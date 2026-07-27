@@ -1,7 +1,7 @@
 /**
  * RIS (Resampled Importance Sampling) compute pass.
  *
- * Samples M_LIGHT=64 direct light candidates + M_BRDF=1 BRDF candidate per pixel,
+ * Samples M_LIGHT=64 direct-light candidates per pixel,
  * selects the best via weighted reservoir sampling (RIS), then applies a visibility
  * test to finalize the W weight.
  *
@@ -17,6 +17,7 @@
  */
 
 import type { WgslModule } from '../pipeline/wgslComposer.js';
+import { reservoirDiAccessorsWgsl } from './reservoirDi.wgsl.js';
 
 export const RIS_WGSL = /* wgsl */ `
 
@@ -31,19 +32,11 @@ export const RIS_WGSL = /* wgsl */ `
 @group(0) @binding(5) var<storage, read_write> currentReservoir:  array<u32>;
 @group(0) @binding(8) var hdrColorOut: texture_storage_2d<rgba16float, write>;
 
+${reservoirDiAccessorsWgsl({ storeReadWriteBinding: 'currentReservoir' })}
+
 // Group 1: static scene BVH + emitters
 // bvh_index is array<vec4u>: .xyz=vertex indices, .w=packed RGBA8 material color+transmission
-@group(1) @binding(0) var<storage, read> bvh:          array<BVHNode>;
-@group(1) @binding(1) var<storage, read> bvh_index:    array<vec4u>;
-@group(1) @binding(2) var<storage, read> bvh_position: array<vec4f>;
-@group(1) @binding(3) var<storage, read> emitters:     array<EmitterTri>;
-@group(1) @binding(4) var<storage, read> emitterCdf:   array<f32>;
 @group(1) @binding(5) var bvh_beer: texture_2d<u32>;
-@group(1) @binding(6) var<storage, read> tlasNodes: array<BVHNode>;
-@group(1) @binding(7) var<storage, read> tlasInstanceIndices: array<u32>;
-@group(1) @binding(8) var<storage, read> tlasBlasRoots: array<u32>;
-@group(1) @binding(9) var<storage, read> tlasInstanceWorldToLocal: array<vec4f>;
-@group(1) @binding(10) var<storage, read> tlasInstanceLocalToWorld: array<vec4f>;
 // WS1 (2026-05-29) — per-vertex world-space normals for the smooth shading
 // normal. ris uses it for the BRDF / candidate p̂; the geometric normal is
 // kept for the shadow-ray offset. Beer binding 5 feeds RGB transparent-shadow
@@ -81,7 +74,6 @@ export const RIS_WGSL = /* wgsl */ `
 // at the cell level — bad trade for fidelity. Back to 64 candidates
 // for cleaner direct-light reservoirs feeding spatial+temporal.
 const M_LIGHT = 64u;
-const M_BRDF  = 1u;
 // Wave 4 — M_ENV: one importance-sampled HDRI candidate per pixel.
 // HDRI maps are spatially smooth (sinθ-weighted CDF pre-baked); one
 // sample captures the dominant bright region (e.g. a sun disk) with
@@ -141,18 +133,16 @@ fn risMain(@builtin(global_invocation_id) gid: vec3u) {
   let primaryRay = generatePrimaryRay_common(pix.x, pix.y, dims.x, dims.y, ubo.cameraPos, invVP);
   let hit = traceSceneFirstHitAlphaMaskTexturedOpaqueOnly(
     ubo.bvhMode, ubo.tlasNodeCount,
-    &bvh_index, &bvh_position, &bvh,
-    &tlasNodes, &tlasInstanceIndices, &tlasBlasRoots,
-    &tlasInstanceWorldToLocal, &tlasInstanceLocalToWorld,
+
     primaryRay, ubo.triIntersectEpsilon,
-    bvh_material, BVH_MATERIAL_TEX_WIDTH);
+    bvh_material, BVH_MATERIAL_TEX_WIDTH, 0u);
 
   if (!hit.didHit) {
     // Sky pixel -- write sky color directly to HDR output, empty reservoir.
     // B3 — directional IBL: when a pixel-backed HDRI is bound, sample the ACTUAL
     // map along the camera ray (rotationY-aware); envRadiance falls back to the
     // scalar skyTint × skyIrradiance when no map is present (no-HDRI byte-identity).
-    storeReservoirDI_rw(&currentReservoir, pixelIdx, emptyReservoirDI());
+    storeReservoirDI_rw(pixelIdx, emptyReservoirDI());
     let skyColor = envRadiance(primaryRay.direction);
     textureStore(hdrColorOut, pix, vec4f(skyColor, 1.0));
     return;
@@ -166,13 +156,13 @@ fn risMain(@builtin(global_invocation_id) gid: vec3u) {
   let geoNormal = hit.normal;
   let n_isTlas = ubo.bvhMode == 1u;
   let n_base = hit.instanceIndex * 4u;
-  let n_ok = n_isTlas && n_base + 2u < arrayLength(&tlasInstanceWorldToLocal);
+  let n_ok = n_isTlas && n_base + 2u < tlasWorldToLocalColumnCount();
   let n_i = select(0u, n_base, n_ok);
   let smoothNormal = smoothShadingNormal(
     hit, geoNormal,
-    bvh_normal[hit.indices.x].xyz, bvh_normal[hit.indices.y].xyz, bvh_normal[hit.indices.z].xyz,
+    sceneLoadBvhNormal(hit.indices.x).xyz, sceneLoadBvhNormal(hit.indices.y).xyz, sceneLoadBvhNormal(hit.indices.z).xyz,
     n_ok,
-    tlasInstanceWorldToLocal[n_i], tlasInstanceWorldToLocal[n_i + 1u], tlasInstanceWorldToLocal[n_i + 2u],
+    tlasLoadWorldToLocalColumn(n_i), tlasLoadWorldToLocalColumn(n_i + 1u), tlasLoadWorldToLocalColumn(n_i + 2u),
   );
   let normalMapped = applyNormalMapForHit(hit, smoothNormal);
   let normal = applyBumpMapForHit(hit, normalMapped);
@@ -184,14 +174,14 @@ fn risMain(@builtin(global_invocation_id) gid: vec3u) {
     scalarMatColor.rgb,
     sampleTransmissionMapForHit(hit, scalarMatColor.a),
   );
-  let isGlass   = matColor.a > 0.3;  // transmission > ~76/255
+  let isGlass   = materialHasTransmission(matColor.a);
   // B1 — real authored roughness/metalness from the per-tri bvh_material texture
   // (was hardcoded). The diffuse-default invariant packs 0.85 for unspecified
   // roughness / 0.05 for glass, so default-diffuse scenes are numerically
   // unchanged; authored glossy/metal surfaces now drive the GGX candidate p̂.
   let rmCoord   = vec2u(hit.indices.w % BVH_MATERIAL_TEX_WIDTH, hit.indices.w / BVH_MATERIAL_TEX_WIDTH);
   let materialWord = textureLoad(bvh_material, vec2i(rmCoord), 0).r;
-  let payload = sampleRestirDIMaterialPayloadForHit(hit, smoothNormal, normal, matColor.rgb, materialWord);
+  let payload = sampleRestirDIMaterialPayloadForHit(hit, smoothNormal, normal, matColor.rgb, materialWord, wo);
   let albedo    = payload.albedo;
   let roughness = payload.rough;
   let metalness = payload.metal;
@@ -206,6 +196,7 @@ fn risMain(@builtin(global_invocation_id) gid: vec3u) {
   surf.albedo = albedo;
   surf.rough  = roughness;
   surf.metal  = metalness;
+  surf.isGlass = isGlass;
   surf.specular = payload.specular;
   surf.anisotropy = payload.anisotropy;
   surf.anisotropyTangent = payload.anisotropyTangent;
@@ -216,17 +207,29 @@ fn risMain(@builtin(global_invocation_id) gid: vec3u) {
   surf.sheenRoughness = payload.sheenRoughness;
   surf.layerTransmission = payload.layerTransmission;
   surf.volumeScattering = payload.volumeScattering;
+  surf.bulkThickness = payload.bulkThickness;
   surf.envMapIntensity = envMapIntensity;
   surf.depth  = hit.dist;
 
   var r = emptyReservoirDI();
-  // Support-aware sample counts for mixed-measure reservoirs. Area emitters and
-  // the BSDF->emitter candidate share finite-emitter support; the HDRI sentinel
+  // Support-aware sample counts for mixed-measure reservoirs. Area emitters
+  // use finite-emitter support; the HDRI sentinel
   // lives on a disjoint directional domain. A selected candidate's W denominator
   // must count only candidates from its support, otherwise a single env sample is
   // averaged down by all finite-emitter candidates in the pool.
   var mAreaSupport = 0u;
   var mEnvSupport = 0u;
+  // Generalized stratified RIS over the tagged union of finite-emitter and
+  // directional-environment domains. Each domain's candidates estimate that
+  // domain's integral as a mean; multiplying source weights by Mtotal/nDomain
+  // lets the canonical W = w_sum/(Mtotal*pHat) represent their SUM rather than
+  // a candidate-count-weighted average. Null draws remain in nDomain.
+  let envStrategyActive = envHasMap();
+  let scheduledAreaM = M_LIGHT;
+  let scheduledEnvM = select(0u, M_ENV, envStrategyActive);
+  let scheduledTotalM = scheduledAreaM + scheduledEnvM;
+  let areaRisScale = f32(scheduledTotalM) / f32(max(1u, scheduledAreaM));
+  let envRisScale = f32(scheduledTotalM) / f32(max(1u, scheduledEnvM));
   let emCount = max(ubo.emitterCount, 1u);
 
   // --- M_LIGHT candidates from emitter distribution ---
@@ -247,6 +250,11 @@ fn risMain(@builtin(global_invocation_id) gid: vec3u) {
   let useRegir = ubo.regirEnabled == 1u;
   let useLightTree = ubo.lightTreeEnabled == 1u;
   for (var i = 0u; i < M_LIGHT; i++) {
+    // RIS normalisation counts scheduled proposal draws, including null /
+    // zero-weight outcomes.  Counting only candidates that survive the guards
+    // below conditions the estimator on acceptance and inflates it by the
+    // reciprocal acceptance probability.
+    mAreaSupport = mAreaSupport + 1u;
     // Select an emitter + record the EXACT selection pmf that produced it.
     var lid: u32;
     var emitterSelPmf: f32;
@@ -268,14 +276,14 @@ fn risMain(@builtin(global_invocation_id) gid: vec3u) {
       emitterSelPmf = lt.pdf;
     } else {
       let xiEm = rand_f32(&rng);
-      lid = sampleEmitterIdx(&emitterCdf, emCount, xiEm);
+      lid = sampleEmitterIdx(emCount, xiEm);
       // Flat power CDF pmf is the actual CDF segment sampled above. This matters
       // for UV-varying emissive maps: the CPU CDF can use map-aware selection
       // power while EmitterTri.Le stays scalar so sampleEmitterLeAtXi can apply
       // the exact hit texel at candidate time.
-      emitterSelPmf = emitterCdfPmf(&emitterCdf, emCount, lid);
+      emitterSelPmf = emitterCdfPmf(emCount, lid);
     }
-    let e   = emitters[lid];
+    let e   = sceneLoadEmitter(lid);
     let xiTri = rand2(&rng);
     let ls  = sampleEmitterPoint(e, xiTri);
 
@@ -285,7 +293,7 @@ fn risMain(@builtin(global_invocation_id) gid: vec3u) {
     let wi     = toL / sqrt(dist2);
     let nDotL  = max(0.0, dot(normal, wi));
     let nlDotL = max(0.0, dot(-e.normal, wi));
-    if (nDotL < 1e-6 || nlDotL < 1e-6) { continue; }
+    if (nDotL <= 0.0 || nlDotL <= 0.0) { continue; }
 
     // evalGGX includes NdotL; G is the emitter geometry term only.
     // Same emitterGeometry helper as the canonical xi-aware p̂ helper
@@ -302,106 +310,17 @@ fn risMain(@builtin(global_invocation_id) gid: vec3u) {
     // the area pdf factor is identical for both modes. This is the source pdf
     // the WRS weight divides p̂ by — getting it exactly right is what keeps
     // ReSTIR unbiased.
-    let pX = max(1e-15, emitterSelPmf * ls.pdfArea);
-    let w = select(0.0, pHat / pX, pHat > 0.0);
-    updateReservoirDI(&r, lid, xiTri, w, &rng);
-    mAreaSupport = mAreaSupport + 1u;
-  }
-
-  // --- M_BRDF candidate(s): GGX-VNDF-sampled BSDF candidate (B16) ────────────
-  // The M_LIGHT loop importance-samples the EMITTERS; it under-samples the cases
-  // where the BSDF lobe is narrow (glossy/metal) and concentrated away from the
-  // emitter's solid angle, so a light-only RIS pool is high-variance on shiny
-  // surfaces. This loop adds a BSDF-sampled candidate per pixel (talk-of-the-
-  // trade light+BSDF MIS-style multi-strategy RIS): draw wi ∝ GGX-VNDF, find
-  // which emitter triangle that ray hits, and fold the resulting on-emitter
-  // sample into the SAME reservoir with the SAME (lid, xi) representation.
-  //
-  // UNBIASEDNESS (the load-bearing detail): RIS over heterogeneous candidate
-  // strategies is unbiased as long as each candidate's WRS weight divides the
-  // SHARED target p̂ by the SOURCE pdf of the strategy that generated it, all in
-  // ONE measure. The light candidates use AREA measure (p = selPmf·pdfArea); the
-  // BRDF candidate samples wi in SOLID-ANGLE measure, so we convert its pdf to
-  // area measure via the geometry Jacobian  p_area = p_sa · dist² / cosθ_light.
-  // p̂ is IDENTICAL to the light candidates (luminance(Le·brdf·G)), so the chosen
-  // sample's W finalisation uses the stored xi, so the BRDF candidate is just
-  // another contributor to w_sum / M over finite-emitter support.
-  //
-  // DIFFUSE-DEFAULT NON-BIAS: for a rough Lambertian (rough≈0.85) the VNDF lobe
-  // is broad; the candidate still has the CORRECT source pdf so it cannot bias
-  // the estimate. It adds at most M_BRDF=1 to r.M, which the unbiased estimator
-  // already accounts for in W = w_sum/(M·p̂). It changes the rng stream + the
-  // numeric result vs the pre-B16 kernel (this is a RENDER-CHANGING DI quality
-  // improvement, NOT a byte-identity-preserving change — see V28 B16 A/B).
-  let emCountB = arrayLength(&emitters);
-  for (var bi = 0u; bi < M_BRDF; bi++) {
-    // Draw a BSDF direction (VNDF) and its solid-angle pdf.
-    let wiB = ggxSampleVndf(normal, wo, roughness, &rng);
-    let nDotLB = dot(normal, wiB);
-    if (nDotLB <= 1e-6) { continue; }
-    let pdfSa = ggxVndfReflectionPdf(normal, wo, wiB, roughness);
-    if (pdfSa <= 1e-8) { continue; }
-
-    // Intersect the BSDF ray against every emitter triangle; keep the nearest
-    // forward hit (emitter counts are small in these scenes — a linear test is
-    // cheaper than recovering the emitter index from a full BVH closest-hit and
-    // inverting its barycentrics). The hit barycentrics map directly to the
-    // (lid, xi) the reservoir + visibility stage already understand.
-    let brdfOrig = pos + geoNormal * 1e-3;
-    var bestT = 1e30;
-    var bestLid = 0u;
-    var bestXi = vec2f(0.0);
-    var bestLe = vec3f(0.0);
-    var bestNl = vec3f(0.0);
-    var found = false;
-    for (var li = 0u; li < emCountB; li++) {
-      let eb = emitters[li];
-      let it = intersectTriangle(brdfOrig, wiB, eb.vA, eb.vB, eb.vC, ubo.triIntersectEpsilon);
-      if (!it.didHit || it.dist <= 1e-4 || it.dist >= bestT) { continue; }
-      // The emitter must face the incoming ray (front side emits).
-      if (dot(eb.normal, wiB) >= 0.0) { continue; }
-      bestT = it.dist;
-      bestLid = li;
-      // Invert sampleEmitterPoint: weights (u,v,w) = (1−s, s·xi.y, s·(1−xi.y))
-      // with s = sqrt(xi.x). barycoord.(x,y,z) are the (A,B,C) vertex weights.
-      let bA = it.barycoord.x;
-      let bB = it.barycoord.y;
-      let bC = it.barycoord.z;
-      let sInv = clamp(1.0 - bA, 0.0, 1.0);
-      let xiX = sInv * sInv;
-      let bcSum = max(bB + bC, 1e-8);
-      let xiY = clamp(bB / bcSum, 0.0, 1.0);
-      bestXi = vec2f(xiX, xiY);
-      bestLe = sampleEmitterLeAtXi(eb, bestXi);
-      bestNl = eb.normal;
-      found = true;
-    }
-    if (!found) { continue; }
-
-    // Shared target p̂ = luminance(Le · brdf · G), evaluated for the on-emitter
-    // sample the BSDF ray landed on — IDENTICAL form to the M_LIGHT candidates.
-    let hitPos = brdfOrig + wiB * bestT;
-    let toLB = hitPos - pos;
-    let dist2B = max(dot(toLB, toLB), 1e-8);
-    let nlDotLB = max(0.0, dot(-bestNl, wiB));
-    if (nlDotLB < 1e-6) { continue; }
-    let Gb = emitterGeometry(nlDotLB, dist2B, ubo.emitterDist2Floor);
-    let brdfB = restir_di_eval_surface_brdf(surf, wiB);
-    let pHatB = luminance(bestLe * brdfB * Gb);
-
-    // Convert the BSDF solid-angle pdf to AREA measure so it shares the
-    // light candidates' measure:  p_area = p_sa · dist² / cosθ_light.
-    let pAreaB = pdfSa * dist2B / max(nlDotLB, 1e-6);
-    let pXb = max(1e-15, pAreaB);
-    let wB = select(0.0, pHatB / pXb, pHatB > 0.0);
-    updateReservoirDI(&r, bestLid, bestXi, wB, &rng);
-    mAreaSupport = mAreaSupport + 1u;
+    let pX = emitterSelPmf * ls.pdfArea;
+    var w = 0.0;
+    if (pHat > 0.0 && pX > 0.0) { w = pHat / pX; }
+    if (!reservoirDiFinite(w)) { w = 0.0; }
+    updateReservoirDI(&r, lid, xiTri, w * areaRisScale, &rng);
   }
 
   // --- M_ENV candidate(s): HDRI importance-sampled directional candidates (Wave 4) ──
   //
-  // The M_LIGHT+M_BRDF loops handle area-emitter and BSDF-sampled candidates; both
-  // contribute ZERO for HDRI-lit scenes with no mesh area lights. This loop adds one
+  // M_LIGHT handles finite emitters and contributes zero in an environment-only
+  // scene. This loop adds one
   // importance-sampled env direction per pixel via the pre-baked sinθ-weighted CDF
   // (bindings 16-17). The env candidate is gated by envHasMap() so emitter-only
   // scenes are BYTE-IDENTICAL to the pre-Wave-4 kernel (p̂=0 → w=0 → reservoir
@@ -412,29 +331,39 @@ fn risMain(@builtin(global_invocation_id) gid: vec3u) {
   // infinity — there is no geometry term G = cosθ_light/dist²). The BRDF candidate
   // above CONVERTS to area measure to match the area-light candidates; the env
   // candidate stays in SA measure. Each candidate divides p̂ by its OWN source
-  // pdf, and finalization divides by the winner's support-family count
-  // (mEnvSupport rather than the finite-emitter candidate count). The shared
-  // canonical p̂ (restir_di_compute_phat_xi) returns the SA-measure env p̂
-  // (no G term) for sentinel lids, consistent with the SA source pdf used here.
+  // pdf. Generalized-RIS scaling above converts each support family's sample
+  // mean into one tagged-union reservoir with Mtotal; the shared canonical p̂
+  // returns the SA-measure env p̂ (no G term) for sentinel lids, consistent
+  // with the SA source pdf used here.
   //
   // VISIBILITY: shadow ray toward the sampled direction with tmax=1e20 (to infinity).
   // skipGlass=true (same as emitter shadow rays — glass is translucent to env light).
   for (var ei = 0u; ei < M_ENV; ei++) {
     let envS = envImportanceSample(&rng);
-    if (envS.pdf <= 1e-8 || !envHasMap()) { continue; }
+    // The environment strategy is inactive when no map exists.  Once active,
+    // every scheduled draw counts even when its pdf/cosine/target is zero.
+    if (!envStrategyActive) { continue; }
+    mEnvSupport = mEnvSupport + 1u;
+    if (!(envS.pdf > 0.0)) { continue; }
     let nDotL = max(0.0, dot(normal, envS.dir));
-    if (nDotL < 1e-6) { continue; }
+    if (nDotL <= 0.0) { continue; }
     let brdfE = restir_di_eval_surface_brdf(surf, envS.dir);
     // p̂ = luminance(envColor * brdf) — no G term (env is at infinity).
     let pHatE = luminance(envS.color * envMapIntensity * brdfE);
     // Source pdf: solid-angle pdf from the CDF importance sample (same measure as p̂).
-    let pXe = max(1e-15, envS.pdf);
-    let wE = select(0.0, pHatE / pXe, pHatE > 0.0);
+    var wE = select(0.0, pHatE / envS.pdf, pHatE > 0.0);
+    if (!reservoirDiFinite(wE)) { wE = 0.0; }
     // Encode direction into xi: xi.x = theta/PI, xi.y = phi/(2PI)+0.5.
     let envXi = envDirToXi(envS.dir);
-    updateReservoirDI(&r, ENV_SAMPLE_SENTINEL, envXi, wE, &rng);
-    mEnvSupport = mEnvSupport + 1u;
+    updateReservoirDI(&r, ENV_SAMPLE_SENTINEL, envXi, wE * envRisScale, &rng);
   }
+
+  // Persist attempted multiplicities before visibility. All-null and occluded
+  // frames are real zero-valued estimates and must retain their M so temporal
+  // and spatial reuse do not condition on proposal acceptance.
+  r.areaM = mAreaSupport;
+  r.envM = mEnvSupport;
+  r.M = mAreaSupport + mEnvSupport;
 
   // --- Visibility test on chosen candidate ---
   if (r.M > 0u && r.w_sum > 0.0) {
@@ -449,26 +378,23 @@ fn risMain(@builtin(global_invocation_id) gid: vec3u) {
       // and attenuate through readable alpha-blend coverage plus glass Beer tint.
       // Reservoir weights are scalar, so RGB visibility is scalarized by
       // luminance; shade recomputes the same tint for the final RGB contribution.
-      let shadowTint = traceSceneAlphaTintTransmittanceTextured(
+      let shadowTint = traceSceneAlphaTintTransmittanceTexturedWithOwnership(
         ubo.bvhMode, ubo.tlasNodeCount,
-        &bvh_index, &bvh_position, &bvh,
-        &tlasNodes, &tlasInstanceIndices, &tlasBlasRoots,
-        &tlasInstanceWorldToLocal, &tlasInstanceLocalToWorld,
+
         shadowOrig, envDir, 1e20, ubo.triIntersectEpsilon,
-        bvh_material, BVH_MATERIAL_TEX_WIDTH, bvh_beer);
+        bvh_material, BVH_MATERIAL_TEX_WIDTH, bvh_beer,
+        ubo.sunAngular.z >= 1.5);
       let shadowT = restirDirectVisibilityScalar(shadowTint);
-      if (shadowT <= 0.001) {
+      if (shadowT <= 0.0) {
         r.w_sum = 0.0;
         r.W     = 0.0;
       } else {
         let pHatZ = restir_di_compute_phat_xi(lid, r.xi, surf);
-        let supportM = max(1u, mEnvSupport);
-        r.M = supportM;
         r.w_sum = r.w_sum * shadowT;
-        r.W = select(0.0, r.w_sum / (f32(supportM) * pHatZ), pHatZ > 0.0);
+        r.W = select(0.0, r.w_sum / (f32(r.M) * pHatZ), pHatZ > 0.0);
       }
     } else {
-      let e   = emitters[lid];
+      let e   = sceneLoadEmitter(lid);
       // 2026-05-18 sweep finding #3 fix — sample the EXACT point that was
       // chosen by the WRS (r.xi), not the centroid. The centroid bias was
       // a real correctness gap: visibility at the centroid disagrees with
@@ -487,16 +413,15 @@ fn risMain(@builtin(global_invocation_id) gid: vec3u) {
       // Emitter castShadow:false disables the emitter's own NEE shadow ray.
       var shadowT = 1.0;
       if (e.castShadowDisabled < 0.5) {
-        let shadowTint = traceSceneAlphaTintTransmittanceTextured(
+        let shadowTint = traceSceneAlphaTintTransmittanceTexturedWithOwnership(
           ubo.bvhMode, ubo.tlasNodeCount,
-          &bvh_index, &bvh_position, &bvh,
-          &tlasNodes, &tlasInstanceIndices, &tlasBlasRoots,
-          &tlasInstanceWorldToLocal, &tlasInstanceLocalToWorld,
+
           shadowOrig, wi, dist - 2e-3, ubo.triIntersectEpsilon,
-          bvh_material, BVH_MATERIAL_TEX_WIDTH, bvh_beer);
+          bvh_material, BVH_MATERIAL_TEX_WIDTH, bvh_beer,
+          ubo.sunAngular.z >= 1.5);
         shadowT = restirDirectVisibilityScalar(shadowTint);
       }
-      if (shadowT <= 0.001) {
+      if (shadowT <= 0.0) {
         r.w_sum = 0.0;
         r.W     = 0.0;
       } else {
@@ -504,15 +429,13 @@ fn risMain(@builtin(global_invocation_id) gid: vec3u) {
         // p̂ helper (Bitterli 2020 §4.3 — identical across RIS/temporal/spatial)
         // sees the same struct shape as the reuse passes.
         let pHatZ = restir_di_compute_phat_xi(lid, r.xi, surf);
-        let supportM = max(1u, mAreaSupport);
-        r.M = supportM;
         r.w_sum = r.w_sum * shadowT;
-        r.W = select(0.0, r.w_sum / (f32(supportM) * pHatZ), pHatZ > 0.0);
+        r.W = select(0.0, r.w_sum / (f32(r.M) * pHatZ), pHatZ > 0.0);
       }
     }
   }
 
-  storeReservoirDI_rw(&currentReservoir, pixelIdx, r);
+  storeReservoirDI_rw(pixelIdx, r);
 }
 `;
 

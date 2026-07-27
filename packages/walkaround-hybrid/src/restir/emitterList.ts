@@ -11,7 +11,8 @@
  *      secondary emitter (gated on primaryLightDot > 0.05)
  *   3. otherwise → skipped
  *
- * Emitters with power < 1e-8 are dropped. If the resulting list is empty,
+ * Only non-positive or non-finite-power emitters are dropped. If the resulting
+ * list is empty,
  * a synthetic dummy emitter is inserted so the GPU buffer is non-empty
  * (WGSL bind groups can't be size 0).
  */
@@ -24,12 +25,7 @@ import {
   LIGHT_TREE_FLOATS_PER_NODE,
 } from '@vitrum/shared-samplers';
 import {
-  type BarycentricWeights,
   classifyTriangleEmitterCore,
-  emissiveMapTriangleSubdivisionLevel,
-  estimateMaterialSpecEmissiveLeOverTriangle,
-  forEachBarycentricSubTriangle,
-  forEachEmissiveMapTexelSubTriangle,
   materialSpecScalarEmissiveLe,
 } from '@vitrum/shared-bvh';
 
@@ -85,7 +81,7 @@ interface EmitterListOptions {
    * stored candidate `xi`. The index must be in the active render buffers'
    * `bvh_index` / material-atlas triangle space; callers with a world-expanded
    * emitter stream can provide `sourceTriIndexForTriangle` to translate.
-   * Negative encodings are reserved: `-1` means fallback to averaged radiance,
+   * Negative encodings are reserved: `-1` means constant packed radiance,
    * while `-(tri + 2)` means source triangle `tri` with reversed barycentric
    * orientation for mirrored TLAS instances.
    */
@@ -93,13 +89,15 @@ interface EmitterListOptions {
   /**
    * Optional mapper from the emitter-list triangle index to the active render
    * buffers' triangle index. Returning a negative/non-finite value keeps that
-   * emitter on the averaged-radiance fallback.
+   * emitter on constant packed radiance.
    */
   sourceTriIndexForTriangle?: (triIdx: number) => number;
   /** Merged UV0 stream, stride-2 and aligned with `positions`. */
   uvs?: Float32Array;
   /** Optional merged UV1 stream, stride-2 and aligned with `positions`. */
   uv1s?: Float32Array;
+  /** Arbitrary merged UV streams keyed by authored TextureRef.texCoord. */
+  uvSets?: ReadonlyMap<number, Float32Array>;
 }
 
 /**
@@ -201,54 +199,27 @@ export function buildEmitterListFromCore(
       const classified = classifyTriangleEmitterCore(mat, normal, lightDir, primaryIntensity);
       const castShadowDisabled = (mat as MaterialSpec & { readonly castShadow?: boolean }).castShadow === false;
       if (classified == null) return null;
-      if (options.packSourceTriIndex !== true) {
-        return { ...classified, castShadowDisabled };
-      }
       const scalarLe = scalarMaterialEmissiveLe(mat);
       if (scalarLe == null) return { ...classified, castShadowDisabled };
-      const selectionColor = estimateTriangleEmissiveLe(
-        mat,
-        indices,
-        t,
-        options.uvs,
-        options.uv1s,
-      ) ?? classified.color;
-      const exactTexelSubTriangles: {
-        a: BarycentricWeights;
-        b: BarycentricWeights;
-        c: BarycentricWeights;
-        radiance: [number, number, number];
-      }[] = [];
-      const i0 = indices[t * 3 + 0] ?? 0;
-      const i1 = indices[t * 3 + 1] ?? 0;
-      const i2 = indices[t * 3 + 2] ?? 0;
-      const exactTexelHandled = mat.emissiveMap != null &&
-        forEachEmissiveMapTexelSubTriangle(
-          mat,
-          uvAt(options.uvs, i0),
-          uvAt(options.uvs, i1),
-          uvAt(options.uvs, i2),
-          uvAt(options.uv1s, i0),
-          uvAt(options.uv1s, i1),
-          uvAt(options.uv1s, i2),
-          (wa, wb, wc, radiance) => {
-            exactTexelSubTriangles.push({
-              a: wa,
-              b: wb,
-              c: wc,
-              radiance: [radiance[0], radiance[1], radiance[2]],
-            });
-          },
-        );
       const sourceTriIndex = options.sourceTriIndexForTriangle?.(t) ?? t;
-      if (exactTexelHandled) {
+      if (mat.emissiveMap != null) {
+        // Mapped emitters use a bounded-memory uniform-area conditional
+        // proposal over the parent triangle. The candidate shader evaluates
+        // the exact atlas texel (including authored transform, wrap, filter,
+        // and mip state) at the sampled barycentrics; reservoir weights divide
+        // by this proposal, so no texel-cell geometry expansion is required
+        // for unbiased transport. `selectionColor` only improves the top-level
+        // alias proposal and is never substituted for candidate radiance.
         return {
           ...classified,
           castShadowDisabled,
           color: scalarLe,
-          selectionColor,
-          texelSubTriangles: exactTexelSubTriangles,
+          selectionColor: classified.color,
+          sourceTriIndex: Math.trunc(sourceTriIndex),
         };
+      }
+      if (options.packSourceTriIndex !== true) {
+        return { ...classified, castShadowDisabled };
       }
       if (
         !Number.isFinite(sourceTriIndex) ||
@@ -261,20 +232,7 @@ export function buildEmitterListFromCore(
         ...classified,
         castShadowDisabled,
         color: scalarLe,
-        selectionColor,
         sourceTriIndex: Math.trunc(sourceTriIndex),
-        subdivisionLevel: emissiveMapTriangleSubdivisionLevel(mat),
-        subdivisionSelectionColor: (wa: BarycentricWeights, wb: BarycentricWeights, wc: BarycentricWeights) =>
-          estimateSubTriangleEmissiveLe(
-            mat,
-            indices,
-            t,
-            wa,
-            wb,
-            wc,
-            options.uvs,
-            options.uv1s,
-          ) ?? selectionColor,
       };
     },
     options,
@@ -296,29 +254,10 @@ type TriangleEmitterClassifier = (
   /** Radiance packed into EmitterTri.Le for shader evaluation. */
   color: [number, number, number];
   intensity: number;
-  /**
-   * Radiance used for power-CDF / light-tree selection. This differs from
-   * `color` when shader evaluation applies a UV-varying emissive map at
-   * candidate time but selection still uses the stable CPU average.
-   */
+  /** Radiance used for power-CDF / light-tree selection. */
   selectionColor?: [number, number, number];
-  /** Valid atlas/BVH triangle id for emissive-map sampling, or absent for fallback. */
+  /** Valid atlas/BVH triangle id for candidate-time sampling, or absent for constant radiance. */
   sourceTriIndex?: number;
-  /** Barycentric micro-triangle split for UV-varying emitter selection. */
-  subdivisionLevel?: number;
-  /** Per-micro-triangle selection radiance estimate in parent barycentric space. */
-  subdivisionSelectionColor?: (
-    wa: BarycentricWeights,
-    wb: BarycentricWeights,
-    wc: BarycentricWeights,
-  ) => [number, number, number];
-  /** Exact CPU-readable emissive-map texel cells, expressed in parent barycentrics. */
-  texelSubTriangles?: readonly {
-    a: BarycentricWeights;
-    b: BarycentricWeights;
-    c: BarycentricWeights;
-    radiance: [number, number, number];
-  }[];
   /** Source primitive explicitly opted out of shadow casting. */
   castShadowDisabled?: boolean;
 } | null;
@@ -327,110 +266,13 @@ function scalarMaterialEmissiveLe(material: MaterialSpec): [number, number, numb
   return materialSpecScalarEmissiveLe(material);
 }
 
-function uvAt(uvs: Float32Array | undefined, vertex: number): [number, number] {
-  if (uvs == null) return [0, 0];
-  return [uvs[vertex * 2] ?? 0, uvs[vertex * 2 + 1] ?? 0];
-}
-
-function baryVec3(
-  a: [number, number, number],
-  b: [number, number, number],
-  c: [number, number, number],
-  w: BarycentricWeights,
-): [number, number, number] {
-  return [
-    a[0] * w[0] + b[0] * w[1] + c[0] * w[2],
-    a[1] * w[0] + b[1] * w[1] + c[1] * w[2],
-    a[2] * w[0] + b[2] * w[1] + c[2] * w[2],
-  ];
-}
-
-/** Area of the triangle (subA, subB, subC) via half the edge cross-product
- *  magnitude. Shared by the texel-sub-triangle emit path (D6-9). */
-function triangleArea(
-  subA: readonly [number, number, number],
-  subB: readonly [number, number, number],
-  subC: readonly [number, number, number],
-): number {
-  const sx = subB[0] - subA[0], sy = subB[1] - subA[1], sz = subB[2] - subA[2];
-  const tx = subC[0] - subA[0], ty = subC[1] - subA[1], tz = subC[2] - subA[2];
-  return 0.5 * Math.sqrt(
-    (sy * tz - sz * ty) ** 2 +
-    (sz * tx - sx * tz) ** 2 +
-    (sx * ty - sy * tx) ** 2,
-  );
-}
-
-function baryUv(
-  a: [number, number],
-  b: [number, number],
-  c: [number, number],
-  w: BarycentricWeights,
-): [number, number] {
-  return [
-    a[0] * w[0] + b[0] * w[1] + c[0] * w[2],
-    a[1] * w[0] + b[1] * w[1] + c[1] * w[2],
-  ];
-}
-
-function estimateTriangleEmissiveLe(
-  material: MaterialSpec,
-  indices: Uint32Array,
-  triIdx: number,
-  uvs?: Float32Array,
-  uv1s?: Float32Array,
-): [number, number, number] | null {
-  if (material.emissiveMap == null) return materialSpecScalarEmissiveLe(material);
-  const i0 = indices[triIdx * 3 + 0] ?? 0;
-  const i1 = indices[triIdx * 3 + 1] ?? 0;
-  const i2 = indices[triIdx * 3 + 2] ?? 0;
-  return estimateMaterialSpecEmissiveLeOverTriangle(
-    material,
-    uvAt(uvs, i0),
-    uvAt(uvs, i1),
-    uvAt(uvs, i2),
-    uvAt(uv1s, i0),
-    uvAt(uv1s, i1),
-    uvAt(uv1s, i2),
-  );
-}
-
-function estimateSubTriangleEmissiveLe(
-  material: MaterialSpec,
-  indices: Uint32Array,
-  triIdx: number,
-  wa: BarycentricWeights,
-  wb: BarycentricWeights,
-  wc: BarycentricWeights,
-  uvs?: Float32Array,
-  uv1s?: Float32Array,
-): [number, number, number] | null {
-  const i0 = indices[triIdx * 3 + 0] ?? 0;
-  const i1 = indices[triIdx * 3 + 1] ?? 0;
-  const i2 = indices[triIdx * 3 + 2] ?? 0;
-  const uv0a = uvAt(uvs, i0);
-  const uv0b = uvAt(uvs, i1);
-  const uv0c = uvAt(uvs, i2);
-  const uv1a = uvAt(uv1s, i0);
-  const uv1b = uvAt(uv1s, i1);
-  const uv1c = uvAt(uv1s, i2);
-  return estimateMaterialSpecEmissiveLeOverTriangle(
-    material,
-    baryUv(uv0a, uv0b, uv0c, wa),
-    baryUv(uv0a, uv0b, uv0c, wb),
-    baryUv(uv0a, uv0b, uv0c, wc),
-    baryUv(uv1a, uv1b, uv1c, wa),
-    baryUv(uv1a, uv1b, uv1c, wb),
-    baryUv(uv1a, uv1b, uv1c, wc),
-  );
-}
 
 /**
  * Shared emitter-list builder core. Iterates the merged world-space triangle
  * stream, derives each triangle's area + face normal (cross-product, then
  * the per-vertex-normal-average override identical to the original
  * `buildEmitterListCore`), runs the supplied `classify` callback, gates on
- * `power < 1e-8`, then packs the 80-byte EmitterTri buffer + power CDF +
+ * positive finite power, then packs the 80-byte EmitterTri buffer + power CDF +
  * light-tree inputs. {@link buildEmitterListFromCore} (`MaterialSpec[]`) calls
  * this with the core-material classifier — the geometry + packing math is
  * independent of the material system.
@@ -482,7 +324,7 @@ function buildEmitterListCore(
   }): void => {
     const powerColor = e.selectionColor ?? e.color;
     const power = luminance(powerColor[0], powerColor[1], powerColor[2]) * e.area;
-    if (power < 1e-8) return;
+    if (!(power > 0) || !Number.isFinite(power)) return;
     emitterData.push({
       triIdx: e.triIdx,
       sourceTriIndex: e.sourceTriIndex,
@@ -543,80 +385,7 @@ function buildEmitterListCore(
     const parentB: [number, number, number] = [bx, by, bz];
     const parentC: [number, number, number] = [cx0, cy0, cz0];
     const normal: [number, number, number] = [nx, ny, nz];
-    // Expand a barycentric sub-triangle of the parent and push it as an emitter.
-    // Shared by the texel-patch and subdivision paths (D6-9); each supplies its
-    // own area (texel patches recompute from the cross-product; subdivision
-    // divides the parent area by level²) + color/provenance metadata.
-    const emitSubTriangle = (
-      wa: BarycentricWeights,
-      wb: BarycentricWeights,
-      wc: BarycentricWeights,
-      meta: {
-        area: number | ((subA: [number, number, number], subB: [number, number, number], subC: [number, number, number]) => number);
-        color: [number, number, number];
-        intensity: number;
-        selectionColor?: [number, number, number];
-        sourceTriIndex: number;
-        sourceSubdivLevel?: number;
-        sourceSubdivOrdinal?: number;
-      },
-    ): void => {
-      const subA = baryVec3(parentA, parentB, parentC, wa);
-      const subB = baryVec3(parentA, parentB, parentC, wb);
-      const subC = baryVec3(parentA, parentB, parentC, wc);
-      const subArea = typeof meta.area === 'function' ? meta.area(subA, subB, subC) : meta.area;
-      if (subArea < 1e-12) return;
-      pushEmitter({
-        triIdx: t,
-        sourceTriIndex: meta.sourceTriIndex,
-        ...(meta.sourceSubdivLevel != null ? { sourceSubdivLevel: meta.sourceSubdivLevel } : {}),
-        ...(meta.sourceSubdivOrdinal != null ? { sourceSubdivOrdinal: meta.sourceSubdivOrdinal } : {}),
-        vA: subA,
-        vB: subB,
-        vC: subC,
-        normal,
-        area: subArea,
-        color: meta.color,
-        intensity: meta.intensity,
-        castShadowDisabled,
-        ...(meta.selectionColor != null ? { selectionColor: meta.selectionColor } : {}),
-      });
-    };
-    if (classified.texelSubTriangles != null) {
-      for (const patch of classified.texelSubTriangles) {
-        emitSubTriangle(patch.a, patch.b, patch.c, {
-          area: triangleArea,
-          color: patch.radiance,
-          intensity: 1,
-          selectionColor: patch.radiance,
-          sourceTriIndex: -1,
-        });
-      }
-      continue;
-    }
     const sourceTriIndex = classified.sourceTriIndex ?? -1;
-    const subdivisionLevel = Math.max(1, Math.floor(classified.subdivisionLevel ?? 1));
-    if (sourceTriIndex !== -1 && subdivisionLevel > 1) {
-      let ordinal = 0;
-      const subArea = area / (subdivisionLevel * subdivisionLevel);
-      forEachBarycentricSubTriangle(subdivisionLevel, (wa, wb, wc) => {
-        const subSelectionColor = classified.subdivisionSelectionColor?.(wa, wb, wc) ??
-          classified.selectionColor ??
-          classified.color;
-        emitSubTriangle(wa, wb, wc, {
-          area: subArea,
-          color: [cr, cg, cb],
-          intensity,
-          selectionColor: subSelectionColor,
-          sourceTriIndex,
-          sourceSubdivLevel: subdivisionLevel,
-          sourceSubdivOrdinal: ordinal,
-        });
-        ordinal += 1;
-      });
-      continue;
-    }
-
     pushEmitter({
       triIdx: t,
       sourceTriIndex,
@@ -636,7 +405,7 @@ function buildEmitterListCore(
     for (const ex of options.extraEmitters) {
       const lum = luminance(ex.Le[0], ex.Le[1], ex.Le[2]);
       const power = lum * ex.area;
-      if (power < 1e-8) continue;
+      if (!(power > 0) || !Number.isFinite(power)) continue;
       emitterData.push({
         triIdx: -1,
         sourceTriIndex: -1,

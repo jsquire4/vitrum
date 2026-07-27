@@ -7,45 +7,22 @@
 // its state (#scene / #sceneBuffers / config); this pure function operates on
 // that state passed in (it does not duplicate or own engine state).
 import type { FrameInput } from '@vitrum/core';
-import { asMat4 } from '@vitrum/core';
+import { asMat4, resolveFrameCameraPosition } from '@vitrum/core';
 import { FrameParamsSlot, FRAME_PARAMS_BYTE_SIZE } from './scene/frameParamsLayout.js';
 import { invertMat4, multiplyMat4 } from './math/mat4.js';
-import { X_CMF_INTEGRAL, Y_CMF_INTEGRAL, Z_CMF_INTEGRAL } from '@vitrum/shared-samplers';
 import type { PtWebgpuTraceTier } from './traceTier.js';
 
-// D8.11 — Module-load-time allocation guard.
-//
-// The buffer is always allocated as 512 bytes (128 u32/f32 slots, indices 0..127).
-// FRAME_PARAMS_BYTE_SIZE is the WGSL-derived padded size of the struct
-// (auto-generated; currently 416 bytes = 104 slots).  If the generator
-// adds fields and the struct grows past 512 bytes, writes at slot ≥ 128 would
-// silently go out of bounds.  Fail loudly here at module load instead.
-//
-// The checked invariant: FRAME_PARAMS_BYTE_SIZE must not exceed the 512-byte
-// ArrayBuffer that `packFrameParams` allocates.
-export const FRAME_PARAMS_BUFFER_ALLOC_BYTES = 512;
-if (FRAME_PARAMS_BYTE_SIZE > FRAME_PARAMS_BUFFER_ALLOC_BYTES) {
+// The CPU payload, GPU buffer, and generated WGSL struct have one exact size.
+// Keeping a larger fixed allocation would silently retain dead per-frame payload.
+export const FRAME_PARAMS_BUFFER_ALLOC_BYTES = FRAME_PARAMS_BYTE_SIZE;
+export const FRAME_PARAMS_MAX_SLOT = FRAME_PARAMS_BYTE_SIZE / 4 - 1;
+if (
+  !Number.isInteger(FRAME_PARAMS_MAX_SLOT) ||
+  FRAME_PARAMS_BYTE_SIZE % 16 !== 0
+) {
   throw new Error(
-    `frameParamsPacker: FRAME_PARAMS_BYTE_SIZE (${FRAME_PARAMS_BYTE_SIZE} B) exceeds the ` +
-    `allocated buffer size (${FRAME_PARAMS_BUFFER_ALLOC_BYTES} B). ` +
-    `Run tools/generate-wgsl-layouts.mjs and update the ArrayBuffer allocation.`,
-  );
-}
-// Also guard the highest *named* slot index used by the packer.  Each slot is 4
-// bytes; the 512-byte buffer accommodates slots 0..127.  If a generator update
-// moves the highest slot past 127 without bumping the allocation, a silent OOB
-// write would corrupt the GPU uniform.  We export this constant so tests can pin it.
-export const FRAME_PARAMS_MAX_SLOT = 127;
-// The authoritative per-field slot map is generated in
-// scene/frameParamsLayout.generated.ts (FrameParamsSlot); do not hand-maintain a
-// slot ledger here. The generator-derived FRAME_PARAMS_BYTE_SIZE / 4 gives the
-// effective slot count (accounting for trailing struct padding):
-const _effectiveSlots = FRAME_PARAMS_BYTE_SIZE / 4; // e.g. 416/4 = 104
-if (_effectiveSlots > FRAME_PARAMS_MAX_SLOT + 1) {
-  throw new Error(
-    `frameParamsPacker: FRAME_PARAMS_BYTE_SIZE implies ${_effectiveSlots} slots but ` +
-    `the buffer only holds ${FRAME_PARAMS_MAX_SLOT + 1} (0..${FRAME_PARAMS_MAX_SLOT}). ` +
-    `Update FRAME_PARAMS_MAX_SLOT or bump the ArrayBuffer allocation.`,
+    `frameParamsPacker: generated FrameParams size (${FRAME_PARAMS_BYTE_SIZE} B) ` +
+    'must be a 16-byte-aligned whole number of f32/u32 slots.',
   );
 }
 
@@ -70,14 +47,6 @@ export interface FrameParamsSceneInputs {
   readonly tlasNodeCount: number;
   readonly lightTreeEnabled: boolean;
   readonly lightTreeNodeCount: number;
-  readonly directionalLight: readonly [number, number, number];
-  readonly directionalIrradiance: readonly [number, number, number];
-  /** D3/SHADOW-01 — signed soft-sun angular diameter in radians (0 = perfect
-   *  delta directional; negative means first directional has castShadow:false,
-   *  encoded as `-1 - angularDiameter`).
-   *  Written to the frame UBO's `cameraPos.w` lane (previously a constant 1, never
-   *  read by any shader). 0 keeps the historical exact directional path. */
-  readonly directionalAngularDiameter: number;
   /** Current scene bounds center, used by BDPT pseudo-distant emitters. */
   readonly sceneCenter: readonly [number, number, number];
   /** Half diagonal of current scene bounds, used to scale BDPT pseudo-distant emitters. */
@@ -119,12 +88,10 @@ export interface FrameParamsEngineConfig {
 }
 
 /**
- * Pack the per-frame uniform buffer (512 bytes, vec4-aligned). Layout is
+ * Pack the generated-size per-frame uniform buffer (vec4-aligned). Layout is
  * pinned and pathTraceBruteforce.wgsl's `params` struct reads from these
  * exact offsets. Callers must have already validated that the scene buffers
  * are non-null (renderFrame's preconditions handle this).
- *
- * Layout (384 bytes used out of a 512-byte buffer; trailing bytes are zero):
  *
  * Authoritative field layout is auto-generated in scene/frameParamsLayout.generated.ts (FrameParamsSlot).
  *
@@ -144,8 +111,12 @@ export function packFrameParams(
   if (invVp == null) {
     throw new Error('renderFrame: non-invertible view-projection matrix');
   }
+  const cameraPosition = resolveFrameCameraPosition(
+    input,
+    'PTEngineWebGPU.renderFrame',
+  );
 
-  const paramsArrayBuffer = new ArrayBuffer(512);
+  const paramsArrayBuffer = new ArrayBuffer(FRAME_PARAMS_BUFFER_ALLOC_BYTES);
   const paramsU32 = new Uint32Array(paramsArrayBuffer);
   const paramsF32 = new Float32Array(paramsArrayBuffer);
   paramsU32[FrameParamsSlot.width] = width;
@@ -182,15 +153,14 @@ export function packFrameParams(
   paramsF32[FrameParamsSlot.triIntersectEpsilon] = 1e-5; // triIntersectEpsilon: default metre-scale (D12)
   paramsU32[FrameParamsSlot.tlasNodeCount] = sb.tlasNodeCount >>> 0;
   paramsU32[FrameParamsSlot.spectralEnabled] = config.spectralEnabled ? 1 : 0;
+  // Spectral kernels sample a hero wavelength per path invocation. These lanes
+  // remain neutral for layout compatibility and non-kernel diagnostic readers.
   paramsF32[FrameParamsSlot.heroLambdaNm] = 550.0;
   paramsF32[FrameParamsSlot.heroPdf] = 1.0;
-  paramsF32[FrameParamsSlot.cmfIntegralX] = X_CMF_INTEGRAL;
-  paramsF32[FrameParamsSlot.cmfIntegralY] = Y_CMF_INTEGRAL;
-  paramsF32[FrameParamsSlot.cmfIntegralZ] = Z_CMF_INTEGRAL;
   const bdptActive = config.bdpt && config.traceTier === 'full';
   paramsU32[FrameParamsSlot.bdptEnabled] = bdptActive ? 1 : 0;
   paramsU32[FrameParamsSlot.bdptMaxLightBounces] = config.bdptMaxLightBounces >>> 0;
-  // Eye-subpath scratch depth = the active per-pixel bounce limit (<= 8).
+  // Active private eye-prefix depth (fixed shader capacity <= 8).
   paramsU32[FrameParamsSlot.bdptMaxEyeDepth] = config.activeBounces >>> 0;
   // WS2 — power-weighted light selection. FULL tier only: the lite kernel keeps
   // the uniform pick and never composes the light-tree WGSL / group(3) binding.
@@ -209,21 +179,9 @@ export function packFrameParams(
   // separate from environmentSun.w (procedural sky sun strength). This ensures the HDRI
   // equirect lookup is NOT silently zeroed when sun.w == 0 (e.g. night-only scenes).
   paramsF32[FrameParamsSlot.environmentHdriIntensity] = sb.environmentHdriIntensity;
-  paramsF32[FrameParamsSlot.cameraPos] = input.cameraPosition[0];
-  paramsF32[FrameParamsSlot.cameraPos + 1] = input.cameraPosition[1];
-  paramsF32[FrameParamsSlot.cameraPos + 2] = input.cameraPosition[2];
-  // D3/SHADOW-01 — signed soft-sun angular diameter mirror in cameraPos.w.
-  // Negative values mean the first directional has castShadow:false, encoded as
-  // -1 - angularDiameter; lite-tier direct lighting decodes this flag.
-  paramsF32[FrameParamsSlot.cameraPos + 3] = sb.directionalAngularDiameter;
-  paramsF32[FrameParamsSlot.lightDir] = sb.directionalLight[0];
-  paramsF32[FrameParamsSlot.lightDir + 1] = sb.directionalLight[1];
-  paramsF32[FrameParamsSlot.lightDir + 2] = sb.directionalLight[2];
-  paramsF32[FrameParamsSlot.lightDir + 3] =
-    (sb.directionalIrradiance[0] +
-      sb.directionalIrradiance[1] +
-      sb.directionalIrradiance[2]) /
-    3;
+  paramsF32[FrameParamsSlot.cameraPos] = cameraPosition[0];
+  paramsF32[FrameParamsSlot.cameraPos + 1] = cameraPosition[1];
+  paramsF32[FrameParamsSlot.cameraPos + 2] = cameraPosition[2];
   paramsF32[FrameParamsSlot.environmentTint] = sb.environmentTint[0];
   paramsF32[FrameParamsSlot.environmentTint + 1] = sb.environmentTint[1];
   paramsF32[FrameParamsSlot.environmentTint + 2] = sb.environmentTint[2];

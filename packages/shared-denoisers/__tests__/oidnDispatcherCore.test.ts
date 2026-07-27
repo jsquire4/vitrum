@@ -112,6 +112,22 @@ describe('OIDNDispatcherCore — basic kick + getLatestDenoised', () => {
     expect(got!.width).toBe(2);
     expect(got!.height).toBe(2);
   });
+
+  it('publishes latest before onComplete and isolates callback exceptions', async () => {
+    const sentinel = new Float32Array(12).fill(4);
+    const onComplete = vi.fn(() => {
+      expect(core.getLatestDenoised()?.rgb).toBe(sentinel);
+      throw new Error('observer failure');
+    });
+    const bridge = makeDefaultBridge(async () => sentinel);
+    const core = new OIDNDispatcherCore<DirectInput>(makeCoreOpts(bridge, { onComplete }));
+    core.kickIfReady(makeInput(), 2, 2);
+    await flushMicrotasks();
+    expect(onComplete).toHaveBeenCalledTimes(1);
+    expect(core.getLatestDenoised()?.rgb).toBe(sentinel);
+    expect(core.getLastError()).toBeNull();
+    expect(core.deriveState()).toMatchObject({ status: 'ready' });
+  });
 });
 
 describe('OIDNDispatcherCore — cohort invalidation', () => {
@@ -144,7 +160,8 @@ describe('OIDNDispatcherCore — cohort invalidation', () => {
         }),
     );
     const bridge: OIDNBridgeLike = { denoiseFinal: slowDenoise };
-    const core = new OIDNDispatcherCore<DirectInput>(makeCoreOpts(bridge));
+    const onComplete = vi.fn();
+    const core = new OIDNDispatcherCore<DirectInput>(makeCoreOpts(bridge, { onComplete }));
 
     // Kick — starts but doesn't finish.
     core.kickIfReady(makeInput(), 2, 2);
@@ -160,6 +177,7 @@ describe('OIDNDispatcherCore — cohort invalidation', () => {
 
     // Result should have been discarded.
     expect(core.getLatestDenoised()).toBeNull();
+    expect(onComplete).not.toHaveBeenCalled();
   });
 });
 
@@ -269,6 +287,33 @@ describe('OIDNDispatcherCore — dispose', () => {
     expect(denoiseFinal.mock.calls).toHaveLength(0);
   });
 
+  it('does not publish an in-flight result after dispose', async () => {
+    let resolveDenoising: ((rgb: Float32Array) => void) | null = null;
+    const denoiseFinal = vi.fn(
+      async () =>
+        new Promise<Float32Array>((resolve) => {
+          resolveDenoising = resolve;
+        }),
+    );
+    const onComplete = vi.fn();
+    const bridge: OIDNBridgeLike = {
+      denoiseFinal,
+      releaseOIDNCacheEntry: vi.fn(),
+    };
+    const core = new OIDNDispatcherCore<DirectInput>(
+      makeCoreOpts(bridge, { onComplete }),
+    );
+
+    core.kickIfReady(makeInput(), 2, 2);
+    await flushMicrotasks();
+    core.dispose();
+    resolveDenoising!(new Float32Array(12).fill(5));
+    await flushMicrotasks();
+
+    expect(onComplete).not.toHaveBeenCalled();
+    expect(core.getLatestDenoised()).toBeNull();
+  });
+
   it('dispose() calls releaseOIDNCacheEntry after a completed inference', async () => {
     const releaseOIDNCacheEntry = vi.fn();
     const bridge: OIDNBridgeLike = {
@@ -313,6 +358,153 @@ describe('OIDNDispatcherCore — dispose', () => {
     core.dispose();
     core.dispose(); // second call
     expect(releaseOIDNCacheEntry).toHaveBeenCalledTimes(1);
+  });
+
+  it('releases a lease that resolves after dispose-during-load without publishing the bridge', async () => {
+    let resolveAcquire!: (lease: { release(): void }) => void;
+    const release = vi.fn();
+    const denoiseFinal = vi.fn(async () => new Float32Array(12));
+    const bridge: OIDNBridgeLike = {
+      denoiseFinal,
+      acquireOIDNSession: vi.fn(() => new Promise(resolve => {
+        resolveAcquire = resolve;
+      })),
+      releaseOIDNCacheEntry: vi.fn(),
+    };
+    const core = new OIDNDispatcherCore<DirectInput>(makeCoreOpts(bridge));
+
+    core.kickIfReady(makeInput(), 2, 2);
+    await flushMicrotasks();
+    core.dispose();
+    resolveAcquire({ release });
+    await flushMicrotasks();
+
+    expect(release).toHaveBeenCalledTimes(1);
+    expect(denoiseFinal).not.toHaveBeenCalled();
+    expect(bridge.releaseOIDNCacheEntry).not.toHaveBeenCalled();
+  });
+
+  it('retires a legacy preloaded cache entry when dispose wins preload', async () => {
+    let resolvePreload!: () => void;
+    const preloadOIDNModel = vi.fn(() => new Promise<void>((resolve) => {
+      resolvePreload = resolve;
+    }));
+    const releaseOIDNCacheEntry = vi.fn();
+    const denoiseFinal = vi.fn(async () => new Float32Array(12));
+    const bridge: OIDNBridgeLike = {
+      denoiseFinal,
+      preloadOIDNModel,
+      releaseOIDNCacheEntry,
+    };
+    const core = new OIDNDispatcherCore<DirectInput>(
+      makeCoreOpts(bridge, { preloadOnBridgeInit: true }),
+    );
+
+    core.kickIfReady(makeInput(), 2, 2);
+    await vi.waitFor(() => expect(preloadOIDNModel).toHaveBeenCalledTimes(1));
+    core.dispose();
+    resolvePreload();
+    await flushMicrotasks();
+
+    expect(releaseOIDNCacheEntry).toHaveBeenCalledTimes(1);
+    expect(releaseOIDNCacheEntry).toHaveBeenCalledWith({
+      modelUrl: '/test/oidn_rt_hdr.onnx',
+    });
+    expect(denoiseFinal).not.toHaveBeenCalled();
+  });
+
+  it('defers lease release until dispose-during-inference has settled', async () => {
+    let resolveDenoise!: (rgb: Float32Array) => void;
+    const release = vi.fn();
+    const denoiseFinal = vi.fn(() => new Promise<Float32Array>(resolve => {
+      resolveDenoise = resolve;
+    }));
+    const bridge: OIDNBridgeLike = {
+      denoiseFinal,
+      acquireOIDNSession: vi.fn(async () => ({ release })),
+    };
+    const core = new OIDNDispatcherCore<DirectInput>(makeCoreOpts(bridge));
+
+    core.kickIfReady(makeInput(), 2, 2);
+    await vi.waitFor(() => expect(denoiseFinal).toHaveBeenCalledTimes(1));
+    core.dispose();
+    core.dispose();
+    expect(release).not.toHaveBeenCalled();
+
+    resolveDenoise(new Float32Array(12));
+    await flushMicrotasks();
+    expect(release).toHaveBeenCalledTimes(1);
+    expect(core.getLatestDenoised()).toBeNull();
+  });
+
+  it('retries lease acquisition after a transient failure without publishing a poisoned bridge', async () => {
+    let attempts = 0;
+    const release = vi.fn();
+    const denoiseFinal = vi.fn(async () => new Float32Array(12));
+    const bridge: OIDNBridgeLike = {
+      denoiseFinal,
+      acquireOIDNSession: vi.fn(async () => {
+        attempts++;
+        if (attempts === 1) throw new Error('transient acquire failure');
+        return { release };
+      }),
+    };
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const core = new OIDNDispatcherCore<DirectInput>(makeCoreOpts(bridge));
+      core.kickIfReady(makeInput(), 2, 2);
+      await flushMicrotasks();
+      expect(core.getLastError()).toBe('transient acquire failure');
+      expect(denoiseFinal).not.toHaveBeenCalled();
+
+      core.kickIfReady(makeInput(), 2, 2);
+      await flushMicrotasks();
+      expect(attempts).toBe(2);
+      expect(denoiseFinal).toHaveBeenCalledTimes(1);
+      expect(core.getLatestDenoised()).not.toBeNull();
+      core.dispose();
+      expect(release).toHaveBeenCalledTimes(1);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('lets a second engine finish and reuse its bridge after the first engine disposes', async () => {
+    let resolveSecond!: (rgb: Float32Array) => void;
+    const releases = [vi.fn(), vi.fn()];
+    let leaseIndex = 0;
+    let denoiseCalls = 0;
+    const bridge: OIDNBridgeLike = {
+      acquireOIDNSession: vi.fn(async () => ({ release: releases[leaseIndex++]! })),
+      denoiseFinal: vi.fn(() => {
+        denoiseCalls++;
+        if (denoiseCalls === 2) {
+          return new Promise<Float32Array>(resolve => { resolveSecond = resolve; });
+        }
+        return Promise.resolve(new Float32Array(12).fill(denoiseCalls));
+      }),
+    };
+    const a = new OIDNDispatcherCore<DirectInput>(makeCoreOpts(bridge));
+    const b = new OIDNDispatcherCore<DirectInput>(makeCoreOpts(bridge));
+    a.kickIfReady(makeInput(), 2, 2);
+    await flushMicrotasks();
+    b.kickIfReady(makeInput(), 2, 2);
+    await vi.waitFor(() => expect(bridge.denoiseFinal).toHaveBeenCalledTimes(2));
+
+    a.dispose();
+    expect(releases[0]).toHaveBeenCalledTimes(1);
+    expect(releases[1]).not.toHaveBeenCalled();
+    resolveSecond(new Float32Array(12).fill(8));
+    await flushMicrotasks();
+    expect(b.getLatestDenoised()?.rgb[0]).toBe(8);
+
+    b.invalidate();
+    b.kickIfReady(makeInput(), 2, 2);
+    await flushMicrotasks();
+    expect(bridge.acquireOIDNSession).toHaveBeenCalledTimes(2);
+    expect(bridge.denoiseFinal).toHaveBeenCalledTimes(3);
+    b.dispose();
+    expect(releases[1]).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -388,6 +580,61 @@ describe('OIDNDispatcherCore — error resilience', () => {
       core.kickIfReady(makeInput(), 2, 2);
       await flushMicrotasks();
       expect(core.getLatestDenoised()).not.toBeNull();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});
+
+describe('OIDNDispatcherCore — payload validation', () => {
+  it('rejects readback dimensions that do not match the kicked cohort before inference', async () => {
+    const bridge = makeDefaultBridge();
+    const onComplete = vi.fn();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const core = new OIDNDispatcherCore<DirectInput>(makeCoreOpts(bridge, { onComplete }));
+      const mismatched = { ...makeInput(1, 4), width: 1, height: 4 };
+      core.kickIfReady(mismatched, 2, 2);
+      await flushMicrotasks();
+      expect(bridge.denoiseFinal).not.toHaveBeenCalled();
+      expect(core.getLatestDenoised()).toBeNull();
+      expect(onComplete).not.toHaveBeenCalled();
+      expect(core.getLastError()).toContain('do not match requested 2×2');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('rejects a wrong-length bridge output without publishing or completing', async () => {
+    const bridge = makeDefaultBridge(async () => new Float32Array(11));
+    const onComplete = vi.fn();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const core = new OIDNDispatcherCore<DirectInput>(makeCoreOpts(bridge, { onComplete }));
+      core.kickIfReady(makeInput(), 2, 2);
+      await flushMicrotasks();
+      expect(core.getLatestDenoised()).toBeNull();
+      expect(onComplete).not.toHaveBeenCalled();
+      expect(core.getLastError()).toBe('OIDN output: expected 12 RGB floats, got 11');
+      expect(core.deriveState()).toMatchObject({ status: 'failed', retryable: true });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('rejects non-finite bridge output without publishing or completing', async () => {
+    const malformed = new Float32Array(12);
+    malformed[7] = Number.NaN;
+    const bridge = makeDefaultBridge(async () => malformed);
+    const onComplete = vi.fn();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const core = new OIDNDispatcherCore<DirectInput>(makeCoreOpts(bridge, { onComplete }));
+      core.kickIfReady(makeInput(), 2, 2);
+      await flushMicrotasks();
+      expect(core.getLatestDenoised()).toBeNull();
+      expect(onComplete).not.toHaveBeenCalled();
+      expect(core.getLastError()).toBe('OIDN output: non-finite value at index 7');
     } finally {
       warn.mockRestore();
     }

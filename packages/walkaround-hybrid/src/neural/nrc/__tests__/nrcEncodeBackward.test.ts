@@ -17,6 +17,7 @@
 // NRC IS BIASED — we assert NOTHING about converged mean equality anywhere.
 
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
 import {
   hashGridForward, hashGridBackward, normalizeToAabb, trilinearCorners,
   type HashGridConfig, type HashGridLevel,
@@ -253,9 +254,19 @@ describe('NRC encode-backward — WGSL codegen pins (line-for-line oracle equiva
   it('binds gradTablesFx at MODULE scope (no storage ptr arg) and uses i32 atomics', () => {
     const wgsl = nrcEncodeBackwardWgsl(opts);
     expect(wgsl).toContain('var<storage, read_write> gradTablesFx : array<atomic<i32>>');
-    expect(wgsl).toContain('atomicAdd(&gradTablesFx[rb + f]');
+      expect(wgsl).toContain('atomicCompareExchangeWeak(&gradTablesFx[gradIndex]');
+      expect(wgsl).toContain('NRC_DIAG_DROPPED_UPDATE');
     // it must NOT take the storage buffer as a function pointer parameter.
     expect(wgsl).not.toContain('ptr<storage, array<atomic<i32>>');
+  });
+
+  it('keeps the executable harness binding-complete for diagnostics', () => {
+    const harness = readFileSync(
+      new URL('../nrcEncodeBackwardHarness.ts', import.meta.url),
+      'utf8',
+    );
+    expect(harness).toContain('{ binding: 5, resource: { buffer: diagnosticsBuf } }');
+    expect(harness).toContain('size: NRC_DIAGNOSTIC_BYTES');
   });
 
   it('inlines the 8-corner trilinear scatter with the same product-of-axes weight', () => {
@@ -287,15 +298,15 @@ describe('NRC encode-backward — WGSL codegen pins (line-for-line oracle equiva
 describe('fused MLP backward — now emits dL/dX into gradInputFx (the upstream signal)', () => {
   const MULLER: FusedMlpWgslOptions = { useF16: false, W: 64, OUT_W: 3, HIDDEN: 6, TILE_B: 32 };
 
-  it('declares the gradInputFx atomic binding and writes it at the l==0 step', () => {
-    const wgsl = fusedBackwardWgsl(MULLER);
-    expect(wgsl).toContain('gradInputFx : array<atomic<i32>>');
-    // row stride is the RAW input width p.inW (NOT the padded layer-0 inW = W),
-    // matching the trainer's gradInputFx allocation of numSamples × spec.inW.
-    expect(wgsl).toContain('atomicAdd(&gradInputFx[S * p.inW + col]');
-    // l==0 input grad is LINEAR — must NOT multiply by relu'(z) in that branch.
-    // (the relu' factor only appears in the l>0 propagation branch.)
-    const l0branch = wgsl.slice(wgsl.indexOf('} else {', wgsl.indexOf('atomicAdd(&gradWfx')));
-    expect(l0branch).toContain('atomicAdd(&gradInputFx');
-  });
+    it('declares the gradInputFx atomic binding and safely writes it at the l==0 step', () => {
+      const wgsl = fusedBackwardWgsl(MULLER);
+      expect(wgsl).toContain('gradInputFx : array<atomic<i32>>');
+      // Row stride is the RAW input width p.inW, and the bounded CAS helper
+      // prevents non-finite conversion and signed-i32 accumulator overflow.
+      expect(wgsl).toContain('nrcAddGradInput(S * p.inW + col, acc);');
+      expect(wgsl).toContain('fn nrcAddGradInput(index: u32, value: f32)');
+      expect(wgsl).toContain('NRC_DIAG_DROPPED_UPDATE');
+      const l0branch = wgsl.slice(wgsl.indexOf('// l == 0: emit dL/dX'));
+      expect(l0branch).toContain('nrcAddGradInput(');
+    });
 });

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createPTEngine_WebGPU } from '../index.js';
+import { PT_WEBGPU_CWBVH_CLOSEST_REQUIRED_STORAGE_BUFFERS_PER_STAGE } from '../webgpuLimits.js';
 
 function makeStubDevice(
   limits: Partial<GPUSupportedLimits> = {
@@ -24,7 +25,7 @@ describe('createPTEngine_WebGPU', () => {
     });
     expect(engine.capabilities.causticStrategy).toBe('manifold-nee');
     // A4: old approximate tag gone; SPPM tag not present for non-photon-map strategies.
-    expect(engine.capabilities.experimentalFeatures?.has('pt-webgpu-photon-map-sppm')).toBe(false);
+    expect(engine.capabilities.activeFeatures?.has('pt-webgpu-photon-map-sppm')).toBe(false);
   });
 
   it('supports photon-map capability reporting path', async () => {
@@ -34,7 +35,56 @@ describe('createPTEngine_WebGPU', () => {
     });
     expect(engine.capabilities.causticStrategy).toBe('photon-map');
     // A4: real SPPM (not approximate) — tag updated to 'pt-webgpu-photon-map-sppm'.
-    expect(engine.capabilities.experimentalFeatures?.has('pt-webgpu-photon-map-sppm')).toBe(true);
+    expect(engine.capabilities.activeFeatures?.has('pt-webgpu-photon-map-sppm')).toBe(true);
+    const details = engine.capabilities.supportDetails?.causticStrategies?.['photon-map'];
+    expect(details?.estimatorScope).toMatch(/production delta surface event/);
+    expect(details?.emitterKinds).toEqual({
+      directional: 'native',
+      point: 'native',
+      spot: 'native',
+      'rect-area': 'native',
+      'disc-area': 'native',
+      'mesh-area': 'native',
+      environment: 'native',
+    });
+    expect(details?.volumeScattering).toBe('native');
+    expect(details?.incompatibleFeatures).toEqual([]);
+    engine.dispose();
+  });
+
+  it('constructs every formerly guarded advanced-estimator composition', async () => {
+    const sppmComposite = await createPTEngine_WebGPU({
+      device: makeStubDevice(),
+      causticStrategy: 'photon-map',
+      spectral: true,
+      bdpt: true,
+      restirPtReuse: true,
+    });
+    expect(sppmComposite.capabilities.activeFeatures?.has('pt-webgpu-spectral')).toBe(true);
+    expect(sppmComposite.capabilities.activeFeatures?.has('pt-webgpu-bdpt')).toBe(true);
+    expect(sppmComposite.capabilities.activeFeatures?.has('pt-webgpu-restir-pt-reuse')).toBe(true);
+    expect(sppmComposite.capabilities.activeFeatures?.has('pt-webgpu-photon-map-sppm')).toBe(true);
+    sppmComposite.dispose();
+
+    const mneeBdpt = await createPTEngine_WebGPU({
+      device: makeStubDevice(),
+      causticStrategy: 'manifold-nee',
+      bdpt: true,
+    });
+    expect(mneeBdpt.capabilities.causticStrategy).toBe('manifold-nee');
+    expect(mneeBdpt.capabilities.activeFeatures?.has('pt-webgpu-bdpt')).toBe(true);
+    mneeBdpt.dispose();
+  });
+
+  it('rejects SPPM on the lite tier before construction', async () => {
+    const liteDevice = makeStubDevice({
+      maxStorageBuffersPerShaderStage: 10,
+      maxStorageTexturesPerShaderStage: 4,
+    });
+    await expect(createPTEngine_WebGPU({
+      device: liteDevice,
+      causticStrategy: 'photon-map',
+    })).rejects.toThrow(/requires traceTier "full"/);
   });
 
   it('reports current incremental patch support matrix', async () => {
@@ -50,7 +100,40 @@ describe('createPTEngine_WebGPU', () => {
       emitter: true,
       topology: true,
     });
-    expect(engine.capabilities.experimentalFeatures?.has('experimental-backend')).toBe(false);
+    expect(engine.capabilities.activeFeatures?.has('pt-webgpu-spectral')).toBe(false);
+    expect(engine.capabilities.activeFeatures?.has('pt-webgpu-cwbvh-closest-traversal')).toBe(
+      false,
+    );
+  });
+
+  it('reports spectral transport only when it is selected', async () => {
+    const engine = await createPTEngine_WebGPU({
+      device: makeStubDevice(),
+      spectral: true,
+    });
+    expect(engine.capabilities.activeFeatures?.has('pt-webgpu-spectral')).toBe(true);
+    engine.dispose();
+  });
+
+  it('accepts spectral transport with hero-aware MNEE and ReSTIR-PT reuse', async () => {
+    const mnee = await createPTEngine_WebGPU({
+      device: makeStubDevice(),
+      spectral: true,
+      causticStrategy: 'manifold-nee',
+      causticOptions: { mneeMaxChainLength: 8 },
+    });
+    expect(mnee.capabilities.causticStrategy).toBe('manifold-nee');
+    expect(mnee.capabilities.activeFeatures?.has('pt-webgpu-spectral')).toBe(true);
+    mnee.dispose();
+
+    const restir = await createPTEngine_WebGPU({
+      device: makeStubDevice(),
+      spectral: true,
+      restirPtReuse: true,
+    });
+    expect(restir.capabilities.activeFeatures?.has('pt-webgpu-spectral')).toBe(true);
+    expect(restir.capabilities.activeFeatures?.has('pt-webgpu-restir-pt-reuse')).toBe(true);
+    restir.dispose();
   });
 
   it('exposes frame/progress telemetry subscriptions', async () => {
@@ -103,7 +186,10 @@ describe('createPTEngine_WebGPU', () => {
       lost: new Promise<never>(() => {}),
     } as unknown as GPUDevice;
     const engine = await createPTEngine_WebGPU({ device: liteDevice });
-    expect(engine.capabilities.experimentalFeatures?.has('pt-webgpu-lite-tier')).toBe(true);
+    expect((engine).backendProfileId).toBe(
+      'pt-webgpu-lite',
+    );
+    expect([...(engine.capabilities.activeFeatures ?? [])]).not.toContain('pt-webgpu-lite-tier');
     engine.dispose();
   });
 
@@ -122,15 +208,15 @@ describe('createPTEngine_WebGPU', () => {
     ).rejects.toThrow(/below the lite tier/i);
   });
 
-  it('advertises and warns for opt-in CWBVH traversal', async () => {
+  it('advertises stable opt-in CWBVH traversal without a prototype warning', async () => {
     const warnings: string[] = [];
     const engine = await createPTEngine_WebGPU({
       device: makeStubDevice(),
-      bvhTraversal: 'cwbvh-closest-experimental',
+      bvhTraversal: 'cwbvh-closest',
       onWarning: (warning) => warnings.push(warning.code),
     });
-    expect(engine.capabilities.experimentalFeatures?.has('pt-webgpu-cwbvh-closest-traversal')).toBe(true);
-    expect(warnings).toContain('pt-webgpu.cwbvh-closest-experimental');
+    expect(engine.capabilities.activeFeatures?.has('pt-webgpu-cwbvh-closest-traversal')).toBe(true);
+    expect(warnings).not.toContain('pt-webgpu.cwbvh-closest');
     engine.dispose();
   });
 
@@ -141,7 +227,7 @@ describe('createPTEngine_WebGPU', () => {
           maxStorageBuffersPerShaderStage: 10,
           maxStorageTexturesPerShaderStage: 4,
         }),
-        bvhTraversal: 'cwbvh-closest-experimental',
+        bvhTraversal: 'cwbvh-closest',
       }),
     ).rejects.toThrow(/requires traceTier "full"/);
   });
@@ -150,11 +236,17 @@ describe('createPTEngine_WebGPU', () => {
     await expect(
       createPTEngine_WebGPU({
         device: makeStubDevice({
-          maxStorageBuffersPerShaderStage: 34,
+          maxStorageBuffersPerShaderStage:
+            PT_WEBGPU_CWBVH_CLOSEST_REQUIRED_STORAGE_BUFFERS_PER_STAGE - 1,
           maxStorageTexturesPerShaderStage: 5,
         }),
-        bvhTraversal: 'cwbvh-closest-experimental',
+        bvhTraversal: 'cwbvh-closest',
       }),
-    ).rejects.toThrow(/requires maxStorageBuffersPerShaderStage >= 39/);
+    ).rejects.toThrow(
+      new RegExp(
+        `requires maxStorageBuffersPerShaderStage >= ` +
+        `${PT_WEBGPU_CWBVH_CLOSEST_REQUIRED_STORAGE_BUFFERS_PER_STAGE}`,
+      ),
+    );
   });
 });

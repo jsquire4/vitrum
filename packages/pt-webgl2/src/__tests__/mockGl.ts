@@ -7,6 +7,7 @@
 
 const REAL_ENUMS: Record<string, number> = {
   MAX_DRAW_BUFFERS: 0x8824,
+  MAX_COLOR_ATTACHMENTS: 0x8cdf,
   MAX_TEXTURE_IMAGE_UNITS: 0x8872,
   MAX_TEXTURE_SIZE: 0x0d33,
   MAX_ARRAY_TEXTURE_LAYERS: 0x88ff,
@@ -89,11 +90,17 @@ export function createMockGl(recordOrOpts?: Map<string, unknown> | MockGlOptions
   };
 
   const handlers: Record<string, (...args: unknown[]) => unknown> = {
-    getExtension: () => ({}),
+    // The default mock models a browser without asynchronous program linking.
+    // Tests that exercise KHR_parallel_shader_compile install the extension
+    // explicitly; returning an empty object here would advertise a malformed
+    // extension whose COMPLETION_STATUS_KHR enum is undefined.
+    getExtension: (name) => name === 'KHR_parallel_shader_compile' ? null : ({}),
     isContextLost: () => contextLostOverride,
+    getError: () => enumOf('NO_ERROR'),
     getParameter: (p) => {
       switch (byValue.get(p as number)) {
         case 'MAX_DRAW_BUFFERS': return 8;
+        case 'MAX_COLOR_ATTACHMENTS': return 8;
         case 'MAX_TEXTURE_IMAGE_UNITS': return 32;
         case 'MAX_TEXTURE_SIZE': return maxTexSizeOverride ?? 16384;
         case 'MAX_ARRAY_TEXTURE_LAYERS': return maxArrayLayersOverride ?? 256;
@@ -119,7 +126,7 @@ export function createMockGl(recordOrOpts?: Map<string, unknown> | MockGlOptions
     uniform1i: (loc, v) => rec(loc, v),
     uniform1f: (loc, v) => rec(loc, v),
     uniform1fv: (loc, v) => rec(loc, v),
-    // vec2/vec3 recorders (resolution, u_jakobCoeffs, …). Stored as a tuple array.
+    // vec2/vec3 recorders (resolution, BDPT scene center, …). Stored as a tuple array.
     uniform2f: (loc, x, y) => rec(loc, [x, y]),
     uniform3f: (loc, x, y, z) => rec(loc, [x, y, z]),
     // H6: matrix uniform recorder (environmentRotation + camera matrices).

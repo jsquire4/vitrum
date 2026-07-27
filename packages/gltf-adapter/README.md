@@ -3,10 +3,11 @@
 glTF 2.0 → `@vitrum/core` Scene adapter.
 
 Hand-rolled GLB container parsing and accessor unpacking. Browser + Node
-compatible; image decoding is pluggable, with small built-in Node PNG/JPEG/WebP
-fallbacks for `loadGltfAndDecodeTextures()`. Draco / meshopt compressed geometry
-is supported via host-supplied decoder hooks (the package bundles no compressed
-geometry decoder — see [Compressed geometry](#compressed-geometry)).
+compatible; image decoding is pluggable, with deterministic built-in PNG/JPEG
+decoders in both hosts and a Node WebP fallback for
+`loadGltfAndDecodeTextures()`. Draco and meshopt compressed geometry
+decode through lazy package built-ins by default; optional host hooks can replace
+either codec (see [Compressed geometry](#compressed-geometry)).
 
 ---
 
@@ -26,7 +27,7 @@ import { gltfToScene } from '@vitrum/gltf-adapter';
 import { createEngine } from '@vitrum/engine';
 
 // Load a GLB file (any means you prefer — fetch, fs.readFile, etc.)
-const buffer = await fetch('/scene.glb').then(r => r.arrayBuffer());
+const buffer = await fetch('/scene.glb').then((r) => r.arrayBuffer());
 
 // Convert to a core Scene.
 const { scene, warnings } = await gltfToScene(buffer);
@@ -43,23 +44,25 @@ engine.setScene(scene);
 
 ### `gltfToScene(input, opts?) → Promise<{ scene, warnings }>`
 
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `input` | `ArrayBuffer \| GltfJson` | Raw GLB bytes, raw JSON bytes (UTF-8), or a parsed `GltfJson` object |
-| `opts.buffers` | `Map<number, ArrayBuffer> \| Record<number, ArrayBuffer>` | Pre-loaded external buffers for `.gltf` files (keyed by buffer index). **The adapter does NOT fetch URIs.** |
-| `opts.decodeImage` | `(bytes: Uint8Array, mimeType: string) => Promise<unknown>` | Optional image decode callback (see Texture handles below) |
-| `opts.sceneIndex` | `number` | Which glTF scene to import (default: `gltf.scene ?? 0`) |
-| `opts.dracoDecode` | `DracoDecodeFn` | Host-supplied `KHR_draco_mesh_compression` decoder hook (see Compressed geometry) |
-| `opts.meshoptDecode` | `MeshoptDecodeFn` | Host-supplied `EXT_meshopt_compression` decoder hook (see Compressed geometry) |
+| Parameter                       | Type                                                        | Description                                                                                                                          |
+| ------------------------------- | ----------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `input`                         | `ArrayBuffer \| GltfJson`                                   | Raw GLB bytes, raw JSON bytes (UTF-8), or a parsed `GltfJson` object                                                                 |
+| `opts.buffers`                  | `Map<number, ArrayBuffer> \| Record<number, ArrayBuffer>`   | Pre-loaded external buffers for `.gltf` files (keyed by buffer index). **The adapter does NOT fetch URIs.**                          |
+| `opts.resourceLimits`           | `GltfImportResourceLimits`                                  | Import-wide geometry, encoded-resource, decoded-texture, and resource-operation ceilings. See [Resource governance](#resource-governance). |
+| `opts.decodeImage`              | `(bytes: Uint8Array, mimeType: string) => Promise<unknown>` | Optional image decode callback (see Texture handles below)                                                                           |
+| `opts.sceneIndex`               | `number`                                                    | Which glTF scene to import (default: `gltf.scene ?? 0`)                                                                              |
+| `opts.dracoDecode`              | `DracoDecodeFn`                                             | Optional host override for the built-in `KHR_draco_mesh_compression` decoder                                                         |
+| `opts.meshoptDecode`            | `MeshoptDecodeFn`                                           | Optional host override for the built-in `EXT/KHR_meshopt_compression` decoder                                                        |
+| `opts.compressionDecoderPolicy` | `'builtin' \| 'host-only'`                                  | Codec policy. Defaults to `'builtin'`; `'host-only'` disables built-ins while preserving explicit hooks and validated spec fallbacks |
 
 Returns `{ scene, animations, animationTargets, warnings }`:
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `scene` | `Scene` | The converted `@vitrum/core` scene (rest pose) |
-| `animations` | `AnimationClip[]` | glTF animations as core clips (empty when none). Evaluate with `sampleAnimationClip` from `@vitrum/core` |
-| `animationTargets` | `Record<string, string[]>` | Maps a channel node id (`gltf-node-<index>`) → the `ScenePrimitive.id`s created from that node's mesh |
-| `warnings` | `string[]` | Non-fatal conversion issues |
+| Field              | Type                       | Description                                                                                              |
+| ------------------ | -------------------------- | -------------------------------------------------------------------------------------------------------- |
+| `scene`            | `Scene`                    | The converted `@vitrum/core` scene (rest pose)                                                           |
+| `animations`       | `AnimationClip[]`          | glTF animations as core clips (empty when none). Evaluate with `sampleAnimationClip` from `@vitrum/core` |
+| `animationTargets` | `Record<string, string[]>` | Maps a channel node id (`gltf-node-<index>`) → the `ScenePrimitive.id`s created from that node's mesh    |
+| `warnings`         | `string[]`                 | Non-fatal conversion issues                                                                              |
 
 ### `loadGltfAsset(input, opts?)`
 
@@ -68,7 +71,10 @@ bytes, converts to a core `Scene`, analyzes feature use, ranks shipping
 backends, and returns a `textureDecodeReport` before the first frame renders.
 
 ```ts
-import { loadGltfAsset } from '@vitrum/gltf-adapter';
+import {
+  loadGltfAsset,
+  releaseGltfResources,
+} from '@vitrum/gltf-adapter';
 
 const asset = await loadGltfAsset('/assets/scene.gltf', {
   fetch,
@@ -76,13 +82,66 @@ const asset = await loadGltfAsset('/assets/scene.gltf', {
   cache: myAssetByteCache,
 });
 
-console.log(asset.recommendedBackend.backend);
-console.table(asset.textureDecodeReport.entries);
+try {
+  console.log(asset.recommendedBackend.backend);
+  console.table(asset.textureDecodeReport.entries);
+} finally {
+  releaseGltfResources(asset);
+}
 ```
 
 `LoadGltfAssetOptions.cache` is keyed by the fully resolved URL plus resource
 kind (`asset`, `buffer`, or `image`). Fetch/resource failures throw typed
 `GltfFetchFailed` / `GltfResourceNotFound` errors with `{ url, kind }` fields.
+
+### Resource governance
+
+Every public import path creates one monotonic resource ledger. The high-level
+loader shares it across fetches, compression, accessors, generated geometry,
+image acquisition, and texture normalization instead of resetting the budget
+between stages.
+
+| `resourceLimits` field | Default | Meaning |
+| --- | ---: | --- |
+| `maxDecodedGeometryBytes` | 512 MiB | Aggregate decoded and adapter-generated typed geometry |
+| `maxEncodedResourceBytes` | 256 MiB | One asset, buffer, image, or raw-image payload |
+| `maxTotalEncodedBytes` | 512 MiB | Aggregate distinct encoded resources observed by one import |
+| `maxDecodedTexturePixels` | 16,777,216 | One decoded or derived texture surface |
+| `maxTotalDecodedTexturePixels` | 16,777,216 | Aggregate accepted/adapter-generated texture surfaces |
+| `maxConcurrentResourceOperations` | 4 | Simultaneous fetch or image-decode operations |
+
+An explicit `0` disables a byte or pixel ceiling. Concurrency must remain a
+positive safe integer. `loadGltfAndDecodeTextures()` and
+`decodeSceneTextures()` also expose the flat
+`maxDecodedTexturePixels`, `maxTotalDecodedTexturePixels`, and
+`maxImageDecodeConcurrency` options; when supplied, those values override the
+matching structured fields.
+
+Later `configureTextureDecode` policy is validated against every resource
+already charged and commits transactionally. Undefined nested fields do not
+relax inherited limits, while defined flat aliases retain their documented
+precedence.
+
+Encoded streams are checked incrementally, capped at 65,536 reads, cancelled on
+failure, and never inserted into the cache after rejection. Unique image work is
+deduplicated and concurrency-limited. Geometry and encoded-resource overflows
+throw `GltfResourceLimitError` with `limitKind`, `limit`, `actual`, and `path`.
+Texture-output overflows leave the affected texture unchanged and emit the
+corresponding structured decode diagnostic before an adapter output allocation.
+Embedded `bufferView` images are non-owning views and reuse the parent buffer’s
+encoded-resource identity rather than charging the same bytes again.
+
+Decoded image handles are transaction-owned. A failed import closes every
+decoder-created closable identity once. A successful import keeps reachable
+handles alive until `releaseGltfResources(result)` is called; that release is
+idempotent and also accepts engine-bridge results through their nested `asset`.
+Successful texture normalization closes an acquired handle immediately when the
+normalized result no longer references it.
+
+For engine-bridge results, first dispose or detach the engine/controller that
+consumes the imported scene, then call `releaseGltfResources(result)`.
+`VitrumCanvas` performs that ordering automatically, including cancellation
+while `attachVitrum()` is still pending.
 
 ### `loadGltfForEngine(input, opts?)`
 
@@ -114,81 +173,83 @@ asset's feature report.
 
 ### Geometry
 
-| Feature | Status |
-|---------|--------|
-| GLB binary container | Supported |
-| .gltf JSON + pre-fetched buffers | Supported |
-| POSITION / NORMAL / TEXCOORD_0 / TEXCOORD_1 | Supported. If a primitive material references up to two material-visible UV sets, including higher glTF UV sets (`TEXCOORD_N`, `N > 1`), the adapter can losslessly project those accessors into core `uvs` / `uv1` and rewrite primitive-local `TextureRef.texCoord` values to the selected renderable lane. Missing high-UV accessors or material routing that needs more than two UV lanes emit structured diagnostics and drop the affected texture fields instead of sampling the wrong UV channel. |
-| TANGENT / COLOR_0 | Supported. Authored TANGENT is preserved; tangent-space mapped primitives without TANGENT synthesize xyzw tangents from POSITION/NORMAL/TEXCOORD_0. COLOR_0 is imported and compatibility-reported: pt-webgl2 and full-tier pt-webgpu consume it natively; walkaround-hybrid consumes it approximately in visible baseColor/alpha; pt-webgpu lite accepts the primitive-constant opaque RGB case by baking the tint into `material.baseColor`, and reports a structured unsupported issue for non-constant colors, alpha-bearing colors, or material-variant scenes that cannot be baked safely. Secondary vertex color sets (`COLOR_1+`) are not imported and emit structured ignored-data diagnostics. |
-| Indices (UINT16 / UINT32 / UINT8) | Supported |
-| Flat normal generation (NORMAL absent) | Supported |
-| Sparse accessors | Supported (all component types) |
-| Multiple primitives per mesh | Supported → one `MeshPrimitive` per glTF primitive |
-| Node hierarchy / nested TRS + matrix | Supported → flattened world transforms |
-| Primitive mode TRIANGLES (4) | Supported |
-| Primitive modes TRIANGLE_STRIP (5) / TRIANGLE_FAN (6) | Supported → triangulated to an indexed triangle list (glTF §3.7.2.1 winding; degenerates dropped; indexed + non-indexed) |
-| Point/line modes (POINTS, LINES, LINE_LOOP, LINE_STRIP) | Supported as `fallback-generated-mesh`: POINTS become tiny cubes and line modes become thin rectangular prisms. `reject-unsupported` accepts them; `reject-degraded` rejects the topology approximation. Override the generated half-width with `pointLineFallbackRadius` when asset scale requires it. |
-| KHR_draco_mesh_compression | Supported via `opts.dracoDecode` hook. Without a hook: uncompressed fallback accessors when present (warn), else warn + skip; throws if in `extensionsRequired` with no fallback |
-| EXT_meshopt_compression | Supported via `opts.meshoptDecode` hook (bufferView-level — geometry, animation and image consumers all see decompressed data). Without a hook: spec fallback buffer when present (warn), else warn + skip; throws if in `extensionsRequired` with no fallback |
-| EXT_mesh_gpu_instancing | Supported for mesh nodes → core `InstancedMeshPrimitive` with `nodeWorld * instanceTRS` baked into each instance matrix. Required use is accepted. `GltfSceneController` patches `instances[]` when the instanced node or an ancestor animates. Malformed accessors warn and import the base mesh once. Skinned/morphed instancing is supported as a renderable `fallback-generated-mesh` route: the importer expands it to one `SkinnedMeshPrimitive` per authored instance, preserves instance-local controller bindings, `reject-unsupported` accepts it, and `reject-degraded` rejects it as a non-native approximation. Native instanced skinning remains a future performance/core-contract feature. |
-| Morph targets (POSITION + NORMAL + TANGENT plus the UV semantics projected to core `uvs` / `uv1`, sparse OK) | Supported → `SkinnedMeshPrimitive.morphTargets` / `.morphTargetNormals` / `.morphTargetTangents` / `.morphTargetUvs` / `.morphTargetUv1s` / `.morphWeights` (node/mesh weights; unskinned morphed meshes get a synthesized identity skeleton). The shared CPU skin solver applies TANGENT deltas to solved tangent-space shading when rest tangents exist and blends UV deltas into posed texture coordinates for backend upload. If a primitive material projects a high glTF UV set (`TEXCOORD_N`, `N > 1`) into core `uvs` or `uv1`, matching `TEXCOORD_N` morph deltas feed the matching `.morphTargetUvs` / `.morphTargetUv1s` stream. Compatibility remains approximate for tangent deltas because GPU-native tangent skinning falls back to CPU. Missing-base UV morphs, UV routing that needs more than two lanes, and morph UV lanes not assigned to core `uvs` / `uv1` emit source-pathed `ignored-morph-target-texcoord` diagnostics plus `morphTargetTexcoords=unsupported` compatibility issues. |
-| Skins / JOINTS_0 (u8 + u16) / WEIGHTS_0 | Supported when a mesh node binds `skin` and the primitive provides both `JOINTS_0` and `WEIGHTS_0` → `SkinnedMeshPrimitive` at rest pose (incl. `bindMatrix`/`bindMatrixInverse`). Joint/weight attributes without a bound node skin, or incomplete joint/weight pairs, are structured unsupported compatibility issues and best-effort import falls back to a static mesh with diagnostics. |
-| Animations (LINEAR / STEP / CUBICSPLINE; T/R/S/weights channels) | Supported → `result.animations` as core `AnimationClip[]` (see Animations below). Geometry imports at rest pose; the host drives playback |
-| Cameras | Warn + ignored |
+| Feature                                                                                                      | Status                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| ------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| GLB binary container                                                                                         | Supported                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| .gltf JSON + pre-fetched buffers                                                                             | Supported                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| glTF asset version                                                                                           | Supports glTF `2.x` assets whose optional `asset.minVersion` is no newer than both the declared asset version and this adapter's glTF 2.0 implementation. Malformed versions, other major versions, and a required minimum newer than 2.0 reject before scene publication.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| POSITION / NORMAL / TEXCOORD_N                                                                               | Supported. Every valid sparse `TEXCOORD_N` stream is preserved under the same authored index in core `uvSets`; `uvs` and `uv1` remain aliases for sets 0 and 1. Material `TextureRef.texCoord` values keep their authored indices through all renderer families. Missing referenced streams reject instead of sampling a different lane. With `KHR_mesh_quantization`, POSITION accepts normalized or unnormalized signed/unsigned 8- and 16-bit storage, while NORMAL follows the extension's signed-normalized encoding rules.                                                                                                                                                                                                                                                                                                                                                                                         |
+| TANGENT / COLOR_N                                                                                            | Supported. Authored TANGENT is preserved; tangent-space mapped primitives without TANGENT synthesize xyzw tangents from the material-selected UV set. Every valid `COLOR_N` stream is preserved in core `colorSets`, with `colors` as the `COLOR_0` alias. `COLOR_0` participates in backend shading according to the selected renderer profile; higher color sets remain available to hosts and extensions but have no implicit base-color meaning in core glTF material semantics. pt-webgpu lite accepts the primitive-constant opaque `COLOR_0` case by baking it into `material.baseColor` and rejects varying/alpha-bearing cases it cannot represent.                                                                                                                                                                                                                                                                      |
+| Application-specific primitive attributes (`_NAME`)                                                          | Accepted with a source-pathed diagnostic and left out of the core Scene because no generic attribute channel is declared. Unknown non-application semantics reject instead of being silently discarded.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| Indices (UINT16 / UINT32 / UINT8)                                                                            | Supported                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| Flat normal generation (NORMAL absent)                                                                       | Supported                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| Sparse accessors                                                                                             | Supported (all component types)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| Multiple primitives per mesh                                                                                 | Supported → one `MeshPrimitive` per glTF primitive                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| Node hierarchy / nested TRS + matrix                                                                         | Supported → flattened world transforms                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| Primitive mode TRIANGLES (4)                                                                                 | Supported                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| Primitive modes TRIANGLE_STRIP (5) / TRIANGLE_FAN (6)                                                        | Supported → triangulated to an indexed triangle list (glTF §3.7.2.1 winding; degenerates dropped; indexed + non-indexed)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| Point/line modes (POINTS, LINES, LINE_LOOP, LINE_STRIP)                                                      | Supported as `fallback-generated-mesh`: POINTS become tiny cubes and line modes become thin rectangular prisms. `reject-unsupported` accepts them; `reject-degraded` rejects the topology approximation. Override the generated half-width with `pointLineFallbackRadius` when asset scale requires it.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| KHR_draco_mesh_compression                                                                                   | Supported by the lazy built-in Draco decoder in browser and Node. `opts.dracoDecode` overrides it. Draco face lists are published as indexed TRIANGLES; a missing base `primitive.indices` accessor is synthesized rather than dropping connectivity                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| EXT/KHR_meshopt_compression                                                                                  | Supported by the lazy built-in meshoptimizer decoder at bufferView level, so geometry, animation and image consumers all see decompressed data. `opts.meshoptDecode` overrides it                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| EXT_mesh_gpu_instancing                                                                                      | Supported for mesh nodes → core `InstancedMeshPrimitive` with `nodeWorld * instanceTRS` baked into each instance matrix. Required use is accepted. `GltfSceneController` patches `instances[]` when the instanced node or an ancestor animates. Malformed accessors warn and import the base mesh once. Skinned/morphed instancing is supported as a renderable `fallback-generated-mesh` route: the importer expands it to one `SkinnedMeshPrimitive` per authored instance, preserves instance-local controller bindings, `reject-unsupported` accepts it, and `reject-degraded` rejects it as a non-native approximation. Native instanced skinning remains a future performance/core-contract feature.                                                                                                                                                                                                                                                                                                    |
+| Morph targets (POSITION + NORMAL + TANGENT + TEXCOORD_N, sparse OK)                                         | Supported → scalable core morph streams plus compatibility aliases for UV sets 0 and 1. The shared solver blends every represented UV-set delta into posed texture coordinates and applies tangent deltas when rest tangents exist. A `TEXCOORD_N` delta without a matching base stream rejects. Optional `COLOR_N` and application-specific morph deltas are valid glTF data that the current core morph contract cannot represent; they are preserved at the base-attribute level, diagnosed with exact source paths, and omitted from morph evaluation. Unknown non-application morph semantics reject.                                                                                                                                                                                                                                                                                                           |
+| Skins / JOINTS_0 (u8 + u16) / WEIGHTS_0                                                                      | Supported when a mesh node binds `skin` and the primitive provides both `JOINTS_0` and `WEIGHTS_0` → `SkinnedMeshPrimitive` at rest pose (incl. `bindMatrix`/`bindMatrixInverse`). Joint/weight attributes without a bound node skin, or incomplete joint/weight pairs, are structured unsupported compatibility issues and best-effort import falls back to a static mesh with diagnostics.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| Animations (LINEAR / STEP / CUBICSPLINE; T/R/S/weights channels)                                             | Supported → `result.animations` as core `AnimationClip[]` (see Animations below). Geometry imports at rest pose; the host drives playback                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| Cameras                                                                                                      | Projection metadata is validated against glTF 2.0 and returned on `result.cameras`; it is not injected into the core Scene camera contract, so a structured `ignored-camera` compatibility diagnostic remains                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 
 ### Materials
 
-| glTF field | Core `MaterialSpec` field |
-|-----------|--------------------------|
-| `pbrMetallicRoughness.baseColorFactor` | `baseColor` (RGB) |
-| `pbrMetallicRoughness.metallicFactor` | `metallic` |
-| `pbrMetallicRoughness.roughnessFactor` | `roughness` |
-| `pbrMetallicRoughness.baseColorTexture` | `baseColorMap` |
-| `pbrMetallicRoughness.metallicRoughnessTexture` | `roughnessMap` (ORM: G=rough, B=metal) |
-| `normalTexture` + `.scale` | `normalMap` + `normalScale` |
-| `occlusionTexture` + `.strength` | `aoMap` + `aoMapIntensity` |
-| `emissiveFactor` | `emissive` |
-| `emissiveTexture` | `emissiveMap` |
-| `KHR_materials_emissive_strength.emissiveStrength` | `emissiveIntensity` |
-| `alphaMode` (OPAQUE/MASK/BLEND) | `alphaMode` ('opaque'/'mask'/'blend') |
-| `alphaCutoff` | `alphaCutoff` |
-| `doubleSided` | `extensions.doubleSided` |
-| `KHR_materials_transmission.transmissionFactor` | `transmission` |
-| `KHR_materials_transmission.transmissionTexture` | `transmissionMap` |
-| `KHR_materials_ior.ior` | `ior` |
-| `KHR_materials_volume.thicknessFactor` | `thickness` |
-| `KHR_materials_volume.thicknessTexture` | `thicknessMap` (pt-webgl2, pt-webgpu, and walkaround-hybrid approximate; backend exactness varies) |
-| `KHR_materials_volume.attenuationDistance` | `attenuationDistance` |
-| `KHR_materials_volume.attenuationColor` | `attenuationColor` |
-| `KHR_materials_specular.specularFactor` | `specularIntensity` |
-| `KHR_materials_specular.specularColorFactor` | `specularColor` |
-| `KHR_materials_specular.specularTexture` | `specularIntensityMap` |
-| `KHR_materials_specular.specularColorTexture` | `specularColorMap` |
-| `KHR_materials_pbrSpecularGlossiness.diffuseFactor` | `baseColor` + `opacity` (legacy conversion) |
-| `KHR_materials_pbrSpecularGlossiness.specularFactor` | `specularColor` |
-| `KHR_materials_pbrSpecularGlossiness.glossinessFactor` | `roughness = 1 - glossinessFactor` |
+| glTF field                                                      | Core `MaterialSpec` field                                                                                                                                                        |
+| --------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pbrMetallicRoughness.baseColorFactor`                          | `baseColor` (RGB)                                                                                                                                                                |
+| `pbrMetallicRoughness.metallicFactor`                           | `metallic`                                                                                                                                                                       |
+| `pbrMetallicRoughness.roughnessFactor`                          | `roughness`                                                                                                                                                                      |
+| `pbrMetallicRoughness.baseColorTexture`                         | `baseColorMap`                                                                                                                                                                   |
+| `pbrMetallicRoughness.metallicRoughnessTexture`                 | `roughnessMap` (ORM: G=rough, B=metal)                                                                                                                                           |
+| `normalTexture` + `.scale`                                      | `normalMap` + `normalScale`                                                                                                                                                      |
+| `occlusionTexture` + `.strength`                                | `aoMap` + `aoMapIntensity`                                                                                                                                                       |
+| `emissiveFactor`                                                | `emissive`                                                                                                                                                                       |
+| `emissiveTexture`                                               | `emissiveMap`                                                                                                                                                                    |
+| `KHR_materials_emissive_strength.emissiveStrength`              | `emissiveIntensity`                                                                                                                                                              |
+| `alphaMode` (OPAQUE/MASK/BLEND)                                 | `alphaMode` ('opaque'/'mask'/'blend')                                                                                                                                            |
+| `alphaCutoff`                                                   | `alphaCutoff`                                                                                                                                                                    |
+| `doubleSided`                                                   | `extensions.doubleSided`                                                                                                                                                         |
+| `KHR_materials_transmission.transmissionFactor`                 | `transmission`                                                                                                                                                                   |
+| `KHR_materials_transmission.transmissionTexture`                | `transmissionMap`                                                                                                                                                                |
+| `KHR_materials_ior.ior`                                         | `ior`                                                                                                                                                                            |
+| `KHR_materials_volume.thicknessFactor`                          | `thickness`                                                                                                                                                                      |
+| `KHR_materials_volume.thicknessTexture`                         | `thicknessMap` (pt-webgl2, pt-webgpu, and walkaround-hybrid approximate; backend exactness varies)                                                                               |
+| `KHR_materials_volume.attenuationDistance`                      | `attenuationDistance`                                                                                                                                                            |
+| `KHR_materials_volume.attenuationColor`                         | `attenuationColor`                                                                                                                                                               |
+| `KHR_materials_specular.specularFactor`                         | `specularIntensity`                                                                                                                                                              |
+| `KHR_materials_specular.specularColorFactor`                    | `specularColor`                                                                                                                                                                  |
+| `KHR_materials_specular.specularTexture`                        | `specularIntensityMap`                                                                                                                                                           |
+| `KHR_materials_specular.specularColorTexture`                   | `specularColorMap`                                                                                                                                                               |
+| `KHR_materials_pbrSpecularGlossiness.diffuseFactor`             | `baseColor` + `opacity` (legacy conversion)                                                                                                                                      |
+| `KHR_materials_pbrSpecularGlossiness.specularFactor`            | `specularColor`                                                                                                                                                                  |
+| `KHR_materials_pbrSpecularGlossiness.glossinessFactor`          | `roughness = 1 - glossinessFactor`                                                                                                                                               |
 | `KHR_materials_pbrSpecularGlossiness.specularGlossinessTexture` | `specularColorMap`; `loadGltfAndDecodeTextures()` / `decodeSceneTextures()` can bake alpha glossiness into a linear `roughnessMap` for `cpu-linear` and `webgpu` texture targets |
-| `KHR_materials_sheen.sheenColorFactor` | `sheenColor` |
-| `KHR_materials_sheen.sheenRoughnessFactor` | `sheenRoughness` |
-| `KHR_materials_sheen.sheenColorTexture` | `sheenColorMap` |
-| `KHR_materials_sheen.sheenRoughnessTexture` | `sheenRoughnessMap` |
-| `KHR_materials_clearcoat.clearcoatFactor` | `clearcoat` |
-| `KHR_materials_clearcoat.clearcoatRoughnessFactor` | `clearcoatRoughness` |
-| `KHR_materials_clearcoat.*Texture` | `clearcoatMap`, `clearcoatRoughnessMap`, `clearcoatNormalMap` |
-| `KHR_materials_iridescence.iridescenceFactor` | `iridescence` |
-| `KHR_materials_iridescence.iridescenceIor` | `iridescenceIor` |
-| `KHR_materials_iridescence.iridescenceThicknessMinimum/Maximum` | `iridescenceThicknessRange` |
-| `KHR_materials_anisotropy.anisotropyStrength` | `anisotropy` |
-| `KHR_materials_anisotropy.anisotropyRotation` | `anisotropyRotation` |
-| `KHR_materials_anisotropy.anisotropyTexture` | `anisotropyMap` |
+| `KHR_materials_sheen.sheenColorFactor`                          | `sheenColor`                                                                                                                                                                     |
+| `KHR_materials_sheen.sheenRoughnessFactor`                      | `sheenRoughness`                                                                                                                                                                 |
+| `KHR_materials_sheen.sheenColorTexture`                         | `sheenColorMap`                                                                                                                                                                  |
+| `KHR_materials_sheen.sheenRoughnessTexture`                     | `sheenRoughnessMap`                                                                                                                                                              |
+| `KHR_materials_clearcoat.clearcoatFactor`                       | `clearcoat`                                                                                                                                                                      |
+| `KHR_materials_clearcoat.clearcoatRoughnessFactor`              | `clearcoatRoughness`                                                                                                                                                             |
+| `KHR_materials_clearcoat.*Texture`                              | `clearcoatMap`, `clearcoatRoughnessMap`, `clearcoatNormalMap`                                                                                                                    |
+| `KHR_materials_iridescence.iridescenceFactor`                   | `iridescence`                                                                                                                                                                    |
+| `KHR_materials_iridescence.iridescenceIor`                      | `iridescenceIor`                                                                                                                                                                 |
+| `KHR_materials_iridescence.iridescenceThicknessMinimum/Maximum` | `iridescenceThicknessRange`                                                                                                                                                      |
+| `KHR_materials_anisotropy.anisotropyStrength`                   | `anisotropy`                                                                                                                                                                     |
+| `KHR_materials_anisotropy.anisotropyRotation`                   | `anisotropyRotation`                                                                                                                                                             |
+| `KHR_materials_anisotropy.anisotropyTexture`                    | `anisotropyMap`                                                                                                                                                                  |
 
 ### Emitters
 
-| glTF feature | Core `SceneEmitter` type |
-|---|---|
-| `KHR_lights_punctual` point light | `PointEmitter` (`intensity` = candela, `decay = 2`) |
-| `KHR_lights_punctual` spot light | `SpotEmitter` (`angle` = `outerConeAngle`, `penumbra` derived from inner/outer ratio) |
-| `KHR_lights_punctual` directional | `DirectionalEmitter` (`intensity` = lux) |
+| glTF feature                      | Core `SceneEmitter` type                                                              |
+| --------------------------------- | ------------------------------------------------------------------------------------- |
+| `KHR_lights_punctual` point light | `PointEmitter` (`intensity` = candela, `decay = 2`)                                   |
+| `KHR_lights_punctual` spot light  | `SpotEmitter` (`angle` = `outerConeAngle`, `penumbra` derived from inner/outer ratio) |
+| `KHR_lights_punctual` directional | `DirectionalEmitter` (`intensity` = lux)                                              |
 
 **Intensity units:** glTF punctual uses candela (cd) for point/spot and lux (lx) for directional.
 These photometric values are passed directly as `EmitterBase.intensity`. Vitrum backends treat
@@ -208,7 +269,7 @@ frame and pushes the results:
 - **translation / rotation / scale** — recompose the node transform and call
   `engine.updatePrimitive(primId, { transform })` for each mapped primitive.
   The adapter flattens the node hierarchy at import, so channels animating an
-  *ancestor* of a mesh node have no mapped primitives; hosts needing full
+  _ancestor_ of a mesh node have no mapped primitives; hosts needing full
   scene-graph animation must retain the `GltfJson` hierarchy and recompute
   world transforms themselves.
 - **weights** — write the sampled vector into the skinned primitive's
@@ -220,10 +281,6 @@ frame and pushes the results:
 ### Out of scope (documented)
 
 - **Cameras**: ignored. Emitting a warning.
-- **Bundled Draco / MeshOpt decoders**: the package stays dependency-free; compressed
-  geometry requires the host to inject `opts.dracoDecode` / `opts.meshoptDecode`
-  (see Compressed geometry). Without a hook the spec fallbacks apply, else warn + skip
-  (or throw when the extension is in `extensionsRequired`).
 - **Morph TANGENT deltas**: preserved on `SkinnedMeshPrimitive.morphTargetTangents`;
   compatibility reports current backend tangent-space shading as approximate until
   solvers/renderers consume those deltas directly.
@@ -239,117 +296,117 @@ frame and pushes the results:
 
 ## Compressed geometry
 
-The adapter resolves `KHR_draco_mesh_compression` and `EXT_meshopt_compression`
-through **host-supplied decoder hooks** — the package itself bundles no decoder,
-keeping it dependency-free. `gltfToScene` is async, so hooks may return their
-result synchronously or as a Promise (both are awaited).
+`KHR_draco_mesh_compression` and `EXT/KHR_meshopt_compression` work without
+host setup. The default `'builtin'` policy lazy-loads each codec only when an
+asset uses it; uncompressed assets do not initialize either decoder.
+Public imports use the import-wide resource ledger as the authority and do not
+reimpose the standalone 512 MiB compression guard when the corresponding public
+byte or geometry ceiling is explicitly disabled.
 
-### Hook contract
+- Draco uses a package-owned Google Draco 1.5.7 decoder WASM and a
+  browser-clean ESM wrapper. The same wrapper and exact WASM bytes run in
+  browser, worker, and Node hosts. The vendored decoder chunk contains no
+  `fs`, `path`, encoder, or CommonJS compatibility branch.
+- meshopt lazy-loads `MeshoptDecoder` from meshoptimizer 1.1.1 (MIT) and waits
+  for its `ready` promise before decoding.
+- `opts.dracoDecode` and `opts.meshoptDecode` are optional overrides. An explicit
+  hook always wins over the built-in.
+- `compressionDecoderPolicy: 'host-only'` disables both built-ins. It is useful
+  for hosts that centrally provision codecs or intentionally forbid WASM.
+
+Failed codec initialization is not cached permanently: a later conversion
+retries the Draco module/WASM load or the meshoptimizer runtime initialization.
+Each conversion is copy-on-write; a late codec or validation
+failure cannot publish half-rewritten JSON or synthetic buffers. Optional
+extensions may use only fully validated spec fallbacks. Required extensions,
+or compressed data without an exact fallback, fail closed with an error.
+
+### Optional override contract
 
 ```ts
-// KHR_draco_mesh_compression — per-primitive. Receives the compressed blob and
-// the extension's semantic → Draco-attribute-unique-id map. Returned arrays
-// must match the primitive's DECLARED accessors (which per spec describe the
-// decoded data): length = accessor.count × components, and either the
-// accessor's exact componentType (the adapter then applies `normalized`
-// itself) or an already-dequantized Float32Array.
 type DracoDecodeFn = (
   compressed: Uint8Array,
-  attributeIds: Readonly<Record<string, number>>, // e.g. { POSITION: 0, NORMAL: 1 }
+  attributeIds: Readonly<Record<string, number>>,
+  context?: DracoDecodeContext,
 ) => DracoDecodeResult | Promise<DracoDecodeResult>;
 
-interface DracoDecodeResult {
-  attributes: Record<string, Int8Array | Uint8Array | Int16Array | Uint16Array | Uint32Array | Float32Array>;
-  indices?: Uint8Array | Uint16Array | Uint32Array; // length = index accessor count
+interface DracoDecodeContext {
+  attributes: Readonly<
+    Record<
+      string,
+      {
+        componentType: 5120 | 5121 | 5122 | 5123 | 5126;
+        normalized: boolean;
+        count: number;
+        type: 'SCALAR' | 'VEC2' | 'VEC3' | 'VEC4';
+      }
+    >
+  >;
 }
 
-// EXT_meshopt_compression — per-bufferView (so accessors, animations and
-// images all transparently see decompressed data). Mirrors meshoptimizer's
-// MeshoptDecoder.decodeGltfBuffer; must return exactly count × byteStride bytes.
+interface DracoDecodeResult {
+  attributes: Record<
+    string,
+    Int8Array | Uint8Array | Int16Array | Uint16Array | Float32Array
+  >;
+  // Triangle-list faces. When primitive.indices is absent, the adapter creates
+  // a synthetic SCALAR index accessor instead of discarding connectivity.
+  indices: Uint8Array | Uint16Array | Uint32Array;
+}
+
 type MeshoptDecodeFn = (
   compressed: Uint8Array,
   count: number,
   byteStride: number,
   mode: 'ATTRIBUTES' | 'TRIANGLES' | 'INDICES',
-  filter: 'NONE' | 'OCTAHEDRAL' | 'QUATERNION' | 'EXPONENTIAL',
+  filter: 'NONE' | 'OCTAHEDRAL' | 'QUATERNION' | 'EXPONENTIAL' | 'COLOR',
 ) => Uint8Array | Promise<Uint8Array>;
 ```
 
-### Failure modes (honest by design)
+Decoded Draco attributes must exactly match their declared accessor shape and
+component type, or be already-dequantized `Float32Array`s. `JOINTS_n` is the
+strict exception: joint indices must preserve the accessor's declared unsigned
+integer type (`Uint8Array` or `Uint16Array`) so they cannot be rounded or
+normalized. Decoded indices are
+validated against the accessor and vertex count. Draco exposes connectivity as
+face lists, so decoded `TRIANGLE_STRIP` inputs are normalized to indexed
+`TRIANGLES` before downstream topology conversion. meshopt output must be
+exactly `count × byteStride` bytes.
 
-| Situation | Behavior |
-|---|---|
-| Extension present, hook supplied | Decoded; geometry identical to an uncompressed export |
-| No hook, spec fallback exists (Draco fallback accessors / meshopt non-stub fallback buffer) | Fallback used + warning |
-| No hook, no fallback, extension in `extensionsUsed` only | Warning + affected primitives skipped |
-| No hook, no fallback, extension in `extensionsRequired` | **Throws** a clear Error |
-| Hook throws / returns wrong-sized data | Warning + primitive skipped (throws when the extension is required) |
+The two meshopt extension names are validated against their distinct contracts.
+`KHR_meshopt_compression` accepts the ATTRIBUTES codec v1
+header and `COLOR` filter; `EXT_meshopt_compression` accepts only its legacy
+codec/header set and rejects `COLOR`. KHR permits its codec `byteStride` to
+differ from the parent bufferView stride, while an authored EXT parent stride
+must match the codec stride. A buffer-level `fallback: true` value is an
+ownership marker for actual uncompressed fallback storage, not proof that bytes
+are absent: every view referencing that buffer must carry the matching extension,
+and no compressed-source declaration may point at it. Fallback is selected only
+after the declared byte range is present and valid.
 
-### Wiring `draco3d`
+### Failure behavior
 
-```ts
-import DracoDecoderModule from 'draco3d/draco_decoder_nodejs.js'; // or the web build
+| Situation                                                  | Behavior                                                    |
+| ---------------------------------------------------------- | ----------------------------------------------------------- |
+| Built-in policy, no override                               | Lazy built-in decode                                        |
+| Explicit hook                                              | Hook overrides the built-in                                 |
+| Decoder/hook fails, optional extension with exact fallback | Fully validated fallback + structured degraded diagnostic   |
+| Decoder/hook fails, required extension                     | Throws; required extension is never silently bypassed       |
+| Decoder/hook fails, no exact fallback                      | Throws; malformed or incomplete geometry is never published |
 
-const draco = await DracoDecoderModule();
+### Vendored Draco provenance
 
-const dracoDecode: DracoDecodeFn = (compressed, attributeIds) => {
-  const decoder = new draco.Decoder();
-  const buf = new draco.DecoderBuffer();
-  buf.Init(compressed, compressed.byteLength);
-  const mesh = new draco.Mesh();
-  try {
-    if (!decoder.DecodeBufferToMesh(buf, mesh).ok()) throw new Error('Draco decode failed');
+The decoder is Google Draco 1.5.7 under Apache-2.0. The complete license is at
+`src/assets/LICENSE.draco.txt`. `src/vendor/draco_decoder_browser.js` is a
+mechanical derivation of upstream `draco_decoder_nodejs.js`: its Node `fs`/`path`
+branch was removed and the UMD footer was replaced by an ESM default export.
+Decoder logic is otherwise unchanged.
 
-    const attributes: Record<string, Float32Array> = {};
-    for (const [semantic, uniqueId] of Object.entries(attributeIds)) {
-      const attr = decoder.GetAttributeByUniqueId(mesh, uniqueId);
-      const n = mesh.num_points() * attr.num_components();
-      const out = new draco.DracoFloat32Array();
-      decoder.GetAttributeFloatForAllPoints(mesh, attr, out);
-      const arr = new Float32Array(n); // dequantized floats are always accepted
-      for (let i = 0; i < n; i++) arr[i] = out.GetValue(i);
-      draco.destroy(out);
-      attributes[semantic] = arr;
-    }
-
-    const indices = new Uint32Array(mesh.num_faces() * 3);
-    const face = new draco.DracoInt32Array();
-    for (let f = 0; f < mesh.num_faces(); f++) {
-      decoder.GetFaceFromMesh(mesh, f, face);
-      indices[f * 3] = face.GetValue(0);
-      indices[f * 3 + 1] = face.GetValue(1);
-      indices[f * 3 + 2] = face.GetValue(2);
-    }
-    draco.destroy(face);
-    return { attributes, indices };
-  } finally {
-    draco.destroy(mesh);
-    draco.destroy(buf);
-    draco.destroy(decoder);
-  }
-};
-
-const { scene } = await gltfToScene(glb, { dracoDecode });
-```
-
-(`@gltf-transform`-style setups expose the same `draco3d` decoder module —
-pass it through the identical adapter.)
-
-### Wiring `meshoptimizer`
-
-```ts
-import { MeshoptDecoder } from 'meshoptimizer';
-
-await MeshoptDecoder.ready;
-
-const meshoptDecode: MeshoptDecodeFn = (compressed, count, byteStride, mode, filter) => {
-  const target = new Uint8Array(count * byteStride);
-  MeshoptDecoder.decodeGltfBuffer(target, count, byteStride, compressed, mode, filter);
-  return target;
-};
-
-const { scene } = await gltfToScene(glb, { meshoptDecode });
-```
+| File                                  | SHA-256                                                            |
+| ------------------------------------- | ------------------------------------------------------------------ |
+| Upstream `draco_decoder_nodejs.js`    | `e8049906ef3f8f75d3456c22a3f31bfdfe5b5b5bd09ccdec613b9e9a49d554d8` |
+| `src/vendor/draco_decoder_browser.js` | `7ec0115432825e898de8796e696b2b6a424405307295b4ab4eae14ade8b2d375` |
+| `src/assets/draco_decoder.wasm`       | `2516a4e43526d71787bf2f678f951329f7f858f8f15f42d4bc9e370b31a0da3a` |
 
 ---
 
@@ -358,14 +415,19 @@ const { scene } = await gltfToScene(glb, { meshoptDecode });
 The adapter decodes image bytes to opaque handles. Which handle shape you get
 depends on the environment:
 
-| Environment | `opts.decodeImage` | Handle shape | Works with |
-|-------------|-------------------|-------------|-----------|
-| Browser | absent | `ImageBitmap` for `loadGltfAsset()`; platform canvas-readback pixels for `loadGltfAndDecodeTextures()` / engine `decodeTextures` | pt-webgpu external-image upload, or CPU-atlas payloads when the decoded path can use browser image + canvas APIs |
-| Node / Worker | absent | `{ kind: 'raw-image', mimeType, data: Uint8Array }` | Needs custom backend upload |
-| Any | provided | Return value of callback | Whatever the callback returns |
+| Environment   | `opts.decodeImage` | Handle shape                                                                                                                     | Works with                                                                                                       |
+| ------------- | ------------------ | -------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| Browser       | absent             | `ImageBitmap` for `loadGltfAsset()`; deterministic PNG/JPEG pixels for decoded loads, with platform image/canvas fallback for WebP and other supported formats | pt-webgpu external-image upload or CPU-atlas payloads |
+| Node / Worker | absent             | `{ kind: 'raw-image', mimeType, data: Uint8Array }` for `loadGltfAsset()`; deterministic PNG/JPEG pixels for decoded loads; Node also has a built-in WebP decoder | Raw-handle backend upload or decoded CPU payloads |
+| Any           | provided           | Return value of callback                                                                                                         | Whatever the callback returns                                                                                    |
 
 Supply `opts.decodeImage` to control the decode target precisely. The adapter
-calls it once per unique image index, in parallel.
+calls it once per unique image index under the import's bounded concurrency
+limit. Each resolved callback result transfers one fresh ownership unit to that
+import/result. A host cache that shares one closable identity across imports must
+retain ownership itself (for example by returning a non-closable wrapper) or
+provide idempotent/reference-counted `close()` semantics. Identity sharing within
+one import is deduplicated automatically.
 
 ### sRGB vs linear
 
@@ -376,10 +438,20 @@ The default TextureRef bridge passes bytes/opaque handles as-is. **The backend i
 
 `decodeSceneTextures(target: 'cpu-linear')` is the opt-in exception: raw image
 handles are converted to linear `Float32Array` RGBA payloads using this same
-color/data policy before backend upload. In browser hosts the default path uses
-`createImageBitmap` plus canvas/OffscreenCanvas readback when available; Node,
-workers without canvas readback, compressed texture sources, and custom formats
-still supply `decodePixels`.
+color/data policy before backend upload. PNG and JPEG use the same
+pure-JavaScript decoder and options in browser and Node, preventing browser
+color management or canvas implementation differences from changing decoded
+pixels. Browser WebP uses the platform image/canvas path while Node WebP uses
+`webp-wasm`; a host that requires byte-identical WebP output across hosts
+supplies one shared `decodePixels` implementation, which always takes
+precedence. Workers without canvas readback, compressed texture sources, and
+custom formats likewise use `decodePixels`.
+
+The built-in PNG/JPEG and Node WebP paths preflight encoded dimensions against
+the exact pixel policy before decoder import or output allocation. The JPEG wrapper
+passes explicit non-stricter `jpeg-js` resolution and memory options, so an
+explicit zero or a high finite pixel ceiling does not silently restore that
+codec’s smaller defaults.
 
 `decodeSceneTextures(target: 'webgpu')` also resolves raw image handles through
 the same platform/custom pixel path, but preserves the backend upload color
@@ -387,6 +459,12 @@ space: sRGB material maps stay sRGB-valued so WebGPU sRGB texture formats can
 perform the hardware decode, while linear/data maps stay linear. This is the
 predictable pre-upload path for glTF loads that would otherwise leave
 `{ kind: 'raw-image' }` handles opaque to pt-webgpu.
+
+When `maxTextureSize` or `npotRepeatWrapPolicy: 'resize-to-pot'` changes
+dimensions, RGB is reconstructed in linear light: exact texel-area integration
+is used while downsampling and pixel-centred bilinear reconstruction while
+upsampling. sRGB payloads are encoded again only after filtering. Alpha/data
+channels remain independent linear values.
 
 ### Sampler metadata
 
@@ -406,8 +484,8 @@ whether a backend-ready map is the expected RGBA float payload before upload.
 Browser default `ImageBitmap` handles from
 ordinary `loadGltfAsset()` are reported through `imageBitmapCount` /
 `imageBitmapRefs`; decoded loads report CPU-readable `pixel-data` handles when
-browser readback or a custom decoder succeeds, and preserve a structured
-diagnostic when readback is unavailable. Current backends already consume per-map
+a built-in, platform, or custom decoder succeeds, and preserve a structured
+diagnostic when the selected fallback cannot read pixels. Current backends already consume per-map
 UV, transform, and wrap metadata where their material map rows are supported;
 per-texture filter/mipmap enforcement remains backend policy and is reported
 through `analyzeGltfAsset()` / `evaluateGltfBackendCompatibility()` as

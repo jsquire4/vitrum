@@ -187,6 +187,16 @@ describe('packMeshAreaLights (B4)', () => {
     )).toBe(true);
   });
 
+  it('retains positive emitters below the former luminance cutoff', () => {
+    const out = packMeshAreaLights(
+      sceneWithPrimitive(panelPrimitive(material({ emissive: [5e-7, 5e-7, 5e-7] }))),
+      fakeMerged(),
+    );
+    expect(out.triLightCount).toBe(2);
+    expect(out.totalEmissivePower).toBeGreaterThan(0);
+    expect(out.data![4]).toBeGreaterThan(0);
+  });
+
   it('subdivides CPU-readable emissiveMap implicit triangle lights with UV-local radiance', () => {
     const emissiveMap = {
       handle: {
@@ -207,7 +217,7 @@ describe('packMeshAreaLights (B4)', () => {
       fakeMerged(),
     );
 
-    expect(out.triLightCount).toBe(8);
+    expect(out.triLightCount).toBe(2);
     expect(out.totalEmissiveArea).toBeCloseTo(1, 6);
     // This fixture's fake merged UVs are all (0,0), so every sub-triangle samples
     // the red texel; power is luminance([6,0,0]) over total area 1.
@@ -296,7 +306,43 @@ describe('packMeshAreaLights (B4)', () => {
       fakeMerged({ uvs: new Float32Array([0.75, 0, 0.75, 0, 0.75, 0, 0.75, 0]) }),
     );
 
-    expect(out.triLightCount).toBe(8);
+    expect(out.triLightCount).toBe(2);
+    expect(out.totalEmissiveArea).toBeCloseTo(1, 6);
+    expect(out.data![4]).toBeCloseTo(0, 6);
+    expect(out.data![5]).toBeCloseTo(2, 6);
+    expect(out.data![6]).toBeCloseTo(0, 6);
+    expect(out.warnings).toEqual([]);
+  });
+
+  it('samples implicit emissive maps from an arbitrary sparse texCoord stream', () => {
+    const texCoord = 37;
+    const uvSets: Array<Float32Array | undefined> = [];
+    uvSets[texCoord] = new Float32Array([
+      0.75, 0,
+      0.75, 0,
+      0.75, 0,
+      0.75, 0,
+    ]);
+    const primitive: MeshPrimitive = {
+      ...panelPrimitive(material({
+        emissive: [2, 2, 2],
+        emissiveMap: {
+          texCoord,
+          handle: {
+            width: 2,
+            height: 1,
+            data: new Uint8Array([
+              255, 0, 0, 255,
+              0, 255, 0, 255,
+            ]),
+          },
+        },
+      })),
+      uvSets,
+    };
+    const out = packMeshAreaLights(sceneWithPrimitive(primitive), fakeMerged());
+
+    expect(out.triLightCount).toBe(2);
     expect(out.totalEmissiveArea).toBeCloseTo(1, 6);
     expect(out.data![4]).toBeCloseTo(0, 6);
     expect(out.data![5]).toBeCloseTo(2, 6);
@@ -339,23 +385,63 @@ describe('packMeshAreaLights (B4)', () => {
     )).toBe(false);
   });
 
-  it('warns and falls back to scalar emissive radiance for unreadable emissiveMap handles', () => {
-    const out = packMeshAreaLights(
+  it('fails closed for unreadable emissiveMap handles instead of biasing MIS', () => {
+    expect(() => packMeshAreaLights(
       sceneWithPrimitive(panelPrimitive(material({
         emissive: [0.5, 0.25, 0.125],
         emissiveIntensity: 8,
         emissiveMap: { handle: { id: 'gpu-only-texture' } },
       }))),
       fakeMerged(),
+    )).toThrow(/emissiveMap without complete CPU-readable texels/);
+  });
+
+  it.each([
+    ['linear minification', { minFilter: 'linear' as const }],
+    ['linear magnification', { magFilter: 'linear' as const }],
+    ['mip filtering', { mipFilter: 'nearest' as const }],
+  ])('rejects %s for mapped-emitter NEE instead of using quadrature', (_label, sampler) => {
+    expect(() => packMeshAreaLights(
+      sceneWithPrimitive(panelPrimitive(material({
+        emissive: [1, 1, 1],
+        emissiveMap: {
+          handle: {
+            width: 2,
+            height: 1,
+            data: new Uint8Array([255, 0, 0, 255, 0, 255, 0, 255]),
+          },
+          ...sampler,
+        },
+      }))),
+      fakeMerged(),
+    )).toThrow(/cannot be represented by exact texel-cell NEE/);
+  });
+
+  it('accepts an exact linear cpuMirror for an otherwise opaque handle', () => {
+    const out = packMeshAreaLights(
+      sceneWithPrimitive(panelPrimitive(material({
+        emissive: [2, 2, 2],
+        emissiveIntensity: 1,
+        emissiveMap: {
+          handle: {
+            id: 'opaque-with-mirror',
+            cpuMirror: {
+              width: 1,
+              height: 1,
+              channels: 4,
+              dataType: 'float32',
+              colorSpace: 'linear',
+              data: new Float32Array([0.25, 0.5, 1, 1]),
+            },
+          },
+        },
+      }))),
+      fakeMerged(),
     );
 
     expect(out.triLightCount).toBe(2);
-    expect(out.data![4]).toBeCloseTo(4, 6);
-    expect(out.data![5]).toBeCloseTo(2, 6);
-    expect(out.data![6]).toBeCloseTo(1, 6);
-    expect(out.warnings).toEqual([
-      '@vitrum/pt-webgl2: primitive "panel" has an emissiveMap without CPU-readable texels; ' +
-        'implicit mesh-area NEE uses scalar emissive radiance only.',
-    ]);
+    expect(out.data![4]).toBeCloseTo(0.5, 6);
+    expect(out.data![5]).toBeCloseTo(1, 6);
+    expect(out.data![6]).toBeCloseTo(2, 6);
   });
 });

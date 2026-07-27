@@ -1,3 +1,5 @@
+import { NEURAL_FINITE_WGSL } from '../preprocessing.js';
+
 /**
  * skipConnection.wgsl.ts — element-wise skip-add kernel for the U-Net decoder.
  *
@@ -12,14 +14,14 @@
  *   @group(0) @binding(3)  output : array<f32>  — sum: inputA + inputB
  *   @group(0) @binding(4)  params : SkipParams  — element count
  *
- * Note: binding 2 (biases) not used; host passes a 4-byte placeholder.
- * inputB occupies binding 1 (normally weights) — this is intentional for skip layers.
+ * Binding 2 is undeclared and omitted by the host. inputB occupies binding 1
+ * (normally weights) intentionally for skip layers.
  */
 
-export const SKIP_CONNECTION_WGSL = /* wgsl */`
+export const SKIP_CONNECTION_WGSL = /* wgsl */`${NEURAL_FINITE_WGSL}
 struct SkipParams {
   count : u32,   // total number of elements (H × W × C)
-  _pad0 : u32,
+  groupsX : u32,
   _pad1 : u32,
   _pad2 : u32,
 }
@@ -31,8 +33,10 @@ struct SkipParams {
 
 @compute @workgroup_size(256, 1, 1)
 fn skipConnectionMain(@builtin(global_invocation_id) gid: vec3<u32>) {
-  let idx = gid.x;
+  let idx = gid.y * params.groupsX * 256u + gid.x;
   if (idx >= params.count) { return; }
-  output[idx] = inputA[idx] + inputB[idx];
+  output[idx] = neuralSanitizeSigned(
+    neuralSanitizeSigned(inputA[idx]) + neuralSanitizeSigned(inputB[idx]),
+  );
 }
 `;

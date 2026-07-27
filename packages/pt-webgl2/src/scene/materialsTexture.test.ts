@@ -4,12 +4,13 @@
 // `material_struct` decoder reads (verified against `MaterialsTexture.js` +
 // `material_struct.glsl.js`). Any divergence here is a real render bug.
 
-import { describe, it, expect, vi } from 'vitest';
-import type { EngineWarning, MaterialSpec } from '@vitrum/core';
+import { describe, it, expect } from 'vitest';
+import type { MaterialSpec } from '@vitrum/core';
 import { evaluateSpectrum } from '@vitrum/shared-samplers';
 import {
   MATERIAL_LAYER_NORMAL_TEXEL_OFFSET,
   MATERIAL_SPECTRAL_REFLECTANCE_TEXEL_OFFSET,
+  MATERIAL_UV_SELECTOR_TEXEL_OFFSET,
   MATERIAL_WRAP_TEXEL_OFFSET,
   packMaterialsTexture,
   MATERIAL_PIXELS,
@@ -26,13 +27,14 @@ describe('packMaterialsTexture — RGBA32F byte layout', () => {
     // + envMapIntensity at 85/86, their transforms at 87..92) + alphaMap transform
     // at 93/94 + anisotropyMap transform at 95/96 + thickness payload/transform
     // at 97..99 + per-map sampler policies at 100..120 + spectral reflectance at 121
-    // + front/back layer normal payload at 122..129.
+    // + front/back layer normal payload at 122..129 + 21 scalable UV-layer
+    // selectors at texels 130..135.
     // Single-sourced with every GLSL fetch site via glsl/shader/structs/materialStride.js
     // — see materialStrideParity.test.ts for the packer↔shader guard.
-    expect(MATERIAL_PIXELS).toBe(130);
+    expect(MATERIAL_PIXELS).toBe(136);
   });
 
-  it('drops direct-core maps that request unsupported high UV sets', () => {
+  it('keeps direct-core maps on arbitrary UV sets and packs dense layer selectors', () => {
     const handle = {};
     const material: MaterialSpec = {
       baseColor: [1, 1, 1],
@@ -41,42 +43,15 @@ describe('packMaterialsTexture — RGBA32F byte layout', () => {
       baseColorMap: { handle, texCoord: 2 },
       normalMap: { handle, texCoord: 3 },
     };
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    try {
-      const structured: EngineWarning[] = [];
-      const data = packMaterialsTexture([material], new Map<unknown, number>([[handle, 7]]), {
-        onWarning: (warning) => structured.push(warning),
-      }).data;
-      expect(data[texel(0, 0, 3)]).toBe(-1);
-      expect(data[texel(0, 4, 0)]).toBe(-1);
-      expect(warn).toHaveBeenCalledWith(expect.stringContaining('baseColorMap: texCoord 2 is unsupported'));
-      expect(warn).toHaveBeenCalledWith(expect.stringContaining('normalMap: texCoord 3 is unsupported'));
-      expect(structured).toEqual([
-        expect.objectContaining({
-          code: 'pt-webgl2.material-texture-unsupported-texcoord',
-          backend: 'pt-webgl2',
-          phase: 'setScene',
-          method: 'setScene',
-          details: expect.objectContaining({
-            materialIndex: 0,
-            field: 'baseColorMap',
-            texCoord: 2,
-            supportedTexCoords: [0, 1],
-            fallback: 'map-ignored',
-          }),
-        }),
-        expect.objectContaining({
-          code: 'pt-webgl2.material-texture-unsupported-texcoord',
-          details: expect.objectContaining({
-            materialIndex: 0,
-            field: 'normalMap',
-            texCoord: 3,
-          }),
-        }),
-      ]);
-    } finally {
-      warn.mockRestore();
-    }
+    const data = packMaterialsTexture(
+      [material],
+      new Map<unknown, number>([[handle, 7]]),
+    ).data;
+    expect(data[texel(0, 0, 3)]).toBe(7);
+    expect(data[texel(0, 4, 0)]).toBe(7);
+    // Standalone packer fallback is dense: texCoord 2 -> layer 5, 3 -> layer 6.
+    expect(data[texel(0, MATERIAL_UV_SELECTOR_TEXEL_OFFSET, 0)]).toBe(5);
+    expect(data[texel(0, MATERIAL_UV_SELECTOR_TEXEL_OFFSET + 1, 1)]).toBe(6);
   });
 
   it('packs a known MaterialSpec to the exact load-bearing texels', () => {
@@ -174,6 +149,25 @@ describe('packMaterialsTexture — RGBA32F byte layout', () => {
     expect(d[texel(0, 13, 3)]).toBe(1); // FrontSide (no transmission)
   });
 
+  it('packs authored double-sided opaque surfaces while preserving closed-volume exit traversal', () => {
+    const frontOnly: MaterialSpec = {
+      baseColor: [0.8, 0.8, 0.8],
+      roughness: 1,
+      metallic: 0,
+      doubleSided: false,
+    };
+    const twoSided: MaterialSpec = { ...frontOnly, doubleSided: true };
+    const closedGlass: MaterialSpec = {
+      ...frontOnly,
+      transmission: 1,
+      attenuationDistance: 2,
+    };
+    const d = packMaterialsTexture([frontOnly, twoSided, closedGlass]).data;
+    expect(d[texel(0, 13, 3)]).toBe(1);
+    expect(d[texel(1, 13, 3)]).toBe(0);
+    expect(d[texel(2, 13, 3)]).toBe(0);
+  });
+
   it('packs primitive-derived castShadow in s14.g, defaulting to true', () => {
     const caster: MaterialSpec = { baseColor: [0.8, 0.8, 0.8], roughness: 1.0, metallic: 0.0 };
     const nonCaster = {
@@ -258,6 +252,43 @@ describe('packMaterialsTexture — RGBA32F byte layout', () => {
     expect(d[texel(0, 16, 1)]).toBeCloseTo(0.8, 6);
     expect(d[texel(0, 16, 2)]).toBeCloseTo(0.9, 6);
     expect(d[texel(0, 16, 3)]).toBe(0); // 0 layers
+  });
+
+  it('includes the packed spectral extinction peak in the free-flight majorant', () => {
+    const medium: MaterialSpec = {
+      baseColor: [1, 1, 1],
+      roughness: 0.5,
+      metallic: 0,
+      transmission: 1,
+      scatteringCoefficientRGB: [0.1, 0.2, 0.05],
+      attenuationColor: [1, 1, 1],
+      attenuationDistance: Infinity,
+      spectralAttenuation: {
+        wavelengthStart: 380,
+        wavelengthEnd: 780,
+        values: new Float32Array([5, 5, 5]),
+      },
+    };
+    const d = packMaterialsTexture([medium]).data;
+    // The shader linearly interpolates the packed grid, whose peak is 5.
+    // Its hero-channel scattering coefficient is bounded by max(sigmaS)=0.2.
+    expect(d[texel(0, 15, 0)]).toBeCloseTo(5.2, 5);
+  });
+
+  it('activates the fog-volume lane for every positive transmitted scattering coefficient', () => {
+    const participating: MaterialSpec = {
+      baseColor: [1, 1, 1],
+      roughness: 0.5,
+      metallic: 0,
+      transmission: 1,
+      scatteringCoefficient: 5e-7,
+    };
+    const active = packMaterialsTexture([participating]).data;
+    expect((active[texel(0, 14, 2)]! & 4) !== 0).toBe(true);
+    expect(active[texel(0, 15, 0)]).toBeGreaterThan(0);
+
+    const nonTransmitted = packMaterialsTexture([{ ...participating, transmission: 0 }]).data;
+    expect((nonTransmitted[texel(0, 14, 2)]! & 4) !== 0).toBe(false);
   });
 
   it('scatteringCoefficientRGB alone activates translucent SSS and packs sigmaS', () => {
@@ -397,8 +428,26 @@ describe('packMaterialsTexture — RGBA32F byte layout', () => {
     expect(d[texel(0, ln + 6, 1)]).toBe(1);
     expect(d[texel(0, ln + 6, 2)]).toBe(1);
     expect(d[texel(0, ln + 6, 3)]).toBe(2);
-    expect(d[texel(0, ln + 7, 0)]).toBe(1);
-    expect(d[texel(0, ln + 7, 1)]).toBe(0);
+    expect(d[texel(0, ln + 7, 0)]).toBe(4);
+    expect(d[texel(0, ln + 7, 1)]).toBe(2);
+  });
+
+  it('packs each atlas handle native extent into its sampler policy', () => {
+    const handle = {};
+    const lookup = {
+      srgb: new Map<unknown, number>([[handle, 0]]),
+      linear: new Map<unknown, number>(),
+      dimensions: new Map<unknown, readonly [number, number]>([[handle, [2, 3]]]),
+    };
+    const mat: MaterialSpec = {
+      baseColor: [1, 1, 1],
+      roughness: 0.5,
+      metallic: 0,
+      baseColorMap: { handle, wrapS: 'repeat', wrapT: 'clamp-to-edge' },
+    };
+    const d = packMaterialsTexture([mat], lookup).data;
+    expect(d[texel(0, MATERIAL_WRAP_TEXEL_OFFSET, 0)]).toBe(2 * 4 + 0);
+    expect(d[texel(0, MATERIAL_WRAP_TEXEL_OFFSET, 1)]).toBe(3 * 4 + 1);
   });
 
   it('spectralAttenuation fills the 32-sample grid (s20..) + sets feature bit 1', () => {
@@ -412,7 +461,7 @@ describe('packMaterialsTexture — RGBA32F byte layout', () => {
       spectralAttenuation: {
         wavelengthStart: 380,
         wavelengthEnd: 780,
-        values: new Float32Array([0.0, 1.0]), // ramp 0→1 across the band
+        values: new Float32Array([0.0, 0.5, 1.0]), // ramp 0→1 across the band
       },
     };
     const d = packMaterialsTexture([spec]).data;

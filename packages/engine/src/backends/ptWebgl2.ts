@@ -14,6 +14,7 @@ import type { EngineFactory } from '@vitrum/core';
 import type { PTEngineWebGL2Options } from '@vitrum/pt-webgl2';
 import {
   attachBackendId,
+  BackendUnavailableError,
   resolveAdvancedForBackend,
   stripOwnershipCriticalKeys,
   wrapWithIdempotentDispose,
@@ -28,10 +29,9 @@ import {
  *  @internal */
 interface PtWebgl2Module {
   readonly createPTEngine_WebGL2: EngineFactory<PTEngineWebGL2Options>;
-}
-
-function disposeOwnedWebGL2Context(gl: WebGL2RenderingContext): void {
-  try { gl.getExtension('WEBGL_lose_context')?.loseContext(); } catch { /* best-effort context loss — ignore */ }
+  readonly validateWebgl2AdvancedOptions: (
+    opts: WebGL2PathTracerAdvancedOptions,
+  ) => void;
 }
 
 function createWebGL2ContextForCanvas(canvas: HTMLCanvasElement): WebGL2RenderingContext {
@@ -40,7 +40,10 @@ function createWebGL2ContextForCanvas(canvas: HTMLCanvasElement): WebGL2Renderin
     preserveDrawingBuffer: false,
   });
   if (gl == null) {
-    throw new Error('createEngine: WebGL2 is unavailable; canvas.getContext("webgl2") returned null.');
+    throw new BackendUnavailableError(
+      'pt-webgl2',
+      'createEngine: WebGL2 is unavailable; canvas.getContext("webgl2") returned null.',
+    );
   }
   return gl;
 }
@@ -50,25 +53,38 @@ export async function constructPathTracer(
   opts: CreateEngineOptions,
   vitrumScene: Scene,
 ): Promise<Engine> {
-  const gl = createWebGL2ContextForCanvas(opts.canvas);
+  const advancedWebGL2Raw = resolveAdvancedForBackend(
+    opts,
+    'pt-webgl2',
+  ) as WebGL2PathTracerAdvancedOptions | undefined;
+  const advancedWebGL2 = stripOwnershipCriticalKeys(
+    advancedWebGL2Raw as Record<string, unknown> | undefined,
+    'pt-webgl2',
+    opts.onWarning,
+  ) as WebGL2PathTracerAdvancedOptions;
+  const module: PtWebgl2Module = await import('@vitrum/pt-webgl2');
+  module.validateWebgl2AdvancedOptions(advancedWebGL2);
+
+  let gl: WebGL2RenderingContext;
+  try {
+    gl = createWebGL2ContextForCanvas(opts.canvas);
+  } catch (cause) {
+    if (cause instanceof BackendUnavailableError) throw cause;
+    throw new BackendUnavailableError(
+      'pt-webgl2',
+      'createEngine: WebGL2 context acquisition failed',
+      { cause },
+    );
+  }
 
   let engine: Engine | null = null;
   try {
-    const advancedWebGL2Raw = resolveAdvancedForBackend(
-      opts,
-      'pt-webgl2',
-    ) as WebGL2PathTracerAdvancedOptions | undefined;
     // V1-6 — pt-webgl2 was the only device-owning backend NOT stripping
     // ownership-critical keys (device/canvas/context) from `advanced`. Because
     // `advanced` was spread AFTER `device: gl`, a host-supplied `advanced.device`
     // could clobber the createEngine-owned WebGL2 context, causing a
     // double-dispose / owned-handle leak. Route it through the same
     // stripOwnershipCriticalKeys guard the walkaround/pt-webgpu backends use.
-    const advancedWebGL2 = stripOwnershipCriticalKeys(
-      advancedWebGL2Raw as Record<string, unknown> | undefined,
-      'pt-webgl2',
-      opts.onWarning,
-    ) as WebGL2PathTracerAdvancedOptions;
     const merged: PTEngineWebGL2Options = {
       device: gl,
       ...advancedWebGL2,
@@ -80,18 +96,19 @@ export async function constructPathTracer(
     // I1.4 — cast via `PtWebgl2Module` (uses EngineFactory<PTEngineWebGL2Options>)
     // instead of `as unknown as PtWebgl2ModuleLike`, so the factory shape is
     // structurally verified by the TypeScript compiler.
-    const { createPTEngine_WebGL2 } = await import('@vitrum/pt-webgl2') as unknown as PtWebgl2Module;
+    const { createPTEngine_WebGL2 } = module;
     engine = await createPTEngine_WebGL2(merged);
     engine.setScene(vitrumScene);
 
     const built = engine;
     engine = null;
-    return wrapWithIdempotentDispose(built, () => {
-      disposeOwnedWebGL2Context(gl);
-    });
+    // Deleting the engine-owned programs, buffers, textures, and framebuffers is
+    // sufficient teardown. Deliberately calling WEBGL_lose_context here turns an
+    // ordinary dispose/recreate into an asynchronous context-loss cycle and can
+    // make the replacement engine allocate against a still-lost canvas context.
+    return wrapWithIdempotentDispose(built, () => {});
   } catch (err) {
     try { engine?.dispose(); } catch { /* best-effort cleanup before re-throw — ignore */ }
-    disposeOwnedWebGL2Context(gl);
     throw err;
   }
 }

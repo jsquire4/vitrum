@@ -1,4 +1,4 @@
-import type { BackendSupportMode, MaterialSpec } from '@vitrum/core';
+import type { MaterialSpec } from '@vitrum/core';
 import { BACKEND_PROMISE_LEDGER, MATERIAL_SPEC_FIELDS } from '@vitrum/core';
 import type { PtWebgpuTraceTier } from './traceTier.js';
 
@@ -63,19 +63,19 @@ export const PT_WEBGPU_LITE_MATERIALS = Object.freeze({
   ...BACKEND_PROMISE_LEDGER['pt-webgpu'].supportDetails.materials,
   ...Object.fromEntries(
     PT_WEBGPU_LITE_EXTRA_UNSUPPORTED_MATERIAL_FIELDS.map((field) =>
-      [field, 'unsupported' as BackendSupportMode],
+      [field, 'unsupported'],
     ),
   ),
   // Lite still packs scalar layered-lobe controls inherited from the full tier,
   // but it omits the group-3 texture bindings used by layer normal maps/scales.
-  frontLayer: 'approximate' as BackendSupportMode,
-  backLayer:  'approximate' as BackendSupportMode,
+  frontLayer: 'approximate',
+  backLayer:  'approximate',
 });
 
 export function collectUnsupportedLayerNormalFields(
   fields: Set<string>,
   prefix: 'frontLayer' | 'backLayer',
-  layer: MaterialSpec['frontLayer'] | MaterialSpec['backLayer'] | undefined,
+  layer: MaterialSpec['frontLayer']   | undefined,
 ): void {
   if (layer?.normalMap != null) fields.add(`${prefix}.normalMap`);
   if (layer?.normalScale != null) fields.add(`${prefix}.normalScale`);

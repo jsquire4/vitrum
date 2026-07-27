@@ -1,7 +1,7 @@
 /**
  * restirPtCompose.wgsl.ts — composes the ReSTIR-PT reuse unit as a SINGLE WGSL
- * module so it compiles standalone (one `device.createShaderModule` for all three
- * @compute entry points: restirPtProduce / restirPtTemporal / restirPtResolve).
+ * module as a string-contract scaffold for all four @compute entry points:
+ * restirPtProduce / restirPtTemporal / restirPtSpatial / restirPtResolve.
  *
  * This MIRRORS the shared-module concatenation order of
  * `composePtWebgpuTraceWgsl` (pathTraceBruteforce.wgsl.ts) — which this file does
@@ -23,6 +23,7 @@
  *     shared trace modules above do NOT include restirPtShift, so no double-def.)
  *   - RESTIR_PT_PRODUCER_WGSL  — @compute restirPtProduce
  *   - RESTIR_PT_TEMPORAL_WGSL  — @compute restirPtTemporal
+ *   - RESTIR_PT_SPATIAL_WGSL   — @compute restirPtSpatial
  *   - RESTIR_PT_RESOLVE_WGSL   — @compute restirPtResolve
  *
  * ── Bind-group note (the honest maxBindGroups constraint) ───────────────────
@@ -33,7 +34,7 @@
  * adapter with maxBindGroups ≥ 5. WebGPU only GUARANTEES 4 (indices 0..3), so the
  * WIRING step must either (a) require maxBindGroups ≥ 5 for the ReSTIR-PT path, or
  * (b) relocate the @group(4) resources into a free slot of an existing group
- * (e.g. high bindings of @group(3), which the producer/temporal/resolve do not
+ * (e.g. high bindings of @group(3), which the reuse passes do not
  * otherwise use). Each pass statically uses only a SUBSET of @group(0..3) (the
  * producer/temporal trace ⇒ groups 0/1/2; resolve ⇒ group 0 + its BRDF), so a
  * per-pass pipeline layout need only bind the groups that pass touches plus
@@ -45,19 +46,19 @@
  * TWO blockers force the wiring shape, both VERIFIED by reading the modules:
  *
  *  (1) The single combined `composePtWebgpuReuseWgsl()` below is NOT compilable:
- *      the three pass bodies declare DIFFERENT vars at the SAME @group(4)/@binding
+ *      the four pass bodies declare DIFFERENT vars at the SAME @group(4)/@binding
  *      slot — @binding(1) is `rpt_resCurrent`(rw) in temporal AND `rpt_resResolved`
  *      (read) in resolve; @binding(4) is `rptParams` thrice. A WGSL module may not
  *      declare two module-scope vars at the same group+binding → naga rejects it.
  *      (The combined unit exists ONLY as a string-contract scaffold; the contract
  *      test never compiles it on a GPU, which is why this slipped past the goldens
  *      — exactly the gap the naga gate closes.) So the WIRING composes ONE module
- *      PER ENTRY POINT (`composeRestirPt{Producer,Temporal,Resolve}Wgsl`) — each
+ *      PER ENTRY POINT (`composeRestirPt{Producer,Temporal,Spatial,Resolve}Wgsl`) — each
  *      declares only its own pass's bindings, so there is no slot collision.
  *
  *  (2) Option (a) (require maxBindGroups ≥ 5) is rejected: it is non-portable
  *      (WebGPU guarantees only 4). We take option (b), RELOCATING the @group(4)
- *      resources into FREE high bindings of @group(0) (bindings 20..24 — verified
+ *      resources into FREE high bindings of @group(0) (bindings 20..25 — verified
  *      unused; the megakernel's group-0 tops out at binding 13). @group(0) is the
  *      ONE group EVERY reuse entry point already uses (FrameParams `params` is
  *      @group(0)@binding(1)), so adding the reservoir/result/params there keeps
@@ -66,14 +67,16 @@
  *      decl lines → `@group(0) @binding(20+b)`; the pass SHADER BODIES are NOT
  *      edited (the rewrite runs on the composed string). Binding map:
  *        rpt_reservoirOut  g4 b0 → g0 b20
- *        rpt_resCurrent    g4 b1 → g0 b21   (resolve's rpt_resResolved is the SAME
- *        rpt_resPrev       g4 b2 → g0 b22    buffer at the same b21 — both are the
- *        rpt_result        g4 b3 → g0 b23    "current" reservoir slot, by binding #)
+ *        rpt_resCurrent    g4 b1 → g0 b21
+ *        rpt_resPrev       g4 b2 → g0 b22
+ *        rpt_result        g4 b3 → g0 b23
  *        rptParams         g4 b4 → g0 b24
+ *        rpt_resSpatial    g4 b5 → g0 b25
  *
  * Per-pass static group usage (verified from the call graph — see the wiring
  * report): producer & temporal trace (traceClosest/traceAny → groups 0,1,2);
- * resolve only evaluates the BRDF (pure math) + reads `params` (group 0). The
+ * spatial and resolve use group 0 only. Resolve evaluates the BRDF (pure math)
+ * plus `params`; spatial reads current-frame G-buffer state. The
  * per-pass explicit pipeline layouts in `gpuResources.ts` declare exactly those
  * groups, so each pipeline validates with ZERO unused-group entries.
  */

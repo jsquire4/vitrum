@@ -17,6 +17,10 @@
  */
 import { PT_WEBGPU_PATH_TRACE_ADJOINT_WGSL } from '../wgsl/pathTrace/pathTraceAdjoint.wgsl.js';
 
+import {
+  PT_WEBGPU_MICROFACET_ALPHA_FLOOR,
+  roughDielectricSmithG1Wgsl,
+} from '../math/roughDielectric.js';
 /** Floats per harness input record (vec4-aligned: 4 × vec4f = 16 floats). */
 export const ADJOINT_HARNESS_INPUT_FLOATS = 16;
 
@@ -112,14 +116,11 @@ fn safe_normalize(v: vec3f) -> vec3f {
 }
 fn ggxD(nDotH: f32, alpha: f32) -> f32 {
   let a2 = alpha * alpha;
-  let d = nDotH * nDotH * (a2 - 1.0) + 1.0;
-  return a2 / max(PI * d * d, 1e-6);
+  let n2 = clamp(nDotH * nDotH, 0.0, 1.0);
+  let d = (1.0 - n2) + n2 * a2;
+  return a2 / (PI * d * d);
 }
-fn smithG1(nDotV: f32, roughness: f32) -> f32 {
-  let r = roughness + 1.0;
-  let k = (r * r) * 0.125;
-  return nDotV / max(nDotV * (1.0 - k) + k, 1e-6);
-}
+${roughDielectricSmithG1Wgsl('smithG1')}
 fn fresnelSchlick(cosTheta: f32, f0: vec3f) -> vec3f {
   let m = clamp(1.0 - cosTheta, 0.0, 1.0);
   let m2 = m * m;
@@ -184,14 +185,11 @@ fn safe_normalize(v: vec3f) -> vec3f {
 }
 fn ggxD(nDotH: f32, alpha: f32) -> f32 {
   let a2 = alpha * alpha;
-  let d = nDotH * nDotH * (a2 - 1.0) + 1.0;
-  return a2 / max(PI * d * d, 1e-6);
+  let n2 = clamp(nDotH * nDotH, 0.0, 1.0);
+  let d = (1.0 - n2) + n2 * a2;
+  return a2 / (PI * d * d);
 }
-fn smithG1(nDotV: f32, roughness: f32) -> f32 {
-  let r = roughness + 1.0;
-  let k = (r * r) * 0.125;
-  return nDotV / max(nDotV * (1.0 - k) + k, 1e-6);
-}
+${roughDielectricSmithG1Wgsl('smithG1')}
 fn fresnelSchlick(cosTheta: f32, f0: vec3f) -> vec3f {
   let m = clamp(1.0 - cosTheta, 0.0, 1.0);
   let m2 = m * m;
@@ -209,7 +207,7 @@ fn evaluateBrdf(baseColor: vec3f, roughness: f32, metallic: f32, normal: vec3f, 
   let vDotH = max(dot(wo, h), 0.0);
   let f0 = vec3f(0.04) + (baseColor - vec3f(0.04)) * metallic;
   let f = fresnelSchlick(vDotH, f0);
-  let alpha = max(roughness * roughness, 1e-3);
+  let alpha = max(roughness * roughness, ${PT_WEBGPU_MICROFACET_ALPHA_FLOOR});
   let d = ggxD(nDotH, alpha);
   let g = smithG1(nDotV, roughness) * smithG1(nDotL, roughness);
   let specScale = (d * g) / max(4.0 * nDotV * nDotL, 1e-6);
@@ -327,14 +325,11 @@ fn safe_normalize(v: vec3f) -> vec3f {
 }
 fn ggxD(nDotH: f32, alpha: f32) -> f32 {
   let a2 = alpha * alpha;
-  let d = nDotH * nDotH * (a2 - 1.0) + 1.0;
-  return a2 / max(PI * d * d, 1e-6);
+  let n2 = clamp(nDotH * nDotH, 0.0, 1.0);
+  let d = (1.0 - n2) + n2 * a2;
+  return a2 / (PI * d * d);
 }
-fn smithG1(nDotV: f32, roughness: f32) -> f32 {
-  let r = roughness + 1.0;
-  let k = (r * r) * 0.125;
-  return nDotV / max(nDotV * (1.0 - k) + k, 1e-6);
-}
+${roughDielectricSmithG1Wgsl('smithG1')}
 fn fresnelSchlick(cosTheta: f32, f0: vec3f) -> vec3f {
   let m = clamp(1.0 - cosTheta, 0.0, 1.0);
   let m2 = m * m;

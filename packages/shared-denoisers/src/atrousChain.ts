@@ -71,9 +71,25 @@ export function makeResourceTracker(destroyEphemeral: () => void): ResourceTrack
       return buffer;
     },
     dispose: (): void => {
-      for (const buffer of buffers) buffer.destroy();
-      for (const texture of textures) texture.destroy();
-      destroyEphemeral();
+      for (const buffer of buffers) {
+        try {
+          buffer.destroy();
+        } catch {
+          // Continue releasing every independently owned resource.
+        }
+      }
+      for (const texture of textures) {
+        try {
+          texture.destroy();
+        } catch {
+          // Continue releasing every independently owned resource.
+        }
+      }
+      try {
+        destroyEphemeral();
+      } catch {
+        // Teardown must not mask the dispatch result or its primary failure.
+      }
     },
   };
 }
@@ -81,7 +97,7 @@ export function makeResourceTracker(destroyEphemeral: () => void): ResourceTrack
 /** Arguments for {@link buildAtrousChain}. */
 export interface AtrousChainArgs {
   readonly device: GPUDevice;
-  /** Compute pipeline for `svgfAtrousMain`. */
+  /** Compute pipeline with the shared six-binding à-trous ABI. */
   readonly atrousPipeline: GPUComputePipeline;
   /** Command encoder the atrous passes are recorded into (caller owns submit). */
   readonly encoder: GPUCommandEncoder;
@@ -100,12 +116,26 @@ export interface AtrousChainArgs {
   readonly normalView: GPUTextureView;
   /** Shared g-buffer depth view (bind-group binding 3). */
   readonly depthView: GPUTextureView;
-  /** Variance-map view fed to every iteration (bind-group binding 4). */
+  /**
+   * Initial variance-map view (binding 4). Standalone à-trous reads it on
+   * every iteration; real SVGF reads it on iteration zero and then consumes
+   * the variance propagated through the color ping-pong alpha channel.
+   */
   readonly varianceView: GPUTextureView;
   /** Debug-label prefix for the per-iteration UBOs. */
   readonly uboLabelPrefix: string;
   /** Register each per-iteration UBO for teardown. */
   readonly trackBuffer: (buffer: GPUBuffer) => GPUBuffer;
+  /**
+   * Optional command-encoding hook invoked immediately after an iteration's
+   * compute pass. It is ordered before the next iteration, allowing a caller
+   * to preserve an intermediate wavelet level with a GPU copy.
+   */
+  readonly afterIteration?: (
+    iteration: number,
+    inputTexture: GPUTexture,
+    outputTexture: GPUTexture,
+  ) => void;
 }
 
 /**
@@ -134,6 +164,7 @@ export function buildAtrousChain(args: AtrousChainArgs): GPUTexture {
     varianceView,
     uboLabelPrefix,
     trackBuffer,
+    afterIteration,
   } = args;
 
   // Pre-allocate one UBO per à-trous iteration so each pass reads its own
@@ -184,6 +215,11 @@ export function buildAtrousChain(args: AtrousChainArgs): GPUTexture {
     pass.setBindGroup(0, atrousBindGroups[iter]);
     pass.dispatchWorkgroups(Math.ceil(w / wg), Math.ceil(h / wg));
     pass.end();
+    afterIteration?.(
+      iter,
+      iter % 2 === 0 ? pingTex : pongTex,
+      iter % 2 === 0 ? pongTex : pingTex,
+    );
   }
 
   // After N iterations, the last write went into pongTex when N is odd,

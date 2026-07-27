@@ -34,10 +34,17 @@
  *
  */
 
-import type { Mat4, MaterialSpec, Scene, SceneNodeId, ScenePrimitive } from '@vitrum/core';
+import {
+  getPrimitiveUvSet,
+  validateScene,
+  type Mat4,
+  type MaterialSpec,
+  type Scene,
+  type ScenePrimitive,
+} from '@vitrum/core';
 import type { PlainAabb } from './aabb.js';
-import { buildArrayBvh } from './buildArrayBvh.js';
-import { maybeMicrodisplaceMeshGeometry, resolveDisplacedGeometry } from './vertexDisplacement.js';
+import { buildArrayBvh, createEmptyBvhNode } from './buildArrayBvh.js';
+import { resolveDisplacedGeometry } from './vertexDisplacement.js';
 import {
   IDENTITY_MAT4,
   applyMatrix4,
@@ -255,8 +262,6 @@ function isMeshLike(primitive: ScenePrimitive): primitive is MeshLikePrimitive {
 export const DEFAULT_MERGE_FILTER = (primitive: ScenePrimitive): boolean =>
   isMeshLike(primitive);
 
-const MAX_WORLD_MERGE_FILTER_WARNINGS = 10;
-
 function constantVertexRgbMultiplier(primitive: MeshLikePrimitive): readonly [number, number, number] | null {
   const colors = primitive.colors;
   if (colors == null || colors.length === 0) return null;
@@ -327,7 +332,36 @@ export function mergeWorldSpaceFromCore(
   scene: Scene,
   opts: WorldSpaceMergeOptions = {},
 ): WorldSpaceMergeResult {
+  validateScene(scene);
+  if (opts == null || typeof opts !== 'object' || Array.isArray(opts)) {
+    throw new TypeError('[@vitrum/shared-bvh/mergeWorldSpaceFromCore] opts must be an object.');
+  }
+  const optionKeys = new Set([
+    'positionStride', 'filter', 'splitMaterialsByCastShadow',
+    'bakeConstantVertexColorIntoMaterial', 'onWarning',
+  ]);
+  for (const key of Reflect.ownKeys(opts)) {
+    if (typeof key !== 'string' || !optionKeys.has(key)) {
+      throw new RangeError(
+        `[@vitrum/shared-bvh/mergeWorldSpaceFromCore] unknown option ${String(key)}.`,
+      );
+    }
+  }
   const stride = opts.positionStride ?? 4;
+  if (stride !== 3 && stride !== 4) {
+    throw new RangeError('[@vitrum/shared-bvh/mergeWorldSpaceFromCore] positionStride must be exactly 3 or 4.');
+  }
+  if (opts.filter !== undefined && typeof opts.filter !== 'function') {
+    throw new TypeError('[@vitrum/shared-bvh/mergeWorldSpaceFromCore] filter must be a function.');
+  }
+  if (opts.onWarning !== undefined && typeof opts.onWarning !== 'function') {
+    throw new TypeError('[@vitrum/shared-bvh/mergeWorldSpaceFromCore] onWarning must be a function.');
+  }
+  for (const key of ['splitMaterialsByCastShadow', 'bakeConstantVertexColorIntoMaterial'] as const) {
+    if (opts[key] !== undefined && typeof opts[key] !== 'boolean') {
+      throw new TypeError(`[@vitrum/shared-bvh/mergeWorldSpaceFromCore] ${key} must be a boolean.`);
+    }
+  }
   const filter = opts.filter ?? DEFAULT_MERGE_FILTER;
 
   // Accumulators for the merged world-space stream (merge order — NOT yet
@@ -376,21 +410,6 @@ export function mergeWorldSpaceFromCore(
 
   let minX = Infinity, minY = Infinity, minZ = Infinity;
   let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
-  let filteredTriangleWarnCount = 0;
-  let filteredTriangleCount = 0;
-
-  const warnFilteredTriangle = (primitiveId: SceneNodeId, tri: number, reason: string): void => {
-    filteredTriangleCount += 1;
-    if (filteredTriangleWarnCount < MAX_WORLD_MERGE_FILTER_WARNINGS) {
-      const message =
-        `[@vitrum/shared-bvh/mergeWorldSpaceFromCore] Primitive "${primitiveId}" triangle ${tri} ${reason}; ` +
-        'filtering it from the merged world-space BVH.';
-      console.warn(message);
-      warn(message);
-      filteredTriangleWarnCount += 1;
-    }
-  };
-
   for (const primitive of scene.primitives) {
     if (!filter(primitive) || !isMeshLike(primitive)) continue;
 
@@ -450,23 +469,19 @@ export function mergeWorldSpaceFromCore(
         const b = baseIndices[t * 3 + 1] ?? 0;
         const c = baseIndices[t * 3 + 2] ?? 0;
         if (a >= localVertexCount || b >= localVertexCount || c >= localVertexCount) {
-          warnFilteredTriangle(
-            primitive.id,
-            t,
-            `references an out-of-range vertex index (i0=${a}, i1=${b}, i2=${c}; vertexCount=${localVertexCount})`,
+          throw new RangeError(
+            `[@vitrum/shared-bvh/mergeWorldSpaceFromCore] Primitive "${primitive.id}" triangle ${t} ` +
+            `references an out-of-range vertex index (i0=${a}, i1=${b}, i2=${c}; vertexCount=${localVertexCount}).`,
           );
-          continue;
         }
         const pa = applyMatrix4(m, sourcePositions[a * 3] ?? 0, sourcePositions[a * 3 + 1] ?? 0, sourcePositions[a * 3 + 2] ?? 0);
         const pb = applyMatrix4(m, sourcePositions[b * 3] ?? 0, sourcePositions[b * 3 + 1] ?? 0, sourcePositions[b * 3 + 2] ?? 0);
         const pc = applyMatrix4(m, sourcePositions[c * 3] ?? 0, sourcePositions[c * 3 + 1] ?? 0, sourcePositions[c * 3 + 2] ?? 0);
         if (!finiteVec3(pa) || !finiteVec3(pb) || !finiteVec3(pc)) {
-          warnFilteredTriangle(
-            primitive.id,
-            t,
-            'has a non-finite transformed vertex coordinate (NaN or Inf)',
+          throw new RangeError(
+            `[@vitrum/shared-bvh/mergeWorldSpaceFromCore] Primitive "${primitive.id}" triangle ${t} ` +
+            'has a non-finite transformed vertex coordinate (NaN or Inf).',
           );
-          continue;
         }
         validTriangles.push(flip ? [c, b, a] : [a, b, c]);
       }
@@ -550,23 +565,15 @@ export function mergeWorldSpaceFromCore(
     }
   }
 
-  if (filteredTriangleCount > MAX_WORLD_MERGE_FILTER_WARNINGS) {
-    const message =
-      `[@vitrum/shared-bvh/mergeWorldSpaceFromCore] ${filteredTriangleCount} malformed triangles filtered ` +
-      `(${MAX_WORLD_MERGE_FILTER_WARNINGS} individual warnings shown above).`;
-    console.warn(message);
-    warn(message);
-  }
-
   const vertexCount = Math.floor(positions.length / stride);
   const triangleCount = mergedTriMaterialId.length;
 
-  // Empty scene → an empty-but-valid result (one zeroed leaf node), so DDGI/RC
+  // Empty scene → an empty-but-valid result (one zero-count leaf node), so DDGI/RC
   // don't have to special-case a primitive-less frame (mirrors
   // `emptyBVHResult`'s intent, THREE-free).
   if (triangleCount === 0) {
     return {
-      bvhNodes: new Float32Array(8),
+      bvhNodes: createEmptyBvhNode(),
       positions: new Float32Array(stride === 4 ? 12 : 9),
       positionStrideFloats: stride,
       indices: new Uint32Array([0, 1, 2]),
@@ -653,18 +660,26 @@ export function mergeWorldSpaceFromCore(
  * @param ranges  `WorldSpaceMergeResult.meshVertexRanges` from `mergeWorldSpaceFromCore`.
  * @param totalVertexCount `WorldSpaceMergeResult.vertexCount`.
  */
-export function mergeUv1FromCore(
+export function mergeUvSetFromCore(
   scene: Scene,
   ranges: readonly MergedMeshVertexRange[],
   totalVertexCount: number,
+  texCoord: number,
 ): Float32Array | undefined {
+  if (!Number.isSafeInteger(texCoord) || texCoord < 0) {
+    throw new RangeError(
+      `mergeUvSetFromCore: texCoord must be a non-negative safe integer (got ${String(texCoord)}).`,
+    );
+  }
   const meshLike = scene.primitives.filter(
     (p): p is Extract<ScenePrimitive, { kind: 'mesh' | 'instanced-mesh' | 'skinned-mesh' }> =>
       p.kind === 'mesh' || p.kind === 'instanced-mesh' || p.kind === 'skinned-mesh',
   );
 
-  const anyUv1 = meshLike.some((p) => p.uv1 != null && p.uv1.length > 0);
-  if (!anyUv1) return undefined;
+  const anyUvSet = meshLike.some(
+    (primitive) => (getPrimitiveUvSet(primitive, texCoord)?.length ?? 0) > 0,
+  );
+  if (!anyUvSet) return undefined;
 
   // V2-4: build a per-primitive UV1 source lookup ONCE (UV1 is instance- and
   // transform-invariant), then drive the output off the merged ranges directly
@@ -672,22 +687,11 @@ export function mergeUv1FromCore(
   // replicated per-instance skip logic that used to desync `rangeIdx` when the
   // producer dropped an all-filtered instance (validTriangles.length === 0 →
   // no range pushed).
-  const srcUv1ByPrimitiveId = new Map<string, Float32Array>();
+  const sourceByPrimitiveId = new Map<string, Float32Array>();
   for (const prim of meshLike) {
-    if (prim.uv1 == null) continue;
-    const microdisplaced = maybeMicrodisplaceMeshGeometry({
-      primitiveId: prim.id,
-      material: prim.material,
-      positions: prim.positions,
-      normals: prim.normals,
-      ...(prim.indices != null ? { indices: prim.indices } : {}),
-      ...(prim.uvs != null ? { uvs: prim.uvs } : {}),
-      ...(prim.uv1 != null ? { uv1: prim.uv1 } : {}),
-      ...(prim.tangents != null ? { tangents: prim.tangents } : {}),
-      ...(prim.colors != null ? { colors: prim.colors } : {}),
-    });
-    const srcUv1 = microdisplaced?.uv1 ?? prim.uv1;
-    if (srcUv1 != null) srcUv1ByPrimitiveId.set(prim.id, srcUv1);
+    const resolved = resolveDisplacedGeometry(prim, () => {});
+    const source = resolved.baseUvSets?.[texCoord];
+    if (source != null) sourceByPrimitiveId.set(prim.id, source);
   }
 
   const out = new Float32Array(totalVertexCount * 2);
@@ -696,15 +700,24 @@ export function mergeUv1FromCore(
     // Prefer the explicit provenance field; fall back to `name` (historically
     // equal to the primitive id) for ranges produced before the field existed.
     const primitiveId = range.sourcePrimitiveId ?? range.name;
-    const srcUv1 = srcUv1ByPrimitiveId.get(primitiveId);
-    if (srcUv1 == null) continue;
+    const source = sourceByPrimitiveId.get(primitiveId);
+    if (source == null) continue;
 
     const { vertexStart, vertexCount } = range;
     for (let v = 0; v < vertexCount; v += 1) {
-      out[(vertexStart + v) * 2] = srcUv1[v * 2] ?? 0;
-      out[(vertexStart + v) * 2 + 1] = srcUv1[v * 2 + 1] ?? 0;
+      out[(vertexStart + v) * 2] = source[v * 2] ?? 0;
+      out[(vertexStart + v) * 2 + 1] = source[v * 2 + 1] ?? 0;
     }
   }
 
   return out;
+}
+
+/** Back-compatible TEXCOORD_1 specialization of {@link mergeUvSetFromCore}. */
+export function mergeUv1FromCore(
+  scene: Scene,
+  ranges: readonly MergedMeshVertexRange[],
+  totalVertexCount: number,
+): Float32Array | undefined {
+  return mergeUvSetFromCore(scene, ranges, totalVertexCount, 1);
 }

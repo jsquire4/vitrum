@@ -19,15 +19,18 @@
 //      (applyFilteredGlossy/sampleBackground), and the main() render loop — all of which
 //      lived inline in the fork material (not in a `.glsl.js` chunk), transcribed here.
 
-import type { TraceFeatures } from '../featureTypes.js';
+import { DEFAULT_TRACE_FEATURES, type TraceFeatures } from '../featureTypes.js';
+import { WEBGL2_MAX_PATH_STEPS } from '../limits.js';
 
 import { BVH_COMMON_FUNCTIONS, BVH_STRUCT, BVH_RAY_FUNCTIONS } from './bvh/index.js';
 import { THREE_COMMON_SHIM } from './common/threeCommonShim.js';
 // D11-3 (T3-D): the uniform manifest + declaration builder + exhaustiveness gate
 // live in uniformManifest.ts; the RENDER_MAIN_* section constants live in
 // renderMain.glsl.ts. This module is the assembly root that composes them.
-import { buildUniformDecls, spectralCausticBdptUniformDecls } from './uniformManifest.js';
+import { buildUniformDecls, spectralBdptUniformDecls } from './uniformManifest.js';
 import { RENDER_MAIN } from './renderMain.glsl.js';
+import { NEE_RESOLVE_MAIN } from './neeResolveMain.glsl.js';
+import { BDPT_INFINITE_MIS_GLSL } from './render/bdpt_infinite_mis.glsl.js';
 
 // Re-export the moved symbols so the public compose surface (consumed by
 // composeTraceGlsl.test.ts + downstream) is unchanged after the split.
@@ -43,7 +46,11 @@ export { RENDER_MAIN_SECTIONS } from './renderMain.glsl.js';
 import * as StructsCamera from './shader/structs/camera_struct.glsl.js';
 import * as StructsLights from './shader/structs/lights_struct.glsl.js';
 import * as StructsEquirect from './shader/structs/equirect_struct.glsl.js';
-import * as StructsMaterial from './shader/structs/material_struct.glsl.js';
+import { MATERIAL_BASIC_GLSL } from './shader/structs/material_basic.glsl.js';
+import { MATERIAL_MAPPED_PBR_GLSL } from './shader/structs/material_mapped_pbr.glsl.js';
+import { MATERIAL_MAPPED_RICH_GLSL } from './shader/structs/material_mapped_rich.glsl.js';
+import { MATERIAL_SCALAR_RICH_GLSL } from './shader/structs/material_scalar_rich.glsl.js';
+import { FOG_MATERIAL_GLSL } from './shader/structs/fog_material.glsl.js';
 import * as StructsSurface from './shader/structs/surface_record_struct.glsl.js';
 
 import * as SamplingShape from './shader/sampling/shape_sampling_functions.glsl.js';
@@ -69,13 +76,20 @@ import * as BsdfFog from './shader/bsdf/fog_functions.glsl.js';
 import * as BsdfSpectral from './shader/bsdf/spectral_accumulator.glsl.js';
 import * as BsdfThinFilm from './shader/bsdf/thin_film_tmm.glsl.js';
 import * as BsdfFunctions from './shader/bsdf/bsdf_functions.glsl.js';
+import { BSDF_BASIC_GLSL } from './shader/bsdf/bsdf_basic.glsl.js';
 
 import * as RenderStructs from './render/render_structs.glsl.js';
 import * as RenderCameraUtil from './render/camera_util_functions.glsl.js';
 import * as RenderTraceScene from './render/trace_scene_function.glsl.js';
 import * as RenderAttenuate from './render/attenuate_hit_function.glsl.js';
+import { ATTENUATE_HIT_BASIC_GLSL } from './render/attenuate_hit_basic.glsl.js';
+import { ATTENUATE_HIT_MAPPED_PBR_GLSL } from './render/attenuate_hit_mapped_pbr.glsl.js';
+import { ATTENUATE_HIT_SCALAR_RICH_GLSL } from './render/attenuate_hit_scalar_rich.glsl.js';
 import * as RenderDirectLight from './render/direct_light_contribution_function.glsl.js';
 import * as RenderGetSurface from './render/get_surface_record_function.glsl.js';
+import { GET_SURFACE_RECORD_BASIC_GLSL } from './render/get_surface_record_basic.glsl.js';
+import { GET_SURFACE_RECORD_MAPPED_PBR_GLSL } from './render/get_surface_record_mapped_pbr.glsl.js';
+import { GET_SURFACE_RECORD_SCALAR_RICH_GLSL } from './render/get_surface_record_scalar_rich.glsl.js';
 import * as RenderBdptSubpath from './render/bdpt_light_subpath.glsl.js';
 import * as RenderBdptConnection from './render/bdpt_connection.glsl.js';
 
@@ -94,7 +108,6 @@ const STRUCTS = {
   camera_struct: pick(StructsCamera, 'camera_struct'),
   lights_struct: pick(StructsLights, 'lights_struct'),
   equirect_struct: pick(StructsEquirect, 'equirect_struct'),
-  material_struct: pick(StructsMaterial, 'material_struct'),
   surface_record_struct: pick(StructsSurface, 'surface_record_struct'),
 } as const;
 
@@ -144,46 +157,30 @@ const RENDER = {
   bdpt_connection: pick(RenderBdptConnection, 'bdpt_connection'),
 } as const;
 
-/**
- * The RANDOM_TYPE branch (PhysicalPathTracingMaterial.js:259-290). The actual selection
- * is resolved by the `#if RANDOM_TYPE == N` preprocessor at compile time from the
- * GlProgram `#define RANDOM_TYPE <f.randomType>`; we emit all three branches verbatim so
- * the preprocessor picks the live one — byte-identical to the fork.
- */
-function randBlock(): string {
-  return /* glsl */ `
-					// random
-					#if RANDOM_TYPE == 2 	// Stratified List
-
-						${RANDOM.stratified_functions}
-
-					#elif RANDOM_TYPE == 1 	// Sobol
-
-						${RANDOM.pcg_functions}
-						${RANDOM.sobol_common}
-						${RANDOM.sobol_functions}
-
-						#define rand(v) sobol(v)
-						#define rand2(v) sobol2(v)
-						#define rand3(v) sobol3(v)
-						#define rand4(v) sobol4(v)
-
-					#else 					// PCG
-
+/** Emit exactly one RNG implementation. Sending all three implementations to
+ * ANGLE behind preprocessor branches materially increases first-link work. */
+function randBlock(randomType: TraceFeatures['randomType']): string {
+  if (randomType === 2) return RANDOM.stratified_functions;
+  if (randomType === 1) {
+    return /* glsl */ `
 					${RANDOM.pcg_functions}
-
-						// Using the sobol functions seems to break the the compiler on MacOS
-						// - specifically the "sobolReverseBits" function.
-						uint sobolPixelIndex = 0u;
-						uint sobolPathIndex = 0u;
-						uint sobolBounceIndex = 0u;
-
-						#define rand(v) pcgRand()
-						#define rand2(v) pcgRand2()
-						#define rand3(v) pcgRand3()
-						#define rand4(v) pcgRand4()
-
-					#endif
+					${RANDOM.sobol_common}
+					${RANDOM.sobol_functions}
+					#define rand(v) sobol(v)
+					#define rand2(v) sobol2(v)
+					#define rand3(v) sobol3(v)
+					#define rand4(v) sobol4(v)
+`;
+  }
+  return /* glsl */ `
+					${RANDOM.pcg_functions}
+					uint sobolPixelIndex = 0u;
+					uint sobolPathIndex = 0u;
+					uint sobolBounceIndex = 0u;
+					#define rand(v) pcgRand()
+					#define rand2(v) pcgRand2()
+					#define rand3(v) pcgRand3()
+					#define rand4(v) pcgRand4()
 `;
 }
 
@@ -224,6 +221,159 @@ const INLINE_HELPERS = /* glsl */ `
 					}
 `;
 
+/**
+ * Resolve the pass-role branches before the GLSL reaches ANGLE. Keeping the
+ * inactive candidate body behind a preprocessor branch still made first-use
+ * optimization inspect that body on affected SwiftShader/ANGLE builds.
+ */
+function specializeNeeCandidatePass(source: string, candidatePass: boolean): string {
+  const lines = source.split('\n');
+
+  function processRange(start: number, end: number): string[] {
+    const output: string[] = [];
+    let index = start;
+    while (index < end) {
+      const trimmed = lines[index]!.trim();
+      if (!/^#if\b/.test(trimmed) || !trimmed.includes('NEE_CANDIDATE_PASS')) {
+        output.push(lines[index]!);
+        index += 1;
+        continue;
+      }
+
+      let depth = 1;
+      let elseIndex = -1;
+      let closeIndex = -1;
+      for (let cursor = index + 1; cursor < end; cursor += 1) {
+        const directive = lines[cursor]!.trim();
+        if (/^#if(?:def|ndef)?\b/.test(directive)) {
+          depth += 1;
+        } else if (directive === '#endif') {
+          depth -= 1;
+          if (depth === 0) {
+            closeIndex = cursor;
+            break;
+          }
+        } else if (directive === '#else' && depth === 1) {
+          elseIndex = cursor;
+        }
+      }
+      if (closeIndex < 0) {
+        throw new Error('pt-webgl2 compose: unterminated NEE_CANDIDATE_PASS block');
+      }
+
+      const negated = trimmed.includes('! NEE_CANDIDATE_PASS');
+      const takeThen = negated ? !candidatePass : candidatePass;
+      const branchStart = takeThen ? index + 1 : elseIndex + 1;
+      const branchEnd = takeThen
+        ? elseIndex >= 0
+          ? elseIndex
+          : closeIndex
+        : elseIndex >= 0
+          ? closeIndex
+          : branchStart;
+      if (branchStart < branchEnd) {
+        const retainedCondition = trimmed.includes('FEATURE_MIS')
+          ? 'FEATURE_MIS'
+          : trimmed.includes('FEATURE_BDPT')
+            ? 'FEATURE_BDPT'
+            : null;
+        if (retainedCondition != null) output.push(`#if ${retainedCondition}`);
+        output.push(...processRange(branchStart, branchEnd));
+        if (retainedCondition != null) output.push('#endif');
+      }
+      index = closeIndex + 1;
+    }
+    return output;
+  }
+
+  return processRange(0, lines.length).join('\n');
+}
+
+function specializePathStepLimit(source: string, pathStepLimit: number): string {
+  if (
+    !Number.isSafeInteger(pathStepLimit) ||
+    pathStepLimit < 2 ||
+    pathStepLimit > WEBGL2_MAX_PATH_STEPS
+  ) {
+    throw new RangeError(
+      `pt-webgl2 compose: pathStepLimit must be a safe integer in ` +
+        `[2, ${WEBGL2_MAX_PATH_STEPS}] (got ${String(pathStepLimit)})`,
+    );
+  }
+  const original = `pathStep < ${WEBGL2_MAX_PATH_STEPS};`;
+  if (!source.includes(original)) {
+    throw new Error('pt-webgl2 compose: static path-step loop marker is missing');
+  }
+  // WebGL2 permits uniform-bounded loops. Keeping a literal 16/64 ceiling made
+  // ANGLE unroll and optimize the entire path body once per possible step; the
+  // host already validates `bounces <= pathStepLimit / 2`, so the uniform bound
+  // is both exact and substantially cheaper to link.
+  return source.replace(original, 'pathStep < bounces * 2;');
+}
+
+function materialStructBlock(features: TraceFeatures): string {
+  if (features.basicMaterials) return MATERIAL_BASIC_GLSL;
+  if (features.scalarRichMaterials) return MATERIAL_SCALAR_RICH_GLSL;
+  if (features.mappedPbrMaterials) return MATERIAL_MAPPED_PBR_GLSL;
+  if (features.mappedRichMaterials) return MATERIAL_MAPPED_RICH_GLSL;
+  throw new Error('pt-webgl2 compose: no supported material compiler tier selected');
+}
+
+function surfaceRecordBlock(features: TraceFeatures): string {
+  if (features.basicMaterials) return GET_SURFACE_RECORD_BASIC_GLSL;
+  if (features.scalarRichMaterials) return GET_SURFACE_RECORD_SCALAR_RICH_GLSL;
+  if (features.mappedPbrMaterials) return GET_SURFACE_RECORD_MAPPED_PBR_GLSL;
+  if (features.mappedRichMaterials) return RENDER.get_surface_record_function;
+  throw new Error('pt-webgl2 compose: no supported material compiler tier selected');
+}
+
+function attenuationBlock(features: TraceFeatures): string {
+  if (features.basicMaterials) return ATTENUATE_HIT_BASIC_GLSL;
+  if (features.scalarRichMaterials) return ATTENUATE_HIT_SCALAR_RICH_GLSL;
+  if (features.mappedPbrMaterials) return ATTENUATE_HIT_MAPPED_PBR_GLSL;
+  if (features.mappedRichMaterials) return RENDER.attenuate_hit_function;
+  throw new Error('pt-webgl2 compose: no supported material compiler tier selected');
+}
+
+function usesFogTransport(features: TraceFeatures): boolean {
+  // Keep the conservative mapped-rich graph byte-stable, and add the helpers
+  // whenever a narrower scene-proven tier actually contains participating media.
+  return features.mappedRichMaterials || features.fog;
+}
+
+function usesAdvancedBsdf(features: TraceFeatures): boolean {
+  return features.scalarRichMaterials || features.mappedRichMaterials;
+}
+
+function assertExactlyOneMaterialTier(features: TraceFeatures): void {
+  const count = [
+    features.basicMaterials,
+    features.scalarRichMaterials,
+    features.mappedPbrMaterials,
+    features.mappedRichMaterials,
+  ].filter(Boolean).length;
+  if (count !== 1) {
+    throw new Error(
+      `pt-webgl2 compose: exactly one material compiler tier is required (got ${count})`,
+    );
+  }
+}
+
+/**
+ * ANGLE's D3D compiler cost is sensitive to the amount of source it receives,
+ * including comments and indentation. Strip only lexical trivia; retain every
+ * newline and all intra-line token spacing so preprocessor directives and GLSL
+ * token boundaries are unchanged.
+ */
+function compactFeatureTierGlsl(source: string): string {
+  const withoutBlockComments = source.replace(/\/\*[\s\S]*?\*\//g, ' ');
+  return withoutBlockComments
+    .split('\n')
+    .map((line) => line.replace(/\/\/.*$/g, '').trim())
+    .filter((line) => line.length !== 0)
+    .join('\n');
+}
+
 
 /**
  * Compose the fragment-shader BODY for the WebGL2 path tracer (no `#version`/precision/
@@ -237,10 +387,14 @@ const INLINE_HELPERS = /* glsl */ `
  *   render chunks out of the program text entirely when off, matching the fork's
  *   `#if FEATURE_BDPT`-wrapped chunk injection at lines 436-441).
  */
-export function composeTraceGlsl(features: TraceFeatures): string {
-  return /* glsl */ `
+function composePathGlsl(features: TraceFeatures, candidatePass: boolean): string {
+  assertExactlyOneMaterialTier(features);
+  const source = /* glsl */ `
 					#define RAY_OFFSET 1e-4
 					#define INFINITY 1e20
+					#ifndef NEE_CANDIDATE_PASS
+					#define NEE_CANDIDATE_PASS 0
+					#endif
 
 					precision highp isampler2D;
 					precision highp usampler2D;
@@ -257,6 +411,7 @@ export function composeTraceGlsl(features: TraceFeatures): string {
 					// written; locations 1 and 2 are harmlessly ignored by the driver.
 					layout(location = 1) out vec4 gNormalDepth;
 					layout(location = 2) out vec4 gAlbedo;
+					${candidatePass ? 'layout(location = 3) out vec4 gNeeCandidate3;' : ''}
 
 					// bvh intersection
 					${BVH_COMMON_FUNCTIONS}
@@ -267,10 +422,11 @@ export function composeTraceGlsl(features: TraceFeatures): string {
 					${STRUCTS.camera_struct}
 					${STRUCTS.lights_struct}
 					${STRUCTS.equirect_struct}
-					${STRUCTS.material_struct}
+					${materialStructBlock(features)}
+					${FOG_MATERIAL_GLSL}
 					${STRUCTS.surface_record_struct}
 
-					${randBlock()}
+					${randBlock(features.randomType)}
 
 					// common
 					${COMMON.texture_sample_functions}
@@ -286,28 +442,114 @@ export function composeTraceGlsl(features: TraceFeatures): string {
 					${SAMPLING.equirect_functions}
 					${SAMPLING.light_sampling_functions}
 
-					${spectralCausticBdptUniformDecls()}
+					${spectralBdptUniformDecls()}
 
-					${PTBVH.inside_fog_volume_function}
+					${usesFogTransport(features) ? PTBVH.inside_fog_volume_function : ''}
 					${BSDF.ggx_functions}
-					${BSDF.sheen_functions}
-					${BSDF.iridescence_functions}
-					${BSDF.fog_functions}
+					${usesAdvancedBsdf(features) ? BSDF.sheen_functions : ''}
+					${usesAdvancedBsdf(features) ? BSDF.iridescence_functions : ''}
+					${usesFogTransport(features) ? BSDF.fog_functions : ''}
 					${BSDF.spectral_accumulator}
-					${BSDF.thin_film_tmm}
-					${BSDF.bsdf_functions}
+					${usesAdvancedBsdf(features) ? BSDF.thin_film_tmm : ''}
+					${usesAdvancedBsdf(features) ? BSDF.bsdf_functions : BSDF_BASIC_GLSL}
 
 					${INLINE_HELPERS}
 
 					${RENDER.render_structs}
 					${RENDER.camera_util_functions}
 					${RENDER.trace_scene_function}
-					${RENDER.attenuate_hit_function}
-					${RENDER.direct_light_contribution_function}
-					${RENDER.get_surface_record_function}
+					${
+						candidatePass || features.bdpt
+							? attenuationBlock(features)
+							: ''
+					}
+					${candidatePass ? RENDER.direct_light_contribution_function : ''}
+                                        ${surfaceRecordBlock(features)}
 
-					${features.bdpt ? RENDER.bdpt_light_subpath + '\n' + RENDER.bdpt_connection : ''}
+                                        ${features.bdpt ? BDPT_INFINITE_MIS_GLSL : ''}
+                                        ${features.bdpt && !candidatePass ? RENDER.bdpt_light_subpath + '\n' + RENDER.bdpt_connection : ''}
 
-					${RENDER_MAIN}
+					${specializePathStepLimit(
+						specializeNeeCandidatePass(RENDER_MAIN, candidatePass),
+						features.pathStepLimit,
+					)}
 `;
+  return compactFeatureTierGlsl(source);
+}
+
+export function composeTraceGlsl(features: TraceFeatures): string {
+  return composePathGlsl(features, false);
+}
+
+/**
+ * Compose the dedicated NEE candidate path replay. The source deliberately
+ * shares the exact path body and feature defines with the main trace; the host
+ * adds `NEE_CANDIDATE_PASS=1`, which redirects the four outputs to the packed
+ * candidate record and removes BDPT connection evaluation from the replay.
+ */
+export function composeNeeCandidateGlsl(features: TraceFeatures): string {
+  return composePathGlsl(features, true);
+}
+
+/**
+ * Compose the no-path-loop direct-light resolve. Only the geometry, material,
+ * spectral, and BSDF chunks needed to rebuild and evaluate one retained vertex
+ * are present. In particular, RENDER_MAIN (and its bounded path loop) is absent.
+ */
+export function composeNeeResolveGlsl(
+  features: TraceFeatures = DEFAULT_TRACE_FEATURES,
+): string {
+  assertExactlyOneMaterialTier(features);
+  const source = /* glsl */ `
+					#define RAY_OFFSET 1e-4
+					#define INFINITY 1e20
+					#ifndef NEE_CANDIDATE_PASS
+					#define NEE_CANDIDATE_PASS 0
+					#endif
+
+					precision highp isampler2D;
+					precision highp usampler2D;
+					precision highp sampler2DArray;
+					vec4 envMapTexelToLinear( vec4 a ) { return a; }
+					${THREE_COMMON_SHIM}
+
+					${BVH_COMMON_FUNCTIONS}
+					${BVH_STRUCT}
+					${BVH_RAY_FUNCTIONS}
+
+					${STRUCTS.camera_struct}
+					${STRUCTS.lights_struct}
+					${STRUCTS.equirect_struct}
+					${materialStructBlock(features)}
+					${FOG_MATERIAL_GLSL}
+					${STRUCTS.surface_record_struct}
+
+					${randBlock(features.randomType)}
+					${COMMON.texture_sample_functions}
+					${COMMON.fresnel_functions}
+					${COMMON.util_functions}
+					${COMMON.math_functions}
+					${COMMON.shape_intersection_functions}
+					${buildUniformDecls()}
+					${SAMPLING.shape_sampling_functions}
+					${SAMPLING.equirect_functions}
+					${SAMPLING.light_sampling_functions}
+					${spectralBdptUniformDecls()}
+
+					${usesFogTransport(features) ? PTBVH.inside_fog_volume_function : ''}
+					${BSDF.ggx_functions}
+					${usesAdvancedBsdf(features) ? BSDF.sheen_functions : ''}
+					${usesAdvancedBsdf(features) ? BSDF.iridescence_functions : ''}
+					${usesFogTransport(features) ? BSDF.fog_functions : ''}
+					${BSDF.spectral_accumulator}
+					${usesAdvancedBsdf(features) ? BSDF.thin_film_tmm : ''}
+					${usesAdvancedBsdf(features) ? BSDF.bsdf_functions : BSDF_BASIC_GLSL}
+					${INLINE_HELPERS}
+
+					${RENDER.render_structs}
+					${RENDER.trace_scene_function}
+					${surfaceRecordBlock(features)}
+					${NEE_RESOLVE_MAIN}
+`;
+  return compactFeatureTierGlsl(source);
 }

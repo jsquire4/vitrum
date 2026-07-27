@@ -28,8 +28,8 @@
  * skin matrix's upper-3×3, takes
  * its inverse-transpose, applies it to the rest normal, and writes the
  * normalized result into `skinnedNormals` (binding 7, stride-4 with `.w`
- * left 0). When `applyWorld != 0`, the world matrix's upper-3×3 inverse-
- * transpose is composed in (matching how positions are world-transformed).
+ * preserving packed UV1). When `applyWorld != 0`, the world matrix's upper-3×3
+ * inverse-transpose is composed in (matching how positions are world-transformed).
  *
  * Indexing (WS1): positions write at `baseVertex + vi` into the SHARED merged
  * `bvhPositions` buffer; skinned normals write at the SAME `baseVertex + vi`
@@ -85,6 +85,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   }
   let outIdx = skinParams.baseVertex + vi;
   let uvPack = bvhPositions[outIdx].w;
+  let uv1Pack = skinnedNormals[outIdx].w;
   let rp = restPositions[vi].xyz;
   let rn = restNormals[vi].xyz;
   let idx = skinIndices[vi];
@@ -151,6 +152,6 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   // applyGpuSkinnedRefit dropped — the skinned normals were computed but never
   // consumed. Spelled without the bracket form here so the gpuSkinNormals guard
   // asserting no mesh-local indexed write stays comment-proof.)
-  skinnedNormals[outIdx] = vec4f(safeN, 0.0);
+  skinnedNormals[outIdx] = vec4f(safeN, uv1Pack);
 }
 `;

@@ -31,12 +31,14 @@
 
 import {
   ATROUS_WGSL,
-  ATROUS_VARIANCE_WGSL,
+  buildAtrousVarianceWgsl,
   TEMPORAL_ACCUM_WGSL,
   WELFORD_VARIANCE_WGSL,
-  SVGF_REPROJECTION_WGSL,
+  buildSvgfReprojectionWgsl,
+  buildSvgf7x7SpatialFallbackWgsl,
+  buildSvgfRealAtrousWgsl,
+  PACKED_NORMAL_DEPTH_TEXTURE_LAYOUT,
   SVGF_VARIANCE_FROM_MOMENTS_WGSL,
-  SVGF_7X7_SPATIAL_FALLBACK_WGSL,
   BMFR_WGSL,
 } from '@vitrum/shared-denoisers';
 import { LUMINANCE_WGSL, OCTAHEDRAL_CORE_WGSL } from '@vitrum/shared-samplers';
@@ -70,6 +72,9 @@ import { TEMPORAL_MODULE } from '../shaders/temporal.wgsl.js';
 import { SPATIAL_MODULE } from '../shaders/spatial.wgsl.js';
 import { SHADE_MODULE } from '../shaders/shade.wgsl.js';
 import { STAINED_GLASS_SHADE_MODULE } from '../shaders/stainedGlassShade.wgsl.js';
+import { REFRACTIVE_CAUSTICS_MODULE } from '../shaders/refractiveCaustics.wgsl.js';
+import { MANIFOLD_SMS_SOLVER_MODULE } from '../shaders/manifoldSmsSolver.wgsl.js';
+import { MANIFOLD_CAUSTICS_MODULE } from '../shaders/manifoldCaustics.wgsl.js';
 import { MOTION_VECTORS_MODULE } from '../shaders/motionVectors.wgsl.js';
 import { SAMPLE_CASCADE_C0_MODULE } from '../shaders/sampleCascadeC0.wgsl.js';
 import { RIS_GI_MODULE } from '../shaders/risGi.wgsl.js';
@@ -185,15 +190,14 @@ export const TEMPORAL_ACCUM_MODULE: WgslModule = {
  *  prepended; W1-R6 turns that comment into structure: `requires: []`. */
 export const ATROUS_VARIANCE_MODULE: WgslModule = {
   name: 'atrousVariance',
-  source: ATROUS_VARIANCE_WGSL,
+  source: buildAtrousVarianceWgsl(PACKED_NORMAL_DEPTH_TEXTURE_LAYOUT),
   requires: [],
 };
 
-/** Pre-R6 svgfReal.ts:72-80: all three SVGF entries compiled standalone
- *  (no COMMON_WGSL prepend). Each is self-contained. */
+/** Real-SVGF entries compile standalone (no COMMON_WGSL prepend). */
 export const SVGF_REPROJECTION_MODULE: WgslModule = {
   name: 'svgfReprojection',
-  source: SVGF_REPROJECTION_WGSL,
+  source: buildSvgfReprojectionWgsl(PACKED_NORMAL_DEPTH_TEXTURE_LAYOUT),
   requires: [],
 };
 export const SVGF_VARIANCE_FROM_MOMENTS_MODULE: WgslModule = {
@@ -203,13 +207,16 @@ export const SVGF_VARIANCE_FROM_MOMENTS_MODULE: WgslModule = {
 };
 export const SVGF_7X7_SPATIAL_FALLBACK_MODULE: WgslModule = {
   name: 'svgf7x7SpatialFallback',
-  source: SVGF_7X7_SPATIAL_FALLBACK_WGSL,
+  source: buildSvgf7x7SpatialFallbackWgsl(PACKED_NORMAL_DEPTH_TEXTURE_LAYOUT),
+  requires: [],
+};
+export const SVGF_REAL_ATROUS_MODULE: WgslModule = {
+  name: 'svgfRealAtrous',
+  source: buildSvgfRealAtrousWgsl(PACKED_NORMAL_DEPTH_TEXTURE_LAYOUT),
   requires: [],
 };
 
-/** BMFR (Koskela 2019) per-block feature-regression kernel. Self-contained:
- *  declares its own UBO struct, feature-row + Householder-QR helpers, and the
- *  bmfrMain entry point. `requires: []`. */
+/** BMFR (Koskela 2019) direct-QR fit + overlap-resolve kernels. */
 export const BMFR_MODULE: WgslModule = {
   name: 'bmfr',
   source: BMFR_WGSL,
@@ -245,8 +252,8 @@ export const WGSL_MODULES: ReadonlyMap<string, WgslModule> = new Map<string, Wgs
   [EMITTER_LE_AT_XI_MODULE.name, EMITTER_LE_AT_XI_MODULE],
   [EMITTER_SAMPLING_MODULE.name, EMITTER_SAMPLING_MODULE],
   [JACOBIAN_SHIFT_MODULE.name, JACOBIAN_SHIFT_MODULE],
-  // GRIS / ReSTIR-PT reconnection-shift + pairwise MIS (Lin et al. 2022).
-  // Consumed by spatialGi / temporalGi when ubo.restirPtReuse == 1.
+  // GRIS DDGI-proxy reconnection-shift + all-technique transformed-density MIS (Lin et al. 2022).
+  // Consumed by spatialGi / temporalGi when ubo.grisReuse == 1.
   [GRIS_REUSE_MODULE.name, GRIS_REUSE_MODULE],
   [CAMERA_RAYS_MODULE.name, CAMERA_RAYS_MODULE],
   [WELFORD_TAIL_MODULE.name, WELFORD_TAIL_MODULE],
@@ -283,10 +290,13 @@ export const WGSL_MODULES: ReadonlyMap<string, WgslModule> = new Map<string, Wgs
   [SHADE_MODULE.name, SHADE_MODULE],
   // T5 — stained-glass-specific lighting physics (opt-in via UBO flag).
   [STAINED_GLASS_SHADE_MODULE.name, STAINED_GLASS_SHADE_MODULE],
+  [MANIFOLD_SMS_SOLVER_MODULE.name, MANIFOLD_SMS_SOLVER_MODULE],
+  [MANIFOLD_CAUSTICS_MODULE.name, MANIFOLD_CAUSTICS_MODULE],
+  [REFRACTIVE_CAUSTICS_MODULE.name, REFRACTIVE_CAUSTICS_MODULE],
   [MOTION_VECTORS_MODULE.name, MOTION_VECTORS_MODULE],
   [SAMPLE_CASCADE_C0_MODULE.name, SAMPLE_CASCADE_C0_MODULE],
 
-  // ReSTIR-GI passes. The GRIS (restirPtReuse ON) variants are separate
+  // ReSTIR-GI passes. The GRIS (grisReuse ON) variants are separate
   // compile-roots, composed only when the host opts in — see
   // spatialGi.wgsl.ts / temporalGi.wgsl.ts headers + pipelineCompiler.ts.
   [RIS_GI_MODULE.name, RIS_GI_MODULE],
@@ -333,6 +343,7 @@ export const WGSL_MODULES: ReadonlyMap<string, WgslModule> = new Map<string, Wgs
   [SVGF_REPROJECTION_MODULE.name, SVGF_REPROJECTION_MODULE],
   [SVGF_VARIANCE_FROM_MOMENTS_MODULE.name, SVGF_VARIANCE_FROM_MOMENTS_MODULE],
   [SVGF_7X7_SPATIAL_FALLBACK_MODULE.name, SVGF_7X7_SPATIAL_FALLBACK_MODULE],
+  [SVGF_REAL_ATROUS_MODULE.name, SVGF_REAL_ATROUS_MODULE],
   [BMFR_MODULE.name, BMFR_MODULE],
 
   // Neural denoiser pack/unpack compute shaders (Issue 2 — extracted from

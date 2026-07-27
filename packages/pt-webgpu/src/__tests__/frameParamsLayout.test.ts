@@ -6,39 +6,11 @@ import { SPPM_PHOTON_PASS_WGSL } from '../wgsl/pathTrace/sppmBindings.wgsl.js';
 /**
  * FrameParams layout contract test.
  *
- * After the Pass-1 4.71 deferral cleanup, the FrameParams UBO is a fixed
- * 384-byte payload in a 512-byte buffer with this layout:
- *
- *   u32 slot 0..19   (offsets 0..79):
- *     0  width
- *     1  height
- *     2  frameIndex
- *     3  frameSeed
- *     4  triangleCount
- *     5  maxBounces
- *     6  bvhNodeCount
- *     7  analyticCount
- *     8  pointLightCount
- *     9  spotLightCount
- *     10 rectAreaLightCount
- *     11 meshAreaLightCount
- *     12 mneeMaxIterations
- *     13 mneeMaxChainLength
- *     14 hasEnvironmentMap   (0/1)
- *     15 causticStrategy     (0=none, 1=manifold-nee, 2=photon-map)
- *     16 environmentMapWidth
- *     17 environmentMapHeight
- *     18 triIntersectEpsilon  (f32; default 1e-5, metre-scale)
- *     19 _pad1
- *
- *   f32 slot 20..23 cameraPos    (xyz, .w = 1)
- *   f32 slot 24..27 lightDir     (xyz, .w = averageDirectionalIrradiance)
- *   f32 slot 28..31 environmentTint (xyz, .w = 0 — unused)
- *   f32 slot 32..35 environmentSun  (xyz sunDir, .w sunStrength)
- *
- *   f32 slot 36..51 invViewProj   (mat4x4f, 16 floats)
- *   f32 slot 52..67 viewProj      (mat4x4f, 16 floats)
- *   f32 slot 68..83 prevViewProj  (mat4x4f, 16 floats)
+ * FrameParams is a generated 384-byte semantic payload and exact-size engine
+ * allocation. `cameraPos: vec3f` is immediately followed by
+ * `environmentHdriIntensity: f32`, so the aligned fourth lane is live without
+ * pretending the camera has a fourth component. Directional data lives only in
+ * the dedicated storage/light textures.
  *
  * Per-light data lives in dedicated storage buffers at bind slots 20..23.
  * The .w-stuffing tricks (rectAreaPos.w hasFlag, meshAreaTriB.w envWidth, etc.)
@@ -73,7 +45,7 @@ function extractFrameParamsFields(wgsl: string): readonly string[] {
 describe('FrameParams UBO layout (pt-webgpu)', () => {
   const fields = extractFrameParamsFields(PT_WEBGPU_TRACE_WGSL);
 
-  it('declares the expected field order — u32 counts then vec4f camera/light/env, then 3 matrices', () => {
+  it('declares the expected generated field order', () => {
     expect(fields).toEqual([
       'width: u32',
       'height: u32',
@@ -98,17 +70,13 @@ describe('FrameParams UBO layout (pt-webgpu)', () => {
       'spectralEnabled: u32',
       'heroLambdaNm: f32',
       'heroPdf: f32',
-      'cmfIntegralX: f32',
-      'cmfIntegralY: f32',
-      'cmfIntegralZ: f32',
       'bdptEnabled: u32',
       'bdptMaxLightBounces: u32',
       'bdptMaxEyeDepth: u32',
       'lightTreeEnabled: u32',
       'lightTreeNodeCount: u32',
+      'cameraPos: vec3f',
       'environmentHdriIntensity: f32',
-      'cameraPos: vec4f',
-      'lightDir: vec4f',
       'environmentTint: vec4f',
       'environmentSun: vec4f',
       'invViewProj: mat4x4f',
@@ -127,7 +95,7 @@ describe('FrameParams UBO layout (pt-webgpu)', () => {
     ]);
   });
 
-  it('drops every legacy single-light vec4f field', () => {
+  it('drops every legacy single-light field and dead spectral constants', () => {
     // The Pass-1 cleanup removes these UBO fields and moves their data to
     // dedicated storage buffers (bindings 20..23). If any reappear in the
     // struct, the host packer offsets will silently mis-align.
@@ -145,12 +113,16 @@ describe('FrameParams UBO layout (pt-webgpu)', () => {
       'meshAreaTriB',
       'meshAreaTriC',
       'meshAreaRadiance',
+      'lightDir',
+      'cmfIntegralX',
+      'cmfIntegralY',
+      'cmfIntegralZ',
     ];
     for (const dropped of droppedFields) {
       // The struct-field test above is positive; this one is defensive:
       // a future patch that re-adds, e.g., `meshAreaTriA: vec4f` would
       // silently break the host packer offset map.
-      const re = new RegExp(`\\b${dropped}\\s*:\\s*vec4f\\b`);
+      const re = new RegExp(`\\b${dropped}\\s*:`);
       expect(re.test(PT_WEBGPU_TRACE_WGSL)).toBe(false);
     }
   });
@@ -188,7 +160,8 @@ describe('FrameParams UBO layout (pt-webgpu)', () => {
     expect(PT_WEBGPU_TRACE_WGSL).toContain('rectAreaLights[rb].xyz');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('rectAreaLights[rb + 3u]');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('meshAreaLights[mb].xyz');
-    expect(PT_WEBGPU_TRACE_WGSL).toContain('meshAreaLights[mb + 3u].rgb');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('sampleMeshAreaLightRadiance(');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('meshAreaLights[base + 6u].rgb');
     // No more reads of the dropped vec4f fields.
     expect(PT_WEBGPU_TRACE_WGSL).not.toMatch(/params\.pointLightPos\b/);
     expect(PT_WEBGPU_TRACE_WGSL).not.toMatch(/params\.spotLightPos\b/);
@@ -203,9 +176,10 @@ describe('FrameParams UBO layout (pt-webgpu)', () => {
     expect(PT_WEBGPU_TRACE_WGSL).not.toMatch(/params\.rectAreaV\b/);
   });
 
-  it('fits inside the 512-byte UBO (WGSL-aligned byte size from layout generator)', () => {
+  it('matches the exact WGSL-aligned byte size from the layout generator', () => {
     const u32Count = fields.filter((f) => /:\s*u32\b/.test(f)).length;
     const f32Count = fields.filter((f) => /:\s*f32\b/.test(f)).length;
+    const vec3Count = fields.filter((f) => /:\s*vec3f\b/.test(f)).length;
     const vec4Count = fields.filter((f) => /:\s*vec4f\b/.test(f)).length;
     const mat4Count = fields.filter((f) => /:\s*mat4x4f\b/.test(f)).length;
     // Raw field sum (no inter-field alignment or struct-end padding). WGSL structs are
@@ -213,11 +187,12 @@ describe('FrameParams UBO layout (pt-webgpu)', () => {
     // for mat4x4f). The cross-check in frameParamsSlotCrossCheck.test.ts applies the
     // full WGSL alignment rules; this test verifies the raw sum is close to and within
     // FRAME_PARAMS_BYTE_SIZE so stale fields are caught without false-failing on padding.
-    const rawBytes = u32Count * 4 + f32Count * 4 + vec4Count * 16 + mat4Count * 64;
+    const rawBytes =
+      u32Count * 4 + f32Count * 4 + vec3Count * 12 + vec4Count * 16 + mat4Count * 64;
     // FRAME_PARAMS_BYTE_SIZE is the properly-padded size; raw < padded is expected
     // when the struct ends with a scalar (trailing u32 adds 4B raw but 16B padded).
     expect(rawBytes).toBeLessThanOrEqual(FRAME_PARAMS_BYTE_SIZE);
     expect(rawBytes).toBeGreaterThan(FRAME_PARAMS_BYTE_SIZE - 16); // at most 16B of end-padding
-    expect(FRAME_PARAMS_BYTE_SIZE).toBeLessThanOrEqual(512);
+    expect(FRAME_PARAMS_BYTE_SIZE).toBe(384);
   });
 });

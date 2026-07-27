@@ -27,6 +27,8 @@
 import {
   buildHybridLayersBindGroup,
   buildShadeHybridLayersBindGroup,
+  buildTransparentOitBindGroup,
+  type NrcHybridLayerBindings,
 } from './bindGroupBuilders.js';
 import { RC_PARAMS_BYTE_SIZE } from '../rc/rcParamsLayout.generated.js';
 import {
@@ -61,7 +63,7 @@ export class OptionalSubsystemBindingState implements PipelineSubsystem {
   /** Cached DDGI placeholder UBO — reused by setInputs(null) so we don't
    *  allocate a fresh Float32Array(16) every frame when DDGI is disabled.
    *  Populated lazily on first setInputs(null) call. */
-  private _placeholderUBO: Float32Array | null = null;
+  private _placeholderUBO: Float32Array<ArrayBuffer> | null = null;
 
   /** W8 Phase 3 — RC cascade-0 buffer (host-supplied via setRCInputs) or
    *  the 16-byte placeholder created at first setRCInputs(null). */
@@ -208,6 +210,7 @@ export class OptionalSubsystemBindingState implements PipelineSubsystem {
     bglCache: BGLCache,
     frameResources: FrameResources,
     resourceCache?: PipelineResourceCache,
+    nrcBindings?: NrcHybridLayerBindings,
   ): GPUBindGroup {
     const rcPh = this._ensureRCPlaceholders();
     // W9 — bind the real PPG tree buffers when PPG is enabled (FrameResources.ppg
@@ -216,9 +219,7 @@ export class OptionalSubsystemBindingState implements PipelineSubsystem {
     const ppg = frameResources.ppg;
     const rcCascade0Buffer = this._rcCascade0 ?? rcPh.cascade0;
     const rcParamsBuffer = this._rcParamsBuffer ?? rcPh.params;
-    const ppgSTreeBuffer = ('sTreeBuf' in ppg) ? ppg.sTreeBuf : ppgPh;
-    const ppgDTreeBuffer = ('dTreeBuf' in ppg) ? ppg.dTreeBuf : ppgPh;
-    const ppgDTreeOffsetsBuffer = ('dTreeOffsetsBuf' in ppg) ? ppg.dTreeOffsetsBuf : ppgPh;
+    const ppgQueryArenaBuffer = ('queryArenaBuf' in ppg) ? ppg.queryArenaBuf : ppgPh;
     const irrTex = this._irrTex ?? frameResources.ddgi.ddgiPlaceholderRgba16f;
     const visTex = this._visTex ?? frameResources.ddgi.ddgiPlaceholderVisRgba16f;
     const build = (): GPUBindGroup => buildHybridLayersBindGroup(device, bglCache, {
@@ -226,24 +227,24 @@ export class OptionalSubsystemBindingState implements PipelineSubsystem {
       ddgiVisTex:             this._visTex,
       ddgiPlaceholderRgba16f: frameResources.ddgi.ddgiPlaceholderRgba16f,
       ddgiPlaceholderVisRgba16f: frameResources.ddgi.ddgiPlaceholderVisRgba16f,
-      nearestSampler:         frameResources.common.nearestSampler,
+      ddgiSampler:            frameResources.ddgi.ddgiSampler,
       ddgiUboBuffer:          frameResources.ddgi.ddgiUboBuffer,
       rcCascade0Buffer,
       rcParamsBuffer,
-      ppgSTreeBuffer,
-      ppgDTreeBuffer,
-      ppgDTreeOffsetsBuffer,
+      ppgQueryArenaBuffer,
+      ...(nrcBindings ? { nrc: nrcBindings } : {}),
     }, resourceCache);
     return cachedBindGroup(resourceCache, 'per-frame:hybrid-layers', [
       irrTex,
       visTex,
-      frameResources.common.nearestSampler,
+      frameResources.ddgi.ddgiSampler,
       frameResources.ddgi.ddgiUboBuffer,
       rcCascade0Buffer,
       rcParamsBuffer,
-      ppgSTreeBuffer,
-      ppgDTreeBuffer,
-      ppgDTreeOffsetsBuffer,
+      ppgQueryArenaBuffer,
+      ...(nrcBindings
+        ? [nrcBindings.inferenceArenaBuffer, nrcBindings.runtimeArenaBuffer, nrcBindings.configBuffer]
+        : []),
     ], build);
   }
 
@@ -266,7 +267,7 @@ export class OptionalSubsystemBindingState implements PipelineSubsystem {
       ddgiVisTex:             this._visTex,
       ddgiPlaceholderRgba16f: frameResources.ddgi.ddgiPlaceholderRgba16f,
       ddgiPlaceholderVisRgba16f: frameResources.ddgi.ddgiPlaceholderVisRgba16f,
-      nearestSampler:         frameResources.common.nearestSampler,
+      ddgiSampler:            frameResources.ddgi.ddgiSampler,
       ddgiUboBuffer:          frameResources.ddgi.ddgiUboBuffer,
       rcCascade0Buffer,
       rcParamsBuffer,
@@ -274,10 +275,47 @@ export class OptionalSubsystemBindingState implements PipelineSubsystem {
     return cachedBindGroup(resourceCache, 'per-frame:shade-hybrid-layers', [
       irrTex,
       visTex,
-      frameResources.common.nearestSampler,
+      frameResources.ddgi.ddgiSampler,
       frameResources.ddgi.ddgiUboBuffer,
       rcCascade0Buffer,
       rcParamsBuffer,
+    ], build);
+  }
+
+  buildTransparentOitBindGroup(
+    device: GPUDevice,
+    bglCache: BGLCache,
+    frameResources: FrameResources,
+    background: GPUTexture,
+    output: GPUTexture,
+    resourceCache?: PipelineResourceCache,
+  ): GPUBindGroup {
+    const rcPh = this._ensureRCPlaceholders();
+    const rcCascade0Buffer = this._rcCascade0 ?? rcPh.cascade0;
+    const rcParamsBuffer = this._rcParamsBuffer ?? rcPh.params;
+    const irrTex = this._irrTex ?? frameResources.ddgi.ddgiPlaceholderRgba16f;
+    const visTex = this._visTex ?? frameResources.ddgi.ddgiPlaceholderVisRgba16f;
+    const build = (): GPUBindGroup => buildTransparentOitBindGroup(
+      device,
+      bglCache,
+      resourceCache?.textureView(irrTex) ?? irrTex.createView(),
+      resourceCache?.textureView(visTex) ?? visTex.createView(),
+      frameResources.ddgi.ddgiSampler,
+      frameResources.ddgi.ddgiUboBuffer,
+      rcCascade0Buffer,
+      rcParamsBuffer,
+      resourceCache?.textureView(background) ?? background.createView(),
+      resourceCache?.textureView(output) ?? output.createView(),
+    );
+    return cachedBindGroup(resourceCache, 'pass:transparent-oit', [
+      irrTex,
+      visTex,
+      frameResources.ddgi.ddgiSampler,
+      frameResources.ddgi.ddgiUboBuffer,
+      rcCascade0Buffer,
+      rcParamsBuffer,
+      background,
+      output,
     ], build);
   }
 

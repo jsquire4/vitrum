@@ -252,60 +252,51 @@ const MIP_FILTER_INDEX: Readonly<Record<TextureMipFilterMode, number>> = {
   linear: 2,
 };
 
-function isUnsupportedTexCoord(ref: TextureRef | undefined): boolean {
-  if (ref?.handle == null) return false;
-  const texCoord = ref.texCoord ?? 0;
-  return texCoord !== 0 && texCoord !== 1;
+function authoredTexCoord(ref: TextureRef | undefined): number {
+  return ref?.texCoord ?? 0;
 }
 
-function safeTexCoord(ref: TextureRef | undefined): number {
-  return isUnsupportedTexCoord(ref) ? 0 : (ref?.texCoord ?? 0);
+interface MaterialUvSetLayout {
+  /** GPU UV slot -> authored TextureRef.texCoord. Slots 0/1 are ABI-stable. */
+  readonly texCoords: readonly number[];
+  readonly slotByTexCoord: ReadonlyMap<number, number>;
 }
 
-function unsupportedTexCoordWarning(
-  materialIndex: number,
-  field: string,
-  texCoord: number,
-): EngineWarning {
-  const message =
-    `[vitrum/pt-webgpu] ignoring material ${materialIndex} ${field}: texCoord ${texCoord} ` +
-    `is unsupported; only texCoord 0 and 1 are renderable by this backend.`;
-  return {
-    code: 'pt-webgpu.material-texture-unsupported-texcoord',
-    backend: 'pt-webgpu',
-    phase: 'setScene',
-    method: 'setScene',
-    message,
-    details: {
-      materialIndex,
-      field,
-      texCoord,
-      supportedTexCoords: [0, 1],
-      fallback: 'map-ignored',
-    },
-  };
-}
-
-function createUnsupportedTexCoordWarner(
-  structuredWarnings: EngineWarning[],
-): (
-  materialIndex: number,
-  field: string,
-  ref: TextureRef | undefined,
-) => boolean {
-  const warned = new Set<string>();
-  return (materialIndex, field, ref): boolean => {
-    if (!isUnsupportedTexCoord(ref)) return false;
-    const texCoord = ref?.texCoord ?? 0;
-    const key = `${materialIndex}:${field}:${texCoord}`;
-    if (!warned.has(key)) {
-      warned.add(key);
-      const warning = unsupportedTexCoordWarning(materialIndex, field, texCoord);
-      structuredWarnings.push(warning);
-      console.warn(warning.message.replace('[vitrum/pt-webgpu] ', '[pt-webgpu] '));
+function materialUvSetLayout(
+  materials: ReadonlyArray<MaterialSpec>,
+): MaterialUvSetLayout {
+  const used = new Set<number>([0, 1]);
+  materials.forEach((material, materialIndex) => {
+    const context: MaterialTextureResolveContext = {
+      roughnessMap: material.roughnessMap ?? material.metallicMap,
+      metallicMap: material.metallicMap ?? material.roughnessMap,
+    };
+    for (const slot of TEXTURE_MAP_SLOTS) {
+      const ref = slot.resolve(material, context);
+      if (ref?.handle == null) continue;
+      const texCoord = authoredTexCoord(ref);
+      if (!Number.isSafeInteger(texCoord) || texCoord < 0) {
+        throw new RangeError(
+          `collectMaterialTextures: material ${materialIndex} ${slot.name}.texCoord ` +
+          `must be a non-negative safe integer (got ${String(texCoord)}).`,
+        );
+      }
+      used.add(texCoord);
     }
-    return true;
+  });
+  const texCoords = [0, 1, ...[...used].filter((value) => value > 1).sort((a, b) => a - b)];
+  return {
+    texCoords,
+    slotByTexCoord: new Map(texCoords.map((texCoord, slot) => [texCoord, slot])),
   };
+}
+
+function packedUvSlot(
+  ref: TextureRef | undefined,
+  layout: MaterialUvSetLayout,
+): number {
+  if (ref?.handle == null) return 0;
+  return layout.slotByTexCoord.get(authoredTexCoord(ref)) ?? 0;
 }
 
 export interface CollectedTextures {
@@ -329,8 +320,10 @@ export interface CollectedTextures {
   readonly emissiveSourceInfos: readonly MaterialTextureLayerInfo[];
   /** Per-material descriptor floats (MATERIAL_TEX_FLOAT_STRIDE per material). */
   readonly descriptors: Float32Array;
-  /** Structured diagnostics for maps dropped because they target texCoord > 1. */
+  /** Compatibility lane; arbitrary texCoord maps are no longer dropped. */
   readonly unsupportedTexCoordWarnings: readonly EngineWarning[];
+  /** Compact GPU UV-slot layout. Entry value is the authored texCoord index. */
+  readonly uvSetTexCoords: readonly number[];
 }
 
 export type MaterialTextureColorSpace = 'srgb' | 'linear';
@@ -438,11 +431,12 @@ function writeUvMeta(
   b: number,
   mapSlot: number,
   ref: TextureRef | undefined,
+  uvLayout: MaterialUvSetLayout,
   metaVec4Offset = MATERIAL_TEX_UV_META_VEC4_OFFSET,
 ): void {
   const vecBase = b + (metaVec4Offset + mapSlot * MATERIAL_TEX_UV_META_VEC4S_PER_MAP) * 4;
   const t = ref?.transform;
-  descriptors[vecBase] = safeTexCoord(ref);
+  descriptors[vecBase] = packedUvSlot(ref, uvLayout);
   descriptors[vecBase + 1] = t?.offset?.[0] ?? 0;
   descriptors[vecBase + 2] = t?.offset?.[1] ?? 0;
   descriptors[vecBase + 3] = t?.rotation ?? 0;
@@ -519,21 +513,19 @@ export function applyMaterialTextureUvFitScales(
 }
 
 /** Collect + dedup material texture sources and pack the per-material descriptors.
- *  Two index spaces: sRGB (baseColor/emissive) and linear (normal/scalar data) — they
- *  upload to separate arrays so each is sampled in the correct colour space. */
+ *  Three GPU arrays preserve the authored sample domains: sRGB color maps,
+ *  linear data maps, and linear-float HDR emissive maps. */
 export function collectMaterialTextures(materials: ReadonlyArray<MaterialSpec>): CollectedTextures {
   const sources: unknown[] = [];
   const linearSources: unknown[] = [];
   const emissiveSources: unknown[] = [];
-  const unsupportedTexCoordWarnings: EngineWarning[] = [];
-  const warnUnsupportedTexCoord = createUnsupportedTexCoordWarner(unsupportedTexCoordWarnings);
+  const uvLayout = materialUvSetLayout(materials);
   const makeIndexer = (list: unknown[], colorSpace: MaterialTextureColorSpace) => {
     const handleToIdx = new Map<unknown, number>();
     const usesByLayer: MaterialTextureLayerUse[][] = [];
     const index = (ref: TextureRef | undefined, materialIndex: number, field: string): number => {
       const handle = ref?.handle;
       if (handle == null) return -1;
-      if (warnUnsupportedTexCoord(materialIndex, field, ref)) return -1;
       let i = handleToIdx.get(handle);
       if (i === undefined) {
         i = list.length;
@@ -544,7 +536,7 @@ export function collectMaterialTextures(materials: ReadonlyArray<MaterialSpec>):
         materialIndex,
         field,
         colorSpace,
-        texCoord: safeTexCoord(ref),
+        texCoord: authoredTexCoord(ref),
         ...(ref?.magFilter != null ? { magFilter: ref.magFilter } : {}),
         ...(ref?.minFilter != null ? { minFilter: ref.minFilter } : {}),
         ...(ref?.mipFilter != null ? { mipFilter: ref.mipFilter } : {}),
@@ -557,14 +549,10 @@ export function collectMaterialTextures(materials: ReadonlyArray<MaterialSpec>):
   };
   const sRgbIndexer = makeIndexer(sources, 'srgb');
   const linearIndexer = makeIndexer(linearSources, 'linear');
-  // Emissive is authored sRGB but uploaded to a LINEAR rgba16float array (the CPU
-  // upload path applies the sRGB decode). Its provenance colorSpace stays 'srgb'
-  // (that is the authored encoding), while the layers live in a separate index
-  // space from the sRGB baseColor array so HDR emissive survives packing.
   const emissiveIndexer = makeIndexer(emissiveSources, 'srgb');
-  const indexOf = sRgbIndexer.index;          // sRGB array
+  const indexOf = sRgbIndexer.index;          // sRGB color array
   const indexOfLinear = linearIndexer.index;  // linear array
-  const indexOfEmissive = emissiveIndexer.index; // emissive rgba16float array
+  const indexOfEmissive = emissiveIndexer.index; // linear-float HDR emissive array
 
   const descriptors = new Float32Array(materials.length * MATERIAL_TEX_FLOAT_STRIDE);
   materials.forEach((m, mi) => {
@@ -582,7 +570,7 @@ export function collectMaterialTextures(materials: ReadonlyArray<MaterialSpec>):
     descriptors[b + 4] = ALPHA_MODE_INDEX[m.alphaMode ?? 'opaque'];
     descriptors[b + 5] = m.alphaCutoff ?? 0.5;
     descriptors[b + 6] = m.opacity ?? 1;
-    descriptors[b + 7] = safeTexCoord(bc);
+    descriptors[b + 7] = packedUvSlot(bc, uvLayout);
     const t = bc?.transform;
     descriptors[b + 8] = t?.offset?.[0] ?? 0;
     descriptors[b + 9] = t?.offset?.[1] ?? 0;
@@ -656,7 +644,14 @@ export function collectMaterialTextures(materials: ReadonlyArray<MaterialSpec>):
       writeWrapPair(descriptors, b + slot.wrapFloatOffset, ref);
       writeMipPolicy(descriptors, b, slotIdx, ref);
       writeFilterPolicy(descriptors, b, slotIdx, ref);
-      writeUvMeta(descriptors, b, slot.uvMetaSlot, ref, slot.uvMetaVec4Offset);
+      writeUvMeta(
+        descriptors,
+        b,
+        slot.uvMetaSlot,
+        ref,
+        uvLayout,
+        slot.uvMetaVec4Offset,
+      );
     });
   });
 
@@ -668,6 +663,7 @@ export function collectMaterialTextures(materials: ReadonlyArray<MaterialSpec>):
     linearSourceInfos: linearIndexer.infos(),
     emissiveSourceInfos: emissiveIndexer.infos(),
     descriptors,
-    unsupportedTexCoordWarnings,
+    unsupportedTexCoordWarnings: [],
+    uvSetTexCoords: uvLayout.texCoords,
   };
 }

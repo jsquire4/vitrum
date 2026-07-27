@@ -18,6 +18,7 @@
 import {
   analyticPrimitiveToMesh,
   asMat4,
+  resolveFrameCameraPosition,
   type FrameInput,
   type Scene,
   type ScenePrimitive,
@@ -30,6 +31,7 @@ import {
 import { invertMat4, multiplyMat4 } from './math/mat4.js';
 import {
   PT_WEBGPU_ADJOINT_PASS_WGSL,
+  composePtWebgpuAdjointPassWgsl,
   ADJOINT_PARAMS_UBO_BYTES,
   ADJOINT_FIELD_BASECOLOR,
   ADJOINT_FIELD_ROUGHNESS,
@@ -62,9 +64,11 @@ import {
   ADJOINT_EMITTER_TARGET_RECT,
   ADJOINT_EMITTER_TARGET_MESH,
 } from './wgsl/pathTrace/adjointPass.wgsl.js';
+import type { PtWebgpuSamplingMode } from './wgsl/common.wgsl.js';
 import { ADJOINT_GRAD_FP } from './wgsl/pathTrace/pathTraceAdjoint.wgsl.js';
 import type { UploadedSceneBuffers } from './scene/uploadSceneBuffers.js';
 import type { AdjointGradientRequest } from './inverse/inverseSession.js';
+import { packGpuUvSets } from './scene/gpuUvPacking.js';
 import {
   meshAreaEmitterAdjointRangeForScene,
   packMeshAreaAdjointReplayArrays,
@@ -83,10 +87,12 @@ interface AdjointWorldSpaceGeometry {
 
 export class AdjointPass {
   readonly #device: GPUDevice;
+  readonly #sampling: PtWebgpuSamplingMode;
   #pipeline: GPUComputePipeline | null = null;
 
-  constructor(device: GPUDevice) {
+  constructor(device: GPUDevice, sampling: PtWebgpuSamplingMode = 'pcg') {
     this.#device = device;
+    this.#sampling = sampling;
   }
 
   /**
@@ -116,12 +122,21 @@ export class AdjointPass {
     last: FrameInput,
     scene: Scene,
     supportedAnalyticShapes: ReadonlySet<string>,
-    materialIndexForPrimitive: (scene: Scene, id: string, shapes: ReadonlySet<string>) => number | null,
+    materialIndexForPrimitive: (
+      scene: Scene,
+      id: string,
+      shapes: ReadonlySet<string>,
+    ) => number | null,
   ): Promise<Float32Array> {
     const device = this.#device;
 
     if (this.#pipeline == null) {
-      const module = device.createShaderModule({ code: PT_WEBGPU_ADJOINT_PASS_WGSL });
+      const module = device.createShaderModule({
+        code:
+          this.#sampling === 'pcg'
+            ? PT_WEBGPU_ADJOINT_PASS_WGSL
+            : composePtWebgpuAdjointPassWgsl(this.#sampling),
+      });
       this.#pipeline = device.createComputePipeline({
         label: 'vitrum.pt-webgpu.adjointPass',
         layout: 'auto',
@@ -144,9 +159,13 @@ export class AdjointPass {
     const uboF = new Float32Array(ubo);
     const uboU = new Uint32Array(ubo);
     uboF.set(invVp, 0); // mat4x4f at byte 0 (16 floats)
-    uboF[16] = last.cameraPosition[0];
-    uboF[17] = last.cameraPosition[1];
-    uboF[18] = last.cameraPosition[2];
+    const cameraPosition = resolveFrameCameraPosition(
+      last,
+      'PTEngineWebGPU.computeAdjointGradient',
+    );
+    uboF[16] = cameraPosition[0];
+    uboF[17] = cameraPosition[1];
+    uboF[18] = cameraPosition[2];
     uboF[19] = 1;
     uboU[20] = width >>> 0;
     uboU[21] = height >>> 0;
@@ -181,9 +200,11 @@ export class AdjointPass {
     // bits (1 for scalar light streams).
     // Lit BRDF fields leave payloads 0.
     // A Float32 view aliases the same buffer.
-    const needsMeshAreaAdjointReplay = params.some((p) =>
-      p.domain === 'emitters' &&
-      scene.emitters.some((e) => e.id === p.id && e.kind === 'mesh-area'));
+    const needsMeshAreaAdjointReplay = params.some(
+      (p) =>
+        p.domain === 'emitters' &&
+        scene.emitters.some((e) => e.id === p.id && e.kind === 'mesh-area'),
+    );
     const meshAreaAdjointReplay = needsMeshAreaAdjointReplay
       ? packMeshAreaAdjointReplayArrays(scene)
       : null;
@@ -209,7 +230,9 @@ export class AdjointPass {
             fieldCode = ADJOINT_FIELD_EMITTER_COLOR;
             break;
           default:
-            throw new Error(`computeAdjointGradient: unsupported emitter adjoint field "${String(p.field)}".`);
+            throw new Error(
+              `computeAdjointGradient: unsupported emitter adjoint field "${String(p.field)}".`,
+            );
         }
         const descBase = i * 8;
         descs[descBase + 0] = target.slot >>> 0;
@@ -298,7 +321,9 @@ export class AdjointPass {
           fieldCode = ADJOINT_FIELD_SPECULAR_INTENSITY;
           break;
         default:
-          throw new Error(`computeAdjointGradient: unsupported material adjoint field "${String(p.field)}".`);
+          throw new Error(
+            `computeAdjointGradient: unsupported material adjoint field "${String(p.field)}".`,
+          );
       }
       const descBase = i * 8;
       descs[descBase + 0] = matId >>> 0;
@@ -320,21 +345,53 @@ export class AdjointPass {
       scene,
       supportedAnalyticShapes,
       materialIndexForPrimitive,
+      sb.uvSetTexCoords,
     );
     if (geometryOverride != null) {
       uboU[22] = geometryOverride.triangleCount >>> 0;
     }
 
-    // H14-D: track all transient buffers in a list; finally block destroys any
-    // that survive a rejected mapAsync (device loss, OOM) so no GPU memory leaks.
+    // H14-D: own every transient from its first successful allocation. Upload,
+    // bind/encode/submit, mapping, and decoding can all fail before readback.
     const U = (globalThis as { GPUBufferUsage: typeof GPUBufferUsage }).GPUBufferUsage;
     const adjointCreated: GPUBuffer[] = [];
     const adjointDestroyed = new Set<GPUBuffer>();
-    const adjointDestroy = (buf: GPUBuffer) => {
-      if (!adjointDestroyed.has(buf)) {
-        adjointDestroyed.add(buf);
-        buf.destroy();
+    let stage: GPUBuffer | null = null;
+    let stageMapped = false;
+    const cleanupAdjointBuffers = (): {
+      readonly failed: boolean;
+      readonly error?: unknown;
+    } => {
+      let failed = false;
+      let firstError: unknown;
+      const capture = (error: unknown) => {
+        if (!failed) {
+          failed = true;
+          firstError = error;
+        }
+      };
+
+      if (stageMapped && stage != null) {
+        try {
+          stage.unmap();
+        } catch (error) {
+          capture(error);
+        } finally {
+          stageMapped = false;
+        }
       }
+
+      for (const buffer of adjointCreated) {
+        if (adjointDestroyed.has(buffer)) continue;
+        try {
+          buffer.destroy();
+        } catch (error) {
+          capture(error);
+        } finally {
+          adjointDestroyed.add(buffer);
+        }
+      }
+      return failed ? { failed, error: firstError } : { failed };
     };
     const mk = (size: number, usage: number, data?: ArrayBufferView): GPUBuffer => {
       const b = device.createBuffer({ size: Math.max(size, 16), usage });
@@ -342,99 +399,146 @@ export class AdjointPass {
       if (data) device.queue.writeBuffer(b, 0, data.buffer, data.byteOffset, data.byteLength);
       return b;
     };
-    const paramsBuf = mk(ADJOINT_PARAMS_UBO_BYTES, U.UNIFORM | U.COPY_DST, uboF);
-    const dLossBuf = mk(dLoss_dRendered.byteLength, U.STORAGE | U.COPY_DST, dLoss_dRendered);
-    const gradBuf = mk(gradientLength * 4, U.STORAGE | U.COPY_SRC | U.COPY_DST, new Int32Array(gradientLength));
-    const descBuf = mk(descs.byteLength, U.STORAGE | U.COPY_DST, descs);
-    const stage = mk(gradientLength * 4, U.MAP_READ | U.COPY_DST);
-    const meshAreaLightsBuffer = meshAreaAdjointReplay == null
-      ? sb.meshAreaLightsBuffer
-      : mk(meshAreaAdjointReplay.meshAreaLightsData.byteLength, U.STORAGE | U.COPY_DST, meshAreaAdjointReplay.meshAreaLightsData);
-    const meshAreaLightSourceFactorsBuffer = meshAreaAdjointReplay == null
-      ? sb.meshAreaLightSourceFactorsBuffer
-      : mk(
-          meshAreaAdjointReplay.meshAreaLightSourceFactorsData.byteLength,
-          U.STORAGE | U.COPY_DST,
-          meshAreaAdjointReplay.meshAreaLightSourceFactorsData,
-        );
-    const positionsBuffer = geometryOverride == null
-      ? sb.positionsBuffer
-      : mk(geometryOverride.positions.byteLength, U.STORAGE | U.COPY_DST, geometryOverride.positions);
-    const indicesBuffer = geometryOverride == null
-      ? sb.indicesBuffer
-      : mk(geometryOverride.indices.byteLength, U.STORAGE | U.COPY_DST, geometryOverride.indices);
-    const triMaterialIdsBuffer = geometryOverride == null
-      ? sb.triMaterialIdsBuffer
-      : mk(geometryOverride.triMaterialIds.byteLength, U.STORAGE | U.COPY_DST, geometryOverride.triMaterialIds);
-    const normalsBuffer = geometryOverride == null
-      ? sb.normalsBuffer
-      : mk(geometryOverride.normals.byteLength, U.STORAGE | U.COPY_DST, geometryOverride.normals);
-    const uvsBuffer = geometryOverride == null
-      ? sb.uvsBuffer
-      : mk(geometryOverride.uvs.byteLength, U.STORAGE | U.COPY_DST, geometryOverride.uvs);
-    const colorsBuffer = geometryOverride == null
-      ? sb.colorsBuffer
-      : mk(geometryOverride.colors.byteLength, U.STORAGE | U.COPY_DST, geometryOverride.colors);
-    const tangentsBuffer = geometryOverride == null
-      ? sb.tangentsBuffer
-      : mk(geometryOverride.tangents.byteLength, U.STORAGE | U.COPY_DST, geometryOverride.tangents);
-
-    const bind = device.createBindGroup({
-      layout: pipeline.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: { buffer: paramsBuf } },
-        { binding: 1, resource: { buffer: positionsBuffer } },
-        { binding: 2, resource: { buffer: indicesBuffer } },
-        { binding: 3, resource: { buffer: triMaterialIdsBuffer } },
-        { binding: 4, resource: { buffer: sb.materialsBuffer } },
-        { binding: 5, resource: { buffer: normalsBuffer } },
-        { binding: 6, resource: { buffer: sb.pointLightsBuffer } },
-        { binding: 7, resource: { buffer: dLossBuf } },
-        { binding: 8, resource: { buffer: gradBuf } },
-        { binding: 9, resource: { buffer: descBuf } },
-        { binding: 10, resource: { buffer: sb.rectAreaLightsBuffer } },
-        { binding: 11, resource: { buffer: sb.directionalLightsBuffer } },
-        { binding: 12, resource: { buffer: sb.spotLightsBuffer } },
-        { binding: 13, resource: { buffer: meshAreaLightsBuffer } },
-        { binding: 14, resource: { buffer: uvsBuffer } },
-        { binding: 15, resource: { buffer: sb.materialTexDescriptorsBuffer } },
-        { binding: 16, resource: sb.materialTextureView },
-        { binding: 17, resource: sb.materialTextureSampler },
-        { binding: 18, resource: { buffer: colorsBuffer } },
-        { binding: 19, resource: sb.materialLinearTextureView },
-        { binding: 20, resource: { buffer: sb.environmentMapTexelsBuffer } },
-        { binding: 21, resource: { buffer: sb.environmentMapCdfBuffer } },
-        { binding: 22, resource: { buffer: meshAreaLightSourceFactorsBuffer } },
-        { binding: 23, resource: { buffer: tangentsBuffer } },
-        // T1-6 — dedicated rgba16float emissive array (HDR emissive replay).
-        { binding: 24, resource: sb.materialEmissiveTextureView },
-      ],
-    });
-
-    const enc = device.createCommandEncoder();
-    const pass = enc.beginComputePass();
-    pass.setPipeline(pipeline);
-    pass.setBindGroup(0, bind);
-    pass.dispatchWorkgroups(Math.ceil(width / 8), Math.ceil(height / 8));
-    pass.end();
-    enc.copyBufferToBuffer(gradBuf, 0, stage, 0, gradientLength * 4);
-    device.queue.submit([enc.finish()]);
+    let operationFailed = false;
+    let operationError: unknown;
+    let result: Float32Array | null = null;
+    let cleanup: ReturnType<typeof cleanupAdjointBuffers> = { failed: false };
     try {
+      const paramsBuf = mk(ADJOINT_PARAMS_UBO_BYTES, U.UNIFORM | U.COPY_DST, uboF);
+      const dLossBuf = mk(dLoss_dRendered.byteLength, U.STORAGE | U.COPY_DST, dLoss_dRendered);
+      const gradBuf = mk(
+        gradientLength * 4,
+        U.STORAGE | U.COPY_SRC | U.COPY_DST,
+        new Int32Array(gradientLength),
+      );
+      const descBuf = mk(descs.byteLength, U.STORAGE | U.COPY_DST, descs);
+      stage = mk(gradientLength * 4, U.MAP_READ | U.COPY_DST);
+      const meshAreaLightsBuffer =
+        meshAreaAdjointReplay == null
+          ? sb.meshAreaLightsBuffer
+          : mk(
+              meshAreaAdjointReplay.meshAreaLightsData.byteLength,
+              U.STORAGE | U.COPY_DST,
+              meshAreaAdjointReplay.meshAreaLightsData,
+            );
+      const meshAreaLightSourceFactorsBuffer =
+        meshAreaAdjointReplay == null
+          ? sb.meshAreaLightSourceFactorsBuffer
+          : mk(
+              meshAreaAdjointReplay.meshAreaLightSourceFactorsData.byteLength,
+              U.STORAGE | U.COPY_DST,
+              meshAreaAdjointReplay.meshAreaLightSourceFactorsData,
+            );
+      const positionsBuffer =
+        geometryOverride == null
+          ? sb.positionsBuffer
+          : mk(
+              geometryOverride.positions.byteLength,
+              U.STORAGE | U.COPY_DST,
+              geometryOverride.positions,
+            );
+      const indicesBuffer =
+        geometryOverride == null
+          ? sb.indicesBuffer
+          : mk(
+              geometryOverride.indices.byteLength,
+              U.STORAGE | U.COPY_DST,
+              geometryOverride.indices,
+            );
+      const triMaterialIdsBuffer =
+        geometryOverride == null
+          ? sb.triMaterialIdsBuffer
+          : mk(
+              geometryOverride.triMaterialIds.byteLength,
+              U.STORAGE | U.COPY_DST,
+              geometryOverride.triMaterialIds,
+            );
+      const normalsBuffer =
+        geometryOverride == null
+          ? sb.normalsBuffer
+          : mk(
+              geometryOverride.normals.byteLength,
+              U.STORAGE | U.COPY_DST,
+              geometryOverride.normals,
+            );
+      const uvsBuffer =
+        geometryOverride == null
+          ? sb.uvsBuffer
+          : mk(geometryOverride.uvs.byteLength, U.STORAGE | U.COPY_DST, geometryOverride.uvs);
+      const colorsBuffer =
+        geometryOverride == null
+          ? sb.colorsBuffer
+          : mk(geometryOverride.colors.byteLength, U.STORAGE | U.COPY_DST, geometryOverride.colors);
+      const tangentsBuffer =
+        geometryOverride == null
+          ? sb.tangentsBuffer
+          : mk(
+              geometryOverride.tangents.byteLength,
+              U.STORAGE | U.COPY_DST,
+              geometryOverride.tangents,
+            );
+
+      const bind = device.createBindGroup({
+        layout: pipeline.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: { buffer: paramsBuf } },
+          { binding: 1, resource: { buffer: positionsBuffer } },
+          { binding: 2, resource: { buffer: indicesBuffer } },
+          { binding: 3, resource: { buffer: triMaterialIdsBuffer } },
+          { binding: 4, resource: { buffer: sb.materialsBuffer } },
+          { binding: 5, resource: { buffer: normalsBuffer } },
+          { binding: 6, resource: { buffer: sb.pointLightsBuffer } },
+          { binding: 7, resource: { buffer: dLossBuf } },
+          { binding: 8, resource: { buffer: gradBuf } },
+          { binding: 9, resource: { buffer: descBuf } },
+          { binding: 10, resource: { buffer: sb.rectAreaLightsBuffer } },
+          { binding: 11, resource: { buffer: sb.directionalLightsBuffer } },
+          { binding: 12, resource: { buffer: sb.spotLightsBuffer } },
+          { binding: 13, resource: { buffer: meshAreaLightsBuffer } },
+          { binding: 14, resource: { buffer: uvsBuffer } },
+          { binding: 15, resource: { buffer: sb.materialTexDescriptorsBuffer } },
+          { binding: 16, resource: sb.materialTextureView },
+          { binding: 17, resource: sb.materialTextureSampler },
+          { binding: 18, resource: { buffer: colorsBuffer } },
+          { binding: 19, resource: sb.materialLinearTextureView },
+          { binding: 20, resource: { buffer: sb.environmentMapTexelsBuffer } },
+          { binding: 21, resource: { buffer: sb.environmentMapCdfBuffer } },
+          { binding: 22, resource: { buffer: meshAreaLightSourceFactorsBuffer } },
+          { binding: 23, resource: { buffer: tangentsBuffer } },
+          // T1-6 — dedicated rgba16float emissive array (HDR emissive replay).
+          { binding: 24, resource: sb.materialEmissiveTextureView },
+        ],
+      });
+
+      const enc = device.createCommandEncoder();
+      const pass = enc.beginComputePass();
+      pass.setPipeline(pipeline);
+      pass.setBindGroup(0, bind);
+      pass.dispatchWorkgroups(Math.ceil(width / 8), Math.ceil(height / 8));
+      pass.end();
+      enc.copyBufferToBuffer(gradBuf, 0, stage, 0, gradientLength * 4);
+      device.queue.submit([enc.finish()]);
       await stage.mapAsync((globalThis as { GPUMapMode: typeof GPUMapMode }).GPUMapMode.READ);
+      stageMapped = true;
       const raw = new Int32Array(stage.getMappedRange().slice(0));
-      stage.unmap();
 
       const grad = new Float32Array(gradientLength);
       for (let i = 0; i < gradientLength; i++) grad[i] = raw[i]! / ADJOINT_GRAD_FP;
 
-      // Per-step transient buffers — free them (no leak; the pipeline is cached).
-      for (const b of adjointCreated) adjointDestroy(b);
-      return grad;
+      result = grad;
+    } catch (error) {
+      operationFailed = true;
+      operationError = error;
     } finally {
-      // Destroy any buffers not already freed in the happy path above
-      // (ensures no GPU memory leak on rejected mapAsync).
-      for (const b of adjointCreated) adjointDestroy(b);
+      // Preserve the operation error while still attempting every cleanup.
+      cleanup = cleanupAdjointBuffers();
     }
+    if (operationFailed) throw operationError;
+    if (cleanup.failed) throw cleanup.error;
+    if (result == null) {
+      throw new Error('computeAdjointGradient: readback completed without a gradient result.');
+    }
+    return result;
   }
 
   /** Drop the cached pipeline reference (GPUComputePipeline has no destroy()). */
@@ -446,7 +550,12 @@ export class AdjointPass {
 export function buildAdjointWorldSpaceGeometryOverride(
   scene: Scene,
   supportedAnalyticShapes: ReadonlySet<string>,
-  materialIndexForPrimitive: (scene: Scene, id: string, shapes: ReadonlySet<string>) => number | null,
+  materialIndexForPrimitive: (
+    scene: Scene,
+    id: string,
+    shapes: ReadonlySet<string>,
+  ) => number | null,
+  uvSetTexCoords: readonly number[] = [0, 1],
 ): AdjointWorldSpaceGeometry | null {
   const replayPrimitives: ScenePrimitive[] = [];
   let needsOverride = false;
@@ -454,7 +563,8 @@ export function buildAdjointWorldSpaceGeometryOverride(
     const replayPrimitive = adjointReplayPrimitive(primitive, supportedAnalyticShapes);
     if (replayPrimitive == null) return null;
     replayPrimitives.push(replayPrimitive);
-    needsOverride ||= primitive.kind === 'analytic' || needsAdjointWorldSpaceGeometryOverride(replayPrimitive);
+    needsOverride ||=
+      primitive.kind === 'analytic' || needsAdjointWorldSpaceGeometryOverride(replayPrimitive);
   }
   if (!needsOverride) {
     return null;
@@ -484,15 +594,16 @@ export function buildAdjointWorldSpaceGeometryOverride(
   }
 
   const uv1 = mergeUv1FromCore(replayScene, merged.meshVertexRanges, merged.vertexCount);
-  const uvs = new Float32Array(merged.vertexCount * 4);
+  const primaryUvs = new Float32Array(merged.vertexCount * 4);
   for (let vertex = 0; vertex < merged.vertexCount; vertex += 1) {
-    uvs[vertex * 4] = merged.uvs[vertex * 2] ?? 0;
-    uvs[vertex * 4 + 1] = merged.uvs[vertex * 2 + 1] ?? 0;
+    primaryUvs[vertex * 4] = merged.uvs[vertex * 2] ?? 0;
+    primaryUvs[vertex * 4 + 1] = merged.uvs[vertex * 2 + 1] ?? 0;
     if (uv1 != null) {
-      uvs[vertex * 4 + 2] = uv1[vertex * 2] ?? 0;
-      uvs[vertex * 4 + 3] = uv1[vertex * 2 + 1] ?? 0;
+      primaryUvs[vertex * 4 + 2] = uv1[vertex * 2] ?? 0;
+      primaryUvs[vertex * 4 + 3] = uv1[vertex * 2 + 1] ?? 0;
     }
   }
+  const uvs = packGpuUvSets(replayScene, primaryUvs, merged.meshVertexRanges, uvSetTexCoords);
 
   return {
     positions: merged.positions,
@@ -513,7 +624,10 @@ function adjointReplayPrimitive(
   if (isAdjointReplayMeshPrimitive(primitive)) return primitive;
   if (primitive.kind === 'analytic') {
     if (!supportedAnalyticShapes.has(primitive.shape)) return null;
-    return analyticPrimitiveToMesh(primitive);
+    // The forward full tier always intersects the authored analytic shape and
+    // never substitutes fallbackMesh. Replay must obey the same source of
+    // geometry even when a host supplied a deliberately coarse fallback.
+    return analyticPrimitiveToMesh(primitive, { preferFallbackMesh: false });
   }
   return null;
 }
@@ -529,10 +643,7 @@ function isAdjointReplayMeshPrimitive(
 }
 
 function needsAdjointWorldSpaceGeometryOverride(
-  primitive: Extract<
-    ScenePrimitive,
-    { kind: 'mesh' | 'skinned-mesh' | 'instanced-mesh' }
-  >,
+  primitive: Extract<ScenePrimitive, { kind: 'mesh' | 'skinned-mesh' | 'instanced-mesh' }>,
 ): boolean {
   if (primitive.kind === 'instanced-mesh') return primitive.instances.length > 0;
   return primitive.transform != null && !isIdentityMat4(primitive.transform);
@@ -635,6 +746,11 @@ function adjointEmitterTargetForScene(
 }
 
 function encodeAdjointEmitterTargetMeta(kind: number, count: number): number {
-  const safeCount = Math.max(1, Math.min(0x00ffffff, Math.floor(count)));
-  return ((kind & 0xff) | (safeCount << 8)) >>> 0;
+  if (!Number.isInteger(count) || count < 1 || count > 0x00ffffff) {
+    throw new RangeError(
+      `computeAdjointGradient: emitter target count must be an integer in ` +
+        `[1, 16777215], received ${String(count)}.`,
+    );
+  }
+  return ((kind & 0xff) | (count << 8)) >>> 0;
 }

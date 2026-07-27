@@ -15,7 +15,7 @@
  *
  *  4. WGSL structural assertions:
  *     a. The equirect sample path is present in the generated WGSL
- *        (ddgiEnvMap binding, ddgiEnvRotateYNeg, textureLoad).
+ *        (ddgiEnvMap/sampler bindings, ddgiEnvRotateYNeg, filtered sample).
  *     b. The procedural sky fallback is retained (sampleSkyColor still
  *        references skyTint and skyIrradiance).
  *     c. The hasEnv gate is present (the WGSL branches on frameParams.hasEnv).
@@ -23,9 +23,8 @@
  *        atan2(lookupDir.z, lookupDir.x) + acos(clamp(lookupDir.y, -1.0, 1.0)).
  *
  *  5. Bind-group layout: dispatchProbeUpdateRaysPass builds bg1 with the
- *     DDGI-local vertex-color stream and bg2 with 7 entries (bindings 0–6),
- *     including binding 6 (ddgiEnvMap). There is no sampler binding because
- *     the shader uses textureLoad.
+ *     DDGI-local vertex-color stream and bg2 with 8 entries (bindings 0–7),
+ *     including ddgiEnvMap and its caller-provided sampler.
  *
  *  6. DDGI.setEnvironment() forwarding: calling DDGI.setEnvironment() reaches
  *     ProbeUpdatePass.setEnvironment() (ProbeUpdatePass is the DDGI API owner).
@@ -33,7 +32,8 @@
 
 import { describe, expect, it, vi } from 'vitest';
 import { makeProbeUpdateRaysWGSL } from '../wgsl/probeUpdateRays.wgsl.js';
-import { DDGI_FRAME_PARAMS_UBO } from '../probeUpdateUbos.js';
+import { makeProbeUpdateBlendIrrWGSL } from '../wgsl/probeUpdateBlend.wgsl.js';
+import { DDGI_FRAME_PARAMS_UBO, PROBE_RAY_STRIDE_BYTES } from '../probeUpdateUbos.js';
 import {
   packProbeUpdateFrameParams,
 } from '../probeUpdateFrameParams.js';
@@ -58,20 +58,13 @@ describe('Wave 4 — DDGI_FRAME_PARAMS_UBO field layout (hasEnv/envRotationY/env
    * Layout (all offsets in bytes, little-endian):
    *   0–11:   randomRotation (vec3f)
    *   12–15:  frameIndex (u32)
-   *   16–19:  totalProbes (u32)
-   *   20–23:  probesPerFrame (u32)
-   *   24–27:  _pad0 (u32)
-   *   28–31:  _pad1 (u32)
-   *   32–43:  skyTint (vec3f)
-   *   44–47:  skyIrradiance (f32)
-   *   48–51:  glassMixScale (f32)
-   *   52–55:  indirectFeedback (u32)
-   *   56–59:  hasEnv (u32)        ← Wave 4 (was _pad3)
-   *   60–63:  envRotationY (f32)  ← Wave 4 (was _pad4)
-   *   64–67:  envIntensity (f32)  ← Wave 4 (new slot)
-   *
-   * The next 64-byte boundary is 128 bytes — the UBO stays within one
-   * WebGPU min-storage-buffer-binding-alignment unit.
+   *   16–27:  skyTint (vec3f)
+   *   28–31:  skyIrradiance (f32)
+   *   32–35:  glassMixScale (f32)
+   *   36–39:  indirectFeedback (u32)
+   *   40–43:  hasEnv (u32)
+   *   44–47:  envRotationY (f32)
+   *   48–51:  envIntensity (f32)
    */
   it('UBO fieldOffsets includes hasEnv, envRotationY, envIntensity keys', () => {
     const offsets = DDGI_FRAME_PARAMS_UBO.fieldOffsets;
@@ -80,11 +73,10 @@ describe('Wave 4 — DDGI_FRAME_PARAMS_UBO field layout (hasEnv/envRotationY/env
     expect(offsets).toHaveProperty('envIntensity');
   });
 
-  it('hasEnv byte offset is after indirectFeedback (i.e. >= 52)', () => {
-    // indirectFeedback is at offset 52 (0-indexed: see layout comment above).
-    // hasEnv follows immediately.
+  it('hasEnv byte offset is after indirectFeedback', () => {
     const offsets = DDGI_FRAME_PARAMS_UBO.fieldOffsets;
-    expect((offsets as Record<string, number>).hasEnv).toBeGreaterThanOrEqual(52);
+    expect((offsets as Record<string, number>).hasEnv)
+      .toBeGreaterThan((offsets as Record<string, number>).indirectFeedback!);
   });
 
   it('envRotationY byte offset is after hasEnv', () => {
@@ -97,14 +89,10 @@ describe('Wave 4 — DDGI_FRAME_PARAMS_UBO field layout (hasEnv/envRotationY/env
     expect(offsets.envIntensity!).toBeGreaterThan(offsets.envRotationY!);
   });
 
-  it('UBO sizeBytes grows to accommodate the new fields (>= 52 bytes)', () => {
-    // Pre-Wave-4 the UBO was 48 bytes (randomRotation-vec3f+frameIndex=16,
-    // totalProbes/probesPerFrame/_pad0/_pad1=16, skyTint-vec3f+skyIrradiance=16
-    // = 48); then glassMixScale + indirectFeedback + _pad3 + _pad4 = +16 = 64.
-    // Wave 4 replaces _pad3/_pad4 with hasEnv/envRotationY and adds envIntensity
-    // (+4 bytes net). The defineUbo packer aligns to 16-byte boundaries so the
-    // size stays at 64 (the next 16-byte boundary after 52 is 64).
-    expect(DDGI_FRAME_PARAMS_UBO.sizeBytes).toBeGreaterThanOrEqual(52);
+  it('UBO contains no dead probe-count fields and remains 16-byte aligned', () => {
+    expect(DDGI_FRAME_PARAMS_UBO.fieldOffsets).not.toHaveProperty('totalProbes');
+    expect(DDGI_FRAME_PARAMS_UBO.fieldOffsets).not.toHaveProperty('probesPerFrame');
+    expect(DDGI_FRAME_PARAMS_UBO.sizeBytes).toBe(64);
   });
 });
 
@@ -113,7 +101,6 @@ describe('Wave 4 — DDGI_FRAME_PARAMS_UBO field layout (hasEnv/envRotationY/env
 describe('Wave 4 — packProbeUpdateFrameParams with hasEnv fields', () => {
   const BASE_INPUT = {
     frameIndex: 0,
-    totalProbes: 8,
     skyTint: [0.4, 0.6, 1.0] as [number, number, number],
     skyIrradiance: 2.0,
     glassMixScale: 0.7,
@@ -174,17 +161,13 @@ describe('Wave 4 — WGSL structural assertions for HDRI probe-ray miss path', (
     expect(wgsl).toContain('texture_2d<f32>');
   });
 
-  it('(a) NO env sampler binding exists (trust-audit F3, 2026-06-10)', () => {
-    // The env lookup is textureLoad-only; a declared-but-unused sampler at
-    // binding(7) was stripped by layout:'auto' while the dispatcher still
-    // passed an entry for it — failing bind-group validation EVERY frame.
-    // Pin the absence so the class cannot silently return.
-    expect(wgsl).not.toContain('@group(2) @binding(7)');
-    expect(wgsl).not.toContain('ddgiEnvSamp:  sampler');
+  it('(a) declares and consumes the caller-provided environment sampler', () => {
+    expect(wgsl).toContain('@group(2) @binding(7)');
+    expect(wgsl).toContain('ddgiEnvSamp:  sampler');
   });
 
-  it('(a) equirect UV math uses textureLoad on ddgiEnvMap', () => {
-    expect(wgsl).toContain('textureLoad(ddgiEnvMap');
+  it('(a) equirect UV math samples through ddgiEnvSamp', () => {
+    expect(wgsl).toContain('textureSampleLevel(ddgiEnvMap, ddgiEnvSamp');
   });
 
   it('(a) ddgiEnvRotateYNeg helper is defined (H6 RY(-rotY) world→map)', () => {
@@ -235,12 +218,28 @@ describe('Wave 4 — WGSL structural assertions for HDRI probe-ray miss path', (
     // Glass hit path: `let transmitted = sampleSkyColor(dir) * mat.attenuationColor`
     expect(wgsl).toContain('sampleSkyColor(dir)');
   });
+
+  it('uses the same compact 32-byte ProbeRay ABI in producer and consumer', () => {
+    const blend = makeProbeUpdateBlendIrrWGSL();
+    expect(PROBE_RAY_STRIDE_BYTES).toBe(32);
+    for (const shader of [wgsl, blend]) {
+      const start = shader.indexOf('struct ProbeRay');
+      const probeRay = shader.slice(start, shader.indexOf('}', start) + 1);
+      expect(probeRay).toContain('hitRadiance: vec3f');
+      expect(probeRay).toContain('hitDistance: f32');
+      expect(probeRay).toContain('direction:');
+      expect(probeRay).not.toContain('hitPosition:');
+      expect(probeRay).not.toContain('hitNormal:');
+      expect(probeRay).not.toContain('hitMaterialId:');
+      expect(probeRay).not.toContain('isGlass:');
+    }
+  });
 });
 
-// ── 5. Bind-group layout: bg1 carries vertex colors; bg2 has 7 entries ───────
+// ── 5. Bind-group layout: bg1 carries vertex colors; bg2 consumes env sampler
 
 describe('Wave 4 — dispatchProbeUpdateRaysPass DDGI resource bindings', () => {
-  it('bg1 carries vertex colors and bg2 includes env binding without stripped sampler entry', () => {
+  it('bg1 carries vertex colors and bg2 binds the consumed environment sampler', () => {
     const bindGroupEntryLists: unknown[][] = [];
     const mockDevice = {
       createBindGroup: vi.fn((desc: { entries: unknown[] }) => {
@@ -262,10 +261,10 @@ describe('Wave 4 — dispatchProbeUpdateRaysPass DDGI resource bindings', () => 
     const gpu: ProbeUpdateGpuState = {
       device: mockDevice,
       raysPipeline:      mockPipeline,
+      classifyRelocatePipeline: mockPipeline,
       blendIrrPipeline:  mockPipeline,
       blendVisPipeline:  mockPipeline,
       borderVisPipeline: mockPipeline,
-      irrScratchTex:     null,
       visScratchTex:     null,
       bvhBuf:            mockBuf,
       posBuf:            mockBuf,
@@ -280,6 +279,7 @@ describe('Wave 4 — dispatchProbeUpdateRaysPass DDGI resource bindings', () => 
       traceParamsBuf:    mockBuf,
       materialsBuf:      mockBuf,
       lightsBuf:         mockBuf,
+      lightsCapacityBytes: 16,
       emitterTrisBuf:    mockBuf,
       emitterTrisCount:  0,
       materialTextureAtlas: mockTex,
@@ -320,15 +320,18 @@ describe('Wave 4 — dispatchProbeUpdateRaysPass DDGI resource bindings', () => 
     expect(bg1Entries.find((e) => e.binding === 6)?.resource).toBe(mockVertexColorView);
 
     // bg2 is the 3rd createBindGroup call (index 2).
-    // Trust-audit F3 (2026-06-10): 7 entries (0-6) — NO sampler entry at 7.
-    // The WGSL uses textureLoad only; layout:'auto' strips an unused sampler,
-    // so an 8th entry failed bind-group validation on every frame.
     const bg2Entries = bindGroupEntryLists[2] as Array<{ binding: number }>;
     expect(bg2Entries).toBeDefined();
-    expect(bg2Entries.length).toBe(7);
+    expect(bg2Entries.length).toBe(8);
 
     const bindings = bg2Entries.map((e) => e.binding).sort((a, b) => a - b);
-    expect(bindings).toEqual([0, 1, 2, 3, 4, 5, 6]);
+    expect(bindings).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
+
+    const replacementSampler = {} as GPUSampler;
+    gpu.envSamplerForProbe = replacementSampler;
+    dispatchProbeUpdateRaysPass(encoder, gpu, 1, mockTex);
+    const rebuiltBg2 = bindGroupEntryLists[3] as Array<{ binding: number; resource: unknown }>;
+    expect(rebuiltBg2.find((entry) => entry.binding === 7)?.resource).toBe(replacementSampler);
   });
 });
 

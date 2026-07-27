@@ -5,7 +5,12 @@
 // subpath only injects @vitrum/engine's createEngine facade for hosts that want
 // a single import path.
 
-import { GltfCompatibilityError, isTextureReadinessIssue, loadGltfForEngine } from '@vitrum/gltf-adapter';
+import {
+  GltfCompatibilityError,
+  isTextureReadinessIssue,
+  loadGltfForEngine,
+  releaseGltfResources,
+} from '@vitrum/gltf-adapter';
 import type {
   GltfAssetInput,
   GltfAssetResult,
@@ -24,6 +29,7 @@ import type {
 } from '@vitrum/gltf-adapter';
 import { probeAdapterProfile } from './adapterProfile.js';
 import { createEngine } from './createEngine.js';
+import { createEngineGltfAssetHint } from './gltfAssetHint.js';
 import {
   createProgressiveEngine,
   type CreateProgressiveEngineOptions,
@@ -36,7 +42,14 @@ import type {
   EngineWithBackendId,
 } from './createEngine.js';
 
-export { GltfCompatibilityError, loadGltfForEngine } from '@vitrum/gltf-adapter';
+export {
+  DEFAULT_GLTF_IMPORT_RESOURCE_LIMITS,
+  GltfCompatibilityError,
+  GltfResourceLimitError,
+  loadGltfForEngine,
+  normalizeGltfImportResourceLimits,
+} from '@vitrum/gltf-adapter';
+export { releaseGltfResources };
 export type {
   DecodeSceneTextureDiagnostic,
   DecodeSceneTextureDiagnosticCode,
@@ -47,20 +60,26 @@ export type {
   GltfCompatibilityMode,
   GltfEngineSelection,
   GltfForEngineResult,
+  GltfImportResourceLimits,
   GltfImportDiagnostic,
   GltfMaterialTextureField,
   GltfNpotRepeatWrapPolicy,
+  GltfResourceLimitErrorInit,
+  GltfResourceLimitKind,
   GltfTextureColorSpace,
   GltfTextureDecodeReport,
   GltfTextureDecodeReportEntry,
   GltfTextureHandleKind,
   LoadGltfForEngineOptions,
+  NormalizedGltfImportResourceLimits,
 } from '@vitrum/gltf-adapter';
 
-export type GltfCreateEngineOptions =
-  Omit<CreateEngineOptions, 'scene' | 'prefer' | 'gltfAsset'> & {
-    readonly prefer?: EnginePreference;
-  };
+export type GltfCreateEngineOptions = Omit<
+  CreateEngineOptions,
+  'scene' | 'prefer' | 'gltfAsset'
+> & {
+  readonly prefer?: EnginePreference;
+};
 
 export type LoadGltfWithEngineOptions = Omit<
   LoadGltfForEngineOptions<EngineWithBackendId, GltfCreateEngineOptions>,
@@ -69,8 +88,10 @@ export type LoadGltfWithEngineOptions = Omit<
   readonly engineOptions?: GltfCreateEngineOptions;
 };
 
-export type GltfCreateProgressiveEngineOptions =
-  Omit<CreateProgressiveEngineOptions, 'scene' | 'controller'>;
+export type GltfCreateProgressiveEngineOptions = Omit<
+  CreateProgressiveEngineOptions,
+  'scene' | 'controller'
+>;
 
 export type LoadGltfWithProgressiveEngineOptions = Omit<
   LoadGltfForEngineOptions,
@@ -109,9 +130,10 @@ export async function loadGltfWithEngine(
       engineRuntimeProfile !== undefined && baseLoadOptions.runtimeProfile === undefined
         ? { ...baseLoadOptions, runtimeProfile: engineRuntimeProfile }
         : baseLoadOptions;
-    const runtimeProfile = engineRuntimeProfile === undefined
-      ? await maybeProbePtWebgpuRuntimeProfile(engine.backendId, profileAwareLoadOptions)
-      : null;
+    const runtimeProfile =
+      engineRuntimeProfile === undefined
+        ? await maybeProbePtWebgpuRuntimeProfile(engine.backendId, profileAwareLoadOptions)
+        : null;
     const loadOptions = withRuntimeTextureCap(profileAwareLoadOptions, runtimeProfile);
     const loaded = await loadGltfForEngine<EngineWithBackendId, GltfCreateEngineOptions>(input, {
       ...loadOptions,
@@ -119,36 +141,48 @@ export async function loadGltfWithEngine(
       attachScene: false,
       engineOptions: engineOptions ?? ({} as GltfCreateEngineOptions),
     });
-    let runtimeProfileId = await resolvePtWebgpuRuntimeProfile(
-      engine.backendId,
-      adapterOptions.compatibilityMode ?? 'best-effort',
-      loaded.asset,
-      loadOptions,
-      runtimeProfile,
-    );
-    if (engineRuntimeProfile !== undefined && engineRuntimeProfile !== runtimeProfileId) {
-      validatePtWebgpuRuntimeProfile(
-        engineRuntimeProfile,
-        traceTierForPtWebgpuProfile(engineRuntimeProfile),
+    try {
+      let runtimeProfileId = await resolvePtWebgpuRuntimeProfile(
+        engine.backendId,
         adapterOptions.compatibilityMode ?? 'best-effort',
         loaded.asset,
         loadOptions,
+        runtimeProfile,
       );
-      runtimeProfileId = engineRuntimeProfile;
+      if (engineRuntimeProfile !== undefined && engineRuntimeProfile !== runtimeProfileId) {
+        validatePtWebgpuRuntimeProfile(
+          engineRuntimeProfile,
+          traceTierForPtWebgpuProfile(engineRuntimeProfile),
+          adapterOptions.compatibilityMode ?? 'best-effort',
+          loaded.asset,
+          loadOptions,
+        );
+        runtimeProfileId = engineRuntimeProfile;
+      }
+      loaded.controller.attachEngine(engine, { setScene: attachScene ?? true });
+      return {
+        ...loaded,
+        backend: engine.backendId,
+        profileId: runtimeProfileId ?? loaded.profileId,
+        engine,
+        attached: true,
+        warnings: [
+          ...loaded.asset.warnings,
+          ...loaded.textureDecodeWarnings,
+          ...loaded.controller.warnings,
+        ],
+      };
+    } catch (error) {
+      releaseGltfResources(loaded);
+      throw error;
     }
-    loaded.controller.attachEngine(engine, { setScene: attachScene ?? true });
-    return {
-      ...loaded,
-      backend: engine.backendId,
-      profileId: runtimeProfileId ?? loaded.profileId,
-      engine,
-      attached: true,
-      warnings: [...loaded.asset.warnings, ...loaded.textureDecodeWarnings, ...loaded.controller.warnings],
-    };
   }
 
   let runtimeProfileId: GltfBackendProfileId | undefined;
-  let runtimeProfile = await maybeProbePtWebgpuRuntimeProfile(preferredAdapterBackend, adapterOptions);
+  let runtimeProfile = await maybeProbePtWebgpuRuntimeProfile(
+    preferredAdapterBackend,
+    adapterOptions,
+  );
   const loadOptions = withRecommendedRuntimeTextureCap(
     withRuntimeTextureCap(adapterOptions, runtimeProfile),
     preferredAdapterBackend,
@@ -175,7 +209,7 @@ export async function loadGltfWithEngine(
       const engine = await createEngine({
         ...createOptions,
         scene,
-        gltfAsset: asset,
+        gltfAsset: createEngineGltfAssetHint(asset),
         prefer: preferForSelectedBackend(backend, createOptions.prefer),
       });
       if (backend !== 'pt-webgpu' && engine.backendId === 'pt-webgpu') {
@@ -211,28 +245,41 @@ export async function loadGltfWithProgressiveEngine(
     runtimeProfile: 'pt-webgpu',
     attachScene: false,
   });
-  const engine = await createProgressiveEngine({
-    ...engineOptions,
-    scene: loaded.asset.scene,
-    controller: loaded.controller,
-  });
-  loaded.controller.attachEngine(engine.coordinator, { setScene: false });
+  let engine: ProgressiveEngineHandle | undefined;
+  try {
+    engine = await createProgressiveEngine({
+      ...engineOptions,
+      scene: loaded.asset.scene,
+      controller: loaded.controller,
+    });
+    const profiledEngine = Object.defineProperty(engine, 'profileId', {
+      value: loaded.profileId,
+      writable: false,
+      enumerable: true,
+      configurable: false,
+    });
+    loaded.controller.attachEngine(profiledEngine.coordinator, { setScene: false });
 
-  return {
-    asset: loaded.asset,
-    backend: 'pt-webgpu',
-    profileId: loaded.profileId,
-    engine,
-    controller: loaded.controller,
-    attached: true,
-    textureDecodeReport: loaded.textureDecodeReport,
-    decodedTextureCount: loaded.decodedTextureCount,
-    unchangedTextureCount: loaded.unchangedTextureCount,
-    textureDecodeDiagnostics: loaded.textureDecodeDiagnostics,
-    textureDecodeWarnings: loaded.textureDecodeWarnings,
-    warnings: loaded.warnings,
-    diagnostics: loaded.diagnostics,
-  };
+    return {
+      asset: loaded.asset,
+      backend: 'pt-webgpu',
+      profileId: loaded.profileId,
+      engine: profiledEngine,
+      controller: loaded.controller,
+      attached: true,
+      textureDecodeReport: loaded.textureDecodeReport,
+      decodedTextureCount: loaded.decodedTextureCount,
+      unchangedTextureCount: loaded.unchangedTextureCount,
+      textureDecodeDiagnostics: loaded.textureDecodeDiagnostics,
+      textureDecodeWarnings: loaded.textureDecodeWarnings,
+      warnings: loaded.warnings,
+      diagnostics: loaded.diagnostics,
+    };
+  } catch (error) {
+    disposeProgressiveEngineAfterRejectedGltfLoad(engine);
+    releaseGltfResources(loaded);
+    throw error;
+  }
 }
 
 async function resolvePtWebgpuRuntimeProfile(
@@ -267,7 +314,7 @@ async function resolvePtWebgpuRuntimeProfile(
     return options.runtimeProfile;
   }
 
-  const profile = runtimeProfile ?? await probeAdapterProfile();
+  const profile = runtimeProfile ?? (await probeAdapterProfile());
   if (profile.ptWebgpuTier === 'full') return 'pt-webgpu';
   if (profile.ptWebgpuTier === 'none') {
     validatePtWebgpuRuntimeUnavailable(compatibilityMode);
@@ -302,9 +349,7 @@ function withRuntimeTextureCap<TOptions extends Pick<LoadGltfWithEngineOptions, 
 ): TOptions {
   if (options.maxTextureSize !== undefined || runtimeProfile == null) return options;
   const maxTextureSize = runtimeMaxTextureSize(runtimeProfile);
-  return maxTextureSize === undefined
-    ? options
-    : { ...options, maxTextureSize };
+  return maxTextureSize === undefined ? options : { ...options, maxTextureSize };
 }
 
 function withRecommendedRuntimeTextureCap<TOptions extends LoadGltfWithEngineOptions>(
@@ -320,22 +365,42 @@ function withRecommendedRuntimeTextureCap<TOptions extends LoadGltfWithEngineOpt
     ...options,
     configureTextureDecode: async (context) => {
       const hostPatch = await options.configureTextureDecode?.(context);
-      const decodeOptions = hostPatch === undefined
-        ? context.decodeOptions
-        : { ...context.decodeOptions, ...hostPatch };
+      validateConfiguredTextureDecodeOptions(hostPatch);
+      const decodeOptions =
+        hostPatch === undefined
+          ? context.decodeOptions
+          : { ...context.decodeOptions, ...hostPatch };
       const recommendedBackend = context.asset.recommendedBackend.backend;
-      const runtimeProfile = recommendedBackend === 'pt-webgpu'
-        ? await resolveRuntimeProfile(recommendedBackend, {
-        ...context,
-        decodeOptions,
-        })
-        : null;
+      const runtimeProfile =
+        recommendedBackend === 'pt-webgpu'
+          ? await resolveRuntimeProfile(recommendedBackend, {
+              ...context,
+              decodeOptions,
+            })
+          : null;
       const capPatch = runtimeTextureCapPatch(decodeOptions, runtimeProfile);
       return hostPatch === undefined && capPatch === undefined
         ? undefined
         : { ...(hostPatch ?? {}), ...(capPatch ?? {}) };
     },
   };
+}
+
+function validateConfiguredTextureDecodeOptions(
+  value: unknown,
+): void {
+  if (
+    value !== undefined &&
+    (
+      value === null ||
+      typeof value !== 'object' ||
+      Array.isArray(value)
+    )
+  ) {
+    throw new TypeError(
+      '[vitrum/engine/gltf] configureTextureDecode must return an options object or undefined.',
+    );
+  }
 }
 
 function runtimeTextureCapPatch(
@@ -353,9 +418,7 @@ function runtimeMaxTextureSize(profile: PtWebgpuRuntimeProfile): number | undefi
   return Math.floor(limit);
 }
 
-function validatePtWebgpuRuntimeUnavailable(
-  compatibilityMode: GltfCompatibilityMode,
-): void {
+function validatePtWebgpuRuntimeUnavailable(compatibilityMode: GltfCompatibilityMode): void {
   if (compatibilityMode === 'best-effort') return;
   const failure = runtimeCompatibilityFailure(
     'pt-webgpu',
@@ -389,8 +452,8 @@ function validatePtWebgpuRuntimeProfile(
   if (compatibilityMode === 'best-effort') return;
   const selected = asset.backendCompatibility.find((entry) => entry.profileId === profileId);
   if (selected != null) {
-    const effectiveIssues = selected.issues.filter((issue) =>
-      !isSatisfiedRuntimeCompatibilityIssue(issue, options, asset)
+    const effectiveIssues = selected.issues.filter(
+      (issue) => !isSatisfiedRuntimeCompatibilityIssue(issue, options, asset),
     );
     const rejectedIssues = rejectedIssuesForMode(effectiveIssues, compatibilityMode);
     if (rejectedIssues.length === 0) return;
@@ -480,10 +543,11 @@ function backendFromProfileId(profileId: GltfBackendProfileId): CreateEngineBack
   return profileId === 'pt-webgpu-lite' ? 'pt-webgpu' : profileId;
 }
 
-function formatBackendProfile(backend: CreateEngineBackendId, profileId: GltfBackendProfileId): string {
-  return profileId === backend
-    ? `"${backend}"`
-    : `"${backend}" profile "${profileId}"`;
+function formatBackendProfile(
+  backend: CreateEngineBackendId,
+  profileId: GltfBackendProfileId,
+): string {
+  return profileId === backend ? `"${backend}"` : `"${backend}" profile "${profileId}"`;
 }
 
 function disposeEngineAfterRejectedGltfRuntimeProfile(engine: EngineWithBackendId): void {
@@ -494,45 +558,64 @@ function disposeEngineAfterRejectedGltfRuntimeProfile(engine: EngineWithBackendI
   }
 }
 
+function disposeProgressiveEngineAfterRejectedGltfLoad(
+  engine: ProgressiveEngineHandle | undefined,
+): void {
+  try {
+    engine?.dispose();
+  } catch {
+    // The glTF wrapper is already rejecting; progressive cleanup is best effort.
+  }
+}
+
 function isSatisfiedRuntimeCompatibilityIssue(
   issue: GltfCompatibilityIssue,
   options: LoadGltfWithEngineOptions,
   asset: GltfAssetResult,
 ): boolean {
-  if (
-    isTextureReadinessIssue(issue) &&
-    issue.support === 'requires-hook'
-  ) {
+  if (isTextureReadinessIssue(issue) && issue.support === 'requires-hook') {
     return opaqueTextureHandlesReadyForBackend(options, 'pt-webgpu');
   }
 
   if (issue.support === 'requires-hook') {
-    if (issue.name === 'KHR_draco_mesh_compression') return typeof options.dracoDecode === 'function';
+    if (issue.name === 'KHR_draco_mesh_compression')
+      return typeof options.dracoDecode === 'function';
     if (issue.name === 'EXT_meshopt_compression' || issue.name === 'KHR_meshopt_compression') {
       return typeof options.meshoptDecode === 'function';
     }
-    if (issue.name === 'KHR_texture_basisu' || issue.name === 'EXT_texture_webp' || issue.name === 'MSFT_texture_dds') {
-      return (options.textureSourceExtensions ?? []).includes(issue.name) && typeof options.decodeImage === 'function';
+    if (
+      issue.name === 'KHR_texture_basisu' ||
+      issue.name === 'EXT_texture_webp' ||
+      issue.name === 'MSFT_texture_dds'
+    ) {
+      return (
+        (options.textureSourceExtensions ?? []).includes(issue.name) &&
+        typeof options.decodeImage === 'function'
+      );
     }
     return false;
   }
 
-  if (issue.name === 'KHR_materials_pbrSpecularGlossiness.specularGlossinessTexture.glossinessAlpha') {
+  if (
+    issue.name === 'KHR_materials_pbrSpecularGlossiness.specularGlossinessTexture.glossinessAlpha'
+  ) {
     const decoded = decodedAssetView(asset);
     if (decoded == null) return false;
     const paths = decoded.featureReport.materials.issuePaths.specGlossGlossinessAlpha;
     const requiredPaths = paths !== undefined && paths.length > 0 ? paths : [issue.path];
-    return requiredPaths.every((path) =>
-      !decoded.textureDecodeDiagnostics.some((diagnostic) =>
-        diagnostic.code === 'spec-gloss-alpha-bake-unavailable' &&
-        diagnostic.path === path
-      ) &&
-      decoded.textureDecodeReport.entries.some((entry) =>
-        entry.materialField === 'roughnessMap' &&
-        entry.path === path &&
-        entry.handleKind === 'pixel-data' &&
-        entry.handleColorSpace === 'linear'
-      )
+    return requiredPaths.every(
+      (path) =>
+        !decoded.textureDecodeDiagnostics.some(
+          (diagnostic) =>
+            diagnostic.code === 'spec-gloss-alpha-bake-unavailable' && diagnostic.path === path,
+        ) &&
+        decoded.textureDecodeReport.entries.some(
+          (entry) =>
+            entry.materialField === 'roughnessMap' &&
+            entry.path === path &&
+            entry.handleKind === 'pixel-data' &&
+            entry.handleColorSpace === 'linear',
+        ),
     );
   }
 
@@ -547,9 +630,7 @@ function opaqueTextureHandlesReadyForBackend(
   return policy === true || (Array.isArray(policy) && policy.includes(backend));
 }
 
-function decodedAssetView(
-  asset: GltfAssetResult,
-): {
+function decodedAssetView(asset: GltfAssetResult): {
   readonly featureReport: GltfAssetResult['featureReport'];
   readonly textureDecodeDiagnostics: readonly DecodeSceneTextureDiagnostic[];
   readonly textureDecodeReport: GltfTextureDecodeReport;
@@ -570,26 +651,13 @@ function ptWebgpuRuntimeProfileFromEngine(
   engine: EngineWithBackendId,
 ): GltfBackendProfileId | undefined {
   if (engine.backendId !== 'pt-webgpu') return undefined;
-  const profileId = (engine as {
-    readonly backendProfileId?: unknown;
-    readonly profileId?: unknown;
-  }).backendProfileId ?? (engine as { readonly profileId?: unknown }).profileId;
+  const profileId = engine.backendProfileId ?? engine.profileId;
   if (profileId === 'pt-webgpu' || profileId === 'pt-webgpu-lite') return profileId;
-  if (engineHasExperimentalFeature(engine, 'pt-webgpu-lite-tier')) return 'pt-webgpu-lite';
   return undefined;
 }
 
 function traceTierForPtWebgpuProfile(profileId: GltfBackendProfileId): string {
   return profileId === 'pt-webgpu-lite' ? 'lite' : 'full';
-}
-
-function engineHasExperimentalFeature(engine: EngineWithBackendId, feature: string): boolean {
-  const features = (engine as {
-    readonly capabilities?: { readonly experimentalFeatures?: unknown };
-  }).capabilities?.experimentalFeatures;
-  if (features == null || typeof features !== 'object') return false;
-  const has = (features as { readonly has?: unknown }).has;
-  return typeof has === 'function' && has.call(features, feature) === true;
 }
 
 function preferForSelectedBackend(

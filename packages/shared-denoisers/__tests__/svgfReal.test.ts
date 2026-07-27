@@ -8,8 +8,9 @@
  *   1. Reprojection identity (no motion): α increases correctly per frame.
  *   2. Disocclusion reset: depth jump → history resets to 1, α=1.
  *   3. Variance from moments: Var = M2 - M1² within ±1e-6.
- *   4. 7×7 spatial fallback: for history=0, matches CPU 7×7 box variance.
- *   5. End-to-end identity: 50 frames of identical input + zero motion → converges within ±1e-3.
+ *   4. 7×7 spatial fallback: geometry-aware short-history variance.
+ *   5. Variance prefilter + squared-weight wavelet propagation.
+ *   6. End-to-end identity: stable input + zero motion converges.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -20,6 +21,8 @@ import {
   svgfReprojCPU,
   svgfVarianceFromMomentsCPU,
   svgf7x7FallbackCPU,
+  svgfPrefilterVariance3x3CPU,
+  svgfPropagateAtrousVarianceCPU,
 } from '../src/svgfRealCpu.js';
 import {
   svgfRealDemodulateAlbedo,
@@ -97,10 +100,10 @@ describe('svgfReprojCPU — identity (no motion, consistent geometry)', () => {
       const h = result.historyLengthOut[0] ?? 0;
       expect(h).toBe(frame + 1);
 
-      // α = max(alphaMin, 1/(h+1)) — should decrease as h grows.
+      // α = max(alphaMin, 1/h) — should decrease as h grows.
       const expectedAlpha = Math.max(
         SVGF_REPROJ_DEFAULT_UNIFORMS.alphaMin,
-        1 / (h + 1),
+        1 / h,
       );
       if (frame > 0) {
         expect(expectedAlpha).toBeLessThanOrEqual(lastAlpha + 1e-9);
@@ -108,7 +111,7 @@ describe('svgfReprojCPU — identity (no motion, consistent geometry)', () => {
       lastAlpha = expectedAlpha;
 
       // After enough frames, alpha should saturate at alphaMin.
-      if (frame >= 18) {
+      if (frame >= 19) {
         expect(expectedAlpha).toBeCloseTo(SVGF_REPROJ_DEFAULT_UNIFORMS.alphaMin, 5);
       }
 
@@ -158,6 +161,44 @@ describe('svgfReprojCPU — identity (no motion, consistent geometry)', () => {
     }
   });
 
+  it('uses the exact running-mean alpha sequence for accepted history', () => {
+    const W = 1, H = 1;
+    const { depth1, norm, objId } = makeGeo(W, H, 1, 0, 0, 1);
+    const motion = new Float32Array(2);
+    let prevColor = makeColor(W, H, 99, 99, 99);
+    let historyLengthIn = new Uint32Array(1);
+    let momentsIn = new Float32Array(2);
+
+    for (const [frame, sample, expected] of [
+      [1, 2, 2],
+      [2, 4, 3],
+      [3, 8, 14 / 3],
+    ] as const) {
+      const result = svgfReprojCPU({
+        currColor: makeColor(W, H, sample, sample, sample),
+        prevColor,
+        motionVec: motion,
+        currDepth: depth1,
+        currNormal: norm,
+        currObjId: objId,
+        prevDepth: depth1,
+        prevNormal: norm,
+        prevObjId: objId,
+        historyLengthIn,
+        momentsIn,
+        width: W,
+        height: H,
+        alphaMin: 0,
+      });
+
+      expect(result.historyLengthOut[0]).toBe(frame);
+      expect(result.colorOut[0]).toBeCloseTo(expected, 6);
+      prevColor = result.colorOut;
+      historyLengthIn = new Uint32Array(result.historyLengthOut);
+      momentsIn = new Float32Array(result.momentsOut);
+    }
+  });
+
   it('matches WGSL history truncation for subpixel bilinear reprojection', () => {
     const W = 2, H = 2;
     const color = makeColor(W, H, 0.2, 0.2, 0.2);
@@ -191,6 +232,33 @@ describe('svgfReprojCPU — identity (no motion, consistent geometry)', () => {
 // ── Test 2: Disocclusion reset ───────────────────────────────────────────────
 
 describe('svgfReprojCPU — disocclusion reset', () => {
+  it('explicitly rejects signed glass depth history', () => {
+    const W = 1, H = 1;
+    const current = makeColor(W, H, 0.25, 0.5, 0.75);
+    const previous = makeColor(W, H, 9, 9, 9);
+    const { norm, objId } = makeGeo(W, H, -2, 0, 0, 1);
+    const signedGlassDepth = new Float32Array([-2]);
+
+    const result = svgfReprojCPU({
+      currColor: current,
+      prevColor: previous,
+      motionVec: new Float32Array(2),
+      currDepth: signedGlassDepth,
+      currNormal: norm,
+      currObjId: objId,
+      prevDepth: signedGlassDepth,
+      prevNormal: norm,
+      prevObjId: objId,
+      historyLengthIn: new Uint32Array([64]),
+      momentsIn: new Float32Array([9, 81]),
+      width: W,
+      height: H,
+    });
+
+    expect(result.historyLengthOut[0]).toBe(1);
+    expect(Array.from(result.colorOut)).toEqual(Array.from(current));
+  });
+
   it('forceReset rejects otherwise-valid history and writes the current frame', () => {
     const W = 2, H = 2;
     const color = makeColor(W, H, 0.5, 0.25, 0.125);
@@ -372,7 +440,7 @@ describe('svgfVarianceFromMomentsCPU — Eq. 5', () => {
 // ── Test 4: 7×7 spatial fallback ─────────────────────────────────────────────
 
 describe('svgf7x7FallbackCPU — spatial variance for new pixels', () => {
-  it('should compute 7×7 box variance for history=0 pixels', () => {
+  it('should compute 7×7 variance for history=0 pixels on uniform geometry', () => {
     const W = 7, H = 7;
     const px = W * H;
 
@@ -395,7 +463,7 @@ describe('svgf7x7FallbackCPU — spatial variance for new pixels', () => {
     }
   });
 
-  it('should match CPU 7×7 box variance on a known noisy pattern', () => {
+  it('should match CPU 7×7 variance on a known noisy pattern', () => {
     const W = 9, H = 9;
     const px = W * H;
 
@@ -441,6 +509,68 @@ describe('svgf7x7FallbackCPU — spatial variance for new pixels', () => {
     for (let i = 0; i < px; i++) {
       expect(passthrough[i] ?? 0).toBeCloseTo(0.42, 5);
     }
+  });
+
+  it('does not mix unrelated depth surfaces into the short-history estimate', () => {
+    const W = 7;
+    const H = 7;
+    const px = W * H;
+    const color = new Float32Array(px * 3);
+    const depth = new Float32Array(px);
+    const normal = makeGeo(W, H, 1, 0, 0, 1).norm;
+    for (let y = 0; y < H; y += 1) {
+      for (let x = 0; x < W; x += 1) {
+        const i = y * W + x;
+        const value = x < 4 ? 0 : 10;
+        color[i * 3] = value;
+        color[i * 3 + 1] = value;
+        color[i * 3 + 2] = value;
+        depth[i] = x < 4 ? 1 : 10;
+      }
+    }
+
+    const result = svgf7x7FallbackCPU({
+      currColor: color,
+      currNormal: normal,
+      currDepth: depth,
+      historyIn: new Uint32Array(px),
+      varianceIn: new Float32Array(px),
+      width: W,
+      height: H,
+    });
+
+    // Pixel (3,3) borders the bright surface, but its same-surface samples
+    // are constant black. A box estimate would be large here.
+    expect(result[3 * W + 3]).toBeLessThan(0.01);
+  });
+});
+
+describe('real-SVGF variance filtering', () => {
+  it('uses the normalized 3×3 Gaussian prefilter for edge-stop variance', () => {
+    const variance = new Float32Array(9);
+    variance[4] = 16;
+    const filtered = svgfPrefilterVariance3x3CPU(variance, 3, 3);
+    // Separable [1,2,1]²: center coefficient is 4/16.
+    expect(filtered[4]).toBeCloseTo(4, 6);
+  });
+
+  it('propagates variance with squared normalized filter weights', () => {
+    expect(svgfPropagateAtrousVarianceCPU([4, 4], [0.5, 0.5])).toBeCloseTo(2, 6);
+    expect(svgfPropagateAtrousVarianceCPU([9, 1], [1, 0])).toBeCloseTo(9, 6);
+  });
+
+  it('WGSL prefilters and carries variance into the next wavelet level', async () => {
+    const { SVGF_REAL_ATROUS_WGSL } =
+      await import('../src/wgsl/svgfAtrous.wgsl.js');
+    expect(SVGF_REAL_ATROUS_WGSL).toContain('fn svgfPrefilterVariance3x3');
+    expect(SVGF_REAL_ATROUS_WGSL).toContain('svgfAtrous_ubo.iteration == 0u');
+    expect(SVGF_REAL_ATROUS_WGSL).toContain('textureLoad(svgfAtrous_input, p, 0).a');
+    expect(SVGF_REAL_ATROUS_WGSL).toContain(
+      'varianceNumerator += weight * weight * sampleVariance',
+    );
+    expect(SVGF_REAL_ATROUS_WGSL).toContain(
+      'varianceNumerator / (weightSum * weightSum)',
+    );
   });
 });
 
@@ -518,6 +648,10 @@ describe('SVGF WGSL exports', () => {
     expect(typeof SVGF_7X7_SPATIAL_FALLBACK_WGSL).toBe('string');
     expect(SVGF_7X7_SPATIAL_FALLBACK_WGSL).toContain('svgf7x7FallbackMain');
     expect(SVGF_7X7_SPATIAL_FALLBACK_WGSL).toContain('@compute');
+    expect(SVGF_7X7_SPATIAL_FALLBACK_WGSL).toContain('sfb_currNormal');
+    expect(SVGF_7X7_SPATIAL_FALLBACK_WGSL).toContain('sfb_currDepth');
+    expect(SVGF_7X7_SPATIAL_FALLBACK_WGSL).toContain('normalWeight');
+    expect(SVGF_7X7_SPATIAL_FALLBACK_WGSL).toContain('depthWeight');
   });
 });
 

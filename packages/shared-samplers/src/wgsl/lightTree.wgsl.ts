@@ -10,10 +10,10 @@
  * The `@group/@binding` of the flat node storage buffer differs per backend
  * (walkaround puts it at a RIS-only group(3); pt-webgpu also at group(3) but in a
  * different pipeline layout), so the binding declaration is PARAMETERISED via
- * `lightTreeWgsl({ group, binding })`. The traversal functions reference the
- * `rand_f32(ptr<function,u32>)` PCG primitive from `@vitrum/shared-samplers`'
- * `PCG_WGSL` (both backends already include it), so the caller must concatenate
- * `PCG_WGSL` (or `requires:['common']` in walkaround's include graph) earlier.
+ * `lightTreeWgsl({ group, binding, rngStateType })`. The default RNG state is
+ * `u32`, matching the shared PCG module. Backends with an explicit state struct
+ * pass its WGSL identifier through `rngStateType`; the matching `rand_f32`
+ * implementation must already be in scope.
  *
  * Layout per node (flat f32, stride `LIGHT_TREE_FLOATS_PER_NODE` = 16, B8 grew
  * this from 12 to carry the orientation cone), identical to `packLightTreeForGPU`:
@@ -34,6 +34,7 @@
  */
 
 import { LIGHT_TREE_FLOATS_PER_NODE } from '../lightTree.js';
+import { requireInteger } from '../numericGuards.js';
 
 /** Module name for include-graph consumers (walkaround's `WgslModule`). */
 export const LIGHT_TREE_MODULE_NAME = 'lightTree';
@@ -92,7 +93,8 @@ fn lt_importance(base: u32, p: vec3f, dist2Floor: f32) -> f32 {
   let cosThetaOE = lightTree[base + 14u];
   let center = 0.5 * (bmin + bmax);
   let coneFactor = lt_coneFactor(axis, cosThetaO, cosThetaOE, p, center);
-  return (power / d2) * coneFactor;
+  let importance = (power / d2) * coneFactor;
+  return min(importance, 3.402823466e38);
 }
 
 // Importance-sample one emitter (leaf) from the tree for shading point p.
@@ -118,10 +120,13 @@ fn sampleLightTree(p: vec3f, dist2Floor: f32, nodeCount: u32, rng: ptr<function,
     let rBase = u32(rightChild) * LIGHT_TREE_STRIDE;
     let impL = lt_importance(lBase, p, dist2Floor);
     let impR = lt_importance(rBase, p, dist2Floor);
-    let sum = impL + impR;
+    let scale = max(impL, impR);
     // Degenerate (both children zero importance): uniform 50/50 so the descent
     // terminates with a strictly-positive pdf (never an infinite RIS weight).
-    let pL = select(0.5, impL / sum, sum > 0.0);
+    var pL = 0.5;
+    if (scale > 0.0) {
+      pL = (impL / scale) / ((impL / scale) + (impR / scale));
+    }
     if (rand_f32(rng) < pL) {
       pdf = pdf * pL;
       nodeIdx = u32(leftChild);
@@ -145,13 +150,29 @@ fn sampleLightTree(p: vec3f, dist2Floor: f32, nodeCount: u32, rng: ptr<function,
  * pipeline layout has room.
  */
 export function lightTreeBindingWgsl(group: number, binding: number): string {
+  requireInteger(group, 'lightTreeBindingWgsl.group', 0, 65535);
+  requireInteger(binding, 'lightTreeBindingWgsl.binding', 0, 65535);
   return `\n// Flat f32 node array, ${LIGHT_TREE_FLOATS_PER_NODE} floats per node (see packLightTreeForGPU).\n@group(${group}) @binding(${binding}) var<storage, read> lightTree: array<f32>;\n`;
 }
 
 /**
  * Full light-tree WGSL fragment: the binding declaration + the traversal body.
- * `rand_f32` (PCG) must already be in scope (concatenate `PCG_WGSL` earlier).
+ * The matching `rand_f32` implementation must already be in scope. The optional `rngStateType` defaults to `u32`.
  */
-export function lightTreeWgsl(opts: { readonly group: number; readonly binding: number }): string {
-  return lightTreeBindingWgsl(opts.group, opts.binding) + LIGHT_TREE_TRAVERSAL_WGSL;
+export function lightTreeWgsl(opts: {
+  readonly group: number;
+  readonly binding: number;
+  readonly rngStateType?: string;
+}): string {
+  const rngStateType = opts.rngStateType ?? 'u32';
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(rngStateType)) {
+    throw new TypeError('lightTreeWgsl.rngStateType must be a WGSL identifier');
+  }
+  const traversal = rngStateType === 'u32'
+    ? LIGHT_TREE_TRAVERSAL_WGSL
+    : LIGHT_TREE_TRAVERSAL_WGSL.replace(
+      'rng: ptr<function, u32>',
+      `rng: ptr<function, ${rngStateType}>`,
+    );
+  return lightTreeBindingWgsl(opts.group, opts.binding) + traversal;
 }

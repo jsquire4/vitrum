@@ -12,6 +12,7 @@
 import { describe, expect, it } from 'vitest';
 import { SHADE_WGSL } from '../src/shaders/shade.wgsl.js';
 import { STAINED_GLASS_SHADE_WGSL } from '../src/shaders/stainedGlassShade.wgsl.js';
+import { REFRACTIVE_CAUSTICS_WGSL } from '../src/shaders/refractiveCaustics.wgsl.js';
 import { INDIRECT_COMBINE_WGSL } from '../src/shaders/indirectCombine.wgsl.js';
 import {
   MAX_PASS_COUNT,
@@ -27,9 +28,8 @@ describe('Sprint 18 — shade.wgsl split output', () => {
   it('splits the final radiance into directRadiance + indirectRadiance', () => {
     expect(SHADE_WGSL).toContain('let directRadiance');
     expect(SHADE_WGSL).toContain('let indirectRadiance');
-    // directRadiance = applyVolumeScatteringApproximation((Lo_emit + ... + (Lo_direct + Lo_sunCaustic + Lo_skyAperture) * ao) * layerTransmission, ...)
-    expect(SHADE_WGSL).toMatch(/let directRadiance\s*=\s*applyVolumeScatteringApproximation\(\s*\(Lo_emit/);
-    expect(SHADE_WGSL).toMatch(/let indirectRadiance\s*=\s*applyVolumeScatteringApproximation\(\s*Lo_indirect\s*\*\s*ao\s*\*\s*layerTransmission/);
+    expect(SHADE_WGSL).toMatch(/let directRadiance\s*=\s*applyHomogeneousVolumeSingleScatter\(\s*\(Lo_emit/);
+    expect(SHADE_WGSL).toMatch(/let indirectRadiance\s*=\s*applyHomogeneousVolumeSingleScatter\(\s*Lo_indirect\s*\*\s*ao\s*\*\s*layerTransmission/);
   });
 
   it('writes split outputs at the end of shadeMain', () => {
@@ -42,12 +42,9 @@ describe('Sprint 18 — shade.wgsl split output', () => {
 
 });
 
-describe('T5 — stained-glass terms extracted to lo_sg_* opt-in module', () => {
-  it('shade.wgsl calls lo_sg_caustic / lo_sg_aperture (new opt-in call surface)', () => {
-    // T5 — the historical local names Lo_sunCaustic / Lo_skyAperture are
-    // preserved (the directRadiance summation + structural tests depend on
-    // them), but they are now produced by the extracted lo_sg_* helpers.
-    expect(SHADE_WGSL).toMatch(/let Lo_sunCaustic\s*=\s*lo_sg_caustic\(/);
+describe('T5 — explicit generic caustics plus stained-glass aperture', () => {
+  it('shade calls the bounded refractive estimator and the flag-gated aperture', () => {
+    expect(SHADE_WGSL).toMatch(/let Lo_refractiveCaustic\s*=\s*lo_refractive_caustic\(/);
     expect(SHADE_WGSL).toMatch(/let Lo_skyAperture\s*=\s*lo_sg_aperture\(/);
     // Both Lo_sunCaustic and Lo_skyAperture still feed directRadiance × ao.
     // (Lo_emitterGlow — camera-visible emitters, 2026-05-30 — joins Lo_emit
@@ -65,7 +62,7 @@ describe('T5 — stained-glass terms extracted to lo_sg_* opt-in module', () => 
     // Phase-3D lightMap slice — Lo_lightMap is baked outgoing radiance and also
     // joins the non-AO direct group.
     expect(SHADE_WGSL).toMatch(
-      /directRadiance\s*=\s*applyVolumeScatteringApproximation\(\s*\(Lo_emit\s*\+\s*Lo_emitterGlow\s*\+\s*Lo_lightMap\s*\+\s*Lo_indirectSpec\s*\+\s*Lo_transmittedGI\s*\+\s*\(Lo_direct\s*\+\s*Lo_analyticNEE\s*\+\s*Lo_sunNEE\s*\+\s*Lo_sunCaustic\s*\+\s*Lo_skyAperture\)\s*\*\s*ao\)\s*\*\s*layerTransmission/,
+      /directRadiance\s*=\s*applyHomogeneousVolumeSingleScatter\(\s*\(Lo_emit\s*\+\s*Lo_emitterGlow\s*\+\s*Lo_lightMap\s*\+\s*Lo_indirectSpec\s*\+\s*\(Lo_direct\s*\+\s*Lo_analyticNEE\s*\+\s*Lo_sunNEE\s*\+\s*Lo_refractiveCaustic\s*\+\s*Lo_skyAperture\)\s*\*\s*ao\)\s*\*\s*layerTransmission\s*\+\s*Lo_transmittedGI/,
     );
   });
 
@@ -78,33 +75,28 @@ describe('T5 — stained-glass terms extracted to lo_sg_* opt-in module', () => 
     expect(SHADE_WGSL).not.toContain('fn lo_sg_aperture');
   });
 
-  it('stainedGlassShade.wgsl defines both lo_sg_* helpers', () => {
-    expect(STAINED_GLASS_SHADE_WGSL).toContain('fn lo_sg_caustic(');
+  it('stainedGlassShade owns only aperture; generic caustics have their own module', () => {
+    expect(STAINED_GLASS_SHADE_WGSL).not.toContain('fn lo_sg_caustic(');
     expect(STAINED_GLASS_SHADE_WGSL).toContain('fn lo_sg_aperture(');
+    expect(REFRACTIVE_CAUSTICS_WGSL).toContain('fn lo_refractive_caustic(');
+    expect(REFRACTIVE_CAUSTICS_WGSL).toContain('fn traceRefractiveCausticPath(');
   });
 
-  it('each helper is gated by its UBO flag bit and early-returns vec3f(0) when OFF', () => {
-    // Flag-OFF early-return path: bitwise-AND of the flag bit against
-    // ubo.stainedGlassFlags == 0u → return vec3f(0.0). One per helper.
-    expect(STAINED_GLASS_SHADE_WGSL).toMatch(
-      /\(ubo\.stainedGlassFlags\s*&\s*SG_FLAG_SUN_CAUSTIC\)\s*==\s*0u\s*\)\s*\{\s*return vec3f\(0\.0\);/,
-    );
+  it('aperture is flag-gated while caustic strategy uses the independent UBO gate', () => {
     expect(STAINED_GLASS_SHADE_WGSL).toMatch(
       /\(ubo\.stainedGlassFlags\s*&\s*SG_FLAG_SKY_APERTURE\)\s*==\s*0u\s*\)\s*\{\s*return vec3f\(0\.0\);/,
     );
+    expect(REFRACTIVE_CAUSTICS_WGSL).toContain('if (ubo.sunAngular.z < 0.5');
+    expect(REFRACTIVE_CAUSTICS_WGSL).toContain('(ubo.stainedGlassFlags & SG_FLAG_SUN_CAUSTIC) != 0u');
   });
 
-  it('flag-ON math is byte-equivalent to the original inline caustic body', () => {
-    // The load-bearing caustic math: tinted visibility clamped by
-    // ubo.causticVisClamp, scaled by sun intensity × Lambert × causticBoost.
-    // This is the exact return expression the inline lo_sun_caustic used; if
-    // it drifts, the Cornell-SG flags-on reference render no longer matches.
-    expect(STAINED_GLASS_SHADE_WGSL).toContain(
-      'let visClamped = min(vis, vec3f(ubo.causticVisClamp));',
-    );
-    expect(STAINED_GLASS_SHADE_WGSL).toContain(
-      'return visClamped * ubo.sunIntensity * nDotSun * albedo * INV_PI * ubo.causticBoost;',
-    );
+  it('generic estimator carries bounded spectral interface traversal and signed NEE correction', () => {
+    expect(REFRACTIVE_CAUSTICS_WGSL).toContain('for (var depth = 0u; depth <= 4u;');
+    expect(REFRACTIVE_CAUSTICS_WGSL).toContain('for (var candidate = 0u; candidate < 2u;');
+    expect(REFRACTIVE_CAUSTICS_WGSL).toContain('materialDispersionIorRgb(');
+    expect(REFRACTIVE_CAUSTICS_WGSL).toContain('materialThinFilmResponse(');
+    expect(REFRACTIVE_CAUSTICS_WGSL).toContain('let baselineT = traceSceneAlphaTintTransmittanceTextured(');
+    expect(REFRACTIVE_CAUSTICS_WGSL).toContain('var correction = (estimate - baseline)');
   });
 
   it('flag-ON math is byte-equivalent to the original inline aperture body', () => {

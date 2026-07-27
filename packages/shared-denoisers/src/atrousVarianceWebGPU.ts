@@ -3,7 +3,7 @@
  *
  * à-trous + variance denoiser; not Schied SVGF — see svgfRealWebGPU.ts for real SVGF.
  *
- * When optional g-buffer slices (`gbufferNormalsRgb`, `linearDepth`, `motionRg`,
+ * When optional g-buffer slices (`gbufferNormalsRgb`, `linearDepth`,
  * `welfordMeanM2`) are omitted, fills synthetic buffers from
  * ATROUS_VARIANCE_SYNTHETIC_GBUFFER_DEFAULTS unless `syntheticGbufferFallback` overrides them.
  *
@@ -28,6 +28,13 @@ import {
 } from './atrousVarianceConstants.js';
 import { acquireDenoiseDevice, makePerDevicePipelineCache } from './sharedWebGpuDevice.js';
 import { buildAtrousChain, makeResourceTracker } from './atrousChain.js';
+import {
+  assertFiniteFloatSlice,
+  assertFiniteNumber,
+  assertOneShotArrayLength,
+  assertOneShotDeviceLimits,
+  assertOneShotDimensions,
+} from './webGpuOneShotValidation.js';
 // NOTE: albedo demodulation differs INTENTIONALLY between this à-trous+variance
 // denoiser and svgfRealWebGPU.ts — see the demodulation cross-reference comment
 // at the `rgbForAtrous` site below (`demodulateAlbedo`/`remodulateAlbedo`).
@@ -92,36 +99,46 @@ const atrousVariancePipelines = makePerDevicePipelineCache<AtrousVariancePipelin
 export function assertAtrousVarianceWebGPUBufferShapes(opts: AtrousVarianceWebGPUOptions): void {
   const w = opts.width;
   const h = opts.height;
-  const px = w * h;
-  if (w <= 0 || h <= 0 || opts.rgb.length < px * 3) {
-    throw new Error('runAtrousVarianceWebGPU: invalid rgb buffer or dimensions');
-  }
-  const need = (cond: boolean, detail: string): void => {
-    if (!cond) throw new Error(`runAtrousVarianceWebGPU: ${detail}`);
+  const label = 'runAtrousVarianceWebGPU';
+  const px = assertOneShotDimensions(label, w, h);
+  const check = (name: string, value: Float32Array, length: number): void => {
+    assertOneShotArrayLength(label, name, value, length);
+    assertFiniteFloatSlice(label, name, value, length);
   };
-  if (opts.prevRadianceRgb != null) {
-    need(
-      opts.prevRadianceRgb.length >= px * 3,
-      'prevRadianceRgb length must be >= width * height * 3',
-    );
-  }
+  check('rgb', opts.rgb, px * 3);
   if (opts.gbufferNormalsRgb != null) {
-    need(
-      opts.gbufferNormalsRgb.length >= px * 3,
-      'gbufferNormalsRgb length must be >= width * height * 3',
-    );
+    check('gbufferNormalsRgb', opts.gbufferNormalsRgb, px * 3);
   }
   if (opts.linearDepth != null) {
-    need(opts.linearDepth.length >= px, 'linearDepth length must be >= width * height');
-  }
-  if (opts.motionRg != null) {
-    need(opts.motionRg.length >= px * 2, 'motionRg length must be >= width * height * 2');
+    check('linearDepth', opts.linearDepth, px);
   }
   if (opts.welfordMeanM2 != null) {
-    need(opts.welfordMeanM2.length >= px * 2, 'welfordMeanM2 length must be >= width * height * 2');
+    check('welfordMeanM2', opts.welfordMeanM2, px * 2);
   }
   if (opts.albedoRgb != null) {
-    need(opts.albedoRgb.length >= px * 3, 'albedoRgb length must be >= width * height * 3');
+    check('albedoRgb', opts.albedoRgb, px * 3);
+  }
+
+  assertFiniteNumber(label, 'frameCount', opts.frameCount ?? 0, {
+    integer: true,
+    min: 0,
+    max: 0xFFFFFFFF,
+  });
+  assertFiniteNumber(
+    label,
+    'atrousIterations',
+    opts.atrousIterations ?? ATROUS_VARIANCE_DEFAULT_ATROUS_ITERATIONS,
+  );
+  assertFiniteNumber(label, 'sigmaColor', opts.sigmaColor ?? ATROUS_VARIANCE_DEFAULT_ATROUS_UNIFORMS.sigmaColor, { min: 0 });
+  assertFiniteNumber(label, 'sigmaNormal', opts.sigmaNormal ?? ATROUS_VARIANCE_DEFAULT_ATROUS_UNIFORMS.sigmaNormal, { min: 0 });
+  assertFiniteNumber(label, 'sigmaDepth', opts.sigmaDepth ?? ATROUS_VARIANCE_DEFAULT_ATROUS_UNIFORMS.sigmaDepth, { min: 0 });
+
+  const fallback = opts.syntheticGbufferFallback;
+  if (fallback?.normalRgb != null) {
+    assertFiniteFloatSlice(label, 'syntheticGbufferFallback.normalRgb', fallback.normalRgb, 3);
+  }
+  if (fallback?.linearDepth != null) {
+    assertFiniteNumber(label, 'syntheticGbufferFallback.linearDepth', fallback.linearDepth);
   }
 }
 
@@ -151,17 +168,10 @@ export interface AtrousVarianceWebGPUOptions {
    */
   readonly reuseSharedWebGpuDevice?: boolean;
 
-  /**
-   * Previous-frame noisy HDR radiance (same layout as `rgb`). Defaults to mirroring `rgb` when omitted.
-   * For motion-aware temporal filtering or TAA-style history, pass reprojected radiance here.
-   */
-  readonly prevRadianceRgb?: Float32Array;
   /** World-space (or view-space) unit normals: row-major RGB, length `width * height * 3`. */
   readonly gbufferNormalsRgb?: Float32Array;
   /** Linear depth per pixel; sampled as `.r` of gbuffer depth texture. Length `width * height`. */
   readonly linearDepth?: Float32Array;
-  /** Screen-space motion vector per pixel (e.g. UV delta); RG interleaved, length `width * height * 2`. */
-  readonly motionRg?: Float32Array;
   /**
    * Welford RG texel matching ATROUS_VARIANCE_WGSL / Sprint 9 Welford buffer: `.r = mean luminance`, `.g = M₂`.
    * Length `width * height * 2`. Supply when frameCount >= ATROUS_VARIANCE_TEMPORAL_MIN_FRAME_COUNT for temporal variance.
@@ -229,6 +239,7 @@ export async function runAtrousVarianceWebGPU(
     makeResourceTracker(destroyEphemeral);
 
   try {
+    assertOneShotDeviceLimits(device, 'runAtrousVarianceWebGPU', w, h, 8);
     const { variance: variancePipeline, atrous: atrousPipeline } = atrousVariancePipelines(device);
 
     // G-buffer inputs are written via writeTexture and read as texture_2d<f32>
@@ -241,14 +252,6 @@ export async function runAtrousVarianceWebGPU(
     const inputColor = trackTexture(
       device.createTexture({
         label: 'atrous-variance-input-color',
-        size: [w, h],
-        format: 'rgba32float',
-        usage: texRgba32Usage,
-      }),
-    );
-    const prevRadiance = trackTexture(
-      device.createTexture({
-        label: 'atrous-variance-prev',
         size: [w, h],
         format: 'rgba32float',
         usage: texRgba32Usage,
@@ -268,15 +271,6 @@ export async function runAtrousVarianceWebGPU(
         size: [w, h],
         format: 'rgba32float',
         usage: texRgba32Usage,
-      }),
-    );
-    const motionVectors = trackTexture(
-      device.createTexture({
-        label: 'atrous-variance-motion',
-        size: [w, h],
-        format: 'rg32float',
-        usage:
-          GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.COPY_SRC,
       }),
     );
     const varianceIn = trackTexture(
@@ -324,11 +318,6 @@ export async function runAtrousVarianceWebGPU(
     );
 
     uploadRgbAsRgba32f(device, inputColor, opts.rgb, w, h);
-    if (opts.prevRadianceRgb != null) {
-      uploadRgbAsRgba32f(device, prevRadiance, opts.prevRadianceRgb, w, h);
-    } else {
-      uploadRgbAsRgba32f(device, prevRadiance, opts.rgb, w, h);
-    }
     if (opts.gbufferNormalsRgb != null) {
       uploadRgbAsRgba32f(device, gbufferNormal, opts.gbufferNormalsRgb, w, h);
     } else {
@@ -343,11 +332,6 @@ export async function runAtrousVarianceWebGPU(
       uploadLinearDepthAsRgba32f(device, gbufferDepth, opts.linearDepth, w, h);
     } else {
       fillRgba32fTexture(device, gbufferDepth, w, h, [synDepth, 0, 0, 0]);
-    }
-    if (opts.motionRg != null) {
-      uploadInterleavedRgAsRg32f(device, motionVectors, opts.motionRg, w, h);
-    } else {
-      fillRg32f(device, motionVectors, w, h, 0, 0);
     }
     if (opts.welfordMeanM2 != null) {
       uploadInterleavedRgAsRg32f(device, varianceIn, opts.welfordMeanM2, w, h);
@@ -369,13 +353,9 @@ export async function runAtrousVarianceWebGPU(
       layout: variancePipeline.getBindGroupLayout(0),
       entries: [
         { binding: 0, resource: inputColor.createView() },
-        { binding: 1, resource: prevRadiance.createView() },
-        { binding: 2, resource: gbufferNormal.createView() },
-        { binding: 3, resource: gbufferDepth.createView() },
-        { binding: 4, resource: motionVectors.createView() },
-        { binding: 5, resource: varianceIn.createView() },
-        { binding: 6, resource: varianceOut.createView() },
-        { binding: 7, resource: { buffer: varianceUbo } },
+        { binding: 1, resource: varianceIn.createView() },
+        { binding: 2, resource: varianceOut.createView() },
+        { binding: 3, resource: { buffer: varianceUbo } },
       ],
     });
 

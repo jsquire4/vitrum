@@ -1,9 +1,6 @@
 import type { EngineOptions } from '@vitrum/core';
 import type { WebGl2TraceTier } from './traceTier.js';
-import type {
-  OIDNBridgeLoader,
-  OidnReadbackFn,
-} from './denoise/oidnFinalDispatcher.js';
+import type { OIDNBridgeLoader, OidnReadbackFn } from './denoise/oidnFinalDispatcher.js';
 
 // `WebGl2TraceTier` is owned by ./traceTier.ts (the tier-selection module);
 // re-exported here so consumers of the options surface keep importing it from
@@ -19,6 +16,20 @@ export type { WebGl2TraceTier };
  */
 export interface PTEngineWebGL2Options extends EngineOptions {
   readonly device: WebGL2RenderingContext;
+  /**
+   * Maximum scattering depth. WebGL2 shader loops are statically bounded, so
+   * this must be an integer in the supported range 1..32. Default 8; 32 remains
+   * available as an explicit high-depth opt-in.
+   */
+  readonly maxBounces?: number;
+  /**
+   * Peak byte budget for frame-sized GPU render targets. The estimator includes
+   * the raw accumulator, four NEE candidate attachments, two running-mean blend
+   * slots, the present target, optional auxiliary G-buffer/OIDN targets, and the
+   * transactional overlap between the current published frame and a replacement.
+   * Default: 512 MiB. Requests above the budget throw before GL allocation.
+   */
+  readonly maxRenderTargetBytes?: number;
   /** Force a tier; otherwise auto-selected from WebGL2 caps (see traceTier.ts). */
   readonly traceTier?: WebGl2TraceTier;
   /** Spectral hero-wavelength rendering (S3). Default false. */
@@ -31,20 +42,19 @@ export interface PTEngineWebGL2Options extends EngineOptions {
    * Sobol direction texture; stratified sampling remains intentionally unsupported.
    */
   readonly sampling?: 'pcg' | 'sobol';
-  /** BDPT tuning — read only when {@link bdpt} is `true`. */
+  /** BDPT tuning — requires `bdpt:true` or `causticStrategy:'bdpt'`. */
   readonly bdptOptions?: {
     /**
-     * Max stored light-subpath vertices. Default 1 keeps `bdpt:true` endpoint-only
-     * and aligned with the safe default used by pt-webgpu. Values >1 require
-     * `experimentalMultiVertex:true` because the current multi-vertex path is a
-     * research harness, not a promoted production estimator.
+     * Maximum stored light-subpath vertices, including the sampled emitter
+     * endpoint. The bounded general-BDPT walk accepts 1..8 vertices; default 4.
+     * Finite emitters connect from c=0; c>=1 extends through stored surface or
+     * participating-medium vertices with an eight-entry nested homogeneous-
+     * medium stack, exact Beer visibility, and authored HG phase PDFs.
+     * Directional/environment paths
+     * use a disjoint partition: primary c=0 NEE, camera/delta forward escape,
+     * and c>=1 BDPT connections.
      */
     readonly maxLightBounces?: number;
-    /**
-     * Required to activate `maxLightBounces > 1`; preserves the known multi-vertex
-     * BDPT research path for A/B captures while preventing accidental use.
-     */
-    readonly experimentalMultiVertex?: boolean;
   };
   /**
    * Optional texture-fetch LOD by bounce depth. `0` (default) disables the optimization
@@ -54,29 +64,19 @@ export interface PTEngineWebGL2Options extends EngineOptions {
    */
   readonly materialLodDepth?: number;
   /**
-   * Naming note for `causticStrategy: 'manifold-nee'`:
-   *
-   * pt-webgl2's `'manifold-nee'` is a **deterministic refraction-walk heuristic**,
-   * NOT the Newton-solve Manifold Next-Event Estimation (MNEE) of pt-webgpu.
-   * It walks the refracted ray chain step-by-step, checks if it escapes to the
-   * environment (`reachedLight = true`), then adds `throughput * color * pow10Focus`
-   * as a caustic weight. There is no Newton solver, no constraint manifold, and no
-   * unbiased connection. The option name is kept for API stability; the real MNEE
-   * port from pt-webgpu is tracked as a road-to-100 fidelity item.
-   *
-   * Similarly, `'photon-map'` is a deterministic cone-traced estimate (8 sample cone
-   * rays, inverse-distance kernel, escaped rays add `+1.0` energy) — a known
-   * approximation (~21% energy bias at typical cone sizes), NOT a full photon-map or
-   * bidirectional density estimation. Documented here so callers set expectations
-   * correctly.
+   * Select the bounded general-BDPT estimator as the named caustic strategy.
+   * This is ordinary bidirectional path tracing with Veach MIS, not MNEE or
+   * photon mapping. Selecting it enables the same estimator as `bdpt:true`.
    */
-  readonly _causticStrategyDoc?: never; // JSDoc-only; not a real field.
+  readonly causticStrategy?: 'bdpt';
+  /** The BDPT caustic strategy has no separate tuning bag; use `bdptOptions`. */
+  readonly causticOptions?: never;
   /**
    * Opacity of directly-visible background (sky/HDRI) pixels, in [0, 1].
    * Default 1 (opaque — the environment is visible behind the scene). Values < 1
-   * make the background partially/fully transparent (alpha coverage), which forces
-   * the alpha-composite accumulation regime so the transparency composites
-   * correctly. Before this existed the uniform defaulted to 0 and directly-visible
+   * make the background partially/fully transparent. The renderer's portable
+   * alpha-aware running-mean compositor preserves that coverage on every WebGL2
+   * device. Before this existed the uniform defaulted to 0 and directly-visible
    * env never accumulated (rendered black) — see items_to_fix §H3.
    */
   readonly backgroundAlpha?: number;

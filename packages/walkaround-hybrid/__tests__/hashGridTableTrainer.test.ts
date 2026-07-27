@@ -30,7 +30,7 @@ import { HashGridTableTrainer } from '../src/neural/nrc/hashGridTableTrainer.js'
 // ── Recording mock GPUDevice ─────────────────────────────────────────────────
 
 interface Op {
-  kind: 'createBuffer' | 'writeBuffer' | 'clear' | 'dispatch' | 'submit';
+  kind: 'createBuffer' | 'createBindGroup' | 'destroy' | 'writeBuffer' | 'copy' | 'clear' | 'dispatch' | 'submit';
   size?: number;
   offset?: number;
   bytes?: number[];
@@ -39,13 +39,17 @@ interface Op {
 
 function makeRecordingDevice(ops: Op[]): GPUDevice {
   let bufId = 0;
-  const mkBuf = (size: number): GPUBuffer => ({
-    _id: bufId++, size,
-    destroy() {},
-    getMappedRange() { return new ArrayBuffer(size); },
-    async mapAsync() {},
-    unmap() {},
-  }) as unknown as GPUBuffer;
+  const mkBuf = (size: number): GPUBuffer => {
+    const id = bufId++;
+    const bytes = new Uint8Array(size);
+    return {
+      _id: id, _bytes: bytes, size,
+      destroy() { ops.push({ kind: 'destroy', detail: id }); },
+      getMappedRange() { return bytes.buffer; },
+      async mapAsync() {},
+      unmap() {},
+    } as unknown as GPUBuffer;
+  };
 
   const mkPass = () => ({
     setPipeline() {}, setBindGroup() {},
@@ -55,6 +59,12 @@ function makeRecordingDevice(ops: Op[]): GPUDevice {
 
   const mkEncoder = () => ({
     clearBuffer() { ops.push({ kind: 'clear' }); },
+    copyBufferToBuffer(s: GPUBuffer, so: number, d: GPUBuffer, doff: number, size: number) {
+      const src = (s as unknown as { _bytes: Uint8Array })._bytes;
+      const dst = (d as unknown as { _bytes: Uint8Array })._bytes;
+      dst.set(src.subarray(so, so + size), doff);
+      ops.push({ kind: 'copy', detail: size });
+    },
     beginComputePass() { return mkPass(); },
     finish() { return {}; },
   });
@@ -66,7 +76,7 @@ function makeRecordingDevice(ops: Op[]): GPUDevice {
     },
     createShaderModule() { return { getCompilationInfo: async () => ({ messages: [] }) }; },
     async createComputePipelineAsync() { return { getBindGroupLayout: () => ({}) }; },
-    createBindGroup() { return {}; },
+    createBindGroup() { ops.push({ kind: 'createBindGroup' }); return {}; },
     createCommandEncoder() { return mkEncoder(); },
     queue: {
       writeBuffer(_buf: GPUBuffer, offset: number, data: ArrayBuffer | ArrayBufferView) {
@@ -97,7 +107,12 @@ const cfg = {
   tableLearningRate: 0.1,
 };
 
-async function buildTrainer(ops: Op[]): Promise<{ device: GPUDevice; trainer: HashGridTableTrainer; tableScalars: number }> {
+async function buildTrainer(ops: Op[]): Promise<{
+  device: GPUDevice;
+  trainer: HashGridTableTrainer;
+  tableScalars: number;
+  initialTable: GPUBuffer;
+}> {
   const device = makeRecordingDevice(ops);
   const tableScalars = cfg.levels * cfg.tableSize * cfg.featuresPerEntry;
   const trainer = new HashGridTableTrainer(device, {
@@ -116,11 +131,86 @@ async function buildTrainer(ops: Op[]): Promise<{ device: GPUDevice; trainer: Ha
     levelsBuf: device.createBuffer({ size: cfg.levels * 16 } as GPUBufferDescriptor),
   };
   await trainer.build(ext, [-1, -1, -1], [1, 1, 1]);
-  return { device, trainer, tableScalars };
+  return { device, trainer, tableScalars, initialTable: ext.tablesBuf };
 }
 
 describe('HashGridTableTrainer — extracted + UBOs-once (Task 4.5 #3)', () => {
-  it('a table-train step creates NO new GPU buffers (persistent UBOs)', async () => {
+  it('alternates generations across success/failure/success without publishing failed bytes', async () => {
+    const ops: Op[] = [];
+    const built = await buildTrainer(ops);
+    const diagnosticsBuffer = (built.trainer as unknown as {
+      _diagnosticsBuffer: GPUBuffer;
+    })._diagnosticsBuffer;
+    const batchPos = new Float32Array(cfg.recordCap * 3).fill(0.25);
+    type Tracked = GPUBuffer & { _id: number; _bytes: Uint8Array };
+    type Set = { tables: Tracked; m: Tracked; v: Tracked };
+    const state = built.trainer as unknown as {
+      _ext: { tablesBuf: Tracked };
+      _trainableSets: readonly [Set, Set];
+      _tableAdamT: number;
+    };
+    const checksum = (set: Set): number => {
+      let hash = 0x811c9dc5;
+      for (const buffer of [set.tables, set.m, set.v]) {
+        for (const byte of buffer._bytes) hash = Math.imul(hash ^ byte, 0x01000193) >>> 0;
+      }
+      return hash;
+    };
+    const liveSet = (): Set => state._trainableSets.find(
+      set => set.tables === state._ext.tablesBuf,
+    )!;
+    const candidateSet = (buffer: GPUBuffer): Set => state._trainableSets.find(
+      set => set.tables === buffer,
+    )!;
+    const mutate = (set: Set, seed: number): void => {
+      set.tables._bytes[0] = seed;
+      set.m._bytes[1] = seed + 1;
+      set.v._bytes[2] = seed + 2;
+    };
+
+    const generationA = liveSet();
+    const baseline = checksum(generationA);
+
+    const tx1 = built.trainer.recordStep(
+      built.device.createCommandEncoder(), batchPos, 8,
+    );
+    const generationB = candidateSet(tx1.candidateTableBuffer);
+    expect(checksum(generationB)).toBe(baseline);
+    mutate(generationB, 17);
+    tx1.commitCpu();
+    tx1.finalizeSuccess();
+    expect(liveSet()).toBe(generationB);
+    const afterFirstSuccess = checksum(liveSet());
+    expect(afterFirstSuccess).not.toBe(baseline);
+    expect(state._tableAdamT).toBe(1);
+
+    const failed = built.trainer.recordStep(
+      built.device.createCommandEncoder(), batchPos, 8,
+    );
+    expect(candidateSet(failed.candidateTableBuffer)).toBe(generationA);
+    expect(checksum(generationA)).toBe(afterFirstSuccess);
+    mutate(generationA, 91);
+    failed.rollback();
+    expect(liveSet()).toBe(generationB);
+    expect(checksum(liveSet())).toBe(afterFirstSuccess);
+    expect(state._tableAdamT).toBe(1);
+
+    const tx2 = built.trainer.recordStep(
+      built.device.createCommandEncoder(), batchPos, 8,
+    );
+    expect(candidateSet(tx2.candidateTableBuffer)).toBe(generationA);
+    expect(checksum(generationA)).toBe(afterFirstSuccess);
+    mutate(generationA, 33);
+    tx2.commitCpu();
+    tx2.finalizeSuccess();
+    expect(liveSet()).toBe(generationA);
+    expect(checksum(liveSet())).not.toBe(afterFirstSuccess);
+    expect(state._tableAdamT).toBe(2);
+    expect((built.trainer as unknown as { _diagnosticsBuffer: GPUBuffer })._diagnosticsBuffer)
+      .toBe(diagnosticsBuffer);
+  });
+
+  it('allocates, binds, and destroys no GPU resources on the epoch hot path', async () => {
     const ops: Op[] = [];
     const { trainer } = await buildTrainer(ops);
 
@@ -128,15 +218,13 @@ describe('HashGridTableTrainer — extracted + UBOs-once (Task 4.5 #3)', () => {
     const batchPos = new Float32Array(cfg.recordCap * 3).fill(0.25);
     trainer.step(batchPos, 8);
 
-    const created = ops.filter(o => o.kind === 'createBuffer');
-    expect(created).toHaveLength(0); // the old code created 2 throwaway UBOs/frame
+    expect(ops.filter(o => o.kind === 'createBuffer')).toHaveLength(0);
+    expect(ops.filter(o => o.kind === 'createBindGroup')).toHaveLength(0);
+    expect(ops.filter(o => o.kind === 'destroy')).toHaveLength(0);
   });
 
-  it('emits the golden per-frame command sequence', async () => {
+  it('emits the transactional single-submit command sequence', async () => {
     const ops: Op[] = [];
-    const { tableScalars } = await { ...(await buildTrainer(ops)) };
-    // Rebuild cleanly to isolate the step ops.
-    ops.length = 0;
     const built = await buildTrainer(ops);
     ops.length = 0;
 
@@ -144,36 +232,27 @@ describe('HashGridTableTrainer — extracted + UBOs-once (Task 4.5 #3)', () => {
     const batchPos = new Float32Array(cfg.recordCap * 3).fill(0.25);
     built.trainer.step(batchPos, numActive);
 
-    // Golden host stream (mirrors NrcSubsystem._tableTrainStep exactly):
-    //  writeBuffer posBuf (numActive*3 f32)
-    //  writeBuffer encBwdParamsUbo @12 (numActive u32)
-    //  clear gradTablesFx + submit   (separate encoder)
-    //  --- main encoder ---
-    //  dispatch encode-backward ceil(numActive/64)
-    //  writeBuffer gradFin count UBO (ONLY if not already written at init — see
-    //    below; the persistent version writes it once at init, so per-step it is
-    //    NOT re-written)
-    //  dispatch gradFinalize ceil(tableScalars/64)
-    //  writeBuffer Adam UBO (per-step bc1/bc2)
-    //  dispatch Adam ceil(tableScalars/64)
-    //  submit
-    const tsDispatch = Math.ceil(built.tableScalars / 64);
-    const kinds = ops.map(o => o.kind);
-    expect(kinds).toEqual([
-      'writeBuffer', // posBuf
-      'writeBuffer', // encBwdParams numActive
+    // One transactional command buffer: write the batch/header, copy every
+    // current table/moment byte into the spare generation, clear gradients,
+    // dispatch encode-backward/finalize/Adam, and submit exactly once.
+    expect(ops.map(o => o.kind)).toEqual([
+      'writeBuffer',
+      'writeBuffer',
+      'copy', 'copy', 'copy',
       'clear',
-      'submit',
-      'dispatch',    // encode-backward
-      'dispatch',    // gradFinalize
-      'writeBuffer', // Adam UBO (bc1/bc2 change per step → re-written)
-      'dispatch',    // Adam
+      'dispatch',
+      'dispatch',
+      'writeBuffer',
+      'dispatch',
       'submit',
     ]);
-    expect(built.tableScalars).toBe(tableScalars);
-    // encode-backward dispatch count.
+    const tableDispatch = Math.ceil(built.tableScalars / 64);
     const dispatches = ops.filter(o => o.kind === 'dispatch').map(o => o.detail);
-    expect(dispatches).toEqual([Math.ceil(numActive / 64), tsDispatch, tsDispatch]);
+    expect(dispatches).toEqual([
+      Math.ceil(numActive / 64),
+      tableDispatch,
+      tableDispatch,
+    ]);
   });
 
   it('writes the golden numActive + Adam-UBO bytes (bc1/bc2 advance per step)', async () => {
@@ -210,5 +289,30 @@ describe('HashGridTableTrainer — extracted + UBOs-once (Task 4.5 #3)', () => {
     expect(a2.bc2).toBeCloseTo(1 - Math.pow(0.999, 2), 6);
     expect(a1.lr).toBeCloseTo(cfg.tableLearningRate, 6);
     expect(a1.count).toBe(built.tableScalars);
+  });
+
+  it('leaves the published table to the subsystem owner and destroys all trainer-owned generations once', async () => {
+    const ops: Op[] = [];
+    const built = await buildTrainer(ops);
+    const batchPos = new Float32Array(cfg.recordCap * 3).fill(0.25);
+    built.trainer.step(batchPos, 8);
+    built.trainer.step(batchPos, 8);
+
+    const currentTable = (built.trainer as unknown as {
+      _ext: { tablesBuf: GPUBuffer };
+    })._ext.tablesBuf;
+    ops.length = 0;
+    built.trainer.dispose();
+
+    const currentId = (currentTable as unknown as { _id: number })._id;
+    expect(ops.filter(o => o.kind === 'destroy' && o.detail === currentId)).toHaveLength(0);
+    const destroyedIds = ops.filter(o => o.kind === 'destroy').map(o => o.detail);
+    expect(new Set(destroyedIds).size).toBe(destroyedIds.length);
+
+    // NrcSubsystem is the sole owner of the published table at final disposal.
+    currentTable.destroy();
+    expect(ops.filter(o => o.kind === 'destroy' && o.detail === currentId)).toHaveLength(1);
+    built.trainer.dispose();
+    expect(ops.filter(o => o.kind === 'destroy' && o.detail === currentId)).toHaveLength(1);
   });
 });

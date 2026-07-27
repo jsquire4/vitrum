@@ -1,6 +1,6 @@
 # @vitrum/walkaround-hybrid
 
-**Stability:** production-grade for the shipped default walkaround pipeline (DDGI, ReSTIR-DI/GI, GTAO, à-trous/SVGF/BMFR denoisers, and RC). PPG, NRC, and the U-Net neural denoiser are opt-in experimental systems whose quality depends on scene validation and supplied training data. Public API surface is still evolving with host-contract work in `@vitrum/core`.
+**Stability:** production-grade for the shipped default walkaround pipeline (DDGI, ReSTIR-DI/GI, GTAO, à-trous/SVGF/BMFR denoisers, and RC). The U-Net runtime is fully implemented and checkpoint-gated; explicit selection requires production-ready v2 metadata, while output quality remains a property of the host-supplied checkpoint. PPG and NRC remain opt-in systems with scene-dependent quality. Public API surface is still evolving with host-contract work in `@vitrum/core`.
 
 WebGPU **ReSTIR DI + ReSTIR-GI** walkaround engine with **DDGI** probe updates and atlas sampling in the shade pass, **GTAO** ambient occlusion (half-res + bilateral upsample), per-channel **SVGF / à-trous-variance** denoising on direct + indirect, and opt-in **PPG** path guiding, **neural U-Net** denoiser, and **Radiance Cascades** (W8 shipped). RC is opt-in via `HybridEngineOptions.rcEnabled` and dispatches cascades each frame against the engine's own raw `GPUBuffer` allocation (no THREE WebGPU renderer dependency); cascade-0 sampling + MIS composition with DDGI / ReSTIR-GI are documented in [plan/archive/w8-rc-mis-composition-archived-2026-05-30.md](../../plan/archive/w8-rc-mis-composition-archived-2026-05-30.md).
 
@@ -10,9 +10,9 @@ Provides a class-based `Engine` implementation (`HybridEngine`) that composes:
 - **ReSTIR DI** (Reservoir-based Spatiotemporal Importance Resampling) — direct illumination with temporal + spatial reuse.
 - **ReSTIR-GI** (Ouyang et al. 2021) — indirect-illumination reservoirs with RIS + temporal + spatial reuse (Sprints 16–17).
 - **GTAO** (Jiménez 2016) — half-resolution ground-truth-based ambient occlusion with bilateral upsample (Sprint 15).
-- **Denoisers** (selectable via `EngineOptions.denoiser`): `'auto'` (resolves only from host-supplied neural/OIDN assets, then falls back visibly), `'atrous'`, `'atrous-variance'` (default), `'svgf-real'` (per-channel SVGF on direct + indirect, Sprint 18), `'bmfr'`, `'oidn-final'`, and `'neural'` (opt-in U-Net; requires preloaded weights — see `tools/neural-denoiser-training/README.md`).
-- **PPG** path guiding (Müller et al. 2017) — opt-in/experimental via `EngineOptions.ppgEnabled`; GPU-side training atomics feed CPU sTree/dTree updates, `splitOverflowLeaves` adaptively splits high-sample spatial cells, and inline gi-ris guided sampling consumes the learned distribution under `src/ppg/`.
-- **NRC** (Neural Radiance Caching) — opt-in/experimental via `nrcEnabled:true`; the default is off and construction emits a structured warning because the cache is a biased learned GI approximation.
+- **Denoisers** (selectable via `EngineOptions.denoiser`): `'auto'` (resolves from production-ready host neural metadata or an OIDN model URL, otherwise to the preset/default), `'atrous'`, `'atrous-variance'` (default), `'svgf-real'` (per-channel SVGF on direct + indirect, Sprint 18), `'bmfr'`, `'oidn-final'`, and `'neural'` (checkpoint-gated U-Net; requires preloaded weights — see `tools/neural-denoiser-training/README.md`).
+- **PPG** path guiding (Müller et al. 2017) — opt-in/supported via `EngineOptions.ppgEnabled`; GPU-side training atomics feed CPU sTree/dTree updates, `splitOverflowLeaves` adaptively splits high-sample spatial cells, and inline gi-ris guided sampling consumes the learned distribution under `src/ppg/`.
+- **NRC** (Neural Radiance Caching) — stable opt-in biased estimator via `nrcEnabled:true`; the default is off by product policy and construction emits a structured bias disclosure.
 - **Approximate material lobes** — atlas-backed scalar `specular`, `clearcoat`, `sheen`, `anisotropy`, and `iridescence` controls feed shade-owned direct, analytic, sun, glossy-indirect, ReSTIR-DI, and GI suffix material paths; readable specular, clearcoat factor/roughness/normal, sheen color/roughness, anisotropy, and iridescence factor/thickness maps multiply, perturb, or thin-film-modify the scalar controls. These rows remain approximate because GI receiver/reuse targeting and validation are not rich-lobe-complete.
 
 ## Denoisers
@@ -26,15 +26,15 @@ All modes share the same engine surface — only the post-shade pass changes.
 | `'atrous'`         |         | Legacy 3-iteration à-trous (no variance weighting).                                  |
 | `'atrous-variance'`| ✓       | Welford temporal accumulator + variance lookup + 3-iter à-trous. Current production. |
 | `'svgf-real'`      |         | Real Schied 2017 SVGF (T2.H1) — reprojection, moments, 7×7 filter, 5-tap à-trous.    |
-| `'bmfr'`           |         | Blockwise Multi-Order Feature Regression (Koskela et al. 2019) — Householder-QR feature regression. |
+| `'bmfr'`           |         | Explicit full-tier mode: overlapping 32×32 Blockwise Multi-Order Feature Regression (Koskela et al. 2019), using cooperative direct Householder TSQR plus deterministic overlap resolution. Never selected by `'auto'` or allowed on the lite tier. The persistent pass exposes `bmfr-fit` and `bmfr-resolve` timestamp-query labels; no device-independent real-time budget is claimed. |
 | `'neural'`         |         | U-Net neural denoiser (T2.H2 / W10). Requires `neuralWeights` — see below.           |
 | `'oidn-final'`     |         | Intel OIDN via ONNX Runtime Web (async; requires `extensions['walkaround-hybrid'].oidnModelUrl`). |
 
 ### Neural denoiser — weights interface
 
-`denoiser: 'neural'` is **opt-in / experimental**. It requires `neuralWeights: ModelWeights`
-to be passed to the engine constructor; missing weights produce a clear validation error at
-construction time.
+`denoiser: 'neural'` is an opt-in, production-implemented runtime. It requires a
+production-ready v2 `neuralWeights: ModelWeights` checkpoint; missing, legacy,
+shape-invalid, or preprocessing-mismatched weights fail during construction.
 
 ```ts
 import {
@@ -107,10 +107,10 @@ src/
   ppg/                   — Practical Path Guiding (Müller 2017): CPU sTree/dTree
                            state, GPU training/readback merge, adaptive
                            splitOverflowLeaves, and gi-ris inline guiding
-                           (opt-in/experimental via ppgEnabled)
-  neural/                — U-Net denoiser (Chaitanya 2017): InferenceGraph,
-                           inputPacker, unetArchitecture, weights loader (opt-in/
-                           experimental via denoiser: 'neural'); WGSL kernels under neural/wgsl/
+                           (opt-in/supported via ppgEnabled)
+  neural/                — checkpoint-gated U-Net denoiser (Chaitanya 2017):
+                           InferenceGraph, CPU oracle, liveness planner, v2 weights
+                           loader, preprocessing contract, and WGSL kernels
 ```
 
 The Radiance Cascades subsystem (`cascadePyramid`, `cascadeDispatch`, `cascadeBuffers`,
@@ -118,44 +118,30 @@ raw WGSL) was extracted
 2026-05-18 into [`@vitrum/walkaround-rc`](../walkaround-rc/). `walkaround-hybrid`
 re-exports the public surface for back-compat.
 
-## Bias & the unbiased GRIS variant
+## GRIS reuse boundary
 
-The default ReSTIR-GI spatial and temporal reuse (`restirPtReuse: false`) is
-**intentionally biased** for the realtime frame budget. The unbiased GRIS
-reconnection-shift variant (Lin et al. 2022, SIGGRAPH) is available as opt-in
-via `HybridEngineOptions.restirPtReuse: true`.
+The default ReSTIR-GI spatial and temporal passes use the compact 20-u32
+reservoir and retain their realtime-biased reuse rules. `grisReuse: true` is a
+construction-time choice that selects a 30-u32 reservoir and a separate shader
+graph for a narrower estimator: one cosine-sampled direction whose surface
+suffix radiance comes from DDGI, or an environment direction.
 
-### Default (OFF) bias sources
+The GRIS variant stores the native receiver state, evaluates the bounded
+all-technique transformed-density matrix, uses exact surface-shift Jacobians and
+environment identity shifts, traces reconnection visibility, folds exact attempt
+counts, and rejects history from an earlier scene/lighting mutation epoch.
+Receiver material response is applied later in shading. Glossy/specular path
+reuse and full path-prefix transport are outside this mode.
 
-| # | Source | File:line | Manifestation |
-|---|--------|-----------|---------------|
-| B1 | **Jacobian clamp `[0.1, 10]`** | `shaders/jacobianShift.wgsl.ts` — `return clamp(J, 0.1, 10.0)` | Systematic over/under-weighting of neighbours with extreme solid-angle ratios (depth-discontinuity edges in the indirect channel). Stationary — does not grow with frame count. |
-| B2 | **No reconnection-visibility ray** | `shaders/spatialGi.wgsl.ts` (OFF, `SPATIAL_GI_WGSL`) and `shaders/temporalGi.wgsl.ts` (OFF, `TEMPORAL_GI_WGSL`) — reuse weight applied without occlusion test | Indirect light bleeds through geometry at depth discontinuities; occluded neighbours contribute energy they should not. Partially suppressed by the normal/depth consistency test but not eliminated. |
-| B3 | **No full GBH MIS** | `spatialGi.wgsl.ts` and `temporalGi.wgsl.ts` (OFF variants) — weight `w_q = pHatZ * rQ.W * Mq * J` with no MIS denominator | Contribution weights do not sum to 1 (Lin 2022 GBH sense); slightly over-energised indirect where M counts differ across pixels. |
-| Former B4 | **Centroid p̂** (closed) | `shaders/restirPHat.wgsl.ts` — `restir_di_compute_phat_xi(...)` | Current shaders evaluate p̂ at the reservoir's stored sampled point `xi`; this row remains only as a historical audit note and should not be counted as an active default-path bias unless the xi-aware helper regresses. |
+This mode does not promise an unbiased path-tracing result: DDGI is a cached
+irradiance approximation and finite `restirGiIrrClamp` / `restirGiWCap` controls
+remain active. It can cost substantially more than compact reuse because viable
+spatial candidates require visibility rays and an O(K^2) density matrix for
+K <= 6 domains. The layout is fixed at engine creation.
 
-### Cost of enabling `restirPtReuse: true`
-
-The unbiased path adds per accepted spatial/temporal reuse candidate:
-- one BVH shadow ray (reconnection-visibility test), and
-- the full generalized-balance MIS cross-evaluation over all K_SPATIAL_GI = 5
-  gathered neighbours (O(K²) target evaluations in the spatial pass).
-
-The GI spatial + temporal passes are the **realtime frame-time bottleneck** for
-typical walkaround usage — enabling GRIS roughly doubles their cost on scenes
-where many neighbours pass the geometric-consistency test. This is the regime
-argument for keeping `false` as the default.
-
-### When to enable
-
-Enable `restirPtReuse: true` when: the scene is rendered in a converged or
-offline-ish mode (sustained still camera, progressive accumulation, A/B
-validation); you observe energy bleed or indirect light leak at geometry
-boundaries; or you are running the V19 GPU unbiasedness validation
-(`HARDWARE-VALIDATION-NEEDS.md`).
-
-The gate is COMPILE-TIME (fixed at engine creation — changes the GI pipeline
-layout and shader variant). Same pattern as `rcEnabled`, `ppgEnabled`, `regir`.
+`restirPtReuse` remains only as a deprecated migration alias for `grisReuse`.
+Conflicting values are rejected, and supplying the alias emits a structured
+construction warning.
 
 ## Known Issues
 
@@ -166,21 +152,13 @@ engine. Hosts provide lifecycle-owned GPU resources through the engine
 constructor; the package no longer imports `three/webgpu` or depends on Three.js
 renderer internals for probe updates.
 
-### Shader portability: Chromium-only (`ptr<storage>` fn params)
+### Shader portability
 
-The walkaround-hybrid + `@vitrum/walkaround-rc` production shaders use
-`ptr<storage>` function parameters (the shared-bvh TLAS traversal helpers pass
-storage pointers by parameter). This requires the WGSL
-`unrestricted_pointer_parameters` capability, which **Tint/Chrome accept but
-naga (Firefox, and Deno's wgpu-native) reject** — there is no WebGPU `enable`
-path for it. The runtime walkaround shaders are therefore **Chromium-only**
-today; the shader gate compiles an `applyNagaFix`-patched derivative for its
-green path and separately REPORTS a verbatim-compile tracked metric
-(`[shader-gate] verbatim-compile metric …`) counting how many shipped shaders
-reject on naga verbatim. Refactoring the traversal core away from `ptr<storage>`
-is a scoped, tracked road-to-100 program (see `plan/road-to-100.md`); it is not
-scheduled here. pt-webgpu shaders are gate-validated verbatim and are not
-affected. See `plan/renderer-fidelity-matrix.md`.
+The walkaround-hybrid and `@vitrum/walkaround-rc` production shaders use the
+shared-bvh module-scope value-return loader seam. They do not require the
+non-core `unrestricted_pointer_parameters` capability. The shader gate compiles
+the exact emitted WGSL on naga and treats every portability failure as fatal;
+the production-pipeline gate creates pipelines from that same unmodified source.
 
 ### RC subsystem: GPU-validated 2026-06-07
 

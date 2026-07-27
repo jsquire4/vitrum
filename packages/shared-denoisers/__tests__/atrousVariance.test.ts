@@ -66,33 +66,25 @@ describe('ATROUS_VARIANCE_WGSL', () => {
     expect(ATROUS_VARIANCE_WGSL).toContain('var varIn_inputColor');
   });
 
-  it('declares prevRadiance binding', () => {
-    expect(ATROUS_VARIANCE_WGSL).toContain('var varIn_prevRadiance');
-  });
-
-  it('declares gbufferNormal binding in variance pass', () => {
-    expect(ATROUS_VARIANCE_WGSL).toContain('var varIn_gbufNormal');
-  });
-
-  it('declares gbufferDepth binding in variance pass', () => {
-    expect(ATROUS_VARIANCE_WGSL).toContain('var varIn_gbufDepth');
-  });
-
-  it('declares motionVectors binding', () => {
-    expect(ATROUS_VARIANCE_WGSL).toContain('var varIn_motionVec');
+  it('does not declare inert temporal or G-buffer resources in the variance pass', () => {
+    expect(ATROUS_VARIANCE_WGSL).not.toContain('varIn_prevRadiance');
+    expect(ATROUS_VARIANCE_WGSL).not.toContain('varIn_gbufNormal');
+    expect(ATROUS_VARIANCE_WGSL).not.toContain('varIn_gbufDepth');
+    expect(ATROUS_VARIANCE_WGSL).not.toContain('varIn_motionVec');
   });
 
   it('declares varianceIn binding', () => {
-    expect(ATROUS_VARIANCE_WGSL).toContain('var varIn_varianceIn');
+    expect(ATROUS_VARIANCE_WGSL).toContain('@group(0) @binding(1) var varIn_varianceIn');
   });
 
   it('declares varianceOut storage binding', () => {
-    expect(ATROUS_VARIANCE_WGSL).toContain('var varOut_varianceOut');
+    expect(ATROUS_VARIANCE_WGSL).toContain('@group(0) @binding(2) var varOut_varianceOut');
   });
 
   it('declares AtrousVarianceVarianceUBO struct', () => {
     expect(ATROUS_VARIANCE_WGSL).toContain('struct AtrousVarianceVarianceUBO');
     expect(ATROUS_VARIANCE_WGSL).toContain('frameCount');
+    expect(ATROUS_VARIANCE_WGSL).toContain('@group(0) @binding(3) var<uniform>');
   });
 
   // À-trous pass bindings

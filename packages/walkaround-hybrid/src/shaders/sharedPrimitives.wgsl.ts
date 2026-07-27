@@ -46,11 +46,7 @@ fn pcgHash2FromSeed(seed: u32) -> vec2f {
 }
 
 fn pixelHash2(px: vec2u, salt: u32) -> vec2f {
-  _ = salt;
-  return vec2f(
-    fract(sin(f32(px.x) * 12.9898 + f32(px.y) * 78.233) * 43758.5453),
-    fract(sin(f32(px.x) * 93.989  + f32(px.y) * 67.345) * 24634.6345),
-  );
+  return pcgHash2FromSeed(vitrumPcgSeed2(px.x, px.y, salt));
 }
 
 fn floatCellHash(p: vec2f, salt: u32) -> f32 {

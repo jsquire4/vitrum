@@ -10,40 +10,43 @@
 
 import type { WgslModule } from '../pipeline/wgslComposer.js';
 
-// INTENTIONAL per-backend divergence (complexity-sweep 2026-06-02, verified + kept
-// — NOT accidental duplication): distributionGGX/geometrySchlickGGX below are kept
-// local rather than shared with pt-webgpu's ggxD/smithG1 or @vitrum/shared-samplers,
-// because the backends floor roughness differently — walkaround floors `rough` at
-// 0.01 (via evalGGX) with no denominator floor; pt-webgpu floors alpha=rough² at
-// 1e-3 plus a 1e-6 denom floor. They produce different low-roughness specular
-// (rough=0.02 → a²≈1.6e-7 here vs 1e-6 in pt-webgpu); unifying would change
-// rendering. See @vitrum/shared-samplers/wgsl/bsdfPrimitives.wgsl.ts for the
-// reference (unfloored) form.
+// Walter et al. 2007 / Heitz 2014 GGX. The continuous lobe is deliberately zero
+// at perceptual roughness == 0; delta reflection/transmission is owned by the
+// explicit event samplers below rather than by broadening the distribution.
 export const GGX_BRDF_WGSL = /* wgsl */ `// ============================================================
 // GGX BRDF (simplified Lambertian + GGX specular)
 // ============================================================
 
 // GGX NDF
 fn distributionGGX(NdotH: f32, rough: f32) -> f32 {
-  let a = rough * rough;
-  let a2 = a * a;
-  let d = NdotH * NdotH * (a2 - 1.0) + 1.0;
-  return a2 / (PI * d * d);
+  if (NdotH <= 0.0 || rough <= 0.0) { return 0.0; }
+  let alpha = rough * rough;
+  let alpha2 = alpha * alpha;
+  let d = NdotH * NdotH * (alpha2 - 1.0) + 1.0;
+  return alpha2 / (PI * d * d);
 }
 
-// Smith G1 (Schlick approximation)
-fn geometrySchlickGGX(NdotV: f32, rough: f32) -> f32 {
-  let r = rough + 1.0;
-  let k = r * r / 8.0;
-  return NdotV / (NdotV * (1.0 - k) + k);
+// Exact Smith G1 for GGX (Walter 2007, Eq. 34; Heitz 2014).
+fn smithG1GGX(NdotV: f32, alpha2: f32) -> f32 {
+  if (NdotV <= 0.0) { return 0.0; }
+  return (2.0 * NdotV) /
+    (NdotV + sqrt(alpha2 + (1.0 - alpha2) * NdotV * NdotV));
 }
 
 fn geometrySmith(NdotV: f32, NdotL: f32, rough: f32) -> f32 {
-  return geometrySchlickGGX(NdotV, rough) * geometrySchlickGGX(NdotL, rough);
+  if (rough <= 0.0) { return 0.0; }
+  let alpha = rough * rough;
+  let alpha2 = alpha * alpha;
+  return smithG1GGX(NdotV, alpha2) * smithG1GGX(NdotL, alpha2);
 }
 
 fn materialF0(albedo: vec3f, metal: f32, specularColor: vec3f, specularIntensity: f32) -> vec3f {
-  let dielectricF0 = vec3f(0.04) * clamp(specularColor, vec3f(0.0), vec3f(1.0)) * clamp(specularIntensity, 0.0, 1.0);
+  let absoluteThinFilmF0 = all(specularColor >= vec3f(1.0));
+  let dielectricF0 = select(
+    vec3f(0.04) * clamp(specularColor, vec3f(0.0), vec3f(1.0)) * clamp(specularIntensity, 0.0, 1.0),
+    clamp(specularColor - vec3f(1.0), vec3f(0.0), vec3f(1.0)),
+    absoluteThinFilmF0,
+  );
   return mix(dielectricF0, albedo, clamp(metal, 0.0, 1.0));
 }
 
@@ -128,7 +131,7 @@ fn evalIridescence(
 
   let OPD = 2.0 * iridescenceIor * thicknessNm * cosTheta2;
   let phi = vec3f(phi21) + phi23;
-  let R123 = clamp(R12 * R23, vec3f(1e-5), vec3f(0.9999));
+  let R123 = clamp(R12 * R23, vec3f(0.0), vec3f(0.9999));
   let r123 = sqrt(R123);
   let Rs = (T121 * T121) * R23 / (vec3f(1.0) - R123);
 
@@ -145,7 +148,7 @@ fn evalIridescence(
 
 fn iridescenceModifiedF0(baseF0: vec3f, iridescence: vec4f, cosTheta: f32) -> vec3f {
   let factor = clamp(iridescence.x, 0.0, 1.0);
-  if (factor < 1e-4) {
+  if (factor <= 0.0) {
     return baseF0;
   }
   let thicknessNm = mix(max(0.0, iridescence.z), max(0.0, iridescence.w), clamp(cosTheta, 0.0, 1.0));
@@ -154,9 +157,9 @@ fn iridescenceModifiedF0(baseF0: vec3f, iridescence: vec4f, cosTheta: f32) -> ve
 }
 
 fn anisotropyAxes(rough: f32, anisotropy: f32) -> vec2f {
-  let alpha = max(rough * rough, 1e-4);
-  let aspect = sqrt(max(1.0 - 0.9 * clamp(anisotropy, 0.0, 1.0), 1e-4));
-  return vec2f(max(alpha / aspect, 1e-4), max(alpha * aspect, 1e-4));
+  let alpha = rough * rough;
+  let aspect = sqrt(1.0 - 0.9 * clamp(anisotropy, 0.0, 1.0));
+  return vec2f(alpha / aspect, alpha * aspect);
 }
 
 fn anisotropyTangentFrame(n: vec3f, rotation: f32) -> mat3x3f {
@@ -195,21 +198,23 @@ fn anisotropyTangentFrameFromBasis(n: vec3f, tangentBasis: vec3f, bitangentBasis
 }
 
 fn distributionGGXAnisotropic(n: vec3f, t: vec3f, b: vec3f, h: vec3f, alphaX: f32, alphaY: f32) -> f32 {
-  let NdotH = max(0.0, dot(n, h));
+  let NdotH = dot(n, h);
+  if (NdotH <= 0.0 || alphaX <= 0.0 || alphaY <= 0.0) { return 0.0; }
   let TdotH = dot(t, h);
   let BdotH = dot(b, h);
   let denom = (TdotH / alphaX) * (TdotH / alphaX) +
               (BdotH / alphaY) * (BdotH / alphaY) +
               NdotH * NdotH;
-  return 1.0 / max(PI * alphaX * alphaY * denom * denom, 1e-8);
+  return 1.0 / (PI * alphaX * alphaY * denom * denom);
 }
 
 fn geometrySmithGGXAnisotropicG1(n: vec3f, t: vec3f, b: vec3f, v: vec3f, alphaX: f32, alphaY: f32) -> f32 {
-  let NdotV = max(1e-4, dot(n, v));
+  let NdotV = dot(n, v);
+  if (NdotV <= 0.0 || alphaX <= 0.0 || alphaY <= 0.0) { return 0.0; }
   let TdotV = dot(t, v);
   let BdotV = dot(b, v);
   let root = sqrt(alphaX * alphaX * TdotV * TdotV + alphaY * alphaY * BdotV * BdotV + NdotV * NdotV);
-  return (2.0 * NdotV) / max(NdotV + root, 1e-6);
+  return (2.0 * NdotV) / (NdotV + root);
 }
 
 fn geometrySmithGGXAnisotropic(n: vec3f, t: vec3f, b: vec3f, wo: vec3f, wi: vec3f, alphaX: f32, alphaY: f32) -> f32 {
@@ -230,16 +235,17 @@ fn evalGGXWithSpecular(
   wi: vec3f,
 ) -> vec3f {
   let h = safe_normalize(wo + wi);
-  let NdotL = max(0.0, dot(n, wi));
-  let NdotV = max(1e-4, dot(n, wo));
+  let NdotL = dot(n, wi);
+  let NdotV = dot(n, wo);
+  if (NdotL <= 0.0 || NdotV <= 0.0) { return vec3f(0.0); }
   let NdotH = max(0.0, dot(n, h));
   let VdotH = max(0.0, dot(wo, h));
-  if (NdotL < 1e-6 || NdotV < 1e-6) { return vec3f(0.0); }
 
   let F0 = materialF0(albedo, metal, specularColor, specularIntensity);
   let F   = fresnelSchlick(VdotH, F0);
-  let D   = distributionGGX(NdotH, max(0.01, rough));
-  let G   = geometrySmith(NdotV, NdotL, max(0.01, rough));
+  let continuousRoughness = clamp(rough, 0.0, 1.0);
+  let D   = distributionGGX(NdotH, continuousRoughness);
+  let G   = geometrySmith(NdotV, NdotL, continuousRoughness);
 
   let specular = (D * G * F) / (4.0 * NdotV * NdotL);
   let diffuse  = (1.0 - F) * (1.0 - metal) * albedo * INV_PI;
@@ -293,27 +299,28 @@ fn evalGGXWithSpecularAnisotropyFrame(
   wi: vec3f,
 ) -> vec3f {
   let aniso = clamp(anisotropy, 0.0, 1.0);
-  if (aniso <= 1e-4 && iridescence.x <= 1e-4) {
+  if (aniso <= 0.0 && iridescence.x <= 0.0) {
     return evalGGXWithSpecular(albedo, rough, metal, specularColor, specularIntensity, n, wo, wi);
   }
 
   let h = safe_normalize(wo + wi);
-  let NdotL = max(0.0, dot(n, wi));
-  let NdotV = max(1e-4, dot(n, wo));
+  let NdotL = dot(n, wi);
+  let NdotV = dot(n, wo);
+  if (NdotL <= 0.0 || NdotV <= 0.0) { return vec3f(0.0); }
   let NdotH = max(0.0, dot(n, h));
   let VdotH = max(0.0, dot(wo, h));
-  if (NdotL < 1e-6 || NdotV < 1e-6) { return vec3f(0.0); }
+  let continuousRoughness = clamp(rough, 0.0, 1.0);
 
   let F0 = iridescenceModifiedF0(materialF0(albedo, metal, specularColor, specularIntensity), iridescence, VdotH);
   let F = fresnelSchlick(VdotH, F0);
   var D: f32;
   var G: f32;
-  if (aniso <= 1e-4) {
-    D = distributionGGX(NdotH, max(0.01, rough));
-    G = geometrySmith(NdotV, NdotL, max(0.01, rough));
+  if (aniso <= 0.0) {
+    D = distributionGGX(NdotH, continuousRoughness);
+    G = geometrySmith(NdotV, NdotL, continuousRoughness);
   } else {
     let frame = anisotropyTangentFrameFromBasis(n, anisotropyTangent, anisotropyBitangent, anisotropyRotation);
-    let axes = anisotropyAxes(max(0.01, rough), aniso);
+    let axes = anisotropyAxes(continuousRoughness, aniso);
     D = distributionGGXAnisotropic(n, frame[0], frame[1], h, axes.x, axes.y);
     G = geometrySmithGGXAnisotropic(n, frame[0], frame[1], wo, wi, axes.x, axes.y);
   }
@@ -329,16 +336,16 @@ fn evalGGX(albedo: vec3f, rough: f32, metal: f32, n: vec3f, wo: vec3f, wi: vec3f
 
 fn evalClearcoatLobe(clearcoat: f32, clearcoatRoughness: f32, n: vec3f, wo: vec3f, wi: vec3f) -> vec3f {
   let cc = clamp(clearcoat, 0.0, 1.0);
-  if (cc < 1e-4) { return vec3f(0.0); }
+  let rough = clamp(clearcoatRoughness, 0.0, 1.0);
+  if (cc <= 0.0 || rough <= 0.0) { return vec3f(0.0); }
   let h = safe_normalize(wo + wi);
-  let NdotL = max(0.0, dot(n, wi));
-  let NdotV = max(1e-4, dot(n, wo));
+  let NdotL = dot(n, wi);
+  let NdotV = dot(n, wo);
+  if (NdotL <= 0.0 || NdotV <= 0.0) { return vec3f(0.0); }
   let NdotH = max(0.0, dot(n, h));
   let VdotH = max(0.0, dot(wo, h));
-  if (NdotL < 1e-6 || NdotV < 1e-6) { return vec3f(0.0); }
 
   // KHR_materials_clearcoat uses a dielectric top coat at IOR 1.5 (F0 ≈ 0.04).
-  let rough = max(0.01, clamp(clearcoatRoughness, 0.0, 1.0));
   let F = fresnelSchlick(VdotH, vec3f(0.04));
   let D = distributionGGX(NdotH, rough);
   let G = geometrySmith(NdotV, NdotL, rough);
@@ -349,24 +356,26 @@ fn evalClearcoatLobe(clearcoat: f32, clearcoatRoughness: f32, n: vec3f, wo: vec3
 // KHR_materials_sheen: Charlie distribution plus Neubelt-Pettineo visibility.
 // This returns the full lobe contribution including NdotL, matching evalGGX().
 fn charlieD(nDotH: f32, alpha: f32) -> f32 {
-  let invAlpha = 1.0 / max(alpha, 1e-4);
+  if (alpha <= 0.0) { return 0.0; }
+  let invAlpha = 1.0 / alpha;
   let sinThetaH = sqrt(max(0.0, 1.0 - nDotH * nDotH));
   return (2.0 + invAlpha) * pow(sinThetaH, invAlpha) / (2.0 * PI);
 }
 
 fn sheenVisibility(nDotL: f32, nDotV: f32) -> f32 {
-  return 1.0 / max(4.0 * (nDotL + nDotV - nDotL * nDotV), 1e-6);
+  return 1.0 / (4.0 * (nDotL + nDotV - nDotL * nDotV));
 }
 
 fn evalSheenLobe(sheen: f32, sheenRoughness: f32, sheenColor: vec3f, n: vec3f, wo: vec3f, wi: vec3f) -> vec3f {
   let sh = clamp(sheen, 0.0, 1.0);
-  if (sh < 1e-4) { return vec3f(0.0); }
-  let NdotL = max(0.0, dot(n, wi));
-  let NdotV = max(0.0, dot(n, wo));
-  if (NdotL < 1e-6 || NdotV < 1e-6) { return vec3f(0.0); }
+  let sheenRough = clamp(sheenRoughness, 0.0, 1.0);
+  if (sh <= 0.0 || sheenRough <= 0.0) { return vec3f(0.0); }
+  let NdotL = dot(n, wi);
+  let NdotV = dot(n, wo);
+  if (NdotL <= 0.0 || NdotV <= 0.0) { return vec3f(0.0); }
   let h = safe_normalize(wo + wi);
   let NdotH = max(0.0, dot(n, h));
-  let alpha = max(clamp(sheenRoughness, 0.0, 1.0) * clamp(sheenRoughness, 0.0, 1.0), 1e-3);
+  let alpha = sheenRough * sheenRough;
   let D = charlieD(NdotH, alpha);
   let V = sheenVisibility(NdotL, NdotV);
   return sh * clamp(sheenColor, vec3f(0.0), vec3f(1.0)) * D * V * NdotL;
@@ -501,11 +510,12 @@ fn fresnelAverage(F0: vec3f) -> vec3f {
 // cosine in). Returns vec3f(0) at low roughness (Eavg→1) so the single-scatter
 // path is unchanged. Eq. refs in the block comment above.
 fn ggxMultiscatter(F0: vec3f, rough: f32, NdotV: f32, NdotL: f32) -> vec3f {
+  if (rough <= 0.0) { return vec3f(0.0); }
   let Eo = ggxDirectionalAlbedo(NdotV, rough);
   let Ei = ggxDirectionalAlbedo(NdotL, rough);
   let Eavg = ggxAverageAlbedo(rough);
   let oneMinusEavg = 1.0 - Eavg;
-  if (oneMinusEavg < 1e-4) { return vec3f(0.0); }       // low-roughness: no comp.
+  if (!(oneMinusEavg > 0.0)) { return vec3f(0.0); }
   let fms = ((1.0 - Eo) * (1.0 - Ei)) / (PI * oneMinusEavg);
   let Favg = fresnelAverage(F0);
   // Colour-series multiscatter Fresnel: keeps conductor hue over extra bounces.
@@ -537,17 +547,18 @@ fn evalGGXSpecularOnlyWithSpecular(
   wi: vec3f,
 ) -> vec3f {
   let h = safe_normalize(wo + wi);
-  let NdotL = max(0.0, dot(n, wi));
-  let NdotV = max(1e-4, dot(n, wo));
+  let NdotL = dot(n, wi);
+  let NdotV = dot(n, wo);
+  if (NdotL <= 0.0 || NdotV <= 0.0) { return vec3f(0.0); }
   let NdotH = max(0.0, dot(n, h));
   let VdotH = max(0.0, dot(wo, h));
-  if (NdotL < 1e-6 || NdotV < 1e-6) { return vec3f(0.0); }
+  let continuousRoughness = clamp(rough, 0.0, 1.0);
   let F0 = materialF0(albedo, metal, specularColor, specularIntensity);
   let F  = fresnelSchlick(VdotH, F0);
-  let D  = distributionGGX(NdotH, max(0.01, rough));
-  let G  = geometrySmith(NdotV, NdotL, max(0.01, rough));
+  let D  = distributionGGX(NdotH, continuousRoughness);
+  let G  = geometrySmith(NdotV, NdotL, continuousRoughness);
   let specular = (D * G * F) / (4.0 * NdotV * NdotL);
-  let ms = ggxMultiscatter(F0, max(0.01, rough), NdotV, NdotL);
+  let ms = ggxMultiscatter(F0, continuousRoughness, NdotV, NdotL);
   return (specular + ms) * NdotL;
 }
 
@@ -598,32 +609,33 @@ fn evalGGXSpecularOnlyWithSpecularAnisotropyFrame(
   wi: vec3f,
 ) -> vec3f {
   let aniso = clamp(anisotropy, 0.0, 1.0);
-  if (aniso <= 1e-4 && iridescence.x <= 1e-4) {
+  if (aniso <= 0.0 && iridescence.x <= 0.0) {
     return evalGGXSpecularOnlyWithSpecular(albedo, rough, metal, specularColor, specularIntensity, n, wo, wi);
   }
 
   let h = safe_normalize(wo + wi);
-  let NdotL = max(0.0, dot(n, wi));
-  let NdotV = max(1e-4, dot(n, wo));
+  let NdotL = dot(n, wi);
+  let NdotV = dot(n, wo);
+  if (NdotL <= 0.0 || NdotV <= 0.0) { return vec3f(0.0); }
   let NdotH = max(0.0, dot(n, h));
   let VdotH = max(0.0, dot(wo, h));
-  if (NdotL < 1e-6 || NdotV < 1e-6) { return vec3f(0.0); }
+  let continuousRoughness = clamp(rough, 0.0, 1.0);
 
   let F0 = iridescenceModifiedF0(materialF0(albedo, metal, specularColor, specularIntensity), iridescence, VdotH);
   let F = fresnelSchlick(VdotH, F0);
   var D: f32;
   var G: f32;
-  if (aniso <= 1e-4) {
-    D = distributionGGX(NdotH, max(0.01, rough));
-    G = geometrySmith(NdotV, NdotL, max(0.01, rough));
+  if (aniso <= 0.0) {
+    D = distributionGGX(NdotH, continuousRoughness);
+    G = geometrySmith(NdotV, NdotL, continuousRoughness);
   } else {
     let frame = anisotropyTangentFrameFromBasis(n, anisotropyTangent, anisotropyBitangent, anisotropyRotation);
-    let axes = anisotropyAxes(max(0.01, rough), aniso);
+    let axes = anisotropyAxes(continuousRoughness, aniso);
     D = distributionGGXAnisotropic(n, frame[0], frame[1], h, axes.x, axes.y);
     G = geometrySmithGGXAnisotropic(n, frame[0], frame[1], wo, wi, axes.x, axes.y);
   }
   let specular = (D * G * F) / (4.0 * NdotV * NdotL);
-  let ms = ggxMultiscatter(F0, max(0.01, rough), NdotV, NdotL);
+  let ms = ggxMultiscatter(F0, continuousRoughness, NdotV, NdotL);
   return (specular + ms) * NdotL;
 }
 
@@ -703,7 +715,7 @@ fn evalGGXSpecularOnlyWithSpecularClearcoatSheenWithAnisotropyFrame(
 // ── B16 (road-to-100) — GGX VNDF importance sampler (Heitz 2018) ─────────────
 //
 // Samples a glossy reflection direction wi ∝ the GGX visible-normal distribution
-// for the DI BRDF candidate (ris.wgsl M_BRDF loop). Returns the world-space wi.
+// for BRDF-direction sampling paths. Returns the world-space wi.
 // The matching solid-angle pdf is ggxVndfReflectionPdf below — they MUST agree
 // (a sampler/pdf mismatch biases the RIS source-pdf bookkeeping).
 //
@@ -719,9 +731,13 @@ fn ggxBuildOnb(n: vec3f, t: ptr<function, vec3f>, b: ptr<function, vec3f>) {
 
 // Heitz 2018 Algorithm 1 — tangent-space VNDF half-vector (wo, N=+Z).
 fn ggxSampleVndfTangent(wo: vec3f, alpha: f32, rng: ptr<function, u32>) -> vec3f {
+  if (alpha <= 0.0) { return vec3f(0.0, 0.0, 1.0); }
   let Vh = safe_normalize(vec3f(alpha * wo.x, alpha * wo.y, wo.z));
   let lensq = Vh.x * Vh.x + Vh.y * Vh.y;
-  let T1 = select(vec3f(1.0, 0.0, 0.0), vec3f(-Vh.y, Vh.x, 0.0) * inverseSqrt(lensq), lensq > 1e-10);
+  var T1 = vec3f(1.0, 0.0, 0.0);
+  if (lensq > 0.0) {
+    T1 = vec3f(-Vh.y, Vh.x, 0.0) * inverseSqrt(lensq);
+  }
   let T2 = cross(Vh, T1);
   let u1 = rand_f32(rng);
   let u2 = rand_f32(rng);
@@ -732,18 +748,18 @@ fn ggxSampleVndfTangent(wo: vec3f, alpha: f32, rng: ptr<function, u32>) -> vec3f
   let s = 0.5 * (1.0 + Vh.z);
   t2 = (1.0 - s) * sqrt(max(0.0, 1.0 - t1 * t1)) + s * t2;
   let Nh = t1 * T1 + t2 * T2 + sqrt(max(0.0, 1.0 - t1 * t1 - t2 * t2)) * Vh;
-  return safe_normalize(vec3f(alpha * Nh.x, alpha * Nh.y, max(1e-6, Nh.z)));
+  return safe_normalize(vec3f(alpha * Nh.x, alpha * Nh.y, max(0.0, Nh.z)));
 }
 
 // Sample a world-space glossy reflection direction wi via VNDF. n = surface
 // normal, wo = world view dir (toward camera). Returns wi (may point below the
 // surface — the caller checks dot(n,wi) > 0).
 //
-// B16 (road-to-100) — alpha floor: alpha = max(rough², 1e-4). Matches
-// ggxVndfReflectionPdf exactly so the RIS source-pdf bookkeeping is unbiased.
-// (Prior code floored at 1e-3 here vs 1e-4 in the pdf — sampler/pdf mismatch.)
+// roughness == 0 is the discrete mirror event. Positive roughness is sampled
+// without broadening so the VNDF and its PDF describe the authored lobe.
 fn ggxSampleVndf(n: vec3f, wo: vec3f, rough: f32, rng: ptr<function, u32>) -> vec3f {
-  let alpha = max(rough * rough, 1e-4);
+  if (rough <= 0.0) { return reflect(-wo, n); }
+  let alpha = rough * rough;
   var t: vec3f; var b: vec3f;
   ggxBuildOnb(n, &t, &b);
   // wo into tangent space (N = +Z).
@@ -753,39 +769,123 @@ fn ggxSampleVndf(n: vec3f, wo: vec3f, rough: f32, rng: ptr<function, u32>) -> ve
   return reflect(-wo, h);
 }
 
-// Exact Smith G1 for GGX (Heitz 2014 / Walter 2007).
-// G1(nv, a²) = 2·nv / (nv + sqrt(a² + (1 − a²)·nv²))
-// Used ONLY in the VNDF density (below); the shading G term (geometrySmith)
-// keeps the Schlick approximation intentionally — changing it would alter
-// shading. The VNDF density REQUIRES the exact G1 (the sampler draws from the
-// exact distribution; using the Schlick approx here biases source-pdf values).
-fn smithG1GGX(nv: f32, a2: f32) -> f32 {
-  return 2.0 * nv / (nv + sqrt(a2 + (1.0 - a2) * nv * nv));
+fn dielectricFresnelExact(cosThetaI: f32, etaIncident: f32, etaTarget: f32) -> f32 {
+  if (etaIncident == etaTarget) { return 0.0; }
+  let ci = clamp(abs(cosThetaI), 0.0, 1.0);
+  let eta = etaIncident / etaTarget;
+  let sin2ThetaT = eta * eta * (1.0 - ci * ci);
+  if (sin2ThetaT >= 1.0) { return 1.0; }
+  let ct = sqrt(1.0 - sin2ThetaT);
+  let rs = (etaIncident * ci - etaTarget * ct) /
+    (etaIncident * ci + etaTarget * ct);
+  let rp = (etaTarget * ci - etaIncident * ct) /
+    (etaTarget * ci + etaIncident * ct);
+  return 0.5 * (rs * rs + rp * rp);
+}
+
+struct GgxDielectricTransmissionSample {
+  direction: vec3f,
+  weight: f32,
+  pdf: f32,
+  transmission: f32,
+  microfacetCos: f32,
+  valid: u32,
+};
+
+// Conditional dielectric-transmission event. For positive roughness this is
+// Walter 2007's rough BTDF sampled with the Heitz visible-normal distribution;
+// weight is f_t * |n·wi| / p(wi) in radiance transport mode. At zero
+// roughness the same result struct carries the discrete Snell event (pdf=1).
+fn ggxSampleDielectricTransmission(
+  n: vec3f,
+  wo: vec3f,
+  rough: f32,
+  etaIncident: f32,
+  etaTarget: f32,
+  rng: ptr<function, u32>,
+) -> GgxDielectricTransmissionSample {
+  var out: GgxDielectricTransmissionSample;
+  out.direction = vec3f(0.0);
+  out.weight = 0.0;
+  out.pdf = 0.0;
+  out.transmission = 0.0;
+  out.microfacetCos = 0.0;
+  out.valid = 0u;
+  let nDotWo = dot(n, wo);
+  if (nDotWo <= 0.0 || etaIncident <= 0.0 || etaTarget <= 0.0) { return out; }
+
+  let eta = etaIncident / etaTarget;
+  let etap = etaTarget / etaIncident;
+  if (rough <= 0.0) {
+    let wi = refract(-wo, n, eta);
+    if (dot(wi, wi) <= 0.0) { return out; }
+    let interfaceT = 1.0 - dielectricFresnelExact(nDotWo, etaIncident, etaTarget);
+    if (interfaceT <= 0.0) { return out; }
+    out.direction = safe_normalize(wi);
+    out.transmission = interfaceT;
+    out.microfacetCos = nDotWo;
+    out.pdf = 1.0;
+    out.weight = interfaceT / (etap * etap);
+    out.valid = 1u;
+    return out;
+  }
+
+  let authoredRoughness = clamp(rough, 0.0, 1.0);
+  let wiReflection = ggxSampleVndf(n, wo, authoredRoughness, rng);
+  var wm = safe_normalize(wo + wiReflection);
+  if (dot(wm, n) < 0.0) { wm = -wm; }
+  let woDotM = dot(wo, wm);
+  if (woDotM <= 0.0) { return out; }
+  let wiRaw = refract(-wo, wm, eta);
+  if (dot(wiRaw, wiRaw) <= 0.0) { return out; }
+  let wi = safe_normalize(wiRaw);
+  let nDotWiAbs = abs(dot(n, wi));
+  if (dot(n, wi) >= 0.0 || nDotWiAbs <= 0.0) { return out; }
+  let wiDotM = dot(wi, wm);
+  let denom = wiDotM + woDotM / etap;
+  if (wiDotM >= 0.0 || denom == 0.0) { return out; }
+
+  let alpha = authoredRoughness * authoredRoughness;
+  let alpha2 = alpha * alpha;
+  let D = distributionGGX(dot(n, wm), authoredRoughness);
+  let G1o = smithG1GGX(nDotWo, alpha2);
+  let G = G1o * smithG1GGX(nDotWiAbs, alpha2);
+  let interfaceT = 1.0 - dielectricFresnelExact(woDotM, etaIncident, etaTarget);
+  let denom2 = denom * denom;
+  let microfacetPdf = D * G1o * abs(woDotM) / nDotWo;
+  let dWmDWi = abs(wiDotM) / denom2;
+  let pdf = microfacetPdf * dWmDWi;
+  if (D <= 0.0 || G <= 0.0 || interfaceT <= 0.0 || pdf <= 0.0) { return out; }
+  let ft = interfaceT * D * G *
+    abs(wiDotM * woDotM / (nDotWiAbs * nDotWo * denom2)) /
+    (etap * etap);
+  out.direction = wi;
+  out.weight = ft * nDotWiAbs / pdf;
+  out.pdf = pdf;
+  out.transmission = interfaceT;
+  out.microfacetCos = woDotM;
+  out.valid = 1u;
+  return out;
 }
 
 // VNDF reflection PDF in SOLID-ANGLE measure (Heitz 2018 §3 Eq. 17 + reflection
 // Jacobian): p(wi) = D(h)·G1(wo,α²) / (4·NdotV). MUST match ggxSampleVndf so
 // the RIS source pdf is exact.
 //
-// B16 (road-to-100) — two fixes applied here:
-//   1. Alpha floor: alpha² = max(rough², 1e-4) — matches ggxSampleVndf exactly.
-//      (Prior code: a = max(0.01, rough); a² could reach 1e-4 correctly, but the
-//      floor was on rough not alpha — now explicit and shared with the sampler.)
-//   2. G1 form: smithG1GGX (exact Smith) replaces geometrySchlickGGX (Schlick
-//      k=(r+1)²/8 shading approximation). The exact G1 is required because the
-//      VNDF distribution is DEFINED in terms of the exact Smith G1 (Heitz 2014
-//      Eq. 2). Using the Schlick form here made pdf(sample) mismatch the true
-//      VNDF density — the RIS M-BRDF weight was subtly biased at all roughnesses.
+// Uses the same unfloored alpha and exact Smith G1 as ggxSampleVndf.
 fn ggxVndfReflectionPdf(n: vec3f, wo: vec3f, wi: vec3f, rough: f32) -> f32 {
+  if (rough <= 0.0) { return 0.0; }
+  let NdotV = dot(n, wo);
+  let NdotL = dot(n, wi);
+  if (NdotV <= 0.0 || NdotL <= 0.0) { return 0.0; }
   let h = safe_normalize(wo + wi);
-  let NdotV = max(1e-4, dot(n, wo));
-  let NdotH = max(0.0, dot(n, h));
+  let NdotH = dot(n, h);
   if (NdotH <= 0.0) { return 0.0; }
-  let a2 = max(rough * rough, 1e-4);
-  let a  = sqrt(a2);
-  let D  = distributionGGX(NdotH, a);
-  let g1 = smithG1GGX(NdotV, a2);
-  return (D * g1) / max(4.0 * NdotV, 1e-6);
+  let alpha = rough * rough;
+  let alpha2 = alpha * alpha;
+  let D  = distributionGGX(NdotH, rough);
+  let g1 = smithG1GGX(NdotV, alpha2);
+  return (D * g1) / (4.0 * NdotV);
 }
 
 `;

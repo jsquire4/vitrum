@@ -21,10 +21,14 @@ import type { ReSTIRBvhMode, SceneBVHBuffers } from '../restir/bvhTypes.js';
 export interface GpuSkinningHost {
   /** Merged-BVH world-position SSBO target for the LBS compute write. */
   getGpuSkinningBvhBuffer(): GPUBuffer | null;
+  /** Exact scene-arena subrange containing packed BVH positions. */
+  getGpuSkinningBvhBinding?(): GPUBufferBinding | null;
   /** WS1 — merged-BVH per-vertex normal SSBO target. The LBS compute writes
    *  inverse-transpose skinned normals here at `baseVertex+vi` so the smooth-
    *  shading-normal blend reads the deformed normal. Null before pipeline init. */
   getGpuSkinningNormalBuffer(): GPUBuffer | null;
+  /** Exact scene-arena subrange containing packed BVH normals. */
+  getGpuSkinningNormalBinding?(): GPUBufferBinding | null;
   /** Per-mesh vertex ranges in the merged BVH. */
   getMeshVertexRanges(): SceneBVHBuffers['meshVertexRanges'] | null;
   /** Active ReSTIR BVH layout (`merged` world positions vs `tlas` local BLAS). */
@@ -37,6 +41,17 @@ export interface GpuSkinningHost {
   /** GPU-skin path: refit BVH nodes after the compute pass wrote world
    *  positions directly into the live `bvhPositions` buffer. */
   applyGpuSkinnedRefit(id: string, localPositions?: Float32Array, localNormals?: Float32Array): void;
+  /** Atomically publish a batch whose compute work has been encoded but not submitted. */
+  applySkinningBatch(
+    updates: readonly SkinningBatchUpdate[],
+    skinCommands: GPUCommandBuffer | null,
+  ): void;
+}
+
+export interface SkinningBatchUpdate {
+  readonly id: string;
+  readonly patch: Partial<SkinnedMeshPrimitive>;
+  readonly gpuWritten: boolean;
 }
 
 const UNIFORM = 0x40;
@@ -85,6 +100,11 @@ function hasNonIdentityBind(prim: SkinnedMeshPrimitive): boolean {
 interface MeshGpuState {
   readonly vertexCount: number;
   readonly boneCount: number;
+  /** Rest-pose and skinning inputs captured by the private storage buffers. */
+  readonly sourcePositions: SkinnedMeshPrimitive['positions'];
+  readonly sourceNormals: SkinnedMeshPrimitive['normals'];
+  readonly sourceSkinIndices: SkinnedMeshPrimitive['skinIndices'];
+  readonly sourceSkinWeights: SkinnedMeshPrimitive['skinWeights'];
   readonly uniformBuffer: GPUBuffer;
   readonly boneBuffer: GPUBuffer;
   readonly restPosBuffer: GPUBuffer;
@@ -97,7 +117,11 @@ interface MeshGpuState {
    *  built against. A full BVH rebuild swaps these buffers (same vert/bone
    *  count), so we rebuild the bind group when either identity changes. */
   readonly boundPositionBuffer: GPUBuffer;
+  readonly boundPositionOffset: number;
+  readonly boundPositionSize: number | undefined;
   readonly boundNormalBuffer: GPUBuffer;
+  readonly boundNormalOffset: number;
+  readonly boundNormalSize: number | undefined;
 }
 
 function packVec4Positions(positions: Float32Array, count: number): Float32Array {
@@ -126,13 +150,21 @@ function packVec4Normals(normals: Float32Array, count: number): Float32Array {
   return out;
 }
 
+function destroyBuffersBestEffort(buffers: readonly GPUBuffer[]): void {
+  for (const buffer of buffers) {
+    try { buffer.destroy(); } catch { /* continue retiring remaining owned buffers */ }
+  }
+}
+
 function destroyMeshState(state: MeshGpuState): void {
-  state.uniformBuffer.destroy();
-  state.boneBuffer.destroy();
-  state.restPosBuffer.destroy();
-  state.restNormBuffer.destroy();
-  state.skinIdxBuffer.destroy();
-  state.skinWeightBuffer.destroy();
+  destroyBuffersBestEffort([
+    state.uniformBuffer,
+    state.boneBuffer,
+    state.restPosBuffer,
+    state.restNormBuffer,
+    state.skinIdxBuffer,
+    state.skinWeightBuffer,
+  ]);
   // boundPositionBuffer / boundNormalBuffer are SHARED merged buffers owned by
   // BvhBufferHost — do NOT destroy them here.
 }
@@ -148,35 +180,6 @@ export class GpuSkinningSubsystem {
     this.#preferGpu = preferGpu;
   }
 
-  /**
-   * CPU skinning fallback: solve the skin on the CPU and push the solved
-   * positions + normals plus any morph-animated attributes through the standard
-   * incremental geometry update.
-   *
-   * Used when: preferGpu is false, the mesh has active morph targets or authored
-   * tangents, the bind matrix is non-identity, the pipeline is unavailable, or
-   * no vertex range exists for the primitive. The GPU kernel writes positions +
-   * normals only; tangent-bearing meshes need the CPU solver so normal/bump/
-   * clearcoat-normal maps do not sample stale rest-pose tangents.
-   */
-  #cpuFallback(host: GpuSkinningHost, prim: SkinnedMeshPrimitive, id: string): void {
-    const { positions, normals, tangents, uvs, uv1 } = solveSkin(prim);
-    host.updatePrimitive(id, {
-      positions,
-      normals,
-      ...(tangents ? { tangents } : {}),
-      ...(uvs ? { uvs } : {}),
-      ...(uv1 ? { uv1 } : {}),
-    });
-  }
-
-  #cpuFallbackAll(host: GpuSkinningHost, scene: Scene): void {
-    for (const prim of scene.primitives) {
-      if (prim.kind !== 'skinned-mesh') continue;
-      this.#cpuFallback(host, prim, String(prim.id));
-    }
-  }
-
   dispose(): void {
     for (const state of this.#meshes.values()) {
       destroyMeshState(state);
@@ -188,90 +191,153 @@ export class GpuSkinningSubsystem {
   run(host: GpuSkinningHost, scene: Scene): void {
     const bvhPositions = host.getGpuSkinningBvhBuffer();
     const bvhNormals = host.getGpuSkinningNormalBuffer();
+    const bvhPositionBinding =
+      host.getGpuSkinningBvhBinding?.() ??
+      (bvhPositions == null ? null : { buffer: bvhPositions });
+    const bvhNormalBinding =
+      host.getGpuSkinningNormalBinding?.() ??
+      (bvhNormals == null ? null : { buffer: bvhNormals });
     const meshVertexRanges = host.getMeshVertexRanges();
-    if (bvhPositions == null || bvhNormals == null || meshVertexRanges == null) {
-      this.#cpuFallbackAll(host, scene);
+    const bvhMode = host.getBvhMode();
+    const tlasBindings = host.getPrimitiveTlasBindings();
+    const skinned = scene.primitives.filter(
+      (primitive): primitive is SkinnedMeshPrimitive => primitive.kind === 'skinned-mesh',
+    );
+    if (skinned.length === 0) return;
+
+    const solvedPatch = (primitive: SkinnedMeshPrimitive): Partial<SkinnedMeshPrimitive> => {
+      const solved = solveSkin(primitive);
+      return {
+        positions: solved.positions,
+        normals: solved.normals,
+        ...(solved.tangents ? { tangents: solved.tangents } : {}),
+        ...(solved.uvs ? { uvs: solved.uvs } : {}),
+        ...(solved.uv1 ? { uv1: solved.uv1 } : {}),
+        ...(solved.uvSets ? { uvSets: solved.uvSets } : {}),
+      };
+    };
+    const fallback = new Map<string, Partial<SkinnedMeshPrimitive>>();
+    const gpuJobs: Array<{
+      readonly primitive: SkinnedMeshPrimitive;
+      readonly id: string;
+      readonly range: SceneBVHBuffers['meshVertexRanges'][number];
+      readonly baseVertex: number;
+    }> = [];
+
+    for (const primitive of skinned) {
+      const id = String(primitive.id);
+      const hasMorph =
+        (primitive.morphTargets?.length ?? 0) > 0 &&
+        primitive.morphWeights != null &&
+        primitive.morphWeights.some((weight) => weight !== 0);
+      const range = meshVertexRanges?.find((candidate) => candidate.name === id);
+      let baseVertex = range?.vertexStart ?? 0;
+      const tlasBinding =
+        bvhMode === 'tlas'
+          ? tlasBindings?.find((binding) => binding.primitiveId === id)
+          : null;
+      if (tlasBinding != null) baseVertex = tlasBinding.vertexStart;
+      const canUseGpu =
+        bvhPositionBinding != null &&
+        bvhNormalBinding != null &&
+        meshVertexRanges != null &&
+        this.#preferGpu &&
+        !hasMorph &&
+        primitive.tangents == null &&
+        (primitive.skinInfluencesPerVertex ?? 4) === 4 &&
+        !hasNonIdentityBind(primitive) &&
+        typeof this.#device.createComputePipeline === 'function' &&
+        range != null &&
+        range.vertexCount > 0 &&
+        (bvhMode !== 'tlas' || (tlasBinding != null && tlasBinding.vertexCount > 0));
+      if (!canUseGpu) {
+        fallback.set(id, solvedPatch(primitive));
+      } else {
+        gpuJobs.push({ primitive, id, range, baseVertex });
+      }
+    }
+
+    const fallbackNeedsTopology = [...fallback.values()].some(
+      (patch) =>
+        patch.tangents != null || patch.uvs != null || patch.uv1 != null || patch.uvSets != null,
+    );
+    if (fallbackNeedsTopology) {
+      // A topology candidate replaces the live BVH buffers, so commands encoded
+      // against their old identities cannot join the transaction. Solve every
+      // skinned primitive on CPU and publish one full candidate instead.
+      host.applySkinningBatch(
+        skinned.map((primitive) => ({
+          id: String(primitive.id),
+          patch: solvedPatch(primitive),
+          gpuWritten: false,
+        })),
+        null,
+      );
       return;
     }
 
-    const encoder = this.#device.createCommandEncoder({ label: 'vitrum.gpuSkinBvh' });
-    const gpuSkinnedIds: string[] = [];
+    let skinCommands: GPUCommandBuffer | null = null;
+    const gpuPatches = new Map<string, Partial<SkinnedMeshPrimitive>>();
+    if (gpuJobs.length > 0) {
+      const encoder = this.#device.createCommandEncoder({ label: 'vitrum.gpuSkinBvh' });
+      for (const job of gpuJobs) {
+        const state = this.#ensureMesh(
+          job.primitive,
+          bvhPositionBinding!,
+          bvhNormalBinding!,
+        );
+        const combined = combineSkinMatrices(
+          job.primitive.bones,
+          job.primitive.boneInverses,
+          state.boneCount,
+        );
+        this.#device.queue.writeBuffer(state.boneBuffer, 0, new Float32Array(combined));
 
-    for (const prim of scene.primitives) {
-      if (prim.kind !== 'skinned-mesh') continue;
-      const id = String(prim.id);
-      const hasMorph =
-        (prim.morphTargets?.length ?? 0) > 0 &&
-        prim.morphWeights != null &&
-        prim.morphWeights.some((w) => w !== 0);
-      const hasTangents = prim.tangents != null;
-      // A non-identity bindMatrix must take the CPU `solveSkin` path: the GPU
-      // kernel applies only `combineSkinMatrices(bones, boneInverses)` and does
-      // NOT wrap by bindMatrix / bindMatrixInverse, so it would skin positions
-      // AND normals incorrectly for a bound mesh. Same fallback shape as morphs.
-      if (
-        !this.#preferGpu ||
-        hasMorph ||
-        hasTangents ||
-        hasNonIdentityBind(prim) ||
-        typeof this.#device.createComputePipeline !== 'function'
-      ) {
-        this.#cpuFallback(host, prim, id);
-        continue;
+        const uniformBytes = new ArrayBuffer(80);
+        const u32 = new Uint32Array(uniformBytes);
+        u32[0] = state.vertexCount;
+        u32[1] = job.baseVertex;
+        u32[2] = bvhMode === 'tlas' ? 0 : 1;
+        new Float32Array(uniformBytes).set(job.range.matrixWorldAtBuild, 4);
+        this.#device.queue.writeBuffer(state.uniformBuffer, 0, uniformBytes);
+
+        const pass = encoder.beginComputePass({
+          label: `vitrum.gpuSkinBvh.${job.id}`,
+        });
+        pass.setPipeline(state.pipeline);
+        pass.setBindGroup(0, state.bindGroup);
+        pass.dispatchWorkgroups(Math.ceil(state.vertexCount / 64), 1, 1);
+        pass.end();
+        gpuPatches.set(job.id, solvedPatch(job.primitive));
       }
-
-      const range = meshVertexRanges.find((r) => r.name === id);
-      if (range == null || range.vertexCount === 0) {
-        this.#cpuFallback(host, prim, id);
-        continue;
-      }
-
-      const bvhMode = host.getBvhMode();
-      let baseVertex = range.vertexStart;
-      if (bvhMode === 'tlas') {
-        const binding = host.getPrimitiveTlasBindings()?.find((b) => b.primitiveId === id);
-        if (binding == null || binding.vertexCount === 0) {
-          this.#cpuFallback(host, prim, id);
-          continue;
-        }
-        baseVertex = binding.vertexStart;
-      }
-
-      const state = this.#ensureMesh(prim, bvhPositions, bvhNormals);
-      const combined = combineSkinMatrices(prim.bones, prim.boneInverses, state.boneCount);
-      this.#device.queue.writeBuffer(state.boneBuffer, 0, new Float32Array(combined));
-
-      const uniformBytes = new ArrayBuffer(80);
-      const u32 = new Uint32Array(uniformBytes);
-      u32[0] = state.vertexCount;
-      u32[1] = baseVertex;
-      u32[2] = host.getBvhMode() === 'tlas' ? 0 : 1;
-      u32[3] = 0;
-      new Float32Array(uniformBytes).set(range.matrixWorldAtBuild, 4);
-      this.#device.queue.writeBuffer(state.uniformBuffer, 0, uniformBytes);
-
-      const pass = encoder.beginComputePass({ label: `vitrum.gpuSkinBvh.${id}` });
-      pass.setPipeline(state.pipeline);
-      pass.setBindGroup(0, state.bindGroup);
-      pass.dispatchWorkgroups(Math.ceil(state.vertexCount / 64), 1, 1);
-      pass.end();
-
-      gpuSkinnedIds.push(id);
+      skinCommands = encoder.finish();
     }
 
-    if (gpuSkinnedIds.length > 0) {
-      this.#device.queue.submit([encoder.finish()]);
-      for (const id of gpuSkinnedIds) {
-        host.applyGpuSkinnedRefit(id);
-      }
-    }
+    const updates: SkinningBatchUpdate[] = skinned.map((primitive) => {
+      const id = String(primitive.id);
+      const gpuPatch = gpuPatches.get(id);
+      return {
+        id,
+        patch: gpuPatch ?? fallback.get(id)!,
+        gpuWritten: gpuPatch != null,
+      };
+    });
+    host.applySkinningBatch(updates, skinCommands);
   }
 
   #ensureMesh(
     prim: SkinnedMeshPrimitive,
-    bvhPositions: GPUBuffer,
-    bvhNormals: GPUBuffer,
+    bvhPositionBinding: GPUBufferBinding,
+    bvhNormalBinding: GPUBufferBinding,
   ): MeshGpuState {
+    const bvhPositions = bvhPositionBinding.buffer;
+    const bvhNormals = bvhNormalBinding.buffer;
+    const bvhPositionOffset = Number(bvhPositionBinding.offset ?? 0);
+    const bvhPositionSize =
+      bvhPositionBinding.size == null ? undefined : Number(bvhPositionBinding.size);
+    const bvhNormalOffset = Number(bvhNormalBinding.offset ?? 0);
+    const bvhNormalSize =
+      bvhNormalBinding.size == null ? undefined : Number(bvhNormalBinding.size);
     const id = String(prim.id);
     const existing = this.#meshes.get(id);
     const vertCount = prim.positions.length / 3;
@@ -283,14 +349,18 @@ export class GpuSkinningSubsystem {
       existing != null &&
       existing.vertexCount === vertCount &&
       existing.boneCount === boneCount &&
+      existing.sourcePositions === prim.positions &&
+      existing.sourceNormals === prim.normals &&
+      existing.sourceSkinIndices === prim.skinIndices &&
+      existing.sourceSkinWeights === prim.skinWeights &&
       existing.boundPositionBuffer === bvhPositions &&
-      existing.boundNormalBuffer === bvhNormals
+      existing.boundPositionOffset === bvhPositionOffset &&
+      existing.boundPositionSize === bvhPositionSize &&
+      existing.boundNormalBuffer === bvhNormals &&
+      existing.boundNormalOffset === bvhNormalOffset &&
+      existing.boundNormalSize === bvhNormalSize
     ) {
       return existing;
-    }
-    if (existing != null) {
-      destroyMeshState(existing);
-      this.#meshes.delete(id);
     }
 
     const device = this.#device;
@@ -307,67 +377,104 @@ export class GpuSkinningSubsystem {
         usage: STORAGE | COPY_DST,
       });
 
-    const restPosBuffer = mkStorage(`vitrum.gpuSkinBvh.${id}.restPos`, vertBytes);
-    const restNormBuffer = mkStorage(`vitrum.gpuSkinBvh.${id}.restNorm`, vertBytes);
-    const skinIdxBuffer = mkStorage(`vitrum.gpuSkinBvh.${id}.skinIdx`, skinIdx.byteLength);
-    const skinWeightBuffer = mkStorage(`vitrum.gpuSkinBvh.${id}.skinW`, skinW.byteLength);
-    const boneBuffer = mkStorage(`vitrum.gpuSkinBvh.${id}.bones`, boneBytes);
-    const uniformBuffer = device.createBuffer({
-      label: `vitrum.gpuSkinBvh.${id}.uniform`,
-      size: 80,
-      usage: UNIFORM | COPY_DST,
-    });
-
-    device.queue.writeBuffer(restPosBuffer, 0, new Float32Array(restPos));
-    device.queue.writeBuffer(restNormBuffer, 0, new Float32Array(restNorm));
-    device.queue.writeBuffer(skinIdxBuffer, 0, new Uint32Array(skinIdx));
-    device.queue.writeBuffer(skinWeightBuffer, 0, new Float32Array(skinW));
-
-    if (this.#bvhPipeline == null) {
-      const module = device.createShaderModule({
-        label: 'vitrum.gpuSkinBvh.module',
-        code: GPU_SKIN_BVH_WITH_NORMALS_WGSL,
-      });
-      this.#bvhPipeline = device.createComputePipeline({
-        label: 'vitrum.gpuSkinBvh.pipeline',
-        layout: 'auto',
-        compute: { module, entryPoint: 'main' },
-      });
+    const forbiddenBuffers = new Set<GPUBuffer>([bvhPositions, bvhNormals]);
+    for (const cached of this.#meshes.values()) {
+      forbiddenBuffers.add(cached.uniformBuffer);
+      forbiddenBuffers.add(cached.boneBuffer);
+      forbiddenBuffers.add(cached.restPosBuffer);
+      forbiddenBuffers.add(cached.restNormBuffer);
+      forbiddenBuffers.add(cached.skinIdxBuffer);
+      forbiddenBuffers.add(cached.skinWeightBuffer);
     }
-    const pipeline = this.#bvhPipeline;
-
-    const bindGroup = device.createBindGroup({
-      label: `vitrum.gpuSkinBvh.${id}.bindGroup`,
-      layout: pipeline.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: { buffer: uniformBuffer } },
-        { binding: 1, resource: { buffer: restPosBuffer } },
-        { binding: 2, resource: { buffer: restNormBuffer } },
-        { binding: 3, resource: { buffer: skinIdxBuffer } },
-        { binding: 4, resource: { buffer: skinWeightBuffer } },
-        { binding: 5, resource: { buffer: boneBuffer } },
-        { binding: 6, resource: { buffer: bvhPositions } },
-        // WS1 — binding 7 is the SHARED merged bvh_normal buffer; the kernel
-        // writes skinned normals at `baseVertex+vi` (NOT a per-mesh buffer).
-        { binding: 7, resource: { buffer: bvhNormals } },
-      ],
-    });
-
-    const state: MeshGpuState = {
-      vertexCount: vertCount,
-      boneCount,
-      uniformBuffer,
-      boneBuffer,
-      restPosBuffer,
-      restNormBuffer,
-      skinIdxBuffer,
-      skinWeightBuffer,
-      bindGroup,
-      pipeline,
-      boundPositionBuffer: bvhPositions,
-      boundNormalBuffer: bvhNormals,
+    const candidateBuffers: GPUBuffer[] = [];
+    const candidateSet = new Set<GPUBuffer>();
+    const registerCandidate = (buffer: GPUBuffer): GPUBuffer => {
+      if (forbiddenBuffers.has(buffer)) {
+        throw new Error(`GpuSkinningSubsystem: device returned a live/shared buffer alias for ${id}`);
+      }
+      if (candidateSet.has(buffer)) {
+        throw new Error(`GpuSkinningSubsystem: device returned a duplicate candidate buffer for ${id}`);
+      }
+      candidateSet.add(buffer);
+      candidateBuffers.push(buffer);
+      return buffer;
     };
-    this.#meshes.set(id, state);
-    return state;
+    try {
+      const createStorage = (label: string, size: number): GPUBuffer =>
+        registerCandidate(mkStorage(label, size));
+      const restPosBuffer = createStorage(`vitrum.gpuSkinBvh.${id}.restPos`, vertBytes);
+      const restNormBuffer = createStorage(`vitrum.gpuSkinBvh.${id}.restNorm`, vertBytes);
+      const skinIdxBuffer = createStorage(`vitrum.gpuSkinBvh.${id}.skinIdx`, skinIdx.byteLength);
+      const skinWeightBuffer = createStorage(`vitrum.gpuSkinBvh.${id}.skinW`, skinW.byteLength);
+      const boneBuffer = createStorage(`vitrum.gpuSkinBvh.${id}.bones`, boneBytes);
+      const uniformBuffer = registerCandidate(device.createBuffer({
+        label: `vitrum.gpuSkinBvh.${id}.uniform`,
+        size: 80,
+        usage: UNIFORM | COPY_DST,
+      }));
+
+      device.queue.writeBuffer(restPosBuffer, 0, new Float32Array(restPos));
+      device.queue.writeBuffer(restNormBuffer, 0, new Float32Array(restNorm));
+      device.queue.writeBuffer(skinIdxBuffer, 0, new Uint32Array(skinIdx));
+      device.queue.writeBuffer(skinWeightBuffer, 0, new Float32Array(skinW));
+
+      let pipeline = this.#bvhPipeline;
+      const createdPipeline = pipeline == null;
+      if (pipeline == null) {
+        const module = device.createShaderModule({
+          label: 'vitrum.gpuSkinBvh.module',
+          code: GPU_SKIN_BVH_WITH_NORMALS_WGSL,
+        });
+        pipeline = device.createComputePipeline({
+          label: 'vitrum.gpuSkinBvh.pipeline',
+          layout: 'auto',
+          compute: { module, entryPoint: 'main' },
+        });
+      }
+      const bindGroup = device.createBindGroup({
+        label: `vitrum.gpuSkinBvh.${id}.bindGroup`,
+        layout: pipeline.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: { buffer: uniformBuffer } },
+          { binding: 1, resource: { buffer: restPosBuffer } },
+          { binding: 2, resource: { buffer: restNormBuffer } },
+          { binding: 3, resource: { buffer: skinIdxBuffer } },
+          { binding: 4, resource: { buffer: skinWeightBuffer } },
+          { binding: 5, resource: { buffer: boneBuffer } },
+          { binding: 6, resource: bvhPositionBinding },
+          { binding: 7, resource: bvhNormalBinding },
+        ],
+      });
+      const state: MeshGpuState = {
+        vertexCount: vertCount,
+        boneCount,
+        sourcePositions: prim.positions,
+        sourceNormals: prim.normals,
+        sourceSkinIndices: prim.skinIndices,
+        sourceSkinWeights: prim.skinWeights,
+        uniformBuffer,
+        boneBuffer,
+        restPosBuffer,
+        restNormBuffer,
+        skinIdxBuffer,
+        skinWeightBuffer,
+        bindGroup,
+        pipeline,
+        boundPositionBuffer: bvhPositions,
+        boundPositionOffset: bvhPositionOffset,
+        boundPositionSize: bvhPositionSize,
+        boundNormalBuffer: bvhNormals,
+        boundNormalOffset: bvhNormalOffset,
+        boundNormalSize: bvhNormalSize,
+      };
+      // Publish only after the complete candidate succeeded.
+      this.#meshes.set(id, state);
+      if (createdPipeline) this.#bvhPipeline = pipeline;
+      if (existing != null) destroyMeshState(existing);
+      return state;
+    } catch (error) {
+      destroyBuffersBestEffort(candidateBuffers);
+      throw error;
+    }
   }
 }

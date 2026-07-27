@@ -1,9 +1,11 @@
 {
   "schema": "vitrum.learned-systems.status.v1",
-  "generatedAt": "2026-06-26T07:27:12.671Z",
+  "generatedAt": "2026-07-22T18:05:24.375Z",
   "verdict": "PASS",
-  "productionPosture": "provisioning-needed",
+  "productionPosture": "stable-host-certified-model-required",
   "neuralDenoiser": {
+    "implementationStatus": "stable",
+    "modelProvisioning": "host-supplied-certified",
     "productionCheckpoint": null,
     "researchCheckpointCount": 2,
     "productionCheckpointCount": 0,
@@ -31,13 +33,14 @@
     },
     "runtimePolicy": {
       "autoSelectsNeuralOnlyWithProductionCheckpoint": true,
-      "explicitNeuralWithNonProductionWeights": "allowed-as-approximate",
-      "nonProductionCapabilitySupport": "approximate",
+      "explicitNeuralWithUncertifiedWeights": "rejected",
+      "uncertifiedCapabilitySupport": "unsupported",
       "requiredMetadataContract": "NeuralCheckpointMetadata"
     },
-    "remaining": "Provision a production neural checkpoint and passing quality A/B manifest before default or production claims."
+    "deploymentNote": "The stable runtime requires a host-supplied certified v2 checkpoint; no certified checkpoint is bundled."
   },
   "nrc": {
+    "implementationStatus": "stable",
     "defaultEnabled": false,
     "estimator": "biased",
     "productionDefaultEligible": false,
@@ -55,30 +58,34 @@
       "requiresArtifactFiles": true,
       "requiresBiasedEstimatorDisclosure": true
     },
-    "remaining": "Run quality/convergence A/B and make a default-tier decision before promoting NRC beyond opt-in."
+    "optionalEvidence": "Optional scene-specific quality/convergence characterization; not a runtime-completeness gate."
   },
   "gris": {
+    "implementationStatus": "stable",
     "defaultEnabled": false,
-    "optInFlag": "restirPtReuse",
-    "estimator": "unbiased-when-enabled",
+    "optInFlag": "grisReuse",
+    "estimator": "biased-ddgi-proxy",
     "productionDefaultEligible": false,
     "qualityManifest": null,
     "qualityManifestRequirements": {
-      "manifestPath": "tools/learned-systems/gris-unbiasedness-ab.json",
+      "manifestPath": "tools/learned-systems/gris-ddgi-proxy-quality.json",
       "requiredVerdict": "PASS",
-      "requiredMode": "gris-unbiasedness-ab",
-      "requiresUnbiasednessAB": true,
-      "requiresBiasedDefaultErrorQuantification": true,
+      "requiredMode": "gris-ddgi-proxy-quality",
+      "requiresProxyQualityComparison": true,
+      "requiresHistoryMutationStress": true,
       "requiresReferenceEstimator": true,
       "requiresHardware": true,
       "requiresGeneratedAt": true,
       "requiresArtifacts": true,
-      "requiresArtifactFiles": true
+      "requiresArtifactFiles": true,
+      "requiresBiasedEstimatorDisclosure": true
     },
-    "remaining": "Run GRIS-on unbiasedness A/B and biased-default error quantification before any default-tier promotion."
+    "optionalEvidence": "Optional DDGI-proxy quality characterization; not a runtime-completeness gate."
   },
   "ppg": {
+    "implementationStatus": "stable",
     "defaultEnabled": false,
+    "estimator": "defensive-mixture-guided",
     "productionDefaultEligible": false,
     "qualityManifest": null,
     "qualityManifestRequirements": {
@@ -93,12 +100,12 @@
       "requiresArtifacts": true,
       "requiresArtifactFiles": true
     },
-    "remaining": "Run favorable-scene A/B and convergence/instability checks before production promotion."
+    "optionalEvidence": "Optional favorable-scene convergence characterization; not a runtime-completeness gate."
   },
   "provenance": {
     "schema": "vitrum.learned-systems.status-provenance.v1",
     "checkerPath": "tools/learned-systems/check-status.mjs",
-    "checkerSha256": "43e38ddc3a9d2ba605a939719f3ccefc49c5c8ccdd997ee6d527cad012f0a6bd",
+    "checkerSha256": "dfb6787ceeed0cf7042b862481149935ea0affe486bacbdae90495396755e693",
     "statusPath": "tools/learned-systems/learned-systems-status.json",
     "sourceFiles": [
       {
@@ -111,67 +118,67 @@
       },
       {
         "path": "packages/walkaround-hybrid/README.md",
-        "sha256": "6c1251705000eaa820e14575331de8abbcd884addc6415930f824d3f8d64f3eb"
+        "sha256": "b4dc109bd274ee01dd1d7ef39becf1cbe9e9e3227aaec1f9949272e4d1e38ed4"
       },
       {
         "path": "packages/walkaround-hybrid/__tests__/neuralWeightsRoundTrip.test.ts",
-        "sha256": "6e5024ecaa6db35ec2fe4f6ccc1c72091acea9a05bea4e73e1babdf0d8b1bf07"
+        "sha256": "7cc74a14d436c2a3ec487ce299ae33b0c106b19347f671aab23a323b91d1658b"
       },
       {
         "path": "packages/walkaround-hybrid/src/HybridEngine.ts",
-        "sha256": "b4f608d9d29cb732dc5c7956cdc6589e2931bcb5b9b50251dc6ba1bd05df395e"
+        "sha256": "018ff091de27b951971a760e77113a051ea167d65baab97b825ab7a0aa769b91"
       },
       {
         "path": "packages/walkaround-hybrid/src/HybridEngineConfig.ts",
-        "sha256": "697c87fe8900f1e5729376c925595d8f8274dc0473e98b24f09b8cd628ac66c9"
+        "sha256": "74732c723f987618e021c403d84f691aa72b57d993f655d19d804d91f227efcc"
       },
       {
         "path": "packages/walkaround-hybrid/src/HybridEngineOptions.ts",
-        "sha256": "dc70ee4cf3e596cadadf521c4f65499268eace54452a4cba49f41489342ec574"
+        "sha256": "580ef282773002d77415acf68b352fe6ac4fe34cb495990ad1e95b763dfb53c0"
       },
       {
         "path": "packages/walkaround-hybrid/src/__tests__/capabilitiesPartition.test.ts",
-        "sha256": "c98ed48ce56852f720f93fff460f15e86d825ea43eaffa4687525efdeb704577"
+        "sha256": "c3a49d43a1f97c809440f076d31fd165350a1dd11e3e2e76da08e8966fede583"
       },
       {
         "path": "packages/walkaround-hybrid/src/__tests__/grisVariantPin.test.ts",
-        "sha256": "99a989b9ab9075f831bb382908dca8b6f515a2b4cdc4e80e453a6ec7ee8cebb6"
+        "sha256": "bae496ffd6078d3bf453ad5b076e6ec55cbbf4aa1e032b4a2a0f895eb3cfe34a"
       },
       {
         "path": "packages/walkaround-hybrid/src/__tests__/hybridLiteTier.test.ts",
-        "sha256": "2e5cccff954cf17b93d30ea1177ec87b1c0df39af2d7c74da9f98ff7febb4ce1"
+        "sha256": "ba45b1ad61824757f39ece628326c0adb12effd8b21c9d0dd3a9e56f9a411540"
       },
       {
         "path": "packages/walkaround-hybrid/src/__tests__/learnedSystemConfig.test.ts",
-        "sha256": "7b1b6d69760aaa18b64749efb13e5553e03fe734aa19d734fa748b7cd503ab32"
+        "sha256": "3ce8e1767fab8727e407cd6cccf06067ab8178e641ce1a904841894650839e03"
       },
       {
         "path": "packages/walkaround-hybrid/src/neural/nrc/__tests__/nrcGateBitIdentity.test.ts",
-        "sha256": "ef4889672379ee8a61940edd61eea8bb9b2d53e47f93c9af765efa23350a4afa"
+        "sha256": "e5ae05c98c282e5fd0ee77fa071f3343572736ec332fd8764c6e9cd345b8b413"
       },
       {
         "path": "packages/walkaround-hybrid/src/neural/weights.ts",
-        "sha256": "a2622873deb064bc41f2308dc91128c3fd49a7667a0cc26f2c5c9b229e1331b4"
+        "sha256": "8d4cd115f61ffbee627d732b2115128a29657db3dd8c90a39b63519353b18f39"
       },
       {
         "path": "packages/walkaround-hybrid/src/pipeline/WalkaroundGPUPipeline.ts",
-        "sha256": "0432eedb6d909b6f63d398c5545f84ce8d7082eb89fc7a6edbec1dd0b649fdd7"
+        "sha256": "e2db77495ae98b6ac03ff4f711f719ac972b1ef0f4e61d0eceaaeadff04ae77d"
       },
       {
         "path": "packages/walkaround-hybrid/src/pipeline/__tests__/nrcDeviceCapability.test.ts",
-        "sha256": "dc7e948f0219bf3ae23d748a73f8a3b9bae80c48f47924845ce04db1c417af97"
+        "sha256": "79ddbe76fa3324109ad6df0855101dccddd88fd97cdd8cbb88417b9f79ed625b"
       },
       {
         "path": "packages/walkaround-hybrid/src/pipeline/__tests__/nrcStructuralGate.test.ts",
-        "sha256": "235c97da2beb85bc46a87e49dae0d6f772ad700a243c448456ac6bfe02a71044"
+        "sha256": "e445f9e1cb9acd8677ad96238034b23491bfd08f5e5259d021460ee1a5284651"
       },
       {
         "path": "packages/walkaround-hybrid/src/pipeline/__tests__/ppgCompilerGate.test.ts",
-        "sha256": "798c82176abdc936613c24a968d533d457a43d9641ff1cc163832bcffc9ac3a0"
+        "sha256": "164fc349a1aaa9c391923c5ebf83e49190e8d8741fc066fb6f75223a25ff0d7d"
       },
       {
         "path": "packages/walkaround-hybrid/src/pipeline/__tests__/ppgCoordinatorDiagnostics.test.ts",
-        "sha256": "da9243ef1d978e1299b47904569dd70c0f2d608c625158214916324b7bf20362"
+        "sha256": "127da5fdb6fe2cad2e4c95d765500afbbba7c39ee481ff8fa54899171cdced1f"
       },
       {
         "path": "plan/library-architecture.md",
@@ -211,11 +218,11 @@
       },
       {
         "path": "tools/neural-denoiser-training/export_weights.py",
-        "sha256": "2c8064675532fde1085d57ecd552262f83833bcb8429046aa326db0a2a06c15c"
+        "sha256": "6d097259e8e0e6be8bb299fdbd65720b833987ed0c5940ae978e3719b4e47c0c"
       },
       {
         "path": "tools/neural-denoiser-training/train.py",
-        "sha256": "0116ba1aaa8e0f52b5905b31171830c785388d7156fba0a1f763edbcc79d4e96"
+        "sha256": "3fe7fca1dc49e48ef7738d2e9bf914dfd90a3df30350fbfd62b278b01979c042"
       }
     ],
     "checkpointFiles": [
@@ -238,7 +245,7 @@
     ],
     "qualityEvidenceManifests": [
       {
-        "path": "tools/learned-systems/gris-unbiasedness-ab.json",
+        "path": "tools/learned-systems/gris-ddgi-proxy-quality.json",
         "exists": false,
         "sha256": null
       },
@@ -261,7 +268,7 @@
   },
   "guardrails": [
     "Research checkpoints are loader/runtime validation assets only.",
-    "Neural, NRC, PPG, and GRIS learned/reuse paths remain opt-in unless future quality evidence promotes them.",
+    "NRC, PPG, and GRIS are stable opt-in modes by product design; scene-quality manifests are optional characterization evidence, not runtime completion gates.",
     "Do not treat this PASS as production model quality."
   ]
 }

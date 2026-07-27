@@ -4,15 +4,18 @@
  * Verifies the RIS_GI_WGSL string contains the expected entry point, bindings,
  * candidate count, and reservoir helpers; the pass layout places `gi-ris`
  * between `spatial-2` and `shade`; and the static/common ReservoirGI export
- * still carries the widened 30-u32 GRIS layout. Runtime compilation selects the
+ * still carries the widened 28-u32 GRIS layout. Runtime compilation selects the
  * compact 20-u32 default via `compilePipelines`; that gate is covered by
  * `giStructuralGate.test.ts`.
  */
 
 import { describe, expect, it } from 'vitest';
-import { RIS_GI_WGSL } from '../src/shaders/risGi.wgsl.js';
+import { RIS_GI_MODULE, RIS_GI_WGSL } from '../src/shaders/risGi.wgsl.js';
 import { COMMON_WGSL } from '../src/shaders/common.wgsl.js';
+import { reservoirGiAccessorsWgsl } from '../src/shaders/reservoirGi.wgsl.js';
 import { DDGI_GRID_UBO_WGSL } from '../src/ddgi/ddgiSampleWgsl.js';
+import { WGSL_MODULES } from '../src/pipeline/wgslModules.js';
+import { composeWgsl } from '../src/pipeline/wgslComposer.js';
 import {
   MAX_PASS_COUNT,
   buildPassLayout,
@@ -24,17 +27,21 @@ describe('Sprint 16 — RIS_GI WGSL', () => {
     expect(RIS_GI_WGSL).toContain('@workgroup_size(8, 8, 1)');
   });
 
-  it('binds gNormalDepth at (0,10) and reservoir buffer at (0,11)', () => {
-    expect(RIS_GI_WGSL).toContain('@group(0) @binding(10) var gi_gNormalDepth');
+  it('binds only the reservoir buffer from the frame group', () => {
+    expect(RIS_GI_WGSL).not.toContain('gi_gNormalDepth');
     expect(RIS_GI_WGSL).toContain(
       '@group(0) @binding(11) var<storage, read_write> reservoirGiCurrent',
     );
   });
 
-  it('binds the BVH triple at group(1)', () => {
-    expect(RIS_GI_WGSL).toContain('@group(1) @binding(0) var<storage, read> bvh:');
-    expect(RIS_GI_WGSL).toContain('@group(1) @binding(1) var<storage, read> bvh_index:');
-    expect(RIS_GI_WGSL).toContain('@group(1) @binding(2) var<storage, read> bvh_position:');
+  it('binds the three versioned scene arenas at group(1)', () => {
+    const composed = composeWgsl(RIS_GI_MODULE, WGSL_MODULES);
+    expect(composed).toContain('@group(1) @binding(0) var<storage, read> sceneGeometryArena:');
+    expect(composed).toContain('@group(1) @binding(1) var<storage, read> sceneTlasArena:');
+    expect(composed).toContain('@group(1) @binding(2) var<storage, read> sceneLightingArena:');
+    expect(composed).toContain('fn bvhLoadNode(');
+    expect(composed).toContain('fn bvhLoadIndex(');
+    expect(composed).toContain('fn bvhLoadPosition(');
   });
 
   it('binds WalkaroundUBO + DDGI atlas at the canonical slots', () => {
@@ -72,13 +79,15 @@ describe('Sprint 16 — RIS_GI WGSL', () => {
     expect(RIS_GI_WGSL).toContain('traceSceneAlphaTintTransmittanceTextured(');
     expect(RIS_GI_WGSL).toContain('let shadowT = clamp(luminance(shadowTint), 0.0, 1.0);');
     expect(RIS_GI_WGSL).not.toContain('traceSceneAlphaTransmittanceTextured(');
-    expect(RIS_GI_WGSL).toMatch(/if \(shadowT <= 0\.001\)/);
+    expect(RIS_GI_WGSL).toContain('if (!reservoirGiFinite(shadowT) || !(shadowT > 0.0))');
     expect(RIS_GI_WGSL).toContain('r.w_sum = r.w_sum * shadowT;');
     expect(RIS_GI_WGSL).toMatch(/r\.W\s*=\s*0\.0/);
   });
 
   it('computes W = w_sum / (M · p̂(z)) per the RIS estimator', () => {
-    expect(RIS_GI_WGSL).toMatch(/r\.w_sum\s*\/\s*\(f32\(r\.M\)\s*\*\s*pHatZ\)/);
+    expect(RIS_GI_WGSL).toContain('finaliseGIReservoirWFromPHat(&r, ubo.restirGiWCap, false, pHatZ);');
+    expect(COMMON_WGSL).toContain('let denominator = normaliser * pHatF;');
+    expect(COMMON_WGSL).toContain('let W_raw = (*r).w_sum / denominator;');
   });
 
   it('only dispatches over half-resolution pixels (W/2 × H/2)', () => {
@@ -87,19 +96,28 @@ describe('Sprint 16 — RIS_GI WGSL', () => {
   });
 });
 
-describe('Sprint 16 — ReservoirGI byte-pack helpers (static common.wgsl export)', () => {
+describe('Sprint 16 — ReservoirGI canonical byte pack and pass-local accessors', () => {
   it('declares the 30 × u32 stride constant on the static GRIS-compatible export', () => {
-    // GRIS Phase-0 appended the reconnection-shift cache at indices [20..29],
-    // widening the per-pixel reservoir from 20 u32 (80 bytes) to 30 u32
-    // (120 bytes). The [0..19] prefix stays byte-identical — see
+    // GRIS Phase-0 appended the reconnection-shift cache at indices [20..27],
+    // widening the per-pixel reservoir from 20 u32 (80 bytes) to 28 u32
+    // (112 bytes). The [0..19] prefix stays byte-identical — see
     // reservoirPtLayout.test.ts for the bit-identity guard.
-    expect(COMMON_WGSL).toContain('RESERVOIR_GI_STRIDE: u32 = 30u');
+    expect(COMMON_WGSL).toContain('RESERVOIR_GI_STRIDE: u32 = 28u');
   });
 
-  it('exposes _rw + _ro load helpers and a _rw store helper', () => {
-    expect(COMMON_WGSL).toContain('fn loadReservoirGI_rw');
-    expect(COMMON_WGSL).toContain('fn loadReservoirGI_ro');
-    expect(COMMON_WGSL).toContain('fn storeReservoirGI_rw');
+  it('exposes canonical pack/unpack and generates exact-binding accessors', () => {
+    expect(COMMON_WGSL).toContain('fn unpackReservoirGI');
+    expect(COMMON_WGSL).toContain('fn packReservoirGI');
+    const accessors = reservoirGiAccessorsWgsl({
+      loadReadWriteBinding: 'currentGi',
+      loadReadBinding: 'previousGi',
+      storeReadWriteBinding: 'currentGi',
+    });
+    expect(accessors).toContain('fn loadReservoirGI_rw');
+    expect(accessors).toContain('fn loadReservoirGI_ro');
+    expect(accessors).toContain('fn storeReservoirGI_rw');
+    expect(accessors).toContain('return unpackReservoirGI(words);');
+    expect(accessors).toContain('let words = packReservoirGI(r);');
   });
 
   it('updateReservoirGI weights by w_sum (canonical reservoir update)', () => {

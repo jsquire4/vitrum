@@ -15,6 +15,8 @@ export {
   type CreateEngineOptions,
   type EngineWithBackendId,
   type EnginePreference,
+  type RuntimeEngineBackendId,
+  type RuntimeEngineWithBackendId,
   type ScaleDefaults,
 } from './createEngine.js';
 export { auditSceneNeedsTlas, type SceneTlasAudit } from '@vitrum/core';
@@ -92,6 +94,7 @@ export {
   createProgressiveEngine,
   computeProgressiveLimitUnion,
   checkProgressiveLimitUnion,
+  progressiveHandleAsEngine,
   type CreateProgressiveEngineOptions,
   type ProgressiveEngineHandle,
 } from './createProgressiveEngine.js';

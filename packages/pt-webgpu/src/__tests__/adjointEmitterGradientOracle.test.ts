@@ -235,16 +235,17 @@ describe('path-replay adjoint emitter gradients — independent CPU oracle', () 
 
   it('the production shader keeps emitter gradients on the closed-form radiance chain', () => {
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('fn scatterEmitterRadianceGradient');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('fn emitterRadianceAdjoint(');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('@group(0) @binding(22) var<storage, read>       meshAreaLightSourceFactors');
-    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let dPackedRadiance_dColor = sourceFactor * emitterIntensity;');
-    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let dPackedRadiance_dIntensity = sourceFactor * emitterColor;');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('dLoss_dPackedRadiance * sourceFactor * emitterIntensity * invReplaySamples');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('dot(dLoss_dPackedRadiance, sourceFactor * emitterColor) * invReplaySamples');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('sourceOwnerSlot = ownerToken - 1u;');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).not.toContain('packedRadiance / emitterColor');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).not.toContain('packedRadiance / emitterIntensity');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).not.toContain('if (dIrrMean.w <= 1e-6) { continue; }');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain(`${ADJOINT_EMITTER_TARGET_DIRECTIONAL}u`);
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('dLoss_dR * brdfValue * (nDotL * attenuation)');
-    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let areaFactor = misWeight / max(lightPdf, 1e-6);');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let areaFactor = misWeight / lightPdf;');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('dLoss_dR * brdfValue * (nDotL * areaFactor)');
   });
 });

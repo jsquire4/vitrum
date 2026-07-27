@@ -1,46 +1,11 @@
 /**
  * liteTierBindingBudget.test.ts — §H H56-b
  *
- * Verifies that the LITE pass graph's WGSL binding declarations fit within the
- * limits stated in HYBRID_LITE_LIMITS, and documents the relationship between
- * the declared binding count and the lite-tier limit.
- *
- * Background:
- *   HYBRID_LITE_LIMITS declares:
- *     maxStorageBuffersPerShaderStage: 10
- *     maxStorageTexturesPerShaderStage: 6
- *
- *   The lite tier forces `bvhMode:'merged'`, which removes the 5 TLAS storage
- *   buffers from the scene bind group at RUNTIME (they are bound to 32-byte
- *   dummies and the shader's `bvhMode == 0u` branch never traverses them).
- *   However, the WGSL DECLARES all bindings regardless — WebGPU's pipeline
- *   creation validates against the DECLARED bindings in each shader, not just
- *   the ones actually executed.
- *
- *   The composed shade shader binding structure:
- *     Frame group (group 0) — storage BUFFERS:  bindings 5, 6, 7, 11 = 4
- *     Frame group (group 0) — storage TEXTURES: bindings 8, 10, 12, 13, 14, 15 = 6
- *     Scene group (group 1) — storage BUFFERS (non-TLAS): 0,1,2,3,4,11 = 6
- *       (binding 11 / bvh_normal is dependency-owned by materialAtlas.wgsl)
- *       (analytic_lights moved to @group(1) @binding(13) as a texture)
- *     Scene group (group 1) — storage BUFFERS (TLAS, merged-mode dummies): 6,7,8,9,10 = 5
- *     Hybrid layers group (group 3) — storage BUFFERS: binding 4 = 1 RC cascade-0
- *
- *   Total storage buffers declared in composed shade WGSL = 4+11+1 = 16
- *   Total storage textures declared in shade WGSL = 6 (at the lite-tier floor)
- *
- *   HYBRID_LITE_LIMITS.maxStorageBuffersPerShaderStage = 10 refers to the
- *   non-TLAS merged path: 4 (frame) + 6 (non-TLAS scene) = 10.
- *   The 5 TLAS buffers, plus the RC cascade when RC is disabled, are DECLARED;
- *   the lite tier depends on those inactive bindings being stripped in the
- *   merged/RC-off path.
- *
- * What this test asserts:
- *   1. HYBRID_LITE_LIMITS < HYBRID_WEBGPU_REQUIRED_LIMITS on both axes.
- *   2. shade storage textures = 6 = HYBRID_LITE_LIMITS.maxStorageTexturesPerShaderStage.
- *   3. composed shade declares the 5 TLAS storage buffers (required for BGL compat).
- *   4. shade does NOT reference PPG tree bindings (lite-forbidden).
- *   5. The non-TLAS storage buffer sum (frame + non-TLAS scene + RC cascade) ≤ 10.
+ * Lite executes less work but compiles the same explicit bind-group layouts as
+ * full. WebGPU validates all declared layout entries, including dummy-bound or
+ * runtime-inactive TLAS/RC slots, so both tiers require the same structural
+ * device floor. The pass-layout recording test covers the global peaks; this
+ * legacy static-WGSL test pins the shade-specific declaration breakdown.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -80,80 +45,58 @@ describe('lite-tier binding budget — static WGSL analysis (H56-b)', () => {
     expect(HYBRID_LITE_LIMITS['maxStorageTexturesPerShaderStage']).toBeTypeOf('number');
   });
 
-  it('HYBRID_LITE_LIMITS < HYBRID_WEBGPU_REQUIRED_LIMITS on both axes (monotone gradient)', () => {
-    // The lite limit must be strictly below the full-tier limit so that the
-    // adapter-capability test (lite vs full verdict) is monotone.
-    expect(HYBRID_LITE_LIMITS['maxStorageBuffersPerShaderStage']!)
-      .toBeLessThan(HYBRID_WEBGPU_REQUIRED_LIMITS['maxStorageBuffersPerShaderStage']!);
-    expect(HYBRID_LITE_LIMITS['maxStorageTexturesPerShaderStage']!)
-      .toBeLessThan(HYBRID_WEBGPU_REQUIRED_LIMITS['maxStorageTexturesPerShaderStage']!);
+  it('uses the same validated layout floor for lite and full', () => {
+    expect(HYBRID_LITE_LIMITS).toEqual(HYBRID_WEBGPU_REQUIRED_LIMITS);
   });
 
-  it('shade.wgsl storage texture count = 6 = HYBRID_LITE_LIMITS.maxStorageTexturesPerShaderStage', () => {
+  it('shade.wgsl declares six storage textures within the seven-texture global peak', () => {
     // The 6 storage textures (hdrColorOut, gNormalDepthOut, hdrIndirectOut,
     // hdrTotalOut, hdrAlbedoOut, svgfObjectIdOut) are the structural minimum.
     // shade writes all 6 simultaneously; this cannot be reduced without a WGSL
     // fork — the lite decision explicitly avoids forking shade.wgsl.
     const texCount = countStorageTextures(SHADE_WGSL);
     expect(texCount).toBe(6);
-    expect(texCount).toBe(HYBRID_LITE_LIMITS['maxStorageTexturesPerShaderStage']!);
+    expect(texCount).toBeLessThanOrEqual(HYBRID_LITE_LIMITS['maxStorageTexturesPerShaderStage']!);
   });
 
-  it('composed shade declares 16 storage buffers (4 frame + 11 scene + 1 RC)', () => {
-    // The root shade module declares 14 buffers; materialAtlas owns the normal
-    // buffer declaration that shade needs for textured alpha-mask traversal.
-    expect(countStorageBuffers(SHADE_WGSL)).toBe(14);
+  it('composed shade declares eight storage buffers (4 frame + 3 scene arenas + 1 RC)', () => {
+    // The root shade module owns only the four frame-group reservoir buffers.
+    // All logical scene arrays are loaded through the dependency-owned arenas.
+    expect(countStorageBuffers(SHADE_WGSL)).toBe(4);
 
-    // The composed shader declares 4 frame-group + 11 scene-group + 1 RC
-    // cascade storage buffers = 16. Analytic point/spot NEE is now a sampled
-    // rgba32float texture, so it no longer consumes a storage-buffer slot.
+    // The composed shader sits exactly on WebGPU's guaranteed floor: four frame
+    // buffers + geometry/TLAS/lighting arenas + one RC cascade buffer.
     const bufCount = countStorageBuffers(composedShadeWgsl);
-    expect(bufCount).toBe(16);
+    expect(bufCount).toBe(8);
     expect(bufCount).toBeLessThanOrEqual(HYBRID_WEBGPU_REQUIRED_LIMITS['maxStorageBuffersPerShaderStage']!);
   });
 
-  it('non-TLAS non-RC storage buffer count (merged path minimum) = 10; composed shade total = 16', () => {
-    // Breakdown of non-TLAS storage buffers in composed shade:
-    //   Frame group:        4  (bindings 5,6,7,11 — reservoirs + GI reservoir)
-    //   Scene group non-TLAS: 6  (bindings 0,1,2,3,4,11 — bvh+index+pos+emitters+cdf+normals)
-    //   Total non-TLAS, non-RC in composed shade: 10
-    //   TLAS (declared):    5  (bindings 6,7,8,9,10 — dummies in merged mode)
-    //   RC cascade-0:       1  (binding 4 in hybrid-layers group)
-    //   Grand total in composed shade: 16
-    //
-    // The HYBRID_LITE_LIMITS (10) is an empirical minimum for hardware that
-    // strips declared-but-inactive TLAS/RC bindings in the merged, RC-off path.
-    const nonTlasFrameBuffers    = 4;  // shade.wgsl @group(0): bindings 5,6,7,11
-    const nonTlasSceneBuffers    = 6;  // shade.wgsl @group(1): bindings 0,1,2,3,4,11
-    const rcCascadeBuffers       = 1;  // sampleCascadeC0 @group(3): binding 4
-    const tlasSceneBuffers       = 5;  // shade.wgsl @group(1): bindings 6,7,8,9,10
-    const nonTlasTotal = nonTlasFrameBuffers + nonTlasSceneBuffers;
-    const grandTotal   = nonTlasTotal + rcCascadeBuffers + tlasSceneBuffers;
-
-    expect(nonTlasTotal).toBe(10);
-    expect(nonTlasTotal + rcCascadeBuffers).toBe(11);
-    expect(grandTotal).toBe(16);
-
-    // Non-TLAS/non-RC total equals the lite limit; drivers must still strip
-    // TLAS and inactive RC bindings to hit that limit for the merged path.
-    expect(nonTlasTotal).toBe(HYBRID_LITE_LIMITS['maxStorageBuffersPerShaderStage']!);
-    expect(grandTotal).toBeLessThanOrEqual(HYBRID_WEBGPU_REQUIRED_LIMITS['maxStorageBuffersPerShaderStage']!);
+  it('uses three scene arena slots regardless of merged-BVH or TLAS traversal mode', () => {
+    const arenaDecls = composedShadeWgsl.match(
+      /@group\(1\)\s*@binding\([0-2]\)\s*var<storage,\s*read>\s*scene(?:Geometry|Tlas|Lighting)Arena/g,
+    ) ?? [];
+    expect(arenaDecls).toHaveLength(3);
+    expect(new Set(arenaDecls).size).toBe(3);
+    expect(countStorageBuffers(composedShadeWgsl)).toBe(
+      4 /* frame */ + 3 /* scene */ + 1 /* RC */,
+    );
   });
 
-  it('the 5 TLAS storage buffers ARE declared in composed shade (required for BGL compat)', () => {
-    // Even in merged mode the full scene BGL is used (single layout) — the TLAS
-    // bindings must be present in the shader.  A future lite-WGSL-fork that
-    // elides them would lower the declared count and should update this test.
-    const tlasNames = [
-      'tlasNodes',
-      'tlasInstanceIndices',
-      'tlasBlasRoots',
-      'tlasInstanceWorldToLocal',
-      'tlasInstanceLocalToWorld',
+  it('the TLAS loader surface is present and reads the versioned TLAS arena', () => {
+    const tlasLoaders = [
+      'tlasLoadNode',
+      'tlasLoadInstanceIndex',
+      'tlasLoadBlasRoot',
+      'tlasLoadWorldToLocalColumn',
+      'tlasLoadLocalToWorldColumn',
     ];
-    for (const name of tlasNames) {
-      expect(composedShadeWgsl, `${name} must be declared in composed shade`).toContain(name);
+    for (const name of tlasLoaders) {
+      expect(composedShadeWgsl, `${name} must be defined in composed shade`).toMatch(
+        new RegExp(`fn\\s+${name}\\s*\\(`),
+      );
     }
+    expect(composedShadeWgsl).toContain('@group(1) @binding(1) var<storage, read> sceneTlasArena: array<u32>;');
+    expect(composedShadeWgsl).not.toMatch(/var<storage,\s*read>\s+tlas(?:Nodes|Instance)/);
   });
 
   it('PPG tree bindings are NOT referenced in shade.wgsl (lite-forbidden, risGi-only)', () => {

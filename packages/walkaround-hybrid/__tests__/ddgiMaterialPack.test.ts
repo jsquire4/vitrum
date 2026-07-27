@@ -86,9 +86,9 @@ describe('packDDGIMaterials — byte-equivalence (W2-C5 canonical layout)', () =
     expect(F[7]).toBeCloseTo(0.1);            // metalness (was roughness)
     expect(F[8]).toBeCloseTo(1.5);            // ior (was metalness — default from extractor)
     expect(F[9]).toBe(0);                     // transmission (was ior)
-    // attenuationDistance: THREE std mat has none, packer treats undefined
-    // → MATERIAL_ATTEN_DIST_INFINITE (1e9, was transmission slot).
-    expect(F[10]).toBeCloseTo(1e9);
+    // attenuationDistance: THREE std mat has none, so the canonical material
+    // representation preserves the physically unbounded distance as +Infinity.
+    expect(F[10]).toBe(Number.POSITIVE_INFINITY);
     expect(F[11]).toBe(0);                    // thickness (was _pad1)
     expect(F[12]).toBe(1);                    // attenuationColor.r (default white)
     expect(F[13]).toBe(1);                    // attenuationColor.g
@@ -169,20 +169,14 @@ describe('packDDGIMaterials — byte-equivalence (W2-C5 canonical layout)', () =
     }
   });
 
-  it('drops materials beyond DDGI_MAX_MATERIALS without error', () => {
+  it('rejects materials beyond DDGI_MAX_MATERIALS instead of silently truncating', () => {
     const N = DDGI_MAX_MATERIALS + 5;
     const mats = Array.from({ length: N }, (_, i): PbrScalarSource => ({
       color: color(i / N, 0, 0),
     }));
-    const buf = packDDGIMaterials(mats);
-    const F = f32(buf);
-
-    // Slot 0..(MAX-1) populated.
-    for (let i = 0; i < DDGI_MAX_MATERIALS; i++) {
-      expect(F[i * ENTRY + 0]).toBeCloseTo(i / N);
-    }
-    // Total buffer size unchanged — overflow materials silently dropped.
-    expect(buf.byteLength).toBe(DDGI_MAX_MATERIALS * DDGI_MATERIAL_STRIDE_BYTES);
+    expect(() => packDDGIMaterials(mats)).toThrow(
+      /Scene has 69 materials.*64 slots.*ddgiMaxMaterials/i,
+    );
   });
 
   it('golden hash — locks the byte output of a known-good fixture scene', () => {

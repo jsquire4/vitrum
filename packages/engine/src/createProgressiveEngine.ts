@@ -19,20 +19,33 @@
 // `coordinator.frame(input)` per RAF tick) and the canvas presentation.
 
 import type {
+  BackendSupportDetails,
+  BackendSupportMode,
+  EngineCapabilities,
+  EngineState,
+  EngineWarning,
   Scene,
   Engine,
   FrameInput,
 } from '@vitrum/core';
-import { auditSceneNeedsTlas } from '@vitrum/core';
-import type { EngineWithBackendId } from './createEngineInternals.js';
+import { auditSceneNeedsTlas, validateScene } from '@vitrum/core';
+import type { RuntimeEngineWithBackendId as EngineWithBackendId } from './createEngineInternals.js';
+import type { GIStatePersistable } from './idempotentDispose.js';
 import {
   HYBRID_WEBGPU_REQUIRED_LIMITS,
+  nrcWebGpuRequiredLimitsForConfig,
+  resolveHybridNrcConfig,
+  validateHybridEngineAdvancedOptions,
+  type NrcConfig,
   type HybridEngineOptions,
 } from '@vitrum/walkaround-hybrid';
 import {
   PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
+  PT_WEBGPU_CWBVH_CLOSEST_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
+  PT_WEBGPU_CWBVH_CLOSEST_RESTIR_PT_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
   PT_WEBGPU_RESTIR_PT_REUSE_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
   PT_WEBGPU_FULL_REQUIRED_STORAGE_TEXTURES_PER_STAGE,
+  validatePtWebgpuAdvancedOptions,
   type PTEngineWebGPUOptions,
 } from '@vitrum/pt-webgpu';
 
@@ -47,11 +60,13 @@ import { computeSceneAABB } from './sceneAABB.js';
 import { configureWebGpuCanvas } from './configureWebGpuCanvas.js';
 import {
   ProgressiveHandoffCoordinator,
+  assertProgressiveHandoffConfiguration,
   type ProgressiveHandoffController,
   type ProgressiveHandoffControllerDelta,
   type ProgressiveHandoffOptions,
 } from './progressiveHandoff.js';
 import type { AdapterProfile } from '@vitrum/core';
+import { requiredWalkaroundNeuralDeviceFeatures } from './neuralFeatureNegotiation.js';
 export interface CreateProgressiveEngineOptions {
   /** Canvas the REALTIME engine presents into (the converged engine renders
    *  offscreen). Used to obtain the WebGPU context for swap-chain plumbing. */
@@ -120,6 +135,11 @@ export interface CreateProgressiveEngineOptions {
    *  built. Lets a host read the tier verdict for a HUD / CI artifact. */
   readonly onAdapterProfile?: (profile: AdapterProfile) => void;
 
+  /** Construction-time warnings from either sub-engine. Runtime warnings are
+   * available through the adapted engine's `onWarning` fan-out. Host callback
+   * exceptions are contained by the backend construction facade. */
+  readonly onWarning?: (warning: EngineWarning) => void;
+
   /** Host-visible construction/plumbing error callback.
    *
    * Mirrors the `onError` parameter on {@link CreateEngineOptions}: the second
@@ -129,14 +149,162 @@ export interface CreateProgressiveEngineOptions {
   readonly onError?: (error: unknown, event: CreateEngineErrorEvent) => void;
 }
 
+const CREATE_PROGRESSIVE_ENGINE_OPTION_KEYS = {
+  canvas: true,
+  scene: true,
+  realtimeOptions: true,
+  convergedOptions: true,
+  stillFramesBeforeHandoff: true,
+  seedWeight: true,
+  seedFromRealtime: true,
+  settleBehindRealtime: true,
+  convergedDisplaySamples: true,
+  cameraEpsilon: true,
+  controller: true,
+  controllerDeltaSeconds: true,
+  controllerLoop: true,
+  debug: true,
+  onAdapterProfile: true,
+  onWarning: true,
+  onError: true,
+} as const satisfies Readonly<Record<keyof CreateProgressiveEngineOptions, true>>;
+
+function assertProgressivePlainDataObject(
+  value: unknown,
+  label: string,
+  allowedKeys: ReadonlySet<string>,
+): asserts value is Record<string, unknown> {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    throw new TypeError(`${label} must be a plain object`);
+  }
+  const prototype: unknown = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) {
+    throw new TypeError(`${label} must have Object.prototype or null prototype`);
+  }
+  for (const key of Reflect.ownKeys(value)) {
+    if (typeof key !== 'string') {
+      throw new TypeError(`${label} contains unsupported symbol key ${String(key)}`);
+    }
+    if (!allowedKeys.has(key)) {
+      throw new TypeError(`${label} contains unknown key ${JSON.stringify(key)}`);
+    }
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (descriptor == null || !('value' in descriptor)) {
+      throw new TypeError(`${label}.${key} must be an own data property`);
+    }
+    if (!descriptor.enumerable) {
+      throw new TypeError(`${label}.${key} must be enumerable`);
+    }
+  }
+}
+
+/**
+ * Validate the progressive facade before scene traversal, adapter acquisition,
+ * capability reads, or canvas-context access. Backend bags are validated by the
+ * same pure validators used by their concrete factories.
+ */
+export function validateCreateProgressiveEngineOptions(
+  value: unknown,
+): asserts value is CreateProgressiveEngineOptions {
+  assertProgressivePlainDataObject(
+    value,
+    'createProgressiveEngine options',
+    new Set(Object.keys(CREATE_PROGRESSIVE_ENGINE_OPTION_KEYS)),
+  );
+
+  if (value.canvas == null || typeof value.canvas !== 'object') {
+    throw new TypeError(
+      'createProgressiveEngine: opts.canvas is required and must be an object',
+    );
+  }
+  if (typeof (value.canvas as { readonly getContext?: unknown }).getContext !== 'function') {
+    throw new TypeError('createProgressiveEngine: opts.canvas must expose getContext()');
+  }
+  for (const dimension of ['width', 'height'] as const) {
+    const component = (value.canvas as {
+      readonly width?: unknown;
+      readonly height?: unknown;
+    })[dimension];
+    if (typeof component !== 'number' || !Number.isSafeInteger(component) || component < 0) {
+      throw new RangeError(
+        `createProgressiveEngine: opts.canvas.${dimension} must be a non-negative safe integer ` +
+          `(got ${String(component)})`,
+      );
+    }
+  }
+  if (value.scene == null || typeof value.scene !== 'object') {
+    throw new TypeError(
+      'createProgressiveEngine: opts.scene is required and must be an object',
+    );
+  }
+
+  if (value.realtimeOptions !== undefined) {
+    validateHybridEngineAdvancedOptions(value.realtimeOptions);
+  }
+  if (value.convergedOptions !== undefined) {
+    validatePtWebgpuAdvancedOptions(
+      value.convergedOptions as Partial<Omit<PTEngineWebGPUOptions, 'device'>>,
+    );
+  }
+
+  for (const option of [
+    'seedFromRealtime',
+    'settleBehindRealtime',
+    'controllerLoop',
+    'debug',
+  ] as const) {
+    if (value[option] !== undefined && typeof value[option] !== 'boolean') {
+      throw new TypeError(
+        `createProgressiveEngine: opts.${option} must be a boolean when supplied`,
+      );
+    }
+  }
+  for (const callback of ['onAdapterProfile', 'onWarning', 'onError'] as const) {
+    if (value[callback] !== undefined && typeof value[callback] !== 'function') {
+      throw new TypeError(
+        `createProgressiveEngine: opts.${callback} must be a function when supplied`,
+      );
+    }
+  }
+  if (
+    value.controller !== undefined &&
+    (
+      value.controller === null ||
+      (typeof value.controller !== 'object' && typeof value.controller !== 'function') ||
+      typeof (value.controller as { readonly advance?: unknown }).advance !== 'function'
+    )
+  ) {
+    throw new TypeError(
+      'createProgressiveEngine: opts.controller must expose advance() when supplied',
+    );
+  }
+  if (
+    value.controllerDeltaSeconds !== undefined &&
+    typeof value.controllerDeltaSeconds !== 'number' &&
+    typeof value.controllerDeltaSeconds !== 'function'
+  ) {
+    throw new TypeError(
+      'createProgressiveEngine: opts.controllerDeltaSeconds must be a number or function',
+    );
+  }
+
+  assertProgressiveHandoffConfiguration(
+    value,
+  );
+}
+
 export interface ProgressiveEngineHandle {
+  /** Resolved converged-backend profile forwarded without inference. */
+  readonly backendProfileId?: 'pt-webgpu' | 'pt-webgpu-lite';
+  /** Adapter/loader profile identity forwarded without inference when present. */
+  readonly profileId?: 'pt-webgpu' | 'pt-webgpu-lite';
   /** The coordinator the host drives per RAF tick (`coordinator.frame(input)`).
    *  Also the scene-mutation authority (it forwards setScene/updatePrimitive/… to
    *  both engines and re-arms the handoff). */
   readonly coordinator: ProgressiveHandoffCoordinator;
   /** The realtime (walkaround-hybrid) engine, for direct introspection. Do NOT
    *  call `dispose()` on it directly — use the handle's `dispose()`. */
-  readonly realtime: Engine;
+  readonly realtime: Engine & Partial<GIStatePersistable>;
   /** The converged (pt-webgpu) engine, for direct introspection. Do NOT call
    *  `dispose()` on it directly — use the handle's `dispose()`. */
   readonly converged: Engine;
@@ -144,6 +312,253 @@ export interface ProgressiveEngineHandle {
   dispose(): void;
 }
 
+
+const SUPPORT_MODE_RANK: Readonly<Record<BackendSupportMode, number>> = {
+  native: 0,
+  'fallback-rebuild': 1,
+  'fallback-generated-mesh': 2,
+  approximate: 3,
+  unsupported: 4,
+};
+
+/** Runtime-immutable set view for a capability object retained by the facade.
+ *  The closure owns the mutable backing Set; hosts receive no mutation method. */
+function runtimeReadonlySet<T>(items: Iterable<T>): ReadonlySet<T> {
+  const values = new Set(items);
+  const view: ReadonlySet<T> = {
+    get size() { return values.size; },
+    has: (value) => values.has(value),
+    entries: () => values.entries(),
+    keys: () => values.keys(),
+    values: () => values.values(),
+    forEach: (callback, thisArg) => {
+      for (const value of values) callback.call(thisArg, value, value, view);
+    },
+    [Symbol.iterator]: () => values[Symbol.iterator](),
+  };
+  return Object.freeze(view);
+}
+
+function weakestSupportMode(
+  first: BackendSupportMode | undefined,
+  second: BackendSupportMode | undefined,
+): BackendSupportMode | undefined {
+  if (first == null || second == null) {
+    return first === 'unsupported' || second === 'unsupported' ? 'unsupported' : undefined;
+  }
+  return SUPPORT_MODE_RANK[first] >= SUPPORT_MODE_RANK[second] ? first : second;
+}
+
+function combineSupportMap<K extends PropertyKey>(
+  first: Readonly<Partial<Record<K, BackendSupportMode>>>,
+  second: Readonly<Partial<Record<K, BackendSupportMode>>>,
+): Readonly<Partial<Record<K, BackendSupportMode>>> {
+  const result: Partial<Record<K, BackendSupportMode>> = {};
+  const keys = new Set<K>([
+    ...(Reflect.ownKeys(first) as K[]),
+    ...(Reflect.ownKeys(second) as K[]),
+  ]);
+  for (const key of keys) {
+    const combined = weakestSupportMode(first[key], second[key]);
+    if (combined != null) result[key] = combined;
+  }
+  return Object.freeze(result);
+}
+
+function intersectSet<T>(first: ReadonlySet<T>, second: ReadonlySet<T>): ReadonlySet<T> {
+  return runtimeReadonlySet([...first].filter((value) => second.has(value)));
+}
+
+function intersectOptionalSet<T>(
+  first: ReadonlySet<T> | undefined,
+  second: ReadonlySet<T> | undefined,
+): ReadonlySet<T> | undefined {
+  return first != null && second != null ? intersectSet(first, second) : undefined;
+}
+
+function unionSet<T>(first: ReadonlySet<T> | undefined, second: ReadonlySet<T> | undefined): ReadonlySet<T> {
+  return runtimeReadonlySet([...(first ?? []), ...(second ?? [])]);
+}
+
+function greatestCommonDivisor(a: number, b: number): number {
+  let x = a;
+  let y = b;
+  while (y !== 0) {
+    const remainder = x % y;
+    x = y;
+    y = remainder;
+  }
+  return x;
+}
+
+function combineSupportDetails(
+  realtime: BackendSupportDetails | undefined,
+  converged: BackendSupportDetails | undefined,
+  sceneFallbackAvailable: boolean,
+  lightingAvailable: boolean,
+): BackendSupportDetails | undefined {
+  if (realtime == null || converged == null) return undefined;
+
+  const denoisers = combineSupportMap(realtime.denoisers, converged.denoisers) as
+    BackendSupportDetails['denoisers'];
+  const shapeModes = new Set([
+    ...Object.keys(realtime.denoiserSpatialShapeRequirements ?? {}),
+    ...Object.keys(converged.denoiserSpatialShapeRequirements ?? {}),
+  ]) as Set<keyof BackendSupportDetails['denoisers']>;
+  const denoiserSpatialShapeRequirements: Record<string, {
+    readonly minWidth: number;
+    readonly minHeight: number;
+    readonly widthMultiple: number;
+    readonly heightMultiple: number;
+  }> = {};
+  for (const mode of shapeModes) {
+    const first = realtime.denoiserSpatialShapeRequirements?.[mode];
+    const second = converged.denoiserSpatialShapeRequirements?.[mode];
+    if (first == null && second == null) continue;
+    const widthMultipleA = first?.widthMultiple ?? 1;
+    const widthMultipleB = second?.widthMultiple ?? 1;
+    const heightMultipleA = first?.heightMultiple ?? 1;
+    const heightMultipleB = second?.heightMultiple ?? 1;
+    denoiserSpatialShapeRequirements[mode] = {
+      minWidth: Math.max(first?.minWidth ?? 1, second?.minWidth ?? 1),
+      minHeight: Math.max(first?.minHeight ?? 1, second?.minHeight ?? 1),
+      widthMultiple:
+        (widthMultipleA / greatestCommonDivisor(widthMultipleA, widthMultipleB)) * widthMultipleB,
+      heightMultiple:
+        (heightMultipleA / greatestCommonDivisor(heightMultipleA, heightMultipleB)) * heightMultipleB,
+    };
+  }
+
+  const mutationMode = (
+    key: keyof BackendSupportDetails['mutations'],
+    sceneBacked: boolean,
+  ): BackendSupportMode => {
+    const first = realtime.mutations[key];
+    const second = converged.mutations[key];
+    if (sceneBacked && sceneFallbackAvailable && (first === 'unsupported' || second === 'unsupported')) {
+      return 'fallback-rebuild';
+    }
+    return weakestSupportMode(first, second) ?? 'unsupported';
+  };
+
+  return {
+    primitives: combineSupportMap(realtime.primitives, converged.primitives),
+    emitters: combineSupportMap(realtime.emitters, converged.emitters),
+    environments: combineSupportMap(realtime.environments, converged.environments),
+    analyticShapes: combineSupportMap(realtime.analyticShapes, converged.analyticShapes),
+    materials: combineSupportMap(realtime.materials, converged.materials),
+    shadows: combineSupportMap(realtime.shadows, converged.shadows),
+    denoisers,
+    ...(shapeModes.size > 0 ? { denoiserSpatialShapeRequirements } : {}),
+    mutations: {
+      transform: mutationMode('transform', true),
+      positions: mutationMode('positions', true),
+      material: mutationMode('material', true),
+      emitter: mutationMode('emitter', true),
+      topology: mutationMode('topology', true),
+      addPrimitive: mutationMode('addPrimitive', true),
+      removePrimitive: mutationMode('removePrimitive', true),
+      environment: mutationMode('environment', true),
+      resize: mutationMode('resize', false),
+      lighting: lightingAvailable ? mutationMode('lighting', false) : 'unsupported',
+    },
+    ...(realtime.thinFilmLayerLimit != null && converged.thinFilmLayerLimit != null
+      ? { thinFilmLayerLimit: Math.min(realtime.thinFilmLayerLimit, converged.thinFilmLayerLimit) }
+      : {}),
+  };
+}
+
+function patchSupport(capabilities: EngineCapabilities, key: keyof NonNullable<
+  EngineCapabilities['incrementalPatchSupport']
+>): boolean {
+  return capabilities.incrementalPatchSupport?.[key] ?? capabilities.supportsIncrementalScene;
+}
+
+/** Compose only guarantees that remain true across BOTH presentation phases. */
+export function composeProgressiveCapabilities(
+  realtime: Engine,
+  converged: Engine,
+  sceneFallbackAvailable = false,
+): EngineCapabilities {
+  const first = realtime.capabilities;
+  const second = converged.capabilities;
+  const supportsPrimitivePatch = sceneFallbackAvailable || (
+    typeof realtime.updatePrimitive === 'function' &&
+    typeof converged.updatePrimitive === 'function'
+  );
+  const supportsEmitterPatch = sceneFallbackAvailable || (
+    typeof realtime.updateEmitter === 'function' &&
+    typeof converged.updateEmitter === 'function'
+  );
+  const supportsAddRemove = sceneFallbackAvailable || (
+    first.supportsAddRemovePrimitive === true &&
+    second.supportsAddRemovePrimitive === true &&
+    typeof realtime.addPrimitive === 'function' &&
+    typeof converged.addPrimitive === 'function' &&
+    typeof realtime.removePrimitive === 'function' &&
+    typeof converged.removePrimitive === 'function'
+  );
+  const supportsLighting =
+    typeof realtime.updateLighting === 'function' &&
+    typeof converged.updateLighting === 'function';
+  const supportedPrimitiveKinds = intersectOptionalSet(
+    first.supportedPrimitiveKinds,
+    second.supportedPrimitiveKinds,
+  );
+  const supportedEnvironmentKinds = intersectOptionalSet(
+    first.supportedEnvironmentKinds,
+    second.supportedEnvironmentKinds,
+  );
+  const supportDetails = combineSupportDetails(
+    first.supportDetails,
+    second.supportDetails,
+    sceneFallbackAvailable,
+    supportsLighting,
+  );
+  return {
+    supportsIncrementalScene: supportsPrimitivePatch || supportsEmitterPatch,
+    supportsAddRemovePrimitive: supportsAddRemove,
+    incrementalPatchSupport: {
+      transform: supportsPrimitivePatch && (sceneFallbackAvailable || (patchSupport(first, 'transform') && patchSupport(second, 'transform'))),
+      positions: supportsPrimitivePatch && (sceneFallbackAvailable || (patchSupport(first, 'positions') && patchSupport(second, 'positions'))),
+      material: supportsPrimitivePatch && (sceneFallbackAvailable || (patchSupport(first, 'material') && patchSupport(second, 'material'))),
+      emitter: supportsEmitterPatch && (sceneFallbackAvailable || (patchSupport(first, 'emitter') && patchSupport(second, 'emitter'))),
+      topology: supportsPrimitivePatch && (sceneFallbackAvailable || (patchSupport(first, 'topology') && patchSupport(second, 'topology'))),
+    },
+    supportsAuxBuffers: first.supportsAuxBuffers && second.supportsAuxBuffers,
+    accumulates: true,
+    supportsAccumulatorSeed: false,
+    supportsProgressiveSeedSource: false,
+    maxSamplesPerPixel: Math.min(first.maxSamplesPerPixel, second.maxSamplesPerPixel),
+    maxBounces: Math.min(first.maxBounces, second.maxBounces),
+    supportedAnalyticShapes: intersectSet(first.supportedAnalyticShapes, second.supportedAnalyticShapes),
+    supportedEmitterKinds: intersectSet(first.supportedEmitterKinds, second.supportedEmitterKinds),
+    ...(supportedPrimitiveKinds != null ? { supportedPrimitiveKinds } : {}),
+    ...(supportedEnvironmentKinds != null ? { supportedEnvironmentKinds } : {}),
+    presentationMode: 'swapchain-optional',
+    activeFeatures: unionSet(first.activeFeatures, second.activeFeatures),
+    ...(supportDetails != null ? { supportDetails } : {}),
+    // Intentionally omit inverseRendering. The progressive facade delegates
+    // inverse sessions to the converged engine only; it is not a guarantee
+    // shared by both phases and therefore must not be presented as a composite
+    // capability.
+    causticStrategy: first.causticStrategy === second.causticStrategy
+      ? first.causticStrategy
+      : 'none',
+    debugSurface: false,
+  };
+}
+
+function progressiveState(realtime: EngineState, converged: EngineState): EngineState {
+  if (realtime === 'error' || converged === 'error') return 'error';
+  if (realtime === 'disposed' && converged === 'disposed') return 'disposed';
+  if (realtime === 'disposed' || converged === 'disposed') return 'error';
+  if (realtime === 'initializing' || converged === 'initializing') return 'initializing';
+  if (realtime === 'uninitialized' || converged === 'uninitialized') return 'uninitialized';
+  if (realtime === 'paused' && converged === 'paused') return 'paused';
+  if (realtime === 'ready' && converged === 'ready') return 'ready';
+  return 'error';
+}
 /**
  * Subscribe `cb` to a telemetry channel on BOTH sub-engines and return a single
  * unsubscribe that drains both. The progressive facade fans out the identical
@@ -179,10 +594,23 @@ function fanOut<Cb>(
  */
 export function progressiveHandleAsEngine(handle: ProgressiveEngineHandle): EngineWithBackendId {
   const coordinator = handle.coordinator;
+  const capabilities = composeProgressiveCapabilities(
+    handle.realtime, handle.converged, coordinator.getScene() != null,
+  );
+  const convergedProfile = handle.converged as {
+    readonly backendProfileId?: 'pt-webgpu' | 'pt-webgpu-lite';
+    readonly profileId?: 'pt-webgpu' | 'pt-webgpu-lite';
+  };
+  const backendProfileId = handle.backendProfileId ?? convergedProfile.backendProfileId;
+  const profileId = handle.profileId ?? convergedProfile.profileId;
+  const exportGIState = handle.realtime.exportGIState?.bind(handle.realtime);
+  const importGIState = handle.realtime.importGIState?.bind(handle.realtime);
   const engine = {
-    backendId: 'pt-webgpu' as const,
-    get state() { return handle.realtime.state; },
-    get capabilities() { return handle.realtime.capabilities; },
+    backendId: 'progressive' as const,
+    ...(backendProfileId != null ? { backendProfileId } : {}),
+    ...(profileId != null ? { profileId } : {}),
+    get state() { return progressiveState(handle.realtime.state, handle.converged.state); },
+    get capabilities() { return capabilities; },
     setScene: (scene: Scene) => coordinator.setScene(scene),
     getScene: () => coordinator.getScene() ?? handle.realtime.getScene?.() ?? null,
     updatePrimitive: (id: string, patch: Parameters<NonNullable<EngineWithBackendId['updatePrimitive']>>[1]) =>
@@ -191,11 +619,22 @@ export function progressiveHandleAsEngine(handle: ProgressiveEngineHandle): Engi
       coordinator.addPrimitive(primitive),
     removePrimitive: (id: Parameters<NonNullable<EngineWithBackendId['removePrimitive']>>[0]) =>
       coordinator.removePrimitive(id),
-    setSize: (width: number, height: number) => {
-      handle.realtime.setSize?.(width, height);
-      handle.converged.setSize?.(width, height);
-    },
+    updateEmitter: (id: string, patch: Parameters<NonNullable<EngineWithBackendId['updateEmitter']>>[1]) =>
+      coordinator.updateEmitter(id, patch),
+    updateEnvironment: (environment: Parameters<NonNullable<EngineWithBackendId['updateEnvironment']>>[0]) =>
+      coordinator.updateEnvironment(environment),
+    ...(typeof handle.realtime.updateLighting === 'function' &&
+    typeof handle.converged.updateLighting === 'function'
+      ? {
+          updateLighting: (
+            opts: Parameters<NonNullable<EngineWithBackendId['updateLighting']>>[0],
+          ) => coordinator.updateLighting(opts),
+        }
+      : {}),
+    setSize: (width: number, height: number) => coordinator.setSize(width, height),
     renderFrame: (input: FrameInput) => coordinator.frame(input).output,
+    captureFrame: (options?: Parameters<NonNullable<EngineWithBackendId['captureFrame']>>[0]) =>
+      coordinator.captureFrame(options),
     // V1-1 / R2 — presentation source for attachVitrum's offscreen blit. The
     // coordinator returns the converged (offscreen pt-webgpu) engine's texture
     // once it hands off, and null while the swapchain realtime engine is driving
@@ -210,6 +649,18 @@ export function progressiveHandleAsEngine(handle: ProgressiveEngineHandle): Engi
       handle.realtime.pause();
       handle.converged.pause();
     },
+    ...(typeof handle.converged.createInverseSession === 'function'
+      ? { createInverseSession: handle.converged.createInverseSession.bind(handle.converged) }
+      : {}),
+    ...(typeof handle.converged.getRestirPtResultBuffer === 'function'
+      ? { getRestirPtResultBuffer: handle.converged.getRestirPtResultBuffer.bind(handle.converged) }
+      : {}),
+    ...(exportGIState != null
+      ? { exportGIState }
+      : {}),
+    ...(importGIState != null
+      ? { importGIState }
+      : {}),
     resume: () => {
       handle.realtime.resume();
       handle.converged.resume();
@@ -241,16 +692,28 @@ export function progressiveHandleAsEngine(handle: ProgressiveEngineHandle): Engi
 export interface ProgressiveLimitUnionOptions {
   /** Include converged-engine ReSTIR-PT reuse reservoirs in the shared-device floor. */
   readonly restirPtReuse?: boolean;
+  /** Include the realtime engine's opt-in NRC bind-group/buffer/workgroup floor. */
+  readonly nrcEnabled?: boolean;
+  /** Resolved against DEFAULT_NRC_CONFIG when NRC is enabled. */
+  readonly nrcConfig?: Partial<NrcConfig>;
+  /** Include the opt-in CWBVH closest-hit traversal buffers in the shared-device floor. */
+  readonly cwbvhClosest?: boolean;
 }
 
 export function computeProgressiveLimitUnion(
   options: ProgressiveLimitUnionOptions = {},
 ): Record<string, number> {
   // The two FULL-tier requiredLimits sets.
-  const hybridFull = HYBRID_WEBGPU_REQUIRED_LIMITS;
+  const hybridFull = options.nrcEnabled === true
+    ? nrcWebGpuRequiredLimitsForConfig(options.nrcConfig ?? {})
+    : HYBRID_WEBGPU_REQUIRED_LIMITS;
   const ptBufferFloor = options.restirPtReuse === true
-    ? PT_WEBGPU_RESTIR_PT_REUSE_REQUIRED_STORAGE_BUFFERS_PER_STAGE
-    : PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE;
+    ? (options.cwbvhClosest === true
+        ? PT_WEBGPU_CWBVH_CLOSEST_RESTIR_PT_REQUIRED_STORAGE_BUFFERS_PER_STAGE
+        : PT_WEBGPU_RESTIR_PT_REUSE_REQUIRED_STORAGE_BUFFERS_PER_STAGE)
+    : (options.cwbvhClosest === true
+        ? PT_WEBGPU_CWBVH_CLOSEST_REQUIRED_STORAGE_BUFFERS_PER_STAGE
+        : PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE);
   const ptWebgpuFull: Record<string, number> = {
     maxStorageBuffersPerShaderStage: ptBufferFloor,
     maxStorageTexturesPerShaderStage: PT_WEBGPU_FULL_REQUIRED_STORAGE_TEXTURES_PER_STAGE,
@@ -299,34 +762,58 @@ export function checkProgressiveLimitUnion(
 export async function createProgressiveEngine(
   opts: CreateProgressiveEngineOptions,
 ): Promise<ProgressiveEngineHandle> {
-  if (opts.canvas == null) {
-    throw new TypeError('createProgressiveEngine: opts.canvas is required');
-  }
-  if (opts.scene == null) {
-    throw new TypeError('createProgressiveEngine: opts.scene is required');
-  }
+  validateCreateProgressiveEngineOptions(opts);
+  validateScene(opts.scene);
+
+  // Scene traversal is pure and belongs before GPU acquisition: malformed
+  // geometry must never consume an adapter/device or touch the canvas.
+  const vitrumScene: Scene = opts.scene;
+  const aabb = computeSceneAABB(vitrumScene);
+  const needsTlas = auditSceneNeedsTlas(vitrumScene).needsTlas;
+
+  const failConstruction = (error: unknown): never => {
+    reportProgressiveEngineError(opts, error, {
+      phase: 'create:progressive',
+      backend: 'progressive',
+      recoverable: false,
+    });
+    throw error;
+  };
+
   if (typeof navigator === 'undefined' || navigator.gpu == null) {
-    throw new Error(
+    failConstruction(new Error(
       'createProgressiveEngine: WebGPU is unavailable (navigator.gpu is undefined). ' +
         'The progressive engine requires WebGPU for BOTH the realtime and converged ' +
         'backends. Use createEngine({ prefer: "quality" }) for a WebGL2 path tracer.',
-    );
+    ));
   }
 
-  const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
-  if (adapter == null) {
-    throw new Error('createProgressiveEngine: navigator.gpu.requestAdapter() returned null (no WebGPU adapter).');
+  let requestedAdapter: GPUAdapter | null = null;
+  try {
+    requestedAdapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
+  } catch (error) {
+    return failConstruction(error);
   }
+  if (requestedAdapter == null) {
+    return failConstruction(new Error(
+      'createProgressiveEngine: navigator.gpu.requestAdapter() returned null (no WebGPU adapter).',
+    ));
+  }
+  const adapter = requestedAdapter;
 
   // ── Limit-union preflight (Class-A-only) ──────────────────────────────────
   // The shared device must satisfy BOTH backends' FULL floors. Compute the union
   // and check the adapter BEFORE requesting the device, so we can throw a clear,
   // gap-naming error instead of letting requestDevice reject opaquely.
   const restirPtReuse = opts.convergedOptions?.restirPtReuse === true;
-  const union = computeProgressiveLimitUnion({ restirPtReuse });
-  const unmet = checkProgressiveLimitUnion(adapter, { restirPtReuse });
+  const cwbvhClosest = opts.convergedOptions?.bvhTraversal === 'cwbvh-closest';
+  const nrcEnabled = opts.realtimeOptions?.nrcEnabled === true;
+  const nrcConfig = resolveHybridNrcConfig(opts.realtimeOptions ?? {});
+  const unionOptions = { restirPtReuse, cwbvhClosest, nrcEnabled, nrcConfig };
+  const union = computeProgressiveLimitUnion(unionOptions);
+  const unmet = checkProgressiveLimitUnion(adapter, unionOptions);
   if (unmet.length > 0) {
-    throw new Error(
+    failConstruction(new Error(
       'createProgressiveEngine: this adapter cannot satisfy the device-limit UNION of ' +
         'the walkaround-hybrid (realtime) + pt-webgpu (converged) backends, which is ' +
         'required to run both on one shared device. Unmet limits: ' +
@@ -335,10 +822,18 @@ export async function createProgressiveEngine(
         'graceful degradation to a single backend is the host\'s call — use ' +
         'createEngine({ prefer: "realtime" }) or createEngine({ prefer: "quality-webgpu" }) ' +
         'on this hardware.',
-    );
+    ));
   }
 
-  const device = await adapter.requestDevice({ requiredLimits: union });
+  let device: GPUDevice;
+  try {
+    device = await adapter.requestDevice({
+      requiredLimits: union,
+      requiredFeatures: requiredWalkaroundNeuralDeviceFeatures(adapter, opts.realtimeOptions),
+    });
+  } catch (error) {
+    return failConstruction(error);
+  }
 
   // From here on the device is allocated; every subsequent throw (profile probe,
   // either sub-engine build, the capability preflight) must destroy it so it
@@ -367,11 +862,6 @@ export async function createProgressiveEngine(
     // Both engines ingest the SAME vitrum scene; the handoff requires both to
     // hold identical scene state (see the coordinator's scene-authority
     // forwarding).
-    const vitrumScene: Scene = opts.scene;
-
-    const aabb = computeSceneAABB(vitrumScene);
-    const needsTlas = auditSceneNeedsTlas(vitrumScene).needsTlas;
-
     const shared: SharedDeviceCtx = { adapter, device, ownsDeviceLifecycle: false };
 
     // Both sub-builds receive the progressive callback so construction-phase
@@ -389,13 +879,19 @@ export async function createProgressiveEngine(
     const realtimeBuildOpts: CreateEngineOptions = {
       canvas: opts.canvas,
       scene: vitrumScene,
-      ...(opts.realtimeOptions != null ? { advanced: opts.realtimeOptions } : {}),
+      ...(opts.realtimeOptions != null
+        ? {
+            advanced: opts.realtimeOptions,
+            advancedBackend: 'walkaround-hybrid' as const,
+          }
+        : {}),
       ...(opts.debug != null ? { debug: opts.debug } : {}),
       // onAdapterProfile is intentionally NOT forwarded — the facade already
       // invoked it once above (off the shared device). Forwarding it here would
       // fire the host callback a second time (off the adapter), breaking the
       // "invoked once" contract.
       ...(subBuildOnError != null ? { onError: subBuildOnError } : {}),
+      ...(opts.onWarning != null ? { onWarning: opts.onWarning } : {}),
     };
     realtime = await constructWalkaround(
       realtimeBuildOpts,
@@ -408,9 +904,15 @@ export async function createProgressiveEngine(
     const convergedBuildOpts: CreateEngineOptions = {
       canvas: opts.canvas,
       scene: vitrumScene,
-      ...(opts.convergedOptions != null ? { advanced: opts.convergedOptions } : {}),
+      ...(opts.convergedOptions != null
+        ? {
+            advanced: opts.convergedOptions,
+            advancedBackend: 'pt-webgpu' as const,
+          }
+        : {}),
       ...(opts.debug != null ? { debug: opts.debug } : {}),
       ...(subBuildOnError != null ? { onError: subBuildOnError } : {}),
+      ...(opts.onWarning != null ? { onWarning: opts.onWarning } : {}),
     };
     converged = await constructPathTracerWebGPU(
       convergedBuildOpts,
@@ -425,17 +927,23 @@ export async function createProgressiveEngine(
     // reset). pt-webgpu advertises supportsAccumulatorSeed unconditionally (the
     // accum buffers exist on both tiers); we still assert it so the contract is
     // enforced at the seam, not assumed.
-    if (realtime.capabilities.supportsProgressiveSeedSource !== true) {
+    if (
+      realtime.capabilities.supportsProgressiveSeedSource !== true ||
+      typeof realtime.getProgressiveSeedTexture !== 'function'
+    ) {
       throw new Error(
         'createProgressiveEngine: the realtime engine does not advertise ' +
-          'supportsProgressiveSeedSource — it cannot provide a seed texture for the ' +
+          'a callable, advertised progressive seed source — it cannot provide a seed texture for the ' +
           'converged engine\'s accumulator. The progressive seed handoff requires it.',
       );
     }
-    if (converged.capabilities.supportsAccumulatorSeed !== true) {
+    if (
+      converged.capabilities.supportsAccumulatorSeed !== true ||
+      typeof converged.seedAccumulator !== 'function'
+    ) {
       throw new Error(
         'createProgressiveEngine: the converged engine does not advertise ' +
-          'supportsAccumulatorSeed — its accumulator cannot be seeded from the realtime ' +
+          'a callable, advertised accumulator seed sink — it cannot be seeded from the realtime ' +
           'engine. The progressive seed handoff requires it.',
       );
     }
@@ -480,9 +988,19 @@ export async function createProgressiveEngine(
 
     const builtRealtime = realtime;
     const builtConverged = converged;
+    const convergedProfile = builtConverged as {
+      readonly backendProfileId?: 'pt-webgpu' | 'pt-webgpu-lite';
+      readonly profileId?: 'pt-webgpu' | 'pt-webgpu-lite';
+    };
     let disposed = false;
     return {
       coordinator,
+      ...(convergedProfile.backendProfileId != null
+        ? { backendProfileId: convergedProfile.backendProfileId }
+        : {}),
+      ...(convergedProfile.profileId != null
+        ? { profileId: convergedProfile.profileId }
+        : {}),
       realtime: builtRealtime,
       converged: builtConverged,
       dispose(): void {

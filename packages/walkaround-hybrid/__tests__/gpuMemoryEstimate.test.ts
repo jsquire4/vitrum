@@ -4,8 +4,8 @@
  * We don't have a real GPU in CI, so we stub `device.createTexture` and
  * `device.createBuffer` with plain JS objects that record the size+format
  * inputs. The estimator walks those records exactly as it walks real GPU
- * objects in production (it only ever reads `.width / .height / .format`
- * on textures and `.size / .usage` on buffers — see
+ * objects in production (it reads dimensions, format, mip count, and texture
+ * dimension on textures and `.size / .usage` on buffers — see
  * `pipeline/gpuMemoryEstimate.ts`).
  *
  * Sanity bands:
@@ -46,6 +46,8 @@ interface StubTexture {
   readonly width: number;
   readonly height: number;
   readonly depthOrArrayLayers?: number;
+  readonly mipLevelCount?: number;
+  readonly dimension?: GPUTextureDimension;
   readonly format: GPUTextureFormat;
   readonly usage: number;
   destroy(): void;
@@ -87,6 +89,8 @@ function makeStubDevice(): GPUDevice {
         width,
         height,
         depthOrArrayLayers: depth,
+        mipLevelCount: desc.mipLevelCount ?? 1,
+        dimension: desc.dimension ?? '2d',
         format: desc.format,
         usage: desc.usage,
         destroy: () => {},
@@ -173,17 +177,42 @@ describe('external GPU resource sections', () => {
     expect(withScene.byTextureFormat.r32uint).toBe((base.byTextureFormat.r32uint ?? 0) + 8 * 2 * 4);
     expect(withScene.total).toBe(base.total + withScene.byCategory.staticScene!);
   });
+
+  it('counts every mip level while preserving 2D array layers', () => {
+    const device = makeStubDevice();
+    const base = estimateFrameResourcesMemory(createFrameResources(device, 64, 64));
+    const withMips = estimateFrameResourcesMemory(
+      createFrameResources(device, 64, 64),
+      {
+        materialAtlas: {
+          atlasTexture: {
+            width: 8,
+            height: 4,
+            depthOrArrayLayers: 2,
+            mipLevelCount: 3,
+            dimension: '2d',
+            format: 'r32uint' as GPUTextureFormat,
+          },
+        },
+      },
+    );
+
+    // (8x4 + 4x2 + 2x1) texels x 2 array layers x 4 bytes.
+    expect(withMips.byCategory.materialAtlas).toBe(336);
+    expect(withMips.byTextureFormat.r32uint).toBe((base.byTextureFormat.r32uint ?? 0) + 336);
+    expect(withMips.total).toBe(base.total + 336);
+  });
 });
 
 describe('H24 ReSTIR-GI reservoir allocation', () => {
-  it('uses compact 20-u32 reservoirs by default and widens only for GRIS/ReSTIR-PT reuse', () => {
+  it('uses compact 20-u32 reservoirs by default and widens only for GRIS DDGI-proxy reuse', () => {
     const device = makeStubDevice();
     const W = 128;
     const H = 64;
     const halfPixels = Math.floor(W / 2) * Math.floor(H / 2);
 
     const compact = createFrameResources(device, W, H);
-    const gris = createFrameResources(device, W, H, { restirPtReuse: true });
+    const gris = createFrameResources(device, W, H, { grisReuse: true });
 
     expect(compact.restirGI.reservoirGiCurrentBuffer.size).toBe(halfPixels * RESERVOIR_GI_BASE_STRIDE_BYTES);
     expect(compact.restirGI.reservoirGiPreviousBuffer.size).toBe(halfPixels * RESERVOIR_GI_BASE_STRIDE_BYTES);
@@ -202,7 +231,7 @@ describe('H24 ReSTIR-GI reservoir allocation', () => {
     const expectedDelta = 3 * halfPixels * (RESERVOIR_GI_GRIS_STRIDE_BYTES - RESERVOIR_GI_BASE_STRIDE_BYTES);
 
     const compact = estimateFrameResourcesMemory(createFrameResources(device, W, H));
-    const gris = estimateFrameResourcesMemory(createFrameResources(device, W, H, { restirPtReuse: true }));
+    const gris = estimateFrameResourcesMemory(createFrameResources(device, W, H, { grisReuse: true }));
 
     expect(gris.byCategory.restirGI! - compact.byCategory.restirGI!).toBe(expectedDelta);
     expect(gris.total - compact.total).toBe(expectedDelta);
@@ -289,7 +318,7 @@ describe('estimateFrameResourcesMemory — 1920×1080 HybridEngine', () => {
     const storage = breakdown.byBufferUsage.storage ?? 0;
     const uniform = breakdown.byBufferUsage.uniform ?? 0;
     // Sprint 16 GI reservoir at half-res 960×540 × 80 bytes ≈ 41 MB —
-    // plus 3 ReSTIR-DI reservoirs at 1920×1080 × 16 bytes ≈ 100 MB total.
+    // plus 3 ReSTIR-DI reservoirs at 1920×1080 × 32 bytes ≈ 199 MB.
     expect(storage).toBeGreaterThan(uniform * 10);
     // Walkaround UBO + DDGI UBO + GTAO UBO together fit in ~1 KB.
     expect(uniform).toBeLessThan(1024 * 4);
@@ -368,15 +397,6 @@ describe('SVGF full-res allocation is gated on the active denoiser (G-P2.6)', ()
       expect(placeholder.height, `${field} placeholder height`).toBe(1);
     }
 
-    for (const field of ['svgfObjIdPlaceholderTexture', 'svgfPrevObjIdPlaceholderTexture'] as const) {
-      const full = enabled.svgf[field] as unknown as StubTexture;
-      const placeholder = disabled.svgf[field] as unknown as StubTexture;
-      expect(full.width, `${field} full-res-mode width`).toBe(1);
-      expect(full.height, `${field} full-res-mode height`).toBe(1);
-      expect(placeholder.width, `${field} placeholder width`).toBe(1);
-      expect(placeholder.height, `${field} placeholder height`).toBe(1);
-    }
-
     for (const field of ['svgfCurrentObjectIdTexture', 'svgfPreviousObjectIdTexture'] as const) {
       const full = enabled.svgf[field] as unknown as StubTexture;
       const placeholder = disabled.svgf[field] as unknown as StubTexture;
@@ -396,7 +416,7 @@ describe('estimateFrameResourcesMemory — 64×64 (deterministic check)', () => 
     const small  = estimateFrameResourcesMemory(createFrameResources(device, 64, 64));
     const medium = estimateFrameResourcesMemory(createFrameResources(device, 128, 128));
     // 4× the pixels → texture bytes scale 4×. Buffers don't scale exactly
-    // (reservoir DI is `W × H × 16`, but min-256 floors apply at tiny sizes),
+    // (reservoir DI is `W × H × 32`, but min-256 floors apply at tiny sizes),
     // so we assert "noticeably bigger" rather than "exactly 4×".
     expect(medium.total).toBeGreaterThan(small.total);
     expect(medium.total).toBeLessThan(small.total * 8);

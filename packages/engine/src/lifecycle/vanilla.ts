@@ -19,7 +19,7 @@ import { createEngine, type CreateEngineErrorEvent, type CreateEngineOptions } f
 import { createOffscreenPresenter, type OffscreenPresenter } from '../presentOffscreen.js';
 import type { GIStatePersistable } from '../idempotentDispose.js';
 import type { GIStateSnapshot } from '@vitrum/walkaround-hybrid';
-import type { EngineWithBackendId } from '../createEngineInternals.js';
+import type { RuntimeEngineWithBackendId as EngineWithBackendId } from '../createEngineInternals.js';
 
 // ────────────────────────────────────────────────────────────────────────────
 // A2 — WebGPU swap-chain detection + per-frame view acquisition.
@@ -262,12 +262,15 @@ export interface AttachVitrumOptions extends Omit<CreateEngineOptions, 'scene'> 
    *     the DDGI probe state is exported before the engine is torn down.
    *     Export/import failures are reported through `onError` as recoverable
    *     lifecycle errors; recreate still proceeds best-effort.
-   *  4. The engine is disposed.
-   *  5. `createEngine` is called again with the original options, minting a
+   *  4. For a WebGL context loss, recreation waits for the canvas's
+   *     `webglcontextrestored` event; no resources are created against a
+   *     still-lost context.
+   *  5. The engine is disposed.
+   *  6. `createEngine` is called again with the original options, minting a
    *     fresh GPU device automatically.
-   *  6. If GI state was exported and the new engine exposes `importGIState`,
+   *  7. If GI state was exported and the new engine exposes `importGIState`,
    *     it is imported — warm DDGI probes survive the recreate.
-   *  7. The RAF loop resumes.
+   *  8. The RAF loop resumes.
    *
    * Retries are capped at **2 attempts within 30 seconds**.  If the cap is
    * exceeded, the final `onEngineError` is delivered with `fatal: true` and
@@ -328,11 +331,15 @@ export interface AttachVitrumSceneController {
 export interface AttachVitrumHandle {
   /** The underlying Engine. Hosts can subscribe to telemetry or call
    *  reset() / pause() / resume() directly via this handle. */
-  readonly engine: Engine;
+  readonly engine: EngineWithBackendId;
   /** Backend selected by createEngine for the currently attached engine.
    *  Auto-recreate keeps the same stable handle object, so this is exposed as a
    *  live getter and updates if a recreated engine lands on a different backend. */
   readonly backendId: EngineWithBackendId['backendId'];
+  /** Live resolved backend profile; updates after auto-recreate. */
+  readonly backendProfileId: EngineWithBackendId['backendProfileId'];
+  /** Live legacy-compatible profile identity; forwarded without inference. */
+  readonly profileId: EngineWithBackendId['profileId'];
   /** Stop the RAF loop, disconnect the ResizeObserver, unsubscribe from
    *  document.visibilitychange, and dispose the engine. Idempotent. */
   dispose(): void;
@@ -350,6 +357,44 @@ export const AUTO_RECREATE_MAX_ATTEMPTS = 2;
 /** @internal — window duration (ms) within which retry attempts are counted. */
 export const AUTO_RECREATE_WINDOW_MS = 30_000;
 
+
+interface WebGlContextRestorationWait {
+  readonly promise: Promise<void>;
+  cancel(): void;
+}
+
+/**
+ * Return a cancellable wait only when this canvas currently owns a genuinely
+ * lost WebGL2 context. Synthetic lifecycle tests and non-WebGL backends have no
+ * lost context and continue directly to recreation.
+ */
+function waitForLostWebGlContextRestoration(
+  canvas: HTMLCanvasElement,
+): WebGlContextRestorationWait | null {
+  let gl: WebGL2RenderingContext | null;
+  try {
+    gl = canvas.getContext('webgl2');
+  } catch {
+    return null;
+  }
+  if (gl == null || typeof gl.isContextLost !== 'function' || !gl.isContextLost()) {
+    return null;
+  }
+
+  let settled = false;
+  let resolveWait!: () => void;
+  const finish = (): void => {
+    if (settled) return;
+    settled = true;
+    canvas.removeEventListener('webglcontextrestored', finish);
+    resolveWait();
+  };
+  const promise = new Promise<void>((resolve) => {
+    resolveWait = resolve;
+    canvas.addEventListener('webglcontextrestored', finish, { once: true });
+  });
+  return { promise, cancel: finish };
+}
 /**
  * Canonical builder: forwards the lifecycle-level `AttachVitrumOptions` into
  * `createEngine`.  The spread was duplicated verbatim at initial construction
@@ -405,11 +450,10 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
   // constructor sees the browser's default 300×150 backing store and only catches
   // up after a later ResizeObserver tick.
   //
-  // A4 — generic PT engines honour viewport-per-frame, but HybridEngine
-  // (WebGPU walkaround) does not — its DDGI atlas / ReSTIR reservoirs /
-  // history textures / accumulation buffer are sized at construction and
-  // can only be resized via `setSize(w, h)`. Call it when available so
-  // WebGPU hosts using attachVitrum get correct resize behaviour out of box.
+  // Every backend honours viewport-per-frame. HybridEngine additionally exposes
+  // `setSize(w, h)` so attachVitrum can eagerly publish replacement screen-space
+  // resources from ResizeObserver instead of deferring that allocation to the
+  // next renderFrame call.
   let viewportDpr = (typeof window !== 'undefined' ? window.devicePixelRatio : null) ?? 1;
   const safeDprInitial = Number.isFinite(viewportDpr) && viewportDpr > 0 ? viewportDpr : 1;
   // Seed from CSS clientWidth/Height × DPR, falling back to the canvas backing
@@ -489,16 +533,14 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
       // viewport/swapchain mismatches until the next createEngine call.
       opts.canvas.width = viewportW;
       opts.canvas.height = viewportH;
-      // A4 — Only backends with `presentationMode === 'swapchain-required'`
-      // (walkaround-hybrid / WebGPU) need explicit `setSize()` on resize;
-      // offscreen-texture backends (pt-webgl2, pt-webgpu) honour
-      // `FrameInput.viewport` per-frame and declare `setSize` absent.
-      if (engine.capabilities.presentationMode === 'swapchain-required') {
-        try {
-          engine.setSize?.(viewportW, viewportH);
-        } catch (err) {
-          reportError(err, { phase: 'attach:resize', recoverable: true });
-        }
+      // `setSize` itself is the resize capability. Presentation mode does not
+      // imply it: the progressive facade is swapchain-optional but must fan the
+      // new dimensions out to both of its phases, while ordinary offscreen
+      // backends simply omit the method and continue to use FrameInput.viewport.
+      try {
+        engine.setSize?.(viewportW, viewportH);
+      } catch (err) {
+        reportError(err, { phase: 'attach:resize', recoverable: true });
       }
     });
     resizeObserver.observe(opts.canvas);
@@ -566,11 +608,15 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
   // with the RAF loop and dispose path. Constructed after `subscribeToEngine`'s
   // definition (its onError callback references the controller lazily at
   // fire-time) and before the first `subscribeToEngine()` invocation.
-  const createAutoRecreateController = (): { handleFatalEngineError: (err: EngineError) => void } => {
+  const createAutoRecreateController = (): {
+    handleFatalEngineError: (err: EngineError) => void;
+    cancelPendingWait: () => void;
+  } => {
   // Retry budget: at most AUTO_RECREATE_MAX_ATTEMPTS within AUTO_RECREATE_WINDOW_MS.
   const autoRecreateMachine = {
     times: [] as number[],
     recreating: false,
+    cancelContextRestorationWait: null as (() => void) | null,
   };
 
   const handleFatalEngineError = (err: EngineError): void => {
@@ -636,8 +682,9 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
     const giEngine = engine as Engine & Partial<GIStatePersistable>;
     let savedGI: GIStateSnapshot | null = null;
     try {
-      if (typeof giEngine.exportGIState === 'function') {
-        savedGI = await giEngine.exportGIState();
+      const pendingGIState = giEngine.exportGIState?.();
+      if (pendingGIState != null) {
+        savedGI = await pendingGIState;
       }
     } catch (err) {
       reportError(err, {
@@ -646,6 +693,24 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
         recoverable: true,
       });
       // Best-effort; proceed without GI state.
+    }
+
+    // A WebGL context is unusable until the platform restores it. Rebuilding
+    // immediately can return the same still-lost context from getContext() and
+    // then allocate an engine whose every GL call is invalid. Keep the old
+    // engine alive long enough for its preventDefault()-enabled restoration
+    // listener to do its job, then tear it down and recreate.
+    if (recreateReason === 'context-lost') {
+      const restoration = waitForLostWebGlContextRestoration(opts.canvas);
+      if (restoration != null) {
+        autoRecreateMachine.cancelContextRestorationWait = () => restoration.cancel();
+        await restoration.promise;
+        autoRecreateMachine.cancelContextRestorationWait = null;
+        if (disposed) {
+          autoRecreateMachine.recreating = false;
+          return;
+        }
+      }
     }
 
     // Snapshot the backend-retained scene immediately before teardown. The
@@ -764,7 +829,13 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
     }
   };
 
-    return { handleFatalEngineError };
+    return {
+      handleFatalEngineError,
+      cancelPendingWait: () => {
+        autoRecreateMachine.cancelContextRestorationWait?.();
+        autoRecreateMachine.cancelContextRestorationWait = null;
+      },
+    };
   };
   const autoRecreateController = createAutoRecreateController();
 
@@ -906,6 +977,8 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
   return {
     get engine() { return engine; },
     get backendId() { return engine.backendId; },
+    get backendProfileId() { return engine.backendProfileId; },
+    get profileId() { return engine.profileId; },
     dispose: () => {
       if (disposed) return;
       disposed = true;
@@ -921,6 +994,7 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
       try { presenter?.dispose(); } catch { /* best-effort cleanup — ignore */ }
       presenter = undefined;
       presenterDevice = undefined;
+      autoRecreateController.cancelPendingWait();
       try { engine.dispose(); } catch { /* best-effort cleanup — ignore */ }
     },
     captureFrame: (captureOpts?: CaptureFrameOptions) => {

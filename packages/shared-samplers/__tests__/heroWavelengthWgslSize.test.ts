@@ -21,6 +21,7 @@ import { describe, it, expect } from 'vitest';
 import { CIE_X_TABLE, CIE_Y_TABLE, CIE_Z_TABLE } from '../src/cieCmf.js';
 import { X_CMF_CDF, Y_CMF_CDF, Z_CMF_CDF } from '../src/wavelengthSampling.js';
 import { HERO_WAVELENGTH_TABLES_WGSL } from '../src/wgsl/heroWavelengthTables.js';
+import { HERO_WAVELENGTH_WGSL } from '../src/wgsl/heroWavelength.wgsl.js';
 
 /** Maps each emitted const name to the source table it was generated from. */
 const TABLE_CONSTS: ReadonlyArray<{ name: string; expectedLength: number }> = [
@@ -91,5 +92,20 @@ describe('hero-wavelength WGSL table sizes (bug A2)', () => {
       expect(HERO_WAVELENGTH_TABLES_WGSL).not.toContain(`const ${name}: array<f32, 82>`);
       expect(HERO_WAVELENGTH_TABLES_WGSL).toContain(`const ${name}: array<f32, 81>`);
     }
+  });
+
+  it('inverts the piecewise-linear CMF integral quadratically', () => {
+    expect(HERO_WAVELENGTH_WGSL).toContain(
+      'let targetIntegral = segmentFraction * segmentIntegral;',
+    );
+    expect(HERO_WAVELENGTH_WGSL).toContain(
+      'let discriminant = max(vLo * vLo + 2.0 * slope * targetIntegral, 0.0);',
+    );
+    expect(HERO_WAVELENGTH_WGSL).toContain(
+      '2.0 * targetIntegral / denominator',
+    );
+    expect(HERO_WAVELENGTH_WGSL).not.toContain(
+      'let t = select(0.0, (uClamped - cdfLo) / (cdfHi - cdfLo)',
+    );
   });
 });

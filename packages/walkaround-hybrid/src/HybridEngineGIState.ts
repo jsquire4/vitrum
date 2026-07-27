@@ -7,7 +7,13 @@
 
 import type { DDGI } from './ddgi/DDGI.js';
 import type { WalkaroundGPUPipeline } from './pipeline/WalkaroundGPUPipeline.js';
-import type { GIStateSnapshot } from './giStateSnapshot.js';
+import {
+  f32SnapshotMetadataMatches,
+  isFiniteRgba16Data,
+  isValidRequiredGIStateSnapshot,
+  type GIStateSnapshot,
+} from './giStateSnapshot.js';
+import { isValidProbeStateData } from './ddgi/probeState.js';
 import type { EngineWarning } from '@vitrum/core';
 
 /** Minimal dep surface for the GI state helpers. */
@@ -76,22 +82,32 @@ export async function exportGIStateImpl(deps: GIStateDeps): Promise<GIStateSnaps
  * starts cold without error.
  */
 export function importGIStateImpl(deps: GIStateDeps, snapshot: GIStateSnapshot): boolean {
+  if (!isValidRequiredGIStateSnapshot(snapshot)) {
+    warnMalformedSnapshot(deps);
+    return false;
+  }
   // Validate grid origin, spacing, and dims before touching GPU buffers.
   // Two scenes can have identical probe-atlas pixel dimensions but different
   // grid origin/spacing/dims — restoring into such a mismatched grid would
   // corrupt the GI with probes from the wrong world-space layout. The atlas
   // dim check in importAtlasData is necessary but not sufficient.
   const grid = deps.ddgi.gridParams;
-  const epsilon = 1e-4;
   const dimsMismatch =
+    !isPositiveSafeInteger(snapshot.dims.x) ||
+    !isPositiveSafeInteger(snapshot.dims.y) ||
+    !isPositiveSafeInteger(snapshot.dims.z) ||
     snapshot.dims.x !== grid.dims.x ||
     snapshot.dims.y !== grid.dims.y ||
     snapshot.dims.z !== grid.dims.z;
   const originMismatch =
-    Math.abs(snapshot.origin[0] - grid.origin.x) > epsilon ||
-    Math.abs(snapshot.origin[1] - grid.origin.y) > epsilon ||
-    Math.abs(snapshot.origin[2] - grid.origin.z) > epsilon;
-  const spacingMismatch = Math.abs(snapshot.spacing - grid.spacing) > epsilon;
+    !isFiniteVec3(snapshot.origin) ||
+    !f32SnapshotMetadataMatches(snapshot.origin[0], grid.origin.x) ||
+    !f32SnapshotMetadataMatches(snapshot.origin[1], grid.origin.y) ||
+    !f32SnapshotMetadataMatches(snapshot.origin[2], grid.origin.z);
+  const spacingMismatch =
+    !Number.isFinite(snapshot.spacing) ||
+    !(snapshot.spacing > 0) ||
+    !f32SnapshotMetadataMatches(snapshot.spacing, grid.spacing);
   if (dimsMismatch || originMismatch || spacingMismatch) {
     warnGIState(deps, {
       code: 'walkaround-hybrid.import-gi-state-grid-mismatch',
@@ -116,24 +132,30 @@ export function importGIStateImpl(deps: GIStateDeps, snapshot: GIStateSnapshot):
     });
     return false;
   }
-  const atlasOk = deps.ddgi.importAtlasData(deps.device, snapshot);
-  if (!atlasOk) {
-    warnGIState(deps, {
-      code: 'walkaround-hybrid.import-gi-state-atlas-rejected',
-      backend: 'walkaround-hybrid',
-      phase: 'lifecycle',
-      method: 'importGIState',
-      message:
-        '[HybridEngine] importGIState: DDGI atlas restore failed — GI state restore rejected and GI will cold-start.',
-      details: {
-        fallback: 'cold-start-gi',
-        snapshot: {
-          irradianceAtlas: [snapshot.irrW, snapshot.irrH],
-          visibilityAtlas: [snapshot.visW, snapshot.visH],
-        },
-      },
-    });
+  if (!canImportDDGIAtlas(deps.ddgi, snapshot)) {
+    warnAtlasRejected(deps, snapshot);
     return false;
+  }
+
+  const reservoirTransaction = snapshot.restirGI == null
+    ? null
+    : prepareRequiredReservoirRestore(deps, snapshot);
+  if (snapshot.restirGI != null && reservoirTransaction == null) {
+    warnReservoirRejected(deps);
+    return false;
+  }
+
+  try {
+    const atlasOk = deps.ddgi.importAtlasData(deps.device, snapshot);
+    if (!atlasOk) {
+      reservoirTransaction?.abort();
+      warnAtlasRejected(deps, snapshot);
+      return false;
+    }
+    reservoirTransaction?.commit();
+  } catch (error) {
+    reservoirTransaction?.abort();
+    throw error;
   }
   if (snapshot.restirGI == null) {
     // v3 (or earlier) / no reservoir section — atlas-only restore.
@@ -144,39 +166,150 @@ export function importGIStateImpl(deps: GIStateDeps, snapshot: GIStateSnapshot):
     }
     return true;
   }
-  // A reservoir section is present: require it to restore too, else report
-  // failure rather than a misleadingly-partial success.
-  const reservoirOk = deps.pipeline?.importRestirGIReservoirs(deps.device, snapshot.restirGI) ?? false;
-  if (!reservoirOk) {
-    warnGIState(deps, {
-      code: 'walkaround-hybrid.import-gi-state-restir-reservoir-rejected',
-      backend: 'walkaround-hybrid',
-      phase: 'lifecycle',
-      method: 'importGIState',
-      message:
-        '[HybridEngine] importGIState: ReSTIR-GI reservoir restore failed — GI state restore rejected to avoid a partial restore.',
-      details: {
-        fallback: 'cold-start-gi',
-        hasPipeline: deps.pipeline != null,
-      },
-    });
-    return false;
-  }
-  // PPG section (v4+): restore is best-effort — a PPG mismatch (different
-  // maxSpatialCells or scene bounds) causes a warm log + cold restart rather
-  // than failing the whole importGIState call. The DDGI probes and ReSTIR-GI
-  // reservoirs are already restored at this point; losing only the PPG guide
-  // is not a correctness failure (guided sampling falls back to cosine until
-  // the next training window converges).
+  // PPG section (v4+): restore is best-effort. A PPG mismatch (different
+  // maxSpatialCells or scene bounds) leaves the current guide unchanged, or
+  // remains cold when no guide exists, rather than failing the whole
+  // importGIState call. DDGI probes and ReSTIR-GI are already restored.
   if (snapshot.ppg != null) {
     restorePPGStateBestEffort(deps, snapshot);
   }
   return true;
 }
 
+function prepareRequiredReservoirRestore(
+  deps: GIStateDeps,
+  snapshot: GIStateSnapshot,
+): ReturnType<WalkaroundGPUPipeline['prepareRestirGIReservoirImport']> {
+  const reservoir = snapshot.restirGI;
+  const pipeline = deps.pipeline;
+  if (
+    reservoir == null ||
+    pipeline == null ||
+    !pipeline.canImportRestirGIReservoirs(reservoir)
+  ) {
+    return null;
+  }
+  return pipeline.prepareRestirGIReservoirImport(deps.device, reservoir);
+}
+
+function canImportDDGIAtlas(ddgi: DDGI, snapshot: GIStateSnapshot): boolean {
+  const grid = ddgi.gridParams;
+  if (
+    ddgi.getReadAtlasGPUTextures() == null ||
+    !isPositiveSafeInteger(snapshot.irrW) ||
+    !isPositiveSafeInteger(snapshot.irrH) ||
+    !isPositiveSafeInteger(snapshot.visW) ||
+    !isPositiveSafeInteger(snapshot.visH) ||
+    snapshot.irrW !== grid.irradianceAtlasW ||
+    snapshot.irrH !== grid.irradianceAtlasH ||
+    snapshot.visW !== grid.visibilityAtlasW ||
+    snapshot.visH !== grid.visibilityAtlasH ||
+    snapshot.probeStateW !== grid.dims.x ||
+    snapshot.probeStateH !== grid.dims.y * grid.dims.z ||
+    !(snapshot.irrData instanceof Uint16Array) ||
+    !(snapshot.visData instanceof Uint16Array) ||
+    !(snapshot.probeStateData instanceof Float32Array) ||
+    !rgbaLengthMatches(snapshot.irrW, snapshot.irrH, snapshot.irrData.length) ||
+    !rgbaLengthMatches(snapshot.visW, snapshot.visH, snapshot.visData.length) ||
+    !rgbaLengthMatches(
+      snapshot.probeStateW,
+      snapshot.probeStateH,
+      snapshot.probeStateData.length,
+    ) ||
+    !isFiniteRgba16Data(snapshot.irrData) ||
+    !isFiniteRgba16Data(snapshot.visData) ||
+    !isValidProbeStateData(snapshot.probeStateData, grid.spacing)
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function rgbaLengthMatches(width: number, height: number, length: number): boolean {
+  if (!isPositiveSafeInteger(width) || !isPositiveSafeInteger(height)) {
+    return false;
+  }
+  const texels = width * height;
+  return (
+    Number.isSafeInteger(texels) &&
+    texels <= Number.MAX_SAFE_INTEGER / 4 &&
+    length === texels * 4
+  );
+}
+
+function isPositiveSafeInteger(value: number): boolean {
+  return Number.isSafeInteger(value) && value > 0;
+}
+
+function isFiniteVec3(value: unknown): value is readonly [number, number, number] {
+  return (
+    Array.isArray(value) &&
+    value.length === 3 &&
+    Number.isFinite(value[0]) &&
+    Number.isFinite(value[1]) &&
+    Number.isFinite(value[2])
+  );
+}
+
+function warnAtlasRejected(
+  deps: GIStateDeps,
+  snapshot: GIStateSnapshot,
+): void {
+  warnGIState(deps, {
+    code: 'walkaround-hybrid.import-gi-state-atlas-rejected',
+    backend: 'walkaround-hybrid',
+    phase: 'lifecycle',
+    method: 'importGIState',
+    message:
+      '[HybridEngine] importGIState: DDGI atlas restore failed — GI state restore rejected and GI will cold-start.',
+    details: {
+      fallback: 'cold-start-gi',
+      snapshot: {
+        irradianceAtlas: [snapshot.irrW, snapshot.irrH],
+        visibilityAtlas: [snapshot.visW, snapshot.visH],
+      },
+    },
+  });
+}
+
+function warnMalformedSnapshot(deps: GIStateDeps): void {
+  warnGIState(deps, {
+    code: 'walkaround-hybrid.import-gi-state-malformed-snapshot',
+    backend: 'walkaround-hybrid',
+    phase: 'lifecycle',
+    method: 'importGIState',
+    message:
+      '[HybridEngine] importGIState: malformed snapshot payload rejected before live GI state mutation.',
+    details: {
+      fallback: 'retain-current-gi',
+    },
+  });
+}
+
+function warnReservoirRejected(deps: GIStateDeps): void {
+  warnGIState(deps, {
+    code: 'walkaround-hybrid.import-gi-state-restir-reservoir-rejected',
+    backend: 'walkaround-hybrid',
+    phase: 'lifecycle',
+    method: 'importGIState',
+    message:
+      '[HybridEngine] importGIState: ReSTIR-GI reservoir restore failed — GI state restore rejected to avoid a partial restore.',
+    details: {
+      fallback: 'cold-start-gi',
+      hasPipeline: deps.pipeline != null,
+    },
+  });
+}
+
 function restorePPGStateBestEffort(deps: GIStateDeps, snapshot: GIStateSnapshot): void {
   if (snapshot.ppg == null) return;
-  const ppgOk = deps.pipeline?.importPPGSTree(snapshot.ppg) ?? false;
+  let ppgOk = false;
+  let failure: unknown;
+  try {
+    ppgOk = deps.pipeline?.importPPGSTree(snapshot.ppg) ?? false;
+  } catch (error) {
+    failure = error;
+  }
   if (ppgOk) return;
   warnGIState(deps, {
     code: 'walkaround-hybrid.import-gi-state-ppg-guide-rejected',
@@ -184,12 +317,22 @@ function restorePPGStateBestEffort(deps: GIStateDeps, snapshot: GIStateSnapshot)
     phase: 'lifecycle',
     method: 'importGIState',
     message:
-      '[HybridEngine] importGIState: PPG guide restore failed — DDGI/ReSTIR-GI restore continues, but PPG will cold-start.',
+      '[HybridEngine] importGIState: PPG guide restore failed — DDGI/ReSTIR-GI restore continues while retaining the current PPG guide (or existing cold state).',
     details: {
-      fallback: 'cold-start-ppg',
+      fallback: 'retain-current-ppg',
       hasPipeline: deps.pipeline != null,
       maxSpatialCells: snapshot.ppg.maxSpatialCells,
       maxDTreeNodesPerCell: snapshot.ppg.maxDTreeNodesPerCell,
+      ...(failure == null
+        ? {}
+        : {
+            failure:
+              failure instanceof Error
+                ? failure.message
+                : typeof failure === 'string'
+                  ? failure
+                  : 'non-Error exception',
+          }),
     },
   });
 }

@@ -3,6 +3,7 @@ import type { MockInstance } from 'vitest';
 import {
   asMat4,
   type EngineWarning,
+  type MaterialSpec,
   type Scene,
   type SceneEmitter,
   type ScenePrimitive,
@@ -15,6 +16,7 @@ import {
   type ReSTIRBvhMode,
   type SceneBVHBuffers,
 } from '../restir/bvhCore.js';
+import type { CollectedBvhMutation } from '../pipeline/CollectingBvhUpdateSink.js';
 
 function makeDeviceStub(): GPUDevice {
   return {
@@ -66,6 +68,7 @@ function mesh(id: string, x: number, baseColor: [number, number, number]): Scene
     id,
     positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
     normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+    uvs: new Float32Array([0, 0, 1, 0, 0, 1]),
     material: { baseColor, roughness: 0.5, metallic: 0 },
     transform: mat4Translate(x),
   };
@@ -82,6 +85,7 @@ function skinnedMesh(id: string, x: number, baseColor: [number, number, number])
     id,
     positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
     normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+    uvs: new Float32Array([0, 0, 1, 0, 0, 1]),
     skinIndices,
     skinWeights,
     bones: identityMat4(),
@@ -112,7 +116,18 @@ function baseColorMapHandle(r: number): { width: number; height: number; data: U
 
 const GLTF_TEXTURE_REF_SOURCE = Symbol('vitrum.gltf.textureRefSource');
 
-const WALKAROUND_PERMANENT_UNSUPPORTED_MATERIAL: Record<string, unknown> = {
+function textureRefWithSource(
+  ref: TextureRef,
+  source: Record<string, unknown>,
+): TextureRef {
+  Object.defineProperty(ref, GLTF_TEXTURE_REF_SOURCE, {
+    value: source,
+    enumerable: false,
+  });
+  return ref;
+}
+
+const WALKAROUND_APPROXIMATE_OPTICAL_MATERIAL: Record<string, unknown> = {
   spectralAttenuation: {
     wavelengthStart: 380,
     wavelengthEnd: 700,
@@ -121,12 +136,6 @@ const WALKAROUND_PERMANENT_UNSUPPORTED_MATERIAL: Record<string, unknown> = {
   dispersionAbbeNumber: 42,
   thinFilmStack: { layers: [{ ior: 1.4, thicknessNm: 300 }] },
 };
-
-const WALKAROUND_PERMANENT_UNSUPPORTED_FIELDS = [
-  'dispersionAbbeNumber',
-  'spectralAttenuation',
-  'thinFilmStack',
-];
 
 function baseScene(emitters: readonly SceneEmitter[] = []): Scene {
   return {
@@ -140,45 +149,190 @@ function baseScene(emitters: readonly SceneEmitter[] = []): Scene {
 }
 
 function makePipeline() {
+  const refreshBvhMaterialSlice = vi.fn();
+  const refreshBvhEmissiveLe = vi.fn();
+  const refreshBvhNormalsSlice = vi.fn();
+  const refreshBvhRefit = vi.fn();
+  const replaceBvhAndEmitters = vi.fn();
+  const refreshMaterialTextureAtlas = vi.fn();
+  const refreshTlasRefit = vi.fn();
+  const updateEmitters = vi.fn();
+  const updateAnalyticLights = vi.fn();
+  const requestAccumReset = vi.fn();
+  const prepareSceneMutation = vi.fn((
+    mutation: CollectedBvhMutation,
+    nextBvh: SceneBVHBuffers,
+    _prefixCommandBuffers: readonly GPUCommandBuffer[] = [],
+  ) => ({
+    commit: vi.fn(() => {
+      if (mutation.replacement != null) {
+        replaceBvhAndEmitters(nextBvh);
+      } else {
+        const positionSlice = mutation.positions?.[0];
+        if (mutation.nodes != null && positionSlice != null) {
+          const [firstNodes, ...remainingNodes] = mutation.nodes;
+          if (firstNodes != null) {
+          refreshBvhRefit(
+            firstNodes.data,
+            positionSlice,
+            firstNodes.byteOffset,
+          );
+          }
+          for (const nodes of remainingNodes) {
+            refreshBvhRefit(nodes.data, positionSlice, nodes.byteOffset);
+          }
+        }
+        for (const normalsSlice of mutation.normals ?? []) {
+          refreshBvhNormalsSlice(normalsSlice);
+        }
+        if (mutation.tlas != null) {
+          refreshTlasRefit(mutation.tlas);
+        }
+        if (mutation.material != null) {
+          refreshBvhMaterialSlice(
+            mutation.material.index,
+            mutation.material.beer,
+            mutation.material.emissive,
+            mutation.material.roughMetal,
+          );
+        }
+        if (mutation.atlas != null) {
+          refreshMaterialTextureAtlas(mutation.atlas);
+        }
+        if (mutation.emitters != null) {
+          updateEmitters(mutation.emitters);
+        }
+      }
+      if (mutation.resetAccumulator) requestAccumReset();
+    }),
+    rollback: vi.fn(),
+    finalize: vi.fn(),
+  }));
+  const prepareEmitterLightingMutation = vi.fn((
+    bvh: SceneBVHBuffers,
+    scene: Scene,
+  ) => ({
+    commit: vi.fn(() => {
+      updateEmitters(bvh);
+      refreshBvhEmissiveLe({
+        data: bvh.bvhEmissiveLe.cpuData,
+        triCount: bvh.bvhEmissiveLe.count,
+      });
+      updateAnalyticLights(scene);
+      requestAccumReset();
+    }),
+    rollback: vi.fn(),
+    finalize: vi.fn(),
+  }));
   return {
     dispose: vi.fn(),
-    refreshBvhMaterialSlice: vi.fn(),
-    refreshBvhEmissiveLe: vi.fn(),
-    refreshBvhNormalsSlice: vi.fn(),
-    refreshBvhRefit: vi.fn(),
+    refreshBvhMaterialSlice,
+    refreshBvhEmissiveLe,
+    refreshBvhNormalsSlice,
+    refreshBvhRefit,
     refreshBvhFullRebuild: vi.fn(),
-    refreshMaterialTextureAtlas: vi.fn(),
-    refreshTlasRefit: vi.fn(),
-    updateEmitters: vi.fn(),
-    updateAnalyticLights: vi.fn(),
+    replaceBvhAndEmitters,
+    refreshMaterialTextureAtlas,
+    refreshTlasRefit,
+    updateEmitters,
+    updateAnalyticLights,
+    prepareSceneMutation,
+    prepareEmitterLightingMutation,
     updateDirectionalEnvironment: vi.fn(),
-    getEnvBindings: vi.fn((): { textureView: GPUTextureView; sampler: GPUSampler } | null => null),
-    requestAccumReset: vi.fn(),
+    getEnvBindings: vi.fn((): {
+      textureView: GPUTextureView;
+      sampler: GPUSampler;
+      rotationY: number;
+      intensity: number;
+      hasDirectionalEnvironment: boolean;
+    } | null => null),
+    requestAccumReset,
     resize: vi.fn(),
   };
 }
 
 function makeDdgi() {
+  const invalidateProbeCache = vi.fn();
+  const markInstancesDirty = vi.fn();
+  const syncRestirBvhBuffers = vi.fn();
+  const setLights = vi.fn();
+  const setSunIntensityMultiplier = vi.fn();
+  const setEmitterTris = vi.fn();
+  const prepareSceneMutation = vi.fn((
+    buffers: SceneBVHBuffers | null,
+    scene: Scene | undefined,
+    options: { readonly invalidate: boolean; readonly instancesDirty: boolean },
+  ) => ({
+    commit: vi.fn(() => {
+      syncRestirBvhBuffers(buffers, scene);
+      if (options.instancesDirty) markInstancesDirty();
+      if (options.invalidate) invalidateProbeCache();
+    }),
+    rollback: vi.fn(),
+    finalize: vi.fn(),
+  }));
+  const prepareLightingMutation = vi.fn((inputs: {
+    readonly lights: readonly unknown[];
+    readonly sunIntensityMultiplier: number;
+    readonly emitterTris: Float32Array;
+    readonly emitterCount: number;
+  }) => ({
+    commit: vi.fn(() => {
+      setSunIntensityMultiplier(inputs.sunIntensityMultiplier);
+      setLights(inputs.lights);
+      setEmitterTris(inputs.emitterTris, inputs.emitterCount);
+      invalidateProbeCache();
+    }),
+    rollback: vi.fn(),
+    finalize: vi.fn(),
+  }));
   return {
-    invalidateProbeCache: vi.fn(),
-    markInstancesDirty: vi.fn(),
-    syncRestirBvhBuffers: vi.fn(),
+    invalidateProbeCache,
+    markInstancesDirty,
+    syncRestirBvhBuffers,
     setSkyParams: vi.fn(),
-    setLights: vi.fn(),
-    setSunIntensityMultiplier: vi.fn(),
-    setEmitterTris: vi.fn(),
+    setLights,
+    setSunIntensityMultiplier,
+    setEmitterTris,
+    prepareSceneMutation,
+    prepareLightingMutation,
     setEnvironment: vi.fn(),
     dispose: vi.fn(),
   };
 }
 
 function makeRc() {
+  const refreshMaterialsFromCore = vi.fn();
+  const invalidateBindings = vi.fn();
+  const syncRestirBvhBuffers = vi.fn();
   return {
-    refreshMaterialsFromCore: vi.fn(),
-    invalidateBindings: vi.fn(),
+    refreshMaterialsFromCore,
+    invalidateBindings,
+    prepareSceneMutation: vi.fn((
+      buffers: SceneBVHBuffers,
+      _scene: Scene | undefined,
+      options: {
+        readonly geometryChanged: boolean;
+        readonly refreshMaterials: boolean;
+      },
+    ) => ({
+      commit: vi.fn(() => {
+        if (options.geometryChanged) syncRestirBvhBuffers(buffers);
+        if (options.refreshMaterials) {
+          refreshMaterialsFromCore(buffers.coreMaterials);
+        }
+      }),
+      rollback: vi.fn(),
+      finalize: vi.fn(),
+    })),
+    prepareBindingInvalidation: vi.fn(() => ({
+      commit: vi.fn(),
+      rollback: vi.fn(),
+      finalize: vi.fn(() => invalidateBindings()),
+    })),
     dispose: vi.fn(),
     refitCascadeBounds: vi.fn(),
-    syncRestirBvhBuffers: vi.fn(),
+    syncRestirBvhBuffers,
     setSceneFromCore: vi.fn(),
     refitMergedInstance: vi.fn(() => false),
   };
@@ -229,6 +383,12 @@ function seedEngine(
 function storedScene(engine: HybridEngine): Scene {
   const scene = (engine as unknown as HybridEngineInternals)._lastScene;
   if (scene == null) throw new Error('expected seeded scene');
+  return scene;
+}
+
+function storedRenderScene(engine: HybridEngine): Scene {
+  const scene = (engine as unknown as HybridEngineInternals)._renderScene;
+  if (scene == null) throw new Error('expected seeded render scene');
   return scene;
 }
 
@@ -371,7 +531,7 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
     try {
       const bones = new Float32Array(mat4Translate(4, 0, 0));
 
-      engine.updatePrimitive('skin-a', { bones } as Partial<ScenePrimitive>);
+      engine.updatePrimitive('skin-a', { bones });
 
       expect(pipeline.refreshBvhRefit).toHaveBeenCalledTimes(1);
       expect(pipeline.refreshBvhNormalsSlice).toHaveBeenCalledTimes(1);
@@ -381,12 +541,18 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
       expect(ddgi.invalidateProbeCache).toHaveBeenCalledTimes(1);
       expect(ddgi.syncRestirBvhBuffers).toHaveBeenCalledTimes(1);
 
-      const updated = storedScene(engine).primitives[0];
-      expect(updated?.kind).toBe('skinned-mesh');
-      if (updated?.kind === 'skinned-mesh') {
-        expect(updated.bones[12]).toBeCloseTo(4, 5);
-        expect(updated.positions[0]).toBeCloseTo(4, 5);
-        expect(updated.positions[3]).toBeCloseTo(5, 5);
+      const authored = storedScene(engine).primitives[0];
+      expect(authored?.kind).toBe('skinned-mesh');
+      if (authored?.kind === 'skinned-mesh') {
+        expect(authored.bones[12]).toBeCloseTo(4, 5);
+        expect(authored.positions[0]).toBeCloseTo(0, 5);
+        expect(authored.positions[3]).toBeCloseTo(1, 5);
+      }
+      const rendered = storedRenderScene(engine).primitives[0];
+      expect(rendered?.kind).toBe('skinned-mesh');
+      if (rendered?.kind === 'skinned-mesh') {
+        expect(rendered.positions[0]).toBeCloseTo(4, 5);
+        expect(rendered.positions[3]).toBeCloseTo(5, 5);
       }
     } finally {
       engine.dispose();
@@ -410,17 +576,24 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
     };
     const { engine, pipeline } = seedEngine(scene, { bvhMode: 'tlas' });
     try {
-      engine.updatePrimitive('skin-uv', { morphWeights: new Float32Array([1]) } as Partial<ScenePrimitive>);
+      engine.updatePrimitive('skin-uv', { morphWeights: new Float32Array([1]) });
 
-      expect(pipeline.refreshBvhFullRebuild).toHaveBeenCalledTimes(1);
+      expect(pipeline.replaceBvhAndEmitters).toHaveBeenCalledTimes(1);
       expect(pipeline.refreshBvhRefit).not.toHaveBeenCalled();
-      const updated = storedScene(engine).primitives[0];
-      expect(updated?.kind).toBe('skinned-mesh');
-      if (updated?.kind === 'skinned-mesh') {
-        expect(updated.uvs?.[0]).toBeCloseTo(0.1, 5);
-        expect(updated.uvs?.[1]).toBeCloseTo(0.2, 5);
-        expect(updated.uv1?.[0]).toBeCloseTo(0.25, 5);
-        expect(updated.uv1?.[1]).toBeCloseTo(0.75, 5);
+      const authored = storedScene(engine).primitives[0];
+      expect(authored?.kind).toBe('skinned-mesh');
+      if (authored?.kind === 'skinned-mesh') {
+        expect(authored.morphWeights?.[0]).toBeCloseTo(1, 5);
+        expect(authored.uvs?.[0]).toBeCloseTo(0, 5);
+        expect(authored.uv1?.[1]).toBeCloseTo(0.25, 5);
+      }
+      const rendered = storedRenderScene(engine).primitives[0];
+      expect(rendered?.kind).toBe('skinned-mesh');
+      if (rendered?.kind === 'skinned-mesh') {
+        expect(rendered.uvs?.[0]).toBeCloseTo(0.1, 5);
+        expect(rendered.uvs?.[1]).toBeCloseTo(0.2, 5);
+        expect(rendered.uv1?.[0]).toBeCloseTo(0.25, 5);
+        expect(rendered.uv1?.[1]).toBeCloseTo(0.75, 5);
       }
     } finally {
       engine.dispose();
@@ -521,7 +694,7 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
     }
   });
 
-  it('updatePrimitive(material) emits structured warnings for every permanently unsupported material field', () => {
+  it('updatePrimitive(material) retains implemented optical fields without an unconsumed warning', () => {
     const { engine, warnings } = seedEngine(baseScene(), { bvhMode: 'tlas' });
     try {
       engine.updatePrimitive('mesh-a', {
@@ -529,7 +702,7 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
           baseColor: [0.6, 0.6, 0.6],
           roughness: 0.35,
           metallic: 0,
-          ...WALKAROUND_PERMANENT_UNSUPPORTED_MATERIAL,
+          ...WALKAROUND_APPROXIMATE_OPTICAL_MATERIAL,
           envMapIntensity: 0.35,
         },
       });
@@ -537,16 +710,11 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
       const materialWarning = warnings.find((w) =>
         w.code === 'walkaround-hybrid.unconsumed-material-fields',
       );
-      expect(materialWarning?.method).toBe('updatePrimitive');
-      expect(materialWarning?.details?.fields).toEqual(WALKAROUND_PERMANENT_UNSUPPORTED_FIELDS);
-      expect(materialWarning?.details?.categories).toEqual({
-        spectral: ['dispersionAbbeNumber', 'spectralAttenuation'],
-        layered: ['thinFilmStack'],
-      });
-      expect(materialWarning?.details?.primitiveFields).toEqual([{
-        primitiveId: 'mesh-a',
-        fields: WALKAROUND_PERMANENT_UNSUPPORTED_FIELDS,
-      }]);
+      expect(materialWarning).toBeUndefined();
+      const gpuMaterial = storedBvh(engine).coreMaterials[0] as MaterialSpec;
+      expect(gpuMaterial.dispersionAbbeNumber).toBe(42);
+      expect(gpuMaterial.spectralAttenuation?.values).toEqual(new Float32Array([0.1, 0.2, 0.3]));
+      expect(gpuMaterial.thinFilmStack?.layers).toHaveLength(1);
     } finally {
       engine.dispose();
     }
@@ -608,47 +776,17 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
     }
   });
 
-  it('updatePrimitive(receiveShadow:false) emits the reserved receiveShadow warning', () => {
-    const { engine, warnings } = seedEngine(baseScene(), { bvhMode: 'tlas' });
-    try {
-      engine.updatePrimitive('mesh-a', { receiveShadow: false });
-
-      const warning = warnings.find((w) =>
-        w.code === 'walkaround-hybrid.reserved-receive-shadow',
-      );
-      expect(warning?.method).toBe('updatePrimitive');
-      expect(warning?.details?.primitiveIds).toEqual(['mesh-a']);
-    } finally {
-      engine.dispose();
-    }
-  });
-
-  it('updatePrimitive emits a structured warning for unknown no-op patch fields', () => {
+  it('updatePrimitive rejects unknown patch fields before mutation', () => {
     const { engine, pipeline, warnings } = seedEngine(baseScene(), { bvhMode: 'tlas' });
     try {
-      engine.updatePrimitive('mesh-a', {
+      const before = engine.getScene();
+      expect(() => engine.updatePrimitive('mesh-a', {
         hostOnlyField: 1,
         anotherHostOnlyField: true,
         ignoredUndefined: undefined,
-      } as never);
-      engine.updatePrimitive('mesh-a', {
-        hostOnlyField: 2,
-        anotherHostOnlyField: false,
-      } as never);
-
-      const unknownWarnings = warnings.filter((w) =>
-        w.code === 'walkaround-hybrid.unknown-primitive-patch-fields',
-      );
-      expect(unknownWarnings).toHaveLength(1);
-      expect(unknownWarnings[0]).toMatchObject({
-        backend: 'walkaround-hybrid',
-        phase: 'mutation',
-        method: 'updatePrimitive',
-        details: {
-          primitiveId: 'mesh-a',
-          fields: ['anotherHostOnlyField', 'hostOnlyField'],
-        },
-      });
+      } as never)).toThrow(/unknown key "hostOnlyField"/);
+      expect(engine.getScene()).toBe(before);
+      expect(warnings).toHaveLength(0);
       expect(pipeline.resize).not.toHaveBeenCalled();
       expect(pipeline.refreshBvhMaterialSlice).not.toHaveBeenCalled();
       expect(pipeline.refreshBvhFullRebuild).not.toHaveBeenCalled();
@@ -658,7 +796,7 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
     }
   });
 
-  it('updatePrimitive(transform + material) rebuilds and warns instead of dropping the material patch', () => {
+  it('updatePrimitive(transform + material) rebuilds without dropping optical fields', () => {
     const { engine, pipeline, warnings } = seedEngine(baseScene(), { bvhMode: 'tlas' });
     try {
       const moved = mat4Translate(4, 0, 0);
@@ -668,16 +806,15 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
           baseColor: [0.1, 0.7, 0.2],
           roughness: 0.25,
           metallic: 0,
-          ...WALKAROUND_PERMANENT_UNSUPPORTED_MATERIAL,
+          ...WALKAROUND_APPROXIMATE_OPTICAL_MATERIAL,
         },
       });
 
-      expect(pipeline.refreshBvhFullRebuild).toHaveBeenCalledTimes(1);
+      expect(pipeline.replaceBvhAndEmitters).toHaveBeenCalledTimes(1);
       const materialWarning = warnings.find((w) =>
         w.code === 'walkaround-hybrid.unconsumed-material-fields',
       );
-      expect(materialWarning?.method).toBe('updatePrimitive');
-      expect(materialWarning?.details?.fields).toEqual(WALKAROUND_PERMANENT_UNSUPPORTED_FIELDS);
+      expect(materialWarning).toBeUndefined();
       const patched = storedScene(engine).primitives.find((p) => p.id === 'mesh-a') as Extract<ScenePrimitive, { kind: 'mesh' }>;
       expect(Array.from(patched.transform ?? [])).toEqual(Array.from(moved));
       expect(patched.material.baseColor).toEqual([0.1, 0.7, 0.2]);
@@ -687,7 +824,7 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
     }
   });
 
-  it('updatePrimitive(positions + material) rebuilds and warns instead of taking the positions-only fast path', () => {
+  it('updatePrimitive(positions + material) rebuilds without dropping optical fields', () => {
     const { engine, pipeline, warnings } = seedEngine(baseScene(), { bvhMode: 'tlas' });
     try {
       const positions = new Float32Array([0, 0, 0, 1.5, 0, 0, 0, 1, 0]);
@@ -697,17 +834,16 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
           baseColor: [0.3, 0.2, 0.9],
           roughness: 0.25,
           metallic: 0,
-          ...WALKAROUND_PERMANENT_UNSUPPORTED_MATERIAL,
+          ...WALKAROUND_APPROXIMATE_OPTICAL_MATERIAL,
         },
       });
 
-      expect(pipeline.refreshBvhFullRebuild).toHaveBeenCalledTimes(1);
+      expect(pipeline.replaceBvhAndEmitters).toHaveBeenCalledTimes(1);
       expect(pipeline.refreshBvhRefit).not.toHaveBeenCalled();
       const materialWarning = warnings.find((w) =>
         w.code === 'walkaround-hybrid.unconsumed-material-fields',
       );
-      expect(materialWarning?.method).toBe('updatePrimitive');
-      expect(materialWarning?.details?.fields).toEqual(WALKAROUND_PERMANENT_UNSUPPORTED_FIELDS);
+      expect(materialWarning).toBeUndefined();
       const patched = storedScene(engine).primitives.find((p) => p.id === 'mesh-a') as Extract<ScenePrimitive, { kind: 'mesh' }>;
       expect(Array.from(patched.positions)).toEqual(Array.from(positions));
       expect(patched.material.baseColor).toEqual([0.3, 0.2, 0.9]);
@@ -716,7 +852,7 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
     }
   });
 
-  it('updatePrimitive(material) emits a structured warning for residual alpha blend approximation', () => {
+  it('updatePrimitive(material) accepts scalar alpha blend without a stale warning', () => {
     const { engine, warnings } = seedEngine(baseScene(), { bvhMode: 'tlas' });
     try {
       const transparentMaterial = {
@@ -733,15 +869,13 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
       const alphaWarnings = warnings.filter((w) =>
         w.code === 'walkaround-hybrid.alpha-blend-approximation',
       );
-      expect(alphaWarnings).toHaveLength(1);
-      expect(alphaWarnings[0]?.method).toBe('updatePrimitive');
-      expect(alphaWarnings[0]?.details?.primitiveIds).toEqual(['mesh-a']);
+      expect(alphaWarnings).toHaveLength(0);
     } finally {
       engine.dispose();
     }
   });
 
-  it('updatePrimitive(material) emits a structured warning for texture-driven alpha blend approximation', () => {
+  it('updatePrimitive(material) accepts texture-driven alpha blend without a stale warning', () => {
     const { engine, warnings } = seedEngine(baseScene(), { bvhMode: 'tlas' });
     try {
       engine.updatePrimitive('mesh-a', {
@@ -773,15 +907,13 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
       const alphaWarnings = warnings.filter((w) =>
         w.code === 'walkaround-hybrid.alpha-blend-approximation',
       );
-      expect(alphaWarnings).toHaveLength(1);
-      expect(alphaWarnings[0]?.method).toBe('updatePrimitive');
-      expect(alphaWarnings[0]?.details?.primitiveIds).toEqual(['mesh-a']);
+      expect(alphaWarnings).toHaveLength(0);
     } finally {
       engine.dispose();
     }
   });
 
-  it('updatePrimitive(material partial) computes alpha blend warnings from the merged material', () => {
+  it('updatePrimitive(material partial) preserves merged alpha transport without a stale warning', () => {
     const sourceScene = baseScene();
     const first = sourceScene.primitives[0] as Extract<ScenePrimitive, { kind: 'mesh' }>;
     const scene: Scene = {
@@ -815,17 +947,16 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
       const alphaWarnings = warnings.filter((w) =>
         w.code === 'walkaround-hybrid.alpha-blend-approximation',
       );
-      expect(alphaWarnings).toHaveLength(1);
-      expect(alphaWarnings[0]?.method).toBe('updatePrimitive');
-      expect(alphaWarnings[0]?.details?.primitiveIds).toEqual(['mesh-a']);
+      expect(alphaWarnings).toHaveLength(0);
     } finally {
       engine.dispose();
     }
   });
 
-  it('updatePrimitive(material) emits a structured warning for emissive-map texel-PDF approximation', () => {
+  it('updatePrimitive(material) uses an exact density for a readable one-texel emissive map', () => {
     const { engine, warnings } = seedEngine(baseScene(), { bvhMode: 'tlas' });
     try {
+      const warningCount = warnings.length;
       const mappedEmissiveMaterial = {
         baseColor: [0.6, 0.6, 0.6] as [number, number, number],
         roughness: 0.35,
@@ -840,25 +971,13 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
       engine.updatePrimitive('mesh-a', { material: mappedEmissiveMaterial });
       engine.updatePrimitive('mesh-a', { material: mappedEmissiveMaterial });
 
-      const texelPdfWarnings = warnings.filter((w) =>
-        w.code === 'walkaround-hybrid.emissive-map-texel-pdf-approximation',
-      );
-      expect(texelPdfWarnings).toHaveLength(1);
-      expect(texelPdfWarnings[0]?.method).toBe('updatePrimitive');
-      expect(texelPdfWarnings[0]?.details?.primitiveIds).toEqual(['mesh-a']);
-      expect(texelPdfWarnings[0]?.details).toMatchObject({
-        directEmitterPdf: 'exact-texel-cell-subtriangles-when-eligible',
-        giSuffixEmission: 'uv-local-emissive-texel-sampled-on-hit',
-        probeHitEmission: 'uv-local-emissive-texel-sampled-on-direct-probe-hit',
-        residualApproximation: 'global-texel-selection-pdf',
-        missing: 'global-exact-texel-alias-pdf',
-      });
+      expect(warnings).toHaveLength(warningCount);
     } finally {
       engine.dispose();
     }
   });
 
-  it('updatePrimitive(material partial) computes emissive-map approximation warnings from the merged material', () => {
+  it('updatePrimitive(material partial) preserves exact one-texel emissive-map sampling', () => {
     const sourceScene = baseScene();
     const first = sourceScene.primitives[0] as Extract<ScenePrimitive, { kind: 'mesh' }>;
     const scene: Scene = {
@@ -878,22 +997,18 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
     };
     const { engine, warnings } = seedEngine(scene, { bvhMode: 'tlas' });
     try {
+      const warningCount = warnings.length;
       engine.updatePrimitive('mesh-a', {
         material: { emissive: [1, 0.5, 0.25] },
       } as unknown as Partial<ScenePrimitive>);
 
-      const texelPdfWarnings = warnings.filter((w) =>
-        w.code === 'walkaround-hybrid.emissive-map-texel-pdf-approximation',
-      );
-      expect(texelPdfWarnings).toHaveLength(1);
-      expect(texelPdfWarnings[0]?.method).toBe('updatePrimitive');
-      expect(texelPdfWarnings[0]?.details?.primitiveIds).toEqual(['mesh-a']);
+      expect(warnings).toHaveLength(warningCount);
     } finally {
       engine.dispose();
     }
   });
 
-  it('updatePrimitive(material) emits a structured warning for camera-visible-only light maps', () => {
+  it('updatePrimitive(material) accepts GI-propagated light maps without a stale warning', () => {
     const { engine, warnings } = seedEngine(baseScene(), { bvhMode: 'tlas' });
     try {
       const lightMappedMaterial = {
@@ -912,22 +1027,13 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
       const lightMapWarnings = warnings.filter((w) =>
         w.code === 'walkaround-hybrid.light-map-camera-visible-approximation',
       );
-      expect(lightMapWarnings).toHaveLength(1);
-      expect(lightMapWarnings[0]?.method).toBe('updatePrimitive');
-      expect(lightMapWarnings[0]?.details?.primitiveIds).toEqual(['mesh-a']);
-      expect(lightMapWarnings[0]?.details).toMatchObject({
-        lightMapUsage: 'camera-visible-baked-outgoing-radiance',
-        directLighting: 'not-sampled-as-scene-light',
-        giPropagation: 'not-injected-into-restir-gi-ddgi-rc',
-        residualApproximation: 'first-hit-baked-light',
-        missing: 'global-transport-light-map-participation',
-      });
+      expect(lightMapWarnings).toHaveLength(0);
     } finally {
       engine.dispose();
     }
   });
 
-  it('updatePrimitive(material) emits a structured warning for rich-material GI approximation', () => {
+  it('updatePrimitive(material) accepts implemented rich lobes without a stale warning', () => {
     const { engine, warnings } = seedEngine(baseScene(), { bvhMode: 'tlas' });
     try {
       const richMaterial = {
@@ -948,16 +1054,7 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
       const richWarnings = warnings.filter((w) =>
         w.code === 'walkaround-hybrid.rich-material-gi-approximation',
       );
-      expect(richWarnings).toHaveLength(1);
-      expect(richWarnings[0]?.method).toBe('updatePrimitive');
-      expect(richWarnings[0]?.details?.primitiveFields).toEqual([{
-        primitiveId: 'mesh-a',
-        fields: ['anisotropy', 'clearcoat', 'clearcoatNormalMap', 'iridescenceMap', 'sheen', 'specularColor'],
-      }]);
-      expect(richWarnings[0]?.details).toMatchObject({
-        approximation: 'compact-rich-material-lobe-response',
-        missing: 'material-furnace-reference-ab-and-full-rich-material-gi-promotion',
-      });
+      expect(richWarnings).toHaveLength(0);
     } finally {
       engine.dispose();
     }
@@ -965,9 +1062,9 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
 
   it('updatePrimitive(material) emits a structured warning when an atlas-backed map is unreadable', () => {
     const { engine, warnings } = seedEngine(baseScene(), { bvhMode: 'tlas' });
-    const baseColorMap = {
+    const baseColorMap = textureRefWithSource({
       handle: { id: 'gpu-only-texture' },
-      [GLTF_TEXTURE_REF_SOURCE]: {
+    }, {
         path: 'materials[0].pbrMetallicRoughness.baseColorTexture',
         textureIndex: 7,
         imageIndex: 8,
@@ -975,8 +1072,7 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
         imageUri: 'albedo.webp',
         imageMimeType: 'image/webp',
         textureSourceExtension: 'EXT_texture_webp',
-      },
-    } as TextureRef;
+    });
     try {
       engine.updatePrimitive('mesh-a', {
         material: {
@@ -1010,59 +1106,47 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
     }
   });
 
-  it('updatePrimitive(material) emits a structured warning when an atlas-backed map uses an unsupported texCoord', () => {
+  it('updatePrimitive(material) rejects a high texCoord when the primitive lacks that UV stream', () => {
     const { engine, warnings } = seedEngine(baseScene(), { bvhMode: 'tlas' });
-    const baseColorMap = {
+    const baseColorMap = textureRefWithSource({
       handle: baseColorMapHandle(128),
       texCoord: 2,
-      [GLTF_TEXTURE_REF_SOURCE]: {
+    }, {
         path: 'materials[0].pbrMetallicRoughness.baseColorTexture',
         textureIndex: 7,
-      },
-    } as TextureRef;
+    });
     try {
-      engine.updatePrimitive('mesh-a', {
+      expect(() => engine.updatePrimitive('mesh-a', {
         material: {
           baseColor: [1, 1, 1],
           roughness: 0.5,
           metallic: 0,
           baseColorMap,
         },
-      });
+      })).toThrow(/references TEXCOORD_2.*does not provide that UV stream/);
 
-      const warning = warnings.find((w) =>
-        w.code === 'walkaround-hybrid.unsupported-material-texture-texcoord',
-      );
-      expect(warning?.method).toBe('updatePrimitive');
-      expect(warning?.details).toMatchObject({
-        materialIndex: 0,
-        field: 'baseColorMap',
-        colorSpace: 'srgb',
-        texCoord: 2,
-        sourcePath: 'materials[0].pbrMetallicRoughness.baseColorTexture',
-        textureIndex: 7,
-        fallback: 'map ignored',
-      });
-      expect(warning?.message).toContain('texCoord 2');
+      // Missing authored UV geometry is a transactional input error, not the
+      // retired "only UV0/UV1" approximation warning.
+      expect(warnings).toEqual([]);
+      expect(storedBvh(engine).coreMaterials[0]?.baseColorMap).toBeUndefined();
     } finally {
       engine.dispose();
     }
   });
 
-  it('updatePrimitive(material) emits a structured warning when an atlas-backed map uses footprint-dependent sampler policy', () => {
+  it('updatePrimitive(material) accepts atlas-backed footprint-dependent sampler policy without approximation', () => {
     const { engine, warnings } = seedEngine(baseScene(), { bvhMode: 'tlas' });
-    const baseColorMap = {
+    const baseColorMap = textureRefWithSource({
       handle: baseColorMapHandle(192),
       magFilter: 'nearest',
       minFilter: 'nearest',
       mipFilter: 'linear',
-      [GLTF_TEXTURE_REF_SOURCE]: {
+    }, {
         path: 'materials[0].pbrMetallicRoughness.baseColorTexture.sampler',
         textureIndex: 7,
         imageIndex: 8,
         samplerIndex: 9,
-      },
-    } as TextureRef;
+    });
     try {
       engine.updatePrimitive('mesh-a', {
         material: {
@@ -1073,76 +1157,41 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
         },
       });
 
-      const warning = warnings.find((w) =>
-        w.code === 'walkaround-hybrid.material-texture-sampler-policy-approximation',
-      );
-      expect(warning?.method).toBe('updatePrimitive');
-      expect(warning?.details).toMatchObject({
-        materialIndex: 0,
-        field: 'baseColorMap',
-        colorSpace: 'srgb',
-        texCoord: 0,
-        magFilter: 'nearest',
-        minFilter: 'nearest',
-        mipFilter: 'linear',
-        sourcePath: 'materials[0].pbrMetallicRoughness.baseColorTexture.sampler',
-        textureIndex: 7,
-        imageIndex: 8,
-        samplerIndex: 9,
-        fallback: 'base-level atlas sampler',
-      });
-      expect(warning?.message).toContain('requests sampler policy');
-      expect(warning?.message).toContain('map remains atlas-backed');
+      expect(warnings).toEqual([]);
+      expect(storedBvh(engine).coreMaterials[0]?.baseColorMap).toBe(baseColorMap);
     } finally {
       engine.dispose();
     }
   });
 
-  it('updatePrimitive(material) emits a structured warning when an atlas-backed map has an invalid transform', () => {
-    const { engine, warnings } = seedEngine(baseScene(), { bvhMode: 'tlas' });
-    const baseColorMap = {
+  it('updatePrimitive(material) rejects a non-finite atlas texture transform before mutation', () => {
+    const { engine, pipeline, warnings } = seedEngine(baseScene(), { bvhMode: 'tlas' });
+    const baseColorMap = textureRefWithSource({
       handle: baseColorMapHandle(192),
       transform: {
         offset: [Number.NaN, 0.25],
         scale: [2, Number.POSITIVE_INFINITY],
         rotation: Number.NEGATIVE_INFINITY,
       },
-      [GLTF_TEXTURE_REF_SOURCE]: {
+    }, {
         path: 'materials[0].pbrMetallicRoughness.baseColorTexture.extensions.KHR_texture_transform',
         textureIndex: 7,
         imageIndex: 8,
         samplerIndex: 9,
-      },
-    } as TextureRef;
+    });
     try {
-      engine.updatePrimitive('mesh-a', {
+      expect(() => engine.updatePrimitive('mesh-a', {
         material: {
           baseColor: [1, 1, 1],
           roughness: 0.5,
           metallic: 0,
           baseColorMap,
         },
-      });
+      })).toThrow(RangeError);
 
-      const warning = warnings.find((w) =>
-        w.code === 'walkaround-hybrid.invalid-material-texture-transform',
-      );
-      expect(warning?.method).toBe('updatePrimitive');
-      expect(warning?.details).toMatchObject({
-        materialIndex: 0,
-        field: 'baseColorMap',
-        colorSpace: 'srgb',
-        sourcePath: 'materials[0].pbrMetallicRoughness.baseColorTexture.extensions.KHR_texture_transform',
-        textureIndex: 7,
-        imageIndex: 8,
-        samplerIndex: 9,
-        transformComponents: ['offset.x', 'scale.y', 'rotation'],
-        fallback: 'identity texture transform fallback',
-      });
-      expect(warning?.message).toContain(
-        'non-finite texture transform component(s) offset.x, scale.y, rotation',
-      );
-      expect(warning?.message).toContain('map remains atlas-backed');
+      expect(warnings).toHaveLength(0);
+      expect(pipeline.refreshBvhMaterialSlice).not.toHaveBeenCalled();
+      expect(pipeline.refreshMaterialTextureAtlas).not.toHaveBeenCalled();
     } finally {
       engine.dispose();
     }
@@ -1150,18 +1199,17 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
 
   it('updatePrimitive(material) emits a structured warning when an atlas-backed map has ambiguous raw stride', () => {
     const { engine, warnings } = seedEngine(baseScene(), { bvhMode: 'tlas' });
-    const baseColorMap = {
+    const baseColorMap = textureRefWithSource({
       handle: {
         width: 1,
         height: 1,
         data: new Uint8Array([64, 128, 255]),
       },
-      [GLTF_TEXTURE_REF_SOURCE]: {
+    }, {
         path: 'materials[0].pbrMetallicRoughness.baseColorTexture',
         textureIndex: 7,
         imageIndex: 8,
-      },
-    } as TextureRef;
+    });
     try {
       engine.updatePrimitive('mesh-a', {
         material: {
@@ -1196,7 +1244,19 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
   });
 
   it('updatePrimitive(material) refreshes material texture atlas when atlas-backed maps change', () => {
-    const { engine, pipeline, ddgi } = seedEngine(baseScene(), { bvhMode: 'tlas' });
+    const sourceScene = baseScene();
+    const primary = sourceScene.primitives[0];
+    if (primary == null || primary.kind !== 'mesh') throw new Error('expected mesh');
+    const { engine, pipeline, ddgi } = seedEngine({
+      ...sourceScene,
+      primitives: [
+        {
+          ...primary,
+          uv1: new Float32Array([0, 0, 1, 0, 0, 1]),
+        },
+        ...sourceScene.primitives.slice(1),
+      ],
+    }, { bvhMode: 'tlas' });
     try {
       engine.updatePrimitive('mesh-a', {
         material: {
@@ -1215,7 +1275,7 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
           emissive: [2, 1, 0.5],
           emissiveIntensity: 3,
           emissiveMap: { handle: baseColorMapHandle(8), wrapT: 'mirrored-repeat' },
-          transmission: 1,
+          transmission: 0,
           transmissionMap: { handle: baseColorMapHandle(4), wrapS: 'clamp-to-edge' },
           lightMap: { handle: baseColorMapHandle(2), texCoord: 1 },
           lightMapIntensity: 2,
@@ -1514,11 +1574,47 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
       } as Partial<ScenePrimitive>);
 
       expect(pipeline.refreshBvhMaterialSlice).not.toHaveBeenCalled();
-      expect(pipeline.refreshBvhFullRebuild).toHaveBeenCalledTimes(1);
-      const [rebuilt] = pipeline.refreshBvhFullRebuild.mock.calls[0] as [SceneBVHBuffers];
+      expect(pipeline.replaceBvhAndEmitters).toHaveBeenCalledTimes(1);
+      const [rebuilt] = pipeline.replaceBvhAndEmitters.mock.calls[0] as [SceneBVHBuffers];
       const positions = new Float32Array(rebuilt.bvhPositions.cpuData);
       expect(positions[2]).toBeCloseTo(0.5, 5);
-      expect(pipeline.updateEmitters).toHaveBeenCalledTimes(1);
+      expect(pipeline.updateEmitters).not.toHaveBeenCalled();
+    } finally {
+      engine.dispose();
+    }
+  });
+
+  it('updatePrimitive(material) rebuilds diced displacement geometry when subdivision level changes', () => {
+    const base = baseScene();
+    const prim = base.primitives[0];
+    if (prim == null || prim.kind !== 'mesh') throw new Error('expected mesh');
+    const seededScene: Scene = {
+      ...base,
+      primitives: [
+        {
+          ...prim,
+          uvs: new Float32Array([0, 0, 1, 0, 0, 1]),
+          material: {
+            ...prim.material,
+            displacementMap: { handle: baseColorMapHandle(255) },
+            displacementScale: 0.5,
+            displacementBias: 0,
+            displacementSubdivisions: 0,
+          },
+        },
+        ...base.primitives.slice(1),
+      ],
+    };
+    const { engine, pipeline } = seedEngine(seededScene, { bvhMode: 'tlas' });
+    try {
+      engine.updatePrimitive('mesh-a', {
+        material: {
+          displacementSubdivisions: 1,
+        },
+      } as Partial<ScenePrimitive>);
+
+      expect(pipeline.refreshBvhMaterialSlice).not.toHaveBeenCalled();
+      expect(pipeline.replaceBvhAndEmitters).toHaveBeenCalledTimes(1);
     } finally {
       engine.dispose();
     }
@@ -1530,7 +1626,7 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
       rc: true,
     });
     try {
-      engine.updateEmitter('lamp', { intensity: 4, position: [2, 3, 4] } as Partial<SceneEmitter>);
+      engine.updateEmitter('lamp', { intensity: 4, position: [2, 3, 4] });
 
       expect(pipeline.updateEmitters).toHaveBeenCalledTimes(1);
       expect(pipeline.refreshBvhEmissiveLe).toHaveBeenCalledTimes(1);
@@ -1540,8 +1636,8 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
       expect(ddgi.setEmitterTris).toHaveBeenCalledTimes(1);
       expect(ddgi.invalidateProbeCache).toHaveBeenCalledTimes(1);
       expect(pipeline.updateAnalyticLights).toHaveBeenCalledTimes(1);
-      expect(pipeline.updateDirectionalEnvironment).toHaveBeenCalledWith(null, 0, 0);
-      expect(ddgi.setEnvironment).toHaveBeenCalledWith(null, null, 0, 0, false);
+      expect(pipeline.updateDirectionalEnvironment).not.toHaveBeenCalled();
+      expect(ddgi.setEnvironment).not.toHaveBeenCalled();
       expect(pipeline.requestAccumReset).toHaveBeenCalledTimes(1);
       expect((storedScene(engine).emitters[0] as { intensity: number }).intensity).toBe(4);
     } finally {
@@ -1561,7 +1657,7 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
       engine.updateEmitter('panel-light', {
         color: [0, 1, 0],
         intensity: 3,
-      } as Partial<SceneEmitter>);
+      });
 
       expect(pipeline.updateEmitters).toHaveBeenCalledTimes(1);
       expect(pipeline.refreshBvhEmissiveLe).toHaveBeenCalledTimes(1);
@@ -1584,7 +1680,7 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
     }
   });
 
-  it('updateEmitter warns when a mesh-area emitter lights an emissiveMap primitive through approximate texel PDFs', () => {
+  it('updateEmitter keeps a readable one-texel mesh-area emissive map exact', () => {
     const sourceScene = baseScene([{
       kind: 'mesh-area',
       id: 'panel-light',
@@ -1603,22 +1699,16 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
                 emissive: [0, 0, 0],
                 emissiveMap: { handle: baseColorMapHandle(255) },
               },
-            } as ScenePrimitive
+            }
           : prim
       ),
     };
     const { engine, warnings } = seedEngine(scene, { bvhMode: 'tlas' });
     try {
-      engine.updateEmitter('panel-light', { intensity: 3 } as Partial<SceneEmitter>);
+      const warningCount = warnings.length;
+      engine.updateEmitter('panel-light', { intensity: 3 });
 
-      const warning = warnings.find((w) =>
-        w.code === 'walkaround-hybrid.emissive-map-texel-pdf-approximation'
-      );
-      expect(warning?.method).toBe('updateEmitter');
-      expect(warning?.details?.primitiveIds).toEqual(['mesh-a']);
-      expect(warning?.details?.directEmitterPdf).toBe('exact-texel-cell-subtriangles-when-eligible');
-      expect(warning?.details?.giSuffixEmission).toBe('uv-local-emissive-texel-sampled-on-hit');
-      expect(warning?.details?.missing).toBe('global-exact-texel-alias-pdf');
+      expect(warnings).toHaveLength(warningCount);
     } finally {
       engine.dispose();
     }
@@ -1631,6 +1721,9 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
     pipeline.getEnvBindings.mockReturnValue({
       textureView: envTextureView,
       sampler: envSampler,
+      rotationY: 0,
+      intensity: 1,
+      hasDirectionalEnvironment: true,
     });
     try {
       engine.updateEnvironment({
@@ -1659,21 +1752,20 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
     }
   });
 
-  it('updateLighting warns on unknown keys and invalidates sky lighting without rebuilding resources', () => {
+  it('updateLighting rejects mixed valid/unknown keys atomically', () => {
     const { engine, pipeline, ddgi, warnings } = seedEngine(baseScene(), { bvhMode: 'tlas' });
     try {
-      engine.updateLighting({
+      const beforeTint = [...(engine as unknown as { _skyTint: number[] })._skyTint];
+      expect(() => engine.updateLighting({
         skyTint: [0.4, 0.5, 0.6],
         typoIntensity: 8,
-      } as never);
+      } as never)).toThrow(/unknown key "typoIntensity"/);
 
-      expect(warnings.some((w) =>
-        w.code === 'walkaround-hybrid.unknown-lighting-key' &&
-        w.details?.key === 'typoIntensity',
-      )).toBe(true);
-      expect(ddgi.setSkyParams).toHaveBeenCalledWith([0.4, 0.5, 0.6], 1);
-      expect(ddgi.invalidateProbeCache).toHaveBeenCalledTimes(1);
-      expect(pipeline.requestAccumReset).toHaveBeenCalledTimes(1);
+      expect((engine as unknown as { _skyTint: number[] })._skyTint).toEqual(beforeTint);
+      expect(warnings).toHaveLength(0);
+      expect(ddgi.setSkyParams).not.toHaveBeenCalled();
+      expect(ddgi.invalidateProbeCache).not.toHaveBeenCalled();
+      expect(pipeline.requestAccumReset).not.toHaveBeenCalled();
       expect(pipeline.resize).not.toHaveBeenCalled();
     } finally {
       engine.dispose();
@@ -1728,12 +1820,12 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
     expect(pipeline.requestAccumReset).not.toHaveBeenCalled();
   });
 
-  it('setSize resizes frame resources only; invalid/same-size calls are no-ops with a structured warning', () => {
+  it('setSize rejects invalid dimensions and resizes frame resources only for a changed valid size', () => {
     const { engine, pipeline, ddgi, warnings } = seedEngine(baseScene(), { bvhMode: 'tlas' });
     try {
       engine.setSize(64, 64);
-      engine.setSize(0, 128);
-      engine.setSize(0, 128);
+      expect(() => engine.setSize(0, 128)).toThrow(RangeError);
+      expect(() => engine.setSize(0, 128)).toThrow(RangeError);
       expect(pipeline.resize).not.toHaveBeenCalled();
 
       engine.setSize(128, 80);
@@ -1743,13 +1835,7 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
       expect(ddgi.invalidateProbeCache).not.toHaveBeenCalled();
       expect(pipeline.requestAccumReset).not.toHaveBeenCalled();
       const sizeWarnings = warnings.filter((w) => w.code === 'walkaround-hybrid.invalid-set-size');
-      expect(sizeWarnings).toHaveLength(1);
-      expect(sizeWarnings[0]).toMatchObject({
-        backend: 'walkaround-hybrid',
-        phase: 'lifecycle',
-        method: 'setSize',
-        details: { width: 0, height: 128 },
-      });
+      expect(sizeWarnings).toHaveLength(0);
     } finally {
       engine.dispose();
     }

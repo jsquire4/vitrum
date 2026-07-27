@@ -77,8 +77,7 @@ export class DenoiserAdapterPass implements Pass {
   async initialize(_ctx: PassInitContext): Promise<void> {
     // The active denoiser's own `initialize` is awaited from the
     // pipeline's `initialize` — this adapter does not duplicate that.
-    // A dedicated initialize on the adapter is reserved for future
-    // adapter-owned resources (none today).
+    // The adapter itself owns no initialization resources.
   }
 
   dispatch(ctx: PassDispatchContext): void {
@@ -89,6 +88,7 @@ export class DenoiserAdapterPass implements Pass {
       width: ctx.width,
       height: ctx.height,
       frameIndex: ctx.frameIndex,
+      ...(ctx.publication ? { publication: ctx.publication } : {}),
       resources: ctx.resources,
       sharedAtrousPipeline: this._sharedAtrousPipeline(),
       bglCache: ctx.bglCache,

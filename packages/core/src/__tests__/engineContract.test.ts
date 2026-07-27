@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   BACKEND_PROMISE_LEDGER,
   ENGINE_DENOISER_MODES,
+  ENGINE_FEATURE_IDS,
   MATERIAL_SPEC_FIELDS,
   asBackendTexture,
   asBackendTextureFormat,
@@ -41,6 +42,15 @@ describe('backend promise ledger', () => {
       expect(rec.methodPromises.addPrimitive).toBe(rec.supportsAddRemovePrimitive);
       expect(rec.methodPromises.removePrimitive).toBe(rec.supportsAddRemovePrimitive);
     }
+  });
+
+  it('declares the offscreen presentation-source method truthfully', () => {
+    expect(BACKEND_PROMISE_LEDGER['walkaround-hybrid'].methodPromises.getPresentationSource)
+      .toBe(false);
+    expect(BACKEND_PROMISE_LEDGER['pt-webgl2'].methodPromises.getPresentationSource)
+      .toBe(false);
+    expect(BACKEND_PROMISE_LEDGER['pt-webgpu'].methodPromises.getPresentationSource)
+      .toBe(true);
   });
 
   it('pins the per-backend add/remove-primitive truth table', () => {
@@ -138,7 +148,7 @@ describe('backend promise ledger', () => {
     expect(wa.thicknessMap).toBe('approximate');
     expect(wa.bumpMap).toBe('approximate');
     expect(wa.bumpScale).toBe('approximate');
-    expect(wa.sheen).toBe('approximate');
+    expect(wa.sheen).toBe('native');
     expect(wa.scatteringCoefficient).toBe('approximate');
     expect(wa.scatteringAnisotropy).toBe('approximate');
     expect(wa.scatteringCoefficientRGB).toBe('approximate');
@@ -158,17 +168,23 @@ describe('backend promise ledger', () => {
     expect(gl2.frontLayer).toBe('native');
     expect(gl2.backLayer).toBe('native');
 
-    // pt-webgpu: KHR_materials_specular scalars are consumed by the ordinary PT
-    // BRDF/PDF path; extension maps and anisotropy controls remain approximate
-    // until specialty reference/furnace promotion closes. scatteringCoefficientRGB
-    // is genuine sigma_s.
-    expect(gpu.specularIntensity).toBe('approximate');
-    expect(gpu.specularColor).toBe('approximate');
+    // pt-webgpu: extension-lobe scalars/maps are carried through ordinary PT,
+    // inverse replay, ReSTIR-PT, BDPT, MNEE, and SPPM. Anisotropy remains a
+    // bounded projected-roughness Kulla-Conty approximation; RGB scattering is
+    // genuine sigma_s.
+    expect(gpu.specularIntensity).toBe('native');
+    expect(gpu.specularColor).toBe('native');
     expect(gpu.shadingModel).toBe('approximate');
-    expect(gpu.clearcoatMap).toBe('approximate');
-    expect(gpu.sheenColorMap).toBe('approximate');
-    expect(gpu.clearcoatNormalMap).toBe('approximate');
+    expect(gpu.clearcoatMap).toBe('native');
+    expect(gpu.clearcoatRoughnessMap).toBe('native');
+    expect(gpu.sheenColorMap).toBe('native');
+    expect(gpu.sheenRoughnessMap).toBe('native');
+    expect(gpu.iridescenceMap).toBe('native');
+    expect(gpu.iridescenceThicknessMap).toBe('native');
+    expect(gpu.clearcoatNormalMap).toBe('native');
     expect(gpu.clearcoatNormalScale).toBe('native');
+    expect(gpu.specularColorMap).toBe('native');
+    expect(gpu.specularIntensityMap).toBe('native');
     expect(gpu.thickness).toBe('approximate');
     expect(gpu.thicknessMap).toBe('approximate');
     expect(gpu.transmissionMap).toBe('native');
@@ -191,15 +207,10 @@ describe('backend promise ledger', () => {
 
   // SHADOW-01 — shadow-flag support rows are exhaustive + pinned per backend.
   it('keeps the shadow support matrix exhaustive and pinned for every backend (SHADOW-01)', () => {
-    const SHADOW_KEYS = ['primitiveCastShadow', 'emitterCastShadow', 'receiveShadow'];
+    const SHADOW_KEYS = ['primitiveCastShadow', 'emitterCastShadow'];
     for (const [id, rec] of Object.entries(BACKEND_PROMISE_LEDGER)) {
       const keys = Object.keys(rec.supportDetails.shadows).sort();
       expect(keys, `shadows matrix keys for ${id}`).toEqual([...SHADOW_KEYS].sort());
-      // receiveShadow is non-physical for GI — unsupported EVERYWHERE; backends
-      // emit a structured *.reserved-receive-shadow warning when set false.
-      expect(rec.supportDetails.shadows.receiveShadow, `receiveShadow for ${id}`).toBe(
-        'unsupported',
-      );
     }
     const wa = BACKEND_PROMISE_LEDGER['walkaround-hybrid'].supportDetails.shadows;
     const gl2 = BACKEND_PROMISE_LEDGER['pt-webgl2'].supportDetails.shadows;
@@ -220,6 +231,38 @@ describe('backend promise ledger', () => {
     // and SPPM photon-source selection.
     expect(gpu.primitiveCastShadow).toBe('native');
     expect(gpu.emitterCastShadow).toBe('native');
+  });
+
+  it('exports a unique stable active-feature ID vocabulary', () => {
+    expect(new Set(ENGINE_FEATURE_IDS).size).toBe(ENGINE_FEATURE_IDS.length);
+    expect(ENGINE_FEATURE_IDS).toEqual([
+      'pt-webgpu-bdpt',
+      'pt-webgpu-restir-pt-reuse',
+      'pt-webgpu-restir-pt-biased-weight-clamp',
+      'pt-webgpu-sobol-sampling',
+      'pt-webgpu-cwbvh-closest-traversal',
+      'pt-webgpu-photon-map-sppm',
+      'pt-webgpu-spectral',
+      'pt-webgpu-oidn-final',
+      'pt-webgl2-bdpt',
+      'pt-webgl2-sobol-sampling',
+      'pt-webgl2-spectral',
+      'pt-webgl2-oidn-final',
+      'walkaround-hybrid-gris-ddgi-proxy-reuse',
+      'walkaround-hybrid-ppg-guided-gi',
+      'walkaround-hybrid-nrc',
+      'walkaround-hybrid-radiance-cascades',
+      'walkaround-hybrid-regir',
+      'walkaround-hybrid-gpu-skinning',
+      'walkaround-hybrid-refractive-trace-caustics',
+      'walkaround-hybrid-manifold-nee-caustics',
+      'walkaround-hybrid-denoiser-atrous',
+      'walkaround-hybrid-denoiser-atrous-variance',
+      'walkaround-hybrid-denoiser-svgf-real',
+      'walkaround-hybrid-denoiser-bmfr',
+      'walkaround-hybrid-denoiser-neural',
+      'walkaround-hybrid-denoiser-oidn-final',
+    ]);
   });
 
   it('keeps denoiser support rows exhaustive and host-readable', () => {
@@ -315,6 +358,7 @@ describe('backend promise ledger', () => {
     });
     expect(rec.methodPromises.setSize).toBe(true);
     expect(rec.methodPromises.updateLighting).toBe(true);
+    expect(rec.frameInputPromises.honorsViewportPerFrame).toBe(true);
   });
 
   it('pins PT backend resize/lighting method promises truthfully', () => {
@@ -326,9 +370,9 @@ describe('backend promise ledger', () => {
       honorsPerFrameBounces: true,
     });
     expect(webgl2.supportDetails.mutations.resize).toBe('native');
-    expect(webgl2.supportDetails.mutations.lighting).toBe('unsupported');
+    expect(webgl2.supportDetails.mutations.lighting).toBe('fallback-rebuild');
     expect(webgl2.methodPromises.setSize).toBe(true);
-    expect(webgl2.methodPromises.updateLighting).toBe(false);
+    expect(webgl2.methodPromises.updateLighting).toBe(true);
 
     const webgpu = BACKEND_PROMISE_LEDGER['pt-webgpu'];
     expect(webgpu.presentationMode).toBe('offscreen-texture');
@@ -337,10 +381,10 @@ describe('backend promise ledger', () => {
       requiresSwapChainView: false,
       honorsPerFrameBounces: true,
     });
-    expect(webgpu.supportDetails.mutations.resize).toBe('unsupported');
-    expect(webgpu.supportDetails.mutations.lighting).toBe('unsupported');
-    expect(webgpu.methodPromises.setSize).toBe(false);
-    expect(webgpu.methodPromises.updateLighting).toBe(false);
+    expect(webgpu.supportDetails.mutations.resize).toBe('native');
+    expect(webgpu.supportDetails.mutations.lighting).toBe('native');
+    expect(webgpu.methodPromises.setSize).toBe(true);
+    expect(webgpu.methodPromises.updateLighting).toBe(true);
   });
 
   it('pins pt-webgpu material mutation as fallback-rebuild despite scalar descriptor fast paths', () => {

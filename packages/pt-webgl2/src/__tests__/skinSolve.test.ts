@@ -187,6 +187,32 @@ describe('pt-webgl2 skinned-mesh ingestion', () => {
     e.dispose();
   });
 
+  it('preserves influences beyond the legacy four-wide skinning layout', async () => {
+    const prim: SkinnedMeshPrimitive = {
+      ...twoBoneSkinnedPrim('sk-eight-influences'),
+      skinInfluencesPerVertex: 8,
+      skinIndices: new Uint32Array([
+        0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 1, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 1,
+      ]),
+      skinWeights: new Float32Array([
+        1, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 1, 0, 0, 0,
+        0.5, 0, 0, 0, 0, 0, 0, 0.5,
+      ]),
+    };
+    const e = await createPTEngine_WebGL2(opts());
+    e.setScene({ primitives: [prim], emitters: [], environment: { kind: 'none' } });
+
+    const packed = e._debugGeoPack!.positions;
+    expect(packed[0]).toBeCloseTo(0);
+    expect(packed[4]).toBeCloseTo(4);
+    expect(packed[8]).toBeCloseTo(2);
+
+    e.dispose();
+  });
+
   it('unskinned mesh is byte-identical through the skinning pre-pass', async () => {
     // Baseline: a plain MeshPrimitive with no skinning data.
     const plain: MeshPrimitive = {
@@ -272,6 +298,90 @@ describe('pt-webgl2 skinned-mesh ingestion', () => {
     );
     expect(Array.from(posed.uv1 ?? [])).toEqual(
       Array.from(solveSkin(prim).uv1!, (v) => expect.closeTo(v, 6)),
+    );
+  });
+
+  it('preserves and applies a sparse high-numbered UV-set morph', () => {
+    const texCoord = 37;
+    const baseUv = new Float32Array([
+      0, 0,
+      1, 0,
+      0, 1,
+    ]);
+    const deltaUv = new Float32Array([
+      0.25, 0.5,
+      0.25, 0.5,
+      0.25, 0.5,
+    ]);
+    const uvSets: Array<Float32Array | undefined> = [];
+    uvSets[texCoord] = baseUv;
+    const morphTargetUvSets: Array<readonly Float32Array[] | undefined> = [];
+    morphTargetUvSets[texCoord] = [deltaUv];
+    const prim: SkinnedMeshPrimitive = {
+      ...twoBoneSkinnedPrim('sk-high-uv-morph'),
+      uvSets,
+      morphTargets: [new Float32Array(9)],
+      morphWeights: new Float32Array([1]),
+      morphTargetUvSets,
+    };
+    const scene: Scene = {
+      primitives: [prim],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+
+    const expected = solveSkin(prim).uvSets?.[texCoord];
+    const posed = solveSkinPrimitives(scene).primitives[0];
+    expect(posed?.kind).toBe('skinned-mesh');
+    if (posed?.kind !== 'skinned-mesh') throw new Error('expected skinned mesh');
+    expect(posed.uvSets?.[texCoord]).toBeInstanceOf(Float32Array);
+    expect(Array.from(posed.uvSets?.[texCoord] ?? [])).toEqual(
+      Array.from(expected ?? [], (value) => expect.closeTo(value, 6)),
+    );
+    expect(Array.from(posed.uvSets?.[texCoord] ?? [])).toEqual([
+      0.25, 0.5,
+      1.25, 0.5,
+      0.25, 1.5,
+    ]);
+  });
+
+  it('overlays solved UVs without dropping sparse lanes across the array-index boundary', () => {
+    const nativeCeilingIndex = 0xffff_fffe;
+    const ordinaryPropertyIndex = 0x1_0000_0001;
+    const baseUv = new Float32Array([0, 0, 1, 0, 0, 1]);
+    const deltaUv = new Float32Array([0.25, 0.5, 0.25, 0.5, 0.25, 0.5]);
+    const uvSets: Array<Float32Array | undefined> = [];
+    uvSets[nativeCeilingIndex] = baseUv;
+    uvSets[ordinaryPropertyIndex] = baseUv;
+    const morphTargetUvSets: Array<readonly Float32Array[] | undefined> = [];
+    morphTargetUvSets[ordinaryPropertyIndex] = [deltaUv];
+    const prim: SkinnedMeshPrimitive = {
+      ...twoBoneSkinnedPrim('sk-array-boundary-uv-morph'),
+      uvSets,
+      morphTargets: [new Float32Array(9)],
+      morphWeights: new Float32Array([1]),
+      morphTargetUvSets,
+    };
+    const scene: Scene = {
+      primitives: [prim],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+
+    const posed = solveSkinPrimitives(scene).primitives[0];
+    expect(posed?.kind).toBe('skinned-mesh');
+    if (posed?.kind !== 'skinned-mesh') throw new Error('expected skinned mesh');
+    expect(posed.uvSets?.[nativeCeilingIndex]).toBe(baseUv);
+    expect(Array.from(posed.uvSets?.[ordinaryPropertyIndex] ?? [])).toEqual([
+      0.25, 0.5,
+      1.25, 0.5,
+      0.25, 1.5,
+    ]);
+    expect(Object.keys(posed.uvSets ?? [])).toEqual(
+      expect.arrayContaining([
+        String(nativeCeilingIndex),
+        String(ordinaryPropertyIndex),
+      ]),
     );
   });
 

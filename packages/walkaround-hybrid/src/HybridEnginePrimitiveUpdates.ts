@@ -49,9 +49,12 @@ import {
   computeLocalAabb,
   computeWorldAabbForBindings,
   invertMat4,
+  isLeafSplit,
   refitBvhBounds,
   refitTlasTransforms,
+  tlasRefitNodeIndices,
   type PrimitiveTlasBinding,
+  type RefitTlasResult,
   type TlasGpuSnapshot,
 } from '@vitrum/shared-bvh';
 import { applyPrimitivePatchToScene } from './scenePatch.js';
@@ -101,12 +104,8 @@ import {
   packBVHRoughMetalFromCore,
 } from './restir/packingHelpers.js';
 import {
-  collectApproximateAlphaBlendPrimitiveIds,
-  collectApproximateEmissiveMapTexelPdfPrimitiveIds,
-  collectApproximateLightMapPrimitiveIds,
-  collectApproximateRichMaterialPrimitiveFields,
+  assertNoUnsupportedMaterialProfiles,
   collectUnconsumedMaterialFieldsForMaterial,
-  type ApproximateRichMaterialPrimitiveFields,
   type UnconsumedMaterialPrimitiveFields,
 } from './restir/consumedMaterialFields.js';
 import type { BvhUpdateSink } from './pipeline/BvhUpdateSink.js';
@@ -200,9 +199,9 @@ function mat3InverseTransposeFromMat4(m: ArrayLike<number>): Float32Array {
   // transpose needed because cofactor rows are already the transposed-inverse
   // columns).
   return new Float32Array([
-    c00 * invDet, c01 * invDet, c02 * invDet,
-    c10 * invDet, c11 * invDet, c12 * invDet,
-    c20 * invDet, c21 * invDet, c22 * invDet,
+    c00 * invDet, c10 * invDet, c20 * invDet,
+    c01 * invDet, c11 * invDet, c21 * invDet,
+    c02 * invDet, c12 * invDet, c22 * invDet,
   ]);
 }
 
@@ -276,7 +275,7 @@ function transformPoint(
  * in both files reference the same list.
  */
 export const TOPOLOGY_PATCH_FIELDS = [
-  'normals', 'uvs', 'uv1', 'tangents', 'indices',
+  'normals', 'uvs', 'uv1', 'uvSets', 'tangents', 'indices',
   'instances', 'params', 'shape', 'fallbackMesh', 'kind',
 ] as const;
 
@@ -299,6 +298,7 @@ function captureTlasSnapshot(tlas: NonNullable<SceneBVHBuffers['tlas']>): TlasGp
     tlasInstanceIndices: new Uint32Array(tlas.instanceIndices.cpuData),
     tlasBlasRoots: new Uint32Array(tlas.blasRoots.cpuData),
     tlasInstanceWorldToLocal: new Float32Array(tlas.worldToLocal.cpuData),
+    tlasInstanceLocalToWorld: new Float32Array(tlas.localToWorld.cpuData),
   };
 }
 
@@ -307,37 +307,257 @@ function captureTlasSnapshot(tlas: NonNullable<SceneBVHBuffers['tlas']>): TlasGp
  *  (matching the pre-extraction call sites). */
 function applyTlasRefitResult(
   tlas: NonNullable<SceneBVHBuffers['tlas']>,
-  refit: { tlasNodes: Uint32Array; tlasInstanceWorldToLocal: Float32Array; tlasInstanceLocalToWorld: Float32Array },
+  refit: Extract<RefitTlasResult, { readonly ok: true }>,
   pipeline: BvhUpdateSink | null | undefined,
 ): void {
+  const dirtyNodes = refit.dirtyTlasNodeIndices;
+  const dirtyTransforms = refit.dirtyTlasTransformInstanceIndices;
+  if (dirtyNodes != null && dirtyTransforms != null) {
+    const nodes = coalesceFixedByteRanges(dirtyNodes, 32).map((range) => ({
+      byteOffset: range.byteOffset,
+      data: tlas.nodes.cpuData.slice(
+        range.byteOffset,
+        range.byteOffset + range.byteLength,
+      ),
+    }));
+    const matrixRanges = coalesceFixedByteRanges(dirtyTransforms, 64);
+    pipeline?.refreshTlasRefit({
+      nodes,
+      worldToLocal: matrixRanges.map((range) => ({
+        byteOffset: range.byteOffset,
+        data: tlas.worldToLocal.cpuData.slice(
+          range.byteOffset,
+          range.byteOffset + range.byteLength,
+        ),
+      })),
+      localToWorld: matrixRanges.map((range) => ({
+        byteOffset: range.byteOffset,
+        data: tlas.localToWorld.cpuData.slice(
+          range.byteOffset,
+          range.byteOffset + range.byteLength,
+        ),
+      })),
+    });
+    return;
+  }
   tlas.nodes.cpuData = refit.tlasNodes.buffer.slice(0) as ArrayBuffer;
   tlas.worldToLocal.cpuData = refit.tlasInstanceWorldToLocal.buffer.slice(0) as ArrayBuffer;
   tlas.localToWorld.cpuData = refit.tlasInstanceLocalToWorld.buffer.slice(0) as ArrayBuffer;
-  pipeline?.refreshTlasRefit(tlas.nodes.cpuData, tlas.worldToLocal.cpuData, tlas.localToWorld.cpuData);
+  pipeline?.refreshTlasRefit({
+    nodes: [{ byteOffset: 0, data: tlas.nodes.cpuData }],
+    worldToLocal: [{ byteOffset: 0, data: tlas.worldToLocal.cpuData }],
+    localToWorld: [{ byteOffset: 0, data: tlas.localToWorld.cpuData }],
+  });
 }
 
-/** Refit BVH node bounds against the updated stride-4 world positions, then
- *  upload the full (small) node buffer + just the affected vertex slice to the
- *  pipeline. Used by the non-TLAS transform + positions fast paths. */
+function blasNodeByteRange(
+  bvh: SceneBVHBuffers,
+  blasRoot: number,
+): { byteOffset: number; byteLength: number } {
+  const totalNodes = bvh.bvhNodes.cpuData.byteLength / 32;
+  let endNode = totalNodes;
+  for (const candidate of bvh.primitiveTlasBindings) {
+    if (candidate.blasRoot > blasRoot && candidate.blasRoot < endNode) {
+      endNode = candidate.blasRoot;
+    }
+  }
+  if (
+    !Number.isSafeInteger(blasRoot) ||
+    blasRoot < 0 ||
+    blasRoot >= endNode ||
+    endNode > totalNodes
+  ) {
+    throw new Error(
+      `[walkaround-hybrid] invalid BLAS node slice [${blasRoot}, ${endNode}).`,
+    );
+  }
+  return {
+    byteOffset: blasRoot * 32,
+    byteLength: (endNode - blasRoot) * 32,
+  };
+}
+
+interface BvhNodeByteRange {
+  readonly byteOffset: number;
+  readonly byteLength: number;
+}
+
+function coalesceFixedByteRanges(
+  indices: ArrayLike<number>,
+  stride: number,
+): readonly BvhNodeByteRange[] {
+  const ascending = [...new Set(Array.from(indices))].sort((a, b) => a - b);
+  const ranges: BvhNodeByteRange[] = [];
+  for (const index of ascending) {
+    const byteOffset = index * stride;
+    const previous = ranges[ranges.length - 1];
+    if (
+      previous != null &&
+      previous.byteOffset + previous.byteLength === byteOffset
+    ) {
+      ranges[ranges.length - 1] = {
+        byteOffset: previous.byteOffset,
+        byteLength: previous.byteLength + stride,
+      };
+    } else {
+      ranges.push({ byteOffset, byteLength: stride });
+    }
+  }
+  return ranges;
+}
+
+function coalesceNodeByteRanges(
+  nodeIndices: ArrayLike<number>,
+): readonly BvhNodeByteRange[] {
+  return coalesceFixedByteRanges(nodeIndices, 32);
+}
+
+function refitMergedNodeSubset(
+  bvh: SceneBVHBuffers,
+  positions: Float32Array,
+  nodesPostorder: Uint32Array,
+): readonly BvhNodeByteRange[] {
+  const f32 = new Float32Array(bvh.bvhNodes.cpuData);
+  const u32 = new Uint32Array(bvh.bvhNodes.cpuData);
+  const indices = bvh.bvhIndicesStride3;
+  const totalNodes = f32.length / 8;
+  const triangleCount = indices.length / 3;
+  const vertexCount = positions.length / 4;
+  let previous = Number.POSITIVE_INFINITY;
+  for (const node of nodesPostorder) {
+    if (node >= totalNodes || node >= previous) {
+      throw new Error(
+        '[walkaround-hybrid] primitive refit nodes must be unique descending indices.',
+      );
+    }
+    previous = node;
+    const base = node * 8;
+    const splitOrCount = u32[base + 7]!;
+    let mnX = Number.POSITIVE_INFINITY;
+    let mnY = Number.POSITIVE_INFINITY;
+    let mnZ = Number.POSITIVE_INFINITY;
+    let mxX = Number.NEGATIVE_INFINITY;
+    let mxY = Number.NEGATIVE_INFINITY;
+    let mxZ = Number.NEGATIVE_INFINITY;
+    if (isLeafSplit(splitOrCount)) {
+      const count = splitOrCount & 0xffff;
+      const triangleOffset = u32[base + 6]!;
+      if (triangleOffset > triangleCount || count > triangleCount - triangleOffset) {
+        throw new Error('[walkaround-hybrid] primitive refit leaf range is corrupt.');
+      }
+      if (count === 0) {
+        mnX = 0; mnY = 0; mnZ = 0;
+        mxX = 0; mxY = 0; mxZ = 0;
+      }
+      for (let tri = triangleOffset; tri < triangleOffset + count; tri += 1) {
+        for (let lane = 0; lane < 3; lane += 1) {
+          const vertex = indices[tri * 3 + lane]!;
+          if (vertex >= vertexCount) {
+            throw new Error('[walkaround-hybrid] primitive refit vertex is out of bounds.');
+          }
+          const offset = vertex * 4;
+          const x = positions[offset]!;
+          const y = positions[offset + 1]!;
+          const z = positions[offset + 2]!;
+          if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) {
+            throw new Error('[walkaround-hybrid] primitive refit vertex is non-finite.');
+          }
+          mnX = Math.min(mnX, x); mnY = Math.min(mnY, y); mnZ = Math.min(mnZ, z);
+          mxX = Math.max(mxX, x); mxY = Math.max(mxY, y); mxZ = Math.max(mxZ, z);
+        }
+      }
+    } else {
+      const left = node + 1;
+      const right = node + u32[base + 6]!;
+      if (left >= totalNodes || right <= node || right >= totalNodes) {
+        throw new Error('[walkaround-hybrid] primitive refit interior node is corrupt.');
+      }
+      for (const child of [left, right]) {
+        const childBase = child * 8;
+        mnX = Math.min(mnX, f32[childBase]!);
+        mnY = Math.min(mnY, f32[childBase + 1]!);
+        mnZ = Math.min(mnZ, f32[childBase + 2]!);
+        mxX = Math.max(mxX, f32[childBase + 3]!);
+        mxY = Math.max(mxY, f32[childBase + 4]!);
+        mxZ = Math.max(mxZ, f32[childBase + 5]!);
+      }
+    }
+    f32[base] = mnX; f32[base + 1] = mnY; f32[base + 2] = mnZ;
+    f32[base + 3] = mxX; f32[base + 4] = mxY; f32[base + 5] = mxZ;
+  }
+  return coalesceNodeByteRanges(nodesPostorder);
+}
+
+/** Refit BVH node bounds against the updated stride-4 positions, then upload
+ *  only the affected BLAS node bytes plus the affected vertex slice. Merged-BVH
+ *  callers have one root and therefore intentionally pass the complete tree. */
 function refitBvhNodesAndUploadSlice(
   bvh: SceneBVHBuffers,
   positionsF32: Float32Array,
   baseVertex: number,
   sliceVerts: number,
   pipeline: BvhUpdateSink | null | undefined,
+  blasRoot?: number,
+  primitiveId?: string,
 ): void {
-  const bvhNodesF32 = new Float32Array(bvh.bvhNodes.cpuData);
-  refitBvhBounds(bvhNodesF32, bvh.bvhIndicesStride3, positionsF32, 4);
+  let nodeRanges: readonly BvhNodeByteRange[];
+  const selectiveNodes = primitiveId == null
+    ? undefined
+    : bvh.primitiveRefitNodeIndices?.get(primitiveId);
+  if (blasRoot !== undefined) {
+    const range = blasNodeByteRange(bvh, blasRoot);
+    refitBvhBounds(
+      new Float32Array(
+        bvh.bvhNodes.cpuData,
+        range.byteOffset,
+        range.byteLength / 4,
+      ),
+      bvh.bvhIndicesStride3,
+      positionsF32,
+      4,
+    );
+    nodeRanges = [range];
+  } else if (selectiveNodes != null && selectiveNodes.length > 0) {
+    nodeRanges = refitMergedNodeSubset(bvh, positionsF32, selectiveNodes);
+  } else {
+    const range = {
+      byteOffset: 0,
+      byteLength: bvh.bvhNodes.cpuData.byteLength,
+    };
+    refitBvhBounds(
+      new Float32Array(bvh.bvhNodes.cpuData),
+      bvh.bvhIndicesStride3,
+      positionsF32,
+      4,
+    );
+    nodeRanges = [range];
+  }
   const positionsByteOffset = baseVertex * REFIT_STRIDE * 4; // f32 = 4 bytes
   const positionsByteLength = sliceVerts * REFIT_STRIDE * 4;
   const positionsSlice = bvh.bvhPositions.cpuData.slice(
     positionsByteOffset,
     positionsByteOffset + positionsByteLength,
   );
-  pipeline?.refreshBvhRefit(
-    bvh.bvhNodes.cpuData.slice(0),
-    { byteOffset: positionsByteOffset, data: positionsSlice },
-  );
+  const [firstNodeRange, ...remainingNodeRanges] = nodeRanges;
+  if (firstNodeRange != null) {
+    pipeline?.refreshBvhRefit(
+      bvh.bvhNodes.cpuData.slice(
+        firstNodeRange.byteOffset,
+        firstNodeRange.byteOffset + firstNodeRange.byteLength,
+      ),
+      { byteOffset: positionsByteOffset, data: positionsSlice },
+      firstNodeRange.byteOffset,
+    );
+  }
+  for (const range of remainingNodeRanges) {
+    pipeline?.refreshBvhNodesOnly(
+      bvh.bvhNodes.cpuData.slice(
+        range.byteOffset,
+        range.byteOffset + range.byteLength,
+      ),
+      range.byteOffset,
+    );
+  }
 }
 
 /**
@@ -367,7 +587,6 @@ function applyNormalTransformAndUpload(
   pipeline: BvhUpdateSink | null | undefined,
   inputNormals?: ArrayLike<number>,
 ): void {
-  if (!pipeline) return;
   const NORM_STRIDE = 4; // vec4f per vertex (.w unused)
   const normalsF32 = new Float32Array(bvh.bvhNormals.cpuData);
   // Inverse-transpose of the upper-3×3 for correct normal transform under
@@ -396,7 +615,7 @@ function applyNormalTransformAndUpload(
   const byteOffset = baseVertex * NORM_STRIDE * 4;
   const byteLength = sliceVerts * NORM_STRIDE * 4;
   const sliceData = bvh.bvhNormals.cpuData.slice(byteOffset, byteOffset + byteLength);
-  pipeline.refreshBvhNormalsSlice({ byteOffset, data: sliceData });
+  pipeline?.refreshBvhNormalsSlice({ byteOffset, data: sliceData });
 }
 
 
@@ -434,18 +653,10 @@ export interface PrimitiveUpdateContext {
     fields: readonly string[],
     primitiveFields?: readonly UnconsumedMaterialPrimitiveFields[],
   ) => void;
-  /** Emits backend-honesty warnings for fractional alpha-blend material patches. */
-  readonly warnApproximateAlphaBlendPrimitiveIds?: (primitiveIds: readonly string[]) => void;
-  /** Emits backend-honesty warnings for emissive-map texel-PDF approximations. */
-  readonly warnApproximateEmissiveMapTexelPdfPrimitiveIds?: (primitiveIds: readonly string[]) => void;
-  /** Emits backend-honesty warnings for camera-visible-only light-map approximations. */
-  readonly warnApproximateLightMapPrimitiveIds?: (primitiveIds: readonly string[]) => void;
-  /** Emits backend-honesty warnings for rich-material GI approximation rows. */
-  readonly warnApproximateRichMaterialPrimitiveFields?: (
-    primitiveFields: readonly ApproximateRichMaterialPrimitiveFields[],
-  ) => void;
   /** Structured warning sink for BVH/emitter rebuild compatibility issues. */
   readonly onWarning?: (warning: EngineWarning) => void;
+  /** Suppress publication/invalidation while HybridEngine prepares a transaction. */
+  readonly deferSubsystemSideEffects?: boolean;
   /** Optional pack-mode override from engine extensions. */
   readonly restirBvhModeOverride?: ReSTIRBvhMode;
 }
@@ -458,6 +669,9 @@ export interface PrimitiveUpdateResult {
    *  - For {@link topologyRebuild}, the freshly-built replacement; the old
    *    buffer has already been disposed inside the function. */
   readonly bvhBuffers: SceneBVHBuffers;
+  /** Deformed/derived scene used by render-facing subsystems when it differs. */
+  readonly updatedRenderScene?: Scene;
+
   /** Patched vitrum scene after a successful geometry update. */
   readonly updatedScene: Scene;
   /**
@@ -485,6 +699,227 @@ export interface PrimitiveUpdateResult {
   /** Material-only paths changed DDGI-visible material data without moving geometry. */
   readonly refreshDdgiMaterialSnapshot?: boolean;
 }
+export interface PrimitiveMutationUndo {
+  /** Bytes retained solely for rollback; exposed so complexity tests can pin the fast path. */
+  readonly retainedByteLength: number;
+  restore(): void;
+  accept(): void;
+}
+
+function restoreBytes(target: ArrayBuffer, offset: number, source: Uint8Array): void {
+  new Uint8Array(target, offset, source.byteLength).set(source);
+}
+
+/**
+ * Capture only CPU bytes an incremental primitive helper may overwrite.
+ *
+ * Geometry refits retain the affected BLAS/TLAS node records plus the affected
+ * position/normal slice. Transform refits additionally retain only the affected
+ * 64-byte TLAS matrix slots. Material edits retain the already-full small
+ * per-triangle payloads they repack. No vertex/index/atlas/scene-wide payload is
+ * copied merely to establish the transaction boundary.
+ */
+export function capturePrimitiveMutationUndo(
+  bvh: SceneBVHBuffers | null,
+  id: string,
+  patch: Partial<ScenePrimitive>,
+  additionalIds: readonly string[] = [],
+): PrimitiveMutationUndo {
+  if (bvh == null) {
+    return { retainedByteLength: 0, restore: () => undefined, accept: () => undefined };
+  }
+  const targetIds = [id, ...additionalIds];
+
+  const defined = (key: string): boolean =>
+    (patch as unknown as Record<string, unknown>)[key] !== undefined;
+  const hasMaterial = defined('material');
+  const hasGeometry =
+    SKIN_POSE_PATCH_FIELDS.some(defined) ||
+    defined('transform') ||
+    defined('positions') ||
+    defined('normals') ||
+    TOPOLOGY_PATCH_FIELDS.some((field) => field !== 'normals' && defined(field));
+  const materialOnly = hasMaterial && !hasGeometry;
+  const hasSkinPose = SKIN_POSE_PATCH_FIELDS.some(defined);
+  const refitsBlas =
+    hasSkinPose ||
+    defined('positions') ||
+    defined('normals') ||
+    (defined('transform') && bvh.bvhMode !== 'tlas');
+  const mutatesPositions =
+    hasSkinPose ||
+    defined('positions') ||
+    (defined('transform') && bvh.bvhMode !== 'tlas');
+  const mutatesNormals =
+    hasSkinPose ||
+    defined('normals') ||
+    (defined('transform') && bvh.bvhMode !== 'tlas');
+  const refitsTlas =
+    bvh.bvhMode === 'tlas' &&
+    (hasSkinPose ||
+      defined('transform') ||
+      defined('positions') ||
+      defined('normals'));
+
+  const snapshots: Array<{
+    readonly target: () => ArrayBuffer;
+    readonly offset: number;
+    readonly bytes: Uint8Array;
+  }> = [];
+  const save = (
+    target: () => ArrayBuffer,
+    offset = 0,
+    requestedByteLength?: number,
+  ): void => {
+    const buffer = target();
+    const byteLength = requestedByteLength ?? buffer.byteLength - offset;
+    snapshots.push({
+      target,
+      offset,
+      bytes: new Uint8Array(buffer.slice(offset, offset + byteLength)),
+    });
+  };
+
+  const rangeMatrices: Array<{ readonly target: Float32Array; readonly bytes: Float32Array }> = [];
+
+  if (!materialOnly && hasGeometry) {
+    if (refitsBlas) {
+      if (bvh.bvhMode === 'tlas') {
+        const roots = new Set<number>();
+        for (const targetId of targetIds) {
+          const binding = bvh.primitiveTlasBindings.find(
+            (candidate) => candidate.primitiveId === targetId,
+          );
+          if (binding != null) roots.add(binding.blasRoot);
+        }
+        for (const root of [...roots].sort((a, b) => a - b)) {
+          const range = blasNodeByteRange(bvh, root);
+          save(
+            () => bvh.bvhNodes.cpuData,
+            range.byteOffset,
+            range.byteLength,
+          );
+        }
+      } else {
+        const affectedNodes = new Set<number>();
+        let hasCompleteMetadata = true;
+        for (const targetId of targetIds) {
+          const nodes = bvh.primitiveRefitNodeIndices?.get(targetId);
+          if (nodes == null || nodes.length === 0) {
+            hasCompleteMetadata = false;
+            break;
+          }
+          for (const node of nodes) affectedNodes.add(node);
+        }
+        if (hasCompleteMetadata) {
+          for (const range of coalesceNodeByteRanges([...affectedNodes])) {
+            save(
+              () => bvh.bvhNodes.cpuData,
+              range.byteOffset,
+              range.byteLength,
+            );
+          }
+        } else {
+          // Compatibility fallback for externally-constructed test/adapter
+          // buffers that predate the build-time primitive refit index.
+          save(() => bvh.bvhNodes.cpuData);
+        }
+      }
+    }
+    for (const targetId of targetIds) {
+      const range = bvh.meshVertexRanges.find((candidate) => candidate.name === targetId);
+      const binding = bvh.primitiveTlasBindings.find(
+        (candidate) => candidate.primitiveId === targetId,
+      );
+      const vertexStart = binding?.vertexStart ?? range?.vertexStart;
+      const vertexCount = binding?.vertexCount ?? range?.vertexCount;
+      if (vertexStart != null && vertexCount != null && vertexCount > 0) {
+        const byteOffset = vertexStart * REFIT_STRIDE * 4;
+        const byteLength = vertexCount * REFIT_STRIDE * 4;
+        if (mutatesPositions) {
+          save(() => bvh.bvhPositions.cpuData, byteOffset, byteLength);
+        }
+        if (mutatesNormals) {
+          save(() => bvh.bvhNormals.cpuData, byteOffset, byteLength);
+        }
+      }
+      if (range != null && defined('transform')) {
+        rangeMatrices.push({
+          target: range.matrixWorldAtBuild,
+          bytes: new Float32Array(range.matrixWorldAtBuild),
+        });
+      }
+    }
+    if (refitsTlas && bvh.tlas != null) {
+      const targetIdSet = new Set(targetIds);
+      const targetInstanceIndices: number[] = [];
+      let instanceStart = 0;
+      for (const binding of bvh.primitiveTlasBindings) {
+        if (targetIdSet.has(binding.primitiveId)) {
+          for (let i = 0; i < binding.instanceCount; i += 1) {
+            targetInstanceIndices.push(instanceStart + i);
+          }
+        }
+        instanceStart += binding.instanceCount;
+      }
+      if (targetInstanceIndices.length > 0) {
+        const affectedNodes = tlasRefitNodeIndices(
+          {
+            nodes: new Uint32Array(bvh.tlas.nodes.cpuData),
+            nodeCount: bvh.tlas.nodeCount,
+            instanceIndices: new Uint32Array(bvh.tlas.instanceIndices.cpuData),
+            blasRoots: new Uint32Array(bvh.tlas.blasRoots.cpuData),
+            instanceTransforms: new Float32Array(
+              bvh.tlas.worldToLocal.cpuData,
+            ),
+          },
+          targetInstanceIndices,
+        );
+        for (const range of coalesceNodeByteRanges(affectedNodes)) {
+          save(
+            () => bvh.tlas!.nodes.cpuData,
+            range.byteOffset,
+            range.byteLength,
+          );
+        }
+        if (defined('transform')) {
+          for (const range of coalesceFixedByteRanges(targetInstanceIndices, 64)) {
+            save(
+              () => bvh.tlas!.worldToLocal.cpuData,
+              range.byteOffset,
+              range.byteLength,
+            );
+            save(
+              () => bvh.tlas!.localToWorld.cpuData,
+              range.byteOffset,
+              range.byteLength,
+            );
+          }
+        }
+      }
+    }
+  }
+
+  let active = true;
+  const retainedByteLength =
+    snapshots.reduce((sum, snapshot) => sum + snapshot.bytes.byteLength, 0) +
+    rangeMatrices.reduce((sum, matrix) => sum + matrix.bytes.byteLength, 0);
+  return {
+    retainedByteLength,
+    restore: () => {
+      if (!active) return;
+      active = false;
+      for (const snapshot of snapshots) {
+        restoreBytes(snapshot.target(), snapshot.offset, snapshot.bytes);
+      }
+      for (const matrix of rangeMatrices) matrix.target.set(matrix.bytes);
+    },
+    accept: () => {
+      active = false;
+    },
+  };
+}
+
 
 function findSkinnedPrimitive(scene: Scene, id: string): SkinnedMeshPrimitive | null {
   const primitive = scene.primitives.find((p) => String(p.id) === id);
@@ -523,16 +958,39 @@ export function skinnedPosePatch(
     ...(solved.tangents ? { tangents: solved.tangents } : {}),
     ...(solved.uvs ? { uvs: solved.uvs } : {}),
     ...(solved.uv1 ? { uv1: solved.uv1 } : {}),
+    ...(solved.uvSets ? { uvSets: solved.uvSets } : {}),
   } as Partial<ScenePrimitive>;
 
-  if (solved.tangents != null || solved.uvs != null || solved.uv1 != null) {
-    return topologyRebuild(id, resolvedPatch, ctx);
+  if (
+    patch.material !== undefined ||
+    solved.tangents != null ||
+    solved.uvs != null ||
+    solved.uv1 != null ||
+    solved.uvSets != null
+  ) {
+    const result = topologyRebuild(id, resolvedPatch, ctx);
+    return {
+      ...result,
+      // positions/normals in SkinnedMeshPrimitive are authored rest-pose
+      // data. Only pose fields are published to the host-owned scene.
+      updatedScene: applyPrimitivePatchToScene(ctx.lastScene, id, patch),
+      updatedRenderScene: applyPrimitivePatchToScene(
+        ctx.renderScene,
+        id,
+        resolvedPatch,
+      ),
+    };
   }
 
   const result = positionsRefit(id, resolvedPatch, ctx);
   return {
     ...result,
-    updatedScene: applyPrimitivePatchToScene(ctx.lastScene, id, resolvedPatch),
+    updatedScene: applyPrimitivePatchToScene(ctx.lastScene, id, patch),
+    updatedRenderScene: applyPrimitivePatchToScene(
+      ctx.renderScene,
+      id,
+      resolvedPatch,
+    ),
   };
 }
 
@@ -578,6 +1036,8 @@ export function transformRefit(
       meshPatch.positions === undefined &&
       meshPatch.normals === undefined &&
       meshPatch.uvs === undefined &&
+      meshPatch.uv1 === undefined &&
+      meshPatch.uvSets === undefined &&
       meshPatch.tangents === undefined &&
       meshPatch.indices === undefined;
     if (transformOnly && bvh.tlas != null && bvh.primitiveTlasBindings.length > 0) {
@@ -588,7 +1048,12 @@ export function transformRefit(
         transform: meshPatch.transform,
       });
       const prev = captureTlasSnapshot(bvh.tlas);
-      const refit = refitTlasTransforms(updatedRenderScene, bvh.primitiveTlasBindings, prev);
+      const refit = refitTlasTransforms(
+        updatedRenderScene,
+        bvh.primitiveTlasBindings,
+        prev,
+        { primitiveId: id },
+      );
       if (refit.ok) {
         applyTlasRefitResult(bvh.tlas, refit, ctx.pipeline);
         const range = bvh.meshVertexRanges.find((r) => r.name === id);
@@ -596,8 +1061,10 @@ export function transformRefit(
           range.matrixWorldAtBuild.set(matrixFromArrayLike(meshPatch.transform));
         }
         ctx.pipeline?.requestAccumReset();
-        ctx.ddgi.markInstancesDirty();
-        ctx.ddgi.invalidateProbeCache();
+        if (!ctx.deferSubsystemSideEffects) {
+          ctx.ddgi.markInstancesDirty();
+          ctx.ddgi.invalidateProbeCache();
+        }
         const rcBounds = computeWorldAabbForBindings(
           updatedRenderScene,
           bvh.primitiveTlasBindings,
@@ -605,6 +1072,7 @@ export function transformRefit(
         return {
           bvhBuffers: bvh,
           updatedScene,
+          updatedRenderScene,
           ...(rcBounds != null ? { rcRefitBounds: rcBounds } : {}),
         };
       }
@@ -664,9 +1132,17 @@ export function transformRefit(
   range.matrixWorldAtBuild.set(newMat);
 
   // Refit BVH bounds in place against the freshly-updated positions (using
-  // the cached stride-3 index buffer), then upload the full node buffer +
-  // just the affected stride-4 vertex slice to honour the fast-path goal.
-  refitBvhNodesAndUploadSlice(bvh, positionsF32, baseVertex, sliceVerts, ctx.pipeline);
+  // the cached stride-3 index buffer), then upload only affected node ranges
+  // plus the affected stride-4 vertex slice.
+  refitBvhNodesAndUploadSlice(
+    bvh,
+    positionsF32,
+    baseVertex,
+    sliceVerts,
+    ctx.pipeline,
+    undefined,
+    id,
+  );
 
   // H19 — apply the same rotation delta to bvhNormals so smooth-shading
   // normals stay correct after a transform refit (skin path exempt — the GPU
@@ -678,18 +1154,23 @@ export function transformRefit(
   ctx.pipeline?.requestAccumReset();
   // DDGI probes baked their irradiance against the old position;
   // invalidate so probes re-converge over the next STRIDE frames.
-  ctx.ddgi.invalidateProbeCache();
+  if (!ctx.deferSubsystemSideEffects) ctx.ddgi.invalidateProbeCache();
 
   const meshPatch = patch as Partial<MeshPrimitive>;
   const updatedScene =
     meshPatch.transform !== undefined
       ? applyPrimitivePatchToScene(ctx.lastScene, id, { transform: meshPatch.transform })
       : ctx.lastScene;
+  const updatedRenderScene =
+    meshPatch.transform !== undefined
+      ? applyPrimitivePatchToScene(ctx.renderScene, id, { transform: meshPatch.transform })
+      : ctx.renderScene;
 
   const rcBounds = computeWorldAabbFromBvhPositions(bvh);
   return {
     bvhBuffers: bvh,
     updatedScene,
+    updatedRenderScene,
     ...(rcBounds != null ? { rcRefitBounds: rcBounds } : {}),
   };
 }
@@ -760,7 +1241,14 @@ export function positionsRefit(
         : b,
     );
 
-    refitBvhNodesAndUploadSlice(bvh, positionsF32, baseVertex, sliceVerts, ctx.pipeline);
+    refitBvhNodesAndUploadSlice(
+      bvh,
+      positionsF32,
+      baseVertex,
+      sliceVerts,
+      ctx.pipeline,
+      binding.blasRoot,
+    );
 
     // H19 — TLAS BLAS slices store local-space normals. When a count-preserving
     // positions patch also supplies replacement normals, upload the matching
@@ -789,7 +1277,12 @@ export function positionsRefit(
     const updatedRenderScene = applyPrimitivePatchToScene(ctx.renderScene, id, posPatch);
 
     const prev = captureTlasSnapshot(bvh.tlas);
-    const refit = refitTlasTransforms(updatedRenderScene, bindings, prev);
+    const refit = refitTlasTransforms(
+      updatedRenderScene,
+      bindings,
+      prev,
+      { primitiveId: id, localBoundsChanged: true },
+    );
     if (refit.ok) {
       applyTlasRefitResult(bvh.tlas, refit, ctx.pipeline);
     } else {
@@ -797,12 +1290,13 @@ export function positionsRefit(
     }
 
     ctx.pipeline?.requestAccumReset();
-    ctx.ddgi.invalidateProbeCache();
+    if (!ctx.deferSubsystemSideEffects) ctx.ddgi.invalidateProbeCache();
     const rcBounds = computeWorldAabbForBindings(updatedRenderScene, bindings);
     const outBvh: SceneBVHBuffers = { ...bvh, primitiveTlasBindings: bindings };
     return {
       bvhBuffers: outBvh,
       updatedScene,
+      updatedRenderScene,
       ...(rcBounds != null ? { rcRefitBounds: rcBounds } : {}),
     };
   }
@@ -841,8 +1335,16 @@ export function positionsRefit(
   }
 
   // Refit BVH bounds in place against the freshly-updated positions, then
-  // upload the full node buffer + just the affected vertex slice to GPU.
-  refitBvhNodesAndUploadSlice(bvh, positionsF32, baseVertex, sliceVerts, ctx.pipeline);
+  // upload only affected node ranges + the affected vertex slice to GPU.
+  refitBvhNodesAndUploadSlice(
+    bvh,
+    positionsF32,
+    baseVertex,
+    sliceVerts,
+    ctx.pipeline,
+    undefined,
+    id,
+  );
 
   // H19 — if the positions patch also carries new local normals, transform them
   // to world space and upload the affected normals slice. Without this the GPU
@@ -858,7 +1360,7 @@ export function positionsRefit(
   // history pixels reference the old geometry. Same invalidation cost as
   // transformRefit.
   ctx.pipeline?.requestAccumReset();
-  ctx.ddgi.invalidateProbeCache();
+  if (!ctx.deferSubsystemSideEffects) ctx.ddgi.invalidateProbeCache();
 
   const meshPosPatch = patch as Partial<MeshPrimitive>;
   const posPatch: Partial<MeshPrimitive> = meshPosPatch.normals !== undefined
@@ -868,8 +1370,9 @@ export function positionsRefit(
       }
     : { positions: f32Copy(newLocalPositions) };
   const updatedScene = applyPrimitivePatchToScene(ctx.lastScene, id, posPatch);
+  const updatedRenderScene = applyPrimitivePatchToScene(ctx.renderScene, id, posPatch);
 
-  return { bvhBuffers: bvh, updatedScene };
+  return { bvhBuffers: bvh, updatedScene, updatedRenderScene };
 }
 
 /**
@@ -891,8 +1394,8 @@ export function refitSkinnedMeshAfterGpuWrite(
     localNormals != null
       ? { positions: new Float32Array(localPositions), normals: new Float32Array(localNormals) }
       : { positions: new Float32Array(localPositions) };
-  const updatedScene = applyPrimitivePatchToScene(ctx.lastScene, id, posPatch);
   const updatedRenderScene = applyPrimitivePatchToScene(ctx.renderScene, id, posPatch);
+  const updatedScene = ctx.lastScene;
 
   if (bvh.bvhMode === 'tlas' && bvh.tlas != null) {
     const binding = bvh.primitiveTlasBindings.find((b) => b.primitiveId === id);
@@ -915,6 +1418,22 @@ export function refitSkinnedMeshAfterGpuWrite(
       positionsF32[off + 1] = localPositions[v * 3 + 1] ?? 0;
       positionsF32[off + 2] = localPositions[v * 3 + 2] ?? 0;
     }
+    const positionByteOffset = baseVertex * STRIDE * 4;
+    const positionByteLength = sliceVerts * STRIDE * 4;
+    ctx.pipeline?.recordLearningBvhPositionsSlice?.({
+      byteOffset: positionByteOffset,
+      data: bvh.bvhPositions.cpuData.slice(
+        positionByteOffset, positionByteOffset + positionByteLength,
+      ),
+    });
+
+    if (localNormals != null && localNormals.length === sliceVerts * 3) {
+      // TLAS skinning writes local-space normals. Mirror the exact stride-4
+      // bytes into the CPU BVH shadow without staging a second GPU upload.
+      applyNormalTransformAndUpload(
+        bvh, IDENTITY_MAT4, baseVertex, sliceVerts, null, localNormals,
+      );
+    }
 
     const localAabb = computeLocalAabb(localPositions);
     if (localAabb == null) {
@@ -926,26 +1445,45 @@ export function refitSkinnedMeshAfterGpuWrite(
         : b,
     );
 
-    const bvhNodesF32 = new Float32Array(bvh.bvhNodes.cpuData);
+    const nodeRange = blasNodeByteRange(bvh, binding.blasRoot);
+    const bvhNodesF32 = new Float32Array(
+      bvh.bvhNodes.cpuData,
+      nodeRange.byteOffset,
+      nodeRange.byteLength / 4,
+    );
     refitBvhBounds(bvhNodesF32, bvh.bvhIndicesStride3, positionsF32, 4);
-    ctx.pipeline?.refreshBvhNodesOnly(bvh.bvhNodes.cpuData.slice(0));
+    ctx.pipeline?.refreshBvhNodesOnly(
+      bvh.bvhNodes.cpuData.slice(
+        nodeRange.byteOffset,
+        nodeRange.byteOffset + nodeRange.byteLength,
+      ),
+      nodeRange.byteOffset,
+    );
 
     const prev = captureTlasSnapshot(bvh.tlas);
-    const refit = refitTlasTransforms(updatedRenderScene, bindings, prev);
+    const refit = refitTlasTransforms(
+      updatedRenderScene,
+      bindings,
+      prev,
+      { primitiveId: id, localBoundsChanged: true },
+    );
     if (!refit.ok) {
       throw new Error(`refitSkinnedMeshAfterGpuWrite("${id}"): TLAS transform refit failed.`);
     }
     applyTlasRefitResult(bvh.tlas, refit, ctx.pipeline);
 
     ctx.pipeline?.requestAccumReset();
-    ctx.ddgi.markInstancesDirty();
-    ctx.ddgi.invalidateProbeCache();
+    if (!ctx.deferSubsystemSideEffects) {
+      ctx.ddgi.markInstancesDirty();
+      ctx.ddgi.invalidateProbeCache();
+    }
     const rcBounds = computeWorldAabbForBindings(updatedRenderScene, bindings);
     const outBvh: SceneBVHBuffers = { ...bvh, primitiveTlasBindings: bindings };
     return {
       bvhBuffers: outBvh,
       updatedScene,
       ...(rcBounds != null ? { rcRefitBounds: rcBounds } : {}),
+      updatedRenderScene,
     };
   }
 
@@ -977,13 +1515,51 @@ export function refitSkinnedMeshAfterGpuWrite(
     positionsF32[off + 2] = z;
   }
 
-  const bvhNodesF32 = new Float32Array(bvh.bvhNodes.cpuData);
-  refitBvhBounds(bvhNodesF32, bvh.bvhIndicesStride3, positionsF32, 4);
-  ctx.pipeline?.refreshBvhNodesOnly(bvh.bvhNodes.cpuData.slice(0));
+  const positionByteOffset = baseVertex * STRIDE * 4;
+  const positionByteLength = sliceVerts * STRIDE * 4;
+  ctx.pipeline?.recordLearningBvhPositionsSlice?.({
+    byteOffset: positionByteOffset,
+    data: bvh.bvhPositions.cpuData.slice(
+      positionByteOffset, positionByteOffset + positionByteLength,
+    ),
+  });
+  const selectiveNodes = bvh.primitiveRefitNodeIndices?.get(id);
+  let nodeRanges: readonly BvhNodeByteRange[];
+  if (selectiveNodes != null && selectiveNodes.length > 0) {
+    nodeRanges = refitMergedNodeSubset(bvh, positionsF32, selectiveNodes);
+  } else {
+    refitBvhBounds(
+      new Float32Array(bvh.bvhNodes.cpuData),
+      bvh.bvhIndicesStride3,
+      positionsF32,
+      4,
+    );
+    nodeRanges = [{
+      byteOffset: 0,
+      byteLength: bvh.bvhNodes.cpuData.byteLength,
+    }];
+  }
+  if (localNormals != null && localNormals.length === sliceVerts * 3) {
+    // The merged kernel applies matrixWorld's inverse-transpose after skinning.
+    // Keep the CPU normal mirror byte-identical, but let the prefix compute
+    // command remain the sole GPU writer for this slice.
+    applyNormalTransformAndUpload(
+      bvh, matWorld, baseVertex, sliceVerts, null, localNormals,
+    );
+  }
+  for (const nodeRange of nodeRanges) {
+    ctx.pipeline?.refreshBvhNodesOnly(
+      bvh.bvhNodes.cpuData.slice(
+        nodeRange.byteOffset,
+        nodeRange.byteOffset + nodeRange.byteLength,
+      ),
+      nodeRange.byteOffset,
+    );
+  }
   ctx.pipeline?.requestAccumReset();
-  ctx.ddgi.invalidateProbeCache();
+  if (!ctx.deferSubsystemSideEffects) ctx.ddgi.invalidateProbeCache();
 
-  return { bvhBuffers: bvh, updatedScene };
+  return { bvhBuffers: bvh, updatedScene, updatedRenderScene };
 }
 
 /**
@@ -1012,7 +1588,7 @@ export function topologyRebuild(
 ): PrimitiveUpdateResult {
   // For now we support the most common topology patches:
   //   - transform (16-element Mat4)
-  //   - positions, normals, uvs, tangents, indices (typed arrays from
+  //   - positions, normals, uvs, uv1, uvSets, tangents, indices (typed arrays from
   //     core/src/scene.ts MeshPrimitive)
   // Other fields (`instances`, `params`, `shape`, `fallbackMesh`,
   // `kind`) require a wholesale primitive replacement. `HybridEngine.
@@ -1025,6 +1601,7 @@ export function topologyRebuild(
     normals?: ArrayLike<number>;
     uvs?: ArrayLike<number>;
     uv1?: ArrayLike<number>;
+    uvSets?: ReadonlyArray<ArrayLike<number> | undefined>;
     tangents?: ArrayLike<number>;
     indices?: ArrayLike<number>;
     instances?: unknown;
@@ -1081,18 +1658,21 @@ export function topologyRebuild(
   } else {
     newBuffers = buildReSTIRSceneBVHForCoreScene(updatedRenderScene, bvhOpts);
   }
-  if (oldBuffers) disposeSceneBVH(oldBuffers);
+  // Publish the complete GPU replacement only after every allocation succeeds.
+  try {
+    ctx.pipeline?.replaceBvhAndEmitters(newBuffers);
+  } catch (error) {
+    disposeSceneBVH(newBuffers);
+    throw error;
+  }
+  if (!ctx.deferSubsystemSideEffects && oldBuffers) disposeSceneBVH(oldBuffers);
 
-  // Refresh the four BVH GPU buffers + (in case emissive geometry
-  // changed) the emitter buffers. Pipeline shaders + bind-group
-  // layouts are NOT touched.
-  ctx.pipeline?.refreshBvhFullRebuild(newBuffers);
-  ctx.pipeline?.updateEmitters(newBuffers);
+
 
   // Reset the accumulator + invalidate DDGI — geometry topology
   // changed, history is meaningless.
   ctx.pipeline?.requestAccumReset();
-  ctx.ddgi.invalidateProbeCache();
+  if (!ctx.deferSubsystemSideEffects) ctx.ddgi.invalidateProbeCache();
 
   const rcBounds =
     newBuffers.bvhMode === 'tlas' && newBuffers.primitiveTlasBindings.length > 0
@@ -1102,6 +1682,7 @@ export function topologyRebuild(
   return {
     bvhBuffers: newBuffers,
     updatedScene,
+    updatedRenderScene,
     ...(rcBounds != null ? { rcRefitBounds: rcBounds } : {}),
   };
 }
@@ -1259,7 +1840,9 @@ export function materialPatchAffectsDisplacementGeometry(
   const nextHasMap = textureRefLike(next.displacementMap) != null;
   if (!prevHasMap && !nextHasMap) return false;
   return (prev?.displacementScale ?? 1) !== (next.displacementScale ?? 1) ||
-    (prev?.displacementBias ?? 0) !== (next.displacementBias ?? 0);
+    (prev?.displacementBias ?? 0) !== (next.displacementBias ?? 0) ||
+    (prev?.displacementSubdivisions ?? 0) !==
+      (next.displacementSubdivisions ?? 0);
 }
 
 function alphaModeAtlasIndex(mode: MaterialSpec['alphaMode'] | undefined): number {
@@ -1366,17 +1949,6 @@ function materialAtlasPatchRequiresFullRebuild(
     envMapIntensityChanged;
 }
 
-function primitiveNumericArray(
-  prim: ScenePrimitive | undefined,
-  key: 'positions' | 'colors',
-): ArrayLike<number> | undefined {
-  if (prim == null) return undefined;
-  const value = (prim as unknown as Record<string, unknown>)[key];
-  return value != null && typeof (value as { length?: unknown }).length === 'number'
-    ? value as ArrayLike<number>
-    : undefined;
-}
-
 /**
  * Material-only fast path — re-pack affected triangle slices in
  * `bvhIndex` / `bvhBeerColors` and partial GPU upload (no SAH rebuild,
@@ -1407,6 +1979,11 @@ export function materialPatch(
     prevMaterial != null
       ? mergeMaterialPatch(prevMaterial, materialPatchValue)
       : materialPatchValue;
+  assertNoUnsupportedMaterialProfiles([{
+    id,
+    kind: prevPrim?.kind ?? 'mesh',
+    material: nextMaterial as unknown as Record<string, unknown>,
+  }], 'updatePrimitive');
   const unconsumedMaterialFields = collectUnconsumedMaterialFieldsForMaterial(
     nextMaterial as unknown as Record<string, unknown>,
   );
@@ -1414,37 +1991,6 @@ export function materialPatch(
     unconsumedMaterialFields,
     unconsumedMaterialFields.length > 0 ? [{ primitiveId: id, fields: unconsumedMaterialFields }] : [],
   );
-  ctx.warnApproximateAlphaBlendPrimitiveIds?.(
-    collectApproximateAlphaBlendPrimitiveIds([{
-      id,
-      kind: prevPrim?.kind ?? 'mesh',
-      material: nextMaterial as unknown as Record<string, unknown>,
-      positions: primitiveNumericArray(prevPrim, 'positions'),
-      colors: primitiveNumericArray(prevPrim, 'colors'),
-    }]),
-  );
-  ctx.warnApproximateEmissiveMapTexelPdfPrimitiveIds?.(
-    collectApproximateEmissiveMapTexelPdfPrimitiveIds([{
-      id,
-      kind: prevPrim?.kind ?? 'mesh',
-      material: nextMaterial as unknown as Record<string, unknown>,
-    }], ctx.lastScene.emitters),
-  );
-  ctx.warnApproximateLightMapPrimitiveIds?.(
-    collectApproximateLightMapPrimitiveIds([{
-      id,
-      kind: prevPrim?.kind ?? 'mesh',
-      material: nextMaterial as unknown as Record<string, unknown>,
-    }]),
-  );
-  ctx.warnApproximateRichMaterialPrimitiveFields?.(
-    collectApproximateRichMaterialPrimitiveFields([{
-      id,
-      kind: prevPrim?.kind ?? 'mesh',
-      material: nextMaterial as unknown as Record<string, unknown>,
-    }]),
-  );
-
   const range = bvh.meshVertexRanges.find((r) => r.name === id);
   if (range == null || range.triCount === 0) {
     throw new Error(
@@ -1480,7 +2026,7 @@ export function materialPatch(
   let materialIdsForPacking = triMaterialIds;
   let updatedTriangleMaterialIds = bvh.triangleMaterialIds;
   const updatedCoreMaterials = [...bvh.coreMaterials] as MaterialSpec[];
-  if (bvh.bvhMode === 'merged' && slotIsShared) {
+  if (slotIsShared) {
     const splitSlotByOriginalSlot = new Map<number, number>();
     for (const matId of matIds) {
       const splitSlot = updatedCoreMaterials.length;
@@ -1508,9 +2054,6 @@ export function materialPatch(
     }
   }
 
-  const indexView = new Uint32Array(bvh.bvhIndex.cpuData);
-  const beerView = new Uint32Array(bvh.bvhBeerColors.cpuData);
-  const roughMetalView = new Uint32Array(bvh.bvhRoughMetal.cpuData);
   const fullIndex = packBVHIndexWFromCore(
     bvh.bvhIndicesStride3,
     materialIdsForPacking,
@@ -1529,11 +2072,40 @@ export function materialPatch(
     bvh.bvhBeerColors.count,
   );
   const materialTextureAtlas = atlasNeedsRefresh
-    ? packMaterialTextureAtlas(updatedCoreMaterials, materialIdsForPacking, bvh.bvhBeerColors.count)
+    ? packMaterialTextureAtlas(
+        updatedCoreMaterials,
+        materialIdsForPacking,
+        bvh.bvhBeerColors.count,
+        bvh.materialTextureAtlas.triangleUvs,
+      )
     : bvh.materialTextureAtlas;
-  indexView.set(fullIndex);
-  beerView.set(fullBeer);
-  roughMetalView.set(fullRoughMetal);
+  const indexBytes = fullIndex.buffer.slice(
+    fullIndex.byteOffset,
+    fullIndex.byteOffset + fullIndex.byteLength,
+  );
+  const beerBytes = fullBeer.buffer.slice(
+    fullBeer.byteOffset,
+    fullBeer.byteOffset + fullBeer.byteLength,
+  );
+  const roughMetalBytes = fullRoughMetal.buffer.slice(
+    fullRoughMetal.byteOffset,
+    fullRoughMetal.byteOffset + fullRoughMetal.byteLength,
+  );
+  const updatedBvhIndex = {
+    cpuData: indexBytes,
+    byteLength: indexBytes.byteLength,
+    count: bvh.bvhIndex.count,
+  };
+  const updatedBeerColors = {
+    cpuData: beerBytes,
+    byteLength: beerBytes.byteLength,
+    count: bvh.bvhBeerColors.count,
+  };
+  const updatedRoughMetal = {
+    cpuData: roughMetalBytes,
+    byteLength: roughMetalBytes.byteLength,
+    count: bvh.bvhRoughMetal.count,
+  };
   const fullEmissive = packBVHEmissiveLeFromCore(
     materialIdsForPacking,
     updatedCoreMaterials,
@@ -1573,14 +2145,14 @@ export function materialPatch(
   const indexSlice = slotIsShared
     ? // Shared slot: upload the entire bvhIndex so all affected triangles
       // (including a merged-mode slot split) get the updated bvhIndex.w.
-      { byteOffset: 0, data: bvh.bvhIndex.cpuData.slice(0) }
+      { byteOffset: 0, data: updatedBvhIndex.cpuData.slice(0) }
     : // Exclusive slot: only this primitive's triangles were affected; the
       // slice upload is correct and avoids transferring the whole buffer.
       (() => {
         const indexByteOffset = triStart * 16;
         return {
           byteOffset: indexByteOffset,
-          data: bvh.bvhIndex.cpuData.slice(indexByteOffset, indexByteOffset + range.triCount * 16),
+          data: updatedBvhIndex.cpuData.slice(indexByteOffset, indexByteOffset + range.triCount * 16),
         };
       })();
 
@@ -1588,7 +2160,7 @@ export function materialPatch(
     indexSlice,
     // WS1 — beer is a texture: re-upload the full beer data (a contiguous tri
     // slice is not a rectangular texture region unless it spans full rows).
-    { data: bvh.bvhBeerColors.cpuData, triCount: bvh.bvhBeerColors.count },
+    { data: updatedBeerColors.cpuData, triCount: updatedBeerColors.count },
     {
       data: fullEmissive.buffer.slice(
         fullEmissive.byteOffset,
@@ -1598,7 +2170,7 @@ export function materialPatch(
     },
     // B1 — re-upload the whole roughness+metalness texture wholesale (same
     // wholesale rationale as beer/emissive).
-    { data: bvh.bvhRoughMetal.cpuData, triCount: bvh.bvhRoughMetal.count },
+    { data: updatedRoughMetal.cpuData, triCount: updatedRoughMetal.count },
   );
   if (atlasNeedsRefresh) {
     ctx.pipeline.refreshMaterialTextureAtlas(materialTextureAtlas);
@@ -1607,6 +2179,9 @@ export function materialPatch(
   let outBvh: SceneBVHBuffers = {
     ...bvh,
     bvhEmissiveLe: updatedEmissiveLe,
+    bvhIndex: updatedBvhIndex,
+    bvhBeerColors: updatedBeerColors,
+    bvhRoughMetal: updatedRoughMetal,
     triangleMaterialIds: updatedTriangleMaterialIds,
     materialTextureAtlas,
     coreMaterials: updatedCoreMaterials,
@@ -1614,7 +2189,7 @@ export function materialPatch(
   const emitterAffectingMaterialChanged =
     atlasNeedsRefresh || materialRadianceOrVisibilityChanged(prevMaterial, nextMaterial);
   if (atlasNeedsRefresh || materialAffectsDdgiProbeCache(prevMaterial, nextMaterial)) {
-    ctx.ddgi.invalidateProbeCache();
+    if (!ctx.deferSubsystemSideEffects) ctx.ddgi.invalidateProbeCache();
   }
   if (emitterAffectingMaterialChanged) {
     const emitterOptions = {
@@ -1637,6 +2212,7 @@ export function materialPatch(
       ...outBvh,
       emitters: emitterSlice.emitters,
       emitterCdf: emitterSlice.emitterCdf,
+      emitterAlias: emitterSlice.emitterAlias,
       emitterCount: emitterSlice.emitterCount,
       totalEmissivePower: emitterSlice.totalEmissivePower,
       lightTree: emitterSlice.lightTree,
@@ -1655,6 +2231,7 @@ export function materialPatch(
   return {
     bvhBuffers: outBvh,
     updatedScene,
+    updatedRenderScene,
     applySubsystems: false,
     refreshRcMaterials: true,
     refreshDdgiMaterialSnapshot: true,

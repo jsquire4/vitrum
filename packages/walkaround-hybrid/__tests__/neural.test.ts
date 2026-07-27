@@ -334,7 +334,7 @@ describe('Test 3 — Uniform buffer write check (Bug 4 fix)', () => {
     expect(typeof graph._uniformWriteCount).toBe('number');
   });
 
-  it('packLayerUniform returns 32-byte ArrayBuffer for conv2d layers', async () => {
+  it('packLayerUniform returns the shared 48-byte layer-uniform allocation', async () => {
     // Task 4.5 (Theme I): _computeTensorDims / _packUniform were extracted from
     // InferenceGraph into the pure tensorDimSolver module. The math is identical;
     // these tests now exercise the extracted pure functions directly.
@@ -346,7 +346,7 @@ describe('Test 3 — Uniform buffer write check (Bug 4 fix)', () => {
     expect(enc1Layer).toBeDefined();
 
     const buf = packLayerUniform(enc1Layer!, dims, 64, 64);
-    expect(buf.byteLength).toBe(32);  // 8 u32 × 4 bytes = 32
+    expect(buf.byteLength).toBe(48);  // 12 u32 × 4 bytes; covers TConv2DParams
 
     // Verify the u32 values encode correct shape params.
     const u32 = new Uint32Array(buf);
@@ -360,36 +360,43 @@ describe('Test 3 — Uniform buffer write check (Bug 4 fix)', () => {
 
   it('uses the same implicit conv2d padding for tensor dims and uniforms', async () => {
     const { computeTensorDims, packLayerUniform } = await import('../src/neural/tensorDimSolver.js');
-    const spec = {
+    const layers = [
+      {
+        kind: 'inputPack',
+        name: 'pack',
+        inputs: ['noisyColor', 'albedo', 'normals'],
+        output: 'packed',
+        params: { inC: 9, outC: 9 },
+        weightLayout: 'none',
+      },
+      {
+        kind: 'conv2d',
+        name: 'same3',
+        inputs: ['packed'],
+        output: 'same3',
+        params: { inC: 9, outC: 4, kH: 3, kW: 3 },
+        weightLayout: 'OIKW',
+      },
+      {
+        kind: 'conv2d',
+        name: 'valid1',
+        inputs: ['same3'],
+        output: 'denoised',
+        params: { inC: 4, outC: 3, kH: 1, kW: 1 },
+        weightLayout: 'OIKW',
+      },
+    ] as const;
+    const spec: UNetSpec = {
       name: 'padding-default-regression',
-      layers: [
-        {
-          kind: 'inputPack',
-          name: 'pack',
-          inputs: [],
-          output: 'packed',
-          params: { inC: 9, outC: 9 },
-        },
-        {
-          kind: 'conv2d',
-          name: 'same3',
-          inputs: ['packed'],
-          output: 'same3',
-          params: { inC: 9, outC: 4, kH: 3, kW: 3 },
-        },
-        {
-          kind: 'conv2d',
-          name: 'valid1',
-          inputs: ['same3'],
-          output: 'valid1',
-          params: { inC: 4, outC: 2, kH: 1, kW: 1 },
-        },
-      ],
-    } as unknown as UNetSpec;
+      inputChannels: 9,
+      outputChannels: 3,
+      layers,
+      paramCount: deriveParamCount(layers),
+    };
 
     const dims = computeTensorDims(spec, 16, 12);
     expect(dims.get('same3')).toEqual({ H: 12, W: 16, C: 4 });
-    expect(dims.get('valid1')).toEqual({ H: 12, W: 16, C: 2 });
+    expect(dims.get('denoised')).toEqual({ H: 12, W: 16, C: 3 });
 
     const sameUniform = new Uint32Array(packLayerUniform(spec.layers[1]!, dims, 12, 16));
     const validUniform = new Uint32Array(packLayerUniform(spec.layers[2]!, dims, 12, 16));
@@ -518,7 +525,7 @@ describe('Test 4 — Weight loader round-trip (weights.ts)', () => {
 
     // Truncate to 20 bytes — will fail reading layer data.
     const truncated = buf.slice(0, 20);
-    expect(() => loadWeightsFromArrayBuffer(truncated)).toThrow(/truncated/i);
+    expect(() => loadWeightsFromArrayBuffer(truncated)).toThrow(/truncated|impossible layerCount/i);
   });
 });
 

@@ -1,15 +1,17 @@
 /**
  * packDDGIProbeLights — exact lane assertions (item 26).
  *
- * Node layout (DDGI light UBO; see probeUpdateRays.wgsl.ts DDGILight struct):
+ * Node layout (DDGI runtime light storage buffer; see probeUpdateRays.wgsl.ts):
  *
  *   Header (4 u32 = 16 bytes):
  *     udata[0]  count (u32)
- *     udata[1..3] padding
+ *     udata[1]  light-record word offset (=4)
+ *     udata[2]  alias-table word offset (=4 + count*16)
+ *     udata[3]  ABI magic
  *
  *   Per-light entry, LIGHT_STRIDE_FLOATS=16 floats = 64 bytes, starting at
  *   float offset (4 + i*16):
- *     +0  kind        u32   (low bits: 0=sun, 1=fixture/teaLight;
+ *     +0  kind        u32   (low bits: 0=sun, 1=point, 2=spot;
  *                            high bit: castShadowDisabled)
  *     +1  distance    f32   (fixture only; 0 = no cutoff)
  *     +2  decay       f32   (fixture only; 0 = no falloff, 2 = inverse-square)
@@ -27,17 +29,23 @@
  *     +14 color.b     f32
  *     +15 outerCone   f32   (spotCosOuter; 0 for sun)
  *
- * These are the EXACT lanes read by the WGSL consumer evalPointLight /
+ * Records are followed by `count` Walker/Vose alias entries (4 words each:
+ * q, alias index, represented pmf, pad). These are the EXACT lanes read by the WGSL consumer evalPointLight /
  * evalDirectLighting (probeUpdateRays.wgsl.ts). Any lane mismatch between
  * this packer and the consumer is flagged as a FINDING in the assertion.
  */
 
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import {
   DDGI_LIGHT_CAST_SHADOW_DISABLED,
   DDGI_LIGHT_KIND_MASK,
+  DDGI_LIGHT_KIND_SPOT,
+  DDGI_PROBE_LIGHTS_ABI_MAGIC,
+  ddgiProbeLightSolidAngle,
+  ddgiProbeLightsBufferByteLength,
   packDDGIProbeLights,
 } from '../probeUpdateLights.js';
+import type { DDGILight } from '../types.js';
 import { makeProbeUpdateRaysWGSL } from '../wgsl/probeUpdateRays.wgsl.js';
 import { coreEmitterToDDGILight } from '../../coreEmittersToDDGILights.js';
 
@@ -223,7 +231,7 @@ describe('probeUpdateRays soft-sun shader plumbing', () => {
     const evalDirectLighting = functionBody(shader, 'evalDirectLighting');
     expect(shader).toContain('fn ddgiSoftSunDirection');
     expect(shader).toContain('let radius = max(angularRadius, 0.0);');
-    expect(evalDirectLighting).toContain('ddgiSoftSunDirection(normalize(-light.direction), light.innerCone, hitPos)');
+    expect(evalDirectLighting).toContain('ddgiSoftSunDirection(-light.direction * inverseSqrt(axisLen2), light.innerCone, hitPos)');
     expect(evalDirectLighting).toContain('evalSunLight(');
   });
 });
@@ -353,8 +361,9 @@ describe('packDDGIProbeLights — spot fixture', () => {
     const { f32, u32 } = decode(buf);
     const base = lightBase(0);
 
-    // kind = 1 (LIGHT_POINT — spot uses the same kind, distinguished by direction length).
-    expect(u32[base]).toBe(1);
+    // Cone evaluation in WGSL is gated on LIGHT_SPOT, so the kind is not
+    // interchangeable with LIGHT_POINT even though both share this record ABI.
+    expect(u32[base]).toBe(DDGI_LIGHT_KIND_SPOT);
 
     // Distance/decay are real fixture fields, not padding.
     expect(f32[base + 1]).toBeCloseTo(9, 5);
@@ -372,12 +381,66 @@ describe('packDDGIProbeLights — spot fixture', () => {
     expect(f32[base + 15]).toBeCloseTo(0.707, 4);
   });
 
-  it('WGSL evaluates packed spotAxis as a forward beam axis and guards hard-edge cones', () => {
-    const body = functionBody(makeProbeUpdateRaysWGSL(4), 'evalPointLight');
+  it('preserves spot kind under the castShadow-disabled flag', () => {
+    const buf = packDDGIProbeLights([{
+      kind: 'fixture',
+      on: true,
+      intensity: 1,
+      spotAxis: { x: 0, y: -1, z: 0 },
+      spotCosInner: 0.9,
+      spotCosOuter: 0.8,
+      castShadow: false,
+    }], 1);
+    const kindWord = decode(buf).u32[lightBase(0)]!;
+    expect(kindWord & DDGI_LIGHT_KIND_MASK).toBe(DDGI_LIGHT_KIND_SPOT);
+    expect((kindWord & DDGI_LIGHT_CAST_SHADOW_DISABLED) >>> 0)
+      .toBe(DDGI_LIGHT_CAST_SHADOW_DISABLED);
+  });
 
+  it('uses the packed kind, not direction length, for alias-table solid angle', () => {
+    expect(ddgiProbeLightSolidAngle(1, 0.9)).toBeCloseTo(4 * Math.PI, 6);
+    expect(ddgiProbeLightSolidAngle(DDGI_LIGHT_KIND_SPOT, 0.9))
+      .toBeCloseTo(2 * Math.PI * 0.1, 6);
+    expect(ddgiProbeLightSolidAngle(
+      DDGI_LIGHT_KIND_SPOT | DDGI_LIGHT_CAST_SHADOW_DISABLED,
+      0.9,
+    )).toBeCloseTo(2 * Math.PI * 0.1, 6);
+
+    const buf = packDDGIProbeLights([
+      {
+        kind: 'fixture',
+        on: true,
+        intensity: 1,
+      },
+      {
+        kind: 'fixture',
+        on: true,
+        intensity: 1,
+        spotAxis: { x: 0, y: -1, z: 0 },
+        spotCosInner: 0.95,
+        spotCosOuter: 0.9,
+      },
+    ], 1);
+    const { f32, u32 } = decode(buf);
+    expect(u32[lightBase(0)]! & DDGI_LIGHT_KIND_MASK).toBe(1);
+    expect(u32[lightBase(1)]! & DDGI_LIGHT_KIND_MASK).toBe(DDGI_LIGHT_KIND_SPOT);
+    const aliasBase = u32[2]!;
+    const pointPmf = f32[aliasBase + 2]!;
+    const spotPmf = f32[aliasBase + 6]!;
+    expect(pointPmf).toBeGreaterThan(spotPmf);
+    expect(pointPmf + spotPmf).toBeCloseTo(1, 6);
+  });
+
+  it('WGSL evaluates packed spotAxis as a forward beam axis and guards hard-edge cones', () => {
+    const shader = makeProbeUpdateRaysWGSL(4);
+    const body = functionBody(shader, 'evalPointLight');
+
+    expect(shader).toContain('const LIGHT_SPOT:  u32 = 2u;');
+    expect(body).toContain('ddgiLightKind(light) == LIGHT_SPOT');
     expect(body).toContain('let cosToP = dot(-light.direction * inverseSqrt(axisLen2), lightDir);');
-    expect(body).toContain('abs(light.innerCone - light.outerCone) < 1e-5');
-    expect(body).toContain('if (light.decay > 0.01)');
+    expect(body).toContain('light.innerCone == light.outerCone');
+    expect(body).toContain('if (light.decay > 0.0)');
+    expect(body).toContain('let regularizedDist2 = max(dist * dist, dist2Floor);');
     expect(body).toContain('if (light.distance > 0.0)');
     expect(body).toContain('let atten = light.intensity * distanceAttenuation;');
     expect(body).not.toContain('dot(lightDir, light.direction * inverseSqrt(axisLen2))');
@@ -416,60 +479,18 @@ describe('packDDGIProbeLights — inactive lights', () => {
     expect(f32[lightBase(0) + 7]).toBeCloseTo(5, 5);
   });
 
-  it('unknown active light kinds warn and do not consume GPU light slots', () => {
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-
-    const buf = packDDGIProbeLights([
-      { kind: 'future-kind', on: true, intensity: 99 },
-      { kind: 'fixture', on: true, intensity: 5, position: { x: 1, y: 2, z: 3 } },
-    ], 1);
-    const { u32, f32 } = decode(buf);
-
-    expect(u32[0]).toBe(1);
-    expect(u32[lightBase(0)]).toBe(1);
-    expect(f32[lightBase(0) + 7]).toBeCloseTo(5, 5);
-    expect(warnSpy).toHaveBeenCalledTimes(1);
-    expect(warnSpy.mock.calls[0]![0]).toMatch(/future-kind/);
-
-    warnSpy.mockRestore();
-  });
-
-  it('unknown active light kinds route through structured warning sink when supplied', () => {
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-    const warnings: unknown[] = [];
-
-    const buf = packDDGIProbeLights([
-      { kind: 'future-kind', on: true, intensity: 99 },
-      { kind: 'fixture', on: true, intensity: 5, position: { x: 1, y: 2, z: 3 } },
-    ], 1, (warning) => warnings.push(warning));
-    const { u32 } = decode(buf);
-
-    expect(u32[0]).toBe(1);
-    expect(warnSpy).not.toHaveBeenCalled();
-    expect(warnings).toEqual([
-      expect.objectContaining({
-        code: 'walkaround-hybrid.ddgi-unsupported-probe-light-kind',
-        backend: 'walkaround-hybrid',
-        phase: 'renderFrame',
-        method: 'ProbeUpdatePass._uploadLights',
-        details: expect.objectContaining({
-          unsupportedKinds: ['future-kind'],
-          activeLightCount: 2,
-        }),
-      }),
-    ]);
-
-    warnSpy.mockRestore();
+  it.each([true, false])('rejects an unknown kind explicitly even when on=%s', (on) => {
+    const unknown = { kind: 'future-kind', on, intensity: 99 } as unknown as DDGILight;
+    expect(() => packDDGIProbeLights([unknown], 1)).toThrowError(
+      /kind must be 'sun', 'fixture', or 'teaLight'/,
+    );
   });
 });
 
-// ── truncation cap ────────────────────────────────────────────────────────────
+// ── runtime-sized storage ─────────────────────────────────────────────────────
 
-describe('packDDGIProbeLights — MAX_DDGI_PROBE_LIGHTS truncation', () => {
-  it('count is clamped to 16 and a console.warn is emitted when > 16 active lights', () => {
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-
-    // Build 17 active fixture lights.
+describe('packDDGIProbeLights — runtime-sized storage', () => {
+  it('packs every light beyond the former 16-light cap', () => {
     const lights = Array.from({ length: 17 }, (_, i) => ({
       kind: 'fixture' as const,
       on: true,
@@ -480,68 +501,57 @@ describe('packDDGIProbeLights — MAX_DDGI_PROBE_LIGHTS truncation', () => {
     const buf = packDDGIProbeLights(lights, 1);
     const { u32, f32 } = decode(buf);
 
-    // Header count must be clamped to 16.
-    expect(u32[0]).toBe(16);
-
-    // The 17th light (index 16, intensity=17) must NOT appear in the buffer.
-    // Slot 15 (last allowed) should have intensity=16.
+    expect(u32[0]).toBe(17);
     expect(f32[lightBase(15) + 7]).toBeCloseTo(16, 5);
-
-    // console.warn must have been called exactly once with a message mentioning
-    // the truncation so hosts know the cap was hit.
-    expect(warnSpy).toHaveBeenCalledTimes(1);
-    expect(warnSpy.mock.calls[0]![0]).toMatch(/DDGI/);
-    expect(warnSpy.mock.calls[0]![0]).toMatch(/16/);
-
-    warnSpy.mockRestore();
+    expect(f32[lightBase(16) + 7]).toBeCloseTo(17, 5);
+    expect(buf.byteLength).toBe(ddgiProbeLightsBufferByteLength(17));
   });
 
-  it('routes truncation through structured warning sink when supplied', () => {
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-    const warnings: unknown[] = [];
-    const lights = Array.from({ length: 17 }, (_, i) => ({
+  it('scales to hundreds of lights without a renderer-authored bound', () => {
+    const lights = Array.from({ length: 257 }, (_, i) => ({
       kind: 'fixture' as const,
       on: true,
       intensity: i + 1,
       position: { x: i, y: 0, z: 0 },
     }));
 
-    const buf = packDDGIProbeLights(lights, 1, (warning) => warnings.push(warning));
-    const { u32 } = decode(buf);
-
-    expect(u32[0]).toBe(16);
-    expect(warnSpy).not.toHaveBeenCalled();
-    expect(warnings).toEqual([
-      expect.objectContaining({
-        code: 'walkaround-hybrid.ddgi-probe-light-cap-exceeded',
-        backend: 'walkaround-hybrid',
-        phase: 'renderFrame',
-        method: 'ProbeUpdatePass._uploadLights',
-        details: expect.objectContaining({
-          activePackableLightCount: 17,
-          maxProbeLights: 16,
-          ignoredLightCount: 1,
-        }),
-      }),
-    ]);
-
-    warnSpy.mockRestore();
+    const buf = packDDGIProbeLights(lights, 1);
+    const { u32, f32 } = decode(buf);
+    expect(u32[0]).toBe(257);
+    expect(f32[lightBase(256) + 7]).toBeCloseTo(257, 5);
+    expect(buf.byteLength).toBe(ddgiProbeLightsBufferByteLength(257));
   });
 
-  it('exactly 16 active lights do NOT trigger the warn', () => {
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  it('declares a runtime raw-word array, validates its ABI, and alias-samples one light', () => {
+    const shader = makeProbeUpdateRaysWGSL(4);
+    expect(shader).toMatch(/var<storage, read> lights:\s+array<u32>/);
+    expect(shader).toContain('lights[3u] != DDGI_LIGHTS_ABI_MAGIC');
+    expect(shader).toContain('let words = arrayLength(&lights);');
+    expect(shader).toContain('let draw = ddgiLightAliasDraw(lightCount');
+    expect(shader).toContain('let light = ddgiLoadLight(draw.index);');
+    expect(shader).toContain('return result / draw.pmf;');
+    expect(shader).not.toContain('MAX_LIGHTS');
+    expect(shader).not.toContain('array<DDGILight, 16>');
+  });
 
-    const lights = Array.from({ length: 16 }, (_, i) => ({
-      kind: 'fixture' as const,
-      on: true,
-      intensity: 1,
-      position: { x: i, y: 0, z: 0 },
-    }));
-
-    packDDGIProbeLights(lights, 1);
-    expect(warnSpy).not.toHaveBeenCalled();
-
-    warnSpy.mockRestore();
+  it('publishes explicit record/alias offsets, ABI magic, and represented PMFs', () => {
+    const buf = packDDGIProbeLights([
+      { kind: 'fixture', on: true, intensity: 1, color: { r: 1, g: 1, b: 1 } },
+      { kind: 'fixture', on: true, intensity: 9, color: { r: 1, g: 1, b: 1 } },
+    ], 1);
+    const { u32, f32 } = decode(buf);
+    expect(Array.from(u32.slice(0, 4))).toEqual([
+      2,
+      4,
+      4 + 2 * LIGHT_STRIDE_FLOATS,
+      DDGI_PROBE_LIGHTS_ABI_MAGIC,
+    ]);
+    const alias = u32[2]!;
+    const pmf0 = f32[alias + 2]!;
+    const pmf1 = f32[alias + 6]!;
+    expect(pmf0 + pmf1).toBeCloseTo(1, 6);
+    expect(pmf1).toBeGreaterThan(pmf0);
+    expect(pmf0).toBeGreaterThan(0);
   });
 });
 
@@ -564,14 +574,13 @@ describe('packDDGIProbeLights — multi-light ordering', () => {
     expect(f32[lightBase(1) + 7]).toBeCloseTo(7, 5);
   });
 
-  it('buffer has the correct total byte length regardless of active count', () => {
-    // Buffer must always be DDGI_PROBE_LIGHTS_BUFFER_BYTES = (4 + 16*16)*4 = 1040 bytes.
-    const expectedBytes = (4 + 16 * 16) * 4;
-    for (const count of [0, 1, 8, 16]) {
+  it('buffer byte length is exactly header plus active records', () => {
+    for (const count of [0, 1, 8, 16, 17, 257]) {
       const lights = Array.from({ length: count }, () => ({
         kind: 'fixture' as const, on: true, intensity: 1,
       }));
-      expect(packDDGIProbeLights(lights, 1).byteLength).toBe(expectedBytes);
+      expect(packDDGIProbeLights(lights, 1).byteLength)
+        .toBe(ddgiProbeLightsBufferByteLength(count));
     }
   });
 });

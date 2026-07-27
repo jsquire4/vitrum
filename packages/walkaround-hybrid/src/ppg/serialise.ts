@@ -29,8 +29,8 @@
  *     [1] v0             — octahedral patch min-V
  *     [2] u1             — octahedral patch max-U
  *     [3] v1             — octahedral patch max-V
- *     [4] flux           — accumulated radiance at this node
- *                          (leaves only; interior carries 0)
+ *     [4] flux           — directional training mass for this subtree
+ *                          (leaf deposit or recomputed interior sum)
  *     [5] solidAngle     — 4π·(u1−u0)·(v1−v0) for leaves; ≤0 for interior
  *     [6] firstChild     — index of NW child (children are 4 consecutive);
  *                          NaN-encoded as −1 (i.e. 4294967295.0) when no children.
@@ -151,7 +151,13 @@ export function serialiseDTree(dTree: DTree, maxNodes?: number): Float32Array {
     out[base + 2] = n.u1;
     out[base + 3] = n.v1;
     out[base + 4] = n.flux;
-    out[base + 5] = n.solidAngle;
+    // Interior nodes store solidAngle = -1. When clamping promotes one to a
+    // served leaf, reconstruct its cylindrical equal-area domain measure;
+    // otherwise GPU PDF evaluation would divide by -1 and return a negative
+    // density for the entire truncated subtree.
+    out[base + 5] = childrenOutOfRange
+      ? 4 * Math.PI * (n.u1 - n.u0) * (n.v1 - n.v0)
+      : n.solidAngle;
     // firstChild: −1 when served as a leaf (clamped or genuine), else the
     // (in-range) child index. f32 representation; integer up to 2^24.
     out[base + 6] = servedAsLeaf ? -1 : n.firstChild;
@@ -225,6 +231,13 @@ export interface SerialisedSTree {
   dTreeOffsets: Uint32Array;
 }
 
+/** ArrayBuffer-owned serialization produced locally by {@link serialiseSTree}. */
+export interface OwnedSerialisedSTree extends SerialisedSTree {
+  sTreeBuf: Float32Array<ArrayBuffer>;
+  dTreeBuf: Float32Array<ArrayBuffer>;
+  dTreeOffsets: Uint32Array<ArrayBuffer>;
+}
+
 /**
  * Pack a full sTree (spatial kd-tree + per-cell dTrees) into a triplet of
  * flat buffers ready for GPU upload.
@@ -245,7 +258,7 @@ export interface SerialisedSTree {
  * @param maxDTreeNodesPerCell  Optional per-cell node cap (= GPU buffer slot
  *                              stride). Omitted ⇒ no clamp.
  */
-export function serialiseSTree(sTree: STree, maxDTreeNodesPerCell?: number): SerialisedSTree {
+export function serialiseSTree(sTree: STree, maxDTreeNodesPerCell?: number): OwnedSerialisedSTree {
   const NS = sTree.nodes.length;
   const NDT = sTree.dTrees.length;
 

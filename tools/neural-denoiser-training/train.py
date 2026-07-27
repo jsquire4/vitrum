@@ -27,7 +27,11 @@ Output:
 Requirements: PyTorch >= 2.0, torchvision, Pillow, numpy
 """
 
+from __future__ import annotations
+
 import argparse
+import hashlib
+import json
 import os
 import struct
 from pathlib import Path
@@ -50,6 +54,171 @@ except ImportError:        # pragma: no cover - environment dependent
     class _StubModule:
         pass
     nn = type('nn', (), {'Module': _StubModule})  # type: ignore
+
+
+# ── Runtime/training preprocessing contract ─────────────────────────────────
+# Must remain byte-for-byte semantically aligned with
+# packages/walkaround-hybrid/src/neural/preprocessing.ts.
+
+NEURAL_RADIANCE_SCALE = 16.0
+NEURAL_RADIANCE_CLAMP = 64.0
+MAX_PARAMETER_MAGNITUDE = 1024.0
+F16_MAX_ABS_ERROR = 0.05
+F16_MAX_MEAN_ABS_ERROR = 0.005
+F16_MIN_PSNR_DB = 35.0
+NEURAL_ARCHITECTURE_ID = 'vitrum-unet-9x3-v1'
+NEURAL_F16_QUANTIZATION = 'f16-storage-per-logical-layer-f32-weight-bias-accumulation'
+NEURAL_F16_METRIC_DOMAIN = 'postprocessed-linear-hdr'
+NEURAL_PREPROCESSING = {
+    'version': 1,
+    'color': 'linear-hdr-scaled',
+    'radianceScale': NEURAL_RADIANCE_SCALE,
+    'radianceClamp': NEURAL_RADIANCE_CLAMP,
+    'albedoRange': [0, 1],
+    'normalEncoding': 'signed-world-unit',
+    'nonFinite': 'zero',
+}
+
+
+def preprocess_radiance_np(values: np.ndarray) -> np.ndarray:
+    """Finite-safe linear-HDR preprocessing used for noisy inputs and clean targets."""
+    finite = np.where(np.isfinite(values), values, 0.0)
+    return (
+        np.clip(finite, 0.0, NEURAL_RADIANCE_CLAMP) / NEURAL_RADIANCE_SCALE
+    ).astype(np.float32)
+
+
+def postprocess_radiance_np(values: np.ndarray) -> np.ndarray:
+    """Inverse runtime output transform for tests and offline inspection."""
+    finite = np.where(np.isfinite(values), values, 0.0)
+    return np.clip(
+        finite * NEURAL_RADIANCE_SCALE,
+        0.0,
+        NEURAL_RADIANCE_CLAMP,
+    ).astype(np.float32)
+
+
+def preprocess_radiance(values):
+    """Torch mirror of preprocess_radiance_np, kept untyped for --dry-run."""
+    finite = torch.where(torch.isfinite(values), values, torch.zeros_like(values))
+    return torch.clamp(finite, 0.0, NEURAL_RADIANCE_CLAMP) / NEURAL_RADIANCE_SCALE
+
+
+def sanitize_albedo(values):
+    finite = torch.where(torch.isfinite(values), values, torch.zeros_like(values))
+    return torch.clamp(finite, 0.0, 1.0)
+
+
+def canonical_json_bytes(value: dict) -> bytes:
+    return json.dumps(
+        value,
+        sort_keys=True,
+        separators=(',', ':'),
+        allow_nan=False,
+    ).encode('utf-8')
+
+
+def validate_export_parameters(values: np.ndarray, label: str) -> None:
+    if not np.all(np.isfinite(values)):
+        raise ValueError(f'{label} contains non-finite values')
+    if values.size and float(np.max(np.abs(values))) > MAX_PARAMETER_MAGNITUDE:
+        raise ValueError(f'{label} exceeds magnitude bound {MAX_PARAMETER_MAGNITUDE:g}')
+
+
+def validate_mixed_precision_metadata(metadata: dict) -> None:
+    tensor_storage = metadata.get('tensorStorage')
+    if tensor_storage not in {None, 'f32', 'f16-compatible'}:
+        raise ValueError('metadata.tensorStorage has an unknown enum value')
+    report = metadata.get('mixedPrecision')
+    if tensor_storage != 'f16-compatible':
+        if report is not None and not isinstance(report, dict):
+            raise ValueError('metadata.mixedPrecision must be an object')
+        return
+    if not isinstance(report, dict):
+        raise ValueError('f16-compatible tensorStorage requires mixedPrecision certification')
+    if report.get('status') != 'pass' or report.get('finiteOutputs') is not True:
+        raise ValueError('mixedPrecision certification must pass with finite outputs')
+    if report.get('architecture') != NEURAL_ARCHITECTURE_ID:
+        raise ValueError('mixedPrecision architecture does not match the runtime U-Net')
+    if report.get('preprocessing') != NEURAL_PREPROCESSING:
+        raise ValueError('mixedPrecision preprocessing does not match the runtime contract')
+    if report.get('quantization') != NEURAL_F16_QUANTIZATION:
+        raise ValueError('mixedPrecision quantization semantics do not match the runtime')
+    if report.get('metricDomain') != NEURAL_F16_METRIC_DOMAIN:
+        raise ValueError('mixedPrecision metricDomain must be postprocessed-linear-hdr')
+    for digest_name in ('checkpointSha256', 'validationCorpusSha256'):
+        digest = report.get(digest_name)
+        if (
+            not isinstance(digest, str)
+            or len(digest) != 64
+            or any(char not in '0123456789abcdef' for char in digest)
+        ):
+            raise ValueError(f'mixedPrecision.{digest_name} must be a lowercase SHA-256 digest')
+    if report.get('accumulation') != 'f32' or report.get('weights') != 'f32':
+        raise ValueError('mixedPrecision certification requires f32 accumulation and weights')
+    validation_scenes = report.get('validationScenes')
+    if (
+        isinstance(validation_scenes, bool)
+        or not isinstance(validation_scenes, int)
+        or validation_scenes < 1
+    ):
+        raise ValueError('mixedPrecision.validationScenes must be an integer >= 1')
+    metrics: dict[str, float] = {}
+    for name in ('maxAbsError', 'meanAbsError', 'psnrDb', 'outputMin', 'outputMax'):
+        value = report.get(name)
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not np.isfinite(value):
+            raise ValueError(f'mixedPrecision.{name} must be finite')
+        metrics[name] = float(value)
+    if (
+        metrics['maxAbsError'] < 0
+        or metrics['maxAbsError'] > F16_MAX_ABS_ERROR
+        or metrics['meanAbsError'] < 0
+        or metrics['meanAbsError'] > F16_MAX_MEAN_ABS_ERROR
+        or metrics['psnrDb'] < F16_MIN_PSNR_DB
+        or metrics['outputMin'] < 0
+        or metrics['outputMin'] > metrics['outputMax']
+        or metrics['outputMax'] > NEURAL_RADIANCE_CLAMP
+    ):
+        raise ValueError('mixedPrecision certification exceeds runtime precision/output bounds')
+
+
+def validate_checkpoint_metadata(metadata: dict) -> None:
+    if not isinstance(metadata, dict):
+        raise ValueError('v2 export requires checkpoint metadata object')
+    if metadata.get('preprocessing') != NEURAL_PREPROCESSING:
+        raise ValueError('metadata.preprocessing does not match the runtime contract')
+    quality = metadata.get('qualityReport')
+    if not isinstance(quality, dict) or quality.get('status') not in {'pass', 'fail', 'unknown'}:
+        raise ValueError('metadata.qualityReport.status has an unknown enum value')
+    validate_mixed_precision_metadata(metadata)
+    canonical_json_bytes(metadata)
+
+
+def checkpoint_metadata(
+    *,
+    checkpoint_id: str,
+    training_samples: int,
+    noisy_spp: int,
+    clean_spp: int,
+    capture_source: str,
+    capture_backend: str,
+    hardware: str,
+) -> dict:
+    """Create a schema-complete v2 checkpoint record; quality starts unknown."""
+    return {
+        'id': checkpoint_id,
+        'trainingSamples': int(training_samples),
+        'noisySpp': int(noisy_spp),
+        'cleanSpp': int(clean_spp),
+        'auxiliaryInputs': ['albedo', 'normal'],
+        'captureSource': capture_source,
+        'captureBackend': capture_backend,
+        'tonemap': 'linear-hdr',
+        'hardware': hardware,
+        'preprocessing': dict(NEURAL_PREPROCESSING),
+        'tensorStorage': 'f32',
+        'qualityReport': {'status': 'unknown'},
+    }
 
 
 # ── Architecture ─────────────────────────────────────────────────────────────
@@ -216,11 +385,12 @@ class DenoisingDataset(Dataset if _HAS_TORCH else object):
         normal = _load_rgb(normal_path)  # [3, H, W] float32 [0,1] (packed)
         clean  = _load_hdr(clean_path)   # [3, H, W] float32 linear HDR
 
-        # Runtime alignment (neuralPack.wgsl:57-58): the pack shader decodes the
-        # normal G-buffer [0,1]->[-1,1] and renormalizes before feeding it to the
-        # denoiser. Mirror that here on the NORMAL channel only so training sees
-        # the same encoding as inference. noisy/albedo/clean are NOT remapped.
+        # Runtime alignment: the outer pack sanitizes signed world normals and
+        # the internal input pack applies the versioned HDR scale/clamp exactly
+        # once. Training applies the same transforms to inputs and targets.
         normal = _decode_normal(normal)
+        noisy, clean = preprocess_radiance(noisy), preprocess_radiance(clean)
+        albedo = sanitize_albedo(albedo)
 
         # Stack to 9-channel input.
         x = torch.cat([noisy, albedo, normal], dim=0)  # [9, H, W]
@@ -278,7 +448,9 @@ def _decode_normal(normal: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
     (nd_remapped = nd*2-1; select(normalize(nd_remapped), (0,1,0), len<eps)).
     Zero-length (sky/background) normals fall back to geometric-up (0,1,0).
     """
-    remapped = normal * 2.0 - 1.0                     # [0,1] -> [-1,1]
+    packed = torch.where(torch.isfinite(normal), normal, torch.full_like(normal, 0.5))
+    packed = torch.clamp(packed, 0.0, 1.0)
+    remapped = packed * 2.0 - 1.0                     # [0,1] -> [-1,1]
     len_sq = (remapped * remapped).sum(dim=0, keepdim=True)  # [1, H, W]
     norm = torch.sqrt(torch.clamp(len_sq, min=eps))
     decoded = remapped / norm
@@ -337,7 +509,7 @@ def combined_loss(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
 # ── Vitrum binary export ──────────────────────────────────────────────────────
 
 VITRUM_MODEL_MAGIC   = 0xDEAF1984
-VITRUM_MODEL_VERSION = 1
+VITRUM_MODEL_VERSION = 2
 
 # Canonical layer names (must match unetArchitecture.ts LayerSpec.name).
 LAYER_NAMES = [
@@ -370,7 +542,7 @@ LAYER_ATTR: dict[str, str] = {
 }
 
 
-def export_vitrum_weights(model: UNetDenoiser, out_path: str) -> None:
+def export_vitrum_weights(model: UNetDenoiser, out_path: str, metadata: dict) -> None:
     """
     Export model weights to the vitrum binary format.
     Same format as export_weights.py — see weights.ts for byte-level layout.
@@ -385,20 +557,7 @@ def export_vitrum_weights(model: UNetDenoiser, out_path: str) -> None:
         b = layer.bias.detach().cpu().numpy().flatten().astype(np.float32)
         records.append((name, w, b))
 
-    with open(out_path, 'wb') as f:
-        # Header
-        f.write(struct.pack('<I', VITRUM_MODEL_MAGIC))
-        f.write(struct.pack('<I', VITRUM_MODEL_VERSION))
-        f.write(struct.pack('<I', len(records)))
-
-        for (name, weights, biases) in records:
-            name_bytes = name.encode('utf-8')
-            f.write(struct.pack('<I', len(name_bytes)))
-            f.write(name_bytes)
-            f.write(struct.pack('<I', len(weights)))
-            f.write(weights.tobytes())
-            f.write(struct.pack('<I', len(biases)))
-            f.write(biases.tobytes())
+    write_vitrum_binary(records, out_path, metadata)
 
     print(f'Exported vitrum weights → {out_path} ({os.path.getsize(out_path) / 1024:.1f} KB)')
 
@@ -436,12 +595,45 @@ def canonical_param_count() -> int:
     return total
 
 
-def write_vitrum_binary(records: list[tuple[str, np.ndarray, np.ndarray]], out_path: str) -> int:
+def ordered_tensor_digest(records: list[tuple[str, np.ndarray, np.ndarray]]) -> str:
+    digest = hashlib.sha256()
+    for name, weights, biases in records:
+        if weights.size == 0 and biases.size == 0:
+            continue
+        name_bytes = name.encode('utf-8')
+        digest.update(struct.pack('<I', len(name_bytes)))
+        digest.update(name_bytes)
+        digest.update(struct.pack('<I', len(weights)))
+        digest.update(np.asarray(weights, dtype='<f4').tobytes())
+        digest.update(struct.pack('<I', len(biases)))
+        digest.update(np.asarray(biases, dtype='<f4').tobytes())
+    return digest.hexdigest()
+
+
+def write_vitrum_binary(
+    records: list[tuple[str, np.ndarray, np.ndarray]],
+    out_path: str,
+    metadata: dict,
+) -> int:
     """Write the .vitrum-model binary (loadWeightsFromArrayBuffer schema). Returns total params."""
+    validate_checkpoint_metadata(metadata)
+    for name, weights, biases in records:
+        validate_export_parameters(weights, f'{name}.weights')
+        validate_export_parameters(biases, f'{name}.biases')
+
+    if (
+        metadata.get('tensorStorage') == 'f16-compatible'
+        and metadata['mixedPrecision']['checkpointSha256'] != ordered_tensor_digest(records)
+    ):
+        raise ValueError('mixedPrecision.checkpointSha256 does not match the exact ordered checkpoint tensors')
+
     with open(out_path, 'wb') as f:
         f.write(struct.pack('<I', VITRUM_MODEL_MAGIC))
         f.write(struct.pack('<I', VITRUM_MODEL_VERSION))
         f.write(struct.pack('<I', len(records)))
+        metadata_bytes = canonical_json_bytes(metadata)
+        f.write(struct.pack('<I', len(metadata_bytes)))
+        f.write(metadata_bytes)
         for (name, weights, biases) in records:
             name_bytes = name.encode('utf-8')
             f.write(struct.pack('<I', len(name_bytes)))
@@ -497,12 +689,16 @@ def dry_run(args: argparse.Namespace) -> None:
     noisy_p, albedo_p, normal_p, clean_p = samples[0]
     def load_png(p: Path) -> np.ndarray:
         return np.asarray(Image.open(p).convert('RGB'), dtype=np.float32) / 255.0  # [H,W,3]
-    # Color targets are linear-HDR .bin; albedo/normal are [0,1] PNG. Decode the
-    # normal [0,1]->[-1,1]+renormalize to mirror neuralPack.wgsl:57-58.
+    # Apply the same finite scale/clamp and auxiliary sanitation as runtime.
     noisy  = _load_hdr_np(noisy_p)                             # [H,W,3] linear
     clean  = _load_hdr_np(clean_p)                             # [H,W,3] linear
     albedo = load_png(albedo_p)                                # [H,W,3] [0,1]
     normal_packed = load_png(normal_p)                         # [H,W,3] [0,1]
+    noisy, clean = preprocess_radiance_np(noisy), preprocess_radiance_np(clean)
+    albedo = np.clip(np.where(np.isfinite(albedo), albedo, 0.0), 0.0, 1.0).astype(np.float32)
+    normal_packed = np.clip(
+        np.where(np.isfinite(normal_packed), normal_packed, 0.5), 0.0, 1.0,
+    )
     remapped = normal_packed * 2.0 - 1.0
     lensq = np.sum(remapped * remapped, axis=-1, keepdims=True)
     up = np.zeros_like(remapped); up[..., 1] = 1.0
@@ -525,7 +721,16 @@ def dry_run(args: argparse.Namespace) -> None:
         b = rng.uniform(-0.01, 0.01, size=blen).astype(np.float32)
         records.append((name, w, b))
 
-    total = write_vitrum_binary(records, args.out_bin)
+    metadata = checkpoint_metadata(
+        checkpoint_id=Path(args.out_bin).stem,
+        training_samples=len(samples),
+        noisy_spp=args.noisy_spp,
+        clean_spp=args.clean_spp,
+        capture_source=str(args.data),
+        capture_backend=args.capture_backend,
+        hardware=args.hardware,
+    )
+    total = write_vitrum_binary(records, args.out_bin, metadata)
     expect = canonical_param_count()
     assert expect == CANONICAL_PARAM_COUNT, f'shape-table param count {expect} != {CANONICAL_PARAM_COUNT}'
     assert total == CANONICAL_PARAM_COUNT, (
@@ -599,15 +804,25 @@ def train(args: argparse.Namespace) -> None:
         print(f'Epoch {epoch:4d}/{args.epochs}  loss={avg_loss:.6f}  lr={scheduler.get_last_lr()[0]:.2e}')
 
     # Save checkpoint.
+    metadata = checkpoint_metadata(
+        checkpoint_id=Path(args.out_pth).stem,
+        training_samples=len(dataset),
+        noisy_spp=args.noisy_spp,
+        clean_spp=args.clean_spp,
+        capture_source=str(args.data),
+        capture_backend=args.capture_backend,
+        hardware=args.hardware,
+    )
     torch.save({
         'state_dict': model.state_dict(),
         'args':       vars(args),
         'param_count': param_count,
+        'metadata': metadata,
     }, args.out_pth)
     print(f'Checkpoint saved → {args.out_pth}')
 
     # Export vitrum binary.
-    export_vitrum_weights(model, args.out_bin)
+    export_vitrum_weights(model, args.out_bin, metadata)
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
@@ -625,6 +840,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument('--out-pth',    default='model.pth',    help='Output PyTorch checkpoint path')
     p.add_argument('--out-bin',    default='weights.bin',  help='Output vitrum binary weights path')
     p.add_argument('--seed',       type=int,   default=1984, help='RNG seed (dry-run weight init)')
+    p.add_argument('--noisy-spp', type=int, default=1, help='Noisy capture samples per pixel recorded in metadata')
+    p.add_argument('--clean-spp', type=int, default=1, help='Clean target samples per pixel recorded in metadata; set this to the capture truth')
+    p.add_argument('--capture-backend', default='unspecified', help='Renderer/backend that captured the dataset')
+    p.add_argument('--hardware', default='unspecified', help='Capture/training hardware provenance')
     p.add_argument('--smoke',      action='store_true',    help='Tiny end-to-end run (≤2 epochs, ≤64 patch); requires torch')
     p.add_argument('--dry-run',    action='store_true',    help='Numpy-only dataset+shape+export validation (no torch)')
     return p.parse_args()

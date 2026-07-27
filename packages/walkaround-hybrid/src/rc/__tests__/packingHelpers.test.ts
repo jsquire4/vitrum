@@ -1,5 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
-import type { EngineWarning } from '@vitrum/core';
+import { describe, expect, it } from 'vitest';
 import type { DDGILight } from '../../ddgi/types.js';
 import { packRCLights } from '../packingHelpers.js';
 
@@ -11,46 +10,27 @@ const makeFixtureLights = (count: number): DDGILight[] =>
     position: { x: i, y: 0, z: 0 },
   }));
 
-describe('packRCLights diagnostics', () => {
-  it('routes fixture-cap truncation through a structured warning sink', () => {
-    const warnings: EngineWarning[] = [];
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-    try {
-      const packed = packRCLights(makeFixtureLights(17), {
-        onWarning: (warning) => warnings.push(warning),
-        phase: 'renderFrame',
-        method: 'renderFrame',
-      });
-
-      expect(new Uint32Array(packed)[0]).toBe(16);
-      expect(warnings).toHaveLength(1);
-      expect(warnings[0]).toMatchObject({
-        code: 'walkaround-hybrid.rc-light-cap-exceeded',
-        backend: 'walkaround-hybrid',
-        phase: 'renderFrame',
-        method: 'renderFrame',
-        details: {
-          activeFixtureCount: 17,
-          maxLights: 16,
-          droppedLightCount: 1,
-          fallback: 'drop-extra-rc-lights',
-        },
-      });
-      expect(warnSpy).not.toHaveBeenCalled();
-    } finally {
-      warnSpy.mockRestore();
-    }
+describe('packRCLights runtime alias ABI', () => {
+  it('retains every active light beyond the former fixed cap', () => {
+    const packed = packRCLights(makeFixtureLights(17));
+    const words = new Uint32Array(packed);
+    expect(words[0]).toBe(17);
+    expect(words[1]).toBe(4);
+    expect(words[2]).toBe(4 + 17 * 16);
+    expect(packed.byteLength).toBe(16 + 17 * (64 + 16));
   });
 
-  it('keeps console fallback for standalone helper use', () => {
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-    try {
-      packRCLights(makeFixtureLights(17));
-
-      expect(warnSpy).toHaveBeenCalledOnce();
-      expect(String(warnSpy.mock.calls[0]?.[0] ?? '')).toContain('active fixtures');
-    } finally {
-      warnSpy.mockRestore();
+  it('stores positive represented PMFs for every positive-power light', () => {
+    const packed = packRCLights(makeFixtureLights(17));
+    const words = new Uint32Array(packed);
+    const floats = new Float32Array(packed);
+    const aliasWord = words[2]!;
+    let sum = 0;
+    for (let index = 0; index < 17; index += 1) {
+      const pmf = floats[aliasWord + index * 4 + 2]!;
+      expect(pmf).toBeGreaterThan(0);
+      sum += pmf;
     }
+    expect(sum).toBeCloseTo(1, 6);
   });
 });

@@ -16,6 +16,7 @@ import { PipelineResourceCache } from '../PipelineResourceCache.js';
 import {
   buildCompositeBindGroup,
   buildFrameBindGroup,
+  buildRisGiFrameBindGroup,
   buildSceneBindGroup,
   buildUboBindGroup,
 } from '../bindGroupBuilders.js';
@@ -24,37 +25,35 @@ beforeEach(() => {
   vi.clearAllMocks();
 });
 
+function makeSceneResources() {
+  return {
+    sceneStorageArenaBuffers: [
+      {} as GPUBuffer,
+      {} as GPUBuffer,
+      {} as GPUBuffer,
+    ] as const,
+    bvhBeerTextureView: {} as GPUTextureView,
+    bvhEmissiveTextureView: {} as GPUTextureView,
+    bvhRoughMetalTextureView: {} as GPUTextureView,
+    materialTextureAtlasView: {} as GPUTextureView,
+    baseColorMapMetaTextureView: {} as GPUTextureView,
+    bvhTangentTextureView: {} as GPUTextureView,
+    bvhVertexColorTextureView: {} as GPUTextureView,
+    analyticLightsTextureView: {} as GPUTextureView,
+    envMapTextureView: {} as GPUTextureView,
+    envMarginalTextureView: {} as GPUTextureView,
+    envConditionalTextureView: {} as GPUTextureView,
+    envSampler: {} as GPUSampler,
+    envParamsBuffer: {} as GPUBuffer,
+  };
+}
+
 describe('pipelineBindGroupFactory', () => {
   it('buildPerFrameBindGroups wires frame, scene, ubo, and hybrid layers', () => {
     const device = {} as GPUDevice;
     const cache = {};
     const placeholderView = {} as GPUTextureView;
-    const scene = {
-      bvhNodesBuffer: {} as GPUBuffer,
-      bvhIndexBuffer: {} as GPUBuffer,
-      bvhPositionBuffer: {} as GPUBuffer,
-      emitterBuffer: {} as GPUBuffer,
-      emitterCdfBuffer: {} as GPUBuffer,
-      bvhBeerTextureView: {} as GPUTextureView,
-      bvhNormalBuffer: {} as GPUBuffer,
-      bvhEmissiveTextureView: {} as GPUTextureView,
-      bvhRoughMetalTextureView: {} as GPUTextureView,
-      materialTextureAtlasView: {} as GPUTextureView,
-      baseColorMapMetaTextureView: {} as GPUTextureView,
-      bvhTangentTextureView: {} as GPUTextureView,
-      bvhVertexColorTextureView: {} as GPUTextureView,
-      tlasNodesBuffer: {} as GPUBuffer,
-      tlasInstanceIndicesBuffer: {} as GPUBuffer,
-      tlasBlasRootsBuffer: {} as GPUBuffer,
-      tlasInstanceWorldToLocalBuffer: {} as GPUBuffer,
-      tlasInstanceLocalToWorldBuffer: {} as GPUBuffer,
-      analyticLightsTextureView: {} as GPUTextureView,
-      envMapTextureView: {} as GPUTextureView,
-      envMarginalTextureView: {} as GPUTextureView,
-      envConditionalTextureView: {} as GPUTextureView,
-      envSampler: {} as GPUSampler,
-      envParamsBuffer: {} as GPUBuffer,
-    };
+    const scene = makeSceneResources();
     const ddgi = {
       buildBindGroup: vi.fn(() => ({ label: 'hybrid' })),
       buildShadeBindGroup: vi.fn(() => ({ label: 'shade-hybrid' })),
@@ -85,6 +84,11 @@ describe('pipelineBindGroupFactory', () => {
     expect(groups.ubo).toEqual({ label: 'ubo' });
     expect(groups.hybridLayers).toEqual({ label: 'hybrid' });
     expect(ddgi.buildBindGroup).toHaveBeenCalledOnce();
+    expect(buildRisGiFrameBindGroup).toHaveBeenCalledWith(
+      device,
+      cache,
+      expect.anything(),
+    );
   });
 
   it('buildCompositePresentBindGroup delegates to buildCompositeBindGroup', () => {
@@ -99,32 +103,7 @@ describe('pipelineBindGroupFactory', () => {
     const cache = {};
     const resourceCache = new PipelineResourceCache();
     const placeholderView = {} as GPUTextureView;
-    const scene = {
-      bvhNodesBuffer: {} as GPUBuffer,
-      bvhIndexBuffer: {} as GPUBuffer,
-      bvhPositionBuffer: {} as GPUBuffer,
-      emitterBuffer: {} as GPUBuffer,
-      emitterCdfBuffer: {} as GPUBuffer,
-      bvhBeerTextureView: {} as GPUTextureView,
-      bvhNormalBuffer: {} as GPUBuffer,
-      bvhEmissiveTextureView: {} as GPUTextureView,
-      bvhRoughMetalTextureView: {} as GPUTextureView,
-      materialTextureAtlasView: {} as GPUTextureView,
-      baseColorMapMetaTextureView: {} as GPUTextureView,
-      bvhTangentTextureView: {} as GPUTextureView,
-      bvhVertexColorTextureView: {} as GPUTextureView,
-      tlasNodesBuffer: {} as GPUBuffer,
-      tlasInstanceIndicesBuffer: {} as GPUBuffer,
-      tlasBlasRootsBuffer: {} as GPUBuffer,
-      tlasInstanceWorldToLocalBuffer: {} as GPUBuffer,
-      tlasInstanceLocalToWorldBuffer: {} as GPUBuffer,
-      analyticLightsTextureView: {} as GPUTextureView,
-      envMapTextureView: {} as GPUTextureView,
-      envMarginalTextureView: {} as GPUTextureView,
-      envConditionalTextureView: {} as GPUTextureView,
-      envSampler: {} as GPUSampler,
-      envParamsBuffer: {} as GPUBuffer,
-    };
+    const scene = makeSceneResources();
     const ddgi = {
       buildBindGroup: vi.fn(() => ({ label: 'hybrid' })),
       buildShadeBindGroup: vi.fn(() => ({ label: 'shade-hybrid' })),
@@ -187,32 +166,7 @@ describe('pipelineBindGroupFactory', () => {
     const resourceCache = new PipelineResourceCache();
     const placeholderView = {} as GPUTextureView;
     const textureView = {} as GPUTextureView;
-    const scene = {
-      bvhNodesBuffer: {} as GPUBuffer,
-      bvhIndexBuffer: {} as GPUBuffer,
-      bvhPositionBuffer: {} as GPUBuffer,
-      emitterBuffer: {} as GPUBuffer,
-      emitterCdfBuffer: {} as GPUBuffer,
-      bvhBeerTextureView: {} as GPUTextureView,
-      bvhNormalBuffer: {} as GPUBuffer,
-      bvhEmissiveTextureView: {} as GPUTextureView,
-      bvhRoughMetalTextureView: {} as GPUTextureView,
-      materialTextureAtlasView: {} as GPUTextureView,
-      baseColorMapMetaTextureView: {} as GPUTextureView,
-      bvhTangentTextureView: {} as GPUTextureView,
-      bvhVertexColorTextureView: {} as GPUTextureView,
-      tlasNodesBuffer: {} as GPUBuffer,
-      tlasInstanceIndicesBuffer: {} as GPUBuffer,
-      tlasBlasRootsBuffer: {} as GPUBuffer,
-      tlasInstanceWorldToLocalBuffer: {} as GPUBuffer,
-      tlasInstanceLocalToWorldBuffer: {} as GPUBuffer,
-      analyticLightsTextureView: {} as GPUTextureView,
-      envMapTextureView: {} as GPUTextureView,
-      envMarginalTextureView: {} as GPUTextureView,
-      envConditionalTextureView: {} as GPUTextureView,
-      envSampler: {} as GPUSampler,
-      envParamsBuffer: {} as GPUBuffer,
-    };
+    const scene = makeSceneResources();
     const ddgi = {
       buildBindGroup: vi.fn(() => ({ label: 'hybrid' })),
       buildShadeBindGroup: vi.fn(() => ({ label: 'shade-hybrid' })),
@@ -262,32 +216,7 @@ describe('pipelineBindGroupFactory', () => {
     const resourceCache = new PipelineResourceCache();
     const placeholderView = {} as GPUTextureView;
     const textureView = {} as GPUTextureView;
-    const scene = {
-      bvhNodesBuffer: {} as GPUBuffer,
-      bvhIndexBuffer: {} as GPUBuffer,
-      bvhPositionBuffer: {} as GPUBuffer,
-      emitterBuffer: {} as GPUBuffer,
-      emitterCdfBuffer: {} as GPUBuffer,
-      bvhBeerTextureView: {} as GPUTextureView,
-      bvhNormalBuffer: {} as GPUBuffer,
-      bvhEmissiveTextureView: {} as GPUTextureView,
-      bvhRoughMetalTextureView: {} as GPUTextureView,
-      materialTextureAtlasView: {} as GPUTextureView,
-      baseColorMapMetaTextureView: {} as GPUTextureView,
-      bvhTangentTextureView: {} as GPUTextureView,
-      bvhVertexColorTextureView: {} as GPUTextureView,
-      tlasNodesBuffer: {} as GPUBuffer,
-      tlasInstanceIndicesBuffer: {} as GPUBuffer,
-      tlasBlasRootsBuffer: {} as GPUBuffer,
-      tlasInstanceWorldToLocalBuffer: {} as GPUBuffer,
-      tlasInstanceLocalToWorldBuffer: {} as GPUBuffer,
-      analyticLightsTextureView: {} as GPUTextureView,
-      envMapTextureView: {} as GPUTextureView,
-      envMarginalTextureView: {} as GPUTextureView,
-      envConditionalTextureView: {} as GPUTextureView,
-      envSampler: {} as GPUSampler,
-      envParamsBuffer: {} as GPUBuffer,
-    };
+    const scene = makeSceneResources();
     const ddgi = {
       buildBindGroup: vi.fn(() => ({ label: 'hybrid' })),
       buildShadeBindGroup: vi.fn(() => ({ label: 'shade-hybrid' })),

@@ -21,8 +21,23 @@
 // real-time→1-sample 'pop') is a documented follow-on; it would render both
 // engines during the transition window.
 
-import { patchPrimitiveInScene } from '@vitrum/core';
-import type { Engine, FrameInput, FrameOutput, Scene, ScenePrimitive } from '@vitrum/core';
+import {
+  patchEmitterInScene,
+  patchPrimitiveInScene,
+  resolveFrameCameraPosition,
+  validateScene as validateCoreScene,
+} from '@vitrum/core';
+import type {
+  CapturedFrame,
+  CaptureFrameOptions,
+  Engine,
+  FrameInput,
+  FrameOutput,
+  Scene,
+  SceneEmitter,
+  SceneEnvironment,
+  ScenePrimitive,
+} from '@vitrum/core';
 
 /** Which engine the coordinator is presenting. */
 export type HandoffPhase =
@@ -147,12 +162,57 @@ interface CameraSnapshot {
   readonly pos: Float32Array;
 }
 
+function finiteVector(
+  value: ArrayLike<number>,
+  expectedLength: number,
+  label: string,
+): Float32Array {
+  if (value.length !== expectedLength) {
+    throw new RangeError(
+      `ProgressiveHandoffCoordinator.frame: ${label} must contain exactly ${expectedLength} values.`,
+    );
+  }
+  const copy = Float32Array.from(value);
+  for (let i = 0; i < copy.length; i += 1) {
+    if (!Number.isFinite(copy[i])) {
+      throw new TypeError(
+        `ProgressiveHandoffCoordinator.frame: ${label}[${i}] must be finite.`,
+      );
+    }
+  }
+  return copy;
+}
+
 function snapshot(input: FrameInput): CameraSnapshot {
+  const cameraPosition = resolveFrameCameraPosition(
+    input,
+    'ProgressiveHandoffCoordinator.frame',
+  );
   return {
-    view: Float32Array.from(input.viewMatrix as unknown as ArrayLike<number>),
-    proj: Float32Array.from(input.projMatrix as unknown as ArrayLike<number>),
-    pos: Float32Array.from(input.cameraPosition as unknown as ArrayLike<number>),
+    view: finiteVector(input.viewMatrix, 16, 'viewMatrix'),
+    proj: finiteVector(input.projMatrix, 16, 'projMatrix'),
+    pos: Float32Array.from(cameraPosition),
   };
+}
+
+function finiteAtLeast(value: number | undefined, fallback: number, minimum: number, label: string): number {
+  const resolved = value ?? fallback;
+  if (!Number.isFinite(resolved) || resolved < minimum) {
+    throw new RangeError(
+      `ProgressiveHandoffCoordinator: ${label} must be a finite number >= ${minimum}.`,
+    );
+  }
+  return resolved;
+}
+
+function positiveInteger(value: number | undefined, fallback: number, label: string): number {
+  const resolved = value ?? fallback;
+  if (!Number.isSafeInteger(resolved) || resolved < 1) {
+    throw new RangeError(
+      `ProgressiveHandoffCoordinator: ${label} must be a positive safe integer.`,
+    );
+  }
+  return resolved;
 }
 
 function maxAbsDelta(a: ArrayLike<number>, b: ArrayLike<number>): number {
@@ -173,6 +233,45 @@ function cameraMoved(prev: CameraSnapshot, next: CameraSnapshot, eps: number): b
   );
 }
 
+function flattenAggregateErrors(error: unknown): unknown[] {
+  return error instanceof AggregateError
+    ? Array.from(error.errors as Iterable<unknown>)
+    : [error];
+}
+
+function errorDescription(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+
+export type ProgressiveHandoffConfiguration = Pick<
+  ProgressiveHandoffOptions,
+  | 'stillFramesBeforeHandoff'
+  | 'cameraEpsilon'
+  | 'convergedDisplaySamples'
+  | 'seedWeight'
+  | 'controllerDeltaSeconds'
+>;
+
+/** Validate every numeric handoff option without touching an engine or GPU.
+ * The high-level factory calls this before adapter acquisition; the coordinator
+ * calls it again so direct low-level construction has the same contract. */
+export function assertProgressiveHandoffConfiguration(
+  opts: ProgressiveHandoffConfiguration,
+): void {
+  positiveInteger(opts.stillFramesBeforeHandoff, 6, 'stillFramesBeforeHandoff');
+  finiteAtLeast(opts.cameraEpsilon, 1e-5, 0, 'cameraEpsilon');
+  positiveInteger(opts.convergedDisplaySamples, 64, 'convergedDisplaySamples');
+  finiteAtLeast(opts.seedWeight, 4, 0, 'seedWeight');
+  if (
+    typeof opts.controllerDeltaSeconds === 'number' &&
+    !Number.isFinite(opts.controllerDeltaSeconds)
+  ) {
+    throw new TypeError(
+      'ProgressiveHandoffCoordinator: controllerDeltaSeconds must be finite when supplied as a number.',
+    );
+  }
+}
 /**
  * Coordinator that hands the displayed frame off from a real-time engine to a
  * converged path tracer once the camera settles. See file header.
@@ -208,19 +307,33 @@ export class ProgressiveHandoffCoordinator {
    *  reset it before the first converged frame of a settle. */
   #convergedStale = true;
   #scene: Scene | null;
+  /** Last size successfully accepted by both phases. Null until the first
+   *  coordinator-routed resize, so a failed first resize cannot be rolled back
+   *  and therefore becomes terminal. */
+  #size: { readonly width: number; readonly height: number } | null = null;
+  /**
+   * An unrecoverable split between the two engines. The coordinator does not
+   * own either backend, so it cannot safely guess which phase is authoritative
+   * after rollback is impossible or fails. Every operation that could render,
+   * capture, present, or mutate is blocked from this point on; callers must
+   * recreate the pair.
+   */
+  #terminalError: AggregateError | null = null;
 
   constructor(opts: ProgressiveHandoffOptions) {
     this.#realtime = opts.realtime;
     this.#converged = opts.converged;
-    this.#threshold = Math.max(1, Math.floor(opts.stillFramesBeforeHandoff ?? 6));
-    this.#eps = opts.cameraEpsilon ?? 1e-5;
+    assertProgressiveHandoffConfiguration(opts);
+    this.#threshold = positiveInteger(opts.stillFramesBeforeHandoff, 6, 'stillFramesBeforeHandoff');
+    this.#eps = finiteAtLeast(opts.cameraEpsilon, 1e-5, 0, 'cameraEpsilon');
     this.#settleBehind = opts.settleBehindRealtime ?? false;
-    this.#displaySamples = Math.max(1, Math.floor(opts.convergedDisplaySamples ?? 64));
+    this.#displaySamples = positiveInteger(opts.convergedDisplaySamples, 64, 'convergedDisplaySamples');
     this.#seedFromRealtime = opts.seedFromRealtime ?? false;
-    this.#seedWeight = Math.max(0, opts.seedWeight ?? 4);
+    this.#seedWeight = finiteAtLeast(opts.seedWeight, 4, 0, 'seedWeight');
     this.#controller = opts.controller;
     this.#controllerDeltaSeconds = opts.controllerDeltaSeconds ?? (1 / 60);
     this.#controllerLoop = opts.controllerLoop ?? true;
+    if (opts.scene !== undefined) validateCoreScene(opts.scene);
     this.#scene = opts.scene ?? null;
   }
 
@@ -239,6 +352,11 @@ export class ProgressiveHandoffCoordinator {
     return this.#scene;
   }
 
+  /** Non-null once the two phases could no longer be proven synchronized. */
+  get synchronizationError(): AggregateError | null {
+    return this.#terminalError;
+  }
+
   /**
    * Force back to real-time and invalidate the converged accumulation. Call when
    * the shared scene changes (both engines must re-`setScene` first) so the next
@@ -252,9 +370,37 @@ export class ProgressiveHandoffCoordinator {
   }
 
   #resetEnginesAfterControllerMutation(): void {
-    this.#realtime.reset();
-    this.#converged.reset();
+    this.#assertSynchronized('controller reset');
+    const errors: unknown[] = [];
+    for (const engine of [this.#realtime, this.#converged]) {
+      try {
+        engine.reset();
+      } catch (error) {
+        errors.push(error);
+      }
+    }
     this.reset();
+    if (errors.length > 0) {
+      throw this.#enterTerminalState('controller reset', errors);
+    }
+  }
+
+  #assertSynchronized(_operation: string): void {
+    if (this.#terminalError == null) return;
+    throw this.#terminalError;
+  }
+
+  #enterTerminalState(operation: string, errors: readonly unknown[]): AggregateError {
+    const primary = errors[0];
+    const terminal = new AggregateError(
+      errors,
+      `ProgressiveHandoffCoordinator entered a terminal synchronization-error state during ${operation}; ` +
+        'the realtime and converged engines can no longer be proven equivalent and must be recreated.' +
+        (primary === undefined ? '' : ` Primary failure: ${errorDescription(primary)}`),
+    );
+    this.#terminalError = terminal;
+    this.reset();
+    return terminal;
   }
 
   // ── Scene authority ───────────────────────────────────────────────────────
@@ -267,10 +413,70 @@ export class ProgressiveHandoffCoordinator {
 
   /** Set the scene on both engines and restart at real-time. */
   setScene(scene: Scene): void {
-    this.#realtime.setScene(scene);
-    this.#converged.setScene(scene);
+    this.#assertSynchronized('setScene');
+    validateCoreScene(scene);
+    const previous = this.#scene;
+    this.#installSceneOnBoth(scene, previous, 'setScene');
     this.#scene = scene;
     this.reset();
+  }
+
+  /**
+   * Publish one scene to both engines without touching the coordinator's
+   * authoritative `#scene`. If either phase rejects and a previous snapshot is
+   * available, both engines are explicitly restored before this returns by
+   * throwing. This is the transaction boundary used by public setScene and by
+   * incremental-mutation recovery.
+   */
+  #installSceneOnBoth(
+    scene: Scene,
+    previous: Scene | null,
+    operation: string,
+  ): void {
+    let forwardError: unknown = null;
+    try {
+      this.#realtime.setScene(scene);
+    } catch (error) {
+      forwardError = error;
+    }
+    if (forwardError == null) {
+      try {
+        this.#converged.setScene(scene);
+      } catch (error) {
+        forwardError = error;
+      }
+    }
+    if (forwardError == null) return;
+    if (previous == null) {
+      throw this.#enterTerminalState(
+        operation,
+        [forwardError],
+      );
+    }
+
+    const restorationErrors: unknown[] = [];
+    for (const engine of [this.#realtime, this.#converged]) {
+      try {
+        engine.setScene(previous);
+      } catch (error) {
+        restorationErrors.push(error);
+      }
+    }
+    // Even a successful restoration invalidates both accumulators. If a
+    // backend could not restore, force the coordinator away from converging so
+    // no stale phase is presented as authoritative.
+    this.reset();
+    if (restorationErrors.length > 0) {
+      throw this.#enterTerminalState(
+        `${operation} rollback`,
+        [forwardError, ...restorationErrors],
+      );
+    }
+    throw new AggregateError(
+      [forwardError],
+      `ProgressiveHandoffCoordinator.${operation} failed (${errorDescription(forwardError)}); ` +
+        'both engines were restored to the previous scene.',
+    );
   }
 
   /**
@@ -287,11 +493,13 @@ export class ProgressiveHandoffCoordinator {
    *          false when it delegated to `setScene` (which already reset).
    */
   #applyToBothEngines(
-    method: 'updatePrimitive' | 'addPrimitive' | 'removePrimitive',
+    method: 'updatePrimitive' | 'addPrimitive' | 'removePrimitive' | 'updateEmitter' | 'updateEnvironment',
     bothSupported: boolean,
-    perform: () => void,
+    performRealtime: () => void,
+    performConverged: () => void,
     nextScene: Scene | null,
   ): boolean {
+    this.#assertSynchronized(method);
     if (!bothSupported) {
       if (nextScene != null) {
         this.setScene(nextScene);
@@ -303,14 +511,32 @@ export class ProgressiveHandoffCoordinator {
       );
     }
     try {
-      perform();
+      performRealtime();
+      performConverged();
       if (nextScene != null) this.#scene = nextScene;
-    } catch (err) {
+    } catch (forwardError) {
       if (nextScene != null) {
-        this.setScene(nextScene);
+        const previous = this.#scene;
+        try {
+          this.#installSceneOnBoth(
+            nextScene,
+            previous,
+            `${method} fallback rebuild`,
+          );
+        } catch (rebuildError) {
+          const combined = new AggregateError(
+            [forwardError, ...flattenAggregateErrors(rebuildError)],
+            `ProgressiveHandoffCoordinator.${method} failed on the incremental path ` +
+              `(${errorDescription(forwardError)}) and its full-scene recovery did not commit.`,
+          );
+          if (this.#terminalError != null) this.#terminalError = combined;
+          throw combined;
+        }
+        this.#scene = nextScene;
+        this.reset();
         return false;
       }
-      throw err;
+      throw this.#enterTerminalState(method, [forwardError]);
     }
     return true;
   }
@@ -321,10 +547,13 @@ export class ProgressiveHandoffCoordinator {
     const bothSupported =
       typeof this.#realtime.updatePrimitive === 'function' &&
       typeof this.#converged.updatePrimitive === 'function';
-    if (this.#applyToBothEngines('updatePrimitive', bothSupported, () => {
-      this.#realtime.updatePrimitive!(id, patch);
-      this.#converged.updatePrimitive!(id, patch);
-    }, nextScene)) {
+    if (this.#applyToBothEngines(
+      'updatePrimitive',
+      bothSupported,
+      () => this.#realtime.updatePrimitive!(id, patch),
+      () => this.#converged.updatePrimitive!(id, patch),
+      nextScene,
+    )) {
       this.reset();
     }
   }
@@ -341,10 +570,13 @@ export class ProgressiveHandoffCoordinator {
     const bothSupported =
       typeof this.#realtime.addPrimitive === 'function' &&
       typeof this.#converged.addPrimitive === 'function';
-    if (this.#applyToBothEngines('addPrimitive', bothSupported, () => {
-      this.#realtime.addPrimitive!(primitive);
-      this.#converged.addPrimitive!(primitive);
-    }, nextScene)) {
+    if (this.#applyToBothEngines(
+      'addPrimitive',
+      bothSupported,
+      () => this.#realtime.addPrimitive!(primitive),
+      () => this.#converged.addPrimitive!(primitive),
+      nextScene,
+    )) {
       this.reset();
     }
   }
@@ -364,37 +596,185 @@ export class ProgressiveHandoffCoordinator {
     const bothSupported =
       typeof this.#realtime.removePrimitive === 'function' &&
       typeof this.#converged.removePrimitive === 'function';
-    if (this.#applyToBothEngines('removePrimitive', bothSupported, () => {
-      this.#realtime.removePrimitive!(id);
-      this.#converged.removePrimitive!(id);
-    }, nextScene)) {
+    if (this.#applyToBothEngines(
+      'removePrimitive',
+      bothSupported,
+      () => this.#realtime.removePrimitive!(id),
+      () => this.#converged.removePrimitive!(id),
+      nextScene,
+    )) {
+      this.reset();
+    }
+  }
+
+
+  /** Patch an emitter on both engines (or rebuild from the authoritative scene). */
+  updateEmitter(id: string, patch: Partial<SceneEmitter>): void {
+    const nextScene = this.#scene != null ? patchEmitterInScene(this.#scene, id, patch) : null;
+    const bothSupported =
+      typeof this.#realtime.updateEmitter === 'function' &&
+      typeof this.#converged.updateEmitter === 'function';
+    if (this.#applyToBothEngines(
+      'updateEmitter',
+      bothSupported,
+      () => this.#realtime.updateEmitter!(id, patch),
+      () => this.#converged.updateEmitter!(id, patch),
+      nextScene,
+    )) {
+      this.reset();
+    }
+  }
+
+  /** Replace the environment on both engines (or rebuild from the authoritative scene). */
+  updateEnvironment(environment: SceneEnvironment | null): void {
+    const normalized = environment ?? { kind: 'none' as const };
+    const nextScene = this.#scene != null
+      ? { ...this.#scene, environment: normalized }
+      : null;
+    const bothSupported =
+      typeof this.#realtime.updateEnvironment === 'function' &&
+      typeof this.#converged.updateEnvironment === 'function';
+    if (this.#applyToBothEngines(
+      'updateEnvironment',
+      bothSupported,
+      () => this.#realtime.updateEnvironment!(environment),
+      () => this.#converged.updateEnvironment!(environment),
+      nextScene,
+    )) {
       this.reset();
     }
   }
 
   /**
+   * Apply backend runtime-lighting controls to both presentation phases.
+   *
+   * Unlike emitter/environment scene edits, `updateLighting` is an opaque
+   * backend option record and cannot be reconstructed from the authoritative
+   * core Scene for rollback. Both methods are therefore required up front. If
+   * either backend rejects after fan-out begins, the pair enters the terminal
+   * synchronization state rather than continuing with potentially different
+   * lighting in the realtime and converged phases.
+   */
+  updateLighting(opts: Readonly<Record<string, unknown>>): void {
+    this.#assertSynchronized('updateLighting');
+    if (opts == null || typeof opts !== 'object' || Array.isArray(opts)) {
+      throw new TypeError('ProgressiveHandoffCoordinator.updateLighting: opts must be an object.');
+    }
+    if (
+      typeof this.#realtime.updateLighting !== 'function' ||
+      typeof this.#converged.updateLighting !== 'function'
+    ) {
+      throw new Error(
+        'ProgressiveHandoffCoordinator.updateLighting: both engines must implement updateLighting.',
+      );
+    }
+
+    const errors: unknown[] = [];
+    for (const engine of [this.#realtime, this.#converged]) {
+      try {
+        engine.updateLighting!(opts);
+      } catch (error) {
+        errors.push(error);
+      }
+    }
+    this.reset();
+    if (errors.length > 0) {
+      throw this.#enterTerminalState('updateLighting', errors);
+    }
+  }
+
+  /** Resize both phases after validating once at the coordinator boundary. */
+  setSize(width: number, height: number): void {
+    this.#assertSynchronized('setSize');
+    if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width < 1 || height < 1) {
+      throw new RangeError(
+        'ProgressiveHandoffCoordinator.setSize: width and height must be positive safe integers.',
+      );
+    }
+    const previous = this.#size;
+    const forwardErrors: unknown[] = [];
+    for (const engine of [this.#realtime, this.#converged]) {
+      try {
+        engine.setSize?.(width, height);
+      } catch (error) {
+        // Resize is a facade fan-out: one backend rejecting must not prevent
+        // the other presentation phase from observing the host resize.
+        forwardErrors.push(error);
+      }
+    }
+    if (forwardErrors.length === 0) {
+      this.#size = { width, height };
+      this.reset();
+      return;
+    }
+
+    if (previous == null) {
+      throw this.#enterTerminalState('setSize', forwardErrors);
+    }
+
+    const restorationErrors: unknown[] = [];
+    for (const engine of [this.#realtime, this.#converged]) {
+      try {
+        engine.setSize?.(previous.width, previous.height);
+      } catch (error) {
+        restorationErrors.push(error);
+      }
+    }
+    this.reset();
+    if (restorationErrors.length > 0) {
+      throw this.#enterTerminalState(
+        'setSize rollback',
+        [...forwardErrors, ...restorationErrors],
+      );
+    }
+    throw new AggregateError(
+      forwardErrors,
+      `ProgressiveHandoffCoordinator.setSize failed (${errorDescription(forwardErrors[0])}); ` +
+        'both phases were restored to the previous size.',
+    );
+  }
+
+  /** Capture the phase that was actually displayed by the latest frame. Before
+   * the first frame, the realtime phase is the defined presentation source. */
+  captureFrame(options?: CaptureFrameOptions): Promise<CapturedFrame | null> {
+    this.#assertSynchronized('captureFrame');
+    const active = this.#lastActive ?? this.#realtime;
+    return active.captureFrame?.(options) ?? Promise.resolve(null);
+  }
+  /**
    * Drive one frame: detect camera motion, pick the engine, render, return its
    * output. The host presents `result.output`.
    */
   frame(input: FrameInput): HandoffFrameResult {
+    this.#assertSynchronized('frame');
     this.#advanceController(input);
 
+    // Treat the coordinator state as a presentation publication record.  The
+    // engines may throw while resetting, seeding, or rendering; none of those
+    // attempts produced a frame the host can safely present.  Compute the next
+    // state locally and publish it only after every render needed by the chosen
+    // result succeeds.  In particular, a failed first converged attempt leaves
+    // #convergedStale armed so the retry resets/seeds from a known boundary.
     const cam = snapshot(input);
     const moved = this.#prev === null || cameraMoved(this.#prev, cam, this.#eps);
-    this.#prev = cam;
+    const nextStillFrames = moved ? 0 : this.#stillFrames + 1;
+    const nextConvergedStale = moved ? true : this.#convergedStale;
+    const publish = (
+      phase: HandoffPhase,
+      active: Engine,
+      convergedStale: boolean,
+    ): void => {
+      this.#prev = cam;
+      this.#stillFrames = nextStillFrames;
+      this.#phase = phase;
+      this.#lastActive = active;
+      this.#convergedStale = convergedStale;
+    };
 
-    if (moved) {
-      this.#stillFrames = 0;
-      // The converged accumulator (if any) is now for a stale camera.
-      this.#convergedStale = true;
-    } else {
-      this.#stillFrames += 1;
-    }
-
-    if (this.#stillFrames >= this.#threshold) {
+    if (nextStillFrames >= this.#threshold) {
       // Hand off to the converged engine. Reset its accumulator on the FIRST
       // converged frame of this settle so it accumulates the current camera.
-      if (this.#convergedStale) {
+      if (nextConvergedStale) {
         this.#converged.reset();
         // P8 increment 2: seed the converged accumulator from the real-time engine's
         // last (still-camera) frame — a decaying prior that hides the 1-sample pop
@@ -402,37 +782,34 @@ export class ProgressiveHandoffCoordinator {
         // prior). No-op unless seedFromRealtime + both engines' capabilities (+ a
         // shared device at runtime).
         if (this.#seedFromRealtime) this.#seedConvergedFromRealtime(input);
-        this.#convergedStale = false;
       }
       // Always advance the converged engine (it accumulates either way).
       const convOutput = this.#converged.renderFrame(input);
       const convReady =
         convOutput.isConverged || convOutput.samplesAccumulated >= this.#displaySamples;
       if (!this.#settleBehind || convReady) {
-        this.#phase = 'converging';
-        this.#lastActive = this.#converged;
-        return { phase: 'converging', active: this.#converged, output: convOutput, stillFrames: this.#stillFrames };
+        publish('converging', this.#converged, false);
+        return { phase: 'converging', active: this.#converged, output: convOutput, stillFrames: nextStillFrames };
       }
       // Pre-roll: the converged engine accumulated above (behind the scenes);
       // keep DISPLAYING the smooth real-time image until it is clean enough,
       // hiding the real-time → 1-sample pop.
-      this.#phase = 'prerolling';
       const rtOutput = this.#realtime.renderFrame(input);
-      this.#lastActive = this.#realtime;
+      publish('prerolling', this.#realtime, false);
       return {
         phase: 'prerolling',
         active: this.#realtime,
         output: rtOutput,
         behindOutput: convOutput,
-        stillFrames: this.#stillFrames,
+        stillFrames: nextStillFrames,
       };
     }
 
     // Real-time: moving, or still-but-settling (below the threshold).
-    this.#phase = this.#stillFrames > 0 ? 'settling' : 'realtime';
+    const nextPhase: HandoffPhase = nextStillFrames > 0 ? 'settling' : 'realtime';
     const output = this.#realtime.renderFrame(input);
-    this.#lastActive = this.#realtime;
-    return { phase: this.#phase, active: this.#realtime, output, stillFrames: this.#stillFrames };
+    publish(nextPhase, this.#realtime, nextConvergedStale);
+    return { phase: nextPhase, active: this.#realtime, output, stillFrames: nextStillFrames };
   }
 
   /**
@@ -448,6 +825,7 @@ export class ProgressiveHandoffCoordinator {
    * expose `getPresentationSource` / has nothing to present.
    */
   getPresentationSource(): { device: unknown; texture: import('@vitrum/core').BackendTexture } | null {
+    this.#assertSynchronized('getPresentationSource');
     const active = this.#lastActive;
     if (active == null) return null;
     if (typeof active.getPresentationSource !== 'function') return null;

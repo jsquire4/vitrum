@@ -69,7 +69,7 @@ const makeStubDenoiser = (id: string, labels: readonly string[]): Denoiser =>
 /**
  * Reproduce the registration sequence of `WalkaroundGPUPipeline.initialize()`
  * (default options: PPG compiled+on, ReGIR compiled+on, both spatial counts 2,
- * NRC off, restirPtReuse off) so the golden captures the full pass set the
+ * NRC off, grisReuse off) so the golden captures the full pass set the
  * orchestrator wires. The ReGIRBuildPass getter is a no-op closure here.
  */
 function buildPipelineRegistry(): PassRegistry {
@@ -79,7 +79,7 @@ function buildPipelineRegistry(): PassRegistry {
   reg.register(new TemporalReservoirPass(stubPipeline));
   reg.register(new SpatialReservoirPass(stubPipeline, 2));
   reg.register(new RISGIPass(stubPipeline, undefined));
-  reg.register(new TemporalGIReservoirPass(stubPipeline, false));
+  reg.register(new TemporalGIReservoirPass(stubPipeline, false, true));
   reg.register(new SpatialGIReservoirPass(stubPipeline, 2, false));
   reg.register(new ShadePass(stubPipeline));
   reg.register(new MotionVectorsPass(stubPipeline));
@@ -166,6 +166,7 @@ describe('WalkaroundGPUPipeline — pass-registration characterization', () => {
       'temporal',
       'spatial-2',
       'gi-ris',
+      'ppg-update',
       'gi-temporal',
       'gi-spatial-2',
       'shade',
@@ -177,7 +178,6 @@ describe('WalkaroundGPUPipeline — pass-registration characterization', () => {
       'atrous-indirect-3',
       'indirect-combine',
       'motion-vectors',
-      'ppg-update',
       'transparent-oit',
       'temporalAccum',
       'resolve',
@@ -203,6 +203,7 @@ describe('WalkaroundGPUPipeline — pass-registration characterization', () => {
       'spatial-1',
       'spatial-2',
       'gi-ris',
+      'ppg-update',
       'gi-temporal',
       'gi-spatial-1',
       'gi-spatial-2',
@@ -219,7 +220,6 @@ describe('WalkaroundGPUPipeline — pass-registration characterization', () => {
       'atrous-indirect-3',
       'indirect-combine',
       'motion-vectors',
-      'ppg-update',
       'transparent-oit',
       'temporalAccum',
       'resolve',

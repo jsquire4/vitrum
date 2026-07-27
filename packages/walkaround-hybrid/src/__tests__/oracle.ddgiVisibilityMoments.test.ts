@@ -101,7 +101,7 @@ function blendVisibilityTexel(
     if (ray.hitDistance < 0.05) continue; // L225 self-intersection skip
     if (skipMisses && ray.hitDistance >= BVH_INTERSECT_INFINITY * 0.1) continue;
     const w = Math.max(0, dot(texelDir, ray.direction)); // L226
-    if (w < 1e-3) continue; // L227
+    if (w <= 0) continue;
     const weight = f32(w * w); // L231 pow(w, 2.0)
     const d = f32(ray.hitDistance); // L232
     newDepth = f32(newDepth + f32(d * weight)); // L233
@@ -202,7 +202,7 @@ describe('HYB-DDGI-01 oracle — sky-miss rays poison visibility moments', () =>
     for (const ray of rays) {
       if (ray.hitDistance < 0.05) continue;
       const w = Math.max(0, dot(texelDir, ray.direction));
-      if (w < 1e-3) continue;
+      if (w <= 0) continue;
       const weight = w * w;
       newDepth += ray.hitDistance * weight;
       newDepthSq += ray.hitDistance * ray.hitDistance * weight;

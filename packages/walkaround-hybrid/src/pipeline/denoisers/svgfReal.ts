@@ -11,7 +11,7 @@
  * read/written here via ping-pong):
  *   - svgfHistoryLengthTexture{A,B} — frame counter; reset on disocclusion
  *   - svgfMomentsTexture{A,B}       — E[L], E[L²]
- *   - svgfPrevRadianceTexture{A,B}  — EMA-blended radiance fed back next frame
+ *   - svgfPrevRadianceTexture{A,B}  — first-wavelet color fed back next frame
  *
  * The à-trous chain reads the reproj output (radWrite) rather than the
  * raw hdrColorTexture so high-variance pixels still get spatial smoothing
@@ -32,8 +32,8 @@ import {
 } from '@vitrum/shared-denoisers';
 import { composeWgsl } from '../wgslComposer.js';
 import {
-  ATROUS_VARIANCE_MODULE,
   SVGF_7X7_SPATIAL_FALLBACK_MODULE,
+  SVGF_REAL_ATROUS_MODULE,
   SVGF_REPROJECTION_MODULE,
   SVGF_VARIANCE_FROM_MOMENTS_MODULE,
   WGSL_MODULES,
@@ -52,6 +52,7 @@ import {
   type DenoiserInitContext,
   type DenoiserState,
 } from './index.js';
+import { publishFrameState } from '../FramePublication.js';
 import { shouldResetDenoiserHistory } from './historyReset.js';
 
 type TextureViewFor = (texture: GPUTexture) => GPUTextureView;
@@ -95,56 +96,95 @@ export class SVGFRealDenoiser implements Denoiser {
     const fallbackSM = device.createShaderModule({
       label: 'svgf-7x7', code: composeWgsl(SVGF_7X7_SPATIAL_FALLBACK_MODULE, WGSL_MODULES),
     });
-    // SVGF-real reuses the atrous-variance kernel for spatial filtering.
     const atrousSM = device.createShaderModule({
-      label: 'svgf-real-atrous-variance', code: composeWgsl(ATROUS_VARIANCE_MODULE, WGSL_MODULES),
+      label: 'svgf-real-atrous', code: composeWgsl(SVGF_REAL_ATROUS_MODULE, WGSL_MODULES),
     });
 
     for (const [label, sm] of [
       ['svgf-reproj', reprojSM],
       ['svgf-moments', momentsSM],
       ['svgf-7x7', fallbackSM],
-      ['svgf-real-atrous-variance', atrousSM],
+      ['svgf-real-atrous', atrousSM],
     ] as [string, GPUShaderModule][]) {
       await checkShaderCompile(sm, label);
     }
 
     // ── Compile pipelines ─────────────────────────────────────────────────
-    [this._reprojPipeline, this._momentsPipeline, this._fallbackPipeline] =
-      await Promise.all([
-        device.createComputePipelineAsync({
-          label: 'svgf-real-reproj', layout: 'auto',
-          compute: { module: reprojSM, entryPoint: 'svgfReprojMain' },
-        }),
-        device.createComputePipelineAsync({
-          label: 'svgf-real-moments', layout: 'auto',
-          compute: { module: momentsSM, entryPoint: 'svgfVarianceFromMomentsMain' },
-        }),
-        device.createComputePipelineAsync({
-          label: 'svgf-real-7x7', layout: 'auto',
-          compute: { module: fallbackSM, entryPoint: 'svgf7x7FallbackMain' },
-        }),
-      ]);
-    this._atrousPipeline = await device.createComputePipelineAsync({
+    // Keep every candidate pipeline local until the matching UBO cohort is also
+    // complete. Reinitialization may target a different device; publishing only
+    // part of that generation would pair new-device pipelines with old-device
+    // buffers after any later failure.
+    const [reprojPipeline, momentsPipeline, fallbackPipeline] = await Promise.all([
+      device.createComputePipelineAsync({
+        label: 'svgf-real-reproj', layout: 'auto',
+        compute: { module: reprojSM, entryPoint: 'svgfReprojMain' },
+      }),
+      device.createComputePipelineAsync({
+        label: 'svgf-real-moments', layout: 'auto',
+        compute: { module: momentsSM, entryPoint: 'svgfVarianceFromMomentsMain' },
+      }),
+      device.createComputePipelineAsync({
+        label: 'svgf-real-7x7', layout: 'auto',
+        compute: { module: fallbackSM, entryPoint: 'svgf7x7FallbackMain' },
+      }),
+    ]);
+    const atrousPipeline = await device.createComputePipelineAsync({
       label: 'svgf-real-atrous', layout: 'auto',
-      compute: { module: atrousSM, entryPoint: 'svgfAtrousMain' },
+      compute: { module: atrousSM, entryPoint: 'svgfRealAtrousMain' },
     });
 
     // ── Eager reproj UBO allocation + default pack ────────────────────────
-    this._reprojUboRef.buf = device.createBuffer({
-      label: 'svgf-real-reproj-ubo',
-      size: SVGF_REPROJ_UNIFORMS_SIZE_BYTES,
-      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-    });
-    this._writeReprojUniforms(device, 0);
-
-    const atrousUsage = GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST;
-    for (let i = 0; i < this._atrousUboRefs.length; i += 1) {
-      this._atrousUboRefs[i]!.buf = device.createBuffer({
-        label: `svgf-real-atrous-ubo-${i}`,
-        size: ATROUS_VARIANCE_ATROUS_UNIFORMS_SIZE_BYTES,
-        usage: atrousUsage,
+    // createBuffer may fail at any allocation. Keep the candidate cohort local
+    // until it is complete so a partial initialize cannot leak buffers or
+    // replace a previously-live cohort on reinitialize.
+    let reprojUbo: GPUBuffer | undefined;
+    const atrousUbos: GPUBuffer[] = [];
+    try {
+      reprojUbo = device.createBuffer({
+        label: 'svgf-real-reproj-ubo',
+        size: SVGF_REPROJ_UNIFORMS_SIZE_BYTES,
+        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
       });
+      const reprojScratch = new ArrayBuffer(SVGF_REPROJ_UNIFORMS_SIZE_BYTES);
+      packSVGFReprojUniforms({
+        ...SVGF_REPROJ_DEFAULT_UNIFORMS,
+        forceReset: 0,
+      }, reprojScratch);
+      device.queue.writeBuffer(reprojUbo, 0, reprojScratch);
+
+      const atrousUsage = GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST;
+      for (let i = 0; i < this._atrousUboRefs.length; i += 1) {
+        atrousUbos.push(device.createBuffer({
+          label: `svgf-real-atrous-ubo-${i}`,
+          size: ATROUS_VARIANCE_ATROUS_UNIFORMS_SIZE_BYTES,
+          usage: atrousUsage,
+        }));
+      }
+    } catch (error) {
+      try { reprojUbo?.destroy(); } catch { /* preserve the allocation error */ }
+      for (const buffer of atrousUbos) {
+        try { buffer.destroy(); } catch { /* preserve the allocation error */ }
+      }
+      throw error;
+    }
+
+    const previousReprojUbo = this._reprojUboRef.buf;
+    const previousAtrousUbos = this._atrousUboRefs.map((ref) => ref.buf);
+    this._reprojPipeline = reprojPipeline;
+    this._momentsPipeline = momentsPipeline;
+    this._fallbackPipeline = fallbackPipeline;
+    this._atrousPipeline = atrousPipeline;
+    this._reprojUboRef.buf = reprojUbo;
+    for (let i = 0; i < this._atrousUboRefs.length; i += 1) {
+      this._atrousUboRefs[i]!.buf = atrousUbos[i];
+    }
+    this._lastForceReset = 0;
+    this._pingPong = 0;
+
+    // Retire the old cohort only after the complete replacement is published.
+    try { previousReprojUbo?.destroy(); } catch { /* replacement remains live */ }
+    for (const buffer of previousAtrousUbos) {
+      try { buffer?.destroy(); } catch { /* replacement remains live */ }
     }
   }
 
@@ -240,6 +280,8 @@ export class SVGFRealDenoiser implements Denoiser {
         { binding: 1, resource: textureViewFor(histWrite) },
         { binding: 2, resource: textureViewFor(svgf.svgfVarianceMomentsIntermedTexture) },
         { binding: 3, resource: textureViewFor(svgf.svgfVarianceTexture) },
+        { binding: 4, resource: textureViewFor(common.gNormalDepthTexture) },
+        { binding: 5, resource: textureViewFor(common.gNormalDepthTexture) },
       ],
     });
   }
@@ -267,7 +309,7 @@ export class SVGFRealDenoiser implements Denoiser {
     // ── Pass 1: Reprojection ─────────────────────────────────────────────
     // Bindings follow svgfReprojection.wgsl.ts binding declarations (0..14).
     // For the walkaround-hybrid pipeline, currDepth + currNormal come from
-    // gNormalDepthTexture (.r = depth packed, .xyz = normal packed 0..1).
+    // gNormalDepthTexture (.w = signed depth, .xyz = normal packed 0..1).
     // We use the current shade-authored G-buffer for curr depth/normal and the
     // previous-frame snapshot copied at the end of this dispatch for prev
     // depth/normal. Object IDs follow the same lifecycle: shade writes the
@@ -280,14 +322,8 @@ export class SVGFRealDenoiser implements Denoiser {
     const momWrite = this._selectPingPong(svgf.svgfMomentsTextureB, svgf.svgfMomentsTextureA);
     const radRead = this._selectPingPong(svgf.svgfPrevRadianceTextureA, svgf.svgfPrevRadianceTextureB);
     const radWrite = this._selectPingPong(svgf.svgfPrevRadianceTextureB, svgf.svgfPrevRadianceTextureA);
-    const hasRealObjectIdHistory =
-      svgf.svgfCurrentObjectIdTexture != null && svgf.svgfPreviousObjectIdTexture != null;
-    const currObjIdTexture = hasRealObjectIdHistory
-      ? svgf.svgfCurrentObjectIdTexture
-      : svgf.svgfObjIdPlaceholderTexture;
-    const prevObjIdTexture = hasRealObjectIdHistory
-      ? svgf.svgfPreviousObjectIdTexture
-      : svgf.svgfPrevObjIdPlaceholderTexture;
+    const currObjIdTexture = svgf.svgfCurrentObjectIdTexture;
+    const prevObjIdTexture = svgf.svgfPreviousObjectIdTexture;
 
     {
       const buildBg = (): GPUBindGroup => this._buildReprojBindGroup(
@@ -356,6 +392,7 @@ export class SVGFRealDenoiser implements Denoiser {
         histWrite,
         svgf.svgfVarianceMomentsIntermedTexture,
         svgf.svgfVarianceTexture,
+        common.gNormalDepthTexture,
       ], buildBg);
       const pass = encoder.beginComputePass(computeDesc('svgf-real-7x7'));
       pass.setPipeline(this._fallbackPipeline);
@@ -364,10 +401,15 @@ export class SVGFRealDenoiser implements Denoiser {
       pass.end();
     }
 
-    // Flip ping-pong for next frame (history, moments, prevRadiance).
-    this._pingPong = 1 - this._pingPong;
+    // History/moments/radiance become the next read side only after the frame
+    // submission is accepted. The wavelet chain below replaces radWrite's
+    // reprojection output with its first filtered level before that happens.
+    const nextPingPong = 1 - this._pingPong;
+    publishFrameState(ctx.publication, () => {
+      this._pingPong = nextPingPong;
+    });
 
-    // ── Pass 4: À-trous chain (svgfAtrousMain) ───────────────────────────
+    // ── Pass 4: variance-propagating real-SVGF à-trous chain ─────────────
     // Feed the EMA-blended reprojection output (radWrite) as the starting color.
     // Ping-pong with denoisedPing/Pong as usual.
     const sa = this._atrousPipeline;
@@ -411,6 +453,22 @@ export class SVGFRealDenoiser implements Denoiser {
           svgf.svgfVarianceTexture,
         ], buildBg);
       },
+      // Schied 2017 §4.3 feeds the first à-trous level—not the raw temporal
+      // reprojection—back as next frame's color history. Preserve that level
+      // in the write-side history texture before later wavelet levels reuse
+      // the denoised ping-pong pair.
+      afterIteration: (iter, _inputTex, outputTex) => {
+        if (iter !== 0) return;
+        encoder.copyTextureToTexture(
+          { texture: outputTex },
+          { texture: radWrite },
+          {
+            width: outputTex.width,
+            height: outputTex.height,
+            depthOrArrayLayers: 1,
+          },
+        );
+      },
       labelFor: (iter) => `svgf-real-atrous-${iter}` as PassLabel,
     });
     // Publish current-frame normal+depth for next-frame reprojection checks.
@@ -423,17 +481,15 @@ export class SVGFRealDenoiser implements Denoiser {
         depthOrArrayLayers: 1,
       },
     );
-    if (hasRealObjectIdHistory) {
-      encoder.copyTextureToTexture(
-        { texture: currObjIdTexture },
-        { texture: prevObjIdTexture },
-        {
-          width: currObjIdTexture.width,
-          height: currObjIdTexture.height,
-          depthOrArrayLayers: 1,
-        },
-      );
-    }
+    encoder.copyTextureToTexture(
+      { texture: currObjIdTexture },
+      { texture: prevObjIdTexture },
+      {
+        width: currObjIdTexture.width,
+        height: currObjIdTexture.height,
+        depthOrArrayLayers: 1,
+      },
+    );
     return denoised;
   }
 
@@ -451,5 +507,7 @@ export class SVGFRealDenoiser implements Denoiser {
       ref.buf?.destroy();
       ref.buf = undefined;
     }
+    this._lastForceReset = -1;
+    this._pingPong = 0;
   }
 }

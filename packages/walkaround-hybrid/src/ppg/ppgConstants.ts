@@ -54,6 +54,9 @@ export const PPG_DTREE_INITIAL_DEPTH = 2;
  */
 export const PPG_DEFAULT_SPATIAL_CELLS = 1_024;
 
+/** Public hard ceiling for the spatial-cell allocation. */
+export const PPG_MAX_SPATIAL_CELLS = 16_384;
+
 /**
  * Default maximum number of dTree nodes allocated per spatial cell.
  *
@@ -66,15 +69,23 @@ export const PPG_DEFAULT_SPATIAL_CELLS = 1_024;
 export const PPG_DEFAULT_MAX_DTREE_NODES_PER_CELL = 341;
 
 /**
+ * Maximum useful per-cell node count at the compiled depth-four limit.
+ * Accepting a larger allocation only wastes storage: the CPU refiner cannot
+ * make more than `1 + 4 + 16 + 64 + 256` reachable nodes.
+ */
+export const PPG_MAX_DTREE_NODES_PER_CELL = 341;
+
+/**
  * MIS mixing weight α — fraction of the guiding PDF used in the source-pdf
  * mixture `p_src = α·p_guide + (1−α)·p_cos` (Müller §3.4). This is consumed
  * live by the gi-ris guided sampling path: `risGi.wgsl` draws candidates from
  * the learned dTree and weights them by this α-mixture (see PPGCoordinator's
  * `misAlpha` UBO field).
  *
- * Set to 0.5 (equal guide/cosine weighting). A variance-reduction-driven
- * adaptive update is described in the paper (Müller §3.4); that variant is
- * tracked in plan/road-to-100.md (PPG adaptive alpha, future work).
+ * Fixed at 0.5 (equal guide/cosine weighting). This stable defensive mixture
+ * keeps cosine-proposal support wherever the diffuse target is non-zero while
+ * still exploiting the learned guide; both proposal PDFs are evaluated for
+ * every chosen direction before the importance weight is formed.
  */
 export const PPG_MIS_ALPHA = 0.5;
 

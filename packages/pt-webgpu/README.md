@@ -7,13 +7,10 @@ adapter tiers and row-level fidelity tracking.
 
 `@vitrum/pt-webgpu` is a peer WebGPU-native path tracing backend that runs
 alongside `@vitrum/pt-webgl2`, serving the same contract surface at different
-quality/capability tiers. Experimental posture is row-level or
-productionisation-specific, not a package-wide stub/prototype label. Until
-productionisation is complete:
+quality/capability tiers. Stable options fail before allocation when the chosen
+adapter tier or estimator composition cannot implement them.
 
-- **No public API stability**. Types, options, and binding shapes can
-  change in any commit.
-- **GPU-verified per-feature; not yet cross-backend pixel-diffed.** The
+- **GPU-verified per-feature.** The
   CPU/struct-layout audit (`plan/archive/pt-webgpu-deep-audit-archived-2026-05-28.md`)
   is closed (all HIGH + MEDIUM + LOW findings fixed or NOT-A-BUG by 2026-05-19),
   and as of 2026-06-04 **ten rendering rows are `supported`** in
@@ -21,9 +18,8 @@ productionisation is complete:
   deterministic reference (analytic / forward-traced) with a committed, sha-pinned
   baseline PNG (hero-λ spectral, spectral Beer–Lambert, thin-film TMM, Cauchy dispersion,
   layered front/back, SSS, multi-emitter, material-fields, MNEE caustic, BDPT). What does
-  **not** yet exist is an end-to-end *cross-backend parity* capture against `@vitrum/pt-webgl2`
-  on the full scenario matrix. So renders are validated correct per-feature,
-  but the two backends are not yet pixel-diffed against each other.
+  two backends intentionally retain different estimator and adapter profiles;
+  support is stated per row rather than inferred from pixel identity.
 - **`createEngine({ prefer: 'auto' })`** selects pt-webgpu when WebGPU is
   available and the scene has **≥ 500k triangles**; use `prefer:
   'quality-webgpu'` to force pt-webgpu on smaller scenes. Below 500k tris,
@@ -33,14 +29,12 @@ productionisation is complete:
 
 ## Implemented (verified clean)
 
-This package is now functional (no longer a stub) and the deep-audit
-findings are all closed; the experimental label is about productionisation,
-not baseline correctness. What's implemented:
+The deep-audit findings are closed. Implemented paths include:
 
 - Progressive accumulation renderer (compute shader)
 - CPU-built BVH with GPU BVH traversal; CPU TLAS build via `buildSceneTlas()` (`scene/tlasBridge.ts`) for multi-instance follow-up
 - Multi-bounce sampling (clamped by `maxBounces`)
-- Material-driven diffuse/specular/emissive shading with an experimental transmission/refraction branch
+- Material-driven diffuse/specular/emissive/transmission/refraction shading
 - Extended packed-material payload path with bounded rich scattering/layered/thin-film/spectral fields (**29 vec4s / material**: 8 thin-film layers × `(ior, thicknessNm, extinctionCoefficient)` plus stack `incidentIor` / `angleDependent`, 32 spectral samples, WS4 volumetric absorption coefficient σ_a, Disney/KHR scalar lobes, Jakob-Hanika spectral reflectance coefficients, `KHR_materials_specular`, and KHR volume thickness)
 - Full-tier material texture path for readable `TextureRef` handles: base color/emissive sRGB maps, normal/bump with authored/generated tangent frames, roughness/metallic/AO/light/alpha/transmission/thickness maps, per-map uv0/uv1 selection plus transform/wrap metadata, and clearcoat/sheen/iridescence/specular extension-lobe maps. See the promise ledger for native vs approximate rows.
 - Procedural-sky environment lighting controls (scene-driven tint/sun direction)
@@ -82,7 +76,8 @@ group-3 bindings 6–8, photon-emission pass from point/spot lights through the 
 camera-hit gather with α=2/3 progressive radius shrink seeded from the scene AABB.
 The prior per-pixel 32-photon approximation with hardcoded `gatherRadius=0.35` and
 `×1.25` brightness fudge is gone. Full-tier only (warn+degrade on lite). Radiometric
-A/B vs forward-traced oracle pending V28-B.
+The deterministic radiometric harness records convergence and bounded mean error
+against the manifold-NEE reference in `tools/radiometric-ab/results-sppm.json`.
 
 The **lite** tier exists only as a **CI / SwiftShader fallback** (often **10** /
 **4** limits in headless Chromium on Linux). WSL2 without GPU passthrough frequently
@@ -94,7 +89,7 @@ if the adapter cannot bind the full shader (so you know limits are wrong, not th
 features are missing).
 
 When the device cannot satisfy the full layout, the factory automatically selects
-**lite** (`capabilities.experimentalFeatures` includes `pt-webgpu-lite-tier`):
+**lite** (`capabilities.activeFeatures` includes `pt-webgpu-lite-tier`):
 
 | Tier | Limits | Features |
 |------|--------|----------|
@@ -118,12 +113,12 @@ Mechanical parity for the native WebGL2 path tracer is **implemented** for:
 - **Skinned-mesh pose solving (2026-06-10):** `solveSkin` runs at ingestion + re-runs on `bones`/morphTargets patches. Ledger grade `skinned-mesh: 'native'`.
 - `updatePrimitive` / `updateEmitter` incremental APIs (see ledger)
 - Hero-wavelength spectral (opt-in extension), Cauchy IOR at hero λ, layered MIS
-- Volumetric subsurface scattering (WS4): homogeneous participating-media random walk — free-flight distance sampling (`t = -ln(1-ξ)/σ_t`), Henyey-Greenstein phase scatter, single-scatter albedo σ_s/σ_t, in-medium next-event estimation with phase↔light power-heuristic MIS, and specular-chain Beer-Lambert extinction in the caustic path. σ_t = σ_a (from `attenuationColor`/`attenuationDistance`, or the spectral curve when authored) + σ_s (`scatteringCoefficient(RGB)`); g = `scatteringAnisotropy`. The walk is **compiled out when BDPT is enabled** (the BDPT light subpath has no medium logic — energy-conservation gate), falling back to per-channel Beer-Lambert absorption. The compatibility (lite) tier keeps Beer-Lambert absorption only (no walk).
+- Volumetric subsurface scattering (WS4): homogeneous participating-media random walk — free-flight distance sampling (`t = -ln(1-ξ)/σ_t`), Henyey-Greenstein phase scatter, single-scatter albedo σ_s/σ_t, in-medium next-event estimation with phase↔light power-heuristic MIS, and specular-chain Beer-Lambert extinction in the caustic path. σ_t = σ_a (from `attenuationColor`/`attenuationDistance`, or the spectral curve when authored) + σ_s (`scatteringCoefficient(RGB)`); g = `scatteringAnisotropy`. BDPT carries the same medium-stack state, free-flight vertices, directional densities, and connection-edge transmittance. The compatibility (lite) tier keeps Beer-Lambert absorption only (no walk).
 - `denoiser: 'auto'` / `'oidn-final'` with aux readback
 
-**Denoisers on pt-webgpu:** `'none'`, `'auto'`, `'oidn-final'`. `auto` resolves to host OIDN when `oidn: { modelUrl }` exists, otherwise no-denoise with a structured warning. Any other mode (incl. `'svgf-real'`) warns and degrades to no-denoise — SVGF is a real-time 1-spp filter, the wrong regime for a converged tracer.
+**Denoisers on pt-webgpu:** `'none'`, `'auto'`, `'oidn-final'`. `auto` resolves to host OIDN when `oidn: { modelUrl }` exists, otherwise no-denoise with a structured warning. Any other explicit mode (incl. `'svgf-real'`) fails construction instead of silently selecting another estimator — SVGF is a real-time 1-spp filter, the wrong regime for a converged tracer.
 
-**BDPT (WG-7):** `extensions['vitrum.ptWebgpu.bdpt'] = true`, `bdptMaxLightBounces` 1–8, optional `engine.bdptAdvanceFrame(view)`; a GPU `bdptExtendLightSubpath` @compute pass fills the light subpath into a storage buffer, consumed by `evaluateBdptConnection` in the full-tier kernel. CPU oracles pin finite-area endpoint radiometry, one-bounce diffuse light tracing, light-vertex BSDF connection, and MIS recurrence.
+**BDPT (WG-7):** `bdpt: true` with `bdptOptions.maxLightBounces` 1–8 (default 2); a GPU `bdptExtendLightSubpath` compute pass fills the light subpath into a storage buffer, consumed by `evaluateBdptConnection` in the full-tier kernel. CPU oracles pin finite-area endpoint radiometry, medium sentinels, one-bounce diffuse light tracing, light-vertex BSDF connection, estimator ownership, and the full MIS recurrence.
 
 Visual sign-off uses `npm run benchmark:gap-closure` on a WebGPU-capable host (`plan/archive/WG-signoff-2026-05-26-archived-2026-05-28.md`).
 
@@ -143,13 +138,11 @@ Visual sign-off uses `npm run benchmark:gap-closure` on a WebGPU-capable host (`
 - **Material-lobe proof boundary:** full-tier texture-map plumbing is implemented, but some
   extension-lobe rows remain graded `approximate` until inverse/adjoint gradients and
   material-furnace/reference A/B prove the same texture-modulated parameters across the
-  sampled eye, ReSTIR-PT, and BDPT paths. The path-replay inverse slice now replays
-  camera-direct `emissiveMap` texels for `emissive` / `emissiveIntensity`, plus local
-  baseColor/COLOR_0/AO, roughness/metallic, specular, clearcoat, sheen, iridescence,
-  and anisotropy map factors inside the scoped direct-light adjoint domain. Alpha-map
-  visibility, normal/bump/light/transmission/thickness/displacement and clearcoat-normal
-  maps, layered/volume/spectral domains, indirect/environment emission, and full
-  stochastic area sampling still use finite difference or remain validation tails.
+  sampled eye, ReSTIR-PT, and BDPT paths. Private adjoint kernels cover a wider local
+  direct-light derivative domain for validation, but the public path-replay contract is
+  deliberately narrower: full tier, one bounce, material `emissive` only. Lite and every
+  other field/transport regime must use explicit finite difference; requesting path replay
+  outside the certified domain throws before creating a session or mutating scene values.
 - **`denoiser: 'auto'` / `'oidn-final'` is NOT turnkey** — `auto`
   resolves at construction to host OIDN when `oidn: { modelUrl }` exists,
   otherwise to no-denoise with a structured

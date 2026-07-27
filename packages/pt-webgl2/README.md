@@ -37,22 +37,22 @@ Force a tier with `traceTier: 'full' | 'lite'` in options.
 | Analytic shapes (sphere, box, capsule, cylinder, h-channel came) | Supported as generated mesh fallback (`fallback-generated-mesh`) |
 | Emitters: directional, point, spot, rect-area, disc-area, mesh-area | Supported |
 | Environment: none, hdri | Supported (HDRI requires raw `{width, height, data}` RGB float payload) |
-| Spectral hero-wavelength (`spectral: true`) | Implemented, but fidelity-promotion pending: CIE CMF reconstruction plus per-material Jakob-Hanika reflectance coefficients are wired; `plan/renderer-fidelity-matrix.md` keeps the pt-webgl2 row `experimental` until runtime A/B evidence lands. |
-| Bidirectional path tracing (`bdpt: true`) | Implemented, but fidelity-promotion pending: host opt-in (`bdpt: true`); analytic, mesh-area, and HDRI environment light subpath passes are driven on any driver. No ANGLE-specific gating exists — `EXT_disjoint_timer_query` is NOT used as a gate. `plan/renderer-fidelity-matrix.md` keeps the pt-webgl2 row `approximate` until visual A/B promotion lands. |
-| `backgroundAlpha` | Supported (0 = transparent background; <1 forces alpha-composite regime) |
+| Spectral hero-wavelength (`spectral: true`) | Supported — CIE CMF importance sampling/reconstruction, per-material Jakob-Hanika reflectance, packed spectral attenuation, thin-film, and Cauchy dispersion are uploaded and consumed by the active trace path. |
+| Bidirectional path tracing (`bdpt: true`) | Supported bounded general BDPT — 1–8 stored light vertices (default 4), finite c=0 and c≥1 surface/medium connections, nested-medium Beer/HG transport, and Veach power-heuristic MIS. Analytic, mesh-area, and HDRI light subpaths are supported. |
+| `backgroundAlpha` | Supported (0 = transparent background; coverage is preserved by the portable alpha-aware running mean on every device) |
 | Analytic lights NEE (`lights.count`) | Supported (H1 fix) |
 | Texture atlas (material maps) | Supported — raw `{width,height,data}` or DataTexture-shaped |
-| Caustic strategy `'manifold-nee'` | Heuristic refraction-walk (NOT Newton-solve MNEE — see options.ts) |
-| Caustic strategy `'photon-map'` | Deterministic cone-traced estimate (known ~21% energy approximation) |
+| Caustic strategy `'bdpt'` | Supported alias for the same bounded general estimator as `bdpt: true`; tune with `bdptOptions.maxLightBounces`. |
+| MNEE / SPPM (`'manifold-nee'`, `'photon-map'`) | Unsupported and rejected by the strict option validator; use the pt-webgpu full tier for these estimators. |
 | Denoiser `auto` / `oidn-final` | `auto` resolves to host OIDN when `oidn: { modelUrl }` exists, otherwise no-denoise with a structured warning. Explicit `oidn-final` is supported as an async final-pass CPU result and requires host `oidn: { modelUrl }` plus optional `onnxruntime-web`; full tier supplies HDR + albedo + normal aux, lite tier supplies HDR color. Retrieve with `getLatestDenoised()` and observe state via `FrameStats.denoiserState`. |
 
-## Known gaps
+## Deliberate backend boundaries
 
-- **BDPT** (`bdpt: true`): BDPT is implemented and host-driven (A5). Light subpaths sample analytic and mesh-area `Scene.emitters` plus HDRI environment sources via the same pseudo-distant endpoint model used by the WebGPU backend. No ANGLE-specific gating exists — there is no `EXT_disjoint_timer_query` gate and no driver detection path. `bdpt: true` defaults to endpoint-only light-subpath depth (`bdptOptions.maxLightBounces: 1`), matching the safe-default proof posture. Explicit `bdptOptions.maxLightBounces > 1` opts into the current multi-vertex research path, capped at the WebGL2 backend's 3-column light-path texture with structured warnings.
-- **Realtime denoisers**: `atrous`, `atrous-variance`, `svgf-real`, `bmfr`, and `neural` remain unsupported on this converged WebGL2 backend and warn/degrade to no-denoise. Use `auto` with host OIDN config or explicit `oidn-final` for final-pass denoising.
-- **`rotationY` implemented (H6)**: `makeRotationYMat4(-rotationY)` is uploaded as `environmentRotation`; the GLSL equirect lookup applies `mat3(environmentRotation) * worldDir` so the environment dome rotates CCW. Default `rotationY = 0` is byte-identical to pre-H6. pt-webgpu implements the same convention via `params.environmentTint.w` (packed rotY) consumed by `rotateYNeg`/`rotateYPos` helpers in `connect.wgsl.ts`. walkaround-hybrid also consumes `rotationY` (HybridEngine.ts:2061,2072 pass it through to DDGI and DDGI-probe-update; `environmentSample.wgsl.ts` applies `envRotateYNeg`).
-- **Mesh-area NEE**: mesh-area emitters are sampled via explicit triangle-light NEE (B4, 2026-06-10) — area-weighted random triangle selection with shadow ray. Also visible via emissive fold on direct camera hits.
-- **Spectral promotion evidence**: spectral mode uploads CIE CMFs and per-material Jakob-Hanika reflectance coefficients and evaluates them in the surface path. Remaining work is validation/promotion for dispersion, SSS, and spectral specialty scenes rather than missing coefficient upload.
+- **Realtime denoisers**: `atrous`, `atrous-variance`, `svgf-real`, `bmfr`, and `neural` are outside this converged backend and are rejected by the strict construction validator. Use `auto` with host OIDN config or explicit `oidn-final` for final-pass denoising.
+- **Caustic-estimator breadth**: this backend provides BDPT. Newton MNEE and SPPM are not option values and fail closed; those estimators are implemented by the pt-webgpu full tier.
+- **SSS model**: translucent surfaces use one back-face single-scatter event with a scalar free-flight majorant, per-channel scattering albedo, and Henyey–Greenstein phase. This is intentionally narrower than pt-webgpu's native volume path.
+- **Mesh-area stream**: mesh-area emitters use the dedicated triangle-light NEE/MIS stream rather than the six-texel analytic-light stream. They are sampled area/power-weighted and remain visible through the emissive fold.
+- **Environment rotation**: `rotationY` is uploaded as `environmentRotation`; GLSL applies the same negative lookup rotation convention as pt-webgpu and walkaround-hybrid.
 
 ## Minimal usage snippet
 

@@ -7,13 +7,13 @@
  *   Eq. 2 — Per-tap disocclusion test: reject if relative depth deviation
  *            > σ_z, if normal dot-product < σ_n, or object-id mismatch.
  *   Eq. 3 — History length: h ← h_prev + 1 (accept) or h ← 1 (reject).
- *   Eq. 4 — EMA α-clamp: α = max(α_min, 1 / (h + 1)), applied to
+ *   Eq. 4 — EMA α-clamp: α = max(α_min, 1 / h), applied to
  *            color, M1 (first moment), and M2 (second moment).
  *
  * Bind group 0 layout (one entry point: svgfReprojMain):
  *   binding 0 — texture_2d<f32>                       currColor        (rgba16float noisy current frame)
  *   binding 1 — texture_2d<f32>                        prevColor        (rgba16float previous frame EMA output)
- *   binding 2 — texture_2d<f32>                        motionVec        (rg32float screen-space UV delta)
+ *   binding 2 — texture_2d<f32>                        motionVec        (rg32float previous-minus-current pixel delta)
  *   binding 3 — texture_2d<f32>                        currDepth        (r32float or rgba16float .r linear depth)
  *   binding 4 — texture_2d<f32>                        currNormal       (rgba16float .xyz world-normal packed 0..1)
  *   binding 5 — texture_2d<u32>                        currObjId        (r8uint or r16uint object identifier)
@@ -41,11 +41,20 @@
  */
 
 import { LUMINANCE_WGSL } from '@vitrum/shared-samplers';
+import {
+  STANDALONE_DEPTH_TEXTURE_LAYOUT,
+  normalDepthWgslDepthComponent,
+  type NormalDepthTextureLayout,
+} from '../normalDepthEncoding.js';
 
 /** Must match @workgroup_size in svgfReprojMain. */
 export const SVGF_REAL_REPROJECTION_WORKGROUP_SIZE = 16 as const;
 
-export const SVGF_REPROJECTION_WGSL = /* wgsl */ `
+export function buildSvgfReprojectionWgsl(
+  depthLayout: NormalDepthTextureLayout = STANDALONE_DEPTH_TEXTURE_LAYOUT,
+): string {
+  const depthComponent = normalDepthWgslDepthComponent(depthLayout);
+  return /* wgsl */ `
 ${LUMINANCE_WGSL}
 // ============================================================
 // SVGFReprojUBO — tunable disocclusion + EMA constants
@@ -108,9 +117,15 @@ fn tapValid(
 ) -> bool {
   if (any(pCoord >= dims)) { return false; }
 
-  let zPrev = textureLoad(reproj_prevDepth,  pCoord, 0).r;
+  let zPrev = textureLoad(reproj_prevDepth,  pCoord, 0).${depthComponent};
   let nPrev = textureLoad(reproj_prevNormal, pCoord, 0).xyz * 2.0 - 1.0;
   let oPrev = textureLoad(reproj_prevObjId,  pCoord, 0).r;
+
+  // Packed walkaround depth uses the sign bit as a glass-primary marker.
+  // Glass radiance is deterministic and bypasses the spatial filter, so it
+  // deliberately starts a fresh temporal history instead of relying on signed
+  // values in the relative-depth expression below.
+  if (zCurr < 0.0 || zPrev < 0.0) { return false; }
 
   // Depth test — relative deviation (Schied Eq. 2, first clause).
   // Use max(z,zPrev) in denominator so the test is symmetric.
@@ -139,7 +154,7 @@ fn svgfReprojMain(@builtin(global_invocation_id) gid: vec3u) {
 
   // Current-frame G-buffer values.
   let currColor = textureLoad(reproj_currColor,  gid.xy, 0).rgb;
-  let zCurr     = textureLoad(reproj_currDepth,  gid.xy, 0).r;
+  let zCurr     = textureLoad(reproj_currDepth,  gid.xy, 0).${depthComponent};
   // Normal is packed 0..1 → world-space by *2-1.
   let nCurr     = textureLoad(reproj_currNormal, gid.xy, 0).xyz * 2.0 - 1.0;
   let objIdCurr = textureLoad(reproj_currObjId,  gid.xy, 0).r;
@@ -213,7 +228,7 @@ fn svgfReprojMain(@builtin(global_invocation_id) gid: vec3u) {
     // Eq. 3 — history increment.
     newHistory = u32(accHistory) + 1u;
     // Eq. 4 — EMA alpha clamp.
-    alpha = max(alphaMin, 1.0 / f32(newHistory + 1u));
+    alpha = max(alphaMin, 1.0 / f32(newHistory));
   } else {
     // Disocclusion: reset history to 1, use only current frame.
     newHistory = 1u;
@@ -237,3 +252,7 @@ fn svgfReprojMain(@builtin(global_invocation_id) gid: vec3u) {
   textureStore(reproj_momentsOut,  gid.xy, vec4f(newM1, newM2, 0.0, 0.0));
 }
 `;
+}
+
+/** Standalone ABI: current/previous depth are dedicated R textures. */
+export const SVGF_REPROJECTION_WGSL = buildSvgfReprojectionWgsl();

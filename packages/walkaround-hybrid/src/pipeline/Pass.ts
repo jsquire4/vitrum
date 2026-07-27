@@ -34,6 +34,7 @@ import type { FrameResources } from './resourceManager.js';
 import type { PassLabel } from './timestampQueries.js';
 import type { PipelineFrameInputs } from './pipelineFrameInputs.js';
 import type { PipelineResourceCache } from './PipelineResourceCache.js';
+import type { FramePublication } from './FramePublication.js';
 
 /** Engine-state surface a pass may inspect when deciding whether to run.
  *  Kept structural so this module does not import HybridEngineOptions. */
@@ -125,6 +126,11 @@ export interface PassDispatchContext {
   readonly frameIndex: number;
   /** Strictly-monotonic frame counter (does NOT reset). */
   readonly frameCount: number;
+  /**
+   * Commit boundary for persistent CPU history/ping-pong state. Production
+   * renderFrame always supplies this; standalone pass harnesses may omit it.
+   */
+  readonly publication?: FramePublication;
   /** Cache of universal BGLs (frame/scene/ubo/composite/accum/atrous/…). */
   readonly bglCache: BGLCache;
   /** Persistent frame resources. */
@@ -139,6 +145,12 @@ export interface PassDispatchContext {
   /** Pre-built DDGI hybrid-layers bind group (slot 3) — used by gi-ris + shade. */
   readonly hybridLayersBindGroup: GPUBindGroup;
   readonly shadeHybridLayersBindGroup: GPUBindGroup;
+  /** Build the OIT-specific group that combines the live DDGI/RC receiver
+   * inputs with this frame's background/output textures. */
+  readonly buildTransparentOitBindGroup: (
+    background: GPUTexture,
+    output: GPUTexture,
+  ) => GPUBindGroup;
   /** Pre-built light-tree bind group (slot 3) — RIS-only DI light selection. */
   readonly lightTreeBindGroup: GPUBindGroup;
   /** Workgroup counts — 8×8 (wgX/wgY), 16×16 (wgX16/wgY16),

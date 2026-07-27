@@ -13,6 +13,7 @@ function oneMeshSceneWithBadBaseColorTexture(): Scene {
         id: 'mesh-a',
         positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
         normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+        uvs: new Float32Array([0, 0, 1, 0, 0, 1]),
         material: {
           baseColor: [1, 1, 1],
           roughness: 0.5,
@@ -81,6 +82,7 @@ function makeDevice(): GPUDevice {
       writeBuffer: vi.fn(),
       writeTexture: vi.fn(),
       copyExternalImageToTexture: vi.fn(),
+      submit: vi.fn(),
     },
     createBuffer: vi.fn((desc: GPUBufferDescriptor) => ({
       label: desc.label,
@@ -88,11 +90,15 @@ function makeDevice(): GPUDevice {
       destroy: vi.fn(),
     })),
     ...textureStubMethods(),
-    createCommandEncoder: vi.fn(),
+    createCommandEncoder: vi.fn(() => ({
+      copyTextureToTexture: vi.fn(),
+      finish: vi.fn(() => ({})),
+    })),
     limits: {
       maxStorageBuffersPerShaderStage: PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
       maxStorageTexturesPerShaderStage: 8,
       maxTextureDimension2D: 8192,
+      maxTextureArrayLayers: 2048,
     },
     addEventListener: vi.fn(),
     removeEventListener: vi.fn(),
@@ -102,25 +108,16 @@ function makeDevice(): GPUDevice {
 
 describe('uploadPackedScene warning propagation', () => {
 
-  it('surfaces direct-core high-UV material map drops as structured warnings', () => {
+  it('preserves direct-core high-UV material maps without a drop warning', () => {
     installGpuConstStubs();
     const device = makeDevice();
     const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
       const uploaded = uploadPackedScene(device, buildPackedScene(oneMeshSceneWithHighUvBaseColorTexture()));
-      expect(uploaded.structuredWarnings).toEqual(expect.arrayContaining([
+      expect(uploaded.uvSetTexCoords).toEqual([0, 1, 3]);
+      expect(uploaded.structuredWarnings).not.toEqual(expect.arrayContaining([
         expect.objectContaining({
           code: 'pt-webgpu.material-texture-unsupported-texcoord',
-          backend: 'pt-webgpu',
-          phase: 'setScene',
-          method: 'setScene',
-          details: expect.objectContaining({
-            materialIndex: 0,
-            field: 'baseColorMap',
-            texCoord: 3,
-            supportedTexCoords: [0, 1],
-            fallback: 'map-ignored',
-          }),
         }),
       ]));
     } finally {
@@ -155,12 +152,14 @@ describe('uploadPackedScene warning propagation', () => {
       createBindGroup: vi.fn(() => ({})),
       createCommandEncoder: vi.fn(() => ({
         beginRenderPass: vi.fn(() => ({ setPipeline: vi.fn(), setViewport: vi.fn(), setBindGroup: vi.fn(), draw: vi.fn(), end: vi.fn() })),
+        copyTextureToTexture: vi.fn(),
         finish: vi.fn(() => ({})),
       })),
       limits: {
         maxStorageBuffersPerShaderStage: PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
         maxStorageTexturesPerShaderStage: 8,
         maxTextureDimension2D: 8192,
+        maxTextureArrayLayers: 2048,
       },
       addEventListener: vi.fn(), removeEventListener: vi.fn(), lost: new Promise<never>(() => {}),
     } as unknown as GPUDevice;
@@ -235,14 +234,12 @@ describe('uploadPackedScene warning propagation', () => {
     }
   });
 
-  it('does not warn for bump sampler policy because bump height reads consume the policy natively', () => {
+  it('does not warn for bump sampler policy because exact material sampling consumes it natively', () => {
     installGpuConstStubs();
     const device = makeDevice();
     const uploaded = uploadPackedScene(device, buildPackedScene(oneMeshSceneWithBumpSamplerPolicy()));
 
-    expect(uploaded.structuredWarnings.some((warning) =>
-      warning.code === 'pt-webgpu.material-texture-sampler-policy-approximation',
-    )).toBe(false);
+    expect(uploaded.structuredWarnings).toEqual([]);
   });
 
   it('emits upload-time material texture failures through Engine.onWarning', async () => {

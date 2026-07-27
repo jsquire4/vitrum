@@ -12,6 +12,7 @@
 import type { GltfJson, GltfNode } from './gltfTypes.js';
 import { asMat4 } from '@vitrum/core';
 import type { Mat4 } from '@vitrum/core';
+import type { ImportResourceLedger } from './importResourceBudget.js';
 
 /** Identity 4×4 column-major matrix. */
 export const IDENTITY_MAT4 = new Float32Array([
@@ -21,8 +22,24 @@ export const IDENTITY_MAT4 = new Float32Array([
   0, 0, 0, 1,
 ]);
 
+function chargeMatrixAllocation(
+  resourceLedger: ImportResourceLedger | undefined,
+  allocationPath: string,
+): void {
+  resourceLedger?.chargeDecodedGeometryBytes(
+    16 * Float32Array.BYTES_PER_ELEMENT,
+    allocationPath,
+  );
+}
+
 /** Multiply two column-major 4×4 matrices: result = a * b. */
-export function mat4Mul(a: ArrayLike<number>, b: ArrayLike<number>): Float32Array {
+export function mat4Mul(
+  a: ArrayLike<number>,
+  b: ArrayLike<number>,
+  resourceLedger?: ImportResourceLedger,
+  allocationPath = 'matrix multiplication result',
+): Float32Array {
+  chargeMatrixAllocation(resourceLedger, allocationPath);
   const out = new Float32Array(16);
   for (let col = 0; col < 4; col++) {
     for (let row = 0; row < 4; row++) {
@@ -37,7 +54,11 @@ export function mat4Mul(a: ArrayLike<number>, b: ArrayLike<number>): Float32Arra
 }
 
 /** Invert a column-major 4x4 matrix. Returns null for singular matrices. */
-export function mat4Invert(m: ArrayLike<number>): Float32Array | null {
+export function mat4Invert(
+  m: ArrayLike<number>,
+  resourceLedger?: ImportResourceLedger,
+  allocationPath = 'matrix inverse',
+): Float32Array | null {
   const a00 = m[0]!, a01 = m[1]!, a02 = m[2]!, a03 = m[3]!;
   const a10 = m[4]!, a11 = m[5]!, a12 = m[6]!, a13 = m[7]!;
   const a20 = m[8]!, a21 = m[9]!, a22 = m[10]!, a23 = m[11]!;
@@ -61,6 +82,7 @@ export function mat4Invert(m: ArrayLike<number>): Float32Array | null {
   if (!Number.isFinite(det) || Math.abs(det) < 1e-12) return null;
   const invDet = 1.0 / det;
 
+  chargeMatrixAllocation(resourceLedger, allocationPath);
   const out = new Float32Array(16);
   out[0] = (a11 * b11 - a12 * b10 + a13 * b09) * invDet;
   out[1] = (a02 * b10 - a01 * b11 - a03 * b09) * invDet;
@@ -91,64 +113,64 @@ function normalizeQuat(q: [number, number, number, number]): [number, number, nu
   return [q[0] / len, q[1] / len, q[2] / len, q[3] / len];
 }
 
-/** Quaternion xyzw → column-major 4×4 rotation matrix. */
-function quatToMat4(qIn: [number, number, number, number]): Float32Array {
-  const [x, y, z, w] = normalizeQuat(qIn);
-  const out = new Float32Array(16);
-  // Column-major:
-  out[0] = 1 - 2 * (y * y + z * z);
-  out[1] = 2 * (x * y + z * w);
-  out[2] = 2 * (x * z - y * w);
-  out[3] = 0;
-
-  out[4] = 2 * (x * y - z * w);
-  out[5] = 1 - 2 * (x * x + z * z);
-  out[6] = 2 * (y * z + x * w);
-  out[7] = 0;
-
-  out[8] = 2 * (x * z + y * w);
-  out[9] = 2 * (y * z - x * w);
-  out[10] = 1 - 2 * (x * x + y * y);
-  out[11] = 0;
-
-  out[12] = 0; out[13] = 0; out[14] = 0; out[15] = 1;
-  return out;
-}
-
 /** Build a column-major 4×4 matrix from TRS. */
 export function composeTrsMat4(
   t: [number, number, number],
   r: [number, number, number, number],
   s: [number, number, number],
+  resourceLedger?: ImportResourceLedger,
+  allocationPath = 'composed TRS matrix',
 ): Float32Array {
-  // Scale matrix
-  const S = new Float32Array(IDENTITY_MAT4);
-  S[0] = s[0]; S[5] = s[1]; S[10] = s[2];
+  const [x, y, z, w] = normalizeQuat(r);
+  const sx = s[0];
+  const sy = s[1];
+  const sz = s[2];
+  chargeMatrixAllocation(resourceLedger, allocationPath);
+  const out = new Float32Array(16);
 
-  // Rotation matrix
-  const R = quatToMat4(r);
+  // M = T · R · S, written directly in column-major form. The previous
+  // implementation materialised S, R, T and two multiplication results; this
+  // single allocation is both cheaper and exactly budgetable.
+  out[0] = (1 - 2 * (y * y + z * z)) * sx;
+  out[1] = (2 * (x * y + z * w)) * sx;
+  out[2] = (2 * (x * z - y * w)) * sx;
+  out[3] = 0;
 
-  // Translation matrix
-  const T = new Float32Array(IDENTITY_MAT4);
-  T[12] = t[0]; T[13] = t[1]; T[14] = t[2];
+  out[4] = (2 * (x * y - z * w)) * sy;
+  out[5] = (1 - 2 * (x * x + z * z)) * sy;
+  out[6] = (2 * (y * z + x * w)) * sy;
+  out[7] = 0;
 
-  // M = T * R * S
-  return mat4Mul(T, mat4Mul(R, S));
+  out[8] = (2 * (x * z + y * w)) * sz;
+  out[9] = (2 * (y * z - x * w)) * sz;
+  out[10] = (1 - 2 * (x * x + y * y)) * sz;
+  out[11] = 0;
+
+  out[12] = t[0];
+  out[13] = t[1];
+  out[14] = t[2];
+  out[15] = 1;
+  return out;
 }
 
 /** Extract the local matrix from a glTF node (matrix || TRS || identity). */
-export function nodeLocalMatrix(node: GltfNode): Float32Array {
+export function nodeLocalMatrix(
+  node: GltfNode,
+  resourceLedger?: ImportResourceLedger,
+  allocationPath = 'node local matrix',
+): Float32Array {
   if (node.matrix) {
     if (node.matrix.length !== 16) {
       throw new Error('[vitrum/gltf-adapter] Node matrix must have 16 elements');
     }
+    chargeMatrixAllocation(resourceLedger, allocationPath);
     return new Float32Array(node.matrix);
   }
 
   const t: [number, number, number] = node.translation ?? [0, 0, 0];
   const r: [number, number, number, number] = node.rotation ?? [0, 0, 0, 1];
   const s: [number, number, number] = node.scale ?? [1, 1, 1];
-  return composeTrsMat4(t, r, s);
+  return composeTrsMat4(t, r, s, resourceLedger, allocationPath);
 }
 
 /**
@@ -160,13 +182,15 @@ export function nodeLocalMatrix(node: GltfNode): Float32Array {
 export function buildWorldTransforms(
   gltf: GltfJson,
   rootNodeIndices: number[],
+  resourceLedger?: ImportResourceLedger,
+  allocationPath = 'scene node transforms',
 ): Map<number, Mat4> {
   const result = new Map<number, Mat4>();
   const nodes = gltf.nodes ?? [];
 
   // Iterative DFS to avoid stack overflow on deep hierarchies.
   const stack: Array<{ nodeIdx: number; parentWorld: Float32Array }> = rootNodeIndices.map(
-    (idx) => ({ nodeIdx: idx, parentWorld: new Float32Array(IDENTITY_MAT4) }),
+    (idx) => ({ nodeIdx: idx, parentWorld: IDENTITY_MAT4 }),
   );
 
   while (stack.length > 0) {
@@ -175,8 +199,18 @@ export function buildWorldTransforms(
     if (!node) continue;
     if (result.has(entry.nodeIdx)) continue; // cycle guard
 
-    const local = nodeLocalMatrix(node);
-    const world = mat4Mul(entry.parentWorld, local);
+    const nodePath = `${allocationPath}.nodes[${entry.nodeIdx}]`;
+    const local = nodeLocalMatrix(
+      node,
+      resourceLedger,
+      `${nodePath}.localMatrix`,
+    );
+    const world = mat4Mul(
+      entry.parentWorld,
+      local,
+      resourceLedger,
+      `${nodePath}.worldMatrix`,
+    );
     result.set(entry.nodeIdx, asMat4(world));
 
     for (const childIdx of node.children ?? []) {

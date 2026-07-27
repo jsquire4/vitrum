@@ -21,6 +21,25 @@ export const DDGI_MATERIAL_STRIDE_BYTES = MATERIAL_ENTRY_STRIDE_BYTES;
 /** Float stride of one MaterialEntry (64 bytes = 16 × f32). */
 export const DDGI_MATERIAL_ENTRY_FLOATS = MATERIAL_ENTRY_FLOATS;
 
+/** Reject a scene that cannot be represented by the compiled DDGI table. */
+export function assertDDGIMaterialCapacity(
+  materialCount: number,
+  maxMaterials: number,
+): void {
+  if (!Number.isSafeInteger(maxMaterials) || maxMaterials < 1) {
+    throw new RangeError('[DDGI] maxMaterials must be a positive safe integer.');
+  }
+  if (!Number.isSafeInteger(materialCount) || materialCount < 0) {
+    throw new RangeError('[DDGI] material count must be a non-negative safe integer.');
+  }
+  if (materialCount > maxMaterials) {
+    throw new RangeError(
+      `[DDGI] Scene has ${materialCount} materials but the compiled probe table ` +
+      `has ${maxMaterials} slots. Raise ddgiMaxMaterials before publishing the scene.`,
+    );
+  }
+}
+
 function pbrToMaterialEntryInput(mat: PbrScalarSource): MaterialEntryInput {
   const pbr = extractPbrScalars(mat);
   return {
@@ -43,6 +62,7 @@ export function packDDGIMaterials(mats: readonly PbrScalarSource[]): ArrayBuffer
 
 /** Pack with an explicit max slot count (matches WGSL compile-time array size). */
 export function packDDGIMaterialsN(mats: readonly PbrScalarSource[], maxMaterials: number): ArrayBuffer {
+  assertDDGIMaterialCapacity(mats.length, maxMaterials);
   const inputs = mats.map(pbrToMaterialEntryInput);
   const out = packMaterials(inputs, maxMaterials);
   return out.buffer as ArrayBuffer;
@@ -66,6 +86,7 @@ export function packDDGIMaterialsFromCoreN(
   mats: readonly MaterialSpec[],
   maxMaterials: number,
 ): ArrayBuffer {
+  assertDDGIMaterialCapacity(mats.length, maxMaterials);
   const inputs = mats.map((m) => coreMaterialToMaterialEntry(toProductionEmissiveRadiance(m)));
   const out = packMaterials(inputs, maxMaterials);
   return out.buffer as ArrayBuffer;

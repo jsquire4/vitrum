@@ -112,6 +112,93 @@ describe('ReGIRCoordinator.dispose', () => {
     coord.dispose();
     expect(coord.gridRegionBytes()).toBe(before);
   });
+
+  it('computes grid bytes exactly beyond the signed-32-bit range', () => {
+    const coord = new ReGIRCoordinator(resolveReGIRConfig({
+      enabled: true,
+      cellsPerAxis: 512,
+      survivorsPerCell: 2,
+    }));
+    expect(coord.gridRegionBytes()).toBe(2_147_483_648);
+  });
+
+  it('rejects an enormous grid at the narrower WGSL addressability boundary', () => {
+    expect(() => resolveReGIRConfig({
+      enabled: true,
+      cellsPerAxis: 131_072,
+      survivorsPerCell: 1,
+    })).toThrow(/WGSL u32/);
+  });
+
+  it.each([
+    ['cellsPerAxis', 0x1_0000_0000],
+    ['candidatesPerCell', 0x1_0000_0000],
+    ['survivorsPerCell', 0x1_0000_0000],
+  ] as const)('rejects %s values that cannot be uploaded as WGSL u32', (key, value) => {
+    expect(() => resolveReGIRConfig({
+      enabled: true,
+      [key]: value,
+    })).toThrow(/representable by WGSL u32/);
+  });
+
+  it('rejects a grid whose flattened invocation arithmetic would overflow WGSL u32', () => {
+    expect(() => resolveReGIRConfig({
+      enabled: true,
+      cellsPerAxis: 1_024,
+      survivorsPerCell: 4,
+    })).toThrow(/invocation domain/);
+  });
+
+  it('rejects a grid whose survivor storage cannot be addressed by WGSL u32', () => {
+    expect(() => resolveReGIRConfig({
+      enabled: true,
+      cellsPerAxis: 1_291,
+      survivorsPerCell: 1,
+    })).toThrow(/element-index domain/);
+  });
+
+  it.each([
+    [{ maxComputeInvocationsPerWorkgroup: 63 }, /maxComputeInvocationsPerWorkgroup/],
+    [{ maxComputeWorkgroupSizeX: 63 }, /maxComputeWorkgroupSizeX/],
+    [{ maxComputeWorkgroupsPerDimension: 511 }, /maxComputeWorkgroupsPerDimension/],
+  ])('rejects insufficient ReGIR device limits before allocation: %o', (limits, error) => {
+    const createBuffer = vi.fn();
+    const device = { limits, createBuffer } as unknown as GPUDevice;
+    const coord = new ReGIRCoordinator(resolveReGIRConfig({
+      enabled: true,
+      cellsPerAxis: 16,
+      survivorsPerCell: 8,
+    }));
+
+    expect(() => coord.assertDeviceLimits(device)).toThrow(error);
+    expect(createBuffer).not.toHaveBeenCalled();
+  });
+
+  it('derives an exact checked dispatch count from the initialized grid', () => {
+    const coord = new ReGIRCoordinator(resolveReGIRConfig({
+      enabled: true,
+      cellsPerAxis: 4,
+      survivorsPerCell: 3,
+    }));
+    coord.assertDeviceLimits({
+      limits: {
+        maxComputeInvocationsPerWorkgroup: 256,
+        maxComputeWorkgroupSizeX: 256,
+        maxComputeWorkgroupsPerDimension: 65_535,
+      },
+    } as unknown as GPUDevice);
+    coord.initialize(makeBvh(), true);
+    expect(coord.buildDispatchWorkgroups).toBe(
+      Math.ceil((coord.cellCount * 3) / 64),
+    );
+  });
+
+  it('rejects a light-tree offset that cannot be uploaded as WGSL u32', () => {
+    const coord = new ReGIRCoordinator(makeConfig(true));
+    const bvh = makeBvh();
+    bvh.lightTreeNodeCount = Math.floor(0xffff_ffff / 16) + 1;
+    expect(() => coord.initialize(bvh, true)).toThrow(/grid offset.*u32/);
+  });
 });
 
 // ── Pipeline teardown wiring ──────────────────────────────────────────────────

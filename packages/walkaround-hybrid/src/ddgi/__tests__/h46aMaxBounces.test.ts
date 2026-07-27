@@ -29,7 +29,6 @@ function readU32At(buf: ArrayBuffer, offset: number): number {
 
 const baseInput = {
   frameIndex: 3,
-  totalProbes: 64,
   skyTint: [0.4, 0.6, 1.0] as const,
   skyIrradiance: 2.0,
   glassMixScale: 0.7,

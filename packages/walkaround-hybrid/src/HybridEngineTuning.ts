@@ -226,7 +226,8 @@ export function readTunables(opts: HybridEngineOptions): Tunables {
     const v = grouped_v !== undefined ? grouped_v
             : tuning_v  !== undefined ? tuning_v
             : def.default;
-    (out as Record<string, number>)[k] = v;
+    // Public tuning values must never put NaN/Infinity into a GPU UBO.
+    (out as Record<string, number>)[k] = Number.isFinite(v) ? v : def.default;
   }
   return Object.freeze(out) as Tunables;
 }
@@ -237,11 +238,13 @@ export function readTunables(opts: HybridEngineOptions): Tunables {
  * not into `pipeline.renderFrame()` per frame.
  */
 export function readInitTunables(opts: HybridEngineOptions): InitTunables {
+  const finiteOr = (value: number | undefined, fallback: number): number =>
+    value !== undefined && Number.isFinite(value) ? value : fallback;
   return Object.freeze({
-    cameraMoveResetThresholdSq:    opts.cameraMoveResetThresholdSq ?? 1.0,
-    temporalAccumAlpha:            opts.temporalAccumAlpha ?? 0.01,
+    cameraMoveResetThresholdSq:    finiteOr(opts.cameraMoveResetThresholdSq, 1.0),
+    temporalAccumAlpha:            finiteOr(opts.temporalAccumAlpha, 0.01),
     // 0.063² — checkerboard forces full-rate once the camera moves >~0.063
     // units/frame, much finer than the temporal reset (see HybridEngineOptions).
-    checkerboardMotionThresholdSq: opts.checkerboardMotionThresholdSq ?? 0.004,
+    checkerboardMotionThresholdSq: finiteOr(opts.checkerboardMotionThresholdSq, 0.004),
   });
 }

@@ -1,3 +1,5 @@
+import { normalizedPairFirst, requireFinite, requireNonNegative, requirePositive } from './numericGuards.js';
+
 /**
  * mixturePdf.ts — Multiple Importance Sampling (MIS) combiners.
  *
@@ -5,9 +7,9 @@
  * ("Optimally Combining Sampling Techniques for Monte Carlo Rendering",
  * SIGGRAPH 95), plus a general mixture PDF evaluator for N strategies.
  *
- * These are CPU-side implementations used to verify MIS correctness and
- * to compute combined PDFs for CPU-side light tree testing. The same
- * math is replicated in the fork's GLSL shaders for per-path MIS weighting.
+ * These public CPU-side implementations support host algorithms and numerical
+ * reference tests. Render backends keep equivalent shader-language math at
+ * their actual transport sites; they do not import this JavaScript helper.
  *
  * References:
  *   - Veach & Guibas 1995, "Optimally Combining Sampling Techniques for
@@ -31,9 +33,9 @@
  * @returns weight ∈ [0, 1] for strategy 1
  */
 export function balanceHeuristic(pdf1: number, pdf2: number): number {
-  const sum = pdf1 + pdf2;
-  if (sum <= 0) return 0.5;
-  return pdf1 / sum;
+  requireNonNegative(pdf1, 'balanceHeuristic.pdf1');
+  requireNonNegative(pdf2, 'balanceHeuristic.pdf2');
+  return normalizedPairFirst(pdf1, pdf2);
 }
 
 /**
@@ -53,11 +55,14 @@ export function balanceHeuristic(pdf1: number, pdf2: number): number {
  * @returns weight ∈ [0, 1] for strategy 1
  */
 export function powerHeuristic(pdf1: number, pdf2: number, beta: number = 2): number {
-  const p1b = Math.pow(pdf1, beta);
-  const p2b = Math.pow(pdf2, beta);
-  const sum = p1b + p2b;
-  if (sum <= 0) return 0.5;
-  return p1b / sum;
+  requireNonNegative(pdf1, 'powerHeuristic.pdf1');
+  requireNonNegative(pdf2, 'powerHeuristic.pdf2');
+  requirePositive(beta, 'powerHeuristic.beta');
+  if (pdf1 === 0 && pdf2 === 0) return 0.5;
+  const scale = Math.max(pdf1, pdf2);
+  const p1b = Math.pow(pdf1 / scale, beta);
+  const p2b = Math.pow(pdf2 / scale, beta);
+  return normalizedPairFirst(p1b, p2b);
 }
 
 /**
@@ -98,7 +103,9 @@ export function mixturePdf(
   }
   let probSum = 0;
   for (let i = 0; i < probabilities.length; i++) {
-    probSum += probabilities[i] ?? 0;
+    const probability = probabilities[i] ?? 0;
+    requireNonNegative(probability, `mixturePdf.probabilities[${i}]`);
+    probSum += probability;
   }
   if (probSum === 0) {
     throw new Error(
@@ -108,7 +115,11 @@ export function mixturePdf(
   }
   let result = 0;
   for (let i = 0; i < probabilities.length; i++) {
-    result += (probabilities[i] ?? 0) * (pdfs[i] ?? 0);
+    const probability = probabilities[i] ?? 0;
+    const pdf = pdfs[i] ?? 0;
+    requireNonNegative(pdf, `mixturePdf.pdfs[${i}]`);
+    result += probability * pdf;
+    requireFinite(result, 'mixturePdf.result');
   }
   return result;
 }

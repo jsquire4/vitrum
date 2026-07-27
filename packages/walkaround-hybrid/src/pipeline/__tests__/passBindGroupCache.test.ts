@@ -54,6 +54,7 @@ function computePassRecorder() {
 
 function baseCtx(overrides: Record<string, unknown> = {}) {
   const pass = computePassRecorder();
+  let cachedTransparentOitBindGroup: GPUBindGroup | undefined;
   const common = {
     varianceBuffer: texture('variance-a'),
     varianceBufferAux: texture('variance-b'),
@@ -93,9 +94,9 @@ function baseCtx(overrides: Record<string, unknown> = {}) {
       },
       ppg: {
         fluxAtomicsBuf: buffer('ppg-flux'),
-        sTreeBuf: buffer('ppg-stree'),
-        dTreeBuf: buffer('ppg-dtree'),
-        dTreeOffsetsBuf: buffer('ppg-offsets'),
+        queryArenaBuf: buffer('ppg-query-arena'),
+        queryArenaLayout: {},
+        queryArenaEpoch: 1,
         cellSampleCountsBuf: buffer('ppg-counts'),
         updateUboBuffer: buffer('ppg-ubo'),
       },
@@ -118,6 +119,11 @@ function baseCtx(overrides: Record<string, unknown> = {}) {
     checkerboardWgY: 4,
     computeDesc: vi.fn((label: string) => ({ label })),
     resourceCache: new PipelineResourceCache(),
+    buildTransparentOitBindGroup: () => {
+      cachedTransparentOitBindGroup ??=
+        (buildTransparentOitBindGroup as unknown as () => GPUBindGroup)();
+      return cachedTransparentOitBindGroup;
+    },
     ...overrides,
   };
   return { ctx: ctx as never, pass, common };
@@ -234,16 +240,15 @@ describe('pass bind-group cache', () => {
     expect(computePass.setBindGroup).toHaveBeenCalledWith(1, { label: 'ppg-bg1' });
   });
 
-  it('rebuilds ReGIR after an emitter buffer identity change', () => {
+  it('rebuilds ReGIR after the combined tree buffer identity changes', () => {
     const resources = {
-      combinedLightTreeBuffer: buffer('tree'),
-      emitterBuffer: buffer('emitters-a'),
+      combinedLightTreeBuffer: buffer('tree-a'),
       uboBuffer: buffer('ubo'),
     };
     const cache = new PipelineResourceCache();
     const pass = new ReGIRBuildPass(
       {} as GPUComputePipeline,
-      { live: true, cellCount: 1, config: { survivorsPerCell: 1 } } as never,
+      { live: true, buildDispatchWorkgroups: 1 } as never,
       {},
       () => resources,
     );
@@ -251,7 +256,7 @@ describe('pass bind-group cache', () => {
 
     pass.dispatch(ctx);
     pass.dispatch(ctx);
-    resources.emitterBuffer = buffer('emitters-b');
+    resources.combinedLightTreeBuffer = buffer('tree-b');
     pass.dispatch(ctx);
 
     expect(buildRegirBuildBindGroup).toHaveBeenCalledTimes(2);

@@ -13,6 +13,7 @@ import {
   BMFR_BLOCK_SIZE,
 } from './bmfrRegression.js';
 import {
+  BMFR_DEFAULT_BLOCK_STRIDE,
   BMFR_DEFAULT_POSITION_SCALE,
   BMFR_DEFAULT_TEMPORAL_ALPHA,
 } from './bmfrConstants.js';
@@ -22,18 +23,15 @@ export interface BmfrUniforms {
   readonly blockSize: number;
   /**
    * Block grid stride in pixels. With stride < blockSize the blocks overlap;
-   * the canonical BMFR scheme offsets the grid by half a block per frame to
-   * hide block-boundary seams. The fit pass dispatches one workgroup per block
-   * origin; pixels covered by multiple blocks take the last writer (the GPU
-   * dispatcher uses a single non-overlapping grid per pass + temporal jitter,
-   * mirroring the reference impl's per-frame offset). Default = blockSize.
+   * each fit writes a private coefficient record and the resolve pass averages
+   * every covering block deterministically. Default = half a block.
    */
   readonly blockStride: number;
   /** World-space normalisation scale for the squared position features. */
   readonly positionScale: number;
   /** Temporal-accumulation EMA weight on the current reconstructed frame. */
   readonly temporalAlpha: number;
-  /** Tikhonov diagonal loading for the normal-equations solve. */
+  /** Tikhonov loading represented as sqrt(lambda) identity rows in direct QR. */
   readonly regularisation: number;
   /**
    * 0 = first frame / history invalid (output = reconstructed only),
@@ -67,7 +65,7 @@ export const BMFR_UNIFORMS_SIZE_BYTES = BMFR_UBO.sizeBytes;
 
 export const BMFR_DEFAULT_UNIFORMS: BmfrUniforms = {
   blockSize: BMFR_BLOCK_SIZE,
-  blockStride: BMFR_BLOCK_SIZE,
+  blockStride: BMFR_DEFAULT_BLOCK_STRIDE,
   positionScale: BMFR_DEFAULT_POSITION_SCALE,
   temporalAlpha: BMFR_DEFAULT_TEMPORAL_ALPHA,
   regularisation: 1e-3,

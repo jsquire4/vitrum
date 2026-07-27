@@ -206,8 +206,9 @@ export interface Engine {
    *  than host-driven env scrubs) may omit this method; hosts MUST
    *  typeof-check before calling. */
   updateEnvironment?(env: import('../scene/index.js').SceneEnvironment | null): void;
-  /** Resize persistent backend render targets. Backends that honour
-   *  `FrameInput.viewport` per frame may omit this. */
+  /** Eagerly resize persistent backend render targets. All shipped engines
+   *  honour `FrameInput.viewport` per frame; backends may additionally expose
+   *  this hook so host resize observers can allocate before the next frame. */
   setSize?(width: number, height: number): void;
   /**
    * Backend-specific runtime lighting update path for engines that do not map
@@ -458,17 +459,17 @@ export interface Engine {
    */
   captureFrame?(opts?: CaptureFrameOptions): Promise<CapturedFrame | null>;
 
-  // ── Experimental / backend-specific result buffers ───────────────────────
+  // ── Backend-specific result buffers ──────────────────────────────────────
 
   /**
-   * H14-C — Returns the EXPERIMENTAL ReSTIR-PT resolve-pass output buffer (the
+   * H14-C — Returns the ReSTIR-PT resolve-pass output buffer (the
    * per-pixel reconnection-indirect estimate, one vec4f / px = 16 B). Present
    * ONLY when the backend was constructed with `restirPtReuse: true` (gated on
-   * the `'pt-webgpu-restir-pt-reuse'` experimental feature) AND the reuse passes
+   * active feature `'pt-webgpu-restir-pt-reuse'`) AND the reuse passes
    * have been dispatched at least once (the buffer may be null before the first
    * successful frame). The returned value is backend-opaque (`unknown`) so hosts
    * must narrow it before use (e.g. cast to `GPUBuffer` when the backend is
-   * known to be pt-webgpu — see `capabilities.experimentalFeatures`).
+   * known to be pt-webgpu — see `capabilities.activeFeatures`).
    *
    * This result buffer is a SEPARATE debug output from the beauty image: the
    * reuse path is validated in isolation before it composites into the beauty

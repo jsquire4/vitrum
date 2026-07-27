@@ -190,7 +190,12 @@ export function createSizeValidatingGpuDeviceStub(
     return bindGroup;
   });
 
-  const encoder = { clearBuffer: vi.fn(), finish: vi.fn(() => ({})) };
+  const encoder = {
+    clearBuffer: vi.fn(),
+    copyBufferToBuffer: vi.fn(),
+    copyTextureToTexture: vi.fn(),
+    finish: vi.fn(() => ({})),
+  };
   const device = {
     limits: resolvedLimits,
     createBuffer,
@@ -217,8 +222,8 @@ export function createSizeValidatingGpuDeviceStub(
 
 function bufferBindingFromResource(resource: GPUBufferBinding | GPUBuffer): GPUBufferBinding | null {
   if (typeof resource !== 'object' || resource === null) return null;
-  if ('buffer' in resource) return resource as GPUBufferBinding;
-  if ('size' in resource) return { buffer: resource as GPUBuffer };
+  if ('buffer' in resource) return resource;
+  if ('size' in resource) return { buffer: resource };
   return null;
 }
 

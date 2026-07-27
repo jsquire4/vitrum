@@ -36,6 +36,8 @@
  *   4 — vec3f-aligned (16 bytes/vertex), the WGSL `array<vec3f>` layout.
  */
 
+import { BINARY_BVH_MAX_BUILD_DEPTH } from './strides.js';
+
 const LEAFNODE_FLAG = 0xffff0000;
 
 /**
@@ -50,11 +52,83 @@ export function isLeafSplit(splitWord: number): boolean {
   return (splitWord >>> 16) === 0xffff;
 }
 
+/**
+ * Create the canonical zero-triangle BVH root.
+ *
+ * A GPU storage binding still needs a non-empty node buffer for an empty scene,
+ * so the empty tree is represented by one leaf whose triangle count is zero.
+ * Encoding slot 7 as `LEAFNODE_FLAG | 0` is load-bearing: an all-zero node is
+ * an interior node (split axis 0, relative right-child offset 0) and traversal
+ * would repeatedly revisit it instead of terminating.
+ */
+export function createEmptyBvhNode(): Float32Array {
+  const node = new Float32Array(8);
+  new Uint32Array(node.buffer)[7] = LEAFNODE_FLAG;
+  return node;
+}
+
 /** Default upper bound on triangles per leaf (Wald 2007 §3 sweet spot). */
 const DEFAULT_MAX_LEAF_TRIANGLES = 4;
 
 /** Default number of SAH bins per axis (Wald 2007 recommends 16). */
 const DEFAULT_NUM_BINS = 16;
+const MAX_NUM_BINS = 256;
+const MAX_LEAF_TRIANGLES = 0xffff;
+const FLOAT32_BRAND = 'Float32Array';
+const UINT32_BRAND = 'Uint32Array';
+const TYPED_ARRAY_BRAND_DESCRIPTOR = Object.getOwnPropertyDescriptor(
+  Object.getPrototypeOf(Float32Array.prototype) as object,
+  Symbol.toStringTag,
+);
+const TYPED_ARRAY_LENGTH_DESCRIPTOR = Object.getOwnPropertyDescriptor(
+  Object.getPrototypeOf(Float32Array.prototype) as object,
+  'length',
+);
+
+function typedArrayBrand(value: unknown): string | undefined {
+  if (!ArrayBuffer.isView(value) || TYPED_ARRAY_BRAND_DESCRIPTOR?.get === undefined) return undefined;
+  try {
+    return TYPED_ARRAY_BRAND_DESCRIPTOR.get.call(value) as string | undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function assertExactTypedArray(
+  value: unknown,
+  expectedBrand: string,
+  label: string,
+): void {
+  let length: unknown;
+  try {
+    length = TYPED_ARRAY_LENGTH_DESCRIPTOR?.get?.call(value);
+  } catch {
+    length = undefined;
+  }
+  if (
+    typedArrayBrand(value) !== expectedBrand ||
+    !Number.isSafeInteger(length) ||
+    (length as number) < 0
+  ) {
+    throw new TypeError(
+      `[@vitrum/shared-bvh/buildArrayBvh] ${label} must be an exact ${expectedBrand}.`,
+    );
+  }
+}
+
+function integerOption(
+  value: unknown,
+  label: string,
+  minimum: number,
+  maximum: number,
+): number {
+  if (!Number.isSafeInteger(value) || (value as number) < minimum || (value as number) > maximum) {
+    throw new RangeError(
+      `[@vitrum/shared-bvh/buildArrayBvh] ${label} must be a safe integer in [${minimum}, ${maximum}], got ${String(value)}.`,
+    );
+  }
+  return value as number;
+}
 
 interface TriangleRecord {
   readonly triIndex: number;
@@ -230,6 +304,15 @@ export interface BuildArrayBvhOpts {
    * recommended value; matches pt-webgpu's historical constant).
    */
   binCount?: number;
+
+  /**
+   * Maximum interior depth. Defaults to the canonical live-traversal-safe
+   * budget and may only be lowered for stricter callers or adversarial tests.
+   * Reaching the cap emits the remaining triangles as one leaf; if that leaf
+   * would exceed the packed 16-bit triangle-count field, the build fails
+   * synchronously instead of producing a tree a live GPU traversal can drop.
+   */
+  maxDepth?: number;
 }
 
 /**
@@ -250,8 +333,8 @@ export interface BuildArrayBvhOpts {
  *  - Output bytes are stable for the same input + same opts.
  *  - The function preserves the input arrays — the inputs are read but
  *    never mutated.
- *  - Empty input (`indices.length / indexStride === 0`) returns a single
- *    zero-filled "empty leaf" node + the unmodified input arrays (so
+ *  - Empty input (`indices.length / indexStride === 0`) returns a single valid
+ *    zero-count leaf node + the unmodified input arrays (so
  *    callers don't have to special-case the zero-triangle path).
  */
 export function buildArrayBvh(
@@ -260,71 +343,98 @@ export function buildArrayBvh(
   triMaterialIds: Uint32Array,
   opts: BuildArrayBvhOpts = {},
 ): CpuBvhBuildResult {
-  const positionStride = opts.positionStride ?? 4;
-  const indexStride = opts.indexStride ?? 4;
-  const maxLeafTriangles = opts.maxLeafTriangles ?? DEFAULT_MAX_LEAF_TRIANGLES;
-  const numBins = opts.binCount ?? DEFAULT_NUM_BINS;
+  if (opts == null || typeof opts !== 'object' || Array.isArray(opts)) {
+    throw new TypeError('[@vitrum/shared-bvh/buildArrayBvh] opts must be an object.');
+  }
+  const optionKeys = new Set([
+    'positionStride', 'indexStride', 'maxLeafTriangles', 'binCount', 'maxDepth',
+  ]);
+  for (const key of Reflect.ownKeys(opts)) {
+    if (typeof key !== 'string' || !optionKeys.has(key)) {
+      throw new RangeError(
+        `[@vitrum/shared-bvh/buildArrayBvh] unknown option ${typeof key === 'symbol' ? String(key) : JSON.stringify(key)}.`,
+      );
+    }
+  }
+  assertExactTypedArray(positions, FLOAT32_BRAND, 'positions');
+  assertExactTypedArray(indices, UINT32_BRAND, 'indices');
+  assertExactTypedArray(triMaterialIds, UINT32_BRAND, 'triMaterialIds');
+  const positionStride = integerOption(opts.positionStride ?? 4, 'positionStride', 3, 4);
+  const indexStride = integerOption(opts.indexStride ?? 4, 'indexStride', 3, 4);
+  if (positionStride !== 3 && positionStride !== 4) {
+    throw new RangeError('[@vitrum/shared-bvh/buildArrayBvh] positionStride must be exactly 3 or 4.');
+  }
+  if (indexStride !== 3 && indexStride !== 4) {
+    throw new RangeError('[@vitrum/shared-bvh/buildArrayBvh] indexStride must be exactly 3 or 4.');
+  }
+  const maxLeafTriangles = integerOption(
+    opts.maxLeafTriangles ?? DEFAULT_MAX_LEAF_TRIANGLES,
+    'maxLeafTriangles',
+    1,
+    MAX_LEAF_TRIANGLES,
+  );
+  const numBins = integerOption(opts.binCount ?? DEFAULT_NUM_BINS, 'binCount', 2, MAX_NUM_BINS);
+  const maxDepth = integerOption(
+    opts.maxDepth ?? BINARY_BVH_MAX_BUILD_DEPTH,
+    'maxDepth',
+    0,
+    BINARY_BVH_MAX_BUILD_DEPTH,
+  );
+  if (positions.length % positionStride !== 0) {
+    throw new RangeError(
+      `[@vitrum/shared-bvh/buildArrayBvh] positions.length ${positions.length} must be divisible by positionStride ${positionStride}.`,
+    );
+  }
+  if (indices.length % indexStride !== 0) {
+    throw new RangeError(
+      `[@vitrum/shared-bvh/buildArrayBvh] indices.length ${indices.length} must be divisible by indexStride ${indexStride}.`,
+    );
+  }
+  for (let offset = 0; offset < positions.length; offset += 1) {
+    if (!Number.isFinite(positions[offset])) {
+      throw new RangeError(
+        `[@vitrum/shared-bvh/buildArrayBvh] positions[${offset}] must be finite (got ${String(positions[offset])}).`,
+      );
+    }
+  }
 
-  const triCount = Math.floor(indices.length / indexStride);
+  const triCount = indices.length / indexStride;
+  if (triMaterialIds.length !== triCount) {
+    throw new RangeError(
+      `[@vitrum/shared-bvh/buildArrayBvh] triMaterialIds.length ${triMaterialIds.length} must equal triangle count ${triCount}.`,
+    );
+  }
   if (triCount === 0) {
-    const emptyNode = new Float32Array(8);
     return {
-      bvhNodes: emptyNode,
+      bvhNodes: createEmptyBvhNode(),
       reorderedIndices: indices,
       reorderedTriMaterialIds: triMaterialIds,
       reorderedToSourceTriangle: new Uint32Array(0),
     };
   }
 
-  // Vertex count for out-of-range index detection. An index >= vertexCount
-  // would read past `positions`, and `getPosition`'s `?? 0` would silently
-  // yield (0,0,0) — a FINITE coordinate, so it slips past the NaN/Inf filter
-  // below and collapses the triangle toward the origin, corrupting the BVH
-  // with no diagnostic. Mirror the NaN-filter warn+skip pattern instead.
-  const vertexCount = positionStride > 0 ? Math.floor(positions.length / positionStride) : 0;
+  const vertexCount = positions.length / positionStride;
 
   const records: TriangleRecord[] = [];
-  const MAX_NAN_WARNS = 10;
-  let nanWarnCount = 0;
-  let nanFilteredCount = 0;
-  let oobWarnCount = 0;
-  let oobFilteredCount = 0;
   for (let t = 0; t < triCount; t += 1) {
     const i0 = indices[t * indexStride] ?? 0;
     const i1 = indices[t * indexStride + 1] ?? 0;
     const i2 = indices[t * indexStride + 2] ?? 0;
-    // H34-style guard: an index referencing a vertex beyond the positions
-    // buffer is malformed mesh data; filter the triangle rather than emit
-    // a silent origin-collapsed degenerate.
     if (i0 >= vertexCount || i1 >= vertexCount || i2 >= vertexCount) {
-      oobFilteredCount += 1;
-      if (oobWarnCount < MAX_NAN_WARNS) {
-        console.warn(
-          `[@vitrum/shared-bvh/buildArrayBvh] Triangle ${t} references an out-of-range vertex ` +
-          `index (i0=${i0}, i1=${i1}, i2=${i2}; vertexCount=${vertexCount}); filtering it from ` +
-          `the BVH build. Check the mesh index/position buffers.`,
-        );
-        oobWarnCount += 1;
-      }
-      continue;
+      throw new RangeError(
+        `[@vitrum/shared-bvh/buildArrayBvh] triangle ${t} references an out-of-range vertex ` +
+        `(i0=${i0}, i1=${i1}, i2=${i2}; vertexCount=${vertexCount}).`,
+      );
     }
     const a = getPosition(positions, i0, positionStride);
     const b = getPosition(positions, i1, positionStride);
     const c = getPosition(positions, i2, positionStride);
-    // Filter triangles whose AABB would be non-finite (NaN or Inf vertex coordinate
-    // poisons the root AABB → silently black scene).
     const isFiniteCoord = (v: readonly [number, number, number]): boolean =>
-      isFinite(v[0]) && isFinite(v[1]) && isFinite(v[2]);
+      Number.isFinite(v[0]) && Number.isFinite(v[1]) && Number.isFinite(v[2]);
     if (!isFiniteCoord(a) || !isFiniteCoord(b) || !isFiniteCoord(c)) {
-      nanFilteredCount += 1;
-      if (nanWarnCount < MAX_NAN_WARNS) {
-        console.warn(
-          `[@vitrum/shared-bvh/buildArrayBvh] Triangle ${t} has non-finite vertex coordinate ` +
-          `(NaN or Inf); filtering it from the BVH build. Check the mesh source data.`,
-        );
-        nanWarnCount += 1;
-      }
-      continue;
+      throw new RangeError(
+        `[@vitrum/shared-bvh/buildArrayBvh] triangle ${t} has a non-finite vertex coordinate.`,
+      );
     }
     const triMin = min3(a, b, c);
     const triMax = max3(a, b, c);
@@ -335,35 +445,6 @@ export function buildArrayBvh(
       centroid: triCentroid(triMin, triMax),
     });
   }
-  if (nanFilteredCount > MAX_NAN_WARNS) {
-    console.warn(
-      `[@vitrum/shared-bvh/buildArrayBvh] ${nanFilteredCount} non-finite triangles filtered ` +
-      `(${MAX_NAN_WARNS} individual warnings shown above).`,
-    );
-  }
-  if (oobFilteredCount > MAX_NAN_WARNS) {
-    console.warn(
-      `[@vitrum/shared-bvh/buildArrayBvh] ${oobFilteredCount} out-of-range-index triangles filtered ` +
-      `(${MAX_NAN_WARNS} individual warnings shown above).`,
-    );
-  }
-  // H60 — ALL triangles can be non-finite, in which case the triCount===0 guard above
-  // never fired but `records` is empty. Proceeding would run the recursive build on an
-  // empty subset (degenerate root, ±Infinity AABB). Return the same empty-BVH shape as
-  // the zero-input path instead.
-  if (records.length === 0) {
-    console.warn(
-      '[@vitrum/shared-bvh/buildArrayBvh] every input triangle was non-finite — returning an empty BVH.',
-    );
-    const emptyNode = new Float32Array(8);
-    return {
-      bvhNodes: emptyNode,
-      reorderedIndices: indices,
-      reorderedTriMaterialIds: triMaterialIds,
-      reorderedToSourceTriangle: new Uint32Array(0),
-    };
-  }
-
   const nodes: NodeBuild[] = [];
   const orderedTriangles: number[] = [];
 
@@ -423,7 +504,7 @@ export function buildArrayBvh(
    *
    * Returns the absolute node index of the subtree root.
    */
-  const build = (subset: TriangleRecord[]): number => {
+  const build = (subset: TriangleRecord[], depth: number): number => {
     const nodeIndex = nodes.length;
     const node: NodeBuild = {
       min: [Infinity, Infinity, Infinity],
@@ -446,6 +527,12 @@ export function buildArrayBvh(
     // Leaf: too few triangles to split profitably.
     if (subset.length <= maxLeafTriangles) {
       return makeLeaf(node, subset, nodeIndex, 'Leaf ');
+    }
+
+    // Stop before allocating either child. Keeping the cap outside the
+    // centroid scan makes the depth invariant independent of input ordering.
+    if (depth >= maxDepth) {
+      return makeLeaf(node, subset, nodeIndex, 'Depth-cap leaf ');
     }
 
     // Compute centroid AABB for bin placement.
@@ -583,8 +670,8 @@ export function buildArrayBvh(
     }
 
     // Recurse. Left subtree is built first (its root is nodeIndex + 1).
-    build(left);
-    const rightChild = build(right);
+    build(left, depth + 1);
+    const rightChild = build(right, depth + 1);
 
     // Store RELATIVE right-child offset (rightChild − nodeIndex).
     // Left child is always nodeIndex + 1 (the immediately-following node).
@@ -594,7 +681,7 @@ export function buildArrayBvh(
     return nodeIndex;
   };
 
-  build(records);
+  build(records, 0);
 
   // Dev/test mode: verify the relative-offset encoding invariant.
   // Every interior node's rightChildOrTriOffset must satisfy 1 ≤ offset < totalNodes.

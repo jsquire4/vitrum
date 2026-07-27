@@ -1,21 +1,19 @@
 /**
  * thinFilmLayerLimit.test.ts — D1 (Option B) pt-webgl2 thin-film capacity.
  *
- * pt-webgl2 packs at most `THIN_FILM_LAYER_LIMIT` (35) thin-film layers. This
- * suite pins: (1) a material declaring > 35 layers emits a structured
- * `thin-film-layer-limit-exceeded` warning naming the requested count + limit;
- * (2) the packer constant matches the value declared in `@vitrum/core`'s
+ * pt-webgl2 packs exactly up to `THIN_FILM_LAYER_LIMIT` (35) thin-film layers.
+ * This suite pins: (1) a material declaring > 35 layers is rejected before
+ * packing or retained-engine mutation; (2) the packer constant matches
+ * the value declared in `@vitrum/core`'s
  * `BACKEND_PROMISE_LEDGER['pt-webgl2'].supportDetails.thinFilmLayerLimit`
- * (drift-guard); (3) a ≤ 35-layer material emits NO such warning.
+ * (drift-guard); (3) a 35-layer material is accepted without truncation.
  */
-import { describe, it, expect, vi, afterEach } from 'vitest';
-import type { EngineWarning, MaterialSpec, ThinFilmStack } from '@vitrum/core';
+import { describe, it, expect } from 'vitest';
+import type { MaterialSpec, Scene, ThinFilmStack } from '@vitrum/core';
 import { BACKEND_PROMISE_LEDGER } from '@vitrum/core';
+import { createPTEngine_WebGL2 } from '../index.js';
+import { createMockGl } from '../__tests__/mockGl.js';
 import { packMaterialsTexture, THIN_FILM_LAYER_LIMIT } from './materialsTexture.js';
-
-afterEach(() => {
-  vi.restoreAllMocks();
-});
 
 function materialWithThinFilmLayers(count: number): MaterialSpec {
   const layers = Array.from({ length: count }, (_, i) => ({
@@ -26,6 +24,21 @@ function materialWithThinFilmLayers(count: number): MaterialSpec {
   return { baseColor: [0.5, 0.5, 0.5], roughness: 0.5, metallic: 0, thinFilmStack };
 }
 
+function sceneWithMaterial(sceneMaterial: MaterialSpec): Scene {
+  return {
+    primitives: [{
+      kind: 'mesh',
+      id: 'film',
+      positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+      normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+      uvs: new Float32Array([0, 0, 1, 0, 0, 1]),
+      material: sceneMaterial,
+    }],
+    emitters: [],
+    environment: { kind: 'none' },
+  };
+}
+
 describe('D1 — pt-webgl2 thin-film layer limit', () => {
   it('declares thinFilmLayerLimit === packer constant (35) in the promise ledger', () => {
     const declared = BACKEND_PROMISE_LEDGER['pt-webgl2'].supportDetails.thinFilmLayerLimit;
@@ -33,32 +46,35 @@ describe('D1 — pt-webgl2 thin-film layer limit', () => {
     expect(declared).toBe(35);
   });
 
-  it('emits thin-film-layer-limit-exceeded when a material exceeds 35 layers', () => {
-    vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const structured: EngineWarning[] = [];
+  it('rejects a material above 35 layers before allocating a packed texture', () => {
     const requested = 40;
-    packMaterialsTexture([materialWithThinFilmLayers(requested)], undefined, {
-      onWarning: (w) => structured.push(w),
-    });
-    const warning = structured.find((w) => w.code === 'thin-film-layer-limit-exceeded');
-    expect(warning).toBeDefined();
-    expect(warning!.backend).toBe('pt-webgl2');
-    expect(warning!.details).toMatchObject({
-      materialIndex: 0,
-      requested,
-      limit: 35,
-      dropped: requested - 35,
-    });
-    expect(warning!.message).toContain(`${requested} thin-film layers`);
-    expect(warning!.message).toContain('at most 35');
+    expect(() => packMaterialsTexture([materialWithThinFilmLayers(requested)]))
+      .toThrow(`material 0 declares ${requested} thin-film layers; the exact backend limit is 35`);
   });
 
-  it('does NOT warn for a material at exactly the 35-layer limit', () => {
-    vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const structured: EngineWarning[] = [];
-    packMaterialsTexture([materialWithThinFilmLayers(35)], undefined, {
-      onWarning: (w) => structured.push(w),
-    });
-    expect(structured.some((w) => w.code === 'thin-film-layer-limit-exceeded')).toBe(false);
+  it('packs a material at exactly the 35-layer limit', () => {
+    expect(() => packMaterialsTexture([materialWithThinFilmLayers(35)])).not.toThrow();
+  });
+
+  it('rejects setScene and material patches before changing retained state or uploading', async () => {
+    const record = new Map<string, unknown>();
+    const engine = await createPTEngine_WebGL2({ device: createMockGl(record) });
+    engine.setScene(sceneWithMaterial(materialWithThinFilmLayers(1)));
+    const before = engine.getScene!();
+    const uploadCountBefore = (record.get('__texImage2D') as unknown[] | undefined)?.length ?? 0;
+
+    expect(() => engine.setScene(sceneWithMaterial(materialWithThinFilmLayers(36))))
+      .toThrow(/setScene: primitive "film" material declares 36 thin-film layers/);
+    expect(engine.getScene!()).toBe(before);
+    expect((record.get('__texImage2D') as unknown[] | undefined)?.length ?? 0)
+      .toBe(uploadCountBefore);
+
+    expect(() => engine.updatePrimitive?.('film', {
+      material: materialWithThinFilmLayers(40),
+    })).toThrow(/updatePrimitive: primitive "film" material declares 40 thin-film layers/);
+    expect(engine.getScene!()).toBe(before);
+    expect((record.get('__texImage2D') as unknown[] | undefined)?.length ?? 0)
+      .toBe(uploadCountBefore);
+    engine.dispose();
   });
 });

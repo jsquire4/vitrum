@@ -9,7 +9,7 @@
  * ORDER is preserved byte-identically (pinned by
  * `materialApproximationWarner.characterization.test.ts`).
  *
- * The atlas-diagnostic warning — previously a triple-repeated 5-arm nested
+ * The atlas-diagnostic warning — previously a triple-repeated nested
  * ternary — is now a single lookup table keyed by `diagnostic.code`
  * ({@link ATLAS_DIAGNOSTIC_TABLE}), so the message/code/fallback for each arm is
  * declared once.
@@ -22,19 +22,11 @@ import type { EngineWarning } from '@vitrum/core';
 import type { MaterialTextureAtlasDiagnostic } from './pipeline/materialTextureAtlas.js';
 import {
   categorizeUnconsumedMaterialFields,
-  EMISSIVE_MAP_TEXEL_PDF_APPROXIMATION_DETAILS,
-  LIGHT_MAP_CAMERA_VISIBLE_APPROXIMATION_DETAILS,
-  RICH_MATERIAL_GI_APPROXIMATION_DETAILS,
-  VOLUME_LAYER_TRANSPORT_APPROXIMATION_DETAILS,
-  type ApproximateRichMaterialPrimitiveFields,
-  type ApproximateVolumeLayerPrimitiveFields,
   type UnconsumedMaterialPrimitiveFields,
 } from './restir/consumedMaterialFields.js';
 
 /** The method label carried on the emitted warning (`phase`/`method`). */
 type WarnMethod = 'setScene' | 'updatePrimitive';
-/** The emissive-map warner additionally accepts the `updateEmitter` entry. */
-type EmissiveWarnMethod = WarnMethod | 'updateEmitter';
 
 /**
  * Per-arm declarations for the material-texture-atlas diagnostic warning. Keyed
@@ -44,10 +36,8 @@ type EmissiveWarnMethod = WarnMethod | 'updateEmitter';
  */
 interface AtlasDiagnosticArm {
   readonly warningCode:
-    | 'walkaround-hybrid.unsupported-material-texture-texcoord'
     | 'walkaround-hybrid.ambiguous-material-texture-stride'
     | 'walkaround-hybrid.invalid-material-texture-transform'
-    | 'walkaround-hybrid.material-texture-sampler-policy-approximation'
     | 'walkaround-hybrid.unreadable-material-texture-map';
   readonly fallback: string;
   readonly message: (
@@ -60,14 +50,6 @@ interface AtlasDiagnosticArm {
 const ATLAS_DIAGNOSTIC_TABLE: Readonly<
   Record<MaterialTextureAtlasDiagnostic['code'], AtlasDiagnosticArm>
 > = {
-  'unsupported-material-texture-texcoord': {
-    warningCode: 'walkaround-hybrid.unsupported-material-texture-texcoord',
-    fallback: 'map ignored',
-    message: (d, method, suffix) =>
-      `[vitrum/walkaround-hybrid] ${method}: ${d.field} on material slot ` +
-      `${d.materialIndex}${suffix} ` +
-      `uses texCoord ${d.texCoord}; the material atlas only supports UV sets 0 and 1, so the map is ignored.`,
-  },
   'ambiguous-material-texture-stride': {
     warningCode: 'walkaround-hybrid.ambiguous-material-texture-stride',
     fallback: 'heuristic pixel stride',
@@ -89,27 +71,16 @@ const ATLAS_DIAGNOSTIC_TABLE: Readonly<
       `${d.transformComponents?.join(', ') ?? '(unknown)'}; invalid components are replaced ` +
       `with the identity texture transform fallback and the map remains atlas-backed.`,
   },
-  'material-texture-sampler-policy-approximation': {
-    warningCode: 'walkaround-hybrid.material-texture-sampler-policy-approximation',
-    fallback: 'base-level atlas sampler',
-    message: (d, method, suffix) =>
-      `[vitrum/walkaround-hybrid] ${method}: ${d.field} on material slot ` +
-      `${d.materialIndex}${suffix} ` +
-      `requests sampler policy ` +
-      `mag=${d.magFilter ?? 'default'}, min=${d.minFilter ?? 'default'}, ` +
-      `mip=${d.mipFilter ?? 'default'}; the material atlas honors footprint-independent ` +
-      `nearest/linear filtering, but this policy needs implicit LOD or min/mag footprint selection ` +
-      `in compute passes, so the map remains atlas-backed with approximate mip/footprint filtering.`,
-  },
   'unreadable-material-texture-map': {
     warningCode: 'walkaround-hybrid.unreadable-material-texture-map',
     fallback: 'map ignored',
     message: (d, method, suffix) =>
       `[vitrum/walkaround-hybrid] ${method}: ${d.field} on material slot ` +
       `${d.materialIndex}${suffix} ` +
-      `has a texture handle that is not CPU-readable; ` +
-      `the map is ignored by the material atlas. Provide a raw {width,height,data} ` +
-      `or DataTexture-shaped handle before setScene/updatePrimitive for native map sampling.`,
+      `has a texture handle that is neither CPU-readable nor a nominal ` +
+      `WalkaroundWebGpuTextureSource descriptor; the map is ignored by the material atlas. Provide a raw ` +
+      `{width,height,data}, DataTexture-shaped handle, or createWalkaroundWebGpuTextureSource ` +
+      `descriptor before setScene/updatePrimitive for native map sampling.`,
   },
 };
 
@@ -125,16 +96,6 @@ export class MaterialApproximationWarner {
    *  (keyed by sorted join of the field names). Prevents duplicate console.warn
    *  calls across incremental `setScene` calls with the same ignored fields. */
   private readonly _warnedMaterialFields = new Set<string>();
-  /** Tracks which fractional alpha-blend primitive sets have already warned. */
-  private readonly _warnedAlphaBlendApproximationIds = new Set<string>();
-  /** Tracks which emissive-map texel-PDF approximation primitive sets have warned. */
-  private readonly _warnedEmissiveMapTexelPdfApproximationIds = new Set<string>();
-  /** Tracks which light-map camera-visible approximation primitive sets have warned. */
-  private readonly _warnedLightMapApproximationIds = new Set<string>();
-  /** Tracks which rich-material approximation primitive/field sets have warned. */
-  private readonly _warnedRichMaterialApproximationIds = new Set<string>();
-  /** Tracks which volume/layer transport approximation primitive/field sets have warned. */
-  private readonly _warnedVolumeLayerTransportApproximationIds = new Set<string>();
   /** Tracks atlas-backed material texture drops already reported to hosts. */
   private readonly _warnedMaterialTextureAtlasDiagnostics = new Set<string>();
   /** Tracks invalid setSize dimensions already reported to hosts. */
@@ -171,163 +132,6 @@ export class MaterialApproximationWarner {
         categories,
         primitiveFields,
       },
-    });
-  }
-
-  warnApproximateAlphaBlendPrimitiveIds(
-    primitiveIds: readonly string[],
-    method: WarnMethod,
-  ): void {
-    if (primitiveIds.length === 0) return;
-    const key = primitiveIds.join(',');
-    if (this._warnedAlphaBlendApproximationIds.has(key)) return;
-    this._warnedAlphaBlendApproximationIds.add(key);
-    this._warn({
-      code: 'walkaround-hybrid.alpha-blend-approximation',
-      backend: 'walkaround-hybrid',
-      phase: method,
-      method,
-      message:
-        `[vitrum/walkaround-hybrid] ${method}: fractional or texture-driven alphaMode:'blend' ` +
-        `is camera-composited by the transparent OIT pass, but transparent-layer ` +
-        `ReSTIR/GI participation remains approximate; finite emitters are ` +
-        `camera-visible fixed-stratified direct lights, not reservoir participants; ` +
-        `primitives: ${primitiveIds.join(', ')}.`,
-      details: { primitiveIds },
-    });
-  }
-
-  warnApproximateEmissiveMapTexelPdfPrimitiveIds(
-    primitiveIds: readonly string[],
-    method: EmissiveWarnMethod,
-  ): void {
-    if (primitiveIds.length === 0) return;
-    const key = primitiveIds.join(',');
-    if (this._warnedEmissiveMapTexelPdfApproximationIds.has(key)) return;
-    this._warnedEmissiveMapTexelPdfApproximationIds.add(key);
-    this._warn({
-      code: 'walkaround-hybrid.emissive-map-texel-pdf-approximation',
-      backend: 'walkaround-hybrid',
-      phase: method,
-      method,
-      message:
-        `[vitrum/walkaround-hybrid] ${method}: material-backed emissiveMap ` +
-        `surfaces are rendered; eligible ReSTIR-DI finite emitters are split ` +
-        `into exact texel-cell sub-triangles, and GI/probe hit shading samples ` +
-        `the readable texel at the hit UV, but full texel-space alias tables/PDFs ` +
-        `are not guaranteed across every GI, RC, DDGI, and fallback sampling path; ` +
-        `primitives: ${primitiveIds.join(', ')}.`,
-      details: {
-        primitiveIds,
-        ...EMISSIVE_MAP_TEXEL_PDF_APPROXIMATION_DETAILS,
-      },
-    });
-  }
-
-  warnApproximateLightMapPrimitiveIds(
-    primitiveIds: readonly string[],
-    method: WarnMethod,
-  ): void {
-    if (primitiveIds.length === 0) return;
-    const key = primitiveIds.join(',');
-    if (this._warnedLightMapApproximationIds.has(key)) return;
-    this._warnedLightMapApproximationIds.add(key);
-    this._warn({
-      code: 'walkaround-hybrid.light-map-camera-visible-approximation',
-      backend: 'walkaround-hybrid',
-      phase: method,
-      method,
-      message:
-        `[vitrum/walkaround-hybrid] ${method}: lightMap is consumed as camera-visible baked ` +
-        `outgoing radiance, but it is not sampled as a scene light and is not propagated ` +
-        `through ReSTIR-GI, DDGI, or RC transport; primitives: ${primitiveIds.join(', ')}.`,
-      details: {
-        primitiveIds,
-        ...LIGHT_MAP_CAMERA_VISIBLE_APPROXIMATION_DETAILS,
-      },
-    });
-  }
-
-  warnApproximateRichMaterialPrimitiveFields(
-    primitiveFields: readonly ApproximateRichMaterialPrimitiveFields[],
-    method: WarnMethod,
-  ): void {
-    if (primitiveFields.length === 0) return;
-    const normalized = primitiveFields
-      .map((entry) => ({
-        primitiveId: entry.primitiveId,
-        fields: [...entry.fields].sort(),
-      }))
-      .sort((a, b) => a.primitiveId.localeCompare(b.primitiveId));
-    const key = normalized.map((entry) => `${entry.primitiveId}:${entry.fields.join('|')}`).join(',');
-    if (this._warnedRichMaterialApproximationIds.has(key)) return;
-    this._warnedRichMaterialApproximationIds.add(key);
-    const fieldSet = [...new Set(normalized.flatMap((entry) => entry.fields))].sort();
-    this._warn({
-      code: 'walkaround-hybrid.rich-material-gi-approximation',
-      backend: 'walkaround-hybrid',
-      phase: method,
-      method,
-      message:
-        `[vitrum/walkaround-hybrid] ${method}: rich material lobes are consumed ` +
-        `by the realtime material path, but specular/clearcoat/sheen/anisotropy/` +
-        `iridescence GI remains approximate pending material-furnace/reference A/B; ` +
-        `primitives: ${normalized.map((entry) => entry.primitiveId).join(', ')}.`,
-      details: {
-        primitiveFields: normalized,
-        fields: fieldSet,
-        ...RICH_MATERIAL_GI_APPROXIMATION_DETAILS,
-      },
-    });
-  }
-
-  warnApproximateVolumeLayerPrimitiveFields(
-    primitiveFields: readonly ApproximateVolumeLayerPrimitiveFields[],
-    method: WarnMethod,
-  ): void {
-    if (primitiveFields.length === 0) return;
-    const normalized = primitiveFields
-      .map((entry) => ({
-        primitiveId: entry.primitiveId,
-        fields: [...entry.fields].sort(),
-      }))
-      .sort((a, b) => a.primitiveId.localeCompare(b.primitiveId));
-    const key = normalized.map((entry) => `${entry.primitiveId}:${entry.fields.join('|')}`).join(',');
-    if (this._warnedVolumeLayerTransportApproximationIds.has(key)) return;
-    this._warnedVolumeLayerTransportApproximationIds.add(key);
-    const fieldSet = [...new Set(normalized.flatMap((entry) => entry.fields))].sort();
-    this._warn({
-      code: 'walkaround-hybrid.volume-layer-transport-approximation',
-      backend: 'walkaround-hybrid',
-      phase: method,
-      method,
-      message:
-        `[vitrum/walkaround-hybrid] ${method}: volume scattering and face-layer ` +
-        `material fields are consumed by the compact realtime material path, but ` +
-        `full participating-media and layered-stack transport remains approximate; ` +
-        `primitives: ${normalized.map((entry) => entry.primitiveId).join(', ')}.`,
-      details: {
-        primitiveFields: normalized,
-        fields: fieldSet,
-        ...VOLUME_LAYER_TRANSPORT_APPROXIMATION_DETAILS,
-      },
-    });
-  }
-
-  warnReservedReceiveShadowPrimitiveIds(
-    primitiveIds: readonly string[],
-    method: WarnMethod,
-  ): void {
-    if (primitiveIds.length === 0) return;
-    this._warn({
-      code: 'walkaround-hybrid.reserved-receive-shadow',
-      backend: 'walkaround-hybrid',
-      phase: method,
-      method,
-      message:
-        `[vitrum/walkaround-hybrid] ${method}: receiveShadow:false is reserved and not ` +
-        `consumed by any backend (non-physical for GI); primitives: ${primitiveIds.join(', ')}.`,
-      details: { primitiveIds },
     });
   }
 

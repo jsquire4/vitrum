@@ -82,11 +82,11 @@ describe('H14-E/H25-H28/D6 — Road/items ledger reconciliation guard', () => {
     expect(items).toContain('**H25 ✅ CLOSED');
     expect(items).toContain('**H26/H27 ✅ CLOSED');
     expect(items).toContain('**H28 ✅ CLOSED');
-    expect(road).toContain('| H25 | ✅ CLOSED');
-    expect(road).toContain('| H26-H27 | ✅ CLOSED');
-    expect(road).toContain('| H28 | ✅ CLOSED');
-    expect(road).toContain('D6 bind-group churn is now closed in HEAD');
-    expect(road).toContain('**D6 — Per-frame bind-group churn** ✅ CLOSED');
+    expect(road).toMatch(/\*\*Source audit date:\*\* \d{4}-\d{2}-\d{2}/);
+    expect(road).toContain('**Authority:** current production source under `packages/*/src`');
+    expect(road).toContain('There are no open implementation rows.');
+    expect(road).toContain('| `npm run build` |');
+    expect(road).not.toMatch(/\bexperimental\b/i);
 
     expect(combined).not.toContain('H14-E (HDRI sun-off pt-webgpu)');
     expect(combined).not.toContain('HDRI sun-off pt-webgpu');
@@ -107,7 +107,7 @@ describe('H14-E/H25-H28/D6 — Road/items ledger reconciliation guard', () => {
 });
 
 describe('H42 — renderer-fidelity matrix reconciliation guard', () => {
-  it('keeps the active fidelity matrix on pt-webgl2/pt-webgpu and retired fork gates', () => {
+  it('keeps the active fidelity matrix source-graded and free of unfinished maturity tags', () => {
     const items = readFileSync(new URL('../../../items_to_fix.md', import.meta.url), 'utf8');
     const matrix = readFileSync(new URL('../../../plan/renderer-fidelity-matrix.md', import.meta.url), 'utf8');
 
@@ -115,10 +115,13 @@ describe('H42 — renderer-fidelity matrix reconciliation guard', () => {
     expect(items).not.toContain('**H42 ◻');
     expect(matrix).toContain('`@vitrum/pt-webgl2`');
     expect(matrix).toContain('| Feature | pt-webgl2 (WebGL2) | pt-webgpu full tier (WebGPU) |');
-    expect(matrix).toContain('The former `@vitrum/pt-webgl` (fork-backed) column was removed');
-    expect(matrix).toContain('`npm run fork-shader-smoke` was removed');
-    expect(matrix).toContain('pre-push T1 GPU smoke');
-    expect(matrix).toContain('| Hero-wavelength + CMF accumulation | experimental | supported |');
+    expect(matrix).toContain('former fork-backed `@vitrum/pt-webgl` backend was removed');
+    expect(matrix).toContain('| Hero-wavelength + CMF accumulation | supported | supported |');
+    expect(matrix).toContain('| Manifold next-event estimation (MNEE) | unsupported | supported |');
+    expect(matrix).toContain('| Progressive photon mapping (SPPM; `photon-map`) | unsupported | supported |');
+    expect(matrix).toContain('| BDPT (eye↔light connections) | supported | supported |');
+    expect(matrix).not.toMatch(/\|\s*experimental\s*\|/);
+    expect(matrix).not.toContain('runtime A/B capture pending');
   });
 });
 
@@ -140,9 +143,9 @@ describe('H15 — UV plumb-through in bvhCore', () => {
   it('TLAS path: bvhPositions .w lane is non-zero when primitive has UVs', () => {
     // UV (0.5, 0.5) for all three vertices — clearly non-zero.
     const uvs = new Float32Array([
-      0.5, 0.5, 0, 0,   // vertex 0 (stride-4: u0, v0, u1, v1)
-      0.5, 0.5, 0, 0,   // vertex 1
-      0.5, 0.5, 0, 0,   // vertex 2
+      0.5, 0.5,
+      0.5, 0.5,
+      0.5, 0.5,
     ]);
     const scene = singleTriScene({ uvs });
     const buffers = buildReSTIRSceneBVHForCoreScene(scene, { bvhMode: 'tlas' });
@@ -157,9 +160,9 @@ describe('H15 — UV plumb-through in bvhCore', () => {
   it('TLAS path: zero UVs produce w ≈ 0 (guard against false positive)', () => {
     // Explicit all-zero UVs: w should stay 0.
     const uvs = new Float32Array([
-      0, 0, 0, 0,
-      0, 0, 0, 0,
-      0, 0, 0, 0,
+      0, 0,
+      0, 0,
+      0, 0,
     ]);
     const scene = singleTriScene({ uvs });
     const buffers = buildReSTIRSceneBVHForCoreScene(scene, { bvhMode: 'tlas' });
@@ -169,9 +172,9 @@ describe('H15 — UV plumb-through in bvhCore', () => {
 
   it('merged path: bvhPositions .w lane is non-zero when primitive has UVs', () => {
     const uvs = new Float32Array([
-      0.25, 0.75, 0, 0,
-      0.25, 0.75, 0, 0,
-      0.25, 0.75, 0, 0,
+      0.25, 0.75,
+      0.25, 0.75,
+      0.25, 0.75,
     ]);
     const scene = singleTriScene({ uvs });
     const buffers = buildReSTIRSceneBVHForCoreScene(scene, { bvhMode: 'merged' });
@@ -188,31 +191,29 @@ describe('H15 — UV plumb-through in bvhCore', () => {
 describe('H16 — packProbeUpdateBlendParams hysteresisOverride', () => {
   /**
    * Decodes the `hysteresis` field out of the packed BLEND_PARAMS UBO.
-   * Layout is owned by DDGI_BLEND_PARAMS_UBO; the second u32/f32 field
-   * at byte offset 4 is hysteresis (f32 per the UBO definition).
+   * Layout is owned by DDGI_BLEND_PARAMS_UBO; hysteresis is the sole
+   * semantic field and begins at byte offset 0.
    */
   function decodeHysteresis(buf: ArrayBuffer): number {
     const view = new DataView(buf);
-    // DDGI_BLEND_PARAMS_UBO: { probesPerFrame: u32, hysteresis: f32 }
-    // → hysteresis lives at byte offset 4.
-    return view.getFloat32(4, true);
+    return view.getFloat32(0, true);
   }
 
   it('default: hysteresis is DDGI_PROBE_BLEND_HYSTERESIS (0.97)', () => {
-    const buf = packProbeUpdateBlendParams(64);
+    const buf = packProbeUpdateBlendParams();
     expect(decodeHysteresis(buf)).toBeCloseTo(DDGI_PROBE_BLEND_HYSTERESIS, 5);
   });
 
   it('hysteresisOverride=0.0 gives full-replace blend (H16 invalidate path)', () => {
-    const buf = packProbeUpdateBlendParams(64, undefined, 0.0);
+    const buf = packProbeUpdateBlendParams(0.0);
     expect(decodeHysteresis(buf)).toBeCloseTo(0.0, 5);
   });
 
   it('hysteresisOverride=0.0 is exactly once, next call reverts to default', () => {
     // After the override call (which simulates the invalidate), the NEXT pack
     // call without override must produce the steady-state value.
-    const override = packProbeUpdateBlendParams(64, undefined, 0.0);
-    const steady   = packProbeUpdateBlendParams(64);
+    const override = packProbeUpdateBlendParams(0.0);
+    const steady   = packProbeUpdateBlendParams();
     expect(decodeHysteresis(override)).toBeCloseTo(0.0, 5);
     expect(decodeHysteresis(steady)).toBeCloseTo(DDGI_PROBE_BLEND_HYSTERESIS, 5);
   });
@@ -414,25 +415,17 @@ describe('H46 — HybridEngine construction warnings', () => {
     expect(bounceWarns).toHaveLength(0);
   });
 
-  it('warns and exposes maxBounces=1 when maxBounces < 1 (cannot be honoured; treated as direct-only)', async () => {
+  it('rejects maxBounces < 1 instead of substituting a direct-only regime', async () => {
     const { HybridEngine } = await import('../src/HybridEngine.js');
-    const engine = new HybridEngine(makeStubOpts({ maxBounces: 0 }) as never);
-    const bounceWarns = warnSpy.mock.calls.filter(
-      (c) => String(c[0]).includes('maxBounces'),
-    );
-    expect(bounceWarns.length).toBeGreaterThan(0);
-    expect(String(bounceWarns[0]![0])).toContain('0');
-    expect(engine.capabilities.maxBounces).toBe(1);
+    expect(() => new HybridEngine(makeStubOpts({ maxBounces: 0 }) as never))
+      .toThrow(/maxBounces.*positive safe integer/i);
   });
 
-  it('warns when causticStrategy is manifold-nee', async () => {
+  it('accepts the implemented manifold-nee strategy', async () => {
     const { HybridEngine } = await import('../src/HybridEngine.js');
-    new HybridEngine(makeStubOpts({ causticStrategy: 'manifold-nee' }) as never);
-    const causticWarns = warnSpy.mock.calls.filter(
-      (c) => String(c[0]).includes('causticStrategy'),
-    );
-    expect(causticWarns.length).toBeGreaterThan(0);
-    expect(String(causticWarns[0]![0])).toContain('manifold-nee');
+    expect(() => new HybridEngine(
+      makeStubOpts({ causticStrategy: 'manifold-nee' }) as never,
+    )).not.toThrow();
   });
 
   it('does not warn when causticStrategy is none or absent', async () => {
@@ -462,23 +455,12 @@ describe('H46 — HybridEngine construction warnings', () => {
     )).toBe(true);
   });
 
-  it('warns when causticOptions are supplied even if causticStrategy is none', async () => {
+  it('rejects unsupported causticOptions even if causticStrategy is none', async () => {
     const { HybridEngine } = await import('../src/HybridEngine.js');
-    const structured: import('@vitrum/core').EngineWarning[] = [];
-    new HybridEngine(makeStubOpts({
+    expect(() => new HybridEngine(makeStubOpts({
       causticStrategy: 'none',
       causticOptions: { mneeMaxIterations: 6 },
-      onWarning: (w: import('@vitrum/core').EngineWarning) => structured.push(w),
-    }) as never);
-    const optionWarns = warnSpy.mock.calls.filter(
-      (c) => String(c[0]).includes('causticOptions'),
-    );
-    expect(optionWarns.length).toBeGreaterThan(0);
-    expect(structured.some((w) =>
-      w.code === 'walkaround-hybrid.unsupported-caustic-options' &&
-      Array.isArray(w.details?.keys) &&
-      (w.details.keys as string[]).includes('mneeMaxIterations'),
-    )).toBe(true);
+    }) as never)).toThrow(/causticOptions require.*manifold-nee/i);
   });
 });
 
@@ -573,7 +555,7 @@ describe('H47/H29 — PPG cap threading', () => {
     expect(cfg.ppgMaxDTreeNodesPerCell).toBe(97);
   });
 
-  it('ppgMixAlpha is preserved and clamped in derived config', async () => {
+  it('ppgMixAlpha is preserved exactly in derived config', async () => {
     const mod = await import('../src/HybridEngine.js');
     const device = {
       createBuffer: () => ({ destroy: () => undefined }),
@@ -603,14 +585,14 @@ describe('H47/H29 — PPG cap threading', () => {
       skyTint: [0.4, 0.6, 1.0],
       skyIrradiance: 2.0,
       denoiser: 'atrous-variance',
-      ppgMixAlpha: 1.5,
+      ppgMixAlpha: 0.35,
     } as never);
 
     const cfg = (engine as unknown as { _cfg: { ppgMixAlpha: number } })._cfg;
-    expect(cfg.ppgMixAlpha).toBe(1);
+    expect(cfg.ppgMixAlpha).toBe(0.35);
   });
 
-  it('nrcWarmupSteps is preserved and clamped in derived config', async () => {
+  it('rejects fractional nrcWarmupSteps instead of silently clamping it', async () => {
     const mod = await import('../src/HybridEngine.js');
     const device = {
       createBuffer: () => ({ destroy: () => undefined }),
@@ -631,7 +613,7 @@ describe('H47/H29 — PPG cap threading', () => {
       lost: new Promise<never>(() => {}),
     } as unknown as GPUDevice;
 
-    const engine = new mod.HybridEngine({
+    expect(() => new mod.HybridEngine({
       device,
       width: 640,
       height: 480,
@@ -641,10 +623,7 @@ describe('H47/H29 — PPG cap threading', () => {
       skyIrradiance: 2.0,
       denoiser: 'atrous-variance',
       nrcWarmupSteps: 3.8,
-    } as never);
-
-    const cfg = (engine as unknown as { _cfg: { nrcWarmupSteps: number } })._cfg;
-    expect(cfg.nrcWarmupSteps).toBe(3);
+    } as never)).toThrow(/nrcWarmupSteps.*safe integer/i);
   });
 
   it('ppgMaxSpatialCells is undefined when not supplied', async () => {

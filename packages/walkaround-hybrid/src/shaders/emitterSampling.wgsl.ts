@@ -40,7 +40,6 @@ fn sampleEmitterPoint(e: EmitterTri, xi: vec2f) -> EmitterSample {
 
 // Binary search over emitter CDF for importance sampling.
 fn sampleEmitterIdx(
-  cdf: ptr<storage, array<f32>, read>,
   emitterCount: u32,
   xi: f32,
 ) -> u32 {
@@ -48,7 +47,7 @@ fn sampleEmitterIdx(
   var hi = emitterCount;
   while (lo < hi) {
     let mid = (lo + hi) / 2u;
-    if ((*cdf)[mid] < xi) {
+    if (sceneLoadEmitterCdf(mid) < xi) {
       lo = mid + 1u;
     } else {
       hi = mid;
@@ -58,17 +57,16 @@ fn sampleEmitterIdx(
 }
 
 fn emitterCdfPmf(
-  cdf: ptr<storage, array<f32>, read>,
   emitterCount: u32,
   lid: u32,
 ) -> f32 {
   if (emitterCount == 0u || lid >= emitterCount) {
     return 0.0;
   }
-  let here = clamp((*cdf)[lid], 0.0, 1.0);
+  let here = clamp(sceneLoadEmitterCdf(lid), 0.0, 1.0);
   var prev = 0.0;
   if (lid > 0u) {
-    prev = clamp((*cdf)[lid - 1u], 0.0, 1.0);
+    prev = clamp(sceneLoadEmitterCdf(lid - 1u), 0.0, 1.0);
   }
   return max(0.0, here - prev);
 }

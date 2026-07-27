@@ -34,23 +34,23 @@ describe('ReSTIR-DI material parity', () => {
     expect(MATERIAL_ATLAS_WGSL).toContain('fn sampleRestirDIMaterialPayloadForHit(');
     expect(MATERIAL_ATLAS_WGSL).toContain('let layerControls = sampleFaceLayerControls(hit.indices.w, hit.side >= 0.0);');
     expect(MATERIAL_ATLAS_WGSL).toContain(
-      'payload.albedo = sampleBaseColorMap(hit.indices.w, hit.uv, uv1, scalarBaseColor * vertexColor.rgb);',
+      'payload.albedo = sampleBaseColorMap(hit, scalarBaseColor * vertexColor.rgb);',
     );
     expect(MATERIAL_ATLAS_WGSL).toContain('payload.rough = faceLayerRoughness(');
     expect(MATERIAL_ATLAS_WGSL).toContain(
-      'payload.metal = sampleMaterialScalarMap(hit.indices.w, MATERIAL_MAP_SLOT_METALLIC, 2u, hit.uv, uv1, decodeRoughMetal(materialWord).y);',
+      'payload.metal = sampleMaterialScalarMap(hit, MATERIAL_MAP_SLOT_METALLIC, 2u, decodeRoughMetal(materialWord).y);',
     );
     expect(MATERIAL_ATLAS_WGSL).toContain(
       'payload.clearcoatNormal = applyClearcoatNormalMapForHit(hit, smoothNormal, shadingNormal);',
     );
-    expect(MATERIAL_ATLAS_WGSL).toContain('payload.specular = sampleSpecularControls(hit.indices.w, hit.uv, uv1);');
-    expect(MATERIAL_ATLAS_WGSL).toContain('payload.anisotropy = sampleAnisotropyControls(hit.indices.w, hit.uv, uv1);');
+    expect(MATERIAL_ATLAS_WGSL).toContain('payload.specular = sampleSpecularControls(hit);');
+    expect(MATERIAL_ATLAS_WGSL).toContain('payload.anisotropy = sampleAnisotropyControls(hit);');
     expect(MATERIAL_ATLAS_WGSL).toContain('payload.anisotropyTangent = anisotropyFrame.tangent;');
     expect(MATERIAL_ATLAS_WGSL).toContain('payload.anisotropyBitangent = anisotropyFrame.bitangent;');
-    expect(MATERIAL_ATLAS_WGSL).toContain('payload.iridescence = sampleIridescenceControls(hit.indices.w, hit.uv, uv1);');
-    expect(MATERIAL_ATLAS_WGSL).toContain('payload.clearcoat = sampleClearcoatControls(hit.indices.w, hit.uv, uv1);');
-    expect(MATERIAL_ATLAS_WGSL).toContain('payload.sheen = sampleSheenControls(hit.indices.w, hit.uv, uv1);');
-    expect(MATERIAL_ATLAS_WGSL).toContain('payload.sheenRoughness = sampleSheenRoughness(hit.indices.w, hit.uv, uv1);');
+    expect(MATERIAL_ATLAS_WGSL).toContain('payload.iridescence = sampleIridescenceControls(hit);');
+    expect(MATERIAL_ATLAS_WGSL).toContain('payload.clearcoat = sampleClearcoatControls(hit);');
+    expect(MATERIAL_ATLAS_WGSL).toContain('payload.sheen = sampleSheenControls(hit);');
+    expect(MATERIAL_ATLAS_WGSL).toContain('payload.sheenRoughness = sampleSheenRoughness(hit);');
     expect(MATERIAL_ATLAS_WGSL).toContain('payload.layerTransmission = faceLayerTransmission(layerControls);');
     expect(MATERIAL_ATLAS_WGSL).toContain('payload.volumeScattering = sampleVolumeScatteringControls(hit.indices.w);');
   });
@@ -76,8 +76,12 @@ describe('ReSTIR-DI material parity', () => {
 
   it('uses the extension-aware BRDF for canonical pHat and RIS candidate scoring', () => {
     expect(RESTIR_PHAT_WGSL).toContain('fn restir_di_eval_surface_brdf(surf: PrimarySurface, wi: vec3f) -> vec3f');
-    expect(RESTIR_PHAT_WGSL).toContain('let brdf = surf.layerTransmission * evalGGXWithSpecularClearcoatSheenWithAnisotropyFrame(');
-    expect(RESTIR_PHAT_WGSL).toContain('return applyVolumeScatteringApproximation(brdf, surf.albedo, surf.volumeScattering, surf.normal, surf.wo);');
+    expect(RESTIR_PHAT_WGSL).toContain('var brdf = evalGGXWithSpecularClearcoatSheenWithAnisotropyFrame(');
+    expect(RESTIR_PHAT_WGSL).toContain('if (surf.isGlass)');
+    expect(RESTIR_PHAT_WGSL).toContain('brdf = evalGGXSpecularOnlyWithSpecularClearcoatSheenWithAnisotropyFrame(');
+    expect(RESTIR_PHAT_WGSL).toContain('brdf = surf.layerTransmission * brdf;');
+    expect(RESTIR_PHAT_WGSL).toContain('return applyHomogeneousVolumeSingleScatter(');
+    expect(RESTIR_PHAT_WGSL).toContain('brdf, surf.albedo, surf.volumeScattering, surf.bulkThickness, surf.normal, surf.wo,');
     expect(RESTIR_PHAT_WGSL).toContain('surf.specular.rgb,');
     expect(RESTIR_PHAT_WGSL).toContain('surf.anisotropyTangent,');
     expect(RESTIR_PHAT_WGSL).toContain('surf.anisotropyBitangent,');
@@ -86,7 +90,7 @@ describe('ReSTIR-DI material parity', () => {
     expect(RESTIR_PHAT_WGSL).toContain('let brdf = restir_di_eval_surface_brdf(surf, wi);');
 
     expect(RIS_WGSL).toContain('let brdf = restir_di_eval_surface_brdf(surf, wi);');
-    expect(RIS_WGSL).toContain('let brdfB = restir_di_eval_surface_brdf(surf, wiB);');
+    expect(RIS_WGSL).not.toContain('let brdfB =');
     expect(RIS_WGSL).toContain('let brdfE = restir_di_eval_surface_brdf(surf, envS.dir);');
     expect(RIS_WGSL).not.toContain('let brdf = evalGGX(albedo, roughness, metalness, normal, wo, wi);');
     expect(RIS_WGSL).not.toContain('let brdfB = evalGGX(albedo, roughness, metalness, normal, wo, wiB);');
@@ -103,7 +107,7 @@ describe('ReSTIR-DI material parity', () => {
     expect(EMITTER_LE_AT_XI_WGSL).toContain('return sampleEmissiveMap(triIndex, uv0, uv1, e.Le);');
     expect(RESTIR_PHAT_WGSL).toContain('let Le = sampleEmitterLeAtXi(e, xi);');
     expect(RIS_WGSL).toContain('let Le = sampleEmitterLeAtXi(e, xiTri);');
-    expect(RIS_WGSL).toContain('bestLe = sampleEmitterLeAtXi(eb, bestXi);');
+    expect(RIS_WGSL).not.toContain('bestLe =');
     expect(SHADING_TERMS_WGSL).toContain('let Le = sampleEmitterLeAtXi(e, r.xi);');
   });
 
@@ -111,13 +115,13 @@ describe('ReSTIR-DI material parity', () => {
     expect(RIS_MODULE.requires).toContain('surfaceTextures');
     expect(RIS_WGSL).toContain('@group(1) @binding(5) var bvh_beer: texture_2d<u32>;');
     expect(RIS_WGSL).toContain('fn restirDirectVisibilityScalar(tint: vec3f) -> f32');
-    expect(RIS_WGSL).toContain('let shadowTint = traceSceneAlphaTintTransmittanceTextured(');
+    expect(RIS_WGSL).toContain('let shadowTint = traceSceneAlphaTintTransmittanceTexturedWithOwnership(');
     expect(RIS_WGSL).toContain('let shadowT = restirDirectVisibilityScalar(shadowTint);');
     expect(RIS_WGSL).not.toContain('traceSceneAlphaTransmittanceTextured(');
 
-    expect(SHADING_TERMS_WGSL).toContain('let shadowTint = traceSceneAlphaTintTransmittanceTextured(');
+    expect(SHADING_TERMS_WGSL).toContain('let shadowTint = traceSceneAlphaTintTransmittanceTexturedWithOwnership(');
     expect(SHADING_TERMS_WGSL).toContain('let shadowScalar = clamp(luminance(shadowTint), 0.0, 1.0);');
-    expect(SHADING_TERMS_WGSL).toContain('let shadowColorCorrection = shadowTint / vec3f(max(shadowScalar, 1e-4));');
+    expect(SHADING_TERMS_WGSL).toContain('let shadowColorCorrection = shadowTint / vec3f(shadowScalar);');
     expect(SHADING_TERMS_WGSL).toContain('return Le * brdf * G * r.W * shadowColorCorrection;');
   });
 });

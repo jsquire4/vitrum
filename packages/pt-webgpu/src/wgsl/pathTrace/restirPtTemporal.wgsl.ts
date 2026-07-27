@@ -10,8 +10,8 @@
  *   1. reprojects the current visible vertex xv through the PREVIOUS-frame camera
  *      (params.prevViewProj) to find the same world point in the previous
  *      reservoir,
- *   2. geometric-rejects on depth (relative) + normal (dot) — material swap /
- *      occlusion,
+ *   2. validates motion-stable primitive identity and finite unit normals —
+ *      material swaps and disocclusions are rejected,
  *   3. M-clamps the previous history (rptParams.mClamp),
  *   4. forms the TWO-DOMAIN (current/previous) pairwise generalized-balance MIS,
  *   5. shifts the previous reservoir's reconnection sample onto THIS pixel's
@@ -26,7 +26,8 @@
  * The reused (previous) reservoir's resampling weight is
  *     w_prev = m_prev · p̂_cur(T z_prev) · W_prev · J          (J = shift Jacobian)
  * with NO division by a source pdf. rPrev is a RESERVOIR: its W_prev already
- * bakes in the source pdf (the producer finalised W = w_sum/p̂). Reservoir reuse
+ * carries the complete prior GRIS normalization (W = w_sum/p̂), which may combine
+ * multiple earlier source reservoirs. Reservoir reuse
  * re-weights by m·p̂·W·J only — the Jacobian alone carries the reconnection-edge
  * measure conversion. This is the temporal FEEDBACK loop (this pass's output
  * becomes next frame's rPrev). An extra /p_src would multiply the carried weight
@@ -35,8 +36,9 @@
  * EXACTLY — see the w_prev line; there is NO /p_src.
  *
  * For prefix length 1 the source/target pre-reconnection vertices ARE the visible
- * vertices (xPre == xv), so the live shift Jacobian is the hybrid form
- *     J_geom(rPrev.xv→rCur.xv) · p_replay(prev domain) / p_replay(cur domain).
+ * vertices (xPre == xv), so the complete change of variables is the half-G
+ * geometry ratio. Source proposal information is already represented by W_prev;
+ * pdfSrc is carried sample metadata, not an additional reuse denominator.
  *
  * ── Bind groups ─────────────────────────────────────────────────────────────
  * Composes the SHARED pt-webgpu modules (for traceAny / projectToNdc); the
@@ -53,9 +55,47 @@ export const RESTIR_PT_TEMPORAL_WGSL = /* wgsl */ `
 @group(4) @binding(2) var<storage, read>       rpt_resPrev:    array<u32>;
 @group(4) @binding(4) var<uniform>             rptParams:      RestirPtParams;
 
-const RPT_DEPTH_REL_TOL: f32 = 0.1;   // |Δdepth|/depth reject (GI DEPTH_REL_TOL)
-const RPT_NORMAL_DOT_MIN: f32 = 0.906; // cos(25°) normal reject (GI NORMAL_DOT_MIN)
 const RPT_RECON_NORMAL_BIAS: f32 = 1e-3;
+const RPT_TEMPORAL_IDENTITY_RADIUS: i32 = 2;
+
+fn rptTemporalNormalIsValid(n: vec3f) -> bool {
+  let len2 = dot(n, n);
+  return all(n == n)
+      && all(abs(n) <= vec3f(1e6))
+      && len2 >= 0.5
+      && len2 <= 1.5;
+}
+
+fn rptTemporalSurfaceDistance(
+  current: ReservoirPTHero,
+  previous: ReservoirPTHero,
+) -> f32 {
+  let delta = current.surfaceParamV - previous.surfaceParamV;
+  if (current.triangleIndexV < params.triangleCount) {
+    return length(delta.xy);
+  }
+  let scale = max(1.0, length(current.surfaceParamV));
+  return length(delta) / scale;
+}
+
+fn rptTemporalSurfaceIdentityMatches(
+  current: ReservoirPTHero,
+  previous: ReservoirPTHero,
+) -> bool {
+  if (current.materialIdV != previous.materialIdV
+   || current.instanceIndexV != previous.instanceIndexV
+   || current.triangleIndexV != previous.triangleIndexV) {
+    return false;
+  }
+  let surfaceDistance = rptTemporalSurfaceDistance(current, previous);
+  if (current.triangleIndexV < params.triangleCount) {
+    // Nearest-pixel reprojection can move slightly within a triangle.
+    return surfaceDistance <= 0.08;
+  }
+  // Analytic shapes carry local-space hit positions, so rigid object motion
+  // remains a valid correspondence while a disoccluded surface is rejected.
+  return surfaceDistance <= 0.03;
+}
 
 // Reproject a world point through the PREVIOUS-frame camera to its full-res
 // pixel. Mirrors the GI projectToPrevHalfPx, but full-res and via the VP matrix
@@ -98,8 +138,14 @@ fn restirPtTemporal(@builtin(global_invocation_id) gid: vec3u) {
     return;
   }
 
-  // Reproject the current visible vertex through the prev camera — the SAME world
-  // point in both frames (camera moves, scene static for this increment).
+  if (!rptTemporalNormalIsValid(rCur.nv)) {
+    storeReservoirPTHero_rw(&rpt_resCurrent, pixelIdx, rCur);
+    return;
+  }
+
+  // Camera reprojection supplies the fast-path location. For moving geometry,
+  // the same primitive-local point need not occupy that exact previous pixel,
+  // so a bounded identity search recovers nearby rigid/skinned motion.
   let prevPx = rptProjectToPrevPx(rCur.xv);
   if (prevPx.x < 0 || prevPx.y < 0
    || u32(prevPx.x) >= params.width || u32(prevPx.y) >= params.height) {
@@ -107,21 +153,50 @@ fn restirPtTemporal(@builtin(global_invocation_id) gid: vec3u) {
     return;
   }
   let prevIdx = u32(prevPx.y) * params.width + u32(prevPx.x);
-  let rPrev = loadReservoirPTHero_ro(&rpt_resPrev, prevIdx);
-
-  if (rPrev.M == 0u || rPrev.W <= 0.0) {
-    storeReservoirPTHero_rw(&rpt_resCurrent, pixelIdx, rCur);
-    return;
+  var rPrev = loadReservoirPTHero_ro(&rpt_resPrev, prevIdx);
+  var prevFound = rPrev.M > 0u
+               && rPrev.W > 0.0
+               && rptTemporalNormalIsValid(rPrev.nv)
+               && rptTemporalSurfaceIdentityMatches(rCur, rPrev);
+  var prevAmbiguous = false;
+  if (!prevFound) {
+    var bestSurfaceDistance = 1e30;
+    for (var oy = -RPT_TEMPORAL_IDENTITY_RADIUS;
+         oy <= RPT_TEMPORAL_IDENTITY_RADIUS;
+         oy = oy + 1) {
+      for (var ox = -RPT_TEMPORAL_IDENTITY_RADIUS;
+           ox <= RPT_TEMPORAL_IDENTITY_RADIUS;
+           ox = ox + 1) {
+        if (ox == 0 && oy == 0) { continue; }
+        let candidatePx = prevPx + vec2i(ox, oy);
+        if (candidatePx.x < 0 || candidatePx.y < 0
+         || u32(candidatePx.x) >= params.width
+         || u32(candidatePx.y) >= params.height) {
+          continue;
+        }
+        let candidateIdx = u32(candidatePx.y) * params.width + u32(candidatePx.x);
+        let candidate = loadReservoirPTHero_ro(&rpt_resPrev, candidateIdx);
+        if (candidate.M == 0u || candidate.W <= 0.0
+         || !rptTemporalNormalIsValid(candidate.nv)
+         || !rptTemporalSurfaceIdentityMatches(rCur, candidate)) {
+          continue;
+        }
+        let surfaceDistance = rptTemporalSurfaceDistance(rCur, candidate);
+        if (!prevFound || surfaceDistance + 1e-6 < bestSurfaceDistance) {
+          rPrev = candidate;
+          bestSurfaceDistance = surfaceDistance;
+          prevFound = true;
+          prevAmbiguous = false;
+        } else if (abs(surfaceDistance - bestSurfaceDistance) <= 1e-6) {
+          // Duplicate primitive-local identities at the same search score are
+          // not distinguishable without previous geometry. Reject history
+          // instead of selecting stale reuse by scan order.
+          prevAmbiguous = true;
+        }
+      }
+    }
   }
-
-  // Geometric-consistency test: depth (relative to the camera) + normal.
-  let dDepth = abs(length(rCur.xv - params.cameraPos.xyz) - length(rPrev.xv - params.cameraPos.xyz));
-  let depthRef = max(1e-3, length(rCur.xv - params.cameraPos.xyz));
-  if (dDepth / depthRef > RPT_DEPTH_REL_TOL) {
-    storeReservoirPTHero_rw(&rpt_resCurrent, pixelIdx, rCur);
-    return;
-  }
-  if (dot(rCur.nv, rPrev.nv) < RPT_NORMAL_DOT_MIN) {
+  if (!prevFound || prevAmbiguous) {
     storeReservoirPTHero_rw(&rpt_resCurrent, pixelIdx, rCur);
     return;
   }
@@ -132,7 +207,7 @@ fn restirPtTemporal(@builtin(global_invocation_id) gid: vec3u) {
   var rng = pcgInit(
     gid.x ^ (params.frameSeed * 0x71E5u),
     gid.y ^ (params.frameSeed * 0xE571u),
-    params.frameSeed ^ 0x9B7Fu,
+    ptRngFrameKey(params.frameSeed ^ 0x9B7Fu, params.frameIndex),
   );
 
   // ── GRIS reconnection-shift temporal reuse (Lin 2022 §5 + Eq. 12 + MIS) ──
@@ -141,31 +216,29 @@ fn restirPtTemporal(@builtin(global_invocation_id) gid: vec3u) {
   // weights (the canonical is a resampling technique, not an un-weighted base).
   let cCur = f32(rCur.M);
   let cPrev = f32(prevM);
-  // Eye directions for the integrand-matching target (the BRDF needs wo at each
-  // domain's visible vertex). The scene is static this increment; the prev camera
-  // ≈ current for small motion, so params.cameraPos serves both domains — an
-  // unbiased approximation (p̂ only sets resampling variance, not the mean).
-  let woCur  = restirpt_safe_normalize(params.cameraPos.xyz - rCur.xv);
-  let woPrev = restirpt_safe_normalize(params.cameraPos.xyz - rPrev.xv);
-  let pHatCur_native = restirPtTargetForDomain(rCur, woCur, rCur.xs, rCur.Lo);
+  // Each domain carries its native producer eye direction. This remains exact
+  // under camera motion; reconstructing both directions from the current camera
+  // would evaluate the previous target in the wrong domain.
+  let woCur  = rCur.woV;
+  let woPrev = rPrev.woV;
+  let pHatCur_native = restirPtTargetForDomainAtHero(
+    rCur, rCur.heroLambdaV, woCur, rCur.xs, rCur.Lo,
+  );
 
-  // Decide whether prev is a VALID reconnection-shift candidate (prefix match,
-  // non-degenerate base half-G, positive Jacobian, non-zero shifted+native
-  // targets, AND reconnection-visible). For prefix length 1 the pre-reconnection
-  // vertices are the visible vertices: J = hybrid half-G × BSDF replay-pdf ratio.
-  var prevValid = (rPrev.prefixVertexCount == rCur.prefixVertexCount)
-               && (rPrev.prefixVertexCount != 0u);
-  var J: f32 = 0.0;
-  var pHatPrev_atCur: f32 = 0.0;
-  var pHatPrev_native: f32 = 0.0;
-  if (prevValid) {
-    J = restirPtHybridShiftJacobianForPair(rPrev, rCur, woPrev, woCur);
-    pHatPrev_atCur  = restirPtTargetForDomain(rCur, woCur, rPrev.xs, rPrev.Lo);
-    pHatPrev_native = restirPtTargetForDomain(rPrev, woPrev, rPrev.xs, rPrev.Lo);
-    prevValid = (J > 0.0)
-             && (pHatPrev_atCur >= 1e-9) && (pHatPrev_native >= 1e-9)
-             && rptReconnectionVisible(rCur.xv, rCur.nv, rPrev.xs);
-  }
+  // Decide whether prev is a VALID one-edge reconnection-shift candidate:
+  // positive half-G Jacobian, non-zero shifted+native targets, and a visible
+  // reconnection edge. Nonempty reservoirs already satisfy the sole supported
+  // path topology; invalid selected edges are emptied before storage.
+  let J = restirPtReconnectionJacobianForPair(rPrev, rCur);
+  let pHatPrev_atCur = restirPtTargetForDomainAtHero(
+    rCur, rPrev.heroLambdaV, woCur, rPrev.xs, rPrev.Lo,
+  );
+  let pHatPrev_native = restirPtTargetForDomainAtHero(
+    rPrev, rPrev.heroLambdaV, woPrev, rPrev.xs, rPrev.Lo,
+  );
+  let prevValid = rptFinitePositive(J)
+               && (pHatPrev_atCur >= 1e-9) && (pHatPrev_native >= 1e-9)
+               && rptReconnectionVisible(rCur.xv, rCur.nv, rPrev.xs);
 
   var rGris = emptyReservoirPTHero();
   copyReservoirPTVisibleDomain(&rGris, rCur);
@@ -176,16 +249,21 @@ fn restirPtTemporal(@builtin(global_invocation_id) gid: vec3u) {
     if (prevValid) {
       // prev's sample re-rooted onto the CURRENT domain is p̂_cur(T z_prev); the
       // canonical's own sample re-rooted onto prev is p̂_prev(T⁻¹ z_cur).
-      let pHatPrev_atCurSample = restirPtTargetForDomain(rPrev, woPrev, rCur.xs, rCur.Lo);
+      let pHatPrev_atCurSample = restirPtTargetForDomainAtHero(
+        rPrev, rCur.heroLambdaV, woPrev, rCur.xs, rCur.Lo,
+      );
       let denomCur = restirPtPairwiseDenomCanonical(cCur, pHatCur_native, cPrev, pHatPrev_atCurSample);
       m_cur = select(1.0, (cCur * pHatCur_native) / denomCur, denomCur > 1e-12);
     }
     // Canonical: no shift (J = 1), already at this pixel (no visibility re-test).
     let w_cur = m_cur * pHatCur_native * rCur.W;
     let oldM = rGris.M;
-    let curReplayPdf = restirPtVisibleReplayPdfForDomain(rCur, woCur, rCur.xs);
-    updateReservoirPTWithHybrid(&rGris, rCur.xs, rCur.ns, rCur.Lo, rCur.pdfSrc, 1.0, curReplayPdf, rCur.rngSeed, w_cur, &rng);
-    rGris.M = oldM + rCur.M;
+    if (updateReservoirPT(
+      &rGris, rCur.xs, rCur.ns, rCur.Lo, rCur.heroLambdaV,
+      rCur.pdfSrc, w_cur, &rng,
+    )) {
+      rGris.M = rptSaturatingAddU32(oldM, rCur.M);
+    }
   }
 
   // Previous (reprojected) sample, reconnection-shifted + MIS-weighted.
@@ -199,21 +277,21 @@ fn restirPtTemporal(@builtin(global_invocation_id) gid: vec3u) {
     // the temporal feedback loop — V19 grison.)
     let w_prev = m_prev * pHatPrev_atCur * rPrev.W * J;
     let oldM = rGris.M;
-    // Carry the prev sample's source pdf alongside it (resolve uses the chosen
-    // sample's pdfSrc; the prev domain's reconnection edge differs but its p_src
-    // is the stored producer value — the reconnection-shift reuse does not
-    // re-derive it, matching the GI reservoir's pass-through of the cached pdf).
-    let prevReplayPdfAtCur = restirPtVisibleReplayPdfForDomain(rCur, woCur, rPrev.xs);
-    updateReservoirPTWithHybrid(&rGris, rPrev.xs, rPrev.ns, rPrev.Lo, rPrev.pdfSrc, J, prevReplayPdfAtCur, rPrev.rngSeed, w_prev, &rng);
-    rGris.M = oldM + prevM;
+    // Carry the selected producer density as sample metadata. The reuse weight
+    // does not divide by it again because rPrev.W already contains 1 / p_src.
+    if (updateReservoirPT(
+      &rGris, rPrev.xs, rPrev.ns, rPrev.Lo, rPrev.heroLambdaV,
+      rPrev.pdfSrc, w_prev, &rng,
+    )) {
+      rGris.M = rptSaturatingAddU32(oldM, prevM);
+    }
   }
 
   // GRIS finalise: W = w_sum / p̂ (the MIS weights already sum to 1 — no /M).
-  finaliseReservoirPTWGris(&rGris, rptParams.wCap, params.cameraPos.xyz);
-  // Refresh the reconnection-shift cache so downstream reuse (and next frame's
-  // temporal step, since rGris becomes rPrev) sees a base edge rooted at THIS
-  // pixel's visible vertex.
-  refreshReconnectionCachePT(&rGris, params.cameraPos.xyz, params.frameSeed ^ pixelIdx);
+  finaliseReservoirPTWGris(&rGris, rptParams.wCap);
+  // Validate the selected reconnection edge before downstream spatial reuse and
+  // next frame's temporal step.
+  refreshReconnectionStatePT(&rGris);
 
   storeReservoirPTHero_rw(&rpt_resCurrent, pixelIdx, rGris);
 }

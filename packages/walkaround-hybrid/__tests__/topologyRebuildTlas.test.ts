@@ -39,6 +39,7 @@ describe('topologyRebuild TLAS (C2)', () => {
     };
     const pipeline = {
       refreshBvhFullRebuild: vi.fn(),
+      replaceBvhAndEmitters: vi.fn(),
       updateEmitters: vi.fn(),
       requestAccumReset: vi.fn(),
     };
@@ -63,7 +64,45 @@ describe('topologyRebuild TLAS (C2)', () => {
 
     expect(result.rcRefitBounds).toBeDefined();
     expect(result.rcRefitBounds!.min[0]).toBeLessThanOrEqual(result.rcRefitBounds!.max[0]);
-    expect(pipeline.refreshBvhFullRebuild).toHaveBeenCalled();
+    expect(pipeline.replaceBvhAndEmitters).toHaveBeenCalledTimes(1);
     expect(ddgi.invalidateProbeCache).toHaveBeenCalled();
+  });
+
+  it('keeps the prior CPU BVH renderable when GPU replacement fails', () => {
+    const scene = twoBoxScene();
+    const buffers = buildReSTIRSceneBVHForCoreScene(scene, { bvhMode: 'tlas' });
+    const previousDispose = vi.spyOn(buffers.mergedGeometry, 'dispose');
+    const pipeline = {
+      replaceBvhAndEmitters: vi.fn(() => {
+        throw new Error('gpu replacement failed');
+      }),
+      requestAccumReset: vi.fn(),
+    };
+    const ddgi = {
+      invalidateProbeCache: vi.fn(),
+      markInstancesDirty: vi.fn(),
+    };
+    const ctx: PrimitiveUpdateContext = {
+      bvhBuffers: buffers,
+      pipeline: pipeline as never,
+      ddgi: ddgi as never,
+      primaryLightDir: [0, -1, 0],
+      primaryLightIntensity: 1,
+      lastScene: scene,
+      renderScene: scene,
+      restirBvhModeOverride: 'tlas',
+    };
+
+    const meshA = scene.primitives[0];
+    if (meshA?.kind !== 'mesh') throw new Error('expected mesh');
+    const flipped = meshA.indices!.slice();
+    flipped[1] = flipped[2]!;
+
+    expect(() => topologyRebuild('box-a', { indices: flipped }, ctx))
+      .toThrow('gpu replacement failed');
+    expect(ctx.bvhBuffers).toBe(buffers);
+    expect(previousDispose).not.toHaveBeenCalled();
+    expect(pipeline.requestAccumReset).not.toHaveBeenCalled();
+    expect(ddgi.invalidateProbeCache).not.toHaveBeenCalled();
   });
 });

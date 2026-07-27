@@ -22,7 +22,7 @@
  * Bitterli et al. 2020/2021 (ReSTIR DI/GI base reservoir + reconnection).
  *
  * ════════════════════════════════════════════════════════════════════════════
- * Increment scope (temporal-only, reconnection-shift-only, prefix-length-1)
+ * Implemented scope (temporal + spatial reconnection, prefix length 1)
  * ════════════════════════════════════════════════════════════════════════════
  * The reservoir stores a SINGLE-bounce reconnection sample:
  *   • xv / nv  — the VISIBLE vertex (the camera's first surface hit) and its
@@ -33,12 +33,13 @@
  *   • Lo       — the outgoing radiance LEAVING xs back toward xv (everything the
  *                suffix path gathers from xs onward; see the producer for the
  *                exact, energy-critical definition).
- *   • wi_recon — the unit reconnection-edge direction xv → xs along the BASE
- *                path (cached so the shift / resolve need not recompute it).
- *   • pdfSrc   — the ACTUAL source directional pdf that generated wi_recon at xv
- *                (the visible-vertex BSDF sampling pdf). UNBIASEDNESS-CRITICAL —
- *                see the unbiasedness note below; this is the hero-stack field
- *                the diffuse-only GI version does not need (it cosine-samples).
+ *   • woV      — the native eye direction at xv in the sample's own domain.
+ *   • primitive identity + surfaceParamV — motion-stable temporal
+ *                correspondence (mesh barycentrics or analytic local position).
+ *   • pdfSrc   — the ACTUAL source directional pdf that generated xv → xs
+ *                (the visible-vertex BSDF sampling pdf). It is proposal metadata
+ *                carried with the selected sample for shifted reuse and
+ *                diagnostics; resolve never divides by it independently.
  *
  * The hero target p̂ (the resampling heuristic) is the INTEGRAND-MATCHING target —
  * the luminance of the real unshadowed reconnection contribution:
@@ -50,53 +51,45 @@
  * variance decisively for a glossy xv. The RESOLVE pass reconstructs the path
  * contribution with the SAME real BRDF (`evaluateBrdf`). (See the unbiasedness note.)
  *
- * ── Unbiasedness note (the load-bearing energy-consistency argument) ─────────
- * Let the producer sample wi_recon from the visible-vertex BSDF with the true
- * directional pdf p_src, hit xs, and cache Lo. The 1-sample RIS candidate weight
- * is w = p̂ / p_src. After finalize, W = w_sum / p̂ = (p̂/p_src) / p̂ = 1/p_src.
- * The RESOLVE pass forms  f_bsdf(xv; wo→wi_recon) · cos(nv,wi_recon) · Lo · W
- *                       = f_bsdf · cos · Lo / p_src,
- * which is EXACTLY the unbiased single-bounce MC estimator of the indirect
- * radiance from the cosine/BSDF-sampled direction. The diffuse-cosine proxy p̂
- * CANCELS (it set which candidate survived resampling — variance only). This
- * holds for a DIFFUSE *and* a GLOSSY visible vertex, PROVIDED:
+ * ── Energy-consistency note ──────────────────────────────────────────────────
+ * Let the producer sample the xv → xs edge from the visible-vertex BSDF with the true
+ * directional pdf p_src, hit xs, and cache Lo. For that INITIAL, one-candidate
+ * producer reservoir only, w = p̂/p_src and W = w_sum/p̂ = 1/p_src. Resolve then
+ * forms the ordinary one-sample estimator f_bsdf·cos·Lo/p_src.
+ *
+ * Temporal/spatial reuse combines more than one source reservoir. Its finalized
+ * W remains the GRIS normalization w_sum/p̂(selected), but is NOT generally
+ * 1/pdfSrc for the selected sample. The generalized-balance weights, source
+ * reservoir W values, and reconnection Jacobians are already folded into w_sum.
+ * Resolve must therefore multiply the vector integrand by W exactly once and
+ * must not introduce a separate /pdfSrc. The scalar target controls selection
+ * variance while the GRIS normalization preserves the estimator. This holds for
+ * a DIFFUSE *and* a GLOSSY visible vertex, PROVIDED:
  *   (1) the producer's candidate denominator is the REAL p_src (the
  *       visible-vertex BSDF directional pdf), not the cosine proxy, AND
  *   (2) the resolve uses the REAL evaluateBrdf at xv.
- * Both hold in this increment. The diffuse GI version gets away with the cosine
- * proxy as p_src because its visible vertex is ALWAYS Lambertian (cosine sampling
- * ⇒ p_src = cos·INV_PI ⇒ w = luminance(Lo)); the hero stack stores p_src so the
- * SAME cancellation works for non-Lambertian xv.
+ * Both hold in this increment. The hero stack retains p_src so the producer
+ * proposal remains explicit for non-Lambertian xv and so shifted reservoirs keep
+ * the proposal metadata belonging to their selected sample.
  *
- * The HONEST residual bias is the REUSE (the shift), not the producer:
- *   • A NEAR-SPECULAR / transmissive visible vertex makes the prefix BSDF nearly
- *     singular, so reusing a neighbour's Lo through a DIFFERENT wi_recon is
- *     invalid (the reconnection shift assumes the reconnection vertex is reached
- *     by a non-singular prefix BSDF). The PRODUCER therefore writes an EMPTY
- *     reservoir (M = 0) for specular/transmissive xv — that pixel does not reuse.
- *   • A MODERATELY-GLOSSY xv: the geometric reconnection shift holds xs fixed and
- *     re-roots the edge; the glossy BRDF at xv is direction-sensitive. The
- *     producer can still form an unbiased single-sample candidate for that
- *     domain, but temporal/spatial reuse is only promoted for the diffuse-safe
- *     default path. Hosts must opt into `experimentalGlossyReuse` before the
- *     producer admits glossy/metallic visible vertices into the GRIS feedback
- *     loop.
+ * Reuse support is the stable finite, same-side reflection domain:
+ *   • Opaque diffuse, glossy dielectric, metallic, clearcoat, and sheen
+ *     vertices have finite connection support and are reusable.
+ *   • Transmission is explicitly excluded. Delta or otherwise singular
+ *     connections are also excluded by bsdfHasFiniteConnectionSupport.
  *
- * ════════════════════════════════════════════════════════════════════════════
- * Live prefix-1 hybrid-shift cache (plus future rngSeed headroom)
- * ════════════════════════════════════════════════════════════════════════════
- * The hybrid shift (a BSDF-pdf-ratio replayed-prefix shift — `restirPtHybridShift
- * .wgsl.ts`) is now consumed by temporal/spatial reuse for the prefix-1 path. A
- * selected reservoir stores the visible-domain replay pdf for its chosen edge in
- * `hybridShiftPdf`; reuse forms J = J_geom * p_source / p_target instead of the
- * old geometry-only Jacobian. `hybridJacCache` records the last applied full
- * hybrid Jacobian for the selected sample. `rngSeed` remains reserved for a
- * future multi-vertex random-replay prefix; prefix-1 reuse does not need to
- * re-trace an offset prefix.
+ * A prefix-1 shift has no randomly replayed prefix. It fixes xs and replaces
+ * the source connection xq → xs with xr → xs, so the complete solid-angle
+ * change of variables is exactly the half-G geometry ratio:
+ *
+ *     J = G(xr, xs) / G(xq, xs).
+ *
+ * The producer proposal density must not appear in J: the source reservoir W
+ * already carries the complete prior GRIS normalization. Temporal and spatial
+ * reuse re-evaluate the target in every participating domain.
  */
 
 import { RESTIR_PT_SHIFT_WGSL } from './restirPtShift.wgsl.js';
-import { RESTIR_PT_HYBRID_SHIFT_WGSL } from './restirPtHybridShift.wgsl.js';
 
 /**
  * ReSTIR-PT runtime params UBO (the reuse unit's OWN tunables) + the reservoir
@@ -106,9 +99,10 @@ import { RESTIR_PT_HYBRID_SHIFT_WGSL } from './restirPtHybridShift.wgsl.js';
  * the megakernel and MUST NOT grow a ReSTIR-PT field for this increment (a
  * parallel agent owns that file). So the reuse passes declare their OWN small
  * uniform — `RestirPtParams` — in the ReSTIR-PT bind group (@group(4)). It
- * carries the GRIS W-cap (the temporal-feedback gain bound — the GI version's
- * `restirGiWCap`), the temporal M-clamp (the GI `restirGiMClamp`), and the
- * explicit glossy-reuse opt-in bit. The WIRING step allocates + writes this buffer.
+ * carries the optional, intentionally biased GRIS W-cap and the temporal
+ * M-clamp (`restirGiMClamp` analogue). The professional default writes f32-max,
+ * making ordinary finite weights effectively unclamped while still saturating
+ * an overflowed +Inf quotient to a finite value.
  *
  * @group(4) layout (the ReSTIR-PT-specific resources, separate from the
  * inherited @group(0..3) the shared modules own):
@@ -125,8 +119,8 @@ struct RestirPtParams {
   width:    u32,   // full-res width  (mirrors params.width; lets a reuse pass
   height:   u32,   // full-res height  run without re-reading FrameParams dims)
   mClamp:   u32,   // temporal M-clamp (GI restirGiMClamp analogue)
-  allowGlossyReuse: u32, // 0 = diffuse-safe default, 1 = research glossy/metal reuse
-  wCap:     f32,   // GRIS W-cap (temporal-feedback gain bound)
+  _padA:    u32,
+  wCap:     f32,   // explicit biased W-cap, or f32-max for professional default
   _padB:    f32,
   _padC:    f32,
   _padD:    f32,
@@ -146,7 +140,7 @@ export const RESTIR_PT_PARAMS_FIELDS = [
   { name: 'width',  byteOffset:  0, type: 'u32' },
   { name: 'height', byteOffset:  4, type: 'u32' },
   { name: 'mClamp', byteOffset:  8, type: 'u32' },
-  { name: 'allowGlossyReuse', byteOffset: 12, type: 'u32' },
+  { name: '_padA', byteOffset: 12, type: 'u32' },
   { name: 'wCap',   byteOffset: 16, type: 'f32' },
   { name: '_padB',  byteOffset: 20, type: 'f32' },
   { name: '_padC',  byteOffset: 24, type: 'f32' },
@@ -157,85 +151,73 @@ export const RESTIR_PT_PARAMS_FIELDS = [
 export const RESTIR_PT_PARAMS_BYTES = 32;
 
 export const RESERVOIR_PT_HERO_WGSL = /* wgsl */ `// ============================================================
-// ReSTIR-PT / GRIS hero reservoir (ReservoirPTHero, 224 bytes = 56 × u32).
-// Full-res, arbitrary visible-vertex material. Mirrors the walkaround-hybrid
-// ReservoirPT field set + bitcast serialization, widened for the hero stack:
-//   - pdfSrc (the REAL visible-vertex BSDF sampling pdf) for unbiased glossy
-//     reconstruction (the diffuse GI version cosine-samples and does not need it),
-//   - the visible-vertex material (base + extension lobes + clearcoat normal) so
-//     the RESOLVE pass can evaluate the FULL BRDF (not a diffuse proxy),
-//   - live prefix-1 hybrid-shift cache + rngSeed headroom.
+// ReSTIR-PT / GRIS hero reservoir.
+//
+// ReservoirPTHero is the rich FUNCTION-space representation used by the target
+// and reuse math. Its storage representation is deliberately compact: exactly
+// 64 bytes (16 × u32) per full-resolution pixel. Visible material parameters are
+// deterministically rehydrated from primitive identity + surface coordinates;
+// they are not duplicated in every frame-sized reservoir buffer.
 // ============================================================
 struct ReservoirPTHero {
   // ── reconnection sample (prefix length 1) ──
-  xv:      vec3f,   // visible vertex (primary hit / path prefix)   idx 0..2
-  _pad0:   f32,     //                                              idx 3
-  nv:      vec3f,   // shading normal at xv                         idx 4..6
-  W:       f32,     // RIS unbiased contribution weight (UCW)       idx 7
-  xs:      vec3f,   // reconnection vertex (held fixed by shift)    idx 8..10
-  w_sum:   f32,     // running RIS weight sum                       idx 11
-  ns:      vec3f,   // shading normal at xs                         idx 12..14
-  M:       u32,     // confidence (candidate count)                idx 15
-  Lo:      vec3f,   // outgoing radiance LEAVING xs toward xv       idx 16..18
-  pdfSrc:  f32,     // REAL source BSDF directional pdf at xv       idx 19
-  // ── reconnection-shift cache (consumed by the temporal shift + resolve) ──
-  wi_recon:          vec3f, // unit reconnection dir xv→xs (base)   idx 20..22
-  distRecon:         f32,   // ‖xv − xs‖ along the base edge        idx 23
-  cosReconOut:       f32,   // |cos θ_out| at xs (ns · −wi_recon)   idx 24
-  prefixVertexCount: u32,   // path-prefix vertex count (1 here)    idx 25
-  roughnessV:        f32,   // visible-vertex roughness (resolve)   idx 26
-  metalV:            f32,   // visible-vertex metallic (resolve)    idx 27
+  xv:      vec3f,   // visible vertex (primary hit / path prefix)
+  _pad0:   f32,
+  nv:      vec3f,   // shading normal at xv
+  W:       f32,     // RIS unbiased contribution weight (UCW)
+  xs:      vec3f,   // reconnection vertex (held fixed by shift)
+  w_sum:   f32,     // running RIS weight sum
+  ns:      vec3f,   // shading normal at xs
+  M:       u32,     // confidence (candidate count; stored exactly through 4095)
+  Lo:      vec3f,   // outgoing radiance LEAVING xs toward xv
+  pdfSrc:  f32,     // producer-only proposal metadata; not serialized
+  // ── native visible-domain identity (temporal correspondence) ──
+  woV:               vec3f, // native eye direction at xv
+  materialIdV:       u32,   // rehydrated from primitive identity
+  instanceIndexV:    u32,   // TLAS instance or 0xffffffff sentinel
+  roughnessV:        f32,
+  metalV:            f32,
+  // Wavelength belonging to the SELECTED reconnection sample.  It is part of
+  // z, not a permanent property of the visible domain: temporal/spatial reuse
+  // must carry it when a neighbour wins and re-evaluate the target domain's
+  // material at this wavelength.
+  heroLambdaV:       f32,
+  isFrontFaceV:      bool,  // selects the authored front/back material layer
   // ── visible-vertex BRDF payload (resolve evaluates the FULL BRDF) ──
-  albV:              vec3f, // visible-vertex baseColor             idx 28..30
-  clearcoatV:        f32,   // clearcoat scalar                     idx 31
-  clearcoatRoughnessV: f32, // clearcoat roughness                  idx 32
-  sheenV:            f32,   // sheen scalar                         idx 33
-  sheenRoughnessV:   f32,   // sheen roughness                      idx 34
-  sheenColorV:       vec3f, // sheen colour                         idx 35..37
-  iridescenceV:      f32,   // iridescence scalar                   idx 38
-  iridescenceIorV:   f32,   // iridescence IOR                      idx 39
-  iridescenceThicknessMinV: f32, // min film thickness              idx 40
-  iridescenceThicknessMaxV: f32, // max film thickness              idx 41
-  anisotropyV:       f32,   // visible-vertex anisotropy strength   idx 42
-  anisotropyRotationV: f32, // visible-vertex anisotropy rotation   idx 43
-  specularColorV:    vec3f, // KHR_materials_specular colour        idx 44..46
-  specularIntensityV: f32,  // KHR_materials_specular intensity     idx 47
-  clearcoatNormalV:  vec3f, // clearcoat normal-map result at xv    idx 48..50
-  _padClearcoatNormalV: f32, //                                   idx 51
-  // ── prefix-1 hybrid-shift cache + rngSeed headroom ──
-  hybridJacCache:    f32,   // last applied hybrid shift Jacobian     idx 52
-  hybridShiftPdf:    f32,   // visible-domain replay pdf for edge     idx 53
-  rngSeed:           u32,   // future random-replay decorrelated seed idx 54
-  _padHybrid:        u32,   //                                      idx 55
+  albV:              vec3f,
+  clearcoatV:        f32,
+  clearcoatRoughnessV: f32,
+  sheenV:            f32,
+  sheenRoughnessV:   f32,
+  sheenColorV:       vec3f,
+  iridescenceV:      f32,
+  iridescenceIorV:   f32,
+  iridescenceThicknessMinV: f32,
+  iridescenceThicknessMaxV: f32,
+  anisotropyV:       f32,
+  anisotropyRotationV: f32,
+  specularColorV:    vec3f,
+  specularIntensityV: f32,
+  clearcoatNormalV:  vec3f,
+  _padClearcoatNormalV: f32,
+  // ── visible primitive-local identity ──
+  triangleIndexV:    u32,
+  surfaceParamV:     vec3f, // mesh bary(v,w), or normalized analytic local p
 };
 
-// ReservoirPTHero byte layout (224 bytes = 56 × u32):
-//   [0..2]   xv.xyz        [3]    _pad0
-//   [4..6]   nv.xyz        [7]    W
-//   [8..10]  xs.xyz        [11]   w_sum
-//   [12..14] ns.xyz        [15]   M
-//   [16..18] Lo.xyz        [19]   pdfSrc
-//   [20..22] wi_recon.xyz  [23]   distRecon
-//   [24]     cosReconOut   [25]   prefixVertexCount
-//   [26]     roughnessV    [27]   metalV
-//   [28..30] albV.xyz      [31]   clearcoatV
-//   [32]     clearcoatRoughnessV
-//   [33]     sheenV        [34]   sheenRoughnessV
-//   [35..37] sheenColorV.xyz
-//   [38]     iridescenceV  [39]   iridescenceIorV
-//   [40]     iridescenceThicknessMinV
-//   [41]     iridescenceThicknessMaxV
-//   [42]     anisotropyV   [43]   anisotropyRotationV
-//   [44..46] specularColorV.xyz
-//   [47]     specularIntensityV
-//   [48..50] clearcoatNormalV.xyz
-//   [51]     _padClearcoatNormalV
-//   [52]     hybridJacCache  (last applied shift J)
-//   [53]     hybridShiftPdf  (visible-domain replay pdf)
-//   [54]     rngSeed         (future multi-prefix replay seed)
-//   [55]     _padHybrid
-// Strided storage in array<u32> (4-byte elements) — stride = 56 u32.
-const RESERVOIR_PT_HERO_STRIDE: u32 = 56u;
+// Compact storage layout (64 bytes = 16 × u32):
+//   [0..2] xv.xyz                  [3] W
+//   [4..6] xs.xyz                  [7] w_sum
+//   [8]    oct16(nv)               [9] oct16(ns)
+//   [10..11] shared-exponent 12-bit RGB Lo + 15-bit lambda + face + M[11:8]
+//   [12]   oct16(woV)              [13] instanceIndexV
+//   [14]   triangleIndexV          [15] surfaceParam[23:0] + M[7:0]
+// Mesh surface coordinates use two UNORM12 barycentrics. Analytic coordinates
+// use three UNORM8 values in a shape-normalized local box. M is exact through
+// 4095; larger histories are deliberately saturated because the default clamp
+// is 20 and confidence above 4095 is numerically counterproductive.
+const RESERVOIR_PT_HERO_STRIDE: u32 = 16u;
+const RPT_MAX_STORED_M: u32 = 4095u;
 
 fn emptyReservoirPTHero() -> ReservoirPTHero {
   var r: ReservoirPTHero;
@@ -243,12 +225,13 @@ fn emptyReservoirPTHero() -> ReservoirPTHero {
   r.xs = vec3f(0.0); r.ns = vec3f(0,1,0);
   r.Lo = vec3f(0.0); r.W = 0.0; r.w_sum = 0.0; r.M = 0u;
   r.pdfSrc = 0.0; r._pad0 = 0.0;
-  r.wi_recon = vec3f(0.0);
-  r.distRecon = 0.0;
-  r.cosReconOut = 0.0;
-  r.prefixVertexCount = 0u;
+  r.woV = vec3f(0.0, 0.0, 1.0);
+  r.materialIdV = 0xffffffffu;
+  r.instanceIndexV = INVALID_TLAS_INSTANCE_INDEX;
   r.roughnessV = 0.0;
   r.metalV = 0.0;
+  r.heroLambdaV = 550.0;
+  r.isFrontFaceV = true;
   r.albV = vec3f(0.0);
   r.clearcoatV = 0.0;
   r.clearcoatRoughnessV = 0.0;
@@ -265,198 +248,572 @@ fn emptyReservoirPTHero() -> ReservoirPTHero {
   r.specularIntensityV = 1.0;
   r.clearcoatNormalV = r.nv;
   r._padClearcoatNormalV = 0.0;
-  // Hybrid-shift cache. Empty reservoirs keep this zeroed; producers/reuse
-  // refresh it after a valid chosen edge is known.
-  r.hybridJacCache = 0.0;
-  r.hybridShiftPdf = 0.0;
-  r.rngSeed = 0u;
-  r._padHybrid = 0u;
+  r.triangleIndexV = 0xffffffffu;
+  r.surfaceParamV = vec3f(0.0);
   return r;
+}
+
+struct RptVisibleMaterial {
+  baseColor: vec3f,
+  roughness: f32,
+  metallic: f32,
+  transmission: f32,
+  ior: f32,
+  clearcoat: f32,
+  clearcoatRoughness: f32,
+  sheen: f32,
+  sheenRoughness: f32,
+  sheenColor: vec3f,
+  iridescence: f32,
+  iridescenceIor: f32,
+  iridescenceThicknessMin: f32,
+  iridescenceThicknessMax: f32,
+  specularColor: vec3f,
+  specularIntensity: f32,
+  anisotropy: f32,
+  anisotropyRotation: f32,
+  clearcoatNormal: vec3f,
+  isUnlit: bool,
+}
+
+// Canonical visible-material decode shared by the producer and storage
+// rehydration. Keeping this in one function prevents the compact representation
+// from drifting from the source sampler's texture/layer/spectral semantics.
+fn rptVisibleMaterialAtSurface(
+  matId: u32,
+  triIndex: u32,
+  baryVW: vec2f,
+  instanceIndex: u32,
+  shadingNormal: vec3f,
+  isFrontFace: bool,
+  heroLambda: f32,
+) -> RptVisibleMaterial {
+  let mat = decodeMaterial(matId);
+  var out: RptVisibleMaterial;
+  out.baseColor = mat.baseColor
+    * sampleVertexColor(triIndex, baryVW).rgb
+    * sampleBaseColorTexture(matId, triIndex, baryVW, instanceIndex).rgb;
+  out.baseColor = out.baseColor
+    * sampleAoFactor(matId, triIndex, baryVW, instanceIndex);
+  let orm = sampleOrmTexture(matId, triIndex, baryVW, instanceIndex);
+  out.roughness = clamp(mat.roughness * orm.g, 0.0, 1.0);
+  out.metallic = clamp(mat.metallic * orm.b, 0.0, 1.0);
+  out.transmission = clamp(
+    mat.transmission
+      * sampleTransmissionTexture(matId, triIndex, baryVW, instanceIndex),
+    0.0, 1.0,
+  );
+  out.ior = mat.ior;
+  if (params.spectralEnabled != 0u && mat.dispersionAbbe >= 1.0) {
+    out.ior = cauchyIorAtLambda(heroLambda, mat.ior, mat.dispersionAbbe);
+  }
+  out.clearcoat = clamp(
+    mat.clearcoat * sampleClearcoatTexture(matId, triIndex, baryVW, instanceIndex),
+    0.0, 1.0,
+  );
+  out.clearcoatRoughness = clamp(
+    mat.clearcoatRoughness
+      * sampleClearcoatRoughnessTexture(matId, triIndex, baryVW, instanceIndex),
+    0.0, 1.0,
+  );
+  out.sheen = mat.sheen;
+  out.sheenRoughness = clamp(
+    mat.sheenRoughness
+      * sampleSheenRoughnessTexture(matId, triIndex, baryVW, instanceIndex),
+    0.0, 1.0,
+  );
+  out.sheenColor = clamp(
+    mat.sheenColor * sampleSheenColorTexture(matId, triIndex, baryVW, instanceIndex),
+    vec3f(0.0), vec3f(1.0),
+  );
+  out.iridescence = clamp(
+    mat.iridescence
+      * sampleIridescenceTexture(matId, triIndex, baryVW, instanceIndex),
+    0.0, 1.0,
+  );
+  let thicknessSample = sampleIridescenceThicknessTexture(
+    matId, triIndex, baryVW, instanceIndex,
+  );
+  out.iridescenceThicknessMin = mat.iridescenceThicknessMin;
+  out.iridescenceThicknessMax = mat.iridescenceThicknessMax;
+  if (thicknessSample >= 0.0) {
+    let thickness = mix(
+      mat.iridescenceThicknessMin, mat.iridescenceThicknessMax, thicknessSample,
+    );
+    out.iridescenceThicknessMin = thickness;
+    out.iridescenceThicknessMax = thickness;
+    if (thickness <= 0.0) { out.iridescence = 0.0; }
+  }
+  out.iridescenceIor = mat.iridescenceIor;
+  out.specularColor = clamp(
+    mat.specularColor
+      * sampleSpecularColorTexture(matId, triIndex, baryVW, instanceIndex),
+    vec3f(0.0), vec3f(1.0),
+  );
+  out.specularIntensity = clamp(
+    mat.specularIntensity
+      * sampleSpecularIntensityTexture(matId, triIndex, baryVW, instanceIndex),
+    0.0, 1.0,
+  );
+  if (params.spectralEnabled != 0u) {
+    out.sheenColor = vec3f(spectralRgbFactorAtHero(out.sheenColor, heroLambda));
+    out.specularColor =
+      vec3f(spectralRgbFactorAtHero(out.specularColor, heroLambda));
+  }
+  out.anisotropy =
+    materialAnisotropy(matId, triIndex, baryVW, instanceIndex);
+  out.anisotropyRotation =
+    materialAnisotropyRotation(matId, triIndex, baryVW, shadingNormal, instanceIndex);
+  out.clearcoatNormal = applyClearcoatNormalMap(
+    matId, triIndex, baryVW, shadingNormal, instanceIndex,
+  );
+  out.isUnlit = mat.isUnlit;
+
+  let layerTx = clamp(
+    select(mat.backLayerTx, mat.frontLayerTx, isFrontFace),
+    vec3f(0.0), vec3f(1.0),
+  );
+  let layerRoughness = select(
+    mat.backLayerRoughness, mat.frontLayerRoughness, isFrontFace,
+  );
+  if (layerRoughness >= 0.0) {
+    out.roughness = clamp(layerRoughness, 0.0, 1.0);
+  }
+  let layerWeight = select(
+    layerTx,
+    activeLayerWeightRgb(layerTx, heroLambda, true),
+    params.spectralEnabled != 0u && luminance(layerTx) < 0.999,
+  );
+  out.baseColor = out.baseColor * layerWeight;
+  if (params.spectralEnabled != 0u) {
+    out.baseColor = vec3f(spectralCombinedReflectanceAtHero(
+      out.baseColor,
+      mat.baseColor,
+      mat.spectralReflCoeffs,
+      mat.hasSpectralReflectance,
+      heroLambda,
+    ));
+  }
+  return out;
+}
+
+// Map an analytic hit into a bounded shape-local box before its three
+// coordinates are quantized. Every supported analytic intersector lies inside
+// this box, so scene scale never leaks into the fixed-width representation.
+fn rptNormalizeAnalyticSurfaceParam(
+  analyticIndex: u32,
+  localPoint: vec3f,
+) -> vec3f {
+  if (analyticIndex >= arrayLength(&analyticHeaders)) {
+    return vec3f(0.0);
+  }
+  let header = analyticHeaders[analyticIndex];
+  let shapeId = u32(max(header.x, 0.0));
+  let paramOffset = u32(max(header.z, 0.0));
+  let p0 = select(
+    vec4f(0.0), analyticParams[paramOffset],
+    paramOffset < arrayLength(&analyticParams),
+  );
+  let p1 = select(
+    vec4f(0.0), analyticParams[paramOffset + 1u],
+    paramOffset + 1u < arrayLength(&analyticParams),
+  );
+  var center = vec3f(0.0);
+  var extent = vec3f(1.0);
+  if (shapeId == SHAPE_SPHERE) {
+    center = p0.xyz;
+    extent = vec3f(max(p0.w, 1e-4));
+  } else if (shapeId == SHAPE_BOX) {
+    center = p0.xyz;
+    extent = max(abs(p1.xyz), vec3f(1e-4));
+  } else if (shapeId == SHAPE_CAPSULE) {
+    center = 0.5 * (p0.xyz + p1.xyz);
+    extent = 0.5 * abs(p1.xyz - p0.xyz) + vec3f(max(p1.w, 1e-4));
+  } else if (shapeId == SHAPE_CYLINDER) {
+    center = p0.xyz;
+    extent = vec3f(max(p0.w, 1e-4), max(p1.x, 1e-4), max(p0.w, 1e-4));
+  } else if (shapeId == SHAPE_H_CHANNEL_CAME) {
+    extent = vec3f(
+      max(0.5 * p0.x, 1e-4),
+      max(0.5 * p0.z, 1e-4),
+      max(0.5 * p0.y, 1e-4),
+    );
+  }
+  return clamp((localPoint - center) / extent, vec3f(-1.0), vec3f(1.0));
+}
+
+fn rptPackOct16(direction: vec3f) -> u32 {
+  return pack2x16snorm(octEncode(safe_normalize(direction)));
+}
+
+fn rptUnpackOct16(packed: u32) -> vec3f {
+  return octDecode(unpack2x16snorm(packed));
+}
+
+struct RptDecodedLoMeta {
+  Lo: vec3f,
+  heroLambda: f32,
+  isFrontFace: bool,
+  mHigh: u32,
+}
+
+// Two words carry non-negative HDR Lo without a finite-range clamp: three
+// 12-bit mantissas share an 8-bit base-2 exponent. The remaining 20 bits hold a
+// 15-bit [380,780]nm wavelength, front/back layer bit, and M[11:8].
+fn rptPackLoMeta(
+  Lo: vec3f,
+  heroLambda: f32,
+  isFrontFace: bool,
+  M: u32,
+) -> vec2u {
+  let finiteLo = select(
+    vec3f(0.0), max(Lo, vec3f(0.0)),
+    all(Lo == Lo) && all(abs(Lo) <= vec3f(3.402823466e38)),
+  );
+  let maxChannel = max(finiteLo.x, max(finiteLo.y, finiteLo.z));
+  var exponentCode = 0u;
+  var q = vec3u(0u);
+  if (maxChannel > 0.0) {
+    let exponent = clamp(
+      i32(floor(log2(maxChannel))) + 1,
+      // exp2(12-exponent) is the encode multiplier. -114 keeps its
+      // largest value at exp2(126), finite on every conforming f32 path.
+      -114,
+      128,
+    );
+    exponentCode = u32(exponent + 127);
+    let encodeScale = exp2(12.0 - f32(exponent));
+    q = vec3u(clamp(
+      round(finiteLo * encodeScale),
+      vec3f(0.0),
+      vec3f(4095.0),
+    ));
+  }
+  let finiteHeroLambda = select(
+    550.0,
+    heroLambda,
+    heroLambda == heroLambda && abs(heroLambda) <= 3.402823466e38,
+  );
+  let lambdaQ = u32(round(
+    clamp((finiteHeroLambda - 380.0) / 400.0, 0.0, 1.0) * 32767.0,
+  ));
+  let word0 =
+      (q.x & 0xfffu)
+    | ((q.y & 0xfffu) << 12u)
+    | ((q.z & 0xffu) << 24u);
+  let word1 =
+      ((q.z >> 8u) & 0xfu)
+    | ((exponentCode & 0xffu) << 4u)
+    | ((lambdaQ & 0x7fffu) << 12u)
+    | (select(0u, 1u, isFrontFace) << 27u)
+    | (((min(M, RPT_MAX_STORED_M) >> 8u) & 0xfu) << 28u);
+  return vec2u(word0, word1);
+}
+
+fn rptUnpackLoMeta(word0: u32, word1: u32) -> RptDecodedLoMeta {
+  var out: RptDecodedLoMeta;
+  let q = vec3u(
+    word0 & 0xfffu,
+    (word0 >> 12u) & 0xfffu,
+    ((word0 >> 24u) & 0xffu) | ((word1 & 0xfu) << 8u),
+  );
+  let exponentCode = (word1 >> 4u) & 0xffu;
+  out.Lo = vec3f(0.0);
+  if (exponentCode != 0u) {
+    let exponent = i32(exponentCode) - 127;
+    out.Lo = vec3f(q) * exp2(f32(exponent) - 12.0);
+  }
+  let lambdaQ = (word1 >> 12u) & 0x7fffu;
+  out.heroLambda = 380.0 + 400.0 * (f32(lambdaQ) / 32767.0);
+  out.isFrontFace = ((word1 >> 27u) & 1u) != 0u;
+  out.mHigh = (word1 >> 28u) & 0xfu;
+  return out;
+}
+
+fn rptCanonicalizeStoredLo(Lo: vec3f) -> vec3f {
+  let packed = rptPackLoMeta(Lo, 550.0, true, 0u);
+  return rptUnpackLoMeta(packed.x, packed.y).Lo;
+}
+
+fn rptPackSurfaceParam(r: ReservoirPTHero) -> u32 {
+  if (r.triangleIndexV < params.triangleCount) {
+    let q = vec2u(round(clamp(r.surfaceParamV.xy, vec2f(0.0), vec2f(1.0)) * 4095.0));
+    return (q.x & 0xfffu) | ((q.y & 0xfffu) << 12u);
+  }
+  let q = vec3u(round(
+    (clamp(r.surfaceParamV, vec3f(-1.0), vec3f(1.0)) * 0.5 + 0.5)
+      * 255.0,
+  ));
+  return (q.x & 0xffu) | ((q.y & 0xffu) << 8u) | ((q.z & 0xffu) << 16u);
+}
+
+fn rptUnpackSurfaceParam(triangleIndex: u32, packed: u32) -> vec3f {
+  if (triangleIndex < params.triangleCount) {
+    var vw = vec2f(
+      f32(packed & 0xfffu) / 4095.0,
+      f32((packed >> 12u) & 0xfffu) / 4095.0,
+    );
+    // Independent nearest-integer quantization can move an edge sample one code
+    // beyond v+w=1. Project that single-code overshoot back onto the simplex.
+    let sumVW = vw.x + vw.y;
+    if (sumVW > 1.0) { vw = vw / sumVW; }
+    return vec3f(vw, 0.0);
+  }
+  return 2.0 * vec3f(
+    f32(packed & 0xffu),
+    f32((packed >> 8u) & 0xffu),
+    f32((packed >> 16u) & 0xffu),
+  ) / 255.0 - vec3f(1.0);
+}
+
+fn rptVisibleIdentityIsValid(r: ReservoirPTHero) -> bool {
+  if (r.triangleIndexV < params.triangleCount) {
+    if (r.triangleIndexV >= arrayLength(&indices)) { return false; }
+    if (r.instanceIndexV == INVALID_TLAS_INSTANCE_INDEX) { return true; }
+    if (r.instanceIndexV > 0x3fffffffu) { return false; }
+    let transformBase = r.instanceIndexV * 4u;
+    return transformBase + 3u < arrayLength(&tlasInstanceLocalToWorld)
+        && transformBase + 3u < arrayLength(&tlasInstanceWorldToLocal);
+  }
+  let analyticIndex = r.triangleIndexV - params.triangleCount;
+  return analyticIndex < params.analyticCount
+      && analyticIndex < arrayLength(&analyticHeaders);
+}
+
+fn rptHydrateVisibleDomain(r: ptr<function, ReservoirPTHero>) {
+  if ((*r).M == 0u) { return; }
+  var matId = 0u;
+  var baryVW = vec2f(0.0);
+  if ((*r).triangleIndexV < params.triangleCount) {
+    if ((*r).triangleIndexV < arrayLength(&triMaterialIds)) {
+      matId = triMaterialIds[(*r).triangleIndexV];
+    }
+    baryVW = (*r).surfaceParamV.xy;
+  } else {
+    let analyticIndex = (*r).triangleIndexV - params.triangleCount;
+    if (analyticIndex < arrayLength(&analyticHeaders)) {
+      matId = u32(max(analyticHeaders[analyticIndex].y, 0.0));
+    }
+  }
+  (*r).materialIdV = matId;
+  let vm = rptVisibleMaterialAtSurface(
+    matId,
+    (*r).triangleIndexV,
+    baryVW,
+    (*r).instanceIndexV,
+    (*r).nv,
+    (*r).isFrontFaceV,
+    (*r).heroLambdaV,
+  );
+  (*r).albV = vm.baseColor;
+  (*r).roughnessV = vm.roughness;
+  (*r).metalV = vm.metallic;
+  (*r).clearcoatV = vm.clearcoat;
+  (*r).clearcoatRoughnessV = vm.clearcoatRoughness;
+  (*r).sheenV = vm.sheen;
+  (*r).sheenRoughnessV = vm.sheenRoughness;
+  (*r).sheenColorV = vm.sheenColor;
+  (*r).iridescenceV = vm.iridescence;
+  (*r).iridescenceIorV = vm.iridescenceIor;
+  (*r).iridescenceThicknessMinV = vm.iridescenceThicknessMin;
+  (*r).iridescenceThicknessMaxV = vm.iridescenceThicknessMax;
+  (*r).specularColorV = vm.specularColor;
+  (*r).specularIntensityV = vm.specularIntensity;
+  (*r).anisotropyV = vm.anisotropy;
+  (*r).anisotropyRotationV = vm.anisotropyRotation;
+  (*r).clearcoatNormalV = vm.clearcoatNormal;
 }
 
 fn loadReservoirPTHero_ro(buf: ptr<storage, array<u32>, read>, pixelIdx: u32) -> ReservoirPTHero {
   let b = pixelIdx * RESERVOIR_PT_HERO_STRIDE;
-  var r: ReservoirPTHero;
-  r.xv      = vec3f(bitcast<f32>(buf[b + 0u]), bitcast<f32>(buf[b + 1u]), bitcast<f32>(buf[b + 2u]));
-  r._pad0   = bitcast<f32>(buf[b + 3u]);
-  r.nv      = vec3f(bitcast<f32>(buf[b + 4u]), bitcast<f32>(buf[b + 5u]), bitcast<f32>(buf[b + 6u]));
-  r.W       = bitcast<f32>(buf[b + 7u]);
-  r.xs      = vec3f(bitcast<f32>(buf[b + 8u]), bitcast<f32>(buf[b + 9u]), bitcast<f32>(buf[b + 10u]));
-  r.w_sum   = bitcast<f32>(buf[b + 11u]);
-  r.ns      = vec3f(bitcast<f32>(buf[b + 12u]), bitcast<f32>(buf[b + 13u]), bitcast<f32>(buf[b + 14u]));
-  r.M       = buf[b + 15u];
-  r.Lo      = vec3f(bitcast<f32>(buf[b + 16u]), bitcast<f32>(buf[b + 17u]), bitcast<f32>(buf[b + 18u]));
-  r.pdfSrc  = bitcast<f32>(buf[b + 19u]);
-  r.wi_recon          = vec3f(bitcast<f32>(buf[b + 20u]), bitcast<f32>(buf[b + 21u]), bitcast<f32>(buf[b + 22u]));
-  r.distRecon         = bitcast<f32>(buf[b + 23u]);
-  r.cosReconOut       = bitcast<f32>(buf[b + 24u]);
-  r.prefixVertexCount = buf[b + 25u];
-  r.roughnessV        = bitcast<f32>(buf[b + 26u]);
-  r.metalV            = bitcast<f32>(buf[b + 27u]);
-  r.albV              = vec3f(bitcast<f32>(buf[b + 28u]), bitcast<f32>(buf[b + 29u]), bitcast<f32>(buf[b + 30u]));
-  r.clearcoatV        = bitcast<f32>(buf[b + 31u]);
-  r.clearcoatRoughnessV = bitcast<f32>(buf[b + 32u]);
-  r.sheenV            = bitcast<f32>(buf[b + 33u]);
-  r.sheenRoughnessV   = bitcast<f32>(buf[b + 34u]);
-  r.sheenColorV       = vec3f(bitcast<f32>(buf[b + 35u]), bitcast<f32>(buf[b + 36u]), bitcast<f32>(buf[b + 37u]));
-  r.iridescenceV      = bitcast<f32>(buf[b + 38u]);
-  r.iridescenceIorV   = bitcast<f32>(buf[b + 39u]);
-  r.iridescenceThicknessMinV = bitcast<f32>(buf[b + 40u]);
-  r.iridescenceThicknessMaxV = bitcast<f32>(buf[b + 41u]);
-  r.anisotropyV       = bitcast<f32>(buf[b + 42u]);
-  r.anisotropyRotationV = bitcast<f32>(buf[b + 43u]);
-  r.specularColorV    = vec3f(bitcast<f32>(buf[b + 44u]), bitcast<f32>(buf[b + 45u]), bitcast<f32>(buf[b + 46u]));
-  r.specularIntensityV = bitcast<f32>(buf[b + 47u]);
-  r.clearcoatNormalV  = vec3f(bitcast<f32>(buf[b + 48u]), bitcast<f32>(buf[b + 49u]), bitcast<f32>(buf[b + 50u]));
-  r._padClearcoatNormalV = bitcast<f32>(buf[b + 51u]);
-  r.hybridJacCache    = bitcast<f32>(buf[b + 52u]);
-  r.hybridShiftPdf    = bitcast<f32>(buf[b + 53u]);
-  r.rngSeed           = buf[b + 54u];
-  r._padHybrid        = buf[b + 55u];
+  var r = emptyReservoirPTHero();
+  r.xv = vec3f(
+    bitcast<f32>(buf[b + 0u]),
+    bitcast<f32>(buf[b + 1u]),
+    bitcast<f32>(buf[b + 2u]),
+  );
+  r.W = bitcast<f32>(buf[b + 3u]);
+  r.xs = vec3f(
+    bitcast<f32>(buf[b + 4u]),
+    bitcast<f32>(buf[b + 5u]),
+    bitcast<f32>(buf[b + 6u]),
+  );
+  r.w_sum = bitcast<f32>(buf[b + 7u]);
+  r.nv = rptUnpackOct16(buf[b + 8u]);
+  r.ns = rptUnpackOct16(buf[b + 9u]);
+  let decodedLo = rptUnpackLoMeta(buf[b + 10u], buf[b + 11u]);
+  r.Lo = decodedLo.Lo;
+  r.heroLambdaV = decodedLo.heroLambda;
+  r.isFrontFaceV = decodedLo.isFrontFace;
+  r.woV = rptUnpackOct16(buf[b + 12u]);
+  r.instanceIndexV = buf[b + 13u];
+  r.triangleIndexV = buf[b + 14u];
+  let surfaceAndM = buf[b + 15u];
+  r.surfaceParamV = rptUnpackSurfaceParam(
+    r.triangleIndexV, surfaceAndM & 0xffffffu,
+  );
+  r.M = ((decodedLo.mHigh & 0xfu) << 8u) | ((surfaceAndM >> 24u) & 0xffu);
+  // pdfSrc is producer diagnostic metadata only. Reused GRIS weights consume W,
+  // never a second proposal division, so it need not occupy persistent storage.
+  r.pdfSrc = 1.0;
+  if (r.M > 0u && !rptVisibleIdentityIsValid(r)) {
+    return emptyReservoirPTHero();
+  }
+  rptHydrateVisibleDomain(&r);
   return r;
 }
 
 fn loadReservoirPTHero_rw(buf: ptr<storage, array<u32>, read_write>, pixelIdx: u32) -> ReservoirPTHero {
   let b = pixelIdx * RESERVOIR_PT_HERO_STRIDE;
-  var r: ReservoirPTHero;
-  r.xv      = vec3f(bitcast<f32>(buf[b + 0u]), bitcast<f32>(buf[b + 1u]), bitcast<f32>(buf[b + 2u]));
-  r._pad0   = bitcast<f32>(buf[b + 3u]);
-  r.nv      = vec3f(bitcast<f32>(buf[b + 4u]), bitcast<f32>(buf[b + 5u]), bitcast<f32>(buf[b + 6u]));
-  r.W       = bitcast<f32>(buf[b + 7u]);
-  r.xs      = vec3f(bitcast<f32>(buf[b + 8u]), bitcast<f32>(buf[b + 9u]), bitcast<f32>(buf[b + 10u]));
-  r.w_sum   = bitcast<f32>(buf[b + 11u]);
-  r.ns      = vec3f(bitcast<f32>(buf[b + 12u]), bitcast<f32>(buf[b + 13u]), bitcast<f32>(buf[b + 14u]));
-  r.M       = buf[b + 15u];
-  r.Lo      = vec3f(bitcast<f32>(buf[b + 16u]), bitcast<f32>(buf[b + 17u]), bitcast<f32>(buf[b + 18u]));
-  r.pdfSrc  = bitcast<f32>(buf[b + 19u]);
-  r.wi_recon          = vec3f(bitcast<f32>(buf[b + 20u]), bitcast<f32>(buf[b + 21u]), bitcast<f32>(buf[b + 22u]));
-  r.distRecon         = bitcast<f32>(buf[b + 23u]);
-  r.cosReconOut       = bitcast<f32>(buf[b + 24u]);
-  r.prefixVertexCount = buf[b + 25u];
-  r.roughnessV        = bitcast<f32>(buf[b + 26u]);
-  r.metalV            = bitcast<f32>(buf[b + 27u]);
-  r.albV              = vec3f(bitcast<f32>(buf[b + 28u]), bitcast<f32>(buf[b + 29u]), bitcast<f32>(buf[b + 30u]));
-  r.clearcoatV        = bitcast<f32>(buf[b + 31u]);
-  r.clearcoatRoughnessV = bitcast<f32>(buf[b + 32u]);
-  r.sheenV            = bitcast<f32>(buf[b + 33u]);
-  r.sheenRoughnessV   = bitcast<f32>(buf[b + 34u]);
-  r.sheenColorV       = vec3f(bitcast<f32>(buf[b + 35u]), bitcast<f32>(buf[b + 36u]), bitcast<f32>(buf[b + 37u]));
-  r.iridescenceV      = bitcast<f32>(buf[b + 38u]);
-  r.iridescenceIorV   = bitcast<f32>(buf[b + 39u]);
-  r.iridescenceThicknessMinV = bitcast<f32>(buf[b + 40u]);
-  r.iridescenceThicknessMaxV = bitcast<f32>(buf[b + 41u]);
-  r.anisotropyV       = bitcast<f32>(buf[b + 42u]);
-  r.anisotropyRotationV = bitcast<f32>(buf[b + 43u]);
-  r.specularColorV    = vec3f(bitcast<f32>(buf[b + 44u]), bitcast<f32>(buf[b + 45u]), bitcast<f32>(buf[b + 46u]));
-  r.specularIntensityV = bitcast<f32>(buf[b + 47u]);
-  r.clearcoatNormalV  = vec3f(bitcast<f32>(buf[b + 48u]), bitcast<f32>(buf[b + 49u]), bitcast<f32>(buf[b + 50u]));
-  r._padClearcoatNormalV = bitcast<f32>(buf[b + 51u]);
-  r.hybridJacCache    = bitcast<f32>(buf[b + 52u]);
-  r.hybridShiftPdf    = bitcast<f32>(buf[b + 53u]);
-  r.rngSeed           = buf[b + 54u];
-  r._padHybrid        = buf[b + 55u];
+  var r = emptyReservoirPTHero();
+  r.xv = vec3f(
+    bitcast<f32>(buf[b + 0u]),
+    bitcast<f32>(buf[b + 1u]),
+    bitcast<f32>(buf[b + 2u]),
+  );
+  r.W = bitcast<f32>(buf[b + 3u]);
+  r.xs = vec3f(
+    bitcast<f32>(buf[b + 4u]),
+    bitcast<f32>(buf[b + 5u]),
+    bitcast<f32>(buf[b + 6u]),
+  );
+  r.w_sum = bitcast<f32>(buf[b + 7u]);
+  r.nv = rptUnpackOct16(buf[b + 8u]);
+  r.ns = rptUnpackOct16(buf[b + 9u]);
+  let decodedLo = rptUnpackLoMeta(buf[b + 10u], buf[b + 11u]);
+  r.Lo = decodedLo.Lo;
+  r.heroLambdaV = decodedLo.heroLambda;
+  r.isFrontFaceV = decodedLo.isFrontFace;
+  r.woV = rptUnpackOct16(buf[b + 12u]);
+  r.instanceIndexV = buf[b + 13u];
+  r.triangleIndexV = buf[b + 14u];
+  let surfaceAndM = buf[b + 15u];
+  r.surfaceParamV = rptUnpackSurfaceParam(
+    r.triangleIndexV, surfaceAndM & 0xffffffu,
+  );
+  r.M = ((decodedLo.mHigh & 0xfu) << 8u) | ((surfaceAndM >> 24u) & 0xffu);
+  r.pdfSrc = 1.0;
+  if (r.M > 0u && !rptVisibleIdentityIsValid(r)) {
+    return emptyReservoirPTHero();
+  }
+  rptHydrateVisibleDomain(&r);
   return r;
 }
 
 fn storeReservoirPTHero_rw(buf: ptr<storage, array<u32>, read_write>, pixelIdx: u32, r: ReservoirPTHero) {
   let b = pixelIdx * RESERVOIR_PT_HERO_STRIDE;
-  buf[b + 0u]  = bitcast<u32>(r.xv.x);
-  buf[b + 1u]  = bitcast<u32>(r.xv.y);
-  buf[b + 2u]  = bitcast<u32>(r.xv.z);
-  buf[b + 3u]  = bitcast<u32>(r._pad0);
-  buf[b + 4u]  = bitcast<u32>(r.nv.x);
-  buf[b + 5u]  = bitcast<u32>(r.nv.y);
-  buf[b + 6u]  = bitcast<u32>(r.nv.z);
-  buf[b + 7u]  = bitcast<u32>(r.W);
-  buf[b + 8u]  = bitcast<u32>(r.xs.x);
-  buf[b + 9u]  = bitcast<u32>(r.xs.y);
-  buf[b + 10u] = bitcast<u32>(r.xs.z);
-  buf[b + 11u] = bitcast<u32>(r.w_sum);
-  buf[b + 12u] = bitcast<u32>(r.ns.x);
-  buf[b + 13u] = bitcast<u32>(r.ns.y);
-  buf[b + 14u] = bitcast<u32>(r.ns.z);
-  buf[b + 15u] = r.M;
-  buf[b + 16u] = bitcast<u32>(r.Lo.x);
-  buf[b + 17u] = bitcast<u32>(r.Lo.y);
-  buf[b + 18u] = bitcast<u32>(r.Lo.z);
-  buf[b + 19u] = bitcast<u32>(r.pdfSrc);
-  buf[b + 20u] = bitcast<u32>(r.wi_recon.x);
-  buf[b + 21u] = bitcast<u32>(r.wi_recon.y);
-  buf[b + 22u] = bitcast<u32>(r.wi_recon.z);
-  buf[b + 23u] = bitcast<u32>(r.distRecon);
-  buf[b + 24u] = bitcast<u32>(r.cosReconOut);
-  buf[b + 25u] = r.prefixVertexCount;
-  buf[b + 26u] = bitcast<u32>(r.roughnessV);
-  buf[b + 27u] = bitcast<u32>(r.metalV);
-  buf[b + 28u] = bitcast<u32>(r.albV.x);
-  buf[b + 29u] = bitcast<u32>(r.albV.y);
-  buf[b + 30u] = bitcast<u32>(r.albV.z);
-  buf[b + 31u] = bitcast<u32>(r.clearcoatV);
-  buf[b + 32u] = bitcast<u32>(r.clearcoatRoughnessV);
-  buf[b + 33u] = bitcast<u32>(r.sheenV);
-  buf[b + 34u] = bitcast<u32>(r.sheenRoughnessV);
-  buf[b + 35u] = bitcast<u32>(r.sheenColorV.x);
-  buf[b + 36u] = bitcast<u32>(r.sheenColorV.y);
-  buf[b + 37u] = bitcast<u32>(r.sheenColorV.z);
-  buf[b + 38u] = bitcast<u32>(r.iridescenceV);
-  buf[b + 39u] = bitcast<u32>(r.iridescenceIorV);
-  buf[b + 40u] = bitcast<u32>(r.iridescenceThicknessMinV);
-  buf[b + 41u] = bitcast<u32>(r.iridescenceThicknessMaxV);
-  buf[b + 42u] = bitcast<u32>(r.anisotropyV);
-  buf[b + 43u] = bitcast<u32>(r.anisotropyRotationV);
-  buf[b + 44u] = bitcast<u32>(r.specularColorV.x);
-  buf[b + 45u] = bitcast<u32>(r.specularColorV.y);
-  buf[b + 46u] = bitcast<u32>(r.specularColorV.z);
-  buf[b + 47u] = bitcast<u32>(r.specularIntensityV);
-  buf[b + 48u] = bitcast<u32>(r.clearcoatNormalV.x);
-  buf[b + 49u] = bitcast<u32>(r.clearcoatNormalV.y);
-  buf[b + 50u] = bitcast<u32>(r.clearcoatNormalV.z);
-  buf[b + 51u] = bitcast<u32>(r._padClearcoatNormalV);
-  buf[b + 52u] = bitcast<u32>(r.hybridJacCache);
-  buf[b + 53u] = bitcast<u32>(r.hybridShiftPdf);
-  buf[b + 54u] = r.rngSeed;
-  buf[b + 55u] = r._padHybrid;
+  let storedM = min(r.M, RPT_MAX_STORED_M);
+  let loMeta = rptPackLoMeta(
+    r.Lo, r.heroLambdaV, r.isFrontFaceV, storedM,
+  );
+  buf[b + 0u] = bitcast<u32>(r.xv.x);
+  buf[b + 1u] = bitcast<u32>(r.xv.y);
+  buf[b + 2u] = bitcast<u32>(r.xv.z);
+  buf[b + 3u] = bitcast<u32>(r.W);
+  buf[b + 4u] = bitcast<u32>(r.xs.x);
+  buf[b + 5u] = bitcast<u32>(r.xs.y);
+  buf[b + 6u] = bitcast<u32>(r.xs.z);
+  buf[b + 7u] = bitcast<u32>(r.w_sum);
+  buf[b + 8u] = rptPackOct16(r.nv);
+  buf[b + 9u] = rptPackOct16(r.ns);
+  buf[b + 10u] = loMeta.x;
+  buf[b + 11u] = loMeta.y;
+  buf[b + 12u] = rptPackOct16(r.woV);
+  buf[b + 13u] = r.instanceIndexV;
+  buf[b + 14u] = r.triangleIndexV;
+  buf[b + 15u] =
+    (rptPackSurfaceParam(r) & 0xffffffu) | ((storedM & 0xffu) << 24u);
 }
 
 // Streaming RIS reservoir update (Talbot 2005 / Bitterli 2020). Mirrors
 // walkaround-hybrid's updateReservoirGI EXACTLY but carries the hero-specific
-// pdfSrc alongside the chosen sample (so the resolve can divide by the REAL
-// source pdf). \`rand_f32\` is forward-referenced (composed earlier from PCG_WGSL).
-fn updateReservoirPTWithHybrid(
-  r: ptr<function, ReservoirPTHero>,
-  xs: vec3f, ns: vec3f, Lo: vec3f, pdfSrc: f32,
-  hybridJacCache: f32, hybridShiftPdf: f32, rngSeed: u32,
-  w: f32,
-  rng: ptr<function, u32>,
-) {
-  (*r).M = (*r).M + 1u;
-  (*r).w_sum = (*r).w_sum + w;
-  if (rand_f32(rng) * (*r).w_sum < w) {
-    (*r).xs = xs;
-    (*r).ns = ns;
-    (*r).Lo = Lo;
-    (*r).pdfSrc = pdfSrc;
-    (*r).hybridJacCache = hybridJacCache;
-    (*r).hybridShiftPdf = hybridShiftPdf;
-    (*r).rngSeed = rngSeed;
-  }
+// pdfSrc alongside the chosen sample as proposal metadata for later shifted
+// reuse. Resolve consumes the finalized GRIS W and never divides by pdfSrc.
+// \`rand_f32\` is forward-referenced (composed earlier from PCG_WGSL).
+const RPT_MAX_FINITE_F32: f32 = 3.402823466e38;
+
+fn rptFiniteScalar(value: f32) -> bool {
+  return value == value && abs(value) <= RPT_MAX_FINITE_F32;
+}
+
+fn rptFinitePositive(value: f32) -> bool {
+  return value > 0.0 && rptFiniteScalar(value);
+}
+
+fn rptFiniteVec3(value: vec3f) -> bool {
+  return rptFiniteScalar(value.x)
+      && rptFiniteScalar(value.y)
+      && rptFiniteScalar(value.z);
+}
+
+fn rptSaturatingAddU32(a: u32, b: u32) -> u32 {
+  let aStored = min(a, RPT_MAX_STORED_M);
+  return aStored + min(b, RPT_MAX_STORED_M - aStored);
 }
 
 fn updateReservoirPT(
   r: ptr<function, ReservoirPTHero>,
-  xs: vec3f, ns: vec3f, Lo: vec3f, pdfSrc: f32,
+  xs: vec3f, ns: vec3f, Lo: vec3f, heroLambda: f32, pdfSrc: f32,
   w: f32,
-  rng: ptr<function, u32>,
-) {
-  updateReservoirPTWithHybrid(r, xs, ns, Lo, pdfSrc, 1.0, pdfSrc, 0u, w, rng);
+  rng: ptr<function, PtRngState>,
+) -> bool {
+  // Reject malformed/overflowed candidates before they affect either M or the
+  // streaming selection. In the ordinary finite domain this branch is inert;
+  // outside representable f32 arithmetic an empty candidate is safer than
+  // publishing NaN/Inf into temporal history and the beauty accumulator.
+  if (!rptFinitePositive(w)
+   || !rptFinitePositive(pdfSrc)
+   || !rptFiniteVec3(xs)
+   || !rptFiniteVec3(ns)
+   || !rptFiniteVec3(Lo)
+   || !rptFiniteScalar(heroLambda)
+   || (params.spectralEnabled != 0u
+       && (heroLambda < 380.0 || heroLambda > 780.0))
+   || any(Lo < vec3f(0.0))) {
+    return false;
+  }
+  // Recover a corrupted aggregate without discarding the current visible-domain
+  // payload. The accepted candidate below necessarily replaces the stale sample
+  // because its fresh sum equals its own positive weight.
+  if ((*r).M == 0u || !rptFinitePositive((*r).w_sum)) {
+    (*r).M = 0u;
+    (*r).w_sum = 0.0;
+    (*r).W = 0.0;
+  }
+  if ((*r).M >= RPT_MAX_STORED_M) { return false; }
+  let nextWeightSum = (*r).w_sum + w;
+  if (!rptFinitePositive(nextWeightSum)) { return false; }
+  (*r).M = (*r).M + 1u;
+  (*r).w_sum = nextWeightSum;
+  if (rand_f32(rng) * (*r).w_sum < w) {
+    (*r).xs = xs;
+    (*r).ns = ns;
+    // Canonicalize before target/finalize evaluation. W is therefore computed
+    // against the exact HDR value that survives the 64-byte serialization.
+    (*r).Lo = rptCanonicalizeStoredLo(Lo);
+    // The sampled wavelength and Lo are one indivisible sample.  Rehydrate the
+    // CURRENT visible domain at the winning wavelength so the final target and
+    // resolve never combine lambda_q radiance with lambda_r material factors.
+    (*r).heroLambdaV = heroLambda;
+    rptHydrateVisibleDomain(r);
+    (*r).pdfSrc = pdfSrc;
+  }
+  return true;
 }
 
 fn copyReservoirPTVisibleDomain(dst: ptr<function, ReservoirPTHero>, src: ReservoirPTHero) {
   (*dst).xv = src.xv;
   (*dst).nv = src.nv;
+  (*dst).woV = src.woV;
+  (*dst).materialIdV = src.materialIdV;
+  (*dst).instanceIndexV = src.instanceIndexV;
+  (*dst).triangleIndexV = src.triangleIndexV;
+  (*dst).surfaceParamV = src.surfaceParamV;
   (*dst).albV = src.albV;
   (*dst).roughnessV = src.roughnessV;
   (*dst).metalV = src.metalV;
+  (*dst).heroLambdaV = src.heroLambdaV;
+  (*dst).isFrontFaceV = src.isFrontFaceV;
   (*dst).clearcoatV = src.clearcoatV;
   (*dst).clearcoatRoughnessV = src.clearcoatRoughnessV;
   (*dst).sheenV = src.sheenV;
@@ -471,7 +828,6 @@ fn copyReservoirPTVisibleDomain(dst: ptr<function, ReservoirPTHero>, src: Reserv
   (*dst).specularColorV = src.specularColorV;
   (*dst).specularIntensityV = src.specularIntensityV;
   (*dst).clearcoatNormalV = src.clearcoatNormalV;
-  (*dst).prefixVertexCount = src.prefixVertexCount;
 }
 
 // The hero target function p̂ in the domain whose visible vertex is xv:
@@ -479,9 +835,10 @@ fn copyReservoirPTVisibleDomain(dst: ptr<function, ReservoirPTHero>, src: Reserv
 // the INTEGRAND-MATCHING target (the luminance of the real unshadowed reconnection
 // contribution, using the visible-vertex BRDF) — NOT the diffuse-cosine proxy the
 // diffuse-only GI version uses. It is a SCALAR resampling heuristic only — W =
-// w_sum/p̂ divides it out, so the converged mean is INDEPENDENT of it (the producer
-// W = 1/p_src cancellation holds for ANY p̂ — see the unbiasedness note); the RESOLVE
-// pass likewise reconstructs with the REAL evaluateBrdf at xv. Matching the integrand
+// w_sum/p̂ supplies the GRIS normalization, so the converged mean is INDEPENDENT
+// of the target choice (for the initial one-candidate producer, this reduces to
+// W = 1/p_src; reused reservoirs generally do not). The RESOLVE pass likewise
+// reconstructs with the REAL evaluateBrdf at xv. Matching the integrand
 // only reduces RESAMPLING VARIANCE — decisively for a GLOSSY visible vertex whose
 // direction-sensitive BRDF the old cosine proxy mis-weighted (the documented prefix-1
 // glossy drift, fixed here). Returns 0 on a degenerate / back-facing edge.
@@ -509,9 +866,13 @@ fn restirPtTargetAt(
   xs: vec3f,
   Lo: vec3f,
 ) -> f32 {
+  if (!rptFiniteVec3(xv) || !rptFiniteVec3(nv) || !rptFiniteVec3(wo)
+   || !rptFiniteVec3(xs) || !rptFiniteVec3(Lo)) {
+    return 0.0;
+  }
   let d = xs - xv;
   let dist2 = dot(d, d);
-  if (dist2 < 1e-8) { return 0.0; }
+  if (!rptFinitePositive(dist2) || dist2 < 1e-8) { return 0.0; }
   let wi = d * inverseSqrt(dist2);
   let cosTheta = max(0.0, dot(nv, wi));
   if (cosTheta <= 0.0) { return 0.0; }
@@ -522,7 +883,9 @@ fn restirPtTargetAt(
     specularColorV, specularIntensityV,
     anisotropyV, anisotropyRotationV,
   );
-  return luminance(f * cosTheta * Lo);
+  let targetValue = luminance(f * cosTheta * Lo);
+  if (!rptFinitePositive(targetValue)) { return 0.0; }
+  return targetValue;
 }
 
 fn restirPtTargetForDomain(r: ReservoirPTHero, wo: vec3f, xs: vec3f, Lo: vec3f) -> f32 {
@@ -537,50 +900,41 @@ fn restirPtTargetForDomain(r: ReservoirPTHero, wo: vec3f, xs: vec3f, Lo: vec3f) 
   );
 }
 
-fn restirPtVisibleReplayPdfForDomain(r: ReservoirPTHero, wo: vec3f, xs: vec3f) -> f32 {
-  let toRecon = xs - r.xv;
-  let d2 = dot(toRecon, toRecon);
-  if (d2 <= 1e-10) { return 0.0; }
-  let wi = toRecon * inverseSqrt(d2);
-  // Reusable ReSTIR-PT visible vertices are filtered to non-transmissive prefixes
-  // by the producer. The reservoir therefore stores no transport IOR lanes; use a
-  // neutral non-transmissive pdf domain here and let transmissive prefixes remain
-  // empty/non-reused.
-  return brdfDirectionalPdfFullSampledWithClearcoatNormal(
-    r.albV, r.roughnessV, r.metalV, 0.0, 1.5, r.nv, r.clearcoatNormalV, wo, wi,
-    r.clearcoatV, r.clearcoatRoughnessV, r.sheenV, r.sheenRoughnessV,
-    r.iridescenceV, r.iridescenceIorV, r.iridescenceThicknessMinV, r.iridescenceThicknessMaxV,
-    r.specularColorV, r.specularIntensityV,
-    r.anisotropyV, r.anisotropyRotationV,
+// Evaluate a sample in an arbitrary visible domain using the SAMPLE'S hero
+// wavelength.  A reused sample may have been generated in another frame/pixel;
+// using r.heroLambdaV here would cross-multiply Lo(lambda_sample) by a BSDF and
+// texture/layer payload evaluated at lambda_domain.  RGB mode takes the cheap
+// identity path.
+fn restirPtTargetForDomainAtHero(
+  r: ReservoirPTHero,
+  sampleHeroLambda: f32,
+  wo: vec3f,
+  xs: vec3f,
+  Lo: vec3f,
+) -> f32 {
+  var domain = r;
+  if (params.spectralEnabled != 0u) {
+    if (!rptFiniteScalar(sampleHeroLambda)
+     || sampleHeroLambda < 380.0 || sampleHeroLambda > 780.0) {
+      return 0.0;
+    }
+    domain.heroLambdaV = sampleHeroLambda;
+    rptHydrateVisibleDomain(&domain);
+  }
+  return restirPtTargetForDomain(domain, wo, xs, Lo);
+}
+
+// Prefix length one has no random-replayed bounce: xv→xs is itself the
+// reconnection edge. Its solid-angle change of variables is therefore exactly
+// the half-G ratio. Proposal density is already carried by the source reservoir W;
+// multiplying by a BSDF-pdf ratio here would count the proposal conversion twice.
+fn restirPtReconnectionJacobianForPair(
+  source: ReservoirPTHero,
+  targetDomain: ReservoirPTHero,
+) -> f32 {
+  return restirPtShiftJacobian(
+    source.xv, targetDomain.xv, source.xs, source.ns,
   );
-}
-
-fn restirPtRefreshHybridReplayCache(r: ptr<function, ReservoirPTHero>, cameraPos: vec3f, seed: u32) {
-  if ((*r).M == 0u || (*r).prefixVertexCount == 0u) {
-    (*r).hybridJacCache = 0.0;
-    (*r).hybridShiftPdf = 0.0;
-    (*r).rngSeed = 0u;
-    return;
-  }
-  let wo = restirpt_safe_normalize(cameraPos - (*r).xv);
-  (*r).hybridShiftPdf = restirPtVisibleReplayPdfForDomain((*r), wo, (*r).xs);
-  if ((*r).hybridJacCache <= 0.0) {
-    (*r).hybridJacCache = 1.0;
-  }
-  (*r).rngSeed = seed;
-}
-
-fn restirPtHybridShiftJacobianForPair(source: ReservoirPTHero, targetDomain: ReservoirPTHero, woSource: vec3f, woTarget: vec3f) -> f32 {
-  let jGeom = rptHybridGeomJacobian(source.xv, targetDomain.xv, source.xs, source.ns);
-  if (jGeom <= 0.0) { return 0.0; }
-  var pSource = source.hybridShiftPdf;
-  if (pSource <= 1e-9) {
-    pSource = restirPtVisibleReplayPdfForDomain(source, woSource, source.xs);
-  }
-  if (pSource <= 1e-9) { return 0.0; }
-  let pTarget = restirPtVisibleReplayPdfForDomain(targetDomain, woTarget, source.xs);
-  if (pTarget <= 1e-9) { return 0.0; }
-  return jGeom * (pSource / pTarget);
 }
 
 // ── GRIS pairwise MIS (Lin 2022 §"pairwise MIS") — mirrors walkaround-hybrid's
@@ -609,53 +963,58 @@ fn restirPtPairwiseDenomCanonical(
 // normalise the sum — dividing by M again would under-energise the estimate.
 //   W = w_sum / p̂(chosen sample)    — Lin 2022 §generalized RIS, NO /M.
 // Mirrors walkaround-hybrid finaliseGIReservoirWGris EXACTLY (the GRIS form),
-// with the hero target p̂ via restirPtTargetAt. wCap bounds the temporal-feedback
-// gain (the V19 grison-divergence guard).
-fn finaliseReservoirPTWGris(r: ptr<function, ReservoirPTHero>, wCap: f32, cameraPos: vec3f) {
-  if ((*r).M > 0u) {
-    let wo = restirpt_safe_normalize(cameraPos - (*r).xv);
-    let pHatF = restirPtTargetForDomain((*r), wo, (*r).xs, (*r).Lo);
-    let W_raw = select(0.0, (*r).w_sum / pHatF, pHatF > 1e-9);
-    (*r).W = min(W_raw, wCap);
+// with the hero target p̂ via restirPtTargetAt. A finite host-authored wCap is an
+// explicitly biased robustness mode. The professional default supplies f32-max:
+// no ordinary finite weight is clipped, while an overflowed +Inf quotient still
+// saturates to a finite representable value.
+fn finaliseReservoirPTWGris(r: ptr<function, ReservoirPTHero>, wCap: f32) {
+  (*r).W = 0.0;
+  if ((*r).M == 0u || !rptFinitePositive((*r).w_sum)
+   || !rptFinitePositive(wCap)) {
+    (*r).M = 0u;
+    return;
+  }
+  let pHatF = restirPtTargetForDomain((*r), (*r).woV, (*r).xs, (*r).Lo);
+  if (!rptFinitePositive(pHatF) || pHatF <= 1e-9) {
+    (*r).M = 0u;
+    return;
+  }
+  let W_raw = (*r).w_sum / pHatF;
+  // A positive finite quotient is unchanged unless the host explicitly opted
+  // into a lower cap. +Inf from a representable-positive division saturates to
+  // the finite cap; NaN/negative results fail closed to an empty reservoir.
+  if (W_raw > 0.0) {
+    (*r).W = min(W_raw, min(wCap, RPT_MAX_FINITE_F32));
+  }
+  if (!rptFinitePositive((*r).W)) {
+    (*r).W = 0.0;
+    (*r).M = 0u;
   }
 }
 
-// Refresh the reconnection-shift cache (wi_recon / distRecon / cosReconOut /
-// prefixVertexCount) from the CHOSEN base edge xv → xs, so downstream reuse sees
-// a base half-G rooted at THIS pixel's visible vertex. Mirrors the proven GI
-// refreshPhase0Cache + the temporalGi GRIS cache-refresh block. Leaves the cache
-// zeroed + prefixVertexCount = 0 on an empty / degenerate reservoir.
-fn refreshReconnectionCachePT(r: ptr<function, ReservoirPTHero>, cameraPos: vec3f, seed: u32) {
+// The implemented ReSTIR-PT contract has exactly one reconnection edge. Reject
+// an invalid selected edge by emptying the reservoir; a transient prefix flag
+// would not survive the compact 16-word store and therefore cannot be a valid
+// cross-pass gate.
+fn refreshReconnectionStatePT(r: ptr<function, ReservoirPTHero>) {
   let toRecon = (*r).xs - (*r).xv;
   let dRecon = length(toRecon);
-  if (dRecon > 1e-6 && (*r).M > 0u) {
-    let wiR = toRecon / dRecon;
-    (*r).wi_recon    = wiR;
-    (*r).distRecon   = dRecon;
-    (*r).cosReconOut = abs(dot((*r).ns, -wiR));
-    (*r).prefixVertexCount = 1u;
-    restirPtRefreshHybridReplayCache(r, cameraPos, seed);
-  } else {
-    (*r).wi_recon    = vec3f(0.0);
-    (*r).distRecon   = 0.0;
-    (*r).cosReconOut = 0.0;
-    (*r).prefixVertexCount = 0u;
-    (*r).hybridJacCache = 0.0;
-    (*r).hybridShiftPdf = 0.0;
-    (*r).rngSeed = 0u;
+  if (!rptFinitePositive(dRecon) || dRecon <= 1e-6
+   || (*r).M == 0u || !rptFinitePositive((*r).W)) {
+    (*r).M = 0u;
+    (*r).W = 0.0;
+    (*r).w_sum = 0.0;
   }
 }
 `;
 
 /**
- * The reservoir module composed with the geometry and hybrid shift Jacobians it
- * sits next to. `RESTIR_PT_SHIFT_WGSL` keeps the old geometry-only helper
- * available for tests/fallbacks; `RESTIR_PT_HYBRID_SHIFT_WGSL` supplies the
- * FD-validated half-G geometry used by the live prefix-1 BSDF replay cache.
+ * The reservoir module composed with its prefix-1 reconnection Jacobian.
+ * `RESTIR_PT_SHIFT_WGSL` supplies the FD-validated half-G geometry ratio used
+ * by temporal and spatial reuse.
  */
 export const RESERVOIR_PT_HERO_WITH_SHIFT_WGSL = /* wgsl */ `
 ${RESTIR_PT_SHIFT_WGSL}
-${RESTIR_PT_HYBRID_SHIFT_WGSL}
 ${RESTIR_PT_PARAMS_WGSL}
 ${RESERVOIR_PT_HERO_WGSL}
 `;

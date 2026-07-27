@@ -34,7 +34,7 @@ function ggxMultiscatterScalar(rough: number, NdotV: number, NdotL: number): num
   const Ei = ggxDirectionalAlbedo(NdotL, rough);
   const Eavg = ggxAverageAlbedo(rough);
   const oneMinusEavg = 1 - Eavg;
-  if (oneMinusEavg < 1e-4) return 0;
+  if (!(rough > 0) || !(oneMinusEavg > 0)) return 0;
   const fms = ((1 - Eo) * (1 - Ei)) / (PI * oneMinusEavg);
   // Favg = 1 → Fms = (1·1·Eavg)/(1 − 1·(1−Eavg)) = Eavg/Eavg = 1.
   return fms;
@@ -98,8 +98,12 @@ describe('B9 — white-furnace energy conservation (perfect conductor)', () => {
   }
 
   it('multiscatter vanishes at low roughness (single-scatter unchanged)', () => {
-    // rough → 0 ⇒ Eavg → 1 ⇒ oneMinusEavg < 1e-4 ⇒ ms = 0.
+    // The exact discrete mirror event has no continuous multiscatter lobe.
     expect(ggxMultiscatterScalar(0.0, 0.5, 0.5)).toBe(0);
+    // Any representable positive roughness keeps its physically tiny lobe.
+    expect(ggxMultiscatterScalar(1e-3, 0.5, 0.5)).toBeGreaterThan(0);
+    expect(GGX_BRDF_WGSL).toContain('if (!(oneMinusEavg > 0.0)) { return vec3f(0.0); }');
+    expect(GGX_BRDF_WGSL).not.toContain('oneMinusEavg < 1e-4');
     // Smooth surfaces keep nearly all single-scatter energy already.
     expect(ggxDirectionalAlbedo(0.5, 0.05)).toBeGreaterThan(0.99);
   });

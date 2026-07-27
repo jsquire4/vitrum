@@ -15,6 +15,7 @@ import type { MaterialSpec } from '@vitrum/core';
 import {
   materialSpecTriColor,
   materialSpecSurfaceTextureId,
+  quantizePackedMaterialTransmission,
   toProductionEmissiveRadiance,
 } from '@vitrum/shared-bvh';
 
@@ -76,7 +77,7 @@ export const WARM_GRAY_DEFAULT_B = 140;
 // DIFFUSE DEFAULT INVARIANT (B1): a material with no authored roughness packs
 // ROUGH_DEFAULT = 0.85 — the EXACT value shade/ris/cast hardcoded for non-glass
 // before B1 — so a default-roughness diffuse scene (metal 0) is numerically
-// unchanged. Glass (transmission > 0.5) packs 0.05 to match the prior glass
+// unchanged. Glass (any physical transmission > 0) packs 0.05 to match the prior glass
 // hardcode. Metalness 0 default.
 //
 // IOR DEFAULT INVARIANT (B1-ior-per-tri): glass materials with no authored ior
@@ -149,7 +150,7 @@ export function resolveRoughMetal(
   transmission: number | undefined,
   ior?: number,
 ): { rough: number; metal: number; ior: number } {
-  const isGlass = (transmission ?? 0) > 0.5;
+  const isGlass = (transmission ?? 0) > 0;
   let rough: number;
   if (roughness === undefined || !Number.isFinite(roughness)) {
     rough = isGlass ? ROUGH_GLASS : ROUGH_DEFAULT;
@@ -224,8 +225,8 @@ function scalarProductionEmissiveLe(m: MaterialSpec): [number, number, number] |
  * `MaterialSpec[]`. Mirrors {@link packBVHIndexWTri} field-for-field:
  *  - RGB ← `materialSpecTriColor(mat, /*applyBeer*\/ false)` × 255 & 0xFF
  *    (the RAW attenuation color for a transmissive surface, else baseColor).
- *  - trans4 ← `min(15, round(transmission · 15)) & 0xF`.
- *  - isMetal ← `metallic > 1e-4 ? 1 : 0`.
+ *  - trans4 ← canonical nonzero-preserving 4-bit transmission quantization.
+ *  - isMetal ← `metallic > 0 ? 1 : 0`.
  *  - texType ← `materialSpecSurfaceTextureId(mat) & 0x7`.
  *  - low byte ← `((trans4 << 4) | (isMetal << 3) | (texType & 0x7)) & 0xFF`.
  * A missing material slot falls back to the warm-gray default + zero
@@ -257,9 +258,9 @@ export function packBVHIndexWFromCore(
       b = Math.round(color[2] * 255) & 0xFF;
       texTypeId = materialSpecSurfaceTextureId(mat) & 0x7;
       const metalness = mat.metallic ?? 0;
-      isMetal = metalness > 1e-4 ? 1 : 0;
+      isMetal = metalness > 0 ? 1 : 0;
     }
-    const trans4 = Math.min(15, Math.round(transmission * 15)) & 0xF;
+    const trans4 = quantizePackedMaterialTransmission(transmission);
     const lowByte = ((trans4 << 4) | (isMetal << 3) | (texTypeId & 0x7)) & 0xFF;
     indexBuf[base4 + 3] = (r << 24) | (g << 16) | (b << 8) | lowByte;
   }
@@ -271,7 +272,7 @@ export function packBVHIndexWFromCore(
  * roughness+metalness+IOR (bits[31:24]=rough×255, bits[23:16]=metal×255,
  * bits[15:8]=ior_quantized) from a `MaterialSpec[]`. Applies the SAME B1
  * diffuse-default invariant as the structural packer: no authored `roughness` →
- * 0.85 (0.05 for glass, transmission > 0.5); metalness from `mat.metallic ?? 0`.
+ * 0.85 (0.05 for glass, transmission > 0); metalness from `mat.metallic ?? 0`.
  * IOR from `mat.ior ?? 1.5` (glass) / `1.0` (opaque). Missing slot →
  * (0.85, 0, opaque-1.0). Mirrors {@link packBVHRoughMetalTri} byte-for-byte so
  * the core and structural paths produce identical per-triangle output.
@@ -343,10 +344,14 @@ export function packBVHRoughMetalFromCore(
 
 /**
  * THREE-free counterpart to {@link packBVHBeerColors}: pack the Beer-Lambert
- * visible color per triangle into a parallel u32 buffer from a `MaterialSpec[]`.
+ * visible color plus a dedicated per-triangle sidedness byte into a parallel
+ * u32 buffer from a `MaterialSpec[]`.
  * Mirrors {@link packBVHBeerColorTri}: RGB ←
  * `materialSpecTriColor(mat, /*applyBeer*\/ true)`, `min(1, c) · 255 & 0xFF`,
- * packed `(r << 24) | (g << 16) | (b << 8)`. Warm-gray default for a missing slot.
+ * packed `(r << 24) | (g << 16) | (b << 8) | sideFlags`, where sideFlags bit 0
+ * is `MaterialSpec.doubleSided`. The low byte was previously zero and is not
+ * part of the Beer RGB decode, so AO keeps its full independent 5-bit lane.
+ * Warm-gray default for a missing slot.
  */
 export function packBVHBeerColorsFromCore(
   triMaterialId: Uint32Array,
@@ -363,7 +368,8 @@ export function packBVHBeerColorsFromCore(
       g = Math.round(Math.min(1, color[1]) * 255) & 0xFF;
       b = Math.round(Math.min(1, color[2]) * 255) & 0xFF;
     }
-    beerBuf[t] = (r << 24) | (g << 16) | (b << 8);
+    const sideFlags = mat?.doubleSided === true ? 1 : 0;
+    beerBuf[t] = ((r << 24) | (g << 16) | (b << 8) | sideFlags) >>> 0;
   }
   return beerBuf;
 }

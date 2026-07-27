@@ -27,25 +27,38 @@ function f32Buffer(values: number[]): ArrayBuffer {
 
 function makeInlineTexturedTriangleGltf(): { gltf: GltfJson; buffers: Map<number, ArrayBuffer> } {
   const positions = f32Buffer([0, 0, 0, 1, 0, 0, 0, 1, 0]);
+  const uv0 = f32Buffer([0, 0, 1, 0, 0, 1]);
   const imageBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47]);
-  const total = new Uint8Array(positions.byteLength + imageBytes.byteLength);
+  const total = new Uint8Array(positions.byteLength + uv0.byteLength + imageBytes.byteLength);
   total.set(new Uint8Array(positions), 0);
-  total.set(imageBytes, positions.byteLength);
+  total.set(new Uint8Array(uv0), positions.byteLength);
+  total.set(imageBytes, positions.byteLength + uv0.byteLength);
   return {
     gltf: {
       asset: { version: '2.0' },
       scene: 0,
       scenes: [{ nodes: [0] }],
       nodes: [{ mesh: 0, camera: 0 }],
-      cameras: [{ type: 'perspective' }],
-      meshes: [{ primitives: [{ attributes: { POSITION: 0 }, material: 0 }] }],
+      cameras: [{
+        type: 'perspective',
+        perspective: { yfov: Math.PI / 3, znear: 0.1 },
+      }],
+      meshes: [{ primitives: [{ attributes: { POSITION: 0, TEXCOORD_0: 1 }, material: 0 }] }],
       materials: [{ pbrMetallicRoughness: { baseColorTexture: { index: 0 } } }],
       textures: [{ source: 0 }],
-      images: [{ bufferView: 1, mimeType: 'image/png' }],
-      accessors: [{ bufferView: 0, componentType: 5126, count: 3, type: 'VEC3' }],
+      images: [{ bufferView: 2, mimeType: 'image/png' }],
+      accessors: [
+        { bufferView: 0, componentType: 5126, count: 3, type: 'VEC3' },
+        { bufferView: 1, componentType: 5126, count: 3, type: 'VEC2' },
+      ],
       bufferViews: [
         { buffer: 0, byteOffset: 0, byteLength: positions.byteLength },
-        { buffer: 0, byteOffset: positions.byteLength, byteLength: imageBytes.byteLength },
+        { buffer: 0, byteOffset: positions.byteLength, byteLength: uv0.byteLength },
+        {
+          buffer: 0,
+          byteOffset: positions.byteLength + uv0.byteLength,
+          byteLength: imageBytes.byteLength,
+        },
       ],
       buffers: [{ byteLength: total.byteLength }],
     },
@@ -93,10 +106,12 @@ function makeInlineVariantTriangleGltf(): { gltf: GltfJson; buffers: Map<number,
 
 function makeInlineTexturedVariantTriangleGltf(): { gltf: GltfJson; buffers: Map<number, ArrayBuffer> } {
   const positions = f32Buffer([0, 0, 0, 1, 0, 0, 0, 1, 0]);
+  const uv0 = f32Buffer([0, 0, 1, 0, 0, 1]);
   const imageBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47]);
-  const total = new Uint8Array(positions.byteLength + imageBytes.byteLength);
+  const total = new Uint8Array(positions.byteLength + uv0.byteLength + imageBytes.byteLength);
   total.set(new Uint8Array(positions), 0);
-  total.set(imageBytes, positions.byteLength);
+  total.set(new Uint8Array(uv0), positions.byteLength);
+  total.set(imageBytes, positions.byteLength + uv0.byteLength);
   return {
     gltf: {
       asset: { version: '2.0' },
@@ -112,7 +127,7 @@ function makeInlineTexturedVariantTriangleGltf(): { gltf: GltfJson; buffers: Map
       },
       meshes: [{
         primitives: [{
-          attributes: { POSITION: 0 },
+          attributes: { POSITION: 0, TEXCOORD_0: 1 },
           material: 0,
           extensions: {
             KHR_materials_variants: {
@@ -126,11 +141,19 @@ function makeInlineTexturedVariantTriangleGltf(): { gltf: GltfJson; buffers: Map
         { name: 'variant textured', pbrMetallicRoughness: { baseColorTexture: { index: 0 } } },
       ],
       textures: [{ source: 0 }],
-      images: [{ bufferView: 1, mimeType: 'image/png' }],
-      accessors: [{ bufferView: 0, componentType: 5126, count: 3, type: 'VEC3' }],
+      images: [{ bufferView: 2, mimeType: 'image/png' }],
+      accessors: [
+        { bufferView: 0, componentType: 5126, count: 3, type: 'VEC3' },
+        { bufferView: 1, componentType: 5126, count: 3, type: 'VEC2' },
+      ],
       bufferViews: [
         { buffer: 0, byteOffset: 0, byteLength: positions.byteLength },
-        { buffer: 0, byteOffset: positions.byteLength, byteLength: imageBytes.byteLength },
+        { buffer: 0, byteOffset: positions.byteLength, byteLength: uv0.byteLength },
+        {
+          buffer: 0,
+          byteOffset: positions.byteLength + uv0.byteLength,
+          byteLength: imageBytes.byteLength,
+        },
       ],
       buffers: [{ byteLength: total.byteLength }],
     },
@@ -192,6 +215,7 @@ describe('@vitrum/engine/gltf progressive helper', () => {
     expect(result.backend).toBe('pt-webgpu');
     expect(result.profileId).toBe('pt-webgpu');
     expect(result.engine).toBe(handle);
+    expect(result.engine.profileId).toBe('pt-webgpu');
     expect(result.attached).toBe(true);
     expect(result.textureDecodeReport).toBe(result.asset.textureDecodeReport);
     expect(result.textureDecodeReport).toMatchObject({
@@ -254,6 +278,7 @@ describe('@vitrum/engine/gltf progressive helper', () => {
   it('validates progressive glTF against the full pt-webgpu profile instead of a standalone lite probe', async () => {
     const { gltf, buffers } = makeInlineTexturedTriangleGltf();
     delete gltf.cameras;
+    delete gltf.nodes![0]!.camera;
     const handle = {
       coordinator: {},
       realtime: {},
@@ -350,7 +375,7 @@ describe('@vitrum/engine/gltf progressive helper', () => {
     result.controller.setVariant('textured');
     expect(coordinator.updatePrimitive).toHaveBeenCalledTimes(1);
     const patch = coordinator.updatePrimitive.mock.calls[0]![1] as Partial<MeshPrimitive>;
-    const map = patch.material?.baseColorMap as TextureRef | undefined;
+    const map = patch.material?.baseColorMap;
     expect(map).toBeDefined();
     expect(map?.handle).toEqual(expect.objectContaining({
       width: 2,
@@ -377,6 +402,7 @@ describe('@vitrum/engine/gltf progressive helper', () => {
     });
     const { gltf, buffers } = makeInlineTexturedTriangleGltf();
     delete gltf.cameras;
+    delete gltf.nodes![0]!.camera;
     const handle = {
       coordinator: {},
       realtime: {},
@@ -396,5 +422,52 @@ describe('@vitrum/engine/gltf progressive helper', () => {
     expect(result.backend).toBe('pt-webgpu');
     expect(result.profileId).toBe('pt-webgpu');
     expect(result.engine).toBe(handle);
+  });
+
+  it('releases acquired image handles when progressive engine creation rejects', async () => {
+    const { gltf, buffers } = makeInlineTexturedTriangleGltf();
+    const close = vi.fn();
+    const failure = new Error('progressive creation failed');
+    createProgressiveEngineMock.mockRejectedValueOnce(failure);
+
+    await expect(
+      loadGltfWithProgressiveEngine(gltf, {
+        buffers,
+        decodeTextures: false,
+        decodeImage: async () => ({ width: 1, height: 1, close }),
+        engineOptions: {
+          canvas: {} as HTMLCanvasElement,
+          seedFromRealtime: false,
+        },
+      }),
+    ).rejects.toBe(failure);
+    expect(close).toHaveBeenCalledOnce();
+  });
+
+  it('disposes the progressive engine and releases images when result decoration rejects', async () => {
+    const { gltf, buffers } = makeInlineTexturedTriangleGltf();
+    const close = vi.fn();
+    const dispose = vi.fn();
+    const handle = Object.preventExtensions({
+      coordinator: {},
+      realtime: {},
+      converged: {},
+      dispose,
+    });
+    createProgressiveEngineMock.mockResolvedValueOnce(handle);
+
+    await expect(
+      loadGltfWithProgressiveEngine(gltf, {
+        buffers,
+        decodeTextures: false,
+        decodeImage: async () => ({ width: 1, height: 1, close }),
+        engineOptions: {
+          canvas: {} as HTMLCanvasElement,
+          seedFromRealtime: false,
+        },
+      }),
+    ).rejects.toBeInstanceOf(TypeError);
+    expect(dispose).toHaveBeenCalledOnce();
+    expect(close).toHaveBeenCalledOnce();
   });
 });

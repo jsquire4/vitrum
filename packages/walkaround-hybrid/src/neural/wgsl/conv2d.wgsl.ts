@@ -1,3 +1,5 @@
+import { NEURAL_FINITE_WGSL } from '../preprocessing.js';
+
 /**
  * conv2d.wgsl.ts — 2D convolution kernel for the vitrum neural denoiser.
  *
@@ -15,7 +17,7 @@
  * output pixel for one output channel.
  */
 
-export const CONV2D_WGSL = /* wgsl */`
+export const CONV2D_WGSL = /* wgsl */`${NEURAL_FINITE_WGSL}
 // ── Conv2DParams uniform (written by host before dispatch) ────────────────────
 struct Conv2DParams {
   inputH  : u32,
@@ -47,7 +49,7 @@ fn conv2dMain(@builtin(global_invocation_id) gid: vec3<u32>) {
 
   if (oy >= outH || ox >= outW || oc >= params.outC) { return; }
 
-  var acc: f32 = biases[oc];
+  var acc: f32 = neuralSanitizeSigned(biases[oc]);
 
   let iy_base = i32(oy * params.stride) - i32(params.padding);
   let ix_base = i32(ox * params.stride) - i32(params.padding);
@@ -68,13 +70,15 @@ fn conv2dMain(@builtin(global_invocation_id) gid: vec3<u32>) {
                  + ic * params.kH * params.kW
                  + kh * params.kW
                  + kw;
-        acc += input[inIdx] * weights[wIdx];
+        acc = neuralSanitizeSigned(
+          acc + neuralSanitizeSigned(input[inIdx]) * neuralSanitizeSigned(weights[wIdx]),
+        );
       }
     }
   }
 
   // Output index: [oy, ox, oc]
   let outIdx = oy * outW * params.outC + ox * params.outC + oc;
-  output[outIdx] = acc;
+  output[outIdx] = neuralSanitizeSigned(acc);
 }
 `;

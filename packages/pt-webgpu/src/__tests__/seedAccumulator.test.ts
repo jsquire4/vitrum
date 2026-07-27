@@ -155,9 +155,13 @@ describe('pt-webgpu seedAccumulator does NOT advance the SPP counter', () => {
     engine.onProgress?.((p) => progress.push(p));
     engine.pause();
     engine.renderFrame({
-      viewMatrix: asMat4(new Float32Array(16)),
+      viewMatrix: asMat4(new Float32Array([
+        1, 0, 0, 0,
+        0, 1, 0, 0,
+        0, 0, 1, 0,
+        0, 0, 0, 1,
+      ])),
       projMatrix: asMat4(new Float32Array(16)),
-      cameraPosition: [0, 0, 1],
       viewport: { width: 16, height: 16, devicePixelRatio: 1 },
       frameIndex: 0,
       frameSeed: 1,

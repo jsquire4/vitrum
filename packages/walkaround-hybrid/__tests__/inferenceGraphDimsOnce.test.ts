@@ -113,7 +113,10 @@ function makeRecordingDevice(rec: Recorded): GPUDevice {
     createBindGroup() { return {}; },
     createCommandEncoder() { return mkEncoder(); },
     queue,
-    limits: { maxComputeWorkgroupStorageSize: 32768 },
+    limits: {
+      maxComputeWorkgroupStorageSize: 32768,
+      maxComputeWorkgroupsPerDimension: 65_535,
+    },
   };
   return device as unknown as GPUDevice;
 }
@@ -139,14 +142,18 @@ function goldenDims(spec: UNetSpec, W: number, H: number): Map<string, Dims> {
         continue;
       case 'conv2d': {
         const kH = layer.params.kH ?? 3, kW = layer.params.kW ?? 3;
-        const s = layer.params.stride ?? 1, p = layer.params.padding ?? 0;
+        const s = layer.params.stride ?? 1;
+        const p = layer.params.padding ?? (kH === 3 && kW === 3 ? 1 : 0);
         outH = Math.floor((outH + 2 * p - kH) / s) + 1;
         outW = Math.floor((outW + 2 * p - kW) / s) + 1;
         break;
       }
       case 'transposedConv2d': {
-        const s = layer.params.stride ?? 2;
-        outH = outH * s; outW = outW * s;
+        const kH = layer.params.kH ?? 2, kW = layer.params.kW ?? 2;
+        const s = layer.params.stride ?? 2, p = layer.params.padding ?? 0;
+        const d = layer.params.dilation ?? 1, op = layer.params.outputPadding ?? 0;
+        outH = (outH - 1) * s - 2 * p + d * (kH - 1) + op + 1;
+        outW = (outW - 1) * s - 2 * p + d * (kW - 1) + op + 1;
         break;
       }
       case 'relu':
@@ -178,26 +185,35 @@ function goldenDispatch(kind: LayerSpec['kind'], d: Dims): [number, number, numb
 
 // Pack the uniform bytes the production graph writes for one layer.
 function goldenUniformBytes(layer: LayerSpec, dimsMap: Map<string, Dims>, H: number, W: number): number[] {
-  const u32 = new Uint32Array(8);
+  const u32 = new Uint32Array(12);
   const inDims = layer.inputs.length > 0 ? dimsMap.get(layer.inputs[0]!) : undefined;
   switch (layer.kind) {
     case 'conv2d':
       u32[0] = inDims?.H ?? H; u32[1] = inDims?.W ?? W;
       u32[2] = layer.params.inC; u32[3] = layer.params.outC;
       u32[4] = layer.params.kH ?? 3; u32[5] = layer.params.kW ?? 3;
-      u32[6] = layer.params.stride ?? 1; u32[7] = layer.params.padding ?? 1;
+      u32[6] = layer.params.stride ?? 1;
+      u32[7] = layer.params.padding ?? (u32[4] === 3 && u32[5] === 3 ? 1 : 0);
       break;
     case 'transposedConv2d':
       u32[0] = inDims?.H ?? H; u32[1] = inDims?.W ?? W;
       u32[2] = layer.params.inC; u32[3] = layer.params.outC;
       u32[4] = layer.params.kH ?? 2; u32[5] = layer.params.kW ?? 2;
       u32[6] = layer.params.stride ?? 2; u32[7] = layer.params.padding ?? 0;
+      u32[8] = layer.params.dilation ?? 1;
+      u32[9] = layer.params.outputPadding ?? 0;
       break;
     case 'relu':
-    case 'skipAdd':
-    case 'bilinearUpsample': {
+    case 'skipAdd': {
       const count = (inDims?.H ?? H) * (inDims?.W ?? W) * (inDims?.C ?? layer.params.inC);
       u32[0] = count;
+      u32[1] = Math.ceil(count / 256);
+      break;
+    }
+    case 'bilinearUpsample': {
+      u32[0] = inDims?.H ?? H;
+      u32[1] = inDims?.W ?? W;
+      u32[2] = inDims?.C ?? layer.params.inC;
       break;
     }
     default:
@@ -314,8 +330,50 @@ describe('InferenceGraph — dims-once + decomposition behavior-identity (Task 4
     const dd = dimsMap.get('denoised')!;
     expect(rec.copies).toHaveLength(1);
     expect(rec.copies[0]!.size).toBe(dd.H * dd.W * dd.C * 4);
-    expect(rec.copies[0]!.srcLabel).toBe('neural/denoised');
+    expect(rec.copies[0]!.srcLabel).toMatch(
+      /^neural\/slot-\d+:.*(?:^|,)denoised(?:,|$)/,
+    );
     expect(rec.copies[0]!.dstLabel).toBe('out');
+  });
+
+  it('zero-pads an odd logical extent and dispatches an exact output crop', async () => {
+    const logicalW = 9;
+    const logicalH = 8;
+    const rec: Recorded = { dispatches: [], uniformWrites: [], copies: [] };
+    const device = makeRecordingDevice(rec);
+    const graph = new InferenceGraph(spec);
+    await graph.initialize(device, makeWeights(spec), logicalW, logicalH);
+
+    const bytes = logicalW * logicalH * 3 * 4;
+    const buffer = (label: string): GPUBuffer => device.createBuffer({
+      label,
+      size: bytes,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
+    });
+    graph.run(buffer('odd-noisy'), buffer('odd-albedo'), buffer('odd-normals'), buffer('odd-out'));
+
+    expect(graph.inferenceWidth).toBe(16);
+    expect(graph.inferenceHeight).toBe(8);
+    expect(rec.dispatches[0]).toEqual({
+      label: 'neural-inputPack',
+      gx: 1,
+      gy: 1,
+      gz: 1,
+    });
+    expect(rec.dispatches.at(-1)).toEqual({
+      label: 'neural-outputCrop',
+      gx: 1,
+      gy: 1,
+      gz: 1,
+    });
+    expect(rec.copies).toHaveLength(0);
+    const u32 = (label: string): number[] => {
+      const write = rec.uniformWrites.find(entry => entry.bufLabel === label);
+      expect(write).toBeDefined();
+      return Array.from(new Uint32Array(Uint8Array.from(write!.bytes).buffer));
+    };
+    expect(u32('neural-uniform-inputPack')).toEqual([9, 8, 16, 8]);
+    expect(u32('neural-uniform-outputCrop')).toEqual([9, 8, 16, 0]);
   });
 
   it('two runs emit an identical dispatch sequence (idempotent per-frame)', async () => {

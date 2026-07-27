@@ -13,18 +13,12 @@ import { LIGHT_PIXELS, packLightsTexture } from './lightsTexture.js';
 // s0.a (type), s1.a (intensity) and s2.a (power) for a directional, a point and
 // a rect-area emitter and pin the per-type power/area math.
 
-const luminance = (r: number, g: number, b: number) =>
-  0.2126 * r + 0.7152 * g + 0.0722 * b;
+const luminance = (r: number, g: number, b: number) => 0.2126 * r + 0.7152 * g + 0.0722 * b;
 
 /** texel `t` (0..5), channel `c` (0..3) of light `i` in the packed grid.
  *  `LightsTextureData.data` is typed as the `Float32Array | Uint32Array`
  *  contract union; the lights packer always emits `rgba32f`. */
-function texel(
-  data: Float32Array | Uint32Array,
-  i: number,
-  t: number,
-  c: number,
-): number {
+function texel(data: Float32Array | Uint32Array, i: number, t: number, c: number): number {
   return data[(i * LIGHT_PIXELS + t) * 4 + c]!;
 }
 
@@ -76,10 +70,7 @@ describe('packLightsTexture', () => {
     expect(texel(data.data, 0, 2, 1)).toBeCloseTo(1, 6);
     expect(texel(data.data, 0, 2, 2)).toBeCloseTo(0, 6);
     // s2.a = power = luminance * intensity
-    expect(texel(data.data, 0, 2, 3)).toBeCloseTo(
-      luminance(1, 1, 1) * 3,
-      6,
-    );
+    expect(texel(data.data, 0, 2, 3)).toBeCloseTo(luminance(1, 1, 1) * 3, 6);
   });
 
   it('packs the point emitter (type 4, intensity, power, decay/distance)', () => {
@@ -91,10 +82,7 @@ describe('packLightsTexture', () => {
     expect(texel(data.data, 1, 2, 0)).toBe(1);
     expect(texel(data.data, 1, 2, 1)).toBe(2);
     expect(texel(data.data, 1, 2, 2)).toBe(3);
-    expect(texel(data.data, 1, 2, 3)).toBeCloseTo(
-      luminance(0.5, 0.25, 0.75) * 2,
-      6,
-    );
+    expect(texel(data.data, 1, 2, 3)).toBeCloseTo(luminance(0.5, 0.25, 0.75) * 2, 6);
     // s4.g = decay, s4.b = distance
     expect(texel(data.data, 1, 4, 1)).toBe(2);
     expect(texel(data.data, 1, 4, 2)).toBe(10);
@@ -110,10 +98,7 @@ describe('packLightsTexture', () => {
     expect(texel(data.data, 2, 2, 1)).toBe(0);
     expect(texel(data.data, 2, 2, 2)).toBe(0);
     // s2.a = power = luminance * intensity * (width * height) = lum*5*(2*3)
-    expect(texel(data.data, 2, 2, 3)).toBeCloseTo(
-      luminance(0.2, 0.4, 0.6) * 5 * 6,
-      6,
-    );
+    expect(texel(data.data, 2, 2, 3)).toBeCloseTo(luminance(0.2, 0.4, 0.6) * 5 * 6, 6);
     // s3.xyz = v-vector, s3.a = area = |u × v| = 6
     expect(texel(data.data, 2, 3, 1)).toBe(3);
     expect(texel(data.data, 2, 3, 3)).toBeCloseTo(6, 6);
@@ -124,6 +109,24 @@ describe('packLightsTexture', () => {
     expect(empty.lightCount).toBe(0);
     expect(empty.dim).toBe(1);
     expect(empty.data.length).toBe(4);
+  });
+
+  it('preserves zero and representable sub-1e-20 powers without flooring', () => {
+    const zero: PointEmitter = {
+      ...point,
+      id: 'zero-power',
+      intensity: 0,
+    };
+    const dim: PointEmitter = {
+      ...point,
+      id: 'dim-power',
+      color: [1, 1, 1],
+      intensity: 1e-25,
+    };
+    const packed = packLightsTexture([zero, dim]);
+    expect(texel(packed.data, 0, 2, 3)).toBe(0);
+    expect(texel(packed.data, 1, 2, 3)).toBeGreaterThan(0);
+    expect(texel(packed.data, 1, 2, 3)).toBeCloseTo(1e-25, 30);
   });
 });
 
@@ -140,7 +143,7 @@ describe('packLightsTexture — disc-area (CIRC_AREA) structural test', () => {
     color: [1.0, 0.5, 0.0],
     intensity: 4,
     position: [0, 2, 0],
-    normal: [0, 1, 0],   // world-up; tangent basis deterministic from this
+    normal: [0, 1, 0], // world-up; tangent basis deterministic from this
     radius: 1.5,
   };
 
@@ -191,6 +194,67 @@ describe('packLightsTexture — disc-area (CIRC_AREA) structural test', () => {
   });
 });
 
+describe('packLightsTexture — punctual spot orientation', () => {
+  it('packs cross(u,v) as the backward axis consumed by NEE and BDPT', () => {
+    const direction = [2, -3, 4] as const;
+    const directionLength = Math.hypot(...direction);
+    const forward = direction.map((value) => value / directionLength);
+    const position = [1, 2, 3] as const;
+    const spot: SpotEmitter = {
+      id: 'oriented-spot',
+      kind: 'spot',
+      color: [1, 1, 1],
+      intensity: 2,
+      position,
+      direction,
+      angle: 0.6,
+      penumbra: 0.25,
+    };
+    const packed = packLightsTexture([spot]);
+    const u = [
+      texel(packed.data, 0, 2, 0),
+      texel(packed.data, 0, 2, 1),
+      texel(packed.data, 0, 2, 2),
+    ] as const;
+    const v = [
+      texel(packed.data, 0, 3, 0),
+      texel(packed.data, 0, 3, 1),
+      texel(packed.data, 0, 3, 2),
+    ] as const;
+    const back = [
+      u[1] * v[2] - u[2] * v[1],
+      u[2] * v[0] - u[0] * v[2],
+      u[0] * v[1] - u[1] * v[0],
+    ] as const;
+    const backLength = Math.hypot(...back);
+    const normalizedBack = back.map((value) => value / backLength);
+
+    // The shader uses -cross(u,v) for emitted direction.
+    const emittedDot = forward.reduce(
+      (sum, component, axis) => sum + component * -normalizedBack[axis]!,
+      0,
+    );
+    expect(emittedDot).toBeCloseTo(1, 6);
+
+    // A receiver placed down the authored beam sees a positive cone cosine
+    // against the same backward axis in randomSpotLightSample.
+    const receiver = position.map((value, axis) => value + 5 * forward[axis]!);
+    const toSource = position.map((value, axis) => value - receiver[axis]!);
+    const toSourceLength = Math.hypot(...toSource);
+    const coneCosine = toSource.reduce(
+      (sum, component, axis) =>
+        sum + (component / toSourceLength) * normalizedBack[axis]!,
+      0,
+    );
+    expect(coneCosine).toBeCloseTo(1, 6);
+
+    // SpotEmitter is a delta-position contract; inherited area/radius lanes
+    // remain reserved zero rather than implying a soft source.
+    expect(texel(packed.data, 0, 3, 3)).toBe(0);
+    expect(texel(packed.data, 0, 4, 0)).toBe(0);
+  });
+});
+
 // ── D10.10: assertSlotCursor dev-only guard tests ─────────────────────────────
 // These tests verify that the slot-cursor guards fire for each light kind when
 // the packing code would produce wrong data. We trigger packing and verify the
@@ -206,39 +270,62 @@ describe('assertSlotCursor — packing cursor is correct for each light kind', (
 
   it('rect-area: packs without throwing (cursor lands at 16)', () => {
     const rect: RectAreaEmitter = {
-      id: 'r', kind: 'rect-area', color: [1, 0, 0], intensity: 1,
-      position: [0, 0, 0], uAxis: [1, 0, 0], vAxis: [0, 1, 0],
+      id: 'r',
+      kind: 'rect-area',
+      color: [1, 0, 0],
+      intensity: 1,
+      position: [0, 0, 0],
+      uAxis: [1, 0, 0],
+      vAxis: [0, 1, 0],
     };
     expect(() => packLightsTexture([rect])).not.toThrow();
   });
 
   it('disc-area: packs without throwing (cursor lands at 16)', () => {
     const disc: DiscAreaEmitter = {
-      id: 'd', kind: 'disc-area', color: [1, 0, 0], intensity: 1,
-      position: [0, 0, 0], normal: [0, 1, 0], radius: 1,
+      id: 'd',
+      kind: 'disc-area',
+      color: [1, 0, 0],
+      intensity: 1,
+      position: [0, 0, 0],
+      normal: [0, 1, 0],
+      radius: 1,
     };
     expect(() => packLightsTexture([disc])).not.toThrow();
   });
 
   it('spot: packs without throwing (cursor lands at 22)', () => {
     const spot: SpotEmitter = {
-      id: 's', kind: 'spot', color: [1, 0, 0], intensity: 1,
-      position: [0, 1, 0], direction: [0, -1, 0], angle: Math.PI / 4,
+      id: 's',
+      kind: 'spot',
+      color: [1, 0, 0],
+      intensity: 1,
+      position: [0, 1, 0],
+      direction: [0, -1, 0],
+      angle: Math.PI / 4,
     };
     expect(() => packLightsTexture([spot])).not.toThrow();
   });
 
   it('point: packs without throwing (cursor lands at 19)', () => {
     const point: PointEmitter = {
-      id: 'p', kind: 'point', color: [1, 0, 0], intensity: 1,
-      position: [0, 0, 0], decay: 2, distance: 10,
+      id: 'p',
+      kind: 'point',
+      color: [1, 0, 0],
+      intensity: 1,
+      position: [0, 0, 0],
+      decay: 2,
+      distance: 10,
     };
     expect(() => packLightsTexture([point])).not.toThrow();
   });
 
   it('directional: packs without throwing (cursor lands at 12)', () => {
     const dir: DirectionalEmitter = {
-      id: 'dir', kind: 'directional', color: [1, 1, 1], intensity: 1,
+      id: 'dir',
+      kind: 'directional',
+      color: [1, 1, 1],
+      intensity: 1,
       direction: [0, 1, 0],
     };
     expect(() => packLightsTexture([dir])).not.toThrow();
@@ -285,13 +372,63 @@ describe('composeTraceGlsl — CIRC_AREA_LIGHT_TYPE is handled in both sample + 
 describe('SHADOW-01 — castShadowDisabled lane (s5.g, channel 21)', () => {
   it('packs 1.0 for castShadow:false on every analytic light kind; 0.0 default', () => {
     const lights = [
-      { kind: 'directional', id: 'd', direction: [0, 1, 0], color: [1, 1, 1], intensity: 1, castShadow: false },
-      { kind: 'point', id: 'p', position: [0, 1, 0], color: [1, 1, 1], intensity: 1, castShadow: false },
-      { kind: 'spot', id: 's', position: [0, 1, 0], direction: [0, -1, 0], angle: 0.5, color: [1, 1, 1], intensity: 1, castShadow: false },
-      { kind: 'rect-area', id: 'r', position: [0, 1, 0], uAxis: [1, 0, 0], vAxis: [0, 1, 0], color: [1, 1, 1], intensity: 1, castShadow: false },
-      { kind: 'disc-area', id: 'c', position: [0, 1, 0], normal: [0, -1, 0], radius: 0.5, color: [1, 1, 1], intensity: 1, castShadow: false },
+      {
+        kind: 'directional',
+        id: 'd',
+        direction: [0, 1, 0],
+        color: [1, 1, 1],
+        intensity: 1,
+        castShadow: false,
+      },
+      {
+        kind: 'point',
+        id: 'p',
+        position: [0, 1, 0],
+        color: [1, 1, 1],
+        intensity: 1,
+        castShadow: false,
+      },
+      {
+        kind: 'spot',
+        id: 's',
+        position: [0, 1, 0],
+        direction: [0, -1, 0],
+        angle: 0.5,
+        color: [1, 1, 1],
+        intensity: 1,
+        castShadow: false,
+      },
+      {
+        kind: 'rect-area',
+        id: 'r',
+        position: [0, 1, 0],
+        uAxis: [1, 0, 0],
+        vAxis: [0, 1, 0],
+        color: [1, 1, 1],
+        intensity: 1,
+        castShadow: false,
+      },
+      {
+        kind: 'disc-area',
+        id: 'c',
+        position: [0, 1, 0],
+        normal: [0, -1, 0],
+        radius: 0.5,
+        color: [1, 1, 1],
+        intensity: 1,
+        castShadow: false,
+      },
       { kind: 'point', id: 'p2', position: [0, 2, 0], color: [1, 1, 1], intensity: 1 },
-      { kind: 'spot', id: 's2', position: [0, 2, 0], direction: [0, -1, 0], angle: 0.5, color: [1, 1, 1], intensity: 1, castShadow: true },
+      {
+        kind: 'spot',
+        id: 's2',
+        position: [0, 2, 0],
+        direction: [0, -1, 0],
+        angle: 0.5,
+        color: [1, 1, 1],
+        intensity: 1,
+        castShadow: true,
+      },
     ] as Parameters<typeof packLightsTexture>[0];
     const packed = packLightsTexture(lights);
     const s5g = (i: number): number => packed.data[i * LIGHT_PIXELS * 4 + 21]!;
@@ -305,22 +442,27 @@ describe('SHADOW-01 — castShadowDisabled lane (s5.g, channel 21)', () => {
   });
 
   it('GLSL decoder reads s5.g into Light.castShadowDisabled and directLightContribution gates on it', async () => {
-    const { composeTraceGlsl } = await import('../glsl/composeTraceGlsl.js');
+    const { composeNeeCandidateGlsl, composeTraceGlsl } = await import('../glsl/composeTraceGlsl.js');
     const { DEFAULT_TRACE_FEATURES } = await import('../featureTypes.js');
     const src = composeTraceGlsl(DEFAULT_TRACE_FEATURES);
+    const candidateSrc = composeNeeCandidateGlsl(DEFAULT_TRACE_FEATURES);
     expect(src).toContain('l.castShadowDisabled = s5.g;');
-    expect(src).toContain('lightRec.castShadowDisabled > 0.5 || ! attenuateHit(');
+    expect(candidateSrc).toContain('lightSample.castShadowDisabled > 0.5 ||');
+    expect(candidateSrc).toContain('! attenuateHit(');
   });
 
   it('GLSL decoder and sampler consume directional angularDiameter as a cone pdf', async () => {
-    const { composeTraceGlsl } = await import('../glsl/composeTraceGlsl.js');
+    const { composeNeeCandidateGlsl, composeTraceGlsl } = await import('../glsl/composeTraceGlsl.js');
     const { DEFAULT_TRACE_FEATURES } = await import('../featureTypes.js');
     const src = composeTraceGlsl(DEFAULT_TRACE_FEATURES);
+    const candidateSrc = composeNeeCandidateGlsl(DEFAULT_TRACE_FEATURES);
     expect(src).toContain('l.angularDiameter = l.type == DIR_LIGHT_TYPE ? max( s5.b, 0.0 ) : 0.0;');
     expect(src).toContain('vec3 sampleDirectionalCone(');
     expect(src).toContain('if ( light.angularDiameter > 0.0 )');
-    expect(src).toContain('rec.direction = sampleDirectionalCone( light.u, light.angularDiameter, ruv.yz, conePdf );');
+    expect(src).toContain(
+      'rec.direction = sampleDirectionalCone( light.u, light.angularDiameter, ruv.yz, conePdf );',
+    );
     expect(src).toContain('float delta;');
-    expect(src).toContain('bool deltaLight = lightRec.delta > 0.5;');
+    expect(candidateSrc).toContain('float misWeight = lightSample.delta > 0.5');
   });
 });

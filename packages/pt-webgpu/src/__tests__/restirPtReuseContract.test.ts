@@ -14,14 +14,39 @@
  */
 
 import { describe, it, expect } from 'vitest';
+import {
+  sampleCMF,
+  wavelengthToRGB,
+  X_CMF_INTEGRAL,
+  Y_CMF_INTEGRAL,
+  Z_CMF_INTEGRAL,
+} from '@vitrum/shared-samplers';
 import { composePtWebgpuReuseWgsl } from '../wgsl/pathTrace/restirPtCompose.wgsl.js';
+import { composePathTraceKernelWgsl } from '../wgsl/pathTrace/kernel.wgsl.js';
 import { RESTIR_PT_TEMPORAL_WGSL } from '../wgsl/pathTrace/restirPtTemporal.wgsl.js';
 import { RESTIR_PT_SPATIAL_WGSL } from '../wgsl/pathTrace/restirPtSpatial.wgsl.js';
 import { RESTIR_PT_PRODUCER_WGSL } from '../wgsl/pathTrace/restirPtProducer.wgsl.js';
 import { RESTIR_PT_RESOLVE_WGSL } from '../wgsl/pathTrace/restirPtResolve.wgsl.js';
 import { RESERVOIR_PT_HERO_WGSL } from '../wgsl/pathTrace/reservoirPtHero.wgsl.js';
+import { PT_WEBGPU_RESTIR_PT_EFFECTIVELY_UNCLAMPED_W } from '../ptWebgpuValidation.js';
 
 const composed = composePtWebgpuReuseWgsl();
+const compositeKernel = composePathTraceKernelWgsl({
+  volumetricSss: true,
+  restirPtComposite: true,
+});
+
+function heroMisMixturePdfReference(lambdaNm: number): number {
+  const [x, y, z] = sampleCMF(lambdaNm);
+  return (x / X_CMF_INTEGRAL + y / Y_CMF_INTEGRAL + z / Z_CMF_INTEGRAL) / 3;
+}
+
+function addRgb(
+  a: readonly [number, number, number],
+  b: readonly [number, number, number],
+): readonly [number, number, number] {
+  return [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
+}
 
 /** Strip `//` line comments so a string-contract match counts only real code. */
 function codeOnly(src: string): string {
@@ -67,8 +92,11 @@ function finaliseReservoirPTWGrisReference(opts: {
   readonly pHat: number;
   readonly wCap: number;
 }): number {
-  if (opts.M <= 0) return 0;
-  const raw = opts.pHat > 1e-9 ? opts.wSum / opts.pHat : 0;
+  if (opts.M <= 0 || !Number.isFinite(opts.wSum) || opts.wSum <= 0 ||
+      !Number.isFinite(opts.pHat) || opts.pHat <= 1e-9 ||
+      !Number.isFinite(opts.wCap) || opts.wCap <= 0) return 0;
+  const raw = opts.wSum / opts.pHat;
+  if (Number.isNaN(raw) || raw <= 0) return 0;
   return Math.min(raw, opts.wCap);
 }
 
@@ -80,15 +108,15 @@ describe('ReSTIR-PT reuse — composes as a single WGSL unit', () => {
     expect((composed.match(/@compute @workgroup_size\(8, 8, 1\)\s*\nfn restirPtResolve\(/g) ?? []).length).toBe(1);
   });
 
-  it('includes the geometry and hybrid shift Jacobians + reservoir ADT exactly once', () => {
+  it('includes only the prefix-1 geometry shift + reservoir ADT exactly once', () => {
     // restirPtShiftJacobian (FD-validated) must be DEFINED once (not double-
     // included by both the shared modules and the reservoir composite).
     const code = codeOnly(composed);
     expect((code.match(/fn restirPtShiftJacobian\(/g) ?? []).length).toBe(1);
     expect((code.match(/fn restirPtReconnectionGeometryTerm\(/g) ?? []).length).toBe(1);
-    expect((code.match(/fn rptHybridGeomJacobian\(/g) ?? []).length).toBe(1);
-    expect((code.match(/fn rptHybridShiftJacobian\(/g) ?? []).length).toBe(1);
-    expect((code.match(/fn restirPtHybridShiftJacobianForPair\(/g) ?? []).length).toBe(1);
+    expect((code.match(/fn restirPtReconnectionJacobianForPair\(/g) ?? []).length).toBe(1);
+    expect(code).not.toContain('fn rptHybridShiftJacobian(');
+    expect(code).not.toContain('pSource / pTarget');
     expect((code.match(/struct ReservoirPTHero \{/g) ?? []).length).toBe(1);
     expect((code.match(/struct RestirPtParams \{/g) ?? []).length).toBe(1);
   });
@@ -134,30 +162,38 @@ describe('ReSTIR-PT reuse — composes as a single WGSL unit', () => {
   });
 });
 
-describe('ReSTIR-PT temporal — calls the hybrid shift + the GRIS finalize', () => {
-  it('calls the prefix-1 hybrid shift with source/target reservoirs and camera-domain wo vectors', () => {
+describe('ReSTIR-PT temporal — calls the reconnection shift + the GRIS finalize', () => {
+  it('calls the prefix-1 geometry shift with source/target reservoirs', () => {
     expect(RESTIR_PT_TEMPORAL_WGSL).toContain(
-      'J = restirPtHybridShiftJacobianForPair(rPrev, rCur, woPrev, woCur);',
+      'let J = restirPtReconnectionJacobianForPair(rPrev, rCur);',
     );
   });
 
   it('finalises with the GRIS form finaliseReservoirPTWGris (W = w_sum/p̂, NO /M)', () => {
-    expect(RESTIR_PT_TEMPORAL_WGSL).toContain('finaliseReservoirPTWGris(&rGris, rptParams.wCap, params.cameraPos.xyz);');
+    expect(RESTIR_PT_TEMPORAL_WGSL).toContain('finaliseReservoirPTWGris(&rGris, rptParams.wCap);');
     // The GRIS finalize must NOT divide by M (the MIS weights already sum to 1).
     const finalizeBody = RESERVOIR_PT_HERO_WGSL.slice(
       RESERVOIR_PT_HERO_WGSL.indexOf('fn finaliseReservoirPTWGris('),
-    ).split('\n').slice(0, 8).join('\n');
+    ).split('\n').slice(0, 30).join('\n');
     expect(finalizeBody).toContain('(*r).w_sum / pHatF');
     expect(finalizeBody).not.toMatch(/f32\(\(\*r\)\.M\)/); // no ·M normalisation
   });
 
-  it('refreshes and carries the live hybrid replay-pdf cache when samples are selected', () => {
-    expect(RESERVOIR_PT_HERO_WGSL).toContain('fn restirPtVisibleReplayPdfForDomain(');
-    expect(RESERVOIR_PT_HERO_WGSL).toContain('brdfDirectionalPdfFullSampledWithClearcoatNormal(');
-    expect(RESERVOIR_PT_HERO_WGSL).toContain('return jGeom * (pSource / pTarget);');
-    expect(RESTIR_PT_TEMPORAL_WGSL).toContain('let curReplayPdf = restirPtVisibleReplayPdfForDomain(rCur, woCur, rCur.xs);');
-    expect(RESTIR_PT_TEMPORAL_WGSL).toContain('let prevReplayPdfAtCur = restirPtVisibleReplayPdfForDomain(rCur, woCur, rPrev.xs);');
-    expect(RESTIR_PT_TEMPORAL_WGSL).toContain('refreshReconnectionCachePT(&rGris, params.cameraPos.xyz, params.frameSeed ^ pixelIdx);');
+  it('does not double-count proposal density in the prefix-1 change of variables', () => {
+    expect(RESERVOIR_PT_HERO_WGSL).toContain('return restirPtShiftJacobian(');
+    expect(RESERVOIR_PT_HERO_WGSL).not.toContain('restirPtVisibleReplayPdfForDomain');
+    expect(RESTIR_PT_TEMPORAL_WGSL).not.toContain('pSource / pTarget');
+    expect(RESTIR_PT_TEMPORAL_WGSL).toContain('refreshReconnectionStatePT(&rGris);');
+  });
+
+  it('uses the implemented one-edge topology directly instead of an unpersisted prefix flag', () => {
+    expect(RESERVOIR_PT_HERO_WGSL).not.toContain('prefixVertexCount');
+    expect(RESTIR_PT_PRODUCER_WGSL).not.toContain('prefixVertexCount');
+    expect(RESTIR_PT_TEMPORAL_WGSL).not.toContain('prefixVertexCount');
+    expect(RESTIR_PT_SPATIAL_WGSL).not.toContain('prefixVertexCount');
+    expect(RESTIR_PT_TEMPORAL_WGSL).toContain(
+      'let prevValid = rptFinitePositive(J)',
+    );
   });
 
   it('uses the INTEGRAND-MATCHING target (evaluateBrdf·cos·Lo), not the diffuse-cosine proxy (B3)', () => {
@@ -176,7 +212,8 @@ describe('ReSTIR-PT temporal — calls the hybrid shift + the GRIS finalize', ()
     expect(targetBody).toContain('luminance(f * cosTheta * Lo)');
     expect(targetBody).not.toContain('INV_PI'); // the old diffuse-cosine proxy is gone
     // wo is threaded from the camera at the call sites (producer + temporal + finalize).
-    expect(RESTIR_PT_TEMPORAL_WGSL).toContain('restirpt_safe_normalize(params.cameraPos.xyz - rCur.xv)');
+    expect(RESTIR_PT_TEMPORAL_WGSL).toContain('let woCur  = rCur.woV;');
+    expect(RESTIR_PT_TEMPORAL_WGSL).toContain('let woPrev = rPrev.woV;');
   });
 
   it('reprojects via the previous-frame camera matrix (params.prevViewProj)', () => {
@@ -264,6 +301,58 @@ describe('ReSTIR-PT temporal — the w_prev weight is m·p̂·W·J with NO /p_sr
     expect(finaliseReservoirPTWGrisReference({ M: 128, wSum: 12, pHat: 0, wCap: 100 })).toBe(0);
     expect(finaliseReservoirPTWGrisReference({ M: 0, wSum: 12, pHat: 3, wCap: 100 })).toBe(0);
   });
+
+  it('professional f32-max ceiling keeps adversarial positive GRIS weights finite without ordinary clipping', () => {
+    const cap = Math.fround(PT_WEBGPU_RESTIR_PT_EFFECTIVELY_UNCLAMPED_W);
+    const finalizeF32 = (wSum: number, pHat: number): number => {
+      const raw = pHat > 1e-9 ? Math.fround(Math.fround(wSum) / Math.fround(pHat)) : 0;
+      return Math.min(raw, cap);
+    };
+    for (const [wSum, pHat] of [
+      [1, 1],
+      [1e20, 1e-8],
+      [cap, 1e-8],
+      [cap, 1],
+      [Number.MAX_VALUE, 1e-8],
+    ] as const) {
+      const weight = finalizeF32(wSum, pHat);
+      expect(Number.isFinite(weight)).toBe(true);
+      expect(Number.isNaN(weight)).toBe(false);
+      expect(weight).toBeGreaterThanOrEqual(0);
+      expect(weight).toBeLessThanOrEqual(cap);
+    }
+    expect(finalizeF32(12, 3)).toBe(4);
+    expect(finalizeF32(cap, 1e-8)).toBe(cap);
+    expect(RESERVOIR_PT_HERO_WGSL).toContain('let W_raw = (*r).w_sum / pHatF;');
+    expect(RESERVOIR_PT_HERO_WGSL).toContain('(*r).W = min(W_raw, min(wCap, RPT_MAX_FINITE_F32));');
+    expect(RESERVOIR_PT_HERO_WGSL).toContain('if (!rptFinitePositive((*r).W))');
+  });
+
+  it('production reservoir code rejects NaN/Inf before candidate count or history publication', () => {
+    const updateBody = RESERVOIR_PT_HERO_WGSL.slice(
+      RESERVOIR_PT_HERO_WGSL.indexOf('fn updateReservoirPT('),
+      RESERVOIR_PT_HERO_WGSL.indexOf('fn copyReservoirPTVisibleDomain('),
+    );
+    expect(updateBody).toContain(') -> bool {');
+    expect(updateBody).toContain('if (!rptFinitePositive(w)');
+    expect(updateBody).toContain('|| !rptFinitePositive(pdfSrc)');
+    expect(updateBody).toContain('let nextWeightSum = (*r).w_sum + w;');
+    expect(updateBody).toContain('if (!rptFinitePositive(nextWeightSum)) { return false; }');
+    expect(updateBody.indexOf('if (!rptFinitePositive(w)')).toBeLessThan(
+      updateBody.indexOf('(*r).M = (*r).M + 1u;'),
+    );
+    expect(RESTIR_PT_TEMPORAL_WGSL).toContain(
+      '&rGris, rCur.xs, rCur.ns, rCur.Lo, rCur.heroLambdaV,',
+    );
+    expect(RESTIR_PT_SPATIAL_WGSL).toContain(
+      '&rOut, rCenter.xs, rCenter.ns, rCenter.Lo, rCenter.heroLambdaV,',
+    );
+
+    for (const bad of [Number.NaN, Infinity, -Infinity, 0, -1]) {
+      expect(Number.isFinite(bad) && bad > 0).toBe(false);
+    }
+    expect(Number.isFinite(1) && 1 > 0).toBe(true);
+  });
 });
 
 describe('ReSTIR-PT producer — unbiased candidate weight + specular gate', () => {
@@ -296,17 +385,19 @@ describe('ReSTIR-PT producer — unbiased candidate weight + specular gate', () 
     expect(RESTIR_PT_PRODUCER_WGSL).toContain('fn rptDirectAtVertex(');
     expect(RESTIR_PT_PRODUCER_WGSL).toContain('clearcoatNormal: vec3f,');
     expect(RESTIR_PT_PRODUCER_WGSL).toContain('clearcoatRoughness: f32,');
-    expect(RESTIR_PT_PRODUCER_WGSL).toContain('let brdf = evaluateBrdfFullWithClearcoatNormal(');
-    expect(RESTIR_PT_PRODUCER_WGSL).toContain('let brdfPdf = brdfDirectionalPdfFullSampledWithClearcoatNormal(');
-    expect(RESTIR_PT_PRODUCER_WGSL).toContain('let fOnward = evaluateBrdfFullWithClearcoatNormal(');
+    expect(RESTIR_PT_PRODUCER_WGSL).toContain('let brdf = evaluateFiniteSameSideBrdfFullWithClearcoatNormal(');
+    expect(RESTIR_PT_PRODUCER_WGSL).toContain('let continuationPdf = max(dot(normal, envDir), 0.0) * INV_PI;');
+    expect(RESTIR_PT_PRODUCER_WGSL).toContain('let fOnward = evaluateFiniteSameSideBrdfFullWithClearcoatNormal(');
   });
 
   it('covers spot and mesh-area emitters in the suffix direct-lighting producer', () => {
     expect(RESTIR_PT_PRODUCER_WGSL).toContain('for (var si = 0u; si < params.spotLightCount; si = si + 1u) {');
     expect(RESTIR_PT_PRODUCER_WGSL).toContain('for (var mi = 0u; mi < params.meshAreaLightCount; mi = mi + 1u) {');
     expect(RESTIR_PT_PRODUCER_WGSL).toContain('let a = meshAreaLights[mb].xyz;');
-    expect(RESTIR_PT_PRODUCER_WGSL).toContain('let mr = meshAreaLights[mb + 3u].rgb;');
-    expect(RESTIR_PT_PRODUCER_WGSL).toContain('let area = max(0.5 * length(cross(b - a, c - a)), 1e-6);');
+    expect(RESTIR_PT_PRODUCER_WGSL).toContain('let mr = sampleMeshAreaLightRadiance(');
+    expect(RESTIR_PT_PRODUCER_WGSL).toContain('mi, vec3f(uu, vv, ww), lpos,');
+    expect(RESTIR_PT_PRODUCER_WGSL).toContain('let area = 0.5 * length(cross(b - a, c - a));');
+    expect(RESTIR_PT_PRODUCER_WGSL).toContain('if (dist2 <= 0.0 || area <= 0.0) { continue; }');
     expect(RESTIR_PT_PRODUCER_WGSL).toContain('meshAreaLights[mb + 3u].w > 0.5 || !traceAny');
   });
 
@@ -336,18 +427,19 @@ describe('ReSTIR-PT producer — unbiased candidate weight + specular gate', () 
     expect(RESTIR_PT_PRODUCER_WGSL).toContain('meshAreaLights[mb + 3u].w > 0.5 || !traceAny');
   });
 
-  it('defaults producer reuse to diffuse-safe visible vertices unless glossy reuse is explicitly enabled', () => {
-    expect(RESTIR_PT_PRODUCER_WGSL).toContain('if (rptParams.allowGlossyReuse == 0u) {');
-    expect(RESTIR_PT_PRODUCER_WGSL).toContain('return metallic <= 0.05 && roughness >= 0.35;');
+  it('admits finite glossy reflection without a maturity switch and excludes transmission', () => {
+    expect(RESTIR_PT_PRODUCER_WGSL).toContain('if (transmission > 0.0) { return false; }');
+    expect(RESTIR_PT_PRODUCER_WGSL).toContain('return bsdfHasFiniteConnectionSupport(');
+    expect(RESTIR_PT_PRODUCER_WGSL).not.toContain('allowGlossyReuse');
   });
 
   it('the candidate weight is p̂ / p_src (RIS), and finalises with the GRIS W', () => {
     expect(RESTIR_PT_PRODUCER_WGSL).toContain('let wCandidate = select(0.0, pHat / pdfSrc, pdfSrc > 1e-8);');
-    expect(RESTIR_PT_PRODUCER_WGSL).toContain('finaliseReservoirPTWGris(&r, rptParams.wCap, params.cameraPos.xyz);');
+    expect(RESTIR_PT_PRODUCER_WGSL).toContain('finaliseReservoirPTWGris(&r, rptParams.wCap);');
   });
 
   it('stores the visible-vertex extension payload and uses anisotropic producer sampling', () => {
-    expect(RESTIR_PT_PRODUCER_WGSL).toContain('let anisotropyV = materialAnisotropy(vMatId, vHit.triIndex, vHit.baryVW);');
+    expect(RESTIR_PT_PRODUCER_WGSL).toContain('let anisotropyV = materialAnisotropy(vMatId, vHit.triIndex, vHit.baryVW, vHit.instanceIndex);');
     expect(RESTIR_PT_PRODUCER_WGSL).toContain('fn rptSampleSourceReconnectionDirection(');
     expect(RESTIR_PT_PRODUCER_WGSL).toContain('bs = glossyReflectionSampleAnisotropic(rng, wo, normal, tanT, tanB, roughness, anisotropy);');
     expect(RESTIR_PT_PRODUCER_WGSL).toContain('anisotropyV,');
@@ -372,46 +464,46 @@ describe('ReSTIR-PT producer — unbiased candidate weight + specular gate', () 
 
   it('mirrors the main shade prologue material-map stack for the visible vertex payload', () => {
     for (const line of [
-      'baseColorV = vMat.baseColor * sampleVertexColor(vHit.triIndex, vHit.baryVW).rgb * sampleBaseColorTexture(vMatId, vHit.triIndex, vHit.baryVW).rgb;',
-      'baseColorV = baseColorV * sampleAoFactor(vMatId, vHit.triIndex, vHit.baryVW);',
-      'let ormSampleV = sampleOrmTexture(vMatId, vHit.triIndex, vHit.baryVW);',
-      'roughnessV = clamp(vMat.roughness * ormSampleV.g, 0.02, 1.0);',
-      'metallicV = clamp(vMat.metallic * ormSampleV.b, 0.0, 1.0);',
-      'transmissionV = clamp(vMat.transmission * sampleTransmissionTexture(vMatId, vHit.triIndex, vHit.baryVW), 0.0, 1.0);',
+      'var baseColorV = vMat.baseColor * sampleVertexColor(vHit.triIndex, vHit.baryVW).rgb * sampleBaseColorTexture(vMatId, vHit.triIndex, vHit.baryVW, vHit.instanceIndex).rgb;',
+      'baseColorV = baseColorV * sampleAoFactor(vMatId, vHit.triIndex, vHit.baryVW, vHit.instanceIndex);',
+      'let ormSampleV = sampleOrmTexture(vMatId, vHit.triIndex, vHit.baryVW, vHit.instanceIndex);',
+      'var roughnessV = clamp(vMat.roughness * ormSampleV.g, 0.0, 1.0);',
+      'var metallicV = clamp(vMat.metallic * ormSampleV.b, 0.0, 1.0);',
+      'var transmissionV = clamp(vMat.transmission * sampleTransmissionTexture(vMatId, vHit.triIndex, vHit.baryVW, vHit.instanceIndex), 0.0, 1.0);',
       'nv = applyNormalMap(vMatId, vHit.triIndex, vHit.baryVW, nv, vHit.instanceIndex, vIsFront);',
       'nv = applyBumpMap(vMatId, vHit.triIndex, vHit.baryVW, nv, vHit.instanceIndex);',
       'let clearcoatNormalV = applyClearcoatNormalMap(vMatId, vHit.triIndex, vHit.baryVW, nv, vHit.instanceIndex);',
-      'clearcoatV = clamp(vMat.clearcoat * sampleClearcoatTexture(vMatId, vHit.triIndex, vHit.baryVW), 0.0, 1.0);',
-      'clearcoatRoughnessV = clamp(vMat.clearcoatRoughness * sampleClearcoatRoughnessTexture(vMatId, vHit.triIndex, vHit.baryVW), 0.0, 1.0);',
-      'sheenColorV = clamp(vMat.sheenColor * sampleSheenColorTexture(vMatId, vHit.triIndex, vHit.baryVW), vec3f(0.0), vec3f(1.0));',
-      'sheenRoughnessV = clamp(vMat.sheenRoughness * sampleSheenRoughnessTexture(vMatId, vHit.triIndex, vHit.baryVW), 0.0, 1.0);',
-      'iridescenceV = clamp(vMat.iridescence * sampleIridescenceTexture(vMatId, vHit.triIndex, vHit.baryVW), 0.0, 1.0);',
-      'let iridescenceThicknessSampleV = sampleIridescenceThicknessTexture(vMatId, vHit.triIndex, vHit.baryVW);',
-      'specularColorV = clamp(vMat.specularColor * sampleSpecularColorTexture(vMatId, vHit.triIndex, vHit.baryVW), vec3f(0.0), vec3f(1.0));',
-      'specularIntensityV = clamp(vMat.specularIntensity * sampleSpecularIntensityTexture(vMatId, vHit.triIndex, vHit.baryVW), 0.0, 1.0);',
+      'var clearcoatV = clamp(vMat.clearcoat * sampleClearcoatTexture(vMatId, vHit.triIndex, vHit.baryVW, vHit.instanceIndex), 0.0, 1.0);',
+      'var clearcoatRoughnessV = clamp(vMat.clearcoatRoughness * sampleClearcoatRoughnessTexture(vMatId, vHit.triIndex, vHit.baryVW, vHit.instanceIndex), 0.0, 1.0);',
+      'var sheenColorV = clamp(vMat.sheenColor * sampleSheenColorTexture(vMatId, vHit.triIndex, vHit.baryVW, vHit.instanceIndex), vec3f(0.0), vec3f(1.0));',
+      'var sheenRoughnessV = clamp(vMat.sheenRoughness * sampleSheenRoughnessTexture(vMatId, vHit.triIndex, vHit.baryVW, vHit.instanceIndex), 0.0, 1.0);',
+      'var iridescenceV = clamp(vMat.iridescence * sampleIridescenceTexture(vMatId, vHit.triIndex, vHit.baryVW, vHit.instanceIndex), 0.0, 1.0);',
+      'let iridescenceThicknessSampleV = sampleIridescenceThicknessTexture(vMatId, vHit.triIndex, vHit.baryVW, vHit.instanceIndex);',
+      'var specularColorV = clamp(vMat.specularColor * sampleSpecularColorTexture(vMatId, vHit.triIndex, vHit.baryVW, vHit.instanceIndex), vec3f(0.0), vec3f(1.0));',
+      'var specularIntensityV = clamp(vMat.specularIntensity * sampleSpecularIntensityTexture(vMatId, vHit.triIndex, vHit.baryVW, vHit.instanceIndex), 0.0, 1.0);',
     ]) {
       expect(RESTIR_PT_PRODUCER_WGSL).toContain(line);
     }
   });
 
   it('applies alpha pass-through and mapped transmission before the reusable-visible gate', () => {
-    const alphaIdx = RESTIR_PT_PRODUCER_WGSL.indexOf('alphaTestPassThrough(hitMaterialId(vHit), vHit.triIndex, vHit.baryVW, &rng)');
+    const alphaIdx = RESTIR_PT_PRODUCER_WGSL.indexOf(
+      'let vTrace = rptTraceClosestAfterAlpha(primaryRay, &rng);',
+    );
     const transmissionIdx = RESTIR_PT_PRODUCER_WGSL.indexOf('var transmissionV = clamp(vMat.transmission * sampleTransmissionTexture');
-    const gateIdx = RESTIR_PT_PRODUCER_WGSL.indexOf('!rptIsReusableVisibleVertex(roughnessV, metallicV, transmissionV)');
+    const gateIdx = RESTIR_PT_PRODUCER_WGSL.indexOf('!rptIsReusableVisibleVertex(roughnessV, metallicV, transmissionV, clearcoatV, sheenV)');
     expect(alphaIdx).toBeGreaterThanOrEqual(0);
     expect(transmissionIdx).toBeGreaterThan(alphaIdx);
     expect(gateIdx).toBeGreaterThan(transmissionIdx);
   });
 
-  it('mirrors layer, thin-film, and spectral visible-vertex prologue effects before sampling', () => {
+  it('mirrors layer and spectral visible-vertex prologue effects before sampling', () => {
     for (const line of [
       'iorV = cauchyIorAtLambda(heroLambda, vMat.ior, vMat.dispersionAbbe);',
       'let layerTxV = clamp(select(vMat.backLayerTx, vMat.frontLayerTx, vIsFront), vec3f(0.0), vec3f(1.0));',
-      'roughnessV = clamp(layerRoughnessV, 0.02, 1.0);',
+      'roughnessV = clamp(layerRoughnessV, 0.0, 1.0);',
       'activeLayerWeightRgb(layerTxV, heroLambda, true)',
-      'let rt = thinFilmTmmRt(',
-      'baseColorV = mix(baseColorV, baseColorV * thinFilmReflectTintV, filmStrengthV);',
-      'evalJakobHanikaSpectrum(vMat.spectralReflCoeffs, heroLambda)',
+      'spectralCombinedReflectanceAtHero(',
       'baseColorV = vec3f(reflScalarV);',
     ]) {
       expect(RESTIR_PT_PRODUCER_WGSL).toContain(line);
@@ -425,21 +517,21 @@ describe('ReSTIR-PT producer — unbiased candidate weight + specular gate', () 
     expect(RESTIR_PT_PRODUCER_WGSL).toContain('struct RptSuffixMaterial {');
     expect(RESTIR_PT_PRODUCER_WGSL).toContain('fn rptSuffixMaterialAtHit(hit: SceneHit, incomingDir: vec3f, wo: vec3f, heroLambda: f32) -> RptSuffixMaterial');
     for (const line of [
-      'out.baseColor = mat.baseColor * sampleVertexColor(hit.triIndex, hit.baryVW).rgb * sampleBaseColorTexture(matId, hit.triIndex, hit.baryVW).rgb;',
-      'out.baseColor = out.baseColor * sampleAoFactor(matId, hit.triIndex, hit.baryVW);',
-      'let ormSample = sampleOrmTexture(matId, hit.triIndex, hit.baryVW);',
-      'out.emissive = mat.emissive * sampleEmissiveTexture(matId, hit.triIndex, hit.baryVW).rgb;',
-      'out.transmission = clamp(mat.transmission * sampleTransmissionTexture(matId, hit.triIndex, hit.baryVW), 0.0, 1.0);',
+      'out.baseColor = mat.baseColor * sampleVertexColor(hit.triIndex, hit.baryVW).rgb * sampleBaseColorTexture(matId, hit.triIndex, hit.baryVW, hit.instanceIndex).rgb;',
+      'out.baseColor = out.baseColor * sampleAoFactor(matId, hit.triIndex, hit.baryVW, hit.instanceIndex);',
+      'let ormSample = sampleOrmTexture(matId, hit.triIndex, hit.baryVW, hit.instanceIndex);',
+      'out.emissive = mat.emissive * sampleEmissiveTexture(matId, hit.triIndex, hit.baryVW, hit.instanceIndex).rgb;',
+      'out.transmission = clamp(mat.transmission * sampleTransmissionTexture(matId, hit.triIndex, hit.baryVW, hit.instanceIndex), 0.0, 1.0);',
       'out.normal = applyNormalMap(matId, hit.triIndex, hit.baryVW, out.normal, hit.instanceIndex, isFrontFace);',
       'out.normal = applyBumpMap(matId, hit.triIndex, hit.baryVW, out.normal, hit.instanceIndex);',
       'out.clearcoatNormal = applyClearcoatNormalMap(matId, hit.triIndex, hit.baryVW, out.normal, hit.instanceIndex);',
-      'out.clearcoat = clamp(mat.clearcoat * sampleClearcoatTexture(matId, hit.triIndex, hit.baryVW), 0.0, 1.0);',
-      'out.sheenColor = clamp(mat.sheenColor * sampleSheenColorTexture(matId, hit.triIndex, hit.baryVW), vec3f(0.0), vec3f(1.0));',
-      'out.iridescence = clamp(mat.iridescence * sampleIridescenceTexture(matId, hit.triIndex, hit.baryVW), 0.0, 1.0);',
-      'out.specularColor = clamp(mat.specularColor * sampleSpecularColorTexture(matId, hit.triIndex, hit.baryVW), vec3f(0.0), vec3f(1.0));',
-      'out.specularIntensity = clamp(mat.specularIntensity * sampleSpecularIntensityTexture(matId, hit.triIndex, hit.baryVW), 0.0, 1.0);',
-      'out.anisotropy = materialAnisotropy(matId, hit.triIndex, hit.baryVW);',
-      'out.anisotropyRotation = materialAnisotropyRotation(matId, hit.triIndex, hit.baryVW);',
+      'out.clearcoat = clamp(mat.clearcoat * sampleClearcoatTexture(matId, hit.triIndex, hit.baryVW, hit.instanceIndex), 0.0, 1.0);',
+      'out.sheenColor = clamp(mat.sheenColor * sampleSheenColorTexture(matId, hit.triIndex, hit.baryVW, hit.instanceIndex), vec3f(0.0), vec3f(1.0));',
+      'out.iridescence = clamp(mat.iridescence * sampleIridescenceTexture(matId, hit.triIndex, hit.baryVW, hit.instanceIndex), 0.0, 1.0);',
+      'out.specularColor = clamp(mat.specularColor * sampleSpecularColorTexture(matId, hit.triIndex, hit.baryVW, hit.instanceIndex), vec3f(0.0), vec3f(1.0));',
+      'out.specularIntensity = clamp(mat.specularIntensity * sampleSpecularIntensityTexture(matId, hit.triIndex, hit.baryVW, hit.instanceIndex), 0.0, 1.0);',
+      'out.anisotropy = materialAnisotropy(matId, hit.triIndex, hit.baryVW, hit.instanceIndex);',
+      'out.anisotropyRotation = materialAnisotropyRotation(matId, hit.triIndex, hit.baryVW, out.normal, hit.instanceIndex);',
       'out.envMapIntensity = materialEnvMapIntensity(matId);',
     ]) {
       expect(RESTIR_PT_PRODUCER_WGSL).toContain(line);
@@ -463,14 +555,12 @@ describe('ReSTIR-PT producer — unbiased candidate weight + specular gate', () 
     expect(RESTIR_PT_PRODUCER_WGSL.slice(f0Idx, fresnelIdx)).toContain('iridescenceThicknessMaxV,');
   });
 
-  it('applies layer, thin-film, spectral albedo, and spectral emission in suffix Lo', () => {
+  it('applies layer, spectral albedo, and spectral emission in suffix Lo', () => {
     for (const line of [
       'out.ior = cauchyIorAtLambda(heroLambda, mat.ior, mat.dispersionAbbe);',
       'let layerTx = clamp(select(mat.backLayerTx, mat.frontLayerTx, isFrontFace), vec3f(0.0), vec3f(1.0));',
       'activeLayerWeightRgb(layerTx, heroLambda, true)',
-      'let rt = thinFilmTmmRt(',
-      'out.baseColor = mix(out.baseColor, out.baseColor * thinFilmReflectTint, filmStrength);',
-      'evalJakobHanikaSpectrum(mat.spectralReflCoeffs, heroLambda)',
+      'spectralCombinedReflectanceAtHero(',
       'out.baseColor = vec3f(reflScalar);',
       'let emissive = select(sm.emissive, spectralEmissionAtHero(sm.emissive, heroLambda), params.spectralEnabled != 0u);',
     ]) {
@@ -497,9 +587,10 @@ describe('ReSTIR-PT producer — unbiased candidate weight + specular gate', () 
       'let envColorOut = select(envColor, spectralEmissionAtHero(envColor, heroLambda), params.spectralEnabled != 0u) * envMapIntensity;',
       'sm.envMapIntensity,',
       'let envContribution = select(envRgb, spectralEmissionAtHero(envRgb, heroLambda), params.spectralEnabled != 0u);',
-      'Lo = Lo + suffixThroughput * envContribution * sm.envMapIntensity;',
-      'let envScaleV = materialEnvMapIntensity(vMatId);',
-      'Lo = reconEnv * envScaleV;',
+      'let envNeePdf = environmentNeeProposalPdf(nextDir, normal);',
+      'let escapeMisWeight = powerHeuristic(cosSample.pdf, envNeePdf);',
+      'Lo = Lo + suffixThroughput * envContribution * sm.envMapIntensity * escapeMisWeight;',
+      '// would estimate the same direct path a second time. An empty producer',
     ]) {
       expect(RESTIR_PT_PRODUCER_WGSL).toContain(line);
     }
@@ -512,7 +603,7 @@ describe('ReSTIR-PT producer — unbiased candidate weight + specular gate', () 
 
     const directCallIdx = RESTIR_PT_PRODUCER_WGSL.indexOf('Lo = Lo + rptDirectAtVertex(');
     const directAnisoIdx = RESTIR_PT_PRODUCER_WGSL.indexOf('sm.anisotropy, sm.anisotropyRotation,', directCallIdx);
-    const onwardIdx = RESTIR_PT_PRODUCER_WGSL.indexOf('let fOnward = evaluateBrdfFullWithClearcoatNormal(');
+    const onwardIdx = RESTIR_PT_PRODUCER_WGSL.indexOf('let fOnward = evaluateFiniteSameSideBrdfFullWithClearcoatNormal(');
     const onwardAnisoIdx = RESTIR_PT_PRODUCER_WGSL.indexOf('sm.anisotropy, sm.anisotropyRotation,', onwardIdx);
     expect(directCallIdx).toBeGreaterThanOrEqual(0);
     expect(directAnisoIdx).toBeGreaterThan(directCallIdx);
@@ -521,32 +612,56 @@ describe('ReSTIR-PT producer — unbiased candidate weight + specular gate', () 
   });
 
   it('alpha-skips reconnection and onward suffix hits before decoding their material', () => {
-    expect(RESTIR_PT_PRODUCER_WGSL).toContain('fn rptTraceClosestAfterAlpha(rayIn: Ray, rng: ptr<function, u32>) -> RptAlphaTraceHit');
-    expect(RESTIR_PT_PRODUCER_WGSL).toContain('alphaTestPassThrough(hitMaterialId(hit), hit.triIndex, hit.baryVW, rng)');
+    expect(RESTIR_PT_PRODUCER_WGSL).toContain('fn rptTraceClosestAfterAlpha(rayIn: Ray, rng: ptr<function, PtRngState>) -> RptAlphaTraceHit');
+    expect(RESTIR_PT_PRODUCER_WGSL).toContain('let passesThrough = alphaTestPassThrough(');
+    expect(RESTIR_PT_PRODUCER_WGSL).toContain(
+      'hitMaterialId(hit), hit.triIndex, hit.baryVW, hit.instanceIndex, rng,',
+    );
+    expect(RESTIR_PT_PRODUCER_WGSL).toContain('for (var aSkip = 0u; aSkip < 9u; aSkip = aSkip + 1u) {');
+    expect(RESTIR_PT_PRODUCER_WGSL).toContain('if (aSkip == 8u) {');
+    expect(RESTIR_PT_PRODUCER_WGSL).toContain('valid = false;');
     expect(RESTIR_PT_PRODUCER_WGSL).toContain('let sTrace = rptTraceClosestAfterAlpha(reconRay, &rng);');
     expect(RESTIR_PT_PRODUCER_WGSL).toContain('let nextTrace = rptTraceClosestAfterAlpha(Ray(pos + normal * 1e-3, nextDir), rng);');
+    expect(RESTIR_PT_PRODUCER_WGSL).toContain('if (!nextTrace.valid) { return rptInvalidSuffixEstimate(); }');
 
     const reconTraceIdx = RESTIR_PT_PRODUCER_WGSL.indexOf('let sTrace = rptTraceClosestAfterAlpha(reconRay, &rng);');
-    const suffixLoIdx = RESTIR_PT_PRODUCER_WGSL.indexOf('Lo = rptComputeLoAtReconnection(&rng, xs, sHit, reconRay.direction, reconDirToXv, heroLambda, suffixBounces);');
+    const suffixLoIdx = RESTIR_PT_PRODUCER_WGSL.indexOf('let suffixEstimate = rptComputeLoAtReconnection(');
     expect(suffixLoIdx).toBeGreaterThan(reconTraceIdx);
   });
 
   it('uses the mapped suffix normal as the reservoir reconnection normal', () => {
     const matIdx = RESTIR_PT_PRODUCER_WGSL.indexOf('let sReservoirMat = rptSuffixMaterialAtHit(sHit, reconRay.direction, reconDirToXv, heroLambda);');
     const normalIdx = RESTIR_PT_PRODUCER_WGSL.indexOf('ns = sReservoirMat.normal;');
-    const updateIdx = RESTIR_PT_PRODUCER_WGSL.indexOf('updateReservoirPT(&r, xs, ns, Lo, pdfSrc, wCandidate, &rng);');
+    const updateIdx = RESTIR_PT_PRODUCER_WGSL.indexOf(
+      '&r, xs, ns, Lo, heroLambda, pdfSrc, wCandidate, &rng,',
+    );
     expect(matIdx).toBeGreaterThanOrEqual(0);
     expect(normalIdx).toBeGreaterThan(matIdx);
     expect(updateIdx).toBeGreaterThan(normalIdx);
   });
 
-  it('gates specular / transmissive visible vertices to an EMPTY reservoir (no reuse)', () => {
+  it('gates singular, transmissive, or exact thin-film visible vertices to an EMPTY reservoir (no reuse)', () => {
     expect(RESTIR_PT_PRODUCER_WGSL).toContain('fn rptIsReusableVisibleVertex(');
-    expect(RESTIR_PT_PRODUCER_WGSL).toContain('if (transmission > 0.01) { return false; }');
+    expect(RESTIR_PT_PRODUCER_WGSL).toContain('if (transmission > 0.0) { return false; }');
+    expect(RESTIR_PT_PRODUCER_WGSL).toContain('if (vMat.isUnlit || vMat.thinFilmEnabled ||');
     expect(RESTIR_PT_PRODUCER_WGSL).toContain(
-      'if (vMat.isUnlit || !rptIsReusableVisibleVertex(roughnessV, metallicV, transmissionV)) {',
+      '!rptIsReusableVisibleVertex(roughnessV, metallicV, transmissionV, clearcoatV, sheenV)) {',
     );
   });
+  it('rejects a transmissive or alpha-exhausted suffix instead of publishing partial Lo', () => {
+    const decodeIdx = RESTIR_PT_PRODUCER_WGSL.indexOf('let sm = rptSuffixMaterialAtHit(');
+    const rejectIdx = RESTIR_PT_PRODUCER_WGSL.indexOf(
+      'if (sm.transmission > 0.0) { return rptInvalidSuffixEstimate(); }',
+      decodeIdx,
+    );
+    const directIdx = RESTIR_PT_PRODUCER_WGSL.indexOf('Lo = Lo + rptDirectAtVertex(', decodeIdx);
+    expect(rejectIdx).toBeGreaterThan(decodeIdx);
+    expect(directIdx).toBeGreaterThan(rejectIdx);
+    expect(RESTIR_PT_PRODUCER_WGSL).toContain('if (!sTrace.valid) {');
+    expect(RESTIR_PT_PRODUCER_WGSL).toContain('if (!suffixEstimate.valid) {');
+    expect(RESTIR_PT_PRODUCER_WGSL).toContain('Lo = suffixEstimate.Lo;');
+    expect(RESTIR_PT_PRODUCER_WGSL).not.toContain('if (sm.transmission > 0.0) { break; }');
+});
 });
 
 describe('ReSTIR-PT resolve — reconstructs with the FULL BRDF (not the proxy target)', () => {
@@ -556,32 +671,78 @@ describe('ReSTIR-PT resolve — reconstructs with the FULL BRDF (not the proxy t
     expect(RESTIR_PT_RESOLVE_WGSL).toContain('r.clearcoatV, r.clearcoatRoughnessV, r.sheenV, r.sheenRoughnessV, r.sheenColorV,');
     expect(RESTIR_PT_RESOLVE_WGSL).toContain('r.specularColorV, r.specularIntensityV,');
     expect(RESTIR_PT_RESOLVE_WGSL).toContain('r.anisotropyV, r.anisotropyRotationV,');
-    expect(RESTIR_PT_RESOLVE_WGSL).toContain('let indirect = fBsdf * cosTheta * r.Lo * r.W;');
+    expect(RESTIR_PT_RESOLVE_WGSL).toContain('let integrand = fBsdf * cosTheta * r.Lo;');
+    expect(RESTIR_PT_RESOLVE_WGSL).toContain('let indirect = integrand * r.W;');
+    expect(RESTIR_PT_RESOLVE_WGSL).toContain('if (!rptFiniteVec3(indirect))');
   });
 
   it('does NOT use the diffuse-cosine proxy (restirPtTargetAt) in reconstruction', () => {
     expect(RESTIR_PT_RESOLVE_WGSL).not.toContain('restirPtTargetAt');
   });
+
+  it('reconstructs history at the reservoir wavelength before RGB compositing', () => {
+    expect(RESTIR_PT_RESOLVE_WGSL).toContain(
+      'let reservoirHeroPdf = heroMisMixturePdf(r.heroLambdaV);',
+    );
+    expect(RESTIR_PT_RESOLVE_WGSL).toContain(
+      'r.heroLambdaV, luminance(indirect), reservoirHeroPdf,',
+    );
+
+    const currentConvert = compositeKernel.indexOf(
+      'outRadiance = heroWavelengthToRgb(heroLambda, luminance(radiance), heroPdf);',
+    );
+    const reusedAdd = compositeKernel.indexOf(
+      'outRadiance = outRadiance + rptComposite.rgb;',
+    );
+    expect(currentConvert).toBeGreaterThanOrEqual(0);
+    expect(reusedAdd).toBeGreaterThan(currentConvert);
+    expect(compositeKernel).not.toContain('radiance = radiance + rptComposite.rgb;');
+
+    // Deliberately separate blue and red hero samples. Correct reuse is the sum
+    // of two independently reconstructed estimators. Relabelling the reservoir
+    // scalar with the current wavelength (the old composite order) is visibly
+    // and numerically different.
+    const currentLambda = 450;
+    const reservoirLambda = 625;
+    const currentScalar = 2.25;
+    const reservoirScalar = 1.75;
+    const currentPdf = heroMisMixturePdfReference(currentLambda);
+    const reservoirPdf = heroMisMixturePdfReference(reservoirLambda);
+    const correct = addRgb(
+      wavelengthToRGB(currentLambda, currentScalar, currentPdf),
+      wavelengthToRGB(reservoirLambda, reservoirScalar, reservoirPdf),
+    );
+    const relabelled = wavelengthToRGB(
+      currentLambda,
+      currentScalar + reservoirScalar,
+      currentPdf,
+    );
+    const error = Math.hypot(
+      correct[0] - relabelled[0],
+      correct[1] - relabelled[1],
+      correct[2] - relabelled[2],
+    );
+    expect(error).toBeGreaterThan(0.01);
+    expect(correct.every(Number.isFinite)).toBe(true);
+  });
 });
 
-describe('ReSTIR-PT reservoir — visible-material payload is serialized with the reservoir', () => {
-  it('bumps the reservoir stride and stores scalar extension-lobe fields', () => {
-    expect(RESERVOIR_PT_HERO_WGSL).toContain('ReservoirPTHero, 224 bytes = 56 × u32');
-    expect(RESERVOIR_PT_HERO_WGSL).toContain('const RESERVOIR_PT_HERO_STRIDE: u32 = 56u;');
+describe('ReSTIR-PT reservoir — visible material is deterministically rehydrated', () => {
+  it('uses the compact identity ABI and reconstructs every resolve lobe', () => {
+    expect(RESERVOIR_PT_HERO_WGSL).toContain('64 bytes (16 × u32)');
+    expect(RESERVOIR_PT_HERO_WGSL).toContain('const RESERVOIR_PT_HERO_STRIDE: u32 = 16u;');
+    expect(RESERVOIR_PT_HERO_WGSL).toContain('fn rptVisibleMaterialAtSurface(');
+    expect(RESERVOIR_PT_HERO_WGSL).toContain('fn rptHydrateVisibleDomain(');
     for (const line of [
-      'buf[b + 31u] = bitcast<u32>(r.clearcoatV);',
-      'buf[b + 32u] = bitcast<u32>(r.clearcoatRoughnessV);',
-      'buf[b + 33u] = bitcast<u32>(r.sheenV);',
-      'buf[b + 34u] = bitcast<u32>(r.sheenRoughnessV);',
-      'buf[b + 35u] = bitcast<u32>(r.sheenColorV.x);',
-      'buf[b + 38u] = bitcast<u32>(r.iridescenceV);',
-      'buf[b + 42u] = bitcast<u32>(r.anisotropyV);',
-      'buf[b + 43u] = bitcast<u32>(r.anisotropyRotationV);',
-      'buf[b + 44u] = bitcast<u32>(r.specularColorV.x);',
-      'buf[b + 47u] = bitcast<u32>(r.specularIntensityV);',
-      'buf[b + 48u] = bitcast<u32>(r.clearcoatNormalV.x);',
-      'buf[b + 51u] = bitcast<u32>(r._padClearcoatNormalV);',
-      'buf[b + 55u] = r._padHybrid;',
+      '(*r).clearcoatV = vm.clearcoat;',
+      '(*r).clearcoatRoughnessV = vm.clearcoatRoughness;',
+      '(*r).sheenV = vm.sheen;',
+      '(*r).sheenColorV = vm.sheenColor;',
+      '(*r).iridescenceV = vm.iridescence;',
+      '(*r).anisotropyV = vm.anisotropy;',
+      '(*r).specularColorV = vm.specularColor;',
+      '(*r).specularIntensityV = vm.specularIntensity;',
+      '(*r).clearcoatNormalV = vm.clearcoatNormal;',
     ]) {
       expect(RESERVOIR_PT_HERO_WGSL).toContain(line);
     }

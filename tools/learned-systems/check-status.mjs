@@ -11,12 +11,16 @@ import {
   validateWeightsForSpec,
 } from "../../packages/walkaround-hybrid/src/neural/weights.ts";
 import {
+  parseHybridEngineOptions,
+} from "../../packages/walkaround-hybrid/src/HybridEngineConfig.ts";
+import {
   MIN_PRODUCTION_NEURAL_CLEAN_REFERENCE_SPP,
   MIN_PRODUCTION_NEURAL_SAMPLE_COUNT,
   validateProductionQualityManifest,
 } from "./qualityManifestValidator.mjs";
 
 /** @typedef {import("../../packages/walkaround-hybrid/src/neural/weights.ts").ModelWeights} ModelWeights */
+/** @typedef {import("../../packages/walkaround-hybrid/src/HybridEngineOptions.ts").HybridEngineOptions} HybridEngineOptions */
 /**
  * @typedef {{
  *   name: string,
@@ -88,7 +92,7 @@ function productionQualityRequirements() {
 function learnedPromotionQualityRequirements() {
   return {
     nrc: { manifestPath: "tools/learned-systems/nrc-quality-convergence.json", requiredVerdict: "PASS", requiredMode: "nrc-quality-convergence", requiresQualityComparison: true, requiresConvergenceComparison: true, requiresDefaultTierDecision: true, requiresHardware: true, requiresGeneratedAt: true, requiresArtifacts: true, requiresArtifactFiles: true, requiresBiasedEstimatorDisclosure: true },
-    gris: { manifestPath: "tools/learned-systems/gris-unbiasedness-ab.json", requiredVerdict: "PASS", requiredMode: "gris-unbiasedness-ab", requiresUnbiasednessAB: true, requiresBiasedDefaultErrorQuantification: true, requiresReferenceEstimator: true, requiresHardware: true, requiresGeneratedAt: true, requiresArtifacts: true, requiresArtifactFiles: true },
+    gris: { manifestPath: "tools/learned-systems/gris-ddgi-proxy-quality.json", requiredVerdict: "PASS", requiredMode: "gris-ddgi-proxy-quality", requiresProxyQualityComparison: true, requiresHistoryMutationStress: true, requiresReferenceEstimator: true, requiresHardware: true, requiresGeneratedAt: true, requiresArtifacts: true, requiresArtifactFiles: true, requiresBiasedEstimatorDisclosure: true },
     ppg: { manifestPath: "tools/learned-systems/ppg-favorable-scene-ab.json", requiredVerdict: "PASS", requiredMode: "ppg-favorable-scene-ab", requiresFavorableSceneAB: true, requiresConvergenceComparison: true, requiresInstabilityChecks: true, requiresHardware: true, requiresGeneratedAt: true, requiresArtifacts: true, requiresArtifactFiles: true },
   };
 }
@@ -453,8 +457,14 @@ async function maybeWriteStatus(checkpointManifest, researchCount, productionCou
     schema: "vitrum.learned-systems.status.v1",
     generatedAt: new Date().toISOString(),
     verdict: "PASS",
-    productionPosture: hasProductionCheckpoint ? "quality-gated" : "provisioning-needed",
+    productionPosture: hasProductionCheckpoint
+      ? "stable-bundled-certified-model"
+      : "stable-host-certified-model-required",
     neuralDenoiser: {
+      implementationStatus: "stable",
+      modelProvisioning: hasProductionCheckpoint
+        ? "bundled-certified"
+        : "host-supplied-certified",
       productionCheckpoint,
       researchCheckpointCount: researchCount,
       productionCheckpointCount: productionCount,
@@ -466,45 +476,49 @@ async function maybeWriteStatus(checkpointManifest, researchCount, productionCou
       qualityManifestRequirements: productionQualityRequirements(),
       runtimePolicy: {
         autoSelectsNeuralOnlyWithProductionCheckpoint: true,
-        explicitNeuralWithNonProductionWeights: "allowed-as-approximate",
-        nonProductionCapabilitySupport: "approximate",
+        explicitNeuralWithUncertifiedWeights: "rejected",
+        uncertifiedCapabilitySupport: "unsupported",
         requiredMetadataContract: "NeuralCheckpointMetadata",
       },
-      remaining: hasProductionCheckpoint
-        ? "Keep production default eligibility tied to the validated quality manifest."
-        : "Provision a production neural checkpoint and passing quality A/B manifest before default or production claims.",
+      deploymentNote: hasProductionCheckpoint
+        ? "Bundled model eligibility remains tied to its validated quality manifest."
+        : "The stable runtime requires a host-supplied certified v2 checkpoint; no certified checkpoint is bundled.",
     },
     nrc: {
+      implementationStatus: "stable",
       defaultEnabled: false,
       estimator: "biased",
       productionDefaultEligible: false,
       qualityManifest: null,
       qualityManifestRequirements: learnedRequirements.nrc,
-      remaining:
-        "Run quality/convergence A/B and make a default-tier decision before promoting NRC beyond opt-in.",
+      optionalEvidence:
+        "Optional scene-specific quality/convergence characterization; not a runtime-completeness gate.",
     },
     gris: {
+      implementationStatus: "stable",
       defaultEnabled: false,
-      optInFlag: "restirPtReuse",
-      estimator: "unbiased-when-enabled",
+      optInFlag: "grisReuse",
+      estimator: "biased-ddgi-proxy",
       productionDefaultEligible: false,
       qualityManifest: null,
       qualityManifestRequirements: learnedRequirements.gris,
-      remaining:
-        "Run GRIS-on unbiasedness A/B and biased-default error quantification before any default-tier promotion.",
+      optionalEvidence:
+        "Optional DDGI-proxy quality characterization; not a runtime-completeness gate.",
     },
     ppg: {
+      implementationStatus: "stable",
       defaultEnabled: false,
+      estimator: "defensive-mixture-guided",
       productionDefaultEligible: false,
       qualityManifest: null,
       qualityManifestRequirements: learnedRequirements.ppg,
-      remaining:
-        "Run favorable-scene A/B and convergence/instability checks before production promotion.",
+      optionalEvidence:
+        "Optional favorable-scene convergence characterization; not a runtime-completeness gate.",
     },
     provenance: await buildStatusProvenance(checkpointManifest),
     guardrails: [
       "Research checkpoints are loader/runtime validation assets only.",
-      "Neural, NRC, PPG, and GRIS learned/reuse paths remain opt-in unless future quality evidence promotes them.",
+      "NRC, PPG, and GRIS are stable opt-in modes by product design; scene-quality manifests are optional characterization evidence, not runtime completion gates.",
       "Do not treat this PASS as production model quality.",
     ],
   };
@@ -530,7 +544,9 @@ async function assertCommittedStatusArtifact(checkpointManifest, researchCount, 
   const record = /** @type {Record<string, any>} */ (status);
   const productionCheckpoint = checkpointManifest.productionCheckpoint ?? null;
   const hasProductionCheckpoint = productionCheckpoint !== null && productionCount > 0;
-  const expectedPosture = hasProductionCheckpoint ? "quality-gated" : "provisioning-needed";
+  const expectedPosture = hasProductionCheckpoint
+    ? "stable-bundled-certified-model"
+    : "stable-host-certified-model-required";
   if (record.schema !== "vitrum.learned-systems.status.v1") fail(`${STATUS_PATH} schema mismatch`);
   if (record.verdict !== "PASS") fail(`${STATUS_PATH} verdict must be PASS`);
   if (record.productionPosture !== expectedPosture) {
@@ -545,6 +561,15 @@ async function assertCommittedStatusArtifact(checkpointManifest, researchCount, 
     fail(`${STATUS_PATH} neuralDenoiser must be an object`);
   }
   const neuralRecord = /** @type {Record<string, any>} */ (neural);
+  if (neuralRecord.implementationStatus !== "stable") {
+    fail(`${STATUS_PATH} neuralDenoiser.implementationStatus must be stable`);
+  }
+  const expectedProvisioning = hasProductionCheckpoint
+    ? "bundled-certified"
+    : "host-supplied-certified";
+  if (neuralRecord.modelProvisioning !== expectedProvisioning) {
+    fail(`${STATUS_PATH} neuralDenoiser.modelProvisioning must be ${expectedProvisioning}`);
+  }
   if (neuralRecord.productionCheckpoint !== productionCheckpoint) {
     fail(`${STATUS_PATH} neuralDenoiser.productionCheckpoint must match checkpoint manifest`);
   }
@@ -576,11 +601,11 @@ async function assertCommittedStatusArtifact(checkpointManifest, researchCount, 
   if (runtimePolicy.autoSelectsNeuralOnlyWithProductionCheckpoint !== true) {
     fail(`${STATUS_PATH} must pin neural auto-selection to production checkpoints only`);
   }
-  if (runtimePolicy.explicitNeuralWithNonProductionWeights !== "allowed-as-approximate") {
-    fail(`${STATUS_PATH} must pin non-production explicit neural as approximate`);
+  if (runtimePolicy.explicitNeuralWithUncertifiedWeights !== "rejected") {
+    fail(`${STATUS_PATH} must pin uncertified explicit neural as rejected`);
   }
-  if (runtimePolicy.nonProductionCapabilitySupport !== "approximate") {
-    fail(`${STATUS_PATH} must pin non-production neural supportDetails as approximate`);
+  if (runtimePolicy.uncertifiedCapabilitySupport !== "unsupported") {
+    fail(`${STATUS_PATH} must pin uncertified neural supportDetails as unsupported`);
   }
   if (runtimePolicy.requiredMetadataContract !== "NeuralCheckpointMetadata") {
     fail(STATUS_PATH + " must cite NeuralCheckpointMetadata as the production contract");
@@ -593,6 +618,9 @@ async function assertCommittedStatusArtifact(checkpointManifest, researchCount, 
       fail(STATUS_PATH + " " + key + " must be an object");
     }
     const sectionRecord = /** @type {Record<string, any>} */ (section);
+    if (sectionRecord.implementationStatus !== "stable") {
+      fail(STATUS_PATH + " " + key + ".implementationStatus must be stable");
+    }
     if (sectionRecord.defaultEnabled !== false) {
       fail(STATUS_PATH + " " + key + ".defaultEnabled must be false");
     }
@@ -616,12 +644,99 @@ async function assertCommittedStatusArtifact(checkpointManifest, researchCount, 
   if (record.nrc?.estimator !== "biased") {
     fail(STATUS_PATH + " nrc.estimator must be biased");
   }
-  if (record.gris?.optInFlag !== "restirPtReuse") {
-    fail(STATUS_PATH + " gris.optInFlag must be restirPtReuse");
+  if (record.gris?.optInFlag !== "grisReuse") {
+    fail(STATUS_PATH + " gris.optInFlag must be grisReuse");
   }
-  if (record.gris?.estimator !== "unbiased-when-enabled") {
-    fail(STATUS_PATH + " gris.estimator must be unbiased-when-enabled");
+  if (record.gris?.estimator !== "biased-ddgi-proxy") {
+    fail(STATUS_PATH + " gris.estimator must be biased-ddgi-proxy");
   }
+}
+
+/**
+ * Build the smallest runtime fixture exercised by parseHybridEngineOptions.
+ * The parser reads only limits/features/queue from the host-owned device; the
+ * explicit GPUDevice assertion stays at this test-fixture boundary.
+ *
+ * @param {Partial<HybridEngineOptions>} [overrides]
+ * @returns {HybridEngineOptions}
+ */
+function learnedConfigOptions(overrides = {}) {
+  return {
+    device: /** @type {GPUDevice} */ (/** @type {unknown} */ ({
+      limits: {},
+      features: new Set(),
+      queue: { writeBuffer() {}, writeTexture() {}, submit() {} },
+    })),
+    width: 64,
+    height: 64,
+    primaryLightDir: [0.3, -0.7, 0.6],
+    primaryLightIntensity: 1,
+    skyTint: [0.5, 0.7, 1],
+    skyIrradiance: 0.3,
+    ...overrides,
+  };
+}
+
+/**
+ * @param {string} label
+ * @param {() => unknown} callback
+ * @param {RegExp} pattern
+ */
+function expectSemanticThrow(label, callback, pattern) {
+  let error;
+  try {
+    callback();
+  } catch (caught) {
+    error = caught;
+  }
+  const message = error instanceof Error ? error.message : "";
+  if (!pattern.test(message)) {
+    fail(label + " must throw the semantic contract; got: " + message);
+  }
+}
+
+/**
+ * Execute the canonical option parser rather than pinning test names or stale
+ * source substrings. This makes the learned-systems checker prove the public
+ * migration semantics it reports: grisReuse is canonical, restirPtReuse is
+ * only a compatible alias, conflicting aliases fail, and PPG cannot falsely
+ * claim guidance while the GRIS producer bypasses it.
+ */
+function assertLearnedRuntimeSemantics() {
+  const defaults = parseHybridEngineOptions(learnedConfigOptions());
+  if (defaults.grisReuse !== 0 || defaults.nrcEnabled !== 0 || defaults.ppgEnabled !== 0) {
+    fail("learned-system defaults must leave GRIS, NRC, and PPG disabled");
+  }
+  const canonical = parseHybridEngineOptions(
+    learnedConfigOptions({ grisReuse: true }),
+  );
+  if (canonical.grisReuse !== 1) fail("grisReuse:true must enable the GRIS config bit");
+
+  const alias = parseHybridEngineOptions(
+    learnedConfigOptions({ restirPtReuse: true }),
+  );
+  if (alias.grisReuse !== 1) {
+    fail("deprecated restirPtReuse:true must map to the canonical GRIS config bit");
+  }
+  const nrc = parseHybridEngineOptions(
+    learnedConfigOptions({ nrcEnabled: true }),
+  );
+  if (nrc.nrcEnabled !== 1) fail("nrcEnabled:true must enable the NRC config bit");
+
+  expectSemanticThrow(
+    "conflicting GRIS migration aliases",
+    () => parseHybridEngineOptions(
+      learnedConfigOptions({ grisReuse: true, restirPtReuse: false }),
+    ),
+    /grisReuse and deprecated restirPtReuse disagree/,
+  );
+  expectSemanticThrow(
+    "PPG plus GRIS",
+    () => parseHybridEngineOptions(
+      learnedConfigOptions({ ppgEnabled: true, grisReuse: true }),
+    ),
+    /ppgEnabled and grisReuse cannot be enabled together/,
+  );
 }
 
 async function assertRuntimeTruthfulnessGuards() {
@@ -647,26 +762,26 @@ async function assertRuntimeTruthfulnessGuards() {
     [config, "let reason: DenoiserAutoResolutionReason = 'no-host-model-assets'", "auto denoiser fallback disclosure"],
     [config, "validateWeightsForSpec(WALKAROUND_DENOISER_UNET_SPEC", "neural checkpoint shape validation before construction"],
     [config, "opts.nrcEnabled === true ? 1 : 0", "NRC opt-in config bit"],
-    [config, "restirPtReuse: opts.restirPtReuse === true ? 1 : 0", "GRIS opt-in config bit"],
-    [engine, "walkaround-hybrid.nrc-experimental-biased", "NRC experimental warning code"],
+    [config, "grisReuse: grisReuse ? 1 : 0", "GRIS opt-in config bit"],
+    [engine, "walkaround-hybrid.nrc-biased-estimator-enabled", "NRC stable opt-in warning code"],
     [engine, "defaultEnabled: false", "NRC warning defaultEnabled=false"],
     [engine, "estimator: 'biased'", "NRC warning estimator=biased"],
     [engine, "walkaround-hybrid.neural-host-weights-required", "neural host-weights warning code"],
     [engine, "walkaround-hybrid.denoiser-auto-resolved", "denoiser auto resolution warning code"],
     [engine, "packageProvidesProductionWeights: false", "neural warning production-weight disclosure"],
     [engine, "neuralCheckpointAssessment.productionReady", "neural production-readiness capability gate"],
-    [engine, "neural: fullTierWeights ? 'approximate' : 'unsupported'", "non-production neural supportDetails downgrade"],
-    [engine, "walkaround-hybrid-gris-unbiased-reuse", "GRIS opt-in experimental feature"],
-    [engine, "walkaround-hybrid-ppg-guided-gi", "PPG opt-in experimental feature"],
-    [engine, "walkaround-hybrid-nrc-biased-cache", "NRC opt-in experimental feature"],
-    [engine, "walkaround-hybrid-neural-denoiser-host-weights", "neural opt-in experimental feature"],
+    [engine, "cfg.neuralCheckpointAssessment.productionReady", "uncertified neural supportDetails gate"],
+    [engine, "walkaround-hybrid-gris-ddgi-proxy-reuse", "GRIS opt-in active feature"],
+    [engine, "walkaround-hybrid-ppg-guided-gi", "PPG opt-in active feature"],
+    [engine, "walkaround-hybrid-nrc", "NRC opt-in active feature"],
+    [engine, "walkaround-hybrid-denoiser-neural", "neural opt-in active feature"],
     [options, "NRC is a BIASED estimator", "NRC option bias disclosure"],
     [options, "readonly restirPtReuse?: boolean", "GRIS restirPtReuse public option"],
-    [options, "V19 GPU unbiasedness validation", "GRIS validation caveat"],
+    [options, "does not promise an unbiased path-tracing estimator", "GRIS estimator-scope caveat"],
     [pipeline, "export function assertNrcDeviceCapable", "NRC device capability gate"],
-    [pipeline, "maxBindGroups < NRC_REQUIRED_MAX_BIND_GROUPS", "NRC maxBindGroups guard"],
-    [pipeline, "maxWgStorage < NRC_REQUIRED_WORKGROUP_STORAGE_BYTES", "NRC workgroup-storage guard"],
-    [pipeline, "assertNrcDeviceCapable(d.limits)", "NRC gate called before pipeline init"],
+    [pipeline, "maxBindGroups: NRC_REQUIRED_MAX_BIND_GROUPS", "NRC maxBindGroups requirement"],
+    [pipeline, "maxComputeWorkgroupStorageSize: NRC_REQUIRED_WORKGROUP_STORAGE_BYTES", "NRC workgroup-storage requirement"],
+    [pipeline, "assertNrcDeviceCapableIfReported(d.limits)", "NRC gate called before pipeline init"],
     [rootReadme, "opt-in PPG/NRC/neural", "root README learned-system opt-in disclosure"],
     [architecture, "SHIPPED as opt-in host-weight path", "architecture neural opt-in disclosure"],
     [architecture, "no production checkpoint is bundled", "architecture production checkpoint disclosure"],
@@ -717,7 +832,7 @@ async function assertTrainingPipelineEvidence() {
     [trainScript, "def dry_run", "train.py numpy-only dry-run"],
     [trainScript, "def combined_loss", "train.py training loss"],
     [exportScript, "VITRUM_MODEL_MAGIC", "export_weights.py model magic"],
-    [exportScript, "VITRUM_MODEL_VERSION = 1", "export_weights.py model version"],
+    [exportScript, "VITRUM_MODEL_VERSION = 2", "export_weights.py model version"],
     [exportScript, "LAYER_NAMES = [", "export_weights.py canonical layer list"],
     [exportScript, "torch.load(pth_path, map_location='cpu', weights_only=True)", "export_weights.py safe checkpoint load"],
     [exportScript, "state_dict", "export_weights.py state_dict handling"],
@@ -758,7 +873,7 @@ async function assertBehavioralProofCoverage() {
       needles: [
         "keeps denoiser:'auto' on the non-learned default when no host model assets exist",
         "resolves denoiser:'auto' to neural only when full-tier host production weights exist",
-        "does not auto-select neural for shape-valid non-production weights",
+        "does not auto-select neural for shape-valid uncertified weights",
         "requires production checkpoint thresholds before auto-selecting neural",
         "trainingSamples>=500",
         "cleanSpp>=4096",
@@ -767,7 +882,7 @@ async function assertBehavioralProofCoverage() {
         "rejects denoiser:'auto' host weights that do not match the U-Net checkpoint contract",
         "rejects denoiser:'neural' host weights that do not match the U-Net checkpoint contract",
         "resolves denoiser:'auto' to OIDN when a host model URL is supplied",
-        "clamps learned-system cadence and mixture knobs into the effective config",
+        "clamps learned-system cadence knobs while preserving a valid PPG mixture",
         "packageProvidesProductionWeights: false",
         "defaultEnabled: false",
         "expect(cfg.ppgEnabled).toBe(1)",
@@ -777,14 +892,14 @@ async function assertBehavioralProofCoverage() {
     {
       path: "packages/walkaround-hybrid/src/__tests__/capabilitiesPartition.test.ts",
       needles: [
-        "keeps learned/research paths out of experimentalFeatures until explicitly enabled",
+        "reports only the resolved default denoiser when opt-in features are disabled",
         "resolves denoiser:'auto' to the default when no host model assets exist",
         "resolves denoiser:'auto' to neural only when full-tier production host weights are supplied",
-        "keeps denoiser:'auto' off neural for shape-valid non-production weights",
-        "expect(engine.capabilities.supportDetails?.denoisers.neural).toBe('approximate')",
+        "keeps denoiser:'auto' off neural for shape-valid uncertified weights",
+        "expect(engine.capabilities.supportDetails?.denoisers.neural).toBe('unsupported')",
         "resolves denoiser:'auto' away from neural on lite even if weights are present",
-        "declares opt-in learned/research paths as experimental features",
-        "walkaround-hybrid.nrc-experimental-biased",
+        "reports selected compatible opt-in paths in activeFeatures and open rows independently",
+        "walkaround-hybrid.nrc-biased-estimator-enabled",
         "walkaround-hybrid.neural-host-weights-required",
         "packageProvidesProductionWeights: false",
       ],
@@ -803,16 +918,16 @@ async function assertBehavioralProofCoverage() {
       path: "packages/walkaround-hybrid/src/pipeline/__tests__/nrcStructuralGate.test.ts",
       needles: [
         "keeps the default gi-ris pass on the 4-group non-NRC module",
-        "adds the 5th NRC bind group and NRC shader symbols only when nrcConfig is provided",
+        "adds packed NRC arenas to group 3 only when nrcConfig is provided",
         "expect(risGiGroupCount(stub.computePipelines)).toBe(4)",
-        "expect(risGiGroupCount(stub.computePipelines)).toBe(5)",
+        "expect(source).toContain('@group(3) @binding(7)')",
       ],
     },
     {
       path: "packages/walkaround-hybrid/src/pipeline/__tests__/nrcDeviceCapability.test.ts",
       needles: [
         "exact required NRC limits pass",
-        "default WebGPU limits fail with an actionable nrcEnabled error",
+        "fits the default WebGPU group/storage-buffer axes",
         "maxBindGroups",
         "maxStorageBuffersPerShaderStage",
         "maxComputeWorkgroupStorageSize",
@@ -830,11 +945,11 @@ async function assertBehavioralProofCoverage() {
     {
       path: "packages/walkaround-hybrid/src/__tests__/grisVariantPin.test.ts",
       needles: [
-        "default (no restirPtReuse) stores 0 (OFF",
-        "restirPtReuse: true stores 1 (ON",
-        "restirPtReuse: true is compatible with the full tier",
-        "restirPtReuse: true is compatible with the lite tier",
-        "default OFF is stable across qualityTier values",
+        "defaults to the compact legacy layout",
+        "selects the fixed-width DDGI-proxy variant at construction",
+        "accepts the GRIS layout on both full and lite tiers",
+        "does not let a quality preset change the construction-time choice",
+        "accepts the deprecated alias, emits one structured warning, and preserves its value",
       ],
     },
     {
@@ -850,7 +965,7 @@ async function assertBehavioralProofCoverage() {
       needles: [
         "omits the PPG update pipeline by default",
         "compiles the PPG update pipeline only when ppgEnabled is true",
-        "threads the GRIS reservoir stride into the PPG update shader when ReSTIR-PT reuse is enabled",
+        "threads the GRIS reservoir stride into the PPG update shader when DDGI-proxy GRIS reuse is enabled",
         "PPGUpdatePass gates training on ppgEnabled and ppgTrainThisFrame",
         "MAX_DTREE_NODES_PER_CELL",
         "RESERVOIR_GI_STRIDE_LOCAL",
@@ -886,6 +1001,7 @@ async function assertBehavioralProofCoverage() {
 const checkpointManifest = await loadCheckpointManifest();
 await assertTrackedResearchCheckpoints(checkpointManifest);
 await assertNoSilentProductionCheckpoint(checkpointManifest);
+assertLearnedRuntimeSemantics();
 await assertRuntimeTruthfulnessGuards();
 await assertTrainingPipelineEvidence();
 await assertBehavioralProofCoverage();

@@ -2,12 +2,15 @@ import { describe, expect, it, vi } from 'vitest';
 import type { Scene } from '@vitrum/core';
 import {
   buildPackedScene,
+  CWBVH_ROOT_PAIR_WORDS,
+  isValidCwbvhRootPair,
   rebuildTlasForSceneTransforms,
   uploadPackedScene,
   uploadScenePackTlasOnly,
 } from '../scene/uploadSceneBuffers.js';
 import { asMat4 } from '@vitrum/core';
 import { installGpuConstStubs, textureStubMethods } from './gpuStub.js';
+import { CWBVH_CHILD_COUNT_INVALID } from '@vitrum/shared-bvh';
 
 function installWebGpuConstStubs(): void {
   installGpuConstStubs();
@@ -98,6 +101,7 @@ describe('uploadScenePackTlasOnly', () => {
 
     const packed = buildPackedScene(twoMeshScene());
     const sb = uploadPackedScene(device, packed);
+    const beforeRootPairs = new Uint32Array(sb.cwbvhTlasBlasRoots);
     writeBuffer.mockClear();
 
     const moved: Scene = {
@@ -143,5 +147,58 @@ describe('uploadScenePackTlasOnly', () => {
     expect(labels.some((l) => l.includes('bvhNodes'))).toBe(false);
     expect(labels.some((l) => l.includes('tlas'))).toBe(true);
     expect(labels.some((l) => l === 'vitrum.pt-webgpu.scene.cwbvhTlasBlasRoots')).toBe(true);
+    expect(sb.cwbvhTlasBlasRoots).toEqual(beforeRootPairs);
+    for (let i = 0; i < sb.tlasBlasRoots.length; i += 1) {
+      const offset = i * CWBVH_ROOT_PAIR_WORDS;
+      expect(isValidCwbvhRootPair(sb.cwbvhTlasBlasRoots, offset)).toBe(true);
+      expect(sb.cwbvhTlasBlasRoots[offset + 1]).toBe(sb.tlasBlasRoots[i]);
+      expect(sb.cwbvhTlasBlasRoots[offset + 2]).toBeLessThan(sb.cwbvhNodeCount);
+    }
+  });
+
+  it('rolls binary TLAS writes back when hostile root remapping fails before publication', () => {
+    installWebGpuConstStubs();
+    const writeBuffer = vi.fn();
+    const device = {
+      queue: { writeBuffer, writeTexture: vi.fn() },
+      createBuffer: vi.fn((desc: GPUBufferDescriptor) => ({
+        label: desc.label,
+        size: desc.size,
+        destroy: vi.fn(),
+      })),
+      ...textureStubMethods(),
+      limits: { maxTextureDimension2D: 8192 },
+    } as unknown as GPUDevice;
+
+    const packed = buildPackedScene(twoMeshScene());
+    const sb = uploadPackedScene(device, packed);
+    const before = {
+      tlasNodes: new Uint32Array(sb.tlasNodes),
+      tlasInstanceIndices: new Uint32Array(sb.tlasInstanceIndices),
+      tlasBlasRoots: new Uint32Array(sb.tlasBlasRoots),
+      cwbvhRoots: new Uint32Array(sb.cwbvhTlasBlasRoots),
+    };
+    const hostileRoot = packed.tlasBlasRoots[0]!;
+    sb.cwbvhBinaryRootToWideRoot[hostileRoot] = CWBVH_CHILD_COUNT_INVALID;
+    writeBuffer.mockClear();
+
+    expect(() => uploadScenePackTlasOnly(device, sb, {
+      tlasNodes: packed.tlasNodes,
+      tlasInstanceIndices: packed.tlasInstanceIndices,
+      tlasBlasRoots: packed.tlasBlasRoots,
+      tlasInstanceWorldToLocal: packed.tlasInstanceWorldToLocal,
+      tlasInstanceLocalToWorld: packed.tlasInstanceLocalToWorld,
+      tlasNodeCount: Math.floor(packed.tlasNodes.length / 8),
+      primitiveTlasBindings: packed.primitiveTlasBindings,
+    })).toThrow(/no valid CWBVH root mapping/);
+
+    expect(writeBuffer).toHaveBeenCalledTimes(11);
+    const labels = writeBuffer.mock.calls.map((call) => (call[0] as GPUBuffer).label ?? '');
+    expect(labels.filter((label) => label === 'vitrum.pt-webgpu.scene.cwbvhTlasBlasRoots')).toHaveLength(1);
+    expect(labels.at(-1)).toBe('vitrum.pt-webgpu.scene.cwbvhTlasBlasRoots');
+    expect(Array.from(sb.tlasNodes)).toEqual(Array.from(before.tlasNodes));
+    expect(Array.from(sb.tlasInstanceIndices)).toEqual(Array.from(before.tlasInstanceIndices));
+    expect(Array.from(sb.tlasBlasRoots)).toEqual(Array.from(before.tlasBlasRoots));
+    expect(Array.from(sb.cwbvhTlasBlasRoots)).toEqual(Array.from(before.cwbvhRoots));
   });
 });

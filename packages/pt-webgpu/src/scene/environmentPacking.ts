@@ -75,6 +75,112 @@ interface EnvironmentParams {
   readonly warnings: readonly string[];
 }
 
+/** Decoded RGBA + transport texels/CDF + double-precision CDF-build scratch. */
+export const HDRI_PACKING_PEAK_BUDGET_BYTES = 512 * 1024 * 1024;
+
+type HdriRawPayload = {
+  readonly width: number;
+  readonly height: number;
+  readonly data: ArrayLike<number>;
+  readonly channels: 1 | 2 | 3 | 4;
+};
+
+function describeUnknown(value: unknown): string {
+  if (value === null) return 'null';
+  if (typeof value === 'string') return value;
+  if (
+    typeof value === 'number' ||
+    typeof value === 'boolean' ||
+    typeof value === 'bigint' ||
+    typeof value === 'undefined'
+  ) {
+    return String(value);
+  }
+  if (typeof value === 'symbol') return value.toString();
+  if (typeof value === 'function') return `[function ${value.name || 'anonymous'}]`;
+  return Object.prototype.toString.call(value);
+}
+
+function strictHdriRawPayload(handle: unknown): HdriRawPayload {
+  if (handle == null || typeof handle !== 'object') {
+    throw new TypeError(
+      '[vitrum/pt-webgpu] HDRI requires a CPU-readable object payload.',
+    );
+  }
+  const record = handle as {
+    readonly width?: unknown;
+    readonly height?: unknown;
+    readonly data?: ArrayLike<number>;
+    readonly image?: {
+      readonly width?: unknown;
+      readonly height?: unknown;
+      readonly data?: ArrayLike<number>;
+    };
+    readonly channels?: unknown;
+    readonly __vitrum_hint__?: { readonly channels?: unknown };
+  };
+  const width = Number(record.width ?? record.image?.width);
+  const height = Number(record.height ?? record.image?.height);
+  const data = record.data ?? record.image?.data;
+  if (!Number.isSafeInteger(width) || width < 1 ||
+      !Number.isSafeInteger(height) || height < 1) {
+    throw new RangeError(
+      `[vitrum/pt-webgpu] HDRI dimensions must be positive safe integers; received ${String(width)}x${String(height)}.`,
+    );
+  }
+  if (data == null || !Number.isSafeInteger(data.length)) {
+    throw new TypeError(
+      '[vitrum/pt-webgpu] HDRI lacks a CPU-readable array-like data payload.',
+    );
+  }
+  const pixelCount = width * height;
+  if (!Number.isSafeInteger(pixelCount)) {
+    throw new RangeError('[vitrum/pt-webgpu] HDRI pixel count exceeds safe integer range.');
+  }
+  const declaredChannels =
+    record.__vitrum_hint__?.channels ?? record.channels;
+  const inferredChannels = data.length / pixelCount;
+  const channels = declaredChannels == null ? inferredChannels : declaredChannels;
+  if (
+    channels !== 1 && channels !== 2 && channels !== 3 && channels !== 4
+  ) {
+    const receivedChannels = describeUnknown(channels);
+    throw new RangeError(
+      '[vitrum/pt-webgpu] HDRI channel count must be exactly 1, 2, 3, or 4; ' +
+      `received ${receivedChannels} from ${data.length} values for ${pixelCount} pixels.`,
+    );
+  }
+  const expectedLength = pixelCount * channels;
+  if (!Number.isSafeInteger(expectedLength) || data.length !== expectedLength) {
+    throw new RangeError(
+      `[vitrum/pt-webgpu] HDRI data length must be exactly ${expectedLength}; received ${data.length}.`,
+    );
+  }
+  // readEnvironmentMapPixels allocates decoded RGBA (16 B/px); this packer then
+  // owns RGBA transport texels (16), a float CDF (4), and double weights (8).
+  const estimatedPeakBytes = pixelCount * 44;
+  if (
+    !Number.isSafeInteger(estimatedPeakBytes) ||
+    estimatedPeakBytes > HDRI_PACKING_PEAK_BUDGET_BYTES
+  ) {
+    throw new RangeError(
+      `[vitrum/pt-webgpu] HDRI packing peak ${estimatedPeakBytes} bytes exceeds ` +
+      `${HDRI_PACKING_PEAK_BUDGET_BYTES}-byte budget.`,
+    );
+  }
+  return { width, height, data, channels };
+}
+
+function finiteNonNegative(value: number | undefined, fallback: number, label: string): number {
+  const resolved = value ?? fallback;
+  if (!Number.isFinite(resolved) || resolved < 0) {
+    throw new RangeError(
+      `[vitrum/pt-webgpu] ${label} must be finite and non-negative; received ${String(resolved)}.`,
+    );
+  }
+  return resolved;
+}
+
 /** Empty / no-environment slot — neutral tint, no HDRI sampling.
  *  File-local — only consumed by `environmentParams()` below; 2026-05-18
  *  dead-code sweep verified zero external consumers. */
@@ -165,18 +271,35 @@ export function environmentParams(scene: Scene): EnvironmentParams {
   if (scene.environment.kind === 'procedural-sky') {
     return buildProceduralSkyEnvironmentParams(scene.environment);
   }
+  const raw = strictHdriRawPayload(scene.environment.hdri);
+  const hdriIntensity = finiteNonNegative(
+    scene.environment.intensity, 1, 'HDRI intensity',
+  );
+  const hdriRotationY = scene.environment.rotationY ?? 0;
+  if (!Number.isFinite(hdriRotationY)) {
+    throw new RangeError(
+      `[vitrum/pt-webgpu] HDRI rotationY must be finite; received ${String(hdriRotationY)}.`,
+    );
+  }
   const hdri = readEnvironmentMapPixels(scene.environment.hdri);
-  const width = Number(hdri?.width ?? 0);
-  const height = Number(hdri?.height ?? 0);
-  const data = hdri?.data;
+  if (hdri == null) {
+    throw new TypeError(
+      '[vitrum/pt-webgpu] HDRI payload is malformed or contains non-finite/unsupported samples.',
+    );
+  }
+  const width = hdri.width;
+  const height = hdri.height;
+  const data = hdri.data;
   const pixelCount = width * height;
-  const hasRgb =
-    hdri != null &&
-    pixelCount > 0 &&
-    data != null &&
-    typeof data.length === 'number' &&
-    data.length >= pixelCount * 4;
-  if (Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0 && hasRgb) {
+  if (
+    width !== raw.width ||
+    height !== raw.height ||
+    hdri.sourceChannels !== raw.channels ||
+    data.length !== pixelCount * 4
+  ) {
+    throw new Error('[vitrum/pt-webgpu] HDRI decoder violated the exact payload layout.');
+  }
+  {
     // Shared handle decoding normalizes raw/DataTexture-shaped RGB/RGBA
     // payloads into RGBA linear floats before this packer builds the HDRI CDF.
     const isImplicitRgba = hdri.sourceChannels === 4 && !hdri.explicitChannels;
@@ -191,35 +314,50 @@ export function environmentParams(scene: Scene): EnvironmentParams {
     }
     const texels = new Float32Array(pixelCount * 4);
     const cdf = new Float32Array(pixelCount + 1);
+    const weights = new Float64Array(pixelCount);
     let totalWeight = 0;
     for (let i = 0; i < pixelCount; i += 1) {
-      const r = Number(data[i * 4] ?? 0);
-      const g = Number(data[i * 4 + 1] ?? 0);
-      const b = Number(data[i * 4 + 2] ?? 0);
+      const r = Number(data[i * 4]);
+      const g = Number(data[i * 4 + 1]);
+      const b = Number(data[i * 4 + 2]);
+      if (
+        !Number.isFinite(r) || !Number.isFinite(g) || !Number.isFinite(b) ||
+        r < 0 || g < 0 || b < 0 ||
+        r > 3.4028234663852886e38 ||
+        g > 3.4028234663852886e38 ||
+        b > 3.4028234663852886e38
+      ) {
+        throw new RangeError(
+          `[vitrum/pt-webgpu] decoded HDRI texel ${i} must contain finite, non-negative ` +
+            'Float32-representable radiance.',
+        );
+      }
       texels[i * 4] = r;
       texels[i * 4 + 1] = g;
       texels[i * 4 + 2] = b;
       const y = (i / width) | 0;
       const theta = ((y + 0.5) / height) * Math.PI;
       const weight = Math.max(0, luminance(r, g, b) * Math.sin(theta));
+      if (!Number.isFinite(weight) || !Number.isFinite(totalWeight + weight)) {
+        throw new RangeError('[vitrum/pt-webgpu] HDRI importance integral overflowed.');
+      }
+      weights[i] = weight;
       totalWeight += weight;
-      cdf[i + 1] = totalWeight;
     }
     if (totalWeight > 1e-12) {
       const dOmegaBase = ((2 * Math.PI) / width) * (Math.PI / height);
+      let cumulative = 0;
       for (let i = 0; i < pixelCount; i += 1) {
-        cdf[i + 1] = (cdf[i + 1] ?? 0) / totalWeight;
+        const pmf = weights[i]! / totalWeight;
+        cumulative += pmf;
+        cdf[i + 1] = cumulative;
         const y = (i / width) | 0;
         const theta = ((y + 0.5) / height) * Math.PI;
         const sinTheta = Math.max(Math.sin(theta), 1e-5);
-        const pmf = Math.max((cdf[i + 1] ?? 0) - (cdf[i] ?? 0), 0);
         texels[i * 4 + 3] = pmf / (dOmegaBase * sinTheta);
       }
       cdf[0] = 0;
       cdf[pixelCount] = 1;
-      const hdriIntensity = scene.environment.intensity ?? 1;
-      // H6: pass rotationY through; default 0 (identity rotation).
-      const hdriRotationY = scene.environment.rotationY ?? 0;
       return {
         tint: [1, 1, 1],
         sunDirection: [0, 1, 0],
@@ -257,19 +395,4 @@ export function environmentParams(scene: Scene): EnvironmentParams {
       ],
     };
   }
-  return {
-    tint: [1, 1, 1],
-    sunDirection: [0, 1, 0],
-    sunStrength: 0,
-    hdriIntensity: 0,
-    hdriRotationY: 0,
-    hdriWidth: 0,
-    hdriHeight: 0,
-    hasHdri: false,
-    hdriTexels: new Float32Array(0),
-    hdriCdf: new Float32Array(0),
-    warnings: [
-      'HDRI environment lacks CPU pixel data (width/height/data); using black no-environment fallback.',
-    ],
-  };
 }

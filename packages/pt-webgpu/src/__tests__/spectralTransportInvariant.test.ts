@@ -85,18 +85,27 @@ function spectralEmissionAtHero(rgb: readonly [number, number, number], lambdaNm
   return chroma * heroSampleD65Normalised(lambdaNm);
 }
 
-/** activeLayerWeightRgb — independent CPU oracle for the WGSL layer weight helper. */
+function spectralRgbFactorAtHero(
+  rgb: readonly [number, number, number],
+  lambdaNm: number,
+): number {
+  const value = rgb.map((channel) => Math.max(channel, 0)) as [number, number, number];
+  const t = heroLambdaTo01(lambdaNm);
+  const wB = Math.max(1 - Math.abs(t - 0.15) / 0.35, 0);
+  const wG = Math.max(1 - Math.abs(t - 0.5) / 0.35, 0);
+  const wR = Math.max(1 - Math.abs(t - 0.85) / 0.35, 0);
+  const wSum = Math.max(wR + wG + wB, 1e-6);
+  return Math.max((value[0] * wR + value[1] * wG + value[2] * wB) / wSum, 0);
+}
+
 function activeLayerWeightRgb(
   layerRgb: readonly [number, number, number],
   lambdaNm: number,
   spectralEnabled: boolean,
 ): [number, number, number] {
-  if (!spectralEnabled) {
-    return [layerRgb[0], layerRgb[1], layerRgb[2]];
-  }
-  const lum = Math.max(0.2126 * layerRgb[0] + 0.7152 * layerRgb[1] + 0.0722 * layerRgb[2], 0);
-  const [r, g, b] = wavelengthToRGB(lambdaNm, lum, 1.0);
-  return [r, g, b];
+  if (!spectralEnabled) return [...layerRgb];
+  const weight = spectralRgbFactorAtHero(layerRgb, lambdaNm);
+  return [weight, weight, weight];
 }
 
 function extractFunctionBody(src: string, name: string): string {
@@ -291,23 +300,16 @@ describe('A3 — spectral transport invariant harness (CPU mirror)', () => {
     expect(activeLayerWeightRgb([0.8, 0.3, 0.1], 540, false)).toEqual([0.8, 0.3, 0.1]);
   });
 
-  it('activeLayerWeightRgb collapses spectral layer throughput to Rec.709 luminance', () => {
+  it('activeLayerWeightRgb evaluates chromatic layer transmission at the hero wavelength', () => {
     const lambdaNm = 540;
     const red: [number, number, number] = [1, 0, 0];
     const sameLumGreen: [number, number, number] = [0, 0.2126 / 0.7152, 0];
 
     const redWeight = activeLayerWeightRgb(red, lambdaNm, true);
     const greenWeight = activeLayerWeightRgb(sameLumGreen, lambdaNm, true);
-    for (let i = 0; i < 3; i += 1) {
-      expect(redWeight[i]!).toBeCloseTo(greenWeight[i]!, 12);
-    }
-
-    const maxPassThroughDelta = Math.max(
-      Math.abs(redWeight[0] - red[0]),
-      Math.abs(redWeight[1] - red[1]),
-      Math.abs(redWeight[2] - red[2]),
-    );
-    expect(maxPassThroughDelta).toBeGreaterThan(0.05);
+    expect(redWeight[0]).toBeCloseTo(0, 12);
+    expect(greenWeight[0]).toBeGreaterThan(0.1);
+    expect(activeLayerWeightRgb([0.37, 0.37, 0.37], 630, true)).toEqual([0.37, 0.37, 0.37]);
   });
 
   it('activeLayerWeightRgb clamps negative spectral layer luminance to black', () => {
@@ -318,7 +320,7 @@ describe('A3 — spectral transport invariant harness (CPU mirror)', () => {
     const body = extractFunctionBody(PT_WEBGPU_PATH_TRACE_MATERIAL_FUNCS_WGSL, 'activeLayerWeightRgb');
     expect(body).toContain('if (!spectralEnabled)');
     expect(body).toContain('return layerRgb;');
-    expect(body).toContain('let lum = max(luminance(layerRgb), 0.0);');
-    expect(body).toContain('return heroWavelengthToRgb(heroLambda, lum, 1.0);');
+    expect(body).toContain('spectralRgbFactorAtHero(layerRgb, heroLambda)');
+    expect(body).not.toContain('heroWavelengthToRgb');
   });
 });

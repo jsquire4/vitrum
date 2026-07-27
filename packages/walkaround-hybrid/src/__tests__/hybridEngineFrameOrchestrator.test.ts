@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import type { FrameInput, Scene } from '@vitrum/core';
+import type { DDGILight } from '../ddgi/types.js';
 import {
   fingerprintHybridPipelineRebuildKey,
   HYBRID_FRAME_SKIP_OUTPUT,
   RESOLUTION_FACTOR_DEBOUNCE_MS,
+  refractiveTraceCausticGate,
   runHybridEngineFrame,
   resolveInternalRenderSize,
   type HybridEngineFrameDeps,
@@ -19,6 +21,59 @@ describe('HybridEngineFrameOrchestrator', () => {
   it('HYBRID_FRAME_SKIP_OUTPUT is skipped kind', () => {
     expect(HYBRID_FRAME_SKIP_OUTPUT.kind).toBe('skipped');
     expect(HYBRID_FRAME_SKIP_OUTPUT.samplesAccumulated).toBe(0);
+  });
+
+  it('gates refractive caustics on both the explicit strategy and a transmissive scene', () => {
+    const transmissive: Scene = {
+      primitives: [{
+        kind: 'mesh', id: 'glass',
+        positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+        normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+        material: {
+          baseColor: [1, 1, 1], roughness: 0, metallic: 0,
+          transmission: 1, ior: 1.5,
+        },
+      }],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+    const opaque: Scene = {
+      ...transmissive,
+      primitives: transmissive.primitives.map((primitive) => ({
+        ...primitive,
+        material: { ...primitive.material, transmission: 0 },
+      })),
+    };
+
+    expect(refractiveTraceCausticGate('none', transmissive)).toBe(0);
+    expect(refractiveTraceCausticGate('manifold-nee', transmissive)).toBe(2);
+    expect(refractiveTraceCausticGate('photon-map', transmissive)).toBe(0);
+    expect(refractiveTraceCausticGate('refractive-trace', opaque)).toBe(0);
+    expect(refractiveTraceCausticGate('refractive-trace', transmissive)).toBe(1);
+
+    const faceBlocked: Scene = {
+      ...transmissive,
+      primitives: transmissive.primitives.map((primitive) => ({
+        ...primitive,
+        material: {
+          ...primitive.material,
+          frontLayer: { transmission: [1, 0, 0] },
+          backLayer: { transmission: [0, 1, 1] },
+        },
+      })),
+    };
+    const faceOverlap: Scene = {
+      ...faceBlocked,
+      primitives: faceBlocked.primitives.map((primitive) => ({
+        ...primitive,
+        material: {
+          ...primitive.material,
+          backLayer: { transmission: [1, 0, 0] },
+        },
+      })),
+    };
+    expect(refractiveTraceCausticGate('refractive-trace', faceBlocked)).toBe(0);
+    expect(refractiveTraceCausticGate('refractive-trace', faceOverlap)).toBe(1);
   });
 });
 
@@ -139,6 +194,7 @@ const FRAME_INPUT = {
 function makeRcFrameDeps(args: {
   scene: Scene | null;
   primaryLightIntensity: number;
+  primaryLightDir?: readonly [number, number, number];
   capture: {
     sunColor: readonly [number, number, number] | null;
     sunCastShadowDisabled?: boolean | null;
@@ -146,13 +202,26 @@ function makeRcFrameDeps(args: {
     emitterCount?: number | null;
     envTextureView?: GPUTextureView | null;
     envSampler?: GPUSampler | null;
+    envRotationY?: number | null;
+    envIntensity?: number | null;
+    scalarSkyRadiance?: readonly [number, number, number] | null;
+    hasDirectionalEnvironment?: boolean | null;
     materialTextureAtlasView?: GPUTextureView | null;
     materialMapMetaTextureView?: GPUTextureView | null;
     bvhTangentTextureView?: GPUTextureView | null;
     bvhVertexColorTextureView?: GPUTextureView | null;
+    lights?: readonly DDGILight[] | undefined;
   };
   rcEmitters?: { readonly buffer: GPUBuffer; readonly count: number } | null;
-  rcEnvBindings?: { readonly textureView: GPUTextureView; readonly sampler: GPUSampler } | null;
+  rcEnvBindings?: {
+    readonly textureView: GPUTextureView;
+    readonly sampler: GPUSampler;
+    readonly rotationY: number;
+    readonly intensity: number;
+    readonly hasDirectionalEnvironment: boolean;
+  } | null;
+  skyTint?: [number, number, number];
+  skyIrradiance?: number;
   rcMaterialAtlasBindings?: {
     readonly materialTextureAtlasView: GPUTextureView;
     readonly materialMapMetaTextureView: GPUTextureView;
@@ -170,8 +239,12 @@ function makeRcFrameDeps(args: {
     setRCInputs: () => undefined,
     getAuxBufferTextures: () => null,
     getEmitterBufferAndCount: () => args.rcEmitters ?? null,
+    getEmitterSamplingBufferAndCount: () => args.rcEmitters == null
+      ? null
+      : { ...args.rcEmitters, emitterDataOffset: 0, emitterAliasOffset: 256 },
     getEnvBindings: () => args.rcEnvBindings ?? null,
     getMaterialAtlasBindings: () => args.rcMaterialAtlasBindings ?? null,
+    getSceneGeometryBufferBindings: () => null,
   };
   const ddgi = {
     warmupFrame: 0,
@@ -186,7 +259,7 @@ function makeRcFrameDeps(args: {
   };
   const rc = {
     syncRestirBvhBuffers: () => undefined,
-    updateLights: () => undefined,
+    updateLights: (lights: readonly DDGILight[]) => { args.capture.lights = lights; },
     dispatchFrame: (inputs: {
       sunColor: readonly [number, number, number];
       sunCastShadowDisabled?: boolean;
@@ -194,6 +267,10 @@ function makeRcFrameDeps(args: {
       emitterCount?: number;
       envTextureView?: GPUTextureView;
       envSampler?: GPUSampler;
+      envRotationY?: number;
+      envIntensity?: number;
+      scalarSkyRadiance?: readonly [number, number, number];
+      hasDirectionalEnvironment?: boolean;
       materialTextureAtlasView?: GPUTextureView;
       materialMapMetaTextureView?: GPUTextureView;
       bvhTangentTextureView?: GPUTextureView;
@@ -205,6 +282,11 @@ function makeRcFrameDeps(args: {
       args.capture.emitterCount = inputs.emitterCount ?? null;
       args.capture.envTextureView = inputs.envTextureView ?? null;
       args.capture.envSampler = inputs.envSampler ?? null;
+      args.capture.envRotationY = inputs.envRotationY ?? null;
+      args.capture.envIntensity = inputs.envIntensity ?? null;
+      args.capture.scalarSkyRadiance = inputs.scalarSkyRadiance ?? null;
+      args.capture.hasDirectionalEnvironment =
+        inputs.hasDirectionalEnvironment ?? null;
       args.capture.materialTextureAtlasView = inputs.materialTextureAtlasView ?? null;
       args.capture.materialMapMetaTextureView = inputs.materialMapMetaTextureView ?? null;
       args.capture.bvhTangentTextureView = inputs.bvhTangentTextureView ?? null;
@@ -227,17 +309,17 @@ function makeRcFrameDeps(args: {
       lastScene: args.scene,
     },
     lighting: {
-      primaryLightDir: [0, -1, 0],
+      primaryLightDir: [...(args.primaryLightDir ?? [0, -1, 0])] as [number, number, number],
       primaryLightIntensity: args.primaryLightIntensity,
-      skyTint: [1, 1, 1],
-      skyIrradiance: 1,
+      skyTint: args.skyTint ?? [1, 1, 1],
+      skyIrradiance: args.skyIrradiance ?? 1,
     },
     filter: {
       indirectFireflyClamp: [1, 1, 1],
       atrousDirectSigmas: [128, 5, 0.05],
       atrousIndirectSigmas: [32, 20, 0.5],
       stainedGlassFlags: 0,
-      restirPtReuse: 0,
+      grisReuse: 0,
       nrcEnabled: 0,
     },
     telemetry: {
@@ -293,6 +375,36 @@ function makeRcFrameDeps(args: {
 }
 
 describe('HybridEngineFrameOrchestrator — RC sun input', () => {
+  it('orients every RC sun to the runtime primary direction and clears stale lights', () => {
+    const capture = {
+      sunColor: null as readonly [number, number, number] | null,
+      lights: undefined as readonly DDGILight[] | undefined,
+    };
+    const scene: Scene = {
+      primitives: [],
+      emitters: [
+        { kind: 'directional', id: 'sun-a', direction: [0, 1, 0], color: [1, 1, 1], intensity: 1 },
+        { kind: 'directional', id: 'sun-b', direction: [0, 0, 1], color: [1, 0.5, 0.25], intensity: 2 },
+      ],
+      environment: { kind: 'none' },
+    };
+    runHybridEngineFrame(
+      makeRcFrameDeps({ scene, primaryLightDir: [1, 0, 0], primaryLightIntensity: 1, capture }),
+      FRAME_INPUT,
+    );
+    expect(capture.lights).toHaveLength(2);
+    expect(capture.lights?.map((light) => light.direction)).toEqual([
+      { x: -1, y: -0, z: -0 },
+      { x: -1, y: -0, z: -0 },
+    ]);
+
+    runHybridEngineFrame(
+      makeRcFrameDeps({ scene: null, primaryLightIntensity: 1, capture }),
+      FRAME_INPUT,
+    );
+    expect(capture.lights).toEqual([]);
+  });
+
   it('uses scene directional emitter RGB and intensity for RC sun color', () => {
     const capture = { sunColor: null as readonly [number, number, number] | null };
     const scene: Scene = {
@@ -359,6 +471,10 @@ describe('HybridEngineFrameOrchestrator — RC sun input', () => {
       emitterCount?: number | null;
       envTextureView?: GPUTextureView | null;
       envSampler?: GPUSampler | null;
+      envRotationY?: number | null;
+      envIntensity?: number | null;
+      scalarSkyRadiance?: readonly [number, number, number] | null;
+      hasDirectionalEnvironment?: boolean | null;
       materialTextureAtlasView?: GPUTextureView | null;
       materialMapMetaTextureView?: GPUTextureView | null;
       bvhTangentTextureView?: GPUTextureView | null;
@@ -378,7 +494,13 @@ describe('HybridEngineFrameOrchestrator — RC sun input', () => {
         primaryLightIntensity: 1,
         capture,
         rcEmitters: { buffer: emittersBuf, count: 7 },
-        rcEnvBindings: { textureView: envTextureView, sampler: envSampler },
+        rcEnvBindings: {
+          textureView: envTextureView,
+          sampler: envSampler,
+          rotationY: Math.PI / 3,
+          intensity: 2.5,
+          hasDirectionalEnvironment: true,
+        },
         rcMaterialAtlasBindings: {
           materialTextureAtlasView,
           materialMapMetaTextureView,
@@ -393,9 +515,41 @@ describe('HybridEngineFrameOrchestrator — RC sun input', () => {
     expect(capture.emitterCount).toBe(7);
     expect(capture.envTextureView).toBe(envTextureView);
     expect(capture.envSampler).toBe(envSampler);
+    expect(capture.envRotationY).toBeCloseTo(Math.PI / 3);
+    expect(capture.envIntensity).toBe(2.5);
+    expect(capture.scalarSkyRadiance).toEqual([1, 1, 1]);
+    expect(capture.hasDirectionalEnvironment).toBe(true);
     expect(capture.materialTextureAtlasView).toBe(materialTextureAtlasView);
     expect(capture.materialMapMetaTextureView).toBe(materialMapMetaTextureView);
     expect(capture.bvhTangentTextureView).toBe(bvhTangentTextureView);
     expect(capture.bvhVertexColorTextureView).toBe(bvhVertexColorTextureView);
+  });
+
+  it('forwards authored scalar sky radiance when the bound env is only a placeholder', () => {
+    const capture = {
+      sunColor: null as readonly [number, number, number] | null,
+      scalarSkyRadiance: null as readonly [number, number, number] | null,
+      hasDirectionalEnvironment: null as boolean | null,
+    };
+    runHybridEngineFrame(
+      makeRcFrameDeps({
+        scene: { primitives: [], emitters: [], environment: { kind: 'none' } },
+        primaryLightIntensity: 1,
+        skyTint: [0.25, 0.5, 1],
+        skyIrradiance: 2,
+        capture,
+        rcEnvBindings: {
+          textureView: { label: 'placeholder-view' } as unknown as GPUTextureView,
+          sampler: { label: 'placeholder-sampler' } as unknown as GPUSampler,
+          rotationY: 0,
+          intensity: 0,
+          hasDirectionalEnvironment: false,
+        },
+      }),
+      FRAME_INPUT,
+    );
+
+    expect(capture.scalarSkyRadiance).toEqual([0.5, 1, 2]);
+    expect(capture.hasDirectionalEnvironment).toBe(false);
   });
 });

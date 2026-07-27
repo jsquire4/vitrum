@@ -18,9 +18,11 @@
 
 import {
   fusedForwardWgsl, fusedBackwardWgsl, gradFinalizeWgsl, downcastF16Wgsl,
+  fusedMlpWorkgroupStorageBytes,
   type FusedMlpWgslOptions,
 } from "./wgsl/fusedMlp.wgsl.js";
 import { packAdamUbo } from "./adamUbo.js";
+import { NRC_DIAGNOSTIC_BYTES, NRC_DIAGNOSTIC_CONSTANTS_WGSL } from './nrcDiagnostics.js';
 
 // Adam optimizer kernel (same math as the spike; operates on the finalized f32
 // grad buffers). Kept inline so the module is self-contained.
@@ -35,17 +37,45 @@ struct AdamParams {
 @group(0) @binding(2) var<storage, read_write> m      : array<f32>;
 @group(0) @binding(3) var<storage, read_write> v      : array<f32>;
 @group(0) @binding(4) var<uniform>             p      : AdamParams;
+@group(0) @binding(5) var<storage, read_write> nrcDiagnostics : array<atomic<u32>>;
+${NRC_DIAGNOSTIC_CONSTANTS_WGSL}
+fn nrcAdamFinite(value: f32) -> bool { return value == value && abs(value) <= 3.402823e38; }
 @compute @workgroup_size(64, 1, 1)
 fn adamMain(@builtin(global_invocation_id) gid : vec3<u32>) {
   let idx = gid.x;
   if (idx >= p.count) { return; }
+  let current = params[idx];
+  let oldM = m[idx];
+  let oldV = v[idx];
   let g = grads[idx];
-  let mi = p.beta1 * m[idx] + (1.0 - p.beta1) * g;
-  let vi = p.beta2 * v[idx] + (1.0 - p.beta2) * g * g;
-  m[idx] = mi; v[idx] = vi;
+  if (!nrcAdamFinite(current) || !nrcAdamFinite(oldM) || !nrcAdamFinite(oldV) || oldV < 0.0) {
+    params[idx] = select(0.0, current, nrcAdamFinite(current));
+    m[idx] = 0.0; v[idx] = 0.0;
+    atomicAdd(&nrcDiagnostics[NRC_DIAG_NONFINITE], 1u);
+    return;
+  }
+  if (!nrcAdamFinite(g) || !nrcAdamFinite(p.lr) || !nrcAdamFinite(p.bc1) || !nrcAdamFinite(p.bc2)
+      || !(p.lr > 0.0) || !(p.bc1 > 0.0) || !(p.bc2 > 0.0)) {
+    atomicAdd(&nrcDiagnostics[NRC_DIAG_NONFINITE], 1u);
+    return;
+  }
+  let mi = p.beta1 * oldM + (1.0 - p.beta1) * g;
+  let vi = p.beta2 * oldV + (1.0 - p.beta2) * g * g;
   let mhat = mi / p.bc1;
   let vhat = vi / p.bc2;
-  params[idx] = params[idx] - p.lr * mhat / (sqrt(vhat) + p.eps);
+  if (!nrcAdamFinite(mi) || !nrcAdamFinite(vi) || !nrcAdamFinite(mhat)
+      || !nrcAdamFinite(vhat) || vi < 0.0 || vhat < 0.0) {
+    atomicAdd(&nrcDiagnostics[NRC_DIAG_NONFINITE], 1u);
+    return;
+  }
+  let updated = current - p.lr * mhat / (sqrt(vhat) + p.eps);
+  if (!nrcAdamFinite(updated)) {
+    atomicAdd(&nrcDiagnostics[NRC_DIAG_NONFINITE], 1u);
+    return;
+  }
+  let bounded = clamp(updated, -65504.0, 65504.0);
+  if (bounded != updated) { atomicAdd(&nrcDiagnostics[NRC_DIAG_SATURATED], 1u); }
+  m[idx] = mi; v[idx] = vi; params[idx] = bounded;
 }
 `;
 
@@ -68,6 +98,26 @@ export interface FusedNetSpec {
 export interface FusedTrainerConfig {
   useF16: boolean;
   tileB: number;
+}
+
+interface MlpTrainableSet {
+  weights: GPUBuffer;
+  biases: GPUBuffer;
+  wMasterGpu: GPUBuffer;
+  bMasterGpu: GPUBuffer;
+  mW: GPUBuffer;
+  vW: GPUBuffer;
+  mB: GPUBuffer;
+  vB: GPUBuffer;
+  destroyed: boolean;
+}
+
+export interface FusedMlpTrainTransaction {
+  readonly candidateWeightBuffer: GPUBuffer;
+  readonly candidateBiasBuffer: GPUBuffer;
+  commitCpu(): void;
+  rollback(): void;
+  finalizeSuccess(): void;
 }
 
 // Per-layer weight/bias offsets in the concatenated param buffers.
@@ -123,8 +173,9 @@ function padEvenU16(a: Uint16Array): Uint16Array {
   return out;
 }
 
-// Half-precision pack: round-to-nearest f32->f16 bit cast (subset; no subnormal
-// flush concerns for our value range). Returns Uint16Array of f16 bits.
+// IEEE-754 binary32 -> binary16, round-to-nearest ties-to-even. NRC normally
+// keeps its optimizer master in f32, but the opt-in f16 forward path still
+// needs correct subnormal, tie, NaN, and mantissa-carry handling.
 function f32ToF16Bits(src: Float32Array): Uint16Array {
   const out = new Uint16Array(src.length);
   const dv = new DataView(new ArrayBuffer(4));
@@ -132,16 +183,52 @@ function f32ToF16Bits(src: Float32Array): Uint16Array {
     dv.setFloat32(0, src[k]!, true);
     const x = dv.getUint32(0, true);
     const sign = (x >>> 16) & 0x8000;
-    const exp = ((x >>> 23) & 0xff) - 127 + 15;
-    let mant = x & 0x7fffff;
-    if (exp <= 0) { out[k] = sign; continue; }            // flush tiny to ±0
-    if (exp >= 0x1f) { out[k] = sign | 0x7c00; continue; } // inf/overflow
-    // round to nearest even
-    const round = (mant & 0x1000) !== 0;
-    mant = mant >>> 13;
-    let h = sign | (exp << 10) | mant;
-    if (round) h += 1;
-    out[k] = h & 0xffff;
+    const exp32 = (x >>> 23) & 0xff;
+    const mant32 = x & 0x7fffff;
+
+    if (exp32 === 0xff) {
+      // Preserve infinities; canonicalise every NaN to a quiet half NaN.
+      out[k] = sign | (mant32 === 0 ? 0x7c00 : 0x7e00);
+      continue;
+    }
+
+    let exp16 = exp32 - 127 + 15;
+    if (exp16 >= 0x1f) {
+      out[k] = sign | 0x7c00;
+      continue;
+    }
+
+    if (exp16 <= 0) {
+      if (exp16 < -10) {
+        out[k] = sign;
+        continue;
+      }
+      const mantissa = mant32 | 0x800000;
+      const shift = 14 - exp16;
+      let rounded = mantissa >>> shift;
+      const remainder = mantissa & ((1 << shift) - 1);
+      const halfway = 1 << (shift - 1);
+      if (remainder > halfway || (remainder === halfway && (rounded & 1) !== 0)) {
+        rounded++;
+      }
+      out[k] = sign | rounded;
+      continue;
+    }
+
+    let mant16 = mant32 >>> 13;
+    const remainder = mant32 & 0x1fff;
+    if (remainder > 0x1000 || (remainder === 0x1000 && (mant16 & 1) !== 0)) {
+      mant16++;
+      if (mant16 === 0x400) {
+        mant16 = 0;
+        exp16++;
+        if (exp16 >= 0x1f) {
+          out[k] = sign | 0x7c00;
+          continue;
+        }
+      }
+    }
+    out[k] = sign | (exp16 << 10) | mant16;
   }
   return out;
 }
@@ -197,13 +284,28 @@ export class FusedMlpTrainer {
 
   numSamples = 0;
   adamT = 0;
+    #disposed = false;
 
-  #disposed = false;
-
-  constructor(device: GPUDevice, spec: FusedNetSpec, cfg: FusedTrainerConfig) {
+  private _diagnosticsBuffer: GPUBuffer | undefined;
+  private _ownsDiagnosticsBuffer = false;
+  private _inFlightCandidate: MlpTrainableSet | undefined;
+  private _spareTrainableSet: MlpTrainableSet | undefined;
+  private _trainableSets: readonly [MlpTrainableSet, MlpTrainableSet] | undefined;
+  private readonly _forwardBindGroups = new Map<GPUBuffer, GPUBindGroup>();
+  private readonly _backwardBindGroups = new Map<GPUBuffer, GPUBindGroup>();
+  private readonly _gradFinalizeBindGroups = new Map<GPUBuffer, GPUBindGroup>();
+  private readonly _adamBindGroups = new Map<GPUBuffer, GPUBindGroup>();
+  private readonly _downcastBindGroups = new Map<GPUBuffer, GPUBindGroup>();
+  constructor(device: GPUDevice, spec: FusedNetSpec, cfg: FusedTrainerConfig, diagnosticsBuffer?: GPUBuffer) {
     this.device = device; this.spec = spec; this.cfg = cfg;
     this.plan = planLayers(spec);
     this.node = spec.hidden + 2;
+    this._diagnosticsBuffer = diagnosticsBuffer;
+  }
+
+  get diagnosticsBuffer(): GPUBuffer {
+    if (!this._diagnosticsBuffer) throw new Error('FusedMlpTrainer diagnostics are unavailable before build()');
+    return this._diagnosticsBuffer;
   }
 
   private wgslOpts(): FusedMlpWgslOptions {
@@ -214,26 +316,178 @@ export class FusedMlpTrainer {
   }
 
   /** Bytes of one resident scalar (f16=2, f32=4). */
-  private scBytes(): number { return this.cfg.useF16 ? 2 : 4; }
 
-  /** Guard at every public-method entry: a disposed trainer's buffers are
-   *  destroyed, so any further use would touch destroyed GPU resources. Fail
-   *  loudly with a clear error instead (D7.5). */
-  #assertUsable(method: string): void {
-    if (this.#disposed) {
-      throw new Error(`FusedMlpTrainer.${method}() called after dispose() — the trainer's GPU buffers are destroyed`);
+  private _allocateTrainableCandidate(): MlpTrainableSet {
+    const usage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST;
+    const allocated: GPUBuffer[] = [];
+    const make = (bytes: number): GPUBuffer => {
+      const buffer = this.device.createBuffer({
+        label: 'nrc-mlp-train-candidate',
+        size: Math.max(16, (bytes + 3) & ~3),
+        usage,
+      });
+      allocated.push(buffer);
+      return buffer;
+    };
+    const sc = this.scBytes();
+    try {
+      return {
+        weights: make(this.plan.totalW * sc), biases: make(this.plan.totalB * sc),
+        wMasterGpu: make(this.plan.totalW * 4), bMasterGpu: make(this.plan.totalB * 4),
+        mW: make(this.plan.totalW * 4), vW: make(this.plan.totalW * 4),
+        mB: make(this.plan.totalB * 4), vB: make(this.plan.totalB * 4),
+        destroyed: false,
+      };
+    } catch (error) {
+      for (const buffer of allocated) try { buffer.destroy(); } catch { /* continue rollback */ }
+      throw error;
     }
   }
 
-  async build(numSamples: number) {
-    this.#assertUsable('build');
-    const d = this.device;
-    this.numSamples = numSamples;
-    const opts = this.wgslOpts();
-    const sc = this.scBytes();
+  private _liveTrainableSet(): MlpTrainableSet {
+    return {
+      weights: this.weights!, biases: this.biases!,
+      wMasterGpu: this.wMasterGpu!, bMasterGpu: this.bMasterGpu!,
+      mW: this.mW!, vW: this.vW!, mB: this.mB!, vB: this.vB!,
+      destroyed: false,
+    };
+  }
 
-    // shared-mem budget sanity (3 tiles of TILE_B×W): assert it fits.
-    const sharedBytes = 3 * this.cfg.tileB * this.spec.W * sc;
+  private _publishTrainableSet(set: MlpTrainableSet): void {
+    this.weights = set.weights; this.biases = set.biases;
+    this.wMasterGpu = set.wMasterGpu; this.bMasterGpu = set.bMasterGpu;
+    this.mW = set.mW; this.vW = set.vW; this.mB = set.mB; this.vB = set.vB;
+  }
+
+  private _buildTrainBindGroups(): void {
+    const d = this.device;
+    const sets = this._trainableSets;
+    if (!sets) throw new Error('NRC MLP trainable generations are unavailable');
+
+    for (const set of sets) {
+      this._forwardBindGroups.set(set.weights, d.createBindGroup({
+        layout: this.pFwd.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: { buffer: set.weights } },
+          { binding: 1, resource: { buffer: set.biases } },
+          { binding: 2, resource: { buffer: this.inputs! } },
+          { binding: 3, resource: { buffer: this.actsGlob! } },
+          { binding: 4, resource: { buffer: this.zGlob! } },
+          { binding: 5, resource: { buffer: this._paramsUbo! } },
+        ],
+      }));
+      this._backwardBindGroups.set(set.weights, d.createBindGroup({
+        layout: this.pBwd.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: { buffer: set.weights } },
+          { binding: 1, resource: { buffer: this.targets! } },
+          { binding: 2, resource: { buffer: this.actsGlob! } },
+          { binding: 3, resource: { buffer: this.zGlob! } },
+          { binding: 4, resource: { buffer: this.gradWfx! } },
+          { binding: 5, resource: { buffer: this.gradBfx! } },
+          { binding: 6, resource: { buffer: this._paramsUbo! } },
+          { binding: 7, resource: { buffer: this.gradInputFx! } },
+          { binding: 8, resource: { buffer: this.diagnosticsBuffer } },
+        ],
+      }));
+      this._adamBindGroups.set(set.wMasterGpu, d.createBindGroup({
+        layout: this.pAdam.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: { buffer: set.wMasterGpu } },
+          { binding: 1, resource: { buffer: this.gradWf! } },
+          { binding: 2, resource: { buffer: set.mW } },
+          { binding: 3, resource: { buffer: set.vW } },
+          { binding: 4, resource: { buffer: this._adamUboW! } },
+          { binding: 5, resource: { buffer: this.diagnosticsBuffer } },
+        ],
+      }));
+      this._adamBindGroups.set(set.bMasterGpu, d.createBindGroup({
+        layout: this.pAdam.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: { buffer: set.bMasterGpu } },
+          { binding: 1, resource: { buffer: this.gradBf! } },
+          { binding: 2, resource: { buffer: set.mB } },
+          { binding: 3, resource: { buffer: set.vB } },
+          { binding: 4, resource: { buffer: this._adamUboB! } },
+          { binding: 5, resource: { buffer: this.diagnosticsBuffer } },
+        ],
+      }));
+      if (this.cfg.useF16) {
+        this._downcastBindGroups.set(set.wMasterGpu, d.createBindGroup({
+          layout: this.pDowncast!.getBindGroupLayout(0),
+          entries: [
+            { binding: 0, resource: { buffer: set.wMasterGpu } },
+            { binding: 1, resource: { buffer: set.weights } },
+            { binding: 2, resource: { buffer: this._downcastUboW! } },
+          ],
+        }));
+        this._downcastBindGroups.set(set.bMasterGpu, d.createBindGroup({
+          layout: this.pDowncast!.getBindGroupLayout(0),
+          entries: [
+            { binding: 0, resource: { buffer: set.bMasterGpu } },
+            { binding: 1, resource: { buffer: set.biases } },
+            { binding: 2, resource: { buffer: this._downcastUboB! } },
+          ],
+        }));
+      }
+    }
+
+    for (const [ubo, fx, f] of [
+      [this._gradFinUboW!, this.gradWfx!, this.gradWf!],
+      [this._gradFinUboB!, this.gradBfx!, this.gradBf!],
+      [this._gradFinUboX!, this.gradInputFx!, this.gradInputF!],
+    ] as const) {
+      this._gradFinalizeBindGroups.set(ubo, d.createBindGroup({
+        layout: this.pGradFin.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: { buffer: fx } },
+          { binding: 1, resource: { buffer: f } },
+          { binding: 2, resource: { buffer: ubo } },
+        ],
+      }));
+    }
+  }
+
+  private _destroyTrainableSet(set: MlpTrainableSet | undefined): void {
+    if (!set || set.destroyed) return;
+    set.destroyed = true;
+    for (const buffer of [set.weights, set.biases, set.wMasterGpu, set.bMasterGpu, set.mW, set.vW, set.mB, set.vB]) {
+      try { buffer.destroy(); } catch { /* continue candidate cleanup */ }
+    }
+  }
+  private scBytes(): number { return this.cfg.useF16 ? 2 : 4; }
+
+    /** Guard at every public-method entry: a disposed trainer's buffers are
+     *  destroyed, so any further use would touch destroyed GPU resources. Fail
+     *  loudly with a clear error instead (D7.5). */
+    #assertUsable(method: string): void {
+      if (this.#disposed) {
+        throw new Error(`FusedMlpTrainer.${method}() called after dispose() — the trainer's GPU buffers are destroyed`);
+      }
+    }
+
+    async build(numSamples: number) {
+      this.#assertUsable('build');
+      const d = this.device;
+      if (!this._diagnosticsBuffer) {
+        this._diagnosticsBuffer = d.createBuffer({
+          label: 'nrc-trainer-diagnostics',
+          size: NRC_DIAGNOSTIC_BYTES,
+          usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
+        });
+        this._ownsDiagnosticsBuffer = true;
+        d.queue.writeBuffer(this._diagnosticsBuffer, 0, new Uint32Array(NRC_DIAGNOSTIC_BYTES / 4));
+      }
+      this.numSamples = numSamples;
+      const opts = this.wgslOpts();
+      const sc = this.scBytes();
+
+      // Exact shader footprint: two TILE_B x W arrays; weights stay global.
+      const sharedBytes = fusedMlpWorkgroupStorageBytes({
+        useF16: this.cfg.useF16,
+        W: this.spec.W,
+        TILE_B: this.cfg.tileB,
+      });
     const lim = d.limits.maxComputeWorkgroupStorageSize ?? 16384;
     if (sharedBytes > lim) {
       throw new Error(`fused MLP shared-mem ${sharedBytes}B exceeds adapter limit ${lim}B ` +
@@ -266,6 +520,10 @@ export class FusedMlpTrainer {
     this.gradInputF = mk(numSamples * this.spec.inW * 4);
     this.mW = mk(this.plan.totalW * 4); this.vW = mk(this.plan.totalW * 4);
     this.mB = mk(this.plan.totalB * 4); this.vB = mk(this.plan.totalB * 4);
+    // Allocate the rollback target once. Training ping-pongs live/spare sets so
+    // an epoch never allocates or destroys GPU buffers on the hot path.
+    this._spareTrainableSet = this._allocateTrainableCandidate();
+    this._trainableSets = [this._liveTrainableSet(), this._spareTrainableSet];
 
     const pipe = async (code: string, entry: string) => {
       const m = d.createShaderModule({ label: entry, code });
@@ -324,6 +582,7 @@ export class FusedMlpTrainer {
       this._downcastUboW = mkUbo(16); writeCount(this._downcastUboW, this.plan.totalW);
       this._downcastUboB = mkUbo(16); writeCount(this._downcastUboB, this.plan.totalB);
     }
+    this._buildTrainBindGroups();
   }
 
   /**
@@ -336,24 +595,54 @@ export class FusedMlpTrainer {
   dispose(): void {
     if (this.#disposed) return;
     this.#disposed = true;
-    // Every GPUBuffer allocated in build(). Guarded for the never-built case.
+    const trainableSets = this._trainableSets;
+    if (trainableSets) {
+      for (const set of trainableSets) this._destroyTrainableSet(set);
+    } else {
+      this._destroyTrainableSet(this._inFlightCandidate);
+      this._destroyTrainableSet(this._spareTrainableSet);
+    }
+    this._spareTrainableSet = undefined;
+    this._inFlightCandidate = undefined;
+    // If both generations were installed, their buffers were destroyed through
+    // the generation sets above. The fallback covers a partial build.
     const buffers: (GPUBuffer | undefined)[] = [
-      this.weights, this.biases,
-      this.wMasterGpu, this.bMasterGpu,
+      ...(trainableSets ? [] : [
+        this.weights, this.biases,
+        this.wMasterGpu, this.bMasterGpu,
+        this.mW, this.vW, this.mB, this.vB,
+      ]),
       this.inputs, this.targets,
       this.actsGlob, this.zGlob,
       this.gradWfx, this.gradBfx,
       this.gradWf, this.gradBf,
       this.gradInputFx, this.gradInputF,
-      this.mW, this.vW, this.mB, this.vB,
       // Persistent UBOs (BUG-1 fix — these were previously thrown away per step).
       this._paramsUbo,
       this._gradFinUboW, this._gradFinUboB, this._gradFinUboX,
       this._adamUboW, this._adamUboB,
       this._downcastUboW, this._downcastUboB,
     ];
-    for (const buf of buffers) buf?.destroy();
+    for (const buf of buffers) {
+      try {
+        buf?.destroy();
+      } catch {
+        // Initialization rollback must keep releasing later owned buffers even
+        // if a test double or invalidated wrapper rejects one destroy call.
+      }
+    }
+      if (this._ownsDiagnosticsBuffer) {
+        try { this._diagnosticsBuffer?.destroy(); } catch { /* continue cleanup */ }
+      }
+      this._diagnosticsBuffer = undefined;
+      this._ownsDiagnosticsBuffer = false;
     // Null the references (honest `GPUBuffer | undefined` types — no casts) so
+      this._forwardBindGroups.clear();
+      this._backwardBindGroups.clear();
+      this._gradFinalizeBindGroups.clear();
+      this._adamBindGroups.clear();
+      this._downcastBindGroups.clear();
+      this._trainableSets = undefined;
     // the GC can reclaim the wrappers; #assertUsable at every public-method
     // entry makes a stray post-dispose use fail loudly with a clear error.
     this.weights = this.biases = undefined;
@@ -374,8 +663,102 @@ export class FusedMlpTrainer {
   }
 
   /** Upload master weights/biases (f32) and downcast to the GPU forward buffers. */
+  prepareSceneReset(encoder: GPUCommandEncoder): {
+    commitCpu(): void;
+    rollback(): void;
+    finalize(): void;
+  } {
+    this.#assertUsable('prepareSceneReset');
+    const { w, b } = heInit(this);
+    const uploads: GPUBuffer[] = [];
+    const stage = (data: ArrayBufferView): GPUBuffer => {
+      const byteLength = Math.max(4, (data.byteLength + 3) & ~3);
+      const buffer = this.device.createBuffer({
+        label: 'nrc-reset-staging',
+        size: byteLength,
+        usage: GPUBufferUsage.COPY_SRC,
+        mappedAtCreation: true,
+      });
+      uploads.push(buffer);
+      new Uint8Array(buffer.getMappedRange()).set(
+        new Uint8Array(data.buffer, data.byteOffset, data.byteLength),
+      );
+      buffer.unmap();
+      return buffer;
+    };
+    try {
+      const wMaster = stage(w);
+      const bMaster = stage(b);
+      const wForwardData = this.cfg.useF16 ? padEvenU16(f32ToF16Bits(w)) : w;
+      const bForwardData = this.cfg.useF16 ? padEvenU16(f32ToF16Bits(b)) : b;
+      const wForward = stage(wForwardData);
+      const bForward = stage(bForwardData);
+      encoder.copyBufferToBuffer(wMaster, 0, this.wMasterGpu!, 0, w.byteLength);
+      encoder.copyBufferToBuffer(bMaster, 0, this.bMasterGpu!, 0, b.byteLength);
+      encoder.copyBufferToBuffer(wForward, 0, this.weights!, 0, wForwardData.byteLength);
+      encoder.copyBufferToBuffer(bForward, 0, this.biases!, 0, bForwardData.byteLength);
+      for (const buffer of [
+        this.inputs, this.targets, this.actsGlob, this.zGlob,
+        this.gradWfx, this.gradBfx, this.gradWf, this.gradBf,
+        this.gradInputFx, this.gradInputF,
+        this.mW, this.vW, this.mB, this.vB,
+      ]) {
+        encoder.clearBuffer(buffer!);
+      }
+    } catch (error) {
+      for (const buffer of uploads) {
+        try {
+          buffer.destroy();
+        } catch { /* continue releasing every staging buffer */ }
+      }
+      throw error;
+    }
+
+    const oldW = this.wMaster;
+    const oldB = this.bMaster;
+    const oldAdamT = this.adamT;
+    let committed = false;
+    let closed = false;
+    const destroyUploads = (): void => {
+      for (const buffer of uploads) {
+        try {
+          buffer.destroy();
+        } catch { /* cleanup is best effort and must not skip later buffers */ }
+      }
+    };
+    return {
+      commitCpu: () => {
+        if (closed || committed) return;
+        this.wMaster = w.slice();
+        this.bMaster = b.slice();
+        this.adamT = 0;
+        committed = true;
+      },
+      rollback: () => {
+        if (closed) return;
+        if (committed) {
+          this.wMaster = oldW;
+          this.bMaster = oldB;
+          this.adamT = oldAdamT;
+        }
+        closed = true;
+        destroyUploads();
+      },
+      finalize: () => {
+        if (closed) return;
+        closed = true;
+        destroyUploads();
+      },
+    };
+  }
+
   setWeights(w: Float32Array, b: Float32Array) {
     this.#assertUsable('setWeights');
+    if (w.length !== this.plan.totalW || b.length !== this.plan.totalB) {
+      throw new RangeError(`FusedMlpTrainer.setWeights expected ${this.plan.totalW} weights and ${this.plan.totalB} biases; got ${w.length} and ${b.length}`);
+    }
+    for (const value of w) if (!Number.isFinite(value)) throw new RangeError('FusedMlpTrainer weights must all be finite');
+    for (const value of b) if (!Number.isFinite(value)) throw new RangeError('FusedMlpTrainer biases must all be finite');
     this.wMaster = w.slice();
     this.bMaster = b.slice();
     this.pushWeightsToGpu();
@@ -383,10 +766,8 @@ export class FusedMlpTrainer {
 
   private pushWeightsToGpu() {
     const q = this.device.queue;
-    // f32 master (Adam operand) always gets the full-precision values.
     q.writeBuffer(this.wMasterGpu!, 0, this.wMaster as unknown as BufferSource);
     q.writeBuffer(this.bMasterGpu!, 0, this.bMaster as unknown as BufferSource);
-    // forward/backward operand buffers: downcast to f16 or copy f32.
     if (this.cfg.useF16) {
       q.writeBuffer(this.weights!, 0, padEvenU16(f32ToF16Bits(this.wMaster)) as unknown as BufferSource);
       q.writeBuffer(this.biases!, 0, padEvenU16(f32ToF16Bits(this.bMaster)) as unknown as BufferSource);
@@ -396,9 +777,16 @@ export class FusedMlpTrainer {
     }
   }
 
-  /** Upload a batch of inputs (raw inW) + f32 targets (outW). */
+  /** Upload one full-capacity batch; active rows are selected by recordTrainStep. */
   setBatch(x: Float32Array, y: Float32Array) {
     this.#assertUsable('setBatch');
+    const expectedX = this.numSamples * this.spec.inW;
+    const expectedY = this.numSamples * this.spec.outW;
+    if (x.length !== expectedX || y.length !== expectedY) {
+      throw new RangeError(`FusedMlpTrainer.setBatch expected ${expectedX} inputs and ${expectedY} targets; got ${x.length} and ${y.length}`);
+    }
+    for (const value of x) if (!Number.isFinite(value)) throw new RangeError('FusedMlpTrainer inputs must all be finite');
+    for (const value of y) if (!Number.isFinite(value)) throw new RangeError('FusedMlpTrainer targets must all be finite');
     const q = this.device.queue;
     if (this.cfg.useF16) {
       q.writeBuffer(this.inputs!, 0, padEvenU16(f32ToF16Bits(x)) as unknown as BufferSource);
@@ -432,20 +820,9 @@ export class FusedMlpTrainer {
    *  @internal — used by {@link FusedMlpTrainerProbe} (the FD/loss debug surface). */
   recordForward(enc: GPUCommandEncoder, activeSamples?: number) {
     this.#assertUsable('recordForward');
-    const d = this.device;
     const win = this.writeParamsHeader(activeSamples);
-    const ub = this.paramsUniform();
-    const bg = d.createBindGroup({
-      layout: this.pFwd.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: { buffer: this.weights! } },
-        { binding: 1, resource: { buffer: this.biases! } },
-        { binding: 2, resource: { buffer: this.inputs! } },
-        { binding: 3, resource: { buffer: this.actsGlob! } },
-        { binding: 4, resource: { buffer: this.zGlob! } },
-        { binding: 5, resource: { buffer: ub } },
-      ],
-    });
+    const bg = this._forwardBindGroups.get(this.weights!);
+    if (!bg) throw new Error('NRC MLP forward binding generation is unavailable');
     const pass = enc.beginComputePass();
     pass.setPipeline(this.pFwd); pass.setBindGroup(0, bg);
     if (win.tiles > 0) pass.dispatchWorkgroups(win.tiles);
@@ -456,22 +833,9 @@ export class FusedMlpTrainer {
    *  @internal — used by {@link FusedMlpTrainerProbe}. */
   recordBackward(enc: GPUCommandEncoder, activeSamples?: number) {
     this.#assertUsable('recordBackward');
-    const d = this.device;
     const win = this.writeParamsHeader(activeSamples);
-    const ub = this.paramsUniform();
-    const bg = d.createBindGroup({
-      layout: this.pBwd.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: { buffer: this.weights! } },
-        { binding: 1, resource: { buffer: this.targets! } },
-        { binding: 2, resource: { buffer: this.actsGlob! } },
-        { binding: 3, resource: { buffer: this.zGlob! } },
-        { binding: 4, resource: { buffer: this.gradWfx! } },
-        { binding: 5, resource: { buffer: this.gradBfx! } },
-        { binding: 6, resource: { buffer: ub } },
-        { binding: 7, resource: { buffer: this.gradInputFx! } },
-      ],
-    });
+    const bg = this._backwardBindGroups.get(this.weights!);
+    if (!bg) throw new Error('NRC MLP backward binding generation is unavailable');
     const pass = enc.beginComputePass();
     pass.setPipeline(this.pBwd); pass.setBindGroup(0, bg);
     if (win.tiles > 0) pass.dispatchWorkgroups(win.tiles);
@@ -479,82 +843,123 @@ export class FusedMlpTrainer {
   }
 
   /** @internal — used by {@link FusedMlpTrainerProbe} + trainStep. */
-  recordGradFinalize(enc: GPUCommandEncoder, fx: GPUBuffer, f: GPUBuffer, count: number, ubo: GPUBuffer) {
+  recordGradFinalize(enc: GPUCommandEncoder, _fx: GPUBuffer, _f: GPUBuffer, count: number, ubo: GPUBuffer) {
     this.#assertUsable('recordGradFinalize');
-    const d = this.device;
     const u = new Uint32Array(4);
     u[0] = count >>> 0;
-    d.queue.writeBuffer(ubo, 0, u);
-    const bg = d.createBindGroup({
-      layout: this.pGradFin.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: { buffer: fx } },
-        { binding: 1, resource: { buffer: f } },
-        { binding: 2, resource: { buffer: ubo } },
-      ],
-    });
+    this.device.queue.writeBuffer(ubo, 0, u);
+    const bg = this._gradFinalizeBindGroups.get(ubo);
+    if (!bg) throw new Error('NRC MLP grad-finalize binding is unavailable');
     const pass = enc.beginComputePass();
     pass.setPipeline(this.pGradFin); pass.setBindGroup(0, bg);
     pass.dispatchWorkgroups(Math.ceil(count / 64));
     pass.end();
   }
 
-  /** Full fused train step: forward, backward, finalize grads, Adam, push back.
-   *  Also finalizes dL/dX into {@link gradInputF} so the NRC encode-backward can
-   *  scatter it into the trainable hash-grid tables. The MLP-weight Adam runs
-   *  here; the host runs the TABLE Adam separately after the encode-backward. */
-  trainStep(lr: number, activeSamples?: number) {
-    this.#assertUsable('trainStep');
-    const win = this.activeWindow(activeSamples);
-    if (win.samples === 0) return;
-    const d = this.device;
-    const enc0 = d.createCommandEncoder();
-    enc0.clearBuffer(this.gradWfx!); enc0.clearBuffer(this.gradBfx!);
-    enc0.clearBuffer(this.gradInputFx!);
-    d.queue.submit([enc0.finish()]);
-
-    const enc = d.createCommandEncoder();
-    this.recordForward(enc, win.samples);
-    this.recordBackward(enc, win.samples);
-    this.recordGradFinalize(enc, this.gradWfx!, this.gradWf!, this.plan.totalW, this._gradFinUboW!);
-    this.recordGradFinalize(enc, this.gradBfx!, this.gradBf!, this.plan.totalB, this._gradFinUboB!);
-    this.recordGradFinalize(enc, this.gradInputFx!, this.gradInputF!, win.samples * this.spec.inW, this._gradFinUboX!);
-    d.queue.submit([enc.finish()]);
-
-    // Adam ALWAYS runs on the f32 MASTER weight/bias buffers (mixed precision);
-    // on the f16 path a downcast kernel then refreshes the f16 forward/backward
-    // operand buffers. This keeps optimizer state full-precision (tiny-cuda-nn
-    // recipe) and is fully on-GPU — no CPU round-trip in the step.
-    this.adamT++;
-    const bc1 = 1 - Math.pow(0.9, this.adamT);
-    const bc2 = 1 - Math.pow(0.999, this.adamT);
-
-    const enc2 = d.createCommandEncoder();
-    // Persistent Adam UBOs: count written once at build; bc1/bc2/lr rewritten per step.
-    this.recordAdam(enc2, this.wMasterGpu!, this.gradWf!, this.mW!, this.vW!, this.plan.totalW, lr, bc1, bc2, this._adamUboW!);
-    this.recordAdam(enc2, this.bMasterGpu!, this.gradBf!, this.mB!, this.vB!, this.plan.totalB, lr, bc1, bc2, this._adamUboB!);
-    if (this.cfg.useF16) {
-      this.recordDowncast(enc2, this.wMasterGpu!, this.weights!, this.plan.totalW, this._downcastUboW!);
-      this.recordDowncast(enc2, this.bMasterGpu!, this.biases!, this.plan.totalB, this._downcastUboB!);
-    } else {
-      // f32 path: master IS the operand; copy master back into the forward buffer.
-      enc2.copyBufferToBuffer(this.wMasterGpu!, 0, this.weights!, 0, this.plan.totalW * 4);
-      enc2.copyBufferToBuffer(this.bMasterGpu!, 0, this.biases!, 0, this.plan.totalB * 4);
+  /** Encode into isolated candidate parameters/moments; publication is explicit. */
+  recordTrainStep(enc: GPUCommandEncoder, lr: number, activeSamples?: number): FusedMlpTrainTransaction | null {
+    this.#assertUsable('recordTrainStep');
+    if (this._inFlightCandidate) throw new Error('FusedMlpTrainer already has an in-flight candidate');
+    if (!Number.isFinite(lr) || lr <= 0) {
+      throw new RangeError(`FusedMlpTrainer learning rate must be finite and positive; got ${lr}`);
     }
-    d.queue.submit([enc2.finish()]);
+    const win = this.activeWindow(activeSamples);
+    if (win.samples === 0) return null;
+    const old = this._liveTrainableSet();
+    const candidate = this._spareTrainableSet ?? this._allocateTrainableCandidate();
+    this._spareTrainableSet = undefined;
+    this._inFlightCandidate = candidate;
+    const previousAdamT = this.adamT;
+    const nextAdamT = previousAdamT + 1;
+    try {
+      enc.copyBufferToBuffer(old.wMasterGpu, 0, candidate.wMasterGpu, 0, this.plan.totalW * 4);
+      enc.copyBufferToBuffer(old.bMasterGpu, 0, candidate.bMasterGpu, 0, this.plan.totalB * 4);
+      enc.copyBufferToBuffer(old.mW, 0, candidate.mW, 0, this.plan.totalW * 4);
+      enc.copyBufferToBuffer(old.vW, 0, candidate.vW, 0, this.plan.totalW * 4);
+      enc.copyBufferToBuffer(old.mB, 0, candidate.mB, 0, this.plan.totalB * 4);
+      enc.copyBufferToBuffer(old.vB, 0, candidate.vB, 0, this.plan.totalB * 4);
+      enc.clearBuffer(this.gradWfx!);
+      enc.clearBuffer(this.gradBfx!);
+      enc.clearBuffer(this.gradInputFx!);
+      this.recordForward(enc, win.samples);
+      this.recordBackward(enc, win.samples);
+      this.recordGradFinalize(enc, this.gradWfx!, this.gradWf!, this.plan.totalW, this._gradFinUboW!);
+      this.recordGradFinalize(enc, this.gradBfx!, this.gradBf!, this.plan.totalB, this._gradFinUboB!);
+      this.recordGradFinalize(enc, this.gradInputFx!, this.gradInputF!, win.samples * this.spec.inW, this._gradFinUboX!);
+      const bc1 = 1 - Math.pow(0.9, nextAdamT);
+      const bc2 = 1 - Math.pow(0.999, nextAdamT);
+      this.recordAdam(enc, candidate.wMasterGpu, this.gradWf!, candidate.mW, candidate.vW, this.plan.totalW, lr, bc1, bc2, this._adamUboW!);
+      this.recordAdam(enc, candidate.bMasterGpu, this.gradBf!, candidate.mB, candidate.vB, this.plan.totalB, lr, bc1, bc2, this._adamUboB!);
+      if (this.cfg.useF16) {
+        this.recordDowncast(enc, candidate.wMasterGpu, candidate.weights, this.plan.totalW, this._downcastUboW!);
+        this.recordDowncast(enc, candidate.bMasterGpu, candidate.biases, this.plan.totalB, this._downcastUboB!);
+      } else {
+        enc.copyBufferToBuffer(candidate.wMasterGpu, 0, candidate.weights, 0, this.plan.totalW * 4);
+        enc.copyBufferToBuffer(candidate.bMasterGpu, 0, candidate.biases, 0, this.plan.totalB * 4);
+      }
+    } catch (error) {
+      this._spareTrainableSet = candidate;
+      this._inFlightCandidate = undefined;
+      throw error;
+    }
+
+    let committed = false;
+    let closed = false;
+    return {
+      candidateWeightBuffer: candidate.wMasterGpu,
+      candidateBiasBuffer: candidate.bMasterGpu,
+      commitCpu: () => {
+        if (closed || committed) return;
+        this._publishTrainableSet(candidate);
+        this.adamT = nextAdamT;
+        this._inFlightCandidate = undefined;
+        committed = true;
+      },
+      rollback: () => {
+        if (closed) return;
+        if (committed) {
+          this._publishTrainableSet(old);
+          this.adamT = previousAdamT;
+        }
+        this._spareTrainableSet = candidate;
+        if (this._inFlightCandidate === candidate) this._inFlightCandidate = undefined;
+        closed = true;
+      },
+      finalizeSuccess: () => {
+        if (closed) return;
+        if (!committed) throw new Error('Cannot finalize an unpublished NRC MLP candidate');
+        this._spareTrainableSet = old;
+        closed = true;
+      },
+    };
+  }
+
+  /** Compatibility wrapper: one command buffer and one queue submission. */
+  trainStep(lr: number, activeSamples?: number): void {
+    this.#assertUsable('trainStep');
+    const enc = this.device.createCommandEncoder({ label: 'nrc-mlp-train-step' });
+    const transaction = this.recordTrainStep(enc, lr, activeSamples);
+    if (!transaction) return;
+    try {
+      this.device.queue.submit([enc.finish()]);
+      transaction.commitCpu();
+      transaction.finalizeSuccess();
+    } catch (error) {
+      transaction.rollback();
+      throw error;
+    }
   }
 
   // Uses a pre-allocated persistent UBO (count is constant after build — written once).
-  private recordDowncast(enc: GPUCommandEncoder, src: GPUBuffer, dst: GPUBuffer, count: number, ubo: GPUBuffer) {
-    const d = this.device;
-    const bg = d.createBindGroup({
-      layout: this.pDowncast!.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: { buffer: src } },
-        { binding: 1, resource: { buffer: dst } },
-        { binding: 2, resource: { buffer: ubo } },
-      ],
-    });
+  private recordDowncast(
+    enc: GPUCommandEncoder,
+    src: GPUBuffer,
+    _dst: GPUBuffer,
+    count: number,
+    _ubo: GPUBuffer,
+  ) {
+    const bg = this._downcastBindGroups.get(src);
+    if (!bg) throw new Error('NRC MLP downcast binding generation is unavailable');
     const pass = enc.beginComputePass();
     pass.setPipeline(this.pDowncast!); pass.setBindGroup(0, bg);
     pass.dispatchWorkgroups(Math.ceil(count / 64));
@@ -563,21 +968,21 @@ export class FusedMlpTrainer {
 
   // Uses a pre-allocated persistent UBO. count is constant per slot; bc1/bc2/lr
   // are rewritten into the same buffer each step (no buffer allocation per step).
-  private recordAdam(enc: GPUCommandEncoder, params: GPUBuffer, grads: GPUBuffer,
-    m: GPUBuffer, v: GPUBuffer, count: number, lr: number, bc1: number, bc2: number,
-    ubo: GPUBuffer) {
-    const d = this.device;
-    d.queue.writeBuffer(ubo, 0, packAdamUbo(count, lr, bc1, bc2));
-    const bg = d.createBindGroup({
-      layout: this.pAdam.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: { buffer: params } },
-        { binding: 1, resource: { buffer: grads } },
-        { binding: 2, resource: { buffer: m } },
-        { binding: 3, resource: { buffer: v } },
-        { binding: 4, resource: { buffer: ubo } },
-      ],
-    });
+  private recordAdam(
+    enc: GPUCommandEncoder,
+    params: GPUBuffer,
+    _grads: GPUBuffer,
+    _m: GPUBuffer,
+    _v: GPUBuffer,
+    count: number,
+    lr: number,
+    bc1: number,
+    bc2: number,
+    ubo: GPUBuffer,
+  ) {
+    this.device.queue.writeBuffer(ubo, 0, packAdamUbo(count, lr, bc1, bc2));
+    const bg = this._adamBindGroups.get(params);
+    if (!bg) throw new Error('NRC MLP Adam binding generation is unavailable');
     const pass = enc.beginComputePass();
     pass.setPipeline(this.pAdam); pass.setBindGroup(0, bg);
     pass.dispatchWorkgroups(Math.ceil(count / 64));

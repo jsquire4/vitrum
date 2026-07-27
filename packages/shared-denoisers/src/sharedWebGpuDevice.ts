@@ -151,14 +151,12 @@ export interface AcquiredDenoiseDevice {
 export async function acquireDenoiseDevice(
   opts: AcquireDenoiseDeviceOptions,
 ): Promise<AcquiredDenoiseDevice> {
-  const reuseShared = opts.reuseSharedWebGpuDevice === true && opts.device == null;
-
-  if (typeof navigator === 'undefined' || navigator.gpu == null) {
-    throw new Error(`${opts.errorLabel}: WebGPU not available`);
-  }
-
   if (opts.device != null) {
     return { device: opts.device, dispose: () => {} };
+  }
+  const reuseShared = opts.reuseSharedWebGpuDevice === true;
+  if (typeof navigator === 'undefined' || navigator.gpu == null) {
+    throw new Error(`${opts.errorLabel}: WebGPU not available`);
   }
   if (reuseShared) {
     return { device: await getSharedWebGPUDevice(), dispose: () => {} };
@@ -168,5 +166,14 @@ export async function acquireDenoiseDevice(
     throw new Error(`${opts.errorLabel}: failed to request GPU adapter`);
   }
   const device = await adapter.requestDevice();
-  return { device, dispose: () => { device.destroy(); } };
+  return {
+    device,
+    dispose: () => {
+      try {
+        device.destroy();
+      } catch {
+        // Teardown is best-effort and must not mask the dispatch result/error.
+      }
+    },
+  };
 }

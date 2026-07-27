@@ -31,6 +31,10 @@
   },
   "scripts": {
     "test": "vitest run --config vitest.config.ts",
+    "test:node": "vitest run --config vitest.config.ts",
+    "test:gpu": "vitest run --config vitest.gpu.config.ts",
+    "test:f16": "deno run --unstable-webgpu ../../tools/gpu-env/probe-deno-neural-f16.ts",
+    "test:all": "vitest run --config vitest.config.ts && vitest run --config vitest.gpu.config.ts && npm run test:f16",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src --ext .ts,.tsx"
   },
@@ -43,6 +47,8 @@
   },
   "devDependencies": {
     "@vitrum/stained-glass-extensions": "file:../stained-glass-extensions",
+    "@vitest/browser": "^1.6.1",
+    "playwright": "^1.59.1",
     "typescript": "^5.5.0",
     "vitest": "^1.6.1"
   }

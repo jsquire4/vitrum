@@ -304,15 +304,23 @@ describe('refitBvhBounds', () => {
   });
 
   it('(f) empty BVH (zero nodes) returns without error', () => {
-    // The zero-triangle empty node from buildArrayBvh has totalNodes=1 but
-    // slot7=0 (NOT a leaf flag) since the empty node is zero-filled.
-    // refitBvhBounds itself guards `if (totalNodes === 0) return`.
-    // This test exercises the guard by passing a zero-length buffer.
+    // refitBvhBounds guards `if (totalNodes === 0) return`.
     const emptyBvhNodes = new Float32Array(0);
     const emptyIndices = new Uint32Array(0);
     const emptyPos = new Float32Array(0);
-    // Must not throw.
     expect(() => refitBvhBounds(emptyBvhNodes, emptyIndices, emptyPos, 3)).not.toThrow();
+  });
+
+  it('(f2) canonical zero-count leaf remains finite and valid after refit', () => {
+    const built = buildArrayBvh(
+      new Float32Array(0), new Uint32Array(0), new Uint32Array(0),
+      { positionStride: 3, indexStride: 3 },
+    );
+    refitBvhBounds(built.bvhNodes, built.reorderedIndices, new Float32Array(0), 3);
+    const u32 = new Uint32Array(built.bvhNodes.buffer);
+    expect(u32[6]).toBe(0);
+    expect(u32[7]).toBe(0xffff0000);
+    expect(Array.from(built.bvhNodes.slice(0, 6))).toEqual([0, 0, 0, 0, 0, 0]);
   });
 
   it('(g) stride-4 positions: refitBvhBounds reads xyz and ignores w', () => {
@@ -342,7 +350,7 @@ describe('refitBvhBounds', () => {
     newPos[3 * 4 + 1] = 10; newPos[4 * 4 + 1] = 10; newPos[5 * 4 + 1] = 10;
     newPos[3 * 4 + 2] = 10; newPos[4 * 4 + 2] = 10; newPos[5 * 4 + 2] = 10;
 
-    expect(() => refitBvhBounds(bvhNodes, reorderedIndices, newPos, 4)).not.toThrow();
+    expect(() => refitBvhBounds(bvhNodes, reorderedIndices, newPos, 4, 4)).not.toThrow();
 
     // Root AABB must bound both clusters: [0,1]³ and [10]³.
     const rootAabb = readNodeAabb(bvhNodes, 0);
@@ -358,5 +366,41 @@ describe('refitBvhBounds', () => {
     expect(rootAabb.maxY).toBeLessThanOrEqual(11);
     expect(rootAabb.maxZ).toBeLessThanOrEqual(11);
   });
+  it('(h) rejects corrupt topology/geometry before mutating any node bounds', () => {
+    const positions = new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]);
+    const indices = new Uint32Array([0, 1, 2]);
+    const built = buildArrayBvh(positions, indices, new Uint32Array([0]), {
+      positionStride: 3, indexStride: 3,
+    });
+    const assertUnchanged = (
+      nodes: Float32Array, badIndices: Uint32Array, badPositions: Float32Array, pattern: RegExp,
+    ): void => {
+      const before = nodes.slice();
+      expect(() => refitBvhBounds(nodes, badIndices, badPositions, 3)).toThrow(pattern);
+      expect(Array.from(nodes)).toEqual(Array.from(before));
+    };
+
+    const badRange = built.bvhNodes.slice();
+    new Uint32Array(badRange.buffer)[6] = 1;
+    assertUnchanged(badRange, indices, positions, /triangle range is corrupt/);
+
+    assertUnchanged(built.bvhNodes.slice(), new Uint32Array([0, 1, 99]), positions, /invalid vertex/);
+    const nonFinite = positions.slice();
+    nonFinite[0] = Number.NaN;
+    assertUnchanged(built.bvhNodes.slice(), indices, nonFinite, /non-finite/);
+
+    const { positions: boxPositions, triangles } = makeBox(-1, 1, -1, 1, -1, 1);
+    const box = buildTestBvh(boxPositions, triangles);
+    const corruptTopology = box.bvhNodes.slice();
+    const words = new Uint32Array(corruptTopology.buffer);
+    words[6] = corruptTopology.length / 8;
+    assertUnchanged(corruptTopology, box.reorderedIndices, box.positions, /interior node 0 is corrupt/);
+
+    const malformedNodes = new Float32Array(7);
+    const beforeMalformed = malformedNodes.slice();
+    expect(() => refitBvhBounds(malformedNodes, indices, positions, 3)).toThrow(/node-stride-aligned/);
+    expect(Array.from(malformedNodes)).toEqual(Array.from(beforeMalformed));
+  });
+
 
 });

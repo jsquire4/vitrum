@@ -12,7 +12,12 @@ export type GltfParseFailureReason =
   | 'glb-invalid-magic'
   | 'glb-unsupported-version'
   | 'glb-declared-length-exceeds-buffer'
+  | 'glb-declared-length-mismatch'
   | 'glb-chunk-out-of-bounds'
+  | 'glb-invalid-chunk-order'
+  | 'glb-duplicate-chunk'
+  | 'glb-invalid-chunk-alignment'
+  | 'glb-trailing-bytes'
   | 'glb-json-parse-failed'
   | 'glb-json-missing';
 

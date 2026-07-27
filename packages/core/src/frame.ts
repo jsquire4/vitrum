@@ -66,7 +66,13 @@ export interface FrameInput {
   // ── Camera (column-major matrices, three.js convention) ────────────────
   readonly viewMatrix: Mat4;
   readonly projMatrix: Mat4;
-  readonly cameraPosition: Vec3;
+  /**
+   * @deprecated The camera position is derived canonically from
+   * `inverse(viewMatrix)`. When supplied for source compatibility, every
+   * backend must reject a meaningful disagreement with that derived value.
+   * Omit this field in new integrations.
+   */
+  readonly cameraPosition?: Vec3;
 
   /** Previous-frame matrices for temporal accumulation, reprojection, and
    *  motion-vector computation. Hosts that don't track these can pass the
@@ -78,33 +84,17 @@ export interface FrameInput {
   /**
    * Per-frame viewport (physical pixel dimensions + DPR).
    *
-   * **Engine-honour contract (A4):**
-   * - Generic PT engines (e.g. `@vitrum/pt-webgl2`) honour `viewport.width`
-   *   and `viewport.height` every frame; passing different values triggers
-   *   an internal render-target resize transparently.
-   * - **`HybridEngine` (`@vitrum/walkaround-hybrid`) does NOT honour
-   *   `viewport`.** Its WebGPU render targets (DDGI atlas, ReSTIR reservoirs,
-   *   history textures, accumulation buffer) are sized to the *canvas* at
-   *   construction via `HybridEngineOptions.{width,height}` and the canvas
-   *   size can only be changed explicitly via `HybridEngine.setSize(width,
-   *   height)`. Pushing a new `FrameInput.viewport` is silently ignored —
-   *   there is no per-frame canvas-resize-detection branch in
-   *   `HybridEngine.renderFrame`.
+   * Every shipped rendering backend honours `viewport.width` and
+   * `viewport.height` on each `renderFrame` call. Changed physical dimensions
+   * transparently resize persistent targets before rendering. Backends with an
+   * explicit `setSize(width, height)` method expose the same operation as an
+   * eager host hook; calling it is optional when the next frame carries the
+   * correct viewport.
    *
-   *   **However, `FrameInput.quality.resolutionFactor` IS honoured per-frame
-   *   by HybridEngine** (Phase-0 productization): it scales the *internal*
-   *   render resolution (= canvas × factor) and the composite pass upscales
-   *   to the full canvas. The internal reallocation is debounced so a host
-   *   ramping the factor continuously does not thrash the temporal
-   *   accumulator. So: changing the *canvas* size still requires `setSize`;
-   *   changing only the internal-resolution scale is per-frame via
-   *   `quality.resolutionFactor`.
-   *
-   * Hosts driving `HybridEngine` directly MUST call `engine.setSize()`
-   * when their canvas dimensions change. Hosts using `attachVitrum()`
-   * get this for free: its `ResizeObserver` duck-types `engine.setSize`
-   * and calls it when the underlying engine exposes the method (i.e.
-   * when the backend is walkaround-hybrid).
+   * `FrameInput.quality.resolutionFactor` remains independent: viewport controls
+   * physical output dimensions, while the factor controls internal working
+   * resolution. `attachVitrum()` calls `setSize` from its `ResizeObserver` when
+   * available so allocation can complete before the next frame.
    */
   readonly viewport: Viewport;
 
@@ -140,6 +130,195 @@ export interface FrameInput {
   /** Backend-opaque swap-chain format. WebGPU backends expect a
    *  `GPUTextureFormat` string literal; WebGL backends ignore. */
   readonly swapChainFormat?: BackendTextureFormat;
+}
+
+/** A frame whose redundant camera-position input has been resolved. */
+export type CanonicalCameraFrameInput = FrameInput & {
+  readonly cameraPosition: Vec3;
+};
+
+/**
+ * Absolute component tolerance used when checking a legacy
+ * `FrameInput.cameraPosition` against the position derived from `viewMatrix`.
+ */
+export const CAMERA_POSITION_ABSOLUTE_TOLERANCE = 1e-5;
+
+/**
+ * Relative component tolerance for legacy camera-position checks: eight f32
+ * epsilons, enough to cover a Float32 matrix paired with a host's f64 position
+ * at large world coordinates without accepting a materially different eye.
+ */
+export const CAMERA_POSITION_RELATIVE_TOLERANCE =
+  8 * 1.1920928955078125e-7;
+
+function finiteMatrixElement(
+  matrix: ArrayLike<number>,
+  index: number,
+  label: string,
+): number {
+  const value = matrix[index];
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    throw new RangeError(
+      `${label}[${index}] must be finite (got ${String(value)}).`,
+    );
+  }
+  return value;
+}
+
+/** Collapse IEEE -0 so canonical camera payloads have one stable zero encoding. */
+function canonicalCameraComponent(value: number): number {
+  return value === 0 ? 0 : value;
+}
+
+/**
+ * Derive the world-space eye position from a column-major camera view matrix.
+ *
+ * A camera view is affine: its upper-left 3×3 maps world-space directions into
+ * view space and its fourth column is translation. Solving `A·eye + t = 0`
+ * yields the translation column of `inverse(viewMatrix)` without coupling core
+ * to a renderer package or allocating a full inverse matrix.
+ *
+ * @throws when the matrix is malformed, non-finite, or has a singular 3×3
+ * camera transform.
+ */
+export function deriveCameraPositionFromViewMatrix(
+  viewMatrix: ArrayLike<number>,
+  label = 'FrameInput.viewMatrix',
+): Vec3 {
+  if (viewMatrix.length !== 16) {
+    throw new RangeError(
+      `${label} must contain exactly 16 values (got ${viewMatrix.length}).`,
+    );
+  }
+  const m = Array.from(
+    { length: 16 },
+    (_, index) => finiteMatrixElement(viewMatrix, index, label),
+  );
+  // The homogeneous scale is fixed by m[15] = 1. Translation can be
+  // arbitrarily large, but it cannot introduce round-off into the structurally
+  // zero projective row, so it must not relax this affine-shape check.
+  const affineTolerance = CAMERA_POSITION_RELATIVE_TOLERANCE;
+  if (
+    Math.abs(m[3]!) > affineTolerance ||
+    Math.abs(m[7]!) > affineTolerance ||
+    Math.abs(m[11]!) > affineTolerance ||
+    Math.abs(m[15]! - 1) > affineTolerance
+  ) {
+    throw new RangeError(
+      `${label} must be an affine camera view matrix with last row [0, 0, 0, 1].`,
+    );
+  }
+
+  // Column-major upper-left 3×3 and translation column.
+  const a00 = m[0]!, a01 = m[4]!, a02 = m[8]!;
+  const a10 = m[1]!, a11 = m[5]!, a12 = m[9]!;
+  const a20 = m[2]!, a21 = m[6]!, a22 = m[10]!;
+  const tx = m[12]!, ty = m[13]!, tz = m[14]!;
+
+  const c00 = a11 * a22 - a12 * a21;
+  const c01 = a02 * a21 - a01 * a22;
+  const c02 = a01 * a12 - a02 * a11;
+  const c10 = a12 * a20 - a10 * a22;
+  const c11 = a00 * a22 - a02 * a20;
+  const c12 = a02 * a10 - a00 * a12;
+  const c20 = a10 * a21 - a11 * a20;
+  const c21 = a01 * a20 - a00 * a21;
+  const c22 = a00 * a11 - a01 * a10;
+  const determinant = a00 * c00 + a01 * c10 + a02 * c20;
+  const matrixScale = Math.max(
+    Math.abs(a00), Math.abs(a01), Math.abs(a02),
+    Math.abs(a10), Math.abs(a11), Math.abs(a12),
+    Math.abs(a20), Math.abs(a21), Math.abs(a22),
+  );
+  const determinantFloor = Math.max(
+    Number.MIN_VALUE,
+    matrixScale ** 3 * 32 * 1.1920928955078125e-7,
+  );
+  if (
+    !Number.isFinite(determinant) ||
+    Math.abs(determinant) <= determinantFloor
+  ) {
+    throw new RangeError(
+      `${label} has a singular camera transform and cannot define an eye position.`,
+    );
+  }
+
+  const inverseDeterminant = 1 / determinant;
+  const eye: Vec3 = [
+    canonicalCameraComponent(
+      -(c00 * tx + c01 * ty + c02 * tz) * inverseDeterminant,
+    ),
+    canonicalCameraComponent(
+      -(c10 * tx + c11 * ty + c12 * tz) * inverseDeterminant,
+    ),
+    canonicalCameraComponent(
+      -(c20 * tx + c21 * ty + c22 * tz) * inverseDeterminant,
+    ),
+  ];
+  if (!eye.every(Number.isFinite)) {
+    throw new RangeError(
+      `${label} derives a non-finite camera position.`,
+    );
+  }
+  return eye;
+}
+
+/**
+ * Return the canonical eye position for a frame and validate the deprecated
+ * redundant host value when present.
+ */
+export function resolveFrameCameraPosition(
+  input: Pick<FrameInput, 'viewMatrix' | 'cameraPosition'>,
+  label = 'FrameInput',
+): Vec3 {
+  const derived = deriveCameraPositionFromViewMatrix(
+    input.viewMatrix,
+    `${label}.viewMatrix`,
+  );
+  const provided = input.cameraPosition;
+  if (provided === undefined) return derived;
+  const providedLength = (provided as ArrayLike<number>).length;
+  if (providedLength !== 3) {
+    throw new RangeError(
+      `${label}.cameraPosition must contain exactly 3 values (got ${providedLength}).`,
+    );
+  }
+  for (let component = 0; component < 3; component += 1) {
+    const actual = provided[component]!;
+    if (typeof actual !== 'number' || !Number.isFinite(actual)) {
+      throw new RangeError(
+        `${label}.cameraPosition[${component}] must be finite (got ${String(actual)}).`,
+      );
+    }
+    const expected = derived[component]!;
+    const tolerance = Math.max(
+      CAMERA_POSITION_ABSOLUTE_TOLERANCE,
+      CAMERA_POSITION_RELATIVE_TOLERANCE *
+        Math.max(1, Math.abs(actual), Math.abs(expected)),
+    );
+    if (Math.abs(actual - expected) > tolerance) {
+      throw new RangeError(
+        `${label}.cameraPosition disagrees with inverse(viewMatrix) at component ` +
+          `${component}: provided ${actual}, derived ${expected}, tolerance ${tolerance}. ` +
+          'Projection jitter and off-axis projection do not change the camera origin.',
+      );
+    }
+  }
+  return derived;
+}
+
+/**
+ * Normalize a public frame payload to the canonical camera position while
+ * preserving every other host-owned field.
+ */
+export function canonicalizeFrameCamera(
+  input: FrameInput,
+  label = 'FrameInput',
+): CanonicalCameraFrameInput {
+  return {
+    ...input,
+    cameraPosition: resolveFrameCameraPosition(input, label),
+  };
 }
 
 export interface Viewport {
@@ -184,8 +363,18 @@ export interface FrameRendered extends FrameOutputBase {
   readonly primaryRadiance: BackendTexture;
 
   // ── Optional G-buffer ──────────────────────────────────────────────────
-  /** Encoded normal + linear depth. RGBA16F: xyz = world-space normal,
-   *  w = linear-depth (camera-space, always positive). */
+  /**
+   * Most-recent primary-hit normal + depth auxiliary.
+   *
+   * Float-RGBA precision is backend-defined. xyz stores a world-space unit
+   * normal affine-encoded to [0,1] as `normal * 0.5 + 0.5`; decode with
+   * `encoded * 2 - 1`. `abs(w)` stores linear distance from the primary camera
+   * ray origin to its first accepted hit, in scene units; alpha-test
+   * pass-through surfaces are not hits. 0 denotes no primary hit.
+   * Backends may reserve the sign of w for surface classification, so consumers
+   * needing geometric depth must use `abs(w)`. The conventional no-hit value
+   * is `(0.5, 1.0, 0.5, 0.0)` (encoded world-up plus zero depth).
+   */
   readonly normalDepth?: BackendTexture;
 
   /** Demodulated albedo (base color × occlusion, no lighting). Used by OIDN

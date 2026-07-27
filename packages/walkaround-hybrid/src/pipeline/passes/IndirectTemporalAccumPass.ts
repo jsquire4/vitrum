@@ -24,6 +24,7 @@ import type { PassLabel } from '../timestampQueries.js';
 import { dispatchSingleBindGroup } from './dispatchHelpers.js';
 import { cachedBindGroup } from '../PipelineResourceCache.js';
 import type { PingPongRef } from './passRefs.js';
+import { publishFrameState } from '../FramePublication.js';
 
 export class IndirectTemporalAccumPass implements Pass {
   readonly id = 'indirect-temporal-accum' as const;
@@ -84,8 +85,13 @@ export class IndirectTemporalAccumPass implements Pass {
 
     // Publish the output handle for the downstream atrous chain.
     frameState.indirectAccumOut = indirectAccumOut;
-    // Flip the ping-pong AFTER the dispatch — mirrors the legacy ordering.
-    this._pingPongRef.value = 1 - this._pingPongRef.value;
+    // The encoded target is valid history only after the frame submit is
+    // accepted. Standalone pass harnesses (no publication transaction) retain
+    // the historical immediate flip.
+    const nextPingPong = 1 - this._pingPongRef.value;
+    publishFrameState(ctx.publication, () => {
+      this._pingPongRef.value = nextPingPong;
+    });
   }
 
   dispose(): void {}

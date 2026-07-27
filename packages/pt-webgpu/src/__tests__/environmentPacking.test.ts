@@ -138,7 +138,7 @@ describe('environmentPacking — all-black HDRI message', () => {
     expect(p.warnings.some((w) => w.includes('procedural sky model'))).toBe(false);
   });
 
-  it('emits the "lacks CPU pixel data" warning only when data is genuinely absent', () => {
+  it('rejects an absent CPU payload instead of silently substituting black', () => {
     const scene: Scene = {
       primitives: [],
       emitters: [],
@@ -147,10 +147,58 @@ describe('environmentPacking — all-black HDRI message', () => {
         hdri: {} as unknown as Scene['environment'] & object,
       },
     };
-    const p = environmentParams(scene);
-    expect(p.hasHdri).toBe(false);
-    expect(p.warnings.some((w) => w.includes('lacks CPU pixel data'))).toBe(true);
-    expect(p.warnings.some((w) => w.includes('procedural sky model'))).toBe(false);
+    expect(() => environmentParams(scene)).toThrow(/dimensions must be positive safe integers/);
+  });
+});
+
+describe('environmentPacking — strict malformed-input rejection', () => {
+  it('rejects non-exact channel layouts', () => {
+    expect(() => environmentParams(makeHdriScene(new Float32Array(5), 1, 1))).toThrow(
+      /channel count must be exactly/,
+    );
+    const wrongLength = makeHdriScene(new Float32Array(3), 1, 1);
+    const env = wrongLength.environment;
+    if (env.kind !== 'hdri') throw new Error('test fixture must be HDRI');
+    (env.hdri as { channels?: number }).channels = 4;
+    expect(() => environmentParams(wrongLength)).toThrow(/data length must be exactly 4/);
+  });
+
+  it('rejects unsafe dimensions before decoding or allocating', () => {
+    const data = { length: Number.MAX_SAFE_INTEGER } as ArrayLike<number>;
+    expect(() => environmentParams(makeHdriScene(data, Number.MAX_SAFE_INTEGER, 2))).toThrow(
+      /pixel count exceeds safe integer range/,
+    );
+  });
+
+  it('rejects payloads whose decoded/CDF peak exceeds the host budget', () => {
+    const width = 13_000_000;
+    const data = { length: width * 3 } as ArrayLike<number>;
+    expect(() => environmentParams(makeHdriScene(data, width, 1))).toThrow(/packing peak .* exceeds/);
+  });
+
+  it.each([NaN, Infinity, -1])('rejects invalid HDRI intensity %s even for an all-black map', (intensity) => {
+    const scene = makeHdriScene(new Float32Array(3), 1, 1);
+    const env = scene.environment;
+    if (env.kind !== 'hdri') throw new Error('test fixture must be HDRI');
+    (env as { intensity?: number }).intensity = intensity;
+    expect(() => environmentParams(scene)).toThrow(/HDRI intensity must be finite and non-negative/);
+  });
+
+  it.each([NaN, Infinity, -Infinity])('rejects invalid HDRI rotation %s even for an all-black map', (rotationY) => {
+    const scene = makeHdriScene(new Float32Array(3), 1, 1);
+    const env = scene.environment;
+    if (env.kind !== 'hdri') throw new Error('test fixture must be HDRI');
+    (env as { rotationY?: number }).rotationY = rotationY;
+    expect(() => environmentParams(scene)).toThrow(/HDRI rotationY must be finite/);
+  });
+
+  it('rejects negative and non-Float32-representable radiance', () => {
+    expect(() => environmentParams(makeHdriScene(new Float64Array([-1, 0, 0]), 1, 1))).toThrow(
+      /finite, non-negative Float32-representable radiance/,
+    );
+    expect(() => environmentParams(makeHdriScene(new Float64Array([Number.MAX_VALUE, 0, 0]), 1, 1))).toThrow(
+      /malformed|non-finite|unsupported|Float32-representable radiance/,
+    );
   });
 });
 

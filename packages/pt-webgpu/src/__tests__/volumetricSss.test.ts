@@ -38,6 +38,7 @@ import {
   DIRECTIONAL_LIGHT_FLOAT_STRIDE,
   packEmitterArrays,
 } from '../scene/emitterPacking.js';
+import { spectralEmissionAtHeroOracle } from './spectralScalarOracle.js';
 
 // ---------------------------------------------------------------------------
 // CPU mirrors of the WGSL volumetric math (identical formulas).
@@ -47,8 +48,16 @@ const INV_4PI = 1.0 / (4.0 * Math.PI);
 
 /** HG phase function p(cosθ; g). Henyey-Greenstein 1941. */
 function hgPhase(cosTheta: number, g: number): number {
-  const denom = 1.0 + g * g - 2.0 * g * cosTheta;
-  return (INV_4PI * (1.0 - g * g)) / Math.max(Math.pow(denom, 1.5), 1e-9);
+  const safeG = Math.max(-0.999999, Math.min(0.999999, g));
+  const a = Math.abs(safeG);
+  const clampedCos = Math.max(-1, Math.min(1, cosTheta));
+  const alignedCos = safeG >= 0 ? clampedCos : -clampedCos;
+  const oneMinusA = 1 - a;
+  const denom = oneMinusA * oneMinusA + 2 * a * (1 - alignedCos);
+  return (
+    (INV_4PI * oneMinusA * (1 + a)) /
+    (denom * Math.sqrt(denom))
+  );
 }
 
 function normalize3(v: readonly [number, number, number]): readonly [number, number, number] {
@@ -102,18 +111,34 @@ function directionalMediumNeeScene(): Scene {
  * HG importance sample: given a uniform u1, return cosθ of the scattered
  * direction relative to the RAY-TRAVEL direction (PBR4e §11.3 eq. 11.7).
  *
- * The PBRT closed form returns cosθ measured against wo = -travel, so its mean
- * is -g; we negate so that cosθ is measured against the travel direction and
- * its mean is +g (forward scatter for g>0). This matches the WGSL sampler,
- * which builds the ONB around the travel direction `wIn` and uses cosθ directly.
+ * The implementation evaluates algebraically equivalent factored/rational
+ * forms on either side of |g|=0.125. Both preserve the exact distribution while
+ * avoiding cancellation at g≈0 and |g|≈1. The sign symmetry measures cosθ
+ * against travel direction, with mean +g (forward scatter for g>0).
  */
 function hgSampleCosTheta(g: number, u1: number): number {
-  if (Math.abs(g) < 1e-3) {
-    return 1.0 - 2.0 * u1; // isotropic
+  const safeG = Math.max(-0.999999, Math.min(0.999999, g));
+  const a = Math.abs(safeG);
+  const q = 1 - 2 * u1;
+  let alignedCos: number;
+  if (a < 0.125) {
+    const d = 1 + a * q;
+    const numerator =
+      2 * q +
+      a * (q * q + 3) +
+      2 * a * a * q +
+      a * a * a * (q * q - 1);
+    alignedCos = numerator / (2 * d * d);
+  } else {
+    const oneMinusA = 1 - a;
+    const ratio =
+      (oneMinusA * (1 + a)) / (oneMinusA + 2 * a * (1 - u1));
+    alignedCos = (1 + a * a - ratio * ratio) / (2 * a);
   }
-  const sq = (1.0 - g * g) / (1.0 + g - 2.0 * g * u1);
-  const cosThetaWo = -(1.0 + g * g - sq * sq) / (2.0 * g);
-  return -cosThetaWo; // relative to travel direction; mean = +g
+  return Math.max(
+    -1,
+    Math.min(1, safeG >= 0 ? alignedCos : -alignedCos),
+  );
 }
 
 /** Free-flight distance: t = -ln(1-ξ)/σ_t (exponential transmittance CDF inversion). */
@@ -243,15 +268,23 @@ describe('Volumetric in-medium directional NEE WGSL guard', () => {
     expect(withoutDarkDirectional[2]).toBeCloseTo(radiance[2], 12);
   });
 
-  it('uses packed N-directional RGB records instead of the legacy scalar lightDir mirror', () => {
-    expect(PT_WEBGPU_TRACE_WGSL).toContain('for (var medDi = 0u; medDi < params.directionalLightCount; medDi = medDi + 1u)');
-    expect(PT_WEBGPU_TRACE_WGSL).toContain('let dDirAD = directionalLights[dBase];');
-    expect(PT_WEBGPU_TRACE_WGSL).toContain('let dIrrMean = directionalLights[dBase + 1u];');
-    expect(PT_WEBGPU_TRACE_WGSL).toContain('let angDiamRaw = dDirAD.w;');
-    expect(PT_WEBGPU_TRACE_WGSL).toContain('let angDiam = select(angDiamRaw, -1.0 - angDiamRaw, dirShadowDisabled);');
-    expect(PT_WEBGPU_TRACE_WGSL).toContain('let lightDir = sampleDirectionalCone(&rng, dDirAD.xyz, angDiam);');
-    expect(PT_WEBGPU_TRACE_WGSL).toContain('radiance = radiance + throughputInMedium * dIrrMean.rgb * phaseVal;');
-    expect(PT_WEBGPU_TRACE_WGSL).not.toContain('radiance = radiance + throughputInMedium * vec3f(params.lightDir.w) * phaseVal;');
+  it('evaluates packed N-directional irradiance in the scalar hero domain', () => {
+    const blueIrradiance: [number, number, number] = [0.1, 0.2, 1];
+    const shortWave = spectralEmissionAtHeroOracle(blueIrradiance, 440);
+    const longWave = spectralEmissionAtHeroOracle(blueIrradiance, 650);
+    expect(shortWave).toBeGreaterThan(longWave);
+    expect(shortWave).toBeGreaterThan(0);
+
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('fn sampleMediumEmitter(');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain(
+      'for (var di = 0u; di < params.directionalLightCount; di = di + 1u)',
+    );
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('directionalLights[base + 1u]');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain(
+      'spectralEmissionAtHero(light.radiance, heroLambda)',
+    );
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('mediumNeeForEmitter(');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('mediumPhaseEmitterConnection(');
   });
 });
 
@@ -457,46 +490,48 @@ describe('volume thickness packing and attenuation-distance clamp', () => {
   });
 });
 
-describe('Structural compile-time gate: SSS off when BDPT enabled', () => {
-  const sssOn = composePtWebgpuTraceWgsl(false); // bdpt off → volumetric walk present
-  const sssOff = composePtWebgpuTraceWgsl(true); // bdpt on  → volumetric walk gated out
+describe('Structural symmetric-medium composition with BDPT', () => {
+  const sssOn = composePtWebgpuTraceWgsl(false);
+  const bdptWithSss = composePtWebgpuTraceWgsl(true);
 
   it('default export equals the BDPT-off (SSS-on) composition', () => {
     expect(PT_WEBGPU_TRACE_WGSL).toBe(sssOn);
   });
 
   it('SSS-on kernel contains the volumetric-walk symbols', () => {
-    expect(sssOn).toContain('var inMedium');
+    expect(sssOn).toContain('var bdptMediumStack');
     expect(sssOn).toContain('fn hgPhase');
     expect(sssOn).toContain('fn sampleHenyeyGreenstein');
     expect(sssOn).toContain('freeFlightDist');
   });
 
-  it('BDPT-on kernel OMITS the volumetric-walk symbols (compile-time gate)', () => {
-    expect(sssOff).not.toContain('var inMedium');
-    expect(sssOff).not.toContain('freeFlightDist');
-    // The HG helpers are also dropped to avoid dead-code in the BDPT build.
-    expect(sssOff).not.toContain('fn sampleHenyeyGreenstein');
+  it('BDPT-on kernel contains the matching volumetric-walk symbols', () => {
+    expect(bdptWithSss).toContain('var bdptMediumStack');
+    expect(bdptWithSss).toContain('freeFlightDist');
+    expect(bdptWithSss).toContain('var mediumStack: array<BdptMediumLayer');
+    expect(bdptWithSss).toContain('fn sampleHenyeyGreenstein');
   });
 
-  it('BDPT-on kernel keeps the Beer-Lambert absorption fallback with thickness clamp support', () => {
-    expect(sssOff).toContain('exp(-sigmaT * materialAttenuationDistance(hit.dist, mat))');
+  it('BDPT-on kernel uses scattering transport on both subpaths', () => {
+    expect(bdptWithSss).toContain('eyeMedium.sigmaS * transmittance');
+    expect(bdptWithSss).toContain('layer.sigmaS * transmittance');
+    expect(bdptWithSss).not.toContain('exp(-sigmaT * materialAttenuationDistance(hit.dist, mat))');
   });
 
   it('does not change the FrameParams UBO byte size (σ_a lives in materials buffer)', () => {
     const extract = (w: string): string => w.match(/struct FrameParams\s*\{[\s\S]*?\};/)?.[0] ?? '';
-    expect(extract(sssOn)).toBe(extract(sssOff));
-    // 416 = 404 raw bytes (ending at sceneRadius) + 12B WGSL struct end-pad to
-    // preserve 16-byte struct alignment. The important WS4 invariant is that SSS
-    // absorption data stays in the material buffer, not a distinct FrameParams tail.
-    expect(FRAME_PARAMS_BYTE_SIZE).toBe(416);
+    expect(extract(sssOn)).toBe(extract(bdptWithSss));
+    // 384 bytes after removing unread CMF/light mirrors and using a semantic
+    // cameraPos vec3f. The important WS4 invariant is that SSS absorption data
+    // stays in the material buffer, not a distinct FrameParams tail.
+    expect(FRAME_PARAMS_BYTE_SIZE).toBe(384);
   });
 
   it('no-collision branch divides out the hero-channel survival probability (V23 double-count fix)', () => {
     // The surviving throughput must be scaled by exp(-(σ_t − heroSigmaT)·d), NOT
     // the full exp(-σ_t·d) (which would double-count the transmittance already
     // realized by the free-flight survival probability).
-    expect(sssOn).toContain('let attenuationDist = min(hit.dist, mediumAttenuationLimit)');
+    expect(sssOn).toContain('let attenuationDist = min(hit.dist, eyeMedium.remainingDistance)');
     expect(sssOn).toContain('exp(-(walkSigmaT - vec3f(heroSigmaT)) * attenuationDist)');
     expect(sssOn).not.toContain('throughput = throughput * exp(-walkSigmaT * hit.dist)');
   });

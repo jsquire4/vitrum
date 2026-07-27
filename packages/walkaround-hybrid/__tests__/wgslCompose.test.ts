@@ -15,9 +15,11 @@ import { describe, expect, it } from 'vitest';
 
 import {
   ATROUS_WGSL,
-  ATROUS_VARIANCE_WGSL,
-  SVGF_7X7_SPATIAL_FALLBACK_WGSL,
-  SVGF_REPROJECTION_WGSL,
+  buildAtrousVarianceWgsl,
+  buildSvgf7x7SpatialFallbackWgsl,
+  buildSvgfRealAtrousWgsl,
+  buildSvgfReprojectionWgsl,
+  PACKED_NORMAL_DEPTH_TEXTURE_LAYOUT,
   SVGF_VARIANCE_FROM_MOMENTS_WGSL,
   TEMPORAL_ACCUM_WGSL,
 } from '@vitrum/shared-denoisers';
@@ -44,6 +46,7 @@ import {
   SPATIAL_GI_GRIS_MODULE,
   SPATIAL_MODULE,
   SVGF_7X7_SPATIAL_FALLBACK_MODULE,
+  SVGF_REAL_ATROUS_MODULE,
   SVGF_REPROJECTION_MODULE,
   SVGF_VARIANCE_FROM_MOMENTS_MODULE,
   TEMPORAL_ACCUM_MODULE,
@@ -90,6 +93,9 @@ import { SAMPLE_BUDGET_WGSL } from '../src/shaders/sampleBudget.wgsl.js';
 import { SHADE_WGSL } from '../src/shaders/shade.wgsl.js';
 import { SAMPLE_CASCADE_C0_WGSL } from '../src/shaders/sampleCascadeC0.wgsl.js';
 import { STAINED_GLASS_SHADE_WGSL } from '../src/shaders/stainedGlassShade.wgsl.js';
+import { REFRACTIVE_CAUSTICS_WGSL } from '../src/shaders/refractiveCaustics.wgsl.js';
+import { MANIFOLD_SMS_SOLVER_WGSL } from '../src/shaders/manifoldSmsSolver.wgsl.js';
+import { MANIFOLD_CAUSTICS_WGSL } from '../src/shaders/manifoldCaustics.wgsl.js';
 import { SPATIAL_WGSL } from '../src/shaders/spatial.wgsl.js';
 import { SPATIAL_GI_WGSL, SPATIAL_GI_GRIS_WGSL } from '../src/shaders/spatialGi.wgsl.js';
 import { SPATIAL_GI_COMMON_WGSL } from '../src/shaders/spatialGiCommon.wgsl.js';
@@ -274,6 +280,9 @@ describe('composeWgsl — bit-identical to pre-R6 concat patterns', () => {
       SAMPLE_CASCADE_C0_WGSL +
       STAINED_GLASS_SHADE_WGSL +
       ENVIRONMENT_SAMPLE_WGSL +
+      MANIFOLD_SMS_SOLVER_WGSL +
+      MANIFOLD_CAUSTICS_WGSL +
+      REFRACTIVE_CAUSTICS_WGSL +
       SHADE_WGSL,
     );
   });
@@ -346,7 +355,7 @@ describe('composeWgsl — bit-identical to pre-R6 concat patterns', () => {
     );
   });
 
-  // ── GI reuse passes: the DEFAULT (restirPtReuse OFF) module is the verbatim
+  // ── GI reuse passes: the DEFAULT (grisReuse OFF) module is the verbatim
   // Sprint-17 pass — no sceneTraversal/grisReuse, NO @group(1). The GRIS (ON)
   // variant is a SEPARATE compile-root composed only when the host opts in.
   // This split is the f8df9a4 black-frame fix: an opt-in feature must not change
@@ -369,21 +378,21 @@ describe('composeWgsl — bit-identical to pre-R6 concat patterns', () => {
     );
   });
 
-  it('temporalGi ON (GRIS): walkaroundUbo + sceneTraversal + reservoirGi + sharedPrimitives + cameraRays + grisReuse + materialDecode + TEMPORAL_GI_GRIS', () => {
-    // GRIS variant adds `grisReuse` (shift + pairwise-MIS math) and uses
-    // `sceneTraversal` (the reconnection-visibility ray's traceSceneAny);
-    // `sceneTraversal`/`cameraRays` were already in the closure. It DROPS
-    // `jacobianShift` — the GRIS path uses grisShiftJacobian, not the legacy
-    // clamped Jacobian.
+  it('temporalGi ON (GRIS): complete diffuse-proxy reuse dependency closure', () => {
+    // The GRIS body uses the full inverse-J matrix instead of jacobianShift.
+    // Its alpha-aware visibility and environment paths pull surfaceTextures and
+    // environmentSample into the dependency closure before grisReuse itself.
     expect(composeWgsl(TEMPORAL_GI_GRIS_MODULE, WGSL_MODULES)).toBe(
       WALKAROUND_UBO_WGSL +
       SCENE_TRAVERSAL_WGSL +
       RESERVOIR_GI_WGSL +
       SHARED_PRIMITIVES_WGSL +
       CAMERA_RAYS_WGSL +
-      GRIS_REUSE_WGSL +
       MATERIAL_DECODE_WGSL +
       MATERIAL_ATLAS_WGSL +
+      SURFACE_TEXTURES_WGSL +
+      ENVIRONMENT_SAMPLE_WGSL +
+      GRIS_REUSE_WGSL +
       RESTIR_CAST_PRIMARY_WGSL +
       GGX_BRDF_WGSL +
       RESTIR_GI_MATERIAL_WGSL +
@@ -413,23 +422,21 @@ describe('composeWgsl — bit-identical to pre-R6 concat patterns', () => {
     );
   });
 
-  it('spatialGi ON (GRIS): walkaroundUbo + spatialGiCommon + sceneTraversal + reservoirGi + sharedPrimitives + grisReuse + materialDecode + materialAtlas + SPATIAL_GI_GRIS', () => {
-    // GRIS variant adds `sceneTraversal` (the reconnection-visibility ray's
-    // traceSceneAny + BVHNode) and `grisReuse` (the shift + pairwise-MIS math),
-    // and DROPS `jacobianShift` (grisShiftJacobian replaces the legacy reuse).
-    // ALPHA-03 adds `materialAtlas` directly so reconnection visibility can
-    // evaluate atlas-backed alpha coverage instead of the scalar-only mask.
-    // Task3 — `spatialGiCommon` (requires:[]) is now the second declared dep,
-    // so it lands immediately after walkaroundUbo, before sceneTraversal.
+  it('spatialGi ON (GRIS): complete diffuse-proxy reuse dependency closure', () => {
+    // grisReuse evaluates alpha-aware visibility and environment radiance, so
+    // surfaceTextures and environmentSample are real transitive dependencies.
+    // The post-order DFS emits their material dependencies before grisReuse.
     expect(composeWgsl(SPATIAL_GI_GRIS_MODULE, WGSL_MODULES)).toBe(
       WALKAROUND_UBO_WGSL +
       SPATIAL_GI_COMMON_WGSL +
       SCENE_TRAVERSAL_WGSL +
       RESERVOIR_GI_WGSL +
       SHARED_PRIMITIVES_WGSL +
-      GRIS_REUSE_WGSL +
       MATERIAL_DECODE_WGSL +
       MATERIAL_ATLAS_WGSL +
+      SURFACE_TEXTURES_WGSL +
+      ENVIRONMENT_SAMPLE_WGSL +
+      GRIS_REUSE_WGSL +
       CAMERA_RAYS_WGSL +
       RESTIR_CAST_PRIMARY_WGSL +
       GGX_BRDF_WGSL +
@@ -477,11 +484,15 @@ describe('composeWgsl — bit-identical to pre-R6 concat patterns', () => {
     // Pre-R6 anti-duplication-by-comment at pipelineCompiler.ts:131 +
     // atrousVariance.ts:148: this string declares its own PI/INV_PI/LUM_W/
     // WelfordVariance. The structural fix is `requires: []`.
-    expect(composeWgsl(ATROUS_VARIANCE_MODULE, WGSL_MODULES)).toBe(ATROUS_VARIANCE_WGSL);
+    expect(composeWgsl(ATROUS_VARIANCE_MODULE, WGSL_MODULES)).toBe(
+      buildAtrousVarianceWgsl(PACKED_NORMAL_DEPTH_TEXTURE_LAYOUT),
+    );
   });
 
   it('svgfReprojection: standalone (no prepend)', () => {
-    expect(composeWgsl(SVGF_REPROJECTION_MODULE, WGSL_MODULES)).toBe(SVGF_REPROJECTION_WGSL);
+    expect(composeWgsl(SVGF_REPROJECTION_MODULE, WGSL_MODULES)).toBe(
+      buildSvgfReprojectionWgsl(PACKED_NORMAL_DEPTH_TEXTURE_LAYOUT),
+    );
   });
 
   it('svgfVarianceFromMoments: standalone (no prepend)', () => {
@@ -492,19 +503,25 @@ describe('composeWgsl — bit-identical to pre-R6 concat patterns', () => {
 
   it('svgf7x7SpatialFallback: standalone (no prepend)', () => {
     expect(composeWgsl(SVGF_7X7_SPATIAL_FALLBACK_MODULE, WGSL_MODULES)).toBe(
-      SVGF_7X7_SPATIAL_FALLBACK_WGSL,
+      buildSvgf7x7SpatialFallbackWgsl(PACKED_NORMAL_DEPTH_TEXTURE_LAYOUT),
     );
   });
 
-  // PPG (Müller 2017) — ppgUpdate requires canonical luminance (W8
-  // follow-up cleanup). Guided sampling is inlined in gi-ris via ppgPdf.
+  it('svgfRealAtrous: standalone (no prepend)', () => {
+    expect(composeWgsl(SVGF_REAL_ATROUS_MODULE, WGSL_MODULES)).toBe(
+      buildSvgfRealAtrousWgsl(PACKED_NORMAL_DEPTH_TEXTURE_LAYOUT),
+    );
+  });
 
-  it('ppgUpdate: LUMINANCE_WGSL + PPG_TREE_LAYOUT_WGSL + PPG_UPDATE_WGSL', () => {
+  // PPG (Müller 2017) — update uses only the shared tree layout; its
+  // histogram mass comes directly from initial-reservoir w_sum / M.
+
+  it('ppgUpdate: PPG_TREE_LAYOUT_WGSL + PPG_UPDATE_WGSL', () => {
     // 2026-06-09 equal-area fix: ppgUpdate dropped its octahedralCore require
     // (the octEncode training-direction call became the inline cylindrical map),
     // so OCTAHEDRAL_CORE_WGSL is no longer composed into this standalone kernel.
     const composed = composeWgsl(PPG_UPDATE_MODULE, WGSL_MODULES);
-    expect(composed).toBe(LUMINANCE_WGSL + PPG_TREE_LAYOUT_WGSL + PPG_UPDATE_WGSL);
+    expect(composed).toBe(PPG_TREE_LAYOUT_WGSL + PPG_UPDATE_WGSL);
   });
 
 });
@@ -545,7 +562,7 @@ describe('T9-stepC — static cross-module identifier resolution', () => {
   const ROOT_PASSES = [
     'ris', 'temporal', 'spatial', 'shade',
     'risGi', 'temporalGi', 'spatialGi',
-    // GRIS (restirPtReuse ON) compile-roots — composed only when the host opts
+    // GRIS (grisReuse ON) compile-roots — composed only when the host opts
     // in, but the ident-resolution gate must still cover their closures.
     'temporalGiGris', 'spatialGiGris',
     'welfordTemporal', 'motionVectors',
@@ -590,7 +607,7 @@ describe('T9-stepC — static cross-module identifier resolution', () => {
       // receiver-lobe GI p-hat, so BRDF/camera traversal are expected. It still
       // carries no emitters and no GRIS branch.
       spatialGi: [
-        'sampleEmitterPoint', 'grisShiftJacobian', 'grisTargetAt',
+        'sampleEmitterPoint', 'grisDomainToCanonicalJacobian', 'grisProxyTargetAt',
       ],
       // spatialGiGris (ON): adds sceneTraversal (reconnection-visibility ray),
       // primary receiver recast, receiver-lobe BRDF target and grisReuse, but
@@ -602,7 +619,7 @@ describe('T9-stepC — static cross-module identifier resolution', () => {
       // no emitters and NO GRIS. The default closure must NOT pull grisReuse.
       temporalGi: [
         'sampleEmitterPoint', 'WelfordVariance',
-        'grisShiftJacobian', 'grisTargetAt',
+        'grisDomainToCanonicalJacobian', 'grisProxyTargetAt',
       ],
       // temporalGiGris (ON): adds grisReuse + receiver material recast, drops
       // the legacy jacobianReconnectionShift.
@@ -688,11 +705,11 @@ describe('Theme-C — temporalGiCommon dedup (byte-identity minus the deleted de
 // sits mid-file after the @group(3) texture bindings.
 // ──────────────────────────────────────────────────────────────────────────
 describe('Theme-D — scene @group(1) binding block stays inlined (not hoistable byte-identically)', () => {
-  it('bvh_normal (binding 11) is present once in every composed scene-traversal pass', () => {
-    const norm = '@group(1) @binding(11) var<storage, read> bvh_normal: array<vec4f>;';
+  it('the arena-backed normal loader is present once in every composed scene-traversal pass', () => {
     for (const mod of [RIS_MODULE, SHADE_MODULE, RIS_GI_MODULE, TEMPORAL_MODULE, SPATIAL_MODULE]) {
-      const matches = composeWgsl(mod, WGSL_MODULES).match(new RegExp(norm.replace(/[()<>]/g, '\\$&'), 'g')) ?? [];
-      expect(matches.length).toBe(1);
+      const composed = composeWgsl(mod, WGSL_MODULES);
+      expect(composed.match(/fn sceneLoadBvhNormal\s*\(/g)).toHaveLength(1);
+      expect(composed).toContain('@group(1) @binding(0) var<storage, read> sceneGeometryArena: array<u32>;');
     }
   });
 
@@ -706,48 +723,32 @@ describe('Theme-D — scene @group(1) binding block stays inlined (not hoistable
     expect(RIS_WGSL).not.toContain('bvh_emissive');
   });
 
-  it('risGi omits emitters/emitterCdf (bindings 3/4) that ris/temporal/spatial declare', () => {
-    const emit = '@group(1) @binding(3) var<storage, read> emitters:     array<EmitterTri>;';
-    expect(RIS_WGSL).toContain(emit);
-    expect(TEMPORAL_WGSL).toContain(emit);
-    expect(SPATIAL_WGSL).toContain(emit);
-    expect(RIS_GI_WGSL).not.toContain(emit);
+  it('emitter/CDF access is loader-backed with no legacy raw bindings', () => {
+    for (const mod of [RIS_MODULE, SHADE_MODULE, RIS_GI_MODULE, TEMPORAL_MODULE, SPATIAL_MODULE]) {
+      const composed = composeWgsl(mod, WGSL_MODULES);
+      expect(composed.match(/fn sceneLoadEmitter\s*\(/g)).toHaveLength(1);
+      expect(composed.match(/fn sceneLoadEmitterCdf\s*\(/g)).toHaveLength(1);
+      expect(composed).not.toMatch(/var<storage,\s*read>\s+emitters\b/);
+      expect(composed).not.toMatch(/var<storage,\s*read>\s+emitterCdf\b/);
+    }
   });
 
-  it('the binding subsets span ≥3 distinct shapes — no single shared fragment reproduces all', () => {
-    // Reduce each consumer to its @group(1) binding-name set; assert at least
-    // three distinct shapes exist (ris, shade, risGi all differ), which is what
-    // makes a single hoisted `sceneBindings` fragment impossible.
-    // 2026-06-06 (G-P0.1 smooth-normal reuse consistency): temporal + spatial
-    // gained bvh_normal @binding(11), which made temporal's group(1) block
-    // IDENTICAL to ris's. B1 (road-to-100, 2026-06-10) then RE-DIVERGED them:
-    // ris declares bvh_material @binding(14) INLINE (its candidate p̂ decodes
-    // real roughness/metal), while temporal/spatial pull bvh_material via the
-    // shared restirCastPrimary module (a SEPARATE source), so temporal.wgsl's
-    // own group(1) block no longer carries binding 14. The 2026-06-20 transparent
-    // direct-light tint wave adds bvh_beer @binding(5) to RIS only. The
-    // ≥3-distinct-shapes rationale for keeping the block inlined holds even more
-    // strongly now.
-    const group1Lines = (src: string): string =>
+  it('the pass-local sampled-texture subsets retain three deliberate shapes', () => {
+    const group1TextureLines = (src: string): string =>
       src
         .split('\n')
-        .filter((l) => l.includes('@group(1) @binding'))
+        .filter((l) => l.includes('@group(1) @binding') && !l.includes('var<storage'))
         .join('\n');
-    const ris = group1Lines(RIS_WGSL);
-    const shade = group1Lines(SHADE_WGSL);
-    const temporal = group1Lines(TEMPORAL_WGSL);
-    const risGi = group1Lines(RIS_GI_WGSL);
+    const ris = group1TextureLines(RIS_WGSL);
+    const shade = group1TextureLines(SHADE_WGSL);
+    const temporal = group1TextureLines(TEMPORAL_WGSL);
+    const spatial = group1TextureLines(SPATIAL_WGSL);
+    const risGi = group1TextureLines(RIS_GI_WGSL);
     expect(ris).not.toBe(shade);
-    expect(ris).not.toBe(temporal); // B1 — ris gained inline bvh_material @binding(14); temporal gets it via restirCastPrimary
-    expect(ris).not.toBe(risGi);
+    expect(ris).not.toBe(temporal);
     expect(shade).not.toBe(temporal);
-    // ris/temporal still share every binding EXCEPT the RIS-only bvh_beer and
-    // B1 bvh_material lines.
-    expect(temporal).toBe(
-      ris
-        .split('\n')
-        .filter((l) => !l.includes('binding(5)') && !l.includes('binding(14)'))
-        .join('\n'),
-    );
+    expect(risGi).toBe(ris);
+    expect(spatial).toBe(temporal);
+    expect(new Set([ris, shade, temporal]).size).toBe(3);
   });
 });

@@ -181,7 +181,7 @@ describe('packCameUBO — GPU std140 wire contract (EXACT byte layout)', () => {
   });
 });
 
-describe('packCameUBO — cap enforcement & truncation warnings', () => {
+describe('packCameUBO — strict caps and explicit truncation', () => {
   it('defaults to 500 segment / 200 node caps (no warning under the cap)', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
@@ -196,7 +196,20 @@ describe('packCameUBO — cap enforcement & truncation warnings', () => {
     }
   });
 
-  it('truncates to host caps and warns once per over-capped input', () => {
+  it('rejects overflow by default without silently packing a partial geometry set', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      expect(() => packCameUBO([SEG, SEG], [NODE], {
+        maxSegments: 1,
+        maxNodes: 1,
+      })).toThrow(/pass \{ overflow: 'truncate' \}/);
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('truncates only under the explicit policy and warns once per over-capped input', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
       const segs = Array.from({ length: 4 }, (_, i): CameSegment => ({
@@ -210,7 +223,11 @@ describe('packCameUBO — cap enforcement & truncation warnings', () => {
         position: [i, 0, 0],
         radius: 1,
       }));
-      const packed = packCameUBO(segs, nodes, { maxSegments: 2, maxNodes: 1 });
+      const packed = packCameUBO(segs, nodes, {
+        maxSegments: 2,
+        maxNodes: 1,
+        overflow: 'truncate',
+      });
       expect(packed.segmentCount).toBe(2);
       expect(packed.nodeCount).toBe(1);
       expect(packed.segments.byteLength).toBe(2 * 64);
@@ -234,5 +251,121 @@ describe('packCameUBO — cap enforcement & truncation warnings', () => {
     } finally {
       warn.mockRestore();
     }
+  });
+
+  it.each([
+    ['maxSegments', Number.NaN],
+    ['maxSegments', Number.POSITIVE_INFINITY],
+    ['maxSegments', 0],
+    ['maxSegments', -1],
+    ['maxSegments', 1.5],
+    ['maxSegments', Number.MAX_SAFE_INTEGER + 1],
+    ['maxNodes', Number.NaN],
+    ['maxNodes', Number.POSITIVE_INFINITY],
+    ['maxNodes', 0],
+    ['maxNodes', -1],
+    ['maxNodes', 1.5],
+    ['maxNodes', Number.MAX_SAFE_INTEGER + 1],
+  ])('rejects unsafe allocation cap %s=%s', (key, value) => {
+    expect(() => packCameUBO([], [], { [key]: value })).toThrow(
+      /positive safe integer/,
+    );
+  });
+
+  it('rejects caps that could authorize an unreasonably large typed-array allocation', () => {
+    expect(() => packCameUBO([], [], { maxSegments: 4_194_305 })).toThrow(
+      /larger than 268435456 bytes/,
+    );
+    expect(() => packCameUBO([], [], { maxNodes: 16_777_217 })).toThrow(
+      /larger than 268435456 bytes/,
+    );
+  });
+
+  it('enforces one combined allocation budget across both output buffers', () => {
+    expect(() => packCameUBO([], [], {
+      maxSegments: 4_194_303,
+      maxNodes: 5,
+    })).toThrow(/combined bytes.*total allocation budget is 268435456 bytes/);
+  });
+
+  it('rejects unknown overflow policies', () => {
+    expect(() => packCameUBO([], [], { overflow: 'drop' } as never)).toThrow(
+      /overflow must be either 'error' or 'truncate'/,
+    );
+  });
+
+  it('rejects unknown option keys instead of silently ignoring misspellings', () => {
+    expect(() => packCameUBO([], [], {
+      maxSegments: 1,
+      maxNode: 1,
+    } as never)).toThrow(/unknown option maxNode/);
+    expect(() => packCameUBO([], [], {
+      [Symbol('extra')]: true,
+    } as never)).toThrow(/unknown option Symbol\(extra\)/);
+  });
+
+  it('publishes truncation warnings only after a complete pack succeeds', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      expect(() => packCameUBO(
+        [SEG, SEG],
+        [{ ...NODE, radius: 0 }],
+        { maxSegments: 1, maxNodes: 1, overflow: 'truncate' },
+      )).toThrow(/nodes\[0\]\.radius/);
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});
+
+describe('packCameUBO — runtime geometry validation', () => {
+  it.each([
+    ['railWidth', 0],
+    ['railWidth', -1],
+    ['railWidth', Number.MIN_VALUE],
+    ['blockHeight', Number.NaN],
+    ['blockHeight', Number.POSITIVE_INFINITY],
+    ['webThickness', Number.MAX_VALUE],
+  ])('rejects invalid segment dimension %s=%s', (field, value) => {
+    expect(() => packCameUBO([
+      { ...SEG, [field]: value },
+    ] as CameSegment[], [])).toThrow(new RegExp(`segments\\[0\\]\\.${field}`));
+  });
+
+  it.each([0, -1, Number.MIN_VALUE, Number.NaN, Number.POSITIVE_INFINITY, Number.MAX_VALUE])(
+    'rejects invalid node radius %s',
+    (radius) => {
+      expect(() => packCameUBO([], [{ ...NODE, radius }])).toThrow(/nodes\[0\]\.radius/);
+    },
+  );
+
+  it('rejects malformed and non-finite coordinate vectors before packing', () => {
+    expect(() => packCameUBO([
+      { ...SEG, startWorld: [1, 2] },
+    ] as unknown as CameSegment[], [])).toThrow(/startWorld must contain exactly three/);
+    expect(() => packCameUBO([
+      { ...SEG, endWorld: [1, Number.NaN, 3] },
+    ], [])).toThrow(/endWorld\[1\] must be a finite float32/);
+    expect(() => packCameUBO([], [
+      { ...NODE, position: [1, Number.MAX_VALUE, 3] },
+    ])).toThrow(/position\[1\] must be a finite float32/);
+  });
+
+  it('rejects zero-length segments, including endpoints that collapse in float32', () => {
+    expect(() => packCameUBO([{
+      ...SEG,
+      endWorld: SEG.startWorld,
+    }], [])).toThrow(/startWorld and endWorld must remain distinct/);
+    expect(() => packCameUBO([{
+      ...SEG,
+      startWorld: [1, 2, 3],
+      endWorld: [1 + Number.EPSILON, 2, 3],
+    }], [])).toThrow(/startWorld and endWorld must remain distinct/);
+  });
+
+  it('rejects non-array collection payloads at the public boundary', () => {
+    expect(() => packCameUBO({ length: 0 } as never, [])).toThrow(/segments must be an array/);
+    expect(() => packCameUBO([], { length: 0 } as never)).toThrow(/nodes must be an array/);
   });
 });

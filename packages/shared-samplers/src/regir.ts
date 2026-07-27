@@ -45,6 +45,13 @@
  */
 
 import { nodeImportance, sampleLightTreeCPU, type LightTreeNode } from './lightTree.js';
+import {
+  requireFiniteVec3,
+  requireInteger,
+  requireNonNegative,
+  requirePositive,
+  requireUnitRandom,
+} from './numericGuards.js';
 
 /** Floats per ReGIR cell-reservoir survivor slot in the packed grid buffer:
  *  [0] emitterIndex (as f32; -1 ⇒ empty slot), [1] pSel (effective selection
@@ -87,6 +94,9 @@ export function regirBuildSurvivorCPU(
   leafImportanceOf: (emitterIndex: number) => number,
   rand01: () => number,
 ): ReGIRSurvivor {
+  requireFiniteVec3(xc, 'regirBuildSurvivorCPU.xc');
+  requirePositive(dist2Floor, 'regirBuildSurvivorCPU.dist2Floor');
+  requireInteger(M, 'regirBuildSurvivorCPU.M', 1, 0xffffffff);
   let wSum = 0;
   let chosen = -1;
   let chosenQHat = 0;
@@ -94,13 +104,20 @@ export function regirBuildSurvivorCPU(
     const draw = sampleLightTreeCPU(nodes, xc, dist2Floor, rand01);
     if (draw.emitterIndex < 0 || draw.pdf <= 0) continue;
     const qHat = leafImportanceOf(draw.emitterIndex);
+    requireNonNegative(qHat, `regirBuildSurvivorCPU.qHat(${draw.emitterIndex})`);
     if (qHat <= 0) continue;
     // RIS source weight: target / source-pdf. Source is the tree's own
     // selection pmf at the cell centroid.
     const w = qHat / draw.pdf;
+    if (!Number.isFinite(w)) {
+      throw new RangeError('regirBuildSurvivorCPU source weight overflowed');
+    }
     wSum += w;
+    if (!Number.isFinite(wSum)) {
+      throw new RangeError('regirBuildSurvivorCPU reservoir weight sum overflowed');
+    }
     // WRS: accept with probability w / wSum.
-    if (rand01() * wSum < w) {
+    if (requireUnitRandom(rand01(), 'regirBuildSurvivorCPU.rand01()') * wSum < w) {
       chosen = draw.emitterIndex;
       chosenQHat = qHat;
     }
@@ -108,6 +125,9 @@ export function regirBuildSurvivorCPU(
   if (chosen < 0 || wSum <= 0) return { emitterIndex: -1, pSel: 0 };
   // Effective selection pmf = q̂(e*) / Ŝ, Ŝ = wSum / M (unbiased S_c estimate).
   const pSel = (chosenQHat * M) / wSum;
+  if (!Number.isFinite(pSel)) {
+    throw new RangeError('regirBuildSurvivorCPU effective PMF overflowed');
+  }
   return { emitterIndex: chosen, pSel };
 }
 
@@ -127,6 +147,8 @@ export function regirCellTargetFromTree(
   xc: readonly [number, number, number],
   dist2Floor: number,
 ): (emitterIndex: number) => number {
+  requireFiniteVec3(xc, 'regirCellTargetFromTree.xc');
+  requirePositive(dist2Floor, 'regirCellTargetFromTree.dist2Floor');
   // Map emitterIndex → leaf node for O(1) lookup.
   const leafByEmitter = new Map<number, LightTreeNode>();
   for (const n of nodes) {
@@ -136,6 +158,7 @@ export function regirCellTargetFromTree(
   }
   const [px, py, pz] = xc;
   return (emitterIndex: number): number => {
+    if (!Number.isSafeInteger(emitterIndex) || emitterIndex < 0) return 0;
     const leaf = leafByEmitter.get(emitterIndex);
     if (!leaf) return 0;
     return nodeImportance(leaf, px, py, pz, dist2Floor);
@@ -159,22 +182,27 @@ export function regirCellPmfExact(
   dist2Floor: number,
 ): Map<number, number> {
   const target = regirCellTargetFromTree(nodes, xc, dist2Floor);
-  const emitters: number[] = [];
+  const emitterSet = new Set<number>();
   for (const n of nodes) {
     if (n.leftChild < 0 && n.rightChild < 0 && n.emitterIndex >= 0) {
-      emitters.push(n.emitterIndex);
+      emitterSet.add(n.emitterIndex);
     }
   }
-  let S = 0;
+  const emitters = [...emitterSet];
+  let maxQ = 0;
   const qHat = new Map<number, number>();
   for (const e of emitters) {
     const q = target(e);
     qHat.set(e, q);
-    S += q;
+    maxQ = Math.max(maxQ, q);
+  }
+  let scaledSum = 0;
+  if (maxQ > 0) {
+    for (const e of emitters) scaledSum += qHat.get(e)! / maxQ;
   }
   const pmf = new Map<number, number>();
   for (const e of emitters) {
-    pmf.set(e, S > 0 ? qHat.get(e)! / S : 0);
+    pmf.set(e, maxQ > 0 ? (qHat.get(e)! / maxQ) / scaledSum : 0);
   }
   return pmf;
 }

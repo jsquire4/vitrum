@@ -14,6 +14,7 @@
 // computed on the CPU from INDEPENDENTLY-derived closed forms (NOT copied from the
 // WGSL): the same discipline as restirPtShift.test.ts.
 import { describe, it, expect } from 'vitest';
+import { roughDielectricSmithG1Wgsl } from '../math/roughDielectric.js';
 import { RESTIR_PT_HYBRID_SHIFT_WGSL } from '../wgsl/pathTrace/restirPtHybridShift.wgsl.js';
 import {
   RESTIR_PT_HYBRID_SHIFT_HARNESS_WGSL,
@@ -96,7 +97,7 @@ const brdfPdf = (
 type Cfg = {
   xq: V3; nq: V3; woq: V3; wiq: V3;
   xr: V3; nr: V3; wor: V3; wir: V3;
-  xs: V3; baseColor: V3; roughness: number; metallic: number; transmission: number; ior: number;
+  xs: V3; baseColor: V3; roughness: number; metallic: number; transmission: number; etaTOverI: number;
 };
 const mkCfg = (over: Partial<Cfg> = {}): Cfg => {
   const xs: V3 = over.xs ?? [0, 0, 1.2];
@@ -115,7 +116,7 @@ const mkCfg = (over: Partial<Cfg> = {}): Cfg => {
     roughness: over.roughness ?? 0.3,
     metallic: over.metallic ?? 0.0,
     transmission: over.transmission ?? 0.0,
-    ior: over.ior ?? 1.5,
+    etaTOverI: over.etaTOverI ?? 1.5,
   };
 };
 
@@ -129,7 +130,7 @@ describe('ReSTIR-PT / GRIS HYBRID-shift Jacobian (random-replay prefix + reconne
     expect(r.slice(16, 20)).toEqual([c.xr[0], c.xr[1], c.xr[2], 0]); // xr.xyz, pad
     expect(r.slice(32, 36)).toEqual([c.xs[0], c.xs[1], c.xs[2], 0]); // xs.xyz, pad
     expect(r.slice(36, 40)).toEqual([c.baseColor[0], c.baseColor[1], c.baseColor[2], c.roughness]);
-    expect(r.slice(40, 44)).toEqual([c.metallic, c.transmission, c.ior, 0]);
+    expect(r.slice(40, 44)).toEqual([c.metallic, c.transmission, c.etaTOverI, 0]);
     // r-domain material row reuses q baseColor + roughness in the canonical case.
     expect(r.slice(44, 48)).toEqual([c.baseColor[0], c.baseColor[1], c.baseColor[2], c.roughness]);
   });
@@ -151,10 +152,10 @@ describe('ReSTIR-PT / GRIS HYBRID-shift Jacobian (random-replay prefix + reconne
     expect(RESTIR_PT_HYBRID_SHIFT_WGSL).toContain('return jGeom * jReplay');
   });
 
-  it('uses the engine\'s OWN smithG1 (Schlick-GGX k=(r+1)²/8) so the pdf matches the sampler that generated the path', () => {
-    // The replay pdf is a property of the engine's sampler, not an idealized Smith Λ.
-    expect(RESTIR_PT_HYBRID_SHIFT_WGSL).toContain('let k = (r * r) * 0.125;');
-    expect(RESTIR_PT_HYBRID_SHIFT_WGSL).toContain('return nDotV / max(nDotV * (1.0 - k) + k, 1e-6);');
+  it('uses the exact Smith G1 emitted by the same oracle as the forward sampler', () => {
+    expect(RESTIR_PT_HYBRID_SHIFT_WGSL).toContain(
+      roughDielectricSmithG1Wgsl('rptHybrid_smithG1'),
+    );
   });
 
   it('harness composes the core byte-identically + writes [J, jGeom, jReplay], [pq, pr, gSrc, gTgt], and the SA derivs', () => {

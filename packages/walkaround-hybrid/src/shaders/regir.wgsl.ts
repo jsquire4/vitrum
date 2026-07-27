@@ -152,7 +152,7 @@ export const REGIR_MODULE: WgslModule = {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Grid-build compute pass (write path). Standalone module: its own bind group
-// declarations (the combined buffer as read_write + emitters + ubo), the WRS
+// declarations (the combined buffer as read_write + ubo), the WRS
 // helpers, and the `regirBuildMain` entry point. The read path references the
 // READ-ONLY `lightTree` binding, which the build pass binds read_write under a
 // different name, so the build kernel reads tree leaf importance from its own
@@ -172,8 +172,7 @@ const REGIR_FLOATS_PER_SURVIVOR: u32 = ${REGIR_FLOATS_PER_SURVIVOR}u;
 // reads the tree region for sampleLightTree, writes the grid region). RIS binds
 // the SAME buffer read-only as lightTree — different access, same GPUBuffer.
 @group(0) @binding(0) var<storage, read_write> regirGridRW: array<f32>;
-@group(0) @binding(1) var<storage, read>       emittersRW:  array<EmitterTri>;
-@group(0) @binding(2) var<uniform>             ubo:         WalkaroundUBO;
+@group(0) @binding(1) var<uniform>             ubo:         WalkaroundUBO;
 
 const REGIR_BUILD_STRIDE: u32 = 16u; // light-tree node stride (must match LIGHT_TREE_STRIDE; B8 12→16)
 

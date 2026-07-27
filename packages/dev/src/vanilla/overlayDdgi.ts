@@ -23,7 +23,7 @@ export function addDdgiDiagnostics(
   const irradianceRow = makeRow('irr atlas', '-');
   const visibilityRow = makeRow('vis atlas', '-');
   const memoryRow = makeRow('gpu memory', '-');
-  const experimentalRow = makeRow('experimental', '-');
+  const activeRow = makeRow('active', '-');
   panel.append(
     debugSurfaceRow.el,
     auxRow.el,
@@ -32,7 +32,7 @@ export function addDdgiDiagnostics(
     irradianceRow.el,
     visibilityRow.el,
     memoryRow.el,
-    experimentalRow.el,
+    activeRow.el,
   );
   add(panel);
 
@@ -64,7 +64,7 @@ export function addDdgiDiagnostics(
     memoryRow.setValue(memory.status === 'ready' && memory.value != null
       ? formatBytes(memory.value.total)
       : memory.status);
-    experimentalRow.setValue(formatSet(caps.experimentalFeatures));
+    activeRow.setValue(formatSet(caps.activeFeatures));
   };
 
   render();

@@ -63,8 +63,6 @@ describe('SVGF object-id frame resources', () => {
 
     const resources = createSvgfFrameResources(device, 4, 2, false);
 
-    expect(resources.svgfObjIdPlaceholderTexture.width).toBe(1);
-    expect(resources.svgfPrevObjIdPlaceholderTexture.width).toBe(1);
     expect(resources.svgfCurrentObjectIdTexture.width).toBe(1);
     expect(resources.svgfCurrentObjectIdTexture.height).toBe(1);
     expect(resources.svgfPreviousObjectIdTexture.width).toBe(1);

@@ -75,7 +75,6 @@ export const material_struct = /* glsl */ `
 		int sheenRoughnessMap;
 
 		bool vertexColors;
-		bool flatShading;
 		bool transparent;
 		bool unlit;
 		bool meshEmitterCastShadowDisabled;
@@ -123,9 +122,8 @@ export const material_struct = /* glsl */ `
 		float bumpScale;
 		float envMapIntensity;
 
-		// UV-set selector bitmask (texel 86.a). Bit k set = map k samples uv1
-		// (ATTR_UV1) instead of uv0 (ATTR_UV). Bit assignments: see materialStride.js.
-		// Stored as a float; decoded in readMaterialInfo via uint(round(...)).
+		// Legacy texCoord-1 compatibility mirror at texel 86.a. Shading reads the
+		// arbitrary-layer selector table instead; retained for record stability.
 		uint uvTexCoordMask;
 
 		mat3 mapTransform;
@@ -179,7 +177,8 @@ export const material_struct = /* glsl */ `
 
 	float wrapMaterialTextureCoord( float coord, float mode ) {
 
-		int m = int( round( mode ) );
+			int packedMode = int( round( mode ) );
+			int m = packedMode - ( packedMode / 4 ) * 4;
 		if ( m == 1 ) {
 
 			return min( clamp( coord, 0.0, 1.0 ), 0.999999 );
@@ -207,12 +206,27 @@ export const material_struct = /* glsl */ `
 
 	}
 
-	int wrapMaterialTextureIndex( int coord, int size, float mode ) {
+		int wrapMaterialTextureIndex( int coord, int size, float mode ) {
 
-		int m = int( round( mode ) );
+			int packedMode = int( round( mode ) );
+			int m = packedMode - ( packedMode / 4 ) * 4;
 		if ( m == 1 ) {
 
 			return clamp( coord, 0, size - 1 );
+
+		}
+
+		ivec2 materialTextureSourceSize( sampler2DArray tex, vec4 samplerPolicy, int level ) {
+
+			ivec2 storageSize = textureSize( tex, 0 ).xy;
+			int packedS = int( round( samplerPolicy.x ) );
+			int packedT = int( round( samplerPolicy.y ) );
+			ivec2 baseSize = ivec2(
+				packedS / 4 > 0 ? packedS / 4 : storageSize.x,
+				packedT / 4 > 0 ? packedT / 4 : storageSize.y
+			);
+			int divisor = 1 << level;
+			return max( ivec2( 1 ), baseSize / divisor );
 
 		}
 
@@ -248,7 +262,7 @@ export const material_struct = /* glsl */ `
 
 	vec4 sampleMaterialTextureNearestLevel( sampler2DArray tex, vec2 uv, int layer, vec4 samplerPolicy, int level ) {
 
-		ivec2 size = textureSize( tex, level ).xy;
+			ivec2 size = materialTextureSourceSize( tex, samplerPolicy, level );
 		ivec2 p = ivec2( floor( uv * vec2( size ) ) );
 		int x = wrapMaterialTextureIndex( p.x, size.x, samplerPolicy.x );
 		int y = wrapMaterialTextureIndex( p.y, size.y, samplerPolicy.y );
@@ -258,7 +272,7 @@ export const material_struct = /* glsl */ `
 
 	vec4 sampleMaterialTextureLinearLevel( sampler2DArray tex, vec2 uv, int layer, vec4 samplerPolicy, int level ) {
 
-		ivec2 size = textureSize( tex, level ).xy;
+			ivec2 size = materialTextureSourceSize( tex, samplerPolicy, level );
 		vec2 p = uv * vec2( size ) - vec2( 0.5 );
 		ivec2 p0 = ivec2( floor( p ) );
 		vec2 f = fract( p );
@@ -298,7 +312,7 @@ export const material_struct = /* glsl */ `
 
 		}
 
-		ivec2 baseSizeI = textureSize( tex, 0 ).xy;
+			ivec2 baseSizeI = materialTextureSourceSize( tex, samplerPolicy, 0 );
 		vec2 baseSize = vec2( baseSizeI );
 		float rawLod = materialTextureRawLod( uv, baseSize );
 		bool minifying = rawLod > 0.0;
@@ -443,7 +457,6 @@ export const material_struct = /* glsl */ `
 		m.matte = bool( s14.r );
 		m.castShadow = bool( s14.g );
 		m.vertexColors = bool( int( s14.b ) & 1 );
-		m.flatShading = bool( int( s14.b ) & 2 );
 		m.fogVolume = bool( int( s14.b ) & 4 );
 		uint packedFlags = uint( round( s14.a ) );
 		m.transparent = bool( packedFlags & 1u );
@@ -492,7 +505,7 @@ export const material_struct = /* glsl */ `
 		m.aoMapIntensity = s21.r;
 		m.lightMapIntensity = s21.g;
 		m.bumpScale = s21.b;
-		// UV-set bitmask (was pad). Bit k set = map k samples uv1 (ATTR_UV1).
+		// Legacy texCoord-1 compatibility mirror (the former pad lane).
 		m.uvTexCoordMask = uint( round( s21.a ) );
 
 		uint firstTextureTransformIdx = i + 55u;

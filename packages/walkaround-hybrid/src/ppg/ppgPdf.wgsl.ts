@@ -7,8 +7,8 @@
  * === Why this module exists ===
  * gi-ris compiles against the shared hybrid pipeline layout
  * (frame/scene/ubo/hybridLayers), so the guide sampler must read the learned
- * PPG trees from the `hybridLayers` group (group 3, bindings 6/7/8 — packed
- * there because the adapter caps `maxBindGroups = 4`) and provides:
+ * PPG trees from one packed query arena in the `hybridLayers` group (group 3,
+ * binding 6 — there because the adapter caps `maxBindGroups = 4`) and provides:
  *
  *   1. `ppgEvalPdf(pos, wi)`        — the SOLID-ANGLE guide pdf p_guide(ωi) for
  *                                     an ARBITRARY world direction. Mirrors the
@@ -34,23 +34,44 @@
  * dependency: the shared octEncode/octDecode are no longer referenced here.
  *
  * === Bindings (group 3 = hybridLayers — see bindGroupLayouts.ts) ===
- *   @group(3) @binding(6) ppgSTreeBuf_gi     : array<f32>  (serialised sTree)
- *   @group(3) @binding(7) ppgDTreeBuf_gi     : array<f32>  (concatenated dTrees)
- *   @group(3) @binding(8) ppgDTreeOffsets_gi : array<u32>  (cell → dTree offset)
+ *   @group(3) @binding(6) ppgQueryArena_gi : array<u32>
+ *     (header + serialised sTree + concatenated dTrees + cell offsets)
  *
  * These are gated: gi-ris only calls into this module when `ubo.ppgEnabled == 1`,
  * so the 16-byte placeholders bound when PPG is off are never dereferenced.
  */
 
 import type { WgslModule } from '../wgslTypes.js';
+import {
+  PPG_QUERY_ARENA_MAGIC,
+  PPG_QUERY_ARENA_SCHEMA,
+  PPG_QUERY_ARENA_VERSION,
+} from './ppgQueryArena.js';
 
 export const PPG_PDF_WGSL = /* wgsl */ `
 // ── PPG guided-sampling + pdf-eval (gi-ris) ─────────────────────────────────
 // Müller 2017 §3.2/§3.4. Reads the learned sTree/dTree from group(3).
 
-@group(3) @binding(6) var<storage, read> ppgSTreeBuf_gi     : array<f32>;
-@group(3) @binding(7) var<storage, read> ppgDTreeBuf_gi     : array<f32>;
-@group(3) @binding(8) var<storage, read> ppgDTreeOffsets_gi : array<u32>;
+@group(3) @binding(6) var<storage, read> ppgQueryArena_gi : array<u32>;
+
+const PPG_QUERY_MAGIC_GI: u32 = ${PPG_QUERY_ARENA_MAGIC}u;
+const PPG_QUERY_VERSION_GI: u32 = ${PPG_QUERY_ARENA_VERSION}u;
+const PPG_QUERY_SCHEMA_GI: u32 = ${PPG_QUERY_ARENA_SCHEMA}u;
+fn ppgQueryArenaValidGi() -> bool {
+  return ppgQueryArena_gi[0] == PPG_QUERY_MAGIC_GI &&
+    ppgQueryArena_gi[1] == PPG_QUERY_VERSION_GI &&
+    ppgQueryArena_gi[2] != 0u &&
+    ppgQueryArena_gi[3] == PPG_QUERY_SCHEMA_GI;
+}
+fn ppgArenaLoadSTreeF32(word: u32) -> f32 {
+  return bitcast<f32>(ppgQueryArena_gi[ppgQueryArena_gi[4] + word]);
+}
+fn ppgArenaLoadDTreeF32(word: u32) -> f32 {
+  return bitcast<f32>(ppgQueryArena_gi[ppgQueryArena_gi[7] + word]);
+}
+fn ppgArenaLoadDTreeOffset(word: u32) -> u32 {
+  return ppgQueryArena_gi[ppgQueryArena_gi[10] + word];
+}
 
 // Layout constants provided by ppgTreeLayout (DTREE_HEADER_F32, DTREE_NODE_STRIDE,
 // STREE_HEADER_F32, STREE_NODE_STRIDE — shared with ppgUpdate).
@@ -86,16 +107,16 @@ fn ppgUvToDir(uv: vec2<f32>) -> vec3<f32> {
 // ppgSTreeBuf there). If you edit the logic here, mirror the change there,
 // and vice versa. The ppgDescentDrift vitest gate enforces this automatically.
 fn ppgSTreeFindLeafBase(pos: vec3<f32>) -> u32 {
-  let nodeCount = u32(ppgSTreeBuf_gi[0]);
+  let nodeCount = u32(ppgArenaLoadSTreeF32(0));
   var idx: u32 = 0u;
   // sTree depth ≤ log2(16384) = 14; 32 is a generous safety cap.
   for (var step: u32 = 0u; step < 32u; step = step + 1u) {
     let base = STREE_HEADER_F32 + idx * STREE_NODE_STRIDE;
-    let splitAxisF = ppgSTreeBuf_gi[base + 7u];
+    let splitAxisF = ppgArenaLoadSTreeF32(base + 7u);
     if (splitAxisF < 0.0) { return base; } // leaf
-    let splitVal = ppgSTreeBuf_gi[base + 3u];
-    let leftChildF  = ppgSTreeBuf_gi[base + 8u];
-    let rightChildF = ppgSTreeBuf_gi[base + 9u];
+    let splitVal = ppgArenaLoadSTreeF32(base + 3u);
+    let leftChildF  = ppgArenaLoadSTreeF32(base + 8u);
+    let rightChildF = ppgArenaLoadSTreeF32(base + 9u);
     let axis = u32(splitAxisF);
     var queryAxis: f32 = 0.0;
     if (axis == 0u)      { queryAxis = pos.x; }
@@ -119,15 +140,15 @@ fn ppgDTreeFindLeafBase(dTreeOffset: u32, octUV: vec2<f32>) -> u32 {
   var idx: u32 = 0u;
   for (var step: u32 = 0u; step < 32u; step = step + 1u) {
     let base = dTreeOffset + DTREE_HEADER_F32 + idx * DTREE_NODE_STRIDE;
-    let isLeafFlag = ppgDTreeBuf_gi[base + 7u];
+    let isLeafFlag = ppgArenaLoadDTreeF32(base + 7u);
     if (isLeafFlag > 0.5) { return base; }
-    let u0 = ppgDTreeBuf_gi[base + 0u];
-    let v0 = ppgDTreeBuf_gi[base + 1u];
-    let u1 = ppgDTreeBuf_gi[base + 2u];
-    let v1 = ppgDTreeBuf_gi[base + 3u];
+    let u0 = ppgArenaLoadDTreeF32(base + 0u);
+    let v0 = ppgArenaLoadDTreeF32(base + 1u);
+    let u1 = ppgArenaLoadDTreeF32(base + 2u);
+    let v1 = ppgArenaLoadDTreeF32(base + 3u);
     let uMid = (u0 + u1) * 0.5;
     let vMid = (v0 + v1) * 0.5;
-    let firstChildF = ppgDTreeBuf_gi[base + 6u];
+    let firstChildF = ppgArenaLoadDTreeF32(base + 6u);
     if (firstChildF < 0.0) { return base; }
     let firstChild = u32(firstChildF);
     var off: u32 = 0u;
@@ -144,16 +165,20 @@ fn ppgDTreeFindLeafBase(dTreeOffset: u32, octUV: vec2<f32>) -> u32 {
 // dTreePdf (dTree.ts) EXACTLY — this is the defensive evaluation that keeps
 // the gi-ris mixture estimator unbiased.
 fn ppgEvalPdf(pos: vec3<f32>, wi: vec3<f32>) -> f32 {
+  if (!ppgQueryArenaValidGi()) { return 1.0 / PPG_FOUR_PI; }
   let sBase = ppgSTreeFindLeafBase(pos);
-  let dTreeIndex = u32(ppgSTreeBuf_gi[sBase + 10u]);
-  let dOff = ppgDTreeOffsets_gi[dTreeIndex];
-  let totalFlux = ppgDTreeBuf_gi[dOff + 2u];
+  let dTreeIndex = u32(ppgArenaLoadSTreeF32(sBase + 10u));
+  let dOff = ppgArenaLoadDTreeOffset(dTreeIndex);
+  let totalFlux = ppgArenaLoadDTreeF32(dOff + 2u);
   if (totalFlux <= 0.0) { return 1.0 / PPG_FOUR_PI; }
   let octUV = ppgDirToUv(wi);
   let leafBase = ppgDTreeFindLeafBase(dOff, octUV);
-  let leafFlux = ppgDTreeBuf_gi[leafBase + 4u];
-  let solidAng = ppgDTreeBuf_gi[leafBase + 5u];
-  return (leafFlux / totalFlux) / max(solidAng, 1e-12);
+  let leafFlux = ppgArenaLoadDTreeF32(leafBase + 4u);
+  let solidAng = ppgArenaLoadDTreeF32(leafBase + 5u);
+  if (!(leafFlux > 0.0) || !(solidAng > 0.0)) {
+    return 1.0 / PPG_FOUR_PI;
+  }
+  return (leafFlux / totalFlux) / solidAng;
 }
 
 // ── Flux-proportional dTree leaf sampler ─────────────────────────────────────
@@ -161,9 +186,9 @@ fn ppgDTreeSampleLeafBase(dTreeOffset: u32, rng: ptr<function, u32>) -> u32 {
   var idx: u32 = 0u;
   for (var step: u32 = 0u; step < 32u; step = step + 1u) {
     let base = dTreeOffset + DTREE_HEADER_F32 + idx * DTREE_NODE_STRIDE;
-    let isLeafFlag = ppgDTreeBuf_gi[base + 7u];
+    let isLeafFlag = ppgArenaLoadDTreeF32(base + 7u);
     if (isLeafFlag > 0.5) { return base; }
-    let firstChildF = ppgDTreeBuf_gi[base + 6u];
+    let firstChildF = ppgArenaLoadDTreeF32(base + 6u);
     if (firstChildF < 0.0) { return base; }
     let firstChild = u32(firstChildF);
 
@@ -171,7 +196,7 @@ fn ppgDTreeSampleLeafBase(dTreeOffset: u32, rng: ptr<function, u32>) -> u32 {
     var cFlux: array<f32, 4>;
     for (var ci: u32 = 0u; ci < 4u; ci = ci + 1u) {
       let cBase = dTreeOffset + DTREE_HEADER_F32 + (firstChild + ci) * DTREE_NODE_STRIDE;
-      cFlux[ci] = ppgDTreeBuf_gi[cBase + 4u];
+      cFlux[ci] = ppgArenaLoadDTreeF32(cBase + 4u);
       sum = sum + cFlux[ci];
     }
     let r = rand_f32(rng);
@@ -184,7 +209,7 @@ fn ppgDTreeSampleLeafBase(dTreeOffset: u32, rng: ptr<function, u32>) -> u32 {
       var cum: f32 = 0.0;
       for (var ci: u32 = 0u; ci < 4u; ci = ci + 1u) {
         cum = cum + cFlux[ci];
-        if (targetFlux <= cum && pick == 3u) { pick = ci; }
+        if (targetFlux < cum && pick == 3u) { pick = ci; }
       }
     }
     idx = firstChild + pick;
@@ -198,10 +223,16 @@ fn ppgDTreeSampleLeafBase(dTreeOffset: u32, rng: ptr<function, u32>) -> u32 {
 // returned direction via ppgEvalPdf (and a cosine pdf) — this routine does NOT
 // return a pdf, because the RIS source pdf is the α-mixture, not p_guide alone.
 fn ppgSampleGuidedDir(pos: vec3<f32>, rng: ptr<function, u32>) -> vec3<f32> {
+  if (!ppgQueryArenaValidGi()) {
+    let z = rand_f32(rng) * 2.0 - 1.0;
+    let phi = rand_f32(rng) * 6.283185307179586;
+    let rxy = sqrt(max(0.0, 1.0 - z * z));
+    return vec3<f32>(rxy * cos(phi), rxy * sin(phi), z);
+  }
   let sBase = ppgSTreeFindLeafBase(pos);
-  let dTreeIndex = u32(ppgSTreeBuf_gi[sBase + 10u]);
-  let dOff = ppgDTreeOffsets_gi[dTreeIndex];
-  let totalFlux = ppgDTreeBuf_gi[dOff + 2u];
+  let dTreeIndex = u32(ppgArenaLoadSTreeF32(sBase + 10u));
+  let dOff = ppgArenaLoadDTreeOffset(dTreeIndex);
+  let totalFlux = ppgArenaLoadDTreeF32(dOff + 2u);
   // Degenerate cell (no training flux): fall back to a uniform-sphere sample
   // so the returned direction is still valid (its mixture pdf is dominated by
   // the cosine term anyway, and p_guide reduces to the 1/4π uniform fallback).
@@ -212,10 +243,10 @@ fn ppgSampleGuidedDir(pos: vec3<f32>, rng: ptr<function, u32>) -> vec3<f32> {
     return vec3<f32>(rxy * cos(phi), rxy * sin(phi), z);
   }
   let leafBase = ppgDTreeSampleLeafBase(dOff, rng);
-  let u0 = ppgDTreeBuf_gi[leafBase + 0u];
-  let v0 = ppgDTreeBuf_gi[leafBase + 1u];
-  let u1 = ppgDTreeBuf_gi[leafBase + 2u];
-  let v1 = ppgDTreeBuf_gi[leafBase + 3u];
+  let u0 = ppgArenaLoadDTreeF32(leafBase + 0u);
+  let v0 = ppgArenaLoadDTreeF32(leafBase + 1u);
+  let u1 = ppgArenaLoadDTreeF32(leafBase + 2u);
+  let v1 = ppgArenaLoadDTreeF32(leafBase + 3u);
   let r0 = rand_f32(rng);
   let r1 = rand_f32(rng);
   let uv = vec2<f32>(u0 + r0 * (u1 - u0), v0 + r1 * (v1 - v0));

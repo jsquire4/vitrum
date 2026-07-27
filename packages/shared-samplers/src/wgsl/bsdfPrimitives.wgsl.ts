@@ -2,12 +2,20 @@
 export const BSDF_PRIMITIVES_MODULE_NAME = 'bsdfPrimitives';
 
 export const BSDF_PRIMITIVES_WGSL = /* wgsl */ `
+fn samplerSafeNormal(n: vec3f) -> vec3f {
+  let scale = max(max(abs(n.x), abs(n.y)), abs(n.z));
+  if (!(scale > 1e-12) || !(scale <= 3.402823e38)) { return vec3f(0.0, 1.0, 0.0); }
+  let scaled = n / scale;
+  return scaled * inverseSqrt(dot(scaled, scaled));
+}
+
 // Build an orthonormal basis around a normal.
 fn buildONB(n: vec3f, T: ptr<function, vec3f>, B: ptr<function, vec3f>) {
+  let nn = samplerSafeNormal(n);
   var up = vec3f(0.0, 1.0, 0.0);
-  if (abs(n.y) > 0.999) { up = vec3f(1.0, 0.0, 0.0); }
-  *T = normalize(cross(up, n));
-  *B = cross(n, *T);
+  if (abs(nn.y) > 0.999) { up = vec3f(1.0, 0.0, 0.0); }
+  *T = normalize(cross(up, nn));
+  *B = cross(nn, *T);
 }
 
 // Cosine-hemisphere sample in local space, returns world-space direction.
@@ -17,12 +25,17 @@ fn sampleCosineHemisphere(n: vec3f, rng: ptr<function, u32>) -> vec3f {
   let phi = 2.0 * PI * xi.y;
   let localDir = vec3f(r * cos(phi), r * sin(phi), sqrt(max(0.0, 1.0 - xi.x)));
   var T: vec3f; var B: vec3f;
-  buildONB(n, &T, &B);
-  return localDir.x * T + localDir.y * B + localDir.z * n;
+  let nn = samplerSafeNormal(n);
+  buildONB(nn, &T, &B);
+  return localDir.x * T + localDir.y * B + localDir.z * nn;
 }
 
 fn cosineHemispherePdf(n: vec3f, wi: vec3f) -> f32 {
-  return max(0.0, dot(n, wi)) * INV_PI;
+  let wiScale = max(max(abs(wi.x), abs(wi.y)), abs(wi.z));
+  if (!(wiScale > 1e-12) || !(wiScale <= 3.402823e38)) { return 0.0; }
+  let wiScaled = wi / wiScale;
+  let wiUnit = wiScaled * inverseSqrt(dot(wiScaled, wiScaled));
+  return max(0.0, dot(samplerSafeNormal(n), wiUnit)) * INV_PI;
 }
 
 // Schlick Fresnel.

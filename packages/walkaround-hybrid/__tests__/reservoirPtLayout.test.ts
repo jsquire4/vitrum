@@ -2,9 +2,9 @@
  * reservoirPtLayout.test.ts — GRIS Phase-0 bit-identity guard for the widened
  * ReSTIR-GI reservoir (ReservoirGI → ReservoirPT).
  *
- * Phase 0 widened the per-pixel GI reservoir from 20 u32 (80 bytes) to 30 u32
- * (120 bytes) by APPENDING the GRIS reconnection-shift cache at indices
- * [20..29]. The CONTRACT is that the existing [0..19] layout is byte-identical
+ * Phase 0 widened the per-pixel GI reservoir from 20 u32 (80 bytes) to 28 u32
+ * (112 bytes) by APPENDING the GRIS reconnection-shift cache at indices
+ * [20..27]. The CONTRACT is that the existing [0..19] layout is byte-identical
  * to the pre-GRIS ReservoirGI, so every current temporal/spatial/shade read of
  * the reservoir is provably unaffected and rendered output stays bit-identical
  * in Phase 0 (the new fields are written-but-unread).
@@ -22,6 +22,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   buildReservoirGiWgsl,
+  reservoirGiAccessorsWgsl,
   RESERVOIR_GI_WGSL,
 } from '../src/shaders/reservoirGi.wgsl.js';
 
@@ -63,9 +64,9 @@ function fnBody(src: string, fnName: string): string {
   return src.slice(open + 1, i);
 }
 
-describe('GRIS Phase-0 — ReservoirPT stride widened to 30 u32 / 120 bytes', () => {
-  it('declares RESERVOIR_GI_STRIDE = 30u (was 20u)', () => {
-    expect(RESERVOIR_GI_WGSL).toContain('const RESERVOIR_GI_STRIDE: u32 = 30u;');
+describe('GRIS Phase-0 — ReservoirPT stride widened to 28 u32 / 112 bytes', () => {
+  it('declares RESERVOIR_GI_STRIDE = 28u (was 20u)', () => {
+    expect(RESERVOIR_GI_WGSL).toContain('const RESERVOIR_GI_STRIDE: u32 = 28u;');
   });
 
   it('renames the struct to ReservoirPT and keeps a ReservoirGI alias', () => {
@@ -80,34 +81,42 @@ describe('H24 — default reservoir layout stays compact unless GRIS is structur
 
   it('compact default declares the 20-u32 Sprint-16/17 stride', () => {
     expect(compact).toContain('const RESERVOIR_GI_STRIDE: u32 = 20u;');
-    expect(full).toContain('const RESERVOIR_GI_STRIDE: u32 = 30u;');
+    expect(full).toContain('const RESERVOIR_GI_STRIDE: u32 = 28u;');
   });
 
-  it('compact store helper writes only the shared [0..19] prefix', () => {
-    const store = fnBody(compact, 'storeReservoirGI_rw');
-    const writes = [...store.matchAll(/buf\[b \+ (\d+)u\]/g)].map((m) => Number(m[1]));
+  it('compact pack helper writes only the shared [0..19] prefix', () => {
+    const store = fnBody(compact, 'packReservoirGI');
+    const writes = [...store.matchAll(/words\[(\d+)u\]/g)].map((m) => Number(m[1]));
     expect(writes.length).toBeGreaterThan(0);
     expect(Math.max(...writes)).toBe(19);
     expect(store).toContain('Compact default layout: no appended GRIS cache stores.');
   });
 
-  it('compact load helpers zero appended GRIS fields instead of reading beyond index 19', () => {
-    for (const body of [
-      fnBody(compact, 'loadReservoirGI_rw'),
-      fnBody(compact, 'loadReservoirGI_ro'),
-    ]) {
-      const reads = [...body.matchAll(/buf\[b \+ (\d+)u\]/g)].map((m) => Number(m[1]));
-      expect(Math.max(...reads)).toBe(19);
-      expect(body).toContain('r.wi_recon = vec3f(0.0);');
-      expect(body).toContain('r.prefixVertexCount = 0u;');
-    }
+  it('compact unpack helper zeroes appended GRIS fields instead of reading beyond index 19', () => {
+    const body = fnBody(compact, 'unpackReservoirGI');
+    const reads = [...body.matchAll(/words\[(\d+)u\]/g)].map((m) => Number(m[1]));
+    expect(Math.max(...reads)).toBe(19);
+    expect(body).toContain('r.wi_recon = vec3f(0.0);');
+    expect(body).toContain('r.prefixVertexCount = 0u;');
+  });
+
+  it('pass-local accessors copy exact bindings through the canonical pack/unpack helpers', () => {
+    const accessors = reservoirGiAccessorsWgsl({
+      loadReadWriteBinding: 'rwReservoirs',
+      loadReadBinding: 'roReservoirs',
+      storeReadWriteBinding: 'rwReservoirs',
+    });
+    expect(accessors).toContain('words[i] = rwReservoirs[base + i];');
+    expect(accessors).toContain('words[i] = roReservoirs[base + i];');
+    expect(accessors).toContain('rwReservoirs[base + i] = words[i];');
+    expect(accessors.match(/return unpackReservoirGI\(words\);/g)).toHaveLength(2);
+    expect(accessors).toContain('let words = packReservoirGI(r);');
   });
 });
 
 describe('GRIS Phase-0 — shared fields [0..19] are byte-identical to old ReservoirGI', () => {
-  const store = fnBody(RESERVOIR_GI_WGSL, 'storeReservoirGI_rw');
-  const loadRw = fnBody(RESERVOIR_GI_WGSL, 'loadReservoirGI_rw');
-  const loadRo = fnBody(RESERVOIR_GI_WGSL, 'loadReservoirGI_ro');
+  const store = fnBody(RESERVOIR_GI_WGSL, 'packReservoirGI');
+  const load = fnBody(RESERVOIR_GI_WGSL, 'unpackReservoirGI');
 
   it('store helper writes every shared field at its golden u32 index', () => {
     // f32 fields go through bitcast<u32>(...); u32 fields (M, lightId) are raw.
@@ -115,14 +124,14 @@ describe('GRIS Phase-0 — shared fields [0..19] are byte-identical to old Reser
       const isRawU32 = field === 'r.M' || field === 'r.lightId';
       const escaped = field.replace(/\./g, '\\.');
       const pat = isRawU32
-        ? new RegExp(`buf\\[b \\+ ${idx}u\\]\\s*=\\s*${escaped};`)
-        : new RegExp(`buf\\[b \\+ ${idx}u\\]\\s*=\\s*bitcast<u32>\\(${escaped}\\);`);
+        ? new RegExp(`words\\[${idx}u\\]\\s*=\\s*${escaped};`)
+        : new RegExp(`words\\[${idx}u\\]\\s*=\\s*bitcast<u32>\\(${escaped}\\);`);
       expect(pat.test(store), `store ${field} at index ${idx}`).toBe(true);
     }
   });
 
-  it('both load helpers read every shared field from its golden u32 index', () => {
-    for (const body of [loadRw, loadRo]) {
+  it('unpack helper reads every shared field from its golden u32 index', () => {
+    const body = load;
       // vec3 components: r.xv = vec3f(bitcast<f32>(buf[b + 0u]), bitcast<f32>(buf[b + 1u]), bitcast<f32>(buf[b + 2u]))
       // Build the expected component-index map per vec3 / scalar.
       const checks: { lhs: string; indices: number[]; raw: boolean }[] = [
@@ -140,17 +149,16 @@ describe('GRIS Phase-0 — shared fields [0..19] are byte-identical to old Reser
       for (const { lhs, indices, raw } of checks) {
         // Each index in `indices` must appear as a read for this field's RHS.
         for (const idx of indices) {
-          const inner = raw ? `buf\\[b \\+ ${idx}u\\]` : `bitcast<f32>\\(buf\\[b \\+ ${idx}u\\]\\)`;
+          const inner = raw ? `words\\[${idx}u\\]` : `bitcast<f32>\\(words\\[${idx}u\\]\\)`;
           expect(new RegExp(inner).test(body), `${lhs} reads index ${idx}`).toBe(true);
         }
         // And the assignment LHS exists.
         const esc = lhs.replace(/\./g, '\\.');
         expect(new RegExp(`${esc}\\s*=`).test(body), `${lhs} assigned`).toBe(true);
-      }
     }
   });
 
-  it('no shared field index collides with the appended GRIS range [20..29]', () => {
+  it('no shared field index collides with the appended GRIS range [20..27]', () => {
     for (const idx of Object.values(GOLDEN_SHARED_FIELD_INDEX)) {
       expect(idx).toBeGreaterThanOrEqual(0);
       expect(idx).toBeLessThanOrEqual(19);
@@ -159,27 +167,25 @@ describe('GRIS Phase-0 — shared fields [0..19] are byte-identical to old Reser
 });
 
 describe('GRIS Phase-0 — appended fields live strictly after index 19', () => {
-  const store = fnBody(RESERVOIR_GI_WGSL, 'storeReservoirGI_rw');
+  const store = fnBody(RESERVOIR_GI_WGSL, 'packReservoirGI');
 
-  it('the GRIS reconnection-shift cache is written at indices 20..29', () => {
-    // wi_recon.xyz → 20,21,22 ; pdfReconBsdf → 23 ; distRecon → 24 ;
-    // cosReconOut → 25 ; prefixVertexCount → 26 ; _padPT0..2 → 27,28,29.
-    expect(store).toMatch(/buf\[b \+ 20u\]\s*=\s*bitcast<u32>\(r\.wi_recon\.x\);/);
-    expect(store).toMatch(/buf\[b \+ 21u\]\s*=\s*bitcast<u32>\(r\.wi_recon\.y\);/);
-    expect(store).toMatch(/buf\[b \+ 22u\]\s*=\s*bitcast<u32>\(r\.wi_recon\.z\);/);
-    expect(store).toMatch(/buf\[b \+ 23u\]\s*=\s*bitcast<u32>\(r\.pdfReconBsdf\);/);
-    expect(store).toMatch(/buf\[b \+ 24u\]\s*=\s*bitcast<u32>\(r\.distRecon\);/);
-    expect(store).toMatch(/buf\[b \+ 25u\]\s*=\s*bitcast<u32>\(r\.cosReconOut\);/);
-    expect(store).toMatch(/buf\[b \+ 26u\]\s*=\s*r\.prefixVertexCount;/);
-    expect(store).toMatch(/buf\[b \+ 27u\]\s*=\s*r\._padPT0;/);
-    expect(store).toMatch(/buf\[b \+ 28u\]\s*=\s*r\._padPT1;/);
-    expect(store).toMatch(/buf\[b \+ 29u\]\s*=\s*r\._padPT2;/);
+  it('the GRIS reconnection-shift cache is written at indices 20..27', () => {
+    // wi_recon.xyz → 20,21,22 ; sampleVisibility → 23 ;
+    // prefixVertexCount → 24 ; sampleKind/nativePHat/historyEpoch → 25,26,27.
+    expect(store).toMatch(/words\[20u\]\s*=\s*bitcast<u32>\(r\.wi_recon\.x\);/);
+    expect(store).toMatch(/words\[21u\]\s*=\s*bitcast<u32>\(r\.wi_recon\.y\);/);
+    expect(store).toMatch(/words\[22u\]\s*=\s*bitcast<u32>\(r\.wi_recon\.z\);/);
+    expect(store).toMatch(/words\[23u\]\s*=\s*bitcast<u32>\(r\.sampleVisibility\);/);
+    expect(store).toMatch(/words\[24u\]\s*=\s*r\.prefixVertexCount;/);
+    expect(store).toMatch(/words\[25u\]\s*=\s*r\.sampleKind;/);
+    expect(store).toMatch(/words\[26u\]\s*=\s*bitcast<u32>\(r\.nativePHat\);/);
+    expect(store).toMatch(/words\[27u\]\s*=\s*r\.historyEpoch;/);
   });
 
-  it('no write touches an index >= 30 (stride bound)', () => {
-    const writes = [...store.matchAll(/buf\[b \+ (\d+)u\]/g)].map((m) => Number(m[1]));
+  it('no write touches an index >= 28 (stride bound)', () => {
+    const writes = [...store.matchAll(/words\[(\d+)u\]/g)].map((m) => Number(m[1]));
     expect(writes.length).toBeGreaterThan(0);
-    for (const idx of writes) expect(idx).toBeLessThan(30);
+    for (const idx of writes) expect(idx).toBeLessThan(28);
   });
 });
 
@@ -203,10 +209,10 @@ describe('GRIS Phase-0 — emptyReservoirGI matches old empty on shared fields +
 
   it('every appended GRIS field is zero-initialised', () => {
     expect(empty).toContain('r.wi_recon = vec3f(0.0);');
-    expect(empty).toContain('r.pdfReconBsdf = 0.0;');
-    expect(empty).toContain('r.distRecon = 0.0;');
-    expect(empty).toContain('r.cosReconOut = 0.0;');
+    expect(empty).toContain('r.sampleVisibility = 0.0;');
     expect(empty).toContain('r.prefixVertexCount = 0u;');
-    expect(empty).toContain('r._padPT0 = 0u; r._padPT1 = 0u; r._padPT2 = 0u;');
+    expect(empty).toContain('r.sampleKind = GI_SAMPLE_SURFACE;');
+    expect(empty).toContain('r.nativePHat = 0.0;');
+    expect(empty).toContain('r.historyEpoch = 0u;');
   });
 });

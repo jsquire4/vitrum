@@ -66,6 +66,7 @@ export interface GltfPrimitiveFeatureReport {
   readonly accessorImportIssues: readonly GltfPrimitiveAccessorImportIssue[];
   readonly instancingIssues: readonly GltfPrimitiveInstancingIssue[];
   readonly hasVertexColors: boolean;
+  /** @deprecated Always empty: valid COLOR_n streams are preserved losslessly. */
   readonly ignoredVertexColorSets: readonly string[];
   readonly hasUv1: boolean;
   readonly issuePaths: Readonly<Record<string, readonly string[]>>;
@@ -303,6 +304,10 @@ export type GltfAnimationMalformedChannelKind =
   | 'invalid-output-sparse-accessor'
   | 'missing-target-node'
   | 'target-node-not-found'
+  | 'pointer-target-undefined'
+  | 'invalid-pointer-output-accessor'
+  | 'invalid-pointer-interpolation'
+  | 'duplicate-animation-target'
   | 'invalid-output-count';
 
 export interface GltfAnimationMalformedChannelIssue {
@@ -313,6 +318,8 @@ export interface GltfAnimationMalformedChannelIssue {
   readonly targetPath?: string;
   readonly samplerIndex?: number;
   readonly nodeIndex?: number;
+  readonly pointer?: string;
+  readonly reason?: string;
   readonly accessorIndex?: number;
   readonly accessorRole?: 'input' | 'output';
   readonly accessorType?: string;

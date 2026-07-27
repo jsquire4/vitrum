@@ -31,20 +31,17 @@
  *   - run(noisyColor, albedo, normals, output): dispatch the inference graph.
  *   - dispose(): destroy all GPU resources.
  *
- * Memory budget (f32, 1080×1920):
- *   enc_input (H×W×9):      ~71 MB
- *   enc1_feat (H×W×24):    ~199 MB
- *   enc1_out (H/2×W/2×24):  ~50 MB
- *   ...total intermediates:  ~461 MB (f32) → use f16 in production.
- *
- * For a hosted GPU test this is large; the smoke test uses 32×32 which is ~4 MB total.
+ * Canonical 1920×1080 f32 telemetry is executable and pinned: 2,326,579,200
+ * logical bytes without reuse, 945,561,600 physical tensor bytes across eight
+ * slots, and 622,080,000 peak live tensor bytes. Adapter limits are preflighted
+ * before allocation and reported with an aspect-correct maximum resolution.
  */
 
 import type { UNetSpec } from './unetArchitecture.js';
 import { validateWeightsForSpec, type ModelWeights, type LayerWeights } from './weights.js';
 import {
   type TensorDims,
-  computeTensorDims,
+  preflightTensorDims,
   packLayerUniform,
   dispatchWorkgroupsFor,
 } from './tensorDimSolver.js';
@@ -52,9 +49,30 @@ import {
   type TensorBuffer,
   type LayerGPUState,
   allocateGraph,
+  type AllocatedGraph,
   buildBindGroup,
   currentBufKeys,
 } from './layerResourceAllocator.js';
+import {
+  assertNeuralDeviceSupportsGraph,
+  type NeuralMemoryTelemetry,
+} from './tensorMemoryPlanner.js';
+import { withNeuralGpuErrorScopes } from './gpuValidation.js';
+import {
+  NEURAL_F32_TENSOR_STORAGE,
+  resolveNeuralTensorStorage,
+  type NeuralTensorStorageContract,
+  type NeuralTensorStoragePreference,
+} from './tensorPrecision.js';
+import { walkaroundNeuralInferenceExtent } from './shapeContract.js';
+
+export type InferenceGraphState = 'idle' | 'initializing' | 'ready' | 'failed' | 'disposed';
+interface GraphResourceSnapshot {
+  readonly tensors: ReadonlyMap<string, TensorBuffer>;
+  readonly layerStates: readonly (LayerGPUState | null)[];
+  readonly allocatedBuffers: readonly GPUBuffer[];
+}
+
 
 // ── InferenceGraph ────────────────────────────────────────────────────────────
 
@@ -64,6 +82,9 @@ export class InferenceGraph {
   private _spec:         UNetSpec;
   private _W:            number = 0;
   private _H:            number = 0;
+  /** Private zero-padded extent used by the canonical U-Net tensors. */
+  private _inferenceW:   number = 0;
+  private _inferenceH:   number = 0;
 
   /** Named tensor buffers allocated during initialize(). */
   private _tensors: Map<string, TensorBuffer> = new Map();
@@ -94,10 +115,19 @@ export class InferenceGraph {
   private _inputPackPipeline: GPUComputePipeline | null = null;
   /** Uniform buffer holding the pixelCount for the input packer. */
   private _inputPackUniformBuf: GPUBuffer | null = null;
+  /** Exact padded-output crop, used only when logical and inference extents differ. */
+  private _outputCropPipeline: GPUComputePipeline | null = null;
+  private _outputCropUniformBuf: GPUBuffer | null = null;
 
   /** Whether initialize() has completed successfully. */
   private _ready = false;
 
+  private _state: InferenceGraphState = 'idle';
+  private _generation = 0;
+  private _lastFailure: string | null = null;
+  private _memoryTelemetry: NeuralMemoryTelemetry | null = null;
+  private _tensorStorage: NeuralTensorStorageContract = NEURAL_F32_TENSOR_STORAGE;
+  private _tensorStoragePreference: NeuralTensorStoragePreference = 'auto';
   /** Uploaded layer weights — retained for bind-group rebuild on buffer resize. */
   private _weightsByName: Map<string, LayerWeights> = new Map();
 
@@ -112,6 +142,20 @@ export class InferenceGraph {
 
   get ready(): boolean { return this._ready; }
 
+  get state(): InferenceGraphState { return this._state; }
+  get width(): number { return this._W; }
+  get height(): number { return this._H; }
+  get inferenceWidth(): number { return this._inferenceW; }
+  get inferenceHeight(): number { return this._inferenceH; }
+  get device(): GPUDevice | null { return this._device; }
+  get lastFailure(): string | null { return this._lastFailure; }
+  get memoryTelemetry(): NeuralMemoryTelemetry | null { return this._memoryTelemetry; }
+  get tensorStorage(): NeuralTensorStorageContract { return this._tensorStorage; }
+
+  owns(device: GPUDevice, width: number, height: number): boolean {
+    return this._ready && this._device === device && this._W === width && this._H === height;
+  }
+
   /**
    * Initialize GPU resources for the given resolution.
    *
@@ -121,44 +165,106 @@ export class InferenceGraph {
    * Bind groups are built here with current buffer references. If initialize()
    * is called again (resize), all bind groups are rebuilt.
    */
-  async initialize(device: GPUDevice, weights: ModelWeights, W: number, H: number): Promise<void> {
-    // Defensive: if initialize() is called a second time (e.g. a future resize
-    // path that re-initializes in place rather than recreating the instance),
-    // the previous allocation's GPU buffers would be ORPHANED — the field
-    // overwrites below drop every reference in `_tensors`/`_allocatedBuffers`,
-    // and nothing would ever `.destroy()` them. dispose() releases the prior
-    // allocation first; it is a no-op on a never-initialized instance.
-    if (this._ready || this._allocatedBuffers.length > 0 || this._tensors.size > 0) {
-      this.dispose();
+  async initialize(
+    device: GPUDevice,
+    weights: ModelWeights,
+    W: number,
+    H: number,
+    tensorStoragePreference: NeuralTensorStoragePreference = this._tensorStoragePreference,
+  ): Promise<void> {
+    if (this._state === 'disposed') {
+      throw new Error('[InferenceGraph] cannot initialize a disposed graph');
     }
-    this._device = device;
-    this._W      = W;
-    this._H      = H;
-    this._ready  = false;
-
     validateWeightsForSpec(this._spec, weights);
+    const extent = walkaroundNeuralInferenceExtent(W, H);
+    const tensorDimsMap = preflightTensorDims(
+      this._spec,
+      extent.inferenceWidth,
+      extent.inferenceHeight,
+    );
+    const tensorStorage = resolveNeuralTensorStorage(device, weights, tensorStoragePreference);
+    assertNeuralDeviceSupportsGraph(
+      device,
+      this._spec,
+      weights,
+      tensorDimsMap,
+      extent.inferenceWidth,
+      extent.inferenceHeight,
+      tensorStorage,
+    );
 
-    // Derive tensor dimensions ONCE by simulating the forward pass; store for
-    // re-use every frame in run().
-    this._tensorDimsMap = computeTensorDims(this._spec, W, H);
+    const generation = ++this._generation;
+    const hadReadyGeneration = this._ready;
+    this._state = 'initializing';
+    this._lastFailure = null;
 
-    // Allocate all GPU resources (buffers, pipelines, bind groups, uniforms).
-    this._tensors = new Map();
-    const alloc = await allocateGraph(device, this._spec, weights, W, H, this._tensorDimsMap);
+    try {
+      const alloc = await withNeuralGpuErrorScopes(
+        device,
+        `InferenceGraph ${W}x${H} (padded ${extent.inferenceWidth}x${extent.inferenceHeight}) generation ${generation}`,
+        () => allocateGraph(
+          device,
+          this._spec,
+          weights,
+          W,
+          H,
+          tensorDimsMap,
+          tensorStorage,
+          extent.inferenceWidth,
+          extent.inferenceHeight,
+        ),
+        disposeAllocatedGraph,
+      );
 
-    this._tensors             = alloc.tensors;
-    this._layerStates         = alloc.layerStates;
-    this._placeholderBuf      = alloc.placeholderBuf;
-    this._inputPackPipeline   = alloc.inputPackPipeline;
-    this._inputPackUniformBuf = alloc.inputPackUniformBuf;
-    this._allocatedBuffers    = alloc.allocatedBuffers;
-    this._weightsByName       = alloc.weightsByName;
-    // One uniform write per compute layer (the input-pack uniform write at init
-    // is NOT counted — it goes direct to the queue, matching the pre-refactor
-    // `_writeUniform`-only counting).
-    this._uniformWriteCount   = alloc.uniformWriteCount;
+      if (this._isDisposed() || generation !== this._generation) {
+        disposeAllocatedGraph(alloc);
+        throw new Error(
+          `[InferenceGraph] generation ${generation} was superseded before publication`,
+        );
+      }
 
-    this._ready = true;
+      const previous: GraphResourceSnapshot = {
+        tensors: this._tensors,
+        layerStates: this._layerStates,
+        allocatedBuffers: this._allocatedBuffers,
+      };
+
+      this._device               = device;
+      this._W                    = W;
+      this._H                    = H;
+      this._inferenceW           = extent.inferenceWidth;
+      this._inferenceH           = extent.inferenceHeight;
+      this._tensorDimsMap        = tensorDimsMap;
+      this._tensors              = alloc.tensors;
+      this._layerStates          = alloc.layerStates;
+      this._placeholderBuf       = alloc.placeholderBuf;
+      this._inputPackPipeline    = alloc.inputPackPipeline;
+      this._inputPackUniformBuf  = alloc.inputPackUniformBuf;
+      this._outputCropPipeline   = alloc.outputCropPipeline;
+      this._outputCropUniformBuf = alloc.outputCropUniformBuf;
+      this._allocatedBuffers     = alloc.allocatedBuffers;
+      this._weightsByName        = alloc.weightsByName;
+      this._uniformWriteCount    = alloc.uniformWriteCount;
+      this._memoryTelemetry      = alloc.memoryTelemetry;
+      this._ready                = true;
+      this._tensorStorage          = tensorStorage;
+      this._tensorStoragePreference = tensorStoragePreference;
+      this._state                = 'ready';
+      this._lastFailure          = null;
+
+      disposeGraphResourceSnapshot(previous);
+    } catch (error) {
+      if (generation === this._generation && !this._isDisposed()) {
+        this._lastFailure = errorMessage(error);
+        if (hadReadyGeneration && this._ready) {
+          this._state = 'ready';
+        } else {
+          this._ready = false;
+          this._state = 'failed';
+        }
+      }
+      throw error;
+    }
   }
 
   /**
@@ -186,6 +292,17 @@ export class InferenceGraph {
       throw new Error('[InferenceGraph] not initialized — call initialize() first');
     }
 
+    if (this._state !== 'ready') {
+      throw new Error(`[InferenceGraph] cannot dispatch while state=${this._state}`);
+    }
+    const rgbBytes = this._W * this._H * 3 * this._tensorStorage.bytesPerScalar;
+    assertBufferCapacity(noisyColorBuf, rgbBytes, 'noisyColor');
+    assertBufferCapacity(albedoBuf, rgbBytes, 'albedo');
+    assertBufferCapacity(normalsBuf, rgbBytes, 'normals');
+    assertBufferCapacity(outputBuf, rgbBytes, 'output');
+    if (this._placeholderBuf == null) {
+      throw new Error('[InferenceGraph] ready graph is missing its placeholder buffer');
+    }
     const device = this._device;
     const enc = commandEncoder ?? device.createCommandEncoder({ label: 'neural-inference' });
     const tensorDimsMap = this._tensorDimsMap;
@@ -206,12 +323,12 @@ export class InferenceGraph {
       if (!state) continue; // inputPack or unsupported kind
 
       // Re-validate bind group buffer identity.
-      const curKeys = currentBufKeys(layer, this._tensors, this._placeholderBuf!);
+      const curKeys = currentBufKeys(layer, this._tensors, this._placeholderBuf);
       if (!keysEqual(state.cachedBufKeys, curKeys)) {
         // Rebuild bind group with fresh buffer references (keep trained weights).
         const { bindGroup, bufKeys } = buildBindGroup(
           device, state.pipeline, layer, this._weightsByName, state.uniformBuf,
-          this._tensors, this._placeholderBuf!, this._allocatedBuffers,
+          this._tensors, this._placeholderBuf, this._allocatedBuffers,
         );
         state.cachedBindGroup = bindGroup;
         state.cachedBufKeys = bufKeys;
@@ -220,31 +337,47 @@ export class InferenceGraph {
       // Re-write uniform with current (stored) dims (handles resize).
       device.queue.writeBuffer(
         state.uniformBuf, 0,
-        packLayerUniform(layer, tensorDimsMap, this._H, this._W),
+        packLayerUniform(
+          layer,
+          tensorDimsMap,
+          this._inferenceH,
+          this._inferenceW,
+          device.limits.maxComputeWorkgroupsPerDimension,
+        ),
       );
       this._uniformWriteCount++;
 
       // Dispatch.
+      const bindGroup = state.cachedBindGroup;
+      if (bindGroup == null) {
+        throw new Error(`[InferenceGraph] layer '${layer.name}' has no bind group`);
+      }
       const pass = enc.beginComputePass({ label: `neural-${layer.name}` });
       pass.setPipeline(state.pipeline);
-      pass.setBindGroup(0, state.cachedBindGroup);
+      pass.setBindGroup(0, bindGroup);
 
       const outDims = tensorDimsMap.get(layer.output);
-      if (outDims) {
-        const [gx, gy, gz] = dispatchWorkgroupsFor(layer.kind, outDims);
-        pass.dispatchWorkgroups(gx, gy, gz);
-      }
+      if (outDims == null) throw new Error(`[InferenceGraph] missing dimensions for '${layer.output}'`);
+      const [gx, gy, gz] = dispatchWorkgroupsFor(
+        layer.kind,
+        outDims,
+        device.limits.maxComputeWorkgroupsPerDimension,
+      );
+      pass.dispatchWorkgroups(gx, gy, gz);
       pass.end();
     }
 
     // Copy final 'denoised' tensor to the output buffer.
     const denoisedTensor = this._tensors.get('denoised');
-    if (denoisedTensor) {
+    if (denoisedTensor == null) throw new Error("[InferenceGraph] ready graph is missing 'denoised'");
+    if (this._W === this._inferenceW && this._H === this._inferenceH) {
       enc.copyBufferToBuffer(
         denoisedTensor.buf, 0,
         outputBuf, 0,
-        denoisedTensor.dims.H * denoisedTensor.dims.W * denoisedTensor.dims.C * 4,
+        denoisedTensor.dims.H * denoisedTensor.dims.W * denoisedTensor.dims.C * this._tensorStorage.bytesPerScalar,
       );
+    } else {
+      this._runOutputCrop(enc, denoisedTensor.buf, outputBuf);
     }
 
     if (!commandEncoder) {
@@ -263,41 +396,39 @@ export class InferenceGraph {
    * uniforms, input-packer uniform, placeholder) is destroyed here.
    */
   dispose(): void {
-    // Null out cached bind groups slot-by-slot BEFORE destroying buffers.
-    for (let i = 0; i < this._layerStates.length; i++) {
-      const s = this._layerStates[i];
-      if (s) {
-        s.cachedBindGroup = null;
-      }
-    }
+    if (this._state === 'disposed') return;
+    this._generation++;
+    this._state = 'disposed';
+    disposeGraphResourceSnapshot({
+      tensors: this._tensors,
+      layerStates: this._layerStates,
+      allocatedBuffers: this._allocatedBuffers,
+    });
     this._layerStates = new Array(this._spec.layers.length).fill(null) as null[];
-
-    // Destroy intermediate tensor buffers.
-    for (const tb of this._tensors.values()) {
-      tb.buf.destroy();
-    }
-    this._tensors.clear();
+    this._tensors = new Map();
     this._tensorDimsMap = new Map();
-
-    // Destroy all tracked allocations (weights, biases, layer uniforms,
-    // input-packer uniform, placeholder buffer). Each buffer.destroy() is
-    // idempotent on a fresh handle, but guard with try/catch to tolerate
-    // double-destroy in error paths.
-    for (const buf of this._allocatedBuffers) {
-      try { buf.destroy(); } catch { /* tolerate already-destroyed */ }
-    }
     this._allocatedBuffers = [];
     this._placeholderBuf = null;
     this._inputPackPipeline = null;
     this._inputPackUniformBuf = null;
-
+    this._outputCropPipeline = null;
+    this._outputCropUniformBuf = null;
+    this._inferenceW = 0;
+    this._inferenceH = 0;
     this._device = null;
-    this._ready  = false;
+    this._ready = false;
     this._weightsByName.clear();
+    this._memoryTelemetry = null;
+    this._tensorStorage = NEURAL_F32_TENSOR_STORAGE;
+    this._tensorStoragePreference = 'auto';
   }
 
   // ── Private helpers ────────────────────────────────────────────────────────
 
+
+  private _isDisposed(): boolean {
+    return this._state === 'disposed';
+  }
   /**
    * GPU-side input packing pass.
    *
@@ -320,12 +451,18 @@ export class InferenceGraph {
     normalsBuf:    GPUBuffer,
   ): void {
     const encInputTensor = this._tensors.get('enc_input');
-    if (!encInputTensor) return;
-    if (!this._inputPackPipeline || !this._inputPackUniformBuf) return;
-    if (!this._device) return;
+    if (encInputTensor == null) {
+      throw new Error("[InferenceGraph] ready graph is missing 'enc_input'");
+    }
+    if (this._inputPackPipeline == null || this._inputPackUniformBuf == null) {
+      throw new Error('[InferenceGraph] ready graph is missing input-pack resources');
+    }
+    if (this._device == null) {
+      throw new Error('[InferenceGraph] ready graph lost its device');
+    }
 
     const device = this._device;
-    const pixelCount = this._H * this._W;
+    const pixelCount = this._inferenceH * this._inferenceW;
 
     const bindGroup = device.createBindGroup({
       label: 'neural-bg-inputPack',
@@ -346,6 +483,32 @@ export class InferenceGraph {
     pass.dispatchWorkgroups(Math.ceil(pixelCount / 256), 1, 1);
     pass.end();
   }
+
+  private _runOutputCrop(
+    enc: GPUCommandEncoder,
+    paddedInput: GPUBuffer,
+    logicalOutput: GPUBuffer,
+  ): void {
+    if (this._device == null
+        || this._outputCropPipeline == null
+        || this._outputCropUniformBuf == null) {
+      throw new Error('[InferenceGraph] ready graph is missing output-crop resources');
+    }
+    const bindGroup = this._device.createBindGroup({
+      label: 'neural-bg-outputCrop',
+      layout: this._outputCropPipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: { buffer: paddedInput } },
+        { binding: 1, resource: { buffer: logicalOutput } },
+        { binding: 2, resource: { buffer: this._outputCropUniformBuf } },
+      ],
+    });
+    const pass = enc.beginComputePass({ label: 'neural-outputCrop' });
+    pass.setPipeline(this._outputCropPipeline);
+    pass.setBindGroup(0, bindGroup);
+    pass.dispatchWorkgroups(Math.ceil((this._W * this._H) / 256), 1, 1);
+    pass.end();
+  }
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -356,4 +519,31 @@ function keysEqual(a: readonly string[], b: readonly string[]): boolean {
     if (a[i] !== b[i]) return false;
   }
   return true;
+}
+function disposeAllocatedGraph(graph: AllocatedGraph): void {
+  disposeGraphResourceSnapshot(graph);
+}
+
+function disposeGraphResourceSnapshot(snapshot: GraphResourceSnapshot): void {
+  const buffers = new Set<GPUBuffer>(snapshot.allocatedBuffers);
+  for (const state of snapshot.layerStates) {
+    if (state != null) state.cachedBindGroup = null;
+  }
+  for (const tensor of snapshot.tensors.values()) buffers.add(tensor.buf);
+  for (const buffer of buffers) {
+    try { buffer.destroy(); } catch { /* teardown is best-effort and idempotent */ }
+  }
+}
+
+function assertBufferCapacity(buffer: GPUBuffer, expectedBytes: number, label: string): void {
+  const size = (buffer as GPUBuffer & { readonly size?: number }).size;
+  if (typeof size === 'number' && size < expectedBytes) {
+    throw new RangeError(
+      `[InferenceGraph] ${label} buffer size ${size} is smaller than required ${expectedBytes}`,
+    );
+  }
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

@@ -5,7 +5,7 @@ import { dirname, join } from 'node:path';
 import type { Scene, Vec3 } from '@vitrum/core';
 import { asMat4 } from '@vitrum/core';
 import { packSceneFromCore, rebuildPrimitiveBlas, type PrimitiveTlasBinding } from '../scenePack.js';
-import { tlasIntersect, type TlasData } from '../tlas.js';
+import { tlasIntersect, type TlasBufferView } from '../tlas.js';
 
 /**
  * BYTE-IDENTITY behaviour pin for `packSceneFromCore` + the BLAS-splice paths.
@@ -184,7 +184,7 @@ function expectSerializedPackInvariants(pack: SerializedScenePack): void {
   }
 }
 
-function tlasDataFromSerialized(pack: SerializedScenePack): TlasData {
+function tlasDataFromSerialized(pack: SerializedScenePack): TlasBufferView {
   return {
     nodes: Uint32Array.from(pack.tlasNodes),
     nodeCount: pack.tlasNodeCount,

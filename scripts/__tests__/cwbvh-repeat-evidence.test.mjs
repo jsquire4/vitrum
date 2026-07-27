@@ -1,11 +1,9 @@
 import assert from 'node:assert/strict';
 import { dirname, resolve } from 'node:path';
-import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
-const validationQueueCheckerPath = resolve(repoRoot, 'tools', 'road-to-100', 'check-validation-queue.mjs');
 const {
   buildCwbvhRepeatCampaignSummary,
   CWBVH_REPEAT_FILTERS,
@@ -152,71 +150,7 @@ test('CWBVH repeat campaign summaries pin the promotion-sized dzn timeout', () =
   assert.match(summary.command, /--dzn-timeout-ms=900000/);
 });
 
-test('CWBVH default-promotion summary cites the completed repeat evidence without promoting', async () => {
-  const summary = JSON.parse(await readFile(
-    resolve(repoRoot, 'tools', 'behavioral-gate', 'cwbvh-default-promotion-status.json'),
-    'utf8',
-  ));
-  const repeatStatus = JSON.parse(await readFile(
-    resolve(repoRoot, 'tools', 'behavioral-gate', 'cwbvh-default-promotion-repeat-status.json'),
-    'utf8',
-  ));
 
-  assert.equal(summary.verdict, 'PASS-PARTIAL');
-  assert.equal(summary.promotion.defaultReady, false);
-  assert.equal(summary.repeatEvidence.status, 'completed-five-sample-warmup-discarded-nonpromoting');
-  assert.equal(summary.repeatEvidence.sampleCountPerWorkload, repeatStatus.sampleCountPerWorkload);
-  assert.equal(summary.repeatEvidence.warmupDiscardedPerWorkload, repeatStatus.warmupDiscardedPerWorkload);
-  assert.equal(summary.repeatEvidence.classification, repeatStatus.classification);
-  assert.equal(summary.repeatEvidence.defaultPromotionEligible, false);
-  assert.match(summary.repeatEvidence.residual, /one material-lobe-map fast outlier/);
-});
-
-test('CWBVH committed repeat status is derived from raw repeat records', async () => {
-  const repeatStatus = JSON.parse(await readFile(
-    resolve(repoRoot, 'tools', 'behavioral-gate', 'cwbvh-default-promotion-repeat-status.json'),
-    'utf8',
-  ));
-  const repeatRecords = JSON.parse(await readFile(
-    resolve(repoRoot, 'tools', 'behavioral-gate', 'cwbvh-default-promotion-repeat-records.json'),
-    'utf8',
-  ));
-  const recomputed = summarizeCwbvhRepeatEvidence(repeatRecords.records, {
-    warmupCount: repeatStatus.warmupDiscardedPerWorkload,
-  });
-
-  assert.deepEqual(repeatStatus.workloads, recomputed.workloads);
-  assert.equal(repeatStatus.classification, recomputed.classification);
-  assert.equal(repeatStatus.sampleCountPerWorkload, recomputed.sampleCountPerWorkload);
-
-  const tamperedRecords = structuredClone(repeatRecords.records);
-  const sample = tamperedRecords.find((record) => record.phase === 'sample' && record.filter === 'cwbvh-broader');
-  const row = sample.status.configs.find((entry) => entry.label === 'pt/cwbvh-broader-material-lobe-maps');
-  row.cwbvhRenderMsRatio = 0.5;
-  const tamperedSummary = summarizeCwbvhRepeatEvidence(tamperedRecords, {
-    warmupCount: repeatStatus.warmupDiscardedPerWorkload,
-  });
-
-  assert.notDeepEqual(tamperedSummary.workloads, repeatStatus.workloads);
-});
-
-test('Road checker pins CWBVH promotion provenance blocks', async () => {
-  const validationQueueChecker = await readFile(validationQueueCheckerPath, 'utf8');
-
-  assert.match(validationQueueChecker, /REQUIRED_CWBVH_PROMOTION_SOURCE_STATUS_PATHS/);
-  assert.match(validationQueueChecker, /vitrum\.cwbvh-default-promotion\.provenance\.v1/);
-  assert.match(validationQueueChecker, /repeat-status-provenance\.v1/);
-  assert.match(validationQueueChecker, /repeat-records-provenance\.v1/);
-  assert.match(validationQueueChecker, /cwbvhPromotionProvenance/);
-  assert.match(validationQueueChecker, /cwbvhRepeatStatusProvenance/);
-  assert.match(validationQueueChecker, /cwbvhRepeatRecordsProvenance/);
-  assert.match(validationQueueChecker, /assertSha256DigestRows/);
-  const checker = await readFile(
-    resolve(repoRoot, 'tools', 'behavioral-gate', 'check-cwbvh-default-promotion-status.mjs'),
-    'utf8',
-  );
-  assert.match(checker, /runIndex .* must be phase/);
-});
 function makeRecords(ratioFor, runCount) {
   const records = [];
   for (let runIndex = 0; runIndex < runCount; runIndex += 1) {

@@ -118,11 +118,11 @@ describe('collectUnconsumedMaterialFields', () => {
     expect(collectUnconsumedMaterialFields(prims)).toEqual([]);
   });
 
-  it('reports material drops on analytic primitives', () => {
+  it('consumes optical-stack fields on analytic primitives', () => {
     const prims: PrimLike[] = [
       { kind: 'analytic', material: { baseColor: [1, 1, 1], roughness: 0, metallic: 0, thinFilmStack: { layers: [] } } },
     ];
-    expect(collectUnconsumedMaterialFields(prims)).toEqual(['thinFilmStack']);
+    expect(collectUnconsumedMaterialFields(prims)).toEqual([]);
   });
 
   it('does not count undefined or null fields as unconsumed', () => {
@@ -138,13 +138,13 @@ describe('collectUnconsumedMaterialFields', () => {
     expect(result).not.toContain('clearcoatMap');
   });
 
-  it('includes skinned-mesh and instanced-mesh primitives', () => {
+  it('consumes optical-stack fields on skinned and instanced primitives', () => {
     const kinds = ['skinned-mesh', 'instanced-mesh'] as const;
     for (const kind of kinds) {
       const prims: PrimLike[] = [
         { kind, material: { baseColor: [1, 1, 1], roughness: 0.5, metallic: 0, thinFilmStack: { layers: [] } } },
       ];
-      expect(collectUnconsumedMaterialFields(prims)).toContain('thinFilmStack');
+      expect(collectUnconsumedMaterialFields(prims)).toEqual([]);
     }
   });
 });
@@ -166,6 +166,8 @@ describe('CONSUMED_MATERIAL_FIELDS', () => {
       'sheenColorMap', 'sheenRoughnessMap',
       'anisotropy', 'anisotropyRotation', 'anisotropyMap',
       'frontLayer', 'backLayer',
+      'spectralAttenuation', 'dispersionAbbeNumber', 'thinFilmStack',
+      'scatteringCoefficient', 'scatteringAnisotropy', 'scatteringCoefficientRGB',
       'iridescence', 'iridescenceIor', 'iridescenceThicknessRange',
       'iridescenceMap', 'iridescenceThicknessMap',
       'baseColorMap', 'roughnessMap', 'metallicMap',

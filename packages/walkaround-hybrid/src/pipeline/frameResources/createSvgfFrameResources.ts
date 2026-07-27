@@ -15,8 +15,7 @@
  * nothing reads these fields off the svgf-real dispatch path; only the GPU
  * memory footprint drops. Object-id textures follow the same size gate; shade
  * writes them through a dimension-guarded helper so the inactive 1×1 storage
- * texture remains a legal frame-layout placeholder. The old 1×1 object-id
- * placeholders are kept as fallback-only resources.
+ * texture remains a legal frame-layout placeholder.
  */
 
 import type { SVGFFrameResources } from '../resourceManager.js';
@@ -62,30 +61,6 @@ export function createSvgfFrameResources(
   // preserving the struct shape + format/usage of every field.
   const w = svgfEnabled ? width : 1;
   const h = svgfEnabled ? height : 1;
-  const svgfObjIdPlaceholderTexture = device.createTexture({
-    label: 'svgf-real-objid-placeholder',
-    size: [1, 1],
-    format: 'r32uint',
-    usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
-  });
-  device.queue.writeTexture(
-    { texture: svgfObjIdPlaceholderTexture },
-    new Uint32Array([0]),
-    { bytesPerRow: 4 },
-    [1, 1],
-  );
-  const svgfPrevObjIdPlaceholderTexture = device.createTexture({
-    label: 'svgf-real-prev-objid-placeholder',
-    size: [1, 1],
-    format: 'r32uint',
-    usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
-  });
-  device.queue.writeTexture(
-    { texture: svgfPrevObjIdPlaceholderTexture },
-    new Uint32Array([1]),
-    { bytesPerRow: 4 },
-    [1, 1],
-  );
   const svgfCurrentObjectIdTexture = device.createTexture({
     label: 'svgf-real-current-object-id',
     size: [w, h],
@@ -187,8 +162,6 @@ export function createSvgfFrameResources(
   });
 
   return {
-    svgfObjIdPlaceholderTexture,
-    svgfPrevObjIdPlaceholderTexture,
     svgfCurrentObjectIdTexture,
     svgfPreviousObjectIdTexture,
     svgfPrevNormalDepthTexture,

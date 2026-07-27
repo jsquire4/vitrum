@@ -14,7 +14,8 @@
  *   slot 10    → attenuationDistance
  *   slot 11    → thickness
  *   slot 12..14→ attenuationColor.xyz
- *   slot 15    → flags (u32; bit 0 = isGlass, bit 1 = castShadow disabled)
+ *   slot 15    → flags (u32; bit 0 = isGlass, bit 1 = castShadow disabled,
+ *                       bit 2 = double-sided)
  *
  * Std140 alignment: every `vec3<f32>` field is followed by an `f32` so the
  * subsequent field starts on a 16-byte boundary. The struct is 64 bytes
@@ -45,11 +46,12 @@ struct MaterialEntry {
   attenuationDistance: f32,
   thickness:           f32,
   attenuationColor:    vec3<f32>,
-  flags:               u32,  // bit 0 = isGlass, bit 1 = castShadow disabled
+  flags:               u32,  // bit 0 = glass, bit 1 = no shadow, bit 2 = double-sided
 };
 
 // Canonical flag bits.
 const MATERIAL_FLAG_IS_GLASS: u32 = 1u;
 const MATERIAL_FLAG_CAST_SHADOW_DISABLED: u32 = 2u;
+const MATERIAL_FLAG_DOUBLE_SIDED: u32 = 4u;
 
 `;

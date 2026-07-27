@@ -13,9 +13,10 @@
 import type { WgslModule } from '../pipeline/wgslComposer.js';
 import {
   BVH_CAST_SHADOW_MASK_WGSL,
-  BVH_INTERSECT_WGSL,
-  TLAS_TRAVERSAL_WGSL,
+  BVH_INTERSECT_CORE_WGSL,
+  TLAS_TRAVERSAL_CORE_WGSL,
 } from '@vitrum/shared-bvh';
+import { SCENE_STORAGE_ARENA_WGSL } from './sceneStorageArena.wgsl.js';
 
 export const SCENE_TRAVERSAL_WGSL = /* wgsl */ `// ============================================================
 // BVH structs + intersection helpers — canonical from @vitrum/shared-bvh
@@ -36,40 +37,21 @@ export const SCENE_TRAVERSAL_WGSL = /* wgsl */ `// =============================
 //     shadow behaviour — light passes through, tint is applied by the
 //     per-channel bvhTraceTintedVisibility helper in shade).
 // ============================================================
-${BVH_INTERSECT_WGSL}
-${TLAS_TRAVERSAL_WGSL}
+${BVH_INTERSECT_CORE_WGSL}
+${SCENE_STORAGE_ARENA_WGSL}
+${TLAS_TRAVERSAL_CORE_WGSL}
 
 // Scene traversal — merged world BVH vs TLAS+local BLAS (PR-3).
 fn traceSceneFirstHit(
   bvhMode: u32,
   tlasNodeCount: u32,
-  bvh_index: ptr<storage, array<vec4u>, read>,
-  bvh_position: ptr<storage, array<vec4f>, read>,
-  bvh: ptr<storage, array<BVHNode>, read>,
-  tlasNodes: ptr<storage, array<BVHNode>, read>,
-  tlasInstanceIndices: ptr<storage, array<u32>, read>,
-  tlasBlasRoots: ptr<storage, array<u32>, read>,
-  tlasInstanceWorldToLocal: ptr<storage, array<vec4f>, read>,
-  tlasInstanceLocalToWorld: ptr<storage, array<vec4f>, read>,
   ray: Ray,
   triEps: f32,
 ) -> IntersectionResult {
   if (bvhMode == 1u && tlasNodeCount > 0u) {
-    return traceTlasFirstHit(
-      tlasNodes,
-      tlasInstanceIndices,
-      tlasBlasRoots,
-      tlasInstanceWorldToLocal,
-      tlasInstanceLocalToWorld,
-      tlasNodeCount,
-      bvh_index,
-      bvh_position,
-      bvh,
-      ray,
-      triEps,
-    );
+    return traceTlasFirstHit(tlasNodeCount, ray, triEps);
   }
-  return bvhIntersectFirstHit(bvh_index, bvh_position, bvh, ray, triEps);
+  return bvhIntersectFirstHit(ray, triEps);
 }
 
 fn materialScalarAlphaDiscardedForTri(
@@ -88,14 +70,6 @@ fn materialScalarAlphaDiscardedForTri(
 fn traceSceneFirstHitAlphaMask(
   bvhMode: u32,
   tlasNodeCount: u32,
-  bvh_index: ptr<storage, array<vec4u>, read>,
-  bvh_position: ptr<storage, array<vec4f>, read>,
-  bvh: ptr<storage, array<BVHNode>, read>,
-  tlasNodes: ptr<storage, array<BVHNode>, read>,
-  tlasInstanceIndices: ptr<storage, array<u32>, read>,
-  tlasBlasRoots: ptr<storage, array<u32>, read>,
-  tlasInstanceWorldToLocal: ptr<storage, array<vec4f>, read>,
-  tlasInstanceLocalToWorld: ptr<storage, array<vec4f>, read>,
   ray: Ray,
   triEps: f32,
   materialMask: texture_2d<u32>,
@@ -107,9 +81,6 @@ fn traceSceneFirstHitAlphaMask(
   for (var i = 0u; i < 32u; i = i + 1u) {
     var hit = traceSceneFirstHit(
       bvhMode, tlasNodeCount,
-      bvh_index, bvh_position, bvh,
-      tlasNodes, tlasInstanceIndices, tlasBlasRoots,
-      tlasInstanceWorldToLocal, tlasInstanceLocalToWorld,
       walkRay, triEps,
     );
     if (!hit.didHit) {
@@ -124,9 +95,6 @@ fn traceSceneFirstHitAlphaMask(
   }
   var exhausted = traceSceneFirstHit(
     bvhMode, tlasNodeCount,
-    bvh_index, bvh_position, bvh,
-    tlasNodes, tlasInstanceIndices, tlasBlasRoots,
-    tlasInstanceWorldToLocal, tlasInstanceLocalToWorld,
     walkRay, triEps,
   );
   if (
@@ -144,14 +112,6 @@ fn traceSceneFirstHitAlphaMask(
 fn traceSceneAny(
   bvhMode: u32,
   tlasNodeCount: u32,
-  bvh_index: ptr<storage, array<vec4u>, read>,
-  bvh_position: ptr<storage, array<vec4f>, read>,
-  bvh: ptr<storage, array<BVHNode>, read>,
-  tlasNodes: ptr<storage, array<BVHNode>, read>,
-  tlasInstanceIndices: ptr<storage, array<u32>, read>,
-  tlasBlasRoots: ptr<storage, array<u32>, read>,
-  tlasInstanceWorldToLocal: ptr<storage, array<vec4f>, read>,
-  tlasInstanceLocalToWorld: ptr<storage, array<vec4f>, read>,
   origin: vec3f,
   dir: vec3f,
   tMax: f32,
@@ -160,15 +120,7 @@ fn traceSceneAny(
 ) -> bool {
   if (bvhMode == 1u && tlasNodeCount > 0u) {
     return traceTlasAny(
-      tlasNodes,
-      tlasInstanceIndices,
-      tlasBlasRoots,
-      tlasInstanceWorldToLocal,
-      tlasInstanceLocalToWorld,
       tlasNodeCount,
-      bvh_index,
-      bvh_position,
-      bvh,
       origin,
       dir,
       tMax,
@@ -176,7 +128,7 @@ fn traceSceneAny(
       skipGlass,
     );
   }
-  return bvhIntersectAny(bvh_index, bvh_position, bvh, origin, dir, tMax, triEps, skipGlass);
+  return bvhIntersectAny(origin, dir, tMax, triEps, skipGlass);
 }
 
 ${BVH_CAST_SHADOW_MASK_WGSL}
@@ -195,14 +147,6 @@ ${BVH_CAST_SHADOW_MASK_WGSL}
 fn traceSceneAnyCastMask(
   bvhMode: u32,
   tlasNodeCount: u32,
-  bvh_index: ptr<storage, array<vec4u>, read>,
-  bvh_position: ptr<storage, array<vec4f>, read>,
-  bvh: ptr<storage, array<BVHNode>, read>,
-  tlasNodes: ptr<storage, array<BVHNode>, read>,
-  tlasInstanceIndices: ptr<storage, array<u32>, read>,
-  tlasBlasRoots: ptr<storage, array<u32>, read>,
-  tlasInstanceWorldToLocal: ptr<storage, array<vec4f>, read>,
-  tlasInstanceLocalToWorld: ptr<storage, array<vec4f>, read>,
   origin: vec3f,
   dir: vec3f,
   tMax: f32,
@@ -213,15 +157,7 @@ fn traceSceneAnyCastMask(
 ) -> bool {
   if (bvhMode == 1u && tlasNodeCount > 0u) {
     return traceTlasAnyCastMask(
-      tlasNodes,
-      tlasInstanceIndices,
-      tlasBlasRoots,
-      tlasInstanceWorldToLocal,
-      tlasInstanceLocalToWorld,
       tlasNodeCount,
-      bvh_index,
-      bvh_position,
-      bvh,
       origin,
       dir,
       tMax,
@@ -231,7 +167,7 @@ fn traceSceneAnyCastMask(
       castMaskWidth,
     );
   }
-  return bvhIntersectAnyAtRootCastMask(bvh_index, bvh_position, bvh, origin, dir, tMax, triEps, skipGlass, 0u, castMask, castMaskWidth);
+  return bvhIntersectAnyAtRootCastMask(origin, dir, tMax, triEps, skipGlass, 0u, castMask, castMaskWidth);
 }
 
 // ─── WS1 (2026-05-29) — smooth shading normal via barycentric per-vertex blend ─
@@ -246,12 +182,12 @@ fn traceSceneAnyCastMask(
 // backface bias by the caller (a smooth normal can point into the surface near
 // a silhouette edge, which would self-intersect the offset ray).
 //
-// TLAS mode (V21): bvh_normal holds LOCAL-space BLAS normals, so the blended
+// TLAS mode (V21): the geometry arena holds LOCAL-space BLAS normals, so the blended
 // shading normal is transformed to WORLD by the hit instance's inverse-transpose
 // (tlasTransformNormalFromLocalCols with the instance world-to-local columns —
 // the SAME transform traceTlasFirstHit applies to the geometric normal). The
 // caller passes isTlas + the three world-to-local columns (read from the
-// module-scope tlasInstanceWorldToLocal binding at instanceIndex*4); merged
+// arena-backed world-to-local loader at instanceIndex*4); merged
 // mode passes isTlas=false and the blend is already world-space. (The earlier
 // wave kept the geometric normal in TLAS — that left smooth shading dormant on
 // every multi-mesh / instanced scene, which all auto-select TLAS.)
@@ -260,18 +196,18 @@ fn traceSceneAnyCastMask(
 // across a thin/folded triangle) we fall back to the geometric face normal so
 // the result stays finite + unit-length.
 // Takes the three per-vertex normals BY VALUE (n0/n1/n2) rather than the
-// bvh_normal storage buffer by pointer: Naga (wgpu-native / Firefox) rejects
-// ptr<storage> function parameters, so a value-arg signature is naga-native
-// and needs no shader-rewrite shim. Callers load bvh_normal[hit.indices.xyz]
+// arena-backed normal stream by pointer: Naga (wgpu-native / Firefox) rejects
+// storage-buffer pointer function parameters, so a value-arg signature is naga-native
+// and needs no shader-rewrite shim. Callers load sceneLoadBvhNormal(hit.indices.xyz)
 // inline at the call site (indexing a module-scope storage global is fine; only
-// passing it AS a ptr<storage> param is the Naga gap). Caught by the wsl-gpu
+// passing it as a storage-buffer pointer param is the Naga gap). Caught by the wsl-gpu
 // T1 smoke gate (lavapipe/naga) — the prior ptr-param form failed to compile.
 // In TLAS mode the per-vertex normals (n0/n1/n2) are LOCAL-space BLAS normals, so
 // the blended shading normal is transformed to world by the SAME inverse-transpose
 // the geometric normal uses (tlasTransformNormalFromLocalCols with the instance's
-// world-to-local columns). The caller reads those columns from the module-scope
-// tlasInstanceWorldToLocal binding (instanceIndex*4) and passes them BY VALUE —
-// Naga rejects ptr<storage> params, but value vec4f args + a bool are naga-native.
+// world-to-local columns). The caller reads those columns through the shared
+// TLAS-arena loader (instanceIndex*4) and passes them BY VALUE —
+// Naga rejects storage-buffer pointer params, but value vec4f args + a bool are naga-native.
 // In merged-world mode isTlas is false and the blend is already world-space.
 fn smoothShadingNormal(
   hit: IntersectionResult,
@@ -295,7 +231,11 @@ fn smoothShadingNormal(
     let worldN = tlasTransformNormalFromLocalCols(w2l0, w2l1, w2l2, n);
     let wl = length(worldN);
     if (wl < 1e-6) { return geoNormal; }
-    n = worldN / wl;
+    // hit.side is world-winding parity corrected by TLAS traversal. Apply
+    // the transform parity to the authored local normal before multiplying by
+    // that side so the final shading normal remains face-forward on mirrored
+    // instances as well as non-mirrored ones.
+    n = (worldN / wl) * tlasLinearOrientationSign(w2l0, w2l1, w2l2);
   }
   return n * hit.side;
 }

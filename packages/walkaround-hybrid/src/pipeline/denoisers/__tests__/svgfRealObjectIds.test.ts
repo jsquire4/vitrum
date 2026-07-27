@@ -68,17 +68,18 @@ describe('SVGFRealDenoiser object IDs', () => {
     const previousObjectId = tex('previous-object-id');
     const gNormalDepth = tex('g-normal-depth');
     const prevNormalDepth = tex('prev-normal-depth');
+    const denoisedPing = tex('ping');
+    const radianceA = tex('rad-a');
+    const radianceB = tex('rad-b');
     const resources = {
       common: {
         hdrColorTexture: tex('hdr'),
         motionVectorTexture: tex('motion'),
         gNormalDepthTexture: gNormalDepth,
-        denoisedPingTexture: tex('ping'),
+        denoisedPingTexture: denoisedPing,
         denoisedPongTexture: tex('pong'),
       },
       svgf: {
-        svgfObjIdPlaceholderTexture: tex('placeholder-object-id', 1, 1),
-        svgfPrevObjIdPlaceholderTexture: tex('placeholder-prev-object-id', 1, 1),
         svgfCurrentObjectIdTexture: currentObjectId,
         svgfPreviousObjectIdTexture: previousObjectId,
         svgfPrevNormalDepthTexture: prevNormalDepth,
@@ -86,8 +87,8 @@ describe('SVGFRealDenoiser object IDs', () => {
         svgfHistoryLengthTextureB: tex('hist-b'),
         svgfMomentsTextureA: tex('mom-a'),
         svgfMomentsTextureB: tex('mom-b'),
-        svgfPrevRadianceTextureA: tex('rad-a'),
-        svgfPrevRadianceTextureB: tex('rad-b'),
+        svgfPrevRadianceTextureA: radianceA,
+        svgfPrevRadianceTextureB: radianceB,
         svgfVarianceTexture: tex('variance'),
         svgfVarianceMomentsIntermedTexture: tex('variance-intermed'),
       },
@@ -110,6 +111,12 @@ describe('SVGFRealDenoiser object IDs', () => {
     expect(currObj.resource).toBe(currentObjectId.view);
     expect(prevObj.resource).toBe(previousObjectId.view);
 
+    // First à-trous output is the next frame's radiance history (§4.3).
+    expect(encoder.copyTextureToTexture).toHaveBeenCalledWith(
+      { texture: denoisedPing },
+      { texture: radianceB },
+      { width: denoisedPing.width, height: denoisedPing.height, depthOrArrayLayers: 1 },
+    );
     expect(encoder.copyTextureToTexture).toHaveBeenCalledWith(
       { texture: gNormalDepth },
       { texture: prevNormalDepth },
@@ -164,6 +171,8 @@ describe('SVGFRealDenoiser object IDs', () => {
     const momB = tex('mom-b');
     const varianceIntermed = tex('variance-intermed');
     const variance = tex('variance');
+    const currentObjectId = tex('current-object-id');
+    const previousObjectId = tex('previous-object-id');
     const resources = {
       common: {
         hdrColorTexture: hdr,
@@ -173,10 +182,8 @@ describe('SVGFRealDenoiser object IDs', () => {
         denoisedPongTexture: tex('pong'),
       },
       svgf: {
-        svgfObjIdPlaceholderTexture: tex('placeholder-object-id', 1, 1),
-        svgfPrevObjIdPlaceholderTexture: tex('placeholder-prev-object-id', 1, 1),
-        svgfCurrentObjectIdTexture: null,
-        svgfPreviousObjectIdTexture: null,
+        svgfCurrentObjectIdTexture: currentObjectId,
+        svgfPreviousObjectIdTexture: previousObjectId,
         svgfPrevNormalDepthTexture: prevNormalDepth,
         svgfHistoryLengthTextureA: tex('hist-a'),
         svgfHistoryLengthTextureB: histB,

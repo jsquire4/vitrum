@@ -13,16 +13,48 @@ import {
   emitterPatch,
   readSceneValue,
   MATERIAL_PARAM_DESCRIPTORS,
-  EMITTER_PARAM_DESCRIPTORS,
   MATERIAL_RGB_FIELDS,
   MATERIAL_VEC2_FIELDS,
   MATERIAL_SCALAR_FIELDS,
   EMITTER_RGB_FIELDS,
   EMITTER_SCALAR_FIELDS,
+  assertFiniteArray,
+  invokeInverseHook,
+  normalizeInverseError,
+  validateInverseReadback,
+  validateInverseSessionOptions,
+  validateInitialSceneValue,
   validateParam,
   type ParamLayoutEntry,
 } from '../inverse-scaffolding.js';
-import type { InverseParam, InverseTargetImage, Scene } from '../index.js';
+import type {
+  InverseParam,
+  InverseSessionOptions,
+  InverseTargetImage,
+  Scene,
+} from '../index.js';
+
+describe('shared inverse scaffolding — hook error boundary', () => {
+  it('preserves Error objects and normalizes every non-Error throw', () => {
+    const existing = new Error('existing');
+    expect(normalizeInverseError(existing, 'operation')).toBe(existing);
+
+    for (const thrown of ['string failure', undefined, null, { code: 7 }]) {
+      let caught: unknown;
+      try {
+        invokeInverseHook('test hook', () => {
+          // eslint-disable-next-line @typescript-eslint/only-throw-error -- verifies the hook boundary
+          throw thrown;
+        });
+      } catch (error) {
+        caught = error;
+      }
+      expect(caught).toBeInstanceOf(Error);
+      expect((caught as Error).message).toContain('test hook');
+      expect((caught as Error).message).toContain('non-Error value');
+    }
+  });
+});
 
 // ── Adam parity: identical gradients ⇒ identical steps ─────────────────────────
 // The whole point of the shared scaffolding is that both backends run the SAME
@@ -56,6 +88,193 @@ describe('shared inverse scaffolding — Adam optimizer parity', () => {
       beta2: 0.999,
       epsilon: 1e-8,
     });
+  });
+
+  it('snapshots/restores moments and rejects a non-finite step atomically', () => {
+    const adam = new Adam(1, DEFAULT_ADAM);
+    const params = new Float32Array([0.5]);
+    const initial = adam.snapshot();
+    adam.step(params, new Float32Array([0.25]));
+    expect(params[0]).not.toBe(0.5);
+    adam.restore(initial);
+    params[0] = 0.5;
+    const before = adam.snapshot();
+    expect(() => adam.step(params, new Float32Array([Number.NaN]))).toThrow(/non-finite/);
+    expect(params[0]).toBe(0.5);
+    expect(adam.snapshot()).toEqual(before);
+  });
+});
+
+describe('shared inverse scaffolding — strict session validation', () => {
+  const valid = (): InverseSessionOptions => ({
+    target: {
+      data: new Float32Array([0, 0, 0]),
+      width: 1,
+      height: 1,
+      channels: 3,
+    },
+    parameters: [{ path: 'materials.panel.roughness', kind: 'scalar' }],
+  });
+
+  it.each([
+    ['zero width', { width: 0 }, /positive safe integers/],
+    ['fractional width', { width: 1.5 }, /positive safe integers/],
+    ['NaN height', { height: Number.NaN }, /positive safe integers/],
+    ['infinite height', { height: Number.POSITIVE_INFINITY }, /positive safe integers/],
+  ])('rejects %s', (_name, targetPatch, message) => {
+    const options = valid();
+    expect(() => validateInverseSessionOptions({
+      ...options,
+      target: { ...options.target, ...targetPatch },
+    }, 'test')).toThrow(message);
+  });
+
+  it('rejects invalid channel counts, target lengths, and non-finite targets', () => {
+    const options = valid();
+    expect(() => validateInverseSessionOptions({
+      ...options,
+      target: { ...options.target, channels: 2 as 3 },
+    }, 'test')).toThrow(/channels/);
+    expect(() => validateInverseSessionOptions({
+      ...options,
+      target: { ...options.target, data: new Float32Array(2) },
+    }, 'test')).toThrow(/data length/);
+    expect(() => validateInverseSessionOptions({
+      ...options,
+      target: { ...options.target, data: new Float32Array([0, Number.NaN, 0]) },
+    }, 'test')).toThrow(/non-finite/);
+  });
+
+  it.each([0, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 4097])(
+    'rejects samplesPerStep=%s',
+    (samplesPerStep) => {
+      expect(() => validateInverseSessionOptions({
+        ...valid(),
+        samplesPerStep,
+      }, 'test')).toThrow(/samplesPerStep/);
+    },
+  );
+
+  it.each([
+    [{ learningRate: 0 }, /learningRate/],
+    [{ beta1: -0.1 }, /beta1/],
+    [{ beta1: 1 }, /beta1/],
+    [{ beta2: Number.NaN }, /beta2/],
+    [{ epsilon: 0 }, /epsilon/],
+    [{ fdEpsilon: Number.POSITIVE_INFINITY }, /fdEpsilon/],
+  ])('rejects invalid optimizer config %#', (optimizer, message) => {
+    expect(() => validateInverseSessionOptions({
+      ...valid(),
+      optimizer,
+    }, 'test')).toThrow(message);
+  });
+
+  it('rejects duplicate paths, invalid bounds, and invalid initial values', () => {
+    expect(() => validateInverseSessionOptions({
+      ...valid(),
+      parameters: [
+        { path: 'materials.panel.roughness', kind: 'scalar' },
+        { path: 'materials.panel.roughness', kind: 'scalar' },
+      ],
+    }, 'test')).toThrow(/duplicate or overlapping/);
+    expect(() => validateInverseSessionOptions({
+      ...valid(),
+      parameters: [{
+        path: 'materials.panel.roughness',
+        kind: 'scalar',
+        min: 2,
+        max: 1,
+      }],
+    }, 'test')).toThrow(/min must not exceed max/);
+    expect(() => validateInverseSessionOptions({
+      ...valid(),
+      parameters: [{
+        path: 'materials.panel.roughness',
+        kind: 'scalar',
+        initial: [Number.NaN],
+      }],
+    }, 'test')).toThrow(/initial value must be finite/);
+  });
+
+  it('defensively copies target pixels, parameters, and initial arrays', () => {
+    const targetData = new Float32Array([0.1, 0.2, 0.3]);
+    const initial = [0.4];
+    const options: InverseSessionOptions = {
+      target: { data: targetData, width: 1, height: 1 },
+      parameters: [{
+        path: 'materials.panel.roughness',
+        kind: 'scalar',
+        initial,
+      }],
+    };
+    const validated = validateInverseSessionOptions(options, 'test');
+    targetData[0] = 9;
+    initial[0] = 9;
+    expect(validated.target.data[0]).toBeCloseTo(0.1);
+    expect(validated.parameters[0]!.initial).toEqual([0.4]);
+  });
+
+  it('rejects unknown and accessor-backed session fields without invoking accessors', () => {
+    expect(() => validateInverseSessionOptions({
+      ...valid(),
+      typo: true,
+    } as unknown as InverseSessionOptions, 'test')).toThrow(/unknown key.*typo/i);
+
+    let getterCalls = 0;
+    const accessorOptions: Record<string, unknown> = { ...valid() };
+    Object.defineProperty(accessorOptions, 'loss', {
+      enumerable: true,
+      configurable: true,
+      get: () => {
+        getterCalls += 1;
+        return 'l2';
+      },
+    });
+    expect(() => validateInverseSessionOptions(
+      accessorOptions as unknown as InverseSessionOptions,
+      'test',
+    )).toThrow(/own data property/i);
+    expect(getterCalls).toBe(0);
+  });
+
+  it('rejects sparse arrays and unknown nested configuration fields', () => {
+    const sparseParameters = new Array(1) as InverseSessionOptions['parameters'];
+    expect(() => validateInverseSessionOptions({
+      ...valid(),
+      parameters: sparseParameters,
+    }, 'test')).toThrow(/dense.*index 0/i);
+
+    expect(() => validateInverseSessionOptions({
+      ...valid(),
+      optimizer: { learningRate: 0.1, typo: 1 },
+    } as unknown as InverseSessionOptions, 'test')).toThrow(/unknown key.*typo/i);
+
+    expect(() => validateInverseSessionOptions({
+      ...valid(),
+      parameters: [{
+        path: 'materials.panel.roughness',
+        kind: 'scalar',
+        typo: true,
+      }],
+    } as unknown as InverseSessionOptions, 'test')).toThrow(/unknown key.*typo/i);
+  });
+
+  it('validates backend readback shape and rejects non-finite radiance', () => {
+    expect(() => validateInverseReadback(new Float32Array(4), 4, 1, 1, 'readback'))
+      .not.toThrow();
+    expect(() => validateInverseReadback(new Float32Array(3), 2, 1, 1, 'readback'))
+      .toThrow(/channels/);
+    expect(() => validateInverseReadback(new Float32Array(3), 4, 1, 1, 'readback'))
+      .toThrow(/data length/);
+    expect(() => validateInverseReadback(
+      new Float32Array([0, Number.POSITIVE_INFINITY, 0]),
+      3,
+      1,
+      1,
+      'readback',
+    )).toThrow(/non-finite/);
+    expect(() => assertFiniteArray(new Float32Array([0, Number.POSITIVE_INFINITY]), 'gradient'))
+      .toThrow(/non-finite/);
   });
 });
 
@@ -107,16 +326,10 @@ describe('shared inverse scaffolding — parseParamPath / paramLength', () => {
     expect(() => parseParamPath('lights.x.intensity')).toThrow(/unknown domain/);
   });
 
-  it('paramLength maps kinds and attributes the texture error to the backend', () => {
+  it('paramLength maps every supported kind', () => {
     expect(paramLength({ path: 'm.x.roughness', kind: 'scalar' }, 'pt-webgl2')).toBe(1);
     expect(paramLength({ path: 'm.x.iridescenceThicknessRange', kind: 'vec2' }, 'pt-webgl2')).toBe(2);
     expect(paramLength({ path: 'm.x.baseColor', kind: 'rgb' }, 'pt-webgpu')).toBe(3);
-    expect(() =>
-      paramLength({ path: 'm.x.baseColorMap', kind: 'texture' }, 'pt-webgl2'),
-    ).toThrow(/pt-webgl2/);
-    expect(() =>
-      paramLength({ path: 'm.x.baseColorMap', kind: 'texture' }, 'pt-webgpu'),
-    ).toThrow(/pt-webgpu/);
   });
 });
 
@@ -137,6 +350,8 @@ describe('shared inverse scaffolding — descriptor table drives all four ops', 
     expect(defaultClampRange('roughness')).toEqual([0, 1]);
     expect(defaultClampRange('ior')).toEqual([1, 2.5]);
     expect(defaultClampRange('attenuationColor')).toEqual([1e-4, 1]);
+    expect(defaultClampRange('dispersionAbbeNumber')).toEqual([1e-6, Infinity]);
+    expect(defaultClampRange('sheenColor')).toEqual([0, 1]);
     expect(defaultClampRange('scatteringAnisotropy')).toEqual([-0.95, 0.95]);
     expect(defaultClampRange('emissive')).toEqual([0, Infinity]);
     expect(defaultClampRange('intensity')).toEqual([0, Infinity]);
@@ -154,6 +369,10 @@ describe('shared inverse scaffolding — descriptor table drives all four ops', 
     expect(emitterPatch('color', [1, 0, 0])).toEqual({ color: [1, 0, 0] });
     expect(() => materialPatch('bogus', [0])).toThrow(/unsupported material field/);
     expect(() => emitterPatch('bogus', [0])).toThrow(/unsupported emitter field/);
+    expect(() => materialPatch('baseColor', [0.1, 0.2])).toThrow(/exactly 3 components/);
+    expect(() => materialPatch('iridescenceThicknessRange', [100])).toThrow(/exactly 2 components/);
+    expect(() => emitterPatch('intensity', [])).toThrow(/exactly 1 component/);
+    expect(() => emitterPatch('color', [1, Number.NaN, 0])).toThrow(/must be finite/);
   });
 
   it('readSceneValue round-trips through the descriptor read fns', () => {
@@ -178,6 +397,21 @@ describe('shared inverse scaffolding — descriptor table drives all four ops', 
     expect(readSceneValue(scene, { domain: 'emitters', id: 'e', field: 'intensity' }, 1)).toEqual([
       3,
     ]);
+  });
+
+  it('requires a positive seed before fitting disabled dispersion', () => {
+    const slot = {
+      param: { path: 'materials.p.dispersionAbbeNumber', kind: 'scalar' },
+      target: { domain: 'materials', id: 'p', field: 'dispersionAbbeNumber' },
+      offset: 0,
+      length: 1,
+    } as const;
+    expect(() => validateInitialSceneValue(slot, [0], false, 'test-backend'))
+      .toThrow(/explicit positive parameter\.initial/);
+    expect(() => validateInitialSceneValue(slot, [0], true, 'test-backend'))
+      .toThrow(/finite positive initial/);
+    expect(() => validateInitialSceneValue(slot, [20], true, 'test-backend'))
+      .not.toThrow();
   });
 });
 
@@ -241,15 +475,4 @@ describe('shared inverse scaffolding — validateParam per-backend gate', () => 
     ).toThrow(/pt-webgpu runtime profile/);
   });
 
-  it('throwOnTextureKind controls the texture-kind raise site', () => {
-    const target = { domain: 'materials', id: 'p', field: 'baseColorMap' } as const;
-    const param: InverseParam = { path: 'materials.p.baseColorMap', kind: 'texture' };
-    expect(() =>
-      validateParam(scene, param, target, { backend: 'pt-webgpu', throwOnTextureKind: true }),
-    ).toThrow(/texture/);
-    // pt-webgl2 defers to paramLength (also throws /texture/)
-    expect(() =>
-      validateParam(scene, param, target, { backend: 'pt-webgl2' }),
-    ).toThrow(/texture/);
-  });
 });

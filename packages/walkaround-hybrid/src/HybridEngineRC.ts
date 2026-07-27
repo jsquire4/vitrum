@@ -4,8 +4,9 @@
  *
  * Owns:
  *   - One {@link RCDispatcher} per `GPUDevice`.
- *   - The 5 raw `GPUBuffer`s for the RC BVH (built from a core `Scene`, or
- *     shared from ReSTIR when `bvhMode === 'tlas'`).
+ *   - RC-specific materials/TLAS adapter buffers. In the integrated engine,
+ *     the large BLAS geometry windows are borrowed directly from the main
+ *     scene arena; standalone use retains an owned merged-BVH fallback.
  *   - The N raw cascade output `GPUBuffer`s (sized per `CASCADE_DIMS`).
  *
  * Lifecycle:
@@ -13,10 +14,10 @@
  *   2. `setSceneFromCore(scene)` for merged single-root BVH, or
  *      `syncRestirBvhBuffers(sceneBVH)` when ReSTIR uses TLAS (C2).
  *   3. On a moving-instance / scene edit (driven by `propagateBvhToGiSubsystems`):
- *        - TLAS mode → `syncRestirBvhBuffers` re-shares ReSTIR's buffers (with
- *          a TLAS-only GPU refit when only transforms changed).
- *        - merged mode → `refitMergedInstance` re-uploads world positions + node
- *          AABBs in place WITHOUT a rebuild/teardown; it declines (→ caller
+ *        - TLAS mode → `syncRestirBvhBuffers` transactionally refreshes the
+ *          compact RC adapter while retaining borrowed main-arena geometry.
+ *        - merged mode → `refitMergedInstance` uploads candidate world-position
+ *          and node-AABB buffers without a rebuild/teardown; it declines (→ caller
  *          rebuilds via `setSceneFromCore`) only on a vertex-count / topology change.
  *      `refitCascadeBounds` cheaply re-aims the cascade probe grid either way.
  *   4. `dispatchFrame({ sunDirection, sunColor, frameSeed, triIntersectEpsilon })`
@@ -32,6 +33,7 @@ import type { EngineWarning, MaterialSpec, Scene } from '@vitrum/core';
 import {
   RCDispatcher,
   CASCADE_DIMS,
+  RC_DEFAULT_TRANSMITTED_INTERFACE_BUDGET,
   validateCascadeDims,
   type CascadeDim,
 } from '@vitrum/walkaround-rc';
@@ -46,11 +48,18 @@ import { refitBvhBounds } from '@vitrum/shared-bvh';
 import type { SceneBVHBuffers } from './restir/bvhCore.js';
 import { packBVHIndexWFromCore } from './restir/packingHelpers.js';
 import {
-  isRestirTlasOnlyRefit,
   makeRestirBvhSnapshot,
+  isRestirTlasOnlyRefit,
   type RestirBvhSnapshot,
 } from './restir/restirBvhSnapshot.js';
 import type { PipelineSubsystem } from './pipeline/PipelineSubsystem.js';
+import type { SceneGeometryBufferBindings } from './pipeline/BvhBufferHost.js';
+import {
+  rethrowWithSceneMutationCleanup,
+  runSceneMutationCleanups,
+  type PreparedSceneMutation,
+  type SceneMutationCleanup,
+} from './SceneMutationTransaction.js';
 // D2.6: packing helpers live in rc/ — import + re-export for back-compat.
 export {
   packRCParams,
@@ -66,14 +75,14 @@ export {
 import {
   packRCParams,
   packRCLights,
-  RC_LIGHTS_BUFFER_BYTES,
+  rcLightsBufferByteLength,
 } from './rc/packingHelpers.js';
 
 interface RCBVHBuffers {
-  readonly bvhNodesBuf:      GPUBuffer;
-  readonly bvhIndicesBuf:    GPUBuffer;
-  readonly bvhPositionsBuf:  GPUBuffer;
-  readonly bvhNormalsBuf:    GPUBuffer;
+  readonly bvhNodesBuf?:      GPUBuffer;
+  readonly bvhIndicesBuf?:    GPUBuffer;
+  readonly bvhPositionsBuf?:  GPUBuffer;
+  readonly bvhNormalsBuf?:    GPUBuffer;
   readonly materialsBuf:     GPUBuffer;
   readonly triMaterialIdBuf: GPUBuffer;
   readonly tlasNodesBuf?:     GPUBuffer;
@@ -81,6 +90,78 @@ interface RCBVHBuffers {
   readonly tlasBlasRootsBuf?: GPUBuffer;
   readonly tlasInstanceWorldToLocalBuf?: GPUBuffer;
   readonly tlasInstanceLocalToWorldBuf?: GPUBuffer;
+}
+
+type RCBvhReplacementKind =
+  | 'none'
+  | 'materials'
+  | 'merged-refit'
+  | 'tlas-refit'
+  | 'full';
+
+function rcReplacementCleanups(
+  buffers: RCBVHBuffers | null,
+  kind: RCBvhReplacementKind,
+): SceneMutationCleanup[] {
+  if (buffers == null || kind === 'none') return [];
+  let owned: Array<GPUBuffer | undefined>;
+  if (kind === 'materials') {
+    owned = [buffers.materialsBuf];
+  } else if (kind === 'merged-refit') {
+    owned = [buffers.bvhPositionsBuf, buffers.bvhNodesBuf];
+  } else if (kind === 'tlas-refit') {
+    owned = [
+      buffers.tlasNodesBuf,
+      buffers.tlasInstanceIndicesBuf,
+      buffers.tlasBlasRootsBuf,
+      buffers.tlasInstanceWorldToLocalBuf,
+      buffers.tlasInstanceLocalToWorldBuf,
+    ];
+  } else {
+    owned = [
+      buffers.bvhNodesBuf,
+      buffers.bvhIndicesBuf,
+      buffers.bvhPositionsBuf,
+      buffers.bvhNormalsBuf,
+      buffers.materialsBuf,
+      buffers.triMaterialIdBuf,
+      buffers.tlasNodesBuf,
+      buffers.tlasInstanceIndicesBuf,
+      buffers.tlasBlasRootsBuf,
+      buffers.tlasInstanceWorldToLocalBuf,
+      buffers.tlasInstanceLocalToWorldBuf,
+    ];
+  }
+  return owned.flatMap((buffer) => buffer == null ? [] : [() => buffer.destroy()]);
+}
+
+function destroyGpuBuffer(buffer: GPUBuffer | undefined): void {
+  try { buffer?.destroy(); } catch { /* release remaining independently-owned buffers */ }
+}
+
+function destroyRCBVHBuffers(buffers: RCBVHBuffers | null): void {
+  if (buffers == null) return;
+  destroyGpuBuffer(buffers.bvhNodesBuf);
+  destroyGpuBuffer(buffers.bvhIndicesBuf);
+  destroyGpuBuffer(buffers.bvhPositionsBuf);
+  destroyGpuBuffer(buffers.bvhNormalsBuf);
+  destroyGpuBuffer(buffers.materialsBuf);
+  destroyGpuBuffer(buffers.triMaterialIdBuf);
+  destroyRCTLASBuffers(buffers);
+}
+
+function destroyRCTLASBuffers(buffers: RCBVHBuffers | null): void {
+  if (buffers == null) return;
+  destroyGpuBuffer(buffers.tlasNodesBuf);
+  destroyGpuBuffer(buffers.tlasInstanceIndicesBuf);
+  destroyGpuBuffer(buffers.tlasBlasRootsBuf);
+  destroyGpuBuffer(buffers.tlasInstanceWorldToLocalBuf);
+  destroyGpuBuffer(buffers.tlasInstanceLocalToWorldBuf);
+}
+
+function destroyGpuBuffers(buffers: readonly GPUBuffer[] | null): void {
+  if (buffers == null) return;
+  for (const buffer of buffers) destroyGpuBuffer(buffer);
 }
 
 interface RCFrameInputs {
@@ -97,23 +178,37 @@ interface RCFrameInputs {
    *  probe cast can NEE-sample the emitter list. Omit/0 ⇒ RC's prior light
    *  model (sun + emissive geometry + env). */
   readonly emittersBuf?:        GPUBuffer;
+  readonly emittersOffset?:     number;
+  readonly emittersSize?:       number;
+  readonly emitterDataOffset?: number;
+  readonly emitterAliasOffset?: number;
   readonly emitterCount?:       number;
   /** A7 (2026-06-10): environment equirectangular texture + sampler for the
    *  last-cascade env sample and glass transContrib env branch. When absent
-   *  the dispatcher uses a 1×1 black placeholder (byte-identical env-less
-   *  behaviour). The pipeline's `BvhBufferHost.envMapTextureView` /
-   *  `envSampler` should be forwarded here when an HDRI is active. */
+   *  the dispatcher binds a 1×1 black placeholder; the explicit directional
+   *  flag below decides whether misses sample it or use scalar sky. */
   readonly envTextureView?:     GPUTextureView | null;
   readonly envSampler?:         GPUSampler | null;
+  /** H6 world-to-unrotated-map Y rotation, in radians. */
+  readonly envRotationY?:       number;
+  /** Linear radiance multiplier; the bound map remains unit-intensity. */
+  readonly envIntensity?:       number;
+  /** Main/ReSTIR-equivalent scalar sky radiance used when no directional map is
+   *  active. This is `skyTint * skyIrradiance`, already in radiance units. */
+  readonly scalarSkyRadiance?: readonly [number, number, number];
+  /** Explicit directional-payload state. A bindable black placeholder does
+   *  not count as a directional environment. */
+  readonly hasDirectionalEnvironment?: boolean;
   /** Material atlas views for UV-varying material-backed emitter NEE. */
   readonly materialTextureAtlasView?: GPUTextureView | null;
   readonly materialMapMetaTextureView?: GPUTextureView | null;
   readonly bvhTangentTextureView?: GPUTextureView | null;
   readonly bvhVertexColorTextureView?: GPUTextureView | null;
-  /** A7 (2026-06-10): packed point/spot analytic lights buffer and count.
-   *  Use `packRCLights()` to build. Omit ⇒ fixtures produce no RC radiance. */
+  /** Runtime punctual/directional lights buffer and count. */
   readonly lightsBuf?:          GPUBuffer | null;
   readonly lightCount?:         number;
+  /** Main pipeline scene-arena ranges; preferred over RC-owned geometry copies. */
+  readonly sceneGeometryBindings?: SceneGeometryBufferBindings | null;
 }
 
 // packRCParams, packRCLights, and all layout constants are now in rc/packingHelpers.ts
@@ -126,12 +221,58 @@ function sameVec3(
   return a != null && a[0] === b[0] && a[1] === b[1] && a[2] === b[2];
 }
 
+function sameBufferBinding(
+  a: GPUBufferBinding,
+  b: GPUBufferBinding,
+): boolean {
+  return a.buffer === b.buffer &&
+    Number(a.offset ?? 0) === Number(b.offset ?? 0) &&
+    Number(a.size ?? (a.buffer.size - Number(a.offset ?? 0))) ===
+      Number(b.size ?? (b.buffer.size - Number(b.offset ?? 0)));
+}
+
+function sameSceneGeometryBindings(
+  a: SceneGeometryBufferBindings | null,
+  b: SceneGeometryBufferBindings,
+): boolean {
+  return a != null &&
+    sameBufferBinding(a.bvhNodes, b.bvhNodes) &&
+    sameBufferBinding(a.bvhIndices, b.bvhIndices) &&
+    sameBufferBinding(a.bvhPositions, b.bvhPositions) &&
+    sameBufferBinding(a.bvhNormals, b.bvhNormals);
+}
+
+function stride4TriangleIndicesToStride3(bytes: ArrayBuffer): Uint32Array {
+  const source = new Uint32Array(bytes);
+  if (source.length % 4 !== 0) {
+    throw new Error('[RCSubsystem] shared BVH index stream is not vec4u-strided.');
+  }
+  const out = new Uint32Array((source.length / 4) * 3);
+  for (let tri = 0; tri < source.length / 4; tri += 1) {
+    out[tri * 3] = source[tri * 4]!;
+    out[tri * 3 + 1] = source[tri * 4 + 1]!;
+    out[tri * 3 + 2] = source[tri * 4 + 2]!;
+  }
+  return out;
+}
+
+/** @internal Directionals have exactly one RC owner. */
+export function resolveRCLegacySunColor(
+  aliasedDirectionalCount: number,
+  fallback: readonly [number, number, number],
+): readonly [number, number, number] {
+  return aliasedDirectionalCount > 0 ? [0, 0, 0] : fallback;
+}
+
 export class RCSubsystem implements PipelineSubsystem {
   private readonly _device: GPUDevice;
   private readonly _cascadeDims: readonly CascadeDim[];
   private readonly _onWarning: ((warning: EngineWarning) => void) | null;
+  private readonly _transmittedInterfaceBudget: number;
   private _dispatcher: RCDispatcher | null = null;
   private _bvhBuffers: RCBVHBuffers | null = null;
+  /** Borrowed main-pipeline arena windows; never destroyed by RC. */
+  private _sharedGeometryBindings: SceneGeometryBufferBindings | null = null;
   private _cascadeBufs: GPUBuffer[] | null = null;
   private _probeOriginWorld: readonly [number, number, number] | null = null;
   private _roomSize:         readonly [number, number, number] | null = null;
@@ -158,25 +299,37 @@ export class RCSubsystem implements PipelineSubsystem {
   private _lastBvhVersion = 0;
   private _lastBlasVersion = -1;
   private _lastTlasVersion = -1;
-  /** A7 (2026-06-10): GPU buffer for the packed RCLightBuffer (point/spot lights).
+  private _lastMaterialVersion = -1;
+  /** GPU buffer for runtime RCLight records plus their alias table.
    *  Re-created whenever `updateLights()` is called with a different set.
    *  Null until the first `updateLights()` call; the dispatcher falls back to
-   *  its internal 1040-byte placeholder when null (lightCount = 0). */
+   *  its internal header-only placeholder when null (lightCount = 0). */
   private _lightsGpuBuf: GPUBuffer | null = null;
   private _lightsCount = 0;
+  private _lightsDirectionalCount = 0;
   /** A7: fingerprint of the last `updateLights` payload to skip redundant GPU
    *  buffer re-creation on frames where the light set hasn't changed. Computed
    *  as a cheap JSON.stringify of the filtered (on && fixture/teaLight) entries. */
   private _lightsFingerprint = '';
 
+  /** True once RC has adopted the main pipeline's canonical geometry arena. */
+  get sharesSceneGeometry(): boolean {
+    return this._sharedGeometryBindings != null;
+  }
+
   constructor(
     device: GPUDevice,
     cascadeDims: readonly CascadeDim[] | undefined = CASCADE_DIMS,
-    diagnostics: { readonly onWarning?: (warning: EngineWarning) => void } = {},
+    diagnostics: {
+      readonly onWarning?: (warning: EngineWarning) => void;
+      readonly transmittedInterfaceBudget?: number;
+    } = {},
   ) {
     this._device = device;
     this._cascadeDims = validateCascadeDims(cascadeDims ?? CASCADE_DIMS, 'RCSubsystem cascadeDims');
     this._onWarning = diagnostics.onWarning ?? null;
+    this._transmittedInterfaceBudget = diagnostics.transmittedInterfaceBudget
+      ?? RC_DEFAULT_TRANSMITTED_INTERFACE_BUDGET;
   }
 
   buildRCInputs(rcWeight: number): { cascade0Buffer: GPUBuffer; paramsBytes: ArrayBuffer } | null {
@@ -220,35 +373,432 @@ export class RCSubsystem implements PipelineSubsystem {
     this._dispatcher?.invalidateBindings();
   }
 
+  /**
+   * Stage invalidation of dispatcher-cached bind groups for a resource
+   * generation swap. Commit and rollback intentionally retain the currently
+   * renderable cache; only successful transaction retirement invalidates it.
+   */
+  prepareBindingInvalidation(): PreparedSceneMutation {
+    let committed = false;
+    let closed = false;
+    return {
+      commit: () => {
+        if (closed) return;
+        committed = true;
+      },
+      rollback: () => {
+        closed = true;
+      },
+      finalize: () => {
+        if (closed) return;
+        closed = true;
+        if (committed) {
+          // Retirement follows the irreversible publication point. A stale
+          // cache entry is already generation-keyed and cannot be reused, so
+          // cache cleanup is best-effort and must not make a successful scene
+          // mutation appear to have failed.
+          try {
+            this._dispatcher?.invalidateBindings();
+          } catch {
+            // Intentionally ignored after commit.
+          }
+        }
+      },
+    };
+  }
+
   refreshMaterialsFromCore(materials: readonly MaterialSpec[]): void {
     const bvh = this._bvhBuffers;
     if (bvh == null || materials.length === 0) return;
     const matFloats = packCascadeMaterialsFromCore([...materials]);
     const next = this._uploadTypedArray(matFloats, 'rc-bvh-materials-refresh');
-    bvh.materialsBuf.destroy();
     this._bvhBuffers = { ...bvh, materialsBuf: next };
-    this.invalidateBindings();
+    bvh.materialsBuf.destroy();
   }
 
   /**
    * C2 — share ReSTIR BLAS/TLAS buffers for RC probe rays (multi-mesh / instanced).
    */
-  syncRestirBvhBuffers(buffers: SceneBVHBuffers | null): void {
-    if (buffers == null || buffers.bvhMode !== 'tlas') {
+  prepareSceneMutation(
+    buffers: SceneBVHBuffers,
+    scene: Scene | undefined,
+    options: {
+      readonly geometryChanged: boolean;
+      readonly refreshMaterials: boolean;
+      readonly allowMergedRefit: boolean;
+      readonly rcRefitBounds?: {
+        readonly min: readonly [number, number, number];
+        readonly max: readonly [number, number, number];
+      };
+    },
+  ): PreparedSceneMutation {
+    const previous = {
+      bvhBuffers: this._bvhBuffers,
+      restirSnapshot: this._restirSnapshot,
+      bvhMode: this._bvhMode,
+      tlasNodeCount: this._tlasNodeCount,
+      mergedNodesCpu: this._mergedNodesCpu,
+      mergedIndicesStride3: this._mergedIndicesStride3,
+      mergedPositionsStride4: this._mergedPositionsStride4,
+      probeOriginWorld: this._probeOriginWorld,
+      roomSize: this._roomSize,
+      lastBvhVersion: this._lastBvhVersion,
+      lastBlasVersion: this._lastBlasVersion,
+      lastTlasVersion: this._lastTlasVersion,
+      lastMaterialVersion: this._lastMaterialVersion,
+    };
+    let nextBvh = previous.bvhBuffers;
+    let nextSnapshot = previous.restirSnapshot;
+    let nextMode = previous.bvhMode;
+    let nextTlasNodeCount = previous.tlasNodeCount;
+    let nextNodesCpu = previous.mergedNodesCpu;
+    let nextIndicesCpu = previous.mergedIndicesStride3;
+    let nextPositionsCpu = previous.mergedPositionsStride4;
+    let nextOrigin = previous.probeOriginWorld;
+    let nextRoomSize = previous.roomSize;
+    let nextBvhVersion = previous.lastBvhVersion;
+    let nextBlasVersion = previous.lastBlasVersion;
+    let nextTlasVersion = previous.lastTlasVersion;
+    let nextMaterialVersion = previous.lastMaterialVersion;
+    let replacementKind: RCBvhReplacementKind = 'none';
+
+    try {
+      if (options.geometryChanged && this._sharedGeometryBindings != null) {
+        // The integrated engine owns geometry in BvhBufferHost. Keep RC's
+        // transactional material/TLAS adapter in sync, but never manufacture a
+        // second BLAS just because an incremental mutation changed its bytes.
+        // BvhBufferHost publishes any replacement arena later in the same
+        // transaction; dispatchFrame adopts those fresh borrowed ranges before
+        // the next probe dispatch.
+        const snap = makeRestirBvhSnapshot(buffers, scene);
+        const needsReplacement =
+          previous.bvhBuffers == null ||
+          snap.contentVersion !== previous.lastBvhVersion;
+        const tlasOnly =
+          needsReplacement &&
+          previous.bvhBuffers != null &&
+          snap.tlas != null &&
+          isRestirTlasOnlyRefit(snap, {
+            blasContentVersion: previous.lastBlasVersion,
+            tlasContentVersion: previous.lastTlasVersion,
+            materialContentVersion: previous.lastMaterialVersion,
+          });
+        if (needsReplacement) {
+          nextBvh = tlasOnly
+            ? { ...previous.bvhBuffers!, ...this._uploadRestirTlasBuffers(snap.tlas) }
+            : this._uploadFromRestirSnapshot(snap, false);
+          replacementKind = tlasOnly ? 'tlas-refit' : 'full';
+        }
+        nextSnapshot = snap;
+        nextMode = snap.bvhMode;
+        nextTlasNodeCount = snap.tlasNodeCount;
+        if (snap.bvhMode === 'merged') {
+          nextNodesCpu = new Float32Array(snap.bvhNodes);
+          nextIndicesCpu = stride4TriangleIndicesToStride3(snap.bvhIndex);
+          nextPositionsCpu = new Float32Array(snap.positions);
+        } else {
+          nextNodesCpu = null;
+          nextIndicesCpu = null;
+          nextPositionsCpu = null;
+        }
+        const { min, max } = snap.boundingBox;
+        nextOrigin = [min.x, min.y, min.z];
+        nextRoomSize = [
+          Math.max(max.x - min.x, 1e-6),
+          Math.max(max.y - min.y, 1e-6),
+          Math.max(max.z - min.z, 1e-6),
+        ];
+        nextBvhVersion = snap.contentVersion;
+        nextBlasVersion = snap.blasContentVersion;
+        nextTlasVersion = snap.tlasContentVersion;
+        nextMaterialVersion = snap.materialContentVersion;
+      } else if (options.geometryChanged && buffers.bvhMode === 'tlas') {
+        const snap = makeRestirBvhSnapshot(buffers);
+        const needsReplacement =
+          previous.bvhBuffers == null || snap.contentVersion !== previous.lastBvhVersion;
+        const tlasOnly =
+          needsReplacement &&
+          previous.bvhBuffers != null &&
+          snap.tlas != null &&
+          isRestirTlasOnlyRefit(snap, {
+            blasContentVersion: previous.lastBlasVersion,
+            tlasContentVersion: previous.lastTlasVersion,
+            materialContentVersion: previous.lastMaterialVersion,
+          });
+          if (needsReplacement) {
+            nextBvh = tlasOnly
+              ? { ...previous.bvhBuffers!, ...this._uploadRestirTlasBuffers(snap.tlas) }
+            : this._uploadFromRestirSnapshot(snap);
+          replacementKind = tlasOnly ? 'tlas-refit' : 'full';
+        }
+        nextSnapshot = snap;
+        nextMode = 'tlas';
+        nextTlasNodeCount = snap.tlasNodeCount;
+        nextNodesCpu = null;
+        nextIndicesCpu = null;
+        nextPositionsCpu = null;
+        const { min, max } = snap.boundingBox;
+        nextOrigin = [min.x, min.y, min.z];
+        nextRoomSize = [
+          Math.max(max.x - min.x, 1e-6),
+          Math.max(max.y - min.y, 1e-6),
+          Math.max(max.z - min.z, 1e-6),
+        ];
+        nextBvhVersion = snap.contentVersion;
+        nextBlasVersion = snap.blasContentVersion;
+        nextTlasVersion = snap.tlasContentVersion;
+        nextMaterialVersion = snap.materialContentVersion;
+      } else if (options.geometryChanged && buffers.bvhMode === 'merged') {
+        const positions = new Float32Array(buffers.bvhPositions.cpuData);
+        const canRefit =
+          options.allowMergedRefit &&
+          previous.bvhMode === 'merged' &&
+          previous.bvhBuffers != null &&
+          previous.mergedNodesCpu != null &&
+          previous.mergedIndicesStride3 != null &&
+          previous.mergedPositionsStride4 != null &&
+          positions.length === previous.mergedPositionsStride4.length;
+        if (canRefit) {
+          const nodes = new Float32Array(previous.mergedNodesCpu!);
+          refitBvhBounds(nodes, previous.mergedIndicesStride3!, positions, 4);
+          const posGpu = this._uploadTypedArray(positions, 'rc-bvh-positions-refit');
+          let nodesGpu: GPUBuffer | null = null;
+          try {
+            nodesGpu = this._uploadTypedArray(nodes, 'rc-bvh-nodes-refit');
+          } catch (error) {
+            rethrowWithSceneMutationCleanup(
+              error,
+              [() => posGpu.destroy()],
+              'RC merged-refit preparation failed and cleanup also failed',
+            );
+          }
+          nextBvh = {
+            ...previous.bvhBuffers!,
+            bvhPositionsBuf: posGpu,
+            bvhNodesBuf: nodesGpu,
+          };
+          nextPositionsCpu = positions;
+          nextNodesCpu = nodes;
+          replacementKind = 'merged-refit';
+        } else if (scene != null) {
+          const built = buildRCSceneBVHFromCore(scene);
+          nextBvh = this._uploadBVH(built);
+          nextNodesCpu = new Float32Array(built.bvhNodes.array);
+          nextIndicesCpu = new Uint32Array(built.indices.array);
+          nextPositionsCpu = new Float32Array(built.positions.array);
+          replacementKind = 'full';
+        }
+        nextSnapshot = null;
+        nextMode = 'merged';
+        nextTlasNodeCount = 0;
+        nextBvhVersion = 0;
+        nextBlasVersion = -1;
+        nextTlasVersion = -1;
+        nextMaterialVersion = -1;
+      } else if (options.refreshMaterials && previous.bvhBuffers != null) {
+        const matFloats = packCascadeMaterialsFromCore([...buffers.coreMaterials]);
+        const materialsBuf = this._uploadTypedArray(matFloats, 'rc-bvh-materials-refresh');
+        nextBvh = { ...previous.bvhBuffers, materialsBuf };
+        replacementKind = 'materials';
+        if (buffers.bvhMode === 'tlas' || this._sharedGeometryBindings != null) {
+          const snap = makeRestirBvhSnapshot(buffers, scene);
+          nextSnapshot = snap;
+          nextBvhVersion = snap.contentVersion;
+          nextBlasVersion = snap.blasContentVersion;
+          nextTlasVersion = snap.tlasContentVersion;
+          nextMaterialVersion = snap.materialContentVersion;
+        }
+      }
+    } catch (error) {
+      rethrowWithSceneMutationCleanup(
+        error,
+        rcReplacementCleanups(nextBvh, replacementKind),
+        'RC scene-mutation preparation failed and cleanup also failed',
+      );
+    }
+
+    if (options.rcRefitBounds) {
+      const { min, max } = options.rcRefitBounds;
+      nextOrigin = [min[0], min[1], min[2]];
+      nextRoomSize = [
+        Math.max(max[0] - min[0], 1e-6),
+        Math.max(max[1] - min[1], 1e-6),
+        Math.max(max[2] - min[2], 1e-6),
+      ];
+    }
+
+    const releaseCandidate = (): void => {
+      runSceneMutationCleanups(
+        rcReplacementCleanups(nextBvh, replacementKind),
+        'RC scene-mutation candidate cleanup failed',
+      );
+    };
+    const releasePrevious = (): void => {
+      runSceneMutationCleanups(
+        rcReplacementCleanups(previous.bvhBuffers, replacementKind),
+        'RC scene-mutation retirement failed',
+      );
+    };
+
+    let committed = false;
+    let closed = false;
+    return {
+      commit: () => {
+        if (closed || committed) return;
+        this._bvhBuffers = nextBvh;
+        this._restirSnapshot = nextSnapshot;
+        this._bvhMode = nextMode;
+        this._tlasNodeCount = nextTlasNodeCount;
+        this._mergedNodesCpu = nextNodesCpu;
+        this._mergedIndicesStride3 = nextIndicesCpu;
+        this._mergedPositionsStride4 = nextPositionsCpu;
+        this._probeOriginWorld = nextOrigin;
+        this._roomSize = nextRoomSize;
+        this._lastBvhVersion = nextBvhVersion;
+        this._lastBlasVersion = nextBlasVersion;
+        this._lastTlasVersion = nextTlasVersion;
+        this._lastMaterialVersion = nextMaterialVersion;
+        committed = true;
+      },
+      rollback: () => {
+        if (closed) return;
+        closed = true;
+        if (committed) {
+          this._bvhBuffers = previous.bvhBuffers;
+          this._restirSnapshot = previous.restirSnapshot;
+          this._bvhMode = previous.bvhMode;
+          this._tlasNodeCount = previous.tlasNodeCount;
+          this._mergedNodesCpu = previous.mergedNodesCpu;
+          this._mergedIndicesStride3 = previous.mergedIndicesStride3;
+          this._mergedPositionsStride4 = previous.mergedPositionsStride4;
+          this._probeOriginWorld = previous.probeOriginWorld;
+          this._roomSize = previous.roomSize;
+          this._lastBvhVersion = previous.lastBvhVersion;
+          this._lastBlasVersion = previous.lastBlasVersion;
+          this._lastTlasVersion = previous.lastTlasVersion;
+          this._lastMaterialVersion = previous.lastMaterialVersion;
+        }
+        releaseCandidate();
+      },
+      finalize: () => {
+        if (closed) return;
+        closed = true;
+        if (committed) {
+          runSceneMutationCleanups(
+            [
+              () => {
+                if (
+                  replacementKind !== 'none' &&
+                  replacementKind !== 'materials' &&
+                  replacementKind !== 'tlas-refit'
+                ) this.invalidateBindings();
+              },
+              releasePrevious,
+            ],
+            'RC scene-mutation retirement failed',
+          );
+        } else {
+          releaseCandidate();
+        }
+      },
+    };
+  }
+  syncRestirBvhBuffers(
+    buffers: SceneBVHBuffers | null,
+    sharedGeometryBindings?: SceneGeometryBufferBindings | null,
+  ): void {
+    if (buffers == null) {
+      this._disposeBvhBuffersOnly();
+      this._restirSnapshot = null;
+      this._sharedGeometryBindings = null;
+      this._bvhMode = 'merged';
+      this._tlasNodeCount = 0;
+      this._probeOriginWorld = null;
+      this._roomSize = null;
+      this._mergedNodesCpu = null;
+      this._mergedIndicesStride3 = null;
+      this._mergedPositionsStride4 = null;
+      this._lastBvhVersion = 0;
+      this._lastBlasVersion = -1;
+      this._lastTlasVersion = -1;
+      this._lastMaterialVersion = -1;
+      this.invalidateBindings();
+      return;
+    }
+    const effectiveSharedGeometry = sharedGeometryBindings === undefined
+      ? this._sharedGeometryBindings
+      : sharedGeometryBindings;
+    // Historical standalone merged mode still uses setSceneFromCore(). The
+    // integrated engine supplies its canonical arena ranges and uses this
+    // unified snapshot path for both merged and TLAS scenes.
+    if (buffers.bvhMode !== 'tlas' && effectiveSharedGeometry == null) {
       this._restirSnapshot = null;
       this._bvhMode = 'merged';
       this._tlasNodeCount = 0;
       return;
     }
     const snap = makeRestirBvhSnapshot(buffers);
+    const sharedGeometryChanged =
+      (this._sharedGeometryBindings == null) !== (effectiveSharedGeometry == null) ||
+      (
+        effectiveSharedGeometry != null &&
+        !sameSceneGeometryBindings(this._sharedGeometryBindings, effectiveSharedGeometry)
+      );
+    const needsReplacement =
+      this._bvhBuffers == null || sharedGeometryChanged ||
+      snap.contentVersion !== this._lastBvhVersion;
+    const tlasOnly =
+      needsReplacement &&
+      !sharedGeometryChanged &&
+      this._bvhBuffers != null &&
+      snap.tlas != null &&
+      isRestirTlasOnlyRefit(snap, {
+        blasContentVersion: this._lastBlasVersion,
+        tlasContentVersion: this._lastTlasVersion,
+        materialContentVersion: this._lastMaterialVersion,
+      });
+    let replacement: RCBVHBuffers | null = null;
+    let cascadeCandidate: GPUBuffer[] | null = null;
+    let dispatcherCandidate = this._dispatcher;
+    try {
+      if (needsReplacement) {
+        replacement = tlasOnly
+          ? { ...this._bvhBuffers!, ...this._uploadRestirTlasBuffers(snap.tlas) }
+          : this._uploadFromRestirSnapshot(
+              snap,
+              effectiveSharedGeometry == null,
+            );
+      }
+      if (this._cascadeBufs == null) cascadeCandidate = this._allocateCascadeBuffers();
+      if (dispatcherCandidate == null) {
+        dispatcherCandidate = new RCDispatcher(this._cascadeDims);
+      }
+    } catch (error) {
+      if (tlasOnly) destroyRCTLASBuffers(replacement);
+      else destroyRCBVHBuffers(replacement);
+      destroyGpuBuffers(cascadeCandidate);
+      if (dispatcherCandidate !== this._dispatcher) dispatcherCandidate?.dispose();
+      throw error;
+    }
+
+    const previousBvh = this._bvhBuffers;
+    if (needsReplacement) this._bvhBuffers = replacement;
+    if (cascadeCandidate != null) this._cascadeBufs = cascadeCandidate;
+
     this._restirSnapshot = snap;
-    this._bvhMode = 'tlas';
+    this._sharedGeometryBindings = effectiveSharedGeometry;
+    this._dispatcher = dispatcherCandidate;
+    this._bvhMode = snap.bvhMode;
     this._tlasNodeCount = snap.tlasNodeCount;
-    // TLAS mode shares the ReSTIR snapshot buffers — drop any merged-mode CPU
-    // mirrors so a stale merged refit can't run against TLAS-shared geometry.
-    this._mergedNodesCpu = null;
-    this._mergedIndicesStride3 = null;
-    this._mergedPositionsStride4 = null;
+    if (snap.bvhMode === 'merged') {
+      this._mergedNodesCpu = new Float32Array(snap.bvhNodes);
+      this._mergedIndicesStride3 = stride4TriangleIndicesToStride3(snap.bvhIndex);
+      this._mergedPositionsStride4 = new Float32Array(snap.positions);
+    } else {
+      this._mergedNodesCpu = null;
+      this._mergedIndicesStride3 = null;
+      this._mergedPositionsStride4 = null;
+    }
 
     const { min, max } = snap.boundingBox;
     this._probeOriginWorld = [min.x, min.y, min.z];
@@ -257,32 +807,15 @@ export class RCSubsystem implements PipelineSubsystem {
       Math.max(max.y - min.y, 1e-6),
       Math.max(max.z - min.z, 1e-6),
     ];
+    this._lastBvhVersion = snap.contentVersion;
+    this._lastBlasVersion = snap.blasContentVersion;
+    this._lastTlasVersion = snap.tlasContentVersion;
+    this._lastMaterialVersion = snap.materialContentVersion;
 
-    if (snap.contentVersion !== this._lastBvhVersion) {
-      const tlasOnly =
-        this._bvhBuffers != null &&
-        isRestirTlasOnlyRefit(snap, {
-          blasContentVersion: this._lastBlasVersion,
-          tlasContentVersion: this._lastTlasVersion,
-        });
-      if (tlasOnly && snap.tlas != null) {
-        this._refitTlasGpuBuffers(snap.tlas);
-      } else {
-        this._disposeBvhBuffersOnly();
-        this._bvhBuffers = this._uploadFromRestirSnapshot(snap);
-        this._dispatcher?.dispose();
-        this._dispatcher = null;
-      }
-      this._lastBvhVersion = snap.contentVersion;
-      this._lastBlasVersion = snap.blasContentVersion;
-      this._lastTlasVersion = snap.tlasContentVersion;
-    }
-
-    if (this._cascadeBufs == null) {
-      this._cascadeBufs = this._allocateCascadeBuffers();
-    }
-    if (this._dispatcher == null) {
-      this._dispatcher = new RCDispatcher(this._cascadeDims);
+    if (needsReplacement) {
+      if (!tlasOnly) dispatcherCandidate?.invalidateBindings();
+      if (tlasOnly) destroyRCTLASBuffers(previousBvh);
+      else destroyRCBVHBuffers(previousBvh);
     }
   }
 
@@ -309,26 +842,43 @@ export class RCSubsystem implements PipelineSubsystem {
    * cascade probe bounds, and (re)create the cascade buffers + dispatcher.
    */
   private _setSceneFromBVH(bvh: SceneBVH): void {
+    let nextBvh: RCBVHBuffers | null = null;
+    let nextCascades: GPUBuffer[] | null = null;
+    let nextDispatcher: RCDispatcher | null = null;
+    let nextNodes!: Float32Array;
+    let nextIndices!: Uint32Array;
+    let nextPositions!: Float32Array;
+    try {
+      nextBvh = this._uploadBVH(bvh);
+      nextCascades = this._allocateCascadeBuffers();
+      nextNodes = new Float32Array(bvh.bvhNodes.array);
+      nextIndices = new Uint32Array(bvh.indices.array);
+      nextPositions = new Float32Array(bvh.positions.array);
+      nextDispatcher = new RCDispatcher(this._cascadeDims);
+    } catch (error) {
+      destroyRCBVHBuffers(nextBvh);
+      destroyGpuBuffers(nextCascades);
+      nextDispatcher?.dispose();
+      throw error;
+    }
+
+    const previousBvh = this._bvhBuffers;
+    const previousCascades = this._cascadeBufs;
+    const previousDispatcher = this._dispatcher;
+    this._bvhBuffers = nextBvh;
+    this._cascadeBufs = nextCascades;
+    this._dispatcher = nextDispatcher;
     this._restirSnapshot = null;
+    this._sharedGeometryBindings = null;
     this._bvhMode = 'merged';
     this._tlasNodeCount = 0;
     this._lastBvhVersion = 0;
     this._lastBlasVersion = -1;
     this._lastTlasVersion = -1;
-    this._disposeSceneBuffers();
-    if (this._dispatcher) {
-      this._dispatcher.dispose();
-      this._dispatcher = null;
-    }
-
-    this._bvhBuffers = this._uploadBVH(bvh);
-
-    // Retain CPU mirrors for the merged-mode moving-instance refit fast path.
-    // `.array` is the typed view backing each StorageBufferAttribute; we copy
-    // so a later in-place refit never aliases the attribute the BVH still owns.
-    this._mergedNodesCpu = new Float32Array(bvh.bvhNodes.array);
-    this._mergedIndicesStride3 = new Uint32Array(bvh.indices.array);
-    this._mergedPositionsStride4 = new Float32Array(bvh.positions.array);
+    this._lastMaterialVersion = -1;
+    this._mergedNodesCpu = nextNodes;
+    this._mergedIndicesStride3 = nextIndices;
+    this._mergedPositionsStride4 = nextPositions;
 
     const { min, max } = bvh.bounds;
     this._probeOriginWorld = [min.x, min.y, min.z];
@@ -338,8 +888,9 @@ export class RCSubsystem implements PipelineSubsystem {
       Math.max(max.z - min.z, 1e-6),
     ];
 
-    this._cascadeBufs = this._allocateCascadeBuffers();
-    this._dispatcher = new RCDispatcher(this._cascadeDims);
+    previousDispatcher?.dispose();
+    destroyRCBVHBuffers(previousBvh);
+    destroyGpuBuffers(previousCascades);
   }
 
   /**
@@ -347,22 +898,19 @@ export class RCSubsystem implements PipelineSubsystem {
    *
    * The merged RC BVH bakes each mesh's world transform into its vertex
    * positions (unlike TLAS mode, where instance transforms live in separate
-   * matrices that `_refitTlasGpuBuffers` can re-upload alone). So a moved
-   * instance invalidates both the affected vertex positions AND every BVH
-   * node AABB that bounds them. This path mirrors the TLAS refit by avoiding
-   * the expensive SAH rebuild + buffer realloc + dispatcher recreation:
+   * matrices). So a moved instance invalidates both the affected vertex
+   * positions and every BVH node AABB that bounds them. This path avoids the
+   * expensive SAH rebuild and dispatcher/cascade recreation:
    *
-   *   1. Apply the host-supplied updated world positions into the cached
-   *      stride-4 CPU mirror (and the live `bvhPositionsBuf` via writeBuffer).
-   *   2. `refitBvhBounds` recomputes every node's AABB in place from the
-   *      updated positions — O(nodes + tris), ~sub-ms vs ~50 ms for a rebuild.
-   *      Tree topology (split planes, child links, triangle order) is
-   *      preserved, so the GPU traversal + cascade dispatch keep working.
-   *   3. Re-upload the refit nodes; refit the cascade probe bounds.
+   *   1. Copy the host-supplied world positions and build a candidate node mirror.
+   *   2. `refitBvhBounds` recomputes every candidate node AABB in O(nodes + tris)
+   *      while preserving split planes, child links, and triangle order.
+   *   3. Upload candidate position + node buffers, then publish both identities
+   *      together and release the previous pair.
    *
-   * The dispatcher, cascade buffers, materials, and index buffers are all
-   * untouched — only positions + nodes change, exactly like the TLAS path
-   * only changes the TLAS payload.
+   * The dispatcher, cascade buffers, materials, and index buffers remain alive.
+   * A failed candidate allocation leaves the live GPU buffers and CPU mirrors
+   * untouched.
    *
    * @param updatedPositionsStride4 the FULL merged stride-4 world-position
    *   buffer after the move (same length/layout as the build-time positions).
@@ -392,99 +940,184 @@ export class RCSubsystem implements PipelineSubsystem {
       return false;
     }
 
-    // 1. Adopt the new positions into the CPU mirror + live GPU buffer.
-    const posMirror = this._mergedPositionsStride4;
-    posMirror.set(updatedPositionsStride4);
-    this._device.queue.writeBuffer(
-      bvh.bvhPositionsBuf, 0, posMirror.buffer, posMirror.byteOffset, posMirror.byteLength,
-    );
-
-    // 2. Refit node AABBs in place from the updated positions (stride-4).
-    const nodesMirror = this._mergedNodesCpu;
+    const posMirror = new Float32Array(updatedPositionsStride4);
+    const nodesMirror = new Float32Array(this._mergedNodesCpu);
     refitBvhBounds(nodesMirror, this._mergedIndicesStride3, posMirror, 4);
 
-    // 3. Re-upload the refit nodes; refit cascade probe bounds. Dispatcher +
-    //    cascade buffers stay alive (no teardown).
-    this._device.queue.writeBuffer(
-      bvh.bvhNodesBuf, 0, nodesMirror.buffer, nodesMirror.byteOffset, nodesMirror.byteLength,
-    );
-    this.refitCascadeBounds(boundsMin, boundsMax);
+    let nextPositions: GPUBuffer | null = null;
+    let nextNodes: GPUBuffer | null = null;
+    if (this._sharedGeometryBindings == null) {
+      try {
+        nextPositions = this._uploadTypedArray(posMirror, 'rc-bvh-positions-refit');
+        nextNodes = this._uploadTypedArray(nodesMirror, 'rc-bvh-nodes-refit');
+      } catch (error) {
+        nextPositions?.destroy();
+        nextNodes?.destroy();
+        throw error;
+      }
+      this._bvhBuffers = {
+        ...bvh,
+        bvhPositionsBuf: nextPositions,
+        bvhNodesBuf: nextNodes,
+      };
+    }
+    this._mergedPositionsStride4 = posMirror;
+    this._mergedNodesCpu = nodesMirror;
+    this._probeOriginWorld = [boundsMin[0], boundsMin[1], boundsMin[2]];
+    this._roomSize = [
+      Math.max(boundsMax[0] - boundsMin[0], 1e-6),
+      Math.max(boundsMax[1] - boundsMin[1], 1e-6),
+      Math.max(boundsMax[2] - boundsMin[2], 1e-6),
+    ];
+    if (this._sharedGeometryBindings == null) {
+      this.invalidateBindings();
+      bvh.bvhPositionsBuf?.destroy();
+      bvh.bvhNodesBuf?.destroy();
+    }
     return true;
   }
 
   /**
-   * A7 (2026-06-10): upload/replace the packed point/spot analytic lights
-   * buffer that RC probe rays use for direct-lighting NEE.
+   * Upload/replace the runtime analytic/directional light alias buffer.
    *
    * Call once after `setSceneFromCore` / `syncRestirBvhBuffers` and again
    * whenever the scene's fixture list changes (matches the DDGI path:
    * `ProbeUpdatePass.setLights` → `packDDGIProbeLights`).
    *
-   * The host should forward the same `DDGILight[]` that DDGI uses so the two
-   * GI subsystems see the same analytic lights.  Sun-kind entries are ignored;
-   * only 'fixture' and 'teaLight' entries become RC point/spot lights.
+   * The host forwards the same oriented `DDGILight[]` used by DDGI.
    */
   updateLights(lights: readonly DDGILight[]): void {
-    // Fingerprint the active fixture/teaLight subset to avoid redundant GPU
-    // buffer re-creation on frames where the light set hasn't changed.
-    const active = lights.filter((l) => l.on && (l.kind === 'fixture' || l.kind === 'teaLight'));
+    const active = lights.filter((light) => light.on);
+    const nextCount = active.length;
+    const requiredBytes = rcLightsBufferByteLength(nextCount);
+    const maxBufferSize = this._device.limits?.maxBufferSize;
+    if (typeof maxBufferSize === 'number' && requiredBytes > maxBufferSize) {
+      throw new RangeError(
+        `[RCSubsystem] ${nextCount} lights require ${requiredBytes} bytes, ` +
+        `exceeding device.limits.maxBufferSize=${maxBufferSize}.`,
+      );
+    }
+    const maxStorageBinding = this._device.limits?.maxStorageBufferBindingSize;
+    if (typeof maxStorageBinding === 'number' && requiredBytes > maxStorageBinding) {
+      throw new RangeError(
+        `[RCSubsystem] ${nextCount} lights require a ${requiredBytes}-byte storage binding, ` +
+        `exceeding device.limits.maxStorageBufferBindingSize=${maxStorageBinding}.`,
+      );
+    }
     const fp = JSON.stringify(active);
     if (fp === this._lightsFingerprint) return;  // no change → skip GPU work
-    this._lightsFingerprint = fp;
-
-    const packed = packRCLights(
-      lights,
-      this._onWarning !== null
-        ? { onWarning: this._onWarning, phase: 'renderFrame', method: 'renderFrame' }
-        : undefined,
-    );
-    if (this._lightsGpuBuf != null) {
-      this._lightsGpuBuf.destroy();
-      this._lightsGpuBuf = null;
+    const nextDirectionalCount = active.filter((light) => light.kind === 'sun').length;
+    let next: GPUBuffer | null = null;
+    if (nextCount > 0) {
+      const packed = packRCLights(active);
+      if (packed.byteLength !== requiredBytes) {
+        throw new Error(
+          `[RCSubsystem] packRCLights ABI mismatch: preflight=${requiredBytes}, packed=${packed.byteLength}.`,
+        );
+      }
+      next = this._device.createBuffer({
+        label: 'rc-lights',
+        size: packed.byteLength,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
+        mappedAtCreation: true,
+      });
+      try {
+        new Uint8Array(next.getMappedRange()).set(new Uint8Array(packed));
+        next.unmap();
+      } catch (error) {
+        next.destroy();
+        throw error;
+      }
     }
-    // Count only fixture / teaLight entries (same filter as packRCLights).
-    this._lightsCount = Math.min(active.length, 16);
+
+    const previous = this._lightsGpuBuf;
+    this._lightsGpuBuf = next;
+    this._lightsCount = nextCount;
+    this._lightsDirectionalCount = nextDirectionalCount;
+    this._lightsFingerprint = fp;
     this.invalidateBindings();
-    if (this._lightsCount === 0) return;  // keep _lightsGpuBuf null; dispatcher uses placeholder
-    const buf = this._device.createBuffer({
-      label: 'rc-lights',
-      size:  RC_LIGHTS_BUFFER_BYTES,
-      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-      mappedAtCreation: true,
-    });
-    new Uint8Array(buf.getMappedRange()).set(new Uint8Array(packed));
-    buf.unmap();
-    this._lightsGpuBuf = buf;
+    previous?.destroy();
   }
 
   dispatchFrame(inputs: RCFrameInputs): void {
+    if ((inputs.envTextureView != null) !== (inputs.envSampler != null)) {
+      throw new Error(
+        '[RCSubsystem] envTextureView and envSampler must be supplied together.',
+      );
+    }
     if (!this._dispatcher || !this._bvhBuffers || !this._cascadeBufs ||
         !this._probeOriginWorld || !this._roomSize) {
       return;
     }
+    const sharedGeometry = inputs.sceneGeometryBindings ?? this._sharedGeometryBindings;
+    if (
+      sharedGeometry != null &&
+      !sameSceneGeometryBindings(this._sharedGeometryBindings, sharedGeometry)
+    ) {
+      const current = this._bvhBuffers;
+      const {
+        bvhNodesBuf,
+        bvhIndicesBuf,
+        bvhPositionsBuf,
+        bvhNormalsBuf,
+        ...nonGeometry
+      } = current;
+      this._bvhBuffers = nonGeometry;
+      this._sharedGeometryBindings = sharedGeometry;
+      this.invalidateBindings();
+      destroyGpuBuffer(bvhNodesBuf);
+      destroyGpuBuffer(bvhIndicesBuf);
+      destroyGpuBuffer(bvhPositionsBuf);
+      destroyGpuBuffer(bvhNormalsBuf);
+    }
     const bvh = this._bvhBuffers;
+    const nodesBinding = sharedGeometry?.bvhNodes;
+    const indicesBinding = sharedGeometry?.bvhIndices;
+    const positionsBinding = sharedGeometry?.bvhPositions;
+    const normalsBinding = sharedGeometry?.bvhNormals;
     this._dispatcher.dispatchFrameRaw({
       device: this._device,
-      bvhNodesBuf:      bvh.bvhNodesBuf,
-      bvhIndicesBuf:    bvh.bvhIndicesBuf,
-      bvhPositionsBuf:  bvh.bvhPositionsBuf,
-      bvhNormalsBuf:    bvh.bvhNormalsBuf,
+      bvhNodesBuf:      nodesBinding?.buffer ?? bvh.bvhNodesBuf!,
+      ...(nodesBinding?.offset == null ? {} : { bvhNodesOffset: Number(nodesBinding.offset) }),
+      ...(nodesBinding?.size == null ? {} : { bvhNodesSize: Number(nodesBinding.size) }),
+      bvhIndicesBuf:    indicesBinding?.buffer ?? bvh.bvhIndicesBuf!,
+      ...(indicesBinding?.offset == null ? {} : { bvhIndicesOffset: Number(indicesBinding.offset) }),
+      ...(indicesBinding?.size == null ? {} : { bvhIndicesSize: Number(indicesBinding.size) }),
+      bvhPositionsBuf:  positionsBinding?.buffer ?? bvh.bvhPositionsBuf!,
+      ...(positionsBinding?.offset == null ? {} : { bvhPositionsOffset: Number(positionsBinding.offset) }),
+      ...(positionsBinding?.size == null ? {} : { bvhPositionsSize: Number(positionsBinding.size) }),
+      bvhNormalsBuf:    normalsBinding?.buffer ?? bvh.bvhNormalsBuf!,
+      ...(normalsBinding?.offset == null ? {} : { bvhNormalsOffset: Number(normalsBinding.offset) }),
+      ...(normalsBinding?.size == null ? {} : { bvhNormalsSize: Number(normalsBinding.size) }),
       materialsBuf:     bvh.materialsBuf,
       triMaterialIdBuf: bvh.triMaterialIdBuf,
       cascadeBufs:      this._cascadeBufs,
       probeOriginWorld: this._probeOriginWorld,
       roomSize:         this._roomSize,
       sunDirection:     inputs.sunDirection,
-      sunColor:         inputs.sunColor,
+      // Directional lights have one owner: when updateLights contains any sun,
+      // the alias estimator owns all directionals and the legacy sun lane is zero.
+      sunColor:         resolveRCLegacySunColor(this._lightsDirectionalCount, inputs.sunColor),
       sunCastShadowDisabled: inputs.sunCastShadowDisabled === true,
       sunAngularRadius: inputs.sunAngularRadius ?? 0,
       frameSeed:        inputs.frameSeed,
       triIntersectEpsilon: inputs.triIntersectEpsilon,
+      scalarSkyRadiance: inputs.scalarSkyRadiance ?? [0, 0, 0],
+      hasDirectionalEnvironment:
+        inputs.hasDirectionalEnvironment ??
+        (inputs.envTextureView != null && inputs.envSampler != null),
+      transmittedInterfaceBudget: this._transmittedInterfaceBudget,
       bvhMode:          this._bvhMode,
       tlasNodeCount:    this._tlasNodeCount,
+      tlasArenaVersion: this._lastTlasVersion,
       // A7: env texture forwarded from the main pipeline (placeholder if absent).
       ...(inputs.envTextureView != null && inputs.envSampler != null
-        ? { envTextureView: inputs.envTextureView, envSampler: inputs.envSampler }
+        ? {
+            envTextureView: inputs.envTextureView,
+            envSampler: inputs.envSampler,
+            envRotationY: inputs.envRotationY ?? 0,
+            envIntensity: inputs.envIntensity ?? 1,
+          }
         : {}),
       ...(inputs.materialTextureAtlasView != null && inputs.materialMapMetaTextureView != null
         ? {
@@ -499,13 +1132,20 @@ export class RCSubsystem implements PipelineSubsystem {
           }
         : {}),
       ...(inputs.emittersBuf != null
-        ? { emittersBuf: inputs.emittersBuf, emitterCount: inputs.emitterCount ?? 0 }
+        ? {
+            emittersBuf: inputs.emittersBuf,
+            emittersOffset: inputs.emittersOffset ?? 0,
+            ...(inputs.emittersSize == null ? {} : { emittersSize: inputs.emittersSize }),
+            emitterDataOffset: inputs.emitterDataOffset ?? 0,
+            emitterAliasOffset: inputs.emitterAliasOffset ?? 0,
+            emitterCount: inputs.emitterCount ?? 0,
+          }
         : {}),
-      // A7: analytic lights (fixtures). Null lightsBuf falls back to dispatcher placeholder.
+      // Runtime analytic/directional lights; null uses the header-only placeholder.
       ...(this._lightsGpuBuf != null
-        ? { lightsBuf: this._lightsGpuBuf, lightCount: this._lightsCount }
+        ? { lightsBuf: this._lightsGpuBuf, lightsSize: this._lightsGpuBuf.size, lightCount: this._lightsCount }
         : (inputs.lightsBuf != null
-          ? { lightsBuf: inputs.lightsBuf, lightCount: inputs.lightCount ?? 0 }
+          ? { lightsBuf: inputs.lightsBuf, lightsSize: inputs.lightsBuf.size, lightCount: inputs.lightCount ?? 0 }
           : {})),
       ...(bvh.tlasNodesBuf != null
         ? {
@@ -539,32 +1179,53 @@ export class RCSubsystem implements PipelineSubsystem {
 
   dispose(): void {
     this._disposeSceneBuffers();
-    if (this._dispatcher) {
-      this._dispatcher.dispose();
-      this._dispatcher = null;
-    }
-    if (this._lightsGpuBuf != null) {
-      this._lightsGpuBuf.destroy();
-      this._lightsGpuBuf = null;
-    }
+    const dispatcher = this._dispatcher;
+    this._dispatcher = null;
+    try { dispatcher?.dispose(); } catch { /* continue releasing owned resources */ }
+    const lightsBuffer = this._lightsGpuBuf;
+    this._lightsGpuBuf = null;
+    destroyGpuBuffer(lightsBuffer ?? undefined);
     this._lightsCount = 0;
+    this._lightsDirectionalCount = 0;
     this._lightsFingerprint = '';  // reset so next init re-uploads correctly
   }
 
-  private _refitTlasGpuBuffers(
-    tlas: NonNullable<RestirBvhSnapshot['tlas']>,
-  ): void {
-    const bvh = this._bvhBuffers;
-    if (bvh?.tlasNodesBuf == null) return;
-    const q = this._device.queue;
-    q.writeBuffer(bvh.tlasNodesBuf, 0, tlas.nodes);
-    q.writeBuffer(bvh.tlasInstanceWorldToLocalBuf!, 0, tlas.worldToLocal);
-    q.writeBuffer(bvh.tlasInstanceLocalToWorldBuf!, 0, tlas.localToWorld);
-  }
 
-  private _uploadFromRestirSnapshot(snap: RestirBvhSnapshot): RCBVHBuffers {
+
+  private _uploadRestirTlasBuffers(tlas: NonNullable<RestirBvhSnapshot['tlas']>) {
+    const created: GPUBuffer[] = [];
+    const upload = (label: string, data: ArrayBuffer): GPUBuffer => {
+      const buffer = this._device.createBuffer({
+        label,
+        size: Math.max(data.byteLength, 16),
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
+        mappedAtCreation: true,
+      });
+      created.push(buffer);
+      new Uint8Array(buffer.getMappedRange()).set(new Uint8Array(data));
+      buffer.unmap();
+      return buffer;
+    };
+    try {
+      return {
+        tlasNodesBuf: upload('rc-restir-tlas-nodes', tlas.nodes),
+        tlasInstanceIndicesBuf: upload('rc-restir-tlas-inst', tlas.instanceIndices),
+        tlasBlasRootsBuf: upload('rc-restir-tlas-blas', tlas.blasRoots),
+        tlasInstanceWorldToLocalBuf: upload('rc-restir-tlas-w2l', tlas.worldToLocal),
+        tlasInstanceLocalToWorldBuf: upload('rc-restir-tlas-l2w', tlas.localToWorld),
+      };
+    } catch (error) {
+      destroyGpuBuffers(created);
+      throw error;
+    }
+  }
+  private _uploadFromRestirSnapshot(
+    snap: RestirBvhSnapshot,
+    includeGeometry = true,
+  ): RCBVHBuffers {
     const device = this._device;
-    const usage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST;
+    const usage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC;
+    const created: GPUBuffer[] = [];
     const upload = (label: string, data: ArrayBuffer): GPUBuffer => {
       const buf = device.createBuffer({
         label,
@@ -572,29 +1233,39 @@ export class RCSubsystem implements PipelineSubsystem {
         usage,
         mappedAtCreation: true,
       });
+      created.push(buf);
       new Uint8Array(buf.getMappedRange()).set(new Uint8Array(data));
       buf.unmap();
       return buf;
     };
-    const matFloats = packCascadeMaterialsFromCore([...snap.coreMaterials]);
-    const tlas = snap.tlas;
-    return {
-      bvhNodesBuf: upload('rc-restir-bvh-nodes', snap.bvhNodes),
-      bvhIndicesBuf: upload('rc-restir-bvh-index', snap.bvhIndex),
-      bvhPositionsBuf: upload('rc-restir-bvh-positions', snap.positions),
-      bvhNormalsBuf: upload('rc-restir-bvh-normals', snap.normals),
-      materialsBuf: upload('rc-restir-bvh-materials', matFloats.buffer as ArrayBuffer),
-      triMaterialIdBuf: upload('rc-restir-bvh-tri-mat', snap.triMaterialIds),
-      ...(tlas != null
-        ? {
-            tlasNodesBuf: upload('rc-restir-tlas-nodes', tlas.nodes),
-            tlasInstanceIndicesBuf: upload('rc-restir-tlas-inst', tlas.instanceIndices),
-            tlasBlasRootsBuf: upload('rc-restir-tlas-blas', tlas.blasRoots),
-            tlasInstanceWorldToLocalBuf: upload('rc-restir-tlas-w2l', tlas.worldToLocal),
-            tlasInstanceLocalToWorldBuf: upload('rc-restir-tlas-l2w', tlas.localToWorld),
-          }
-        : {}),
-    };
+    try {
+      const matFloats = packCascadeMaterialsFromCore([...snap.coreMaterials]);
+      const tlas = snap.tlas;
+      return {
+        ...(includeGeometry
+          ? {
+              bvhNodesBuf: upload('rc-restir-bvh-nodes', snap.bvhNodes),
+              bvhIndicesBuf: upload('rc-restir-bvh-index', snap.bvhIndex),
+              bvhPositionsBuf: upload('rc-restir-bvh-positions', snap.positions),
+              bvhNormalsBuf: upload('rc-restir-bvh-normals', snap.normals),
+            }
+          : {}),
+        materialsBuf: upload('rc-restir-bvh-materials', matFloats.buffer as ArrayBuffer),
+        triMaterialIdBuf: upload('rc-restir-bvh-tri-mat', snap.triMaterialIds),
+        ...(tlas != null
+          ? {
+              tlasNodesBuf: upload('rc-restir-tlas-nodes', tlas.nodes),
+              tlasInstanceIndicesBuf: upload('rc-restir-tlas-inst', tlas.instanceIndices),
+              tlasBlasRootsBuf: upload('rc-restir-tlas-blas', tlas.blasRoots),
+              tlasInstanceWorldToLocalBuf: upload('rc-restir-tlas-w2l', tlas.worldToLocal),
+              tlasInstanceLocalToWorldBuf: upload('rc-restir-tlas-l2w', tlas.localToWorld),
+            }
+          : {}),
+      };
+    } catch (error) {
+      destroyGpuBuffers(created);
+      throw error;
+    }
   }
 
   private _uploadBVH(bvh: SceneBVH): RCBVHBuffers {
@@ -622,14 +1293,24 @@ export class RCSubsystem implements PipelineSubsystem {
       bvh.coreMaterials,
       triCount,
     );
-    return {
-      bvhNodesBuf:      this._uploadAttribute(bvh.bvhNodes,      'rc-bvh-nodes'),
-      bvhIndicesBuf:    this._uploadTypedArray(idxStride4,        'rc-bvh-indices'),
-      bvhPositionsBuf:  this._uploadAttribute(bvh.positions,      'rc-bvh-positions'),
-      bvhNormalsBuf:    this._uploadAttribute(bvh.normals,        'rc-bvh-normals'),
-      materialsBuf:     this._uploadAttribute(bvh.materials,      'rc-bvh-materials'),
-      triMaterialIdBuf: this._uploadAttribute(bvh.triMaterialId,  'rc-bvh-tri-mat-id'),
+    const created: GPUBuffer[] = [];
+    const keep = (buffer: GPUBuffer): GPUBuffer => {
+      created.push(buffer);
+      return buffer;
     };
+    try {
+      return {
+        bvhNodesBuf: keep(this._uploadAttribute(bvh.bvhNodes, 'rc-bvh-nodes')),
+        bvhIndicesBuf: keep(this._uploadTypedArray(idxStride4, 'rc-bvh-indices')),
+        bvhPositionsBuf: keep(this._uploadAttribute(bvh.positions, 'rc-bvh-positions')),
+        bvhNormalsBuf: keep(this._uploadAttribute(bvh.normals, 'rc-bvh-normals')),
+        materialsBuf: keep(this._uploadAttribute(bvh.materials, 'rc-bvh-materials')),
+        triMaterialIdBuf: keep(this._uploadAttribute(bvh.triMaterialId, 'rc-bvh-tri-mat-id')),
+      };
+    } catch (error) {
+      destroyGpuBuffers(created);
+      throw error;
+    }
   }
 
   /** Upload a raw typed array as a STORAGE buffer (used for the F-RC1 stride-4
@@ -638,69 +1319,81 @@ export class RCSubsystem implements PipelineSubsystem {
   private _uploadTypedArray(arr: Float32Array | Uint32Array, label: string): GPUBuffer {
     const buf = this._device.createBuffer({
       label,
-      size:  Math.max(arr.byteLength, 16),
-      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+      size: Math.max(arr.byteLength, 16),
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
       mappedAtCreation: true,
     });
-    new Uint8Array(buf.getMappedRange()).set(new Uint8Array(arr.buffer, arr.byteOffset, arr.byteLength));
-    buf.unmap();
-    return buf;
+    try {
+      new Uint8Array(buf.getMappedRange()).set(
+        new Uint8Array(arr.buffer, arr.byteOffset, arr.byteLength),
+      );
+      buf.unmap();
+      return buf;
+    } catch (error) {
+      buf.destroy();
+      throw error;
+    }
   }
 
   private _uploadAttribute(attr: StorageAttributeLike, label: string): GPUBuffer {
     const arr = attr.array;
     const buf = this._device.createBuffer({
       label,
-      size:  arr.byteLength,
-      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+      size: arr.byteLength,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
       mappedAtCreation: true,
     });
-    new Uint8Array(buf.getMappedRange()).set(new Uint8Array(arr.buffer, arr.byteOffset, arr.byteLength));
-    buf.unmap();
-    return buf;
+    try {
+      new Uint8Array(buf.getMappedRange()).set(
+        new Uint8Array(arr.buffer, arr.byteOffset, arr.byteLength),
+      );
+      buf.unmap();
+      return buf;
+    } catch (error) {
+      buf.destroy();
+      throw error;
+    }
   }
 
   private _allocateCascadeBuffers(): GPUBuffer[] {
-    return this._cascadeDims.map((c, k) => {
-      const totalRays = c.probes[0] * c.probes[1] * c.probes[2] * c.rays;
-      return this._device.createBuffer({
-        label: `rc-cascade-C${k}`,
-        size:  totalRays * 16,
-        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
-      });
-    });
+    const created: GPUBuffer[] = [];
+    try {
+      for (const [k, c] of this._cascadeDims.entries()) {
+        const totalRays = c.probes[0] * c.probes[1] * c.probes[2] * c.rays;
+        created.push(this._device.createBuffer({
+          label: `rc-cascade-C${k}`,
+          size: totalRays * 16,
+          usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
+        }));
+      }
+      return created;
+    } catch (error) {
+      destroyGpuBuffers(created);
+      throw error;
+    }
   }
 
   private _disposeBvhBuffersOnly(): void {
-    if (!this._bvhBuffers) return;
-    this._bvhBuffers.bvhNodesBuf.destroy();
-    this._bvhBuffers.bvhIndicesBuf.destroy();
-    this._bvhBuffers.bvhPositionsBuf.destroy();
-    this._bvhBuffers.bvhNormalsBuf.destroy();
-    this._bvhBuffers.materialsBuf.destroy();
-    this._bvhBuffers.triMaterialIdBuf.destroy();
-    this._bvhBuffers.tlasNodesBuf?.destroy();
-    this._bvhBuffers.tlasInstanceIndicesBuf?.destroy();
-    this._bvhBuffers.tlasBlasRootsBuf?.destroy();
-    this._bvhBuffers.tlasInstanceWorldToLocalBuf?.destroy();
-    this._bvhBuffers.tlasInstanceLocalToWorldBuf?.destroy();
+    const previous = this._bvhBuffers;
     this._bvhBuffers = null;
+    destroyRCBVHBuffers(previous);
   }
 
   private _disposeSceneBuffers(): void {
     this._disposeBvhBuffersOnly();
-    if (this._cascadeBufs) {
-      for (const b of this._cascadeBufs) b.destroy();
-      this._cascadeBufs = null;
-    }
+    const cascades = this._cascadeBufs;
+    this._cascadeBufs = null;
+    destroyGpuBuffers(cascades);
     this._probeOriginWorld = null;
     this._roomSize         = null;
     this._restirSnapshot = null;
+    this._sharedGeometryBindings = null;
     this._mergedNodesCpu = null;
     this._mergedIndicesStride3 = null;
     this._mergedPositionsStride4 = null;
     this._lastBvhVersion = 0;
     this._lastBlasVersion = -1;
     this._lastTlasVersion = -1;
+    this._lastMaterialVersion = -1;
   }
 }

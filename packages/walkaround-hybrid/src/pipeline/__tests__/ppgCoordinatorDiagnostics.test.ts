@@ -2,6 +2,9 @@ import { describe, expect, it, vi } from 'vitest';
 import type { EngineError, EngineWarning } from '@vitrum/core';
 import { PPGCoordinator } from '../PPGCoordinator.js';
 import type { FrameResources, PPGFrameResources } from '../resourceManager.js';
+import { createPpgQueryArenaLayout } from '../../ppg/ppgQueryArena.js';
+import { installWebGPUPolyfills } from '../../../__tests__/helpers/webgpuPolyfills.js';
+installWebGPUPolyfills();
 
 type PPGCoordinatorInternals = {
   _enabled: boolean;
@@ -23,14 +26,25 @@ function makeGpuDevice(): GPUDevice & {
   readonly clearBuffer: ReturnType<typeof vi.fn>;
 } {
   const clearBuffer = vi.fn();
+  const copyBufferToBuffer = vi.fn();
   return {
     queue: {
       writeBuffer: vi.fn(),
       submit: vi.fn(),
     },
     clearBuffer,
+    createBuffer: vi.fn((descriptor: GPUBufferDescriptor) => {
+      const mapped = new ArrayBuffer(Number(descriptor.size));
+      return {
+        size: Number(descriptor.size),
+        getMappedRange: vi.fn(() => mapped),
+        unmap: vi.fn(),
+        destroy: vi.fn(),
+      };
+    }),
     createCommandEncoder: vi.fn(() => ({
       clearBuffer,
+      copyBufferToBuffer,
       finish: vi.fn(() => ({})),
     })),
   } as unknown as GPUDevice & {
@@ -40,11 +54,18 @@ function makeGpuDevice(): GPUDevice & {
 }
 
 function makeFrameResources(): FrameResources {
+  const queryArenaLayout = createPpgQueryArenaLayout({
+    sTreeCapacityBytes: 4096,
+    dTreeCapacityBytes: 4096,
+    dTreeOffsetsCapacityBytes: 32,
+    maxSpatialCells: 8,
+    maxDTreeNodesPerCell: 4,
+  });
   return {
     ppg: {
-      sTreeBuf: makeGpuBuffer(),
-      dTreeBuf: makeGpuBuffer(),
-      dTreeOffsetsBuf: makeGpuBuffer(32),
+      queryArenaBuf: makeGpuBuffer(queryArenaLayout.byteLength),
+      queryArenaLayout,
+      queryArenaEpoch: 1,
       fluxAtomicsBuf: makeGpuBuffer(128),
       cellSampleCountsBuf: makeGpuBuffer(32),
       updateUboBuffer: makeGpuBuffer(16),
@@ -106,7 +127,8 @@ describe('PPGCoordinator diagnostics', () => {
 
     expect(internals._sceneAABB.min[0]).toBeLessThan(2);
     expect(internals._sceneAABB.max[2]).toBeGreaterThan(8);
-    expect(device.queue.writeBuffer).toHaveBeenCalled();
+    expect(device.queue.writeBuffer).not.toHaveBeenCalled();
+    expect(device.createBuffer).toHaveBeenCalled();
     expect(device.clearBuffer).toHaveBeenCalledWith(ppgResources(frameResources).fluxAtomicsBuf);
     expect(device.clearBuffer).toHaveBeenCalledWith(ppgResources(frameResources).cellSampleCountsBuf);
     expect(device.queue.submit).toHaveBeenCalledTimes(1);
@@ -133,7 +155,7 @@ describe('PPGCoordinator diagnostics', () => {
         details: {
           snapshotMaxSpatialCells: 16,
           liveMaxSpatialCells: 8,
-          fallback: 'cold PPG restart',
+          fallback: 'retain current PPG guide',
         },
       }),
     ]);
@@ -159,8 +181,8 @@ describe('PPGCoordinator diagnostics', () => {
         details: {
           snapshotSceneBounds: { min: [2, 0, 0], max: [3, 1, 1] },
           liveSceneBounds: { min: [0, 0, 0], max: [1, 1, 1] },
-          epsilon: 1e-3,
-          fallback: 'cold PPG restart',
+          tolerance: 'same-f32-representation',
+          fallback: 'retain current PPG guide',
         },
       }),
     ]);
@@ -187,5 +209,56 @@ describe('PPGCoordinator diagnostics', () => {
     expect(errors[0]?.message).toContain('training refine readback failed');
     expect(errors[0]?.message).toContain('mapAsync failed');
     warnSpy.mockRestore();
+  });
+
+  it('unmaps a readback buffer when mapped-range decoding throws', async () => {
+    const errors: EngineError[] = [];
+    const unmap = vi.fn();
+    const fluxReadback = {
+      size: 16,
+      mapAsync: vi.fn(() => Promise.resolve()),
+      getMappedRange: vi.fn(() => { throw new Error('decode failed'); }),
+      unmap,
+      destroy: vi.fn(),
+    } as unknown as GPUBuffer;
+    const cellReadback = {
+      size: 16,
+      mapAsync: vi.fn(() => Promise.resolve()),
+      getMappedRange: vi.fn(() => new Uint32Array(4).buffer),
+      unmap: vi.fn(),
+      destroy: vi.fn(),
+    } as unknown as GPUBuffer;
+    const copyBufferToBuffer = vi.fn();
+    const device = {
+      createBuffer: vi.fn()
+        .mockReturnValueOnce(fluxReadback)
+        .mockReturnValueOnce(cellReadback),
+      createCommandEncoder: vi.fn(() => ({
+        copyBufferToBuffer,
+        finish: vi.fn(() => ({})),
+      })),
+      queue: {
+        submit: vi.fn(),
+        onSubmittedWorkDone: vi.fn(() => Promise.resolve()),
+      },
+    } as unknown as GPUDevice;
+    const coordinator = makeCoordinator([], errors, device);
+    Object.assign(coordinator as object, {
+      _fluxReadbackBuffer: fluxReadback,
+      _cellCountReadbackBuffer: cellReadback,
+      _sTree: {
+        nodes: [],
+        dTrees: [{}],
+        sceneBounds: { min: [0, 0, 0], max: [1, 1, 1] },
+      },
+    });
+
+    coordinator.maybeRunTrainingRefine(makeFrameResources(), true, 1);
+
+    await vi.waitFor(() => expect(errors).toHaveLength(1));
+    expect(unmap).toHaveBeenCalledOnce();
+    expect(errors[0]?.message).toContain('decode failed');
+    expect((coordinator as unknown as { _fluxReadbackInFlight: boolean })
+      ._fluxReadbackInFlight).toBe(false);
   });
 });

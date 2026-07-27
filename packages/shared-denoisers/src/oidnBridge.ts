@@ -93,12 +93,8 @@ interface OIDNModelTensorNames {
    *
    * Default (when unset): the bridge looks up the tensor named `"output"`
    * first, then falls back to the literal `"color"` key. The `"color"`
-   * fallback is a documented back-compat alias — some legacy OIDN ONNX
-   * exports name their single output tensor `"color"` (matching the input
-   * tensor name) rather than `"output"`. This is intentional and retained:
-   * see the `results[outputPrimaryKey] ?? results['color']` lookup in
-   * `denoiseFinal`. Set this field explicitly to pin a non-standard output
-   * name and bypass the `"color"` fallback.
+   * fallback is a documented back-compat alias for legacy exports. Setting
+   * this field pins one exact output name and disables every fallback.
    */
   readonly output?: string;
 }
@@ -149,7 +145,25 @@ export interface OIDNDenoiseOptions {
 // untracked (never released). The promise is inserted synchronously BEFORE the
 // await; a rejected create deletes its own entry so a transient failure does
 // not poison the cache.
-const _sessionCache = new Map<string, Promise<unknown>>();
+interface _SessionCacheEntry {
+  readonly key: string;
+  readonly creation: Promise<unknown>;
+  leaseCount: number;
+  activeUsers: number;
+  evictionRequested: boolean;
+  releaseScheduled: boolean;
+}
+
+const _sessionCache = new Map<string, _SessionCacheEntry>();
+
+/**
+ * One engine's ownership claim on a shared OIDN session. Releasing a lease is
+ * idempotent. The underlying ORT session is released only after every engine
+ * lease and every in-flight denoise call for the cache key has ended.
+ */
+export interface OIDNSessionLease {
+  release(): void;
+}
 
 // ============================================================
 // Public API
@@ -170,55 +184,94 @@ export async function denoiseFinal(
   inputs: OIDNDenoiseInputs,
   opts: OIDNDenoiseOptions,
 ): Promise<Float32Array> {
+  const expectedValues = _validateDenoiseRequest(inputs, opts);
   const ort = await _loadORT();
-  const session = await _getOrCreateSession(ort, opts);
+  const entry = _getOrCreateSessionEntry(ort, opts);
+  // Acquire the active-use claim before awaiting creation. A concurrent engine
+  // dispose/clear therefore cannot release a just-resolved session in the gap
+  // between the creation promise resolving and run() beginning.
+  entry.activeUsers += 1;
 
-  const { color, normal, albedo, width, height } = inputs;
+  try {
+    const session = await entry.creation;
+    const { color, normal, albedo, width, height } = inputs;
 
-  const tn = opts.tensorNames ?? {};
-  const colorKey = tn.color ?? 'color';
-  const normalKey = tn.normal ?? 'normal';
-  const albedoKey = tn.albedo ?? 'albedo';
+    const tn = opts.tensorNames ?? {};
+    const colorKey = tn.color ?? 'color';
+    const normalKey = tn.normal ?? 'normal';
+    const albedoKey = tn.albedo ?? 'albedo';
 
-  const colorNchw = _hwcToNchw(color, height, width, 3);
-  const feeds: Record<string, unknown> = {
-    [colorKey]: new ort.Tensor('float32', colorNchw, [1, 3, height, width]),
-  };
+    const typedSession = session as _OrtSession;
+    const declaredInputs = _declaredSessionInputNames(typedSession);
+    if (declaredInputs !== null && !declaredInputs.has(colorKey)) {
+      throw new Error(
+        `[oidnBridge] ONNX model does not declare the required color input ` +
+        `'${colorKey}'. Declared inputs: ${[...declaredInputs].join(', ')}`,
+      );
+    }
 
-  if (normal !== undefined) {
-    feeds[normalKey] = new ort.Tensor('float32', _hwcToNchw(normal, height, width, 3), [
-      1,
-      3,
-      height,
-      width,
-    ]);
+    const colorNchw = _hwcToNchw(color, height, width, 3);
+    const feeds: Record<string, unknown> = {
+      [colorKey]: new ort.Tensor('float32', colorNchw, [1, 3, height, width]),
+    };
+
+    const acceptsNormal = declaredInputs === null || declaredInputs.has(normalKey);
+    if (normal !== undefined && tn.normal !== undefined && !acceptsNormal) {
+      throw new Error(
+        `[oidnBridge] configured normal input '${normalKey}' is not declared by ` +
+        `the ONNX model. Declared inputs: ${[...declaredInputs].join(', ')}`,
+      );
+    }
+    if (normal !== undefined && acceptsNormal) {
+      feeds[normalKey] = new ort.Tensor('float32', _hwcToNchw(normal, height, width, 3), [
+        1,
+        3,
+        height,
+        width,
+      ]);
+    }
+    const acceptsAlbedo = declaredInputs === null || declaredInputs.has(albedoKey);
+    if (albedo !== undefined && tn.albedo !== undefined && !acceptsAlbedo) {
+      throw new Error(
+        `[oidnBridge] configured albedo input '${albedoKey}' is not declared by ` +
+        `the ONNX model. Declared inputs: ${[...declaredInputs].join(', ')}`,
+      );
+    }
+    if (albedo !== undefined && acceptsAlbedo) {
+      feeds[albedoKey] = new ort.Tensor('float32', _hwcToNchw(albedo, height, width, 3), [
+        1,
+        3,
+        height,
+        width,
+      ]);
+    }
+
+    const results = await typedSession.run(feeds);
+    if (results == null || typeof results !== 'object' || Array.isArray(results)) {
+      throw new TypeError('[oidnBridge] ONNX session result must be an object.');
+    }
+
+    const explicitOutputKey = tn.output;
+    const outputTensor = explicitOutputKey === undefined
+      ? results['output'] ?? results['color']
+      : results[explicitOutputKey];
+    if (outputTensor == null) {
+      const expected = explicitOutputKey === undefined
+        ? "'output' or legacy alias 'color'"
+        : `'${explicitOutputKey}'`;
+      throw new Error(
+        `[oidnBridge] ONNX model output not found. ` +
+        `Expected output named ${expected}. Got keys: ${Object.keys(results).join(', ')}`,
+      );
+    }
+
+    _assertNchwTensorShape('model output', outputTensor.dims, height, width);
+    _assertFiniteFloat32Buffer('model output', outputTensor.data, expectedValues);
+    return _nchwToHwc(outputTensor.data, height, width, 3);
+  } finally {
+    entry.activeUsers -= 1;
+    _releaseEntryIfIdle(entry);
   }
-  if (albedo !== undefined) {
-    feeds[albedoKey] = new ort.Tensor('float32', _hwcToNchw(albedo, height, width, 3), [
-      1,
-      3,
-      height,
-      width,
-    ]);
-  }
-
-  const results = await (session as _OrtSession).run(feeds);
-
-  const outputPrimaryKey = tn.output ?? 'output';
-  // `tn.output ?? 'output'` covers both the explicit-name path and the
-  // 'output' fallback in a single lookup; the literal 'color' below is the
-  // documented back-compat alias for legacy models that name their output
-  // tensor 'color' (see OIDNModelTensorNames.output JSDoc — D14-4). Pin
-  // `tensorNames.output` explicitly to bypass this fallback.
-  const outputTensor = results[outputPrimaryKey] ?? results['color'];
-  if (outputTensor == null) {
-    throw new Error(
-      `[oidnBridge] ONNX model output not found. ` +
-      `Expected output named '${outputPrimaryKey}' or 'color'. Got keys: ${Object.keys(results).join(', ')}`,
-    );
-  }
-
-  return _nchwToHwc(outputTensor.data, height, width, 3);
 }
 
 /**
@@ -231,8 +284,42 @@ export async function denoiseFinal(
  * @param opts - Same options as denoiseFinal (model URL + execution providers).
  */
 export async function preloadOIDNModel(opts: OIDNDenoiseOptions): Promise<void> {
+  _validateOIDNOptions(opts);
   const ort = await _loadORT();
   await _getOrCreateSession(ort, opts);
+}
+
+/**
+ * Preload and retain one shared OIDN session on behalf of an engine instance.
+ * Every successful acquisition must be paired with lease.release().
+ */
+export async function acquireOIDNSession(
+  opts: OIDNDenoiseOptions,
+): Promise<OIDNSessionLease> {
+  _validateOIDNOptions(opts);
+  const ort = await _loadORT();
+  const entry = _getOrCreateSessionEntry(ort, opts);
+  entry.leaseCount += 1;
+  try {
+    await entry.creation;
+  } catch (err) {
+    entry.leaseCount -= 1;
+    _releaseEntryIfIdle(entry);
+    throw err;
+  }
+
+  let released = false;
+  return Object.freeze({
+    release(): void {
+      if (released) return;
+      released = true;
+      entry.leaseCount -= 1;
+      // An engine release requests retirement, but other engine leases and
+      // in-flight users keep the shared session alive until they finish.
+      entry.evictionRequested = true;
+      _releaseEntryIfIdle(entry);
+    },
+  });
 }
 
 /**
@@ -246,15 +333,10 @@ export async function preloadOIDNModel(opts: OIDNDenoiseOptions): Promise<void> 
  * from scratch (including another model load).
  */
 export function clearOIDNCache(): void {
-  for (const pending of _sessionCache.values()) {
-    // Release the session once it resolves; swallow a rejected create (its
-    // entry is already removed by _getOrCreateSession's catch).
-    void pending.then(
-      (session) => _releaseSession(session),
-      () => {},
-    );
+  for (const entry of _sessionCache.values()) {
+    entry.evictionRequested = true;
+    _releaseEntryIfIdle(entry);
   }
-  _sessionCache.clear();
 }
 
 // ============================================================
@@ -298,15 +380,213 @@ interface _OrtModule {
 
 /** Subset of onnxruntime-web's InferenceSession we depend on. */
 interface _OrtSession {
+  /**
+   * ONNX Runtime publishes the graph's declared input names on every session.
+   * Older test doubles and compatible runtimes may omit the metadata, in which
+   * case the bridge preserves its historical "forward every supplied input"
+   * behaviour.
+   */
+  readonly inputNames?: readonly string[];
   run: (
     feeds: Record<string, unknown>,
-  ) => Promise<Record<string, { data: Float32Array }>>;
+  ) => Promise<Record<string, { data: unknown; dims: unknown }>>;
+}
+
+function _declaredSessionInputNames(session: _OrtSession): ReadonlySet<string> | null {
+  const value: unknown = session.inputNames;
+  if (value === undefined) return null;
+  if (!Array.isArray(value) || value.some((name) => typeof name !== 'string')) {
+    throw new TypeError('[oidnBridge] ONNX session inputNames must be an array of strings.');
+  }
+  return new Set(value);
+}
+
+function _validateOIDNOptions(opts: OIDNDenoiseOptions): void {
+  if (opts == null || typeof opts !== 'object' || Array.isArray(opts)) {
+    throw new TypeError('[oidnBridge] options must be an object.');
+  }
+  const record = opts as unknown as Record<string, unknown>;
+  _rejectUnknownKeys(record, ['modelUrl', 'executionProviders', 'tensorNames'], 'options');
+
+  if (typeof record['modelUrl'] !== 'string' || record['modelUrl'].trim().length === 0) {
+    throw new TypeError('[oidnBridge] modelUrl must be a non-empty string.');
+  }
+
+  const executionProviders = record['executionProviders'];
+  if (executionProviders !== undefined) {
+    if (!Array.isArray(executionProviders) || executionProviders.length === 0) {
+      throw new TypeError(
+        '[oidnBridge] executionProviders must be a non-empty array.',
+      );
+    }
+    const seen = new Set<string>();
+    const providers: unknown[] = executionProviders;
+    for (const provider of providers) {
+      if (provider !== 'webnn' && provider !== 'webgpu' && provider !== 'wasm') {
+        throw new TypeError(
+          `[oidnBridge] unsupported execution provider ${String(provider)}.`,
+        );
+      }
+      if (seen.has(provider)) {
+        throw new TypeError(
+          `[oidnBridge] executionProviders contains duplicate '${provider}'.`,
+        );
+      }
+      seen.add(provider);
+    }
+  }
+
+  const tensorNames = record['tensorNames'];
+  if (tensorNames !== undefined) {
+    if (
+      tensorNames == null ||
+      typeof tensorNames !== 'object' ||
+      Array.isArray(tensorNames)
+    ) {
+      throw new TypeError('[oidnBridge] tensorNames must be an object.');
+    }
+    const names = tensorNames as Record<string, unknown>;
+    _rejectUnknownKeys(names, ['color', 'normal', 'albedo', 'output'], 'tensorNames');
+    for (const key of ['color', 'normal', 'albedo', 'output'] as const) {
+      const name = names[key];
+      if (name !== undefined && (typeof name !== 'string' || name.trim().length === 0)) {
+        throw new TypeError(
+          `[oidnBridge] tensorNames.${key} must be a non-empty string.`,
+        );
+      }
+    }
+
+    const configuredColor = names['color'];
+    const configuredNormal = names['normal'];
+    const configuredAlbedo = names['albedo'];
+    const feedNames = [
+      typeof configuredColor === 'string' ? configuredColor : 'color',
+      typeof configuredNormal === 'string' ? configuredNormal : 'normal',
+      typeof configuredAlbedo === 'string' ? configuredAlbedo : 'albedo',
+    ];
+    if (new Set(feedNames).size !== feedNames.length) {
+      throw new TypeError(
+        '[oidnBridge] color, normal, and albedo feed tensor names must be unique.',
+      );
+    }
+  }
+}
+
+function _rejectUnknownKeys(
+  record: Record<string, unknown>,
+  allowed: readonly string[],
+  name: string,
+): void {
+  const unknownKeys = Object.keys(record).filter((key) => !allowed.includes(key));
+  if (unknownKeys.length !== 0) {
+    throw new TypeError(
+      `[oidnBridge] ${name} contains unknown key(s): ${unknownKeys.join(', ')}.`,
+    );
+  }
+}
+
+function _positiveSafeInteger(value: number, name: string): void {
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new RangeError(
+      `[oidnBridge] ${name} must be a positive safe integer; received ${String(value)}.`,
+    );
+  }
+}
+
+function _expectedTensorValues(
+  height: number,
+  width: number,
+  channels: number,
+): number {
+  _positiveSafeInteger(width, 'width');
+  _positiveSafeInteger(height, 'height');
+  _positiveSafeInteger(channels, 'channels');
+  const pixels = width * height;
+  const values = pixels * channels;
+  if (!Number.isSafeInteger(pixels) || !Number.isSafeInteger(values)) {
+    throw new RangeError(
+      '[oidnBridge] width × height × channels exceeds the safe integer range.',
+    );
+  }
+  return values;
+}
+
+function _assertFiniteFloat32Buffer(
+  name: string,
+  buffer: unknown,
+  expectedValues: number,
+): asserts buffer is Float32Array {
+  if (!(buffer instanceof Float32Array)) {
+    throw new TypeError(`[oidnBridge] ${name} must be a Float32Array.`);
+  }
+  if (buffer.length !== expectedValues) {
+    throw new RangeError(
+      `[oidnBridge] ${name} length must be exactly ${expectedValues}; received ${buffer.length}.`,
+    );
+  }
+  for (let i = 0; i < buffer.length; i += 1) {
+    const value = buffer[i]!;
+    if (!Number.isFinite(value)) {
+      throw new RangeError(
+        `[oidnBridge] ${name}[${i}] must be finite; received ${String(value)}.`,
+      );
+    }
+  }
+}
+
+function _assertNchwTensorShape(
+  name: string,
+  dims: unknown,
+  height: number,
+  width: number,
+): void {
+  const expected = [1, 3, height, width] as const;
+  const valid = Array.isArray(dims) &&
+    dims.length === expected.length &&
+    dims.every((dimension, index) => dimension === expected[index]);
+  if (!valid) {
+    const received = Array.isArray(dims) ? `[${dims.join(', ')}]` : String(dims);
+    throw new RangeError(
+      `[oidnBridge] ${name} dims must be exactly [${expected.join(', ')}]; received ${received}.`,
+    );
+  }
+}
+
+function _validateDenoiseRequest(
+  inputs: OIDNDenoiseInputs,
+  opts: OIDNDenoiseOptions,
+): number {
+  _validateOIDNOptions(opts);
+  if (inputs == null || typeof inputs !== 'object') {
+    throw new TypeError('[oidnBridge] inputs must be an object.');
+  }
+  const expectedValues = _expectedTensorValues(inputs.height, inputs.width, 3);
+  _assertFiniteFloat32Buffer('color', inputs.color, expectedValues);
+  if (inputs.normal !== undefined) {
+    _assertFiniteFloat32Buffer('normal', inputs.normal, expectedValues);
+  }
+  if (inputs.albedo !== undefined) {
+    _assertFiniteFloat32Buffer('albedo', inputs.albedo, expectedValues);
+  }
+  return expectedValues;
 }
 
 function _releaseSession(session: unknown): void {
-  const release = (session as { release?: unknown }).release;
-  if (typeof release === 'function') {
-    release.call(session);
+  try {
+    const release = (session as { release?: unknown }).release;
+    if (typeof release === 'function') {
+      const result = release.call(session) as unknown;
+      if (
+        result !== null &&
+        (typeof result === 'object' || typeof result === 'function') &&
+        typeof (result as { then?: unknown }).then === 'function'
+      ) {
+        void Promise.resolve(result).catch(() => {});
+      }
+    }
+  } catch {
+    // Resource cleanup is best-effort and must never create an unhandled
+    // rejection from the cache retirement microtask.
   }
 }
 
@@ -352,21 +632,18 @@ function _sessionCacheKey(opts: OIDNDenoiseOptions): string {
 export function releaseOIDNCacheEntry(
   opts: Pick<OIDNDenoiseOptions, 'modelUrl' | 'executionProviders'>,
 ): void {
+  _validateOIDNOptions(opts);
   const key = _sessionCacheKey(opts);
-  const pending = _sessionCache.get(key);
-  if (pending !== undefined) {
-    void pending.then(
-      (session) => _releaseSession(session),
-      () => {},
-    );
-  }
-  _sessionCache.delete(key);
+  const entry = _sessionCache.get(key);
+  if (entry === undefined) return;
+  entry.evictionRequested = true;
+  _releaseEntryIfIdle(entry);
 }
 
-async function _getOrCreateSession(
+function _getOrCreateSessionEntry(
   ort: Awaited<ReturnType<typeof _loadORT>>,
   opts: OIDNDenoiseOptions,
-): Promise<unknown> {
+): _SessionCacheEntry {
   const { modelUrl, executionProviders = ['webnn', 'webgpu', 'wasm'] } = opts;
   const key = _sessionCacheKey(opts);
 
@@ -374,7 +651,7 @@ async function _getOrCreateSession(
   if (cached !== undefined) {
     // A concurrent first-use caller already started (or finished) creation;
     // share its in-flight promise instead of creating a duplicate session.
-    return await cached;
+    return cached;
   }
 
   // Insert the creation promise SYNCHRONOUSLY (before the await) so a second
@@ -383,15 +660,43 @@ async function _getOrCreateSession(
   const creation = ort.InferenceSession.create(modelUrl, {
     executionProviders: executionProviders,
   });
-  _sessionCache.set(key, creation);
-  try {
-    return await creation;
-  } catch (err) {
-    if (_sessionCache.get(key) === creation) {
+  const entry: _SessionCacheEntry = {
+    key,
+    creation,
+    leaseCount: 0,
+    activeUsers: 0,
+    evictionRequested: false,
+    releaseScheduled: false,
+  };
+  _sessionCache.set(key, entry);
+  void creation.catch(() => {
+    if (_sessionCache.get(key) === entry) {
       _sessionCache.delete(key);
     }
-    throw err;
+  });
+  return entry;
+}
+
+async function _getOrCreateSession(
+  ort: Awaited<ReturnType<typeof _loadORT>>,
+  opts: OIDNDenoiseOptions,
+): Promise<unknown> {
+  return await _getOrCreateSessionEntry(ort, opts).creation;
+}
+
+function _releaseEntryIfIdle(entry: _SessionCacheEntry): void {
+  if (!entry.evictionRequested || entry.leaseCount !== 0 || entry.activeUsers !== 0) {
+    return;
   }
+  if (entry.releaseScheduled) return;
+  entry.releaseScheduled = true;
+  if (_sessionCache.get(entry.key) === entry) {
+    _sessionCache.delete(entry.key);
+  }
+  void entry.creation.then(
+    session => _releaseSession(session),
+    () => {},
+  );
 }
 
 /**
@@ -404,15 +709,15 @@ function _hwcToNchw(
   width: number,
   channels: number,
 ): Float32Array {
-  const dst = new Float32Array(height * width * channels);
+  const values = _expectedTensorValues(height, width, channels);
+  _assertFiniteFloat32Buffer('HWC source', src, values);
+  const dst = new Float32Array(values);
   for (let c = 0; c < channels; c++) {
     for (let h = 0; h < height; h++) {
       for (let w = 0; w < width; w++) {
         const srcIdx = (h * width + w) * channels + c;
         const dstIdx = c * height * width + h * width + w;
-        // noUncheckedIndexedAccess: indices are computed from loop bounds,
-        // so they are always in range. The ?? 0 guard satisfies the type checker.
-        dst[dstIdx] = src[srcIdx] ?? 0;
+        dst[dstIdx] = src[srcIdx]!;
       }
     }
   }
@@ -429,15 +734,15 @@ function _nchwToHwc(
   width: number,
   channels: number,
 ): Float32Array {
-  const dst = new Float32Array(height * width * channels);
+  const values = _expectedTensorValues(height, width, channels);
+  _assertFiniteFloat32Buffer('NCHW source', src, values);
+  const dst = new Float32Array(values);
   for (let c = 0; c < channels; c++) {
     for (let h = 0; h < height; h++) {
       for (let w = 0; w < width; w++) {
         const srcIdx = c * height * width + h * width + w;
         const dstIdx = (h * width + w) * channels + c;
-        // noUncheckedIndexedAccess: indices are computed from loop bounds,
-        // so they are always in range. The ?? 0 guard satisfies the type checker.
-        dst[dstIdx] = src[srcIdx] ?? 0;
+        dst[dstIdx] = src[srcIdx]!;
       }
     }
   }

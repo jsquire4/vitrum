@@ -25,14 +25,24 @@ import type { FrameResources } from '../src/pipeline/resourceManager.js';
 
 installWebGPUPolyfills();
 
-const FLUX_SCALE = 65536.0;
 const MAX_DTREE_NODES_PER_CELL = 341;
 const MAX_SPATIAL_CELLS = 1024;
 // Full flux buffer the GPU allocates: every cell × every per-cell slot.
 const FULL_FLUX_U32 = MAX_SPATIAL_CELLS * MAX_DTREE_NODES_PER_CELL;
 
-interface CopyCall { srcOffset: number; dstOffset: number; size: number }
+interface CopyCall {
+  encoderLabel: string;
+  srcOffset: number;
+  dstOffset: number;
+  size: number;
+}
 interface WriteCall { bufLabel: string; byteLength: number }
+interface ClearCall {
+  encoderLabel: string;
+  bufLabel: string;
+  offset: number;
+  size: number | undefined;
+}
 
 interface MockBuf {
   size: number;
@@ -42,13 +52,14 @@ interface MockBuf {
 }
 
 /**
- * A mock device whose flux buffer is backed by a real Uint32Array so we can
+ * A mock device whose flux buffer is backed by a real Float32Array so we can
  * exercise the full async readback → merge path. `copyBufferToBuffer` records
  * the requested copy size; the mapped readback returns the active prefix.
  */
-function makeHarness(fluxBacking: Uint32Array) {
+function makeHarness(fluxBacking: Float32Array) {
   const copies: CopyCall[] = [];
   const writes: WriteCall[] = [];
+  const clears: ClearCall[] = [];
   let mappedActiveBytes = 0;
 
   const fluxBuf: MockBuf = {
@@ -104,11 +115,28 @@ function makeHarness(fluxBacking: Uint32Array) {
         unmap: () => {},
       } as unknown as GPUBuffer;
     },
-    createCommandEncoder: () => ({
+    createCommandEncoder: (descriptor?: { label?: string }) => ({
       copyBufferToBuffer: (
         _src: unknown, srcOffset: number, _dst: unknown, dstOffset: number, size: number,
       ) => {
-        copies.push({ srcOffset, dstOffset, size });
+        copies.push({
+          encoderLabel: descriptor?.label ?? '',
+          srcOffset,
+          dstOffset,
+          size,
+        });
+      },
+      clearBuffer: (
+        buffer: { label?: string },
+        offset = 0,
+        size?: number,
+      ) => {
+        clears.push({
+          encoderLabel: descriptor?.label ?? '',
+          bufLabel: buffer.label ?? '',
+          offset,
+          size,
+        });
       },
       finish: () => ({}),
     }),
@@ -138,7 +166,14 @@ function makeHarness(fluxBacking: Uint32Array) {
     },
   } as unknown as FrameResources;
 
-  return { device, frameResources, copies, writes, getMappedActiveBytes: () => mappedActiveBytes };
+  return {
+    device,
+    frameResources,
+    copies,
+    writes,
+    clears,
+    getMappedActiveBytes: () => mappedActiveBytes,
+  };
 }
 
 const _AABB = { min: [0, 0, 0] as [number, number, number], max: [1, 1, 1] as [number, number, number] }; // retained for spatial-query test extensions
@@ -146,11 +181,11 @@ const _AABB = { min: [0, 0, 0] as [number, number, number], max: [1, 1, 1] as [n
 describe('PPGCoordinator — bounded flux readback', () => {
   it('copies and clears only the active prefix, not the full buffer', async () => {
     // A single active cell (fresh tree) → activeCells = 1.
-    const fluxBacking = new Uint32Array(FULL_FLUX_U32);
+    const fluxBacking = new Float32Array(FULL_FLUX_U32);
     // Put a recognisable value in the active prefix and a poison value in the
     // tail. If the implementation accidentally reads the tail, the merged flux
     // would change (the test below) — here we just assert the copy is bounded.
-    fluxBacking[0] = Math.round(3.0 * FLUX_SCALE);
+    fluxBacking[0] = 3.0;
     fluxBacking[FULL_FLUX_U32 - 1] = 0xdeadbeef;
 
     const h = makeHarness(fluxBacking);
@@ -161,37 +196,46 @@ describe('PPGCoordinator — bounded flux readback', () => {
     );
 
     // Force the readback (interval 0 → fires immediately).
-    coord.maybeRunTrainingRefine(h.frameResources, 100, 0);
+    coord.maybeRunTrainingRefine(h.frameResources, true, 1);
     // Drain the fire-and-forget promise chain.
     for (let i = 0; i < 12; i += 1) await Promise.resolve(); // A2: two mapAsync chains now
 
-    // A2 — two bounded copies per window now: the flux prefix + the per-cell
-    // sample-count prefix (the spatial-split feed).
-    expect(h.copies.length).toBe(2);
+    // A2 — two bounded readback copies per window: the flux prefix + the
+    // per-cell sample-count prefix. The subsequent transactional guide
+    // publication contributes four separate staging copies.
+    const readbackCopies = h.copies.filter(
+      (copy) => copy.encoderLabel === 'ppg-flux-readback-copy',
+    );
+    expect(readbackCopies).toHaveLength(2);
     // Active prefix for 1 cell = MAX_DTREE_NODES_PER_CELL u32 = 341 * 4 bytes,
     // which is FAR less than the full buffer (1024 * 341 * 4 ≈ 1.4 MB).
     const expectedActiveBytes = MAX_DTREE_NODES_PER_CELL * 4;
-    expect(h.copies[0]!.size).toBe(expectedActiveBytes);
-    expect(h.copies[0]!.size).toBeLessThan(FULL_FLUX_U32 * 4);
+    expect(readbackCopies[0]!.size).toBe(expectedActiveBytes);
+    expect(readbackCopies[0]!.size).toBeLessThan(FULL_FLUX_U32 * 4);
     expect(h.getMappedActiveBytes()).toBe(expectedActiveBytes);
 
-    // The zero-clear writeBuffer to the flux buffer must also be bounded.
-    const fluxClear = h.writes.find((w) => w.bufLabel === 'ppg-fluxAtomics');
+    // The accumulator clear belongs to the same ordered publication command
+    // buffer as the staged guide and remains bounded to the active prefix.
+    const fluxClear = h.clears.find(
+      (clear) => clear.encoderLabel === 'ppg-refine-publication'
+        && clear.bufLabel === 'ppg-fluxAtomics',
+    );
     expect(fluxClear).toBeDefined();
-    expect(fluxClear!.byteLength).toBe(expectedActiveBytes);
-    expect(fluxClear!.byteLength).toBeLessThan(FULL_FLUX_U32 * 4);
+    expect(fluxClear!.offset).toBe(0);
+    expect(fluxClear!.size).toBe(expectedActiveBytes);
+    expect(fluxClear!.size).toBeLessThan(FULL_FLUX_U32 * 4);
   });
 
   it('reading the prefix-only buffer merges flux identically to reading the full buffer', async () => {
     // Stage known flux in the (single) active cell's leaf slots; poison the
     // tail. The merged dTree.totalFlux must equal the sum of the active-prefix
     // leaf flux ONLY — proving the tail is irrelevant (behaviour-preserving).
-    const fluxBacking = new Uint32Array(FULL_FLUX_U32);
+    const fluxBacking = new Float32Array(FULL_FLUX_U32);
     // Fresh dTree at initial depth 2 → 16 leaves at nodes[5..20] (header is
     // implicit in serialise; here the merge maps node i → slot i). We deposit
     // into the first few node slots; leaves accumulate into totalFlux.
-    // Use small integer-scaled values to avoid fixed-point rounding noise.
-    const depositPerSlot = Math.round(2.0 * FLUX_SCALE);
+    // Use exactly representable f32 values so expected flux sums are exact.
+    const depositPerSlot = 2.0;
     for (let i = 0; i < MAX_DTREE_NODES_PER_CELL; i++) {
       fluxBacking[i] = depositPerSlot;
     }
@@ -207,7 +251,7 @@ describe('PPGCoordinator — bounded flux readback', () => {
       h.frameResources, 32, 32, true, 0,
     );
 
-    coord.maybeRunTrainingRefine(h.frameResources, 100, 0);
+    coord.maybeRunTrainingRefine(h.frameResources, true, 1);
     for (let i = 0; i < 12; i += 1) await Promise.resolve(); // A2: two mapAsync chains now
 
     // Sanity: the readback completed (copy issued, prefix mapped). If the
@@ -215,6 +259,10 @@ describe('PPGCoordinator — bounded flux readback', () => {
     // 0xffffffff-scaled flux into leaves and refineDTree would have exploded
     // the tree — instead it stays bounded. We assert the copy bound here; the
     // exact post-refine topology is pinned by ppg.test.ts.
-    expect(h.copies[0]!.size).toBe(MAX_DTREE_NODES_PER_CELL * 4);
+    const fluxReadbackCopy = h.copies.find(
+      (copy) => copy.encoderLabel === 'ppg-flux-readback-copy'
+        && copy.size === MAX_DTREE_NODES_PER_CELL * 4,
+    );
+    expect(fluxReadbackCopy?.size).toBe(MAX_DTREE_NODES_PER_CELL * 4);
   });
 });

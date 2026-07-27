@@ -1,9 +1,13 @@
-import type { GltfJson, GltfMaterial, GltfPrimitive } from './gltfTypes.js';
+import type { GltfJson, GltfPrimitive } from './gltfTypes.js';
 import {
   GLTF_TEXTURE_SOURCE_EXTENSIONS,
   type GltfTextureSourceExtension,
 } from './textures.js';
-import { resolveGltfMaterialAnimationPointer } from './materialPointerAnimation.js';
+import {
+  collectGltfMaterialTextureIndices,
+  isGltfAnimationPointerTargetReachable,
+  resolveGltfAnimationPointer,
+} from './animationPointer.js';
 
 export interface GltfSceneReachability {
   readonly sceneIndex: number;
@@ -95,8 +99,16 @@ export function collectGltfSceneReachability(
     for (const channel of animation.channels ?? []) {
       if (channel.target.path === 'pointer') {
         const pointer = channel.target.extensions?.KHR_animation_pointer?.pointer;
-        const pointerTarget = resolveGltfMaterialAnimationPointer(pointer);
-        if (pointerTarget === undefined || !materialIndices.has(pointerTarget.materialIndex)) continue;
+        const pointerTarget = resolveGltfAnimationPointer(pointer);
+        if (
+          pointerTarget === undefined ||
+          !isGltfAnimationPointerTargetReachable(pointerTarget, {
+            nodeIndices,
+            materialIndices,
+            cameraIndices,
+            punctualLightIndices,
+          })
+        ) continue;
         const sampler = animation.samplers?.[channel.sampler];
         collectAccessorBufferViews(gltf, sampler?.input, bufferViewIndices);
         collectAccessorBufferViews(gltf, sampler?.output, bufferViewIndices);
@@ -111,7 +123,11 @@ export function collectGltfSceneReachability(
   }
 
   for (const materialIndex of materialIndices) {
-    collectMaterialTextureIndices(gltf.materials?.[materialIndex], textureIndices);
+    for (const textureIndex of collectGltfMaterialTextureIndices(
+      gltf.materials?.[materialIndex],
+    )) {
+      textureIndices.add(textureIndex);
+    }
   }
 
   const enabledTextureSourceExtensions = new Set(textureSourceExtensions);
@@ -200,25 +216,6 @@ function collectInstancingBufferViews(
   for (const accessorIndex of Object.values(attributes)) {
     collectAccessorBufferViews(gltf, accessorIndex, out);
   }
-}
-
-function collectMaterialTextureIndices(
-  material: GltfMaterial | undefined,
-  out: Set<number>,
-): void {
-  visitMaterialValue(material, out);
-}
-
-function visitMaterialValue(value: unknown, out: Set<number>): void {
-  if (Array.isArray(value)) {
-    for (const item of value) visitMaterialValue(item, out);
-    return;
-  }
-  if (!isRecord(value)) return;
-  if (typeof value.index === 'number' && Number.isInteger(value.index) && value.index >= 0) {
-    out.add(value.index);
-  }
-  for (const child of Object.values(value)) visitMaterialValue(child, out);
 }
 
 function selectedTextureImageIndex(

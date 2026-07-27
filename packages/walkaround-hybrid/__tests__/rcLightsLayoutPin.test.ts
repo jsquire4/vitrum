@@ -38,6 +38,7 @@ import {
   RC_LIGHT_ENTRY_BYTES,
   RCLightBufferHeaderOffset,
   RCLightEntryOffset,
+  resolveRCLegacySunColor,
 } from '../src/HybridEngineRC.js';
 import { PROBE_RAY_CAST_WGSL } from '@vitrum/walkaround-rc';
 import type { DDGILight } from '../src/ddgi/types.js';  // used for typed fixtures below
@@ -68,8 +69,8 @@ const wgslOffsets = parseRCLightOffsets(PROBE_RAY_CAST_WGSL);
 // ── Constant correctness ─────────────────────────────────────────────────────
 
 describe('RCLightBuffer layout constants vs. WGSL struct', () => {
-  it('RC_LIGHTS_BUFFER_BYTES = 1040 (header 16 + 16 × 64 entries)', () => {
-    expect(RC_LIGHTS_BUFFER_BYTES).toBe(1040);
+  it('RC_LIGHTS_BUFFER_BYTES is the 16-byte canonical empty header', () => {
+    expect(RC_LIGHTS_BUFFER_BYTES).toBe(16);
   });
 
   it('RC_LIGHTS_HEADER_BYTES = 16 (4 × u32)', () => {
@@ -155,9 +156,9 @@ function readF32(buf: ArrayBuffer, byteOffset: number): number {
 }
 
 describe('packRCLights output byte alignment', () => {
-  it('output byteLength equals RC_LIGHTS_BUFFER_BYTES', () => {
+  it('output byteLength is header + one record + one alias entry', () => {
     const buf = packRCLights([POINT_LIGHT]);
-    expect(buf.byteLength).toBe(RC_LIGHTS_BUFFER_BYTES);
+    expect(buf.byteLength).toBe(16 + 64 + 16);
   });
 
   it('count = 1 at header offset 0', () => {
@@ -165,9 +166,9 @@ describe('packRCLights output byte alignment', () => {
     expect(readU32(buf, RCLightBufferHeaderOffset.count)).toBe(1);
   });
 
-  it('count = 0 when no active fixtures', () => {
+  it('count includes active directional lights', () => {
     const buf = packRCLights([{ kind: 'sun', on: true, intensity: 1 }]);
-    expect(readU32(buf, RCLightBufferHeaderOffset.count)).toBe(0);
+    expect(readU32(buf, RCLightBufferHeaderOffset.count)).toBe(1);
   });
 
   it('point light kind = 1 at item[0].kind', () => {
@@ -265,13 +266,65 @@ describe('packRCLights output byte alignment', () => {
     expect(readU32(buf, RCLightBufferHeaderOffset.count)).toBe(0);
   });
 
-  it('sun-kind lights are excluded', () => {
+  it('sun-kind lights are packed as directional kind 3', () => {
     const buf = packRCLights([{ kind: 'sun', on: true, intensity: 10 }]);
-    expect(readU32(buf, RCLightBufferHeaderOffset.count)).toBe(0);
+    expect(readU32(buf, RCLightBufferHeaderOffset.count)).toBe(1);
+    expect(readU32(buf, RC_LIGHTS_HEADER_BYTES + RCLightEntryOffset.kind)).toBe(3);
+  });
+});
+
+describe('RC directional ownership', () => {
+  it('keeps legacy fallback only with zero aliased directionals', () => {
+    expect(resolveRCLegacySunColor(0, [1, 2, 3])).toEqual([1, 2, 3]);
+    expect(resolveRCLegacySunColor(1, [1, 2, 3])).toEqual([0, 0, 0]);
+    expect(resolveRCLegacySunColor(2, [1, 2, 3])).toEqual([0, 0, 0]);
+  });
+
+  it('keeps a zero-power active sun represented without reviving fallback', () => {
+    const buf = packRCLights([{ kind: 'sun', on: true, intensity: 0 }]);
+    expect(readU32(buf, RCLightBufferHeaderOffset.count)).toBe(1);
+    expect(resolveRCLegacySunColor(1, [4, 4, 4])).toEqual([0, 0, 0]);
   });
 });
 
 describe('RCSubsystem light buffer lifecycle', () => {
+  it('rejects device-budget overflow before packing/GPU allocation and preserves live state', () => {
+    const savedUsage = (globalThis as { GPUBufferUsage?: unknown }).GPUBufferUsage;
+    (globalThis as { GPUBufferUsage?: unknown }).GPUBufferUsage = {
+      STORAGE: 1,
+      COPY_DST: 2,
+      COPY_SRC: 4,
+    };
+    try {
+      const buffers: Array<{ destroy: ReturnType<typeof vi.fn> }> = [];
+      const limits = { maxBufferSize: 96, maxStorageBufferBindingSize: 96 };
+      const device = {
+        limits,
+        createBuffer: vi.fn((desc: GPUBufferDescriptor) => {
+          const buffer = {
+            size: desc.size,
+            destroy: vi.fn(),
+            getMappedRange: vi.fn(() => new ArrayBuffer(desc.size)),
+            unmap: vi.fn(),
+          };
+          buffers.push(buffer);
+          return buffer;
+        }),
+      } as unknown as GPUDevice;
+      const rc = new RCSubsystem(device);
+      rc.updateLights([POINT_LIGHT]);
+      expect(device.createBuffer).toHaveBeenCalledOnce();
+
+      expect(() => rc.updateLights([POINT_LIGHT, SPOT_LIGHT])).toThrow(
+        /2 lights require 176 bytes.*maxBufferSize=96/,
+      );
+      expect(device.createBuffer).toHaveBeenCalledOnce();
+      expect(buffers[0]!.destroy).not.toHaveBeenCalled();
+    } finally {
+      (globalThis as { GPUBufferUsage?: unknown }).GPUBufferUsage = savedUsage;
+    }
+  });
+
   it('invalidates dispatcher bindings when analytic lights transition from nonzero to zero', () => {
     const savedUsage = (globalThis as { GPUBufferUsage?: unknown }).GPUBufferUsage;
     (globalThis as { GPUBufferUsage?: unknown }).GPUBufferUsage = {
@@ -305,7 +358,7 @@ describe('RCSubsystem light buffer lifecycle', () => {
       rc.updateLights([POINT_LIGHT]);
       expect(device.createBuffer).toHaveBeenCalledTimes(1);
       expect(buffers[0]!.label).toBe('rc-lights');
-      expect(buffers[0]!.size).toBe(RC_LIGHTS_BUFFER_BYTES);
+      expect(buffers[0]!.size).toBe(16 + 64 + 16);
       expect(invalidateSpy).toHaveBeenCalledTimes(1);
 
       invalidateSpy.mockClear();

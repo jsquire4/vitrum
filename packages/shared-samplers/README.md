@@ -17,8 +17,20 @@ Sampling utilities for path tracers and walkaround engines: QMC sequences, light
 **Consumer dedup status:**
 - Per-pixel/cell pixel-hash — walkaround deterministic shade/transparent/noise call sites now route through shared helpers; render-sensitive direct-sun jitter keeps its legacy-compatible sequence inside the helper, while cell/world hashes use `PCG_HASH_TO_F32_WGSL`. GTAO keeps its established local jitter sequence because the T1 dzn/lavapipe smoke is calibrated to that low-res AO pattern.
 
+**Standalone CPU/host utilities (zero backend imports are intentional):**
+- `mixturePdf` — general N-strategy mixture-PDF evaluator for host algorithms
+  and numerical oracles.
+- `sampleEquiAngular` — homogeneous-volume distance sampler for host algorithms
+  and CPU reference implementations.
+
 **Also exported from the package index:**
-`buildLightTree`, `mixturePdf`, `evaluateHG`, `sampleEquiAngular`, BDPT helpers (`bdptConnectionMIS_full`, vertex/MIS types; `_partial` variants deleted), Jakob–Hanika spectral upsampling (`rgbToSpectralCoefficients`), Cauchy IOR formula (`cauchyIOR`) — all are exported from the package index and available to consumers. Unit tests pin their numerical contracts.
+`buildLightTree`, `evaluateHG`, BDPT MIS helpers (`bdptConnectionMIS_full`,
+`BDPTFullVertex`; `_partial` variants deleted), Jakob–Hanika spectral upsampling
+(`rgbToSpectralCoefficients`), and the Cauchy IOR formula (`cauchyIOR`) are
+available to consumers. Unit tests pin their numerical contracts. BDPT vertex
+storage is deliberately backend-owned: the WebGL2 and WebGPU renderers retain
+different transport payloads and packed layouts, so this package does not
+publish a purportedly canonical vertex packer.
 
 To deep-import an oracle for tests: `import { ... } from '@vitrum/shared-samplers/src/<module>.js';`.
 

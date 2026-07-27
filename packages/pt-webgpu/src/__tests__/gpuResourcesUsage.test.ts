@@ -29,7 +29,7 @@ describe('GpuResources texture usage', () => {
     expect((usageByLabel.get('vitrum.pt-webgpu.albedo')! & copySrc) !== 0).toBe(true);
   });
 
-  it('replaces stale SPPM per-pixel stats buffers with a placeholder when device limits are exceeded', () => {
+  it('preserves a usable SPPM per-pixel stats buffer when a larger request exceeds device limits', () => {
     const { device, buffers } = createSizeValidatingGpuDeviceStub({ maxBufferSize: 1024 });
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
@@ -37,7 +37,7 @@ describe('GpuResources texture usage', () => {
     expect(gpu.ensureSppmPixelStatsBuffer(4, 4)).toBe(true);
     const realBuffer = gpu.sppm.sppmPixelStatsBuffer as unknown as { label?: string; size: number; destroy: ReturnType<typeof vi.fn> };
     expect(realBuffer.label).toBe('vitrum.pt-webgpu.sppm.pixelStats');
-    expect(realBuffer.size).toBe(512);
+    expect(realBuffer.size).toBe(1024);
     expect(gpu.sppm.sppmPixelStatsWidth).toBe(4);
     expect(gpu.sppm.sppmPixelStatsHeight).toBe(4);
 
@@ -46,16 +46,16 @@ describe('GpuResources texture usage', () => {
 
     expect(gpu.ensureSppmPixelStatsBuffer(16, 16)).toBe(false);
 
-    const placeholder = gpu.sppm.sppmPixelStatsBuffer as unknown as { label?: string; size: number };
-    expect(realBuffer.destroy).toHaveBeenCalledOnce();
-    expect(placeholder).not.toBe(realBuffer);
-    expect(placeholder.label).toBe('vitrum.pt-webgpu.sppm.pixelStats.placeholder');
-    expect(placeholder.size).toBe(64);
+    const retained = gpu.sppm.sppmPixelStatsBuffer as unknown as { label?: string; size: number };
+    expect(realBuffer.destroy).not.toHaveBeenCalled();
+    expect(retained).toBe(realBuffer);
+    expect(retained.label).toBe('vitrum.pt-webgpu.sppm.pixelStats');
+    expect(retained.size).toBe(1024);
     expect(buffers.every((b) => b.size <= 1024)).toBe(true);
-    expect(gpu.sppm.sppmPixelStatsWidth).toBe(0);
-    expect(gpu.sppm.sppmPixelStatsHeight).toBe(0);
-    expect(gpu.pathTraceBindGroup).toBeNull();
-    expect(gpu.pathTraceBindGroup3).toBeNull();
+    expect(gpu.sppm.sppmPixelStatsWidth).toBe(4);
+    expect(gpu.sppm.sppmPixelStatsHeight).toBe(4);
+    expect(gpu.pathTraceBindGroup).not.toBeNull();
+    expect(gpu.pathTraceBindGroup3).not.toBeNull();
     expect(warnSpy).toHaveBeenCalledOnce();
   });
 });

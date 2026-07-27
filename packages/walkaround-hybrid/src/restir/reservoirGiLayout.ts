@@ -13,6 +13,6 @@ export {
   RESERVOIR_GI_GRIS_STRIDE_U32,
   RESERVOIR_GI_BASE_STRIDE_BYTES,
   RESERVOIR_GI_GRIS_STRIDE_BYTES,
-  reservoirGiStrideU32ForRestirPtReuse,
-  reservoirGiStrideBytesForRestirPtReuse,
+  reservoirGiStrideU32ForGrisReuse,
+  reservoirGiStrideBytesForGrisReuse,
 } from '../gi/giLayout.js';

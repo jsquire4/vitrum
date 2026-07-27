@@ -74,44 +74,68 @@ describe('material stride parity (packer ↔ composed GLSL)', () => {
     expect(withUv1.data[86 * 4 + 3]).toBe(1); // bit 0
   });
 
-  it('GLSL material_struct decodes uv-set bitmask at s21.a into uvTexCoordMask', () => {
+  it('GLSL material_struct decodes uv-set bitmask at texel 86.a into uvTexCoordMask', () => {
     // Verify the decoder reads the bitmask from the former pad lane.
     const shader = composedShader();
-    expect(shader).toContain('m.uvTexCoordMask = uint( round( s21.a ) )');
+    expect(shader).toContain('s = texelFetch1D( tex, i + 86u );');
+    expect(shader).toContain('m.uvTexCoordMask = uint( round( s.a ) )');
     expect(shader).toContain('uvTexCoordMask');
   });
 
   it('GLSL decodes scalar anisotropy and routes GGX through anisotropic helpers', () => {
     const shader = composedShader();
-    expect(shader).toContain('m.anisotropyMap = int( round( s6.b ) );');
-    expect(shader).toContain('m.anisotropy = clamp( s11.a, 0.0, 1.0 );');
-    expect(shader).toContain('m.anisotropyRotation = s17.b;');
-    expect(shader).toContain('m.thickness = max( s22.r, 0.0 );');
-    expect(shader).toContain('m.thicknessMap = int( round( s22.g ) );');
-    expect(shader).toContain('m.anisotropyMapTransform = m.anisotropyMap == - 1 ? mat3( 1.0 ) : readTextureTransform( tex, i + 95u );');
-    expect(shader).toContain('m.thicknessMapTransform = m.thicknessMap == - 1 ? mat3( 1.0 ) : readTextureTransform( tex, i + 98u );');
+    expect(shader).toContain('s = texelFetch1D( tex, i + 6u );');
+    expect(shader).toContain('m.anisotropyMap = int( round( s.b ) );');
+    expect(shader).toContain('s = texelFetch1D( tex, i + 11u );');
+    expect(shader).toContain('m.thinFilm = bool( s.b ); m.anisotropy = clamp( s.a, 0.0, 1.0 );');
+    expect(shader).toContain('s = texelFetch1D( tex, i + 17u );');
+    expect(shader).toContain('m.thinFilmAngleDependent = s.g > 0.5; m.anisotropyRotation = s.b;');
+    expect(shader).toContain('s = texelFetch1D( tex, i + 97u );');
+    expect(shader).toContain('m.thickness = max( s.r, 0.0 ); m.thicknessMap = int( round( s.g ) );');
+    expect(shader).toContain('mat3 readMaterialMapTransform(');
+    expect(shader).toContain('vec4 readMaterialMapPolicy(');
+    expect(shader).not.toContain('m.anisotropyMapTransform =');
+    expect(shader).not.toContain('m.thicknessMapTransform =');
     expect(shader).toContain('m.frontLayerNormalMap = int( round( layerNormal.r ) );');
     expect(shader).toContain('m.backLayerNormalMap = int( round( layerNormal.b ) );');
-    expect(shader).toContain('m.frontLayerNormalMapTransform');
-    expect(shader).toContain('m.backLayerNormalMapTransform');
+    expect(shader).toContain('activeNormalMapTransformOffset = 123u;');
+    expect(shader).toContain('activeNormalMapTransformOffset = 125u;');
     expect(shader).toContain('activeNormalMap = material.frontLayerNormalMap;');
     expect(shader).toContain('activeNormalMap = material.backLayerNormalMap;');
-    expect(shader).toContain('activeNormalUv = material.frontLayerNormalTexCoord > 0.5 ? uv1 : uv;');
-    expect(shader).toContain('sampleMaterialTexture( textures, uvPrime.xy, activeNormalMap, activeNormalMapWrap )');
-    expect(shader).toContain('m.anisotropyMapWrap = texelFetch1D( tex, i + 119u );');
-    expect(shader).toContain('m.thicknessMapWrap = texelFetch1D( tex, i + 120u );');
-    expect(shader).toContain('vec3 uvPrime = material.anisotropyMapTransform * vec3( MAP_UV( 19u ), 1 );');
+    expect(shader).toContain('int( round( material.frontLayerNormalTexCoord ) )');
+    expect(shader).toContain('readMaterialMapUvLayer( materials, materialIndex, mapIndex )');
+    expect(shader.replace(/\s+/g, ' ')).toContain(
+      'activeNormalMap, activeNormalMapTransformOffset, activeNormalMapPolicyOffset, activeNormalUv',
+    );
+    expect(shader).not.toContain('m.anisotropyMapWrap =');
+    expect(shader).not.toContain('m.thicknessMapWrap =');
+    expect(shader.replace(/\s+/g, ' ')).toContain(
+      'material.anisotropyMap, 95u, 119u, MAP_UV( 19u )',
+    );
     expect(shader).toContain('anisotropy *= anisotropyTexel.b;');
     expect(shader).toContain('anisotropyRotation += atan( rg.y, rg.x );');
-    expect(shader).toContain('vec3 uvPrime = material.thicknessMapTransform * vec3( MAP_UV( 20u ), 1 );');
-    expect(shader).toContain('attenuationThickness *= sampleMaterialTexture(');
+    expect(shader.replace(/\s+/g, ' ')).toContain(
+      'material.thicknessMap, 98u, 120u, MAP_UV( 20u )',
+    );
+    expect(shader).toContain('attenuationThickness *= MAP_SAMPLE(');
     expect(shader).toContain('attenuationDist = min( attenuationDist, max( surf.attenuationThickness, 0.0 ) );');
     expect(shader).toContain('surf.anisotropy = clamp( anisotropy, 0.0, 1.0 );');
     expect(shader).toContain('mat3 getBasisFromNormalAndTangent( vec3 normal, vec4 tangentSample )');
     expect(shader).toContain('vec3 tangent = tangentSample.xyz - n * dot( tangentSample.xyz, n );');
     expect(shader).toContain('vec4 bsdfTangentSample = textureSampleBarycoord(');
-    expect(shader).toContain('surf.normalBasis = getBasisFromNormalAndTangent( surf.normal, bsdfTangentSample );');
-    expect(shader).toContain('vec2 anisotropicRoughnessAxes( SurfaceRecord surf )');
+    expect(shader.replace(/\s+/g, ' ')).toContain(
+      'int bsdfBasisUvLayer = material.anisotropyMap != - 1 ? readMaterialMapUvLayer( materials, materialIndex, 19u ) : ATTR_UV;',
+    );
+    expect(shader.replace(/\s+/g, ' ')).toContain(
+      'surf.normalBasis = getBasisFromSelectedUv( bvh.position, attributesArray, bsdfBasisUvLayer, surfaceHit.faceIndices.xyz, surf.normal, bsdfTangentSample );',
+    );
+    expect(shader.replace(/\s+/g, ' ')).toContain(
+      'int clearcoatBasisUvLayer = material.clearcoatNormalMap != - 1 ? readMaterialMapUvLayer( materials, materialIndex, 9u ) : ATTR_UV;',
+    );
+    expect(shader.replace(/\s+/g, ' ')).toContain(
+      'surf.clearcoatBasis = getBasisFromSelectedUv( bvh.position, attributesArray, clearcoatBasisUvLayer, surfaceHit.faceIndices.xyz, surf.clearcoatNormal, bsdfTangentSample );',
+    );
+    expect(shader).toContain('vec2 anisotropicRoughnessAxes( const in SurfaceRecord surf )');
     expect(shader).toContain('ggxDirectionForSurface( wo, surf, rand2( 12 ) )');
     expect(shader).toContain('ggxDistributionForSurface( wh, surf )');
     expect(shader).toContain('ggxPdfForSurface( wo, wh, surf )');

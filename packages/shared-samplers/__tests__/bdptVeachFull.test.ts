@@ -25,6 +25,8 @@ import {
   geometricTermG,
   buildBDPTStrategyPDFs_full,
   bdptConnectionMIS_full,
+  bdptExplicitConnectionStrategyIsValid,
+  maskBDPTExplicitConnectionStrategyPDFs,
 } from '../src/bdptMIS.js';
 import type { BDPTFullVertex } from '../src/bdptMIS.js';
 
@@ -520,5 +522,41 @@ describe('T6 — camera/light endpoint corner cases', () => {
     const pdfs = new Float64Array([0, 0, 0]);
     expect(bdptConnectionMIS_full(pdfs, 1)).toBe(0);
     expect(Number.isFinite(bdptConnectionMIS_full(pdfs, 1))).toBe(true);
+  });
+});
+
+describe('bounded explicit-connection strategy family', () => {
+  it('excludes pure-eye, pure-light, and unavailable-depth strategies', () => {
+    const limits = { maxLightVertices: 3, maxEyeVertices: 3 } as const;
+    // n=6: s=2 has 2 light + 3 eye vertices; s=3 has 3 light + 2 eye.
+    // s=1 exceeds the eye budget; s=4 exceeds the light budget.
+    expect(bdptExplicitConnectionStrategyIsValid(6, 0, limits)).toBe(false);
+    expect(bdptExplicitConnectionStrategyIsValid(6, 1, limits)).toBe(false);
+    expect(bdptExplicitConnectionStrategyIsValid(6, 2, limits)).toBe(true);
+    expect(bdptExplicitConnectionStrategyIsValid(6, 3, limits)).toBe(true);
+    expect(bdptExplicitConnectionStrategyIsValid(6, 4, limits)).toBe(false);
+    expect(bdptExplicitConnectionStrategyIsValid(6, 5, limits)).toBe(false);
+
+    const masked = maskBDPTExplicitConnectionStrategyPDFs(
+      new Float64Array([1, 2, 3, 4, 5, 6]),
+      limits,
+    );
+    expect(Array.from(masked)).toEqual([0, 0, 3, 4, 0, 0]);
+  });
+
+  it('renormalizes the power heuristic over only sampled explicit strategies', () => {
+    const masked = maskBDPTExplicitConnectionStrategyPDFs(
+      new Float64Array([9, 2, 3, 4, 5, 8]),
+      { maxLightVertices: 3, maxEyeVertices: 3 },
+    );
+    let explicitWeightSum = 0;
+    for (let s = 0; s < masked.length; s += 1) {
+      explicitWeightSum += bdptConnectionMIS_full(masked, s);
+    }
+    expect(explicitWeightSum).toBeCloseTo(1, 14);
+    expect(bdptConnectionMIS_full(masked, 0)).toBe(0);
+    expect(bdptConnectionMIS_full(masked, 1)).toBe(0);
+    expect(bdptConnectionMIS_full(masked, 4)).toBe(0);
+    expect(bdptConnectionMIS_full(masked, 5)).toBe(0);
   });
 });

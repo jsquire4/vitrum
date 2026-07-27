@@ -133,6 +133,25 @@ describe('materialSpecEmissiveLe', () => {
     expect(le).toEqual([2, 3, 4]);
   });
 
+  it('samples an explicitly supplied arbitrary emissive UV lane', () => {
+    const handle = {
+      width: 2,
+      height: 1,
+      data: new Float32Array([
+        1, 0, 0, 1,
+        0, 1, 0, 1,
+      ]),
+      __vitrum_hint__: { channels: 4, dataType: 'float32', colorSpace: 'linear' },
+    };
+
+    const le = materialSpecEmissiveLeAtUv(material({
+      emissive: [2, 2, 2],
+      emissiveMap: { handle, texCoord: 3 },
+    }), [0, 0], undefined, [0.75, 0]);
+
+    expect(le).toEqual([0, 2, 0]);
+  });
+
   it('estimates triangle emissive power from UV-local map samples instead of full-texture average', () => {
     const handle = {
       width: 2,
@@ -192,7 +211,7 @@ describe('materialSpecEmissiveLe', () => {
           __vitrum_hint__: { channels: 4, dataType: 'float32', colorSpace: 'linear' },
         },
       },
-    }), 4)).toBe(1);
+    }), 4)).toBe(4);
   });
 
   it('enumerates barycentric micro-triangles with conserved area count', () => {

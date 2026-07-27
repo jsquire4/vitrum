@@ -73,9 +73,12 @@ export interface PointEmitter extends EmitterBase {
 
 export interface SpotEmitter extends EmitterBase {
   readonly kind: 'spot';
+  /** Delta-position source origin. `SpotEmitter` has no finite source radius;
+   *  use a `rect-area` or `disc-area` emitter when source extent is required. */
   readonly position: Vec3;
   readonly direction: Vec3;
   readonly angle: number;                 // half-cone angle in radians
+  /** Angular cone falloff, not a finite-source/soft-shadow radius. */
   readonly penumbra?: number;             // 0–1; 0 = hard edge, 1 = full penumbra
   readonly distance?: number;
   readonly decay?: number;

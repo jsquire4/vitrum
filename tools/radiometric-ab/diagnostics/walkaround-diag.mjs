@@ -2,7 +2,6 @@
 // @ts-nocheck
 import { createWalkaroundEngine_Hybrid } from "@vitrum/walkaround-hybrid";
 import { asMat4 } from "@vitrum/core";
-import { applyNagaFix } from "../../shader-gate/nagaFix.mjs";
 
 const W = 128, H = 128, SPP = 16;
 
@@ -24,14 +23,6 @@ function makeLookAtMatrix(eye, center, up) {
 const EYE=[0,0,2.5],CENTER=[0,0,0];
 const proj=asMat4(makePerspectiveMatrix(60,W/H,0.1,50));
 const view=asMat4(makeLookAtMatrix(EYE,CENTER,[0,1,0]));
-
-function patchDeviceForWh(device) {
-  const orig=device.createShaderModule.bind(device);
-  device.createShaderModule=(desc)=>{
-    if(typeof desc.code==="string"){try{return orig({...desc,code:applyNagaFix(desc.code)});}catch{return orig(desc);}}
-    return orig(desc);
-  };
-}
 
 async function acquireWhDevice() {
   const adapter=await navigator.gpu.requestAdapter();
@@ -82,7 +73,6 @@ function makeCornellScene(opts={}) {
 
 async function run(label,engineOpts,sceneOpts) {
   const device=await acquireWhDevice();
-  patchDeviceForWh(device);
   const engine=await createWalkaroundEngine_Hybrid({device,width:W,height:H,primaryLightDir:[0.3,-0.8,0.5],primaryLightIntensity:0.6,skyTint:[0.5,0.7,1.0],skyIrradiance:0.15,verbose:false,ppgEnabled:false,rcEnabled:false,denoiser:"atrous-variance",...engineOpts});
   engine.setScene(makeCornellScene(sceneOpts));
   const deadline=Date.now()+90000;

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { EngineWarning, HdriEnvironment, NoneEnvironment, ProceduralSkyEnvironment } from '@vitrum/core';
+import type { HdriEnvironment, NoneEnvironment, ProceduralSkyEnvironment } from '@vitrum/core';
 import { buildEquirectInfo } from './equirectHdrInfo.js';
 
 const luminance = (r: number, g: number, b: number) => 0.2126 * r + 0.7152 * g + 0.0722 * b;
@@ -42,16 +42,14 @@ describe('buildEquirectInfo', () => {
     expect(out.totalSum).toBe(0);
   });
 
-  it('returns all-null grids for an hdri lacking CPU pixel data', () => {
-    const out = buildEquirectInfo({ kind: 'hdri', hdri: { mock: true } });
-    expect(out.map).toBeNull();
-    expect(out.marginal).toBeNull();
-    expect(out.conditional).toBeNull();
+  it('rejects an hdri lacking CPU pixel data', () => {
+    expect(() => buildEquirectInfo({ kind: 'hdri', hdri: { mock: true } })).toThrow(
+      /authored HDRI is not CPU-readable: no raw or DataTexture-shaped pixel data was supplied/,
+    );
   });
 
-  it('preserves malformed DataTexture-shaped HDRI dimensions in structured diagnostics', () => {
-    const warnings: EngineWarning[] = [];
-    const out = buildEquirectInfo({
+  it('rejects a short DataTexture-shaped HDRI payload', () => {
+    expect(() => buildEquirectInfo({
       kind: 'hdri',
       hdri: {
         image: {
@@ -60,19 +58,58 @@ describe('buildEquirectInfo', () => {
           data: new Float32Array([1]),
         },
       },
-    }, {
-      onWarning: (warning) => warnings.push(warning),
-    });
+    })).toThrow(/data length 1 must exactly equal 6 \(RGB\) or 8 \(RGBA\)/);
+  });
 
-    expect(out.map).toBeNull();
-    expect(warnings).toContainEqual(expect.objectContaining({
-      code: 'pt-webgl2.hdri-unreadable',
-      details: expect.objectContaining({
-        width: 2,
+  it.each([
+    [
+      'fractional dimensions',
+      { width: 1.5, height: 1, data: new Float32Array([1, 1, 1]) },
+      /width and height must be positive safe integers/,
+    ],
+    [
+      'non-finite dimensions',
+      { width: Number.POSITIVE_INFINITY, height: 1, data: new Float32Array([1, 1, 1]) },
+      /width and height must be positive safe integers/,
+    ],
+    [
+      'trailing pixel values',
+      { width: 1, height: 1, data: new Float32Array([1, 1, 1, 1, 99]) },
+      /data length 5 must exactly equal 3 \(RGB\) or 4 \(RGBA\)/,
+    ],
+    [
+      'non-finite radiance',
+      { width: 1, height: 1, data: new Float32Array([Number.NaN, 1, 1]) },
+      /every RGB radiance value and optional alpha value must decode to a finite float/,
+    ],
+    [
+      'negative radiance',
+      { width: 1, height: 1, data: new Float32Array([-0.25, 1, 1]) },
+      /radiance must be finite and nonnegative/,
+    ],
+  ])('rejects %s instead of degrading to EMPTY_ENV', (_label, hdri, message) => {
+    expect(() => buildEquirectInfo({ kind: 'hdri', hdri })).toThrow(message);
+  });
+
+  it('rejects incompatible dataType backing and non-RGB channel hints', () => {
+    expect(() => buildEquirectInfo({
+      kind: 'hdri',
+      hdri: {
+        width: 1,
         height: 1,
-        sourceType: '[object Float32Array]',
-      }),
-    }));
+        data: new Uint16Array([1, 1, 1]),
+        __vitrum_hint__: { channels: 3, dataType: 'uint8' },
+      },
+    })).toThrow(/dataType "uint8" requires Uint8Array or Uint8ClampedArray/);
+    expect(() => buildEquirectInfo({
+      kind: 'hdri',
+      hdri: {
+        width: 1,
+        height: 1,
+        data: new Float32Array([1, 1]),
+        __vitrum_hint__: { channels: 2, dataType: 'float32' },
+      },
+    })).toThrow(/channels must be 3 \(RGB\) or 4 \(RGBA\)/);
   });
 
   it('accepts DataTexture-shaped HDRI handles with explicit channel hints', () => {

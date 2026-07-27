@@ -48,6 +48,32 @@ export type TexAllocSpec =
       readonly resourceName: string;
     };
 
+function glErrorName(gl: WebGL2RenderingContext, error: number): string {
+  const entries: readonly (readonly [number, string])[] = [
+    [gl.INVALID_ENUM, 'INVALID_ENUM'],
+    [gl.INVALID_VALUE, 'INVALID_VALUE'],
+    [gl.INVALID_OPERATION, 'INVALID_OPERATION'],
+    [gl.INVALID_FRAMEBUFFER_OPERATION, 'INVALID_FRAMEBUFFER_OPERATION'],
+    [gl.OUT_OF_MEMORY, 'OUT_OF_MEMORY'],
+    [gl.CONTEXT_LOST_WEBGL, 'CONTEXT_LOST_WEBGL'],
+  ];
+  return entries.find(([value]) => value === error)?.[1] ?? `0x${error.toString(16)}`;
+}
+
+function assertNoGlError(gl: WebGL2RenderingContext, resourceName: string, phase: 'before' | 'after'): void {
+  if (typeof gl.getError !== 'function' || typeof gl.NO_ERROR !== 'number') return;
+  const error = gl.getError();
+  if (error === gl.NO_ERROR) return;
+  if (phase === 'before') {
+    throw new Error(
+      `pt-webgl2: pre-existing WebGL error ${glErrorName(gl, error)} before allocating ${resourceName} texture`,
+    );
+  }
+  throw new Error(
+    `pt-webgl2: failed to upload ${resourceName} texture (${glErrorName(gl, error)})`,
+  );
+}
+
 /**
  * Allocate a GL texture from a spec, guarding against context loss and device
  * dimension limits. Returns the new `WebGLTexture`.
@@ -72,6 +98,24 @@ export function allocGlTexture(
   }
 
   // Dimension guard.
+  const invalidDimensions =
+    spec.kind === '2d'
+      ? !Number.isInteger(spec.dim) || spec.dim <= 0
+      : spec.kind === 'rect'
+        ? !Number.isInteger(spec.width) ||
+          !Number.isInteger(spec.height) ||
+          spec.width <= 0 ||
+          spec.height <= 0
+        : !Number.isInteger(spec.dim) ||
+          !Number.isInteger(spec.layers) ||
+          spec.dim <= 0 ||
+          spec.layers <= 0;
+  if (invalidDimensions) {
+    throw new RangeError(
+      `pt-webgl2: ${resourceName} texture dimensions and layer counts must be positive integers`,
+    );
+  }
+
   const maxSize = gl.getParameter(gl.MAX_TEXTURE_SIZE) as number;
   if (spec.kind === '2d') {
     if (spec.dim > maxSize) {
@@ -105,6 +149,7 @@ export function allocGlTexture(
     }
   }
 
+  assertNoGlError(gl, resourceName, 'before');
   const tex = gl.createTexture();
   if (tex == null) {
     throw new Error(
@@ -113,30 +158,37 @@ export function allocGlTexture(
   }
 
   const target = spec.kind === 'array' ? gl.TEXTURE_2D_ARRAY : gl.TEXTURE_2D;
-  gl.bindTexture(target, tex);
-  gl.texParameteri(target, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-  gl.texParameteri(target, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-  gl.texParameteri(target, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-  gl.texParameteri(target, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  try {
+    gl.bindTexture(target, tex);
+    gl.texParameteri(target, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(target, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(target, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(target, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
 
-  if (spec.kind === 'array') {
-    gl.texImage3D(
-      target,
-      0,
-      spec.internalFormat,
-      spec.dim,
-      spec.dim,
-      spec.layers,
-      0,
-      spec.format,
-      spec.type,
-      spec.data,
-    );
-  } else {
-    const w = spec.kind === 'rect' ? spec.width : spec.dim;
-    const h = spec.kind === 'rect' ? spec.height : spec.dim;
-    gl.texImage2D(target, 0, spec.internalFormat, w, h, 0, spec.format, spec.type, spec.data);
+    if (spec.kind === 'array') {
+      gl.texImage3D(
+        target,
+        0,
+        spec.internalFormat,
+        spec.dim,
+        spec.dim,
+        spec.layers,
+        0,
+        spec.format,
+        spec.type,
+        spec.data,
+      );
+    } else {
+      const w = spec.kind === 'rect' ? spec.width : spec.dim;
+      const h = spec.kind === 'rect' ? spec.height : spec.dim;
+      gl.texImage2D(target, 0, spec.internalFormat, w, h, 0, spec.format, spec.type, spec.data);
+    }
+    assertNoGlError(gl, resourceName, 'after');
+    return tex;
+  } catch (error) {
+    gl.deleteTexture(tex);
+    throw error;
+  } finally {
+    gl.bindTexture(target, null);
   }
-
-  return tex;
 }

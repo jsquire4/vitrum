@@ -52,8 +52,14 @@ export interface UploadedSceneTextures {
   readonly materialIndex: WebGLTexture;
   // materials (sampler2D, 85px/material)
   readonly materials: WebGLTexture;
-  // vertex attributes (sampler2DArray: layer 0=normal, 1=tangent, 2=uv, 3=color)
+  // vertex attributes (sampler2DArray: fixed 0=normal, 1=tangent, 2=uv0,
+  // 3=color, 4=uv1; dense scene-local arbitrary UV layers begin at 5)
   readonly attributesArray: WebGLTexture;
+  /** Authored TextureRef.texCoord -> dense attributesArray layer. Optional only
+   *  for legacy test/mocked bundles; real uploads always populate it. */
+  readonly uvLayerByTexCoord?: ReadonlyMap<number, number>;
+  /** Allocated attributesArray layer count, used to guard in-place subuploads. */
+  readonly attributeLayerCount?: number;
   // lights (sampler2D, 6px/light)
   readonly lights: WebGLTexture;
   readonly lightCount: number;

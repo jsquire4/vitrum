@@ -128,24 +128,18 @@ function orderedGl(log: { op: string; v?: unknown }[]): WebGLRenderingContext {
 }
 
 describe('A5 BDPT host driver', () => {
-  it('defaults bdpt:true to endpoint-only light-subpath mode, then eye flag=0', async () => {
+  it('defaults bdpt:true to four light vertices in the 8x8 path buffer, then eye flag=0', async () => {
     const log: { op: string; v?: unknown }[] = [];
     const gl = orderedGl(log) as unknown as WebGL2RenderingContext;
     const engine = await createPTEngine_WebGL2({ device: gl, bdpt: true });
     engine.setScene(sceneWithAnalyticLight());
     engine.renderFrame(frame());
 
-    // Safe default matches pt-webgpu: endpoint-only BDPT (one stored light vertex),
-    // then uBdptLightSubpathPass=0 for the eye. Multi-vertex WebGL2 BDPT stays an
-    // explicit research-mode opt-in below.
     const cols = log.filter((e) => e.op === 'uBdptVertexCol').map((e) => e.v);
-    expect(cols).toEqual([0]);
-    expect(log.some((e) => e.op === 'resolution' && Array.isArray(e.v) && e.v[0] === 3 && e.v[1] === 5)).toBe(true);
+    expect(cols).toEqual([0, 1, 2, 3]);
+    expect(log.some((e) => e.op === 'resolution' && Array.isArray(e.v) && e.v[0] === 8 && e.v[1] === 8)).toBe(true);
 
     const passFlags = log.filter((e) => e.op === 'uBdptLightSubpathPass').map((e) => e.v);
-    // The subpath flag is set to 1 (build) before the column loop, then back to 0 for
-    // the eye pass. So: at least one 1, and the LAST set is 0 (eye), and the 1 precedes
-    // all three column draws.
     expect(passFlags).toContain(1);
     expect(passFlags[passFlags.length - 1]).toBe(0); // eye pass last
     const firstEyeFlagIdx = log.findIndex((e) => e.op === 'uBdptLightSubpathPass' && e.v === 0);
@@ -153,93 +147,67 @@ describe('A5 BDPT host driver', () => {
     expect(firstEyeFlagIdx).toBeGreaterThan(lastColIdx); // eye flag set AFTER all columns
   });
 
-  it('warns and runs the explicit multi-vertex research path when requested', async () => {
+  it('accepts an explicitly shorter two-vertex light subpath', async () => {
     const log: { op: string; v?: unknown }[] = [];
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const structured: EngineWarning[] = [];
-    try {
-      const gl = orderedGl(log) as unknown as WebGL2RenderingContext;
-      const engine = await createPTEngine_WebGL2({
-        device: gl,
-        bdpt: true,
-        bdptOptions: { maxLightBounces: 3, experimentalMultiVertex: true },
-        onWarning: (w) => structured.push(w),
-      });
-      engine.setScene(sceneWithAnalyticLight());
-      engine.renderFrame(frame());
+    const engine = await createPTEngine_WebGL2({
+      device: orderedGl(log) as unknown as WebGL2RenderingContext,
+      bdpt: true,
+      bdptOptions: { maxLightBounces: 2 },
+    });
+    engine.setScene(sceneWithAnalyticLight());
+    engine.renderFrame(frame());
 
-      const cols = log.filter((e) => e.op === 'uBdptVertexCol').map((e) => e.v);
-      expect(cols).toEqual([0, 1, 2]);
-      expect(warn.mock.calls.some((c) => String(c[0]).includes('multi-vertex BDPT research path'))).toBe(true);
-      expect(structured).toContainEqual(expect.objectContaining({
-        code: 'pt-webgl2.bdpt-multivertex-research-mode',
-        details: { requested: 3, resolved: 3, safeDefault: 1, experimentalMultiVertex: true },
-      }));
-    } finally {
-      warn.mockRestore();
-    }
+    expect(log.filter((e) => e.op === 'uBdptVertexCol').map((e) => e.v)).toEqual([0, 1]);
+    engine.dispose();
   });
 
-  it('rejects multi-vertex BDPT unless the research flag is explicit', async () => {
-    await expect(
-      createPTEngine_WebGL2({
+  it('accepts the maximum eight-vertex subpath and rejects larger depths', async () => {
+    const log: { op: string; v?: unknown }[] = [];
+    const engine = await createPTEngine_WebGL2({
+      device: orderedGl(log) as unknown as WebGL2RenderingContext,
+      bdpt: true,
+      bdptOptions: { maxLightBounces: 8 },
+    });
+    engine.setScene(sceneWithAnalyticLight());
+    engine.renderFrame(frame());
+    expect(log.filter((e) => e.op === 'uBdptVertexCol').map((e) => e.v)).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
+    engine.dispose();
+
+    const error = await createPTEngine_WebGL2({
         device: orderedGl([]) as unknown as WebGL2RenderingContext,
         bdpt: true,
-        bdptOptions: { maxLightBounces: 2 },
-      }),
-    ).rejects.toThrow('bdptOptions.experimentalMultiVertex=true');
+        bdptOptions: { maxLightBounces: 9 },
+      }).then(
+        () => undefined,
+        (reason: unknown) => reason,
+      );
+    expect(error).toBeInstanceOf(RangeError);
   });
 
-  it('validates and warns for WebGL2 BDPT maxLightBounces coercions', async () => {
+  it('rejects non-positive, fractional, and non-finite BDPT depths', async () => {
     await expect(
       createPTEngine_WebGL2({
         device: orderedGl([]) as unknown as WebGL2RenderingContext,
         bdpt: true,
         bdptOptions: { maxLightBounces: 0 },
       }),
-    ).rejects.toThrow('bdptOptions.maxLightBounces must be a finite number >= 1');
+    ).rejects.toThrow('supported range 1..8');
 
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const structured: EngineWarning[] = [];
-    try {
-      const engine = await createPTEngine_WebGL2({
+    await expect(
+      createPTEngine_WebGL2({
         device: orderedGl([]) as unknown as WebGL2RenderingContext,
         bdpt: true,
-        bdptOptions: { maxLightBounces: 8.75, experimentalMultiVertex: true },
-        onWarning: (w) => structured.push(w),
-      });
-      expect(warn.mock.calls.some((c) => String(c[0]).includes('clamping to supported WebGL2 BDPT'))).toBe(true);
-      expect(structured).toContainEqual(expect.objectContaining({
-        code: 'pt-webgl2.bdpt-max-light-bounces-clamped',
-        details: { requested: 8.75, clampedTo: 3 },
-      }));
-      expect(structured).toContainEqual(expect.objectContaining({
-        code: 'pt-webgl2.bdpt-multivertex-research-mode',
-        details: { requested: 8.75, resolved: 3, safeDefault: 1, experimentalMultiVertex: true },
-      }));
-      engine.dispose();
-    } finally {
-      warn.mockRestore();
-    }
+        bdptOptions: { maxLightBounces: 2.75 },
+      }),
+    ).rejects.toThrow('supported range 1..8');
 
-    const roundWarn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const roundStructured: EngineWarning[] = [];
-    try {
-      const engine = await createPTEngine_WebGL2({
+    await expect(
+      createPTEngine_WebGL2({
         device: orderedGl([]) as unknown as WebGL2RenderingContext,
         bdpt: true,
-        bdptOptions: { maxLightBounces: 2.75, experimentalMultiVertex: true },
-        onWarning: (w) => roundStructured.push(w),
-      });
-      expect(roundWarn.mock.calls.some((c) => String(c[0]).includes('rounding down to integer 2'))).toBe(true);
-      expect(roundStructured).toContainEqual(expect.objectContaining({
-        code: 'pt-webgl2.bdpt-max-light-bounces-rounded',
-        details: { requested: 2.75, roundedTo: 2 },
-      }));
-      engine.dispose();
-    } finally {
-      roundWarn.mockRestore();
-    }
+        bdptOptions: { maxLightBounces: Number.POSITIVE_INFINITY },
+      }),
+    ).rejects.toThrow('supported range 1..8');
   });
 
   it('does NOT issue any light-subpath pass when bdpt:false (unidirectional invariant)', async () => {
@@ -262,9 +230,9 @@ describe('A5 BDPT host driver', () => {
     engine.setScene({ primitives: [mesh('floor', 0)], emitters: [], environment: { kind: 'none' } });
     engine.renderFrame(frame());
     expect(log.filter((e) => e.op === 'uBdptVertexCol' && e.v !== undefined)).toHaveLength(0);
-    // The eye pass still sets the subpath flag to 0.
+    // Main, candidate replay, and no-loop resolve each receive the inert flag.
     const passFlags = log.filter((e) => e.op === 'uBdptLightSubpathPass').map((e) => e.v);
-    expect(passFlags).toEqual([0]);
+    expect(passFlags).toEqual([0, 0, 0]);
   });
 
   it('builds BDPT light subpaths for mesh-area-only light sources', async () => {
@@ -284,8 +252,8 @@ describe('A5 BDPT host driver', () => {
       expect(warn.mock.calls.some((c) =>
         String(c[0]).includes('BDPT connections fall back to the unidirectional'),
       )).toBe(false);
-      expect(structured.some((w) => w.code === 'pt-webgl2.bdpt-environment-light-subpaths-unsupported')).toBe(false);
-      expect(log.filter((e) => e.op === 'uBdptVertexCol').map((e) => e.v)).toEqual([0]);
+      expect(structured.some((w) => w.code === 'pt-webgl2.bdpt-source-partition')).toBe(false);
+      expect(log.filter((e) => e.op === 'uBdptVertexCol').map((e) => e.v)).toEqual([0, 1, 2, 3]);
     } finally {
       warn.mockRestore();
     }
@@ -305,11 +273,9 @@ describe('A5 BDPT host driver', () => {
       engine.setScene(sceneWithEnvironmentLight());
       engine.renderFrame(frame());
 
-      expect(warn.mock.calls.some((c) =>
-        String(c[0]).includes('BDPT connections fall back to the unidirectional'),
-      )).toBe(false);
-      expect(structured.some((w) => w.code === 'pt-webgl2.bdpt-environment-light-subpaths-unsupported')).toBe(false);
-      expect(log.filter((e) => e.op === 'uBdptVertexCol').map((e) => e.v)).toEqual([0]);
+      expect(structured.some((w) => w.code === 'pt-webgl2.bdpt-source-partition')).toBe(false);
+      expect(warn.mock.calls.some((c) => String(c[0]).includes('Ordinary NEE'))).toBe(false);
+      expect(log.filter((e) => e.op === 'uBdptVertexCol').map((e) => e.v)).toEqual([0, 1, 2, 3]);
     } finally {
       warn.mockRestore();
     }
@@ -332,8 +298,8 @@ describe('A5 BDPT host driver', () => {
       expect(warn.mock.calls.some((c) =>
         String(c[0]).includes('BDPT connections fall back to the unidirectional'),
       )).toBe(false);
-      expect(structured.some((w) => w.code === 'pt-webgl2.bdpt-environment-light-subpaths-unsupported')).toBe(false);
-      expect(log.filter((e) => e.op === 'uBdptVertexCol').map((e) => e.v)).toEqual([0]);
+      expect(structured.some((w) => w.code === 'pt-webgl2.bdpt-source-partition')).toBe(false);
+      expect(log.filter((e) => e.op === 'uBdptVertexCol').map((e) => e.v)).toEqual([0, 1, 2, 3]);
     } finally {
       warn.mockRestore();
     }
@@ -351,13 +317,12 @@ describe('A5 BDPT host driver', () => {
       });
 
       engine.setScene(sceneWithAnalyticAndEnvironmentLight());
+      engine.setScene(sceneWithAnalyticAndEnvironmentLight());
       engine.renderFrame(frame());
 
-      expect(warn.mock.calls.some((c) =>
-        String(c[0]).includes('BDPT connections fall back to the unidirectional'),
-      )).toBe(false);
-      expect(structured.some((w) => w.code === 'pt-webgl2.bdpt-environment-light-subpaths-unsupported')).toBe(false);
-      expect(log.filter((e) => e.op === 'uBdptVertexCol').map((e) => e.v)).toEqual([0]);
+      expect(structured.some((w) => w.code === 'pt-webgl2.bdpt-source-partition')).toBe(false);
+      expect(warn.mock.calls.filter((c) => String(c[0]).includes('Ordinary NEE'))).toHaveLength(0);
+      expect(log.filter((e) => e.op === 'uBdptVertexCol').map((e) => e.v)).toEqual([0, 1, 2, 3]);
     } finally {
       warn.mockRestore();
     }

@@ -15,12 +15,51 @@
 
 export function nrcSpreadTerminationWgsl(): string {
   return /* wgsl */`
-// Per-segment spread term sqrt( d² / (p·|cosθ|) ), with the same 1e-12 denom
-// clamp as the CPU oracle (a degenerate segment → huge spread → early
-// termination, the conservative behaviour).
+// sqrt(max-finite-f32), derived so both the segment term and its square remain
+// representable. We use a log-domain fallback only when pdf*|cos| itself leaves
+// f32 range; positive subnormal PDFs are not cut off. A value is saturated only
+// at this format boundary, and every such event increments diagnostics.
+const NRC_SPREAD_MAX_ROOT_F32: f32 = 1.844674297e19;
+const NRC_SPREAD_MAX_ROOT_LOG2: f32 = 64.0;
+
+fn nrcSpreadFinite(value: f32) -> bool {
+  return value == value && abs(value) <= 3.402823466e38;
+}
+
 fn nrcSegmentSpreadTerm(dist: f32, pdf: f32, cosTheta: f32) -> f32 {
-  let denom = max(pdf * abs(cosTheta), 1e-12);
-  return sqrt((dist * dist) / denom);
+  if (!nrcSpreadFinite(dist) || !nrcSpreadFinite(pdf) || !nrcSpreadFinite(cosTheta)) {
+    nrcRecordNonFiniteValue();
+    return NRC_SPREAD_MAX_ROOT_F32;
+  }
+  let absCos = abs(cosTheta);
+  if (!(pdf > 0.0) || !(absCos > 0.0)) {
+    nrcRecordInvalidPdf();
+    return NRC_SPREAD_MAX_ROOT_F32;
+  }
+  let absDist = abs(dist);
+  if (absDist == 0.0) { return 0.0; }
+
+  let density = pdf * absCos;
+  var term: f32;
+  if (nrcSpreadFinite(density) && density > 0.0) {
+    term = absDist / sqrt(density);
+  } else {
+    // Multiplication overflow/underflow: evaluate the identical ratio in log2
+    // space, which preserves finite-positive inputs without an epsilon cutoff.
+    let logTerm = log2(absDist) - 0.5 * (log2(pdf) + log2(absCos));
+    if (!nrcSpreadFinite(logTerm) || logTerm >= NRC_SPREAD_MAX_ROOT_LOG2) {
+      nrcRecordSaturatedValue();
+      return NRC_SPREAD_MAX_ROOT_F32;
+    }
+    term = exp2(logTerm);
+  }
+
+  if (!nrcSpreadFinite(term) || term > NRC_SPREAD_MAX_ROOT_F32) {
+    nrcRecordSaturatedValue();
+    return NRC_SPREAD_MAX_ROOT_F32;
+  }
+  if (term == 0.0) { nrcRecordSaturatedValue(); }
+  return term;
 }
 
 // Accumulate one more segment into the running spread state. The state carries
@@ -29,7 +68,13 @@ fn nrcSegmentSpreadTerm(dist: f32, pdf: f32, cosTheta: f32) -> f32 {
 //   runningSum_io : in/out running Σ of per-segment terms
 //   returns        : a(x) = runningSum² after adding this segment
 fn nrcAccumulateSpread(runningSum_io: ptr<function, f32>, dist: f32, pdf: f32, cosTheta: f32) -> f32 {
-  *runningSum_io = *runningSum_io + nrcSegmentSpreadTerm(dist, pdf, cosTheta);
+  let next = *runningSum_io + nrcSegmentSpreadTerm(dist, pdf, cosTheta);
+  if (!nrcSpreadFinite(next) || next > NRC_SPREAD_MAX_ROOT_F32) {
+    nrcRecordSaturatedValue();
+    *runningSum_io = NRC_SPREAD_MAX_ROOT_F32;
+  } else {
+    *runningSum_io = max(next, 0.0);
+  }
   return (*runningSum_io) * (*runningSum_io);
 }
 

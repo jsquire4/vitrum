@@ -1,29 +1,25 @@
-# Planning Docs
+# Planning docs
 
-Use this directory as a small active planning surface. Historical/generated
-campaign files were removed in the 2026-06-17 cleanup because they contradicted
-the current closure state and kept sending agents back into stale work queues.
+Keep the active planning surface small and code-directed. Historical campaign
+ledgers and host-proof queues are not implementation authority.
 
 ## Active
 
-- `road-to-100.md` — current road-to-100 ledger and validation posture.
-- `gap-closure-execution-plan.md` — curated closeout plan. This supersedes the
-  deleted Cursor/orchestrator wave bundle.
-- `renderer-fidelity-matrix.md` — backend fidelity rows and promotion state.
-- `roadmap.md` — broader project roadmap.
+- `road-to-100.md` — the finite current code-completion queue and reopen rule.
+- `renderer-fidelity-matrix.md` — actual backend implementation semantics.
+- `roadmap.md` — optional capability expansion after the current release boundary.
 
-## Reference
+## Architecture and design reference
 
-- `library-architecture.md` — package responsibilities and boundaries.
-- `walkaround-without-three.md` — walkaround extraction/design notes.
-- `fidelity-promotion-playbook.md` — how to promote fidelity rows with proof.
-- `differentiable-rt.md` — inverse/differentiable rendering notes.
-- `tier4-vision-not-yet.md` and `app-ideas.md` — non-blocking future ideas.
+- `library-architecture.md` — package responsibilities and dependencies.
+- `walkaround-without-three.md` — walkaround extraction and ownership design.
+- `differentiable-rt.md` — inverse/differentiable rendering model.
+- `premium-grade-refactor-20260517.md` — retained structural rationale.
+- `tier4-vision-not-yet.md` and `app-ideas.md` — non-blocking product ideas.
 
-Completed campaign plans, including the old three-removal stack and generated
-gap-orchestrator bundle, are intentionally not kept here. Use git history if
-you need that archaeology.
+Completed sprint records live under `archive/`. Use git history for deleted
+generated queues and superseded execution plans.
 
-If a future audit finds a real code gap, add it to
-`gap-closure-execution-plan.md` with source evidence and a focused gate. Do not
-recreate large generated wave/task ledgers unless the user explicitly asks.
+When current production source exposes a real contract defect, add one bounded row
+to `road-to-100.md` with a focused executable regression. Do not recreate prose-pin,
+promotion, or cross-host work queues as code-completion gates.

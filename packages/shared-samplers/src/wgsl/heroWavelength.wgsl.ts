@@ -74,7 +74,30 @@ fn heroSampleCmfCdfInverse(
   // treat the off-the-end CMF sample as 0 instead of reading past the array.
   let vHiIdx = lo + 1u;
   let vHi = select(0.0, cmfTable[min(vHiIdx, HERO_CIE_TABLE_LENGTH - 1u)], vHiIdx < HERO_CIE_TABLE_LENGTH);
-  let t = select(0.0, (uClamped - cdfLo) / (cdfHi - cdfLo), cdfHi > cdfLo);
+  // The CMF is linearly interpolated within the selected wavelength bin, so
+  // its integrated CDF is quadratic. Invert that integral, not the two CDF
+  // endpoints linearly, and use the cancellation-safe quadratic root.
+  let segmentFraction = select(
+    0.0,
+    (uClamped - cdfLo) / (cdfHi - cdfLo),
+    cdfHi > cdfLo,
+  );
+  let segmentIntegral = 0.5 * (vLo + vHi);
+  let targetIntegral = segmentFraction * segmentIntegral;
+  let slope = vHi - vLo;
+  var t = 0.0;
+  if (segmentIntegral > 0.0) {
+    let nearConstant = abs(slope) <=
+      1.1920928955078125e-7 * max(max(abs(vLo), abs(vHi)), 1e-30);
+    if (nearConstant) {
+      t = targetIntegral / max(vLo, 1e-30);
+    } else {
+      let discriminant = max(vLo * vLo + 2.0 * slope * targetIntegral, 0.0);
+      let denominator = vLo + sqrt(discriminant);
+      t = select(0.0, 2.0 * targetIntegral / denominator, denominator > 0.0);
+    }
+  }
+  t = clamp(t, 0.0, 1.0);
   let lambdaNm = clamp(
     HERO_CIE_LAMBDA_MIN + (f32(lo) + t) * HERO_CIE_LAMBDA_STEP,
     HERO_CIE_LAMBDA_MIN,

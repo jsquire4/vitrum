@@ -25,8 +25,10 @@ import {
   asBackendTexture,
   BACKEND_PROMISE_LEDGER,
   MATERIAL_SPEC_FIELDS,
+  deriveCameraPositionFromViewMatrix,
   patchEmitterInScene,
   patchPrimitiveInScene,
+  validateScene as validateCoreScene,
 } from '@vitrum/core';
 import type { WorldSpaceMergeResult } from '@vitrum/shared-bvh';
 import { pickPrimitiveCpu, type PickCamera } from '@vitrum/shared-bvh';
@@ -35,7 +37,7 @@ import { makeStateSlot, type StateSlot } from './state.js';
 import type { PTEngineWebGL2Options } from './options.js';
 import { resolveWebGl2TraceTier, type WebGl2TraceTier } from './traceTier.js';
 import { GlResources } from './gl/glResources.js';
-import { probeGlCaps } from './gl/glCaps.js';
+import { retireTexturesIndependently } from './gl/resourceRetirement.js';
 import { buildSceneTextures } from './scene/uploadSceneTextures.js';
 import type { UploadedSceneTextures } from './scene/sceneTextures.js';
 import {
@@ -52,29 +54,24 @@ import {
   buildPrimitiveMutationFallbackWarning,
 } from './scene/mutationFallbackWarnings.js';
 import { packFrameUniforms } from './gl/frameUniformsPacker.js';
-import {
-  resolveBdptMaxLightBounces,
-  validateAndResolveWebgl2Options,
-} from './options.validate.js';
+import { resolveBdptMaxLightBounces, validateAndResolveWebgl2Options } from './options.validate.js';
+export { validateWebgl2AdvancedOptions } from './options.validate.js';
 import type { FrameUniforms } from './gl/glResources.js';
-import { DEFAULT_TRACE_FEATURES, type AccumRegime, type TraceFeatures } from './featureTypes.js';
-import {
-  OIDNFinalDispatcher,
-  type DenoisedFrame,
-} from './denoise/oidnFinalDispatcher.js';
+import { DEFAULT_TRACE_FEATURES, type TraceFeatures } from './featureTypes.js';
+import { OIDNFinalDispatcher, type DenoisedFrame } from './denoise/oidnFinalDispatcher.js';
 import { WebGl2FiniteDifferenceInverseSession } from './inverse/finiteDifferenceSession.js';
+import { resolveWebGl2FrameQuality, withResolvedWebGl2FrameQuality } from './frameQuality.js';
+import { validateWebGl2FrameInput, validateWebGl2PixelSize } from './frameValidation.js';
+import { WEBGL2_DEFAULT_BOUNCES } from './limits.js';
+import { DEFAULT_RENDER_TARGET_BUDGET_BYTES } from './gl/renderTargetBudget.js';
+import {
+  deriveSceneTraceFeatures,
+  validateWebGl2SceneMaterials,
+} from './scene/sceneTraceFeatures.js';
 
 interface UnsupportedMaterialFieldUse {
   readonly primitiveId: string;
   readonly fields: readonly string[];
-}
-
-function collectFieldUnion(uses: readonly UnsupportedMaterialFieldUse[]): string[] {
-  const fields = new Set<string>();
-  for (const use of uses) {
-    for (const field of use.fields) fields.add(field);
-  }
-  return Array.from(fields).sort();
 }
 
 function collectUnsupportedMaterialFieldUses(scene: Scene): UnsupportedMaterialFieldUse[] {
@@ -93,6 +90,17 @@ function collectUnsupportedMaterialFieldUses(scene: Scene): UnsupportedMaterialF
   return uses;
 }
 
+function assertNoUnsupportedMaterialFields(scene: Scene, method: string): void {
+  const uses = collectUnsupportedMaterialFieldUses(scene);
+  if (uses.length === 0) return;
+  const detail = uses
+    .map((use) => `primitive ${JSON.stringify(use.primitiveId)}: ${use.fields.join(', ')}`)
+    .join('; ');
+  throw new RangeError(
+    `[vitrum/pt-webgl2] ${method}: material field(s) unsupported by this backend (${detail}).`,
+  );
+}
+
 // CAP-01 — the remaining material fields this backend silently drops, derived
 // from the ledger's per-field support matrix so warning + capability rows can
 // never drift. `extensions` is the contract-sanctioned host-discretionary escape
@@ -104,8 +112,96 @@ const UNSUPPORTED_MATERIAL_FIELDS: readonly (keyof MaterialSpec)[] = MATERIAL_SP
 );
 
 const DEFAULT_MAX_SPP = 4096;
-const DEFAULT_MAX_BOUNCES = 32;
 const DEFAULT_SPP_TARGET = 16;
+
+interface AccumulationSignature {
+  readonly viewMatrix: readonly number[];
+  readonly projMatrix: readonly number[];
+  readonly bounces: number;
+  readonly filteredGlossyFactor: number;
+}
+
+interface PresentationSignature {
+  readonly tonemapMode: number;
+  readonly exposure: number;
+  readonly outputColorSpace: number;
+}
+
+function sameNumberArray(a: readonly number[], b: readonly number[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
+}
+
+interface BdptSceneBounds {
+  readonly center: readonly [number, number, number];
+  readonly radius: number;
+}
+
+function computeBdptSceneBounds(pack: WorldSpaceMergeResult): BdptSceneBounds {
+  const positions = pack.positions;
+  const stride = pack.positionStrideFloats;
+  let minX = Number.POSITIVE_INFINITY;
+  let minY = Number.POSITIVE_INFINITY;
+  let minZ = Number.POSITIVE_INFINITY;
+  let maxX = Number.NEGATIVE_INFINITY;
+  let maxY = Number.NEGATIVE_INFINITY;
+  let maxZ = Number.NEGATIVE_INFINITY;
+  for (let i = 0; i + 2 < positions.length; i += stride) {
+    const x = positions[i]!;
+    const y = positions[i + 1]!;
+    const z = positions[i + 2]!;
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) continue;
+    minX = Math.min(minX, x);
+    minY = Math.min(minY, y);
+    minZ = Math.min(minZ, z);
+    maxX = Math.max(maxX, x);
+    maxY = Math.max(maxY, y);
+    maxZ = Math.max(maxZ, z);
+  }
+  if (!Number.isFinite(minX)) return { center: [0, 0, 0], radius: 1 };
+  const center: readonly [number, number, number] = [
+    (minX + maxX) * 0.5,
+    (minY + maxY) * 0.5,
+    (minZ + maxZ) * 0.5,
+  ];
+  let radiusSquared = 0;
+  for (let i = 0; i + 2 < positions.length; i += stride) {
+    const dx = positions[i]! - center[0];
+    const dy = positions[i + 1]! - center[1];
+    const dz = positions[i + 2]! - center[2];
+    const d2 = dx * dx + dy * dy + dz * dz;
+    if (Number.isFinite(d2)) radiusSquared = Math.max(radiusSquared, d2);
+  }
+  return { center, radius: Math.max(Math.sqrt(radiusSquared) * 1.001, 1e-3) };
+}
+
+function sameAccumulationSignature(
+  a: AccumulationSignature | null,
+  b: AccumulationSignature,
+): boolean {
+  return (
+    a != null &&
+    a.bounces === b.bounces &&
+    a.filteredGlossyFactor === b.filteredGlossyFactor &&
+    sameNumberArray(a.viewMatrix, b.viewMatrix) &&
+    sameNumberArray(a.projMatrix, b.projMatrix)
+  );
+}
+
+function samePresentationSignature(
+  a: PresentationSignature | null,
+  b: PresentationSignature,
+): boolean {
+  return (
+    a != null &&
+    a.tonemapMode === b.tonemapMode &&
+    a.exposure === b.exposure &&
+    a.outputColorSpace === b.outputColorSpace
+  );
+}
 
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -143,21 +239,16 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
   // ── Rendering config ──────────────────────────────────────────────────────
   readonly #maxBouncesLimit: number;
   readonly #maxSamplesLimit: number;
-  readonly #causticStrategy: EngineCapabilities['causticStrategy'];
   readonly #spectralEnabled: boolean;
   readonly #bdpt: boolean;
   readonly #randomType: TraceFeatures['randomType'];
   readonly #bdptMaxLightBounces: number;
-  readonly #mneeMaxIterations: number;
-  readonly #mneeMaxChainLength: number;
   readonly #materialLodDepth: number;
   readonly #backgroundAlpha: number;
   readonly #backgroundBlur: number;
-  readonly #regime: AccumRegime;
-  // eslint-disable-next-line no-unused-private-class-members -- reserved for lite-tier branching (road-to-100 B12)
-  readonly #traceTier: WebGl2TraceTier;
   readonly #supportsAuxBuffers: boolean;
   readonly #postDenoiser: OIDNFinalDispatcher | null;
+  #pendingDenoised: DenoisedFrame | null = null;
 
   // ── Camera + optics ───────────────────────────────────────────────────────
   readonly #cameraType: 0 | 1 | 2;
@@ -177,9 +268,12 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
   #scene: Scene | null = null;
   #geoPack: WorldSpaceMergeResult | null = null;
   #sceneTextures: UploadedSceneTextures | null = null;
+  #bdptSceneBounds: BdptSceneBounds = { center: [0, 0, 0], radius: 1 };
   #samplesAccumulated = 0;
   #requestedSize: { width: number; height: number } | null = null;
   #resolutionFactor = 1;
+  #accumulationSignature: AccumulationSignature | null = null;
+  #presentationSignature: PresentationSignature | null = null;
   /** Last-frame input retained for the debug click-to-pick surface (T3.G #30). */
   #lastFrameInput: FrameInput | null = null;
   #inInverseRender = false;
@@ -197,53 +291,39 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
     if (opts.onWarning != null) {
       this.#onWarningSubs.add(opts.onWarning);
     }
-    this.#maxBouncesLimit = Math.max(1, opts.maxBounces ?? DEFAULT_MAX_BOUNCES);
-    this.#maxSamplesLimit = Math.max(1, opts.maxSamplesPerPixel ?? DEFAULT_MAX_SPP);
-    this.#causticStrategy = opts.causticStrategy ?? 'none';
+    this.#maxBouncesLimit = opts.maxBounces ?? WEBGL2_DEFAULT_BOUNCES;
+    this.#maxSamplesLimit = opts.maxSamplesPerPixel ?? DEFAULT_MAX_SPP;
     this.#spectralEnabled = opts.spectral ?? false;
-    this.#bdpt = opts.bdpt ?? false;
+    this.#bdpt = opts.bdpt === true || opts.causticStrategy === 'bdpt';
     this.#randomType = opts.sampling === 'sobol' ? 1 : 0;
     this.#bdptMaxLightBounces = resolveBdptMaxLightBounces(opts.bdptOptions?.maxLightBounces);
     // A5 (2026-06-10): the BDPT light-subpath passes are now host-driven (GlResources
     // .#buildBdptLightSubpath builds the ping-pong light-path texture per sample and
     // binds it as uBdptLightPathTex; the eye pass connects to it). The old inert-warn
     // was removed. When bdpt:false the BDPT path is never touched (byte-identical
-    // unidirectional render); see capabilities.experimentalFeatures (pt-webgl2-bdpt).
-    this.#mneeMaxIterations = opts.causticOptions?.mneeMaxIterations ?? 8;
-    this.#mneeMaxChainLength = opts.causticOptions?.mneeMaxChainLength ?? 3;
-    this.#materialLodDepth = Math.max(0, Math.floor(opts.materialLodDepth ?? 0));
-    this.#backgroundAlpha = Math.min(1, Math.max(0, opts.backgroundAlpha ?? 1));
-    this.#backgroundBlur = Math.max(0, opts.backgroundBlur ?? 0);
+    // unidirectional render); see capabilities.activeFeatures (pt-webgl2-bdpt).
+    this.#materialLodDepth = opts.materialLodDepth ?? 0;
+    this.#backgroundAlpha = opts.backgroundAlpha ?? 1;
+    this.#backgroundBlur = opts.backgroundBlur ?? 0;
     // Flag-plumbing audit (2026-06-10): cameraType + dof are now real options.
     this.#cameraType =
       opts.cameraType === 'orthographic' ? 1 : opts.cameraType === 'equirectangular' ? 2 : 0;
-    // Item 22 — DOF × equirect guard: force DOF off for equirectangular (the factory
-    // already warns; here we make the engine actually ignore it so FEATURE_DOF=0
-    // even if the host passes dof). Orthographic + dof is left intact (coherent model).
-    this.#dof = opts.cameraType === 'equirectangular' ? undefined : opts.dof;
-    this.#traceTier = traceTier;
+    // The factory rejects the incoherent equirectangular+DOF combination.
+    // Orthographic + DOF remains a coherent tilt-shift-style projection.
+    this.#dof = opts.dof;
     this.#supportsAuxBuffers = traceTier === 'full';
-    this.#regime = PTEngineWebGL2.#resolveRegime(opts.device, this.#backgroundAlpha);
-    this.#gpu = new GlResources(opts.device, this.#supportsAuxBuffers);
+    this.#gpu = new GlResources(
+      opts.device,
+      this.#supportsAuxBuffers,
+      opts.maxRenderTargetBytes ?? DEFAULT_RENDER_TARGET_BUDGET_BYTES,
+    );
     if (opts.denoiser === 'oidn-final') {
-      const modelUrl = opts.oidn?.modelUrl;
+      const modelUrl = opts.oidn?.modelUrl as string;
       const eps = opts.oidn?.executionProviders?.filter(
         (p) => p === 'webnn' || p === 'webgpu' || p === 'wasm',
       );
-      if (typeof modelUrl !== 'string' || modelUrl.length === 0) {
-        throw new Error(
-          "createPTEngine_WebGL2: denoiser: 'oidn-final' is not turnkey - it " +
-            'requires TWO host-provided assets that vitrum does not ship: ' +
-            '(1) oidn: { modelUrl } - a non-empty URL to an OIDN ONNX model ' +
-            '(use oidn_rt_hdr_alb_nrm.onnx when supplying albedo + normal aux); ' +
-            "and (2) the 'onnxruntime-web' optional peer dependency installed in " +
-            'the host. Omit the `denoiser` option to render without a final denoise.',
-        );
-      }
       const dispatcherOpts =
-        eps !== undefined && eps.length > 0
-          ? { modelUrl, executionProviders: eps }
-          : { modelUrl };
+        eps !== undefined && eps.length > 0 ? { modelUrl, executionProviders: eps } : { modelUrl };
       this.#postDenoiser = new OIDNFinalDispatcher(
         dispatcherOpts,
         opts.oidnBridgeLoader,
@@ -256,6 +336,12 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
               fatal: false,
               raw: err,
             });
+          },
+          onComplete: (frame) => {
+            if (this.#contextLost || this.#slot.get() === 'disposed') return;
+            // The WebGL context is host-owned. Never mutate shared GL state from
+            // an inference promise callback; consume this at the next renderFrame.
+            this.#pendingDenoised = frame;
           },
         },
       );
@@ -274,14 +360,14 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
     this.#onContextLost = (e: Event): void => {
       e.preventDefault(); // Required so 'webglcontextrestored' can fire later.
       this.#contextLost = true;
-      const msg = '[vitrum/pt-webgl2] WebGL context lost. Rendering is suspended. ' +
+      this.#slot.set('error');
+      const msg =
+        '[vitrum/pt-webgl2] WebGL context lost. Rendering is suspended. ' +
         'Per the core contract, the host should call engine.dispose() and ' +
         'create a fresh engine with the recovered context.';
       console.warn(msg);
       // Route through onError so the host can react programmatically (item 28).
-      for (const cb of this.#onErrorSubs) {
-        try { cb({ kind: 'context-lost', message: msg, fatal: true, raw: e }); } catch { /* subscriber errors must not stop context-loss notification — ignore */ }
-      }
+      this.#emitError({ kind: 'context-lost', message: msg, fatal: true, raw: e });
     };
     this.#onContextRestored = (): void => {
       // Do NOT attempt auto-restore (the GPU resource state is stale). Warn the
@@ -313,11 +399,15 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
 
   get capabilities(): EngineCapabilities {
     return buildCapabilities(
-      this.#causticStrategy,
+      this.#postDenoiser == null ? 'none' : 'oidn-final',
       this.#maxBouncesLimit,
       this.#maxSamplesLimit,
       this.#supportsAuxBuffers,
-      { bdpt: this.#bdpt, spectral: this.#spectralEnabled, oidn: this.#postDenoiser != null },
+      {
+        bdpt: this.#bdpt,
+        spectral: this.#spectralEnabled,
+        sampling: this.#randomType === 1 ? 'sobol' : 'pcg',
+      },
     );
   }
 
@@ -352,44 +442,9 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
 
   setScene(scene: Scene): void {
     this.#guardLive('setScene');
-    // CAP-01 — warn on remaining unsupported material fields (matrix-driven).
-    // Once per setScene.
-    const unsupportedMaterialUses = collectUnsupportedMaterialFieldUses(scene);
-    const unsupportedMaterialFields = collectFieldUnion(unsupportedMaterialUses);
-    if (unsupportedMaterialFields.length > 0) {
-      this.#warn({
-        code: 'pt-webgl2.unsupported-material-fields',
-        backend: 'pt-webgl2',
-        phase: 'setScene',
-        method: 'setScene',
-        message:
-          `[vitrum/pt-webgl2] setScene: material fields are supplied ` +
-          `but not rendered by this backend: ${unsupportedMaterialFields.join(', ')}.`,
-        details: {
-          fields: unsupportedMaterialFields,
-          primitiveIds: unsupportedMaterialUses.map((use) => use.primitiveId),
-          primitiveFields: unsupportedMaterialUses,
-        },
-      });
-    }
-    // SHADOW-01 — receiveShadow is @reserved on all shipping backends (a
-    // "receiver ignores occlusion" toggle is non-physical for a GI path
-    // tracer). Structured signal when a scene sets it to false.
-    const receiveShadowIds = scene.primitives
-      .filter((p) => (p as { receiveShadow?: boolean }).receiveShadow === false)
-      .map((p) => p.id);
-    if (receiveShadowIds.length > 0) {
-      this.#warn({
-        code: 'pt-webgl2.reserved-receive-shadow',
-        backend: 'pt-webgl2',
-        phase: 'setScene',
-        method: 'setScene',
-        message:
-          `[vitrum/pt-webgl2] setScene: receiveShadow:false is reserved and not ` +
-          `consumed by any backend (non-physical for GI); primitives: ${receiveShadowIds.join(', ')}.`,
-        details: { primitiveIds: receiveShadowIds },
-      });
-    }
+    validateCoreScene(scene);
+    validateWebGl2SceneMaterials(scene, 'setScene');
+    assertNoUnsupportedMaterialFields(scene, 'setScene');
     // H7 FIX (2026-06-09): partition ONCE. setScene used to call
     // partitionSceneBySupport here AND buildSceneTextures re-partitioned the
     // already-filtered scene internally (uploadSceneTextures.ts) — redundant work.
@@ -408,10 +463,27 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
     for (const warning of built.structuredWarnings) {
       this.#warn(warning);
     }
-    this.#sceneTextures?.destroy();
+    const previousTextures = this.#sceneTextures;
+    const nextBdptSceneBounds = computeBdptSceneBounds(built.merged);
     this.#sceneTextures = built.textures;
     this.#geoPack = built.merged;
+    this.#bdptSceneBounds = nextBdptSceneBounds;
     this.#scene = built.supported;
+    if (previousTextures != null) {
+      try {
+        previousTextures.destroy();
+      } catch (error) {
+        this.#warn({
+          code: 'pt-webgl2.texture-retirement-failed',
+          backend: 'pt-webgl2',
+          phase: 'lifecycle',
+          method: 'setScene',
+          message:
+            '[vitrum/pt-webgl2] Replacement scene was published, but one or more old textures failed to retire.',
+          details: { error: errorMessage(error) },
+        });
+      }
+    }
     this.reset();
   }
 
@@ -430,17 +502,20 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
           'inverse session - the session re-renders the most-recent camera view.',
       );
     }
-    return new WebGl2FiniteDifferenceInverseSession({
-      getScene: () => this.#scene!,
-      renderAndReadback: (width, height, samples) =>
-        this.#renderAndReadbackForInverse(width, height, samples),
-      patchMaterial: (primitiveId, patch) => {
-        this.updatePrimitive(primitiveId, { material: patch } as Partial<ScenePrimitive>);
+    return new WebGl2FiniteDifferenceInverseSession(
+      {
+        getScene: () => this.#scene!,
+        renderAndReadback: (width, height, samples) =>
+          this.#renderAndReadbackForInverse(width, height, samples),
+        patchMaterial: (primitiveId, patch) => {
+          this.updatePrimitive(primitiveId, { material: patch } as Partial<ScenePrimitive>);
+        },
+        patchEmitter: (emitterId, patch) => {
+          this.updateEmitter(emitterId, patch);
+        },
       },
-      patchEmitter: (emitterId, patch) => {
-        this.updateEmitter(emitterId, patch);
-      },
-    }, opts);
+      opts,
+    );
   }
 
   // ── Debug introspection (T3.G #30) ────────────────────────────────────────
@@ -456,7 +531,10 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
       const cam: PickCamera = {
         viewMatrix: last.viewMatrix,
         projMatrix: last.projMatrix,
-        cameraPosition: last.cameraPosition,
+        cameraPosition: deriveCameraPositionFromViewMatrix(
+          last.viewMatrix,
+          'PTEngineWebGL2.debug.pickPrimitive.viewMatrix',
+        ),
       };
       return pickPrimitiveCpu(scene, cam, x, y, w, h);
     },
@@ -474,10 +552,19 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
       ...this.#scene,
       primitives: [...this.#scene.primitives, primitive],
     };
-    const fast = tryFastPathPrimitiveListMutation(this.#gl, this.#sceneTextures, this.#geoPack, nextScene, {
-      method: 'addPrimitive',
-      primitiveId: String(primitive.id),
-    });
+    validateCoreScene(nextScene);
+    validateWebGl2SceneMaterials(nextScene, 'addPrimitive');
+    assertNoUnsupportedMaterialFields(nextScene, 'addPrimitive');
+    const fast = tryFastPathPrimitiveListMutation(
+      this.#gl,
+      this.#sceneTextures,
+      this.#geoPack,
+      nextScene,
+      {
+        method: 'addPrimitive',
+        primitiveId: String(primitive.id),
+      },
+    );
     if (fast != null) {
       if (fast.mutationFallback != null) {
         this.#warnPrimitiveListFallback(
@@ -490,7 +577,11 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
       this.#commitMutationSwap(nextScene, fast);
       return;
     }
-    this.#warnPrimitiveListFallback('addPrimitive', String(primitive.id), 'primitive-list-scene-repack');
+    this.#warnPrimitiveListFallback(
+      'addPrimitive',
+      String(primitive.id),
+      'primitive-list-scene-repack',
+    );
     this.setScene(nextScene);
   }
 
@@ -512,10 +603,17 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
       ...this.#scene,
       primitives,
     };
-    const fast = tryFastPathPrimitiveListMutation(this.#gl, this.#sceneTextures, this.#geoPack, nextScene, {
-      method: 'removePrimitive',
-      primitiveId: String(id),
-    });
+    validateCoreScene(nextScene);
+    const fast = tryFastPathPrimitiveListMutation(
+      this.#gl,
+      this.#sceneTextures,
+      this.#geoPack,
+      nextScene,
+      {
+        method: 'removePrimitive',
+        primitiveId: String(id),
+      },
+    );
     if (fast != null) {
       if (fast.mutationFallback != null) {
         this.#warnPrimitiveListFallback(
@@ -538,18 +636,8 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
       throw new Error('updatePrimitive: call setScene() before updatePrimitive()');
     }
     const nextScene = patchPrimitiveInScene(this.#scene, id, patch);
-    if ((patch as { receiveShadow?: boolean }).receiveShadow === false) {
-      this.#warn({
-        code: 'pt-webgl2.reserved-receive-shadow',
-        backend: 'pt-webgl2',
-        phase: 'mutation',
-        method: 'updatePrimitive',
-        message:
-          `[vitrum/pt-webgl2] updatePrimitive("${id}"): receiveShadow:false is reserved ` +
-          'and not consumed by any backend (non-physical for GI).',
-        details: { primitiveIds: [id] },
-      });
-    }
+    validateWebGl2SceneMaterials(nextScene, 'updatePrimitive');
+    assertNoUnsupportedMaterialFields(nextScene, 'updatePrimitive');
     const fast = tryFastPathMaterialMutation(
       this.#gl,
       this.#sceneTextures,
@@ -586,7 +674,13 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
       throw new Error('updateEmitter: call setScene() before updateEmitter()');
     }
     const nextScene = patchEmitterInScene(this.#scene, id, patch);
-    const fast = tryFastPathEmitterMutation(this.#gl, this.#sceneTextures, this.#geoPack, nextScene, id);
+    const fast = tryFastPathEmitterMutation(
+      this.#gl,
+      this.#sceneTextures,
+      this.#geoPack,
+      nextScene,
+      id,
+    );
     if (fast != null) {
       this.#commitMutationSwap(nextScene, fast);
       return;
@@ -603,6 +697,7 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
       ...this.#scene,
       environment: env ?? { kind: 'none' },
     };
+    validateCoreScene(nextScene);
     const fast = fastPathEnvironmentMutation(this.#gl, this.#sceneTextures, nextScene);
     if (fast != null) {
       this.#commitMutationSwap(nextScene, fast);
@@ -611,28 +706,93 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
     this.setScene(nextScene);
   }
 
+  /**
+   * Atomically replace either or both runtime lighting domains.
+   *
+   * Unlike a host-side sequence of `updateEmitter()` / `updateEnvironment()`,
+   * this validates and uploads one complete candidate scene before publishing
+   * any part of it. `setScene()` builds replacement resources before swapping
+   * the retained scene, so a validation or upload failure preserves the prior
+   * lighting and GL resources.
+   */
+  updateLighting(opts: Readonly<Record<string, unknown>>): void {
+    this.#guardLive('updateLighting');
+    if (opts == null || typeof opts !== 'object' || Array.isArray(opts)) {
+      throw new TypeError('updateLighting: options must be an object');
+    }
+
+    const knownKeys = new Set<PropertyKey>(['emitters', 'environment']);
+    for (const key of Reflect.ownKeys(opts)) {
+      if (!knownKeys.has(key)) {
+        throw new RangeError(
+          `updateLighting: unknown option key ${typeof key === 'symbol' ? String(key) : JSON.stringify(key)}`,
+        );
+      }
+    }
+    const hasEmitters =
+      Object.prototype.hasOwnProperty.call(opts, 'emitters') &&
+      opts.emitters !== undefined;
+    const hasEnvironment =
+      Object.prototype.hasOwnProperty.call(opts, 'environment') &&
+      opts.environment !== undefined;
+
+    if (hasEmitters && !Array.isArray(opts.emitters)) {
+      throw new TypeError('updateLighting: emitters must be an array when supplied');
+    }
+    if (
+      hasEnvironment &&
+      opts.environment !== null &&
+      (typeof opts.environment !== 'object' || Array.isArray(opts.environment))
+    ) {
+      throw new TypeError(
+        'updateLighting: environment must be a scene environment object or null',
+      );
+    }
+
+    if (!hasEmitters && !hasEnvironment) {
+      return;
+    }
+    if (this.#scene == null) {
+      throw new Error('updateLighting: call setScene() before updateLighting()');
+    }
+
+    const nextScene: Scene = {
+      ...this.#scene,
+      ...(hasEmitters
+        ? { emitters: [...(opts.emitters as readonly SceneEmitter[])] }
+        : {}),
+      ...(hasEnvironment
+        ? {
+            environment:
+              (opts.environment as SceneEnvironment | null) ??
+              ({ kind: 'none' } as const),
+          }
+        : {}),
+    };
+
+    validateCoreScene(nextScene);
+    this.setScene(nextScene);
+  }
+
   setSize(width: number, height: number): void {
     this.#guardLive('setSize');
-    if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return;
-    const next = {
-      width: Math.max(1, Math.floor(width)),
-      height: Math.max(1, Math.floor(height)),
-    };
-    if (this.#requestedSize?.width === next.width && this.#requestedSize.height === next.height) return;
-    this.#requestedSize = next;
+    validateWebGl2PixelSize('setSize', width, height);
+    const next = { width, height };
+    if (this.#requestedSize?.width === next.width && this.#requestedSize.height === next.height)
+      return;
     if (this.#gpu.accumDims.width > 0 && this.#gpu.accumDims.height > 0) {
       this.#gpu.ensureAccumResources(
         Math.max(1, Math.floor(next.width * this.#resolutionFactor)),
         Math.max(1, Math.floor(next.height * this.#resolutionFactor)),
       );
     }
+    this.#requestedSize = next;
     this.reset();
   }
 
   renderFrame(input: FrameInput): FrameOutput {
     this.#guardLive('renderFrame');
-    // Retain camera for the debug click-to-pick surface (T3.G #30).
-    this.#lastFrameInput = input;
+    validateWebGl2FrameInput(input);
     // Context-loss guard: the GL device is no longer usable. Return a safe skipped
     // output (allowed by the contract — the host owns the device-lost recovery path).
     if (this.#contextLost) {
@@ -642,37 +802,130 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
       return { kind: 'skipped', samplesAccumulated: 0, isConverged: false };
     }
 
-    const q = input.quality ?? {};
-    const activeBounces = Math.max(1, Math.min(q.bounces ?? this.#maxBouncesLimit, this.#maxBouncesLimit));
-    const targetSpp = Math.min(q.samplesTarget ?? DEFAULT_SPP_TARGET, this.#maxSamplesLimit);
-    const requestedResolutionFactor = q.resolutionFactor ?? 1;
-    const res = Number.isFinite(requestedResolutionFactor) && requestedResolutionFactor > 0
-      ? requestedResolutionFactor
-      : 1;
+    const quality = resolveWebGl2FrameQuality(
+      input.quality,
+      this.#maxBouncesLimit,
+      this.#maxSamplesLimit,
+      DEFAULT_SPP_TARGET,
+    );
+    const effectiveInput: FrameInput = {
+      ...input,
+      quality: withResolvedWebGl2FrameQuality(quality),
+    };
+    const activeBounces = quality.bounces;
+    const targetSpp = quality.samplesTarget;
+    const res = quality.resolutionFactor;
     this.#resolutionFactor = res;
-    const baseWidth = this.#requestedSize?.width ?? input.viewport.width;
-    const baseHeight = this.#requestedSize?.height ?? input.viewport.height;
+    const requestedBaseWidth = this.#requestedSize?.width ?? input.viewport.width;
+    const requestedBaseHeight = this.#requestedSize?.height ?? input.viewport.height;
+    const baseWidth =
+      Number.isFinite(requestedBaseWidth) && requestedBaseWidth > 0 ? requestedBaseWidth : 1;
+    const baseHeight =
+      Number.isFinite(requestedBaseHeight) && requestedBaseHeight > 0 ? requestedBaseHeight : 1;
     const w = Math.max(1, Math.floor(baseWidth * res));
     const h = Math.max(1, Math.floor(baseHeight * res));
+    this.#gpu.validateAccumRequest(w, h);
+
+    // Cold ANGLE links for the production trace graph are polled through
+    // KHR_parallel_shader_compile. Until every pass is ready, return without
+    // allocating frame-sized targets or mutating accumulation state.
+    if (!this.#gpu.ensureProgram(this.#traceFeatures())) {
+      return {
+        kind: 'skipped',
+        samplesAccumulated: 0,
+        isConverged: false,
+      };
+    }
+    // Compile-pending calls must not replace the last presented/debug camera.
+    this.#lastFrameInput = input;
+    if (this.#gpu.ensureAccumResources(w, h)) {
+      this.#samplesAccumulated = 0;
+      this.#pendingDenoised = null;
+      this.#postDenoiser?.invalidate();
+    }
+
+    const accumulationSignature: AccumulationSignature = {
+      viewMatrix: Array.from(input.viewMatrix),
+      projMatrix: Array.from(input.projMatrix),
+      bounces: activeBounces,
+      filteredGlossyFactor: quality.filteredGlossyFactor,
+    };
+    const accumulationChanged =
+      this.#accumulationSignature != null &&
+      !sameAccumulationSignature(this.#accumulationSignature, accumulationSignature);
+    if (accumulationChanged && this.#samplesAccumulated > 0) {
+      this.reset();
+    }
+    this.#accumulationSignature = accumulationSignature;
+
+    // Advance the shared spectral+BDPT wavelength with the actual accumulated
+    // sample even when a host repeats frameSeed. Computing this after any
+    // invalidation makes reset + the same seed reproducible.
+    const frameUniforms = this.#frameUniforms(
+      effectiveInput,
+      activeBounces,
+      w,
+      h,
+      this.#samplesAccumulated,
+    );
+    const presentationSignature: PresentationSignature = {
+      tonemapMode: frameUniforms.tonemapMode,
+      exposure: frameUniforms.exposure,
+      outputColorSpace: frameUniforms.outputColorSpace,
+    };
+    const presentationChanged =
+      this.#presentationSignature != null &&
+      !samePresentationSignature(this.#presentationSignature, presentationSignature);
+    this.#presentationSignature = presentationSignature;
+    if (
+      this.#postDenoiser != null &&
+      this.#samplesAccumulated > 0 &&
+      this.#samplesAccumulated < targetSpp &&
+      (this.#postDenoiser.isInFlight() || this.#postDenoiser.getLatestDenoised() != null)
+    ) {
+      this.#pendingDenoised = null;
+      this.#postDenoiser.invalidate();
+      this.#gpu.clearDenoisedResult();
+    }
+
+    this.#presentPendingDenoised(presentationSignature);
 
     // Paused → return the current accumulation without drawing.
     if (this.#slot.get() === 'paused' && !this.#inInverseRender) {
+      if (this.#samplesAccumulated === 0) {
+        return { kind: 'skipped', samplesAccumulated: 0, isConverged: false };
+      }
+      if (presentationChanged) {
+        this.#gpu.presentAccumulation(
+          presentationSignature.tonemapMode,
+          presentationSignature.exposure,
+          presentationSignature.outputColorSpace,
+        );
+      }
       const tex = this.#gpu.resultTexture();
       if (tex == null) return { kind: 'skipped', samplesAccumulated: 0, isConverged: false };
-      return this.#frameRendered(tex, this.#samplesAccumulated, this.#samplesAccumulated >= targetSpp, targetSpp);
+      return this.#frameRendered(
+        tex,
+        this.#samplesAccumulated,
+        this.#samplesAccumulated >= targetSpp,
+        targetSpp,
+      );
     }
-
-    if (this.#gpu.ensureAccumResources(w, h)) this.#samplesAccumulated = 0;
-    this.#gpu.ensureProgram(this.#traceFeatures());
 
     // Converged → fast-out without drawing (this is how accumulation terminates).
     if (this.#samplesAccumulated >= targetSpp) {
+      if (presentationChanged) {
+        this.#gpu.presentAccumulation(
+          presentationSignature.tonemapMode,
+          presentationSignature.exposure,
+          presentationSignature.outputColorSpace,
+        );
+      }
       const tex = this.#gpu.resultTexture();
       if (tex == null) return { kind: 'skipped', samplesAccumulated: 0, isConverged: false };
       return this.#frameRendered(tex, this.#samplesAccumulated, true, targetSpp);
     }
 
-    const frameUniforms = this.#frameUniforms(input, activeBounces, w, h);
     // H7 FIX (2026-06-09): real per-frame time for the onFrame telemetry (was
     // hardcoded 0). This is the CPU-side cost of building + SUBMITTING the accum
     // step (uniform packing + the GL draw call); it is NOT GPU execution time
@@ -680,16 +933,12 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
     // monotonic frame-cost signal instead of a constant 0. The no-draw paused/
     // converged fast-outs honestly report 0 (they enqueue no work).
     const t0 = performance.now();
-    this.#gpu.drawAccumStep(this.#sceneTextures, this.#regime, input.frameSeed, frameUniforms);
+    this.#gpu.drawAccumStep(this.#sceneTextures, input.frameSeed, frameUniforms);
     this.#samplesAccumulated = Math.min(this.#samplesAccumulated + 1, this.#maxSamplesLimit);
 
     const tex = this.#gpu.resultTexture();
     if (tex == null) return { kind: 'skipped', samplesAccumulated: 0, isConverged: false };
     const isConverged = this.#samplesAccumulated >= targetSpp;
-    if (this.#postDenoiser != null && isConverged && this.#samplesAccumulated > 0) {
-      const readback = this.#gpu.readOidnInputsRgba32f();
-      if (readback != null) this.#postDenoiser.kickIfReady(readback);
-    }
     const frameTimeMs = performance.now() - t0;
     return this.#frameRendered(tex, this.#samplesAccumulated, isConverged, targetSpp, frameTimeMs);
   }
@@ -768,6 +1017,7 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
 
   reset(): void {
     this.#samplesAccumulated = 0;
+    this.#pendingDenoised = null;
     this.#gpu.clearAccum();
     this.#postDenoiser?.invalidate();
   }
@@ -779,30 +1029,51 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
 
   resume(): void {
     this.#guardLive('resume');
+    if (this.#contextLost || this.#slot.get() === 'error') {
+      throw new Error(
+        'resume: engine cannot resume after fatal WebGL context loss; dispose and recreate it',
+      );
+    }
     this.#slot.set('ready');
   }
 
   dispose(): void {
     if (this.#slot.get() === 'disposed') return;
+    const errors: unknown[] = [];
+    const attempt = (cleanup: () => void): void => {
+      try {
+        cleanup();
+      } catch (error) {
+        errors.push(error);
+      }
+    };
     // Remove context-loss listeners before tearing down resources — the listeners
     // are no longer needed and must not fire after dispose().
     const canvas = this.#gl.canvas as EventTarget;
     if (canvas != null && typeof canvas.removeEventListener === 'function') {
-      canvas.removeEventListener('webglcontextlost', this.#onContextLost);
-      canvas.removeEventListener('webglcontextrestored', this.#onContextRestored);
+      attempt(() => canvas.removeEventListener('webglcontextlost', this.#onContextLost));
+      attempt(() => canvas.removeEventListener('webglcontextrestored', this.#onContextRestored));
     }
-    this.#gpu.dispose();
-    this.#postDenoiser?.dispose();
-    this.#sceneTextures?.destroy();
+    attempt(() => this.#gpu.dispose());
+    attempt(() => this.#postDenoiser?.dispose());
+    attempt(() => this.#sceneTextures?.destroy());
     this.#sceneTextures = null;
     this.#scene = null;
     this.#geoPack = null;
     this.#lastFrameInput = null;
+    this.#pendingDenoised = null;
     this.#onFrameSubs.clear();
     this.#onProgressSubs.clear();
     this.#onErrorSubs.clear();
     this.#onWarningSubs.clear();
     this.#slot.set('disposed');
+    if (errors.length === 1) throw errors[0];
+    if (errors.length > 1) {
+      throw new AggregateError(
+        errors,
+        'pt-webgl2: one or more resource cleanups failed during dispose()',
+      );
+    }
   }
 
   onFrame(cb: (s: FrameStats) => void): () => void {
@@ -850,7 +1121,11 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
   }
 
   #warn(warning: EngineWarning, ...consoleArgs: readonly unknown[]): void {
-    console.warn(...(consoleArgs.length > 0 ? consoleArgs : [warning.message]));
+    try {
+      console.warn(...(consoleArgs.length > 0 ? consoleArgs : [warning.message]));
+    } catch {
+      // A hostile/replaced console must never break publication or lifecycle.
+    }
     this.#emitWarning(warning);
   }
 
@@ -895,42 +1170,119 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
       this.#warn(warning);
     }
     this.#sceneTextures = swap.textures;
-    if (swap.geoPack != null) this.#geoPack = swap.geoPack;
+    if (swap.geoPack != null) {
+      this.#geoPack = swap.geoPack;
+      this.#bdptSceneBounds = computeBdptSceneBounds(swap.geoPack);
+    }
     this.#scene = swap.scene ?? scene;
-    for (const tex of swap.deleteOldTextures) {
-      if (tex != null) this.#gl.deleteTexture(tex);
+    try {
+      retireTexturesIndependently(
+        this.#gl,
+        swap.deleteOldTextures,
+        'pt-webgl2: one or more superseded mutation textures failed to retire',
+      );
+    } catch (error) {
+      this.#warn({
+        code: 'pt-webgl2.texture-retirement-failed',
+        backend: 'pt-webgl2',
+        phase: 'lifecycle',
+        method: 'incremental-mutation',
+        message:
+          '[vitrum/pt-webgl2] Incremental scene mutation was published, but one or more old textures failed to retire.',
+        details: { error: errorMessage(error) },
+      });
     }
     this.reset();
   }
 
   #traceFeatures(): TraceFeatures {
+    const sceneFeatures = deriveSceneTraceFeatures(this.#scene);
     return {
       ...DEFAULT_TRACE_FEATURES,
       bdpt: this.#bdpt,
       cameraType: this.#cameraType,
       dof: this.#dof != null,
       randomType: this.#randomType,
+      pathStepLimit: this.#maxBouncesLimit * 2,
+      ...sceneFeatures,
     };
   }
 
-  #frameUniforms(input: FrameInput, bounces: number, w: number, h: number): FrameUniforms {
-    return packFrameUniforms(input, bounces, w, h, {
-      causticStrategy: this.#causticStrategy,
-      scene: this.#scene,
-      hasEnvMap: this.#sceneTextures?.envMap != null,
-      materialLodDepth: this.#materialLodDepth,
-      backgroundBlur: this.#backgroundBlur,
-      spectralEnabled: this.#spectralEnabled,
-      mneeMaxIterations: this.#mneeMaxIterations,
-      mneeMaxChainLength: this.#mneeMaxChainLength,
-      backgroundAlpha: this.#backgroundAlpha,
-      bdpt: this.#bdpt,
-      bdptMaxLightBounces: this.#bdptMaxLightBounces,
-      dof: this.#dof,
-    });
+  #frameUniforms(
+    input: FrameInput,
+    bounces: number,
+    w: number,
+    h: number,
+    accumulatedSample: number,
+  ): FrameUniforms {
+    return packFrameUniforms(
+      input,
+      bounces,
+      w,
+      h,
+      {
+        scene: this.#scene,
+        hasEnvMap: this.#sceneTextures?.envMap != null,
+        materialLodDepth: this.#materialLodDepth,
+        backgroundBlur: this.#backgroundBlur,
+        spectralEnabled: this.#spectralEnabled,
+        backgroundAlpha: this.#backgroundAlpha,
+        bdpt: this.#bdpt,
+        bdptMaxLightBounces: this.#bdptMaxLightBounces,
+        bdptSceneCenter: this.#bdptSceneBounds.center,
+        bdptSceneRadius: this.#bdptSceneBounds.radius,
+        dof: this.#dof,
+      },
+      accumulatedSample,
+    );
   }
 
-  #frameRendered(tex: WebGLTexture, samples: number, isConverged: boolean, target: number, frameTimeMs = 0): FrameRendered {
+  #kickPostDenoiserIfReady(samples: number): void {
+    const denoiser = this.#postDenoiser;
+    if (
+      denoiser == null ||
+      samples <= 0 ||
+      denoiser.isInFlight() ||
+      denoiser.getLatestDenoised() != null
+    )
+      return;
+    const readback = this.#gpu.readOidnInputsRgba32f();
+    if (readback != null) denoiser.kickIfReady(readback);
+  }
+
+  #presentPendingDenoised(presentation: PresentationSignature): void {
+    const pending = this.#pendingDenoised;
+    if (pending == null) return;
+    this.#pendingDenoised = null;
+    try {
+      this.#gpu.presentDenoisedResult(
+        pending,
+        presentation.tonemapMode,
+        presentation.exposure,
+        presentation.outputColorSpace,
+      );
+    } catch (err) {
+      // Core publishes before invoking onComplete. Retire that accepted result
+      // so the converged fast-out can start a clean retry on this same call.
+      this.#gpu.clearDenoisedResult();
+      this.#postDenoiser?.invalidate();
+      this.#emitError({
+        kind: 'denoiser',
+        message: `[vitrum/pt-webgl2] Could not present OIDN result: ${errorMessage(err)}`,
+        fatal: false,
+        raw: err,
+      });
+    }
+  }
+
+  #frameRendered(
+    tex: WebGLTexture,
+    samples: number,
+    isConverged: boolean,
+    target: number,
+    frameTimeMs = 0,
+  ): FrameRendered {
+    if (isConverged) this.#kickPostDenoiserIfReady(samples);
     const nd = this.#supportsAuxBuffers ? this.#gpu.normalDepthTex : null;
     const al = this.#supportsAuxBuffers ? this.#gpu.albedoTex : null;
     const out: FrameRendered = {
@@ -942,28 +1294,25 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
       isConverged,
     };
     const fraction = target > 0 ? Math.min(samples / target, 1) : 1;
-    for (const cb of this.#onProgressSubs) cb({ kind: 'pt-spp', current: samples, target, fraction });
-    const denoiserState = this.#postDenoiser != null
-      ? this.#postDenoiser.getState()
-      : { status: 'disabled' as const, reason: null };
-    for (const cb of this.#onFrameSubs) cb({ frameTimeMs, spp: samples, denoiserState });
+    for (const cb of this.#onProgressSubs) {
+      try {
+        cb({ kind: 'pt-spp', current: samples, target, fraction });
+      } catch {
+        // Telemetry subscribers are host code and must not break rendering.
+      }
+    }
+    const denoiserState =
+      this.#postDenoiser != null
+        ? this.#postDenoiser.getState()
+        : { status: 'disabled' as const, reason: null };
+    for (const cb of this.#onFrameSubs) {
+      try {
+        cb({ frameTimeMs, spp: samples, denoiserState });
+      } catch {
+        // Telemetry subscribers are host code and must not break rendering.
+      }
+    }
     return out;
-  }
-
-  /**
-   * D10.13: Determine the accumulation regime from the device capabilities and
-   * the configured background alpha.
-   *
-   * Running-average HDR accumulation (`'normal'`) requires `EXT_float_blend`; otherwise the
-   * alpha-composite ping-pong regime is the unbiased fallback (plan 02 §3). A
-   * transparent background (`backgroundAlpha < 1`) ALSO forces `'alpha-composite'` —
-   * the `SRC_ALPHA` running-average blend cannot composite partial background coverage
-   * (mirrors the fork's `needsAlphaComposite = bgAlpha !== 1 || !floatBlend`).
-   */
-  static #resolveRegime(device: WebGL2RenderingContext, backgroundAlpha: number): AccumRegime {
-    return probeGlCaps(device).floatBlend && backgroundAlpha === 1
-      ? 'normal'
-      : 'alpha-composite';
   }
 
   #guardLive(method: string): void {
@@ -977,7 +1326,7 @@ export const createPTEngine_WebGL2: EngineFactory<
   // eslint-disable-next-line @typescript-eslint/require-await -- factory signature is async to match EngineFactory<…> contract; no async setup needed for WebGL2
 > = async (opts: PTEngineWebGL2Options): Promise<Engine & PTEngineWebGL2Surface> => {
   const effectiveOpts = validateAndResolveWebgl2Options(opts);
-  const traceTier = resolveWebGl2TraceTier(opts.device, opts.traceTier);
+  const traceTier = resolveWebGl2TraceTier(effectiveOpts.device, effectiveOpts.traceTier);
   const slot = makeStateSlot();
   const engine = new PTEngineWebGL2(effectiveOpts, slot, traceTier);
   slot.set('ready');
@@ -991,4 +1340,30 @@ export type {
   OIDNBridgeLoader,
 } from './denoise/oidnFinalDispatcher.js';
 export { PT_WEBGL2_SUPPORT } from './capabilities.js';
+export { WEBGL2_DEFAULT_BOUNCES, WEBGL2_MAX_BOUNCES } from './limits.js';
+export {
+  PT_WEBGL2_TEXTURE_SNAPSHOT_BUDGET_BYTES,
+  PT_WEBGL2_TEXTURE_SOURCE_KIND,
+  createPtWebgl2TextureSource,
+  isPtWebgl2TextureSource,
+  type PtWebgl2RawTextureSourceInput,
+  type PtWebgl2TextureColorSpace,
+  type PtWebgl2TextureCpuMirror,
+  type PtWebgl2TextureDataType,
+  type PtWebgl2TextureSource,
+  type PtWebgl2TextureSourceOptions,
+} from './materialTextureSource.js';
+export {
+  AUX_ALLOCATION_BYTES_PER_PIXEL,
+  AUX_RENDER_TARGET_BYTES_PER_PIXEL,
+  BASE_ALLOCATION_BYTES_PER_PIXEL,
+  BASE_RENDER_TARGET_BYTES_PER_PIXEL,
+  BLEND_RENDER_TARGET_BYTES_PER_PIXEL,
+  DEFAULT_RENDER_TARGET_BUDGET_BYTES,
+  DENOISED_RENDER_TARGET_BYTES_PER_PIXEL,
+  estimateWebGl2AllocationBytes,
+  estimateWebGl2DenoisedTargetBytes,
+  estimateWebGl2ResidentBytes,
+  estimateWebGl2RenderTargetBytes,
+} from './gl/renderTargetBudget.js';
 export { packBvhTextureData, uploadBvhTextures } from './scene/bvhTextureAdapter.js';

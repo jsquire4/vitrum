@@ -14,25 +14,16 @@
  *  distribution; 65521 is the largest prime below 2^16. */
 export const SPPM_MAX_CELLS = 65521;
 
-/** Photons stored per cell (bounded reservoir).  Over-capacity cells retain a
- *  random subset of SPPM_CELL_CAPACITY photons and the gather estimator weights
- *  stored samples by totalInserted / storedCount, so the cap controls memory
- *  without silently treating the retained subset as the whole cell.  R7a
- *  behavioral-gate fix (2026-06-10): capacity 128 made the cells
- *  buffer 65521 × 128 × 48 B ≈ 402 MiB — EXCEEDING WebGPU's default
- *  maxBufferSize (256 MiB), so every photon-map render failed buffer validation
- *  on default-limit devices.  32 → ≈ 100 MiB, inside BOTH the default maxBufferSize (256 MiB) AND the default maxStorageBufferBindingSize (128 MiB — the binding limit binds first); the
- *  host additionally guards against the live device limit at allocation and
- *  degrades to manifold-nee with a warning. */
-export const SPPM_CELL_CAPACITY = 32;
+/** Per-iteration photon count and unique-record capacity. Each invocation owns
+ * one record; bucket publication is a single atomic head exchange. */
+export const SPPM_PHOTON_COUNT = 65536;
 
 /** Bytes per PhotonRecord: 3 × vec4f = 48 bytes. */
 export const SPPM_PHOTON_RECORD_BYTES = 48;
 
-/** Bytes for the sppmPhotonCells buffer:
- *  SPPM_MAX_CELLS × SPPM_CELL_CAPACITY × SPPM_PHOTON_RECORD_BYTES. */
+/** Bytes for the per-iteration photon-record buffer. */
 export const SPPM_PHOTON_CELLS_BYTES =
-  SPPM_MAX_CELLS * SPPM_CELL_CAPACITY * SPPM_PHOTON_RECORD_BYTES;
+  SPPM_PHOTON_COUNT * SPPM_PHOTON_RECORD_BYTES;
 
 /** Bytes for the sppmCellCounters buffer: SPPM_MAX_CELLS × 4 (atomic<u32>). */
 export const SPPM_CELL_COUNTERS_BYTES = SPPM_MAX_CELLS * 4;
@@ -55,36 +46,35 @@ export const SPPM_STATS_FIELDS = [
   { name: 'frameAccumulated', byteOffset:  8, type: 'u32' },
   { name: 'photonCount',      byteOffset: 12, type: 'u32' },
   { name: 'sceneExtent',      byteOffset: 16, type: 'f32' },
-  { name: '_pad0',            byteOffset: 20, type: 'f32' },
-  { name: '_pad1',            byteOffset: 24, type: 'f32' },
-  { name: '_pad2',            byteOffset: 28, type: 'f32' },
+  { name: 'sceneCenterX',      byteOffset: 20, type: 'f32' },
+  { name: 'sceneCenterY',      byteOffset: 24, type: 'f32' },
+  { name: 'sceneCenterZ',      byteOffset: 28, type: 'f32' },
 ] as const;
 
 /**
- * Bytes per per-pixel SPPM statistics record:
- *   tau.rgb (f32×3) + radius2 (f32) + N (f32) + _pad (f32×3) = 8 × f32 = 32 bytes.
+ * Bytes per pixel for two independent SPPM statistics records:
+ *   surface: tau.rgb + radius2 + N + pad = 32 bytes
+ *   volume:  tau.rgb + radius2 + N + pad = 32 bytes
  *
  * A4-progressive: each pixel accumulates τ, R², and N across frames so the
  * Hachisuka progressive update rule can run without re-visiting previous frames.
- * The buffer is sized W×H×32 bytes and reset whenever the PT accumulator resets
+ * The buffer is sized W×H×64 bytes and reset whenever the PT accumulator resets
  * (camera move, setScene, reset()) — the same static-eye-point assumption that
  * makes progressive accumulation valid also gates the SPPM stats.
  */
-export const SPPM_PIXEL_STATS_BYTES_PER_PIXEL = 32; // 8 × f32
+export const SPPM_PIXEL_STATS_BYTES_PER_PIXEL = 64; // 2 measures × 8 f32
 
 /**
- * Safety ceiling for the photon-cells buffer.  ~512 MiB at default params;
- * the warn-once pattern mirrors the BDPT eye-stack ceiling.
+ * Exact fixed-capacity photon-record allocation ceiling (3 MiB). The grid has
+ * one record per emitted lane and never allocates per hash bucket.
  */
-export const SPPM_PHOTON_CELLS_MAX_BYTES = 512 * 1024 * 1024; // 512 MiB
+export const SPPM_PHOTON_CELLS_MAX_BYTES = SPPM_PHOTON_CELLS_BYTES;
 
 /**
  * SPPM progressive-radius decay constant α (Hachisuka & Jensen 2009, Eq. 4).
  *
- * After `n` accumulated frames:
- *   r(n) = r₀ × sqrt((n × α + α) / (n + 1))
- * with α = 2/3.  For n=0 (first frame) r(0) = r₀ × sqrt(α) ≈ r₀ × 0.8165,
- * converging to 0 as n → ∞.
+ * Radius is updated by the exact Hachisuka N/R recurrence, not by a closed-form
+ * shortcut that would incorrectly remain constant for α=2/3.
  */
 export const SPPM_ALPHA = 2.0 / 3.0; // Hachisuka & Jensen 2009 α
 
@@ -93,8 +83,15 @@ export const SPPM_ALPHA = 2.0 / 3.0; // Hachisuka & Jensen 2009 α
  * Used on the CPU host side (TypeScript) to write the UBO each frame.
  */
 export function sppmRadiusAtFrame(r0: number, n: number): number {
-  if (n <= 0) return r0 * Math.sqrt(SPPM_ALPHA);
-  return r0 * Math.sqrt((n * SPPM_ALPHA + SPPM_ALPHA) / (n + 1));
+  const steps = Math.max(0, Math.floor(n)) + 1;
+  let radius2 = r0 * r0;
+  let accumulated = 0;
+  for (let step = 0; step < steps; step++) {
+    const nextAccumulated = accumulated + SPPM_ALPHA;
+    radius2 *= nextAccumulated / (accumulated + 1);
+    accumulated = nextAccumulated;
+  }
+  return Math.sqrt(radius2);
 }
 
 /**
@@ -115,4 +112,39 @@ export function sppmInitialRadius(
   const dz = sceneMax[2] - sceneMin[2];
   const diagonal = Math.sqrt(dx * dx + dy * dy + dz * dz);
   return Math.max(diagonal / 100, 1e-3);
+}
+export interface SppmSceneBounds {
+  readonly initialRadius: number;
+  readonly extent: number;
+  readonly center: readonly [number, number, number];
+}
+
+/** Compute the AABB-derived launch disk and gather scale from packed xyz/w vertices. */
+export function sppmSceneBoundsFromPackedPositions(
+  positions: ArrayLike<number>,
+): SppmSceneBounds | null {
+  if (positions.length < 4) return null;
+  let minX = Infinity, minY = Infinity, minZ = Infinity;
+  let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+  for (let i = 0; i + 2 < positions.length; i += 4) {
+    const x = positions[i]!, y = positions[i + 1]!, z = positions[i + 2]!;
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) continue;
+    if (x < minX) minX = x; if (x > maxX) maxX = x;
+    if (y < minY) minY = y; if (y > maxY) maxY = y;
+    if (z < minZ) minZ = z; if (z > maxZ) maxZ = z;
+  }
+  if (!Number.isFinite(minX)) return null;
+  const min = [minX, minY, minZ] as const;
+  const max = [maxX, maxY, maxZ] as const;
+  const initialRadius = sppmInitialRadius(min, max);
+  const dx = maxX - minX, dy = maxY - minY, dz = maxZ - minZ;
+  return {
+    initialRadius,
+    extent: Math.max(Math.sqrt(dx * dx + dy * dy + dz * dz) * 0.5, initialRadius),
+    center: [
+      (minX + maxX) * 0.5,
+      (minY + maxY) * 0.5,
+      (minZ + maxZ) * 0.5,
+    ],
+  };
 }

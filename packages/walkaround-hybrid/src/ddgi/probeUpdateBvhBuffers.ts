@@ -7,6 +7,7 @@ import type { RestirBvhSnapshot } from '../restir/restirBvhSnapshot.js';
 import { padTriangleIndicesToVec4 } from './probeUpdateMaterials.js';
 
 const RO = 0x80 | 0x08; // STORAGE | COPY_DST — literal for Node vitest import chain
+const COPY_STAGING = 0x04 | 0x08; // COPY_SRC | COPY_DST
 const BVH_NODE_PLACEHOLDER_BYTES = 32;
 const STORAGE_PLACEHOLDER_BYTES = 16;
 
@@ -23,19 +24,87 @@ export interface ProbeUpdateBvhGpuBuffers {
   tlasL2wBuf: GPUBuffer;
 }
 
-function replaceStorageBuffer(
+type ProbeBvhBufferKey = keyof ProbeUpdateBvhGpuBuffers;
+type ProbeCpuBufferData = ArrayBufferLike | ArrayBufferView;
+
+interface GpuWriteSpan {
+  readonly buffer: ArrayBuffer;
+  readonly byteOffset: number;
+  readonly byteLength: number;
+}
+
+/**
+ * WebGPU does not accept SharedArrayBuffer-backed BufferSource values. Preserve
+ * zero-copy uploads for ordinary ArrayBuffers, but copy the exact visible span
+ * for SABs (and preserve typed-array byte offsets in both cases).
+ */
+function gpuWriteSpan(data: ProbeCpuBufferData): GpuWriteSpan {
+  const backing = ArrayBuffer.isView(data) ? data.buffer : data;
+  const byteOffset = ArrayBuffer.isView(data) ? data.byteOffset : 0;
+  const byteLength = data.byteLength;
+  if (backing instanceof ArrayBuffer) {
+    return { buffer: backing, byteOffset, byteLength };
+  }
+  const copy = new Uint8Array(byteLength);
+  copy.set(new Uint8Array(backing, byteOffset, byteLength));
+  return { buffer: copy.buffer, byteOffset: 0, byteLength };
+}
+
+function destroyBuffersBestEffort(
+  buffers: Iterable<GPUBuffer>,
+  preserved: ReadonlySet<GPUBuffer> = new Set(),
+): void {
+  const destroyed = new Set<GPUBuffer>(preserved);
+  for (const buffer of buffers) {
+    if (destroyed.has(buffer)) continue;
+    destroyed.add(buffer);
+    try { buffer.destroy(); } catch { /* preserve the transaction outcome */ }
+  }
+}
+
+function rebuildProbeBvhBuffers(
   device: GPUDevice,
-  oldBuf: GPUBuffer,
-  data: ArrayBufferLike,
-): GPUBuffer {
-  oldBuf.destroy();
-  const arr = data instanceof ArrayBuffer ? data : new Uint8Array(data).buffer;
-  const buf = device.createBuffer({
-    size: Math.max(arr.byteLength, 16),
-    usage: RO,
-  });
-  device.queue.writeBuffer(buf, 0, arr);
-  return buf;
+  g: ProbeUpdateBvhGpuBuffers,
+  entries: readonly (readonly [ProbeBvhBufferKey, ProbeCpuBufferData, number])[],
+): void {
+  const previous = new Map<ProbeBvhBufferKey, GPUBuffer>(
+    entries.map(([key]) => [key, g[key]]),
+  );
+  const previousSet = new Set(previous.values());
+  const candidates = new Map<ProbeBvhBufferKey, GPUBuffer>();
+  const candidateSet = new Set<GPUBuffer>();
+  try {
+    for (const [key, data, minimumSize] of entries) {
+      const candidate = device.createBuffer({
+        label: `ddgi.${String(key)}.candidate`,
+        size: Math.max(data.byteLength, minimumSize),
+        usage: RO,
+      });
+      if (previousSet.has(candidate) || candidateSet.has(candidate)) {
+        throw new Error(`DDGI BVH candidate ${String(key)} aliases a live resource.`);
+      }
+      candidates.set(key, candidate);
+      candidateSet.add(candidate);
+      if (data.byteLength > 0) {
+        const source = gpuWriteSpan(data);
+        device.queue.writeBuffer(
+          candidate,
+          0,
+          source.buffer,
+          source.byteOffset,
+          source.byteLength,
+        );
+      }
+    }
+  } catch (error) {
+    destroyBuffersBestEffort(candidateSet, previousSet);
+    throw error;
+  }
+
+  // All writes have succeeded; publish the ten-buffer cohort without a
+  // fallible operation between fields, then retire the old cohort.
+  for (const [key] of entries) g[key] = candidates.get(key)!;
+  destroyBuffersBestEffort(previousSet, candidateSet);
 }
 
 /** C2 — TLAS transform refit: upload nodes + instance matrices only. */
@@ -44,9 +113,106 @@ export function refitProbeTlasBuffersInPlace(
   g: ProbeUpdateBvhGpuBuffers,
   tlas: NonNullable<RestirBvhSnapshot['tlas']>,
 ): void {
-  device.queue.writeBuffer(g.tlasNodesBuf, 0, tlas.nodes);
-  device.queue.writeBuffer(g.tlasW2lBuf, 0, tlas.worldToLocal);
-  device.queue.writeBuffer(g.tlasL2wBuf, 0, tlas.localToWorld);
+  const entries = [
+    ['tlasNodesBuf', tlas.nodes, BVH_NODE_PLACEHOLDER_BYTES],
+    ['tlasW2lBuf', tlas.worldToLocal, STORAGE_PLACEHOLDER_BYTES],
+    ['tlasL2wBuf', tlas.localToWorld, STORAGE_PLACEHOLDER_BYTES],
+  ] as const satisfies readonly (readonly [ProbeBvhBufferKey, ProbeCpuBufferData, number])[];
+  const liveSet = new Set<GPUBuffer>(Object.values(g));
+  const replacements = new Map<ProbeBvhBufferKey, GPUBuffer>();
+  const destinations = new Map<ProbeBvhBufferKey, GPUBuffer>();
+  const staging = new Map<ProbeBvhBufferKey, GPUBuffer>();
+  const candidateSet = new Set<GPUBuffer>();
+  let submitted = false;
+
+  try {
+    // A capacity increase gets a private destination. Same-capacity refits keep
+    // their stable public buffers, but still upload through private staging.
+    for (const [key, data, minimumSize] of entries) {
+      const live = g[key];
+      if (live.size >= data.byteLength) {
+        destinations.set(key, live);
+        continue;
+      }
+      const replacement = device.createBuffer({
+        label: `ddgi.${String(key)}.refit-destination`,
+        size: Math.max(data.byteLength, minimumSize),
+        usage: RO,
+      });
+      if (liveSet.has(replacement) || candidateSet.has(replacement)) {
+        throw new Error(`DDGI TLAS destination ${String(key)} aliases a live resource.`);
+      }
+      replacements.set(key, replacement);
+      destinations.set(key, replacement);
+      candidateSet.add(replacement);
+    }
+
+    // Queue writes target staging only. A failure at any write therefore leaves
+    // every live TLAS buffer byte-for-byte untouched.
+    for (const [key, data] of entries) {
+      const stage = device.createBuffer({
+        label: `ddgi.${String(key)}.refit-staging`,
+        size: Math.max(data.byteLength, 4),
+        usage: COPY_STAGING,
+      });
+      if (liveSet.has(stage) || candidateSet.has(stage)) {
+        throw new Error(`DDGI TLAS staging ${String(key)} aliases another resource.`);
+      }
+      staging.set(key, stage);
+      candidateSet.add(stage);
+      if (data.byteLength > 0) {
+        const source = gpuWriteSpan(data);
+        device.queue.writeBuffer(
+          stage,
+          0,
+          source.buffer,
+          source.byteOffset,
+          source.byteLength,
+        );
+      }
+    }
+
+    // All three staging→destination copies enter the queue in one command
+    // buffer. Encoder/finish/submit failure cannot expose a mixed node/matrix
+    // generation, and public replacement identities are published only after
+    // the queue accepts that complete command buffer.
+    const encoder = device.createCommandEncoder({ label: 'ddgi.tlas-refit.transaction' });
+    for (const [key, data] of entries) {
+      if (data.byteLength === 0) continue;
+      encoder.copyBufferToBuffer(
+        staging.get(key)!,
+        0,
+        destinations.get(key)!,
+        0,
+        data.byteLength,
+      );
+    }
+    const commandBuffer = encoder.finish();
+    device.queue.submit([commandBuffer]);
+    submitted = true;
+  } catch (error) {
+    destroyBuffersBestEffort(candidateSet, liveSet);
+    throw error;
+  }
+
+  for (const [key, replacement] of replacements) {
+    const previous = g[key];
+    g[key] = replacement;
+    destroyBuffersBestEffort([previous], candidateSet);
+  }
+
+  const stagingSet = new Set(staging.values());
+  const retireStaging = (): void => destroyBuffersBestEffort(stagingSet, liveSet);
+  if (submitted && typeof device.queue.onSubmittedWorkDone === 'function') {
+    try {
+      void device.queue.onSubmittedWorkDone().then(retireStaging, retireStaging);
+    } catch {
+      // The copy submission was already accepted. Keep staging alive rather
+      // than risking use-after-destroy if completion tracking itself is lost.
+    }
+  } else {
+    retireStaging();
+  }
 }
 
 export function rebuildProbeBvhFromRestir(
@@ -54,23 +220,24 @@ export function rebuildProbeBvhFromRestir(
   g: ProbeUpdateBvhGpuBuffers,
   snap: RestirBvhSnapshot,
 ): void {
-  const upload = (old: GPUBuffer, data: ArrayBufferLike) => replaceStorageBuffer(device, old, data);
-  g.bvhBuf = upload(g.bvhBuf, snap.bvhNodes);
-  g.posBuf = upload(g.posBuf, snap.positions);
-  g.idxBuf = upload(g.idxBuf, snap.bvhIndex);
-  g.normBuf = upload(g.normBuf, snap.normals);
-  g.matIdBuf = upload(g.matIdBuf, snap.triMaterialIds);
   // No-TLAS snapshots still bind the declared TLAS storage arrays. `tlasNodes`
   // is `array<BVHNode>` (32-byte stride), so strict WebGPU backends reject the
   // old generic 16-byte dummy at bind-group creation even when bvhMode=merged.
   const emptyTlasNodes = new ArrayBuffer(BVH_NODE_PLACEHOLDER_BYTES);
   const empty = new ArrayBuffer(STORAGE_PLACEHOLDER_BYTES);
   const tlas = snap.tlas;
-  g.tlasNodesBuf = upload(g.tlasNodesBuf, tlas?.nodes ?? emptyTlasNodes);
-  g.tlasInstIdxBuf = upload(g.tlasInstIdxBuf, tlas?.instanceIndices ?? empty);
-  g.tlasBlasRootsBuf = upload(g.tlasBlasRootsBuf, tlas?.blasRoots ?? empty);
-  g.tlasW2lBuf = upload(g.tlasW2lBuf, tlas?.worldToLocal ?? empty);
-  g.tlasL2wBuf = upload(g.tlasL2wBuf, tlas?.localToWorld ?? empty);
+  rebuildProbeBvhBuffers(device, g, [
+    ['bvhBuf', snap.bvhNodes, BVH_NODE_PLACEHOLDER_BYTES],
+    ['posBuf', snap.positions, STORAGE_PLACEHOLDER_BYTES],
+    ['idxBuf', snap.bvhIndex, STORAGE_PLACEHOLDER_BYTES],
+    ['normBuf', snap.normals, STORAGE_PLACEHOLDER_BYTES],
+    ['matIdBuf', snap.triMaterialIds, STORAGE_PLACEHOLDER_BYTES],
+    ['tlasNodesBuf', tlas?.nodes ?? emptyTlasNodes, BVH_NODE_PLACEHOLDER_BYTES],
+    ['tlasInstIdxBuf', tlas?.instanceIndices ?? empty, STORAGE_PLACEHOLDER_BYTES],
+    ['tlasBlasRootsBuf', tlas?.blasRoots ?? empty, STORAGE_PLACEHOLDER_BYTES],
+    ['tlasW2lBuf', tlas?.worldToLocal ?? empty, STORAGE_PLACEHOLDER_BYTES],
+    ['tlasL2wBuf', tlas?.localToWorld ?? empty, STORAGE_PLACEHOLDER_BYTES],
+  ]);
 }
 
 export function rebuildProbeBvhFromScene(
@@ -78,13 +245,7 @@ export function rebuildProbeBvhFromScene(
   g: ProbeUpdateBvhGpuBuffers,
   buffers: SceneBvhBuffers,
 ): void {
-  const upload = (old: GPUBuffer, data: ArrayBufferLike) => replaceStorageBuffer(device, old, data);
   const idx4 = padTriangleIndicesToVec4(buffers.indices);
-  g.bvhBuf = upload(g.bvhBuf, buffers.bvhNodes.buffer);
-  g.posBuf = upload(g.posBuf, buffers.positions.buffer);
-  g.idxBuf = upload(g.idxBuf, idx4.buffer);
-  g.normBuf = upload(g.normBuf, buffers.normals.buffer);
-  g.matIdBuf = upload(g.matIdBuf, buffers.triMaterialId.buffer);
   // Merged mode does not traverse the TLAS, but the probe-rays shader STILL
   // declares the five TLAS bindings (group 0, bindings 5–9). The first of them,
   // `tlasNodes: array<BVHNode>`, has a 32-byte struct stride → a minimum binding
@@ -96,9 +257,16 @@ export function rebuildProbeBvhFromScene(
   // so it was never affected.)
   const emptyTlasNodes = new ArrayBuffer(BVH_NODE_PLACEHOLDER_BYTES);
   const empty = new ArrayBuffer(STORAGE_PLACEHOLDER_BYTES);
-  g.tlasNodesBuf = upload(g.tlasNodesBuf, emptyTlasNodes);
-  g.tlasInstIdxBuf = upload(g.tlasInstIdxBuf, empty);
-  g.tlasBlasRootsBuf = upload(g.tlasBlasRootsBuf, empty);
-  g.tlasW2lBuf = upload(g.tlasW2lBuf, empty);
-  g.tlasL2wBuf = upload(g.tlasL2wBuf, empty);
+  rebuildProbeBvhBuffers(device, g, [
+    ['bvhBuf', buffers.bvhNodes, BVH_NODE_PLACEHOLDER_BYTES],
+    ['posBuf', buffers.positions, STORAGE_PLACEHOLDER_BYTES],
+    ['idxBuf', idx4, STORAGE_PLACEHOLDER_BYTES],
+    ['normBuf', buffers.normals, STORAGE_PLACEHOLDER_BYTES],
+    ['matIdBuf', buffers.triMaterialId, STORAGE_PLACEHOLDER_BYTES],
+    ['tlasNodesBuf', emptyTlasNodes, BVH_NODE_PLACEHOLDER_BYTES],
+    ['tlasInstIdxBuf', empty, STORAGE_PLACEHOLDER_BYTES],
+    ['tlasBlasRootsBuf', empty, STORAGE_PLACEHOLDER_BYTES],
+    ['tlasW2lBuf', empty, STORAGE_PLACEHOLDER_BYTES],
+    ['tlasL2wBuf', empty, STORAGE_PLACEHOLDER_BYTES],
+  ]);
 }

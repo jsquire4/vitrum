@@ -53,6 +53,161 @@ export interface AnimationClip {
   readonly channels: ReadonlyArray<AnimationChannel>;
 }
 
+const ANIMATION_PATHS: ReadonlySet<string> = new Set([
+  'translation', 'rotation', 'scale', 'weights', 'pointer',
+]);
+const ANIMATION_INTERPOLATIONS: ReadonlySet<string> = new Set([
+  'LINEAR', 'STEP', 'CUBICSPLINE',
+]);
+
+function isRuntimeArray(value: unknown): boolean {
+  return Array.isArray(value);
+}
+
+function animationError(path: string, message: string): never {
+  throw new RangeError(`validateAnimationClip: ${path} ${message}`);
+}
+
+function assertAnimationFloatArray(value: unknown, path: string): asserts value is Float32Array {
+  if (!(value instanceof Float32Array)) {
+    throw new TypeError(`validateAnimationClip: ${path} must be a Float32Array`);
+  }
+  for (let index = 0; index < value.length; index += 1) {
+    if (!Number.isFinite(value[index])) {
+      animationError(`${path}[${index}]`, `must be finite (got ${String(value[index])})`);
+    }
+  }
+}
+
+/**
+ * Validate a complete animation clip at the public CPU-sampling boundary.
+ * Malformed sampler shapes are rejected instead of being floor-divided and
+ * zero-filled, which otherwise turns corrupt asset data into plausible poses.
+ */
+export function validateAnimationClip(clip: AnimationClip): void {
+  if (clip == null || typeof clip !== 'object' || Array.isArray(clip)) {
+    throw new TypeError('validateAnimationClip: clip must be a non-array object');
+  }
+  if (!Number.isFinite(clip.duration) || clip.duration < 0) {
+    animationError('duration', `must be finite and >= 0 (got ${String(clip.duration)})`);
+  }
+  if (!isRuntimeArray(clip.channels)) {
+    throw new TypeError('validateAnimationClip: channels must be an array');
+  }
+
+  const targets = new Set<string>();
+  for (let channelIndex = 0; channelIndex < clip.channels.length; channelIndex += 1) {
+    const channel = clip.channels[channelIndex];
+    const channelPath = `channels[${channelIndex}]`;
+    if (channel == null || typeof channel !== 'object' || Array.isArray(channel)) {
+      throw new TypeError(`validateAnimationClip: ${channelPath} must be an object`);
+    }
+    const target = channel.target;
+    if (target == null || typeof target !== 'object' || Array.isArray(target)) {
+      throw new TypeError(`validateAnimationClip: ${channelPath}.target must be an object`);
+    }
+    if (typeof target.node !== 'string' || target.node.length === 0) {
+      throw new TypeError(`validateAnimationClip: ${channelPath}.target.node must be a non-empty string`);
+    }
+    if (typeof target.path !== 'string' || !ANIMATION_PATHS.has(target.path)) {
+      animationError(
+        `${channelPath}.target.path`,
+        `is unsupported (got ${String(target.path)})`,
+      );
+    }
+    if (target.path === 'pointer') {
+      if (typeof target.pointer !== 'string' || target.pointer.length === 0) {
+        throw new TypeError(
+          `validateAnimationClip: ${channelPath}.target.pointer must be a non-empty string for path "pointer"`,
+        );
+      }
+    } else if (target.pointer !== undefined) {
+      throw new TypeError(
+        `validateAnimationClip: ${channelPath}.target.pointer is only valid for path "pointer"`,
+      );
+    }
+    const targetKey = `${target.node}\u0000${target.path}\u0000${target.pointer ?? ''}`;
+    if (targets.has(targetKey)) {
+      animationError(channelPath, 'duplicates an earlier channel target');
+    }
+    targets.add(targetKey);
+
+    const sampler = channel.sampler;
+    if (sampler == null || typeof sampler !== 'object' || Array.isArray(sampler)) {
+      throw new TypeError(`validateAnimationClip: ${channelPath}.sampler must be an object`);
+    }
+    assertAnimationFloatArray(sampler.times, `${channelPath}.sampler.times`);
+    assertAnimationFloatArray(sampler.values, `${channelPath}.sampler.values`);
+    if (sampler.times.length === 0) {
+      animationError(`${channelPath}.sampler.times`, 'must contain at least one keyframe');
+    }
+    for (let keyIndex = 0; keyIndex < sampler.times.length; keyIndex += 1) {
+      const keyTime = sampler.times[keyIndex]!;
+      if (keyTime < 0) {
+        animationError(`${channelPath}.sampler.times[${keyIndex}]`, 'must be >= 0');
+      }
+      if (keyIndex > 0 && !(keyTime > sampler.times[keyIndex - 1]!)) {
+        animationError(
+          `${channelPath}.sampler.times[${keyIndex}]`,
+          'must be strictly greater than the previous key time',
+        );
+      }
+    }
+    const lastTime = sampler.times[sampler.times.length - 1]!;
+    if (lastTime > clip.duration) {
+      animationError(
+        `${channelPath}.sampler.times[${sampler.times.length - 1}]`,
+        `exceeds clip duration ${clip.duration}`,
+      );
+    }
+    const interpolation = sampler.interpolation ?? 'LINEAR';
+    if (!ANIMATION_INTERPOLATIONS.has(interpolation)) {
+      animationError(
+        `${channelPath}.sampler.interpolation`,
+        `is unsupported (got ${String(interpolation)})`,
+      );
+    }
+    const cubicFactor = interpolation === 'CUBICSPLINE' ? 3 : 1;
+    const fixedComponents = target.path === 'rotation'
+      ? 4
+      : target.path === 'translation' || target.path === 'scale'
+        ? 3
+        : undefined;
+    const valueDivisor = sampler.times.length * cubicFactor;
+    const components = fixedComponents ?? sampler.values.length / valueDivisor;
+    if (!Number.isSafeInteger(components) || components <= 0) {
+      animationError(
+        `${channelPath}.sampler.values`,
+        `length ${sampler.values.length} does not encode a positive integral component count`,
+      );
+    }
+    const expectedValues = valueDivisor * components;
+    if (sampler.values.length !== expectedValues) {
+      animationError(
+        `${channelPath}.sampler.values`,
+        `has length ${sampler.values.length}; expected ${expectedValues}`,
+      );
+    }
+    if (target.path === 'rotation') {
+      const stride = components * cubicFactor;
+      const valueOffset = interpolation === 'CUBICSPLINE' ? components : 0;
+      for (let keyIndex = 0; keyIndex < sampler.times.length; keyIndex += 1) {
+        const offset = keyIndex * stride + valueOffset;
+        const magnitude = Math.hypot(
+          sampler.values[offset]!, sampler.values[offset + 1]!,
+          sampler.values[offset + 2]!, sampler.values[offset + 3]!,
+        );
+        if (!(magnitude > 1e-8) || !Number.isFinite(magnitude)) {
+          animationError(
+            `${channelPath}.sampler.values`,
+            `contains a zero-length rotation quaternion at keyframe ${keyIndex}`,
+          );
+        }
+      }
+    }
+  }
+}
+
 // ────────────────────────────────────────────────────────────────────────────
 // CPU clip sampler — evaluate a clip at time t → per-channel values the host
 // pushes through updatePrimitive(transform/positions). Backend-agnostic; no GPU.
@@ -77,7 +232,7 @@ function pathComponents(
   if (path === 'rotation') return 4;
   if (path === 'translation' || path === 'scale') return 3;
   const div = (cubic ? 3 : 1) * Math.max(keyframeCount, 1);
-  return Math.max(1, Math.floor(valuesLen / div));
+  return valuesLen / div;
 }
 
 function findInterval(times: Float32Array, time: number): { i0: number; i1: number; t: number } {
@@ -94,13 +249,17 @@ function findInterval(times: Float32Array, time: number): { i0: number; i1: numb
 }
 
 function slerpQuat(out: Float32Array, v: Float32Array, o0: number, o1: number, t: number): void {
-  const ax = v[o0] ?? 0, ay = v[o0 + 1] ?? 0, az = v[o0 + 2] ?? 0, aw = v[o0 + 3] ?? 1;
-  let bx = v[o1] ?? 0, by = v[o1 + 1] ?? 0, bz = v[o1 + 2] ?? 0, bw = v[o1 + 3] ?? 1;
+  const aInv = 1 / Math.hypot(v[o0]!, v[o0 + 1]!, v[o0 + 2]!, v[o0 + 3]!);
+  const bInv = 1 / Math.hypot(v[o1]!, v[o1 + 1]!, v[o1 + 2]!, v[o1 + 3]!);
+  const ax = v[o0]! * aInv, ay = v[o0 + 1]! * aInv;
+  const az = v[o0 + 2]! * aInv, aw = v[o0 + 3]! * aInv;
+  let bx = v[o1]! * bInv, by = v[o1 + 1]! * bInv;
+  let bz = v[o1 + 2]! * bInv, bw = v[o1 + 3]! * bInv;
   let cos = ax * bx + ay * by + az * bz + aw * bw;
   if (cos < 0) { cos = -cos; bx = -bx; by = -by; bz = -bz; bw = -bw; }
   let s0: number, s1: number;
   if (1 - cos > 1e-6) {
-    const omega = Math.acos(Math.min(cos, 1));
+    const omega = Math.acos(Math.max(-1, Math.min(cos, 1)));
     const sin = Math.sin(omega);
     s0 = Math.sin((1 - t) * omega) / sin;
     s1 = Math.sin(t * omega) / sin;
@@ -115,17 +274,14 @@ function slerpQuat(out: Float32Array, v: Float32Array, o0: number, o1: number, t
 }
 
 function normalizeSampledQuat(value: Float32Array): void {
-  const len = Math.hypot(value[0] ?? 0, value[1] ?? 0, value[2] ?? 0, value[3] ?? 1);
+  const len = Math.hypot(value[0]!, value[1]!, value[2]!, value[3]!);
   if (len > 1e-8 && Number.isFinite(len)) {
-    value[0] = (value[0] ?? 0) / len;
-    value[1] = (value[1] ?? 0) / len;
-    value[2] = (value[2] ?? 0) / len;
-    value[3] = (value[3] ?? 1) / len;
+    value[0] = value[0]! / len;
+    value[1] = value[1]! / len;
+    value[2] = value[2]! / len;
+    value[3] = value[3]! / len;
   } else {
-    value[0] = 0;
-    value[1] = 0;
-    value[2] = 0;
-    value[3] = 1;
+    throw new RangeError('sampleAnimationClip: interpolated rotation quaternion has zero length');
   }
 }
 
@@ -135,6 +291,10 @@ function normalizeSampledQuat(value: Float32Array): void {
  * use quaternion slerp; CUBICSPLINE uses the glTF Hermite basis.
  */
 export function sampleAnimationClip(clip: AnimationClip, time: number): SampledChannel[] {
+  validateAnimationClip(clip);
+  if (!Number.isFinite(time)) {
+    throw new RangeError(`sampleAnimationClip: time must be finite (got ${String(time)})`);
+  }
   const out: SampledChannel[] = [];
   for (const ch of clip.channels) {
     const times = ch.sampler.times;

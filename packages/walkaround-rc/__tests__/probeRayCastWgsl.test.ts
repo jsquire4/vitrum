@@ -64,3 +64,42 @@ describe('PROBE_RAY_CAST_WGSL material UV decode', () => {
     );
   });
 });
+
+describe('PROBE_RAY_CAST_WGSL environment transform', () => {
+  it('uses one H6 RY(-rotationY) directional lookup helper at both RC environment reads', () => {
+    expect(PROBE_RAY_CAST_WGSL).toContain(
+      'return vec3f(c * dir.x - s * dir.z, dir.y, s * dir.x + c * dir.z);',
+    );
+    expect(
+      PROBE_RAY_CAST_WGSL.match(/dirToEquirectUV\(rcEnvRotateYNeg\(/g),
+    ).toHaveLength(1);
+    expect(
+      PROBE_RAY_CAST_WGSL.match(/rcEnvironmentRadiance\((?:ray\.direction|rayDir)\)/g),
+    ).toHaveLength(2);
+    expect(PROBE_RAY_CAST_WGSL).toContain(').rgb * rc_u.envIntensity;');
+
+    const rotationY = Math.PI / 2;
+    const direction: readonly [number, number, number] = [1, 0, 0];
+    const c = Math.cos(rotationY);
+    const s = Math.sin(rotationY);
+    const lookup = [
+      c * direction[0] - s * direction[2],
+      direction[1],
+      s * direction[0] + c * direction[2],
+    ];
+    expect(lookup[0]).toBeCloseTo(0, 12);
+    expect(lookup[1]).toBe(0);
+    expect(lookup[2]).toBeCloseTo(1, 12);
+  });
+
+  it('selects scalar sky radiance only when no directional payload is active', () => {
+    expect(PROBE_RAY_CAST_WGSL).toContain('if (rc_u.hasDirectionalEnv == 0u)');
+    expect(PROBE_RAY_CAST_WGSL).toContain('return rc_u.scalarSkyRadiance;');
+    expect(PROBE_RAY_CAST_WGSL).toContain(
+      'radiance = rcEnvironmentRadiance(rayDir);',
+    );
+    expect(PROBE_RAY_CAST_WGSL).toContain(
+      'let env = rcEnvironmentRadiance(ray.direction);',
+    );
+  });
+});

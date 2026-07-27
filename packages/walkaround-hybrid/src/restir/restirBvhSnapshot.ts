@@ -6,11 +6,16 @@
 import type { MaterialSpec, Scene } from '@vitrum/core';
 import {
   computeWorldAabbForBindings,
-  fingerprintBuffers,
+  fingerprintBuffersExact,
   isTlasOnlyVersionBump,
 } from '@vitrum/shared-bvh';
 import type { SceneBVHBuffers } from './bvhTypes.js';
 import type { MaterialTextureAtlasPayload } from '../pipeline/materialTextureAtlas.js';
+import {
+  packDDGIMaterialsFromCoreN,
+  packDDGIMaterialsN,
+} from '../ddgi/probeUpdateMaterials.js';
+import type { PbrScalarSource } from '../pbrScalars.js';
 import {
   makeEmptyAabb,
   setAabb,
@@ -70,6 +75,52 @@ export interface RestirBvhSnapshot {
   readonly blasContentVersion: number;
   /** TLAS nodes + instance transforms — bumps on transform refit. */
   readonly tlasContentVersion: number;
+  /** Scalar material bytes + texture-atlas bytes consumed by DDGI/RC. */
+  readonly materialContentVersion: number;
+}
+
+function materialAtlasMetadata(atlas: MaterialTextureAtlasPayload): Uint32Array {
+  return new Uint32Array([
+    atlas.atlasDim,
+    atlas.atlasLayerCount,
+    atlas.atlasMipLevelCount,
+    atlas.gpuSourceLayers.length,
+    atlas.baseColorMetaWidth,
+    atlas.baseColorMetaHeight,
+    atlas.readableBaseColorLayerCount,
+    atlas.readableNormalLayerCount,
+    atlas.readableRoughnessLayerCount,
+    atlas.readableMetallicLayerCount,
+    atlas.readableAoLayerCount,
+    atlas.readableAlphaLayerCount,
+    atlas.readableEmissiveLayerCount,
+    atlas.readableTransmissionLayerCount,
+    atlas.readableLightLayerCount,
+    atlas.readableSpecularColorLayerCount,
+    atlas.readableSpecularIntensityLayerCount,
+    atlas.readableClearcoatLayerCount,
+    atlas.readableClearcoatRoughnessLayerCount,
+    atlas.readableClearcoatNormalLayerCount,
+    atlas.readableSheenColorLayerCount,
+    atlas.readableSheenRoughnessLayerCount,
+    atlas.readableAnisotropyLayerCount,
+    atlas.readableIridescenceLayerCount,
+    atlas.readableIridescenceThicknessLayerCount,
+    atlas.readableThicknessLayerCount,
+    atlas.readableBumpLayerCount,
+  ]);
+}
+
+function materialAtlasGpuSourceIdentity(atlas: MaterialTextureAtlasPayload): Uint32Array {
+  const words = new Uint32Array(atlas.gpuSourceLayers.length * 4);
+  atlas.gpuSourceLayers.forEach((entry, index) => {
+    const base = index * 4;
+    words[base] = entry.layer;
+    words[base + 1] = entry.source.sourceId >>> 0;
+    words[base + 2] = Math.floor(entry.source.sourceId / 0x1_0000_0000) >>> 0;
+    words[base + 3] = entry.decodeSrgb ? 1 : 0;
+  });
+  return words;
 }
 
 export function makeRestirBvhSnapshot(
@@ -103,7 +154,7 @@ export function makeRestirBvhSnapshot(
   }
 
   const tlas = buffers.tlas;
-  const blasContentVersion = fingerprintBuffers(
+  const blasContentVersion = fingerprintBuffersExact(
     buffers.bvhNodes.cpuData,
     buffers.bvhPositions.cpuData,
     buffers.bvhIndex.cpuData,
@@ -113,7 +164,7 @@ export function makeRestirBvhSnapshot(
     buffers.triangleMaterialIds.cpuData,
   );
   const tlasContentVersion = tlas != null
-    ? fingerprintBuffers(
+    ? fingerprintBuffersExact(
         tlas.nodes.cpuData,
         tlas.instanceIndices.cpuData,
         tlas.blasRoots.cpuData,
@@ -121,6 +172,25 @@ export function makeRestirBvhSnapshot(
         tlas.localToWorld.cpuData,
       )
     : 0;
+  const materialSlots = Math.max(
+    1,
+    buffers.coreMaterials.length,
+    buffers.buildMaterials.length,
+  );
+  const materialBytes = buffers.coreMaterials.length > 0
+    ? packDDGIMaterialsFromCoreN(buffers.coreMaterials, materialSlots)
+    : packDDGIMaterialsN(
+        buffers.buildMaterials as readonly PbrScalarSource[],
+        materialSlots,
+      );
+  const atlas = buffers.materialTextureAtlas;
+  const materialContentVersion = fingerprintBuffersExact(
+    materialBytes,
+    atlas.atlasData,
+    atlas.baseColorMetaData,
+    materialAtlasMetadata(atlas),
+    materialAtlasGpuSourceIdentity(atlas),
+  );
 
   return {
     bvhMode: buffers.bvhMode,
@@ -147,21 +217,31 @@ export function makeRestirBvhSnapshot(
           },
         }
       : {}),
-    contentVersion: fingerprintBuffers(
-      new Uint32Array([blasContentVersion, tlasContentVersion]).buffer,
+    contentVersion: fingerprintBuffersExact(
+      new Uint32Array([
+        blasContentVersion,
+        tlasContentVersion,
+        materialContentVersion,
+      ]),
     ),
     blasContentVersion,
     tlasContentVersion,
+    materialContentVersion,
   };
 }
 
 /** True when only TLAS nodes / instance transforms changed (transform-only refit). */
 export function isRestirTlasOnlyRefit(
   snap: RestirBvhSnapshot,
-  prev: { readonly blasContentVersion: number; readonly tlasContentVersion: number },
+  prev: {
+    readonly blasContentVersion: number;
+    readonly tlasContentVersion: number;
+    readonly materialContentVersion: number;
+  },
 ): boolean {
   return (
     snap.tlas != null &&
+    snap.materialContentVersion === prev.materialContentVersion &&
     isTlasOnlyVersionBump(snap.blasContentVersion, snap.tlasContentVersion, prev)
   );
 }

@@ -85,7 +85,6 @@ export const UNIFORM_MANIFEST = [
   { glslName: 'bounces',               glslType: 'int',              frameKey: 'bounces' },
   { glslName: 'transmissiveBounces',   glslType: 'int',              frameKey: 'transmissiveBounces' },
   { glslName: 'filterGlossyFactor',    glslType: 'float',            frameKey: 'filterGlossyFactor' },
-  { glslName: 'uRadianceClamp',       glslType: 'float',            frameKey: 'radianceClamp' },
   { glslName: 'seed',                  glslType: 'int',              frameKey: 'internal' },
   // ── image ─────────────────────────────────────────────────────────────────
   { glslName: 'resolution',            glslType: 'vec2',             frameKey: 'resolution' },
@@ -103,16 +102,16 @@ export const UNIFORM_MANIFEST = [
 //   opacity              — computed as 1/(samples+1) from GlResources state, not from FrameUniforms
 //                          (frameKey='internal' in manifest)
 //   spectralEnabled      — drives CMF upload gate (uSpectralRendering int uniform); the manifest
-//                          covers the CMF uniforms via spectralCausticBdptUniformDecls()
-//   causticStrategy      — declared in spectralCausticBdptUniformDecls() as uCausticStrategy
-//   mneeMaxIterations    — declared as uMneeMaxIterations in spectralCausticBdptUniformDecls()
-//   mneeMaxChainLength   — declared as uMneeMaxChainLength in spectralCausticBdptUniformDecls()
+//                          covers the CMF uniforms via spectralBdptUniformDecls()
 //   bdpt                 — drives pass-selection (uBdptLightSubpathPass); not a simple scalar
-//   bdptMaxLightBounces  — declared as uBdptMaxLightBounces in spectralCausticBdptUniformDecls()
+//   bdptMaxLightBounces  — declared as uBdptMaxLightBounces in spectralBdptUniformDecls()
+//   bdptSceneCenter / bdptSceneRadius
+//                        — bounded infinite-source launch disk uniforms
+//   bdptSharedWavelengthNm / bdptSharedWavelengthPdf
+//                        — shared spectral+BDPT uniform pair in spectralBdptUniformDecls()
 //   materialLodDepth     — declared in get_surface_record_function.glsl.js; uploaded from FrameUniforms
 //                          but not part of this module's UNIFORM_DECLS block.
-//   iorCauchy            — split into iorCauchyA/B/C in spectralCausticBdptUniformDecls()
-//   jakobCoeffs          — declared as u_jakobCoeffs in spectralCausticBdptUniformDecls()
+//   iorCauchy            — split into iorCauchyA/B/C in spectralBdptUniformDecls()
 //   dof                  — drives gated PhysicalCamera struct (FEATURE_DOF)
 //   backgroundAlpha      — in manifest (frameKey='backgroundAlpha') — not in _HandledSeparately
 //   tonemapMode          — drives PresentPass only; no PT shader uniform counterpart
@@ -122,14 +121,14 @@ export const UNIFORM_MANIFEST = [
 type _ManifestFrameKey = (typeof UNIFORM_MANIFEST)[number]['frameKey'];
 type _HandledSeparately =
   | 'spectralEnabled'
-  | 'causticStrategy'
-  | 'mneeMaxIterations'
-  | 'mneeMaxChainLength'
   | 'bdpt'
   | 'bdptMaxLightBounces'
+  | 'bdptSceneCenter'
+  | 'bdptSceneRadius'
+  | 'bdptSharedWavelengthNm'
+  | 'bdptSharedWavelengthPdf'
   | 'materialLodDepth'
   | 'iorCauchy'
-  | 'jakobCoeffs'
   | 'dof'
   | 'tonemapMode'
   | 'exposure'
@@ -216,7 +215,6 @@ const UNIFORM_DECLS = /* glsl */ `
 					uniform int bounces;
 					uniform int transmissiveBounces;
 					uniform float filterGlossyFactor;
-					uniform float uRadianceClamp;
 					uniform int seed;
 
 					// image
@@ -232,24 +230,21 @@ const UNIFORM_DECLS = /* glsl */ `
 `;
 
 /**
- * The spectral / Cauchy / caustic uniform decls and (gated) BDPT uniform decls
+ * The spectral / Cauchy uniform decls and (gated) BDPT uniform decls
  * (PhysicalPathTracingMaterial.js:358-384). Inline in the fork (not a chunk). The
  * FEATURE_BDPT gate resolves from the preamble define; we emit it unconditionally and let
  * the preprocessor strip it when FEATURE_BDPT == 0.
  */
-export function spectralCausticBdptUniformDecls(): string {
+export function spectralBdptUniformDecls(): string {
   return /* glsl */ `
-					uniform vec3 u_jakobCoeffs;
 					uniform float iorCauchyA;
 					uniform float iorCauchyB;
 					uniform float iorCauchyC;
-					uniform int uCausticStrategy;
-					uniform float uMneeMaxIterations;
-					uniform float uMneeMaxChainLength;
 
 					// Sprint 10c — BDPT uniforms.
-					// uBdptLightPathTex: RGBA32F ping-pong texture (width=BDPT_MAX_LIGHT_BOUNCES, height=5).
-					//   Rows: 0=position+kind, 1=normal+pdfFwd, 2=throughput+pdfRev, 3=metadata.
+					// uBdptLightPathTex: RGBA32F ping-pong texture (width=8, height=6).
+					//   Rows: 0=position+kind, 1=normal+pdfFwd, 2=throughput+pdfRev,
+					//   3=BSDF/endpoint metadata, 4=material/endpoint payload, 5=medium context.
 					//   Columns: 0..uBdptMaxLightBounces-1 (one per light subpath bounce).
 					// uBdptMaxLightBounces: how many stored light vertices to attempt connections with.
 					// uBdptEnabled is mirrored as FEATURE_BDPT define; uniform kept for runtime query.
@@ -259,6 +254,10 @@ export function spectralCausticBdptUniformDecls(): string {
 					uniform int uBdptMaxLightBounces;
 					uniform int uBdptLightSubpathPass;
 					uniform int uBdptVertexCol;
+					uniform float uBdptSharedWavelength;
+					uniform float uBdptSharedWavelengthPdf;
+					uniform vec3 uBdptSceneCenter;
+					uniform float uBdptSceneRadius;
 
 					#endif
 `;

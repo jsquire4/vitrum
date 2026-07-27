@@ -376,9 +376,10 @@ describe('RESOLVE_WGSL — checkerboard upsampling + temporal reprojection', () 
     expect(RESOLVE_WGSL).toContain('textureLoad(t_prev_radiance');
   });
 
-  it('negates NDC-y when converting motion vector to pixel offset', () => {
-    // NDC y increases up, pixel y increases down — sign must flip.
-    expect(RESOLVE_WGSL).toContain('-mv.y');
+  it('consumes the producer-authored framebuffer-pixel motion without a second y flip', () => {
+    // motionVectors.wgsl performs the NDC→y-down framebuffer conversion once.
+    expect(RESOLVE_WGSL).toContain('let deltaPx = vec2i(round(mv));');
+    expect(RESOLVE_WGSL).not.toContain('-mv.y');
   });
 
   it('guards against out-of-bounds invocations', () => {

@@ -28,11 +28,11 @@
 export function analyticLightFalloffWgsl(prefix: string): string {
   return /* wgsl */ `fn ${prefix}SpotConeFalloff(lightDir: vec3f, wi: vec3f, cosInner: f32, cosOuter: f32) -> f32 {
   let axisLen2 = dot(lightDir, lightDir);
-  if (axisLen2 <= 0.01) { return 1.0; }
+  if (axisLen2 <= 0.0) { return 1.0; }
   let axis = lightDir * inverseSqrt(axisLen2);
   let cosTheta = dot(-axis, wi);
   if (cosTheta < cosOuter) { return 0.0; }
-  if (abs(cosInner - cosOuter) < 1e-5) {
+  if (cosInner == cosOuter) {
     return select(0.0, 1.0, cosTheta >= cosOuter);
   }
   return smoothstep(cosOuter, cosInner, cosTheta);
@@ -40,12 +40,10 @@ export function analyticLightFalloffWgsl(prefix: string): string {
 
 fn ${prefix}PointSpotAttenuation(dist: f32, cutoffDistance: f32, decay: f32, dist2Floor: f32) -> f32 {
   var attenuation = 1.0;
-  if (decay > 0.01) {
-    if (abs(decay - 2.0) < 1e-5) {
-      attenuation = 1.0 / (dist * dist + dist2Floor);
-    } else {
-      attenuation = 1.0 / max(pow(max(dist, 1.0), decay), max(dist2Floor, 1e-6));
-    }
+  if (decay > 0.0) {
+    let regularizedDist2 = max(dist * dist, dist2Floor);
+    if (!(regularizedDist2 > 0.0)) { return 0.0; }
+    attenuation = 1.0 / pow(sqrt(regularizedDist2), decay);
   }
   if (cutoffDistance > 0.0) {
     let x = clamp(1.0 - pow(dist / cutoffDistance, 4.0), 0.0, 1.0);

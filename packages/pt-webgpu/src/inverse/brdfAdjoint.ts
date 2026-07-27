@@ -1,3 +1,10 @@
+import {
+  PT_WEBGPU_MICROFACET_ALPHA_FLOOR,
+  ptWebgpuMicrofacetAlpha,
+  roughDielectricSmithG1 as smithG1,
+  roughDielectricSmithG1RoughnessDerivative,
+} from '../math/roughDielectric.js';
+
 /**
  * brdfAdjoint.ts — CPU reference for the path-replay BSDF adjoint (WS5 Phase 1).
  *
@@ -67,6 +74,21 @@ const IRIDESCENCE_THICKNESS_DERIV_STEP = 1e-2;
 const ANISOTROPY_DERIV_STEP = 1e-3;
 const ANISOTROPY_ROTATION_DERIV_STEP = 1e-3;
 const ANISOTROPIC_BASE_PARAM_DERIV_STEP = 1e-4;
+const MULTISCATTER_ROUGHNESS_DERIV_STEP = 1e-4;
+const GGX_E_LUT_DIM = 8;
+const GGX_E_LUT: readonly number[] = [
+  0.1375, 0.5617, 0.7546, 0.8522, 0.9111, 0.9505, 0.9788, 1.0,
+  0.2955, 0.515, 0.7091, 0.8192, 0.889, 0.937, 0.9721, 0.9988,
+  0.5794, 0.5541, 0.6677, 0.7691, 0.8451, 0.9021, 0.9457, 0.98,
+  0.7011, 0.6486, 0.6669, 0.7199, 0.7776, 0.8305, 0.8764, 0.9155,
+  0.7335, 0.6901, 0.6696, 0.6756, 0.6972, 0.7262, 0.7578, 0.7893,
+  0.7153, 0.6712, 0.6355, 0.6145, 0.6052, 0.6045, 0.6101, 0.6199,
+  0.6669, 0.6137, 0.5657, 0.5286, 0.5, 0.478, 0.4611, 0.4483,
+  0.6017, 0.537, 0.4773, 0.4296, 0.3905, 0.358, 0.3305, 0.3069,
+];
+const GGX_EAVG_LUT: readonly number[] = [
+  0.9106, 0.8931, 0.8629, 0.8094, 0.725, 0.6147, 0.4931, 0.3766,
+];
 
 // ── primitive mirrors (match material.wgsl.ts exactly) ──────────────────────
 
@@ -224,7 +246,7 @@ function iridescenceModifiedF0(
   thicknessMax: number,
   cosTheta: number,
 ): Vec3 {
-  if (iridescence < 1e-4) return baseF0;
+  if (iridescence <= 0) return baseF0;
   const thicknessNm = thicknessMin + (thicknessMax - thicknessMin) * Math.min(Math.max(cosTheta, 0.0), 1.0);
   const iridF = evalIridescence(1.0, iridescenceIor, cosTheta, thicknessNm, baseF0);
   return [
@@ -260,15 +282,131 @@ function materialSpecularF0(
 /** ggxD (material.wgsl.ts:344). */
 function ggxD(nDotH: number, alpha: number): number {
   const a2 = alpha * alpha;
-  const d = nDotH * nDotH * (a2 - 1.0) + 1.0;
-  return a2 / Math.max(PI * d * d, 1e-6);
+  const n2 = Math.min(1, Math.max(0, nDotH * nDotH));
+  const d = (1 - n2) + n2 * a2;
+  return a2 / (PI * d * d);
 }
 
-/** smithG1 (material.wgsl.ts:350). */
-function smithG1(nDotV: number, roughness: number): number {
-  const r = roughness + 1.0;
-  const k = r * r * 0.125;
-  return nDotV / Math.max(nDotV * (1.0 - k) + k, 1e-6);
+function mixNumber(a: number, b: number, t: number): number {
+  return a + (b - a) * t;
+}
+
+/** Exact CPU mirror of `ggxMultiscatter.wgsl.ts:ggxDirectionalAlbedo`. */
+function ggxDirectionalAlbedo(cosTheta: number, roughness: number): number {
+  const mu = clamp01(cosTheta);
+  const r = clamp01(roughness);
+  const fr = r * (GGX_E_LUT_DIM - 1);
+  const fm = mu * (GGX_E_LUT_DIM - 1);
+  const r0 = Math.floor(fr);
+  const m0 = Math.floor(fm);
+  const r1 = Math.min(r0 + 1, GGX_E_LUT_DIM - 1);
+  const m1 = Math.min(m0 + 1, GGX_E_LUT_DIM - 1);
+  const tr = fr - r0;
+  const tm = fm - m0;
+  const e00 = GGX_E_LUT[r0 * GGX_E_LUT_DIM + m0]!;
+  const e01 = GGX_E_LUT[r0 * GGX_E_LUT_DIM + m1]!;
+  const e10 = GGX_E_LUT[r1 * GGX_E_LUT_DIM + m0]!;
+  const e11 = GGX_E_LUT[r1 * GGX_E_LUT_DIM + m1]!;
+  return Math.min(
+    Math.max(mixNumber(mixNumber(e00, e01, tm), mixNumber(e10, e11, tm), tr), 0.02),
+    1.0,
+  );
+}
+
+/** Exact CPU mirror of `ggxMultiscatter.wgsl.ts:ggxAverageAlbedo`. */
+function ggxAverageAlbedo(roughness: number): number {
+  const r = clamp01(roughness);
+  const fr = r * (GGX_E_LUT_DIM - 1);
+  const r0 = Math.floor(fr);
+  const r1 = Math.min(r0 + 1, GGX_E_LUT_DIM - 1);
+  const tr = fr - r0;
+  return Math.min(Math.max(mixNumber(GGX_EAVG_LUT[r0]!, GGX_EAVG_LUT[r1]!, tr), 0.3), 1.0);
+}
+
+function ggxMultiscatterLobeRoughness(
+  f0: Vec3,
+  roughnessV: number,
+  roughnessL: number,
+  roughnessAvg: number,
+  nDotV: number,
+  nDotL: number,
+): Vec3 {
+  const eAvg = ggxAverageAlbedo(roughnessAvg);
+  const oneMinusEavg = 1.0 - eAvg;
+  if (oneMinusEavg <= 0.0) return [0, 0, 0];
+  const eo = ggxDirectionalAlbedo(nDotV, roughnessV);
+  const ei = ggxDirectionalAlbedo(nDotL, roughnessL);
+  const shape = ((1.0 - eo) * (1.0 - ei)) / (PI * oneMinusEavg);
+  const out: [number, number, number] = [0, 0, 0];
+  for (let c = 0; c < 3; c++) {
+    const fAvg = f0[c]! + (1.0 - f0[c]!) * (1.0 / 21.0);
+    const seriesDenom = 1.0 - fAvg * oneMinusEavg;
+    if (seriesDenom <= 0.0) return [0, 0, 0];
+    const value = ((fAvg * fAvg * eAvg) / seriesDenom) * shape;
+    out[c] = Number.isFinite(value) ? value : 0.0;
+  }
+  return out;
+}
+
+function ggxMultiscatterLobe(
+  f0: Vec3,
+  roughness: number,
+  nDotV: number,
+  nDotL: number,
+): Vec3 {
+  return ggxMultiscatterLobeRoughness(
+    f0, roughness, roughness, roughness, nDotV, nDotL,
+  );
+}
+
+/**
+ * Per-channel derivative of the Kulla-Conty lobe with respect to F0. The
+ * directional-albedo shape is achromatic; the colour-series derivative is
+ * evaluated analytically so all base/specular/iridescence partials include
+ * the production forward model's multiscatter term.
+ */
+function dGgxMultiscatter_dF0(
+  f0: Vec3,
+  roughness: number,
+  nDotV: number,
+  nDotL: number,
+): Vec3 {
+  const eAvg = ggxAverageAlbedo(roughness);
+  const oneMinusEavg = 1.0 - eAvg;
+  if (oneMinusEavg <= 0.0) return [0, 0, 0];
+  const eo = ggxDirectionalAlbedo(nDotV, roughness);
+  const ei = ggxDirectionalAlbedo(nDotL, roughness);
+  const shape = ((1.0 - eo) * (1.0 - ei)) / (PI * oneMinusEavg);
+  const dFavg_dF0 = 20.0 / 21.0;
+  const out: [number, number, number] = [0, 0, 0];
+  for (let c = 0; c < 3; c++) {
+    const fAvg = f0[c]! + (1.0 - f0[c]!) * (1.0 / 21.0);
+    const seriesDenom = 1.0 - fAvg * oneMinusEavg;
+    if (seriesDenom <= 0.0) return [0, 0, 0];
+    const numerator = eAvg * (2.0 * fAvg - fAvg * fAvg * oneMinusEavg);
+    const value = shape * dFavg_dF0 * numerator / (seriesDenom * seriesDenom);
+    out[c] = Number.isFinite(value) ? value : 0.0;
+  }
+  return out;
+}
+
+function dGgxMultiscatter_dRoughness(
+  f0: Vec3,
+  roughness: number,
+  nDotV: number,
+  nDotL: number,
+): Vec3 {
+  const rp = clamp01(roughness + MULTISCATTER_ROUGHNESS_DERIV_STEP);
+  const rm = clamp01(roughness - MULTISCATTER_ROUGHNESS_DERIV_STEP);
+  const denom = rp - rm;
+  if (denom <= 1e-8) return [0, 0, 0];
+  const fp = ggxMultiscatterLobe(f0, rp, nDotV, nDotL);
+  const fm = ggxMultiscatterLobe(f0, rm, nDotV, nDotL);
+  return [
+    (fp[0] - fm[0]) / denom,
+    (fp[1] - fm[1]) / denom,
+    (fp[2] - fm[2]) / denom,
+  ];
 }
 
 /**
@@ -322,17 +460,18 @@ export function evaluateBrdf(
   const vDotH = Math.max(dot(wo, h), 0.0);
   const f0 = materialSpecularF0(baseColor, metallic, specularColor, specularIntensity);
   const f = fresnelSchlick(vDotH, f0);
-  const alpha = Math.max(roughness * roughness, 1e-3);
+  const alpha = ptWebgpuMicrofacetAlpha(roughness);
   const d = ggxD(nDotH, alpha);
   const g = smithG1(nDotV, roughness) * smithG1(nDotL, roughness);
   const specScale = (d * g) / Math.max(4.0 * nDotV * nDotL, 1e-6);
   const kd0 = 1.0 - metallic;
+  const ms = ggxMultiscatterLobe(f0, roughness, nDotV, nDotL);
   const out: [number, number, number] = [0, 0, 0];
   for (let c = 0; c < 3; c++) {
     const spec = specScale * f[c]!;
     const kd = (1.0 - f[c]!) * kd0;
     const diff = kd * baseColor[c]! * INV_PI;
-    out[c] = diff + spec;
+    out[c] = diff + spec + ms[c]!;
   }
   return out;
 }
@@ -353,15 +492,16 @@ function evaluateBrdfWithF0(
   const nDotH = Math.max(dot(normal, h), 0.0);
   const vDotH = Math.max(dot(wo, h), 0.0);
   const f = fresnelSchlick(vDotH, f0);
-  const alpha = Math.max(roughness * roughness, 1e-3);
+  const alpha = ptWebgpuMicrofacetAlpha(roughness);
   const d = ggxD(nDotH, alpha);
   const g = smithG1(nDotV, roughness) * smithG1(nDotL, roughness);
   const specScale = (d * g) / Math.max(4.0 * nDotV * nDotL, 1e-6);
   const kd0 = 1.0 - metallic;
+  const ms = ggxMultiscatterLobe(f0, roughness, nDotV, nDotL);
   return [
-    ((1.0 - f[0]) * kd0 * baseColor[0] * INV_PI) + specScale * f[0],
-    ((1.0 - f[1]) * kd0 * baseColor[1] * INV_PI) + specScale * f[1],
-    ((1.0 - f[2]) * kd0 * baseColor[2] * INV_PI) + specScale * f[2],
+    ((1.0 - f[0]) * kd0 * baseColor[0] * INV_PI) + specScale * f[0] + ms[0],
+    ((1.0 - f[1]) * kd0 * baseColor[1] * INV_PI) + specScale * f[1] + ms[1],
+    ((1.0 - f[2]) * kd0 * baseColor[2] * INV_PI) + specScale * f[2] + ms[2],
   ];
 }
 
@@ -372,7 +512,7 @@ function evalClearcoatLobe(
   wo: Vec3,
   wi: Vec3,
 ): Vec3 {
-  if (clearcoat < 1e-4) return [0, 0, 0];
+  if (clearcoat <= 0) return [0, 0, 0];
   const nDotL = Math.max(dot(normal, wi), 0.0);
   const nDotV = Math.max(dot(normal, wo), 0.0);
   if (nDotL <= 1e-5 || nDotV <= 1e-5) return [0, 0, 0];
@@ -380,7 +520,7 @@ function evalClearcoatLobe(
   const nDotH = Math.max(dot(normal, h), 0.0);
   const vDotH = Math.max(dot(wo, h), 0.0);
   const f = fresnelSchlick(vDotH, [0.04, 0.04, 0.04]);
-  const alpha = Math.max(clearcoatRoughness * clearcoatRoughness, 1e-3);
+  const alpha = ptWebgpuMicrofacetAlpha(clearcoatRoughness);
   const d = ggxD(nDotH, alpha);
   const g = smithG1(nDotV, clearcoatRoughness) * smithG1(nDotL, clearcoatRoughness);
   const specScale = (d * g) / Math.max(4.0 * nDotV * nDotL, 1e-6);
@@ -405,13 +545,13 @@ function evalSheenLobe(
   wo: Vec3,
   wi: Vec3,
 ): Vec3 {
-  if (sheen < 1e-4) return [0, 0, 0];
+  if (sheen <= 0) return [0, 0, 0];
   const nDotL = Math.max(dot(normal, wi), 0.0);
   const nDotV = Math.max(dot(normal, wo), 0.0);
   if (nDotL <= 1e-5 || nDotV <= 1e-5) return [0, 0, 0];
   const h = safeNormalize([wi[0] + wo[0], wi[1] + wo[1], wi[2] + wo[2]]);
   const nDotH = Math.max(dot(normal, h), 0.0);
-  const alpha = Math.max(sheenRoughness * sheenRoughness, 1e-3);
+  const alpha = ptWebgpuMicrofacetAlpha(sheenRoughness);
   const d = charlieD(nDotH, alpha);
   const vis = sheenVisibility(nDotL, nDotV);
   return [
@@ -449,7 +589,7 @@ function evalBrdfSpecAnisotropic(
   const h = safeNormalize([wi[0] + wo[0], wi[1] + wo[1], wi[2] + wo[2]]);
   const vDotH = Math.max(dot(wo, h), 1e-6);
   const f = fresnelSchlick(vDotH, f0);
-  const alpha = Math.max(roughness * roughness, 1e-3);
+  const alpha = ptWebgpuMicrofacetAlpha(roughness);
   const aspect = Math.sqrt(Math.max(1.0 - 0.9 * anisotropy, 1e-4));
   const ax = Math.max(alpha / aspect, 1e-4);
   const ay = Math.max(alpha * aspect, 1e-4);
@@ -466,6 +606,58 @@ function evalBrdfSpecAnisotropic(
   const g = smithG1Anis(woT, woB, woN, ax, ay) * smithG1Anis(wiT, wiB, wiN, ax, ay);
   const specScale = (d * g) / Math.max(4.0 * nDotV * nDotL, 1e-6);
   return [specScale * f[0], specScale * f[1], specScale * f[2]];
+}
+
+function anisotropicAxes(alpha: number, anisotropy: number): readonly [number, number] {
+  const aspect = Math.sqrt(Math.max(1.0 - 0.9 * anisotropy, 1e-4));
+  return [Math.max(alpha / aspect, 1e-4), Math.max(alpha * aspect, 1e-4)];
+}
+
+function anisotropicProjectedRoughness(
+  dir: Vec3,
+  tangent: Vec3,
+  bitangent: Vec3,
+  roughness: number,
+  anisotropy: number,
+): number {
+  const alpha = ptWebgpuMicrofacetAlpha(roughness);
+  const [ax, ay] = anisotropicAxes(alpha, anisotropy);
+  const dT = dot(dir, tangent);
+  const dB = dot(dir, bitangent);
+  const tangentLen2 = dT * dT + dB * dB;
+  const projectionBlend = Math.min(Math.max(0.15 * anisotropy, 0.0), 0.15);
+  if (tangentLen2 <= 1e-6) {
+    const projectedNormal = Math.sqrt(Math.min(Math.max(0.5 * (ax + ay), 1e-4), 1.0));
+    return mixNumber(roughness, projectedNormal, projectionBlend);
+  }
+  const alphaEff = Math.sqrt(
+    ((dT * ax) * (dT * ax) + (dB * ay) * (dB * ay)) / tangentLen2,
+  );
+  const projected = Math.sqrt(Math.min(Math.max(alphaEff, 1e-4), 1.0));
+  return mixNumber(roughness, projected, projectionBlend);
+}
+
+function anisotropicAverageRoughness(roughness: number, anisotropy: number): number {
+  const alpha = ptWebgpuMicrofacetAlpha(roughness);
+  const [ax, ay] = anisotropicAxes(alpha, anisotropy);
+  const alphaRms = Math.sqrt(0.5 * (ax * ax + ay * ay));
+  const projected = Math.sqrt(Math.min(Math.max(alphaRms, 1e-4), 1.0));
+  return mixNumber(
+    roughness,
+    projected,
+    Math.min(Math.max(0.15 * anisotropy, 0.0), 0.15),
+  );
+}
+
+function smoothstep(edge0: number, edge1: number, x: number): number {
+  const t = Math.min(Math.max((x - edge0) / (edge1 - edge0), 0.0), 1.0);
+  return t * t * (3.0 - 2.0 * t);
+}
+
+function anisotropicMultiscatterScale(anisotropy: number, roughnessForScale: number): number {
+  const anisoReduction = smoothstep(0.0, 0.35, clamp01(anisotropy));
+  return mixNumber(1.0, 0.6, anisoReduction) *
+    smoothstep(0.35, 0.9, roughnessForScale);
 }
 
 /**
@@ -594,7 +786,7 @@ export function evaluateBrdfWithAnisotropy(
     (1.0 - f[1]) * kd0 * baseColor[1] * INV_PI,
     (1.0 - f[2]) * kd0 * baseColor[2] * INV_PI,
   ];
-  if (anisotropy <= 1e-4) {
+  if (anisotropy <= 0) {
     const iso = evaluateBrdf(baseColor, roughness, metallic, normal, wo, wi, specularColor, specularIntensity);
     return iso;
   }
@@ -612,7 +804,21 @@ export function evaluateBrdfWithAnisotropy(
     -s * tanT[2] + c * tanB[2],
   ];
   const spec = evalBrdfSpecAnisotropic(f0, roughness, anisotropy, normal, anisoT, anisoB, wo, wi);
-  return [diff[0] + spec[0], diff[1] + spec[1], diff[2] + spec[2]];
+  const roughnessAvg = anisotropicAverageRoughness(roughness, anisotropy);
+  const msBase = ggxMultiscatterLobeRoughness(
+    f0,
+    anisotropicProjectedRoughness(wo, anisoT, anisoB, roughness, anisotropy),
+    anisotropicProjectedRoughness(wi, anisoT, anisoB, roughness, anisotropy),
+    roughnessAvg,
+    nDotV,
+    nDotL,
+  );
+  const msScale = anisotropicMultiscatterScale(anisotropy, roughnessAvg);
+  return [
+    diff[0] + spec[0] + msScale * msBase[0],
+    diff[1] + spec[1] + msScale * msBase[1],
+    diff[2] + spec[2] + msScale * msBase[2],
+  ];
 }
 
 // ── analytic partials ────────────────────────────────────────────────────────
@@ -640,11 +846,13 @@ export function dBrdf_dBaseColor(
   const h = safeNormalize([wi[0] + wo[0], wi[1] + wo[1], wi[2] + wo[2]]);
   const nDotH = Math.max(dot(normal, h), 0.0);
   const vDotH = Math.max(dot(wo, h), 0.0);
-  const alpha = Math.max(roughness * roughness, 1e-3);
+  const alpha = ptWebgpuMicrofacetAlpha(roughness);
   const d = ggxD(nDotH, alpha);
   const g = smithG1(nDotV, roughness) * smithG1(nDotL, roughness);
   const specScale = (d * g) / Math.max(4.0 * nDotV * nDotL, 1e-6);
   const kd0 = 1.0 - metallic;
+  const currentF0 = materialSpecularF0(baseColor, metallic, specularColor, specularIntensity);
+  const dMs_dF0 = dGgxMultiscatter_dF0(currentF0, roughness, nDotV, nDotL);
 
   // Schlick m5 factor (same for every channel).
   const m = Math.min(Math.max(1.0 - vDotH, 0.0), 1.0);
@@ -666,7 +874,7 @@ export function dBrdf_dBaseColor(
     const dfc = (1.0 - m5) * metallic;
     const dDiff = kd0 * INV_PI * ((1.0 - fc) + baseColor[c]! * -dfc);
     const dSpec = specScale * dfc;
-    out[c] = dDiff + dSpec;
+    out[c] = dDiff + dSpec + dMs_dF0[c]! * metallic;
   }
   return out;
 }
@@ -675,11 +883,12 @@ export function dBrdf_dBaseColor(
  * Analytic ∂(evaluateBrdf)_c / ∂roughness — per channel (the specular term is
  * channel-coupled only through Fresnel, but roughness affects D and both G1s,
  * which are achromatic; the per-channel result differs only via the Fresnel
- * weight f_c). The diffuse term is roughness-independent, so only the specular
- * term contributes.
+ * weight f_c). The diffuse term is roughness-independent; the specular D/G
+ * term and Kulla-Conty multiscatter compensation both contribute.
  *
- * alpha = max(roughness², 1e-3). Below the clamp boundary (roughness² < 1e-3,
- * i.e. roughness < ~0.0316) dalpha/droughness = 0; above it = 2·roughness.
+ * alpha uses `PT_WEBGPU_MICROFACET_ALPHA_FLOOR`. Below that numerical floor,
+ * dalpha/droughness = 0; above it = 2·roughness. Event classification remains
+ * exact-zero delta versus positive finite and is deliberately separate.
  */
 export function dBrdf_dRoughness(
   baseColor: Vec3,
@@ -700,8 +909,8 @@ export function dBrdf_dRoughness(
   const f0 = materialSpecularF0(baseColor, metallic, specularColor, specularIntensity);
   const f = fresnelSchlick(vDotH, f0);
 
-  const alpha = Math.max(roughness * roughness, 1e-3);
-  const alphaClamped = roughness * roughness < 1e-3;
+  const alpha = ptWebgpuMicrofacetAlpha(roughness);
+  const alphaClamped = roughness * roughness < PT_WEBGPU_MICROFACET_ALPHA_FLOOR;
   const dAlpha_dRough = alphaClamped ? 0.0 : 2.0 * roughness;
 
   // ── dD/dalpha ──
@@ -711,33 +920,31 @@ export function dBrdf_dRoughness(
   //          = [den − 2·a²·nDotH²] / (PI·den³)
   //   da²/droughness = 2·alpha·dAlpha_dRough
   const a2 = alpha * alpha;
-  const den = nDotH * nDotH * (a2 - 1.0) + 1.0;
-  const dD_da2 = (den - 2.0 * a2 * (nDotH * nDotH)) / Math.max(PI * den * den * den, 1e-12);
+  const n2 = Math.min(1, Math.max(0, nDotH * nDotH));
+  const den = (1 - n2) + n2 * a2;
+  const dD_da2 = (den - 2.0 * a2 * n2) / (PI * den * den * den);
   const da2_dRough = 2.0 * alpha * dAlpha_dRough;
   const dD_dRough = dD_da2 * da2_dRough;
   const d = ggxD(nDotH, alpha);
 
-  // ── dG1/droughness ── G1(x) = x / (x·(1-k) + k),  k = (roughness+1)²/8.
-  //   dk/droughness = (roughness+1)/4.
-  //   dG1/dk = -x·(1 - x) / (x·(1-k)+k)²
-  const k = (roughness + 1.0) * (roughness + 1.0) * 0.125;
-  const dk_dRough = (roughness + 1.0) * 0.25;
-  const g1 = (x: number): number => x / Math.max(x * (1.0 - k) + k, 1e-6);
-  const dG1_dRough = (x: number): number => {
-    const denom = x * (1.0 - k) + k;
-    if (denom <= 1e-6) return 0.0; // clamp region: derivative of the floor is 0
-    return (-x * (1.0 - x) / (denom * denom)) * dk_dRough;
-  };
-  const g1V = g1(nDotV);
-  const g1L = g1(nDotL);
+  // The exact Smith derivative shares the forward oracle's alpha=roughness² map.
+  const g1V = smithG1(nDotV, roughness);
+  const g1L = smithG1(nDotL, roughness);
   const g = g1V * g1L;
-  const dG_dRough = dG1_dRough(nDotV) * g1L + g1V * dG1_dRough(nDotL);
+  const dG_dRough =
+    roughDielectricSmithG1RoughnessDerivative(nDotV, roughness) * g1L +
+    g1V * roughDielectricSmithG1RoughnessDerivative(nDotL, roughness);
 
   // spec_c = [(D·G)/(4·nDotV·nDotL)] · f_c.
   //   d(spec_c)/droughness = [(dD·G + D·dG)/(4·nDotV·nDotL)] · f_c.
   const invDenom = 1.0 / Math.max(4.0 * nDotV * nDotL, 1e-6);
   const dSpecScale = (dD_dRough * g + d * dG_dRough) * invDenom;
-  return [dSpecScale * f[0], dSpecScale * f[1], dSpecScale * f[2]];
+  const dMs = dGgxMultiscatter_dRoughness(f0, roughness, nDotV, nDotL);
+  return [
+    dSpecScale * f[0] + dMs[0],
+    dSpecScale * f[1] + dMs[1],
+    dSpecScale * f[2] + dMs[2],
+  ];
 }
 
 /**
@@ -767,11 +974,13 @@ export function dBrdf_dMetallic(
   const h = safeNormalize([wi[0] + wo[0], wi[1] + wo[1], wi[2] + wo[2]]);
   const nDotH = Math.max(dot(normal, h), 0.0);
   const vDotH = Math.max(dot(wo, h), 0.0);
-  const alpha = Math.max(roughness * roughness, 1e-3);
+  const alpha = ptWebgpuMicrofacetAlpha(roughness);
   const d = ggxD(nDotH, alpha);
   const g = smithG1(nDotV, roughness) * smithG1(nDotL, roughness);
   const specScale = (d * g) / Math.max(4.0 * nDotV * nDotL, 1e-6);
   const kd0 = 1.0 - metallic;
+  const currentF0 = materialSpecularF0(baseColor, metallic, specularColor, specularIntensity);
+  const dMs_dF0 = dGgxMultiscatter_dF0(currentF0, roughness, nDotV, nDotL);
   const m = Math.min(Math.max(1.0 - vDotH, 0.0), 1.0);
   const m2 = m * m;
   const m5 = m2 * m2 * m;
@@ -783,7 +992,8 @@ export function dBrdf_dMetallic(
     const dfc = (1.0 - m5) * (baseColor[c]! - dielectricF0);
     const dDiff = baseColor[c]! * INV_PI * (-kd0 * dfc - (1.0 - fc));
     const dSpec = specScale * dfc;
-    out[c] = dDiff + dSpec;
+    const dF0_dMetallic = baseColor[c]! - dielectricF0;
+    out[c] = dDiff + dSpec + dMs_dF0[c]! * dF0_dMetallic;
   }
   return out;
 }
@@ -804,9 +1014,12 @@ export function dBrdf_dSpecularColor(
   specularColor: Vec3 = [1, 1, 1],
   specularIntensity = 1,
 ): Vec3 {
-  void specularColor;
   const dF0 = 0.04 * clamp01(specularIntensity) * (1.0 - metallic);
-  return dBrdf_dSpecularF0(baseColor, roughness, metallic, normal, wo, wi, [dF0, dF0, dF0]);
+  const currentF0 = materialSpecularF0(baseColor, metallic, specularColor, specularIntensity);
+  return dBrdf_dSpecularF0(
+    baseColor, roughness, metallic, normal, wo, wi,
+    currentF0, [dF0, dF0, dF0],
+  );
 }
 
 /**
@@ -820,12 +1033,18 @@ export function dBrdf_dSpecularIntensity(
   wo: Vec3,
   wi: Vec3,
   specularColor: Vec3 = [1, 1, 1],
+  specularIntensity = 1,
 ): Vec3 {
-  return dBrdf_dSpecularF0(baseColor, roughness, metallic, normal, wo, wi, [
-    0.04 * clamp01(specularColor[0]) * (1.0 - metallic),
-    0.04 * clamp01(specularColor[1]) * (1.0 - metallic),
-    0.04 * clamp01(specularColor[2]) * (1.0 - metallic),
-  ]);
+  const currentF0 = materialSpecularF0(baseColor, metallic, specularColor, specularIntensity);
+  return dBrdf_dSpecularF0(
+    baseColor, roughness, metallic, normal, wo, wi,
+    currentF0,
+    [
+      0.04 * clamp01(specularColor[0]) * (1.0 - metallic),
+      0.04 * clamp01(specularColor[1]) * (1.0 - metallic),
+      0.04 * clamp01(specularColor[2]) * (1.0 - metallic),
+    ],
+  );
 }
 
 /**
@@ -855,7 +1074,7 @@ export function dBrdf_dClearcoatRoughness(
   wo: Vec3,
   wi: Vec3,
 ): Vec3 {
-  if (clearcoat < 1e-4) return [0, 0, 0];
+  if (clearcoat <= 0) return [0, 0, 0];
   const nDotL = Math.max(dot(normal, wi), 0.0);
   const nDotV = Math.max(dot(normal, wo), 0.0);
   if (nDotL <= 1e-5 || nDotV <= 1e-5) return [0, 0, 0];
@@ -864,29 +1083,24 @@ export function dBrdf_dClearcoatRoughness(
   const vDotH = Math.max(dot(wo, h), 0.0);
   const f = fresnelSchlick(vDotH, [0.04, 0.04, 0.04]);
 
-  const alpha = Math.max(clearcoatRoughness * clearcoatRoughness, 1e-3);
-  const alphaClamped = clearcoatRoughness * clearcoatRoughness < 1e-3;
+  const alpha = ptWebgpuMicrofacetAlpha(clearcoatRoughness);
+  const alphaClamped = clearcoatRoughness * clearcoatRoughness < PT_WEBGPU_MICROFACET_ALPHA_FLOOR;
   const dAlpha_dRough = alphaClamped ? 0.0 : 2.0 * clearcoatRoughness;
 
   const a2 = alpha * alpha;
-  const den = nDotH * nDotH * (a2 - 1.0) + 1.0;
-  const dD_da2 = (den - 2.0 * a2 * (nDotH * nDotH)) / Math.max(PI * den * den * den, 1e-12);
+  const n2 = Math.min(1, Math.max(0, nDotH * nDotH));
+  const den = (1 - n2) + n2 * a2;
+  const dD_da2 = (den - 2.0 * a2 * n2) / (PI * den * den * den);
   const da2_dRough = 2.0 * alpha * dAlpha_dRough;
   const dD_dRough = dD_da2 * da2_dRough;
   const d = ggxD(nDotH, alpha);
 
-  const k = (clearcoatRoughness + 1.0) * (clearcoatRoughness + 1.0) * 0.125;
-  const dk_dRough = (clearcoatRoughness + 1.0) * 0.25;
-  const g1 = (x: number): number => x / Math.max(x * (1.0 - k) + k, 1e-6);
-  const dG1_dRough = (x: number): number => {
-    const denom = x * (1.0 - k) + k;
-    if (denom <= 1e-6) return 0.0;
-    return (-x * (1.0 - x) / (denom * denom)) * dk_dRough;
-  };
-  const g1V = g1(nDotV);
-  const g1L = g1(nDotL);
+  const g1V = smithG1(nDotV, clearcoatRoughness);
+  const g1L = smithG1(nDotL, clearcoatRoughness);
   const g = g1V * g1L;
-  const dG_dRough = dG1_dRough(nDotV) * g1L + g1V * dG1_dRough(nDotL);
+  const dG_dRough =
+    roughDielectricSmithG1RoughnessDerivative(nDotV, clearcoatRoughness) * g1L +
+    g1V * roughDielectricSmithG1RoughnessDerivative(nDotL, clearcoatRoughness);
 
   const invDenom = 1.0 / Math.max(4.0 * nDotV * nDotL, 1e-6);
   const dSpecScale = (dD_dRough * g + d * dG_dRough) * invDenom;
@@ -935,7 +1149,7 @@ export function dBrdf_dSheenRoughness(
   wo: Vec3,
   wi: Vec3,
 ): Vec3 {
-  if (sheen < 1e-4) return [0, 0, 0];
+  if (sheen <= 0) return [0, 0, 0];
   const nDotL = Math.max(dot(normal, wi), 0.0);
   const nDotV = Math.max(dot(normal, wo), 0.0);
   if (nDotL <= 1e-5 || nDotV <= 1e-5) return [0, 0, 0];
@@ -943,10 +1157,10 @@ export function dBrdf_dSheenRoughness(
   const nDotH = Math.max(dot(normal, h), 0.0);
   const sinThetaH = Math.sqrt(Math.max(0.0, 1.0 - nDotH * nDotH));
   const alphaRaw = sheenRoughness * sheenRoughness;
-  const dAlpha_dRough = alphaRaw < 1e-3 ? 0.0 : 2.0 * sheenRoughness;
+  const dAlpha_dRough = alphaRaw < PT_WEBGPU_MICROFACET_ALPHA_FLOOR ? 0.0 : 2.0 * sheenRoughness;
   if (sinThetaH <= 1e-6 || dAlpha_dRough === 0.0) return [0, 0, 0];
 
-  const alpha = Math.max(alphaRaw, 1e-3);
+  const alpha = Math.max(alphaRaw, PT_WEBGPU_MICROFACET_ALPHA_FLOOR);
   const q = 1.0 / Math.max(alpha, 1e-4);
   const powTerm = Math.pow(sinThetaH, q);
   const logSin = Math.log(sinThetaH);
@@ -974,6 +1188,7 @@ export function dBrdf_dIridescence(
   normal: Vec3,
   wo: Vec3,
   wi: Vec3,
+  iridescence: number,
   iridescenceIor: number,
   iridescenceThicknessMin: number,
   iridescenceThicknessMax: number,
@@ -986,11 +1201,21 @@ export function dBrdf_dIridescence(
   const thicknessNm = iridescenceThicknessMin +
     (iridescenceThicknessMax - iridescenceThicknessMin) * Math.min(Math.max(vDotH, 0.0), 1.0);
   const iridF = evalIridescence(1.0, iridescenceIor, vDotH, thicknessNm, baseF0);
-  return dBrdf_dSpecularF0(baseColor, roughness, metallic, normal, wo, wi, [
-    iridF[0] - baseF0[0],
-    iridF[1] - baseF0[1],
-    iridF[2] - baseF0[2],
-  ]);
+  const amount = clamp01(iridescence);
+  const currentF0: Vec3 = [
+    baseF0[0] + (iridF[0] - baseF0[0]) * amount,
+    baseF0[1] + (iridF[1] - baseF0[1]) * amount,
+    baseF0[2] + (iridF[2] - baseF0[2]) * amount,
+  ];
+  return dBrdf_dSpecularF0(
+    baseColor, roughness, metallic, normal, wo, wi,
+    currentF0,
+    [
+      iridF[0] - baseF0[0],
+      iridF[1] - baseF0[1],
+      iridF[2] - baseF0[2],
+    ],
+  );
 }
 
 /**
@@ -1016,7 +1241,7 @@ export function dBrdf_dIridescenceIor(
   specularColor: Vec3 = [1, 1, 1],
   specularIntensity = 1,
 ): Vec3 {
-  if (iridescence < 1e-4) return [0, 0, 0];
+  if (iridescence <= 0) return [0, 0, 0];
   const h = safeNormalize([wi[0] + wo[0], wi[1] + wo[1], wi[2] + wo[2]]);
   const vDotH = Math.max(dot(wo, h), 0.0);
   const baseF0 = materialSpecularF0(baseColor, metallic, specularColor, specularIntensity);
@@ -1027,13 +1252,25 @@ export function dBrdf_dIridescenceIor(
   const iorM = Math.max(1.0, iridescenceIor - step);
   const denom = iorP - iorM;
   if (denom <= 1e-6) return [0, 0, 0];
+  const currentIridF = evalIridescence(
+    1.0, iridescenceIor, vDotH, thicknessNm, baseF0,
+  );
+  const currentF0: Vec3 = [
+    baseF0[0] + (currentIridF[0] - baseF0[0]) * iridescence,
+    baseF0[1] + (currentIridF[1] - baseF0[1]) * iridescence,
+    baseF0[2] + (currentIridF[2] - baseF0[2]) * iridescence,
+  ];
   const fp = evalIridescence(1.0, iorP, vDotH, thicknessNm, baseF0);
   const fm = evalIridescence(1.0, iorM, vDotH, thicknessNm, baseF0);
-  return dBrdf_dSpecularF0(baseColor, roughness, metallic, normal, wo, wi, [
-    iridescence * (fp[0] - fm[0]) / denom,
-    iridescence * (fp[1] - fm[1]) / denom,
-    iridescence * (fp[2] - fm[2]) / denom,
-  ]);
+  return dBrdf_dSpecularF0(
+    baseColor, roughness, metallic, normal, wo, wi,
+    currentF0,
+    [
+      iridescence * (fp[0] - fm[0]) / denom,
+      iridescence * (fp[1] - fm[1]) / denom,
+      iridescence * (fp[2] - fm[2]) / denom,
+    ],
+  );
 }
 
 /**
@@ -1063,7 +1300,7 @@ export function dBrdf_dIridescenceThicknessRange(
   specularIntensity = 1,
   iridescenceThicknessTexel: number | null = null,
 ): { min: Vec3; max: Vec3 } {
-  if (iridescence < 1e-4) return { min: [0, 0, 0], max: [0, 0, 0] };
+  if (iridescence <= 0) return { min: [0, 0, 0], max: [0, 0, 0] };
   const h = safeNormalize([wi[0] + wo[0], wi[1] + wo[1], wi[2] + wo[2]]);
   const vDotH = Math.min(Math.max(dot(wo, h), 0.0), 1.0);
   const rangeT = iridescenceThicknessTexel == null || !Number.isFinite(iridescenceThicknessTexel)
@@ -1077,13 +1314,25 @@ export function dBrdf_dIridescenceThicknessRange(
   const tm = Math.max(0.0, thicknessNm - step);
   const denom = tp - tm;
   if (denom <= 1e-6) return { min: [0, 0, 0], max: [0, 0, 0] };
+  const currentIridF = evalIridescence(
+    1.0, iridescenceIor, vDotH, thicknessNm, baseF0,
+  );
+  const currentF0: Vec3 = [
+    baseF0[0] + (currentIridF[0] - baseF0[0]) * iridescence,
+    baseF0[1] + (currentIridF[1] - baseF0[1]) * iridescence,
+    baseF0[2] + (currentIridF[2] - baseF0[2]) * iridescence,
+  ];
   const fp = evalIridescence(1.0, iridescenceIor, vDotH, tp, baseF0);
   const fm = evalIridescence(1.0, iridescenceIor, vDotH, tm, baseF0);
-  const dBrdf_dThickness = dBrdf_dSpecularF0(baseColor, roughness, metallic, normal, wo, wi, [
-    iridescence * (fp[0] - fm[0]) / denom,
-    iridescence * (fp[1] - fm[1]) / denom,
-    iridescence * (fp[2] - fm[2]) / denom,
-  ]);
+  const dBrdf_dThickness = dBrdf_dSpecularF0(
+    baseColor, roughness, metallic, normal, wo, wi,
+    currentF0,
+    [
+      iridescence * (fp[0] - fm[0]) / denom,
+      iridescence * (fp[1] - fm[1]) / denom,
+      iridescence * (fp[2] - fm[2]) / denom,
+    ],
+  );
   const minWeight = 1.0 - rangeT;
   const maxWeight = rangeT;
   return {
@@ -1152,7 +1401,7 @@ export function dBrdf_dAnisotropyRotation(
   specularColor: Vec3 = [1, 1, 1],
   specularIntensity = 1,
 ): Vec3 {
-  if (anisotropy <= 1e-4) return [0, 0, 0];
+  if (anisotropy <= 0) return [0, 0, 0];
   const step = ANISOTROPY_ROTATION_DERIV_STEP;
   const fp = evaluateBrdfWithAnisotropy(
     baseColor, roughness, metallic, normal, wo, wi,
@@ -1188,7 +1437,7 @@ export function dBrdf_dBaseColorWithAnisotropy(
   specularColor: Vec3 = [1, 1, 1],
   specularIntensity = 1,
 ): Vec3 {
-  if (anisotropy <= 1e-4) {
+  if (anisotropy <= 0) {
     return dBrdf_dBaseColor(
       baseColor, roughness, metallic, normal, wo, wi, specularColor, specularIntensity,
     );
@@ -1225,7 +1474,7 @@ export function dBrdf_dRoughnessWithAnisotropy(
   specularColor: Vec3 = [1, 1, 1],
   specularIntensity = 1,
 ): Vec3 {
-  if (anisotropy <= 1e-4) {
+  if (anisotropy <= 0) {
     return dBrdf_dRoughness(
       baseColor, roughness, metallic, normal, wo, wi, specularColor, specularIntensity,
     );
@@ -1258,7 +1507,7 @@ export function dBrdf_dMetallicWithAnisotropy(
   specularColor: Vec3 = [1, 1, 1],
   specularIntensity = 1,
 ): Vec3 {
-  if (anisotropy <= 1e-4) {
+  if (anisotropy <= 0) {
     return dBrdf_dMetallic(
       baseColor, roughness, metallic, normal, wo, wi, specularColor, specularIntensity,
     );
@@ -1291,7 +1540,7 @@ export function dBrdf_dSpecularColorWithAnisotropy(
   specularColor: Vec3 = [1, 1, 1],
   specularIntensity = 1,
 ): Vec3 {
-  if (anisotropy <= 1e-4) {
+  if (anisotropy <= 0) {
     return dBrdf_dSpecularColor(
       baseColor, roughness, metallic, normal, wo, wi, specularColor, specularIntensity,
     );
@@ -1328,9 +1577,9 @@ export function dBrdf_dSpecularIntensityWithAnisotropy(
   specularColor: Vec3 = [1, 1, 1],
   specularIntensity = 1,
 ): Vec3 {
-  if (anisotropy <= 1e-4) {
+  if (anisotropy <= 0) {
     return dBrdf_dSpecularIntensity(
-      baseColor, roughness, metallic, normal, wo, wi, specularColor,
+      baseColor, roughness, metallic, normal, wo, wi, specularColor, specularIntensity,
     );
   }
   const step = ANISOTROPIC_BASE_PARAM_DERIV_STEP;
@@ -1362,6 +1611,7 @@ function dBrdf_dSpecularF0(
   normal: Vec3,
   wo: Vec3,
   wi: Vec3,
+  currentF0: Vec3,
   dF0: Vec3,
 ): Vec3 {
   const nDotL = Math.max(dot(normal, wi), 0.0);
@@ -1370,7 +1620,7 @@ function dBrdf_dSpecularF0(
   const h = safeNormalize([wi[0] + wo[0], wi[1] + wo[1], wi[2] + wo[2]]);
   const nDotH = Math.max(dot(normal, h), 0.0);
   const vDotH = Math.max(dot(wo, h), 0.0);
-  const alpha = Math.max(roughness * roughness, 1e-3);
+  const alpha = ptWebgpuMicrofacetAlpha(roughness);
   const d = ggxD(nDotH, alpha);
   const g = smithG1(nDotV, roughness) * smithG1(nDotL, roughness);
   const specScale = (d * g) / Math.max(4.0 * nDotV * nDotL, 1e-6);
@@ -1378,10 +1628,11 @@ function dBrdf_dSpecularF0(
   const m = Math.min(Math.max(1.0 - vDotH, 0.0), 1.0);
   const m2 = m * m;
   const m5 = m2 * m2 * m;
+  const dMs_dF0 = dGgxMultiscatter_dF0(currentF0, roughness, nDotV, nDotL);
   return [
-    dF0[0] * (1.0 - m5) * (specScale - kd0 * baseColor[0] * INV_PI),
-    dF0[1] * (1.0 - m5) * (specScale - kd0 * baseColor[1] * INV_PI),
-    dF0[2] * (1.0 - m5) * (specScale - kd0 * baseColor[2] * INV_PI),
+    dF0[0] * ((1.0 - m5) * (specScale - kd0 * baseColor[0] * INV_PI) + dMs_dF0[0]),
+    dF0[1] * ((1.0 - m5) * (specScale - kd0 * baseColor[1] * INV_PI) + dMs_dF0[1]),
+    dF0[2] * ((1.0 - m5) * (specScale - kd0 * baseColor[2] * INV_PI) + dMs_dF0[2]),
   ];
 }
 

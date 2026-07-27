@@ -117,6 +117,17 @@ export function runAtrousChain(
       inputTex: GPUTexture,
       outputTex: GPUTexture,
     ) => GPUBindGroup;
+    /**
+     * Optional command-encoding hook invoked immediately after an iteration's
+     * compute pass. The callback runs before the next iteration is encoded, so
+     * callers can preserve an intermediate wavelet level with an ordered GPU
+     * copy without submitting a separate command buffer.
+     */
+    readonly afterIteration?: (
+      iter: number,
+      inputTex: GPUTexture,
+      outputTex: GPUTexture,
+    ) => void;
     readonly labelFor: (iter: number) => PassLabel;
   },
 ): GPUTexture {
@@ -131,6 +142,7 @@ export function runAtrousChain(
     pass.setBindGroup(0, bg);
     pass.dispatchWorkgroups(opts.wgX, opts.wgY, 1);
     pass.end();
+    opts.afterIteration?.(iter, inputTex, outputTex);
     inputTex = outputTex;
   }
   return inputTex;

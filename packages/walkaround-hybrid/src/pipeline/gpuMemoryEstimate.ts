@@ -8,10 +8,9 @@
  * `FrameStats.gpuMemoryBytes`.
  *
  * Estimation, not exact: WebGPU does not report driver-allocated size.
- * Texture bytes are computed as `width × height × bytesPerTexel(format)`;
- * we do not account for implementation-driven row-alignment padding,
- * mip-chain rounding (we don't generate mips on the walkaround path), or
- * BC/ASTC block size. If a backend later adopts block-compressed formats
+ * Texture bytes are computed from every exposed mip level, array layer, and
+ * depth slice. We do not account for implementation-driven row-alignment
+ * padding or BC/ASTC block size. If a backend later adopts block-compressed formats
  * this helper would *under-report*, so it intentionally throws on
  * unrecognised formats rather than silently returning zero — that fails
  * loud on stale lookup tables.
@@ -28,7 +27,7 @@
  *       gtao: 8_000_000,
  *       ddgi: 25_000_000,
  *       ppg: 0,
- *       neural: 0,         // NeuralFrameResources is an empty placeholder; InferenceGraph owns its tensor buffers
+ *       neural: 0,         // InferenceGraph owns these; supplied separately when available
  *     },
  *     byTextureFormat: { rgba16float: ..., r32uint: ..., ... },
  *     byBufferUsage:   { storage: ..., uniform: ..., vertex: ... },
@@ -165,6 +164,8 @@ interface MeasurableTexture {
   readonly height: number;
   readonly format: GPUTextureFormat;
   readonly depthOrArrayLayers?: number;
+  readonly mipLevelCount?: number;
+  readonly dimension?: GPUTextureDimension;
 }
 
 /** A buffer with the fields we need. Same rationale as MeasurableTexture. */
@@ -173,10 +174,23 @@ interface MeasurableBuffer {
   readonly usage: number;
 }
 
-/** Compute one texture's byte footprint, including array layers if any. */
+/** Compute one texture's byte footprint, including every explicit mip level. */
 function textureBytes(t: MeasurableTexture): number {
-  const layers = t.depthOrArrayLayers ?? 1;
-  return t.width * t.height * layers * bytesPerTexel(t.format);
+  const mipLevelCount = Math.max(1, Math.floor(t.mipLevelCount ?? 1));
+  const depthOrLayers = Math.max(1, Math.floor(t.depthOrArrayLayers ?? 1));
+  const bytesPerPixel = bytesPerTexel(t.format);
+  let bytes = 0;
+  for (let level = 0; level < mipLevelCount; level += 1) {
+    const width = Math.max(1, Math.floor(t.width / (2 ** level)));
+    const height = Math.max(1, Math.floor(t.height / (2 ** level)));
+    // Array/cube layers persist at every level. Only a genuine 3D texture
+    // shrinks its depth as the mip level increases.
+    const layers = t.dimension === '3d'
+      ? Math.max(1, Math.floor(depthOrLayers / (2 ** level)))
+      : depthOrLayers;
+    bytes += width * height * layers * bytesPerPixel;
+  }
+  return bytes;
 }
 
 /**
@@ -185,7 +199,8 @@ function textureBytes(t: MeasurableTexture): number {
  *
  * `byCategory` keys match the sub-struct names verbatim (the contract
  * surface — see `EngineDebugSurface.estimatedGpuMemoryBytes`); algorithms
- * with no resources allocated (PPG / neural placeholders today) report 0.
+ * with no resources allocated report 0. Graph-owned neural memory is an
+ * external category rather than a fictitious FrameResources section.
  *
  * The implementation is deliberately structural: we walk each sub-struct's
  * own enumerable properties and dispatch on the GPU-object brand

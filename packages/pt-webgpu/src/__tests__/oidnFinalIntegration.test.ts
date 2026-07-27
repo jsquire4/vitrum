@@ -59,7 +59,8 @@ describe('pt-webgpu oidn-final (WG-1)', () => {
         String(c[0]).includes('no denoiser integration'),
       ),
     ).toBe(false);
-    expect(engine.capabilities.experimentalFeatures?.has('pt-webgpu-oidn-final')).toBe(true);
+    expect(engine.capabilities.supportDetails?.denoisers?.['oidn-final']).toBe('native');
+    expect(engine.capabilities.activeFeatures?.has('pt-webgpu-oidn-final')).toBe(true);
     engine.dispose();
     warn.mockRestore();
   });
@@ -89,7 +90,8 @@ describe('pt-webgpu oidn-final (WG-1)', () => {
       }),
     ]));
     expect(warn.mock.calls.some((c) => String(c[0]).includes('unsupported-denoiser'))).toBe(false);
-    expect(engine.capabilities.experimentalFeatures?.has('pt-webgpu-oidn-final')).toBe(true);
+    expect(engine.capabilities.supportDetails?.denoisers?.['oidn-final']).toBe('native');
+    expect(engine.capabilities.activeFeatures?.has('pt-webgpu-oidn-final')).toBe(true);
     engine.dispose();
     warn.mockRestore();
   });
@@ -202,5 +204,41 @@ describe('pt-webgpu oidn-final (WG-1)', () => {
     } finally {
       warn.mockRestore();
     }
+  });
+
+  it('owns a session lease and defers exactly-once release until inference settles', async () => {
+    let resolveDenoise!: (rgb: Float32Array) => void;
+    const release = vi.fn();
+    const bridge: OIDNBridgeLike = {
+      acquireOIDNSession: vi.fn(async () => ({ release })),
+      preloadOIDNModel: vi.fn(async () => undefined),
+      denoiseFinal: vi.fn(() => new Promise<Float32Array>((resolve) => {
+        resolveDenoise = resolve;
+      })),
+      releaseOIDNCacheEntry: vi.fn(),
+    };
+    const dispatcher = new OIDNFinalDispatcher(
+      { modelUrl: '/models/lease.onnx' },
+      async () => bridge,
+      mockReadback(),
+    );
+
+    dispatcher.kickIfReady(
+      makeStubDevice(),
+      { color: {} as GPUTexture },
+      2,
+      2,
+    );
+    await vi.waitFor(() => expect(bridge.denoiseFinal).toHaveBeenCalledTimes(1));
+    expect(bridge.acquireOIDNSession).toHaveBeenCalledTimes(1);
+    expect(bridge.preloadOIDNModel).not.toHaveBeenCalled();
+
+    dispatcher.dispose();
+    dispatcher.dispose();
+    expect(release).not.toHaveBeenCalled();
+    resolveDenoise(new Float32Array(12));
+    await vi.waitFor(() => expect(release).toHaveBeenCalledTimes(1));
+    expect(dispatcher.getLatestDenoised()).toBeNull();
+    expect(bridge.releaseOIDNCacheEntry).not.toHaveBeenCalled();
   });
 });

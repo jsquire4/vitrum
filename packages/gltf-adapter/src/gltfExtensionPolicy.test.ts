@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   analyzeGltfAsset,
+  createGltfSceneController,
   evaluateGltfBackendCompatibility,
   gltfToScene,
   type GltfJson,
@@ -38,18 +39,26 @@ function minimalMaterialGltf(material: NonNullable<GltfJson['materials']>[number
   buffers: Map<number, ArrayBuffer>;
 } {
   const positions = f32Buffer([0, 0, 0, 1, 0, 0, 0, 1, 0]);
+  const uvs = f32Buffer([0, 0, 1, 0, 0, 1]);
+  const buffer = concat([positions, uvs]);
   return {
-    buffers: new Map([[0, positions]]),
+    buffers: new Map([[0, buffer]]),
     gltf: {
       asset: { version: '2.0' },
       scene: 0,
       scenes: [{ nodes: [0] }],
       nodes: [{ mesh: 0 }],
-      meshes: [{ primitives: [{ attributes: { POSITION: 0 }, material: 0 }] }],
+      meshes: [{ primitives: [{ attributes: { POSITION: 0, TEXCOORD_0: 1 }, material: 0 }] }],
       materials: [material],
-      accessors: [{ bufferView: 0, componentType: 5126, count: 3, type: 'VEC3' }],
-      bufferViews: [{ buffer: 0, byteOffset: 0, byteLength: positions.byteLength }],
-      buffers: [{ byteLength: positions.byteLength }],
+      accessors: [
+        { bufferView: 0, componentType: 5126, count: 3, type: 'VEC3' },
+        { bufferView: 1, componentType: 5126, count: 3, type: 'VEC2' },
+      ],
+      bufferViews: [
+        { buffer: 0, byteOffset: 0, byteLength: positions.byteLength },
+        { buffer: 0, byteOffset: positions.byteLength, byteLength: uvs.byteLength },
+      ],
+      buffers: [{ byteLength: buffer.byteLength }],
     },
   };
 }
@@ -61,12 +70,13 @@ function textureSourceGltf(extension: GltfTextureSourceExtension): {
   extensionBytes: number[];
 } {
   const positions = f32Buffer([0, 0, 0, 1, 0, 0, 0, 1, 0]);
+  const uvs = f32Buffer([0, 0, 1, 0, 0, 1]);
   const fallbackBytes = [0x89, 0x50, 0x4e, 0x47];
   const extensionBytes = [0xab, 0xcd, 0xef, 0x01];
   const fallback = new Uint8Array(fallbackBytes).buffer;
   const alternate = new Uint8Array(extensionBytes).buffer;
-  const buffer = concat([positions, fallback, alternate]);
-  const fallbackOffset = positions.byteLength;
+  const buffer = concat([positions, uvs, fallback, alternate]);
+  const fallbackOffset = positions.byteLength + uvs.byteLength;
   const alternateOffset = fallbackOffset + fallback.byteLength;
   return {
     fallbackBytes,
@@ -77,7 +87,7 @@ function textureSourceGltf(extension: GltfTextureSourceExtension): {
       scene: 0,
       scenes: [{ nodes: [0] }],
       nodes: [{ mesh: 0 }],
-      meshes: [{ primitives: [{ attributes: { POSITION: 0 }, material: 0 }] }],
+      meshes: [{ primitives: [{ attributes: { POSITION: 0, TEXCOORD_0: 1 }, material: 0 }] }],
       materials: [{ pbrMetallicRoughness: { baseColorTexture: { index: 0 } } }],
       textures: [{
         source: 0,
@@ -86,9 +96,9 @@ function textureSourceGltf(extension: GltfTextureSourceExtension): {
         },
       }],
       images: [
-        { bufferView: 1, mimeType: 'image/png' },
+        { bufferView: 2, mimeType: 'image/png' },
         {
-          bufferView: 2,
+          bufferView: 3,
           mimeType: extension === 'KHR_texture_basisu'
             ? 'image/ktx2'
             : extension === 'MSFT_texture_dds'
@@ -96,9 +106,13 @@ function textureSourceGltf(extension: GltfTextureSourceExtension): {
               : 'image/webp',
         },
       ],
-      accessors: [{ bufferView: 0, componentType: 5126, count: 3, type: 'VEC3' }],
+      accessors: [
+        { bufferView: 0, componentType: 5126, count: 3, type: 'VEC3' },
+        { bufferView: 1, componentType: 5126, count: 3, type: 'VEC2' },
+      ],
       bufferViews: [
         { buffer: 0, byteOffset: 0, byteLength: positions.byteLength },
+        { buffer: 0, byteOffset: positions.byteLength, byteLength: uvs.byteLength },
         { buffer: 0, byteOffset: fallbackOffset, byteLength: fallback.byteLength },
         { buffer: 0, byteOffset: alternateOffset, byteLength: alternate.byteLength },
       ],
@@ -155,6 +169,43 @@ describe('glTF common extension policy', () => {
         }),
       ]),
     );
+  });
+
+  it('accepts non-normalized integer POSITION data permitted by KHR_mesh_quantization', async () => {
+    const positions = i16Buffer([
+      0, 0, 0,
+      10, 0, 0,
+      0, 10, 0,
+    ]);
+    const gltf: GltfJson = {
+      asset: { version: '2.0' },
+      scene: 0,
+      scenes: [{ nodes: [0] }],
+      nodes: [{ mesh: 0 }],
+      meshes: [{ primitives: [{ attributes: { POSITION: 0 } }] }],
+      extensionsUsed: ['KHR_mesh_quantization'],
+      extensionsRequired: ['KHR_mesh_quantization'],
+      accessors: [{
+        bufferView: 0,
+        componentType: 5122,
+        count: 3,
+        type: 'VEC3',
+      }],
+      bufferViews: [{ buffer: 0, byteOffset: 0, byteLength: positions.byteLength }],
+      buffers: [{ byteLength: positions.byteLength }],
+    };
+
+    const { scene, diagnostics } = await gltfToScene(gltf, {
+      buffers: new Map([[0, positions]]),
+    });
+    const primitive = scene.primitives[0] as MeshPrimitive;
+
+    expect(Array.from(primitive.positions)).toEqual([
+      0, 0, 0,
+      10, 0, 0,
+      0, 10, 0,
+    ]);
+    expect(diagnostics).not.toContainEqual(expect.objectContaining({ severity: 'error' }));
   });
 
   it('imports KHR_materials_dispersion as MaterialSpec.dispersionAbbeNumber', async () => {
@@ -535,7 +586,7 @@ describe('glTF common extension policy', () => {
     }));
 
     const selectedReport = analyzeGltfAsset(gltf, { textureSourceExtensions: ['EXT_texture_webp'] });
-    expect(selectedReport.extensions.requiresHook).toContain('EXT_texture_webp');
+    expect(selectedReport.extensions.requiresHook).not.toContain('EXT_texture_webp');
     expect(selectedReport.extensions.textureSourceUses).toEqual([
       {
         extension: 'EXT_texture_webp',
@@ -545,29 +596,22 @@ describe('glTF common extension policy', () => {
         selected: true,
         required: false,
         hasBaseSource: true,
-        requiresHook: true,
+        requiresHook: false,
         mimeType: 'image/webp',
       },
     ]);
-    expect(evaluateGltfBackendCompatibility(selectedReport, 'pt-webgl2').issues).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          category: 'extension',
-          name: 'EXT_texture_webp',
-          support: 'requires-hook',
-          path: 'textures[0].extensions.EXT_texture_webp',
-        }),
-      ]),
-    );
+    expect(evaluateGltfBackendCompatibility(selectedReport, 'pt-webgl2').issues.some(
+      (issue) => issue.category === 'extension' && issue.name === 'EXT_texture_webp',
+    )).toBe(false);
   });
 
-  it('requires a hook for an optional texture-source extension when no base source fallback exists', () => {
+  it('recognizes built-in WebP support when no base source fallback exists', () => {
     const { gltf } = textureSourceGltf('EXT_texture_webp');
     gltf.extensionsUsed = ['EXT_texture_webp'];
     delete gltf.textures![0]!.source;
 
     const report = analyzeGltfAsset(gltf);
-    expect(report.extensions.requiresHook).toContain('EXT_texture_webp');
+    expect(report.extensions.requiresHook).not.toContain('EXT_texture_webp');
     expect(report.extensions.unsupportedOptional).not.toContain('EXT_texture_webp');
     expect(report.extensions.textureSourceUses).toEqual([
       expect.objectContaining({
@@ -577,17 +621,14 @@ describe('glTF common extension policy', () => {
         path: 'textures[0].extensions.EXT_texture_webp',
         required: false,
         hasBaseSource: false,
-        requiresHook: true,
+        requiresHook: false,
       }),
     ]);
 
     const compatibility = evaluateGltfBackendCompatibility(report, 'pt-webgl2');
-    expect(compatibility.issues).toContainEqual(expect.objectContaining({
-      category: 'extension',
-      name: 'EXT_texture_webp',
-      support: 'requires-hook',
-      path: 'textures[0].extensions.EXT_texture_webp',
-    }));
+    expect(compatibility.issues.some(
+      (issue) => issue.category === 'extension' && issue.name === 'EXT_texture_webp',
+    )).toBe(false);
   });
 
   it('treats authored mipmapped nearest sampler policy as exact on pt-webgl2', () => {
@@ -719,5 +760,100 @@ describe('glTF common extension policy', () => {
     expect(evaluateGltfBackendCompatibility(report, 'walkaround-hybrid').issues.some(
       (issue) => issue.name === 'baseColorMap.samplerPolicy',
     )).toBe(false);
+  });
+
+  it('applies inherited KHR_node_visibility to meshes/lights, never cameras, and restores via STEP pointer', async () => {
+    const positions = f32Buffer([0, 0, 0, 1, 0, 0, 0, 1, 0]);
+    const times = f32Buffer([0, 1]);
+    const visibility = new Uint8Array([0, 255]).buffer;
+    const gltf: GltfJson = {
+      asset: { version: '2.0' },
+      scene: 0,
+      scenes: [{ nodes: [0] }],
+      nodes: [
+        {
+          children: [1, 2],
+          extensions: { KHR_node_visibility: { visible: false } },
+        },
+        {
+          mesh: 0,
+          extensions: { KHR_lights_punctual: { light: 0 } },
+        },
+        { camera: 0 },
+      ],
+      meshes: [{ primitives: [{ attributes: { POSITION: 0 } }] }],
+      cameras: [{
+        type: 'perspective',
+        perspective: { yfov: 1, znear: 0.1, zfar: 100 },
+      }],
+      extensions: {
+        KHR_lights_punctual: {
+          lights: [{ type: 'point', color: [1, 1, 1], intensity: 1, range: 10 }],
+        },
+      },
+      extensionsUsed: ['KHR_node_visibility', 'KHR_animation_pointer', 'KHR_lights_punctual'],
+      extensionsRequired: ['KHR_node_visibility', 'KHR_animation_pointer'],
+      accessors: [
+        { bufferView: 0, componentType: 5126, count: 3, type: 'VEC3' },
+        { bufferView: 1, componentType: 5126, count: 2, type: 'SCALAR' },
+        { bufferView: 2, componentType: 5121, count: 2, type: 'SCALAR' },
+      ],
+      bufferViews: [
+        { buffer: 0, byteOffset: 0, byteLength: positions.byteLength },
+        { buffer: 1, byteOffset: 0, byteLength: times.byteLength },
+        { buffer: 2, byteOffset: 0, byteLength: visibility.byteLength },
+      ],
+      buffers: [
+        { byteLength: positions.byteLength },
+        { byteLength: times.byteLength },
+        { byteLength: visibility.byteLength },
+      ],
+      animations: [{
+        name: 'show-visual-subtree',
+        samplers: [{ input: 1, output: 2, interpolation: 'STEP' }],
+        channels: [{
+          sampler: 0,
+          target: {
+            path: 'pointer',
+            extensions: {
+              KHR_animation_pointer: {
+                pointer: '/nodes/0/extensions/KHR_node_visibility/visible',
+              },
+            },
+          },
+        }],
+      }],
+    };
+    const imported = await gltfToScene(gltf, {
+      buffers: new Map([[0, positions], [1, times], [2, visibility]]),
+    });
+
+    expect(imported.scene.primitives).toHaveLength(0);
+    expect(imported.scene.emitters).toHaveLength(0);
+    expect(imported.cameras).toHaveLength(1);
+    expect(imported.nodeVisibilityPrimitives).toHaveLength(1);
+    expect(imported.nodeVisibilityEmitters).toHaveLength(1);
+    expect(analyzeGltfAsset(gltf).extensions.supported).toEqual(expect.arrayContaining([
+      'KHR_node_visibility',
+      'KHR_animation_pointer',
+    ]));
+
+    const setScene = vi.fn();
+    const controller = createGltfSceneController({ ...imported, gltf }, {
+      engine: { setScene },
+      setSceneOnAttach: false,
+    });
+    const shown = controller.applyAnimation('show-visual-subtree', 1);
+
+    expect(shown.scene.primitives).toHaveLength(1);
+    expect(shown.scene.emitters).toHaveLength(1);
+    expect(shown.cameras).toHaveLength(1);
+    expect(shown.usedSetScene).toBe(true);
+    expect(setScene).toHaveBeenCalledWith(shown.scene);
+
+    const hidden = controller.applyAnimation('show-visual-subtree', 0);
+    expect(hidden.scene.primitives).toHaveLength(0);
+    expect(hidden.scene.emitters).toHaveLength(0);
+    expect(hidden.cameras).toHaveLength(1);
   });
 });

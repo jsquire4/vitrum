@@ -548,7 +548,7 @@ describe('attachVitrum with happy-dom + mock engine', () => {
     vi.restoreAllMocks();
   });
 
-  it('H30 fix — ResizeObserver callback updates canvas.width/height (backing store)', async () => {
+  it('H30 fix — ResizeObserver updates the backing store and calls swapchain-optional setSize', async () => {
     // Verifies Bug 1: after a resize, canvas.width/height must track the new
     // CSS × DPR size so the swapchain textures are the right physical size.
     const { attachVitrum } = await import('../src/lifecycle/vanilla.js');
@@ -568,6 +568,9 @@ describe('attachVitrum with happy-dom + mock engine', () => {
     canvas.height = 150;
 
     const engine = makeMockEngine();
+    const setSize = vi.fn();
+    (engine.capabilities as { presentationMode: string }).presentationMode = 'swapchain-optional';
+    (engine as Engine & { setSize(width: number, height: number): void }).setSize = setSize;
     const { asMat4 } = await import('@vitrum/core');
     const identity = asMat4(new Float32Array([1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]));
     const camera = {
@@ -597,6 +600,7 @@ describe('attachVitrum with happy-dom + mock engine', () => {
     // Canvas backing store must have been updated to the new physical size.
     expect(canvas.width).toBe(800);
     expect(canvas.height).toBe(600);
+    expect(setSize).toHaveBeenCalledWith(800, 600);
 
     handle.dispose();
     vi.restoreAllMocks();

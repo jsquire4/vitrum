@@ -6,18 +6,20 @@ import type {
   FrameOutput,
   FrameStats,
   ProgressStats,
+  EngineCapabilities,
   EngineDebugSurface,
   EngineState,
   Scene,
 } from '@vitrum/core';
-import { asBackendTexture } from '@vitrum/core';
+import { asBackendTexture, resolveFrameCameraPosition } from '@vitrum/core';
 import { TONEMAP_MODE_INDEX } from '@vitrum/shared-samplers';
 import type { DDGI } from './ddgi/DDGI.js';
 import { packDDGIGridParams } from './ddgi/ddgiGridUbo.js';
-import { coreEmittersToDDGILights } from './coreEmittersToDDGILights.js';
+import { coreEmittersToDDGILights, orientDdgiSunLights } from './coreEmittersToDDGILights.js';
 import { propagateBvhToGiSubsystems } from './HybridEngineGiPropagation.js';
 import type { RCSubsystem } from './HybridEngineRC.js';
 import type { Tunables } from './HybridEngineTuning.js';
+import type { HybridRenderLayer } from './HybridEnginePublic.js';
 import type { WalkaroundGPUPipeline } from './pipeline/WalkaroundGPUPipeline.js';
 import { WALKAROUND_DEFAULT_SUN_ANGULAR_RADIUS } from './pipeline/constants.js';
 import type { SceneBVHBuffers } from './restir/bvhCore.js';
@@ -36,6 +38,36 @@ export function sunAngularRadiusForScene(scene: Scene | null | undefined): numbe
     return Math.max(0, authoredDiameter) * 0.5;
   }
   return WALKAROUND_DEFAULT_SUN_ANGULAR_RADIUS;
+}
+
+export function sceneHasRefractiveCaustics(scene: Scene | null | undefined): boolean {
+  return scene?.primitives.some((primitive) => {
+    const material = primitive.material;
+    if ((material.transmission ?? 0) <= 0) return false;
+
+    // The estimator multiplies both authored face absorbers while traversing a
+    // closed dielectric shell. A layer omitted by the host is the documented
+    // identity [1,1,1]. Require at least one wavelength proxy to survive BOTH
+    // faces so fully/complementarily blocked shells do not enable dead work.
+    const front = material.frontLayer?.transmission ?? [1, 1, 1];
+    const back = material.backLayer?.transmission ?? [1, 1, 1];
+    return ([0, 1, 2] as const).some(
+      (channel) => front[channel] > 0 && back[channel] > 0,
+    );
+  }) ?? false;
+}
+
+/** Resolve the exact UBO gate for the bounded realtime estimator. A
+ * transmissive scene alone is insufficient: causticStrategy:'none' must stay
+ * bit-identical to the non-caustic path, and true MNEE is never implied. */
+export function refractiveTraceCausticGate(
+  strategy: EngineCapabilities['causticStrategy'] | undefined,
+  scene: Scene | null | undefined,
+): 0 | 1 | 2 {
+  if (!sceneHasRefractiveCaustics(scene)) return 0;
+  if (strategy === 'refractive-trace') return 1;
+  if (strategy === 'manifold-nee') return 2;
+  return 0;
 }
 
 /**
@@ -140,17 +172,17 @@ export interface HybridDenoiserFilterDeps {
    *  {@link Tunables} table) because it is a derived bitfield, not a
    *  host-overridable scalar tunable. */
   stainedGlassFlags: number;
-  /** GRIS / ReSTIR-PT reconnection-shift reuse gate (0 = legacy reuse, 1 =
-   *  unbiased GRIS shift + visibility + pairwise MIS). Splatted into
-   *  pipeline.renderFrame as `restirPtReuse` for the UBO. NOTE: the GI pipeline
+  /** GRIS DDGI-proxy reconnection-shift reuse gate (0 = legacy reuse, 1 =
+   *  bounded GRIS DDGI-proxy shift + visibility + all-technique transformed-density MIS). Splatted into
+   *  pipeline.renderFrame as `grisReuse` for the UBO. NOTE: the GI pipeline
    *  STRUCTURE (the @group(1) scene group + GRIS shader) is gated at COMPILE
    *  time in `pipeline.initialize` — this per-frame number only drives the UBO
    *  field (telemetry/consistency). Lives in this cluster for the same
    *  derived-gate (not scalar tunable) reason as `stainedGlassFlags`. */
-  restirPtReuse: number;
+  grisReuse: number;
   /** NRC (Müller et al. 2021) cache flag (0 = off / verbatim DDGI suffix, 1 =
    *  on). Splatted into pipeline.renderFrame as `nrcEnabled`. Same derived-gate
-   *  cluster rationale as `restirPtReuse`. The load-bearing gate is compile-time
+   *  cluster rationale as `grisReuse`. The load-bearing gate is compile-time
    *  (the risGiNrc variant); when ON the suffix cache-query + training are live. */
   nrcEnabled: number;
 }
@@ -220,10 +252,16 @@ interface HybridEngineFrameFlags {
   state: EngineState;
   debug: boolean;
   ddgiOn: boolean;
-  isLayerEnabled: (layer: string) => boolean;
+  isLayerEnabled: (layer: HybridRenderLayer) => boolean;
   device: GPUDevice;
   tunables: Tunables;
   rcWeight: number;
+  /** Exact construction-time estimator selection. refractive-trace is a
+   * bounded sampler and must never be conflated with manifold-nee. */
+  causticStrategy?: EngineCapabilities['causticStrategy'];
+  mneeMaxIterations?: number;
+  mneeMaxChainLength?: number;
+  mneeMultiplicityTrials?: number;
 }
 
 /**
@@ -413,17 +451,20 @@ function dispatchRcAndSetInputs(
     // gap — RC otherwise saw only sun + emissive geometry + env). World-space
     // triangles ⇒ the same buffer is valid for RC's BVH; null ⇒ RC keeps its
     // prior light model.
-    const rcEmitters = pipeline.getEmitterBufferAndCount();
+    const rcEmitters = pipeline.getEmitterSamplingBufferAndCount();
 
-    // A7 (2026-06-10): sync analytic point/spot lights into RC.
+    // A7 (2026-06-10): sync analytic point/spot/directional lights into RC.
     // `updateLights` is idempotent and cheap (only re-uploads when the lights
     // array changes). Forward the same DDGILight list that DDGI uses so RC and
     // DDGI always agree on the fixture set. Null scene → empty list.
     const scene = deps.subsystems.lastScene;
-    if (scene != null) {
-      const ddgiLights = coreEmittersToDDGILights(scene);
-      deps.subsystems.rc.updateLights(ddgiLights);
-    }
+    const ddgiLights = scene == null
+      ? []
+      : orientDdgiSunLights(
+          coreEmittersToDDGILights(scene),
+          deps.lighting.primaryLightDir,
+        );
+    deps.subsystems.rc.updateLights(ddgiLights);
 
     // A7/H24: chromatic sun from the scene directional emitter. Scene
     // directional emitters are the physical source of truth for GI suns (same
@@ -441,10 +482,17 @@ function dispatchRcAndSetInputs(
       : [I, I, I];  // legacy fallback: achromatic (no scene directional)
 
     // A7: env texture forwarded from the main pipeline so the last-cascade
-    // env sample reads the real HDRI (or the 1×1 black placeholder when
-    // no HDRI is active — byte-identical env-less).
+    // env sample reads the real HDRI. The placeholder remains bound when no
+    // directional payload is active, while the explicit flag selects the same
+    // flat scalar sky radiance used by main/ReSTIR shading.
     const rcEnvBindings = pipeline.getEnvBindings();
+    const scalarSkyRadiance: readonly [number, number, number] = [
+      deps.lighting.skyTint[0] * deps.lighting.skyIrradiance,
+      deps.lighting.skyTint[1] * deps.lighting.skyIrradiance,
+      deps.lighting.skyTint[2] * deps.lighting.skyIrradiance,
+    ];
     const rcMaterialAtlasBindings = pipeline.getMaterialAtlasBindings();
+    const rcSceneGeometryBindings = pipeline.getSceneGeometryBufferBindings();
 
     deps.subsystems.rc.dispatchFrame({
       sunDirection: deps.lighting.primaryLightDir,
@@ -453,12 +501,30 @@ function dispatchRcAndSetInputs(
       sunAngularRadius: sunAngularRadiusForScene(deps.subsystems.lastScene),
       frameSeed: input.frameSeed,
       triIntersectEpsilon: deps.flags.tunables.triIntersectEpsilon,
+      scalarSkyRadiance,
+      hasDirectionalEnvironment:
+        rcEnvBindings?.hasDirectionalEnvironment ?? false,
+      ...(rcSceneGeometryBindings != null
+        ? { sceneGeometryBindings: rcSceneGeometryBindings }
+        : {}),
       ...(rcEmitters != null
-        ? { emittersBuf: rcEmitters.buffer, emitterCount: rcEmitters.count }
+        ? {
+            emittersBuf: rcEmitters.buffer,
+            emittersOffset: Number(rcEmitters.offset ?? 0),
+            ...(rcEmitters.size == null ? {} : { emittersSize: Number(rcEmitters.size) }),
+            emitterDataOffset: rcEmitters.emitterDataOffset,
+            emitterAliasOffset: rcEmitters.emitterAliasOffset,
+            emitterCount: rcEmitters.count,
+          }
         : {}),
       // A7: forward env texture so RC env sampling is live (placeholder if null).
       ...(rcEnvBindings != null
-        ? { envTextureView: rcEnvBindings.textureView, envSampler: rcEnvBindings.sampler }
+        ? {
+            envTextureView: rcEnvBindings.textureView,
+            envSampler: rcEnvBindings.sampler,
+            envRotationY: rcEnvBindings.rotationY,
+            envIntensity: rcEnvBindings.intensity,
+          }
         : {}),
       ...(rcMaterialAtlasBindings != null
         ? {
@@ -631,7 +697,10 @@ function emitFrameTelemetry(
   }
 }
 
-export function runHybridEngineFrame(deps: HybridEngineFrameDeps, input: FrameInput): FrameOutput {
+export function runHybridEngineFrame(
+  deps: HybridEngineFrameDeps,
+  input: FrameInput,
+): FrameOutput {
   if (deps.flags.state === 'paused' || deps.flags.state === 'disposed' || deps.flags.state === 'error') {
     return HYBRID_FRAME_SKIP_OUTPUT;
   }
@@ -742,7 +811,8 @@ export function runHybridEngineFrame(deps: HybridEngineFrameDeps, input: FrameIn
   // the internal render resolution. The composite pass upscales the
   // internal-sized resolvedTexture to the full swap-chain view, so the
   // compute kernels + UBO `screenSize` use the internal dims (not the canvas
-  // dims). Canvas resizes still require `setSize()` (see renderFrame JSDoc).
+  // dims). HybridEngine.renderFrame has already synchronized changed physical
+  // viewport dimensions through its transactional `setSize()` path.
   const internal = deps.control.applyResolutionFactor(input.quality?.resolutionFactor, now);
   const viewMatrix = new Float32Array(input.viewMatrix);
   const projMatrix = new Float32Array(input.projMatrix);
@@ -754,7 +824,10 @@ export function runHybridEngineFrame(deps: HybridEngineFrameDeps, input: FrameIn
       viewMatrix,
       projMatrix,
       prevViewProjMatrix: multiplyMat4ColumnMajor(prevProjMatrix, prevViewMatrix),
-      cameraPos: input.cameraPosition as [number, number, number],
+      cameraPos: resolveFrameCameraPosition(
+        input,
+        'HybridEngine.renderFrame',
+      ) as [number, number, number],
     },
     screen: {
       screenWidth:    internal.width,
@@ -769,6 +842,16 @@ export function runHybridEngineFrame(deps: HybridEngineFrameDeps, input: FrameIn
       primaryLightDir:     deps.lighting.primaryLightDir,
       primaryLightIntensity: deps.lighting.primaryLightIntensity,
       sunAngularRadius:    sunAngularRadiusForScene(deps.subsystems.lastScene),
+      genericRefractiveCaustics: refractiveTraceCausticGate(
+        deps.flags.causticStrategy,
+        deps.subsystems.lastScene,
+      ),
+      ...(deps.flags.mneeMaxIterations == null
+        ? {} : { mneeMaxIterations: deps.flags.mneeMaxIterations }),
+      ...(deps.flags.mneeMaxChainLength == null
+        ? {} : { mneeMaxChainLength: deps.flags.mneeMaxChainLength }),
+      ...(deps.flags.mneeMultiplicityTrials == null
+        ? {} : { mneeMultiplicityTrials: deps.flags.mneeMultiplicityTrials }),
       skyTint:             deps.lighting.skyTint,
       skyIrradiance:       deps.lighting.skyIrradiance,
       emitterDist2Floor:   deps.flags.tunables.emitterDist2Floor,
@@ -794,7 +877,7 @@ export function runHybridEngineFrame(deps: HybridEngineFrameDeps, input: FrameIn
       restirGiSpatialRadiusPx:   deps.flags.tunables.restirGiSpatialRadiusPx,
       restirGiSpatialNormalDotMin: deps.flags.tunables.restirGiSpatialNormalDotMin,
       restirGiSpatialCoplanarTol: deps.flags.tunables.restirGiSpatialCoplanarTol,
-      restirPtReuse:             deps.filter.restirPtReuse,
+      grisReuse:             deps.filter.grisReuse,
     },
     gtao: {
       gtaoRadiusPx:                deps.flags.tunables.gtaoRadiusPx,
@@ -840,7 +923,8 @@ export function runHybridEngineFrame(deps: HybridEngineFrameDeps, input: FrameIn
   emitFrameTelemetry(deps, pipeline, performance.now() - t0, now);
 
   // Aux G-buffers (EngineCapabilities.supportsAuxBuffers): expose the always-
-  // allocated normal-depth / demodulated-albedo / motion-vector views so hosts
+  // allocated normal-depth / demodulated-albedo / variance / motion-vector
+  // views so hosts
   // can feed an external denoiser (e.g. OIDN) or post chain. Fresh views owned
   // by the pipeline — invalidated on the next setScene / resize / dispose.
   const aux = pipeline?.getAuxBufferTextures?.() ?? null;
@@ -851,6 +935,7 @@ export function runHybridEngineFrame(deps: HybridEngineFrameDeps, input: FrameIn
       ? {
           normalDepth: asBackendTexture<'webgpu', GPUTextureView>(aux.normalDepth),
           albedo: asBackendTexture<'webgpu', GPUTextureView>(aux.albedo),
+          variance: asBackendTexture<'webgpu', GPUTextureView>(aux.variance),
           motionVectors: asBackendTexture<'webgpu', GPUTextureView>(aux.motionVectors),
         }
       : {}),

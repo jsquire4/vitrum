@@ -20,4 +20,30 @@ describe('emit composed shaders for real-driver compile probe', () => {
     expect(frag.length).toBeGreaterThan(5000);
     expect(vert.length).toBeGreaterThan(20);
   });
+
+  it('writes the feature-heavy BDPT+Sobol fragment to /tmp', () => {
+    const f = {
+      ...DEFAULT_TRACE_FEATURES,
+      bdpt: true,
+      randomType: 1 as const,
+      dof: true,
+    };
+    const defines = new Map(Object.entries(featureDefines(f)));
+    const frag = buildFragmentSource(defines, composeTraceGlsl(f));
+    writeFileSync('/tmp/ptwebgl2-bdpt-sobol-frag.glsl', frag);
+    expect(frag.length).toBeGreaterThan(5000);
+  });
+
+  it('writes the mapped-PBR fragment to /tmp', () => {
+    const f = {
+      ...DEFAULT_TRACE_FEATURES,
+      mappedRichMaterials: false,
+      mappedPbrMaterials: true,
+    };
+    const defines = new Map(Object.entries(featureDefines(f)));
+    const frag = buildFragmentSource(defines, composeTraceGlsl(f));
+    writeFileSync('/tmp/ptwebgl2-mapped-pbr-frag.glsl', frag);
+    expect(frag.length).toBeGreaterThan(5000);
+  });
+
 });

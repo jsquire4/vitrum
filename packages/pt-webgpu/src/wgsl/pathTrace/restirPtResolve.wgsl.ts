@@ -13,24 +13,28 @@
  * ════════════════════════════════════════════════════════════════════════════
  * The reservoir's W was finalised as W = w_sum/p̂ where p̂ is the
  * INTEGRAND-MATCHING target (restirPtTargetAt: luminance of the real unshadowed
- * reconnection contribution — evaluateBrdf·cos·Lo; B3). The producer's candidate weight was
- * w = p̂/p_src (p_src = the REAL visible-vertex BSDF sampling pdf, stored as
- * rCur.pdfSrc). So W = 1/p_src for the chosen sample, and the unbiased
- * single-bounce contribution is:
+ * reconnection contribution — evaluateBrdf·cos·Lo; B3). For an initial
+ * one-candidate producer reservoir, w = p̂/p_src and this reduces to W=1/p_src.
+ * After temporal/spatial reuse, however, w_sum contains generalized-balance
+ * contributions from multiple source reservoirs, so W is NOT generally the
+ * reciprocal of the selected sample's rCur.pdfSrc. The GRIS contribution is:
  *
- *   L = f_bsdf(xv; wo → wi_recon) · cos(nv, wi_recon) · Lo · W
- *     = f_bsdf · cos · Lo / p_src
+ *   L = f_bsdf(xv; wo → wi) · cos(nv, wi) · Lo · W
  *
- * which is the standard MC estimator of the indirect radiance from the
- * BSDF-sampled reconnection direction. The diffuse-cosine proxy p̂ CANCELS (it
- * only chose which candidate survived resampling — variance, not mean). Resolve
- * therefore evaluates the FULL visible-vertex BRDF (evaluateBrdf with the cached
+ * with W carrying the complete resampling normalization. pdfSrc remains source
+ * proposal metadata for the selected shifted sample; resolve must not divide by
+ * it again. In the one-candidate producer case the expression reduces to the
+ * standard f_bsdf·cos·Lo/p_src Monte Carlo estimator.
+ *
+ * The scalar target only controls which candidate survives resampling (variance,
+ * not mean). Resolve therefore evaluates the FULL visible-vertex BRDF
+ * (evaluateBrdf with the cached
  * albV/roughnessV/metalV), making a GLOSSY visible vertex unbiased — the diffuse
  * proxy is NEVER used in the reconstruction. (See reservoirPtHero.wgsl.ts
  * unbiasedness note.)
  *
- * wo at xv is the camera direction: wo = normalize(cameraPos − xv). wi_recon is
- * the cached reconnection-edge direction. W bakes 1/p_src for the chosen sample.
+ * wo at xv is the native producer direction stored in r.woV; wi is recomputed
+ * from xv → xs. W carries the finalized GRIS normalization.
  *
  * HONEST NOTE: this contribution is the INDIRECT (one-bounce-reconnection) term
  * ONLY. The DIRECT lighting at the visible vertex xv (NEE at xv) and the
@@ -72,7 +76,10 @@ fn restirPtResolve(@builtin(global_invocation_id) gid: vec3u) {
 
   // Empty reservoir → no reconnection indirect (alpha 0 so the compositor can
   // tell "no reuse" apart from "reuse is black").
-  if (r.M == 0u || r.W <= 0.0) {
+  if (r.M == 0u || !rptFinitePositive(r.W)
+   || !rptFiniteVec3(r.xv) || !rptFiniteVec3(r.xs)
+   || !rptFiniteVec3(r.nv) || !rptFiniteVec3(r.woV)
+   || !rptFiniteVec3(r.Lo)) {
     rpt_result[pixelIdx] = vec4f(0.0, 0.0, 0.0, 0.0);
     return;
   }
@@ -80,23 +87,22 @@ fn restirPtResolve(@builtin(global_invocation_id) gid: vec3u) {
   // Reconstruct the reconnection edge xv → xs.
   let toS = r.xs - r.xv;
   let dist2 = dot(toS, toS);
-  if (dist2 < 1e-8) {
+  if (!rptFinitePositive(dist2) || dist2 < 1e-8) {
     rpt_result[pixelIdx] = vec4f(0.0, 0.0, 0.0, 0.0);
     return;
   }
   let wiRecon = toS * inverseSqrt(dist2);
   let cosTheta = max(0.0, dot(r.nv, wiRecon));
-  if (cosTheta <= 1e-6) {
+  if (!rptFinitePositive(cosTheta) || cosTheta <= 1e-6) {
     rpt_result[pixelIdx] = vec4f(0.0, 0.0, 0.0, 0.0);
     return;
   }
 
-  // wo at the visible vertex is the camera direction.
-  let wo = safe_normalize(params.cameraPos.xyz - r.xv);
+  // Native eye direction is part of the visible domain and survives camera motion.
+  let wo = r.woV;
 
-  // FULL visible-vertex BRDF (NOT the diffuse proxy target). With W = 1/p_src for
-  // the chosen sample, f·cos·Lo·W = f·cos·Lo/p_src = the unbiased single-bounce
-  // estimator (see the file header).
+  // FULL visible-vertex BRDF. Multiply the vector integrand by the finalized
+  // scalar GRIS weight exactly once; reused reservoirs must not add /pdfSrc.
   let fBsdf = evaluateBrdfFullWithClearcoatNormal(
     r.albV, r.roughnessV, r.metalV, r.nv, r.clearcoatNormalV, wo, wiRecon,
     r.clearcoatV, r.clearcoatRoughnessV, r.sheenV, r.sheenRoughnessV, r.sheenColorV,
@@ -104,8 +110,38 @@ fn restirPtResolve(@builtin(global_invocation_id) gid: vec3u) {
     r.specularColorV, r.specularIntensityV,
     r.anisotropyV, r.anisotropyRotationV,
   );
-  let indirect = fBsdf * cosTheta * r.Lo * r.W;
+  let integrand = fBsdf * cosTheta * r.Lo;
+  if (!rptFiniteVec3(fBsdf) || !rptFiniteVec3(integrand)) {
+    rpt_result[pixelIdx] = vec4f(0.0, 0.0, 0.0, 0.0);
+    return;
+  }
+  let indirect = integrand * r.W;
+  if (!rptFiniteVec3(indirect)) {
+    rpt_result[pixelIdx] = vec4f(0.0, 0.0, 0.0, 0.0);
+    return;
+  }
 
-  rpt_result[pixelIdx] = vec4f(max(indirect, vec3f(0.0)), 1.0);
+  // Lo and the visible-domain BRDF are monochromatic replicated scalars in
+  // spectral mode.  Reconstruct this reservoir with THE RESERVOIR'S wavelength
+  // before publication: temporal/spatial reuse may select a sample drawn at a
+  // different lambda than the megakernel's current path.  Publishing the scalar
+  // and converting it later with the current path's lambda changes the estimator.
+  var indirectOut = max(indirect, vec3f(0.0));
+  if (params.spectralEnabled != 0u) {
+    let reservoirHeroPdf = heroMisMixturePdf(r.heroLambdaV);
+    if (!rptFinitePositive(reservoirHeroPdf)) {
+      rpt_result[pixelIdx] = vec4f(0.0, 0.0, 0.0, 0.0);
+      return;
+    }
+    indirectOut = heroWavelengthToRgb(
+      r.heroLambdaV, luminance(indirect), reservoirHeroPdf,
+    );
+    if (!rptFiniteVec3(indirectOut)) {
+      rpt_result[pixelIdx] = vec4f(0.0, 0.0, 0.0, 0.0);
+      return;
+    }
+  }
+
+  rpt_result[pixelIdx] = vec4f(indirectOut, 1.0);
 }
 `;

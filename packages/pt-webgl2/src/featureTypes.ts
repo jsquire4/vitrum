@@ -5,6 +5,8 @@
 // Mirrors the fork's PhysicalPathTracingMaterial defines (plan/three-removal/
 // 04-glsl-kernels.md §1a), verified at PhysicalPathTracingMaterial.js:55-90.
 
+import { WEBGL2_MAX_PATH_STEPS } from './limits.js';
+
 type RandomType = 0 | 1 | 2; // 0=PCG, 1=Sobol, 2=Stratified
 type CameraType = 0 | 1 | 2; // 0=Perspective, 1=Orthographic, 2=Equirectangular
 
@@ -22,12 +24,9 @@ export interface TraceFeatures {
   // but have no real host pathway, so they are deliberately pinned and NOT exposed as
   // options — leaving them switchable would be a silent dead claim. Each kept here
   // only so featureDefines() can emit the GLSL macro at its safe default:
-  //   • fog            — FEATURE_FOG: the retained fog-volume material path needs a
-  //                      core fog-volume primitive; @vitrum/core carries no such node,
-  //                      so there is nothing honest to drive. The old global
-  //                      homogeneous-medium uniforms/branch were removed from the
-  //                      active shader because they had no host setter. Pinned false
-  //                      until core gains a fog-volume node.
+  //   • fog            — FEATURE_FOG is scene-derived from transmitted materials
+  //                      with positive scattering coefficients. It is false only
+  //                      before a medium-bearing scene is installed.
   //   • backgroundMap  — FEATURE_BACKGROUND_MAP: a SEPARATE background texture distinct
   //                      from the environment map; the core contract has no such field
   //                      (env IS the background). Pinned false.
@@ -37,10 +36,23 @@ export interface TraceFeatures {
   //                      remains deliberately unexposed until its tables ship.
   //   • debugMode      — DEBUG_MODE: g-buffer/AOV debug visualisations, not a production
   //                      render path. Pinned 0.
-  readonly fog: boolean;            // FEATURE_FOG (pinned false)
+  readonly fog: boolean;            // FEATURE_FOG (scene-derived)
   readonly backgroundMap: boolean;  // FEATURE_BACKGROUND_MAP (pinned false)
   readonly randomType: RandomType;  // RANDOM_TYPE (PCG default, Sobol opt-in)
   readonly debugMode: number;       // DEBUG_MODE (pinned 0)
+  /** Static compiler-visible loop ceiling: two physical steps per configured bounce. */
+  readonly pathStepLimit: number;
+  /** Scene-proven opaque base-PBR subset; unknown/authored optional fields force false. */
+  readonly basicMaterials: boolean;
+  /** Scene-proven texture-free full transport subset; unknown/map fields force false. */
+  readonly scalarRichMaterials: boolean;
+  /** Scene-proven texture-capable opaque base-PBR subset. */
+  readonly mappedPbrMaterials: boolean;
+  /** Scene-proven complete public MaterialSpec graph, including mixed maps and transport. */
+  readonly mappedRichMaterials: boolean;
+  readonly analyticLights: boolean;
+  readonly meshLights: boolean;
+  readonly environmentLight: boolean;
 }
 
 export const DEFAULT_TRACE_FEATURES: TraceFeatures = {
@@ -50,16 +62,26 @@ export const DEFAULT_TRACE_FEATURES: TraceFeatures = {
   dof: false,
   cameraType: 0,
   stainedGlassPerturbation: false,
-  // Internal fixed defaults (see TraceFeatures for why each is pinned, not optional).
+  // Internal defaults. Scene-derived values (including fog and material tiers)
+  // override these in PTEngineWebGL2.#traceFeatures.
   fog: false,
   backgroundMap: false,
   randomType: 0,
   debugMode: 0,
+  pathStepLimit: WEBGL2_MAX_PATH_STEPS,
+  basicMaterials: false,
+  scalarRichMaterials: false,
+  mappedPbrMaterials: false,
+  mappedRichMaterials: true,
+  analyticLights: true,
+  meshLights: true,
+  environmentLight: true,
 };
 
-/** The fixed attribute-slot defines the GLSL `texelFetch1D(attributesArray, ATTR_*, ...)` reads.
- *  ATTR_UV1 (layer 4) carries the second UV channel (TextureRef.texCoord 1); filled from
- *  primitive.uv1, falling back to uv0 when absent so the layer is always valid. */
+/** Fixed compatibility slots used by direct GLSL attribute reads. ATTR_UV1
+ *  carries TextureRef.texCoord 1 and falls back to UV0 when absent. Arbitrary
+ *  additional texCoord ids use scene-local dense layers selected from the
+ *  material record rather than compile-time defines. */
 const ATTR_DEFINES = { ATTR_NORMAL: 0, ATTR_TANGENT: 1, ATTR_UV: 2, ATTR_COLOR: 3, ATTR_UV1: 4 } as const;
 
 /** Build the `#define NAME VALUE` map the GlProgram preamble injects. */
@@ -78,16 +100,3 @@ export function featureDefines(f: TraceFeatures): Record<string, number> {
     ...ATTR_DEFINES,
   };
 }
-
-/**
- * The accumulation blend regime (plan 02-gl-framework §3):
- *  - 'alpha-composite' — PT NoBlend → BlendMaterial ping-pong (no EXT_float_blend, or bgAlpha≠1).
- *  - 'normal'          — running average via SRC_ALPHA / ONE_MINUS_SRC_ALPHA; opacity = 1/(samples+1).
- *
- * D3 (2026-06-09): 'additive' was removed. It was a dead union member — the engine
- * never assigned it (index.ts only used 'normal' or 'alpha-composite'). 'normal' IS
- * the EXT_float_blend running-average path that 'additive' was originally intended to
- * be; enabling 'additive' would have changed default accumulation on float-blend
- * devices without any host opt-in.
- */
-export type AccumRegime = 'alpha-composite' | 'normal';

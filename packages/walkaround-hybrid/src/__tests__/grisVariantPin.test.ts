@@ -1,28 +1,13 @@
 /**
- * A8 GRIS-variant compile-time gate pin.
+ * Construction-time pin for the fixed-width GRIS DDGI-proxy variant.
  *
- * Verifies that the `HybridEngineOptions.restirPtReuse` flag is correctly
- * threaded through `deriveHybridEngineConfig` into `_cfg.restirPtReuse`
- * (the value that `WalkaroundGPUPipeline.initialize` passes to
- * `compilePipelines({ restirPtReuse: this._cfg.restirPtReuse === 1 })`),
- * which selects the GRIS vs legacy shader variant at compile time.
- *
- * These tests run entirely in the HybridEngine constructor (synchronous)
- * and never touch GPU resources — the test seam is the `_cfg.restirPtReuse`
- * field on the parsed engine config record.
- *
- * Architecture decision (plan/road-to-100.md A8, 2026-06-10):
- *   Default `false` = biased clamped-Jacobian reuse (Sprint-17), retained
- *   for the realtime frame budget. Bias sources: B1 Jacobian clamp [0.1,10]
- *   (jacobianShift.wgsl.ts), B2 no reconnection-visibility ray (OFF variants
- *   of spatialGi/temporalGi), and B3 no full-GBH MIS (OFF combine weights).
- *   The old B4 centroid-p̂ note is stale: direct ReSTIR now stores selected xi
- *   and `restirPHat.wgsl.ts` re-evaluates the xi-aware target.
- *   `true` = unbiased GRIS (Phase-1 reconnection shift + Phase-2 full-GBH MIS),
- *   compile-time gated (adds @group(1) scene BVH group to GI passes).
+ * `grisReuse` selects a 30-u32 reservoir layout and matching GI shader graph.
+ * The enabled estimator reuses a diffuse/geometric one-bounce DDGI proxy with
+ * exact surface-shift Jacobians, environment identity shifts, visibility-aware
+ * inverse support, and a bounded all-technique density matrix. It is not
+ * ReSTIR PT and does not claim an unbiased path-tracing result.
  */
-
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { HybridEngine, type HybridEngineOptions } from '../HybridEngine.js';
 
 function fakeDevice(): GPUDevice {
@@ -55,58 +40,116 @@ function baseOpts(overrides: Partial<HybridEngineOptions> = {}): HybridEngineOpt
   };
 }
 
-// Test seam: read _cfg.restirPtReuse (the 0/1 numeric gate stored by
-// deriveHybridEngineConfig — the exact value compilePipelines receives).
-const grisGate = (e: HybridEngine): number =>
-  (e as unknown as { _cfg: { restirPtReuse: number } })._cfg.restirPtReuse;
+const grisGate = (engine: HybridEngine): number =>
+  (engine as unknown as { _cfg: { grisReuse: number } })._cfg.grisReuse;
 
-describe('A8 GRIS variant gate — _cfg.restirPtReuse threading', () => {
-  it('default (no restirPtReuse) stores 0 (OFF — biased clamped-Jacobian path)', () => {
-    const engine = new HybridEngine(baseOpts());
-    expect(grisGate(engine)).toBe(0);
+describe('GRIS DDGI-proxy variant gate', () => {
+  it('defaults to the compact legacy layout', () => {
+    expect(grisGate(new HybridEngine(baseOpts()))).toBe(0);
   });
 
-  it('restirPtReuse: false stores 0 (explicit OFF)', () => {
-    const engine = new HybridEngine(baseOpts({ restirPtReuse: false }));
-    expect(grisGate(engine)).toBe(0);
+  it('preserves an explicit false canonical option', () => {
+    expect(grisGate(new HybridEngine(baseOpts({ grisReuse: false })))).toBe(0);
   });
 
-  it('restirPtReuse: true stores 1 (ON — unbiased GRIS path selected at compile time)', () => {
-    const engine = new HybridEngine(baseOpts({ restirPtReuse: true }));
-    expect(grisGate(engine)).toBe(1);
+  it('selects the fixed-width DDGI-proxy variant at construction', () => {
+    expect(grisGate(new HybridEngine(baseOpts({ grisReuse: true })))).toBe(1);
   });
 
-  it('restirPtReuse: true is compatible with the full tier (GRIS requires BVH group)', () => {
-    expect(() =>
-      new HybridEngine(baseOpts({ tier: 'full', restirPtReuse: true }))
-    ).not.toThrow();
-    const engine = new HybridEngine(baseOpts({ tier: 'full', restirPtReuse: true }));
-    expect(grisGate(engine)).toBe(1);
-  });
-
-  it('restirPtReuse: true is compatible with the lite tier (structural gate is compile-time, not resource-gated)', () => {
-    // GRIS is a compile-time shader/layout choice only; it does not increase
-    // the bind-group resource budget beyond what the scene BGL already occupies.
-    // The lite-tier resource guard forbids rcEnabled/ppgEnabled/nrcEnabled
-    // (they add extra bind groups or large buffers). GRIS reuses the existing
-    // scene BGL binding (@group(1) is already present for RIS/shade), so it is
-    // NOT forbidden on lite.
-    expect(() =>
-      new HybridEngine(baseOpts({ tier: 'lite', restirPtReuse: true }))
-    ).not.toThrow();
-  });
-
-  it('default OFF is stable across qualityTier values (preset does not toggle the GRIS gate)', () => {
-    for (const qualityTier of ['ultra', 'high', 'medium', 'low'] as const) {
-      const engine = new HybridEngine(baseOpts({ qualityTier }));
-      expect(grisGate(engine)).toBe(0);
+  it('accepts the GRIS layout on both full and lite tiers', () => {
+    for (const tier of ['full', 'lite'] as const) {
+      const engine = new HybridEngine(baseOpts({ tier, grisReuse: true }));
+      expect(grisGate(engine)).toBe(1);
     }
   });
 
-  it('ON survives a qualityTier override (preset cannot un-set the host opt-in)', () => {
+  it('does not let a quality preset change the construction-time choice', () => {
     for (const qualityTier of ['ultra', 'high', 'medium', 'low'] as const) {
-      const engine = new HybridEngine(baseOpts({ qualityTier, restirPtReuse: true }));
+      expect(grisGate(new HybridEngine(baseOpts({ qualityTier })))).toBe(0);
+      expect(grisGate(new HybridEngine(baseOpts({ qualityTier, grisReuse: true })))).toBe(1);
+    }
+  });
+
+  it('requires engine reconstruction to move between compact and GRIS layouts', () => {
+    const compact = new HybridEngine(baseOpts({ grisReuse: false }));
+    const gris = new HybridEngine(baseOpts({ grisReuse: true }));
+    expect(grisGate(compact)).toBe(0);
+    expect(grisGate(gris)).toBe(1);
+  });
+
+  it('accepts the deprecated alias, emits one structured warning, and preserves its value', () => {
+    const warnings: unknown[] = [];
+    const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const engine = new HybridEngine(baseOpts({
+        restirPtReuse: true,
+        onWarning: (warning) => warnings.push(warning),
+      }));
       expect(grisGate(engine)).toBe(1);
+      expect(warnings).toEqual([
+        expect.objectContaining({
+          code: 'walkaround-hybrid.restir-pt-reuse-deprecated',
+          backend: 'walkaround-hybrid',
+          phase: 'construction',
+          details: { replacement: 'grisReuse', effectiveValue: true },
+          message: expect.stringMatching(/not ReSTIR PT/),
+        }),
+      ]);
+      expect(warnings).not.toEqual([
+        expect.objectContaining({ message: expect.stringMatching(/unbiased/i) }),
+      ]);
+      expect(consoleWarn).toHaveBeenCalledOnce();
+    } finally {
+      consoleWarn.mockRestore();
+    }
+  });
+
+  it('does not emit the alias warning for the canonical option', () => {
+    const warnings: unknown[] = [];
+    const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const engine = new HybridEngine(baseOpts({
+        grisReuse: true,
+        onWarning: (warning) => warnings.push(warning),
+      }));
+      expect(grisGate(engine)).toBe(1);
+      expect(warnings).toEqual([]);
+      expect(consoleWarn).not.toHaveBeenCalled();
+    } finally {
+      consoleWarn.mockRestore();
+    }
+  });
+
+  it('accepts matching canonical and deprecated values but still warns about the alias', () => {
+    const warnings: unknown[] = [];
+    const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const engine = new HybridEngine(baseOpts({
+        grisReuse: true,
+        restirPtReuse: true,
+        onWarning: (warning) => warnings.push(warning),
+      }));
+      expect(grisGate(engine)).toBe(1);
+      expect(warnings).toEqual([
+        expect.objectContaining({
+          code: 'walkaround-hybrid.restir-pt-reuse-deprecated',
+          details: { replacement: 'grisReuse', effectiveValue: true },
+        }),
+      ]);
+    } finally {
+      consoleWarn.mockRestore();
+    }
+  });
+
+  it('rejects conflicting canonical and deprecated values', () => {
+    const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      expect(() => new HybridEngine(baseOpts({
+        grisReuse: true,
+        restirPtReuse: false,
+      }))).toThrow(/grisReuse and deprecated restirPtReuse disagree/);
+    } finally {
+      consoleWarn.mockRestore();
     }
   });
 });

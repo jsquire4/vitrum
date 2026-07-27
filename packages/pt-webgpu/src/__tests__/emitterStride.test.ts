@@ -99,11 +99,11 @@ describe('H51-D emitter stride consistency: TS pack ↔ TS walk ↔ WGSL', () =>
     expect(wgslStride).toBe(SPOT_LIGHT_FLOAT_STRIDE);
   });
 
-  it('rect-area and mesh-area strides are unchanged at 16', () => {
+  it('rect-area stays at 16 floats and exact mesh-area records use 28', () => {
     expect(RECT_AREA_LIGHT_FLOAT_STRIDE).toBe(16);
     expect(RECT_AREA_LIGHT_STRIDE).toBe(16);
-    expect(MESH_AREA_LIGHT_FLOAT_STRIDE).toBe(16);
-    expect(MESH_AREA_LIGHT_STRIDE).toBe(16);
+    expect(MESH_AREA_LIGHT_FLOAT_STRIDE).toBe(28);
+    expect(MESH_AREA_LIGHT_STRIDE).toBe(28);
   });
 
   it('point layout: position (0..2) + _ (3) + radiance (4..6) + _ (7) + distance (8) + decay (9) + pad (10,11)', () => {
@@ -159,12 +159,12 @@ describe('WGSL light-stride constants ↔ TS packer parity (caustic H1-class fix
     expect(wgslVec4Stride).toBe(SPOT_LIGHT_FLOAT_STRIDE / 4);
   });
 
-  it('caustic MNEE point loops use POINT_LIGHT_VEC4_STRIDE (not a bare literal)', () => {
-    // Three MNEE loops (reflection/refraction/glass-slab) must all reference the
-    // shared constant — no residual bare `li * 2u` or similar stale literal.
+  it('the unified bounded MNEE emitter loader uses POINT_LIGHT_VEC4_STRIDE', () => {
+    // The unified bounded-chain estimator loads every point family through one
+    // shared emitter loader. There must be no residual bare stride literal.
     expect(PT_WEBGPU_TRACE_WGSL).not.toMatch(/let lbase\s*=\s*li\s*\*\s*2u/);
-    const strideUses = (PT_WEBGPU_TRACE_WGSL.match(/let lbase\s*=\s*li\s*\*\s*POINT_LIGHT_VEC4_STRIDE/g) ?? []).length;
-    expect(strideUses).toBe(3);
+    const strideUses = (PT_WEBGPU_TRACE_WGSL.match(/let base\s*=\s*index\s*\*\s*POINT_LIGHT_VEC4_STRIDE/g) ?? []).length;
+    expect(strideUses).toBe(1);
   });
 
   it('caustic photon-map point seed uses POINT_LIGHT_VEC4_STRIDE (not a bare literal)', () => {

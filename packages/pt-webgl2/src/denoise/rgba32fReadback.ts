@@ -1,4 +1,7 @@
-import type { ReadbackResult } from '@vitrum/shared-denoisers';
+import {
+  decodeNormalDepthWorldNormal,
+  type ReadbackResult,
+} from '@vitrum/shared-denoisers';
 
 export type RgbDecode = (r: number, g: number, b: number) => readonly [number, number, number];
 
@@ -87,7 +90,7 @@ export function readOidnInputsFromWebGlFbos(
         sources.normalDepthAttachment,
         width,
         height,
-        (r, g, b) => [r * 2 - 1, g * 2 - 1, b * 2 - 1],
+        decodeNormalDepthWorldNormal,
       );
     }
 

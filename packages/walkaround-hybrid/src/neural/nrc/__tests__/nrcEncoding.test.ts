@@ -21,9 +21,7 @@ import {
   assembleNrcInput, nrcInputWidth,
   type HashGridConfig, type HashGridLevel, type NrcEncodingConfig,
 } from '../nrcEncoding.ts';
-import {
-  nrcEncodeHelpersWgsl, nrcHashGridForwardWgsl,
-} from '../wgsl/nrcEncoding.wgsl.ts';
+import { nrcEncodeHelpersWgsl } from '../wgsl/nrcEncoding.wgsl.ts';
 
 // ── build a small but representative multiresolution hash grid ──
 function makeGrid(seed = 1): HashGridConfig {
@@ -217,15 +215,6 @@ describe('NRC full input assembly', () => {
 });
 
 describe('NRC WGSL codegen — shape pins (line-for-line oracle equivalence)', () => {
-  const opts = { levels: 4, featuresPerEntry: 2, oneBlobBins: 8 };
-
-  it('forward emits the 8-corner trilinear loop and the matching hash call', () => {
-    const fwd = nrcHashGridForwardWgsl(opts);
-    expect(fwd).toContain('for (var c: u32 = 0u; c < 8u');
-    expect(fwd).toContain('nrcSpatialHash3D');
-    expect(fwd).toContain('let weight = wx * wy * wz;'); // same product-of-axes weight
-  });
-
   it('one-blob helper L1-normalises (matches the oracle normalisation)', () => {
     const helpers = nrcEncodeHelpersWgsl();
     expect(helpers).toContain('exp(-0.5 * d * d)');

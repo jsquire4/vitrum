@@ -17,6 +17,7 @@ import { describe, expect, it } from 'vitest';
 // define an inline structural copy with a complaint comment).
 
 // Type-level assertion: import succeeds and satisfies the structural contract.
+import { progressiveHandleAsEngine } from '../index.js';
 import type { CameraLike } from '../index.js';
 
 describe('CameraLike public export (@vitrum/engine)', () => {
@@ -46,5 +47,11 @@ describe('CameraLike public export (@vitrum/engine)', () => {
     expect(camera.matrixWorldInverse.elements).toBeInstanceOf(Float32Array);
     expect(camera.projectionMatrix.elements).toBeInstanceOf(Float32Array);
     expect(camera.position.x).toBe(0);
+  });
+});
+
+describe('progressive facade public export (@vitrum/engine)', () => {
+  it('is callable from the package root for vanilla lifecycle hosts', () => {
+    expect(progressiveHandleAsEngine).toBeTypeOf('function');
   });
 });

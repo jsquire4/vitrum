@@ -14,18 +14,22 @@ export const RCParamsOffset = {
 /** Byte size of one `RCLight` entry (mirrors probeRayCast.wgsl.ts). */
 export const RC_LIGHT_ENTRY_BYTES = 64;
 
-/** Byte size of the `RCLightBuffer` header section (count + 3 pad). */
+/** Byte size of the runtime `RCLightBuffer` header section. */
 export const RC_LIGHTS_HEADER_BYTES = 16;
 
-/** Max `RCLight` entries (matches WGSL `array<RCLight, 16>`). */
-export const RC_LIGHTS_MAX = 16;
+/** Byte size of one Walker/Vose alias entry (q, alias, represented PMF, pad). */
+export const RC_LIGHT_ALIAS_ENTRY_BYTES = 16;
 
-/** Byte size of the full `RCLightBuffer` GPU allocation (1040 bytes). */
-export const RC_LIGHTS_BUFFER_BYTES = 1040;
+/** Smallest valid runtime light buffer: a header with count=0. */
+export const RC_LIGHTS_BUFFER_BYTES = RC_LIGHTS_HEADER_BYTES;
+export const RC_LIGHTS_ABI_MAGIC = 0x31544352;
 
 /** Byte offsets within the `RCLightBuffer` header. */
 export const RCLightBufferHeaderOffset = {
   count: 0,
+  entriesWordOffset: 4,
+  aliasWordOffset: 8,
+  abiMagic: 12,
 } as const;
 
 /** Field byte offsets within one `RCLight` entry (relative to entry start). */

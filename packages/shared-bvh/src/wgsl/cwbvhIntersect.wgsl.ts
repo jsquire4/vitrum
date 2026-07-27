@@ -1,5 +1,5 @@
 /**
- * CWBVH traversal prototype for the compressed-wide BVH layout.
+ * CWBVH traversal for the compressed-wide BVH layout.
  *
  * This module mirrors `compressedWideBvh.ts`:
  *   - one node has 8 child slots;
@@ -8,17 +8,46 @@
  *     words (`lo16 | hi16 << 16`);
  *   - child metadata is three u32 words (`kind`, `nodeIndexOrTriOffset`,
  *     `triCount`).
- *
- * It intentionally lives in `shared-bvh` without being wired into renderer
- * defaults. Backends should opt into this only after parity/perf A/B against
- * the canonical binary-BVH traversal lands.
  */
 
+import { CWBVH_TRAVERSAL_STACK_DEPTH } from '../strides.js';
 import { MOLLER_TRUMBORE_WGSL, SAFE_INV_DIR_WGSL } from './bvhIntersect.wgsl.js';
+import { buildMaterialTransmissionPredicatesWGSL } from './materialTransmission.wgsl.js';
 
-export const CWBVH_INTERSECT_STACK_DEPTH = 64;
+const CWBVH_MATERIAL_TRANSMISSION_PREDICATE_WGSL =
+  buildMaterialTransmissionPredicatesWGSL({
+    packedFunctionName: 'cwbvhPackedMaterialHasTransmission',
+  });
+
+export const CWBVH_INTERSECT_STACK_DEPTH = CWBVH_TRAVERSAL_STACK_DEPTH;
+
+/** Default value-return loaders for the ordinary module-global buffers. */
+export const CWBVH_INTERSECT_GLOBAL_LOADERS_WGSL = /* wgsl */ `
+fn cwbvhLoadNodeBounds(index: u32) -> CwbvhNodeBounds {
+  return cwbvhNodeBounds[index];
+}
+fn cwbvhNodeBoundsCount() -> u32 { return arrayLength(&cwbvhNodeBounds); }
+fn cwbvhLoadChildBoundsWord(index: u32) -> u32 {
+  return cwbvhChildBoundsPacked[index];
+}
+fn cwbvhChildBoundsWordCount() -> u32 {
+  return arrayLength(&cwbvhChildBoundsPacked);
+}
+fn cwbvhLoadChildMeta(index: u32) -> CwbvhChildMeta {
+  return cwbvhChildMeta[index];
+}
+fn cwbvhChildMetaCount() -> u32 { return arrayLength(&cwbvhChildMeta); }
+fn cwbvhLoadChildCount(index: u32) -> u32 { return cwbvhChildCount[index]; }
+fn cwbvhChildCountCount() -> u32 { return arrayLength(&cwbvhChildCount); }
+fn cwbvhLoadIndex(index: u32) -> vec4u { return bvh_index[index]; }
+fn cwbvhIndexCount() -> u32 { return arrayLength(&bvh_index); }
+fn cwbvhLoadPosition(index: u32) -> vec4f { return bvh_position[index]; }
+fn cwbvhPositionCount() -> u32 { return arrayLength(&bvh_position); }
+`;
 
 export const CWBVH_INTERSECT_CORE_WGSL = /* wgsl */ `
+${CWBVH_MATERIAL_TRANSMISSION_PREDICATE_WGSL}
+
 const CWBVH_CHILDREN: u32 = 8u;
 const CWBVH_CHILD_BOUNDS_PACKED_U32: u32 = 3u;
 const CWBVH_INTERSECT_STACK_DEPTH: u32 = ${CWBVH_INTERSECT_STACK_DEPTH}u;
@@ -26,6 +55,9 @@ const CWBVH_INTERSECT_INFINITY: f32 = 1e20;
 const CWBVH_CHILD_EMPTY: u32 = 0u;
 const CWBVH_CHILD_NODE: u32 = 1u;
 const CWBVH_CHILD_LEAF: u32 = 2u;
+const CWBVH_STATUS_COMPLETE: u32 = 0u;
+const CWBVH_STATUS_STACK_OVERFLOW: u32 = 1u;
+const CWBVH_STATUS_INVALID_LAYOUT: u32 = 2u;
 
 struct CwbvhNodeBounds {
   boundsMin: array<f32, 3>,
@@ -49,6 +81,7 @@ struct CwbvhAabb {
 };
 
 struct CwbvhIntersectionResult {
+  status: u32,
   didHit: bool,
   dist: f32,
   triIndex: u32,
@@ -60,8 +93,14 @@ struct CwbvhIntersectionResult {
   uv: vec2f,
 };
 
+struct CwbvhAnyHitResult {
+  status: u32,
+  didHit: bool,
+};
+
 fn cwbvhMiss() -> CwbvhIntersectionResult {
   var result: CwbvhIntersectionResult;
+  result.status = CWBVH_STATUS_COMPLETE;
   result.didHit = false;
   result.dist = CWBVH_INTERSECT_INFINITY;
   result.triIndex = 0xffffffffu;
@@ -74,6 +113,13 @@ fn cwbvhMiss() -> CwbvhIntersectionResult {
   return result;
 }
 
+fn cwbvhAnyHitResult(status: u32, didHit: bool) -> CwbvhAnyHitResult {
+  var result: CwbvhAnyHitResult;
+  result.status = status;
+  result.didHit = didHit;
+  return result;
+}
+
 fn cwbvhUnpackLo16(word: u32) -> u32 {
   return word & 0xffffu;
 }
@@ -83,26 +129,28 @@ fn cwbvhUnpackHi16(word: u32) -> u32 {
 }
 
 fn cwbvhDecodeBound(q: u32, parentMin: f32, parentMax: f32) -> f32 {
-  let extent = parentMax - parentMin;
-  if (!(extent > 0.0)) {
+  if (!(parentMax > parentMin)) {
     return parentMin;
   }
-  return parentMin + (f32(q) / 65535.0) * extent;
+  if (q == 0u) { return parentMin; }
+  if (q >= 65535u) { return parentMax; }
+  let t = f32(q) / 65535.0;
+  // Convex interpolation avoids overflow in parentMax - parentMin for
+  // opposite-sign finite f32 bounds near the representable limits.
+  return parentMin * (1.0 - t) + parentMax * t;
 }
 
 fn cwbvhLoadChildBounds(
-  cwbvhNodeBounds: ptr<storage, array<CwbvhNodeBounds>, read>,
-  cwbvhChildBoundsPacked: ptr<storage, array<u32>, read>,
   nodeIndex: u32,
   slot: u32,
 ) -> CwbvhAabb {
-  let node = (*cwbvhNodeBounds)[nodeIndex];
+  let node = cwbvhLoadNodeBounds(nodeIndex);
   let pMin = vec3f(node.boundsMin[0], node.boundsMin[1], node.boundsMin[2]);
   let pMax = vec3f(node.boundsMax[0], node.boundsMax[1], node.boundsMax[2]);
   let base = nodeIndex * CWBVH_CHILDREN * CWBVH_CHILD_BOUNDS_PACKED_U32 + slot * CWBVH_CHILD_BOUNDS_PACKED_U32;
-  let w0 = (*cwbvhChildBoundsPacked)[base + 0u];
-  let w1 = (*cwbvhChildBoundsPacked)[base + 1u];
-  let w2 = (*cwbvhChildBoundsPacked)[base + 2u];
+  let w0 = cwbvhLoadChildBoundsWord(base + 0u);
+  let w1 = cwbvhLoadChildBoundsWord(base + 1u);
+  let w2 = cwbvhLoadChildBoundsWord(base + 2u);
 
   var bounds: CwbvhAabb;
   bounds.boundsMin = vec3f(
@@ -135,13 +183,17 @@ fn cwbvhAabbEntry(
   return tNear;
 }
 
+fn cwbvhBoundsAreValid(bmin: vec3f, bmax: vec3f) -> bool {
+  // Ordered comparisons reject NaN and the finite ceiling rejects +/-Inf.
+  // Layout corruption must surface as INVALID_LAYOUT so renderer wrappers can
+  // restart the canonical binary traversal instead of silently dropping hits.
+  let finiteMax = vec3f(3.402823e38);
+  return all(bmin <= bmax) &&
+    all(abs(bmin) <= finiteMax) &&
+    all(abs(bmax) <= finiteMax);
+}
+
 fn cwbvhIntersectFirstHitRangeFromRoot(
-  cwbvhNodeBounds: ptr<storage, array<CwbvhNodeBounds>, read>,
-  cwbvhChildBoundsPacked: ptr<storage, array<u32>, read>,
-  cwbvhChildMeta: ptr<storage, array<CwbvhChildMeta>, read>,
-  cwbvhChildCount: ptr<storage, array<u32>, read>,
-  bvh_index: ptr<storage, array<vec4u>, read>,
-  bvh_position: ptr<storage, array<vec4f>, read>,
   ray: CwbvhRay,
   triEps: f32,
   tMin: f32,
@@ -152,7 +204,20 @@ fn cwbvhIntersectFirstHitRangeFromRoot(
 ) -> CwbvhIntersectionResult {
   var best = cwbvhMiss();
   best.dist = tMax;
-  if (nodeCount == 0u || rootNode >= nodeCount) {
+  if (nodeCount == 0u) {
+    return best;
+  }
+  if (rootNode >= nodeCount) {
+    best.status = CWBVH_STATUS_INVALID_LAYOUT;
+    return best;
+  }
+  if (
+    nodeCount > cwbvhNodeBoundsCount() ||
+    nodeCount > cwbvhChildBoundsWordCount() / (CWBVH_CHILDREN * CWBVH_CHILD_BOUNDS_PACKED_U32) ||
+    nodeCount > cwbvhChildMetaCount() / CWBVH_CHILDREN ||
+    nodeCount > cwbvhChildCountCount()
+  ) {
+    best.status = CWBVH_STATUS_INVALID_LAYOUT;
     return best;
   }
 
@@ -167,43 +232,74 @@ fn cwbvhIntersectFirstHitRangeFromRoot(
     stackPtr = stackPtr - 1u;
     let nodeIndex = stack[stackPtr];
     if (nodeIndex >= nodeCount) {
-      continue;
+      best.status = CWBVH_STATUS_INVALID_LAYOUT;
+      return best;
     }
 
-    let count = min((*cwbvhChildCount)[nodeIndex], CWBVH_CHILDREN);
+    let rawCount = cwbvhLoadChildCount(nodeIndex);
+    if (rawCount > CWBVH_CHILDREN) {
+      best.status = CWBVH_STATUS_INVALID_LAYOUT;
+      return best;
+    }
+    let parent = cwbvhLoadNodeBounds(nodeIndex);
+    let parentMin = vec3f(parent.boundsMin[0], parent.boundsMin[1], parent.boundsMin[2]);
+    let parentMax = vec3f(parent.boundsMax[0], parent.boundsMax[1], parent.boundsMax[2]);
+    if (!cwbvhBoundsAreValid(parentMin, parentMax)) {
+      best.status = CWBVH_STATUS_INVALID_LAYOUT;
+      return best;
+    }
+    let count = rawCount;
     for (var slot = 0u; slot < count; slot = slot + 1u) {
       let childIndex = nodeIndex * CWBVH_CHILDREN + slot;
-      let childInfo = (*cwbvhChildMeta)[childIndex];
+      let childInfo = cwbvhLoadChildMeta(childIndex);
       if (childInfo.kind == CWBVH_CHILD_EMPTY) {
-        continue;
+        best.status = CWBVH_STATUS_INVALID_LAYOUT;
+        return best;
       }
 
-      let bounds = cwbvhLoadChildBounds(cwbvhNodeBounds, cwbvhChildBoundsPacked, nodeIndex, slot);
+      let bounds = cwbvhLoadChildBounds(nodeIndex, slot);
+      if (!cwbvhBoundsAreValid(bounds.boundsMin, bounds.boundsMax)) {
+        best.status = CWBVH_STATUS_INVALID_LAYOUT;
+        return best;
+      }
       let childT = cwbvhAabbEntry(ray.origin, invDir, bounds.boundsMin, bounds.boundsMax, best.dist);
       if (childT == CWBVH_INTERSECT_INFINITY) {
         continue;
       }
 
       if (childInfo.kind == CWBVH_CHILD_NODE) {
+        if (childInfo.indexOrOffset >= nodeCount) {
+          best.status = CWBVH_STATUS_INVALID_LAYOUT;
+          return best;
+        }
         if (stackPtr >= CWBVH_INTERSECT_STACK_DEPTH) {
+          best.status = CWBVH_STATUS_STACK_OVERFLOW;
           return best;
         }
         stack[stackPtr] = childInfo.indexOrOffset;
         stackPtr = stackPtr + 1u;
       } else if (childInfo.kind == CWBVH_CHILD_LEAF) {
+        let indexCount = cwbvhIndexCount();
+        if (childInfo.triCount == 0u || childInfo.indexOrOffset > indexCount || childInfo.triCount > indexCount - childInfo.indexOrOffset) {
+          best.status = CWBVH_STATUS_INVALID_LAYOUT;
+          return best;
+        }
         for (var i = 0u; i < childInfo.triCount; i = i + 1u) {
           let triIdx = childInfo.indexOrOffset + i;
-          let idxEntry = (*bvh_index)[triIdx];
+          let idxEntry = cwbvhLoadIndex(triIdx);
           if (skipGlass) {
-            let trans4 = (idxEntry.w >> 4u) & 0xFu;
-            if (trans4 > 4u) {
+            if (cwbvhPackedMaterialHasTransmission(idxEntry.w)) {
               continue;
             }
           }
           let idx = idxEntry.xyz;
-          let pa4 = (*bvh_position)[idx.x];
-          let pb4 = (*bvh_position)[idx.y];
-          let pc4 = (*bvh_position)[idx.z];
+          if (idx.x >= cwbvhPositionCount() || idx.y >= cwbvhPositionCount() || idx.z >= cwbvhPositionCount()) {
+            best.status = CWBVH_STATUS_INVALID_LAYOUT;
+            return best;
+          }
+          let pa4 = cwbvhLoadPosition(idx.x);
+          let pb4 = cwbvhLoadPosition(idx.y);
+          let pc4 = cwbvhLoadPosition(idx.z);
           let tri = mollerTrumboreCore(ray.origin, ray.direction, pa4.xyz, pb4.xyz, pc4.xyz, triEps);
           if (tri.hit && tri.t > tMin && tri.t < best.dist) {
             best.didHit = true;
@@ -220,6 +316,9 @@ fn cwbvhIntersectFirstHitRangeFromRoot(
             best.uv = tri.bary.x * uvA + tri.bary.y * uvB + tri.bary.z * uvC;
           }
         }
+      } else {
+        best.status = CWBVH_STATUS_INVALID_LAYOUT;
+        return best;
       }
     }
   }
@@ -228,12 +327,6 @@ fn cwbvhIntersectFirstHitRangeFromRoot(
 }
 
 fn cwbvhIntersectFirstHitFromRoot(
-  cwbvhNodeBounds: ptr<storage, array<CwbvhNodeBounds>, read>,
-  cwbvhChildBoundsPacked: ptr<storage, array<u32>, read>,
-  cwbvhChildMeta: ptr<storage, array<CwbvhChildMeta>, read>,
-  cwbvhChildCount: ptr<storage, array<u32>, read>,
-  bvh_index: ptr<storage, array<vec4u>, read>,
-  bvh_position: ptr<storage, array<vec4f>, read>,
   ray: CwbvhRay,
   triEps: f32,
   nodeCount: u32,
@@ -241,12 +334,6 @@ fn cwbvhIntersectFirstHitFromRoot(
   skipGlass: bool,
 ) -> CwbvhIntersectionResult {
   return cwbvhIntersectFirstHitRangeFromRoot(
-    cwbvhNodeBounds,
-    cwbvhChildBoundsPacked,
-    cwbvhChildMeta,
-    cwbvhChildCount,
-    bvh_index,
-    bvh_position,
     ray,
     triEps,
     triEps,
@@ -258,24 +345,12 @@ fn cwbvhIntersectFirstHitFromRoot(
 }
 
 fn cwbvhIntersectFirstHit(
-  cwbvhNodeBounds: ptr<storage, array<CwbvhNodeBounds>, read>,
-  cwbvhChildBoundsPacked: ptr<storage, array<u32>, read>,
-  cwbvhChildMeta: ptr<storage, array<CwbvhChildMeta>, read>,
-  cwbvhChildCount: ptr<storage, array<u32>, read>,
-  bvh_index: ptr<storage, array<vec4u>, read>,
-  bvh_position: ptr<storage, array<vec4f>, read>,
   ray: CwbvhRay,
   triEps: f32,
   nodeCount: u32,
   skipGlass: bool,
 ) -> CwbvhIntersectionResult {
   return cwbvhIntersectFirstHitFromRoot(
-    cwbvhNodeBounds,
-    cwbvhChildBoundsPacked,
-    cwbvhChildMeta,
-    cwbvhChildCount,
-    bvh_index,
-    bvh_position,
     ray,
     triEps,
     nodeCount,
@@ -285,12 +360,6 @@ fn cwbvhIntersectFirstHit(
 }
 
 fn cwbvhIntersectAnyFromRoot(
-  cwbvhNodeBounds: ptr<storage, array<CwbvhNodeBounds>, read>,
-  cwbvhChildBoundsPacked: ptr<storage, array<u32>, read>,
-  cwbvhChildMeta: ptr<storage, array<CwbvhChildMeta>, read>,
-  cwbvhChildCount: ptr<storage, array<u32>, read>,
-  bvh_index: ptr<storage, array<vec4u>, read>,
-  bvh_position: ptr<storage, array<vec4f>, read>,
   origin: vec3f,
   dir: vec3f,
   tMax: f32,
@@ -298,9 +367,20 @@ fn cwbvhIntersectAnyFromRoot(
   nodeCount: u32,
   rootNode: u32,
   skipGlass: bool,
-) -> bool {
-  if (nodeCount == 0u || rootNode >= nodeCount) {
-    return false;
+) -> CwbvhAnyHitResult {
+  if (nodeCount == 0u) {
+    return cwbvhAnyHitResult(CWBVH_STATUS_COMPLETE, false);
+  }
+  if (rootNode >= nodeCount) {
+    return cwbvhAnyHitResult(CWBVH_STATUS_INVALID_LAYOUT, false);
+  }
+  if (
+    nodeCount > cwbvhNodeBoundsCount() ||
+    nodeCount > cwbvhChildBoundsWordCount() / (CWBVH_CHILDREN * CWBVH_CHILD_BOUNDS_PACKED_U32) ||
+    nodeCount > cwbvhChildMetaCount() / CWBVH_CHILDREN ||
+    nodeCount > cwbvhChildCountCount()
+  ) {
+    return cwbvhAnyHitResult(CWBVH_STATUS_INVALID_LAYOUT, false);
   }
 
   var stack: array<u32, ${CWBVH_INTERSECT_STACK_DEPTH}>;
@@ -314,80 +394,91 @@ fn cwbvhIntersectAnyFromRoot(
     stackPtr = stackPtr - 1u;
     let nodeIndex = stack[stackPtr];
     if (nodeIndex >= nodeCount) {
-      continue;
+      return cwbvhAnyHitResult(CWBVH_STATUS_INVALID_LAYOUT, false);
     }
 
-    let count = min((*cwbvhChildCount)[nodeIndex], CWBVH_CHILDREN);
+    let count = cwbvhLoadChildCount(nodeIndex);
+    if (count > CWBVH_CHILDREN) {
+      return cwbvhAnyHitResult(CWBVH_STATUS_INVALID_LAYOUT, false);
+    }
+    let parent = cwbvhLoadNodeBounds(nodeIndex);
+    let parentMin = vec3f(parent.boundsMin[0], parent.boundsMin[1], parent.boundsMin[2]);
+    let parentMax = vec3f(parent.boundsMax[0], parent.boundsMax[1], parent.boundsMax[2]);
+    if (!cwbvhBoundsAreValid(parentMin, parentMax)) {
+      return cwbvhAnyHitResult(CWBVH_STATUS_INVALID_LAYOUT, false);
+    }
     for (var slot = 0u; slot < count; slot = slot + 1u) {
       let childIndex = nodeIndex * CWBVH_CHILDREN + slot;
-      let childInfo = (*cwbvhChildMeta)[childIndex];
+      let childInfo = cwbvhLoadChildMeta(childIndex);
       if (childInfo.kind == CWBVH_CHILD_EMPTY) {
-        continue;
+        return cwbvhAnyHitResult(CWBVH_STATUS_INVALID_LAYOUT, false);
       }
 
-      let bounds = cwbvhLoadChildBounds(cwbvhNodeBounds, cwbvhChildBoundsPacked, nodeIndex, slot);
+      let bounds = cwbvhLoadChildBounds(nodeIndex, slot);
+      if (!cwbvhBoundsAreValid(bounds.boundsMin, bounds.boundsMax)) {
+        return cwbvhAnyHitResult(CWBVH_STATUS_INVALID_LAYOUT, false);
+      }
       let childT = cwbvhAabbEntry(origin, invDir, bounds.boundsMin, bounds.boundsMax, tMax);
       if (childT == CWBVH_INTERSECT_INFINITY) {
         continue;
       }
 
       if (childInfo.kind == CWBVH_CHILD_NODE) {
+        if (childInfo.indexOrOffset >= nodeCount) {
+          return cwbvhAnyHitResult(CWBVH_STATUS_INVALID_LAYOUT, false);
+        }
         if (stackPtr >= CWBVH_INTERSECT_STACK_DEPTH) {
-          return false;
+          return cwbvhAnyHitResult(CWBVH_STATUS_STACK_OVERFLOW, false);
         }
         stack[stackPtr] = childInfo.indexOrOffset;
         stackPtr = stackPtr + 1u;
       } else if (childInfo.kind == CWBVH_CHILD_LEAF) {
+        let indexCount = cwbvhIndexCount();
+        if (childInfo.triCount == 0u || childInfo.indexOrOffset > indexCount || childInfo.triCount > indexCount - childInfo.indexOrOffset) {
+          return cwbvhAnyHitResult(CWBVH_STATUS_INVALID_LAYOUT, false);
+        }
         for (var i = 0u; i < childInfo.triCount; i = i + 1u) {
           let triIdx = childInfo.indexOrOffset + i;
-          let idxEntry = (*bvh_index)[triIdx];
+          let idxEntry = cwbvhLoadIndex(triIdx);
           if (skipGlass) {
-            let trans4 = (idxEntry.w >> 4u) & 0xFu;
-            if (trans4 > 4u) {
+            if (cwbvhPackedMaterialHasTransmission(idxEntry.w)) {
               continue;
             }
           }
           let idx = idxEntry.xyz;
+          if (idx.x >= cwbvhPositionCount() || idx.y >= cwbvhPositionCount() || idx.z >= cwbvhPositionCount()) {
+            return cwbvhAnyHitResult(CWBVH_STATUS_INVALID_LAYOUT, false);
+          }
           let tri = mollerTrumboreCore(
             origin,
             dir,
-            (*bvh_position)[idx.x].xyz,
-            (*bvh_position)[idx.y].xyz,
-            (*bvh_position)[idx.z].xyz,
+            cwbvhLoadPosition(idx.x).xyz,
+            cwbvhLoadPosition(idx.y).xyz,
+            cwbvhLoadPosition(idx.z).xyz,
             triEps,
           );
-          if (tri.hit && tri.t > 1e-4 && tri.t < tMax) {
-            return true;
+          if (tri.hit && tri.t > triEps && tri.t < tMax) {
+            return cwbvhAnyHitResult(CWBVH_STATUS_COMPLETE, true);
           }
         }
+      } else {
+        return cwbvhAnyHitResult(CWBVH_STATUS_INVALID_LAYOUT, false);
       }
     }
   }
 
-  return false;
+  return cwbvhAnyHitResult(CWBVH_STATUS_COMPLETE, false);
 }
 
 fn cwbvhIntersectAny(
-  cwbvhNodeBounds: ptr<storage, array<CwbvhNodeBounds>, read>,
-  cwbvhChildBoundsPacked: ptr<storage, array<u32>, read>,
-  cwbvhChildMeta: ptr<storage, array<CwbvhChildMeta>, read>,
-  cwbvhChildCount: ptr<storage, array<u32>, read>,
-  bvh_index: ptr<storage, array<vec4u>, read>,
-  bvh_position: ptr<storage, array<vec4f>, read>,
   origin: vec3f,
   dir: vec3f,
   tMax: f32,
   triEps: f32,
   nodeCount: u32,
   skipGlass: bool,
-) -> bool {
+) -> CwbvhAnyHitResult {
   return cwbvhIntersectAnyFromRoot(
-    cwbvhNodeBounds,
-    cwbvhChildBoundsPacked,
-    cwbvhChildMeta,
-    cwbvhChildCount,
-    bvh_index,
-    bvh_position,
     origin,
     dir,
     tMax,
@@ -403,4 +494,5 @@ export const CWBVH_INTERSECT_WGSL = /* wgsl */ `
 ${SAFE_INV_DIR_WGSL}
 ${MOLLER_TRUMBORE_WGSL}
 ${CWBVH_INTERSECT_CORE_WGSL}
+${CWBVH_INTERSECT_GLOBAL_LOADERS_WGSL}
 `;

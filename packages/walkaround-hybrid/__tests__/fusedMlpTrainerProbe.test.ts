@@ -167,15 +167,19 @@ describe('FusedMlpTrainer — persistent params UBO: no new buffers per trainSte
   const tileB = 8;
   const B = 5;
 
-  function makeTrackingDevice(createBufferCalls: number[]): GPUDevice {
-    const mkBuf = (size: number): GPUBuffer => ({
-      _id: createBufferCalls.length,  // stable identity (same object reference per allocation)
-      size,
-      destroy() {},
-      getMappedRange() { return new ArrayBuffer(size); },
-      async mapAsync() {},
-      unmap() {},
-    }) as unknown as GPUBuffer;
+  function makeTrackingDevice(createBufferCalls: number[], resourceOps: string[] = []): GPUDevice {
+    const mkBuf = (size: number): GPUBuffer => {
+      const id = createBufferCalls.length;
+      return {
+        _bytes: new Uint8Array(size),
+        _id: id,
+        size,
+        destroy() { resourceOps.push(`destroy:${id}`); },
+        getMappedRange() { return (this as unknown as { _bytes: Uint8Array })._bytes.buffer; },
+        async mapAsync() {},
+        unmap() {},
+      } as unknown as GPUBuffer;
+    };
 
     return {
       createBuffer(desc: { size: number }) {
@@ -184,14 +188,18 @@ describe('FusedMlpTrainer — persistent params UBO: no new buffers per trainSte
       },
       createShaderModule() { return { getCompilationInfo: async () => ({ messages: [] }) }; },
       async createComputePipelineAsync() { return { getBindGroupLayout: () => ({}) }; },
-      createBindGroup() { return {}; },
+      createBindGroup() { resourceOps.push('bind'); return {}; },
       createCommandEncoder() {
         return {
           clearBuffer() {},
           beginComputePass() {
             return { setPipeline() {}, setBindGroup() {}, dispatchWorkgroups() {}, end() {} };
           },
-          copyBufferToBuffer() {},
+          copyBufferToBuffer(s: GPUBuffer, so: number, d: GPUBuffer, doff: number, size: number) {
+            const src = (s as unknown as { _bytes: Uint8Array })._bytes;
+            const dst = (d as unknown as { _bytes: Uint8Array })._bytes;
+            dst.set(src.subarray(so, so + size), doff);
+          },
           finish() { return {}; },
         };
       },
@@ -202,10 +210,12 @@ describe('FusedMlpTrainer — persistent params UBO: no new buffers per trainSte
 
   it('no new GPUBuffers are created by trainStep() after build() completes (f32 path)', async () => {
     const buildCalls: number[] = [];
-    const device = makeTrackingDevice(buildCalls);
+    const resourceOps: string[] = [];
+    const device = makeTrackingDevice(buildCalls, resourceOps);
     const trainer = new FusedMlpTrainer(device, spec, { useF16: false, tileB });
     await trainer.build(B);
 
+    resourceOps.length = 0;
     const buildAllocCount = buildCalls.length;
     expect(buildAllocCount).toBeGreaterThan(0); // sanity: build does allocate
 
@@ -224,6 +234,7 @@ describe('FusedMlpTrainer — persistent params UBO: no new buffers per trainSte
 
     // The fix: ZERO new buffers created during any trainStep.
     expect(postBuildCalls).toHaveLength(0);
+    expect(resourceOps).toEqual([]);
   });
 
   it('the persistent params UBO field identity is stable across trainStep() calls', async () => {
@@ -261,6 +272,101 @@ describe('FusedMlpTrainer — persistent params UBO: no new buffers per trainSte
     expect(trainer._gradFinUboW).toBe(uboW);
     expect(trainer._gradFinUboB).toBe(uboB);
     expect(trainer._gradFinUboX).toBe(uboX);
+  });
+
+  it('alternates parameter/moment generations across success/failure/success', async () => {
+    const calls: number[] = [];
+    const device = makeTrackingDevice(calls);
+    const trainer = new FusedMlpTrainer(device, spec, { useF16: false, tileB });
+    await trainer.build(B);
+    const diagnosticsBuffer = trainer.diagnosticsBuffer;
+    type Tracked = GPUBuffer & { _bytes: Uint8Array };
+    type Set = {
+      weights: Tracked; biases: Tracked;
+      wMasterGpu: Tracked; bMasterGpu: Tracked;
+      mW: Tracked; vW: Tracked; mB: Tracked; vB: Tracked;
+    };
+    const state = trainer as unknown as {
+      weights: Tracked; wMasterGpu: Tracked;
+      _trainableSets: readonly [Set, Set];
+      adamT: number;
+    };
+    const checksum = (set: Set): number => {
+      let hash = 0x811c9dc5;
+      for (const buffer of [
+        set.wMasterGpu, set.bMasterGpu, set.mW, set.vW, set.mB, set.vB,
+      ]) {
+        for (const byte of buffer._bytes) hash = Math.imul(hash ^ byte, 0x01000193) >>> 0;
+      }
+      return hash;
+    };
+    const liveSet = (): Set => state._trainableSets.find(
+      set => set.wMasterGpu === state.wMasterGpu,
+    )!;
+    const candidateSet = (buffer: GPUBuffer): Set => state._trainableSets.find(
+      set => set.wMasterGpu === buffer,
+    )!;
+    const mutate = (set: Set, seed: number): void => {
+      set.wMasterGpu._bytes[0] = seed;
+      set.bMasterGpu._bytes[1] = seed + 1;
+      set.mW._bytes[2] = seed + 2;
+      set.vW._bytes[3] = seed + 3;
+      set.mB._bytes[4] = seed + 4;
+      set.vB._bytes[5] = seed + 5;
+    };
+
+    const generationA = liveSet();
+    const baseline = checksum(generationA);
+
+    const tx1 = trainer.recordTrainStep(device.createCommandEncoder(), 0.01)!;
+    const generationB = candidateSet(tx1.candidateWeightBuffer);
+    expect(checksum(generationB)).toBe(baseline);
+    mutate(generationB, 19);
+    tx1.commitCpu();
+    tx1.finalizeSuccess();
+    expect(liveSet()).toBe(generationB);
+    const afterFirstSuccess = checksum(liveSet());
+    expect(afterFirstSuccess).not.toBe(baseline);
+    expect(state.adamT).toBe(1);
+
+    const failed = trainer.recordTrainStep(device.createCommandEncoder(), 0.01)!;
+    expect(candidateSet(failed.candidateWeightBuffer)).toBe(generationA);
+    expect(checksum(generationA)).toBe(afterFirstSuccess);
+    mutate(generationA, 93);
+    failed.rollback();
+    expect(liveSet()).toBe(generationB);
+    expect(checksum(liveSet())).toBe(afterFirstSuccess);
+    expect(state.adamT).toBe(1);
+
+    const tx2 = trainer.recordTrainStep(device.createCommandEncoder(), 0.01)!;
+    expect(candidateSet(tx2.candidateWeightBuffer)).toBe(generationA);
+    expect(checksum(generationA)).toBe(afterFirstSuccess);
+    mutate(generationA, 37);
+    tx2.commitCpu();
+    tx2.finalizeSuccess();
+    expect(liveSet()).toBe(generationA);
+    expect(checksum(liveSet())).not.toBe(afterFirstSuccess);
+    expect(state.adamT).toBe(2);
+    expect(trainer.diagnosticsBuffer).toBe(diagnosticsBuffer);
+  });
+
+  it('destroys both preallocated generations exactly once', async () => {
+    const calls: number[] = [];
+    const resourceOps: string[] = [];
+    const device = makeTrackingDevice(calls, resourceOps);
+    const trainer = new FusedMlpTrainer(device, spec, { useF16: false, tileB });
+    await trainer.build(B);
+    trainer.trainStep(0.01);
+    trainer.trainStep(0.01);
+
+    resourceOps.length = 0;
+    trainer.dispose();
+    const destroyed = resourceOps.filter(op => op.startsWith('destroy:'));
+    expect(new Set(destroyed).size).toBe(destroyed.length);
+    expect(destroyed).toHaveLength(calls.length);
+
+    trainer.dispose();
+    expect(resourceOps.filter(op => op.startsWith('destroy:'))).toHaveLength(calls.length);
   });
 
   it('dispose() after build() destroys all persistent UBOs', async () => {

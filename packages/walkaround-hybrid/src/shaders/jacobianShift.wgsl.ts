@@ -29,7 +29,7 @@ fn jacobianReconnectionShift(
   let cos_theta_q = dot(ns, dq * inv_dq_len);
   let cos_theta_r = dot(ns, dr * inv_dr_len);
 
-  if (cos_theta_q <= 1e-4 || cos_theta_r <= 1e-4) { return 0.0; }
+  if (cos_theta_q <= 0.0 || cos_theta_r <= 0.0) { return 0.0; }
 
   // Eq. 11 reconnection shift: cosine ratio x inverse-square distance ratio.
   let J = (cos_theta_r / cos_theta_q) * (dq_len2 / dr_len2);

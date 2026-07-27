@@ -15,11 +15,12 @@ function fakeDevice(): GPUDevice {
   return {
     limits: {
       maxStorageBuffersPerShaderStage: 16,
-      maxStorageTexturesPerShaderStage: 8,
+      maxStorageTexturesPerShaderStage: 7,
+      maxSampledTexturesPerShaderStage: 20,
     },
     features: new Set<string>(),
     queue: { writeBuffer() {}, writeTexture() {}, submit() {} },
-    createBuffer: () => ({ destroy() {} }),
+    createBuffer: vi.fn(() => ({ destroy() {} })),
     createTexture: () => ({ createView: () => ({}), destroy() {} }),
     createQuerySet: () => ({}),
     addEventListener: () => {},
@@ -55,17 +56,23 @@ interface CfgPeek {
   ddgiUpdateDivisor: number;
   denoiser: string;
   checkerboard: boolean;
+  resolutionFactor: number;
 }
 const cfg = (e: HybridEngine): CfgPeek => (e as unknown as { _cfg: CfgPeek })._cfg;
 const resolutionFactor = (e: HybridEngine): number =>
   (e as unknown as { _resolutionFactor: number })._resolutionFactor;
 
-describe('HYBRID_LITE_LIMITS', () => {
-  it('is strictly below HYBRID_WEBGPU_REQUIRED_LIMITS on both axes', () => {
-    expect(HYBRID_LITE_LIMITS['maxStorageBuffersPerShaderStage']!)
-      .toBeLessThan(HYBRID_WEBGPU_REQUIRED_LIMITS['maxStorageBuffersPerShaderStage']!);
-    expect(HYBRID_LITE_LIMITS['maxStorageTexturesPerShaderStage']!)
-      .toBeLessThan(HYBRID_WEBGPU_REQUIRED_LIMITS['maxStorageTexturesPerShaderStage']!);
+describe('walkaround device-limit constructor preflight', () => {
+  it('uses the same structural layout floor for lite and full', () => {
+    expect(HYBRID_LITE_LIMITS).toEqual(HYBRID_WEBGPU_REQUIRED_LIMITS);
+  });
+
+  it('rejects an under-limit real device surface before any GPU allocation', () => {
+    const device = fakeDevice();
+    (device.limits as unknown as Record<string, number>).maxSampledTexturesPerShaderStage = 15;
+    expect(() => new HybridEngine(baseOpts({ device, tier: 'full' })))
+      .toThrow(/maxSampledTexturesPerShaderStage=15 \(requires >= 16\)/);
+    expect(device.createBuffer).not.toHaveBeenCalled();
   });
 });
 
@@ -83,6 +90,25 @@ describe('HybridEngine tier:lite — constructor validation', () => {
   it('throws on tier:lite + denoiser:neural', () => {
     expect(() => new HybridEngine(baseOpts({ tier: 'lite', denoiser: 'neural' })))
       .toThrow(/tier:'lite' forbids denoiser:'neural'/);
+  });
+
+  it('throws on tier:lite + denoiser:bmfr before allocation', () => {
+    const device = fakeDevice();
+    expect(() => new HybridEngine(baseOpts({ device, tier: 'lite', denoiser: 'bmfr' })))
+      .toThrow(/tier:'lite' forbids denoiser:'bmfr'/);
+    expect(device.createBuffer).not.toHaveBeenCalled();
+  });
+
+  it('keeps BMFR available as an explicit full-tier selection', () => {
+    const engine = new HybridEngine(baseOpts({ tier: 'full', denoiser: 'bmfr' }));
+    expect(cfg(engine).denoiser).toBe('bmfr');
+  });
+
+  it('never auto-selects BMFR on either runtime tier', () => {
+    const lite = new HybridEngine(baseOpts({ tier: 'lite', denoiser: 'auto' }));
+    const full = new HybridEngine(baseOpts({ tier: 'full', denoiser: 'auto' }));
+    expect(cfg(lite).denoiser).toBe('atrous-variance');
+    expect(cfg(full).denoiser).toBe('atrous-variance');
   });
 
   it('throws on tier:lite + nrcEnabled', () => {
@@ -180,6 +206,26 @@ describe('HybridEngine tier:lite — biases default qualityTier to medium', () =
     const engine = new HybridEngine(baseOpts({ tier: 'lite', qualityTier: 'ultra' }));
     expect(cfg(engine).diSpatialPasses).toBe(2);
     expect(resolutionFactor(engine)).toBe(1.0);
+  });
+
+  it('returns to the preset resolution when a frame omits its temporary override', () => {
+    const engine = new HybridEngine(baseOpts({ tier: 'lite' }));
+    const runtime = engine as unknown as {
+      _resolutionFactor: number;
+      _applyResolutionFactor(
+        factor: number | undefined,
+        nowMs: number,
+      ): { width: number; height: number };
+    };
+
+    expect(runtime._applyResolutionFactor(0.5, 1_000)).toEqual({ width: 32, height: 32 });
+    expect(runtime._resolutionFactor).toBe(0.5);
+
+    expect(runtime._applyResolutionFactor(undefined, 1_251)).toEqual({
+      width: Math.round(64 * cfg(engine).resolutionFactor),
+      height: Math.round(64 * cfg(engine).resolutionFactor),
+    });
+    expect(runtime._resolutionFactor).toBe(cfg(engine).resolutionFactor);
   });
 });
 

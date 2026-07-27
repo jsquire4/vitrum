@@ -18,7 +18,7 @@ import type {
   GltfBackendTextureStatus,
   GltfTextureDecodeReport,
 } from './texturePipeline.js';
-import { resolveGltfMaterialAnimationPointer } from './materialPointerAnimation.js';
+import { resolveGltfAnimationPointer } from './animationPointer.js';
 import {
   collectGltfSceneReachability,
   collectPrimitiveMaterialIndices,
@@ -97,10 +97,14 @@ export function hasReachableMaterialPointerAnimationForColoredPrimitive(
   for (const animation of gltf.animations ?? []) {
     for (const channel of animation.channels ?? []) {
       if (channel.target.path !== 'pointer') continue;
-      const pointerTarget = resolveGltfMaterialAnimationPointer(
+      const pointerTarget = resolveGltfAnimationPointer(
         channel.target.extensions?.KHR_animation_pointer?.pointer,
       );
-      if (pointerTarget !== undefined && coloredMaterialIndices.has(pointerTarget.materialIndex)) {
+      if (
+        pointerTarget !== undefined &&
+        (pointerTarget.kind === 'material-property' || pointerTarget.kind === 'material-texture-transform') &&
+        coloredMaterialIndices.has(pointerTarget.materialIndex)
+      ) {
         return true;
       }
     }
@@ -110,7 +114,7 @@ export function hasReachableMaterialPointerAnimationForColoredPrimitive(
 
 export function bakePtWebgpuLiteCompatibleVertexColors(scene: Scene): Scene {
   let changed = false;
-  const primitives = scene.primitives.map((primitive) => {
+  const primitives = scene.primitives.map((primitive): ScenePrimitive => {
     const color = ptWebgpuLiteBakeableVertexColor(primitive);
     if (color == null) return primitive;
     changed = true;
@@ -126,7 +130,7 @@ export function bakePtWebgpuLiteCompatibleVertexColors(scene: Scene): Scene {
           material.baseColor[2] * color[2],
         ],
       },
-    } as ScenePrimitive;
+    };
   });
   return changed ? { ...scene, primitives } : scene;
 }

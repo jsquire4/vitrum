@@ -228,6 +228,7 @@ function makeCtx(encoder: GPUCommandEncoder): PassDispatchContext {
     varianceBuffer: buf('variance'),
     varianceBufferAux: buf('varianceAux'),
     atrousVarianceEstimateTexture: tex('atrousVarianceEstimate'),
+    checkerboardRadianceSnapshotTexture: tex('checkerboardSnapshot'),
     tierTexture: tex('tier'),
   };
   const resources = {
@@ -403,19 +404,17 @@ describe('Theme-E dispatch equivalence — RISGIPass NRC slot-4 (#3)', () => {
     expect(records[0]!.dims).toEqual([2, 2, 1]);
   });
 
-  it('NRC ON: frame/scene/ubo/hybrid at 0..3 + NRC group at slot-4, half-res', () => {
-    const { encoder, records, events } = makeRecordingEncoder();
-    const ctx = makeCtx(encoder);
-    const nrcBg = { __tag: 'nrcBG' } as unknown as GPUBindGroup;
-    const slotClaims = buf('nrcSlotClaims');
-    new RISGIPass(
-      stubPipeline('giRis'),
-      () => nrcBg,
-      (enc) => enc.clearBuffer(slotClaims),
-    ).dispatch(ctx);
-    encoder.copyBufferToBuffer(buf('nrcRecords'), 0, buf('nrcReadback'), 0, 64);
-    expect(records[0]!.binds.map((b) => b.slot)).toEqual([0, 1, 2, 3, 4]);
-    expect((records[0]!.binds[4]!.group as { __tag: string }).__tag).toBe('nrcBG');
+    it('NRC ON: frame/scene/ubo + packed hybrid/NRC at 0..3, half-res', () => {
+      const { encoder, records, events } = makeRecordingEncoder();
+      const ctx = makeCtx(encoder);
+      const slotClaims = buf('nrcSlotClaims');
+      new RISGIPass(
+        stubPipeline('giRis'),
+        (enc) => enc.clearBuffer(slotClaims),
+      ).dispatch(ctx);
+      encoder.copyBufferToBuffer(buf('nrcRecords'), 0, buf('nrcReadback'), 0, 64);
+      expect(records[0]!.binds.map((b) => b.slot)).toEqual([0, 1, 2, 3]);
+      expect((records[0]!.binds[3]!.group as { __tag: string }).__tag).toBe('hybridBG');
     expect(records[0]!.dims).toEqual([2, 2, 1]);
     expect(events.map((e) => e.kind)).toEqual(['clear', 'pass', 'copy']);
     expect(events[1]!.label).toBe('gi-ris');

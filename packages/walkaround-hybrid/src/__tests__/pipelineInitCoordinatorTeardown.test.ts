@@ -3,6 +3,7 @@ import {
   PipelineInitCoordinator,
   type PipelineInitHost,
 } from '../HybridEngineLifecycle.js';
+import { DEFAULT_NRC_CONFIG } from '../neural/nrc/nrcSubsystem.js';
 
 /**
  * V1-4 regression: a dispose that races the scene-readiness poll must still
@@ -45,6 +46,7 @@ function makePollingHost(): { host: PipelineInitHost; spies: TeardownSpies } {
     restirBvhModeOverride: undefined,
     denoiser: 'none' as const,
     neuralWeights: undefined,
+    neuralTensorStorage: 'auto',
     oidnModelUrl: undefined,
     oidnExecutionProviders: undefined,
     verbose: false,
@@ -54,14 +56,14 @@ function makePollingHost(): { host: PipelineInitHost; spies: TeardownSpies } {
     checkerboardMotionThresholdSq: 0,
     ctorLights: [],
     ddgi: {} as PipelineInitHost['ddgi'],
+    hostSunWarningState: { warned: false },
     preferredSwapChainFormat: 'bgra8unorm' as GPUTextureFormat,
     gtaoMode: 'off' as const,
     diSpatialPasses: 1 as const,
     giSpatialPasses: 1 as const,
-    restirPtReuse: false,
+    grisReuse: false,
     nrcEnabled: false,
-    nrcWarmupSteps: 0,
-    nrcSpreadC: 0,
+    nrcConfig: DEFAULT_NRC_CONFIG,
     ppgEnabled: false,
     ppgMaxSpatialCells: undefined,
     ppgMaxDTreeNodesPerCell: undefined,

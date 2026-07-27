@@ -1,6 +1,16 @@
 {
+  "schema": "vitrum.radiometric-ab.result.v1",
+  "provenance": {
+    "schema": "vitrum.radiometric-ab.result-provenance.v1",
+    "scriptPath": "tools/radiometric-ab/ab-restir-pt.mjs",
+    "resultPath": "tools/radiometric-ab/results-restir-pt.json",
+    "scriptSha256": "3cbb6d6a11453d5ca5b28398ceaed7b2b459fe8be400345379d3d9361a84215c",
+    "helperPath": "tools/radiometric-ab/resultProvenance.mjs",
+    "helperSha256": "cc87985755e7391d19fbf98e19dc218df7264beb9b218f0a7eacf819761642e3",
+    "generatedBy": "vitrum radiometric A/B harness"
+  },
   "ab": "restir-pt-reuse-on-vs-off",
-  "date": "2026-06-23T18:03:09.053Z",
+  "date": "2026-07-23T15:06:59.613Z",
   "resolution": {
     "W": 80,
     "H": 80
@@ -15,28 +25,156 @@
   "varianceRuns": 8,
   "varianceFramesPerRun": 8,
   "base": {
-    "globalLum": 0.08006546401561064,
-    "roiLum": 0.1093735323935114,
-    "variance": 0.07856658106002219
+    "globalLum": 0.11680481179024321,
+    "roiLum": 0.18364952657137412,
+    "variance": 0.06089904137063397
   },
   "rpt": {
-    "globalLum": 0.08640241212873728,
-    "roiLum": 0.12534955841171544,
-    "variance": 0.07387478597479197
+    "globalLum": 0.1163408124233725,
+    "roiLum": 0.18105867252482113,
+    "variance": 0.050742519666283147
   },
-  "globalRelErr": 0.07914708533870615,
-  "roiRelErr": 0.14606848355893295,
-  "varRatio": 0.9402825600665269,
+  "globalRelErr": 0.0039724336674070585,
+  "roiRelErr": 0.01410759992101624,
+  "varRatio": 0.8332236193581796,
+  "defaultWeightMode": "effectively-unclamped-f32-max",
+  "reservoirWeightStats": {
+    "pixelCount": 6400,
+    "nonEmptyCount": 4665,
+    "nonEmptyFraction": 0.72890625,
+    "weight": {
+      "min": 0.008340280503034592,
+      "p50": 2.7424635887145996,
+      "p90": 11.92166805267334,
+      "p95": 25.228036880493164,
+      "p99": 90.66498565673828,
+      "max": 268.24456787109375,
+      "mean": 6.867433549245542
+    },
+    "sourcePdf": {
+      "min": 0.0024397694505751133,
+      "p50": 0.19957248866558075,
+      "p90": 0.2852128744125366,
+      "p99": 29.64598274230957,
+      "max": 119.90010070800781
+    },
+    "diagnosticClamp": 10,
+    "totalWeight": 32036.577507230453,
+    "aboveDiagnosticClampCount": 570,
+    "aboveDiagnosticClampFraction": 0.12218649517684887,
+    "clippedWeightMass": 14389.670890808105,
+    "clippedWeightMassFraction": 0.4491637999583585
+  },
+  "clampControls": [
+    {
+      "wCap": 10,
+      "globalLum": 0.10844310881074323,
+      "roiLum": 0.17414375287859052,
+      "globalRelErr": 0.0715869736130035,
+      "roiRelErr": 0.05176040401655623
+    },
+    {
+      "wCap": 100,
+      "globalLum": 0.11532683442549041,
+      "roiLum": 0.17911173347519851,
+      "globalRelErr": 0.012653394514319651,
+      "roiRelErr": 0.024708983360281222
+    }
+  ],
+  "pairedSeedAnalysis": {
+    "confidenceLevel": 0.95,
+    "tCritical": 2.364624251,
+    "equivalenceMargin": 0.1,
+    "runs": [
+      {
+        "run": 0,
+        "baseGlobalLum": 0.1168948867910542,
+        "rptGlobalLum": 0.11710766935036343,
+        "baseRoiLum": 0.1917337956149777,
+        "rptRoiLum": 0.187363336065911,
+        "signedGlobalRelativeDifference": 0.0018202897077061583,
+        "signedRoiRelativeDifference": -0.02279441417747271
+      },
+      {
+        "run": 1,
+        "baseGlobalLum": 0.11386252750283848,
+        "rptGlobalLum": 0.11375025271262247,
+        "baseRoiLum": 0.1809460570142365,
+        "rptRoiLum": 0.17905519228808806,
+        "signedGlobalRelativeDifference": -0.0009860556644785024,
+        "signedRoiRelativeDifference": -0.010449880795134814
+      },
+      {
+        "run": 2,
+        "baseGlobalLum": 0.1198208012879456,
+        "rptGlobalLum": 0.11914450569135371,
+        "baseRoiLum": 0.19688092586450187,
+        "rptRoiLum": 0.19620753917508388,
+        "signedGlobalRelativeDifference": -0.005644225287449584,
+        "signedRoiRelativeDifference": -0.0034202738861632215
+      },
+      {
+        "run": 3,
+        "baseGlobalLum": 0.11637842970658996,
+        "rptGlobalLum": 0.11735742263251012,
+        "baseRoiLum": 0.19301579682131986,
+        "rptRoiLum": 0.1916599182632849,
+        "signedGlobalRelativeDifference": 0.00841215101791945,
+        "signedRoiRelativeDifference": -0.0070247025391923295
+      },
+      {
+        "run": 4,
+        "baseGlobalLum": 0.11572662026141199,
+        "rptGlobalLum": 0.11429011454626162,
+        "baseRoiLum": 0.18167754390781843,
+        "rptRoiLum": 0.17873996879732762,
+        "signedGlobalRelativeDifference": -0.012412923767284373,
+        "signedRoiRelativeDifference": -0.016169170098321608
+      },
+      {
+        "run": 5,
+        "baseGlobalLum": 0.11751557544822269,
+        "rptGlobalLum": 0.1174492136355848,
+        "baseRoiLum": 0.19155882099003055,
+        "rptRoiLum": 0.18373702377662396,
+        "signedGlobalRelativeDifference": -0.0005647065283454908,
+        "signedRoiRelativeDifference": -0.04083235203151342
+      },
+      {
+        "run": 6,
+        "baseGlobalLum": 0.1158467648499035,
+        "rptGlobalLum": 0.11998350678757737,
+        "baseRoiLum": 0.18407894902252758,
+        "rptRoiLum": 0.18239346497948014,
+        "signedGlobalRelativeDifference": 0.035708739411356244,
+        "signedRoiRelativeDifference": -0.00915631065908124
+      },
+      {
+        "run": 7,
+        "baseGlobalLum": 0.1174147472763322,
+        "rptGlobalLum": 0.11653938139373254,
+        "baseRoiLum": 0.19711556248294365,
+        "rptRoiLum": 0.18945378385798212,
+        "signedGlobalRelativeDifference": -0.007455331658973816,
+        "signedRoiRelativeDifference": -0.03886947599900696
+      }
+    ],
+    "global": {
+      "mean": 0.002359742153806261,
+      "standardDeviation": 0.014868258954596685,
+      "lower": -0.010070433397328764,
+      "upper": 0.014789917704941286
+    },
+    "roi": {
+      "mean": -0.018589572523235787,
+      "standardDeviation": 0.014385754939179722,
+      "lower": -0.03061636462281301,
+      "upper": -0.006562780423658564
+    },
+    "equivalent": true
+  },
+  "highFrameMeanAgreement": true,
   "meanAgreement": true,
   "varianceNotWorse": true,
-  "verdict": "PASS",
-  "provenance": {
-    "schema": "vitrum.radiometric-ab.result-provenance.v1",
-    "scriptPath": "tools/radiometric-ab/ab-restir-pt.mjs",
-    "resultPath": "tools/radiometric-ab/results-restir-pt.json",
-    "scriptSha256": "92a3d3fcb9e6ad1a9ea2a2426ca837f5c4d12206061c1099e7297c5253ac4e88",
-    "helperPath": "tools/radiometric-ab/resultProvenance.mjs",
-    "helperSha256": "cc87985755e7391d19fbf98e19dc218df7264beb9b218f0a7eacf819761642e3",
-    "generatedBy": "vitrum radiometric A/B harness"
-  }
+  "verdict": "PASS"
 }

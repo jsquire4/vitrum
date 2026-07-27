@@ -300,20 +300,24 @@ describe('inverseSession — emissive/ior field-set widening', () => {
     // camera-DIRECT emission at the primary hit (∂loss/∂emissive_c = dLoss_dR_c ·
     // emissiveIntensity, dContribution_dEmissive with throughput = 1), with the
     // fixed emissiveIntensity carried in the descriptor `.w` (bitcast f32). The
-    // end-to-end fit converges + sign-matches FD on lavapipe (wsl-gpu
-    // tests/v24-emissive-fit.mjs). The earlier divergent trial scattered emissive
+    // native full-render gate sign-matches FD within 1.9–2.7% on lavapipe
+    // (tools/gpu-env/inverse-fit-deno.ts). The earlier divergent trial scattered emissive
     // inside the NEE loop and validated against a barely-visible target.
     expect(session.method).toBe('path-replay');
     session.dispose();
   });
 
-  it('resolves emissiveIntensity to path-replay in the same primary-hit emission domain', () => {
+  it('keeps emissiveIntensity on FD until its end-to-end GPU fit is registered', () => {
     const session = new PtWebgpuInverseSession(makeHooks(makeScene(), true), {
       target,
       parameters: [{ path: 'materials.panel.emissiveIntensity', kind: 'scalar' }],
       method: 'path-replay',
     });
-    expect(session.method).toBe('path-replay');
+    expect(session.method).toBe('finite-difference');
+    expect(session.diagnostics).toContainEqual(expect.objectContaining({
+      code: 'path-replay-unsupported-field',
+      details: expect.objectContaining({ proof: 'missing-end-to-end-gpu-fit' }),
+    }));
     session.dispose();
   });
 
@@ -390,7 +394,7 @@ describe('inverseSession — emissive/ior field-set widening', () => {
     session.dispose();
   });
 
-  it('keeps base/specular BRDF params on path-replay when fixed iridescence is present', () => {
+  it('keeps unproved specular params on FD even when their local partial is compatible', () => {
     const session = new PtWebgpuInverseSession(makeHooks(makeScene(), true), {
       target,
       parameters: [
@@ -399,15 +403,19 @@ describe('inverseSession — emissive/ior field-set widening', () => {
       method: 'path-replay',
     });
 
-    expect(session.method).toBe('path-replay');
+    expect(session.method).toBe('finite-difference');
     expect(session.diagnostics).not.toContainEqual(expect.objectContaining({
       code: 'path-replay-unsupported-material',
+      path: 'materials.panel.specularColor',
+    }));
+    expect(session.diagnostics).toContainEqual(expect.objectContaining({
+      code: 'path-replay-unsupported-field',
       path: 'materials.panel.specularColor',
     }));
     session.dispose();
   });
 
-  it('keeps additive clearcoat params on path-replay when fixed iridescence is present', () => {
+  it('keeps unproved clearcoat params on FD even when fixed iridescence is compatible', () => {
     const session = new PtWebgpuInverseSession(makeHooks(makeScene(), true), {
       target,
       parameters: [
@@ -417,14 +425,18 @@ describe('inverseSession — emissive/ior field-set widening', () => {
       method: 'path-replay',
     });
 
-    expect(session.method).toBe('path-replay');
+    expect(session.method).toBe('finite-difference');
     expect(session.diagnostics).not.toContainEqual(expect.objectContaining({
       code: 'path-replay-unsupported-material',
+    }));
+    expect(session.diagnostics).toContainEqual(expect.objectContaining({
+      code: 'path-replay-unsupported-field',
+      path: 'materials.panel.clearcoat',
     }));
     session.dispose();
   });
 
-  it('keeps clean extension-lobe BRDF params on path-replay when no coupled iridescence lobe is present', () => {
+  it('keeps clean but unproved extension-lobe params on FD', () => {
     const session = new PtWebgpuInverseSession(makeHooks(makeSceneWithoutIridescence(), true), {
       target,
       parameters: [
@@ -434,9 +446,12 @@ describe('inverseSession — emissive/ior field-set widening', () => {
       method: 'path-replay',
     });
 
-    expect(session.method).toBe('path-replay');
+    expect(session.method).toBe('finite-difference');
     expect(session.diagnostics).not.toContainEqual(expect.objectContaining({
       code: 'path-replay-unsupported-material',
+    }));
+    expect(session.diagnostics).toContainEqual(expect.objectContaining({
+      code: 'path-replay-unsupported-field',
     }));
     session.dispose();
   });

@@ -1,20 +1,33 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { EngineWarning } from '@vitrum/core';
 import type { DDGI } from '../ddgi/DDGI.js';
-import type { GIStateSnapshot } from '../giStateSnapshot.js';
+import {
+  deserializeGIState,
+  serializeGIState,
+  type GIStateSnapshot,
+} from '../giStateSnapshot.js';
 import { importGIStateImpl, type GIStateDeps } from '../HybridEngineGIState.js';
+
+const DIMS = { x: 3, y: 3, z: 3 } as const;
+const IRR_W = 15;
+const IRR_H = 45;
+const VIS_W = 54;
+const VIS_H = 162;
 
 function makeSnapshot(): GIStateSnapshot {
   return {
-    dims: { x: 3, y: 3, z: 3 },
+    dims: DIMS,
     origin: [10, 0, 0],
     spacing: 2,
-    irrW: 9,
-    irrH: 9,
-    visW: 48,
-    visH: 48,
-    irrData: new Uint16Array(9 * 9 * 4),
-    visData: new Uint16Array(48 * 48 * 4),
+    irrW: IRR_W,
+    irrH: IRR_H,
+    visW: VIS_W,
+    visH: VIS_H,
+    irrData: new Uint16Array(IRR_W * IRR_H * 4),
+    visData: new Uint16Array(VIS_W * VIS_H * 4),
+    probeStateW: 3,
+    probeStateH: 9,
+    probeStateData: new Float32Array(3 * 9 * 4),
   };
 }
 
@@ -30,10 +43,10 @@ function makeRestirGISnapshot(): NonNullable<GIStateSnapshot['restirGI']> {
   return {
     halfW: 2,
     halfH: 2,
-    strideU32: 30,
-    current: new Uint32Array(2 * 2 * 30),
-    previous: new Uint32Array(2 * 2 * 30),
-    spatial: new Uint32Array(2 * 2 * 30),
+    strideU32: 28,
+    current: new Uint32Array(2 * 2 * 28),
+    previous: new Uint32Array(2 * 2 * 28),
+    spatial: new Uint32Array(2 * 2 * 28),
   };
 }
 
@@ -54,18 +67,29 @@ function makeDeps(
   options: {
     readonly importAtlasData?: () => boolean;
     readonly pipeline?: GIStateDeps['pipeline'];
+    readonly atlasAvailable?: boolean;
+    readonly origin?: readonly [number, number, number];
+    readonly spacing?: number;
   } = {},
 ): GIStateDeps {
+  const origin = options.origin ?? [0, 0, 0];
   const ddgi = {
     gridParams: {
-      dims: { x: 3, y: 3, z: 3 },
-      origin: { x: 0, y: 0, z: 0 },
-      spacing: 2,
-      irradianceAtlasW: 9,
-      irradianceAtlasH: 9,
-      visibilityAtlasW: 48,
-      visibilityAtlasH: 48,
+      dims: DIMS,
+      origin: { x: origin[0], y: origin[1], z: origin[2] },
+      spacing: options.spacing ?? 2,
+      irradianceAtlasW: IRR_W,
+      irradianceAtlasH: IRR_H,
+      visibilityAtlasW: VIS_W,
+      visibilityAtlasH: VIS_H,
     },
+    getReadAtlasGPUTextures: vi.fn(() =>
+      options.atlasAvailable === false
+        ? null
+        : {
+            irradiance: {} as GPUTexture,
+            visibility: {} as GPUTexture,
+          }),
     importAtlasData: vi.fn(options.importAtlasData ?? (() => true)),
   } as unknown as DDGI;
 
@@ -77,7 +101,60 @@ function makeDeps(
   };
 }
 
+function makePreparedPipeline(options: {
+  readonly canImport?: boolean;
+  readonly prepare?: () => {
+    commit(): void;
+    abort(): void;
+  } | null;
+  readonly importPPG?: () => boolean;
+} = {}) {
+  const transaction = {
+    commit: vi.fn(),
+    abort: vi.fn(),
+  };
+  const pipeline = {
+    canImportRestirGIReservoirs: vi.fn(() => options.canImport ?? true),
+    prepareRestirGIReservoirImport: vi.fn(
+      options.prepare ?? (() => transaction),
+    ),
+    importPPGSTree: vi.fn(options.importPPG ?? (() => true)),
+  } as unknown as NonNullable<GIStateDeps['pipeline']>;
+  return { pipeline, transaction };
+}
+
 describe('HybridEngineGIState import diagnostics', () => {
+  it.each([
+    ['null', null],
+    ['empty object', {}],
+    [
+      'missing payload arrays',
+      {
+        dims: DIMS,
+        origin: [0, 0, 0],
+        spacing: 2,
+        irrW: IRR_W,
+        irrH: IRR_H,
+        visW: VIS_W,
+        visH: VIS_H,
+      },
+    ],
+  ])('rejects a structurally malformed public input without throwing: %s', (_label, value) => {
+    const warnings: EngineWarning[] = [];
+    const made = makePreparedPipeline();
+    const deps = makeDeps(warnings, { pipeline: made.pipeline });
+
+    expect(
+      importGIStateImpl(deps, value as unknown as GIStateSnapshot),
+    ).toBe(false);
+    expect(deps.ddgi.importAtlasData).not.toHaveBeenCalled();
+    expect(made.pipeline.canImportRestirGIReservoirs).not.toHaveBeenCalled();
+    expect(warnings.at(-1)).toMatchObject({
+      code: 'walkaround-hybrid.import-gi-state-malformed-snapshot',
+      details: { fallback: 'retain-current-gi' },
+    });
+  });
+
   it('routes grid-layout mismatch rejection through structured warnings', () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     const warnings: EngineWarning[] = [];
@@ -129,8 +206,8 @@ describe('HybridEngineGIState import diagnostics', () => {
       details: {
         fallback: 'cold-start-gi',
         snapshot: {
-          irradianceAtlas: [9, 9],
-          visibilityAtlas: [48, 48],
+          irradianceAtlas: [IRR_W, IRR_H],
+          visibilityAtlas: [VIS_W, VIS_H],
         },
       },
     });
@@ -141,9 +218,8 @@ describe('HybridEngineGIState import diagnostics', () => {
   it('routes ReSTIR-GI reservoir restore rejection through structured warnings', () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     const warnings: EngineWarning[] = [];
-    const pipeline = {
-      importRestirGIReservoirs: vi.fn(() => false),
-    } as unknown as GIStateDeps['pipeline'];
+    const made = makePreparedPipeline({ canImport: false });
+    const pipeline = made.pipeline;
     const deps = makeDeps(warnings, { pipeline });
 
     const ok = importGIStateImpl(deps, makeMatchingSnapshot({
@@ -152,7 +228,11 @@ describe('HybridEngineGIState import diagnostics', () => {
 
     expect(ok).toBe(false);
     expect(warnSpy).not.toHaveBeenCalled();
-    expect(pipeline!.importRestirGIReservoirs).toHaveBeenCalledTimes(1);
+    expect(pipeline.canImportRestirGIReservoirs).toHaveBeenCalledTimes(1);
+    expect(pipeline.prepareRestirGIReservoirImport).not.toHaveBeenCalled();
+    expect(deps.ddgi.importAtlasData).not.toHaveBeenCalled();
+    expect(made.transaction.commit).not.toHaveBeenCalled();
+    expect(made.transaction.abort).not.toHaveBeenCalled();
     expect(warnings).toHaveLength(1);
     expect(warnings[0]).toMatchObject({
       code: 'walkaround-hybrid.import-gi-state-restir-reservoir-rejected',
@@ -168,13 +248,11 @@ describe('HybridEngineGIState import diagnostics', () => {
     warnSpy.mockRestore();
   });
 
-  it('keeps PPG restore best-effort but warns when the guide cold-starts', () => {
+  it('keeps PPG restore best-effort and warns that the current guide is retained', () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     const warnings: EngineWarning[] = [];
-    const pipeline = {
-      importRestirGIReservoirs: vi.fn(() => true),
-      importPPGSTree: vi.fn(() => false),
-    } as unknown as GIStateDeps['pipeline'];
+    const made = makePreparedPipeline({ importPPG: () => false });
+    const pipeline = made.pipeline;
     const deps = makeDeps(warnings, { pipeline });
 
     const ok = importGIStateImpl(deps, makeMatchingSnapshot({
@@ -184,8 +262,10 @@ describe('HybridEngineGIState import diagnostics', () => {
 
     expect(ok).toBe(true);
     expect(warnSpy).not.toHaveBeenCalled();
-    expect(pipeline!.importRestirGIReservoirs).toHaveBeenCalledTimes(1);
-    expect(pipeline!.importPPGSTree).toHaveBeenCalledTimes(1);
+    expect(pipeline.prepareRestirGIReservoirImport).toHaveBeenCalledTimes(1);
+    expect(made.transaction.commit).toHaveBeenCalledTimes(1);
+    expect(made.transaction.abort).not.toHaveBeenCalled();
+    expect(pipeline.importPPGSTree).toHaveBeenCalledTimes(1);
     expect(warnings).toHaveLength(1);
     expect(warnings[0]).toMatchObject({
       code: 'walkaround-hybrid.import-gi-state-ppg-guide-rejected',
@@ -193,13 +273,230 @@ describe('HybridEngineGIState import diagnostics', () => {
       phase: 'lifecycle',
       method: 'importGIState',
       details: {
-        fallback: 'cold-start-ppg',
+        fallback: 'retain-current-ppg',
         hasPipeline: true,
         maxSpatialCells: 128,
         maxDTreeNodesPerCell: 64,
       },
     });
-    expect(warnings[0]!.message).toContain('PPG will cold-start');
+    expect(warnings[0]!.message).toContain('retaining the current PPG guide');
     warnSpy.mockRestore();
+  });
+
+  it.each([
+    ['NaN origin', { origin: [Number.NaN, 0, 0] as const }],
+    ['infinite origin', { origin: [0, Number.POSITIVE_INFINITY, 0] as const }],
+    ['NaN spacing', { spacing: Number.NaN }],
+    ['zero spacing', { spacing: 0 }],
+    ['infinite spacing', { spacing: Number.POSITIVE_INFINITY }],
+  ])('rejects non-finite grid metadata before touching either GI cohort: %s', (_label, metadata) => {
+    const warnings: EngineWarning[] = [];
+    const made = makePreparedPipeline();
+    const deps = makeDeps(warnings, { pipeline: made.pipeline });
+    const snapshot = makeMatchingSnapshot({
+      ...metadata,
+      restirGI: makeRestirGISnapshot(),
+    });
+
+    expect(importGIStateImpl(deps, snapshot)).toBe(false);
+    expect(deps.ddgi.importAtlasData).not.toHaveBeenCalled();
+    expect(made.pipeline.canImportRestirGIReservoirs).not.toHaveBeenCalled();
+    expect(made.transaction.commit).not.toHaveBeenCalled();
+    expect(made.transaction.abort).not.toHaveBeenCalled();
+    expect(warnings.at(-1)?.code).toBe(
+      'walkaround-hybrid.import-gi-state-malformed-snapshot',
+    );
+  });
+
+  it.each([
+    [
+      'irradiance length',
+      () => ({ irrData: new Uint16Array(IRR_W * IRR_H * 4 - 1) }),
+    ],
+    [
+      'visibility non-finite half',
+      () => {
+        const visData = new Uint16Array(VIS_W * VIS_H * 4);
+        visData[17] = 0x7e00;
+        return { visData };
+      },
+    ],
+    ['probe-state length', () => ({ probeStateData: new Float32Array(3) })],
+    ['unallocated live atlases', () => ({})],
+  ])('preflights malformed DDGI payloads without invoking its importer: %s', (_label, build) => {
+    const warnings: EngineWarning[] = [];
+    const deps = makeDeps(warnings, {
+      atlasAvailable: _label !== 'unallocated live atlases',
+    });
+    const snapshot = makeMatchingSnapshot(build());
+
+    expect(importGIStateImpl(deps, snapshot)).toBe(false);
+    expect(deps.ddgi.importAtlasData).not.toHaveBeenCalled();
+    expect(warnings.at(-1)?.code).toBe(
+      _label === 'unallocated live atlases'
+        ? 'walkaround-hybrid.import-gi-state-atlas-rejected'
+        : 'walkaround-hybrid.import-gi-state-malformed-snapshot',
+    );
+  });
+
+  it('accepts a legitimate large-world f32 serialization round-trip', () => {
+    const origin = [
+      1_000_000_033,
+      -2_000_000_017,
+      3_000_000_049,
+    ] as const;
+    const spacing = 1_000_000.03125;
+    const serialized = serializeGIState(
+      makeMatchingSnapshot({ origin, spacing }),
+    );
+    const restored = deserializeGIState(serialized);
+    const warnings: EngineWarning[] = [];
+    const deps = makeDeps(warnings, { origin, spacing });
+
+    expect(restored.origin).toEqual(origin.map(Math.fround));
+    expect(restored.spacing).toBe(Math.fround(spacing));
+    expect(importGIStateImpl(deps, restored)).toBe(true);
+    expect(deps.ddgi.importAtlasData).toHaveBeenCalledOnce();
+    expect(warnings).toEqual([]);
+  });
+
+  it('rejects a meaningfully different large-world grid', () => {
+    const origin = [
+      1_000_000_033,
+      -2_000_000_017,
+      3_000_000_049,
+    ] as const;
+    const spacing = 1_000_000.03125;
+    const restored = deserializeGIState(
+      serializeGIState(makeMatchingSnapshot({ origin, spacing })),
+    );
+    const mismatched: GIStateSnapshot = {
+      ...restored,
+      origin: [restored.origin[0] + 256, restored.origin[1], restored.origin[2]],
+    };
+    const warnings: EngineWarning[] = [];
+    const deps = makeDeps(warnings, { origin, spacing });
+
+    expect(importGIStateImpl(deps, mismatched)).toBe(false);
+    expect(deps.ddgi.importAtlasData).not.toHaveBeenCalled();
+    expect(warnings.at(-1)?.code).toBe(
+      'walkaround-hybrid.import-gi-state-grid-mismatch',
+    );
+  });
+
+  it('does not publish DDGI when required-reservoir preparation throws', () => {
+    const warnings: EngineWarning[] = [];
+    const made = makePreparedPipeline({
+      prepare: () => {
+        throw new Error('injected reservoir allocation failure');
+      },
+    });
+    const deps = makeDeps(warnings, { pipeline: made.pipeline });
+
+    expect(() =>
+      importGIStateImpl(
+        deps,
+        makeMatchingSnapshot({ restirGI: makeRestirGISnapshot() }),
+      ),
+    ).toThrow('injected reservoir allocation failure');
+    expect(deps.ddgi.importAtlasData).not.toHaveBeenCalled();
+    expect(made.transaction.commit).not.toHaveBeenCalled();
+    expect(made.transaction.abort).not.toHaveBeenCalled();
+  });
+
+  it('aborts the prepared reservoir cohort when DDGI rejects without publication', () => {
+    const warnings: EngineWarning[] = [];
+    const made = makePreparedPipeline();
+    const deps = makeDeps(warnings, {
+      pipeline: made.pipeline,
+      importAtlasData: () => false,
+    });
+
+    expect(
+      importGIStateImpl(
+        deps,
+        makeMatchingSnapshot({ restirGI: makeRestirGISnapshot() }),
+      ),
+    ).toBe(false);
+    expect(made.transaction.abort).toHaveBeenCalledOnce();
+    expect(made.transaction.commit).not.toHaveBeenCalled();
+    expect(warnings.at(-1)?.code).toBe(
+      'walkaround-hybrid.import-gi-state-atlas-rejected',
+    );
+  });
+
+  it('aborts the prepared reservoir cohort and rethrows when DDGI import throws', () => {
+    const warnings: EngineWarning[] = [];
+    const made = makePreparedPipeline();
+    const deps = makeDeps(warnings, {
+      pipeline: made.pipeline,
+      importAtlasData: () => {
+        throw new Error('injected DDGI upload failure');
+      },
+    });
+
+    expect(() =>
+      importGIStateImpl(
+        deps,
+        makeMatchingSnapshot({ restirGI: makeRestirGISnapshot() }),
+      ),
+    ).toThrow('injected DDGI upload failure');
+    expect(made.transaction.abort).toHaveBeenCalledOnce();
+    expect(made.transaction.commit).not.toHaveBeenCalled();
+  });
+
+  it('publishes ReSTIR only after DDGI has accepted its candidate atlases', () => {
+    const events: string[] = [];
+    const transaction = {
+      commit: vi.fn(() => events.push('restir-published')),
+      abort: vi.fn(),
+    };
+    const made = makePreparedPipeline({ prepare: () => transaction });
+    const deps = makeDeps([], {
+      pipeline: made.pipeline,
+      importAtlasData: () => {
+        events.push('ddgi-published');
+        return true;
+      },
+    });
+
+    expect(
+      importGIStateImpl(
+        deps,
+        makeMatchingSnapshot({ restirGI: makeRestirGISnapshot() }),
+      ),
+    ).toBe(true);
+    expect(events).toEqual(['ddgi-published', 'restir-published']);
+    expect(transaction.commit).toHaveBeenCalledOnce();
+    expect(transaction.abort).not.toHaveBeenCalled();
+  });
+
+  it('contains an unexpected optional PPG throw after required GI publication', () => {
+    const warnings: EngineWarning[] = [];
+    const made = makePreparedPipeline({
+      importPPG: () => {
+        throw new Error('injected optional PPG failure');
+      },
+    });
+    const deps = makeDeps(warnings, { pipeline: made.pipeline });
+
+    expect(
+      importGIStateImpl(
+        deps,
+        makeMatchingSnapshot({
+          restirGI: makeRestirGISnapshot(),
+          ppg: makePpgSnapshot(),
+        }),
+      ),
+    ).toBe(true);
+    expect(made.transaction.commit).toHaveBeenCalledOnce();
+    expect(made.transaction.abort).not.toHaveBeenCalled();
+    expect(warnings.at(-1)).toMatchObject({
+      code: 'walkaround-hybrid.import-gi-state-ppg-guide-rejected',
+      details: {
+        fallback: 'retain-current-ppg',
+        failure: 'injected optional PPG failure',
+      },
+    });
   });
 });

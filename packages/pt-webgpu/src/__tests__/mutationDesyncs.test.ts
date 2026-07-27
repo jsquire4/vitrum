@@ -4,18 +4,21 @@
  * 2a. canFastPathMaterialPatch rejects TextureRef fields.
  * 2b. hasMeshAreaEmitterForPrimitive covers implicit emissive-mesh emitters.
  * 2c. Emissive-field material patch triggers emitter re-pack.
- * 2d. directionalAngularDiameter is updated by applyEmitterCountMutation.
- * 2e. clearReservoirBuffers is callable and clears allocated buffers.
+ * 2d. directional storage records stay synchronized through emitter mutations.
+ * 2e. clearTemporalBuffers clears every scene-dependent history buffer.
  * 2f. topology/resource fast paths invalidate cached bind groups before reset.
  */
 
 import { describe, expect, it, vi } from 'vitest';
 import type { EngineWarning, Scene } from '@vitrum/core';
 import { asMat4, asTextureRef } from '@vitrum/core';
-import { canFastPathMaterialPatch, materialPatchRepackFields } from '../scene/incrementalPatch.js';
+import {
+  canFastPathGeometryPatch,
+  canFastPathMaterialPatch,
+  materialPatchRepackFields,
+} from '../scene/incrementalPatch.js';
 import { hasMeshAreaEmitterForPrimitive } from '../scene/emitterPacking.js';
 import {
-  applyEmitterCountMutation,
   buildPackedScene,
   scenePackResultFromPacked,
 } from '../scene/uploadSceneBuffers.js';
@@ -157,6 +160,27 @@ describe('canFastPathMaterialPatch — Item 2a: TextureRef fields route to setSc
 
 // ─── 2b: hasMeshAreaEmitterForPrimitive covers implicit emitters ──────────────
 
+describe('canFastPathGeometryPatch — sparse semantic sets', () => {
+  it('checks only present UV streams across the native array-index boundary', () => {
+    const nativeCeilingIndex = 0xffff_fffe;
+    const ordinaryPropertyIndex = 0x1_0000_0001;
+    const uvSets: Array<Float32Array | undefined> = [];
+    uvSets[nativeCeilingIndex] = new Float32Array(6);
+    uvSets[ordinaryPropertyIndex] = new Float32Array(6);
+    const primitive: Scene['primitives'][number] = {
+      kind: 'mesh',
+      id: 'sparse-patch',
+      positions: new Float32Array(9),
+      normals: new Float32Array(9),
+      material: { baseColor: [1, 1, 1], roughness: 0.5, metallic: 0 },
+    };
+
+    expect(canFastPathGeometryPatch(primitive, { uvSets })).toBe(true);
+    uvSets[ordinaryPropertyIndex] = new Float32Array(4);
+    expect(canFastPathGeometryPatch(primitive, { uvSets })).toBe(false);
+  });
+});
+
 describe('hasMeshAreaEmitterForPrimitive — Item 2b: implicit emissive-mesh emitters', () => {
   it('returns true for a non-analytic primitive with non-zero emissive (no explicit emitter)', () => {
     const scene: Scene = {
@@ -235,8 +259,10 @@ function makeHostWithEmissiveScene(scene: Scene): {
   sceneBuffers: UploadedSceneBuffers;
   meshAreaLightsWriteCalls: Float32Array[];
   writeBuffer: { readonly mock: { readonly calls: unknown[][] }; mockClear: () => void };
+  copyBufferToBuffer: { readonly mock: { readonly calls: unknown[][] } };
 } {
   const packed = buildPackedScene(scene, {});
+  installGpuConstStubs();
   const geoPack = scenePackResultFromPacked(packed);
   const meshAreaLightsData = new Float32Array(packed.meshAreaLightsData);
   const meshAreaLightsWriteCalls: Float32Array[] = [];
@@ -247,7 +273,7 @@ function makeHostWithEmissiveScene(scene: Scene): {
     srcOffset = 0,
     length?: number,
   ) => {
-    if (buf === meshAreaLightsBuffer) {
+    if ((buf as StubGpuBuffer | undefined)?.label === 'vitrum.pt-webgpu.scene.meshAreaLights') {
       const byteLength = length ?? data.byteLength - srcOffset;
       meshAreaLightsWriteCalls.push(new Float32Array(data, srcOffset, Math.floor(byteLength / 4)));
     }
@@ -265,6 +291,15 @@ function makeHostWithEmissiveScene(scene: Scene): {
   });
 
   const meshAreaLightsBuffer = buffer('vitrum.pt-webgpu.scene.meshAreaLights', meshAreaLightsData);
+  const copyBufferToBuffer = vi.fn((
+    _source: unknown,
+    _sourceOffset: number,
+    destination: unknown,
+  ) => {
+    if (destination === meshAreaLightsBuffer) {
+      meshAreaLightsWriteCalls.push(new Float32Array());
+    }
+  });
 
   const sceneBuffers: UploadedSceneBuffers = {
     ...packed,
@@ -313,7 +348,11 @@ function makeHostWithEmissiveScene(scene: Scene): {
   const host: MutationHost = {
     device: {
       createBuffer,
-      queue: { writeBuffer },
+      createCommandEncoder: vi.fn(() => ({
+        copyBufferToBuffer,
+        finish: vi.fn(() => ({})),
+      })),
+      queue: { writeBuffer, submit: vi.fn() },
     } as unknown as GPUDevice,
     assertLive: vi.fn(),
     getScene: () => sceneRef.current,
@@ -329,7 +368,7 @@ function makeHostWithEmissiveScene(scene: Scene): {
     reset: vi.fn(),
   };
 
-  return { host, sceneRef, sceneBuffers, meshAreaLightsWriteCalls, writeBuffer };
+  return { host, sceneRef, sceneBuffers, meshAreaLightsWriteCalls, writeBuffer, copyBufferToBuffer };
 }
 
 describe('SceneMutationRouter — Item 2c: emissive-field material patch triggers emitter re-pack', () => {
@@ -421,95 +460,10 @@ describe('SceneMutationRouter — Item 2c: emissive-field material patch trigger
   });
 });
 
-// ─── 2d: directionalAngularDiameter in applyEmitterCountMutation ──────────────
+// ─── 2e: clearTemporalBuffers clears all scene-dependent history ───────────────
 
-describe('applyEmitterCountMutation — Item 2d: directionalAngularDiameter sync', () => {
-  it('updates directionalAngularDiameter on the mutable buffer struct', () => {
-    // Create a minimal UploadedSceneBuffers stub that exposes the field.
-    const stubSb = {
-      pointLightCount: 0,
-      spotLightCount: 0,
-      rectAreaLightCount: 0,
-      meshAreaLightCount: 0,
-      directionalLight: [0, 1, 0] as const,
-      directionalIrradiance: [0, 0, 0] as const,
-      directionalAngularDiameter: 0,
-    } as unknown as UploadedSceneBuffers;
-
-    applyEmitterCountMutation(stubSb, {
-      directionalLightCount: 1,
-      pointLightCount: 1,
-      spotLightCount: 0,
-      rectAreaLightCount: 0,
-      meshAreaLightCount: 0,
-      directionalLight: [0, 1, 0],
-      directionalIrradiance: [1, 0.9, 0.8],
-      directionalAngularDiameter: 0.009271, // ~sun angular diameter in radians
-    });
-
-    // The mutable cast in applyEmitterCountMutation writes directly to the struct.
-    const mutable = stubSb as unknown as { directionalAngularDiameter: number };
-    expect(mutable.directionalAngularDiameter).toBeCloseTo(0.009271, 5);
-  });
-
-  it('zero (default) is written when not supplied explicitly', () => {
-    // Verify that directionalAngularDiameter defaults to 0 when passed as 0.
-    const stubSb = {
-      pointLightCount: 0,
-      spotLightCount: 0,
-      rectAreaLightCount: 0,
-      meshAreaLightCount: 0,
-      directionalLight: [0, 1, 0] as const,
-      directionalIrradiance: [0, 0, 0] as const,
-      directionalAngularDiameter: 0.5, // initial non-zero value
-    } as unknown as UploadedSceneBuffers;
-
-    applyEmitterCountMutation(stubSb, {
-      directionalLightCount: 0,
-      pointLightCount: 0,
-      spotLightCount: 0,
-      rectAreaLightCount: 0,
-      meshAreaLightCount: 0,
-      directionalLight: [0, 1, 0],
-      directionalIrradiance: [0, 0, 0],
-      directionalAngularDiameter: 0,
-    });
-
-    const mutable = stubSb as unknown as { directionalAngularDiameter: number };
-    expect(mutable.directionalAngularDiameter).toBe(0);
-  });
-
-  it('preserves the signed castShadow:false mirror value', () => {
-    const stubSb = {
-      pointLightCount: 0,
-      spotLightCount: 0,
-      rectAreaLightCount: 0,
-      meshAreaLightCount: 0,
-      directionalLight: [0, 1, 0] as const,
-      directionalIrradiance: [0, 0, 0] as const,
-      directionalAngularDiameter: 0,
-    } as unknown as UploadedSceneBuffers;
-
-    applyEmitterCountMutation(stubSb, {
-      directionalLightCount: 1,
-      pointLightCount: 0,
-      spotLightCount: 0,
-      rectAreaLightCount: 0,
-      meshAreaLightCount: 0,
-      directionalLight: [0, 1, 0],
-      directionalIrradiance: [1, 1, 1],
-      directionalAngularDiameter: -1.009271,
-    });
-
-    const mutable = stubSb as unknown as { directionalAngularDiameter: number };
-    expect(mutable.directionalAngularDiameter).toBeCloseTo(-1.009271, 5);
-  });
-});
-
-// ─── 2e: clearReservoirBuffers clears allocated buffers ───────────────────────
-
-describe('GpuResources.clearReservoirBuffers — Item 2e: reservoir history cleared on scene change', () => {
-  it('clears all three reservoir buffers when allocated', () => {
+describe('GpuResources.clearTemporalBuffers — Item 2e: history cleared on scene change', () => {
+  it('clears accumulator, variance, reservoir, and SPPM buffers in one submission', () => {
     installGpuConstStubs();
     const clearBuffer = vi.fn();
     const finishStub = vi.fn(() => 'cmd');
@@ -524,28 +478,34 @@ describe('GpuResources.clearReservoirBuffers — Item 2e: reservoir history clea
     const buf = (label: string) => ({ label });
     const rptReservoirCur = buf('cur');
     const rptReservoirPrev = buf('prev');
-    const rptReservoirSpatial = buf('spatial');
+    const accum = buf('accum');
+    const variance = buf('variance');
+    const sppm = buf('sppm');
 
     const gpu = new GpuResources(device, 'full', false, true);
+    gpu.accumBuffer = accum as unknown as GPUBuffer;
+    gpu.varianceMomentsBuffer = variance as unknown as GPUBuffer;
     gpu.reservoir.rptReservoirCur = rptReservoirCur as unknown as GPUBuffer;
     gpu.reservoir.rptReservoirPrev = rptReservoirPrev as unknown as GPUBuffer;
-    gpu.reservoir.rptReservoirSpatial = rptReservoirSpatial as unknown as GPUBuffer;
-    gpu.clearReservoirBuffers();
+    gpu.sppm.sppmPixelStatsBuffer = sppm as unknown as GPUBuffer;
+    gpu.sppm.sppmPixelStatsWidth = 1;
+    gpu.clearTemporalBuffers();
 
-    // Three clearBuffer calls — Cur, Prev, Spatial.
-    expect(clearBuffer).toHaveBeenCalledTimes(3);
+    expect(clearBuffer).toHaveBeenCalledTimes(5);
+    expect(clearBuffer).toHaveBeenCalledWith(accum);
+    expect(clearBuffer).toHaveBeenCalledWith(variance);
     expect(clearBuffer).toHaveBeenCalledWith(rptReservoirCur);
     expect(clearBuffer).toHaveBeenCalledWith(rptReservoirPrev);
-    expect(clearBuffer).toHaveBeenCalledWith(rptReservoirSpatial);
+    expect(clearBuffer).toHaveBeenCalledWith(sppm);
     expect(device.createCommandEncoder).toHaveBeenCalledWith({
-      label: 'vitrum.pt-webgpu.restirPt.clearReservoirs',
+      label: 'vitrum.pt-webgpu.clearTemporalBuffers',
     });
     expect(finishStub).toHaveBeenCalledOnce();
     expect(submit).toHaveBeenCalledTimes(1);
     expect(submit).toHaveBeenCalledWith(['cmd']);
   });
 
-  it('is a no-op when rptReservoirCur is null', () => {
+  it('is a no-op when no temporal buffers are allocated', () => {
     installGpuConstStubs();
     const submit = vi.fn();
     const device = {
@@ -555,17 +515,17 @@ describe('GpuResources.clearReservoirBuffers — Item 2e: reservoir history clea
     } as unknown as GPUDevice;
     const gpu = new GpuResources(device, 'full', false, true);
 
-    gpu.clearReservoirBuffers();
+    gpu.clearTemporalBuffers();
 
     expect(device.createCommandEncoder).not.toHaveBeenCalled();
     expect(submit).not.toHaveBeenCalled();
   });
 });
 
-// ─── 2d + updateEmitter: directionalAngularDiameter flows through updateEmitter ─
+// ─── 2d + updateEmitter: authoritative directional record stays synchronized ─
 
-describe('SceneMutationRouter — Item 2d: updateEmitter syncs directionalAngularDiameter', () => {
-  it('updateEmitter on directional emitter updates directionalAngularDiameter in sceneBuffers', () => {
+describe('SceneMutationRouter — Item 2d: updateEmitter syncs directional storage', () => {
+  it('updates angular diameter and cast-shadow encoding in directionalLightsData', () => {
     const scene: Scene = {
       primitives: [
         {
@@ -592,11 +552,7 @@ describe('SceneMutationRouter — Item 2d: updateEmitter syncs directionalAngula
     const packed = buildPackedScene(scene, {});
     const geoPack = scenePackResultFromPacked(packed);
 
-    // Expose the mutable directionalAngularDiameter on the stub.
     const sbState = {
-      directionalAngularDiameter: 0,
-      directionalLight: packed.directionalLight,
-      directionalIrradiance: packed.directionalIrradiance,
       pointLightCount: packed.pointLightCount,
       spotLightCount: packed.spotLightCount,
       rectAreaLightCount: packed.rectAreaLightCount,
@@ -648,7 +604,18 @@ describe('SceneMutationRouter — Item 2d: updateEmitter syncs directionalAngula
     const sceneRef = { current: scene };
 
     const host: MutationHost = {
-      device: { queue: { writeBuffer: vi.fn() } } as unknown as GPUDevice,
+      device: {
+        createBuffer: vi.fn((desc: GPUBufferDescriptor) => ({
+          label: desc.label,
+          size: Number(desc.size),
+          destroy: vi.fn(),
+        })),
+        createCommandEncoder: vi.fn(() => ({
+          copyBufferToBuffer: vi.fn(),
+          finish: vi.fn(() => ({})),
+        })),
+        queue: { writeBuffer: vi.fn(), submit: vi.fn() },
+      } as unknown as GPUDevice,
       assertLive: vi.fn(),
       getScene: () => sceneRef.current,
       setSceneState: vi.fn((s: Scene) => { sceneRef.current = s; }),
@@ -668,13 +635,10 @@ describe('SceneMutationRouter — Item 2d: updateEmitter syncs directionalAngula
     // Patch the directional emitter to set a non-zero angular diameter.
     router.updateEmitter('sun', { angularDiameter: 0.009271 });
 
-    // After updateEmitter, the directionalAngularDiameter on sceneBuffers should
-    // have been updated via applyEmitterCountMutation.
-    const mutable = sceneBuffers as unknown as { directionalAngularDiameter: number };
-    expect(mutable.directionalAngularDiameter).toBeCloseTo(0.009271, 4);
+    expect(sceneBuffers.directionalLightsData[3]).toBeCloseTo(0.009271, 4);
 
     router.updateEmitter('sun', { castShadow: false });
-    expect(mutable.directionalAngularDiameter).toBeCloseTo(-1.009271, 4);
+    expect(sceneBuffers.directionalLightsData[3]).toBeCloseTo(-1.009271, 4);
   });
 });
 
@@ -687,6 +651,7 @@ describe('SceneMutationRouter — Phase 5C mutation observability', () => {
           id: 'floor',
           positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
           normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+          uvs: new Float32Array([0, 0, 1, 0, 0, 1]),
           material: { baseColor: [0.5, 0.5, 0.5], roughness: 0.5, metallic: 0 },
         },
       ],
@@ -751,14 +716,27 @@ describe('SceneMutationRouter — Phase 5C mutation observability', () => {
       ],
       environment: { kind: 'none' },
     };
-    const { host, writeBuffer, sceneBuffers } = makeHostWithEmissiveScene(scene);
+    const { host, writeBuffer, copyBufferToBuffer, sceneBuffers } =
+      makeHostWithEmissiveScene(scene);
     const router = new SceneMutationRouter(host);
     writeBuffer.mockClear();
+    const copiesBefore = copyBufferToBuffer.mock.calls.length;
 
     router.updateEmitter('lamp', { intensity: 4, position: [2, 3, 4] });
 
-    const writtenLabels = writeBuffer.mock.calls.map((c) => (c[0] as StubGpuBuffer | undefined)?.label ?? '');
-    expect(writtenLabels).toContain('vitrum.pt-webgpu.scene.pointLights');
+    expect(writeBuffer.mock.calls).toHaveLength(1);
+    const staging = writeBuffer.mock.calls[0]?.[0] as StubGpuBuffer;
+    expect(staging.label).toBe('vitrum.pt-webgpu.scene.incremental-staging');
+    const encodedCopies = copyBufferToBuffer.mock.calls.slice(copiesBefore);
+    expect(encodedCopies.some(
+      (call) => call[2] === sceneBuffers.pointLightsBuffer,
+    )).toBe(true);
+    for (const [source, sourceOffset, , destinationOffset, size] of encodedCopies) {
+      expect(source).toBe(staging);
+      expect(Number(sourceOffset) % 4).toBe(0);
+      expect(Number(destinationOffset) % 4).toBe(0);
+      expect(Number(size) % 4).toBe(0);
+    }
     expect(sceneBuffers.pointLightCount).toBe(1);
     expect(host.setSceneState).toHaveBeenCalledTimes(1);
     expect(host.setScene).not.toHaveBeenCalled();
@@ -787,15 +765,30 @@ describe('SceneMutationRouter — Phase 5C mutation observability', () => {
       emitters: [],
       environment: { kind: 'hdri', hdri: hdri(1), intensity: 1, rotationY: 0 },
     };
-    const { host, writeBuffer, sceneBuffers } = makeHostWithEmissiveScene(scene);
+    const { host, writeBuffer, copyBufferToBuffer, sceneBuffers } =
+      makeHostWithEmissiveScene(scene);
     const router = new SceneMutationRouter(host);
     writeBuffer.mockClear();
+    const copiesBefore = copyBufferToBuffer.mock.calls.length;
 
     router.updateEnvironment({ kind: 'hdri', hdri: hdri(2), intensity: 0.4, rotationY: 0.25 });
 
-    const writtenLabels = writeBuffer.mock.calls.map((c) => (c[0] as StubGpuBuffer | undefined)?.label ?? '');
-    expect(writtenLabels).toContain('vitrum.pt-webgpu.scene.environmentMapTexels');
-    expect(writtenLabels).toContain('vitrum.pt-webgpu.scene.environmentMapCdf');
+    expect(writeBuffer.mock.calls).toHaveLength(1);
+    const staging = writeBuffer.mock.calls[0]?.[0] as StubGpuBuffer;
+    expect(staging.label).toBe('vitrum.pt-webgpu.scene.incremental-staging');
+    const encodedCopies = copyBufferToBuffer.mock.calls.slice(copiesBefore);
+    expect(encodedCopies.some(
+      (call) => call[2] === sceneBuffers.environmentMapTexelsBuffer,
+    )).toBe(true);
+    expect(encodedCopies.some(
+      (call) => call[2] === sceneBuffers.environmentMapCdfBuffer,
+    )).toBe(false);
+    for (const [source, sourceOffset, , destinationOffset, size] of encodedCopies) {
+      expect(source).toBe(staging);
+      expect(Number(sourceOffset) % 4).toBe(0);
+      expect(Number(destinationOffset) % 4).toBe(0);
+      expect(Number(size) % 4).toBe(0);
+    }
     expect(sceneBuffers.hasEnvironmentMap).toBe(true);
     expect(sceneBuffers.environmentHdriIntensity).toBe(0.4);
     expect(sceneBuffers.environmentHdriRotationY).toBe(0.25);

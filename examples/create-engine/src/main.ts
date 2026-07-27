@@ -68,7 +68,7 @@ async function main(): Promise<void> {
     const output = engine.renderFrame({
       viewMatrix,
       projMatrix,
-      cameraPosition: [0, -1, -4],
+      cameraPosition: [0, 1, 4],
       viewport:  { width, height, devicePixelRatio: 1 },
       frameIndex,
       frameSeed: (frameIndex * 1664525 + 1013904223) >>> 0,

@@ -2,8 +2,8 @@
  * Sprint 17 — ReSTIR-GI temporal + spatial reuse structural tests.
  *
  * Validates WGSL contents (entry points, bindings, reuse formulae),
- * pass-layout placement (gi-temporal → gi-spatial-1 → gi-spatial-2 in
- * a contiguous block right after gi-ris and before shade), and that
+ * pass-layout placement (PPG training → gi-temporal → gi-spatial-1 →
+ * gi-spatial-2 after the initial gi-ris and before shade), and that
  * MAX_PASS_COUNT was bumped to fit the new slots.
  */
 
@@ -92,19 +92,21 @@ describe('Sprint 17 — spatial-GI WGSL', () => {
 });
 
 describe('Sprint 17 — pass-layout placement', () => {
-  it('places gi-temporal + gi-spatial-1 + gi-spatial-2 contiguously after gi-ris in every layout variant', () => {
+  it('places PPG training before the contiguous GI-reuse block in every layout variant', () => {
     for (const denoiserMode of ['atrous-variance', 'atrous'] as const) {
       const layout = buildPassLayout({ denoiserMode });
       const labels = layout.labels;
       const giRis = labels.indexOf('gi-ris');
+      const ppgUpdate = labels.indexOf('ppg-update');
       const giTemporal = labels.indexOf('gi-temporal');
       const giS1 = labels.indexOf('gi-spatial-1');
       const giS2 = labels.indexOf('gi-spatial-2');
       const shade = labels.indexOf('shade');
       expect(giRis).toBeGreaterThanOrEqual(0);
-      expect(giTemporal).toBe(giRis + 1);
-      expect(giS1).toBe(giRis + 2);
-      expect(giS2).toBe(giRis + 3);
+      expect(ppgUpdate).toBe(giRis + 1);
+      expect(giTemporal).toBe(ppgUpdate + 1);
+      expect(giS1).toBe(giTemporal + 1);
+      expect(giS2).toBe(giS1 + 1);
       expect(shade).toBe(giS2 + 1);
     }
   });

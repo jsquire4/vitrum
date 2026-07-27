@@ -11,7 +11,7 @@ are using.
   sky irradiance) from a `LightingStateInputs` description; host adapters map those
   values into each engine's own options/update API.
 - `skyParamsFor` / `worldSunPosition` — Preetham sky model: compute `SkyParams` from
-  a time-of-day and geographic location.
+  time-of-day and solar-arc calibration inputs.
 - `getSunIntensity` / `COLOR_TEMP_HEX` / `SUN_INTENSITY` — directional sun-intensity
   look-up table (color temperature to approximate solar radiance).
 - `pointIntensityFromLumens` / `rectAreaIntensityFromLumens` — convert physical lumen

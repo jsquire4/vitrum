@@ -8,7 +8,7 @@
 
 import type { Engine } from './index.js';
 import type { EngineWarning } from './telemetry.js';
-import type { EngineDenoiserMode } from './capabilities.js';
+import type { EngineCausticStrategy, EngineDenoiserMode } from './capabilities.js';
 
 /** All engine-creation factories follow this shape. The `device` is opaque at
  *  the core level; each backend narrows `device` to its own concrete type.
@@ -103,49 +103,48 @@ export interface EngineOptions {
    *                  accumulate slowly via BSDF-sampled paths (may require many
    *                  thousands of samples to converge).
    *
+   * 'bdpt':          Bounded bidirectional path tracing with Veach MIS. The
+   *                  backend reports its stored light/eye depth limits and
+   *                  endpoint/medium coverage through supportDetails.
+   *
    * 'manifold-nee':  Manifold Next-Event Estimation (Hanika et al. 2015).
    *                  At each diffuse vertex, launch a manifold walk to find
    *                  valid specular connections to sampled light positions.
-   *                  Unbiased. Adds per-shading-event cost proportional to
-   *                  the number of specular interfaces (typically 2–5 Newton
-   *                  steps per walk attempt). May fail for highly curved or
-   *                  rough specular surfaces.
+   *                  Backends report whether their implementation is native or
+   *                  approximate. Walkaround uses finite Newton/chain caps and
+   *                  a bounded SMS inverse-basin recurrence correction; that is
+   *                  a supported bounded approximation, not an unbiased claim.
    *
-   * 'photon-map':    Biased photon mapping for caustics. Trace forward photons
-   *                  from lights; store caustic photons in a spatial data
-   *                  structure; use density estimation at diffuse shading points
-   *                  to reconstruct caustic radiance. APPROXIMATE / stylized — NOT
-   *                  a radiometric reference: on `pt-webgpu`, GPU-A/B'd against the
-   *                  forward-traced oracle that validated MNEE it recovers only
-   *                  ~21% of the true caustic energy and fires on ~1% of caustic
-   *                  pixels, with a hardcoded world-unit gather radius (~6×
-   *                  firing-rate swing under a scale change) and a flat brightness
-   *                  fudge (~20% of its reported energy). Backends that expose it
-   *                  advertise it as approximate.
+   * 'photon-map':    Progressive stochastic photon mapping on pt-webgpu full
+   *                  tier. Each iteration emits a fresh bounded photon set,
+   *                  hashes it into scene-relative cells, and updates per-pixel
+   *                  (tau, radius^2, N) density-estimation state. Backends that
+   *                  do not implement this estimator reject the option.
    *
-   * Backend note: `pt-webgpu`'s `manifold-nee` path is the VALIDATED REFERENCE
-   * caustic (~98.7% oracle energy, scale-invariant) — prefer it for fidelity.
-   * `pt-webgl2`'s caustic modes and `pt-webgpu`'s `photon-map` mode are
-   * approximate/experimental capability rows. Evidence for the pt-webgpu numbers:
-   * GPU A/B dzn RTX-4090, 2026-06-07,
-   * `wsl-gpu/captures/queue-2026-06-07/photon-map/RESULTS.md`.
+   * 'refractive-trace': Bounded realtime receiver-to-directional-light path
+   *                  sampling through refractive interfaces. This is an
+   *                  approximate finite-work estimator, NOT Manifold NEE and
+   *                  not covered by MNEE's unbiasedness claim. Backends report
+   *                  the exact selected strategy through capabilities.
    *
    * Default: 'none'.
    *
    * Reference: Hanika, Droske, Fascione, "Manifold Next Event Estimation,"
    * Computer Graphics Forum 34(4), 2015. DOI: 10.1111/cgf.12681.
    */
-  readonly causticStrategy?: 'none' | 'manifold-nee' | 'photon-map';
+  readonly causticStrategy?: EngineCausticStrategy;
 
   /**
-   * Caustic-strategy-specific tuning knobs. Backends ignore entries that don't
-   * apply to the selected `causticStrategy`.
+   * Caustic-strategy-specific tuning knobs. Backends validate entries against
+   * the selected `causticStrategy`; unsupported keys may be rejected.
    *
    * Known keys:
    *  - `mneeMaxIterations` (number, default 8) — MNEE Newton iterations per
    *    manifold walk attempt. Active when `causticStrategy === 'manifold-nee'`.
    *  - `mneeMaxChainLength` (number, default 3) — Maximum specular vertices
    *    in an MNEE chain. Active when `causticStrategy === 'manifold-nee'`.
+   *  - `mneeMultiplicityTrials` (number, default 8) — Bounded independent
+   *    recurrence trials used by the SMS inverse-basin approximation.
    *
    * The `[key: string]: unknown` index signature is the **intentional extension
    * point** for future caustic strategies (e.g. photon-map radius, PPG target
@@ -157,6 +156,7 @@ export interface EngineOptions {
   readonly causticOptions?: Readonly<{
     mneeMaxIterations?: number;
     mneeMaxChainLength?: number;
+    mneeMultiplicityTrials?: number;
     [key: string]: unknown;
   }>;
 

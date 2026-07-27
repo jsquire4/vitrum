@@ -5,6 +5,23 @@ export const SOBOL_BLUE_NOISE_TILE_SIZE = 8;
 
 const SOBOL_FACTOR = 1 / 16_777_216; // 2^-24, matching the GLSL Sobol texture path.
 
+export const SOBOL_SAMPLE_BLOCK_SIZE = 65_536;
+// Four independent direction-number tables are embedded by both the CPU and
+// WGSL implementations. Higher dimensions use the explicit PCG continuation;
+// cycling those four tables with a different scramble is not a 256-D Sobol net.
+export const SOBOL_DIMENSION_COUNT = 4;
+export const SOBOL_DIMENSION_EXHAUSTION = 0xffff_ffff;
+
+export interface OwenScrambledSobolStreamState {
+  sampleIndex: number;
+  dimension: number;
+  pixelX: number;
+  pixelY: number;
+  sequenceKey: number;
+  rotationTile: number;
+  fallbackState: number;
+}
+
 export const SOBOL_BLUE_NOISE_RANK_8X8 = [
    0, 63, 12, 60,  3, 55, 15, 62,
   53, 23, 57, 17, 44, 19, 32, 22,
@@ -144,24 +161,61 @@ export function sobolTextureComponentBits(index: number, dimension: number): num
 
 export function sobolBlueNoiseRotationBits(tileIndex: number, dimension: number): number {
   const tile = finiteIntegerOrZero(tileIndex) & 63;
-  const dim = finiteIntegerOrZero(dimension) & 0xff;
+  const dim = finiteIntegerOrZero(dimension) >>> 0;
   const rank = SOBOL_BLUE_NOISE_RANK_8X8[tile] ?? 0;
   if (rank === 0) return 0;
   return sobolHash(sobolHashCombine(rank, dim)) & 0x00ffffff;
 }
 
+export function sobolFrameKey(frameSeed: number, frameIndex: number): number {
+  const seed = finiteIntegerOrZero(frameSeed) >>> 0;
+  const frame = finiteIntegerOrZero(frameIndex) >>> 0;
+  const sampleBlock = frame >>> 16;
+  const seedKey = sobolHash(seed) & 0x0000ffff;
+  const blockKey = (seedKey + Math.imul(sampleBlock, 0x00009e37)) & 0x0000ffff;
+  return toU32((blockKey << 16) | (frame & 0x0000ffff));
+}
+
+function streamSeedFor(pixelX: number, pixelY: number, sequenceKey: number): number {
+  const pixelSeed = sobolHash(sobolHashCombine(sobolHash(pixelX), pixelY));
+  return sobolHash(sobolHashCombine(pixelSeed, sequenceKey));
+}
+
+export function initOwenScrambledSobolStream(
+  pixelX: number,
+  pixelY: number,
+  frameKey: number,
+): OwenScrambledSobolStreamState {
+  const px = finiteIntegerOrZero(pixelX) >>> 0;
+  const py = finiteIntegerOrZero(pixelY) >>> 0;
+  const key = finiteIntegerOrZero(frameKey) >>> 0;
+  const sampleIndex = key & 0x0000ffff;
+  const sequenceKey = key >>> 16;
+  const pixelSeed = sobolHash(sobolHashCombine(sobolHash(px), py));
+  return {
+    sampleIndex,
+    dimension: 0,
+    pixelX: px,
+    pixelY: py,
+    sequenceKey,
+    rotationTile: (px & 7) | ((py & 7) << 3),
+    fallbackState: sobolHash(
+      sobolHashCombine(
+        sobolHashCombine(sobolHashCombine(pixelSeed, sequenceKey), sampleIndex),
+        SOBOL_DIMENSION_COUNT,
+      ),
+    ),
+  };
+}
+
+/** @deprecated Use initOwenScrambledSobolStream for the full non-aliasing state. */
 export function initOwenScrambledSobolState(
   pixelX: number,
   pixelY: number,
-  frameSeed: number,
+  frameKey: number,
 ): number {
-  const px = finiteIntegerOrZero(pixelX) >>> 0;
-  const py = finiteIntegerOrZero(pixelY) >>> 0;
-  const frame = finiteIntegerOrZero(frameSeed) >>> 0;
-  const pixelSeed = sobolHash(sobolHashCombine(sobolHash(px), py));
-  const sampleIndex = frame & 0x0000ffff;
-  const rotationTile = sobolHash(sobolHashCombine(pixelSeed, frame >>> 16)) & 0xff;
-  return toU32((sampleIndex << 16) | (rotationTile << 8));
+  const state = initOwenScrambledSobolStream(pixelX, pixelY, frameKey);
+  return toU32((state.sampleIndex << 16) | (state.rotationTile << 8));
 }
 
 function sobolComponent(index: number, directions: readonly number[]): number {
@@ -180,20 +234,26 @@ export function sobolTexturePoint(index: number): readonly [number, number, numb
 }
 
 /**
- * CPU oracle for pt-webgpu's binding-free Sobol RNG.
+ * CPU oracle for pt-webgpu's binding-free Sobol dimensions.
  *
- * `dimension` is intentionally reduced to the shader's 8-bit per-path counter
- * so tests can catch CPU/GPU drift at the exact public shader contract.
+ * The Owen seed is fixed for a full pixel/path stream and dimension; it never
+ * depends on the sample index. Dimensions outside the four-table contract are
+ * rejected here and are handled by nextOwenScrambledSobolU32's PCG fallback.
  */
 export function owenScrambledSobolU32(
   pathIndex: number,
   dimension: number,
   rotationTile = 0,
+  streamSeed = 0,
 ): number {
   const path = finiteIntegerOrZero(pathIndex) & 0x0000ffff;
-  const dim = finiteIntegerOrZero(dimension) & 0xff;
-  const seed = sobolHash(sobolHashCombine(path, dim));
-  const shuffleSeed = sobolHashCombine(seed, 0);
+  const rawDimension = dimension;
+  if (!Number.isInteger(rawDimension) || rawDimension < 0 || rawDimension >= SOBOL_DIMENSION_COUNT) {
+    throw new RangeError(`dimension must be an integer in [0, ${SOBOL_DIMENSION_COUNT - 1}]`);
+  }
+  const dim = rawDimension >>> 0;
+  const seed = sobolHash(sobolHashCombine(streamSeed, dim));
+  const shuffleSeed = sobolHashCombine(streamSeed, 0);
   const shuffledIndex = nestedUniformScrambleBase2(
     reverseBits32(path),
     shuffleSeed,
@@ -205,12 +265,46 @@ export function owenScrambledSobolU32(
   return toU32(rotated24 << 8);
 }
 
+function nextFallbackU32(state: OwenScrambledSobolStreamState): number {
+  const next = toU32(Math.imul(state.fallbackState, 747_796_405) + 2_891_336_453);
+  state.fallbackState = next;
+  let word = Math.imul(toU32((next >>> ((next >>> 28) + 4)) ^ next), 277_803_737) >>> 0;
+  word = toU32((word >>> 22) ^ word);
+  return word;
+}
+
+export function nextOwenScrambledSobolU32(
+  state: OwenScrambledSobolStreamState,
+): number {
+  const dim = finiteIntegerOrZero(state.dimension) >>> 0;
+  if (dim >= SOBOL_DIMENSION_COUNT) {
+    if (dim !== SOBOL_DIMENSION_EXHAUSTION) state.dimension = dim + 1;
+    return nextFallbackU32(state);
+  }
+  const streamSeed = streamSeedFor(state.pixelX, state.pixelY, state.sequenceKey);
+  const value = owenScrambledSobolU32(
+    state.sampleIndex,
+    dim,
+    state.rotationTile,
+    streamSeed,
+  );
+  state.dimension = dim + 1;
+  return value;
+}
+
+export function nextOwenScrambledSobolFloat(
+  state: OwenScrambledSobolStreamState,
+): number {
+  return (nextOwenScrambledSobolU32(state) >>> 8) * SOBOL_FACTOR;
+}
+
 export function owenScrambledSobolFloat(
   pathIndex: number,
   dimension: number,
   rotationTile = 0,
+  streamSeed = 0,
 ): number {
-  return (owenScrambledSobolU32(pathIndex, dimension, rotationTile) >>> 8) * SOBOL_FACTOR;
+  return (owenScrambledSobolU32(pathIndex, dimension, rotationTile, streamSeed) >>> 8) * SOBOL_FACTOR;
 }
 
 export function generateSobolTextureData(pointCount = SOBOL_TEXTURE_POINTS): Float32Array {

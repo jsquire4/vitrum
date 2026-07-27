@@ -24,7 +24,7 @@ export const bsdf_functions = /* glsl */`
 		return vec3( heroScalarFromRgb( rgb, heroWavelength ) );
 	}
 
-	vec3 activeLayerThroughput( SurfaceRecord surf, float heroWavelength ) {
+	vec3 activeLayerThroughput( const in SurfaceRecord surf, float heroWavelength ) {
 		if ( ! surf.hasActiveLayer ) return vec3( 1.0 );
 		return pathThroughputFromRgb( surf.activeLayerTransmission, heroWavelength );
 	}
@@ -42,14 +42,26 @@ export const bsdf_functions = /* glsl */`
 		return ( 1.0 - g2 ) / ( 4.0 * PI * denom * sqrt( denom ) );
 	}
 
-	vec3 sampleHG_glsl( float u1, float u2, float g, vec3 forward ) {
-		float gg = clamp( g, -0.9999, 0.9999 );
-		float cosTheta;
-		if ( abs( gg ) < 1e-4 ) {
-			cosTheta = 1.0 - 2.0 * u2;
-		} else {
-			float sqrtTerm = ( 1.0 - gg * gg ) / ( 1.0 - gg + 2.0 * gg * u2 );
-			cosTheta = ( 1.0 + gg * gg - sqrtTerm * sqrtTerm ) / ( 2.0 * gg );
+        vec3 sampleHG_glsl( float u1, float u2, float g, vec3 forward ) {
+                float gg = clamp( g, -0.9999, 0.9999 );
+                float cosTheta;
+                float a = 1.0 - 2.0 * u2;
+                if ( gg == 0.0 ) {
+                        cosTheta = a;
+                } else if ( abs( gg ) < 1e-3 ) {
+                        // Stable expansion of the exact inversion through g².
+                        // Unlike the old isotropic cutoff, every nonzero
+                        // authored asymmetry still changes the sample.
+                        float a2 = a * a;
+                        cosTheta = a + 1.5 * gg * ( 1.0 - a2 )
+                                + 2.0 * gg * gg * ( a * a2 - a );
+                } else {
+                        // Using 1-u preserves the exact-zero branch's sample
+                        // orientation while leaving the HG distribution
+                        // unchanged because the variate remains uniform.
+                        float xi = 1.0 - u2;
+                        float sqrtTerm = ( 1.0 - gg * gg ) / ( 1.0 - gg + 2.0 * gg * xi );
+                        cosTheta = ( 1.0 + gg * gg - sqrtTerm * sqrtTerm ) / ( 2.0 * gg );
 		}
 		cosTheta = clamp( cosTheta, -1.0, 1.0 );
 		float sinTheta = sqrt( max( 0.0, 1.0 - cosTheta * cosTheta ) );
@@ -59,7 +71,7 @@ export const bsdf_functions = /* glsl */`
 	}
 
 	// diffuse
-	float diffuseEval( vec3 wo, vec3 wi, vec3 wh, SurfaceRecord surf, inout vec3 color ) {
+	float diffuseEval( vec3 wo, vec3 wi, vec3 wh, const in SurfaceRecord surf, inout vec3 color ) {
 
 		// https://schuttejoe.github.io/post/disneybsdf/
 		float fl = schlickFresnel( wi.z, 0.0 );
@@ -82,7 +94,7 @@ export const bsdf_functions = /* glsl */`
 
 	}
 
-	vec3 diffuseDirection( vec3 wo, SurfaceRecord surf ) {
+	vec3 diffuseDirection( vec3 wo, const in SurfaceRecord surf ) {
 
 		vec3 lightDirection = sampleSphere( rand2( 11 ) );
 		lightDirection.z += 1.0;
@@ -108,31 +120,39 @@ export const bsdf_functions = /* glsl */`
 
 	}
 
-	vec2 anisotropicRoughnessAxes( SurfaceRecord surf ) {
+        vec2 anisotropicRoughnessAxes( const in SurfaceRecord surf ) {
 
-		float roughness = clamp( surf.filteredRoughness, 0.001, 1.0 );
-		float aspect = sqrt( max( 1.0 - 0.9 * clamp( surf.anisotropy, 0.0, 1.0 ), 0.1 ) );
-		return clamp( vec2( roughness / aspect, roughness * aspect ), vec2( 0.001 ), vec2( 1.0 ) );
+                float roughness = clamp( surf.filteredRoughness, 0.0, 1.0 );
+                // A positive anisotropy request deliberately stays on the
+                // anisotropic continuous path. Only the degenerate exact-zero
+                // width needs a finite representation; every authored positive
+                // roughness, however small, is preserved verbatim.
+                if ( roughness == 0.0 ) roughness = 0.001;
+                float aspect = sqrt( max( 1.0 - 0.9 * clamp( surf.anisotropy, 0.0, 1.0 ), 0.1 ) );
+                return min( vec2( roughness / aspect, roughness * aspect ), vec2( 1.0 ) );
 
 	}
 
 	float ggxDistributionAnisotropic( vec3 halfVector, vec2 roughness ) {
 
 		if ( halfVector.z <= 0.0 ) return 0.0;
-		float ax = max( roughness.x, 0.001 );
-		float ay = max( roughness.y, 0.001 );
-		float hx = halfVector.x / ax;
-		float hy = halfVector.y / ay;
-		float denom = hx * hx + hy * hy + halfVector.z * halfVector.z;
-		return 1.0 / max( PI * ax * ay * denom * denom, EPSILON );
+                float ax = roughness.x;
+                float ay = roughness.y;
+                if ( ! ( ax > 0.0 ) || ! ( ay > 0.0 ) ) return 0.0;
+                float hx = halfVector.x / ax;
+                float hy = halfVector.y / ay;
+                float denom = hx * hx + hy * hy + halfVector.z * halfVector.z;
+                float normalization = PI * ax * ay * denom * denom;
+                if ( ! ( normalization > 0.0 ) ) return 0.0;
+                return 1.0 / normalization;
 
 	}
 
 	float ggxLambdaAnisotropic( vec3 w, vec2 roughness ) {
 
 		float z2 = max( w.z * w.z, 1e-6 );
-		float ax = max( roughness.x, 0.001 );
-		float ay = max( roughness.y, 0.001 );
+                float ax = max( roughness.x, 0.0 );
+                float ay = max( roughness.y, 0.0 );
 		float a2tan2 = ( ax * ax * w.x * w.x + ay * ay * w.y * w.y ) / z2;
 		return ( - 1.0 + sqrt( 1.0 + a2tan2 ) ) * 0.5;
 
@@ -150,43 +170,45 @@ export const bsdf_functions = /* glsl */`
 
 	}
 
-	float ggxDistributionForSurface( vec3 halfVector, SurfaceRecord surf ) {
+	float ggxDistributionForSurface( vec3 halfVector, const in SurfaceRecord surf ) {
 
-		if ( surf.anisotropy <= 1e-4 ) return ggxDistribution( halfVector, surf.filteredRoughness );
+            if ( surf.anisotropy <= 0.0 ) return ggxDistribution( halfVector, surf.filteredRoughness );
 		vec3 h = rotateAnisotropyFrame( halfVector, surf.anisotropyRotation );
 		return ggxDistributionAnisotropic( h, anisotropicRoughnessAxes( surf ) );
 
 	}
 
-	float ggxShadowMaskG1ForSurface( vec3 w, SurfaceRecord surf ) {
+	float ggxShadowMaskG1ForSurface( vec3 w, const in SurfaceRecord surf ) {
 
-		if ( surf.anisotropy <= 1e-4 ) return ggxShadowMaskG1( acos( w.z ), surf.filteredRoughness );
+            if ( surf.anisotropy <= 0.0 ) return ggxShadowMaskG1( acos( w.z ), surf.filteredRoughness );
 		vec3 wa = rotateAnisotropyFrame( w, surf.anisotropyRotation );
 		return ggxShadowMaskG1Anisotropic( wa, anisotropicRoughnessAxes( surf ) );
 
 	}
 
-	float ggxShadowMaskG2ForSurface( vec3 wi, vec3 wo, SurfaceRecord surf ) {
+	float ggxShadowMaskG2ForSurface( vec3 wi, vec3 wo, const in SurfaceRecord surf ) {
 
-		if ( surf.anisotropy <= 1e-4 ) return ggxShadowMaskG2( wi, wo, surf.filteredRoughness );
+            if ( surf.anisotropy <= 0.0 ) return ggxShadowMaskG2( wi, wo, surf.filteredRoughness );
 		vec3 wia = rotateAnisotropyFrame( wi, surf.anisotropyRotation );
 		vec3 woa = rotateAnisotropyFrame( wo, surf.anisotropyRotation );
 		return ggxShadowMaskG2Anisotropic( wia, woa, anisotropicRoughnessAxes( surf ) );
 
 	}
 
-	float ggxPdfForSurface( vec3 wi, vec3 halfVector, SurfaceRecord surf ) {
+	float ggxPdfForSurface( vec3 wi, vec3 halfVector, const in SurfaceRecord surf ) {
 
-		if ( surf.anisotropy <= 1e-4 ) return ggxPDF( wi, halfVector, surf.filteredRoughness );
-		float D = ggxDistributionForSurface( halfVector, surf );
-		float G1 = ggxShadowMaskG1ForSurface( wi, surf );
-		return D * G1 * max( 0.0, abs( dot( wi, halfVector ) ) ) / max( abs( wi.z ), EPSILON );
+            if ( surf.anisotropy <= 0.0 ) return ggxPDF( wi, halfVector, surf.filteredRoughness );
+                float D = ggxDistributionForSurface( halfVector, surf );
+                float G1 = ggxShadowMaskG1ForSurface( wi, surf );
+                float projectedView = abs( wi.z );
+                if ( ! ( projectedView > 0.0 ) ) return 0.0;
+                return D * G1 * abs( dot( wi, halfVector ) ) / projectedView;
 
 	}
 
-	vec3 ggxDirectionForSurface( vec3 wo, SurfaceRecord surf, vec2 uv ) {
+	vec3 ggxDirectionForSurface( vec3 wo, const in SurfaceRecord surf, vec2 uv ) {
 
-		if ( surf.anisotropy <= 1e-4 ) return ggxDirection( wo, vec2( surf.filteredRoughness ), uv );
+            if ( surf.anisotropy <= 0.0 ) return ggxDirection( wo, vec2( surf.filteredRoughness ), uv );
 		vec3 woAniso = rotateAnisotropyFrame( wo, surf.anisotropyRotation );
 		vec3 hAniso = ggxDirection( woAniso, anisotropicRoughnessAxes( surf ), uv );
 		return normalize( unrotateAnisotropyFrame( hAniso, surf.anisotropyRotation ) );
@@ -212,18 +234,18 @@ export const bsdf_functions = /* glsl */`
 		float lambdaUm = lambdaNm * 0.001;  // nm → µm
 		float lam2 = lambdaUm * lambdaUm;
 		float lam4 = lam2 * lam2;
-		// Fast path: skip C term when near-zero to save one division.
-		if ( abs( C ) < 1e-8 ) return A + B / lam2;
+		// Exact-zero fast path: positive finite Cauchy support must not disappear.
+		if ( C == 0.0 ) return A + B / lam2;
 		return A + B / lam2 + C / lam4;
 	}
 
-	bool cauchyDispersionEnabled( SurfaceRecord surf ) {
+	bool cauchyDispersionEnabled( const in SurfaceRecord surf ) {
 
-		return surf.dispersionStrength > 1e-5 && ( abs( iorCauchyB ) > 1e-8 || abs( iorCauchyC ) > 1e-8 );
+		return surf.dispersionStrength > 0.0 && ( abs( iorCauchyB ) > 0.0 || abs( iorCauchyC ) > 0.0 );
 
 	}
 
-	float surfaceIorAtHero( SurfaceRecord surf, float heroWavelength ) {
+	float surfaceIorAtHero( const in SurfaceRecord surf, float heroWavelength ) {
 
 		if ( ! cauchyDispersionEnabled( surf ) ) {
 
@@ -233,13 +255,15 @@ export const bsdf_functions = /* glsl */`
 
 		float iorAtHero = cauchyIORatLambda( heroWavelength, iorCauchyA, iorCauchyB, iorCauchyC );
 		float iorDelta = iorAtHero - iorCauchyA;
-		float dispersionScale = surf.dispersionStrength / max( abs( iorCauchyB ), 1e-6 );
+		float dispersionBasis = max( abs( iorCauchyB ), abs( iorCauchyC ) );
+		if ( ! ( dispersionBasis > 0.0 ) || isnan( dispersionBasis ) || isinf( dispersionBasis ) ) return surf.ior;
+		float dispersionScale = surf.dispersionStrength / dispersionBasis;
 		dispersionScale = clamp( dispersionScale, 0.0, 4.0 );
 		return max( 1.0, surf.ior + iorDelta * dispersionScale );
 
 	}
 
-	float transmissionEtaAtHero( SurfaceRecord surf, float heroWavelength ) {
+	float transmissionEtaAtHero( const in SurfaceRecord surf, float heroWavelength ) {
 
 		float ior = surfaceIorAtHero( surf, heroWavelength );
 		return surf.frontFace ? 1.0 / ior : ior;
@@ -247,7 +271,7 @@ export const bsdf_functions = /* glsl */`
 	}
 
 	// specular
-	float specularEval( vec3 wo, vec3 wi, vec3 wh, SurfaceRecord surf, float heroWavelength, inout vec3 color ) {
+	float specularEval( vec3 wo, vec3 wi, vec3 wh, const in SurfaceRecord surf, float heroWavelength, inout vec3 color ) {
 
 		// if roughness is set to 0 then D === NaN which results in black pixels
 		float metalness = surf.metalness;
@@ -301,7 +325,7 @@ export const bsdf_functions = /* glsl */`
 
 	}
 
-	vec3 specularDirection( vec3 wo, SurfaceRecord surf ) {
+	vec3 specularDirection( vec3 wo, const in SurfaceRecord surf ) {
 
 		// sample ggx vndf distribution which gives a new normal
 		vec3 halfVector = ggxDirectionForSurface( wo, surf, rand2( 12 ) );
@@ -314,10 +338,44 @@ export const bsdf_functions = /* glsl */`
 
 	// Transmission / refraction (GGX microfacet BTDF).
 	// PDF follows Walter et al., EGSR07 §4.2 — consistent with half-vector Jacobians
-	// when sampling uses a perturbed normal / half-vector (see commented block above).
-	float transmissionEval( vec3 wo, vec3 wi, vec3 wh, SurfaceRecord surf, float heroWavelength, inout vec3 color ) {
+	// for the exact VNDF half-vector sampled by transmissionDirection().
+	float transmissionEval( vec3 wo, vec3 wi, vec3 wh, const in SurfaceRecord surf, float heroWavelength, inout vec3 color ) {
 
-		color = surf.transmission * surf.color;
+		float eta = transmissionEtaAtHero( surf, heroWavelength );
+		float woDotH = dot( wo, wh );
+		float wiDotH = dot( wi, wh );
+		if ( woDotH * wiDotH >= 0.0 || abs( wo.z ) <= EPSILON || abs( wi.z ) <= EPSILON ) {
+			color = vec3( 0.0 );
+			return 0.0;
+		}
+
+		// Our transmission half-vector is normalize(wi + eta * wo), equivalent
+		// to Walter's normalize(wo + eta_t/eta_i * wi). The solid-angle
+		// Jacobian for mapping the sampled microfacet normal to wi is therefore:
+		//   dwh/dwi = |wi·wh| / (wi·wh + eta * wo·wh)^2
+		float sqrtDenom = wiDotH + eta * woDotH;
+		float denom = sqrtDenom * sqrtDenom;
+		if ( denom <= 1e-12 ) {
+			color = vec3( 0.0 );
+			return 0.0;
+		}
+		float pdfWh = ggxPdfForSurface( wo, wh, surf );
+		float pdfWi = pdfWh * abs( wiDotH ) / denom;
+		if ( pdfWi <= 0.0 ) {
+			color = vec3( 0.0 );
+			return 0.0;
+		}
+
+		float F = dielectricFresnel( abs( woDotH ), eta );
+		float D = ggxDistributionForSurface( wh, surf );
+		float G = ggxShadowMaskG2ForSurface( wi, wo, surf );
+		// Walter et al. rough-dielectric BTDF in radiance-transport mode,
+		// multiplied by |n·wi| because ScatterRecord.throughput stores f*cos.
+		// eta^2 is 1/(eta_t/eta_i)^2 for this shader's eta convention.
+		float btdfCos =
+			( 1.0 - F ) * D * G * abs( wiDotH * woDotH ) * eta * eta /
+			max( abs( wo.z ) * denom, 1e-12 );
+		color = surf.transmission * surf.color * btdfCos;
 		if ( surf.thinFilmEnabled > 0.5 && surf.thinFilmLayerCount > 0.5 ) {
 			float viewCos = surf.thinFilmAngleDependent ? abs( wo.z ) : 1.0;
 			vec2 thinFilmRt = thinFilmTMM(
@@ -331,37 +389,34 @@ export const bsdf_functions = /* glsl */`
 			color *= thinFilmRt.y;
 		}
 
-		float eta = transmissionEtaAtHero( surf, heroWavelength );
-		float cosTheta = min( wo.z, 1.0 );
-		float sinTheta = sqrt( max( 1.0 - cosTheta * cosTheta, 0.0 ) );
-		bool cannotRefract = eta * sinTheta > 1.0;
-		if ( cannotRefract ) {
-
-			return 0.0;
-
-		}
-
-		float inner = eta * dot( wi, wh ) + dot( wo, wh );
-		float denom = inner * inner;
-		if ( denom <= 1e-12 ) {
-
-			return 0.0;
-
-		}
-
-		return ggxPdfForSurface( wo, wh, surf ) / denom;
+		return pdfWi;
 
 	}
 
-	vec3 transmissionDirection( vec3 wo, SurfaceRecord surf ) {
+        vec3 transmissionDirection( vec3 wo, const in SurfaceRecord surf ) {
 
 		float eta = surf.eta;
-		vec3 halfVector = ggxDirectionForSurface( wo, surf, rand2( 13 ) );
-		vec3 lightDirection = refract( normalize( - wo ), halfVector, eta );
+                vec3 halfVector = ggxDirectionForSurface( wo, surf, rand2( 13 ) );
+                vec3 lightDirection = refract( normalize( - wo ), halfVector, eta );
 
-		if ( surf.thinFilm ) {
+                // GLSL refract returns exactly zero for total internal reflection.
+                // Never feed that sentinel to normalize, including the virtual
+                // second boundary of a thin sheet.
+                if ( ! ( dot( lightDirection, lightDirection ) > 1e-16 ) ) {
+                        return vec3( 0.0 );
+                }
 
-			lightDirection = - refract( normalize( - lightDirection ), - vec3( 0.0, 0.0, 1.0 ), 1.0 / eta );
+                if ( surf.thinFilm ) {
+
+                        vec3 exitDirection = refract(
+                                normalize( - lightDirection ),
+                                - vec3( 0.0, 0.0, 1.0 ),
+                                1.0 / eta
+                        );
+                        if ( ! ( dot( exitDirection, exitDirection ) > 1e-16 ) ) {
+                                return vec3( 0.0 );
+                        }
+                        lightDirection = - exitDirection;
 
 		}
 
@@ -382,60 +437,24 @@ export const bsdf_functions = /* glsl */`
 		return 0.5 + x * inversesqrt( 1.0 + x * x ) * 0.5;
 	}
 
-	// Jakob & Hanika 2019 spectral upsampling (see evalSpectrum). The host solves the
-	// genuine sigmoid-polynomial coefficients for a representative medium albedo and
-	// uploads them into u_jakobCoeffs (default flat (0,0,0) ⇒ S ≡ ½, the no-op case).
-	// evalSpectrumAtHero returns the paper-accurate reflectance S(λ) of that albedo at
-	// the sampled hero wavelength — used by mediumAlbedoHero below to drive the volume
-	// scatter / SSS single-scatter albedo through chroma-accurate spectral reflectance.
-	// Ref: Jakob, W. & Hanika, J. 2019, "A Low-Dimensional Function Space for Efficient
-	//      Spectral Upsampling", Computer Graphics Forum 38(2) (Eurographics 2019).
-	float evalSpectrumAtHero( float lambdaNm ) {
-		return evalSpectrum( u_jakobCoeffs, lambdaNm );
-	}
-
-	// True when the host has actually uploaded a non-trivial Jakob & Hanika coefficient
-	// set: spectral rendering enabled AND u_jakobCoeffs not at the flat (0,0,0) default.
-	// The flat default evaluates to sigmoid(0) = ½ for every wavelength, which would
-	// wash out colour — so when the gate is false we MUST stay on the legacy RGB→hero
-	// smoothstep projection, keeping the default path bit-identical to pre-wiring behaviour.
-	bool spectralUpsamplingActive() {
-		return uSpectralRendering == 1 &&
-			( u_jakobCoeffs.x != 0.0 || u_jakobCoeffs.y != 0.0 || u_jakobCoeffs.z != 0.0 );
-	}
-
-	// Hero-wavelength scalar for the representative MEDIUM albedo (volume single-scatter
-	// σ_s/σ_t and SSS single-scatter albedo). Both quantities are the dispersive medium's
-	// dimensionless albedo in [0,1] — exactly the colour the host upsamples into
-	// u_jakobCoeffs via @vitrum/shared-samplers::rgbToSpectralCoefficients.
-	//
-	//   gate ON  : S(λ) = evalSpectrumAtHero(λ)         (Jakob & Hanika 2019 sigmoid reflectance)
-	//   gate OFF : heroScalarFromRgb( rgb, λ )          (legacy smoothstep tent projection)
-	//
-	// Both branches return a unit-less reflectance scalar in [0,1], so energy/units are
-	// preserved across the switch. The rgb argument is the medium albedo the host
-	// represented via spectralAlbedo; when the gate is active the global sigmoid spectrum
-	// supersedes the per-channel tent projection of that same albedo.
-	// Ref: Jakob & Hanika 2019 (see evalSpectrumAtHero).
-	float mediumAlbedoHero( vec3 rgb, float heroWavelength ) {
-		if ( spectralUpsamplingActive() ) {
-			return evalSpectrumAtHero( heroWavelength );
-		}
-		return heroScalarFromRgb( rgb, heroWavelength );
-	}
-
 	vec3 mediumAlbedoThroughput( vec3 rgb, float heroWavelength ) {
 		if ( uSpectralRendering == 0 ) return max( rgb, vec3( 0.0 ) );
-		return vec3( mediumAlbedoHero( rgb, heroWavelength ) );
+		// RGB scattering is an explicitly approximate contract row. Project the
+		// actual per-material σ_s/σ_t albedo to the sampled hero wavelength;
+		// a single scene-global sigmoid spectrum cannot represent more than one
+		// participating material and previously remained at an unreachable flat
+		// default. Surface reflectance continues to use genuine per-material
+		// Jakob-Hanika coefficients through evalSpectrum().
+		return vec3( heroScalarFromRgb( rgb, heroWavelength ) );
 	}
 
-	vec3 attenuationSigmaA( vec3 attColor, float attDist ) {
-		if ( attDist <= 0.0 || attDist > 1e19 ) return vec3( 0.0 );
-		vec3 transmittance = clamp( attColor, vec3( 1e-4 ), vec3( 1.0 ) );
-		return max( - log( transmittance ) / attDist, vec3( 0.0 ) );
-	}
+        vec3 attenuationSigmaA( vec3 attColor, float attDist ) {
+                if ( attDist <= 0.0 || isinf( attDist ) ) return vec3( 0.0 );
+                vec3 transmittance = min( attColor, vec3( 1.0 ) );
+                return max( - log( transmittance ) / attDist, vec3( 0.0 ) );
+        }
 
-	vec3 transmissionAttenuationThroughput(
+        vec3 transmissionAttenuationThroughput(
 		sampler2D materialsTex,
 		float dist,
 		vec3 attColor,
@@ -455,29 +474,135 @@ export const bsdf_functions = /* glsl */`
 			hasSpectral,
 			materialIndex,
 			heroWavelength
-		) );
-	}
+                ) );
+        }
+
+        vec3 fogTrueExtinction(
+                sampler2D materialsTex,
+                const in FogMaterial fog,
+                float heroWavelength
+        ) {
+                vec3 sigmaA = attenuationSigmaA(
+                        fog.attenuationColor, fog.attenuationDistance
+                );
+                if ( uSpectralRendering == 0 ) return sigmaA + fog.sigmaS;
+                float sigmaAHero = fog.hasSpectralAttenuation
+                        ? spectralAttenuationMuHero(
+                                materialsTex, fog.materialIndex, heroWavelength
+                        )
+                        : heroScalarFromRgb( sigmaA, heroWavelength );
+                float sigmaSHero = heroScalarFromRgb(
+                        fog.sigmaS, heroWavelength
+                );
+                return vec3( sigmaAHero + sigmaSHero );
+        }
+
+        vec3 fogSegmentTransmittance(
+                sampler2D materialsTex,
+                const in FogMaterial fog,
+                float dist,
+                float heroWavelength
+        ) {
+                if ( dist <= 0.0 ) return vec3( 1.0 );
+                return exp(
+                        - fogTrueExtinction(
+                                materialsTex, fog, heroWavelength
+                        ) * dist
+                );
+        }
+
+        // The ray-distance proposal is sampled from fog.opacity, the packed
+        // scalar majorant.  This ratio converts that proposal's survival into
+        // the authored RGB / hero-wavelength Beer law without changing the
+        // proposal PDFs used by BDPT MIS.
+        vec3 fogFreeFlightRatioWeight(
+                sampler2D materialsTex,
+                const in FogMaterial fog,
+                float dist,
+                float heroWavelength
+        ) {
+                if ( dist <= 0.0 || fog.opacity <= 0.0 ) return vec3( 1.0 );
+                vec3 sigmaT = fogTrueExtinction(
+                        materialsTex, fog, heroWavelength
+                );
+                return exp( ( vec3( fog.opacity ) - sigmaT ) * dist );
+        }
+
+        float mediumPhasePdf( vec3 worldWo, vec3 worldWi, float g ) {
+                float cosTheta = clamp(
+                        dot( - normalize( worldWo ), normalize( worldWi ) ),
+                        -1.0,
+                        1.0
+                );
+                float g2 = g * g;
+                float denominator = pow( 1.0 + g2 - 2.0 * g * cosTheta, 1.5 );
+                return ( 1.0 - g2 ) / ( 4.0 * PI * denominator );
+        }
+
+        vec3 sampleMediumPhase( vec3 worldWo, float g, vec2 uv ) {
+                float cosTheta;
+                float a = 1.0 - 2.0 * uv.x;
+                if ( g == 0.0 ) {
+                        cosTheta = a;
+                } else if ( abs( g ) < 1e-3 ) {
+                        // Stable expansion of the exact inversion through g².
+                        // Every nonzero authored asymmetry remains observable;
+                        // there is no isotropic epsilon cutoff.
+                        float a2 = a * a;
+                        cosTheta = a + 1.5 * g * ( 1.0 - a2 )
+                                + 2.0 * g * g * ( a * a2 - a );
+                } else {
+                        // Complementing the uniform variate keeps the finite-g
+                        // inversion continuous with the exact-zero orientation.
+                        float xi = 1.0 - uv.x;
+                        float ratio = ( 1.0 - g * g ) / ( 1.0 - g + 2.0 * g * xi );
+                        cosTheta = ( 1.0 + g * g - ratio * ratio ) / ( 2.0 * g );
+                }
+                cosTheta = clamp( cosTheta, -1.0, 1.0 );
+                float sinTheta = sqrt( max( 1.0 - cosTheta * cosTheta, 0.0 ) );
+                float phi = 2.0 * PI * uv.y;
+                vec3 localDirection = vec3(
+                        sinTheta * cos( phi ),
+                        sinTheta * sin( phi ),
+                        cosTheta
+                );
+                return normalize(
+                        getBasisFromNormal( - normalize( worldWo ) ) * localDirection
+                );
+        }
 
 	// Sprint 12: dielectric transmission with hero-wavelength Cauchy IOR.
 	// Uses global Cauchy coefficients (iorCauchyA/B/C) with per-material base IOR
 	// preserved by applying only the spectral delta from iorCauchyA.
-	vec3 dispersionTransmissionDirection( vec3 wo, SurfaceRecord surf, float heroWavelength ) {
+        vec3 dispersionTransmissionDirection( vec3 wo, const in SurfaceRecord surf, float heroWavelength ) {
 
 		float eta = transmissionEtaAtHero( surf, heroWavelength );
 
-		vec3 halfVector = ggxDirectionForSurface( wo, surf, rand2( 13 ) );
-		vec3 lightDirection = refract( normalize( - wo ), halfVector, eta );
+                vec3 halfVector = ggxDirectionForSurface( wo, surf, rand2( 13 ) );
+                vec3 lightDirection = refract( normalize( - wo ), halfVector, eta );
 
-		if ( surf.thinFilm ) {
-			lightDirection = - refract( normalize( - lightDirection ), - vec3( 0.0, 0.0, 1.0 ), 1.0 / eta );
-		}
+                if ( ! ( dot( lightDirection, lightDirection ) > 1e-16 ) ) {
+                        return vec3( 0.0 );
+                }
+
+                if ( surf.thinFilm ) {
+                        vec3 exitDirection = refract(
+                                normalize( - lightDirection ),
+                                - vec3( 0.0, 0.0, 1.0 ),
+                                1.0 / eta
+                        );
+                        if ( ! ( dot( exitDirection, exitDirection ) > 1e-16 ) ) {
+                                return vec3( 0.0 );
+                        }
+                        lightDirection = - exitDirection;
+                }
 
 		return normalize( lightDirection );
 
 	}
 
 	// clearcoat
-	float clearcoatEval( vec3 wo, vec3 wi, vec3 wh, SurfaceRecord surf, inout vec3 color ) {
+	float clearcoatEval( vec3 wo, vec3 wi, vec3 wh, const in SurfaceRecord surf, inout vec3 color ) {
 
 		float ior = 1.5;
 		float f0 = iorRatioToF0( ior );
@@ -498,7 +623,7 @@ export const bsdf_functions = /* glsl */`
 
 	}
 
-	vec3 clearcoatDirection( vec3 wo, SurfaceRecord surf ) {
+	vec3 clearcoatDirection( vec3 wo, const in SurfaceRecord surf ) {
 
 		// sample ggx vndf distribution which gives a new normal
 		float roughness = surf.filteredClearcoatRoughness;
@@ -514,7 +639,7 @@ export const bsdf_functions = /* glsl */`
 	}
 
 	// sheen
-	vec3 sheenColor( vec3 wo, vec3 wi, vec3 wh, SurfaceRecord surf ) {
+	vec3 sheenColor( vec3 wo, vec3 wi, vec3 wh, const in SurfaceRecord surf ) {
 
 		float cosThetaO = saturateCos( wo.z );
 		float cosThetaI = saturateCos( wi.z );
@@ -534,7 +659,7 @@ export const bsdf_functions = /* glsl */`
 
 	// bsdf
 	void getLobeWeights(
-		vec3 wo, vec3 wi, vec3 wh, vec3 clearcoatWo, SurfaceRecord surf,
+		vec3 wo, vec3 wi, vec3 wh, vec3 clearcoatWo, const in SurfaceRecord surf,
 		float heroWavelength,
 		inout float diffuseWeight, inout float specularWeight, inout float transmissionWeight, inout float clearcoatWeight
 	) {
@@ -560,10 +685,10 @@ export const bsdf_functions = /* glsl */`
 		clearcoatWeight /= totalWeight;
 	}
 
-	void getSamplingLobeWeights(
-		vec3 wo, vec3 clearcoatWo, SurfaceRecord surf, float heroWavelength,
-		inout float diffuseWeight, inout float specularWeight, inout float transmissionWeight, inout float clearcoatWeight
-	) {
+        void getSamplingLobeWeights(
+                vec3 wo, vec3 clearcoatWo, const in SurfaceRecord surf, float heroWavelength,
+                inout float diffuseWeight, inout float specularWeight, inout float transmissionWeight, inout float clearcoatWeight
+        ) {
 
 		// The path sampler chooses a lobe before a candidate wi exists. Use the
 		// same incident-direction-independent policy anywhere a mixed BSDF PDF is
@@ -573,16 +698,465 @@ export const bsdf_functions = /* glsl */`
 		// policy so MIS sees the PDF of the distribution that could generate wi.
 		getLobeWeights( wo, wo, vec3( 0, 0, 1 ), clearcoatWo, surf, heroWavelength, diffuseWeight, specularWeight, transmissionWeight, clearcoatWeight );
 
-	}
+        }
 
-	float bsdfEval(
-		vec3 wo, vec3 clearcoatWo, vec3 wi, vec3 clearcoatWi, SurfaceRecord surf,
-		float heroWavelength,
-		float diffuseWeight, float specularWeight, float transmissionWeight, float clearcoatWeight, inout float specularPdf, inout vec3 color
-	) {
+        bool bsdfBaseLobesAreDelta( const in SurfaceRecord surf ) {
 
-		float metalness = surf.metalness;
-		float transmission = surf.transmission;
+            // Anisotropy only shapes a lobe with nonzero width. At exact-zero
+            // roughness both axes collapse to the same discrete direction.
+            return surf.filteredRoughness <= 0.0;
+
+        }
+
+        bool bsdfClearcoatLobeIsDelta( const in SurfaceRecord surf ) {
+
+                return surf.filteredClearcoatRoughness <= 0.0;
+
+        }
+
+        bool bsdfDeltaDirectionMatches( vec3 sampledDirection, vec3 candidateDirection ) {
+
+                return dot(
+                        normalize( sampledDirection ),
+                        normalize( candidateDirection )
+                ) >= 1.0 - 2e-6;
+
+        }
+
+        vec3 bsdfDeltaTransmissionDirection(
+                vec3 wo,
+                const in SurfaceRecord surf,
+                float heroWavelength
+        ) {
+
+                float eta = transmissionEtaAtHero( surf, heroWavelength );
+                vec3 direction = refract(
+                        normalize( - wo ),
+                        vec3( 0.0, 0.0, 1.0 ),
+                        eta
+                );
+                if ( ! ( dot( direction, direction ) > 1e-16 ) ) {
+                        return vec3( 0.0 );
+                }
+                if ( surf.thinFilm ) {
+
+                        vec3 exitDirection = refract(
+                                normalize( - direction ),
+                                - vec3( 0.0, 0.0, 1.0 ),
+                                1.0 / eta
+                        );
+                        if ( ! ( dot( exitDirection, exitDirection ) > 1e-16 ) ) {
+                                return vec3( 0.0 );
+                        }
+                        direction = - exitDirection;
+
+                }
+                return normalize( direction );
+
+        }
+
+        float bsdfDeltaPdfLocal(
+                vec3 wo,
+                vec3 clearcoatWo,
+                vec3 wi,
+                vec3 clearcoatWi,
+                const in SurfaceRecord surf,
+                float heroWavelength,
+                float specularWeight,
+                float transmissionWeight,
+                float clearcoatWeight,
+                out bool deltaMeasure
+        ) {
+
+                deltaMeasure = false;
+                float pdf = 0.0;
+                if ( bsdfBaseLobesAreDelta( surf ) ) {
+
+                        vec3 reflected = - reflect( wo, vec3( 0.0, 0.0, 1.0 ) );
+                        if (
+                                specularWeight > 0.0 &&
+                                wi.z > 0.0 &&
+                                bsdfDeltaDirectionMatches( reflected, wi )
+                        ) {
+
+                                pdf += specularWeight;
+                                deltaMeasure = true;
+
+                        }
+
+                        vec3 transmitted =
+                                bsdfDeltaTransmissionDirection( wo, surf, heroWavelength );
+                        if (
+                                transmissionWeight > 0.0 &&
+                                wi.z < 0.0 &&
+                                length( transmitted ) > 1e-8 &&
+                                bsdfDeltaDirectionMatches( transmitted, wi )
+                        ) {
+
+                                pdf += transmissionWeight;
+                                deltaMeasure = true;
+
+                        }
+
+                }
+
+                if ( bsdfClearcoatLobeIsDelta( surf ) && clearcoatWeight > 0.0 ) {
+
+                        vec3 reflectedClearcoat =
+                                - reflect( clearcoatWo, vec3( 0.0, 0.0, 1.0 ) );
+                        if (
+                                clearcoatWi.z >= 0.0 &&
+                                bsdfDeltaDirectionMatches( reflectedClearcoat, clearcoatWi )
+                        ) {
+
+                                pdf += clearcoatWeight;
+                                deltaMeasure = true;
+
+                        }
+
+                }
+
+                return pdf;
+
+        }
+
+        float bsdfPdfLocal(
+                vec3 wo,
+                vec3 clearcoatWo,
+                vec3 wi,
+                vec3 clearcoatWi,
+                const in SurfaceRecord surf,
+                float heroWavelength,
+                float diffuseWeight,
+                float specularWeight,
+                float transmissionWeight,
+                float clearcoatWeight,
+                out bool deltaMeasure
+        ) {
+
+                float deltaPdf = bsdfDeltaPdfLocal(
+                        wo,
+                        clearcoatWo,
+                        wi,
+                        clearcoatWi,
+                        surf,
+                        heroWavelength,
+                        specularWeight,
+                        transmissionWeight,
+                        clearcoatWeight,
+                        deltaMeasure
+                );
+                if ( deltaMeasure ) return deltaPdf;
+
+                float dpdf = 0.0;
+                float spdf = 0.0;
+                float tpdf = 0.0;
+                float cpdf = 0.0;
+                if ( diffuseWeight > 0.0 && wi.z > 0.0 ) {
+
+                        dpdf = wi.z / PI;
+
+                }
+                if (
+                        specularWeight > 0.0 &&
+                        wi.z > 0.0 &&
+                        ! bsdfBaseLobesAreDelta( surf )
+                ) {
+
+                        vec3 wh = getHalfVector( wi, wo );
+                        spdf = ggxPdfForSurface( wo, wh, surf ) /
+                                max( 4.0 * dot( wo, wh ), 1e-12 );
+
+                }
+                if (
+                        transmissionWeight > 0.0 &&
+                        wi.z < 0.0 &&
+                        ! bsdfBaseLobesAreDelta( surf )
+                ) {
+
+                        float eta = transmissionEtaAtHero( surf, heroWavelength );
+                        vec3 wh = getHalfVector( wi, wo, eta );
+                        float wiDotH = dot( wi, wh );
+                        float woDotH = dot( wo, wh );
+                        float sqrtDenom = wiDotH + eta * woDotH;
+                        float denom = sqrtDenom * sqrtDenom;
+                        if ( wiDotH * woDotH < 0.0 && denom > 1e-12 ) {
+
+                                tpdf =
+                                        ggxPdfForSurface( wo, wh, surf ) *
+                                        abs( wiDotH ) /
+                                        denom;
+
+                        }
+
+                }
+                if (
+                        clearcoatWeight > 0.0 &&
+                        clearcoatWi.z >= 0.0 &&
+                        ! bsdfClearcoatLobeIsDelta( surf )
+                ) {
+
+                        vec3 wh = getHalfVector( clearcoatWi, clearcoatWo );
+                        cpdf = ggxPDF(
+                                clearcoatWo,
+                                wh,
+                                surf.filteredClearcoatRoughness
+                        ) / max( 4.0 * dot( clearcoatWi, wh ), 1e-12 );
+
+                }
+
+                return
+                        dpdf * diffuseWeight +
+                        spdf * specularWeight +
+                        tpdf * transmissionWeight +
+                        cpdf * clearcoatWeight;
+
+        }
+
+        float bsdfPdfResult(
+                vec3 worldWo,
+                vec3 worldWi,
+                const in SurfaceRecord surf,
+                float heroWavelength,
+                out bool deltaMeasure
+        ) {
+
+                if ( surf.volumeParticle ) {
+
+                        deltaMeasure = false;
+                        return mediumPhasePdf(
+                                worldWo, worldWi, surf.sssAnisotropyG
+                        );
+
+                }
+
+                mat3 normalInvBasis = transpose( surf.normalBasis );
+                vec3 wo = normalize( normalInvBasis * worldWo );
+                vec3 wi = normalize( normalInvBasis * worldWi );
+                mat3 clearcoatInvBasis = transpose( surf.clearcoatBasis );
+                vec3 clearcoatWo = normalize( clearcoatInvBasis * worldWo );
+                vec3 clearcoatWi = normalize( clearcoatInvBasis * worldWi );
+
+                float diffuseWeight;
+                float specularWeight;
+                float transmissionWeight;
+                float clearcoatWeight;
+                getSamplingLobeWeights(
+                        wo,
+                        clearcoatWo,
+                        surf,
+                        heroWavelength,
+                        diffuseWeight,
+                        specularWeight,
+                        transmissionWeight,
+                        clearcoatWeight
+                );
+                return bsdfPdfLocal(
+                        wo,
+                        clearcoatWo,
+                        wi,
+                        clearcoatWi,
+                        surf,
+                        heroWavelength,
+                        diffuseWeight,
+                        specularWeight,
+                        transmissionWeight,
+                        clearcoatWeight,
+                        deltaMeasure
+                );
+
+        }
+
+        float bsdfDeltaEvalLocal(
+                vec3 wo,
+                vec3 clearcoatWo,
+                vec3 wi,
+                vec3 clearcoatWi,
+                const in SurfaceRecord surf,
+                float heroWavelength,
+                float specularWeight,
+                float transmissionWeight,
+                float clearcoatWeight,
+                inout vec3 color
+        ) {
+
+                bool deltaMeasure;
+                float pdf = bsdfDeltaPdfLocal(
+                        wo,
+                        clearcoatWo,
+                        wi,
+                        clearcoatWi,
+                        surf,
+                        heroWavelength,
+                        specularWeight,
+                        transmissionWeight,
+                        clearcoatWeight,
+                        deltaMeasure
+                );
+                color = vec3( 0.0 );
+                if ( ! deltaMeasure ) return 0.0;
+
+                vec3 baseDelta = vec3( 0.0 );
+                if ( bsdfBaseLobesAreDelta( surf ) ) {
+
+                        vec3 reflected = - reflect( wo, vec3( 0.0, 0.0, 1.0 ) );
+                        if (
+                                specularWeight > 0.0 &&
+                                wi.z > 0.0 &&
+                                bsdfDeltaDirectionMatches( reflected, wi )
+                        ) {
+
+                                vec3 f0Color = mix(
+                                        surf.f0 * surf.specularColor * surf.specularIntensity,
+                                        surf.color,
+                                        surf.metalness
+                                );
+                                vec3 f90Color = vec3(
+                                        mix( surf.specularIntensity, 1.0, surf.metalness )
+                                );
+                                vec3 F = evaluateFresnel(
+                                        abs( wo.z ),
+                                        surf.eta,
+                                        f0Color,
+                                        f90Color
+                                );
+                                if ( ( surf.lobeMask & 16u ) != 0u && ! surf.liteMode ) {
+
+                                        vec3 iridescenceF = evalIridescence(
+                                                1.0,
+                                                surf.iridescenceIor,
+                                                abs( wi.z ),
+                                                surf.iridescenceThickness,
+                                                f0Color
+                                        );
+                                        F = mix( F, iridescenceF, surf.iridescence );
+
+                                }
+                                if (
+                                        surf.thinFilmEnabled > 0.5 &&
+                                        surf.thinFilmLayerCount > 0.5
+                                ) {
+
+                                        float viewCos =
+                                                surf.thinFilmAngleDependent
+                                                        ? abs( wo.z )
+                                                        : 1.0;
+                                        vec2 thinFilmRt = thinFilmTMM(
+                                                surf.materialIndex,
+                                                int( surf.thinFilmLayerCount + 0.5 ),
+                                                heroWavelength,
+                                                max( surf.ior, 1.0 ),
+                                                surf.thinFilmIncidentIor,
+                                                viewCos
+                                        );
+                                        F = clamp(
+                                                F + ( vec3( 1.0 ) - F ) * thinFilmRt.x,
+                                                vec3( 0.0 ),
+                                                vec3( 1.0 )
+                                        );
+
+                                }
+                                baseDelta += F;
+
+                        }
+
+                        vec3 transmitted =
+                                bsdfDeltaTransmissionDirection( wo, surf, heroWavelength );
+                        if (
+                                transmissionWeight > 0.0 &&
+                                wi.z < 0.0 &&
+                                length( transmitted ) > 1e-8 &&
+                                bsdfDeltaDirectionMatches( transmitted, wi )
+                        ) {
+
+                                float eta = transmissionEtaAtHero( surf, heroWavelength );
+                                float F = dielectricFresnel( abs( wo.z ), eta );
+                                vec3 transmissionColor =
+                                        surf.transmission *
+                                        surf.color *
+                                        ( 1.0 - F ) *
+                                        eta * eta;
+                                if (
+                                        surf.thinFilmEnabled > 0.5 &&
+                                        surf.thinFilmLayerCount > 0.5
+                                ) {
+
+                                        float viewCos =
+                                                surf.thinFilmAngleDependent
+                                                        ? abs( wo.z )
+                                                        : 1.0;
+                                        vec2 thinFilmRt = thinFilmTMM(
+                                                surf.materialIndex,
+                                                int( surf.thinFilmLayerCount + 0.5 ),
+                                                heroWavelength,
+                                                max( surf.ior, 1.0 ),
+                                                surf.thinFilmIncidentIor,
+                                                viewCos
+                                        );
+                                        transmissionColor *= thinFilmRt.y;
+
+                                }
+                                baseDelta += transmissionColor;
+
+                        }
+
+                }
+
+                vec3 clearcoatDelta = vec3( 0.0 );
+                float clearcoatF = 0.0;
+                if ( ( surf.lobeMask & 8u ) != 0u && ! surf.liteMode ) {
+
+                        clearcoatF = schlickFresnel( abs( clearcoatWo.z ), 0.04 );
+                        if (
+                                bsdfClearcoatLobeIsDelta( surf ) &&
+                                clearcoatWeight > 0.0
+                        ) {
+
+                                vec3 reflectedClearcoat =
+                                        - reflect( clearcoatWo, vec3( 0.0, 0.0, 1.0 ) );
+                                if (
+                                        clearcoatWi.z >= 0.0 &&
+                                        bsdfDeltaDirectionMatches(
+                                                reflectedClearcoat,
+                                                clearcoatWi
+                                        )
+                                ) {
+
+                                        clearcoatDelta =
+                                                vec3( surf.clearcoat * clearcoatF );
+
+                                }
+
+                        }
+                        if ( clearcoatWi.z >= 0.0 ) {
+
+                                baseDelta *= 1.0 - surf.clearcoat * clearcoatF;
+
+                        }
+
+                }
+
+                if ( ( surf.lobeMask & 4u ) != 0u && ! surf.liteMode ) {
+
+                        baseDelta *= mix(
+                                1.0,
+                                sheenAlbedoScaling( wo, wi, surf ),
+                                surf.sheen
+                        );
+
+                }
+                color =
+                        ( baseDelta + clearcoatDelta ) *
+                        activeLayerThroughput( surf, heroWavelength );
+                return pdf;
+
+        }
+
+        float bsdfEval(
+                vec3 wo, vec3 clearcoatWo, vec3 wi, vec3 clearcoatWi, const in SurfaceRecord surf,
+                float heroWavelength,
+                float diffuseWeight, float specularWeight, float transmissionWeight, float clearcoatWeight, inout float specularPdf, inout vec3 color
+        ) {
 
 		float spdf = 0.0;
 		float dpdf = 0.0;
@@ -592,7 +1166,6 @@ export const bsdf_functions = /* glsl */`
 
 		vec3 halfVector = getHalfVector( wi, wo, surf.eta );
 
-		// diffuse
 		if ( diffuseWeight > 0.0 && wi.z > 0.0 ) {
 
 			dpdf = diffuseEval( wo, wi, halfVector, surf, color );
@@ -600,8 +1173,11 @@ export const bsdf_functions = /* glsl */`
 
 		}
 
-		// ggx specular
-		if ( specularWeight > 0.0 && wi.z > 0.0 ) {
+                if (
+                        specularWeight > 0.0 &&
+                        wi.z > 0.0 &&
+                        ! bsdfBaseLobesAreDelta( surf )
+                ) {
 
 			vec3 outColor;
 			spdf = specularEval( wo, wi, getHalfVector( wi, wo ), surf, heroWavelength, outColor );
@@ -609,29 +1185,47 @@ export const bsdf_functions = /* glsl */`
 
 		}
 
-		// transmission
-		if ( transmissionWeight > 0.0 && wi.z < 0.0 ) {
+                if (
+                        transmissionWeight > 0.0 &&
+                        wi.z < 0.0 &&
+                        ! bsdfBaseLobesAreDelta( surf )
+                ) {
 
 			vec3 transmissionHalfVector = getHalfVector( wi, wo, transmissionEtaAtHero( surf, heroWavelength ) );
-			tpdf = transmissionEval( wo, wi, transmissionHalfVector, surf, heroWavelength, color );
+			vec3 transmissionColor;
+			tpdf = transmissionEval( wo, wi, transmissionHalfVector, surf, heroWavelength, transmissionColor );
+			color += transmissionColor;
 
 		}
 
-		// lobeMask-gated optional lobes. liteMode is retained as an internal
-		// escape hatch, but ordinary path-tracing keeps authored lobes at all depths.
-		// sheen: skip entirely when lobeMask bit 2 is clear.
 		if ( ( surf.lobeMask & 4u ) != 0u && ! surf.liteMode ) {
 			color *= mix( 1.0, sheenAlbedoScaling( wo, wi, surf ), surf.sheen );
 			color += sheenColor( wo, wi, halfVector, surf ) * surf.sheen;
 		}
 
-		// clearcoat: skip entirely when lobeMask bit 3 is clear.
-		if ( ( surf.lobeMask & 8u ) != 0u && ! surf.liteMode && clearcoatWi.z >= 0.0 && clearcoatWeight > 0.0 ) {
+                if (
+                        ( surf.lobeMask & 8u ) != 0u &&
+                        ! surf.liteMode &&
+                        clearcoatWi.z >= 0.0 &&
+                        clearcoatWeight > 0.0 &&
+                        ! bsdfClearcoatLobeIsDelta( surf )
+                ) {
 
 			vec3 clearcoatHalfVector = getHalfVector( clearcoatWo, clearcoatWi );
-			cpdf = clearcoatEval( clearcoatWo, clearcoatWi, clearcoatHalfVector, surf, color );
+                        cpdf = clearcoatEval( clearcoatWo, clearcoatWi, clearcoatHalfVector, surf, color );
 
-		}
+                } else if (
+                        ( surf.lobeMask & 8u ) != 0u &&
+                        ! surf.liteMode &&
+                        clearcoatWi.z >= 0.0 &&
+                        clearcoatWeight > 0.0
+                ) {
+
+                        float clearcoatF =
+                                schlickFresnel( abs( clearcoatWo.z ), 0.04 );
+                        color *= 1.0 - surf.clearcoat * clearcoatF;
+
+                }
 
 		// RFE-03 / Sprint 14: apply selected front/back layer absorption exactly once
 		// in the BSDF evaluation flow, after all lobes have been summed.
@@ -645,36 +1239,54 @@ export const bsdf_functions = /* glsl */`
 			+ tpdf * transmissionWeight
 			+ cpdf * clearcoatWeight;
 
-		// retrieve specular rays for the shadows flag
 		specularPdf = spdf * specularWeight + cpdf * clearcoatWeight;
 
 		return pdf;
 
 	}
 
-	float bsdfResult( vec3 worldWo, vec3 worldWi, SurfaceRecord surf, float heroWavelength, inout vec3 color ) {
+	float bsdfResult( vec3 worldWo, vec3 worldWi, const in SurfaceRecord surf, float heroWavelength, inout vec3 color ) {
 
-		if ( surf.volumeParticle ) {
+           if ( surf.volumeParticle ) {
 
-			color = surf.color / ( 4.0 * PI );
-			return 1.0 / ( 4.0 * PI );
+                   float phasePdf = mediumPhasePdf(
+                           worldWo, worldWi, surf.sssAnisotropyG
+                   );
+                   color = surf.color * phasePdf;
+                   return phasePdf;
 
 		}
 
-		vec3 wo = normalize( surf.normalInvBasis * worldWo );
-		vec3 wi = normalize( surf.normalInvBasis * worldWi );
+		mat3 normalInvBasis = transpose( surf.normalBasis );
+		vec3 wo = normalize( normalInvBasis * worldWo );
+		vec3 wi = normalize( normalInvBasis * worldWi );
 
-		vec3 clearcoatWo = normalize( surf.clearcoatInvBasis * worldWo );
-		vec3 clearcoatWi = normalize( surf.clearcoatInvBasis * worldWi );
+		mat3 clearcoatInvBasis = transpose( surf.clearcoatBasis );
+		vec3 clearcoatWo = normalize( clearcoatInvBasis * worldWo );
+		vec3 clearcoatWi = normalize( clearcoatInvBasis * worldWi );
 
 		float diffuseWeight;
 		float specularWeight;
 		float transmissionWeight;
-		float clearcoatWeight;
-		getSamplingLobeWeights( wo, clearcoatWo, surf, heroWavelength, diffuseWeight, specularWeight, transmissionWeight, clearcoatWeight );
+                float clearcoatWeight;
+                getSamplingLobeWeights( wo, clearcoatWo, surf, heroWavelength, diffuseWeight, specularWeight, transmissionWeight, clearcoatWeight );
 
-		float specularPdf;
-		return bsdfEval( wo, clearcoatWo, wi, clearcoatWi, surf, heroWavelength, diffuseWeight, specularWeight, transmissionWeight, clearcoatWeight, specularPdf, color );
+                float deltaPdf = bsdfDeltaEvalLocal(
+                        wo,
+                        clearcoatWo,
+                        wi,
+                        clearcoatWi,
+                        surf,
+                        heroWavelength,
+                        specularWeight,
+                        transmissionWeight,
+                        clearcoatWeight,
+                        color
+                );
+                if ( deltaPdf > 0.0 ) return deltaPdf;
+
+                float specularPdf;
+                return bsdfEval( wo, clearcoatWo, wi, clearcoatWi, surf, heroWavelength, diffuseWeight, specularWeight, transmissionWeight, clearcoatWeight, specularPdf, color );
 
 	}
 
@@ -684,7 +1296,7 @@ export const bsdf_functions = /* glsl */`
 	// The scatter position is sampled from an exponential distribution along
 	// the refracted direction; the scattered direction is sampled from HG.
 	// Mirrors @vitrum/shared-samplers/src/hgPhase.ts::sampleHG.
-	ScatterRecord sssSample( vec3 worldWo, SurfaceRecord surf, float heroWavelength ) {
+	ScatterRecord sssSample( vec3 worldWo, const in SurfaceRecord surf, float heroWavelength ) {
 
 		// Per-material SSS parameters come from the SurfaceRecord (packed from the
 		// MaterialsTexture: material.sssSigmaT/sssAnisotropyG/sssSigmaS via
@@ -701,46 +1313,53 @@ export const bsdf_functions = /* glsl */`
 		float tScatter = sampleExponentialDistance( rand( 17 ), sigmaTMajorant, 1e6 );
 		float beerLambert = exp( - sigmaTMajorant * tScatter );
 		vec3 mediumAlbedo = vec3(
-			sigmaT.x > 1e-6 ? sigmaS.x / sigmaT.x : 0.0,
-			sigmaT.y > 1e-6 ? sigmaS.y / sigmaT.y : 0.0,
-			sigmaT.z > 1e-6 ? sigmaS.z / sigmaT.z : 0.0
+			sigmaT.x > 0.0 ? sigmaS.x / sigmaT.x : 0.0,
+			sigmaT.y > 0.0 ? sigmaS.y / sigmaT.y : 0.0,
+			sigmaT.z > 0.0 ? sigmaS.z / sigmaT.z : 0.0
 		);
 
 		vec3 rd = normalize( - worldWo ); // refracted direction approximation
 		vec3 scatterDir = sampleHG_glsl( rand( 18 ), rand( 19 ), surf.sssAnisotropyG, rd );
 
-		ScatterRecord sssRec;
-		sssRec.pdf = hg_phase( dot( rd, scatterDir ), surf.sssAnisotropyG );
-		sssRec.specularPdf = 0.0;
-		sssRec.direction = scatterDir;
-		// Medium single-scatter albedo at the hero wavelength. Under the Jakob & Hanika
-		// gate this is the paper-accurate sigmoid reflectance of the representative medium
-		// albedo; otherwise the legacy smoothstep tent projection. Beer-Lambert attenuation
-		// stays an explicit scalar factor so units (reflectance × transmittance) are preserved.
+                ScatterRecord sssRec;
+                sssRec.pdf = hg_phase( dot( rd, scatterDir ), surf.sssAnisotropyG );
+                sssRec.specularPdf = 0.0;
+                sssRec.direction = scatterDir;
+                sssRec.sampledDelta = false;
+		// Medium single-scatter albedo is projected from this material's authored
+		// RGB σ_s/σ_t to the hero wavelength. Beer-Lambert attenuation remains an
+		// explicit scalar so units (reflectance × transmittance) are preserved.
 		sssRec.throughput = mediumAlbedoThroughput( mediumAlbedo, heroWavelength ) * beerLambert;
 		return sssRec;
 
 	}
 
-	ScatterRecord bsdfSample( vec3 worldWo, SurfaceRecord surf, float heroWavelength ) {
+	ScatterRecord bsdfSample( vec3 worldWo, const in SurfaceRecord surf, float heroWavelength ) {
 
-		if ( surf.volumeParticle ) {
+           if ( surf.volumeParticle ) {
 
-			ScatterRecord sampleRec;
-			sampleRec.specularPdf = 0.0;
-			sampleRec.pdf = 1.0 / ( 4.0 * PI );
-			sampleRec.direction = sampleSphere( rand2( 16 ) );
-			sampleRec.throughput = pathThroughputFromRgb( surf.color / ( 4.0 * PI ), heroWavelength );
+                        ScatterRecord sampleRec;
+                        sampleRec.specularPdf = 0.0;
+                        sampleRec.direction = sampleMediumPhase(
+                                worldWo, surf.sssAnisotropyG, rand2( 16 )
+                        );
+                        sampleRec.pdf = mediumPhasePdf(
+                                worldWo, sampleRec.direction, surf.sssAnisotropyG
+                        );
+                        sampleRec.sampledDelta = false;
+                   sampleRec.throughput = pathThroughputFromRgb(
+                           surf.color * sampleRec.pdf, heroWavelength
+                   );
 			return sampleRec;
 
 		}
 
-		vec3 wo = normalize( surf.normalInvBasis * worldWo );
-		vec3 clearcoatWo = normalize( surf.clearcoatInvBasis * worldWo );
 		mat3 normalBasis = surf.normalBasis;
-		mat3 invBasis = surf.normalInvBasis;
+		mat3 invBasis = transpose( normalBasis );
 		mat3 clearcoatNormalBasis = surf.clearcoatBasis;
-		mat3 clearcoatInvBasis = surf.clearcoatInvBasis;
+		mat3 clearcoatInvBasis = transpose( clearcoatNormalBasis );
+		vec3 wo = normalize( invBasis * worldWo );
+		vec3 clearcoatWo = normalize( clearcoatInvBasis * worldWo );
 
 		float diffuseWeight;
 		float specularWeight;
@@ -760,7 +1379,7 @@ export const bsdf_functions = /* glsl */`
 		cdf[2] = pdf[2] + cdf[1];
 		cdf[3] = pdf[3] + cdf[2];
 
-		if( cdf[3] != 0.0 ) {
+		if ( cdf[3] != 0.0 ) {
 
 			float invMaxCdf = 1.0 / cdf[3];
 			cdf[0] *= invMaxCdf;
@@ -777,53 +1396,101 @@ export const bsdf_functions = /* glsl */`
 
 		}
 
-		vec3 wi;
-		vec3 clearcoatWi;
+                vec3 wi;
+                vec3 clearcoatWi;
+                bool sampledDelta = false;
+                bool rejectedTransmission = false;
 
-		float r = rand( 15 );
-		if ( r <= cdf[0] ) { // diffuse
+                float r = rand( 15 );
+                if ( r <= cdf[0] ) {
 
 			wi = diffuseDirection( wo, surf );
 			clearcoatWi = normalize( clearcoatInvBasis * normalize( normalBasis * wi ) );
 
-		} else if ( r <= cdf[1] ) { // specular
+                } else if ( r <= cdf[1] ) {
 
-			wi = specularDirection( wo, surf );
-			clearcoatWi = normalize( clearcoatInvBasis * normalize( normalBasis * wi ) );
+                        wi = specularDirection( wo, surf );
+                        clearcoatWi = normalize( clearcoatInvBasis * normalize( normalBasis * wi ) );
+                        sampledDelta = bsdfBaseLobesAreDelta( surf );
 
-		} else if ( r <= cdf[2] ) { // transmission / refraction
+                } else if ( r <= cdf[2] ) {
 
-			// Sprint 12 hero-wavelength dispersion path.
-			// Fast path: if material or global Cauchy dispersion is effectively disabled,
-			// use the classic single-IOR transmission direction.
-			if ( cauchyDispersionEnabled( surf ) ) {
-				wi = dispersionTransmissionDirection( wo, surf, heroWavelength );
-				clearcoatWi = normalize( clearcoatInvBasis * normalize( normalBasis * wi ) );
-				ScatterRecord dispResult;
-				vec3 dispColor;
-				dispResult.pdf = bsdfEval( wo, clearcoatWo, wi, clearcoatWi, surf, heroWavelength, diffuseWeight, specularWeight, transmissionWeight, clearcoatWeight, dispResult.specularPdf, dispColor );
-				dispResult.throughput = pathThroughputFromRgb( dispColor, heroWavelength );
-				dispResult.direction = normalize( surf.normalBasis * wi );
-				return dispResult;
-			} else {
-				wi = transmissionDirection( wo, surf );
-				clearcoatWi = normalize( clearcoatInvBasis * normalize( normalBasis * wi ) );
-			}
+                        wi = cauchyDispersionEnabled( surf )
+                                ? dispersionTransmissionDirection( wo, surf, heroWavelength )
+                                : transmissionDirection( wo, surf );
+                        if ( dot( wi, wi ) > 1e-16 ) {
+                                clearcoatWi = normalize(
+                                        clearcoatInvBasis * normalize( normalBasis * wi )
+                                );
+                        } else {
+                                // TIR rejects the selected transmission sample.
+                                // Keep every returned field finite; zero density
+                                // and throughput make the placeholder direction inert.
+                                clearcoatWi = vec3( 0.0, 0.0, 1.0 );
+                                rejectedTransmission = true;
+                        }
+                        sampledDelta = bsdfBaseLobesAreDelta( surf );
 
-		} else if ( r <= cdf[3] ) { // clearcoat
+                } else {
 
-			clearcoatWi = clearcoatDirection( clearcoatWo, surf );
-			wi = normalize( invBasis * normalize( clearcoatNormalBasis * clearcoatWi ) );
+                        clearcoatWi = clearcoatDirection( clearcoatWo, surf );
+                        wi = normalize( invBasis * normalize( clearcoatNormalBasis * clearcoatWi ) );
+                        sampledDelta = surf.filteredClearcoatRoughness <= 0.0;
 
 		}
 
-		ScatterRecord result;
-		vec3 resultColor;
-		result.pdf = bsdfEval( wo, clearcoatWo, wi, clearcoatWi, surf, heroWavelength, diffuseWeight, specularWeight, transmissionWeight, clearcoatWeight, result.specularPdf, resultColor );
-		result.throughput = pathThroughputFromRgb( resultColor, heroWavelength );
-		result.direction = normalize( surf.normalBasis * wi );
+                ScatterRecord result;
+                if ( rejectedTransmission ) {
 
-		return result;
+                        result.pdf = 0.0;
+                        result.specularPdf = 0.0;
+                        result.throughput = vec3( 0.0 );
+                        result.direction = normalize(
+                                surf.normalBasis * vec3( 0.0, 0.0, 1.0 )
+                        );
+                        result.sampledDelta = sampledDelta;
+                        return result;
+
+                }
+                vec3 resultColor;
+                if ( sampledDelta ) {
+
+                        result.pdf = bsdfDeltaEvalLocal(
+                                wo,
+                                clearcoatWo,
+                                wi,
+                                clearcoatWi,
+                                surf,
+                                heroWavelength,
+                                specularWeight,
+                                transmissionWeight,
+                                clearcoatWeight,
+                                resultColor
+                        );
+                        result.specularPdf = result.pdf;
+
+                } else {
+
+                        result.pdf = bsdfEval(
+                                wo,
+                                clearcoatWo,
+                                wi,
+                                clearcoatWi,
+                                surf,
+                                heroWavelength,
+                                diffuseWeight,
+                                specularWeight,
+                                transmissionWeight,
+                                clearcoatWeight,
+                                result.specularPdf,
+                                resultColor
+                        );
+
+                }
+                result.throughput = pathThroughputFromRgb( resultColor, heroWavelength );
+                result.direction = normalize( surf.normalBasis * wi );
+                result.sampledDelta = sampledDelta;
+                return result;
 
 	}
 

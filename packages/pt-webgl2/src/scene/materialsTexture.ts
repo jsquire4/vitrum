@@ -14,7 +14,6 @@
 // CREDITS.md attributes the absorbed fork.
 
 import type {
-  EngineWarning,
   MaterialSpec,
   TextureFilterMode,
   TextureMipFilterMode,
@@ -35,6 +34,7 @@ import type { TextureAtlasLayerMap, TextureSampleColorSpace } from './texturesAr
 import {
   MATERIAL_MAP_FIELD_ORDER,
   MATERIAL_LAYER_NORMAL_TEXEL_OFFSET,
+  MATERIAL_UV_SELECTOR_TEXEL_OFFSET,
   MATERIAL_PIXELS,
   MATERIAL_SPECTRAL_REFLECTANCE_TEXEL_OFFSET,
   MATERIAL_WRAP_TEXEL_OFFSET,
@@ -54,11 +54,13 @@ import {
  *  site via `materialStride.js` (fork base layout 85 + D3 ao/light/bump/env
  *  texels 85..92 + alphaMap transform texels 93..94 + anisotropyMap transform
  *  texels 95..96 + thickness payload/transform texels 97..99 + wrap texels
- *  sampler-policy texels 100..120 + spectral reflectance texel 121). Re-exported
+ *  sampler-policy texels 100..120 + spectral reflectance texel 121 + layer
+ *  normal texels 122..129 + UV selector texels 130..135). Re-exported
  *  for tests and parity guards. */
 export {
   MATERIAL_MAP_FIELD_ORDER,
   MATERIAL_LAYER_NORMAL_TEXEL_OFFSET,
+  MATERIAL_UV_SELECTOR_TEXEL_OFFSET,
   MATERIAL_PIXELS,
   MATERIAL_SPECTRAL_REFLECTANCE_TEXEL_OFFSET,
   MATERIAL_WRAP_TEXEL_OFFSET,
@@ -84,21 +86,16 @@ const SPECTRAL_GRID_SAMPLE_COUNT = 32;
 const SPECTRAL_GRID_START_NM = 380.0;
 const SPECTRAL_GRID_END_NM = 780.0;
 
-// pt-webgl2's spectral-curve edge handling (fork port): require ≥ 2 values, fall
-// back to the 380/780 nm grid bounds when wavelengthStart/End are non-finite.
-// Passed to shared-samplers `sampleSpectralCurve` to keep the exact prior lookup.
+// Core SpectralCurve requires at least three finite, non-negative values and
+// strictly ordered finite bounds. The shared sampler enforces that contract.
 const PT_WEBGL2_SPECTRAL_CURVE_OPTIONS: SpectralCurveSampleOptions = {
-  minValueCount: 2,
-  fallbackStartNm: SPECTRAL_GRID_START_NM,
-  fallbackEndNm: SPECTRAL_GRID_END_NM,
+  minValueCount: 3,
 };
 
 // Thin-film stack: 35 layers × [ior, thicknessNm, extinction].
 // Declared per-backend in `@vitrum/core` `BackendSupportDetails.thinFilmLayerLimit`
 // (D1 = Option B); pt-webgl2 keeps its 35-layer GLSL stride.
 export const THIN_FILM_LAYER_LIMIT = 35;
-const MEDIUM_EPSILON = 1e-6;
-
 /** ceil(sqrt(n)) — the square dimension that holds `n` texels row-major (mirrors fork). */
 function squareDim(texelCount: number): number {
   return Math.max(1, Math.ceil(Math.sqrt(Math.max(1, texelCount))));
@@ -132,9 +129,33 @@ function resolveSssMedium(
     sigmaA[2] + sigmaS[2],
   );
   const sigmaSMax = Math.max(sigmaS[0], sigmaS[1], sigmaS[2]);
+  // Free-flight sampling uses one scalar majorant for both RGB and hero-
+  // wavelength paths.  The shader interpolates the packed 32-sample spectral
+  // grid linearly, so the largest packed endpoint is an exact upper bound for
+  // every wavelength the shader can evaluate.  Omitting this term made an
+  // authored spectral absorption peak larger than the proposal density.
+  let spectralSigmaAMax = 0.0;
+  if (m.spectralAttenuation != null) {
+    const spectralDenom = Math.max(SPECTRAL_GRID_SAMPLE_COUNT - 1, 1);
+    for (let s = 0; s < SPECTRAL_GRID_SAMPLE_COUNT; s += 1) {
+      const t = s / spectralDenom;
+      const lambdaNm = SPECTRAL_GRID_START_NM +
+        t * (SPECTRAL_GRID_END_NM - SPECTRAL_GRID_START_NM);
+      spectralSigmaAMax = Math.max(
+        spectralSigmaAMax,
+        sharedSampleSpectralCurve(
+          m.spectralAttenuation,
+          lambdaNm,
+          PT_WEBGL2_SPECTRAL_CURVE_OPTIONS,
+        ),
+      );
+    }
+  }
   return {
-    active: sigmaSMax > MEDIUM_EPSILON,
-    sigmaTMax: Math.max(sigmaTMax, 0.0),
+    // Any authored positive scattering coefficient is a medium. Do not erase
+    // dim media behind an arbitrary activation epsilon.
+    active: sigmaSMax > 0,
+    sigmaTMax: Math.max(sigmaTMax, spectralSigmaAMax + sigmaSMax, 0.0),
     sigmaS,
   };
 }
@@ -196,123 +217,57 @@ type TextureRefLike = { handle?: unknown; texCoord?: number };
 
 interface PackMaterialsTextureOptions {
   readonly vertexColorMaterialIds?: ReadonlySet<number>;
-  readonly onWarning?: (warning: EngineWarning) => void;
-  readonly warningPhase?: string;
-  readonly warningMethod?: string;
+  /** Scene-local authored texCoord -> dense attributesArray layer mapping. */
+  readonly uvLayerByTexCoord?: ReadonlyMap<number, number>;
 }
 
-type UnsupportedTexCoordWarner = (
-  materialIndex: number,
-  field: string,
-  ref: TextureRefLike | undefined,
-) => boolean;
-
-function isUnsupportedTexCoord(ref: TextureRefLike | undefined): boolean {
-  if (ref?.handle == null) return false;
-  const texCoord = ref.texCoord ?? 0;
-  return texCoord !== 0 && texCoord !== 1;
-}
-
-function safeTexCoord(ref: TextureRefLike | undefined): number {
-  return isUnsupportedTexCoord(ref) ? 0 : (ref?.texCoord ?? 0);
-}
-
-function unsupportedTexCoordWarning(
-  materialIndex: number,
-  field: string,
-  texCoord: number,
-  options: PackMaterialsTextureOptions,
-): EngineWarning {
-  const message =
-    `[vitrum/pt-webgl2] ignoring material ${materialIndex} ${field}: texCoord ${texCoord} ` +
-    `is unsupported; only texCoord 0 and 1 are renderable by this backend.`;
-  return {
-    code: 'pt-webgl2.material-texture-unsupported-texcoord',
-    backend: 'pt-webgl2',
-    phase: options.warningPhase ?? 'setScene',
-    method: options.warningMethod ?? 'setScene',
-    message,
-    details: {
-      materialIndex,
-      field,
-      texCoord,
-      supportedTexCoords: [0, 1],
-      fallback: 'map-ignored',
-    },
-  };
-}
-
-/**
- * D1 (2026-07-20, Option B) — structured truthfulness warning for a material
- * whose `thinFilmStack.layers` exceed pt-webgl2's declared `THIN_FILM_LAYER_LIMIT`
- * (35). Layers beyond the limit are dropped by `packThinFilm`; this surfaces the
- * truncation to the host so it can reconcile against the backend's declared
- * `BackendSupportDetails.thinFilmLayerLimit`. Warning-only — no texel bytes change
- * for ≤35-layer scenes.
- */
-function thinFilmLayerLimitWarning(
-  materialIndex: number,
-  requested: number,
-  options: PackMaterialsTextureOptions,
-): EngineWarning {
-  const message =
-    `[vitrum/pt-webgl2] material ${materialIndex} declares ${requested} thin-film layers; ` +
-    `this backend packs at most ${THIN_FILM_LAYER_LIMIT} — ${requested - THIN_FILM_LAYER_LIMIT} ` +
-    `excess layer(s) are dropped.`;
-  return {
-    code: 'thin-film-layer-limit-exceeded',
-    backend: 'pt-webgl2',
-    phase: options.warningPhase ?? 'setScene',
-    method: options.warningMethod ?? 'setScene',
-    message,
-    details: {
-      materialIndex,
-      requested,
-      limit: THIN_FILM_LAYER_LIMIT,
-      dropped: requested - THIN_FILM_LAYER_LIMIT,
-    },
-  };
-}
-
-function emitThinFilmLayerLimitWarning(
-  materialIndex: number,
+export function assertThinFilmLayerLimit(
   m: MaterialSpec,
-  options: PackMaterialsTextureOptions,
-): void {
+  context = 'material',
+): number {
   const requested = m.thinFilmStack?.layers?.length ?? 0;
-  if (requested <= THIN_FILM_LAYER_LIMIT) return;
-  const warning = thinFilmLayerLimitWarning(materialIndex, requested, options);
-  options.onWarning?.(warning);
-  console.warn(warning.message.replace('[vitrum/pt-webgl2] ', '[pt-webgl2] '));
-}
-
-function createUnsupportedTexCoordWarner(options: PackMaterialsTextureOptions): UnsupportedTexCoordWarner {
-  const warned = new Set<string>();
-  return (materialIndex, field, ref): boolean => {
-    if (!isUnsupportedTexCoord(ref)) return false;
-    const texCoord = ref?.texCoord ?? 0;
-    const key = `${materialIndex}:${field}:${texCoord}`;
-    if (!warned.has(key)) {
-      warned.add(key);
-      const warning = unsupportedTexCoordWarning(materialIndex, field, texCoord, options);
-      options.onWarning?.(warning);
-      console.warn(warning.message.replace('[vitrum/pt-webgl2] ', '[pt-webgl2] '));
-    }
-    return true;
-  };
+  if (requested > THIN_FILM_LAYER_LIMIT) {
+    throw new RangeError(
+      `[vitrum/pt-webgl2] ${context} declares ${requested} thin-film layers; ` +
+      `the exact backend limit is ${THIN_FILM_LAYER_LIMIT}.`,
+    );
+  }
+  return requested;
 }
 
 function mapLayer(
   ref: TextureRefLike | undefined,
   layerOf: TextureLayerLookup | undefined,
   colorSpace: TextureSampleColorSpace,
-  materialIndex: number,
-  field: string,
-  warnUnsupportedTexCoord: UnsupportedTexCoordWarner,
 ): number {
   if (ref?.handle == null || layerOf == null) return -1;
-  if (warnUnsupportedTexCoord(materialIndex, field, ref)) return -1;
   return layerMapFor(layerOf, colorSpace)?.get(ref.handle) ?? -1;
+}
+
+function defaultUvAttributeLayer(texCoord: number): number {
+  if (texCoord === 0) return 2;
+  if (texCoord === 1) return 4;
+  return 5 + (texCoord - 2);
+}
+
+function resolveUvAttributeLayer(
+  ref: TextureRefLike | undefined,
+  options: PackMaterialsTextureOptions,
+): number {
+  const texCoord = ref?.texCoord ?? 0;
+  if (!Number.isSafeInteger(texCoord) || texCoord < 0) {
+    throw new RangeError(
+      `pt-webgl2: TextureRef.texCoord must be a non-negative safe integer (got ${String(texCoord)})`,
+    );
+  }
+  if (options.uvLayerByTexCoord == null) return defaultUvAttributeLayer(texCoord);
+  const layer = options.uvLayerByTexCoord.get(texCoord);
+  if (layer == null) {
+    throw new Error(
+      `pt-webgl2: scene UV layout has no attribute layer for TextureRef.texCoord ${texCoord}`,
+    );
+  }
+  return layer;
 }
 
 /**
@@ -345,15 +300,25 @@ function writeSamplerPolicy(
   data: Float32Array,
   offset: number,
   ref: {
+    handle?: unknown;
     wrapS?: TextureWrapMode;
     wrapT?: TextureWrapMode;
     magFilter?: TextureFilterMode;
     minFilter?: TextureFilterMode;
     mipFilter?: TextureMipFilterMode;
   } | undefined,
+  layerOf: TextureLayerLookup | undefined,
 ): void {
-  data[offset] = WRAP_MODE_INDEX[ref?.wrapS ?? 'repeat'];
-  data[offset + 1] = WRAP_MODE_INDEX[ref?.wrapT ?? 'repeat'];
+  const dimensions = ref?.handle == null || layerOf == null || typeof (layerOf as Map<unknown, number>).get === 'function'
+    ? undefined
+    : (layerOf as TextureAtlasLayerMap).dimensions?.get(ref.handle);
+  const width = dimensions?.[0] ?? 0;
+  const height = dimensions?.[1] ?? 0;
+  // Pack the native source extent into the high integer bits while retaining
+  // wrap mode modulo four. A zero extent is the low-level helper's legacy
+  // common-size mode; production atlas builds always supply exact dimensions.
+  data[offset] = WRAP_MODE_INDEX[ref?.wrapS ?? 'repeat'] + width * 4;
+  data[offset + 1] = WRAP_MODE_INDEX[ref?.wrapT ?? 'repeat'] + height * 4;
   data[offset + 2] = MIP_FILTER_INDEX[ref?.mipFilter ?? 'none'];
   data[offset + 3] =
     FILTER_MODE_INDEX[ref?.magFilter ?? 'nearest'] +
@@ -436,8 +401,6 @@ const LAYER_ID_MAP: readonly LayerIdMapEntry[] = [
 function packLayerIds(
   m: MaterialSpec,
   layerOf: TextureLayerLookup | undefined,
-  materialIndex: number,
-  warnUnsupportedTexCoord: UnsupportedTexCoordWarner,
 ): LayerIds {
   const ids = {} as LayerIds;
   for (const entry of LAYER_ID_MAP) {
@@ -445,9 +408,6 @@ function packLayerIds(
       entry.ref(m),
       layerOf,
       entry.colorSpace,
-      materialIndex,
-      entry.field,
-      warnUnsupportedTexCoord,
     );
   }
   return ids;
@@ -581,19 +541,22 @@ function packScalarSlots(
   data[index++] = ids.alpha;
   data[index++] = opacity;
   data[index++] = alphaTest;
-  // side: 0 when (!isThinFilm && transmission>0); else FrontSide=1 (core has no
-  // BackSide/DoubleSide concept — meshes are single-sided front by convention,
-  // and the transmission rule overrides to 0/double-sided for glass).
-  if (!isThinFilm && transmission > 0.0) {
+  // side: 0 = both orientations, 1 = front only. Authored double-sided
+  // surfaces are two-sided directly. Closed transmissive volumes also keep
+  // both interfaces traversable even when their exterior visibility policy is
+  // one-sided, otherwise a refracted path could never hit its exit boundary.
+  if (m.doubleSided === true || (!isThinFilm && transmission > 0.0)) {
     data[index++] = 0;
   } else {
     data[index++] = 1; // FrontSide
   }
 
-  // sample 14 — matte / castShadow / vertexColors|(flat<<1) / flags
+  // sample 14 — matte / castShadow / vertexColors|fogVolume / flags
   data[index++] = 0; // matte (core has no matte field)
   data[index++] = m.castShadow === false ? 0 : 1;
-  data[index++] = m.vertexColors === true ? 1 : 0;
+  data[index++] =
+    (m.vertexColors === true ? 1 : 0) |
+    (sssMedium.active && transmission > 0 ? 4 : 0);
   {
     let flags = Number(transparent);
     if (sssMedium.active) flags |= TRANSLUCENT_BIT;
@@ -606,8 +569,7 @@ function packScalarSlots(
   const scatteringAnisotropy = m.scatteringAnisotropy ?? 0.0;
   const dispersionAbbe = m.dispersionAbbeNumber ?? 0.0;
   const dispersionStrength = dispersionStrengthFromAbbe(ior, dispersionAbbe);
-  const thinFilmLayers = m.thinFilmStack?.layers ?? [];
-  const thinFilmLayerCount = Math.min(thinFilmLayers.length, THIN_FILM_LAYER_LIMIT);
+  const thinFilmLayerCount = assertThinFilmLayerLimit(m);
   const thinFilmEnabled = thinFilmLayerCount > 0 ? 1.0 : 0.0;
   data[index++] = sssMedium.sigmaTMax;
   data[index++] = scatteringAnisotropy;
@@ -688,7 +650,7 @@ function packSpectralGrid(data: Float32Array, index: number, m: MaterialSpec): n
  */
 function packThinFilm(data: Float32Array, index: number, m: MaterialSpec): number {
   const thinFilmLayers = m.thinFilmStack?.layers ?? [];
-  const thinFilmLayerCount = Math.min(thinFilmLayers.length, THIN_FILM_LAYER_LIMIT);
+  const thinFilmLayerCount = assertThinFilmLayerLimit(m);
   for (let layerIdx = 0; layerIdx < THIN_FILM_LAYER_LIMIT; layerIdx += 1) {
     if (layerIdx < thinFilmLayerCount) {
       const layer = thinFilmLayers[layerIdx]!;
@@ -722,6 +684,8 @@ function packTextureTransforms(
   base: number,
   m: MaterialSpec,
   ids: LayerIds,
+  options: PackMaterialsTextureOptions,
+  layerOf: TextureLayerLookup | undefined,
 ): void {
   // samples 55..84 (30 texels): 15 texture-transform mat3s, 2 texels each, at
   // `texel 55 + 2k` (k per the GLSL `readTextureTransform` order in material_struct).
@@ -756,7 +720,8 @@ function packTextureTransforms(
 
   // D3 — texels 85/86: ao/light/bump map ids + scalars + envMapIntensity
   // (mirrors readMaterialInfo s20/s21 in material_struct.glsl.js).
-  // texel 86.a: UV-set bitmask — bit k set means map k samples uv1 (ATTR_UV1)
+  // texel 86.a: retained UV1 compatibility mirror. Shaders use the arbitrary
+  // layer-selector table below; this lane remains stable for record consumers.
   // instead of uv0 (ATTR_UV). Bit assignments are single-sourced in materialStride.js.
   let uvSetMask = 0;
   for (const [key, bit] of Object.entries(UV_SET_BIT)) {
@@ -798,6 +763,7 @@ function packTextureTransforms(
         minFilter?: TextureFilterMode;
         mipFilter?: TextureMipFilterMode;
       } | undefined,
+      layerOf,
     );
   }
 
@@ -816,14 +782,23 @@ function packTextureTransforms(
     writeTransform(data, base, MATERIAL_LAYER_NORMAL_TEXEL_OFFSET + 3, m.backLayer?.normalMap);
   }
   const frontLayerSampler = base + (MATERIAL_LAYER_NORMAL_TEXEL_OFFSET + 5) * 4;
-  writeSamplerPolicy(data, frontLayerSampler, m.frontLayer?.normalMap);
+  writeSamplerPolicy(data, frontLayerSampler, m.frontLayer?.normalMap, layerOf);
   const backLayerSampler = base + (MATERIAL_LAYER_NORMAL_TEXEL_OFFSET + 6) * 4;
-  writeSamplerPolicy(data, backLayerSampler, m.backLayer?.normalMap);
+  writeSamplerPolicy(data, backLayerSampler, m.backLayer?.normalMap, layerOf);
   const layerUv = base + (MATERIAL_LAYER_NORMAL_TEXEL_OFFSET + 7) * 4;
-  data[layerUv] = ids.frontLayerNormal >= 0 ? safeTexCoord(m.frontLayer?.normalMap) : 0;
-  data[layerUv + 1] = ids.backLayerNormal >= 0 ? safeTexCoord(m.backLayer?.normalMap) : 0;
+  data[layerUv] = resolveUvAttributeLayer(m.frontLayer?.normalMap, options);
+  data[layerUv + 1] = resolveUvAttributeLayer(m.backLayer?.normalMap, options);
   data[layerUv + 2] = 0;
   data[layerUv + 3] = 0;
+
+  // Scalable selector table: one dense attributesArray layer per mapped-rich
+  // slot. Authored texCoord ids never enter GLSL and therefore need not be dense.
+  for (let mapIndex = 0; mapIndex < MATERIAL_MAP_FIELD_ORDER.length; mapIndex += 1) {
+    const field = MATERIAL_MAP_FIELD_ORDER[mapIndex]!;
+    const ref = m[field as keyof MaterialSpec] as TextureRefLike | undefined;
+    data[base + MATERIAL_UV_SELECTOR_TEXEL_OFFSET * 4 + mapIndex] =
+      resolveUvAttributeLayer(ref, options);
+  }
 }
 
 function packSpectralReflectance(
@@ -850,10 +825,12 @@ export function packMaterialsTexture(
   options: PackMaterialsTextureOptions = {},
 ): MaterialsTextureData {
   const materialCount = materials.length;
+  for (let materialIndex = 0; materialIndex < materialCount; materialIndex += 1) {
+    assertThinFilmLayerLimit(materials[materialIndex]!, `material ${materialIndex}`);
+  }
   const pixelCount = materialCount * MATERIAL_PIXELS;
   const dim = squareDim(pixelCount);
   const data = new Float32Array(dim * dim * 4);
-  const warnUnsupportedTexCoord = createUnsupportedTexCoordWarner(options);
 
   let index = 0;
   for (let i = 0; i < materialCount; i += 1) {
@@ -863,11 +840,7 @@ export function packMaterialsTexture(
       : source) as PackedMaterialSpec;
     const base = index; // first float of this material's block
 
-    const ids = packLayerIds(m, layerOf, i, warnUnsupportedTexCoord);
-
-    // D1 — warn (truthfulness) when this material's thin-film stack exceeds the
-    // 35-layer backend limit; excess layers are dropped by packThinFilm below.
-    emitThinFilmLayerLimitWarning(i, m, options);
+    const ids = packLayerIds(m, layerOf);
 
     // samples 0..19: scalar fields, layer ids, SSS, thin-film metadata
     index = packScalarSlots(data, index, m, ids);
@@ -876,7 +849,7 @@ export function packMaterialsTexture(
     // samples 28..54: thin-film layer payload
     index = packThinFilm(data, index, m);
     // samples 55..92: texture-transform mat3s + D3 ao/light/bump auxiliary block
-    packTextureTransforms(data, base, m, ids);
+    packTextureTransforms(data, base, m, ids, options, layerOf);
     // sample 111: per-material Jakob-Hanika spectral reflectance coefficients.
     packSpectralReflectance(data, base, m);
 

@@ -33,6 +33,7 @@ import {
   GltfCompatibilityError,
   type GltfCompatibilityFailureDetail,
 } from './errors.js';
+import { releaseGltfResources } from './importResourceBudget.js';
 
 export type GltfEngineSelection = GltfBackendProfileId | 'recommended';
 export type GltfCompatibilityMode = 'best-effort' | 'reject-unsupported' | 'reject-degraded';
@@ -62,9 +63,10 @@ export interface LoadGltfForEngineOptions<
    * Run the CPU texture decode bridge before engine construction/attachment.
    * This promotes raw-image `TextureRef` handles into backend-ready CPU-linear
    * handles and surfaces `textureDecodeDiagnostics` / `textureDecodeWarnings` on
-   * the returned bridge result. It defaults to false unless a decode-specific
-   * option such as `decodePixels`, `textureTarget`, `maxTextureSize`,
-   * `warnOnNpotRepeatWrap`, or `npotRepeatWrapPolicy` is supplied.
+   * the returned bridge result. It defaults to true: the one-call engine bridge
+   * owns the complete asset-to-renderable-texture path, using the bundled
+   * PNG/JPEG/WebP/platform decoders when no host decoder is supplied. Pass false
+   * only when the engine/factory deliberately owns opaque texture upload.
    */
   readonly decodeTextures?: boolean;
 
@@ -167,39 +169,52 @@ export async function loadGltfForEngine<
   const asset = shouldDecodeTextures(loadOptions)
     ? await loadGltfAndDecodeTextures(input, loadOptions)
     : await loadGltfAsset(input, loadOptions);
-  const selected = selectBackendTarget(asset, options.backend ?? 'recommended');
-  const selectedBackend = selected.backend;
-  let selectedProfileId = resolveRuntimeProfile(selectedBackend, selected.profileId, options.runtimeProfile);
-  enforceCompatibility(asset, selectedBackend, selectedProfileId, compatibilityMode, options);
-
-  const controller = createGltfSceneController({
-    gltf: asset.gltf,
-    sceneIndex: asset.sceneIndex,
-    scene: asset.scene,
-    cameras: asset.cameras,
-    warnings: asset.warnings,
-    diagnostics: asset.diagnostics,
-    animations: asset.animations,
-    animationTargets: asset.animationTargets,
-    ...(asset.convertedMaterials !== undefined ? { convertedMaterials: asset.convertedMaterials } : {}),
-    ...(asset.materialVariantBindings !== undefined ? { materialVariantBindings: asset.materialVariantBindings } : {}),
-    ...(asset.materialBindings !== undefined ? { materialBindings: asset.materialBindings } : {}),
-    ...(asset.instancingBindings !== undefined ? { instancingBindings: asset.instancingBindings } : {}),
-  });
-
   let engine = options.engine;
   let createdEngine = false;
-  if (!engine && options.createEngine) {
-    engine = await options.createEngine({
-      scene: asset.scene,
-      backend: selectedBackend,
-      asset,
-      options: options.engineOptions ?? ({} as TFactoryOptions),
-    });
-    createdEngine = true;
-  }
-
   try {
+    const selected = selectBackendTarget(asset, options.backend ?? 'recommended');
+    const selectedBackend = selected.backend;
+    let selectedProfileId = resolveRuntimeProfile(
+      selectedBackend,
+      selected.profileId,
+      options.runtimeProfile,
+    );
+    enforceCompatibility(asset, selectedBackend, selectedProfileId, compatibilityMode, options);
+
+    const controller = createGltfSceneController({
+      gltf: asset.gltf,
+      sceneIndex: asset.sceneIndex,
+      scene: asset.scene,
+      cameras: asset.cameras,
+      warnings: asset.warnings,
+      diagnostics: asset.diagnostics,
+      animations: asset.animations,
+      animationTargets: asset.animationTargets,
+      ...(asset.convertedMaterials !== undefined ? { convertedMaterials: asset.convertedMaterials } : {}),
+      ...(asset.materialVariantBindings !== undefined ? { materialVariantBindings: asset.materialVariantBindings } : {}),
+      ...(asset.materialBindings !== undefined ? { materialBindings: asset.materialBindings } : {}),
+      ...(asset.instancingBindings !== undefined ? { instancingBindings: asset.instancingBindings } : {}),
+      ...(asset.punctualEmitterBindings !== undefined
+        ? { punctualEmitterBindings: asset.punctualEmitterBindings }
+        : {}),
+      ...(asset.nodeVisibilityPrimitives !== undefined
+        ? { nodeVisibilityPrimitives: asset.nodeVisibilityPrimitives }
+        : {}),
+      ...(asset.nodeVisibilityEmitters !== undefined
+        ? { nodeVisibilityEmitters: asset.nodeVisibilityEmitters }
+        : {}),
+    });
+
+    if (!engine && options.createEngine) {
+      engine = await options.createEngine({
+        scene: asset.scene,
+        backend: selectedBackend,
+        asset,
+        options: options.engineOptions ?? ({} as TFactoryOptions),
+      });
+      createdEngine = true;
+    }
+
     const backend = backendIdFromEngine(engine) ?? selectedBackend;
     const engineProfileId = backendProfileIdFromEngine(engine);
     if (backend !== selectedBackend) {
@@ -234,6 +249,7 @@ export async function loadGltfForEngine<
     };
   } catch (err) {
     if (createdEngine) disposeCreatedEngineAfterRejectedGltfLoad(engine);
+    releaseGltfResources(asset);
     throw err;
   }
 }
@@ -251,14 +267,7 @@ function shouldDecodeTextures<
   TEngine extends GltfScenePatchTarget,
   TFactoryOptions extends object,
 >(options: LoadGltfForEngineOptions<TEngine, TFactoryOptions>): boolean {
-  return options.decodeTextures === true ||
-    options.textureTarget !== undefined ||
-    options.decodePixels !== undefined ||
-    options.maxTextureSize !== undefined ||
-    options.warnOnNpotRepeatWrap !== undefined ||
-    options.npotRepeatWrapPolicy !== undefined ||
-    options.onTextureDiagnostic !== undefined ||
-    options.onTextureWarning !== undefined;
+  return options.decodeTextures !== false;
 }
 
 function isDecodedAsset(asset: GltfAssetResult | GltfDecodedAssetResult): asset is GltfDecodedAssetResult {
@@ -467,15 +476,6 @@ const UNSUPPORTED_IMPORT_DIAGNOSTICS: ReadonlySet<GltfImportDiagnosticCode> = ne
   'scene-not-found',
   'unsupported-required-extension',
   'unsupported-primitive-mode',
-  'unresolved-compression',
-  'draco-buffer-view-unavailable',
-  'draco-decode-hook-failed',
-  'draco-decode-hook-missing',
-  'draco-geometry-unusable',
-  'meshopt-buffer-unavailable',
-  'meshopt-decode-hook-failed',
-  'meshopt-decode-hook-missing',
-  'meshopt-decoded-byte-length-mismatch',
   'missing-position',
   'unreadable-position',
   'unreadable-indices',
@@ -502,10 +502,8 @@ const UNSUPPORTED_IMPORT_DIAGNOSTICS: ReadonlySet<GltfImportDiagnosticCode> = ne
 const DEGRADED_IMPORT_DIAGNOSTICS: ReadonlySet<GltfImportDiagnosticCode> = new Set([
   'unsupported-version',
   'ignored-camera',
-  'double-sided-material',
   'ignored-gpu-instancing',
   'ignored-gpu-instancing-attribute',
-  'fallback-expanded-gpu-instancing',
   'fallback-generated-primitive-mode',
   'generated-flat-normals',
   'unreadable-normal',
@@ -524,7 +522,6 @@ const DEGRADED_IMPORT_DIAGNOSTICS: ReadonlySet<GltfImportDiagnosticCode> = new S
   'ignored-morph-target-attribute',
   'invalid-morph-target-delta-length',
   'morph-weight-count-mismatch',
-  'morph-identity-skin-promotion',
   'missing-punctual-light',
   'unknown-animation-interpolation',
   'image-not-found',
@@ -537,17 +534,20 @@ const DEGRADED_IMPORT_DIAGNOSTICS: ReadonlySet<GltfImportDiagnosticCode> = new S
   'data-uri-decode-failed',
   'image-decoder-missing',
   'disabled-texture-source-extension',
-  'draco-accessor-missing',
-  'draco-attribute-component-type-mismatch',
-  'draco-attribute-count-mismatch',
-  'draco-attribute-missing',
-  'draco-index-count-mismatch',
-  'draco-indices-missing',
+  'draco-fallback-accessors-used',
+  'meshopt-buffer-unavailable',
+  'meshopt-codec-version-unsupported',
+  'meshopt-invalid-bitstream-header',
+  'meshopt-compression-budget-exceeded',
+  'meshopt-decode-hook-failed',
+  'meshopt-decoded-byte-length-mismatch',
+  'meshopt-fallback-buffer-used',
   'sparse-indices-buffer-view-not-found',
   'sparse-indices-buffer-unavailable',
   'sparse-values-buffer-view-not-found',
   'sparse-values-buffer-unavailable',
   'invalid-sparse-indices-component-type',
+  'sparse-indices-not-strictly-increasing',
   'sparse-index-out-of-range',
   'invalid-material-dispersion',
   'material-texture-not-found',
@@ -556,7 +556,6 @@ const DEGRADED_IMPORT_DIAGNOSTICS: ReadonlySet<GltfImportDiagnosticCode> = new S
   'invalid-material-texture-sampler',
   'spec-gloss-approximation',
   'spec-gloss-texture-alpha-approximation',
-  'unsupported-material-extension',
   'unknown-material-extension',
 ]);
 
@@ -693,21 +692,7 @@ function backendProfileIdFromEngine(engine: GltfScenePatchTarget | undefined): G
   const profileId = (engine as { readonly backendProfileId?: unknown; readonly profileId?: unknown }).backendProfileId ??
     (engine as { readonly profileId?: unknown }).profileId;
   if (isBackendProfileId(profileId)) return profileId;
-  const backendId = backendIdFromEngine(engine);
-  if (backendId === 'pt-webgpu' && engineHasExperimentalFeature(engine, 'pt-webgpu-lite-tier')) {
-    return 'pt-webgpu-lite';
-  }
   return undefined;
-}
-
-function engineHasExperimentalFeature(engine: GltfScenePatchTarget, feature: string): boolean {
-  const capabilities = (engine as {
-    readonly capabilities?: { readonly experimentalFeatures?: unknown };
-  }).capabilities;
-  const features = capabilities?.experimentalFeatures;
-  if (features == null || typeof features !== 'object') return false;
-  const has = (features as { readonly has?: unknown }).has;
-  return typeof has === 'function' && has.call(features, feature) === true;
 }
 
 function isBackendId(value: unknown): value is BackendId {
@@ -752,9 +737,13 @@ function isSatisfiedCompatibilityIssue<
     return opaqueTextureHandlesReadyForBackend(options, backend);
   }
   if (issue.support === 'requires-hook') {
-    if (issue.name === 'KHR_draco_mesh_compression') return typeof options.dracoDecode === 'function';
+    if (issue.name === 'KHR_draco_mesh_compression') {
+      return typeof options.dracoDecode === 'function' ||
+        options.compressionDecoderPolicy !== 'host-only';
+    }
     if (issue.name === 'EXT_meshopt_compression' || issue.name === 'KHR_meshopt_compression') {
-      return typeof options.meshoptDecode === 'function';
+      return typeof options.meshoptDecode === 'function' ||
+        options.compressionDecoderPolicy !== 'host-only';
     }
     if (issue.name === 'KHR_texture_basisu' || issue.name === 'EXT_texture_webp' || issue.name === 'MSFT_texture_dds') {
       return (options.textureSourceExtensions ?? []).includes(issue.name) && typeof options.decodeImage === 'function';
@@ -784,4 +773,3 @@ function isSpecGlossAlphaBakeSatisfied(asset: GltfDecodedAssetResult, path: stri
       entry.handleColorSpace === 'linear'
     );
 }
-

@@ -31,19 +31,14 @@ export class RISGIPass implements Pass {
   readonly passLabels: readonly PassLabel[] = ['gi-ris'];
 
   private readonly _pipeline: GPUComputePipeline;
-  /** When NRC is compile-time on, returns the host-owned @group(4) NRC bind
-   *  group to bind at slot 4. Undefined (default) ⇒ NRC OFF, no slot-4 bind. */
-  private readonly _nrcBindGroup?: () => GPUBindGroup;
   /** Clears NRC per-slot claims immediately before the NRC GI-RIS dispatch. */
   private readonly _nrcClearSlotClaims?: (encoder: GPUCommandEncoder) => void;
 
   constructor(
     pipeline: GPUComputePipeline,
-    nrcBindGroup?: () => GPUBindGroup,
     nrcClearSlotClaims?: (encoder: GPUCommandEncoder) => void,
   ) {
     this._pipeline = pipeline;
-    if (nrcBindGroup !== undefined) this._nrcBindGroup = nrcBindGroup;
     if (nrcClearSlotClaims !== undefined) this._nrcClearSlotClaims = nrcClearSlotClaims;
   }
 
@@ -54,9 +49,7 @@ export class RISGIPass implements Pass {
   async initialize(_ctx: PassInitContext): Promise<void> {}
 
   dispatch(ctx: PassDispatchContext): void {
-    if (this._nrcBindGroup !== undefined) {
-      this._nrcClearSlotClaims?.(ctx.encoder);
-    }
+    this._nrcClearSlotClaims?.(ctx.encoder);
     dispatchSharedBindGroupPass(ctx, this._pipeline, {
       label: 'gi-ris',
       // gi-ris binds its dedicated GI reservoir+frame group at slot 0 (not the
@@ -66,9 +59,6 @@ export class RISGIPass implements Pass {
       frameBindGroupOverride: ctx.risGiFrameBindGroup,
       useHybridLayers: true,
       halfRes: true,
-      ...(this._nrcBindGroup !== undefined
-        ? { extraGroups: [{ slot: 4, group: this._nrcBindGroup() }] }
-        : {}),
     });
   }
 

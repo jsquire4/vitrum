@@ -62,4 +62,24 @@ describe('BVH per-triangle texture dimension guards', () => {
       .toThrow(/bvhEmissive texture refresh needs 5 triangles/);
     expect(writeTexture).not.toHaveBeenCalled();
   });
+
+  it('destroys a candidate texture when its upload fails', () => {
+    const destroy = vi.fn();
+    const device = {
+      limits: { maxTextureDimension2D: 4096 },
+      createTexture: vi.fn(() => ({
+        createView: vi.fn(() => ({})),
+        destroy,
+      })),
+      queue: {
+        writeTexture: vi.fn(() => {
+          throw new Error('writeTexture failed');
+        }),
+      },
+    } as unknown as GPUDevice;
+
+    expect(() => uploadBeerTexture(device, new ArrayBuffer(4), 1))
+      .toThrow('writeTexture failed');
+    expect(destroy).toHaveBeenCalledTimes(1);
+  });
 });

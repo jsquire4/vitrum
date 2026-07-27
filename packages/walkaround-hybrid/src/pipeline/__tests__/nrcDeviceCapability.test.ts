@@ -37,10 +37,9 @@ describe('NRC device capability gate', () => {
     }))).not.toThrow();
   });
 
-  it('default WebGPU limits fail with an actionable nrcEnabled error', () => {
-    expectLimitFailure(limits(), 'maxBindGroups');
-    expectLimitFailure(limits(), 'maxStorageBuffersPerShaderStage');
-    expectLimitFailure(limits(), 'maxComputeWorkgroupStorageSize');
+  it('fits the default WebGPU group/storage-buffer axes', () => {
+    expect(() => assertNrcDeviceCapable(limits())).not.toThrow();
+    expect(NRC_REQUIRED_WORKGROUP_STORAGE_BYTES).toBe(16_384);
   });
 
   it('rejects devices that are under the maxBindGroups NRC threshold', () => {

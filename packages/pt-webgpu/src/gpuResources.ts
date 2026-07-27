@@ -7,8 +7,8 @@
  *   - the accumulation + aux textures (accum / normalDepth / albedo / variance /
  *     motionVectors) and their cached views,
  *   - the accum / varianceMoments storage buffers + the params uniform buffer,
- *   - the compute pipeline(s) (path-trace + optional BDPT light-subpath) sharing
- *     ONE explicit GPUPipelineLayout, and the explicit per-group bind-group
+ *   - the path-trace compute pipeline sharing ONE explicit GPUPipelineLayout,
+ *     and the explicit per-group bind-group
  *     layouts that pipeline layout is built from,
  *   - the cached per-frame bind groups (group 0/1/2), and
  *   - the current accum dims (width / height / byte size).
@@ -17,14 +17,15 @@
  * cross-cutting state that stays on the engine is `#samplesAccumulated`: methods
  * that reset it (`ensureAccumResources` on recreate) report that back to the
  * caller (return `recreated: boolean`) rather than reaching into engine state.
- * Bind-group *construction* takes the scene buffers + BDPT light-path view as
- * explicit parameters (those live on the engine), but the resulting groups are
+ * Bind-group *construction* takes the scene buffers as explicit parameters
+ * (those live on the engine), but the resulting groups are
  * cached here because their lifetime is tied to the accum views + pipeline.
  */
 
 import type { EngineWarning } from '@vitrum/core';
 import type { PtWebgpuTraceTier } from './traceTier.js';
 import type { UploadedSceneBuffers } from './scene/uploadSceneBuffers.js';
+import { FRAME_PARAMS_BYTE_SIZE } from './scene/frameParamsLayout.js';
 import type { LiteLightTexData, LiteEnvTexData, LiteEnvCdfData } from './scene/litePackedTextures.js';
 import {
   composePtWebgpuTraceWgsl,
@@ -50,9 +51,35 @@ import {
   RPT_GROUP0_BINDING_BASE,
 } from './wgsl/pathTrace/restirPtCompose.wgsl.js';
 
-export type PtWebgpuBvhTraversalMode = 'binary' | 'cwbvh-closest-experimental';
+export type PtWebgpuBvhTraversalMode = 'binary' | 'cwbvh-closest';
 
 // ── Module-level binding-layout helpers (D8.3) ─────────────────────────────
+
+/** Two-phase replacement token used by setScene's outer resource transaction. */
+export interface LiteTextureReplacement {
+  /** Publish candidate views while retaining the previous textures for rollback. */
+  commit(): void;
+  /** Restore the previous views (if committed) and destroy every candidate. */
+  rollback(): void;
+  /** Make a committed replacement permanent and destroy the previous textures. */
+  finalize(): void;
+}
+
+type DestroyableGpuResource = GPUTexture | GPUBuffer;
+
+function destroyGpuResourcesBestEffort(
+  resources: readonly (DestroyableGpuResource | null)[],
+  preservedResources: readonly (DestroyableGpuResource | null)[] = [],
+): void {
+  const destroyed = new Set<object>(
+    preservedResources.filter((resource): resource is DestroyableGpuResource => resource != null),
+  );
+  for (const resource of resources) {
+    if (resource == null || destroyed.has(resource)) continue;
+    destroyed.add(resource);
+    try { resource.destroy(); } catch { /* preserve the transaction outcome */ }
+  }
+}
 // These are hoisted out of the per-method local-scope to eliminate the
 // duplication that previously existed between #buildSharedPipelineLayout and
 // #buildReservoirGroup0Layout.  All values are pure constants; the only
@@ -90,9 +117,17 @@ function _sampledTex(binding: number): GPUBindGroupLayoutEntry {
   return { binding, visibility: _vis(), texture: { sampleType: 'unfilterable-float', viewDimension: '2d' } };
 }
 
+interface SharedPipelineLayoutCandidate {
+  readonly pipelineLayout: GPUPipelineLayout;
+  readonly bindGroupLayout: GPUBindGroupLayout;
+  readonly bindGroupLayout1: GPUBindGroupLayout | null;
+  readonly bindGroupLayout2: GPUBindGroupLayout | null;
+  readonly bindGroupLayout3: GPUBindGroupLayout | null;
+}
+
 // ── D8.1 Sub-object: ReservoirResources ─────────────────────────────────────
 /**
- * Owns the ReSTIR-PT reuse resources: reservoir ping-pong buffers, result
+ * Owns the ReSTIR-PT reuse resources: two full-frame reservoir buffers, result
  * buffer, params UBO, the four reuse compute pipelines + composite megakernel,
  * and the cached per-pass reuse bind groups. Gated by `restirPtReuse &&
  * traceTier === 'full'`. GpuResources delegates to this sub-object and exposes
@@ -101,23 +136,18 @@ function _sampledTex(binding: number): GPUBindGroupLayoutEntry {
  */
 class ReservoirResources {
   /**
-   * Full-res ReservoirPTHero ping-pong buffers (224 B/px = 56 u32). `Cur` is the
-   * producer output that the temporal pass fuses in place; `Prev` is last frame's
-   * temporal output (read-only this frame). `swapReservoirs()` exchanges them at
-   * frame end so this frame's resolved reservoir becomes next frame's history.
-   * STORAGE | COPY_SRC | COPY_DST (COPY_* so a future readback / clear works).
+   * Two full-resolution ReservoirPTHero buffers (64 B/px = 16 u32). `Cur` is
+   * producer/temporal scratch. The spatial pass writes its hazard-free output
+   * directly into `Prev`; resolve reads `Prev`, which is already next frame's
+   * history. No third full-frame reservoir or end-of-frame rotation is required.
    */
   rptReservoirCur: GPUBuffer | null = null;
   rptReservoirPrev: GPUBuffer | null = null;
-  /** A1 — the SPATIAL pass output (post-temporal → spatial → resolve). The spatial
-   *  pass reads the temporal output (`Cur`) for neighbour sampling and writes here;
-   *  resolve reads this. A dedicated buffer (not a ping-pong slot) so the spatial
-   *  pass never writes the slot it samples (hazard-free neighbour reads). */
-  rptReservoirSpatial: GPUBuffer | null = null;
   /** `rpt_result`: one vec4f / px (16 B) — the resolve pass's reconnection
    *  indirect (.rgb) + contributing flag (.a). STORAGE | COPY_SRC. */
   rptResultBuffer: GPUBuffer | null = null;
-  /** RestirPtParams UBO (32 B: width/height/mClamp/allowGlossyReuse u32 + wCap/3×_pad f32). */
+  /** RestirPtParams UBO (32 B: width/height/mClamp/_padA u32 + explicit biased
+   *  wCap or professional f32-max ceiling + 3×_pad f32). */
   rptParamsBuffer: GPUBuffer | null = null;
   rptReservoirByteSize = 0;
   rptResultByteSize = 0;
@@ -141,8 +171,6 @@ class ReservoirResources {
     this.rptReservoirCur = null;
     this.rptReservoirPrev?.destroy();
     this.rptReservoirPrev = null;
-    this.rptReservoirSpatial?.destroy();
-    this.rptReservoirSpatial = null;
     this.rptResultBuffer?.destroy();
     this.rptResultBuffer = null;
     this.rptParamsBuffer?.destroy();
@@ -173,7 +201,7 @@ class ReservoirResources {
 class SppmResources {
   /**
    * A4 — SPPM photon hash-grid cells buffer.
-   * PhotonRecord[SPPM_MAX_CELLS × SPPM_CELL_CAPACITY], 48 B/record ≈ 402 MiB.
+   * One 48-byte PhotonRecord per emitted lane (65,536 records = 3 MiB).
    * Bound at group(3) binding(6).  A 64-byte placeholder is used when SPPM is
    * off so the group-3 layout slot is satisfied without allocating the real buffer.
    */
@@ -186,13 +214,14 @@ class SppmResources {
   sppmCellCountersBuffer: GPUBuffer | null = null;
   /**
    * A4 — SppmStats UBO (32 bytes): currentRadius, r0, frameAccumulated,
-   * photonCount, sceneExtent, _pad×3.  Written per-frame by the host.
+   * photonCount, sceneExtent, sceneCenter.xyz. Written per-frame by the host.
    * Bound at group(3) binding(8).
    */
   sppmStatsBuffer: GPUBuffer | null = null;
   /**
    * A4-progressive — per-pixel SPPM statistics buffer.
-   * SppmPixelStats[W×H] = {tau.rgb, radius2, N, _pad×3} × 32 bytes/px.
+   * SppmPixelStats[W×H×2] = separate surface/volume
+   * {tau.rgb, radius2, N, _pad×3} records × 32 bytes = 64 bytes/px.
    * Allocated in `ensureSppmPixelStatsBuffer`; reset (GPU-cleared) whenever
    * the PT accumulator resets. Bound at group(3) binding(9).
    */
@@ -242,6 +271,14 @@ class PresentResources {
   presentView: GPUTextureView | null = null;
 
   /**
+   * Accepted linear-HDR OIDN output. It is deliberately separate from the
+   * stable present texture so presentation changes can reuse it without a new
+   * inference or CPU upload.
+   */
+  denoisedLinearTexture: GPUTexture | null = null;
+
+
+  /**
    * PresentParams UBO (16 bytes): tonemapMode (u32), exposure (f32),
    * outputColorSpace (u32), _pad (u32).
    */
@@ -258,6 +295,7 @@ class PresentResources {
    * lite tier (which has no real varianceMomentsBuffer). Discarded at write time.
    */
   seedBlitVarPlaceholder: GPUBuffer | null = null;
+  seedBlitVarPlaceholderByteSize = 0;
 
   dispose(): void {
     // Seed-blit resources (freed before present, matching original dispose order).
@@ -265,6 +303,7 @@ class PresentResources {
     this.seedBlitParamsBuffer = null;
     this.seedBlitVarPlaceholder?.destroy();
     this.seedBlitVarPlaceholder = null;
+    this.seedBlitVarPlaceholderByteSize = 0;
     this.seedBlitSampler = null;     // GPUSampler has no destroy(); drop the ref
     this.seedBlitPipeline = null;    // GPUComputePipeline has no destroy(); drop the ref
     // Present-pass resources.
@@ -276,6 +315,7 @@ class PresentResources {
     // drops the refs if the texture has already been nulled by that path.
     this.presentTexture = null;
     this.presentView = null;
+    this.denoisedLinearTexture = null;
   }
 }
 
@@ -328,34 +368,19 @@ export class GpuResources {
 
   paramsBuffer: GPUBuffer | null = null;
   computePipeline: GPUComputePipeline | null = null;
-  bdptSubpathPipeline: GPUComputePipeline | null = null;
   /**
    * Explicit group-0 bind-group layout. Used to build `pathTraceBindGroup`.
    *
-   * Both compute pipelines (path-trace `main` + BDPT `bdptExtendLightSubpath`)
-   * share ONE explicit `GPUPipelineLayout` built from these layouts. A bind
-   * group built against an explicit layout is NOT pipeline-exclusive, so the
-   * SAME bind groups can be set on both pipelines — which is exactly what the
-   * BDPT light-subpath pass needs (it reuses the path-trace scene/params/light
-   * bindings). Auto-generated layouts (`layout:'auto'`) are pipeline-exclusive
-   * per the WebGPU spec, so they would reject a cross-pipeline `setBindGroup`.
+   * The path-trace pipeline uses one explicit `GPUPipelineLayout`. BDPT light
+   * prefixes are generated inside `main`; there is no auxiliary BDPT pipeline.
    */
   bindGroupLayout: GPUBindGroupLayout | null = null;
   /** Explicit group-1 layout (full tier only): analytics + env + area lights. */
   bindGroupLayout1: GPUBindGroupLayout | null = null;
-  /** Explicit group-2 layout (full tier only): TLAS table + BDPT scratch buffers. */
+  /** Explicit group-2 layout (full tier only): TLAS table. */
   bindGroupLayout2: GPUBindGroupLayout | null = null;
   /** Explicit group-3 layout (full tier only): WS2 light-tree node buffer. */
   bindGroupLayout3: GPUBindGroupLayout | null = null;
-
-  /**
-   * BDPT eye-subpath scratch stack (D2): a per-pixel × maxEyeDepth read_write
-   * storage buffer (2× vec4 / eye vertex = 32 B). Bound at group(2) binding(6) on
-   * the full tier. A 32-byte placeholder is kept when BDPT is off so the explicit
-   * group-2 layout (which always declares binding 6) stays satisfied.
-   */
-  bdptEyeStackBuffer: GPUBuffer | null = null;
-  bdptEyeStackByteSize = 0;
 
   // ── D8.1 sub-object public accessors (D9-2: sub-objects are the real owners) ──
   /** ReSTIR-PT reuse reservoir/pipeline/bind-group cluster. Access fields via
@@ -387,29 +412,21 @@ export class GpuResources {
   liteLightTexture: GPUTexture | null = null;
   liteLightTextureView: GPUTextureView | null = null;
 
-  /** Bytes per ReservoirPTHero (56 u32). MUST equal RESERVOIR_PT_HERO_STRIDE·4
+  /** Bytes per compact ReservoirPTHero (16 u32). MUST equal the shader stride·4
    *  in reservoirPtHero.wgsl.ts (pinned by reservoirPtHeroLayout.test.ts). */
-  static readonly RESERVOIR_PT_HERO_BYTES = 224;
+  static readonly RESERVOIR_PT_HERO_BYTES = 64;
   /** RestirPtParams UBO byte size (8 × 4-byte fields). */
   static readonly RESTIR_PT_PARAMS_BYTES = 32;
   /**
-   * Safety ceiling for EACH reservoir ping-pong buffer. 224 B/px is ~464 MB at
-   * 1920×1080; above this ceiling we refuse to grow (skip reuse this frame) rather
-   * than silently allocate. Mirrors the BDPT eye-stack ceiling discipline.
+   * Portable per-binding ceiling. A 64 B/px 1920×1080 reservoir is 126.6 MiB,
+   * fitting the WebGPU default 128 MiB maxStorageBufferBindingSize.
    */
-  static readonly RESTIR_PT_RESERVOIR_MAX_BYTES = 416 * 1024 * 1024; // 416 MiB
+  static readonly RESTIR_PT_RESERVOIR_MAX_BYTES = 128 * 1024 * 1024;
+  /** Aggregate budget for Cur + Prev + the 16 B/px resolved-result buffer. */
+  static readonly RESTIR_PT_TOTAL_MAX_BYTES = 320 * 1024 * 1024;
 
   /** Byte size of the PresentParams UBO: 4 × 4 bytes. */
   static readonly PRESENT_PARAMS_BYTES = 16;
-
-  /** Bytes per eye vertex in the scratch stack: 2× vec4f = 32. */
-  static readonly BDPT_EYE_VERTEX_BYTES = 32;
-  /**
-   * Safety ceiling for the eye-stack allocation. The full-depth (8) per-pixel
-   * stack is ~530 MB at 1920×1080; above this ceiling we refuse to grow the
-   * buffer and warn rather than silently allocating a multi-hundred-MB region.
-   */
-  static readonly BDPT_EYE_STACK_MAX_BYTES = 384 * 1024 * 1024; // 384 MiB
 
   /**
    * H14-F — once-gate set for per-frame buffer-ceiling warnings. A warning fires
@@ -433,7 +450,7 @@ export class GpuResources {
     this.#bdpt = bdpt;
     this.#sampling = sampling;
     this.#onWarning = onWarning;
-    this.#cwbvhClosest = bvhTraversal === 'cwbvh-closest-experimental' && traceTier === 'full';
+    this.#cwbvhClosest = bvhTraversal === 'cwbvh-closest' && traceTier === 'full';
     // Reuse is full-tier only: the per-pass layouts bind the full-tier scene
     // groups (analytics/TLAS/lights). On the lite tier the flag is inert.
     this.#restirPtReuse = restirPtReuse && traceTier === 'full';
@@ -447,11 +464,6 @@ export class GpuResources {
       return;
     }
     console.warn(warning.message);
-  }
-
-  /** Whether ReSTIR-PT reuse is active for this engine (compile-time + full-tier). */
-  get restirPtReuseEnabled(): boolean {
-    return this.#restirPtReuse;
   }
 
   destroyAccumTexture(): void {
@@ -481,6 +493,9 @@ export class GpuResources {
     this.#present.presentTexture?.destroy();
     this.#present.presentTexture = null;
     this.#present.presentView = null;
+    this.#present.denoisedLinearTexture?.destroy();
+    this.#present.denoisedLinearTexture = null;
+
   }
 
   clearAccumBuffer(): void {
@@ -494,19 +509,36 @@ export class GpuResources {
   }
 
   /**
-   * Item 2e — Clear all allocated ReSTIR-PT reservoir buffers (Cur/Prev/Spatial)
-   * when the scene changes or the engine resets so stale temporal history from a
-   * previous scene does not bleed into the new one. No-op when the buffers have
-   * not yet been allocated. Called by `index.ts reset()` and full setScene.
+   * Clear every scene-dependent temporal buffer in one command submission.
+   *
+   * Besides avoiding three queue submissions on an ordinary reset, this gives
+   * setScene a single synchronous failure boundary: no later clear can throw
+   * after an earlier clear has already been accepted by the queue.
    */
-  clearReservoirBuffers(): void {
-    if (this.#rsvr.rptReservoirCur == null) return;
+  clearTemporalBuffers(): void {
+    const buffers = new Set<GPUBuffer>();
+    if (this.accumBuffer != null) buffers.add(this.accumBuffer);
+    if (this.varianceMomentsBuffer != null) {
+      buffers.add(this.varianceMomentsBuffer);
+    }
+    if (this.#rsvr.rptReservoirCur != null) {
+      buffers.add(this.#rsvr.rptReservoirCur);
+    }
+    if (this.#rsvr.rptReservoirPrev != null) {
+      buffers.add(this.#rsvr.rptReservoirPrev);
+    }
+    if (
+      this.#sppm.sppmPixelStatsBuffer != null &&
+      this.#sppm.sppmPixelStatsWidth !== 0
+    ) {
+      buffers.add(this.#sppm.sppmPixelStatsBuffer);
+    }
+    if (buffers.size === 0) return;
+
     const encoder = this.#device.createCommandEncoder({
-      label: 'vitrum.pt-webgpu.restirPt.clearReservoirs',
+      label: 'vitrum.pt-webgpu.clearTemporalBuffers',
     });
-    encoder.clearBuffer(this.#rsvr.rptReservoirCur);
-    if (this.#rsvr.rptReservoirPrev != null) encoder.clearBuffer(this.#rsvr.rptReservoirPrev);
-    if (this.#rsvr.rptReservoirSpatial != null) encoder.clearBuffer(this.#rsvr.rptReservoirSpatial);
+    for (const buffer of buffers) encoder.clearBuffer(buffer);
     this.#device.queue.submit([encoder.finish()]);
   }
 
@@ -519,96 +551,174 @@ export class GpuResources {
    * fast path where nothing was touched.
    */
   ensureAccumResources(width: number, height: number): boolean {
-    const targetByteSize = width * height * 16;
+    if (!Number.isSafeInteger(width) || width <= 0 ||
+        !Number.isSafeInteger(height) || height <= 0) {
+      throw new RangeError(
+        `pt-webgpu render-target dimensions must be positive safe integers ` +
+        `(got ${String(width)}x${String(height)})`,
+      );
+    }
+    const pixelCount = width * height;
+    const targetByteSize = pixelCount * 16;
+    if (!Number.isSafeInteger(pixelCount) || !Number.isSafeInteger(targetByteSize)) {
+      throw new RangeError(
+        `pt-webgpu render-target allocation ${width}x${height} exceeds the safe integer range`,
+      );
+    }
+    // `GPUDevice.limits` is mandatory in browsers. Keep this runtime guard for
+    // lightweight injected/test devices so validation still fails only on an
+    // advertised finite ceiling rather than dereferencing an absent mock field.
+    const limits = this.#device.limits as GPUSupportedLimits | undefined;
+    const maxTextureDimension2D = Number(limits?.maxTextureDimension2D);
+    if (Number.isFinite(maxTextureDimension2D) && maxTextureDimension2D > 0 &&
+        (width > maxTextureDimension2D || height > maxTextureDimension2D)) {
+      throw new RangeError(
+        `pt-webgpu render-target allocation ${width}x${height} exceeds ` +
+        `maxTextureDimension2D=${maxTextureDimension2D}`,
+      );
+    }
+    const maxBufferSize = Number(limits?.maxBufferSize);
+    const maxStorageBindingSize = Number(limits?.maxStorageBufferBindingSize);
+    const finiteBufferLimits = [maxBufferSize, maxStorageBindingSize]
+      .filter((limit) => Number.isFinite(limit) && limit > 0);
+    const effectiveBufferLimit = finiteBufferLimits.length > 0
+      ? Math.min(...finiteBufferLimits)
+      : Number.POSITIVE_INFINITY;
+    if (targetByteSize > effectiveBufferLimit) {
+      throw new RangeError(
+        `pt-webgpu render-target allocation ${width}x${height} requires a ` +
+        `${targetByteSize}-byte storage buffer; device limit is ${effectiveBufferLimit}`,
+      );
+    }
     const textureReady =
       this.accumTexture != null && this.accumWidth === width && this.accumHeight === height;
     const bufferReady = this.accumBuffer != null && this.accumBufferByteSize === targetByteSize;
     if (textureReady && bufferReady) {
       return false;
     }
-    this.destroyAccumTexture();
-    this.accumTexture = this.#device.createTexture({
-      label: 'vitrum.pt-webgpu.accum',
-      size: { width, height, depthOrArrayLayers: 1 },
-      format: 'rgba16float',
-      usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC,
-    });
-    this.accumView = this.accumTexture.createView();
-    this.normalDepthTexture = this.#device.createTexture({
-      label: 'vitrum.pt-webgpu.normalDepth',
-      size: { width, height, depthOrArrayLayers: 1 },
-      format: 'rgba16float',
-      usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC,
-    });
-    this.normalDepthView = this.normalDepthTexture.createView();
-    this.albedoTexture = this.#device.createTexture({
-      label: 'vitrum.pt-webgpu.albedo',
-      size: { width, height, depthOrArrayLayers: 1 },
-      format: 'rgba16float',
-      usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC,
-    });
-    this.albedoView = this.albedoTexture.createView();
-    this.varianceTexture = this.#device.createTexture({
-      label: 'vitrum.pt-webgpu.variance',
-      size: { width, height, depthOrArrayLayers: 1 },
-      format: 'rgba16float',
-      usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
-    });
-    this.varianceView = this.varianceTexture.createView();
-    if (this.#traceTier === 'full') {
-      this.motionVectorsTexture = this.#device.createTexture({
-        label: 'vitrum.pt-webgpu.motionVectors',
-        size: { width, height, depthOrArrayLayers: 1 },
-        format: 'rgba16float',
-        usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
+    const previous = [
+      this.accumTexture, this.normalDepthTexture, this.albedoTexture,
+      this.varianceTexture, this.motionVectorsTexture, this.accumBuffer,
+      this.varianceMomentsBuffer, this.#present.presentTexture,
+      this.#present.denoisedLinearTexture,
+    ];
+    const created: Array<GPUTexture | GPUBuffer> = [];
+    const forbiddenResources = new Set<object>(
+      previous.filter((resource) => resource != null),
+    );
+    const registerCandidate = <T extends DestroyableGpuResource>(resource: T, label: string): T => {
+      if (forbiddenResources.has(resource)) {
+        throw new Error(`[pt-webgpu] ${label} candidate aliased an existing GPU resource`);
+      }
+      created.push(resource);
+      forbiddenResources.add(resource);
+      return resource;
+    };
+    let accumTexture: GPUTexture;
+    let accumView: GPUTextureView;
+    let normalDepthTexture: GPUTexture;
+    let normalDepthView: GPUTextureView;
+    let albedoTexture: GPUTexture;
+    let albedoView: GPUTextureView;
+    let varianceTexture: GPUTexture;
+    let varianceView: GPUTextureView;
+    let motionVectorsTexture: GPUTexture | null = null;
+    let motionVectorsView: GPUTextureView | null = null;
+    let accumBuffer: GPUBuffer;
+    let varianceMomentsBuffer: GPUBuffer | null = null;
+    let presentTexture: GPUTexture;
+    let presentView: GPUTextureView;
+    try {
+      const createTexture = (descriptor: GPUTextureDescriptor): GPUTexture => {
+        return registerCandidate(this.#device.createTexture(descriptor), String(descriptor.label));
+      };
+      accumTexture = createTexture({
+        label: 'vitrum.pt-webgpu.accum', size: { width, height, depthOrArrayLayers: 1 },
+        format: 'rgba16float', usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC,
       });
-      this.motionVectorsView = this.motionVectorsTexture.createView();
-    }
-    this.accumBuffer = this.#device.createBuffer({
-      label: 'vitrum.pt-webgpu.accum.buffer',
-      size: Math.max(16, targetByteSize),
-      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-    });
-    if (this.#traceTier === 'full') {
-      this.varianceMomentsBuffer = this.#device.createBuffer({
-        label: 'vitrum.pt-webgpu.varianceMoments.buffer',
-        size: Math.max(16, targetByteSize),
+      accumView = accumTexture.createView();
+      normalDepthTexture = createTexture({
+        label: 'vitrum.pt-webgpu.normalDepth', size: { width, height, depthOrArrayLayers: 1 },
+        format: 'rgba16float', usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC,
+      });
+      normalDepthView = normalDepthTexture.createView();
+      albedoTexture = createTexture({
+        label: 'vitrum.pt-webgpu.albedo', size: { width, height, depthOrArrayLayers: 1 },
+        format: 'rgba16float', usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC,
+      });
+      albedoView = albedoTexture.createView();
+      varianceTexture = createTexture({
+        label: 'vitrum.pt-webgpu.variance', size: { width, height, depthOrArrayLayers: 1 },
+        format: 'rgba16float', usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
+      });
+      varianceView = varianceTexture.createView();
+      if (this.#traceTier === 'full') {
+        motionVectorsTexture = createTexture({
+          label: 'vitrum.pt-webgpu.motionVectors', size: { width, height, depthOrArrayLayers: 1 },
+          format: 'rgba16float', usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
+        });
+        motionVectorsView = motionVectorsTexture.createView();
+      }
+      accumBuffer = registerCandidate(this.#device.createBuffer({
+        label: 'vitrum.pt-webgpu.accum.buffer', size: Math.max(16, targetByteSize),
         usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+      }), 'vitrum.pt-webgpu.accum.buffer');
+      if (this.#traceTier === 'full') {
+        varianceMomentsBuffer = registerCandidate(this.#device.createBuffer({
+          label: 'vitrum.pt-webgpu.varianceMoments.buffer', size: Math.max(16, targetByteSize),
+          usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+        }), 'vitrum.pt-webgpu.varianceMoments.buffer');
+      }
+      presentTexture = createTexture({
+        label: 'vitrum.pt-webgpu.present', size: { width, height, depthOrArrayLayers: 1 },
+        format: 'rgba16float', usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC,
       });
+      presentView = presentTexture.createView();
+      const encoder = this.#device.createCommandEncoder({ label: 'vitrum.pt-webgpu.clearAccum.candidate' });
+      encoder.clearBuffer(accumBuffer);
+      if (varianceMomentsBuffer != null) encoder.clearBuffer(varianceMomentsBuffer);
+      this.#device.queue.submit([encoder.finish()]);
+    } catch (error) {
+      destroyGpuResourcesBestEffort(created, previous);
+      throw error;
     }
+
+    this.accumTexture = accumTexture;
+    this.accumView = accumView;
+    this.normalDepthTexture = normalDepthTexture;
+    this.normalDepthView = normalDepthView;
+    this.albedoTexture = albedoTexture;
+    this.albedoView = albedoView;
+    this.varianceTexture = varianceTexture;
+    this.varianceView = varianceView;
+    this.motionVectorsTexture = motionVectorsTexture;
+    this.motionVectorsView = motionVectorsView;
+    this.accumBuffer = accumBuffer;
+    this.varianceMomentsBuffer = varianceMomentsBuffer;
     this.accumBufferByteSize = targetByteSize;
     this.accumWidth = width;
     this.accumHeight = height;
-    // Present texture — same dims as accumTexture. Needs STORAGE_BINDING (write)
-    // for the present compute pass and TEXTURE_BINDING so hosts can read it.
-    // COPY_SRC so snapshot/debug paths can read it back.
-    this.#present.presentTexture = this.#device.createTexture({
-      label: 'vitrum.pt-webgpu.present',
-      size: { width, height, depthOrArrayLayers: 1 },
-      format: 'rgba16float',
-      usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC,
-    });
-    this.#present.presentView = this.#present.presentTexture.createView();
+    this.#present.presentTexture = presentTexture;
+    this.#present.presentView = presentView;
+    this.#present.denoisedLinearTexture = null;
     // Drop ALL cached bind groups: the path-trace groups AND (when reuse is on)
     // the reuse group-0, which references the just-recreated accum/aux views.
     this.invalidateBindGroups();
-    this.clearAccumBuffer();
+    destroyGpuResourcesBestEffort(previous, created);
     return true;
   }
 
   /**
    * Build the explicit `GPUBindGroupLayout`s for the current tier and wrap them
-   * in a single `GPUPipelineLayout` shared by both compute pipelines. The
+   * in the path-trace pipeline's single explicit `GPUPipelineLayout`. The
    * binding indices / resource types / visibility MUST match what the prior
    * `layout:'auto'` derived from the WGSL `@group/@binding` decls (see
    * `wgsl/pathTrace/material.wgsl.ts`) so the existing bind-group construction
    * in `buildBindGroups` stays valid unchanged.
    *
    * All bindings are COMPUTE-visible (the entire kernel is one compute stage).
-   * The explicit layout is a SUPERSET that satisfies both `main` (uses every
-   * binding) and `bdptExtendLightSubpath` (uses a subset) — an explicit layout
-   * may declare bindings an entry point doesn't statically use, so one layout
-   * serves both pipelines.
+   * Invocation-local BDPT executes inside `main` and owns no additional
+   * pipeline or bind-group resource.
    */
   /**
    * D8.2 — The full-tier group-0 bind-group layout entries (bindings 0..13).
@@ -684,30 +794,21 @@ export class GpuResources {
   }
 
   /**
-   * D9-6 — The full-tier group-2 bind-group entries (TLAS table bindings 0..4 +
-   * BDPT light-path/eye-stack bindings 5/6). Both `buildBindGroups` and
-   * `rebuildGroup2Only` build this identical entry list; extracting it here
-   * eliminates the prior duplication (any change propagates to both). The
-   * `binding:5` light-path buffer is caller-supplied (the full build passes the
-   * lazily-resolved `bdptLightPathBuffer()`; the H9 fast rebuild passes the
-   * host-supplied next-frame buffer). Full tier only.
+   * D9-6 — The full-tier group-2 bind-group entries (TLAS table bindings 0..4).
+   * BDPT eye/light stacks are invocation-private WGSL values, so this group has
+   * no BDPT-owned resource. Full tier only.
    */
-  #makeGroup2BindGroupEntries(
-    sb: UploadedSceneBuffers,
-    lightPathBuffer: GPUBuffer,
-  ): GPUBindGroupEntry[] {
+  #makeGroup2BindGroupEntries(sb: UploadedSceneBuffers): GPUBindGroupEntry[] {
     return [
       { binding: 0, resource: { buffer: sb.tlasNodesBuffer } },
       { binding: 1, resource: { buffer: sb.tlasInstanceIndicesBuffer } },
       { binding: 2, resource: { buffer: sb.tlasBlasRootsBuffer } },
       { binding: 3, resource: { buffer: sb.tlasInstanceWorldToLocalBuffer } },
       { binding: 4, resource: { buffer: sb.tlasInstanceLocalToWorldBuffer } },
-      { binding: 5, resource: { buffer: lightPathBuffer } },
-      { binding: 6, resource: { buffer: this.bdptEyeStackBuffer! } },
     ];
   }
 
-  #buildSharedPipelineLayout(): GPUPipelineLayout {
+  #buildSharedPipelineLayout(): SharedPipelineLayoutCandidate {
     // Group 0 — bindings 0..11 (both tiers) + 12..14 (lite texture slots) / 12..13 (full).
     // Mirrors material.wgsl.ts.
     let group0Entries: GPUBindGroupLayoutEntry[];
@@ -736,20 +837,23 @@ export class GpuResources {
         _sampledTex(14),      // liteLightTex  — RGBA32F packed light data
       ];
     }
-    this.bindGroupLayout = this.#device.createBindGroupLayout({
+    const bindGroupLayout = this.#device.createBindGroupLayout({
       label: `vitrum.pt-webgpu.layout.group0.${this.#traceTier}`,
       entries: group0Entries,
     });
-    const bindGroupLayouts: GPUBindGroupLayout[] = [this.bindGroupLayout];
+    const bindGroupLayouts: GPUBindGroupLayout[] = [bindGroupLayout];
+    let bindGroupLayout1: GPUBindGroupLayout | null = null;
+    let bindGroupLayout2: GPUBindGroupLayout | null = null;
+    let bindGroupLayout3: GPUBindGroupLayout | null = null;
 
     if (this.#traceTier === 'full') {
       // Group 1 — 11 read-only storage buffers (analytics + env + area lights).
-      this.bindGroupLayout1 = this.#device.createBindGroupLayout({
+      bindGroupLayout1 = this.#device.createBindGroupLayout({
         label: 'vitrum.pt-webgpu.layout.group1.full',
         entries: Array.from({ length: 11 }, (_unused, binding) => _buf(binding, _ro)),
       });
-      // Group 2 — TLAS table (5 read-only) + BDPT light-path + eye-stack (read_write).
-      this.bindGroupLayout2 = this.#device.createBindGroupLayout({
+      // Group 2 — TLAS table. BDPT stacks are invocation-private.
+      bindGroupLayout2 = this.#device.createBindGroupLayout({
         label: 'vitrum.pt-webgpu.layout.group2.full',
         entries: [
           _buf(0, _ro), // tlasNodes
@@ -757,8 +861,6 @@ export class GpuResources {
           _buf(2, _ro), // tlasBlasRoots
           _buf(3, _ro), // tlasInstanceWorldToLocal
           _buf(4, _ro), // tlasInstanceLocalToWorld
-          _buf(5, _rw), // bdptLightPath (read_write)
-          _buf(6, _rw), // bdptEyeStack (read_write)
         ],
       });
       // Group 3 — WS2 light-tree node buffer + P2 material textures (per-vertex
@@ -771,7 +873,7 @@ export class GpuResources {
       // buffers are bound when SPPM is off; the gather code is guarded by
       // causticMode() == 2u so they are never accessed.
       const VIS = _vis();
-      this.bindGroupLayout3 = this.#device.createBindGroupLayout({
+      bindGroupLayout3 = this.#device.createBindGroupLayout({
         label: 'vitrum.pt-webgpu.layout.group3.full',
         entries: [
           _buf(0, _ro), // lightTree (read-only storage)
@@ -799,257 +901,275 @@ export class GpuResources {
             : []),
         ],
       });
-      bindGroupLayouts.push(this.bindGroupLayout1, this.bindGroupLayout2, this.bindGroupLayout3);
-    } else {
-      this.bindGroupLayout1 = null;
-      this.bindGroupLayout2 = null;
-      this.bindGroupLayout3 = null;
+      bindGroupLayouts.push(bindGroupLayout1, bindGroupLayout2, bindGroupLayout3);
     }
 
-    return this.#device.createPipelineLayout({
+    const pipelineLayout = this.#device.createPipelineLayout({
       label: `vitrum.pt-webgpu.pipelineLayout.${this.#traceTier}`,
       bindGroupLayouts,
     });
+    return {
+      pipelineLayout,
+      bindGroupLayout,
+      bindGroupLayout1,
+      bindGroupLayout2,
+      bindGroupLayout3,
+    };
   }
 
   ensurePipeline(): void {
-    if (this.computePipeline != null && this.bindGroupLayout != null && this.paramsBuffer != null) {
+    const layoutsReady =
+      this.bindGroupLayout != null &&
+      (this.#traceTier === 'lite' || (
+        this.bindGroupLayout1 != null &&
+        this.bindGroupLayout2 != null &&
+        this.bindGroupLayout3 != null
+      ));
+    if (
+      this.computePipeline != null &&
+      this.paramsBuffer != null &&
+      layoutsReady &&
+      true
+    ) {
       return;
     }
-    this.paramsBuffer = this.#device.createBuffer({
-      label: 'vitrum.pt-webgpu.params',
-      size: 512,
-      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-    });
-    // WS4 — the full-tier kernel is composed for this engine's integrator
-    // config: the volumetric SSS random walk is compiled in only when BDPT is
-    // OFF (structural gate — energy conservation; BDPT has no medium logic).
-    const samplingOpts = { sampling: this.#sampling, cwbvhClosest: this.#cwbvhClosest };
-    const traceWgsl =
-      this.#traceTier === 'lite'
-        ? composePtWebgpuTraceLiteWgsl(samplingOpts)
-        : composePtWebgpuTraceWgsl(this.#bdpt, samplingOpts);
-    const module = this.#device.createShaderModule({
-      label: `vitrum.pt-webgpu.pathTrace.${this.#traceTier}`,
-      code: traceWgsl,
-    });
-    // ONE explicit pipeline layout shared by BOTH pipelines. Auto layouts are
-    // pipeline-exclusive (WebGPU spec), so a bind group built against the
-    // path-trace pipeline's auto layout cannot be set on the BDPT pipeline (and
-    // vice versa). The BDPT light-subpath pass reuses the path-trace bind groups,
-    // so it requires a shared explicit layout to dispatch on real hardware.
-    const pipelineLayout = this.#buildSharedPipelineLayout();
-    this.computePipeline = this.#device.createComputePipeline({
-      label: 'vitrum.pt-webgpu.pathTrace.pipeline',
-      layout: pipelineLayout,
-      compute: {
-        module,
-        entryPoint: 'main',
-      },
-    });
-    if (this.#traceTier === 'full' && this.#bdpt) {
-      this.bdptSubpathPipeline = this.#device.createComputePipeline({
-        label: 'vitrum.pt-webgpu.bdptLightSubpath.pipeline',
-        layout: pipelineLayout,
+
+    const previousParamsBuffer = this.paramsBuffer;
+    let paramsBuffer: GPUBuffer | null = null;
+    try {
+      paramsBuffer = this.#device.createBuffer({
+        label: 'vitrum.pt-webgpu.params',
+        size: FRAME_PARAMS_BYTE_SIZE,
+        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+      });
+      // WS4 — the full-tier kernel is composed for this engine's integrator
+      // config: the volumetric SSS random walk is compiled in only when BDPT is
+      // OFF (structural gate — energy conservation; BDPT has no medium logic).
+      const samplingOpts = { sampling: this.#sampling, cwbvhClosest: this.#cwbvhClosest };
+      const traceWgsl =
+        this.#traceTier === 'lite'
+          ? composePtWebgpuTraceLiteWgsl(samplingOpts)
+          : composePtWebgpuTraceWgsl(this.#bdpt, samplingOpts);
+      const module = this.#device.createShaderModule({
+        label: `vitrum.pt-webgpu.pathTrace.${this.#traceTier}`,
+        code: traceWgsl,
+      });
+      // Build the entire explicit-layout + pipeline cohort off to the side.
+      // Publishing any member before the optional BDPT pipeline succeeds would
+      // poison the readiness guard and make a transient creation failure
+      // permanently non-retryable.
+      const layouts = this.#buildSharedPipelineLayout();
+      const computePipeline = this.#device.createComputePipeline({
+        label: 'vitrum.pt-webgpu.pathTrace.pipeline',
+        layout: layouts.pipelineLayout,
         compute: {
           module,
-          entryPoint: 'bdptExtendLightSubpath',
+          entryPoint: 'main',
         },
       });
-    } else {
-      this.bdptSubpathPipeline = null;
+      this.paramsBuffer = paramsBuffer;
+      this.computePipeline = computePipeline;
+      this.bindGroupLayout = layouts.bindGroupLayout;
+      this.bindGroupLayout1 = layouts.bindGroupLayout1;
+      this.bindGroupLayout2 = layouts.bindGroupLayout2;
+      this.bindGroupLayout3 = layouts.bindGroupLayout3;
+      this.invalidateBindGroups();
+      destroyGpuResourcesBestEffort([previousParamsBuffer], [paramsBuffer]);
+    } catch (error) {
+      destroyGpuResourcesBestEffort([paramsBuffer], [previousParamsBuffer]);
+      throw error;
     }
-  }
-
-  /**
-   * (Re)allocate the BDPT eye-subpath scratch stack for the given render dims and
-   * per-pixel eye depth. Returns `true` if BDPT connections may proceed this
-   * frame, `false` if the allocation would exceed the safety ceiling (caller must
-   * skip the BDPT pass; a stale/placeholder buffer remains bound so the pipeline
-   * still validates). Sizes the buffer to `width·height·maxDepth·32 B`. When
-   * BDPT is off, keeps only a 32-byte placeholder.
-   *
-   * The full-tier explicit group-2 layout always declares the `bdptEyeStack`
-   * binding (6), so a non-null buffer must always exist on the full tier.
-   */
-  ensureBdptEyeStack(width: number, height: number, maxDepth: number, bdptActive: boolean): boolean {
-    if (this.#traceTier !== 'full') {
-      return false;
-    }
-    const targetBytes = bdptActive
-      ? Math.max(
-          GpuResources.BDPT_EYE_VERTEX_BYTES,
-          width * height * Math.max(1, maxDepth) * GpuResources.BDPT_EYE_VERTEX_BYTES,
-        )
-      : GpuResources.BDPT_EYE_VERTEX_BYTES;
-
-    if (bdptActive && targetBytes > GpuResources.BDPT_EYE_STACK_MAX_BYTES) {
-      // H14-F: once-gate — warn only on the first frame that hits the ceiling.
-      const mib = (targetBytes / (1024 * 1024)).toFixed(1);
-      this.#emitResourceCeilingWarning('bdptEyeStack', {
-        code: 'pt-webgpu.bdpt-eye-stack-ceiling',
-        backend: 'pt-webgpu',
-        phase: 'renderFrame',
-        method: 'renderFrame',
-        message:
-          `[vitrum/pt-webgpu] BDPT eye-stack scratch would be ${mib} MiB ` +
-          `(${width}×${height} × depth ${maxDepth} × 32 B), exceeding the ` +
-          `${(GpuResources.BDPT_EYE_STACK_MAX_BYTES / (1024 * 1024)).toFixed(0)} MiB ceiling. ` +
-          'Skipping BDPT connections this frame — lower resolutionFactor, cap bounces, or tile. ' +
-          '(This warning fires once per engine instance.)',
-        details: {
-          width,
-          height,
-          maxDepth,
-          targetBytes,
-          ceilingBytes: GpuResources.BDPT_EYE_STACK_MAX_BYTES,
-          fallback: 'skip-bdpt-connections',
-        },
-      });
-      if (this.bdptEyeStackBuffer == null) {
-        this.bdptEyeStackBuffer = this.#device.createBuffer({
-          label: 'vitrum.pt-webgpu.bdpt.eyeStack.placeholder',
-          size: GpuResources.BDPT_EYE_VERTEX_BYTES,
-          usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-        });
-        this.bdptEyeStackByteSize = GpuResources.BDPT_EYE_VERTEX_BYTES;
-        this.invalidateBindGroups();
-      }
-      return false;
-    }
-
-    if (this.bdptEyeStackBuffer != null && this.bdptEyeStackByteSize === targetBytes) {
-      return bdptActive;
-    }
-    this.bdptEyeStackBuffer?.destroy();
-    this.bdptEyeStackBuffer = this.#device.createBuffer({
-      label: 'vitrum.pt-webgpu.bdpt.eyeStack',
-      size: targetBytes,
-      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-    });
-    this.bdptEyeStackByteSize = targetBytes;
-    this.invalidateBindGroups();
-    return bdptActive;
   }
 
   // ── ReSTIR-PT reuse resource lifecycle (gated; full tier only) ───────────────
 
   /**
-   * (Re)allocate the ReSTIR-PT reservoir ping-pong buffers (`Cur` / `Prev`,
-   * 144 B/px), the `rpt_result` buffer (16 B/px), and the RestirPtParams UBO to
-   * the requested dims. No-op (returns `false`) when reuse is OFF. Returns `true`
-   * when buffers for the requested frame dimensions are available, whether they
-   * were freshly created or already cached. Refuses to grow past the per-buffer
-   * safety ceiling (returns `false`, leaving any prior buffers as-is); the caller
-   * skips the reuse passes that frame instead of dispatching against stale sizes.
-   *
-   * Both reservoir buffers are zero-cleared on (re)allocation so the FIRST frame's
-   * temporal pass reads an empty (M=0) history rather than garbage.
+   * Ensure the two compact full-frame reservoirs (`Cur` scratch + `Prev`
+   * spatial/history) and the 16 B/px resolved-result buffer. The method either
+   * returns with an exact-size cohort or throws before publishing any candidate;
+   * an explicitly requested ReSTIR mode is never silently disabled.
    */
   ensureReservoirBuffers(width: number, height: number): boolean {
     if (!this.#restirPtReuse) return false;
-    const px = Math.max(1, width) * Math.max(1, height);
+    if (
+      !Number.isSafeInteger(width) || width < 1 || width > 0xffffffff ||
+      !Number.isSafeInteger(height) || height < 1 || height > 0xffffffff
+    ) {
+      throw new RangeError(
+        `[vitrum/pt-webgpu] ReSTIR-PT dimensions must be positive u32 integers (got ${width}×${height}).`,
+      );
+    }
+    const px = width * height;
     const reservoirBytes = px * GpuResources.RESERVOIR_PT_HERO_BYTES;
     const resultBytes = px * 16;
-    if (reservoirBytes > GpuResources.RESTIR_PT_RESERVOIR_MAX_BYTES) {
-      // H14-F: once-gate — warn only on the first frame that hits the ceiling.
-      const mib = (reservoirBytes / (1024 * 1024)).toFixed(1);
+    const totalBytes = reservoirBytes * 2 + resultBytes;
+    if (
+      !Number.isSafeInteger(reservoirBytes) ||
+      !Number.isSafeInteger(resultBytes) ||
+      !Number.isSafeInteger(totalBytes)
+    ) {
+      throw new RangeError(
+        `[vitrum/pt-webgpu] ReSTIR-PT dimensions ${width}×${height} overflow a safe GPU allocation size.`,
+      );
+    }
+
+    const limits = this.#device.limits as Partial<GPUSupportedLimits> | undefined;
+    const finiteLimit = (value: number | undefined): number => (
+      value != null && Number.isFinite(value) && value > 0
+        ? value
+        : Number.POSITIVE_INFINITY
+    );
+    const perBufferLimit = Math.min(
+      GpuResources.RESTIR_PT_RESERVOIR_MAX_BYTES,
+      finiteLimit(limits?.maxStorageBufferBindingSize),
+      finiteLimit(limits?.maxBufferSize),
+    );
+    const exceedsPerBuffer = reservoirBytes > perBufferLimit
+      || resultBytes > perBufferLimit;
+    const exceedsTotal = totalBytes > GpuResources.RESTIR_PT_TOTAL_MAX_BYTES;
+    if (exceedsPerBuffer || exceedsTotal) {
+      const message =
+        `[vitrum/pt-webgpu] ReSTIR-PT at ${width}×${height} requires ` +
+        `${(reservoirBytes / (1024 * 1024)).toFixed(2)} MiB per reservoir and ` +
+        `${(totalBytes / (1024 * 1024)).toFixed(2)} MiB total; limits are ` +
+        `${(perBufferLimit / (1024 * 1024)).toFixed(2)} MiB per binding and ` +
+        `${(GpuResources.RESTIR_PT_TOTAL_MAX_BYTES / (1024 * 1024)).toFixed(0)} MiB total.`;
       this.#emitResourceCeilingWarning('restirPtReservoir', {
         code: 'pt-webgpu.restir-pt-reservoir-ceiling',
         backend: 'pt-webgpu',
         phase: 'renderFrame',
         method: 'renderFrame',
-        message:
-          `[vitrum/pt-webgpu] ReSTIR-PT reservoir buffer would be ${mib} MiB ` +
-          `(${width}×${height} × ${GpuResources.RESERVOIR_PT_HERO_BYTES} B), exceeding the ` +
-          `${(GpuResources.RESTIR_PT_RESERVOIR_MAX_BYTES / (1024 * 1024)).toFixed(0)} MiB ceiling. ` +
-          'Skipping ReSTIR-PT reuse this frame — lower resolutionFactor or tile. ' +
-          '(This warning fires once per engine instance.)',
+        message,
         details: {
           width,
           height,
-          targetBytes: reservoirBytes,
-          ceilingBytes: GpuResources.RESTIR_PT_RESERVOIR_MAX_BYTES,
-          fallback: 'skip-restir-pt-reuse',
+          bytesPerPixel: GpuResources.RESERVOIR_PT_HERO_BYTES,
+          reservoirCount: 2,
+          reservoirBytes,
+          resultBytes,
+          totalBytes,
+          perBufferLimit,
+          totalLimit: GpuResources.RESTIR_PT_TOTAL_MAX_BYTES,
+          fallback: 'throw',
         },
       });
-      return false;
+      throw new RangeError(message);
     }
+
     const ready =
       this.#rsvr.rptReservoirCur != null &&
+      this.#rsvr.rptReservoirPrev != null &&
+      this.#rsvr.rptResultBuffer != null &&
+      this.#rsvr.rptParamsBuffer != null &&
       this.#rsvr.rptReservoirByteSize === reservoirBytes &&
       this.#rsvr.rptResultByteSize === resultBytes;
     if (ready) return true;
 
-    this.#rsvr.rptReservoirCur?.destroy();
-    this.#rsvr.rptReservoirPrev?.destroy();
-    this.#rsvr.rptReservoirSpatial?.destroy();
-    this.#rsvr.rptResultBuffer?.destroy();
-    const usage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST;
-    this.#rsvr.rptReservoirCur = this.#device.createBuffer({
-      label: 'vitrum.pt-webgpu.restirPt.reservoir.cur',
-      size: reservoirBytes,
-      usage,
-    });
-    this.#rsvr.rptReservoirPrev = this.#device.createBuffer({
-      label: 'vitrum.pt-webgpu.restirPt.reservoir.prev',
-      size: reservoirBytes,
-      usage,
-    });
-    this.#rsvr.rptReservoirSpatial = this.#device.createBuffer({
-      label: 'vitrum.pt-webgpu.restirPt.reservoir.spatial',
-      size: reservoirBytes,
-      usage,
-    });
-    this.#rsvr.rptResultBuffer = this.#device.createBuffer({
-      label: 'vitrum.pt-webgpu.restirPt.result',
-      size: resultBytes,
-      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC,
-    });
-    if (this.#rsvr.rptParamsBuffer == null) {
-      this.#rsvr.rptParamsBuffer = this.#device.createBuffer({
+    const previous = [
+      this.#rsvr.rptReservoirCur,
+      this.#rsvr.rptReservoirPrev,
+      this.#rsvr.rptResultBuffer,
+      this.#rsvr.rptParamsBuffer,
+    ];
+    const usage =
+      GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST;
+    const candidates: GPUBuffer[] = [];
+    try {
+      const cur = this.#device.createBuffer({
+        label: 'vitrum.pt-webgpu.restirPt.reservoir.cur',
+        size: reservoirBytes,
+        usage,
+      });
+      candidates.push(cur);
+      const prev = this.#device.createBuffer({
+        label: 'vitrum.pt-webgpu.restirPt.reservoir.prev',
+        size: reservoirBytes,
+        usage,
+      });
+      candidates.push(prev);
+      const result = this.#device.createBuffer({
+        label: 'vitrum.pt-webgpu.restirPt.result',
+        size: resultBytes,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC,
+      });
+      candidates.push(result);
+      const params = this.#device.createBuffer({
         label: 'vitrum.pt-webgpu.restirPt.params',
         size: GpuResources.RESTIR_PT_PARAMS_BYTES,
         usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
       });
+      candidates.push(params);
+
+      const enc = this.#device.createCommandEncoder({
+        label: 'vitrum.pt-webgpu.restirPt.clear',
+      });
+      enc.clearBuffer(cur);
+      enc.clearBuffer(prev);
+      this.#device.queue.submit([enc.finish()]);
+
+      this.#rsvr.rptReservoirCur = cur;
+      this.#rsvr.rptReservoirPrev = prev;
+      this.#rsvr.rptResultBuffer = result;
+      this.#rsvr.rptParamsBuffer = params;
+      this.#rsvr.rptReservoirByteSize = reservoirBytes;
+      this.#rsvr.rptResultByteSize = resultBytes;
+      this.#rsvr.rptProducerGroup0 = null;
+      this.#rsvr.rptTemporalGroup0 = null;
+      this.#rsvr.rptSpatialGroup0 = null;
+      this.#rsvr.rptResolveGroup0 = null;
+      destroyGpuResourcesBestEffort(previous, candidates);
+      return true;
+    } catch (error) {
+      destroyGpuResourcesBestEffort(candidates, previous);
+      throw error;
     }
-    this.#rsvr.rptReservoirByteSize = reservoirBytes;
-    this.#rsvr.rptResultByteSize = resultBytes;
-    // Zero the ping-pong so frame 0's temporal history is an empty reservoir.
-    const enc = this.#device.createCommandEncoder({ label: 'vitrum.pt-webgpu.restirPt.clear' });
-    enc.clearBuffer(this.#rsvr.rptReservoirCur);
-    enc.clearBuffer(this.#rsvr.rptReservoirPrev);
-    enc.clearBuffer(this.#rsvr.rptReservoirSpatial);
-    this.#device.queue.submit([enc.finish()]);
-    // New buffers → the cached reuse bind groups are stale.
-    this.#rsvr.rptProducerGroup0 = null;
-    this.#rsvr.rptTemporalGroup0 = null;
-    this.#rsvr.rptSpatialGroup0 = null;
-    this.#rsvr.rptResolveGroup0 = null;
-    return true;
   }
 
   /**
-   * Write the RestirPtParams UBO (width/height/mClamp/allowGlossyReuse + wCap).
-   * No-op when reuse is OFF or the buffer is absent. Called per-frame by the
-   * engine before dispatch.
+   * Write the RestirPtParams UBO (width/height/mClamp + wCap).
+   * No-op only when reuse is OFF. Once requested, an absent params buffer or an
+   * unrepresentable value is an invariant failure rather than a silent skip.
+   * Called per-frame by the engine before dispatch.
    */
   writeReservoirParams(
     width: number,
     height: number,
     mClamp: number,
     wCap: number,
-    allowGlossyReuse: boolean,
   ): void {
-    if (!this.#restirPtReuse || this.#rsvr.rptParamsBuffer == null) return;
+    if (!this.#restirPtReuse) return;
+    if (this.#rsvr.rptParamsBuffer == null) {
+      throw new Error(
+        '[vitrum/pt-webgpu] ReSTIR-PT params buffer is absent after reuse was enabled.',
+      );
+    }
+    if (
+      !Number.isSafeInteger(width) || width < 1 || width > 0xffffffff ||
+      !Number.isSafeInteger(height) || height < 1 || height > 0xffffffff
+    ) {
+      throw new RangeError(
+        `[vitrum/pt-webgpu] ReSTIR-PT parameter dimensions must be positive u32 integers (got ${width}×${height}).`,
+      );
+    }
+    if (!Number.isInteger(mClamp) || mClamp < 1 || mClamp > 4095) {
+      throw new RangeError(
+        `[vitrum/pt-webgpu] ReSTIR-PT mClamp must be an integer in 1..4095 (got ${mClamp}).`,
+      );
+    }
+    const packedWCap = Math.fround(wCap);
+    if (!Number.isFinite(wCap) || !Number.isFinite(packedWCap) || packedWCap <= 0) {
+      throw new RangeError(
+        `[vitrum/pt-webgpu] ReSTIR-PT wCap must remain positive and finite as f32 (got ${wCap}).`,
+      );
+    }
     const ubo = new ArrayBuffer(GpuResources.RESTIR_PT_PARAMS_BYTES);
     const u = new Uint32Array(ubo);
     const f = new Float32Array(ubo);
-    u[0] = width >>> 0;
-    u[1] = height >>> 0;
-    u[2] = Math.max(1, Math.floor(mClamp)) >>> 0;
-    u[3] = allowGlossyReuse ? 1 : 0;
-    f[4] = wCap;
+    u[0] = width;
+    u[1] = height;
+    u[2] = mClamp;
+    u[3] = 0; // _padA
+    f[4] = packedWCap;
     f[5] = 0; f[6] = 0; f[7] = 0; // _padB/_padC/_padD
     this.#device.queue.writeBuffer(this.#rsvr.rptParamsBuffer, 0, ubo);
   }
@@ -1057,8 +1177,8 @@ export class GpuResources {
   /**
    * Build the extended group-0 bind-group layout for the reuse passes: the
    * megakernel's full-tier group-0 bindings (0..13, IDENTICAL to #buildShared-
-   * PipelineLayout's group0) PLUS the relocated reuse bindings (20..24). This is
-   * the ONE group the reuse passes carry their own resources in; groups 1/2/3 are
+   * PipelineLayout's group0) PLUS the relocated reuse bindings (20..25). This is
+   * the one group the reuse passes carry their own resources in; groups 1/2/3 are
    * the megakernel's existing explicit layouts (reused verbatim), so a reuse
    * pipeline's layout is [g0', g1, g2, g3] — exactly 4 groups, portable on a
    * guaranteed maxBindGroups = 4 adapter. Full tier only (the reuse passes
@@ -1072,7 +1192,7 @@ export class GpuResources {
     // the shared extractor guarantees the two layouts can never diverge.
     const entries: GPUBindGroupLayoutEntry[] = [
       ...this.#makeGroup0LayoutEntries(),
-      // Relocated reuse bindings (20..24). The composed WGSL keeps rpt_resPrev /
+      // Relocated reuse bindings (20..25). The composed WGSL keeps rpt_resPrev /
       // rpt_resResolved as `var<storage, read>` (the naga-gap fix is to MONOMORPHISE
       // the reservoir helpers so the read-only global is indexed DIRECTLY rather
       // than passed as a storage pointer — see restirPtCompose.wgsl.ts
@@ -1092,7 +1212,7 @@ export class GpuResources {
   }
 
   /**
-   * Lazily build the three reuse compute pipelines + their shared 4-group layout
+   * Lazily build the four reuse compute pipelines + their shared 4-group layout
    * [g0', g1, g2, g3]. Requires `ensurePipeline()` to have run first (so the
    * megakernel's group-1/2/3 explicit layouts exist — the reuse passes reuse them
    * for the scene/TLAS/light bindings their trace + NEE statically use). No-op
@@ -1103,7 +1223,14 @@ export class GpuResources {
    */
   ensureReservoirPipelines(): void {
     if (!this.#restirPtReuse) return;
-    if (this.#rsvr.rptProducerPipeline != null) return;
+    if (
+      this.#rsvr.rptGroup0Layout != null &&
+      this.#rsvr.rptProducerPipeline != null &&
+      this.#rsvr.rptTemporalPipeline != null &&
+      this.#rsvr.rptSpatialPipeline != null &&
+      this.#rsvr.rptResolvePipeline != null &&
+      this.#rsvr.rptCompositePipeline != null
+    ) return;
     if (
       this.bindGroupLayout1 == null ||
       this.bindGroupLayout2 == null ||
@@ -1114,11 +1241,11 @@ export class GpuResources {
         'ensureReservoirPipelines: full-tier group-1/2/3 layouts missing — call ensurePipeline() first.',
       );
     }
-    this.#rsvr.rptGroup0Layout = this.#buildReservoirGroup0Layout();
+    const group0Layout = this.#buildReservoirGroup0Layout();
     const pipelineLayout = this.#device.createPipelineLayout({
       label: 'vitrum.pt-webgpu.restirPt.pipelineLayout',
       bindGroupLayouts: [
-        this.#rsvr.rptGroup0Layout,
+        group0Layout,
         this.bindGroupLayout1,
         this.bindGroupLayout2,
         this.bindGroupLayout3,
@@ -1132,22 +1259,24 @@ export class GpuResources {
         compute: { module, entryPoint },
       });
     };
-    this.#rsvr.rptProducerPipeline = mk(
+    // Candidate-first publication is essential here: a transient failure in a
+    // later pass must not leave producer non-null and poison the retry guard.
+    const producerPipeline = mk(
       'vitrum.pt-webgpu.restirPt.producer',
       composeRestirPtProducerWgsl({ sampling: this.#sampling }),
       'restirPtProduce',
     );
-    this.#rsvr.rptTemporalPipeline = mk(
+    const temporalPipeline = mk(
       'vitrum.pt-webgpu.restirPt.temporal',
       composeRestirPtTemporalWgsl({ sampling: this.#sampling }),
       'restirPtTemporal',
     );
-    this.#rsvr.rptSpatialPipeline = mk(
+    const spatialPipeline = mk(
       'vitrum.pt-webgpu.restirPt.spatial',
       composeRestirPtSpatialWgsl({ sampling: this.#sampling }),
       'restirPtSpatial',
     );
-    this.#rsvr.rptResolvePipeline = mk(
+    const resolvePipeline = mk(
       'vitrum.pt-webgpu.restirPt.resolve',
       composeRestirPtResolveWgsl({ sampling: this.#sampling }),
       'restirPtResolve',
@@ -1155,7 +1284,7 @@ export class GpuResources {
     // A1 — the COMPOSITE megakernel uses the SAME [g0', g1, g2, g3] layout (it reads
     // rpt_result at the relocated group-0 binding 23 + the scene groups). Composed
     // for this engine's BDPT mode (matches the default megakernel's SSS/BDPT gate).
-    this.#rsvr.rptCompositePipeline = mk(
+    const compositePipeline = mk(
       'vitrum.pt-webgpu.restirPt.compositeMegakernel',
       composePtWebgpuCompositeTraceWgsl(this.#bdpt, {
         sampling: this.#sampling,
@@ -1163,44 +1292,54 @@ export class GpuResources {
       }),
       'main',
     );
+
+    this.#rsvr.rptGroup0Layout = group0Layout;
+    this.#rsvr.rptProducerPipeline = producerPipeline;
+    this.#rsvr.rptTemporalPipeline = temporalPipeline;
+    this.#rsvr.rptSpatialPipeline = spatialPipeline;
+    this.#rsvr.rptResolvePipeline = resolvePipeline;
+    this.#rsvr.rptCompositePipeline = compositePipeline;
+    this.#rsvr.rptProducerGroup0 = null;
+    this.#rsvr.rptTemporalGroup0 = null;
+    this.#rsvr.rptSpatialGroup0 = null;
+    this.#rsvr.rptResolveGroup0 = null;
   }
 
   /**
    * Build (and cache) the per-pass reuse group-0 bind groups. Each provides the
    * megakernel group-0 scene/G-buffer resources (IDENTICAL to the trace group 0)
-   * PLUS the reuse bindings (20..24). The producer reads `Cur` as its OUTPUT slot
-   * (binding 21 is the "current" reservoir in every pass by binding number); the
-   * temporal pass reads `Cur`(21)+`Prev`(22); the resolve pass reads `Cur`(21) +
-   * writes `result`(23). All three also bind 20/23/24 even if a given pass does
-   * not declare them (extra layout entries are legal; the layout is uniform), so
-   * one group-0 bind-group construction serves all three with the SAME resources
-   * except the producer's binding-20 write target. Returns nothing; the engine
-   * reads the cached groups off this struct. Idempotent.
+   * PLUS the reuse bindings (20..25). Four distinct groups keep each pass's
+   * statically used bindings non-aliasing: producer writes Cur at b20; temporal
+   * reads/writes Cur at b21 and reads Prev at b22; spatial reads Cur at b21 and
+   * writes Prev at b25; resolve reads Prev at b25 and writes result at b23.
+   * Extra layout entries are legal, but their resources are selected per pass so
+   * no pass binds the same buffer through two of its active read/write slots.
+   * Returns nothing; the engine reads the cached groups off this struct.
+   * Idempotent.
    *
-   * NOTE on binding 20 vs 21: the producer writes `rpt_reservoirOut` at b20 and
-   * the temporal/resolve read `rpt_resCurrent`/`rpt_resResolved` at b21 — these
-   * are the SAME logical "current" reservoir. We bind `rptReservoirCur` to BOTH
-   * b20 and b21 so the producer's output IS the temporal's input (one buffer),
-   * and `rptReservoirPrev` to b22.
-   *
-   * **Aliasing-safety rationale** — `rptReservoirCur` is bound simultaneously at
-   * b20 (`rpt_reservoirOut`, read_write) and b21 (`rpt_resCurrent`, read_write).
-   * This is safe because the producer, temporal, spatial, and resolve passes are
-   * SEQUENTIAL compute passes: each pass encodes into its own
-   * `GPUComputePassEncoder` and the encoder submits them in order. WebGPU (§19.4)
-   * guarantees an implicit memory barrier at each `computePassEncoder.end()`, so
-   * the producer's writes to b20 are fully visible before the temporal pass reads
-   * b21 — there is no within-pass read-write hazard. Within a single pass the
-   * producer only WRITES b20 (b21 is read by temporal, not by producer), so the
-   * dual binding is data-race-free at all times.
+   * The pass sequence provides the inter-pass visibility boundary. Cur is the
+   * producer/temporal scratch reservoir; Prev is both temporal history and the
+   * spatial output/resolve input, so it becomes the next frame's history without
+   * an end-of-frame swap.
    */
   buildReservoirBindGroups(sb: UploadedSceneBuffers): void {
-    if (!this.#restirPtReuse || this.#rsvr.rptGroup0Layout == null) return;
-    if (this.#rsvr.rptProducerGroup0 != null) return;
+    if (!this.#restirPtReuse) return;
+    if (this.#rsvr.rptGroup0Layout == null) {
+      throw new Error(
+        '[vitrum/pt-webgpu] ReSTIR-PT group-0 layout is absent after pipeline initialization.',
+      );
+    }
+    if (
+      this.#rsvr.rptProducerGroup0 != null &&
+      this.#rsvr.rptTemporalGroup0 != null &&
+      this.#rsvr.rptSpatialGroup0 != null &&
+      this.#rsvr.rptResolveGroup0 != null
+    ) {
+      return;
+    }
     if (
       this.#rsvr.rptReservoirCur == null ||
       this.#rsvr.rptReservoirPrev == null ||
-      this.#rsvr.rptReservoirSpatial == null ||
       this.#rsvr.rptResultBuffer == null ||
       this.#rsvr.rptParamsBuffer == null ||
       this.accumView == null ||
@@ -1211,7 +1350,9 @@ export class GpuResources {
       this.varianceMomentsBuffer == null ||
       this.paramsBuffer == null
     ) {
-      return;
+      throw new Error(
+        '[vitrum/pt-webgpu] ReSTIR-PT bind-group resources are incomplete after requested-mode setup.',
+      );
     }
     const B = RPT_GROUP0_BINDING_BASE;
     // D8.2: Shared megakernel group-0 scene/G-buffer entries (0..13) sourced from
@@ -1221,57 +1362,43 @@ export class GpuResources {
       ...this.#makeGroup0BindGroupEntries(sb),
       { binding: B + 4, resource: { buffer: this.#rsvr.rptParamsBuffer } },
     ];
-    // The reuse-reservoir slots differ only in which buffer is the "current"
-    // ping-pong half. All three passes share ONE bind group: b20 = b21 = Cur (the
-    // producer writes b20, temporal/resolve read b21 — same buffer), b22 = Prev,
-    // b23 = result.
-    const group0 = this.#device.createBindGroup({
-      label: 'vitrum.pt-webgpu.restirPt.bindgroup0',
-      layout: this.#rsvr.rptGroup0Layout,
+    const makeGroup = (
+      label: string,
+      out: GPUBuffer,
+      current: GPUBuffer,
+      historyRead: GPUBuffer,
+      spatialOutput: GPUBuffer,
+    ): GPUBindGroup => this.#device.createBindGroup({
+      label,
+      layout: this.#rsvr.rptGroup0Layout!,
       entries: [
         ...sceneG0,
-        { binding: B + 0, resource: { buffer: this.#rsvr.rptReservoirCur } }, // rpt_reservoirOut → Cur
-        { binding: B + 1, resource: { buffer: this.#rsvr.rptReservoirCur } }, // rpt_resCurrent  → Cur
-        { binding: B + 2, resource: { buffer: this.#rsvr.rptReservoirPrev } }, // rpt_resPrev    → Prev
-        { binding: B + 3, resource: { buffer: this.#rsvr.rptResultBuffer } }, // rpt_result      → result
-        { binding: B + 5, resource: { buffer: this.#rsvr.rptReservoirSpatial } }, // rpt_resSpatial → Spatial
+        { binding: B + 0, resource: { buffer: out } },
+        { binding: B + 1, resource: { buffer: current } },
+        { binding: B + 2, resource: { buffer: historyRead } },
+        { binding: B + 3, resource: { buffer: this.#rsvr.rptResultBuffer! } },
+        { binding: B + 5, resource: { buffer: spatialOutput } },
       ],
     });
-    // Same resources for all four passes (the layout + bindings are uniform).
-    this.#rsvr.rptProducerGroup0 = group0;
-    this.#rsvr.rptTemporalGroup0 = group0;
-    this.#rsvr.rptSpatialGroup0 = group0;
-    this.#rsvr.rptResolveGroup0 = group0;
-  }
-
-  /**
-   * Ping-pong the reservoir buffers: this frame's RESOLVED reservoir is the SPATIAL
-   * pass output (producer→Cur, temporal Prev→Cur, spatial Cur→Spatial, resolve reads
-   * Spatial). For the temporal feedback loop to carry the spatially-improved estimate
-   * forward, next frame's `Prev` history must be THIS frame's `Spatial` — so we swap
-   * Prev↔Spatial (the old Prev buffer becomes the new Spatial scratch). `Cur` is
-   * producer-overwritten every frame, so it does NOT rotate. Invalidates the cached
-   * reuse bind groups (they reference the now-swapped buffers). No-op when reuse OFF.
-   *
-   * **ORDERING CONSTRAINT** — this method MUST be called AFTER `device.queue.submit()`
-   * for the current frame. Calling it before submit would swap the buffer references
-   * while the GPU is still reading/writing them inside the submitted command buffer,
-   * causing temporal history corruption on the very next frame (Prev and Spatial
-   * buffers in the new bind groups would point to the wrong ping-pong half).
-   * The call site in `index.ts` (the `gpu.swapReservoirs()` call immediately after
-   * `this.#device.queue.submit(…)` in `renderFrame`) enforces this ordering: the swap
-   * and bind-group invalidation always happen after the GPU command stream has been
-   * handed to the driver.
-   */
-  swapReservoirs(): void {
-    if (!this.#restirPtReuse) return;
-    const tmp = this.#rsvr.rptReservoirPrev;
-    this.#rsvr.rptReservoirPrev = this.#rsvr.rptReservoirSpatial;
-    this.#rsvr.rptReservoirSpatial = tmp;
-    this.#rsvr.rptProducerGroup0 = null;
-    this.#rsvr.rptTemporalGroup0 = null;
-    this.#rsvr.rptSpatialGroup0 = null;
-    this.#rsvr.rptResolveGroup0 = null;
+    const cur = this.#rsvr.rptReservoirCur;
+    const prev = this.#rsvr.rptReservoirPrev;
+    // Separate groups keep each pass's statically-used read/write bindings
+    // non-aliasing. Spatial reads Cur at b21 and writes Prev at b25; resolve then
+    // reads Prev at b25, which is already next frame's b22 temporal history.
+    // Publish the cohort only after every per-pass group was created. A
+    // transient failure can then be retried without a partial-cache false hit.
+    const producerGroup =
+      makeGroup('vitrum.pt-webgpu.restirPt.bindgroup0.producer', cur, prev, cur, prev);
+    const temporalGroup =
+      makeGroup('vitrum.pt-webgpu.restirPt.bindgroup0.temporal', cur, cur, prev, cur);
+    const spatialGroup =
+      makeGroup('vitrum.pt-webgpu.restirPt.bindgroup0.spatial', cur, cur, cur, prev);
+    const resolveGroup =
+      makeGroup('vitrum.pt-webgpu.restirPt.bindgroup0.resolve', cur, cur, cur, prev);
+    this.#rsvr.rptProducerGroup0 = producerGroup;
+    this.#rsvr.rptTemporalGroup0 = temporalGroup;
+    this.#rsvr.rptSpatialGroup0 = spatialGroup;
+    this.#rsvr.rptResolveGroup0 = resolveGroup;
   }
 
   /** Tear down all ReSTIR-PT reuse resources. Called from dispose(). */
@@ -1282,21 +1409,24 @@ export class GpuResources {
 
   /**
    * Build (and cache) the path-trace bind group(s) from the current accum views,
-   * params buffer, pipeline layout, the supplied scene buffers, and the BDPT
-   * light-path buffer. Returns group 0 (the always-present group). Groups 1/2 are
+   * params buffer, pipeline layout, and the supplied scene buffers. Returns
+   * group 0 (the always-present group). Groups 1/2 are
    * only created on the `full` tier and are read back off this struct by the
    * caller. Idempotent: if group 0 is already cached, returns it unchanged.
-   *
-   * `bdptLightPathBuffer` is a thunk so the engine's lazy placeholder-buffer
-   * creation only fires on the construction branch (matching the prior inline
-   * code, which only called `#bdptLightPathBuffer()` when the group was rebuilt).
    *
    * Callers must have already run `ensureAccumResources` + `ensurePipeline` and
    * validated that the views / pipeline / layout / params / scene buffers are
    * non-null (renderFrame's preconditions handle this).
    */
-  buildBindGroups(sb: UploadedSceneBuffers, bdptLightPathBuffer: () => GPUBuffer): GPUBindGroup {
-    if (this.pathTraceBindGroup != null) return this.pathTraceBindGroup;
+  buildBindGroups(sb: UploadedSceneBuffers): GPUBindGroup {
+    const complete =
+      this.pathTraceBindGroup != null &&
+      (this.#traceTier === 'lite' || (
+        this.pathTraceBindGroup1 != null &&
+        this.pathTraceBindGroup2 != null &&
+        this.pathTraceBindGroup3 != null
+      ));
+    if (complete) return this.pathTraceBindGroup!;
     // Bindings 0–11 are shared between the lite and full tiers; the tiers then
     // DIVERGE at 12+ (lite: B12 sampled light/env textures at 12–14; full:
     // motion-vectors storage texture at 12 + variance-moments buffer at 13).
@@ -1329,30 +1459,30 @@ export class GpuResources {
       // N-directional: directionalLights storage buffer (group 1 binding 10).
       { binding: 10, resource: { buffer: sb.directionalLightsBuffer } },
     ];
-    const fullGroup2Entries: GPUBindGroupEntry[] = this.#makeGroup2BindGroupEntries(
-      sb,
-      bdptLightPathBuffer(),
-    );
+    const fullGroup2Entries: GPUBindGroupEntry[] = this.#traceTier === 'full'
+      ? this.#makeGroup2BindGroupEntries(sb)
+      : [];
     const bindGroup = this.#device.createBindGroup({
       label: `vitrum.pt-webgpu.pathTrace.bindgroup0.${this.#traceTier}`,
       layout: this.bindGroupLayout!,
       entries: this.#traceTier === 'lite' ? liteEntries : fullGroup0Entries,
     });
-    this.pathTraceBindGroup = bindGroup;
+    let bindGroup1: GPUBindGroup | null = null;
+    let bindGroup2: GPUBindGroup | null = null;
+    let bindGroup3: GPUBindGroup | null = null;
     if (this.#traceTier === 'full') {
-      // Built against the SAME explicit layouts the shared pipeline layout uses,
-      // so these groups set cleanly on BOTH the path-trace and BDPT pipelines.
-      this.pathTraceBindGroup1 = this.#device.createBindGroup({
+      // Built against the explicit layouts used by the path-trace pipeline.
+      bindGroup1 = this.#device.createBindGroup({
         label: 'vitrum.pt-webgpu.pathTrace.bindgroup1.full',
         layout: this.bindGroupLayout1!,
         entries: fullGroup1Entries,
       });
-      this.pathTraceBindGroup2 = this.#device.createBindGroup({
+      bindGroup2 = this.#device.createBindGroup({
         label: 'vitrum.pt-webgpu.pathTrace.bindgroup2.full',
         layout: this.bindGroupLayout2!,
         entries: fullGroup2Entries,
       });
-      this.pathTraceBindGroup3 = this.#device.createBindGroup({
+      bindGroup3 = this.#device.createBindGroup({
         label: 'vitrum.pt-webgpu.pathTrace.bindgroup3.full',
         layout: this.bindGroupLayout3!,
         entries: [
@@ -1386,44 +1516,15 @@ export class GpuResources {
         ],
       });
     }
+
+    // Commit all four groups together. If a later createBindGroup throws, the
+    // previous complete cohort remains published and the next call retries.
+    this.pathTraceBindGroup = bindGroup;
+    this.pathTraceBindGroup1 = bindGroup1;
+    this.pathTraceBindGroup2 = bindGroup2;
+    this.pathTraceBindGroup3 = bindGroup3;
     return bindGroup;
   }
-
-  /**
-   * H9 — Reconstruct ONLY bind group 2 (TLAS table + BDPT light-path/eye-stack)
-   * while leaving groups 0, 1, and 3 intact.  Called by `bdptAdvanceFrame` when
-   * the host supplies a new external light-path buffer for the NEXT frame; the
-   * full-group rebuild in `buildBindGroups` is NOT triggered because group 0 is
-   * still cached (and returning it early is the correct fast path for all other
-   * frames).
-   *
-   * Fast-out: if `lightPathBuffer` is the same reference that was used to build
-   * the currently-cached group 2, the group is left in place (pointer equality
-   * suffices because GPUBuffer identity is stable for the same host allocation).
-   *
-   * Preconditions (enforced by the `bdptAdvanceFrame` caller):
-   *  - full tier only (`this.#traceTier === 'full'`)
-   *  - `bindGroupLayout2` non-null (ensurePipeline must have run)
-   *  - `sb` non-null (a scene has been set)
-   *  - `bdptEyeStackBuffer` non-null (ensureBdptEyeStack must have run)
-   */
-  rebuildGroup2Only(sb: UploadedSceneBuffers, lightPathBuffer: GPUBuffer): void {
-    if (this.#traceTier !== 'full' || this.bindGroupLayout2 == null) return;
-    // Pointer-equality fast-out: if the buffer didn't change, the cached group
-    // is still valid — avoid a redundant createBindGroup call.
-    if (this.#lastBdptLightPathBuffer === lightPathBuffer && this.pathTraceBindGroup2 != null) {
-      return;
-    }
-    this.#lastBdptLightPathBuffer = lightPathBuffer;
-    this.pathTraceBindGroup2 = this.#device.createBindGroup({
-      label: 'vitrum.pt-webgpu.pathTrace.bindgroup2.full.bdptRebuild',
-      layout: this.bindGroupLayout2,
-      entries: this.#makeGroup2BindGroupEntries(sb, lightPathBuffer),
-    });
-  }
-  /** The light-path buffer reference used to build the most-recent group 2.
-   *  Enables the pointer-equality fast-out in `rebuildGroup2Only`. */
-  #lastBdptLightPathBuffer: GPUBuffer | null = null;
 
   /**
    * Progressive walkaround→PT handoff (P8) — seed the accumulation buffers from
@@ -1447,76 +1548,120 @@ export class GpuResources {
     if (this.accumBuffer == null) return;
     const W = Math.max(0, weight);
 
-    // Lazily build the seed-blit pipeline + sampler + params UBO (engine-owned).
-    if (this.#present.seedBlitPipeline == null) {
-      const module = this.#device.createShaderModule({
-        label: 'vitrum.pt-webgpu.seedBlit',
-        code: PT_WEBGPU_SEED_BLIT_WGSL,
-      });
-      this.#present.seedBlitPipeline = this.#device.createComputePipeline({
-        label: 'vitrum.pt-webgpu.seedBlit.pipeline',
-        layout: 'auto',
-        compute: { module, entryPoint: 'main' },
-      });
-    }
-    if (this.#present.seedBlitSampler == null) {
-      // Filtering sampler so a differently-sized seed is bilinearly resampled
-      // onto the accum grid; clamp so edge UVs don't wrap.
-      this.#present.seedBlitSampler = this.#device.createSampler({
-        label: 'vitrum.pt-webgpu.seedBlit.sampler',
-        magFilter: 'linear',
-        minFilter: 'linear',
-        addressModeU: 'clamp-to-edge',
-        addressModeV: 'clamp-to-edge',
-      });
-    }
-    if (this.#present.seedBlitParamsBuffer == null) {
-      this.#present.seedBlitParamsBuffer = this.#device.createBuffer({
-        label: 'vitrum.pt-webgpu.seedBlit.params',
-        size: 32, // vec4u seedDim (16) + vec4f seedWeight (16)
-        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-      });
-    }
+    const placeholderByteSize = Math.max(this.accumBufferByteSize, 16);
+    const needsPlaceholder = this.varianceMomentsBuffer == null;
+    const previousPipeline = this.#present.seedBlitPipeline;
+    const previousSampler = this.#present.seedBlitSampler;
+    const previousParamsBuffer = this.#present.seedBlitParamsBuffer;
+    const previousPlaceholder = this.#present.seedBlitVarPlaceholder;
+    const cohortReady =
+      previousPipeline != null &&
+      previousSampler != null &&
+      previousParamsBuffer != null &&
+      (!needsPlaceholder ||
+        (previousPlaceholder != null &&
+          this.#present.seedBlitVarPlaceholderByteSize === placeholderByteSize));
 
-    // SeedParams UBO: seedDim (accum dims) as uvec4, seedWeight as vec4f.
-    const ubo = new ArrayBuffer(32);
-    new Uint32Array(ubo, 0, 4).set([width >>> 0, height >>> 0, 0, 0]);
-    new Float32Array(ubo, 16, 4).set([W, 0, 0, 0]);
-    this.#device.queue.writeBuffer(this.#present.seedBlitParamsBuffer, 0, ubo);
+    let pipeline = previousPipeline;
+    let sampler = previousSampler;
+    let paramsBuffer = previousParamsBuffer;
+    let placeholder = previousPlaceholder;
+    const candidateBuffers: GPUBuffer[] = [];
 
-    // varianceMoments slot: the real buffer on the full tier; a discardable
-    // placeholder on the lite tier (which has none) so the layout stays valid.
-    let varBuffer = this.varianceMomentsBuffer;
-    if (varBuffer == null) {
-      if (this.#present.seedBlitVarPlaceholder == null) {
-        this.#present.seedBlitVarPlaceholder = this.#device.createBuffer({
-          label: 'vitrum.pt-webgpu.seedBlit.varPlaceholder',
-          size: this.accumBufferByteSize > 0 ? this.accumBufferByteSize : 16,
-          usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    try {
+      // If any member is missing (or a lite-tier placeholder is stale after a
+      // resize), build a complete replacement cohort locally. Publishing fields
+      // piecemeal makes a later bind-group/submit failure poison every retry.
+      if (!cohortReady) {
+        const module = this.#device.createShaderModule({
+          label: 'vitrum.pt-webgpu.seedBlit',
+          code: PT_WEBGPU_SEED_BLIT_WGSL,
         });
+        pipeline = this.#device.createComputePipeline({
+          label: 'vitrum.pt-webgpu.seedBlit.pipeline',
+          layout: 'auto',
+          compute: { module, entryPoint: 'main' },
+        });
+        // Filtering sampler so a differently-sized seed is bilinearly resampled
+        // onto the accum grid; clamp so edge UVs don't wrap.
+        sampler = this.#device.createSampler({
+          label: 'vitrum.pt-webgpu.seedBlit.sampler',
+          magFilter: 'linear',
+          minFilter: 'linear',
+          addressModeU: 'clamp-to-edge',
+          addressModeV: 'clamp-to-edge',
+        });
+        paramsBuffer = this.#device.createBuffer({
+          label: 'vitrum.pt-webgpu.seedBlit.params',
+          size: 32, // vec4u seedDim (16) + vec4f seedWeight (16)
+          usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+        });
+        candidateBuffers.push(paramsBuffer);
+        placeholder = needsPlaceholder
+          ? this.#device.createBuffer({
+              label: 'vitrum.pt-webgpu.seedBlit.varPlaceholder',
+              size: placeholderByteSize,
+              usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+            })
+          : null;
+        if (placeholder != null) candidateBuffers.push(placeholder);
       }
-      varBuffer = this.#present.seedBlitVarPlaceholder;
+
+      // Narrowing follows from cohortReady or the complete candidate build.
+      if (pipeline == null || sampler == null || paramsBuffer == null) {
+        throw new Error('pt-webgpu: incomplete seed-blit resource cohort');
+      }
+      const varBuffer = this.varianceMomentsBuffer ?? placeholder;
+      if (varBuffer == null) {
+        throw new Error('pt-webgpu: seed-blit variance target is unavailable');
+      }
+
+      // SeedParams UBO: seedDim (accum dims) as uvec4, seedWeight as vec4f.
+      const ubo = new ArrayBuffer(32);
+      new Uint32Array(ubo, 0, 4).set([width >>> 0, height >>> 0, 0, 0]);
+      new Float32Array(ubo, 16, 4).set([W, 0, 0, 0]);
+      this.#device.queue.writeBuffer(paramsBuffer, 0, ubo);
+
+      const bindGroup = this.#device.createBindGroup({
+        label: 'vitrum.pt-webgpu.seedBlit.bindgroup',
+        layout: pipeline.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: { buffer: paramsBuffer } },
+          { binding: 1, resource: seedTex.createView() },
+          { binding: 2, resource: sampler },
+          { binding: 3, resource: { buffer: this.accumBuffer } },
+          { binding: 4, resource: { buffer: varBuffer } },
+        ],
+      });
+
+      const encoder = this.#device.createCommandEncoder({ label: 'vitrum.pt-webgpu.seedBlit.encoder' });
+      const pass = encoder.beginComputePass({ label: 'vitrum.pt-webgpu.seedBlit.pass' });
+      pass.setPipeline(pipeline);
+      pass.setBindGroup(0, bindGroup);
+      pass.dispatchWorkgroups(Math.ceil(width / 8), Math.ceil(height / 8), 1);
+      pass.end();
+      this.#device.queue.submit([encoder.finish()]);
+
+      if (!cohortReady) {
+        this.#present.seedBlitPipeline = pipeline;
+        this.#present.seedBlitSampler = sampler;
+        this.#present.seedBlitParamsBuffer = paramsBuffer;
+        this.#present.seedBlitVarPlaceholder = placeholder;
+        this.#present.seedBlitVarPlaceholderByteSize = needsPlaceholder
+          ? placeholderByteSize
+          : 0;
+        destroyGpuResourcesBestEffort(
+          [previousParamsBuffer, previousPlaceholder],
+          candidateBuffers,
+        );
+      }
+    } catch (error) {
+      destroyGpuResourcesBestEffort(
+        candidateBuffers,
+        [previousParamsBuffer, previousPlaceholder],
+      );
+      throw error;
     }
-
-    const bindGroup = this.#device.createBindGroup({
-      label: 'vitrum.pt-webgpu.seedBlit.bindgroup',
-      layout: this.#present.seedBlitPipeline.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: { buffer: this.#present.seedBlitParamsBuffer } },
-        { binding: 1, resource: seedTex.createView() },
-        { binding: 2, resource: this.#present.seedBlitSampler },
-        { binding: 3, resource: { buffer: this.accumBuffer } },
-        { binding: 4, resource: { buffer: varBuffer } },
-      ],
-    });
-
-    const encoder = this.#device.createCommandEncoder({ label: 'vitrum.pt-webgpu.seedBlit.encoder' });
-    const pass = encoder.beginComputePass({ label: 'vitrum.pt-webgpu.seedBlit.pass' });
-    pass.setPipeline(this.#present.seedBlitPipeline);
-    pass.setBindGroup(0, bindGroup);
-    pass.dispatchWorkgroups(Math.ceil(width / 8), Math.ceil(height / 8), 1);
-    pass.end();
-    this.#device.queue.submit([encoder.finish()]);
   }
 
   /**
@@ -1569,9 +1714,6 @@ export class GpuResources {
     this.pathTraceBindGroup1 = null;
     this.pathTraceBindGroup2 = null;
     this.pathTraceBindGroup3 = null;
-    // A full invalidation also clears the fast-out reference so the next
-    // rebuildGroup2Only call unconditionally rebuilds against fresh scene buffers.
-    this.#lastBdptLightPathBuffer = null;
     // The reuse bind groups reference the same scene buffers + accum views, so a
     // scene-buffer / accum-view recreation invalidates them too.
     this.#rsvr.rptProducerGroup0 = null;
@@ -1593,7 +1735,15 @@ export class GpuResources {
    */
   sppmWouldExceedCeiling(): boolean {
     if (this.#traceTier !== 'full') return false;
-    if (this.#sppm.sppmBuffersReady) return false;
+    if (
+      this.#sppm.sppmBuffersReady &&
+      this.#sppm.sppmPhotonCellsBuffer != null &&
+      this.#sppm.sppmCellCountersBuffer != null &&
+      this.#sppm.sppmStatsBuffer != null &&
+      this.#sppm.sppmPhotonPipeline != null
+    ) {
+      return false;
+    }
     const deviceMaxBuffer = this.#device.limits?.maxBufferSize ?? 256 * 1024 * 1024;
     const deviceMaxBinding =
       this.#device.limits?.maxStorageBufferBindingSize ?? 128 * 1024 * 1024;
@@ -1611,7 +1761,7 @@ export class GpuResources {
    * light-tree / material-texture entries (0–5).  No new bind group is needed;
    * only the three buffer handles in group-3 are managed here.
    *
-   * A 16-byte placeholder buffer is always created when SPPM is off so the
+   * A 64-byte placeholder buffer is always created when SPPM is off so the
    * group-3 layout slots 6/7/8 are satisfied without allocating the real data.
    * The gather code in caustic.wgsl.ts is guarded by `causticMode() == 2u` so
    * the placeholder buffers are never accessed on the GPU.
@@ -1630,43 +1780,73 @@ export class GpuResources {
     // 0bedd92 / the 32B BVHNode dummies); placeholders sized 64 B to clear any
     // current element stride with headroom.
     if (!sppmActive) {
-      if (this.#sppm.sppmPhotonCellsBuffer == null) {
-        this.#sppm.sppmPhotonCellsBuffer = this.#device.createBuffer({
-          label: 'vitrum.pt-webgpu.sppm.photonCells.placeholder',
-          size: 64,
-          usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-        });
-        this.#sppm.sppmCellCountersBuffer = this.#device.createBuffer({
-          label: 'vitrum.pt-webgpu.sppm.cellCounters.placeholder',
-          size: 64,
-          usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-        });
-        this.#sppm.sppmStatsBuffer = this.#device.createBuffer({
-          label: 'vitrum.pt-webgpu.sppm.stats.placeholder',
-          size: 64,
-          usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-        });
-        // A4-progressive: placeholder for binding(9) when SPPM is off.
-        if (this.#sppm.sppmPixelStatsBuffer == null) {
-          this.#sppm.sppmPixelStatsBuffer = this.#device.createBuffer({
+      const placeholdersReady =
+        this.#sppm.sppmPhotonCellsBuffer != null &&
+        this.#sppm.sppmCellCountersBuffer != null &&
+        this.#sppm.sppmStatsBuffer != null &&
+        this.#sppm.sppmPixelStatsBuffer != null;
+      if (!placeholdersReady) {
+        const previous = [
+          this.#sppm.sppmPhotonCellsBuffer,
+          this.#sppm.sppmCellCountersBuffer,
+          this.#sppm.sppmStatsBuffer,
+          this.#sppm.sppmPixelStatsBuffer,
+        ];
+        const candidates: GPUBuffer[] = [];
+        try {
+          const photonCells = this.#device.createBuffer({
+            label: 'vitrum.pt-webgpu.sppm.photonCells.placeholder',
+            size: 64,
+            usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+          });
+          candidates.push(photonCells);
+          const cellCounters = this.#device.createBuffer({
+            label: 'vitrum.pt-webgpu.sppm.cellCounters.placeholder',
+            size: 64,
+            usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+          });
+          candidates.push(cellCounters);
+          const stats = this.#device.createBuffer({
+            label: 'vitrum.pt-webgpu.sppm.stats.placeholder',
+            size: 64,
+            usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+          });
+          candidates.push(stats);
+          const pixelStats = this.#device.createBuffer({
             label: 'vitrum.pt-webgpu.sppm.pixelStats.placeholder',
             size: 64,
             usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
           });
+          candidates.push(pixelStats);
+
+          this.#sppm.sppmPhotonCellsBuffer = photonCells;
+          this.#sppm.sppmCellCountersBuffer = cellCounters;
+          this.#sppm.sppmStatsBuffer = stats;
+          this.#sppm.sppmPixelStatsBuffer = pixelStats;
+          this.#sppm.sppmPixelStatsWidth = 0;
+          this.#sppm.sppmPixelStatsHeight = 0;
+          this.#sppm.sppmBuffersReady = false;
+          this.invalidateGroup3BindGroup();
+          destroyGpuResourcesBestEffort(previous, candidates);
+        } catch (error) {
+          destroyGpuResourcesBestEffort(candidates, previous);
+          throw error;
         }
-        // SPPM buffers just created — invalidate group-3 so it rebuilds
-        // with the new placeholder handles.
-        this.invalidateGroup3BindGroup();
       }
       return false;
     }
     // Full allocation path.
-    if (this.#sppm.sppmBuffersReady) return true;
+    const fullCohortReady =
+      this.#sppm.sppmBuffersReady &&
+      this.#sppm.sppmPhotonCellsBuffer != null &&
+      this.#sppm.sppmCellCountersBuffer != null &&
+      this.#sppm.sppmStatsBuffer != null &&
+      this.#sppm.sppmPhotonPipeline != null;
+    if (fullCohortReady) return true;
 
-    // R7a behavioral-gate fix (2026-06-10): the static ceiling alone let a
-    // 402 MiB allocation through onto devices whose maxBufferSize is the
-    // WebGPU default 256 MiB — buffer creation failed validation and photon-map
-    // rendered black.  Guard against the LIVE device limit too, same degrade.
+    // Validate the exact 3 MiB record buffer against both live WebGPU limits
+    // before creating it. The caller treats false as an explicit readiness
+    // failure and throws before packing caustic mode 2.
     const deviceMaxBuffer = this.#device.limits?.maxBufferSize ?? 256 * 1024 * 1024;
     const deviceMaxBinding = this.#device.limits?.maxStorageBufferBindingSize ?? 128 * 1024 * 1024;
     const sppmCeiling = Math.min(SPPM_PHOTON_CELLS_MAX_BYTES, deviceMaxBuffer, deviceMaxBinding);
@@ -1680,55 +1860,60 @@ export class GpuResources {
         message:
           `[vitrum/pt-webgpu] SPPM photon-cells buffer would be ${mib} MiB, ` +
           `exceeding the ${(sppmCeiling / (1024 * 1024)).toFixed(0)} MiB ceiling ` +
-          '(min of the static SPPM ceiling and device.limits.maxBufferSize). ' +
-          "Falling back to 'manifold-nee' caustic strategy. " +
-          '(This warning fires once per engine instance.)',
+          '(min of the static SPPM ceiling and live device limits). ' +
+          'The requested photon-map frame cannot be rendered.',
         details: {
           targetBytes: SPPM_PHOTON_CELLS_BYTES,
           ceilingBytes: sppmCeiling,
           deviceMaxBuffer,
           deviceMaxBinding,
-          fallback: 'manifold-nee',
+          fallback: 'throw',
         },
       });
       return false;
     }
-    // Destroy any placeholder buffers before allocating the real ones.
-    this.#sppm.sppmPhotonCellsBuffer?.destroy();
-    this.#sppm.sppmCellCountersBuffer?.destroy();
-    this.#sppm.sppmStatsBuffer?.destroy();
-    this.#sppm.sppmPhotonCellsBuffer = this.#device.createBuffer({
-      label: 'vitrum.pt-webgpu.sppm.photonCells',
-      size: SPPM_PHOTON_CELLS_BYTES,
-      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-    });
-    this.#sppm.sppmCellCountersBuffer = this.#device.createBuffer({
-      label: 'vitrum.pt-webgpu.sppm.cellCounters',
-      size: SPPM_CELL_COUNTERS_BYTES,
-      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-    });
-    this.#sppm.sppmStatsBuffer = this.#device.createBuffer({
-      label: 'vitrum.pt-webgpu.sppm.stats',
-      size: SPPM_STATS_BYTES,
-      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-    });
-    // New SPPM buffers — invalidate group-3 so it rebuilds with the real handles.
-    this.invalidateGroup3BindGroup();
-    this.#sppm.sppmBuffersReady = true;
-
     // Build the photon-emission pipeline lazily.
     // The photon pass uses groups 0–3.  Group 3 now carries the SPPM bindings
     // (6/7/8) in addition to the light-tree / material-texture entries (0–5).
     // Its pipeline layout is [g0, g1, g2, g3] — the SAME 4-group layout as the
     // megakernel.  This is safe on ALL adapters (maxBindGroups = 4 is guaranteed
     // by the WebGPU spec).  Must be called AFTER ensurePipeline().
-    if (this.#sppm.sppmPhotonPipeline == null) {
-      if (
-        this.bindGroupLayout != null &&
-        this.bindGroupLayout1 != null &&
-        this.bindGroupLayout2 != null &&
-        this.bindGroupLayout3 != null
-      ) {
+    if (
+      this.bindGroupLayout == null ||
+      this.bindGroupLayout1 == null ||
+      this.bindGroupLayout2 == null ||
+      this.bindGroupLayout3 == null
+    ) {
+      return false;
+    }
+
+    const previous = [
+      this.#sppm.sppmPhotonCellsBuffer,
+      this.#sppm.sppmCellCountersBuffer,
+      this.#sppm.sppmStatsBuffer,
+    ];
+    const candidates: GPUBuffer[] = [];
+    try {
+      const photonCells = this.#device.createBuffer({
+        label: 'vitrum.pt-webgpu.sppm.photonCells',
+        size: SPPM_PHOTON_CELLS_BYTES,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+      });
+      candidates.push(photonCells);
+      const cellCounters = this.#device.createBuffer({
+        label: 'vitrum.pt-webgpu.sppm.cellCounters',
+        size: SPPM_CELL_COUNTERS_BYTES,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+      });
+      candidates.push(cellCounters);
+      const stats = this.#device.createBuffer({
+        label: 'vitrum.pt-webgpu.sppm.stats',
+        size: SPPM_STATS_BYTES,
+        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+      });
+      candidates.push(stats);
+
+      const photonPipeline = this.#sppm.sppmPhotonPipeline ?? (() => {
         const module = this.#device.createShaderModule({
           label: 'vitrum.pt-webgpu.sppm.photonPass',
           code: composeSppmPhotonPassWgsl({ sampling: this.#sampling }),
@@ -1742,89 +1927,157 @@ export class GpuResources {
             this.bindGroupLayout3,
           ],
         });
-        this.#sppm.sppmPhotonPipeline = this.#device.createComputePipeline({
+        return this.#device.createComputePipeline({
           label: 'vitrum.pt-webgpu.sppm.photonPass.pipeline',
           layout: photonLayout,
           compute: { module, entryPoint: 'sppmEmitPhotons' },
         });
-      }
+      })();
+
+      this.#sppm.sppmPhotonCellsBuffer = photonCells;
+      this.#sppm.sppmCellCountersBuffer = cellCounters;
+      this.#sppm.sppmStatsBuffer = stats;
+      this.#sppm.sppmPhotonPipeline = photonPipeline;
+      this.#sppm.sppmBuffersReady = true;
+      this.invalidateGroup3BindGroup();
+      destroyGpuResourcesBestEffort(previous, candidates);
+      return true;
+    } catch (error) {
+      destroyGpuResourcesBestEffort(candidates, previous);
+      throw error;
     }
-    return true;
   }
 
-  // ── B12 — Lite-tier texture upload ──────────────────────────────────────────
-
   /**
-   * B12 — (Re)allocate and upload the lite-tier packed textures for the current
-   * scene.  Called from `index.ts` after `uploadSceneBuffers` (full or incremental
-   * rebuild) whenever the trace tier is `'lite'`.
-   *
-   * Destroys any previously-allocated lite textures before re-creating them so
-   * the bind group always holds fresh views.  Invalidates the cached group-0 bind
-   * group so `buildBindGroups` will rebuild it with the new texture views.
-   *
-   * No-op on the full tier (lite textures are null/unused there).
+   * Allocate, upload, and create every lite view without publishing any of it.
+   * The returned token lets the engine include these textures in its wider
+   * scene/BDPT/reset transaction.
    */
-  uploadLiteTextures(
+  stageLiteTextureReplacement(
     lightData: LiteLightTexData,
-    envData:   LiteEnvTexData,
-    cdfData:   LiteEnvCdfData,
-  ): void {
-    if (this.#traceTier !== 'lite') return;
+    envData: LiteEnvTexData,
+    cdfData: LiteEnvCdfData,
+    additionalForbiddenResources: readonly object[] = [],
+  ): LiteTextureReplacement {
+    if (this.#traceTier !== 'lite') {
+      return { commit() {}, rollback() {}, finalize() {} };
+    }
+    const previousTextures = [
+      this.liteEnvTexture,
+      this.liteEnvCdfTexture,
+      this.liteLightTexture,
+    ];
+    const created: GPUTexture[] = [];
+    const forbiddenResources = new Set<object>([
+      ...previousTextures.filter((texture) => texture != null),
+      ...additionalForbiddenResources,
+    ]);
+    const registerCandidate = (texture: GPUTexture, label: string): GPUTexture => {
+      if (forbiddenResources.has(texture)) {
+        throw new Error(
+          `[pt-webgpu] ${label} candidate aliased an existing GPU texture`,
+        );
+      }
+      created.push(texture);
+      forbiddenResources.add(texture);
+      return texture;
+    };
+    let envTexture: GPUTexture;
+    let envView: GPUTextureView;
+    let cdfTexture: GPUTexture;
+    let cdfView: GPUTextureView;
+    let lightTexture: GPUTexture;
+    let lightView: GPUTextureView;
+    try {
+      envTexture = registerCandidate(this.#device.createTexture({
+        label: 'vitrum.pt-webgpu.lite.envTex',
+        size: { width: envData.width, height: envData.height, depthOrArrayLayers: 1 },
+        format: 'rgba32float',
+        usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+      }), 'vitrum.pt-webgpu.lite.envTex');
+      this.#device.queue.writeTexture(
+        { texture: envTexture },
+        envData.texels as unknown as Float32Array<ArrayBuffer>,
+        { bytesPerRow: envData.width * 16, rowsPerImage: envData.height },
+        { width: envData.width, height: envData.height },
+      );
+      envView = envTexture.createView();
 
-    // Destroy previous textures.
-    this.liteEnvTexture?.destroy();
-    this.liteEnvCdfTexture?.destroy();
-    this.liteLightTexture?.destroy();
+      cdfTexture = registerCandidate(this.#device.createTexture({
+        label: 'vitrum.pt-webgpu.lite.envCdfTex',
+        size: { width: cdfData.width, height: cdfData.height, depthOrArrayLayers: 1 },
+        format: 'rgba32float',
+        usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+      }), 'vitrum.pt-webgpu.lite.envCdfTex');
+      this.#device.queue.writeTexture(
+        { texture: cdfTexture },
+        cdfData.data as unknown as Float32Array<ArrayBuffer>,
+        { bytesPerRow: cdfData.width * 16, rowsPerImage: cdfData.height },
+        { width: cdfData.width, height: cdfData.height },
+      );
+      cdfView = cdfTexture.createView();
 
-    // Create and upload env radiance+pdf texture (envWidth × envHeight, RGBA32F).
-    this.liteEnvTexture = this.#device.createTexture({
-      label: 'vitrum.pt-webgpu.lite.envTex',
-      size: { width: envData.width, height: envData.height, depthOrArrayLayers: 1 },
-      format: 'rgba32float',
-      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
-    });
-    this.#device.queue.writeTexture(
-      { texture: this.liteEnvTexture },
-      // Cast: packed texels are always new Float32Array() with a plain ArrayBuffer.
-      envData.texels as unknown as Float32Array<ArrayBuffer>,
-      { bytesPerRow: envData.width * 16, rowsPerImage: envData.height },
-      { width: envData.width, height: envData.height },
-    );
-    this.liteEnvTextureView = this.liteEnvTexture.createView();
+      lightTexture = registerCandidate(this.#device.createTexture({
+        label: 'vitrum.pt-webgpu.lite.lightTex',
+        size: { width: lightData.width, height: 1, depthOrArrayLayers: 1 },
+        format: 'rgba32float',
+        usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+      }), 'vitrum.pt-webgpu.lite.lightTex');
+      this.#device.queue.writeTexture(
+        { texture: lightTexture },
+        lightData.data as unknown as Float32Array<ArrayBuffer>,
+        { bytesPerRow: lightData.width * 16, rowsPerImage: 1 },
+        { width: lightData.width, height: 1 },
+      );
+      lightView = lightTexture.createView();
+    } catch (error) {
+      destroyGpuResourcesBestEffort(created, previousTextures);
+      throw error;
+    }
 
-    // Create and upload env CDF texture (envWidth × envHeight, RGBA32F, .r = CDF).
-    this.liteEnvCdfTexture = this.#device.createTexture({
-      label: 'vitrum.pt-webgpu.lite.envCdfTex',
-      size: { width: cdfData.width, height: cdfData.height, depthOrArrayLayers: 1 },
-      format: 'rgba32float',
-      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
-    });
-    this.#device.queue.writeTexture(
-      { texture: this.liteEnvCdfTexture },
-      cdfData.data as unknown as Float32Array<ArrayBuffer>,
-      { bytesPerRow: cdfData.width * 16, rowsPerImage: cdfData.height },
-      { width: cdfData.width, height: cdfData.height },
-    );
-    this.liteEnvCdfTextureView = this.liteEnvCdfTexture.createView();
-
-    // Create and upload light data texture (liteLightTexWidth × 1, RGBA32F).
-    this.liteLightTexture = this.#device.createTexture({
-      label: 'vitrum.pt-webgpu.lite.lightTex',
-      size: { width: lightData.width, height: 1, depthOrArrayLayers: 1 },
-      format: 'rgba32float',
-      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
-    });
-    this.#device.queue.writeTexture(
-      { texture: this.liteLightTexture },
-      lightData.data as unknown as Float32Array<ArrayBuffer>,
-      { bytesPerRow: lightData.width * 16, rowsPerImage: 1 },
-      { width: lightData.width, height: 1 },
-    );
-    this.liteLightTextureView = this.liteLightTexture.createView();
-
-    // Invalidate group-0 so buildBindGroups picks up the new texture views.
-    this.pathTraceBindGroup = null;
+    const previous = {
+      envTexture: this.liteEnvTexture,
+      envView: this.liteEnvTextureView,
+      cdfTexture: this.liteEnvCdfTexture,
+      cdfView: this.liteEnvCdfTextureView,
+      lightTexture: this.liteLightTexture,
+      lightView: this.liteLightTextureView,
+    };
+    let state: 'staged' | 'committed' | 'rolled-back' | 'finalized' = 'staged';
+    const commit = (): void => {
+      if (state !== 'staged') return;
+      this.liteEnvTexture = envTexture;
+      this.liteEnvTextureView = envView;
+      this.liteEnvCdfTexture = cdfTexture;
+      this.liteEnvCdfTextureView = cdfView;
+      this.liteLightTexture = lightTexture;
+      this.liteLightTextureView = lightView;
+      this.pathTraceBindGroup = null;
+      state = 'committed';
+    };
+    return {
+      commit,
+      rollback: () => {
+        if (state === 'rolled-back' || state === 'finalized') return;
+        if (state === 'committed') {
+          this.liteEnvTexture = previous.envTexture;
+          this.liteEnvTextureView = previous.envView;
+          this.liteEnvCdfTexture = previous.cdfTexture;
+          this.liteEnvCdfTextureView = previous.cdfView;
+          this.liteLightTexture = previous.lightTexture;
+          this.liteLightTextureView = previous.lightView;
+          this.pathTraceBindGroup = null;
+        }
+        destroyGpuResourcesBestEffort(created, previousTextures);
+        state = 'rolled-back';
+      },
+      finalize: () => {
+        if (state === 'finalized' || state === 'rolled-back') return;
+        commit();
+        destroyGpuResourcesBestEffort(previousTextures, created);
+        state = 'finalized';
+      },
+    };
   }
 
   /**
@@ -1850,19 +2103,16 @@ export class GpuResources {
   }
 
   #ensureSppmPixelStatsPlaceholder(): void {
-    if (
-      this.#sppm.sppmPixelStatsBuffer != null &&
-      this.#sppm.sppmPixelStatsWidth === 0 &&
-      this.#sppm.sppmPixelStatsHeight === 0
-    ) {
-      return;
-    }
-    this.#sppm.sppmPixelStatsBuffer?.destroy();
-    this.#sppm.sppmPixelStatsBuffer = this.#device.createBuffer({
+    // A ceiling rejection must not downgrade a previously usable real buffer.
+    // The placeholder exists only to satisfy the full-tier static layout before
+    // the first accepted pixel-stats allocation.
+    if (this.#sppm.sppmPixelStatsBuffer != null) return;
+    const candidate = this.#device.createBuffer({
       label: 'vitrum.pt-webgpu.sppm.pixelStats.placeholder',
       size: 64,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
+    this.#sppm.sppmPixelStatsBuffer = candidate;
     this.#sppm.sppmPixelStatsWidth = 0;
     this.#sppm.sppmPixelStatsHeight = 0;
     this.invalidateGroup3BindGroup();
@@ -1875,6 +2125,7 @@ export class GpuResources {
     frameAccumulated: number,
     photonCount: number,
     sceneExtent: number,
+    sceneCenter: readonly [number, number, number],
   ): void {
     if (this.#sppm.sppmStatsBuffer == null) return;
     const ubo = new ArrayBuffer(SPPM_STATS_BYTES);
@@ -1885,7 +2136,9 @@ export class GpuResources {
     u[2] = frameAccumulated >>> 0;
     u[3] = photonCount >>> 0;
     f[4] = sceneExtent;
-    f[5] = 0; f[6] = 0; f[7] = 0; // _pad
+    f[5] = sceneCenter[0];
+    f[6] = sceneCenter[1];
+    f[7] = sceneCenter[2];
     this.#device.queue.writeBuffer(this.#sppm.sppmStatsBuffer, 0, ubo);
   }
 
@@ -1907,7 +2160,7 @@ export class GpuResources {
       64, // minimum for valid binding
       width * height * SPPM_PIXEL_STATS_BYTES_PER_PIXEL,
     );
-    // Guard against device limits (same discipline as BDPT eye-stack / photon cells).
+    // Guard against device limits before allocating the photon cells.
     const deviceMaxBuffer  = this.#device.limits?.maxBufferSize ?? 256 * 1024 * 1024;
     const deviceMaxBinding = this.#device.limits?.maxStorageBufferBindingSize ?? 128 * 1024 * 1024;
     if (targetBytes > Math.min(deviceMaxBuffer, deviceMaxBinding)) {
@@ -1920,8 +2173,8 @@ export class GpuResources {
         message:
           `[vitrum/pt-webgpu] SPPM per-pixel stats buffer would be ${mib} MiB ` +
           `(${width}×${height} × ${SPPM_PIXEL_STATS_BYTES_PER_PIXEL} B), exceeding the device limit. ` +
-          'SPPM progressive stats disabled — caustic quality will be reduced. ' +
-          '(This warning fires once per engine instance.)',
+          'The requested photon-map frame cannot be rendered. ' +
+          '(This warning fires once per engine instance before the caller throws.)',
         details: {
           width,
           height,
@@ -1929,7 +2182,7 @@ export class GpuResources {
           ceilingBytes: Math.min(deviceMaxBuffer, deviceMaxBinding),
           deviceMaxBuffer,
           deviceMaxBinding,
-          fallback: 'disable-sppm-progressive-stats',
+          fallback: 'throw',
         },
       });
       this.#ensureSppmPixelStatsPlaceholder();
@@ -1943,36 +2196,30 @@ export class GpuResources {
     ) {
       return true;
     }
-    // Reallocate.
-    this.#sppm.sppmPixelStatsBuffer?.destroy();
-    this.#sppm.sppmPixelStatsBuffer = this.#device.createBuffer({
-      label: 'vitrum.pt-webgpu.sppm.pixelStats',
-      size: targetBytes,
-      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-    });
-    this.#sppm.sppmPixelStatsWidth  = width;
-    this.#sppm.sppmPixelStatsHeight = height;
-    // GPU-clear: all zeros → τ=0, R²=0 (→ seed r₀ on first frame), N=0.
-    const enc = this.#device.createCommandEncoder({ label: 'vitrum.pt-webgpu.sppm.pixelStats.clear' });
-    enc.clearBuffer(this.#sppm.sppmPixelStatsBuffer);
-    this.#device.queue.submit([enc.finish()]);
-    // New buffer handle — invalidate group-3 so buildBindGroups picks it up.
-    this.invalidateGroup3BindGroup();
-    return true;
-  }
+    const previous = this.#sppm.sppmPixelStatsBuffer;
+    let candidate: GPUBuffer | null = null;
+    try {
+      candidate = this.#device.createBuffer({
+        label: 'vitrum.pt-webgpu.sppm.pixelStats',
+        size: targetBytes,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+      });
+      // Clear before publication so a clear/submit failure cannot replace a
+      // usable history buffer with an uninitialized candidate.
+      const enc = this.#device.createCommandEncoder({ label: 'vitrum.pt-webgpu.sppm.pixelStats.clear' });
+      enc.clearBuffer(candidate);
+      this.#device.queue.submit([enc.finish()]);
 
-  /**
-   * GPU-clear the per-pixel SPPM statistics buffer (τ/R²/N → 0).
-   * Called whenever the PT accumulator resets (camera move / setScene / reset())
-   * so the progressive estimate restarts from a clean state — consistent with
-   * SPPM's static-eye-point assumption (accumulation only proceeds on a still view).
-   * No-op if the buffer has not been allocated yet.
-   */
-  clearSppmPixelStats(): void {
-    if (this.#sppm.sppmPixelStatsBuffer == null || this.#sppm.sppmPixelStatsWidth === 0) return;
-    const enc = this.#device.createCommandEncoder({ label: 'vitrum.pt-webgpu.sppm.pixelStats.reset' });
-    enc.clearBuffer(this.#sppm.sppmPixelStatsBuffer);
-    this.#device.queue.submit([enc.finish()]);
+      this.#sppm.sppmPixelStatsBuffer = candidate;
+      this.#sppm.sppmPixelStatsWidth = width;
+      this.#sppm.sppmPixelStatsHeight = height;
+      this.invalidateGroup3BindGroup();
+      destroyGpuResourcesBestEffort([previous], [candidate]);
+      return true;
+    } catch (error) {
+      destroyGpuResourcesBestEffort([candidate], [previous]);
+      throw error;
+    }
   }
 
   /** Dispose SPPM-specific GPU resources. Called from dispose(). */
@@ -1990,21 +2237,37 @@ export class GpuResources {
    * Uses `layout: 'auto'` (the present pass has no cross-pipeline layout sharing).
    */
   ensurePresentPipeline(): void {
-    if (this.#present.presentPipeline != null) return;
-    const module = this.#device.createShaderModule({
-      label: 'vitrum.pt-webgpu.present',
-      code: PT_WEBGPU_PRESENT_WGSL,
-    });
-    this.#present.presentPipeline = this.#device.createComputePipeline({
-      label: 'vitrum.pt-webgpu.present.pipeline',
-      layout: 'auto',
-      compute: { module, entryPoint: 'presentMain' },
-    });
-    this.#present.presentParamsBuffer = this.#device.createBuffer({
-      label: 'vitrum.pt-webgpu.present.params',
-      size: GpuResources.PRESENT_PARAMS_BYTES,
-      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-    });
+    if (
+      this.#present.presentPipeline != null &&
+      this.#present.presentParamsBuffer != null
+    ) {
+      return;
+    }
+    const previousParams = this.#present.presentParamsBuffer;
+    let params: GPUBuffer | null = null;
+    try {
+      const module = this.#device.createShaderModule({
+        label: 'vitrum.pt-webgpu.present',
+        code: PT_WEBGPU_PRESENT_WGSL,
+      });
+      const pipeline = this.#device.createComputePipeline({
+        label: 'vitrum.pt-webgpu.present.pipeline',
+        layout: 'auto',
+        compute: { module, entryPoint: 'presentMain' },
+      });
+      params = this.#device.createBuffer({
+        label: 'vitrum.pt-webgpu.present.params',
+        size: GpuResources.PRESENT_PARAMS_BYTES,
+        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+      });
+
+      this.#present.presentPipeline = pipeline;
+      this.#present.presentParamsBuffer = params;
+      destroyGpuResourcesBestEffort([previousParams], [params]);
+    } catch (error) {
+      destroyGpuResourcesBestEffort([params], [previousParams]);
+      throw error;
+    }
   }
 
   /**
@@ -2042,11 +2305,16 @@ export class GpuResources {
    * Preconditions: `ensurePresentPipeline` + `writePresentParams` have run;
    * `accumTexture` / `presentTexture` / `presentView` / `accumView` are non-null.
    */
-  dispatchPresentPass(encoder: GPUCommandEncoder, width: number, height: number): void {
+  dispatchPresentPass(
+    encoder: GPUCommandEncoder,
+    width: number,
+    height: number,
+    sourceTexture: GPUTexture | null = this.accumTexture,
+  ): void {
     if (
       this.#present.presentPipeline == null ||
       this.#present.presentParamsBuffer == null ||
-      this.accumTexture == null ||
+      sourceTexture == null ||
       this.#present.presentTexture == null ||
       this.#present.presentView == null
     ) {
@@ -2058,7 +2326,7 @@ export class GpuResources {
       layout: this.#present.presentPipeline.getBindGroupLayout(0),
       entries: [
         { binding: 0, resource: { buffer: this.#present.presentParamsBuffer } },
-        { binding: 1, resource: this.accumTexture.createView() },
+        { binding: 1, resource: sourceTexture.createView() },
         { binding: 2, resource: this.#present.presentView },
       ],
     });
@@ -2069,6 +2337,118 @@ export class GpuResources {
     pass.end();
   }
 
+
+  /** Whether an accepted OIDN linear-HDR source is retained for presentation. */
+  hasDenoisedResult(): boolean {
+    return this.#present.denoisedLinearTexture != null;
+  }
+
+  /** Stop presenting the accepted OIDN source and return to the accumulator. */
+  clearDenoisedResult(): void {
+    this.#present.denoisedLinearTexture?.destroy();
+    this.#present.denoisedLinearTexture = null;
+  }
+
+  /**
+   * Upload an accepted OIDN RGB frame and publish it only after the present
+   * submission succeeds. All GPU mutation occurs synchronously inside the
+   * host's explicit render cadence; the inference completion hook only queues
+   * CPU data on the engine.
+   */
+  presentDenoisedResult(
+    frame: { readonly rgb: Float32Array; readonly width: number; readonly height: number },
+    tonemapMode: number,
+    exposure: number,
+    outputColorSpace: number,
+  ): void {
+    if (frame.width !== this.accumWidth || frame.height !== this.accumHeight) {
+      throw new RangeError(
+        `pt-webgpu: OIDN result ${frame.width}×${frame.height} does not match accumulation ` +
+          `${this.accumWidth}×${this.accumHeight}`,
+      );
+    }
+    const pixelCount = frame.width * frame.height;
+    if (frame.rgb.length !== pixelCount * 3) {
+      throw new RangeError(
+        `pt-webgpu: OIDN result expected ${pixelCount * 3} RGB floats, got ${frame.rgb.length}`,
+      );
+    }
+
+    const rgba = new Float32Array(pixelCount * 4);
+    for (let i = 0; i < pixelCount; i += 1) {
+      const src = i * 3;
+      const dst = i * 4;
+      rgba[dst] = frame.rgb[src]!;
+      rgba[dst + 1] = frame.rgb[src + 1]!;
+      rgba[dst + 2] = frame.rgb[src + 2]!;
+      rgba[dst + 3] = 1;
+    }
+
+    const previous = this.#present.denoisedLinearTexture;
+    const candidate = this.#device.createTexture({
+      label: 'vitrum.pt-webgpu.oidn.linear',
+      size: { width: frame.width, height: frame.height, depthOrArrayLayers: 1 },
+      format: 'rgba32float',
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+    });
+    const forbiddenTextures = new Set<GPUTexture>();
+    for (const texture of [
+      previous,
+      this.accumTexture,
+      this.normalDepthTexture,
+      this.albedoTexture,
+      this.varianceTexture,
+      this.motionVectorsTexture,
+      this.#present.presentTexture,
+      this.liteEnvTexture,
+      this.liteEnvCdfTexture,
+      this.liteLightTexture,
+    ]) {
+      if (texture != null) forbiddenTextures.add(texture);
+    }
+    if (forbiddenTextures.has(candidate)) {
+      throw new Error('pt-webgpu: OIDN upload candidate aliased a live GPU texture');
+    }
+    try {
+      this.#device.queue.writeTexture(
+        { texture: candidate },
+        rgba,
+        { bytesPerRow: frame.width * 16, rowsPerImage: frame.height },
+        { width: frame.width, height: frame.height, depthOrArrayLayers: 1 },
+      );
+      this.ensurePresentPipeline();
+      this.writePresentParams(tonemapMode, exposure, outputColorSpace);
+      const encoder = this.#device.createCommandEncoder({
+        label: 'vitrum.pt-webgpu.oidn.present.encoder',
+      });
+      this.dispatchPresentPass(encoder, frame.width, frame.height, candidate);
+      this.#device.queue.submit([encoder.finish()]);
+    } catch (error) {
+      try { candidate.destroy(); } catch { /* preserve the presentation error */ }
+      throw error;
+    }
+    this.#present.denoisedLinearTexture = candidate;
+    if (previous != null) {
+      try { previous.destroy(); } catch { /* candidate is already live */ }
+    }
+  }
+
+  /** Re-run presentation over the retained OIDN source, or the accumulator. */
+  presentCurrentResult(
+    tonemapMode: number,
+    exposure: number,
+    outputColorSpace: number,
+  ): void {
+    const source = this.#present.denoisedLinearTexture ?? this.accumTexture;
+    if (source == null || this.accumWidth <= 0 || this.accumHeight <= 0) return;
+    this.ensurePresentPipeline();
+    this.writePresentParams(tonemapMode, exposure, outputColorSpace);
+    const encoder = this.#device.createCommandEncoder({
+      label: 'vitrum.pt-webgpu.present.current.encoder',
+    });
+    this.dispatchPresentPass(encoder, this.accumWidth, this.accumHeight, source);
+    this.#device.queue.submit([encoder.finish()]);
+  }
   /**
    * Full GPU-resource teardown for engine `dispose()`: destroy the accum textures
    * + buffers, drop the cached bind groups, destroy + null the params buffer, and
@@ -2080,9 +2460,6 @@ export class GpuResources {
     this.pathTraceBindGroup1 = null;
     this.pathTraceBindGroup2 = null;
     this.pathTraceBindGroup3 = null;
-    this.bdptEyeStackBuffer?.destroy();
-    this.bdptEyeStackBuffer = null;
-    this.bdptEyeStackByteSize = 0;
     // D8.1: PresentResources.dispose() tears down seed-blit resources (in order:
     // seedBlitParamsBuffer → seedBlitVarPlaceholder → seedBlitSampler → seedBlitPipeline)
     // then present-pass resources (presentParamsBuffer → presentPipeline).
@@ -2091,7 +2468,6 @@ export class GpuResources {
     this.paramsBuffer?.destroy();
     this.paramsBuffer = null;
     this.computePipeline = null;
-    this.bdptSubpathPipeline = null;
     this.bindGroupLayout = null;
     this.bindGroupLayout1 = null;
     this.bindGroupLayout2 = null;

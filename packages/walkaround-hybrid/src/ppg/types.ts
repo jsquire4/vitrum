@@ -94,12 +94,10 @@ export interface DTreeNode {
    */
   solidAngle: number;
   /**
-   * Accumulated radiance flux (training signal) at this leaf.
-   * Incremented during the training pass via atomic adds on the GPU;
-   * summed over all leaves to derive `totalFlux`.
-   *
-   * Addresses deviation 3: flux is accumulated from L_i (incoming radiance)
-   * at the sample point, NOT from post-BRDF outgoing radiance L_o.
+   * Accumulated non-negative directional training mass at this node. The GPU
+   * deposits the initial RIS histogram estimator `w_sum / M` at the selected
+   * direction; interior values are recomputed as subtree sums before upload.
+   * `totalFlux` is the root/subtree mass used to normalise guide probabilities.
    */
   flux: number;
   /** Index of the first child (quadrant NW) in the flat DTree.nodes array. Children are at [child, child+1, child+2, child+3]. -1 for leaves. */

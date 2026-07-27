@@ -7,8 +7,11 @@
 import type { Scene, Engine } from '@vitrum/core';
 import {
   createWalkaroundEngine_Hybrid,
+  validateHybridEngineAdvancedOptions,
   HYBRID_WEBGPU_REQUIRED_LIMITS,
   HYBRID_LITE_LIMITS,
+  nrcWebGpuRequiredLimitsForConfig,
+  resolveHybridNrcConfig,
   type HybridEngineOptions,
 } from '@vitrum/walkaround-hybrid';
 import { probeAdapterProfile } from '../adapterProfile.js';
@@ -25,6 +28,7 @@ import {
   resolveAdvancedForBackend,
   stripOwnershipCriticalKeys,
   reportCreateEngineError,
+  BackendUnavailableError,
   attachBackendId,
   wrapWithIdempotentDispose,
   type CreateEngineOptions,
@@ -33,6 +37,7 @@ import {
 } from '../createEngineInternals.js';
 import type { GIStatePersistable } from '../idempotentDispose.js';
 import type { SceneAABB } from '../sceneAABB.js';
+import { requiredWalkaroundNeuralDeviceFeatures } from '../neuralFeatureNegotiation.js';
 
 function destroyOwnedWebGpuDevice(shared: SharedDeviceCtx | undefined, device: GPUDevice): void {
   if (shared == null) {
@@ -49,9 +54,32 @@ export async function constructWalkaround(
   needsTlas: boolean,
   shared?: SharedDeviceCtx,
 ): Promise<Engine & Partial<GIStatePersistable>> {
-  const adapter = shared?.adapter ?? await navigator.gpu.requestAdapter();
+  const advancedHybridRaw = resolveAdvancedForBackend(
+    opts,
+    'walkaround-hybrid',
+  ) as Partial<HybridEngineOptions> | undefined;
+  const advancedHybrid = stripOwnershipCriticalKeys(
+    advancedHybridRaw,
+    'walkaround-hybrid',
+    opts.onWarning,
+  ) as Partial<HybridEngineOptions>;
+  validateHybridEngineAdvancedOptions(advancedHybrid);
+
+  let adapter: GPUAdapter | null;
+  try {
+    adapter = shared?.adapter ?? await navigator.gpu.requestAdapter();
+  } catch (cause) {
+    throw new BackendUnavailableError(
+      'walkaround-hybrid',
+      'createEngine: WebGPU adapter acquisition failed for walkaround-hybrid',
+      { cause },
+    );
+  }
   if (adapter == null) {
-    throw new Error('createEngine: WebGPU adapter request returned null even though detectGpu reported support');
+    throw new BackendUnavailableError(
+      'walkaround-hybrid',
+      'createEngine: WebGPU adapter request returned null even though detectGpu reported support',
+    );
   }
 
   // Phase-0 productization — probe the adapter's graceful-degradation profile
@@ -61,7 +89,16 @@ export async function constructWalkaround(
   // a hybrid-incapable-but-lite-capable adapter, and (c) requests the device
   // with the matching `requiredLimits` (previously NO limits were requested,
   // so full hybrid silently relied on adapter defaults — a latent gap).
-  const profile = await probeAdapterProfile(adapter);
+  let profile;
+  try {
+    profile = await probeAdapterProfile(adapter);
+  } catch (cause) {
+    throw new BackendUnavailableError(
+      'walkaround-hybrid',
+      'createEngine: WebGPU adapter capability probing failed for walkaround-hybrid',
+      { cause },
+    );
+  }
   try {
     opts.onAdapterProfile?.(profile);
   } catch {
@@ -76,7 +113,8 @@ export async function constructWalkaround(
     // Class D — software rasterizer or below the lite floor. Never init
     // hybrid here (it would fail opaquely mid-init). Point the host at a
     // path-tracer fallback.
-    throw new Error(
+    throw new BackendUnavailableError(
+      'walkaround-hybrid',
       `createEngine: this adapter cannot run the walkaround-hybrid realtime ` +
       `engine (recommendedRealtimeTier='${profile.recommendedRealtimeTier}', ` +
       `isSoftwareAdapter=${profile.isSoftwareAdapter}, ` +
@@ -90,13 +128,34 @@ export async function constructWalkaround(
   // Full when the adapter meets the full limits; otherwise lite (the profile
   // already guaranteed hybridLiteCapable above).
   const useLite = !profile.hybridCapable;
+  const nrcEnabled = advancedHybrid.nrcEnabled === true;
+  const nrcConfig = resolveHybridNrcConfig(advancedHybrid);
+  if (nrcEnabled && useLite && shared == null) {
+    throw new BackendUnavailableError(
+      'walkaround-hybrid',
+      'createEngine: nrcEnabled requires the full walkaround-hybrid device tier; ' +
+        `this adapter resolved to the lite tier (${profile.recommendedRealtimeTier}).`,
+    );
+  }
   // Reuse a shared device when given (progressive facade), else mint our own.
   // A shared device is built with the limit UNION (which includes the FULL
   // hybrid floor), so `profile.hybridCapable` is true and `useLite` is false —
   // the shared path always runs full hybrid, as it must to satisfy the union.
-  const device = shared?.device ?? await adapter.requestDevice({
-    requiredLimits: useLite ? HYBRID_LITE_LIMITS : HYBRID_WEBGPU_REQUIRED_LIMITS,
-  });
+  let device: GPUDevice;
+  try {
+    device = shared?.device ?? await adapter.requestDevice({
+      requiredLimits: nrcEnabled
+        ? nrcWebGpuRequiredLimitsForConfig(nrcConfig)
+        : (useLite ? HYBRID_LITE_LIMITS : HYBRID_WEBGPU_REQUIRED_LIMITS),
+      requiredFeatures: requiredWalkaroundNeuralDeviceFeatures(adapter, advancedHybrid),
+    });
+  } catch (cause) {
+    throw new BackendUnavailableError(
+      'walkaround-hybrid',
+      'createEngine: WebGPU device acquisition failed for walkaround-hybrid',
+      { cause },
+    );
+  }
 
   const D = aabb.diagonal;
   const scaleDefaults = deriveScaleDefaults(D);
@@ -127,15 +186,6 @@ export async function constructWalkaround(
 
   let engine: (Engine & Partial<GIStatePersistable>) | null = null;
   try {
-    const advancedHybridRaw = resolveAdvancedForBackend(
-      opts,
-      'walkaround-hybrid',
-    ) as Partial<HybridEngineOptions> | undefined;
-    const advancedHybrid = stripOwnershipCriticalKeys(
-      advancedHybridRaw,
-      'walkaround-hybrid',
-      opts.onWarning,
-    ) as Partial<HybridEngineOptions>;
     const merged: HybridEngineOptions = {
       device,
       width: Math.max(1, opts.canvas.width),
@@ -191,13 +241,21 @@ export async function constructWalkaround(
     // then re-throw) instead of silently rendering black forever. The reported
     // error is escalated to recoverable:false to reflect the non-recoverable
     // swap-chain state.
-    configureWebGpuCanvas(opts.canvas, device, (err) => {
-      reportCreateEngineError(opts, err, {
-        phase: 'canvas-configure',
-        backend: 'walkaround-hybrid',
-        recoverable: false,
-      });
-    }, { required: true });
+    try {
+      configureWebGpuCanvas(opts.canvas, device, (err) => {
+        reportCreateEngineError(opts, err, {
+          phase: 'canvas-configure',
+          backend: 'walkaround-hybrid',
+          recoverable: false,
+        });
+      }, { required: true });
+    } catch (cause) {
+      throw new BackendUnavailableError(
+        'walkaround-hybrid',
+        'createEngine: the canvas cannot be configured for walkaround-hybrid',
+        { cause },
+      );
+    }
 
     const built = engine;
     engine = null;

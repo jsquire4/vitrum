@@ -80,15 +80,17 @@ export function bmfrFeatureRow(
 }
 
 /**
- * Solve the normal-equations system `(AΑᵀA + λI) x = Aᵀb` for x.
+ * Solve the regularised least-squares system directly by Householder QR.
  *
- * BMFR's QR-on-the-feature-matrix is mathematically equivalent to solving the
- * normal equations; doing it on the (10×10) normal matrix is what the GPU
- * kernel does too (one Householder QR of the SYMMETRIC normal matrix), so the
- * CPU oracle mirrors that exact path. We assemble the symmetric positive-
- * (semi)definite normal matrix `M = AᵀA + λI` and right-hand side `r = Aᵀb`,
- * then solve `M x = r` via Householder QR of M (stable for the small dense
- * symmetric system; no pivoting needed once λ-loaded).
+ * Tikhonov regularisation is represented as an augmented system rather than by
+ * forming normal equations:
+ *
+ *     [ A          ] x ≈ [ b ]
+ *     [ sqrt(λ) I  ]     [ 0 ]
+ *
+ * Factoring this rectangular matrix preserves the condition number of `A`;
+ * factoring `AᵀA` would square it and is specifically unsuitable for the
+ * nearly-collinear polynomial features BMFR encounters on planar surfaces.
  *
  * @param rows   array of feature rows (each length BMFR_FEATURE_COUNT)
  * @param values target value per row (the noisy color channel)
@@ -101,103 +103,127 @@ export function bmfrSolveChannel(
   lambda: number = BMFR_QR_REGULARISATION,
 ): Float32Array {
   const f = BMFR_FEATURE_COUNT;
-  // Normal matrix M (f×f) and rhs r (f).
-  const M = new Float64Array(f * f);
-  const r = new Float64Array(f);
-  for (let k = 0; k < rows.length; k++) {
-    const row = rows[k]!;
-    const v = values[k]!;
-    for (let i = 0; i < f; i++) {
-      const ri = row[i]!;
-      r[i] = (r[i] ?? 0) + ri * v;
-      for (let j = 0; j < f; j++) {
-        const idx = i * f + j;
-        M[idx] = (M[idx] ?? 0) + ri * row[j]!;
-      }
-    }
+  if (rows.length !== values.length) {
+    throw new RangeError('bmfrSolveChannel: rows and values must have equal length');
   }
-  for (let i = 0; i < f; i++) {
-    const idx = i * f + i;
-    M[idx] = (M[idx] ?? 0) + lambda;
+  if (!Number.isFinite(lambda) || lambda < 0) {
+    throw new RangeError('bmfrSolveChannel: lambda must be finite and nonnegative');
   }
 
-  return householderSolve(M, r, f);
+  const regularisationRows = lambda > 0 ? f : 0;
+  const rowCount = rows.length + regularisationRows;
+  const A = new Float64Array(rowCount * f);
+  const b = new Float64Array(rowCount);
+  for (let k = 0; k < rows.length; k++) {
+    const row = rows[k]!;
+    if (row.length < f) {
+      throw new RangeError(`bmfrSolveChannel: row ${k} has fewer than ${f} features`);
+    }
+    const v = values[k]!;
+    if (!Number.isFinite(v)) {
+      throw new RangeError(`bmfrSolveChannel: values[${k}] must be finite`);
+    }
+    for (let i = 0; i < f; i++) {
+      const ri = row[i]!;
+      if (!Number.isFinite(ri)) {
+        throw new RangeError(`bmfrSolveChannel: row ${k} feature ${i} must be finite`);
+      }
+      A[k * f + i] = ri;
+    }
+    b[k] = v;
+  }
+  if (regularisationRows > 0) {
+    const diagonal = Math.sqrt(lambda);
+    for (let i = 0; i < f; i++) {
+      A[(rows.length + i) * f + i] = diagonal;
+    }
+  }
+
+  return householderLeastSquares(A, b, rowCount, f);
 }
 
 /**
- * Solve a dense `A x = b` (A is f×f, row-major) via Householder QR.
+ * Solve a dense rectangular least-squares system via direct Householder QR.
  *
- * Reduces A to upper-triangular R by left-multiplying with Householder
- * reflectors, applying the same reflectors to b, then back-substitutes.
- * Returns x as a Float32Array (single-precision to match the GPU result
- * magnitude; the accumulation is done in f64 for stability).
+ * `A` is row-major with `rowCount × columnCount` entries. The routine reduces
+ * it to upper-triangular `R`, applies the same reflectors to `b`, and solves the
+ * leading square system. Inputs are copied and never mutated.
  */
-// MUST-MATCH MIRROR: householderSolve (CPU ↔ GPU)
-//
-// This function is the CPU reference for the WGSL kernel in
-// shared-denoisers/src/wgsl/bmfr.wgsl.ts::householderSolve.
-// The two implementations MUST stay bit-for-bit equivalent on every
-// convergence guard and back-substitution step:
-//
-//   • norm < 1e-20         — skip near-zero pivot columns       ← BOTH sides
-//   • vNormSq < 1e-30      — skip near-degenerate reflectors    ← BOTH sides
-//   • abs(diag) < 1e-20    — back-substitution singularity gate ← BOTH sides
-//   • back-substitution traversal order: i = n-1 .. 0 (descending)
-//
-// If you change any of these guards or the back-substitution order here,
-// apply the IDENTICAL change in bmfr.wgsl.ts::householderSolve and vice-versa.
+export function householderLeastSquares(
+  A: Float64Array,
+  b: Float64Array,
+  rowCount: number,
+  columnCount: number,
+): Float32Array {
+  if (!Number.isInteger(rowCount) || rowCount < 0) {
+    throw new RangeError('householderLeastSquares: rowCount must be a nonnegative integer');
+  }
+  if (!Number.isInteger(columnCount) || columnCount < 0) {
+    throw new RangeError('householderLeastSquares: columnCount must be a nonnegative integer');
+  }
+  if (A.length < rowCount * columnCount || b.length < rowCount) {
+    throw new RangeError('householderLeastSquares: matrix or rhs is too short');
+  }
+
+  const R = A.slice(0, rowCount * columnCount);
+  const y = b.slice(0, rowCount);
+  const pivotCount = Math.min(rowCount, columnCount);
+
+  for (let col = 0; col < pivotCount; col++) {
+    let normSq = 0;
+    for (let i = col; i < rowCount; i++) {
+      const v = R[i * columnCount + col]!;
+      normSq += v * v;
+    }
+    let norm = Math.sqrt(normSq);
+    if (norm < 1e-20) continue;
+    const x0 = R[col * columnCount + col]!;
+    const sign = x0 >= 0 ? 1 : -1;
+    norm *= sign;
+    const v = new Float64Array(rowCount);
+    v[col] = x0 + norm;
+    for (let i = col + 1; i < rowCount; i++) {
+      v[i] = R[i * columnCount + col]!;
+    }
+    let vNormSq = 0;
+    for (let i = col; i < rowCount; i++) vNormSq += v[i]! * v[i]!;
+    if (vNormSq < 1e-30) continue;
+
+    for (let j = col; j < columnCount; j++) {
+      let dot = 0;
+      for (let i = col; i < rowCount; i++) {
+        dot += v[i]! * R[i * columnCount + j]!;
+      }
+      const factor = (2 * dot) / vNormSq;
+      for (let i = col; i < rowCount; i++) {
+        R[i * columnCount + j]! -= factor * v[i]!;
+      }
+    }
+    let dotY = 0;
+    for (let i = col; i < rowCount; i++) dotY += v[i]! * y[i]!;
+    const fy = (2 * dotY) / vNormSq;
+    for (let i = col; i < rowCount; i++) y[i]! -= fy * v[i]!;
+  }
+
+  const x = new Float32Array(columnCount);
+  for (let i = columnCount - 1; i >= 0; i--) {
+    let acc = i < rowCount ? y[i]! : 0;
+    for (let j = i + 1; j < columnCount; j++) {
+      acc -= (i < rowCount ? R[i * columnCount + j]! : 0) * x[j]!;
+    }
+    const diag = i < rowCount ? R[i * columnCount + i]! : 0;
+    x[i] = Math.abs(diag) < 1e-20 ? 0 : acc / diag;
+  }
+  return x;
+}
+
+/** Solve a square dense system via the same direct Householder implementation. */
 export function householderSolve(
   A: Float64Array,
   b: Float64Array,
   n: number,
 ): Float32Array {
-  // Work on copies so the inputs are not mutated.
-  const R = A.slice();
-  const y = b.slice();
-
-  for (let col = 0; col < n; col++) {
-    // Norm of the sub-column R[col..n, col].
-    let normSq = 0;
-    for (let i = col; i < n; i++) {
-      const v = R[i * n + col]!;
-      normSq += v * v;
-    }
-    let norm = Math.sqrt(normSq);
-    if (norm < 1e-20) continue; // already zero below the pivot — MUST-MATCH bmfr.wgsl.ts
-    // Householder vector v = x - sign(x0)*||x|| e0.
-    const x0 = R[col * n + col]!;
-    const sign = x0 >= 0 ? 1 : -1;
-    norm *= sign;
-    const v = new Float64Array(n);
-    v[col] = x0 + norm;
-    for (let i = col + 1; i < n; i++) v[i] = R[i * n + col]!;
-    let vNormSq = 0;
-    for (let i = col; i < n; i++) vNormSq += v[i]! * v[i]!;
-    if (vNormSq < 1e-30) continue; // MUST-MATCH bmfr.wgsl.ts
-
-    // Apply reflector H = I - 2 v vᵀ / (vᵀv) to remaining columns of R.
-    for (let j = col; j < n; j++) {
-      let dot = 0;
-      for (let i = col; i < n; i++) dot += v[i]! * R[i * n + j]!;
-      const factor = (2 * dot) / vNormSq;
-      for (let i = col; i < n; i++) R[i * n + j]! -= factor * v[i]!;
-    }
-    // Apply the same reflector to y.
-    let dotY = 0;
-    for (let i = col; i < n; i++) dotY += v[i]! * y[i]!;
-    const fy = (2 * dotY) / vNormSq;
-    for (let i = col; i < n; i++) y[i]! -= fy * v[i]!;
-  }
-
-  // Back-substitution on the upper-triangular R.
-  const x = new Float32Array(n);
-  for (let i = n - 1; i >= 0; i--) {
-    let acc = y[i]!;
-    for (let j = i + 1; j < n; j++) acc -= R[i * n + j]! * x[j]!;
-    const diag = R[i * n + i]!;
-    x[i] = Math.abs(diag) < 1e-20 ? 0 : acc / diag; // MUST-MATCH bmfr.wgsl.ts
-  }
-  return x;
+  return householderLeastSquares(A, b, n, n);
 }
 
 /**

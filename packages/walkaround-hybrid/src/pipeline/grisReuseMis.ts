@@ -1,207 +1,271 @@
 /**
- * grisReuseMis.ts — CPU mirror of the GRIS reconnection-shift + pairwise-MIS
- * arithmetic the GPU reuse passes run (`shaders/grisReuse.wgsl.ts`).
+ * Independent CPU oracle for the bounded GRIS reuse implemented by the
+ * walkaround renderer.
  *
- * This is the SINGLE SOURCE OF TRUTH for the GRIS reuse math as the WGSL
- * computes it, in the same role `pt-webgpu/src/bdpt/bdptConnectionMisFull.ts`
- * plays for BDPT MIS: an independent TS reimplementation that ports the *same
- * arithmetic* the shader runs, so one test can assert (a) it matches the
- * `@vitrum/shared-samplers/reconnectionShift.ts` oracle to machine ε, and (b)
- * the GRIS pairwise-MIS weights form a partition of unity (Σ m_i = 1).
+ * This is deliberately narrower than a general path-space GRIS implementation:
+ * samples represent the renderer's one-bounce diffuse DDGI proxy. Surface
+ * reconnection uses a geometry-term Jacobian; environment directions use an
+ * identity mapping. Every proposal density is transformed into the canonical
+ * receiver measure with pHat / |dT| before the generalized-balance weights are
+ * formed. Invalid inverse mappings and occluded techniques have zero density.
  *
- * The shared-samplers oracle (`reconnectionShift.ts`) is the read-only first-
- * principles reference for the shift mapping + Jacobian; this file ports the
- * GPU-side arithmetic (geometry term, Jacobian-from-cached-half-G, GI target,
- * pairwise generalized-balance MIS denominators) the WGSL `grisReuse.wgsl.ts`
- * runs. The WGSL helpers and these functions are line-for-line equivalent.
- *
- * References:
- *   - Lin, Kettunen, Bitterli, Pantaleoni, Jakob, Nowrouzezahrai 2022,
- *     "Generalized Resampled Importance Sampling: Foundations of ReSTIR",
- *     SIGGRAPH 2022 — §5 (reconnection shift), Eq. 12 (Jacobian),
- *     §"pairwise MIS" (the practical generalized-balance form).
- *
- * @module grisReuseMis
+ * The renderer remains biased by its one-bounce proxy, reservoir clamps, and
+ * irradiance clamps. These helpers validate reuse arithmetic; they do not claim
+ * full-path or unbiased rendering.
  */
 
 export type Vec3 = readonly [number, number, number];
+export type GrisSampleKind = 'surface' | 'environment';
+
+const INV_PI = 0.3183098861837907;
+export const MAX_GRIS_TECHNIQUES = 6;
+const MAX_U32 = 0xffff_ffff;
+const MAX_FINITE_F32 = 3.402823466e38;
+const MAX_WEIGHTED_DENSITY = MAX_FINITE_F32 / MAX_GRIS_TECHNIQUES;
+
+function finiteVec3(value: Vec3): boolean {
+  return value.every((component) => Number.isFinite(component));
+}
+
+function positiveU32Attempts(value: number, domainIndex: number): number {
+  if (!Number.isInteger(value) || value <= 0 || value > MAX_U32) {
+    throw new RangeError(
+      `GRIS domain ${domainIndex} attempts must be a positive u32; got ${value}`,
+    );
+  }
+  return value;
+}
+
+function weightedDensity(attempts: number, density: number): number {
+  if (!(density > 0) || !Number.isFinite(density)) return 0;
+  // Six bounded terms form the shader denominator. Capping each term at one
+  // sixth of max-f32 guarantees that neither multiplication nor accumulation
+  // can become Infinity while retaining monotonic mass in the extreme tail.
+  if (density > MAX_WEIGHTED_DENSITY / attempts) {
+    return MAX_WEIGHTED_DENSITY;
+  }
+  return attempts * density;
+}
 
 function sub(a: Vec3, b: Vec3): Vec3 {
   return [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
 }
+
 function dot(a: Vec3, b: Vec3): number {
   return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 }
 
-const INV_PI = 0.31830988618;
+function normalized(v: Vec3): Vec3 | undefined {
+  const lengthSquared = dot(v, v);
+  if (!(lengthSquared > 1e-12) || !Number.isFinite(lengthSquared)) return undefined;
+  const inverseLength = 1 / Math.sqrt(lengthSquared);
+  return [v[0] * inverseLength, v[1] * inverseLength, v[2] * inverseLength];
+}
 
-/** Rec.709 luminance — mirrors the WGSL `luminance()` weights used by the
- *  GI target. Kept local so the mirror has no cross-package dependency. */
 function luminance(c: Vec3): number {
   return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
 }
 
-/**
- * Destination-cosine reconnection-edge geometry term — the GPU
- * `grisReconnectionGeometryTerm`, identical to the oracle's
- * `reconnectionGeometryTerm`:
- *   G(x1 ↔ x2) = |cos θ_out(x2)| / ‖x1 − x2‖²
- * Returns 0 for a degenerate (coincident) edge or a tangent connection.
- */
-export function reconnectionGeometryTerm(x1: Vec3, x2: Vec3, n2: Vec3): number {
-  const d = sub(x2, x1);
-  const dist2 = dot(d, d);
-  if (dist2 <= 0) return 0;
-  const dist = Math.sqrt(dist2);
-  const cosOut = Math.abs(dot(n2, d) / dist);
-  return cosOut / dist2;
-}
-
-/**
- * Shift Jacobian |∂T/∂·| = G(shifted) / G(base) computed the GPU way: the base
- * half-G is supplied directly (recovered from the Phase-0 cache
- * cosReconOut / distRecon²) and the shifted half-G is recomputed from the
- * offset primary vertex. Mirrors `grisShiftJacobian`. Returns 0 when either
- * half-G is 0 (degenerate / non-invertible shift).
- */
-export function shiftJacobian(
-  gBase: number,
-  xvOffset: Vec3,
-  xs: Vec3,
-  ns: Vec3,
-): number {
-  if (gBase <= 0) return 0;
-  const gShifted = reconnectionGeometryTerm(xvOffset, xs, ns);
-  return gShifted / gBase;
-}
-
-/**
- * Recover the cached base half-G from the Phase-0 reservoir fields exactly as
- * the GPU does: `gBase = cosReconOut / distRecon²`. This is the value the
- * reservoir stores (cosReconOut = |cos θ_out| at xs; distRecon = ‖xv − xs‖)
- * and is algebraically identical to `reconnectionGeometryTerm(xv, xs, ns)`.
- */
-export function cachedBaseHalfG(cosReconOut: number, distRecon: number): number {
-  if (distRecon <= 0) return 0;
-  return cosReconOut / (distRecon * distRecon);
-}
-
-/**
- * GI target p̂ in the domain rooted at `xv`:
- *   p̂(z) = luminance(Lo) · max(0, cos(nv, xv→xs)) · INV_PI
- * Mirrors `grisTargetAt`. Returns 0 for a degenerate edge.
- */
-export function giTargetAt(xv: Vec3, nv: Vec3, xs: Vec3, Lo: Vec3): number {
-  const d = sub(xs, xv);
-  const dist2 = dot(d, d);
-  if (dist2 < 1e-8) return 0;
-  const inv = 1 / Math.sqrt(dist2);
-  const wi: Vec3 = [d[0] * inv, d[1] * inv, d[2] * inv];
-  const cosTheta = Math.max(0, dot(nv, wi));
-  return luminance(Lo) * cosTheta * INV_PI;
-}
-
-/**
- * One domain participating in the GRIS pairwise / generalized-balance MIS. The
- * canonical pixel r and each neighbour q is a {@link GrisDomain}: a primary
- * vertex (xv/nv) and its per-domain confidence weight c (the reservoir M).
- */
+/** Receiver technique participating in the bounded all-technique matrix. */
 export interface GrisDomain {
-  /** Primary/visible vertex of this domain. */
   readonly xv: Vec3;
-  /** Normal at the visible vertex. */
   readonly nv: Vec3;
-  /** This domain's stored reconnection sample (held fixed by the shift). */
-  readonly xs: Vec3;
-  readonly ns: Vec3;
-  readonly Lo: Vec3;
-  /** Per-domain confidence weight (the reservoir's M count, as a number). */
-  readonly c: number;
+  /** Reservoir attempts represented by this technique. */
+  readonly attempts: number;
+  /** Visibility of this fixed sample from this receiver. Defaults to one. */
+  readonly visibility?: number;
+  /** Whether this receiver has a valid inverse mapping for the sample. */
+  readonly inverseValid?: boolean;
 }
 
-/** A reconnection sample (the world-space reconnection vertex + its suffix
- *  radiance) that the reconnection shift re-roots onto each domain's primary
- *  vertex. The shift keeps {xs, ns, Lo} fixed and swaps the primary vertex. */
+/** A fixed sample evaluated under every receiver technique. */
 export interface GrisSample {
-  readonly xs: Vec3;
-  readonly ns: Vec3;
+  readonly kind: GrisSampleKind;
+  /** Surface reconnection position; required when kind is `surface`. */
+  readonly xs?: Vec3;
+  /** Surface reconnection normal; required when kind is `surface`. */
+  readonly ns?: Vec3;
+  /** Persistent direction; required when kind is `environment`. */
+  readonly direction?: Vec3;
   readonly Lo: Vec3;
+  /** Technique that originally produced this sample. */
+  readonly nativeDomainIndex: number;
+  /** Stored native pHat, including native visibility, when available. */
+  readonly nativePHat?: number;
+}
+
+export interface GrisTechniqueMatrix {
+  readonly pHats: readonly number[];
+  readonly jacobians: readonly number[];
+  readonly transformedDensities: readonly number[];
+  readonly numerators: readonly number[];
+  readonly denominator: number;
+  readonly weights: readonly number[];
+}
+
+/** Destination-cosine half-geometry term used by the reconnection map. */
+export function reconnectionGeometryTerm(x1: Vec3, x2: Vec3, n2: Vec3): number {
+  if (!finiteVec3(x1) || !finiteVec3(x2) || !finiteVec3(n2)) return 0;
+  const edge = sub(x2, x1);
+  const distanceSquared = dot(edge, edge);
+  if (!(distanceSquared > 1e-12) || !Number.isFinite(distanceSquared)) return 0;
+  const inverseDistance = 1 / Math.sqrt(distanceSquared);
+  const result = Math.abs(dot(n2, edge) * inverseDistance) / distanceSquared;
+  return Number.isFinite(result) && result > 0 ? result : 0;
+}
+
+/** |dT_domain->canonical|. Environment directions map identically. */
+export function domainToCanonicalJacobian(
+  domainXv: Vec3,
+  canonicalXv: Vec3,
+  sample: GrisSample,
+): number {
+  if (sample.kind === 'environment') return 1;
+  if (sample.xs === undefined || sample.ns === undefined) return 0;
+  const domainGeometry = reconnectionGeometryTerm(domainXv, sample.xs, sample.ns);
+  const canonicalGeometry = reconnectionGeometryTerm(canonicalXv, sample.xs, sample.ns);
+  if (!(domainGeometry > 0) || !(canonicalGeometry > 0)) return 0;
+  const result = canonicalGeometry / domainGeometry;
+  return Number.isFinite(result) && result > 0 && result <= MAX_FINITE_F32
+    ? result
+    : 0;
+}
+
+/** Diffuse one-bounce proxy target without visibility. */
+export function proxyTargetAt(domain: GrisDomain, sample: GrisSample): number {
+  const direction = sample.kind === 'environment'
+    ? (sample.direction === undefined ? undefined : normalized(sample.direction))
+    : (sample.xs === undefined ? undefined : normalized(sub(sample.xs, domain.xv)));
+  if (direction === undefined) return 0;
+  const receiverCosine = Math.max(0, dot(domain.nv, direction));
+  const value = luminance(sample.Lo) * receiverCosine * INV_PI;
+  return Number.isFinite(value) && value > 0 ? value : 0;
+}
+
+/** Proxy pHat including the technique's own visibility result. */
+export function proxyPHatAt(domain: GrisDomain, sample: GrisSample): number {
+  if (domain.inverseValid === false) return 0;
+  const rawVisibility = domain.visibility ?? 1;
+  if (!Number.isFinite(rawVisibility)) return 0;
+  const visibility = Math.min(1, Math.max(0, rawVisibility));
+  if (!(visibility > 0)) return 0;
+  return proxyTargetAt(domain, sample) * visibility;
+}
+
+/** Convert a native-domain density into the canonical receiver measure. */
+export function transformedDensity(
+  pHatDomain: number,
+  domainToCanonical: number,
+  inverseValid = true,
+): number {
+  if (!inverseValid || !(pHatDomain > 0) || !(domainToCanonical > 0)) return 0;
+  const result = pHatDomain / domainToCanonical;
+  return Number.isFinite(result) && result > 0 && result <= MAX_FINITE_F32
+    ? result
+    : 0;
 }
 
 /**
- * GRIS generalized balance heuristic (Lin 2022, generalized balance heuristic /
- * §pairwise MIS) for ONE fixed reconnection sample `y` evaluated across a set of
- * {@link domains}. The MIS weight of technique (domain) `i` for the sample `y`
- * is
- *
- *   m_i(y) = (c_i · p̂_i(T_{·→i} y)) / Σ_j ( c_j · p̂_j(T_{·→j} y) )
- *
- * where the reconnection shift T_{·→i} re-roots `y`'s reconnection vertex onto
- * domain i's primary vertex (xv_i), so the per-domain target is
- * `giTargetAt(domains[i].xv, domains[i].nv, y.xs, y.Lo)`. The shift keeps the
- * reconnection vertex shared — only the primary vertex changes per domain —
- * which is exactly the reconnection shift. The shift JACOBIAN enters the
- * resampling weight (applied by the GPU reuse loop), not these target ratios;
- * each target is evaluated in its domain's native measure so the densities are
- * commensurable.
- *
- * For a FIXED sample `y` these weights PARTITION UNITY: Σ_i m_i(y) = 1 — this is
- * the unbiasedness invariant of the generalized balance heuristic (a sample
- * could have been produced by ANY of the domains' techniques; the weights of
- * those techniques for that one sample sum to 1).
- *
- * @returns the MIS weights `m_i(y)`, one per domain, in input order. All-zero
- *   only when `y` shifts to a zero target in every domain (then the sample
- *   carries no contribution at all).
+ * Evaluate the complete bounded generalized-balance denominator for one fixed
+ * sample. No pairwise streaming approximation is used.
  */
-export function grisGeneralizedBalanceWeights(
-  domains: ReadonlyArray<GrisDomain>,
-  y: GrisSample,
-): number[] {
-  const n = domains.length;
-  const weights = new Array<number>(n).fill(0);
-  // Denominator: Σ_j c_j · p̂_j(T_{·→j} y) — the same sample y shifted into
-  // every domain j (xs/Lo fixed, primary vertex swapped to xv_j).
-  let denom = 0;
-  const numer = new Array<number>(n).fill(0);
-  for (let j = 0; j < n; j += 1) {
-    const dj = domains[j]!;
-    const t = dj.c * giTargetAt(dj.xv, dj.nv, y.xs, y.Lo);
-    numer[j] = t;
-    denom += t;
+export function evaluateTechniqueMatrix(
+  domains: readonly GrisDomain[],
+  sample: GrisSample,
+  canonicalDomainIndex: number,
+): GrisTechniqueMatrix {
+  if (sample.kind !== 'surface' && sample.kind !== 'environment') {
+    throw new TypeError(
+      `sample.kind must be surface or environment; got ${String(sample.kind)}`,
+    );
   }
-  if (denom <= 0) return weights;
-  for (let i = 0; i < n; i += 1) weights[i] = numer[i]! / denom;
-  return weights;
+  if (domains.length > MAX_GRIS_TECHNIQUES) {
+    throw new RangeError(`GRIS supports at most ${MAX_GRIS_TECHNIQUES} techniques`);
+  }
+  if (!Number.isInteger(canonicalDomainIndex)
+      || canonicalDomainIndex < 0
+      || canonicalDomainIndex >= domains.length) {
+    throw new RangeError('canonicalDomainIndex is outside the domain matrix');
+  }
+  if (!Number.isInteger(sample.nativeDomainIndex)
+      || sample.nativeDomainIndex < 0
+      || sample.nativeDomainIndex >= domains.length) {
+    throw new RangeError('sample.nativeDomainIndex is outside the domain matrix');
+  }
+
+  const canonical = domains[canonicalDomainIndex]!;
+  const pHats = new Array<number>(domains.length).fill(0);
+  const jacobians = new Array<number>(domains.length).fill(0);
+  const densities = new Array<number>(domains.length).fill(0);
+  const numerators = new Array<number>(domains.length).fill(0);
+  let denominator = 0;
+
+  for (let index = 0; index < domains.length; index += 1) {
+    const domain = domains[index]!;
+    const attempts = positiveU32Attempts(domain.attempts, index);
+    const visibility = domain.visibility ?? 1;
+    const inverseValid = domain.inverseValid !== false
+      && Number.isFinite(visibility)
+      && visibility > 0;
+    let pHat = index === sample.nativeDomainIndex && sample.nativePHat !== undefined
+      ? sample.nativePHat
+      : proxyPHatAt(domain, sample);
+    if (!inverseValid || !Number.isFinite(pHat) || !(pHat > 0)) pHat = 0;
+
+    const jacobian = domainToCanonicalJacobian(domain.xv, canonical.xv, sample);
+    const density = transformedDensity(pHat, jacobian, inverseValid);
+    const numerator = weightedDensity(attempts, density);
+
+    pHats[index] = pHat;
+    jacobians[index] = jacobian;
+    densities[index] = density;
+    numerators[index] = numerator;
+    denominator += numerator;
+  }
+
+  const weights = denominator > 0
+    ? numerators.map((numerator) => numerator / denominator)
+    : numerators.map(() => 0);
+
+  return {
+    pHats,
+    jacobians,
+    transformedDensities: densities,
+    numerators,
+    denominator,
+    weights,
+  };
+}
+
+/** Canonical resampling weight accumulated for one source reservoir sample. */
+export function canonicalResamplingWeight(
+  misWeight: number,
+  canonicalPHat: number,
+  sourceReservoirW: number,
+  sourceToCanonicalJacobian: number,
+): number {
+  if (!(misWeight > 0)
+      || !(canonicalPHat > 0)
+      || !(sourceReservoirW > 0)
+      || !(sourceToCanonicalJacobian > 0)) return 0;
+  const weight = misWeight * canonicalPHat * sourceReservoirW * sourceToCanonicalJacobian;
+  return Number.isFinite(weight) && weight > 0 ? weight : 0;
 }
 
 /**
- * Streaming pairwise denominator the GPU reuse loop uses when folding ONE
- * neighbour `q` into the canonical pixel `r` (mirrors
- * `grisPairwiseDenomNeighbor`):
- *   denom = c_r · p̂_r(shifted q sample) + c_q · p̂_q(native q sample)
- * The neighbour's MIS weight is then `m_q = (c_q · p̂_q_native) / denom`.
+ * Fold represented attempts exactly, including techniques whose sample weight
+ * is zero. Selecting a candidate does not add a synthetic extra attempt.
  */
-export function pairwiseDenomNeighbor(
-  cR: number,
-  pHatR_atQsample: number,
-  cQ: number,
-  pHatQ_native: number,
-): number {
-  return cR * pHatR_atQsample + cQ * pHatQ_native;
-}
-
-/**
- * Streaming pairwise denominator for the CANONICAL sample against neighbour
- * `q` (mirrors `grisPairwiseDenomCanonical`):
- *   denom = c_r · p̂_r(native r sample) + c_q · p̂_q(shifted r sample)
- * The canonical MIS weight is `m_r = (c_r · p̂_r_native) / denom`.
- */
-export function pairwiseDenomCanonical(
-  cR: number,
-  pHatR_native: number,
-  cQ: number,
-  pHatQ_atRsample: number,
-): number {
-  return cR * pHatR_native + cQ * pHatQ_atRsample;
+export function foldAttemptCount(attemptCounts: readonly number[]): number {
+  let total = 0;
+  for (let index = 0; index < attemptCounts.length; index += 1) {
+    const count = attemptCounts[index]!;
+    if (!Number.isInteger(count) || count < 0 || count > MAX_U32) {
+      throw new RangeError(
+        `GRIS attempt count ${index} must be a u32; got ${count}`,
+      );
+    }
+    total = Math.min(MAX_U32, total + count);
+  }
+  return total;
 }

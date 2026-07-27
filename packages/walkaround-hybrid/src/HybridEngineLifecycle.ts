@@ -49,9 +49,27 @@ import type { ReSTIRBvhMode, SceneBVHBuffers } from './restir/bvhCore.js';
 import { InferenceGraph } from './neural/InferenceGraph.js';
 import type { ModelWeights } from './neural/weights.js';
 import type { DDGI } from './ddgi/DDGI.js';
+import type { NeuralTensorStoragePreference } from './neural/tensorPrecision.js';
 import type { DDGILight } from './ddgi/types.js';
 import { syncDdgiFromCoreScene } from './HybridEngineDdgiSync.js';
 import type { EngineError, EngineWarning, Scene } from '@vitrum/core';
+import type { NrcConfig } from './neural/nrc/nrcSubsystem.js';
+
+/**
+ * Per-engine warning state for the host-sun/scene-directional conflict.
+ *
+ * The identity is owned by HybridEngine and shared by its init and mutation
+ * paths. Keeping the latch here instead of at module scope means every engine
+ * receives its own actionable warning while repeated syncs on that engine stay
+ * quiet.
+ */
+export interface HostSunWarningState {
+  warned: boolean;
+}
+
+export function createHostSunWarningState(): HostSunWarningState {
+  return { warned: false };
+}
 
 /**
  * Opaque back-reference into the engine. The coordinator only touches
@@ -72,6 +90,7 @@ export interface PipelineInitHost {
   readonly restirBvhModeOverride: ReSTIRBvhMode | undefined;
   readonly denoiser: 'none' | 'atrous' | 'atrous-variance' | 'svgf-real' | 'bmfr' | 'neural' | 'oidn-final';
   readonly neuralWeights: ModelWeights | undefined;
+  readonly neuralTensorStorage: NeuralTensorStoragePreference;
   readonly oidnModelUrl: string | undefined;
   readonly oidnExecutionProviders: ReadonlyArray<'webnn' | 'webgpu' | 'wasm'> | undefined;
   readonly verbose: boolean;
@@ -81,6 +100,7 @@ export interface PipelineInitHost {
   readonly checkerboardMotionThresholdSq: number;
   readonly ctorLights: readonly DDGILight[];
   readonly ddgi: DDGI;
+  readonly hostSunWarningState: HostSunWarningState;
   readonly preferredSwapChainFormat: GPUTextureFormat;
   // ── Phase-0 productization — quality-preset structural gating ──────────
   /** GTAO dispatch mode: `'on'` (half-res) / `'quarter'` / `'off'`. */
@@ -89,23 +109,21 @@ export interface PipelineInitHost {
   readonly diSpatialPasses: 1 | 2;
   /** ReSTIR-GI spatial-reuse ping-pong pass count (1 or 2). */
   readonly giSpatialPasses: 1 | 2;
-  /** GRIS / ReSTIR-PT reconnection-shift reuse (Lin et al. 2022) opt-in.
+  /** GRIS DDGI-proxy reconnection-shift reuse (Lin et al. 2022) opt-in.
    *  COMPILE-TIME structural gate threaded into `pipeline.initialize`: when
    *  true the GI spatial + temporal pipelines are built with the two-group
    *  (scene-BVH) layout + GRIS shader; when false (default) they are the
    *  verbatim Sprint-17 single-group pipeline. */
-  readonly restirPtReuse: boolean;
+  readonly grisReuse: boolean;
   /** NRC (Müller et al. 2021) live cache opt-in (full-tier only). COMPILE-TIME
    *  structural gate threaded into `pipeline.initialize`: when true the gi-ris
    *  pipeline is built with the 5th `@group(4)` NRC group + the inline-MLP
    *  shader variant; when false (default) it is the verbatim 4-group DDGI pass.
-   *  Same compile-time discipline as `restirPtReuse` (a runtime flag binding an
+   *  Same compile-time discipline as `grisReuse` (a runtime flag binding an
    *  extra group on the default path is the GRIS-class regression). */
   readonly nrcEnabled: boolean;
-  /** NRC trainer windows required before cache substitution may replace DDGI. */
-  readonly nrcWarmupSteps: number;
-  /** NRC spread-termination constant `c`. */
-  readonly nrcSpreadC: number;
+  /** Fully resolved NRC shader/trainer/allocation contract. */
+  readonly nrcConfig: NrcConfig;
   /** PPG (Müller 2017) guided sampling — when true the pipeline builds the
    *  ppg-update pipeline and enables the UBO gate; false = bit-identical
    *  cosine kernel. */
@@ -187,6 +205,7 @@ export type HybridInitStaticConfig = Pick<
   PipelineInitHost,
   | 'device'
   | 'restirBvhModeOverride'
+  | 'neuralTensorStorage'
   | 'denoiser'
   | 'neuralWeights'
   | 'oidnModelUrl'
@@ -201,16 +220,14 @@ export type HybridInitStaticConfig = Pick<
   | 'gtaoMode'
   | 'diSpatialPasses'
   | 'giSpatialPasses'
-  | 'restirPtReuse'
+  | 'grisReuse'
   | 'nrcEnabled'
-  | 'nrcWarmupSteps'
-  | 'nrcSpreadC'
+  | 'nrcConfig'
   | 'ppgEnabled'
   | 'ppgMaxSpatialCells'
   | 'ppgMaxDTreeNodesPerCell'
   | 'ppgMixAlpha'
   | 'checkerboard'
-  | 'ppgDispatchInterval'
   | 'regirConfig'
 >;
 
@@ -464,7 +481,13 @@ export class PipelineInitCoordinator {
       if (host.denoiser === 'neural' && host.neuralWeights) {
         const { buildUNetSpec } = await import('./neural/unetArchitecture.js');
         inferenceGraph = new InferenceGraph(buildUNetSpec());
-        await inferenceGraph.initialize(device, host.neuralWeights, host.width, host.height);
+        await inferenceGraph.initialize(
+          device,
+          host.neuralWeights,
+          host.width,
+          host.height,
+          host.neuralTensorStorage,
+        );
       }
 
       await pipeline.initialize(
@@ -481,14 +504,15 @@ export class PipelineInitCoordinator {
           gtaoMode: host.gtaoMode,
           diSpatialPasses: host.diSpatialPasses,
           giSpatialPasses: host.giSpatialPasses,
-          // GRIS / ReSTIR-PT reconnection-shift reuse — COMPILE-TIME structural
+          // GRIS DDGI-proxy reconnection-shift reuse — COMPILE-TIME structural
           // gate (selects the GI pipeline layout + shader variant). Default
           // OFF = the verbatim Sprint-17 GI pipeline (known-good default).
-          restirPtReuse: host.restirPtReuse,
+          grisReuse: host.grisReuse,
           // NRC (Müller et al. 2021) — COMPILE-TIME structural gate (selects the
           // gi-ris pipeline layout: 4-group DDGI default vs 5-group inline-MLP
           // variant). Default OFF = the verbatim DDGI-estimate gi-ris pass.
           nrcEnabled: host.nrcEnabled,
+          nrcConfig: host.nrcConfig,
           // PPG (Müller 2017) guided sampling — builds the ppg-update pipeline
           // and the UBO gate. (G-P1.1 follow-up: this forward was missing, so
           // opts.ppgEnabled died at the lite-tier guard and PPG was inert
@@ -502,8 +526,6 @@ export class PipelineInitCoordinator {
           // which checkerboard is forced full-rate (finer than the temporal
           // reset). Only consulted when checkerboard is on.
           checkerboardMotionThresholdSq: host.checkerboardMotionThresholdSq,
-          nrcWarmupSteps: host.nrcWarmupSteps,
-          nrcSpreadC: host.nrcSpreadC,
           // Phase-0 — PPG train-pass cadence (ppg-update gates on
           // `frameCount % N`). Only takes effect when PPG is enabled at the
           // pipeline level; harmless (= every frame) otherwise.
@@ -589,6 +611,7 @@ export class PipelineInitCoordinator {
           ctorLights: host.ctorLights,
           primaryLightIntensity: host.primaryLightIntensity,
           primaryLightDir: host.primaryLightDir,
+          hostSunWarningState: host.hostSunWarningState,
           onWarning: (warning) => host.reportWarning(warning),
           setLightsConditional: true,
           ...(bvhPublished.bvhMode === 'tlas'
@@ -684,7 +707,10 @@ function errorMessage(err: unknown): string {
 export function mergeDDGILightsDedupSun(
   ctorLights: readonly DDGILight[],
   sceneLights: readonly DDGILight[],
-  options: { readonly onWarning?: (warning: EngineWarning) => void } = {},
+  options: {
+    readonly onWarning?: (warning: EngineWarning) => void;
+    readonly warningState?: HostSunWarningState;
+  } = {},
 ): DDGILight[] {
   const sceneHasSun = sceneLights.some((l) => l.kind === 'sun');
   if (!sceneHasSun) {
@@ -700,18 +726,20 @@ export function mergeDDGILightsDedupSun(
     keptCtor.push(l);
   }
   if (droppedHostSun) {
-    warnHostSunOverriddenOnce(options.onWarning);
+    warnHostSunOverriddenOnce(options.warningState, options.onWarning);
   }
   return [...keptCtor, ...sceneLights];
 }
 
-/** One-time warning when a host-supplied `opts.lights` sun is dropped in favour
- *  of the scene-derived directional. Module-level latch so a per-frame
- *  re-sync can't spam the console. */
-let _warnedHostSunOverridden = false;
-function warnHostSunOverriddenOnce(onWarning: ((warning: EngineWarning) => void) | undefined): void {
-  if (_warnedHostSunOverridden) return;
-  _warnedHostSunOverridden = true;
+/** One warning per engine when a host-supplied sun is overridden. Callers that
+ *  omit a state receive a warning for that individual merge rather than
+ *  silently sharing process-global suppression with unrelated engines. */
+function warnHostSunOverriddenOnce(
+  state: HostSunWarningState | undefined,
+  onWarning: ((warning: EngineWarning) => void) | undefined,
+): void {
+  if (state?.warned === true) return;
+  if (state != null) state.warned = true;
   const warning: EngineWarning = {
     code: 'walkaround-hybrid.ddgi-host-sun-overridden',
     backend: 'walkaround-hybrid',

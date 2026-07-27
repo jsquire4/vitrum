@@ -12,7 +12,7 @@
 2. `plan/library-architecture.md` — package responsibilities, dependencies
 3. `packages/core/src/scene/` + `src/frame.ts` + `src/engine/` — the locked-in API contract types
 4. `CREDITS.md` — attribution to ~30 prior works the engine builds on
-5. Active plan docs: `plan/roadmap.md` (§0.5 = locked priorities), `plan/renderer-fidelity-matrix.md`, `plan/walkaround-without-three.md`. Completed-sprint artifacts live in `plan/archive/`.
+5. Active plan docs: `plan/road-to-100.md` (current code-completion queue), `plan/renderer-fidelity-matrix.md` (implemented backend contract), and `plan/roadmap.md` (future product additions). Completed sprint records live in `plan/archive/`.
 
 ## Packages
 
@@ -24,15 +24,15 @@
 - `walkaround-rc` — Radiance Cascades subsystem (cascade pyramid + dispatch + receiver)
 - `shared-bvh`, `shared-samplers`, `shared-denoisers`, `scene-lighting`, `stained-glass-extensions`, `dev` (debug overlays)
 
-## Where things stand (2026-06-19)
+## Where things stand (2026-07-24)
 
-- **Maturity headline:** release-candidate track for `engine`, `walkaround-hybrid`, `pt-webgl2`, and the peer `pt-webgpu` backend, with feature-level fidelity grades in `plan/renderer-fidelity-matrix.md`. The in-repo gates include typecheck, Vitest, proof-check, shader-gate, glTF sweeps, committed dzn status artifacts, and the pre-push WSL T1 GPU smoke.
-- **Recent Road-to-100 closure shape:** the old June 10 tail list is stale. A4 progressive SPPM, PPG dispatch/guiding, NRC structural/warm-up gates, GRIS opt-in/default-policy truthfulness, glTF texture/source-path diagnostics, pt-webgl2 `TextureRef.texCoord`, H25/H28/H29, and the main H-residue clusters have been reworked and reconciled in `plan/road-to-100.md` and `items_to_fix.md`.
-- **Honest remaining tail:** full analytic adjoint parity is still scoped; transparent ReSTIR/GI transport remains approximate; neural still needs a production checkpoint and quality A/B; NRC/neural default-tier decisions remain; multi-vertex BDPT is research-mode; and broad V28-B/material-furnace/rich-material/glTF/mutation/browser-adapter proof work remains before promotion claims are final.
-- **Authoritative sources:** `plan/road-to-100.md`, `plan/road-to-100-gap-ledger-2026-06-11.md`, and `items_to_fix.md`. Treat old rows as candidate backlog until source-read verified; do not reopen a closed item from prose alone.
-- **THREE removal: COMPLETE (2026-06-09).** Runtime engines consume `@vitrum/core` scenes only.
+- **Implemented profiles:** `engine`, `walkaround-hybrid`, `pt-webgl2`, and `pt-webgpu` implement the feature surface they advertise. Unsupported combinations are reported as unsupported instead of being routed through a provisional mode.
+- **Contract closure:** core scene validation is used by adapters, engines, and mutation paths. The renderers consume advertised material, texture, lighting, animation, volume, spectral, caustic, and denoiser fields. Radiance Cascades uses runtime-sized light tables and strict raw-dispatch validation.
+- **Authoritative current queue:** `plan/road-to-100.md`. Add a row only for a source-read, reachable runtime gap with an implementation change. `items_to_fix.md` is historical audit context, not an open backlog.
+- **Future scope:** `plan/roadmap.md` holds deliberate additions such as native point/line rendering and heterogeneous media. Do not turn future scope into a present implementation defect.
+- **THREE removal: complete.** Runtime engines consume `@vitrum/core` scenes only.
 
-Treat open items as real, prioritise honestly. Don't paper over with band-aids that suppress symptoms.
+Do not reopen completed work from old plans or generated evidence. Reopen it only from current production source and a concrete failure mode.
 
 ## Hard-won process lessons
 

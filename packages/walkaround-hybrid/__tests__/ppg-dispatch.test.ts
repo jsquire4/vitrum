@@ -87,9 +87,9 @@ function makeMinimalCtx(
   // GI reservoir source matter for these tests.
   const ppgResources = ppgEnabled
     ? {
-        sTreeBuf: makeMockBuffer(),
-        dTreeBuf: makeMockBuffer(),
-        dTreeOffsetsBuf: makeMockBuffer(),
+        queryArenaBuf: makeMockBuffer(),
+        queryArenaLayout: {},
+        queryArenaEpoch: 1,
         fluxAtomicsBuf: makeMockBuffer(),
         cellSampleCountsBuf: makeMockBuffer(), // A2 — per-cell sample counters
         updateUboBuffer: makeMockBuffer(),
@@ -118,6 +118,7 @@ function makeMinimalCtx(
     uboBindGroup: {} as unknown as GPUBindGroup,
     hybridLayersBindGroup: {} as unknown as GPUBindGroup,
     shadeHybridLayersBindGroup: {} as unknown as GPUBindGroup,
+    buildTransparentOitBindGroup: () => ({} as unknown as GPUBindGroup),
     lightTreeBindGroup: {} as unknown as GPUBindGroup,
     wgX: 0, wgY: 0, wgX16: 0, wgY16: 0, halfWgX: 0, halfWgY: 0,
     checkerboardWgX: 0, checkerboardWgY: 0,

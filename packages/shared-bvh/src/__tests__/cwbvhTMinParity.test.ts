@@ -7,12 +7,9 @@ import {
 } from '../index.js';
 
 /**
- * Pins the tMin / comparator parity invariant between the two CWBVH
- * traversals: anyHit must NEVER report a miss where firstHit reports a hit at
- * the same epsilon boundary. Before the 2026-07-20 reconcile, firstHit used
- * `tMin = triEps` with `hit.t >= tMin` while anyHit used `tMin = 1e-4` with
- * `hit.t > tMin`, so a hit exactly at tMin was a hit in firstHit but a miss in
- * anyHit — shadow rays under-occluded relative to the closest-hit geometry.
+ * Pins the canonical open ray interval `(tMin, tMax)` in both CPU CWBVH
+ * traversals. The active pt-webgpu binary and wide WGSL paths use the same
+ * strict comparisons, so exact-boundary results must not diverge by backend.
  */
 
 // A single triangle lying in the z = zPlane plane, large enough that a
@@ -32,33 +29,38 @@ function buildSingleTriangleAt(zPlane: number) {
 const rayAlongZ: CwbvhRay = { origin: [0, 0, 0], direction: [0, 0, 1] };
 
 describe('CWBVH tMin/comparator parity (firstHit vs anyHit)', () => {
-  it('a hit exactly at an explicit tMin is a hit in both traversals', () => {
+  it('rejects a hit exactly at tMin and accepts it immediately above tMin in both traversals', () => {
     const zPlane = 5;
     const { cwbvh, positions } = buildSingleTriangleAt(zPlane);
 
-    // tMin set exactly to the hit distance: the boundary case.
-    const first = intersectCompressedWideBvhFirstHit(cwbvh, positions, rayAlongZ, { tMin: zPlane });
-    const any = intersectCompressedWideBvhAnyHit(cwbvh, positions, rayAlongZ, { tMin: zPlane });
+    const firstAtBoundary = intersectCompressedWideBvhFirstHit(
+      cwbvh, positions, rayAlongZ, { tMin: zPlane },
+    );
+    const anyAtBoundary = intersectCompressedWideBvhAnyHit(
+      cwbvh, positions, rayAlongZ, { tMin: zPlane },
+    );
+    expect(firstAtBoundary.didHit).toBe(false);
+    expect(anyAtBoundary).toBe(false);
 
-    expect(first.didHit).toBe(true);
-    expect(first.dist).toBeCloseTo(zPlane, 6);
-    // Invariant: firstHit-hit ⇒ anyHit-hit at the same boundary.
-    expect(any).toBe(true);
+    const firstInside = intersectCompressedWideBvhFirstHit(
+      cwbvh, positions, rayAlongZ, { tMin: zPlane - 1e-4 },
+    );
+    const anyInside = intersectCompressedWideBvhAnyHit(
+      cwbvh, positions, rayAlongZ, { tMin: zPlane - 1e-4 },
+    );
+    expect(firstInside.didHit).toBe(true);
+    expect(firstInside.dist).toBeCloseTo(zPlane, 6);
+    expect(anyInside).toBe(true);
   });
 
-  it('a hit at the old anyHit default tMin (1e-4) no longer diverges at defaults', () => {
-    // Triangle exactly at z = 1e-4, the OLD anyHit default tMin. With the pre-
-    // reconcile code, firstHit (default tMin = triEps = 1e-5, `>=`) reported a
-    // hit while anyHit (default tMin = 1e-4, `>`) reported a miss — the exact
-    // divergence this fix closes. Both now derive tMin from triEps with `>=`.
-    const zPlane = 1e-4;
+  it('rejects a hit exactly at tMax in both traversals', () => {
+    const zPlane = 5;
     const { cwbvh, positions } = buildSingleTriangleAt(zPlane);
 
-    const first = intersectCompressedWideBvhFirstHit(cwbvh, positions, rayAlongZ);
-    const any = intersectCompressedWideBvhAnyHit(cwbvh, positions, rayAlongZ);
+    const first = intersectCompressedWideBvhFirstHit(cwbvh, positions, rayAlongZ, { tMax: zPlane });
+    const any = intersectCompressedWideBvhAnyHit(cwbvh, positions, rayAlongZ, { tMax: zPlane });
 
-    expect(first.didHit).toBe(true);
-    // Invariant: firstHit-hit ⇒ anyHit-hit at the same default boundary.
-    expect(any).toBe(true);
+    expect(first.didHit).toBe(false);
+    expect(any).toBe(false);
   });
 });

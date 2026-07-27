@@ -53,38 +53,21 @@
  * exceeds c·a₀ is bit-identical to the OFF pass.
  *
  * ════════════════════════════════════════════════════════════════════════════
- * A6 — Training target: ReSTIR-GI reservoir Lo (not DDGI distillation)
+ * NRC training target: independent bounded path suffix
  * ════════════════════════════════════════════════════════════════════════════
- * Previously, training wrote the DDGI irradiance (or sun+DDGI) as the target —
- * this was DISTILLATION: the cache learned to approximate the same estimate it
- * was replacing, with no fidelity upside.
+ * The first qualifying opaque candidate launches a private four-vertex path
+ * suffix. Its target contains mapped self-emission/light maps, exact-CDF finite
+ * emitter NEE, analytic point/spot and directional-sun NEE, and BSDF continuation
+ * to the environment. A defensive cosine/GGX-VNDF mixture evaluates the full
+ * mapped material response with its matching mixture PDF; Russian roulette starts
+ * after two vertices. The target reads neither DDGI nor the cache prediction.
  *
- * The correct target is the ReSTIR-GI reconnection radiance r.Lo — the Lo that
- * the full RIS process SELECTED as the best estimate for the visible pixel. This
- * Lo is computed post-loop (after the visibility test and W normalisation) and
- * stored in the reservoir. Training on r.Lo means the NRC converges to the same
- * quantity the ReSTIR-GI estimator produces — strictly more informative than
- * DDGI distillation because: (1) it incorporates RIS importance weighting across
- * M_GI candidates, (2) it includes the post-visibility correction (r.w_sum = 0
- * for occluded paths), and (3) it naturally accounts for sky-miss paths (Lo_env).
- *
- * BIAS BOUND: r.Lo is itself the biased-default ReSTIR-GI estimate (clamped
- * Jacobian [0.1,10], no reuse-visibility ray, no full GBH MIS in the default
- * reuse path). Producer pHat and normalization are now receiver-lobe/material
- * aware, but the default reuse estimator is still intentionally biased relative
- * to the true path integral. See HARDWARE-VALIDATION-NEEDS V20.
- *
- * IMPLEMENTATION: The NRC spread heuristic fires on the FIRST RIS candidate that
- * exceeds the threshold. The surface data at that candidate (xs, ns, wi, rough,
- * albedo) is saved in per-pixel tracking vars. After the loop, ONE training
- * record is written for the NRC-fired candidate using r.Lo (the final selected
- * reservoir Lo) as the target. If the NRC never fired this pixel, no record is
- * written. If a non-NRC candidate won the reservoir, r.Lo is a DDGI estimate for
- * that candidate — still a better signal than the NRC-candidate's own DDGI
- * (because it was importance-weighted selected). If the NRC candidate won, r.Lo
- * is nrcQueryRadiance(…) — which is circular but self-consistent (the NRC
- * gradient is computed against its own output, regularised by other-candidate
- * records; this is standard self-distillation that converges over frames).
+ * Cache substitution is still receiver-lobe/material-aware when the candidate
+ * enters the ReSTIR-GI reservoir; the independent target is matched to its key.
+ * The teacher stream is seeded independently from RIS, so training cannot change
+ * later candidates or reservoir selection. Glass candidates are not cached because
+ * the current NRC key has no IOR/transmission coordinate; they retain the dedicated
+ * bounded glass-GI path instead of aliasing optically distinct states.
  *
  * ════════════════════════════════════════════════════════════════════════════
  * A6 — xsRough: real material-payload roughness (not hardcoded 1.0)
@@ -140,9 +123,12 @@ import { nrcEncodeHelpersWgsl } from '../neural/nrc/wgsl/nrcEncoding.wgsl.js';
 import { nrcSpreadTerminationWgsl } from '../neural/nrc/wgsl/spreadTermination.wgsl.js';
 import { nrcQueryWgsl, type NrcQueryWgslOptions } from '../neural/nrc/wgsl/nrcQuery.wgsl.js';
 import {
+  RIS_GI_GLASS_TRANSPORT_PREFIX_WGSL,
   RIS_GI_GLASS_RESERVOIR_LOOP_WGSL,
   RIS_GI_GLASS_VISIBILITY_TAIL_WGSL,
 } from './risGiGlassWalk.wgsl.js';
+import { NRC_INDEPENDENT_SUFFIX_WGSL } from './nrcIndependentSuffix.wgsl.js';
+import { reservoirGiAccessorsWgsl } from './reservoirGi.wgsl.js';
 
 /** Config the NRC gi-ris module bakes its sizes from. Must agree with the host
  *  `NrcSubsystem` config (same hash-grid L/F, one-blob bins, MLP W/OUT/hidden). */
@@ -157,18 +143,11 @@ export interface RisGiNrcConfig extends NrcQueryWgslOptions {}
 // NRC group declared by the nrcQueryWgsl helpers prepended to this body.
 export const RIS_GI_NRC_BODY = /* wgsl */ `
 
-@group(0) @binding(10) var gi_gNormalDepth: texture_2d<f32>;
 @group(0) @binding(11) var<storage, read_write> reservoirGiCurrent: array<u32>;
 
-@group(1) @binding(0) var<storage, read> bvh:          array<BVHNode>;
-@group(1) @binding(1) var<storage, read> bvh_index:    array<vec4u>;
-@group(1) @binding(2) var<storage, read> bvh_position: array<vec4f>;
+${reservoirGiAccessorsWgsl({ storeReadWriteBinding: 'reservoirGiCurrent' })}
+
 @group(1) @binding(5) var bvh_beer: texture_2d<u32>;
-@group(1) @binding(6) var<storage, read> tlasNodes: array<BVHNode>;
-@group(1) @binding(7) var<storage, read> tlasInstanceIndices: array<u32>;
-@group(1) @binding(8) var<storage, read> tlasBlasRoots: array<u32>;
-@group(1) @binding(9) var<storage, read> tlasInstanceWorldToLocal: array<vec4f>;
-@group(1) @binding(10) var<storage, read> tlasInstanceLocalToWorld: array<vec4f>;
 // WS1 (2026-05-29) — bvh_normal is declared by materialAtlas.wgsl so alpha
 // cutout traversal and NRC GI shading share the same UV1/normal source.
 // A6 — per-triangle roughness+metalness (r32uint texture, binding 14). Decoded
@@ -177,6 +156,7 @@ export const RIS_GI_NRC_BODY = /* wgsl */ `
 // decodeRoughMetal comes from the materialDecode module (BVH_MATERIAL_TEX_WIDTH
 // constant + fn decodeRoughMetal). Default-diffuse invariant: no authored
 // roughness → packed as 0.85 (see packingHelpers.packBVHRoughMetal).
+@group(1) @binding(13) var analytic_lights: texture_2d<f32>;
 @group(1) @binding(14) var bvh_material: texture_2d<u32>;
 
 @group(2) @binding(0) var<uniform> ubo: WalkaroundUBO;
@@ -190,6 +170,8 @@ export const RIS_GI_NRC_BODY = /* wgsl */ `
 
 const M_GI_BASE: u32 = 8u;
 const RECONNECT_MAX_DIST: f32 = 100.0;
+
+${NRC_INDEPENDENT_SUFFIX_WGSL}
 const NORMAL_BIAS_GI: f32 = 1e-3;
 
 @compute @workgroup_size(8, 8, 1)
@@ -214,13 +196,11 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
   );
   let hit = traceSceneFirstHitAlphaMaskTexturedOpaqueOnly(
     ubo.bvhMode, ubo.tlasNodeCount,
-    &bvh_index, &bvh_position, &bvh,
-    &tlasNodes, &tlasInstanceIndices, &tlasBlasRoots,
-    &tlasInstanceWorldToLocal, &tlasInstanceLocalToWorld,
+
     primaryRay, ubo.triIntersectEpsilon,
-    bvh_material, BVH_MATERIAL_TEX_WIDTH);
+    bvh_material, BVH_MATERIAL_TEX_WIDTH, 0u);
   if (!hit.didHit) {
-    storeReservoirGI_rw(&reservoirGiCurrent, pixelIdxGi, emptyReservoirGI());
+    storeReservoirGI_rw(pixelIdxGi, emptyReservoirGI());
     return;
   }
 
@@ -230,18 +210,18 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
   let geoNormal = hit.normal;
   let n_isTlas = ubo.bvhMode == 1u;
   let n_base = hit.instanceIndex * 4u;
-  let n_ok = n_isTlas && n_base + 2u < arrayLength(&tlasInstanceWorldToLocal);
+  let n_ok = n_isTlas && n_base + 2u < tlasWorldToLocalColumnCount();
   let n_i = select(0u, n_base, n_ok);
   let smoothNormal = smoothShadingNormal(
     hit, geoNormal,
-    bvh_normal[hit.indices.x].xyz, bvh_normal[hit.indices.y].xyz, bvh_normal[hit.indices.z].xyz,
+    sceneLoadBvhNormal(hit.indices.x).xyz, sceneLoadBvhNormal(hit.indices.y).xyz, sceneLoadBvhNormal(hit.indices.z).xyz,
     n_ok,
-    tlasInstanceWorldToLocal[n_i], tlasInstanceWorldToLocal[n_i + 1u], tlasInstanceWorldToLocal[n_i + 2u],
+    tlasLoadWorldToLocalColumn(n_i), tlasLoadWorldToLocalColumn(n_i + 1u), tlasLoadWorldToLocalColumn(n_i + 2u),
   );
   let normalMapped = applyNormalMapForHit(hit, smoothNormal);
   let normal = applyBumpMapForHit(hit, normalMapped);
   // B1 — metals/glossy now get a GI reservoir; shade reflects it via the GGX
-  // specular lobe. Glass primaries mirror risGi.wgsl's bounded 1-interface
+  // specular lobe. Glass primaries mirror risGi.wgsl's bounded multi-interface
   // refracted GI walk, then return before NRC cache substitution/training. That
   // keeps the learned cache scope honest without dropping glass indirect light.
   let scalarMatColor = decodeMaterialColor(hit.matColorPacked);
@@ -260,115 +240,15 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
     normal,
     scalarMatColor.rgb,
     receiverMaterialWord,
+    -primaryRay.direction,
   );
   let receiverClearcoatNormal = receiverPayload.clearcoatNormal;
   let receiverWo = -primaryRay.direction;
-  let isGlass = matColor.a > 0.3;
+  let isGlass = materialHasTransmission(matColor.a);
+  let grisOn = ubo.grisReuse == 1u;
+  let currentGrisEpoch = bitcast<u32>(ubo.sunAngular.y);
 
-  // ── Glass refracted GI: 1-interface refraction walk ─────────────────────
-  // Parity with risGi.wgsl for primary glass pixels. The NRC cache is bypassed
-  // for this branch; it builds the same post-glass ReSTIR-GI reservoir as the
-  // default pass and stores it directly.
-  const GLASS_WALK_MAX_EXTRA: u32 = 2u;
-
-  if (isGlass) {
-    let glassPrimaryRmCoord = vec2u(hit.indices.w % BVH_MATERIAL_TEX_WIDTH,
-                                    hit.indices.w / BVH_MATERIAL_TEX_WIDTH);
-    let glassPrimaryPacked = textureLoad(bvh_material, vec2i(glassPrimaryRmCoord), 0).r;
-    let glassPrimaryRm = decodeRoughMetal(glassPrimaryPacked);
-    let glassPrimaryRough = glassPrimaryRm.x;
-    let IOR_GLASS: f32 = decodeIor(glassPrimaryPacked);
-
-    let d = primaryRay.direction;
-    let cosI = -dot(d, normal);
-    let etaRatio = select(IOR_GLASS, 1.0 / IOR_GLASS, cosI > 0.0);
-    let nFlipped = select(-normal, normal, cosI > 0.0);
-    let cosI_pos = abs(cosI);
-    let sin2T = etaRatio * etaRatio * (1.0 - cosI_pos * cosI_pos);
-    if (sin2T > 1.0) {
-      storeReservoirGI_rw(&reservoirGiCurrent, pixelIdxGi, emptyReservoirGI());
-      return;
-    }
-    let cosT = sqrt(max(0.0, 1.0 - sin2T));
-    var refractDir = safe_normalize(etaRatio * d + (etaRatio * cosI_pos - cosT) * nFlipped);
-
-    const ROUGH_GLASS_THRESHOLD: f32 = 0.1;
-    if (glassPrimaryRough > ROUGH_GLASS_THRESHOLD) {
-      let up = select(vec3f(0.0, 1.0, 0.0), vec3f(1.0, 0.0, 0.0),
-                      abs(refractDir.y) > 0.9);
-      let t1 = safe_normalize(cross(refractDir, up));
-      let t2 = cross(refractDir, t1);
-
-      let alphaGlass = glassPrimaryRough * glassPrimaryRough;
-      let xi1 = rand_f32(&rng);
-      let xi2 = rand_f32(&rng);
-      let r2 = alphaGlass * alphaGlass * xi1 / max(1e-6, 1.0 - xi1);
-      let r = sqrt(r2);
-      let phi = 2.0 * 3.14159265 * xi2;
-      let dx = r * cos(phi);
-      let dy = r * sin(phi);
-      let perturbedDir = safe_normalize(refractDir + dx * t1 + dy * t2);
-      if (dot(perturbedDir, -nFlipped) > 1e-4) {
-        refractDir = perturbedDir;
-      }
-    }
-
-    var walkOrigin = pos - geoNormal * NORMAL_BIAS_GI;
-    var walkHit: IntersectionResult;
-    var walkHitPos: vec3f;
-    var walkHitNormal: vec3f;
-    var walkSmoothNormal: vec3f;
-    var foundSurface: bool = false;
-
-    for (var gi: u32 = 0u; gi <= GLASS_WALK_MAX_EXTRA; gi = gi + 1u) {
-      let walkRay = Ray(walkOrigin, refractDir);
-      walkHit = traceSceneFirstHitAlphaMaskTexturedOpaqueOnly(
-        ubo.bvhMode, ubo.tlasNodeCount,
-        &bvh_index, &bvh_position, &bvh,
-        &tlasNodes, &tlasInstanceIndices, &tlasBlasRoots,
-        &tlasInstanceWorldToLocal, &tlasInstanceLocalToWorld,
-        walkRay, ubo.triIntersectEpsilon,
-        bvh_material, BVH_MATERIAL_TEX_WIDTH,
-      );
-      if (!walkHit.didHit) { break; }
-
-      walkHitPos = walkOrigin + refractDir * walkHit.dist;
-      walkHitNormal = walkHit.normal;
-      let scalarWalkMat = decodeMaterialColor(walkHit.matColorPacked);
-      let walkMat = vec4f(
-        scalarWalkMat.rgb,
-        sampleTransmissionMapForHit(walkHit, scalarWalkMat.a),
-      );
-      let walkIsGlass = walkMat.a > 0.3;
-
-      if (!walkIsGlass) {
-        let wn_isTlas = ubo.bvhMode == 1u;
-        let wn_base = walkHit.instanceIndex * 4u;
-        let wn_ok = wn_isTlas && wn_base + 2u < arrayLength(&tlasInstanceWorldToLocal);
-        let wn_i = select(0u, wn_base, wn_ok);
-        walkSmoothNormal = smoothShadingNormal(
-          walkHit, walkHit.normal,
-          bvh_normal[walkHit.indices.x].xyz,
-          bvh_normal[walkHit.indices.y].xyz,
-          bvh_normal[walkHit.indices.z].xyz,
-          wn_ok,
-          tlasInstanceWorldToLocal[wn_i],
-          tlasInstanceWorldToLocal[wn_i + 1u],
-          tlasInstanceWorldToLocal[wn_i + 2u],
-        );
-        let walkNormalMapped = applyNormalMapForHit(walkHit, walkSmoothNormal);
-        walkHitNormal = applyBumpMapForHit(walkHit, walkNormalMapped);
-        foundSurface = true;
-        break;
-      }
-
-      walkOrigin = walkHitPos + refractDir * NORMAL_BIAS_GI;
-    }
-
-    if (!foundSurface) {
-      storeReservoirGI_rw(&reservoirGiCurrent, pixelIdxGi, emptyReservoirGI());
-      return;
-    }
+${RIS_GI_GLASS_TRANSPORT_PREFIX_WGSL}
 
 ${RIS_GI_GLASS_RESERVOIR_LOOP_WGSL}
 
@@ -378,12 +258,13 @@ ${RIS_GI_GLASS_VISIBILITY_TAIL_WGSL}
   var r: ReservoirGI = emptyReservoirGI();
   r.xv = pos;
   r.nv = normal;
+  if (grisOn) { r.historyEpoch = currentGrisEpoch; }
 
   let tier_raw = textureLoad(gi_tier, vec2i(fullPx), 0).r;
   let tier = clamp(tier_raw, 1u, 4u);
   let M_GI = M_GI_BASE * tier / 2u;
 
-  let ppgGuidedOn = (ubo.ppgEnabled == 1u);
+  let ppgGuidedOn = (ubo.ppgEnabled == 1u) && !grisOn;
   let alpha = select(0.0, ubo.ppgMixAlpha, ppgGuidedOn);
 
   // ── NRC: primary-vertex footprint a0 (Müller §5). The primary edge is
@@ -394,23 +275,52 @@ ${RIS_GI_GLASS_VISIBILITY_TAIL_WGSL}
   // spread is compared against c·a0 to decide cache termination.
   //
   // H26 camera-pdf fix: previously this used pdf=1.0 (pinhole unit-resolution
-  // fallback). The Müller-correct value is the camera's per-pixel solid-angle
-  // pdf = cot²(fovY/2)·W·H/4, which grows with resolution and FOV narrowing.
+  // fallback). The centre-pixel pinhole approximation is
+  // pdf = |fx·fy|·W·H/4, which grows with resolution and FOV narrowing.
   // Higher camPdf → smaller a0term → smaller a0 → smaller threshold c·a0 →
   // the heuristic fires SOONER (more aggressive cache use at high resolution).
   // This is physically correct: a high-resolution camera has a narrow per-pixel
   // footprint; after one GI bounce the path has spread far beyond it → terminate
   // into the cache. See the A6 spreadC derivation in the file-level docblock.
-  let cosThetaPrimary = max(1e-4, abs(dot(normal, primaryRay.direction)));
+  let cosThetaPrimary = abs(dot(normal, primaryRay.direction));
   let a0term = nrcSegmentSpreadTerm(hit.dist, nrcCfg.cameraPixelPdf, cosThetaPrimary);
   let a0 = a0term * a0term;
 
-  let nrcCanSubstitute = nrcCfg.trainedSteps >= nrcCfg.warmupSteps;
+  let nrcCanSubstitute = nrcCfg.trainedSteps >= nrcCfg.warmupSteps
+    && nrcInferenceArenaValid() && nrcRuntimeArenaValid();
 
-  // A6 — NRC candidate tracking: save surface data for the FIRST candidate
-  // that triggers the spread heuristic. The training record is written once
-  // after the loop using r.Lo (the final ReSTIR-GI selected radiance) as the
-  // target — not the per-candidate DDGI estimate (which was DDGI distillation).
+
+  // Bound teacher work to at most recordCap suffixes per frame. Each record
+  // slot owns one contiguous pixel block and selects one frame-varying pixel
+  // from that block, so eligible invocations never collide and the sample set
+  // changes with frameSeed without perturbing the RIS RNG stream.
+  let nrcPixelCount = halfDims.x * halfDims.y;
+  let nrcTeacherCap = max(nrcCfg.recordCap, 1u);
+  let nrcTeacherStride = max(1u, 1u + (nrcPixelCount - 1u) / nrcTeacherCap);
+  let nrcTeacherSlot = pixelIdxGi / nrcTeacherStride;
+  let nrcTeacherBlockStart = nrcTeacherSlot * nrcTeacherStride;
+  let nrcTeacherBlockLength = min(
+    nrcTeacherStride,
+    nrcPixelCount - nrcTeacherBlockStart,
+  );
+  var nrcTeacherSelectRng = pcgInit(
+    nrcTeacherSlot,
+    ubo.frameSeed ^ 0x74656163u,
+    0x68657221u,
+  );
+  let nrcTeacherSelectedLocal = min(
+    u32(rand_f32(&nrcTeacherSelectRng) * f32(nrcTeacherBlockLength)),
+    nrcTeacherBlockLength - 1u,
+  );
+  let nrcTeacherEligible =
+    nrcCfg.recordCap > 0u &&
+    nrcTeacherSlot < nrcCfg.recordCap &&
+    pixelIdxGi - nrcTeacherBlockStart == nrcTeacherSelectedLocal;
+
+  // NRC candidate tracking: preserve a matched input/teacher pair for the first
+  // candidate that triggers the spread heuristic. The target is captured from
+  // this candidate before cache substitution, preventing a cross-candidate or
+  // self-prediction label after reservoir selection.
   var nrcFired: bool = false;
   var nrcTrackXs: vec3f = vec3f(0.0);
   var nrcTrackNs: vec3f = vec3f(0.0, 1.0, 0.0);
@@ -418,6 +328,7 @@ ${RIS_GI_GLASS_VISIBILITY_TAIL_WGSL}
   var nrcTrackRough: f32 = 1.0;
   var nrcTrackAlbedo: vec3f = vec3f(0.0);
 
+  var nrcTrackTarget: vec3f = vec3f(0.0);
   for (var i: u32 = 0u; i < M_GI; i = i + 1u) {
     var wi: vec3f;
     if (alpha > 0.0) {
@@ -431,24 +342,32 @@ ${RIS_GI_GLASS_VISIBILITY_TAIL_WGSL}
       wi = sampleCosineHemisphere(normal, &rng);
     }
     let cosTheta = max(0.0, dot(normal, wi));
-    if (cosTheta < 1e-4) { continue; }
+    if (!nrcFinite(cosTheta) || !(cosTheta > 0.0)) {
+      if (grisOn) {
+        recordInvalidReservoirGICandidate(&r, GI_SAMPLE_SURFACE, currentGrisEpoch);
+      } else {
+        r.M = r.M + 1u;
+      }
+      continue;
+    }
 
     // WS1 — offset the bounce-ray origin along the GEOMETRIC normal.
     let bounceRay = Ray(pos + geoNormal * NORMAL_BIAS_GI, wi);
-    let bounceHit = traceSceneFirstHitAlphaMaskTexturedOpaqueOnly(
+    let bounceHit = traceSceneFirstHitAlphaMaskTextured(
       ubo.bvhMode, ubo.tlasNodeCount,
-      &bvh_index, &bvh_position, &bvh,
-      &tlasNodes, &tlasInstanceIndices, &tlasBlasRoots,
-      &tlasInstanceWorldToLocal, &tlasInstanceLocalToWorld,
+
       bounceRay, ubo.triIntersectEpsilon,
       bvh_material, BVH_MATERIAL_TEX_WIDTH,
+      ubo.frameSeed ^ (i * 0x85ebca6bu) ^ 0x4e474942u,
     );
 
     var xs:  vec3f;
     var ns:  vec3f;
     var Lo:  vec3f;
+    var sampleKind: u32 = GI_SAMPLE_ENVIRONMENT;
 
     if (bounceHit.didHit) {
+      sampleKind = GI_SAMPLE_SURFACE;
       xs = bounceRay.origin + wi * bounceHit.dist;
       let smoothNs = restir_gi_smooth_normal_for_hit(bounceHit, bounceHit.normal);
       ns = applyBumpMapForHit(bounceHit, applyNormalMapForHit(bounceHit, smoothNs));
@@ -466,7 +385,13 @@ ${RIS_GI_GLASS_VISIBILITY_TAIL_WGSL}
         wi,
         xsMaterialWord,
       );
-      let ddgiLo = xsPayload.Lo;
+      let ddgiProxyLo = restir_gi_surface_source_for_hit(bounceHit, xsPayload.albedo)
+        + irrAtXs * xsPayload.albedo * INV_PI;
+      let ddgiLo = select(xsPayload.Lo, ddgiProxyLo, grisOn);
+      let xsTransmission = sampleTransmissionMapForHit(
+        bounceHit,
+        decodeMaterialColor(bounceHit.matColorPacked).a,
+      );
 
       // ── NRC cache termination (Müller §5) ──
       // The bounce edge pos→xs accumulates spread. The candidate's source pdf
@@ -486,10 +411,24 @@ ${RIS_GI_GLASS_VISIBILITY_TAIL_WGSL}
       // cache query. The correct seeding (0.0) means only the bounce edge's
       // spread term matters, matching the oracle in spreadTermination.ts.
       var runningSum: f32 = 0.0;
-      let cosArrive = max(1e-4, abs(dot(ns, -wi)));
-      let pSrcBounce = max(cosTheta * INV_PI, 1e-12);
+      let cosArrive = abs(dot(ns, -wi));
+      let pCosBounce = cosTheta * INV_PI;
+      var pSrcBounce = pCosBounce;
+      if (alpha > 0.0) {
+        pSrcBounce = alpha * ppgEvalPdf(pos, wi) + (1.0 - alpha) * pCosBounce;
+      }
+      if (!nrcFinite(pSrcBounce) || !(pSrcBounce > 0.0)) {
+        nrcRecordInvalidPdf();
+        if (grisOn) {
+          recordInvalidReservoirGICandidate(&r, GI_SAMPLE_SURFACE, currentGrisEpoch);
+        } else {
+          r.M = r.M + 1u;
+        }
+        continue;
+      }
       let aX = nrcAccumulateSpread(&runningSum, bounceHit.dist, pSrcBounce, cosArrive);
-      if (nrcShouldTerminateIntoCache(aX, a0, nrcCfg.spreadC)) {
+      // The cache key omits IOR/transmission; glass stays on its dedicated path.
+      if (nrcShouldTerminateIntoCache(aX, a0, nrcCfg.spreadC) && xsTransmission <= 0.3) {
         let xsAlbedo = xsPayload.albedo;
         // A6 — real mapped payload roughness (was hardcoded 1.0). The
         // diffuse-default invariant still yields rough≈0.85 for materials
@@ -498,18 +437,33 @@ ${RIS_GI_GLASS_VISIBILITY_TAIL_WGSL}
         let xsRough = xsPayload.rough;
         // Query the cache for outgoing radiance toward the visible point
         // (view dir at xs is −wi, the incident bounce direction reversed).
-        Lo = select(ddgiLo, nrcQueryRadiance(xs, ns, -wi, xsRough, xsAlbedo), nrcCanSubstitute);
-        // A6 — save the NRC candidate surface data for the post-loop record.
-        // We only save the FIRST fired candidate (the one most likely to be
-        // importance-selected into the reservoir). After the loop, we write
-        // ONE record with r.Lo as the training target (see below).
-        if (!nrcFired) {
+        Lo = select(
+          ddgiLo,
+          nrcQueryRadiance(xs, ns, -wi, xsRough, xsAlbedo),
+          nrcCanSubstitute && !grisOn,
+        );
+        // Save the first qualifying candidate's input and its pre-cache suffix
+        // target together. Reservoir selection below does not alter this pair.
+        if (!nrcFired && nrcTeacherEligible) {
           nrcFired = true;
           nrcTrackXs = xs;
           nrcTrackNs = ns;
           nrcTrackWi = wi;
           nrcTrackRough = xsRough;
           nrcTrackAlbedo = xsAlbedo;
+          // The teacher uses a private stream so tracing does not perturb RIS.
+          // Its target is independent of both DDGI and the cache prediction.
+          var teacherRng = pcgInit(
+            pixelIdxGi ^ (i * 0x9e3779b9u),
+            ubo.frameSeed ^ 0x6e726374u,
+            bounceHit.indices.w ^ 0xa511e9b3u,
+          );
+          nrcTrackTarget = nrcTraceIndependentSuffix(
+            bounceHit,
+            xs,
+            -wi,
+            &teacherRng,
+          );
         }
       } else {
         Lo = ddgiLo;
@@ -523,101 +477,152 @@ ${RIS_GI_GLASS_VISIBILITY_TAIL_WGSL}
       Lo = envRadiance(wi);
     }
 
-    let pHat = restir_gi_receiver_phat_from_payload(
-      pos,
-      normal,
-      receiverClearcoatNormal,
-      receiverWo,
-      receiverPayload,
-      xs,
-      Lo,
-    );
-    if (pHat < 1e-9) { continue; }
-
-    var w: f32;
-    if (alpha > 0.0) {
-      let pCos = cosTheta * INV_PI;
-      let pGuide = ppgEvalPdf(pos, wi);
-      let pSrc = alpha * pGuide + (1.0 - alpha) * pCos;
-      w = select(0.0, pHat / pSrc, pSrc > 1e-12);
-    } else {
-      let pCos = cosTheta * INV_PI;
-      w = select(0.0, pHat / pCos, pCos > 1e-12);
-    }
-    updateReservoirGI(&r, xs, ns, Lo, w, &rng);
-  }
-
-  if (r.M > 0u && r.w_sum > 0.0) {
-    let toS = r.xs - r.xv;
-    let distS = length(toS);
-    if (distS > 1e-4) {
-      let wiZ = toS / distS;
-      let shadowOrig = r.xv + r.nv * NORMAL_BIAS_GI;
+    var candidateVisibility: f32 = 1.0;
+    var pHat: f32;
+    if (grisOn) {
+      var tMax = 1e20;
+      if (sampleKind == GI_SAMPLE_SURFACE) {
+        tMax = max(0.0, length(xs - pos) - 2e-3);
+      }
       let shadowTint = traceSceneAlphaTintTransmittanceTextured(
         ubo.bvhMode, ubo.tlasNodeCount,
-        &bvh_index, &bvh_position, &bvh,
-        &tlasNodes, &tlasInstanceIndices, &tlasBlasRoots,
-        &tlasInstanceWorldToLocal, &tlasInstanceLocalToWorld,
-        shadowOrig, wiZ, distS - 2e-3, ubo.triIntersectEpsilon,
+
+        pos + geoNormal * NORMAL_BIAS_GI, wi, tMax, ubo.triIntersectEpsilon,
         bvh_material, BVH_MATERIAL_TEX_WIDTH, bvh_beer,
       );
-      let shadowT = clamp(luminance(shadowTint), 0.0, 1.0);
-      if (shadowT <= 0.001) {
-        r.w_sum = 0.0;
-        r.W = 0.0;
-      } else {
-        let pHatZ = restir_gi_receiver_phat_from_payload(
-          pos,
-          normal,
-          receiverClearcoatNormal,
-          receiverWo,
-          receiverPayload,
-          r.xs,
-          r.Lo,
-        );
-        r.w_sum = r.w_sum * shadowT;
-        let W_raw = select(0.0, r.w_sum / (f32(r.M) * pHatZ), pHatZ > 1e-9);
-        r.W = min(W_raw, ubo.restirGiWCap);
-      }
+      candidateVisibility = clamp(luminance(shadowTint), 0.0, 1.0);
+      pHat = luminance(Lo) * cosTheta * INV_PI * candidateVisibility;
     } else {
-      r.W = 0.0;
-      r.w_sum = 0.0;
+      pHat = restir_gi_receiver_phat_from_payload(
+        pos,
+        normal,
+        receiverClearcoatNormal,
+        receiverWo,
+        receiverPayload,
+        xs,
+        Lo,
+      );
+    }
+      let invalidPHat = !nrcFinite(pHat) || !(pHat > 0.0) || !nrcFinite(candidateVisibility) || !(candidateVisibility > 0.0);
+      if (invalidPHat) { nrcRecordInvalidPdf(); }
+      if (invalidPHat) {
+        if (grisOn) {
+          recordInvalidReservoirGICandidate(&r, sampleKind, currentGrisEpoch);
+        } else {
+          r.M = r.M + 1u;
+        }
+        continue;
+      }
+
+      var pSrc: f32;
+      if (alpha > 0.0) {
+        let pCos = cosTheta * INV_PI;
+        let pGuide = ppgEvalPdf(pos, wi);
+        pSrc = alpha * pGuide + (1.0 - alpha) * pCos;
+      } else {
+        pSrc = cosTheta * INV_PI;
+      }
+      if (!nrcFinite(pSrc) || !(pSrc > 0.0)) {
+        nrcRecordInvalidPdf();
+        if (grisOn) {
+          recordInvalidReservoirGICandidate(&r, sampleKind, currentGrisEpoch);
+        } else {
+          r.M = r.M + 1u;
+        }
+        continue;
+      }
+      let w = pHat / pSrc;
+      if (!nrcFinite(w) || !(w > 0.0) || !nrcFinite(r.w_sum) || r.w_sum < 0.0 || w > 3.402823466e38 - r.w_sum) {
+        nrcRecordInvalidPdf();
+        if (grisOn) {
+          recordInvalidReservoirGICandidate(&r, sampleKind, currentGrisEpoch);
+        } else {
+          r.M = r.M + 1u;
+        }
+        continue;
+      }
+    if (grisOn) {
+      updateReservoirGIWithMetadata(
+        &r, xs, ns, Lo, sampleKind, wi,
+        pHat, candidateVisibility, currentGrisEpoch, w, &rng,
+      );
+    } else {
+      updateReservoirGI(&r, xs, ns, Lo, w, &rng);
     }
   }
 
-  // A6 — post-loop NRC training record (ReSTIR-GI Lo as target).
-  // Write ONE record if the spread heuristic fired on at least one candidate.
-  // r.Lo is the final selected reservoir radiance — the ReSTIR-GI reconnection
-  // estimate for this pixel. Training on r.Lo means the NRC converges to the
-  // same quantity the RIS estimator produces (vs the old DDGI distillation).
-  //
-  // BIAS BOUND (documented): r.Lo is itself the biased-default ReSTIR-GI
-  // estimate (clamped Jacobian, no reuse-visibility ray, no full GBH MIS in the
-  // default reuse path). Producer pHat and normalization are receiver-lobe /
-  // material aware; the NRC converges to that estimator, which is still more
-  // informative than DDGI-only distillation but not an unbiased path integral.
-  //
-  // TAIL-PADDING GUARD: records where r.Lo == 0 (occluded sample, W=0) are
-  // valid zero-radiance training data — the NRC should predict 0 for dark
-  // surfaces. The host skips only all-zero ENCODED-INPUT slots (indicating the
-  // slot was never written), not zero-radiance slots. Zero Lo trains the MLP
-  // toward 0 for occlusion, which is correct.
+    if (grisOn) {
+      if (nrcFinite(r.nativePHat) && r.nativePHat > 0.0 && nrcFinite(r.w_sum) && r.w_sum >= 0.0) {
+        finaliseGIReservoirWFromPHat(&r, ubo.restirGiWCap, false, r.nativePHat);
+      } else {
+        nrcRecordInvalidPdf();
+        r.W = 0.0;
+        r.w_sum = 0.0;
+      }
+    }
+
+  if (!grisOn) {
+    if (r.M > 0u && r.w_sum > 0.0) {
+      let toS = r.xs - r.xv;
+      let distS = length(toS);
+      if (distS > 1e-4) {
+        let wiZ = toS / distS;
+        let shadowOrig = r.xv + r.nv * NORMAL_BIAS_GI;
+        let shadowTint = traceSceneAlphaTintTransmittanceTextured(
+          ubo.bvhMode, ubo.tlasNodeCount,
+
+          shadowOrig, wiZ, distS - 2e-3, ubo.triIntersectEpsilon,
+          bvh_material, BVH_MATERIAL_TEX_WIDTH, bvh_beer,
+        );
+        let shadowT = clamp(luminance(shadowTint), 0.0, 1.0);
+        if (!nrcFinite(shadowT) || !(shadowT > 0.0)) {
+          r.w_sum = 0.0;
+          r.W = 0.0;
+        } else {
+          let pHatZ = restir_gi_receiver_phat_from_payload(
+            pos,
+            normal,
+            receiverClearcoatNormal,
+            receiverWo,
+            receiverPayload,
+            r.xs,
+            r.Lo,
+          );
+          if (!nrcFinite(pHatZ) || !(pHatZ > 0.0)) {
+            nrcRecordInvalidPdf();
+            r.W = 0.0;
+            r.w_sum = 0.0;
+          } else {
+            r.w_sum = r.w_sum * shadowT;
+            finaliseGIReservoirWFromPHat(&r, ubo.restirGiWCap, false, pHatZ);
+          }
+        }
+      } else {
+        r.W = 0.0;
+        r.w_sum = 0.0;
+      }
+    }
+  }
+
+  // Write one matched input/teacher record if any candidate crossed the spread
+  // threshold. A zero teacher target remains valid dark-surface data; the host
+  // identifies unwritten slots from the encoded input, not from target RGB.
   if (nrcFired) {
-    // Slot: deterministic per-pixel assignment (pixelIdxGi % recordCap) with
-    // first-writer-wins atomic claim in nrcWriteRecord (H27 torn-record fix).
+    // The bounded block sampler assigns at most one eligible pixel to each slot;
+    // nrcWriteRecord retains its atomic claim as a defensive invariant.
     nrcWriteRecord(
-      pixelIdxGi % nrcCfg.recordCap,
+      nrcTeacherSlot,
       nrcTrackXs, nrcTrackNs, -nrcTrackWi,
       nrcTrackRough, nrcTrackAlbedo,
-      r.Lo,
+      nrcTrackTarget,
     );
   }
 
   // GRIS Phase-0 reconnection-shift cache (Lin et al. 2022 §5) — written, read
-  // by no pass in Phase 0.  Shared with risGi.wgsl via refreshPhase0Cache.
-  refreshPhase0Cache(&r);
+  // by no pass in Phase 0.  Shared with risGi.wgsl via refreshGrisMetadata.
+  refreshGrisMetadata(&r);
 
-  storeReservoirGI_rw(&reservoirGiCurrent, pixelIdxGi, r);
+  storeReservoirGI_rw(pixelIdxGi, r);
 }
 `;
 
@@ -641,7 +646,7 @@ export function buildRisGiNrcModule(cfg: RisGiNrcConfig): WgslModule {
   // hash-grid trilinear forward is INLINED inside nrcQueryWgsl (it reads the
   // storage `nrcTables` directly; a helper taking a storage pointer is
   // WGSL-illegal without unrestricted_pointer_parameters). So we do NOT include
-  // nrcHashGridForwardWgsl here.
+  // a storage-buffer helper here.
   const source =
     nrcEncodeHelpersWgsl() +
     nrcSpreadTerminationWgsl() +
@@ -655,6 +660,6 @@ export function buildRisGiNrcModule(cfg: RisGiNrcConfig): WgslModule {
     // env bindings 15-19 are already present in the scene BGL for NRC passes.
     // D5.1+D5.2: ddgiSample replaced by ddgiGridUbo (which requires ddgiSample
     // transitively, and adds the DDGIGridUBO struct + binding + sampleDDGIAtPoint).
-    requires: ['walkaroundUbo', 'sceneTraversal', 'reservoirGi', 'sharedPrimitives', 'materialDecode', 'materialAtlas', 'surfaceTextures', 'restirGiMaterial', 'cameraRays', 'ddgiGridUbo', 'ppgPdf', 'environmentSample'],
+    requires: ['walkaroundUbo', 'sceneTraversal', 'reservoirGi', 'sharedPrimitives', 'materialDecode', 'materialAtlas', 'surfaceTextures', 'restirGiMaterial', 'cameraRays', 'ddgiGridUbo', 'ppgPdf', 'environmentSample', 'emitterLeAtXi'],
   };
 }

@@ -8,7 +8,7 @@
  *   m        = clamp(Meff / restirGiMClamp, 0, 1)   ReSTIR-GI confidence
  *   c_restir = m
  *   c_rc     = clamp(rcWeight, 0, 1) · (1 - m)      RC prior gated by ReSTIR unreliability
- *   w_rc     = c_rc / (c_rc + c_restir)             (0 when c_rc + c_restir ≈ 0)
+ *   w_rc     = c_rc / (c_rc + c_restir)             (0 when the sum is exactly 0)
  *   w_restir = 1 - w_rc
  *   Lo       = w_restir·Lo_restir + w_rc·Lo_rc
  *
@@ -25,7 +25,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { SHADE_WGSL } from '../src/shaders/shade.wgsl.js';
+import { SHADING_TERMS_WGSL } from '../src/shaders/shadingTerms.wgsl.js';
 
 // ── CPU port of the WGSL weight function (shade.wgsl.ts lo_indirect tail) ──
 // Mirrors the WGSL line-for-line so the test fails if the shader math drifts.
@@ -48,10 +48,10 @@ function composeIndirect(
   // RC-has-energy gate (2026-06-07): RC weight is forced to 0 when the sampled
   // cascade carries no radiance (Lo_rc ≈ 0), so a scene outside RC's light
   // model can never replace the ReSTIR-GI estimate with RC's zero.
-  const rcHasEnergy = Math.max(loRc[0], loRc[1], loRc[2]) > 1e-6;
+  const rcHasEnergy = Math.max(loRc[0], loRc[1], loRc[2]) > 0;
   const cRc = Math.min(Math.max(rcWeight, 0), 1) * (1 - m) * (rcHasEnergy ? 1 : 0);
   const cSum = cRestir + cRc;
-  const wRc = cSum > 1e-6 ? cRc / Math.max(cSum, 1e-6) : 0.0;
+  const wRc = cSum > 0 ? cRc / cSum : 0.0;
   const wRestir = 1.0 - wRc;
   return {
     wRestir,
@@ -171,7 +171,7 @@ describe('shade lo_indirect — confidence-ratio RC/ReSTIR composition', () => {
   // carries ANY radiance, the blend is exactly the ungated confidence MIS.
   it('(e2) gate is inert once the cascade has energy (blend unchanged)', () => {
     const r = composeIndirect([1, 1, 1], [0.001, 0.001, 0.001], /* Meff */ 1, 50, /* rcWeight */ 1.0);
-    // Lo_rc above the 1e-6 floor ⇒ gate = 1 ⇒ standard m=0.02 ⇒ w_rc ≈ 0.98.
+    // Any positive Lo_rc ⇒ gate = 1 ⇒ standard m=0.02 ⇒ w_rc ≈ 0.98.
     expect(r.wRc).toBeGreaterThan(0.9);
   });
 });
@@ -180,29 +180,30 @@ describe('shade lo_indirect — WGSL structural pins', () => {
   it('accumulates a bilinear-weighted ReSTIR M alongside Lo_indirect', () => {
     // Confidence proxy is the reservoir sample count M, blended by the same
     // bilinear weight `bw` as the radiance.
-    expect(SHADE_WGSL).toContain('Maccum = Maccum + f32(g.M) * bw;');
-    expect(SHADE_WGSL).toMatch(/Meff\s*=\s*Maccum\s*\/\s*totalW;/);
+    expect(SHADING_TERMS_WGSL).toContain('Maccum = Maccum + f32(g.M) * bw;');
+    expect(SHADING_TERMS_WGSL).toMatch(/Meff\s*=\s*Maccum\s*\/\s*totalW;/);
   });
 
   it('derives the confidence-ratio weights from M and the host rcWeight prior', () => {
-    expect(SHADE_WGSL).toMatch(
+    expect(SHADING_TERMS_WGSL).toMatch(
       /let m\s*=\s*clamp\(Meff\s*\/\s*f32\(max\(ubo\.restirGiMClamp,\s*1u\)\),\s*0\.0,\s*1\.0\);/,
     );
-    expect(SHADE_WGSL).toContain('let cRestir = m;');
+    expect(SHADING_TERMS_WGSL).toContain('let cRestir = m;');
     // RC-has-energy gate: cRc carries the select(0,1,rcHasEnergy) factor.
-    expect(SHADE_WGSL).toContain('let rcHasEnergy = max(Lo_rc.r, max(Lo_rc.g, Lo_rc.b)) > 1e-6;');
-    expect(SHADE_WGSL).toContain('let cRc = clamp(rcParams.rcWeight, 0.0, 1.0) * (1.0 - m) * select(0.0, 1.0, rcHasEnergy);');
-    expect(SHADE_WGSL).toMatch(/let wRc\s*=\s*select\(0\.0,\s*cRc\s*\/\s*max\(cSum,\s*1e-6\),\s*cSum\s*>\s*1e-6\);/);
-    expect(SHADE_WGSL).toContain('let wRestirGi = 1.0 - wRc;');
+    expect(SHADING_TERMS_WGSL).toContain('let rcHasEnergy = max(Lo_rc.r, max(Lo_rc.g, Lo_rc.b)) > 0.0;');
+    expect(SHADING_TERMS_WGSL).toContain('let cRc = clamp(rcParams.rcWeight, 0.0, 1.0) * (1.0 - m) * select(0.0, 1.0, rcHasEnergy);');
+    expect(SHADING_TERMS_WGSL).toContain('var wRc = 0.0;');
+    expect(SHADING_TERMS_WGSL).toContain('if (cSum > 0.0) { wRc = cRc / cSum; }');
+    expect(SHADING_TERMS_WGSL).toContain('let wRestirGi = 1.0 - wRc;');
   });
 
   it('still composes a convex blend (weights sum to 1 by construction)', () => {
-    expect(SHADE_WGSL).toContain('return wRestirGi * Lo_indirect + wRc * Lo_rc;');
+    expect(SHADING_TERMS_WGSL).toContain('return wRestirGi * Lo_indirect + wRc * Lo_rc;');
   });
 
   it('no longer uses the old fixed host-scalar lerp', () => {
     // The misleading fixed-scalar form `let wRc = clamp(rcParams.rcWeight,…);`
     // is gone — wRc is now derived from the per-pixel confidence ratio.
-    expect(SHADE_WGSL).not.toMatch(/let wRc\s*=\s*clamp\(rcParams\.rcWeight,\s*0\.0,\s*1\.0\);/);
+    expect(SHADING_TERMS_WGSL).not.toMatch(/let wRc\s*=\s*clamp\(rcParams\.rcWeight,\s*0\.0,\s*1\.0\);/);
   });
 });

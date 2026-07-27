@@ -18,11 +18,14 @@ function fakeAdapter(
   buf: number,
   tex: number,
   info?: { vendor?: string; architecture?: string },
+  sampled: number =
+    HYBRID_WEBGPU_REQUIRED_LIMITS['maxSampledTexturesPerShaderStage']!,
 ): GPUAdapter {
   return {
     limits: {
       maxStorageBuffersPerShaderStage: buf,
       maxStorageTexturesPerShaderStage: tex,
+      maxSampledTexturesPerShaderStage: sampled,
     },
     ...(info ? { info } : {}),
   } as unknown as GPUAdapter;
@@ -49,16 +52,15 @@ describe('probeAdapterProfile — verdict logic (no GPU)', () => {
     expect(p.maxStorageTexturesPerStage).toBe(8);
   });
 
-  it('10/6 is not full hybrid but is lite-capable for both realtime and pt-webgpu', async () => {
-    // 10 buffers / 6 textures: below hybrid full (16/8), at/above hybrid lite
-    // (10/6), and at/above pt-webgpu lite (8 buf / 4 tex).
+  it('10/6 is below the real hybrid layout floor but remains pt-webgpu lite-capable', async () => {
+    // The current hybrid lite path compiles the same explicit layouts as full.
     const p = await probeAdapterProfile(
       fakeAdapter(10, 6, { vendor: 'intel', architecture: 'gen12' }),
     );
     expect(p.hybridCapable).toBe(false);
-    expect(p.hybridLiteCapable).toBe(true);
+    expect(p.hybridLiteCapable).toBe(false);
     expect(p.ptWebgpuTier).toBe('lite');
-    expect(p.recommendedRealtimeTier).toBe('medium');
+    expect(p.recommendedRealtimeTier).toBe('unavailable');
     expect(p.recommendedHeroBackend).toBe('pt-webgpu-lite');
   });
 
@@ -130,6 +132,14 @@ describe('threshold-coupling guard (R1 — fails if a magic number is forked)', 
 
     const texJustBelow = await probeAdapterProfile(fakeAdapter(FULL_BUF, FULL_TEX - 1));
     expect(texJustBelow.hybridCapable).toBe(false);
+
+    const sampledJustBelow = await probeAdapterProfile(fakeAdapter(
+      FULL_BUF,
+      FULL_TEX,
+      undefined,
+      HYBRID_WEBGPU_REQUIRED_LIMITS['maxSampledTexturesPerShaderStage']! - 1,
+    ));
+    expect(sampledJustBelow.hybridCapable).toBe(false);
   });
 
   it('hybridLiteCapable flips exactly at HYBRID_LITE_LIMITS', async () => {
@@ -151,8 +161,7 @@ describe('threshold-coupling guard (R1 — fails if a magic number is forked)', 
     expect(belowLite.ptWebgpuTier).toBe('none');
   });
 
-  it('HYBRID_LITE_LIMITS is strictly below HYBRID_WEBGPU_REQUIRED_LIMITS on both axes', () => {
-    expect(LITE_BUF).toBeLessThan(FULL_BUF);
-    expect(LITE_TEX).toBeLessThan(FULL_TEX);
+  it('HYBRID_LITE_LIMITS equals FULL until the lite path has distinct layouts', () => {
+    expect(HYBRID_LITE_LIMITS).toEqual(HYBRID_WEBGPU_REQUIRED_LIMITS);
   });
 });

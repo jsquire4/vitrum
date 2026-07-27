@@ -9,10 +9,8 @@
 //
 //   - `sigmaAFromAttenuation` — Beer-Lambert σ_a from KHR_materials_volume
 //     attenuationColor/attenuationDistance (identical in both backends).
-//   - `sampleSpectralCurve` — linear-interpolated μ(λ) lookup into a core
-//     `SpectralCurve`. The two backends had slightly different edge handling
-//     (minimum value count, wavelength-range fallback), so this is parameterized
-//     via `SpectralCurveSampleOptions` to reproduce EACH backend byte-for-byte.
+//   - `sampleSpectralCurve` — strict linear-interpolated μ(λ) lookup into a core
+//     `SpectralCurve` without silently canonicalizing malformed input.
 //   - `sampleSpectralGrid` — the 32-sample 380→780 nm uniform grid sampling loop.
 //   - `dispersionStrengthFromAbbe` — dispersion strength from the Abbe number,
 //     evaluated at the Fraunhofer C/F lines (pt-webgl2's `dispersionStrength`).
@@ -36,19 +34,6 @@ export interface SpectralCurveLike {
   readonly values: ArrayLike<number>;
 }
 
-function isFiniteNumber(v: number | undefined): boolean {
-  return Number.isFinite(v);
-}
-
-function finiteOr(value: number | undefined, fallback: number): number {
-  return Number.isFinite(value) ? Number(value) : fallback;
-}
-
-/** Default transmittance-clamp epsilon shared by both material packers.
- *  `attenuationColor` channels are clamped to `[epsilon, 1]` before the log so
- *  a 0 channel does not produce -Infinity σ_a. */
-export const ATTENUATION_TRANSMITTANCE_EPSILON = 1e-4;
-
 /** Canonical 32-sample uniform spectral grid (380→780 nm inclusive) shared by
  *  both packers' spectral-attenuation blocks. */
 export const SPECTRAL_GRID_SAMPLE_COUNT = 32;
@@ -61,22 +46,36 @@ export const SPECTRAL_GRID_END_NM = 780.0;
  * `attenuationDistance`:
  *
  *   T(d) = attenuationColor = exp(-σ_a · attenuationDistance)
- *   ⇒ σ_a = -ln(clamp(attenuationColor, epsilon, 1)) / attenuationDistance   (≥ 0)
+ *   ⇒ σ_a = -ln(attenuationColor) / attenuationDistance   (≥ 0)
  *
- * Returns `[0, 0, 0]` when the distance is non-finite or ≤ 0 (no absorption).
- * This reproduces both backends' prior per-channel derivation byte-for-byte.
+ * A zero transmittance channel maps to positive infinity, its exact
+ * Beer-Lambert coefficient. Positive-infinite distance means no attenuation.
+ * Every other malformed value is rejected instead of being rewritten.
  */
 export function sigmaAFromAttenuation(
   attenuationColor: MaterialScalarVec3,
   attenuationDistance: number,
-  epsilon: number = ATTENUATION_TRANSMITTANCE_EPSILON,
 ): [number, number, number] {
-  if (!Number.isFinite(attenuationDistance) || attenuationDistance <= 0.0) {
+  for (let channelIndex = 0; channelIndex < 3; channelIndex += 1) {
+    const channel = attenuationColor[channelIndex]!;
+    if (!Number.isFinite(channel) || channel < 0 || channel > 1) {
+      throw new RangeError(
+        `sigmaAFromAttenuation.attenuationColor[${channelIndex}] must be finite and in [0, 1]`,
+      );
+    }
+  }
+  if (attenuationDistance === Number.POSITIVE_INFINITY) {
     return [0.0, 0.0, 0.0];
   }
+  if (!Number.isFinite(attenuationDistance) || attenuationDistance <= 0.0) {
+    throw new RangeError(
+      'sigmaAFromAttenuation.attenuationDistance must be positive or +Infinity',
+    );
+  }
   const sigmaAChannel = (channel: number): number => {
-    const transmittance = Math.min(Math.max(finiteOr(channel, 1.0), epsilon), 1.0);
-    return Math.max(-Math.log(transmittance) / attenuationDistance, 0.0);
+    if (channel === 0) return Number.POSITIVE_INFINITY;
+    if (channel === 1) return 0;
+    return -Math.log(channel) / attenuationDistance;
   };
   return [
     sigmaAChannel(attenuationColor[0]),
@@ -85,56 +84,100 @@ export function sigmaAFromAttenuation(
   ];
 }
 
-/** Edge-handling knobs for {@link sampleSpectralCurve}. The two backends diverge
- *  ONLY in these two aspects — the interpolation math is identical — so this
- *  option object lets one shared function reproduce each backend exactly. */
+/** Validation options for {@link sampleSpectralCurve}. */
 export interface SpectralCurveSampleOptions {
-  /** Minimum number of curve values required to sample (else return 0).
-   *  pt-webgpu accepted length ≥ 1; pt-webgl2 requires length ≥ 2. Default 1. */
+  /** Minimum number of curve values required to sample. Default 1. */
   readonly minValueCount?: number;
-  /** Wavelength-range fallback when `wavelengthStart`/`End` are non-finite.
-   *  pt-webgpu used the raw (possibly-non-finite) fields; pt-webgl2 fell back to
-   *  the 380/780 nm grid bounds. When omitted, the raw fields are used verbatim
-   *  (pt-webgpu behavior). */
-  readonly fallbackStartNm?: number;
-  readonly fallbackEndNm?: number;
+}
+
+interface ValidatedSpectralCurve {
+  readonly wavelengthStart: number;
+  readonly wavelengthEnd: number;
+  readonly values: readonly number[];
+}
+
+function validateSpectralCurve(
+  curve: SpectralCurveLike,
+  minValueCount: number,
+): ValidatedSpectralCurve {
+  const values = curve.values;
+  if (
+    values == null ||
+    !Number.isSafeInteger(values.length) ||
+    values.length < minValueCount
+  ) {
+    throw new RangeError(
+      `sampleSpectralCurve.values must contain at least ${minValueCount} sample(s)`,
+    );
+  }
+  if (
+    !Number.isFinite(curve.wavelengthStart) ||
+    !Number.isFinite(curve.wavelengthEnd) ||
+    !(curve.wavelengthEnd > curve.wavelengthStart)
+  ) {
+    throw new RangeError(
+      'sampleSpectralCurve wavelength bounds must be finite with wavelengthEnd > wavelengthStart',
+    );
+  }
+  const checkedValues = new Array<number>(values.length);
+  for (let index = 0; index < values.length; index += 1) {
+    const value = values[index];
+    if (!Number.isFinite(value) || Number(value) < 0) {
+      throw new RangeError(
+        `sampleSpectralCurve.values[${index}] must be finite and non-negative`,
+      );
+    }
+    checkedValues[index] = Number(value);
+  }
+  return {
+    wavelengthStart: curve.wavelengthStart,
+    wavelengthEnd: curve.wavelengthEnd,
+    values: checkedValues,
+  };
+}
+
+function sampleValidatedSpectralCurve(
+  curve: ValidatedSpectralCurve,
+  lambdaNm: number,
+): number {
+  const t = Math.min(
+    1,
+    Math.max(
+      0,
+      (lambdaNm - curve.wavelengthStart) /
+        (curve.wavelengthEnd - curve.wavelengthStart),
+    ),
+  );
+  const f = t * (curve.values.length - 1);
+  const i0 = Math.floor(f);
+  const i1 = Math.min(i0 + 1, curve.values.length - 1);
+  const a = curve.values[i0]!;
+  const b = curve.values[i1]!;
+  return a + (b - a) * (f - i0);
 }
 
 /**
  * Sample a core `SpectralCurve` at `lambdaNm` with linear interpolation between
- * the two nearest grid values. Shared by both backends; edge handling is
- * parameterized via {@link SpectralCurveSampleOptions} to preserve each
- * backend's exact prior behavior.
+ * the two nearest grid values. A missing curve evaluates to zero; a present but
+ * malformed curve is rejected.
  */
 export function sampleSpectralCurve(
   curve: SpectralCurveLike | null | undefined,
   lambdaNm: number,
   options: SpectralCurveSampleOptions = {},
 ): number {
-  if (curve == null) return 0;
-  const values = curve.values;
   const minValueCount = options.minValueCount ?? 1;
-  if (!values || values.length < minValueCount || values.length === 0) return 0;
-  const start =
-    options.fallbackStartNm !== undefined
-      ? isFiniteNumber(curve.wavelengthStart)
-        ? curve.wavelengthStart
-        : options.fallbackStartNm
-      : curve.wavelengthStart;
-  const end =
-    options.fallbackEndNm !== undefined
-      ? isFiniteNumber(curve.wavelengthEnd)
-        ? curve.wavelengthEnd
-        : options.fallbackEndNm
-      : curve.wavelengthEnd;
-  const denom = Math.max(end - start, 1e-6);
-  const t = Math.min(1, Math.max(0, (lambdaNm - start) / denom));
-  const f = t * (values.length - 1);
-  const i0 = Math.floor(f);
-  const i1 = Math.min(i0 + 1, values.length - 1);
-  const a = Number(values[i0] ?? 0);
-  const b = Number(values[i1] ?? a);
-  return a + (b - a) * (f - i0);
+  if (!Number.isSafeInteger(minValueCount) || minValueCount < 1) {
+    throw new RangeError('sampleSpectralCurve.minValueCount must be a positive safe integer');
+  }
+  if (curve == null) return 0;
+  if (!Number.isFinite(lambdaNm)) {
+    throw new RangeError('sampleSpectralCurve.lambdaNm must be finite');
+  }
+  return sampleValidatedSpectralCurve(
+    validateSpectralCurve(curve, minValueCount),
+    lambdaNm,
+  );
 }
 
 /** Result of {@link sampleSpectralGrid}: the 32 grid samples plus the summary
@@ -155,27 +198,29 @@ export interface SpectralGridResult {
 
 /**
  * Sample a core `SpectralCurve` onto the canonical 32-sample 380→780 nm uniform
- * grid, clamping each sample to ≥ 0 and folding in avg/max/count. Shared by both
- * backends' spectral-attenuation packing. Edge handling is passed through to
- * {@link sampleSpectralCurve} via `curveOptions` so each backend keeps its exact
- * prior μ(λ) lookup.
+ * grid and fold avg/max/count. A present malformed curve is rejected before any
+ * samples are emitted.
  */
 export function sampleSpectralGrid(
   curve: SpectralCurveLike | null | undefined,
   curveOptions: SpectralCurveSampleOptions = {},
 ): SpectralGridResult {
   const samples = new Array<number>(SPECTRAL_GRID_SAMPLE_COUNT).fill(0);
-  const hasCurve = curve != null && curve.values.length > 0;
-  if (!hasCurve) {
+  const minValueCount = curveOptions.minValueCount ?? 1;
+  if (!Number.isSafeInteger(minValueCount) || minValueCount < 1) {
+    throw new RangeError('sampleSpectralGrid.minValueCount must be a positive safe integer');
+  }
+  if (curve == null) {
     return { samples, avg: 0, max: 0, sampleCount: 0 };
   }
-  const denom = Math.max(SPECTRAL_GRID_SAMPLE_COUNT - 1, 1);
+  const validatedCurve = validateSpectralCurve(curve, minValueCount);
+  const denom = SPECTRAL_GRID_SAMPLE_COUNT - 1;
   let sum = 0;
-  let maxMu = Number.NEGATIVE_INFINITY;
+  let maxMu = 0;
   for (let i = 0; i < SPECTRAL_GRID_SAMPLE_COUNT; i += 1) {
     const t = i / denom;
     const lambda = SPECTRAL_GRID_START_NM + t * (SPECTRAL_GRID_END_NM - SPECTRAL_GRID_START_NM);
-    const v = Math.max(sampleSpectralCurve(curve, lambda, curveOptions), 0);
+    const v = sampleValidatedSpectralCurve(validatedCurve, lambda);
     samples[i] = v;
     sum += v;
     maxMu = Math.max(maxMu, v);
@@ -184,7 +229,7 @@ export function sampleSpectralGrid(
   return {
     samples,
     avg,
-    max: Number.isFinite(maxMu) ? maxMu : 0,
+    max: maxMu,
     sampleCount: SPECTRAL_GRID_SAMPLE_COUNT,
   };
 }
@@ -192,19 +237,31 @@ export function sampleSpectralGrid(
 /**
  * Dispersion strength from the Abbe number V_d and IOR, evaluated at the
  * Fraunhofer C/F lines — pt-webgl2's `dispersionStrengthFromAbbe`
- * (exact port of the absorbed fork's derivation). Returns 0 when abbe ≤ 0 ||
- * ior ≤ 1 (no dispersion) or when the denominator underflows.
+ * (exact port of the absorbed fork's derivation). Zero Abbe or IOR ≤ 1 means
+ * dispersion is disabled; malformed negative/non-finite values are rejected.
  */
 export function dispersionStrengthFromAbbe(ior: number, abbe: number): number {
-  if (abbe <= 0 || ior <= 1) return 0;
+  if (!Number.isFinite(ior) || ior <= 0) {
+    throw new RangeError('dispersionStrengthFromAbbe.ior must be finite and positive');
+  }
+  if (!Number.isFinite(abbe) || abbe < 0) {
+    throw new RangeError('dispersionStrengthFromAbbe.abbe must be finite and non-negative');
+  }
+  if (abbe === 0 || ior <= 1) return 0;
   const denom =
     1 / (FRAUNHOFER_F_NM * FRAUNHOFER_F_NM) - 1 / (FRAUNHOFER_C_NM * FRAUNHOFER_C_NM);
-  if (Math.abs(denom) < 1e-12) return 0;
-  return Math.max(0, (ior - 1) / (abbe * denom));
+  if (denom === 0) {
+    throw new Error('Fraunhofer C/F wavelengths must define a non-zero dispersion denominator');
+  }
+  return (ior - 1) / (abbe * denom);
 }
 
 /** The shared `emissiveIntensity ?? 1` default. Both backends default a missing
  *  `emissiveIntensity` to 1.0 (0.0 would silently black-out emissive maps). */
 export function resolveEmissiveIntensity(emissiveIntensity: number | undefined): number {
-  return emissiveIntensity ?? 1.0;
+  if (emissiveIntensity === undefined) return 1;
+  if (!Number.isFinite(emissiveIntensity) || emissiveIntensity < 0) {
+    throw new RangeError('resolveEmissiveIntensity value must be finite and non-negative');
+  }
+  return emissiveIntensity;
 }

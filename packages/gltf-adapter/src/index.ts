@@ -10,6 +10,7 @@ export { GltfImportError, gltfToScene } from './gltfToScene.js';
 export type {
   GltfImportDiagnostic,
   GltfImportDiagnosticCode,
+  GltfCompressionDecoderPolicy,
   GltfInstancingBinding,
   GltfMaterialBinding,
   GltfMaterialVariantBinding,
@@ -17,6 +18,18 @@ export type {
   GltfToSceneOptions,
   GltfToSceneResult,
 } from './gltfToScene.js';
+export {
+  DEFAULT_GLTF_IMPORT_RESOURCE_LIMITS,
+  GltfResourceLimitError,
+  normalizeGltfImportResourceLimits,
+  releaseGltfResources,
+} from './importResourceBudget.js';
+export type {
+  GltfImportResourceLimits,
+  GltfResourceLimitErrorInit,
+  GltfResourceLimitKind,
+  NormalizedGltfImportResourceLimits,
+} from './importResourceBudget.js';
 export { loadGltfAndDecodeTextures, loadGltfAsset } from './assetLoader.js';
 export type {
   GltfAssetCache,
@@ -25,6 +38,9 @@ export type {
   GltfAssetFetch,
   GltfAssetFetchResponse,
   GltfAssetInput,
+  GltfAssetReadableStream,
+  GltfAssetReadableStreamReader,
+  GltfAssetReadableStreamReadResult,
   GltfAssetResult,
   ConfigureGltfTextureDecodeOptions,
   GltfDecodedAssetResult,
@@ -64,6 +80,41 @@ export type {
   GltfMaterialPointerField,
   GltfMaterialPointerTarget,
 } from './materialPointerAnimation.js';
+export {
+  applyGltfMaterialAnimationPointerValue,
+  applyGltfMaterialTextureTransformPointerValue,
+  gltfAnimationPointerInterpolationError,
+  gltfAnimationPointerOutputAccessorError,
+  gltfAnimationPointerSampleValueError,
+  gltfAnimationPointerTargetComponentCount,
+  gltfAnimationPointerTargetDefinitionError,
+  gltfAnimationPointerTargetIdentity,
+  gltfAnimationPointerValuesError,
+  gltfAnimationTargetsConflict,
+  gltfNativeAnimationTargetIdentity,
+  isGltfAnimationPointerTargetReachable,
+  resolveGltfAnimationPointer,
+  supportedGltfAnimationPointers,
+} from './animationPointer.js';
+export type {
+  GltfAnimationPointerComponents,
+  GltfAnimationPointerReachability,
+  GltfAnimationPointerTarget,
+  GltfAnimationPointerValueType,
+  GltfAnimationTargetIdentity,
+  GltfCameraAnimationPointerTarget,
+  GltfMaterialPropertyAnimationPointerTarget,
+  GltfMaterialTextureRefField,
+  GltfMaterialTextureTransformAnimationPointerTarget,
+  GltfNodeAnimationPointerTarget,
+  GltfNodeVisibilityAnimationPointerTarget,
+  GltfNodeWeightElementAnimationPointerTarget,
+  GltfOrthographicCameraAnimationField,
+  GltfPerspectiveCameraAnimationField,
+  GltfPunctualLightAnimationField,
+  GltfPunctualLightAnimationPointerTarget,
+  GltfTextureTransformAnimationField,
+} from './animationPointer.js';
 export type {
   DecodeGltfTexturePixelsFn,
   DecodeSceneTextureDiagnostic,
@@ -158,14 +209,16 @@ export type {
   GltfTextureSourceExtension,
   RawImageHandle,
 } from './textures.js';
-// Compressed-geometry decoder hook contract (GLTF-02): the host injects
-// KHR_draco_mesh_compression / EXT_meshopt_compression decoders; the package
-// itself bundles none. See README "Compressed geometry".
+// Compressed-geometry override contracts (GLTF-02). Lazy built-in Draco and
+// meshoptimizer decoders are the default; host hooks take precedence.
 export type {
   GltfDecodeHooks,
   GltfCompressionDiagnostic,
   GltfCompressionDiagnosticCode,
   DracoDecodeFn,
+  DracoDecodeContext,
+  DracoAttributeDecodeSchema,
+  DracoAccessorComponentType,
   DracoDecodeResult,
   DracoTypedArray,
   MeshoptDecodeFn,

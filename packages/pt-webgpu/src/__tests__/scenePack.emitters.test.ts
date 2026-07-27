@@ -3,10 +3,9 @@ import { asMat4, type Scene } from '@vitrum/core';
 import { luminance } from '@vitrum/shared-samplers';
 import {
   buildLightTreeInputForScene,
-  defaultDirectionalAngularDiameter,
+  MESH_AREA_LIGHT_FLOAT_STRIDE,
   meshAreaEmitterAdjointRangeForScene,
   packMeshAreaAdjointReplayArrays,
-  sortMeshAreaTrianglesForNeeCapForTests,
 } from '../scene/emitterPacking.js';
 import { buildPackedScene } from '../scene/uploadSceneBuffers.js';
 
@@ -74,7 +73,7 @@ function triAt(data: Float32Array, tri: number): {
   c: [number, number, number];
   r: [number, number, number];
 } {
-  const o = tri * 16;
+  const o = tri * MESH_AREA_LIGHT_FLOAT_STRIDE;
   return {
     a: [data[o]!, data[o + 1]!, data[o + 2]!],
     b: [data[o + 4]!, data[o + 5]!, data[o + 6]!],
@@ -111,7 +110,9 @@ describe('buildPackedScene emitter + environment packing', () => {
     const scene = quadScene('mesh');
     const packed = buildPackedScene(scene);
     expect(packed.meshAreaLightCount).toBe(2);
-    expect(packed.meshAreaLightsData.length).toBe(2 * 16);
+    expect(packed.meshAreaLightsData.length).toBe(
+      2 * MESH_AREA_LIGHT_FLOAT_STRIDE,
+    );
     const t0 = triAt(packed.meshAreaLightsData, 0);
     const t1 = triAt(packed.meshAreaLightsData, 1);
     expectVec3Close(t0.a, [0, 0, 0]);
@@ -129,34 +130,6 @@ describe('buildPackedScene emitter + environment packing', () => {
     expectVec3Close(tree.centroids[1]!, [1 / 3, 2 / 3, 0]);
     expect(tree.powers[0]).toBeCloseTo(luminance(1, 2, 4) * 0.5, 6);
     expect(tree.powers[1]).toBeCloseTo(luminance(1, 2, 4) * 0.5, 6);
-  });
-
-  it('ranks mesh-area cap candidates by emitted power, not area alone', () => {
-    const ranked = sortMeshAreaTrianglesForNeeCapForTests([
-      {
-        triA: [0, 0, 0],
-        triB: [10, 0, 0],
-        triC: [0, 10, 0],
-        radiance: [0.01, 0.01, 0.01],
-        sourceFactor: [1, 1, 1],
-        adjointEmitterSlot: -1,
-        power: luminance(0.01, 0.01, 0.01) * 50,
-        castShadowDisabled: false,
-      },
-      {
-        triA: [0, 0, 0],
-        triB: [1, 0, 0],
-        triC: [0, 1, 0],
-        radiance: [100, 100, 100],
-        sourceFactor: [1, 1, 1],
-        adjointEmitterSlot: -1,
-        power: luminance(100, 100, 100) * 0.5,
-        castShadowDisabled: false,
-      },
-    ]);
-
-    expect(ranked[0]?.radiance).toEqual([100, 100, 100]);
-    expect(ranked[1]?.radiance).toEqual([0.01, 0.01, 0.01]);
   });
 
   it('reports a stable adjoint range for uncapped explicit mesh-area emitters', () => {
@@ -215,7 +188,7 @@ describe('buildPackedScene emitter + environment packing', () => {
     expect(replay.meshAreaLightSourceFactorsData[11]).toBe(2);
   });
 
-  it('subdivides implicit emissive-map mesh lights through the packed-scene path', () => {
+  it('packs exact-sampled implicit emissive-map mesh lights through the packed-scene path', () => {
     const scene: Scene = {
       primitives: [{
         kind: 'mesh',
@@ -246,9 +219,23 @@ describe('buildPackedScene emitter + environment packing', () => {
     };
 
     const packed = buildPackedScene(scene);
-    expect(packed.meshAreaLightCount).toBe(4);
-    expect(packed.meshAreaLightsData.length).toBe(4 * 16);
-    expectVec3Close(triAt(packed.meshAreaLightsData, 0).r, [0, 6, 0]);
+    expect(packed.meshAreaLightCount).toBe(1);
+    expect(packed.meshAreaLightsData.length).toBe(
+      MESH_AREA_LIGHT_FLOAT_STRIDE,
+    );
+    expectVec3Close(triAt(packed.meshAreaLightsData, 0).r, [6, 6, 6]);
+    expect(Array.from(packed.meshAreaLightsData.slice(16, 22))).toEqual([
+      0.75, 0, 0.75, 0, 0.75, 0,
+    ]);
+    expect(packed.meshAreaLightsData[22]).toBe(1);
+    expectVec3Close(
+      [
+        packed.meshAreaLightsData[24]!,
+        packed.meshAreaLightsData[25]!,
+        packed.meshAreaLightsData[26]!,
+      ],
+      [6, 6, 6],
+    );
     expect(packed.warnings).toEqual([]);
   });
 
@@ -317,6 +304,85 @@ describe('buildPackedScene emitter + environment packing', () => {
     expect(tree.powers[0]).toBeCloseTo(expectedPower, 4);
   });
 
+  it('retains strictly-positive f32-representable disc radii below the former epsilon', () => {
+    const radius = 1e-9;
+    const scene: Scene = {
+      ...baseScene(),
+      emitters: [{
+        kind: 'disc-area',
+        id: 'tiny-disc',
+        position: [0, 2, 0],
+        normal: [0, 1, 0],
+        radius,
+        color: [1, 1, 1],
+        intensity: 1,
+      }],
+    };
+    const packed = buildPackedScene(scene);
+    expect(packed.rectAreaLightCount).toBe(1);
+    const uLen = Math.hypot(
+      packed.rectAreaLightsData[4]!,
+      packed.rectAreaLightsData[5]!,
+      packed.rectAreaLightsData[6]!,
+    );
+    expect(uLen).toBeGreaterThan(0);
+    expect(uLen / radius).toBeCloseTo(1, 5);
+    expect(buildLightTreeInputForScene(scene).powers[0]).toBeGreaterThan(0);
+  });
+
+  it('retains strictly-positive f32-representable mesh areas below the former epsilon', () => {
+    const side = 1e-6;
+    const scene: Scene = {
+      primitives: [{
+        kind: 'mesh',
+        id: 'tiny-triangle',
+        positions: new Float32Array([0, 0, 0, side, 0, 0, 0, side, 0]),
+        normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+        material: { baseColor: [1, 1, 1], roughness: 0.4, metallic: 0 },
+      }],
+      emitters: [{
+        kind: 'mesh-area', id: 'tiny-mesh-light', meshId: 'tiny-triangle',
+        color: [1, 1, 1], intensity: 1,
+      }],
+      environment: { kind: 'none' },
+    };
+    const packed = buildPackedScene(scene);
+    expect(packed.meshAreaLightCount).toBe(1);
+    const triangle = triAt(packed.meshAreaLightsData, 0);
+    const area = 0.5 * Math.hypot(
+      (triangle.b[1] - triangle.a[1]) * (triangle.c[2] - triangle.a[2]) -
+        (triangle.b[2] - triangle.a[2]) * (triangle.c[1] - triangle.a[1]),
+      (triangle.b[2] - triangle.a[2]) * (triangle.c[0] - triangle.a[0]) -
+        (triangle.b[0] - triangle.a[0]) * (triangle.c[2] - triangle.a[2]),
+      (triangle.b[0] - triangle.a[0]) * (triangle.c[1] - triangle.a[1]) -
+        (triangle.b[1] - triangle.a[1]) * (triangle.c[0] - triangle.a[0]),
+    );
+    expect(area).toBeGreaterThan(0);
+    expect(area).toBeLessThan(1e-12);
+    expect(buildLightTreeInputForScene(scene).powers[0]).toBeGreaterThan(0);
+  });
+
+  it('rejects low-level unsupported scene content instead of packing a filtered subset', () => {
+    const scene = {
+      primitives: [{
+        kind: 'analytic',
+        id: 'future-shape',
+        shape: 'future-shape',
+        params: new Float32Array([1]),
+        material: { baseColor: [1, 1, 1], roughness: 0.4, metallic: 0 },
+      }],
+      emitters: [],
+      environment: { kind: 'none' },
+    } as unknown as Scene;
+    expect(() => buildPackedScene(scene)).toThrow(/unsupported content.*future-shape/);
+  });
+
+  it('rejects lite merged packing when explicit mesh-area emitters would be dropped', () => {
+    expect(() => buildPackedScene(quadScene(), { geometryMode: 'merged' })).toThrow(
+      /mesh-area emitters \[m\]/,
+    );
+  });
+
   it('cameraVisibleEmitters re-attaches mesh-area emitter radiance onto the primitive material (color·intensity)', () => {
     // This scene models an emissive mesh as a sampled mesh-area emitter while the
     // primitive material remains non-emissive. With cameraVisibleEmitters the
@@ -364,23 +430,9 @@ describe('buildPackedScene emitter + environment packing', () => {
     expect(packed.environmentMapCdf.length).toBe(5);
   });
 
-  it('warns and falls back when HDRI payload is opaque', () => {
+  it('fails closed when HDRI payload is opaque', () => {
     const scene: Scene = { ...baseScene(), environment: { kind: 'hdri', hdri: { mock: true } } };
-    const packed = buildPackedScene(scene);
-    expect(packed.hasEnvironmentMap).toBe(false);
-    expect(packed.warnings.some((w) => w.includes('HDRI environment'))).toBe(true);
-    expect(packed.structuredWarnings).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        code: 'pt-webgpu.hdri-unreadable',
-        backend: 'pt-webgpu',
-        phase: 'setScene',
-        method: 'setScene',
-        details: expect.objectContaining({
-          fallback: 'no-environment',
-          warning: expect.stringContaining('lacks CPU pixel data'),
-        }),
-      }),
-    ]));
+    expect(() => buildPackedScene(scene)).toThrow(/dimensions must be positive safe integers/);
   });
 
   it('emits a structured zero-luminance HDRI fallback warning', () => {
@@ -439,7 +491,6 @@ describe('SHADOW-01 emitter castShadowDisabled lanes', () => {
     // directional — sign-encoded angularDiameter (stride 8 floats / light).
     expect(packed.directionalLightsData[3]).toBeCloseTo(-1.25, 6);  // -1 - 0.25
     expect(packed.directionalLightsData[8 + 3]).toBeCloseTo(0.25, 6);
-    expect(defaultDirectionalAngularDiameter(scene)).toBeCloseTo(-1.25, 6);
 
     // point — stride 12, lane 10.
     expect(packed.pointLightsData[10]).toBe(1);
@@ -472,7 +523,6 @@ describe('SHADOW-01 emitter castShadowDisabled lanes', () => {
     };
     const packed = buildPackedScene(scene);
     expect(packed.directionalLightsData[3]).toBe(0);   // no angularDiameter → 0, non-negative
-    expect(defaultDirectionalAngularDiameter(scene)).toBe(0);
     expect(packed.pointLightsData[10]).toBe(0);
     expect(packed.spotLightsData[14]).toBe(0);
     expect(packed.rectAreaLightsData[3]).toBe(0);
@@ -488,6 +538,5 @@ describe('SHADOW-01 emitter castShadowDisabled lanes', () => {
     };
     const packed = buildPackedScene(scene);
     expect(packed.directionalLightsData[3]).toBeCloseTo(0.125, 6);
-    expect(defaultDirectionalAngularDiameter(scene)).toBeCloseTo(0.125, 6);
   });
 });

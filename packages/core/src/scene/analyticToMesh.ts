@@ -1,5 +1,11 @@
 import { decodeAnalyticParams } from './analyticParams.js';
-import type { AnalyticPrimitive, MeshPrimitive } from './primitives.js';
+import { cloneSparseArray, sparseArrayOwnIndices } from './primitives.js';
+import type {
+  AnalyticPrimitive,
+  MeshPrimitive,
+  PrimitiveColorSets,
+  PrimitiveUvSets,
+} from './primitives.js';
 
 export interface AnalyticPrimitiveToMeshOptions {
   /** Circumferential segments for curved shapes. Clamped to at least 3. */
@@ -68,11 +74,13 @@ function meshFromGeometry(primitive: AnalyticPrimitive, geometry: GeometryData):
     indices: geometry.indices,
     material: primitive.material,
     ...(primitive.transform != null ? { transform: primitive.transform } : {}),
+    ...(primitive.castShadow != null ? { castShadow: primitive.castShadow } : {}),
   };
 }
 
 function meshFromFallback(primitive: AnalyticPrimitive): MeshPrimitive {
   const fallback = primitive.fallbackMesh!;
+  const castShadow = primitive.castShadow ?? fallback.castShadow;
   return {
     kind: 'mesh',
     id: primitive.id,
@@ -80,14 +88,34 @@ function meshFromFallback(primitive: AnalyticPrimitive): MeshPrimitive {
     normals: new Float32Array(fallback.normals),
     ...(fallback.uvs != null ? { uvs: new Float32Array(fallback.uvs) } : {}),
     ...(fallback.uv1 != null ? { uv1: new Float32Array(fallback.uv1) } : {}),
+    ...(fallback.uvSets != null ? { uvSets: cloneSparseStreams(fallback.uvSets) } : {}),
     ...(fallback.tangents != null ? { tangents: new Float32Array(fallback.tangents) } : {}),
     ...(fallback.colors != null ? { colors: new Float32Array(fallback.colors) } : {}),
+    ...(fallback.colorSets != null ? { colorSets: cloneSparseStreams(fallback.colorSets) } : {}),
     ...(fallback.indices != null ? { indices: cloneIndices(fallback.indices) } : {}),
     material: primitive.material,
     ...(primitive.transform != null ? { transform: primitive.transform } : {}),
-    ...(fallback.castShadow != null ? { castShadow: fallback.castShadow } : {}),
-    ...(fallback.receiveShadow != null ? { receiveShadow: fallback.receiveShadow } : {}),
+    ...(castShadow != null ? { castShadow } : {}),
   };
+}
+
+/**
+ * Clone only the authored own lanes. Iterating numeric indices up to
+ * `streams.length` turns a valid TEXCOORD_1000000/COLOR_1000000 sparse array
+ * into a linear-time denial of service. The canonical sparse-key helper is
+ * proportional to the number of present streams; assigning those same numeric
+ * keys preserves their semantic indices, including keys beyond array-index
+ * range.
+ */
+function cloneSparseStreams(
+  streams: PrimitiveUvSets | PrimitiveColorSets,
+): Array<Float32Array | undefined> {
+  const clone = cloneSparseArray(streams);
+  for (const index of sparseArrayOwnIndices(clone)) {
+    const stream = clone[index];
+    if (stream !== undefined) clone[index] = new Float32Array(stream);
+  }
+  return clone;
 }
 
 function cloneIndices(indices: Uint32Array | Uint16Array): Uint32Array | Uint16Array {
@@ -335,7 +363,10 @@ function appendRingSide(
 ): void {
   const bottom: number[] = [];
   const top: number[] = [];
-  for (let i = 0; i < segments; i++) {
+  // Duplicate the azimuth-zero vertices at u=1. Sharing a single vertex
+  // between u=0 and the final segment interpolates almost the full texture
+  // width across that segment instead of crossing the wrap seam.
+  for (let i = 0; i <= segments; i++) {
     // u = azimuth [0,1], v = 0 at bottom, 1 at top.
     const uCoord = i / segments;
     const radial = circleDirection(u, v, i, segments);
@@ -345,7 +376,7 @@ function appendRingSide(
   }
 
   for (let i = 0; i < segments; i++) {
-    const next = (i + 1) % segments;
+    const next = i + 1;
     pushTriangle(builder, bottom[i]!, top[i]!, bottom[next]!);
     pushTriangle(builder, bottom[next]!, top[i]!, top[next]!);
   }
@@ -406,7 +437,9 @@ function buildSurfaceRows(
     }
 
     const indices: number[] = [];
-    for (let i = 0; i < segments; i++) {
+    // Non-pole rows carry a duplicate u=1 endpoint so no indexed triangle
+    // interpolates from (segments - 1) / segments directly back to u=0.
+    for (let i = 0; i <= segments; i++) {
       const uCoord = i / segments;
       const radial = circleDirection(u, v, i, segments);
       const position = add(row.center, scale(radial, row.radius));
@@ -421,15 +454,15 @@ function buildSurfaceRows(
     const upper = rowIndices[row + 1]!;
     if (lower.length === 1 && upper.length > 1) {
       for (let i = 0; i < segments; i++) {
-        pushTriangle(builder, lower[0]!, upper[i]!, upper[(i + 1) % segments]!);
+        pushTriangle(builder, lower[0]!, upper[i]!, upper[i + 1]!);
       }
     } else if (lower.length > 1 && upper.length === 1) {
       for (let i = 0; i < segments; i++) {
-        pushTriangle(builder, lower[i]!, upper[0]!, lower[(i + 1) % segments]!);
+        pushTriangle(builder, lower[i]!, upper[0]!, lower[i + 1]!);
       }
     } else {
       for (let i = 0; i < segments; i++) {
-        const next = (i + 1) % segments;
+        const next = i + 1;
         pushTriangle(builder, lower[i]!, upper[i]!, lower[next]!);
         pushTriangle(builder, lower[next]!, upper[i]!, upper[next]!);
       }

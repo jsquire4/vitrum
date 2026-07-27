@@ -15,6 +15,7 @@ import { describe, it, expect } from 'vitest';
 import type { MaterialSpec } from '@vitrum/core';
 import {
   packBVHRoughMetalFromCore,
+  packBVHIndexWFromCore,
   quantizeIor,
   dequantizeIor,
   IOR_DEFAULT_GLASS,
@@ -50,6 +51,22 @@ const ROUGH_DEFAULT = 0.85;
 const ROUGH_GLASS = 0.05;
 
 describe('packBVHRoughMetal — bit layout + decode round-trip', () => {
+  it('preserves the glass class for transmission below half a quantization step', () => {
+    const material = {
+      baseColor: [1, 1, 1],
+      roughness: 0,
+      metallic: 0,
+      transmission: 1e-8,
+    } as MaterialSpec;
+    const packed = packBVHIndexWFromCore(
+      new Uint32Array([0, 1, 2]),
+      new Uint32Array([0]),
+      [material],
+      1,
+    );
+    expect((packed[3]! >>> 4) & 0xF).toBe(1);
+  });
+
   it('packs authored roughness/metalness into the high two bytes', () => {
     const mats: PbrMaterialLike[] = [{ roughness: 0.2, metalness: 1.0 }];
     const buf = packBVHRoughMetal(new Uint32Array([0]), mats, 1);
@@ -67,10 +84,17 @@ describe('packBVHRoughMetal — bit layout + decode round-trip', () => {
     expect(metal).toBe(0);
   });
 
-  it('glass (transmission > 0.5) with no authored roughness defaults to 0.05', () => {
+  it('glass (any transmission > 0) with no authored roughness defaults to 0.05', () => {
     const buf = packBVHRoughMetal(new Uint32Array([0]), [{ transmission: 1.0 }], 1);
     const { rough } = decodeRoughMetal(buf[0]!);
     expect(rough).toBeCloseTo(ROUGH_GLASS, 2);
+
+    const lowTransmission = packBVHRoughMetal(
+      new Uint32Array([0]),
+      [{ transmission: 1e-8 }],
+      1,
+    );
+    expect(decodeRoughMetal(lowTransmission[0]!).rough).toBeCloseTo(ROUGH_GLASS, 2);
   });
 
   it('authored roughness on glass overrides the glass default', () => {

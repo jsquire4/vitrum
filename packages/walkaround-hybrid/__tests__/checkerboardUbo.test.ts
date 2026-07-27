@@ -4,7 +4,7 @@
  *
  * Checkerboard rendering ships OFF by default and inert (the standard
  * "ship off-default, validate, then enable" pattern shared by
- * RC/PPG/ReGIR/NRC/restirPtReuse). This test pins:
+ * RC/PPG/ReGIR/NRC/grisReuse). This test pins:
  *
  *   1. UBO contract — WalkaroundUBO repurposes the two trailing pad slots
  *      (`_padPreVec3` → `frameParity` @ offset 316, `_padEnd` → `checkerboardOn`

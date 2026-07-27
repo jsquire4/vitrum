@@ -182,7 +182,7 @@ describe('HybridEngine.onProgress — subscription wiring', () => {
 
 import { runHybridEngineFrame } from '../HybridEngineFrameOrchestrator.js';
 import type { HybridEngineFrameDeps } from '../HybridEngineFrameOrchestrator.js';
-import type { FrameInput } from '@vitrum/core';
+import { asMat4, type FrameInput } from '@vitrum/core';
 
 /** Build a frame-deps object whose DDGI / pipeline are stubs exposing exactly
  *  the warm-up + accumulator state the progress path reads. */
@@ -241,7 +241,7 @@ function makeFrameDeps(opts: {
       atrousDirectSigmas: [128, 5, 0.05],
       atrousIndirectSigmas: [32, 20, 0.5],
       stainedGlassFlags: 0,
-      restirPtReuse: 0,
+      grisReuse: 0,
       nrcEnabled: 0,
     },
     telemetry: {
@@ -274,10 +274,16 @@ function makeFrameDeps(opts: {
   };
 }
 
+const FRAME_MATRIX = asMat4(new Float32Array([
+  1, 0, 0, 0,
+  0, 1, 0, 0,
+  0, 0, 1, 0,
+  0, 0, 0, 1,
+]));
+
 const FRAME_INPUT: FrameInput = {
-  viewMatrix: new Float32Array(16),
-  projMatrix: new Float32Array(16),
-  cameraPosition: [0, 0, 0],
+  viewMatrix: FRAME_MATRIX,
+  projMatrix: FRAME_MATRIX,
   frameSeed: 1,
   swapChainView: {} as unknown as GPUTextureView,
 } as unknown as FrameInput;

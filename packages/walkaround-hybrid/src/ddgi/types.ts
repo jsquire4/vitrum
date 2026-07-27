@@ -23,10 +23,9 @@
    *     light's own visibility ray while still emitting radiance
  */
 export interface DDGILight {
-  /** Runtime kind tag. Only 'sun', 'fixture', and 'teaLight' are handled;
-   *  any other kind is warn-skipped by the DDGI probe-light packer. */
-  // eslint-disable-next-line @typescript-eslint/no-redundant-type-constituents -- intentional: literal union widens to string for extensibility while preserving IDE autocomplete for the known kinds
-  readonly kind: 'sun' | 'fixture' | 'teaLight' | string;
+  /** Closed runtime kind tag. New kinds must add an explicit GPU estimator;
+   *  they cannot silently disappear from probe-update GI. */
+  readonly kind: 'sun' | 'fixture' | 'teaLight';
 
   /** Optional source-emitter id, preserved when a DDGILight is mapped
    *  directly from a `@vitrum/core` `SceneEmitter` (see
@@ -42,7 +41,7 @@ export interface DDGILight {
   readonly intensity: number;
 
   /** Whether this light is active. ProbeUpdatePass filters to only
-   *  lights where on === true before uploading to the GPU UBO. */
+   *  lights where on === true before uploading to the GPU storage buffer. */
   readonly on: boolean;
 
   /** Mirrors `SceneEmitter.castShadow`. When false, this light still contributes
@@ -96,6 +95,26 @@ export interface DDGILight {
   /** POINT/SPOT fixtures only — distance falloff exponent. `0` = no falloff,
    *  `2` = physical inverse-square. Defaults to 2 for core punctual emitters. */
   readonly decay?: number;
+}
+
+/**
+ * Take an ownership-safe copy of a DDGI light list.
+ *
+ * The public light contract is readonly to TypeScript callers, but JavaScript
+ * hosts can still mutate the array and its nested vector/color objects after a
+ * setter returns. GPU work is deferred, so every subsystem boundary that keeps
+ * a light list must snapshot it instead of retaining host-owned aliases.
+ *
+ * @internal
+ */
+export function snapshotDdgiLights(lights: readonly DDGILight[]): DDGILight[] {
+  return lights.map((light) => ({
+    ...light,
+    ...(light.position === undefined ? {} : { position: { ...light.position } }),
+    ...(light.direction === undefined ? {} : { direction: { ...light.direction } }),
+    ...(light.color === undefined ? {} : { color: { ...light.color } }),
+    ...(light.spotAxis === undefined ? {} : { spotAxis: { ...light.spotAxis } }),
+  }));
 }
 
 // `DDGIDeviceHandle` interface removed 2026-05-18 — was defined here but

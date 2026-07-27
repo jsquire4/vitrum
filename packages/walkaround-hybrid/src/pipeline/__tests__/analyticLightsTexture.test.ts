@@ -34,11 +34,10 @@ function makeDevice() {
 }
 
 describe('analyticLightsTexture', () => {
-  it('writes an explicit zero-count header and ignores placeholder payload', () => {
+  it('writes an explicit zero-count header for an exact empty payload', () => {
     const { device, descriptors, writes } = makeDevice();
-    const placeholder = new Float32Array(16).fill(9);
 
-    uploadAnalyticLightsTexture(device, placeholder, 0);
+    uploadAnalyticLightsTexture(device, new Float32Array(0), 0);
 
     expect(descriptors[0]!).toMatchObject({
       format: 'rgba32float',
@@ -51,23 +50,57 @@ describe('analyticLightsTexture', () => {
 
   it('stores packed lights after the header texel', () => {
     const { device, writes } = makeDevice();
-    const packed = new Float32Array(Array.from({ length: 32 }, (_v, i) => i + 1));
+    const packed = new Float32Array(Array.from({ length: 40 }, (_v, i) => i + 1));
 
     uploadAnalyticLightsTexture(device, packed, 2);
 
     expect(writes[0]!.data[0]).toBe(2);
-    expect(Array.from(writes[0]!.data.slice(4, 36))).toEqual(Array.from(packed));
+    expect(Array.from(writes[0]!.data.slice(4, 44))).toEqual(Array.from(packed));
   });
 
   it('refresh validates capacity including the header texel', () => {
     const { device, writes } = makeDevice();
-    const packed = new Float32Array(Array.from({ length: 16 }, (_v, i) => i + 1));
+    const packed = new Float32Array(Array.from({ length: 20 }, (_v, i) => i + 1));
     const tex = uploadAnalyticLightsTexture(device, packed, 1);
 
     refreshAnalyticLightsTexture(device, tex, packed, 1);
 
     expect(writes).toHaveLength(2);
     expect(writes[1]!.data[0]).toBe(1);
-    expect(Array.from(writes[1]!.data.slice(4, 20))).toEqual(Array.from(packed));
+    expect(Array.from(writes[1]!.data.slice(4, 24))).toEqual(Array.from(packed));
+  });
+
+  it.each([1.5, -1, Number.NaN, Number.POSITIVE_INFINITY])(
+    'rejects invalid lightCount %s before allocating or writing',
+    (lightCount) => {
+      const { device, descriptors, writes } = makeDevice();
+
+      expect(() => uploadAnalyticLightsTexture(device, new Float32Array(0), lightCount))
+        .toThrow(/non-negative safe integer/);
+      expect(descriptors).toHaveLength(0);
+      expect(writes).toHaveLength(0);
+    },
+  );
+
+  it('rejects a short refresh payload before touching retained texture state', () => {
+    const { device, writes } = makeDevice();
+    const packed = new Float32Array(20).fill(1);
+    const tex = uploadAnalyticLightsTexture(device, packed, 1);
+
+    expect(() => refreshAnalyticLightsTexture(device, tex, packed.subarray(0, 19), 1))
+      .toThrow(/exactly 20 floats/);
+    expect(writes).toHaveLength(1);
+  });
+
+  it('rejects non-finite refresh payloads before touching retained texture state', () => {
+    const { device, writes } = makeDevice();
+    const packed = new Float32Array(20).fill(1);
+    const tex = uploadAnalyticLightsTexture(device, packed, 1);
+    const malformed = packed.slice();
+    malformed[7] = Number.NaN;
+
+    expect(() => refreshAnalyticLightsTexture(device, tex, malformed, 1))
+      .toThrow(/payload\[7\] must be finite/);
+    expect(writes).toHaveLength(1);
   });
 });

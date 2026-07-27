@@ -1,19 +1,8 @@
 /**
- * Regression for the WebGPU-conformance bug that blocked BDPT-ON from
- * dispatching on real hardware (lavapipe + dzn + Dawn): both compute pipelines
- * (path-trace `main` + BDPT `bdptExtendLightSubpath`) were created with
- * `layout:'auto'`. Auto-generated bind-group layouts are pipeline-exclusive per
- * the WebGPU spec, so a bind group built against the path-trace pipeline cannot
- * be set on the BDPT pipeline. The BDPT light-subpath pass reuses the path-trace
- * bind groups, so it was rejected at `setBindGroup` with "Exclusive pipelines
- * don't match".
- *
- * The fix gives both pipelines ONE explicit shared `GPUPipelineLayout` built
- * from explicit per-group `GPUBindGroupLayout`s. These tests pin that wiring
- * with a stub device (no real GPU): both pipelines must reference the SAME
- * pipeline-layout object, and the explicit group layouts must match the binding
- * indices / resource types the WGSL `@group/@binding` decls (and the prior auto
- * layout) declared, so the existing bind-group construction stays valid.
+ * Regression coverage for the explicit WebGPU pipeline layout. BDPT now builds
+ * its light and eye subpaths inside each `main` invocation, so there is one
+ * compute pipeline and no cross-pipeline storage-buffer handoff. These tests pin
+ * that single pipeline and the exact layouts declared by the composed WGSL.
  */
 import { describe, expect, it, vi } from 'vitest';
 import { GpuResources } from '../gpuResources.js';
@@ -94,10 +83,10 @@ function makeStubDevice() {
   };
 }
 
-describe('pt-webgpu shared explicit pipeline layout (BDPT cross-pipeline bind-group fix)', () => {
+describe('pt-webgpu explicit pipeline layout', () => {
   installWebGpuConstStubs();
 
-  it('full+bdpt: both pipelines share ONE explicit GPUPipelineLayout (no layout:auto)', () => {
+  it('full+bdpt: builds one main pipeline with one explicit GPUPipelineLayout', () => {
     const stub = makeStubDevice();
     const gpu = new GpuResources(stub.device, 'full', true);
     gpu.ensurePipeline();
@@ -107,13 +96,9 @@ describe('pt-webgpu shared explicit pipeline layout (BDPT cross-pipeline bind-gr
     expect(stub.createdPipelineLayouts).toHaveLength(1);
     expect(stub.createdPipelineLayouts[0]!.bindGroupLayouts).toHaveLength(4);
 
-    // Two compute pipelines: path-trace `main` + BDPT `bdptExtendLightSubpath`.
     const entryPoints = stub.createdPipelines.map((p) => p.entryPoint).sort();
-    expect(entryPoints).toEqual(['bdptExtendLightSubpath', 'main']);
+    expect(entryPoints).toEqual(['main']);
 
-    // BOTH pipelines reference the SAME explicit pipeline-layout object — never
-    // the string 'auto'. This is the crux of the fix: shared layout → the same
-    // bind groups can be set on both pipelines without "exclusive" rejection.
     const sharedLayout = stub.createdPipelineLayouts[0]!.token;
     for (const p of stub.createdPipelines) {
       expect(p.layout).toBe(sharedLayout);
@@ -169,18 +154,16 @@ describe('pt-webgpu shared explicit pipeline layout (BDPT cross-pipeline bind-gr
       expect(e.visibility).toBe(COMPUTE);
     }
 
-    // Group 2 — TLAS table (0..4 read-only) + BDPT light-path/eye-stack (5,6 read_write).
+    // Group 2 — TLAS table only. BDPT path state is invocation-private.
     const g2m = byBinding(g2!.entries);
-    expect(g2!.entries.map((e) => e.binding)).toEqual([0, 1, 2, 3, 4, 5, 6]);
+    expect(g2!.entries.map((e) => e.binding)).toEqual([0, 1, 2, 3, 4]);
     for (const b of [0, 1, 2, 3, 4]) expect(g2m.get(b)!.buffer?.type).toBe('read-only-storage');
-    expect(g2m.get(5)!.buffer?.type).toBe('storage'); // bdptLightPath
-    expect(g2m.get(6)!.buffer?.type).toBe('storage'); // bdptEyeStack
 
     // Group 3 — WS2 light-tree buffer (0) + P2 material textures: meshUvs (1),
     // descriptors (2), sRGB texture_2d_array (3), sampler (4), LINEAR
     // texture_2d_array for normal/scalar data maps (5) + A4 SPPM buffers: sppmPhotonCells (6),
     // sppmCellCounters (7), sppmStats uniform (8) + A4-progressive per-pixel
-    // stats buffer (9): SppmPixelStats[W×H] read_write + authored tangents (10)
+    // stats buffer (9): SppmPixelStats[W×H×2] read_write + authored tangents (10)
     // + COLOR_0 vertex colors (11). T1-6 appends the dedicated rgba16float
     // emissive array at binding 17 (declared right after the linear array 5).
     expect(g3!.entries.map((e) => e.binding)).toEqual([0, 1, 2, 3, 4, 5, 17, 6, 7, 8, 9, 10, 11]);
@@ -208,7 +191,6 @@ describe('pt-webgpu shared explicit pipeline layout (BDPT cross-pipeline bind-gr
 
     expect(stub.createdPipelineLayouts).toHaveLength(1);
     expect(stub.createdPipelines.map((p) => p.entryPoint)).toEqual(['main']);
-    expect(gpu.bdptSubpathPipeline).toBeNull();
     expect(gpu.bindGroupLayout).not.toBeNull();
   });
 
@@ -221,7 +203,7 @@ describe('pt-webgpu shared explicit pipeline layout (BDPT cross-pipeline bind-gr
       false,
       undefined,
       'pcg',
-      'cwbvh-closest-experimental',
+      'cwbvh-closest',
     );
     gpu.ensurePipeline();
 
@@ -237,7 +219,7 @@ describe('pt-webgpu shared explicit pipeline layout (BDPT cross-pipeline bind-gr
   });
 
   // B12 — bindings 12/13/14 added for liteEnvTex + liteEnvCdfTex + liteLightTex.
-  it('lite tier: single-group explicit layout (bindings 0..14), no group 1/2/3, no bdpt pipeline', () => {
+  it('lite tier: single-group explicit layout (bindings 0..14), no group 1/2/3', () => {
     const stub = makeStubDevice();
     const gpu = new GpuResources(stub.device, 'lite', false);
     gpu.ensurePipeline();
@@ -249,8 +231,6 @@ describe('pt-webgpu shared explicit pipeline layout (BDPT cross-pipeline bind-gr
     // WS2 — the lite tier keeps the uniform light pick and MUST NOT carry the
     // group-3 light-tree layout/binding.
     expect(gpu.bindGroupLayout3).toBeNull();
-    expect(gpu.bdptSubpathPipeline).toBeNull();
-
     const [g0] = stub.createdLayouts;
     // B12 — bindings 12/13/14 are the lite texture slots (liteEnvTex, liteEnvCdfTex, liteLightTex).
     expect(g0!.entries.map((e) => e.binding)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]);

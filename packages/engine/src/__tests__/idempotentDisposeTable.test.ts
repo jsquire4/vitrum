@@ -41,7 +41,6 @@ function allOnCapabilities(): EngineCapabilities {
     supportedPrimitiveKinds: new Set(),
     supportedEnvironmentKinds: new Set(),
     presentationMode: 'offscreen-texture',
-    experimentalFeatures: new Set(),
     causticStrategy: 'none',
     incrementalPatchSupport: {
       transform: true,
@@ -144,6 +143,20 @@ describe('idempotentDispose proxy table — pre-dispose forwarding', () => {
     const p = wrapWithIdempotentDispose(engine, () => {});
     expect(p.debug).toBe(debug);
   });
+
+  it('preserves the resolved backend profile identity', () => {
+    const { engine } = makeFullEngine();
+    const profiledEngine = Object.assign(engine, {
+      backendProfileId: 'pt-webgpu-lite' as const,
+      profileId: 'pt-webgpu-lite' as const,
+    });
+    const p = wrapWithIdempotentDispose(profiledEngine, () => {}) as Engine & {
+      readonly backendProfileId?: 'pt-webgpu' | 'pt-webgpu-lite';
+      readonly profileId?: 'pt-webgpu' | 'pt-webgpu-lite';
+    };
+    expect(p.backendProfileId).toBe('pt-webgpu-lite');
+    expect(p.profileId).toBe('pt-webgpu-lite');
+  });
 });
 
 describe('idempotentDispose proxy table — post-dispose behaviour (golden)', () => {
@@ -223,6 +236,26 @@ describe('idempotentDispose proxy table — getRestirPtResultBuffer disposed ret
     expect(result).not.toBeUndefined();
     // Must not forward to the backend after dispose.
     expect(getRestirPtResultBuffer).not.toHaveBeenCalled();
+  });
+});
+
+describe('idempotentDispose proxy table — presentation source forwarding', () => {
+  it('forwards while live and returns null without forwarding after dispose', () => {
+    const source = { device: { kind: 'GPUDevice' }, texture: { kind: 'GPUTexture' } };
+    const getPresentationSource = vi.fn(() => source as never);
+    const engine: Engine = {
+      ...makeFullEngine().engine,
+      capabilities: allOnCapabilities(),
+      getPresentationSource,
+    };
+    const p = wrapWithIdempotentDispose(engine, () => {});
+
+    expect(p.getPresentationSource?.()).toBe(source);
+    expect(getPresentationSource).toHaveBeenCalledTimes(1);
+
+    p.dispose();
+    expect(p.getPresentationSource?.()).toBeNull();
+    expect(getPresentationSource).toHaveBeenCalledTimes(1);
   });
 });
 

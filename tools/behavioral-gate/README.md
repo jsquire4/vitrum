@@ -49,7 +49,7 @@ npm run behavioral-gate:dzn -- --filter gltf --require-full-tier
 VITRUM_BEHAVIORAL_GATE_DZN_TIMEOUT_MS=600000 \
   npm run behavioral-gate:dzn -- --filter gltf --require-full-tier
 
-# Verify committed dzn status artifacts:
+# Inspect/revalidate retained dzn diagnostic artifacts (may be stale):
 npm run behavioral-gate:dzn-status-check
 
 # H32 standalone oracle: TLAS shadow rays skip glass but still hit opaque geometry.
@@ -57,42 +57,10 @@ VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json \
   npm run behavioral-gate:tlas-glass-shadow
 ```
 
-The committed dzn status set includes the broader `--filter gltf` full-suite
-lane, focused pt-webgpu/light/mutation artifacts, and eleven walkaround shards
-(`wh/default`, `wh/rcEnabled`, `wh/ppgEnabled`, `wh/gtao-off`,
-`wh/checkerboard`, `wh/skinned-mesh`, `wh/hdri-env`, `wh/rect-area-emitter`,
-`wh/directional-sun`, `wh/glass-gi`, `wh/transparent-oit`). Together they cover every real
-behavioral-gate label; the only uncovered label is the synthetic
-`__self-test/always-black` failure-injection row.
-The broad glTF status confirms full-tier execution with zero GPU errors for all
-selected glTF lanes; real-asset comparisons use the explicit `dzn-full` golden
-variant under `tools/reference-renders/gltf-real-behavioral-dzn-full/`. The
-default, lite-tier, spectral, skinned, and analytic lanes prove baseline
-pt/walkaround, explicit pt-webgpu lite fallback, spectral combos,
-skinned/glTF-skinned animation, and full-tier analytic sphere boot/render health.
-The BDPT lane is a full-tier boot/render proof for `pt/bdpt` and
-`pt/spectral+bdpt`; material furnace and multi-vertex promotion remain separate
-radiometric proof work. The ReSTIR-PT lane is a full-tier boot/render proof for
-off-default `pt/restirPtReuse`; equal-spp variance and specialty radiometric
-promotion remain separate proof work. The Sobol lanes prove adapter-backed
-boot/render health for the opt-in `sampling:'sobol'` full, lite, BDPT, and
-ReSTIR-PT variants with the tiled ranked Sobol rotation; source-level dimension
-assignment is pinned by pt-webgpu regression tests, and equal-time RMSE
-promotion remains separate proof work. The caustic/photon lanes prove full-tier
-boot/render health for `pt/caustic-manifold`, `pt/caustic-photon`, and
-`pt/spectral+photon`; caustic radiometric convergence remains a separate A/B
-proof. The material-lobes lanes pin full-tier scalar and map-backed clearcoat,
-sheen, iridescence, anisotropy, and specular panels against committed dzn
-goldens; specialty-integrator radiometry and promotion remain separate proof
-work. The `wh/transparent-oit` shard pins its camera-visible fractional blend
-scene against a committed `dzn-full` PNG golden while keeping true transparent
-ReSTIR/GI transport intentionally approximate. The light, directional, HDRI, and
-procedural-sky lanes pin dzn execution
-for analytic emitters and environment modes across the relevant pt-webgpu
-full/lite and walkaround rows; reference-quality radiometric sweeps remain
-separate. The `wh/` lane pins all eleven walkaround behavioral rows on dzn,
-including RC, PPG, checkerboard, skinned, rect-area, directional, HDRI, and
-glass-GI/transparent-OIT modes.
+Host-status JSON, PNG goldens, and their checkers are opt-in regression
+diagnostics. They are intentionally excluded from the canonical `npm run
+proof-check`, do not describe current implementation maturity, and may require a
+fresh capture after source or configuration changes.
 
 ## What it covers
 
@@ -215,7 +183,7 @@ lane is currently a pt-webgpu lane and passes on WSL lavapipe; walkaround
 render-gate promotion should be re-enabled after that Deno/WebGPU harness issue
 is cleared.
 
-## Naga gap patches
+## Naga portability
 
 lavapipe's Vulkan/naga layer rejects a small set of WGSL constructs that Tint/Dawn
 accepts.  The gate applies the same patches as the pre-push T1 GPU smoke:
@@ -223,9 +191,8 @@ accepts.  The gate applies the same patches as the pre-push T1 GPU smoke:
 - **pt-webgpu** — strips the 3-arg `textureLoad(bdptLightPath, …, mip)` mip argument;
   adds `isNan`/`isInf` polyfills; downgrades `bdptLightPath` from `texture_storage_2d`
   to `texture_2d<f32>` when `bdpt=false`.
-- **walkaround-hybrid** — uses `tools/shader-gate/nagaFix.mjs` (the production fix
-  shared with the shader compile gate and the T1 smoke); primarily rewrites
-  `ptr<storage>` function parameters.
+- **walkaround-hybrid** — submits production WGSL verbatim. Shared BVH/TLAS
+  traversal uses module-scope value-return loaders and needs no naga rewrite.
 
 ## CI
 

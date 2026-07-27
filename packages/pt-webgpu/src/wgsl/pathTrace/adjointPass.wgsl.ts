@@ -1,14 +1,12 @@
 /**
  * adjointPass.wgsl.ts — the engine-side WS5 Phase-1 path-replay adjoint COMPUTE
  * PASS (the last V24 piece). For each pixel it re-traces the frozen-seed primary
- * ray (brute-force closest-hit), re-derives the single-bounce direct lighting
- * (point-light NEE with shadow rays — the SAME `rad/dist²` model + packing the
- * forward `kernel.wgsl.ts` uses), and accumulates `∂loss/∂θ` for the optimized
- * material parameters through the two GPU-VALIDATED adjoint stages:
- *   - the BRDF partials `dBrdf_dBaseColor` / `dBrdf_dRoughness`
- *     (`pathTraceAdjoint.wgsl.ts`, GPU == FD oracle to f32),
- *   - the chain rule + fixed-point `adjointScatter` accumulation
- *     (`adjointHarness.wgsl.ts`, analytic == on-device FD).
+ * ray (brute-force closest-hit), re-derives the single-bounce direct lighting,
+ * and accumulates `∂loss/∂θ`. Local material fields use frozen-sample central
+ * differences of the complete direct-light estimator: BRDF, cosine, light
+ * measure, BRDF PDF, and power-MIS weight. The shared BRDF evaluator includes
+ * the production GGX multiscatter model. Fixed-point `adjointScatter` remains
+ * the accumulation primitive validated by the focused GPU harness.
  *
  * It deliberately does NOT call the forward `evaluateBrdf` — the per-pixel
  * `dLoss/dRendered` is handed in by `inverseSession` (computed from the baseline
@@ -48,7 +46,6 @@
  *
  * Ref: Vicini 2021 (Path Replay Backprop); Möller-Trumbore 1997 (intersection).
  */
-import { PCG_WGSL } from '@vitrum/shared-samplers';
 import {
   MATERIAL_TEX_CLEARCOAT_NORMAL_UV_META_VEC4_OFFSET,
   MATERIAL_TEX_CLEARCOAT_NORMAL_VEC4_OFFSET,
@@ -60,7 +57,16 @@ import {
   MATERIAL_TEX_UV_META_VEC4S_PER_MAP,
   MATERIAL_TEX_VEC4_STRIDE,
 } from '../../scene/materialTextures.js';
+import {
+  PT_WEBGPU_MICROFACET_ALPHA_FLOOR,
+  roughDielectricSmithG1Wgsl,
+} from '../../math/roughDielectric.js';
+import {
+  composePtWebgpuRngWgsl,
+  type PtWebgpuSamplingMode,
+} from '../common.wgsl.js';
 import { PT_WEBGPU_PATH_TRACE_ADJOINT_WGSL } from './pathTraceAdjoint.wgsl.js';
+import { PT_WEBGPU_POINT_SPOT_ATTENUATION_WGSL } from './material.wgsl.js';
 
 /** Field codes in the adjointParams descriptor (matches inverseSession fields). */
 export const ADJOINT_FIELD_BASECOLOR = 0;
@@ -143,9 +149,71 @@ const ADJOINT_MATERIAL_TEX_CLEARCOAT_NORMAL_WRAP =
 const ADJOINT_MATERIAL_TEX_UV_CLEARCOAT_NORMAL =
   MATERIAL_TEX_CLEARCOAT_NORMAL_UV_META_VEC4_OFFSET;
 
-export const PT_WEBGPU_ADJOINT_PASS_WGSL = /* wgsl */ `
+function adjointSourceRectSamplerWgsl(name: string, texArray: string): string {
+  return /* wgsl */ `
+fn ${name}AtMip(
+  layerIdx: i32,
+  uv: vec2f,
+  sourceBaseSize: vec2u,
+  wrapMode: vec2f,
+  mip: u32,
+  linearFilter: bool,
+) -> vec4f {
+  let sourceSize = adjointMaterialTextureSourceMipSize(sourceBaseSize, mip);
+  if (!linearFilter) {
+    let raw = vec2i(floor(uv * vec2f(sourceSize)));
+    let coord = vec2i(
+      adjointMaterialTextureWrapTexel(raw.x, i32(sourceSize.x), wrapMode.x),
+      adjointMaterialTextureWrapTexel(raw.y, i32(sourceSize.y), wrapMode.y),
+    );
+    return textureLoad(${texArray}, coord, layerIdx, mip);
+  }
+  let samplePosition = uv * vec2f(sourceSize) - vec2f(0.5);
+  let baseCoord = vec2i(floor(samplePosition));
+  let blend = fract(samplePosition);
+  let x0 = adjointMaterialTextureWrapTexel(baseCoord.x, i32(sourceSize.x), wrapMode.x);
+  let x1 = adjointMaterialTextureWrapTexel(baseCoord.x + 1, i32(sourceSize.x), wrapMode.x);
+  let y0 = adjointMaterialTextureWrapTexel(baseCoord.y, i32(sourceSize.y), wrapMode.y);
+  let y1 = adjointMaterialTextureWrapTexel(baseCoord.y + 1, i32(sourceSize.y), wrapMode.y);
+  let c00 = textureLoad(${texArray}, vec2i(x0, y0), layerIdx, mip);
+  let c10 = textureLoad(${texArray}, vec2i(x1, y0), layerIdx, mip);
+  let c01 = textureLoad(${texArray}, vec2i(x0, y1), layerIdx, mip);
+  let c11 = textureLoad(${texArray}, vec2i(x1, y1), layerIdx, mip);
+  return mix(mix(c00, c10, blend.x), mix(c01, c11, blend.x), blend.y);
+}
+
+fn ${name}(
+  layerIdx: i32,
+  uv: vec2f,
+  sourceBaseSize: vec2u,
+  wrapMode: vec2f,
+  policyLod: f32,
+  filterMode: f32,
+  mipPolicy: f32,
+) -> vec4f {
+  let maxMip = adjointMaterialTextureSourceMipCount(sourceBaseSize) - 1u;
+  let lod0 = min(u32(floor(max(policyLod, 0.0))), maxMip);
+  let lod1 = min(lod0 + 1u, maxMip);
+  let linearFilter = filterMode >= 0.5;
+  let c0 = ${name}AtMip(layerIdx, uv, sourceBaseSize, wrapMode, lod0, linearFilter);
+  let c1 = ${name}AtMip(layerIdx, uv, sourceBaseSize, wrapMode, lod1, linearFilter);
+  return mix(c0, c1, select(0.0, fract(policyLod), mipPolicy >= 1.5));
+}
+`;
+}
+
+const ADJOINT_SOURCE_RECT_SAMPLERS_WGSL =
+  adjointSourceRectSamplerWgsl('sampleAdjointSrgbSourceRect', 'materialTextures') +
+  adjointSourceRectSamplerWgsl('sampleAdjointLinearSourceRect', 'materialTexturesLinear') +
+  adjointSourceRectSamplerWgsl('sampleAdjointEmissiveSourceRect', 'materialTexturesEmissive');
+
+export function composePtWebgpuAdjointPassWgsl(
+  sampling: PtWebgpuSamplingMode = 'pcg',
+): string {
+  return /* wgsl */ `
 const PI = 3.14159265358979;
 const INV_PI = 0.31830988618;
+${PT_WEBGPU_POINT_SPOT_ATTENUATION_WGSL}
 // MUST match the canonical MATERIAL_VEC4_STRIDE (material.wgsl.ts / materialPacking.ts).
 // This adjoint pass reads the SAME materials storage buffer the forward kernel
 // uploads, so its per-material stride must equal the forward stride or every
@@ -210,7 +278,8 @@ struct AdjointParams {
 @group(0) @binding(11) var<storage, read>      directionalLights: array<vec4f>;
 // spot lights: per light {position, axis+cosOuter, radiance+cosInner, distance+decay+shadowFlag} (4 vec4 stride).
 @group(0) @binding(12) var<storage, read>      spotLights: array<vec4f>;
-// mesh-area lights: per triangle {a, b, c, radiance+shadowFlag} (4 vec4 stride).
+// mesh-area lights: per triangle {a, b, c, proposalLe+shadowFlag,
+// rawUvA+rawUvB, rawUvC+materialToken+sourceArea, baseLe} (7 vec4 stride).
 @group(0) @binding(13) var<storage, read>      meshAreaLights: array<vec4f>;
 // Material-map replay subset: mirrors the forward texture samplers for local
 // base/ORM/AO/specular/clearcoat/sheen/iridescence/anisotropy chain factors,
@@ -241,9 +310,22 @@ struct AdjointParams {
 // emissive replay below samples here to stay consistent with the forward pass.
 @group(0) @binding(24) var                      materialTexturesEmissive: texture_2d_array<f32>;
 
+fn adjointUvForVertex(vertexIndex: u32, gpuUvSlot: u32) -> vec2f {
+  let vertexCount = arrayLength(&positions);
+  if (vertexIndex >= vertexCount || vertexIndex >= arrayLength(&meshUvs)) {
+    return vec2f(0.0);
+  }
+  let primary = meshUvs[vertexIndex];
+  if (gpuUvSlot == 0u) { return primary.xy; }
+  if (gpuUvSlot == 1u) { return primary.zw; }
+  let tailIndex = vertexCount + (gpuUvSlot - 2u) * vertexCount + vertexIndex;
+  if (tailIndex >= arrayLength(&meshUvs)) { return vec2f(0.0); }
+  return meshUvs[tailIndex].xy;
+}
+
 // ── BRDF primitives ──────────────────────────────────────────────────────────
 const ADJOINT_FROZEN_SEED_BASE = 0x5eed5eedu;
-${PCG_WGSL}
+${composePtWebgpuRngWgsl(sampling)}
 //
 // MIRROR SITE — these four functions are intentionally duplicated here from
 // their canonical definitions so this adjoint-pass shader is a self-contained
@@ -268,14 +350,11 @@ fn rotateYPos(v: vec3f, a: f32) -> vec3f {
 }
 fn ggxD(nDotH: f32, alpha: f32) -> f32 {
   let a2 = alpha * alpha;
-  let d = nDotH * nDotH * (a2 - 1.0) + 1.0;
-  return a2 / max(PI * d * d, 1e-6);
+  let n2 = clamp(nDotH * nDotH, 0.0, 1.0);
+  let d = (1.0 - n2) + n2 * a2;
+  return a2 / (PI * d * d);
 }
-fn smithG1(nDotV: f32, roughness: f32) -> f32 {
-  let r = roughness + 1.0;
-  let k = (r * r) * 0.125;
-  return nDotV / max(nDotV * (1.0 - k) + k, 1e-6);
-}
+${roughDielectricSmithG1Wgsl('smithG1')}
 fn fresnelSchlick(cosTheta: f32, f0: vec3f) -> vec3f {
   let m = clamp(1.0 - cosTheta, 0.0, 1.0);
   let m2 = m * m;
@@ -288,7 +367,7 @@ struct AdjointEnvironmentSample {
   pdf: f32,
 }
 
-fn sampleAdjointEnvironmentImportance(rng: ptr<function, u32>) -> AdjointEnvironmentSample {
+fn sampleAdjointEnvironmentImportance(rng: ptr<function, PtRngState>) -> AdjointEnvironmentSample {
   var result: AdjointEnvironmentSample;
   result.wi = vec3f(0.0, 1.0, 0.0);
   result.value = vec3f(0.0);
@@ -318,9 +397,12 @@ fn sampleAdjointEnvironmentImportance(rng: ptr<function, u32>) -> AdjointEnviron
   let sinTheta = sin(theta);
   let mapDir = vec3f(cos(phi) * sinTheta, cos(theta), sin(phi) * sinTheta);
   let texel = environmentMapTexels[idx];
+  if (!(texel.w > 0.0) || !(texel.w == texel.w) || abs(texel.w) > 3.402823e38) {
+    return result;
+  }
   result.wi = safe_normalize(rotateYPos(mapDir, params.environmentParams.y));
   result.value = texel.rgb * max(params.environmentParams.x, 0.0);
-  result.pdf = max(texel.w, 1e-8);
+  result.pdf = texel.w;
   return result;
 }
 
@@ -391,6 +473,40 @@ fn adjointWrapTextureCoord(coord: f32, mode: f32) -> f32 {
   return fract(coord);
 }
 
+fn adjointMaterialTextureSourceBaseSize(arraySize: vec2u, uvFitScale: vec2f) -> vec2u {
+  return max(vec2u(1u), vec2u(round(vec2f(arraySize) * uvFitScale)));
+}
+
+fn adjointMaterialTextureSourceMipCount(sourceBaseSize: vec2u) -> u32 {
+  return 1u + u32(floor(log2(f32(max(sourceBaseSize.x, sourceBaseSize.y)))));
+}
+
+fn adjointMaterialTextureSourceMipSize(sourceBaseSize: vec2u, mip: u32) -> vec2u {
+  return vec2u(
+    max(1u, sourceBaseSize.x >> mip),
+    max(1u, sourceBaseSize.y >> mip),
+  );
+}
+
+fn adjointMaterialTexturePositiveModulo(value: i32, modulus: i32) -> i32 {
+  let remainder = value % modulus;
+  return select(remainder + modulus, remainder, remainder >= 0);
+}
+
+fn adjointMaterialTextureWrapTexel(index: i32, size: i32, modeValue: f32) -> i32 {
+  if (size <= 1) { return 0; }
+  let mode = u32(modeValue);
+  if (mode == 1u) { return clamp(index, 0, size - 1); }
+  if (mode == 2u) {
+    let period = 2 * size;
+    let folded = adjointMaterialTexturePositiveModulo(index, period);
+    return select(period - 1 - folded, folded, folded < size);
+  }
+  return adjointMaterialTexturePositiveModulo(index, size);
+}
+
+${ADJOINT_SOURCE_RECT_SAMPLERS_WGSL}
+
 fn adjointMaterialTextureMipPolicy(base: u32, slot: u32) -> f32 {
   let vecIdx = base + ADJOINT_MATERIAL_TEX_MIP_POLICY + slot / 4u;
   if (vecIdx >= arrayLength(&materialTexDescriptors)) { return 2.0; }
@@ -426,30 +542,25 @@ fn adjointMaterialTextureFilterPolicy(base: u32, slot: u32) -> vec2f {
 fn sampleAdjointMaterialLayer(layerIdx: i32, base: u32, triIndex: u32, baryVW: vec2f, uvMetaOffset: u32, uvFitScale: vec2f, wrapMode: vec2f, mipPolicySlot: u32) -> vec4f {
   if (layerIdx < 0 || triIndex >= arrayLength(&indices) || base + uvMetaOffset + 1u >= arrayLength(&materialTexDescriptors)) { return vec4f(1.0); }
   let tri = indices[triIndex];
-  if (tri.x >= arrayLength(&meshUvs) || tri.y >= arrayLength(&meshUvs) || tri.z >= arrayLength(&meshUvs)) {
+  if (tri.x >= arrayLength(&positions) || tri.y >= arrayLength(&positions) || tri.z >= arrayLength(&positions)) {
     return vec4f(1.0);
   }
   let v = baryVW.x;
   let w = baryVW.y;
   let u = 1.0 - v - w;
-  let uva = meshUvs[tri.x];
-  let uvb = meshUvs[tri.y];
-  let uvc = meshUvs[tri.z];
-  let ch0 = uva.xy * u + uvb.xy * v + uvc.xy * w;
-  let ch1 = uva.zw * u + uvb.zw * v + uvc.zw * w;
   let uvMeta = materialTexDescriptors[base + uvMetaOffset];
   let uvScale = materialTexDescriptors[base + uvMetaOffset + 1u];
-  let texCoord = u32(uvMeta.x);
-  let rawUv = select(ch0, ch1, texCoord == 1u);
+  let gpuUvSlot = u32(uvMeta.x);
+  let rawA = adjointUvForVertex(tri.x, gpuUvSlot);
+  let rawB = adjointUvForVertex(tri.y, gpuUvSlot);
+  let rawC = adjointUvForVertex(tri.z, gpuUvSlot);
+  let rawUv = rawA * u + rawB * v + rawC * w;
   let xform = vec4f(uvMeta.y, uvMeta.z, uvScale.x, uvScale.y);
   let rot = uvMeta.w;
   let c = cos(rot);
   let s = sin(rot);
   let sx = xform.z;
   let sy = xform.w;
-  let rawA = select(uva.xy, uva.zw, texCoord == 1u);
-  let rawB = select(uvb.xy, uvb.zw, texCoord == 1u);
-  let rawC = select(uvc.xy, uvc.zw, texCoord == 1u);
   let uvA = vec2f(
     sx * c * rawA.x + sx * s * rawA.y + xform.x,
     -sy * s * rawA.x + sy * c * rawA.y + xform.y,
@@ -466,40 +577,29 @@ fn sampleAdjointMaterialLayer(layerIdx: i32, base: u32, triIndex: u32, baryVW: v
     sx * c * rawUv.x + sx * s * rawUv.y + xform.x,
     -sy * s * rawUv.x + sy * c * rawUv.y + xform.y,
   );
-  let wrappedUv = vec2f(adjointWrapTextureCoord(uv.x, wrapMode.x), adjointWrapTextureCoord(uv.y, wrapMode.y));
-  let fittedUv = wrappedUv * uvFitScale;
-  let texDim = vec2f(textureDimensions(materialTextures, 0));
-  let mipCount = f32(textureNumLevels(materialTextures));
+  let sourceBaseSize = adjointMaterialTextureSourceBaseSize(
+    vec2u(textureDimensions(materialTextures, 0)), uvFitScale,
+  );
+  let sourceMipCount = f32(adjointMaterialTextureSourceMipCount(sourceBaseSize));
+  let texDim = vec2f(sourceBaseSize);
   let texelArea = max(abs((uvB.x - uvA.x) * (uvC.y - uvA.y) - (uvB.y - uvA.y) * (uvC.x - uvA.x)) * texDim.x * texDim.y, 1.0);
   let pa = positions[tri.x].xyz;
   let pb = positions[tri.y].xyz;
   let pc = positions[tri.z].xyz;
-  let worldArea = max(0.5 * length(cross(pb - pa, pc - pa)), 1e-8);
+  let worldArea = 0.5 * length(cross(pb - pa, pc - pa));
   let hitPos = pa * u + pb * v + pc * w;
   let cameraDistance = max(length(hitPos - params.cameraPos.xyz), 1e-3);
   let pixelsPerMeter = 0.5 * f32(max(params.width, params.height)) / cameraDistance;
   let projectedPixels = max(sqrt(worldArea) * pixelsPerMeter, 1.0);
-  let lod = clamp(log2(sqrt(texelArea) / projectedPixels), 0.0, max(mipCount - 1.0, 0.0));
+  let lod = clamp(log2(sqrt(texelArea) / projectedPixels), 0.0, max(sourceMipCount - 1.0, 0.0));
   let mipPolicy = adjointMaterialTextureMipPolicy(base, mipPolicySlot);
-  let policyLod = adjointMaterialTexturePolicyLod(lod, mipCount, mipPolicy);
+  let policyLod = adjointMaterialTexturePolicyLod(lod, sourceMipCount, mipPolicy);
   let filterPolicy = adjointMaterialTextureFilterPolicy(base, mipPolicySlot);
   let filterMode = select(filterPolicy.x, filterPolicy.y, lod > 0.0);
-  if (filterMode < 0.5) {
-    let maxLod = max(mipCount - 1.0, 0.0);
-    let lod0 = clamp(floor(policyLod), 0.0, maxLod);
-    let lod1 = clamp(lod0 + 1.0, 0.0, maxLod);
-    let lod0u = u32(lod0);
-    let lod1u = u32(lod1);
-    let dim0 = vec2f(textureDimensions(materialTextures, lod0u));
-    let dim1 = vec2f(textureDimensions(materialTextures, lod1u));
-    let coord0 = vec2i(clamp(floor(fittedUv * dim0), vec2f(0.0), max(dim0 - vec2f(1.0), vec2f(0.0))));
-    let coord1 = vec2i(clamp(floor(fittedUv * dim1), vec2f(0.0), max(dim1 - vec2f(1.0), vec2f(0.0))));
-    let c0 = textureLoad(materialTextures, coord0, layerIdx, lod0u);
-    let c1 = textureLoad(materialTextures, coord1, layerIdx, lod1u);
-    let mipMix = select(0.0, fract(policyLod), mipPolicy >= 1.5);
-    return mix(c0, c1, mipMix);
-  }
-  return textureSampleLevel(materialTextures, materialTexSampler, fittedUv, layerIdx, policyLod);
+  return sampleAdjointSrgbSourceRect(
+    layerIdx, uv, sourceBaseSize, wrapMode,
+    policyLod, filterMode, mipPolicy,
+  );
 }
 
 // T1-6 — emissive variant: same sampling as sampleAdjointMaterialLayer but from
@@ -509,30 +609,25 @@ fn sampleAdjointMaterialLayer(layerIdx: i32, base: u32, triIndex: u32, baryVW: v
 fn sampleAdjointMaterialLayerEmissive(layerIdx: i32, base: u32, triIndex: u32, baryVW: vec2f, uvMetaOffset: u32, uvFitScale: vec2f, wrapMode: vec2f, mipPolicySlot: u32) -> vec4f {
   if (layerIdx < 0 || triIndex >= arrayLength(&indices) || base + uvMetaOffset + 1u >= arrayLength(&materialTexDescriptors)) { return vec4f(1.0); }
   let tri = indices[triIndex];
-  if (tri.x >= arrayLength(&meshUvs) || tri.y >= arrayLength(&meshUvs) || tri.z >= arrayLength(&meshUvs)) {
+  if (tri.x >= arrayLength(&positions) || tri.y >= arrayLength(&positions) || tri.z >= arrayLength(&positions)) {
     return vec4f(1.0);
   }
   let v = baryVW.x;
   let w = baryVW.y;
   let u = 1.0 - v - w;
-  let uva = meshUvs[tri.x];
-  let uvb = meshUvs[tri.y];
-  let uvc = meshUvs[tri.z];
-  let ch0 = uva.xy * u + uvb.xy * v + uvc.xy * w;
-  let ch1 = uva.zw * u + uvb.zw * v + uvc.zw * w;
   let uvMeta = materialTexDescriptors[base + uvMetaOffset];
   let uvScale = materialTexDescriptors[base + uvMetaOffset + 1u];
-  let texCoord = u32(uvMeta.x);
-  let rawUv = select(ch0, ch1, texCoord == 1u);
+  let gpuUvSlot = u32(uvMeta.x);
+  let rawA = adjointUvForVertex(tri.x, gpuUvSlot);
+  let rawB = adjointUvForVertex(tri.y, gpuUvSlot);
+  let rawC = adjointUvForVertex(tri.z, gpuUvSlot);
+  let rawUv = rawA * u + rawB * v + rawC * w;
   let xform = vec4f(uvMeta.y, uvMeta.z, uvScale.x, uvScale.y);
   let rot = uvMeta.w;
   let c = cos(rot);
   let s = sin(rot);
   let sx = xform.z;
   let sy = xform.w;
-  let rawA = select(uva.xy, uva.zw, texCoord == 1u);
-  let rawB = select(uvb.xy, uvb.zw, texCoord == 1u);
-  let rawC = select(uvc.xy, uvc.zw, texCoord == 1u);
   let uvA = vec2f(
     sx * c * rawA.x + sx * s * rawA.y + xform.x,
     -sy * s * rawA.x + sy * c * rawA.y + xform.y,
@@ -549,69 +644,137 @@ fn sampleAdjointMaterialLayerEmissive(layerIdx: i32, base: u32, triIndex: u32, b
     sx * c * rawUv.x + sx * s * rawUv.y + xform.x,
     -sy * s * rawUv.x + sy * c * rawUv.y + xform.y,
   );
-  let wrappedUv = vec2f(adjointWrapTextureCoord(uv.x, wrapMode.x), adjointWrapTextureCoord(uv.y, wrapMode.y));
-  let fittedUv = wrappedUv * uvFitScale;
-  let texDim = vec2f(textureDimensions(materialTexturesEmissive, 0));
-  let mipCount = f32(textureNumLevels(materialTexturesEmissive));
+  let sourceBaseSize = adjointMaterialTextureSourceBaseSize(
+    vec2u(textureDimensions(materialTexturesEmissive, 0)), uvFitScale,
+  );
+  let sourceMipCount = f32(adjointMaterialTextureSourceMipCount(sourceBaseSize));
+  let texDim = vec2f(sourceBaseSize);
   let texelArea = max(abs((uvB.x - uvA.x) * (uvC.y - uvA.y) - (uvB.y - uvA.y) * (uvC.x - uvA.x)) * texDim.x * texDim.y, 1.0);
   let pa = positions[tri.x].xyz;
   let pb = positions[tri.y].xyz;
   let pc = positions[tri.z].xyz;
-  let worldArea = max(0.5 * length(cross(pb - pa, pc - pa)), 1e-8);
+  let worldArea = 0.5 * length(cross(pb - pa, pc - pa));
   let hitPos = pa * u + pb * v + pc * w;
   let cameraDistance = max(length(hitPos - params.cameraPos.xyz), 1e-3);
   let pixelsPerMeter = 0.5 * f32(max(params.width, params.height)) / cameraDistance;
   let projectedPixels = max(sqrt(worldArea) * pixelsPerMeter, 1.0);
-  let lod = clamp(log2(sqrt(texelArea) / projectedPixels), 0.0, max(mipCount - 1.0, 0.0));
+  let lod = clamp(log2(sqrt(texelArea) / projectedPixels), 0.0, max(sourceMipCount - 1.0, 0.0));
   let mipPolicy = adjointMaterialTextureMipPolicy(base, mipPolicySlot);
-  let policyLod = adjointMaterialTexturePolicyLod(lod, mipCount, mipPolicy);
+  let policyLod = adjointMaterialTexturePolicyLod(lod, sourceMipCount, mipPolicy);
   let filterPolicy = adjointMaterialTextureFilterPolicy(base, mipPolicySlot);
   let filterMode = select(filterPolicy.x, filterPolicy.y, lod > 0.0);
-  if (filterMode < 0.5) {
-    let maxLod = max(mipCount - 1.0, 0.0);
-    let lod0 = clamp(floor(policyLod), 0.0, maxLod);
-    let lod1 = clamp(lod0 + 1.0, 0.0, maxLod);
-    let lod0u = u32(lod0);
-    let lod1u = u32(lod1);
-    let dim0 = vec2f(textureDimensions(materialTexturesEmissive, lod0u));
-    let dim1 = vec2f(textureDimensions(materialTexturesEmissive, lod1u));
-    let coord0 = vec2i(clamp(floor(fittedUv * dim0), vec2f(0.0), max(dim0 - vec2f(1.0), vec2f(0.0))));
-    let coord1 = vec2i(clamp(floor(fittedUv * dim1), vec2f(0.0), max(dim1 - vec2f(1.0), vec2f(0.0))));
-    let c0 = textureLoad(materialTexturesEmissive, coord0, layerIdx, lod0u);
-    let c1 = textureLoad(materialTexturesEmissive, coord1, layerIdx, lod1u);
-    let mipMix = select(0.0, fract(policyLod), mipPolicy >= 1.5);
-    return mix(c0, c1, mipMix);
+  return sampleAdjointEmissiveSourceRect(
+    layerIdx, uv, sourceBaseSize, wrapMode,
+    policyLod, filterMode, mipPolicy,
+  );
+}
+
+// Exact emissive-map multiplier for a sampled packed mesh-area point. The
+// packed record retains the source triangle's selected raw UVs and original
+// world-space footprint, so this uses the same transform, wrap, filter and mip
+// policy as the forward NEE path instead of a triangle-average approximation.
+fn sampleAdjointMeshEmitterSourceFactor(
+  index: u32,
+  weights: vec3f,
+  worldPosition: vec3f,
+) -> vec3f {
+  let base = index * 7u;
+  let uvAB = meshAreaLights[base + 4u];
+  let uvCAndMaterial = meshAreaLights[base + 5u];
+  let materialIdPlusOne = uvCAndMaterial.z;
+  if (materialIdPlusOne < 0.5) { return vec3f(1.0); }
+  let matId = u32(materialIdPlusOne - 1.0);
+  let descriptorBase = matId * ADJOINT_MATERIAL_TEX_VEC4_STRIDE;
+  if (descriptorBase + 13u >= arrayLength(&materialTexDescriptors)) {
+    return vec3f(0.0);
   }
-  return textureSampleLevel(materialTexturesEmissive, materialTexSampler, fittedUv, layerIdx, policyLod);
+  let layerIdx = i32(materialTexDescriptors[descriptorBase].w);
+  if (layerIdx < 0) { return vec3f(0.0); }
+
+  let rawA = uvAB.xy;
+  let rawB = uvAB.zw;
+  let rawC = uvCAndMaterial.xy;
+  let rawUv = rawA * weights.x + rawB * weights.y + rawC * weights.z;
+  let uvMeta = materialTexDescriptors[
+    descriptorBase + ADJOINT_MATERIAL_TEX_UV_EMISSIVE
+  ];
+  let uvScale = materialTexDescriptors[
+    descriptorBase + ADJOINT_MATERIAL_TEX_UV_EMISSIVE + 1u
+  ];
+  let c = cos(uvMeta.w);
+  let s = sin(uvMeta.w);
+  let transformUv = mat2x2f(
+    uvScale.x * c, -uvScale.y * s,
+    uvScale.x * s, uvScale.y * c,
+  );
+  let offset = uvMeta.yz;
+  let uvA = transformUv * rawA + offset;
+  let uvB = transformUv * rawB + offset;
+  let uvC = transformUv * rawC + offset;
+  let uv = transformUv * rawUv + offset;
+  let wrapMode = materialTexDescriptors[descriptorBase + 13u].zw;
+  let uvFitScale = materialTexDescriptors[descriptorBase + 7u].zw;
+  let sourceBaseSize = adjointMaterialTextureSourceBaseSize(
+    vec2u(textureDimensions(materialTexturesEmissive, 0)), uvFitScale,
+  );
+  let sourceMipCount = f32(adjointMaterialTextureSourceMipCount(sourceBaseSize));
+  let texDim = vec2f(sourceBaseSize);
+  let texelArea = max(
+    abs((uvB.x - uvA.x) * (uvC.y - uvA.y) -
+        (uvB.y - uvA.y) * (uvC.x - uvA.x)) * texDim.x * texDim.y,
+    1.0,
+  );
+  let worldArea = uvCAndMaterial.w;
+  if (worldArea <= 0.0) { return vec3f(0.0); }
+  let cameraDistance = max(
+    length(worldPosition - params.cameraPos.xyz), 1e-3,
+  );
+  let pixelsPerMeter =
+    0.5 * f32(max(params.width, params.height)) / cameraDistance;
+  let projectedPixels = max(sqrt(worldArea) * pixelsPerMeter, 1.0);
+  let lod = clamp(
+    log2(sqrt(texelArea) / projectedPixels),
+    0.0,
+    max(sourceMipCount - 1.0, 0.0),
+  );
+  let mipPolicy = adjointMaterialTextureMipPolicy(
+    descriptorBase, ADJOINT_MATERIAL_TEX_MIP_EMISSIVE,
+  );
+  let policyLod = adjointMaterialTexturePolicyLod(
+    lod, sourceMipCount, mipPolicy,
+  );
+  let filterPolicy = adjointMaterialTextureFilterPolicy(
+    descriptorBase, ADJOINT_MATERIAL_TEX_MIP_EMISSIVE,
+  );
+  let filterMode = select(filterPolicy.x, filterPolicy.y, lod > 0.0);
+  return sampleAdjointEmissiveSourceRect(
+    layerIdx, uv, sourceBaseSize, wrapMode,
+    policyLod, filterMode, mipPolicy,
+  ).rgb;
 }
 
 fn sampleAdjointMaterialLayerLinear(layerIdx: i32, base: u32, triIndex: u32, baryVW: vec2f, uvMetaOffset: u32, uvFitScale: vec2f, wrapMode: vec2f, mipPolicySlot: u32) -> vec4f {
   if (layerIdx < 0 || triIndex >= arrayLength(&indices) || base + uvMetaOffset + 1u >= arrayLength(&materialTexDescriptors)) { return vec4f(1.0); }
   let tri = indices[triIndex];
-  if (tri.x >= arrayLength(&meshUvs) || tri.y >= arrayLength(&meshUvs) || tri.z >= arrayLength(&meshUvs)) {
+  if (tri.x >= arrayLength(&positions) || tri.y >= arrayLength(&positions) || tri.z >= arrayLength(&positions)) {
     return vec4f(1.0);
   }
   let v = baryVW.x;
   let w = baryVW.y;
   let u = 1.0 - v - w;
-  let uva = meshUvs[tri.x];
-  let uvb = meshUvs[tri.y];
-  let uvc = meshUvs[tri.z];
-  let ch0 = uva.xy * u + uvb.xy * v + uvc.xy * w;
-  let ch1 = uva.zw * u + uvb.zw * v + uvc.zw * w;
   let uvMeta = materialTexDescriptors[base + uvMetaOffset];
   let uvScale = materialTexDescriptors[base + uvMetaOffset + 1u];
-  let texCoord = u32(uvMeta.x);
-  let rawUv = select(ch0, ch1, texCoord == 1u);
+  let gpuUvSlot = u32(uvMeta.x);
+  let rawA = adjointUvForVertex(tri.x, gpuUvSlot);
+  let rawB = adjointUvForVertex(tri.y, gpuUvSlot);
+  let rawC = adjointUvForVertex(tri.z, gpuUvSlot);
+  let rawUv = rawA * u + rawB * v + rawC * w;
   let xform = vec4f(uvMeta.y, uvMeta.z, uvScale.x, uvScale.y);
   let rot = uvMeta.w;
   let c = cos(rot);
   let s = sin(rot);
   let sx = xform.z;
   let sy = xform.w;
-  let rawA = select(uva.xy, uva.zw, texCoord == 1u);
-  let rawB = select(uvb.xy, uvb.zw, texCoord == 1u);
-  let rawC = select(uvc.xy, uvc.zw, texCoord == 1u);
   let uvA = vec2f(
     sx * c * rawA.x + sx * s * rawA.y + xform.x,
     -sy * s * rawA.x + sy * c * rawA.y + xform.y,
@@ -628,40 +791,29 @@ fn sampleAdjointMaterialLayerLinear(layerIdx: i32, base: u32, triIndex: u32, bar
     sx * c * rawUv.x + sx * s * rawUv.y + xform.x,
     -sy * s * rawUv.x + sy * c * rawUv.y + xform.y,
   );
-  let wrappedUv = vec2f(adjointWrapTextureCoord(uv.x, wrapMode.x), adjointWrapTextureCoord(uv.y, wrapMode.y));
-  let fittedUv = wrappedUv * uvFitScale;
-  let texDim = vec2f(textureDimensions(materialTexturesLinear, 0));
-  let mipCount = f32(textureNumLevels(materialTexturesLinear));
+  let sourceBaseSize = adjointMaterialTextureSourceBaseSize(
+    vec2u(textureDimensions(materialTexturesLinear, 0)), uvFitScale,
+  );
+  let sourceMipCount = f32(adjointMaterialTextureSourceMipCount(sourceBaseSize));
+  let texDim = vec2f(sourceBaseSize);
   let texelArea = max(abs((uvB.x - uvA.x) * (uvC.y - uvA.y) - (uvB.y - uvA.y) * (uvC.x - uvA.x)) * texDim.x * texDim.y, 1.0);
   let pa = positions[tri.x].xyz;
   let pb = positions[tri.y].xyz;
   let pc = positions[tri.z].xyz;
-  let worldArea = max(0.5 * length(cross(pb - pa, pc - pa)), 1e-8);
+  let worldArea = 0.5 * length(cross(pb - pa, pc - pa));
   let hitPos = pa * u + pb * v + pc * w;
   let cameraDistance = max(length(hitPos - params.cameraPos.xyz), 1e-3);
   let pixelsPerMeter = 0.5 * f32(max(params.width, params.height)) / cameraDistance;
   let projectedPixels = max(sqrt(worldArea) * pixelsPerMeter, 1.0);
-  let lod = clamp(log2(sqrt(texelArea) / projectedPixels), 0.0, max(mipCount - 1.0, 0.0));
+  let lod = clamp(log2(sqrt(texelArea) / projectedPixels), 0.0, max(sourceMipCount - 1.0, 0.0));
   let mipPolicy = adjointMaterialTextureMipPolicy(base, mipPolicySlot);
-  let policyLod = adjointMaterialTexturePolicyLod(lod, mipCount, mipPolicy);
+  let policyLod = adjointMaterialTexturePolicyLod(lod, sourceMipCount, mipPolicy);
   let filterPolicy = adjointMaterialTextureFilterPolicy(base, mipPolicySlot);
   let filterMode = select(filterPolicy.x, filterPolicy.y, lod > 0.0);
-  if (filterMode < 0.5) {
-    let maxLod = max(mipCount - 1.0, 0.0);
-    let lod0 = clamp(floor(policyLod), 0.0, maxLod);
-    let lod1 = clamp(lod0 + 1.0, 0.0, maxLod);
-    let lod0u = u32(lod0);
-    let lod1u = u32(lod1);
-    let dim0 = vec2f(textureDimensions(materialTexturesLinear, lod0u));
-    let dim1 = vec2f(textureDimensions(materialTexturesLinear, lod1u));
-    let coord0 = vec2i(clamp(floor(fittedUv * dim0), vec2f(0.0), max(dim0 - vec2f(1.0), vec2f(0.0))));
-    let coord1 = vec2i(clamp(floor(fittedUv * dim1), vec2f(0.0), max(dim1 - vec2f(1.0), vec2f(0.0))));
-    let c0 = textureLoad(materialTexturesLinear, coord0, layerIdx, lod0u);
-    let c1 = textureLoad(materialTexturesLinear, coord1, layerIdx, lod1u);
-    let mipMix = select(0.0, fract(policyLod), mipPolicy >= 1.5);
-    return mix(c0, c1, mipMix);
-  }
-  return textureSampleLevel(materialTexturesLinear, materialTexSampler, fittedUv, layerIdx, policyLod);
+  return sampleAdjointLinearSourceRect(
+    layerIdx, uv, sourceBaseSize, wrapMode,
+    policyLod, filterMode, mipPolicy,
+  );
 }
 
 fn sampleAdjointMaterialLayerLinearRawUvPolicy(layerIdx: i32, base: u32, triIndex: u32, baryVW: vec2f, rawUv: vec2f, uvMetaOffset: u32, uvFitScale: vec2f, wrapMode: vec2f, mipPolicySlot: u32) -> vec4f {
@@ -674,21 +826,18 @@ fn sampleAdjointMaterialLayerLinearRawUvPolicy(layerIdx: i32, base: u32, triInde
   let v = baryVW.x;
   let w = baryVW.y;
   let u = 1.0 - v - w;
-  let uva = meshUvs[tri.x];
-  let uvb = meshUvs[tri.y];
-  let uvc = meshUvs[tri.z];
   let uvMeta = materialTexDescriptors[base + uvMetaOffset];
   let uvScale = materialTexDescriptors[base + uvMetaOffset + 1u];
-  let texCoord = u32(uvMeta.x);
+  let gpuUvSlot = u32(uvMeta.x);
   let xform = vec4f(uvMeta.y, uvMeta.z, uvScale.x, uvScale.y);
   let rot = uvMeta.w;
   let c = cos(rot);
   let s = sin(rot);
   let sx = xform.z;
   let sy = xform.w;
-  let rawA = select(uva.xy, uva.zw, texCoord == 1u);
-  let rawB = select(uvb.xy, uvb.zw, texCoord == 1u);
-  let rawC = select(uvc.xy, uvc.zw, texCoord == 1u);
+  let rawA = adjointUvForVertex(tri.x, gpuUvSlot);
+  let rawB = adjointUvForVertex(tri.y, gpuUvSlot);
+  let rawC = adjointUvForVertex(tri.z, gpuUvSlot);
   let uvA = vec2f(
     sx * c * rawA.x + sx * s * rawA.y + xform.x,
     -sy * s * rawA.x + sy * c * rawA.y + xform.y,
@@ -705,40 +854,29 @@ fn sampleAdjointMaterialLayerLinearRawUvPolicy(layerIdx: i32, base: u32, triInde
     sx * c * rawUv.x + sx * s * rawUv.y + xform.x,
     -sy * s * rawUv.x + sy * c * rawUv.y + xform.y,
   );
-  let wrappedUv = vec2f(adjointWrapTextureCoord(uv.x, wrapMode.x), adjointWrapTextureCoord(uv.y, wrapMode.y));
-  let fittedUv = wrappedUv * uvFitScale;
-  let texDim = vec2f(textureDimensions(materialTexturesLinear, 0));
-  let mipCount = f32(textureNumLevels(materialTexturesLinear));
+  let sourceBaseSize = adjointMaterialTextureSourceBaseSize(
+    vec2u(textureDimensions(materialTexturesLinear, 0)), uvFitScale,
+  );
+  let sourceMipCount = f32(adjointMaterialTextureSourceMipCount(sourceBaseSize));
+  let texDim = vec2f(sourceBaseSize);
   let texelArea = max(abs((uvB.x - uvA.x) * (uvC.y - uvA.y) - (uvB.y - uvA.y) * (uvC.x - uvA.x)) * texDim.x * texDim.y, 1.0);
   let pa = positions[tri.x].xyz;
   let pb = positions[tri.y].xyz;
   let pc = positions[tri.z].xyz;
-  let worldArea = max(0.5 * length(cross(pb - pa, pc - pa)), 1e-8);
+  let worldArea = 0.5 * length(cross(pb - pa, pc - pa));
   let hitPos = pa * u + pb * v + pc * w;
   let cameraDistance = max(length(hitPos - params.cameraPos.xyz), 1e-3);
   let pixelsPerMeter = 0.5 * f32(max(params.width, params.height)) / cameraDistance;
   let projectedPixels = max(sqrt(worldArea) * pixelsPerMeter, 1.0);
-  let lod = clamp(log2(sqrt(texelArea) / projectedPixels), 0.0, max(mipCount - 1.0, 0.0));
+  let lod = clamp(log2(sqrt(texelArea) / projectedPixels), 0.0, max(sourceMipCount - 1.0, 0.0));
   let mipPolicy = adjointMaterialTextureMipPolicy(base, mipPolicySlot);
-  let policyLod = adjointMaterialTexturePolicyLod(lod, mipCount, mipPolicy);
+  let policyLod = adjointMaterialTexturePolicyLod(lod, sourceMipCount, mipPolicy);
   let filterPolicy = adjointMaterialTextureFilterPolicy(base, mipPolicySlot);
   let filterMode = select(filterPolicy.x, filterPolicy.y, lod > 0.0);
-  if (filterMode < 0.5) {
-    let maxLod = max(mipCount - 1.0, 0.0);
-    let lod0 = clamp(floor(policyLod), 0.0, maxLod);
-    let lod1 = clamp(lod0 + 1.0, 0.0, maxLod);
-    let lod0u = u32(lod0);
-    let lod1u = u32(lod1);
-    let dim0 = vec2f(textureDimensions(materialTexturesLinear, lod0u));
-    let dim1 = vec2f(textureDimensions(materialTexturesLinear, lod1u));
-    let coord0 = vec2i(clamp(floor(fittedUv * dim0), vec2f(0.0), max(dim0 - vec2f(1.0), vec2f(0.0))));
-    let coord1 = vec2i(clamp(floor(fittedUv * dim1), vec2f(0.0), max(dim1 - vec2f(1.0), vec2f(0.0))));
-    let c0 = textureLoad(materialTexturesLinear, coord0, layerIdx, lod0u);
-    let c1 = textureLoad(materialTexturesLinear, coord1, layerIdx, lod1u);
-    let mipMix = select(0.0, fract(policyLod), mipPolicy >= 1.5);
-    return mix(c0, c1, mipMix);
-  }
-  return textureSampleLevel(materialTexturesLinear, materialTexSampler, fittedUv, layerIdx, policyLod);
+  return sampleAdjointLinearSourceRect(
+    layerIdx, uv, sourceBaseSize, wrapMode,
+    policyLod, filterMode, mipPolicy,
+  );
 }
 
 // T1-6 — samples the dedicated rgba16float emissive array (emissiveIdx indexes
@@ -791,7 +929,7 @@ struct AdjointTangentFrame {
   valid: bool,
 }
 
-fn buildAdjointTangentFrame(triIndex: u32, baryVW: vec2f, normal: vec3f) -> AdjointTangentFrame {
+fn buildAdjointTangentFrame(triIndex: u32, baryVW: vec2f, normal: vec3f, gpuUvSlot: u32) -> AdjointTangentFrame {
   var frame: AdjointTangentFrame;
   frame.valid = false;
   if (triIndex >= arrayLength(&indices)) { return frame; }
@@ -800,7 +938,7 @@ fn buildAdjointTangentFrame(triIndex: u32, baryVW: vec2f, normal: vec3f) -> Adjo
       tri.x >= arrayLength(&positions) || tri.y >= arrayLength(&positions) || tri.z >= arrayLength(&positions)) {
     return frame;
   }
-  if (tri.x < arrayLength(&meshTangents) && tri.y < arrayLength(&meshTangents) && tri.z < arrayLength(&meshTangents)) {
+  if (gpuUvSlot == 0u && tri.x < arrayLength(&meshTangents) && tri.y < arrayLength(&meshTangents) && tri.z < arrayLength(&meshTangents)) {
     let v = baryVW.x;
     let w = baryVW.y;
     let u = 1.0 - v - w;
@@ -825,20 +963,64 @@ fn buildAdjointTangentFrame(triIndex: u32, baryVW: vec2f, normal: vec3f) -> Adjo
   let p0 = positions[tri.x].xyz;
   let e1 = positions[tri.y].xyz - p0;
   let e2 = positions[tri.z].xyz - p0;
-  let uv0 = meshUvs[tri.x].xy;
-  let duv1 = meshUvs[tri.y].xy - uv0;
-  let duv2 = meshUvs[tri.z].xy - uv0;
+  let uv0 = adjointUvForVertex(tri.x, gpuUvSlot);
+  let duv1 = adjointUvForVertex(tri.y, gpuUvSlot) - uv0;
+  let duv2 = adjointUvForVertex(tri.z, gpuUvSlot) - uv0;
   let det = duv1.x * duv2.y - duv2.x * duv1.y;
   if (abs(det) < 1e-10) { return frame; }
   var tangent = (duv2.y * e1 - duv1.y * e2) / det;
+  var bitangent = (-duv2.x * e1 + duv1.x * e2) / det;
   tangent = tangent - normal * dot(normal, tangent);
   let tlen = length(tangent);
   if (tlen < 1e-8) { return frame; }
   tangent = tangent / tlen;
+  bitangent = bitangent - normal * dot(normal, bitangent);
+  let handedness = select(
+    -1.0, 1.0, dot(cross(normal, tangent), bitangent) >= 0.0,
+  );
   frame.tangent = tangent;
-  frame.bitangent = cross(normal, tangent);
+  frame.bitangent = cross(normal, tangent) * handedness;
   frame.valid = true;
   return frame;
+}
+
+struct AdjointAnisotropyOrientation {
+  angle: f32,
+  localRotationDerivative: f32,
+}
+
+fn adjointAnisotropyOrientation(
+  matId: u32,
+  triIndex: u32,
+  baryVW: vec2f,
+  normal: vec3f,
+  localRotation: f32,
+) -> AdjointAnisotropyOrientation {
+  var out: AdjointAnisotropyOrientation;
+  out.angle = localRotation;
+  out.localRotationDerivative = 1.0;
+  let base = matId * ADJOINT_MATERIAL_TEX_VEC4_STRIDE;
+  if (base + 17u >= arrayLength(&materialTexDescriptors)) { return out; }
+  var gpuUvSlot = 0u;
+  if (i32(materialTexDescriptors[base + 5u].z) >= 0) {
+    gpuUvSlot = u32(
+      materialTexDescriptors[base + ADJOINT_MATERIAL_TEX_UV_ANISOTROPY].x,
+    );
+  }
+  let frame = buildAdjointTangentFrame(triIndex, baryVW, normal, gpuUvSlot);
+  if (!frame.valid) { return out; }
+  let canonicalT = adjointBuildTangent(normal);
+  let canonicalB = cross(normal, canonicalT);
+  let authoredDirection =
+    cos(localRotation) * frame.tangent + sin(localRotation) * frame.bitangent;
+  out.angle = atan2(
+    dot(authoredDirection, canonicalB),
+    dot(authoredDirection, canonicalT),
+  );
+  out.localRotationDerivative = select(
+    -1.0, 1.0, dot(cross(frame.tangent, frame.bitangent), normal) >= 0.0,
+  );
+  return out;
 }
 
 struct AdjointNormalMapSample {
@@ -854,7 +1036,10 @@ fn sampleAdjointNormalMap(matId: u32, triIndex: u32, baryVW: vec2f, geomNormal: 
   if (base + 14u >= arrayLength(&materialTexDescriptors)) { return out; }
   let normalIdx = i32(materialTexDescriptors[base].y);
   if (normalIdx < 0) { return out; }
-  let frame = buildAdjointTangentFrame(triIndex, baryVW, geomNormal);
+  let normalGpuUvSlot = u32(
+    materialTexDescriptors[base + ADJOINT_MATERIAL_TEX_UV_NORMAL].x,
+  );
+  let frame = buildAdjointTangentFrame(triIndex, baryVW, geomNormal, normalGpuUvSlot);
   if (!frame.valid) { return out; }
   let texel = sampleAdjointMaterialLayerLinear(
     normalIdx,
@@ -894,7 +1079,12 @@ fn sampleAdjointClearcoatNormalMap(matId: u32, triIndex: u32, baryVW: vec2f, cle
   if (base + ADJOINT_MATERIAL_TEX_UV_CLEARCOAT_NORMAL + 1u >= arrayLength(&materialTexDescriptors)) { return out; }
   let clearcoatNormalIdx = i32(materialTexDescriptors[base + ADJOINT_MATERIAL_TEX_CLEARCOAT_NORMAL].x);
   if (clearcoatNormalIdx < 0) { return out; }
-  let frame = buildAdjointTangentFrame(triIndex, baryVW, clearcoatNormal);
+  let clearcoatNormalGpuUvSlot = u32(
+    materialTexDescriptors[base + ADJOINT_MATERIAL_TEX_UV_CLEARCOAT_NORMAL].x,
+  );
+  let frame = buildAdjointTangentFrame(
+    triIndex, baryVW, clearcoatNormal, clearcoatNormalGpuUvSlot,
+  );
   if (!frame.valid) { return out; }
   let texel = sampleAdjointMaterialLayerLinear(
     clearcoatNormalIdx,
@@ -939,21 +1129,19 @@ fn sampleAdjointBumpMap(matId: u32, triIndex: u32, baryVW: vec2f, shadingNormal:
       tri.x >= arrayLength(&positions) || tri.y >= arrayLength(&positions) || tri.z >= arrayLength(&positions)) {
     return out;
   }
-  let frame = buildAdjointTangentFrame(triIndex, baryVW, shadingNormal);
-  if (!frame.valid) { return out; }
   let bumpUvFitScale = materialTexDescriptors[base + 10u].zw;
   let bumpWrapMode = materialTexDescriptors[base + 16u].zw;
   let v = baryVW.x;
   let w = baryVW.y;
   let u = 1.0 - v - w;
   let uvMeta = materialTexDescriptors[base + ADJOINT_MATERIAL_TEX_UV_BUMP];
-  let texCoord = u32(uvMeta.x);
-  let uva = meshUvs[tri.x];
-  let uvb = meshUvs[tri.y];
-  let uvc = meshUvs[tri.z];
-  let rawUv0 = uva.xy * u + uvb.xy * v + uvc.xy * w;
-  let rawUv1 = uva.zw * u + uvb.zw * v + uvc.zw * w;
-  let rawUv = select(rawUv0, rawUv1, texCoord == 1u);
+  let gpuUvSlot = u32(uvMeta.x);
+  let frame = buildAdjointTangentFrame(triIndex, baryVW, shadingNormal, gpuUvSlot);
+  if (!frame.valid) { return out; }
+  let rawUv =
+    adjointUvForVertex(tri.x, gpuUvSlot) * u +
+    adjointUvForVertex(tri.y, gpuUvSlot) * v +
+    adjointUvForVertex(tri.z, gpuUvSlot) * w;
   let linearDims = vec2f(textureDimensions(materialTexturesLinear, 0));
   let sourceDims = max(linearDims * bumpUvFitScale, vec2f(1.0));
   let texelStep = vec2f(1.0 / sourceDims.x, 1.0 / sourceDims.y);
@@ -1008,7 +1196,10 @@ fn sampleAdjointNormalMapWithScale(
   if (base + 14u >= arrayLength(&materialTexDescriptors)) { return geomNormal; }
   let normalIdx = i32(materialTexDescriptors[base].y);
   if (normalIdx < 0) { return geomNormal; }
-  let frame = buildAdjointTangentFrame(triIndex, baryVW, geomNormal);
+  let normalGpuUvSlot = u32(
+    materialTexDescriptors[base + ADJOINT_MATERIAL_TEX_UV_NORMAL].x,
+  );
+  let frame = buildAdjointTangentFrame(triIndex, baryVW, geomNormal, normalGpuUvSlot);
   if (!frame.valid) { return geomNormal; }
   let texel = sampleAdjointMaterialLayerLinear(
     normalIdx,
@@ -1046,21 +1237,19 @@ fn sampleAdjointBumpMapWithScale(
       tri.x >= arrayLength(&positions) || tri.y >= arrayLength(&positions) || tri.z >= arrayLength(&positions)) {
     return shadingNormal;
   }
-  let frame = buildAdjointTangentFrame(triIndex, baryVW, shadingNormal);
-  if (!frame.valid) { return shadingNormal; }
   let bumpUvFitScale = materialTexDescriptors[base + 10u].zw;
   let bumpWrapMode = materialTexDescriptors[base + 16u].zw;
   let v = baryVW.x;
   let w = baryVW.y;
   let u = 1.0 - v - w;
   let uvMeta = materialTexDescriptors[base + ADJOINT_MATERIAL_TEX_UV_BUMP];
-  let texCoord = u32(uvMeta.x);
-  let uva = meshUvs[tri.x];
-  let uvb = meshUvs[tri.y];
-  let uvc = meshUvs[tri.z];
-  let rawUv0 = uva.xy * u + uvb.xy * v + uvc.xy * w;
-  let rawUv1 = uva.zw * u + uvb.zw * v + uvc.zw * w;
-  let rawUv = select(rawUv0, rawUv1, texCoord == 1u);
+  let gpuUvSlot = u32(uvMeta.x);
+  let frame = buildAdjointTangentFrame(triIndex, baryVW, shadingNormal, gpuUvSlot);
+  if (!frame.valid) { return shadingNormal; }
+  let rawUv =
+    adjointUvForVertex(tri.x, gpuUvSlot) * u +
+    adjointUvForVertex(tri.y, gpuUvSlot) * v +
+    adjointUvForVertex(tri.z, gpuUvSlot) * w;
   let linearDims = vec2f(textureDimensions(materialTexturesLinear, 0));
   let sourceDims = max(linearDims * bumpUvFitScale, vec2f(1.0));
   let texelStep = vec2f(1.0 / sourceDims.x, 1.0 / sourceDims.y);
@@ -1087,7 +1276,12 @@ fn sampleAdjointClearcoatNormalMapWithScale(
   if (base + ADJOINT_MATERIAL_TEX_UV_CLEARCOAT_NORMAL + 1u >= arrayLength(&materialTexDescriptors)) { return clearcoatNormal; }
   let clearcoatNormalIdx = i32(materialTexDescriptors[base + ADJOINT_MATERIAL_TEX_CLEARCOAT_NORMAL].x);
   if (clearcoatNormalIdx < 0) { return clearcoatNormal; }
-  let frame = buildAdjointTangentFrame(triIndex, baryVW, clearcoatNormal);
+  let clearcoatNormalGpuUvSlot = u32(
+    materialTexDescriptors[base + ADJOINT_MATERIAL_TEX_UV_CLEARCOAT_NORMAL].x,
+  );
+  let frame = buildAdjointTangentFrame(
+    triIndex, baryVW, clearcoatNormal, clearcoatNormalGpuUvSlot,
+  );
   if (!frame.valid) { return clearcoatNormal; }
   let texel = sampleAdjointMaterialLayerLinear(
     clearcoatNormalIdx,
@@ -1392,17 +1586,20 @@ fn adjointLuminance(v: vec3f) -> f32 {
 fn adjointPowerHeuristic(pdfA: f32, pdfB: f32) -> f32 {
   let a2 = pdfA * pdfA;
   let b2 = pdfB * pdfB;
-  return a2 / max(a2 + b2, 1e-6);
+  let denominator = a2 + b2;
+  if (!(denominator > 0.0) || !(denominator == denominator) ||
+      abs(denominator) > 3.402823e38) { return 0.0; }
+  return a2 / denominator;
 }
 
 fn adjointClearcoatPdf(clearcoat: f32, clearcoatRoughness: f32, normal: vec3f, wo: vec3f, wi: vec3f) -> f32 {
-  if (clearcoat < 1e-4) { return 0.0; }
+  if (!(clearcoat > 0.0)) { return 0.0; }
   let nDotV = max(dot(normal, wo), 0.0);
   let nDotL = max(dot(normal, wi), 0.0);
   if (nDotV <= 1e-5 || nDotL <= 1e-5) { return 0.0; }
   let h = safe_normalize(wi + wo);
   let nDotH = max(dot(normal, h), 0.0);
-  let alpha = max(clearcoatRoughness * clearcoatRoughness, 1e-3);
+  let alpha = max(clearcoatRoughness * clearcoatRoughness, ${PT_WEBGPU_MICROFACET_ALPHA_FLOOR});
   let d = ggxD(nDotH, alpha);
   let g1Wo = smithG1(nDotV, clearcoatRoughness);
   return (d * g1Wo) / max(4.0 * nDotV, 1e-6);
@@ -1415,14 +1612,14 @@ fn adjointCharliePdfD(nDotH: f32, alpha: f32) -> f32 {
 }
 
 fn adjointCharlieSheenPdf(sheen: f32, sheenRoughness: f32, normal: vec3f, wo: vec3f, wi: vec3f) -> f32 {
-  if (sheen < 1e-4) { return 0.0; }
+  if (!(sheen > 0.0)) { return 0.0; }
   let nDotL = max(dot(normal, wi), 0.0);
   let nDotV = max(dot(normal, wo), 0.0);
   if (nDotL <= 1e-5 || nDotV <= 1e-5) { return 0.0; }
   let h = safe_normalize(wi + wo);
   let nDotH = max(dot(normal, h), 0.0);
   let vDotH = max(dot(wo, h), 1e-6);
-  let alpha = max(sheenRoughness * sheenRoughness, 1e-3);
+  let alpha = max(sheenRoughness * sheenRoughness, ${PT_WEBGPU_MICROFACET_ALPHA_FLOOR});
   return (adjointCharliePdfD(nDotH, alpha) * nDotH) / max(4.0 * vDotH, 1e-6);
 }
 
@@ -1439,7 +1636,7 @@ fn adjointBrdfAnisotropicSpecPdf(
   let nDotL = max(dot(normal, wi), 0.0);
   if (nDotL <= 1e-5) { return 0.0; }
   let h = safe_normalize(wo + wi);
-  let alpha = max(roughness * roughness, 1e-3);
+  let alpha = max(roughness * roughness, ${PT_WEBGPU_MICROFACET_ALPHA_FLOOR});
   let aspect = sqrt(max(1.0 - 0.9 * anisotropy, 1e-4));
   let ax = max(alpha / aspect, 1e-4);
   let ay = max(alpha * aspect, 1e-4);
@@ -1481,13 +1678,13 @@ fn adjointBrdfDirectionalPdfFullSampledWithClearcoatNormal(
   let fresnel = fresnelSchlick(vDotH, f0);
   let baseSpecProb = clamp(mix(0.04, 0.96, max(adjointLuminance(fresnel), metallic)), 0.04, 0.96);
   let baseDiffProb = max(0.0, 1.0 - metallic);
-  let sumProb = max(baseSpecProb + baseDiffProb, 1e-4);
+  let sumProb = baseSpecProb + baseDiffProb;
   let specProb = baseSpecProb / sumProb;
   let diffProb = baseDiffProb / sumProb;
   let nDotL = max(wiDotN, 0.0);
   if (nDotL <= 1e-5) { return 0.0; }
   var pdfSpec: f32;
-  if (anisotropy > 1e-4) {
+  if (anisotropy > 0.0) {
     let tanT = adjointBuildTangent(normal);
     let tanB = cross(normal, tanT);
     let c = cos(anisotropyRotation);
@@ -1497,7 +1694,7 @@ fn adjointBrdfDirectionalPdfFullSampledWithClearcoatNormal(
     pdfSpec = adjointBrdfAnisotropicSpecPdf(roughness, anisotropy, normal, anisoT, anisoB, wo, wi);
   } else {
     let nDotH = max(dot(normal, h), 0.0);
-    let alpha = max(roughness * roughness, 1e-3);
+    let alpha = max(roughness * roughness, ${PT_WEBGPU_MICROFACET_ALPHA_FLOOR});
     let d = ggxD(nDotH, alpha);
     let g1Wo = smithG1(nDotV, roughness);
     pdfSpec = (d * g1Wo) / max(4.0 * nDotV, 1e-6);
@@ -1618,7 +1815,92 @@ struct DirectLightAdjoint {
   anisotropyRotationGrad: f32,
 }
 
-fn directLightAdjoint(
+struct AdjointDirectMaterial {
+  baseColor: vec3f,
+  roughness: f32,
+  metallic: f32,
+  specularColor: vec3f,
+  specularIntensity: f32,
+  clearcoat: f32,
+  clearcoatRoughness: f32,
+  sheen: f32,
+  sheenRoughness: f32,
+  sheenColor: vec3f,
+  iridescence: f32,
+  iridescenceIor: f32,
+  iridescenceThicknessMin: f32,
+  iridescenceThicknessMax: f32,
+  anisotropy: f32,
+  anisotropyRotation: f32,
+}
+
+const ADJOINT_DIRECT_PARAM_STEP = 1e-3;
+
+fn adjointDirectContributionForMaterial(
+  material: AdjointDirectMaterial,
+  n: vec3f,
+  clearcoatNormal: vec3f,
+  wo: vec3f,
+  wi: vec3f,
+  Li: vec3f,
+  lightPdf: f32,
+) -> vec3f {
+  return directLightContributionValue(
+    material.baseColor,
+    material.roughness,
+    material.metallic,
+    n,
+    clearcoatNormal,
+    wo,
+    wi,
+    material.specularColor,
+    material.specularIntensity,
+    material.clearcoat,
+    material.clearcoatRoughness,
+    material.sheen,
+    material.sheenRoughness,
+    material.sheenColor,
+    material.iridescence,
+    material.iridescenceIor,
+    material.iridescenceThicknessMin,
+    material.iridescenceThicknessMax,
+    material.anisotropy,
+    material.anisotropyRotation,
+    Li,
+    lightPdf,
+  );
+}
+
+fn adjointDirectScalarGradient(
+  dLoss_dR: vec3f,
+  plus: vec3f,
+  minus: vec3f,
+  denominator: f32,
+) -> f32 {
+  if (!(denominator > 0.0) || !(denominator == denominator) ||
+      abs(denominator) > 3.402823e38) { return 0.0; }
+  let derivative = (plus - minus) / denominator;
+  if (!all(derivative == derivative) ||
+      !all(abs(derivative) <= vec3f(3.402823e38))) { return 0.0; }
+  return dot(dLoss_dR, derivative);
+}
+
+fn adjointEffectiveIridescenceThickness(
+  authoredMin: f32,
+  authoredMax: f32,
+  texel: f32,
+) -> vec2f {
+  if (texel >= 0.0) {
+    let thickness = mix(authoredMin, authoredMax, texel);
+    return vec2f(thickness);
+  }
+  return vec2f(authoredMin, authoredMax);
+}
+
+// Differentiate the complete frozen-sample direct-light estimator. In
+// particular, finite-area and environment samples re-evaluate the BRDF PDF and
+// power-heuristic weight for every parameter perturbation; MIS is not frozen.
+fn directLightAdjointFull(
   dLoss_dR: vec3f,
   baseColor: vec3f,
   roughness: f32,
@@ -1643,78 +1925,227 @@ fn directLightAdjoint(
   iridescenceThicknessTexel: f32,
   anisotropy: f32,
   anisotropyRotation: f32,
-  nDotL: f32,
   Li: vec3f,
+  lightPdf: f32,
 ) -> DirectLightAdjoint {
-  let gBaseColor = dLoss_dR * dBrdf_dBaseColorWithAnisotropyAndIridescence(
-    baseColor, roughness, metallic, n, wo, wi,
-    anisotropy, anisotropyRotation, specularColor, specularIntensity,
-    iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
-  ) * nDotL * Li;
-  let gRough = dot(dLoss_dR, dBrdf_dRoughnessWithAnisotropyAndIridescence(
-    baseColor, roughness, metallic, n, wo, wi,
-    anisotropy, anisotropyRotation, specularColor, specularIntensity,
-    iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
-  ) * nDotL * Li);
-  let gSpecularColor = dLoss_dR * dBrdf_dSpecularColorWithAnisotropyAndIridescence(
-    baseColor, roughness, metallic, n, wo, wi,
-    anisotropy, anisotropyRotation, specularColor, specularIntensity,
-    iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
-  ) * nDotL * Li;
-  let gSpecularIntensity = dot(dLoss_dR, dBrdf_dSpecularIntensityWithAnisotropyAndIridescence(
-    baseColor, roughness, metallic, n, wo, wi,
-    anisotropy, anisotropyRotation, specularColor, specularIntensity,
-    iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
-  ) * nDotL * Li);
-  let gMetallic = dot(dLoss_dR, dBrdf_dMetallicWithAnisotropyAndIridescence(
-    baseColor, roughness, metallic, n, wo, wi,
-    anisotropy, anisotropyRotation, specularColor, specularIntensity,
-    iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
-  ) * nDotL * Li);
-  let gClearcoat = dot(dLoss_dR, dBrdf_dClearcoat(
-    clearcoatRoughness, clearcoatNormal, wo, wi,
-  ) * nDotL * Li);
-  let gClearcoatRoughness = dot(dLoss_dR, dBrdf_dClearcoatRoughness(
-    clearcoat, clearcoatRoughness, clearcoatNormal, wo, wi,
-  ) * nDotL * Li);
-  let gSheen = dot(dLoss_dR, dBrdf_dSheen(
-    sheenRoughness, sheenColor, n, wo, wi,
-  ) * nDotL * Li);
-  let gSheenColor = dLoss_dR * dBrdf_dSheenColor(
-    sheen, sheenRoughness, n, wo, wi,
-  ) * nDotL * Li;
-  let gSheenRoughness = dot(dLoss_dR, dBrdf_dSheenRoughness(
-    sheen, sheenRoughness, sheenColor, n, wo, wi,
-  ) * nDotL * Li);
-  let gIridescence = dot(dLoss_dR, dBrdf_dIridescence(
-    baseColor, roughness, metallic, n, wo, wi, specularColor, specularIntensity,
-    iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
-  ) * nDotL * Li);
-  let gIridescenceIor = dot(dLoss_dR, dBrdf_dIridescenceIor(
-    baseColor, roughness, metallic, n, wo, wi, specularColor, specularIntensity,
-    iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
-  ) * nDotL * Li);
-  let gIridescenceThicknessRangePartial = dBrdf_dIridescenceThicknessRange(
-    baseColor, roughness, metallic, n, wo, wi, specularColor, specularIntensity,
-    iridescence, iridescenceIor, authoredIridescenceThicknessMin,
-    authoredIridescenceThicknessMax, iridescenceThicknessTexel,
+  let original = AdjointDirectMaterial(
+    baseColor, roughness, metallic, specularColor, specularIntensity,
+    clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
+    iridescence, iridescenceIor,
+    iridescenceThicknessMin, iridescenceThicknessMax,
+    anisotropy, anisotropyRotation,
   );
-  let gIridescenceThicknessRange = vec2f(
-    dot(dLoss_dR, gIridescenceThicknessRangePartial.min * nDotL * Li),
-    dot(dLoss_dR, gIridescenceThicknessRangePartial.max * nDotL * Li),
+
+  var gBaseColor = vec3f(0.0);
+  for (var channel = 0u; channel < 3u; channel = channel + 1u) {
+    var plus = original;
+    var minus = original;
+    plus.baseColor[channel] = min(baseColor[channel] + ADJOINT_DIRECT_PARAM_STEP, 1.0);
+    minus.baseColor[channel] = max(baseColor[channel] - ADJOINT_DIRECT_PARAM_STEP, 0.0);
+    gBaseColor[channel] = adjointDirectScalarGradient(
+      dLoss_dR,
+      adjointDirectContributionForMaterial(plus, n, clearcoatNormal, wo, wi, Li, lightPdf),
+      adjointDirectContributionForMaterial(minus, n, clearcoatNormal, wo, wi, Li, lightPdf),
+      plus.baseColor[channel] - minus.baseColor[channel],
+    );
+  }
+
+  var plus = original;
+  var minus = original;
+  plus.roughness = min(roughness + ADJOINT_DIRECT_PARAM_STEP, 1.0);
+  minus.roughness = max(roughness - ADJOINT_DIRECT_PARAM_STEP, 0.0);
+  let gRoughness = adjointDirectScalarGradient(
+    dLoss_dR,
+    adjointDirectContributionForMaterial(plus, n, clearcoatNormal, wo, wi, Li, lightPdf),
+    adjointDirectContributionForMaterial(minus, n, clearcoatNormal, wo, wi, Li, lightPdf),
+    plus.roughness - minus.roughness,
   );
-  let gAnisotropy = dot(dLoss_dR, dBrdf_dAnisotropy(
-    baseColor, roughness, metallic, n, wo, wi,
-    anisotropy, anisotropyRotation, specularColor, specularIntensity,
-  ) * nDotL * Li);
-  let gAnisotropyRotation = dot(dLoss_dR, dBrdf_dAnisotropyRotation(
-    baseColor, roughness, metallic, n, wo, wi,
-    anisotropy, anisotropyRotation, specularColor, specularIntensity,
-  ) * nDotL * Li);
+
+  var gSpecularColor = vec3f(0.0);
+  for (var channel = 0u; channel < 3u; channel = channel + 1u) {
+    plus = original;
+    minus = original;
+    plus.specularColor[channel] = min(specularColor[channel] + ADJOINT_DIRECT_PARAM_STEP, 1.0);
+    minus.specularColor[channel] = max(specularColor[channel] - ADJOINT_DIRECT_PARAM_STEP, 0.0);
+    gSpecularColor[channel] = adjointDirectScalarGradient(
+      dLoss_dR,
+      adjointDirectContributionForMaterial(plus, n, clearcoatNormal, wo, wi, Li, lightPdf),
+      adjointDirectContributionForMaterial(minus, n, clearcoatNormal, wo, wi, Li, lightPdf),
+      plus.specularColor[channel] - minus.specularColor[channel],
+    );
+  }
+
+  plus = original;
+  minus = original;
+  plus.specularIntensity = min(specularIntensity + ADJOINT_DIRECT_PARAM_STEP, 1.0);
+  minus.specularIntensity = max(specularIntensity - ADJOINT_DIRECT_PARAM_STEP, 0.0);
+  let gSpecularIntensity = adjointDirectScalarGradient(
+    dLoss_dR,
+    adjointDirectContributionForMaterial(plus, n, clearcoatNormal, wo, wi, Li, lightPdf),
+    adjointDirectContributionForMaterial(minus, n, clearcoatNormal, wo, wi, Li, lightPdf),
+    plus.specularIntensity - minus.specularIntensity,
+  );
+
+  plus = original;
+  minus = original;
+  plus.metallic = min(metallic + ADJOINT_DIRECT_PARAM_STEP, 1.0);
+  minus.metallic = max(metallic - ADJOINT_DIRECT_PARAM_STEP, 0.0);
+  let gMetallic = adjointDirectScalarGradient(
+    dLoss_dR,
+    adjointDirectContributionForMaterial(plus, n, clearcoatNormal, wo, wi, Li, lightPdf),
+    adjointDirectContributionForMaterial(minus, n, clearcoatNormal, wo, wi, Li, lightPdf),
+    plus.metallic - minus.metallic,
+  );
+
+  plus = original;
+  minus = original;
+  plus.clearcoat = min(clearcoat + ADJOINT_DIRECT_PARAM_STEP, 1.0);
+  minus.clearcoat = max(clearcoat - ADJOINT_DIRECT_PARAM_STEP, 0.0);
+  let gClearcoat = adjointDirectScalarGradient(
+    dLoss_dR,
+    adjointDirectContributionForMaterial(plus, n, clearcoatNormal, wo, wi, Li, lightPdf),
+    adjointDirectContributionForMaterial(minus, n, clearcoatNormal, wo, wi, Li, lightPdf),
+    plus.clearcoat - minus.clearcoat,
+  );
+
+  plus = original;
+  minus = original;
+  plus.clearcoatRoughness = min(clearcoatRoughness + ADJOINT_DIRECT_PARAM_STEP, 1.0);
+  minus.clearcoatRoughness = max(clearcoatRoughness - ADJOINT_DIRECT_PARAM_STEP, 0.0);
+  let gClearcoatRoughness = adjointDirectScalarGradient(
+    dLoss_dR,
+    adjointDirectContributionForMaterial(plus, n, clearcoatNormal, wo, wi, Li, lightPdf),
+    adjointDirectContributionForMaterial(minus, n, clearcoatNormal, wo, wi, Li, lightPdf),
+    plus.clearcoatRoughness - minus.clearcoatRoughness,
+  );
+
+  plus = original;
+  minus = original;
+  plus.sheen = min(sheen + ADJOINT_DIRECT_PARAM_STEP, 1.0);
+  minus.sheen = max(sheen - ADJOINT_DIRECT_PARAM_STEP, 0.0);
+  let gSheen = adjointDirectScalarGradient(
+    dLoss_dR,
+    adjointDirectContributionForMaterial(plus, n, clearcoatNormal, wo, wi, Li, lightPdf),
+    adjointDirectContributionForMaterial(minus, n, clearcoatNormal, wo, wi, Li, lightPdf),
+    plus.sheen - minus.sheen,
+  );
+
+  plus = original;
+  minus = original;
+  plus.sheenRoughness = min(sheenRoughness + ADJOINT_DIRECT_PARAM_STEP, 1.0);
+  minus.sheenRoughness = max(sheenRoughness - ADJOINT_DIRECT_PARAM_STEP, 0.0);
+  let gSheenRoughness = adjointDirectScalarGradient(
+    dLoss_dR,
+    adjointDirectContributionForMaterial(plus, n, clearcoatNormal, wo, wi, Li, lightPdf),
+    adjointDirectContributionForMaterial(minus, n, clearcoatNormal, wo, wi, Li, lightPdf),
+    plus.sheenRoughness - minus.sheenRoughness,
+  );
+
+  var gSheenColor = vec3f(0.0);
+  for (var channel = 0u; channel < 3u; channel = channel + 1u) {
+    plus = original;
+    minus = original;
+    plus.sheenColor[channel] = min(sheenColor[channel] + ADJOINT_DIRECT_PARAM_STEP, 1.0);
+    minus.sheenColor[channel] = max(sheenColor[channel] - ADJOINT_DIRECT_PARAM_STEP, 0.0);
+    gSheenColor[channel] = adjointDirectScalarGradient(
+      dLoss_dR,
+      adjointDirectContributionForMaterial(plus, n, clearcoatNormal, wo, wi, Li, lightPdf),
+      adjointDirectContributionForMaterial(minus, n, clearcoatNormal, wo, wi, Li, lightPdf),
+      plus.sheenColor[channel] - minus.sheenColor[channel],
+    );
+  }
+
+  plus = original;
+  minus = original;
+  plus.iridescence = min(iridescence + ADJOINT_DIRECT_PARAM_STEP, 1.0);
+  minus.iridescence = max(iridescence - ADJOINT_DIRECT_PARAM_STEP, 0.0);
+  let gIridescence = adjointDirectScalarGradient(
+    dLoss_dR,
+    adjointDirectContributionForMaterial(plus, n, clearcoatNormal, wo, wi, Li, lightPdf),
+    adjointDirectContributionForMaterial(minus, n, clearcoatNormal, wo, wi, Li, lightPdf),
+    plus.iridescence - minus.iridescence,
+  );
+
+  plus = original;
+  minus = original;
+  plus.iridescenceIor = iridescenceIor + ADJOINT_DIRECT_PARAM_STEP;
+  minus.iridescenceIor = max(iridescenceIor - ADJOINT_DIRECT_PARAM_STEP, 1.0);
+  let gIridescenceIor = adjointDirectScalarGradient(
+    dLoss_dR,
+    adjointDirectContributionForMaterial(plus, n, clearcoatNormal, wo, wi, Li, lightPdf),
+    adjointDirectContributionForMaterial(minus, n, clearcoatNormal, wo, wi, Li, lightPdf),
+    plus.iridescenceIor - minus.iridescenceIor,
+  );
+
+  var authoredMinPlus = authoredIridescenceThicknessMin + ADJOINT_DIRECT_PARAM_STEP;
+  var authoredMinMinus = max(authoredIridescenceThicknessMin - ADJOINT_DIRECT_PARAM_STEP, 0.0);
+  plus = original;
+  minus = original;
+  var effectiveThickness = adjointEffectiveIridescenceThickness(
+    authoredMinPlus, authoredIridescenceThicknessMax, iridescenceThicknessTexel,
+  );
+  plus.iridescenceThicknessMin = effectiveThickness.x;
+  plus.iridescenceThicknessMax = effectiveThickness.y;
+  effectiveThickness = adjointEffectiveIridescenceThickness(
+    authoredMinMinus, authoredIridescenceThicknessMax, iridescenceThicknessTexel,
+  );
+  minus.iridescenceThicknessMin = effectiveThickness.x;
+  minus.iridescenceThicknessMax = effectiveThickness.y;
+  let gThicknessMin = adjointDirectScalarGradient(
+    dLoss_dR,
+    adjointDirectContributionForMaterial(plus, n, clearcoatNormal, wo, wi, Li, lightPdf),
+    adjointDirectContributionForMaterial(minus, n, clearcoatNormal, wo, wi, Li, lightPdf),
+    authoredMinPlus - authoredMinMinus,
+  );
+
+  let authoredMaxPlus = authoredIridescenceThicknessMax + ADJOINT_DIRECT_PARAM_STEP;
+  let authoredMaxMinus = max(authoredIridescenceThicknessMax - ADJOINT_DIRECT_PARAM_STEP, 0.0);
+  plus = original;
+  minus = original;
+  effectiveThickness = adjointEffectiveIridescenceThickness(
+    authoredIridescenceThicknessMin, authoredMaxPlus, iridescenceThicknessTexel,
+  );
+  plus.iridescenceThicknessMin = effectiveThickness.x;
+  plus.iridescenceThicknessMax = effectiveThickness.y;
+  effectiveThickness = adjointEffectiveIridescenceThickness(
+    authoredIridescenceThicknessMin, authoredMaxMinus, iridescenceThicknessTexel,
+  );
+  minus.iridescenceThicknessMin = effectiveThickness.x;
+  minus.iridescenceThicknessMax = effectiveThickness.y;
+  let gThicknessMax = adjointDirectScalarGradient(
+    dLoss_dR,
+    adjointDirectContributionForMaterial(plus, n, clearcoatNormal, wo, wi, Li, lightPdf),
+    adjointDirectContributionForMaterial(minus, n, clearcoatNormal, wo, wi, Li, lightPdf),
+    authoredMaxPlus - authoredMaxMinus,
+  );
+
+  plus = original;
+  minus = original;
+  plus.anisotropy = min(anisotropy + ADJOINT_DIRECT_PARAM_STEP, 1.0);
+  minus.anisotropy = max(anisotropy - ADJOINT_DIRECT_PARAM_STEP, 0.0);
+  let gAnisotropy = adjointDirectScalarGradient(
+    dLoss_dR,
+    adjointDirectContributionForMaterial(plus, n, clearcoatNormal, wo, wi, Li, lightPdf),
+    adjointDirectContributionForMaterial(minus, n, clearcoatNormal, wo, wi, Li, lightPdf),
+    plus.anisotropy - minus.anisotropy,
+  );
+
+  plus = original;
+  minus = original;
+  plus.anisotropyRotation = anisotropyRotation + ADJOINT_DIRECT_PARAM_STEP;
+  minus.anisotropyRotation = anisotropyRotation - ADJOINT_DIRECT_PARAM_STEP;
+  let gAnisotropyRotation = adjointDirectScalarGradient(
+    dLoss_dR,
+    adjointDirectContributionForMaterial(plus, n, clearcoatNormal, wo, wi, Li, lightPdf),
+    adjointDirectContributionForMaterial(minus, n, clearcoatNormal, wo, wi, Li, lightPdf),
+    plus.anisotropyRotation - minus.anisotropyRotation,
+  );
+
   return DirectLightAdjoint(
-    gBaseColor, gRough, gSpecularColor, gSpecularIntensity, gMetallic,
+    gBaseColor, gRoughness, gSpecularColor, gSpecularIntensity, gMetallic,
     gClearcoat, gClearcoatRoughness, gSheen, gSheenRoughness, gSheenColor,
-    gIridescence, gIridescenceIor, gIridescenceThicknessRange, gAnisotropy, gAnisotropyRotation,
+    gIridescence, gIridescenceIor, vec2f(gThicknessMin, gThicknessMax),
+    gAnisotropy, gAnisotropyRotation,
   );
 }
 
@@ -1866,7 +2297,7 @@ fn directLightClearcoatNormalScaleGradient(
   Li: vec3f,
   lightPdf: f32,
 ) -> f32 {
-  if (dot(dClearcoatNormal_dScale, dClearcoatNormal_dScale) <= 1e-12 || clearcoat <= 1e-6) { return 0.0; }
+  if (dot(dClearcoatNormal_dScale, dClearcoatNormal_dScale) <= 1e-12 || clearcoat <= 0.0) { return 0.0; }
   let h = ADJOINT_NORMAL_SCALE_DERIV_STEP;
   let ccPlus = safe_normalize(clearcoatNormal + dClearcoatNormal_dScale * h);
   let ccMinus = safe_normalize(clearcoatNormal - dClearcoatNormal_dScale * h);
@@ -1883,6 +2314,24 @@ fn directLightClearcoatNormalScaleGradient(
     anisotropy, anisotropyRotation, Li, lightPdf,
   );
   return dot(dLoss_dR, (cPlus - cMinus) / (2.0 * h));
+}
+
+struct EmitterRadianceAdjoint {
+  color: vec3f,
+  intensity: f32,
+}
+
+fn emitterRadianceAdjoint(
+  dLoss_dPackedRadiance: vec3f,
+  sourceFactor: vec3f,
+  emitterColor: vec3f,
+  emitterIntensity: f32,
+  invReplaySamples: f32,
+) -> EmitterRadianceAdjoint {
+  return EmitterRadianceAdjoint(
+    dLoss_dPackedRadiance * sourceFactor * emitterIntensity * invReplaySamples,
+    dot(dLoss_dPackedRadiance, sourceFactor * emitterColor) * invReplaySamples,
+  );
 }
 
 fn scatterEmitterRadianceGradient(
@@ -1909,15 +2358,19 @@ fn scatterEmitterRadianceGradient(
     );
     let emitterIntensity = bitcast<f32>(payload.w);
     let gradOffset = d.z;
+    let emitterGradient = emitterRadianceAdjoint(
+      dLoss_dPackedRadiance,
+      sourceFactor,
+      emitterColor,
+      emitterIntensity,
+      invReplaySamples,
+    );
     if (d.y == ${ADJOINT_FIELD_EMITTER_COLOR}u) {
-      let dPackedRadiance_dColor = sourceFactor * emitterIntensity;
-      let gColor = dLoss_dPackedRadiance * dPackedRadiance_dColor;
-      adjointScatter(gradOffset, gColor.x * invReplaySamples);
-      adjointScatter(gradOffset + 1u, gColor.y * invReplaySamples);
-      adjointScatter(gradOffset + 2u, gColor.z * invReplaySamples);
+      adjointScatter(gradOffset, emitterGradient.color.x);
+      adjointScatter(gradOffset + 1u, emitterGradient.color.y);
+      adjointScatter(gradOffset + 2u, emitterGradient.color.z);
     } else {
-      let dPackedRadiance_dIntensity = sourceFactor * emitterColor;
-      adjointScatter(gradOffset, dot(dLoss_dPackedRadiance, dPackedRadiance_dIntensity) * invReplaySamples);
+      adjointScatter(gradOffset, emitterGradient.intensity);
     }
   }
 }
@@ -1934,7 +2387,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   let replaySamples = max(params.sampleCount, 1u);
   let invReplaySamples = 1.0 / f32(replaySamples);
   for (var sampleIdx = 0u; sampleIdx < replaySamples; sampleIdx = sampleIdx + 1u) {
-    var rng = pcgInit(gid.x, gid.y, ADJOINT_FROZEN_SEED_BASE + sampleIdx);
+    let frameSeed = ADJOINT_FROZEN_SEED_BASE + sampleIdx;
+    var rng = pcgInit(gid.x, gid.y, ptRngFrameKey(frameSeed, 0u));
     let jitter = vec2f(rand_f32(&rng), rand_f32(&rng));
     let ray = generatePrimaryRay(gid.x, gid.y, jitter);
     let hit = closestHit(ray.origin, ray.direction);
@@ -1955,10 +2409,10 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     let aoSample = sampleAdjointAo(matId, hit.tri, hitBaryVW);
     let baseColorFactor = baseColorNoAoFactor * aoSample.factor;
     let effectiveBaseColor = baseColor * baseColorFactor;
-    let roughness = clamp(m0.w, 0.02, 1.0);
+    let roughness = clamp(m0.w, 0.0, 1.0);
     let metallic = clamp(m1.w, 0.0, 1.0);
     let ormFactor = sampleAdjointOrmTexture(matId, hit.tri, vec2f(hit.bary.y, hit.bary.z));
-    let effectiveRoughness = clamp(roughness * ormFactor.g, 0.02, 1.0);
+    let effectiveRoughness = clamp(roughness * ormFactor.g, 0.0, 1.0);
     let effectiveMetallic = clamp(metallic * ormFactor.b, 0.0, 1.0);
     let isUnlit = (u32(max(m26.w, 0.0)) & 2u) != 0u;
     let specularColor = m27.rgb;
@@ -2009,7 +2463,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       anisotropyRotation = anisoDesc.y;
     }
     let effectiveAnisotropy = clamp(anisotropy * anisotropyMapSample.strength, 0.0, 1.0);
-    let effectiveAnisotropyRotation = anisotropyRotation + anisotropyMapSample.rotationOffset;
+    let localAnisotropyRotation = anisotropyRotation + anisotropyMapSample.rotationOffset;
 
     let idx = indices[hit.tri];
     let nGeo = safe_normalize(hit.bary.x * normals[idx.x].xyz + hit.bary.y * normals[idx.y].xyz + hit.bary.z * normals[idx.z].xyz);
@@ -2020,6 +2474,10 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     let normalMapSample = sampleAdjointNormalMap(matId, hit.tri, hitBaryVW, nFace);
     let bumpMapSample = sampleAdjointBumpMap(matId, hit.tri, hitBaryVW, normalMapSample.normal);
     let n = bumpMapSample.normal;
+    let anisotropyOrientation = adjointAnisotropyOrientation(
+      matId, hit.tri, hitBaryVW, n, localAnisotropyRotation,
+    );
+    let effectiveAnisotropyRotation = anisotropyOrientation.angle;
     let clearcoatNormalMapSample = sampleAdjointClearcoatNormalMap(matId, hit.tri, hitBaryVW, n);
     let clearcoatNormal = clearcoatNormalMapSample.normal;
     var dNormal_dNormalScale = normalMapSample.dNormal_dScale;
@@ -2111,14 +2569,14 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       let nDotL = max(0.0, dot(n, wi));
       if (nDotL <= 0.0) { continue; }
       if (!directionalShadowDisabled && anyHit(pos + n * 1e-3, wi, 1e30)) { continue; }
-      let lg = directLightAdjoint(
+      let lg = directLightAdjointFull(
         dLoss_dR, effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, clearcoatNormal, wo, wi, effectiveSpecularColor, effectiveSpecularIntensity,
         effectiveClearcoat, effectiveClearcoatRoughness, sheen, effectiveSheenRoughness, effectiveSheenColor,
         effectiveIridescence,
         iridescenceIor, effectiveIridescenceThicknessMin, effectiveIridescenceThicknessMax,
         iridescenceThicknessMin, iridescenceThicknessMax, iridescenceThicknessSample,
         effectiveAnisotropy, effectiveAnisotropyRotation,
-        nDotL, dIrrMean.rgb,
+        dIrrMean.rgb, 0.0,
       );
       gBaseColor = gBaseColor + lg.baseColor;
       gRough = gRough + lg.roughness;
@@ -2182,23 +2640,24 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       let ptMaxDist = ptExtra.x;
       let ptDecay   = ptExtra.y;
       let toPoint = lp - pos;
-      let dist2 = max(dot(toPoint, toPoint), 1e-5);
+      let dist2 = dot(toPoint, toPoint);
+      if (!(dist2 > 0.0)) { continue; }
       let dist = sqrt(dist2);
       if (ptMaxDist > 0.0 && dist > ptMaxDist) { continue; }
       let wi = toPoint / dist;
       let nDotL = max(0.0, dot(n, wi));
       if (nDotL <= 0.0) { continue; }
       if (ptExtra.z <= 0.5 && anyHit(pos + n * 1e-3, wi, dist - 2e-3)) { continue; } // shadowed
-      let attenuation = select(1.0 / dist2, pow(max(dist, 1.0), -ptDecay), ptDecay > 0.01);
+      let attenuation = pointSpotDistanceAttenuation(dist, ptMaxDist, ptDecay);
       let Li = rad * attenuation;
-      let lg = directLightAdjoint(
+      let lg = directLightAdjointFull(
         dLoss_dR, effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, clearcoatNormal, wo, wi, effectiveSpecularColor, effectiveSpecularIntensity,
         effectiveClearcoat, effectiveClearcoatRoughness, sheen, effectiveSheenRoughness, effectiveSheenColor,
         effectiveIridescence,
         iridescenceIor, effectiveIridescenceThicknessMin, effectiveIridescenceThicknessMax,
         iridescenceThicknessMin, iridescenceThicknessMax, iridescenceThicknessSample,
         effectiveAnisotropy, effectiveAnisotropyRotation,
-        nDotL, Li,
+        Li, 0.0,
       );
       gBaseColor = gBaseColor + lg.baseColor;
       gRough = gRough + lg.roughness;
@@ -2265,7 +2724,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       let cosOuter = saxis.w;
       let cosInner = sradW.w;
       let toSpot = spos - pos;
-      let dist2 = max(dot(toSpot, toSpot), 1e-5);
+      let dist2 = dot(toSpot, toSpot);
+      if (!(dist2 > 0.0)) { continue; }
       let dist = sqrt(dist2);
       if (spExtra.x > 0.0 && dist > spExtra.x) { continue; }
       let wi = toSpot / dist;
@@ -2275,16 +2735,16 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       if (nDotL <= 0.0) { continue; }
       if (spExtra.z <= 0.5 && anyHit(pos + n * 1e-3, wi, dist - 2e-3)) { continue; }
       let softness = smoothstep(cosOuter, max(cosInner, cosOuter + 1e-6), coneCos);
-      let attenuation = select(1.0 / dist2, pow(max(dist, 1.0), -spExtra.y), spExtra.y > 0.01);
+      let attenuation = pointSpotDistanceAttenuation(dist, spExtra.x, spExtra.y);
       let Li = sradW.rgb * softness * attenuation;
-      let lg = directLightAdjoint(
+      let lg = directLightAdjointFull(
         dLoss_dR, effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, clearcoatNormal, wo, wi, effectiveSpecularColor, effectiveSpecularIntensity,
         effectiveClearcoat, effectiveClearcoatRoughness, sheen, effectiveSheenRoughness, effectiveSheenColor,
         effectiveIridescence,
         iridescenceIor, effectiveIridescenceThicknessMin, effectiveIridescenceThicknessMax,
         iridescenceThicknessMin, iridescenceThicknessMax, iridescenceThicknessSample,
         effectiveAnisotropy, effectiveAnisotropyRotation,
-        nDotL, Li,
+        Li, 0.0,
       );
       gBaseColor = gBaseColor + lg.baseColor;
       gRough = gRough + lg.roughness;
@@ -2362,13 +2822,14 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         let r = length(ru);
         let disc = adjointConcentricDiscSample(vec2f(xi1 * 2.0 - 1.0, xi2 * 2.0 - 1.0));
         lpos = rpos + ru * disc.x + rv * disc.y;
-        area = max(PI * r * r, 1e-6);
+        area = PI * r * r;
       } else {
         lpos = rpos + ru * (xi1 * 2.0 - 1.0) + rv * (xi2 * 2.0 - 1.0);
-        area = max(4.0 * length(cross(ru, rv)), 1e-6);
+        area = 4.0 * length(cross(ru, rv));
       }
       let toLight = lpos - pos;
-      let dist2 = max(dot(toLight, toLight), 1e-6);
+      let dist2 = dot(toLight, toLight);
+      if (dist2 <= 0.0 || area <= 0.0) { continue; }
       let dist = sqrt(dist2);
       let wi = toLight / dist;
       let nDotL = max(0.0, dot(n, wi));
@@ -2376,24 +2837,23 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       let lightNormal = safe_normalize(cross(ru, rv));
       let cosLight = max(dot(lightNormal, -wi), 0.0);
       if (cosLight <= 0.0) { continue; }
-      if (rectAreaLights[rb].w <= 0.5 && anyHit(pos + n * 1e-3, wi, dist - 2e-3)) { continue; } // shadowed
-      let lightPdf = dist2 / max(cosLight * area, 1e-6);
-      let LiPerMisUnit = rad / max(lightPdf, 1e-6);
+      if (rectAreaLights[rb].w <= 0.5 && anyHit(pos + n * 1e-3, wi, max(dist - 2e-3, 1e-3))) { continue; } // shadowed
+      let lightPdf = dist2 / (cosLight * area);
+      let LiPerMisUnit = rad / lightPdf;
       let misWeight = adjointDirectLightMisWeight(
         effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, clearcoatNormal, wo, wi,
         effectiveSpecularColor, effectiveSpecularIntensity,
         effectiveClearcoat, effectiveClearcoatRoughness, sheen, effectiveSheenRoughness,
         effectiveAnisotropy, effectiveAnisotropyRotation, lightPdf,
       );
-      let Li = LiPerMisUnit * misWeight;
-      let lg = directLightAdjoint(
+      let lg = directLightAdjointFull(
         dLoss_dR, effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, clearcoatNormal, wo, wi, effectiveSpecularColor, effectiveSpecularIntensity,
         effectiveClearcoat, effectiveClearcoatRoughness, sheen, effectiveSheenRoughness, effectiveSheenColor,
         effectiveIridescence,
         iridescenceIor, effectiveIridescenceThicknessMin, effectiveIridescenceThicknessMax,
         iridescenceThicknessMin, iridescenceThicknessMax, iridescenceThicknessSample,
         effectiveAnisotropy, effectiveAnisotropyRotation,
-        nDotL, Li,
+        LiPerMisUnit, lightPdf,
       );
       gBaseColor = gBaseColor + lg.baseColor;
       gRough = gRough + lg.roughness;
@@ -2434,7 +2894,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
           effectiveIridescence, iridescenceIor, effectiveIridescenceThicknessMin, effectiveIridescenceThicknessMax,
           effectiveAnisotropy, effectiveAnisotropyRotation, LiPerMisUnit, lightPdf,
         );
-        let areaFactor = misWeight / max(lightPdf, 1e-6);
+        let areaFactor = misWeight / lightPdf;
         let brdfValue = directLightBrdfValue(
           effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, clearcoatNormal, wo, wi, effectiveSpecularColor, effectiveSpecularIntensity,
           effectiveClearcoat, effectiveClearcoatRoughness, sheen, effectiveSheenRoughness, effectiveSheenColor,
@@ -2452,20 +2912,18 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     }
 
     // Mesh-area lights: stochastic triangle-area replay of each packed emissive
-    // triangle or emissive-map texel subtriangle. This mirrors the forward NEE
+    // source triangle. This mirrors the forward NEE
     // sampler and its per-light MIS weight without pretending to replay the
     // forward one-of-N light-selection lottery.
     for (var mi = 0u; mi < params.meshAreaLightCount; mi = mi + 1u) {
-      let mb = mi * 4u;
+      let mb = mi * 7u;
       let a = meshAreaLights[mb].xyz;
       let b = meshAreaLights[mb + 1u].xyz;
       let c = meshAreaLights[mb + 2u].xyz;
       let mr = meshAreaLights[mb + 3u];
-      var sourceFactor = vec3f(1.0);
       var sourceOwnerSlot = 0xffffffffu;
       if (mi < arrayLength(&meshAreaLightSourceFactors)) {
         let sourceRecord = meshAreaLightSourceFactors[mi];
-        sourceFactor = sourceRecord.rgb;
         let ownerToken = u32(max(sourceRecord.w, 0.0) + 0.5);
         if (ownerToken > 0u) {
           sourceOwnerSlot = ownerToken - 1u;
@@ -2478,35 +2936,39 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       let vv = r2 * su;
       let ww = 1.0 - uu - vv;
       let lpos = a * uu + b * vv + c * ww;
+      let sourceFactor = sampleAdjointMeshEmitterSourceFactor(
+        mi, vec3f(uu, vv, ww), lpos,
+      );
+      let sampledRadiance = meshAreaLights[mb + 6u].rgb * sourceFactor;
       let edgeCross = cross(b - a, c - a);
-      let area = max(0.5 * length(edgeCross), 1e-6);
+      let area = 0.5 * length(edgeCross);
       let lightNormal = safe_normalize(edgeCross);
       let toLight = lpos - pos;
-      let dist2 = max(dot(toLight, toLight), 1e-6);
+      let dist2 = dot(toLight, toLight);
+      if (dist2 <= 0.0 || area <= 0.0) { continue; }
       let dist = sqrt(dist2);
       let wi = toLight / dist;
       let nDotL = max(0.0, dot(n, wi));
       if (nDotL <= 0.0) { continue; }
       let cosLight = max(dot(lightNormal, -wi), 0.0);
       if (cosLight <= 0.0) { continue; }
-      if (mr.w <= 0.5 && anyHit(pos + n * 1e-3, wi, dist - 2e-3)) { continue; }
-      let lightPdf = dist2 / max(cosLight * area, 1e-6);
-      let LiPerMisUnit = mr.rgb / max(lightPdf, 1e-6);
+      if (mr.w <= 0.5 && anyHit(pos + n * 1e-3, wi, max(dist - 2e-3, 1e-3))) { continue; }
+      let lightPdf = dist2 / (cosLight * area);
+      let LiPerMisUnit = sampledRadiance / lightPdf;
       let misWeight = adjointDirectLightMisWeight(
         effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, clearcoatNormal, wo, wi,
         effectiveSpecularColor, effectiveSpecularIntensity,
         effectiveClearcoat, effectiveClearcoatRoughness, sheen, effectiveSheenRoughness,
         effectiveAnisotropy, effectiveAnisotropyRotation, lightPdf,
       );
-      let Li = LiPerMisUnit * misWeight;
-      let lg = directLightAdjoint(
+      let lg = directLightAdjointFull(
         dLoss_dR, effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, clearcoatNormal, wo, wi, effectiveSpecularColor, effectiveSpecularIntensity,
         effectiveClearcoat, effectiveClearcoatRoughness, sheen, effectiveSheenRoughness, effectiveSheenColor,
         effectiveIridescence,
         iridescenceIor, effectiveIridescenceThicknessMin, effectiveIridescenceThicknessMax,
         iridescenceThicknessMin, iridescenceThicknessMax, iridescenceThicknessSample,
         effectiveAnisotropy, effectiveAnisotropyRotation,
-        nDotL, Li,
+        LiPerMisUnit, lightPdf,
       );
       gBaseColor = gBaseColor + lg.baseColor;
       gRough = gRough + lg.roughness;
@@ -2547,7 +3009,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
           effectiveIridescence, iridescenceIor, effectiveIridescenceThicknessMin, effectiveIridescenceThicknessMax,
           effectiveAnisotropy, effectiveAnisotropyRotation, LiPerMisUnit, lightPdf,
         );
-        let areaFactor = misWeight / max(lightPdf, 1e-6);
+        let areaFactor = misWeight / lightPdf;
         let brdfValue = directLightBrdfValue(
           effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, clearcoatNormal, wo, wi, effectiveSpecularColor, effectiveSpecularIntensity,
           effectiveClearcoat, effectiveClearcoatRoughness, sheen, effectiveSheenRoughness, effectiveSheenColor,
@@ -2575,7 +3037,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       let wi = envSample.wi;
       let nDotL = max(0.0, dot(n, wi));
       if (nDotL > 0.0 && !anyHit(pos + n * 1e-3, wi, 1e30)) {
-        let envLiPerUnitIntensity = envSample.value / max(envSample.pdf, 1e-8);
+        let envLiPerUnitIntensity = envSample.value / envSample.pdf;
         let envMapIntensity = adjointMaterialEnvMapIntensity(matId);
         let LiPerMisUnit = envLiPerUnitIntensity * envMapIntensity;
         let misWeight = adjointDirectLightMisWeight(
@@ -2584,15 +3046,14 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
           effectiveClearcoat, effectiveClearcoatRoughness, sheen, effectiveSheenRoughness,
           effectiveAnisotropy, effectiveAnisotropyRotation, envSample.pdf,
         );
-        let Li = LiPerMisUnit * misWeight;
-        let lg = directLightAdjoint(
+        let lg = directLightAdjointFull(
           dLoss_dR, effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, clearcoatNormal, wo, wi, effectiveSpecularColor, effectiveSpecularIntensity,
           effectiveClearcoat, effectiveClearcoatRoughness, sheen, effectiveSheenRoughness, effectiveSheenColor,
           effectiveIridescence,
           iridescenceIor, effectiveIridescenceThicknessMin, effectiveIridescenceThicknessMax,
           iridescenceThicknessMin, iridescenceThicknessMax, iridescenceThicknessSample,
           effectiveAnisotropy, effectiveAnisotropyRotation,
-          nDotL, Li,
+          LiPerMisUnit, envSample.pdf,
         );
         gBaseColor = gBaseColor + lg.baseColor;
         gRough = gRough + lg.roughness;
@@ -2656,6 +3117,18 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       let payload = adjointParamDescs[descBase + 1u];
       if (d.y == ${ADJOINT_FIELD_EMITTER_COLOR}u || d.y == ${ADJOINT_FIELD_EMITTER_INTENSITY}u) { continue; }
       if (d.x != matId) { continue; }
+      // An unlit primary hit has no BRDF, environment, or normal response.
+      // Only its base/occlusion colour and additive emission/light-map terms
+      // remain differentiable. Skip the other slots rather than scattering a
+      // numerically-computed value so their gradients are bit-exact zero.
+      if (isUnlit &&
+          d.y != ${ADJOINT_FIELD_BASECOLOR}u &&
+          d.y != ${ADJOINT_FIELD_AO_MAP_INTENSITY}u &&
+          d.y != ${ADJOINT_FIELD_LIGHT_MAP_INTENSITY}u &&
+          d.y != ${ADJOINT_FIELD_EMISSIVE}u &&
+          d.y != ${ADJOINT_FIELD_EMISSIVE_INTENSITY}u) {
+        continue;
+      }
       let gradOffset = d.z;
       if (d.y == ${ADJOINT_FIELD_BASECOLOR}u) {
         let gUnlitBaseColor = dLoss_dR * baseColorFactor;
@@ -2713,7 +3186,11 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       } else if (d.y == ${ADJOINT_FIELD_ANISOTROPY}u) {
         adjointScatter(gradOffset, gAnisotropy * anisotropyMapSample.strength * invReplaySamples);
       } else if (d.y == ${ADJOINT_FIELD_ANISOTROPY_ROTATION}u) {
-        adjointScatter(gradOffset, gAnisotropyRotation * invReplaySamples);
+        adjointScatter(
+          gradOffset,
+          gAnisotropyRotation * anisotropyOrientation.localRotationDerivative *
+            invReplaySamples,
+        );
       } else if (d.y == ${ADJOINT_FIELD_EMISSIVE}u) {
         // ∂loss/∂emissive_c = dLoss_dR_c · emissiveIntensity. The packed material
         // folds intensity into emissive.rgb, so the host hands the fixed
@@ -2745,3 +3222,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   }
 }
 `;
+}
+
+/** Default PCG composition retained for direct imports and shader tests. */
+export const PT_WEBGPU_ADJOINT_PASS_WGSL = composePtWebgpuAdjointPassWgsl();

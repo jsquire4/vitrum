@@ -8,14 +8,17 @@
  * machine-readable instead of leaving future runs as an unclassified crash.
  */
 import { spawnSync } from 'node:child_process';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, relative, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
-  walkaroundPromotionProvenance,
   walkaroundResultProvenance,
   walkaroundStatusProvenance,
 } from './resultProvenance.mjs';
+import {
+  validateWalkaroundRunResult,
+  WalkaroundRunValidationError,
+} from './walkaroundRunValidation.mjs';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(scriptDir, '../..');
@@ -44,27 +47,7 @@ const resultPath = resolveFromRepo(
       ? 'tools/radiometric-ab/walkaround-ab-all-spp64.json'
       : 'tools/radiometric-ab/walkaround-ab-results.json',
 );
-const DEFAULT_PROMOTION_STATUS_PATH = 'tools/radiometric-ab/walkaround-ab-promotion-status.json';
-const promotionStatusPath = resolve(repoRoot, DEFAULT_PROMOTION_STATUS_PATH);
-const DEFAULT_SOURCE_STATUS_PATHS = [
-  'tools/radiometric-ab/walkaround-ab-host-status.json',
-  'tools/radiometric-ab/walkaround-ab-glossy-spp64-status.json',
-  'tools/radiometric-ab/walkaround-ab-all-spp64-status.json',
-];
-const DEFAULT_RESULT_PATHS = {
-  baseline: 'tools/radiometric-ab/walkaround-ab-results.json',
-  glossySpp64: 'tools/radiometric-ab/walkaround-ab-glossy-spp64.json',
-  allSpp64: 'tools/radiometric-ab/walkaround-ab-all-spp64.json',
-};
-const DEFAULT_RESULT_PATH_LIST = [
-  DEFAULT_RESULT_PATHS.baseline,
-  DEFAULT_RESULT_PATHS.glossySpp64,
-  DEFAULT_RESULT_PATHS.allSpp64,
-];
 const WALKAROUND_AB_CASE_IDS = ['a8', 'sun', 'glass', 'glossy'];
-const usingDefaultProofPaths =
-  (process.env.VITRUM_WALKAROUND_AB_STATUS_PATH == null || process.env.VITRUM_WALKAROUND_AB_STATUS_PATH === '') &&
-  (process.env.VITRUM_WALKAROUND_AB_OUTPUT_PATH == null || process.env.VITRUM_WALKAROUND_AB_OUTPUT_PATH === '');
 
 function resolveFromRepo(raw, fallbackRelative) {
   if (raw == null || raw === '') return resolve(repoRoot, fallbackRelative);
@@ -75,99 +58,14 @@ function repoRelative(path) {
   return relative(repoRoot, path).replaceAll('\\', '/');
 }
 
-function readJson(relativePath) {
-  return JSON.parse(readFileSync(resolve(repoRoot, relativePath), 'utf8'));
-}
-
-function resultVerdicts(result) {
-  return Object.fromEntries(WALKAROUND_AB_CASE_IDS.map((id) => [
-    id,
-    result[id]?.verdict ?? 'UNKNOWN',
-  ]));
-}
-
-function glassProfile(label, resultPath, qualityProfile, spp) {
-  const glass = readJson(resultPath).glass;
-  return {
-    label,
-    resultPath,
-    spp,
-    qualityProfile,
-    verdict: glass?.verdict,
-    centreRatio: glass?.centreRatio,
-    overallRatio: glass?.overallRatio,
-    ratioWithinPromotionBounds: glass?.ratioWithinPromotionBounds,
-    materialEffectObserved: glass?.materialEffectObserved,
-  };
-}
-
-function glossyProfile(label, resultPath, qualityProfile, spp) {
-  const glossy = readJson(resultPath).glossy;
-  return {
-    label,
-    resultPath,
-    spp,
-    qualityProfile,
-    verdict: glossy?.verdict,
-    sampleRatio: glossy?.sampleRatio ?? glossy?.floorRatio,
-    materialEffectObserved: glossy?.materialEffectObserved,
-  };
-}
-
-async function buildPromotionStatus(generatedAt) {
-  const baseline = readJson(DEFAULT_RESULT_PATHS.baseline);
-  const allSpp64 = readJson(DEFAULT_RESULT_PATHS.allSpp64);
-  return {
-    provenance: await walkaroundPromotionProvenance(
-      repoRootUrl,
-      DEFAULT_PROMOTION_STATUS_PATH,
-      DEFAULT_SOURCE_STATUS_PATHS,
-      DEFAULT_RESULT_PATH_LIST,
-    ),
-    generatedAt,
-    harness: 'walkaround-ab-promotion-proof',
-    verdict: 'PASS-PARTIAL',
-    promotion: {
-      defaultReady: false,
-      classification: 'glossy-finding',
-      reason:
-        'Native WebGPU 16-SPP and 64-SPP recaptures now show bounded PASS glass transport, while glossy rich-material GI remains a non-promotable FINDING because the realtime DDGI cache stores cosine-weighted irradiance rather than GGX-filtered radiance.',
-      blocker: 'ddgi-irradiance-cache-not-ggx-filtered-radiance',
-      blockers: {
-        glossy: 'ddgi-irradiance-cache-not-ggx-filtered-radiance',
-      },
-      requiredEvidence: 'material-furnace-reference-ab-and-browser-real-adapter-recapture',
-    },
-    caseVerdicts: resultVerdicts(baseline),
-    highSppCaseVerdicts: resultVerdicts(allSpp64),
-    glassProfiles: [
-      glassProfile('baseline', DEFAULT_RESULT_PATHS.baseline, 'baseline', 16),
-      glassProfile('all-spp64', DEFAULT_RESULT_PATHS.allSpp64, 'all-spp64', 64),
-    ],
-    glossyProfiles: [
-      glossyProfile('baseline', DEFAULT_RESULT_PATHS.baseline, 'baseline', 16),
-      glossyProfile('glossy-spp64', DEFAULT_RESULT_PATHS.glossySpp64, 'glossy-spp64', 64),
-      glossyProfile('all-spp64', DEFAULT_RESULT_PATHS.allSpp64, 'all-spp64', 64),
-    ],
-    sourceStatuses: DEFAULT_SOURCE_STATUS_PATHS,
-  };
-}
-
-async function maybeWritePromotionStatus(generatedAt) {
-  if (!usingDefaultProofPaths) return;
-  const requiredFiles = [
-    ...DEFAULT_SOURCE_STATUS_PATHS,
-    DEFAULT_RESULT_PATHS.baseline,
-    DEFAULT_RESULT_PATHS.glossySpp64,
-    DEFAULT_RESULT_PATHS.allSpp64,
-  ];
-  if (!requiredFiles.every((path) => existsSync(resolve(repoRoot, path)))) return;
-
-  const statuses = DEFAULT_SOURCE_STATUS_PATHS.map((path) => readJson(path));
-  if (statuses.some((status) => status.verdict === 'HOST-BLOCKED' || status.verdict === 'FAIL')) return;
-
-  const promotionStatus = await buildPromotionStatus(generatedAt);
-  writeFileSync(promotionStatusPath, `${JSON.stringify(promotionStatus, null, 2)}\n`);
+function captureResultFileState() {
+  try {
+    const text = readFileSync(resultPath, 'utf8');
+    const stat = statSync(resultPath);
+    return { text, mtimeMs: stat.mtimeMs, size: stat.size };
+  } catch {
+    return null;
+  }
 }
 
 function parseTimeoutMs(raw) {
@@ -204,7 +102,7 @@ function failClosedResultStatus(generatedAt, code, message) {
     },
     nextSteps: [
       'Re-run the walkaround radiometric A/B wrapper so it can write a complete result artifact.',
-      'Do not promote GRIS, rich-material GI, glass, or glossy walkaround rows from this malformed capture.',
+      'Do not treat this malformed capture as a regression result.',
     ],
   };
   writeFileSync(statusPath, `${JSON.stringify(status, null, 2)}\n`);
@@ -219,35 +117,43 @@ async function stampWalkaroundResultProvenance(payload) {
 }
 
 function readWalkaroundResultsForStatus(generatedAt) {
-  let payload;
-  try {
-    payload = JSON.parse(readFileSync(resultPath, 'utf8'));
-  } catch (err) {
+  const afterState = captureResultFileState();
+  if (afterState == null) {
     failClosedResultStatus(
       generatedAt,
       'walkaround-ab-missing-result',
-      `The native WebGPU harness exited 0 but did not write readable result JSON: ${err instanceof Error ? err.message : String(err)}`,
+      'The native WebGPU harness exited 0 but did not write a readable result artifact.',
     );
   }
-  if (payload == null || typeof payload !== 'object' || Array.isArray(payload)) {
+  let payload;
+  try {
+    payload = JSON.parse(afterState.text);
+  } catch (err) {
     failClosedResultStatus(
       generatedAt,
       'walkaround-ab-invalid-result',
-      'The native WebGPU harness exited 0 but wrote a non-object result artifact.',
+      `The native WebGPU harness exited 0 but wrote invalid result JSON: ${err instanceof Error ? err.message : String(err)}`,
     );
   }
-  const missing = expectedCaseIdsForStatus().filter((id) => {
-    const row = payload[id];
-    return row == null || typeof row !== 'object' || typeof row.verdict !== 'string';
-  });
-  if (missing.length > 0) {
+  try {
+    return {
+      payload,
+      ...validateWalkaroundRunResult(payload, {
+        expectedCaseIds: expectedCaseIdsForStatus(),
+        beforeState: resultStateBeforeRun,
+        afterState,
+        startedAtMs: runStartedAtMs,
+      }),
+    };
+  } catch (err) {
     failClosedResultStatus(
       generatedAt,
-      'walkaround-ab-incomplete-result',
-      `The native WebGPU harness exited 0 but the result artifact is missing verdicts for: ${missing.join(', ')}`,
+      err instanceof WalkaroundRunValidationError
+        ? err.code
+        : 'walkaround-ab-invalid-result',
+      err instanceof Error ? err.message : String(err),
     );
   }
-  return payload;
 }
 
 const denoArgs = [
@@ -278,6 +184,8 @@ const denoEnv = {
 if (selectedCases != null) denoEnv.VITRUM_WALKAROUND_AB_CASES = selectedCases;
 if (renderConfig.qualityProfile != null) denoEnv.VITRUM_WALKAROUND_AB_PROFILE = renderConfig.qualityProfile;
 
+const resultStateBeforeRun = captureResultFileState();
+const runStartedAtMs = Date.now();
 const result = spawnSync('deno', denoArgs, {
   cwd: repoRoot,
   env: denoEnv,
@@ -313,7 +221,7 @@ if (timedOut) {
     nextSteps: [
       'Re-run with VITRUM_WALKAROUND_AB_TIMEOUT_MS set higher if the host is merely slow.',
       'Run the same harness in the browser/real-adapter validation lane if native Deno remains blocked.',
-      'Do not promote GRIS, rich-material GI, glass, or glossy walkaround rows from this timed-out run.',
+      'Do not treat this timed-out run as a regression result.',
     ],
   };
   writeFileSync(statusPath, `${JSON.stringify(status, null, 2)}\n`);
@@ -326,26 +234,9 @@ if (result.error) {
 }
 if (result.status === 0) {
   const generatedAt = new Date().toISOString();
-  const walkaroundResults = await stampWalkaroundResultProvenance(readWalkaroundResultsForStatus(generatedAt));
-  const caseVerdicts = Object.fromEntries(WALKAROUND_AB_CASE_IDS
-    .filter((id) => walkaroundResults[id] != null)
-    .map((id) => [
-      id,
-      walkaroundResults[id]?.verdict ?? 'UNKNOWN',
-    ]));
-  const partialVerdicts = new Set([
-    'PASS-PARTIAL',
-    'PASS-WEAK',
-    'SMOKE',
-    'FINDING',
-    'SMALL',
-    'MODERATE',
-    'SIGNIFICANT',
-  ]);
-  const partialCaseIds = Object.entries(caseVerdicts)
-    .filter(([, verdict]) => partialVerdicts.has(verdict))
-    .map(([id, verdict]) => `${id}:${verdict}`);
-  const partial = partialCaseIds.length > 0;
+  const validated = readWalkaroundResultsForStatus(generatedAt);
+  await stampWalkaroundResultProvenance(validated.payload);
+  const { caseVerdicts, partialCaseIds, partial } = validated;
   const status = {
     provenance: await walkaroundStatusProvenance(repoRootUrl, repoRelative(statusPath), resultFile),
     generatedAt,
@@ -362,23 +253,22 @@ if (result.status === 0) {
     caseVerdicts,
     reason: partial
       ? {
-        code: 'walkaround-ab-partial-proof',
+        code: 'walkaround-ab-partial-regression-result',
         message:
-          'The native WebGPU harness ran to completion, but at least one case is only a partial/weak proof.',
+          'The native WebGPU harness ran to completion, but at least one case did not meet every regression threshold.',
       }
       : {
         code: 'walkaround-ab-complete',
-        message: 'The native WebGPU harness ran to completion and all checked cases met their full proof thresholds.',
+        message: 'The native WebGPU harness ran to completion and all checked cases met their full regression thresholds.',
       },
     nextSteps: partial
       ? [
-        `Do not promote partial/weak walkaround rows from this proof alone (${partialCaseIds.join(', ')}).`,
-        'Use higher-SPP, HDR, browser/real-adapter, or case-specific reference captures before promotion.',
+        `Investigate the cases that did not meet every threshold (${partialCaseIds.join(', ')}).`,
+        'Use higher-SPP, HDR, browser/real-adapter, or case-specific reference captures to isolate the regression.',
       ]
       : [],
   };
   writeFileSync(statusPath, `${JSON.stringify(status, null, 2)}\n`);
-  await maybeWritePromotionStatus(generatedAt);
   process.exit(0);
 }
 
@@ -410,7 +300,7 @@ if (knownDenoWgpuPanic) {
     nextSteps: [
       'Run the same harness in the browser/real-adapter validation lane.',
       'Re-run this wrapper after the Deno native WebGPU panic is fixed or the host path changes.',
-      'Do not promote GRIS, rich-material GI, glass, or glossy walkaround rows from this blocked native-Deno run.',
+      'Do not treat this blocked native-Deno run as a regression result.',
     ],
   };
   writeFileSync(statusPath, `${JSON.stringify(status, null, 2)}\n`);

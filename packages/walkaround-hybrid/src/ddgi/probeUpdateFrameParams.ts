@@ -3,18 +3,20 @@
  */
 import { haltonSO3AxisAngleFromFrameIndex } from '@vitrum/shared-samplers';
 import { DDGI_BLEND_PARAMS_UBO, DDGI_FRAME_PARAMS_UBO } from './probeUpdateUbos.js';
+import {
+  assertDdgiBoolean,
+  assertDdgiUnitInterval,
+  assertFiniteDdgiNumber,
+  assertFiniteDdgiVec3,
+  assertNonNegativeDdgiNumber,
+} from './inputValidation.js';
 export { haltonSO3AxisAngleFromFrameIndex };
 
 export interface ProbeUpdateFrameParamsInput {
   frameIndex: number;
-  totalProbes: number;
   skyTint: readonly [number, number, number];
   skyIrradiance: number;
   glassMixScale: number;
-  /** Phase-0 productization — round-robin probe-update divisor
-   *  (`probesPerFrame = ceil(totalProbes / divisor)`). Default 4 reproduces
-   *  the historical hardcoded `/4` 4-frame full-grid cycle. */
-  updateDivisor?: number;
   /** H46-A — DDGI indirect-feedback gate. `true` (default) folds the
    *  previous-frame irradiance atlas into the bounce surface (the
    *  infinite-bounce diffuse EMA, maxBounces >= 2). `false` drops it →
@@ -42,20 +44,34 @@ export interface ProbeUpdateFrameParamsInput {
   envIntensity?: number;
 }
 
-/** Clamp the divisor to ≥ 1 so `probesPerFrame` never exceeds `totalProbes`. */
-function safeDivisor(divisor: number | undefined): number {
-  return Math.max(1, Math.floor(divisor ?? 4));
+function assertDdgiUint32(value: number, label: string): void {
+  if (!Number.isSafeInteger(value) || value < 0 || value > 0xffff_ffff) {
+    throw new RangeError(`${label} must be a uint32 integer.`);
+  }
 }
 
 export function packProbeUpdateFrameParams(input: ProbeUpdateFrameParamsInput): ArrayBuffer {
+  assertDdgiUint32(input.frameIndex, 'DDGI frame index');
+  assertFiniteDdgiVec3(input.skyTint, 'DDGI sky tint');
+  input.skyTint.forEach((channel, index) => {
+    assertNonNegativeDdgiNumber(channel, `DDGI sky tint[${index}]`);
+  });
+  assertNonNegativeDdgiNumber(input.skyIrradiance, 'DDGI sky irradiance');
+  assertDdgiUnitInterval(input.glassMixScale, 'DDGI glass mix scale');
+  if (input.indirectFeedback !== undefined) {
+    assertDdgiBoolean(input.indirectFeedback, 'DDGI indirect feedback');
+  }
+  if (input.hasEnv !== undefined) {
+    assertDdgiBoolean(input.hasEnv, 'DDGI environment hasEnv');
+  }
+  const envRotationY = input.envRotationY ?? 0;
+  const envIntensity = input.envIntensity ?? 0;
+  assertFiniteDdgiNumber(envRotationY, 'DDGI environment rotation');
+  assertNonNegativeDdgiNumber(envIntensity, 'DDGI environment intensity');
   const data = new ArrayBuffer(DDGI_FRAME_PARAMS_UBO.sizeBytes);
   DDGI_FRAME_PARAMS_UBO.pack(new DataView(data), 0, {
     randomRotation: haltonSO3AxisAngleFromFrameIndex(input.frameIndex),
     frameIndex: input.frameIndex,
-    totalProbes: input.totalProbes,
-    probesPerFrame: Math.ceil(input.totalProbes / safeDivisor(input.updateDivisor)),
-    _pad0: 0,
-    _pad1: 0,
     skyTint: [input.skyTint[0], input.skyTint[1], input.skyTint[2]] as const,
     skyIrradiance: input.skyIrradiance,
     glassMixScale: input.glassMixScale,
@@ -67,8 +83,8 @@ export function packProbeUpdateFrameParams(input: ProbeUpdateFrameParamsInput): 
     indirectFeedback: (input.indirectFeedback ?? true) ? 1 : 0,
     // Wave 4 — HDRI into DDGI probe misses (2026-06-10).
     hasEnv: (input.hasEnv ?? false) ? 1 : 0,
-    envRotationY: input.envRotationY ?? 0,
-    envIntensity: input.envIntensity ?? 0,
+    envRotationY,
+    envIntensity,
   });
   return data;
 }
@@ -78,24 +94,19 @@ export const DDGI_PROBE_BLEND_HYSTERESIS = 0.97;
 /**
  * Pack the blend-params UBO.
  *
- * @param totalProbes - Total probe count for the current grid.
- * @param updateDivisor - Round-robin stride (≥ 1); default 4.
  * @param hysteresisOverride - When provided, overrides the steady-state 0.97.
  *   Pass `0.0` for a full-replace blend (H16 invalidate path): EMA weight = 0
  *   means `newValue = (1 − 0) × freshSample + 0 × history = freshSample`,
  *   clearing stale atlas data in one probe-update cycle.
  */
 export function packProbeUpdateBlendParams(
-  totalProbes: number,
-  updateDivisor?: number,
   hysteresisOverride?: number,
 ): ArrayBuffer {
+  const hysteresis = hysteresisOverride ?? DDGI_PROBE_BLEND_HYSTERESIS;
+  assertDdgiUnitInterval(hysteresis, 'DDGI blend hysteresis');
   const data = new ArrayBuffer(DDGI_BLEND_PARAMS_UBO.sizeBytes);
   DDGI_BLEND_PARAMS_UBO.pack(new DataView(data), 0, {
-    // MUST match the ray pass's coverage (same divisor) so the blend kernel
-    // only blends probes that received fresh rays this frame.
-    probesPerFrame: Math.ceil(totalProbes / safeDivisor(updateDivisor)),
-    hysteresis: hysteresisOverride ?? DDGI_PROBE_BLEND_HYSTERESIS,
+    hysteresis,
   });
   return data;
 }

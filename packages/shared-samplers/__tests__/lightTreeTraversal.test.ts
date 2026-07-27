@@ -19,6 +19,7 @@ import {
   lightTreePdfCPU,
   type LightTreeBuildInput,
 } from '../src/lightTree.js';
+import { lightTreeWgsl } from '../src/wgsl/lightTree.wgsl.js';
 
 const FLOOR = 0.01;
 
@@ -296,5 +297,29 @@ describe('B8 orientation cones — oriented emitters culled from behind', () => 
     // (unbiasedness: the selection pdf is divided out, never 0 for a hit leaf).
     expect(s.emitterIndex).toBeGreaterThanOrEqual(0);
     expect(s.pdf).toBeGreaterThan(0);
+  });
+});
+
+describe('lightTreeWgsl RNG-state specialization', () => {
+  it('keeps u32 as the shared default and accepts the pt-webgpu state type', () => {
+    expect(lightTreeWgsl({ group: 0, binding: 1 })).toContain(
+      'rng: ptr<function, u32>',
+    );
+    const specialized = lightTreeWgsl({
+      group: 3,
+      binding: 0,
+      rngStateType: 'PtRngState',
+    });
+    expect(specialized).toContain('@group(3) @binding(0)');
+    expect(specialized).toContain('rng: ptr<function, PtRngState>');
+    expect(specialized).not.toContain('rng: ptr<function, u32>');
+  });
+
+  it('rejects a non-identifier RNG type instead of emitting malformed WGSL', () => {
+    expect(() => lightTreeWgsl({
+      group: 0,
+      binding: 0,
+      rngStateType: 'u32); bad(',
+    })).toThrow(TypeError);
   });
 });

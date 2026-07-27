@@ -49,6 +49,9 @@ describe('pt-webgl2 promise ledger compliance', () => {
     expect(typeof engine.getRestirPtResultBuffer === 'function').toBe(
       expected.methodPromises.getRestirPtResultBuffer,
     );
+    expect(typeof engine.getPresentationSource === 'function').toBe(
+      expected.methodPromises.getPresentationSource,
+    );
     expect(typeof engine.getProgressiveSeedTexture === 'function').toBe(
       expected.methodPromises.getProgressiveSeedTexture,
     );

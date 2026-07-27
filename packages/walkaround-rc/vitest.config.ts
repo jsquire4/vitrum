@@ -20,5 +20,6 @@ export default defineConfig({
   },
   test: {
     include: ['__tests__/**/*.test.ts'],
+    exclude: ['__tests__/**/*.gpu.test.ts'],
   },
 });

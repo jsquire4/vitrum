@@ -1,8 +1,8 @@
 /**
- * Single-source-of-truth for the 62-texel-per-triangle material-atlas decode
+ * Single-source-of-truth for the 157-texel-per-triangle material-atlas decode
  * ABI *offset constants* (complexity-sweep 2026-07-20, T4-2 / D6-1·D16-2).
  *
- * The host packs each triangle's material into a fixed 62-texel meta strip in
+ * The host packs each triangle's material into a fixed 157-texel meta strip in
  * `baseColorMapMeta` (RGBA32F). Three independent WGSL consumers read that
  * strip and MUST agree on the texel-slot layout byte-for-byte:
  *
@@ -47,7 +47,7 @@
  * by texel index) — every consumer declares its subset in this same order.
  */
 export const MATERIAL_ATLAS_OFFSETS: ReadonlyArray<readonly [suffix: string, value: number]> = [
-  ['META_TEXELS_PER_TRI', 62],
+  ['META_TEXELS_PER_TRI', 157],
   ['SLOT_BASE_COLOR', 0],
   ['SLOT_ROUGHNESS', 1],
   ['SLOT_METALLIC', 2],
@@ -87,6 +87,15 @@ export const MATERIAL_ATLAS_OFFSETS: ReadonlyArray<readonly [suffix: string, val
   ['FRONT_LAYER_NORMAL_SCALE_TEXEL_OFFSET', 58],
   ['BACK_LAYER_NORMAL_TEXEL_OFFSET', 59],
   ['BACK_LAYER_NORMAL_SCALE_TEXEL_OFFSET', 61],
+  ['OPTICAL_HEADER_TEXEL_OFFSET', 62],
+  ['DISPERSION_IOR_RGB_TEXEL_OFFSET', 63],
+  ['SPECTRAL_SAMPLES_TEXEL_OFFSET', 64],
+  ['THIN_FILM_FRONT_REFLECTANCE_TEXEL_OFFSET', 96],
+  ['THIN_FILM_FRONT_TRANSMITTANCE_TEXEL_OFFSET', 104],
+  ['THIN_FILM_BACK_REFLECTANCE_TEXEL_OFFSET', 112],
+  ['THIN_FILM_BACK_TRANSMITTANCE_TEXEL_OFFSET', 120],
+  ['UV_AFFINE_BASE_TEXEL_OFFSET', 128],
+  ['SIDE_FLAGS_TEXEL_OFFSET', 156],
 ];
 
 const OFFSET_VALUE_BY_SUFFIX: ReadonlyMap<string, number> = new Map(MATERIAL_ATLAS_OFFSETS);

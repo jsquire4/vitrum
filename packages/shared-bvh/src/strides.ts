@@ -79,14 +79,14 @@ export const VERTEX_STRIDE_F32 = 4 as const;
  */
 export const MAT4_STRIDE_F32 = 16 as const;
 
-/** Number of child slots in the compressed wide-BVH prototype node. */
+/** Number of child slots in the compressed wide-BVH node. */
 export const CWBVH_CHILDREN = 8 as const;
 
 /**
  * Quantized bounds words per CWBVH child:
  * `[minX, minY, minZ, maxX, maxY, maxZ]`, each u16 relative to the parent node
- * bounds. This is the CPU/oracle-side packed form that the future WGSL traversal
- * will mirror.
+ * bounds. This is the CPU/oracle-side form mirrored by the production WGSL
+ * traversal after explicit u16-pair packing.
  */
 export const CWBVH_CHILD_BOUNDS_U16 = 6 as const;
 
@@ -105,3 +105,21 @@ export const CWBVH_CHILD_BOUNDS_PACKED_U32 = 3 as const;
  * kind = 0 empty, 1 child wide-node, 2 leaf triangle range.
  */
 export const CWBVH_CHILD_META_WORDS = 3 as const;
+
+/** Fixed private-stack budgets compiled into the live WGSL traversals. */
+export const BVH_TRAVERSAL_STACK_DEPTH = 60 as const;
+export const CWBVH_TRAVERSAL_STACK_DEPTH = 64 as const;
+export const TLAS_TRAVERSAL_STACK_DEPTH = 64 as const;
+
+/**
+ * Deepest interior level emitted by the canonical binary builder. Derive this
+ * from the smallest live binary/wide/TLAS stack, reserving two slots because
+ * the nested TLAS/BLAS paths push two children before the next pop.
+ */
+export const BINARY_BVH_MAX_BUILD_DEPTH = (
+  Math.min(
+    BVH_TRAVERSAL_STACK_DEPTH,
+    CWBVH_TRAVERSAL_STACK_DEPTH,
+    TLAS_TRAVERSAL_STACK_DEPTH,
+  ) - 2
+);

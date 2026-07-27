@@ -52,6 +52,7 @@ import {
 } from '../src/cieCmf.js';
 
 import {
+  _sampleCmfCdfInverseForTest,
   sampleHeroWavelength,
   sampleHeroWavelengthMIS,
   wavelengthToRGB,
@@ -427,6 +428,20 @@ describe('cauchyIOR', () => {
     const nRed  = cauchyIOR(700, A, B, C);
     expect(nBlue).toBeGreaterThan(nRed);
   });
+  it('Cauchy dispersion produces distinct blue and red transmission directions', () => {
+    const { A, B, C } = CAUCHY_LEAD_CRYSTAL;
+    const incidentAngle = 0.7;
+    const transmittedAngle = (lambda: number) => {
+      const n = cauchyIOR(lambda, A, B, C);
+      return Math.asin(Math.sin(incidentAngle) / n);
+    };
+    const blue = transmittedAngle(450);
+    const red = transmittedAngle(650);
+    expect(blue).toBeLessThan(red);
+    expect(red - blue).toBeGreaterThan(0.002);
+  });
+
+
 });
 
 describe('abbeNumber', () => {
@@ -502,6 +517,120 @@ describe('X / Y / Z CDFs are valid normalised CDFs', () => {
       }
     });
   }
+});
+
+describe('piecewise-linear CMF inverse', () => {
+  const distributions = [
+    ['X', CIE_X_TABLE, X_CMF_CDF, X_CMF_INTEGRAL],
+    ['Y', CIE_Y_TABLE, Y_CMF_CDF, Y_CMF_INTEGRAL],
+    ['Z', CIE_Z_TABLE, Z_CMF_CDF, Z_CMF_INTEGRAL],
+  ] as const;
+
+  for (const [name, table, cdf, integral] of distributions) {
+    it(`${name}: CDF(inverse(u)) round-trips within every non-empty physical interval`, () => {
+      expect(cdf[80]).toBeCloseTo(1, 12);
+      expect(cdf[81]).toBeCloseTo(1, 12);
+      for (let i = 0; i < CIE_TABLE_LENGTH - 1; i++) {
+        const intervalProbability = cdf[i + 1]! - cdf[i]!;
+        if (intervalProbability <= 1e-15) continue;
+        const vLo = table[i]!;
+        const vHi = table[i + 1]!;
+        for (const t of [0.125, 0.5, 0.875]) {
+          const partialIntegral =
+            CIE_LAMBDA_STEP * (vLo * t + 0.5 * (vHi - vLo) * t * t);
+          const u = cdf[i]! + partialIntegral / integral;
+          const sample = _sampleCmfCdfInverseForTest(u, table, cdf, integral);
+          const segmentStart = CIE_LAMBDA_MIN + i * CIE_LAMBDA_STEP;
+          expect(sample.lambdaNm).toBeGreaterThanOrEqual(segmentStart);
+          expect(sample.lambdaNm).toBeLessThanOrEqual(segmentStart + CIE_LAMBDA_STEP);
+          const sampledT = (sample.lambdaNm - segmentStart) / CIE_LAMBDA_STEP;
+          const recoveredPartial =
+            CIE_LAMBDA_STEP * (vLo * sampledT + 0.5 * (vHi - vLo) * sampledT * sampledT);
+          const recoveredU = cdf[i]! + recoveredPartial / integral;
+          expect(Math.abs(recoveredU - u)).toBeLessThan(2e-12);
+          expect(sample.pdf).toBeCloseTo((vLo + sampledT * (vHi - vLo)) / integral, 11);
+          if (intervalProbability > 1e-7) {
+            expect(sample.lambdaNm).toBeCloseTo(segmentStart + t * CIE_LAMBDA_STEP, 5);
+          }
+        }
+      }
+    });
+  }
+
+  it('analytically inverts a positive zero-slope density segment', () => {
+    const table = new Float32Array(CIE_TABLE_LENGTH).fill(1);
+    const cdf = new Float64Array(CIE_TABLE_LENGTH + 1);
+    for (let i = 0; i < CIE_TABLE_LENGTH; i++) cdf[i] = i / (CIE_TABLE_LENGTH - 1);
+    cdf[CIE_TABLE_LENGTH] = 1;
+    const sample = _sampleCmfCdfInverseForTest(0.38125, table, cdf, 400);
+    expect(sample.lambdaNm).toBeCloseTo(532.5, 10);
+    expect(sample.pdf).toBeCloseTo(1 / 400, 12);
+  });
+
+  it('preserves the last 1e-7 of CDF mass and defines the u=1 boundary', () => {
+    const nextBelowOne = 1 - 2 ** -53;
+    expect(1 - nextBelowOne).toBe(2 ** -53);
+    const tailU = [1 - 5e-8, 1 - 1e-8, nextBelowOne];
+
+    for (const [, table, cdf, integral] of distributions) {
+      for (const u of tailU) {
+        expect(u).toBeGreaterThan(1 - 1e-7);
+        const sample = _sampleCmfCdfInverseForTest(u, table, cdf, integral);
+        const rawIndex = (sample.lambdaNm - CIE_LAMBDA_MIN) / CIE_LAMBDA_STEP;
+        const lo = Math.min(CIE_TABLE_LENGTH - 2, Math.max(0, Math.floor(rawIndex)));
+        const t = Math.min(1, Math.max(0, rawIndex - lo));
+        const vLo = table[lo]!;
+        const vHi = table[lo + 1]!;
+        const recoveredU = cdf[lo]! +
+          CIE_LAMBDA_STEP * (vLo * t + 0.5 * (vHi - vLo) * t * t) / integral;
+        expect(Math.abs(recoveredU - u)).toBeLessThan(2e-12);
+      }
+
+      const boundary = _sampleCmfCdfInverseForTest(1, table, cdf, integral);
+      expect(boundary.lambdaNm).toBe(CIE_LAMBDA_MAX);
+      expect(boundary.pdf).toBe((table[CIE_TABLE_LENGTH - 1] ?? 0) / integral);
+    }
+
+    expect(() => sampleHeroWavelength(1)).toThrow(/must be in \[0, 1\)/);
+    expect(() => sampleHeroWavelengthMIS(0.5, 1)).toThrow(/must be in \[0, 1\)/);
+  });
+});
+
+describe('wavelength PDF normalization and reconstruction', () => {
+  it('the X/Y/Z MIS mixture PDF integrates to one over [380,780]', () => {
+    const step = 0.125;
+    let integral = 0;
+    for (let lambda = HERO_LAMBDA_MIN; lambda < HERO_LAMBDA_MAX; lambda += step) {
+      const [x0, y0, z0] = sampleCMF(lambda);
+      const [x1, y1, z1] = sampleCMF(lambda + step);
+      const p0 = (x0 / X_CMF_INTEGRAL + y0 / Y_CMF_INTEGRAL + z0 / Z_CMF_INTEGRAL) / 3;
+      const p1 = (x1 / X_CMF_INTEGRAL + y1 / Y_CMF_INTEGRAL + z1 / Z_CMF_INTEGRAL) / 3;
+      integral += 0.5 * (p0 + p1) * step;
+    }
+    expect(integral).toBeCloseTo(1, 6);
+  });
+
+  it('constant-spectrum MIS reconstruction converges to the tabulated CMF integral', () => {
+    const expected = xyzToLinearSRGB(
+      X_CMF_INTEGRAL / Y_CMF_INTEGRAL,
+      1,
+      Z_CMF_INTEGRAL / Y_CMF_INTEGRAL,
+    );
+    const sum = [0, 0, 0];
+    const n = 60000;
+    for (let i = 0; i < n; i++) {
+      const uStrategy = (i + 0.5) / n;
+      const uLambda = (((i * 7919) % n) + 0.5) / n;
+      const { lambdaNm, pdf } = sampleHeroWavelengthMIS(uStrategy, uLambda);
+      const rgb = wavelengthToRGB(lambdaNm, 1, pdf);
+      sum[0] = sum[0]! + rgb[0];
+      sum[1] = sum[1]! + rgb[1];
+      sum[2] = sum[2]! + rgb[2];
+    }
+    expect(sum[0]! / n).toBeCloseTo(expected[0], 2);
+    expect(sum[1]! / n).toBeCloseTo(expected[1], 2);
+    expect(sum[2]! / n).toBeCloseTo(expected[2], 2);
+  });
 });
 
 describe('sampleHeroWavelengthMIS', () => {

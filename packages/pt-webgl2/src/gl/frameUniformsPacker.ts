@@ -1,8 +1,7 @@
 // frameUniformsPacker — pure builder of the per-frame `FrameUniforms` payload for
 // the pt-webgl2 accumulation draw (extracted from index.ts #frameUniforms, T3-D /
-// D11-1). BEHAVIOR-PRESERVING: the returned FrameUniforms object is byte-identical
-// to the pre-extraction inline construction; the caller supplies its config +
-// scene state as a plain record so this module stays free of the engine class.
+// D11-1). The caller supplies its config + scene state as a plain record so this
+// module stays free of the engine class.
 
 import type { FrameInput, Scene } from '@vitrum/core';
 import type { FrameUniforms } from './glResources.js';
@@ -10,47 +9,38 @@ import type { PTEngineWebGL2Options } from '../options.js';
 import { CAUCHY_CROWN_GLASS, TONEMAP_MODE_INDEX } from '@vitrum/shared-samplers';
 import { invertMat4, makeRotationYMat4 } from '../mat4.js';
 
+import { sharedBdptWavelengthForSeed } from './sharedBdptWavelength.js';
 const IDENTITY_MAT4 = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
 
-// H2 follow-on — scene-global spectral coefficients (the GLSL declares u_jakobCoeffs +
-// iorCauchyA/B/C as global uniforms, not per-material).
-//   • iorCauchy: Crown Glass three-term Cauchy IOR (n(λ)). Uploaded only when
-//     spectral is on so any material carrying `dispersionAbbeNumber` (→ per-material
-//     dispersionStrength in the materials texture) actually disperses. All-zero =
-//     the GLSL `cauchyEnabled` fast-path (no dispersion), which is the non-spectral
-//     and the no-dispersion default → byte-identical when spectral:false.
-//   • jakobCoeffs: stays the flat (0,0,0) ⇒ S≡½ no-op. u_jakobCoeffs is a SINGLE
-//     global reflectance the GLSL uses only for representative MEDIUM albedo
-//     (volume single-scatter / SSS); baseColor reflectance is per-material via
-//     the materials texture, solved once at scene build.
+// Crown Glass three-term Cauchy IOR n(λ). Uploaded only when spectral is on so
+// material-local dispersionStrength actually disperses. All-zero selects the
+// shader's no-dispersion fast path. Spectral reflectance is not global: genuine
+// Jakob-Hanika coefficients are solved and packed per material at scene build.
 const SPECTRAL_IOR_CAUCHY: readonly [number, number, number] = [
   CAUCHY_CROWN_GLASS.A,
   CAUCHY_CROWN_GLASS.B,
   CAUCHY_CROWN_GLASS.C,
 ];
-const FLAT_JAKOB_COEFFS: readonly [number, number, number] = [0, 0, 0];
 const NO_IOR_CAUCHY: readonly [number, number, number] = [0, 0, 0];
 
 /** Engine-config + scene-state slice consumed by `packFrameUniforms`. */
 export interface FrameUniformsConfig {
-  readonly causticStrategy: 'none' | 'manifold-nee' | 'photon-map' | undefined;
   readonly scene: Scene | null;
   readonly hasEnvMap: boolean;
   readonly materialLodDepth: number;
   readonly backgroundBlur: number;
   readonly spectralEnabled: boolean;
-  readonly mneeMaxIterations: number;
-  readonly mneeMaxChainLength: number;
   readonly backgroundAlpha: number;
   readonly bdpt: boolean;
   readonly bdptMaxLightBounces: number;
+  readonly bdptSceneCenter: readonly [number, number, number];
+  readonly bdptSceneRadius: number;
   readonly dof: PTEngineWebGL2Options['dof'];
 }
 
 /**
- * Pack the per-frame `FrameUniforms` for the accumulation draw. Byte-identical to
- * the pre-extraction `#frameUniforms` method (index.ts). Throws on a singular
- * view/projection matrix (same as before).
+ * Pack the per-frame `FrameUniforms` for the accumulation draw. Throws on a
+ * singular view/projection matrix.
  */
 export function packFrameUniforms(
   input: FrameInput,
@@ -58,26 +48,28 @@ export function packFrameUniforms(
   w: number,
   h: number,
   cfg: FrameUniformsConfig,
+  accumulatedSample = 0,
 ): FrameUniforms {
   const cameraWorldMatrix = invertMat4(input.viewMatrix);
   const invProjectionMatrix = invertMat4(input.projMatrix);
   if (cameraWorldMatrix == null || invProjectionMatrix == null) {
     throw new Error('renderFrame: singular view/projection matrix');
   }
-  const caustic =
-    cfg.causticStrategy === 'manifold-nee' ? 1 : cfg.causticStrategy === 'photon-map' ? 2 : 0;
   // H6 FIX (2026-06-09): honour the HDRI environment's `intensity` contract field
   // (was hardcoded to 1, so `environment.intensity` was silently ignored).
   // Mirrors pt-webgpu (environmentPacking.ts:54: `env.intensity ?? 1`).
   const env = cfg.scene?.environment;
   const envIntensity = env != null && env.kind === 'hdri' ? env.intensity ?? 1 : 1;
+  const sharedBdptWavelength = sharedBdptWavelengthForSeed(
+    input.frameSeed,
+    accumulatedSample,
+  );
   return {
     resolution: [w, h],
     bounces,
     transmissiveBounces: bounces,
     filterGlossyFactor: input.quality?.filteredGlossyFactor ?? 0,
     materialLodDepth: cfg.materialLodDepth,
-    radianceClamp: 0,
     cameraWorldMatrix,
     invProjectionMatrix,
     environmentIntensity: cfg.hasEnvMap ? envIntensity : 0,
@@ -93,17 +85,16 @@ export function packFrameUniforms(
       : IDENTITY_MAT4,
     backgroundBlur: cfg.backgroundBlur,
     spectralEnabled: cfg.spectralEnabled,
-    causticStrategy: caustic,
-    mneeMaxIterations: cfg.mneeMaxIterations,
-    mneeMaxChainLength: cfg.mneeMaxChainLength,
     backgroundAlpha: cfg.backgroundAlpha,
     // A5 — BDPT host-driver inputs (no-op when bdpt:false).
     bdpt: cfg.bdpt,
     bdptMaxLightBounces: cfg.bdptMaxLightBounces,
-    // H2 follow-on — global spectral coefficients. Cauchy IOR only when spectral is
-    // on (else the no-dispersion fast path → byte-identical); Jakob stays flat.
+    bdptSceneCenter: cfg.bdptSceneCenter,
+    bdptSceneRadius: cfg.bdptSceneRadius,
+    bdptSharedWavelengthNm: sharedBdptWavelength.wavelengthNm,
+    bdptSharedWavelengthPdf: sharedBdptWavelength.pdf,
+    // Cauchy IOR only when spectral is on; otherwise the no-dispersion fast path.
     iorCauchy: cfg.spectralEnabled ? SPECTRAL_IOR_CAUCHY : NO_IOR_CAUCHY,
-    jakobCoeffs: FLAT_JAKOB_COEFFS,
     dof:
       cfg.dof != null
         ? {

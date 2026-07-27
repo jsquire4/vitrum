@@ -14,6 +14,7 @@ function makeDevice() {
     end: vi.fn(),
   }));
   const submit = vi.fn();
+  const copyTextureToTexture = vi.fn();
   const createTexture = vi.fn((desc: GPUTextureDescriptor) => {
     const size = desc.size as { width: number; height: number; depthOrArrayLayers?: number };
     return {
@@ -27,7 +28,7 @@ function makeDevice() {
     };
   });
   const device = {
-    limits: { maxTextureDimension2D: 8192 },
+    limits: { maxTextureDimension2D: 8192, maxTextureArrayLayers: 256 },
     queue: {
       writeTexture,
       copyExternalImageToTexture: vi.fn(),
@@ -42,10 +43,18 @@ function makeDevice() {
     createBindGroup: vi.fn(() => ({})),
     createCommandEncoder: vi.fn(() => ({
       beginRenderPass,
+      copyTextureToTexture,
       finish: vi.fn(() => ({})),
     })),
   } as unknown as GPUDevice;
-  return { device, writeTexture, createTexture, beginRenderPass, submit };
+  return {
+    device,
+    writeTexture,
+    createTexture,
+    beginRenderPass,
+    copyTextureToTexture,
+    submit,
+  };
 }
 
 function rawImage(width: number, height: number): { width: number; height: number; data: Uint8Array } {
@@ -74,12 +83,12 @@ describe('createMaterialTextureArray', () => {
       size: { width: 4, height: 4, depthOrArrayLayers: 2 },
     }));
     expect(beginRenderPass).toHaveBeenCalledTimes(4);
-    expect(submit).toHaveBeenCalledTimes(1);
+    expect(submit).toHaveBeenCalledTimes(4);
   });
 
-  it('reports per-layer UV-fit scales for heterogeneous source dimensions', () => {
+  it('builds independent native mip rectangles for heterogeneous source dimensions', () => {
     installGpuConstStubs();
-    const { device } = makeDevice();
+    const { device, copyTextureToTexture } = makeDevice();
     const array = createMaterialTextureArray(device, [
       rawImage(2, 4),
       rawImage(4, 4),
@@ -91,30 +100,19 @@ describe('createMaterialTextureArray', () => {
       [1, 1],
       [1, 0.5],
     ]);
-    expect(array.warnings).toContain(
-      '[materialTextureArray] source 0 is 2×4 but the array is 4×4; copied at native size and sampled through a per-layer UV-fit scale. Use same-size textures when exact mip/border filtering parity is required.',
+    expect(array.warnings).toEqual([]);
+    expect(array.structuredWarnings).toEqual([]);
+    expect(copyTextureToTexture).toHaveBeenCalledTimes(9);
+    expect(copyTextureToTexture).toHaveBeenCalledWith(
+      expect.objectContaining({ mipLevel: 1 }),
+      expect.objectContaining({ mipLevel: 1, origin: { x: 0, y: 0, z: 0 } }),
+      { width: 1, height: 2, depthOrArrayLayers: 1 },
     );
-    expect(array.warnings).toContain(
-      '[materialTextureArray] source 2 is 4×2 but the array is 4×4; copied at native size and sampled through a per-layer UV-fit scale. Use same-size textures when exact mip/border filtering parity is required.',
+    expect(copyTextureToTexture).toHaveBeenCalledWith(
+      expect.objectContaining({ mipLevel: 1 }),
+      expect.objectContaining({ mipLevel: 1, origin: { x: 0, y: 0, z: 2 } }),
+      { width: 2, height: 1, depthOrArrayLayers: 1 },
     );
-    expect(array.structuredWarnings).toEqual([
-      expect.objectContaining({
-        code: 'texture-size-mismatch',
-        layer: 0,
-        width: 2,
-        height: 4,
-        arrayWidth: 4,
-        arrayHeight: 4,
-      }),
-      expect.objectContaining({
-        code: 'texture-size-mismatch',
-        layer: 2,
-        width: 4,
-        height: 2,
-        arrayWidth: 4,
-        arrayHeight: 4,
-      }),
-    ]);
   });
 
   it('expands 8-bit RGB raw data to RGBA8 rows before writeTexture', () => {
@@ -177,32 +175,19 @@ describe('createMaterialTextureArray', () => {
     expect(call[3]).toEqual({ width: 1, height: 1 });
   });
 
-  it('warns and leaves unsupported raw typed-array shapes black', () => {
+  it('rejects unsupported raw typed-array shapes before GPU allocation', () => {
     installGpuConstStubs();
-    const { device, writeTexture } = makeDevice();
-    const array = createMaterialTextureArray(device, [
+    const { device, writeTexture, createTexture } = makeDevice();
+    expect(() => createMaterialTextureArray(device, [
       { width: 1, height: 1, data: new Float32Array([1, 0, 0, 1, 0]) },
-    ]);
-
+    ])).toThrow(/unsupported raw layout/);
     expect(writeTexture).not.toHaveBeenCalled();
-    expect(array.warnings).toContain(
-      '[materialTextureArray] source 0 has raw data with unsupported byte layout (20 bytes for 1×1); expected 1, 2, 3, or 4 8-bit or normalized numeric channel(s) per pixel. Layer left black.',
-    );
-    expect(array.structuredWarnings).toEqual([
-      expect.objectContaining({
-        code: 'texture-unsupported-layout',
-        layer: 0,
-        width: 1,
-        height: 1,
-        byteLength: 20,
-        fallback: 'black-layer',
-      }),
-    ]);
+    expect(createTexture).not.toHaveBeenCalled();
   });
 
-  it('attaches source-layer uses to structured upload warnings', () => {
+  it('surfaces unreadable source dimensions as an explicit black-layer fallback', () => {
     installGpuConstStubs();
-    const { device } = makeDevice();
+    const { device, createTexture } = makeDevice();
     const array = createMaterialTextureArray(
       device,
       [{ image: { width: 0, height: 0 } }],
@@ -212,15 +197,66 @@ describe('createMaterialTextureArray', () => {
         uses: [{ materialIndex: 3, field: 'baseColorMap', colorSpace: 'srgb', texCoord: 1 }],
       }],
     );
+    expect(createTexture).toHaveBeenCalledTimes(1);
+    expect(array.structuredWarnings).toEqual([expect.objectContaining({
+      code: 'texture-unreadable',
+      layer: 0,
+      fallback: 'black-layer',
+      uses: [{ materialIndex: 3, field: 'baseColorMap', colorSpace: 'srgb', texCoord: 1 }],
+    })]);
+  });
 
-    expect(array.structuredWarnings).toEqual([
-      expect.objectContaining({
-        code: 'texture-unreadable',
-        layer: 0,
-        fallback: 'black-layer',
-        uses: [{ materialIndex: 3, field: 'baseColorMap', colorSpace: 'srgb', texCoord: 1 }],
-      }),
-    ]);
+  it('rejects non-finite Float32 samples before GPU allocation', () => {
+    installGpuConstStubs();
+    const { device, createTexture } = makeDevice();
+    expect(() => createMaterialTextureArray(device, [{
+      width: 1,
+      height: 1,
+      data: new Float32Array([1, Number.NaN, 0, 1]),
+    }], 'rgba16float')).toThrow(/raw HDR sample 1 must be finite/);
+    expect(createTexture).not.toHaveBeenCalled();
+  });
+
+  it('rejects lossy out-of-range Float32 values for rgba8 arrays', () => {
+    installGpuConstStubs();
+    const { device, createTexture } = makeDevice();
+    expect(() => createMaterialTextureArray(device, [{
+      width: 1,
+      height: 1,
+      data: new Float32Array([2, 0, 0, 1]),
+    }], 'rgba8unorm')).toThrow(/must be in \[0, 1\]/);
+    expect(createTexture).not.toHaveBeenCalled();
+  });
+
+  it('rejects unsupported numeric element types instead of coercing them', () => {
+    installGpuConstStubs();
+    const { device, createTexture } = makeDevice();
+    expect(() => createMaterialTextureArray(device, [{
+      width: 1,
+      height: 1,
+      data: new Float64Array([1, 0, 0, 1]),
+    }])).toThrow(/unsupported raw layout/);
+    expect(createTexture).not.toHaveBeenCalled();
+  });
+
+  it('rejects dimensions above device limits rather than truncating them', () => {
+    installGpuConstStubs();
+    const { device, createTexture } = makeDevice();
+    expect(() => createMaterialTextureArray(device, [{
+      width: 8193,
+      height: 1,
+    }])).toThrow(/truncation is not permitted/);
+    expect(createTexture).not.toHaveBeenCalled();
+  });
+
+  it('rejects aggregate mip allocation above the explicit peak budget', () => {
+    installGpuConstStubs();
+    const { device, createTexture } = makeDevice();
+    expect(() => createMaterialTextureArray(device, [
+      { width: 8192, height: 8192 },
+      { width: 8192, height: 8192 },
+    ], 'rgba16float')).toThrow(/estimated array upload peak/);
+    expect(createTexture).not.toHaveBeenCalled();
   });
 
   it('accepts regular material-map sampler policy requests consumed by the pt-webgpu descriptor', () => {
@@ -244,9 +280,7 @@ describe('createMaterialTextureArray', () => {
       }],
     );
 
-    expect(array.structuredWarnings.filter((warning) =>
-      warning.code === 'texture-sampler-policy-approximation',
-    )).toEqual([]);
+    expect(array.structuredWarnings).toEqual([]);
     expect(array.warnings.some((warning) => warning.includes('sampler policy'))).toBe(false);
   });
 
@@ -285,9 +319,7 @@ describe('createMaterialTextureArray', () => {
       ],
     );
 
-    expect(array.structuredWarnings.filter((warning) =>
-      warning.code === 'texture-sampler-policy-approximation',
-    )).toEqual([]);
+    expect(array.structuredWarnings).toEqual([]);
   });
 
   // ── T1-6 — rgba16float emissive array (HDR emissive) ────────────────────────
@@ -380,9 +412,7 @@ describe('createMaterialTextureArray', () => {
       }],
     );
 
-    expect(array.structuredWarnings.filter((warning) =>
-      warning.code === 'texture-sampler-policy-approximation',
-    )).toEqual([]);
+    expect(array.structuredWarnings).toEqual([]);
     expect(array.warnings.some((warning) => warning.includes('sampler policy'))).toBe(false);
   });
 });

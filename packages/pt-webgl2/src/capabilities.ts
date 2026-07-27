@@ -1,6 +1,7 @@
 import type {
   AnalyticShape,
   EngineCapabilities,
+  EngineFeatureId,
   SceneEmitter,
   SceneEnvironment,
   ScenePrimitive,
@@ -49,21 +50,18 @@ export const PT_WEBGL2_SUPPORT: Required<SupportSets> = {
  * Build the capabilities object from the explicit `pt-webgl2` promise-ledger row.
  */
 export function buildCapabilities(
-  causticStrategy: EngineCapabilities['causticStrategy'],
+  denoiser: 'none' | 'oidn-final',
   maxBounces: number,
   maxSamplesPerPixel: number,
   _supportsAuxBuffers: boolean,
-  experimental?: { bdpt?: boolean; spectral?: boolean; oidn?: boolean },
+  selected?: { bdpt?: boolean; spectral?: boolean; sampling?: 'pcg' | 'sobol' },
 ): EngineCapabilities {
-  // experimentalFeatures advertises OFF-default research paths that are HOST-DRIVEN
-  // and live (not inert). A5 (2026-06-10): pt-webgl2-bdpt is added only when bdpt:true
-  // because the light-subpath passes are now actually issued (see GlResources). The
-  // photon-map/manifold-nee approximations are surfaced via causticStrategy + JSDoc,
-  // not here. Undefined (no flags) → field omitted, matching the prior shape.
-  const features = new Set<string>();
-  if (experimental?.bdpt === true) features.add('pt-webgl2-bdpt');
-  if (experimental?.spectral === true) features.add('pt-webgl2-spectral');
-  if (experimental?.oidn === true) features.add('pt-webgl2-oidn-final');
+  const activeFeatures = new Set<EngineFeatureId>();
+  if (selected?.bdpt === true) activeFeatures.add('pt-webgl2-bdpt');
+  if (selected?.spectral === true) activeFeatures.add('pt-webgl2-spectral');
+  if (selected?.sampling === 'sobol') activeFeatures.add('pt-webgl2-sobol-sampling');
+  if (denoiser === 'oidn-final') activeFeatures.add('pt-webgl2-oidn-final');
+
   return {
     supportsIncrementalScene: true,
     incrementalPatchSupport: {
@@ -85,12 +83,34 @@ export function buildCapabilities(
     supportedPrimitiveKinds: new Set(PT_WEBGL2_SUPPORT.supportedPrimitiveKinds),
     supportedEnvironmentKinds: new Set(PT_WEBGL2_SUPPORT.supportedEnvironmentKinds),
     presentationMode: 'offscreen-texture',
-    causticStrategy,
+    causticStrategy: selected?.bdpt === true ? 'bdpt' : 'none',
     // T3.G #30 — this backend exposes debug.pickPrimitive (CPU ray-cast click-to-pick).
     debugSurface: true,
-    ...(features.size > 0 ? { experimentalFeatures: features } : {}),
+    activeFeatures,
     supportDetails: {
       ...PT_WEBGL2_BASE_SUPPORT_DETAILS,
+      causticStrategies: {
+        ...PT_WEBGL2_BASE_SUPPORT_DETAILS.causticStrategies,
+        bdpt: {
+          mode: 'native',
+          estimatorScope:
+            'bounded general BDPT: power-weighted light subpaths store 1..8 vertices (default 4); finite-emitter c=0 plus c>=1 light/eye surface and participating-medium vertices carry an exact eight-entry nested homogeneous-medium stack, RGB or hero-wavelength Beer visibility, authored sigma_a/sigma_s, and Henyey-Greenstein phase transport through Veach power-heuristic MIS; thicknessMap modulates the core contract\'s authored surface-volume attenuation; distant paths are disjointly owned by primary c=0 NEE, camera/delta forward escape, or c>=1 BDPT',
+          emitterKinds: {
+            directional: 'native',
+            point: 'native',
+            spot: 'native',
+            'rect-area': 'native',
+            'disc-area': 'native',
+            'mesh-area': 'native',
+            environment: 'native',
+          },
+          // This is the complete spatial-medium domain expressible by the core
+          // contract: closed homogeneous boundaries, authored absorption /
+          // scattering / HG anisotropy, and texture-modulated thickness.
+          volumeScattering: 'native',
+          incompatibleFeatures: [],
+        },
+      },
       mutations: {
         ...PT_WEBGL2_BASE_SUPPORT_DETAILS.mutations,
         transform: 'native',

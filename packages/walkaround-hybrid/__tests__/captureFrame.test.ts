@@ -101,10 +101,23 @@ function makeStubDevice(): GPUDevice {
   } as unknown as GPUDevice;
 }
 
-const MINIMAL_OPTS: Pick<HybridEngineOptions, 'device' | 'width' | 'height'> = {
+const MINIMAL_OPTS: Pick<
+  HybridEngineOptions,
+  | 'device'
+  | 'width'
+  | 'height'
+  | 'primaryLightDir'
+  | 'primaryLightIntensity'
+  | 'skyTint'
+  | 'skyIrradiance'
+> = {
   device: makeStubDevice(),
   width: 64,
   height: 64,
+  primaryLightDir: [0, -1, 0],
+  primaryLightIntensity: 1,
+  skyTint: [0.4, 0.6, 1],
+  skyIrradiance: 0.3,
 };
 
 // ── Tests 1–2: high-level HybridEngine ────────────────────────────────────────

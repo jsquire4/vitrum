@@ -45,12 +45,11 @@
 
 import { createWalkaroundEngine_Hybrid } from "@vitrum/walkaround-hybrid";
 import { asMat4 } from "@vitrum/core";
-// Shared WH GPU harness scaffolding (camera/device/naga-patch) — D17-5. The scene
+// Shared WH GPU harness scaffolding (camera/device) — D17-5. The scene
 // builders below stay local (they carry harness-specific ior/attenuation params).
 import {
   makePerspectiveMatrix,
   makeLookAtMatrix,
-  patchDeviceForWh,
   acquireWhDevice,
 } from "../lib/whHarness.mjs";
 import { readRgba16fWalkaround } from "../../packages/walkaround-hybrid/src/util/gpuReadback.ts";
@@ -169,7 +168,7 @@ function makeDirOnlyScene() {
   };
 }
 
-// patchDeviceForWh + acquireWhDevice imported from ../lib/whHarness.mjs (D17-5).
+// acquireWhDevice imported from ../lib/whHarness.mjs (D17-5).
 
 // ── Engine readiness helper ──────────────────────────────────────────────────
 async function waitForReady(engine, label, timeoutMs = 90_000) {
@@ -221,8 +220,6 @@ async function runVariant(label, engineOpts, sceneFactory) {
   let device;
   try { device = await acquireWhDevice(); }
   catch (e) { return { label, error: e.message, pixels: null, lum: 0 }; }
-
-  patchDeviceForWh(device);
 
   let engine  = null;
   let swapTex = null;

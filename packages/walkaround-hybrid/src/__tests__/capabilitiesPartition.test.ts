@@ -36,6 +36,7 @@ import { HybridEngine } from '../HybridEngine.js';
 import type { HybridEngineOptions } from '../HybridEngine.js';
 import { WALKAROUND_DENOISER_UNET_SPEC } from '../neural/unetArchitecture.js';
 import type { LayerWeights, ModelWeights, NeuralCheckpointMetadata } from '../neural/weights.js';
+import { NEURAL_PREPROCESSING_CONTRACT } from '../neural/preprocessing.js';
 
 const PRODUCTION_CHECKPOINT: NeuralCheckpointMetadata = {
   id: 'capability-fixture',
@@ -47,6 +48,7 @@ const PRODUCTION_CHECKPOINT: NeuralCheckpointMetadata = {
   captureBackend: 'pt-webgpu-full',
   tonemap: 'linear-hdr',
   hardware: 'real-adapter-fixture',
+  preprocessing: NEURAL_PREPROCESSING_CONTRACT,
   qualityReport: { status: 'pass', reportPath: 'tools/neural-denoiser-training/reports/capability-fixture.json' },
 };
 
@@ -56,6 +58,11 @@ const PRODUCTION_CHECKPOINT: NeuralCheckpointMetadata = {
  *  it touches any of these. */
 function makeDeviceStub(): GPUDevice {
   return {
+    limits: {
+      maxBindGroups: 5,
+      maxStorageBuffersPerShaderStage: 22,
+      maxComputeWorkgroupStorageSize: 16_384,
+    },
     createCommandEncoder: vi.fn(),
     createBuffer: vi.fn(),
     createTexture: vi.fn(),
@@ -95,7 +102,7 @@ function makeZeroNeuralWeights(): ModelWeights {
 }
 
 function makeProductionNeuralWeights(): ModelWeights {
-  return { ...makeZeroNeuralWeights(), checkpoint: PRODUCTION_CHECKPOINT };
+  return { ...makeZeroNeuralWeights(), formatVersion: 2, checkpoint: PRODUCTION_CHECKPOINT };
 }
 
 function resolvedDenoiser(engine: HybridEngine): string {
@@ -220,7 +227,7 @@ describe('walkaround-hybrid capability/partition reconciliation', () => {
     try {
       expect(warnings).toEqual([
         expect.objectContaining({
-          code: 'walkaround-hybrid.nrc-experimental-biased',
+          code: 'walkaround-hybrid.nrc-biased-estimator-enabled',
           backend: 'walkaround-hybrid',
           phase: 'construction',
           method: 'createWalkaroundEngine_Hybrid',
@@ -237,34 +244,94 @@ describe('walkaround-hybrid capability/partition reconciliation', () => {
     }
   });
 
-  it('routes DDGI constructor warnings through the engine warning surface', () => {
+  it('rejects an invalid DDGI material capacity before construction side effects', () => {
     warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const warnings: unknown[] = [];
-    const engine = new HybridEngine({
+    expect(() => new HybridEngine({
       ...makeOpts(),
       ddgiMaxMaterials: 0,
       onWarning: (warning) => warnings.push(warning),
-    });
+    })).toThrow(/ddgiMaxMaterials must be a positive safe integer/);
+    expect(warnings).toHaveLength(0);
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+
+  it('reports only the resolved default denoiser when opt-in features are disabled', () => {
+    const engine = new HybridEngine(makeOpts());
     try {
-      expect(warnings).toEqual([
-        expect.objectContaining({
-          code: 'walkaround-hybrid.ddgi-invalid-max-materials',
-          backend: 'walkaround-hybrid',
-          phase: 'construction',
-          method: 'ProbeUpdatePass.constructor',
-          details: expect.objectContaining({ requested: 0, clampedTo: 1 }),
-        }),
-      ]);
-      expect(warnSpy.mock.calls.flat().join('\n')).toContain('maxMaterials=0');
+      expect(engine.capabilities.activeFeatures).toEqual(new Set(['walkaround-hybrid-denoiser-atrous-variance']));
+      expect([...(engine.capabilities.activeFeatures ?? [])]).not.toContain('svgf-real-conservative-objid');
     } finally {
       engine.dispose();
     }
   });
 
-  it('keeps learned/research paths out of experimentalFeatures until explicitly enabled', () => {
-    const engine = new HybridEngine(makeOpts());
+  it('reports the refractive-trace estimator without claiming Manifold NEE', () => {
+    const engine = new HybridEngine({
+      ...makeOpts(),
+      causticStrategy: 'refractive-trace',
+    });
     try {
-      expect(engine.capabilities.experimentalFeatures).toEqual(new Set(['svgf-real-conservative-objid']));
+      expect(engine.capabilities.causticStrategy).toBe('refractive-trace');
+      expect(engine.capabilities.activeFeatures).toEqual(new Set([
+        'walkaround-hybrid-refractive-trace-caustics',
+        'walkaround-hybrid-denoiser-atrous-variance',
+      ]));
+      expect(engine.capabilities.causticStrategy).not.toBe('manifold-nee');
+      expect(engine.capabilities.supportDetails?.causticStrategies?.['refractive-trace']).toEqual({
+        mode: 'approximate',
+        estimatorScope:
+          'camera-visible diffuse receiver <- up-to-four specular transmission interfaces <- directional emitter; two bounded stratified RGB candidates, not Newton manifold NEE',
+        emitterKinds: {
+          directional: 'native',
+          point: 'unsupported',
+          spot: 'unsupported',
+          'rect-area': 'unsupported',
+          'disc-area': 'unsupported',
+          'mesh-area': 'unsupported',
+          environment: 'unsupported',
+        },
+        volumeScattering: 'unsupported',
+        incompatibleFeatures: ['manifold-nee', 'photon-map'],
+      });
+    } finally {
+      engine.dispose();
+    }
+  });
+
+
+  it.each([
+    ['none', undefined],
+    ['atrous', 'walkaround-hybrid-denoiser-atrous'],
+    ['atrous-variance', 'walkaround-hybrid-denoiser-atrous-variance'],
+    ['svgf-real', 'walkaround-hybrid-denoiser-svgf-real'],
+    ['bmfr', 'walkaround-hybrid-denoiser-bmfr'],
+    ['neural', 'walkaround-hybrid-denoiser-neural'],
+    ['oidn-final', 'walkaround-hybrid-denoiser-oidn-final'],
+  ] as const)('reports the resolved %s denoiser and no support-limit pseudo-feature', (denoiser, feature) => {
+    const engine = new HybridEngine({
+      ...makeOpts(),
+      denoiser,
+      ...(denoiser === 'neural'
+        ? { neuralWeights: makeProductionNeuralWeights() }
+        : {}),
+      ...(denoiser === 'oidn-final'
+        ? {
+            extensions: {
+              'walkaround-hybrid': {
+                oidnModelUrl: '/models/oidn_rt_hdr_alb_nrm.onnx',
+              },
+            },
+          }
+        : {}),
+    });
+    try {
+      expect(engine.capabilities.activeFeatures).toEqual(
+        new Set(feature === undefined ? [] : [feature]),
+      );
+      expect([...(engine.capabilities.activeFeatures ?? [])]).not.toContain(
+        'svgf-real-conservative-objid',
+      );
     } finally {
       engine.dispose();
     }
@@ -279,8 +346,8 @@ describe('walkaround-hybrid capability/partition reconciliation', () => {
       onWarning: (warning) => warnings.push(warning),
     });
     try {
+      expect(engine.capabilities.activeFeatures).toEqual(new Set(['walkaround-hybrid-denoiser-atrous-variance']));
       expect(resolvedDenoiser(engine)).toBe('atrous-variance');
-      expect(engine.capabilities.experimentalFeatures?.has('walkaround-hybrid-neural-denoiser-host-weights')).toBe(false);
       expect(engine.capabilities.supportDetails?.denoisers.neural).toBe('unsupported');
       expect(warnings).toEqual([
         expect.objectContaining({
@@ -312,8 +379,8 @@ describe('walkaround-hybrid capability/partition reconciliation', () => {
       onWarning: (warning) => warnings.push(warning),
     });
     try {
+      expect(engine.capabilities.activeFeatures).toEqual(new Set(['walkaround-hybrid-denoiser-neural']));
       expect(resolvedDenoiser(engine)).toBe('neural');
-      expect(engine.capabilities.experimentalFeatures?.has('walkaround-hybrid-neural-denoiser-host-weights')).toBe(true);
       expect(engine.capabilities.supportDetails?.denoisers.neural).toBe('native');
       expect(warnings).toEqual(expect.arrayContaining([
         expect.objectContaining({
@@ -343,7 +410,7 @@ describe('walkaround-hybrid capability/partition reconciliation', () => {
     }
   });
 
-  it("keeps denoiser:'auto' off neural for shape-valid non-production weights", () => {
+  it("keeps denoiser:'auto' off neural for shape-valid uncertified weights", () => {
     warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const warnings: unknown[] = [];
     const engine = new HybridEngine({
@@ -353,9 +420,9 @@ describe('walkaround-hybrid capability/partition reconciliation', () => {
       onWarning: (warning) => warnings.push(warning),
     });
     try {
+      expect(engine.capabilities.activeFeatures).toEqual(new Set(['walkaround-hybrid-denoiser-atrous-variance']));
       expect(resolvedDenoiser(engine)).toBe('atrous-variance');
-      expect(engine.capabilities.experimentalFeatures?.has('walkaround-hybrid-neural-denoiser-host-weights')).toBe(false);
-      expect(engine.capabilities.supportDetails?.denoisers.neural).toBe('approximate');
+      expect(engine.capabilities.supportDetails?.denoisers.neural).toBe('unsupported');
       expect(warnings).toEqual([
         expect.objectContaining({
           code: 'walkaround-hybrid.denoiser-auto-resolved',
@@ -364,7 +431,7 @@ describe('walkaround-hybrid capability/partition reconciliation', () => {
             resolved: 'atrous-variance',
             reason: 'host-neural-weights-not-production-ready',
             neuralCheckpointProductionReady: false,
-            neuralCheckpointMissing: ['checkpoint metadata'],
+            neuralCheckpointMissing: ['formatVersion=2', 'checkpoint metadata'],
           }),
         }),
       ]);
@@ -384,8 +451,8 @@ describe('walkaround-hybrid capability/partition reconciliation', () => {
       onWarning: (warning) => warnings.push(warning),
     });
     try {
+      expect(engine.capabilities.activeFeatures).toEqual(new Set(['walkaround-hybrid-denoiser-atrous-variance']));
       expect(resolvedDenoiser(engine)).toBe('atrous-variance');
-      expect(engine.capabilities.experimentalFeatures?.has('walkaround-hybrid-neural-denoiser-host-weights')).toBe(false);
       expect(warnings).toEqual([
         expect.objectContaining({
           code: 'walkaround-hybrid.denoiser-auto-resolved',
@@ -401,29 +468,33 @@ describe('walkaround-hybrid capability/partition reconciliation', () => {
     }
   });
 
-  it('declares opt-in learned/research paths as experimental features', () => {
+  it('reports selected compatible opt-in paths in activeFeatures and open rows independently', () => {
     warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const warnings: unknown[] = [];
     const engine = new HybridEngine({
       ...makeOpts(),
-      restirPtReuse: true,
+      rcEnabled: true,
+      gpuSkinning: true,
+      regir: { enabled: true },
+      grisReuse: false,
       ppgEnabled: true,
       nrcEnabled: true,
       denoiser: 'neural',
-      neuralWeights: makeZeroNeuralWeights(),
+      neuralWeights: makeProductionNeuralWeights(),
       onWarning: (warning) => warnings.push(warning),
     });
     try {
-      expect(engine.capabilities.experimentalFeatures).toEqual(new Set([
-        'svgf-real-conservative-objid',
-        'walkaround-hybrid-gris-unbiased-reuse',
+      expect(engine.capabilities.activeFeatures).toEqual(new Set([
         'walkaround-hybrid-ppg-guided-gi',
-        'walkaround-hybrid-nrc-biased-cache',
-        'walkaround-hybrid-neural-denoiser-host-weights',
+        'walkaround-hybrid-nrc',
+        'walkaround-hybrid-radiance-cascades',
+        'walkaround-hybrid-regir',
+        'walkaround-hybrid-gpu-skinning',
+        'walkaround-hybrid-denoiser-neural',
       ]));
       expect(warnings).toEqual(expect.arrayContaining([
         expect.objectContaining({
-          code: 'walkaround-hybrid.nrc-experimental-biased',
+          code: 'walkaround-hybrid.nrc-biased-estimator-enabled',
           details: expect.objectContaining({ estimator: 'biased', defaultEnabled: false }),
         }),
         expect.objectContaining({
@@ -433,8 +504,8 @@ describe('walkaround-hybrid capability/partition reconciliation', () => {
             weightsRequired: true,
             packageProvidesProductionWeights: false,
             defaultEnabled: false,
-            checkpointProductionReady: false,
-            checkpointMissing: ['checkpoint metadata'],
+            checkpointProductionReady: true,
+            checkpointMissing: [],
           }),
         }),
       ]));
@@ -517,6 +588,22 @@ describe('walkaround-hybrid capability/partition reconciliation', () => {
       expect(generated.positions.length).toBeGreaterThan(0);
       expect(generated.normals.length).toBe(generated.positions.length);
       expect(generated.material.baseColor).toEqual([1, 0, 0]);
+    } finally {
+      engine.dispose();
+    }
+  });
+
+  it('reports the canonical neural internal-render shape requirement', () => {
+    const engine = new HybridEngine(makeOpts());
+    try {
+      expect(
+        engine.capabilities.supportDetails?.denoiserSpatialShapeRequirements?.neural,
+      ).toEqual({
+        minWidth: 1,
+        minHeight: 1,
+        widthMultiple: 1,
+        heightMultiple: 1,
+      });
     } finally {
       engine.dispose();
     }

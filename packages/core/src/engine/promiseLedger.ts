@@ -49,11 +49,15 @@ export interface BackendMethodPromises {
   readonly createInverseSession: boolean;
   /**
    * Whether the backend implements `Engine.getRestirPtResultBuffer()` —
-   * the experimental ReSTIR-PT resolve-pass output buffer accessor. pt-webgpu
-   * only (and only when the `pt-webgpu-restir-pt-reuse` experimental feature
-   * flag is set); other backends omit this method.
+   * the ReSTIR-PT resolve-pass output buffer accessor. pt-webgpu only (and only
+   * when `pt-webgpu-restir-pt-reuse` is active); other backends omit it.
    */
   readonly getRestirPtResultBuffer: boolean;
+  /**
+   * Whether the backend implements `Engine.getPresentationSource()` for
+   * host-side presentation of an engine-owned offscreen texture.
+   */
+  readonly getPresentationSource: boolean;
   /**
    * Whether the backend implements `Engine.getProgressiveSeedTexture()` —
    * the progressive walkaround→PT seed SOURCE (post-denoise HDR output exposed
@@ -285,7 +289,7 @@ export const MATERIAL_SPEC_FIELDS = [
   // Base PBR
   'baseColor', 'roughness', 'metallic', 'emissive', 'emissiveIntensity', 'shadingModel',
   // Alpha / coverage
-  'alphaMode', 'alphaCutoff', 'opacity',
+  'alphaMode', 'alphaCutoff', 'opacity', 'doubleSided',
   // Transmission / refraction
   'transmission', 'ior', 'attenuationColor', 'attenuationDistance', 'thickness',
   // Texture maps + their scalars
@@ -345,6 +349,9 @@ const WALKAROUND_MATERIALS: MaterialSupportMatrix = Object.freeze({
   // transmissive surfaces (packingHelpers.ts resolveTriColor mirror).
   baseColor: 'approximate',
   // packBVHRoughMetalFromCore: u8 lane + B1 default invariants (0.85 / glass 0.05).
+  // Roughness is supported for opaque reflection. When combined with physical
+  // transmission, only numerical-zero delta interfaces are accepted; see the
+  // machine-readable materialProfiles.roughTransmission row below.
   roughness: 'approximate',
   // u8 lane + a separate BINARY isMetal classification bit in bvhIndex.w.
   metallic: 'approximate',
@@ -354,98 +361,90 @@ const WALKAROUND_MATERIALS: MaterialSupportMatrix = Object.freeze({
   // Folded into emitter Le at classification (emitterClassify.ts Le = emissive·ei).
   emissiveIntensity: 'native',
   shadingModel: 'approximate',
-  // Cutout coverage: scalar mask uses opacity < alphaCutoff; readable alphaMap
-  // handles are sampled in the atlas-backed primary/RIS/GI traversal path and
+  // Cutout coverage: scalar mask uses opacity < alphaCutoff; atlas-backed
+  // alpha maps are sampled in the primary/RIS/GI traversal path and
   // in atlas-backed shade/ReSTIR-DI/ReSTIR-GI/NRC/GRIS shadow visibility.
   // Fractional blend is camera-composited by walkaround's transparent-OIT pass,
   // including direct sun plus analytic point/spot lighting with alpha-aware
-  // direct shadow transmittance and fixed-stratified finite-emitter direct light,
-  // but transparent layers still are not ReSTIR/GI/DDGI/RC transport
-  // participants.
-  alphaMode: 'approximate',
-  alphaCutoff: 'approximate',
-  opacity: 'approximate',
+  // direct shadow transmittance and finite-emitter direct light. Secondary
+  // ReSTIR-GI/NRC/DDGI/RC traversal uses independent seeded stochastic
+  // coverage, so blend layers participate without deterministic correlation.
+  alphaMode: 'native',
+  alphaCutoff: 'native',
+  opacity: 'native',
+  // Dedicated per-triangle side metadata filters opaque back faces in hybrid,
+  // DDGI, RC, and shadow traversal. Mirrored TLAS instances parity-correct the
+  // hit side; transmissive exits remain admissible for closed volumes.
+  doubleSided: 'native',
   // 4-bit trans4 lane in bvhIndex.w (16 steps).
   transmission: 'approximate',
   // u8-quantized [1,3] lane (B1-ior-per-tri) + DDGI material entry.
   ior: 'approximate',
   // Beer-Lambert tint PRE-BAKED per triangle at pack time (bvh_beer lane) with
-  // `thickness` as a fixed slab; readable thicknessMap multiplies that slab
+  // `thickness` as a fixed slab; atlas-backed thicknessMap multiplies that slab
   // approximately by exponentiating the tint with thicknessTexture.g at hit UV.
   attenuationColor: 'approximate',
   attenuationDistance: 'approximate',
   thickness: 'approximate',
-  // Phase-3D first slice: readable raw/DataTexture-shaped uv0/uv1 baseColorMap
-  // handles are sampled with wrap+transform and multiplied into visible albedo.
-  // Approximate because glass Beer/transmission tint still uses the scalar
-  // packed color path, and compact GI/reservoir paths still use bounded
-  // approximations for mapped emitters and transparent transport.
+  // CPU pixel payloads and nominal WalkaroundWebGpuTextureSource descriptors
+  // share a full-mip RGBA32F atlas. Authored sampler policy, texture transforms,
+  // and compact arbitrary texCoord affine charts are honored. Primary and
+  // secondary hits use a bounded camera-projected triangle footprint rather
+  // than propagated ray differentials. Approximate because glass Beer/
+  // transmission tint still uses the scalar packed color path, and compact
+  // GI/reservoir paths retain mapped-emitter and transparent-transport limits.
   baseColorMap: 'approximate',
   // Phase-3D map slice: normalMap perturbs the camera-visible smooth normal
   // through authored/generated tangent.xyzw when present, falling back to a
   // derived per-triangle tangent frame. roughness/metallic sample glTF G/B
   // channels in shade for visible BRDF terms; AO samples the glTF R channel and
-  // multiplies the runtime GTAO factor; alphaMap samples R for primary/RIS/GI
-  // cutout traversal; emissiveMap modulates camera-visible emitter glow and,
-  // on merged-BVH ReSTIR-DI emitters with a source-triangle lane, per-candidate
-  // pHat/final shade radiance at the stored xi; transmissionMap modulates
-  // shade/RIS/GI glass gating; lightMap adds first-hit baked outgoing radiance.
-  // Approximate because emitter selection power still lacks a global texel-alias
-  // PDF; merged/TLAS ReSTIR-DI, DDGI, and RC sample UV-local mapped-emitter
-  // payloads when source lanes exist, while fallback paths still use averaged Le.
-  // lightMap is camera-visible only, and transparent blend promotion is split:
-  // finite emitters are camera-visible in OIT, while
-  // ReSTIR direct-light reservoirs plus GI semantics remain approximate.
+  // multiplies the runtime GTAO factor; transmissionMap modulates
+  // shade/RIS/GI glass gating. Alpha maps feed ordered primary OIT and seeded
+  // secondary coverage. Light maps are receiver-local irradiance converted to
+  // outgoing albedo/π radiance in ReSTIR-GI, DDGI, and RC.
   roughnessMap: 'approximate',
   metallicMap: 'approximate',
   normalMap: 'approximate',
   normalScale: 'approximate',
   transmissionMap: 'approximate',
   thicknessMap: 'approximate',
-  // T1-6 — emissiveMap now uploads to a DEDICATED rgba16float texture array, so
-  // authored HDR emissive texel values > 1.0 survive (they were previously
-  // clamped to [0,1] by the shared sRGB 8-bit array); LDR emissive round-trips
-  // identically via a CPU sRGB→linear decode on upload. Still 'approximate' (NOT
-  // native) because emitter SELECTION power for mapped emitters still lacks a
-  // global texel-alias PDF and transparent/GI transport for mapped emitters stays
-  // approximate — the HDR-range fix does not change those transport gaps.
-  emissiveMap: 'approximate',
-  alphaMap: 'approximate',
+  // Accepted emissive maps upload to a dedicated HDR atlas and every radiating
+  // triangle is split into exact constant-radiance texel-cell emitters. The CDF,
+  // alias table, light tree, p-hat, and final payload therefore share one
+  // density. GPU-only/unreadable sources and missing UV sets are synchronously
+  // rejected before scene publication rather than falling back to scalar Le.
+  emissiveMap: 'native',
+  alphaMap: 'native',
   aoMap: 'approximate',
   aoMapIntensity: 'approximate',
-  // Readable clearcoat factor/roughness maps modulate shade-owned direct
-  // lighting and DI/GI suffix material payloads. Approximate rather than native
-  // pending rich-material GI GPU A/B promotion; receiver-lobe targeting now
-  // consumes the material proxy, but compact geometry+Lo reservoirs keep these
-  // rows below native.
-  clearcoatMap: 'approximate',
-  clearcoatRoughnessMap: 'approximate',
+  // Rich-lobe maps drive the authored BRDF evaluation in direct, specular
+  // indirect, DI, and GI receiver targets. Reservoir proposal PDFs are evaluated
+  // for the distribution actually sampled, so they need not be lobe-matched.
+  clearcoatMap: 'native',
+  clearcoatRoughnessMap: 'native',
   // Clearcoat normal maps reuse walkaround's authored-tangent-aware atlas
   // normal path and feed shade-owned/DI/GI suffix plus receiver clearcoat
-  // evaluations. Approximate until reference A/B promotion lands.
-  clearcoatNormalMap: 'approximate',
-  clearcoatNormalScale: 'approximate',
-  // Readable sheen maps modulate the shade-owned Charlie sheen lobe plus DI/GI
-  // suffix and receiver material payloads; compact reservoirs keep this
-  // approximate.
-  sheenColorMap: 'approximate',
-  sheenRoughnessMap: 'approximate',
-  // Readable KHR_materials_iridescence maps modulate the shade-owned thin-film
-  // F0 approximation plus DI/GI suffix and receiver-lobe material payloads.
-  // Rows remain approximate until rich-material GI GPU A/B promotion lands.
-  iridescenceMap: 'approximate',
-  iridescenceThicknessMap: 'approximate',
-  // Readable KHR_materials_anisotropy maps multiply the shade-owned scalar
+  // evaluations.
+  clearcoatNormalMap: 'native',
+  clearcoatNormalScale: 'native',
+  // Atlas-backed sheen maps modulate the shade-owned Charlie sheen lobe plus DI/GI
+  // suffix and receiver material payloads.
+  sheenColorMap: 'native',
+  sheenRoughnessMap: 'native',
+  // Atlas-backed KHR_materials_iridescence maps modulate the shade-owned thin-film
+  // F0 model plus DI/GI receiver-lobe material payloads.
+  iridescenceMap: 'native',
+  iridescenceThicknessMap: 'native',
+  // Atlas-backed KHR_materials_anisotropy maps multiply the shade-owned scalar
   // anisotropic GGX branch (B = strength, RG = direction) and DI/GI suffix plus
-  // receiver-lobe payloads. Reservoirs stay compact, so this remains
-  // approximate until A/B promotion.
-  anisotropyMap: 'approximate',
-  // Readable specular maps ride the material atlas and modulate shade-owned,
-  // DI/GI suffix, and receiver-lobe scalar specular controls. GI reservoirs stay
-  // geometry+Lo compact rather than full specular-lobe reservoirs.
-  specularColorMap: 'approximate',
-  specularIntensityMap: 'approximate',
-  // Readable bump maps ride the walkaround material atlas and finite-difference a
+  // receiver-lobe payloads. Proposal sampling remains unbiased because the
+  // sampled source density, not an anisotropic surrogate, is used in weights.
+  anisotropyMap: 'native',
+  // Atlas-backed specular maps ride the material atlas and modulate shade-owned,
+  // DI/GI receiver-lobe scalar specular controls.
+  specularColorMap: 'native',
+  specularIntensityMap: 'native',
+  // Atlas-backed bump maps ride the walkaround material atlas and finite-difference a
   // visible normal perturbation for shade-owned, DI, GI suffix, and receiver
   // material payloads. The compact reservoir path keeps this approximate rather
   // than native.
@@ -453,63 +452,64 @@ const WALKAROUND_MATERIALS: MaterialSupportMatrix = Object.freeze({
   bumpScale: 'approximate',
   // CPU-readable displacement maps are applied before the shared merged BVH is
   // built. Authored vertices move by default; opt-in uniform dicing via
-  // displacementSubdivisions adds bounded CPU microdisplacement, but the row
-  // remains approximate until adaptive/error-bounded microgeometry is contracted.
+  // displacementSubdivisions adds bounded uniform CPU microdisplacement. The
+  // absence of adaptive/error-bounded dicing is the intentional approximation.
   displacementMap: 'approximate',
   displacementScale: 'approximate',
   displacementBias: 'approximate',
   displacementSubdivisions: 'approximate',
-  lightMap: 'approximate',
-  lightMapIntensity: 'approximate',
+  lightMap: 'native',
+  lightMapIntensity: 'native',
   // Scalar sheen rides material atlas metadata and adds a Charlie/Neubelt-
   // Pettineo lobe in shade-owned direct/analytic/sun/specular-indirect paths
-  // plus DI/GI suffix and receiver material payloads. Compact reservoirs keep
-  // this approximate pending GPU A/B promotion.
-  sheen: 'approximate',
-  sheenColor: 'approximate',
-  sheenRoughness: 'approximate',
+  // plus DI/GI receiver material payloads.
+  sheen: 'native',
+  sheenColor: 'native',
+  sheenRoughness: 'native',
   // Scalar clearcoat rides material atlas metadata and adds a fixed-F0 GGX top
   // coat in shade-owned direct/analytic/sun/specular-indirect paths plus DI/GI
-  // suffix and receiver material payloads; approximate pending GPU A/B promotion.
-  clearcoat: 'approximate',
-  clearcoatRoughness: 'approximate',
+  // receiver material payloads.
+  clearcoat: 'native',
+  clearcoatRoughness: 'native',
   // Scalar KHR_materials_iridescence rides material atlas metadata and modifies
   // shade-owned GGX F0 in direct/analytic/sun/specular-indirect paths plus DI/GI
-  // suffix and receiver material payloads. Compact reservoirs keep this
-  // approximate pending GPU A/B promotion.
-  iridescence: 'approximate',
-  iridescenceIor: 'approximate',
-  iridescenceThicknessRange: 'approximate',
+  // receiver material payloads.
+  iridescence: 'native',
+  iridescenceIor: 'native',
+  iridescenceThicknessRange: 'native',
   // Scalar KHR_materials_specular controls ride the material atlas metadata and
   // modulate dielectric F0 in shade-owned direct/analytic/sun/specular-indirect
-  // paths plus DI/GI suffix and receiver material payloads. Compact reservoirs
-  // and pending GPU A/B promotion keep this approximate.
-  specularIntensity: 'approximate',
-  specularColor: 'approximate',
+  // paths plus DI/GI receiver material payloads.
+  specularIntensity: 'native',
+  specularColor: 'native',
   // Material-atlas scalar consumed by the HDRI environment-light path:
   // RIS candidate scoring, canonical temporal/spatial p-hat reuse, and shade
   // resolve all apply the same per-surface scale. Finite emitters/sun/analytic
   // lights are intentionally unaffected.
   envMapIntensity: 'native',
-  spectralAttenuation: 'unsupported',
-  dispersionAbbeNumber: 'unsupported',
-  // Realtime volume approximation: material-atlas metadata stores scalar/RGB
-  // sigmaS plus HG anisotropy and applies a bounded single-scatter tint/softening
-  // in shade/OIT/ReSTIR/DDGI. This is not delta-tracked volumetric transport.
+  // Realtime optical reduction shared by shade/OIT/ReSTIR/DDGI/RC: a
+  // 32-sample 380–780 nm CIE/D65 attenuation integral and three-channel
+  // Cauchy/Abbe refraction. Deliberately approximate rather than unsupported.
+  spectralAttenuation: 'approximate',
+  dispersionAbbeNumber: 'approximate',
+  // Bounded homogeneous single scattering uses per-channel sigma_s, RGB Beer
+  // transmittance, and a normalized HG phase in shade/ReSTIR/DDGI/RC. It is an
+  // intentional realtime single-scatter approximation, not a rejected field.
   scatteringCoefficient: 'approximate',
   scatteringAnisotropy: 'approximate',
   scatteringCoefficientRGB: 'approximate',
-  // Per-face absorption layers ride the walkaround material atlas. Transmission
-  // attenuates final bulk radiance, roughness overrides the selected face, and
-  // layer-local normal maps perturb the selected face in shade/OIT/ReSTIR/DDGI/RC;
-  // full layered-BSDF multiple scattering remains out of model.
+  // Face-selected transmission/roughness/normal controls are consumed at both
+  // dielectric interfaces and in the camera/ReSTIR/DDGI/RC material payloads.
   frontLayer: 'approximate',
   backLayer: 'approximate',
-  thinFilmStack: 'unsupported',
+  // Full spectral CPU TMM (stable Redheffer composition) preintegrated into
+  // eight incidence-angle bins for forward/reverse realtime consumption.
+  thinFilmStack: 'approximate',
   // Scalar anisotropy rides material atlas metadata and swaps shade-owned GGX
-  // evals to an anisotropic branch. Sampling/PDF reservoirs remain isotropic.
-  anisotropy: 'approximate',
-  anisotropyRotation: 'approximate',
+  // evals to an anisotropic branch. RIS source PDFs match their actual proposal
+  // distributions, so isotropic proposals affect variance rather than bias.
+  anisotropy: 'native',
+  anisotropyRotation: 'native',
   // extensions.surfaceTextureId → texType3 procedural-pattern lane;
   // extensions.skipEmitter → emitter classification. Consumed as defined.
   extensions: 'native',
@@ -534,6 +534,8 @@ const PT_WEBGL2_MATERIALS: MaterialSupportMatrix = Object.freeze({
   alphaMode: 'native',
   alphaCutoff: 'native',
   opacity: 'native',
+  // Packed into material.side (0 = both orientations, 1 = front only).
+  doubleSided: 'native',
   transmission: 'native',
   ior: 'native',
   // attenuate_hit_function.glsl.js — per-ray Beer-Lambert.
@@ -594,9 +596,9 @@ const PT_WEBGL2_MATERIALS: MaterialSupportMatrix = Object.freeze({
   dispersionAbbeNumber: 'native',
   scatteringCoefficient: 'native',
   scatteringAnisotropy: 'native',
-  // Consumed as authored per-channel σ_s (s16 sssSigmaS) with a scalar-majorant
-  // WebGL SSS free-flight path; approximate until visual promotion proves the
-  // simplified single-scatter model against reference scenes.
+  // Consumed as authored per-channel σ_s (s16 sssSigmaS) by the implemented
+  // scalar-majorant WebGL single-scatter model. The model itself is the bounded
+  // approximation; this grade is not conditional on a future evidence gate.
   scatteringCoefficientRGB: 'approximate',
   // transmission tint + per-face roughness override + per-face normal map/scale
   // are packed, face-selected, and sampled by surface + attenuation shaders.
@@ -633,6 +635,9 @@ const PT_WEBGPU_MATERIALS: MaterialSupportMatrix = Object.freeze({
   alphaMode: 'native',
   alphaCutoff: 'native',
   opacity: 'native',
+  // Opaque one-sided back faces are skipped by closest/visibility traversal;
+  // transmissive exits remain admissible for closed dielectric volumes.
+  doubleSided: 'native',
   transmission: 'native',
   ior: 'native',
   // σ_a = −ln(attenuationColor)/attenuationDistance (WS4 vec4 #22) drives the
@@ -665,29 +670,26 @@ const PT_WEBGPU_MATERIALS: MaterialSupportMatrix = Object.freeze({
   // path-replay adjoint now mirrors that local factor for scoped baseColor fits.
   aoMap: 'native',
   aoMapIntensity: 'native',
-  // Full-tier megakernel, ReSTIR-PT suffix/visible payloads, and BDPT surface
-  // light vertices sample these extension-lobe maps. Approximate until inverse/
-  // adjoint gradients, BDPT light-side clearcoat-normal/layer/thin-film/spectral
-  // special cases, and reference A/B evidence carry the same texture-modulated
-  // parameters end-to-end.
-  clearcoatMap: 'approximate',
-  clearcoatRoughnessMap: 'approximate',
-  // Sampled in the full-tier megakernel clearcoat BRDF/PDF/source sampler, using
-  // authored/generated tangent.xyzw when present; still not carried by every
-  // specialty payload schema.
-  clearcoatNormalMap: 'approximate',
+  // Full-tier megakernel, inverse replay, BSDF area/environment connections,
+  // ReSTIR-PT, BDPT, MNEE, and SPPM all consume the same texture-modulated
+  // extension-lobe values. Clearcoat-normal evaluation/PDFs carry the authored
+  // tangent-space normal through every finite-connection estimator; discrete
+  // TMM thin-film vertices are excluded from those finite-density families.
+  clearcoatMap: 'native',
+  clearcoatRoughnessMap: 'native',
+  clearcoatNormalMap: 'native',
   clearcoatNormalScale: 'native',
-  sheenColorMap: 'approximate',
-  sheenRoughnessMap: 'approximate',
-  iridescenceMap: 'approximate',
-  iridescenceThicknessMap: 'approximate',
+  sheenColorMap: 'native',
+  sheenRoughnessMap: 'native',
+  iridescenceMap: 'native',
+  iridescenceThicknessMap: 'native',
   // Full-tier samplers consume KHR_materials_anisotropy RG/B map data. The
   // anisotropic lobe uses a conservative projected-roughness Kulla-Conty
-  // approximation over the isotropic E LUT; still approximate until a full
-  // anisotropic material-furnace promotion gate lands.
+  // approximation over the isotropic E LUT. That bounded energy model is the
+  // final reason for the approximate grade.
   anisotropyMap: 'approximate',
-  specularColorMap: 'approximate',
-  specularIntensityMap: 'approximate',
+  specularColorMap: 'native',
+  specularIntensityMap: 'native',
   bumpMap: 'native',
   bumpScale: 'native',
   // Full-tier packSceneFromCore and merged-mode paths apply CPU-readable
@@ -708,14 +710,10 @@ const PT_WEBGPU_MATERIALS: MaterialSupportMatrix = Object.freeze({
   iridescence: 'native',
   iridescenceIor: 'native',
   iridescenceThicknessRange: 'native',
-  // SPEC-01 — scalar factors are packed in material vec4 #27 and consumed by the
-  // ordinary PT BRDF/PDF paths, MNEE/SPPM receiver paths, ReSTIR-PT visible-domain
-  // reservoirs/resolve, and BDPT eye/light + light-subpath surface scattering.
-  // Path-replay adjoints exist for the direct-light inverse slice, including
-  // local specular maps, but the row stays approximate until remaining specialty
-  // reference/furnace proof gates carry the same scalar/material-lobe coherence.
-  specularIntensity: 'approximate',
-  specularColor: 'approximate',
+  // SPEC-01 — scalar factors and local maps are consumed coherently by ordinary
+  // PT, inverse replay, MNEE/SPPM receivers, ReSTIR-PT, and both BDPT subpaths.
+  specularIntensity: 'native',
+  specularColor: 'native',
   envMapIntensity: 'native',
   spectralAttenuation: 'native',
   dispersionAbbeNumber: 'native',
@@ -732,9 +730,8 @@ const PT_WEBGPU_MATERIALS: MaterialSupportMatrix = Object.freeze({
   thinFilmStack: 'native',
   // Anisotropic GGX sampler/eval/PDF and map rotation are live, including inverse
   // direct-light replay. Energy compensation uses the same conservative
-  // projected-roughness Kulla-Conty approximation as anisotropyMap, and specialty-
-  // integrator proof remains approximate until the anisotropic furnace/reference
-  // row is promoted.
+  // projected-roughness Kulla-Conty approximation as anisotropyMap; the bounded
+  // energy-compensation model is the final reason for the approximate grade.
   anisotropy: 'approximate',
   anisotropyRotation: 'approximate',
   // Contract-sanctioned escape hatch this backend deliberately does not read
@@ -764,7 +761,7 @@ const PT_WEBGPU_MATERIALS: MaterialSupportMatrix = Object.freeze({
   //                shade flag.
 
 type ShadowSupportMatrix = Readonly<
-  Record<'primitiveCastShadow' | 'emitterCastShadow' | 'receiveShadow', BackendSupportMode>
+  Record<'primitiveCastShadow' | 'emitterCastShadow', BackendSupportMode>
 >;
 
 /** walkaround-hybrid — primitive castShadow is honored by DI shadow predicates,
@@ -775,12 +772,10 @@ type ShadowSupportMatrix = Readonly<
  *  predicate-backed shared-BVH traversal.
  *  Emitter castShadow is honored across direct analytic/area NEE,
  *  DDGI fixture/sun probe lights, RC fixture/sun probe lights, and the main
- *  direct-sun shade path → 'native'. receiveShadow: see
- *  BackendSupportDetails.shadows JSDoc — non-physical for GI, warned. */
+ *  direct-sun shade path → 'native'. */
 const WALKAROUND_SHADOWS: ShadowSupportMatrix = Object.freeze({
   primitiveCastShadow: 'native',
   emitterCastShadow: 'native',
-  receiveShadow: 'unsupported',
 });
 
 /** pt-webgl2 — primitive castShadow rides the fork integrator's shadow-ray
@@ -795,7 +790,6 @@ const WALKAROUND_SHADOWS: ShadowSupportMatrix = Object.freeze({
 const PT_WEBGL2_SHADOWS: ShadowSupportMatrix = Object.freeze({
   primitiveCastShadow: 'native',
   emitterCastShadow: 'native',
-  receiveShadow: 'unsupported',
 });
 
 /** pt-webgpu — primitive castShadow is enforced in `traceMeshBvh`'s any-hit
@@ -819,7 +813,6 @@ const PT_WEBGL2_SHADOWS: ShadowSupportMatrix = Object.freeze({
 const PT_WEBGPU_SHADOWS: ShadowSupportMatrix = Object.freeze({
   primitiveCastShadow: 'native',
   emitterCastShadow: 'native',
-  receiveShadow: 'unsupported',
 });
 
 type DenoiserSupportMatrix = Readonly<Record<EngineDenoiserMode, BackendSupportMode>>;
@@ -836,8 +829,8 @@ const WALKAROUND_DENOISERS: DenoiserSupportMatrix = Object.freeze({
   'svgf-real': 'native',
   bmfr: 'native',
   'oidn-final': 'native',
-  // Native dispatch path, but opt-in only: hosts must supply validated weights,
-  // and current repo checkpoints are research/starter artifacts rather than a
+  // Native dispatch path, but opt-in only: hosts must supply validated weights.
+  // Repo checkpoint assets are validation-only and are never selected as a
   // production default.
   neural: 'native',
 });
@@ -881,7 +874,8 @@ const PT_WEBGPU_DENOISERS: DenoiserSupportMatrix = Object.freeze({
  *  geometry/material/atlas/BVH texture pack for list edits after applying the
  *  same analytic-to-mesh fallback tessellation used by setScene(). Resize is
  *  native: it reallocates render targets and resets accumulation without
- *  scene/BVH work. Lighting is unsupported. */
+ *  scene/BVH work. Atomic multi-domain lighting replacement is implemented,
+ *  but currently validates and rebuilds the complete scene-texture pack. */
 const PT_WEBGL2_MUTATIONS: BackendPromiseRecord['supportDetails']['mutations'] = Object.freeze({
   transform: 'native',
   positions: 'native',
@@ -892,7 +886,7 @@ const PT_WEBGL2_MUTATIONS: BackendPromiseRecord['supportDetails']['mutations'] =
   removePrimitive: 'fallback-rebuild',
   environment: 'native',
   resize: 'native',
-  lighting: 'unsupported',
+  lighting: 'fallback-rebuild',
 });
 
 /** pt-webgpu mutations — geometry/transform/topology/emitter/env patches have
@@ -905,7 +899,8 @@ const PT_WEBGL2_MUTATIONS: BackendPromiseRecord['supportDetails']['mutations'] =
  *  still fall back to full scene repack so texture arrays and unsupported
  *  descriptors stay coherent. The coarse row is therefore `fallback-rebuild`
  *  rather than `native`. Add/remove are fallback-rebuild (insert/evict forces
- *  a full BLAS/TLAS repack). Resize and lighting are unsupported. */
+ *  a full BLAS/TLAS repack). Resize eagerly replaces only render-target state;
+ *  lighting replaces only emitter/environment/light-tree buffers. */
 const PT_WEBGPU_MUTATIONS: BackendPromiseRecord['supportDetails']['mutations'] = Object.freeze({
   transform: 'native',
   positions: 'native',
@@ -915,8 +910,8 @@ const PT_WEBGPU_MUTATIONS: BackendPromiseRecord['supportDetails']['mutations'] =
   addPrimitive: 'fallback-rebuild',
   removePrimitive: 'fallback-rebuild',
   environment: 'native',
-  resize: 'unsupported',
-  lighting: 'unsupported',
+  resize: 'native',
+  lighting: 'native',
 });
 
 /** Method-promise fields that are true (or false) identically across all three
@@ -963,12 +958,9 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
     supportsIncrementalScene: true,
     incrementalPatchSupport: ALL_PATCHES_SUPPORTED,
     supportsAddRemovePrimitive: true,
-    // Interim (plan/v1-closure-plan-2026-06-10.md): walkaround-hybrid surfaces
-    // normalDepth and motionVectors, but NOT variance — the contract's
-    // supportsAuxBuffers flag means variance AND motionVectors, and variance is
-    // never exposed from walkaround's FrameOutput wiring. Flipped to false until
-    // the variance buffer is wired (Wave 2 or later).
-    supportsAuxBuffers: false,
+    // The pipeline exposes normal/depth, albedo, motion, and the freshest side
+    // of its full-resolution Welford variance ping-pong on every rendered frame.
+    supportsAuxBuffers: true,
     accumulates: false,
     // The render-scene path ingests mesh / skinned-mesh / instanced-mesh;
     // analytic primitives are accepted in the authored scene and converted to
@@ -1010,7 +1002,7 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
         // DDGI probe misses sample the HDRI (procedural fallback when none); RC
         // last-cascade env is bound; `updateEnvironment` rebuilds the directional
         // CDFs at runtime via resolveHybridEnvironment → updateDirectionalEnvironment.
-        // Promoted approximate→native. Radiometric A/B pending V28-B.
+        // Native by source semantics; runtime evidence is tracked separately.
         hdri: 'native',
         // resolveHybridEnvironment handles procedural-sky by baking the shared
         // Preetham model to an equirect/CDF and preserving scalar sky as fallback.
@@ -1019,8 +1011,63 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
       },
       analyticShapes: ANALYTIC_SHAPES_FALLBACK_GENERATED_MESH,
       materials: WALKAROUND_MATERIALS,
+      materialProfiles: {
+        // Delta interfaces use bounded per-interface Snell/Fresnel transport.
+        deltaTransmission: 'approximate',
+        // Positive roughness uses an unfloored Heitz VNDF proposal paired with
+        // the Walter rough-BTDF PDF/weight; zero roughness is a discrete event.
+        roughTransmission: 'approximate',
+        // Face layers and optical top-layer transmittance participate in the
+        // bounded dielectric walk; rich reflection lobes remain realtime-reduced.
+        layeredTransmission: 'approximate',
+        // Normal/bump maps are sampled at every supported dielectric boundary;
+        // geometric normals continue to own medium enter/exit classification.
+        normalMappedTransmission: 'approximate',
+        participatingMedia: 'approximate',
+        faceLayers: 'approximate',
+      },
       shadows: WALKAROUND_SHADOWS,
       denoisers: WALKAROUND_DENOISERS,
+      causticStrategies: {
+        'refractive-trace': {
+          mode: 'approximate',
+          estimatorScope:
+            'camera-visible diffuse receiver <- up-to-four specular transmission interfaces <- directional emitter; two bounded stratified RGB candidates, not Newton manifold NEE',
+          emitterKinds: {
+            directional: 'native',
+            point: 'unsupported',
+            spot: 'unsupported',
+            'rect-area': 'unsupported',
+            'disc-area': 'unsupported',
+            'mesh-area': 'unsupported',
+            environment: 'unsupported',
+          },
+          volumeScattering: 'unsupported',
+          incompatibleFeatures: [
+            'manifold-nee',
+            'photon-map',
+          ],
+        },
+        'manifold-nee': {
+          mode: 'approximate',
+          estimatorScope:
+            'camera-visible diffuse receiver <- one-to-eight mapped rough/delta transmission events <- sampled explicit or environment endpoint; bounded SMS inverse-basin correction',
+          emitterKinds: {
+            directional: 'native',
+            point: 'native',
+            spot: 'native',
+            'rect-area': 'native',
+            'disc-area': 'native',
+            'mesh-area': 'native',
+            environment: 'native',
+          },
+          volumeScattering: 'unsupported',
+          incompatibleFeatures: [
+            'refractive-trace',
+            'photon-map',
+          ],
+        },
+      },
       mutations: {
         transform: 'native',
         positions: 'native',
@@ -1055,8 +1102,10 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
       // walkaround-hybrid does NOT implement createInverseSession (differentiable RT
       // is pt-webgpu only in the current slice).
       createInverseSession: false,
-      // getRestirPtResultBuffer is pt-webgpu only (ReSTIR-PT reuse experimental feature).
+      // getRestirPtResultBuffer is pt-webgpu only (ReSTIR-PT reuse).
       getRestirPtResultBuffer: false,
+      // Walkaround presents directly into the host-provided swap-chain view.
+      getPresentationSource: false,
       // walkaround-hybrid exposes the post-denoise resolvedTexture as a seed SOURCE for
       // the progressive walkaround→PT handoff (see getProgressiveSeedTexture).
       getProgressiveSeedTexture: true,
@@ -1067,7 +1116,7 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
       giStatePersistence: true,
     },
     frameInputPromises: {
-      honorsViewportPerFrame: false,
+      honorsViewportPerFrame: true,
       requiresSwapChainView: true,
       honorsPerFrameBounces: false,
     },
@@ -1119,6 +1168,24 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
       materials: PT_WEBGL2_MATERIALS,
       shadows: PT_WEBGL2_SHADOWS,
       denoisers: PT_WEBGL2_DENOISERS,
+      causticStrategies: {
+        bdpt: {
+          mode: 'native',
+          estimatorScope:
+            'bounded general BDPT: power-weighted light subpaths store 1..8 vertices (default 4); finite-emitter c=0 plus c>=1 light/eye surface and participating-medium vertices carry an exact eight-entry nested homogeneous-medium stack, RGB or hero-wavelength Beer visibility, authored sigma_a/sigma_s, and Henyey-Greenstein phase transport through Veach power-heuristic MIS; thicknessMap modulates the core contract\'s authored surface-volume attenuation; distant paths are disjointly owned by primary c=0 NEE, camera/delta forward escape, or c>=1 BDPT',
+          emitterKinds: {
+            directional: 'native',
+            point: 'native',
+            spot: 'native',
+            'rect-area': 'native',
+            'disc-area': 'native',
+            'mesh-area': 'native',
+            environment: 'native',
+          },
+          volumeScattering: 'native',
+          incompatibleFeatures: [],
+        },
+      },
       // D1 (2026-07-20) — pt-webgl2 packs up to 35 thin-film layers (GLSL stride);
       // MUST match materialsTexture.ts THIN_FILM_LAYER_LIMIT.
       thinFilmLayerLimit: 35,
@@ -1134,7 +1201,10 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
       // GPU→CPU pixel readback: accum FBO (RGBA32F, rows flipped to top-left)
       // for 'linear'; present FBO for 'output'. ✓ via spread.
       setSize: true,
-      updateLighting: false,
+      // Atomic `{ emitters?, environment? }` candidate validation + scene
+      // texture replacement. A failed validation/upload preserves the prior
+      // retained scene and GL resources.
+      updateLighting: true,
       // T3.G #30 — pt-webgl2 exposes debug.pickPrimitive and advertises
       // capabilities.debugSurface=true.
       debug: true,
@@ -1143,6 +1213,7 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
       // expose pt-webgpu's scoped path-replay adjoint hook.
       createInverseSession: true,
       getRestirPtResultBuffer: false,
+      getPresentationSource: false,
       getProgressiveSeedTexture: false,
       seedAccumulator: false,
       giStatePersistence: false,
@@ -1192,6 +1263,62 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
       shadows: PT_WEBGPU_SHADOWS,
       denoisers: PT_WEBGPU_DENOISERS,
       mutations: PT_WEBGPU_MUTATIONS,
+      causticStrategies: {
+        'manifold-nee': {
+          mode: 'native',
+          estimatorScope:
+            'camera-visible finite surface receiver <- one-to-eight planar geometric-normal mesh/instanced/skinned delta interfaces <- sampled explicit or environment endpoint; bounded Newton/SMS solve; analytic delta interfaces, varying interface normals, and normal/bump/layer-normal mapped interfaces fail closed before upload',
+          emitterKinds: {
+            directional: 'native',
+            point: 'native',
+            spot: 'native',
+            'rect-area': 'native',
+            'disc-area': 'native',
+            'mesh-area': 'native',
+            environment: 'native',
+          },
+          volumeScattering: 'unsupported',
+          incompatibleFeatures: [],
+        },
+        'photon-map': {
+          mode: 'native',
+          estimatorScope:
+            'camera-visible finite surface or homogeneous-medium collision receiver <- one-or-more production delta surface events <- sampled light; surface uses a disk density and volume uses a medium-identity-filtered HG sphere density with independent progressive state',
+          emitterKinds: {
+            directional: 'native',
+            point: 'native',
+            spot: 'native',
+            'rect-area': 'native',
+            'disc-area': 'native',
+            'mesh-area': 'native',
+            environment: 'native',
+          },
+          volumeScattering: 'native',
+          incompatibleFeatures: [],
+        },
+      },
+      // pt-webgpu's independently enabled `bdpt:true` mode is deliberately a
+      // bounded explicit-connection family. It does not allocate a camera-We
+      // film-splat pass for t=1 light tracing, and its MIS denominator masks
+      // every unallocated strategy rather than pretending it was sampled.
+      bidirectionalPathTracing: {
+        mode: 'bounded-explicit-connections',
+        maxLightVertices: 8,
+        maxEyeVertices: 8,
+        pureEyeStrategy: 'partitioned-eye-estimator',
+        cameraSplatStrategy: 'unsupported',
+        misDenominator: 'sampled-strategies-only',
+      },
+      samplingSequences: {
+        default: 'pcg',
+        modes: { pcg: 'native', sobol: 'native' },
+        sobol: {
+          lowDiscrepancyDimensions: 4,
+          continuation: 'independent-pcg',
+          sampleBlockSize: 65536,
+          frameIndexPeriod: 4294967296,
+        },
+      },
       // D1 (2026-07-20) — pt-webgpu packs up to 8 thin-film layers (WGSL loop
       // stride); MUST match materialPacking.ts THIN_FILM_LAYER_LIMIT + WGSL 8u.
       thinFilmLayerLimit: 8,
@@ -1201,21 +1328,23 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
       // GPU error surface: device.uncapturederror (throttled) + device.lost. ✓ via spread.
       // GPU→CPU pixel readback: accumTexture (rgba16float decoded to f32) for
       // 'linear'; presentTexture (rgba16float) for 'output'. ✓ via spread.
-      setSize: false,
-      updateLighting: false,
+      setSize: true,
+      updateLighting: true,
       debug: true,
-      // pt-webgpu implements the inverse-rendering API surface. The safe
-      // fallback is finite-difference; the analytic path-replay fast path is
-      // intentionally scoped to single-bounce direct-light eligible material fields
-      // (directional/point/spot/rect/disc/uncapped mesh-area where supported)
-      // and is selected by createInverseSession only when that domain matches.
+      // pt-webgpu implements the inverse-rendering API surface. Explicit
+      // finite-difference is available across both tiers. Full-tier path replay
+      // is fail-closed and currently certified only for single-bounce material
+      // emissive; every out-of-domain request throws before applying initial
+      // parameter values instead of silently changing the selected method.
       createInverseSession: true,
-      // getRestirPtResultBuffer is gated on the 'pt-webgpu-restir-pt-reuse'
-      // experimental feature. The method IS wired on the engine class (returns
+      // getRestirPtResultBuffer is gated on active feature
+      // 'pt-webgpu-restir-pt-reuse'. The method IS wired on the engine class (returns
       // null when the feature is off); the ledger records it as implemented
       // because the method EXISTS on every pt-webgpu instance, not just those
       // with ReSTIR-PT enabled.
       getRestirPtResultBuffer: true,
+      // Exposes the live WebGPU device/texture pair used for host presentation.
+      getPresentationSource: true,
       // pt-webgpu does not expose a seed SOURCE (the resolvedTexture/progressive-seed
       // source path is walkaround-hybrid only).
       getProgressiveSeedTexture: false,

@@ -69,6 +69,15 @@ interface PipelineFrameLighting {
    *  `DirectionalEmitter.angularDiameter / 2` when authored; otherwise the
    *  legacy real-sun radius is used. */
   sunAngularRadius?: number;
+  /** 1 when the current scene contains contract-level transmission and the
+   * generic bounded refractive-caustic estimator should run. */
+  genericRefractiveCaustics?: number;
+  /** Bounded Newton work for `causticStrategy:'manifold-nee'`. */
+  mneeMaxIterations?: number;
+  /** Maximum fixed-offset specular chain length (1..8). */
+  mneeMaxChainLength?: number;
+  /** Bounded SMS recurrence trials used for inverse-basin correction. */
+  mneeMultiplicityTrials?: number;
   /** Diffuse-sky-dome RGB tint, derived from computeLightingState. Replaces
    *  four formerly-hardcoded sky tints in WGSL. Consumed by sky-aperture
    *  probe + second-bounce sky-miss paths. */
@@ -134,15 +143,15 @@ interface PipelineFrameRestirGI {
   /** 2026-05-18 sweep — ReSTIR-GI spatial-reuse tangent-plane distance
    *  tolerance (spatialGi). Cornell default 0.05 (5 cm world units). */
   restirGiSpatialCoplanarTol: number;
-  /** GRIS / ReSTIR-PT reconnection-shift reuse gate (UBO offset 412). `1` ⇒
-   *  the GI spatial + temporal reuse passes apply the unbiased GRIS
+  /** GRIS DDGI-proxy reconnection-shift reuse gate (UBO offset 412). `1` ⇒
+   *  the GI spatial + temporal reuse passes apply the bounded GRIS DDGI-proxy
    *  reconnection shift, its change-of-variables Jacobian, a reconnection-
-   *  visibility ray, and the pairwise generalized-balance MIS (Lin et al.
+   *  visibility ray, and the bounded all-technique transformed-density balance MIS (Lin et al.
    *  2022). `0`/omitted ⇒ the reuse runs the legacy clamped-Jacobian path
-   *  BIT-FOR-BIT (the GRIS branch is gated behind `ubo.restirPtReuse == 1`).
-   *  Host opt-in via HybridEngineOptions.restirPtReuse — the same
+   *  BIT-FOR-BIT (the GRIS branch is gated behind `ubo.grisReuse == 1`).
+   *  Host opt-in via HybridEngineOptions.grisReuse — the same
    *  OFF-is-bit-identical pattern as RC/PPG/ReGIR. */
-  restirPtReuse?: number;
+  grisReuse?: number;
 }
 
 /** GTAO + adaptive-sampling tuning knobs. */

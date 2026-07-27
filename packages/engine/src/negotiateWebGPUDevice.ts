@@ -29,10 +29,18 @@ import type { AdapterProfile } from '@vitrum/core';
 import {
   HYBRID_WEBGPU_REQUIRED_LIMITS,
   HYBRID_LITE_LIMITS,
+  nrcWebGpuRequiredFeaturesForConfig,
+  nrcWebGpuRequiredLimitsForConfig,
+  type NrcConfig,
 } from '@vitrum/walkaround-hybrid';
 import {
   ptWebgpuRequiredLimitsForAdapter,
-  mergeAdapterRequiredLimits,
+  PT_WEBGPU_CWBVH_CLOSEST_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
+  PT_WEBGPU_CWBVH_CLOSEST_RESTIR_PT_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
+  PT_WEBGPU_FULL_REQUIRED_STORAGE_TEXTURES_PER_STAGE,
+  PT_WEBGPU_LITE_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
+  PT_WEBGPU_LITE_REQUIRED_STORAGE_TEXTURES_PER_STAGE,
+  PT_WEBGPU_RESTIR_PT_REUSE_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
 } from '@vitrum/pt-webgpu';
 
 import { probeAdapterProfile } from './adapterProfile.js';
@@ -76,29 +84,48 @@ export interface NegotiateWebGPUDeviceOptions {
   readonly target?: NegotiateTarget;
 
   /** Explicit `requiredLimits` override. When provided, REPLACES the
-   *  target-derived limits (each entry is still clamped to the adapter's actual
-   *  capability via `mergeAdapterRequiredLimits`, so an over-ask never makes the
-   *  device request reject opaquely). Most hosts leave this unset and rely on
-   *  `target`. */
+   *  target-derived limits. Every entry is validated as a finite, non-negative
+   *  safe integer and preflighted against the adapter; an unsatisfied or unknown
+   *  limit rejects before device allocation. Most hosts leave this unset and
+   *  rely on `target`. */
   readonly requiredLimits?: Readonly<Record<string, number>>;
 
-  /** `requiredFeatures` forwarded verbatim to `adapter.requestDevice`. The
-   *  helper does not add any features itself. */
+  /** Additional features required from the adapter. Unsupported entries reject
+   *  before device allocation. NRC adds `shader-f16` automatically when the
+   *  resolved `nrcConfig.useF16` contract requires it. */
   readonly requiredFeatures?: readonly GPUFeatureName[];
 
   /** Optional `label` forwarded to `adapter.requestDevice` for debugging. */
   readonly label?: string;
 
   /**
-   * For `target: 'progressive'` only — include the ReSTIR-PT reuse
+   * For `target: 'pt-webgpu'` or `'progressive'` — include the ReSTIR-PT reuse
    * reservoir buffers in the device-limit union (raises the
    * `maxStorageBuffersPerShaderStage` floor to the ReSTIR-PT reuse tier).
    * Matches the `restirPtReuse` option on {@link CreateProgressiveEngineOptions}
    * so a host can build the device with `negotiateWebGPUDevice` and then pass
    * it to `createProgressiveEngine` with the same flag without a limit
-   * mismatch.  Ignored for all other targets.
+   * mismatch. Ignored for all other targets.
    */
   readonly restirPtReuse?: boolean;
+
+  /**
+   * For `target: 'pt-webgpu'` or `'progressive'` — include the opt-in CWBVH
+   * closest-hit traversal buffers in the required device floor. Must match the
+   * converged backend's `bvhTraversal: 'cwbvh-closest'` option.
+   * Ignored for all other targets.
+   */
+  readonly cwbvhClosest?: boolean;
+
+  /**
+   * For `target: 'walkaround-hybrid'` or `'progressive'` — include the
+   * realtime engine's opt-in Neural Radiance Cache bind-group, buffer, and
+   * workgroup-storage requirements. Must match `realtimeOptions.nrcEnabled`
+   * when the negotiated device is passed to `createProgressiveEngine`.
+   */
+  readonly nrcEnabled?: boolean;
+  /** NRC shape/precision used for dynamic limits and feature negotiation. */
+  readonly nrcConfig?: Partial<NrcConfig>;
 }
 
 /** The negotiated, HOST-OWNED WebGPU handles. The caller is responsible for
@@ -134,6 +161,8 @@ export interface NegotiatedWebGPUDevice {
 export async function negotiateWebGPUDevice(
   options: NegotiateWebGPUDeviceOptions = {},
 ): Promise<NegotiatedWebGPUDevice> {
+  const target = assertNegotiateTarget(options.target ?? 'pt-webgpu');
+
   if (typeof navigator === 'undefined' || navigator.gpu == null) {
     throw new Error(
       'negotiateWebGPUDevice: WebGPU is unavailable (navigator.gpu is undefined). ' +
@@ -156,44 +185,87 @@ export async function negotiateWebGPUDevice(
   // walkaround target gates on it. Reuses the single-source threshold logic.
   const profile = await probeAdapterProfile(adapter);
 
-  const requiredLimits = resolveRequiredLimits(adapter, profile, options);
+  const requiredLimits = resolveRequiredLimits(adapter, profile, options, target);
+  const requiredFeatures = resolveRequiredFeatures(adapter, options, target);
+
+  // Resolve presentation metadata before device allocation. A browser bug or
+  // host shim that throws here must not strand a newly-created GPUDevice.
+  const format =
+    navigator.gpu.getPreferredCanvasFormat?.() ?? ('bgra8unorm');
 
   const device = await adapter.requestDevice({
     ...(requiredLimits != null ? { requiredLimits } : {}),
-    ...(options.requiredFeatures != null
-      ? { requiredFeatures: [...options.requiredFeatures] }
+    ...(requiredFeatures.length > 0
+      ? { requiredFeatures }
       : {}),
     ...(options.label != null ? { label: options.label } : {}),
   });
 
-  const format =
-    navigator.gpu.getPreferredCanvasFormat?.() ?? ('bgra8unorm');
-
   return { adapter, device, format, profile };
 }
 
-/** Resolve the `requiredLimits` for the chosen target, clamped to the adapter.
+/** Resolve and preflight the `requiredLimits` for the chosen target.
  *  Returns `undefined` for `target: 'none'` with no explicit override (request
  *  the device with adapter defaults). */
 function resolveRequiredLimits(
   adapter: GPUAdapter,
   profile: AdapterProfile,
   options: NegotiateWebGPUDeviceOptions,
+  target: NegotiateTarget,
 ): Record<string, number> | undefined {
-  // An explicit override always wins, clamped to the adapter so an over-ask
-  // can't make requestDevice reject opaquely.
+  // An explicit override always wins, but it remains a guarantee: never weaken
+  // a host's declared requirement to make requestDevice appear to succeed.
   if (options.requiredLimits != null) {
-    return mergeAdapterRequiredLimits(adapter, { ...options.requiredLimits });
+    return assertRequiredLimits(adapter, options.requiredLimits, 'explicit requiredLimits');
   }
-
-  const target = options.target ?? 'pt-webgpu';
   switch (target) {
     case 'none':
       return undefined;
 
-    case 'pt-webgpu':
-      // The factory's own adapter-aware tier resolver (full vs lite).
-      return ptWebgpuRequiredLimitsForAdapter(adapter);
+    case 'pt-webgpu': {
+      const maxBuffers = adapter.limits.maxStorageBuffersPerShaderStage;
+      const maxTextures = adapter.limits.maxStorageTexturesPerShaderStage;
+      if (
+        maxBuffers < PT_WEBGPU_LITE_REQUIRED_STORAGE_BUFFERS_PER_STAGE ||
+        maxTextures < PT_WEBGPU_LITE_REQUIRED_STORAGE_TEXTURES_PER_STAGE
+      ) {
+        throw new Error(
+          'negotiateWebGPUDevice: target "pt-webgpu" — this adapter is below the ' +
+            `lite-tier floor (${PT_WEBGPU_LITE_REQUIRED_STORAGE_BUFFERS_PER_STAGE} ` +
+            'storage buffers/stage and ' +
+            `${PT_WEBGPU_LITE_REQUIRED_STORAGE_TEXTURES_PER_STAGE} storage textures/stage); ` +
+            `adapter exposes ${maxBuffers} and ${maxTextures}.`,
+        );
+      }
+
+      const restirPtReuse = options.restirPtReuse === true;
+      const cwbvhClosest = options.cwbvhClosest === true;
+      const optionalBufferFloor = cwbvhClosest
+        ? (restirPtReuse
+            ? PT_WEBGPU_CWBVH_CLOSEST_RESTIR_PT_REQUIRED_STORAGE_BUFFERS_PER_STAGE
+            : PT_WEBGPU_CWBVH_CLOSEST_REQUIRED_STORAGE_BUFFERS_PER_STAGE)
+        : (restirPtReuse
+            ? PT_WEBGPU_RESTIR_PT_REUSE_REQUIRED_STORAGE_BUFFERS_PER_STAGE
+            : undefined);
+      if (
+        optionalBufferFloor != null &&
+        (maxBuffers < optionalBufferFloor ||
+          maxTextures < PT_WEBGPU_FULL_REQUIRED_STORAGE_TEXTURES_PER_STAGE)
+      ) {
+        throw new Error(
+          'negotiateWebGPUDevice: target "pt-webgpu" cannot enable the requested ' +
+            `${cwbvhClosest ? 'CWBVH closest-hit' : ''}` +
+            `${cwbvhClosest && restirPtReuse ? ' + ' : ''}` +
+            `${restirPtReuse ? 'ReSTIR-PT reuse' : ''} layout. ` +
+            `Need at least ${optionalBufferFloor} storage buffers/stage and ` +
+            `${PT_WEBGPU_FULL_REQUIRED_STORAGE_TEXTURES_PER_STAGE} storage textures/stage; ` +
+            `adapter exposes ${maxBuffers} and ${maxTextures}.`,
+        );
+      }
+
+      const required = ptWebgpuRequiredLimitsForAdapter(adapter, { restirPtReuse, cwbvhClosest });
+      return assertRequiredLimits(adapter, required, 'target "pt-webgpu"');
+    }
 
     case 'walkaround-hybrid': {
       // Mirror createEngine's walkaround constructor: full when hybridCapable,
@@ -209,12 +281,12 @@ function resolveRequiredLimits(
             'Negotiate a "pt-webgpu" device or use a WebGL2 backend on this hardware.',
         );
       }
-      return mergeAdapterRequiredLimits(
-        adapter,
-        profile.hybridCapable
-          ? { ...HYBRID_WEBGPU_REQUIRED_LIMITS }
-          : { ...HYBRID_LITE_LIMITS },
-      );
+      const required = options.nrcEnabled === true
+        ? nrcWebGpuRequiredLimitsForConfig(options.nrcConfig ?? {})
+        : (profile.hybridCapable
+            ? HYBRID_WEBGPU_REQUIRED_LIMITS
+            : HYBRID_LITE_LIMITS);
+      return assertRequiredLimits(adapter, required, 'target "walkaround-hybrid"');
     }
 
     case 'progressive': {
@@ -224,8 +296,16 @@ function resolveRequiredLimits(
       // ReSTIR-PT reuse gets the higher buffer floor (matching the
       // createProgressiveEngine limit-union preflight).
       const restirPtReuse = options.restirPtReuse === true;
-      const union = computeProgressiveLimitUnion({ restirPtReuse });
-      const unmet = checkProgressiveLimitUnion(adapter, { restirPtReuse });
+      const cwbvhClosest = options.cwbvhClosest === true;
+      const nrcEnabled = options.nrcEnabled === true;
+      const unionOptions = {
+        restirPtReuse,
+        cwbvhClosest,
+        nrcEnabled,
+        ...(options.nrcConfig !== undefined ? { nrcConfig: options.nrcConfig } : {}),
+      };
+      const union = computeProgressiveLimitUnion(unionOptions);
+      const unmet = checkProgressiveLimitUnion(adapter, unionOptions);
       if (unmet.length > 0) {
         throw new Error(
           'negotiateWebGPUDevice: target "progressive" — this adapter cannot satisfy the ' +
@@ -235,7 +315,104 @@ function resolveRequiredLimits(
             '. Negotiate a single-backend device ("walkaround-hybrid" or "pt-webgpu") instead.',
         );
       }
-      return union;
+      return assertRequiredLimits(adapter, union, 'target "progressive"');
     }
   }
+}
+
+const NEGOTIATE_TARGETS: readonly NegotiateTarget[] = [
+  'walkaround-hybrid',
+  'pt-webgpu',
+  'progressive',
+  'none',
+];
+
+function assertNegotiateTarget(value: unknown): NegotiateTarget {
+  if (!NEGOTIATE_TARGETS.includes(value as NegotiateTarget)) {
+    throw new TypeError(
+      `negotiateWebGPUDevice: target must be one of ${NEGOTIATE_TARGETS.join(', ')}; ` +
+        `received ${String(value)}.`,
+    );
+  }
+  return value as NegotiateTarget;
+}
+
+function assertRequiredFeatures(
+  adapter: GPUAdapter,
+  requiredFeatures: readonly GPUFeatureName[] | undefined,
+): void {
+  if (requiredFeatures == null) return;
+  for (const feature of requiredFeatures) {
+    if (!adapter.features.has(feature)) {
+      throw new Error(
+        `negotiateWebGPUDevice: required feature "${String(feature)}" is not supported ` +
+          'by this adapter.',
+      );
+    }
+  }
+}
+
+function resolveRequiredFeatures(
+  adapter: GPUAdapter,
+  options: NegotiateWebGPUDeviceOptions,
+  target: NegotiateTarget,
+): GPUFeatureName[] {
+  const required = new Set<GPUFeatureName>(options.requiredFeatures ?? []);
+  if (
+    options.nrcEnabled === true &&
+    (target === 'walkaround-hybrid' || target === 'progressive')
+  ) {
+    for (const feature of nrcWebGpuRequiredFeaturesForConfig(options.nrcConfig ?? {})) {
+      required.add(feature);
+    }
+  }
+  const resolved = [...required];
+  assertRequiredFeatures(adapter, resolved);
+  return resolved;
+}
+
+// These are the two WebGPU limits whose smaller value is the stronger
+// capability. Every other currently specified GPUSupportedLimits field is a
+// maximum, where larger is stronger.
+const MINIMUM_DIRECTION_LIMITS = new Set<string>([
+  'minUniformBufferOffsetAlignment',
+  'minStorageBufferOffsetAlignment',
+]);
+
+/** Validate a required-limit map without silently weakening the requirement. */
+function assertRequiredLimits(
+  adapter: GPUAdapter,
+  required: Readonly<Record<string, number>>,
+  context: string,
+): Record<string, number> {
+  const adapterLimits = adapter.limits as unknown as Record<string, unknown>;
+  const validated: Record<string, number> = {};
+  for (const [key, wanted] of Object.entries(required)) {
+    if (!Number.isSafeInteger(wanted) || wanted < 0) {
+      throw new TypeError(
+        `negotiateWebGPUDevice: ${context}.${key} must be a finite, non-negative ` +
+          `safe integer; received ${String(wanted)}.`,
+      );
+    }
+
+    const supported = adapterLimits[key];
+    if (typeof supported !== 'number' || !Number.isFinite(supported)) {
+      throw new Error(
+        `negotiateWebGPUDevice: ${context} names unknown or unreported adapter limit ` +
+          `"${key}".`,
+      );
+    }
+
+    const smallerIsStronger = MINIMUM_DIRECTION_LIMITS.has(key);
+    const satisfied = smallerIsStronger ? supported <= wanted : supported >= wanted;
+    if (!satisfied) {
+      const relation = smallerIsStronger ? '<=' : '>=';
+      throw new Error(
+        `negotiateWebGPUDevice: ${context} requires ${key} ${relation} ${wanted}, ` +
+          `but this adapter exposes ${supported}.`,
+      );
+    }
+    validated[key] = wanted;
+  }
+  return validated;
 }

@@ -1,5 +1,13 @@
 export const light_sampling_functions = /* glsl */`
 
+        float finitePositiveLightPower( float power ) {
+
+                return power > 0.0 && ! isnan( power ) && ! isinf( power )
+                        ? power
+                        : 0.0;
+
+        }
+
 	float getSpotAttenuation( const in float coneCosine, const in float penumbraCosine, const in float angleCosine ) {
 
 		return smoothstep( coneCosine, penumbraCosine, angleCosine );
@@ -11,7 +19,7 @@ export const light_sampling_functions = /* glsl */`
 		// based upon Frostbite 3 Moving to Physically-based Rendering
 		// page 32, equation 26: E[window1]
 		// https://seblagarde.files.wordpress.com/2015/07/course_notes_moving_frostbite_to_pbr_v32.pdf
-		float distanceFalloff = 1.0 / max( pow( lightDistance, decayExponent ), EPSILON );
+                float distanceFalloff = 1.0 / pow( lightDistance, decayExponent );
 
 		if ( cutoffDistance > 0.0 ) {
 
@@ -71,10 +79,10 @@ export const light_sampling_functions = /* glsl */`
 				lightRec.dist = dist;
 				lightRec.point = rayOrigin + rayDirection * dist;
 				lightRec.normal = normal;
-				// Guard against grazing angles / degenerate area terms causing
-				// divide-by-zero or negative PDFs in MIS weights.
-				float denom = max( abs( light.area * cosTheta ), EPSILON );
-				lightRec.pdf = max( ( dist * dist ) / denom, EPSILON );
+                                float denom = abs( light.area * cosTheta );
+                                lightRec.pdf = denom > 0.0
+                                        ? ( dist * dist ) / denom
+                                        : 0.0;
 				lightRec.emission = light.color * light.intensity;
 				lightRec.direction = rayDirection;
 				lightRec.type = light.type;
@@ -112,8 +120,8 @@ export const light_sampling_functions = /* glsl */`
 
 		vec3 toLight = randomPos - rayOrigin;
 		float lightDistSq = dot( toLight, toLight );
-		float dist = sqrt( lightDistSq );
-		vec3 direction = toLight / dist;
+                float dist = sqrt( lightDistSq );
+                vec3 direction = dist > 0.0 ? toLight / dist : vec3( 0.0 );
 		vec3 lightNormal = normalize( cross( light.u, light.v ) );
 
 		LightRecord lightRec;
@@ -124,10 +132,10 @@ export const light_sampling_functions = /* glsl */`
 		lightRec.normal = lightNormal;
 		lightRec.direction = direction;
 
-		// Guard against grazing-angle and zero-area degeneracies so MIS weights
-		// never see NaN/Inf PDFs from area-light sampling.
-		float denom = max( abs( light.area * dot( direction, lightNormal ) ), EPSILON );
-		lightRec.pdf = max( lightDistSq / denom, EPSILON );
+                float denom = abs( light.area * dot( direction, lightNormal ) );
+                lightRec.pdf = dist > 0.0 && denom > 0.0
+                        ? lightDistSq / denom
+                        : 0.0;
 		lightRec.discretePdf = 1.0;
 		lightRec.castShadowDisabled = light.castShadowDisabled;
 		lightRec.delta = 0.0;
@@ -136,23 +144,13 @@ export const light_sampling_functions = /* glsl */`
 
 	}
 
-	LightRecord randomSpotLightSample( Light light, vec3 rayOrigin, vec2 ruv ) {
+	LightRecord randomSpotLightSample( Light light, vec3 rayOrigin ) {
 
-		float radius = light.radius * sqrt( ruv.x );
-		float theta = ruv.y * 2.0 * PI;
-		float x = radius * cos( theta );
-		float y = radius * sin( theta );
-
-		vec3 u = light.u;
-		vec3 v = light.v;
-		vec3 normal = normalize( cross( u, v ) );
-
-		float angle = acos( light.coneCos );
-		float angleTan = tan( angle );
-		float startDistance = light.radius / max( angleTan, EPSILON );
-
-		vec3 randomPos = light.position - normal * startDistance + u * x + v * y;
-		vec3 toLight = randomPos - rayOrigin;
+		// Core SpotEmitter is a delta-position source. cross(u,v) is its backward
+		// axis, so a receiver inside the authored forward cone sees a positive
+		// dot(direction-to-source, backwardAxis).
+		vec3 normal = normalize( cross( light.u, light.v ) );
+		vec3 toLight = light.position - rayOrigin;
 		float lightDistSq = dot( toLight, toLight );
 		float dist = sqrt( lightDistSq );
 
@@ -164,7 +162,7 @@ export const light_sampling_functions = /* glsl */`
 		LightRecord lightRec;
 		lightRec.type = light.type;
 		lightRec.dist = dist;
-		lightRec.point = randomPos;
+		lightRec.point = light.position;
 		lightRec.normal = normal;
 		lightRec.direction = direction;
 		lightRec.emission = light.color * light.intensity * distanceAttenuation * spotAttenuation;
@@ -226,12 +224,16 @@ export const light_sampling_functions = /* glsl */`
 		uint chosen = meshLightCount - 1u;
 		float cum = 0.0;
 		for ( uint ii = 0u; ii < meshLightCount; ii ++ ) {
-			cum += max( readMeshTriLight( meshLights, ii ).power, 0.0 );
+                        cum += finitePositiveLightPower(
+                                readMeshTriLight( meshLights, ii ).power
+                        );
 			if ( uPick <= cum ) { chosen = ii; break; }
 		}
 
-		MeshTriLight tri = readMeshTriLight( meshLights, chosen );
-		rec.castShadowDisabled = tri.castShadowDisabled;
+                MeshTriLight tri = readMeshTriLight( meshLights, chosen );
+                rec.castShadowDisabled = tri.castShadowDisabled;
+                float triPower = finitePositiveLightPower( tri.power );
+                if ( triPower <= 0.0 || tri.area <= 0.0 ) return rec;
 
 		// Uniform-area barycentric sample on the chosen triangle.
 		float su = sqrt( max( ruv.y, 0.0 ) );
@@ -243,20 +245,22 @@ export const light_sampling_functions = /* glsl */`
 
 		vec3 toLight = pos - rayOrigin;
 		float distSq = dot( toLight, toLight );
-		float dist = sqrt( max( distSq, 1e-20 ) );
+                if ( distSq <= 0.0 ) return rec;
+                float dist = sqrt( distSq );
 		vec3 direction = toLight / dist;
 
 		// Two-sided emitter: face the normal toward the receiver.
-		float cosLight = dot( triNormal, -direction );
-		if ( cosLight < 0.0 ) { triNormal = -triNormal; cosLight = -cosLight; }
+                float cosLight = dot( triNormal, -direction );
+                if ( cosLight < 0.0 ) { triNormal = -triNormal; cosLight = -cosLight; }
+                if ( cosLight <= 0.0 ) return rec;
 
 		rec.point = pos;
 		rec.normal = triNormal;
 		rec.dist = dist;
 		rec.direction = direction;
 		rec.emission = tri.radiance;
-		float areaDensity = max( tri.power, 0.0 ) / ( max( tri.area, EPSILON ) * totalEmissivePower );
-		rec.pdf = max( areaDensity * distSq / max( cosLight, EPSILON ), EPSILON );
+                float areaDensity = triPower / ( tri.area * totalEmissivePower );
+                rec.pdf = areaDensity * distSq / cosLight;
 		return rec;
 	}
 
@@ -264,8 +268,13 @@ export const light_sampling_functions = /* glsl */`
 	// strategy. The area density is luminance(surface emission) / totalPower.
 	float meshAreaLightForwardPdf( float distSq, float cosLight, float totalEmissivePower, vec3 emission ) {
 		if ( totalEmissivePower <= 0.0 ) return 0.0;
-		float areaDensity = max( luminance( emission ), 0.0 ) / totalEmissivePower;
-		return areaDensity * distSq / max( abs( cosLight ), EPSILON );
+                float cosine = abs( cosLight );
+                float areaDensity = finitePositiveLightPower(
+                        luminance( emission )
+                ) / totalEmissivePower;
+                return cosine > 0.0
+                        ? areaDensity * distSq / cosine
+                        : 0.0;
 	}
 
 	vec3 sampleDirectionalCone( vec3 axis, float angularDiameter, vec2 uv, out float pdf ) {
@@ -275,7 +284,8 @@ export const light_sampling_functions = /* glsl */`
 		float sinTheta = sqrt( max( 0.0, 1.0 - cosTheta * cosTheta ) );
 		float phi = 2.0 * PI * uv.y;
 		vec3 localDir = vec3( cos( phi ) * sinTheta, sin( phi ) * sinTheta, cosTheta );
-		pdf = 1.0 / max( 2.0 * PI * ( 1.0 - cosHalfAngle ), EPSILON );
+                float solidAngle = 2.0 * PI * ( 1.0 - cosHalfAngle );
+                pdf = solidAngle > 0.0 ? 1.0 / solidAngle : 0.0;
 		return normalize( getBasisFromNormal( normalize( axis ) ) * localDir );
 
 	}
@@ -284,60 +294,52 @@ export const light_sampling_functions = /* glsl */`
 
 		LightRecord result;
 
-		float invCount = 1.0 / max( float( lightCount ), 1.0 );
-		float sumPower = 0.0;
+                float sumPower = 0.0;
 		for ( uint ii = 0u; ii < lightCount; ii ++ ) {
 
 			Light tmpLight = readLightInfo( lights, ii );
-			sumPower += max( tmpLight.power, 1e-20 );
+                        sumPower += finitePositiveLightPower( tmpLight.power );
 
 		}
 
 		uint l = 0u;
-		float discretePdf = invCount;
+                float discretePdf = 0.0;
 
-		if ( lightCount > 0u && sumPower > 1e-30 ) {
+                if ( lightCount > 0u && sumPower > 0.0 ) {
 
-			Light defaultPick = readLightInfo( lights, lightCount - 1u );
-			l = lightCount - 1u;
-			discretePdf = max( defaultPick.power, 1e-20 ) / sumPower;
+                        float uPick = ruv.x * sumPower;
+                        float cum = 0.0;
+                        for ( uint ii = 0u; ii < lightCount; ii ++ ) {
 
-			float uPick = ruv.x * sumPower;
-			float cum = 0.0;
-			for ( uint ii = 0u; ii < lightCount; ii ++ ) {
+                                Light tmpLight = readLightInfo( lights, ii );
+                                float w = finitePositiveLightPower( tmpLight.power );
+                                if ( w <= 0.0 ) continue;
+                                // Also serves as the exact final-bin fallback
+                                // if a generator ever returns u == 1.
+                                l = ii;
+                                discretePdf = w / sumPower;
+                                cum += w;
+                                if ( uPick <= cum ) {
+                                        break;
 
-				Light tmpLight = readLightInfo( lights, ii );
-				float w = max( tmpLight.power, 1e-20 );
-				cum += w;
-				if ( uPick <= cum ) {
+                                }
 
-					l = ii;
-					discretePdf = w / sumPower;
-					break;
+                        }
 
-				}
-
-			}
-
-		} else if ( lightCount > 0u ) {
-
-			l = uint( ruv.x * float( lightCount ) );
-			discretePdf = invCount;
-
-		}
+                }
 
 		Light light = readLightInfo( lights, l );
 
 		if ( light.type == SPOT_LIGHT_TYPE ) {
 
-			result = randomSpotLightSample( light, rayOrigin, ruv.yz );
+			result = randomSpotLightSample( light, rayOrigin );
 
 		} else if ( light.type == POINT_LIGHT_TYPE ) {
 
 			vec3 lightRay = light.u - rayOrigin;
 			float lightDist = length( lightRay );
 			float cutoffDistance = light.distance;
-			float distanceFalloff = 1.0 / max( pow( lightDist, light.decay ), 0.01 );
+                        float distanceFalloff = 1.0 / pow( lightDist, light.decay );
 			if ( cutoffDistance > 0.0 ) {
 
 				distanceFalloff *= pow2( saturate( 1.0 - pow4( lightDist / cutoffDistance ) ) );

@@ -9,10 +9,6 @@
  * shared with the producer and samplers), so the border pass cannot silently
  * drift from the atlas layout.
  *
- * For backward compatibility the previous string exports
- * (`PROBE_UPDATE_BORDER_IRR_WGSL` / `PROBE_UPDATE_BORDER_VIS_WGSL`) remain
- * available as consts computed from the factory at module-load time.
- *
  * Background: the atlas allocates (CELL + BORDER) × (CELL + BORDER) pixels
  * per probe, where BORDER=2 (1 pixel on each side). The blend pass writes
  * only the interior CELL × CELL pixels. The border pixels are zero-initialized
@@ -69,7 +65,7 @@
 
 import { VIS_CELL, VIS_STRIDE } from '../ddgiAtlasLayout.js';
 
-/** Parameters that distinguish the irradiance vs visibility border pass. */
+/** Parameters for the production visibility pass and generic coverage tests. */
 export interface BorderFillParams {
   /** Interior octahedral cell dimension (N). Production visibility uses VIS_CELL=16. */
   cell: number;

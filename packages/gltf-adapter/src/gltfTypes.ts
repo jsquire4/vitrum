@@ -5,7 +5,7 @@
 // CREDITS.md attributes this reference.
 
 export interface GltfJson {
-  asset: { version: string; generator?: string };
+  asset: { version: string; minVersion?: string; generator?: string };
   scene?: number;
   scenes?: GltfScene[];
   nodes?: GltfNode[];
@@ -93,6 +93,10 @@ export interface GltfNode {
   weights?: number[];
   extensions?: {
     EXT_mesh_gpu_instancing?: GltfMeshGpuInstancingExtension;
+    KHR_node_visibility?: {
+      /** Whether this node's visual subtree is displayed. Default: true. */
+      visible?: boolean;
+    };
     [key: string]: unknown;
   };
 }
@@ -188,7 +192,10 @@ export interface GltfBufferView {
 export interface GltfBuffer {
   uri?: string;
   byteLength: number;
-  /** Per-buffer extensions (EXT_meshopt_compression `fallback: true` stubs). */
+  /**
+   * Per-buffer extensions. EXT/KHR_meshopt_compression may mark a buffer
+   * `fallback: true` when it is reserved for uncompressed fallback storage.
+   */
   extensions?: Record<string, unknown>;
 }
 

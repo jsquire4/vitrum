@@ -1,11 +1,10 @@
 /**
  * r4WaveFixes.test.ts — pin tests for the R4 (pt-webgpu) complexity-sweep fixes:
  *
- *   V2-1  SPPM ceiling-miss fallback is HONORED: when the photon-cells allocation
- *         would exceed the effective ceiling, the packed FrameParams caustic mode
- *         must flip from photon-map (2u) to manifold-nee (1u) so the kernel takes
- *         the manifold path instead of gathering against placeholder photon
- *         buffers (which rendered caustics ~zero).
+ *   V2-1  SPPM ownership is strict: photon-map mode (2u) is packed only after the
+ *         exact photon-cell allocation and SPPM pipelines are ready. If the
+ *         allocation exceeds the effective device ceiling, renderFrame throws
+ *         before publishing a FrameParams write.
  *
  *   V2-5 / D2  the BDPT default light-bounce count is now 2 (was 1). At the default
  *         the packed `bdptMaxLightBounces` slot must be 2 so the kernel connection
@@ -109,7 +108,6 @@ function frameInput(size: number) {
   return {
     viewMatrix: asMat4(identityMat()),
     projMatrix: asMat4(identityMat()),
-    cameraPosition: [0, 0, 1] as [number, number, number],
     viewport: { width: size, height: size, devicePixelRatio: 1 },
     frameIndex: 0,
     frameSeed: 1,
@@ -128,11 +126,9 @@ function latestFrameParams(rec: Recorder): Uint32Array {
   return new Uint32Array(buf);
 }
 
-describe('R4 / V2-1 — SPPM ceiling-miss honors the manifold-nee fallback', () => {
-  it('packs causticMode=2 (photon-map) when the photon-cells allocation FITS the ceiling', async () => {
+describe('R4 / V2-1 — SPPM ownership is gated on exact allocation readiness', () => {
+  it('packs causticMode=2 after the default device admits the photon-cell allocation', async () => {
     const rec: Recorder = { bufferWrites: [] };
-    // Default limits (256 MiB buffer / 128 MiB binding) — the ~96 MiB photon-cells
-    // allocation fits, so the configured photon-map strategy is used.
     const engine = await createPTEngine_WebGPU({
       device: makeFullTierDevice(rec),
       causticStrategy: 'photon-map',
@@ -144,10 +140,8 @@ describe('R4 / V2-1 — SPPM ceiling-miss honors the manifold-nee fallback', () 
     engine.dispose();
   });
 
-  it('flips the packed causticMode to 1 (manifold-nee) when SPPM allocation exceeds the ceiling', async () => {
+  it('keeps causticMode=2 at a 32 MiB ceiling because the current allocation is 3 MiB', async () => {
     const rec: Recorder = { bufferWrites: [] };
-    // Force the ceiling miss: shrink the storage-binding limit below the ~96 MiB
-    // photon-cells buffer so sppmWouldExceedCeiling() returns true.
     const engine = await createPTEngine_WebGPU({
       device: makeFullTierDevice(rec, {
         maxBufferSize: 32 * 1024 * 1024,
@@ -158,10 +152,38 @@ describe('R4 / V2-1 — SPPM ceiling-miss honors the manifold-nee fallback', () 
     engine.setScene(makeScene());
     engine.renderFrame(frameInput(16));
     const params = latestFrameParams(rec);
-    // Before the fix this was 2 (photon-map) — the kernel gathered against
-    // placeholder photon buffers and caustics rendered ~zero. Now the fallback is
-    // honored: the packed mode is manifold-nee (1u).
-    expect(params[FrameParamsSlot.causticStrategy]).toBe(1);
+    expect(params[FrameParamsSlot.causticStrategy]).toBe(2);
+    engine.dispose();
+  });
+
+  it('rejects an undersized device before any per-frame allocation, encoding, submit, or params write', async () => {
+    const rec: Recorder = { bufferWrites: [] };
+    const device = makeFullTierDevice(rec, {
+      maxBufferSize: 2 * 1024 * 1024,
+      maxStorageBufferBindingSize: 2 * 1024 * 1024,
+    });
+    const engine = await createPTEngine_WebGPU({
+      device,
+      causticStrategy: 'photon-map',
+    });
+    engine.setScene(makeScene());
+
+    const buffersBefore = vi.mocked(device.createBuffer).mock.calls.length;
+    const encodersBefore = vi.mocked(device.createCommandEncoder).mock.calls.length;
+    const submitsBefore = vi.mocked(device.queue.submit).mock.calls.length;
+    const paramsWritesBefore = rec.bufferWrites.filter(
+      (write) => write.label === 'vitrum.pt-webgpu.params',
+    ).length;
+
+    expect(() => engine.renderFrame(frameInput(16))).toThrow(
+      /SPPM photon grid.*device storage-buffer limits/i,
+    );
+    expect(vi.mocked(device.createBuffer).mock.calls).toHaveLength(buffersBefore);
+    expect(vi.mocked(device.createCommandEncoder).mock.calls).toHaveLength(encodersBefore);
+    expect(vi.mocked(device.queue.submit).mock.calls).toHaveLength(submitsBefore);
+    expect(
+      rec.bufferWrites.filter((write) => write.label === 'vitrum.pt-webgpu.params'),
+    ).toHaveLength(paramsWritesBefore);
     engine.dispose();
   });
 });
@@ -174,6 +196,7 @@ describe('R4 / V2-2 — setScene is atomic (rollback on throw, no leak, old scen
     const allBuffers: TrackedBuffer[] = [];
     let throwArmed = false;
     let createsSinceArmed = 0;
+    let submitThrowArmed = false;
 
     installGpuConstStubs();
     const pass = { setPipeline: vi.fn(), setBindGroup: vi.fn(), dispatchWorkgroups: vi.fn(), end: vi.fn() };
@@ -194,7 +217,11 @@ describe('R4 / V2-2 — setScene is atomic (rollback on throw, no leak, old scen
           rec.bufferWrites.push({ label: buffer?.label ?? '', bytes });
         }),
         writeTexture: vi.fn(),
-        submit: vi.fn(),
+        submit: vi.fn(() => {
+          if (submitThrowArmed) {
+            throw new Error('injected reset submit failure (test)');
+          }
+        }),
       },
       createBuffer: vi.fn((desc?: { label?: string }) => {
         const label = desc?.label ?? '';
@@ -256,6 +283,27 @@ describe('R4 / V2-2 — setScene is atomic (rollback on throw, no leak, old scen
     expect(() => engine.renderFrame(frameInput(16))).not.toThrow();
     const paramsAfterFailure = latestFrameParams(rec);
     expect(paramsAfterFailure[FrameParamsSlot.triangleCount]).toBe(firstTriangleCount);
+
+    // Also fail after the complete candidate has been published reversibly:
+    // reset() submits the accumulator clear while the previous scene is still
+    // alive. The catch must restore that old scene and retire only candidates.
+    const buffersBeforeResetFailure = allBuffers.length;
+    submitThrowArmed = true;
+    expect(() => engine.setScene(makeScene())).toThrow(
+      'injected reset submit failure',
+    );
+    submitThrowArmed = false;
+    const resetFailureCandidates = allBuffers
+      .slice(buffersBeforeResetFailure)
+      .filter((buffer) => buffer.label.startsWith('vitrum.pt-webgpu.scene.'));
+    expect(resetFailureCandidates.length).toBeGreaterThan(0);
+    for (const buffer of resetFailureCandidates) {
+      expect(buffer.destroy, buffer.label).toHaveBeenCalled();
+    }
+    for (const buffer of firstSceneBuffers) {
+      expect(buffer.destroy, buffer.label).not.toHaveBeenCalled();
+    }
+    expect(() => engine.renderFrame(frameInput(16))).not.toThrow();
 
     engine.dispose();
   });

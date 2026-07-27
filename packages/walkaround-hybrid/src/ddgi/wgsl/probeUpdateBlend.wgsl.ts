@@ -2,7 +2,7 @@
  * DDGI Probe Update — Pass 2: Octahedral Atlas Blend.
  *
  * Two separate WGSL modules:
- *   makeProbeUpdateBlendIrrWGSL() — irradiance atlas blend (rgba16float, 8×8/probe)
+ *   makeProbeUpdateBlendIrrWGSL() — irradiance L2-SH blend (rgba16float, 3×3/probe)
  *   makeProbeUpdateBlendVisWGSL() — visibility atlas blend (rgba16float, 16×16/probe, rg used)
  *
  * Bindings are independent so the two pipelines don't share layouts.
@@ -14,9 +14,6 @@
  * shaders previously hardcoded `IRR_CELL=8u` / `VIS_CELL=16u` as WGSL
  * literals, which risked silent drift if the layout ever changed.
  *
- * For backward compatibility the previous string exports
- * (`PROBE_UPDATE_BLEND_IRR_WGSL` / `PROBE_UPDATE_BLEND_VIS_WGSL`) remain
- * available as consts computed from the factories at module-load time.
  */
 
 import { OCTAHEDRAL_WGSL } from '@vitrum/shared-bvh';
@@ -32,20 +29,15 @@ function makeCommonHeader(): string {
 ${OCTAHEDRAL_WGSL}
 
 const RAYS_PER_PROBE: u32 = ${RAYS_PER_PROBE}u;
-const HYSTERESIS:     f32 = 0.97;
 const IRR_CELL:       u32 = ${IRR_CELL}u;
 const VIS_CELL:       u32 = ${VIS_CELL}u;
 const DDGI_MISS_DISTANCE: f32 = 1.0e19;
 
 struct ProbeRay {
-  hitPosition:   vec3f,
-  hitDistance:   f32,
-  hitNormal:     vec3f,
-  hitMaterialId: u32,
-  hitRadiance:   vec3f,
-  isGlass:       u32,
-  direction:     vec3f,
-  _pad0:         f32,
+  hitRadiance: vec3f,
+  hitDistance: f32,
+  direction:   vec3f,
+  _pad0:       f32,
 }
 
 struct ProbeGridParams {
@@ -60,10 +52,7 @@ struct ProbeGridParams {
 }
 
 struct FrameBlendParams {
-  probesPerFrame: u32,
-  hysteresis:     f32,
-  _pad0:          u32,
-  _pad1:          u32,
+  hysteresis: f32,
 }
 
 // @group(0) @binding(0-3) — shared layout
@@ -127,34 +116,48 @@ fn probeUpdateBlendIrradiance(
   // Only the first 3x3 interior texels carry the 9 SH coefficients.
   if (lx >= 3u || ly >= 3u) { return; }
   let k = ly * 3u + lx;   // SH coefficient index 0..8
-
-  // Project incoming radiance onto SH coeff k: c_k = (4PI/N) * sum_i L_i * Y_k(w_i)
-  // over the uniform-sphere rays. Backface (negative dist) + self-intersection
-  // (< 0.05) rays carry hitRadiance = occluded -> contribute 0 but still count
-  // in N (= RAYS_PER_PROBE), which is the correct integral estimator.
-  var accum = vec3f(0.0);
+  let atlasCoord = irrAtlasCoord(probeIdx, vec2u(lx, ly));
   let baseIdx = probeIdx * RAYS_PER_PROBE;
   let numRays = arrayLength(&rayResults);
+  if (baseIdx >= numRays) { return; }
+  if (rayResults[baseIdx]._pad0 < 0.5) {
+    // Inactive probes publish conservative zero, bypassing temporal history.
+    textureStore(irrOut, atlasCoord, vec4f(0.0, 0.0, 0.0, 1.0));
+    return;
+  }
+
+  // Project incoming radiance onto SH coeff k. Backface and self-intersection
+  // records are invalid samples for a relocated probe and are excluded from
+  // both numerator and denominator. This prevents an embedded probe from being
+  // dimmed merely because many of its rays were rejected.
+  var accum = vec3f(0.0);
+  var validRayCount = 0u;
   for (var r = 0u; r < RAYS_PER_PROBE; r = r + 1u) {
     let rIdx = baseIdx + r;
     if (rIdx >= numRays) { break; }
     let ray = rayResults[rIdx];
     if (ray.hitDistance < 0.05) { continue; }   // occluded direction -> 0
+    validRayCount = validRayCount + 1u;
     let Y = ddgiShBasis(ray.direction);
     accum = accum + ray.hitRadiance * Y[k];
   }
   // Store the COSINE-CONVOLVED coefficient E_lm = A_l * c_k so the receiver eval
   // (sum_k E_lm * Y_k(n)) yields irradiance E directly. 4PI = 12.56637061436.
-  let coeff = accum * (12.56637061436 / f32(RAYS_PER_PROBE)) * ddgiShCosineA(k);
+  let coeff = select(
+    vec3f(0.0),
+    accum * (12.56637061436 / f32(max(validRayCount, 1u))) * ddgiShCosineA(k),
+    validRayCount > 0u,
+  );
 
-  let atlasCoord = irrAtlasCoord(probeIdx, vec2u(lx, ly));
   // EMA read at the EXACT texel centre (bilinear collapses to the exact coeff)
   // so the sampler binding stays USED and the layout:"auto" blend pipeline does
   // not prune it (a pruned sampler desyncs the host bind group).
   let iUv = (vec2f(atlasCoord) + vec2f(0.5)) /
             vec2f(gridParams.irradianceAtlasW, gridParams.irradianceAtlasH);
   let prev = textureSampleLevel(irrPrev, irrSamp, iUv, 0.0).rgb;
-  let blended = mix(coeff, prev, blendParams.hysteresis);
+  // An all-invalid update must not retain stale active-probe radiance.
+  let hysteresis = select(0.0, blendParams.hysteresis, validRayCount > 0u);
+  let blended = mix(coeff, prev, hysteresis);
   textureStore(irrOut, atlasCoord, vec4f(blended, 1.0));
 }
 
@@ -201,12 +204,21 @@ fn probeUpdateBlendVisibility(
 
   let octUv = (vec2f(pixel) + vec2f(0.5)) / vec2f(f32(VIS_CELL));
   let dir   = octDecode(octUv * 2.0 - 1.0);
+  let atlasCoord = visAtlasCoord(probeIdx, pixel);
+  let baseIdx = probeIdx * RAYS_PER_PROBE;
+  let numRays = arrayLength(&rayResults);
+  if (baseIdx >= numRays) { return; }
+  if (rayResults[baseIdx]._pad0 < 0.5) {
+    // Inactive/embedded probes are conservatively occluded. Never publish the
+    // historical far-open sentinel for a probe with no valid geometry sample.
+    textureStore(visOut, atlasCoord, vec4f(0.0, 0.0, 0.0, 1.0));
+    return;
+  }
 
   var newDepth   = 0.0;
   var newDepthSq = 0.0;
   var totalWeight = 0.0;
-  let baseIdx = probeIdx * RAYS_PER_PROBE;
-  let numRays = arrayLength(&rayResults);
+  var validRayCount = 0u;
   for (var r = 0u; r < RAYS_PER_PROBE; r = r + 1u) {
     let rIdx = baseIdx + r;
     if (rIdx >= numRays) { break; }
@@ -229,8 +241,9 @@ fn probeUpdateBlendVisibility(
     // including them drives mean/depth² to infinity in the rgba16float atlas,
     // which makes the Chebyshev receiver permanently transparent.
     if (ray.hitDistance >= DDGI_MISS_DISTANCE) { continue; }
+    validRayCount = validRayCount + 1u;
     let w = max(0.0, dot(dir, ray.direction));
-    if (w < 1e-3) { continue; }
+    if (w <= 0.0) { continue; }
     // Variance-shadow visibility kernel — Majercik 2019 §3 uses pow(2) for the
     // depth/depth² accumulation (Chebyshev shadow visibility). pow(50) was too
     // narrow for a 192-ray budget (most atlas pixels had zero aligned rays).
@@ -240,23 +253,26 @@ fn probeUpdateBlendVisibility(
     newDepthSq = newDepthSq + d * d * weight;
     totalWeight = totalWeight + weight;
   }
-  if (totalWeight > 1e-5) {
+  if (totalWeight > 0.0) {
     newDepth   = newDepth / totalWeight;
     newDepthSq = newDepthSq / totalWeight;
-  } else {
-    // No aligned finite hit samples means this visibility texel is open sky,
-    // not "occluder at distance zero". Use a finite far-visible sentinel that
-    // survives rgba16float storage and keeps Chebyshev visibility open for
-    // ordinary scene-scale receivers.
-    newDepth   = 65504.0;
+  } else if (validRayCount > 0u) {
+    // The probe has valid finite geometry, but none of those rays align with
+    // this octahedral cell. Preserve the open-direction sentinel.
+    newDepth = 65504.0;
     newDepthSq = 65504.0;
+  } else {
+    // Every ray was invalid/miss/backface. Conservative zero avoids turning an
+    // embedded or unclassified probe into a permanently open visibility cell.
+    newDepth = 0.0;
+    newDepthSq = 0.0;
   }
 
-  let atlasCoord = visAtlasCoord(probeIdx, pixel);
   let vUv = (vec2f(atlasCoord) + vec2f(0.5)) /
             vec2f(gridParams.visibilityAtlasW, gridParams.visibilityAtlasH);
   let prev    = textureSampleLevel(visPrev, visSamp, vUv, 0.0).rg;
-  let blended = mix(vec2f(newDepth, newDepthSq), prev, blendParams.hysteresis);
+  let hysteresis = select(0.0, blendParams.hysteresis, validRayCount > 0u);
+  let blended = mix(vec2f(newDepth, newDepthSq), prev, hysteresis);
   textureStore(visOut, atlasCoord, vec4f(blended, 0.0, 1.0));
 }
 

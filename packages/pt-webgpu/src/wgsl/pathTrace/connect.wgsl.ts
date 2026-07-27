@@ -57,6 +57,9 @@ struct EnvironmentLookup {
 
 fn environmentLookup(dir: vec3f) -> EnvironmentLookup {
   if (!hasEnvironmentMap()) {
+    if (params.environmentSun.w > 0.0) {
+      return EnvironmentLookup(sampleSky(dir), 0.25 * INV_PI);
+    }
     return EnvironmentLookup(vec3f(0.0), 0.0);
   }
   let dims = environmentDimensions();
@@ -98,7 +101,7 @@ fn environmentPdf(dir: vec3f) -> f32 {
 // (no environment map, or empty CDF). Same RNG consumption (one rand_f32 call)
 // and identical sampled direction / radiance / pdf as the prior pointer-out
 // signature it replaces.
-fn sampleEnvironmentImportance(rng: ptr<function, u32>) -> BsdfSample {
+fn sampleEnvironmentImportance(rng: ptr<function, PtRngState>) -> BsdfSample {
   var result: BsdfSample;
   result.wi = vec3f(0.0, 1.0, 0.0);
   result.value = vec3f(0.0);
@@ -140,6 +143,131 @@ fn sampleEnvironmentImportance(rng: ptr<function, u32>) -> BsdfSample {
   return result;
 }
 
+fn environmentImportanceSamplerReady() -> bool {
+  if (!hasEnvironmentMap()) { return false; }
+  let dims = environmentDimensions();
+  let count = dims.x * dims.y;
+  return count > 0u && arrayLength(&environmentMapCdf) >= count + 1u;
+}
+
+// Density of the proposal used by environment NEE. When the importance table
+// is unavailable every transport family falls back to the same uniform-sphere
+// proposal. This keeps p0/p1/p2+ densities comparable without a receiver-local
+// normal hidden in the infinite-root light subpath.
+fn environmentNeeProposalPdf(dir: vec3f, normal: vec3f) -> f32 {
+  if (environmentImportanceSamplerReady()) {
+    return max(environmentPdf(dir), 1e-8);
+  }
+  return 0.25 * INV_PI;
+}
+
+const MESH_AREA_LIGHT_VEC4_STRIDE: u32 = 7u;
+
+fn meshAreaLightBase(index: u32) -> u32 {
+  return index * MESH_AREA_LIGHT_VEC4_STRIDE;
+}
+
+fn meshAreaLightWeightsAtPoint(index: u32, point: vec3f) -> vec3f {
+  let base = meshAreaLightBase(index);
+  let a = meshAreaLights[base].xyz;
+  let ab = meshAreaLights[base + 1u].xyz - a;
+  let ac = meshAreaLights[base + 2u].xyz - a;
+  let ap = point - a;
+  let d00 = dot(ab, ab);
+  let d01 = dot(ab, ac);
+  let d11 = dot(ac, ac);
+  let d20 = dot(ap, ab);
+  let d21 = dot(ap, ac);
+  let denom = d00 * d11 - d01 * d01;
+  if (denom <= 0.0) { return vec3f(1.0, 0.0, 0.0); }
+  let wb = (d11 * d20 - d01 * d21) / denom;
+  let wc = (d00 * d21 - d01 * d20) / denom;
+  return vec3f(1.0 - wb - wc, wb, wc);
+}
+
+// Evaluate the exact authored emissive texture at a sampled packed-light point.
+// Rows 4..6 retain the source triangle's raw selected UVs, material descriptor,
+// original world area, and unmodulated emitter Le. This reproduces the forward
+// material sampler's transform, wrap, min/mag/mipmap policy and footprint LOD.
+fn sampleMeshAreaLightRadiance(
+  index: u32,
+  weights: vec3f,
+  worldPosition: vec3f,
+) -> vec3f {
+  let base = meshAreaLightBase(index);
+  let averageAndShadow = meshAreaLights[base + 3u];
+  let uvAB = meshAreaLights[base + 4u];
+  let uvCAndMaterial = meshAreaLights[base + 5u];
+  let materialIdPlusOne = uvCAndMaterial.z;
+  if (materialIdPlusOne < 0.5) { return averageAndShadow.rgb; }
+  let matId = u32(materialIdPlusOne - 1.0);
+  let descriptorBase = matId * MATERIAL_TEX_VEC4_STRIDE;
+  if (descriptorBase + 13u >= arrayLength(&materialTexDescriptors)) {
+    return vec3f(0.0);
+  }
+  let layerIdx = i32(materialTexDescriptors[descriptorBase].w);
+  if (layerIdx < 0) { return vec3f(0.0); }
+  let rawA = uvAB.xy;
+  let rawB = uvAB.zw;
+  let rawC = uvCAndMaterial.xy;
+  let rawUv = rawA * weights.x + rawB * weights.y + rawC * weights.z;
+  let uvMeta = materialTexDescriptors[
+    descriptorBase + MATERIAL_TEX_UV_EMISSIVE
+  ];
+  let uvScale = materialTexDescriptors[
+    descriptorBase + MATERIAL_TEX_UV_EMISSIVE + 1u
+  ];
+  let c = cos(uvMeta.w);
+  let s = sin(uvMeta.w);
+  let transformUv = mat2x2f(
+    uvScale.x * c, -uvScale.y * s,
+    uvScale.x * s, uvScale.y * c,
+  );
+  let offset = uvMeta.yz;
+  let uvA = transformUv * rawA + offset;
+  let uvB = transformUv * rawB + offset;
+  let uvC = transformUv * rawC + offset;
+  let uv = transformUv * rawUv + offset;
+  let wrapMode = materialTexDescriptors[descriptorBase + 13u].zw;
+  let uvFitScale = materialTexDescriptors[descriptorBase + 7u].zw;
+  let sourceBaseSize = materialTextureSourceBaseSize(
+    vec2u(textureDimensions(materialTexturesEmissive, 0)), uvFitScale,
+  );
+  let sourceMipCount = f32(materialTextureSourceMipCount(sourceBaseSize));
+  let texDim = vec2f(sourceBaseSize);
+  let texelArea = max(
+    abs((uvB.x - uvA.x) * (uvC.y - uvA.y) -
+        (uvB.y - uvA.y) * (uvC.x - uvA.x)) * texDim.x * texDim.y,
+    1.0,
+  );
+  let worldArea = uvCAndMaterial.w;
+  if (worldArea <= 0.0) { return vec3f(0.0); }
+  let cameraDistance = max(
+    length(worldPosition - params.cameraPos.xyz), 1e-3,
+  );
+  let pixelsPerMeter =
+    0.5 * f32(max(params.width, params.height)) / cameraDistance;
+  let projectedPixels = max(sqrt(worldArea) * pixelsPerMeter, 1.0);
+  let lod = clamp(
+    log2(sqrt(texelArea) / projectedPixels),
+    0.0,
+    max(sourceMipCount - 1.0, 0.0),
+  );
+  let mipPolicy = materialTextureMipPolicy(
+    descriptorBase, MATERIAL_TEX_MIP_EMISSIVE,
+  );
+  let policyLod = materialTexturePolicyLod(lod, sourceMipCount, mipPolicy);
+  let filterPolicy = materialTextureFilterPolicy(
+    descriptorBase, MATERIAL_TEX_MIP_EMISSIVE,
+  );
+  let filterMode = select(filterPolicy.x, filterPolicy.y, lod > 0.0);
+  let texel = sampleMaterialEmissiveSourceRect(
+    layerIdx, uv, sourceBaseSize, wrapMode,
+    policyLod, filterMode, mipPolicy,
+  );
+  return meshAreaLights[base + 6u].rgb * texel.rgb;
+}
+
 // Intersect the BSDF sample ray against rect/disc area light index li.
 // Reads the shape discriminator from emission.w: ≈ 0 → rect, ≈ 1 → analytic disc.
 // Rect:  uCoord/vCoord ∈ [-1,1] box test; area = 4·|u×v|.
@@ -155,9 +283,12 @@ fn intersectRectAreaLightRay(li: u32, rayOrigin: vec3f, rayDir: vec3f, distOut: 
   let vAxis = rectAreaLights[rb + 2u].xyz;
   let rshape = rectAreaLights[rb + 3u];
   let isDisc = abs(rshape.w - 1.0) < 0.5;
-  let lightNormal = safe_normalize(cross(uAxis, vAxis));
+  let axisCross = cross(uAxis, vAxis);
+  let axisCrossLen2 = dot(axisCross, axisCross);
+  if (axisCrossLen2 <= 0.0) { return false; }
+  let lightNormal = axisCross * inverseSqrt(axisCrossLen2);
   let denom = dot(lightNormal, rayDir);
-  if (abs(denom) < 1e-6) {
+  if (denom == 0.0) {
     return false;
   }
   let t = dot(lightNormal, rectPos - rayOrigin) / denom;
@@ -166,8 +297,9 @@ fn intersectRectAreaLightRay(li: u32, rayOrigin: vec3f, rayDir: vec3f, distOut: 
   }
   let p = rayOrigin + rayDir * t;
   let rel = p - rectPos;
-  let uLen2 = max(dot(uAxis, uAxis), 1e-6);
-  let vLen2 = max(dot(vAxis, vAxis), 1e-6);
+  let uLen2 = dot(uAxis, uAxis);
+  let vLen2 = dot(vAxis, vAxis);
+  if (uLen2 <= 0.0 || vLen2 <= 0.0) { return false; }
   let uCoord = dot(rel, uAxis) / uLen2;
   let vCoord = dot(rel, vAxis) / vLen2;
   // Containment test: disc uses circle (u²+v²≤1), rect uses square (|u|,|v|≤1).
@@ -185,12 +317,13 @@ fn intersectRectAreaLightRay(li: u32, rayOrigin: vec3f, rayDir: vec3f, distOut: 
   }
   // Area formula: disc → π·r² (r = |uAxis|); rect → 4·|u×v|.
   let area = select(
-    max(4.0 * length(cross(uAxis, vAxis)), 1e-6),
-    max(PI * dot(uAxis, uAxis), 1e-6),
+    4.0 * sqrt(axisCrossLen2),
+    PI * uLen2,
     isDisc,
   );
+  if (area <= 0.0) { return false; }
   *distOut = t;
-  *lightPdfOut = (t * t) / max(cosLight * area, 1e-6);
+  *lightPdfOut = (t * t) / (cosLight * area);
   return true;
 }
 
@@ -198,7 +331,7 @@ fn intersectRectAreaLightRay(li: u32, rayOrigin: vec3f, rayDir: vec3f, distOut: 
 // Accepts a light index so BSDF->light MIS can check all lights.
 // Ref: Veach 1997 Ch. 9 -- sum-MIS over all lights (D9 decision).
 fn intersectMeshAreaLightRay(li: u32, rayOrigin: vec3f, rayDir: vec3f, distOut: ptr<function, f32>, lightPdfOut: ptr<function, f32>) -> bool {
-  let mb = li * 4u;
+  let mb = meshAreaLightBase(li);
   let a = meshAreaLights[mb].xyz;
   let b = meshAreaLights[mb + 1u].xyz;
   let c = meshAreaLights[mb + 2u].xyz;
@@ -206,27 +339,31 @@ fn intersectMeshAreaLightRay(li: u32, rayOrigin: vec3f, rayDir: vec3f, distOut: 
   if (t <= 1e-4 || t >= INFINITY) {
     return false;
   }
-  let lightNormal = safe_normalize(cross(b - a, c - a));
+  let triangleCross = cross(b - a, c - a);
+  let triangleCrossLength = length(triangleCross);
+  if (triangleCrossLength <= 0.0) { return false; }
+  let lightNormal = triangleCross / triangleCrossLength;
   let cosLight = max(dot(lightNormal, -rayDir), 0.0);
   if (cosLight <= 0.0) {
     return false;
   }
-  let area = max(0.5 * length(cross(b - a, c - a)), 1e-6);
+  let area = 0.5 * triangleCrossLength;
   *distOut = t;
-  *lightPdfOut = (t * t) / max(cosLight * area, 1e-6);
+  *lightPdfOut = (t * t) / (cosLight * area);
   return true;
 }
 
 fn bsdfAreaLightConnectionContribution(
   hitPos: vec3f,
   normal: vec3f,
+  clearcoatNormal: vec3f,
   wo: vec3f,
   wi: vec3f,
   baseColor: vec3f,
   roughness: f32,
   metallic: f32,
   transmission: f32,
-  ior: f32,
+  etaTOverI: f32,
   clearcoat: f32,
   clearcoatRoughness: f32,
   sheen: f32,
@@ -244,30 +381,32 @@ fn bsdfAreaLightConnectionContribution(
   heroLambda: f32,
   includeMeshAreaLights: bool,
 ) -> vec3f {
-  let nDotL = max(dot(normal, wi), 0.0);
-  if (nDotL <= 1e-5) {
+  let nDotL = abs(dot(normal, wi));
+  if (nDotL <= 0.0) {
     return vec3f(0.0);
   }
-  let bsdfPdf = brdfDirectionalPdfFullSampled(
-    baseColor, roughness, metallic, transmission, ior, normal, wo, wi,
+  let bsdfPdf = brdfDirectionalPdfFullSampledWithClearcoatNormal(
+    baseColor, roughness, metallic, transmission, etaTOverI,
+    normal, clearcoatNormal, wo, wi,
     clearcoat, clearcoatRoughness, sheen, sheenRoughness,
     iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
     specularColor, specularIntensity,
     anisotropy, anisotropyRotation,
   );
-  if (bsdfPdf <= 1e-6) {
+  if (bsdfPdf <= 0.0) {
     return vec3f(0.0);
   }
   // Sum MIS over all area lights: iterate every rect/disc and, when allowed,
   // mesh light, keep the closest unoccluded hit. Cost is O(N_lights)
-  // intersection tests — acceptable for experimental scenes with ≤ 8 lights
+  // intersection tests — intended for scenes with no more than eight area lights
   // (D9 decision). ReSTIR-PT composite mode disables the mesh branch for
   // contributed pixels because the resolve already carries xs-on-emissive-mesh
   // radiance, while rect/disc analytic emitters cannot be reconnection vertices.
   // Ref: Veach 1997 Ch. 9 — sum-MIS is unbiased; choosing the closest hit along
   //      the BSDF-sampled direction is correct because the sample is a direction,
   //      not a point, so only the nearest light along that direction contributes.
-  let offsetOrigin = hitPos + normal * 1e-3;
+  let offsetNormal = select(-normal, normal, dot(normal, wi) > 0.0);
+  let offsetOrigin = hitPos + offsetNormal * 1e-3;
   var bestDist = INFINITY;
   var bestLightPdf = 0.0;
   var bestEmission = vec3f(0.0);
@@ -293,44 +432,50 @@ fn bsdfAreaLightConnectionContribution(
       var meshPdf = 0.0;
       if (intersectMeshAreaLightRay(mi, offsetOrigin, wi, &meshDist, &meshPdf)) {
         let shadowRay = Ray(offsetOrigin, wi);
-        // SHADOW-01 — meshAreaLights[mi*4+3].w carries castShadowDisabled (NEE parity).
-        let meshShadowDisabled = meshAreaLights[mi * 4u + 3u].w > 0.5;
+        // SHADOW-01 — row 3.w carries castShadowDisabled (NEE parity).
+        let meshBase = meshAreaLightBase(mi);
+        let meshShadowDisabled = meshAreaLights[meshBase + 3u].w > 0.5;
         if ((meshShadowDisabled || !traceAny(shadowRay, 1e-4, max(meshDist - 2e-3, 1e-3))) && meshDist < bestDist) {
           bestDist = meshDist;
           bestLightPdf = meshPdf;
-          bestEmission = meshAreaLights[mi * 4u + 3u].rgb;
+          let lightPoint = offsetOrigin + wi * meshDist;
+          bestEmission = sampleMeshAreaLightRadiance(
+            mi, meshAreaLightWeightsAtPoint(mi, lightPoint), lightPoint,
+          );
         }
       }
     }
   }
-  if (bestDist >= INFINITY || bestLightPdf <= 1e-6) {
+  if (bestDist >= INFINITY || bestLightPdf <= 0.0) {
     return vec3f(0.0);
   }
   // A3 — spectralize the BSDF-connection emission at the hero λ in spectral mode,
   // matching the NEE half (kernel.wgsl.ts §631/676) so both halves of the MIS pair
   // use the same emission model for chromatic emitters. RGB mode: byte-identical.
   let emitOut = select(bestEmission, spectralEmissionAtHero(bestEmission, heroLambda), params.spectralEnabled != 0u);
-  let brdf = evaluateBrdfFull(
-    baseColor, roughness, metallic, normal, wo, wi,
+  let brdf = evaluateFiniteBsdfFullWithClearcoatNormal(
+    baseColor, roughness, metallic, transmission, etaTOverI,
+    normal, clearcoatNormal, wo, wi,
     clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
     iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
     specularColor, specularIntensity,
-    anisotropy, anisotropyRotation,
+    anisotropy, anisotropyRotation, false,
   );
   let misWeight = powerHeuristic(bsdfPdf, bestLightPdf);
-  return throughputAtVertex * brdf * nDotL * emitOut * misWeight / max(bsdfPdf, 1e-6);
+  return throughputAtVertex * brdf * nDotL * emitOut * misWeight / bsdfPdf;
 }
 
 fn bsdfEnvironmentConnectionContribution(
   hitPos: vec3f,
   normal: vec3f,
+  clearcoatNormal: vec3f,
   wo: vec3f,
   wi: vec3f,
   baseColor: vec3f,
   roughness: f32,
   metallic: f32,
   transmission: f32,
-  ior: f32,
+  etaTOverI: f32,
   clearcoat: f32,
   clearcoatRoughness: f32,
   sheen: f32,
@@ -347,27 +492,35 @@ fn bsdfEnvironmentConnectionContribution(
   throughputAtVertex: vec3f,
   heroLambda: f32,
   matId: u32,
+  misWeightOverride: f32,
 ) -> vec3f {
-  let nDotL = max(dot(normal, wi), 0.0);
-  if (nDotL <= 1e-5) { return vec3f(0.0); }
-  let bsdfPdf = brdfDirectionalPdfFullSampled(
-    baseColor, roughness, metallic, transmission, ior, normal, wo, wi,
+  let nDotL = abs(dot(normal, wi));
+  if (nDotL <= 0.0) { return vec3f(0.0); }
+  let bsdfPdf = brdfDirectionalPdfFullSampledWithClearcoatNormal(
+    baseColor, roughness, metallic, transmission, etaTOverI,
+    normal, clearcoatNormal, wo, wi,
     clearcoat, clearcoatRoughness, sheen, sheenRoughness,
     iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
     specularColor, specularIntensity,
     anisotropy, anisotropyRotation,
   );
-  if (bsdfPdf <= 1e-6) { return vec3f(0.0); }
-  let shadowRay = Ray(hitPos + normal * 1e-3, wi);
+  if (bsdfPdf <= 0.0) { return vec3f(0.0); }
+  let offsetNormal = select(-normal, normal, dot(normal, wi) > 0.0);
+  let shadowRay = Ray(hitPos + offsetNormal * 1e-3, wi);
   if (traceAny(shadowRay, 1e-4, INFINITY)) { return vec3f(0.0); }
   let env = environmentLookup(wi);
-  let misWeight = powerHeuristic(bsdfPdf, env.pdf);
-  let brdf = evaluateBrdfFull(
-    baseColor, roughness, metallic, normal, wo, wi,
+  let envLightPdf = environmentNeeProposalPdf(wi, normal);
+  let ordinaryMisWeight = powerHeuristic(bsdfPdf, envLightPdf);
+  let misWeight = select(
+    ordinaryMisWeight, misWeightOverride, misWeightOverride >= 0.0,
+  );
+  let brdf = evaluateFiniteBsdfFullWithClearcoatNormal(
+    baseColor, roughness, metallic, transmission, etaTOverI,
+    normal, clearcoatNormal, wo, wi,
     clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
     iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
     specularColor, specularIntensity,
-    anisotropy, anisotropyRotation,
+    anisotropy, anisotropyRotation, false,
   );
   // A3 — spectralize the env connection at the hero λ in spectral mode, matching the
   // NEE miss-shader path (kernel.wgsl.ts §431) and the NEE env branch (§724).
@@ -377,6 +530,6 @@ fn bsdfEnvironmentConnectionContribution(
   // the converged env contribution is consistent across the two MIS strategies.
   let envScale = materialEnvMapIntensity(matId);
   let envColorOut = select(env.color, spectralEmissionAtHero(env.color, heroLambda), params.spectralEnabled != 0u) * envScale;
-  return throughputAtVertex * brdf * nDotL * envColorOut * misWeight / max(bsdfPdf, 1e-6);
+  return throughputAtVertex * brdf * nDotL * envColorOut * misWeight / bsdfPdf;
 }
 `;

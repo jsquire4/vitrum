@@ -1,11 +1,11 @@
 /**
- * H51-A/B/C — Coercion warns:
- *   A: warn when opts.maxBounces exceeds the engine's clamp cap.
+ * H51-A/B/C — option validation:
+ *   A: reject maxBounces outside the engine supported integer range.
  *   B: historical roughnessMap + metallicMap split no longer warns; both handles
  *      are packed into independent pt-webgpu texture slots.
  *   C: warn once listing unknown opts.extensions keys.
- *   D: validate/warn bdptOptions.maxLightBounces rather than silently coercing.
- * H48: warn when opts.denoiser is neither 'none', 'auto', nor 'oidn-final'.
+ *   D: reject bdptOptions.maxLightBounces outside its supported integer range.
+ * H48: reject opts.denoiser when it is neither 'none', 'auto', nor 'oidn-final'.
  */
 import { describe, expect, it, vi } from 'vitest';
 import { createPTEngine_WebGPU } from '../index.js';
@@ -29,12 +29,14 @@ function makeStubDevice(): GPUDevice {
 // ── H48 ──────────────────────────────────────────────────────────────────────
 // (H48 is already tested by unsupportedDenoiserDegrade.test.ts; this block
 //  serves as the authoritative H48 statement.)
-describe('H48: unsupported denoiser warns', () => {
-  it("warns when denoiser is set to a non-oidn-final value ('atrous')", async () => {
+describe('H48: unsupported denoiser rejects', () => {
+  it("rejects a non-oidn-final value ('atrous') without warning", async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const engine = await createPTEngine_WebGPU({ device: makeStubDevice(), denoiser: 'atrous' });
-    expect(warn.mock.calls.some((c) => String(c[0]).includes('denoiser="atrous"'))).toBe(true);
-    engine.dispose();
+    await expect(createPTEngine_WebGPU({
+      device: makeStubDevice(),
+      denoiser: 'atrous' as never,
+    })).rejects.toThrow(/denoiser="atrous".*unsupported.*not degraded/s);
+    expect(warn).not.toHaveBeenCalled();
     warn.mockRestore();
   });
 
@@ -47,165 +49,55 @@ describe('H48: unsupported denoiser warns', () => {
   });
 });
 
-// ── H51-A ─────────────────────────────────────────────────────────────────────
-describe('H51-A: maxBounces clamp warns', () => {
-  it('warns when maxBounces exceeds the experimental cap (8)', async () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const engine = await createPTEngine_WebGPU({ device: makeStubDevice(), maxBounces: 20 });
-    expect(
-      warn.mock.calls.some((c) => String(c[0]).includes('maxBounces=20')),
-    ).toBe(true);
-    // Clamp stays: capability reports the capped value.
-    expect(engine.capabilities.maxBounces).toBe(8);
-    engine.dispose();
-    warn.mockRestore();
-  });
+// ── H51-A ──────────────────────────────────────────────────────────────────────
+describe("H51-A: maxBounces validation", () => {
+  it.each([0, 1.5, 9, Number.NaN, Number.POSITIVE_INFINITY])(
+    "rejects an unsupported value (%s)",
+    async (maxBounces) => {
+      await expect(
+        createPTEngine_WebGPU({ device: makeStubDevice(), maxBounces }),
+      ).rejects.toThrow("maxBounces must be an integer in 1..8");
+    },
+  );
 
-  it('does not warn when maxBounces is within the cap', async () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const engine = await createPTEngine_WebGPU({ device: makeStubDevice(), maxBounces: 4 });
-    expect(
-      warn.mock.calls.some((c) => String(c[0]).includes('maxBounces=')),
-    ).toBe(false);
+  it("accepts maxBounces within the supported range", async () => {
+    const engine = await createPTEngine_WebGPU({
+      device: makeStubDevice(),
+      maxBounces: 4,
+    });
+    expect(engine.capabilities.maxBounces).toBe(4);
     engine.dispose();
-    warn.mockRestore();
   });
 });
 
-// ── H51-D ─────────────────────────────────────────────────────────────────────
-describe('H51-D: bdptOptions.maxLightBounces validates and warns predictably', () => {
-  it('keeps bdpt:true default endpoint-only without a multi-vertex warning', async () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const onWarning = vi.fn();
-    const engine = await createPTEngine_WebGPU({
-      device: makeStubDevice(),
-      bdpt: true,
-      onWarning,
-    });
+// ── H51-D ──────────────────────────────────────────────────────────────────────
+describe("H51-D: bdptOptions.maxLightBounces validation", () => {
+  it.each([0, 2.75, 9, Number.NaN, Number.POSITIVE_INFINITY])(
+    "rejects an unsupported value (%s)",
+    async (maxLightBounces) => {
+      await expect(
+        createPTEngine_WebGPU({
+          device: makeStubDevice(),
+          bdpt: true,
+          bdptOptions: { maxLightBounces },
+        }),
+      ).rejects.toThrow(
+        "bdptOptions.maxLightBounces must be an integer in 1..8",
+      );
+    },
+  );
 
-    expect(
-      warn.mock.calls.some((c) => String(c[0]).includes('multi-vertex BDPT research path')),
-    ).toBe(false);
-    expect(onWarning).not.toHaveBeenCalledWith(expect.objectContaining({
-      code: 'pt-webgpu.bdpt-multivertex-research-mode',
-    }));
-
-    engine.dispose();
-    warn.mockRestore();
-  });
-
-  it('throws when maxLightBounces is below the structural minimum', async () => {
-    await expect(
-      createPTEngine_WebGPU({
+  it.each([1, 2, 3, 8])(
+    "accepts every representative stable depth (%s)",
+    async (maxLightBounces) => {
+      const engine = await createPTEngine_WebGPU({
         device: makeStubDevice(),
         bdpt: true,
-        bdptOptions: { maxLightBounces: 0 },
-      }),
-    ).rejects.toThrow('bdptOptions.maxLightBounces must be a finite number >= 1');
-  });
-
-  it('warns when maxLightBounces exceeds the supported cap (8)', async () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const onWarning = vi.fn();
-    const engine = await createPTEngine_WebGPU({
-      device: makeStubDevice(),
-      bdpt: true,
-      bdptOptions: { maxLightBounces: 20, experimentalMultiVertex: true },
-      onWarning,
-    });
-
-    expect(
-      warn.mock.calls.some((c) => String(c[0]).includes('bdptOptions.maxLightBounces=20')),
-    ).toBe(true);
-    expect(onWarning).toHaveBeenCalledWith(expect.objectContaining({
-      code: 'pt-webgpu.bdpt-max-light-bounces-clamped',
-      details: { requested: 20, clampedTo: 8 },
-    }));
-
-    engine.dispose();
-    warn.mockRestore();
-  });
-
-  it('warns when maxLightBounces explicitly opts into multi-vertex BDPT', async () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const onWarning = vi.fn();
-    // D2 (2026-07-20): the safe default light-bounce count is now 2, so the
-    // multi-vertex research gate triggers at maxLightBounces > 2 (i.e. 3+). Use 3
-    // to exercise the multi-vertex opt-in warning.
-    const engine = await createPTEngine_WebGPU({
-      device: makeStubDevice(),
-      bdpt: true,
-      bdptOptions: { maxLightBounces: 3, experimentalMultiVertex: true },
-      onWarning,
-    });
-
-    expect(
-      warn.mock.calls.some((c) => String(c[0]).includes('multi-vertex BDPT research path')),
-    ).toBe(true);
-    expect(onWarning).toHaveBeenCalledWith(expect.objectContaining({
-      code: 'pt-webgpu.bdpt-multivertex-research-mode',
-      details: expect.objectContaining({
-        requested: 3,
-        resolved: 3,
-        safeDefault: 2,
-        experimentalMultiVertex: true,
-        promotionReady: false,
-        currentEstimator: 'additive-sidecar-not-weighted-against-eye-path',
-        blocker: 'not-weighted-against-regular-eye-path-strategy',
-        requiredEstimator: 'multi-vertex-light-subpath-strategies-weighted-against-regular-eye-path-strategy',
-        safeAlternative: 'omit bdptOptions.maxLightBounces or set maxLightBounces:2',
-        evidencePath: 'tools/radiometric-ab/results-bdpt.json',
-      }),
-    }));
-
-    engine.dispose();
-    warn.mockRestore();
-  });
-
-  it('rejects multi-vertex BDPT unless the research flag is explicit', async () => {
-    // D2: maxLightBounces:2 is now the safe default and does NOT trigger the gate;
-    // 3 does.
-    await expect(
-      createPTEngine_WebGPU({
-        device: makeStubDevice(),
-        bdpt: true,
-        bdptOptions: { maxLightBounces: 3 },
-      }),
-    ).rejects.toThrow('bdptOptions.experimentalMultiVertex=true');
-  });
-
-  it('accepts maxLightBounces:2 at the new safe default without the research flag', async () => {
-    // D2 regression guard: 2 is the new safe default; constructing with it and no
-    // experimentalMultiVertex flag must NOT throw.
-    const engine = await createPTEngine_WebGPU({
-      device: makeStubDevice(),
-      bdpt: true,
-      bdptOptions: { maxLightBounces: 2 },
-    });
-    engine.dispose();
-  });
-
-  it('warns when maxLightBounces is fractional and rounds down', async () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const onWarning = vi.fn();
-    const engine = await createPTEngine_WebGPU({
-      device: makeStubDevice(),
-      bdpt: true,
-      bdptOptions: { maxLightBounces: 2.75, experimentalMultiVertex: true },
-      onWarning,
-    });
-
-    expect(
-      warn.mock.calls.some((c) => String(c[0]).includes('rounding down to integer 2')),
-    ).toBe(true);
-    expect(onWarning).toHaveBeenCalledWith(expect.objectContaining({
-      code: 'pt-webgpu.bdpt-max-light-bounces-rounded',
-      details: { requested: 2.75, roundedTo: 2 },
-    }));
-
-    engine.dispose();
-    warn.mockRestore();
-  });
+        bdptOptions: { maxLightBounces },
+      });
+      engine.dispose();
+    },
+  );
 });
 
 // ── H51-B ─────────────────────────────────────────────────────────────────────
@@ -277,24 +169,15 @@ describe('H51-B: distinct roughnessMap + metallicMap texture slots', () => {
 });
 
 // ── H51-C ─────────────────────────────────────────────────────────────────────
-describe('H51-C: unknown extensions keys warn once at construction', () => {
-  it('warns on unknown extension keys', async () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const engine = await createPTEngine_WebGPU({
+describe('H51-C: extensions are a strict construction boundary', () => {
+  it('rejects all unknown extension keys in one error', async () => {
+    await expect(createPTEngine_WebGPU({
       device: makeStubDevice(),
       extensions: {
         'my.custom.key': 42,
         'another.unknown': 'value',
       },
-    });
-    const extWarn = warn.mock.calls.find((c) =>
-      String(c[0]).includes('Unknown extensions keys'),
-    );
-    expect(extWarn).toBeDefined();
-    expect(String(extWarn?.[0])).toContain('my.custom.key');
-    expect(String(extWarn?.[0])).toContain('another.unknown');
-    engine.dispose();
-    warn.mockRestore();
+    })).rejects.toThrow(/my\.custom\.key.*another\.unknown/);
   });
 
   it('does not warn when extensions is empty or absent', async () => {
@@ -309,20 +192,14 @@ describe('H51-C: unknown extensions keys warn once at construction', () => {
     warn.mockRestore();
   });
 
-  it('does not warn for graduated legacy extension keys (spectral, bdpt, oidn)', async () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const engine = await createPTEngine_WebGPU({
+  it('rejects graduated legacy keys with named-option migration guidance', async () => {
+    await expect(createPTEngine_WebGPU({
       device: makeStubDevice(),
       extensions: {
         'vitrum.ptWebgpu.spectralHeroWavelength': true,
         'vitrum.ptWebgpu.bdpt': true,
         'vitrum.ptWebgpu.oidnModelUrl': '/model.onnx',
       },
-    });
-    expect(
-      warn.mock.calls.some((c) => String(c[0]).includes('Unknown extensions keys')),
-    ).toBe(false);
-    engine.dispose();
-    warn.mockRestore();
+    })).rejects.toThrow(/spectral:true.*bdpt:true.*denoiser:'oidn-final'/);
   });
 });

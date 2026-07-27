@@ -49,8 +49,16 @@ export interface SceneBVHBuffers {
    *  binding and multiplied into visible baseColor/alpha; missing colors are
    *  already white-filled by shared-bvh. */
   bvhColors: StorageBufferHandle;
+  /** Compact GPU-visible membership domains for manifold/SMS facet proposals.
+   * Each 32-byte record stores a disjoint triangle range, instance range, and
+   * Walker/Vose alias entry weighted by their Cartesian-product cardinality.
+   * This represents every concrete facet identity without O(triangles*instances)
+   * storage and remains valid across material-only mutations. */
+  mneeFacetDomains?: StorageBufferHandle;
   emitters: StorageBufferHandle;
   emitterCdf: StorageBufferHandle;
+  /** Runtime-sized alias sampler for bounded-work RC emitter selection. */
+  emitterAlias: StorageBufferHandle;
   emitterCount: number;
   totalEmissivePower: number;
   lightTree: StorageBufferHandle;
@@ -66,6 +74,12 @@ export interface SceneBVHBuffers {
     matrixWorldAtBuild: Float32Array;
   }>;
   bvhIndicesStride3: Uint32Array;
+  /**
+   * Merged-BVH postorder node indices affected by each primitive. Built once
+   * with the BVH so live refits can update/journal only leaves containing that
+   * primitive plus their ancestors, without rescanning unrelated topology.
+   */
+  primitiveRefitNodeIndices?: ReadonlyMap<string, Uint32Array>;
   /** Legacy adapters may retain source material handles; core callers use coreMaterials. */
   buildMaterials: readonly unknown[];
   coreMaterials: readonly MaterialSpec[];
@@ -87,6 +101,7 @@ export type RebuiltEmitterBuffers = Pick<
   SceneBVHBuffers,
   | 'emitters'
   | 'emitterCdf'
+  | 'emitterAlias'
   | 'emitterCount'
   | 'totalEmissivePower'
   | 'lightTree'

@@ -1,10 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 
-const enabled = process.env['VITRUM_PTWGPU_TLAS_ACCEPTANCE'] === '1';
-const runIfEnabled = enabled ? describe : describe.skip;
+const COMMITTED_METRICS_PATH = fileURLToPath(
+  new URL('../../../../tools/benchmark-runner/results/acceptance/ptwgpu-tlas-real.json', import.meta.url),
+);
 
-runIfEnabled('pt-webgpu TLAS promotion acceptance (env-gated)', () => {
+describe('pt-webgpu TLAS promotion acceptance', () => {
   function readMetrics(): {
     readonly schemaVersion?: string;
     readonly tlasVsLegacyMeanAbs: number;
@@ -19,13 +21,7 @@ runIfEnabled('pt-webgpu TLAS promotion acceptance (env-gated)', () => {
       readonly overall?: boolean;
     };
   } {
-    const path = process.env['VITRUM_PTWGPU_TLAS_METRICS'];
-    if (!path) {
-      throw new Error(
-        'VITRUM_PTWGPU_TLAS_ACCEPTANCE=1 requires ' +
-          'VITRUM_PTWGPU_TLAS_METRICS=<json file> produced by tools/benchmark-runner.',
-      );
-    }
+    const path = process.env['VITRUM_PTWGPU_TLAS_METRICS'] ?? COMMITTED_METRICS_PATH;
     const parsed = JSON.parse(readFileSync(path, 'utf8')) as {
       schemaVersion?: string;
       tlasVsLegacyMeanAbs?: number;
@@ -101,4 +97,3 @@ runIfEnabled('pt-webgpu TLAS promotion acceptance (env-gated)', () => {
     expect(metrics.nanPixelCount).toBe(0);
   });
 });
-

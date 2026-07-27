@@ -18,7 +18,16 @@ import { makeProbeUpdateRaysWGSL } from '../../ddgi/wgsl/probeUpdateRays.wgsl.js
  *   - the barycentric+Beer-tint decode was hoisted into `_bvhBeerTintFactor`
  *     (SURFACE_TEXTURES_WGSL golden-refreshed; naga-validated via shader-gate).
  *
- * Any future edit that perturbs these strings must consciously re-pin here.
+ * Packed-scene-arena refresh (2026-07-22): scene storage moved behind the
+ * three-arena value-return loader ABI. The semantic binding/traversal suites
+ * and shader gates were audited before the intentionally changed bytes below
+ * were re-pinned. Any future edit that perturbs these strings must likewise be
+ * investigated before re-pinning.
+ *
+ * DDGI packed-state refresh (2026-07-27): the standalone probe-state texture
+ * binding was replaced by one reserved irradiance-atlas texel per probe. The
+ * production shader gate compiled 79/79 modules and created 51/51 pipelines
+ * before the composed and probe-ray digests below were re-pinned.
  */
 function sha(s: string): string {
   return createHash('sha256').update(s, 'utf8').digest('hex');
@@ -27,40 +36,46 @@ function sha(s: string): string {
 describe('material-atlas decode ABI composed byte identity', () => {
   it('pins the MATERIAL_ATLAS_WGSL fragment (offset ABI + alpha-mask walkers)', () => {
     expect({ length: MATERIAL_ATLAS_WGSL.length, sha256: sha(MATERIAL_ATLAS_WGSL) }).toEqual({
-      length: 41802,
-      sha256: '183ff5ff1d03a9cba1a6d4fbb4ba12a73585423bcfec66c63fb38f9b6f2f2899',
+      length: 53288,
+      sha256: 'a89da77e54b7fbc140a11eb4d2f4ecad46bcd72c447a239b4c54c1488cd88c71',
     });
   });
 
   it('pins the SURFACE_TEXTURES_WGSL fragment (Beer-tint helper)', () => {
     expect({ length: SURFACE_TEXTURES_WGSL.length, sha256: sha(SURFACE_TEXTURES_WGSL) }).toEqual({
-      length: 22809,
-      sha256: '041157d1854cf98940190087cc9e00a43c67a5793519629419b45d08576c4128',
+      length: 23959,
+      sha256: '1c7a3c9016a875e7318b195a6b1b4228fca737f3526b3445d545a822d29a01f4',
     });
   });
 
   it('pins the composed shade + risGi pipelines', () => {
     const shade = composeWgsl(SHADE_MODULE, WGSL_MODULES);
     const risGi = composeWgsl(RIS_GI_MODULE, WGSL_MODULES);
-    expect({ length: shade.length, sha256: sha(shade) }).toEqual({
-      length: 283563,
-      sha256: '628c2374daf1bc32293a964b1b9f8f9761b3074e5cc13e4093c05a162605d7cd',
+    const shadeDigest = { length: shade.length, sha256: sha(shade) };
+    expect(shadeDigest, `shade current=${JSON.stringify(shadeDigest)}`).toEqual({
+      length: 381419,
+      sha256: '797a7adb8c7fe888f7658e473eb068706358b0b0161da37cb56b55478d62fca7',
     });
-    expect({ length: risGi.length, sha256: sha(risGi) }).toEqual({
-      length: 236849,
-      sha256: 'fd2677a8f960022d028ba48e87b2968336b598d3c9dd036e268e13bbcb62c7de',
+    const risGiDigest = { length: risGi.length, sha256: sha(risGi) };
+    expect(risGiDigest, `risGi current=${JSON.stringify(risGiDigest)}`).toEqual({
+      length: 267701,
+      sha256: 'a11f917c7ef94b44443ffa767269dc4febbe9a4fc2decaf2e453c40d42b2d295',
     });
   });
 
   it('pins probeUpdateRays for representative maxMaterials (DDGI offset ABI)', () => {
     const cases: Array<[number, number, string]> = [
-      [1, 130509, 'bc4d6fcd5af057a7a67340f9353d1c2b4882a2ed65e5f929c792947687032ee4'],
-      [8, 130509, '3fc2223ac3de327483e7cf535e4e8764b1d4158e44f54a12948e734a4c62043c'],
-      [64, 130510, 'ca797b0144ed8924be943856a79b6e77fdbe826c93331980bab7f8dc88607e8e'],
+      [1, 149638, '0da0392fefe56d0bcb97f6696ca56c83f7266cc9bca28e8a4a59f9bf123220f2'],
+      [8, 149638, 'ed687be1afe12d6dc23d5fe61f6004975391b5e26460ba54d9465dd18fc3e2eb'],
+      [64, 149639, 'c86ed4e93865c5ca4ae7bf210bd1837e9c1a90a4e493f3bd16e7f68289502086'],
     ];
-    for (const [m, length, sha256] of cases) {
+    const current = cases.map(([m]) => {
       const wgsl = makeProbeUpdateRaysWGSL(m);
-      expect({ m, length: wgsl.length, sha256: sha(wgsl) }).toEqual({ m, length, sha256 });
-    }
+      return { m, length: wgsl.length, sha256: sha(wgsl) };
+    });
+    expect(
+      current,
+      `probeUpdateRays current=${JSON.stringify(current)}`,
+    ).toEqual(cases.map(([m, length, sha256]) => ({ m, length, sha256 })));
   });
 });

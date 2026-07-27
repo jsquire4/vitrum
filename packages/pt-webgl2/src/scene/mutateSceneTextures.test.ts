@@ -2,22 +2,27 @@ import { describe, expect, it, vi } from 'vitest';
 import type { MaterialSpec, MeshPrimitive, Scene } from '@vitrum/core';
 import type { WorldSpaceMergeResult } from '@vitrum/shared-bvh';
 import type { UploadedSceneTextures } from './sceneTextures.js';
-import { materialTextureMapPatchFields, tryFastPathMaterialMutation } from './mutateSceneTextures.js';
+import {
+  materialTextureMapPatchFields,
+  tryFastPathGeometryMutation,
+  tryFastPathMaterialMutation,
+} from './mutateSceneTextures.js';
+import { buildSceneGeometryTextureData } from './uploadSceneTextures.js';
 
 function fakeGl(): WebGL2RenderingContext {
   const gl = {
     RGBA32F: 0x8814,
     RGBA: 0x1908,
     FLOAT: 0x1406,
-    TEXTURE_2D: 0x0DE1,
-    TEXTURE_2D_ARRAY: 0x8C1A,
+    TEXTURE_2D: 0x0de1,
+    TEXTURE_2D_ARRAY: 0x8c1a,
     TEXTURE_MIN_FILTER: 0x2801,
     TEXTURE_MAG_FILTER: 0x2800,
     TEXTURE_WRAP_S: 0x2802,
     TEXTURE_WRAP_T: 0x2803,
     NEAREST: 0x2600,
-    CLAMP_TO_EDGE: 0x812F,
-    MAX_TEXTURE_SIZE: 0x0D33,
+    CLAMP_TO_EDGE: 0x812f,
+    MAX_TEXTURE_SIZE: 0x0d33,
     isContextLost: vi.fn(() => false),
     getParameter: vi.fn(() => 8192),
     createTexture: vi.fn(() => ({})),
@@ -26,6 +31,7 @@ function fakeGl(): WebGL2RenderingContext {
     texImage2D: vi.fn(),
     texSubImage2D: vi.fn(),
     texImage3D: vi.fn(),
+    texStorage3D: vi.fn(),
     texSubImage3D: vi.fn(),
     deleteTexture: vi.fn(),
   };
@@ -40,18 +46,8 @@ function panelPrimitive(mat: MaterialSpec): MeshPrimitive {
   return {
     kind: 'mesh',
     id: 'panel',
-    positions: new Float32Array([
-      0, 0, 0,
-      1, 0, 0,
-      1, 0, 1,
-      0, 0, 1,
-    ]),
-    normals: new Float32Array([
-      0, 1, 0,
-      0, 1, 0,
-      0, 1, 0,
-      0, 1, 0,
-    ]),
+    positions: new Float32Array([0, 0, 0, 1, 0, 0, 1, 0, 1, 0, 0, 1]),
+    normals: new Float32Array([0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0]),
     uvs: new Float32Array(8),
     indices: new Uint32Array([0, 1, 2, 0, 2, 3]),
     material: mat,
@@ -63,12 +59,7 @@ function sceneWithPrimitive(primitive: MeshPrimitive): Scene {
 }
 
 function fakeMerged(materials: readonly MaterialSpec[]): WorldSpaceMergeResult {
-  const positions = new Float32Array([
-    0, 0, 0, 0,
-    1, 0, 0, 0,
-    1, 0, 1, 0,
-    0, 0, 1, 0,
-  ]);
+  const positions = new Float32Array([0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 0, 0, 0, 1, 0]);
   const mergedIndices = new Uint32Array([0, 1, 2, 0, 2, 3]);
   return {
     bvhNodes: new Float32Array(),
@@ -80,20 +71,13 @@ function fakeMerged(materials: readonly MaterialSpec[]): WorldSpaceMergeResult {
     bvhTriToMergedTri: new Uint32Array([0, 1]),
     normals: new Float32Array(positions.length),
     tangents: new Float32Array(positions.length),
-    colors: new Float32Array([
-      1, 1, 1, 1,
-      1, 1, 1, 1,
-      1, 1, 1, 1,
-      1, 1, 1, 1,
-    ]),
+    colors: new Float32Array([1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]),
     uvs: new Float32Array(8),
     mergedIndices,
     mergedTriMaterialId: new Uint32Array([0, 0]),
     materials: [...materials],
     boundingBox: { min: [0, 0, 0], max: [1, 0, 1] },
-    meshVertexRanges: [
-      { name: 'panel', vertexStart: 0, vertexCount: 4, triStart: 0, triCount: 2 },
-    ],
+    meshVertexRanges: [{ name: 'panel', vertexStart: 0, vertexCount: 4, triStart: 0, triCount: 2 }],
     warnings: [],
     vertexCount: 4,
     triangleCount: 2,
@@ -136,18 +120,16 @@ function fakeCurrent(overrides: Partial<UploadedSceneTextures> = {}): UploadedSc
 
 describe('tryFastPathMaterialMutation', () => {
   it('classifies nested layered normal maps as texture-map patch fields', () => {
-    expect(materialTextureMapPatchFields({
-      material: {
-        roughness: 0.5,
-        baseColorMap: { handle: { id: 'base' } },
-        frontLayer: { normalMap: undefined, normalScale: 0.25 },
-        backLayer: undefined,
-      },
-    } as never)).toEqual([
-      'backLayer.normalMap',
-      'baseColorMap',
-      'frontLayer.normalMap',
-    ]);
+    expect(
+      materialTextureMapPatchFields({
+        material: {
+          roughness: 0.5,
+          baseColorMap: { handle: { id: 'base' } },
+          frontLayer: { normalMap: undefined, normalScale: 0.25 },
+          backLayer: undefined,
+        },
+      } as never),
+    ).toEqual(['backLayer.normalMap', 'baseColorMap', 'frontLayer.normalMap']);
   });
 
   it('subuploads only material rows for scalar-only material mutations', () => {
@@ -157,7 +139,12 @@ describe('tryFastPathMaterialMutation', () => {
 
     const swap = tryFastPathMaterialMutation(
       gl,
-      fakeCurrent({ meshLights: null, meshLightCount: 0, totalEmissiveArea: 0, totalEmissivePower: 0 }),
+      fakeCurrent({
+        meshLights: null,
+        meshLightCount: 0,
+        totalEmissiveArea: 0,
+        totalEmissivePower: 0,
+      }),
       fakeMerged([previous, material({ baseColor: [0.1, 0.1, 0.1] })]),
       sceneWithPrimitive(panelPrimitive(next)),
       'panel',
@@ -189,10 +176,12 @@ describe('tryFastPathMaterialMutation', () => {
     );
 
     expect(swap).not.toBeNull();
-    expect(swap?.geoPack?.materials[0]).toEqual(expect.objectContaining({
-      emissive: [2, 0, 0],
-      emissiveIntensity: 3,
-    }));
+    expect(swap?.geoPack?.materials[0]).toEqual(
+      expect.objectContaining({
+        emissive: [2, 0, 0],
+        emissiveIntensity: 3,
+      }),
+    );
     expect(swap?.textures.meshLightCount).toBe(2);
     expect(swap?.textures.totalEmissiveArea).toBeCloseTo(1, 6);
 
@@ -255,5 +244,69 @@ describe('tryFastPathMaterialMutation', () => {
     expect(swap?.textures.materialAtlasLayerCount).toBe(0);
     expect(swap?.deleteOldTextures).toContain(oldAtlas);
     expect((gl.texImage3D as unknown as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(0);
+  });
+});
+
+describe('tryFastPathGeometryMutation — arbitrary UV sets', () => {
+  function uv2Scene(values: Float32Array): Scene {
+    const primitive = panelPrimitive(material({}));
+    return sceneWithPrimitive({
+      ...primitive,
+      uvSets: [primitive.uvs, undefined, values],
+    });
+  }
+
+  it('subuploads a changed UV2 stream when the dense layout remains stable', () => {
+    const before = new Float32Array([0, 0, 1, 0, 1, 1, 0, 1]);
+    const after = new Float32Array([0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]);
+    const currentBuild = buildSceneGeometryTextureData(uv2Scene(before));
+    const gl = fakeGl();
+    const current = fakeCurrent({
+      meshLights: null,
+      meshLightCount: 0,
+      totalEmissiveArea: 0,
+      totalEmissivePower: 0,
+      uvLayerByTexCoord: currentBuild.uvLayerByTexCoord,
+      attributeLayerCount: currentBuild.attrData.layers,
+    });
+
+    const swap = tryFastPathGeometryMutation(gl, current, currentBuild.merged, uv2Scene(after), {
+      uvSets: [undefined, undefined, after],
+    });
+    expect(swap).not.toBeNull();
+    const calls = (gl.texSubImage3D as unknown as ReturnType<typeof vi.fn>).mock.calls;
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.[7]).toBe(6);
+    const data = calls[0]?.[10] as Float32Array;
+    const floatsPerLayer = currentBuild.attrData.dim * currentBuild.attrData.dim * 4;
+    const uv2Base = 5 * floatsPerLayer;
+    expect(Array.from(data.slice(uv2Base, uv2Base + 14).filter((_, i) => i % 4 < 2))).toEqual(
+      Array.from(after),
+    );
+  });
+
+  it('declines in-place mutation when adding a new UV id changes array storage', () => {
+    const uv2 = new Float32Array(8);
+    const uv3 = new Float32Array(8).fill(0.75);
+    const currentBuild = buildSceneGeometryTextureData(uv2Scene(uv2));
+    const current = fakeCurrent({
+      meshLights: null,
+      meshLightCount: 0,
+      totalEmissiveArea: 0,
+      totalEmissivePower: 0,
+      uvLayerByTexCoord: currentBuild.uvLayerByTexCoord,
+      attributeLayerCount: currentBuild.attrData.layers,
+    });
+    const next = uv2Scene(uv2);
+    const primitive = next.primitives[0] as MeshPrimitive;
+    const nextScene = sceneWithPrimitive({
+      ...primitive,
+      uvSets: [primitive.uvs, undefined, uv2, uv3],
+    });
+    expect(
+      tryFastPathGeometryMutation(fakeGl(), current, currentBuild.merged, nextScene, {
+        uvSets: [undefined, undefined, uv2, uv3],
+      }),
+    ).toBeNull();
   });
 });

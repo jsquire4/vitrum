@@ -32,6 +32,7 @@ import {
 } from './pathTrace/kernel.wgsl.js';
 import { PT_WEBGPU_BDPT_CONNECTION_WGSL } from './bdpt/bdptConnection.wgsl.js';
 import { PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL } from './bdpt/bdptLightSubpath.wgsl.js';
+import { PT_WEBGPU_MEDIUM_NEE_WGSL } from './pathTrace/mediumNee.wgsl.js';
 
 /**
  * Brute-force path tracing kernel — orchestrator that concatenates the six
@@ -66,11 +67,11 @@ import { PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL } from './bdpt/bdptLightSubpath.wgsl.
  *                       BEFORE `caustic` so the glass-slab caustic can call it.
  *   6d. `sppm`        — A4 SPPM group-3 hash-grid bindings (SppmStats UBO +
  *                       sppmPhotonCells + sppmCellCounters) + sppmInsertPhoton +
- *                       sppmGatherProgressive.  Composed BEFORE `caustic` because
- *                       `photonMapContribution` calls `sppmGatherProgressive`
+ *                       progressive update/readback helpers. Composed BEFORE
+ *                       `caustic` because `photonMapUpdateProgressive` calls them
  *                       (WGSL requires callees to precede callers in source order).
- *   7. `caustic`      — REAL MNEE reflection caustic + transmissive cone-search
- *                       MNEE + SPPM gather shim (causticStrategy modes 1 / 2).
+ *   7. `caustic`      — constrained reflection/refraction/slab MNEE + SPPM
+ *                       gather shim (causticStrategy modes 1 / 2).
  *   8. `kernel`       — primary-ray generation, projectToNdc, causticMode,
  *                       RR helpers, accumulateFrame, and the @compute @main
  *                       entry point that walks each path.
@@ -85,13 +86,8 @@ import { PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL } from './bdpt/bdptLightSubpath.wgsl.
  * Compose the full-tier brute-force path-trace WGSL for a given integrator
  * configuration.
  *
- * WS4 — the volumetric subsurface-scattering random walk is compiled in ONLY
- * when BDPT is disabled. The BDPT light subpath has no participating-media
- * logic, so a medium that attenuates / scatters only the eye path would break
- * energy conservation; the gate is therefore structural (the SSS WGSL symbols
- * are simply absent from the BDPT-on shader) rather than a runtime UBO branch.
- * When `bdptEnabled` is true the kernel emits the legacy per-channel
- * Beer-Lambert absorption fallback instead.
+ * The volumetric random walk is compiled into ordinary PT and BDPT. BDPT
+ * contributes matching light-subpath medium vertices and segment densities.
  */
 export interface PtWebgpuTraceComposeOptions {
   readonly sampling?: PtWebgpuSamplingMode;
@@ -99,10 +95,10 @@ export interface PtWebgpuTraceComposeOptions {
 }
 
 export function composePtWebgpuTraceWgsl(
-  bdptEnabled: boolean,
+  _bdptEnabled: boolean,
   opts: PtWebgpuTraceComposeOptions = {},
 ): string {
-  const kernel = composePathTraceKernelWgsl({ volumetricSss: !bdptEnabled });
+  const kernel = composePathTraceKernelWgsl({ volumetricSss: true });
   const common = composePtWebgpuCommonWgsl(opts.sampling ?? 'pcg');
   const intersection = composePtWebgpuPathTraceIntersectionWgsl({
     cwbvhClosest: opts.cwbvhClosest === true,
@@ -124,6 +120,7 @@ ${SPPM_GROUP3_BINDINGS_WGSL}
 ${PT_WEBGPU_PATH_TRACE_CAUSTIC_WGSL}
 ${PT_WEBGPU_BDPT_CONNECTION_WGSL}
 ${PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL}
+${PT_WEBGPU_MEDIUM_NEE_WGSL}
 ${kernel}
 `;
 }
@@ -145,11 +142,11 @@ ${kernel}
  * are in group(3) (bindings 6/7/8) and are not relocated by this transform.
  */
 export function composePtWebgpuCompositeTraceWgsl(
-  bdptEnabled: boolean,
+  _bdptEnabled: boolean,
   opts: PtWebgpuTraceComposeOptions = {},
 ): string {
   const kernel = composePathTraceKernelWgsl({
-    volumetricSss: !bdptEnabled,
+    volumetricSss: true,
     restirPtComposite: true,
   });
   const common = composePtWebgpuCommonWgsl(opts.sampling ?? 'pcg');
@@ -173,6 +170,7 @@ ${SPPM_GROUP3_BINDINGS_WGSL}
 ${PT_WEBGPU_PATH_TRACE_CAUSTIC_WGSL}
 ${PT_WEBGPU_BDPT_CONNECTION_WGSL}
 ${PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL}
+${PT_WEBGPU_MEDIUM_NEE_WGSL}
 ${kernel}
 `;
   // Relocate @group(4)@binding(N) → @group(0)@binding(20+N).
@@ -222,9 +220,9 @@ ${SPPM_PHOTON_PASS_WGSL}
 }
 
 /**
- * Default full-tier composition — BDPT off ⇒ volumetric SSS walk present.
- * Preserved as a const for the many WGSL-contract tests + the non-BDPT
- * pipeline path. `composePtWebgpuTraceWgsl(true)` yields the BDPT-on variant.
+ * Default full-tier composition with the volumetric SSS walk present.
+ * Preserved as a const for WGSL-contract tests and the ordinary PT pipeline;
+ * the BDPT composer carries the same medium modules and activates at runtime.
  *
  * Re-pinned 2026-06-10: A4 real SPPM progressive photon map replaces the
  * per-pixel 32-photon approximation (removed: gatherRadius=0.35, ×1.25 fudge).
@@ -251,5 +249,6 @@ ${SPPM_GROUP3_BINDINGS_WGSL}
 ${PT_WEBGPU_PATH_TRACE_CAUSTIC_WGSL}
 ${PT_WEBGPU_BDPT_CONNECTION_WGSL}
 ${PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL}
+${PT_WEBGPU_MEDIUM_NEE_WGSL}
 ${PT_WEBGPU_PATH_TRACE_KERNEL_WGSL}
 `;

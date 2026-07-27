@@ -250,6 +250,15 @@ function makeMorphGltf(opts: {
     { bufferView: 3, componentType: 5126, count: 3, type: 'VEC2' }, // TEXCOORD_1
   ];
   const attributes: Record<string, number> = { POSITION: 0, NORMAL: 1, TEXCOORD_0: 2, TEXCOORD_1: 3 };
+  if (opts.targets.some((target) => target.tangent !== undefined)) {
+    attributes.TANGENT = accessors.length;
+    accessors.push({ bufferView: chunks.length, componentType: 5126, count: 3, type: 'VEC4' });
+    chunks.push(f32Buffer([
+      1, 0, 0, 1,
+      1, 0, 0, 1,
+      1, 0, 0, 1,
+    ]));
+  }
   if (opts.materialTexCoord2 || opts.targets.some((target) => target.texcoord2 !== undefined)) {
     attributes.TEXCOORD_2 = accessors.length;
     accessors.push({ bufferView: chunks.length, componentType: 5126, count: 3, type: 'VEC2' });
@@ -328,7 +337,7 @@ describe('morph targets (GLTF-04)', () => {
   const POS_DELTA_1 = [0, 0, 1, 0, 0, 1, 0, 0, 1];      // +1 Z all verts
   const POS_DELTA_2 = [2, 0, 0, 2, 0, 0, 2, 0, 0];      // +2 X all verts
 
-  it('promotes an unskinned morphed mesh to skinned-mesh with an identity skeleton', async () => {
+  it('represents an unskinned morphed mesh exactly with an identity skeleton', async () => {
     const { gltf, buffers } = makeMorphGltf({
       targets: [{ position: POS_DELTA_1 }],
       meshWeights: [0.5],
@@ -344,7 +353,7 @@ describe('morph targets (GLTF-04)', () => {
     expect(Array.from(prim.skinIndices)).toEqual([0,0,0,0, 0,0,0,0, 0,0,0,0]);
     expect(Array.from(prim.skinWeights)).toEqual([1,0,0,0, 1,0,0,0, 1,0,0,0]);
     expect(prim.bindMatrix).toBeUndefined();
-    expect(warnings.some(w => w.includes('synthesized identity skeleton'))).toBe(true);
+    expect(warnings.some(w => w.includes('synthesized identity skeleton'))).toBe(false);
     // Morph data imported.
     expect(prim.morphTargets).toHaveLength(1);
     expect(Array.from(prim.morphTargets![0]!)).toEqual(POS_DELTA_1);
@@ -450,7 +459,7 @@ describe('morph targets (GLTF-04)', () => {
     ])));
   });
 
-  it('remaps high TEXCOORD_N morph deltas into uv1 when the material UV set is losslessly remapped', async () => {
+  it('preserves high TEXCOORD_N morph deltas in the matching scalable UV lane', async () => {
     const uv2Delta = [0, 0.4, 0, 0.4, 0, 0.4];
     const { gltf, buffers } = makeMorphGltf({
       targets: [{ position: POS_DELTA_1, texcoord2: uv2Delta }],
@@ -460,13 +469,14 @@ describe('morph targets (GLTF-04)', () => {
     const { scene, diagnostics } = await gltfToScene(gltf, { buffers });
     const prim = scene.primitives[0] as SkinnedMeshPrimitive;
 
-    expect(Array.from(prim.uv1 ?? [])).toEqual(Array.from(new Float32Array(MORPH_BASE_UVS_2)));
-    expect(prim.morphTargetUv1s).toHaveLength(1);
-    expect(Array.from(prim.morphTargetUv1s![0]!)).toEqual(Array.from(new Float32Array(uv2Delta)));
+    expect(Array.from(prim.uvSets?.[2] ?? [])).toEqual(Array.from(new Float32Array(MORPH_BASE_UVS_2)));
+    expect(prim.morphTargetUv1s).toBeUndefined();
+    expect(prim.morphTargetUvSets?.[2]).toHaveLength(1);
+    expect(Array.from(prim.morphTargetUvSets![2]![0]!)).toEqual(Array.from(new Float32Array(uv2Delta)));
     expect(diagnostics.some((d) => d.code === 'ignored-morph-target-texcoord')).toBe(false);
 
     const solved = solveSkin(prim);
-    expect(Array.from(solved.uv1 ?? [])).toEqual(Array.from(new Float32Array([
+    expect(Array.from(solved.uvSets?.[2] ?? [])).toEqual(Array.from(new Float32Array([
       0.2, 0.5,
       1.2, 0.5,
       0.2, 1.5,
@@ -774,44 +784,43 @@ describe('animations (GLTF-03)', () => {
     expect(animationTargets[animationNodeId(0)]).toEqual(['gltf-prim-0']);
   });
 
-  it('unknown interpolation degrades to LINEAR with a warning; bad channels are skipped', async () => {
-    const { gltf, buffers } = makeAnimGltf([
-      {
-        path: 'translation',
-        times: [0, 1],
-        values: [0,0,0, 1,0,0],
-        outType: 'VEC3',
-        interpolation: 'BEZIER', // not a glTF interpolation
-      },
-      {
-        path: 'translation',
-        times: [0, 1],
-        values: [0,0,0],
-        outType: 'VEC3',
-      },
-    ]);
-    const { animations, diagnostics, warnings } = await gltfToScene(gltf, { buffers });
-    expect(warnings.some(w => w.includes('BEZIER'))).toBe(true);
-    expect(warnings.some(w => w.includes('expect 6'))).toBe(true);
-    expect(diagnostics).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        severity: 'warning',
+  it('rejects unknown animation interpolation atomically', async () => {
+    const { gltf, buffers } = makeAnimGltf([{
+      path: 'translation',
+      times: [0, 1],
+      values: [0,0,0, 1,0,0],
+      outType: 'VEC3',
+      interpolation: 'BEZIER', // not a glTF interpolation
+    }]);
+    await expect(gltfToScene(gltf, { buffers })).rejects.toMatchObject({
+      name: 'GltfImportError',
+      diagnostics: expect.arrayContaining([expect.objectContaining({
+        severity: 'error',
         code: 'unknown-animation-interpolation',
         path: 'animations[0].samplers[0].interpolation',
         animationIndex: 0,
         samplerIndex: 0,
-      }),
-      expect.objectContaining({
-        severity: 'warning',
+      })]),
+    });
+  });
+
+  it('rejects invalid animation output counts atomically', async () => {
+    const { gltf, buffers } = makeAnimGltf([{
+      path: 'translation',
+      times: [0, 1],
+      values: [0,0,0],
+      outType: 'VEC3',
+    }]);
+    await expect(gltfToScene(gltf, { buffers })).rejects.toMatchObject({
+      name: 'GltfImportError',
+      diagnostics: expect.arrayContaining([expect.objectContaining({
+        severity: 'error',
         code: 'invalid-animation-output-count',
-        path: 'animations[0].channels[1].sampler',
+        path: 'animations[0].channels[0].sampler',
         animationIndex: 0,
-        channelIndex: 1,
-      }),
-    ]));
-    expect(animations).toHaveLength(1);
-    expect(animations[0]!.channels).toHaveLength(1);
-    expect(animations[0]!.channels[0]!.sampler.interpolation).toBe('LINEAR');
+        channelIndex: 0,
+      })]),
+    });
   });
 
   it('result.animations is empty (not undefined) when the glTF has no animations', async () => {

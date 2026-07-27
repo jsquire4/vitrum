@@ -266,7 +266,7 @@ export async function checkLearning(device: GPUDevice, useF16: boolean): Promise
   // ── PART 2: actually LEARN the target function (full fused train loop) ──
   console.log("\n--- PART 2: fit a known function (FUSED train loop) ---");
   const trSpec: FusedNetSpec = { inW: 2, W: 64, outW: 3, hidden: 6 }; // the Müller core sizing
-  // tileB: f16 fits 64 (3*64*64*2=24576<32768); f32 needs <=32 (3*32*64*4=24576).
+  // Both modes use two activation/delta tiles: f16 64 and f32 32 each use 16 KiB.
   const trTileB = useF16 ? 64 : 32;
   const B_tr = 512;
   const trainer = new FusedMlpTrainer(device, trSpec, { useF16, tileB: trTileB });

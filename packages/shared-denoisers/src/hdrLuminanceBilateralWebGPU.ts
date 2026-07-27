@@ -9,6 +9,14 @@ import {
   HDR_LUMINANCE_BILATERAL_WORKGROUP_SIZE,
 } from './wgsl/hdrLuminanceBilateral.wgsl.js';
 import { acquireDenoiseDevice, makePerDevicePipelineCache } from './sharedWebGpuDevice.js';
+import { makeResourceTracker } from './atrousChain.js';
+import {
+  assertFiniteFloatSlice,
+  assertFiniteNumber,
+  assertOneShotArrayLength,
+  assertOneShotDeviceLimits,
+  assertOneShotDimensions,
+} from './webGpuOneShotValidation.js';
 import { uploadRgbAsRgba32f, readRgba32fToRgb } from './webGpuTextureUpload.js';
 import { defineUbo } from '@vitrum/shared-samplers';
 
@@ -59,39 +67,38 @@ export async function runHdrLuminanceBilateralWebGPU(
   opts: HdrLuminanceBilateralWebGPUOptions,
 ): Promise<Float32Array> {
   const { rgb, width: w, height: h } = opts;
+  const label = 'runHdrLuminanceBilateralWebGPU';
+  const px = assertOneShotDimensions(label, w, h);
+  assertOneShotArrayLength(label, 'rgb', rgb, px * 3);
+  assertFiniteFloatSlice(label, 'rgb', rgb, px * 3);
   const sigma = opts.sigmaLuminance ?? HDR_LUMINANCE_BILATERAL_DEFAULT_SIGMA_LUMINANCE;
-  if (typeof navigator === 'undefined' || navigator.gpu == null) {
-    throw new Error('runHdrLuminanceBilateralWebGPU: WebGPU not available in this browser');
-  }
-  if (w <= 0 || h <= 0 || rgb.length < w * h * 3) {
-    throw new Error('runHdrLuminanceBilateralWebGPU: invalid rgb buffer or dimensions');
-  }
+  assertFiniteNumber(label, 'sigmaLuminance', sigma, { min: 0 });
 
   const { device, dispose: destroyEphemeral } = await acquireDenoiseDevice({
     device: opts.device,
     reuseSharedWebGpuDevice: opts.reuseSharedWebGpuDevice,
-    errorLabel: 'runHdrLuminanceBilateralWebGPU',
+    errorLabel: label,
   });
 
-  let texIn: GPUTexture | undefined;
-  let texOut: GPUTexture | undefined;
-  let ubo: GPUBuffer | undefined;
+  const { trackTexture, trackBuffer, dispose: disposeResources } =
+    makeResourceTracker(destroyEphemeral);
 
   try {
+    assertOneShotDeviceLimits(device, label, w, h, 16);
     const pipeline = bilateralComputePipeline(device);
 
-    texIn = device.createTexture({
+    const texIn = trackTexture(device.createTexture({
       label: 'hdr-bilateral-in',
       size: [w, h],
       format: 'rgba32float',
       usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
-    });
-    texOut = device.createTexture({
+    }));
+    const texOut = trackTexture(device.createTexture({
       label: 'hdr-bilateral-out',
       size: [w, h],
       format: 'rgba32float',
       usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.COPY_SRC,
-    });
+    }));
 
     // Upload tight RGB as rgba32float (alpha=1) via the shared helper.
     uploadRgbAsRgba32f(device, texIn, rgb, w, h);
@@ -100,11 +107,11 @@ export async function runHdrLuminanceBilateralWebGPU(
     // hand-rolled Float32Array(4) layout: sigmaLuminance at offset 0, pads zero).
     const uboScratch = new ArrayBuffer(HDR_BILATERAL_UBO_SIZE_BYTES);
     HDR_BILATERAL_UBO.pack(new DataView(uboScratch), 0, { sigmaLuminance: sigma });
-    ubo = device.createBuffer({
+    const ubo = trackBuffer(device.createBuffer({
       label: 'hdr-bilateral-ubo',
       size: HDR_BILATERAL_UBO_SIZE_BYTES,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-    });
+    }));
     device.queue.writeBuffer(ubo, 0, uboScratch);
 
     const bindGroup = device.createBindGroup({
@@ -128,9 +135,6 @@ export async function runHdrLuminanceBilateralWebGPU(
 
     return await readRgba32fToRgb(device, texOut, w, h);
   } finally {
-    texIn?.destroy();
-    texOut?.destroy();
-    ubo?.destroy();
-    destroyEphemeral();
+    disposeResources();
   }
 }

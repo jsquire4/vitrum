@@ -1,7 +1,17 @@
 {
+  "schema": "vitrum.radiometric-ab.result.v1",
+  "provenance": {
+    "schema": "vitrum.radiometric-ab.result-provenance.v1",
+    "scriptPath": "tools/radiometric-ab/ab-sobol.mjs",
+    "resultPath": "tools/radiometric-ab/results-sobol.json",
+    "scriptSha256": "287d05dd1ade8a0b91d39b961b45a502d9f4c052c74acd5976f4433b98b17223",
+    "helperPath": "tools/radiometric-ab/resultProvenance.mjs",
+    "helperSha256": "cc87985755e7391d19fbf98e19dc218df7264beb9b218f0a7eacf819761642e3",
+    "generatedBy": "vitrum radiometric A/B harness"
+  },
   "ab": "sobol-equal-frame-rmse",
   "verdict": "PASS",
-  "generatedAt": "2026-06-23T18:03:14.353Z",
+  "generatedAt": "2026-07-23T14:09:13.623Z",
   "resolution": {
     "width": 80,
     "height": 80
@@ -13,22 +23,15 @@
   },
   "candidateFrames": 12,
   "traceTier": "lite",
-  "promotion": {
-    "defaultReady": false,
+  "defaultSelection": {
+    "selected": false,
     "evidenceClass": "wsl-lite-equal-frame-proxy",
-    "reason": "WSL-lite evidence bounds correctness but does not show equal-time convergence superiority.",
-    "requiredEvidence": "full-tier/real-adapter equal-time Sobol RMSE A/B"
-  },
-  "researchFindings": {
-    "sobolDefault": {
-      "defaultReady": false,
-      "evidenceClass": "wsl-lite-equal-frame-proxy",
-      "requiredEvidence": "full-tier/real-adapter equal-time Sobol RMSE A/B",
-      "maxGlobalRmseRatio": 1.4858971059275516,
-      "maxRoiRmseRatio": 1.3821594259086538,
-      "maxElapsedMsRatio": 1.8274217765736416,
-      "evidencePath": "tools/radiometric-ab/results-sobol.json"
-    }
+    "reason": "PCG remains the default until full-tier equal-time measurements justify changing it.",
+    "requiredEvidence": "full-tier/real-adapter equal-time Sobol RMSE A/B",
+    "maxGlobalRmseRatio": 1.3627805571742555,
+    "maxRoiRmseRatio": 1.3116539843098562,
+    "maxElapsedMsRatio": 1.7445479125744996,
+    "evidencePath": "tools/radiometric-ab/results-sobol.json"
   },
   "thresholds": {
     "maxGlobalRmseRatio": 1.5,
@@ -54,27 +57,28 @@
       "referenceFrames": 40,
       "candidateFrames": 12,
       "pcg": {
-        "elapsedMs": 552.061,
-        "globalRmse": 0.165052190473949,
-        "roiRmse": 0.1868439776609491,
-        "roiSpatialVariance": 0.08715450941835301
+        "elapsedMs": 624.669,
+        "globalRmse": 0.23531600372446385,
+        "roiRmse": 0.4147411851614354,
+        "roiSpatialVariance": 0.5293023031665683
       },
       "sobol": {
-        "elapsedMs": 1008.848,
-        "globalRmse": 0.22556566272227685,
-        "roiRmse": 0.25824816489834673,
-        "roiSpatialVariance": 0.10351733141667087
+        "elapsedMs": 1089.765,
+        "globalRmse": 0.20223524779623922,
+        "roiRmse": 0.3475490020637574,
+        "roiSpatialVariance": 0.22014851501012628
       },
       "ratios": {
-        "globalRmse": 1.366632348680516,
-        "roiRmse": 1.3821594259086538,
-        "roiSpatialVariance": 1.1877449842528993,
-        "elapsedMs": 1.8274217765736416
+        "globalRmse": 0.8594198634829804,
+        "roiRmse": 0.837990087549362,
+        "roiSpatialVariance": 0.41592208024238814,
+        "elapsedMs": 1.7445479125744996
       },
       "relativeErrors": {
-        "globalRmse": 0.3666323486805162,
-        "roiRmse": 0.38215942590865376,
-        "roiSpatialVariance": 0.1877449842528994
+        "globalRmse": 0.14058013651701962,
+        "roiRmse": 0.162009912450638,
+        "roiSpatialVariance": 0.5840779197576119,
+        "elapsedMs": 0.7445479125744997
       },
       "pass": true
     },
@@ -90,38 +94,30 @@
       "referenceFrames": 40,
       "candidateFrames": 12,
       "pcg": {
-        "elapsedMs": 550.428,
-        "globalRmse": 0.10214406982361526,
-        "roiRmse": 0.10838852817149666,
-        "roiSpatialVariance": 0.057049093747272184
+        "elapsedMs": 651.997,
+        "globalRmse": 0.5861106142183775,
+        "roiRmse": 0.6674767414994253,
+        "roiSpatialVariance": 0.6533083921129454
       },
       "sobol": {
-        "elapsedMs": 981.913,
-        "globalRmse": 0.15177557773857167,
-        "roiRmse": 0.13927698556820095,
-        "roiSpatialVariance": 0.052755535393591346
+        "elapsedMs": 1061.775,
+        "globalRmse": 0.7987401494102656,
+        "roiRmse": 0.8754985274218812,
+        "roiSpatialVariance": 0.593183183153409
       },
       "ratios": {
-        "globalRmse": 1.4858971059275516,
-        "roiRmse": 1.2849790279265656,
-        "roiSpatialVariance": 0.9247392364775973,
-        "elapsedMs": 1.7839082598754006
+        "globalRmse": 1.3627805571742555,
+        "roiRmse": 1.3116539843098562,
+        "roiSpatialVariance": 0.907968105590871,
+        "elapsedMs": 1.6284967568869184
       },
       "relativeErrors": {
-        "globalRmse": 0.48589710592755153,
-        "roiRmse": 0.2849790279265656,
-        "roiSpatialVariance": 0.07526076352240275
+        "globalRmse": 0.3627805571742555,
+        "roiRmse": 0.3116539843098563,
+        "roiSpatialVariance": 0.092031894409129,
+        "elapsedMs": 0.6284967568869184
       },
       "pass": true
     }
-  ],
-  "provenance": {
-    "schema": "vitrum.radiometric-ab.result-provenance.v1",
-    "scriptPath": "tools/radiometric-ab/ab-sobol.mjs",
-    "resultPath": "tools/radiometric-ab/results-sobol.json",
-    "scriptSha256": "ec1981ebdcdd3d23258ba33101b43e50bc3c5c141a65c00fce4f87f414679f67",
-    "helperPath": "tools/radiometric-ab/resultProvenance.mjs",
-    "helperSha256": "cc87985755e7391d19fbf98e19dc218df7264beb9b218f0a7eacf819761642e3",
-    "generatedBy": "vitrum radiometric A/B harness"
-  }
+  ]
 }

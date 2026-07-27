@@ -6,7 +6,11 @@ export function tonemapWgsl(): string {
   return /* wgsl */ `
 fn vt_aces(x: vec3f) -> vec3f {
   let a = 2.51; let b = 0.03; let c = 2.43; let d = 0.59; let e = 0.14;
-  return clamp((x * (a * x + b)) / (x * (c * x + d) + e), vec3f(0.0), vec3f(1.0));
+  let v = max(x, vec3f(0.0));
+  // Divide the quadratic numerator and denominator by v² to avoid inf/inf.
+  let inv = vec3f(1.0) / max(v, vec3f(1e-20));
+  let curved = (vec3f(a) + b * inv) / (vec3f(c) + d * inv + e * inv * inv);
+  return select(clamp(curved, vec3f(0.0), vec3f(1.0)), vec3f(0.0), v == vec3f(0.0));
 }
 fn vt_agx_curve(x: f32) -> f32 {
   let x2 = x * x; let x4 = x2 * x2;

@@ -1,15 +1,12 @@
 {
-  "generatedAt": "2026-06-23T19:54:29.931Z",
+  "generatedAt": "2026-07-25T07:08:14.983Z",
   "harness": "gltf-browser-proof:pt-webgl2-real",
-  "verdict": "HOST-BLOCKED",
+  "verdict": "FAIL",
   "backend": "pt-webgl2",
-  "hostBlockClasses": [
-    "engine-readback-timeout"
-  ],
   "captureMode": "engine-first",
   "hostReadbackProbe": {
-    "generatedAt": "2026-06-23T19:53:09.780Z",
-    "finishedAt": "2026-06-23T19:53:10.876Z",
+    "generatedAt": "2026-07-25T07:07:47.904Z",
+    "finishedAt": "2026-07-25T07:07:49.116Z",
     "harness": "gltf-browser-proof:host-readback-preflight",
     "browserVersion": "148.0.7778.96",
     "timeoutMs": 10000,
@@ -76,183 +73,54 @@
   },
   "assets": [
     {
-      "generatedAt": "2026-06-23T19:53:36.164Z",
+      "generatedAt": "2026-07-25T07:08:14.944Z",
       "harness": "gltf-browser-proof:pt-webgl2-real",
-      "verdict": "HOST-BLOCKED",
-      "assetId": "box-textured-glb",
-      "kind": "textured-glb",
-      "backend": "pt-webgl2",
-      "captureMode": "engine-first",
-      "step": "engine-captureFrame-output",
-      "error": "Error: engine captureFrame fallback timed out\n    at Timeout.<anonymous> (file:///home/jsquire4/projects/vitrum/tools/gltf-browser-proof/capture-pt-webgl2-real.mjs:942:41)\n    at listOnTimeout (node:internal/timers:581:17)\n    at process.processTimers (node:internal/timers:519:7)",
-      "hostBlockClass": "engine-readback-timeout",
-      "hostBlockMethods": [
-        "engine-captureFrame-output"
-      ],
-      "hostBlockReason": "pt-webgl2 engine.captureFrame readPixels timed out before browser fallback could run safely",
-      "captureAttempts": [
-        {
-          "method": "engine-captureFrame-output",
-          "status": "failed",
-          "step": "engine-captureFrame-output",
-          "startedAt": "2026-06-23T19:53:20.062Z",
-          "pauseBeforeCapture": true,
-          "pauseProtocol": "VITRUM_CAPTURE_PAUSED",
-          "pausedAtCaptureStart": true,
-          "error": "engine captureFrame fallback timed out",
-          "finishedAt": "2026-06-23T19:53:36.085Z",
-          "hostBlockHint": "engine-readback"
-        }
-      ],
-      "pageDiagnostics": {
-        "phase": "pre-capture",
-        "url": "http://127.0.0.1:5187/?vitrumGltfAsset=box-textured-glb&vitrumBackend=pt-webgl2&vitrumSpp=1",
-        "ready": true,
-        "captureError": null,
-        "captureFrameInstalled": true,
-        "captureFrameType": "function",
-        "capturePaused": false,
-        "canvasPresent": true,
-        "canvasId": "vitrum-canvas",
-        "canvasWidth": 64,
-        "canvasHeight": 64,
-        "canvasClientWidth": 64,
-        "canvasClientHeight": 64,
-        "canvasRect": {
-          "x": 0,
-          "y": 0,
-          "width": 64,
-          "height": 64
-        },
-        "devicePixelRatio": 1
-      },
-      "hostReadbackProbe": {
-        "generatedAt": "2026-06-23T19:53:09.780Z",
-        "finishedAt": "2026-06-23T19:53:10.876Z",
-        "harness": "gltf-browser-proof:host-readback-preflight",
-        "browserVersion": "148.0.7778.96",
-        "timeoutMs": 10000,
-        "webgl2": true,
-        "status": "PASS",
-        "renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)",
-        "vendor": "Google Inc. (Google)",
-        "version": "WebGL 2.0 (OpenGL ES 3.0 Chromium)",
-        "shadingLanguageVersion": "WebGL GLSL ES 3.00 (OpenGL ES GLSL ES 3.0 Chromium)",
-        "extensions": [
-          "EXT_clip_control",
-          "EXT_color_buffer_float",
-          "EXT_color_buffer_half_float",
-          "EXT_conservative_depth",
-          "EXT_depth_clamp",
-          "EXT_float_blend",
-          "EXT_polygon_offset_clamp",
-          "EXT_texture_compression_bptc",
-          "EXT_texture_compression_rgtc",
-          "EXT_texture_filter_anisotropic",
-          "EXT_texture_mirror_clamp_to_edge",
-          "NV_shader_noperspective_interpolation",
-          "OES_draw_buffers_indexed",
-          "OES_sample_variables",
-          "OES_shader_multisample_interpolation",
-          "OES_texture_float_linear",
-          "OVR_multiview2",
-          "WEBGL_clip_cull_distance",
-          "WEBGL_compressed_texture_astc",
-          "WEBGL_compressed_texture_etc",
-          "WEBGL_compressed_texture_etc1",
-          "WEBGL_compressed_texture_s3tc",
-          "WEBGL_compressed_texture_s3tc_srgb",
-          "WEBGL_debug_renderer_info",
-          "WEBGL_debug_shaders",
-          "WEBGL_lose_context",
-          "WEBGL_multi_draw",
-          "WEBGL_polygon_mode",
-          "WEBGL_stencil_texturing"
-        ],
-        "unsignedByteReadback": {
-          "status": "PASS",
-          "rgba": [
-            64,
-            128,
-            191,
-            255
-          ]
-        },
-        "floatReadback": {
-          "status": "PASS",
-          "rgba": [
-            0.125,
-            0.25,
-            0.5,
-            1
-          ]
-        },
-        "dataUrl": {
-          "status": "PASS",
-          "length": 146,
-          "prefix": "data:image/png;base64,"
-        }
-      },
-      "telemetry": {
-        "assetId": "box-textured-glb",
-        "backend": "pt-webgl2",
-        "profileId": "pt-webgl2",
-        "primitiveCount": 1,
-        "extensionsUsed": [],
-        "extensionsRequired": [],
-        "browserDecodeHooks": {
-          "requested": [],
-          "draco": false,
-          "meshopt": false
-        },
-        "textureDecodeReport": {
-          "mapCount": 1,
-          "uniqueHandleCount": 1,
-          "rawImageCount": 0,
-          "opaqueHandleCount": 0,
-          "cpuReadableCount": 1
-        },
-        "warningCount": 0,
-        "diagnosticCount": 0,
-        "realAssetReady": true
-      },
-      "console": [
-        "debug: [vite] connecting...",
-        "debug: [vite] connected.",
-        "warning: No available adapters.",
-        "warning: [.WebGL-0x3b8c00158e00]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels"
-      ],
-      "serverLog": "\n  VITE v5.4.21  ready in 69 ms\n\n  ➜  Local:   http://127.0.0.1:5187/\n"
-    },
-    {
-      "generatedAt": "2026-06-23T19:54:03.643Z",
-      "harness": "gltf-browser-proof:pt-webgl2-real",
-      "verdict": "HOST-BLOCKED",
+      "verdict": "FAIL",
+      "command": "node tools/gltf-browser-proof/capture-pt-webgl2-real.mjs --asset cesium-milk-truck-draco",
+      "updateGolden": false,
       "assetId": "cesium-milk-truck-draco",
       "kind": "draco",
       "backend": "pt-webgl2",
       "captureMode": "engine-first",
-      "step": "engine-captureFrame-output",
-      "error": "Error: engine captureFrame fallback timed out\n    at Timeout.<anonymous> (file:///home/jsquire4/projects/vitrum/tools/gltf-browser-proof/capture-pt-webgl2-real.mjs:942:41)\n    at listOnTimeout (node:internal/timers:581:17)\n    at process.processTimers (node:internal/timers:519:7)",
-      "hostBlockClass": "engine-readback-timeout",
-      "hostBlockMethods": [
-        "engine-captureFrame-output"
-      ],
-      "hostBlockReason": "pt-webgl2 engine.captureFrame readPixels timed out before browser fallback could run safely",
+      "width": 64,
+      "height": 64,
+      "samplesPerPixel": 1,
+      "captureMethod": "page-canvas-clip-screenshot",
       "captureAttempts": [
         {
           "method": "engine-captureFrame-output",
           "status": "failed",
           "step": "engine-captureFrame-output",
-          "startedAt": "2026-06-23T19:53:47.483Z",
+          "startedAt": "2026-07-25T07:08:14.866Z",
           "pauseBeforeCapture": true,
           "pauseProtocol": "VITRUM_CAPTURE_PAUSED",
           "pausedAtCaptureStart": true,
-          "error": "engine captureFrame fallback timed out",
-          "finishedAt": "2026-06-23T19:54:03.520Z",
-          "hostBlockHint": "engine-readback"
+          "error": "page.evaluate: Error: pt-webgl2: output capture framebuffer is incomplete (status 0x8cdd)\n    at GlResources.readPixelsRgba32f (http://127.0.0.1:5187/@fs/home/jsquire4/projects/vitrum/packages/pt-webgl2/src/gl/glResources.ts:749:13)\n    at PTEngineWebGL2.captureFrame (http://127.0.0.1:5187/@fs/home/jsquire4/projects/vitrum/packages/pt-webgl2/src/index.ts:731:28)\n    at Object.captureFrame (http://127.0.0.1:5187/@fs/home/jsquire4/projects/vitrum/packages/engine/src/idempotentDispose.ts:171:21)\n    at globalThis.VITRUM_CAPTURE_FRAME (http://127.0.0.1:5187/src/main.ts:91:32)\n    at eval (eval at evaluate (:302:30), <anonymous>:6:16)\n    at UtilityScript.evaluate (<anonymous>:304:16)\n    at UtilityScript.<anonymous> (<anonymous>:1:44)",
+          "finishedAt": "2026-07-25T07:08:14.887Z"
+        },
+        {
+          "method": "page-canvas-clip-screenshot",
+          "status": "succeeded",
+          "step": "page-canvas-clip-screenshot",
+          "startedAt": "2026-07-25T07:08:14.916Z",
+          "finishedAt": "2026-07-25T07:08:14.940Z"
         }
       ],
+      "luminance": 0.019607843137255526,
+      "structure": {
+        "thresholds": {
+          "minLumaRange": 12,
+          "minUniqueColorCount": 16,
+          "minNonDominantFraction": 0.05
+        },
+        "minLuma": 4.999999999999999,
+        "maxLuma": 4.999999999999999,
+        "lumaRange": 0,
+        "uniqueColorCount": 1,
+        "dominantColorFraction": 1,
+        "nonDominantFraction": 0
+      },
+      "error": "capture is visually uninformative: lumaRange 0.000 < 12; uniqueColorCount 1 < 16; nonDominantFraction 0.0000 < 0.05",
       "pageDiagnostics": {
         "phase": "pre-capture",
         "url": "http://127.0.0.1:5187/?vitrumGltfAsset=cesium-milk-truck-draco&vitrumBackend=pt-webgl2&vitrumSpp=1",
@@ -275,73 +143,6 @@
         },
         "devicePixelRatio": 1
       },
-      "hostReadbackProbe": {
-        "generatedAt": "2026-06-23T19:53:09.780Z",
-        "finishedAt": "2026-06-23T19:53:10.876Z",
-        "harness": "gltf-browser-proof:host-readback-preflight",
-        "browserVersion": "148.0.7778.96",
-        "timeoutMs": 10000,
-        "webgl2": true,
-        "status": "PASS",
-        "renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)",
-        "vendor": "Google Inc. (Google)",
-        "version": "WebGL 2.0 (OpenGL ES 3.0 Chromium)",
-        "shadingLanguageVersion": "WebGL GLSL ES 3.00 (OpenGL ES GLSL ES 3.0 Chromium)",
-        "extensions": [
-          "EXT_clip_control",
-          "EXT_color_buffer_float",
-          "EXT_color_buffer_half_float",
-          "EXT_conservative_depth",
-          "EXT_depth_clamp",
-          "EXT_float_blend",
-          "EXT_polygon_offset_clamp",
-          "EXT_texture_compression_bptc",
-          "EXT_texture_compression_rgtc",
-          "EXT_texture_filter_anisotropic",
-          "EXT_texture_mirror_clamp_to_edge",
-          "NV_shader_noperspective_interpolation",
-          "OES_draw_buffers_indexed",
-          "OES_sample_variables",
-          "OES_shader_multisample_interpolation",
-          "OES_texture_float_linear",
-          "OVR_multiview2",
-          "WEBGL_clip_cull_distance",
-          "WEBGL_compressed_texture_astc",
-          "WEBGL_compressed_texture_etc",
-          "WEBGL_compressed_texture_etc1",
-          "WEBGL_compressed_texture_s3tc",
-          "WEBGL_compressed_texture_s3tc_srgb",
-          "WEBGL_debug_renderer_info",
-          "WEBGL_debug_shaders",
-          "WEBGL_lose_context",
-          "WEBGL_multi_draw",
-          "WEBGL_polygon_mode",
-          "WEBGL_stencil_texturing"
-        ],
-        "unsignedByteReadback": {
-          "status": "PASS",
-          "rgba": [
-            64,
-            128,
-            191,
-            255
-          ]
-        },
-        "floatReadback": {
-          "status": "PASS",
-          "rgba": [
-            0.125,
-            0.25,
-            0.5,
-            1
-          ]
-        },
-        "dataUrl": {
-          "status": "PASS",
-          "length": 146,
-          "prefix": "data:image/png;base64,"
-        }
-      },
       "telemetry": {
         "assetId": "cesium-milk-truck-draco",
         "backend": "pt-webgl2",
@@ -353,12 +154,14 @@
         "extensionsRequired": [
           "KHR_draco_mesh_compression"
         ],
-        "browserDecodeHooks": {
+        "browserCompressionDecoders": {
+          "policy": "builtin",
           "requested": [
             "draco"
           ],
-          "draco": true,
-          "meshopt": false
+          "hostOverrides": [],
+          "draco": "builtin",
+          "meshopt": "unused"
         },
         "textureDecodeReport": {
           "mapCount": 3,
@@ -377,181 +180,20 @@
         "warning: No available adapters.",
         "warning: [vitrum/createEngine] Scene has 5 mesh-like primitive(s) and 0 TLAS instance(s); prefer @vitrum/walkaround-hybrid or @vitrum/pt-webgpu over merged-BVH pt-webgl2.",
         "warning: [gltf-viewer example] [vitrum/createEngine] Scene has 5 mesh-like primitive(s) and 0 TLAS instance(s); prefer @vitrum/walkaround-hybrid or @vitrum/pt-webgpu over merged-BVH pt-webgl2. {recommendation: prefer-tlas-backend, resolvedBackend: pt-webgl2}",
-        "warning: [.WebGL-0xeec03f14000]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels"
-      ],
-      "serverLog": "\n  VITE v5.4.21  ready in 69 ms\n\n  ➜  Local:   http://127.0.0.1:5187/\n"
-    },
-    {
-      "generatedAt": "2026-06-23T19:54:29.930Z",
-      "harness": "gltf-browser-proof:pt-webgl2-real",
-      "verdict": "HOST-BLOCKED",
-      "assetId": "meshopt-cube-real",
-      "kind": "meshopt",
-      "backend": "pt-webgl2",
-      "captureMode": "engine-first",
-      "step": "engine-captureFrame-output",
-      "error": "Error: engine captureFrame fallback timed out\n    at Timeout.<anonymous> (file:///home/jsquire4/projects/vitrum/tools/gltf-browser-proof/capture-pt-webgl2-real.mjs:942:41)\n    at listOnTimeout (node:internal/timers:581:17)\n    at process.processTimers (node:internal/timers:519:7)",
-      "hostBlockClass": "engine-readback-timeout",
-      "hostBlockMethods": [
-        "engine-captureFrame-output"
-      ],
-      "hostBlockReason": "pt-webgl2 engine.captureFrame readPixels timed out before browser fallback could run safely",
-      "captureAttempts": [
-        {
-          "method": "engine-captureFrame-output",
-          "status": "failed",
-          "step": "engine-captureFrame-output",
-          "startedAt": "2026-06-23T19:54:13.807Z",
-          "pauseBeforeCapture": true,
-          "pauseProtocol": "VITRUM_CAPTURE_PAUSED",
-          "pausedAtCaptureStart": true,
-          "error": "engine captureFrame fallback timed out",
-          "finishedAt": "2026-06-23T19:54:29.849Z",
-          "hostBlockHint": "engine-readback"
-        }
-      ],
-      "pageDiagnostics": {
-        "phase": "pre-capture",
-        "url": "http://127.0.0.1:5187/?vitrumGltfAsset=meshopt-cube-real&vitrumBackend=pt-webgl2&vitrumSpp=1",
-        "ready": true,
-        "captureError": null,
-        "captureFrameInstalled": true,
-        "captureFrameType": "function",
-        "capturePaused": false,
-        "canvasPresent": true,
-        "canvasId": "vitrum-canvas",
-        "canvasWidth": 64,
-        "canvasHeight": 64,
-        "canvasClientWidth": 64,
-        "canvasClientHeight": 64,
-        "canvasRect": {
-          "x": 0,
-          "y": 0,
-          "width": 64,
-          "height": 64
-        },
-        "devicePixelRatio": 1
-      },
-      "hostReadbackProbe": {
-        "generatedAt": "2026-06-23T19:53:09.780Z",
-        "finishedAt": "2026-06-23T19:53:10.876Z",
-        "harness": "gltf-browser-proof:host-readback-preflight",
-        "browserVersion": "148.0.7778.96",
-        "timeoutMs": 10000,
-        "webgl2": true,
-        "status": "PASS",
-        "renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)",
-        "vendor": "Google Inc. (Google)",
-        "version": "WebGL 2.0 (OpenGL ES 3.0 Chromium)",
-        "shadingLanguageVersion": "WebGL GLSL ES 3.00 (OpenGL ES GLSL ES 3.0 Chromium)",
-        "extensions": [
-          "EXT_clip_control",
-          "EXT_color_buffer_float",
-          "EXT_color_buffer_half_float",
-          "EXT_conservative_depth",
-          "EXT_depth_clamp",
-          "EXT_float_blend",
-          "EXT_polygon_offset_clamp",
-          "EXT_texture_compression_bptc",
-          "EXT_texture_compression_rgtc",
-          "EXT_texture_filter_anisotropic",
-          "EXT_texture_mirror_clamp_to_edge",
-          "NV_shader_noperspective_interpolation",
-          "OES_draw_buffers_indexed",
-          "OES_sample_variables",
-          "OES_shader_multisample_interpolation",
-          "OES_texture_float_linear",
-          "OVR_multiview2",
-          "WEBGL_clip_cull_distance",
-          "WEBGL_compressed_texture_astc",
-          "WEBGL_compressed_texture_etc",
-          "WEBGL_compressed_texture_etc1",
-          "WEBGL_compressed_texture_s3tc",
-          "WEBGL_compressed_texture_s3tc_srgb",
-          "WEBGL_debug_renderer_info",
-          "WEBGL_debug_shaders",
-          "WEBGL_lose_context",
-          "WEBGL_multi_draw",
-          "WEBGL_polygon_mode",
-          "WEBGL_stencil_texturing"
-        ],
-        "unsignedByteReadback": {
-          "status": "PASS",
-          "rgba": [
-            64,
-            128,
-            191,
-            255
-          ]
-        },
-        "floatReadback": {
-          "status": "PASS",
-          "rgba": [
-            0.125,
-            0.25,
-            0.5,
-            1
-          ]
-        },
-        "dataUrl": {
-          "status": "PASS",
-          "length": 146,
-          "prefix": "data:image/png;base64,"
-        }
-      },
-      "telemetry": {
-        "assetId": "meshopt-cube-real",
-        "backend": "pt-webgl2",
-        "profileId": "pt-webgl2",
-        "primitiveCount": 35,
-        "extensionsUsed": [
-          "KHR_mesh_quantization",
-          "KHR_meshopt_compression"
-        ],
-        "extensionsRequired": [
-          "KHR_mesh_quantization",
-          "KHR_meshopt_compression"
-        ],
-        "browserDecodeHooks": {
-          "requested": [
-            "meshopt"
-          ],
-          "draco": false,
-          "meshopt": true
-        },
-        "textureDecodeReport": {
-          "mapCount": 10,
-          "uniqueHandleCount": 10,
-          "rawImageCount": 0,
-          "opaqueHandleCount": 0,
-          "cpuReadableCount": 10
-        },
-        "warningCount": 10,
-        "diagnosticCount": 10,
-        "realAssetReady": true
-      },
-      "console": [
-        "debug: [vite] connecting...",
-        "debug: [vite] connected.",
-        "warning: No available adapters.",
-        "warning: [vitrum/createEngine] Scene has 35 mesh-like primitive(s) and 0 TLAS instance(s); prefer @vitrum/walkaround-hybrid or @vitrum/pt-webgpu over merged-BVH pt-webgl2.",
-        "warning: [gltf-viewer example] [vitrum/createEngine] Scene has 35 mesh-like primitive(s) and 0 TLAS instance(s); prefer @vitrum/walkaround-hybrid or @vitrum/pt-webgpu over merged-BVH pt-webgl2. {recommendation: prefer-tlas-backend, resolvedBackend: pt-webgl2}",
-        "warning: [.WebGL-0x68c00153c00]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels",
-        "warning: [vitrum/pt-webgl2] updatePrimitive(\"gltf-prim-5\") fields [transform] are supported by rebuilding the backend scene-texture/BVH pack rather than by a targeted native patch.",
-        "warning: [gltf-viewer example] [vitrum/pt-webgl2] updatePrimitive(\"gltf-prim-5\") fields [transform] are supported by rebuilding the backend scene-texture/BVH pack rather than by a targeted native patch. {primitiveId: gltf-prim-5, fields: Array(1), fallbackReason: geometry-bvh-texture-rebuild, nativePatchMissing: targeted-primitive-geometry-splice, textureRefreshMode: resident-storage-respecify}",
-        "warning: [vitrum/pt-webgl2] updatePrimitive(\"gltf-prim-10\") fields [transform] are supported by rebuilding the backend scene-texture/BVH pack rather than by a targeted native patch.",
-        "warning: [gltf-viewer example] [vitrum/pt-webgl2] updatePrimitive(\"gltf-prim-10\") fields [transform] are supported by rebuilding the backend scene-texture/BVH pack rather than by a targeted native patch. {primitiveId: gltf-prim-10, fields: Array(1), fallbackReason: geometry-bvh-texture-rebuild, nativePatchMissing: targeted-primitive-geometry-splice, textureRefreshMode: resident-storage-respecify}"
-      ],
-      "serverLog": "\n  VITE v5.4.21  ready in 69 ms\n\n  ➜  Local:   http://127.0.0.1:5187/\n"
+        "warning: [.WebGL-0x5c400155400]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels",
+        "warning: WebGL: CONTEXT_LOST_WEBGL: loseContext: context lost",
+        "warning: [vitrum/pt-webgl2] WebGL context lost. Rendering is suspended. Per the core contract, the host should call engine.dispose() and create a fresh engine with the recovered context.",
+        "pageerror: Error: pt-webgl2: WebGL context lost — cannot create scene BVH bounds texture\n    at allocGlTexture (http://127.0.0.1:5187/@fs/home/jsquire4/projects/vitrum/packages/pt-webgl2/src/gl/texAlloc.ts:28:11)\n    at fTex (http://127.0.0.1:5187/@fs/home/jsquire4/projects/vitrum/packages/pt-webgl2/src/scene/bvhTextureAdapter.ts:98:37)\n    at uploadBvhTextures (http://127.0.0.1:5187/@fs/home/jsquire4/projects/vitrum/packages/pt-webgl2/src/scene/bvhTextureAdapter.ts:111:18)\n    at buildSceneTextures (http://127.0.0.1:5187/@fs/home/jsquire4/projects/vitrum/packages/pt-webgl2/src/scene/uploadSceneTextures.ts:229:15)\n    at PTEngineWebGL2.setScene (http://127.0.0.1:5187/@fs/home/jsquire4/projects/vitrum/packages/pt-webgl2/src/index.ts:288:19)\n    at Object.setScene (http://127.0.0.1:5187/@fs/home/jsquire4/projects/vitrum/packages/engine/src/idempotentDispose.ts:96:29)\n    at #commitSceneChange (http://127.0.0.1:5187/@fs/home/jsquire4/projects/vitrum/packages/gltf-adapter/src/sceneController.ts:521:16)\n    at #applySampledChannels (http://127.0.0.1:5187/@fs/home/jsquire4/projects/vitrum/packages/gltf-adapter/src/sceneController.ts:783:49)\n    at GltfSceneController.applyAnimation (http://127.0.0.1:5187/@fs/home/jsquire4/projects/vitrum/packages/gltf-adapter/src/sceneController.ts:240:47)\n    at GltfSceneController.seek (http://127.0.0.1:5187/@fs/home/jsquire4/projects/vitrum/packages/gltf-adapter/src/sceneController.ts:229:17)"
+      ]
     }
   ],
-  "assetCount": 3,
+  "assetCount": 1,
   "provenance": {
     "schema": "vitrum.gltf-browser-proof.status-provenance.v1",
     "checkerPath": "tools/gltf-browser-proof/check-status.mjs",
-    "checkerSha256": "9b48194ea722d428e2e19719f04f029046055ef67c46129348a2c26d82285420",
+    "checkerSha256": "9f969df252d6f07d3f0cc858360a891f2c4641b7dfa89a5f0bf7d8e768b82bae",
     "captureHarnessPath": "tools/gltf-browser-proof/capture-pt-webgl2-real.mjs",
-    "captureHarnessSha256": "6ef20ca1dca82618d324f44fe234d2d6006549098004ecb0ce3987f6cceeb588",
+    "captureHarnessSha256": "52fcdd1824157ae695e4f830e7500cedf12b9b7dc12e7d71dcaddaf07d964f83",
     "manifestPath": "tools/reference-renders/gltf-real-browser-pt-webgl2/manifest.json",
     "manifestSha256": "a2dcc0de38d4ecd8a3b28c2dd6026a9113136d76961c81c7bdab0f4a5f14238e",
     "goldenFiles": [

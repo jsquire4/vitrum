@@ -1,8 +1,9 @@
 /**
  * OIDN final-pass dispatcher for {@link PTEngineWebGPU} (`denoiser: 'oidn-final'`).
  *
- * Unlike pt-webgl (color-only MRT), pt-webgpu reads HDR + albedo + normal-depth
- * storage textures via `readOidnInputsFromTextures` (WG-1 / plan primary-release).
+ * Reads HDR + albedo + canonical packed-normal/depth storage textures through
+ * `readOidnInputsFromTextures`; its normal decoder is shared with pt-webgl2 so
+ * OIDN receives the same signed world-normal convention from both backends.
  *
  * ## Thin wrapper
  *
@@ -31,6 +32,12 @@ import {
 
 export interface OIDNFinalDispatcherRuntimeHooks {
   readonly onError?: (err: unknown) => void;
+  /**
+   * Called only after the shared dispatcher core has validated and accepted a
+   * completed RGB frame. The hook must not mutate host-owned GPU state; the
+   * WebGPU engine queues the frame here and uploads it on the next render call.
+   */
+  readonly onComplete?: (frame: DenoisedFrame) => void;
 }
 
 // Re-export the shared types so existing importers of this module are unchanged.
@@ -81,6 +88,7 @@ export class OIDNFinalDispatcher {
       // difference from pt-webgl — preserved intentionally).
       preloadOnBridgeInit: true,
       ...(hooks?.onError != null ? { onError: hooks.onError } : {}),
+      ...(hooks?.onComplete != null ? { onComplete: hooks.onComplete } : {}),
     });
   }
 

@@ -9,23 +9,23 @@ describe('buildPassLayout — Sprint 9..18 + indirect atrous chain', () => {
       expect(layout.index('sample-budget')).toBe(0);
     });
 
-    it('DI RIS chain at 1..4; GI block at 5..8; shade at 9', () => {
+    it('DI RIS chain at 1..4; GI initial + PPG + reuse at 5..9; shade at 10', () => {
       expect(layout.index('ris')).toBe(1);
       expect(layout.index('temporal')).toBe(2);
       expect(layout.index('spatial-1')).toBe(3);
       expect(layout.index('spatial-2')).toBe(4);
       expect(layout.index('gi-ris')).toBe(5);
-      expect(layout.index('gi-temporal')).toBe(6);
-      expect(layout.index('gi-spatial-1')).toBe(7);
-      expect(layout.index('gi-spatial-2')).toBe(8);
-      expect(layout.index('shade')).toBe(9);
+      expect(layout.index('ppg-update')).toBe(6);
+      expect(layout.index('gi-temporal')).toBe(7);
+      expect(layout.index('gi-spatial-1')).toBe(8);
+      expect(layout.index('gi-spatial-2')).toBe(9);
+      expect(layout.index('shade')).toBe(10);
     });
 
-    it('places motion-vectors + gtao + gtao-upsample + ppg update at slots 10..13', () => {
-      expect(layout.index('motion-vectors')).toBe(10);
-      expect(layout.index('gtao')).toBe(11);
-      expect(layout.index('gtao-upsample')).toBe(12);
-      expect(layout.index('ppg-update')).toBe(13);
+    it('places motion-vectors + gtao + gtao-upsample at slots 11..13', () => {
+      expect(layout.index('motion-vectors')).toBe(11);
+      expect(layout.index('gtao')).toBe(12);
+      expect(layout.index('gtao-upsample')).toBe(13);
     });
 
     it('places cb-prefill at slot 14 (between ppg-update and denoiser labels)', () => {
@@ -70,15 +70,15 @@ describe('buildPassLayout — Sprint 9..18 + indirect atrous chain', () => {
   describe('legacy atrous mode (30 slots + trailing regir-build)', () => {
     const layout = buildPassLayout({ denoiserMode: 'atrous' });
 
-    it('GI block at 5..8; shade at 9; motion-vectors + gtao + upsample + ppg at 10..13; cb-prefill at 14; atrous-0..2 at 15..17', () => {
+    it('GI initial + PPG + reuse at 5..9; shade at 10; motion/GTAO at 11..13; cb-prefill at 14; atrous at 15..17', () => {
       expect(layout.index('sample-budget')).toBe(0);
       expect(layout.index('gi-ris')).toBe(5);
-      expect(layout.index('gi-spatial-2')).toBe(8);
-      expect(layout.index('shade')).toBe(9);
-      expect(layout.index('motion-vectors')).toBe(10);
-      expect(layout.index('gtao')).toBe(11);
-      expect(layout.index('gtao-upsample')).toBe(12);
-      expect(layout.index('ppg-update')).toBe(13);
+      expect(layout.index('ppg-update')).toBe(6);
+      expect(layout.index('gi-spatial-2')).toBe(9);
+      expect(layout.index('shade')).toBe(10);
+      expect(layout.index('motion-vectors')).toBe(11);
+      expect(layout.index('gtao')).toBe(12);
+      expect(layout.index('gtao-upsample')).toBe(13);
       expect(layout.index('cb-prefill')).toBe(14);
       expect(layout.index('atrous-0')).toBe(15);
       expect(layout.index('atrous-1')).toBe(16);

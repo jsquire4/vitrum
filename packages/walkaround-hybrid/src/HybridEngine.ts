@@ -41,6 +41,7 @@ import type {
   CaptureFrameOptions,
   Engine,
   EngineCapabilities,
+  EngineFeatureId,
   EngineDebugSurface,
   EngineError,
   EngineFactory,
@@ -49,14 +50,32 @@ import type {
   FrameStats,
   ProgressStats,
 } from '@vitrum/core';
-import type { Scene, ScenePrimitive, SceneEmitter, SceneEnvironment } from '@vitrum/core';
-import { BACKEND_PROMISE_LEDGER, analyticPrimitiveToMesh, partitionSceneBySupport } from '@vitrum/core';
+import type {
+  MaterialSpec,
+  Scene,
+  ScenePrimitive,
+  SkinnedMeshPrimitive,
+  SceneEmitter,
+  SceneEnvironment,
+} from '@vitrum/core';
+import {
+  BACKEND_PROMISE_LEDGER,
+  analyticPrimitiveToMesh,
+  canonicalizeFrameCamera,
+  partitionSceneBySupport,
+  validateScene as validateCoreScene,
+} from '@vitrum/core';
 import type { FrameInput, FrameOutput } from '@vitrum/core';
 import { asBackendTexture } from '@vitrum/core';
 import type { BackendTexture } from '@vitrum/core';
 import { DDGI } from './ddgi/DDGI.js';
 import type { DDGILight } from './ddgi/types.js';
-import { WalkaroundGPUPipeline } from './pipeline/WalkaroundGPUPipeline.js';
+import {
+  WalkaroundGPUPipeline,
+  assertHybridDeviceCapableIfReported,
+  assertNrcDeviceCapableIfReported,
+  resolvePpgDispatchInterval,
+} from './pipeline/WalkaroundGPUPipeline.js';
 import {
   parseHybridEngineOptions,
   validateHybridEngineOptions,
@@ -78,6 +97,7 @@ import {
 import {
   rebuildEmitterBuffersFromCoreScene,
   rebuildBvhEmissiveLeFromCoreScene,
+  assertExactEmissiveMapSamplingForCoreScene,
   disposeSceneBVH,
   type ReSTIRBvhMode,
   type SceneBVHBuffers,
@@ -95,14 +115,28 @@ import {
   materialPatchAffectsDisplacementGeometry,
   skinnedPosePatch,
   refitSkinnedMeshAfterGpuWrite,
+  capturePrimitiveMutationUndo,
   SKIN_POSE_PATCH_FIELDS,
   TOPOLOGY_PATCH_FIELDS,
   TOPOLOGY_PATCH_WHOLESALE_FIELDS,
   type PrimitiveUpdateContext,
+  type PrimitiveMutationUndo,
   type PrimitiveUpdateResult,
 } from './HybridEnginePrimitiveUpdates.js';
 import {
+  CollectingBvhUpdateSink,
+  type CollectedBvhMutation,
+} from './pipeline/CollectingBvhUpdateSink.js';
+import {
+  commitSceneMutations,
+  prepareSceneMutations,
+  SceneMutationFinalizationError,
+  type PreparedSceneMutation,
+} from './SceneMutationTransaction.js';
+import {
+  createHostSunWarningState,
   PipelineInitCoordinator,
+  type HostSunWarningState,
   type PipelineInitHost,
   type HybridInitStaticConfig,
 } from './HybridEngineLifecycle.js';
@@ -116,36 +150,34 @@ import type { FrameBudgetControllerConfig, FrameBudgetDecision } from './FrameBu
 import type { HybridEngineOptions, LightingOptions } from './HybridEngineOptions.js';
 import { assertKnownLightingKeys } from './HybridEngineOptions.js';
 import {
-  collectApproximateAlphaBlendPrimitiveIds,
-  collectApproximateEmissiveMapTexelPdfPrimitiveIds,
-  collectApproximateLightMapPrimitiveIds,
-  collectApproximateRichMaterialPrimitiveFields,
-  collectApproximateVolumeLayerPrimitiveFields,
-  collectUnconsumedMaterialFieldsForMaterial,
-  collectUnconsumedMaterialPrimitiveFields,
-  type ApproximateRichMaterialPrimitiveFields,
-  type ApproximateVolumeLayerPrimitiveFields,
+  assertNoRcDirectSunTransmissionProfiles,
+  assertNoUnconsumedMaterialFields,
+  assertNoUnsupportedMaterialProfiles,
   type UnconsumedMaterialPrimitiveFields,
 } from './restir/consumedMaterialFields.js';
 import { RCSubsystem } from './HybridEngineRC.js';
 import { MaterialApproximationWarner } from './HybridEngineMaterialWarner.js';
 import { propagateBvhToGiSubsystems } from './HybridEngineGiPropagation.js';
-import {
-  directionalSunMultiplier,
-  orientDdgiSunLights,
-} from './coreEmittersToDDGILights.js';
-import { GpuSkinningSubsystem } from './skin/GpuSkinningSubsystem.js';
+import { directionalSunMultiplier, orientDdgiSunLights } from './coreEmittersToDDGILights.js';
+import { GpuSkinningSubsystem, type SkinningBatchUpdate } from './skin/GpuSkinningSubsystem.js';
 import type { GIStateSnapshot } from './giStateSnapshot.js';
-import type { HybridEngineGISurface } from './HybridEnginePublic.js';
+import type {
+  HybridRenderLayer,
+} from './HybridEnginePublic.js';
 import {
   resolveHybridEnvironment,
   type HybridEnvironmentResolverExtensions,
+  type HybridResolvedEnvironment,
 } from './environment/resolveHybridEnvironment.js';
+import { exportGIStateImpl, importGIStateImpl } from './HybridEngineGIState.js';
 import {
-  exportGIStateImpl,
-  importGIStateImpl,
-} from './HybridEngineGIState.js';
-import { syncDdgiFromCoreScene } from './HybridEngineDdgiSync.js';
+  buildDdgiLightingMutationInputs,
+  syncDdgiFromCoreScene,
+} from './HybridEngineDdgiSync.js';
+import { WALKAROUND_NEURAL_DENOISER_SHAPE_REQUIREMENT } from './neural/shapeContract.js';
+import type { NrcDiagnostics } from './neural/nrc/nrcDiagnostics.js';
+
+const HYBRID_RENDER_LAYERS: ReadonlySet<string> = new Set(['ddgi']);
 
 function sceneWithAnalyticMeshFallback(scene: Scene): Scene {
   let changed = false;
@@ -155,6 +187,350 @@ function sceneWithAnalyticMeshFallback(scene: Scene): Scene {
     return analyticPrimitiveToMesh(primitive);
   });
   return changed ? { ...scene, primitives } : scene;
+}
+
+/**
+ * Consume the declared capability sets as a strict acceptance boundary. The
+ * shared partitioner remains useful as the single kind/shape comparison, but a
+ * professional backend must never publish its lossy warn-and-drop partition.
+ */
+function sceneAcceptedByCapabilities(
+  scene: Scene,
+  capabilities: EngineCapabilities,
+  method: 'setScene' | 'updateEmitter',
+): Scene {
+  const partitioned = partitionSceneBySupport(scene, capabilities);
+  if (partitioned.warnings.length > 0) {
+    throw new TypeError(
+      `[vitrum/walkaround-hybrid] ${method}: scene capability mismatch; ` +
+      `no authored primitive, emitter, analytic shape, or environment may be ` +
+      `silently converted, skipped, or replaced. ${partitioned.warnings.join(' ')}`,
+    );
+  }
+  return partitioned.supported;
+}
+
+const MESH_PATCH_KEYS = new Set([
+  'kind', 'id', 'positions', 'normals', 'uvs', 'uv1', 'uvSets', 'tangents',
+  'colors', 'colorSets', 'indices', 'material', 'transform', 'castShadow',
+]);
+const INSTANCED_MESH_PATCH_KEYS = new Set([
+  'kind', 'id', 'positions', 'normals', 'uvs', 'uv1', 'uvSets', 'tangents',
+  'colors', 'colorSets', 'indices', 'material', 'instances', 'castShadow',
+]);
+const ANALYTIC_PATCH_KEYS = new Set([
+  'kind', 'id', 'shape', 'params', 'material', 'transform', 'castShadow',
+  'fallbackMesh',
+]);
+const SKINNED_MESH_PATCH_KEYS = new Set([
+  'kind', 'id', 'positions', 'normals', 'uvs', 'uv1', 'uvSets', 'tangents',
+  'colors', 'colorSets', 'indices', 'skinIndices', 'skinWeights',
+  'skinInfluencesPerVertex', 'bones', 'boneInverses', 'bindMatrix',
+  'bindMatrixInverse', 'morphTargets', 'morphTargetNormals',
+  'morphTargetTangents', 'morphTargetUvs', 'morphTargetUv1s',
+  'morphTargetUvSets', 'morphWeights', 'material', 'transform', 'castShadow',
+]);
+
+const MATERIAL_PATCH_KEY_RECORD = {
+  baseColor: true,
+  roughness: true,
+  metallic: true,
+  emissive: true,
+  emissiveIntensity: true,
+  shadingModel: true,
+  alphaMode: true,
+  alphaCutoff: true,
+  opacity: true,
+  doubleSided: true,
+  transmission: true,
+  ior: true,
+  attenuationColor: true,
+  attenuationDistance: true,
+  thickness: true,
+  baseColorMap: true,
+  normalMap: true,
+  normalScale: true,
+  roughnessMap: true,
+  metallicMap: true,
+  transmissionMap: true,
+  thicknessMap: true,
+  emissiveMap: true,
+  alphaMap: true,
+  aoMap: true,
+  aoMapIntensity: true,
+  clearcoatMap: true,
+  clearcoatRoughnessMap: true,
+  clearcoatNormalMap: true,
+  clearcoatNormalScale: true,
+  sheenColorMap: true,
+  sheenRoughnessMap: true,
+  iridescenceMap: true,
+  iridescenceThicknessMap: true,
+  anisotropyMap: true,
+  specularColorMap: true,
+  specularIntensityMap: true,
+  bumpMap: true,
+  bumpScale: true,
+  displacementMap: true,
+  displacementScale: true,
+  displacementBias: true,
+  displacementSubdivisions: true,
+  lightMap: true,
+  lightMapIntensity: true,
+  sheen: true,
+  sheenColor: true,
+  sheenRoughness: true,
+  clearcoat: true,
+  clearcoatRoughness: true,
+  iridescence: true,
+  iridescenceIor: true,
+  iridescenceThicknessRange: true,
+  specularIntensity: true,
+  specularColor: true,
+  envMapIntensity: true,
+  spectralAttenuation: true,
+  dispersionAbbeNumber: true,
+  scatteringCoefficient: true,
+  scatteringAnisotropy: true,
+  scatteringCoefficientRGB: true,
+  frontLayer: true,
+  backLayer: true,
+  thinFilmStack: true,
+  anisotropy: true,
+  anisotropyRotation: true,
+  extensions: true,
+} as const satisfies Readonly<Record<keyof MaterialSpec, true>>;
+const MATERIAL_PATCH_KEYS = new Set(Object.keys(MATERIAL_PATCH_KEY_RECORD));
+const SURFACE_LAYER_PATCH_KEYS = new Set([
+  'transmission', 'roughness', 'normalMap', 'normalScale',
+]);
+
+const EMITTER_PATCH_KEYS: Readonly<Record<SceneEmitter['kind'], ReadonlySet<string>>> = {
+  directional: new Set([
+    'kind', 'id', 'color', 'intensity', 'castShadow', 'direction',
+    'angularDiameter',
+  ]),
+  'disc-area': new Set([
+    'kind', 'id', 'color', 'intensity', 'castShadow', 'position', 'normal',
+    'radius',
+  ]),
+  'rect-area': new Set([
+    'kind', 'id', 'color', 'intensity', 'castShadow', 'position', 'uAxis',
+    'vAxis',
+  ]),
+  point: new Set([
+    'kind', 'id', 'color', 'intensity', 'castShadow', 'position', 'distance',
+    'decay',
+  ]),
+  spot: new Set([
+    'kind', 'id', 'color', 'intensity', 'castShadow', 'position', 'direction',
+    'angle', 'penumbra', 'distance', 'decay',
+  ]),
+  'mesh-area': new Set([
+    'kind', 'id', 'color', 'intensity', 'castShadow', 'meshId',
+  ]),
+};
+
+function assertPatchRecord(
+  value: unknown,
+  allowed: ReadonlySet<string>,
+  path: string,
+): asserts value is Record<string, unknown> {
+  if (
+    value == null || typeof value !== 'object' || Array.isArray(value)
+    || ArrayBuffer.isView(value)
+  ) {
+    throw new TypeError(`${path} must be a plain object.`);
+  }
+  for (const key of Object.keys(value)) {
+    if (!allowed.has(key)) {
+      throw new TypeError(`${path}: unknown key "${key}".`);
+    }
+  }
+}
+
+function assertKnownPrimitivePatchKeys(
+  primitive: ScenePrimitive,
+  patch: Partial<ScenePrimitive>,
+  id: string,
+): void {
+  const allowed = primitive.kind === 'mesh'
+    ? MESH_PATCH_KEYS
+    : primitive.kind === 'instanced-mesh'
+      ? INSTANCED_MESH_PATCH_KEYS
+      : primitive.kind === 'analytic'
+        ? ANALYTIC_PATCH_KEYS
+        : SKINNED_MESH_PATCH_KEYS;
+  assertPatchRecord(patch, allowed, `HybridEngine.updatePrimitive("${id}") patch`);
+  const material = (patch as { readonly material?: unknown }).material;
+  if (material !== undefined) {
+    assertPatchRecord(
+      material,
+      MATERIAL_PATCH_KEYS,
+      `HybridEngine.updatePrimitive("${id}") patch.material`,
+    );
+    for (const layerKey of ['frontLayer', 'backLayer'] as const) {
+      const layer = material[layerKey];
+      if (layer !== undefined) {
+        assertPatchRecord(
+          layer,
+          SURFACE_LAYER_PATCH_KEYS,
+          `HybridEngine.updatePrimitive("${id}") patch.material.${layerKey}`,
+        );
+      }
+    }
+    // `material.extensions` is intentionally an open backend-extension map.
+  }
+}
+
+function assertKnownEmitterPatchKeys(
+  emitter: SceneEmitter,
+  patch: Partial<SceneEmitter>,
+  id: string,
+): void {
+  assertPatchRecord(
+    patch,
+    EMITTER_PATCH_KEYS[emitter.kind],
+    `HybridEngine.updateEmitter("${id}") patch`,
+  );
+}
+
+function assertPositiveSafeViewportDimension(value: unknown, label: string): asserts value is number {
+  if (typeof value !== 'number') {
+    throw new TypeError(`${label} must be a number.`);
+  }
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new RangeError(`${label} must be a positive safe integer (got ${String(value)}).`);
+  }
+}
+
+function assertFiniteFrameArray(value: unknown, length: number, label: string): void {
+  if (
+    value == null ||
+    typeof value !== 'object' ||
+    !('length' in value) ||
+    (value as { readonly length?: unknown }).length !== length
+  ) {
+    throw new TypeError(
+      `HybridEngine.renderFrame: ${label} must be an array-like value of length ${length}.`,
+    );
+  }
+  const values = value as ArrayLike<unknown>;
+  for (let index = 0; index < length; index += 1) {
+    const component = values[index];
+    if (typeof component !== 'number' || !Number.isFinite(component)) {
+      throw new RangeError(
+        `HybridEngine.renderFrame: ${label}[${index}] must be finite (got ${String(component)}).`,
+      );
+    }
+  }
+}
+
+function assertFiniteFrameNumber(value: unknown, label: string): asserts value is number {
+  if (typeof value !== 'number') {
+    throw new TypeError(`HybridEngine.renderFrame: ${label} must be a number.`);
+  }
+  if (!Number.isFinite(value)) {
+    throw new RangeError(
+      `HybridEngine.renderFrame: ${label} must be finite (got ${String(value)}).`,
+    );
+  }
+}
+
+function assertFrameU32(value: unknown, label: string): asserts value is number {
+  assertFiniteFrameNumber(value, label);
+  if (!Number.isInteger(value) || value < 0 || value > 0xffffffff) {
+    throw new RangeError(
+      `HybridEngine.renderFrame: ${label} must be an integer in 0..4294967295 (got ${String(value)}).`,
+    );
+  }
+}
+
+/** Validate every host-controlled frame field before renderFrame reads or mutates engine state. */
+function validateHybridFrameInput(input: FrameInput): void {
+  if (input == null || typeof input !== 'object' || Array.isArray(input)) {
+    throw new TypeError('HybridEngine.renderFrame: input must be a FrameInput object.');
+  }
+  assertFiniteFrameArray(input.viewMatrix, 16, 'viewMatrix');
+  assertFiniteFrameArray(input.projMatrix, 16, 'projMatrix');
+  if (input.cameraPosition !== undefined) {
+    assertFiniteFrameArray(input.cameraPosition, 3, 'cameraPosition');
+  }
+  if (input.prevViewMatrix !== undefined) {
+    assertFiniteFrameArray(input.prevViewMatrix, 16, 'prevViewMatrix');
+  }
+  if (input.prevProjMatrix !== undefined) {
+    assertFiniteFrameArray(input.prevProjMatrix, 16, 'prevProjMatrix');
+  }
+  const viewport = input.viewport;
+  if (viewport == null || typeof viewport !== 'object' || Array.isArray(viewport)) {
+    throw new TypeError('HybridEngine.renderFrame: viewport must be an object.');
+  }
+  assertPositiveSafeViewportDimension(
+    viewport.width,
+    'HybridEngine.renderFrame: viewport.width',
+  );
+  assertPositiveSafeViewportDimension(
+    viewport.height,
+    'HybridEngine.renderFrame: viewport.height',
+  );
+  if (typeof viewport.devicePixelRatio !== 'number') {
+    throw new TypeError('HybridEngine.renderFrame: viewport.devicePixelRatio must be a number.');
+  }
+  if (!Number.isFinite(viewport.devicePixelRatio) || viewport.devicePixelRatio <= 0) {
+    throw new RangeError(
+      `HybridEngine.renderFrame: viewport.devicePixelRatio must be finite and > 0 (got ${String(viewport.devicePixelRatio)}).`,
+    );
+  }
+  assertFrameU32(input.frameIndex, 'frameIndex');
+  assertFrameU32(input.frameSeed, 'frameSeed');
+
+  const quality = input.quality;
+  if (quality === undefined) return;
+  if (quality === null || typeof quality !== 'object' || Array.isArray(quality)) {
+    throw new TypeError('HybridEngine.renderFrame: quality must be an object when supplied.');
+  }
+  for (const field of ['samplesTarget', 'bounces'] as const) {
+    const value = quality[field];
+    if (value === undefined) continue;
+    assertFiniteFrameNumber(value, `quality.${field}`);
+    if (!Number.isInteger(value)) {
+      throw new RangeError(
+        `HybridEngine.renderFrame: quality.${field} must be an integer (got ${String(value)}).`,
+      );
+    }
+  }
+  if (quality.resolutionFactor !== undefined) {
+    assertFiniteFrameNumber(quality.resolutionFactor, 'quality.resolutionFactor');
+  }
+  if (quality.exposure !== undefined) {
+    assertFiniteFrameNumber(quality.exposure, 'quality.exposure');
+    if (quality.exposure < 0) {
+      throw new RangeError(
+        `HybridEngine.renderFrame: quality.exposure must be >= 0 (got ${String(quality.exposure)}).`,
+      );
+    }
+  }
+  if (quality.filteredGlossyFactor !== undefined) {
+    assertFiniteFrameNumber(quality.filteredGlossyFactor, 'quality.filteredGlossyFactor');
+  }
+  if (
+    quality.tonemap !== undefined &&
+    !['aces', 'agx', 'reinhard', 'linear', 'none'].includes(quality.tonemap)
+  ) {
+    throw new RangeError(
+      `HybridEngine.renderFrame: quality.tonemap is unsupported (got ${String(quality.tonemap)}).`,
+    );
+  }
+  if (
+    quality.outputColorSpace !== undefined &&
+    quality.outputColorSpace !== 'srgb' &&
+    quality.outputColorSpace !== 'linear'
+  ) {
+    throw new RangeError(
+      `HybridEngine.renderFrame: quality.outputColorSpace is unsupported (got ${String(quality.outputColorSpace)}).`,
+    );
+  }
 }
 
 // Re-export the option / lighting interfaces from their dedicated module so
@@ -182,12 +558,36 @@ export { validateHybridEngineOptions, deriveHybridEngineConfig };
 // `readRgba16fWalkaround` moved to `src/util/gpuReadback.ts` (R3 B-chain step 2).
 // Re-imported above.
 
-function buildWalkaroundExperimentalFeatures(cfg: ParsedHybridEngineConfig): ReadonlySet<string> {
-  const features = new Set<string>(['svgf-real-conservative-objid']);
-  if (cfg.restirPtReuse === 1) features.add('walkaround-hybrid-gris-unbiased-reuse');
+function buildWalkaroundActiveFeatures(
+  opts: HybridEngineOptions,
+  cfg: ParsedHybridEngineConfig,
+): ReadonlySet<EngineFeatureId> {
+  const features = new Set<EngineFeatureId>();
+  if (cfg.grisReuse === 1) features.add('walkaround-hybrid-gris-ddgi-proxy-reuse');
   if (cfg.ppgEnabled === 1) features.add('walkaround-hybrid-ppg-guided-gi');
-  if (cfg.nrcEnabled === 1) features.add('walkaround-hybrid-nrc-biased-cache');
-  if (cfg.denoiser === 'neural') features.add('walkaround-hybrid-neural-denoiser-host-weights');
+  if (cfg.nrcEnabled === 1) features.add('walkaround-hybrid-nrc');
+  if (opts.rcEnabled === true) features.add('walkaround-hybrid-radiance-cascades');
+  if (cfg.regirConfig?.enabled === true) features.add('walkaround-hybrid-regir');
+  if (opts.gpuSkinning === true) features.add('walkaround-hybrid-gpu-skinning');
+  if (opts.causticStrategy === 'refractive-trace') {
+    features.add('walkaround-hybrid-refractive-trace-caustics');
+  } else if (opts.causticStrategy === 'manifold-nee') {
+    features.add('walkaround-hybrid-manifold-nee-caustics');
+  }
+  if (cfg.denoiser !== 'none') {
+    const denoiserFeatures: Record<
+      Exclude<ParsedHybridEngineConfig['denoiser'], 'none'>,
+      EngineFeatureId
+    > = {
+      atrous: 'walkaround-hybrid-denoiser-atrous',
+      'atrous-variance': 'walkaround-hybrid-denoiser-atrous-variance',
+      'svgf-real': 'walkaround-hybrid-denoiser-svgf-real',
+      bmfr: 'walkaround-hybrid-denoiser-bmfr',
+      neural: 'walkaround-hybrid-denoiser-neural',
+      'oidn-final': 'walkaround-hybrid-denoiser-oidn-final',
+    };
+    features.add(denoiserFeatures[cfg.denoiser]);
+  }
   return features;
 }
 
@@ -196,13 +596,19 @@ function buildWalkaroundSupportDetails(
   cfg: ParsedHybridEngineConfig,
 ): NonNullable<EngineCapabilities['supportDetails']> {
   const base = BACKEND_PROMISE_LEDGER['walkaround-hybrid'].supportDetails;
-  const fullTierWeights = opts.tier !== 'lite' && cfg.neuralWeights != null;
-  if (fullTierWeights && cfg.neuralCheckpointAssessment.productionReady) return base;
+  const certifiedFullTierWeights =
+    opts.tier !== 'lite' &&
+    cfg.neuralWeights != null &&
+    cfg.neuralCheckpointAssessment.productionReady;
   return {
     ...base,
+    denoiserSpatialShapeRequirements: {
+      ...base.denoiserSpatialShapeRequirements,
+      neural: WALKAROUND_NEURAL_DENOISER_SHAPE_REQUIREMENT,
+    },
     denoisers: {
       ...base.denoisers,
-      neural: fullTierWeights ? 'approximate' : 'unsupported',
+      neural: certifiedFullTierWeights ? base.denoisers.neural : 'unsupported',
     },
   };
 }
@@ -212,7 +618,6 @@ function buildWalkaroundSupportDetails(
 // ────────────────────────────────────────────────────────────────────────────
 
 export class HybridEngine implements Engine {
-
   // ── Engine contract fields ─────────────────────────────────────────────
   private _state: EngineState = 'uninitialized';
   readonly capabilities: EngineCapabilities;
@@ -222,7 +627,7 @@ export class HybridEngine implements Engine {
   }
 
   // ── Creation-time options (immutable after construction) ───────────────
-  private readonly _device:               GPUDevice;
+  private readonly _device: GPUDevice;
   // Mutable since T-resize: the host calls `setSize()` whenever the
   // canvas resizes; the pipeline reallocates its FrameResources without
   // a full engine teardown. See `setSize()` for the resize contract.
@@ -235,11 +640,8 @@ export class HybridEngine implements Engine {
   // The two are kept in sync by `setSize` (recomputes internal from the last
   // factor) and by the per-frame `quality.resolutionFactor` path in
   // `HybridEngineFrameOrchestrator` (debounced internal resize).
-  private _width:                number;
-  private _height:               number;
-  /** Fires the one-time `FrameInput.viewport`-ignored dev warning at most once
-   *  per engine instance (see {@link renderFrame}). */
-  private _viewportMismatchWarned = false;
+  private _width: number;
+  private _height: number;
   /** Fires environment-resolution warnings at most once per engine instance
    *  (see {@link _skyScalarsFromEnvironment}). */
   private _proceduralSkyWarned = false;
@@ -249,17 +651,17 @@ export class HybridEngine implements Engine {
    * inline. The private `_warn*` methods below delegate to it; the engine's
    * `_warn` (console + subscriber fan-out) is injected as the sink.
    */
-  private readonly _materialWarner = new MaterialApproximationWarner(
-    (warning) => this._warn(warning),
+  private readonly _materialWarner = new MaterialApproximationWarner((warning) =>
+    this._warn(warning),
   );
   /** Internal render width = `_width × _resolutionFactor`. Drives compute
    *  dispatch + UBO `screenSize`; the composite upscales to `_width`. */
-  private _internalWidth:        number;
+  private _internalWidth: number;
   /** Internal render height = `_height × _resolutionFactor`. */
-  private _internalHeight:       number;
+  private _internalHeight: number;
   /** Last-seen `FrameInput.quality.resolutionFactor` (clamped to (0,1]).
    *  Default 1.0 (internal == canvas). */
-  private _resolutionFactor:     number = 1.0;
+  private _resolutionFactor: number = 1.0;
   /** `performance.now()` of the last accepted resolution-factor resize, for
    *  the debounce that prevents accumulator thrash (Risk R5). */
   private _lastResolutionResizeTs: number = 0;
@@ -267,14 +669,25 @@ export class HybridEngine implements Engine {
    *  updateEnvironment() to reduce opaque HDRI handles into the diffuse
    *  sky-dome scalars this backend consumes. */
   private readonly _environmentResolverExtensions: HybridEnvironmentResolverExtensions | null;
+  /** Last environment payload resolved and validated before scene publication.
+   * Reused by async init so an opaque-handle resolver is called exactly once
+   * per authored mutation and cannot fail after live scene state has changed. */
+  private _resolvedEnvironment: HybridResolvedEnvironment = {
+    mode: 'none',
+    skyIrradiance: 0,
+    warnings: [],
+  };
   /** Optional host readiness predicate. Core mesh presence remains required. */
-  private readonly _isSceneReady:         () => boolean;
+  private readonly _isSceneReady: () => boolean;
   // Lighting fields are NOT readonly — updateLighting() mutates them at runtime.
-  private _primaryLightDir:               [number, number, number];
-  private _primaryLightIntensity:         number;
-  private _skyTint:                       [number, number, number];
-  private _skyIrradiance:                 number;
-  private readonly _ctorLights:           readonly DDGILight[];
+  private _primaryLightDir: [number, number, number];
+  private _primaryLightIntensity: number;
+  private _skyTint: [number, number, number];
+  private _skyIrradiance: number;
+  private readonly _ctorLights: readonly DDGILight[];
+  /** Resolved caustic estimator. `refractive-trace` is a bounded realtime
+   * path sampler and is intentionally not labelled as manifold NEE. */
+  private readonly _causticStrategy: EngineCapabilities['causticStrategy'];
 
   /** Rolling window of per-frame timings (newest last, cap 240 entries).
    *  Only populated when `debug === true`. Hosts that want a UI gauge
@@ -337,6 +750,14 @@ export class HybridEngine implements Engine {
   }
 
   /**
+   * Snapshot the live Neural Radiance Cache health/cadence counters.
+   * Returns `null` when NRC is disabled or the pipeline has not reached ready.
+   */
+  getNrcDiagnostics(): NrcDiagnostics | null {
+    return this._pipeline?.getNrcDiagnostics() ?? null;
+  }
+
+  /**
    * Runtime DDGI probe-update divisor (round-robin stride) setter. The
    * construction-time value comes from the quality preset / `ddgiUpdateDivisor`
    * option; this lets a host (or the adaptive frame-budget controller) retune
@@ -362,14 +783,17 @@ export class HybridEngine implements Engine {
    * fps, etc. See {@link FrameBudgetControllerConfig}.
    */
   enableFrameBudget(config: Partial<FrameBudgetControllerConfig> = {}): void {
-    this._frameBudget = new FrameBudgetController({
-      adaptPpgDispatchInterval: this._cfg.ppgEnabled === 1,
-      ...config,
-    }, {
-      resolutionFactor: this._resolutionFactor,
-      ddgiStride: this._cfg.ddgiUpdateDivisor,
-      ppgDispatchInterval: this._cfg.ppgDispatchInterval,
-    });
+    this._frameBudget = new FrameBudgetController(
+      {
+        adaptPpgDispatchInterval: this._cfg.ppgEnabled === 1,
+        ...config,
+      },
+      {
+        resolutionFactor: this._resolutionFactor,
+        ddgiStride: this._cfg.ddgiUpdateDivisor,
+        ppgDispatchInterval: this._ppgDispatchInterval,
+      },
+    );
   }
 
   /** Opt-out: turn OFF the adaptive frame-budget controller. The knobs are left
@@ -423,7 +847,9 @@ export class HybridEngine implements Engine {
    * frame-budget controller and host A/B knobs.
    */
   setPpgDispatchInterval(interval: number): void {
-    this._pipeline?.setPpgDispatchInterval(interval);
+    const resolved = resolvePpgDispatchInterval(interval);
+    this._ppgDispatchInterval = resolved;
+    this._pipeline?.setPpgDispatchInterval(resolved);
   }
 
   /**
@@ -440,6 +866,10 @@ export class HybridEngine implements Engine {
    * field below because it changes after construction.
    */
   private readonly _cfg: ParsedHybridEngineConfig;
+  /** Runtime PPG cadence retained independently of pipeline lifetime. The init
+   *  host reads this live value, so pre-init calls and reset/rebuild cycles
+   *  preserve the host's latest setting. */
+  private _ppgDispatchInterval: number;
   /** Dev A/B — mirrors `engine.debug.setDenoiserEnabled` (default on). */
   private _denoiserPassEnabled = true;
 
@@ -458,8 +888,8 @@ export class HybridEngine implements Engine {
   private _scaledIndirectFireflyClamp: readonly [number, number, number] | null = null;
 
   // ── Pipeline state ─────────────────────────────────────────────────────
-  private _pipeline:    WalkaroundGPUPipeline | null = null;
-  private _bvhBuffers:  SceneBVHBuffers | null       = null;
+  private _pipeline: WalkaroundGPUPipeline | null = null;
+  private _bvhBuffers: SceneBVHBuffers | null = null;
 
   // ── Scene (from @vitrum/core contract) ────────────────────────────────
   /** Last authored scene accepted via `setScene()`. Incremental updates patch
@@ -477,8 +907,12 @@ export class HybridEngine implements Engine {
   private _lastFrameCamera: PickCamera | null = null;
 
   // ── DDGI subsystem ─────────────────────────────────────────────────────
-  private _ddgi:    DDGI;
-  private _ddgiOn:  boolean = true;
+  private _ddgi: DDGI;
+  /** Once-only conflict-warning state shared by init and incremental lighting
+   *  sync for this engine instance. */
+  private readonly _hostSunWarningState: HostSunWarningState =
+    createHostSunWarningState();
+  private _ddgiOn: boolean = true;
 
   // ── Adaptive frame-budget controller (opt-in; Phase IV.1 / review gap D1) ─
   /** Lazily-created on the first {@link enableFrameBudget}/{@link tickFrameBudget}
@@ -497,21 +931,19 @@ export class HybridEngine implements Engine {
 
   // ── Diagnostic counters (debug only) ──────────────────────────────────
   private _dbg = {
-    initStart:          0,
-    initCount:          0,
-    disposeCount:       0,
-    skipNoPipeline:     0,
-    skipNoBvh:          0,
-    skipNoSwapView:     0,
-    skipFrameInterval:  0,
-    framesDispatched:   0,
-    lastReportTs:       0,
+    initStart: 0,
+    initCount: 0,
+    disposeCount: 0,
+    skipNoPipeline: 0,
+    skipNoBvh: 0,
+    skipNoSwapView: 0,
+    skipFrameInterval: 0,
+    framesDispatched: 0,
+    lastReportTs: 0,
   };
 
   // ── Layer toggles (debug console interface) ────────────────────────────
-  private _layerEnabled: Map<string, boolean> = new Map([
-    ['ddgi', true],
-  ]);
+  private _layerEnabled: Map<HybridRenderLayer, boolean> = new Map([['ddgi', true]]);
 
   // ── Pipeline init coordinator (see HybridEngineLifecycle.ts) ──────────
   //
@@ -544,7 +976,10 @@ export class HybridEngine implements Engine {
     // runtime state (device handle, size, lighting, accumulators, the rebuild-
     // key fingerprint) gets its own field.
     const cfg = parseHybridEngineOptions(opts);
+    assertHybridDeviceCapableIfReported(opts.device.limits);
+    if (cfg.nrcEnabled === 1) assertNrcDeviceCapableIfReported(opts.device.limits);
     this._cfg = cfg;
+    this._ppgDispatchInterval = cfg.ppgDispatchInterval;
     if (opts.onWarning != null) {
       this._warningSubs.push(opts.onWarning);
     }
@@ -568,6 +1003,8 @@ export class HybridEngine implements Engine {
           defaultEnabled: r.defaultEnabled,
           neuralCheckpointProductionReady: r.neuralCheckpointProductionReady,
           neuralCheckpointMissing: r.neuralCheckpointMissing,
+          neuralDeviceFailure: r.neuralDeviceFailure,
+          neuralTensorPrecision: r.neuralTensorPrecision,
         },
       });
     }
@@ -577,9 +1014,9 @@ export class HybridEngine implements Engine {
     // the three scalar clamps has a subsystem sub-object, so `opts.tuning` is
     // the only override path; `indirectFireflyClamp` is its own top-level field.
     this._clampHostExplicit = {
-      restirGiIrrClamp:     opts.tuning?.restirGiIrrClamp !== undefined,
-      directFireflyClamp:   opts.tuning?.directFireflyClamp !== undefined,
-      emitterDist2Floor:    opts.tuning?.emitterDist2Floor !== undefined,
+      restirGiIrrClamp: opts.tuning?.restirGiIrrClamp !== undefined,
+      directFireflyClamp: opts.tuning?.directFireflyClamp !== undefined,
+      emitterDist2Floor: opts.tuning?.emitterDist2Floor !== undefined,
       indirectFireflyClamp: opts.indirectFireflyClamp !== undefined,
     };
 
@@ -592,42 +1029,13 @@ export class HybridEngine implements Engine {
     // EMA converges to infinite diffuse bounces). Intermediate/large values
     // (2, 3, 4, …) are all identical to the default >= 2 regime because the EMA
     // converges to the bounce limit regardless of the integer value — only the
-    // 1-vs-many distinction is meaningful. Warn only when the value cannot be
-    // honoured as authored (non-finite, == 0, or negative is treated as
-    // direct-only).
-    const authoredMaxBounces = opts.maxBounces;
-    if (authoredMaxBounces !== undefined && (!Number.isFinite(authoredMaxBounces) || authoredMaxBounces < 1)) {
-      this._warn({
-        code: 'walkaround-hybrid.max-bounces-clamped',
-        backend: 'walkaround-hybrid',
-        phase: 'construction',
-        method: 'createWalkaroundEngine_Hybrid',
-        message:
-          `[HybridEngine] maxBounces=${String(authoredMaxBounces)} is not a valid positive value and is treated as ` +
-        `1 (direct-only DDGI probes). The walkaround engine is not a path tracer; ` +
-        `maxBounces gates the DDGI diffuse multi-bounce feedback (1 = direct-only, ` +
-        `>= 2 = infinite-bounce diffuse equilibrium), not a per-ray bounce count.`,
-        details: { requested: authoredMaxBounces, clampedTo: cfg.maxBounces },
-      });
-    }
-    // H46 — causticStrategy: walkaround always reports 'none' in capabilities.
-    // Non-'none' strategies are not implemented for this backend.
-    if ((opts as { causticStrategy?: string }).causticStrategy != null &&
-        (opts as { causticStrategy?: string }).causticStrategy !== 'none') {
-      const strategy = (opts as { causticStrategy?: string }).causticStrategy;
-      this._warn({
-        code: 'walkaround-hybrid.unsupported-caustic-strategy',
-        backend: 'walkaround-hybrid',
-        phase: 'construction',
-        method: 'createWalkaroundEngine_Hybrid',
-        message:
-          `[HybridEngine] causticStrategy='${strategy}' ` +
-        `is not supported by the walkaround-hybrid engine. ` +
-        `This engine always reports causticStrategy:'none' in capabilities. ` +
-        `Use pt-webgpu or pt-webgl2 for manifold-nee/photon-map caustics.`,
-        details: { requested: strategy },
-      });
-    }
+    // 1-vs-many distinction is meaningful. Invalid values are rejected by
+    // parseHybridEngineOptions before any engine/GPU state is created.
+    const requestedCausticStrategy = opts.causticStrategy ?? 'none';
+    this._causticStrategy = requestedCausticStrategy === 'refractive-trace' ||
+      requestedCausticStrategy === 'manifold-nee'
+      ? requestedCausticStrategy
+      : 'none';
     // H46 — maxSamplesPerPixel is a converged-PT structural cap. walkaround is a
     // realtime single-frame GI engine (capabilities.accumulates=false), so there
     // is no SPP accumulator to size or clamp. Warn when a host supplies it rather
@@ -640,36 +1048,25 @@ export class HybridEngine implements Engine {
         method: 'createWalkaroundEngine_Hybrid',
         message:
           `[HybridEngine] maxSamplesPerPixel=${opts.maxSamplesPerPixel} is ignored by ` +
-        `walkaround-hybrid. This backend does not progressively accumulate samples ` +
-        `(capabilities.accumulates=false); use FrameInput quality knobs or a path-tracing ` +
-        `backend for SPP caps.`,
+          `walkaround-hybrid. This backend does not progressively accumulate samples ` +
+          `(capabilities.accumulates=false); use FrameInput quality knobs or a path-tracing ` +
+          `backend for SPP caps.`,
         details: { requested: opts.maxSamplesPerPixel },
-      });
-    }
-    if (opts.causticOptions !== undefined) {
-      this._warn({
-        code: 'walkaround-hybrid.unsupported-caustic-options',
-        backend: 'walkaround-hybrid',
-        phase: 'construction',
-        method: 'createWalkaroundEngine_Hybrid',
-        message:
-          `[HybridEngine] causticOptions were provided but walkaround-hybrid does ` +
-        `not implement causticStrategy modes. The causticOptions object is ignored.`,
-        details: { keys: Object.keys(opts.causticOptions) },
       });
     }
     if (opts.nrcEnabled === true) {
       this._warn({
-        code: 'walkaround-hybrid.nrc-experimental-biased',
+        code: 'walkaround-hybrid.nrc-biased-estimator-enabled',
         backend: 'walkaround-hybrid',
         phase: 'construction',
         method: 'createWalkaroundEngine_Hybrid',
         message:
-          `[HybridEngine] nrcEnabled:true enables the opt-in Neural Radiance ` +
-          `Cache. NRC is a biased experimental radiance cache for realtime GI; ` +
-          `the default remains disabled and hosts should validate quality before ` +
-          `using it in production scenes.`,
+          `[HybridEngine] nrcEnabled:true enables the stable opt-in Neural Radiance ` +
+          `Cache. NRC is a biased radiance-cache estimator for realtime GI; its ` +
+          `default-disabled posture is product policy, and the estimator bias is ` +
+          `disclosed so hosts can make an informed scene-quality choice.`,
         details: {
+          implementationStatus: 'stable',
           nrcEnabled: true,
           defaultEnabled: false,
           estimator: 'biased',
@@ -683,11 +1080,12 @@ export class HybridEngine implements Engine {
         phase: 'construction',
         method: 'createWalkaroundEngine_Hybrid',
         message:
-          `[HybridEngine] denoiser:'neural' is an opt-in GPU U-Net path that ` +
-          `requires host-provided, scene-validated weights. The package does ` +
-          `not ship production neural weights or enable neural by default; ` +
-          `non-production checkpoint metadata is reported as approximate support.`,
+          `[HybridEngine] denoiser:'neural' is a stable GPU U-Net runtime that ` +
+          `requires a host-supplied certified v2 checkpoint. The package bundles ` +
+          `no certified weights and does not enable neural by default; uncertified ` +
+          `or legacy checkpoints are rejected.`,
         details: {
+          implementationStatus: 'stable',
           denoiser: 'neural',
           weightsRequired: true,
           packageProvidesProductionWeights: false,
@@ -698,25 +1096,23 @@ export class HybridEngine implements Engine {
       });
     }
 
-    this._device                = opts.device;
-    this._width                 = opts.width;
-    this._height                = opts.height;
+    this._device = opts.device;
+    this._width = opts.width;
+    this._height = opts.height;
     // Phase-0 — the quality preset supplies the INITIAL internal-resolution
     // factor. A per-frame `quality.resolutionFactor` still overrides at runtime
     // (`_applyResolutionFactor`); this is just the starting point so a
     // `qualityTier:'low'` engine boots at 0.5 internal res.
-    this._resolutionFactor      = cfg.resolutionFactor;
-    this._internalWidth         = Math.max(1, Math.round(opts.width * cfg.resolutionFactor));
-    this._internalHeight        = Math.max(1, Math.round(opts.height * cfg.resolutionFactor));
-    this._skinning              = opts.gpuSkinning
-      ? new GpuSkinningSubsystem(opts.device, true)
-      : null;
+    this._resolutionFactor = cfg.resolutionFactor;
+    this._internalWidth = Math.max(1, Math.round(opts.width * cfg.resolutionFactor));
+    this._internalHeight = Math.max(1, Math.round(opts.height * cfg.resolutionFactor));
+    this._skinning = opts.gpuSkinning ? new GpuSkinningSubsystem(opts.device, true) : null;
     this._environmentResolverExtensions = opts.extensions ?? null;
-    this._primaryLightDir       = opts.primaryLightDir;
+    this._primaryLightDir = opts.primaryLightDir;
     this._primaryLightIntensity = opts.primaryLightIntensity;
-    this._skyTint               = opts.skyTint;
-    this._skyIrradiance         = opts.skyIrradiance;
-    this._isSceneReady          = opts.isSceneReady ?? (() => true);
+    this._skyTint = opts.skyTint;
+    this._skyIrradiance = opts.skyIrradiance;
+    this._isSceneReady = opts.isSceneReady ?? (() => true);
 
     // `_rebuildKeyFingerprintSeen` is the one rebuild-key value that MUTATES
     // post-construction (`consumeRebuildKeyChange` rewrites it), so it stays a
@@ -743,29 +1139,37 @@ export class HybridEngine implements Engine {
       this._ddgi.setLights(orientDdgiSunLights(this._ctorLights, this._primaryLightDir));
     }
 
-    // W8 Phase 2 — opt-in RC subsystem. RCSubsystem owns its own BVH +
-    // cascade GPUBuffers. setScene() rebuilds them when the source scene
-    // changes; dispatch happens per-frame in renderFrame() below.
+    // Opt-in RC subsystem. Its cascade buffers and compact material/TLAS
+    // adapter are private, while BLAS geometry is borrowed from the canonical
+    // pipeline scene arena after initialization. Dispatch remains per-frame.
     if (opts.rcEnabled === true) {
       // B3b — Cornell-tuned CASCADE_DIMS default lives in walkaround-rc;
       // hosts override via opts.cascadeDims for non-Cornell aspect ratios
       // or scene scales.
-      this._rc = opts.cascadeDims !== undefined
-        ? new RCSubsystem(this._device, opts.cascadeDims, { onWarning: (warning) => this._warn(warning) })
-        : new RCSubsystem(this._device, undefined, { onWarning: (warning) => this._warn(warning) });
+      this._rc =
+        opts.cascadeDims !== undefined
+          ? new RCSubsystem(this._device, opts.cascadeDims, {
+              onWarning: (warning) => this._warn(warning),
+              transmittedInterfaceBudget: cfg.rcTransmittedInterfaceBudget,
+            })
+          : new RCSubsystem(this._device, undefined, {
+              onWarning: (warning) => this._warn(warning),
+              transmittedInterfaceBudget: cfg.rcTransmittedInterfaceBudget,
+            });
       // W8 Phase 3 — host-overridable MIS weight (default 0.5 = equal
       // mix with ReSTIR-GI). When rcEnabled is false the weight stays 0
       // and pipeline.setRCInputs(null) routes the bind group to the
       // placeholder buffers (rcParams.enabled = 0u short-circuits the
       // shader's sample to vec3f(0)).
-      this._rcWeight = Math.max(0, Math.min(1, opts.rcWeight ?? 0.5));
+      const rcWeight = opts.rcWeight;
+      this._rcWeight = Number.isFinite(rcWeight) ? Math.max(0, Math.min(1, rcWeight!)) : 0.5;
     }
 
     this.capabilities = {
       // Incremental scene patches are implemented: transform/positions fast
       // paths plus full-rebuild fallbacks for material/topology edits, and
       // emitter patching via scene-level rebuild.
-      supportsIncrementalScene:  true,
+      supportsIncrementalScene: true,
       incrementalPatchSupport: {
         transform: true,
         positions: true,
@@ -788,29 +1192,37 @@ export class HybridEngine implements Engine {
       // primitive). Kept in sync with the walkaround-hybrid row in
       // @vitrum/core's BACKEND_PROMISE_LEDGER.
       supportsAddRemovePrimitive: true,
-      // supportsAuxBuffers is false: the contract flag means variance AND
-      // motionVectors are exposed; walkaround never exposes variance from its
-      // FrameOutput wiring (the Welford buffer is internal, not in FrameOutput).
-      // Kept in sync with the walkaround-hybrid ledger row in @vitrum/core's
-      // BACKEND_PROMISE_LEDGER (plan/v1-closure-plan-2026-06-10.md).
-      supportsAuxBuffers:        false,
+      // All four full-resolution auxiliary signals are surfaced on rendered
+      // frames, including the freshest side of the Welford variance ping-pong.
+      supportsAuxBuffers: true,
       // The post-denoise resolvedTexture is exposed via getProgressiveSeedTexture()
       // as the seed source for progressive walkaround→PT handoff (P8).
       supportsProgressiveSeedSource: true,
-      accumulates:               false,
-      maxSamplesPerPixel:        Infinity,
+      accumulates: false,
+      maxSamplesPerPixel: Infinity,
       // H46-A — echoes the authored value. SEMANTICS for this realtime stack:
       // this is NOT a path-tracer per-ray bounce cap. 1 ⇒ direct-only DDGI
       // probes; >= 2 ⇒ infinite-bounce diffuse equilibrium (the atlas EMA). All
       // values >= 2 behave identically (the EMA converges regardless of the
       // integer). See the construction-site gate `setIndirectFeedback`.
-      maxBounces:                this._cfg.maxBounces,
-      supportedAnalyticShapes:   new Set<AnalyticShape>(['sphere', 'box', 'capsule', 'cylinder', 'h-channel-came']),
+      maxBounces: this._cfg.maxBounces,
+      supportedAnalyticShapes: new Set<AnalyticShape>([
+        'sphere',
+        'box',
+        'capsule',
+        'cylinder',
+        'h-channel-came',
+      ]),
       // BVH + DDGI ingest via a render-scene view. Mesh/skinned/instanced-mesh
       // flow through directly; analytic primitives are accepted in the authored
       // scene and converted to deterministic MeshPrimitive fallbacks before
       // ReSTIR / DDGI / RC consume them.
-      supportedPrimitiveKinds:   new Set<ScenePrimitive['kind']>(['mesh', 'skinned-mesh', 'instanced-mesh', 'analytic']),
+      supportedPrimitiveKinds: new Set<ScenePrimitive['kind']>([
+        'mesh',
+        'skinned-mesh',
+        'instanced-mesh',
+        'analytic',
+      ]),
       // Emitter kinds that genuinely reach a renderable state:
       //   - rect-area / disc-area → harvested as ReSTIR-DI direct emitter tris
       //     from core emitter data AND projected
@@ -834,7 +1246,7 @@ export class HybridEngine implements Engine {
       //     still drives the shade-side Lo_emit via the WalkaroundUBO config
       //     path (primaryLightDir/Intensity) — those remain host config, not
       //     derived from the emitter, so there is no shade-side double-count.
-      supportedEmitterKinds:     new Set<SceneEmitter['kind']>([
+      supportedEmitterKinds: new Set<SceneEmitter['kind']>([
         'directional',
         'rect-area',
         'disc-area',
@@ -845,16 +1257,17 @@ export class HybridEngine implements Engine {
       // procedural-sky bakes through resolveHybridEnvironment into a finite
       // Preetham equirect + CDF. It remains approximate due model/resolution
       // limits, not because turbidity/rayleigh/mie are dropped.
-      supportedEnvironmentKinds: new Set<SceneEnvironment['kind']>(['none', 'hdri', 'procedural-sky']),
-      presentationMode:          'swapchain-required',
-      supportDetails:            buildWalkaroundSupportDetails(opts, this._cfg),
-      experimentalFeatures:      buildWalkaroundExperimentalFeatures(this._cfg),
-      // RFE-05: Real-time caustic strategies (MNEE / photon-map) are not
-      // compatible with the walkaround engine's frame cadence; the walkaround
-      // engine always reports 'none'. Track via
-      // external_requests/05-manifold-nee.md §4 for the approved approximation
-      // path if real-time caustic approximation is added.
-      causticStrategy: 'none',
+      supportedEnvironmentKinds: new Set<SceneEnvironment['kind']>([
+        'none',
+        'hdri',
+        'procedural-sky',
+      ]),
+      presentationMode: 'swapchain-required',
+      supportDetails: buildWalkaroundSupportDetails(opts, this._cfg),
+      activeFeatures: buildWalkaroundActiveFeatures(opts, this._cfg),
+      // Exact selected estimator identity. `refractive-trace` is the bounded
+      // realtime path sampler in refractiveCaustics.wgsl.ts, not MNEE.
+      causticStrategy: this._causticStrategy,
       // W3-D8 — this engine ships a `debug` surface (DDGI atlases, BVH nodes,
       // GI signal textures, and now estimatedGpuMemoryBytes). Hosts can
       // structurally opt-in to the dev-overlay panel without typeof-checking
@@ -899,8 +1312,8 @@ export class HybridEngine implements Engine {
       const rawError = gpuEvent.error;
       // eslint-disable-next-line @typescript-eslint/no-base-to-string -- fallback stringification of GPUUncapturedErrorEvent; acceptable for diagnostic messages
       const message = rawError?.message ?? String(event);
-      const kind: EngineError['kind'] = rawError != null &&
-        rawError.constructor?.name === 'GPUInternalError'
+      const kind: EngineError['kind'] =
+        rawError != null && rawError.constructor?.name === 'GPUInternalError'
           ? 'gpu-internal'
           : 'gpu-validation';
       const lastFrame = this._errorThrottleMap.get(message) ?? -Infinity;
@@ -912,16 +1325,20 @@ export class HybridEngine implements Engine {
     opts.device.addEventListener('uncapturederror', this._onUncapturedError);
 
     // device.lost: fatal transition to 'error' state.
-    opts.device.lost.then((info: { reason?: string; message?: string }) => {
-      if (this._state === 'disposed') return;
-      this._state = 'error';
-      this._emitError({
-        kind: 'device-lost',
-        message: info.message ?? `GPUDevice lost (reason: ${info.reason ?? 'unknown'})`,
-        fatal: true,
-        raw: info,
+    opts.device.lost
+      .then((info: { reason?: string; message?: string }) => {
+        if (this._state === 'disposed') return;
+        this._state = 'error';
+        this._emitError({
+          kind: 'device-lost',
+          message: info.message ?? `GPUDevice lost (reason: ${info.reason ?? 'unknown'})`,
+          fatal: true,
+          raw: info,
+        });
+      })
+      .catch(() => {
+        /* spec says it shouldn't reject; guard defensively */
       });
-    }).catch(() => { /* spec says it shouldn't reject; guard defensively */ });
   }
 
   // ── Scene management ───────────────────────────────────────────────────
@@ -937,48 +1354,6 @@ export class HybridEngine implements Engine {
     primitiveFields: readonly UnconsumedMaterialPrimitiveFields[] = [],
   ): void {
     this._materialWarner.warnUnconsumedMaterialFields(fields, method, primitiveFields);
-  }
-
-  private _warnApproximateAlphaBlendPrimitiveIds(
-    primitiveIds: readonly string[],
-    method: 'setScene' | 'updatePrimitive',
-  ): void {
-    this._materialWarner.warnApproximateAlphaBlendPrimitiveIds(primitiveIds, method);
-  }
-
-  private _warnApproximateEmissiveMapTexelPdfPrimitiveIds(
-    primitiveIds: readonly string[],
-    method: 'setScene' | 'updatePrimitive' | 'updateEmitter',
-  ): void {
-    this._materialWarner.warnApproximateEmissiveMapTexelPdfPrimitiveIds(primitiveIds, method);
-  }
-
-  private _warnApproximateLightMapPrimitiveIds(
-    primitiveIds: readonly string[],
-    method: 'setScene' | 'updatePrimitive',
-  ): void {
-    this._materialWarner.warnApproximateLightMapPrimitiveIds(primitiveIds, method);
-  }
-
-  private _warnApproximateRichMaterialPrimitiveFields(
-    primitiveFields: readonly ApproximateRichMaterialPrimitiveFields[],
-    method: 'setScene' | 'updatePrimitive',
-  ): void {
-    this._materialWarner.warnApproximateRichMaterialPrimitiveFields(primitiveFields, method);
-  }
-
-  private _warnApproximateVolumeLayerPrimitiveFields(
-    primitiveFields: readonly ApproximateVolumeLayerPrimitiveFields[],
-    method: 'setScene' | 'updatePrimitive',
-  ): void {
-    this._materialWarner.warnApproximateVolumeLayerPrimitiveFields(primitiveFields, method);
-  }
-
-  private _warnReservedReceiveShadowPrimitiveIds(
-    primitiveIds: readonly string[],
-    method: 'setScene' | 'updatePrimitive',
-  ): void {
-    this._materialWarner.warnReservedReceiveShadowPrimitiveIds(primitiveIds, method);
   }
 
   private _warnMaterialTextureAtlasDiagnostics(
@@ -998,8 +1373,9 @@ export class HybridEngine implements Engine {
    * **Host guidance:** pass a canonical `@vitrum/core` Scene. Host-specific
    * scene adapters live outside this package.
    *
-   * **Capability filter + analytic fallback:** the scene is first partitioned
-   * against this engine's declared `supported*Kinds` (warn + skip). Supported
+   * **Capability validation + analytic fallback:** the scene is checked
+   * against this engine's declared `supported*Kinds`; any mismatch throws.
+   * Supported
    * analytic primitives stay in the authored `_lastScene`, then `_renderScene`
    * replaces them with generated MeshPrimitive fallbacks before the BVH/GI
    * ingestion path runs.
@@ -1010,96 +1386,51 @@ export class HybridEngine implements Engine {
     if (this._state === 'disposed') {
       throw new Error('HybridEngine.setScene: engine is disposed.');
     }
-    // Capability filter (warn + skip) consumes this engine's OWN declared
-    // support sets. The supported authored scene remains the mutation source of
-    // truth; `_renderScene` is the mesh-like ingestion view.
-    const { supported: scene, warnings } = partitionSceneBySupport(inputScene, this.capabilities);
-    for (const warning of warnings) {
-      this._warn({
-        code: 'walkaround-hybrid.scene-support-warning',
-        backend: 'walkaround-hybrid',
-        phase: 'setScene',
-        method: 'setScene',
-        message: `[vitrum/walkaround-hybrid] ${warning}`,
-        details: { warning },
-      });
-    }
-
-    // Warn once per distinct set of unconsumed material fields so hosts know
-    // which Material properties this backend silently ignores. The warn-once
-    // key is the sorted field list so incremental scene/material changes with
-    // the same ignored set don't spam.
-    const unconsumedMaterialPrimitiveFields = collectUnconsumedMaterialPrimitiveFields(
-      scene.primitives as unknown as ReadonlyArray<{
+    validateCoreScene(inputScene);
+    const resolvedEnvironment = resolveHybridEnvironment(
+      inputScene.environment ?? { kind: 'none' },
+      { extensions: this._environmentResolverExtensions },
+    );
+    assertNoUnsupportedMaterialProfiles(
+      inputScene.primitives as unknown as ReadonlyArray<{
         readonly id?: string;
         readonly kind: string;
         readonly material?: Record<string, unknown>;
       }>,
-    );
-    this._warnUnconsumedMaterialFields(
-      Array.from(new Set(unconsumedMaterialPrimitiveFields.flatMap((entry) => entry.fields))).sort(),
       'setScene',
-      unconsumedMaterialPrimitiveFields,
     );
-
-    const alphaBlendApproxIds = collectApproximateAlphaBlendPrimitiveIds(
-      scene.primitives as unknown as ReadonlyArray<{
-        readonly id?: string;
-        readonly kind: string;
-        readonly material?: Record<string, unknown>;
-        readonly positions?: ArrayLike<number> | undefined;
-        readonly colors?: ArrayLike<number> | undefined;
-      }>,
-    );
-    this._warnApproximateAlphaBlendPrimitiveIds(alphaBlendApproxIds, 'setScene');
-
-    const emissiveMapTexelPdfApproxIds = collectApproximateEmissiveMapTexelPdfPrimitiveIds(
-      scene.primitives as unknown as ReadonlyArray<{
-        readonly id?: string;
-        readonly kind: string;
-        readonly material?: Record<string, unknown>;
-      }>,
-      scene.emitters,
-    );
-    this._warnApproximateEmissiveMapTexelPdfPrimitiveIds(emissiveMapTexelPdfApproxIds, 'setScene');
-
-    const lightMapApproxIds = collectApproximateLightMapPrimitiveIds(
+    if (this._rc != null) {
+      assertNoRcDirectSunTransmissionProfiles(
+        inputScene.primitives as unknown as ReadonlyArray<{
+          readonly id?: string;
+          readonly kind: string;
+          readonly material?: Record<string, unknown>;
+        }>,
+        'setScene',
+      );
+    }
+    const scene = sceneAcceptedByCapabilities(inputScene, this.capabilities, 'setScene');
+    assertNoUnconsumedMaterialFields(
       scene.primitives as unknown as ReadonlyArray<{
         readonly id?: string;
         readonly kind: string;
         readonly material?: Record<string, unknown>;
       }>,
+      'setScene',
     );
-    this._warnApproximateLightMapPrimitiveIds(lightMapApproxIds, 'setScene');
 
-    const richMaterialApproxFields = collectApproximateRichMaterialPrimitiveFields(
-      scene.primitives as unknown as ReadonlyArray<{
-        readonly id?: string;
-        readonly kind: string;
-        readonly material?: Record<string, unknown>;
-      }>,
-    );
-    this._warnApproximateRichMaterialPrimitiveFields(richMaterialApproxFields, 'setScene');
-
-    const volumeLayerApproxFields = collectApproximateVolumeLayerPrimitiveFields(
-      scene.primitives as unknown as ReadonlyArray<{
-        readonly id?: string;
-        readonly kind: string;
-        readonly material?: Record<string, unknown>;
-      }>,
-    );
-    this._warnApproximateVolumeLayerPrimitiveFields(volumeLayerApproxFields, 'setScene');
-
-    // SHADOW-01 — receiveShadow is reserved/unsupported: a "receiver ignores
-    // occlusion" toggle is non-physical for this GI renderer. castShadow rows
-    // have native support and should not warn here.
-    const receiveShadowIds = scene.primitives
-      .filter((p) => (p as { receiveShadow?: boolean }).receiveShadow === false)
-      .map((p) => p.id);
-    this._warnReservedReceiveShadowPrimitiveIds(receiveShadowIds, 'setScene');
-
+    const renderScene = sceneWithAnalyticMeshFallback(scene);
+    assertExactEmissiveMapSamplingForCoreScene(renderScene);
+    const scaleAwareClamps = deriveScaleAwareClamps(renderScene, {
+      baseTunables: this._cfg.tunables,
+      baseIndirectFireflyClamp: this._cfg.indirectFireflyClamp,
+      hostExplicit: this._clampHostExplicit,
+    });
+    this._emitResolvedEnvironmentWarnings(resolvedEnvironment, 'setScene');
     this._lastScene = scene;
-    this._renderScene = sceneWithAnalyticMeshFallback(scene);
+    this._renderScene = renderScene;
+    this._resolvedEnvironment = resolvedEnvironment;
+    this._applyResolvedEnvironmentScalars(resolvedEnvironment);
 
     // B15 — derive scene-scale-aware radiometric clamp DEFAULTS from the new
     // scene's world diagonal. Uses the render-scene view (analytic primitives
@@ -1107,7 +1438,7 @@ export class HybridEngine implements Engine {
     // scale the law short-circuits to byte-identical defaults; host-explicit
     // clamps pass through un-scaled. These feed the per-frame deps below (NOT
     // the UBO layout — the UBO stays frozen; only the host-computed VALUES move).
-    this._applyScaleAwareClamps();
+    this._publishScaleAwareClamps(scaleAwareClamps);
 
     // W8 Phase 2: rebuild the RC BVH + cascade buffers after async ReSTIR
     // BVH publish via the core-native path.
@@ -1143,22 +1474,19 @@ export class HybridEngine implements Engine {
    * topology-patch routes all funnel through `setScene`, so a single hook here
    * keeps the scaled defaults in sync with the live geometry).
    */
-  private _applyScaleAwareClamps(): void {
-    const result = deriveScaleAwareClamps(this._renderScene, {
-      baseTunables: this._cfg.tunables,
-      baseIndirectFireflyClamp: this._cfg.indirectFireflyClamp,
-      hostExplicit: this._clampHostExplicit,
-    });
+  private _publishScaleAwareClamps(
+    result: ReturnType<typeof deriveScaleAwareClamps>,
+  ): void {
     this._scaledTunables = result.tunables;
     this._scaledIndirectFireflyClamp = result.indirectFireflyClamp;
     if (this._cfg.verbose && Math.abs(result.scaleRatio - 1) > 1e-6) {
       console.log(
         `[HybridEngine] B15 scale-aware clamps: sceneDiagonal=${result.sceneDiagonal.toFixed(3)} ` +
-        `(×${result.scaleRatio.toFixed(3)} vs Cornell) → ` +
-        `restirGiIrrClamp=${result.tunables.restirGiIrrClamp.toExponential(3)}, ` +
-        `directFireflyClamp=${result.tunables.directFireflyClamp.toExponential(3)}, ` +
-        `emitterDist2Floor=${result.tunables.emitterDist2Floor.toExponential(3)} ` +
-        `(host-explicit knobs un-scaled).`,
+          `(×${result.scaleRatio.toFixed(3)} vs Cornell) → ` +
+          `restirGiIrrClamp=${result.tunables.restirGiIrrClamp.toExponential(3)}, ` +
+          `directFireflyClamp=${result.tunables.directFireflyClamp.toExponential(3)}, ` +
+          `emitterDist2Floor=${result.tunables.emitterDist2Floor.toExponential(3)} ` +
+          `(host-explicit knobs un-scaled).`,
       );
     }
   }
@@ -1199,13 +1527,13 @@ export class HybridEngine implements Engine {
     if (this._state === 'initializing') {
       throw new Error(
         `HybridEngine.updatePrimitive("${id}"): engine is initializing. ` +
-        `Wait for setScene init to finish before applying primitive patches.`,
+          `Wait for setScene init to finish before applying primitive patches.`,
       );
     }
     if (this._lastScene == null) {
       throw new Error(
         `HybridEngine.updatePrimitive("${id}"): no scene set. ` +
-        `Call setScene(scene) before updatePrimitive.`,
+          `Call setScene(scene) before updatePrimitive.`,
       );
     }
     const primIndex = this._lastScene.primitives.findIndex((p) => String(p.id) === id);
@@ -1214,6 +1542,39 @@ export class HybridEngine implements Engine {
         `HybridEngine.updatePrimitive("${id}"): primitive id not found in current scene.`,
       );
     }
+    assertKnownPrimitivePatchKeys(this._lastScene.primitives[primIndex]!, patch, id);
+    const preflightScene = applyPrimitivePatchToScene(this._lastScene, id, patch);
+    validateCoreScene(preflightScene);
+    sceneAcceptedByCapabilities(preflightScene, this.capabilities, 'setScene');
+    assertNoUnsupportedMaterialProfiles(
+      preflightScene.primitives as unknown as ReadonlyArray<{
+        readonly id?: string;
+        readonly kind: string;
+        readonly material?: Record<string, unknown>;
+      }>,
+      'updatePrimitive',
+    );
+    assertNoUnconsumedMaterialFields(
+      preflightScene.primitives as unknown as ReadonlyArray<{
+        readonly id?: string;
+        readonly kind: string;
+        readonly material?: Record<string, unknown>;
+      }>,
+      'updatePrimitive',
+    );
+    if (this._rc != null) {
+      assertNoRcDirectSunTransmissionProfiles(
+        preflightScene.primitives as unknown as ReadonlyArray<{
+          readonly id?: string;
+          readonly kind: string;
+          readonly material?: Record<string, unknown>;
+        }>,
+        'updatePrimitive',
+      );
+    }
+    assertExactEmissiveMapSamplingForCoreScene(
+      sceneWithAnalyticMeshFallback(preflightScene),
+    );
 
     // Wholesale-replacement patches — `instances` (instanced-mesh instance-COUNT
     // change), `params` / `shape` (analytic), `fallbackMesh`, `kind` — can't be
@@ -1224,9 +1585,12 @@ export class HybridEngine implements Engine {
     // the value is honoring incrementalPatchSupport.topology + matching
     // pt-webgl/pt-webgpu (which absorb the instance-COUNT case) instead of
     // throwing "call setScene()". P5 contract-honesty.
-    if (TOPOLOGY_PATCH_WHOLESALE_FIELDS.some((f) => (patch as Record<string, unknown>)[f] !== undefined)) {
-      this._warnPrimitiveUpdatePatchTruthfulness(id, patch);
-      this.setScene(applyPrimitivePatchToScene(this._lastScene, id, patch));
+    if (
+      TOPOLOGY_PATCH_WHOLESALE_FIELDS.some(
+        (f) => (patch as Record<string, unknown>)[f] !== undefined,
+      )
+    ) {
+      this.setScene(preflightScene);
       return;
     }
 
@@ -1238,7 +1602,19 @@ export class HybridEngine implements Engine {
     // "Positions only" means new vertex data on the SAME index buffer +
     // SAME vertex count. The positionsRefit path falls through to
     // topologyRebuild internally if the count doesn't match.
-    const result = this._routePrimitiveUpdate(id, patch);
+    const collector = new CollectingBvhUpdateSink();
+    const undo = capturePrimitiveMutationUndo(this._bvhBuffers, id, patch);
+    let result: PrimitiveUpdateResult | null;
+    try {
+      result = this._routePrimitiveUpdate(
+        id,
+        patch,
+        this._buildPrimitiveUpdateContext(collector),
+      );
+    } catch (error) {
+      undo.restore();
+      throw error;
+    }
     if (result == null) {
       // No recognised patch field: keep the forgiving no-op behavior, but make
       // the integration mistake visible through the structured warning channel.
@@ -1248,9 +1624,15 @@ export class HybridEngine implements Engine {
           .filter(([, value]) => value !== undefined)
           .map(([field]) => field),
       );
+      undo.restore();
       return;
     }
-    this._applyUpdateResult(result);
+    try {
+      this._commitPrimitiveMutation(result, collector.snapshot(), undo);
+    } catch (error) {
+      undo.restore();
+      throw error;
+    }
   }
 
   /**
@@ -1274,13 +1656,11 @@ export class HybridEngine implements Engine {
   private _routePrimitiveUpdate(
     id: string,
     patch: Partial<ScenePrimitive>,
+    ctx: PrimitiveUpdateContext = this._buildPrimitiveUpdateContext(),
   ): PrimitiveUpdateResult | null {
     const has = (f: string): boolean => (patch as Record<string, unknown>)[f] !== undefined;
-    const ctx = this._buildPrimitiveUpdateContext();
-    this._warnPrimitiveUpdatePatchTruthfulness(id, patch);
     const hasMaterial = has('material');
     const hasSkinnedPose = SKIN_POSE_PATCH_FIELDS.some((f) => has(f));
-    if (hasMaterial && hasSkinnedPose) return topologyRebuild(id, patch, ctx);
     if (hasSkinnedPose) return skinnedPosePatch(id, patch, ctx);
     const hasStructuralTopology = TOPOLOGY_PATCH_FIELDS.some((f) => f !== 'normals' && has(f));
     if (hasStructuralTopology) return topologyRebuild(id, patch, ctx);
@@ -1296,10 +1676,14 @@ export class HybridEngine implements Engine {
         previousPrimitive != null && 'material' in previousPrimitive
           ? previousPrimitive.material
           : undefined;
-      if (materialPatchAffectsDisplacementGeometry(
-        previousMaterial,
-        patch.material as unknown as Parameters<typeof materialPatchAffectsDisplacementGeometry>[1],
-      )) {
+      if (
+        materialPatchAffectsDisplacementGeometry(
+          previousMaterial,
+          patch.material as unknown as Parameters<
+            typeof materialPatchAffectsDisplacementGeometry
+          >[1],
+        )
+      ) {
         return topologyRebuild(id, patch, ctx);
       }
       return materialPatch(id, patch, ctx);
@@ -1307,157 +1691,170 @@ export class HybridEngine implements Engine {
     return null;
   }
 
-  private _warnPrimitiveUpdatePatchTruthfulness(
-    id: string,
-    patch: Partial<ScenePrimitive>,
-  ): void {
-    if ((patch as { receiveShadow?: boolean }).receiveShadow === false) {
-      this._warnReservedReceiveShadowPrimitiveIds([id], 'updatePrimitive');
-    }
-    const materialPatch = (patch as unknown as { material?: Record<string, unknown> }).material;
-    if (materialPatch == null) return;
-    const previousPrimitive = this._lastScene?.primitives.find((p) => String(p.id) === id);
-    const previousMaterial = previousPrimitive != null && 'material' in previousPrimitive
-      ? previousPrimitive.material as unknown as Record<string, unknown>
-      : undefined;
-    const material = previousMaterial != null
-      ? { ...previousMaterial, ...materialPatch }
-      : materialPatch;
-    const unconsumedMaterialFields = collectUnconsumedMaterialFieldsForMaterial(material);
-    this._warnUnconsumedMaterialFields(
-      unconsumedMaterialFields,
-      'updatePrimitive',
-      unconsumedMaterialFields.length > 0 ? [{ primitiveId: id, fields: unconsumedMaterialFields }] : [],
-    );
-    this._warnApproximateAlphaBlendPrimitiveIds(
-      collectApproximateAlphaBlendPrimitiveIds([{
-        id,
-        kind: patch.kind ?? previousPrimitive?.kind ?? 'mesh',
-        material,
-        positions: primitivePatchNumericArray(patch, previousPrimitive, 'positions'),
-        colors: primitivePatchNumericArray(patch, previousPrimitive, 'colors'),
-      }]),
-      'updatePrimitive',
-    );
-    this._warnApproximateEmissiveMapTexelPdfPrimitiveIds(
-      collectApproximateEmissiveMapTexelPdfPrimitiveIds([{
-        id,
-        kind: patch.kind ?? 'mesh',
-        material,
-      }], this._lastScene?.emitters ?? []),
-      'updatePrimitive',
-    );
-    this._warnApproximateLightMapPrimitiveIds(
-      collectApproximateLightMapPrimitiveIds([{
-        id,
-        kind: patch.kind ?? previousPrimitive?.kind ?? 'mesh',
-        material,
-      }]),
-      'updatePrimitive',
-    );
-    this._warnApproximateRichMaterialPrimitiveFields(
-      collectApproximateRichMaterialPrimitiveFields([{
-        id,
-        kind: patch.kind ?? previousPrimitive?.kind ?? 'mesh',
-        material,
-      }]),
-      'updatePrimitive',
-    );
-    this._warnApproximateVolumeLayerPrimitiveFields(
-      collectApproximateVolumeLayerPrimitiveFields([{
-        id,
-        kind: patch.kind ?? previousPrimitive?.kind ?? 'mesh',
-        material,
-      }]),
-      'updatePrimitive',
-    );
-  }
-
-  private _warnUnknownPrimitivePatchFields(
-    id: string,
-    fields: readonly string[],
-  ): void {
+  private _warnUnknownPrimitivePatchFields(id: string, fields: readonly string[]): void {
     this._materialWarner.warnUnknownPrimitivePatchFields(id, fields);
   }
 
   /**
-   * Uniform epilogue for every primitive-update path: swap the freshly-built
-   * BVH buffers + patched scene into engine state, then — unless the path
-   * opted out (`applySubsystems === false`, the material-only fast path) —
-   * re-sync the GI subsystems against the new BVH. Material-only paths can
-   * still request a DDGI material-snapshot refresh without RC geometry
-   * propagation.
-   */
-  private _applyUpdateResult(result: PrimitiveUpdateResult): void {
-    this._bvhBuffers = result.bvhBuffers;
-    this._lastScene = result.updatedScene;
-    this._renderScene = sceneWithAnalyticMeshFallback(result.updatedScene);
-    this._warnMaterialTextureAtlasDiagnostics(
-      result.bvhBuffers.materialTextureAtlas.diagnostics,
-      'updatePrimitive',
-    );
-    if (result.refreshRcMaterials === true) {
-      this._rc?.refreshMaterialsFromCore(result.bvhBuffers.coreMaterials);
-    }
-    if (result.applySubsystems !== false) {
-      this._applyPrimitiveUpdateSubsystems(result);
-    } else if (result.refreshDdgiMaterialSnapshot === true) {
-      this._ddgi.syncRestirBvhBuffers(result.bvhBuffers, this._renderScene ?? undefined);
-    }
-  }
-
-  /**
-   * PR-7 — GPU LBS wrote world positions into the live `bvhPositions` buffer;
-   * refit BVH nodes and sync scene without re-uploading the position slice.
+   * Apply one solved skin pose through the same staged primitive transaction.
+   * This public single-item seam performs a normal position-slice upload; the
+   * internal GPU batch seam below supplies an unsubmitted compute command buffer.
    */
   applyGpuSkinnedRefit(
     id: string,
     localPositions?: Float32Array,
     localNormals?: Float32Array,
   ): void {
+    const prim = this._lastScene?.primitives.find(
+      (candidate) => String(candidate.id) === id && candidate.kind === 'skinned-mesh',
+    );
+    if (prim?.kind !== 'skinned-mesh') {
+      throw new Error(`applyGpuSkinnedRefit("${id}"): skinned-mesh primitive not found.`);
+    }
+    const solved = localPositions == null ? solveSkin(prim) : null;
+    const patch: Partial<SkinnedMeshPrimitive> = {
+      positions: localPositions ?? solved!.positions,
+      ...((localNormals ?? solved?.normals) != null
+        ? { normals: localNormals ?? solved!.normals }
+        : {}),
+      ...(solved?.tangents ? { tangents: solved.tangents } : {}),
+      ...(solved?.uvs ? { uvs: solved.uvs } : {}),
+      ...(solved?.uv1 ? { uv1: solved.uv1 } : {}),
+    };
+    this.applySkinningBatch([{ id, patch, gpuWritten: false }], null);
+  }
+
+  /**
+   * Publish one animation tick as a single transaction. The optional skin
+   * command buffer is already encoded against the live position/normal buffers
+   * but is deliberately unsubmitted; the pipeline submits it immediately before
+   * the staged BVH/learned-state copies in its final irreversible operation.
+   */
+  applySkinningBatch(
+    updates: readonly SkinningBatchUpdate[],
+    skinCommands: GPUCommandBuffer | null,
+  ): void {
     if (this._state === 'disposed') {
-      throw new Error('HybridEngine.applyGpuSkinnedRefit: engine is disposed.');
+      throw new Error('HybridEngine.applySkinningBatch: engine is disposed.');
     }
     if (this._state === 'initializing') {
       throw new Error(
-        `HybridEngine.applyGpuSkinnedRefit("${id}"): engine is initializing. ` +
-        `Wait for setScene init to finish before applying skinned-mesh refits.`,
+        'HybridEngine.applySkinningBatch: engine is initializing; wait for setScene.',
       );
     }
-    let positions = localPositions;
-    let normals = localNormals;
-    let solvedAttributes: Partial<ScenePrimitive> | null = null;
-    if (positions == null) {
-      const prim = this._lastScene?.primitives.find(
-        (p) => String(p.id) === id && p.kind === 'skinned-mesh',
-      );
-      if (prim?.kind !== 'skinned-mesh') {
-        throw new Error(`applyGpuSkinnedRefit("${id}"): skinned-mesh primitive not found.`);
-      }
-      const solved = solveSkin(prim);
-      positions = solved.positions;
-      normals = solved.normals;
-      if (solved.tangents != null || solved.uvs != null || solved.uv1 != null) {
-        solvedAttributes = {
-          positions,
-          normals,
-          ...(solved.tangents ? { tangents: solved.tangents } : {}),
-          ...(solved.uvs ? { uvs: solved.uvs } : {}),
-          ...(solved.uv1 ? { uv1: solved.uv1 } : {}),
-        };
-      }
+    if (updates.length === 0) return;
+    const ids = updates.map((update) => update.id);
+    if (new Set(ids).size !== ids.length) {
+      throw new Error('HybridEngine.applySkinningBatch: duplicate primitive id.');
     }
-    if (solvedAttributes != null) {
-      this.updatePrimitive(id, solvedAttributes);
-      return;
-    }
-    const result = refitSkinnedMeshAfterGpuWrite(
-      id,
-      positions,
-      normals,
-      this._buildPrimitiveUpdateContext(),
+
+    const topology = updates.some((update) =>
+      TOPOLOGY_PATCH_FIELDS.some(
+        (field) =>
+          field !== 'normals' &&
+          (update.patch as unknown as Record<string, unknown>)[field] !== undefined,
+      ),
     );
-    this._applyUpdateResult(result);
+    if (topology && skinCommands != null) {
+      throw new Error(
+        'HybridEngine.applySkinningBatch: topology fallback cannot target live GPU buffers.',
+      );
+    }
+
+    const collector = new CollectingBvhUpdateSink();
+    const undo = capturePrimitiveMutationUndo(
+      this._bvhBuffers,
+      updates[0]!.id,
+      updates[0]!.patch,
+      ids.slice(1),
+    );
+    let result: PrimitiveUpdateResult;
+    try {
+      const authoredScene = this._lastScene;
+      const initialRenderScene = this._renderScene;
+      const initialBvh = this._bvhBuffers;
+      if (authoredScene == null || initialRenderScene == null || initialBvh == null) {
+        throw new Error('HybridEngine.applySkinningBatch: scene/BVH not ready.');
+      }
+      const currentScene: Scene = authoredScene;
+      let currentRenderScene: Scene = initialRenderScene;
+      let currentBvh: SceneBVHBuffers = initialBvh;
+
+      if (topology) {
+        for (let i = 0; i < updates.length - 1; i += 1) {
+          const update = updates[i]!;
+          currentRenderScene = applyPrimitivePatchToScene(
+            currentRenderScene,
+            update.id,
+            update.patch,
+          );
+        }
+        const last = updates[updates.length - 1]!;
+        result = topologyRebuild(last.id, last.patch, {
+          ...this._buildPrimitiveUpdateContext(collector),
+          bvhBuffers: currentBvh,
+          lastScene: currentScene,
+          renderScene: currentRenderScene,
+        });
+        result = {
+          ...result,
+          updatedScene: currentScene,
+          updatedRenderScene: result.updatedRenderScene ??
+            applyPrimitivePatchToScene(currentRenderScene, last.id, last.patch),
+        };
+      } else {
+        let latest: PrimitiveUpdateResult | null = null;
+        for (const update of updates) {
+          const positions = update.patch.positions;
+          if (positions == null) {
+            throw new Error(
+              `HybridEngine.applySkinningBatch("${update.id}"): positions are required.`,
+            );
+          }
+          const context: PrimitiveUpdateContext = {
+            ...this._buildPrimitiveUpdateContext(collector),
+            bvhBuffers: currentBvh,
+            lastScene: currentScene,
+            renderScene: currentRenderScene,
+          };
+          latest = update.gpuWritten
+            ? refitSkinnedMeshAfterGpuWrite(
+                update.id,
+                new Float32Array(positions),
+                update.patch.normals != null
+                  ? new Float32Array(update.patch.normals)
+                  : undefined,
+                context,
+              )
+            : positionsRefit(update.id, update.patch, context);
+          const nextRenderScene = latest.updatedRenderScene ??
+            applyPrimitivePatchToScene(currentRenderScene, update.id, update.patch);
+          latest = {
+            ...latest,
+            updatedScene: currentScene,
+            updatedRenderScene: nextRenderScene,
+          };
+          currentRenderScene = nextRenderScene;
+          currentBvh = latest.bvhBuffers;
+        }
+        result = latest!;
+      }
+    } catch (error) {
+      undo.restore();
+      throw error;
+    }
+
+    try {
+      this._commitPrimitiveMutation(
+        result,
+        collector.snapshot(),
+        undo,
+        skinCommands != null ? [skinCommands] : [],
+      );
+    } catch (error) {
+      undo.restore();
+      throw error;
+    }
   }
 
   /** Merged BVH position SSBO for GPU skinning (null before pipeline init). */
@@ -1465,11 +1862,19 @@ export class HybridEngine implements Engine {
     return this._pipeline?.getBvhPositionBuffer() ?? null;
   }
 
+  getGpuSkinningBvhBinding(): GPUBufferBinding | null {
+    return this._pipeline?.getBvhPositionBinding() ?? null;
+  }
+
   /** WS1 — merged BVH normal SSBO for GPU skinning (null before pipeline init).
    *  The skin kernel writes inverse-transpose skinned normals here at
    *  `baseVertex+vi` so the smooth shading-normal blend reads deformed normals. */
   getGpuSkinningNormalBuffer(): GPUBuffer | null {
     return this._pipeline?.getBvhNormalBuffer() ?? null;
+  }
+
+  getGpuSkinningNormalBinding(): GPUBufferBinding | null {
+    return this._pipeline?.getBvhNormalBinding() ?? null;
   }
 
   /** Per-mesh vertex ranges in the merged BVH (for GPU skinning). */
@@ -1503,38 +1908,27 @@ export class HybridEngine implements Engine {
   }
 
   /** Build the per-call resource context the primitive-update helpers consume. */
-  private _buildPrimitiveUpdateContext(): PrimitiveUpdateContext {
+  private _buildPrimitiveUpdateContext(
+    transactionalSink?: CollectingBvhUpdateSink,
+  ): PrimitiveUpdateContext {
     if (this._lastScene == null) {
-      throw new Error(
-        'HybridEngine.updatePrimitive: no scene set. Call setScene(scene) first.',
-      );
+      throw new Error('HybridEngine.updatePrimitive: no scene set. Call setScene(scene) first.');
     }
     if (this._renderScene == null) {
       this._renderScene = sceneWithAnalyticMeshFallback(this._lastScene);
     }
     const ctx: PrimitiveUpdateContext = {
-      bvhBuffers:            this._bvhBuffers,
-      pipeline:              this._pipeline,
-      ddgi:                  this._ddgi,
-      primaryLightDir:       this._primaryLightDir,
+      bvhBuffers: this._bvhBuffers,
+      pipeline: transactionalSink ?? this._pipeline,
+      deferSubsystemSideEffects: transactionalSink != null,
+      ddgi: this._ddgi,
+      primaryLightDir: this._primaryLightDir,
       primaryLightIntensity: this._primaryLightIntensity,
-      lastScene:             this._lastScene,
-      renderScene:           this._renderScene,
+      lastScene: this._lastScene,
+      renderScene: this._renderScene,
       coreSceneSuppliesMeshes: this._coreSceneSuppliesMeshes(),
       warnUnconsumedMaterialFields: (fields, primitiveFields) => {
         this._warnUnconsumedMaterialFields(fields, 'updatePrimitive', primitiveFields);
-      },
-      warnApproximateAlphaBlendPrimitiveIds: (primitiveIds) => {
-        this._warnApproximateAlphaBlendPrimitiveIds(primitiveIds, 'updatePrimitive');
-      },
-      warnApproximateEmissiveMapTexelPdfPrimitiveIds: (primitiveIds) => {
-        this._warnApproximateEmissiveMapTexelPdfPrimitiveIds(primitiveIds, 'updatePrimitive');
-      },
-      warnApproximateLightMapPrimitiveIds: (primitiveIds) => {
-        this._warnApproximateLightMapPrimitiveIds(primitiveIds, 'updatePrimitive');
-      },
-      warnApproximateRichMaterialPrimitiveFields: (primitiveFields) => {
-        this._warnApproximateRichMaterialPrimitiveFields(primitiveFields, 'updatePrimitive');
       },
       onWarning: (warning) => {
         this._warn(warning);
@@ -1544,6 +1938,93 @@ export class HybridEngine implements Engine {
       return { ...ctx, restirBvhModeOverride: this._cfg.restirBvhModeOverride };
     }
     return ctx;
+  }
+
+  private _commitPrimitiveMutation(
+    result: PrimitiveUpdateResult,
+    mutation: CollectedBvhMutation,
+    undo: PrimitiveMutationUndo,
+    prefixCommandBuffers: readonly GPUCommandBuffer[] = [],
+  ): void {
+    const previousBvh = this._bvhBuffers;
+    const previousScene = this._lastScene;
+    const previousRenderScene = this._renderScene;
+    const nextRenderScene = result.updatedRenderScene ??
+      sceneWithAnalyticMeshFallback(result.updatedScene);
+    const geometryChanged = result.applySubsystems !== false;
+    let stateCommitted = false;
+    const stateMutation: PreparedSceneMutation = {
+      commit: () => {
+        if (stateCommitted) return;
+        this._bvhBuffers = result.bvhBuffers;
+        this._lastScene = result.updatedScene;
+        this._renderScene = nextRenderScene;
+        stateCommitted = true;
+      },
+      rollback: () => {
+        undo.restore();
+        if (!stateCommitted) return;
+        this._bvhBuffers = previousBvh;
+        this._lastScene = previousScene;
+        this._renderScene = previousRenderScene;
+        stateCommitted = false;
+      },
+      finalize: () => {
+        undo.accept();
+        if (mutation.replacement && previousBvh && previousBvh !== result.bvhBuffers) {
+          disposeSceneBVH(previousBvh);
+        }
+      },
+    };
+
+    const factories: Array<() => PreparedSceneMutation> = [
+      () => stateMutation,
+    ];
+    if (geometryChanged || result.refreshDdgiMaterialSnapshot === true) {
+      factories.push(() => this._ddgi.prepareSceneMutation(
+        result.bvhBuffers,
+        nextRenderScene,
+        {
+          invalidate: geometryChanged || result.refreshDdgiMaterialSnapshot === true,
+          instancesDirty: geometryChanged && result.bvhBuffers.bvhMode === 'tlas',
+        },
+      ));
+    }
+    if (this._rc != null && (geometryChanged || result.refreshRcMaterials === true)) {
+      factories.push(() => this._rc!.prepareSceneMutation(
+        result.bvhBuffers,
+        nextRenderScene,
+        {
+          geometryChanged,
+          refreshMaterials: result.refreshRcMaterials === true,
+          allowMergedRefit: mutation.replacement == null,
+          ...(result.rcRefitBounds ? { rcRefitBounds: result.rcRefitBounds } : {}),
+        },
+      ));
+    }
+    if (this._pipeline != null) {
+      factories.push(() => this._pipeline!.prepareSceneMutation(
+        mutation,
+        result.bvhBuffers,
+        prefixCommandBuffers,
+      ));
+    }
+    try {
+      this._warnMaterialTextureAtlasDiagnostics(
+        result.bvhBuffers.materialTextureAtlas.diagnostics,
+        'updatePrimitive',
+      );
+      commitSceneMutations(prepareSceneMutations(factories));
+    } catch (error) {
+      if (
+        !(error instanceof SceneMutationFinalizationError) &&
+        mutation.replacement &&
+        result.bvhBuffers !== previousBvh
+      ) {
+        disposeSceneBVH(result.bvhBuffers);
+      }
+      throw error;
+    }
   }
 
   /**
@@ -1587,13 +2068,13 @@ export class HybridEngine implements Engine {
     if (this._lastScene == null) {
       throw new Error(
         `HybridEngine.addPrimitive("${String(primitive.id)}"): no scene set. ` +
-        `Call setScene(scene) before addPrimitive.`,
+          `Call setScene(scene) before addPrimitive.`,
       );
     }
     if (this._lastScene.primitives.some((p) => String(p.id) === String(primitive.id))) {
       throw new Error(
         `HybridEngine.addPrimitive: a primitive with id "${String(primitive.id)}" ` +
-        `already exists; use updatePrimitive to mutate an existing primitive.`,
+          `already exists; use updatePrimitive to mutate an existing primitive.`,
       );
     }
     const nextScene: Scene = {
@@ -1638,14 +2119,14 @@ export class HybridEngine implements Engine {
     if (this._lastScene == null) {
       throw new Error(
         `HybridEngine.removePrimitive("${String(id)}"): no scene set. ` +
-        `Call setScene(scene) before removePrimitive.`,
+          `Call setScene(scene) before removePrimitive.`,
       );
     }
     const nextPrimitives = this._lastScene.primitives.filter((p) => String(p.id) !== String(id));
     if (nextPrimitives.length === this._lastScene.primitives.length) {
       throw new Error(
         `HybridEngine.removePrimitive: no primitive with id "${String(id)}" ` +
-        `in the live scene.`,
+          `in the live scene.`,
       );
     }
     const nextScene: Scene = {
@@ -1656,10 +2137,19 @@ export class HybridEngine implements Engine {
   }
 
   updateEmitter(id: string, patch: Partial<SceneEmitter>): void {
+    if (this._state === 'disposed') {
+      throw new Error('HybridEngine.updateEmitter: engine is disposed.');
+    }
+    if (this._state === 'initializing') {
+      throw new Error(
+        `HybridEngine.updateEmitter("${id}"): engine is initializing. ` +
+          `Wait for setScene init to finish before applying emitter patches.`,
+      );
+    }
     if (this._lastScene == null) {
       throw new Error(
         `HybridEngine.updateEmitter("${id}"): no scene set. ` +
-        `Call setScene(scene) before updateEmitter.`,
+          `Call setScene(scene) before updateEmitter.`,
       );
     }
     const idx = this._lastScene.emitters.findIndex((e) => String(e.id) === id);
@@ -1668,6 +2158,7 @@ export class HybridEngine implements Engine {
         `HybridEngine.updateEmitter("${id}"): emitter id not found in current scene.`,
       );
     }
+    assertKnownEmitterPatchKeys(this._lastScene.emitters[idx]!, patch, id);
     if (this._bvhBuffers == null) {
       throw new Error(
         `HybridEngine.updateEmitter("${id}"): BVH not ready. Wait for setScene init to finish.`,
@@ -1679,19 +2170,18 @@ export class HybridEngine implements Engine {
       );
     }
 
-    this._lastScene = applyEmitterPatchToScene(this._lastScene, id, patch);
-    this._renderScene = sceneWithAnalyticMeshFallback(this._lastScene);
-    this._warnApproximateEmissiveMapTexelPdfPrimitiveIds(
-      collectApproximateEmissiveMapTexelPdfPrimitiveIds(
-        this._lastScene.primitives as unknown as ReadonlyArray<{
-          readonly id?: string;
-          readonly kind: string;
-          readonly material?: Record<string, unknown>;
-        }>,
-        this._lastScene.emitters,
-      ),
+    const previousScene = this._lastScene;
+    const previousRenderScene = this._renderScene;
+    const previousBvh = this._bvhBuffers;
+    const authoredNextScene = applyEmitterPatchToScene(previousScene, id, patch);
+    validateCoreScene(authoredNextScene);
+    const nextScene = sceneAcceptedByCapabilities(
+      authoredNextScene,
+      this.capabilities,
       'updateEmitter',
     );
+    const nextRenderScene = sceneWithAnalyticMeshFallback(nextScene);
+    assertExactEmissiveMapSamplingForCoreScene(nextRenderScene);
 
     const emitterOptions = {
       primaryLightDir: {
@@ -1701,40 +2191,85 @@ export class HybridEngine implements Engine {
       },
       primaryLightIntensity: this._primaryLightIntensity,
       packSourceTriIndex: true,
-      ...(this._bvhBuffers.bvhMode === 'tlas'
-        ? { tlasPrimitiveBindings: this._bvhBuffers.primitiveTlasBindings }
+      ...(previousBvh.bvhMode === 'tlas'
+        ? { tlasPrimitiveBindings: previousBvh.primitiveTlasBindings }
         : {}),
       onWarning: (warning: EngineWarning) => this._warn(warning),
       warningPhase: 'mutation' as const,
       warningMethod: 'updateEmitter',
     };
-    const emitterSlice = rebuildEmitterBuffersFromCoreScene(this._renderScene, emitterOptions);
-    const emissiveLe = rebuildBvhEmissiveLeFromCoreScene(
-      this._renderScene,
-      this._bvhBuffers,
+    const emitterSlice = rebuildEmitterBuffersFromCoreScene(
+      nextRenderScene,
       emitterOptions,
     );
-
-    this._bvhBuffers = {
-      ...this._bvhBuffers,
+    const emissiveLe = rebuildBvhEmissiveLeFromCoreScene(
+      nextRenderScene,
+      previousBvh,
+      emitterOptions,
+    );
+    const nextBvh: SceneBVHBuffers = {
+      ...previousBvh,
       bvhEmissiveLe: emissiveLe,
       emitters: emitterSlice.emitters,
       emitterCdf: emitterSlice.emitterCdf,
+      emitterAlias: emitterSlice.emitterAlias,
       emitterCount: emitterSlice.emitterCount,
       totalEmissivePower: emitterSlice.totalEmissivePower,
       lightTree: emitterSlice.lightTree,
       lightTreeNodeCount: emitterSlice.lightTreeNodeCount,
       lightTreeEnabled: emitterSlice.lightTreeEnabled,
     };
+    const lightingInputs = buildDdgiLightingMutationInputs(
+      {
+        ctorLights: this._ctorLights,
+        hostSunWarningState: this._hostSunWarningState,
+        primaryLightIntensity: this._primaryLightIntensity,
+        primaryLightDir: this._primaryLightDir,
+        onWarning: (warning) => this._warn(warning),
+        ...(nextBvh.bvhMode === 'tlas'
+          ? { tlasPrimitiveBindings: nextBvh.primitiveTlasBindings }
+          : {}),
+      },
+      nextRenderScene,
+      {
+        warningPhase: 'mutation',
+        warningMethod: 'updateEmitter',
+      },
+    );
 
-    this._pipeline?.updateEmitters(this._bvhBuffers);
-    this._pipeline?.refreshBvhEmissiveLe({
-      data: this._bvhBuffers.bvhEmissiveLe.cpuData,
-      triCount: this._bvhBuffers.bvhEmissiveLe.count,
-    });
-    this._rc?.invalidateBindings();
-    this._syncDdgiLightsFromCoreScene();
-    this._pipeline?.requestAccumReset();
+    let stateCommitted = false;
+    const stateMutation: PreparedSceneMutation = {
+      commit: () => {
+        if (stateCommitted) return;
+        this._lastScene = nextScene;
+        this._renderScene = nextRenderScene;
+        this._bvhBuffers = nextBvh;
+        stateCommitted = true;
+      },
+      rollback: () => {
+        if (!stateCommitted) return;
+        this._lastScene = previousScene;
+        this._renderScene = previousRenderScene;
+        this._bvhBuffers = previousBvh;
+        stateCommitted = false;
+      },
+      finalize: () => undefined,
+    };
+    const factories: Array<() => PreparedSceneMutation> = [
+      () => stateMutation,
+      () => this._ddgi.prepareLightingMutation(lightingInputs),
+    ];
+    if (this._rc != null) {
+      factories.push(() => this._rc!.prepareBindingInvalidation());
+    }
+    if (this._pipeline != null) {
+      factories.push(() => this._pipeline!.prepareEmitterLightingMutation(
+        nextBvh,
+        nextRenderScene,
+      ));
+    }
+
+    commitSceneMutations(prepareSceneMutations(factories));
   }
 
   private _syncDdgiLightsFromCoreScene(): void {
@@ -1742,21 +2277,25 @@ export class HybridEngine implements Engine {
     // Steps 1–4 (sun intensity, lights merge, emitter tris H18, analytic lights H41)
     // delegated to the shared helper (R3 B-chain step 4). Engine path always
     // merges lights (setLightsConditional: false = default).
-    syncDdgiFromCoreScene({
-      ddgi: this._ddgi,
-      pipeline: this._pipeline,
-      ctorLights: this._ctorLights,
-      primaryLightIntensity: this._primaryLightIntensity,
-      primaryLightDir: this._primaryLightDir,
-      onWarning: (warning) => this._warn(warning),
-      ...(this._bvhBuffers?.bvhMode === 'tlas'
-        ? { tlasPrimitiveBindings: this._bvhBuffers.primitiveTlasBindings }
-        : {}),
-    }, this._renderScene);
+    syncDdgiFromCoreScene(
+      {
+        ddgi: this._ddgi,
+        pipeline: this._pipeline,
+        ctorLights: this._ctorLights,
+        hostSunWarningState: this._hostSunWarningState,
+        primaryLightIntensity: this._primaryLightIntensity,
+        primaryLightDir: this._primaryLightDir,
+        onWarning: (warning) => this._warn(warning),
+        ...(this._bvhBuffers?.bvhMode === 'tlas'
+          ? { tlasPrimitiveBindings: this._bvhBuffers.primitiveTlasBindings }
+          : {}),
+      },
+      this._renderScene,
+    );
     // B3 — push the scene's directional IBL map+CDFs to the pipeline (or reset to
     // the no-HDRI placeholder). Called here so both the initial scene load and any
     // emitter/scene fast-update re-resolve the env; no-op before pipeline init.
-    this._applyDirectionalEnvironment(this._renderScene.environment ?? { kind: 'none' });
+    this._applyDirectionalEnvironment(this._resolvedEnvironment);
     this._ddgi.invalidateProbeCache();
   }
 
@@ -1791,12 +2330,15 @@ export class HybridEngine implements Engine {
    * starts cold without error.
    */
   importGIState(snapshot: GIStateSnapshot): boolean {
-    return importGIStateImpl({
-      device: this._device,
-      ddgi: this._ddgi,
-      pipeline: this._pipeline,
-      onWarning: (warning) => this._warn(warning),
-    }, snapshot);
+    return importGIStateImpl(
+      {
+        device: this._device,
+        ddgi: this._ddgi,
+        pipeline: this._pipeline,
+        onWarning: (warning) => this._warn(warning),
+      },
+      snapshot,
+    );
   }
 
   /**
@@ -1814,10 +2356,9 @@ export class HybridEngine implements Engine {
   updateLighting(opts: Partial<LightingOptions>): void {
     if (this._state === 'disposed') return;
     // `Engine.updateLighting` is contractually opaque (Record<string, unknown>),
-    // so hosts can pass any key without a type error at the core-contract call
-    // site. Warn (don't throw) on keys outside LightingOptions so silent drops
-    // become visible; the field-by-field application below is unchanged.
-    assertKnownLightingKeys(opts, (warning, ...args) => this._warn(warning, ...args));
+    // so enforce this backend's closed vocabulary before changing any live
+    // lighting or GPU-facing state.
+    assertKnownLightingKeys(opts);
 
     let changed = false;
 
@@ -1847,9 +2388,7 @@ export class HybridEngine implements Engine {
       // still drives the shade-side Lo_emit via the WalkaroundUBO). Absent a
       // scene directional, the config intensity is the multiplier as before.
       const sceneForSun =
-        this._coreSceneSuppliesMeshes() && this._renderScene != null
-          ? this._renderScene
-          : null;
+        this._coreSceneSuppliesMeshes() && this._renderScene != null ? this._renderScene : null;
       this._ddgi.setSunIntensityMultiplier(
         directionalSunMultiplier(sceneForSun, opts.primaryLightIntensity),
       );
@@ -1934,23 +2473,28 @@ export class HybridEngine implements Engine {
     if (this._state === 'disposed') return;
 
     const nextEnv: SceneEnvironment = env ?? { kind: 'none' };
+    validateCoreScene({ primitives: [], emitters: [], environment: nextEnv });
+    const resolved = resolveHybridEnvironment(nextEnv, {
+      extensions: this._environmentResolverExtensions,
+    });
+    this._emitResolvedEnvironmentWarnings(resolved, 'updateEnvironment');
     // Cache on the live scene so a later scene-state read / debug surface sees
     // the current env (parallels pt-webgl/pt-webgpu). `_lastScene` may be null
     // if no setScene() ran yet — still record the sky-scalar change; the next
     // setScene() carries its own environment.
     if (this._lastScene != null) {
       this._lastScene = { ...this._lastScene, environment: nextEnv };
-      this._renderScene = this._renderScene != null
-        ? { ...this._renderScene, environment: nextEnv }
-        : sceneWithAnalyticMeshFallback(this._lastScene);
+      this._renderScene =
+        this._renderScene != null
+          ? { ...this._renderScene, environment: nextEnv }
+          : sceneWithAnalyticMeshFallback(this._lastScene);
     }
+    this._resolvedEnvironment = resolved;
 
     // Map the env onto this backend's sky-dome scalars (the only env channel it
     // consumes — there is no IBL baker here). Omitted fields leave the
     // corresponding scalar unchanged.
-    const sky = this._skyScalarsFromEnvironment(nextEnv);
-    if (sky.skyTint !== undefined) this._skyTint = sky.skyTint;
-    if (sky.skyIrradiance !== undefined) this._skyIrradiance = sky.skyIrradiance;
+    this._applyResolvedEnvironmentScalars(resolved);
     this._ddgi.setSkyParams?.(this._skyTint, this._skyIrradiance);
 
     // Re-converge the world-space DDGI irradiance atlas (the sky-dome term feeds
@@ -1964,13 +2508,13 @@ export class HybridEngine implements Engine {
     // B3 — push the directional IBL map+CDFs to the pipeline (or reset to the
     // no-HDRI placeholder). Independent of the sky scalars above, which remain
     // the WGSL fallback when no directional data is present.
-    this._applyDirectionalEnvironment(nextEnv);
+    this._applyDirectionalEnvironment(resolved);
   }
 
   /**
    * Map a `SceneEnvironment` onto this backend's diffuse sky-dome scalars
    * ({@link _skyTint} / {@link _skyIrradiance}). No GPU work and no engine-state
-   * mutation beyond flipping the one-time {@link _proceduralSkyWarned} flag, so
+   * mutation, so
    * the mapping is straightforward to unit-test. Returns only the fields that
    * should change — an omitted field leaves the engine's current scalar in
    * place (so e.g. an `hdri` swap that carries no tint preserves a host-supplied
@@ -1979,52 +2523,48 @@ export class HybridEngine implements Engine {
    * Mapping (see {@link updateEnvironment} for the full rationale):
    *  - `none` → `skyIrradiance: 0` (sky contributes no light; matches
    *    `applyEnvironment`'s black-background `none`). Tint left unchanged.
-   *  - `hdri` → raw numeric payloads / host extension resolvers can provide
-   *    diffuse `skyTint` + `skyIrradiance`; opaque handles without a resolver
-   *    fall back to intensity-only.
+   *  - `hdri` → raw numeric payloads / host extension resolvers provide either
+   *    directional data or an explicit scalar-only contract. Opaque handles
+   *    without a resolver are rejected synchronously.
    *  - `procedural-sky` → 'approximate' grade: resolveHybridEnvironment bakes
    *    turbidity/rayleigh/mie/sunDirection into a finite Preetham equirect and
    *    returns scalar skyTint/skyIrradiance as the no-directional fallback.
    */
-  private _skyScalarsFromEnvironment(
-    env: SceneEnvironment,
-  ): { skyTint?: [number, number, number]; skyIrradiance?: number } {
-    const resolved = resolveHybridEnvironment(env, {
-      extensions: this._environmentResolverExtensions,
-    });
-    if (resolved.warnings.length > 0 && !this._proceduralSkyWarned) {
-      this._proceduralSkyWarned = true;
-      for (const warning of resolved.warnings) {
-        this._warn({
-          code: 'walkaround-hybrid.environment-approximation',
-          backend: 'walkaround-hybrid',
-          phase: 'mutation',
-          method: 'updateEnvironment',
-          message: `[HybridEngine] updateEnvironment: ${warning}`,
-          details: { warning },
-        });
-      }
+  private _applyResolvedEnvironmentScalars(resolved: HybridResolvedEnvironment): void {
+    if (resolved.skyTint !== undefined) this._skyTint = resolved.skyTint;
+    if (resolved.skyIrradiance !== undefined) this._skyIrradiance = resolved.skyIrradiance;
+  }
+
+  /** Emit resolver diagnostics before any scene/lighting state is published. */
+  private _emitResolvedEnvironmentWarnings(
+    resolved: HybridResolvedEnvironment,
+    method: 'setScene' | 'updateEnvironment',
+  ): void {
+    if (resolved.warnings.length === 0 || this._proceduralSkyWarned) return;
+    for (const warning of resolved.warnings) {
+      this._warn({
+        code: 'walkaround-hybrid.environment-approximation',
+        backend: 'walkaround-hybrid',
+        phase: method === 'setScene' ? 'setScene' : 'mutation',
+        method,
+        message: `[HybridEngine] ${method}: ${warning}`,
+        details: { warning },
+      });
     }
-    return {
-      ...(resolved.skyTint !== undefined ? { skyTint: resolved.skyTint } : {}),
-      ...(resolved.skyIrradiance !== undefined ? { skyIrradiance: resolved.skyIrradiance } : {}),
-    };
+    this._proceduralSkyWarned = true;
   }
 
   /**
    * B3 — resolve the directional IBL payload (PBRT 2D distribution) from the
    * environment and push it to the pipeline's scene-group env resources. A
    * raw pixel-backed HDRI or procedural sky yields the directional map+CDFs;
-   * everything else (opaque handle, none, all-black map) resets the pipeline to
+   * scalar-only/none/all-black resolutions reset the pipeline to
    * the no-HDRI placeholder so the WGSL scalar-sky fallback runs (no-HDRI
    * byte-identity). No-op when the pipeline is not yet initialized — setScene's
    * init path calls this AFTER the pipeline exists.
    */
-  private _applyDirectionalEnvironment(env: SceneEnvironment): void {
+  private _applyDirectionalEnvironment(resolved: HybridResolvedEnvironment): void {
     if (this._pipeline == null) return;
-    const resolved = resolveHybridEnvironment(env, {
-      extensions: this._environmentResolverExtensions,
-    });
     if (resolved.directional !== undefined) {
       this._pipeline.updateDirectionalEnvironment(
         resolved.directional,
@@ -2100,7 +2640,7 @@ export class HybridEngine implements Engine {
   async captureFrame(opts?: CaptureFrameOptions): Promise<CapturedFrame | null> {
     const colorSpace = opts?.colorSpace ?? 'linear';
     if (colorSpace === 'output') {
-      const rgba = await this._pipeline?.captureOutputFrame() ?? null;
+      const rgba = (await this._pipeline?.captureOutputFrame()) ?? null;
       if (rgba == null) return null;
       return { width: this._internalWidth, height: this._internalHeight, rgba };
     }
@@ -2138,7 +2678,9 @@ export class HybridEngine implements Engine {
    *
    * No-op when called with the current size, or when the pipeline isn't
    * yet live (the new size is stored on the engine; `_initPipeline` will
-   * use it when it constructs the pipeline).
+   * use it when it constructs the pipeline). `renderFrame` invokes this
+   * automatically when `FrameInput.viewport` changes; direct calls remain a
+   * useful eager-resize hook for hosts reacting to a ResizeObserver.
    *
    * Cost: O(W·H) GPU memory churn for the FrameResources reallocation;
    * no shader recompile, no BVH rebuild. Typical resize tick: 5-30 ms
@@ -2149,30 +2691,22 @@ export class HybridEngine implements Engine {
     if (this._state === 'disposed') {
       throw new Error('HybridEngine.setSize: engine is disposed.');
     }
+    assertPositiveSafeViewportDimension(width, 'HybridEngine.setSize: width');
+    assertPositiveSafeViewportDimension(height, 'HybridEngine.setSize: height');
     if (width === this._width && height === this._height) return;
-    if (width <= 0 || height <= 0) {
-      // Defensive: WebGPU createTexture rejects zero-sized textures.
-      // Hosts sometimes feed in transient 0-pixel sizes during resize
-      // animations. Keep the no-op behavior, but do not hide it from hosts.
-      this._warnInvalidSetSize(width, height);
-      return;
-    }
+
+    // Keep every public and internal dimension unchanged until the pipeline has
+    // proved that its complete replacement resource set can be published.
+    const internalWidth = Math.max(1, Math.round(width * this._resolutionFactor));
+    const internalHeight = Math.max(1, Math.round(height * this._resolutionFactor));
+    this._pipeline?.resize(internalWidth, internalHeight);
+
     this._width = width;
     this._height = height;
-    // Recompute the internal render size from the last-seen resolution factor
-    // so a canvas resize preserves the host's chosen downscale. The pipeline
-    // renders at the INTERNAL size; the composite upscales to the canvas.
-    this._internalWidth = Math.max(1, Math.round(width * this._resolutionFactor));
-    this._internalHeight = Math.max(1, Math.round(height * this._resolutionFactor));
-    if (this._pipeline) {
-      this._pipeline.resize(this._internalWidth, this._internalHeight);
-    }
+    this._internalWidth = internalWidth;
+    this._internalHeight = internalHeight;
     // No DDGI invalidation — the irradiance atlas is world-space, not
     // screen-space, so it survives a resize unchanged.
-  }
-
-  private _warnInvalidSetSize(width: number, height: number): void {
-    this._materialWarner.warnInvalidSetSize(width, height);
   }
 
   /**
@@ -2191,17 +2725,19 @@ export class HybridEngine implements Engine {
     factor: number | undefined,
     nowMs: number,
   ): { width: number; height: number } {
-    // Record the clamped factor so a subsequent setSize() preserves the host's
-    // chosen downscale.
-    this._resolutionFactor =
-      typeof factor === 'number' && Number.isFinite(factor) && factor > 0
-        ? Math.min(1, factor)
+    // An omitted per-frame override falls back to the construction-time quality
+    // preset rather than silently promoting medium/low engines to full resolution.
+    const requestedFactor = factor ?? this._cfg.resolutionFactor;
+    // Record the clamped effective factor so a subsequent setSize() preserves it.
+    const resolutionFactor =
+      Number.isFinite(requestedFactor) && requestedFactor > 0
+        ? Math.min(1, requestedFactor)
         : 1;
 
     const decision = resolveInternalRenderSize({
       swapW: this._width,
       swapH: this._height,
-      factor,
+      factor: requestedFactor,
       currentW: this._internalWidth,
       currentH: this._internalHeight,
       nowMs,
@@ -2209,11 +2745,12 @@ export class HybridEngine implements Engine {
     });
 
     if (decision.shouldResize) {
+      this._pipeline?.resize(decision.targetW, decision.targetH);
       this._internalWidth = decision.targetW;
       this._internalHeight = decision.targetH;
       this._lastResolutionResizeTs = nowMs;
-      this._pipeline?.resize(decision.targetW, decision.targetH);
     }
+    this._resolutionFactor = resolutionFactor;
     return { width: this._internalWidth, height: this._internalHeight };
   }
 
@@ -2240,12 +2777,10 @@ export class HybridEngine implements Engine {
    * this returns a "skip" FrameOutput (`kind: 'skipped'`,
    * `samplesAccumulated: 0`, `isConverged: false`).
    *
-   * Note: `input.viewport` (the CANVAS size) is ignored by HybridEngine — its
-   * WebGPU render targets (DDGI atlas, ReSTIR reservoirs, history textures,
-   * accumulation buffer) are sized to the canvas at construction and the
-   * canvas size is changed only via {@link setSize}. Hosts MUST call
-   * `engine.setSize(w, h)` when the canvas dimensions change; pushing a new
-   * `viewport` per frame is silently dropped.
+   * `input.viewport` is the physical CANVAS size. A changed width or height is
+   * applied transactionally through {@link setSize} before any frame state is
+   * advanced. Unchanged dimensions allocate nothing; a failed replacement
+   * leaves the published canvas/internal dimensions and temporal state intact.
    *
    * However, `input.quality.resolutionFactor` IS honoured per-frame
    * (Phase-0 productization): it scales the INTERNAL render resolution
@@ -2254,38 +2789,41 @@ export class HybridEngine implements Engine {
    * FrameInput.viewport JSDoc for the cross-backend contract.
    */
   renderFrame(input: FrameInput): FrameOutput {
+    validateHybridFrameInput(input);
+    const canonicalInput = canonicalizeFrameCamera(
+      input,
+      'HybridEngine.renderFrame',
+    );
+    // FrameInput.viewport is the cross-backend resize contract. Keep the
+    // explicit setSize method as an eager host hook, while making direct
+    // renderFrame callers correct without a ResizeObserver. setSize publishes
+    // dimensions only after the pipeline has published its complete replacement
+    // resource set, so a thrown resize leaves this frame entirely unadvanced.
+    if (
+      this._state !== 'disposed' &&
+      (canonicalInput.viewport.width !== this._width ||
+        canonicalInput.viewport.height !== this._height)
+    ) {
+      this.setSize(
+        canonicalInput.viewport.width,
+        canonicalInput.viewport.height,
+      );
+    }
+    // Retain the validated camera even when this frame is subsequently
+    // skipped for a pipeline rebuild. `renderFrame` accepted the frame and
+    // debug picking must observe its canonical camera; malformed inputs and
+    // failed resize transactions still throw before this publication point.
+    this._lastFrameCamera = {
+      viewMatrix: new Float32Array(canonicalInput.viewMatrix),
+      projMatrix: new Float32Array(canonicalInput.projMatrix),
+      cameraPosition: [
+        canonicalInput.cameraPosition[0],
+        canonicalInput.cameraPosition[1],
+        canonicalInput.cameraPosition[2],
+      ],
+    };
     // Advance the error-throttle frame counter (see _onUncapturedError).
     this._errorFrameCount++;
-    // Ergonomics guard: HybridEngine sizes its render targets at construction /
-    // `setSize()` and does NOT honour `FrameInput.viewport` per-frame (unlike the
-    // converged PT backends — see the FrameInput.viewport contract note). A host
-    // that resizes its canvas and pushes a new viewport, expecting the engine to
-    // follow, would silently render at the stale size. Warn once so the misuse is
-    // visible instead of mysterious. (attachVitrum wires setSize for you.)
-    if (
-      !this._viewportMismatchWarned &&
-      (input.viewport.width !== this._width || input.viewport.height !== this._height)
-    ) {
-      this._viewportMismatchWarned = true;
-      this._warn({
-        code: 'walkaround-hybrid.viewport-ignored',
-        backend: 'walkaround-hybrid',
-        phase: 'renderFrame',
-        method: 'renderFrame',
-        message:
-          `[HybridEngine] FrameInput.viewport (${input.viewport.width}×${input.viewport.height}) ` +
-          `differs from the engine canvas size (${this._width}×${this._height}) and is IGNORED. ` +
-          'HybridEngine sizes render targets at construction; call engine.setSize(width, height) ' +
-          'on canvas resize (attachVitrum does this automatically). For per-frame internal-' +
-          'resolution scaling use FrameInput.quality.resolutionFactor instead.',
-        details: {
-          viewportWidth: input.viewport.width,
-          viewportHeight: input.viewport.height,
-          engineWidth: this._width,
-          engineHeight: this._height,
-        },
-      });
-    }
     // Rebuild-key check (D2.5 — moved out of the orchestrator dep bundle so
     // engine-state mutations don't live inside the FrameDeps closure). Must
     // run BEFORE _buildFrameDeps / runHybridEngineFrame — same position as the
@@ -2299,14 +2837,7 @@ export class HybridEngine implements Engine {
       return HYBRID_FRAME_SKIP_OUTPUT;
     }
 
-    // Retain the camera (copied — decoupled from host mutation) for debug
-    // click-to-pick (EngineDebugSurface.pickPrimitive, T3.G).
-    this._lastFrameCamera = {
-      viewMatrix: new Float32Array(input.viewMatrix),
-      projMatrix: new Float32Array(input.projMatrix),
-      cameraPosition: [input.cameraPosition[0], input.cameraPosition[1], input.cameraPosition[2]],
-    };
-    return runHybridEngineFrame(this._buildFrameDeps(), input);
+    return runHybridEngineFrame(this._buildFrameDeps(), canonicalInput);
   }
 
   /** Live lighting snapshot — the four runtime-mutable lighting fields
@@ -2329,7 +2860,9 @@ export class HybridEngine implements Engine {
    *  compact and makes a new tuple knob a single edit. */
   private _denoiserFilterDeps(): HybridDenoiserFilterDeps {
     const directionalSunShadowDisabled =
-      this._renderScene?.emitters.some((e) => e.kind === 'directional' && e.castShadow === false) === true;
+      this._renderScene?.emitters.some(
+        (e) => e.kind === 'directional' && e.castShadow === false,
+      ) === true;
     return {
       // B15 — scene-scale-aware default (falls back to the Cornell baseline
       // before the first setScene). Host overrides already pass through verbatim
@@ -2340,7 +2873,7 @@ export class HybridEngine implements Engine {
       stainedGlassFlags: directionalSunShadowDisabled
         ? (this._cfg.stainedGlassFlags | SHADE_FLAG_DIRECT_SUN_SHADOW_DISABLED) >>> 0
         : this._cfg.stainedGlassFlags,
-      restirPtReuse: this._cfg.restirPtReuse,
+      grisReuse: this._cfg.grisReuse,
       nrcEnabled: this._cfg.nrcEnabled,
     };
   }
@@ -2402,6 +2935,10 @@ export class HybridEngine implements Engine {
         // before the first setScene; byte-identical at Cornell scale).
         tunables: self._scaledTunables ?? self._cfg.tunables,
         rcWeight: self._rcWeight,
+        causticStrategy: self._causticStrategy,
+        mneeMaxIterations: self._cfg.mneeMaxIterations,
+        mneeMaxChainLength: self._cfg.mneeMaxChainLength,
+        mneeMultiplicityTrials: self._cfg.mneeMultiplicityTrials,
       },
     };
   }
@@ -2468,7 +3005,18 @@ export class HybridEngine implements Engine {
    * The host sets up `window.__HYBRID_LAYERS__` → `engine.setLayerEnabled()`
    * forwarding if it wants console-accessible toggles.
    */
-  setLayerEnabled(layer: string, enabled: boolean): void {
+  setLayerEnabled(layer: HybridRenderLayer, enabled: boolean): void {
+    if (!HYBRID_RENDER_LAYERS.has(layer)) {
+      throw new RangeError(
+        `HybridEngine.setLayerEnabled: unsupported layer "${String(layer)}"; ` +
+        `supported layers: ddgi.`,
+      );
+    }
+    if (typeof enabled !== 'boolean') {
+      throw new TypeError(
+        `HybridEngine.setLayerEnabled("${layer}"): enabled must be a boolean.`,
+      );
+    }
     this._layerEnabled.set(layer, enabled);
   }
 
@@ -2542,14 +3090,22 @@ export class HybridEngine implements Engine {
   /** Internal: emit an error to all subscribers. Catches subscriber throws. */
   private _emitError(error: EngineError): void {
     for (const cb of this._errorSubs) {
-      try { cb(error); } catch { /* must not break rendering */ }
+      try {
+        cb(error);
+      } catch {
+        /* must not break rendering */
+      }
     }
   }
 
   /** Internal: emit a warning to all subscribers. Catches subscriber throws. */
   private _emitWarning(warning: EngineWarning): void {
     for (const cb of this._warningSubs) {
-      try { cb(warning); } catch { /* must not break rendering */ }
+      try {
+        cb(warning);
+      } catch {
+        /* must not break rendering */
+      }
     }
   }
 
@@ -2586,6 +3142,8 @@ export class HybridEngine implements Engine {
       this._device.removeEventListener('uncapturederror', this._onUncapturedError);
       this._onUncapturedError = null;
     }
+    this._frameSubs.length = 0;
+    this._progressSubs.length = 0;
     this._errorSubs.length = 0;
     this._warningSubs.length = 0;
     this._errorThrottleMap.clear();
@@ -2630,8 +3188,10 @@ export class HybridEngine implements Engine {
         framesDispatched: dbg.framesDispatched,
         deferredTeardown: !teardownNow,
         skipReasons: {
-          noPipeline: dbg.skipNoPipeline, noBvh: dbg.skipNoBvh,
-          noSwapView: dbg.skipNoSwapView, frameInterval: dbg.skipFrameInterval,
+          noPipeline: dbg.skipNoPipeline,
+          noBvh: dbg.skipNoBvh,
+          noSwapView: dbg.skipNoSwapView,
+          frameInterval: dbg.skipFrameInterval,
         },
       });
     }
@@ -2646,8 +3206,11 @@ export class HybridEngine implements Engine {
    *  their instance matrices directly. */
   private _coreSceneSuppliesMeshes(): boolean {
     const s = this._renderScene;
-    return s != null && s.primitives.some(
-      (p) => p.kind === 'mesh' || p.kind === 'skinned-mesh' || p.kind === 'instanced-mesh',
+    return (
+      s != null &&
+      s.primitives.some(
+        (p) => p.kind === 'mesh' || p.kind === 'skinned-mesh' || p.kind === 'instanced-mesh',
+      )
     );
   }
 
@@ -2684,6 +3247,7 @@ export class HybridEngine implements Engine {
       restirBvhModeOverride: this._cfg.restirBvhModeOverride,
       denoiser: this._cfg.denoiser,
       neuralWeights: this._cfg.neuralWeights,
+      neuralTensorStorage: this._cfg.neuralTensorStorage,
       oidnModelUrl: this._cfg.oidnModelUrl,
       oidnExecutionProviders: this._cfg.oidnExecutionProviders,
       verbose: this._cfg.verbose,
@@ -2696,22 +3260,19 @@ export class HybridEngine implements Engine {
       gtaoMode: this._cfg.gtaoMode,
       diSpatialPasses: this._cfg.diSpatialPasses,
       giSpatialPasses: this._cfg.giSpatialPasses,
-      // GRIS / ReSTIR-PT reuse is a COMPILE-TIME structural gate at the pipeline
-      // level (selects the GI pipeline layout + shader variant). The `restirPtReuse`
+      // GRIS DDGI-proxy reuse is a COMPILE-TIME structural gate at the pipeline
+      // level (selects the GI pipeline layout + shader variant). The `grisReuse`
       // number (0/1) also drives the UBO flag; here we forward the boolean so the
       // pipeline builds the matching layout.
-      restirPtReuse: this._cfg.restirPtReuse === 1,
+      grisReuse: this._cfg.grisReuse === 1,
       // NRC live cache — same COMPILE-TIME structural gate discipline as
-      // restirPtReuse. `nrcEnabled` (0/1) also drives the UBO flag; here we
+      // grisReuse. `nrcEnabled` (0/1) also drives the UBO flag; here we
       // forward the boolean so the pipeline builds the matching gi-ris layout
       // (4-group DDGI default vs 5-group inline-MLP variant).
       nrcEnabled: this._cfg.nrcEnabled === 1,
+      nrcConfig: this._cfg.nrcConfig,
       // PPG guided sampling — builds the ppg-update pipeline + UBO gate.
       ppgEnabled: this._cfg.ppgEnabled === 1,
-      // NRC substitution warmup gate.
-      nrcWarmupSteps: this._cfg.nrcWarmupSteps,
-      nrcSpreadC: this._cfg.nrcSpreadC,
-      ppgDispatchInterval: this._cfg.ppgDispatchInterval,
       // H47 — PPG max spatial cells. undefined ⇒ allocatePPGResources default (1 024).
       ppgMaxSpatialCells: this._cfg.ppgMaxSpatialCells,
       // H29 — PPG max per-cell dTree nodes. undefined ⇒ default 341-node stride.
@@ -2739,77 +3300,119 @@ export class HybridEngine implements Engine {
       // resolutionFactor). Equal to the canvas size on first init (factor
       // 1.0); after a factor was applied, a reset() re-inits at the live
       // internal size so the composite upscale stays correct.
-      get width() { return self._internalWidth; },
-      get height() { return self._internalHeight; },
-      get lastScene() { return self._renderScene; },
-      get primaryLightDir() { return self._primaryLightDir; },
-      get primaryLightIntensity() { return self._primaryLightIntensity; },
-      get preferredSwapChainFormat() { return getPreferredSwapChainFormat(); },
-      get currentBvhBuffers() { return self._bvhBuffers; },
+      get width() {
+        return self._internalWidth;
+      },
+      get height() {
+        return self._internalHeight;
+      },
+      get lastScene() {
+        return self._renderScene;
+      },
+      get primaryLightDir() {
+        return self._primaryLightDir;
+      },
+      get primaryLightIntensity() {
+        return self._primaryLightIntensity;
+      },
+      get ppgDispatchInterval() {
+        return self._ppgDispatchInterval;
+      },
+      get hostSunWarningState() {
+        return self._hostSunWarningState;
+      },
+      get preferredSwapChainFormat() {
+        return getPreferredSwapChainFormat();
+      },
+      get currentBvhBuffers() {
+        return self._bvhBuffers;
+      },
 
       isSceneReadyForBvh: () => self._sceneReadyForBvh(),
       coreSceneSuppliesMeshes: () => self._coreSceneSuppliesMeshes(),
 
-      publishBvh:             (bvh) => {
+      publishBvh: (bvh) => {
         self._bvhBuffers = bvh;
         self._warnMaterialTextureAtlasDiagnostics(bvh.materialTextureAtlas.diagnostics, 'setScene');
         propagateBvhToGiSubsystems({
           ddgi: self._ddgi,
-          rc: self._rc,
+          // RC adopts the pipeline's canonical GPU arena after initialize();
+          // avoid a second geometry BVH at this earlier CPU-only checkpoint.
+          rc: null,
           bvhBuffers: bvh,
           lastScene: self._renderScene,
           syncDdgi: true,
           allowRcSceneRebuild: true,
         });
       },
-      publishPipeline:        (p)   => { self._pipeline = p; },
-      rollbackBvh:            ()    => { self._bvhBuffers = null; },
-      setState:               (s)   => { self._state = s; },
-      reportError:            (e)   => { self._emitError(e); },
-      reportWarning:          (w)   => { self._warn(w); },
-      teardownPipeline:       ()    => { self._teardownPipeline(); },
-      disposeDdgi:            ()    => { self._ddgi.dispose(); },
+      publishPipeline: (p) => {
+        // A host may retune PPG while async pipeline.initialize() is in flight.
+        // Re-apply the live engine value at the publication boundary so the
+        // newly published generation cannot expose the stale value captured
+        // when initialization began.
+        p.setPpgDispatchInterval(self._ppgDispatchInterval);
+        if (self._rc != null && self._bvhBuffers != null) {
+          const sharedGeometry = p.getSceneGeometryBufferBindings();
+          if (sharedGeometry == null) {
+            throw new Error(
+              '[HybridEngine] initialized pipeline did not publish scene geometry bindings.',
+            );
+          }
+          self._rc.syncRestirBvhBuffers(self._bvhBuffers, sharedGeometry);
+        }
+        self._pipeline = p;
+      },
+      rollbackBvh: () => {
+        self._bvhBuffers = null;
+      },
+      setState: (s) => {
+        self._state = s;
+      },
+      reportError: (e) => {
+        self._emitError(e);
+      },
+      reportWarning: (w) => {
+        self._warn(w);
+      },
+      teardownPipeline: () => {
+        self._teardownPipeline();
+      },
+      disposeDdgi: () => {
+        self._ddgi.dispose();
+      },
       // Mirror the synchronous dispose (HybridEngine.dispose) so a deferred
       // (dispose-races-init) teardown releases RC + skinning too, not just
       // pipeline/BVH/DDGI. RC dispose also nulls the handle, matching dispose().
-      disposeRc:              ()    => {
-        if (self._rc) { self._rc.dispose(); self._rc = null; }
+      disposeRc: () => {
+        if (self._rc) {
+          self._rc.dispose();
+          self._rc = null;
+        }
       },
-      disposeSkinning:        ()    => { self._skinning?.dispose(); },
+      disposeSkinning: () => {
+        self._skinning?.dispose();
+      },
 
       recordInitStart: () => {
         const d = self._dbg;
         d.initCount++;
         d.initStart = performance.now();
         console.log(`[hybrid:debug] init #${d.initCount} START`, {
-          W: self._width, H: self._height, device: !!self._device,
+          W: self._width,
+          H: self._height,
+          device: !!self._device,
           t: d.initStart.toFixed(0),
         });
       },
       recordInitComplete: (pipelineMs, totalMs) => {
         const d = self._dbg;
         console.log(`[hybrid:debug] init #${d.initCount} COMPLETE`, {
-          pipelineMs: pipelineMs.toFixed(1), totalMs: totalMs.toFixed(1),
+          pipelineMs: pipelineMs.toFixed(1),
+          totalMs: totalMs.toFixed(1),
         });
       },
     };
   }
-
-}
-
-function primitivePatchNumericArray(
-  patch: Partial<ScenePrimitive>,
-  previousPrimitive: ScenePrimitive | undefined,
-  key: 'positions' | 'colors',
-): ArrayLike<number> | undefined {
-  const patchedValue = (patch as unknown as Record<string, unknown>)[key];
-  if (patchedValue != null && typeof (patchedValue as { length?: unknown }).length === 'number') {
-    return patchedValue as ArrayLike<number>;
-  }
-  const previousValue = (previousPrimitive as unknown as Record<string, unknown> | undefined)?.[key];
-  return previousValue != null && typeof (previousValue as { length?: unknown }).length === 'number'
-    ? previousValue as ArrayLike<number>
-    : undefined;
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -2820,7 +3423,7 @@ function primitivePatchNumericArray(
  * The walkaround-hybrid backend's STABLE, public-facing surface BEYOND the
  * host-agnostic {@link Engine} contract: DDGI GI-state persistence (the "cached
  * light field"). {@link createWalkaroundEngine_Hybrid} returns
- * `Promise<Engine & HybridEngineGISurface>` so a host that deliberately picks
+ * `Promise<HybridEngine>` so a host that deliberately picks
  * this backend by name gets the export/import methods typed — without the
  * universal contract baking in a backend-specific feature. (`@vitrum/engine`'s
  * `createEngine` facade forwards these same methods via its internal
@@ -2837,11 +3440,11 @@ function primitivePatchNumericArray(
  */
 export const createWalkaroundEngine_Hybrid: EngineFactory<
   HybridEngineOptions,
-  Engine & HybridEngineGISurface
+  HybridEngine
 > = async (
   opts: HybridEngineOptions,
-// eslint-disable-next-line @typescript-eslint/require-await -- factory signature is async to match EngineFactory<…> contract; no async setup needed in this code path
-): Promise<Engine & HybridEngineGISurface> => {
+  // eslint-disable-next-line @typescript-eslint/require-await -- factory signature is async to match EngineFactory<…> contract; no async setup needed in this code path
+): Promise<HybridEngine> => {
   // Duck-type GPUDevice validation — `instanceof GPUDevice` is not reliable
   // across realms; checking for a known required method is more robust.
   if (
@@ -2850,8 +3453,7 @@ export const createWalkaroundEngine_Hybrid: EngineFactory<
   ) {
     throw new TypeError(
       '[createWalkaroundEngine_Hybrid] opts.device must be a live GPUDevice. ' +
-      // eslint-disable-next-line @typescript-eslint/no-base-to-string -- diagnostic; [object Object] output is acceptable in a TypeError message
-      'Received: ' + String(opts.device),
+        `Received value of type ${typeof opts.device}.`,
     );
   }
 
@@ -2865,4 +3467,4 @@ export const createWalkaroundEngine_Hybrid: EngineFactory<
   //      The bootstrap is wasted work but safe.
   engine.setScene({ primitives: [], emitters: [], environment: { kind: 'none' } });
   return engine;
-}
+};

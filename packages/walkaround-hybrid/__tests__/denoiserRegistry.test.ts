@@ -123,7 +123,7 @@ describe('Builtin Denoiser entries', () => {
     const d = new BmfrDenoiser();
     expect(d.id).toBe('bmfr');
     expect((d as { disabled?: boolean }).disabled).toBeUndefined();
-    expect(d.passLabels).toEqual(['bmfr']);
+    expect(d.passLabels).toEqual(['bmfr-fit', 'bmfr-resolve']);
   });
 
   it('NeuralDenoiser carries id "neural" and is disabled by default (no InferenceGraph supplied)', () => {

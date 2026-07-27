@@ -15,9 +15,11 @@ import {
 describe('consumedMaterialField docs ↔ allowlist parity (D6-5)', () => {
   it('every allowlist field has a non-empty doc entry', () => {
     for (const field of CONSUMED_MATERIAL_FIELDS) {
-      const doc = CONSUMED_MATERIAL_FIELD_DOCS[field];
+      const doc = CONSUMED_MATERIAL_FIELD_DOCS[
+        field as keyof typeof CONSUMED_MATERIAL_FIELD_DOCS
+      ];
       expect(doc, `missing doc for consumed field "${field}"`).toBeDefined();
-      expect(doc!.length, `empty doc for consumed field "${field}"`).toBeGreaterThan(0);
+      expect(doc.length, `empty doc for consumed field "${field}"`).toBeGreaterThan(0);
     }
   });
 

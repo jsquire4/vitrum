@@ -1,12 +1,18 @@
 import { describe, expect, it } from 'vitest';
 import { createHash } from 'node:crypto';
-import { FrameParamsSlot } from '../scene/frameParamsLayout.js';
+import {
+  FRAME_PARAMS_BYTE_SIZE,
+  FrameParamsSlot,
+} from '../scene/frameParamsLayout.js';
 import { PT_WEBGPU_TRACE_WGSL } from '../wgsl/pathTraceBruteforce.wgsl.js';
 import { PT_WEBGPU_TRACE_LITE_WGSL } from '../wgsl/pathTraceBruteforceLite.wgsl.js';
 import { PT_WEBGPU_PATH_TRACE_CAUSTIC_WGSL } from '../wgsl/pathTrace/caustic.wgsl.js';
+import { RESTIR_PT_PRODUCER_WGSL } from '../wgsl/pathTrace/restirPtProducer.wgsl.js';
+import { PT_WEBGPU_BDPT_CONNECTION_WGSL } from '../wgsl/bdpt/bdptConnection.wgsl.js';
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { activeLayerWeightRgbOracle } from './spectralScalarOracle.js';
 
 // ── Theme-C byte-identity pin ───────────────────────────────────────────────
 // Task 2.2 collapsed the compile-time-variant whole-body WGSL duplication
@@ -76,7 +82,7 @@ describe('pt-webgpu WGSL byte-identity (Theme-C dedup pin)', () => {
     // Re-pinned 2026-06-10: A9 (BDPT production quality) — the BDPT-gated light
     // subpath gained a REAL glossy/specular BSDF extension (was Lambertian-only);
     // the light-path vertex widened first to 4 rows (matId + wo-toward-prev), then
-    // to 5 rows (hit-local tri/bary/instance material payload) so the §10.3
+    // to 6 rows (hit-local material payload plus interface eta) so the §10.3
     // connection evaluates the REAL texture-mapped light-vertex BSDF/pdfs
     // (fwdEe/revLcMinus); the connection light-bounce cap rose 3→8; the
     // point emitter went isotropic (uniform sphere, was cosine-up). All gated behind
@@ -310,8 +316,44 @@ describe('pt-webgpu WGSL byte-identity (Theme-C dedup pin)', () => {
     // variant; emissive now samples the HDR emissive array (was the sRGB baseColor
     // array). RENDER-CHANGING for HDR textured emissive (values > 1.0 survive);
     // LDR emissive is visually identical (CPU sRGB→linear decode on upload).
-    expect(digest).toBe('c2957a41ad2c2dc0ab28ef1b1fa9891efd1c8715d611e2b878b6ab919f71b61b');
-    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(408332);
+    // Re-pinned 2026-07-21: finite dielectric rough transmission and the
+    // bounded explicit-BDPT strategy-family ownership/mask are now represented
+    // by the composed full-tier shader. The old unconditional 100-unit BDPT
+    // contribution clamp was removed, and the bounded BDPT eye walk now keeps
+    // q=1 instead of using an unreconstructable one-sided RR density. The full
+    // bounded MIS recurrence and power denominator now run in log space.
+    // Re-pinned 2026-07-21: two-sided BDPT medium transport and removal of the
+    // non-manifold directional cone-caustic approximation changed the source.
+    // Re-pinned 2026-07-22: validated TLAS traversal now restarts a stackless
+    // all-instance fallback after defensive stack overflow instead of returning
+    // a partial closest hit or conservative synthetic occlusion.
+    // Re-pinned 2026-07-23: tangent-space normal, clearcoat-normal, and bump
+    // maps now derive their frame from the descriptor-selected compact UV slot;
+    // mirrored UV/TLAS handedness and anisotropy use that same authored frame.
+    // Re-pinned 2026-07-23: geometric-winding double-sided traversal (including
+    // mirrored TLAS/CWBVH parity), BDPT/SPPM interior-delta ownership, and
+    // wavelength-carrying spectral ReSTIR reuse are intentional render changes.
+    // Re-pinned 2026-07-23: finite-light, environment, SPPM, and MNEE receiver
+    // evaluation now uses the authored clearcoat-normal frame. Exact thin-film
+    // transport is owned only by the discrete TMM path and is excluded from
+    // finite connection/reuse families that cannot represent its delta events.
+    // Re-pinned 2026-07-24: exact-zero delta classification, stable HG sampling,
+    // unbiased SPPM record accumulation, and sampled thin-film transmission are
+    // now shared consistently by the full, BDPT, SPPM, and adjoint compositions.
+    // Re-pinned 2026-07-27: rough dielectric eval, PDF, and source sampling now
+    // share coloured specular/iridescence Fresnel across PT, BDPT, and SPPM.
+    // Re-pinned 2026-07-27: removed unread CMF/light-direction UBO payload and
+    // made cameraPos a semantic vec3f beside the live HDRI-intensity scalar.
+    // Re-pinned 2026-07-27: soft directional medium NEE now keeps sole-family
+    // ownership, and straight visibility rejects non-null IOR transitions.
+    // Re-pinned 2026-07-27: ReSTIR-PT producer candidates are canonicalized
+    // into the packed storage domain before target and weight evaluation.
+    // Re-pinned 2026-07-27: finite-BSDF sampling now shares one finalization
+    // path, and bounded MNEE uses the production caustic-event implementation.
+    // Re-pinned 2026-07-27: medium NEE visibility now traverses nested null
+    // boundaries while rejecting opaque or non-null dielectric blockers.
+    expect(digest).toBe('8ded043e1a57bad92f75d02685f2497aab669c795b1873d19cd81de2eabdfb9e');
+    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(567703);
   });
 });
 
@@ -329,16 +371,13 @@ describe('pt-webgpu WGSL material contract', () => {
     expect(PT_WEBGPU_TRACE_WGSL).toContain('mat.volumeThickness = max(m28.x, 0.0);');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('fn materialAttenuationDistance(segmentDistance: f32, mat: DecodedMaterial) -> f32');
     expect(PT_WEBGPU_TRACE_WGSL).toContain(
-      'transmission = clamp(transmission * sampleTransmissionTexture(matId, hit.triIndex, hit.baryVW), 0.0, 1.0);',
+      'transmission = clamp(transmission * sampleTransmissionTexture(matId, hit.triIndex, hit.baryVW, hit.instanceIndex), 0.0, 1.0);',
     );
     expect(PT_WEBGPU_TRACE_WGSL).toContain(
-      'let volumeThicknessSample = sampleVolumeThicknessTexture(matId, hit.triIndex, hit.baryVW);',
+      'let volumeThicknessSample = sampleVolumeThicknessTexture(matId, hit.triIndex, hit.baryVW, hit.instanceIndex);',
     );
-    expect(PT_WEBGPU_TRACE_WGSL).toContain(
-      'var mediumAttenuationLimit = INFINITY;',
-    );
-    expect(PT_WEBGPU_TRACE_WGSL).toContain('mediumAttenuationLimit = materialAttenuationDistance(INFINITY, mat);');
-    expect(PT_WEBGPU_TRACE_WGSL).toContain('let attenuationDist = min(hit.dist, mediumAttenuationLimit);');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('materialAttenuationDistance(INFINITY, mat),');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('let attenuationDist = min(hit.dist, eyeMedium.remainingDistance);');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('if (freeFlightDist < attenuationDist)');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('exp(-(walkSigmaT - vec3f(heroSigmaT)) * attenuationDist)');
   });
@@ -346,9 +385,10 @@ describe('pt-webgpu WGSL material contract', () => {
   it('routes full-tier BSDF-side area/env connections through extension-aware BRDF helpers', () => {
     expect(PT_WEBGPU_TRACE_WGSL).toContain('fn bsdfAreaLightConnectionContribution(');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('clearcoat: f32,');
-    expect(PT_WEBGPU_TRACE_WGSL).toContain('let bsdfPdf = brdfDirectionalPdfFullSampled(');
-    expect(PT_WEBGPU_TRACE_WGSL).toContain('let brdf = evaluateBrdfFull(');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('let bsdfPdf = brdfDirectionalPdfFullSampledWithClearcoatNormal(');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('let brdf = evaluateBrdfFullWithClearcoatNormal(');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('mat.clearcoatRoughness,');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('clearcoatNormal,');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('anisoRotation,');
   });
 
@@ -363,8 +403,8 @@ describe('pt-webgpu WGSL material contract', () => {
     expect(PT_WEBGPU_TRACE_WGSL).toContain('let ccDensity = (clearcoatWeight / lobeWeightSum) * ccPdf;');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('let shDensity = (sheenWeight / lobeWeightSum) * shPdf;');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('let shBrdf = evalSheenLobe(sheen, sheenRoughness, sheenColor, normal, -incomingDir, result.sampledDir);');
-    expect(PT_WEBGPU_TRACE_WGSL).toContain('let scatterPdfFwd = brdfDirectionalPdfFullSampledWithClearcoatNormal(');
-    expect(PT_WEBGPU_TRACE_WGSL).toContain('let swappedRev = brdfDirectionalPdfFullSampledWithClearcoatNormal(');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('let scatterPdfFwd = bs.sampledEventPdf;');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('swappedRev = bdptMarginalSurfacePdf(');
   });
 
   it('uses iridescence-modified F0 for sampled Fresnel and the full sampled PDF', () => {
@@ -387,8 +427,8 @@ describe('pt-webgpu WGSL material contract', () => {
       PT_WEBGPU_TRACE_WGSL.indexOf('fn brdfDirectionalPdf(', PT_WEBGPU_TRACE_WGSL.indexOf('fn brdfDirectionalPdfWithIridescence(')),
     );
     expect(pdfHelper).toContain('iridescenceThicknessMax: f32,');
-    expect(pdfHelper).toContain('let f0 = iridescenceModifiedF0(');
-    expect(pdfHelper).toContain('vDotH,');
+    expect(pdfHelper).toContain('let lobeWeights = brdfFiniteBaseLobeWeights(');
+    expect(pdfHelper).toContain('iridescenceThicknessMin, iridescenceThicknessMax,');
 
     const fullPdf = PT_WEBGPU_TRACE_WGSL.slice(
       PT_WEBGPU_TRACE_WGSL.indexOf('fn brdfDirectionalPdfFullWithClearcoatNormal('),
@@ -411,9 +451,9 @@ describe('pt-webgpu WGSL material contract', () => {
     expect(branch).toContain('let lobeWeightSum = brdfExtensionLobeWeightSum(clearcoat, sheen);');
     expect(branch).toContain('let xiLobe = rand_f32(rng) * lobeWeightSum;');
     expect(branch).toContain('let xiBase = xiLobe;');
-    expect(branch).toContain('result.throughputMul = fresnel * g1Wi * msBoost * lobeWeightSum / max(R, 1e-4);');
+    expect(branch).toContain('result.throughputMul = microfacetF * g1Wi * msBoost * lobeWeightSum / max(reflectionProbability, 1e-10);');
     expect(branch).toContain(
-      'result.throughputMul = baseColor * thinFilmTransmitTint * lobeWeightSum / max(1.0 - R, 1e-4);',
+      'baseColor * transmissionWeight * (vec3f(1.0) - microfacetF) *',
     );
     expect(branch).toContain(
       'let bsCc = glossyReflectionSample(rng, wo, clearcoatNormal, ccTanT, ccTanB, clearcoatRoughness);',
@@ -422,17 +462,19 @@ describe('pt-webgpu WGSL material contract', () => {
   });
 
   it('uses extension-aware BRDF evaluation for SPPM receiver gathers', () => {
-    expect(PT_WEBGPU_TRACE_WGSL).toContain('fn sppmGatherProgressive(');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('fn sppmUpdateSurfaceProgressive(');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('fn sppmCurrentProgressiveEstimate(');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('clearcoatRoughness : f32,');
-    expect(PT_WEBGPU_TRACE_WGSL).toContain('let brdf = evaluateBrdfFull(');
-    expect(PT_WEBGPU_TRACE_WGSL).toContain('photonMapContribution(');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('let brdf = evaluateBrdfFullWithClearcoatNormal(');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('photonMapUpdateProgressive(');
   });
 
   it('uses extension-aware BRDF/PDF evaluation for MNEE caustic receivers', () => {
     expect(PT_WEBGPU_TRACE_WGSL).toContain('fn manifoldNeeContribution(');
-    expect(PT_WEBGPU_TRACE_WGSL).toContain('fn pointLightReflectionCaustic(');
-    expect(PT_WEBGPU_TRACE_WGSL).toContain('let fr = evaluateBrdfFull(');
-    expect(PT_WEBGPU_TRACE_WGSL).toContain('let brdfPdf = brdfDirectionalPdfFullSampled(');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('fn boundedManifoldCaustic(');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('let emitter = mneeSampleEmitter(rng);');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('let fr = evaluateBrdfFullWithClearcoatNormal(');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('let brdfPdf = brdfDirectionalPdfFullSampledWithClearcoatNormal(');
   });
 
   it('keeps lite-tier MNEE stub signature aligned with the lite kernel call', () => {
@@ -459,11 +501,12 @@ describe('pt-webgpu WGSL material contract', () => {
 
   it('uses extension-aware BRDF/PDF evaluation for BDPT connection endpoints', () => {
     expect(PT_WEBGPU_TRACE_WGSL).toContain('fn evaluateBdptConnection(');
-    expect(PT_WEBGPU_TRACE_WGSL).toContain('let eyeBrdf = evaluateBrdfFullWithClearcoatNormal(');
-    expect(PT_WEBGPU_TRACE_WGSL).toContain('let lvBrdf = evaluateBrdfFullWithClearcoatNormal(');
-    expect(PT_WEBGPU_TRACE_WGSL).toContain('lightNormal, lvMat.clearcoatNormal, -connDir, lvWoPrev,');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('eyeBrdf = evaluateFiniteBsdfFullWithClearcoatNormal(');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('let lvBrdf = evaluateFiniteBsdfFullWithClearcoatNormal(');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('lightNormal, lvMat.clearcoatNormal, lvWoPrev, -connDir,');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('fwdEe = brdfDirectionalPdfFullSampledWithClearcoatNormal(');
-    expect(PT_WEBGPU_TRACE_WGSL).toContain('let revLc = brdfDirectionalPdfFullSampledWithClearcoatNormal(');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('var revLc = 0.0;');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('revLc = bdptTransmissiveConnectionPdf(');
   });
 
   it('includes hero-wavelength MIS helpers when spectral mode is enabled', () => {
@@ -494,20 +537,42 @@ describe('pt-webgpu WGSL material contract', () => {
     // pdf — so the accumulation is a bare add. p_select is `1/lightCount` on the
     // uniform fallback path and `lt.pdf` on the power-weighted light-tree path.
     expect(PT_WEBGPU_TRACE_WGSL).toContain('radiance = radiance + directLi;');
-    expect(PT_WEBGPU_TRACE_WGSL).toContain('lightSelectInvPdf = f32(lightCount);');
-    expect(PT_WEBGPU_TRACE_WGSL).toContain('lightSelectInvPdf = 1.0 / lt.pdf;');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('var lightSelection: DirectLightSelection;');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('lightSelection = sampleDistantDirectLight(sumDirectLighting, &rng);');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('lightSelection = sampleCanonicalDirectLight(');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('let lightSelectInvPdf = lightSelection.invPdf;');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain(
+      'let directLightingScale = select(\n        lightSelectInvPdf, 1.0, sumDirectLighting,\n      );',
+    );
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('return DirectLightSelection(index, f32(lightCount));');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('1.0 / selected.pdf,');
   });
 
-  it('gates emissive-on-hit to camera + refraction paths (camera-visible emitters)', () => {
+  it('keeps finite-emitter measures exact and MIS-accountable across rough transmission', () => {
+    expect(PT_WEBGPU_TRACE_WGSL).not.toContain('max(PI * rradL * rradL, 1e-6)');
+    expect(PT_WEBGPU_TRACE_WGSL).not.toContain('max(4.0 * length(cross(ru, rv)), 1e-6)');
+    expect(PT_WEBGPU_TRACE_WGSL).not.toContain('max(cosLight * area, 1e-6)');
+    expect(PT_WEBGPU_TRACE_WGSL).not.toContain('let worldArea = max(uvCAndMaterial.w, 1e-8);');
+    expect(PT_WEBGPU_TRACE_WGSL).not.toContain('let denom = max(d00 * d11 - d01 * d01, 1e-20);');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('let nDotL = abs(dot(normal, wi));');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('let brdf = evaluateFiniteBsdfFullWithClearcoatNormal(');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain(
+      'let offsetNormal = select(-normal, normal, dot(normal, wi) > 0.0);',
+    );
+    expect(PT_WEBGPU_TRACE_WGSL).toContain(
+      'result.sampleAllowsAreaMis = result.sampledEventPdf > 0.0;',
+    );
+  });
+
+  it('gates emissive-on-hit to paths without an MIS-accountable prior event', () => {
     // The emissive-on-hit term must be gated on !prevSampleAllowsAreaMis so it
-    // fires ONLY on the camera ray (prevSampleAllowsAreaMis inits false) and after
-    // a refraction/specular-transmission bounce (which sets sampleAllowsAreaMis
-    // false) — the paths the analytic bsdfAreaLightConnectionContribution cannot
-    // reach. On diffuse/glossy bounces the connection already MIS-accounts for the
-    // light, so the gate prevents a double-count.
+    // fires only on the camera ray (prevSampleAllowsAreaMis inits false) and
+    // after a delta event that the analytic BSDF↔light connection cannot reach.
+    // Rough transmission has a finite directional density and remains
+    // MIS-accountable, just like diffuse/glossy reflection.
     expect(PT_WEBGPU_TRACE_WGSL).toContain('var prevSampleAllowsAreaMis = false;');
-    expect(PT_WEBGPU_TRACE_WGSL).toContain('if (!prevSampleAllowsAreaMis) {');
-    expect(PT_WEBGPU_TRACE_WGSL).toContain('prevSampleAllowsAreaMis = sampleAllowsAreaMis;');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('if (!prevSampleAllowsAreaMis && !sppmOwnsCurrentEmission) {');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('prevSampleAllowsAreaMis = prevEventKind != 0u && prevDirectionalPdf > 0.0;');
     // The emissive add must appear EXACTLY ONCE and be the gated form (wrapped in
     // the `if (!prevSampleAllowsAreaMis)` block). A second/unconditional add would
     // double-count emissive against the analytic connection once re-attached.
@@ -523,15 +588,46 @@ describe('pt-webgpu WGSL material contract', () => {
     );
   });
 
+  it('suppresses the raw environment miss after an MIS-accounted BSDF connection', () => {
+    expect(PT_WEBGPU_TRACE_WGSL).toMatch(
+      /if \(!hit\.didHit\) \{[\s\S]*?if \(!prevSampleAllowsAreaMis && !sppmOwnsCurrentEmission\) \{[\s\S]*?radiance = radiance \+ throughput \* envContribution \* lastEnvMapIntensity;[\s\S]*?\}\s*break;/,
+    );
+    const rawMissAdds = (
+      PT_WEBGPU_TRACE_WGSL.match(
+        /radiance = radiance \+ throughput \* envContribution \* lastEnvMapIntensity;/g,
+      ) ?? []
+    ).length;
+    expect(rawMissAdds).toBe(1);
+    expect(PT_WEBGPU_TRACE_WGSL).toContain(
+      'radiance = radiance + bsdfEnvironmentConnectionContribution(',
+    );
+  });
+
   it('contains active strategy-specific caustic paths', () => {
     expect(PT_WEBGPU_TRACE_WGSL).toContain('fn causticMode() -> u32');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('fn manifoldNeeContribution');
-    expect(PT_WEBGPU_TRACE_WGSL).toContain('fn photonMapContribution');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('fn photonMapUpdateProgressive');
     // Caches the strategy code in `caustic` and branches on the local, so
     // the manifold/photon dispatch sites read a single causticMode() call.
     expect(PT_WEBGPU_TRACE_WGSL).toContain('let caustic = causticMode();');
-    expect(PT_WEBGPU_TRACE_WGSL).toContain('if (caustic == 1u)');
-    expect(PT_WEBGPU_TRACE_WGSL).toContain('else if (caustic == 2u)');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('caustic == 1u && mneeReceiverEligible');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('else if (sppmActive)');
+  });
+
+  it('keeps exact thin-film transport out of incompatible finite connection families', () => {
+    expect(PT_WEBGPU_TRACE_WGSL).toContain(
+      'if (directFamilyCount > 0u && !sppmOwnsCurrentDirect && !thinFilm.enabled)',
+    );
+    expect(PT_WEBGPU_TRACE_WGSL).toContain(
+      'if (bdptOwnsFiniteLightFamily && !thinFilm.enabled &&',
+    );
+    expect(PT_WEBGPU_TRACE_WGSL).toContain(
+      'let sppmReceiverEligible = !thinFilm.enabled &&',
+    );
+    expect(RESTIR_PT_PRODUCER_WGSL).toContain(
+      'if (vMat.isUnlit || vMat.thinFilmEnabled ||',
+    );
+    expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain('if (lvMat.thinFilmEnabled) {');
   });
 
   it('declares INV_2PI alongside INV_PI for HDRI equirect sampling', () => {
@@ -546,20 +642,12 @@ describe('pt-webgpu WGSL material contract', () => {
     expect(PT_WEBGPU_TRACE_WGSL).not.toContain('return EnvironmentLookup(sampleSky(dir), 1.0 / (4.0 * PI));');
   });
 
-  it('FrameParams matches the host-side 512-byte UBO buffer size', () => {
-    // The host allocates `new ArrayBuffer(512)` in PTEngineWebGPU.#buildParamsBuffer
-    // and writes vec4-aligned fields at offsets 0..127 (16-byte units). If the
-    // WGSL FrameParams struct grows past 512 bytes, this assertion fails first
-    // and points at the host-side layout mismatch.
-    // Count of vec4-aligned slots referenced by WGSL: matrix terms (12 mat4f =
-    // 48 vec4f-slots? no, three mat4x4f = 12 vec4f total) + scalar/vec4 fields.
-    // Total budget 512 bytes / 16 bytes-per-vec4 = 32 vec4-slots = 128 f32-slots.
-    // Sanity check: the WGSL header should NOT reference paramsF32[128+].
+  it('FrameParams uses the exact generated 384-byte host/GPU payload', () => {
     const stride = (PT_WEBGPU_TRACE_WGSL.match(/struct FrameParams/g) ?? []).length;
     expect(stride).toBeGreaterThanOrEqual(1);
+    expect(FRAME_PARAMS_BYTE_SIZE).toBe(384);
     // Verify FrameParams contains the matrix fields. Exact byte offsets
-    // (invViewProj@144, viewProj@208, prevViewProj@272 post W3-D12 + W4-A4
-    // refactor) are pinned numerically in the next test.
+    // are pinned numerically against the generated slot table in the next test.
     expect(PT_WEBGPU_TRACE_WGSL).toMatch(/invViewProj\s*:\s*mat4x4f/);
     expect(PT_WEBGPU_TRACE_WGSL).toMatch(/viewProj\s*:\s*mat4x4f/);
   });
@@ -658,26 +746,30 @@ describe('pt-webgpu WGSL material contract', () => {
       'clearcoatNormal = applyClearcoatNormalMap(matId, hit.triIndex, hit.baryVW, clearcoatNormal, hit.instanceIndex);',
     );
     expect(PT_WEBGPU_TRACE_WGSL).toContain(
-      'evaluateBrdfFullWithClearcoatNormal(baseColor, roughness, metallic, normal, clearcoatNormal, wo, wi,',
+      'evaluateFiniteBsdfFullWithClearcoatNormal(baseColor, roughness, metallic, transmission, surfaceEtaTOverI, normal, clearcoatNormal, wo, wi,',
     );
     expect(PT_WEBGPU_TRACE_WGSL).toContain(
-      'brdfDirectionalPdfFullSampledWithClearcoatNormal(baseColor, roughness, metallic, transmission, ior, normal, clearcoatNormal, wo, wi,',
+      'brdfDirectionalPdfFullSampledWithClearcoatNormal(baseColor, roughness, metallic, transmission, surfaceEtaTOverI, normal, clearcoatNormal, wo, wi,',
     );
     expect(PT_WEBGPU_TRACE_WGSL).toContain('let bs = sampleNextBounceDirectionWithClearcoatNormal(');
   });
 
-  it('uses conservative local-ray bounds for TLAS closest-hit traversal under scaling', () => {
-    // Closest-hit traversal keeps the prior unbounded local BLAS query because
-    // the dynamic closest world distance is clamped after reconstruction.
-    expect(PT_WEBGPU_TRACE_WGSL).toContain('traceMeshBvh(localRay, tMin, INFINITY, true, &localHit, blasRoot, true);');
+  it('transforms both TLAS closest-hit bounds into BLAS-local distance', () => {
+    expect(PT_WEBGPU_TRACE_WGSL).toContain(
+      'let localTMin = max(dot(localStart - localRay.origin, localRay.direction), 0.0);',
+    );
+    expect(PT_WEBGPU_TRACE_WGSL).toContain(
+      'traceMeshBvh(localRay, localTMin, localTMax, true, &localHit, blasRoot, true);',
+    );
+    expect(PT_WEBGPU_TRACE_WGSL).not.toContain('localHit.dist < (*hit).dist');
   });
 
-  it('uses finite local-ray bounds for TLAS any-hit instance traversal', () => {
+  it('transforms both TLAS any-hit bounds into BLAS-local distance', () => {
     expect(PT_WEBGPU_TRACE_WGSL).toContain('captureShadingDetails: bool');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('var localTMax = tMax;');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('let localEnd = transformPointCols(w2l0, w2l1, w2l2, w2l3, ray.origin + ray.direction * tMax);');
-    expect(PT_WEBGPU_TRACE_WGSL).toContain('localTMax = max(dot(localEnd - localRay.origin, localRay.direction), tMin);');
-    expect(PT_WEBGPU_TRACE_WGSL).toContain('traceMeshBvh(localRay, tMin, localTMax, false, &localHit, blasRoot, false)');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('localTMax = max(dot(localEnd - localRay.origin, localRay.direction), localTMin);');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('traceMeshBvh(localRay, localTMin, localTMax, false, &localHit, blasRoot, false)');
   });
 
   it('returns closest-hit result from traceMeshBvh when in closest mode', () => {
@@ -686,14 +778,40 @@ describe('pt-webgpu WGSL material contract', () => {
     expect(PT_WEBGPU_TRACE_WGSL).toContain('return select(false, (*hit).didHit, closest);');
   });
 
-  it('routes traceAny through TLAS any-hit traversal', () => {
-    expect(PT_WEBGPU_TRACE_WGSL).toContain('fn traceTlasAny(ray: Ray, tMin: f32, tMax: f32) -> bool');
-    expect(PT_WEBGPU_TRACE_WGSL).toContain('if (traceTlasAny(ray, tMin, tMax)) {');
+  it('routes traceAny through sided closest candidates before accepting occlusion', () => {
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('fn traceClosestRaw(ray: Ray, tMin: f32, tMax: f32) -> SceneHit');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('let hit = traceClosestRaw(ray, cursor, tMax);');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('materialAcceptsSidedHit(matId, hit.frontFace) &&');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('!materialShadowCastDisabled(matId)');
   });
 
-  it('uses conservative any-hit stack-overflow handling to avoid light leaks', () => {
-    expect(PT_WEBGPU_TRACE_WGSL).toContain('Conservative any-hit overflow policy: prefer occlusion over light leak.');
-    expect(PT_WEBGPU_TRACE_WGSL).toContain('return true;');
+  it('restarts any-hit and closest-hit overflow from the complete instance permutation', () => {
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('fn tlasClosestFallback(');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('fn tlasAnySceneFallback(');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('return tlasClosestFallback(ray, tMin, tMax, hit);');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('return tlasAnySceneFallback(ray, tMin, tMax);');
+    expect(PT_WEBGPU_TRACE_WGSL).not.toContain(
+      'tlasTraversalStatusCode = TLAS_TRAVERSAL_STATUS_STACK_OVERFLOW;\n        return (*hit).didHit;',
+    );
+  });
+
+  it('preserves TLAS instance ids through normal and overflow-fallback closest paths', () => {
+    expect(PT_WEBGPU_TRACE_WGSL).toContain(
+      'fn tlasResetSceneHit(hit: ptr<function, SceneHit>, tMax: f32)',
+    );
+    expect(PT_WEBGPU_TRACE_WGSL).toContain(
+      '(*hit).instanceIndex = INVALID_TLAS_INSTANCE_INDEX;',
+    );
+    expect(PT_WEBGPU_TRACE_WGSL).toContain(
+      'fn tlasTraceSceneInstanceClosest(',
+    );
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('(*hit).instanceIndex = instIdx;');
+    const fallback = PT_WEBGPU_TRACE_WGSL.slice(
+      PT_WEBGPU_TRACE_WGSL.indexOf('fn tlasClosestFallback('),
+      PT_WEBGPU_TRACE_WGSL.indexOf('fn tlasTraceSceneInstanceAny('),
+    );
+    expect(fallback).toContain('tlasResetSceneHit(hit, tMax);');
+    expect(fallback).toContain('tlasTraceSceneInstanceClosest(');
   });
 
   it('keeps the per-material envMapIntensity descriptor lane wired into environment paths', () => {
@@ -712,12 +830,20 @@ describe('pt-webgpu WGSL material contract', () => {
   // the composed full-tier shader. `luminance()` is defined exactly as
   // `dot(c, vec3f(0.2126,0.7152,0.0722))`, so the GPU result is unchanged.
   describe('Theme-D — Rec.709 luminance routed through canonical luminance()', () => {
-    it('activeLayerWeightRgb uses luminance(layerRgb), not an inline Rec.709 dot', () => {
-      expect(PT_WEBGPU_TRACE_WGSL).toContain('let lum = max(luminance(layerRgb), 0.0);');
+    it('activeLayerWeightRgb preserves RGB mode and is scalar at the hero wavelength', () => {
+      expect(activeLayerWeightRgbOracle([0.8, 0.3, 0.1], 540, false)).toEqual([0.8, 0.3, 0.1]);
+      const spectral = activeLayerWeightRgbOracle([0.8, 0.3, 0.1], 540, true);
+      expect(spectral[0]).toBe(spectral[1]);
+      expect(spectral[1]).toBe(spectral[2]);
+      expect(PT_WEBGPU_TRACE_WGSL).toContain('spectralRgbFactorAtHero(layerRgb, heroLambda)');
+      expect(PT_WEBGPU_TRACE_WGSL).not.toContain('heroWavelengthToRgb(heroLambda, luminance(layerRgb)');
     });
 
-    it('bdptLightLuminance routes through luminance() and keeps the 1e-20 floor', () => {
-      expect(PT_WEBGPU_TRACE_WGSL).toContain('return max(luminance(c), 1e-20);');
+    it('BDPT source selection is exactly uniform without a luminance proxy', () => {
+      expect(PT_WEBGPU_TRACE_WGSL).toContain('fn bdptEmitterCount() -> u32');
+      expect(PT_WEBGPU_TRACE_WGSL).toContain('let threshold = ((0xffffffffu % emitterCount) + 1u) % emitterCount;');
+      expect(PT_WEBGPU_TRACE_WGSL).toContain('if (word >= threshold) { return word % emitterCount; }');
+      expect(PT_WEBGPU_TRACE_WGSL).not.toContain('fn bdptLightLuminance(');
     });
 
     it('no inline Rec.709 dot(..., vec3f(0.2126, 0.7152, 0.0722)) remains in the composed shader', () => {
@@ -731,32 +857,14 @@ describe('pt-webgpu WGSL material contract', () => {
     });
   });
 
-  // ── Theme-D caustic decode: COLLAPSED onto canonical decodeMaterial() ───────
-  // caustic.wgsl.ts previously hand-decoded the packed material inline at two
-  // sites (traceSpecularTransmissiveChain + photonMapContribution), duplicating
-  // the m0/m2/m3/m22 offset arithmetic decodeMaterial() already owns. The decode
-  // is now routed through decodeMaterial(matId); the only behavioural difference
-  // — caustic's clamp(baseColor, 0, 1) inside its mix — is re-applied at both
-  // sites to preserve bit-identical render output for in-[0,1] albedos (OOB
-  // albedos are unreachable for valid scenes). This pin guards the collapse.
-  it('caustic material decode is routed through canonical decodeMaterial() with baseColor re-clamped', () => {
-    // Both decode sites now CALL the canonical decoder. Strip comment lines so
-    // the explanatory references in comments don't count as invocations.
+  // ── Theme-D caustic decode: canonical decodeMaterial() only ────────────────
+  it('caustic material reads use canonical decodeMaterial without raw slots', () => {
     const causticCode = PT_WEBGPU_PATH_TRACE_CAUSTIC_WGSL
       .split('\n')
       .filter((l) => !l.trim().startsWith('//'))
       .join('\n');
-    // A4: traceSpecularTransmissiveChain = 1 real call.  photonMapContribution now
-    // delegates to sppmGatherProgressive() (SPPM hash-grid lookup) and no longer has its
-    // own decodeMaterial call — the gather is done inside the SPPM bindings module.
-    const decodeCalls = causticCode.match(/let mat = decodeMaterial\(matId\);/g) ?? [];
-    expect(decodeCalls.length).toBe(1);
-
-    // The historical baseColor clamp inside the mix is preserved at the remaining site.
-    expect(causticCode).toContain(
-      'mix(vec3f(1.0), clamp(mat.baseColor, vec3f(0.0), vec3f(1.0)), 0.2)',
-    );
-
+    expect(causticCode).toContain('let matId = triMaterialIds[facet.triIndex];');
+    expect(causticCode).toContain('let mat = decodeMaterial(matId);');
     // NO raw-slot offset arithmetic / inline OOB fallback remains in caustic.
     expect(causticCode).not.toContain('m0Index');
     expect(causticCode).not.toContain('m2Index');

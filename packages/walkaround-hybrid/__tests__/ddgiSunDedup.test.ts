@@ -15,7 +15,10 @@
 
 import type { MockInstance } from 'vitest';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { mergeDDGILightsDedupSun } from '../src/HybridEngineLifecycle.js';
+import {
+  createHostSunWarningState,
+  mergeDDGILightsDedupSun,
+} from '../src/HybridEngineLifecycle.js';
 import { coreEmittersToDDGILights } from '../src/coreEmittersToDDGILights.js';
 import type { DDGILight } from '../src/ddgi/types.js';
 import type { Scene, DirectionalEmitter } from '@vitrum/core';
@@ -57,19 +60,31 @@ describe('mergeDDGILightsDedupSun', () => {
     warnSpy.mockRestore();
   });
 
-  // NOTE: this test is declared FIRST on purpose. `warnHostSunOverriddenOnce`
-  // uses a module-level latch, so the FIRST override-triggering call anywhere
-  // in this file trips it. Asserting "exactly one warn across two calls" is
-  // only deterministic before any other test has tripped the latch — hence the
-  // ordering. Subsequent tests assert dedup behaviour, not the warning.
-  it('warns exactly once (not per call) when a host sun is overridden', () => {
+  it('warns once per engine owner, not once per process', () => {
     const sceneLights = coreEmittersToDDGILights(sceneOf(SCENE_DIRECTIONAL));
     expect(sceneLights.filter((l) => l.kind === 'sun')).toHaveLength(1);
-    mergeDDGILightsDedupSun([HOST_SUN], sceneLights);
-    mergeDDGILightsDedupSun([HOST_SUN], sceneLights);
-    // Two override calls → exactly one console.warn (the latch suppresses the
-    // second). This pins both that the warning fires AND that it's one-time.
-    expect(warnSpy).toHaveBeenCalledTimes(1);
+    const firstEngine = createHostSunWarningState();
+    const secondEngine = createHostSunWarningState();
+
+    mergeDDGILightsDedupSun(
+      [HOST_SUN],
+      sceneLights,
+      { warningState: firstEngine },
+    );
+    mergeDDGILightsDedupSun(
+      [HOST_SUN],
+      sceneLights,
+      { warningState: firstEngine },
+    );
+    mergeDDGILightsDedupSun(
+      [HOST_SUN],
+      sceneLights,
+      { warningState: secondEngine },
+    );
+
+    // Re-syncing the first engine is quiet; an independent engine still gets
+    // its own actionable conflict warning.
+    expect(warnSpy).toHaveBeenCalledTimes(2);
   });
 
   it('drops the host sun when the scene contributes a directional→sun', () => {

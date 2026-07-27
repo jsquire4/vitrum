@@ -42,6 +42,7 @@
 //                 inW (dL/dX row stride), L, F.
 
 import { nrcEncodeHashHelpersWgsl } from './nrcEncoding.wgsl.js';
+import { NRC_DIAGNOSTIC_CONSTANTS_WGSL } from '../nrcDiagnostics.js';
 
 export interface NrcEncodeBackwardWgslOptions {
   /** Hash-grid resolution levels L. */
@@ -90,6 +91,9 @@ struct EncBwdParams {
 @group(0) @binding(2) var<storage, read>       nrcLevels    : array<NrcLevelDesc>;
 @group(0) @binding(3) var<storage, read_write> gradTablesFx : array<atomic<i32>>; // fixed-point
 @group(0) @binding(4) var<uniform>             p            : EncBwdParams;
+@group(0) @binding(5) var<storage, read_write> nrcDiagnostics : array<atomic<u32>>;
+${NRC_DIAGNOSTIC_CONSTANTS_WGSL}
+fn nrcTrainFinite(value: f32) -> bool { return value == value && abs(value) <= 3.402823e38; }
 
 // (D7.7: the former ebSpatialHash3D / ebNormalizeToAabb duplicates were deleted;
 // the prefix composed above provides the canonical nrcSpatialHash3D /
@@ -133,7 +137,43 @@ fn nrcEncodeBackward(@builtin(global_invocation_id) gid : vec3<u32>) {
       let rb = desc.tableOffset + row * NRC_FEAT;
       for (var f: u32 = 0u; f < NRC_FEAT; f = f + 1u) {
         let g = weight * gradInputF[rowBase + outBase + f];
-        atomicAdd(&gradTablesFx[rb + f], i32(g * NRC_GRAD_FP));
+        let gradIndex = rb + f;
+        if (!nrcTrainFinite(g)) {
+          atomicAdd(&nrcDiagnostics[NRC_DIAG_NONFINITE], 1u);
+          continue;
+        }
+        let scaled = g * NRC_GRAD_FP;
+        if (!nrcTrainFinite(scaled)) {
+          atomicAdd(&nrcDiagnostics[NRC_DIAG_NONFINITE], 1u);
+          continue;
+        }
+        let bounded = clamp(scaled, -2147483000.0, 2147483000.0);
+        let delta = i32(bounded);
+        let inputSaturated = bounded != scaled;
+        var stored = false;
+        for (var attempt: u32 = 0u; attempt < 64u; attempt = attempt + 1u) {
+          let old = atomicLoad(&gradTablesFx[gradIndex]);
+          var next = old;
+          var accumulatorSaturated = false;
+          if (delta > 0 && old > 2147483000 - delta) {
+            next = 2147483000;
+            accumulatorSaturated = true;
+          } else if (delta < 0 && old < -2147483000 - delta) {
+            next = -2147483000;
+            accumulatorSaturated = true;
+          } else {
+            next = old + delta;
+          }
+          let exchanged = atomicCompareExchangeWeak(&gradTablesFx[gradIndex], old, next);
+          if (exchanged.exchanged) {
+            if (inputSaturated || accumulatorSaturated) {
+              atomicAdd(&nrcDiagnostics[NRC_DIAG_SATURATED], 1u);
+            }
+            stored = true;
+            break;
+          }
+        }
+        if (!stored) { atomicAdd(&nrcDiagnostics[NRC_DIAG_DROPPED_UPDATE], 1u); }
       }
     }
   }

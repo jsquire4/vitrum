@@ -51,7 +51,7 @@ function baseInputs(): PipelineFrameInputs {
       restirGiWCap: 16, restirGiIrrClamp: 5, restirGiMClamp: 50,
       restirGiSpatialRadiusPx: 12, restirGiSpatialNormalDotMin: 0.906,
       restirGiSpatialCoplanarTol: 0.05,
-      restirPtReuse: 0,
+      grisReuse: 0,
     },
     gtao: { gtaoRadiusPx: 32, gtaoIntensity: 2, gtaoDepthThreshold: 2, gtaoBilateralDepthSigma: 0.25, adaptiveSamplingThresholdLow: 0.01, adaptiveSamplingThresholdHigh: 0.1 },
     filter: {
@@ -110,7 +110,7 @@ describe('NRC gate — OFF bit-identity (the honest acceptance criterion)', () =
     expect(bytes.length).toBe(WALKAROUND_UBO_SIZE_BYTES);
     const u32 = new Uint32Array(bytes.buffer.slice(0));
     const f32 = new Float32Array(bytes.buffer.slice(0));
-    // restirPtReuse (offset 412 / u32[103]) and the later sun-angular tail are unaffected.
+    // grisReuse (offset 412 / u32[103]) and the later sun-angular tail are unaffected.
     expect(u32[103]).toBe(0);
     expect(f32[104]).toBeCloseTo(WALKAROUND_DEFAULT_SUN_ANGULAR_RADIUS);
     expect(u32[NRC_GATE_U32_INDEX]).toBe(1);

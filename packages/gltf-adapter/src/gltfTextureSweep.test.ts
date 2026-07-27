@@ -49,6 +49,7 @@ function concat(buffers: readonly ArrayBuffer[]): ArrayBuffer {
 }
 
 const TRIANGLE_POSITIONS = [0, 0, 0, 1, 0, 0, 0, 1, 0];
+const TRIANGLE_UVS = [0, 0, 1, 0, 0, 1];
 const PNG_MAGIC = [0x89, 0x50, 0x4e, 0x47];
 
 /** Per-ordinal distinct transform so a wrong-slot mapping cannot pass. */
@@ -212,17 +213,19 @@ const EXPECTED_SOURCE_PATH_BY_FIELD: Readonly<Record<string, string>> = {
 
 function makeSweepGltf(): { gltf: GltfJson; buffers: Map<number, ArrayBuffer> } {
   const posBuf = f32Buffer(TRIANGLE_POSITIONS);
+  const uv1Buf = f32Buffer(TRIANGLE_UVS);
   const imageBytes = new Uint8Array(PNG_MAGIC);
-  const total = new Uint8Array(posBuf.byteLength + imageBytes.length);
+  const total = new Uint8Array(posBuf.byteLength + uv1Buf.byteLength + imageBytes.length);
   total.set(new Uint8Array(posBuf), 0);
-  total.set(imageBytes, posBuf.byteLength);
+  total.set(new Uint8Array(uv1Buf), posBuf.byteLength);
+  total.set(imageBytes, posBuf.byteLength + uv1Buf.byteLength);
 
   const gltf: GltfJson = {
     asset: { version: '2.0' },
     scenes: [{ nodes: [0] }],
     scene: 0,
     nodes: [{ mesh: 0 }],
-    meshes: [{ primitives: [{ attributes: { POSITION: 0 }, material: 0 }] }],
+    meshes: [{ primitives: [{ attributes: { POSITION: 0, TEXCOORD_1: 1 }, material: 0 }] }],
     materials: [{
       pbrMetallicRoughness: {
         baseColorTexture: texInfo(0),
@@ -278,11 +281,19 @@ function makeSweepGltf(): { gltf: GltfJson; buffers: Map<number, ArrayBuffer> } 
     }],
     textures: Array.from({ length: TEXTURE_COUNT }, (_, i) => ({ source: 0, sampler: i })),
     samplers: Array.from({ length: TEXTURE_COUNT }, (_, i) => samplerForOrdinal(i)),
-    images: [{ bufferView: 1, mimeType: 'image/png' }],
-    accessors: [{ bufferView: 0, componentType: 5126, count: 3, type: 'VEC3' }],
+    images: [{ bufferView: 2, mimeType: 'image/png' }],
+    accessors: [
+      { bufferView: 0, componentType: 5126, count: 3, type: 'VEC3' },
+      { bufferView: 1, componentType: 5126, count: 3, type: 'VEC2' },
+    ],
     bufferViews: [
       { buffer: 0, byteOffset: 0, byteLength: posBuf.byteLength },
-      { buffer: 0, byteOffset: posBuf.byteLength, byteLength: imageBytes.length },
+      { buffer: 0, byteOffset: posBuf.byteLength, byteLength: uv1Buf.byteLength },
+      {
+        buffer: 0,
+        byteOffset: posBuf.byteLength + uv1Buf.byteLength,
+        byteLength: imageBytes.length,
+      },
     ],
     buffers: [{ byteLength: total.byteLength }],
   };
@@ -297,12 +308,13 @@ function makeTextureSourceExtensionGltf(extension: GltfTextureSourceExtension): 
   extensionMimeType: string;
 } {
   const positions = f32Buffer(TRIANGLE_POSITIONS);
+  const uvs = f32Buffer(TRIANGLE_UVS);
   const fallbackBytes = PNG_MAGIC;
   const extensionBytes = [0x44, 0x44, 0x53, 0x20];
   const fallback = new Uint8Array(fallbackBytes).buffer;
   const alternate = new Uint8Array(extensionBytes).buffer;
-  const buffer = concat([positions, fallback, alternate]);
-  const fallbackOffset = positions.byteLength;
+  const buffer = concat([positions, uvs, fallback, alternate]);
+  const fallbackOffset = positions.byteLength + uvs.byteLength;
   const alternateOffset = fallbackOffset + fallback.byteLength;
   const extensionMimeType = extension === 'KHR_texture_basisu'
     ? 'image/ktx2'
@@ -319,7 +331,7 @@ function makeTextureSourceExtensionGltf(extension: GltfTextureSourceExtension): 
       scene: 0,
       scenes: [{ nodes: [0] }],
       nodes: [{ mesh: 0 }],
-      meshes: [{ primitives: [{ attributes: { POSITION: 0 }, material: 0 }] }],
+      meshes: [{ primitives: [{ attributes: { POSITION: 0, TEXCOORD_0: 1 }, material: 0 }] }],
       materials: [{ pbrMetallicRoughness: { baseColorTexture: { index: 0 } } }],
       textures: [{
         source: 0,
@@ -328,12 +340,16 @@ function makeTextureSourceExtensionGltf(extension: GltfTextureSourceExtension): 
         },
       }],
       images: [
-        { bufferView: 1, mimeType: 'image/png' },
-        { bufferView: 2, mimeType: extensionMimeType },
+        { bufferView: 2, mimeType: 'image/png' },
+        { bufferView: 3, mimeType: extensionMimeType },
       ],
-      accessors: [{ bufferView: 0, componentType: 5126, count: 3, type: 'VEC3' }],
+      accessors: [
+        { bufferView: 0, componentType: 5126, count: 3, type: 'VEC3' },
+        { bufferView: 1, componentType: 5126, count: 3, type: 'VEC2' },
+      ],
       bufferViews: [
         { buffer: 0, byteOffset: 0, byteLength: positions.byteLength },
+        { buffer: 0, byteOffset: positions.byteLength, byteLength: uvs.byteLength },
         { buffer: 0, byteOffset: fallbackOffset, byteLength: fallback.byteLength },
         { buffer: 0, byteOffset: alternateOffset, byteLength: alternate.byteLength },
       ],
@@ -490,58 +506,61 @@ describe('KHR extension texture sweep (GLTF-06)', () => {
     });
   });
 
-  it('reports a single structured diagnostic when a texture has only disabled source-extension images', async () => {
+  it('rejects a texture that has only disabled source-extension images with a complete cause chain', async () => {
     const { gltf, buffers } = makeTextureSourceExtensionGltf('MSFT_texture_dds');
     delete gltf.textures![0]!.source;
     gltf.extensionsUsed = ['MSFT_texture_dds'];
 
-    const result = await gltfToScene(gltf, {
+    await expect(gltfToScene(gltf, {
       buffers,
       decodeImage: async () => ({ kind: 'decoded-texture' }),
+    })).rejects.toMatchObject({
+      name: 'GltfImportError',
+      diagnostics: expect.arrayContaining([
+        expect.objectContaining({
+          severity: 'warning',
+          code: 'disabled-texture-source-extension',
+          path: 'textures[0].extensions.MSFT_texture_dds',
+          textureIndex: 0,
+          textureSourceExtensions: ['MSFT_texture_dds'],
+        }),
+        expect.objectContaining({
+          severity: 'error',
+          code: 'material-texture-unresolved',
+          path: 'materials[0].pbrMetallicRoughness.baseColorTexture',
+        }),
+      ]),
     });
-
-    const material = (result.scene.primitives[0] as MeshPrimitive).material;
-    expect(material.baseColorMap).toBeUndefined();
-    expect(result.diagnostics).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        severity: 'warning',
-        code: 'disabled-texture-source-extension',
-        path: 'textures[0].extensions.MSFT_texture_dds',
-        textureIndex: 0,
-        textureSourceExtensions: ['MSFT_texture_dds'],
-        message: expect.stringContaining('textures[0]'),
-      }),
-    ]));
-    expect(result.warnings.filter((warning) =>
-      warning.includes('MSFT_texture_dds') && warning.includes('Texture skipped'),
-    )).toHaveLength(1);
   });
 
-  it('reports selected source-extension missing images at the extension source path', async () => {
+  it('rejects selected source-extension missing images at the extension source path', async () => {
     const { gltf, buffers } = makeTextureSourceExtensionGltf('MSFT_texture_dds');
     gltf.extensionsUsed = ['MSFT_texture_dds'];
     gltf.textures![0]!.extensions = {
       MSFT_texture_dds: { source: 99 },
     };
 
-    const result = await gltfToScene(gltf, {
+    await expect(gltfToScene(gltf, {
       buffers,
       textureSourceExtensions: ['MSFT_texture_dds'],
       decodeImage: async () => ({ kind: 'decoded-texture' }),
+    })).rejects.toMatchObject({
+      name: 'GltfImportError',
+      diagnostics: expect.arrayContaining([
+        expect.objectContaining({
+          severity: 'warning',
+          code: 'image-not-found',
+          path: 'textures[0].extensions.MSFT_texture_dds.source',
+          textureIndex: 0,
+          imageIndex: 99,
+          textureSourceExtensions: ['MSFT_texture_dds'],
+        }),
+        expect.objectContaining({
+          severity: 'error',
+          code: 'material-texture-unresolved',
+        }),
+      ]),
     });
-
-    const material = (result.scene.primitives[0] as MeshPrimitive).material;
-    expect(material.baseColorMap).toBeUndefined();
-    expect(result.diagnostics).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        severity: 'warning',
-        code: 'image-not-found',
-        path: 'textures[0].extensions.MSFT_texture_dds.source',
-        textureIndex: 0,
-        imageIndex: 99,
-        textureSourceExtensions: ['MSFT_texture_dds'],
-      }),
-    ]));
   });
 
   it('scalar companions still map (normalScale, aoMapIntensity, clearcoatNormalScale)', async () => {
@@ -560,7 +579,7 @@ describe('KHR extension texture sweep (GLTF-06)', () => {
         ...mats[0]!.extensions,
         KHR_materials_volume: {
           thicknessFactor: 0.5,
-          thicknessTexture: { index: 0 },
+          thicknessTexture: { index: 0, texCoord: 1 },
           attenuationDistance: 2.0,
         },
       },

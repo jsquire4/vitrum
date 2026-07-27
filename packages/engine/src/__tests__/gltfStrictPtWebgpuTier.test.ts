@@ -39,13 +39,13 @@ const mocks = vi.hoisted(() => {
     path: 'materials[0].doubleSided',
     message: 'double-sided shading is approximate on this profile.',
   });
-	  const khrMeshoptHookIssue = Object.freeze({
-	    category: 'extension',
-	    name: 'KHR_meshopt_compression',
-	    support: 'requires-hook',
-	    path: 'bufferViews[0].extensions.KHR_meshopt_compression',
-	    message: 'KHR_meshopt_compression requires a host meshopt decoder.',
-	  });
+  const khrMeshoptHookIssue = Object.freeze({
+    category: 'extension',
+    name: 'KHR_meshopt_compression',
+    support: 'requires-hook',
+    path: 'bufferViews[0].extensions.KHR_meshopt_compression',
+    message: 'KHR_meshopt_compression requires a host meshopt decoder.',
+  });
   const textureReadinessIssue = Object.freeze({
     category: 'texture',
     name: 'texture-readiness:pt-webgpu',
@@ -65,79 +65,83 @@ const mocks = vi.hoisted(() => {
       issuePaths: Object.freeze({}),
     }),
   });
-	  const state = {
-	    selectedBackend: 'pt-webgpu' as 'pt-webgpu' | 'pt-webgl2' | 'walkaround-hybrid',
-	    liteIssues: [unsupportedLiteIssue] as readonly object[],
-	    textureDecodeReport,
-	    textureDecodeDiagnostics: [] as readonly object[],
-	    featureReport: emptyFeatureReport as object,
-	    textureDecodePolicyPatch: undefined as Record<string, unknown> | undefined,
-	  };
-  const makeCompatibility = () => Object.freeze([
+  const state = {
+    selectedBackend: 'pt-webgpu' as 'pt-webgpu' | 'pt-webgl2' | 'walkaround-hybrid',
+    liteIssues: [unsupportedLiteIssue] as readonly object[],
+    textureDecodeReport,
+    textureDecodeDiagnostics: [] as readonly object[],
+    featureReport: emptyFeatureReport as object,
+    textureDecodePolicyPatch: undefined as Record<string, unknown> | undefined,
+  };
+  const makeCompatibility = () =>
+    Object.freeze([
+      Object.freeze({
+        backend: 'pt-webgpu',
+        profileId: 'pt-webgpu',
+        traceTier: 'full',
+        unsupportedCount: 0,
+        approximateCount: 0,
+        nativeCount: 1,
+        requiresHookCount: 0,
+        issues: Object.freeze([]),
+        isCompatible: true,
+      }),
+      Object.freeze({
+        backend: 'pt-webgpu',
+        profileId: 'pt-webgpu-lite',
+        traceTier: 'lite',
+        unsupportedCount: state.liteIssues.filter(
+          (issue) => (issue as { support?: string }).support === 'unsupported',
+        ).length,
+        approximateCount: state.liteIssues.filter(
+          (issue) => (issue as { support?: string }).support === 'approximate',
+        ).length,
+        nativeCount: 0,
+        requiresHookCount: state.liteIssues.filter(
+          (issue) => (issue as { support?: string }).support === 'requires-hook',
+        ).length,
+        issues: Object.freeze([...state.liteIssues]),
+        isCompatible: !state.liteIssues.some(
+          (issue) => (issue as { support?: string }).support === 'unsupported',
+        ),
+      }),
+      Object.freeze({
+        backend: 'pt-webgl2',
+        profileId: 'pt-webgl2',
+        unsupportedCount: 0,
+        approximateCount: 0,
+        nativeCount: 1,
+        requiresHookCount: 0,
+        issues: Object.freeze([]),
+        isCompatible: true,
+      }),
+    ]);
+  const makeAsset = () =>
     Object.freeze({
-      backend: 'pt-webgpu',
-      profileId: 'pt-webgpu',
-      traceTier: 'full',
-      unsupportedCount: 0,
-      approximateCount: 0,
-      nativeCount: 1,
-      requiresHookCount: 0,
-      issues: Object.freeze([]),
-      isCompatible: true,
-    }),
-    Object.freeze({
-      backend: 'pt-webgpu',
-      profileId: 'pt-webgpu-lite',
-      traceTier: 'lite',
-      unsupportedCount: state.liteIssues.filter((issue) =>
-        (issue as { support?: string }).support === 'unsupported'
-      ).length,
-      approximateCount: state.liteIssues.filter((issue) =>
-        (issue as { support?: string }).support === 'approximate'
-      ).length,
-      nativeCount: 0,
-      requiresHookCount: state.liteIssues.filter((issue) =>
-        (issue as { support?: string }).support === 'requires-hook'
-      ).length,
-      issues: Object.freeze([...state.liteIssues]),
-      isCompatible: !state.liteIssues.some((issue) => (issue as { support?: string }).support === 'unsupported'),
-    }),
-    Object.freeze({
-      backend: 'pt-webgl2',
-      profileId: 'pt-webgl2',
-      unsupportedCount: 0,
-      approximateCount: 0,
-      nativeCount: 1,
-      requiresHookCount: 0,
-      issues: Object.freeze([]),
-      isCompatible: true,
-    }),
-  ]);
-  const makeAsset = () => Object.freeze({
-    scene,
-    gltf: Object.freeze({ asset: Object.freeze({ version: '2.0' }) }),
-    sceneIndex: 0,
-    featureReport: state.featureReport,
-    warnings: Object.freeze([]),
-    diagnostics: Object.freeze([]),
-    animations: Object.freeze([]),
-    animationTargets: Object.freeze([]),
-    backendCompatibility: makeCompatibility(),
-    recommendedBackend: makeCompatibility()[0],
-    textureDecodeReport: state.textureDecodeReport,
-    textureDecodeDiagnostics: state.textureDecodeDiagnostics,
-  });
+      scene,
+      gltf: Object.freeze({ asset: Object.freeze({ version: '2.0' }) }),
+      sceneIndex: 0,
+      featureReport: state.featureReport,
+      warnings: Object.freeze([]),
+      diagnostics: Object.freeze([]),
+      animations: Object.freeze([]),
+      animationTargets: Object.freeze([]),
+      backendCompatibility: makeCompatibility(),
+      recommendedBackend: makeCompatibility()[0],
+      textureDecodeReport: state.textureDecodeReport,
+      textureDecodeDiagnostics: state.textureDecodeDiagnostics,
+    });
   const attachEngine = vi.fn();
   return {
     state,
-	    unsupportedLiteIssue,
-	    approximateLiteIssue,
-	    khrMeshoptHookIssue,
-	    textureReadinessIssue,
-	    specGlossAlphaIssue,
-	    emptyFeatureReport,
-      emptyTextureDecodeReport,
-	    makeAsset,
+    unsupportedLiteIssue,
+    approximateLiteIssue,
+    khrMeshoptHookIssue,
+    textureReadinessIssue,
+    specGlossAlphaIssue,
+    emptyFeatureReport,
+    emptyTextureDecodeReport,
+    makeAsset,
     createEngine: vi.fn(async () => ({
       backendId: state.selectedBackend,
       dispose: vi.fn(),
@@ -145,52 +149,69 @@ const mocks = vi.hoisted(() => {
       setScene: vi.fn(),
     })),
     attachEngine,
-	    loadGltfForEngine: vi.fn(async (_input: unknown, options: Record<string, unknown>) => {
+    loadGltfForEngine: vi.fn(async (_input: unknown, options: Record<string, unknown>) => {
       const requested = options['backend'] as
         | 'pt-webgpu'
         | 'pt-webgpu-lite'
         | 'pt-webgl2'
         | 'walkaround-hybrid'
         | undefined;
-      const selectedBackend = requested === 'pt-webgpu-lite'
-        ? 'pt-webgpu'
-        : requested ?? state.selectedBackend;
-	      const factory = options['createEngine'] as
-	        | ((args: { scene: unknown; backend: string; asset: unknown; options: object }) => Promise<unknown>)
-	        | undefined;
-	      const factoryOptions = (options['engineOptions'] as object | undefined) ?? {};
-	      const asset = makeAsset();
-	      const decodeTextures = options['decodeTextures'] === true ||
-	        options['textureTarget'] !== undefined ||
-	        options['decodePixels'] !== undefined ||
-	        options['maxTextureSize'] !== undefined ||
-	        options['warnOnNpotRepeatWrap'] !== undefined ||
-	        options['npotRepeatWrapPolicy'] !== undefined ||
-	        options['onTextureDiagnostic'] !== undefined ||
-	        options['onTextureWarning'] !== undefined;
-	      const configureTextureDecode = decodeTextures ? options['configureTextureDecode'] as
-	        | ((context: { asset: unknown; decodeOptions: Record<string, unknown> }) => Promise<Record<string, unknown> | void> | Record<string, unknown> | void)
-	        | undefined : undefined;
-	      state.textureDecodePolicyPatch = configureTextureDecode == null
-	        ? undefined
-	        : (await configureTextureDecode({
-	          asset,
-	          decodeOptions: {
-	            target: 'cpu-linear',
-	            ...(options['maxTextureSize'] !== undefined ? { maxTextureSize: options['maxTextureSize'] } : {}),
-	          },
-	        })) as Record<string, unknown> | undefined;
-	      const engine = factory == null
-	        ? undefined
-	        : await factory({
-          scene,
-          backend: selectedBackend,
-          asset,
-          options: factoryOptions,
-        });
-      const actualBackend = (
-        engine as { readonly backendId?: 'pt-webgpu' | 'pt-webgl2' | 'walkaround-hybrid' } | undefined
-      )?.backendId ?? selectedBackend;
+      const selectedBackend =
+        requested === 'pt-webgpu-lite' ? 'pt-webgpu' : (requested ?? state.selectedBackend);
+      const factory = options['createEngine'] as
+        | ((args: {
+            scene: unknown;
+            backend: string;
+            asset: unknown;
+            options: object;
+          }) => Promise<unknown>)
+        | undefined;
+      const factoryOptions = (options['engineOptions'] as object | undefined) ?? {};
+      const asset = makeAsset();
+      const decodeTextures =
+        options['decodeTextures'] === true ||
+        options['textureTarget'] !== undefined ||
+        options['decodePixels'] !== undefined ||
+        options['maxTextureSize'] !== undefined ||
+        options['warnOnNpotRepeatWrap'] !== undefined ||
+        options['npotRepeatWrapPolicy'] !== undefined ||
+        options['onTextureDiagnostic'] !== undefined ||
+        options['onTextureWarning'] !== undefined;
+      const configureTextureDecode = decodeTextures
+        ? (options['configureTextureDecode'] as
+            | ((context: {
+                asset: unknown;
+                decodeOptions: Record<string, unknown>;
+              }) => Promise<Record<string, unknown> | void> | Record<string, unknown> | void)
+            | undefined)
+        : undefined;
+      state.textureDecodePolicyPatch =
+        configureTextureDecode == null
+          ? undefined
+          : ((await configureTextureDecode({
+              asset,
+              decodeOptions: {
+                target: 'cpu-linear',
+                ...(options['maxTextureSize'] !== undefined
+                  ? { maxTextureSize: options['maxTextureSize'] }
+                  : {}),
+              },
+            })) as Record<string, unknown> | undefined);
+      const engine =
+        factory == null
+          ? undefined
+          : await factory({
+              scene,
+              backend: selectedBackend,
+              asset,
+              options: factoryOptions,
+            });
+      const actualBackend =
+        (
+          engine as
+            | { readonly backendId?: 'pt-webgpu' | 'pt-webgl2' | 'walkaround-hybrid' }
+            | undefined
+        )?.backendId ?? selectedBackend;
       return {
         asset,
         backend: actualBackend,
@@ -259,6 +280,7 @@ vi.mock('@vitrum/gltf-adapter', () => ({
     }
   },
   loadGltfForEngine: mocks.loadGltfForEngine,
+  releaseGltfResources: vi.fn(),
   // T3-E (I4-2/D15-8): engine/gltf.ts now imports the shared texture-readiness
   // predicate from @vitrum/gltf-adapter; mirror its real implementation here.
   isTextureReadinessIssue: (issue: { category: string; name: string }): boolean =>
@@ -275,6 +297,7 @@ vi.mock('../createEngine.js', () => ({
 
 import { loadGltfWithEngine } from '../gltf.js';
 import type { EngineWithBackendId } from '../createEngine.js';
+import { createEngineGltfAssetHint } from '../gltfAssetHint.js';
 
 function makeExistingPtWebgpuEngine(): EngineWithBackendId {
   return {
@@ -294,10 +317,10 @@ describe('loadGltfWithEngine strict pt-webgpu tier guard', () => {
   beforeEach(() => {
     mocks.state.selectedBackend = 'pt-webgpu';
     mocks.state.liteIssues = [mocks.unsupportedLiteIssue];
-	    mocks.state.textureDecodeReport = mocks.emptyTextureDecodeReport();
-	    mocks.state.textureDecodeDiagnostics = [];
-	    mocks.state.featureReport = mocks.emptyFeatureReport;
-	    mocks.state.textureDecodePolicyPatch = undefined;
+    mocks.state.textureDecodeReport = mocks.emptyTextureDecodeReport();
+    mocks.state.textureDecodeDiagnostics = [];
+    mocks.state.featureReport = mocks.emptyFeatureReport;
+    mocks.state.textureDecodePolicyPatch = undefined;
     mocks.createEngine.mockClear();
     mocks.attachEngine.mockClear();
     mocks.loadGltfForEngine.mockClear();
@@ -318,6 +341,35 @@ describe('loadGltfWithEngine strict pt-webgpu tier guard', () => {
     });
   });
 
+  it('narrows rich adapter results before createEngine strict option validation', async () => {
+    const richAsset = {
+      recommendedBackend: { backend: 'pt-webgpu' as const },
+      scene: { primitives: [], emitters: [] },
+      gltf: { asset: { version: '2.0' } },
+      backendCompatibility: [],
+    };
+    expect(createEngineGltfAssetHint(richAsset)).toEqual({
+      recommendedBackend: { backend: 'pt-webgpu' },
+    });
+
+    await expect(loadGltfWithEngine('asset.glb')).resolves.toMatchObject({ attached: true });
+
+    expect(mocks.createEngine).toHaveBeenCalledWith(
+      expect.objectContaining({
+        gltfAsset: {
+          recommendedBackend: { backend: 'pt-webgpu' },
+        },
+      }),
+    );
+    const createEngineCalls = mocks.createEngine.mock.calls as unknown as Array<
+      [{ readonly gltfAsset?: unknown }]
+    >;
+    const gltfAsset = createEngineCalls[0]?.[0]?.gltfAsset;
+    expect(gltfAsset).not.toHaveProperty('scene');
+    expect(gltfAsset).not.toHaveProperty('gltf');
+    expect(gltfAsset).not.toHaveProperty('backendCompatibility');
+  });
+
   it('passes explicit engine preference into glTF backend selection before adapter recommendations', async () => {
     await expect(
       loadGltfWithEngine('asset.glb', {
@@ -332,9 +384,11 @@ describe('loadGltfWithEngine strict pt-webgpu tier guard', () => {
       'asset.glb',
       expect.objectContaining({ backend: 'pt-webgl2' }),
     );
-    expect(mocks.createEngine).toHaveBeenCalledWith(expect.objectContaining({
-      prefer: 'quality',
-    }));
+    expect(mocks.createEngine).toHaveBeenCalledWith(
+      expect.objectContaining({
+        prefer: 'quality',
+      }),
+    );
   });
 
   it('rejects reject-degraded glTF loads when selected pt-webgpu is lite tier', async () => {
@@ -346,79 +400,79 @@ describe('loadGltfWithEngine strict pt-webgpu tier guard', () => {
     expect(mocks.createEngine).not.toHaveBeenCalled();
   });
 
-	  it('rejects reject-unsupported glTF loads when the runtime lite profile has unsupported rows', async () => {
-	    await expect(
-	      loadGltfWithEngine('asset.glb', { compatibilityMode: 'reject-unsupported' }),
-	    ).rejects.toThrow(/pt-webgpu.*lite.*reject-unsupported.*baseColorMap=unsupported/);
+  it('rejects reject-unsupported glTF loads when the runtime lite profile has unsupported rows', async () => {
+    await expect(
+      loadGltfWithEngine('asset.glb', { compatibilityMode: 'reject-unsupported' }),
+    ).rejects.toThrow(/pt-webgpu.*lite.*reject-unsupported.*baseColorMap=unsupported/);
 
-	    expect(mocks.probeAdapterProfile).toHaveBeenCalledTimes(1);
-	    expect(mocks.createEngine).not.toHaveBeenCalled();
-	  });
+    expect(mocks.probeAdapterProfile).toHaveBeenCalledTimes(1);
+    expect(mocks.createEngine).not.toHaveBeenCalled();
+  });
 
-	  it('rejects strict pt-webgpu loads when the probed adapter is below lite tier', async () => {
-	    mocks.probeAdapterProfile.mockResolvedValueOnce({
-	      hasWebGPU: true,
-	      hybridCapable: false,
-	      hybridLiteCapable: false,
-	      ptWebgpuTier: 'none',
-	      maxStorageBuffersPerStage: 4,
-	      maxStorageTexturesPerStage: 2,
-	      isSoftwareAdapter: false,
-	      adapterKind: 'hardware',
-	      hasWebGL2: true,
-	      recommendedRealtimeTier: 'unavailable',
-	      recommendedHeroBackend: 'pt-webgl2',
-	      limits: Object.freeze({}),
-	    });
+  it('rejects strict pt-webgpu loads when the probed adapter is below lite tier', async () => {
+    mocks.probeAdapterProfile.mockResolvedValueOnce({
+      hasWebGPU: true,
+      hybridCapable: false,
+      hybridLiteCapable: false,
+      ptWebgpuTier: 'none',
+      maxStorageBuffersPerStage: 4,
+      maxStorageTexturesPerStage: 2,
+      isSoftwareAdapter: false,
+      adapterKind: 'hardware',
+      hasWebGL2: true,
+      recommendedRealtimeTier: 'unavailable',
+      recommendedHeroBackend: 'pt-webgl2',
+      limits: Object.freeze({}),
+    });
 
-	    await expect(
-	      loadGltfWithEngine('asset.glb', { compatibilityMode: 'reject-unsupported' }),
-	    ).rejects.toMatchObject({
-	      code: 'GLTF_COMPATIBILITY_REJECTED',
-	      backend: 'pt-webgpu',
-	      failures: ['runtime:pt-webgpu=unsupported at adapterProfile.ptWebgpuTier'],
-	      failureDetails: [
-	        expect.objectContaining({
-	          source: 'compatibility-issue',
-	          category: 'runtime',
-	          name: 'pt-webgpu',
-	          support: 'unsupported',
-	          path: 'adapterProfile.ptWebgpuTier',
-	        }),
-	      ],
-	    });
+    await expect(
+      loadGltfWithEngine('asset.glb', { compatibilityMode: 'reject-unsupported' }),
+    ).rejects.toMatchObject({
+      code: 'GLTF_COMPATIBILITY_REJECTED',
+      backend: 'pt-webgpu',
+      failures: ['runtime:pt-webgpu=unsupported at adapterProfile.ptWebgpuTier'],
+      failureDetails: [
+        expect.objectContaining({
+          source: 'compatibility-issue',
+          category: 'runtime',
+          name: 'pt-webgpu',
+          support: 'unsupported',
+          path: 'adapterProfile.ptWebgpuTier',
+        }),
+      ],
+    });
 
-	    expect(mocks.probeAdapterProfile).toHaveBeenCalledTimes(1);
-	    expect(mocks.createEngine).not.toHaveBeenCalled();
-	  });
+    expect(mocks.probeAdapterProfile).toHaveBeenCalledTimes(1);
+    expect(mocks.createEngine).not.toHaveBeenCalled();
+  });
 
-	  it('reports structured runtime compatibility failure details for pt-webgpu lite rows', async () => {
-	    await expect(
-	      loadGltfWithEngine('asset.glb', { compatibilityMode: 'reject-unsupported' }),
-	    ).rejects.toMatchObject({
-	      code: 'GLTF_COMPATIBILITY_REJECTED',
-	      backend: 'pt-webgpu',
-	      profileId: 'pt-webgpu-lite',
-	      failures: [
-	        'material:baseColorMap=unsupported at materials[0].pbrMetallicRoughness.baseColorTexture',
-	      ],
-	      failureDetails: [
-	        expect.objectContaining({
-	          source: 'compatibility-issue',
-	          category: 'material',
-	          name: 'baseColorMap',
-	          support: 'unsupported',
-	          path: 'materials[0].pbrMetallicRoughness.baseColorTexture',
-	        }),
-	      ],
-	    });
+  it('reports structured runtime compatibility failure details for pt-webgpu lite rows', async () => {
+    await expect(
+      loadGltfWithEngine('asset.glb', { compatibilityMode: 'reject-unsupported' }),
+    ).rejects.toMatchObject({
+      code: 'GLTF_COMPATIBILITY_REJECTED',
+      backend: 'pt-webgpu',
+      profileId: 'pt-webgpu-lite',
+      failures: [
+        'material:baseColorMap=unsupported at materials[0].pbrMetallicRoughness.baseColorTexture',
+      ],
+      failureDetails: [
+        expect.objectContaining({
+          source: 'compatibility-issue',
+          category: 'material',
+          name: 'baseColorMap',
+          support: 'unsupported',
+          path: 'materials[0].pbrMetallicRoughness.baseColorTexture',
+        }),
+      ],
+    });
 
-	    expect(mocks.probeAdapterProfile).toHaveBeenCalledTimes(1);
-	    expect(mocks.createEngine).not.toHaveBeenCalled();
-	  });
+    expect(mocks.probeAdapterProfile).toHaveBeenCalledTimes(1);
+    expect(mocks.createEngine).not.toHaveBeenCalled();
+  });
 
-	  it('honors explicit pt-webgpu-lite runtimeProfile without probing', async () => {
-	    await expect(
+  it('honors explicit pt-webgpu-lite runtimeProfile without probing', async () => {
+    await expect(
       loadGltfWithEngine('asset.glb', {
         runtimeProfile: 'pt-webgpu-lite',
         compatibilityMode: 'reject-unsupported',
@@ -563,6 +617,64 @@ describe('loadGltfWithEngine strict pt-webgpu tier guard', () => {
     );
   });
 
+  it('honors the forwarded profileId alias without probing', async () => {
+    const existingEngine = {
+      ...makeExistingPtWebgpuEngine(),
+      profileId: 'pt-webgpu-lite' as const,
+    } as EngineWithBackendId & { readonly profileId: 'pt-webgpu-lite' };
+
+    await expect(
+      loadGltfWithEngine('asset.glb', {
+        engine: existingEngine,
+        compatibilityMode: 'best-effort',
+      }),
+    ).resolves.toMatchObject({
+      backend: 'pt-webgpu',
+      profileId: 'pt-webgpu-lite',
+      engine: existingEngine,
+      attached: true,
+    });
+
+    expect(mocks.probeAdapterProfile).not.toHaveBeenCalled();
+  });
+
+  it('ignores feature markers when no runtime profile identity is present', async () => {
+    mocks.probeAdapterProfile.mockResolvedValueOnce({
+      hasWebGPU: true,
+      hybridCapable: true,
+      hybridLiteCapable: true,
+      ptWebgpuTier: 'full',
+      maxStorageBuffersPerStage: 28,
+      maxStorageTexturesPerStage: 8,
+      isSoftwareAdapter: false,
+      adapterKind: 'hardware',
+      hasWebGL2: true,
+      recommendedRealtimeTier: 'ultra',
+      recommendedHeroBackend: 'pt-webgpu-full',
+      limits: Object.freeze({}),
+    });
+    const existingEngine = makeExistingPtWebgpuEngine();
+    Object.assign(existingEngine, {
+      capabilities: {
+        activeFeatures: new Set(['pt-webgpu-spectral']),
+      },
+    });
+
+    await expect(
+      loadGltfWithEngine('asset.glb', {
+        engine: existingEngine,
+        compatibilityMode: 'best-effort',
+      }),
+    ).resolves.toMatchObject({
+      backend: 'pt-webgpu',
+      profileId: 'pt-webgpu',
+      engine: existingEngine,
+      attached: true,
+    });
+
+    expect(mocks.probeAdapterProfile).toHaveBeenCalledTimes(1);
+  });
+
   it('keeps existing pt-webgpu engines on a reported full runtime profile without probing', async () => {
     const existingEngine = {
       ...makeExistingPtWebgpuEngine(),
@@ -612,8 +724,8 @@ describe('loadGltfWithEngine strict pt-webgpu tier guard', () => {
     expect(mocks.createEngine).toHaveBeenCalledTimes(1);
   });
 
-	  it('treats KHR_meshopt_compression as satisfied by the engine meshoptDecode hook', async () => {
-	    mocks.state.liteIssues = [mocks.khrMeshoptHookIssue];
+  it('treats KHR_meshopt_compression as satisfied by the engine meshoptDecode hook', async () => {
+    mocks.state.liteIssues = [mocks.khrMeshoptHookIssue];
 
     await expect(
       loadGltfWithEngine('asset.glb', {
@@ -622,23 +734,23 @@ describe('loadGltfWithEngine strict pt-webgpu tier guard', () => {
       }),
     ).resolves.toMatchObject({ backend: 'pt-webgpu', attached: true });
 
-	    expect(mocks.probeAdapterProfile).toHaveBeenCalledTimes(1);
-	    expect(mocks.createEngine).toHaveBeenCalledTimes(1);
-	  });
+    expect(mocks.probeAdapterProfile).toHaveBeenCalledTimes(1);
+    expect(mocks.createEngine).toHaveBeenCalledTimes(1);
+  });
 
-	  it('treats pt-webgpu texture readiness rows as satisfied by host-ready opaque handles', async () => {
-	    mocks.state.liteIssues = [mocks.textureReadinessIssue];
+  it('treats pt-webgpu texture readiness rows as satisfied by host-ready opaque handles', async () => {
+    mocks.state.liteIssues = [mocks.textureReadinessIssue];
 
-	    await expect(
-	      loadGltfWithEngine('asset.glb', {
-	        compatibilityMode: 'reject-degraded',
-	        opaqueTextureHandlesReady: ['pt-webgpu'],
-	      }),
-	    ).resolves.toMatchObject({ backend: 'pt-webgpu', attached: true });
+    await expect(
+      loadGltfWithEngine('asset.glb', {
+        compatibilityMode: 'reject-degraded',
+        opaqueTextureHandlesReady: ['pt-webgpu'],
+      }),
+    ).resolves.toMatchObject({ backend: 'pt-webgpu', attached: true });
 
-	    expect(mocks.probeAdapterProfile).toHaveBeenCalledTimes(1);
-	    expect(mocks.createEngine).toHaveBeenCalledTimes(1);
-	  });
+    expect(mocks.probeAdapterProfile).toHaveBeenCalledTimes(1);
+    expect(mocks.createEngine).toHaveBeenCalledTimes(1);
+  });
 
   it('does not satisfy runtime spec-gloss alpha rows with an unrelated decoded roughness map', async () => {
     mocks.state.liteIssues = [mocks.specGlossAlphaIssue];
@@ -746,8 +858,8 @@ describe('loadGltfWithEngine strict pt-webgpu tier guard', () => {
     expect(mocks.createEngine).toHaveBeenCalledTimes(1);
   });
 
-	  it('reports the runtime lite profile for best-effort pt-webgpu glTF loads without rejecting', async () => {
-	    await expect(
+  it('reports the runtime lite profile for best-effort pt-webgpu glTF loads without rejecting', async () => {
+    await expect(
       loadGltfWithEngine('asset.glb', { compatibilityMode: 'best-effort' }),
     ).resolves.toMatchObject({ backend: 'pt-webgpu', profileId: 'pt-webgpu-lite', attached: true });
 
@@ -787,9 +899,9 @@ describe('loadGltfWithEngine strict pt-webgpu tier guard', () => {
     );
   });
 
-	  it('derives pt-webgpu texture decode caps from the runtime adapter profile', async () => {
-	    mocks.probeAdapterProfile.mockResolvedValueOnce({
-	      hasWebGPU: true,
+  it('derives pt-webgpu texture decode caps from the runtime adapter profile', async () => {
+    mocks.probeAdapterProfile.mockResolvedValueOnce({
+      hasWebGPU: true,
       hybridCapable: true,
       hybridLiteCapable: true,
       ptWebgpuTier: 'full',
@@ -819,45 +931,45 @@ describe('loadGltfWithEngine strict pt-webgpu tier guard', () => {
         backend: 'pt-webgpu',
         maxTextureSize: 4096,
       }),
-	    );
-	  });
+    );
+  });
 
-	  it('derives texture decode caps when the adapter-recommended backend is pt-webgpu', async () => {
-	    mocks.probeAdapterProfile.mockResolvedValueOnce({
-	      hasWebGPU: true,
-	      hybridCapable: true,
-	      hybridLiteCapable: true,
-	      ptWebgpuTier: 'full',
-	      maxStorageBuffersPerStage: 28,
-	      maxStorageTexturesPerStage: 5,
-	      isSoftwareAdapter: false,
-	      adapterKind: 'hardware',
-	      hasWebGL2: true,
-	      recommendedRealtimeTier: 'ultra',
-	      recommendedHeroBackend: 'pt-webgpu-full',
-	      limits: Object.freeze({ maxTextureDimension2D: 4096 }),
-	    });
+  it('derives texture decode caps when the adapter-recommended backend is pt-webgpu', async () => {
+    mocks.probeAdapterProfile.mockResolvedValueOnce({
+      hasWebGPU: true,
+      hybridCapable: true,
+      hybridLiteCapable: true,
+      ptWebgpuTier: 'full',
+      maxStorageBuffersPerStage: 28,
+      maxStorageTexturesPerStage: 5,
+      isSoftwareAdapter: false,
+      adapterKind: 'hardware',
+      hasWebGL2: true,
+      recommendedRealtimeTier: 'ultra',
+      recommendedHeroBackend: 'pt-webgpu-full',
+      limits: Object.freeze({ maxTextureDimension2D: 4096 }),
+    });
 
-	    await expect(
-	      loadGltfWithEngine('asset.glb', {
-	        decodeTextures: true,
-	      }),
-	    ).resolves.toMatchObject({ backend: 'pt-webgpu', attached: true });
+    await expect(
+      loadGltfWithEngine('asset.glb', {
+        decodeTextures: true,
+      }),
+    ).resolves.toMatchObject({ backend: 'pt-webgpu', attached: true });
 
-	    expect(mocks.probeAdapterProfile).toHaveBeenCalledTimes(1);
-	    expect(mocks.loadGltfForEngine).toHaveBeenCalledWith(
-	      'asset.glb',
-	      expect.objectContaining({
-	        decodeTextures: true,
-	        configureTextureDecode: expect.any(Function),
-	      }),
-	    );
-	    expect(mocks.state.textureDecodePolicyPatch).toMatchObject({
-	      maxTextureSize: 4096,
-	    });
-	  });
+    expect(mocks.probeAdapterProfile).toHaveBeenCalledTimes(1);
+    expect(mocks.loadGltfForEngine).toHaveBeenCalledWith(
+      'asset.glb',
+      expect.objectContaining({
+        decodeTextures: true,
+        configureTextureDecode: expect.any(Function),
+      }),
+    );
+    expect(mocks.state.textureDecodePolicyPatch).toMatchObject({
+      maxTextureSize: 4096,
+    });
+  });
 
-	  it('does not override an explicit glTF maxTextureSize with the runtime adapter cap', async () => {
+  it('does not override an explicit glTF maxTextureSize with the runtime adapter cap', async () => {
     mocks.probeAdapterProfile.mockResolvedValueOnce({
       hasWebGPU: true,
       hybridCapable: true,

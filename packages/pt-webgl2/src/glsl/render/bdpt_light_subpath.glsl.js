@@ -1,75 +1,80 @@
 /**
- * bdpt_light_subpath.glsl.js — BDPT light-subpath kernel (Sprint 10c).
+ * Bounded general-BDPT light-subpath construction for the native WebGL2 PT.
  *
- * Included when `FEATURE_BDPT == 1`. The host light-subpath draw uses
- * `uBdptLightSubpathPass` in PhysicalPathTracingMaterial (one fullscreen draw
- * per vertex column) via PathTracingRenderer.renderBdptLightSubpathPass().
+ * One 8x8 RGBA32F texture stores up to eight vertices:
+ *   row 0: position.xyz | kind (0=ordinary, 1=delta, 3=invalid)
+ *   row 1: shading normal / emitter axis | forward directional density
+ *   row 2: throughput.rgb | reverse directional density
+ *   row 3: direction toward predecessor | material id / endpoint sentinel
+ *   row 4: surface barycentric payload or endpoint attenuation payload
+ *   row 5: medium-stack count | material ids 0..2
+ *   row 6: medium-stack material ids 3..6
+ *   row 7: medium-stack material id 7 | scattering-medium id | reserved
  *
- * Ping-pong vertex texture layout (RGBA32F, width=BDPT_MAX_LIGHT_BOUNCES=3, height=5):
- *   Texel(col, 0):  position.xyz | kind    (0=light vertex, 3=invalid/empty)
- *   Texel(col, 1):  normal.xyz   | pdfFwd  (forward PDF, SOLID-ANGLE measure)
- *   Texel(col, 2):  throughput.rgb | pdfRev (radiance weight; reverse SA PDF)
- *   Texel(col, 3):  woTowardPrev.xyz | materialId (-1=emitter profile)
- *   Texel(col, 4):  triangleIndex | barycentric.xy | side
+ * Columns are built sequentially with ping-pong render targets. Extension k
+ * patches k-1 row 0 (the sampled event's real delta classification). Its
+ * swapped reverse BSDF times the intermediate incoming-edge distance factor
+ * belongs to k-2 row 2; this is the reverse density that becomes known only
+ * after the successor exists.
  *
- * Each draw call renders into a single 5-row × N-column render target at column
- * uBdptVertexCol (0…BDPT_MAX_LIGHT_BOUNCES-1). Five fragments (one per row) at
- * the same column cooperate: all five trace the SAME subpath (RNG seeded with
- * vec2(gl_FragCoord.x, 0.0) — row-independent) and each writes one row of the
- * vertex. The host ping-pongs: "write" target = current frame's texture; "read"
- * target (uBdptLightPathTex) = previous frame's texture. For bounce k=0 the read
- * texture is irrelevant (emitter vertex; no prior bounce).
- *
- * pdfFwd / pdfRev are stored in SOLID-ANGLE measure with NO baked-in geometry
- * term: the full Veach §10.3 connection sweep (bdpt_connection.glsl.js) converts
- * SA→area on the fly via ConvertDensity (PBRT Vertex::ConvertDensity), so baking
- * G here would double-apply the Jacobian. Emitter vertices use the cosine-emission
- * density; surface vertices use the same BSDF pdf reported by bsdfSample().
- *
- * Geometry term: G(x↔y) = |cosθ_x · cosθ_y| / ‖x−y‖²  (Veach §8.3.2, Eq. 8.10),
- * still used for visibility/throughput bookkeeping in the connection pass.
- *
- * Throughput model:
- *   T_0 = Le × cosθ_emit / (p_light × p_hemisphere)
- *   T_k = T_{k-1} × f_k(wo,wi)·cosθ / p_bsdf
- * Surface light vertices now use the same getSurfaceRecord + bsdfSample path as
- * the eye path, so maps/layer lobes participate in the generated light chain.
- *
- * Seed isolation: eye-path rand() uses seeds 0–30 (established by prior sprints).
- *   Light subpath bounce 0 uses seeds 50–52.
- *   Light subpath bounce k uses seeds 53 + k*3 … 55 + k*3.
- *
- * References:
- *   Veach 1997, §10.3 (BDPT), §8.3.2 (geometric term).
- *   Pharr et al. 2023, PBR 4e §16.3 (vertex formulation).
+ * References: Veach 1997, chapter 10; PBRT-v4, section 16.3.
  */
 export const bdpt_light_subpath = /* glsl */`
 
-	// ── Geometry term G(x↔y) ────────────────────────────────────────────────
-	// Returns 0 on degenerate connections (coincident points or near-tangent
-	// incidence — both produce near-zero or negative cosines).
-	float bdptGeometricTerm( vec3 posX, vec3 nX, vec3 posY, vec3 nY ) {
-		vec3 d    = posY - posX;
-		float dist2 = dot( d, d );
-		if ( dist2 <= 1e-12 ) return 0.0;
-		vec3 w    = d * inversesqrt( dist2 );
-		float cosX = abs( dot( nX, w ) );
-		float cosY = abs( dot( nY, -w ) ); // opposite direction
-		return ( cosX * cosY ) / dist2;
-	}
+	const float BDPT_KIND_LIGHT = 0.0;
+	const float BDPT_KIND_DELTA = 1.0;
+	const float BDPT_KIND_INVALID = 3.0;
 
-	const float BDPT_LV_EMITTER_MATID = -1.0;
 	const float BDPT_LV_AREA_EMITTER_MATID = -2.0;
+	const float BDPT_LV_POINT_EMITTER_MATID = -4.0;
+	const float BDPT_LV_SPOT_EMITTER_MATID = -5.0;
+	const float BDPT_LV_MEDIUM_MATID = -7.0;
+	const float BDPT_LV_DIRECTIONAL_EMITTER_MATID = -8.0;
+	const float BDPT_LV_ENVIRONMENT_EMITTER_MATID = -9.0;
+
+        float bdptConnectionInverseDistanceSquared( vec3 posX, vec3 posY ) {
+                vec3 d = posY - posX;
+                float dist2 = dot( d, d );
+                return dist2 > 0.0 ? 1.0 / dist2 : 0.0;
+	}
 
 	vec4 bdptSurfacePayload( SurfaceHit hit ) {
 		return vec4(
-			float( hit.faceIndices.w ),
-			hit.barycoord.x,
-			hit.barycoord.y,
-			hit.side
+			float( hit.faceIndices.w ), hit.barycoord.x, hit.barycoord.y, hit.side
 		);
 	}
 
+        bool bdptLoadSurfaceRecord(
+		float materialId,
+		vec4 payload,
+		float heroWavelength,
+		out SurfaceRecord surf
+	) {
+		uint triIndex = uint( max( floor( payload.x + 0.5 ), 0.0 ) );
+		uvec3 indices = uTexelFetch1D( bvh.index, triIndex ).xyz;
+		vec3 p0 = texelFetch1D( bvh.position, indices.x ).xyz;
+		vec3 p1 = texelFetch1D( bvh.position, indices.y ).xyz;
+		vec3 p2 = texelFetch1D( bvh.position, indices.z ).xyz;
+		vec3 faceNormal = cross( p1 - p0, p2 - p0 );
+		if ( dot( faceNormal, faceNormal ) <= 1e-16 ) return false;
+
+		SurfaceHit hit;
+		hit.faceIndices = uvec4( indices, triIndex );
+		hit.barycoord = vec3(
+			payload.y, payload.z, max( 0.0, 1.0 - payload.y - payload.z )
+		);
+		hit.faceNormal = normalize( faceNormal );
+		hit.side = payload.w < 0.0 ? -1.0 : 1.0;
+		hit.dist = 0.0;
+		uint matIdx = uint( max( floor( materialId + 0.5 ), 0.0 ) );
+		// The stored hit already passed stochastic opacity when the path was built.
+		return getSurfaceRecord(
+			matIdx, hit, attributesArray, 0.0, 0, heroWavelength, true, surf
+		) == HIT_SURFACE;
+	}
+
+	// Compatibility overload used by the connection kernel; the exact geometric
+	// normal is reconstructed from the stored triangle rather than the fallback.
 	bool bdptLoadSurfaceRecord(
 		float materialId,
 		vec4 payload,
@@ -77,503 +82,629 @@ export const bdpt_light_subpath = /* glsl */`
 		float heroWavelength,
 		out SurfaceRecord surf
 	) {
-		uint triIndex = uint( max( floor( payload.x + 0.5 ), 0.0 ) );
-		uvec3 indices = uTexelFetch1D( bvh.index, triIndex ).xyz;
-		SurfaceHit hit;
-		hit.faceIndices = uvec4( indices, triIndex );
-		hit.barycoord = vec3( payload.y, payload.z, max( 0.0, 1.0 - payload.y - payload.z ) );
-		hit.faceNormal = fallbackFaceNormal;
-		hit.side = payload.w < 0.0 ? -1.0 : 1.0;
-		hit.dist = 0.0;
+                return bdptLoadSurfaceRecord( materialId, payload, heroWavelength, surf );
+        }
 
-		uint matIdx = uint( max( floor( materialId + 0.5 ), 0.0 ) );
-		Material mat = readMaterialInfo( materials, matIdx );
-		return getSurfaceRecord( mat, matIdx, hit, attributesArray, 0.0, 0, heroWavelength, surf ) == HIT_SURFACE;
-	}
+        void bdptPackMediumStack(
+                const in MediumStack stack,
+                float scatteringMediumId,
+                out vec4 row5,
+                out vec4 row6,
+                out vec4 row7
+        ) {
+                // Preserve outer-to-inner order exactly; leaveMedium requires
+                // the current innermost material at count-1 on unpack.
+                row5 = vec4( float( stack.count ), -1.0, -1.0, -1.0 );
+                row6 = vec4( -1.0 );
+                row7 = vec4( -1.0, scatteringMediumId, 0.0, 0.0 );
+                for ( int i = 0; i < MEDIUM_STACK_CAPACITY; i ++ ) {
+                        if ( i >= stack.count ) break;
+                        float materialId = float( stack.materialIds[ i ] );
+                        if ( i == 0 ) row5.y = materialId;
+                        else if ( i == 1 ) row5.z = materialId;
+                        else if ( i == 2 ) row5.w = materialId;
+                        else if ( i == 3 ) row6.x = materialId;
+                        else if ( i == 4 ) row6.y = materialId;
+                        else if ( i == 5 ) row6.z = materialId;
+                        else if ( i == 6 ) row6.w = materialId;
+                        else row7.x = materialId;
+                }
+        }
 
-	// ── Write a fully invalid (empty) vertex ─────────────────────────────────
-	// Called when sampling fails or the subpath terminates early.
-	// kind = 3.0 = BDPT_KIND_INVALID — the connection pass skips these.
-	void writeBdptInvalidVertex(
-		out vec4 v0, out vec4 v1, out vec4 v2, out vec4 v3, out vec4 v4
+        bool bdptUnpackMediumStack(
+                vec4 row5,
+                vec4 row6,
+                vec4 row7,
+                out MediumStack stack,
+                inout FogMaterial fog
+        ) {
+                initMediumStack( stack );
+                int count = int( round( row5.x ) );
+                if ( count < 0 || count > MEDIUM_STACK_CAPACITY ) return false;
+                float packedIds[ MEDIUM_STACK_CAPACITY ];
+                packedIds[ 0 ] = row5.y;
+                packedIds[ 1 ] = row5.z;
+                packedIds[ 2 ] = row5.w;
+                packedIds[ 3 ] = row6.x;
+                packedIds[ 4 ] = row6.y;
+                packedIds[ 5 ] = row6.z;
+                packedIds[ 6 ] = row6.w;
+                packedIds[ 7 ] = row7.x;
+                for ( int i = 0; i < MEDIUM_STACK_CAPACITY; i ++ ) {
+                        if ( i >= count ) break;
+                        if ( packedIds[ i ] < 0.0 ) return false;
+                        stack.materialIds[ i ] = uint( round( packedIds[ i ] ) );
+                        stack.count ++;
+                }
+                // The final packed id remains the top/innermost medium. Do not
+                // sort or deduplicate: repeated material ids are valid nesting.
+                refreshMediumFromStack( stack, materials, fog );
+                return true;
+        }
+
+        void writeBdptInvalidVertex(
+                out vec4 v0, out vec4 v1, out vec4 v2,
+                out vec4 v3, out vec4 v4, out vec4 v5,
+                out vec4 v6, out vec4 v7
 	) {
-		v0 = vec4( 0.0, 0.0, 0.0, 3.0 ); // kind = BDPT_KIND_INVALID
+		v0 = vec4( 0.0, 0.0, 0.0, BDPT_KIND_INVALID );
 		v1 = vec4( 0.0 );
 		v2 = vec4( 0.0 );
-		v3 = vec4( 0.0, 0.0, 0.0, BDPT_LV_EMITTER_MATID );
+		v3 = vec4( 0.0, 0.0, 0.0, BDPT_LV_AREA_EMITTER_MATID );
 		v4 = vec4( 0.0 );
+                v5 = vec4( 0.0, -1.0, 0.0, 0.0 );
+                v6 = vec4( -1.0 );
+                v7 = vec4( -1.0 );
 	}
 
-	float bdptAnalyticEmitterPower( uint index ) {
-		return max( readLightInfo( lights.tex, index ).power, 1e-20 );
+        float bdptAnalyticEmitterPower( uint index ) {
+                return finitePositiveLightPower(
+                        readLightInfo( lights.tex, index ).power
+                );
+        }
+
+        float bdptMeshEmitterPower( uint index ) {
+                return finitePositiveLightPower(
+                        readMeshTriLight( uMeshLights, index ).power
+                );
 	}
 
-	float bdptMeshEmitterPower( uint index ) {
-		return max( readMeshTriLight( uMeshLights, index ).power, 0.0 );
+	float bdptEnvironmentEmitterPower() {
+		return environmentIntensity > 0.0 && envMapInfo.totalSum > 0.0
+			? environmentIntensity * envMapInfo.totalSum
+			: 0.0;
 	}
 
-	bool bdptHasEnvironmentEmitter() {
-		return envMapInfo.totalSum > 0.0 && environmentIntensity > 0.0;
-	}
+        float bdptTotalEmitterPower() {
+                float total = bdptEnvironmentEmitterPower();
+                for ( uint i = 0u; i < lights.count; i ++ ) total += bdptAnalyticEmitterPower( i );
+                for ( uint i = 0u; i < uMeshLightCount; i ++ ) total += bdptMeshEmitterPower( i );
+                return total;
+        }
 
-	float bdptEnvironmentPower() {
-		return max( envMapInfo.totalSum * environmentIntensity, 1e-20 );
-	}
+        // The main eye pass does not include the candidate-pass direct-light
+        // module, so keep the same two-slot distant-family denominator here for
+        // environment escape MIS. Finite emitters are owned by BDPT c=0.
+        float bdptDirectionalNeePower() {
+                float total = 0.0;
+                for ( uint i = 0u; i < lights.count; i ++ ) {
+                        Light light = readLightInfo( lights.tex, i );
+                        if ( light.type == DIR_LIGHT_TYPE ) {
+                                total += finitePositiveLightPower( light.power );
+                        }
+                }
+                return total;
+        }
 
-	vec3 bdptDistantEnvironmentEmitterPosition( vec3 lightDir ) {
-		return - lightDir * 1.0e6;
-	}
+        float bdptDistantNeeDenom() {
+                float directionalSlot = bdptDirectionalNeePower() > 0.0 ? 1.0 : 0.0;
+                float environmentSlot =
+                        envMapInfo.totalSum > 0.0 && environmentIntensity > 0.0 ? 1.0 : 0.0;
+                return directionalSlot + environmentSlot;
+        }
 
-	float bdptTotalEmitterPower() {
-		float sumPower = 0.0;
-		for ( uint ii = 0u; ii < lights.count; ii ++ ) {
-			sumPower += bdptAnalyticEmitterPower( ii );
-		}
-		for ( uint ii = 0u; ii < uMeshLightCount; ii ++ ) {
-			sumPower += bdptMeshEmitterPower( ii );
-		}
-		if ( bdptHasEnvironmentEmitter() ) {
-			sumPower += bdptEnvironmentPower();
-		}
-		return sumPower;
-	}
-
-	LightRecord bdptSampleAnalyticEmitterAtIndex( uint index, vec3 rayOrigin, vec3 ruv ) {
-		Light light = readLightInfo( lights.tex, index );
-		LightRecord result;
-
-		if ( light.type == SPOT_LIGHT_TYPE ) {
-
-			result = randomSpotLightSample( light, rayOrigin, ruv.yz );
-
-		} else if ( light.type == POINT_LIGHT_TYPE ) {
-
-			vec3 lightRay = light.u - rayOrigin;
-			float lightDist = length( lightRay );
-			float cutoffDistance = light.distance;
-			float distanceFalloff = 1.0 / max( pow( lightDist, light.decay ), 0.01 );
-			if ( cutoffDistance > 0.0 ) {
-				distanceFalloff *= pow2( saturate( 1.0 - pow4( lightDist / cutoffDistance ) ) );
-			}
-
-			LightRecord rec;
-			rec.point = light.u;
-			rec.direction = normalize( lightRay );
-			rec.dist = lightDist;
-			rec.normal = - rec.direction;
-			rec.pdf = 1.0;
-			rec.emission = light.color * light.intensity * distanceFalloff;
-			rec.type = light.type;
-			rec.discretePdf = 1.0;
-			rec.castShadowDisabled = light.castShadowDisabled;
-			rec.delta = 1.0;
-			result = rec;
-
-		} else if ( light.type == DIR_LIGHT_TYPE ) {
-
-			LightRecord rec;
-			rec.dist = 1e10;
-			if ( light.angularDiameter > 0.0 ) {
-				float conePdf;
-				rec.direction = sampleDirectionalCone( light.u, light.angularDiameter, ruv.yz, conePdf );
-				rec.pdf = conePdf;
-				rec.delta = 0.0;
-			} else {
-				rec.direction = light.u;
-				rec.pdf = 1.0;
-				rec.delta = 1.0;
-			}
-			rec.point = - rec.direction * rec.dist;
-			rec.normal = rec.direction;
-			rec.emission = light.color * light.intensity;
-			rec.type = light.type;
-			rec.discretePdf = 1.0;
-			rec.castShadowDisabled = light.castShadowDisabled;
-			result = rec;
-
-		} else {
-
-			result = randomAreaLightSample( light, rayOrigin, ruv.yz );
-
-		}
-
-		result.discretePdf = 1.0;
-		return result;
-	}
-
-	bool bdptSampleMeshEmitterAtIndex(
-		uint index,
-		vec2 uv,
-		out vec3 emitPos,
-		out vec3 emitNormal,
-		out vec3 emitRadiance,
-		out float pdfArea,
-		out float castShadowDisabled
+	bool bdptSampleAreaAnalytic(
+		Light light, vec2 uv,
+		out vec3 pos, out vec3 normal, out vec3 radiance, out float pdfArea
 	) {
-		MeshTriLight tri = readMeshTriLight( uMeshLights, index );
-		emitRadiance = tri.radiance;
-		castShadowDisabled = tri.castShadowDisabled;
-		if ( tri.area <= EPSILON || tri.power <= 0.0 || tri.radiance == vec3( 0.0 ) ) {
-			return false;
+                if (
+                        ( light.type != RECT_AREA_LIGHT_TYPE && light.type != CIRC_AREA_LIGHT_TYPE ) ||
+                        light.area <= 0.0
+		) return false;
+		if ( light.type == RECT_AREA_LIGHT_TYPE ) {
+			pos = light.position + light.u * ( uv.x - 0.5 ) + light.v * ( uv.y - 0.5 );
+		} else {
+			float radius = 0.5 * sqrt( max( uv.x, 0.0 ) );
+			float phi = 2.0 * PI * uv.y;
+			pos = light.position + radius * ( light.u * cos( phi ) + light.v * sin( phi ) );
 		}
+		vec3 n = cross( light.u, light.v );
+		if ( dot( n, n ) <= 1e-16 ) return false;
+		normal = normalize( n );
+		radiance = light.color * light.intensity;
+                pdfArea = 1.0 / light.area;
+		return any( greaterThan( radiance, vec3( 0.0 ) ) );
+	}
 
+	bool bdptSampleMeshArea(
+		MeshTriLight tri, vec2 uv,
+		out vec3 pos, out vec3 normal, out vec3 radiance, out float pdfArea
+	) {
+                if ( tri.area <= 0.0 || tri.power <= 0.0 ) return false;
 		float su = sqrt( max( uv.x, 0.0 ) );
 		float b0 = 1.0 - su;
 		float b1 = uv.y * su;
 		float b2 = 1.0 - b0 - b1;
-		emitPos = tri.v0 * b0 + tri.v1 * b1 + tri.v2 * b2;
-
+		pos = tri.v0 * b0 + tri.v1 * b1 + tri.v2 * b2;
 		vec3 n = cross( tri.v1 - tri.v0, tri.v2 - tri.v0 );
-		float nLen = length( n );
-		if ( nLen <= 1e-8 ) return false;
-		emitNormal = n / nLen;
-		pdfArea = 1.0 / max( tri.area, EPSILON );
-		return true;
+		if ( dot( n, n ) <= 1e-16 ) return false;
+		normal = normalize( n );
+		radiance = tri.radiance;
+                pdfArea = 1.0 / tri.area;
+		return any( greaterThan( radiance, vec3( 0.0 ) ) );
 	}
 
-	void writeBdptCosineEmitterVertex(
-		vec3 emitPos,
-		vec3 emitNormal,
-		vec3 emitRadiance,
-		float pdfLight,
-		float castShadowDisabled,
-		out vec4 gBdptVertex0,
-		out vec4 gBdptVertex1,
-		out vec4 gBdptVertex2,
-		out vec4 gBdptVertex3,
-		out vec4 gBdptVertex4
-	) {
-		vec3 scatterDir = sampleHemisphere( emitNormal, rand2( 52 ) );
-		float cosEmit   = max( dot( emitNormal, scatterDir ), 0.0 );
-		float pdfHemi   = cosEmit / PI;
-		float pdfJoint  = max( pdfLight * pdfHemi, 1e-8 );
-		vec3 emitThroughput = emitRadiance * cosEmit / pdfJoint;
-
-		gBdptVertex0 = vec4( emitPos,        0.0 );
-		gBdptVertex1 = vec4( emitNormal,     pdfJoint );
-		gBdptVertex2 = vec4( emitThroughput, pdfHemi );
-		gBdptVertex3 = vec4( emitNormal,     BDPT_LV_EMITTER_MATID );
-		gBdptVertex4 = vec4( castShadowDisabled, 0.0, 0.0, 0.0 );
+	vec3 bdptDiskLaunch( vec3 towardSource, vec2 uv ) {
+		float radius = max( uBdptSceneRadius, 1e-3 );
+		float r = radius * sqrt( max( uv.x, 0.0 ) );
+		float phi = 2.0 * PI * uv.y;
+		mat3 basis = getBasisFromNormal( normalize( towardSource ) );
+		return uBdptSceneCenter + normalize( towardSource ) * radius +
+			basis[ 0 ] * ( r * cos( phi ) ) + basis[ 1 ] * ( r * sin( phi ) );
 	}
 
-	void writeBdptAreaEmitterVertex(
-		vec3 emitPos,
-		vec3 emitNormal,
-		vec3 emitRadiance,
-		float pdfLight,
-		float pdfArea,
-		float castShadowDisabled,
-		out vec4 gBdptVertex0,
-		out vec4 gBdptVertex1,
-		out vec4 gBdptVertex2,
-		out vec4 gBdptVertex3,
-		out vec4 gBdptVertex4
+	void bdptWriteEndpoint(
+		vec3 pos, vec3 axis, vec3 data, vec3 radiance,
+		float pdfPosition, float sentinel, float kind,
+                vec4 payload,
+                out vec4 v0, out vec4 v1, out vec4 v2,
+                out vec4 v3, out vec4 v4, out vec4 v5,
+                out vec4 v6, out vec4 v7
 	) {
-		vec3 scatterDir = sampleHemisphere( emitNormal, rand2( 52 ) );
-		float cosEmit   = max( dot( emitNormal, scatterDir ), 0.0 );
-		float pdfHemi   = cosEmit / PI;
-		float pdfPos    = max( pdfLight * pdfArea, 1e-8 );
-		vec3 emitThroughput = emitRadiance / pdfPos;
-
-		gBdptVertex0 = vec4( emitPos,        0.0 );
-		gBdptVertex1 = vec4( emitNormal,     pdfPos );
-		gBdptVertex2 = vec4( emitThroughput, pdfHemi );
-		gBdptVertex3 = vec4( emitNormal,     BDPT_LV_AREA_EMITTER_MATID );
-		gBdptVertex4 = vec4( castShadowDisabled, 0.0, 0.0, 0.0 );
+		if ( pdfPosition <= 0.0 || any( isnan( radiance ) ) || any( isinf( radiance ) ) ) {
+			writeBdptInvalidVertex( v0, v1, v2, v3, v4, v5, v6, v7 );
+			return;
+		}
+		v0 = vec4( pos, kind );
+		v1 = vec4( axis, pdfPosition );
+		v2 = vec4( radiance / pdfPosition, 0.0 );
+                v3 = vec4( data, sentinel );
+                v4 = payload;
+                MediumStack emptyStack;
+                initMediumStack( emptyStack );
+                bdptPackMediumStack( emptyStack, -1.0, v5, v6, v7 );
 	}
 
-	// ── Main light-subpath vertex writer ─────────────────────────────────────
-	// Writes one vertex per call; called from the BDPT light-subpath pass main().
-	//
-	// Parameters:
-	//   vertexCol         — bounce index (0 = emitter vertex).
-	//   maxLightBounces   — BDPT_MAX_LIGHT_BOUNCES uniform value.
-	//   lightPathTex      — ping-pong texture (read = previous frame's texture).
-	//   fogMat            — current fog material state (from host uniform).
-	//
-	// Outputs: writes to gBdptVertex0/1/2/3 light-path row layout.
-	void writeLightSubpathVertex(
-		int vertexCol,
-		int maxLightBounces,
-		sampler2D lightPathTex,
-		Material fogMat,
-		float heroWavelength,
-		out vec4 gBdptVertex0,
-		out vec4 gBdptVertex1,
-		out vec4 gBdptVertex2,
-		out vec4 gBdptVertex3,
-		out vec4 gBdptVertex4
+        void bdptWriteBounce0(
+                out vec4 v0, out vec4 v1, out vec4 v2,
+                out vec4 v3, out vec4 v4, out vec4 v5,
+                out vec4 v6, out vec4 v7
 	) {
-
-		// Bounds guard.
-		bool hasMeshBdptEmitters = uMeshLightCount != 0u && uTotalEmissivePower > 0.0;
-		bool hasEnvironmentBdptEmitter = bdptHasEnvironmentEmitter();
-		if ( vertexCol < 0 || vertexCol >= maxLightBounces || ( lights.count == 0u && ! hasMeshBdptEmitters && ! hasEnvironmentBdptEmitter ) ) {
-			writeBdptInvalidVertex( gBdptVertex0, gBdptVertex1, gBdptVertex2, gBdptVertex3, gBdptVertex4 );
+		float totalPower = bdptTotalEmitterPower();
+		if ( totalPower <= 0.0 ) {
+			writeBdptInvalidVertex( v0, v1, v2, v3, v4, v5, v6, v7 );
 			return;
 		}
 
-		if ( vertexCol == 0 ) {
-
-			// ── Bounce 0: sample emitter surface ─────────────────────────────
-			// Pick an analytic or mesh-area emitter by the same emitted-power
-			// measure used by pt-webgpu's BDPT light-subpath builder.
-			float totalEmitterPower = bdptTotalEmitterPower();
-			if ( totalEmitterPower <= 0.0 ) {
-				writeBdptInvalidVertex( gBdptVertex0, gBdptVertex1, gBdptVertex2, gBdptVertex3, gBdptVertex4 );
-				return;
+		float pick = rand( 50 ) * totalPower;
+		float cumulative = 0.0;
+		float selectedPower = 0.0;
+		int selectedFamily = -1; // 0 analytic, 1 mesh, 2 environment
+		uint selectedIndex = 0u;
+		for ( uint i = 0u; i < lights.count; i ++ ) {
+			float p = bdptAnalyticEmitterPower( i );
+			cumulative += p;
+			if ( selectedFamily < 0 && p > 0.0 && pick < cumulative ) {
+				selectedFamily = 0; selectedIndex = i; selectedPower = p;
 			}
-
-			float uPick = rand( 50 ) * totalEmitterPower;
-			float cumPower = 0.0;
-			bool pickedMesh = false;
-			bool pickedEnvironment = false;
-			uint pickedIndex = 0u;
-			float pickedPower = 0.0;
-
-			for ( uint ii = 0u; ii < lights.count; ii ++ ) {
-				float p = bdptAnalyticEmitterPower( ii );
-				cumPower += p;
-				if ( pickedPower <= 0.0 && uPick <= cumPower ) {
-					pickedMesh = false;
-					pickedIndex = ii;
-					pickedPower = p;
-				}
+		}
+		for ( uint i = 0u; i < uMeshLightCount; i ++ ) {
+			float p = bdptMeshEmitterPower( i );
+			cumulative += p;
+			if ( selectedFamily < 0 && p > 0.0 && pick < cumulative ) {
+				selectedFamily = 1; selectedIndex = i; selectedPower = p;
 			}
-			for ( uint ii = 0u; ii < uMeshLightCount; ii ++ ) {
-				float p = bdptMeshEmitterPower( ii );
-				cumPower += p;
-				if ( pickedPower <= 0.0 && uPick <= cumPower ) {
-					pickedMesh = true;
-					pickedEnvironment = false;
-					pickedIndex = ii;
-					pickedPower = p;
-				}
+		}
+		float envPower = bdptEnvironmentEmitterPower();
+		if ( selectedFamily < 0 && envPower > 0.0 ) {
+			selectedFamily = 2; selectedPower = envPower;
+		}
+		if ( selectedFamily < 0 || selectedPower <= 0.0 ) {
+			writeBdptInvalidVertex( v0, v1, v2, v3, v4, v5, v6, v7 );
+			return;
+		}
+		float discretePdf = selectedPower / totalPower;
+
+		if ( selectedFamily == 1 ) {
+			MeshTriLight tri = readMeshTriLight( uMeshLights, selectedIndex );
+			vec3 pos; vec3 normal; vec3 radiance; float pdfArea;
+			if ( ! bdptSampleMeshArea( tri, rand2( 51 ), pos, normal, radiance, pdfArea ) ) {
+				writeBdptInvalidVertex( v0, v1, v2, v3, v4, v5, v6, v7 ); return;
 			}
-			if ( hasEnvironmentBdptEmitter ) {
-				float p = bdptEnvironmentPower();
-				cumPower += p;
-				if ( pickedPower <= 0.0 && uPick <= cumPower ) {
-					pickedMesh = false;
-					pickedEnvironment = true;
-					pickedIndex = 0u;
-					pickedPower = p;
-				}
-			}
-
-			if ( pickedPower <= 0.0 ) {
-				if ( hasEnvironmentBdptEmitter ) {
-					pickedMesh = false;
-					pickedEnvironment = true;
-					pickedIndex = 0u;
-					pickedPower = bdptEnvironmentPower();
-				} else if ( hasMeshBdptEmitters ) {
-					pickedMesh = true;
-					pickedEnvironment = false;
-					pickedIndex = uMeshLightCount - 1u;
-					pickedPower = bdptMeshEmitterPower( pickedIndex );
-				} else if ( lights.count != 0u ) {
-					pickedMesh = false;
-					pickedEnvironment = false;
-					pickedIndex = lights.count - 1u;
-					pickedPower = bdptAnalyticEmitterPower( pickedIndex );
-				}
-			}
-
-			float discretePdf = pickedPower / max( totalEmitterPower, 1e-20 );
-			if ( discretePdf <= 0.0 ) {
-				writeBdptInvalidVertex( gBdptVertex0, gBdptVertex1, gBdptVertex2, gBdptVertex3, gBdptVertex4 );
-				return;
-			}
-
-			if ( pickedMesh ) {
-				vec3 emitPos;
-				vec3 emitNormal;
-				vec3 emitRadiance;
-				float pdfArea;
-				float castShadowDisabled;
-				if ( ! bdptSampleMeshEmitterAtIndex( pickedIndex, rand2( 51 ), emitPos, emitNormal, emitRadiance, pdfArea, castShadowDisabled ) ) {
-					writeBdptInvalidVertex( gBdptVertex0, gBdptVertex1, gBdptVertex2, gBdptVertex3, gBdptVertex4 );
-					return;
-				}
-				writeBdptAreaEmitterVertex(
-					emitPos,
-					emitNormal,
-					emitRadiance,
-					discretePdf,
-					pdfArea,
-					castShadowDisabled,
-					gBdptVertex0,
-					gBdptVertex1,
-					gBdptVertex2,
-					gBdptVertex3,
-					gBdptVertex4
-				);
-			} else if ( pickedEnvironment ) {
-				vec3 envColor;
-				vec3 envDirectionLocal;
-				float envPdf = sampleEquirectProbability( rand2( 51 ), envColor, envDirectionLocal );
-				vec3 envDirection = normalize( invEnvRotation3x3 * envDirectionLocal );
-				if ( envPdf <= 0.0 || luminance( envColor ) <= 0.0 ) {
-					writeBdptInvalidVertex( gBdptVertex0, gBdptVertex1, gBdptVertex2, gBdptVertex3, gBdptVertex4 );
-					return;
-				}
-
-				writeBdptCosineEmitterVertex(
-					bdptDistantEnvironmentEmitterPosition( envDirection ),
-					envDirection,
-					envColor * environmentIntensity,
-					discretePdf * envPdf,
-					0.0,
-					gBdptVertex0,
-					gBdptVertex1,
-					gBdptVertex2,
-					gBdptVertex3,
-					gBdptVertex4
-				);
-			} else {
-				LightRecord lightRec = bdptSampleAnalyticEmitterAtIndex(
-					pickedIndex,
-					vec3( 0.0 ),
-					rand3( 51 )
-				);
-
-				if ( lightRec.pdf <= 0.0 || lightRec.emission == vec3( 0.0 ) ) {
-					writeBdptInvalidVertex( gBdptVertex0, gBdptVertex1, gBdptVertex2, gBdptVertex3, gBdptVertex4 );
-					return;
-				}
-
-				writeBdptCosineEmitterVertex(
-					lightRec.point,
-					normalize( lightRec.normal ),
-					lightRec.emission,
-					discretePdf * lightRec.pdf,
-					lightRec.castShadowDisabled,
-					gBdptVertex0,
-					gBdptVertex1,
-					gBdptVertex2,
-					gBdptVertex3,
-					gBdptVertex4
-				);
-			}
-
-		} else {
-
-			// ── Bounce k>0: read prior vertex, extend subpath ─────────────────
-			// Read prior vertex from the ping-pong "read" texture.
-			// The "read" texture holds the previous frame's or the prior-bounce result.
-			// Host must ensure: write target ≠ read source (WebGL2 requirement).
-			int prevCol = vertexCol - 1;
-			vec4 v0prev = texelFetch( lightPathTex, ivec2( prevCol, 0 ), 0 );
-			vec4 v1prev = texelFetch( lightPathTex, ivec2( prevCol, 1 ), 0 );
-			vec4 v2prev = texelFetch( lightPathTex, ivec2( prevCol, 2 ), 0 );
-			vec4 v3prev = texelFetch( lightPathTex, ivec2( prevCol, 3 ), 0 );
-			vec4 v4prev = texelFetch( lightPathTex, ivec2( prevCol, 4 ), 0 );
-
-			// Check kind — skip if the prior vertex is invalid.
-			if ( v0prev.w == 3.0 ) { // BDPT_KIND_INVALID
-				writeBdptInvalidVertex( gBdptVertex0, gBdptVertex1, gBdptVertex2, gBdptVertex3, gBdptVertex4 );
-				return;
-			}
-
-			vec3 prevPos        = v0prev.xyz;
-			vec3 prevNormal     = v1prev.xyz;
-			// v1prev.w = prevPdfFwd — not needed for scatter direction or throughput update.
-			vec3 prevThroughput = v2prev.xyz;
-			// v2prev.w = prevPdfRev — not needed for scatter; pdfRev is recomputed at this vertex.
-			vec3 woAtPrev       = normalize( v3prev.xyz );
-			float prevMatId     = v3prev.w;
-
-			// Seed isolation: 53 + vertexCol*3 (covers bounces 1, 2).
-			int seedBase = 53 + vertexCol * 3;
-			vec3 scatterDir;
-			float pdfScatter;
-			vec3 segmentThroughput;
-
-			if ( prevMatId < 0.0 ) {
-
-				// Emitter profile: cosine-weighted emission about the stored source normal.
-				scatterDir = sampleHemisphere( prevNormal, rand2( seedBase ) );
-				float cosScatter = max( dot( prevNormal, scatterDir ), 0.0 );
-				pdfScatter = cosScatter / PI;
-				segmentThroughput = vec3( cosScatter / PI );
-
-			} else {
-
-				// Surface vertex: reuse the same material/texture BSDF sampler as the eye path.
-				SurfaceRecord prevSurf;
-				if ( ! bdptLoadSurfaceRecord( prevMatId, v4prev, prevNormal, heroWavelength, prevSurf ) ) {
-					writeBdptInvalidVertex( gBdptVertex0, gBdptVertex1, gBdptVertex2, gBdptVertex3, gBdptVertex4 );
-					return;
-				}
-				ScatterRecord scatterRec = bsdfSample( woAtPrev, prevSurf, heroWavelength );
-				scatterDir = scatterRec.direction;
-				pdfScatter = scatterRec.pdf;
-				segmentThroughput = scatterRec.throughput;
-
-			}
-
-			if ( pdfScatter <= 0.0 ) {
-				writeBdptInvalidVertex( gBdptVertex0, gBdptVertex1, gBdptVertex2, gBdptVertex3, gBdptVertex4 );
-				return;
-			}
-
-			// Trace ray from prior vertex into the scene.
-			Ray scatterRay;
-			scatterRay.origin    = prevPos + prevNormal * RAY_OFFSET;
-			scatterRay.direction = scatterDir;
-
-			SurfaceHit scatterHit;
-			int hitType = traceScene( scatterRay, fogMat, scatterHit );
-
-			if ( hitType != SURFACE_HIT ) {
-				writeBdptInvalidVertex( gBdptVertex0, gBdptVertex1, gBdptVertex2, gBdptVertex3, gBdptVertex4 );
-				return;
-			}
-
-			// Fetch material at the new hit.
-			uint matIdx  = uTexelFetch1D( materialIndexAttribute, scatterHit.faceIndices.w ).r;
-			Material mat = readMaterialInfo( materials, matIdx );
-			SurfaceRecord newSurf;
-			if ( getSurfaceRecord( mat, matIdx, scatterHit, attributesArray, 0.0, vertexCol, heroWavelength, newSurf ) != HIT_SURFACE ) {
-				writeBdptInvalidVertex( gBdptVertex0, gBdptVertex1, gBdptVertex2, gBdptVertex3, gBdptVertex4 );
-				return;
-			}
-
-			// Skip specular / delta-BSDF surfaces — MIS weight would be zero for
-			// explicit connections through them (Veach §10.3.5).
-			bool isSpecular = ( newSurf.transmission > 0.5 && newSurf.filteredRoughness < 0.05 );
-			if ( isSpecular ) {
-				writeBdptInvalidVertex( gBdptVertex0, gBdptVertex1, gBdptVertex2, gBdptVertex3, gBdptVertex4 );
-				return;
-			}
-
-			// New vertex geometry.
-			vec3 newPos    = scatterRay.origin + scatterRay.direction * scatterHit.dist;
-			vec3 newNormal = normalize( newSurf.normal );
-
-			// Throughput: prior × f(prev, scatterDir)·cos / pdfScatter. For real
-			// surface vertices segmentThroughput comes from bsdfSample(); emitter
-			// vertices keep the cosine emission profile used at bounce 0.
-			vec3 newThroughput = prevThroughput * segmentThroughput / pdfScatter;
-
-			// Store SOLID-ANGLE pdfs (NO baked-in geometry term). The full Veach
-			// §10.3 connection sweep converts SA→area on the fly via ConvertDensity
-			// (PBRT Vertex::ConvertDensity, destination-cosine only), so baking the
-			// full G here would double-apply the Jacobian and bias the MIS weights.
-			float pdfFwd = pdfScatter;                                  // SA forward generation density
-			vec3 woToPrev = normalize( prevPos - newPos );
-			float cosRev = max( dot( newNormal, woToPrev ), 0.0 );
-			float pdfRev = cosRev / PI;                                 // SA reverse (cosθ/π)
-
-			gBdptVertex0 = vec4( newPos,        0.0 );   // kind = BDPT_KIND_LIGHT
-			gBdptVertex1 = vec4( newNormal,     pdfFwd );
-			gBdptVertex2 = vec4( newThroughput, pdfRev );
-			gBdptVertex3 = vec4( woToPrev, float( matIdx ) );
-			gBdptVertex4 = bdptSurfacePayload( scatterHit );
-
+			bdptWriteEndpoint(
+				pos, normal, normal, radiance, discretePdf * pdfArea,
+				BDPT_LV_AREA_EMITTER_MATID, BDPT_KIND_LIGHT,
+					// Mesh-area emission is two-sided in sampleMeshAreaLight and
+					// forward emissive hits. payload.y preserves that ownership here.
+					vec4( tri.castShadowDisabled, 1.0, 0.0, 0.0 ),
+				v0, v1, v2, v3, v4, v5, v6, v7
+			);
+			return;
 		}
 
+		if ( selectedFamily == 2 ) {
+			vec3 envColor = vec3( 0.0 );
+			vec3 envLocalDir = vec3( 0.0, 1.0, 0.0 );
+			float directionPdf = sampleEquirectProbability( rand2( 51 ), envColor, envLocalDir );
+			vec3 towardSource = normalize( invEnvRotation3x3 * envLocalDir );
+                        float radius = max( uBdptSceneRadius, 1e-3 );
+                        float pdfPosition = discretePdf / ( PI * radius * radius );
+                        float neePdf = directionPdf / bdptDistantNeeDenom();
+                        bdptWriteEndpoint(
+                                bdptDiskLaunch( towardSource, rand2( 52 ) ), towardSource,
+                                - towardSource, envColor * environmentIntensity,
+                                pdfPosition, BDPT_LV_ENVIRONMENT_EMITTER_MATID, BDPT_KIND_LIGHT,
+                                vec4( 0.0, directionPdf, neePdf, 0.0 ),
+				v0, v1, v2, v3, v4, v5, v6, v7
+			);
+			return;
+		}
+
+		Light light = readLightInfo( lights.tex, selectedIndex );
+		vec3 radiance = light.color * light.intensity;
+		if ( light.type == RECT_AREA_LIGHT_TYPE || light.type == CIRC_AREA_LIGHT_TYPE ) {
+			vec3 pos; vec3 normal; vec3 areaRadiance; float pdfArea;
+			if ( ! bdptSampleAreaAnalytic( light, rand2( 51 ), pos, normal, areaRadiance, pdfArea ) ) {
+				writeBdptInvalidVertex( v0, v1, v2, v3, v4, v5, v6, v7 ); return;
+			}
+				bdptWriteEndpoint(
+					pos, normal, normal, areaRadiance, discretePdf * pdfArea,
+					BDPT_LV_AREA_EMITTER_MATID, BDPT_KIND_LIGHT,
+					// Analytic area NEE uses an absolute light cosine, so preserve
+					// the same two-sided emission profile in the BDPT family.
+					vec4( light.castShadowDisabled, 1.0, 0.0, 0.0 ),
+					v0, v1, v2, v3, v4, v5, v6, v7
+				);
+			} else if ( light.type == POINT_LIGHT_TYPE ) {
+				bdptWriteEndpoint(
+					light.position, vec3( 0.0 ), vec3( 0.0 ), radiance, discretePdf,
+					// Position is singular, but the emitted direction is finite.
+					// Do not mark the root as a delta scattering event: doing so
+					// asymmetrically removes the valid c=0↔c=1 MIS transition.
+					BDPT_LV_POINT_EMITTER_MATID, BDPT_KIND_LIGHT,
+				vec4( light.castShadowDisabled, light.distance, light.decay, 0.0 ),
+				v0, v1, v2, v3, v4, v5, v6, v7
+			);
+		} else if ( light.type == SPOT_LIGHT_TYPE ) {
+			vec3 backAxis = normalize( cross( light.u, light.v ) );
+			vec3 emitAxis = - backAxis;
+				bdptWriteEndpoint(
+					light.position, emitAxis, vec3( light.penumbraCos, 0.0, 0.0 ), radiance,
+					discretePdf, BDPT_LV_SPOT_EMITTER_MATID, BDPT_KIND_LIGHT,
+				vec4( light.castShadowDisabled, light.distance, light.decay, light.coneCos ),
+				v0, v1, v2, v3, v4, v5, v6, v7
+			);
+		} else if ( light.type == DIR_LIGHT_TYPE ) {
+			float directionPdf = 1.0;
+			vec3 towardSource = sampleDirectionalCone(
+				normalize( light.u ), light.angularDiameter, rand2( 51 ), directionPdf
+			);
+			float radius = max( uBdptSceneRadius, 1e-3 );
+                        float pdfPosition = discretePdf / ( PI * radius * radius );
+                        bool isDelta = light.angularDiameter <= 0.0;
+			// Directional RGB is irradiance. For a soft cone, carry p_dir here so
+			// the extension's division by p_dir preserves authored irradiance.
+                        vec3 weightedRadiance = radiance * ( isDelta ? 1.0 : directionPdf );
+                        float directionalNeePdf =
+                                selectedPower /
+                                bdptDirectionalNeePower() *
+                                directionPdf /
+                                bdptDistantNeeDenom();
+                        bdptWriteEndpoint(
+                                bdptDiskLaunch( towardSource, rand2( 52 ) ), towardSource,
+                                - towardSource, weightedRadiance, pdfPosition,
+                                BDPT_LV_DIRECTIONAL_EMITTER_MATID,
+                                // The singular direction is an endpoint measure, not a
+                                // delta scattering vertex.  Keeping the root connectable
+                                // lets s=1 NEE compete with s>=2 launch-disk strategies.
+                                BDPT_KIND_LIGHT,
+                                vec4(
+                                        light.castShadowDisabled,
+                                        directionPdf,
+                                        directionalNeePdf,
+                                        isDelta ? 1.0 : 0.0
+                                ),
+				v0, v1, v2, v3, v4, v5, v6, v7
+			);
+		} else {
+			writeBdptInvalidVertex( v0, v1, v2, v3, v4, v5, v6, v7 );
+		}
+	}
+
+        bool bdptSampledSurfaceEventIsDelta(
+                SurfaceRecord surf, vec3 wo, ScatterRecord rec
+        ) {
+                return rec.sampledDelta;
+        }
+
+	bool bdptSampleEndpointDirection(
+		float sentinel, vec3 axis, vec3 endpointData, vec4 payload, int seedBase,
+		out vec3 direction, out float pdf, out vec3 throughput
+	) {
+			throughput = vec3( 1.0 );
+			if ( sentinel == BDPT_LV_AREA_EMITTER_MATID ) {
+				vec3 endpointNormal = normalize( axis );
+				bool twoSided = payload.y > 0.5;
+				if ( twoSided && rand( seedBase + 2 ) < 0.5 ) {
+					endpointNormal = - endpointNormal;
+				}
+				direction = sampleHemisphere( endpointNormal, rand2( seedBase ) );
+				float cosTheta = abs( dot( normalize( axis ), direction ) );
+				pdf = cosTheta / ( twoSided ? 2.0 * PI : PI );
+				throughput = vec3( cosTheta );
+		} else if ( sentinel == BDPT_LV_POINT_EMITTER_MATID ) {
+			direction = sampleSphere( rand2( seedBase ) );
+			pdf = 1.0 / ( 4.0 * PI );
+		} else if ( sentinel == BDPT_LV_SPOT_EMITTER_MATID ) {
+			float halfAngle = acos( clamp( payload.w, -1.0, 1.0 ) );
+			direction = sampleDirectionalCone( normalize( axis ), 2.0 * halfAngle, rand2( seedBase ), pdf );
+			float angleCos = dot( normalize( axis ), direction );
+			throughput = vec3( getSpotAttenuation( payload.w, endpointData.x, angleCos ) );
+		} else if (
+			sentinel == BDPT_LV_DIRECTIONAL_EMITTER_MATID ||
+			sentinel == BDPT_LV_ENVIRONMENT_EMITTER_MATID
+		) {
+			direction = normalize( endpointData );
+			pdf = payload.y;
+		} else {
+			return false;
+		}
+                return pdf > 0.0 &&
+                        ! any( isnan( direction ) ) &&
+                        ! any( isinf( direction ) );
+	}
+
+	void writeLightSubpathVertex(
+		int vertexCol,
+		int maxLightBounces,
+                sampler2D lightPathTex,
+                const in FogMaterial initialFogMat,
+                const in MediumStack initialMediumStack,
+                float heroWavelength,
+                out vec4 v0, out vec4 v1, out vec4 v2,
+                out vec4 v3, out vec4 v4, out vec4 v5,
+                out vec4 v6, out vec4 v7,
+                out vec4 predecessor0, out vec4 predecessor2
+	) {
+		predecessor0 = vec4( 0.0 );
+		predecessor2 = vec4( 0.0 );
+		if ( vertexCol < 0 || vertexCol >= maxLightBounces || vertexCol >= 8 ) {
+			writeBdptInvalidVertex( v0, v1, v2, v3, v4, v5, v6, v7 ); return;
+		}
+		if ( vertexCol == 0 ) {
+			bdptWriteBounce0( v0, v1, v2, v3, v4, v5, v6, v7 ); return;
+		}
+
+		int prevCol = vertexCol - 1;
+		vec4 p0 = texelFetch( lightPathTex, ivec2( prevCol, 0 ), 0 );
+		vec4 p1 = texelFetch( lightPathTex, ivec2( prevCol, 1 ), 0 );
+		vec4 p2 = texelFetch( lightPathTex, ivec2( prevCol, 2 ), 0 );
+		vec4 p3 = texelFetch( lightPathTex, ivec2( prevCol, 3 ), 0 );
+                vec4 p4 = texelFetch( lightPathTex, ivec2( prevCol, 4 ), 0 );
+                vec4 p5 = texelFetch( lightPathTex, ivec2( prevCol, 5 ), 0 );
+                vec4 p6 = texelFetch( lightPathTex, ivec2( prevCol, 6 ), 0 );
+                vec4 p7 = texelFetch( lightPathTex, ivec2( prevCol, 7 ), 0 );
+		predecessor0 = p0;
+		predecessor2 = p2;
+		if ( p0.w == BDPT_KIND_INVALID ) {
+			writeBdptInvalidVertex( v0, v1, v2, v3, v4, v5, v6, v7 ); return;
+                }
+
+                FogMaterial fogMat = initialFogMat;
+                MediumStack mediumStack;
+                if ( ! bdptUnpackMediumStack( p5, p6, p7, mediumStack, fogMat ) ) {
+                        writeBdptInvalidVertex( v0, v1, v2, v3, v4, v5, v6, v7 );
+                        return;
+                }
+
+		vec3 scatterDir = vec3( 0.0 );
+		float scatterPdf = 0.0;
+		vec3 scatterThroughput = vec3( 0.0 );
+		bool eventDelta = false;
+		float prevMatId = p3.w;
+		int seedBase = 53 + vertexCol * 5;
+		if ( prevMatId < 0.0 && prevMatId != BDPT_LV_MEDIUM_MATID ) {
+			if ( ! bdptSampleEndpointDirection(
+				prevMatId, p1.xyz, p3.xyz, p4, seedBase,
+				scatterDir, scatterPdf, scatterThroughput
+			) ) {
+				writeBdptInvalidVertex( v0, v1, v2, v3, v4, v5, v6, v7 ); return;
+			}
+			eventDelta = p0.w == BDPT_KIND_DELTA;
+		} else {
+                        SurfaceRecord prevSurf;
+                        if ( prevMatId == BDPT_LV_MEDIUM_MATID ) {
+                                if ( p7.y < 0.0 ) {
+                                        writeBdptInvalidVertex( v0, v1, v2, v3, v4, v5, v6, v7 ); return;
+                                }
+                                FogMaterial scatteringFog = readFogMaterialInfo(
+                                        materials, uint( round( p7.y ) )
+                                );
+                                scatteringFog.fogVolume = true;
+                                setFogSurfaceRecord( scatteringFog, prevSurf );
+			} else if ( ! bdptLoadSurfaceRecord( prevMatId, p4, heroWavelength, prevSurf ) ) {
+				writeBdptInvalidVertex( v0, v1, v2, v3, v4, v5, v6, v7 ); return;
+			}
+			ScatterRecord rec = bsdfSample( normalize( p3.xyz ), prevSurf, heroWavelength );
+			scatterDir = rec.direction;
+			scatterPdf = rec.pdf;
+			scatterThroughput = rec.throughput;
+			eventDelta = bdptSampledSurfaceEventIsDelta( prevSurf, normalize( p3.xyz ), rec );
+		}
+                if ( scatterPdf <= 0.0 || any( isnan( scatterThroughput ) ) || any( isinf( scatterThroughput ) ) ) {
+                        writeBdptInvalidVertex( v0, v1, v2, v3, v4, v5, v6, v7 ); return;
+                }
+
+                vec3 rayOrigin = p0.xyz + scatterDir * RAY_OFFSET;
+                #if FEATURE_FOG
+                if ( prevMatId < 0.0 && prevMatId != BDPT_LV_MEDIUM_MATID ) {
+                        // Column 1 is the first segment out of the sampled emitter.
+                        // Reconstruct its medium at the actual launch point and along
+                        // the sampled launch ray. A world-origin probe is wrong for
+                        // translated volumes and for an emitter on a volume boundary.
+                        vec3 endpointLaunchDirection = normalize( scatterDir );
+                        vec3 endpointLaunchOrigin =
+                                p0.xyz + endpointLaunchDirection * RAY_OFFSET;
+                        if ( ! bvhBuildMediumStack(
+                                endpointLaunchOrigin,
+                                - endpointLaunchDirection,
+                                materialIndexAttribute,
+                                materials,
+                                mediumStack,
+                                fogMat
+                        ) ) {
+                                writeBdptInvalidVertex( v0, v1, v2, v3, v4, v5, v6, v7 );
+                                return;
+                        }
+                }
+                #endif
+                if ( prevMatId >= 0.0 ) {
+			SurfaceRecord offsetSurf;
+			if ( bdptLoadSurfaceRecord( prevMatId, p4, heroWavelength, offsetSurf ) ) {
+				float side = dot( scatterDir, offsetSurf.faceNormal ) < 0.0 ? -1.0 : 1.0;
+				rayOrigin = p0.xyz + offsetSurf.faceNormal * ( side * RAY_OFFSET );
+			}
+		}
+		Ray scatterRay;
+		scatterRay.origin = rayOrigin;
+		scatterRay.direction = normalize( scatterDir );
+
+		SurfaceHit hit;
+		SurfaceRecord newSurf;
+		bool foundVertex = false;
+                bool mediumVertex = false;
+                float scatteringMediumId = -1.0;
+                uint newMatIdx = 0u;
+                vec3 newPos = vec3( 0.0 );
+                float segmentSurvival = 1.0;
+                vec3 segmentRatioWeight = vec3( 1.0 );
+                float forwardCollisionDensity = 1.0;
+                float reverseCollisionDensity = 1.0;
+                if ( prevMatId == BDPT_LV_MEDIUM_MATID && p7.y >= 0.0 ) {
+                        reverseCollisionDensity = max(
+                                readFogMaterialInfo(
+                                        materials, uint( round( p7.y ) )
+                                ).opacity,
+                                0.0
+                        );
+                }
+                for ( int traversal = 0; traversal < 32; traversal ++ ) {
+			int hitType = traceScene( scatterRay, fogMat, hit );
+			if ( hitType == NO_HIT ) break;
+                        if ( fogMat.fogVolume ) {
+                                float sigmaT = max( fogMat.opacity, 0.0 );
+                                float mediumDistance = max( hit.dist, 0.0 );
+                                float survival = exp( - sigmaT * mediumDistance );
+                                segmentSurvival *= survival;
+                                segmentRatioWeight *= fogFreeFlightRatioWeight(
+                                        materials,
+                                        fogMat,
+                                        mediumDistance,
+                                        heroWavelength
+                                );
+                                if ( hitType == FOG_HIT ) forwardCollisionDensity = sigmaT;
+			}
+			newPos = scatterRay.origin + scatterRay.direction * hit.dist;
+                        if ( hitType == FOG_HIT ) {
+                                setFogSurfaceRecord( fogMat, newSurf );
+                                mediumVertex = true;
+                                scatteringMediumId = float( fogMat.materialIndex );
+                                foundVertex = true;
+                                break;
+			}
+
+			newMatIdx = uTexelFetch1D( materialIndexAttribute, hit.faceIndices.w ).r;
+			MaterialControl control;
+                        readMaterialControl( materials, newMatIdx, control );
+                        if ( control.fogVolume ) {
+                                bool stackValid = hit.side == 1.0
+                                        ? enterMedium(
+                                                mediumStack, newMatIdx,
+                                                materials, fogMat
+                                        )
+                                        : leaveMedium(
+                                                mediumStack, newMatIdx,
+                                                materials, fogMat
+                                        );
+                                if ( ! stackValid ) break;
+                                scatterRay.origin = stepRayOrigin(
+					scatterRay.origin, scatterRay.direction, - hit.faceNormal, hit.dist
+				);
+				continue;
+			}
+			int status = getSurfaceRecord(
+				newMatIdx, hit, attributesArray, 0.0, vertexCol, heroWavelength, newSurf
+			);
+			if ( status == SKIP_SURFACE ) {
+				scatterRay.origin = stepRayOrigin(
+					scatterRay.origin, scatterRay.direction, - hit.faceNormal, hit.dist
+				);
+				continue;
+			}
+			foundVertex = true;
+			break;
+		}
+                float segmentForwardDensity = segmentSurvival * forwardCollisionDensity;
+                float segmentReverseDensity = segmentSurvival * reverseCollisionDensity;
+                if ( ! foundVertex || segmentForwardDensity <= 0.0 ) {
+                        writeBdptInvalidVertex( v0, v1, v2, v3, v4, v5, v6, v7 ); return;
+                }
+
+		float edgeDistance = distance( p0.xyz, newPos );
+			if ( prevMatId == BDPT_LV_POINT_EMITTER_MATID || prevMatId == BDPT_LV_SPOT_EMITTER_MATID ) {
+				scatterThroughput *= getDistanceAttenuation( edgeDistance, p4.y, p4.z );
+			}
+			if ( prevMatId == BDPT_LV_ENVIRONMENT_EMITTER_MATID ) {
+				// Match direct-environment NEE: the first real receiver's
+				// per-material environment scale is a radiance factor, not a PDF.
+				scatterThroughput *= newSurf.envMapIntensity;
+			}
+                        vec3 newThroughput =
+                                p2.xyz * segmentRatioWeight *
+                                scatterThroughput / scatterPdf;
+                float edgePdf = scatterPdf * segmentForwardDensity;
+                float reverseScatterPdf = scatterPdf;
+                if ( prevMatId >= 0.0 && ! eventDelta ) {
+                        SurfaceRecord reverseSurf;
+                        if ( bdptLoadSurfaceRecord( prevMatId, p4, heroWavelength, reverseSurf ) ) {
+                                vec3 reverseColor;
+                                reverseScatterPdf = bsdfResult(
+                                        normalize( scatterDir ), normalize( p3.xyz ), reverseSurf,
+                                        heroWavelength, reverseColor
+                                );
+                        }
+                }
+                predecessor0.w = eventDelta ? BDPT_KIND_DELTA : BDPT_KIND_LIGHT;
+                // row2.w on a newly created vertex carries the intermediate
+                // reverse distance/collision density of its incoming edge.  One
+                // column later the successor supplies the swapped BSDF at the
+                // current vertex; their product belongs to the vertex BEFORE
+                // current (PBRT RandomWalk: prev.pdfRev =
+                // vertex.ConvertDensity(pdfRevAtVertex, prev)).  The main pass
+                // therefore routes predecessor2 to vertexCol-2, while the delta
+                // marker above still belongs to current at vertexCol-1.
+                predecessor2.w = max( reverseScatterPdf, 0.0 ) * p2.w;
+
+		vec3 woToPrev = normalize( p0.xyz - newPos );
+		vec3 newNormal = mediumVertex ? vec3( 0.0 ) : normalize( newSurf.normal );
+		v0 = vec4( newPos, BDPT_KIND_LIGHT );
+		v1 = vec4( newNormal, edgePdf );
+                v2 = vec4( newThroughput, segmentReverseDensity );
+                v3 = vec4( woToPrev, mediumVertex ? BDPT_LV_MEDIUM_MATID : float( newMatIdx ) );
+                v4 = mediumVertex ? vec4( 0.0 ) : bdptSurfacePayload( hit );
+                bdptPackMediumStack(
+                        mediumStack, scatteringMediumId, v5, v6, v7
+                );
 	}
 
 `;

@@ -10,9 +10,9 @@
  * — undefined behavior in WebGPU that can produce stale reads in any one-pass
  * compute execution.
  *
- * H28 fix in layerResourceAllocator.ts: for in-place relu layers, a distinct
- * `${layer.name}_out` buffer is allocated for binding 3 and the tensors map is
- * updated so downstream layers see the relu-written output.
+ * The canonical spec gives every ReLU a distinct logical output, and the
+ * liveness planner assigns that output a physical slot that cannot alias any
+ * input still live at the dispatch.
  *
  * This test uses a minimal stub GPUDevice that records all createBuffer calls and
  * createBindGroup entries — no real GPU required.
@@ -51,6 +51,7 @@ function makeStubDevice() {
   const bindGroups: RecordedBindGroup[] = [];
 
   const device = {
+    limits: { maxComputeWorkgroupsPerDimension: 65_535 },
     createBuffer(desc: { label?: string; size: number; usage: number; mappedAtCreation?: boolean }): StubBuffer {
       const buf = { label: desc.label ?? '', id: nextBufId++ };
       allBuffers.push(buf);

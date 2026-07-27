@@ -5,7 +5,7 @@
 // dependency, so the engine keeps the GPU-touching fast-path orchestration in
 // `updatePrimitive`/`updateEmitter` and delegates the eligibility decisions
 // here.
-import type { ScenePrimitive } from '@vitrum/core';
+import { sparseArrayOwnIndices, type ScenePrimitive } from '@vitrum/core';
 import type { Scene } from '@vitrum/core';
 import type { UploadedSceneBuffers } from './uploadSceneBuffers.js';
 
@@ -219,10 +219,24 @@ export function canFastPathGeometryPatch(
     return false;
   }
   const keys = Object.keys(patch).filter((k) => k !== 'id' && k !== 'kind');
-  if (!keys.every((k) => k === 'positions' || k === 'normals' || k === 'tangents')) {
+  if (!keys.every((k) =>
+    k === 'positions' ||
+    k === 'normals' ||
+    k === 'tangents' ||
+    k === 'uvs' ||
+    k === 'uv1' ||
+    k === 'uvSets'
+  )) {
     return false;
   }
-  if (!('positions' in patch) && !('normals' in patch) && !('tangents' in patch)) {
+  if (
+    !('positions' in patch) &&
+    !('normals' in patch) &&
+    !('tangents' in patch) &&
+    !('uvs' in patch) &&
+    !('uv1' in patch) &&
+    !('uvSets' in patch)
+  ) {
     return false;
   }
   if ('positions' in patch && patch.positions != null) {
@@ -248,6 +262,27 @@ export function canFastPathGeometryPatch(
     const expectedLength = cur?.length ?? Math.floor(primitive.positions.length / 3) * 4;
     if (patch.tangents.length !== expectedLength) {
       return false;
+    }
+  }
+  if ('uvs' in patch && patch.uvs != null) {
+    const expectedLength = primitive.uvs?.length ??
+      Math.floor(primitive.positions.length / 3) * 2;
+    if (patch.uvs.length !== expectedLength) {
+      return false;
+    }
+  }
+  if ('uv1' in patch && patch.uv1 != null) {
+    const expectedLength = primitive.uv1?.length ??
+      Math.floor(primitive.positions.length / 3) * 2;
+    if (patch.uv1.length !== expectedLength) {
+      return false;
+    }
+  }
+  if ('uvSets' in patch && patch.uvSets != null) {
+    const expectedLength = Math.floor(primitive.positions.length / 3) * 2;
+    for (const texCoord of sparseArrayOwnIndices(patch.uvSets)) {
+      const stream = patch.uvSets[texCoord];
+      if (stream != null && stream.length !== expectedLength) return false;
     }
   }
   return true;

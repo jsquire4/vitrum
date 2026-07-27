@@ -29,6 +29,9 @@ arc for the emitter-NEE fix; two-scene RC acceptance gate
   `HybridEngineOptions.cascadeDims: readonly CascadeDim[]`.
 - `validateCascadeDims` — runtime guard for custom cascade overrides (positive
   probe grids, square ray counts, 2x ray-grid steps, valid intervals).
+- `allocateCascades` / `disposeCascades` — optional CPU-only cascade storage
+  helpers for hosts and raw-kernel validation. They do not allocate GPU
+  resources and are not part of `RCDispatcher` lifecycle management.
 - `PROBE_RAY_CAST_WGSL` / `CASCADE_MERGE_WGSL` — raw WGSL strings for host
   inspection or headless WGSL-compile testing.
 - `computeOctahedralSolidAngles` — pure CPU helper used by cascade-merge math.

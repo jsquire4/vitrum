@@ -49,6 +49,7 @@ describe('Road D5 stale-comment gates', () => {
     expect(risGiNrc).not.toContain('centroid-p');
     expect(risGiNrc).toContain('receiver-lobe/material');
     expect(nrcSubsystem).not.toContain('checking whether the first');
-    expect(nrcSubsystem).toContain('scanning the entire encoded-');
+    expect(nrcSubsystem).toContain('const unpacked = unpackRecords(');
+    expect(nrcSubsystem).toContain('if (unpacked.filled === 0) return;');
   });
 });

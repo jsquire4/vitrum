@@ -75,6 +75,16 @@ export interface DecodableTextureHandle {
   readonly height?: number;
   readonly data?: ArrayLike<number>;
   readonly image?: { readonly width?: number; readonly height?: number; readonly data?: ArrayLike<number> };
+  /**
+   * Optional immutable CPU snapshot for an otherwise opaque/GPU-resident
+   * texture. Backends use this structural lane when they must build an
+   * emissive-light distribution without reading a host-owned GPU resource.
+   */
+  readonly cpuMirror?: {
+    readonly width?: number;
+    readonly height?: number;
+    readonly data?: ArrayLike<number>;
+  };
 }
 
 /** Resolved decode state shared by the emitter-map texel readers. */
@@ -105,9 +115,10 @@ export function resolveReadableTexture(
   hintColorSpace: TextureDecodeHint['colorSpace'] | undefined,
 ): ResolvedReadableTexture | null {
   if (handle == null) return null;
-  const src = handle.data ?? handle.image?.data;
-  const width = Math.floor(Number(handle.width ?? handle.image?.width ?? 0));
-  const height = Math.floor(Number(handle.height ?? handle.image?.height ?? 0));
+  const mirror = handle.cpuMirror;
+  const src = mirror?.data ?? handle.data ?? handle.image?.data;
+  const width = Math.floor(Number(mirror?.width ?? handle.width ?? handle.image?.width ?? 0));
+  const height = Math.floor(Number(mirror?.height ?? handle.height ?? handle.image?.height ?? 0));
   if (src == null || typeof src.length !== 'number' || width <= 0 || height <= 0) {
     return null;
   }

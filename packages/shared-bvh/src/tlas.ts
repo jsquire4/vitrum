@@ -44,11 +44,25 @@
  * instance is where, how many instances) is unchanged.
  */
 
-import { BVH_NODE_FLOATS } from './strides.js';
+import {
+  BINARY_BVH_MAX_BUILD_DEPTH,
+  BVH_NODE_FLOATS,
+  TLAS_TRAVERSAL_STACK_DEPTH,
+} from './strides.js';
 
 const TLAS_LEAFNODE_FLAG = 0xffff0000;
 const TLAS_DEFAULT_MAX_LEAF_INSTANCES = 1;       // typically 1 instance/leaf
 const TLAS_DEFAULT_NUM_BINS = 16;
+/** Packed TLAS leaves store their instance count in 16 bits. */
+export const TLAS_MAX_LEAF_INSTANCES = 0xffff;
+/**
+ * Upper bound for binned-SAH scratch allocation. More bins have sharply
+ * diminishing value for an instance TLAS while allocating six O(K) arrays
+ * per axis; 256 is deliberately generous and keeps malformed options bounded.
+ */
+export const TLAS_MAX_NUM_BINS = 256;
+/** Deepest interior level accepted by every live binary TLAS traversal. */
+export const TLAS_MAX_BUILD_DEPTH = BINARY_BVH_MAX_BUILD_DEPTH;
 /** Alias for {@link BVH_NODE_FLOATS}: TLAS shares the same 32-byte node layout as BLAS. */
 const TLAS_NODE_STRIDE_U32 = BVH_NODE_FLOATS;
 
@@ -68,13 +82,45 @@ export interface TlasInstance {
 }
 
 export interface TlasBuildOptions {
+  /** Maximum instances in any leaf; finite safe integer in [1, 65535]. */
   readonly maxLeafInstances?: number;
+  /** SAH bin count; finite safe integer in [2, 256]. */
   readonly numBins?: number;
+  /** Maximum node depth; finite safe integer in [0, 58]. May only lower the live-safe cap. */
+  readonly maxDepth?: number;
 }
 
-/** Built TLAS payload — designed for direct DMA to a WebGPU storage buffer. */
-export interface TlasData {
-  /** 8 × u32 per node, packed. Tree is breadth-first; node 0 is the root. */
+export type TlasBalancedFallbackReason =
+  | 'degenerate-centroids'
+  | 'non-improving-sah'
+  | 'degenerate-partition'
+  | 'depth-safety';
+
+export interface TlasValidationReport {
+  readonly status: 'valid';
+  readonly nodeCount: number;
+  readonly interiorNodeCount: number;
+  readonly leafNodeCount: number;
+  readonly maxDepth: number;
+  readonly maxLeafInstances: number;
+  readonly maxTraversalStackEntries: number;
+  readonly traversalStackCapacity: number;
+}
+
+export interface TlasBuildStatus {
+  readonly status: 'valid';
+  readonly inputInstanceCount: number;
+  readonly includedInstanceCount: number;
+  readonly filteredInvalidInstanceIndices: readonly number[];
+  readonly invalidInstancePolicy: 'reject-invalid';
+  readonly balancedFallbackCount: number;
+  readonly balancedFallbackReasons: Readonly<Record<TlasBalancedFallbackReason, number>>;
+  readonly validation: TlasValidationReport;
+}
+
+/** Packed TLAS buffers accepted by validators, refit helpers, and CPU traversal. */
+export interface TlasBufferView {
+  /** 8 × u32 per node, packed in preorder/depth-first layout; node 0 is the root. */
   readonly nodes: Uint32Array;
   readonly nodeCount: number;
   /**
@@ -90,6 +136,16 @@ export interface TlasData {
    */
   readonly blasRoots: Uint32Array;
   readonly instanceTransforms: Float32Array;
+}
+
+/** Internally built TLAS payload — designed for direct DMA to WebGPU storage buffers. */
+export interface TlasData extends TlasBufferView {
+  /**
+   * Build-time proof that the packed tree fits the live WGSL traversal stack.
+   * Serialized/foreign buffers remain valid {@link TlasBufferView} values and
+   * can obtain the same report with {@link validateTlasBuild}.
+   */
+  readonly buildStatus: TlasBuildStatus;
 }
 
 interface InstanceRecord {
@@ -112,6 +168,11 @@ interface AabbBin {
   count: number;
 }
 
+interface TlasBuildStats {
+  balancedFallbackCount: number;
+  readonly balancedFallbackReasons: Record<TlasBalancedFallbackReason, number>;
+}
+
 function aabbCentroid(min: readonly [number, number, number], max: readonly [number, number, number])
   : readonly [number, number, number] {
   return [
@@ -126,10 +187,68 @@ function isFiniteVec3(v: readonly [number, number, number]): boolean {
 }
 
 function isFiniteMat4(m: Float32Array): boolean {
-  for (let i = 0; i < m.length; i += 1) {
+  // The caller has already established the intrinsic 16-element length. Loop
+  // the contract size directly so an own spoofed `length` property cannot turn
+  // this validation into a zero-iteration pass.
+  for (let i = 0; i < 16; i += 1) {
     if (!Number.isFinite(m[i])) return false;
   }
   return true;
+}
+
+const TYPED_ARRAY_BRAND_DESCRIPTOR = Object.getOwnPropertyDescriptor(
+  Object.getPrototypeOf(Float32Array.prototype) as object,
+  Symbol.toStringTag,
+);
+const TYPED_ARRAY_LENGTH_DESCRIPTOR = Object.getOwnPropertyDescriptor(
+  Object.getPrototypeOf(Float32Array.prototype) as object,
+  'length',
+);
+
+function intrinsicFloat32Length(value: unknown): number | undefined {
+  if (
+    !ArrayBuffer.isView(value) ||
+    TYPED_ARRAY_BRAND_DESCRIPTOR?.get === undefined ||
+    TYPED_ARRAY_LENGTH_DESCRIPTOR?.get === undefined
+  ) {
+    return undefined;
+  }
+  try {
+    if (TYPED_ARRAY_BRAND_DESCRIPTOR.get.call(value) !== 'Float32Array') return undefined;
+    const length = TYPED_ARRAY_LENGTH_DESCRIPTOR.get.call(value) as unknown;
+    return Number.isSafeInteger(length) && (length as number) >= 0 ? length as number : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function assertDenseArray(value: unknown, label: string): asserts value is unknown[] {
+  if (!Array.isArray(value)) throw new TypeError(`buildTlas: ${label} must be an array.`);
+  const length = value.length;
+  let count = 0;
+  for (const key of Reflect.ownKeys(value)) {
+    if (key === 'length') continue;
+    if (typeof key !== 'string' || !/^(0|[1-9][0-9]*)$/.test(key) || Number(key) >= length) {
+      throw new RangeError(`buildTlas: ${label} may only contain indexed elements.`);
+    }
+    const descriptor = Object.getOwnPropertyDescriptor(value, key)!;
+    if (!('value' in descriptor) || descriptor.enumerable !== true) {
+      throw new RangeError(`buildTlas: ${label}[${key}] must be an own enumerable data property.`);
+    }
+    count += 1;
+  }
+  if (count !== length) throw new RangeError(`buildTlas: ${label} must be dense.`);
+}
+
+function assertVec3Tuple(value: unknown, label: string): asserts value is [number, number, number] {
+  assertDenseArray(value, label);
+  if (value.length !== 3) throw new RangeError(`buildTlas: ${label} must have exactly 3 elements.`);
+  for (let lane = 0; lane < 3; lane += 1) {
+    const component = value[lane];
+    if (typeof component !== 'number' || !Number.isFinite(component) || !Number.isFinite(Math.fround(component))) {
+      throw new RangeError(`buildTlas: ${label}[${lane}] must be finite and representable as float32.`);
+    }
+  }
 }
 
 function isInvertedAabb(
@@ -298,78 +417,166 @@ function partitionByBin(
   return { left, right };
 }
 
+function minimumBalancedDepth(recordCount: number, maxLeaf: number): number {
+  const leavesNeeded = Math.ceil(recordCount / maxLeaf);
+  return leavesNeeded <= 1 ? 0 : Math.ceil(Math.log2(leavesNeeded));
+}
+
+function noteBalancedFallback(
+  stats: TlasBuildStats,
+  reason: TlasBalancedFallbackReason,
+): void {
+  stats.balancedFallbackCount += 1;
+  stats.balancedFallbackReasons[reason] += 1;
+}
+
+function balancedPartition(
+  records: ReadonlyArray<InstanceRecord>,
+  cb: CentroidBounds,
+): { left: InstanceRecord[]; right: InstanceRecord[]; axis: number } {
+  const extents: readonly [number, number, number] = [
+    cb.cMax[0] - cb.cMin[0],
+    cb.cMax[1] - cb.cMin[1],
+    cb.cMax[2] - cb.cMin[2],
+  ];
+  let axis = 0;
+  if (extents[1] > extents[axis]!) axis = 1;
+  if (extents[2] > extents[axis]!) axis = 2;
+  const ordered = [...records].sort((a, b) => {
+    const centroidDelta = a.centroid[axis]! - b.centroid[axis]!;
+    return centroidDelta !== 0 ? centroidDelta : a.origIndex - b.origIndex;
+  });
+  const midpoint = Math.floor(ordered.length / 2);
+  return {
+    left: ordered.slice(0, midpoint),
+    right: ordered.slice(midpoint),
+    axis,
+  };
+}
+
+function splitFitsDepth(
+  leftCount: number,
+  rightCount: number,
+  childDepth: number,
+  maxDepth: number,
+  maxLeaf: number,
+): boolean {
+  const remainingDepth = maxDepth - childDepth;
+  return (
+    minimumBalancedDepth(leftCount, maxLeaf) <= remainingDepth &&
+    minimumBalancedDepth(rightCount, maxLeaf) <= remainingDepth
+  );
+}
+
 function buildRecursive(
   records: ReadonlyArray<InstanceRecord>,
   nodes: TlasNodeBuild[],
   permutation: number[],
   maxLeaf: number,
   numBins: number,
+  depth: number,
+  maxDepth: number,
+  stats: TlasBuildStats,
 ): number {
   const thisIdx = nodes.length;
   if (records.length <= maxLeaf) {
     const leaf = buildLeaf(records);
-    leaf.rightChildOrInstanceOffset = permutation.length;     // patched: instance offset
-    nodes.push(leaf);
-    for (const r of records) permutation.push(r.origIndex);
-    return thisIdx;
-  }
-
-  // Compute centroid bounds ONCE; both SAH evaluation and partitioning
-  // consume them. Mirrors the BLAS builder pattern in `buildArrayBvh.ts`
-  // (avoids the redundant rescan partitionByBin used to do).
-  const cb = computeCentroidBounds(records);
-  const split = pickSplit(records, cb, numBins);
-  if (split == null || split.cost >= records.length) {
-    // No improving split — emit a leaf even if larger than maxLeaf.
-    const leaf = buildLeaf(records);
     leaf.rightChildOrInstanceOffset = permutation.length;
     nodes.push(leaf);
     for (const r of records) permutation.push(r.origIndex);
     return thisIdx;
   }
 
-  // Reserve this node slot; we'll fill it after recursing.
+  if (
+    depth >= maxDepth ||
+    minimumBalancedDepth(records.length, maxLeaf) > maxDepth - depth
+  ) {
+    throw new Error(
+      `[@vitrum/shared-bvh/tlas] Cannot encode ${records.length} instances at depth ` +
+      `${depth} within the traversal-safe maximum depth ${maxDepth}. ` +
+      'Split the scene into fewer top-level instances.',
+    );
+  }
+
+  const cb = computeCentroidBounds(records);
+  const split = pickSplit(records, cb, numBins);
+  let axis = split?.axis ?? 0;
+  let left: InstanceRecord[] = [];
+  let right: InstanceRecord[] = [];
+  let fallbackReason: TlasBalancedFallbackReason | null = null;
+
+  if (split == null) {
+    fallbackReason = 'degenerate-centroids';
+  } else if (split.cost >= records.length) {
+    fallbackReason = 'non-improving-sah';
+  } else {
+    ({ left, right } = partitionByBin(records, cb, split.axis, split.binIdx, numBins));
+    if (left.length === 0 || right.length === 0) {
+      fallbackReason = 'degenerate-partition';
+    } else if (
+      !splitFitsDepth(left.length, right.length, depth + 1, maxDepth, maxLeaf)
+    ) {
+      fallbackReason = 'depth-safety';
+    }
+  }
+
+  if (fallbackReason != null) {
+    ({ left, right, axis } = balancedPartition(records, cb));
+    noteBalancedFallback(stats, fallbackReason);
+  }
+
+  if (
+    left.length === 0 ||
+    right.length === 0 ||
+    !splitFitsDepth(left.length, right.length, depth + 1, maxDepth, maxLeaf)
+  ) {
+    throw new Error(
+      '[@vitrum/shared-bvh/tlas] Internal balanced fallback failed to make a ' +
+      'non-empty traversal-safe partition.',
+    );
+  }
+
   nodes.push({
     min: [0, 0, 0],
     max: [0, 0, 0],
     rightChildOrInstanceOffset: 0,
-    splitAxisOrInstanceCount: split.axis,
+    splitAxisOrInstanceCount: axis,
   });
 
-  const { left, right } = partitionByBin(records, cb, split.axis, split.binIdx, numBins);
-  if (left.length === 0 || right.length === 0) {
-    // Degenerate split → fall back to a leaf.
-    if (records.length > 0xffff) {
-      throw new Error(
-        `[@vitrum/shared-bvh/tlas] Degenerate-partition leaf instance count ${records.length} exceeds the ` +
-        `16-bit limit (0xFFFF = 65535). Reduce the number of instances per leaf.`,
-      );
-    }
-    const leaf = buildLeaf(records);
-    leaf.rightChildOrInstanceOffset = permutation.length;
-    leaf.splitAxisOrInstanceCount = TLAS_LEAFNODE_FLAG | records.length;
-    nodes[thisIdx] = leaf;
-    for (const r of records) permutation.push(r.origIndex);
-    return thisIdx;
-  }
-
-  buildRecursive(left, nodes, permutation, maxLeaf, numBins);
-  const rightIdx = buildRecursive(right, nodes, permutation, maxLeaf, numBins);
+  buildRecursive(
+    left,
+    nodes,
+    permutation,
+    maxLeaf,
+    numBins,
+    depth + 1,
+    maxDepth,
+    stats,
+  );
+  const rightIdx = buildRecursive(
+    right,
+    nodes,
+    permutation,
+    maxLeaf,
+    numBins,
+    depth + 1,
+    maxDepth,
+    stats,
+  );
 
   const thisNode = nodes[thisIdx]!;
   thisNode.rightChildOrInstanceOffset = rightIdx - thisIdx;
-  // Union of children's bounds.
-  const ln = nodes[thisIdx + 1]!;
-  const rn = nodes[rightIdx]!;
+  const leftNode = nodes[thisIdx + 1]!;
+  const rightNode = nodes[rightIdx]!;
   thisNode.min = [
-    Math.min(ln.min[0], rn.min[0]),
-    Math.min(ln.min[1], rn.min[1]),
-    Math.min(ln.min[2], rn.min[2]),
+    Math.min(leftNode.min[0], rightNode.min[0]),
+    Math.min(leftNode.min[1], rightNode.min[1]),
+    Math.min(leftNode.min[2], rightNode.min[2]),
   ];
   thisNode.max = [
-    Math.max(ln.max[0], rn.max[0]),
-    Math.max(ln.max[1], rn.max[1]),
-    Math.max(ln.max[2], rn.max[2]),
+    Math.max(leftNode.max[0], rightNode.max[0]),
+    Math.max(leftNode.max[1], rightNode.max[1]),
+    Math.max(leftNode.max[2], rightNode.max[2]),
   ];
 
   return thisIdx;
@@ -394,6 +601,250 @@ function flattenNodes(nodes: ReadonlyArray<TlasNodeBuild>): Uint32Array {
   return out;
 }
 
+export interface TlasValidationOptions {
+  /** Reject leaves larger than this value. Defaults to the packed 16-bit limit. */
+  readonly maxLeafInstances?: number;
+  /** Reject nodes deeper than this value. May only lower the canonical limit. */
+  readonly maxDepth?: number;
+}
+
+function finiteSafeIntegerInRange(
+  value: number,
+  name: string,
+  minimum: number,
+  maximum: number,
+): number {
+  if (!Number.isSafeInteger(value) || value < minimum || value > maximum) {
+    throw new RangeError(
+      `buildTlas: ${name} must be a finite safe integer in [${minimum}, ${maximum}], ` +
+      `got ${String(value)}.`,
+    );
+  }
+  return value;
+}
+
+/**
+ * Validate a packed TLAS and prove that its exact depth-first traversal stack
+ * requirement fits the private stack compiled into every live WGSL consumer.
+ *
+ * This is deliberately exported for deserializers and foreign buffer
+ * producers. {@link buildTlas} runs it unconditionally before publishing a
+ * result, so a successful build cannot rely on the shader's overflow policy.
+ */
+export function validateTlasBuild(
+  data: TlasBufferView,
+  opts: TlasValidationOptions = {},
+): TlasValidationReport {
+  const maxLeafInstances = finiteSafeIntegerInRange(
+    opts.maxLeafInstances ?? TLAS_MAX_LEAF_INSTANCES,
+    'validation maxLeafInstances',
+    1,
+    TLAS_MAX_LEAF_INSTANCES,
+  );
+  const maxDepth = finiteSafeIntegerInRange(
+    opts.maxDepth ?? TLAS_MAX_BUILD_DEPTH,
+    'validation maxDepth',
+    0,
+    TLAS_MAX_BUILD_DEPTH,
+  );
+  if (!Number.isSafeInteger(data.nodeCount) || data.nodeCount <= 0) {
+    throw new Error('validateTlasBuild: nodeCount must be a positive safe integer.');
+  }
+  if (data.nodes.length !== data.nodeCount * TLAS_NODE_STRIDE_U32) {
+    throw new Error(
+      `validateTlasBuild: node buffer has ${data.nodes.length} words for ` +
+      `${data.nodeCount} nodes; expected exactly ${data.nodeCount * TLAS_NODE_STRIDE_U32}.`,
+    );
+  }
+  if (data.instanceTransforms.length !== data.blasRoots.length * 16) {
+    throw new Error(
+      'validateTlasBuild: instanceTransforms length must equal blasRoots.length * 16.',
+    );
+  }
+
+  const nodeFloats = new Float32Array(
+    data.nodes.buffer,
+    data.nodes.byteOffset,
+    data.nodes.length,
+  );
+  const visitedNodes = new Uint8Array(data.nodeCount);
+  const visitedPermutation = new Uint8Array(data.instanceIndices.length);
+  const visitedInstances = new Uint8Array(data.blasRoots.length);
+  const stack: Array<{ readonly nodeIndex: number; readonly depth: number }> = [
+    { nodeIndex: 0, depth: 0 },
+  ];
+  let maxTraversalStackEntries = 1;
+  let maxObservedDepth = 0;
+  let interiorNodeCount = 0;
+  let leafNodeCount = 0;
+  let maxObservedLeafInstances = 0;
+  let visitedNodeCount = 0;
+
+  while (stack.length > 0) {
+    const current = stack.pop()!;
+    const { nodeIndex, depth } = current;
+    if (nodeIndex < 0 || nodeIndex >= data.nodeCount) {
+      throw new Error(`validateTlasBuild: node reference ${nodeIndex} is out of range.`);
+    }
+    if (visitedNodes[nodeIndex] !== 0) {
+      throw new Error(
+        `validateTlasBuild: node ${nodeIndex} is referenced more than once (cycle or DAG).`,
+      );
+    }
+    if (depth > maxDepth) {
+      throw new Error(
+        `validateTlasBuild: node ${nodeIndex} depth ${depth} exceeds maximum ${maxDepth}.`,
+      );
+    }
+    visitedNodes[nodeIndex] = 1;
+    visitedNodeCount += 1;
+    maxObservedDepth = Math.max(maxObservedDepth, depth);
+
+    const base = nodeIndex * TLAS_NODE_STRIDE_U32;
+    const minX = nodeFloats[base]!;
+    const minY = nodeFloats[base + 1]!;
+    const minZ = nodeFloats[base + 2]!;
+    const maxX = nodeFloats[base + 3]!;
+    const maxY = nodeFloats[base + 4]!;
+    const maxZ = nodeFloats[base + 5]!;
+    if (
+      !Number.isFinite(minX) ||
+      !Number.isFinite(minY) ||
+      !Number.isFinite(minZ) ||
+      !Number.isFinite(maxX) ||
+      !Number.isFinite(maxY) ||
+      !Number.isFinite(maxZ) ||
+      minX > maxX ||
+      minY > maxY ||
+      minZ > maxZ
+    ) {
+      throw new Error(`validateTlasBuild: node ${nodeIndex} has invalid bounds.`);
+    }
+
+    const splitOrCount = data.nodes[base + 7]!;
+    const isLeaf = (splitOrCount >>> 16) === 0xffff;
+    if (isLeaf) {
+      leafNodeCount += 1;
+      const count = splitOrCount & 0x0000ffff;
+      const offset = data.nodes[base + 6]!;
+      if (
+        count === 0 ||
+        count > maxLeafInstances ||
+        offset > data.instanceIndices.length ||
+        count > data.instanceIndices.length - offset
+      ) {
+        throw new Error(
+          `validateTlasBuild: leaf ${nodeIndex} has invalid range offset=${offset}, count=${count}.`,
+        );
+      }
+      maxObservedLeafInstances = Math.max(maxObservedLeafInstances, count);
+      for (let i = 0; i < count; i += 1) {
+        const permutationIndex = offset + i;
+        if (visitedPermutation[permutationIndex] !== 0) {
+          throw new Error(
+            `validateTlasBuild: permutation slot ${permutationIndex} is referenced more than once.`,
+          );
+        }
+        visitedPermutation[permutationIndex] = 1;
+        const instanceIndex = data.instanceIndices[permutationIndex]!;
+        if (instanceIndex >= data.blasRoots.length) {
+          throw new Error(
+            `validateTlasBuild: instance reference ${instanceIndex} is out of range.`,
+          );
+        }
+        if (visitedInstances[instanceIndex] !== 0) {
+          throw new Error(
+            `validateTlasBuild: original instance ${instanceIndex} is referenced more than once ` +
+            'by the instance permutation.',
+          );
+        }
+        visitedInstances[instanceIndex] = 1;
+        const transformOffset = instanceIndex * 16;
+        for (let lane = 0; lane < 16; lane += 1) {
+          if (!Number.isFinite(data.instanceTransforms[transformOffset + lane])) {
+            throw new Error(
+              `validateTlasBuild: included instance ${instanceIndex} has a non-finite transform.`,
+            );
+          }
+        }
+      }
+      continue;
+    }
+
+    interiorNodeCount += 1;
+    if (depth >= maxDepth) {
+      throw new Error(
+        `validateTlasBuild: interior node ${nodeIndex} reaches maximum depth ${maxDepth}.`,
+      );
+    }
+    if (splitOrCount > 2) {
+      throw new Error(
+        `validateTlasBuild: interior node ${nodeIndex} has invalid split axis ${splitOrCount}.`,
+      );
+    }
+    const rightOffset = data.nodes[base + 6]!;
+    const leftChild = nodeIndex + 1;
+    const rightChild = nodeIndex + rightOffset;
+    if (
+      rightOffset <= 1 ||
+      leftChild >= data.nodeCount ||
+      rightChild >= data.nodeCount
+    ) {
+      throw new Error(
+        `validateTlasBuild: interior node ${nodeIndex} has invalid child references.`,
+      );
+    }
+    for (const childIndex of [leftChild, rightChild]) {
+      const childBase = childIndex * TLAS_NODE_STRIDE_U32;
+      const childMinX = nodeFloats[childBase]!;
+      const childMinY = nodeFloats[childBase + 1]!;
+      const childMinZ = nodeFloats[childBase + 2]!;
+      const childMaxX = nodeFloats[childBase + 3]!;
+      const childMaxY = nodeFloats[childBase + 4]!;
+      const childMaxZ = nodeFloats[childBase + 5]!;
+      if (
+        childMinX < minX || childMinY < minY || childMinZ < minZ ||
+        childMaxX > maxX || childMaxY > maxY || childMaxZ > maxZ
+      ) {
+        throw new Error(
+          `validateTlasBuild: interior node ${nodeIndex} bounds do not enclose child ${childIndex}.`,
+        );
+      }
+    }
+    stack.push({ nodeIndex: rightChild, depth: depth + 1 });
+    stack.push({ nodeIndex: leftChild, depth: depth + 1 });
+    maxTraversalStackEntries = Math.max(maxTraversalStackEntries, stack.length);
+    if (maxTraversalStackEntries > TLAS_TRAVERSAL_STACK_DEPTH) {
+      throw new Error(
+        `validateTlasBuild: traversal requires ${maxTraversalStackEntries} stack entries, ` +
+        `exceeding the live WGSL capacity ${TLAS_TRAVERSAL_STACK_DEPTH}.`,
+      );
+    }
+  }
+
+  if (visitedNodeCount !== data.nodeCount) {
+    throw new Error(
+      `validateTlasBuild: ${data.nodeCount - visitedNodeCount} node(s) are unreachable from root.`,
+    );
+  }
+  for (let i = 0; i < visitedPermutation.length; i += 1) {
+    if (visitedPermutation[i] === 0) {
+      throw new Error(`validateTlasBuild: permutation slot ${i} is not referenced by a leaf.`);
+    }
+  }
+
+  return {
+    status: 'valid',
+    nodeCount: data.nodeCount,
+    interiorNodeCount,
+    leafNodeCount,
+    maxDepth: maxObservedDepth,
+    maxLeafInstances: maxObservedLeafInstances,
+    maxTraversalStackEntries,
+    traversalStackCapacity: TLAS_TRAVERSAL_STACK_DEPTH,
+  };
+}
+
 /**
  * Build a TLAS from a list of instances.
  *
@@ -405,34 +856,68 @@ export function buildTlas(
   instances: ReadonlyArray<TlasInstance>,
   opts: TlasBuildOptions = {},
 ): TlasData {
+  assertDenseArray(instances, 'instances');
+  if (opts == null || typeof opts !== 'object' || Array.isArray(opts)) {
+    throw new TypeError('buildTlas: opts must be an object.');
+  }
+  const optionKeys = new Set(['maxLeafInstances', 'numBins', 'maxDepth']);
+  for (const key of Reflect.ownKeys(opts)) {
+    if (typeof key !== 'string' || !optionKeys.has(key)) {
+      throw new RangeError(`buildTlas: unknown option ${String(key)}.`);
+    }
+  }
   if (instances.length === 0) {
     throw new Error('buildTlas: instances list is empty.');
   }
-  const maxLeaf = Math.max(1, opts.maxLeafInstances ?? TLAS_DEFAULT_MAX_LEAF_INSTANCES);
-  const numBins = Math.max(2, opts.numBins ?? TLAS_DEFAULT_NUM_BINS);
+  const maxLeaf = finiteSafeIntegerInRange(
+    opts.maxLeafInstances ?? TLAS_DEFAULT_MAX_LEAF_INSTANCES,
+    'maxLeafInstances',
+    1,
+    TLAS_MAX_LEAF_INSTANCES,
+  );
+  const numBins = finiteSafeIntegerInRange(
+    opts.numBins ?? TLAS_DEFAULT_NUM_BINS,
+    'numBins',
+    2,
+    TLAS_MAX_NUM_BINS,
+  );
+  const maxDepth = finiteSafeIntegerInRange(
+    opts.maxDepth ?? TLAS_MAX_BUILD_DEPTH,
+    'maxDepth',
+    0,
+    TLAS_MAX_BUILD_DEPTH,
+  );
 
   const records: InstanceRecord[] = [];
-  const MAX_INVALID_WARNS = 10;
-  let invalidWarnCount = 0;
-  let invalidFilteredCount = 0;
+  const filteredInvalidInstanceIndices: number[] = [];
   for (let i = 0; i < instances.length; i += 1) {
     const inst = instances[i]!;
-    if (inst.worldToLocal.length !== 16) {
-      throw new Error(`buildTlas: instance ${i} worldToLocal length ${inst.worldToLocal.length} != 16.`);
+    if (inst == null || typeof inst !== 'object' || Array.isArray(inst)) {
+      throw new TypeError(`buildTlas: instance ${i} must be an object.`);
     }
+    const instanceKeys = new Set(['blasId', 'aabbMin', 'aabbMax', 'worldToLocal']);
+    for (const key of Reflect.ownKeys(inst)) {
+      if (typeof key !== 'string' || !instanceKeys.has(key)) {
+        throw new RangeError(`buildTlas: instance ${i} has unknown field ${String(key)}.`);
+      }
+    }
+    if (!Number.isSafeInteger(inst.blasId) || inst.blasId < 0 || inst.blasId > 0xffffffff) {
+      throw new RangeError(
+        `buildTlas: instance ${i} blasId must be an unsigned 32-bit safe integer, ` +
+        `got ${String(inst.blasId)}.`,
+      );
+    }
+    const matrixLength = intrinsicFloat32Length(inst.worldToLocal);
+    if (matrixLength !== 16) {
+      throw new TypeError(`buildTlas: instance ${i} worldToLocal must be an exact 16-element Float32Array.`);
+    }
+    assertVec3Tuple(inst.aabbMin, `instance ${i} aabbMin`);
+    assertVec3Tuple(inst.aabbMax, `instance ${i} aabbMax`);
     if (isInvertedAabb(inst.aabbMin, inst.aabbMax)) {
       throw new Error(`buildTlas: instance ${i} has inverted AABB.`);
     }
     if (!isFiniteVec3(inst.aabbMin) || !isFiniteVec3(inst.aabbMax) || !isFiniteMat4(inst.worldToLocal)) {
-      invalidFilteredCount += 1;
-      if (invalidWarnCount < MAX_INVALID_WARNS) {
-        console.warn(
-          `[@vitrum/shared-bvh/tlas] Instance ${i} has non-finite AABB or worldToLocal data; ` +
-          'filtering it from the TLAS build. Check the instance transform/bounds source.',
-        );
-        invalidWarnCount += 1;
-      }
-      continue;
+      throw new RangeError(`buildTlas: instance ${i} has non-finite AABB or worldToLocal data.`);
     }
     records.push({
       origIndex: i,
@@ -441,19 +926,34 @@ export function buildTlas(
       max: inst.aabbMax,
     });
   }
-  if (invalidFilteredCount > MAX_INVALID_WARNS) {
-    console.warn(
-      `[@vitrum/shared-bvh/tlas] ${invalidFilteredCount} non-finite TLAS instance(s) filtered ` +
-      `(${MAX_INVALID_WARNS} individual warnings shown above).`,
-    );
-  }
-  if (records.length === 0) {
-    throw new Error('buildTlas: no valid finite instances remain after filtering.');
-  }
 
   const nodes: TlasNodeBuild[] = [];
   const permutation: number[] = [];
-  buildRecursive(records, nodes, permutation, maxLeaf, numBins);
+  if (minimumBalancedDepth(records.length, maxLeaf) > maxDepth) {
+    throw new RangeError(
+      `buildTlas: ${records.length} valid instances cannot fit maxLeafInstances=${maxLeaf} ` +
+      `within requested traversal-safe depth ${maxDepth}.`,
+    );
+  }
+  const stats: TlasBuildStats = {
+    balancedFallbackCount: 0,
+    balancedFallbackReasons: {
+      'degenerate-centroids': 0,
+      'non-improving-sah': 0,
+      'degenerate-partition': 0,
+      'depth-safety': 0,
+    },
+  };
+  buildRecursive(
+    records,
+    nodes,
+    permutation,
+    maxLeaf,
+    numBins,
+    0,
+    maxDepth,
+    stats,
+  );
 
   const flatNodes = flattenNodes(nodes);
   const instanceIndices = new Uint32Array(permutation);
@@ -463,12 +963,29 @@ export function buildTlas(
     blasRoots[i] = instances[i]!.blasId >>> 0;
     instanceTransforms.set(instances[i]!.worldToLocal, i * 16);
   }
-  return {
+  const buffers: TlasBufferView = {
     nodes: flatNodes,
     nodeCount: nodes.length,
     instanceIndices,
     blasRoots,
     instanceTransforms,
+  };
+  const validation = validateTlasBuild(buffers, {
+    maxLeafInstances: maxLeaf,
+    maxDepth,
+  });
+  return {
+    ...buffers,
+    buildStatus: {
+      status: 'valid',
+      inputInstanceCount: instances.length,
+      includedInstanceCount: records.length,
+      filteredInvalidInstanceIndices,
+      invalidInstancePolicy: 'reject-invalid',
+      balancedFallbackCount: stats.balancedFallbackCount,
+      balancedFallbackReasons: { ...stats.balancedFallbackReasons },
+      validation,
+    },
   };
 }
 
@@ -484,15 +1001,36 @@ export function buildTlas(
  * `data.instanceIndices`.
  */
 export function refitTlas(
-  data: TlasData,
+  data: TlasBufferView,
   newAabbs: ReadonlyArray<{ min: readonly [number, number, number]; max: readonly [number, number, number]; }>,
+): void {
+  refitTlasInstances(
+    data,
+    newAabbs,
+    data.instanceIndices,
+  );
+}
+
+function validateTlasRefitAabbs(
+  data: TlasBufferView,
+  newAabbs: ReadonlyArray<{
+    min: readonly [number, number, number];
+    max: readonly [number, number, number];
+  }>,
 ): void {
   if (newAabbs.length !== data.blasRoots.length) {
     throw new Error(
       `refitTlas: expected ${data.blasRoots.length} AABBs, got ${newAabbs.length}.`,
     );
   }
-  for (let i = 0; i < newAabbs.length; i += 1) {
+  const included = new Uint8Array(data.blasRoots.length);
+  for (let permutationIndex = 0; permutationIndex < data.instanceIndices.length; permutationIndex += 1) {
+    const i = data.instanceIndices[permutationIndex]!;
+    if (i >= included.length) {
+      throw new Error(`refitTlas: instance reference ${i} is out of range.`);
+    }
+    if (included[i] !== 0) continue;
+    included[i] = 1;
     const aabb = newAabbs[i]!;
     if (isInvertedAabb(aabb.min, aabb.max)) {
       throw new Error(`refitTlas: instance ${i} has inverted AABB.`);
@@ -501,11 +1039,130 @@ export function refitTlas(
       throw new Error(`refitTlas: instance ${i} has non-finite AABB.`);
     }
   }
-  const f32 = new Float32Array(data.nodes.buffer);
+}
 
-  // Walk nodes back-to-front; leaves get their AABBs from the instance
-  // table, interiors get them from their already-refit children.
-  for (let i = data.nodeCount - 1; i >= 0; i--) {
+/**
+ * Return the exact leaf-and-ancestor node set affected by original-input
+ * instance indices. Indices are child-before-parent so callers may snapshot,
+ * refit, and upload only these 32-byte node records.
+ */
+export function tlasRefitNodeIndices(
+  data: TlasBufferView,
+  changedInstanceIndices: ArrayLike<number>,
+): Uint32Array {
+  if (data.nodes.length !== data.nodeCount * TLAS_NODE_STRIDE_U32) {
+    throw new Error('tlasRefitNodeIndices: node count does not match packed nodes.');
+  }
+  const changed = new Uint8Array(data.blasRoots.length);
+  for (let i = 0; i < changedInstanceIndices.length; i += 1) {
+    const instance = changedInstanceIndices[i]!;
+    if (
+      !Number.isSafeInteger(instance) ||
+      instance < 0 ||
+      instance >= changed.length
+    ) {
+      throw new RangeError(
+        `tlasRefitNodeIndices: instance index ${instance} is out of bounds.`,
+      );
+    }
+    changed[instance] = 1;
+  }
+  if (changedInstanceIndices.length === 0) return new Uint32Array(0);
+
+  const parents = new Int32Array(data.nodeCount);
+  parents.fill(-1);
+  const directlyAffected = new Uint8Array(data.nodeCount);
+  const referencedInstances = new Uint8Array(data.blasRoots.length);
+  for (let node = 0; node < data.nodeCount; node += 1) {
+    const base = node * TLAS_NODE_STRIDE_U32;
+    const split = data.nodes[base + 7]!;
+    const isLeaf = (split >>> 16) === 0xffff;
+    if (isLeaf) {
+      const offset = data.nodes[base + 6]!;
+      const count = split & 0x0000ffff;
+      if (count === 0 || offset + count > data.instanceIndices.length) {
+        throw new Error(
+          `tlasRefitNodeIndices: leaf ${node} has invalid instance span.`,
+        );
+      }
+      for (let k = 0; k < count; k += 1) {
+        const original = data.instanceIndices[offset + k]!;
+        if (original >= changed.length) {
+          throw new Error(
+            `tlasRefitNodeIndices: leaf ${node} references invalid instance ${original}.`,
+          );
+        }
+        referencedInstances[original] = 1;
+        if (changed[original] !== 0) directlyAffected[node] = 1;
+      }
+      continue;
+    }
+
+    const left = node + 1;
+    const right = node + data.nodes[base + 6]!;
+    if (
+      left >= data.nodeCount ||
+      right <= node ||
+      right >= data.nodeCount ||
+      parents[left] !== -1 ||
+      parents[right] !== -1
+    ) {
+      throw new Error(
+        `tlasRefitNodeIndices: interior node ${node} has invalid children.`,
+      );
+    }
+    parents[left] = node;
+    parents[right] = node;
+  }
+
+  for (let instance = 0; instance < changed.length; instance += 1) {
+    if (changed[instance] !== 0 && referencedInstances[instance] === 0) {
+      throw new Error(
+        `tlasRefitNodeIndices: changed instance ${instance} has no TLAS leaf.`,
+      );
+    }
+  }
+
+  const affected = new Uint8Array(data.nodeCount);
+  for (let node = 0; node < data.nodeCount; node += 1) {
+    if (directlyAffected[node] === 0) continue;
+    for (let cursor = node; cursor >= 0; cursor = parents[cursor]!) {
+      if (affected[cursor] !== 0) break;
+      affected[cursor] = 1;
+    }
+  }
+  const result: number[] = [];
+  for (let node = data.nodeCount - 1; node >= 0; node -= 1) {
+    if (affected[node] !== 0) result.push(node);
+  }
+  if (result.length === 0) {
+    throw new Error('tlasRefitNodeIndices: changed instance has no TLAS leaf.');
+  }
+  return Uint32Array.from(result);
+}
+
+/**
+ * Refit only leaves containing the changed instances and their ancestors.
+ * `newAabbs` remains complete because a TLAS leaf may contain multiple
+ * instances; unrelated nodes are neither read-modify-written nor returned.
+ */
+export function refitTlasInstances(
+  data: TlasBufferView,
+  newAabbs: ReadonlyArray<{
+    min: readonly [number, number, number];
+    max: readonly [number, number, number];
+  }>,
+  changedInstanceIndices: ArrayLike<number>,
+): Uint32Array {
+  validateTlasRefitAabbs(data, newAabbs);
+  const affectedNodes = tlasRefitNodeIndices(data, changedInstanceIndices);
+  const f32 = new Float32Array(
+    data.nodes.buffer,
+    data.nodes.byteOffset,
+    data.nodes.length,
+  );
+
+  for (const i of affectedNodes) {
     const base = i * TLAS_NODE_STRIDE_U32;
     const split = data.nodes[base + 7]!;
     // Extract upper 16 bits as unsigned; mirrors the BLAS leaf-flag check
@@ -549,6 +1206,7 @@ export function refitTlas(
       f32[base + 5] = Math.max(lMxZ, rMxZ);
     }
   }
+  return affectedNodes;
 }
 
 /**
@@ -564,45 +1222,66 @@ export function refitTlas(
  * WGSL is the production path.
  */
 export function tlasIntersect(
-  data: TlasData,
+  data: TlasBufferView,
   origin: readonly [number, number, number],
   direction: readonly [number, number, number],
   tMax: number = Infinity,
 ): number[] {
   const hits: number[] = [];
   if (data.nodeCount === 0) return hits;
-  const f32 = new Float32Array(data.nodes.buffer);
-
-  // Pre-compute inverse direction for slab tests. Treat zero components
-  // as ±∞ to keep the algorithm branchless (parallel slab).
-  const idx = direction[0] !== 0 ? 1 / direction[0] : direction[0] >= 0 ? Infinity : -Infinity;
-  const idy = direction[1] !== 0 ? 1 / direction[1] : direction[1] >= 0 ? Infinity : -Infinity;
-  const idz = direction[2] !== 0 ? 1 / direction[2] : direction[2] >= 0 ? Infinity : -Infinity;
+  if (
+    !origin.every(Number.isFinite) ||
+    !direction.every(Number.isFinite) ||
+    Math.hypot(direction[0], direction[1], direction[2]) === 0 ||
+    Number.isNaN(tMax) ||
+    tMax < 0
+  ) {
+    return hits;
+  }
+  if (data.nodes.length < data.nodeCount * TLAS_NODE_STRIDE_U32) {
+    throw new Error('tlasIntersect: node buffer is shorter than nodeCount.');
+  }
+  const f32 = new Float32Array(
+    data.nodes.buffer,
+    data.nodes.byteOffset,
+    data.nodes.length,
+  );
 
   function nodeAabbIntersects(nodeIdx: number): boolean {
     const base = nodeIdx * TLAS_NODE_STRIDE_U32;
     const mnX = f32[base + 0]!, mnY = f32[base + 1]!, mnZ = f32[base + 2]!;
     const mxX = f32[base + 3]!, mxY = f32[base + 4]!, mxZ = f32[base + 5]!;
+    if (
+      !Number.isFinite(mnX) || !Number.isFinite(mnY) || !Number.isFinite(mnZ) ||
+      !Number.isFinite(mxX) || !Number.isFinite(mxY) || !Number.isFinite(mxZ) ||
+      mnX > mxX || mnY > mxY || mnZ > mxZ
+    ) {
+      throw new Error(`tlasIntersect: node ${nodeIdx} has invalid bounds.`);
+    }
     let tEnter = 0;
     let tExit = tMax;
-    const t0x = (mnX - origin[0]) * idx;
-    const t1x = (mxX - origin[0]) * idx;
-    tEnter = Math.max(tEnter, Math.min(t0x, t1x));
-    tExit = Math.min(tExit, Math.max(t0x, t1x));
-    const t0y = (mnY - origin[1]) * idy;
-    const t1y = (mxY - origin[1]) * idy;
-    tEnter = Math.max(tEnter, Math.min(t0y, t1y));
-    tExit = Math.min(tExit, Math.max(t0y, t1y));
-    const t0z = (mnZ - origin[2]) * idz;
-    const t1z = (mxZ - origin[2]) * idz;
-    tEnter = Math.max(tEnter, Math.min(t0z, t1z));
-    tExit = Math.min(tExit, Math.max(t0z, t1z));
+    const clipAxis = (o: number, d: number, mn: number, mx: number): boolean => {
+      // Match WGSL safeInvDir: magnitudes below 1e-30 are effectively parallel.
+      // Handle the slab explicitly so an on-boundary 0 * Infinity cannot become NaN.
+      if (Math.abs(d) < 1e-30) return o >= mn && o <= mx;
+      const t0 = (mn - o) / d;
+      const t1 = (mx - o) / d;
+      tEnter = Math.max(tEnter, Math.min(t0, t1));
+      tExit = Math.min(tExit, Math.max(t0, t1));
+      return tEnter <= tExit;
+    };
+    if (!clipAxis(origin[0], direction[0], mnX, mxX)) return false;
+    if (!clipAxis(origin[1], direction[1], mnY, mxY)) return false;
+    if (!clipAxis(origin[2], direction[2], mnZ, mxZ)) return false;
     return tEnter <= tExit && tExit >= 0;
   }
 
   const stack: number[] = [0];
   while (stack.length > 0) {
     const nodeIdx = stack.pop()!;
+    if (nodeIdx >= data.nodeCount) {
+      throw new Error(`tlasIntersect: node reference ${nodeIdx} is out of range.`);
+    }
     if (!nodeAabbIntersects(nodeIdx)) continue;
     const base = nodeIdx * TLAS_NODE_STRIDE_U32;
     const split = data.nodes[base + 7]!;
@@ -610,11 +1289,25 @@ export function tlasIntersect(
     if (isLeaf) {
       const offset = data.nodes[base + 6]!;
       const count = split & 0x0000ffff;
-      for (let k = 0; k < count; k++) hits.push(data.instanceIndices[offset + k]!);
+      if (count === 0 || offset + count > data.instanceIndices.length) {
+        throw new Error(`tlasIntersect: node ${nodeIdx} has an invalid leaf range.`);
+      }
+      for (let k = 0; k < count; k++) {
+        const instanceIdx = data.instanceIndices[offset + k]!;
+        if (instanceIdx >= data.blasRoots.length) {
+          throw new Error(`tlasIntersect: instance reference ${instanceIdx} is out of range.`);
+        }
+        hits.push(instanceIdx);
+      }
     } else {
       const rightOff = data.nodes[base + 6]!;
-      stack.push(nodeIdx + 1);
-      stack.push(nodeIdx + rightOff);
+      const left = nodeIdx + 1;
+      const right = nodeIdx + rightOff;
+      if (rightOff <= 1 || left >= data.nodeCount || right >= data.nodeCount) {
+        throw new Error(`tlasIntersect: node ${nodeIdx} has invalid child references.`);
+      }
+      stack.push(left);
+      stack.push(right);
     }
   }
   return hits;

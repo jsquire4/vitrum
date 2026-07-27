@@ -48,7 +48,7 @@ struct RRResult {
   throughputMul: f32,
 }
 
-fn russianRoulette(rng: ptr<function, u32>, throughput: vec3f) -> RRResult {
+fn russianRoulette(rng: ptr<function, PtRngState>, throughput: vec3f) -> RRResult {
   let survival = clamp(max(throughput.r, max(throughput.g, throughput.b)), 0.1, 0.95);
   var result: RRResult;
   if (rand_f32(rng) > survival) {

@@ -204,6 +204,33 @@ export function animationMalformedChannelMessage(issue: GltfAnimationMalformedCh
   if (issue.kind === 'target-node-not-found') {
     return `glTF animation channel ${issue.animationIndex}:${issue.channelIndex} targets node ${String(issue.nodeIndex)} which does not exist; the importer skips the channel.`;
   }
+  if (issue.kind === 'pointer-target-undefined') {
+    return (
+      `glTF animation channel ${issue.animationIndex}:${issue.channelIndex} pointer ` +
+      `"${String(issue.pointer)}" does not resolve to a defined asset property (${String(issue.reason)}); ` +
+      'the importer skips the channel.'
+    );
+  }
+  if (issue.kind === 'invalid-pointer-output-accessor') {
+    return (
+      `glTF animation channel ${issue.animationIndex}:${issue.channelIndex} pointer ` +
+      `"${String(issue.pointer)}" has an incompatible output accessor (${String(issue.reason)}); ` +
+      'the importer skips the channel.'
+    );
+  }
+  if (issue.kind === 'invalid-pointer-interpolation') {
+    return (
+      `glTF animation channel ${issue.animationIndex}:${issue.channelIndex} pointer ` +
+      `"${String(issue.pointer)}" uses invalid interpolation (${String(issue.reason)}); ` +
+      'the importer skips the channel.'
+    );
+  }
+  if (issue.kind === 'duplicate-animation-target') {
+    return (
+      `glTF animation channel ${issue.animationIndex}:${issue.channelIndex} targets a property already ` +
+      'targeted by an earlier channel in the same animation; the importer deterministically keeps the first channel.'
+    );
+  }
   return (
     `glTF animation channel ${issue.animationIndex}:${issue.channelIndex} has ` +
     `${String(issue.actualOutputFloats)} output floats but the target path expects ` +

@@ -12,7 +12,7 @@
 //   s1 = (color.rgb, intensity)
 //   s2 = (u-vector.xyz, power)
 //   s3 = (v-vector.xyz, area)
-//   s4 = (radius, decay, distance, coneCos)        — spot/point only
+//   s4 = (reserved 0, decay, distance, coneCos)    — spot/point only
 //   s5 = (penumbraCos, castShadowDisabled, angularDiameter, 0)
 //        — s5.r spot only; s5.g ALL kinds; s5.b directional only
 //        (SHADOW-01: s5.g — the former IES padding slot — carries 1.0 when the
@@ -128,7 +128,8 @@ function writeColorIntensity(
  *
  * Unmappable / approximated fields vs the THREE source (documented for the caller):
  *  - IES profiles: removed (not in @vitrum/core contract). s5.g is reserved padding.
- *  - Spot `radius`: core `SpotEmitter` has no soft-source radius → 0 (area = 0).
+ *  - Spot emitters are delta-position sources. The inherited radius/area lanes
+ *    remain reserved zeroes; finite source extent is represented by rect/disc.
  *  - `disc-area` (CIRC_AREA): core gives centre+normal+radius; the in-plane
  *    (u, v) axes are synthesized from a deterministic tangent basis, each
  *    scaled by `2*radius` (full diameter, matching the fork's full-extent
@@ -215,28 +216,31 @@ export function packLightsTexture(
         // the light's orientation. Core gives the forward `direction`; we build
         // a basis whose -w is the spot direction and read its u/v axes.
         const forward = normalize(l.direction);
-        const { t, b } = tangentBasis(forward);
+        // The GLSL/fork convention recovers the spot's BACK axis as cross(u,v)
+        // and negates it to obtain the forward emission direction. Build the
+        // plane around -forward so both NEE cone attenuation and BDPT emission
+        // point along the authored core direction.
+        const { t, b } = tangentBasis([-forward[0], -forward[1], -forward[2]]);
         // s2: u / power
         data[base + cursor.k++] = t[0];
         data[base + cursor.k++] = t[1];
         data[base + cursor.k++] = t[2];
         data[base + cursor.k++] = lum * l.intensity;
-        // s3: v / area. Core spot has no source radius → radius = 0, area = 0.
-        const radius = 0;
+        // s3: v / reserved area (zero for the delta-position spot contract).
         data[base + cursor.k++] = b[0];
         data[base + cursor.k++] = b[1];
         data[base + cursor.k++] = b[2];
-        data[base + cursor.k++] = Math.PI * radius * radius;
-        // s4: radius / decay / distance / coneCos
-        data[base + cursor.k++] = radius;
+        cursor.k += 1;
+        // s4: reserved radius / decay / distance / coneCos
+        cursor.k += 1;
         data[base + cursor.k++] = l.decay ?? 2;
         data[base + cursor.k++] = l.distance ?? 0;
         data[base + cursor.k++] = Math.cos(l.angle);
-        // s5: penumbraCos / (reserved padding) / 0 / 0
-        // s5.g was the IES profile slot — IES is removed; padding zero keeps layout stable.
+        // s5: penumbraCos / castShadowDisabled / 0 / 0. The shared shadow
+        // flag is written after the kind-specific switch below.
         data[base + cursor.k++] = Math.cos(l.angle * (1 - (l.penumbra ?? 0)));
-        cursor.k += 1; // s5.g reserved padding (IES removed)
-        // spot packs s0..s4 fully + s5.r + s5.g (pad) = 22 channels; s5.b/s5.a stay zero.
+        cursor.k += 1;
+        // spot packs through s5.g, including reserved zero area/radius lanes.
         assertSlotCursor(cursor.k, 22, 'spot');
         break;
       }

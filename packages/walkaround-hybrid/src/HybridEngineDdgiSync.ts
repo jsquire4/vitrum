@@ -37,7 +37,10 @@ import {
   directionalSunMultiplier,
   orientDdgiSunLights,
 } from './coreEmittersToDDGILights.js';
-import { mergeDDGILightsDedupSun } from './HybridEngineLifecycle.js';
+import {
+  mergeDDGILightsDedupSun,
+  type HostSunWarningState,
+} from './HybridEngineLifecycle.js';
 import {
   collectRectAreaEmitterTrisFromCore,
   collectMeshAreaEmitterTrisFromCore,
@@ -54,6 +57,8 @@ export interface SyncDdgiFromCoreSceneDeps {
   pipeline: WalkaroundGPUPipeline | null;
   /** Constructor-time lights (opts.lights). */
   ctorLights: readonly DDGILight[];
+  /** Per-engine latch shared by init and mutation paths. */
+  hostSunWarningState: HostSunWarningState;
   /** Engine config primary-light intensity (used by directionalSunMultiplier). */
   primaryLightIntensity: number;
   /**
@@ -74,6 +79,62 @@ export interface SyncDdgiFromCoreSceneDeps {
   setLightsConditional?: boolean;
 }
 
+export interface DdgiLightingMutationInputs {
+  readonly lights: readonly DDGILight[];
+  readonly sunIntensityMultiplier: number;
+  readonly emitterTris: Float32Array;
+  readonly emitterCount: number;
+  readonly sceneLightCount: number;
+}
+
+export interface BuildDdgiLightingMutationOptions {
+  readonly warningPhase?: EngineWarning['phase'];
+  readonly warningMethod?: string;
+}
+
+/** Build the exact DDGI inputs used by both immediate and transactional sync. */
+export function buildDdgiLightingMutationInputs(
+  deps: Omit<SyncDdgiFromCoreSceneDeps, 'ddgi' | 'pipeline' | 'setLightsConditional'>,
+  scene: Scene,
+  options: BuildDdgiLightingMutationOptions = {},
+): DdgiLightingMutationInputs {
+  const sceneLights = coreEmittersToDDGILights(scene);
+  const mergedLights = mergeDDGILightsDedupSun(
+    deps.ctorLights,
+    sceneLights,
+    {
+      warningState: deps.hostSunWarningState,
+      ...(deps.onWarning != null ? { onWarning: deps.onWarning } : {}),
+    },
+  );
+  const lights = deps.primaryLightDir != null
+    ? orientDdgiSunLights(mergedLights, deps.primaryLightDir)
+    : mergedLights;
+  const emitterTris = [
+    ...collectRectAreaEmitterTrisFromCore(scene),
+    ...collectMeshAreaEmitterTrisFromCore(scene, {
+      ...(deps.tlasPrimitiveBindings != null
+        ? { tlasPrimitiveBindings: deps.tlasPrimitiveBindings }
+        : {}),
+      ...(deps.onWarning != null
+        ? {
+            onWarning: deps.onWarning,
+            warningPhase: options.warningPhase ?? 'mutation',
+            warningMethod: options.warningMethod ?? 'buildDdgiLightingMutationInputs',
+          }
+        : {}),
+    }),
+  ];
+  const packed = packEmitterTrisForDDGI(emitterTris);
+  return {
+    lights,
+    sunIntensityMultiplier: directionalSunMultiplier(scene, deps.primaryLightIntensity),
+    emitterTris: packed.data,
+    emitterCount: packed.count,
+    sceneLightCount: sceneLights.length,
+  };
+}
+
 /**
  * Run the DDGI light-sync sequence for a resolved core scene:
  *   1. setSunIntensityMultiplier (single-count directional sun)
@@ -88,53 +149,19 @@ export function syncDdgiFromCoreScene(
   deps: SyncDdgiFromCoreSceneDeps,
   scene: Scene,
 ): void {
-  // Step 1 — H18/sun single-count: when the scene has a directional emitter,
-  // `coreEmittersToDDGILights` emits a `sun` DDGILight with the real
-  // intensity, so the multiplier must be 1. Absent a scene directional, keep
-  // the legacy config multiplier. See directionalSunMultiplier.
-  deps.ddgi.setSunIntensityMultiplier(
-    directionalSunMultiplier(scene, deps.primaryLightIntensity),
+  const lighting = buildDdgiLightingMutationInputs(
+    deps,
+    scene,
+    { warningPhase: 'lifecycle', warningMethod: 'syncDdgiFromCoreScene' },
   );
 
-  // Step 2 — collect scene lights + merge with ctorLights.
-  const ddgiSceneLights = coreEmittersToDDGILights(scene);
-  if (!deps.setLightsConditional || ddgiSceneLights.length > 0) {
-    // De-dup the sun: if the scene contributes a directional→sun AND the host
-    // passed an `opts.lights` sun, drop the host sun (scene wins) so DDGI
-    // doesn't double-count the sun. See `mergeDDGILightsDedupSun`.
-    const mergedLights = mergeDDGILightsDedupSun(
-      deps.ctorLights,
-      ddgiSceneLights,
-      deps.onWarning != null ? { onWarning: deps.onWarning } : {},
-    );
-    deps.ddgi.setLights(
-      deps.primaryLightDir != null
-        ? orientDdgiSunLights(mergedLights, deps.primaryLightDir)
-        : mergedLights,
-    );
+  deps.ddgi.setSunIntensityMultiplier(lighting.sunIntensityMultiplier);
+  if (!deps.setLightsConditional || lighting.sceneLightCount > 0) {
+    deps.ddgi.setLights([...lighting.lights]);
   }
+  deps.ddgi.setEmitterTris(lighting.emitterTris, lighting.emitterCount);
 
-  // Step 3 — H18 Stage 2: supply area-emitter NEE triangles to the probe-ray
-  // kernel. rect-area/disc-area: same geometry as ReSTIR-DI. mesh-area:
-  // DDGI-only expansion — the geometry stream carries them for ReSTIR; DDGI's
-  // probe-NEE path has no geometry stream, so they must be added explicitly.
-  // Count=0 (sun+point-only scenes) → no-op guard.
-  // (mesh-area tris added to probe NEE, 2026-06-10)
-  const emitterTris = [
-    ...collectRectAreaEmitterTrisFromCore(scene),
-    ...collectMeshAreaEmitterTrisFromCore(scene, {
-      ...(deps.tlasPrimitiveBindings != null ? { tlasPrimitiveBindings: deps.tlasPrimitiveBindings } : {}),
-      ...(deps.onWarning != null
-        ? { onWarning: deps.onWarning, warningPhase: 'lifecycle', warningMethod: 'syncDdgiFromCoreScene' }
-        : {}),
-    }),
-  ];
-  const packed = packEmitterTrisForDDGI(emitterTris);
-  deps.ddgi.setEmitterTris(packed.data, packed.count);
-
-  // Step 4 — H41: re-upload the analytic point/spot lights buffer for shade
-  // NEE. No-op when pipeline is null (init in-flight — lifecycle path calls
-  // with the local pipeline before publishPipeline; engine fast-update path
-  // calls on this._pipeline after init).
+  // The immediate lifecycle path retains its existing analytic-light upload.
+  // Atomic emitter updates use BvhBufferHost.prepareEmitterLightingReplacement.
   deps.pipeline?.updateAnalyticLights(scene);
 }

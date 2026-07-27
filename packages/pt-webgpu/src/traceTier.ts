@@ -44,6 +44,11 @@ export function resolvePtWebgpuTraceTier(
   force?: PtWebgpuTraceTier,
 ): PtWebgpuTraceTier {
   if (force === 'lite') {
+    // A forced tier is still a capability request, not permission to defer an
+    // impossible bind layout to shader/pipeline creation. select validates the
+    // lite floor (and may return full on a stronger adapter); then honor the
+    // caller's deliberate lower-tier choice.
+    selectPtWebgpuTraceTier(device);
     return 'lite';
   }
   if (force === 'full') {

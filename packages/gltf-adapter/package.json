@@ -3,7 +3,12 @@
   "version": "0.0.0",
   "private": true,
   "description": "glTF 2.0 → @vitrum/core Scene adapter with browser and Node texture decode paths.",
-  "keywords": ["gltf", "glb", "path-tracing", "vitrum"],
+  "keywords": [
+    "gltf",
+    "glb",
+    "path-tracing",
+    "vitrum"
+  ],
   "author": "jsquire4",
   "license": "MIT",
   "type": "module",
@@ -12,7 +17,10 @@
   "exports": {
     ".": "./src/index.ts"
   },
-  "files": ["src", "README.md"],
+  "files": [
+    "src",
+    "README.md"
+  ],
   "repository": {
     "type": "git",
     "url": "git+https://github.com/jsquire4/vitrum.git",
@@ -20,7 +28,9 @@
   },
   "dependencies": {
     "@vitrum/core": "*",
+    "buffer": "^6.0.3",
     "jpeg-js": "^0.4.4",
+    "meshoptimizer": "^1.1.1",
     "pngjs": "^7.0.0",
     "webp-wasm": "^1.0.6"
   },
@@ -30,8 +40,7 @@
     "lint": "eslint src --ext .ts,.tsx"
   },
   "devDependencies": {
-    "draco3d": "^1.5.7",
-    "meshoptimizer": "^1.1.1",
+    "draco3d": "1.5.7",
     "typescript": "^5.5.0",
     "vitest": "^1.6.1"
   }

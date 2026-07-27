@@ -12,6 +12,10 @@
 
 import { defineUbo } from '@vitrum/shared-samplers';
 import {
+  TEMPORAL_ACCUM_UBO_SIZE_BYTES,
+  packTemporalAccumUniforms,
+} from '@vitrum/shared-denoisers';
+import {
   getFrameBindGroupLayout,
   getRisGiFrameBindGroupLayout,
   getSceneBindGroupLayout,
@@ -34,6 +38,7 @@ import {
   getIndirectTemporalAccumBindGroupLayout,
   getLightTreeBindGroupLayout,
   getRegirBuildBindGroupLayout,
+  getNrcHybridLayersBindGroupLayout,
   type BGLCache,
 } from './bindGroupLayouts.js';
 import { buildBindGroupFromTable } from './bindGroupDescriptors.js';
@@ -55,16 +60,11 @@ const ATROUS_UBO = defineUbo([
   { name: 'sigmaC',    type: 'f32' },
 ] as const);
 // AccumUBO (temporalAccum.wgsl.ts): {alpha, _pad1, _pad2, _pad3} — 1 active f32
-// padded to the 16-byte WebGPU minimum-binding floor. Only `alpha` is read by
-// the shader; the three trailing pads are zero-filled by defineUbo.pack.
-const ACCUM_UBO = defineUbo([
-  { name: 'alpha', type: 'f32' },
-] as const);
+// The shared-denoisers packer below owns the 16-byte AccumUBO wire contract.
 
 // ── Frame bind group ─────────────────────────────────────────────────────────
 
 interface FrameBindGroupResources {
-  placeholderView: GPUTextureView;
   reservoirCurrentBuffer: GPUBuffer;
   reservoirPreviousBuffer: GPUBuffer;
   reservoirSpatialBuffer: GPUBuffer;
@@ -85,10 +85,9 @@ interface FrameBindGroupResources {
 
 // Positional resource order MUST match the 'frame' descriptor table in
 // bindGroupDescriptors.ts (which carries the per-binding rationale notes —
-// incl. the shade.wgsl-declared G-buffer slots 0-4 and shade-only 10/12/13/14/15).
-// IMPORTANT: slots 0-4 are bound to a 1×1 placeholder in primary-ray-cast mode
-// but shade.wgsl DOES declare them at @binding(0..4) — removing them from the
-// BGL would break the shade pipeline's bind group layout validation.
+// including shade-only 10/12/13/14/15. The unused primary-ray-mode placeholder
+// textures that formerly occupied bindings 0..4 were removed so every pipeline
+// remains within the WebGPU guaranteed 16 sampled-texture limit.
 export function buildFrameBindGroup(
   device: GPUDevice,
   cache: BGLCache,
@@ -96,11 +95,6 @@ export function buildFrameBindGroup(
   viewCache?: TextureViewCache,
 ): GPUBindGroup {
   return buildBindGroupFromTable(device, 'frame', getFrameBindGroupLayout(device, cache), [
-    r.placeholderView,                          // 0 gDepth (placeholder)
-    r.placeholderView,                          // 1 gNormal (placeholder)
-    r.placeholderView,                          // 2 gAlbedo (placeholder)
-    r.placeholderView,                          // 3 gRough (placeholder)
-    r.placeholderView,                          // 4 motionVec (placeholder)
     { buffer: r.reservoirCurrentBuffer },       // 5
     { buffer: r.reservoirPreviousBuffer },      // 6
     { buffer: r.reservoirSpatialBuffer },       // 7
@@ -118,15 +112,12 @@ export function buildFrameBindGroup(
 export function buildRisGiFrameBindGroup(
   device: GPUDevice,
   cache: BGLCache,
-  gNormalDepthTexture: GPUTexture,
   reservoirGiCurrentBuffer: GPUBuffer,
-  viewCache?: TextureViewCache,
 ): GPUBindGroup {
   return device.createBindGroup({
     label: 'ris-gi-frame-bg',
     layout: getRisGiFrameBindGroupLayout(device, cache),
     entries: [
-      { binding: 10, resource: textureView(gNormalDepthTexture, viewCache) },
       { binding: 11, resource: { buffer: reservoirGiCurrentBuffer } },
     ],
   });
@@ -135,15 +126,9 @@ export function buildRisGiFrameBindGroup(
 // ── Scene bind group ─────────────────────────────────────────────────────────
 
 interface SceneBindGroupResources {
-  bvhNodesBuffer: GPUBuffer;
-  bvhIndexBuffer: GPUBuffer;
-  bvhPositionBuffer: GPUBuffer;
-  emitterBuffer: GPUBuffer;
-  emitterCdfBuffer: GPUBuffer;
+  sceneStorageArenaBuffers: readonly [GPUBuffer, GPUBuffer, GPUBuffer];
   /** WS1 — beer is now a uint texture (binding 5), not a storage buffer. */
   bvhBeerTextureView: GPUTextureView;
-  /** WS1 — per-vertex world-space normals storage buffer (binding 11). */
-  bvhNormalBuffer: GPUBuffer;
   /** Per-vertex authored/generated tangent.xyzw texture (binding 22). */
   bvhTangentTextureView: GPUTextureView;
   /** Per-vertex COLOR_0 rgba texture (binding 23). */
@@ -158,11 +143,6 @@ interface SceneBindGroupResources {
   materialTextureAtlasView: GPUTextureView;
   /** Phase-3D first slice — per-triangle baseColorMap metadata (binding 21). */
   baseColorMapMetaTextureView: GPUTextureView;
-  tlasNodesBuffer: GPUBuffer;
-  tlasInstanceIndicesBuffer: GPUBuffer;
-  tlasBlasRootsBuffer: GPUBuffer;
-  tlasInstanceWorldToLocalBuffer: GPUBuffer;
-  tlasInstanceLocalToWorldBuffer: GPUBuffer;
   analyticLightsTextureView: GPUTextureView;
   /** B3 — directional IBL (bindings 15-19). Placeholders + envParams.hasEnv=0
    *  for non-HDRI scenes (scalar-tint fallback, no-HDRI byte-identity). */
@@ -179,18 +159,10 @@ export function buildSceneBindGroup(
   r: SceneBindGroupResources,
 ): GPUBindGroup {
   return buildBindGroupFromTable(device, 'scene', getSceneBindGroupLayout(device, cache), [
-    { buffer: r.bvhNodesBuffer },                   // 0
-    { buffer: r.bvhIndexBuffer },                   // 1 vec4u: [0..2]=indices, [3]=RGBA8 raw attCol
-    { buffer: r.bvhPositionBuffer },                // 2
-    { buffer: r.emitterBuffer },                    // 3
-    { buffer: r.emitterCdfBuffer },                 // 4
+    { buffer: r.sceneStorageArenaBuffers[0] },    // 0 geometry arena
+    { buffer: r.sceneStorageArenaBuffers[1] },    // 1 TLAS arena
+    { buffer: r.sceneStorageArenaBuffers[2] },    // 2 lighting arena
     r.bvhBeerTextureView,                           // 5 WS1 r32uint texture: per-tri Beer-Lambert color
-    { buffer: r.tlasNodesBuffer },                  // 6
-    { buffer: r.tlasInstanceIndicesBuffer },        // 7
-    { buffer: r.tlasBlasRootsBuffer },              // 8
-    { buffer: r.tlasInstanceWorldToLocalBuffer },   // 9
-    { buffer: r.tlasInstanceLocalToWorldBuffer },   // 10
-    { buffer: r.bvhNormalBuffer },                  // 11 WS1 per-vertex world-space smooth normals
     r.bvhEmissiveTextureView,                       // 12 camera-visible emitters: per-tri HDR emissive Le
     r.analyticLightsTextureView,                    // 13 analytic point/spot lights
     r.bvhRoughMetalTextureView,                     // 14 B1 per-tri roughness+metalness (r32uint texture)
@@ -230,7 +202,7 @@ export function buildLightTreeBindGroup(
 /**
  * Build the ReGIR grid-build bind group: the COMBINED light-tree + grid buffer
  * bound READ_WRITE (binding 0 — same GPUBuffer RIS reads read-only at its
- * group(3)), the emitter list (binding 1), and the WalkaroundUBO (binding 2).
+ * group(3)) and the WalkaroundUBO (binding 1).
  * Bound only by the grid-build pipeline so the read_write access never touches
  * the RIS / shade layouts.
  */
@@ -238,7 +210,6 @@ export function buildRegirBuildBindGroup(
   device: GPUDevice,
   cache: BGLCache,
   combinedLightTreeBuffer: GPUBuffer,
-  emitterBuffer: GPUBuffer,
   uboBuffer: GPUBuffer,
 ): GPUBindGroup {
   return device.createBindGroup({
@@ -246,8 +217,7 @@ export function buildRegirBuildBindGroup(
     layout: getRegirBuildBindGroupLayout(device, cache),
     entries: [
       { binding: 0, resource: { buffer: combinedLightTreeBuffer } },
-      { binding: 1, resource: { buffer: emitterBuffer } },
-      { binding: 2, resource: { buffer: uboBuffer } },
+      { binding: 1, resource: { buffer: uboBuffer } },
     ],
   });
 }
@@ -435,17 +405,16 @@ export function writeAccumUbo(
 ): GPUBuffer {
   if (!uboRef.buf) {
     uboRef.buf = device.createBuffer({
-      size: ACCUM_UBO.sizeBytes,
+      size: TEMPORAL_ACCUM_UBO_SIZE_BYTES,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
   }
   // W2-C13 follow-up: AccumUBO is now {alpha, _pad1, _pad2, _pad3} — the
   // temporal accum shader uses an AABB clamp on the 3×3 neighborhood (not
-  // k·std_dev), so the former varianceK slot is unused padding. defineUbo
-  // zero-fills the trailing pad bytes to match the prior
-  // Float32Array([alpha, 0, 0, 0]) write byte-for-byte.
-  const accumUboData = new ArrayBuffer(ACCUM_UBO.sizeBytes);
-  ACCUM_UBO.pack(new DataView(accumUboData), 0, { alpha });
+  // k·std_dev), so the former varianceK slot is unused padding. The canonical
+  // shared packer zero-fills that padding deterministically.
+  const accumUboData = new ArrayBuffer(TEMPORAL_ACCUM_UBO_SIZE_BYTES);
+  packTemporalAccumUniforms({ alpha }, accumUboData);
   device.queue.writeBuffer(uboRef.buf, 0, accumUboData);
   return uboRef.buf;
 }
@@ -485,7 +454,7 @@ interface ShadeHybridLayersResources {
   ddgiVisTex: GPUTexture | null;
   ddgiPlaceholderRgba16f: GPUTexture;
   ddgiPlaceholderVisRgba16f: GPUTexture;
-  nearestSampler: GPUSampler;
+  ddgiSampler: GPUSampler;
   ddgiUboBuffer: GPUBuffer;
   // W8 Phase 3 (2026-05-18) — RC cascade-0 + params. Both fields are
   // always-present GPUBuffers (a 16-byte and a 64-byte placeholder
@@ -496,16 +465,22 @@ interface ShadeHybridLayersResources {
   rcParamsBuffer:   GPUBuffer;
 }
 
+export interface NrcHybridLayerBindings {
+  readonly inferenceArenaBuffer: GPUBuffer;
+  readonly runtimeArenaBuffer: GPUBuffer;
+  readonly configBuffer: GPUBuffer;
+}
+
 interface HybridLayersResources extends ShadeHybridLayersResources {
-  // W9 guided sampling — PPG tree buffers (sTree / dTree / dTreeOffsets).
+  // Versioned packed PPG query arena (sTree / dTree / dTreeOffsets).
   // Always present GPUBuffers: the real STORAGE-flagged PPG buffers when PPG
   // is enabled, or a shared 16-byte zeroed placeholder when disabled. gi-ris
   // descends them only when ubo.ppgEnabled == 1, so the placeholders are
   // never dereferenced in the PPG-off path. The SHADE bind group does not use
   // these (bindings 6-8 are gi-ris-only).
-  ppgSTreeBuffer:        GPUBuffer;
-  ppgDTreeBuffer:        GPUBuffer;
-  ppgDTreeOffsetsBuffer: GPUBuffer;
+  ppgQueryArenaBuffer: GPUBuffer;
+  /** Present only for the compile-time NRC variant (bindings 7..9). */
+  nrc?: NrcHybridLayerBindings;
 }
 
 export function buildHybridLayersBindGroup(
@@ -517,19 +492,23 @@ export function buildHybridLayersBindGroup(
   const irrTex = r.ddgiIrrTex ?? r.ddgiPlaceholderRgba16f;
   const visTex = r.ddgiVisTex ?? r.ddgiPlaceholderVisRgba16f;
   return device.createBindGroup({
-    label: 'hybrid-layers-bg',
-    layout: getHybridLayersBindGroupLayout(device, cache),
+    label: r.nrc ? 'hybrid-layers-nrc-bg' : 'hybrid-layers-bg',
+    layout: r.nrc
+      ? getNrcHybridLayersBindGroupLayout(device, cache)
+      : getHybridLayersBindGroupLayout(device, cache),
     entries: [
       { binding: 0, resource: textureView(irrTex, viewCache) },
       { binding: 1, resource: textureView(visTex, viewCache) },
-      { binding: 2, resource: r.nearestSampler },
+      { binding: 2, resource: r.ddgiSampler },
       { binding: 3, resource: { buffer: r.ddgiUboBuffer } },
       { binding: 4, resource: { buffer: r.rcCascade0Buffer } },
       { binding: 5, resource: { buffer: r.rcParamsBuffer } },
-      // W9 — PPG guided-sampling tree buffers.
-      { binding: 6, resource: { buffer: r.ppgSTreeBuffer } },
-      { binding: 7, resource: { buffer: r.ppgDTreeBuffer } },
-      { binding: 8, resource: { buffer: r.ppgDTreeOffsetsBuffer } },
+      { binding: 6, resource: { buffer: r.ppgQueryArenaBuffer } },
+      ...(r.nrc ? [
+        { binding: 7, resource: { buffer: r.nrc.inferenceArenaBuffer } },
+        { binding: 8, resource: { buffer: r.nrc.runtimeArenaBuffer } },
+        { binding: 9, resource: { buffer: r.nrc.configBuffer } },
+      ] : []),
     ],
   });
 }
@@ -548,7 +527,7 @@ export function buildShadeHybridLayersBindGroup(
     entries: [
       { binding: 0, resource: textureView(irrTex, viewCache) },
       { binding: 1, resource: textureView(visTex, viewCache) },
-      { binding: 2, resource: r.nearestSampler },
+      { binding: 2, resource: r.ddgiSampler },
       { binding: 3, resource: { buffer: r.ddgiUboBuffer } },
       { binding: 4, resource: { buffer: r.rcCascade0Buffer } },
       { binding: 5, resource: { buffer: r.rcParamsBuffer } },
@@ -616,13 +595,15 @@ export function buildCbPrefillBindGroup(
   cbPrefillUbo: GPUBuffer,
   prevRadianceView: GPUTextureView,
   motionVectorsView: GPUTextureView,
+  currentRadianceSnapshotView: GPUTextureView,
   hdrColorWriteView: GPUTextureView,
 ): GPUBindGroup {
   return buildBindGroupFromTable(device, 'cbPrefill', getCbPrefillBindGroupLayout(device, cache), [
     { buffer: cbPrefillUbo },  // 0
     prevRadianceView,          // 1
     motionVectorsView,         // 2
-    hdrColorWriteView,         // 3
+    currentRadianceSnapshotView, // 3
+    hdrColorWriteView,         // 4
   ]);
 }
 
@@ -752,10 +733,22 @@ export function buildIndirectCombineBindGroup(
 export function buildTransparentOitBindGroup(
   device: GPUDevice,
   cache: BGLCache,
+  ddgiIrradianceView: GPUTextureView,
+  ddgiVisibilityView: GPUTextureView,
+  ddgiSampler: GPUSampler,
+  ddgiUboBuffer: GPUBuffer,
+  rcCascade0Buffer: GPUBuffer,
+  rcParamsBuffer: GPUBuffer,
   backgroundView: GPUTextureView,
   transparentOutView: GPUTextureView,
 ): GPUBindGroup {
   return buildBindGroupFromTable(device, 'transparentOit', getTransparentOitBindGroupLayout(device, cache), [
+    ddgiIrradianceView,
+    ddgiVisibilityView,
+    ddgiSampler,
+    { buffer: ddgiUboBuffer },
+    { buffer: rcCascade0Buffer },
+    { buffer: rcParamsBuffer },
     backgroundView,
     transparentOutView,
   ]);
@@ -825,9 +818,7 @@ export type AutoLayoutFor = (index: number) => GPUBindGroupLayout;
 export interface PpgUpdateBindGroupResources {
   reservoirGiCurrentBuffer: GPUBuffer;
   fluxAtomicsBuf: GPUBuffer;
-  sTreeBuf: GPUBuffer;
-  dTreeBuf: GPUBuffer;
-  dTreeOffsetsBuf: GPUBuffer;
+  queryArenaBuf: GPUBuffer;
   /** A2 — per-spatial-cell sample counter (binding 5). */
   cellSampleCountsBuf: GPUBuffer;
   updateUboBuffer: GPUBuffer;
@@ -836,7 +827,7 @@ export interface PpgUpdateBindGroupResources {
 /**
  * Build the two auto-layout bind groups for the PPG update kernel
  * (ppgUpdate.wgsl.ts):
- *   group(0): reservoirGiCurrent / fluxAtomics / sTree / dTree / dTreeOffsets /
+ *   group(0): reservoirGiCurrent / fluxAtomics / packed query arena /
  *            cellSampleCounts
  *   group(1): updateUbo
  */
@@ -851,10 +842,8 @@ export function buildPpgUpdateBindGroups(
     entries: [
       { binding: 0, resource: { buffer: r.reservoirGiCurrentBuffer } },
       { binding: 1, resource: { buffer: r.fluxAtomicsBuf } },
-      { binding: 2, resource: { buffer: r.sTreeBuf } },
-      { binding: 3, resource: { buffer: r.dTreeBuf } },
-      { binding: 4, resource: { buffer: r.dTreeOffsetsBuf } },
-      { binding: 5, resource: { buffer: r.cellSampleCountsBuf } },
+      { binding: 2, resource: { buffer: r.queryArenaBuf } },
+      { binding: 3, resource: { buffer: r.cellSampleCountsBuf } },
     ],
   });
   const bg1 = device.createBindGroup({

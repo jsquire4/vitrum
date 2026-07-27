@@ -46,7 +46,6 @@ export function uploadProbeUpdateBorderUbo(
   gpu: ProbeUpdateGpuState,
   grid: ProbeGrid,
   atlas: GPUTexture,
-  _which: 'irr' | 'vis', // retained for call-site clarity; always 'vis' (irr uses SH, no border pass)
 ): void {
   const data = packProbeUpdateBorderUbo({
     probeCount: grid.probeCount,
@@ -56,10 +55,36 @@ export function uploadProbeUpdateBorderUbo(
     gridDimY: grid.params.dims.y,
     gridDimZ: grid.params.dims.z,
   });
-  // Irradiance is SH (seam-free, no border pass), so only the visibility border
-  // UBO exists; `which` is retained for call-site clarity but is always 'vis'.
-  const buf = gpu.borderVisUboBuf;
-  device.queue.writeBuffer(buf, 0, data);
+  device.queue.writeBuffer(gpu.borderVisUboBuf, 0, data);
+}
+
+/**
+ * Copy the entire accepted irradiance image, including the packed probe-state
+ * ring texels, into the next ping-pong target before classifying this frame's
+ * stratum. The classifier overwrites only active state texels and the SH blend
+ * overwrites only active 3x3 coefficient blocks, so this is the bit-for-bit
+ * carry-forward guarantee for every non-updated probe.
+ */
+export function copyProbeIrradianceAndPackedStateForward(
+  encoder: Pick<GPUCommandEncoder, 'copyTextureToTexture'>,
+  readTexture: GPUTexture,
+  writeTexture: GPUTexture,
+): void {
+  if (
+    readTexture.width !== writeTexture.width ||
+    readTexture.height !== writeTexture.height
+  ) {
+    throw new Error('DDGI irradiance ping-pong textures must have identical dimensions.');
+  }
+  encoder.copyTextureToTexture(
+    { texture: readTexture },
+    { texture: writeTexture },
+    {
+      width: readTexture.width,
+      height: readTexture.height,
+      depthOrArrayLayers: 1,
+    },
+  );
 }
 
 export function dispatchProbeUpdateRaysPass(
@@ -95,6 +120,7 @@ export function dispatchProbeUpdateRaysPass(
   // Invalidated on material/emitter upload or atlas/tangent/color replacement.
   const raysG1 = getOrCreateBindGroup(c, 'raysG1', [
     gpu.materialsBuf,
+    gpu.lightsBuf,
     gpu.emitterTrisBuf,
     gpu.materialTextureAtlasView,
     gpu.materialTextureAtlasMetaView,
@@ -123,6 +149,7 @@ export function dispatchProbeUpdateRaysPass(
     gpu.rayResultsBuf,
     gpu.activeProbesBuf,
     gpu.envMapView,
+    gpu.envSamplerForProbe,
   ], () => gpu.device.createBindGroup({
     layout: gpu.raysPipeline.getBindGroupLayout(2),
     entries: [
@@ -136,10 +163,8 @@ export function dispatchProbeUpdateRaysPass(
       // A 1×1 placeholder view is bound when hasEnv=0 so the bind group is
       // always valid; the WGSL sampleSkyColor gates on frameParams.hasEnv
       // before sampling, so the placeholder is never actually read.
-      // Trust-audit F3: NO sampler entry — the WGSL uses textureLoad and a
-      // declared-but-unused sampler is stripped by layout:'auto', so passing
-      // an entry for it failed bind-group validation every frame.
       { binding: 6, resource: gpu.envMapView },
+      { binding: 7, resource: gpu.envSamplerForProbe },
     ],
   }));
 
@@ -149,6 +174,72 @@ export function dispatchProbeUpdateRaysPass(
   pass.setBindGroup(1, raysG1);
   pass.setBindGroup(2, raysG2);
   pass.dispatchWorkgroups(activeCount);
+  pass.end();
+}
+
+/**
+ * Classify and relocate the current probe stratum from the ray producer's
+ * records. State is read from the accepted irradiance atlas and written to the
+ * reserved ring texel in the next atlas, so one command buffer has no
+ * read/write alias and publication can swap atomically.
+ */
+export function dispatchProbeClassifyRelocatePass(
+  encoder: GPUCommandEncoder,
+  gpu: ProbeUpdateGpuState,
+  activeCount: number,
+  irrReadTex: GPUTexture,
+  irrWriteTex: GPUTexture,
+): void {
+  if (!Number.isSafeInteger(activeCount) || activeCount < 0) {
+    throw new RangeError('DDGI classifier active count must be a non-negative safe integer.');
+  }
+  if (activeCount === 0) return;
+  const activeBindingBytes = activeCount * Uint32Array.BYTES_PER_ELEMENT;
+  if (
+    !Number.isSafeInteger(activeBindingBytes) ||
+    activeBindingBytes > gpu.activeProbesBuf.size
+  ) {
+    throw new RangeError('DDGI classifier active prefix exceeds its GPU buffer.');
+  }
+  if (!gpu.bgCache) gpu.bgCache = makeBgCache();
+  const c = gpu.bgCache;
+  const classifyG0 = getOrCreateBindGroup(c, 'classifyG0', [
+    gpu.rayResultsBuf,
+    gpu.activeProbesBuf,
+    activeBindingBytes,
+    irrReadTex,
+    irrWriteTex,
+  ], () => gpu.device.createBindGroup({
+    layout: gpu.classifyRelocatePipeline.getBindGroupLayout(0),
+    entries: [
+      { binding: 0, resource: { buffer: gpu.rayResultsBuf } },
+      // Bind only the just-uploaded prefix. The compute dispatch is rounded to
+      // 64 lanes; arrayLength(activeProbes) must not expose stale capacity from
+      // a larger prior stratum to those padded lanes.
+      {
+        binding: 1,
+        resource: {
+          buffer: gpu.activeProbesBuf,
+          offset: 0,
+          size: activeBindingBytes,
+        },
+      },
+      { binding: 2, resource: { buffer: gpu.gridParamsBuf } },
+      { binding: 3, resource: irrReadTex.createView() },
+      {
+        binding: 4,
+        resource: irrWriteTex.createView({
+          format: 'rgba16float',
+          mipLevelCount: 1,
+        }),
+      },
+    ],
+  }));
+
+  const pass = encoder.beginComputePass({ label: 'ddgi-classify-relocate' });
+  pass.setPipeline(gpu.classifyRelocatePipeline);
+  pass.setBindGroup(0, classifyG0);
+  pass.dispatchWorkgroups(Math.ceil(activeCount / 64), 1, 1);
   pass.end();
 }
 

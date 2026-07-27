@@ -40,6 +40,13 @@ export interface CascadeDim {
 
 export const CASCADE_COUNT = CASCADE_DIMS.length;
 
+const UINT32_MAX = 0xffff_ffff;
+const MAX_CASCADE_RAYS_FOR_VEC4_INDEXING = Math.floor(UINT32_MAX / 4);
+
+function isArrayValue(value: unknown): boolean {
+  return Array.isArray(value);
+}
+
 /** Plain AABB ({min,max} in world space), used instead of `THREE.Box3`. */
 export interface CascadeAABB {
   readonly min: readonly [number, number, number];
@@ -47,15 +54,26 @@ export interface CascadeAABB {
 }
 
 function assertPositiveInteger(value: unknown, path: string): asserts value is number {
-  if (!Number.isInteger(value) || (value as number) <= 0) {
+  if (!Number.isSafeInteger(value) || (value as number) <= 0 || (value as number) > UINT32_MAX) {
     throw new Error(`${path} must be a positive integer; received ${String(value)}`);
   }
 }
 
 function assertFiniteNumber(value: unknown, path: string): asserts value is number {
-  if (typeof value !== 'number' || !Number.isFinite(value)) {
+  if (typeof value !== 'number' || !Number.isFinite(value) || !Number.isFinite(Math.fround(value))) {
     throw new Error(`${path} must be a finite number; received ${String(value)}`);
   }
+}
+
+function checkedProduct(values: readonly number[], path: string): number {
+  let product = 1;
+  for (const value of values) {
+    if (product > Math.floor(Number.MAX_SAFE_INTEGER / value)) {
+      throw new Error(`${path} exceeds JavaScript's safe-integer range`);
+    }
+    product *= value;
+  }
+  return product;
 }
 
 /**
@@ -67,8 +85,11 @@ export function validateCascadeDims(
   dims: readonly CascadeDim[],
   label = 'cascadeDims',
 ): readonly CascadeDim[] {
-  if (!Array.isArray(dims) || dims.length === 0) {
+  if (!isArrayValue(dims) || dims.length === 0) {
     throw new Error(`${label} must contain at least one cascade`);
+  }
+  if (!Number.isSafeInteger(dims.length) || dims.length > UINT32_MAX) {
+    throw new Error(`${label}.length must fit in a u32`);
   }
 
   let previousRayGrid = 0;
@@ -81,6 +102,17 @@ export function validateCascadeDims(
     assertPositiveInteger(dim.probes[1], `${label}[${i}].probes[1]`);
     assertPositiveInteger(dim.probes[2], `${label}[${i}].probes[2]`);
     assertPositiveInteger(dim.rays, `${label}[${i}].rays`);
+
+    const totalRays = checkedProduct(
+      [dim.probes[0], dim.probes[1], dim.probes[2], dim.rays],
+      `${label}[${i}] total ray count`,
+    );
+    if (totalRays > MAX_CASCADE_RAYS_FOR_VEC4_INDEXING) {
+      throw new Error(
+        `${label}[${i}] total ray count ${totalRays} exceeds the u32 vec4 indexing limit ` +
+        `${MAX_CASCADE_RAYS_FOR_VEC4_INDEXING}`,
+      );
+    }
 
     const rayGrid = Math.sqrt(dim.rays);
     if (!Number.isInteger(rayGrid)) {

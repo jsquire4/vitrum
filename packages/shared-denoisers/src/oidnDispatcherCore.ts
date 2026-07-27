@@ -91,12 +91,21 @@ export interface OIDNBridgeLike {
     modelUrl: string;
     executionProviders?: ReadonlyArray<'webnn' | 'webgpu' | 'wasm'>;
   }) => Promise<void>;
+  /** Acquire one engine lease on the shared session. */
+  readonly acquireOIDNSession?: (opts: {
+    modelUrl: string;
+    executionProviders?: ReadonlyArray<'webnn' | 'webgpu' | 'wasm'>;
+  }) => Promise<OIDNSessionLeaseLike>;
   readonly releaseOIDNCacheEntry?: (opts: {
     modelUrl: string;
     executionProviders?: ReadonlyArray<'webnn' | 'webgpu' | 'wasm'>;
   }) => void;
   /** @deprecated Prefer {@link releaseOIDNCacheEntry} for per-engine dispose. */
   readonly clearOIDNCache?: () => void;
+}
+
+export interface OIDNSessionLeaseLike {
+  release(): void;
 }
 
 /**
@@ -115,6 +124,7 @@ export const _defaultLoader: OIDNBridgeLoader = async () => {
   return {
     denoiseFinal: mod.denoiseFinal,
     preloadOIDNModel: mod.preloadOIDNModel,
+    acquireOIDNSession: mod.acquireOIDNSession,
     releaseOIDNCacheEntry: mod.releaseOIDNCacheEntry,
     clearOIDNCache: mod.clearOIDNCache,
   };
@@ -207,6 +217,55 @@ export function deriveOidnState(inputs: OIDNDerivedStateInputs): OIDNDerivedStat
  */
 export type ReadbackFn<TInput> = (input: TInput) => Promise<ReadbackResult | null>;
 
+function validateRgbBuffer(
+  label: string,
+  value: Float32Array,
+  width: number,
+  height: number,
+): void {
+  if (!(value instanceof Float32Array)) {
+    throw new TypeError(`${label}: expected Float32Array`);
+  }
+  const expected = width * height * 3;
+  if (!Number.isSafeInteger(expected) || expected <= 0) {
+    throw new RangeError(`${label}: invalid dimensions ${width}×${height}`);
+  }
+  if (value.length !== expected) {
+    throw new RangeError(`${label}: expected ${expected} RGB floats, got ${value.length}`);
+  }
+  for (let i = 0; i < value.length; i += 1) {
+    if (!Number.isFinite(value[i])) {
+      throw new RangeError(`${label}: non-finite value at index ${i}`);
+    }
+  }
+}
+
+function validateReadback(
+  readback: ReadbackResult,
+  requestedWidth: number,
+  requestedHeight: number,
+): void {
+  if (!Number.isSafeInteger(readback.width) || !Number.isSafeInteger(readback.height) ||
+      readback.width <= 0 || readback.height <= 0) {
+    throw new RangeError(
+      `OIDN readback: invalid dimensions ${readback.width}×${readback.height}`,
+    );
+  }
+  if (readback.width !== requestedWidth || readback.height !== requestedHeight) {
+    throw new RangeError(
+      `OIDN readback: dimensions ${readback.width}×${readback.height} do not match ` +
+        `requested ${requestedWidth}×${requestedHeight}`,
+    );
+  }
+  validateRgbBuffer('OIDN readback color', readback.color, readback.width, readback.height);
+  if (readback.albedo !== undefined) {
+    validateRgbBuffer('OIDN readback albedo', readback.albedo, readback.width, readback.height);
+  }
+  if (readback.normal !== undefined) {
+    validateRgbBuffer('OIDN readback normal', readback.normal, readback.width, readback.height);
+  }
+}
+
 /**
  * Options for constructing an {@link OIDNDispatcherCore}.
  */
@@ -241,6 +300,8 @@ export interface OIDNDispatcherCoreOptions<TInput> {
    * fires IN ADDITION to the warn.
    */
   readonly onError?: (err: unknown) => void;
+  /** Called only after an accepted result is published; observer failures are isolated. */
+  readonly onComplete?: (frame: DenoisedFrame) => void;
 }
 
 /**
@@ -269,6 +330,7 @@ export class OIDNDispatcherCore<TInput> {
   readonly #readback: ReadbackFn<TInput>;
   readonly #preloadOnBridgeInit: boolean;
   readonly #onError: ((err: unknown) => void) | undefined;
+  readonly #onComplete: ((frame: DenoisedFrame) => void) | undefined;
 
   /** True while an OIDN inference promise is unresolved. Re-kick attempts
    *  during this window are no-ops. */
@@ -286,6 +348,10 @@ export class OIDNDispatcherCore<TInput> {
    *  import. Module-level cache on the bridge side keeps the
    *  InferenceSession warm across cycles. */
   #bridge: OIDNBridgeLike | null = null;
+  /** Per-engine ownership of the shared bridge session. */
+  #sessionLease: OIDNSessionLeaseLike | null = null;
+  /** Disposal waits for this core's in-flight cycle before dropping ownership. */
+  #releaseBridgeWhenIdle = false;
   /** Cohort token: every {@link invalidate} call bumps this; inferences in
    *  flight at bump time discard their result on resolve. Prevents a stale
    *  inference from polluting the post-invalidation cohort. */
@@ -308,6 +374,7 @@ export class OIDNDispatcherCore<TInput> {
     this.#readback = opts.readback;
     this.#preloadOnBridgeInit = opts.preloadOnBridgeInit;
     this.#onError = opts.onError;
+    this.#onComplete = opts.onComplete;
   }
 
   /**
@@ -405,6 +472,9 @@ export class OIDNDispatcherCore<TInput> {
     this.#inFlight = true;
     void this.#runCycle(input, width, height, cohortAtKick).finally(() => {
       this.#inFlight = false;
+      if (this.#releaseBridgeWhenIdle) {
+        this.#releaseBridgeOwnership();
+      }
     });
   }
 
@@ -419,18 +489,45 @@ export class OIDNDispatcherCore<TInput> {
       const readback = await this.#readback(input);
       if (readback === null) return;
       if (this.#disposed || this.#cohortId !== cohortAtKick) return;
+      validateReadback(readback, width, height);
 
       // Step 2 — lazy bridge load (+ optional preload on first init).
       if (this.#bridge == null) {
-        this.#bridge = await this.#loader();
-        if (this.#preloadOnBridgeInit && this.#bridge.preloadOIDNModel != null) {
-          await this.#bridge.preloadOIDNModel({
+        const candidateBridge = await this.#loader();
+        let candidateLease: OIDNSessionLeaseLike | null = null;
+        const bridgeOpts = {
+          modelUrl: this.#modelUrl,
+          ...(this.#executionProviders !== undefined
+            ? { executionProviders: this.#executionProviders }
+            : {}),
+        };
+        if (candidateBridge.acquireOIDNSession != null) {
+          candidateLease = await candidateBridge.acquireOIDNSession(bridgeOpts);
+        } else if (this.#preloadOnBridgeInit && candidateBridge.preloadOIDNModel != null) {
+          await candidateBridge.preloadOIDNModel({
             modelUrl: this.#modelUrl,
             ...(this.#executionProviders !== undefined
               ? { executionProviders: this.#executionProviders }
               : {}),
           });
         }
+        // Candidate-first publication: a failed loader/acquire leaves no
+        // partially published bridge. Dispose during acquisition releases the
+        // just-created lease immediately instead of reviving this core.
+        if (this.#disposed) {
+          try {
+            if (candidateLease != null) {
+              candidateLease.release();
+            } else if (candidateBridge.releaseOIDNCacheEntry != null) {
+              candidateBridge.releaseOIDNCacheEntry(bridgeOpts);
+            } else {
+              candidateBridge.clearOIDNCache?.();
+            }
+          } catch { /* disposal is best-effort */ }
+          return;
+        }
+        this.#bridge = candidateBridge;
+        this.#sessionLease = candidateLease;
       }
       if (this.#disposed || this.#cohortId !== cohortAtKick) return;
 
@@ -452,12 +549,25 @@ export class OIDNDispatcherCore<TInput> {
       );
 
       if (this.#disposed || this.#cohortId !== cohortAtKick) return;
-      this.#latest = { rgb: denoised, width, height };
+      validateRgbBuffer('OIDN output', denoised, readback.width, readback.height);
+      const completed = { rgb: denoised, width: readback.width, height: readback.height };
+      this.#latest = completed;
       this.#haveCompleted = true;
       // Clear the error state after a successful inference so that
       // `getLastError()` reflects the current health of the dispatcher.
       this.#lastErrorMessage = null;
+      if (this.#onComplete !== undefined) {
+        try {
+          this.#onComplete(completed);
+        } catch {
+          // Completion observers must not corrupt accepted inference state.
+        }
+      }
     } catch (err) {
+      // A disposed dispatcher or invalidated cohort must not publish a late
+      // failure into the replacement lifecycle or notify a host that no longer
+      // owns this work.
+      if (this.#disposed || this.#cohortId !== cohortAtKick) return;
       const msg = err instanceof Error ? err.message : String(err);
       // Suppress repeated `console.warn` for the identical error message —
       // only warn when the message changes from the previously recorded one.
@@ -478,12 +588,25 @@ export class OIDNDispatcherCore<TInput> {
   dispose(): void {
     if (this.#disposed) return;
     this.#disposed = true;
-    const opts =
-      this.#executionProviders !== undefined
-        ? { modelUrl: this.#modelUrl, executionProviders: this.#executionProviders }
-        : { modelUrl: this.#modelUrl };
+    if (this.#inFlight) {
+      this.#releaseBridgeWhenIdle = true;
+    } else {
+      this.#releaseBridgeOwnership();
+    }
+  }
+
+  #releaseBridgeOwnership(): void {
+    this.#releaseBridgeWhenIdle = false;
+    const lease = this.#sessionLease;
+    this.#sessionLease = null;
     try {
-      if (this.#bridge?.releaseOIDNCacheEntry != null) {
+      if (lease != null) {
+        lease.release();
+      } else if (this.#bridge?.releaseOIDNCacheEntry != null) {
+        const opts =
+          this.#executionProviders !== undefined
+            ? { modelUrl: this.#modelUrl, executionProviders: this.#executionProviders }
+            : { modelUrl: this.#modelUrl };
         this.#bridge.releaseOIDNCacheEntry(opts);
       } else if (this.#bridge?.clearOIDNCache != null) {
         this.#bridge.clearOIDNCache();

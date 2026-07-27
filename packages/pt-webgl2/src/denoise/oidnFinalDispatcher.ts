@@ -24,6 +24,7 @@ export type OidnReadbackFn = (
 
 export interface OIDNFinalDispatcherRuntimeHooks {
   readonly onError?: (err: unknown) => void;
+  readonly onComplete?: (frame: DenoisedFrame) => void;
 }
 
 /**
@@ -55,6 +56,7 @@ export class OIDNFinalDispatcher {
       readback: async (input) => resolvedReadback(input),
       preloadOnBridgeInit: false,
       ...(hooks?.onError != null ? { onError: hooks.onError } : {}),
+      ...(hooks?.onComplete != null ? { onComplete: hooks.onComplete } : {}),
     });
   }
 

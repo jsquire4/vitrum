@@ -28,11 +28,11 @@
 // morphTargets:
 //   `solveSkin` fully handles morph-target + normal/UV blending when the primitive
 //   carries `morphTargets` / `morphWeights` / `morphTargetNormals` /
-//   `morphTargetUvs`.  No gap here
+//   `morphTargetUvs` / `morphTargetUvSets`. No gap here
 //   — morph application is part of the solver's pre-LBS step.
 
 import type { EngineWarning, Scene, ScenePrimitive } from '@vitrum/core';
-import { solveSkin } from '@vitrum/core';
+import { cloneSparseArray, solveSkin, sparseArrayOwnIndices } from '@vitrum/core';
 
 export interface SolveSkinPrimitivesWarningOptions {
   readonly onWarning?: (warning: EngineWarning) => void;
@@ -64,7 +64,22 @@ export function solveSkinPrimitives(scene: Scene, warningOptions: SolveSkinPrimi
       return prim;
     }
 
-    const { positions, normals, tangents, uvs, uv1 } = solveSkin(prim);
+    const solved = solveSkin(prim);
+    const { positions, normals, tangents, uvs, uv1 } = solved;
+    const solvedUvSets = prim.uvSets == null && solved.uvSets == null
+      ? undefined
+      : (() => {
+          const next = prim.uvSets == null ? [] : cloneSparseArray(prim.uvSets);
+          if (solved.uvSets != null) {
+            for (const texCoord of sparseArrayOwnIndices(solved.uvSets)) {
+              const stream = solved.uvSets[texCoord];
+              if (stream != null) next[texCoord] = stream;
+            }
+          }
+          if (uvs != null && next[0] != null) next[0] = uvs;
+          if (uv1 != null && next[1] != null) next[1] = uv1;
+          return next;
+        })();
     anyResolved = true;
     // Return a new object that shares every field except solved geometry arrays.
     // Core solveSkin() now handles tangent morphing + skinning, so preserve its
@@ -76,6 +91,7 @@ export function solveSkinPrimitives(scene: Scene, warningOptions: SolveSkinPrimi
       ...(tangents != null ? { tangents } : {}),
       ...(uvs != null ? { uvs } : {}),
       ...(uv1 != null ? { uv1 } : {}),
+      ...(solvedUvSets != null ? { uvSets: solvedUvSets } : {}),
     };
   });
 

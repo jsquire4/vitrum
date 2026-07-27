@@ -22,6 +22,14 @@
  *
  * @module bdptMIS
  */
+import {
+  requireFinite,
+  requireFiniteVec3,
+  requireInteger,
+  requireNonNegative,
+  requirePositive,
+  saturatingPositiveMultiply,
+} from './numericGuards.js';
 
 // ────────────────────────────────────────────────────────────────────────────
 // Full Veach §10.3 implementation (T2.H4)
@@ -55,13 +63,21 @@ export function geometricTermG(
   normalJ: readonly [number, number, number],
 ): number {
   // Direction from i to j (unnormalized)
+  requireFiniteVec3(posI, 'geometricTermG.posI');
+  requireFiniteVec3(normalI, 'geometricTermG.normalI');
+  requireFiniteVec3(posJ, 'geometricTermG.posJ');
+  requireFiniteVec3(normalJ, 'geometricTermG.normalJ');
   const dx = posJ[0] - posI[0];
   const dy = posJ[1] - posI[1];
   const dz = posJ[2] - posI[2];
-  const dist2 = dx * dx + dy * dy + dz * dz;
-  if (dist2 <= 0) return 0;
+  requireFinite(dx, 'geometricTermG.dx');
+  requireFinite(dy, 'geometricTermG.dy');
+  requireFinite(dz, 'geometricTermG.dz');
+  const dist = Math.hypot(dx, dy, dz);
 
-  const invDist = 1 / Math.sqrt(dist2);
+  if (dist <= 0) return 0;
+  const dist2 = dist * dist;
+  const invDist = 1 / dist;
 
   // Unit direction i→j
   const wx = dx * invDist;
@@ -69,10 +85,14 @@ export function geometricTermG(
   const wz = dz * invDist;
 
   // |cos θᵢ| = |normalI · w|, |cos θⱼ| = |normalJ · (−w)|
-  const cosI = Math.abs(normalI[0] * wx + normalI[1] * wy + normalI[2] * wz);
-  const cosJ = Math.abs(normalJ[0] * wx + normalJ[1] * wy + normalJ[2] * wz);
+  const normalILength = Math.hypot(normalI[0], normalI[1], normalI[2]);
+  const normalJLength = Math.hypot(normalJ[0], normalJ[1], normalJ[2]);
+  if (normalILength < 1e-12 || normalJLength < 1e-12) return 0;
+  const cosI = Math.abs(normalI[0] * wx + normalI[1] * wy + normalI[2] * wz) / normalILength;
+  const cosJ = Math.abs(normalJ[0] * wx + normalJ[1] * wy + normalJ[2] * wz) / normalJLength;
 
-  return (cosI * cosJ) / dist2;
+  const result = (cosI * cosJ) / dist2;
+  return Number.isFinite(result) ? result : Number.MAX_VALUE;
 }
 
 // ── convertDensitySAtoArea (PBRT Vertex::ConvertDensity) ──────────────────────
@@ -119,14 +139,18 @@ function convertDensitySAtoArea(
   const dx = destPos[0] - fromPos[0];
   const dy = destPos[1] - fromPos[1];
   const dz = destPos[2] - fromPos[2];
-  const dist2 = dx * dx + dy * dy + dz * dz;
-  if (dist2 <= 0) return pdfSA; // coincident → unit Jacobian (endpoint guard)
+  const dist = Math.hypot(dx, dy, dz);
+  if (dist <= 0) return pdfSA; // coincident → unit Jacobian (endpoint guard)
+  const dist2 = dist * dist;
 
-  const invDist = 1 / Math.sqrt(dist2);
+  const normalLength = Math.hypot(destNorm[0], destNorm[1], destNorm[2]);
+  if (normalLength < 1e-12) return 0;
+  const invDist = 1 / dist;
   const cosDest = Math.abs(
     destNorm[0] * dx * invDist + destNorm[1] * dy * invDist + destNorm[2] * dz * invDist,
-  );
-  return (pdfSA * cosDest) / dist2;
+  ) / normalLength;
+  const result = (pdfSA * cosDest) / dist2;
+  return Number.isFinite(result) ? result : Number.MAX_VALUE;
 }
 
 // ── BDPTFullVertex ────────────────────────────────────────────────────────────
@@ -234,6 +258,16 @@ export function buildBDPTStrategyPDFs_full(
   const n = vertices.length;
   if (n === 0) return new Float64Array(0);
 
+  requireInteger(selectedS, 'buildBDPTStrategyPDFs_full.selectedS', 0, n - 1);
+  requirePositive(pRef, 'buildBDPTStrategyPDFs_full.pRef');
+  for (let i = 0; i < n; i++) {
+    const v = vertices[i]!;
+    requireFiniteVec3(v.position, `buildBDPTStrategyPDFs_full.vertices[${i}].position`);
+    requireFiniteVec3(v.normal, `buildBDPTStrategyPDFs_full.vertices[${i}].normal`);
+    requireNonNegative(v.pdfFwd, `buildBDPTStrategyPDFs_full.vertices[${i}].pdfFwd`);
+    requireNonNegative(v.pdfRev, `buildBDPTStrategyPDFs_full.vertices[${i}].pdfRev`);
+  }
+
   const pdfs = new Float64Array(n);
   pdfs[selectedS] = pRef;
 
@@ -273,7 +307,7 @@ export function buildBDPTStrategyPDFs_full(
       const pRev = revArea(s - 1);
       if (pFwd <= 0 || pRev <= 0) break;
 
-      p = p * (pRev / pFwd);
+      p = saturatingPositiveMultiply(p, pRev / pFwd);
       pdfs[s - 1] = p;
     }
   }
@@ -294,12 +328,111 @@ export function buildBDPTStrategyPDFs_full(
       const pRev = revArea(s);
       if (pFwd <= 0 || pRev <= 0) break;
 
-      p = p * (pFwd / pRev);
+      p = saturatingPositiveMultiply(p, pFwd / pRev);
       pdfs[s + 1] = p;
     }
   }
 
   return pdfs;
+}
+
+/**
+ * Depth limits for the explicit-connection strategy family evaluated by a
+ * bounded BDPT implementation.
+ *
+ * `maxLightVertices` includes the sampled emitter endpoint. `maxEyeVertices`
+ * counts scene-surface vertices on the eye subpath and excludes the camera.
+ */
+export interface BDPTExplicitConnectionLimits {
+  readonly maxLightVertices: number;
+  readonly maxEyeVertices: number;
+}
+
+function explicitConnectionStrategyIsValidUnchecked(
+  pathVertexCount: number,
+  strategyS: number,
+  maxLightVertices: number,
+  maxEyeVertices: number,
+): boolean {
+  // An explicit connection needs at least one light vertex (the emitter), one
+  // eye-surface vertex, and the camera endpoint. s=0 and s=n-1 are the pure
+  // camera/light techniques and are not sampled by the pt-webgpu connection
+  // kernel. The remaining counts must fit the actually allocated subpaths.
+  if (pathVertexCount < 3 || strategyS < 1 || strategyS > pathVertexCount - 2) {
+    return false;
+  }
+  const lightVertices = strategyS;
+  const eyeVertices = pathVertexCount - strategyS - 1;
+  return lightVertices <= maxLightVertices && eyeVertices <= maxEyeVertices;
+}
+
+/** Return whether strategy `s` is sampled by the bounded explicit family. */
+export function bdptExplicitConnectionStrategyIsValid(
+  pathVertexCount: number,
+  strategyS: number,
+  limits: BDPTExplicitConnectionLimits,
+): boolean {
+  requireInteger(
+    pathVertexCount,
+    'bdptExplicitConnectionStrategyIsValid.pathVertexCount',
+  );
+  requireInteger(
+    strategyS,
+    'bdptExplicitConnectionStrategyIsValid.strategyS',
+  );
+  const maxLightVertices = requireInteger(
+    limits.maxLightVertices,
+    'bdptExplicitConnectionStrategyIsValid.maxLightVertices',
+  );
+  const maxEyeVertices = requireInteger(
+    limits.maxEyeVertices,
+    'bdptExplicitConnectionStrategyIsValid.maxEyeVertices',
+  );
+  return explicitConnectionStrategyIsValidUnchecked(
+    pathVertexCount,
+    strategyS,
+    maxLightVertices,
+    maxEyeVertices,
+  );
+}
+
+/**
+ * Copy a full recurrence vector while zeroing techniques that the bounded
+ * explicit-connection kernel did not sample. Applying this before the power
+ * heuristic prevents unsampled s=0/t=1 or depth-truncated strategies from
+ * diluting the weights of the techniques that were actually evaluated.
+ */
+export function maskBDPTExplicitConnectionStrategyPDFs(
+  pdfsByStrategy: ReadonlyArray<number> | Float64Array,
+  limits: BDPTExplicitConnectionLimits,
+): Float64Array {
+  const maxLightVertices = requireInteger(
+    limits.maxLightVertices,
+    'maskBDPTExplicitConnectionStrategyPDFs.maxLightVertices',
+  );
+  const maxEyeVertices = requireInteger(
+    limits.maxEyeVertices,
+    'maskBDPTExplicitConnectionStrategyPDFs.maxEyeVertices',
+  );
+  const masked = new Float64Array(pdfsByStrategy.length);
+  for (let s = 0; s < pdfsByStrategy.length; s += 1) {
+    const pdf = pdfsByStrategy[s] ?? 0;
+    requireNonNegative(
+      pdf,
+      `maskBDPTExplicitConnectionStrategyPDFs.pdfsByStrategy[${s}]`,
+    );
+    if (
+      explicitConnectionStrategyIsValidUnchecked(
+        pdfsByStrategy.length,
+        s,
+        maxLightVertices,
+        maxEyeVertices,
+      )
+    ) {
+      masked[s] = pdf;
+    }
+  }
+  return masked;
 }
 
 // ── bdptConnectionMIS_full ────────────────────────────────────────────────────
@@ -333,18 +466,22 @@ export function bdptConnectionMIS_full(
   beta: number = 2,
 ): number {
   const len = pdfsByStrategy.length;
+  if (!Number.isInteger(selectedS)) return 0;
   if (selectedS < 0 || selectedS >= len) return 0;
+  requirePositive(beta, 'bdptConnectionMIS_full.beta');
 
-  let denominator = 0;
+  let maxPdf = 0;
   for (let i = 0; i < len; i++) {
     const p = pdfsByStrategy[i] ?? 0;
-    if (p > 0) denominator += Math.pow(p, beta);
+    requireNonNegative(p, `bdptConnectionMIS_full.pdfsByStrategy[${i}]`);
+    maxPdf = Math.max(maxPdf, p);
   }
-
-  if (denominator <= 0) return 0;
+  if (maxPdf === 0) return 0;
+  let denominator = 0;
+  for (let i = 0; i < len; i++) denominator += Math.pow((pdfsByStrategy[i] ?? 0) / maxPdf, beta);
 
   const p_s = pdfsByStrategy[selectedS] ?? 0;
   if (p_s <= 0) return 0;
 
-  return Math.pow(p_s, beta) / denominator;
+  return Math.pow(p_s / maxPdf, beta) / denominator;
 }

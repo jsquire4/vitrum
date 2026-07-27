@@ -10,7 +10,6 @@ export const surface_record_struct = /* glsl */`
 		bool frontFace;
 		vec3 normal;
 		mat3 normalBasis;
-		mat3 normalInvBasis;
 
 		// cached properties
 		float eta;
@@ -21,6 +20,7 @@ export const surface_record_struct = /* glsl */`
 		float filteredRoughness;
 		float metalness;
 		vec3 color;
+		vec3 rgbColor;
 		vec3 emission;
 
 		// transmission
@@ -47,7 +47,6 @@ export const surface_record_struct = /* glsl */`
 		// clearcoat
 		vec3 clearcoatNormal;
 		mat3 clearcoatBasis;
-		mat3 clearcoatInvBasis;
 		float clearcoat;
 		float clearcoatRoughness;
 		float filteredClearcoatRoughness;
@@ -88,11 +87,15 @@ export const surface_record_struct = /* glsl */`
 		bool liteMode;
 	};
 
-	struct ScatterRecord {
-		float specularPdf;
-		float pdf;
-		vec3 direction;
-		vec3 throughput;
-	};
+        struct ScatterRecord {
+                float specularPdf;
+                float pdf;
+                vec3 direction;
+                vec3 throughput;
+                // True only when the actually selected sampling lobe is
+                // mathematically singular. This is event identity, not a PDF
+                // magnitude test: a finite rough-glossy density may exceed 1.
+                bool sampledDelta;
+        };
 
 `;

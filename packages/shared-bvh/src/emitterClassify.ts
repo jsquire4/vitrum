@@ -16,8 +16,6 @@
 import type { MaterialSpec, TextureRef } from '@vitrum/core';
 import {
   MATERIAL_TRANSMISSIVE_COLOR_THRESHOLD,
-  MATERIAL_EMITTER_TRANSMISSION_THRESHOLD,
-  MATERIAL_EMITTER_SUN_DOT_THRESHOLD,
   MATERIAL_DEFAULT_TRI_COLOR,
 } from './materialEntry.js';
 import { srgbToLinear, resolveReadableTexture } from './textureDecode.js';
@@ -31,6 +29,14 @@ interface ReadableTextureHandle {
   readonly channels?: number;
   readonly dataType?: string;
   readonly colorSpace?: string;
+  readonly cpuMirror?: {
+    readonly width?: number;
+    readonly height?: number;
+    readonly data?: ArrayLike<number>;
+    readonly channels?: number;
+    readonly dataType?: string;
+    readonly colorSpace?: string;
+  };
 }
 
 interface TextureHandleHint {
@@ -58,27 +64,28 @@ interface TextureCellInterval {
 
 function textureHint(handle: ReadableTextureHandle): TextureHandleHint | undefined {
   if (handle.__vitrum_hint__ != null) return handle.__vitrum_hint__;
-  if (handle.channels == null && handle.dataType == null && handle.colorSpace == null) return undefined;
+  const source = handle.cpuMirror ?? handle;
+  if (source.channels == null && source.dataType == null && source.colorSpace == null) return undefined;
   const hint: MutableTextureHandleHint = {};
   if (
-    handle.channels === 1 ||
-    handle.channels === 2 ||
-    handle.channels === 3 ||
-    handle.channels === 4
+    source.channels === 1 ||
+    source.channels === 2 ||
+    source.channels === 3 ||
+    source.channels === 4
   ) {
-    hint.channels = handle.channels;
+    hint.channels = source.channels;
   }
   if (
-    handle.dataType === 'uint8' ||
-    handle.dataType === 'uint16' ||
-    handle.dataType === 'float16' ||
-    handle.dataType === 'half-float' ||
-    handle.dataType === 'float32'
+    source.dataType === 'uint8' ||
+    source.dataType === 'uint16' ||
+    source.dataType === 'float16' ||
+    source.dataType === 'half-float' ||
+    source.dataType === 'float32'
   ) {
-    hint.dataType = handle.dataType;
+    hint.dataType = source.dataType;
   }
-  if (handle.colorSpace === 'srgb' || handle.colorSpace === 'linear') {
-    hint.colorSpace = handle.colorSpace;
+  if (source.colorSpace === 'srgb' || source.colorSpace === 'linear') {
+    hint.colorSpace = source.colorSpace;
   }
   return hint;
 }
@@ -86,13 +93,47 @@ function textureHint(handle: ReadableTextureHandle): TextureHandleHint | undefin
 function readableTextureDimensions(ref: TextureRef | undefined): { width: number; height: number } | null {
   const handle = ref?.handle as ReadableTextureHandle | null | undefined;
   if (handle == null) return null;
-  const src = handle.data ?? handle.image?.data;
-  const width = Math.floor(Number(handle.width ?? handle.image?.width ?? 0));
-  const height = Math.floor(Number(handle.height ?? handle.image?.height ?? 0));
+  const mirror = handle.cpuMirror;
+  const src = mirror?.data ?? handle.data ?? handle.image?.data;
+  const width = Math.floor(Number(mirror?.width ?? handle.width ?? handle.image?.width ?? 0));
+  const height = Math.floor(Number(mirror?.height ?? handle.height ?? handle.image?.height ?? 0));
   if (src == null || typeof src.length !== 'number' || width <= 0 || height <= 0) {
     return null;
   }
   return { width, height };
+}
+
+/**
+ * True only when every RGB texel needed by CPU emitter-distribution builders is
+ * present and finite. This is deliberately stricter than the sampling helpers:
+ * a production backend may use it to fail closed instead of silently replacing
+ * an opaque or malformed emissive map with scalar emission.
+ */
+export function isTextureRefCpuReadable(
+  ref: TextureRef | undefined,
+  fieldColorSpace: 'srgb' | 'linear',
+): boolean {
+  const handle = ref?.handle as ReadableTextureHandle | null | undefined;
+  if (handle == null) return false;
+  const hint = textureHint(handle);
+  const resolved = resolveReadableTexture(
+    handle,
+    fieldColorSpace,
+    hint?.channels,
+    hint?.dataType,
+    hint?.colorSpace,
+  );
+  if (resolved == null) return false;
+  const { src, pixelCount, stride, decode } = resolved;
+  if (src.length !== pixelCount * stride) return false;
+  for (let p = 0; p < pixelCount; p += 1) {
+    const base = p * stride;
+    const r = decode(Number(src[base]));
+    const g = decode(Number(src[base + (stride > 1 ? 1 : 0)]));
+    const b = decode(Number(src[base + (stride > 2 ? 2 : 0)]));
+    if (!Number.isFinite(r) || !Number.isFinite(g) || !Number.isFinite(b)) return false;
+  }
+  return true;
 }
 
 function averageReadableTextureRgb(
@@ -259,14 +300,21 @@ export function materialSpecEmissiveLeAtUv(
   material: MaterialSpec,
   uv0: readonly [number, number],
   uv1?: readonly [number, number],
+  selectedHighUv?: readonly [number, number],
 ): [number, number, number] | null {
   const scalar = materialSpecScalarEmissiveLe(material);
   if (scalar == null) return null;
   const ref = material.emissiveMap;
   if (ref == null) return scalar;
-  const texCoord = Math.max(0, Math.floor(ref.texCoord ?? 0));
-  if (texCoord > 1) return scalar;
-  const uv = texCoord === 1 && uv1 != null ? uv1 : uv0;
+  const texCoord = ref.texCoord ?? 0;
+  if (!Number.isSafeInteger(texCoord) || texCoord < 0) return scalar;
+  if (texCoord > 1 && selectedHighUv == null) return scalar;
+  if (texCoord === 1 && uv1 == null) return scalar;
+  const uv = texCoord === 0
+    ? uv0
+    : texCoord === 1
+      ? uv1!
+      : selectedHighUv!;
   const map = sampleReadableTextureRgbAtUv(ref, uv, 'srgb') ?? [1, 1, 1];
   const out: [number, number, number] = [
     scalar[0] * map[0],
@@ -296,8 +344,8 @@ export function emissiveMapTriangleSubdivisionLevel(
   maxSubdivision = 4,
 ): number {
   if (material.emissiveMap == null) return 1;
-  const texCoord = Math.max(0, Math.floor(material.emissiveMap.texCoord ?? 0));
-  if (texCoord > 1) return 1;
+  const texCoord = material.emissiveMap.texCoord ?? 0;
+  if (!Number.isSafeInteger(texCoord) || texCoord < 0) return 1;
   const dims = readableTextureDimensions(material.emissiveMap);
   if (dims == null) return 1;
   const cappedMax = Math.max(1, Math.floor(maxSubdivision));
@@ -403,7 +451,6 @@ function buildTextureCellIntervals(
   mode: TextureRef['wrapS'],
 ): TextureCellInterval[] | null {
   if (texelCount <= 0 || !Number.isFinite(minValue) || !Number.isFinite(maxValue)) return null;
-  if (mode === 'mirrored-repeat') return null;
   if (texelCount === 1) {
     return [{ lo: minValue, hi: maxValue, texel: 0 }];
   }
@@ -424,7 +471,11 @@ function buildTextureCellIntervals(
   const last = Math.floor(maxValue * texelCount);
   const out: TextureCellInterval[] = [];
   for (let cell = first; cell <= last; cell += 1) {
-    const texel = ((cell % texelCount) + texelCount) % texelCount;
+    const period = texelCount * 2;
+    const repeated = ((cell % period) + period) % period;
+    const texel = mode === 'mirrored-repeat'
+      ? (repeated < texelCount ? repeated : period - 1 - repeated)
+      : ((cell % texelCount) + texelCount) % texelCount;
     const lo = Math.max(cell / texelCount, minValue);
     const hi = Math.min((cell + 1) / texelCount, maxValue);
     if (hi > lo + 1e-12) out.push({ lo, hi, texel });
@@ -450,8 +501,9 @@ function texUvArea2(
  * instead of the older fixed quadrature estimate.
  *
  * Returns `false` when an exact split is not representable or bounded here
- * (unreadable map, mirrored repeat, degenerate UVs, or too many covered cells);
- * callers should then fall back to the conservative barycentric subdivision.
+ * (unreadable map, missing selected UV set, non-constant degenerate UVs, or too
+ * many covered cells). Production importance samplers must reject that
+ * emitter rather than substitute scalar-average selection weights.
  * Returns `true` when the texture was handled, even if all covered texels were
  * black and no sub-triangles were emitted.
  */
@@ -473,6 +525,11 @@ export function forEachEmissiveMapTexelSubTriangle(
     ordinal: number,
   ) => void,
   maxCoveredCells = 4096,
+  selectedHighUv?: readonly [
+    readonly [number, number],
+    readonly [number, number],
+    readonly [number, number],
+  ],
 ): boolean {
   const scalar = materialSpecScalarEmissiveLe(material);
   const ref = material.emissiveMap;
@@ -480,15 +537,61 @@ export function forEachEmissiveMapTexelSubTriangle(
   const dims = readableTextureDimensions(ref);
   if (dims == null) return false;
 
-  const texCoord = Math.max(0, Math.floor(ref.texCoord ?? 0));
-  if (texCoord > 1) return false;
-  const useUv1 = texCoord === 1 && uv1A != null && uv1B != null && uv1C != null;
-  const srcA = useUv1 ? uv1A : uv0A;
-  const srcB = useUv1 ? uv1B : uv0B;
-  const srcC = useUv1 ? uv1C : uv0C;
+  const texCoord = ref.texCoord ?? 0;
+  if (!Number.isSafeInteger(texCoord) || texCoord < 0) return false;
+  // A one-texel image is spatially constant under every supported transform,
+  // wrap mode, and UV set. Treating it as one exact whole-triangle cell keeps
+  // constant emissive textures usable even when a primitive has no UVs; there
+  // is no sampling-density ambiguity to resolve in that case.
+  if (dims.width === 1 && dims.height === 1) {
+    const texelRgb = readTextureRgbAtTexel(ref, 0, 0, 'srgb');
+    if (texelRgb == null) return false;
+    const radiance: [number, number, number] = [
+      scalar[0] * texelRgb[0],
+      scalar[1] * texelRgb[1],
+      scalar[2] * texelRgb[2],
+    ];
+    if (radiance[0] > 0 || radiance[1] > 0 || radiance[2] > 0) {
+      visit([1, 0, 0], [0, 1, 0], [0, 0, 1], radiance, 0, 0, 0);
+    }
+    return true;
+  }
+  // The constant-radiance texel partition below is exact for nearest/no-mip
+  // sampling. Linear or mip-filtered emission is continuous within a cell and
+  // needs a different point-density sampler; fail closed so NEE and forward-hit
+  // MIS never use mismatched densities.
+  if (
+    (ref.magFilter ?? 'nearest') !== 'nearest' ||
+    (ref.minFilter ?? 'nearest') !== 'nearest' ||
+    (ref.mipFilter ?? 'none') !== 'none'
+  ) return false;
+  if (texCoord === 1 && (uv1A == null || uv1B == null || uv1C == null)) return false;
+  if (texCoord > 1 && selectedHighUv == null) return false;
+  const srcA = texCoord === 0 ? uv0A : texCoord === 1 ? uv1A! : selectedHighUv![0];
+  const srcB = texCoord === 0 ? uv0B : texCoord === 1 ? uv1B! : selectedHighUv![1];
+  const srcC = texCoord === 0 ? uv0C : texCoord === 1 ? uv1C! : selectedHighUv![2];
   const texA = transformTextureUvUnwrapped(ref, srcA);
   const texB = transformTextureUvUnwrapped(ref, srcB);
   const texC = transformTextureUvUnwrapped(ref, srcC);
+  if (
+    texA[0] === texB[0] && texA[0] === texC[0] &&
+    texA[1] === texB[1] && texA[1] === texC[1]
+  ) {
+    const wrapped = transformTextureUv(ref, srcA);
+    const texelX = Math.min(dims.width - 1, Math.max(0, Math.floor(wrapped[0] * dims.width)));
+    const texelY = Math.min(dims.height - 1, Math.max(0, Math.floor(wrapped[1] * dims.height)));
+    const texelRgb = readTextureRgbAtTexel(ref, texelX, texelY, 'srgb');
+    if (texelRgb == null) return false;
+    const radiance: [number, number, number] = [
+      scalar[0] * texelRgb[0],
+      scalar[1] * texelRgb[1],
+      scalar[2] * texelRgb[2],
+    ];
+    if (radiance[0] > 0 || radiance[1] > 0 || radiance[2] > 0) {
+      visit([1, 0, 0], [0, 1, 0], [0, 0, 1], radiance, texelX, texelY, 0);
+    }
+    return true;
+  }
   if (texUvArea2(texA, texB, texC) < 1e-14) return false;
 
   const minX = Math.min(texA[0], texB[0], texC[0]);
@@ -557,6 +660,11 @@ export function estimateMaterialSpecEmissiveLeOverTriangle(
   uv1A?: readonly [number, number],
   uv1B?: readonly [number, number],
   uv1C?: readonly [number, number],
+  selectedHighUv?: readonly [
+    readonly [number, number],
+    readonly [number, number],
+    readonly [number, number],
+  ],
 ): [number, number, number] | null {
   const scalar = materialSpecScalarEmissiveLe(material);
   if (scalar == null) return null;
@@ -570,7 +678,10 @@ export function estimateMaterialSpecEmissiveLeOverTriangle(
     const uv1 = uv1A != null && uv1B != null && uv1C != null
       ? baryUv(uv1A, uv1B, uv1C, weights)
       : undefined;
-    const le = materialSpecEmissiveLeAtUv(material, uv0, uv1);
+    const highUv = selectedHighUv == null
+      ? undefined
+      : baryUv(selectedHighUv[0], selectedHighUv[1], selectedHighUv[2], weights);
+    const le = materialSpecEmissiveLeAtUv(material, uv0, uv1, highUv);
     r += le?.[0] ?? 0;
     g += le?.[1] ?? 0;
     b += le?.[2] ?? 0;
@@ -588,9 +699,10 @@ export function estimateMaterialSpecEmissiveLeOverTriangle(
  * (absent emissive, non-positive intensity, all-non-positive final channels),
  * so the camera-visible glow Le and the NEE-sampled emitter radiance share one
  * source. When `emissiveMap` exposes readable CPU pixels, the average linear RGB
- * map value modulates Le; opaque/GPU-only handles fall back to the scalar factor.
- * Deliberately EXCLUDES the transmissive "sun-attenuated secondary emitter"
- * branch — that lives in {@link classifyTriangleEmitterCore}.
+ * map value modulates Le. Spatially exact mapped-emitter callers must use
+ * {@link materialSpecEmissiveLeAtUv} or
+ * {@link forEachEmissiveMapTexelSubTriangle}; this helper is an integrated
+ * average-radiance classifier.
  * A missing `emissiveIntensity` defaults to ×1, matching the core material
  * entry adapter and the path-tracing backends.
  *
@@ -615,8 +727,8 @@ export function materialSpecEmissiveLe(
 /**
  * Apply RGB Beer-Lambert absorption to a tint color given a sample
  * thickness / attenuation-distance pair: `c' = c^(thickness/attDist)`
- * (per channel, with a 1e-6 floor). Returns the input color unchanged when any
- * required parameter is missing / non-finite / non-positive.
+ * (per channel, with no artificial channel floor). Missing parameters mean no
+ * authored absorption; malformed present parameters are rejected.
  *
  * Tuple in/out helper used by per-triangle color and Beer-lane packing.
  */
@@ -628,17 +740,17 @@ export function applyBeerLambertColor(
   if (thickness === undefined || attDist === undefined) {
     return [attCol[0], attCol[1], attCol[2]];
   }
-  if (!Number.isFinite(thickness) || !Number.isFinite(attDist)) {
-    return [attCol[0], attCol[1], attCol[2]];
+  if (!Number.isFinite(thickness) || thickness < 0) {
+    throw new RangeError(`applyBeerLambertColor: thickness must be finite and >= 0 (got ${String(thickness)}).`);
   }
-  if (thickness <= 0 || attDist <= 0) {
-    return [attCol[0], attCol[1], attCol[2]];
+  if (!(attDist > 0) || (!Number.isFinite(attDist) && attDist !== Number.POSITIVE_INFINITY)) {
+    throw new RangeError(`applyBeerLambertColor: attenuation distance must be > 0 or +Infinity (got ${String(attDist)}).`);
   }
   const k = thickness / attDist;
   return [
-    Math.pow(Math.max(1e-6, attCol[0]), k),
-    Math.pow(Math.max(1e-6, attCol[1]), k),
-    Math.pow(Math.max(1e-6, attCol[2]), k),
+    Math.pow(attCol[0], k),
+    Math.pow(attCol[1], k),
+    Math.pow(attCol[2], k),
   ];
 }
 
@@ -718,25 +830,19 @@ export function materialSpecSkipEmitter(material: MaterialSpec): boolean {
 }
 
 /**
- * Classify a core `MaterialSpec` + face normal as a ReSTIR-DI emitter, or `null`
- * when the face is not selected. Priority order:
+ * Classify a core `MaterialSpec` as a ReSTIR-DI emitter, or `null` when the
+ * surface has no positive source term.
  *
  *  1. **Emissive** (`emissive.rgb · emissiveIntensity` positive) → direct
  *     emitter with `color = Le`, `intensity = emissiveIntensity` (default 1).
  *     Shares {@link materialSpecEmissiveLe} with the camera-glow packer so the
  *     NEE radiance and the camera glow Le are identical.
- *  2. **Transmissive** (`transmission > {@link MATERIAL_EMITTER_TRANSMISSION_THRESHOLD}`
- *     (0.1), not `skipEmitter`, `|dot(lightDir, normal)| > {@link
- *     MATERIAL_EMITTER_SUN_DOT_THRESHOLD}` (0.05)) → sun-attenuated secondary
- *     emitter:
- *       `color   = baseColor ⊙ attenuationColor · transmission · primaryIntensity · sunDot`
- *       `intensity = primaryIntensity · transmission · sunDot`
- *     `baseColor` / `attenuationColor` default to (1,1,1) when absent.
- *  3. otherwise → `null` (skipped).
+ *  2. Otherwise → `null`. Transmission is transport, never emission; inventing
+ *     a sun-shaped source at glass boundaries double-counts radiance.
  *
  * `lightDir` is the configured primary-light direction; `primaryIntensity` is
  * its irradiance — both passed as plain numbers/tuples. The caller computes
- * power (`luminance(color) · area`) and the < 1e-8 drop.
+ * power (`luminance(color) · area`) without an arbitrary dim-emitter cutoff.
  *
  * @param material         a core `MaterialSpec`.
  * @param normal           the face normal (world-space, unit length).
@@ -746,9 +852,9 @@ export function materialSpecSkipEmitter(material: MaterialSpec): boolean {
  */
 export function classifyTriangleEmitterCore(
   material: MaterialSpec,
-  normal: { x: number; y: number; z: number },
-  lightDir: { x: number; y: number; z: number },
-  primaryIntensity: number,
+  _normal: { x: number; y: number; z: number },
+  _lightDir: { x: number; y: number; z: number },
+  _primaryIntensity: number,
 ): { color: [number, number, number]; intensity: number } | null {
   // 1. Emissive surface → direct emitter (shares the camera-glow Le source).
   const emissiveLe = materialSpecEmissiveLe(material);
@@ -756,24 +862,9 @@ export function classifyTriangleEmitterCore(
     return { color: emissiveLe, intensity: material.emissiveIntensity ?? 1 };
   }
 
-  // 2. Transmissive → sun-attenuated secondary emitter.
-  const trans = material.transmission ?? 0;
-  if (trans <= MATERIAL_EMITTER_TRANSMISSION_THRESHOLD) return null;
-  if (materialSpecSkipEmitter(material)) return null;
-
-  const sunDot = Math.abs(
-    lightDir.x * normal.x + lightDir.y * normal.y + lightDir.z * normal.z,
-  );
-  if (sunDot <= MATERIAL_EMITTER_SUN_DOT_THRESHOLD) return null;
-
-  const baseColor = material.baseColor ?? [1, 1, 1];
-  const attenColor = material.attenuationColor ?? [1, 1, 1];
-  return {
-    color: [
-      baseColor[0] * attenColor[0] * trans * primaryIntensity * sunDot,
-      baseColor[1] * attenColor[1] * trans * primaryIntensity * sunDot,
-      baseColor[2] * attenColor[2] * trans * primaryIntensity * sunDot,
-    ],
-    intensity: primaryIntensity * trans * sunDot,
-  };
+  // Transmission redirects incident radiance; it is not a source term. Treating
+  // glass as a sun-shaped secondary emitter double-counts transport and makes
+  // the result depend on arbitrary thresholds. Caustic/through-glass energy is
+  // owned by the transport estimators, never by emitter classification.
+  return null;
 }

@@ -25,6 +25,8 @@ type Vec4 = readonly [number, number, number, number];
 interface TriangleFixture {
   readonly positions: readonly [Vec3, Vec3, Vec3];
   readonly uvs: readonly [Vec4, Vec4, Vec4];
+  /** Compact GPU UV planes for slots 2+, in slot order. */
+  readonly compactUvPlanes?: readonly (readonly [Vec2, Vec2, Vec2])[];
   readonly tangents?: readonly [Vec4, Vec4, Vec4];
 }
 
@@ -107,8 +109,10 @@ function buildShadingTangentFrame(
   fixture: TriangleFixture,
   baryVW: Vec2,
   normal: Vec3,
+  gpuUvSlot = 0,
+  instanceDeterminantSign = 1,
 ): TangentFrame {
-  if (fixture.tangents) {
+  if (gpuUvSlot === 0 && fixture.tangents) {
     let tangent = baryBlend3([
       [fixture.tangents[0][0], fixture.tangents[0][1], fixture.tangents[0][2]],
       [fixture.tangents[1][0], fixture.tangents[1][1], fixture.tangents[1][2]],
@@ -123,7 +127,7 @@ function buildShadingTangentFrame(
       tangent = sub(tangent, scale(normal, dot(normal, tangent)));
       tangent = normalize(tangent);
       if (Math.hypot(...tangent) > 1e-8) {
-        const handedness = handednessRaw >= 0 ? 1 : -1;
+        const handedness = (handednessRaw >= 0 ? 1 : -1) * instanceDeterminantSign;
         return {
           tangent,
           bitangent: scale(cross(normal, tangent), handedness),
@@ -136,19 +140,29 @@ function buildShadingTangentFrame(
   const p0 = fixture.positions[0];
   const e1 = sub(fixture.positions[1], p0);
   const e2 = sub(fixture.positions[2], p0);
-  const uv0 = fixture.uvs[0];
-  const duv1 = [fixture.uvs[1][0] - uv0[0], fixture.uvs[1][1] - uv0[1]] as const;
-  const duv2 = [fixture.uvs[2][0] - uv0[0], fixture.uvs[2][1] - uv0[1]] as const;
+  const uvForVertex = (vertex: 0 | 1 | 2): Vec2 => {
+    if (gpuUvSlot === 0) return [fixture.uvs[vertex][0], fixture.uvs[vertex][1]];
+    if (gpuUvSlot === 1) return [fixture.uvs[vertex][2], fixture.uvs[vertex][3]];
+    return fixture.compactUvPlanes?.[gpuUvSlot - 2]?.[vertex] ?? [0, 0];
+  };
+  const uv0 = uvForVertex(0);
+  const uv1 = uvForVertex(1);
+  const uv2 = uvForVertex(2);
+  const duv1 = [uv1[0] - uv0[0], uv1[1] - uv0[1]] as const;
+  const duv2 = [uv2[0] - uv0[0], uv2[1] - uv0[1]] as const;
   const det = duv1[0] * duv2[1] - duv2[0] * duv1[1];
   if (Math.abs(det) < 1e-10) return { tangent: [0, 0, 0], bitangent: [0, 0, 0], valid: false };
   const f = 1 / det;
   let tangent = scale(sub(scale(e1, duv2[1]), scale(e2, duv1[1])), f);
+  let bitangent = scale(add(scale(e1, -duv2[0]), scale(e2, duv1[0])), f);
   tangent = sub(tangent, scale(normal, dot(normal, tangent)));
   tangent = normalize(tangent);
   if (Math.hypot(...tangent) < 1e-8) return { tangent: [0, 0, 0], bitangent: [0, 0, 0], valid: false };
+  bitangent = sub(bitangent, scale(normal, dot(normal, bitangent)));
+  const handedness = dot(cross(normal, tangent), bitangent) >= 0 ? 1 : -1;
   return {
     tangent,
-    bitangent: cross(normal, tangent),
+    bitangent: scale(cross(normal, tangent), handedness),
     valid: true,
   };
 }
@@ -207,13 +221,18 @@ function chooseNormalDescriptor(isFrontFace: boolean): NormalDescriptorChoice {
 describe('pt-webgpu normal-map tangent-frame oracle', () => {
   it('keeps the production WGSL linked to the oracle-covered tangent-frame branches', () => {
     for (const snippet of [
-      'fn buildShadingTangentFrame(triIndex: u32, baryVW: vec2f, normal: vec3f, instanceIndex: u32)',
+      'fn buildShadingTangentFrame(triIndex: u32, baryVW: vec2f, normal: vec3f, gpuUvSlot: u32, instanceIndex: u32)',
+      'if (gpuUvSlot == 0u && tri.x < arrayLength(&meshTangents)',
+      'let uv0 = materialUvForVertex(tri.x, gpuUvSlot);',
       'let handednessRaw = ta.w * u + tb.w * v + tc.w * w;',
       'frame.bitangent = cross(normal, tangent) * handedness;',
       'let f = 1.0 / det;',
       'var normalScale = materialTexDescriptors[base + 5u].w;',
       'tn.x = tn.x * normalScale;',
       'normalUvMetaOffset = select(MATERIAL_TEX_UV_BACK_LAYER_NORMAL, MATERIAL_TEX_UV_FRONT_LAYER_NORMAL, isFrontFace);',
+      'let normalGpuUvSlot = u32(materialTexDescriptors[base + normalUvMetaOffset].x);',
+      'let clearcoatNormalGpuUvSlot = u32(',
+      'let bumpGpuUvSlot = u32(uvMeta.x);',
       'let clearcoatNormalScale = materialTexDescriptors[base + MATERIAL_TEX_CLEARCOAT_NORMAL].y;',
     ]) {
       expect(PT_WEBGPU_PATH_TRACE_MATERIAL_WGSL).toContain(snippet);
@@ -251,6 +270,58 @@ describe('pt-webgpu normal-map tangent-frame oracle', () => {
       ],
     }, [0.2, 0.3], NORMAL);
     expect(degenerate.valid).toBe(false);
+  });
+
+  it('normal, bump, and clearcoat-normal frames follow the descriptor-selected compact UV slot', () => {
+    const fixture: TriangleFixture = {
+      ...TRI,
+      uvs: [
+        [0, 0, 0, 0],
+        [1, 0, 0, 1],
+        [0, 1, 1, 0],
+      ],
+      compactUvPlanes: [[
+        [0, 0],
+        [-1, 0],
+        [0, 1],
+      ]],
+      tangents: [
+        [1, 0, 0, 1],
+        [1, 0, 0, 1],
+        [1, 0, 0, 1],
+      ],
+    };
+
+    // Only UV0 may consume authored glTF tangents. UV1 and a compact sparse
+    // authored set (GPU slot 2) derive independent orientations.
+    const uv0Frame = buildShadingTangentFrame(fixture, [0.2, 0.3], NORMAL, 0);
+    const uv1Frame = buildShadingTangentFrame(fixture, [0.2, 0.3], NORMAL, 1);
+    const sparseMirroredFrame = buildShadingTangentFrame(fixture, [0.2, 0.3], NORMAL, 2);
+    vecClose(uv0Frame.tangent, [1, 0, 0]);
+    vecClose(uv1Frame.tangent, [0, 1, 0]);
+    vecClose(uv1Frame.bitangent, [1, 0, 0]);
+    vecClose(sparseMirroredFrame.tangent, [-1, 0, 0]);
+    vecClose(sparseMirroredFrame.bitangent, [0, 1, 0]);
+    expect(dot(
+      cross(sparseMirroredFrame.tangent, sparseMirroredFrame.bitangent),
+      NORMAL,
+    )).toBeCloseTo(-1);
+  });
+
+  it('flips authored tangent handedness for a reflected TLAS instance', () => {
+    const fixture: TriangleFixture = {
+      ...TRI,
+      tangents: [
+        [1, 0, 0, 1],
+        [1, 0, 0, 1],
+        [1, 0, 0, 1],
+      ],
+    };
+    const frame = buildShadingTangentFrame(
+      fixture, [0.2, 0.3], NORMAL, 0, -1,
+    );
+    vecClose(frame.tangent, [1, 0, 0]);
+    vecClose(frame.bitangent, [0, -1, 0]);
   });
 
   it('normalScale damps tangent-space xy tilt before normalization', () => {

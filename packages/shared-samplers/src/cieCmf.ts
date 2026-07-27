@@ -25,6 +25,8 @@
  * Sprint 12 (Phase 6) deliverable — hero-wavelength spectral path tracing.
  * Used by: wavelengthSampling.ts (importance sampling + reconstruction).
  */
+import { requireFinite } from './numericGuards.js';
+
 
 // ── Table dimensions ───────────────────────────────────────────────────────────
 
@@ -159,6 +161,7 @@ export const CIE_D65_TABLE: Readonly<Float32Array> = new Float32Array([
  * @param lambdaNm - Wavelength in nm.
  */
 function sampleTable(table: Float32Array, lambdaNm: number): number {
+  if (!Number.isFinite(lambdaNm)) return 0;
   if (lambdaNm < CIE_LAMBDA_MIN || lambdaNm > CIE_LAMBDA_MAX) return 0;
   const f = (lambdaNm - CIE_LAMBDA_MIN) / CIE_LAMBDA_STEP;
   const lo = Math.floor(f);
@@ -210,9 +213,16 @@ export function xyzToLinearSRGB(
   y: number,
   z: number,
 ): readonly [number, number, number] {
-  return [
+  requireFinite(x, 'xyzToLinearSRGB.x');
+  requireFinite(y, 'xyzToLinearSRGB.y');
+  requireFinite(z, 'xyzToLinearSRGB.z');
+  const rgb = [
      3.2404542 * x - 1.5371385 * y - 0.4985314 * z,
     -0.9692660 * x + 1.8760108 * y + 0.0415560 * z,
      0.0556434 * x - 0.2040259 * y + 1.0572252 * z,
-  ];
+  ] as const;
+  requireFinite(rgb[0], 'xyzToLinearSRGB.result[0]');
+  requireFinite(rgb[1], 'xyzToLinearSRGB.result[1]');
+  requireFinite(rgb[2], 'xyzToLinearSRGB.result[2]');
+  return rgb;
 }

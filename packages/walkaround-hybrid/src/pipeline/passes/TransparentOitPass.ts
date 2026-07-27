@@ -7,14 +7,12 @@
  * into `common.transparentCompositeTexture`.
  */
 
-import { buildTransparentOitBindGroup } from '../bindGroupBuilders.js';
 import {
   dispatchSharedBindGroupPass,
   type Pass,
   type PassDispatchContext,
   type PassInitContext,
 } from '../Pass.js';
-import { cachedBindGroup } from '../PipelineResourceCache.js';
 import type { PassLabel } from '../timestampQueries.js';
 
 export class TransparentOitPass implements Pass {
@@ -35,18 +33,9 @@ export class TransparentOitPass implements Pass {
   async initialize(_ctx: PassInitContext): Promise<void> {}
 
   dispatch(ctx: PassDispatchContext): void {
-    const { device, bglCache, resources, frameState, resourceCache } = ctx;
+    const { resources, frameState } = ctx;
     const outTex = resources.common.transparentCompositeTexture;
-    const buildBg = (): GPUBindGroup => buildTransparentOitBindGroup(
-      device,
-      bglCache,
-      resourceCache?.textureView(frameState.combinedDenoised) ?? frameState.combinedDenoised.createView(),
-      resourceCache?.textureView(outTex) ?? outTex.createView(),
-    );
-    const oitBg = cachedBindGroup(resourceCache, 'pass:transparent-oit', [
-      frameState.combinedDenoised,
-      outTex,
-    ], buildBg);
+    const oitBg = ctx.buildTransparentOitBindGroup(frameState.combinedDenoised, outTex);
 
     dispatchSharedBindGroupPass(ctx, this._pipeline, {
       label: 'transparent-oit',

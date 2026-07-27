@@ -1,72 +1,9 @@
-/**
- * reservoirPtHeroLayout.test.ts — byte-identity guard for the hero ReSTIR-PT /
- * GRIS reservoir (ReservoirPTHero), mirroring walkaround-hybrid's
- * reservoirPtLayout.test.ts (the proven GI reservoir byte-golden style).
- *
- * The reservoir is serialised strided into `array<u32>` via bitcast<u32>(f32) /
- * raw-u32. The CONTRACT this test pins is that EACH field maps to a FROZEN GOLDEN
- * u32 index in the load/store helpers — so a future reorder of the fields (which
- * would silently corrupt every produced/reused reservoir, since the producer,
- * temporal and resolve passes all share this serialization) fails the test. The
- * golden is transcribed BY HAND from the layout comment, NOT read from the
- * current source, so a drift is caught.
- *
- * No GPU: pure source-string / index-mapping regression, same style as
- * walkaround-hybrid/reservoirPtLayout.test.ts and ddgiAtlasLayoutWgsl.test.ts.
- */
-
-import { describe, it, expect } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import {
   RESERVOIR_PT_HERO_WGSL,
   RESTIR_PT_PARAMS_WGSL,
 } from '../wgsl/pathTrace/reservoirPtHero.wgsl.js';
 
-// ── FROZEN GOLDEN — the ReservoirPTHero 224-byte (56 u32) layout ─────────────
-// field → u32 index. Transcribed by hand from the layout comment. A reorder MUST
-// fail. f32 fields go through bitcast<u32>(); u32 fields (M, prefixVertexCount,
-// rngSeed, _padHybrid) are raw.
-const GOLDEN_FIELD_INDEX: Record<string, number> = {
-  'r.xv.x': 0, 'r.xv.y': 1, 'r.xv.z': 2,
-  'r._pad0': 3,
-  'r.nv.x': 4, 'r.nv.y': 5, 'r.nv.z': 6,
-  'r.W': 7,
-  'r.xs.x': 8, 'r.xs.y': 9, 'r.xs.z': 10,
-  'r.w_sum': 11,
-  'r.ns.x': 12, 'r.ns.y': 13, 'r.ns.z': 14,
-  'r.M': 15,
-  'r.Lo.x': 16, 'r.Lo.y': 17, 'r.Lo.z': 18,
-  'r.pdfSrc': 19,
-  'r.wi_recon.x': 20, 'r.wi_recon.y': 21, 'r.wi_recon.z': 22,
-  'r.distRecon': 23,
-  'r.cosReconOut': 24,
-  'r.prefixVertexCount': 25,
-  'r.roughnessV': 26,
-  'r.metalV': 27,
-  'r.albV.x': 28, 'r.albV.y': 29, 'r.albV.z': 30,
-  'r.clearcoatV': 31,
-  'r.clearcoatRoughnessV': 32,
-  'r.sheenV': 33,
-  'r.sheenRoughnessV': 34,
-  'r.sheenColorV.x': 35, 'r.sheenColorV.y': 36, 'r.sheenColorV.z': 37,
-  'r.iridescenceV': 38,
-  'r.iridescenceIorV': 39,
-  'r.iridescenceThicknessMinV': 40,
-  'r.iridescenceThicknessMaxV': 41,
-  'r.anisotropyV': 42,
-  'r.anisotropyRotationV': 43,
-  'r.specularColorV.x': 44, 'r.specularColorV.y': 45, 'r.specularColorV.z': 46,
-  'r.specularIntensityV': 47,
-  'r.clearcoatNormalV.x': 48, 'r.clearcoatNormalV.y': 49, 'r.clearcoatNormalV.z': 50,
-  'r._padClearcoatNormalV': 51,
-  'r.hybridJacCache': 52,
-  'r.hybridShiftPdf': 53,
-  'r.rngSeed': 54,
-  'r._padHybrid': 55,
-};
-
-const RAW_U32_FIELDS = new Set(['r.M', 'r.prefixVertexCount', 'r.rngSeed', 'r._padHybrid']);
-
-/** Extract a named WGSL function body (text between the fn's `{` and its `}`). */
 function fnBody(src: string, fnName: string): string {
   const sig = src.indexOf(`fn ${fnName}(`);
   expect(sig, `fn ${fnName} present`).toBeGreaterThanOrEqual(0);
@@ -75,150 +12,249 @@ function fnBody(src: string, fnName: string): string {
   let i = open;
   for (; i < src.length; i++) {
     if (src[i] === '{') depth++;
-    else if (src[i] === '}') {
-      depth--;
-      if (depth === 0) break;
-    }
+    else if (src[i] === '}' && --depth === 0) break;
   }
   return src.slice(open + 1, i);
 }
 
-describe('ReSTIR-PT hero reservoir — ReservoirPTHero stride = 56 u32 / 224 bytes', () => {
-  it('declares RESERVOIR_PT_HERO_STRIDE = 56u', () => {
-    expect(RESERVOIR_PT_HERO_WGSL).toContain('const RESERVOIR_PT_HERO_STRIDE: u32 = 56u;');
-  });
+interface PackedLoMeta {
+  readonly word0: number;
+  readonly word1: number;
+}
 
-  it('declares the ReservoirPTHero struct', () => {
-    expect(RESERVOIR_PT_HERO_WGSL).toContain('struct ReservoirPTHero {');
-  });
-
-  it('declares the RestirPtParams UBO (the reuse unit owns its tunables)', () => {
-    expect(RESTIR_PT_PARAMS_WGSL).toContain('struct RestirPtParams {');
-    expect(RESTIR_PT_PARAMS_WGSL).toContain('wCap:     f32,');
-    expect(RESTIR_PT_PARAMS_WGSL).toContain('mClamp:   u32,');
-    expect(RESTIR_PT_PARAMS_WGSL).toContain('allowGlossyReuse: u32,');
-  });
-});
-
-describe('ReSTIR-PT hero reservoir — every field at its golden u32 index', () => {
-  const store = fnBody(RESERVOIR_PT_HERO_WGSL, 'storeReservoirPTHero_rw');
-  const loadRw = fnBody(RESERVOIR_PT_HERO_WGSL, 'loadReservoirPTHero_rw');
-  const loadRo = fnBody(RESERVOIR_PT_HERO_WGSL, 'loadReservoirPTHero_ro');
-
-  it('store helper writes every field at its golden u32 index', () => {
-    for (const [field, idx] of Object.entries(GOLDEN_FIELD_INDEX)) {
-      const isRawU32 = RAW_U32_FIELDS.has(field);
-      const escaped = field.replace(/\./g, '\\.');
-      const pat = isRawU32
-        ? new RegExp(`buf\\[b \\+ ${idx}u\\]\\s*=\\s*${escaped};`)
-        : new RegExp(`buf\\[b \\+ ${idx}u\\]\\s*=\\s*bitcast<u32>\\(${escaped}\\);`);
-      expect(pat.test(store), `store ${field} at index ${idx}`).toBe(true);
-    }
-  });
-
-  it('both load helpers read every field from its golden u32 index', () => {
-    const checks: { lhs: string; indices: number[]; raw: boolean }[] = [
-      { lhs: 'r.xv', indices: [0, 1, 2], raw: false },
-      { lhs: 'r._pad0', indices: [3], raw: false },
-      { lhs: 'r.nv', indices: [4, 5, 6], raw: false },
-      { lhs: 'r.W', indices: [7], raw: false },
-      { lhs: 'r.xs', indices: [8, 9, 10], raw: false },
-      { lhs: 'r.w_sum', indices: [11], raw: false },
-      { lhs: 'r.ns', indices: [12, 13, 14], raw: false },
-      { lhs: 'r.M', indices: [15], raw: true },
-      { lhs: 'r.Lo', indices: [16, 17, 18], raw: false },
-      { lhs: 'r.pdfSrc', indices: [19], raw: false },
-      { lhs: 'r.wi_recon', indices: [20, 21, 22], raw: false },
-      { lhs: 'r.distRecon', indices: [23], raw: false },
-      { lhs: 'r.cosReconOut', indices: [24], raw: false },
-      { lhs: 'r.prefixVertexCount', indices: [25], raw: true },
-      { lhs: 'r.roughnessV', indices: [26], raw: false },
-      { lhs: 'r.metalV', indices: [27], raw: false },
-      { lhs: 'r.albV', indices: [28, 29, 30], raw: false },
-      { lhs: 'r.clearcoatV', indices: [31], raw: false },
-      { lhs: 'r.clearcoatRoughnessV', indices: [32], raw: false },
-      { lhs: 'r.sheenV', indices: [33], raw: false },
-      { lhs: 'r.sheenRoughnessV', indices: [34], raw: false },
-      { lhs: 'r.sheenColorV', indices: [35, 36, 37], raw: false },
-      { lhs: 'r.iridescenceV', indices: [38], raw: false },
-      { lhs: 'r.iridescenceIorV', indices: [39], raw: false },
-      { lhs: 'r.iridescenceThicknessMinV', indices: [40], raw: false },
-      { lhs: 'r.iridescenceThicknessMaxV', indices: [41], raw: false },
-      { lhs: 'r.anisotropyV', indices: [42], raw: false },
-      { lhs: 'r.anisotropyRotationV', indices: [43], raw: false },
-      { lhs: 'r.specularColorV', indices: [44, 45, 46], raw: false },
-      { lhs: 'r.specularIntensityV', indices: [47], raw: false },
-      { lhs: 'r.clearcoatNormalV', indices: [48, 49, 50], raw: false },
-      { lhs: 'r._padClearcoatNormalV', indices: [51], raw: false },
-      { lhs: 'r.hybridJacCache', indices: [52], raw: false },
-      { lhs: 'r.hybridShiftPdf', indices: [53], raw: false },
-      { lhs: 'r.rngSeed', indices: [54], raw: true },
-      { lhs: 'r._padHybrid', indices: [55], raw: true },
+function packLoMetaCpu(
+  loInput: readonly [number, number, number],
+  heroLambdaInput: number,
+  isFrontFace: boolean,
+  mInput: number,
+): PackedLoMeta {
+  const finite = loInput.every((v) => Number.isFinite(v));
+  const lo = finite
+    ? loInput.map((v) => Math.max(0, v)) as [number, number, number]
+    : [0, 0, 0] as [number, number, number];
+  const maxChannel = Math.max(...lo);
+  let exponentCode = 0;
+  let q: [number, number, number] = [0, 0, 0];
+  if (maxChannel > 0) {
+    const exponent = Math.max(-114, Math.min(128, Math.floor(Math.log2(maxChannel)) + 1));
+    exponentCode = exponent + 127;
+    const scale = 2 ** (12 - exponent);
+    q = lo.map((v) => Math.max(0, Math.min(4095, Math.round(v * scale)))) as [
+      number, number, number,
     ];
-    for (const body of [loadRw, loadRo]) {
-      for (const { lhs, indices, raw } of checks) {
-        for (const idx of indices) {
-          const inner = raw ? `buf\\[b \\+ ${idx}u\\]` : `bitcast<f32>\\(buf\\[b \\+ ${idx}u\\]\\)`;
-          expect(new RegExp(inner).test(body), `${lhs} reads index ${idx}`).toBe(true);
-        }
-        const esc = lhs.replace(/\./g, '\\.');
-        expect(new RegExp(`${esc}\\s*=`).test(body), `${lhs} assigned`).toBe(true);
+  }
+  const heroLambda = Number.isFinite(heroLambdaInput) ? heroLambdaInput : 550;
+  const lambdaQ = Math.round(
+    Math.max(0, Math.min(1, (heroLambda - 380) / 400)) * 32767,
+  );
+  const m = Math.max(0, Math.min(4095, Math.trunc(mInput)));
+  const word0 = (
+    (q[0] & 0xfff) |
+    ((q[1] & 0xfff) << 12) |
+    ((q[2] & 0xff) << 24)
+  ) >>> 0;
+  const word1 = (
+    ((q[2] >>> 8) & 0xf) |
+    ((exponentCode & 0xff) << 4) |
+    ((lambdaQ & 0x7fff) << 12) |
+    ((isFrontFace ? 1 : 0) << 27) |
+    (((m >>> 8) & 0xf) << 28)
+  ) >>> 0;
+  return { word0, word1 };
+}
+
+function unpackLoMetaCpu(
+  { word0, word1 }: PackedLoMeta,
+  surfaceWord: number,
+): {
+  readonly lo: readonly [number, number, number];
+  readonly heroLambda: number;
+  readonly isFrontFace: boolean;
+  readonly m: number;
+} {
+  const q: [number, number, number] = [
+    word0 & 0xfff,
+    (word0 >>> 12) & 0xfff,
+    ((word0 >>> 24) & 0xff) | ((word1 & 0xf) << 8),
+  ];
+  const exponentCode = (word1 >>> 4) & 0xff;
+  const scale = exponentCode === 0 ? 0 : 2 ** ((exponentCode - 127) - 12);
+  const lambdaQ = (word1 >>> 12) & 0x7fff;
+  return {
+    lo: [q[0] * scale, q[1] * scale, q[2] * scale],
+    heroLambda: 380 + 400 * lambdaQ / 32767,
+    isFrontFace: ((word1 >>> 27) & 1) !== 0,
+    m: (((word1 >>> 28) & 0xf) << 8) | ((surfaceWord >>> 24) & 0xff),
+  };
+}
+
+function packMeshBaryCpu(v: number, w: number): number {
+  const qv = Math.round(Math.max(0, Math.min(1, v)) * 4095);
+  const qw = Math.round(Math.max(0, Math.min(1, w)) * 4095);
+  return (qv & 0xfff) | ((qw & 0xfff) << 12);
+}
+
+function unpackMeshBaryCpu(packed: number): readonly [number, number] {
+  let v = (packed & 0xfff) / 4095;
+  let w = ((packed >>> 12) & 0xfff) / 4095;
+  const sum = v + w;
+  if (sum > 1) {
+    v /= sum;
+    w /= sum;
+  }
+  return [v, w];
+}
+
+describe('ReSTIR-PT compact hero reservoir ABI', () => {
+  it('is exactly 16 u32 / 64 bytes and writes each word once', () => {
+    expect(RESERVOIR_PT_HERO_WGSL).toContain(
+      'const RESERVOIR_PT_HERO_STRIDE: u32 = 16u;',
+    );
+    const store = fnBody(RESERVOIR_PT_HERO_WGSL, 'storeReservoirPTHero_rw');
+    const writes = [...store.matchAll(/buf\[b \+ (\d+)u\]\s*=/g)]
+      .map((match) => Number(match[1]));
+    expect(writes).toHaveLength(16);
+    expect([...new Set(writes)].sort((a, b) => a - b)).toEqual(
+      Array.from({ length: 16 }, (_, index) => index),
+    );
+  });
+
+  it('both load paths read the same 16-word ABI', () => {
+    for (const name of ['loadReservoirPTHero_ro', 'loadReservoirPTHero_rw']) {
+      const body = fnBody(RESERVOIR_PT_HERO_WGSL, name);
+      for (let index = 0; index < 16; index++) {
+        expect(body, `${name} reads word ${index}`).toContain(`buf[b + ${index}u]`);
       }
     }
   });
 
-  it('no write touches an index >= 56 (stride bound)', () => {
-    const writes = [...store.matchAll(/buf\[b \+ (\d+)u\]/g)].map((m) => Number(m[1]));
-    expect(writes.length).toBeGreaterThan(0);
-    for (const idx of writes) expect(idx).toBeLessThan(56);
+  it('pins compression, rehydration, saturation, and corrupt-identity guards', () => {
+    for (const token of [
+      'pack2x16snorm(octEncode',
+      'const RPT_MAX_STORED_M: u32 = 4095u;',
+      'fn rptPackLoMeta(',
+      'fn rptCanonicalizeStoredLo(',
+      'fn rptVisibleMaterialAtSurface(',
+      'fn rptHydrateVisibleDomain(',
+      'fn rptVisibleIdentityIsValid(',
+      'return emptyReservoirPTHero();',
+      'r.pdfSrc = 1.0;',
+    ]) {
+      expect(RESERVOIR_PT_HERO_WGSL).toContain(token);
+    }
   });
 
-  it('writes all 56 indices [0..55] exactly once', () => {
-    const writes = [...store.matchAll(/buf\[b \+ (\d+)u\]/g)].map((m) => Number(m[1]));
-    const seen = new Set(writes);
-    expect(seen.size).toBe(56);
-    for (let i = 0; i < 56; i++) expect(seen.has(i), `index ${i} written`).toBe(true);
+  it('keeps the reuse unit tunables in its 32-byte UBO', () => {
+    expect(RESTIR_PT_PARAMS_WGSL).toContain('struct RestirPtParams {');
+    expect(RESTIR_PT_PARAMS_WGSL).toContain('mClamp:   u32,');
+    expect(RESTIR_PT_PARAMS_WGSL).toContain('wCap:     f32,');
   });
 });
 
-describe('ReSTIR-PT hero reservoir — empty constructor zeroes every field', () => {
+describe('ReSTIR-PT compact HDR/meta packing oracle', () => {
+  it.each([
+    ['zero', [0, 0, 0] as const],
+    ['subnormal', [Number.MIN_VALUE, Number.MIN_VALUE, Number.MIN_VALUE] as const],
+    ['very dark', [2 ** -120, 2 ** -121, 0] as const],
+    ['ordinary HDR', [0.125, 12.5, 1000] as const],
+    ['max finite f32', [3.402823466e38, 1.7014117e38, 0] as const],
+    ['NaN rejected', [Number.NaN, 1, 2] as const],
+  ])('%s stays finite and non-negative', (_label, lo) => {
+    const packed = packLoMetaCpu(lo, 510, true, 4095);
+    const decoded = unpackLoMetaCpu(packed, 0xff00_0000);
+    for (const channel of decoded.lo) {
+      expect(Number.isFinite(channel)).toBe(true);
+      expect(channel).toBeGreaterThanOrEqual(0);
+    }
+    expect(decoded.isFrontFace).toBe(true);
+    expect(decoded.m).toBe(4095);
+  });
+
+  it('round-trips representable HDR within one shared-exponent quantization step', () => {
+    for (const lo of [
+      [1e-20, 2e-20, 4e-20],
+      [0.125, 12.5, 1000],
+      [1e10, 2e10, 3e10],
+      [3.402823466e38, 1.7014117e38, 0],
+    ] as const) {
+      const decoded = unpackLoMetaCpu(packLoMetaCpu(lo, 510, false, 20), 20 << 24);
+      const maxChannel = Math.max(...lo);
+      for (let channel = 0; channel < 3; channel++) {
+        const normalizedAbsoluteError =
+          Math.abs(decoded.lo[channel]! - lo[channel]!) / maxChannel;
+        expect(normalizedAbsoluteError).toBeLessThanOrEqual(1 / 2047);
+      }
+    }
+  });
+
+  it('sanitizes nonfinite wavelength and accurately preserves finite wavelength', () => {
+    const invalid = unpackLoMetaCpu(packLoMetaCpu([1, 1, 1], Number.NaN, false, 1), 1 << 24);
+    expect(invalid.heroLambda).toBeCloseTo(550, 2);
+    const finite = unpackLoMetaCpu(packLoMetaCpu([1, 1, 1], 612.345, false, 1), 1 << 24);
+    expect(finite.heroLambda).toBeCloseTo(612.345, 2);
+  });
+});
+
+describe('ReSTIR-PT compact barycentric packing oracle', () => {
+  it.each([
+    [0, 0],
+    [1, 0],
+    [0, 1],
+    [0.5, 0.5],
+    [1 / 3, 1 / 3],
+    [0.9999, 0.0001],
+  ])('keeps boundary barycentric (%s,%s) on the simplex', (v, w) => {
+    const decoded = unpackMeshBaryCpu(packMeshBaryCpu(v, w));
+    expect(decoded[0]).toBeGreaterThanOrEqual(0);
+    expect(decoded[1]).toBeGreaterThanOrEqual(0);
+    expect(decoded[0] + decoded[1]).toBeLessThanOrEqual(1);
+  });
+
+  it('keeps deterministic random valid barycentrics on the simplex', () => {
+    let state = 0x12345678;
+    const random = (): number => {
+      state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+      return state / 0x1_0000_0000;
+    };
+    for (let i = 0; i < 2048; i++) {
+      let v = random();
+      let w = random();
+      if (v + w > 1) {
+        v = 1 - v;
+        w = 1 - w;
+      }
+      const decoded = unpackMeshBaryCpu(packMeshBaryCpu(v, w));
+      expect(decoded[0] + decoded[1]).toBeLessThanOrEqual(1);
+      expect(Math.abs(decoded[0] - v)).toBeLessThanOrEqual(1 / 2047);
+      expect(Math.abs(decoded[1] - w)).toBeLessThanOrEqual(1 / 2047);
+    }
+  });
+});
+
+describe('ReSTIR-PT empty reservoir', () => {
   const empty = fnBody(RESERVOIR_PT_HERO_WGSL, 'emptyReservoirPTHero');
 
-  it('zero/identity-initialises the sample fields', () => {
-    expect(empty).toContain('r.xv = vec3f(0.0);');
-    expect(empty).toContain('r.nv = vec3f(0,1,0);');
-    expect(empty).toContain('r.xs = vec3f(0.0);');
-    expect(empty).toContain('r.ns = vec3f(0,1,0);');
-    expect(empty).toContain('r.Lo = vec3f(0.0);');
-    expect(empty).toContain('r.W = 0.0;');
-    expect(empty).toContain('r.w_sum = 0.0;');
-    expect(empty).toContain('r.M = 0u;');
-    expect(empty).toContain('r.pdfSrc = 0.0;');
+  it('initializes all persisted identity and metadata sentinels', () => {
+    for (const token of [
+      'r.W = 0.0;',
+      'r.w_sum = 0.0;',
+      'r.M = 0u;',
+      'r.pdfSrc = 0.0;',
+      'r.heroLambdaV = 550.0;',
+      'r.isFrontFaceV = true;',
+      'r.instanceIndexV = INVALID_TLAS_INSTANCE_INDEX;',
+      'r.triangleIndexV = 0xffffffffu;',
+    ]) {
+      expect(empty).toContain(token);
+    }
   });
 
-  it('zero-initialises the reconnection-shift cache + visible-vertex material', () => {
-    expect(empty).toContain('r.wi_recon = vec3f(0.0);');
-    expect(empty).toContain('r.distRecon = 0.0;');
-    expect(empty).toContain('r.cosReconOut = 0.0;');
-    expect(empty).toContain('r.prefixVertexCount = 0u;');
-    expect(empty).toContain('r.roughnessV = 0.0;');
-    expect(empty).toContain('r.metalV = 0.0;');
-    expect(empty).toContain('r.albV = vec3f(0.0);');
-    expect(empty).toContain('r.clearcoatV = 0.0;');
-    expect(empty).toContain('r.sheenV = 0.0;');
-    expect(empty).toContain('r.sheenColorV = vec3f(0.0);');
-    expect(empty).toContain('r.iridescenceIorV = 1.3;');
-    expect(empty).toContain('r.anisotropyV = 0.0;');
-    expect(empty).toContain('r.specularColorV = vec3f(1.0);');
-    expect(empty).toContain('r.specularIntensityV = 1.0;');
-    expect(empty).toContain('r.clearcoatNormalV = r.nv;');
-    expect(empty).toContain('r._padClearcoatNormalV = 0.0;');
-  });
-
-  it('zero-initialises the live hybrid-shift cache + rngSeed headroom', () => {
-    expect(empty).toContain('r.hybridJacCache = 0.0;');
-    expect(empty).toContain('r.hybridShiftPdf = 0.0;');
-    expect(empty).toContain('r.rngSeed = 0u;');
-    expect(empty).toContain('r._padHybrid = 0u;');
+  it('does not synthesize an unstored prefix gate and empties invalid one-edge paths', () => {
+    expect(RESERVOIR_PT_HERO_WGSL).not.toContain('prefixVertexCount');
+    const refresh = fnBody(RESERVOIR_PT_HERO_WGSL, 'refreshReconnectionStatePT');
+    expect(refresh).toContain('!rptFinitePositive(dRecon) || dRecon <= 1e-6');
+    expect(refresh).toContain('(*r).M = 0u;');
+    expect(refresh).toContain('(*r).W = 0.0;');
+    expect(refresh).toContain('(*r).w_sum = 0.0;');
   });
 });

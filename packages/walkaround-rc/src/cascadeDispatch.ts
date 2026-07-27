@@ -43,7 +43,7 @@ interface CastPassHandles {
   /** Uniform buffer (GPUBuffer wrapping a Float32Array aligned to CascadeUniforms). */
   cascadeParamsBuf: GPUBuffer;
   /** CPU-side backing for the uniform buffer — updated each frame. */
-  cascadeParamsRaw: Float32Array;
+  cascadeParamsRaw: Float32Array<ArrayBuffer>;
   /** Workgroup dispatch count = ceil(totalRays / 64). */
   dispatchX:  number;
 }
@@ -76,17 +76,68 @@ interface DispatchHandles {
   placeholderTangentTexture?: GPUTexture;
   /** Owned 1x1 white vertex-color texture when caller provided none. */
   placeholderVertexColorTexture?: GPUTexture;
+  /** Packed read-only material/TLAS arena consumed by the cast shader. */
+  sceneArenaBuf: GPUBuffer;
+  /** Dirty source ranges copied incrementally into {@link sceneArenaBuf}. */
+  sceneArenaCopies: SceneArenaCopy[];
+  materialArenaVersion: number;
+  tlasArenaVersion: number;
+  /** Every destroyable resource allocated while building this candidate. */
+  ownedResources: OwnedGpuResource[];
 }
+
+interface OwnedGpuResource {
+  destroy(): void;
+}
+
+type OwnGpuResource = <T extends OwnedGpuResource>(resource: T) => T;
+
+interface SceneArenaCopy {
+  source: GPUBuffer;
+  readonly destinationOffset: number;
+  readonly size: number;
+  readonly category: 'material' | 'tlas';
+  dirty: boolean;
+}
+
+/**
+ * The cast shader stays within WebGPU's guaranteed minimum of eight storage
+ * buffers per shader stage. Hosts therefore never need to negotiate an
+ * optional adapter limit just to enable RC.
+ */
+export const RC_REQUIRED_MAX_STORAGE_BUFFERS_PER_SHADER_STAGE = 8;
+
+/** Runtime dielectric-interface budget accepted by the bounded RC glass walk. */
+export const RC_MIN_TRANSMITTED_INTERFACE_BUDGET = 1;
+export const RC_MAX_TRANSMITTED_INTERFACE_BUDGET = 8;
+export const RC_DEFAULT_TRANSMITTED_INTERFACE_BUDGET = 8;
+
+const RC_SCENE_ARENA_HEADER_WORDS = 16;
+const RC_SCENE_ARENA_HEADER_BYTES = RC_SCENE_ARENA_HEADER_WORDS * 4;
+const RC_CASCADE_UNIFORM_WORDS = 40;
+const RC_CASCADE_UNIFORM_BYTES = RC_CASCADE_UNIFORM_WORDS * 4;
+const RC_EMITTER_STRIDE_BYTES = 80;
+const RC_ALIAS_STRIDE_BYTES = 16;
+const RC_LIGHT_HEADER_BYTES = 16;
+const RC_LIGHT_STRIDE_BYTES = 64;
+const RC_LIGHTS_BUFFER_BYTES = RC_LIGHT_HEADER_BYTES;
+const UINT32_MAX = 0xffff_ffff;
 
 interface DispatchBindingSignature {
   readonly device: GPUDevice;
   readonly bvhMode: 'merged' | 'tlas';
   readonly bvhNodesBuf: GPUBuffer;
+  readonly bvhNodesOffset: number;
+  readonly bvhNodesSize: number | null;
   readonly bvhIndicesBuf: GPUBuffer;
+  readonly bvhIndicesOffset: number;
+  readonly bvhIndicesSize: number | null;
   readonly bvhPositionsBuf: GPUBuffer;
+  readonly bvhPositionsOffset: number;
+  readonly bvhPositionsSize: number | null;
   readonly bvhNormalsBuf: GPUBuffer;
-  readonly materialsBuf: GPUBuffer;
-  readonly triMaterialIdBuf: GPUBuffer;
+  readonly bvhNormalsOffset: number;
+  readonly bvhNormalsSize: number | null;
   readonly cascadeBufs: readonly GPUBuffer[];
   readonly probeOriginWorld: readonly [number, number, number];
   readonly roomSize: readonly [number, number, number];
@@ -96,13 +147,14 @@ interface DispatchBindingSignature {
   readonly materialMapMetaTextureView: GPUTextureView | null;
   readonly bvhTangentTextureView: GPUTextureView | null;
   readonly bvhVertexColorTextureView: GPUTextureView | null;
-  readonly tlasNodesBuf: GPUBuffer | null;
-  readonly tlasInstanceIndicesBuf: GPUBuffer | null;
-  readonly tlasBlasRootsBuf: GPUBuffer | null;
-  readonly tlasInstanceWorldToLocalBuf: GPUBuffer | null;
-  readonly tlasInstanceLocalToWorldBuf: GPUBuffer | null;
   readonly emittersBuf: GPUBuffer | null;
+  readonly emittersOffset: number;
+  readonly emittersSize: number | null;
+  readonly emitterDataOffset: number;
+  readonly emitterAliasOffset: number;
   readonly lightsBuf: GPUBuffer | null;
+  readonly lightsOffset: number;
+  readonly lightsSize: number | null;
 }
 
 // ─── Public interface ─────────────────────────────────────────────────────────
@@ -124,14 +176,32 @@ export interface RCDispatchOptsRaw {
   /** Raw WebGPU device — caller-owned. */
   device:             GPUDevice;
 
-  /** BVH GPU buffers (6 separate SSBOs; layout matches the raw RC SceneBVH contract). */
+  /**
+   * BVH GPU buffers. The optional byte ranges let an owning renderer bind
+   * RC directly to subranges of its canonical scene-storage arena instead of
+   * allocating a second geometry BVH. Offsets must satisfy the device storage
+   * binding alignment; sizes default to the remainder of the buffer.
+   */
   bvhNodesBuf:        GPUBuffer;
+  bvhNodesOffset?:    number;
+  bvhNodesSize?:      number;
   bvhIndicesBuf:      GPUBuffer;
+  bvhIndicesOffset?:  number;
+  bvhIndicesSize?:    number;
   bvhPositionsBuf:    GPUBuffer;
+  bvhPositionsOffset?: number;
+  bvhPositionsSize?:   number;
   /** Packed normal.xyz plus UV1 in .w, matching the shared ReSTIR BVH layout. */
   bvhNormalsBuf:      GPUBuffer;
+  bvhNormalsOffset?:  number;
+  bvhNormalsSize?:    number;
+  /** Must include `GPUBufferUsage.COPY_SRC`; packed into RC's scene arena. */
   materialsBuf:       GPUBuffer;
+  /** Must include `GPUBufferUsage.COPY_SRC`; packed into RC's scene arena. */
   triMaterialIdBuf:   GPUBuffer;
+  /** Increment when material/triangle-material data is mutated in place. A
+   *  replacement buffer identity is detected automatically. */
+  materialArenaVersion?: number;
 
   /** One cascade-output `GPUBuffer` per cascade, same order as
    *  {@link CASCADE_DIMS}. The dispatcher writes into these (cast) and
@@ -154,6 +224,29 @@ export interface RCDispatchOptsRaw {
    *  view + sampler. Pass `null` to use the dispatcher's 1×1 black placeholder. */
   envTextureView?:    GPUTextureView | null;
   envSampler?:        GPUSampler | null;
+  /**
+   * H6 world-to-unrotated-map Y rotation in radians. The shader evaluates
+   * `RY(-envRotationY) * worldDirection` before equirectangular lookup.
+   * Defaults to 0.
+   */
+  envRotationY?:      number;
+  /**
+   * Linear radiance multiplier for the environment map. The bound map is
+   * expected to contain unit-intensity texels. Defaults to 1.
+   */
+  envIntensity?:      number;
+  /**
+   * Constant sky radiance used on last-cascade misses when no directional
+   * environment is active. Defaults to black for raw callers.
+   */
+  scalarSkyRadiance?: readonly [number, number, number];
+  /**
+   * Whether the supplied texture/sampler pair contains a live directional
+   * environment. Defaults to true when a pair is supplied and false otherwise,
+   * preserving existing raw-call behavior while allowing a bindable black
+   * placeholder to select {@link scalarSkyRadiance}.
+   */
+  hasDirectionalEnvironment?: boolean;
 
   /** Material texture atlas + per-triangle map metadata for UV-varying
    *  material-backed emitter radiance. When omitted, RC falls back to the
@@ -172,15 +265,23 @@ export interface RCDispatchOptsRaw {
   frameSeed:          number;
   /** Möller–Trumbore coplanarity threshold. Default 1e-5. */
   triIntersectEpsilon?: number;
+  /** Maximum dielectric interfaces crossed by one transmitted probe ray.
+   *  Integer in [1, 8]. Defaults to 8. Thin sheets consume two interfaces. */
+  transmittedInterfaceBudget?: number;
 
   /** C2 — TLAS traversal (ReSTIR-shared buffers). Omit for merged-only RC BVH. */
   bvhMode?: 'merged' | 'tlas';
   tlasNodeCount?: number;
+  /** TLAS buffers must include `GPUBufferUsage.COPY_SRC`; RC packs them into
+   *  one read-only arena to stay within WebGPU's guaranteed binding limits. */
   tlasNodesBuf?: GPUBuffer;
   tlasInstanceIndicesBuf?: GPUBuffer;
   tlasBlasRootsBuf?: GPUBuffer;
   tlasInstanceWorldToLocalBuf?: GPUBuffer;
   tlasInstanceLocalToWorldBuf?: GPUBuffer;
+  /** Increment when any TLAS buffer is mutated in place. Replacement buffer
+   *  identities are detected automatically. */
+  tlasArenaVersion?: number;
 
   /** Rect-area emitter NEE (2026-06-07). The packed `array<EmitterTri>` buffer
    *  (80 bytes/tri — share the main pipeline's `BvhBufferHost._emitterBuffer`)
@@ -188,14 +289,18 @@ export interface RCDispatchOptsRaw {
    *  (sun + emissive geometry + env); the dispatcher binds an 80-byte zero
    *  placeholder so the bind group stays valid. */
   emittersBuf?: GPUBuffer;
+  emittersOffset?: number;
+  emittersSize?: number;
+  /** Byte offsets relative to the bound emitter window. */
+  emitterDataOffset?: number;
+  emitterAliasOffset?: number;
   emitterCount?: number;
 
-  /** A7 (2026-06-10): packed `RCLightBuffer` (point/spot analytic lights).
-   *  16-byte header (count + 3 pad) + up to 16 × 64-byte RCLight entries =
-   *  1040 bytes total. The host packs this via `packRCLights()` in
-   *  HybridEngineRC.ts. Omit to bind a 1040-byte zero placeholder (lightCount
-   *  stays 0 → loop is a no-op, byte-identical with prior). */
+  /** Runtime-sized RCLight records plus represented-PMF alias entries.
+   * Omit to bind a header-only zero placeholder. */
   lightsBuf?: GPUBuffer;
+  lightsOffset?: number;
+  lightsSize?: number;
   lightCount?: number;
 }
 
@@ -216,16 +321,124 @@ export interface CascadeUniformInputs {
   readonly sunCastShadowDisabled: boolean;
   readonly sunAngularRadius: number;
   readonly envIntensity:     number;
+  /** H6 world-to-unrotated-map Y rotation. Defaults to 0. */
+  readonly envRotationY?:    number;
+  /** Scalar sky radiance selected when no directional environment is active. */
+  readonly scalarSkyRadiance?: readonly [number, number, number];
+  readonly hasDirectionalEnvironment?: boolean;
   readonly frameSeed:        number;
   /** E2: Möller–Trumbore coplanarity threshold (was local WGSL const). */
   readonly triIntersectEpsilon: number;
+  /** Bounded transmitted-dielectric interface count. Defaults to 8. */
+  readonly transmittedInterfaceBudget?: number;
   readonly bvhMode:          number;
   readonly tlasNodeCount:    number;
   readonly emitterCount:     number;
-  /** A7: point/spot analytic light count. */
+  /** Runtime punctual/directional analytic light count. */
   readonly lightCount:       number;
+  readonly emitterDataWordOffset?: number;
+  readonly emitterAliasWordOffset?: number;
   /** Per-instance cascade dimensions. Defaults to {@link CASCADE_DIMS}. */
   readonly dims?:            readonly CascadeDim[];
+}
+
+function assertU32(value: unknown, path: string): asserts value is number {
+  if (!Number.isSafeInteger(value) || (value as number) < 0 || (value as number) > UINT32_MAX) {
+    throw new Error(`${path} must be an unsigned 32-bit integer; received ${String(value)}`);
+  }
+}
+
+function assertFiniteF32(value: unknown, path: string): asserts value is number {
+  if (
+    typeof value !== 'number' ||
+    !Number.isFinite(value) ||
+    !Number.isFinite(Math.fround(value))
+  ) {
+    throw new Error(`${path} must be a finite f32; received ${String(value)}`);
+  }
+}
+
+function assertFiniteVec3(
+  value: unknown,
+  path: string,
+  predicate?: (component: number) => boolean,
+  predicateDescription?: string,
+): asserts value is readonly [number, number, number] {
+  if (!Array.isArray(value) || value.length !== 3) {
+    throw new Error(`${path} must be a [x, y, z] tuple`);
+  }
+  const tuple: readonly unknown[] = value;
+  for (let axis = 0; axis < 3; axis += 1) {
+    const component = tuple[axis];
+    assertFiniteF32(component, `${path}[${axis}]`);
+    if (predicate && !predicate(component)) {
+      throw new Error(`${path}[${axis}] must be ${predicateDescription ?? 'valid'}`);
+    }
+  }
+}
+
+function validateCascadeUniformInputs(
+  k: number,
+  inputs: CascadeUniformInputs,
+): readonly CascadeDim[] {
+  const dims = validateCascadeDims(inputs.dims ?? CASCADE_DIMS, 'CascadeUniformInputs.dims');
+  if (!Number.isSafeInteger(k) || k < 0 || k >= dims.length) {
+    throw new Error(`cascade index must be an integer in [0, ${dims.length}); received ${String(k)}`);
+  }
+  assertFiniteVec3(inputs.probeOriginWorld, 'probeOriginWorld');
+  assertFiniteVec3(inputs.roomSize, 'roomSize', component => component > 0, 'positive');
+  assertFiniteVec3(inputs.sunDir, 'sunDir');
+  const sunLength = Math.hypot(inputs.sunDir[0], inputs.sunDir[1], inputs.sunDir[2]);
+  if (!Number.isFinite(sunLength) || Math.abs(sunLength - 1) > 1e-3) {
+    throw new Error(`sunDir must be normalized; length=${String(sunLength)}`);
+  }
+  assertFiniteVec3(inputs.sunColor, 'sunColor', component => component >= 0, 'nonnegative');
+  if (typeof inputs.sunCastShadowDisabled !== 'boolean') {
+    throw new Error('sunCastShadowDisabled must be boolean');
+  }
+  assertFiniteF32(inputs.sunAngularRadius, 'sunAngularRadius');
+  if (inputs.sunAngularRadius < 0 || inputs.sunAngularRadius > Math.PI) {
+    throw new Error('sunAngularRadius must be in [0, PI]');
+  }
+  assertFiniteF32(inputs.envIntensity, 'envIntensity');
+  if (inputs.envIntensity < 0) throw new Error('envIntensity must be nonnegative');
+  assertFiniteF32(inputs.envRotationY ?? 0, 'envRotationY');
+  assertFiniteVec3(
+    inputs.scalarSkyRadiance ?? [0, 0, 0],
+    'scalarSkyRadiance',
+    component => component >= 0,
+    'nonnegative',
+  );
+  if (typeof (inputs.hasDirectionalEnvironment ?? false) !== 'boolean') {
+    throw new Error('hasDirectionalEnvironment must be boolean');
+  }
+  assertU32(inputs.frameSeed, 'frameSeed');
+  assertFiniteF32(inputs.triIntersectEpsilon, 'triIntersectEpsilon');
+  if (inputs.triIntersectEpsilon <= 0) {
+    throw new Error('triIntersectEpsilon must be positive');
+  }
+  const transmittedInterfaceBudget = inputs.transmittedInterfaceBudget
+    ?? RC_DEFAULT_TRANSMITTED_INTERFACE_BUDGET;
+  assertU32(transmittedInterfaceBudget, 'transmittedInterfaceBudget');
+  if (
+    transmittedInterfaceBudget < RC_MIN_TRANSMITTED_INTERFACE_BUDGET ||
+    transmittedInterfaceBudget > RC_MAX_TRANSMITTED_INTERFACE_BUDGET
+  ) {
+    throw new Error(
+      `transmittedInterfaceBudget must be an integer in ` +
+      `[${RC_MIN_TRANSMITTED_INTERFACE_BUDGET}, ${RC_MAX_TRANSMITTED_INTERFACE_BUDGET}]; ` +
+      `received ${String(transmittedInterfaceBudget)}`,
+    );
+  }
+  if (inputs.bvhMode !== 0 && inputs.bvhMode !== 1) {
+    throw new Error(`bvhMode must be exactly 0 or 1; received ${String(inputs.bvhMode)}`);
+  }
+  assertU32(inputs.tlasNodeCount, 'tlasNodeCount');
+  assertU32(inputs.emitterCount, 'emitterCount');
+  assertU32(inputs.lightCount, 'lightCount');
+  assertU32(inputs.emitterDataWordOffset ?? 0, 'emitterDataWordOffset');
+  assertU32(inputs.emitterAliasWordOffset ?? 0, 'emitterAliasWordOffset');
+  return dims;
 }
 
 /** Write CascadeUniforms into an existing Float32Array (avoids realloc per frame).
@@ -242,6 +455,12 @@ export function buildCascadeUniformDataInto(
   k: number,
   inputs: CascadeUniformInputs,
 ): void {
+  if (!(d instanceof Float32Array) || d.length < RC_CASCADE_UNIFORM_WORDS) {
+    throw new Error(
+      `CascadeUniforms destination must be a Float32Array of at least ` +
+      `${RC_CASCADE_UNIFORM_WORDS} words`,
+    );
+  }
   const {
     probeOriginWorld,
     roomSize,
@@ -250,15 +469,20 @@ export function buildCascadeUniformDataInto(
     sunCastShadowDisabled,
     sunAngularRadius,
     envIntensity,
+    envRotationY = 0,
+    scalarSkyRadiance = [0, 0, 0],
+    hasDirectionalEnvironment = false,
     frameSeed,
     triIntersectEpsilon,
+    transmittedInterfaceBudget = RC_DEFAULT_TRANSMITTED_INTERFACE_BUDGET,
     bvhMode,
     tlasNodeCount,
     emitterCount,
     lightCount,
-    dims: inputDims,
+    emitterDataWordOffset = 0,
+    emitterAliasWordOffset = 0,
   } = inputs;
-  const dims = inputDims ?? CASCADE_DIMS;
+  const dims = validateCascadeUniformInputs(k, inputs);
   const dim = dims[k]!;
   const rayGridSize = Math.round(Math.sqrt(dim.rays));
   const o = probeOriginWorld;
@@ -268,10 +492,10 @@ export function buildCascadeUniformDataInto(
   // field is indexed by its named byte offset / 4 (all fields are 4-aligned) so
   // adding/moving a field is a single-site edit in the codegen field list — the
   // magic slot indices (ui[29..31] etc.) and the drift-prone ASCII layout
-  // comment are gone. The buffer is still allocated at 40 words (160 bytes) by
-  // the caller; the trailing pad words stay zero from Float32Array init.
+  // comment are gone. The buffer remains exactly 40 words (160 bytes).
   const O = CascadeUniformsOffset;
-  const ui = new Uint32Array(d.buffer);
+  d.fill(0, 0, RC_CASCADE_UNIFORM_WORDS);
+  const ui = new Uint32Array(d.buffer, d.byteOffset, d.length);
   d[O.probeOriginWorld / 4 + 0] = o[0];
   d[O.probeOriginWorld / 4 + 1] = o[1];
   d[O.probeOriginWorld / 4 + 2] = o[2];
@@ -289,7 +513,7 @@ export function buildCascadeUniformDataInto(
   d[O.sunDirection / 4 + 0] = sunDir[0];
   d[O.sunDirection / 4 + 1] = sunDir[1];
   d[O.sunDirection / 4 + 2] = sunDir[2];
-  d[O.sunAngularRadius / 4] = Number.isFinite(sunAngularRadius) ? Math.max(0, sunAngularRadius) : 0;
+  d[O.sunAngularRadius / 4] = sunAngularRadius;
   d[O.sunColor / 4 + 0] = sunColor[0];
   d[O.sunColor / 4 + 1] = sunColor[1];
   d[O.sunColor / 4 + 2] = sunColor[2];
@@ -297,12 +521,19 @@ export function buildCascadeUniformDataInto(
   ui[O.frameSeed / 4] = frameSeed;
   ui[O.lastCascade / 4] = dims.length - 1;
   d[O.triIntersectEpsilon / 4] = triIntersectEpsilon;  // E2: UBO-plumbed (was local const)
-  ui[O.bvhMode / 4] = bvhMode >>> 0;
-  ui[O.tlasNodeCount / 4] = tlasNodeCount >>> 0;
-  ui[O.emitterCount / 4] = emitterCount >>> 0;         // RC emitter NEE
-  ui[O.lightCount / 4] = lightCount >>> 0;             // A7: point/spot analytic lights
+  ui[O.bvhMode / 4] = bvhMode;
+  ui[O.tlasNodeCount / 4] = tlasNodeCount;
+  ui[O.emitterCount / 4] = emitterCount;         // RC emitter NEE
+  ui[O.lightCount / 4] = lightCount;
   ui[O.sunCastShadowDisabled / 4] = sunCastShadowDisabled ? 1 : 0; // directional castShadow:false
-  // _pad4 / _pad5 stay zero from Float32Array init.
+  ui[O.emitterDataWordOffset / 4] = emitterDataWordOffset;
+  ui[O.emitterAliasWordOffset / 4] = emitterAliasWordOffset;
+  ui[O.transmittedInterfaceBudget / 4] = transmittedInterfaceBudget;
+  d[O.envRotationY / 4] = envRotationY;
+  d[O.scalarSkyRadiance / 4 + 0] = scalarSkyRadiance[0];
+  d[O.scalarSkyRadiance / 4 + 1] = scalarSkyRadiance[1];
+  d[O.scalarSkyRadiance / 4 + 2] = scalarSkyRadiance[2];
+  ui[O.hasDirectionalEnv / 4] = hasDirectionalEnvironment ? 1 : 0;
 }
 
 function buildMergeUniformData(
@@ -334,11 +565,371 @@ function buildMergeUniformData(
   return d;
 }
 
+function assertNonnegativeSafeInteger(value: unknown, path: string): asserts value is number {
+  if (!Number.isSafeInteger(value) || (value as number) < 0) {
+    throw new Error(`${path} must be a nonnegative safe integer; received ${String(value)}`);
+  }
+}
+
+function validateBuffer(
+  buffer: GPUBuffer | null | undefined,
+  label: string,
+  stride: number,
+  requiredUsage: number,
+): GPUBuffer {
+  if (buffer == null || typeof buffer !== 'object') {
+    throw new Error(`[RCDispatcher] ${label} is required.`);
+  }
+  const size = buffer.size;
+  if (!Number.isSafeInteger(size) || size < stride || size % stride !== 0) {
+    throw new Error(
+      `[RCDispatcher] ${label}.size=${String(size)} must be a positive safe-integer ` +
+      `multiple of ${stride}.`,
+    );
+  }
+  if (typeof buffer.usage === 'number' && (buffer.usage & requiredUsage) !== requiredUsage) {
+    throw new Error(`[RCDispatcher] ${label} is missing required GPUBufferUsage flags.`);
+  }
+  return buffer;
+}
+
+interface ValidatedStorageBinding {
+  readonly buffer: GPUBuffer;
+  readonly offset: number;
+  readonly size: number;
+  readonly resource: GPUBufferBinding;
+}
+
+function validateStorageBinding(
+  device: GPUDevice,
+  buffer: GPUBuffer | null | undefined,
+  label: string,
+  stride: number,
+  requiredUsage: number,
+  offsetValue: number | undefined,
+  sizeValue: number | undefined,
+): ValidatedStorageBinding {
+  const checked = validateBuffer(buffer, label, 4, requiredUsage);
+  const offset = offsetValue ?? 0;
+  assertNonnegativeSafeInteger(offset, `${label}Offset`);
+  const alignment = device.limits?.minStorageBufferOffsetAlignment;
+  if (typeof alignment === 'number' && offset % alignment !== 0) {
+    throw new Error(
+      `[RCDispatcher] ${label}Offset must satisfy ` +
+      `minStorageBufferOffsetAlignment=${alignment}.`,
+    );
+  }
+  const size = sizeValue ?? checked.size - offset;
+  assertNonnegativeSafeInteger(size, `${label}Size`);
+  if (
+    size < stride || size % stride !== 0 ||
+    offset > checked.size - size
+  ) {
+    throw new Error(
+      `[RCDispatcher] ${label} binding [${offset}, ${offset + size}) must be ` +
+      `in bounds and have a positive size divisible by ${stride}.`,
+    );
+  }
+  return {
+    buffer: checked,
+    offset,
+    size,
+    resource: { buffer: checked, offset, size },
+  };
+}
+
+function validateSceneArenaSources(opts: RCDispatchOptsRaw): {
+  arenaBytes: number;
+  sourceBuffers: readonly GPUBuffer[];
+} {
+  const sources: GPUBuffer[] = [
+    validateBuffer(opts.materialsBuf, 'materialsBuf', 64, GPUBufferUsage.COPY_SRC),
+    validateBuffer(opts.triMaterialIdBuf, 'triMaterialIdBuf', 4, GPUBufferUsage.COPY_SRC),
+  ];
+  const mode = opts.bvhMode ?? 'merged';
+  if (mode === 'tlas') {
+    sources.push(
+      validateBuffer(opts.tlasNodesBuf, 'tlasNodesBuf', 32, GPUBufferUsage.COPY_SRC),
+      validateBuffer(opts.tlasInstanceIndicesBuf, 'tlasInstanceIndicesBuf', 4, GPUBufferUsage.COPY_SRC),
+      validateBuffer(opts.tlasBlasRootsBuf, 'tlasBlasRootsBuf', 4, GPUBufferUsage.COPY_SRC),
+      validateBuffer(opts.tlasInstanceWorldToLocalBuf, 'tlasInstanceWorldToLocalBuf', 64, GPUBufferUsage.COPY_SRC),
+      validateBuffer(opts.tlasInstanceLocalToWorldBuf, 'tlasInstanceLocalToWorldBuf', 64, GPUBufferUsage.COPY_SRC),
+    );
+  }
+
+  let arenaBytes = RC_SCENE_ARENA_HEADER_BYTES;
+  for (const source of sources) {
+    if (arenaBytes > Number.MAX_SAFE_INTEGER - source.size) {
+      throw new Error('[RCDispatcher] packed scene arena size exceeds the safe-integer range.');
+    }
+    arenaBytes += source.size;
+    if (arenaBytes / 4 > UINT32_MAX) {
+      throw new Error('[RCDispatcher] packed scene arena exceeds its u32 word-offset encoding.');
+    }
+  }
+  return { arenaBytes, sourceBuffers: sources };
+}
+
+function assertLimit(
+  actual: number | undefined,
+  required: number,
+  name: string,
+): void {
+  if (typeof actual === 'number' && actual < required) {
+    throw new Error(`[RCDispatcher] ${name}=${actual}; RC requires at least ${required}.`);
+  }
+}
+
+function validateDispatchOptsRaw(
+  opts: RCDispatchOptsRaw,
+  dims: readonly CascadeDim[],
+): void {
+  if (opts == null || typeof opts !== 'object' || opts.device == null) {
+    throw new Error('[RCDispatcher] dispatch options must include a GPUDevice.');
+  }
+  const mode = opts.bvhMode ?? 'merged';
+  if (mode !== 'merged' && mode !== 'tlas') {
+    throw new Error(`[RCDispatcher] bvhMode must be "merged" or "tlas"; received ${String(mode)}.`);
+  }
+  assertU32(opts.materialArenaVersion ?? 0, 'materialArenaVersion');
+  assertU32(opts.tlasArenaVersion ?? 0, 'tlasArenaVersion');
+  assertU32(opts.tlasNodeCount ?? 0, 'tlasNodeCount');
+  assertU32(opts.emitterCount ?? 0, 'emitterCount');
+  assertU32(opts.lightCount ?? 0, 'lightCount');
+
+  const hasEnvView = opts.envTextureView != null;
+  const hasEnvSampler = opts.envSampler != null;
+  if (hasEnvView !== hasEnvSampler) {
+    throw new Error('[RCDispatcher] envTextureView and envSampler must be supplied together.');
+  }
+  const hasDirectionalEnvironment =
+    opts.hasDirectionalEnvironment ?? (hasEnvView && hasEnvSampler);
+  if (hasDirectionalEnvironment === true && !hasEnvView) {
+    throw new Error(
+      '[RCDispatcher] hasDirectionalEnvironment=true requires envTextureView and envSampler.',
+    );
+  }
+
+  validateCascadeUniformInputs(0, {
+    probeOriginWorld: opts.probeOriginWorld,
+    roomSize: opts.roomSize,
+    sunDir: opts.sunDirection,
+    sunColor: opts.sunColor,
+    sunCastShadowDisabled: opts.sunCastShadowDisabled ?? false,
+    sunAngularRadius: opts.sunAngularRadius ?? 0,
+    envIntensity: opts.envIntensity ?? 1,
+    envRotationY: opts.envRotationY ?? 0,
+    scalarSkyRadiance: opts.scalarSkyRadiance ?? [0, 0, 0],
+    hasDirectionalEnvironment,
+    frameSeed: opts.frameSeed,
+    triIntersectEpsilon: opts.triIntersectEpsilon ?? 1e-5,
+    transmittedInterfaceBudget: opts.transmittedInterfaceBudget
+      ?? RC_DEFAULT_TRANSMITTED_INTERFACE_BUDGET,
+    bvhMode: mode === 'tlas' ? 1 : 0,
+    tlasNodeCount: opts.tlasNodeCount ?? 0,
+    emitterCount: opts.emitterCount ?? 0,
+    lightCount: opts.lightCount ?? 0,
+    emitterDataWordOffset: (opts.emitterDataOffset ?? 0) / 4,
+    emitterAliasWordOffset: (opts.emitterAliasOffset ?? 0) / 4,
+    dims,
+  });
+
+  const hasAtlas = opts.materialTextureAtlasView != null;
+  const hasAtlasMeta = opts.materialMapMetaTextureView != null;
+  if (hasAtlas !== hasAtlasMeta) {
+    throw new Error(
+      '[RCDispatcher] materialTextureAtlasView and materialMapMetaTextureView must be supplied together.',
+    );
+  }
+
+  const bvhNodes = validateStorageBinding(
+    opts.device, opts.bvhNodesBuf, 'bvhNodesBuf', 32, GPUBufferUsage.STORAGE,
+    opts.bvhNodesOffset, opts.bvhNodesSize,
+  );
+  const bvhIndices = validateStorageBinding(
+    opts.device, opts.bvhIndicesBuf, 'bvhIndicesBuf', 16, GPUBufferUsage.STORAGE,
+    opts.bvhIndicesOffset, opts.bvhIndicesSize,
+  );
+  const bvhPositions = validateStorageBinding(
+    opts.device, opts.bvhPositionsBuf, 'bvhPositionsBuf', 16, GPUBufferUsage.STORAGE,
+    opts.bvhPositionsOffset, opts.bvhPositionsSize,
+  );
+  const bvhNormals = validateStorageBinding(
+    opts.device, opts.bvhNormalsBuf, 'bvhNormalsBuf', 16, GPUBufferUsage.STORAGE,
+    opts.bvhNormalsOffset, opts.bvhNormalsSize,
+  );
+  if (bvhPositions.size !== bvhNormals.size) {
+    throw new Error('[RCDispatcher] bvhPositionsBuf and bvhNormalsBuf must have equal vertex capacity.');
+  }
+
+  const cascadeBufsAreArray: boolean = Array.isArray(opts.cascadeBufs);
+  if (!cascadeBufsAreArray || opts.cascadeBufs.length !== dims.length) {
+    throw new Error(`[RCDispatcher] cascadeBufs must contain exactly ${dims.length} buffers.`);
+  }
+  const cascadeBuffers = opts.cascadeBufs.map((buffer, index) => {
+    const dim = dims[index]!;
+    const requiredBytes = dim.probes[0] * dim.probes[1] * dim.probes[2] * dim.rays * 16;
+    const checked = validateBuffer(buffer, `cascadeBufs[${index}]`, 16, GPUBufferUsage.STORAGE);
+    if (checked.size < requiredBytes) {
+      throw new Error(
+        `[RCDispatcher] cascadeBufs[${index}].size=${checked.size}; requires ${requiredBytes} bytes.`,
+      );
+    }
+    return checked;
+  });
+
+  const { arenaBytes, sourceBuffers } = validateSceneArenaSources(opts);
+  const triCount = bvhIndices.size / 16;
+  if (opts.triMaterialIdBuf.size / 4 < triCount) {
+    throw new Error('[RCDispatcher] triMaterialIdBuf does not cover every geometry triangle.');
+  }
+
+  if (mode === 'tlas') {
+    if ((opts.tlasNodeCount ?? 0) === 0) {
+      throw new Error('[RCDispatcher] bvhMode="tlas" requires a positive tlasNodeCount.');
+    }
+    const tlasNodeCapacity = opts.tlasNodesBuf!.size / 32;
+    if ((opts.tlasNodeCount ?? 0) > tlasNodeCapacity) {
+      throw new Error('[RCDispatcher] tlasNodeCount exceeds tlasNodesBuf capacity.');
+    }
+    const instanceCount = opts.tlasBlasRootsBuf!.size / 4;
+    if (
+      opts.tlasInstanceIndicesBuf!.size / 4 !== instanceCount ||
+      opts.tlasInstanceWorldToLocalBuf!.size / 64 !== instanceCount ||
+      opts.tlasInstanceLocalToWorldBuf!.size / 64 !== instanceCount
+    ) {
+      throw new Error('[RCDispatcher] TLAS instance-index/root/transform capacities must match.');
+    }
+  } else {
+    if ((opts.tlasNodeCount ?? 0) !== 0) {
+      throw new Error('[RCDispatcher] merged bvhMode requires tlasNodeCount=0.');
+    }
+    if (
+      opts.tlasNodesBuf != null || opts.tlasInstanceIndicesBuf != null ||
+      opts.tlasBlasRootsBuf != null || opts.tlasInstanceWorldToLocalBuf != null ||
+      opts.tlasInstanceLocalToWorldBuf != null
+    ) {
+      throw new Error('[RCDispatcher] TLAS buffers are only valid when bvhMode="tlas".');
+    }
+  }
+
+  const emitterCount = opts.emitterCount ?? 0;
+  let emitterBindingBytes = 16;
+  if (opts.emittersBuf == null) {
+    if (
+      emitterCount !== 0 || opts.emittersOffset != null || opts.emittersSize != null ||
+      opts.emitterDataOffset != null || opts.emitterAliasOffset != null
+    ) {
+      throw new Error('[RCDispatcher] emitter count/range/alias fields require emittersBuf.');
+    }
+  } else {
+    const emitterBuffer = validateBuffer(opts.emittersBuf, 'emittersBuf', 4, GPUBufferUsage.STORAGE);
+    const offset = opts.emittersOffset ?? 0;
+    assertNonnegativeSafeInteger(offset, 'emittersOffset');
+    const storageAlignment = opts.device.limits?.minStorageBufferOffsetAlignment;
+    if (typeof storageAlignment === 'number' && offset % storageAlignment !== 0) {
+      throw new Error(`[RCDispatcher] emittersOffset must satisfy minStorageBufferOffsetAlignment=${storageAlignment}.`);
+    }
+    emitterBindingBytes = opts.emittersSize ?? (emitterBuffer.size - offset);
+    assertNonnegativeSafeInteger(emitterBindingBytes, 'emittersSize');
+    if (emitterBindingBytes < 16 || offset > emitterBuffer.size - emitterBindingBytes) {
+      throw new Error('[RCDispatcher] emitter sampling binding range must be in bounds and at least 16 bytes.');
+    }
+    const dataOffset = opts.emitterDataOffset ?? 0;
+    const aliasOffset = opts.emitterAliasOffset ?? emitterCount * RC_EMITTER_STRIDE_BYTES;
+    assertNonnegativeSafeInteger(dataOffset, 'emitterDataOffset');
+    assertNonnegativeSafeInteger(aliasOffset, 'emitterAliasOffset');
+    if (dataOffset % 4 !== 0 || aliasOffset % 4 !== 0) {
+      throw new Error('[RCDispatcher] emitter data/alias offsets must be 4-byte aligned.');
+    }
+    const dataBytes = emitterCount * RC_EMITTER_STRIDE_BYTES;
+    const aliasBytes = emitterCount * RC_ALIAS_STRIDE_BYTES;
+    if (!Number.isSafeInteger(dataBytes) || !Number.isSafeInteger(aliasBytes)) {
+      throw new Error('[RCDispatcher] emitter sampling ranges exceed Number.MAX_SAFE_INTEGER.');
+    }
+    if (dataOffset > emitterBindingBytes - dataBytes || aliasOffset > emitterBindingBytes - aliasBytes) {
+      throw new Error(
+        `[RCDispatcher] emitterCount=${emitterCount} requires ${dataBytes} data bytes and ` +
+        `${aliasBytes} alias bytes inside the ${emitterBindingBytes}-byte bound window.`,
+      );
+    }
+    if (emitterCount > 0 && dataOffset < aliasOffset + aliasBytes && aliasOffset < dataOffset + dataBytes) {
+      throw new Error('[RCDispatcher] emitter data and alias ranges must not overlap.');
+    }
+  }
+
+  const lightCount = opts.lightCount ?? 0;
+  let lightsBindingBytes = RC_LIGHTS_BUFFER_BYTES;
+  if (opts.lightsBuf == null) {
+    if (lightCount !== 0 || opts.lightsOffset != null || opts.lightsSize != null) {
+      throw new Error('[RCDispatcher] light count/range fields require lightsBuf.');
+    }
+  } else {
+    const lights = validateBuffer(opts.lightsBuf, 'lightsBuf', 16, GPUBufferUsage.STORAGE);
+    const offset = opts.lightsOffset ?? 0;
+    assertNonnegativeSafeInteger(offset, 'lightsOffset');
+    const storageAlignment = opts.device.limits?.minStorageBufferOffsetAlignment;
+    if (typeof storageAlignment === 'number' && offset % storageAlignment !== 0) {
+      throw new Error(`[RCDispatcher] lightsOffset must satisfy minStorageBufferOffsetAlignment=${storageAlignment}.`);
+    }
+    const requiredBytes = RC_LIGHT_HEADER_BYTES
+      + lightCount * (RC_LIGHT_STRIDE_BYTES + RC_ALIAS_STRIDE_BYTES);
+    if (!Number.isSafeInteger(requiredBytes)) {
+      throw new Error('[RCDispatcher] runtime light buffer size exceeds Number.MAX_SAFE_INTEGER.');
+    }
+    lightsBindingBytes = opts.lightsSize ?? (lights.size - offset);
+    assertNonnegativeSafeInteger(lightsBindingBytes, 'lightsSize');
+    if (lightsBindingBytes !== requiredBytes || offset > lights.size - lightsBindingBytes) {
+      throw new Error(
+        `[RCDispatcher] lightCount=${lightCount} requires an exact ${requiredBytes}-byte bound range; ` +
+        `received ${lightsBindingBytes} bytes.`,
+      );
+    }
+  }
+
+  const limits = opts.device.limits;
+  assertLimit(limits?.maxStorageBuffersPerShaderStage, RC_REQUIRED_MAX_STORAGE_BUFFERS_PER_SHADER_STAGE, 'maxStorageBuffersPerShaderStage');
+  assertLimit(limits?.maxSampledTexturesPerShaderStage, 5, 'maxSampledTexturesPerShaderStage');
+  assertLimit(limits?.maxSamplersPerShaderStage, 1, 'maxSamplersPerShaderStage');
+  assertLimit(limits?.maxUniformBufferBindingSize, RC_CASCADE_UNIFORM_BYTES, 'maxUniformBufferBindingSize');
+  assertLimit(limits?.maxComputeInvocationsPerWorkgroup, 64, 'maxComputeInvocationsPerWorkgroup');
+  assertLimit(limits?.maxComputeWorkgroupSizeX, 64, 'maxComputeWorkgroupSizeX');
+
+  const directStorageSizes = [
+    bvhNodes.size, bvhIndices.size, bvhPositions.size, bvhNormals.size,
+    ...cascadeBuffers.map(buffer => buffer.size),
+    arenaBytes, emitterBindingBytes, lightsBindingBytes, 80,
+  ];
+  const maxStorageBinding = Math.max(...directStorageSizes);
+  assertLimit(limits?.maxStorageBufferBindingSize, maxStorageBinding, 'maxStorageBufferBindingSize');
+
+  const allBufferSizes = [
+    ...sourceBuffers.map(buffer => buffer.size),
+    bvhNodes.buffer.size, bvhIndices.buffer.size,
+    bvhPositions.buffer.size, bvhNormals.buffer.size,
+    ...cascadeBuffers.map(buffer => buffer.size), arenaBytes,
+    ...(opts.emittersBuf ? [opts.emittersBuf.size] : []),
+    ...(opts.lightsBuf ? [opts.lightsBuf.size] : []),
+  ];
+  assertLimit(limits?.maxBufferSize, Math.max(...allBufferSizes), 'maxBufferSize');
+
+  const maxDispatchX = Math.max(
+    ...dims.map(dim => Math.ceil(dim.probes[0] * dim.probes[1] * dim.probes[2] * dim.rays / 64)),
+  );
+  assertLimit(limits?.maxComputeWorkgroupsPerDimension, maxDispatchX, 'maxComputeWorkgroupsPerDimension');
+}
+
 function sameVec3(
   a: readonly [number, number, number],
   b: readonly [number, number, number],
 ): boolean {
   return a[0] === b[0] && a[1] === b[1] && a[2] === b[2];
+}
+
+function destroyOwnedResource(
+  resource: { destroy(): void } | null | undefined,
+): void {
+  try { resource?.destroy(); } catch { /* continue releasing independent owners */ }
 }
 
 function sameBufferArray(a: readonly GPUBuffer[], b: readonly GPUBuffer[]): boolean {
@@ -386,11 +977,17 @@ const BINDING_FIELDS: readonly BindingField<keyof DispatchBindingSignature>[] = 
   bf('device', 'ref', (o) => o.device),
   bf('bvhMode', 'ref', (o) => o.bvhMode ?? 'merged'),
   bf('bvhNodesBuf', 'ref', (o) => o.bvhNodesBuf),
+  bf('bvhNodesOffset', 'ref', (o) => o.bvhNodesOffset ?? 0),
+  bf('bvhNodesSize', 'ref', (o) => o.bvhNodesSize ?? null),
   bf('bvhIndicesBuf', 'ref', (o) => o.bvhIndicesBuf),
+  bf('bvhIndicesOffset', 'ref', (o) => o.bvhIndicesOffset ?? 0),
+  bf('bvhIndicesSize', 'ref', (o) => o.bvhIndicesSize ?? null),
   bf('bvhPositionsBuf', 'ref', (o) => o.bvhPositionsBuf),
+  bf('bvhPositionsOffset', 'ref', (o) => o.bvhPositionsOffset ?? 0),
+  bf('bvhPositionsSize', 'ref', (o) => o.bvhPositionsSize ?? null),
   bf('bvhNormalsBuf', 'ref', (o) => o.bvhNormalsBuf),
-  bf('materialsBuf', 'ref', (o) => o.materialsBuf),
-  bf('triMaterialIdBuf', 'ref', (o) => o.triMaterialIdBuf),
+  bf('bvhNormalsOffset', 'ref', (o) => o.bvhNormalsOffset ?? 0),
+  bf('bvhNormalsSize', 'ref', (o) => o.bvhNormalsSize ?? null),
   bf('cascadeBufs', 'bufferArray', (o) => [...o.cascadeBufs]),
   bf('probeOriginWorld', 'vec3', (o) => [...o.probeOriginWorld] as [number, number, number]),
   bf('roomSize', 'vec3', (o) => [...o.roomSize] as [number, number, number]),
@@ -400,13 +997,14 @@ const BINDING_FIELDS: readonly BindingField<keyof DispatchBindingSignature>[] = 
   bf('materialMapMetaTextureView', 'ref', (o) => o.materialMapMetaTextureView ?? null),
   bf('bvhTangentTextureView', 'ref', (o) => o.bvhTangentTextureView ?? null),
   bf('bvhVertexColorTextureView', 'ref', (o) => o.bvhVertexColorTextureView ?? null),
-  bf('tlasNodesBuf', 'ref', (o) => o.tlasNodesBuf ?? null),
-  bf('tlasInstanceIndicesBuf', 'ref', (o) => o.tlasInstanceIndicesBuf ?? null),
-  bf('tlasBlasRootsBuf', 'ref', (o) => o.tlasBlasRootsBuf ?? null),
-  bf('tlasInstanceWorldToLocalBuf', 'ref', (o) => o.tlasInstanceWorldToLocalBuf ?? null),
-  bf('tlasInstanceLocalToWorldBuf', 'ref', (o) => o.tlasInstanceLocalToWorldBuf ?? null),
   bf('emittersBuf', 'ref', (o) => o.emittersBuf ?? null),
+  bf('emittersOffset', 'ref', (o) => o.emittersOffset ?? 0),
+  bf('emittersSize', 'ref', (o) => o.emittersSize ?? null),
+  bf('emitterDataOffset', 'ref', (o) => o.emitterDataOffset ?? 0),
+  bf('emitterAliasOffset', 'ref', (o) => o.emitterAliasOffset ?? 0),
   bf('lightsBuf', 'ref', (o) => o.lightsBuf ?? null),
+  bf('lightsOffset', 'ref', (o) => o.lightsOffset ?? 0),
+  bf('lightsSize', 'ref', (o) => o.lightsSize ?? null),
 ] as const;
 
 /** The binding-signature field keys, in order — exported for the pin test. */
@@ -469,11 +1067,8 @@ export class RCDispatcher {
   private _bindingSignature: DispatchBindingSignature | null = null;
   private _castShaderModule:  GPUShaderModule | null = null;
   private _mergeShaderModule: GPUShaderModule | null = null;
+  private _shaderDevice: GPUDevice | null = null;
   private _lastError: Error | null = null;
-  /** Dummy 32-byte TLAS placeholder buffers created in merged mode (see
-   *  `_dummyStorageBuffer`). Tracked so `dispose()` can destroy them — they
-   *  are not retained on `DispatchHandles`. */
-  private _dummyTlasBuffers: GPUBuffer[] = [];
   /** B3b (2026-05-19) — per-instance cascade dimensions. Defaults to the
    *  Cornell-tuned `CASCADE_DIMS`; hosts override via constructor for
    *  non-Cornell aspect ratios / scene scales. */
@@ -498,23 +1093,31 @@ export class RCDispatcher {
    * rebuilds them before dispatching.
    */
   dispatchFrameRaw(opts: RCDispatchOptsRaw): void {
+    validateDispatchOptsRaw(opts, this._cascadeDims);
     const device = opts.device;
     const signature = bindingSignature(opts);
-    if (this._handles && !sameBindingSignature(this._bindingSignature, signature)) {
-      this.invalidateBindings();
+    let handles = this._handles;
+    let needsBuild = handles == null || !sameBindingSignature(this._bindingSignature, signature);
+    if (!needsBuild && handles && !this._refreshSceneArenaSources(handles, opts)) {
+      needsBuild = true;
     }
-    if (!this._handles) {
+    if (needsBuild) {
       try {
-        this._handles = this._buildHandlesRaw(device, opts);
+        const candidate = this._buildHandlesRaw(device, opts);
+        const previous = this._handles;
+        this._handles = candidate;
         this._bindingSignature = signature;
         this._lastError = null;
+        handles = candidate;
+        this._releaseHandleResources(previous);
       } catch (err: unknown) {
         const error = err instanceof Error ? err : new Error(String(err));
         this._lastError = error;
         throw new Error(`[RCDispatcher] buildHandlesRaw failed: ${error.message}`);
       }
     }
-    const handles = this._handles;
+    if (!handles) throw new Error('[RCDispatcher] internal error: dispatch handles were not published.');
+    this._lastError = null;
 
     // Update per-frame uniforms for each cast pass.
     const dims = this._cascadeDims;
@@ -527,13 +1130,22 @@ export class RCDispatcher {
         sunColor:         opts.sunColor,
         sunCastShadowDisabled: opts.sunCastShadowDisabled === true,
         sunAngularRadius: opts.sunAngularRadius ?? 0,
-        envIntensity:     1.0,
+        envIntensity:     opts.envIntensity ?? 1,
+        envRotationY:     opts.envRotationY ?? 0,
+        scalarSkyRadiance: opts.scalarSkyRadiance ?? [0, 0, 0],
+        hasDirectionalEnvironment:
+          opts.hasDirectionalEnvironment ??
+          (opts.envTextureView != null && opts.envSampler != null),
         frameSeed:        opts.frameSeed,
         triIntersectEpsilon: opts.triIntersectEpsilon ?? 1e-5,
+        transmittedInterfaceBudget: opts.transmittedInterfaceBudget
+          ?? RC_DEFAULT_TRANSMITTED_INTERFACE_BUDGET,
         bvhMode:          opts.bvhMode === 'tlas' ? 1 : 0,
         tlasNodeCount:    opts.tlasNodeCount ?? 0,
         emitterCount:     opts.emitterCount ?? 0,
         lightCount:       opts.lightCount ?? 0,
+        emitterDataWordOffset: (opts.emitterDataOffset ?? 0) / 4,
+        emitterAliasWordOffset: (opts.emitterAliasOffset ?? 0) / 4,
         dims,
       });
       device.queue.writeBuffer(pass.cascadeParamsBuf, 0, pass.cascadeParamsRaw.buffer);
@@ -541,6 +1153,18 @@ export class RCDispatcher {
 
     // Encode compute commands.
     const commandEncoder = device.createCommandEncoder({ label: 'RCDispatcher' });
+    const encodedArenaCopies: SceneArenaCopy[] = [];
+    for (const copy of handles.sceneArenaCopies) {
+      if (!copy.dirty) continue;
+      commandEncoder.copyBufferToBuffer(
+        copy.source,
+        0,
+        handles.sceneArenaBuf,
+        copy.destinationOffset,
+        copy.size,
+      );
+      encodedArenaCopies.push(copy);
+    }
     const passEncoder = commandEncoder.beginComputePass({ label: 'rc-cascade' });
 
     // Cast passes C0 → C(N-1).
@@ -561,6 +1185,7 @@ export class RCDispatcher {
 
     passEncoder.end();
     device.queue.submit([commandEncoder.finish()]);
+    for (const copy of encodedArenaCopies) copy.dirty = false;
   }
 
   /** Drop cached bind groups so the next dispatch captures fresh caller buffers.
@@ -574,6 +1199,7 @@ export class RCDispatcher {
     this._lastError = null;
     this._castShaderModule  = null;
     this._mergeShaderModule = null;
+    this._shaderDevice = null;
   }
 
   /** Release all GPU resources. Next `dispatchFrame()` will re-initialize. */
@@ -582,6 +1208,7 @@ export class RCDispatcher {
     this._lastError = null;
     this._castShaderModule  = null;
     this._mergeShaderModule = null;
+    this._shaderDevice = null;
   }
 
   // ─── Private helpers ────────────────────────────────────────────────────────
@@ -595,20 +1222,12 @@ export class RCDispatcher {
         { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
         { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
         { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
-        { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
         { binding: 5, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
         { binding: 6, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'float', viewDimension: '2d' } },
         { binding: 7, visibility: GPUShaderStage.COMPUTE, sampler: { type: 'filtering' } },
-        { binding: 8, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
-        { binding: 9, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
-        { binding: 10, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
-        { binding: 11, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
-        { binding: 12, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
-        { binding: 13, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+        { binding: 8, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
         { binding: 14, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } }, // rc_emitters
-        // A7 (2026-06-10): analytic point/spot lights (rc_lights: RCLightBuffer).
-        // 16-byte header + up to 16 × 64-byte entries = 1040 bytes; a 1040-byte zero
-        // placeholder is bound when the scene has no point/spot fixtures.
+        // Runtime-sized analytic/directional lights plus alias table.
         { binding: 15, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } }, // rc_lights
         // Material atlas/meta are rgba32float textures read with textureLoad()
         // in probeRayCast.wgsl. WebGPU classifies rgba32float as
@@ -624,48 +1243,29 @@ export class RCDispatcher {
     });
   }
 
-  private _dummyStorageBuffer(device: GPUDevice, label: string, size = 32): GPUBuffer {
-    // Merged mode (bvhMode == 0) never traverses the TLAS, but the probe-ray
-    // shader STILL declares the five TLAS bindings (group 0, bindings 9–13). The
-    // first, `rc_tlas_nodes: array<BVHNode>`, has a 32-byte struct stride → a
-    // 32-byte MINIMUM binding size. A 16-byte placeholder is REJECTED by strict
-    // backends ("Binding size 16 … less than minimum 32" on lavapipe AND dzn),
-    // invalidating the bind group and silently zeroing the whole cascade. Use a
-    // 32-byte empty placeholder so the merged-mode bind group is valid on every
-    // backend; the u32 / vec4f TLAS bindings (10–13) accept 32 bytes too. The
-    // TLAS-mode path uploads real, larger buffers, so it was never affected. This
-    // is the exact analogue of the DDGI fix `ea88803` (same root cause); latent
-    // because RC's probe shader had no GPU-compile/bind gate (W8 CPU-only) until
-    // the RC core-BVH converged A/B exercised it.
-    const buf = device.createBuffer({
+  private _dummyStorageBuffer(
+    device: GPUDevice,
+    label: string,
+    size: number,
+    own: OwnGpuResource,
+  ): GPUBuffer {
+    return own(device.createBuffer({
       label,
       size,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-    });
-    this._dummyTlasBuffers.push(buf);
-    return buf;
+    }));
+  }
+
+  private _releaseHandleResources(handles: DispatchHandles | null): void {
+    if (!handles) return;
+    for (const resource of handles.ownedResources) destroyOwnedResource(resource);
   }
 
   private _releaseHandles(): void {
-    if (this._handles) {
-      for (const pass of this._handles.castPasses) {
-        pass.cascadeParamsBuf.destroy();
-      }
-      for (const pass of this._handles.mergePasses) {
-        pass.cascadeParamsBuf.destroy();
-      }
-      this._handles.placeholderEnvTexture?.destroy();
-      this._handles.placeholderMaterialAtlasTexture?.destroy();
-      this._handles.placeholderMaterialMetaTexture?.destroy();
-      this._handles.placeholderTangentTexture?.destroy();
-      this._handles.placeholderVertexColorTexture?.destroy();
-      this._handles = null;
-    }
+    const handles = this._handles;
+    this._handles = null;
     this._bindingSignature = null;
-    for (const buf of this._dummyTlasBuffers) {
-      buf.destroy();
-    }
-    this._dummyTlasBuffers = [];
+    this._releaseHandleResources(handles);
   }
 
   /** Build bind group layout for a merge pass (3 entries: upper + lower cascades + uniforms). */
@@ -688,6 +1288,7 @@ export class RCDispatcher {
   private _resolveEnvBindingRaw(
     device: GPUDevice,
     opts: RCDispatchOptsRaw,
+    own: OwnGpuResource,
   ): {
     envTextureView: GPUTextureView;
     envSampler: GPUSampler;
@@ -699,12 +1300,12 @@ export class RCDispatcher {
         envSampler: opts.envSampler,
       };
     }
-    const placeholderTex = device.createTexture({
+    const placeholderTex = own(device.createTexture({
       label:  'rc-env-placeholder',
       size:   [1, 1],
       format: 'rgba8unorm',
       usage:  GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
-    });
+    }));
     device.queue.writeTexture(
       { texture: placeholderTex },
       new Uint8Array([0, 0, 0, 255]),
@@ -726,6 +1327,7 @@ export class RCDispatcher {
   private _resolveMaterialAtlasBindingRaw(
     device: GPUDevice,
     opts: RCDispatchOptsRaw,
+    own: OwnGpuResource,
   ): {
     materialTextureAtlasView: GPUTextureView;
     materialMapMetaTextureView: GPUTextureView;
@@ -738,24 +1340,24 @@ export class RCDispatcher {
         materialMapMetaTextureView: opts.materialMapMetaTextureView,
       };
     }
-    const atlasTexture = device.createTexture({
+    const atlasTexture = own(device.createTexture({
       label: 'rc-material-atlas-placeholder',
       size: { width: 1, height: 1, depthOrArrayLayers: 1 },
       format: 'rgba32float',
       usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
-    });
+    }));
     device.queue.writeTexture(
       { texture: atlasTexture },
       new Float32Array([1, 1, 1, 1]),
       { bytesPerRow: 16, rowsPerImage: 1 },
       { width: 1, height: 1, depthOrArrayLayers: 1 },
     );
-    const metaTexture = device.createTexture({
+    const metaTexture = own(device.createTexture({
       label: 'rc-material-meta-placeholder',
       size: { width: 2, height: 1 },
       format: 'rgba32float',
       usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
-    });
+    }));
     device.queue.writeTexture(
       { texture: metaTexture },
       // First meta texel: layer=-1 => absent map. Second texel is unused transform.
@@ -774,6 +1376,7 @@ export class RCDispatcher {
   private _resolveTangentTextureBindingRaw(
     device: GPUDevice,
     opts: RCDispatchOptsRaw,
+    own: OwnGpuResource,
   ): {
     bvhTangentTextureView: GPUTextureView;
     placeholderTangentTexture?: GPUTexture;
@@ -781,12 +1384,12 @@ export class RCDispatcher {
     if (opts.bvhTangentTextureView) {
       return { bvhTangentTextureView: opts.bvhTangentTextureView };
     }
-    const tangentTexture = device.createTexture({
+    const tangentTexture = own(device.createTexture({
       label: 'rc-bvh-tangent-placeholder',
       size: { width: 1, height: 1 },
       format: 'rgba32float',
       usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
-    });
+    }));
     device.queue.writeTexture(
       { texture: tangentTexture },
       new Float32Array([0, 0, 0, 0]),
@@ -802,6 +1405,7 @@ export class RCDispatcher {
   private _resolveVertexColorTextureBindingRaw(
     device: GPUDevice,
     opts: RCDispatchOptsRaw,
+    own: OwnGpuResource,
   ): {
     bvhVertexColorTextureView: GPUTextureView;
     placeholderVertexColorTexture?: GPUTexture;
@@ -809,12 +1413,12 @@ export class RCDispatcher {
     if (opts.bvhVertexColorTextureView) {
       return { bvhVertexColorTextureView: opts.bvhVertexColorTextureView };
     }
-    const vertexColorTexture = device.createTexture({
+    const vertexColorTexture = own(device.createTexture({
       label: 'rc-bvh-vertex-color-placeholder',
       size: { width: 1, height: 1 },
       format: 'rgba32float',
       usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
-    });
+    }));
     device.queue.writeTexture(
       { texture: vertexColorTexture },
       new Float32Array([1, 1, 1, 1]),
@@ -836,64 +1440,233 @@ export class RCDispatcher {
    * legacy entry was dropped the same day.
    */
   private _buildHandlesRaw(device: GPUDevice, opts: RCDispatchOptsRaw): DispatchHandles {
-    // Compile shader modules (shared across all cast passes / merge passes).
-    if (!this._castShaderModule) {
-      this._castShaderModule = device.createShaderModule({
-        label:  'rc-probe-ray-cast',
-        code:   PROBE_RAY_CAST_WGSL,
-      });
-    }
-    if (!this._mergeShaderModule) {
-      this._mergeShaderModule = device.createShaderModule({
-        label:  'rc-cascade-merge',
-        code:   CASCADE_MERGE_WGSL,
-      });
-    }
-
-    const castBGL  = this._castBindGroupLayout(device);
-    const mergeBGL = this._mergeBindGroupLayout(device);
-    const castPipelineLayout  = device.createPipelineLayout({ bindGroupLayouts: [castBGL] });
-    const mergePipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [mergeBGL] });
-
-    const bvhBindings = this._resolveBvhBindings(device, opts);
-    const { envTextureView, envSampler, placeholderEnvTexture } = this._resolveEnvBindingRaw(device, opts);
-    const {
-      materialTextureAtlasView,
-      materialMapMetaTextureView,
-      placeholderMaterialAtlasTexture,
-      placeholderMaterialMetaTexture,
-    } = this._resolveMaterialAtlasBindingRaw(device, opts);
-    const {
-      bvhTangentTextureView,
-      placeholderTangentTexture,
-    } = this._resolveTangentTextureBindingRaw(device, opts);
-    const {
-      bvhVertexColorTextureView,
-      placeholderVertexColorTexture,
-    } = this._resolveVertexColorTextureBindingRaw(device, opts);
-
-    const { castPasses, castBindGroups } = this._buildCastPasses(
-      device, opts, castBGL, castPipelineLayout, bvhBindings, envTextureView, envSampler,
-      materialTextureAtlasView, materialMapMetaTextureView, bvhTangentTextureView,
-      bvhVertexColorTextureView,
-    );
-    const { mergePasses, mergeBindGroups } = this._buildMergePasses(
-      device, opts, mergeBGL, mergePipelineLayout,
-    );
-
-    return {
-      castPasses,
-      mergePasses,
-      envTextureView,
-      envSampler,
-      castBindGroups,
-      mergeBindGroups,
-      ...(placeholderEnvTexture ? { placeholderEnvTexture } : {}),
-      ...(placeholderMaterialAtlasTexture ? { placeholderMaterialAtlasTexture } : {}),
-      ...(placeholderMaterialMetaTexture ? { placeholderMaterialMetaTexture } : {}),
-      ...(placeholderTangentTexture ? { placeholderTangentTexture } : {}),
-      ...(placeholderVertexColorTexture ? { placeholderVertexColorTexture } : {}),
+    const ownedResources: OwnedGpuResource[] = [];
+    const own: OwnGpuResource = resource => {
+      ownedResources.push(resource);
+      return resource;
     };
+
+    try {
+      const canReuseModules = this._shaderDevice === device;
+      const castShaderModule = canReuseModules && this._castShaderModule
+        ? this._castShaderModule
+        : device.createShaderModule({ label: 'rc-probe-ray-cast', code: PROBE_RAY_CAST_WGSL });
+      const mergeShaderModule = canReuseModules && this._mergeShaderModule
+        ? this._mergeShaderModule
+        : device.createShaderModule({ label: 'rc-cascade-merge', code: CASCADE_MERGE_WGSL });
+
+      const castBGL  = this._castBindGroupLayout(device);
+      const mergeBGL = this._mergeBindGroupLayout(device);
+      const castPipelineLayout  = device.createPipelineLayout({ bindGroupLayouts: [castBGL] });
+      const mergePipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [mergeBGL] });
+
+      const bvhBindings = this._resolveBvhBindings(device, opts, own);
+      const { envTextureView, envSampler, placeholderEnvTexture } =
+        this._resolveEnvBindingRaw(device, opts, own);
+      const {
+        materialTextureAtlasView,
+        materialMapMetaTextureView,
+        placeholderMaterialAtlasTexture,
+        placeholderMaterialMetaTexture,
+      } = this._resolveMaterialAtlasBindingRaw(device, opts, own);
+      const {
+        bvhTangentTextureView,
+        placeholderTangentTexture,
+      } = this._resolveTangentTextureBindingRaw(device, opts, own);
+      const {
+        bvhVertexColorTextureView,
+        placeholderVertexColorTexture,
+      } = this._resolveVertexColorTextureBindingRaw(device, opts, own);
+
+      const { castPasses, castBindGroups } = this._buildCastPasses(
+        device, opts, castBGL, castPipelineLayout, castShaderModule, bvhBindings,
+        envTextureView, envSampler, materialTextureAtlasView, materialMapMetaTextureView,
+        bvhTangentTextureView, bvhVertexColorTextureView, own,
+      );
+      const { mergePasses, mergeBindGroups } = this._buildMergePasses(
+        device, opts, mergeBGL, mergePipelineLayout, mergeShaderModule, own,
+      );
+
+      const candidate: DispatchHandles = {
+        castPasses,
+        mergePasses,
+        envTextureView,
+        envSampler,
+        castBindGroups,
+        mergeBindGroups,
+        sceneArenaBuf: bvhBindings.sceneArenaBuf,
+        sceneArenaCopies: bvhBindings.sceneArenaCopies,
+        materialArenaVersion: opts.materialArenaVersion ?? 0,
+        tlasArenaVersion: opts.tlasArenaVersion ?? 0,
+        ownedResources,
+        ...(placeholderEnvTexture ? { placeholderEnvTexture } : {}),
+        ...(placeholderMaterialAtlasTexture ? { placeholderMaterialAtlasTexture } : {}),
+        ...(placeholderMaterialMetaTexture ? { placeholderMaterialMetaTexture } : {}),
+        ...(placeholderTangentTexture ? { placeholderTangentTexture } : {}),
+        ...(placeholderVertexColorTexture ? { placeholderVertexColorTexture } : {}),
+      };
+
+      // Publish device-bound shader cache state only after every fallible build step succeeds.
+      this._castShaderModule = castShaderModule;
+      this._mergeShaderModule = mergeShaderModule;
+      this._shaderDevice = device;
+      return candidate;
+    } catch (error) {
+      for (const resource of ownedResources) destroyOwnedResource(resource);
+      throw error;
+    }
+  }
+
+  /**
+   * Pack material metadata and the five TLAS arrays behind one storage binding.
+   * The 64-byte header stores `(wordOffset, elementCount)` pairs in this order:
+   * materials, triangle-material ids, TLAS nodes, instance ids, BLAS roots,
+   * world-to-local columns, local-to-world columns. The last pair is reserved.
+   *
+   * Only dirty subranges are recopied: replacement identities are detected
+   * automatically and in-place writers opt in through the two version fields.
+   */
+  private _buildSceneArena(
+    device: GPUDevice,
+    opts: RCDispatchOptsRaw,
+    own: OwnGpuResource,
+  ): { sceneArenaBuf: GPUBuffer; sceneArenaCopies: SceneArenaCopy[] } {
+    const header = new Uint32Array(RC_SCENE_ARENA_HEADER_WORDS);
+    const copies: SceneArenaCopy[] = [];
+    let cursor = RC_SCENE_ARENA_HEADER_BYTES;
+
+    const append = (
+      pairIndex: number,
+      label: string,
+      source: GPUBuffer,
+      elementStride: number,
+    ): void => {
+      const size = source.size;
+      if (!Number.isSafeInteger(size) || size < elementStride || size % 4 !== 0) {
+        throw new Error(
+          `[RCDispatcher] ${label} has invalid byte size ${String(size)}; ` +
+          `expected a positive multiple of 4 and at least ${elementStride} bytes.`,
+        );
+      }
+      if (
+        typeof source.usage === 'number' &&
+        (source.usage & GPUBufferUsage.COPY_SRC) === 0
+      ) {
+        throw new Error(
+          `[RCDispatcher] ${label} must include GPUBufferUsage.COPY_SRC ` +
+          'so RC can pack its portable eight-binding scene arena.',
+        );
+      }
+      header[pairIndex * 2] = cursor / 4;
+      header[pairIndex * 2 + 1] = Math.floor(size / elementStride);
+      copies.push({
+        source,
+        destinationOffset: cursor,
+        size,
+        category: pairIndex <= 1 ? 'material' : 'tlas',
+        dirty: true,
+      });
+      cursor += size;
+    };
+
+    const markEmpty = (pairIndex: number): void => {
+      header[pairIndex * 2] = cursor / 4;
+      header[pairIndex * 2 + 1] = 0;
+    };
+
+    append(0, 'materialsBuf', opts.materialsBuf, 64);
+    append(1, 'triMaterialIdBuf', opts.triMaterialIdBuf, 4);
+
+    const tlasBuffers = [
+      opts.tlasNodesBuf,
+      opts.tlasInstanceIndicesBuf,
+      opts.tlasBlasRootsBuf,
+      opts.tlasInstanceWorldToLocalBuf,
+      opts.tlasInstanceLocalToWorldBuf,
+    ] as const;
+    if (opts.bvhMode === 'tlas') {
+      if (tlasBuffers.some((buffer) => buffer == null)) {
+        throw new Error(
+          '[RCDispatcher] bvhMode="tlas" requires all five TLAS buffers.',
+        );
+      }
+      append(2, 'tlasNodesBuf', tlasBuffers[0]!, 32);
+      append(3, 'tlasInstanceIndicesBuf', tlasBuffers[1]!, 4);
+      append(4, 'tlasBlasRootsBuf', tlasBuffers[2]!, 4);
+      append(5, 'tlasInstanceWorldToLocalBuf', tlasBuffers[3]!, 16);
+      append(6, 'tlasInstanceLocalToWorldBuf', tlasBuffers[4]!, 16);
+    } else {
+      for (let pairIndex = 2; pairIndex <= 6; pairIndex += 1) {
+        markEmpty(pairIndex);
+      }
+    }
+
+    const sceneArenaBuf = own(device.createBuffer({
+      label: 'rc-scene-arena',
+      size: cursor,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    }));
+    device.queue.writeBuffer(
+      sceneArenaBuf,
+      0,
+      header.buffer,
+      header.byteOffset,
+      header.byteLength,
+    );
+    return { sceneArenaBuf, sceneArenaCopies: copies };
+  }
+
+  /**
+   * Refresh arena source identities without rebuilding bind groups. Returns
+   * false only when a replacement changes the packed shape and needs a new
+   * arena allocation. Static frames leave every copy clean.
+   */
+  private _refreshSceneArenaSources(
+    handles: DispatchHandles,
+    opts: RCDispatchOptsRaw,
+  ): boolean {
+    const desired: GPUBuffer[] = [opts.materialsBuf, opts.triMaterialIdBuf];
+    if (opts.bvhMode === 'tlas') {
+      const tlas = [
+        opts.tlasNodesBuf,
+        opts.tlasInstanceIndicesBuf,
+        opts.tlasBlasRootsBuf,
+        opts.tlasInstanceWorldToLocalBuf,
+        opts.tlasInstanceLocalToWorldBuf,
+      ] as const;
+      if (tlas.some((buffer) => buffer == null)) return false;
+      desired.push(tlas[0]!, tlas[1]!, tlas[2]!, tlas[3]!, tlas[4]!);
+    }
+    if (desired.length !== handles.sceneArenaCopies.length) return false;
+
+    // Validate the complete replacement shape before mutating any retained copy.
+    for (let index = 0; index < desired.length; index += 1) {
+      if (desired[index]!.size !== handles.sceneArenaCopies[index]!.size) return false;
+    }
+    for (let index = 0; index < desired.length; index += 1) {
+      const source = desired[index]!;
+      const copy = handles.sceneArenaCopies[index]!;
+      if (source !== copy.source) {
+        copy.source = source;
+        copy.dirty = true;
+      }
+    }
+
+    const materialVersion = opts.materialArenaVersion ?? 0;
+    if (materialVersion !== handles.materialArenaVersion) {
+      for (const copy of handles.sceneArenaCopies) {
+        if (copy.category === 'material') copy.dirty = true;
+      }
+      handles.materialArenaVersion = materialVersion;
+    }
+    const tlasVersion = opts.tlasArenaVersion ?? 0;
+    if (tlasVersion !== handles.tlasArenaVersion) {
+      for (const copy of handles.sceneArenaCopies) {
+        if (copy.category === 'tlas') copy.dirty = true;
+      }
+      handles.tlasArenaVersion = tlasVersion;
+    }
+    return true;
   }
 
   /**
@@ -901,36 +1674,61 @@ export class RCDispatcher {
    * sized dummy placeholders for any that the caller omitted. Extracted from
    * `_buildHandlesRaw` (D13.1).
    */
-  private _resolveBvhBindings(device: GPUDevice, opts: RCDispatchOptsRaw): {
-    bvhBuf: GPUBuffer; idxBuf: GPUBuffer; posBuf: GPUBuffer; normBuf: GPUBuffer;
-    matBuf: GPUBuffer; triMatBuf: GPUBuffer;
-    tlasNodesBuf: GPUBuffer; tlasInstBuf: GPUBuffer; tlasBlasBuf: GPUBuffer;
-    tlasW2lBuf: GPUBuffer; tlasL2wBuf: GPUBuffer;
-    emittersBuf: GPUBuffer; lightsBuf: GPUBuffer;
+  private _resolveBvhBindings(
+    device: GPUDevice,
+    opts: RCDispatchOptsRaw,
+    own: OwnGpuResource,
+  ): {
+    bvhBinding: GPUBufferBinding;
+    indexBinding: GPUBufferBinding;
+    positionBinding: GPUBufferBinding;
+    normalBinding: GPUBufferBinding;
+    sceneArenaBuf: GPUBuffer; sceneArenaCopies: SceneArenaCopy[];
+    emittersBinding: GPUBufferBinding; lightsBinding: GPUBufferBinding;
   } {
-    const bvhBuf    = opts.bvhNodesBuf;
-    const idxBuf    = opts.bvhIndicesBuf;
-    const posBuf    = opts.bvhPositionsBuf;
-    const normBuf   = opts.bvhNormalsBuf;
-    const matBuf    = opts.materialsBuf;
-    const triMatBuf = opts.triMaterialIdBuf;
-    const tlasNodesBuf = opts.tlasNodesBuf ?? this._dummyStorageBuffer(device, 'rc-tlas-nodes-dummy');
-    const tlasInstBuf  = opts.tlasInstanceIndicesBuf ?? this._dummyStorageBuffer(device, 'rc-tlas-inst-dummy');
-    const tlasBlasBuf  = opts.tlasBlasRootsBuf ?? this._dummyStorageBuffer(device, 'rc-tlas-blas-dummy');
-    const tlasW2lBuf   = opts.tlasInstanceWorldToLocalBuf ?? this._dummyStorageBuffer(device, 'rc-tlas-w2l-dummy');
-    const tlasL2wBuf   = opts.tlasInstanceLocalToWorldBuf ?? this._dummyStorageBuffer(device, 'rc-tlas-l2w-dummy');
-    // Rect-area emitter NEE buffer (binding 14, array<EmitterTri>). When absent,
-    // bind an 80-byte zero placeholder — one EmitterTri stride, the minimum
-    // binding size for the runtime array. emitterCount==0 ⇒ the shader's NEE
-    // loop never reads it. 80 (not 32) bytes because EmitterTri is 80 bytes;
-    // a sub-stride placeholder would be rejected like the TLAS 16-vs-32 class.
-    const emittersBuf = opts.emittersBuf ?? this._dummyStorageBuffer(device, 'rc-emitters-dummy', 80);
-    // A7 (2026-06-10): analytic point/spot lights buffer (binding 15, RCLightBuffer).
-    // 16-byte header (count + 3 pad u32) + 16 × 64-byte RCLight entries = 1040 bytes.
-    // When absent, bind a 1040-byte zero placeholder (count=0 → loop no-op).
-    // 1040 bytes ≥ the RCLightBuffer struct stride so strict backends accept it.
-    const lightsBuf = opts.lightsBuf ?? this._dummyStorageBuffer(device, 'rc-lights-dummy', 1040);
-    return { bvhBuf, idxBuf, posBuf, normBuf, matBuf, triMatBuf, tlasNodesBuf, tlasInstBuf, tlasBlasBuf, tlasW2lBuf, tlasL2wBuf, emittersBuf, lightsBuf };
+    const bvhBinding = validateStorageBinding(
+      device, opts.bvhNodesBuf, 'bvhNodesBuf', 32, GPUBufferUsage.STORAGE,
+      opts.bvhNodesOffset, opts.bvhNodesSize,
+    ).resource;
+    const indexBinding = validateStorageBinding(
+      device, opts.bvhIndicesBuf, 'bvhIndicesBuf', 16, GPUBufferUsage.STORAGE,
+      opts.bvhIndicesOffset, opts.bvhIndicesSize,
+    ).resource;
+    const positionBinding = validateStorageBinding(
+      device, opts.bvhPositionsBuf, 'bvhPositionsBuf', 16, GPUBufferUsage.STORAGE,
+      opts.bvhPositionsOffset, opts.bvhPositionsSize,
+    ).resource;
+    const normalBinding = validateStorageBinding(
+      device, opts.bvhNormalsBuf, 'bvhNormalsBuf', 16, GPUBufferUsage.STORAGE,
+      opts.bvhNormalsOffset, opts.bvhNormalsSize,
+    ).resource;
+    const { sceneArenaBuf, sceneArenaCopies } = this._buildSceneArena(device, opts, own);
+    // Raw emitter+alias window. count=0 never reads beyond the 16-byte dummy.
+    const emittersBinding: GPUBufferBinding = opts.emittersBuf == null
+      ? { buffer: this._dummyStorageBuffer(device, 'rc-emitters-dummy', 16, own), offset: 0, size: 16 }
+      : {
+          buffer: opts.emittersBuf,
+          offset: opts.emittersOffset ?? 0,
+          ...(opts.emittersSize == null ? {} : { size: opts.emittersSize }),
+        };
+    // Runtime-sized RCLight+alias window; absent scenes use a 16-byte header.
+    const lightsBinding: GPUBufferBinding = opts.lightsBuf == null
+      ? { buffer: this._dummyStorageBuffer(device, 'rc-lights-dummy', RC_LIGHTS_BUFFER_BYTES, own), offset: 0, size: RC_LIGHTS_BUFFER_BYTES }
+      : {
+          buffer: opts.lightsBuf,
+          offset: opts.lightsOffset ?? 0,
+          size: opts.lightsSize ?? opts.lightsBuf.size - (opts.lightsOffset ?? 0),
+        };
+    return {
+      bvhBinding,
+      indexBinding,
+      positionBinding,
+      normalBinding,
+      sceneArenaBuf,
+      sceneArenaCopies,
+      emittersBinding,
+      lightsBinding,
+    };
   }
 
   /**
@@ -942,6 +1740,7 @@ export class RCDispatcher {
     opts: RCDispatchOptsRaw,
     castBGL: GPUBindGroupLayout,
     castPipelineLayout: GPUPipelineLayout,
+    castShaderModule: GPUShaderModule,
     bvhBindings: ReturnType<typeof RCDispatcher.prototype._resolveBvhBindings>,
     envTextureView: GPUTextureView,
     envSampler: GPUSampler,
@@ -949,11 +1748,11 @@ export class RCDispatcher {
     materialMapMetaTextureView: GPUTextureView,
     bvhTangentTextureView: GPUTextureView,
     bvhVertexColorTextureView: GPUTextureView,
+    own: OwnGpuResource,
   ): { castPasses: CastPassHandles[]; castBindGroups: GPUBindGroup[] } {
     const {
-      bvhBuf, idxBuf, posBuf, normBuf, matBuf, triMatBuf,
-      tlasNodesBuf, tlasInstBuf, tlasBlasBuf, tlasW2lBuf, tlasL2wBuf,
-      emittersBuf, lightsBuf,
+      bvhBinding, indexBinding, positionBinding, normalBinding, sceneArenaBuf,
+      emittersBinding, lightsBinding,
     } = bvhBindings;
 
     const castPasses: CastPassHandles[] = [];
@@ -968,20 +1767,14 @@ export class RCDispatcher {
         label:  `rc-cast-C${k}`,
         layout: castPipelineLayout,
         compute: {
-          module:     this._castShaderModule!,
+          module:     castShaderModule,
           entryPoint: 'probeRayCastKernel',
         },
       });
 
-      // Per-pass STORAGE buffer for CascadeUniforms (40 floats = 160 bytes).
-      // Backed by storage (not UNIFORM) because the 160-byte struct exceeds
-      // the default maxUniformBufferBindingSize on low-end adapters; the
-      // shader binds it as `read-only-storage` which has no such limit.
-      // envIntensity is fixed at 1.0 by design: tone mapping is applied per-
-      // material downstream, and environment-level scaling is intentionally
-      // not exposed at the RC dispatch level. If a future requirement needs
-      // it, add `envIntensity?: number` to `RCDispatchOpts` and thread it
-      // through.
+      // Per-pass uniform buffer for CascadeUniforms (40 words = 160 bytes).
+      // WebGPU guarantees at least 16 KiB for a uniform binding, so this is
+      // portable and avoids consuming one of the eight guaranteed storage slots.
       const cascadeParamsRaw = new Float32Array(40);
       buildCascadeUniformDataInto(cascadeParamsRaw, k, {
         probeOriginWorld: opts.probeOriginWorld,
@@ -990,21 +1783,30 @@ export class RCDispatcher {
         sunColor:         opts.sunColor,
         sunCastShadowDisabled: opts.sunCastShadowDisabled === true,
         sunAngularRadius: opts.sunAngularRadius ?? 0,
-        envIntensity:     1.0,
+        envIntensity:     opts.envIntensity ?? 1,
+        envRotationY:     opts.envRotationY ?? 0,
+        scalarSkyRadiance: opts.scalarSkyRadiance ?? [0, 0, 0],
+        hasDirectionalEnvironment:
+          opts.hasDirectionalEnvironment ??
+          (opts.envTextureView != null && opts.envSampler != null),
         frameSeed:        opts.frameSeed,
         triIntersectEpsilon: opts.triIntersectEpsilon ?? 1e-5,
+        transmittedInterfaceBudget: opts.transmittedInterfaceBudget
+          ?? RC_DEFAULT_TRANSMITTED_INTERFACE_BUDGET,
         bvhMode:          opts.bvhMode === 'tlas' ? 1 : 0,
         tlasNodeCount:    opts.tlasNodeCount ?? 0,
         emitterCount:     opts.emitterCount ?? 0,
         lightCount:       opts.lightCount ?? 0,
+        emitterDataWordOffset: (opts.emitterDataOffset ?? 0) / 4,
+        emitterAliasWordOffset: (opts.emitterAliasOffset ?? 0) / 4,
         dims:             cascadeDims,
       });
-      const cascadeParamsBuf = device.createBuffer({
+      const cascadeParamsBuf = own(device.createBuffer({
         label:  `rc-cast-C${k}-uniforms`,
         size:   cascadeParamsRaw.byteLength,
-        usage:  GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+        usage:  GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
         mappedAtCreation: true,
-      });
+      }));
       new Float32Array(cascadeParamsBuf.getMappedRange()).set(cascadeParamsRaw);
       cascadeParamsBuf.unmap();
 
@@ -1013,25 +1815,19 @@ export class RCDispatcher {
         label:  `rc-cast-C${k}-bg`,
         layout: castBGL,
         entries: [
-          { binding: 0, resource: { buffer: bvhBuf } },
-          { binding: 1, resource: { buffer: idxBuf } },
-          { binding: 2, resource: { buffer: posBuf } },
-          { binding: 3, resource: { buffer: matBuf } },
-          { binding: 4, resource: { buffer: triMatBuf } },
+          { binding: 0, resource: bvhBinding },
+          { binding: 1, resource: indexBinding },
+          { binding: 2, resource: positionBinding },
+          { binding: 3, resource: { buffer: sceneArenaBuf } },
           { binding: 5, resource: { buffer: cascadeBuf } },
           { binding: 6, resource: envTextureView },
           { binding: 7, resource: envSampler },
           { binding: 8, resource: { buffer: cascadeParamsBuf } },
-          { binding: 9, resource: { buffer: tlasNodesBuf } },
-          { binding: 10, resource: { buffer: tlasInstBuf } },
-          { binding: 11, resource: { buffer: tlasBlasBuf } },
-          { binding: 12, resource: { buffer: tlasW2lBuf } },
-          { binding: 13, resource: { buffer: tlasL2wBuf } },
-          { binding: 14, resource: { buffer: emittersBuf } },
-          { binding: 15, resource: { buffer: lightsBuf } },  // A7: rc_lights
+          { binding: 14, resource: emittersBinding },
+          { binding: 15, resource: lightsBinding },  // runtime RCLight + alias window
           { binding: 16, resource: materialTextureAtlasView },
           { binding: 17, resource: materialMapMetaTextureView },
-          { binding: 18, resource: { buffer: normBuf } },
+          { binding: 18, resource: normalBinding },
           { binding: 19, resource: bvhTangentTextureView },
           { binding: 20, resource: bvhVertexColorTextureView },
         ],
@@ -1053,6 +1849,8 @@ export class RCDispatcher {
     opts: RCDispatchOptsRaw,
     mergeBGL: GPUBindGroupLayout,
     mergePipelineLayout: GPUPipelineLayout,
+    mergeShaderModule: GPUShaderModule,
+    own: OwnGpuResource,
   ): { mergePasses: MergePassHandles[]; mergeBindGroups: GPUBindGroup[] } {
     const mergePasses: MergePassHandles[] = [];
     const mergeBindGroups: GPUBindGroup[] = [];
@@ -1067,19 +1865,19 @@ export class RCDispatcher {
         label:  `rc-merge-${lower}→${lower + 1}`,
         layout: mergePipelineLayout,
         compute: {
-          module:     this._mergeShaderModule!,
+          module:     mergeShaderModule,
           entryPoint: 'cascadeMergeKernel',
         },
       });
 
       // MergeUniforms buffer (20 floats = 80 bytes).
       const mergeRaw = buildMergeUniformData(lowerDim, upperDim, opts.probeOriginWorld, opts.roomSize);
-      const cascadeParamsBuf = device.createBuffer({
+      const cascadeParamsBuf = own(device.createBuffer({
         label:  `rc-merge-${lower}-uniforms`,
         size:   mergeRaw.byteLength,
         usage:  GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
         mappedAtCreation: true,
-      });
+      }));
       new Float32Array(cascadeParamsBuf.getMappedRange()).set(mergeRaw);
       cascadeParamsBuf.unmap();
 

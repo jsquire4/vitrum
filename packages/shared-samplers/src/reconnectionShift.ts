@@ -81,6 +81,8 @@ function sub(a: Vec3, b: Vec3): [number, number, number] {
   return [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
 }
 
+import { requireFinite, requireFiniteVec3 } from './numericGuards.js';
+
 function dot(a: Vec3, b: Vec3): number {
   return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 }
@@ -136,11 +138,19 @@ export interface ReconnectionPath {
  * @returns reconnection-edge geometry term ≥ 0
  */
 export function reconnectionGeometryTerm(x1: Vec3, x2: Vec3, n2: Vec3): number {
+  requireFiniteVec3(x1, 'reconnectionGeometryTerm.x1');
+  requireFiniteVec3(x2, 'reconnectionGeometryTerm.x2');
+  requireFiniteVec3(n2, 'reconnectionGeometryTerm.n2');
   const d = sub(x2, x1);
+  requireFinite(d[0], 'reconnectionGeometryTerm.delta[0]');
+  requireFinite(d[1], 'reconnectionGeometryTerm.delta[1]');
+  requireFinite(d[2], 'reconnectionGeometryTerm.delta[2]');
   const dist = len(d);
-  if (dist <= 0) return 0;
-  const cosOut = Math.abs(dot(n2, d) / dist);
-  return cosOut / (dist * dist);
+  const normalLength = len(n2);
+  if (dist <= 0 || normalLength < 1e-12) return 0;
+  const cosOut = Math.abs(dot(n2, d) / (dist * normalLength));
+  const result = cosOut / (dist * dist);
+  return Number.isFinite(result) ? result : Number.MAX_VALUE;
 }
 
 // ── the reconnection shift T and its inverse T⁻¹ ──────────────────────────────
@@ -164,6 +174,10 @@ export function reconnectionGeometryTerm(x1: Vec3, x2: Vec3, n2: Vec3): number {
  * @returns the shifted (offset-domain) reconnection path
  */
 export function reconnectionShift(base: ReconnectionPath, offsetX1: Vec3): ReconnectionPath {
+  requireFiniteVec3(base.x2, 'reconnectionShift.base.x2');
+  requireFiniteVec3(base.n2, 'reconnectionShift.base.n2');
+  requireFiniteVec3(base.x1, 'reconnectionShift.base.x1');
+  requireFiniteVec3(offsetX1, 'reconnectionShift.offsetX1');
   return { x1: [offsetX1[0], offsetX1[1], offsetX1[2]], x2: base.x2, n2: base.n2 };
 }
 
@@ -179,6 +193,10 @@ export function reconnectionShift(base: ReconnectionPath, offsetX1: Vec3): Recon
  * @returns the un-shifted (base-domain) reconnection path
  */
 export function reconnectionShiftInverse(offset: ReconnectionPath, baseX1: Vec3): ReconnectionPath {
+  requireFiniteVec3(offset.x2, 'reconnectionShiftInverse.offset.x2');
+  requireFiniteVec3(offset.n2, 'reconnectionShiftInverse.offset.n2');
+  requireFiniteVec3(offset.x1, 'reconnectionShiftInverse.offset.x1');
+  requireFiniteVec3(baseX1, 'reconnectionShiftInverse.baseX1');
   return { x1: [baseX1[0], baseX1[1], baseX1[2]], x2: offset.x2, n2: offset.n2 };
 }
 
@@ -206,8 +224,17 @@ export function reconnectionShiftInverse(offset: ReconnectionPath, baseX1: Vec3)
  * @returns the Jacobian determinant ≥ 0
  */
 export function reconnectionJacobian(base: ReconnectionPath, shifted: ReconnectionPath): number {
+  for (let i = 0; i < 3; i++) {
+    if (base.x2[i] !== shifted.x2[i] || base.n2[i] !== shifted.n2[i]) {
+      throw new RangeError('reconnectionJacobian requires a shared x2 and n2');
+    }
+  }
   const gBase = reconnectionGeometryTerm(base.x1, base.x2, base.n2);
   if (gBase <= 0) return 0;
   const gShifted = reconnectionGeometryTerm(shifted.x1, shifted.x2, shifted.n2);
-  return gShifted / gBase;
+  if (gShifted <= 0) return 0;
+  const logRatio = Math.log(gShifted) - Math.log(gBase);
+  if (logRatio >= Math.log(Number.MAX_VALUE)) return Number.MAX_VALUE;
+  if (logRatio <= Math.log(Number.MIN_VALUE)) return 0;
+  return Math.exp(logRatio);
 }

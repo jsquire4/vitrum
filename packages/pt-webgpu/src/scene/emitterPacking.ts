@@ -1,10 +1,15 @@
-import type { DiscAreaEmitter, Mat4, MaterialSpec, MeshAreaEmitter, Scene, TextureRef } from '@vitrum/core';
 import {
-  emissiveMapTriangleSubdivisionLevel,
-  estimateMaterialSpecEmissiveLeOverTriangle,
-  forEachBarycentricSubTriangle,
-  forEachEmissiveMapTexelSubTriangle,
-  type BarycentricWeights,
+  getPrimitiveUvSet,
+  type DiscAreaEmitter,
+  type Mat4,
+  type MaterialSpec,
+  type MeshAreaEmitter,
+  type Scene,
+} from '@vitrum/core';
+import {
+  isTextureRefCpuReadable,
+  materialSpecEmissiveLe,
+  materialSpecScalarEmissiveLe,
 } from '@vitrum/shared-bvh';
 import { luminance, type LightTreeBuildInput } from '@vitrum/shared-samplers';
 import { transformPoint } from '../math/mat4.js';
@@ -21,19 +26,16 @@ import {
  *   vec4 0: direction.xyz (normalized toward light), angularDiameter (radians)
  *   vec4 1: irradiance.rgb, mean_irradiance
  *   angularDiameter = 0 ⟹ perfect delta directional (historical exact path, byte-identical).
- *   mean_irradiance = (r+g+b)/3 — cached for the kernel gate (lightDir.w analog).
+ *   mean_irradiance = (r+g+b)/3 — cached for storage/texture consumers.
  *   SHADOW-01: emitter castShadow:false is SIGN-ENCODED into the angularDiameter
  *   lane (both vec4s are otherwise full): packed = -1 - angularDiameter when the
  *   flag is false; the kernel decodes shadowDisabled = (raw < 0) and
  *   angularDiameter = -1 - raw. castShadow:true packs the raw value (≥ 0),
  *   byte-identical to the pre-SHADOW-01 layout.
  *
- * Directional[0] is ALSO mirrored into the frame-UBO lightDir/cameraPos.w lanes for
- * backward compatibility with lite-tier single-directional direct lighting.
- * The cameraPos.w mirror uses the SAME sign-encoded angularDiameter convention
- * as the storage-buffer lane so lite can honor castShadow:false without adding
- * a storage-buffer binding. For N > 1, lights [1..N-1] are read ONLY from this
- * storage buffer; the full kernel loops params.directionalLightCount records.
+ * The full tier reads this storage buffer directly; the lite tier receives the
+ * same records through its packed sampled-light texture. No first-directional
+ * frame-UBO mirror exists.
  */
 export const DIRECTIONAL_LIGHT_FLOAT_STRIDE = 8;
 
@@ -58,7 +60,13 @@ export const POINT_LIGHT_FLOAT_STRIDE = 12;
  */
 export const SPOT_LIGHT_FLOAT_STRIDE = 16;
 export const RECT_AREA_LIGHT_FLOAT_STRIDE = 16;
-export const MESH_AREA_LIGHT_FLOAT_STRIDE = 16;
+/**
+ * Mesh-area record (7 vec4 = 28 floats):
+ *   0..2 position vertices; 3 average Le + castShadowDisabled;
+ *   4 raw emissive UV A/B; 5 raw UV C + (materialId+1) + source world area;
+ *   6 authored base Le. A zero materialId+1 marks an untextured emitter.
+ */
+export const MESH_AREA_LIGHT_FLOAT_STRIDE = 28;
 
 /**
  * Rect/disc area light record layout (4 vec4 = 16 floats):
@@ -79,17 +87,19 @@ const RECT_DISC_SHAPE_DISC = 1.0;
 
 type Vec3 = [number, number, number];
 
-interface RawTexturePayload {
-  readonly width: number;
-  readonly height: number;
-  readonly data: ArrayBufferView;
-}
-
 type PackedMeshAreaTriangle = {
   readonly triA: Vec3;
   readonly triB: Vec3;
   readonly triC: Vec3;
   readonly radiance: Vec3;
+  readonly baseRadiance: Vec3;
+  readonly emissiveRawUvs: readonly [
+    readonly [number, number],
+    readonly [number, number],
+    readonly [number, number],
+  ];
+  readonly mappedMaterialId: number | null;
+  readonly sourceWorldArea: number;
   /**
    * Per-channel source multiplier before authored mesh-area emitter color and
    * intensity are applied. `1` for scalar emitters; readable emissive-map
@@ -113,39 +123,28 @@ type PackedMeshAreaTriangle = {
 type MeshAreaTrianglePackOptions = {
   readonly includeZeroRadianceTriangles?: boolean;
   readonly adjointEmitterSlot?: number;
+  readonly materialIdByPrimitive?: ReadonlyMap<string, number>;
 };
 
 /**
- * Mesh-area NEE triangle cap — prevents a large emissive mesh from producing an
- * unbounded GPU buffer (16 floats × 4 bytes per triangle) and an oversized CPU
+ * Mesh-area production proposal limit — prevents a large emissive mesh from
+ * producing an unbounded GPU buffer (28 floats × 4 bytes per triangle) and an oversized CPU
  * light-tree build (O(N log N)).
  *
- * Cap = 65 536 triangles ≈ 4 MB buffer + a still-manageable light tree.
+ * Limit = 65 536 triangles ≈ 7 MiB for the primary records, plus the
+ * source-factor and light-tree storage.
  *
  * Rationale:
- *   - A 1M-triangle emissive mesh = 64 MB buffer + slow tree build per setScene.
- *   - Dropped triangles still emit via the BSDF/forward path (energy not lost,
- *     only NEE efficiency for the dropped fraction).
- *   - Selection: HIGHEST-EMITTED-POWER-FIRST — drops the lowest-contribution
- *     triangles by luminance(Le)·area. This matters for CPU-readable emissive
- *     maps because UV-local texel sub-triangles can be small but bright.
- *   - Warn ONCE per emitter that exceeds the cap.
+ *   - A 1M-triangle emissive mesh would require at least 112 MB for primary
+ *     records alone and a slow tree build per setScene.
+ *   - Production fails synchronously above the limit. Silently dropping even a
+ *     dim triangle would leave forward-hit emission with zero NEE proposal
+ *     support and bias MIS.
+ *   - Inverse-adjoint replay uses the same hard ceiling, but fails closed when
+ *     exact coverage would exceed it. A truncated replay stream would compute
+ *     a biased derivative for the omitted emitting triangles.
  */
 export const MESH_AREA_LIGHT_TRI_CAP = 65536;
-
-export function sortMeshAreaTrianglesForNeeCapForTests(
-  triangles: readonly PackedMeshAreaTriangle[],
-): readonly PackedMeshAreaTriangle[] {
-  return Array.from(triangles).sort((a, b) => {
-    const byPower = b.power - a.power;
-    if (Math.abs(byPower) > 1e-12) return byPower;
-    const byArea =
-      meshTriangleArea(b.triA, b.triB, b.triC) -
-      meshTriangleArea(a.triA, a.triB, a.triC);
-    if (Math.abs(byArea) > 1e-12) return byArea;
-    return 0;
-  });
-}
 
 export interface PackedEmitterArrays {
   readonly warnings: string[];
@@ -163,17 +162,16 @@ export interface PackedEmitterArrays {
 }
 
 export interface MeshAreaEmitterAdjointRange {
-  /** First packed mesh-area triangle slot for this explicit emitter before any cap/reorder. */
+  /** First packed mesh-area triangle slot for this explicit emitter. */
   readonly start: number;
   /** Number of packed non-degenerate triangles this explicit emitter contributes. */
   readonly count: number;
-  /** Total mesh-area triangle count before the global cap is applied. */
+  /** Total mesh-area triangle count before the exact-replay capacity check. */
   readonly totalMeshAreaTriangles: number;
   /**
-   * True when `packEmitterArrays` will sort/drop triangles by area. In that case
-   * the explicit emitter's source triangles are no longer guaranteed to occupy the
-   * contiguous range reported above; adjoint replay uses `adjointEmitterSlot`
-   * owner tags instead of range contiguity for capped streams.
+   * True when an exact adjoint replay stream would exceed the supported GPU
+   * capacity. Such a target is ineligible for path replay and must use the
+   * finite-difference fallback; replay packing throws instead of truncating.
    */
   readonly capped: boolean;
   /**
@@ -217,116 +215,90 @@ function emitterRadiance(
   ];
 }
 
-function clamp01(value: number): number {
-  return Math.min(1, Math.max(0, Number.isFinite(value) ? value : 0));
-}
-
-function srgbToLinear(value: number): number {
-  const c = clamp01(value);
-  return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
-}
-
-function numericChannelMax(data: ArrayBufferView): number | null {
-  if (data instanceof Float32Array || data instanceof Float64Array) return 1;
-  if (data instanceof Uint8Array || data instanceof Uint8ClampedArray) return 255;
-  if (data instanceof Uint16Array) return 65535;
-  if (data instanceof Uint32Array) return 4294967295;
-  if (data instanceof Int8Array) return 127;
-  if (data instanceof Int16Array) return 32767;
-  if (data instanceof Int32Array) return 2147483647;
-  return null;
-}
-
-function rawPayloadOfTexture(ref: TextureRef | undefined): RawTexturePayload | null {
-  const source = ref?.handle;
-  if (source == null || typeof source !== 'object') return null;
-  const img = ('image' in source && (source as { image?: unknown }).image != null
-    ? (source as { image?: unknown }).image
-    : source) as Record<string, unknown>;
-  if (img == null || typeof img !== 'object') return null;
-  const width = typeof img.width === 'number' ? img.width : 0;
-  const height = typeof img.height === 'number' ? img.height : 0;
-  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
-    return null;
-  }
-  return ArrayBuffer.isView(img.data)
-    ? { width: Math.floor(width), height: Math.floor(height), data: img.data }
-    : null;
-}
-
 function uvAt(uvs: Float32Array | undefined, vertex: number): [number, number] {
   if (uvs == null) return [0, 0];
   return [uvs[vertex * 2] ?? 0, uvs[vertex * 2 + 1] ?? 0];
 }
 
-function baryVec3(a: Vec3, b: Vec3, c: Vec3, w: BarycentricWeights): Vec3 {
-  return [
-    a[0] * w[0] + b[0] * w[1] + c[0] * w[2],
-    a[1] * w[0] + b[1] * w[1] + c[1] * w[2],
-    a[2] * w[0] + b[2] * w[1] + c[2] * w[2],
-  ];
-}
-
-function baryUv2(
-  a: readonly [number, number],
-  b: readonly [number, number],
-  c: readonly [number, number],
-  w: BarycentricWeights,
-): [number, number] {
-  return [
-    a[0] * w[0] + b[0] * w[1] + c[0] * w[2],
-    a[1] * w[0] + b[1] * w[1] + c[1] * w[2],
-  ];
-}
-
-function averageSrgbTextureRgb(ref: TextureRef | undefined): Vec3 | null {
-  const payload = rawPayloadOfTexture(ref);
-  if (payload == null) return null;
-  const pixelCount = payload.width * payload.height;
-  if (pixelCount <= 0) return null;
-  const data = payload.data as unknown as ArrayLike<number>;
-  const channelCount = data.length / pixelCount;
-  if (![1, 2, 3, 4].includes(channelCount) || !Number.isInteger(channelCount)) {
-    return null;
+function assertEmissiveMapCpuReadable(material: MaterialSpec, primitiveId: string): void {
+  if (material.emissiveMap == null || isTextureRefCpuReadable(material.emissiveMap, 'srgb')) {
+    return;
   }
-  const maxValue = numericChannelMax(payload.data);
-  if (maxValue == null) return null;
-  let r = 0;
-  let g = 0;
-  let b = 0;
-  for (let i = 0; i < pixelCount; i += 1) {
-    const src = i * channelCount;
-    const rawR = Number(data[src] ?? 0);
-    const rawG = channelCount >= 2 ? Number(data[src + 1] ?? 0) : rawR;
-    const rawB = channelCount >= 3 ? Number(data[src + 2] ?? 0) : rawR;
-    r += srgbToLinear(rawR / maxValue);
-    g += srgbToLinear(rawG / maxValue);
-    b += srgbToLinear(rawB / maxValue);
-  }
-  const inv = 1 / pixelCount;
-  return [r * inv, g * inv, b * inv];
+  throw new TypeError(
+    `@vitrum/pt-webgpu: primitive "${primitiveId}" uses an emissiveMap without ` +
+      'complete CPU-readable texels. Emissive-map NEE cannot substitute scalar emission ' +
+      'without biasing forward-hit MIS. Supply a CPU-readable texture payload, or wrap a ' +
+      'GPUTexture with createPtWebgpuTextureSource(..., { cpuMirror }).',
+  );
 }
 
 function emissiveRadianceForMaterial(
   material: MaterialSpec,
   primitiveId: string,
-  warnings?: string[],
 ): Vec3 {
-  const emissive = material.emissive ?? [0, 0, 0];
-  const intensity = material.emissiveIntensity ?? 1;
-  const mapAverage = averageSrgbTextureRgb(material.emissiveMap);
-  if (material.emissiveMap != null && mapAverage == null && warnings != null) {
-    warnings.push(
-      `@vitrum/pt-webgpu: primitive "${primitiveId}" has an emissiveMap without CPU-readable texels; ` +
-        'implicit mesh-area NEE uses scalar emissive radiance only.',
-    );
-  }
-  const map = mapAverage ?? [1, 1, 1];
+  if (materialSpecScalarEmissiveLe(material) == null) return [0, 0, 0];
+  assertEmissiveMapCpuReadable(material, primitiveId);
+  return materialSpecEmissiveLe(material) ?? [0, 0, 0];
+}
+
+function hasPositiveRadiance(radiance: readonly [number, number, number]): boolean {
+  return radiance[0] > 0 || radiance[1] > 0 || radiance[2] > 0;
+}
+
+function f32Dot3(x: number, y: number, z: number): number {
+  const xx = Math.fround(Math.fround(x) * Math.fround(x));
+  const yy = Math.fround(Math.fround(y) * Math.fround(y));
+  const zz = Math.fround(Math.fround(z) * Math.fround(z));
+  return Math.fround(Math.fround(xx + yy) + zz);
+}
+
+function f32Cross(
+  a: readonly [number, number, number],
+  b: readonly [number, number, number],
+): Vec3 {
+  const ax = Math.fround(a[0]);
+  const ay = Math.fround(a[1]);
+  const az = Math.fround(a[2]);
+  const bx = Math.fround(b[0]);
+  const by = Math.fround(b[1]);
+  const bz = Math.fround(b[2]);
   return [
-    emissive[0] * intensity * map[0],
-    emissive[1] * intensity * map[1],
-    emissive[2] * intensity * map[2],
+    Math.fround(Math.fround(ay * bz) - Math.fround(az * by)),
+    Math.fround(Math.fround(az * bx) - Math.fround(ax * bz)),
+    Math.fround(Math.fround(ax * by) - Math.fround(ay * bx)),
   ];
+}
+
+function f32TriangleHasPositiveArea(a: Vec3, b: Vec3, c: Vec3): boolean {
+  const ab: Vec3 = [
+    Math.fround(Math.fround(b[0]) - Math.fround(a[0])),
+    Math.fround(Math.fround(b[1]) - Math.fround(a[1])),
+    Math.fround(Math.fround(b[2]) - Math.fround(a[2])),
+  ];
+  const ac: Vec3 = [
+    Math.fround(Math.fround(c[0]) - Math.fround(a[0])),
+    Math.fround(Math.fround(c[1]) - Math.fround(a[1])),
+    Math.fround(Math.fround(c[2]) - Math.fround(a[2])),
+  ];
+  const cross = f32Cross(ab, ac);
+  return f32Dot3(cross[0], cross[1], cross[2]) > 0;
+}
+
+function assertUniqueMeshAreaEmitterOwnership(scene: Scene): void {
+  const ownerByMeshId = new Map<string, string>();
+  for (const emitter of scene.emitters) {
+    if (emitter.kind !== 'mesh-area') continue;
+    const previousOwner = ownerByMeshId.get(emitter.meshId);
+    if (previousOwner != null) {
+      throw new TypeError(
+        `@vitrum/pt-webgpu: mesh primitive "${emitter.meshId}" is referenced by multiple ` +
+          `mesh-area emitters ("${previousOwner}" and "${emitter.id}"). A surface may have ` +
+          'only one explicit mesh-area emitter so forward-hit radiance and its MIS proposal ' +
+          'have one unambiguous owner.',
+      );
+    }
+    ownerByMeshId.set(emitter.meshId, emitter.id);
+  }
 }
 
 /**
@@ -347,25 +319,25 @@ function emissiveRadianceForMaterial(
  * Native analytic disc emitters replace the 32-triangle fan, 2026-06-10 —
  * RENDER-CHANGING for disc-lit scenes, A/B in R9-B.
  */
-function packDiscAsRect(
-  e: DiscAreaEmitter,
-  warnings: string[],
-): readonly number[] {
-  if (!Number.isFinite(e.radius) || e.radius < 1e-8) {
-    warnings.push(
-      `@vitrum/pt-webgpu: disc-area emitter "${e.id}" has near-zero radius; skipped.`,
+function packDiscAsRect(e: DiscAreaEmitter): readonly number[] {
+  if (
+    !Number.isFinite(e.radius) ||
+    !(e.radius > 0) ||
+    !(f32Dot3(e.radius, 0, 0) > 0)
+  ) {
+    throw new RangeError(
+      `@vitrum/pt-webgpu: disc-area emitter "${e.id}" has a non-positive or ` +
+        'non-f32-representable radius.',
     );
-    return [];
   }
   const nx = e.normal[0];
   const ny = e.normal[1];
   const nz = e.normal[2];
   const nLen = Math.hypot(nx, ny, nz);
-  if (nLen < 1e-8) {
-    warnings.push(
-      `@vitrum/pt-webgpu: disc-area emitter "${e.id}" has degenerate normal; skipped.`,
+  if (!Number.isFinite(nLen) || !(nLen > 0)) {
+    throw new RangeError(
+      `@vitrum/pt-webgpu: disc-area emitter "${e.id}" has a degenerate normal.`,
     );
-    return [];
   }
   // Build orthonormal tangent basis (tangent, bitangent) for the disc plane.
   const ux = nx / nLen;
@@ -378,11 +350,10 @@ function packDiscAsRect(
   const ty = az * ux - ax * uz;
   const tz = ax * uy - ay * ux;
   const tLen = Math.hypot(tx, ty, tz);
-  if (tLen < 1e-8) {
-    warnings.push(
-      `@vitrum/pt-webgpu: disc-area emitter "${e.id}" has degenerate tangent basis; skipped.`,
+  if (!Number.isFinite(tLen) || !(tLen > 0)) {
+    throw new RangeError(
+      `@vitrum/pt-webgpu: disc-area emitter "${e.id}" has a degenerate tangent basis.`,
     );
-    return [];
   }
   const tcx = tx / tLen;
   const tcy = ty / tLen;
@@ -393,69 +364,30 @@ function packDiscAsRect(
   const bz = ux * tcy - uy * tcx;
   // Scale both axes by radius — the WGSL recovers radius as |uAxis|.
   const r = e.radius;
+  const uAxis: Vec3 = [tcx * r, tcy * r, tcz * r];
+  const vAxis: Vec3 = [bx * r, by * r, bz * r];
+  const axisCross = f32Cross(uAxis, vAxis);
+  if (
+    !(f32Dot3(uAxis[0], uAxis[1], uAxis[2]) > 0) ||
+    !(f32Dot3(vAxis[0], vAxis[1], vAxis[2]) > 0) ||
+    !(f32Dot3(axisCross[0], axisCross[1], axisCross[2]) > 0)
+  ) {
+    throw new RangeError(
+      `@vitrum/pt-webgpu: disc-area emitter "${e.id}" does not retain ` +
+        'strictly positive area in f32 shader arithmetic.',
+    );
+  }
   const rad = emitterRadiance(e);
   return [
     // vec4 0: center (.w = SHADOW-01 castShadowDisabled, 0.0 default)
     e.position[0], e.position[1], e.position[2], e.castShadow === false ? 1 : 0,
     // vec4 1: uAxis = tangent × radius
-    tcx * r, tcy * r, tcz * r, 0,
+    uAxis[0], uAxis[1], uAxis[2], 0,
     // vec4 2: vAxis = bitangent × radius
-    bx * r, by * r, bz * r, 0,
+    vAxis[0], vAxis[1], vAxis[2], 0,
     // vec4 3: radiance.rgb, shape = DISC (1.0)
     rad[0], rad[1], rad[2], RECT_DISC_SHAPE_DISC,
   ];
-}
-
-export function defaultDirectionalLight(scene: Scene): readonly [number, number, number] {
-  const directional = scene.emitters.find((e) => e.kind === 'directional');
-  if (directional == null) return [0.4, 1.0, 0.2];
-  const x = directional.direction[0];
-  const y = directional.direction[1];
-  const z = directional.direction[2];
-  const len = Math.hypot(x, y, z);
-  if (len < 1e-8) return [0.4, 1.0, 0.2];
-  // Core contract: direction points AT the light, so incoming light is -direction.
-  return [-x / len, -y / len, -z / len];
-}
-
-export function defaultDirectionalIrradiance(scene: Scene): readonly [number, number, number] {
-  const directional = scene.emitters.find((e) => e.kind === 'directional');
-  // No directional emitter ⇒ NO directional light. The former [1,1,1] default
-  // fabricated a phantom directional in EVERY directional-less scene (the kernel
-  // gates directional NEE on `lightDir.w = mean(thisIrradiance) > 1e-6`), which
-  // is physically wrong AND skewed the power-weighted light tree: the phantom's
-  // leaf was assigned the union-AABB of all positional lights, so its dist²≈0
-  // inside the scene made its importance dominate the descent, starving the real
-  // lights of selection probability and inflating their 1/pdf NEE weights (V22
-  // showed the tree raising variance ~76% over a uniform pick). [0,0,0] removes
-  // the phantom from both the kernel NEE and the tree. (V22, 2026-05-29.)
-  if (directional == null) return [0, 0, 0];
-  const scale = directional.intensity;
-  return [
-    directional.color[0] * scale,
-    directional.color[1] * scale,
-    directional.color[2] * scale,
-  ];
-}
-
-/**
- * D3/SHADOW-01 — signed soft-sun angular diameter mirror for the scene's first
- * directional emitter.
- * 0 (the default, and when no directional emitter is present) = a perfect delta
- * directional, the historical exact path (byte-identical). A positive value turns
- * the directional NEE into a cone sampler over the sun's solid angle for soft
- * shadows. If the first directional has `castShadow:false`, the returned mirror
- * is sign-encoded as `-1 - angularDiameter`, matching the storage-buffer lane.
- * Carried in the frame UBO's `cameraPos.w` lane (a previously-unused `.w` slot
- * — see frameParamsPacker) so no UBO byte-size/layout change is needed.
- * Ref: DirectionalEmitter.angularDiameter (core contract).
- */
-export function defaultDirectionalAngularDiameter(scene: Scene): number {
-  const directional = scene.emitters.find((e) => e.kind === 'directional');
-  if (directional == null) return 0;
-  const ad = directional.angularDiameter;
-  const angularDiameter = ad != null && Number.isFinite(ad) && ad > 0 ? ad : 0;
-  return directional.castShadow === false ? -1 - angularDiameter : angularDiameter;
 }
 
 function packMeshAreaTriangles(
@@ -491,6 +423,9 @@ function packMeshAreaTriangles(
     return [];
   }
   const radiance = emitterRadiance(emitter);
+  if (hasPositiveRadiance(radiance)) {
+    assertEmissiveMapCpuReadable(primitive.material, primitive.id);
+  }
   const implicitMaterial = emitter.id === `__implicit__${primitive.id}` ? primitive.material : undefined;
   const mappedRadianceMaterial: MaterialSpec | undefined = implicitMaterial ??
     (primitive.material.emissiveMap != null
@@ -514,6 +449,23 @@ function packMeshAreaTriangles(
         (implicitMaterial.emissive?.[1] ?? 0) * (implicitMaterial.emissiveIntensity ?? 1),
         (implicitMaterial.emissive?.[2] ?? 0) * (implicitMaterial.emissiveIntensity ?? 1),
       ];
+  const mappedMaterialId = mappedSourceFactorMaterial == null
+    ? null
+    : options.materialIdByPrimitive?.get(primitive.id) ?? (() => {
+        let materialId = 0;
+        for (const candidate of scene.primitives) {
+          if (candidate.id === primitive.id) return materialId;
+          // packEmitterArrays receives the capability-filtered scene in production;
+          // every surviving primitive contributes one dense material slot.
+          materialId += 1;
+        }
+        return -1;
+      })();
+  if (mappedSourceFactorMaterial != null && (mappedMaterialId == null || mappedMaterialId < 0)) {
+    throw new Error(
+      `@vitrum/pt-webgpu: cannot resolve material slot for mapped mesh emitter "${emitter.id}".`,
+    );
+  }
   // SHADOW-01 — carry the emitter's castShadow flag onto every packed triangle.
   const castShadowDisabled = emitter.castShadow === false;
   const packed: PackedMeshAreaTriangle[] = [];
@@ -541,7 +493,14 @@ function packMeshAreaTriangles(
         b = transformPoint(transform, b);
         c = transformPoint(transform, c);
       }
-      if (meshTriangleArea(a, b, c) < 1e-12) {
+      const sourceArea = meshTriangleArea(a, b, c);
+      if (!Number.isFinite(sourceArea)) {
+        throw new RangeError(
+          `@vitrum/pt-webgpu: mesh-area emitter "${emitter.id}" produced ` +
+            'non-finite transformed triangle geometry.',
+        );
+      }
+      if (!(sourceArea > 0) || !f32TriangleHasPositiveArea(a, b, c)) {
         degenerateTriangleCount += 1;
         continue;
       }
@@ -551,45 +510,52 @@ function packMeshAreaTriangles(
       const uv1A = uvAt(primitive.uv1, i0);
       const uv1B = uvAt(primitive.uv1, i1);
       const uv1C = uvAt(primitive.uv1, i2);
+      const mappedTexCoord = mappedSourceFactorMaterial?.emissiveMap?.texCoord ?? 0;
+      const highUvStream = mappedTexCoord > 1
+        ? getPrimitiveUvSet(primitive, mappedTexCoord)
+        : undefined;
+      const selectedHighUv = highUvStream == null
+        ? undefined
+        : [
+            uvAt(highUvStream, i0),
+            uvAt(highUvStream, i1),
+            uvAt(highUvStream, i2),
+          ] as const;
+      const sourceWorldArea = sourceArea;
+      const selectedRawUvs = mappedTexCoord === 0
+        ? [uv0A, uv0B, uv0C] as const
+        : mappedTexCoord === 1
+          ? [uv1A, uv1B, uv1C] as const
+          : selectedHighUv ?? ([[0, 0], [0, 0], [0, 0]] as const);
 
       const pushTriangle = (
         triA: Vec3,
         triB: Vec3,
         triC: Vec3,
-        tuv0A: readonly [number, number],
-        tuv0B: readonly [number, number],
-        tuv0C: readonly [number, number],
-        tuv1A: readonly [number, number],
-        tuv1B: readonly [number, number],
-        tuv1C: readonly [number, number],
-        radianceOverride?: readonly [number, number, number],
-        sourceFactorOverride?: readonly [number, number, number],
+        rawEmissiveUvA: readonly [number, number],
+        rawEmissiveUvB: readonly [number, number],
+        rawEmissiveUvC: readonly [number, number],
       ): void => {
         const area = meshTriangleArea(triA, triB, triC);
-        if (area < 1e-12) return;
-        const sourceFactor = sourceFactorOverride ?? (mappedSourceFactorMaterial == null
-          ? [1, 1, 1] as Vec3
-          : estimateMaterialSpecEmissiveLeOverTriangle(
-              mappedSourceFactorMaterial,
-              tuv0A,
-              tuv0B,
-              tuv0C,
-              tuv1A,
-              tuv1B,
-              tuv1C,
-            ));
-        const triangleRadiance = radianceOverride ?? (sourceFactor == null
-          ? null
-          : [
-              mappedBaseRadiance[0] * sourceFactor[0],
-              mappedBaseRadiance[1] * sourceFactor[1],
-              mappedBaseRadiance[2] * sourceFactor[2],
-            ]);
-        if (triangleRadiance == null) {
-          return;
+        if (!Number.isFinite(area)) {
+          throw new RangeError(
+            `@vitrum/pt-webgpu: mesh-area emitter "${emitter.id}" produced ` +
+              'non-finite subdivided triangle geometry.',
+          );
         }
+        if (!(area > 0) || !f32TriangleHasPositiveArea(triA, triB, triC)) return;
+        // This record's RGB is a strictly-positive proposal proxy whenever the
+        // authored base Le can emit. The GPU evaluates the exact mapped Le at
+        // the sampled point; using the base Le here guarantees non-zero PMF
+        // support even for a single bright texel, bilinear seam, or mip bleed.
+        const sourceFactor: Vec3 = [1, 1, 1];
+        const triangleRadiance: Vec3 = [
+          mappedBaseRadiance[0],
+          mappedBaseRadiance[1],
+          mappedBaseRadiance[2],
+        ];
         const emittedLuminance = luminance(triangleRadiance[0], triangleRadiance[1], triangleRadiance[2]);
-        if (!options.includeZeroRadianceTriangles && emittedLuminance < IMPLICIT_EMITTER_LUMINANCE_THRESHOLD) {
+        if (!options.includeZeroRadianceTriangles && !hasPositiveRadiance(triangleRadiance)) {
           return;
         }
         packed.push({
@@ -597,67 +563,30 @@ function packMeshAreaTriangles(
           triB,
           triC,
           radiance: [triangleRadiance[0], triangleRadiance[1], triangleRadiance[2]],
-          sourceFactor: sourceFactor == null
-            ? [1, 1, 1]
-            : [sourceFactor[0], sourceFactor[1], sourceFactor[2]],
+          baseRadiance: mappedSourceFactorMaterial == null
+            ? [triangleRadiance[0], triangleRadiance[1], triangleRadiance[2]]
+            : [mappedBaseRadiance[0], mappedBaseRadiance[1], mappedBaseRadiance[2]],
+          emissiveRawUvs: [
+            [rawEmissiveUvA[0], rawEmissiveUvA[1]],
+            [rawEmissiveUvB[0], rawEmissiveUvB[1]],
+            [rawEmissiveUvC[0], rawEmissiveUvC[1]],
+          ],
+          mappedMaterialId,
+          sourceWorldArea,
+          sourceFactor,
           adjointEmitterSlot: options.adjointEmitterSlot ?? -1,
           power: emittedLuminance * area,
           castShadowDisabled,
         });
       };
 
-      const exactTexelHandled = mappedSourceFactorMaterial == null
-        ? false
-        : forEachEmissiveMapTexelSubTriangle(
-            mappedSourceFactorMaterial,
-            uv0A,
-            uv0B,
-            uv0C,
-            uv1A,
-            uv1B,
-            uv1C,
-            (wa, wb, wc, sourceFactor) => {
-              pushTriangle(
-                baryVec3(a, b, c, wa),
-                baryVec3(a, b, c, wb),
-                baryVec3(a, b, c, wc),
-                baryUv2(uv0A, uv0B, uv0C, wa),
-                baryUv2(uv0A, uv0B, uv0C, wb),
-                baryUv2(uv0A, uv0B, uv0C, wc),
-                baryUv2(uv1A, uv1B, uv1C, wa),
-                baryUv2(uv1A, uv1B, uv1C, wb),
-                baryUv2(uv1A, uv1B, uv1C, wc),
-                [
-                  mappedBaseRadiance[0] * sourceFactor[0],
-                  mappedBaseRadiance[1] * sourceFactor[1],
-                  mappedBaseRadiance[2] * sourceFactor[2],
-                ],
-                sourceFactor,
-              );
-            },
-          );
-      if (exactTexelHandled) continue;
-
-      const subdiv = mappedRadianceMaterial == null
-        ? 1
-        : emissiveMapTriangleSubdivisionLevel(mappedRadianceMaterial);
-      if (subdiv <= 1) {
-        pushTriangle(a, b, c, uv0A, uv0B, uv0C, uv1A, uv1B, uv1C);
-      } else {
-        forEachBarycentricSubTriangle(subdiv, (wa, wb, wc) => {
-          pushTriangle(
-            baryVec3(a, b, c, wa),
-            baryVec3(a, b, c, wb),
-            baryVec3(a, b, c, wc),
-            baryUv2(uv0A, uv0B, uv0C, wa),
-            baryUv2(uv0A, uv0B, uv0C, wb),
-            baryUv2(uv0A, uv0B, uv0C, wc),
-            baryUv2(uv1A, uv1B, uv1C, wa),
-            baryUv2(uv1A, uv1B, uv1C, wb),
-            baryUv2(uv1A, uv1B, uv1C, wc),
-          );
-        });
-      }
+      // One record retains the complete source triangle. Subdivision or texel
+      // pruning cannot preserve support under authored bilinear/mipmap/wrap
+      // filtering and is therefore not a valid production fallback.
+      pushTriangle(
+        a, b, c,
+        selectedRawUvs[0], selectedRawUvs[1], selectedRawUvs[2],
+      );
     }
   }
   if (invalidTriangleCount > 0) {
@@ -677,30 +606,20 @@ function packMeshAreaTriangles(
 }
 
 /**
- * Luminance threshold for implicit mesh-area emitter synthesis (H14-A).
- * A material must have `luminance(emissive · emissiveIntensity · avg(emissiveMap))`
- * >= IMPLICIT_EMITTER_THRESHOLD to be treated as an area light by NEE/BDPT. The same
- * helper is used by both `packEmitterArrays` (synthesis) and
- * `hasMeshAreaEmitterForPrimitive` (staleness check), so the threshold cannot drift
- * between the two paths.
- */
-const IMPLICIT_EMITTER_LUMINANCE_THRESHOLD = 1e-6;
-
-/**
  * H14-A — Synthesize implicit mesh-area emitters for every mesh-like primitive
- * whose material has non-zero emissive energy (luminance ≥
- * {@link IMPLICIT_EMITTER_LUMINANCE_THRESHOLD}) AND that has NO explicit
- * `mesh-area` emitter already referencing it.
+ * whose material has any finite positive emissive energy AND that has NO
+ * explicit `mesh-area` emitter already referencing it. There is deliberately
+ * no artistic luminance cutoff: every surface that can contribute forward-hit
+ * radiance must retain light-sampling support, however dim.
  *
  * Without this synthesis, an emissive mesh is invisible to NEE/BDPT — the
  * kernel's emissive-on-hit term fires, but the direct-lighting estimators never
  * enumerate it. The synthetic emitters are virtual (id = `__implicit__<primitiveId>`)
  * and carry the material's coarse average emissive radiance as `color · intensity = 1`.
- * During mesh-area packing, CPU-readable emissive maps are re-sampled over each
- * source triangle (and bounded barycentric micro-triangles for textured emitters)
- * so direct-light sampling sees localized texel energy instead of one constant
- * radiance per primitive. Opaque/unreadable map handles keep the scalar fallback
- * and emit a warning from `packEmitterArrays`.
+ * Production mesh-area packing retains each complete source triangle and the GPU
+ * evaluates the exact authored emissive sample at the selected surface point.
+ * Opaque/unreadable map handles are rejected before GPU allocation because scalar
+ * substitution would disagree with forward-hit MIS.
  *
  * Guard: explicit mesh-area emitters take priority — if a `mesh-area` entry in
  * `scene.emitters` already references a primitive, that primitive is skipped to
@@ -708,15 +627,14 @@ const IMPLICIT_EMITTER_LUMINANCE_THRESHOLD = 1e-6;
  * stream and do NOT generate mesh-area triangles, so they are not excluded here.
  *
  * This function is the single source of truth for the implicit-emitter synthesis
- * logic and is reused by `hasMeshAreaEmitterForPrimitive` to avoid duplicating
- * the threshold check.
+ * logic and is reused by `hasMeshAreaEmitterForPrimitive`.
  */
 function synthesizeImplicitEmitters(
   scene: Scene,
   /** When set, only consider this primitive id (early-exit fast path for the
    *  `hasMeshAreaEmitterForPrimitive` staleness predicate). */
   onlyPrimitiveId?: string,
-  warnings?: string[],
+  _warnings?: string[],
 ): Extract<Scene['emitters'][number], { kind: 'mesh-area' }>[] {
   const explicitMeshAreaIds = new Set<string>(
     scene.emitters
@@ -729,8 +647,8 @@ function synthesizeImplicitEmitters(
     if (onlyPrimitiveId !== undefined && primitive.id !== onlyPrimitiveId) continue;
     if (primitive.kind === 'analytic') continue;
     if (explicitMeshAreaIds.has(primitive.id)) continue;
-    const [emR, emG, emB] = emissiveRadianceForMaterial(primitive.material, primitive.id, warnings);
-    if (luminance(emR, emG, emB) < IMPLICIT_EMITTER_LUMINANCE_THRESHOLD) continue;
+    const [emR, emG, emB] = emissiveRadianceForMaterial(primitive.material, primitive.id);
+    if (!hasPositiveRadiance([emR, emG, emB])) continue;
     result.push({
       kind: 'mesh-area',
       id: `__implicit__${primitive.id}`,
@@ -812,26 +730,32 @@ export function packMeshAreaAdjointReplayArrays(scene: Scene): PackedMeshAreaAdj
     meshAreaTriangles.push(...packMeshAreaTriangles(synthetic, scene, warnings));
   }
 
-  let cappedTriangles = meshAreaTriangles;
   if (meshAreaTriangles.length > MESH_AREA_LIGHT_TRI_CAP) {
-    warnings.push(
-      `@vitrum/pt-webgpu: adjoint mesh-area replay triangle count (${meshAreaTriangles.length}) exceeds cap ` +
-        `(${MESH_AREA_LIGHT_TRI_CAP}); keeping the ${MESH_AREA_LIGHT_TRI_CAP} highest-emitted-power triangles.`,
+    throw new RangeError(
+      `@vitrum/pt-webgpu: exact adjoint mesh-area replay requires ${meshAreaTriangles.length} ` +
+        `triangles, exceeding the supported limit of ${MESH_AREA_LIGHT_TRI_CAP}. ` +
+        'Path replay cannot truncate emitting geometry; use finite-difference for this target.',
     );
-    cappedTriangles = sortMeshAreaTrianglesForNeeCapForTests(meshAreaTriangles)
-      .slice(0, MESH_AREA_LIGHT_TRI_CAP);
   }
 
   const meshAreaLights: number[] = [];
   const meshAreaLightSourceFactors: number[] = [];
-  for (const tri of cappedTriangles) {
+  for (const tri of meshAreaTriangles) {
     pushVec4(meshAreaLights, tri.triA);
     pushVec4(meshAreaLights, tri.triB);
     pushVec4(meshAreaLights, tri.triC);
     pushVec4(meshAreaLights, tri.radiance, tri.castShadowDisabled ? 1 : 0);
+    meshAreaLights.push(
+      tri.emissiveRawUvs[0][0], tri.emissiveRawUvs[0][1],
+      tri.emissiveRawUvs[1][0], tri.emissiveRawUvs[1][1],
+      tri.emissiveRawUvs[2][0], tri.emissiveRawUvs[2][1],
+      tri.mappedMaterialId == null ? 0 : tri.mappedMaterialId + 1,
+      tri.sourceWorldArea,
+    );
+    pushVec4(meshAreaLights, tri.baseRadiance);
     pushVec4(meshAreaLightSourceFactors, tri.sourceFactor, tri.adjointEmitterSlot + 1);
   }
-  const meshAreaLightCount = cappedTriangles.length;
+  const meshAreaLightCount = meshAreaTriangles.length;
   return {
     warnings,
     meshAreaLightCount,
@@ -850,12 +774,15 @@ export function packMeshAreaAdjointReplayArrays(scene: Scene): PackedMeshAreaAdj
   };
 }
 
-export function packEmitterArrays(scene: Scene): PackedEmitterArrays {
+export function packEmitterArrays(
+  scene: Scene,
+  options: { readonly materialIdByPrimitive?: ReadonlyMap<string, number> } = {},
+): PackedEmitterArrays {
+  assertUniqueMeshAreaEmitterOwnership(scene);
   const warnings: string[] = [];
 
   // N-directional packing — all directional emitters go into a flat storage-buffer
-  // array. The first directional[0] is ALSO mirrored into the frame-UBO lightDir
-  // and signed cameraPos.w lanes by frameParamsPacker.ts (backward-compat lite NEE).
+  // array. Lite serializes these same records into its sampled light texture.
   const directionalLights: number[] = [];
   let directionalLightCount = 0;
   for (const e of scene.emitters) {
@@ -963,6 +890,19 @@ export function packEmitterArrays(scene: Scene): PackedEmitterArrays {
   // Rect-area emitters: shape tag = 0.0 (RECT_DISC_SHAPE_RECT).
   for (const e of scene.emitters) {
     if (e.kind !== 'rect-area') continue;
+    const uAxis: Vec3 = [Math.fround(e.uAxis[0]), Math.fround(e.uAxis[1]), Math.fround(e.uAxis[2])];
+    const vAxis: Vec3 = [Math.fround(e.vAxis[0]), Math.fround(e.vAxis[1]), Math.fround(e.vAxis[2])];
+    const axisCross = f32Cross(uAxis, vAxis);
+    if (
+      !(f32Dot3(uAxis[0], uAxis[1], uAxis[2]) > 0) ||
+      !(f32Dot3(vAxis[0], vAxis[1], vAxis[2]) > 0) ||
+      !(f32Dot3(axisCross[0], axisCross[1], axisCross[2]) > 0)
+    ) {
+      throw new RangeError(
+        `@vitrum/pt-webgpu: rect-area emitter "${e.id}" does not retain ` +
+          'strictly positive area in f32 shader arithmetic.',
+      );
+    }
     rectAreaLights.push(
       // SHADOW-01 — center .w carries castShadowDisabled (0.0 default).
       e.position[0], e.position[1], e.position[2], e.castShadow === false ? 1 : 0,
@@ -978,8 +918,7 @@ export function packEmitterArrays(scene: Scene): PackedEmitterArrays {
   // RENDER-CHANGING for disc-lit scenes, A/B in R9-B.
   for (const e of scene.emitters) {
     if (e.kind !== 'disc-area') continue;
-    const discRecord = packDiscAsRect(e, warnings);
-    if (discRecord.length === 0) continue;
+    const discRecord = packDiscAsRect(e);
     rectAreaLights.push(...discRecord);
     rectAreaLightCount += 1;
   }
@@ -993,29 +932,40 @@ export function packEmitterArrays(scene: Scene): PackedEmitterArrays {
   const meshAreaTriangles: PackedMeshAreaTriangle[] = [];
   for (const emitter of scene.emitters) {
     if (emitter.kind !== 'mesh-area') continue;
-    meshAreaTriangles.push(...packMeshAreaTriangles(emitter, scene, warnings));
+    meshAreaTriangles.push(...packMeshAreaTriangles(
+      emitter, scene, warnings,
+      {
+        ...(options.materialIdByPrimitive == null
+          ? {}
+          : { materialIdByPrimitive: options.materialIdByPrimitive }),
+      },
+    ));
   }
 
   // H14-A: synthesize implicit mesh-area emitters and pack their triangles.
   // See `synthesizeImplicitEmitters` for the synthesis contract.
   for (const synthetic of synthesizeImplicitEmitters(scene, undefined, warnings)) {
-    meshAreaTriangles.push(...packMeshAreaTriangles(synthetic, scene, warnings));
+    meshAreaTriangles.push(...packMeshAreaTriangles(
+      synthetic, scene, warnings,
+      {
+        ...(options.materialIdByPrimitive == null
+          ? {}
+          : { materialIdByPrimitive: options.materialIdByPrimitive }),
+      },
+    ));
   }
 
-  // Mesh-area NEE cap: cap the total triangle count to MESH_AREA_LIGHT_TRI_CAP.
-  // Strategy: HIGHEST-EMITTED-POWER-FIRST (keeps the largest luminance(Le)·area
-  // contributors for NEE; dropped triangles still emit via the BSDF/forward path
-  // — energy is not lost, only NEE efficiency for the dropped fraction).
-  let cappedTriangles = meshAreaTriangles;
+  // Every source triangle whose exact filtered Le can be non-zero must remain
+  // in the proposal. Silently dropping a tail at the storage cap would create
+  // forward-hit support with zero light-sampling density, so fail before upload.
   if (meshAreaTriangles.length > MESH_AREA_LIGHT_TRI_CAP) {
-    warnings.push(
-      `@vitrum/pt-webgpu: mesh-area NEE triangle count (${meshAreaTriangles.length}) exceeds cap ` +
-        `(${MESH_AREA_LIGHT_TRI_CAP}); keeping the ${MESH_AREA_LIGHT_TRI_CAP} highest-emitted-power triangles. ` +
-        `Dropped triangles still emit via the BSDF/forward path (no energy loss, NEE-only efficiency reduction).`,
+    throw new RangeError(
+      `@vitrum/pt-webgpu: mesh-area proposal requires ${meshAreaTriangles.length} triangles, ` +
+        `exceeding the exact-support limit of ${MESH_AREA_LIGHT_TRI_CAP}. ` +
+        'Split the scene or reduce emissive geometry; partial proposal support is rejected.',
     );
-    cappedTriangles = sortMeshAreaTrianglesForNeeCapForTests(meshAreaTriangles)
-      .slice(0, MESH_AREA_LIGHT_TRI_CAP);
   }
+  const cappedTriangles = meshAreaTriangles;
 
   const meshAreaLights: number[] = [];
   const meshAreaLightSourceFactors: number[] = [];
@@ -1025,6 +975,14 @@ export function packEmitterArrays(scene: Scene): PackedEmitterArrays {
     pushVec4(meshAreaLights, tri.triC);
     // SHADOW-01 — radiance vec4 .w carries castShadowDisabled (0.0 default).
     pushVec4(meshAreaLights, tri.radiance, tri.castShadowDisabled ? 1 : 0);
+    meshAreaLights.push(
+      tri.emissiveRawUvs[0][0], tri.emissiveRawUvs[0][1],
+      tri.emissiveRawUvs[1][0], tri.emissiveRawUvs[1][1],
+      tri.emissiveRawUvs[2][0], tri.emissiveRawUvs[2][1],
+      tri.mappedMaterialId == null ? 0 : tri.mappedMaterialId + 1,
+      tri.sourceWorldArea,
+    );
+    pushVec4(meshAreaLights, tri.baseRadiance);
     pushVec4(meshAreaLightSourceFactors, tri.sourceFactor);
   }
   const meshAreaLightCount = cappedTriangles.length;
@@ -1106,9 +1064,9 @@ export function hasMeshAreaEmitterForPrimitive(scene: Scene, primitiveId: string
     if (meshId === primitiveId) return true;
   }
   // Item 2b — also check for implicit emitters synthesized at pack time.
-  // `synthesizeImplicitEmitters` is the single source of the threshold check
-  // (IMPLICIT_EMITTER_LUMINANCE_THRESHOLD), so the staleness predicate here
-  // cannot drift from the synthesis path in `packEmitterArrays`.
+  // `synthesizeImplicitEmitters` is the single source of the any-positive
+  // radiance check, so the staleness predicate cannot drift from the synthesis
+  // path in `packEmitterArrays`.
   return synthesizeImplicitEmitters(scene, primitiveId).length > 0;
 }
 
@@ -1195,9 +1153,9 @@ export interface EnvSummaryForTree {
  * Callers (all within `@vitrum/pt-webgpu` — not exported to external packages):
  *   - `buildPackedScene` (uploadSceneBuffers.ts): always passes both `packed` and
  *     `envSummary` from the same-scene results already computed above it.
- *   - `rebuildLightTreeForScene` (uploadSceneBuffers.ts): forwards its own optional
+ *   - `packLightTreeForScene` (uploadSceneBuffers.ts): forwards its own optional
  *     `precomputed` parameter; callers supply it when available.
- *   - `sceneMutationRouter.ts` (via `rebuildLightTreeForScene`): passes `packed`
+ *   - `sceneMutationRouter.ts` (via `packLightTreeForScene`): passes `packed`
  *     and/or `envSummary` from already-computed incremental update results.
  *   - Test files (`lightTreeImportance`, `scenePack.emitters`, `nDirectionalPacking`,
  *     `packingNoDoubleWork`): legitimately omit `precomputed` — they exercise the
@@ -1213,13 +1171,12 @@ export function buildLightTreeInputForScene(
   precomputed?: { packed?: PackedEmitterArrays; envSummary?: EnvSummaryForTree },
 ): LightTreeBuildInput {
   const packed = precomputed?.packed ?? packEmitterArrays(scene);
-  // N-directional expansion: build one tree leaf PER directional emitter (matching
-  // the kernel's loop `for (var di = 0u; di < params.directionalLightCount; di++)`).
-  // Each leaf uses the per-directional irradiance as the power proxy; a directional
-  // with mean_irradiance ≤ 1e-6 is silently skipped (matches the kernel's inner gate
-  // `if (d_meanIrr > 1e-6)`). The leaves for directionals[0..N-1] are inserted at
-  // the FRONT of the arrays (indices 0..N-1) in walk order, exactly mirroring the
-  // kernel's `current` counter which starts at 0.
+  // N-directional expansion: build one tree leaf PER packed directional, matching
+  // the kernel loop and its unconditional `current` increment. Zero-radiance
+  // records remain zero-power leaves: dropping one would densely renumber every
+  // later leaf while the kernel still addresses the original packed slot, causing
+  // a tree sample to shade the wrong emitter. Directional leaves are inserted at
+  // the front in packed order, exactly mirroring the kernel's slot walk.
   //
   // NOTE: directionals deliberately stay OUTSIDE the light tree's spatial structure
   // (they are given the union-AABB of positional lights so the distance term floors
@@ -1234,27 +1191,24 @@ export function buildLightTreeInputForScene(
     const irrR = packed.directionalLightsData[base + 4] ?? 0;
     const irrG = packed.directionalLightsData[base + 5] ?? 0;
     const irrB = packed.directionalLightsData[base + 6] ?? 0;
-    const meanIrr = (irrR + irrG + irrB) / 3;
-    if (meanIrr <= 1e-6) continue; // kernel gate: skip black/absent directionals
     directionalLeaves.push({
       power: emitterPower([irrR, irrG, irrB], { kind: 'delta' }),
       dir: [irrR, irrG, irrB], // kept for potential future per-directional diagnostics
     });
   }
 
-  // For backward-compat gates in buildLightTreeInputForScene (lightDir.w was the
-  // single gate); now we check the packed array directly.
+  // The packed array is the single authoritative directional-light gate.
   const hasDirectional = directionalLeaves.length > 0;
 
   // Mirror the kernel's env NEE gate EXACTLY: `hasEnvironmentMap || sunStrength
-  // > 1e-6`, both derived from the SAME `environmentParams` the GPU uploads.
+  // > 0`, both derived from the SAME `environmentParams` the GPU uploads.
   // When the caller already has an EnvSummaryForTree (from a prior environmentParams
   // call for the same scene), use it directly to avoid re-running the HDRI/sky bake.
   const envSummary: EnvSummaryForTree = precomputed?.envSummary ?? (() => {
     const p = environmentParams(scene);
     return { hasHdri: p.hasHdri, sunStrength: p.sunStrength, tint: p.tint };
   })();
-  const hasEnv = envSummary.hasHdri || envSummary.sunStrength > 1e-6;
+  const hasEnv = envSummary.hasHdri || envSummary.sunStrength > 0;
 
   const powers: number[] = [];
   const centroids: Vec3[] = [];
@@ -1266,10 +1220,6 @@ export function buildLightTreeInputForScene(
   type ConeEntry = { axis: readonly [number, number, number]; thetaO?: number; thetaE?: number } | undefined;
   const cones: ConeEntry[] = [];
   const HEMISPHERE = Math.PI / 2; // one-sided cosine emission lobe (area lights)
-  // Spotlights: a forward beam. We don't carry the spot half-angle in the walked
-  // record, so use a conservative wide-ish lobe (≈60°) — it still culls the rear
-  // hemisphere (the common, high-value case) without over-tightening selection.
-  const SPOT_LOBE = Math.PI / 3;
   const norm3 = (v: Vec3): readonly [number, number, number] => {
     const l = Math.hypot(v[0], v[1], v[2]);
     return l > 1e-12 ? [v[0] / l, v[1] / l, v[2] / l] : [0, 0, 0];
@@ -1317,7 +1267,11 @@ export function buildLightTreeInputForScene(
         powers.push(emitterPower(e.radiance, { kind: 'delta' }));
         centroids.push(p);
         aabbs.push(pointAabb(p));
-        cones.push({ axis: norm3(e.axis), thetaO: 0, thetaE: SPOT_LOBE });
+        cones.push({
+          axis: norm3(e.axis),
+          thetaO: 0,
+          thetaE: Math.acos(Math.max(-1, Math.min(1, e.cosOuter))),
+        });
         break;
       }
       case 'rect': {

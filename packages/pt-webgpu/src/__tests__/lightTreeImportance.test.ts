@@ -36,7 +36,7 @@ import {
 import {
   emitterPower,
   buildLightTreeInputForScene,
-  defaultDirectionalIrradiance,
+  packEmitterArrays,
   AREA_LIGHT_KINDS,
 } from '../scene/emitterPacking.js';
 
@@ -66,6 +66,17 @@ function emptyScene(): Scene {
 // 1. Per-emitter-type power formula
 // ===========================================================================
 describe('WS2 — per-emitter-type power formula', () => {
+  it('keeps a tiny positive procedural sky in light-tree selector parity', () => {
+    const input = buildLightTreeInputForScene(emptyScene(), {
+      envSummary: { hasHdri: false, sunStrength: 1e-12, tint: [1, 1, 1] },
+    });
+    expect(input.powers).toHaveLength(1);
+    expect(input.powers[0]).toBeGreaterThan(0);
+    const source = buildLightTreeInputForScene.toString();
+    expect(source).toContain('envSummary.sunStrength > 0');
+    expect(source).not.toContain('envSummary.sunStrength > 1e-6');
+  });
+
   it('delta light (point/spot/directional) power == luminance(radiance)', () => {
     const radiance: [number, number, number] = [2, 4, 6];
     const expected = luminance(radiance[0], radiance[1], radiance[2]);
@@ -179,12 +190,10 @@ describe('WS2 — light-tree build over a multi-light scene', () => {
 // V22 — kernel/tree directional-slot ALIGNMENT (GPU-surfaced bias fix, 2026-05-29)
 // ===========================================================================
 describe('V22 — light-tree directional slot mirrors the kernel NEE gate exactly', () => {
-  it('no directional emitter ⇒ defaultDirectionalIrradiance is [0,0,0] (no phantom light)', () => {
-    // The kernel gates directional NEE on lightDir.w = mean(directionalIrradiance)
-    // > 1e-6. The former [1,1,1] default fabricated a phantom directional in every
-    // directional-less scene; [0,0,0] removes it (and keeps the kernel + tree
-    // gates aligned — both exclude the directional slot).
-    expect(defaultDirectionalIrradiance(emptyScene())).toEqual([0, 0, 0]);
+  it('no directional emitter produces no packed directional record', () => {
+    const packed = packEmitterArrays(emptyScene());
+    expect(packed.directionalLightCount).toBe(0);
+    expect(packed.directionalLightsData.length).toBe(0);
   });
 
   it('a directional-less multi-light scene builds NO directional leaf (leaf count = real lights only)', () => {
@@ -214,7 +223,8 @@ describe('V22 — light-tree directional slot mirrors the kernel NEE gate exactl
         { id: 'p0', kind: 'point', position: [0, 5, 0], color: [1, 1, 1], intensity: 2 },
       ],
     } as unknown as Scene;
-    expect(defaultDirectionalIrradiance(scene)).toEqual([3, 1.5, 0.75]);
+    const packed = packEmitterArrays(scene);
+    expect(Array.from(packed.directionalLightsData.slice(4, 7))).toEqual([3, 1.5, 0.75]);
     const input = buildLightTreeInputForScene(scene);
     // directional (slot 0) + 1 point = 2 leaves; leaf 0 is the directional.
     expect(input.powers.length).toBe(2);

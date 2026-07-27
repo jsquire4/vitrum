@@ -2,7 +2,7 @@
 
 A WebGPU + WebGL2 **path tracing & global illumination engine** for the browser. Core-scene, host-agnostic, drop-in.
 
-> **Status**: release-candidate track, private monorepo. Not yet on npm. Public release follows final packaging, ecosystem docs, and cross-host verification.
+> **Status**: the declared engine and backend profiles are implemented end to end. Public packaging remains private and is tracked separately from code maturity.
 
 ## What is vitrum
 
@@ -47,9 +47,9 @@ import { VitrumCanvas } from '@vitrum/engine/react';
 | **GI quality**                | real-time, single-bounce GI | converged, multi-bounce PT | converged, multi-bounce PT |
 | **Bounce count**              | 1 (DDGI gives multi-bounce) | unlimited                  | unlimited |
 | **Light types**               | point/spot/dir/area/sky (point+spot: analytic NEE in shade pass + DDGI probe bounce; rect-area: NEE) | point / dir / area / sky   | point / spot / dir / area / HDRI |
-| **Materials**                 | PBR + transmission + atlas textures; rich lobes approximate; spectral/dispersion/thin-film-stack fields unsupported; front/back layers approximate | PBR + transmission + spectral/Disney/layered material fields; WebGL2 runtime A/B promotion pending for some fidelity rows | PBR + transmission + spectral/Disney/layered material fields; full-tier rows tracked in the fidelity matrix |
-| **Caustics**                  | none (DDGI only)            | heuristic approximate (not Newton-solve MNEE)      | manifold NEE / photon-map modes |
-| **BDPT**                      | not applicable              | implemented + host-driven for analytic, mesh-area, and HDRI environment light subpaths; browser runtime promotion pending | supported safe-default path; multi-vertex research mode remains opt-in |
+| **Materials**                 | PBR + transmission, transparency, arbitrary UV sets, light maps, rich lobes, layers, spectral fields, volumes, and caustic controls | PBR + transmission + spectral/Disney/layered material fields | PBR + transmission + spectral/Disney/layered material fields |
+| **Caustics**                  | screen-space and GI-integrated caustic paths | bounded BDPT transport; MNEE and photon mapping explicitly unsupported | bounded MNEE and progressive photon-map modes |
+| **BDPT**                      | not applicable              | supported bounded eye↔light connections with 1–8 stored light vertices | supported bounded eye↔light connections with 1–8 stored light vertices |
 | **Animation**                 | camera ✓ / lights limited / mesh ✓ (material + positions + transform; vertex/index-count via rebuild) | camera ✓ / lights ✓ / mesh ✓ (material + transform/positions native; topology/list via bounded texture refresh) | camera ✓ / lights ✓ / mesh ✓ (targeted BLAS/TLAS paths where available) |
 | **Hardware**                  | WebGPU                      | WebGL2                     | WebGPU |
 | **Convergence**               | re-renders every frame      | accumulates SPP            | accumulates SPP |
@@ -68,7 +68,7 @@ Set `prefer: 'realtime'` for interactive viewers, lighting designers, scrub-the-
 | ----------------------------- | ------------------------------------------------------ |
 | `@vitrum/engine`              | `createEngine`, `attachVitrum`, `<VitrumCanvas>` (React subpath), `CameraLike` |
 | `@vitrum/core`                | `Engine`, `Scene`, `FrameInput`, `FrameStats`, `ProgressStats`, `EngineError` types; `Engine.onError`, `Engine.captureFrame`, `Engine.pickPrimitive` |
-| `@vitrum/gltf-adapter`        | `gltfToScene`, `loadGltfAsset`, `loadGltfAndDecodeTextures`, `analyzeGltfAsset` / backend ranking, `decodeSceneTextures`, `loadGltfForEngine`, `GltfSceneController` — glTF 2.0 / GLB ingestion, compatibility planning, texture decode diagnostics, and runtime animation/variant patches |
+| `@vitrum/gltf-adapter`        | `gltfToScene`, `loadGltfAsset`, `loadGltfAndDecodeTextures`, `releaseGltfResources`, `analyzeGltfAsset` / backend ranking, `decodeSceneTextures`, `loadGltfForEngine`, `GltfSceneController` — glTF 2.0 / GLB ingestion, compatibility planning, texture decode diagnostics, explicit imported-handle release, and runtime animation/variant patches |
 | `@vitrum/dev`                 | Debug overlays (FrameTimeHUD, MaterialInspector, …) — devDep only |
 
 Backend packages (`@vitrum/walkaround-hybrid`, `@vitrum/pt-webgl2`, `@vitrum/pt-webgpu`) are also installable directly if you need backend-specific knobs that the facade doesn't surface.
@@ -80,7 +80,8 @@ Backend packages (`@vitrum/walkaround-hybrid`, `@vitrum/pt-webgl2`, `@vitrum/pt-
 - `supportedPrimitiveKinds`, `supportedEnvironmentKinds`, `supportedEmitterKinds`
 - `incrementalPatchSupport` (granular patch-path truth, not just a boolean)
 - `presentationMode` (`swapchain-required` vs `offscreen-texture`)
-- `experimentalFeatures` (explicit non-final algorithm seams)
+- `activeFeatures` (stable IDs for construction-time features actually selected
+  after validation, tier gating, and automatic resolution)
 
 This removes prior silent divergence between advertised and actual backend behavior.
 
@@ -125,8 +126,8 @@ context loss, device-limit errors, NaN pixels) see
 ```
 @vitrum/engine             Drop-in facade — createEngine, attachVitrum, VitrumCanvas
   ↓
-@vitrum/core               Engine contract; types only, no GPU code
-@vitrum/gltf-adapter       glTF 2.0 / GLB → @vitrum/core Scene (zero-dependency)
+@vitrum/core               Engine contract + CPU utilities; no GPU code
+@vitrum/gltf-adapter       glTF 2.0 / GLB → @vitrum/core Scene (THREE-independent; lazy codecs)
 @vitrum/walkaround-hybrid  WebGPU DDGI + ReSTIR DI/GI + SVGF + GTAO; opt-in PPG/NRC/neural; composes RC
 @vitrum/walkaround-rc      Radiance Cascades subsystem (cascade pyramid + raw GPU dispatch)
 @vitrum/pt-webgl2          Native WebGL2 PT
@@ -164,7 +165,7 @@ Bench reports include `p95FrameMs` and `estimatedGpuMemoryBytes` when the hybrid
 - **Layered hybrid GI** — WebGPU pipeline combining diffuse probe GI (DDGI) with stochastic direct illumination (ReSTIR-DI) and a single-bounce indirect (ReSTIR-GI), denoised with per-channel SVGF + GTAO. ([packages/walkaround-hybrid/README.md](packages/walkaround-hybrid/README.md))
 - **NormalMap-perturbed NEE shadow rays** — produces textured caustics through transmissive materials in pure NEE; ported into the native path-tracing stack.
 - **Hybrid analytic-CSG + BVH-mesh intersection** — closed-form quadrics + triangle meshes in the same path-tracing kernel. Production renderers usually pick one or the other.
-- **Hero-wavelength MIS** (Wilkie et al. 2014) — one-sample MIS across X/Y/Z CMFs ships in the WebGL2 PT spectral path; material spectral coefficients remain a known promotion tail.
+- **Hero-wavelength MIS** (Wilkie et al. 2014) — one-sample MIS across X/Y/Z CMFs ships in both converged path-tracing backends, including the packed material spectral path.
 
 ## Built on prior work
 

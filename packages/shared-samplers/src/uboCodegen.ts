@@ -45,6 +45,8 @@
  * adopters, grep `defineUbo(` across the workspace — the call sites are the
  * source of truth; a hand-maintained inventory here only goes stale.
  */
+import { requireFinite, requireInteger } from './numericGuards.js';
+
 
 // ─── Field-type vocabulary ────────────────────────────────────────────────────
 
@@ -148,6 +150,33 @@ function alignUp(offset: number, alignment: number): number {
   return Math.ceil(offset / alignment) * alignment;
 }
 
+function requireWgslIdentifier(value: string, label: string): void {
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(value) || value.startsWith('__')) {
+    throw new RangeError(`${label} must be a valid WGSL identifier`);
+  }
+}
+
+function requireF32(value: number, label: string): number {
+  requireFinite(value, label);
+  if (!Number.isFinite(Math.fround(value))) {
+    throw new RangeError(`${label} must be representable as f32`);
+  }
+  return value;
+}
+
+function requireFloatTuple(value: unknown, length: number, label: string): readonly number[] {
+  if (!Array.isArray(value) && !ArrayBuffer.isView(value)) {
+    throw new TypeError(`${label} must be an array-like tuple`);
+  }
+  const tuple = value as unknown as { readonly length: number; readonly [index: number]: number };
+  if (tuple.length !== length) {
+    throw new RangeError(`${label} must contain exactly ${length} values`);
+  }
+  const out: number[] = [];
+  for (let i = 0; i < length; i++) out.push(requireF32(tuple[i]!, `${label}[${i}]`));
+  return out;
+}
+
 interface ResolvedField {
   readonly name: string;
   readonly type: UboFieldType;
@@ -175,6 +204,7 @@ function computeLayout(fields: readonly UboFieldSpec[]): {
   let maxAlign = 0;
   const seen = new Set<string>();
   for (const spec of fields) {
+    requireWgslIdentifier(spec.name, 'defineUbo field name');
     if (seen.has(spec.name)) {
       throw new Error(`defineUbo: duplicate field name "${spec.name}"`);
     }
@@ -269,52 +299,55 @@ export function defineUbo<const F extends readonly UboFieldSpec[]>(fields: F): U
   };
 
   function pack(view: DataView, offset: number, value: UboValue<F>): void {
-    if (offset < 0 || offset + sizeBytes > view.byteLength) {
+    requireInteger(offset, 'defineUbo.pack.offset');
+    if (offset + sizeBytes > view.byteLength) {
       throw new RangeError(
         `defineUbo.pack: offset ${offset} + sizeBytes ${sizeBytes} exceeds view.byteLength ${view.byteLength}`,
       );
     }
-    // Zero-fill the destination region first so std140 padding bytes are
-    // deterministic regardless of buffer history.
-    new Uint8Array(view.buffer, view.byteOffset + offset, sizeBytes).fill(0);
+    // Validate and encode into isolated storage. Only commit after every field
+    // succeeds so a rejected late field cannot partially mutate the caller's
+    // destination. A fresh ArrayBuffer also deterministically zeroes padding.
+    const stagedBytes = new Uint8Array(sizeBytes);
+    const stagedView = new DataView(stagedBytes.buffer);
     for (const f of resolved) {
       const v = (value as unknown as Record<string, unknown>)[f.name];
-      const base = offset + f.offset;
+      const base = f.offset;
       switch (f.type) {
         case 'f32':
-          view.setFloat32(base, v as number, true);
+          stagedView.setFloat32(base, requireF32(v as number, `defineUbo.pack.${f.name}`), true);
           break;
         case 'u32':
-          view.setUint32(base, (v as number) >>> 0, true);
+          stagedView.setUint32(base, requireInteger(v as number, `defineUbo.pack.${f.name}`, 0, 0xffffffff), true);
           break;
         case 'i32':
-          view.setInt32(base, (v as number) | 0, true);
+          stagedView.setInt32(base, requireInteger(v as number, `defineUbo.pack.${f.name}`, -0x80000000, 0x7fffffff), true);
           break;
         case 'vec2f': {
-          const tup = v as readonly number[];
-          view.setFloat32(base + 0, tup[0]!, true);
-          view.setFloat32(base + 4, tup[1]!, true);
+          const tup = requireFloatTuple(v, 2, `defineUbo.pack.${f.name}`);
+          stagedView.setFloat32(base + 0, tup[0]!, true);
+          stagedView.setFloat32(base + 4, tup[1]!, true);
           break;
         }
         case 'vec3f': {
-          const tup = v as readonly number[];
-          view.setFloat32(base + 0, tup[0]!, true);
-          view.setFloat32(base + 4, tup[1]!, true);
-          view.setFloat32(base + 8, tup[2]!, true);
-          // bytes [base+12, base+16) are std140 pad — left at zero by the fill above.
+          const tup = requireFloatTuple(v, 3, `defineUbo.pack.${f.name}`);
+          stagedView.setFloat32(base + 0, tup[0]!, true);
+          stagedView.setFloat32(base + 4, tup[1]!, true);
+          stagedView.setFloat32(base + 8, tup[2]!, true);
+          // bytes [base+12, base+16) are std140 pad — the staged buffer keeps them zero.
           break;
         }
         case 'vec4f': {
-          const tup = v as readonly number[];
-          view.setFloat32(base +  0, tup[0]!, true);
-          view.setFloat32(base +  4, tup[1]!, true);
-          view.setFloat32(base +  8, tup[2]!, true);
-          view.setFloat32(base + 12, tup[3]!, true);
+          const tup = requireFloatTuple(v, 4, `defineUbo.pack.${f.name}`);
+          stagedView.setFloat32(base +  0, tup[0]!, true);
+          stagedView.setFloat32(base +  4, tup[1]!, true);
+          stagedView.setFloat32(base +  8, tup[2]!, true);
+          stagedView.setFloat32(base + 12, tup[3]!, true);
           break;
         }
         case 'mat4x4f': {
-          const tup = v as readonly number[];
-          for (let i = 0; i < 16; i++) view.setFloat32(base + i * 4, tup[i]!, true);
+          const tup = requireFloatTuple(v, 16, `defineUbo.pack.${f.name}`);
+          for (let i = 0; i < 16; i++) stagedView.setFloat32(base + i * 4, tup[i]!, true);
           break;
         }
         default: {
@@ -324,10 +357,12 @@ export function defineUbo<const F extends readonly UboFieldSpec[]>(fields: F): U
         }
       }
     }
+    new Uint8Array(view.buffer, view.byteOffset + offset, sizeBytes).set(stagedBytes);
   }
 
   function unpack(view: DataView, offset: number): UboValue<F> {
-    if (offset < 0 || offset + sizeBytes > view.byteLength) {
+    requireInteger(offset, 'defineUbo.unpack.offset');
+    if (offset + sizeBytes > view.byteLength) {
       throw new RangeError(
         `defineUbo.unpack: offset ${offset} + sizeBytes ${sizeBytes} exceeds view.byteLength ${view.byteLength}`,
       );
@@ -366,6 +401,7 @@ export function defineUbo<const F extends readonly UboFieldSpec[]>(fields: F): U
   }
 
   function wgsl(structName: string, opts: UboWgslOptions = {}): string {
+    requireWgslIdentifier(structName, 'defineUbo.wgsl.structName');
     const indent = opts.indent ?? '  ';
     const explicitPadding = opts.explicitPadding ?? false;
     const lines: string[] = [`struct ${structName} {`];

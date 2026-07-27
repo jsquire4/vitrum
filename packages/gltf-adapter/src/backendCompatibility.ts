@@ -169,7 +169,7 @@ function emitExtensionIssues(ctx: CompatibilityEmitContext): void {
       name: ext,
       support: 'requires-hook',
       path: requiresHookIssuePath(report, ext),
-      message: `glTF extension "${ext}" requires host-supplied decode support.`,
+      message: `glTF extension "${ext}" requires built-in or host-supplied decode support.`,
     });
   }
   for (const ext of report.extensions.unsupportedOptional) {
@@ -284,38 +284,9 @@ function emitPrimitiveIssues(ctx: CompatibilityEmitContext): void {
       support: 'unsupported',
       path: firstSourcePath(report.primitives.issuePaths, 'unsupportedMorphTargetTexcoords', 'meshes'),
       message:
-        'glTF morph-target UV deltas require the matching base UV stream assigned to core uv/uv1. ' +
-        'TEXCOORD_2+ morph deltas are supported only when that high UV set is losslessly remapped ' +
-        'into core uv1 for this primitive; unsupported lanes are reported explicitly.',
-    });
-  }
-
-  if (report.primitives.hasInstancedSkinnedOrMorphed) {
-    addIssue({
-      category: 'primitive',
-      name: 'EXT_mesh_gpu_instancing.skinnedOrMorphed',
-      support: 'fallback-generated-mesh',
-      path: firstSourcePath(
-        report.primitives.issuePaths,
-        'instancedSkinnedOrMorphed',
-        'nodes',
-      ),
-      message:
-        'glTF EXT_mesh_gpu_instancing on skinned or morphed meshes is fallback-expanded into one SkinnedMeshPrimitive ' +
-        'per authored instance. This keeps every instance renderable under the current core Scene contract, but it is ' +
-        'not native instanced skinning and may cost more memory/BVH work than a future first-class primitive.',
-    });
-  }
-
-  if (report.primitives.hasCollapsedSkinInfluenceSets) {
-    addIssue({
-      category: 'primitive',
-      name: 'skinInfluenceSets.collapsedToFour',
-      support: 'approximate',
-      path: firstSourcePath(report.primitives.issuePaths, 'collapsedSkinInfluenceSets', 'meshes'),
-      message:
-        'glTF secondary skin influence sets are imported by merging duplicate joints, retaining the strongest ' +
-        'four unique joint weights per vertex, and renormalizing to fit the current core SkinnedMeshPrimitive contract.',
+        'glTF morph-target UV deltas require a matching primitive TEXCOORD_N base stream. ' +
+        'All authored UV-set indices are representable; only deltas whose base stream is absent ' +
+        'remain unsupported and are reported explicitly.',
     });
   }
 
@@ -358,17 +329,6 @@ function emitPrimitiveIssues(ctx: CompatibilityEmitContext): void {
     }
   }
 
-  for (const semantic of report.primitives.ignoredVertexColorSets) {
-    addIssue({
-      category: 'primitive',
-      name: semantic,
-      support: 'unsupported',
-      path: firstSourcePath(report.primitives.issuePaths, `ignoredVertexColorSet:${semantic}`, 'meshes'),
-      message:
-        `glTF ${semantic} secondary vertex-color sets are not imported; ` +
-        'the core Scene contract currently preserves COLOR_0 only.',
-    });
-  }
 }
 
 function emitSceneIssues(ctx: CompatibilityEmitContext): void {
@@ -472,18 +432,6 @@ function emitMaterialIssues(ctx: CompatibilityEmitContext): void {
     });
   }
 
-  if (report.materials.doubleSidedCount > 0) {
-    addIssue({
-      category: 'material',
-      name: 'doubleSided',
-      support: 'approximate',
-      path: firstSourcePath(report.materials.issuePaths, 'doubleSided', 'materials'),
-      message:
-        'glTF doubleSided is preserved in MaterialSpec.extensions for host inspection, ' +
-        'but Vitrum has no first-class double-sided/backface-normal contract yet.',
-    });
-  }
-
   for (const uvSet of report.materials.uvSets) {
     if (uvSet <= 1) continue;
     if (!report.materials.unrepresentableUvSets.includes(uvSet)) continue;
@@ -493,9 +441,8 @@ function emitMaterialIssues(ctx: CompatibilityEmitContext): void {
       support: 'unsupported',
       path: firstSourcePath(report.materials.issuePaths, `uvSet:${uvSet}`, 'materials'),
       message:
-        `glTF material textures reference TEXCOORD_${uvSet}, but the core Scene ` +
-        'contract carries only UV sets 0 and 1 (`uvs` / `uv1`) and this asset ' +
-        'cannot be losslessly remapped into the uv1 lane.',
+        `glTF material textures reference TEXCOORD_${uvSet}, but a primitive using the material ` +
+        `does not provide the matching TEXCOORD_${uvSet} base stream.`,
     });
   }
 

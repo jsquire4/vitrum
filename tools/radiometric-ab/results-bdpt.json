@@ -1,6 +1,16 @@
 {
+  "schema": "vitrum.radiometric-ab.result.v1",
+  "provenance": {
+    "schema": "vitrum.radiometric-ab.result-provenance.v1",
+    "scriptPath": "tools/radiometric-ab/ab-bdpt.mjs",
+    "resultPath": "tools/radiometric-ab/results-bdpt.json",
+    "scriptSha256": "72eea6910ac2d86a8e16386d05e5e30d7a257b861f4b2ee6bd1144bded496d09",
+    "helperPath": "tools/radiometric-ab/resultProvenance.mjs",
+    "helperSha256": "cc87985755e7391d19fbf98e19dc218df7264beb9b218f0a7eacf819761642e3",
+    "generatedBy": "vitrum radiometric A/B harness"
+  },
   "ab": "bdpt-vs-unidirectional",
-  "date": "2026-06-23T17:59:42.311Z",
+  "date": "2026-07-23T01:43:33.958Z",
   "resolution": {
     "W": 80,
     "H": 80
@@ -15,78 +25,60 @@
   "varianceRuns": 8,
   "varianceFramesPerRun": 8,
   "uni": {
-    "globalLum": 0.08006546401561064,
-    "roiLum": 0.1093735323935114,
-    "variance": 0.07856658106002219
+    "globalLum": 0.11680481179024321,
+    "roiLum": 0.18364952657137412,
+    "variance": 0.06089904137063397
   },
   "bdpt": {
-    "globalLum": 0.08006546401561064,
-    "roiLum": 0.1093735323935114,
-    "variance": 0.07856658106002219
+    "globalLum": 0.1098578666732127,
+    "roiLum": 0.16723438409666294,
+    "variance": 0.07161798250064456
   },
   "controls": {
     "meanFrames": 60,
     "byMaxLightBounces": [
       {
         "maxLightBounces": 1,
-        "globalLum": 0.08006546401561064,
-        "roiLum": 0.1093735323935114,
-        "globalRelErr": 0,
-        "roiRelErr": 0
+        "globalLum": 0.10808416107931582,
+        "roiLum": 0.1616799122634129,
+        "globalRelErr": 0.07466002964490748,
+        "roiRelErr": 0.11962793870542798
       },
       {
         "maxLightBounces": 2,
-        "globalLum": 0.09064365778547873,
-        "roiLum": 0.12464137983030454,
-        "globalRelErr": 0.13211930886712425,
-        "roiRelErr": 0.13959362107700302
+        "globalLum": 0.1098578666732127,
+        "roiLum": 0.16723438409666294,
+        "globalRelErr": 0.0594748196633008,
+        "roiRelErr": 0.089382982799749
       },
       {
         "maxLightBounces": 3,
-        "globalLum": 0.09374135884168382,
-        "roiLum": 0.1286461473422478,
-        "globalRelErr": 0.17080891235960038,
-        "roiRelErr": 0.17620912964021407
+        "globalLum": 0.1132589840978328,
+        "roiLum": 0.17422089203180585,
+        "globalRelErr": 0.030356863198221375,
+        "roiRelErr": 0.05134036942863502
+      },
+      {
+        "maxLightBounces": 8,
+        "globalLum": 0.11588433933951171,
+        "roiLum": 0.17914448149823284,
+        "globalRelErr": 0.007880432634782834,
+        "roiRelErr": 0.024530665323498284
       }
     ],
-    "endpointOnlyMatchesUni": true,
-    "multiVertexFindingStartsAt": 2,
-    "multiVertexPromotion": {
-      "defaultReady": false,
-      "warningCode": "pt-webgpu.bdpt-multivertex-research-mode",
-      "currentEstimator": "additive-sidecar-not-weighted-against-eye-path",
-      "blocker": "not-weighted-against-regular-eye-path-strategy",
-      "requiredEstimator": "multi-vertex-light-subpath-strategies-weighted-against-regular-eye-path-strategy",
-      "safeAlternative": "omit bdptOptions.maxLightBounces or set maxLightBounces:1",
-      "evidencePath": "tools/radiometric-ab/results-bdpt.json"
-    }
+    "endpointOnlyCarriesSignal": true,
+    "endpointOnlyMeanAgreement": true,
+    "supportedDepths": [
+      1,
+      2,
+      3,
+      8
+    ]
   },
-  "researchFindings": {
-    "bdptMultiVertex": {
-      "defaultReady": false,
-      "warningCode": "pt-webgpu.bdpt-multivertex-research-mode",
-      "currentEstimator": "additive-sidecar-not-weighted-against-eye-path",
-      "blocker": "not-weighted-against-regular-eye-path-strategy",
-      "requiredEstimator": "multi-vertex-light-subpath-strategies-weighted-against-regular-eye-path-strategy",
-      "safeAlternative": "omit bdptOptions.maxLightBounces or set maxLightBounces:1",
-      "firstFindingMaxLightBounces": 2,
-      "firstFindingGlobalRelErr": 0.13211930886712425,
-      "evidencePath": "tools/radiometric-ab/results-bdpt.json"
-    }
-  },
-  "globalRelErr": 0,
-  "roiRelErr": 0,
-  "varRatio": 1,
+  "globalRelErr": 0.0594748196633008,
+  "roiRelErr": 0.089382982799749,
+  "varRatio": 1.176011656156863,
   "meanAgreement": true,
   "varianceImproved": true,
-  "verdict": "PASS",
-  "provenance": {
-    "schema": "vitrum.radiometric-ab.result-provenance.v1",
-    "scriptPath": "tools/radiometric-ab/ab-bdpt.mjs",
-    "resultPath": "tools/radiometric-ab/results-bdpt.json",
-    "scriptSha256": "18552e5923991f225fddfd37fe7d2fac13b535484ff2e49ddd7d13f8f9414c7d",
-    "helperPath": "tools/radiometric-ab/resultProvenance.mjs",
-    "helperSha256": "cc87985755e7391d19fbf98e19dc218df7264beb9b218f0a7eacf819761642e3",
-    "generatedBy": "vitrum radiometric A/B harness"
-  }
+  "verdict": "PASS"
 }

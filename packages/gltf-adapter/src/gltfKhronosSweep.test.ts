@@ -351,7 +351,7 @@ function compressedAndAlternateSources(): GltfJson {
 }
 
 function meshoptFallbackBufferSample(
-  opts: { fallbackStub?: boolean; extensionName?: 'EXT_meshopt_compression' | 'KHR_meshopt_compression' } = {},
+  opts: { fallbackMarkerOnly?: boolean; extensionName?: 'EXT_meshopt_compression' | 'KHR_meshopt_compression' } = {},
 ): GltfJson {
   const extensionName = opts.extensionName ?? 'EXT_meshopt_compression';
   return {
@@ -406,8 +406,8 @@ function meshoptFallbackBufferSample(
       },
     ],
     buffers: [
-      opts.fallbackStub
-        ? { byteLength: 0, extensions: { [extensionName]: { fallback: true } } }
+      opts.fallbackMarkerOnly
+        ? { byteLength: 42, extensions: { [extensionName]: { fallback: true } } }
         : { uri: 'fallback.bin', byteLength: 42 },
       { uri: 'meshopt.bin', byteLength: 32 },
     ],
@@ -603,6 +603,7 @@ describe('GATE-GLTF analyze-only Khronos-style sweep', () => {
       'anisotropyMap',
       'dispersionAbbeNumber',
       'emissiveIntensity',
+      'doubleSided',
     ]));
     expect(webgl2.issues).toEqual(expect.arrayContaining([
       expect.objectContaining({
@@ -613,17 +614,14 @@ describe('GATE-GLTF analyze-only Khronos-style sweep', () => {
       }),
       expect.objectContaining({
         category: 'material',
-        name: 'doubleSided',
-        support: 'approximate',
-        path: 'materials[0].doubleSided',
-      }),
-      expect.objectContaining({
-        category: 'material',
         name: 'KHR_materials_pbrSpecularGlossiness.specularGlossinessTexture.glossinessAlpha',
         support: 'approximate',
         path: 'materials[0].extensions.KHR_materials_pbrSpecularGlossiness.specularGlossinessTexture',
       }),
     ]));
+    expect(webgl2.issues.some((issue) =>
+      issue.category === 'material' && issue.name === 'doubleSided'
+    )).toBe(false);
   });
 
   it('scores KHR_materials_emissive_strength as supported scalar emissiveIntensity on every backend profile', () => {
@@ -679,7 +677,7 @@ describe('GATE-GLTF analyze-only Khronos-style sweep', () => {
     ]));
   });
 
-  it('reports secondary vertex color sets as unsupported ignored data', () => {
+  it('preserves secondary vertex color sets without an unsupported issue', () => {
     const gltf = minimalTriangle();
     gltf.meshes![0]!.primitives[0]!.attributes.COLOR_1 = 1;
     gltf.accessors!.push({ bufferView: 1, componentType: 5126, count: 3, type: 'VEC3' });
@@ -689,19 +687,11 @@ describe('GATE-GLTF analyze-only Khronos-style sweep', () => {
     const report = reportFor(gltf);
     const webgl2 = evaluateGltfBackendCompatibility(report, 'pt-webgl2');
 
-    expect(report.primitives.ignoredVertexColorSets).toEqual(['COLOR_1']);
-    expect(webgl2.issues).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        category: 'primitive',
-        name: 'COLOR_1',
-        support: 'unsupported',
-        path: 'meshes[0].primitives[0].attributes.COLOR_1',
-      }),
-    ]));
-    expect(webgl2.unsupportedCount).toBeGreaterThanOrEqual(1);
+    expect(report.primitives.ignoredVertexColorSets).toEqual([]);
+    expect(webgl2.issues.some((issue) => issue.name === 'COLOR_1')).toBe(false);
   });
 
-  it('keeps Draco and no-base alternate texture-source assets in requires-hook space', () => {
+  it('keeps unselected no-base WebP visible without misclassifying its built-in codec', () => {
     const report = reportFor(compressedAndAlternateSources());
     const webgl2 = evaluateGltfBackendCompatibility(report, 'pt-webgl2');
 
@@ -709,10 +699,7 @@ describe('GATE-GLTF analyze-only Khronos-style sweep', () => {
       usesDraco: true,
       usesMeshopt: true,
     });
-    expect(report.extensions.requiresHook).toEqual([
-      'EXT_texture_webp',
-      'KHR_draco_mesh_compression',
-    ]);
+    expect(report.extensions.requiresHook).toEqual([]);
     expect(report.extensions.textureSourceUses).toEqual([
       expect.objectContaining({
         extension: 'EXT_texture_webp',
@@ -721,7 +708,7 @@ describe('GATE-GLTF analyze-only Khronos-style sweep', () => {
         path: 'textures[0].extensions.EXT_texture_webp',
         required: false,
         hasBaseSource: false,
-        requiresHook: true,
+        requiresHook: false,
         mimeType: 'image/webp',
       }),
     ]);
@@ -734,21 +721,9 @@ describe('GATE-GLTF analyze-only Khronos-style sweep', () => {
         textureSourceExtensions: ['EXT_texture_webp'],
       }),
     ]);
-    expect(webgl2.requiresHookCount).toBe(3);
+    expect(webgl2.requiresHookCount).toBe(1);
     expect(webgl2.unsupportedCount).toBe(0);
     expect(webgl2.issues).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        category: 'extension',
-        name: 'KHR_draco_mesh_compression',
-        support: 'requires-hook',
-        path: 'extensionsRequired[0]',
-      }),
-      expect.objectContaining({
-        category: 'extension',
-        name: 'EXT_texture_webp',
-        support: 'requires-hook',
-        path: 'textures[0].extensions.EXT_texture_webp',
-      }),
       expect.objectContaining({
         category: 'material',
         name: 'baseColorMap.textureRef.disabled-texture-source-extension',
@@ -773,47 +748,34 @@ describe('GATE-GLTF analyze-only Khronos-style sweep', () => {
     )).toBe(false);
   });
 
-  it('keeps optional meshopt fallback-stub assets in requires-hook space', () => {
-    const report = reportFor(meshoptFallbackBufferSample({ fallbackStub: true }));
+  it('treats optional meshopt fallback-marker-only assets as built-in-codec compatible', () => {
+    const report = reportFor(meshoptFallbackBufferSample({ fallbackMarkerOnly: true }));
     const webgl2 = evaluateGltfBackendCompatibility(report, 'pt-webgl2');
 
     expect(report.primitives.usesMeshopt).toBe(true);
-    expect(report.extensions.requiresHook).toEqual(['EXT_meshopt_compression']);
-    expect(webgl2.requiresHookCount).toBe(1);
-    expect(webgl2.issues).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        category: 'extension',
-        name: 'EXT_meshopt_compression',
-        support: 'requires-hook',
-        path: 'bufferViews[0].extensions.EXT_meshopt_compression',
-      }),
-    ]));
+    expect(report.extensions.requiresHook).toEqual([]);
+    expect(webgl2.requiresHookCount).toBe(0);
+    expect(webgl2.issues.some((issue) => issue.name === 'EXT_meshopt_compression')).toBe(false);
   });
 
-  it('classifies Khronos KHR_meshopt_compression samples with the same hook policy', () => {
+  it('classifies Khronos KHR_meshopt_compression samples as built-in-codec compatible', () => {
     const report = reportFor(meshoptFallbackBufferSample({
-      fallbackStub: true,
+      fallbackMarkerOnly: true,
       extensionName: 'KHR_meshopt_compression',
     }));
     const webgl2 = evaluateGltfBackendCompatibility(report, 'pt-webgl2');
 
     expect(report.primitives.usesMeshopt).toBe(true);
     expect(report.extensions.supported).toContain('KHR_meshopt_compression');
-    expect(report.extensions.requiresHook).toEqual(['KHR_meshopt_compression']);
+    expect(report.extensions.requiresHook).toEqual([]);
     expect(report.extensions.unsupportedRequired).not.toContain('KHR_meshopt_compression');
-    expect(webgl2.issues).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        category: 'extension',
-        name: 'KHR_meshopt_compression',
-        support: 'requires-hook',
-        path: 'bufferViews[0].extensions.KHR_meshopt_compression',
-      }),
-    ]));
+    expect(webgl2.requiresHookCount).toBe(0);
+    expect(webgl2.issues.some((issue) => issue.name === 'KHR_meshopt_compression')).toBe(false);
   });
 
   it('keeps selected-scene bufferView meshopt and mesh-quantization extensions in scoped reports', () => {
     const gltf = meshoptFallbackBufferSample({
-      fallbackStub: true,
+      fallbackMarkerOnly: true,
       extensionName: 'KHR_meshopt_compression',
     });
     gltf.extensionsUsed = ['KHR_mesh_quantization', 'KHR_meshopt_compression'];
@@ -834,7 +796,7 @@ describe('GATE-GLTF analyze-only Khronos-style sweep', () => {
       'KHR_mesh_quantization',
       'KHR_meshopt_compression',
     ]));
-    expect(report.extensions.requiresHook).toEqual(['KHR_meshopt_compression']);
+    expect(report.extensions.requiresHook).toEqual([]);
     expect(report.primitives.usesMeshopt).toBe(true);
     expect(report.extensions.sourcePaths.KHR_meshopt_compression).toEqual(expect.arrayContaining([
       'bufferViews[0].extensions.KHR_meshopt_compression',
@@ -842,14 +804,8 @@ describe('GATE-GLTF analyze-only Khronos-style sweep', () => {
       'extensionsRequired[1]',
     ]));
     expect([...reachability.bufferIndices].sort()).toEqual([0, 1]);
-    expect(webgl2.issues).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        category: 'extension',
-        name: 'KHR_meshopt_compression',
-        support: 'requires-hook',
-        path: 'bufferViews[0].extensions.KHR_meshopt_compression',
-      }),
-    ]));
+    expect(webgl2.requiresHookCount).toBe(0);
+    expect(webgl2.issues.some((issue) => issue.name === 'KHR_meshopt_compression')).toBe(false);
     expect(webgl2.issues).not.toEqual(expect.arrayContaining([
       expect.objectContaining({
         category: 'extension',
@@ -874,37 +830,24 @@ describe('GATE-GLTF analyze-only Khronos-style sweep', () => {
     )).toBe(false);
   });
 
-  it('keeps optional Draco assets without fallback accessors in requires-hook space', () => {
+  it('treats optional Draco assets without fallback accessors as built-in-codec compatible', () => {
     const report = reportFor(optionalDracoSample());
     const webgl2 = evaluateGltfBackendCompatibility(report, 'pt-webgl2');
 
     expect(report.primitives.usesDraco).toBe(true);
-    expect(report.extensions.requiresHook).toEqual(['KHR_draco_mesh_compression']);
-    expect(webgl2.requiresHookCount).toBe(1);
-    expect(webgl2.issues).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        category: 'extension',
-        name: 'KHR_draco_mesh_compression',
-        support: 'requires-hook',
-      }),
-    ]));
+    expect(report.extensions.requiresHook).toEqual([]);
+    expect(webgl2.requiresHookCount).toBe(0);
+    expect(webgl2.issues.some((issue) => issue.name === 'KHR_draco_mesh_compression')).toBe(false);
   });
 
-  it('keeps required Draco assets in requires-hook space even when fallback accessors exist', () => {
+  it('treats required Draco assets as built-in-codec compatible even with fallback accessors', () => {
     const report = reportFor(optionalDracoSample({ withFallback: true, required: true }));
     const webgl2 = evaluateGltfBackendCompatibility(report, 'pt-webgl2');
 
     expect(report.primitives.usesDraco).toBe(true);
-    expect(report.extensions.requiresHook).toEqual(['KHR_draco_mesh_compression']);
-    expect(webgl2.requiresHookCount).toBe(1);
-    expect(webgl2.issues).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        category: 'extension',
-        name: 'KHR_draco_mesh_compression',
-        support: 'requires-hook',
-        path: 'extensionsRequired[0]',
-      }),
-    ]));
+    expect(report.extensions.requiresHook).toEqual([]);
+    expect(webgl2.requiresHookCount).toBe(0);
+    expect(webgl2.issues.some((issue) => issue.name === 'KHR_draco_mesh_compression')).toBe(false);
   });
 
   it('keeps pt-webgpu full and lite profile differences visible in the sweep', () => {

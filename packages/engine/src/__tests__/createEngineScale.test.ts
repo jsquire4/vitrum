@@ -33,21 +33,16 @@ describe('createEngine backend selection', () => {
     expect(pickBackend('auto', false, 12, false, 'walkaround-hybrid')).toBe('pt-webgl2');
   });
 
-  it('recommends a PT backend for plain Scene material fields unsupported by walkaround', () => {
+  it('keeps walkaround for approximate plain Scene volume-scattering fields', () => {
     const recommendation = recommendBackendForSceneMaterials(sceneWithMaterial({
       baseColor: [1, 1, 1],
       roughness: 0.35,
       metallic: 0,
-      thinFilmStack: {
-        layers: [{ ior: 1.45, thicknessNm: 120 }],
-      },
+      scatteringCoefficient: 0.12,
     }), true);
 
-    expect(recommendation).toEqual({
-      backend: 'pt-webgpu',
-      fields: ['thinFilmStack'],
-    });
-    expect(pickBackend('auto', true, 12, false, undefined, recommendation?.backend)).toBe('pt-webgpu');
+    expect(recommendation).toBeNull();
+    expect(pickBackend('auto', true, 12, false, undefined, recommendation?.backend)).toBe('walkaround-hybrid');
   });
 
   it.each([
@@ -64,7 +59,7 @@ describe('createEngine backend selection', () => {
         layers: [{ ior: 1.45, thicknessNm: 120 }],
       },
     }],
-  ] as const)('recommends PT for plain Scene %s when auto-routing', (_field, materialPatch) => {
+  ] as const)('keeps walkaround for bounded approximate plain Scene %s support', (_field, materialPatch) => {
     const recommendation = recommendBackendForSceneMaterials(sceneWithMaterial({
       baseColor: [1, 1, 1],
       roughness: 0.4,
@@ -72,49 +67,32 @@ describe('createEngine backend selection', () => {
       ...materialPatch,
     }), true);
 
-    expect(recommendation).toEqual({
-      backend: 'pt-webgpu',
-      fields: [_field],
-    });
-    expect(pickBackend('auto', true, 12, false, undefined, recommendation?.backend)).toBe('pt-webgpu');
+    expect(recommendation).toBeNull();
+    expect(pickBackend('auto', true, 12, false, undefined, recommendation?.backend)).toBe('walkaround-hybrid');
   });
 
-  it('falls back to pt-webgl2 for plain Scene PT-only material fields on WebGL hosts', () => {
+  it('does not create a material recommendation for approximate face-layer fields on WebGL hosts', () => {
     const recommendation = recommendBackendForSceneMaterials(sceneWithMaterial({
       baseColor: [1, 1, 1],
       roughness: 0.4,
       metallic: 0,
-      thinFilmStack: {
-        layers: [{ ior: 1.45, thicknessNm: 120 }],
-      },
+      frontLayer: { transmission: [0.85, 0.9, 1], roughness: 0.25 },
     }), false);
 
-    expect(recommendation).toEqual({
-      backend: 'pt-webgl2',
-      fields: ['thinFilmStack'],
-    });
+    expect(recommendation).toBeNull();
     expect(pickBackend('auto', false, 12, false, undefined, recommendation?.backend)).toBe('pt-webgl2');
   });
 
-  it('sorts multiple PT-only material fields for deterministic warnings', () => {
+  it('does not reroute multiple fields that walkaround implements approximately', () => {
     const recommendation = recommendBackendForSceneMaterials(sceneWithMaterial({
       baseColor: [1, 1, 1],
       roughness: 0.4,
       metallic: 0,
-      spectralAttenuation: {
-        wavelengthStart: 380,
-        wavelengthEnd: 700,
-        values: new Float32Array([0.1, 0.2, 0.3]),
-      },
-      thinFilmStack: {
-        layers: [{ ior: 1.45, thicknessNm: 120 }],
-      },
+      frontLayer: { transmission: [0.85, 0.9, 1], roughness: 0.25 },
+      scatteringCoefficient: 0.12,
     }), true);
 
-    expect(recommendation).toEqual({
-      backend: 'pt-webgpu',
-      fields: ['spectralAttenuation', 'thinFilmStack'],
-    });
+    expect(recommendation).toBeNull();
   });
 
   it('does not reroute for material fields walkaround already consumes approximately', () => {
@@ -123,30 +101,30 @@ describe('createEngine backend selection', () => {
       roughness: 1,
       metallic: 0,
       displacementScale: 0.1,
-      scatteringCoefficient: 0.12,
-      scatteringAnisotropy: 0.35,
-      scatteringCoefficientRGB: [0.1, 0.2, 0.3],
-      frontLayer: { transmission: [0.85, 0.9, 1], roughness: 0.25 },
-      backLayer: { transmission: [1, 0.9, 0.85] },
+      spectralAttenuation: {
+        wavelengthStart: 380,
+        wavelengthEnd: 700,
+        values: new Float32Array([0.1, 0.2, 0.3]),
+      },
+      dispersionAbbeNumber: 55,
+      thinFilmStack: {
+        layers: [{ ior: 1.45, thicknessNm: 120 }],
+      },
     }), true);
 
     expect(recommendation).toBeNull();
     expect(pickBackend('auto', true, 12, false, undefined, recommendation?.backend)).toBe('walkaround-hybrid');
   });
 
-  it('keeps explicit realtime stronger than a plain Scene material recommendation', () => {
+  it('keeps explicit realtime for an approximately supported plain Scene material', () => {
     const recommendation = recommendBackendForSceneMaterials(sceneWithMaterial({
       baseColor: [1, 1, 1],
       roughness: 0.35,
       metallic: 0,
-      spectralAttenuation: {
-        wavelengthStart: 380,
-        wavelengthEnd: 700,
-        values: new Float32Array([0.1, 0.2, 0.3]),
-      },
+      scatteringCoefficient: 0.12,
     }), true);
 
-    expect(recommendation?.backend).toBe('pt-webgpu');
+    expect(recommendation).toBeNull();
     expect(pickBackend('realtime', true, 12, false, undefined, recommendation?.backend)).toBe('walkaround-hybrid');
   });
 });

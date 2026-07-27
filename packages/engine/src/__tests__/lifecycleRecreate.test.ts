@@ -39,6 +39,33 @@ function makeCanvas(): HTMLCanvasElement {
   } as unknown as HTMLCanvasElement;
 }
 
+
+function makeLostWebGlCanvas(): {
+  readonly canvas: HTMLCanvasElement;
+  restore(): void;
+} {
+  const events = new EventTarget();
+  let lost = true;
+  const gl = {
+    isContextLost: vi.fn(() => lost),
+  } as unknown as WebGL2RenderingContext;
+  const canvas = {
+    width: 300,
+    height: 150,
+    clientWidth: 300,
+    clientHeight: 150,
+    getContext: vi.fn((kind: string) => kind === 'webgl2' ? gl : null),
+    addEventListener: events.addEventListener.bind(events),
+    removeEventListener: events.removeEventListener.bind(events),
+  } as unknown as HTMLCanvasElement;
+  return {
+    canvas,
+    restore: () => {
+      lost = false;
+      events.dispatchEvent(new Event('webglcontextrestored'));
+    },
+  };
+}
 function makeCamera() {
   return {
     updateMatrixWorld: vi.fn(),
@@ -75,6 +102,7 @@ function makeEngine(backendId = 'pt-webgl2', retainedScene: Scene | null = scene
 }
 
 const LOSS: EngineError = { kind: 'device-lost', fatal: true, message: 'lost' };
+const CONTEXT_LOSS: EngineError = { kind: 'context-lost', fatal: true, message: 'lost' };
 
 describe('attachVitrum lifecycle recreate (R1)', () => {
   const originalRaf = globalThis.requestAnimationFrame;
@@ -190,5 +218,60 @@ describe('attachVitrum lifecycle recreate (R1)', () => {
 
     handle.dispose();
     errorSpy.mockRestore();
+  });
+
+  it('waits for a genuinely lost WebGL context to restore before disposal and recreation', async () => {
+    const first = makeEngine('pt-webgl2');
+    const second = makeEngine('pt-webgl2');
+    const lostCanvas = makeLostWebGlCanvas();
+    const recreateEngine = vi.fn(async () => second.engine as unknown as EngineWithBackendId);
+
+    const handle = await attachVitrum({
+      canvas: lostCanvas.canvas,
+      engine: first.engine as never,
+      scene: sceneA,
+      camera: makeCamera(),
+      autoRecreateOnDeviceLoss: true,
+      recreateEngine,
+    });
+
+    first.errorCallbacks[0]!(CONTEXT_LOSS);
+
+    expect(recreateEngine).not.toHaveBeenCalled();
+    expect(first.engine.dispose).not.toHaveBeenCalled();
+
+    lostCanvas.restore();
+    await vi.waitFor(() => expect(recreateEngine).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(second.engine.onError).toHaveBeenCalled());
+    expect(first.engine.dispose).toHaveBeenCalledTimes(1);
+
+    handle.dispose();
+  });
+
+  it('cancels a pending WebGL restoration wait when the lifecycle handle is disposed', async () => {
+    const first = makeEngine('pt-webgl2');
+    const second = makeEngine('pt-webgl2');
+    const lostCanvas = makeLostWebGlCanvas();
+    const recreateEngine = vi.fn(async () => second.engine as unknown as EngineWithBackendId);
+
+    const handle = await attachVitrum({
+      canvas: lostCanvas.canvas,
+      engine: first.engine as never,
+      scene: sceneA,
+      camera: makeCamera(),
+      autoRecreateOnDeviceLoss: true,
+      recreateEngine,
+    });
+
+    first.errorCallbacks[0]!(CONTEXT_LOSS);
+    expect(recreateEngine).not.toHaveBeenCalled();
+
+    handle.dispose();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(first.engine.dispose).toHaveBeenCalledTimes(1);
+    expect(recreateEngine).not.toHaveBeenCalled();
+    expect(second.engine.dispose).not.toHaveBeenCalled();
   });
 });

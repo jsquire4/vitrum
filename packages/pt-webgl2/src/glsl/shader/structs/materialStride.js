@@ -20,7 +20,9 @@
 //   125..126 = backLayer.normalMap transform
 //   127 = frontLayer.normalMap sampler policy
 //   128 = backLayer.normalMap sampler policy
-//   129 = {front texCoord, back texCoord, _, _}
+//   129 = {front UV attribute layer, back UV attribute layer, _, _}
+// 130..135 = dense attribute-layer selectors for the 21 base map slots
+//             (four selectors per texel, MATERIAL_MAP_FIELD_ORDER order).
 export const MATERIAL_WRAP_TEXEL_OFFSET = 100;
 
 // ── Named absolute texel offsets (single source of truth for the packer AND the
@@ -101,10 +103,14 @@ export const MATERIAL_WRAP_TEXELS = MATERIAL_MAP_FIELD_ORDER.length;
 export const MATERIAL_SPECTRAL_REFLECTANCE_TEXEL_OFFSET = MATERIAL_WRAP_TEXEL_OFFSET + MATERIAL_WRAP_TEXELS;
 export const MATERIAL_LAYER_NORMAL_TEXEL_OFFSET = MATERIAL_SPECTRAL_REFLECTANCE_TEXEL_OFFSET + 1;
 export const MATERIAL_LAYER_NORMAL_TEXELS = 8;
-export const MATERIAL_PIXELS = MATERIAL_LAYER_NORMAL_TEXEL_OFFSET + MATERIAL_LAYER_NORMAL_TEXELS;
+export const MATERIAL_UV_SELECTOR_TEXEL_OFFSET = MATERIAL_LAYER_NORMAL_TEXEL_OFFSET + MATERIAL_LAYER_NORMAL_TEXELS;
+export const MATERIAL_UV_SELECTOR_TEXELS = Math.ceil(MATERIAL_MAP_FIELD_ORDER.length / 4);
+export const MATERIAL_PIXELS = MATERIAL_UV_SELECTOR_TEXEL_OFFSET + MATERIAL_UV_SELECTOR_TEXELS;
 
-// UV-set bitmask — packed at texel 86.a (the former pad lane).
-// Bit k set = the k-th map samples uv1 (ATTR_UV1) instead of uv0 (ATTR_UV).
+// Legacy UV1 compatibility mirror packed at texel 86.a (the former pad lane).
+// Shading uses the arbitrary-layer selector table at MATERIAL_UV_SELECTOR_TEXEL_OFFSET;
+// this bitmask remains stable for older material-record diagnostics/consumers.
+// Bit k set = the k-th map was authored with texCoord 1.
 // Map→bit assignments (must match the packer in materialsTexture.ts AND the
 // GLSL decoder in material_struct.glsl.js — single source here):
 //   bit 0  = baseColorMap          bit 10 = sheenColorMap

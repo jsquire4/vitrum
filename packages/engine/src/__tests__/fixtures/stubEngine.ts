@@ -32,7 +32,6 @@ export function stubCapabilities(
     supportedPrimitiveKinds: new Set(),
     supportedEnvironmentKinds: new Set(),
     presentationMode: 'offscreen-texture',
-    experimentalFeatures: new Set(),
     causticStrategy: 'none',
     ...overrides,
   } as unknown as EngineCapabilities;
@@ -63,5 +62,5 @@ export function stubEngine(caps: EngineCapabilities = stubCapabilities()): Engin
     pause: vi.fn(),
     resume: vi.fn(),
     dispose: vi.fn(),
-  } as unknown as Engine;
+  };
 }

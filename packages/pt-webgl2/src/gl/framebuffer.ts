@@ -35,16 +35,45 @@ function createTexture(
   gl: WebGL2RenderingContext, w: number, h: number,
   internalFormat: number, format: number, type: number,
 ): WebGLTexture {
+  if (gl.isContextLost()) {
+    throw new Error('pt-webgl2: WebGL context lost — cannot create render-target texture');
+  }
+  if (!Number.isInteger(w) || !Number.isInteger(h) || w <= 0 || h <= 0) {
+    throw new RangeError(`pt-webgl2: render-target dimensions must be positive integers (got ${w}×${h})`);
+  }
+  const maxSize = gl.getParameter(gl.MAX_TEXTURE_SIZE) as number;
+  if (w > maxSize || h > maxSize) {
+    throw new RangeError(
+      `pt-webgl2: render target needs ${w}×${h}, but this device supports at most ${maxSize}×${maxSize}`,
+    );
+  }
   const tex = gl.createTexture();
   if (tex == null) throw new Error('pt-webgl2: failed to create render-target texture');
-  gl.bindTexture(gl.TEXTURE_2D, tex);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-  gl.texImage2D(gl.TEXTURE_2D, 0, internalFormat, w, h, 0, format, type, null);
-  gl.bindTexture(gl.TEXTURE_2D, null);
-  return tex;
+  try {
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texImage2D(gl.TEXTURE_2D, 0, internalFormat, w, h, 0, format, type, null);
+    return tex;
+  } catch (error) {
+    gl.deleteTexture(tex);
+    throw error;
+  } finally {
+    gl.bindTexture(gl.TEXTURE_2D, null);
+  }
+}
+
+function framebufferStatusName(gl: WebGL2RenderingContext, status: number): string {
+  const entries: readonly (readonly [number, string])[] = [
+    [gl.FRAMEBUFFER_INCOMPLETE_ATTACHMENT, 'FRAMEBUFFER_INCOMPLETE_ATTACHMENT'],
+    [gl.FRAMEBUFFER_INCOMPLETE_MISSING_ATTACHMENT, 'FRAMEBUFFER_INCOMPLETE_MISSING_ATTACHMENT'],
+    [gl.FRAMEBUFFER_INCOMPLETE_DIMENSIONS, 'FRAMEBUFFER_INCOMPLETE_DIMENSIONS'],
+    [gl.FRAMEBUFFER_UNSUPPORTED, 'FRAMEBUFFER_UNSUPPORTED'],
+    [gl.FRAMEBUFFER_INCOMPLETE_MULTISAMPLE, 'FRAMEBUFFER_INCOMPLETE_MULTISAMPLE'],
+  ];
+  return entries.find(([value]) => value === status)?.[1] ?? `0x${status.toString(16)}`;
 }
 
 /** A render target: an FBO with a primary color texture + optional MRT aux textures. */
@@ -63,6 +92,105 @@ export interface RenderTarget {
   destroy(): void;
 }
 
+/** Four RGBA32F attachments used by the portable one-vertex NEE handoff. */
+export interface NeeCandidateTarget {
+  readonly fbo: WebGLFramebuffer;
+  readonly textures: readonly [WebGLTexture, WebGLTexture, WebGLTexture, WebGLTexture];
+  readonly drawBuffers: [GLenum, GLenum, GLenum, GLenum];
+  readonly width: number;
+  readonly height: number;
+  destroy(): void;
+}
+
+/**
+ * Allocate the dedicated four-attachment NEE candidate target.
+ *
+ * WebGL2 requires at least four draw buffers/color attachments, but the check is
+ * still explicit: a broken/virtualized context must fail before any partial
+ * target is published. Every allocation and framebuffer failure retires all
+ * resources created by this attempt.
+ */
+export function createNeeCandidateTarget(
+  gl: WebGL2RenderingContext,
+  w: number,
+  h: number,
+): NeeCandidateTarget {
+  const maxDrawBuffers = gl.getParameter(gl.MAX_DRAW_BUFFERS) as number;
+  const maxColorAttachments = gl.getParameter(gl.MAX_COLOR_ATTACHMENTS) as number;
+  if (maxDrawBuffers < 4 || maxColorAttachments < 4) {
+    throw new Error(
+      'pt-webgl2: the NEE resolve pipeline requires four RGBA32F draw buffers ' +
+        `(device reports ${maxDrawBuffers} draw buffers and ${maxColorAttachments} color attachments)`,
+    );
+  }
+
+  const fbo = gl.createFramebuffer();
+  if (fbo == null) throw new Error('pt-webgl2: failed to create NEE candidate framebuffer');
+  const textures: WebGLTexture[] = [];
+  const drawBuffers: [GLenum, GLenum, GLenum, GLenum] = [
+    gl.COLOR_ATTACHMENT0,
+    gl.COLOR_ATTACHMENT1,
+    gl.COLOR_ATTACHMENT2,
+    gl.COLOR_ATTACHMENT3,
+  ];
+  try {
+    for (let attachment = 0; attachment < 4; attachment += 1) {
+      const texture = createColorTexture(gl, w, h);
+      textures.push(texture);
+    }
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+    for (let attachment = 0; attachment < 4; attachment += 1) {
+      gl.framebufferTexture2D(
+        gl.FRAMEBUFFER,
+        drawBuffers[attachment]!,
+        gl.TEXTURE_2D,
+        textures[attachment]!,
+        0,
+      );
+    }
+    gl.drawBuffers(drawBuffers);
+    const status = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
+    if (status !== gl.FRAMEBUFFER_COMPLETE) {
+      throw new Error(
+        `pt-webgl2: NEE candidate framebuffer ${w}×${h} is incomplete ` +
+          `(${framebufferStatusName(gl, status)})`,
+      );
+    }
+  } catch (error) {
+    for (const texture of textures) gl.deleteTexture(texture);
+    gl.deleteFramebuffer(fbo);
+    throw error;
+  } finally {
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  }
+
+  if (textures.length !== 4) {
+    for (const texture of textures) gl.deleteTexture(texture);
+    gl.deleteFramebuffer(fbo);
+    throw new Error('pt-webgl2: NEE candidate target allocation did not complete');
+  }
+  const completeTextures = textures as unknown as [
+    WebGLTexture,
+    WebGLTexture,
+    WebGLTexture,
+    WebGLTexture,
+  ];
+  let destroyed = false;
+  return {
+    fbo,
+    textures: completeTextures,
+    drawBuffers,
+    width: w,
+    height: h,
+    destroy() {
+      if (destroyed) return;
+      destroyed = true;
+      gl.deleteFramebuffer(fbo);
+      for (const texture of completeTextures) gl.deleteTexture(texture);
+    },
+  };
+}
+
 /**
  * Create an RGBA32F render target. When `withAux` is true and the device supports ≥3
  * draw buffers, also attach gNormalDepth/gAlbedo at COLOR_ATTACHMENT1/2 and set up a
@@ -77,35 +205,58 @@ export function createRenderTarget(
   const fbo = gl.createFramebuffer();
   if (fbo == null) throw new Error('pt-webgl2: failed to create framebuffer');
 
-  const color = createColorTexture(gl, w, h);
+  let color: WebGLTexture | null = null;
   let normalDepth: WebGLTexture | null = null;
   let albedo: WebGLTexture | null = null;
-
-  gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
-  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, color, 0);
-
   const drawBuffers: GLenum[] = [gl.COLOR_ATTACHMENT0];
-  if (withAux) {
-    normalDepth = createColorTexture(gl, w, h);
-    albedo = createColorTexture(gl, w, h);
-    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT1, gl.TEXTURE_2D, normalDepth, 0);
-    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT2, gl.TEXTURE_2D, albedo, 0);
-    drawBuffers.push(gl.COLOR_ATTACHMENT1, gl.COLOR_ATTACHMENT2);
+  try {
+    color = createColorTexture(gl, w, h);
+    if (withAux) {
+      normalDepth = createColorTexture(gl, w, h);
+      albedo = createColorTexture(gl, w, h);
+      drawBuffers.push(gl.COLOR_ATTACHMENT1, gl.COLOR_ATTACHMENT2);
+    }
+
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, color, 0);
+    if (normalDepth != null && albedo != null) {
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT1, gl.TEXTURE_2D, normalDepth, 0);
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT2, gl.TEXTURE_2D, albedo, 0);
+    }
+    gl.drawBuffers(drawBuffers);
+    const status = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
+    if (status !== gl.FRAMEBUFFER_COMPLETE) {
+      throw new Error(
+        `pt-webgl2: framebuffer ${w}×${h} is incomplete (${framebufferStatusName(gl, status)})`,
+      );
+    }
+  } catch (error) {
+    if (color != null) gl.deleteTexture(color);
+    if (normalDepth != null) gl.deleteTexture(normalDepth);
+    if (albedo != null) gl.deleteTexture(albedo);
+    gl.deleteFramebuffer(fbo);
+    throw error;
+  } finally {
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   }
-  gl.drawBuffers(drawBuffers);
-  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+
+  const completeColor = color;
+  if (completeColor == null) throw new Error('pt-webgl2: render-target color allocation did not complete');
+  let destroyed = false;
 
   return {
     fbo,
-    color,
+    color: completeColor,
     normalDepth,
     albedo,
     drawBuffers,
     width: w,
     height: h,
     destroy() {
+      if (destroyed) return;
+      destroyed = true;
       gl.deleteFramebuffer(fbo);
-      gl.deleteTexture(color);
+      gl.deleteTexture(completeColor);
       if (normalDepth != null) gl.deleteTexture(normalDepth);
       if (albedo != null) gl.deleteTexture(albedo);
     },

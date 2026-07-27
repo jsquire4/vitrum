@@ -46,7 +46,6 @@ export function getRisGiFrameBindGroupLayout(device: GPUDevice, cache: BGLCache)
   cache.risGiFrame = device.createBindGroupLayout({
     label: 'ris-gi-frame-bgl',
     entries: [
-      { binding: 10, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
       { binding: 11, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
     ],
   });
@@ -89,22 +88,21 @@ export function getLightTreeBindGroupLayout(device: GPUDevice, cache: BGLCache):
 /**
  * ReGIR grid-build pass BGL — a DEDICATED group(0) bound only by the grid-build
  * compute pipeline. It writes the ReGIR grid region of the COMBINED light-tree
- * buffer and reads the tree region + the emitter list.
+ * buffer and reads the tree region.
  *
  *   0 — combined light-tree + ReGIR-grid buffer (READ_WRITE storage). The SAME
  *       GPUBuffer RIS binds read-only at its group(3) binding 0; binding it
  *       read_write here (different bind group, different access) keeps RIS at
  *       16 storage buffers while letting the build pass write the grid region.
- *   1 — emitters (read-only storage) — for the per-cell target q̂_c eval.
- *   2 — WalkaroundUBO (uniform) — grid geometry + M/K + frameSeed + gate.
+ *   1 — WalkaroundUBO (uniform) — grid geometry + M/K + frameSeed + gate.
  *
  * The grid-build pipeline uses a SINGLE bind group (group 0), so it consumes
- * only 2 storage buffers — far under any tier floor.
+ * only 1 storage buffer — far under any tier floor.
  */
 // Back-compat re-export: getNrcBindGroupLayout now lives in the NRC subsystem
 // (I5.2, R6 E sweep, 2026-06-11). Existing callers (pipelineCompiler.ts +
 // nrcSubsystem.ts) continue to import from either path unchanged.
-export { getNrcBindGroupLayout } from '../neural/nrc/nrcBindGroupLayout.js';
+export { getNrcHybridLayersBindGroupLayout } from '../neural/nrc/nrcBindGroupLayout.js';
 
 export function getRegirBuildBindGroupLayout(device: GPUDevice, cache: BGLCache): GPUBindGroupLayout {
   if (cache.regirBuild) return cache.regirBuild;
@@ -112,8 +110,7 @@ export function getRegirBuildBindGroupLayout(device: GPUDevice, cache: BGLCache)
     label: 'regir-build-bgl',
     entries: [
       { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
-      { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
-      { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
+      { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
     ],
   });
   return cache.regirBuild;
@@ -179,9 +176,9 @@ export function getAccumBindGroupLayout(device: GPUDevice, cache: BGLCache): GPU
  * rejected. maxBindingsPerBindGroup is 1000 so 6 bindings is fine.
  * Layout:
  *   DDGI section
- *     0 — irradiance atlas (texture_2d<f32>, unfilterable)
- *     1 — visibility atlas (texture_2d<f32>, unfilterable)
- *     2 — non-filtering sampler
+ *     0 — irradiance atlas (texture_2d<f32>, filterable)
+ *     1 — visibility atlas (texture_2d<f32>, filterable)
+ *     2 — dedicated linear filtering sampler
  *     3 — DDGI grid uniform (64 bytes)
  *   RC section (W8 Phase 3, 2026-05-18)
  *     4 — cascade-0 storage buffer (read-only) — `array<vec4f>` packed
@@ -193,26 +190,18 @@ export function getAccumBindGroupLayout(device: GPUDevice, cache: BGLCache): GPU
  *         so the same bind group works for rcEnabled=true and false
  *         without a pipeline recompile.
  *   PPG section (W9 guided-sampling landing)
- *     6 — PPG sTree storage buffer (read-only) — serialised spatial kd-tree.
- *     7 — PPG dTree storage buffer (read-only) — concatenated per-cell
- *         directional quadtrees (the learned guiding distribution).
- *     8 — PPG dTreeOffsets storage buffer (read-only) — sTree-cell →
- *         dTreeBuf base-offset table.
- *         All three are ALWAYS bound; a 16-byte zeroed placeholder backs
- *         each slot when PPG is disabled. gi-ris reads them only when
- *         `ubo.ppgEnabled == 1` (the kernel guards on the gate before any
- *         dTree descent), so the placeholders are never dereferenced when
- *         PPG is off.
+ *     6 — versioned packed PPG query arena (read-only) containing the sTree,
+ *         dTrees, and offset table. A 16-byte zeroed placeholder backs the
+ *         slot when PPG is disabled; gi-ris reads it only when
+ *         `ubo.ppgEnabled == 1`.
  *
- * shade.wgsl reads bindings 0-5; risGi.wgsl reads 0-3 (DDGI) + 6-8 (PPG).
+ * shade.wgsl reads bindings 0-5; risGi.wgsl reads 0-3 (DDGI) + 6 (PPG).
  * WebGPU spec allows pipelines to reference a subset of layout entries, so
  * the unified BGL works for both. Bind groups must still provide resources
- * for all 9 entries (placeholders for unused). The PPG storage buffers are
- * read-only-storage, so they bind against the STORAGE-flagged PPG buffers
- * (or placeholders) without any usage-flag change.
+ * for all 7 entries (placeholders for unused).
  *
  * Storage-buffer budget: in TLAS mode gi-ris references 9 storage buffers
- * (1 frame reservoir + 8 scene BVH/TLAS) + these 3 PPG buffers = 12, under
+ * (1 frame reservoir + 8 scene BVH/TLAS) + the PPG arena = 10, under
  * the `HYBRID_WEBGPU_REQUIRED_LIMITS.maxStorageBuffersPerShaderStage = 16`
  * full-tier floor. PPG is forbidden on the lite tier, so its lower (10)
  * floor is never asked to host the PPG buffers.
@@ -222,17 +211,14 @@ export function getHybridLayersBindGroupLayout(device: GPUDevice, cache: BGLCach
   cache.hybridLayers = device.createBindGroupLayout({
     label: 'hybrid-layers-bgl',
     entries: [
-      { binding: 0, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
-      { binding: 1, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
-      { binding: 2, visibility: GPUShaderStage.COMPUTE, sampler: { type: 'non-filtering' } },
+      { binding: 0, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'float' } },
+      { binding: 1, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'float' } },
+      { binding: 2, visibility: GPUShaderStage.COMPUTE, sampler: { type: 'filtering' } },
       { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
       { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
       { binding: 5, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
-      // PPG guided-sampling tree buffers (W9). Read-only-storage; gi-ris
-      // descends them when ubo.ppgEnabled == 1.
+      // Versioned packed PPG query arena. gi-ris descends it only when enabled.
       { binding: 6, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
-      { binding: 7, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
-      { binding: 8, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
     ],
   });
   return cache.hybridLayers;
@@ -243,9 +229,9 @@ export function getShadeHybridLayersBindGroupLayout(device: GPUDevice, cache: BG
   cache.shadeHybridLayers = device.createBindGroupLayout({
     label: 'shade-hybrid-layers-bgl',
     entries: [
-      { binding: 0, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
-      { binding: 1, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
-      { binding: 2, visibility: GPUShaderStage.COMPUTE, sampler: { type: 'non-filtering' } },
+      { binding: 0, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'float' } },
+      { binding: 1, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'float' } },
+      { binding: 2, visibility: GPUShaderStage.COMPUTE, sampler: { type: 'filtering' } },
       { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
       { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
       { binding: 5, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
@@ -300,7 +286,8 @@ export function getResolveBindGroupLayout(
  *   0 — CbPrefillUniforms (uniform)
  *   1 — readAccum / previous-frame radiance (rgba16float sampled, unfilterable)
  *   2 — motionVectors (rgba32float sampled, unfilterable)
- *   3 — hdrColorTexture gap-fill output (rgba16float, write-only storage)
+ *   3 — immutable current shaded-radiance snapshot (rgba16float sampled)
+ *   4 — hdrColorTexture gap-fill output (rgba16float, write-only storage)
  */
 export function getCbPrefillBindGroupLayout(
   device: GPUDevice,
@@ -455,9 +442,8 @@ export function getIndirectCombineBindGroupLayout(
 
 /**
  * Camera-visible transparent composition pass BGL. Matches
- * `transparentOit.wgsl.ts` group(3):
- *   0 — opaque/background combined radiance (rgba16float, sampled)
- *   1 — transparent-composited output (rgba16float, write-only storage)
+ * `transparentOit.wgsl.ts` group(3): bindings 0-5 mirror the shade DDGI/RC
+ * receiver inputs; 6 is the opaque/background radiance and 7 is the OIT output.
  *
  * Kept as a dedicated group so the shader can also bind the standard frame,
  * scene, and UBO groups without adding to their already budget-sensitive

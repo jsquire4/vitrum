@@ -37,6 +37,9 @@
 /** Number of sub-cells per axis used for the numerical integration. */
 const SUB = 16;
 
+/** Highest supported grid width; bounds both allocation and O(N² × SUB²) work. */
+export const MAX_OCTAHEDRAL_SOLID_ANGLE_GRID_SIZE = 256;
+
 /**
  * Decode an octahedral (u,v) → unit sphere direction.
  *
@@ -112,6 +115,14 @@ function sphericalQuadArea(
  * @param gridSize - N (must be a positive integer; tested for 4, 8, 16, 32).
  */
 export function computeOctahedralSolidAngles(gridSize: number): Float32Array {
+  if (!Number.isSafeInteger(gridSize) || gridSize <= 0) {
+    throw new Error(`gridSize must be a positive safe integer; received ${String(gridSize)}`);
+  }
+  if (gridSize > MAX_OCTAHEDRAL_SOLID_ANGLE_GRID_SIZE) {
+    throw new Error(
+      `gridSize ${gridSize} exceeds the validated maximum ${MAX_OCTAHEDRAL_SOLID_ANGLE_GRID_SIZE}`,
+    );
+  }
   const N = gridSize;
   const cellWidth = 2.0 / N;   // UV width of each cell
   const subWidth  = cellWidth / SUB;

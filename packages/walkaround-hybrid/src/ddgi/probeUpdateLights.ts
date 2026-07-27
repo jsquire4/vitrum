@@ -1,71 +1,73 @@
 /**
- * DDGI probe-update light UBO packing (up to 16 lights × 64 B).
+ * DDGI probe-update runtime storage-buffer packing.
+ *
+ * The 16-byte header is followed by one 64-byte light record and one 16-byte
+ * alias-table record for every active light.
+ * There is no renderer-authored light cap; the only upper bound is the WebGPU
+ * device's storage-buffer limit, which ProbeUpdatePass checks before upload.
  */
-import type { EngineWarning } from '@vitrum/core';
+import { buildAliasTable, luminance } from '@vitrum/shared-samplers';
 import type { DDGILight } from './types.js';
+import {
+  assertNonNegativeDdgiNumber,
+  assertValidDdgiLights,
+} from './inputValidation.js';
 
-const MAX_DDGI_PROBE_LIGHTS = 16;
 const LIGHT_STRIDE_FLOATS = 16;
+const HEADER_FLOATS = 4;
+const ALIAS_STRIDE_FLOATS = 4;
+export const DDGI_PROBE_LIGHTS_ABI_MAGIC = 0x444c4131;
 export const DDGI_LIGHT_KIND_SUN = 0;
 export const DDGI_LIGHT_KIND_POINT = 1;
+export const DDGI_LIGHT_KIND_SPOT = 2;
 export const DDGI_LIGHT_KIND_MASK = 0x7fffffff;
 export const DDGI_LIGHT_CAST_SHADOW_DISABLED = 0x80000000;
+/** Header-only buffer size used before the first non-empty light upload. */
 export const DDGI_PROBE_LIGHTS_BUFFER_BYTES =
-  (4 + MAX_DDGI_PROBE_LIGHTS * LIGHT_STRIDE_FLOATS) * Float32Array.BYTES_PER_ELEMENT;
+  HEADER_FLOATS * Float32Array.BYTES_PER_ELEMENT;
 
-export type DDGIProbeLightWarningSink = (warning: EngineWarning) => void;
+/** Exact byte length of a packed DDGI light buffer. */
+export function ddgiProbeLightsBufferByteLength(count: number): number {
+  if (!Number.isSafeInteger(count) || count < 0 || count > 0xffff_ffff) {
+    throw new RangeError('[DDGI] active probe-light count must fit in u32.');
+  }
+  const bytes = (
+    HEADER_FLOATS + count * (LIGHT_STRIDE_FLOATS + ALIAS_STRIDE_FLOATS)
+  )
+    * Float32Array.BYTES_PER_ELEMENT;
+  if (!Number.isSafeInteger(bytes)) {
+    throw new RangeError('[DDGI] probe-light buffer byte length is not safe.');
+  }
+  return bytes;
+}
 
-function isPackableDDGILight(l: DDGILight): boolean {
-  return l.kind === 'sun' || l.kind === 'fixture' || l.kind === 'teaLight';
+/** Solid-angle support used by the probe-light alias proposal. */
+export function ddgiProbeLightSolidAngle(kindWord: number, outerCone: number): number {
+  const kind = kindWord & DDGI_LIGHT_KIND_MASK;
+  return kind === DDGI_LIGHT_KIND_SPOT
+    ? 2 * Math.PI * Math.max(0, 1 - outerCone)
+    : 4 * Math.PI;
 }
 
 export function packDDGIProbeLights(
   lights: readonly DDGILight[],
   sunIntensityMul: number,
-  onWarning?: DDGIProbeLightWarningSink,
 ): ArrayBuffer {
-  const headerSize = 4;
-  const data = new Float32Array(headerSize + MAX_DDGI_PROBE_LIGHTS * LIGHT_STRIDE_FLOATS);
-  const udata = new Uint32Array(data.buffer);
+  assertValidDdgiLights(lights, 'packDDGIProbeLights lights');
+  assertNonNegativeDdgiNumber(
+    sunIntensityMul,
+    'packDDGIProbeLights sunIntensityMul',
+  );
   const active = lights.filter((l) => l.on);
-  const unsupportedKinds = [...new Set(active
-    .filter((l) => !isPackableDDGILight(l))
-    .map((l) => l.kind))];
-  if (unsupportedKinds.length > 0) {
-    emitProbeLightWarning(onWarning, {
-      code: 'walkaround-hybrid.ddgi-unsupported-probe-light-kind',
-      backend: 'walkaround-hybrid',
-      phase: 'renderFrame',
-      method: 'ProbeUpdatePass._uploadLights',
-      message:
-        `[DDGI] packDDGIProbeLights: unsupported DDGI light kind(s) ${unsupportedKinds.join(', ')} ` +
-        'were ignored for probe-update GI.',
-      details: { unsupportedKinds, activeLightCount: active.length },
-    });
-  }
-  const packable = active.filter(isPackableDDGILight);
-  // H18 Stage 1 — warn on truncation so hosts know lights beyond the cap are dropped.
-  if (packable.length > MAX_DDGI_PROBE_LIGHTS) {
-    emitProbeLightWarning(onWarning, {
-      code: 'walkaround-hybrid.ddgi-probe-light-cap-exceeded',
-      backend: 'walkaround-hybrid',
-      phase: 'renderFrame',
-      method: 'ProbeUpdatePass._uploadLights',
-      message:
-        `[DDGI] packDDGIProbeLights: scene has ${packable.length} active packable lights but the DDGI probe ` +
-        `shader supports at most ${MAX_DDGI_PROBE_LIGHTS}. Lights beyond this cap are ignored ` +
-        `for probe-update GI. Reduce your light count or raise MAX_DDGI_PROBE_LIGHTS.`,
-      details: {
-        activePackableLightCount: packable.length,
-        maxProbeLights: MAX_DDGI_PROBE_LIGHTS,
-        ignoredLightCount: packable.length - MAX_DDGI_PROBE_LIGHTS,
-      },
-    });
-  }
-  udata[0] = Math.min(packable.length, MAX_DDGI_PROBE_LIGHTS);
+  const data = new Float32Array(ddgiProbeLightsBufferByteLength(active.length) / 4);
+  const udata = new Uint32Array(data.buffer);
+  udata[0] = active.length;
+  udata[1] = HEADER_FLOATS;
+  udata[2] = HEADER_FLOATS + active.length * LIGHT_STRIDE_FLOATS;
+  udata[3] = DDGI_PROBE_LIGHTS_ABI_MAGIC;
 
-  packable.slice(0, MAX_DDGI_PROBE_LIGHTS).forEach((l, i) => {
-    const base = headerSize + i * LIGHT_STRIDE_FLOATS;
+  active.forEach((l, i) => {
+    const base = HEADER_FLOATS + i * LIGHT_STRIDE_FLOATS;
     const ubase = base;
     const shadowFlag = l.castShadow === false ? DDGI_LIGHT_CAST_SHADOW_DISABLED : 0;
     if (l.kind === 'sun') {
@@ -95,7 +97,6 @@ export function packDDGIProbeLights(
       data[base + 14] = col?.b ?? 0.85;
       data[base + 15] = 0;
     } else if (l.kind === 'fixture' || l.kind === 'teaLight') {
-      udata[ubase] = (DDGI_LIGHT_KIND_POINT | shadowFlag) >>> 0;
       const pos = l.position;
       const col = l.color;
       // [1,2] = distance/decay, [8,9,10] = spot cone axis
@@ -104,6 +105,11 @@ export function packDDGIProbeLights(
       // to the DDGILight WGSL struct's distance / decay / direction /
       // innerCone / outerCone.
       const spot = l.spotAxis;
+      const isSpot = spot != null &&
+        (l.spotCosInner != null || l.spotCosOuter != null);
+      udata[ubase] = (
+        (isSpot ? DDGI_LIGHT_KIND_SPOT : DDGI_LIGHT_KIND_POINT) | shadowFlag
+      ) >>> 0;
       data[base + 1] = typeof l.distance === 'number' && l.distance > 0 ? l.distance : 0;
       data[base + 2] = typeof l.decay === 'number' ? l.decay : 2;
       data[base + 4] = pos?.x ?? 0;
@@ -120,16 +126,27 @@ export function packDDGIProbeLights(
       data[base + 15] = l.spotCosOuter ?? 0;
     }
   });
-  return data.buffer;
-}
 
-function emitProbeLightWarning(
-  onWarning: DDGIProbeLightWarningSink | undefined,
-  warning: EngineWarning,
-): void {
-  if (onWarning) {
-    onWarning(warning);
-    return;
-  }
-  console.warn(warning.message);
+  const weights = active.map((_light, index) => {
+    const base = HEADER_FLOATS + index * LIGHT_STRIDE_FLOATS;
+    const emittedLuminance = luminance(
+      data[base + 12]!,
+      data[base + 13]!,
+      data[base + 14]!,
+    ) * data[base + 7]!;
+    if ((udata[base]! & DDGI_LIGHT_KIND_MASK) === DDGI_LIGHT_KIND_SUN) {
+      return emittedLuminance;
+    }
+    const solidAngle = ddgiProbeLightSolidAngle(
+      udata[base]!,
+      data[base + 15]!,
+    );
+    return emittedLuminance * solidAngle;
+  });
+  const alias = buildAliasTable(weights);
+  new Uint8Array(data.buffer).set(
+    new Uint8Array(alias.data),
+    udata[2] * Uint32Array.BYTES_PER_ELEMENT,
+  );
+  return data.buffer;
 }

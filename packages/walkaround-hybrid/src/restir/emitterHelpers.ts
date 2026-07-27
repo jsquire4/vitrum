@@ -6,15 +6,11 @@
  * the DDGI probe-NEE kernel and the ReSTIR shade pass.
  */
 
-import type { EngineWarning, Mat4, MaterialSpec, Scene, Vec3 } from '@vitrum/core';
+import type { EngineWarning, Mat4, Scene, Vec3 } from '@vitrum/core';
 import {
-  emissiveMapTriangleSubdivisionLevel,
-  estimateMaterialSpecEmissiveLeOverTriangle,
-  forEachBarycentricSubTriangle,
-  forEachEmissiveMapTexelSubTriangle,
-  type BarycentricWeights,
   type PrimitiveTlasBinding,
 } from '@vitrum/shared-bvh';
+import { buildAliasTable, luminance } from '@vitrum/shared-samplers';
 
 const IDENTITY_MAT4 = new Float32Array([
   1, 0, 0, 0,
@@ -35,36 +31,6 @@ function transformPoint(
     (m[0]! * x + m[4]! * y + m[8]! * z + m[12]!) * invW,
     (m[1]! * x + m[5]! * y + m[9]! * z + m[13]!) * invW,
     (m[2]! * x + m[6]! * y + m[10]! * z + m[14]!) * invW,
-  ];
-}
-
-function uvAt(uvs: Float32Array | undefined, vertex: number): [number, number] {
-  if (uvs == null) return [0, 0];
-  return [uvs[vertex * 2] ?? 0, uvs[vertex * 2 + 1] ?? 0];
-}
-
-function baryVec3(
-  a: [number, number, number],
-  b: [number, number, number],
-  c: [number, number, number],
-  w: BarycentricWeights,
-): [number, number, number] {
-  return [
-    a[0] * w[0] + b[0] * w[1] + c[0] * w[2],
-    a[1] * w[0] + b[1] * w[1] + c[1] * w[2],
-    a[2] * w[0] + b[2] * w[1] + c[2] * w[2],
-  ];
-}
-
-function baryUv2(
-  a: readonly [number, number],
-  b: readonly [number, number],
-  c: readonly [number, number],
-  w: BarycentricWeights,
-): [number, number] {
-  return [
-    a[0] * w[0] + b[0] * w[1] + c[0] * w[2],
-    a[1] * w[0] + b[1] * w[1] + c[1] * w[2],
   ];
 }
 
@@ -290,24 +256,13 @@ export function collectRectAreaEmitterTrisFromCore(scene: Scene): ExtraEmitterTr
   return out;
 }
 
-/** A world-space sub-triangle: 3 positions + its UV0 and UV1 vertex pairs.
- *  Groups the former 9 positional vertex args of the `pushTri` closure. */
+/** A world-space sub-triangle represented by three positions. */
 interface SubTriangle {
   readonly pos: readonly [
     [number, number, number],
     [number, number, number],
     [number, number, number],
   ];
-  readonly uv0: readonly [readonly [number, number], readonly [number, number], readonly [number, number]];
-  readonly uv1: readonly [readonly [number, number], readonly [number, number], readonly [number, number]];
-}
-
-/** Optional per-sub-triangle metadata (provenance + radiance override). */
-interface SubTriangleMeta {
-  readonly sourceSubdivLevel?: number;
-  readonly sourceSubdivOrdinal?: number;
-  readonly radianceOverride?: readonly [number, number, number];
-  readonly forceScalarLe?: boolean;
 }
 
 /**
@@ -359,10 +314,6 @@ export function collectMeshAreaEmitterTrisFromCore(
     const indices = prim.indices;
     const transform: Mat4 | undefined = (prim as { transform?: Mat4 }).transform;
     const Le = emitterLe(e.color, e.intensity);
-    const mappedRadianceMaterial: MaterialSpec | undefined = prim.material.emissiveMap != null
-      ? { ...prim.material, emissive: Le, emissiveIntensity: 1 }
-      : undefined;
-
     const m: ArrayLike<number> = transform != null ? (transform) : IDENTITY_MAT4;
 
     const triCount = indices != null
@@ -377,13 +328,6 @@ export function collectMeshAreaEmitterTrisFromCore(
       const vA = transformPoint(m, positions[i0 * 3]!, positions[i0 * 3 + 1]!, positions[i0 * 3 + 2]!);
       const vB = transformPoint(m, positions[i1 * 3]!, positions[i1 * 3 + 1]!, positions[i1 * 3 + 2]!);
       const vC = transformPoint(m, positions[i2 * 3]!, positions[i2 * 3 + 1]!, positions[i2 * 3 + 2]!);
-      const uv0A = uvAt(prim.uvs, i0);
-      const uv0B = uvAt(prim.uvs, i1);
-      const uv0C = uvAt(prim.uvs, i2);
-      const uv1A = uvAt(prim.uv1, i0);
-      const uv1B = uvAt(prim.uv1, i1);
-      const uv1C = uvAt(prim.uv1, i2);
-
       const abx = vB[0] - vA[0], aby = vB[1] - vA[1], abz = vB[2] - vA[2];
       const acx = vC[0] - vA[0], acy = vC[1] - vA[1], acz = vC[2] - vA[2];
       const nx = aby * acz - abz * acy;
@@ -397,11 +341,8 @@ export function collectMeshAreaEmitterTrisFromCore(
       // A world-space sub-triangle: 3 positions + its two UV sets, plus optional
       // provenance/override metadata. Replaces the former 13-positional-arg
       // pushTri closure (D6-6).
-      const pushTri = (sub: SubTriangle, meta: SubTriangleMeta = {}): void => {
+      const pushTri = (sub: SubTriangle): void => {
         const [triA, triB, triC] = sub.pos;
-        const [tuv0A, tuv0B, tuv0C] = sub.uv0;
-        const [tuv1A, tuv1B, tuv1C] = sub.uv1;
-        const { sourceSubdivLevel, sourceSubdivOrdinal, radianceOverride, forceScalarLe = false } = meta;
         const sx = triB[0] - triA[0], sy = triB[1] - triA[1], sz = triB[2] - triA[2];
         const tx = triC[0] - triA[0], ty = triC[1] - triA[1], tz = triC[2] - triA[2];
         const triArea = 0.5 * Math.sqrt(
@@ -410,72 +351,21 @@ export function collectMeshAreaEmitterTrisFromCore(
           (sx * ty - sy * tx) ** 2,
         );
         if (triArea < 1e-12) return;
-        const triLe = radianceOverride ?? (mappedRadianceMaterial == null
-          ? Le
-          : estimateMaterialSpecEmissiveLeOverTriangle(
-              mappedRadianceMaterial,
-              tuv0A,
-              tuv0B,
-              tuv0C,
-              tuv1A,
-              tuv1B,
-              tuv1C,
-            ));
-        if (triLe == null) return;
         out.push({
           vA: triA,
           vB: triB,
           vC: triC,
           normal,
           area: triArea,
-          Le: [triLe[0], triLe[1], triLe[2]],
+          Le: [Le[0], Le[1], Le[2]],
           ...(e.castShadow !== undefined ? { castShadow: e.castShadow } : {}),
-          ...(sourceTriIndex != null && !forceScalarLe ? { sourceTriIndex } : {}),
-          ...(sourceSubdivLevel != null && !forceScalarLe ? { sourceSubdivLevel } : {}),
-          ...(sourceSubdivOrdinal != null && !forceScalarLe ? { sourceSubdivOrdinal } : {}),
+          ...(sourceTriIndex != null ? { sourceTriIndex } : {}),
         });
       };
-
-      // Interpolate the parent triangle's positions + both UV sets at the given
-      // barycentric weights into a SubTriangle.
-      const subTriangleAt = (
-        wa: readonly [number, number, number],
-        wb: readonly [number, number, number],
-        wc: readonly [number, number, number],
-      ): SubTriangle => ({
-        pos: [baryVec3(vA, vB, vC, wa), baryVec3(vA, vB, vC, wb), baryVec3(vA, vB, vC, wc)],
-        uv0: [baryUv2(uv0A, uv0B, uv0C, wa), baryUv2(uv0A, uv0B, uv0C, wb), baryUv2(uv0A, uv0B, uv0C, wc)],
-        uv1: [baryUv2(uv1A, uv1B, uv1C, wa), baryUv2(uv1A, uv1B, uv1C, wb), baryUv2(uv1A, uv1B, uv1C, wc)],
-      });
-
-      const exactTexelHandled = mappedRadianceMaterial == null
-        ? false
-        : forEachEmissiveMapTexelSubTriangle(
-            mappedRadianceMaterial,
-            uv0A,
-            uv0B,
-            uv0C,
-            uv1A,
-            uv1B,
-            uv1C,
-            (wa, wb, wc, texelLe) => {
-              pushTri(subTriangleAt(wa, wb, wc), { radianceOverride: texelLe, forceScalarLe: true });
-            },
-          );
-      if (exactTexelHandled) continue;
-
-      const subdiv = mappedRadianceMaterial == null
-        ? 1
-        : emissiveMapTriangleSubdivisionLevel(mappedRadianceMaterial);
-      if (subdiv <= 1) {
-        pushTri({ pos: [vA, vB, vC], uv0: [uv0A, uv0B, uv0C], uv1: [uv1A, uv1B, uv1C] });
-      } else {
-        let ordinal = 0;
-        forEachBarycentricSubTriangle(subdiv, (wa, wb, wc) => {
-          pushTri(subTriangleAt(wa, wb, wc), { sourceSubdivLevel: subdiv, sourceSubdivOrdinal: ordinal });
-          ordinal += 1;
-        });
-      }
+      // Keep one bounded-memory parent-triangle proposal. DDGI and RC recover
+      // the source barycentrics from this provenance and evaluate the same
+      // material-atlas emissive sample as ReSTIR at candidate time.
+      pushTri({ pos: [vA, vB, vC] });
     }
   }
   return out;
@@ -551,20 +441,21 @@ export interface PackedAnalyticLights {
  * Pack `point` and `spot` emitters from a `@vitrum/core` `Scene` into the
  * 64-byte-stride analytic-lights buffer for shade NEE (H41).
  *
- * Returns a 16-float placeholder (1 dummy entry, count=0) when the scene has
- * no point/spot emitters, so the bind group is always valid (WebGPU storage
- * bindings must be non-empty).
+ * Returns an exact empty payload when the scene has no point/spot emitters.
+ * The texture uploader supplies the non-empty four-texel GPU placeholder and
+ * writes the zero-count header; payload bytes describe real lights only.
  */
 export function packAnalyticPointSpotEmitters(scene: Scene): PackedAnalyticLights {
   const emitters = scene.emitters.filter(
     (e) => e.kind === 'point' || e.kind === 'spot',
   );
   if (emitters.length === 0) {
-    return { data: new Float32Array(ANALYTIC_LIGHT_STRIDE_FLOATS), count: 0 };
+    return { data: new Float32Array(0), count: 0 };
   }
 
   const S = ANALYTIC_LIGHT_STRIDE_FLOATS;
-  const data = new Float32Array(emitters.length * S);
+  // Four payload vec4s followed by one alias-table vec4 for every light.
+  const data = new Float32Array(emitters.length * (S + 4));
   let out = 0;
   for (const e of emitters) {
     if (e.kind === 'point') {
@@ -602,5 +493,23 @@ export function packAnalyticPointSpotEmitters(scene: Scene): PackedAnalyticLight
       out++;
     }
   }
+
+  const weights = Array.from({ length: out }, (_, index) => {
+    const base = index * S;
+    const power = luminance(data[base + 4]!, data[base + 5]!, data[base + 6]!);
+    const axisLen2 =
+      data[base + 8]! * data[base + 8]! +
+      data[base + 9]! * data[base + 9]! +
+      data[base + 10]! * data[base + 10]!;
+    const solidAngle = axisLen2 > 0.25
+      ? 2 * Math.PI * Math.max(0, 1 - data[base + 12]!)
+      : 4 * Math.PI;
+    return power * solidAngle;
+  });
+  const alias = buildAliasTable(weights);
+  new Uint8Array(data.buffer).set(
+    new Uint8Array(alias.data),
+    out * S * Float32Array.BYTES_PER_ELEMENT,
+  );
   return { data, count: out };
 }

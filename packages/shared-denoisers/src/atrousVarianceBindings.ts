@@ -204,7 +204,7 @@ export function packAtrousVarianceAtrousUniforms(
  *   - Color / radiance textures: rgba16float
  *   - Normal G-buffer: rgba16float (.xyz = world normal, .w unused)
  *   - Depth G-buffer: rgba16float (.r = linear depth) or r32float
- *   - Motion vectors: rg32float (.xy = screen-space UV delta, [-1,1])
+ *   - Motion vectors: rg32float (.xy = previous-minus-current pixel delta)
  *   - Welford variance buffer: rg32float (.r = mean, .g = M2)
  *   - Output variance map: rgba32float (.r = estimated variance, .g = frameCount)
  */

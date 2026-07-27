@@ -34,22 +34,18 @@ afterEach(() => {
 });
 
 describe('DDGI structured error reporting', () => {
-  it('guards ProbeUpdatePass construction warnings from throwing host warning callbacks', () => {
+  it('rejects an invalid material capacity before invoking host warning callbacks', () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     const hostError = new Error('host warning sink failed');
     const onWarning = vi.fn(() => {
       throw hostError;
     });
 
-    expect(() => new DDGI({ maxMaterials: 0, onWarning }).dispose()).not.toThrow();
+    expect(() => new DDGI({ maxMaterials: 0, onWarning })).toThrow(
+      /DDGI maxMaterials must be at least 1/,
+    );
 
-    expect(onWarning).toHaveBeenCalledWith(expect.objectContaining({
-      code: 'walkaround-hybrid.ddgi-invalid-max-materials',
-      backend: 'walkaround-hybrid',
-      phase: 'construction',
-      method: 'ProbeUpdatePass.constructor',
-      details: { requested: 0, clampedTo: 1 },
-    }));
+    expect(onWarning).not.toHaveBeenCalled();
     expect(warnSpy).not.toHaveBeenCalled();
   });
 
@@ -141,7 +137,7 @@ describe('DDGI structured error reporting', () => {
   it('reports BVH update failures and skips the probe dispatch for that frame', async () => {
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     vi.spyOn(ProbeUpdatePass.prototype, 'init').mockResolvedValue(true);
-    const runFrameSpy = vi.spyOn(ProbeUpdatePass.prototype, 'runFrame').mockResolvedValue();
+    const runFrameSpy = vi.spyOn(ProbeUpdatePass.prototype, 'runFrame').mockResolvedValue(true);
     const thrown = new Error('bvh exploded');
     vi.spyOn(SceneBvh.prototype, 'updateFromCore').mockImplementation(() => {
       throw thrown;

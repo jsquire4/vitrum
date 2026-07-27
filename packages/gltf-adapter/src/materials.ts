@@ -22,17 +22,17 @@ import { resolveTextureRef, type GltfTextureSourceExtension } from './textures.j
 
 export type GltfMaterialDiagnosticCode =
   | 'invalid-material-dispersion'
+  | 'invalid-material-alpha-mode'
   | 'material-texture-not-found'
   | 'material-texture-unresolved'
   | 'material-texture-sampler-not-found'
   | 'invalid-material-texture-sampler'
   | 'spec-gloss-approximation'
   | 'spec-gloss-texture-alpha-approximation'
-  | 'unsupported-material-extension'
   | 'unknown-material-extension';
 
 export interface GltfMaterialDiagnostic {
-  readonly severity: 'warning';
+  readonly severity: 'warning' | 'error';
   readonly code: GltfMaterialDiagnosticCode;
   readonly path: string;
   readonly message: string;
@@ -45,6 +45,16 @@ export interface GltfMaterialDiagnostic {
 }
 
 export type GltfMaterialDiagnosticSink = (diagnostic: GltfMaterialDiagnostic) => void;
+
+export class GltfMaterialImportError extends Error {
+  readonly diagnostic: GltfMaterialDiagnostic;
+
+  constructor(diagnostic: GltfMaterialDiagnostic) {
+    super(diagnostic.message);
+    this.name = 'GltfMaterialImportError';
+    this.diagnostic = diagnostic;
+  }
+}
 
 type MaterialTextureInfo = {
   readonly index: number;
@@ -68,8 +78,6 @@ const KNOWN_KHR_EXTENSIONS = new Set([
   'KHR_materials_variants',
   'KHR_materials_pbrSpecularGlossiness',
 ]);
-
-const KNOWN_UNSUPPORTED_EXTENSION_MESSAGES: Readonly<Partial<Record<string, string>>> = {};
 
 const PRESERVE_RAW_EXTENSION_KEYS = new Set([
   'KHR_materials_pbrSpecularGlossiness',
@@ -434,17 +442,16 @@ function _parseDispersionExt(
   if (!dispersionExt || dispersionExt.dispersion === undefined) return {};
   const dispersion = dispersionExt.dispersion;
   if (!Number.isFinite(dispersion) || dispersion < 0) {
-    emitMaterialDiagnostic(warnings, onDiagnostic, {
-      severity: 'warning',
+    throwMaterialImportError(warnings, onDiagnostic, {
+      severity: 'error',
       code: 'invalid-material-dispersion',
       path: materialSourcePath(materialIndex, 'extensions.KHR_materials_dispersion.dispersion'),
       ...materialDiagnosticIndex(materialIndex),
       extensionName: 'KHR_materials_dispersion',
       message:
         `[vitrum/gltf-adapter] Material "${materialName}" uses KHR_materials_dispersion ` +
-        `with invalid dispersion=${String(dispersion)}. Dispersion is ignored.`,
+        `with invalid dispersion=${String(dispersion)}.`,
     });
-    return {};
   }
   if (dispersion === 0) return {};
   return {
@@ -656,10 +663,27 @@ export function convertMaterial(
   const emissiveIntensity = emissiveStrengthExt?.emissiveStrength ?? 1;
 
   // ── Alpha mode ────────────────────────────────────────────────────────────
+  const rawAlphaMode: unknown = gltfMat.alphaMode;
+  if (
+    rawAlphaMode !== undefined &&
+    rawAlphaMode !== 'OPAQUE' &&
+    rawAlphaMode !== 'MASK' &&
+    rawAlphaMode !== 'BLEND'
+  ) {
+    throwMaterialImportError(warnings, onDiagnostic, {
+      severity: 'error',
+      code: 'invalid-material-alpha-mode',
+      path: materialSourcePath(materialIndex, 'alphaMode'),
+      ...materialDiagnosticIndex(materialIndex),
+      message:
+        `[vitrum/gltf-adapter] Material "${materialName}" alphaMode must be ` +
+        `"OPAQUE", "MASK", or "BLEND"; received ${JSON.stringify(rawAlphaMode)}.`,
+    });
+  }
   const alphaMode =
-    gltfMat.alphaMode === 'MASK'
+    rawAlphaMode === 'MASK'
       ? ('mask' as const)
-      : gltfMat.alphaMode === 'BLEND'
+      : rawAlphaMode === 'BLEND'
         ? ('blend' as const)
         : ('opaque' as const);
   const alphaCutoff = gltfMat.alphaCutoff;
@@ -672,19 +696,7 @@ export function convertMaterial(
 
   // ── Extension policy warnings ─────────────────────────────────────────────
   for (const key of Object.keys(ext)) {
-    const unsupportedMessage = KNOWN_UNSUPPORTED_EXTENSION_MESSAGES[key];
-    if (unsupportedMessage) {
-      emitMaterialDiagnostic(warnings, onDiagnostic, {
-        severity: 'warning',
-        code: 'unsupported-material-extension',
-        path: materialSourcePath(materialIndex, `extensions.${key}`),
-        ...materialDiagnosticIndex(materialIndex),
-        extensionName: key,
-        message:
-          `[vitrum/gltf-adapter] Material "${gltfMat.name ?? '(unnamed)'}" uses ${key}. ` +
-          unsupportedMessage,
-      });
-    } else if (!KNOWN_KHR_EXTENSIONS.has(key)) {
+    if (!KNOWN_KHR_EXTENSIONS.has(key)) {
       emitMaterialDiagnostic(warnings, onDiagnostic, {
         severity: 'warning',
         code: 'unknown-material-extension',
@@ -801,6 +813,7 @@ export function convertMaterial(
     alphaMode,
     ...(alphaCutoff !== undefined ? { alphaCutoff } : {}),
     ...(opacity !== undefined ? { opacity } : {}),
+    doubleSided,
     ...(baseColorMap ? { baseColorMap } : {}),
     ...(normalMap ? { normalMap } : {}),
     ...(normalScale !== 1 ? { normalScale } : {}),
@@ -819,12 +832,10 @@ export function convertMaterial(
     ...dispersionPartial,
     ...specGlossPartial,
     extensions: {
-      ...(doubleSided ? { doubleSided: true } : {}),
       // Preserve unknown/unsupported extensions as raw data under their original key.
       ...Object.fromEntries(
         Object.entries(ext).filter(([key]) =>
           !KNOWN_KHR_EXTENSIONS.has(key) ||
-          KNOWN_UNSUPPORTED_EXTENSION_MESSAGES[key] ||
           PRESERVE_RAW_EXTENSION_KEYS.has(key),
         ),
       ),
@@ -846,6 +857,31 @@ function resolveMaterialTextureRef(
   onDiagnostic: GltfMaterialDiagnosticSink | undefined,
 ): TextureRef | undefined {
   if (!info) return undefined;
+  const path = sourcePath ?? materialSourcePath(materialIndex, `texture:${String(info.index)}`);
+  if (!Number.isSafeInteger(info.index) || info.index < 0) {
+    throwMaterialImportError(warnings, onDiagnostic, {
+      severity: 'error',
+      code: 'material-texture-not-found',
+      path: `${path}.index`,
+      ...materialDiagnosticIndex(materialIndex),
+      textureIndex: info.index,
+      message:
+        `[vitrum/gltf-adapter] Material "${materialName}" texture index must be a non-negative safe integer; ` +
+        `received ${String(info.index)} at ${path}.`,
+    });
+  }
+  if (info.texCoord !== undefined && (!Number.isSafeInteger(info.texCoord) || info.texCoord < 0)) {
+    throwMaterialImportError(warnings, onDiagnostic, {
+      severity: 'error',
+      code: 'material-texture-unresolved',
+      path: `${path}.texCoord`,
+      ...materialDiagnosticIndex(materialIndex),
+      textureIndex: info.index,
+      message:
+        `[vitrum/gltf-adapter] Material "${materialName}" texture texCoord must be a non-negative safe integer.`,
+    });
+  }
+  validateTextureTransform(info, path, warnings, materialName, materialIndex, onDiagnostic);
   const ref = resolveTextureRef(info, handleMap, gltf, sourcePath, textureSourceExtensions);
   if (ref) {
     emitMaterialTextureSamplerDiagnostics(
@@ -860,33 +896,67 @@ function resolveMaterialTextureRef(
     return ref;
   }
 
-  const path = sourcePath ?? materialSourcePath(materialIndex, `texture:${info.index}`);
   const texture = gltf?.textures?.[info.index];
   if (gltf?.textures && texture === undefined) {
-    emitMaterialDiagnostic(warnings, onDiagnostic, {
-      severity: 'warning',
+    throwMaterialImportError(warnings, onDiagnostic, {
+      severity: 'error',
       code: 'material-texture-not-found',
       path: `${path}.index`,
       ...materialDiagnosticIndex(materialIndex),
       textureIndex: info.index,
       message:
         `[vitrum/gltf-adapter] Material "${materialName}" references missing texture index ` +
-        `${info.index} at ${path}. Texture field ignored.`,
+        `${info.index} at ${path}.`,
     });
-    return undefined;
   }
 
-  emitMaterialDiagnostic(warnings, onDiagnostic, {
-    severity: 'warning',
+  throwMaterialImportError(warnings, onDiagnostic, {
+    severity: 'error',
     code: 'material-texture-unresolved',
     path,
     ...materialDiagnosticIndex(materialIndex),
     textureIndex: info.index,
     message:
       `[vitrum/gltf-adapter] Material "${materialName}" references texture index ${info.index} ` +
-      'but no decoded or raw image handle is available. Texture field ignored.',
+      'but no decoded or raw image handle is available.',
   });
-  return undefined;
+}
+
+function validateTextureTransform(
+  info: MaterialTextureInfo,
+  path: string,
+  warnings: string[],
+  materialName: string,
+  materialIndex: number | undefined,
+  onDiagnostic: GltfMaterialDiagnosticSink | undefined,
+): void {
+  const raw = info.extensions?.KHR_texture_transform;
+  if (raw === undefined) return;
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+    throwMaterialImportError(warnings, onDiagnostic, {
+      severity: 'error', code: 'material-texture-unresolved', path: `${path}.extensions.KHR_texture_transform`,
+      ...materialDiagnosticIndex(materialIndex), textureIndex: info.index,
+      message: `[vitrum/gltf-adapter] Material "${materialName}" KHR_texture_transform must be an object.`,
+    });
+  }
+  const transform = raw as Record<string, unknown>;
+  const vec2IsFinite = (value: unknown): value is readonly [number, number] =>
+    Array.isArray(value) && value.length === 2 && value.every(Number.isFinite);
+  if (
+    (transform.offset !== undefined && !vec2IsFinite(transform.offset)) ||
+    (transform.scale !== undefined && !vec2IsFinite(transform.scale)) ||
+    (transform.rotation !== undefined && !Number.isFinite(transform.rotation)) ||
+    (transform.texCoord !== undefined &&
+      (!Number.isSafeInteger(transform.texCoord) || (transform.texCoord as number) < 0))
+  ) {
+    throwMaterialImportError(warnings, onDiagnostic, {
+      severity: 'error', code: 'material-texture-unresolved', path: `${path}.extensions.KHR_texture_transform`,
+      ...materialDiagnosticIndex(materialIndex), textureIndex: info.index,
+      message:
+        `[vitrum/gltf-adapter] Material "${materialName}" KHR_texture_transform requires finite VEC2 offset/scale, ` +
+        'a finite rotation, and a non-negative safe-integer texCoord.',
+    });
+  }
 }
 
 function emitMaterialTextureSamplerDiagnostics(
@@ -904,8 +974,8 @@ function emitMaterialTextureSamplerDiagnostics(
   const sampler = gltf?.samplers?.[samplerIndex];
   const materialPath = sourcePath ?? materialSourcePath(materialIndex, `texture:${info.index}`);
   if (sampler == null) {
-    emitMaterialDiagnostic(warnings, onDiagnostic, {
-      severity: 'warning',
+    throwMaterialImportError(warnings, onDiagnostic, {
+      severity: 'error',
       code: 'material-texture-sampler-not-found',
       path: `textures[${info.index}].sampler`,
       ...materialDiagnosticIndex(materialIndex),
@@ -913,9 +983,8 @@ function emitMaterialTextureSamplerDiagnostics(
       samplerIndex,
       message:
         `[vitrum/gltf-adapter] Material "${materialName}" references texture ${info.index} at ${materialPath}, ` +
-        `whose sampler index ${samplerIndex} does not exist. Texture imported with default sampler settings.`,
+        `whose sampler index ${samplerIndex} does not exist.`,
     });
-    return;
   }
 
   emitInvalidSamplerDiagnosticIfNeeded(
@@ -982,8 +1051,8 @@ function emitInvalidSamplerDiagnosticIfNeeded(
 ): void {
   if (value === undefined || isValid(value)) return;
   const path = `samplers[${samplerIndex}].${property}`;
-  emitMaterialDiagnostic(warnings, onDiagnostic, {
-    severity: 'warning',
+  throwMaterialImportError(warnings, onDiagnostic, {
+    severity: 'error',
     code: 'invalid-material-texture-sampler',
     path,
     ...materialDiagnosticIndex(materialIndex),
@@ -993,7 +1062,7 @@ function emitInvalidSamplerDiagnosticIfNeeded(
     samplerValue: value,
     message:
       `[vitrum/gltf-adapter] Material "${materialName}" references texture ${info.index} at ${materialPath}, ` +
-      `but ${path} has invalid value ${value}. Texture imported with default/fallback sampler settings.`,
+      `but ${path} has invalid value ${value}.`,
   });
 }
 
@@ -1009,7 +1078,9 @@ function materialSourcePath(materialIndex: number | undefined, suffix: string): 
   return materialIndex === undefined ? `materials[?].${suffix}` : `materials[${materialIndex}].${suffix}`;
 }
 
-function materialDiagnosticIndex(materialIndex: number | undefined): Pick<GltfMaterialDiagnostic, 'materialIndex'> | {} {
+function materialDiagnosticIndex(
+  materialIndex: number | undefined,
+): Partial<Pick<GltfMaterialDiagnostic, 'materialIndex'>> {
   return materialIndex === undefined ? {} : { materialIndex };
 }
 
@@ -1027,6 +1098,23 @@ function emitMaterialDiagnostic(
     }
   }
   warnings.push(diagnostic.message);
+}
+
+function throwMaterialImportError(
+  warnings: string[],
+  onDiagnostic: GltfMaterialDiagnosticSink | undefined,
+  diagnostic: GltfMaterialDiagnostic,
+): never {
+  if (onDiagnostic) {
+    try {
+      onDiagnostic(diagnostic);
+    } catch {
+      // A diagnostic observer cannot suppress a strict import failure.
+    }
+  } else {
+    warnings.push(diagnostic.message);
+  }
+  throw new GltfMaterialImportError(diagnostic);
 }
 
 /**

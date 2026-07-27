@@ -18,6 +18,7 @@ import {
   MATERIAL_ENTRY_FLOATS,
   MATERIAL_ENTRY_STRIDE_BYTES,
   MATERIAL_FLAG_CAST_SHADOW_DISABLED,
+  MATERIAL_FLAG_DOUBLE_SIDED,
   MATERIAL_FLAG_IS_GLASS,
   coreMaterialToMaterialEntry,
   packMaterials,
@@ -58,18 +59,13 @@ describe('canonical MaterialEntry packing (W2-C5)', () => {
     }
   });
 
-  it('maxCount truncates an oversize input list', () => {
+  it('rejects an input list larger than maxCount', () => {
     const inputs: MaterialEntryInput[] = [
       { baseColor: [1, 0, 0] },
       { baseColor: [0, 1, 0] },
       { baseColor: [0, 0, 1] },
     ];
-    const out = packMaterials(inputs, 2);
-    expect(out.length).toBe(2 * ENTRY);
-    expect(out[0]).toBe(1);
-    expect(out[ENTRY + 1]).toBe(1);
-    // Slot 2's baseColor.b would land at `2*ENTRY + 2` if present; truncated.
-    expect(out[2 * ENTRY - 1]).toBe(0); // last slot of slot 1, not slot 2
+    expect(() => packMaterials(inputs, 2)).toThrow(/exceed.*capacity/i);
   });
 
   it('applies library defaults to a fully-empty entry', () => {
@@ -147,6 +143,16 @@ describe('canonical MaterialEntry packing (W2-C5)', () => {
     expect(U[ENTRY + 15]).toBe(MATERIAL_FLAG_IS_GLASS | MATERIAL_FLAG_CAST_SHADOW_DISABLED);
   });
 
+  it('coreMaterialToMaterialEntry packs doubleSided independently in flag bit 2', () => {
+    const out = packMaterials([
+      coreMaterialToMaterialEntry(spec({ doubleSided: true })),
+      coreMaterialToMaterialEntry(spec({ transmission: 0.7, doubleSided: true })),
+    ]);
+    const U = u32(out);
+    expect(U[15]).toBe(MATERIAL_FLAG_DOUBLE_SIDED);
+    expect(U[ENTRY + 15]).toBe(MATERIAL_FLAG_IS_GLASS | MATERIAL_FLAG_DOUBLE_SIDED);
+  });
+
   it('flags is written as a real u32 not the IEEE-754 bit pattern of 1.0', () => {
     const out = packMaterials([{ transmission: 1 }]);
     const U = u32(out);
@@ -154,19 +160,16 @@ describe('canonical MaterialEntry packing (W2-C5)', () => {
     expect(U[15]).not.toBe(0x3F800000);
   });
 
-  it('non-finite / negative attenuationDistance is replaced with the sentinel', () => {
+  it('preserves +Infinity and rejects invalid attenuationDistance', () => {
     const out = packMaterials([
       { attenuationDistance: Infinity },
-      { attenuationDistance: -3 },
-      { attenuationDistance: 0 },
-      { attenuationDistance: Number.NaN },
       { attenuationDistance: 2.5 },
     ]);
-    expect(out[10]).toBe(MATERIAL_ATTEN_DIST_INFINITE);                 // Inf
-    expect(out[1 * ENTRY + 10]).toBe(MATERIAL_ATTEN_DIST_INFINITE);     // -3
-    expect(out[2 * ENTRY + 10]).toBe(MATERIAL_ATTEN_DIST_INFINITE);     // 0
-    expect(out[3 * ENTRY + 10]).toBe(MATERIAL_ATTEN_DIST_INFINITE);     // NaN
-    expect(out[4 * ENTRY + 10]).toBeCloseTo(2.5);                        // finite ok
+    expect(out[10]).toBe(MATERIAL_ATTEN_DIST_INFINITE);
+    expect(out[ENTRY + 10]).toBeCloseTo(2.5);
+    for (const attenuationDistance of [-3, 0, Number.NaN]) {
+      expect(() => packMaterials([{ attenuationDistance }])).toThrow(/attenuationDistance/);
+    }
   });
 });
 

@@ -160,22 +160,19 @@ describe('H12: lite-tier capabilities truth', () => {
     warn.mockRestore();
   });
 
-  it('lite tier: pt-webgpu-bdpt is absent from experimentalFeatures even with bdpt:true', async () => {
+  it('lite tier: rejects BDPT instead of silently omitting the requested estimator', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const structured: EngineWarning[] = [];
-    const engine = await createPTEngine_WebGPU({
-      device: makeLiteDevice(),
-      bdpt: true,
-      bdptOptions: { maxLightBounces: 2 },
-      onWarning: (w) => structured.push(w),
-    });
-    expect(engine.capabilities.experimentalFeatures?.has('pt-webgpu-bdpt')).toBe(false);
-    expect(engine.capabilities.experimentalFeatures?.has('pt-webgpu-lite-tier')).toBe(true);
-    expect(structured.map((w) => w.code)).toContain('pt-webgpu.lite-tier');
-    expect(structured.map((w) => w.code)).not.toContain('pt-webgpu.bdpt-multivertex-research-mode');
-    expect(warn.mock.calls.some((c) => String(c[0]).includes('multi-vertex BDPT research path'))).toBe(false);
-    engine.dispose();
-    warn.mockRestore();
+    try {
+      await expect(createPTEngine_WebGPU({
+        device: makeLiteDevice(),
+        bdpt: true,
+        bdptOptions: { maxLightBounces: 2 },
+      })).rejects.toThrow(
+        /bdpt:true requires traceTier .*full.*lite kernel does not compose the BDPT connection or invocation-private path state/,
+      );
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('full tier: analytic shapes, all emitter kinds, hdri, and bdpt are available', async () => {
@@ -183,8 +180,8 @@ describe('H12: lite-tier capabilities truth', () => {
     expect(engine.capabilities.supportedAnalyticShapes.size).toBeGreaterThan(0);
     expect(engine.capabilities.supportedEmitterKinds.has('rect-area')).toBe(true);
     expect(engine.capabilities.supportedEnvironmentKinds?.has('hdri')).toBe(true);
-    expect(engine.capabilities.experimentalFeatures?.has('pt-webgpu-bdpt')).toBe(true);
-    expect(engine.capabilities.experimentalFeatures?.has('pt-webgpu-lite-tier')).toBe(false);
+    expect(engine.backendProfileId).toBe('pt-webgpu');
+    expect(engine.capabilities.activeFeatures?.has('pt-webgpu-bdpt')).toBe(true);
     engine.dispose();
   });
 
@@ -246,15 +243,16 @@ describe('H12: lite-tier capabilities truth', () => {
     engine.dispose();
   });
 
-  it('lite tier: setScene warns when scene contains analytic primitives', async () => {
+  it('lite tier: setScene rejects analytic primitives before GPU allocation', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const structured: EngineWarning[] = [];
+    const device = makeLiteDeviceForSetScene();
     const engine = await createPTEngine_WebGPU({
-      device: makeLiteDeviceForSetScene(),
+      device,
       onWarning: (w) => structured.push(w),
     });
     warn.mockClear();
-    // The warn must fire BEFORE the GPU upload — use try/catch for GPU stub noise.
+    structured.length = 0;
     const scene: Scene = {
       primitives: [
         {
@@ -268,26 +266,10 @@ describe('H12: lite-tier capabilities truth', () => {
       emitters: [],
       environment: { kind: 'none' },
     };
-    try {
-      engine.setScene(scene);
-    } catch {
-      /* GPU stubs may throw after the warn — that's expected */
-    }
-    const calls = warn.mock.calls.map((c) => c.join(' '));
-    expect(calls.some((c) => c.includes('analytic') && c.includes('Lite tier'))).toBe(true);
-    expect(structured).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        code: 'pt-webgpu.lite-analytic-primitive',
-        details: expect.objectContaining({
-          count: 1,
-          primitiveIds: ['a'],
-          primitiveKinds: ['analytic'],
-          requiredTier: 'full',
-          fallback: 'ignore-unsupported-lite-primitive',
-        }),
-      }),
-    ]));
-    expect(calls.some((c) => c.includes('silently ignored'))).toBe(false);
+    const buffersBefore = vi.mocked(device.createBuffer).mock.calls.length;
+    expect(() => engine.setScene(scene)).toThrow(/analytic primitives \[a\]/);
+    expect(vi.mocked(device.createBuffer).mock.calls.length).toBe(buffersBefore);
+    expect(structured).toEqual([]);
     engine.dispose();
     warn.mockRestore();
   });
@@ -360,14 +342,16 @@ describe('H12: lite-tier capabilities truth', () => {
     warn.mockRestore();
   });
 
-  it('setScene warns when displacement map handles are not CPU-readable', async () => {
+  it('setScene rejects unreadable displacement maps before GPU allocation', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const structured: EngineWarning[] = [];
+    const device = makeLiteDeviceForSetScene();
     const engine = await createPTEngine_WebGPU({
-      device: makeLiteDeviceForSetScene(),
+      device,
       onWarning: (w) => structured.push(w),
     });
     warn.mockClear();
+    structured.length = 0;
     const displacementMap = { handle: { id: 'height' } };
     Object.defineProperty(displacementMap, Symbol('vitrum.gltf.textureRefSource'), {
       value: { path: 'materials[0].extensions.VITRUM_displacement.displacementTexture' },
@@ -379,6 +363,7 @@ describe('H12: lite-tier capabilities truth', () => {
           id: 'm',
           positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
           normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+          uvs: new Float32Array([0, 0, 1, 0, 0, 1]),
           material: {
             baseColor: [0.8, 0.2, 0.1],
             roughness: 0.3,
@@ -392,114 +377,12 @@ describe('H12: lite-tier capabilities truth', () => {
       emitters: [],
       environment: { kind: 'none' },
     };
-    try {
-      engine.setScene(scene);
-    } catch {
-      /* GPU stubs may throw after the warn — that's expected */
-    }
-    expect(structured.some((w) =>
-      w.code === 'pt-webgpu.scene-pack-warning' &&
-      w.message.includes('displacementMap') &&
-      w.message.includes('displacement skipped') &&
-      typeof w.details?.warning === 'string' &&
-      w.details.warning.includes('Primitive "m" displacementMap') &&
-      w.details.sourcePath === 'materials[0].extensions.VITRUM_displacement.displacementTexture'
-    )).toBe(true);
-    engine.dispose();
-    warn.mockRestore();
-  });
-
-  it('setScene warns when receiveShadow:false is supplied', async () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const structured: EngineWarning[] = [];
-    const engine = await createPTEngine_WebGPU({
-      device: makeLiteDeviceForSetScene(),
-      onWarning: (w) => structured.push(w),
-    });
-    warn.mockClear();
-    const scene: Scene = {
-      primitives: [
-        {
-          kind: 'mesh',
-          id: 'm',
-          positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
-          normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
-          material: {
-            baseColor: [0.8, 0.2, 0.1],
-            roughness: 0.3,
-            metallic: 0,
-          },
-          receiveShadow: false,
-        },
-      ],
-      emitters: [],
-      environment: { kind: 'none' },
-    };
-    try {
-      engine.setScene(scene);
-    } catch {
-      /* GPU stubs may throw after the warn — that's expected */
-    }
-    const calls = warn.mock.calls.map((c) => c.join(' '));
-    expect(calls.some((c) =>
-      c.includes('receiveShadow:false') &&
-      c.includes('m'),
-    )).toBe(true);
-    expect(structured.some((w) =>
-      w.code === 'pt-webgpu.reserved-receive-shadow' &&
-      w.phase === 'setScene' &&
-      w.method === 'setScene' &&
-      Array.isArray(w.details?.primitiveIds) &&
-      w.details.primitiveIds.includes('m'),
-    )).toBe(true);
-    engine.dispose();
-    warn.mockRestore();
-  });
-
-  it('updatePrimitive warns when receiveShadow:false is supplied', async () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const structured: EngineWarning[] = [];
-    const engine = await createPTEngine_WebGPU({
-      device: makeLiteDeviceForSetScene(),
-      onWarning: (w) => structured.push(w),
-    });
-    warn.mockClear();
-    try {
-      engine.setScene({
-        primitives: [
-          {
-            kind: 'mesh',
-            id: 'm',
-            positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
-            normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
-            material: {
-              baseColor: [0.8, 0.2, 0.1],
-              roughness: 0.3,
-              metallic: 0,
-            },
-          },
-        ],
-        emitters: [],
-        environment: { kind: 'none' },
-      });
-      structured.length = 0;
-      warn.mockClear();
-
-      expect(engine.updatePrimitive).toBeTypeOf('function');
-      engine.updatePrimitive!('m', { receiveShadow: false } as never);
-    } catch {
-      /* GPU stubs may throw after the warn — that's expected */
-    }
-    expect(structured.some((w) =>
-      w.code === 'pt-webgpu.reserved-receive-shadow' &&
-      w.phase === 'mutation' &&
-      w.method === 'updatePrimitive' &&
-      Array.isArray(w.details?.primitiveIds) &&
-      w.details.primitiveIds.includes('m'),
-    )).toBe(true);
-    expect(warn.mock.calls.flat().map(String).some((m) =>
-      m.includes('updatePrimitive("m")') && m.includes('receiveShadow:false'),
-    )).toBe(true);
+    const buffersBefore = vi.mocked(device.createBuffer).mock.calls.length;
+    expect(() => engine.setScene(scene)).toThrow(
+      'Primitive "m" displacementMap at materials[0].extensions.VITRUM_displacement.displacementTexture handle is not CPU-readable',
+    );
+    expect(vi.mocked(device.createBuffer).mock.calls.length).toBe(buffersBefore);
+    expect(structured).toEqual([]);
     engine.dispose();
     warn.mockRestore();
   });
@@ -604,14 +487,16 @@ describe('H12: lite-tier capabilities truth', () => {
     warn.mockRestore();
   });
 
-  it('lite tier: setScene warns for thicknessMap but not scalar thickness (CAP-01)', async () => {
+  it('lite tier: setScene rejects thicknessMap but accepts scalar thickness (CAP-01)', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const structured: EngineWarning[] = [];
+    const device = makeLiteDeviceForSetScene();
     const engine = await createPTEngine_WebGPU({
-      device: makeLiteDeviceForSetScene(),
+      device,
       onWarning: (w) => structured.push(w),
     });
     warn.mockClear();
+    structured.length = 0;
     const scene: Scene = {
       primitives: [
         {
@@ -619,6 +504,7 @@ describe('H12: lite-tier capabilities truth', () => {
           id: 'm',
           positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
           normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+          uvs: new Float32Array([0, 0, 1, 0, 0, 1]),
           material: {
             baseColor: [0.8, 0.2, 0.1],
             roughness: 0.3,
@@ -634,47 +520,24 @@ describe('H12: lite-tier capabilities truth', () => {
       emitters: [],
       environment: { kind: 'none' },
     };
-    try {
-      engine.setScene(scene);
-    } catch {
-      /* GPU stubs may throw after the warn — that's expected */
-    }
-    const calls = warn.mock.calls.map((c) => c.join(' '));
-    expect(calls.some((c) => c.includes('thicknessMap') && !c.includes('displacementMap'))).toBe(true);
-    expect(structured.some((w) =>
-      w.code === 'pt-webgpu.unsupported-material-fields' &&
-      Array.isArray(w.details?.fields) &&
-      w.details.fields.includes('thicknessMap') &&
-      !w.details.fields.includes('thickness') &&
-      !w.details.fields.includes('displacementMap') &&
-      Array.isArray(w.details?.primitiveIds) &&
-      w.details.primitiveIds.includes('m') &&
-      Array.isArray(w.details?.primitiveFields) &&
-      w.details.primitiveFields.some((entry) =>
-        entry.primitiveId === 'm' &&
-        entry.fields.includes('thicknessMap') &&
-        !entry.fields.includes('thickness') &&
-        !entry.fields.includes('displacementMap')
-      ),
-    )).toBe(true);
-    // Consumed fields must NOT appear in the warning.
-    expect(structured.some((w) =>
-      w.code === 'pt-webgpu.unsupported-material-fields' &&
-      Array.isArray(w.details?.fields) &&
-      (w.details.fields.includes('baseColor') || w.details.fields.includes('roughness')),
-    )).toBe(false);
+    const buffersBefore = vi.mocked(device.createBuffer).mock.calls.length;
+    expect(() => engine.setScene(scene)).toThrow(/selected lite tier: thicknessMap/);
+    expect(vi.mocked(device.createBuffer).mock.calls.length).toBe(buffersBefore);
+    expect(structured).toEqual([]);
     engine.dispose();
     warn.mockRestore();
   });
 
-  it('lite tier: setScene warns when full-tier material texture and alpha fields are supplied', async () => {
+  it('lite tier: setScene rejects full-tier material texture and alpha fields before allocation', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const structured: EngineWarning[] = [];
+    const device = makeLiteDeviceForSetScene();
     const engine = await createPTEngine_WebGPU({
-      device: makeLiteDeviceForSetScene(),
+      device,
       onWarning: (w) => structured.push(w),
     });
     warn.mockClear();
+    structured.length = 0;
     const scene: Scene = {
       primitives: [
         {
@@ -682,6 +545,7 @@ describe('H12: lite-tier capabilities truth', () => {
           id: 'm',
           positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
           normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+          uvs: new Float32Array([0, 0, 1, 0, 0, 1]),
           material: {
             baseColor: [0.8, 0.2, 0.1],
             roughness: 0.3,
@@ -709,50 +573,10 @@ describe('H12: lite-tier capabilities truth', () => {
       emitters: [],
       environment: { kind: 'none' },
     };
-    try {
-      engine.setScene(scene);
-    } catch {
-      /* GPU stubs may throw — expected */
-    }
-    expect(structured).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        code: 'pt-webgpu.unsupported-material-fields',
-        details: expect.objectContaining({
-          fields: expect.arrayContaining([
-            'baseColorMap',
-            'normalMap',
-            'normalScale',
-            'alphaMode',
-            'opacity',
-            'envMapIntensity',
-            'anisotropy',
-            'frontLayer.normalMap',
-            'frontLayer.normalScale',
-            'backLayer.normalMap',
-            'backLayer.normalScale',
-          ]),
-          primitiveIds: ['m'],
-          primitiveFields: expect.arrayContaining([
-            expect.objectContaining({
-              primitiveId: 'm',
-              fields: expect.arrayContaining([
-                'baseColorMap',
-                'normalMap',
-                'normalScale',
-                'alphaMode',
-                'opacity',
-                'envMapIntensity',
-                'anisotropy',
-                'frontLayer.normalMap',
-                'frontLayer.normalScale',
-                'backLayer.normalMap',
-                'backLayer.normalScale',
-              ]),
-            }),
-          ]),
-        }),
-      }),
-    ]));
+    const buffersBefore = vi.mocked(device.createBuffer).mock.calls.length;
+    expect(() => engine.setScene(scene)).toThrow(/alphaMode.*backLayer\.normalMap.*baseColorMap.*normalMap.*opacity/);
+    expect(vi.mocked(device.createBuffer).mock.calls.length).toBe(buffersBefore);
+    expect(structured).toEqual([]);
     engine.dispose();
     warn.mockRestore();
   });
@@ -772,6 +596,7 @@ describe('H12: lite-tier capabilities truth', () => {
           id: 'layered',
           positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
           normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+          uvs: new Float32Array([0, 0, 1, 0, 0, 1]),
           material: {
             baseColor: [0.8, 0.2, 0.1],
             roughness: 0.3,
@@ -815,14 +640,16 @@ describe('H12: lite-tier capabilities truth', () => {
     warn.mockRestore();
   });
 
-  it('lite tier: setScene warns when non-constant COLOR_0 vertex colors would be dropped', async () => {
+  it('lite tier: setScene rejects non-constant COLOR_0 before allocation', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const structured: EngineWarning[] = [];
+    const device = makeLiteDeviceForSetScene();
     const engine = await createPTEngine_WebGPU({
-      device: makeLiteDeviceForSetScene(),
+      device,
       onWarning: (w) => structured.push(w),
     });
     warn.mockClear();
+    structured.length = 0;
     const scene: Scene = {
       primitives: [
         {
@@ -837,21 +664,10 @@ describe('H12: lite-tier capabilities truth', () => {
       emitters: [],
       environment: { kind: 'none' },
     };
-    try {
-      engine.setScene(scene);
-    } catch {
-      /* GPU stubs may throw — expected */
-    }
-    expect(structured).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        code: 'pt-webgpu.lite-unsupported-vertex-colors',
-        details: expect.objectContaining({
-          primitiveIds: ['colored'],
-          bakedWhen: 'constant-rgb-alpha-one',
-          requiredTier: 'full',
-        }),
-      }),
-    ]));
+    const buffersBefore = vi.mocked(device.createBuffer).mock.calls.length;
+    expect(() => engine.setScene(scene)).toThrow(/non-bakeable COLOR_0 primitives \[colored\]/);
+    expect(vi.mocked(device.createBuffer).mock.calls.length).toBe(buffersBefore);
+    expect(structured).toEqual([]);
     engine.dispose();
     warn.mockRestore();
   });
@@ -960,15 +776,17 @@ describe('H12: lite-tier capabilities truth', () => {
   });
 
   // B12 follow-up — disc-area is native in lite via the rect/disc texture record;
-  // explicit mesh-area remains unsupported.
-  it('lite tier: setScene does not warn for disc-area but still warns for mesh-area emitters', async () => {
+  // explicit mesh-area remains unsupported and is rejected, never ignored.
+  it('lite tier: setScene rejects mesh-area emitters before allocating', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const structured: EngineWarning[] = [];
+    const device = makeLiteDeviceForSetScene();
     const engine = await createPTEngine_WebGPU({
-      device: makeLiteDeviceForSetScene(),
+      device,
       onWarning: (w) => structured.push(w),
     });
     warn.mockClear();
+    structured.length = 0;
     const scene: Scene = {
       primitives: [
         {
@@ -985,28 +803,10 @@ describe('H12: lite-tier capabilities truth', () => {
       ],
       environment: { kind: 'none' },
     };
-    try {
-      engine.setScene(scene);
-    } catch {
-      /* GPU stubs may throw after the warn — that's expected */
-    }
-    const calls = warn.mock.calls.map((c) => c.join(' '));
-    expect(calls.some((c) => c.includes('disc-area') && c.includes('Lite tier'))).toBe(false);
-    expect(calls.some((c) => c.includes('mesh-area') && c.includes('Lite tier'))).toBe(true);
-    expect(structured).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        code: 'pt-webgpu.lite-unsupported-emitters',
-        details: expect.objectContaining({
-          kinds: 'mesh-area',
-          count: 1,
-          emitterIds: ['ma'],
-          emitterKinds: ['mesh-area'],
-          requiredTier: 'full',
-          fallback: 'ignore-unsupported-lite-emitter',
-        }),
-      }),
-    ]));
-    expect(calls.some((c) => c.includes('silently ignored'))).toBe(false);
+    const buffersBefore = vi.mocked(device.createBuffer).mock.calls.length;
+    expect(() => engine.setScene(scene)).toThrow(/mesh-area emitters \[ma\]/);
+    expect(vi.mocked(device.createBuffer).mock.calls.length).toBe(buffersBefore);
+    expect(structured).toEqual([]);
     engine.dispose();
     warn.mockRestore();
   });
@@ -1082,14 +882,16 @@ describe('H12: lite-tier capabilities truth', () => {
 
   // B12 — HDRI environments are supported via texture packing; unreadable opaque
   // handles are a payload-readability fallback, not an unsupported-environment warning.
-  it('lite tier: setScene emits structured unreadable-HDRI fallback without unsupported warning', async () => {
+  it('lite tier: setScene rejects an unreadable HDRI before allocation', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const structured: EngineWarning[] = [];
+    const device = makeLiteDeviceForSetScene();
     const engine = await createPTEngine_WebGPU({
-      device: makeLiteDeviceForSetScene(),
+      device,
       onWarning: (w) => structured.push(w),
     });
     warn.mockClear();
+    structured.length = 0;
     const scene: Scene = {
       primitives: [
         {
@@ -1101,36 +903,15 @@ describe('H12: lite-tier capabilities truth', () => {
         },
       ],
       emitters: [],
-      environment: { kind: 'hdri', hdri: undefined as unknown as NonNullable<unknown> },
+      environment: { kind: 'hdri', hdri: {} },
     };
-    try {
-      engine.setScene(scene);
-    } catch {
-      /* GPU stubs may throw — expected */
-    }
+    const buffersBefore = vi.mocked(device.createBuffer).mock.calls.length;
+    expect(() => engine.setScene(scene)).toThrow(/HDRI dimensions must be positive safe integers/);
+    expect(vi.mocked(device.createBuffer).mock.calls.length).toBe(buffersBefore);
     const calls = warn.mock.calls.map((c) => c.join(' '));
     // Must NOT warn that hdri is unsupported.
     expect(calls.some((c) => c.includes('hdri') && c.toLowerCase().includes('unsupported'))).toBe(false);
-    expect(structured).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        code: 'pt-webgpu.hdri-unreadable',
-        backend: 'pt-webgpu',
-        phase: 'setScene',
-        method: 'setScene',
-        details: expect.objectContaining({
-          fallback: 'no-environment',
-          warning: expect.stringContaining('lacks CPU pixel data'),
-        }),
-      }),
-    ]));
-    expect(
-      structured.some(
-        (w) =>
-          w.code === 'pt-webgpu.scene-pack-warning' &&
-          typeof w.details?.warning === 'string' &&
-          w.details.warning.includes('HDRI environment'),
-      ),
-    ).toBe(false);
+    expect(structured).toEqual([]);
     engine.dispose();
     warn.mockRestore();
   });

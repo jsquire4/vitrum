@@ -57,8 +57,7 @@
  * Defaults (when a field is absent on the input):
  *   baseColor = (1,1,1), emissive = (0,0,0), roughness = 1.0, metalness = 0,
  *   ior = 1.5, transmission = 0, attenuationColor = (1,1,1),
- *   attenuationDistance = Infinity (packed as 1e9 — `Infinity` is not
- *   round-trip-safe through f32 in some legacy WGSL paths), thickness = 0,
+ *   attenuationDistance = Infinity (packed as IEEE-754 +Infinity), thickness = 0,
  *   flags = 0.
  *
  * Default roughness: 1.0 — picked because (a) Lambertian fallback is the
@@ -86,19 +85,7 @@ export const MATERIAL_DEFAULT_TRI_COLOR: readonly [number, number, number] = [
 /**
  * Transmission threshold above which a surface is treated as "transmissive"
  * for triangle-color resolution (Beer-Lambert tint vs. base color). */
-export const MATERIAL_TRANSMISSIVE_COLOR_THRESHOLD = 0.01;
-
-/**
- * Transmission threshold above which an opaque-but-transmissive face is eligible
- * to become a "sun-attenuated secondary emitter" in the ReSTIR emitter list.
- * Strictly higher than {@link MATERIAL_TRANSMISSIVE_COLOR_THRESHOLD} — a faintly
- * transmissive surface tints but does not emit. */
-export const MATERIAL_EMITTER_TRANSMISSION_THRESHOLD = 0.1;
-
-/**
- * Minimum |dot(lightDir, faceNormal)| for a transmissive face to register as a
- * sun-attenuated emitter. */
-export const MATERIAL_EMITTER_SUN_DOT_THRESHOLD = 0.05;
+export const MATERIAL_TRANSMISSIVE_COLOR_THRESHOLD = 0;
 
 /** Byte stride per entry. */
 export const MATERIAL_ENTRY_STRIDE_BYTES = MATERIAL_ENTRY_FLOATS * 4;
@@ -109,14 +96,19 @@ export const MATERIAL_FLAG_IS_GLASS = 0x1;
 /** Flag bit: source primitive explicitly set `castShadow:false`. */
 export const MATERIAL_FLAG_CAST_SHADOW_DISABLED = 0x2;
 
+/** Flag bit: both winding orientations are authored surface sides. */
+export const MATERIAL_FLAG_DOUBLE_SIDED = 0x4;
+
 /** Library-canonical default roughness — used when an input lacks one.
  *  See module docstring for the choice rationale. */
 export const MATERIAL_DEFAULT_ROUGHNESS = 1.0;
 
-/** Sentinel used in place of `Infinity` for attenuationDistance — finite f32
- *  values are safer across f32 round-trip through WGSL. Same value the
- *  pre-W2-C5 RC packer used. */
-export const MATERIAL_ATTEN_DIST_INFINITE = 1e9;
+/** Canonical no-absorption-distance value. IEEE-754 +Infinity is preserved. */
+export const MATERIAL_ATTEN_DIST_INFINITE = Number.POSITIVE_INFINITY;
+
+function isRuntimeArray(value: unknown): boolean {
+  return Array.isArray(value);
+}
 
 /**
  * Engine-independent PBR-scalar bag accepted by {@link packMaterials}.
@@ -149,7 +141,7 @@ export interface MaterialEntryInput {
    * Explicit flag override. When omitted, {@link packMaterials} derives
    * `flags = (transmission > 0) ? MATERIAL_FLAG_IS_GLASS : 0`.
    * Pass an explicit value if the caller needs additional bits (e.g.
-   * `castShadow:false` at position 1).
+   * `castShadow:false` at bit 1 or `doubleSided:true` at bit 2).
    */
   flags?: number;
 }
@@ -216,7 +208,8 @@ export function coreMaterialToMaterialEntry(material: MaterialSpec): MaterialEnt
     (material.transmission !== undefined && material.transmission > 0 ? MATERIAL_FLAG_IS_GLASS : 0) |
     ((material as MaterialSpec & { castShadow?: boolean }).castShadow === false
       ? MATERIAL_FLAG_CAST_SHADOW_DISABLED
-      : 0);
+      : 0) |
+    (material.doubleSided === true ? MATERIAL_FLAG_DOUBLE_SIDED : 0);
   if (flags !== 0) out.flags = flags;
   return out;
 }
@@ -267,13 +260,11 @@ export {
  * Pack a list of canonical material inputs into a tightly-packed
  * `Float32Array` of `entries.length * 16` floats.
  *
- * @param mats        Input materials. May be shorter or longer than
- *                    `maxCount` — see the `maxCount` parameter for
- *                    truncation / padding behaviour.
+ * @param mats        Input materials. May be shorter than `maxCount`; an
+ *                    oversize input is rejected rather than truncated.
  * @param maxCount    When provided, the output is exactly
  *                    `maxCount * MATERIAL_ENTRY_FLOATS` floats long.
- *                    Inputs beyond `maxCount` are silently dropped;
- *                    remaining slots are zero-padded so the consumer
+ *                    Remaining slots are zero-padded so the consumer
  *                    sees a stable buffer size regardless of scene
  *                    population. When omitted the output is exactly
  *                    `mats.length` entries (with a single zeroed entry
@@ -289,10 +280,82 @@ export function packMaterials(
   maxCount?: number,
 ): Float32Array {
   const ENTRY = MATERIAL_ENTRY_FLOATS;
+  if (!isRuntimeArray(mats)) {
+    throw new TypeError('packMaterials: mats must be an array.');
+  }
+  if (maxCount !== undefined && (!Number.isSafeInteger(maxCount) || maxCount < 1)) {
+    throw new RangeError(`packMaterials: maxCount must be a positive safe integer (got ${String(maxCount)}).`);
+  }
   const count = maxCount ?? Math.max(1, mats.length);
+  if (mats.length > count) {
+    throw new RangeError(
+      `packMaterials: ${mats.length} materials exceed the exact maxCount capacity ${count}.`,
+    );
+  }
+  const knownKeys = new Set([
+    'baseColor', 'roughness', 'metalness', 'emissive', 'ior', 'transmission',
+    'attenuationColor', 'attenuationDistance', 'thickness', 'flags',
+  ]);
+  const assertF32 = (value: unknown, label: string, allowInfinity = false): number => {
+    if (
+      typeof value !== 'number' ||
+      (!Number.isFinite(value) && !(allowInfinity && value === Number.POSITIVE_INFINITY)) ||
+      (Number.isFinite(value) && !Number.isFinite(Math.fround(value)))
+    ) {
+      throw new RangeError(`packMaterials: ${label} must be representable as float32${allowInfinity ? ' or +Infinity' : ''}.`);
+    }
+    return value;
+  };
+  const assertVec3 = (value: unknown, label: string): readonly [number, number, number] => {
+    if (!Array.isArray(value) || value.length !== 3 || Reflect.ownKeys(value).some((key) => (
+      key !== 'length' && (typeof key !== 'string' || !/^[0-2]$/.test(key))
+    ))) {
+      throw new TypeError(`packMaterials: ${label} must be an exact 3-element array.`);
+    }
+    return [
+      assertF32(value[0], `${label}[0]`),
+      assertF32(value[1], `${label}[1]`),
+      assertF32(value[2], `${label}[2]`),
+    ];
+  };
+  for (let i = 0; i < mats.length; i += 1) {
+    const material = mats[i];
+    if (material == null || typeof material !== 'object' || Array.isArray(material)) {
+      throw new TypeError(`packMaterials: mats[${i}] must be an object.`);
+    }
+    for (const key of Reflect.ownKeys(material)) {
+      if (typeof key !== 'string' || !knownKeys.has(key)) {
+        throw new RangeError(`packMaterials: mats[${i}] has unknown field ${String(key)}.`);
+      }
+    }
+    if (material.baseColor !== undefined) assertVec3(material.baseColor, `mats[${i}].baseColor`);
+    if (material.emissive !== undefined) assertVec3(material.emissive, `mats[${i}].emissive`);
+    if (material.attenuationColor !== undefined) assertVec3(material.attenuationColor, `mats[${i}].attenuationColor`);
+    for (const key of ['roughness', 'metalness', 'transmission'] as const) {
+      if (material[key] !== undefined) {
+        const value = assertF32(material[key], `mats[${i}].${key}`);
+        if (value < 0 || value > 1) throw new RangeError(`packMaterials: mats[${i}].${key} must be in [0, 1].`);
+      }
+    }
+    if (material.ior !== undefined && !(assertF32(material.ior, `mats[${i}].ior`) > 0)) {
+      throw new RangeError(`packMaterials: mats[${i}].ior must be > 0.`);
+    }
+    if (material.thickness !== undefined && assertF32(material.thickness, `mats[${i}].thickness`) < 0) {
+      throw new RangeError(`packMaterials: mats[${i}].thickness must be >= 0.`);
+    }
+    if (material.attenuationDistance !== undefined) {
+      const value = assertF32(material.attenuationDistance, `mats[${i}].attenuationDistance`, true);
+      if (!(value > 0)) throw new RangeError(`packMaterials: mats[${i}].attenuationDistance must be > 0 or +Infinity.`);
+    }
+    if (material.flags !== undefined && (
+      !Number.isSafeInteger(material.flags) || material.flags < 0 || material.flags > 0xffff_ffff
+    )) {
+      throw new RangeError(`packMaterials: mats[${i}].flags must be an unsigned 32-bit integer.`);
+    }
+  }
   const out = new Float32Array(count * ENTRY);
   const u32view = new Uint32Array(out.buffer);
-  const n = Math.min(mats.length, count);
+  const n = mats.length;
 
   for (let i = 0; i < n; i++) {
     const m = mats[i]!;
@@ -306,13 +369,7 @@ export function packMaterials(
     const ior = m.ior ?? 1.5;
     const transmission = m.transmission ?? 0;
     const attenuationDistance = m.attenuationDistance;
-    // Treat undefined / non-finite / negative as "no attenuation".
-    const attenDistF =
-      attenuationDistance === undefined ||
-      !Number.isFinite(attenuationDistance) ||
-      attenuationDistance <= 0
-        ? MATERIAL_ATTEN_DIST_INFINITE
-        : attenuationDistance;
+    const attenDistF = attenuationDistance ?? MATERIAL_ATTEN_DIST_INFINITE;
     const thickness = m.thickness ?? 0;
     const flags =
       m.flags ?? (transmission > 0 ? MATERIAL_FLAG_IS_GLASS : 0);

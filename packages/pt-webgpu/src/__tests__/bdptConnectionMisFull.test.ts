@@ -108,6 +108,27 @@ function sub(a: Vec3, b: Vec3): Vec3 {
   return [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
 }
 
+
+function logSpaceStrategyWeights(
+  fwd: readonly number[],
+  rev: readonly number[],
+  selectedS: number,
+): number[] {
+  const logPdfs = new Array<number>(fwd.length).fill(Number.NEGATIVE_INFINITY);
+  logPdfs[selectedS] = 0;
+  for (let s = selectedS; s > 0; s -= 1) {
+    logPdfs[s - 1] =
+      logPdfs[s]! + Math.log(rev[s - 1]!) - Math.log(fwd[s - 1]!);
+  }
+  for (let s = selectedS; s < fwd.length - 1; s += 1) {
+    logPdfs[s + 1] =
+      logPdfs[s]! + Math.log(fwd[s]!) - Math.log(rev[s]!);
+  }
+  const maxPowerLog = Math.max(...logPdfs.map((value) => 2 * value));
+  const terms = logPdfs.map((value) => Math.exp(2 * value - maxPowerLog));
+  const denominator = terms.reduce((sum, term) => sum + term, 0);
+  return terms.map((term) => term / denominator);
+}
 describe('bdptConnectionMisFull — §10.3 port vs shared-samplers oracle', () => {
   it('ConvertDensity matches the PBRT destination-cosine Jacobian', () => {
     const from: Vec3 = [0, 0, 0];
@@ -258,4 +279,93 @@ describe('bdptConnectionMisFull — §10.3 port vs shared-samplers oracle', () =
       expect(Math.abs(mine[i]! - oracle[i]!)).toBeLessThanOrEqual(1e-12);
     }
   });
+
+  it('keeps q=1 at bounded eye vertices instead of distorting one MIS direction', () => {
+    const f = makeFixture();
+    const { vertices, selectedS } = assembleMergedConnectionPath(f);
+    const pRef = 0.018;
+    const baseline = buildStrategyPdfs(vertices, selectedS, pRef);
+
+    const unitSurvivalVertices = vertices.map((vertex) => ({
+      ...vertex,
+      pdfFwd: vertex.pdfFwd * 1,
+      pdfRev: vertex.pdfRev * 1,
+    }));
+    const unitSurvival = buildStrategyPdfs(
+      unitSurvivalVertices,
+      selectedS,
+      pRef,
+    );
+    expect(Array.from(unitSurvival)).toEqual(Array.from(baseline));
+
+    let weightSum = 0;
+    for (let s = 0; s < unitSurvival.length; s += 1) {
+      weightSum += powerHeuristicWeight(unitSurvival, s, 2);
+    }
+    expect(weightSum).toBeCloseTo(1, 12);
+
+    const oneSidedRoulette = vertices.map((vertex, index) => ({
+      ...vertex,
+      pdfRev: index === 3 ? vertex.pdfRev * 0.2 : vertex.pdfRev,
+    }));
+    const distorted = buildStrategyPdfs(
+      oneSidedRoulette,
+      selectedS,
+      pRef,
+    );
+    expect(Math.abs(
+      powerHeuristicWeight(distorted, selectedS, 2) -
+      powerHeuristicWeight(baseline, selectedS, 2)
+    )).toBeGreaterThan(1e-6);
+  });
 });
+
+  it('keeps high-dynamic-range strategy weights finite in the log-domain mirror', () => {
+    const strategyCount = 9;
+    const selectedS = 4;
+    const fwd = new Array<number>(strategyCount).fill(1);
+    const rev = new Array<number>(strategyCount).fill(1);
+
+    // True relative densities are symmetric:
+    //   [1, 1e20, 1e40, 1e20, 1, 1e20, 1e40, 1e20, 1].
+    // Raw f32 recurrence overflows at 1e40 and cannot recover; raw squaring also
+    // overflows at 1e20. Log recurrence must retain two equal 0.5 peaks.
+    rev[3] = 1e20;
+    rev[2] = 1e20;
+    fwd[1] = 1e20;
+    fwd[0] = 1e20;
+    fwd[4] = 1e20;
+    fwd[5] = 1e20;
+    rev[6] = 1e20;
+    rev[7] = 1e20;
+
+    const stableWeights = logSpaceStrategyWeights(fwd, rev, selectedS);
+    expect(stableWeights.every(Number.isFinite)).toBe(true);
+    expect(stableWeights.reduce((sum, weight) => sum + weight, 0)).toBeCloseTo(
+      1,
+      14,
+    );
+    expect(stableWeights[2]).toBeCloseTo(0.5, 12);
+    expect(stableWeights[6]).toBeCloseTo(0.5, 12);
+
+    const rawF32 = new Float32Array(strategyCount);
+    rawF32[selectedS] = 1;
+    for (let s = selectedS; s > 0; s -= 1) {
+      rawF32[s - 1] = Math.fround(
+        rawF32[s]! * Math.fround(rev[s - 1]! / fwd[s - 1]!),
+      );
+    }
+    for (let s = selectedS; s < strategyCount - 1; s += 1) {
+      rawF32[s + 1] = Math.fround(
+        rawF32[s]! * Math.fround(fwd[s]! / rev[s]!),
+      );
+    }
+    let rawDenominator = 0;
+    for (const pdf of rawF32) {
+      rawDenominator = Math.fround(
+        rawDenominator + Math.fround(pdf * pdf),
+      );
+    }
+    const rawPeakNumerator = Math.fround(rawF32[2]! * rawF32[2]!);
+    expect(Number.isFinite(rawPeakNumerator / rawDenominator)).toBe(false);
+  });

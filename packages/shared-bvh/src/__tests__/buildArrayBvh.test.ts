@@ -2,7 +2,7 @@
  * W2-C2 — buildArrayBvh smoke + invariant tests.
  *
  * Verifies the THREE-independent CPU BVH builder hoisted from pt-webgpu:
- *   1. Empty input returns a single zero-filled node + the unmodified inputs.
+ *   1. Empty input returns a valid zero-count leaf + the unmodified inputs.
  *   2. Single-leaf case for tiny input encodes LEAFNODE_FLAG | triCount.
  *   3. Multi-leaf case preserves the triangle / material multiset.
  *   4. Interior nodes carry valid RELATIVE right-child offsets.
@@ -11,7 +11,11 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { buildArrayBvh, validateBvhEncoding } from '../index.js';
+import {
+  BINARY_BVH_MAX_BUILD_DEPTH,
+  buildArrayBvh,
+  validateBvhEncoding,
+} from '../index.js';
 
 const LEAFNODE_FLAG = 0xffff;
 
@@ -46,6 +50,10 @@ describe('buildArrayBvh', () => {
     expect(built.bvhNodes.length).toBe(8); // single 8 × u32 node
     expect(built.reorderedIndices.length).toBe(0);
     expect(built.reorderedTriMaterialIds.length).toBe(0);
+    const nodeU32 = new Uint32Array(built.bvhNodes.buffer);
+    expect(nodeU32[6]).toBe(0);
+    expect(nodeU32[7]).toBe(0xffff0000);
+    expect(() => validateBvhEncoding(built.bvhNodes, 1)).not.toThrow();
   });
 
   it('2. emits a single-leaf node for a single triangle (default stride 4)', () => {
@@ -195,5 +203,70 @@ describe('buildArrayBvh', () => {
     }
     expect(Array.from(a.reorderedIndices)).toEqual(Array.from(b.reorderedIndices));
     expect(Array.from(a.reorderedTriMaterialIds)).toEqual(Array.from(b.reorderedTriMaterialIds));
+  });
+
+  it('8. caps canonical build depth at the smallest live traversal budget', () => {
+    const positions = makeStride4Positions(24);
+    const indices = new Uint32Array([
+      0, 1, 2, 0,
+      3, 4, 5, 0,
+      6, 7, 8, 0,
+      9, 10, 11, 0,
+      12, 13, 14, 0,
+      15, 16, 17, 0,
+      18, 19, 20, 0,
+      21, 22, 23, 0,
+    ]);
+    const built = buildArrayBvh(positions, indices, new Uint32Array(8), {
+      maxLeafTriangles: 1,
+      maxDepth: 1,
+    });
+    const words = new Uint32Array(built.bvhNodes.buffer);
+    let maxDepth = 0;
+    let leafTriangles = 0;
+    const walk = (nodeIndex: number, depth: number): void => {
+      maxDepth = Math.max(maxDepth, depth);
+      const splitOrCount = words[nodeIndex * 8 + 7]!;
+      if ((splitOrCount >>> 16) === LEAFNODE_FLAG) {
+        leafTriangles += splitOrCount & 0xffff;
+        return;
+      }
+      walk(nodeIndex + 1, depth + 1);
+      walk(nodeIndex + words[nodeIndex * 8 + 6]!, depth + 1);
+    };
+    walk(0, 0);
+
+    expect(maxDepth).toBe(1);
+    expect(leafTriangles).toBe(8);
+    expect(() => validateBvhEncoding(built.bvhNodes, built.bvhNodes.length / 8)).not.toThrow();
+  });
+
+  it('9. rejects invalid depth budgets and a forced leaf that cannot be encoded', () => {
+    const positions = new Float32Array([
+      0, 0, 0, 0,
+      1, 0, 0, 0,
+      0, 1, 0, 0,
+    ]);
+    const oneTriangle = new Uint32Array([0, 1, 2, 0]);
+    expect(() => buildArrayBvh(positions, oneTriangle, new Uint32Array([0]), { maxDepth: -1 }))
+      .toThrow(/maxDepth must be a safe integer/);
+    expect(() => buildArrayBvh(positions, oneTriangle, new Uint32Array([0]), {
+      maxDepth: BINARY_BVH_MAX_BUILD_DEPTH + 1,
+    })).toThrow(/maxDepth must be a safe integer/);
+    expect(() => buildArrayBvh(positions, oneTriangle, new Uint32Array([0]), { maxDepth: 1.5 }))
+      .toThrow(/maxDepth must be a safe integer/);
+
+    const triangleCount = 0x10000;
+    const indices = new Uint32Array(triangleCount * 4);
+    for (let tri = 0; tri < triangleCount; tri += 1) {
+      const base = tri * 4;
+      indices[base] = 0;
+      indices[base + 1] = 1;
+      indices[base + 2] = 2;
+    }
+    expect(() => buildArrayBvh(positions, indices, new Uint32Array(triangleCount), {
+      maxLeafTriangles: 1,
+      maxDepth: 0,
+    })).toThrow(/Depth-cap leaf triangle count 65536 exceeds the 16-bit limit/);
   });
 });

@@ -34,9 +34,9 @@ describe('KHR_animation_pointer material fields', () => {
     ).toBeCloseTo(0.25);
   });
 
-  it('supports volume attenuation color and dispersion conversion', () => {
+  it('preserves accepted values exactly and converts dispersion', () => {
     expect(applyPointer('/materials/0/extensions/KHR_materials_volume/attenuationColor', [1.2, -0.1, 0.5])
-      .attenuationColor).toEqual([1, 0, 0.5]);
+      .attenuationColor).toEqual(Array.from(new Float32Array([1.2, -0.1, 0.5])));
     expect(applyPointer('/materials/0/extensions/KHR_materials_dispersion/dispersion', [0.4])
       .dispersionAbbeNumber).toBeCloseTo(50);
     expect(applyPointer('/materials/0/extensions/KHR_materials_dispersion/dispersion', [0])

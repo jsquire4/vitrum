@@ -1,168 +1,416 @@
 export const direct_light_contribution_function = /*glsl*/`
 
-	vec3 directLightContribution( vec3 worldWo, SurfaceRecord surf, RenderState state, vec3 rayOrigin ) {
+        struct DirectLightSample {
 
-		vec3 result = vec3( 0.0 );
-		vec3 throughputRgb = wavelengthToRGB( state.wavelength, state.throughput, state.wavelengthPdf );
+                bool valid;
+                vec3 direction;
+                vec3 emission;
+                float distance;
+                float pdf;
+                float delta;
+                float castShadowDisabled;
+                float contributionScale;
+                float bdptLaunchPdf;
+                float bdptInfiniteKind;
 
-		// Uniformly pick one NEE strategy slot with a single shared variate.
-		// PCG-backed rand(v) advances on every call, so using separate
-		// rand(5) calls for the analytic and mesh thresholds biases the
-		// slot probabilities away from the PDFs below.
-		float neeStrategyU = rand( 5 );
-		float analyticCutoff = lightsDenom != 0.0 ? float( lights.count ) / lightsDenom : 0.0;
-		float meshCutoff = lightsDenom != 0.0 ? float( lights.count + 1u ) / lightsDenom : 0.0;
-		if( lightsDenom != 0.0 && neeStrategyU < analyticCutoff ) {
+        };
 
-			// sample a light or environment. Back-face candidates are resampled up to
-			// 4 attempts before giving up to zero contribution.
-			LightRecord lightRec;
-			bool foundFrontFacingLightSample = false;
-			for ( int attempt = 0; attempt < 4; attempt ++ ) {
+        vec2 neeOctEncodeDirection( vec3 direction ) {
 
-				lightRec = randomLightSample( lights.tex, lights.count, rayOrigin, rand3( 6 + attempt ) );
-				bool isSampleBelowSurface = ! surf.volumeParticle && dot( surf.faceNormal, lightRec.direction ) < 0.0;
-				if ( ! isSampleBelowSurface ) {
+                vec3 n = normalize( direction );
+                n /= abs( n.x ) + abs( n.y ) + abs( n.z );
+                vec2 encoded = n.xy;
+                if ( n.z < 0.0 ) {
 
-					foundFrontFacingLightSample = true;
-					break;
+                        vec2 signNotZero = vec2(
+                                encoded.x >= 0.0 ? 1.0 : -1.0,
+                                encoded.y >= 0.0 ? 1.0 : -1.0
+                        );
+                        encoded = ( 1.0 - abs( encoded.yx ) ) * signNotZero;
 
-				}
+                }
+                return encoded;
 
-			}
+        }
 
-			if ( ! foundFrontFacingLightSample ) {
+        float bdptDirectionalNeePower() {
+                float total = 0.0;
+                for ( uint i = 0u; i < lights.count; i ++ ) {
+                        Light light = readLightInfo( lights.tex, i );
+                        if ( light.type == DIR_LIGHT_TYPE ) {
+                                total += finitePositiveLightPower( light.power );
+                        }
+                }
+                return total;
+        }
 
-				lightRec.pdf = 0.0;
+        float bdptDistantNeeDenom() {
+                float directionalSlot = bdptDirectionalNeePower() > 0.0 ? 1.0 : 0.0;
+                float environmentSlot =
+                        envMapInfo.totalSum > 0.0 && environmentIntensity > 0.0 ? 1.0 : 0.0;
+                return directionalSlot + environmentSlot;
+        }
 
-			}
+        float bdptCandidateTotalEmitterPower() {
 
-			// check if a ray could even reach the light area
-			Ray lightRay;
-			lightRay.origin = rayOrigin;
-			lightRay.direction = lightRec.direction;
-			// SHADOW-01 — emitter castShadow:false skips the occlusion/attenuation
-			// test entirely (light passes through blockers, no glass tint).
-			// attenuatedColor stays 1.0 in that case; attenuateHit overwrites it on
-			// the default path, so flag-less scenes are behaviorally identical.
-			vec3 attenuatedColor = vec3( 1.0 );
-			if (
-				lightRec.pdf > 0.0 &&
-				isDirectionValid( lightRec.direction, surf.normal, surf.faceNormal ) &&
-				( lightRec.castShadowDisabled > 0.5 || ! attenuateHit( state, lightRay, lightRec.dist, attenuatedColor ) )
-			) {
+                float total = environmentIntensity > 0.0 && envMapInfo.totalSum > 0.0
+                        ? environmentIntensity * envMapInfo.totalSum
+                        : 0.0;
+                for ( uint i = 0u; i < lights.count; i ++ ) {
 
-				// get the material pdf
-				vec3 sampleColor;
-				float lightMaterialPdf = bsdfResult( worldWo, lightRec.direction, surf, state.wavelength, sampleColor );
-				bool isValidSampleColor = all( greaterThanEqual( sampleColor, vec3( 0.0 ) ) );
-				if ( lightMaterialPdf > 0.0 && isValidSampleColor ) {
+                        total += finitePositiveLightPower(
+                                readLightInfo( lights.tex, i ).power
+                        );
 
-					// weight the direct light contribution
-					float lightPdf =
-						lightRec.pdf / lightsDenom * float( lights.count ) * lightRec.discretePdf;
-					bool deltaLight = lightRec.delta > 0.5;
-					float misWeight = deltaLight ? 1.0 : misHeuristic( lightPdf, lightMaterialPdf );
-					result = attenuatedColor * lightRec.emission * throughputRgb * sampleColor * misWeight / lightPdf;
+                }
+                for ( uint i = 0u; i < uMeshLightCount; i ++ ) {
 
-				}
+                        total += finitePositiveLightPower(
+                                readMeshTriLight( uMeshLights, i ).power
+                        );
 
-			}
+                }
+                return total;
 
-		} else if (
-			lightsDenom != 0.0 &&
-			uMeshLightCount != 0u &&
-			neeStrategyU < meshCutoff
+        }
+
+        bool bdptSampleDirectionalNee(
+                vec3 rayOrigin, vec3 ruv, out LightRecord rec, out float discretePdf
+        ) {
+                float totalPower = bdptDirectionalNeePower();
+                if ( totalPower <= 0.0 ) return false;
+                float pick = ruv.x * totalPower;
+                float cumulative = 0.0;
+                uint selected = 0u;
+                float selectedPower = 0.0;
+                for ( uint i = 0u; i < lights.count; i ++ ) {
+                        Light candidate = readLightInfo( lights.tex, i );
+                        float power = candidate.type == DIR_LIGHT_TYPE
+                                ? finitePositiveLightPower( candidate.power )
+                                : 0.0;
+                        if ( power > 0.0 ) {
+                                selected = i;
+                                selectedPower = power;
+                                cumulative += power;
+                                if ( pick <= cumulative ) break;
+                        }
+                }
+                if ( selectedPower <= 0.0 ) return false;
+                Light light = readLightInfo( lights.tex, selected );
+                rec.dist = 1e10;
+                if ( light.angularDiameter > 0.0 ) {
+                        float conePdf;
+                        rec.direction = sampleDirectionalCone(
+                                light.u, light.angularDiameter, ruv.yz, conePdf
+                        );
+                        rec.pdf = conePdf;
+                        rec.delta = 0.0;
+                } else {
+                        rec.direction = normalize( light.u );
+                        rec.pdf = 1.0;
+                        rec.delta = 1.0;
+                }
+                rec.point = rayOrigin + rec.direction * rec.dist;
+                rec.normal = - rec.direction;
+                rec.emission = light.color * light.intensity;
+                rec.type = light.type;
+                rec.discretePdf = selectedPower / totalPower;
+                rec.castShadowDisabled = light.castShadowDisabled;
+                discretePdf = rec.discretePdf;
+                return true;
+        }
+
+        DirectLightSample sampleDirectLight( const in SurfaceRecord surf, vec3 rayOrigin ) {
+
+		DirectLightSample lightSample;
+		lightSample.valid = false;
+		lightSample.direction = vec3( 0.0 );
+		lightSample.emission = vec3( 0.0 );
+		lightSample.distance = 0.0;
+		lightSample.pdf = 0.0;
+		lightSample.delta = 0.0;
+                lightSample.castShadowDisabled = 0.0;
+                lightSample.contributionScale = 1.0;
+                lightSample.bdptLaunchPdf = 0.0;
+                lightSample.bdptInfiniteKind = 0.0;
+                float neeStrategyU = rand( 5 );
+
+                #if FEATURE_BDPT
+
+                // BDPT owns every finite-emitter direct strategy through c=0.
+                // Only the non-connectable distant roots (directional + environment)
+                // remain in ordinary NEE, sampled as two explicit strategy slots.
+                float distantDenom = bdptDistantNeeDenom();
+                bool hasDirectional = bdptDirectionalNeePower() > 0.0;
+                float directionalCutoff = hasDirectional && distantDenom > 0.0
+                        ? 1.0 / distantDenom
+                        : 0.0;
+                if ( distantDenom > 0.0 && neeStrategyU < directionalCutoff ) {
+                        LightRecord lightRec;
+                        float discretePdf;
+                        if ( bdptSampleDirectionalNee( rayOrigin, rand3( 6 ), lightRec, discretePdf ) ) {
+                                bool below = ! surf.volumeParticle &&
+                                        dot( surf.faceNormal, lightRec.direction ) < 0.0;
+                                if ( ! below && lightRec.pdf > 0.0 ) {
+                                        lightSample.valid = true;
+                                        lightSample.direction = lightRec.direction;
+                                        lightSample.emission = lightRec.emission;
+                                        lightSample.distance = lightRec.dist;
+                                        lightSample.pdf = lightRec.pdf * discretePdf / distantDenom;
+                                        lightSample.delta = lightRec.delta;
+                                        lightSample.castShadowDisabled = lightRec.castShadowDisabled;
+                                        float totalEmitterPower =
+                                                bdptCandidateTotalEmitterPower();
+                                        float selectedPower =
+                                                discretePdf * bdptDirectionalNeePower();
+                                        float diskArea = PI * uBdptSceneRadius * uBdptSceneRadius;
+                                        lightSample.bdptLaunchPdf =
+                                                totalEmitterPower > 0.0 && diskArea > 0.0
+                                                ? selectedPower / totalEmitterPower *
+                                                        lightRec.pdf / diskArea
+                                                : 0.0;
+                                        lightSample.bdptInfiniteKind = 2.0;
+                                }
+                        }
+                } else if (
+                        distantDenom > 0.0 &&
+                        envMapInfo.totalSum > 0.0 && environmentIntensity > 0.0
+                ) {
+                        vec3 envColor;
+                        vec3 envDirection;
+                        float envPdf = sampleEquirectProbability(
+                                rand2( 7 ), envColor, envDirection
+                        );
+                        envDirection = invEnvRotation3x3 * envDirection;
+                        bool below = ! surf.volumeParticle &&
+                                dot( surf.faceNormal, envDirection ) < 0.0;
+                        bool needsTransmission = below && surf.transmission > 0.0;
+                        if ( ( ! below || needsTransmission ) && envPdf > 0.0 ) {
+                                lightSample.valid = true;
+                                lightSample.direction = envDirection;
+                                lightSample.emission = envColor;
+                                lightSample.distance = INFINITY;
+                                lightSample.pdf = envPdf / distantDenom;
+                                lightSample.delta = 0.0;
+                                lightSample.contributionScale =
+                                        surf.envMapIntensity * environmentIntensity;
+                                float totalEmitterPower =
+                                        bdptCandidateTotalEmitterPower();
+                                float environmentPower =
+                                        environmentIntensity * envMapInfo.totalSum;
+                                float diskArea = PI * uBdptSceneRadius * uBdptSceneRadius;
+                                lightSample.bdptLaunchPdf =
+                                        totalEmitterPower > 0.0 && diskArea > 0.0
+                                        ? environmentPower / totalEmitterPower *
+                                                envPdf / diskArea
+                                        : 0.0;
+                                lightSample.bdptInfiniteKind = 1.0;
+                        }
+                }
+
+                #else
+
+                float analyticCutoff = lightsDenom != 0.0
+                        ? float( lights.count ) / lightsDenom
+                        : 0.0;
+                float meshCutoff = lightsDenom != 0.0
+                        ? float( lights.count + 1u ) / lightsDenom
+                        : 0.0;
+
+                if ( lightsDenom != 0.0 && neeStrategyU < analyticCutoff ) {
+
+                        // One analytic-light proposal is one Monte Carlo trial. Retrying
+                        // rejected back-facing samples would condition the proposal without
+                        // applying the corresponding acceptance-probability correction and
+                        // therefore bias the estimator. A rejected draw is a zero-valued
+                        // (null) sample under the original one-draw density.
+                        LightRecord lightRec = randomLightSample(
+                                lights.tex, lights.count, rayOrigin, rand3( 6 )
+                        );
+                        bool isSampleBelowSurface =
+                                ! surf.volumeParticle &&
+                                dot( surf.faceNormal, lightRec.direction ) < 0.0;
+                        if ( ! isSampleBelowSurface && lightRec.pdf > 0.0 ) {
+
+				lightSample.valid = true;
+				lightSample.direction = lightRec.direction;
+				lightSample.emission = lightRec.emission;
+				lightSample.distance = lightRec.dist;
+				lightSample.pdf =
+                                        lightRec.pdf / lightsDenom *
+                                        float( lights.count ) *
+                                        lightRec.discretePdf;
+					// Rect/disc emitters have a matching forward-hit BSDF strategy,
+					// so preserve their continuous measure. Directional lights have
+					// no forward miss evaluator in the non-BDPT path (only the
+					// environment does), and therefore remain NEE-owned even when
+					// angularDiameter gives their proposal finite width.
+					lightSample.delta = lightRec.type == DIR_LIGHT_TYPE
+						? 1.0
+						: lightRec.delta;
+				lightSample.castShadowDisabled = lightRec.castShadowDisabled;
+
+                        }
+
+                } else if (
+                        lightsDenom != 0.0 &&
+                        uMeshLightCount != 0u &&
+                        neeStrategyU < meshCutoff
+                ) {
+
+                        LightRecord lightRec = sampleMeshAreaLight(
+                                uMeshLights,
+                                uMeshLightCount,
+                                uTotalEmissivePower,
+                                rayOrigin,
+                                rand3( 6 )
+                        );
+                        bool isSampleBelowSurface =
+                                ! surf.volumeParticle &&
+                                dot( surf.faceNormal, lightRec.direction ) < 0.0;
+                        if ( ! isSampleBelowSurface && lightRec.pdf > 0.0 ) {
+
+				lightSample.valid = true;
+				lightSample.direction = lightRec.direction;
+				lightSample.emission = lightRec.emission;
+				lightSample.distance = lightRec.dist - 1e-3;
+				lightSample.pdf = lightRec.pdf / lightsDenom;
+				lightSample.delta = lightRec.delta;
+				lightSample.castShadowDisabled = lightRec.castShadowDisabled;
+
+                        }
+
+                } else if ( envMapInfo.totalSum != 0.0 && environmentIntensity != 0.0 ) {
+
+                        vec3 envColor;
+                        vec3 envDirection;
+                        float envPdf = sampleEquirectProbability(
+                                rand2( 7 ), envColor, envDirection
+                        );
+                        envDirection = invEnvRotation3x3 * envDirection;
+
+                        bool isSampleBelowSurface =
+                                ! surf.volumeParticle &&
+                                dot( surf.faceNormal, envDirection ) < 0.0;
+                        bool envSampleNeedsTransmission =
+                                isSampleBelowSurface && surf.transmission > 0.0;
+                        if (
+                                ( ! isSampleBelowSurface || envSampleNeedsTransmission ) &&
+                                envPdf > 0.0
+                        ) {
+
+				lightSample.valid = true;
+				lightSample.direction = envDirection;
+				lightSample.emission = envColor;
+				lightSample.distance = INFINITY;
+				lightSample.pdf = envPdf / lightsDenom;
+					// Environment directions have a finite solid-angle density and
+					// therefore compete with the continuation BSDF strategy.
+					lightSample.delta = 0.0;
+				lightSample.castShadowDisabled = 0.0;
+				lightSample.contributionScale =
+                                        surf.envMapIntensity * environmentIntensity;
+
+                        }
+
+                }
+
+                #endif
+
+                return lightSample;
+
+        }
+
+	DirectLightSample prepareDirectLightSample(
+		const in SurfaceRecord surf,
+		RenderState state,
+		vec3 rayOrigin,
+		DirectLightSample lightSample
+	) {
+
+		if (
+			! lightSample.valid ||
+			lightSample.pdf <= 0.0 ||
+			! isDirectionValid( lightSample.direction, surf.normal, surf.faceNormal )
 		) {
 
-				// B4 — mesh-area triangle-light NEE. One strategy slot; the chosen point is
-				// emitted-power-proportional over emissive triangles / texel cells, so the
-				// forward-hit PDF can recover the same area density from surf.emission.
-				LightRecord lightRec = sampleMeshAreaLight(
-					uMeshLights, uMeshLightCount, uTotalEmissivePower, rayOrigin, rand3( 6 )
-				);
-
-			bool isSampleBelowSurface = ! surf.volumeParticle && dot( surf.faceNormal, lightRec.direction ) < 0.0;
-			if ( isSampleBelowSurface ) lightRec.pdf = 0.0;
-
-			Ray lightRay;
-			lightRay.origin = rayOrigin;
-			lightRay.direction = lightRec.direction;
-			vec3 attenuatedColor = vec3( 1.0 );
-			if (
-				lightRec.pdf > 0.0 &&
-				isDirectionValid( lightRec.direction, surf.normal, surf.faceNormal ) &&
-				( lightRec.castShadowDisabled > 0.5 || ! attenuateHit( state, lightRay, lightRec.dist - 1e-3, attenuatedColor ) )
-			) {
-
-				vec3 sampleColor;
-				float lightMaterialPdf = bsdfResult( worldWo, lightRec.direction, surf, state.wavelength, sampleColor );
-				bool isValidSampleColor = all( greaterThanEqual( sampleColor, vec3( 0.0 ) ) );
-				if ( lightMaterialPdf > 0.0 && isValidSampleColor ) {
-
-					// The mesh-light strategy is ONE slot of lightsDenom, chosen with
-					// probability 1/lightsDenom; the full NEE pdf of this sample is therefore
-					// (1/lightsDenom)·lightRec.pdf. (Mirrors the analytic branch's
-					// lightRec.pdf/lightsDenom·count·discretePdf — there count·discretePdf is
-					// the in-branch light selection; here the single area-proportional pick
-					// makes the in-branch factor 1.)
-					float lightPdf = lightRec.pdf / lightsDenom;
-					float misWeight = misHeuristic( lightPdf, lightMaterialPdf );
-					result = attenuatedColor * lightRec.emission * throughputRgb * sampleColor * misWeight / lightPdf;
-
-				}
-
-			}
-
-		} else if ( envMapInfo.totalSum != 0.0 && environmentIntensity != 0.0 ) {
-
-			// find a sample in the environment map to include in the contribution
-			vec3 envColor, envDirection;
-			float envPdf = sampleEquirectProbability( rand2( 7 ), envColor, envDirection );
-			envDirection = invEnvRotation3x3 * envDirection;
-
-			bool isSampleBelowSurface = ! surf.volumeParticle && dot( surf.faceNormal, envDirection ) < 0.0;
-			bool envSampleNeedsTransmission = isSampleBelowSurface && surf.transmission > 0.001;
-			if ( isSampleBelowSurface && ! envSampleNeedsTransmission ) {
-
-				envPdf = 0.0;
-
-			}
-
-			// check if a ray could even reach the surface
-			Ray envRay;
-			envRay.origin = rayOrigin;
-			envRay.direction = envDirection;
-			vec3 attenuatedColor;
-			if (
-				envPdf > 0.0 &&
-				isDirectionValid( envDirection, surf.normal, surf.faceNormal ) &&
-				! attenuateHit( state, envRay, INFINITY, attenuatedColor )
-			) {
-
-				// get the material pdf
-				vec3 sampleColor;
-				float envMaterialPdf = bsdfResult( worldWo, envDirection, surf, state.wavelength, sampleColor );
-				bool isValidSampleColor = all( greaterThanEqual( sampleColor, vec3( 0.0 ) ) );
-				if ( envMaterialPdf > 0.0 && isValidSampleColor ) {
-
-					// weight the direct light contribution
-					// D3 — surf.envMapIntensity: per-material env scale on the NEE half;
-					// the forward (BSDF) half applies the same factor via
-					// state.envMapIntensity, keeping the MIS estimator consistent.
-					envPdf /= lightsDenom;
-					float misWeight = misHeuristic( envPdf, envMaterialPdf );
-					result = attenuatedColor * surf.envMapIntensity * environmentIntensity * envColor * throughputRgb * sampleColor * misWeight / envPdf;
-
-				}
-
-			}
+			lightSample.valid = false;
+			return lightSample;
 
 		}
 
-		// Function changed to have a single return statement to potentially help with crashes on Mac OS.
-		// See issue #470
-		return result;
+		bool lightIsBelowSurface =
+			! surf.volumeParticle &&
+			dot( surf.faceNormal, lightSample.direction ) < 0.0;
+		Ray lightRay;
+		lightRay.origin = stepRayOrigin(
+			rayOrigin,
+			vec3( 0.0 ),
+			lightIsBelowSurface ? - surf.faceNormal : surf.faceNormal,
+			0.0
+		);
+		lightRay.direction = lightSample.direction;
+		vec3 attenuatedColor = vec3( 1.0 );
+		RenderState visibilityState = state;
+		visibilityState.isShadowRay = true;
+		bool visible =
+			lightSample.castShadowDisabled > 0.5 ||
+			! attenuateHit(
+				visibilityState,
+				lightRay,
+				lightSample.distance,
+				attenuatedColor
+			);
+		if ( ! visible ) {
+
+			lightSample.valid = false;
+
+		} else {
+
+			lightSample.emission *= attenuatedColor;
+
+		}
+		return lightSample;
+
+	}
+
+	vec3 evaluatePreparedDirectLightSample(
+		RenderState state,
+		DirectLightSample lightSample,
+		vec3 sampleColor,
+		float lightMaterialPdf,
+		float lightFamilyProbability,
+		float continuationFamilyProbability
+	) {
+
+                float sampledLightPdf =
+                        lightFamilyProbability * lightSample.pdf;
+                if (
+                        ! lightSample.valid ||
+                        sampledLightPdf <= 0.0 ||
+                        lightMaterialPdf <= 0.0 ||
+			! all( greaterThanEqual( sampleColor, vec3( 0.0 ) ) )
+		) {
+
+			return vec3( 0.0 );
+
+		}
+
+                float competingBsdfPdf =
+			continuationFamilyProbability * lightMaterialPdf;
+		float misWeight = lightSample.delta > 0.5
+			? 1.0
+			: misHeuristic( sampledLightPdf, competingBsdfPdf );
+		vec3 spectralContribution =
+			state.throughput *
+			pathThroughputFromRgb( lightSample.emission, state.wavelength ) *
+			pathThroughputFromRgb( sampleColor, state.wavelength );
+		return wavelengthToRGB(
+			state.wavelength,
+			spectralContribution,
+			state.wavelengthPdf
+                ) * lightSample.contributionScale * misWeight /
+                        sampledLightPdf;
 
 	}
 

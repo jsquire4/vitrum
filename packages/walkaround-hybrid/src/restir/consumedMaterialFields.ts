@@ -1,3 +1,5 @@
+import type { MaterialSpec } from '@vitrum/core';
+
 /**
  * Allowlist of `MaterialSpec` fields that the walkaround-hybrid package
  * actually reads during scene ingestion (BVH packing, material atlas upload,
@@ -25,27 +27,32 @@
  *                           discard into bvh_material bit 2; sceneTraversal
  *                           skips those triangles for first-hit traversal
  *  alphaCutoff            same scalar cutout path (`mask` cutoff default 0.5)
- *  opacity                same scalar cutout path; fractional `blend` remains
- *                           approximate and is diagnosed by HybridEngine
+ *  opacity                scalar mask coverage plus ordered front-to-back OIT
+ *                           for primary blend layers; secondary transport uses
+ *                           independently seeded stochastic coverage.
+ *  doubleSided            dedicated side metadata filters opaque back faces in
+ *                           hybrid, DDGI, and RC traversal; TLAS orientation is
+ *                           corrected for mirrored instance transforms while
+ *                           transmissive exits remain admissible.
  *  emissive               packingHelpers.ts – packBVHEmissiveLeFromCore via
  *                           materialSpecEmissiveLe
  *  emissiveIntensity      same as emissive
- *  emissiveMap            materialAtlas.wgsl samples readable sRGB emissive
- *                           maps for camera-visible emitter glow; ReSTIR-DI direct
- *                           emitter lists split eligible CPU-readable maps into
- *                           exact texel-cell sub-triangles, while GI/RC/DDGI and
- *                           fallback paths still report all-path texel-PDF
- *                           approximation.
+ *  emissiveMap            materialAtlas.wgsl samples accepted CPU-readable maps
+ *                           for camera-visible glow; ReSTIR-DI splits every
+ *                           radiating mapped triangle into exact constant-texel
+ *                           sub-triangles shared by the CDF/alias/light tree and
+ *                           p-hat. GPU-only/unreadable maps or missing UV sets
+ *                           fail synchronously before scene publication.
  *  transmission           packingHelpers.ts – packBVHIndexWFromCore (trans4
  *                           lane) + resolveRoughMetal (glass-roughness branch)
- *  transmissionMap        materialAtlas.wgsl samples readable linear R-channel
+ *  transmissionMap        materialAtlas.wgsl samples atlas-backed linear R-channel
  *                           maps for shade/RIS/GI glass gating; emitter/GI
  *                           payloads still use scalar packed lanes.
  *  attenuationColor       shared-bvh materialSpecTriColor / Beer-Lambert lane
  *                           (bvh_beer buffer)
  *  attenuationDistance    same Beer-Lambert path
  *  thickness              same Beer-Lambert path
- *  thicknessMap           materialAtlas.wgsl samples readable linear KHR
+ *  thicknessMap           materialAtlas.wgsl samples atlas-backed linear KHR
  *                           volume maps from G and exponentiates the scalar
  *                           Beer-Lambert tint by thicknessTexture.g.
  *  ior                    shared-bvh coreMaterialToMaterialEntry →
@@ -53,17 +60,17 @@
  *  extensions             materialSpecSurfaceTextureId (extensions.surfaceTextureId
  *                           → texType3 lane in bvhIndex.w) +
  *                           materialSpecSkipEmitter (extensions.skipEmitter)
- *  baseColorMap           pipeline/materialTextureAtlas.ts packs readable raw
- *                           uv0 TextureRefs into an RGBA32F array texture;
- *                           shade.wgsl samples it with wrap + transform and
- *                           multiplies the visible scalar baseColor.
+ *  baseColorMap           pipeline/materialTextureAtlas.ts packs CPU pixel or
+ *                           nominal GPU TextureRefs into a full-mip RGBA32F array;
+ *                           shade.wgsl applies authored wrap/filter/transform and
+ *                           a bounded projected-triangle footprint LOD.
  *  normalMap              same material atlas path; shade.wgsl derives a
  *                           per-triangle tangent frame from positions + uv0/uv1
  *                           and perturbs the camera-visible smooth normal.
  *  normalScale            stored in normal-map atlas metadata and applied to
  *                           tangent-space xy before normal reconstruction.
  *  bumpMap                same material atlas path; shade.wgsl samples a
- *                           readable linear height field and finite-differences
+ *                           atlas-backed linear height field and finite-differences
  *                           it into a camera-visible normal perturbation after
  *                           normalMap application.
  *  bumpScale              stored in bump-map atlas metadata and applied to the
@@ -83,13 +90,15 @@
  *                           primary traversal, RIS, and GI bounce casts; mask
  *                           uses opacity * baseColorMap.a * alphaMap.r <
  *                           alphaCutoff. Fractional blend camera composition is
- *                           handled by the transparent-OIT pass; direct-light
- *                           OIT shadows attenuate blend coverage, while
- *                           ReSTIR/GI participation remains approximate.
- *  lightMap               materialAtlas.wgsl samples readable linear light maps
- *                           as camera-visible baked outgoing radiance only.
+ *                           handled by ordered transparent OIT; secondary
+ *                           ReSTIR/GI casts use independently seeded stochastic
+ *                           coverage and alpha-aware shadow transmittance.
+ *  lightMap               materialAtlas.wgsl samples atlas-backed linear light maps
+ *                           as receiver-local irradiance, converts it to
+ *                           outgoing Lambertian radiance exactly once, and
+ *                           carries that source through ReSTIR-GI, DDGI, and RC.
  *  lightMapIntensity      stored in light-map atlas metadata and multiplied into
- *                           the camera-visible baked light-map term.
+ *                           the receiver-local baked irradiance term.
  *  envMapIntensity        stored in material atlas metadata and applied to
  *                           shade-owned HDRI ReSTIR-DI environment lighting,
  *                           including canonical p-hat evaluation for temporal
@@ -98,24 +107,21 @@
  *                           dielectric GGX F0 tint in shade-owned direct,
  *                           analytic, sun, specular-indirect, and DI/GI suffix
  *                           material paths.
- *  specularIntensity      same scalar specular metadata path; approximate
- *                           pending rich-material GI GPU A/B promotion, not
- *                           because the receiver target ignores the lobe.
- *  specularColorMap      readable sRGB maps multiply scalar `specularColor`
+ *  specularIntensity      same scalar specular metadata path.
+ *  specularColorMap      atlas-backed sRGB maps multiply scalar `specularColor`
  *                           before shade-owned GGX evaluation.
- *  specularIntensityMap  readable linear maps multiply scalar
+ *  specularIntensityMap  atlas-backed linear maps multiply scalar
  *                           `specularIntensity` from their alpha channel.
  *  clearcoat             stored in material atlas metadata and added as a
  *                           fixed-F0 GGX top-coat lobe in shade-owned direct,
  *                           analytic, sun, specular-indirect, DI/GI suffix,
  *                           and GI receiver-target material paths.
- *  clearcoatRoughness    same scalar clearcoat metadata path; approximate
- *                           pending rich-material GI GPU A/B promotion.
- *  clearcoatMap          readable linear maps multiply scalar `clearcoat`
+ *  clearcoatRoughness    same scalar clearcoat metadata path.
+ *  clearcoatMap          atlas-backed linear maps multiply scalar `clearcoat`
  *                           from their red channel before top-coat evaluation.
- *  clearcoatRoughnessMap readable linear maps multiply scalar
+ *  clearcoatRoughnessMap atlas-backed linear maps multiply scalar
  *                           `clearcoatRoughness` from their green channel.
- *  clearcoatNormalMap    readable normal maps perturb the shade-owned
+ *  clearcoatNormalMap    atlas-backed normal maps perturb the shade-owned
  *                           clearcoat lobe plus DI/GI suffix and receiver
  *                           material payloads through the derived-TBN atlas path.
  *  clearcoatNormalScale  metadata scale for `clearcoatNormalMap`.
@@ -123,38 +129,37 @@
  *                           Charlie/Neubelt-Pettineo sheen lobe in shade-owned
  *                           direct, analytic, sun, specular-indirect, and DI/GI
  *                           suffix/receiver-target material paths.
- *  sheenColor            same scalar sheen metadata path; approximate pending
- *                           rich-material GI GPU A/B promotion.
+ *  sheenColor            same scalar sheen metadata path.
  *  sheenRoughness        same scalar sheen metadata path.
- *  sheenColorMap         readable sRGB maps multiply scalar `sheenColor`.
- *  sheenRoughnessMap     readable linear maps multiply scalar
+ *  sheenColorMap         atlas-backed sRGB maps multiply scalar `sheenColor`.
+ *  sheenRoughnessMap     atlas-backed linear maps multiply scalar
  *                           `sheenRoughness` from their alpha channel.
  *  anisotropy            stored in material atlas metadata and switches
  *                           shade-owned GGX evals to an anisotropic branch.
  *  anisotropyRotation    metadata rotation for the anisotropic GGX frame.
- *  anisotropyMap         readable linear KHR anisotropy maps multiply
+ *  anisotropyMap         atlas-backed linear KHR anisotropy maps multiply
  *                           strength from B and direction from RG.
  *  iridescence           stored in material atlas metadata and modifies
  *                           shade-owned GGX F0 with a thin-film approximation.
  *  iridescenceIor        metadata thin-film IOR for the F0 approximation.
  *  iridescenceThicknessRange metadata min/max thickness in nanometres.
- *  iridescenceMap        readable linear KHR iridescence maps multiply
+ *  iridescenceMap        atlas-backed linear KHR iridescence maps multiply
  *                           scalar iridescence from the red channel.
- *  iridescenceThicknessMap readable linear thickness maps select thickness
+ *  iridescenceThicknessMap atlas-backed linear thickness maps select thickness
  *                           from the green channel.
- *  frontLayer             material atlas stores per-face transmission, roughness
- *                           override, and layer-local normal maps. Shade,
- *                           transparent-OIT, ReSTIR-DI p-hat/reuse, ReSTIR-GI
- *                           suffix/receiver targets, RC probe rays, and DDGI
- *                           probe-hit material all apply the selected face layer.
- *  backLayer              same per-face material atlas path as frontLayer.
+ *  spectralAttenuation    preintegrated 32-sample CIE/D65 attenuation, shared
+ *                           by shade, OIT, ReSTIR GI/DI, DDGI, and RC transport.
+ *  dispersionAbbeNumber   Cauchy/Abbe RGB IOR reduction drives transmissive
+ *                           refraction and generic refractive caustics.
+ *  thinFilmStack          full CPU TMM spectral integration pre-binned by
+ *                           incidence angle and consumed in all material paths.
  *
  * Everything else — TextureRef maps other than baseColorMap / normalMap /
  * roughnessMap / metallicMap / aoMap / alphaMap / emissiveMap /
  * transmissionMap / thicknessMap / lightMap / specular maps / clearcoat maps /
  * sheen maps / anisotropyMap / iridescence maps / bumpMap / displacementMap,
  * scalar displacement controls other than displacementScale /
- * displacementBias / displacementSubdivisions, spectral curves, thin-film stacks,
+ * displacementBias / displacementSubdivisions,
  * and unlisted future maps/extension families
  * — is rejected by the
  * warning/truthfulness surface rather than silently rendered as native.
@@ -169,7 +174,7 @@
  * machine-checkable index (guarded by `consumedMaterialFieldDocs.test.ts`, which
  * asserts key parity with the Set — D6-5).
  */
-export const CONSUMED_MATERIAL_FIELD_DOCS: Readonly<Record<string, string>> = {
+export const CONSUMED_MATERIAL_FIELD_DOCS = {
   baseColor: 'packingHelpers packBVHIndexWFromCore via materialSpecTriColor',
   roughness: 'packingHelpers packBVHRoughMetalFromCore via resolveRoughMetal',
   metallic: 'packBVHIndexWFromCore isMetal flag + packBVHRoughMetalFromCore',
@@ -177,56 +182,56 @@ export const CONSUMED_MATERIAL_FIELD_DOCS: Readonly<Record<string, string>> = {
   emissive: 'packingHelpers packBVHEmissiveLeFromCore via materialSpecEmissiveLe',
   emissiveIntensity: 'same as emissive',
   emissiveMap: 'materialAtlas.wgsl camera-visible emitter glow + exact texel sub-triangles',
-  lightMap: 'materialAtlas.wgsl camera-visible baked outgoing radiance',
-  lightMapIntensity: 'light-map atlas metadata multiplier',
+  lightMap: 'receiver-local irradiance → albedo/π outgoing source in ReSTIR-GI/DDGI/RC',
+  lightMapIntensity: 'receiver-local light-map irradiance multiplier',
   envMapIntensity: 'material atlas metadata → shade HDRI ReSTIR-DI env lighting',
+  spectralAttenuation: '32-sample CIE/D65 attenuation → shade/OIT/ReSTIR/DDGI/RC',
+  dispersionAbbeNumber: 'Cauchy/Abbe RGB IOR → transmissive transport and caustics',
+  thinFilmStack: 'spectral TMM preintegration → angle-binned forward/reverse optical response',
   specularColor: 'material atlas metadata → dielectric GGX F0 tint',
   specularIntensity: 'scalar specular metadata path',
-  specularColorMap: 'readable sRGB maps multiply scalar specularColor',
-  specularIntensityMap: 'readable linear maps multiply specularIntensity from alpha',
+  specularColorMap: 'atlas-backed sRGB maps multiply scalar specularColor',
+  specularIntensityMap: 'atlas-backed linear maps multiply specularIntensity from alpha',
   clearcoat: 'material atlas metadata → fixed-F0 GGX top-coat lobe',
   clearcoatRoughness: 'scalar clearcoat metadata path',
-  clearcoatMap: 'readable linear maps multiply scalar clearcoat from red',
-  clearcoatRoughnessMap: 'readable linear maps multiply clearcoatRoughness from green',
-  clearcoatNormalMap: 'readable normal maps perturb the clearcoat lobe (derived TBN)',
+  clearcoatMap: 'atlas-backed linear maps multiply scalar clearcoat from red',
+  clearcoatRoughnessMap: 'atlas-backed linear maps multiply clearcoatRoughness from green',
+  clearcoatNormalMap: 'atlas-backed normal maps perturb the clearcoat lobe (derived TBN)',
   clearcoatNormalScale: 'metadata scale for clearcoatNormalMap',
   sheen: 'material atlas metadata → Charlie sheen lobe',
   sheenColor: 'scalar sheen metadata path',
   sheenRoughness: 'scalar sheen metadata path',
-  sheenColorMap: 'readable sRGB maps multiply scalar sheenColor',
-  sheenRoughnessMap: 'readable linear maps multiply sheenRoughness from alpha',
+  sheenColorMap: 'atlas-backed sRGB maps multiply scalar sheenColor',
+  sheenRoughnessMap: 'atlas-backed linear maps multiply sheenRoughness from alpha',
   anisotropy: 'material atlas metadata → anisotropic GGX branch',
   anisotropyRotation: 'metadata rotation for the anisotropic GGX frame',
-  anisotropyMap: 'readable linear KHR anisotropy maps (strength B, direction RG)',
+  anisotropyMap: 'atlas-backed linear KHR anisotropy maps (strength B, direction RG)',
   iridescence: 'material atlas metadata → thin-film F0 approximation',
   iridescenceIor: 'metadata thin-film IOR',
   iridescenceThicknessRange: 'metadata min/max thickness (nm)',
-  iridescenceMap: 'readable linear KHR iridescence maps multiply from red',
-  iridescenceThicknessMap: 'readable linear thickness maps select from green',
-  frontLayer: 'per-face transmission/roughness/normal in material atlas',
-  'frontLayer.normalMap': 'layer-local normal map for the front face layer',
-  'frontLayer.normalScale': 'metadata scale for frontLayer.normalMap',
-  backLayer: 'same per-face material atlas path as frontLayer',
-  'backLayer.normalMap': 'layer-local normal map for the back face layer',
-  'backLayer.normalScale': 'metadata scale for backLayer.normalMap',
+  iridescenceMap: 'atlas-backed linear KHR iridescence maps multiply from red',
+  iridescenceThicknessMap: 'atlas-backed linear thickness maps select from green',
   alphaMode: 'packBVHRoughMetalFromCore encodes mask/blend into bvh_material bit 2',
   alphaCutoff: 'scalar cutout path (mask cutoff default 0.5)',
-  opacity: 'scalar cutout path; fractional blend diagnosed by HybridEngine',
+  opacity: 'scalar mask coverage + ordered primary OIT + seeded secondary coverage',
+  doubleSided: 'dedicated side metadata → parity-correct hybrid/DDGI/RC traversal filtering',
   transmission: 'packBVHIndexWFromCore trans4 lane + resolveRoughMetal glass branch',
-  transmissionMap: 'materialAtlas.wgsl readable linear R glass gating',
-  scatteringCoefficient: 'volume scattering meta (materialTextureAtlas)',
-  scatteringAnisotropy: 'volume scattering meta (materialTextureAtlas)',
-  scatteringCoefficientRGB: 'volume scattering meta (materialTextureAtlas)',
+  transmissionMap: 'materialAtlas.wgsl atlas-backed linear R glass gating',
   attenuationColor: 'shared-bvh Beer-Lambert lane (bvh_beer buffer)',
   attenuationDistance: 'same Beer-Lambert path',
   thickness: 'same Beer-Lambert path',
-  thicknessMap: 'materialAtlas.wgsl readable linear KHR volume maps from G',
+  thicknessMap: 'materialAtlas.wgsl atlas-backed linear KHR volume maps from G',
+  scatteringCoefficient: 'RGB homogeneous-medium sigma_s (scalar fallback) in camera/ReSTIR/DDGI/RC',
+  scatteringCoefficientRGB: 'per-channel homogeneous-medium sigma_s in camera/ReSTIR/DDGI/RC',
+  scatteringAnisotropy: 'normalized Henyey-Greenstein phase in camera/ReSTIR/DDGI/RC',
+  frontLayer: 'front-face RGB transmission, roughness, and layer-local normal map transport',
+  backLayer: 'back-face RGB transmission, roughness, and layer-local normal map transport',
   ior: 'shared-bvh coreMaterialToMaterialEntry → DDGI material upload',
   extensions: 'surfaceTextureId → texType3 lane; skipEmitter',
-  baseColorMap: 'pipeline/materialTextureAtlas packs readable uv0 RGBA32F atlas',
+  baseColorMap: 'mipmapped RGBA32F atlas with CPU/GPU sources and compact arbitrary-texCoord affine charts',
   normalMap: 'material atlas path; shade.wgsl per-triangle TBN perturbation',
   normalScale: 'normal-map atlas metadata applied to tangent-space xy',
-  bumpMap: 'readable linear height field finite-differenced into a normal perturbation',
+  bumpMap: 'atlas-backed linear height field finite-differenced into a normal perturbation',
   bumpScale: 'bump-map atlas metadata applied to the height gradient',
   displacementMap: 'shared-bvh vertex displacement (mesh microdisplacement)',
   displacementScale: 'displacement magnitude scalar',
@@ -237,7 +242,18 @@ export const CONSUMED_MATERIAL_FIELD_DOCS: Readonly<Record<string, string>> = {
   aoMap: 'material atlas + metadata; shade.wgsl multiplies runtime GTAO (glTF R)',
   aoMapIntensity: 'packBVHRoughMetalFromCore stores occlusion strength in material-word bits 3-7',
   alphaMap: 'materialAtlas.wgsl alpha maps in primary/RIS/GI casts; mask + OIT',
-};
+} as const satisfies Readonly<Partial<Record<keyof MaterialSpec, string>>>;
+
+/**
+ * Compile-time-complete disposition of the canonical MaterialSpec contract.
+ * Every field is either represented by the renderer's ingestion/transport
+ * path above or is rejected by assertNoUnsupportedVolumeLayerProfiles.
+ * Adding a core material field therefore breaks this package's typecheck until
+ * the backend deliberately consumes or rejects it.
+ */
+export const MATERIAL_FIELD_DISPOSITIONS = {
+  ...CONSUMED_MATERIAL_FIELD_DOCS,
+} as const satisfies Readonly<Record<keyof MaterialSpec, string>>;
 
 /** The set of `MaterialSpec` keys actually consumed by walkaround-hybrid.
  *  Derived from {@link CONSUMED_MATERIAL_FIELD_DOCS} keys so the allowlist and
@@ -245,82 +261,15 @@ export const CONSUMED_MATERIAL_FIELD_DOCS: Readonly<Record<string, string>> = {
 export const CONSUMED_MATERIAL_FIELDS: ReadonlySet<string> =
   new Set<string>(Object.keys(CONSUMED_MATERIAL_FIELD_DOCS));
 
-/** Structured payload for the residual emissive-map texel-PDF warning. */
-export const EMISSIVE_MAP_TEXEL_PDF_APPROXIMATION_DETAILS = {
-  directEmitterPdf: 'exact-texel-cell-subtriangles-when-eligible',
-  fallbackDirectEmitterPdf: 'uv-local-barycentric-micro-emitter-selection',
-  giSuffixEmission: 'uv-local-emissive-texel-sampled-on-hit',
-  probeHitEmission: 'uv-local-emissive-texel-sampled-on-direct-probe-hit',
-  residualApproximation: 'global-texel-selection-pdf',
-  missing: 'global-exact-texel-alias-pdf',
-  exactDirectEmitterConditions: [
-    'cpu-readable-emissive-map',
-    'non-mirrored-wrap',
-    'non-degenerate-uvs',
-    'bounded-covered-texel-cells',
-    'readable-covered-texels',
-  ],
-  approximatePaths: [
-    'ReSTIR-GI-texel-selection-pdf',
-    'RC-non-direct-texel-selection-pdf',
-    'DDGI-non-direct-texel-selection-pdf',
-    'fallback-direct-emitter',
-  ],
-} as const;
-
-/** Structured payload for the camera-visible-only light-map approximation. */
-export const LIGHT_MAP_CAMERA_VISIBLE_APPROXIMATION_DETAILS = {
-  lightMapUsage: 'camera-visible-baked-outgoing-radiance',
-  directLighting: 'not-sampled-as-scene-light',
-  giPropagation: 'not-injected-into-restir-gi-ddgi-rc',
-  residualApproximation: 'first-hit-baked-light',
-  missing: 'global-transport-light-map-participation',
-} as const;
-
-/** Structured payload for consumed-but-still-promoted-by-proof rich material rows. */
-export const RICH_MATERIAL_GI_APPROXIMATION_DETAILS = {
-  consumedBy: [
-    'shade-owned-direct-light',
-    'ReSTIR-DI-candidate-and-resolve-BRDF',
-    'ReSTIR-GI-suffix-and-receiver-lobe-targets',
-    'DDGI/RC-probe-hit-compact-BRDF',
-  ],
-  approximation: 'compact-rich-material-lobe-response',
-  missing: 'material-furnace-reference-ab-and-full-rich-material-gi-promotion',
-  proofTail: [
-    'GPU-material-furnace',
-    'rich-material-GI-A/B',
-    'reference-render-sweep',
-  ],
-} as const;
-
-/** Structured payload for consumed volume/layer fields that remain realtime approximations. */
-export const VOLUME_LAYER_TRANSPORT_APPROXIMATION_DETAILS = {
-  consumedBy: [
-    'shade-owned-direct-light',
-    'transparent-OIT-face-layer-shading',
-    'ReSTIR-DI-candidate-and-resolve-material-payloads',
-    'ReSTIR-GI-suffix-and-receiver-target-material-payloads',
-    'DDGI/RC-probe-hit-compact-material-payloads',
-  ],
-  approximation: 'compact-single-surface-volume-layer-response',
-  missing: 'path-tracer-equivalent-participating-media-and-full-layer-stack-transport',
-  proofTail: [
-    'walkaround-specialty-material-transport-reference-ab',
-    'rich-material-GI-A/B',
-    'future-contract-specialty-material-transport',
-  ],
-} as const;
-
-export interface ApproximateRichMaterialPrimitiveFields {
+export interface UnsupportedVolumeLayerPrimitiveFields {
   readonly primitiveId: string;
   readonly fields: readonly string[];
 }
 
-export interface ApproximateVolumeLayerPrimitiveFields {
-  readonly primitiveId: string;
-  readonly fields: readonly string[];
-}
+/** Numerical zero used by the delta-interface transport paths. Roughness is
+ * packed to u8 on GPU, so every positive representable shader value is above
+ * this epsilon; it is not an artistic smooth-glass threshold. */
+export const MAX_DELTA_DIELECTRIC_ROUGHNESS_EPSILON = 1e-4;
 
 export interface UnconsumedMaterialPrimitiveFields {
   readonly primitiveId: string;
@@ -364,9 +313,6 @@ export type UnconsumedMaterialFieldCategory =
   | 'unknown';
 
 const UNCONSUMED_MATERIAL_FIELD_CATEGORIES: Readonly<Record<string, UnconsumedMaterialFieldCategory>> = {
-  spectralAttenuation: 'spectral',
-  dispersionAbbeNumber: 'spectral',
-  thinFilmStack: 'layered',
 };
 
 /** Group unconsumed material keys into stable semantic buckets for diagnostics. */
@@ -445,414 +391,127 @@ export function collectUnconsumedMaterialPrimitiveFields(
 }
 
 /**
- * Return primitive ids whose material asks for nontrivial `alphaMode:'blend'`.
- * The scalar alpha traversal path can faithfully discard fully-transparent
- * blend endpoints (`opacity <= 0`) and mask cutouts (`opacity < alphaCutoff`),
- * and the transparent-OIT pass camera-composites partial coverage. HybridEngine
- * still emits a structured warning because camera-visible light-map/emissive
- * terms are first-hit approximations, finite-emitter direct light is
- * fixed-stratified, and ReSTIR/GI participation remains approximate.
+ * Strict scene/update boundary for material authorship. Core validation owns
+ * the canonical MaterialSpec vocabulary; this guard is deliberately retained
+ * as a second line of defence for untyped callers and future core additions.
+ * No authored field may degrade to a warning-and-ignore path.
  */
-export function collectApproximateAlphaBlendPrimitiveIds(
-  primitives: ReadonlyArray<{
-    readonly id?: string;
-    readonly kind: string;
-    readonly material?: Record<string, unknown>;
-    readonly positions?: ArrayLike<number> | undefined;
-    readonly colors?: ArrayLike<number> | undefined;
-  }>,
-): string[] {
-  const ids: string[] = [];
-  for (const prim of primitives) {
-    if (!materialBearingPrimitiveKind(prim.kind)) {
-      continue;
-    }
-    const mat = prim.material;
-    if (!mat || mat.alphaMode !== 'blend') continue;
-    const opacity = effectiveScalarBlendOpacity(mat);
-    const hasTextureAlphaSource = baseColorMapCanReduceAlpha(mat.baseColorMap) || mat.alphaMap != null;
-    const hasVertexAlphaSource = hasFractionalVertexAlpha(prim.positions, prim.colors);
-    if (opacity > 0 && (opacity < 1 || hasTextureAlphaSource || hasVertexAlphaSource)) {
-      ids.push(prim.id ?? '(unnamed)');
-    }
-  }
-  return ids.sort();
-}
-
-/**
- * Return primitive ids whose material-backed emissive maps still need a residual
- * all-path texel-PDF warning. This is a truthfulness surface, not a rejection:
- * walkaround samples readable emissive maps for visible glow and can split
- * eligible ReSTIR-DI finite emitters into exact texel-cell sub-triangles.
- * ReSTIR-GI suffix hits and direct probe hits sample the readable texel at the
- * hit UV. The remaining approximation is global texel-selection/PDF promotion
- * across every GI/RC/DDGI/fallback path.
- */
-export function collectApproximateEmissiveMapTexelPdfPrimitiveIds(
+export function assertNoUnconsumedMaterialFields(
   primitives: ReadonlyArray<{
     readonly id?: string;
     readonly kind: string;
     readonly material?: Record<string, unknown>;
   }>,
-  emitters: ReadonlyArray<{
-    readonly id?: unknown;
-    readonly kind: string;
-    readonly meshId?: unknown;
-    readonly color?: ArrayLike<unknown>;
-    readonly intensity?: unknown;
-  }> = [],
-): string[] {
-  const ids = new Set<string>();
-  const litMeshAreaIds = collectLitMeshAreaEmitterMeshIds(emitters);
-  for (const prim of primitives) {
-    if (!materialBearingPrimitiveKind(prim.kind)) {
-      continue;
-    }
-    const mat = prim.material;
-    if (!mat || mat.emissiveMap == null) continue;
-    const id = prim.id ?? '(unnamed)';
-    if (emissiveEnergyIsNonZero(mat) || litMeshAreaIds.has(String(id))) {
-      ids.add(id);
-    }
-  }
-  return [...ids].sort();
-}
-
-/**
- * Return primitive ids whose light map is rendered only as a camera-visible baked
- * outgoing-radiance term. This is consumed, but deliberately approximate: the
- * map is not treated as a scene light source and is not propagated through GI.
- */
-export function collectApproximateLightMapPrimitiveIds(
-  primitives: ReadonlyArray<{
-    readonly id?: string;
-    readonly kind: string;
-    readonly material?: Record<string, unknown>;
-  }>,
-): string[] {
-  const ids: string[] = [];
-  for (const prim of primitives) {
-    if (!materialBearingPrimitiveKind(prim.kind)) continue;
-    const mat = prim.material;
-    if (!mat || mat.lightMap == null) continue;
-    const intensity = typeof mat.lightMapIntensity === 'number' && Number.isFinite(mat.lightMapIntensity)
-      ? Math.max(0, mat.lightMapIntensity)
-      : 1;
-    if (intensity > 0) ids.push(prim.id ?? '(unnamed)');
-  }
-  return ids.sort();
-}
-
-/**
- * Return material-bearing primitives that exercise rich-material lobes that are
- * consumed by walkaround but still approximate pending material-furnace /
- * rich-GI reference promotion. Default scalar metadata does not warn; maps and
- * non-default active lobes do.
- */
-export function collectApproximateRichMaterialPrimitiveFields(
-  primitives: ReadonlyArray<{
-    readonly id?: string;
-    readonly kind: string;
-    readonly material?: Record<string, unknown>;
-  }>,
-): ApproximateRichMaterialPrimitiveFields[] {
-  const out: ApproximateRichMaterialPrimitiveFields[] = [];
-  for (const prim of primitives) {
-    if (!materialBearingPrimitiveKind(prim.kind)) continue;
-    const fields = collectApproximateRichMaterialFieldsForMaterial(prim.material);
-    if (fields.length > 0) {
-      out.push({ primitiveId: prim.id ?? '(unnamed)', fields });
-    }
-  }
-  return out.sort((a, b) => a.primitiveId.localeCompare(b.primitiveId));
-}
-
-export function collectApproximateVolumeLayerPrimitiveFields(
-  primitives: ReadonlyArray<{
-    readonly id?: string;
-    readonly kind: string;
-    readonly material?: Record<string, unknown>;
-  }>,
-): ApproximateVolumeLayerPrimitiveFields[] {
-  const out: ApproximateVolumeLayerPrimitiveFields[] = [];
-  for (const prim of primitives) {
-    if (!materialBearingPrimitiveKind(prim.kind)) continue;
-    const fields = collectApproximateVolumeLayerFieldsForMaterial(prim.material);
-    if (fields.length > 0) {
-      out.push({ primitiveId: prim.id ?? '(unnamed)', fields });
-    }
-  }
-  return out.sort((a, b) => a.primitiveId.localeCompare(b.primitiveId));
-}
-
-export function collectApproximateVolumeLayerFieldsForMaterial(
-  material: Record<string, unknown> | undefined,
-): string[] {
-  if (!material) return [];
-  const fields = new Set<string>();
-  const scalar = (key: string, fallback: number): number => {
-    const value = material[key];
-    return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
-  };
-  const vectorAnyNonZero = (key: string): boolean => {
-    const value = material[key];
-    if (!Array.isArray(value)) return false;
-    return value.some((entry) => Math.abs(Number(entry ?? 0)) > 1e-6);
-  };
-  const layerHasPayload = (key: string): boolean => {
-    const value = material[key];
-    if (value == null) return false;
-    if (typeof value !== 'object') return true;
-    return Object.keys(value).length > 0;
-  };
-
-  if (Math.abs(scalar('scatteringCoefficient', 0)) > 1e-6) fields.add('scatteringCoefficient');
-  if (vectorAnyNonZero('scatteringCoefficientRGB')) fields.add('scatteringCoefficientRGB');
-  if (Math.abs(scalar('scatteringAnisotropy', 0)) > 1e-6) fields.add('scatteringAnisotropy');
-  if (layerHasPayload('frontLayer')) fields.add('frontLayer');
-  if (layerHasPayload('backLayer')) fields.add('backLayer');
-
-  return [...fields].sort();
-}
-
-export function collectApproximateRichMaterialFieldsForMaterial(
-  material: Record<string, unknown> | undefined,
-): string[] {
-  if (!material) return [];
-  const fields = new Set<string>();
-  const has = (key: string): boolean => material[key] !== undefined && material[key] !== null;
-  const scalar = (key: string, fallback: number): number => {
-    const value = material[key];
-    return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
-  };
-  const rgbDiffers = (key: string, fallback: readonly [number, number, number]): boolean => {
-    const value = material[key];
-    if (!Array.isArray(value)) return false;
-    return Math.abs(Number(value[0] ?? fallback[0]) - fallback[0]) > 1e-6 ||
-      Math.abs(Number(value[1] ?? fallback[1]) - fallback[1]) > 1e-6 ||
-      Math.abs(Number(value[2] ?? fallback[2]) - fallback[2]) > 1e-6;
-  };
-  const vec2Differs = (key: string, fallback: readonly [number, number]): boolean => {
-    const value = material[key];
-    if (!Array.isArray(value)) return false;
-    return Math.abs(Number(value[0] ?? fallback[0]) - fallback[0]) > 1e-6 ||
-      Math.abs(Number(value[1] ?? fallback[1]) - fallback[1]) > 1e-6;
-  };
-
-  if (rgbDiffers('specularColor', [1, 1, 1])) fields.add('specularColor');
-  if (has('specularColorMap')) fields.add('specularColorMap');
-  if (Math.abs(scalar('specularIntensity', 1) - 1) > 1e-6) fields.add('specularIntensity');
-  if (has('specularIntensityMap')) fields.add('specularIntensityMap');
-
-  const clearcoatActive = scalar('clearcoat', 0) > 1e-6 || has('clearcoatMap');
-  if (scalar('clearcoat', 0) > 1e-6) fields.add('clearcoat');
-  if (has('clearcoatMap')) fields.add('clearcoatMap');
-  if (clearcoatActive && Math.abs(scalar('clearcoatRoughness', 0) - 0) > 1e-6) fields.add('clearcoatRoughness');
-  if (has('clearcoatRoughnessMap')) fields.add('clearcoatRoughnessMap');
-  if (has('clearcoatNormalMap')) fields.add('clearcoatNormalMap');
-  if (has('clearcoatNormalMap') && Math.abs(scalar('clearcoatNormalScale', 1) - 1) > 1e-6) fields.add('clearcoatNormalScale');
-
-  const sheenActive = scalar('sheen', 0) > 1e-6 || has('sheenColorMap') || has('sheenRoughnessMap');
-  if (scalar('sheen', 0) > 1e-6) fields.add('sheen');
-  if (sheenActive && rgbDiffers('sheenColor', [0, 0, 0])) fields.add('sheenColor');
-  if (sheenActive && Math.abs(scalar('sheenRoughness', 0) - 0) > 1e-6) fields.add('sheenRoughness');
-  if (has('sheenColorMap')) fields.add('sheenColorMap');
-  if (has('sheenRoughnessMap')) fields.add('sheenRoughnessMap');
-
-  const anisotropyActive = Math.abs(scalar('anisotropy', 0)) > 1e-6 || has('anisotropyMap');
-  if (Math.abs(scalar('anisotropy', 0)) > 1e-6) fields.add('anisotropy');
-  if (anisotropyActive && Math.abs(scalar('anisotropyRotation', 0)) > 1e-6) fields.add('anisotropyRotation');
-  if (has('anisotropyMap')) fields.add('anisotropyMap');
-
-  const iridescenceActive = scalar('iridescence', 0) > 1e-6 || has('iridescenceMap') || has('iridescenceThicknessMap');
-  if (scalar('iridescence', 0) > 1e-6) fields.add('iridescence');
-  if (iridescenceActive && Math.abs(scalar('iridescenceIor', 1.3) - 1.3) > 1e-6) fields.add('iridescenceIor');
-  if (iridescenceActive && vec2Differs('iridescenceThicknessRange', [100, 400])) fields.add('iridescenceThicknessRange');
-  if (has('iridescenceMap')) fields.add('iridescenceMap');
-  if (has('iridescenceThicknessMap')) fields.add('iridescenceThicknessMap');
-
-  return [...fields].sort();
-}
-
-/**
- * Stringify a scene emitter `meshId` (declared `unknown`) into a Set key. Output
- * is identical to `String(meshId)` — primitives stringify as-is, objects fall
- * back to their `toString()` — but written with explicit narrowing so it does
- * not trip the `no-base-to-string` lint.
- */
-function stringifyMeshId(meshId: unknown): string {
-  if (typeof meshId === 'string') return meshId;
-  if (
-    typeof meshId === 'number' ||
-    typeof meshId === 'boolean' ||
-    typeof meshId === 'bigint' ||
-    typeof meshId === 'symbol' ||
-    meshId == null
-  ) {
-    return String(meshId);
-  }
-  // Object / function: mirror String()'s fallback to the value's own toString.
-  return (meshId as { toString(): string }).toString();
-}
-
-function collectLitMeshAreaEmitterMeshIds(
-  emitters: ReadonlyArray<{
-    readonly kind: string;
-    readonly meshId?: unknown;
-    readonly color?: ArrayLike<unknown>;
-    readonly intensity?: unknown;
-  }>,
-): ReadonlySet<string> {
-  const meshIds = new Set<string>();
-  for (const emitter of emitters) {
-    if (emitter.kind !== 'mesh-area' || emitter.meshId === undefined) continue;
-    if (!emitterEnergyIsNonZero(emitter)) continue;
-    meshIds.add(stringifyMeshId(emitter.meshId));
-  }
-  return meshIds;
-}
-
-function effectiveScalarBlendOpacity(material: Record<string, unknown>): number {
-  const opacity = unitAlpha(material.opacity, 1);
-  const baseColor = material.baseColor as ArrayLike<unknown> | undefined;
-  const baseAlpha = baseColor && typeof baseColor.length === 'number' && baseColor.length >= 4
-    ? unitAlpha(baseColor[3], 1)
-    : 1;
-  return Math.min(1, Math.max(0, opacity * baseAlpha));
-}
-
-function asTextureHandle(value: unknown): unknown {
-  if (value == null) return null;
-  if (typeof value === 'object' && 'handle' in value) {
-    return (value as { readonly handle?: unknown }).handle ?? null;
-  }
-  return value;
-}
-
-function textureHint(handle: unknown): {
-  readonly channels?: number;
-  readonly dataType?: string;
-} | undefined {
-  if (handle == null || typeof handle !== 'object') return undefined;
-  const h = handle as {
-    readonly __vitrum_hint__?: { readonly channels?: number; readonly dataType?: string };
-    readonly channels?: number;
-    readonly dataType?: string;
-  };
-  return h.__vitrum_hint__ ?? (
-    h.channels != null || h.dataType != null
-      ? {
-          ...(h.channels != null ? { channels: h.channels } : {}),
-          ...(h.dataType != null ? { dataType: h.dataType } : {}),
-        }
-      : undefined
+  method: 'setScene' | 'updatePrimitive',
+): void {
+  const unconsumed = collectUnconsumedMaterialPrimitiveFields(primitives);
+  if (unconsumed.length === 0) return;
+  const details = unconsumed
+    .map(({ primitiveId, fields }) => `${primitiveId} [${fields.join(', ')}]`)
+    .join('; ');
+  throw new TypeError(
+    `[vitrum/walkaround-hybrid] ${method}: material fields are not represented ` +
+    `by this backend and cannot be ignored. Unsupported primitive fields: ${details}.`,
   );
 }
 
-function halfToFloat(h: number): number {
-  const s = (h & 0x8000) >> 15;
-  const e = (h & 0x7c00) >> 10;
-  const f = h & 0x03ff;
-  if (e === 0) return (s ? -1 : 1) * 2 ** -14 * (f / 1024);
-  if (e === 0x1f) return f ? NaN : (s ? -1 : 1) * Infinity;
-  return (s ? -1 : 1) * 2 ** (e - 15) * (1 + f / 1024);
+export function collectUnsupportedVolumeLayerPrimitiveFields(
+  _primitives: ReadonlyArray<{
+    readonly id?: string;
+    readonly kind: string;
+    readonly material?: Record<string, unknown>;
+  }>,
+): UnsupportedVolumeLayerPrimitiveFields[] {
+  return [];
 }
 
-function decodedTextureAlpha(value: number, src: ArrayLike<number>, hintDataType: string | undefined): number {
-  const isFloat = src instanceof Float32Array;
-  const useHalf = hintDataType != null
-    ? hintDataType === 'float16' || hintDataType === 'half-float'
-    : false;
-  const useUint16 = hintDataType != null ? hintDataType === 'uint16' : src instanceof Uint16Array;
-  const useFloat = hintDataType != null ? hintDataType === 'float32' : isFloat;
-  const bpe = (src as { readonly BYTES_PER_ELEMENT?: number }).BYTES_PER_ELEMENT ?? 1;
-  const intMax = useHalf || useUint16 || useFloat ? 0 : 2 ** (8 * bpe) - 1;
-  return useHalf ? halfToFloat(value) :
-    useFloat ? value :
-      useUint16 ? Math.min(1, Math.max(0, value / 65535)) :
-      intMax > 0 ? value / intMax : value;
+export function collectUnsupportedVolumeLayerFieldsForMaterial(
+  _material: Record<string, unknown> | undefined,
+): string[] {
+  return [];
 }
 
-function baseColorMapCanReduceAlpha(value: unknown): boolean {
-  const handle = asTextureHandle(value);
-  if (handle == null || typeof handle !== 'object') return false;
-  const h = handle as {
-    readonly width?: number;
-    readonly height?: number;
-    readonly data?: ArrayLike<number>;
-    readonly image?: { readonly width?: number; readonly height?: number; readonly data?: ArrayLike<number> };
-  };
-  const src = h.data ?? h.image?.data;
-  const width = Number(h.width ?? h.image?.width ?? 0);
-  const height = Number(h.height ?? h.image?.height ?? 0);
-  if (src == null || typeof src.length !== 'number' || width <= 0 || height <= 0) return false;
-
-  const hint = textureHint(handle);
-  const pixelCount = Math.max(1, width * height);
-  const heuristicStride = Math.max(1, Math.round(src.length / pixelCount));
-  const stride = hint?.channels ?? heuristicStride;
-  if (stride < 4) return false;
-
-  for (let p = 0; p < pixelCount; p += 1) {
-    const alpha = decodedTextureAlpha(Number(src[p * stride + 3] ?? 1), src, hint?.dataType);
-    if (Number.isFinite(alpha) && alpha < 0.999) return true;
-  }
-  return false;
+/**
+ * Reject material profiles whose public contract requires participating-media
+ * or layered-BSDF transport that this realtime backend does not implement.
+ * The old compact tint/softening path was not delta tracking and the one-pass
+ * face multiplier did not satisfy the two-sided layer contract, so accepting
+ * these fields would silently substitute a different model.
+ */
+export function assertNoUnsupportedVolumeLayerProfiles(
+  _primitives: ReadonlyArray<{
+    readonly id?: string;
+    readonly kind: string;
+    readonly material?: Record<string, unknown>;
+  }>,
+  _method: 'setScene' | 'updatePrimitive',
+): void {
+  // Compatibility no-op: every formerly rejected field has a live transport
+  // implementation. Keep the exported guard so existing hosts need not branch.
 }
 
-function hasFractionalVertexAlpha(
-  positions: ArrayLike<number> | undefined,
-  colors: ArrayLike<number> | undefined,
-): boolean {
-  if (positions == null || colors == null) return false;
-  const vertexCount = Math.floor(positions.length / 3);
-  if (vertexCount <= 0) return false;
-  const stride = colors.length / vertexCount;
-  if (!Number.isInteger(stride) || stride < 4) return false;
-  for (let v = 0; v < vertexCount; v += 1) {
-    const alpha = unitAlpha(colors[v * stride + 3], 1);
-    if (alpha > 0 && alpha < 1) return true;
-  }
-  return false;
+/**
+ * The bounded GI/RC/caustic dielectric continuations are delta-interface
+ * estimators. Applying their Snell path to a rough transmissive BSDF would omit
+ * the rough proposal PDF and BSDF weight, so that profile is rejected at the
+ * synchronous scene boundary instead of being silently rendered as smooth.
+ */
+export function assertNoUnsupportedRoughTransmissionProfiles(
+  _primitives: ReadonlyArray<{
+    readonly id?: string;
+    readonly kind: string;
+    readonly material?: Record<string, unknown>;
+  }>,
+  _method: 'setScene' | 'updatePrimitive',
+): void {
+  // Compatibility no-op: exact VNDF rough-BTDF sampling is implemented.
 }
 
-function unitAlpha(value: unknown, fallback: number): number {
-  return typeof value === 'number' && Number.isFinite(value)
-    ? Math.min(1, Math.max(0, value))
-    : fallback;
+/**
+ * The bounded dielectric continuation owns one smooth interface lobe.  The
+ * opaque BRDF path supports coat/sheen/specular/iridescence, but composing
+ * those lobes with transmission requires a joint event sampler and PDFs at the
+ * boundary. Reject that conditional profile instead of dropping the lobes.
+ */
+export function assertNoUnsupportedLayeredTransmissionProfiles(
+  _primitives: ReadonlyArray<{
+    readonly id?: string;
+    readonly kind: string;
+    readonly material?: Record<string, unknown>;
+  }>,
+  _method: 'setScene' | 'updatePrimitive',
+): void {
+  // Compatibility no-op: layered event weights are represented at interfaces.
 }
 
-function emissiveEnergyIsNonZero(material: Record<string, unknown>): boolean {
-  const intensity = typeof material.emissiveIntensity === 'number' && Number.isFinite(material.emissiveIntensity)
-    ? Math.max(0, material.emissiveIntensity)
-    : 1;
-  if (intensity <= 0) return false;
-  const emissive = material.emissive as ArrayLike<unknown> | undefined;
-  if (!emissive || typeof emissive.length !== 'number') return false;
-  for (let i = 0; i < Math.min(3, emissive.length); i += 1) {
-    const channel = emissive[i];
-    if (typeof channel === 'number' && Number.isFinite(channel) && channel > 0) {
-      return true;
-    }
-  }
-  return false;
+export function assertNoUnsupportedMaterialProfiles(
+  primitives: ReadonlyArray<{
+    readonly id?: string;
+    readonly kind: string;
+    readonly material?: Record<string, unknown>;
+  }>,
+  method: 'setScene' | 'updatePrimitive',
+): void {
+  assertNoUnsupportedVolumeLayerProfiles(primitives, method);
+  assertNoUnsupportedRoughTransmissionProfiles(primitives, method);
+  assertNoUnsupportedLayeredTransmissionProfiles(primitives, method);
 }
 
-function emitterEnergyIsNonZero(emitter: {
-  readonly color?: ArrayLike<unknown>;
-  readonly intensity?: unknown;
-}): boolean {
-  const intensity = typeof emitter.intensity === 'number' && Number.isFinite(emitter.intensity)
-    ? Math.max(0, emitter.intensity)
-    : 0;
-  if (intensity <= 0) return false;
-  const color = emitter.color;
-  if (!color || typeof color.length !== 'number') return false;
-  for (let i = 0; i < Math.min(3, color.length); i += 1) {
-    const channel = color[i];
-    if (typeof channel === 'number' && Number.isFinite(channel) && channel > 0) {
-      return true;
-    }
-  }
-  return false;
+/**
+ * Radiance Cascades' direct-sun cache path currently casts a straight
+ * directional visibility ray. A delta dielectric can bend that path, and a
+ * correct connection to a delta directional emitter requires solving the
+ * refractive boundary connection (not merely applying Beer tint along the
+ * unrefracted ray). Until RC owns that solver, reject this feature combination
+ * synchronously instead of publishing a physically false cache.
+ */
+export function assertNoRcDirectSunTransmissionProfiles(
+  _primitives: ReadonlyArray<{
+    readonly id?: string;
+    readonly kind: string;
+    readonly material?: Record<string, unknown>;
+  }>,
+  _method: 'setScene' | 'updatePrimitive',
+): void {
+  // Compatibility no-op retained for hosts compiled against the older guard.
 }

@@ -29,6 +29,7 @@ import {
 import type { DTree, DTreeNode } from './types.js';
 
 const FOUR_PI = 4 * Math.PI;
+const MAX_FINITE_F32 = 3.402823466e38;
 
 // ────────────────────────────────────────────────────────────────────────────
 // Build
@@ -46,6 +47,13 @@ const FOUR_PI = 4 * Math.PI;
  *                      1 = 4 leaves, 2 = 16 leaves, …).
  */
 export function buildEmptyDTree(initialDepth: number): DTree {
+  if (!Number.isSafeInteger(initialDepth)
+      || initialDepth < 0
+      || initialDepth > PPG_DTREE_MAX_DEPTH) {
+    throw new RangeError(
+      `initialDepth must be an integer in [0, ${PPG_DTREE_MAX_DEPTH}]; got ${initialDepth}`,
+    );
+  }
   const nodes: DTreeNode[] = [];
   buildSubtree(nodes, 0, 1, 0, 1, 0, initialDepth);
   return { nodes, totalFlux: 0 };
@@ -282,10 +290,14 @@ export function dTreeSample(
       // PDF = (leafFlux / totalFlux) / solidAngle_leaf  (deviation 5 fix) —
       // unchanged by this fix; the jitter decorrelation does not alter the
       // per-leaf solid-angle PDF.
-      const pdf = (node.flux > 0 && totalFlux > 0)
+      const representedLeaf = node.flux > 0
+        && totalFlux > 0
+        && Number.isFinite(node.solidAngle)
+        && node.solidAngle > 0;
+      const pdf = representedLeaf
         ? (node.flux / totalFlux) / node.solidAngle
         : 1 / FOUR_PI;
-      return { octUV: [uSample, vSample], pdf: Math.max(pdf, 1e-12) };
+      return { octUV: [uSample, vSample], pdf };
     }
 
     // Traverse children by selecting proportional to accumulated flux.
@@ -294,7 +306,7 @@ export function dTreeSample(
     let chosen = 3; // default to last child
     for (let ci = 0; ci < 4; ci++) {
       cumFlux += dTree.nodes[c0 + ci]!.flux;
-      if (remaining <= cumFlux) {
+      if (remaining < cumFlux) {
         chosen = ci;
         break;
       }
@@ -320,6 +332,9 @@ export function dTreePdf(dTree: DTree, octUV: [number, number]): number {
   if (dTree.totalFlux <= 0) return 1 / FOUR_PI;
   const leafIdx = findDTreeLeaf(dTree, octUV);
   const leaf = dTree.nodes[leafIdx]!;
+  if (!(leaf.flux > 0) || !Number.isFinite(leaf.solidAngle) || !(leaf.solidAngle > 0)) {
+    return 1 / FOUR_PI;
+  }
   return (leaf.flux / dTree.totalFlux) / leaf.solidAngle;
 }
 
@@ -348,8 +363,29 @@ export function refineDTree(
   fluxFrac: number = PPG_DTREE_FLUX_FRACTION,
   mergeFrac: number = PPG_DTREE_MERGE_FRACTION,
   maxDepth: number = PPG_DTREE_MAX_DEPTH,
+  maxNodes: number = Number.POSITIVE_INFINITY,
 ): void {
+  if (!Number.isFinite(fluxFrac) || fluxFrac < 0 || fluxFrac > 1) {
+    throw new RangeError(`fluxFrac must be finite and inside [0,1]; got ${fluxFrac}`);
+  }
+  if (!Number.isFinite(mergeFrac) || mergeFrac < 0 || mergeFrac > 1) {
+    throw new RangeError(`mergeFrac must be finite and inside [0,1]; got ${mergeFrac}`);
+  }
+  if (!Number.isSafeInteger(maxDepth)
+      || maxDepth < 0
+      || maxDepth > PPG_DTREE_MAX_DEPTH) {
+    throw new RangeError(
+      `maxDepth must be an integer in [0, ${PPG_DTREE_MAX_DEPTH}]; got ${maxDepth}`,
+    );
+  }
+  if (maxNodes !== Number.POSITIVE_INFINITY
+      && (!Number.isSafeInteger(maxNodes) || maxNodes < 1)) {
+    throw new RangeError(`maxNodes must be a positive safe integer or Infinity; got ${maxNodes}`);
+  }
   const totalFlux = dTree.totalFlux;
+  if (!Number.isFinite(totalFlux) || totalFlux < 0 || totalFlux > MAX_FINITE_F32) {
+    throw new RangeError(`dTree totalFlux must be finite, non-negative, and f32-representable; got ${totalFlux}`);
+  }
   if (totalFlux <= 0) return; // nothing to refine
 
   const splitThreshold = fluxFrac * totalFlux;
@@ -361,6 +397,7 @@ export function refineDTree(
     if (!node.isLeaf) continue;
     if (node.depth >= maxDepth) continue;
     if (node.flux <= splitThreshold) continue;
+    if (dTree.nodes.length + 4 > maxNodes) break;
 
     // Split this leaf into 4 children (Müller §3.2).
     splitDTreeLeaf(dTree, i);
@@ -409,6 +446,78 @@ export function refineDTree(
   // from the root and re-patching `firstChild` to the consecutive-children
   // invariant `buildSubtree` documents.
   compactDTree(dTree);
+  recomputeDTreeInteriorFlux(dTree);
+}
+
+/**
+ * Recompute all subtree masses and the total leaf mass after topology or leaf
+ * changes. Invalid/non-f32-representable state is rejected instead of silently
+ * serialising NaN/Infinity into the GPU guide.
+ */
+export function recomputeDTreeInteriorFlux(dTree: DTree): void {
+  if (dTree.nodes.length === 0) {
+    throw new RangeError('cannot recompute flux for an empty dTree');
+  }
+
+  // Stage every derived mass before committing. Validation failures therefore
+  // leave both node flux and totalFlux byte-for-byte unchanged.
+  const staged = new Float64Array(dTree.nodes.length);
+  const visitState = new Uint8Array(dTree.nodes.length); // 0=unseen, 1=open, 2=closed
+  const stack: Array<{ index: number; expanded: boolean }> = [
+    { index: 0, expanded: false },
+  ];
+  while (stack.length > 0) {
+    const { index, expanded } = stack.pop()!;
+    const node = dTree.nodes[index];
+    if (!node) throw new RangeError(`dTree traversal reached invalid node ${index}`);
+    if (!expanded) {
+      if (visitState[index] === 1) {
+        throw new RangeError(`dTree node ${index} is cyclic`);
+      }
+      if (visitState[index] === 2) {
+        throw new RangeError(`dTree node ${index} is multiply referenced`);
+      }
+      if (!Number.isFinite(node.flux) || node.flux < 0) {
+        throw new RangeError(`dTree node ${index} has invalid flux ${node.flux}`);
+      }
+      visitState[index] = 1;
+      stack.push({ index, expanded: true });
+      if (!node.isLeaf) {
+        if (
+          !Number.isSafeInteger(node.firstChild) ||
+          node.firstChild <= index ||
+          node.firstChild + 3 >= dTree.nodes.length
+        ) {
+          throw new RangeError(`dTree interior node ${index} has invalid children`);
+        }
+        for (let child = 3; child >= 0; child--) {
+          stack.push({ index: node.firstChild + child, expanded: false });
+        }
+      }
+      continue;
+    }
+
+    let mass = node.flux;
+    if (!node.isLeaf) {
+      mass = 0;
+      for (let child = 0; child < 4; child++) {
+        mass += staged[node.firstChild + child]!;
+      }
+    }
+    if (!Number.isFinite(mass) || mass > MAX_FINITE_F32) {
+      throw new RangeError(`dTree node ${index} exceeds finite f32 range`);
+    }
+    staged[index] = mass;
+    visitState[index] = 2;
+  }
+  if (visitState.some((state) => state === 0)) {
+    throw new RangeError('dTree contains unreachable nodes');
+  }
+
+  for (let index = 0; index < dTree.nodes.length; index++) {
+    dTree.nodes[index]!.flux = staged[index]!;
+  }
+  dTree.totalFlux = staged[0]!;
 }
 
 /**
@@ -532,21 +641,53 @@ export function dTreeAccumulateFlux(
   octUV: [number, number],
   flux: number,
 ): void {
+  if (!Number.isFinite(flux) || flux < 0) {
+    throw new RangeError(`flux must be finite and non-negative; got ${flux}`);
+  }
+  if (
+    !Number.isFinite(octUV[0]) ||
+    !Number.isFinite(octUV[1]) ||
+    octUV[0] < 0 || octUV[0] > 1 || octUV[1] < 0 || octUV[1] > 1
+  ) {
+    throw new RangeError(
+      `octUV must be finite and inside [0,1]^2; got ${octUV.join(',')}`,
+    );
+  }
+  if (dTree.nodes.length === 0) {
+    throw new RangeError('cannot accumulate flux into an empty dTree');
+  }
+
+  // Resolve and validate the complete path before mutating anything. This keeps
+  // failed deposits transactional and prevents a malformed graph from leaving
+  // only some ancestors updated.
+  const path: number[] = [];
+  const seen = new Set<number>();
   let idx = 0;
   while (true) {
-    const node = dTree.nodes[idx]!;
-    if (node.isLeaf) {
-      node.flux += flux;
-      dTree.totalFlux += flux;
-      return;
+    const node = dTree.nodes[idx];
+    if (!node || seen.has(idx)) {
+      throw new RangeError(`dTree traversal reached invalid or cyclic node ${idx}`);
+    }
+    seen.add(idx);
+    path.push(idx);
+    if (!Number.isFinite(node.flux) || node.flux < 0 || node.flux + flux > MAX_FINITE_F32) {
+      throw new RangeError(`dTree node ${idx} flux would exceed finite f32 range`);
+    }
+    if (node.isLeaf) break;
+    if (node.firstChild < 0 || node.firstChild + 3 >= dTree.nodes.length) {
+      throw new RangeError(`dTree node ${idx} has invalid children`);
     }
     const uMid = (node.u0 + node.u1) * 0.5;
     const vMid = (node.v0 + node.v1) * 0.5;
     const goRight = octUV[0] >= uMid;
-    const goDown  = octUV[1] >= vMid;
-    // firstChild ordering: 0=NW(left,top), 1=NE(right,top), 2=SW(left,bot), 3=SE(right,bot)
+    const goDown = octUV[1] >= vMid;
     idx = node.firstChild + (goDown ? 2 : 0) + (goRight ? 1 : 0);
   }
+  if (!Number.isFinite(dTree.totalFlux) || dTree.totalFlux < 0 || dTree.totalFlux + flux > MAX_FINITE_F32) {
+    throw new RangeError('dTree total flux would exceed finite f32 range');
+  }
+  for (const nodeIndex of path) dTree.nodes[nodeIndex]!.flux += flux;
+  dTree.totalFlux += flux;
 }
 
 export function sumLeafSolidAngles(dTree: DTree): number {

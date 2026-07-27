@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from 'vitest';
 import type { Scene } from '@vitrum/core';
 import {
   buildPackedScene,
+  CWBVH_ROOT_PAIR_WORDS,
+  isValidCwbvhRootPair,
   scenePackResultFromPacked,
   uploadPackedScene,
   uploadScenePackBlasOnly,
@@ -95,5 +97,11 @@ describe('uploadScenePackBlasOnly', () => {
     expect(labels.some((l) => l.includes('colors'))).toBe(true);
     expect(labels.some((l) => l.includes('bvhNodes'))).toBe(true);
     expect(labels.some((l) => l.includes('cwbvhNodeBounds'))).toBe(true);
+    for (let i = 0; i < sb.tlasBlasRoots.length; i += 1) {
+      const offset = i * CWBVH_ROOT_PAIR_WORDS;
+      expect(isValidCwbvhRootPair(sb.cwbvhTlasBlasRoots, offset)).toBe(true);
+      expect(sb.cwbvhTlasBlasRoots[offset + 1]).toBe(sb.tlasBlasRoots[i]);
+      expect(sb.cwbvhTlasBlasRoots[offset + 2]).toBeLessThan(sb.cwbvhNodeCount);
+    }
   });
 });

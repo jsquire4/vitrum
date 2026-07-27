@@ -37,7 +37,9 @@ export function encodeAnalyticParams<S extends AnalyticShape>(
       `encodeAnalyticParams: shape "${shape}" expects ${len} values, got ${params.length}`,
     );
   }
-  return Float32Array.from(params);
+  const packed = Float32Array.from(params);
+  validateAnalyticParams(shape, packed);
+  return packed;
 }
 
 /** Decode packed params after validating length for the shape. */
@@ -45,20 +47,71 @@ export function decodeAnalyticParams<S extends AnalyticShape>(
   shape: S,
   packed: Float32Array,
 ): AnalyticParamsByShape[S] {
-  const len = ANALYTIC_PARAM_LENGTH[shape];
-  if (packed.length !== len) {
-    throw new Error(
-      `decodeAnalyticParams: shape "${shape}" expects ${len} values, got ${packed.length}`,
-    );
-  }
+  validateAnalyticParams(shape, packed);
   return Array.from(packed) as unknown as AnalyticParamsByShape[S];
 }
 
 export function validateAnalyticParams(shape: AnalyticShape, packed: Float32Array): void {
+  if (!Object.prototype.hasOwnProperty.call(ANALYTIC_PARAM_LENGTH, shape)) {
+    throw new TypeError(`validateAnalyticParams: unsupported shape "${String(shape)}"`);
+  }
+  if (!(packed instanceof Float32Array)) {
+    throw new TypeError(
+      `validateAnalyticParams: shape "${shape}" params must be a Float32Array`,
+    );
+  }
   const len = ANALYTIC_PARAM_LENGTH[shape];
   if (packed.length !== len) {
     throw new Error(
       `validateAnalyticParams: shape "${shape}" expects ${len} values, got ${packed.length}`,
     );
+  }
+  for (let index = 0; index < packed.length; index += 1) {
+    const value = packed[index];
+    if (!Number.isFinite(value)) {
+      throw new RangeError(
+        `validateAnalyticParams: shape "${shape}" params[${index}] must be finite (got ${String(value)})`,
+      );
+    }
+  }
+
+  const positive = (index: number, label: string): void => {
+    const value = packed[index]!;
+    if (!(value > 0)) {
+      throw new RangeError(
+        `validateAnalyticParams: shape "${shape}" ${label} must be > 0 (got ${value})`,
+      );
+    }
+  };
+  switch (shape) {
+    case 'sphere':
+      positive(3, 'radius');
+      break;
+    case 'box':
+      positive(3, 'half-width');
+      positive(4, 'half-height');
+      positive(5, 'half-depth');
+      break;
+    case 'capsule':
+      positive(6, 'radius');
+      break;
+    case 'cylinder':
+      positive(3, 'radius');
+      positive(4, 'half-height');
+      break;
+    case 'h-channel-came': {
+      positive(0, 'length');
+      positive(1, 'railWidth');
+      positive(2, 'blockHeight');
+      positive(3, 'webThickness');
+      const webThickness = packed[3]!;
+      if (webThickness >= Math.min(packed[1]!, packed[2]!)) {
+        throw new RangeError(
+          `validateAnalyticParams: shape "h-channel-came" webThickness must be smaller than ` +
+            `railWidth and blockHeight (got ${webThickness})`,
+        );
+      }
+      break;
+    }
   }
 }

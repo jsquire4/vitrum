@@ -7,6 +7,8 @@
 // the adapter should hand downstream engines a predictable core Scene when
 // POSITION/NORMAL/TEXCOORD_0 are available.
 
+import type { ImportResourceLedger } from './importResourceBudget.js';
+
 /**
  * Generate per-vertex xyzw tangents from positions, normals, UV0 and triangles.
  * The xyz vector is Gram-Schmidt orthonormalized against the normal; w is the
@@ -17,14 +19,43 @@ export function generateTangents(
   normals: Float32Array,
   uvs: Float32Array,
   indices: Uint32Array | Uint16Array | undefined,
+  resourceLedger?: ImportResourceLedger,
+  allocationPath = 'generated vertex tangents',
 ): Float32Array | undefined {
   const vertexCount = positions.length / 3;
   if (!Number.isInteger(vertexCount) || vertexCount <= 0) return undefined;
   if (normals.length < vertexCount * 3 || uvs.length < vertexCount * 2) return undefined;
 
-  const tangents = new Float32Array(vertexCount * 4);
-  const tanAccum = new Float32Array(vertexCount * 3);
-  const bitanAccum = new Float32Array(vertexCount * 3);
+  const tangentElementCount = checkedTangentProduct(
+    vertexCount,
+    4,
+    `${allocationPath} output element count`,
+  );
+  const accumulatorElementCount = checkedTangentProduct(
+    vertexCount,
+    3,
+    `${allocationPath} accumulator element count`,
+  );
+  const totalElementCount = checkedTangentSum(
+    tangentElementCount,
+    checkedTangentProduct(
+      accumulatorElementCount,
+      2,
+      `${allocationPath} accumulator total`,
+    ),
+    `${allocationPath} total element count`,
+  );
+  resourceLedger?.chargeDecodedGeometryBytes(
+    checkedTangentProduct(
+      totalElementCount,
+      Float32Array.BYTES_PER_ELEMENT,
+      `${allocationPath} byte length`,
+    ),
+    allocationPath,
+  );
+  const tangents = new Float32Array(tangentElementCount);
+  const tanAccum = new Float32Array(accumulatorElementCount);
+  const bitanAccum = new Float32Array(accumulatorElementCount);
   const triCount = indices ? Math.floor(indices.length / 3) : Math.floor(vertexCount / 3);
   let validTriangleCount = 0;
 
@@ -62,14 +93,9 @@ export function generateTangents(
     const by = (du1 * e2y - du2 * e1y) * r;
     const bz = (du1 * e2z - du2 * e1z) * r;
 
-    for (const vi of [i0, i1, i2]) {
-      tanAccum[vi * 3] = (tanAccum[vi * 3] ?? 0) + tx;
-      tanAccum[vi * 3 + 1] = (tanAccum[vi * 3 + 1] ?? 0) + ty;
-      tanAccum[vi * 3 + 2] = (tanAccum[vi * 3 + 2] ?? 0) + tz;
-      bitanAccum[vi * 3] = (bitanAccum[vi * 3] ?? 0) + bx;
-      bitanAccum[vi * 3 + 1] = (bitanAccum[vi * 3 + 1] ?? 0) + by;
-      bitanAccum[vi * 3 + 2] = (bitanAccum[vi * 3 + 2] ?? 0) + bz;
-    }
+    accumulateTangentFrame(tanAccum, bitanAccum, i0, tx, ty, tz, bx, by, bz);
+    accumulateTangentFrame(tanAccum, bitanAccum, i1, tx, ty, tz, bx, by, bz);
+    accumulateTangentFrame(tanAccum, bitanAccum, i2, tx, ty, tz, bx, by, bz);
   }
 
   if (validTriangleCount === 0) return undefined;
@@ -97,10 +123,16 @@ export function generateTangents(
     let len = Math.sqrt(tx * tx + ty * ty + tz * tz);
 
     if (len < 1e-8) {
-      const fallback = tangentFromNormal(nx, ny, nz);
-      tx = fallback[0];
-      ty = fallback[1];
-      tz = fallback[2];
+      const sign = nz >= 0 ? 1 : -1;
+      const a = -1 / (sign + nz);
+      const b = nx * ny * a;
+      tx = 1 + sign * nx * nx * a;
+      ty = sign * b;
+      tz = -sign * nx;
+      const fallbackLength = Math.sqrt(tx * tx + ty * ty + tz * tz) || 1;
+      tx /= fallbackLength;
+      ty /= fallbackLength;
+      tz /= fallbackLength;
       len = 1;
     }
 
@@ -113,13 +145,48 @@ export function generateTangents(
   return tangents;
 }
 
-function tangentFromNormal(nx: number, ny: number, nz: number): readonly [number, number, number] {
-  const sign = nz >= 0 ? 1 : -1;
-  const a = -1 / (sign + nz);
-  const b = nx * ny * a;
-  const tx = 1 + sign * nx * nx * a;
-  const ty = sign * b;
-  const tz = -sign * nx;
-  const len = Math.sqrt(tx * tx + ty * ty + tz * tz) || 1;
-  return [tx / len, ty / len, tz / len];
+function checkedTangentProduct(left: number, right: number, label: string): number {
+  if (
+    !Number.isSafeInteger(left) ||
+    left < 0 ||
+    !Number.isSafeInteger(right) ||
+    right < 0 ||
+    (left !== 0 && right > Math.floor(Number.MAX_SAFE_INTEGER / left))
+  ) {
+    throw new RangeError(`[vitrum/gltf-adapter] ${label} exceeds the safe integer range.`);
+  }
+  return left * right;
+}
+
+function checkedTangentSum(left: number, right: number, label: string): number {
+  if (
+    !Number.isSafeInteger(left) ||
+    left < 0 ||
+    !Number.isSafeInteger(right) ||
+    right < 0 ||
+    right > Number.MAX_SAFE_INTEGER - left
+  ) {
+    throw new RangeError(`[vitrum/gltf-adapter] ${label} exceeds the safe integer range.`);
+  }
+  return left + right;
+}
+
+function accumulateTangentFrame(
+  tangents: Float32Array,
+  bitangents: Float32Array,
+  vertex: number,
+  tx: number,
+  ty: number,
+  tz: number,
+  bx: number,
+  by: number,
+  bz: number,
+): void {
+  const offset = vertex * 3;
+  tangents[offset] = (tangents[offset] ?? 0) + tx;
+  tangents[offset + 1] = (tangents[offset + 1] ?? 0) + ty;
+  tangents[offset + 2] = (tangents[offset + 2] ?? 0) + tz;
+  bitangents[offset] = (bitangents[offset] ?? 0) + bx;
+  bitangents[offset + 1] = (bitangents[offset + 1] ?? 0) + by;
+  bitangents[offset + 2] = (bitangents[offset + 2] ?? 0) + bz;
 }

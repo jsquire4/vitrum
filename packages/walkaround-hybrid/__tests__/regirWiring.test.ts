@@ -161,12 +161,13 @@ describe('RIS WGSL — ReGIR cell selection enters the unbiased weight', () => {
     // pX = emitterSelPmf × ls.pdfArea, then w = p̂ / pX. The regir branch sets
     // emitterSelPmf = the cell pmf, so the divisor is exact ⇒ unbiased.
     expect(RIS_WGSL).toContain('emitterSelPmf * ls.pdfArea');
-    expect(RIS_WGSL).toContain('let w = select(0.0, pHat / pX, pHat > 0.0)');
+    expect(RIS_WGSL).toContain('if (pHat > 0.0 && pX > 0.0) { w = pHat / pX; }');
+    expect(RIS_WGSL).toContain('if (!reservoirDiFinite(w)) { w = 0.0; }');
   });
 
   it('the tree + flat-CDF fallback paths are preserved (regir branch is else-if)', () => {
     expect(RIS_WGSL).toContain('sampleLightTree(pos, ubo.emitterDist2Floor');
-    expect(RIS_WGSL).toContain('sampleEmitterIdx(&emitterCdf, emCount');
+    expect(RIS_WGSL).toContain('sampleEmitterIdx(emCount, xiEm)');
   });
 });
 
@@ -192,6 +193,17 @@ describe('ReGIR WGSL — grid build stores the exact per-cell pmf', () => {
     expect(REGIR_WGSL).not.toContain('fn regir_cell_target(');
     expect(REGIR_BUILD_WGSL).not.toContain('fn rb_cell_target(');
     expect(REGIR_BUILD_WGSL).not.toContain('luminance(e.Le) * e.area');
+  });
+
+  it('binds only the combined light-tree buffer and UBO', () => {
+    expect(REGIR_BUILD_WGSL).toContain(
+      '@group(0) @binding(0) var<storage, read_write> regirGridRW',
+    );
+    expect(REGIR_BUILD_WGSL).toContain(
+      '@group(0) @binding(1) var<uniform>             ubo:',
+    );
+    expect(REGIR_BUILD_WGSL).not.toContain('emittersRW');
+    expect(REGIR_BUILD_WGSL).not.toContain('@group(0) @binding(2)');
   });
 });
 
@@ -258,11 +270,15 @@ describe('ReGIRCoordinator', () => {
     c.initialize(bvh(7, true), true);
     expect(c.live).toBe(true);
     // Emitter rebuild grew the tree (more nodes) → offset shifts.
-    c.refreshAfterEmitterRebuild({ lightTreeNodeCount: 15, lightTreeEnabled: true });
+    c.refreshAfterEmitterRebuild(bvh(15, true));
     expect(c.uboState().gridFloatOffset).toBe(15 * 16); // B8: stride 12→16
     // Tree went degenerate → ReGIR drops to the tree/flat path.
-    c.refreshAfterEmitterRebuild({ lightTreeNodeCount: 0, lightTreeEnabled: false });
+    c.refreshAfterEmitterRebuild(bvh(0, false));
     expect(c.live).toBe(false);
+    // A later emitter rebuild can make the tree live again.
+    c.refreshAfterEmitterRebuild(bvh(9, true));
+    expect(c.live).toBe(true);
+    expect(c.uboState().gridFloatOffset).toBe(9 * 16);
   });
 });
 

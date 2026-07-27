@@ -19,7 +19,9 @@ const COPY_DST = 0x02;
  * MUST match the format (4 for r32uint, 16 for rgba32float) — it drives
  * `bytesPerRow`.
  */
-export function uploadElementTexture<T extends Uint32Array | Float32Array>(
+export function uploadElementTexture<
+  T extends Uint32Array<ArrayBuffer> | Float32Array<ArrayBuffer>,
+>(
   device: GPUDevice,
   opts: {
     label: string;
@@ -43,12 +45,23 @@ export function uploadElementTexture<T extends Uint32Array | Float32Array>(
     format,
     usage: TEX_BINDING | COPY_DST,
   });
-  writeElementTexture(device, texture, { width, height, bytesPerTexel, makePadded, elementsPerTexel, fill });
-  return texture;
+  try {
+    writeElementTexture(
+      device,
+      texture,
+      { width, height, bytesPerTexel, makePadded, elementsPerTexel, fill },
+    );
+    return texture;
+  } catch (error) {
+    texture.destroy();
+    throw error;
+  }
 }
 
 /** Re-upload the full padded grid into an existing texture (refresh path). */
-export function writeElementTexture<T extends Uint32Array | Float32Array>(
+export function writeElementTexture<
+  T extends Uint32Array<ArrayBuffer> | Float32Array<ArrayBuffer>,
+>(
   device: GPUDevice,
   texture: GPUTexture,
   opts: {

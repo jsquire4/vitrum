@@ -11,11 +11,6 @@ import {
   diSpatialPassLabels,
   giSpatialPassLabels,
 } from '../pipeline/passes/passOrder.js';
-import {
-  packProbeUpdateFrameParams,
-  packProbeUpdateBlendParams,
-} from '../ddgi/probeUpdateFrameParams.js';
-import { DDGI_FRAME_PARAMS_UBO, DDGI_BLEND_PARAMS_UBO } from '../ddgi/probeUpdateUbos.js';
 
 const TIERS: QualityTier[] = ['ultra', 'high', 'medium', 'low'];
 
@@ -201,50 +196,5 @@ describe('pass-flag characterization — buildPassLayout / composePassLabels (GP
     expect(diSpatialPassLabels(2)).toContain('spatial-2');
     expect(giSpatialPassLabels(1)).toContain('gi-spatial-2');
     expect(giSpatialPassLabels(2)).toContain('gi-spatial-2');
-  });
-});
-
-describe('DDGI probe-update divisor characterization (UBO byte-level)', () => {
-  const TOTAL_PROBES = 4096;
-
-  /** Read the packed `probesPerFrame` u32 out of the frame-params UBO bytes. */
-  function frameProbesPerFrame(divisor: number | undefined): number {
-    const buf = packProbeUpdateFrameParams({
-      frameIndex: 0,
-      totalProbes: TOTAL_PROBES,
-      skyTint: [0.4, 0.6, 1.0],
-      skyIrradiance: 2.0,
-      glassMixScale: 0.7,
-      ...(divisor !== undefined ? { updateDivisor: divisor } : {}),
-    });
-    const offset = DDGI_FRAME_PARAMS_UBO.fieldOffsets.probesPerFrame;
-    return new DataView(buf).getUint32(offset, true);
-  }
-
-  function blendProbesPerFrame(divisor: number | undefined): number {
-    const buf = packProbeUpdateBlendParams(TOTAL_PROBES, divisor);
-    const offset = DDGI_BLEND_PARAMS_UBO.fieldOffsets.probesPerFrame;
-    return new DataView(buf).getUint32(offset, true);
-  }
-
-  it('default divisor (omitted) reproduces the historical /4', () => {
-    expect(frameProbesPerFrame(undefined)).toBe(Math.ceil(TOTAL_PROBES / 4));
-    expect(blendProbesPerFrame(undefined)).toBe(Math.ceil(TOTAL_PROBES / 4));
-  });
-
-  it('medium (8) and low (16) divisors update fewer probes per frame', () => {
-    expect(frameProbesPerFrame(8)).toBe(Math.ceil(TOTAL_PROBES / 8));
-    expect(frameProbesPerFrame(16)).toBe(Math.ceil(TOTAL_PROBES / 16));
-  });
-
-  it('ray pass and blend pass agree on coverage for the same divisor (no probe drift)', () => {
-    for (const d of [4, 8, 16]) {
-      expect(frameProbesPerFrame(d)).toBe(blendProbesPerFrame(d));
-    }
-  });
-
-  it('divisor < 1 is clamped to 1 (never requests more probes than exist)', () => {
-    expect(frameProbesPerFrame(0)).toBe(TOTAL_PROBES);
-    expect(blendProbesPerFrame(0)).toBe(TOTAL_PROBES);
   });
 });

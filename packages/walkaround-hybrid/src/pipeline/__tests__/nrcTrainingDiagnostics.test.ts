@@ -40,7 +40,43 @@ describe('WalkaroundGPUPipeline NRC training diagnostics', () => {
     expect(onError).toHaveBeenCalledTimes(1);
     expect(onError).toHaveBeenCalledWith({
       kind: 'render',
-      message: '[WalkaroundGPUPipeline] NRC training failed; retaining previous NRC weights. mapAsync failed',
+      message: '[WalkaroundGPUPipeline] NRC training transaction failed; the last committed NRC generation remains valid. mapAsync failed',
+      fatal: false,
+      raw,
+    });
+  });
+
+  it('contains and reports a synchronous NRC training throw', () => {
+    const raw = new Error('synchronous training setup failed');
+    const trainFromRecords = vi.fn(() => { throw raw; });
+    const onError = vi.fn();
+    const pipeline = makeHarness(trainFromRecords, onError);
+
+    expect(() => pipeline._tickSubsystemTraining({})).not.toThrow();
+    expect(onError).toHaveBeenCalledOnce();
+    expect(onError).toHaveBeenCalledWith({
+      kind: 'render',
+      message: '[WalkaroundGPUPipeline] NRC training transaction failed; the last committed NRC generation remains valid. synchronous training setup failed',
+      fatal: false,
+      raw,
+    });
+  });
+
+  it('contains a synchronous PPG refine throw and still starts NRC training', async () => {
+    const raw = new Error('PPG readback setup failed');
+    const trainFromRecords = vi.fn(() => Promise.resolve());
+    const onError = vi.fn();
+    const pipeline = makeHarness(trainFromRecords, onError);
+    pipeline._ppg = {
+      maybeRunTrainingRefine: vi.fn(() => { throw raw; }),
+    };
+
+    expect(() => pipeline._tickSubsystemTraining({})).not.toThrow();
+    await flushTrainingCatch();
+    expect(trainFromRecords).toHaveBeenCalledOnce();
+    expect(onError).toHaveBeenCalledWith({
+      kind: 'render',
+      message: "[WalkaroundGPUPipeline] accepted frame post-submit hook 'PPG training/refine' failed; GPU submission remains accepted. PPG readback setup failed",
       fatal: false,
       raw,
     });

@@ -72,10 +72,15 @@ describe('pt-webgl2 robustness — context-loss handling', () => {
     const lostEvent = Object.assign(new Event('webglcontextlost'), { preventDefault: vi.fn() });
     canvas.dispatchEvent('webglcontextlost', lostEvent);
 
+    expect(engine.state).toBe('error');
+    expect(() => engine.resume()).toThrow(/dispose and recreate/);
+    expect(engine.state).toBe('error');
+
     // After loss: renderFrame must return 'skipped', not throw.
     const out = engine.renderFrame(frame());
     expect(out.kind).toBe('skipped');
     expect(out.samplesAccumulated).toBe(0);
+    expect(lostEvent.preventDefault).toHaveBeenCalledOnce();
   });
 
   it('webglcontextlost: emits a console.warn naming the loss', async () => {
@@ -228,5 +233,104 @@ describe('pt-webgl2 robustness — texture size validation', () => {
     // layer-count guard to fire here — only override maxArrayLayers.
     expect(msg).toMatch(/pt-webgl2/);
     expect(msg).toMatch(/layer/i);
+  });
+
+  it('rejects arbitrary-UV attribute layers before allocating scene textures', async () => {
+    const record = new Map<string, unknown>();
+    const gl = createMockGl({ record, maxArrayLayers: 5 });
+    const engine = await createPTEngine_WebGL2({ device: gl });
+    const before = (record.get('__texImage2D') as unknown[] | undefined)?.length ?? 0;
+    const uv2 = new Float32Array([0, 0, 1, 0, 0, 1]);
+    const primitive: MeshPrimitive = {
+      kind: 'mesh',
+      id: 'uv2-budget',
+      positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+      normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+      uvSets: [undefined, undefined, uv2],
+      indices: new Uint32Array([0, 1, 2]),
+      material: { baseColor: [1, 1, 1], roughness: 1, metallic: 0 },
+    };
+    expect(() => engine.setScene({
+      primitives: [primitive], emitters: [], environment: { kind: 'none' },
+    })).toThrow(/vertex attributes require 6.*MAX_ARRAY_TEXTURE_LAYERS=5/i);
+    const after = (record.get('__texImage2D') as unknown[] | undefined)?.length ?? 0;
+    expect(after).toBe(before);
+    engine.dispose();
+  });
+});
+
+describe('pt-webgl2 robustness — non-throwing warnings and post-publication retirement', () => {
+  it('delivers structured warnings even when console.warn throws', async () => {
+    const gl = createMockGl();
+    const engine = await createPTEngine_WebGL2({ device: gl });
+    const warnings: string[] = [];
+    engine.onWarning?.((warning) => warnings.push(warning.code));
+    const canvas = (gl as unknown as {
+      canvas: { dispatchEvent(type: string, event: Event): void };
+    }).canvas;
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {
+      throw new Error('hostile console');
+    });
+    try {
+      expect(() => canvas.dispatchEvent(
+        'webglcontextrestored',
+        new Event('webglcontextrestored'),
+      )).not.toThrow();
+      expect(warnings).toContain('pt-webgl2.context-restored-recreate-required');
+    } finally {
+      warn.mockRestore();
+      engine.dispose();
+    }
+  });
+
+  it('publishes setScene and attempts every old texture retirement when one delete throws', async () => {
+    const gl = createMockGl();
+    const engine = await createPTEngine_WebGL2({ device: gl });
+    engine.setScene(smallScene());
+    const warnings: string[] = [];
+    engine.onWarning?.((warning) => warnings.push(warning.code));
+    const deleteTexture = vi.fn()
+      .mockImplementationOnce(() => { throw new Error('hostile delete'); });
+    (gl as unknown as { deleteTexture: (texture: WebGLTexture) => void }).deleteTexture =
+      deleteTexture;
+
+    const replacement: Scene = {
+      primitives: [tri('replacement')],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+    expect(() => engine.setScene(replacement)).not.toThrow();
+    expect(engine.getScene?.()?.primitives[0]?.id).toBe('replacement');
+    expect(deleteTexture.mock.calls.length).toBeGreaterThan(1);
+    expect(warnings).toContain('pt-webgl2.texture-retirement-failed');
+    engine.dispose();
+  });
+
+  it('keeps an incremental environment publication and retires all three superseded textures independently', async () => {
+    const gl = createMockGl();
+    const engine = await createPTEngine_WebGL2({ device: gl });
+    engine.setScene({
+      ...smallScene(),
+      environment: {
+        kind: 'hdri',
+        hdri: {
+          width: 1,
+          height: 1,
+          data: new Float32Array([0.25, 0.5, 1, 1]),
+        },
+      },
+    });
+    const warnings: string[] = [];
+    engine.onWarning?.((warning) => warnings.push(warning.code));
+    const deleteTexture = vi.fn()
+      .mockImplementationOnce(() => { throw new Error('hostile delete'); });
+    (gl as unknown as { deleteTexture: (texture: WebGLTexture) => void }).deleteTexture =
+      deleteTexture;
+
+    expect(() => engine.updateEnvironment?.(null)).not.toThrow();
+    expect(engine.getScene?.()?.environment.kind).toBe('none');
+    expect(deleteTexture).toHaveBeenCalledTimes(3);
+    expect(warnings).toContain('pt-webgl2.texture-retirement-failed');
+    engine.dispose();
   });
 });

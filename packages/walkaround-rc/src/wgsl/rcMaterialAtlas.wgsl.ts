@@ -9,7 +9,7 @@
  *
  * IMPORTANT: these helpers reference **consumer bindings** declared in
  * `probeRayCast.wgsl.ts` (`rc_materialMapMeta`, `rc_materialTextureAtlas`,
- * `rc_geom_*`, `rc_tlas_l2w`, `rc_u_arr`). Per the composeWgsl ordering constraint,
+ * `rc_geom_*`, packed TLAS loaders, `rc_u`). Per the composeWgsl ordering constraint,
  * this fragment is a RAW STRING interpolated into the consumer body AFTER those
  * bindings are declared — it is NOT a standalone `WgslModule`. The composed output
  * is byte-identical to the pre-split single-file literal (pinned by
@@ -24,7 +24,10 @@
  * (pinned by `probeRayCastByteIdentity.test.ts`). The decode fns below stay RC-
  * specific (see the divergence note in materialAtlasOffsets.wgsl.ts).
  */
-import { buildMaterialAtlasOffsetConstsWGSL } from '@vitrum/shared-bvh';
+import {
+  MATERIAL_OPTICS_WGSL,
+  buildMaterialAtlasOffsetConstsWGSL,
+} from '@vitrum/shared-bvh';
 
 export const RC_MATERIAL_ATLAS_WGSL = /* wgsl */ `${buildMaterialAtlasOffsetConstsWGSL({
   prefix: 'RC_',
@@ -36,8 +39,11 @@ export const RC_MATERIAL_ATLAS_WGSL = /* wgsl */ `${buildMaterialAtlasOffsetCons
     'SLOT_ALPHA',
     'ALPHA_COVERAGE_TEXEL_OFFSET',
     'EMISSIVE_TEXEL_OFFSET',
+    'TRANSMISSION_TEXEL_OFFSET',
     'NORMAL_TEXEL_OFFSET',
     'NORMAL_SCALE_TEXEL_OFFSET',
+    'LIGHT_TEXEL_OFFSET',
+    'LIGHT_INTENSITY_TEXEL_OFFSET',
     'SPECULAR_TEXEL_OFFSET',
     'CLEARCOAT_TEXEL_OFFSET',
     'SHEEN_COLOR_TEXEL_OFFSET',
@@ -54,8 +60,12 @@ export const RC_MATERIAL_ATLAS_WGSL = /* wgsl */ `${buildMaterialAtlasOffsetCons
     'IRIDESCENCE_TEXEL_OFFSET',
     'IRIDESCENCE_THICKNESS_TEXEL_OFFSET',
     'IRIDESCENCE_SCALAR_TEXEL_OFFSET',
+    'THICKNESS_TEXEL_OFFSET',
     'BUMP_TEXEL_OFFSET',
     'BUMP_SCALE_TEXEL_OFFSET',
+    'FRONT_LAYER_TEXEL_OFFSET',
+    'BACK_LAYER_TEXEL_OFFSET',
+    'VOLUME_SCATTERING_TEXEL_OFFSET',
     'FRONT_LAYER_NORMAL_TEXEL_OFFSET',
     'FRONT_LAYER_NORMAL_SCALE_TEXEL_OFFSET',
     'BACK_LAYER_NORMAL_TEXEL_OFFSET',
@@ -84,6 +94,12 @@ fn rcMaterialMetaLoadOrZero(triIndex: u32, metaOffset: u32) -> vec4f {
   }
   return textureLoad(rc_materialMapMeta, rcMaterialMetaCoord(texel), 0);
 }
+
+fn materialOpticalLoad(triIndex: u32, metaOffset: u32) -> vec4f {
+  return rcMaterialMetaLoadOrZero(triIndex, metaOffset);
+}
+
+${MATERIAL_OPTICS_WGSL}
 
 fn rcWrapMaterialUv1(v: f32, mode: u32) -> f32 {
   if (mode == 1u) {
@@ -196,8 +212,8 @@ fn rcSampleMaterialAtlasRawAtOffsetDelta(
     return vec4f(-1.0);
   }
   let wrapPacked = u32(max(meta0.y, 0.0) + 0.5);
-  let texCoord = (wrapPacked >> 4u) & 0x3u;
-  let uv = select(uv0, uv1, texCoord == 1u);
+  let texCoord = (wrapPacked >> 4u) & 0xFu;
+  let uv = materialResolveUv(triIndex, texCoord, uv0, uv1);
   let meta1 = textureLoad(rc_materialMapMeta, rcMaterialMetaCoord(metaTexel + 1u), 0);
   let scaled = uv * meta1.xy;
   let transformed = vec2f(
@@ -236,6 +252,27 @@ fn rcSampleSurfaceEmissiveMap(hit: IntersectionResult, scalarEmission: vec3f) ->
     return scalarEmission;
   }
   return scalarEmission * texel.rgb;
+}
+
+fn rcSampleLightMapIrradiance(hit: IntersectionResult) -> vec3f {
+  let uvs = rcHitMaterialUvs(hit);
+  if (uvs.valid == 0u) {
+    return vec3f(0.0);
+  }
+  let texel = rcSampleMaterialAtlasRawAtOffset(
+    hit.indices.w,
+    RC_MATERIAL_MAP_LIGHT_TEXEL_OFFSET,
+    uvs.uv0,
+    uvs.uv1,
+  );
+  if (texel.x < 0.0) {
+    return vec3f(0.0);
+  }
+  let intensity = rcMaterialMetaLoadOrZero(
+    hit.indices.w,
+    RC_MATERIAL_MAP_LIGHT_INTENSITY_TEXEL_OFFSET,
+  ).x;
+  return max(texel.rgb, vec3f(0.0)) * max(intensity, 0.0);
 }
 
 fn rcMaterialMapChannel(v: vec4f, channel: u32) -> f32 {
@@ -328,7 +365,7 @@ fn rcSampleAnisotropyControls(triIndex: u32, uv0: vec2f, uv1: vec2f) -> vec2f {
   if (anisoMap.x >= 0.0) {
     strength = clamp(strength * anisoMap.b, 0.0, 1.0);
     let direction = anisoMap.rg * 2.0 - vec2f(1.0);
-    if (dot(direction, direction) > 1e-6) {
+    if (dot(direction, direction) > 0.0) {
       rotation += atan2(direction.y, direction.x);
     }
   }
@@ -358,6 +395,26 @@ fn rcSampleIridescenceControls(triIndex: u32, uv0: vec2f, uv1: vec2f) -> vec4f {
   return vec4f(factor, ior, thicknessMin, thicknessMax);
 }
 
+fn rcFiniteF32(v: f32) -> bool {
+  return v == v && abs(v) <= 3.402823e+38;
+}
+
+fn rcFiniteVec3(v: vec3f) -> bool {
+  return all(v == v) && all(abs(v) <= vec3f(3.402823e+38));
+}
+
+fn rcSafeNormalizeOr(v: vec3f, fallback: vec3f) -> vec3f {
+  let len2 = dot(v, v);
+  if (rcFiniteVec3(v) && rcFiniteF32(len2) && len2 > 1e-20) {
+    return v * inverseSqrt(len2);
+  }
+  let fallbackLen2 = dot(fallback, fallback);
+  if (rcFiniteVec3(fallback) && rcFiniteF32(fallbackLen2) && fallbackLen2 > 1e-20) {
+    return fallback * inverseSqrt(fallbackLen2);
+  }
+  return vec3f(0.0, 1.0, 0.0);
+}
+
 fn rcSmoothNormalForHit(hit: IntersectionResult, fallbackNormal: vec3f) -> vec3f {
   let i0 = hit.indices.x;
   let i1 = hit.indices.y;
@@ -365,11 +422,29 @@ fn rcSmoothNormalForHit(hit: IntersectionResult, fallbackNormal: vec3f) -> vec3f
   if (i0 >= arrayLength(&rc_geom_normal) || i1 >= arrayLength(&rc_geom_normal) || i2 >= arrayLength(&rc_geom_normal)) {
     return fallbackNormal;
   }
-  let n = normalize(
+  let nLocalRaw =
     hit.barycoord.x * rc_geom_normal[i0].xyz +
     hit.barycoord.y * rc_geom_normal[i1].xyz +
-    hit.barycoord.z * rc_geom_normal[i2].xyz
-  );
+    hit.barycoord.z * rc_geom_normal[i2].xyz;
+  let nLocalLen2 = dot(nLocalRaw, nLocalRaw);
+  if (!rcFiniteVec3(nLocalRaw) || !rcFiniteF32(nLocalLen2) || nLocalLen2 <= 1e-20) {
+    return rcSafeNormalizeOr(fallbackNormal, vec3f(0.0, 1.0, 0.0));
+  }
+  let nLocal = nLocalRaw * inverseSqrt(nLocalLen2);
+  var n = nLocal;
+  if (rc_u.bvhMode == 1u) {
+    let base = hit.instanceIndex * 4u;
+    if (base + 2u >= tlasWorldToLocalColumnCount()) {
+      return rcSafeNormalizeOr(fallbackNormal, vec3f(0.0, 1.0, 0.0));
+    }
+    n = tlasTransformNormalFromLocalCols(
+      tlasLoadWorldToLocalColumn(base),
+      tlasLoadWorldToLocalColumn(base + 1u),
+      tlasLoadWorldToLocalColumn(base + 2u),
+      nLocal,
+    );
+  }
+  n = rcSafeNormalizeOr(n, fallbackNormal);
   return select(-n, n, dot(n, fallbackNormal) >= 0.0);
 }
 
@@ -425,6 +500,9 @@ fn rcTransformDirectionCols(l2w0: vec4f, l2w1: vec4f, l2w2: vec4f, v: vec3f) -> 
 
 fn rcTangentHandednessForLocalToWorld(l2w0: vec4f, l2w1: vec4f, l2w2: vec4f) -> f32 {
   let det = dot(l2w0.xyz, cross(l2w1.xyz, l2w2.xyz));
+  if (!rcFiniteF32(det) || abs(det) <= 1e-20) {
+    return 1.0;
+  }
   return select(-1.0, 1.0, det >= 0.0);
 }
 
@@ -450,20 +528,26 @@ fn rcPreferAuthoredTangentFrameForHit(
     hit.barycoord.z * tc.w;
 
   if (length(authoredTangent) > 1e-8 && abs(authoredHandedness) > 0.5) {
-    let isTlas = rc_u_arr[0].bvhMode == 1u;
+    let isTlas = rc_u.bvhMode == 1u;
     let tBase = hit.instanceIndex * 4u;
-    let tOk = isTlas && tBase + 2u < arrayLength(&rc_tlas_l2w);
+    let tOk = isTlas && tBase + 2u < tlasLocalToWorldColumnCount();
+    if (isTlas && !tOk) {
+      return RCMaterialTangentFrame(fallbackTangent, fallbackBitangent);
+    }
     if (tOk) {
+      let t0 = tlasLoadLocalToWorldColumn(tBase);
+      let t1 = tlasLoadLocalToWorldColumn(tBase + 1u);
+      let t2 = tlasLoadLocalToWorldColumn(tBase + 2u);
       authoredTangent = rcTransformDirectionCols(
-        rc_tlas_l2w[tBase],
-        rc_tlas_l2w[tBase + 1u],
-        rc_tlas_l2w[tBase + 2u],
+        t0,
+        t1,
+        t2,
         authoredTangent,
       );
       authoredHandedness = authoredHandedness * rcTangentHandednessForLocalToWorld(
-        rc_tlas_l2w[tBase],
-        rc_tlas_l2w[tBase + 1u],
-        rc_tlas_l2w[tBase + 2u],
+        t0,
+        t1,
+        t2,
       );
     }
 
@@ -481,9 +565,9 @@ fn rcPreferAuthoredTangentFrameForHit(
 fn rcFallbackBitangentForNormal(n: vec3f, t: vec3f) -> vec3f {
   let b = cross(n, t);
   let len2 = dot(b, b);
-  if (len2 < 1e-8) {
+  if (!rcFiniteVec3(b) || !rcFiniteF32(len2) || len2 < 1e-8) {
     let up = select(vec3f(0.0, 1.0, 0.0), vec3f(1.0, 0.0, 0.0), abs(n.y) > 0.95);
-    return normalize(cross(n, up));
+    return rcSafeNormalizeOr(cross(n, up), vec3f(0.0, 0.0, 1.0));
   }
   return b * inverseSqrt(len2);
 }
@@ -497,7 +581,7 @@ fn rcMaterialTangentFrameForHit(
   let metaTexel = triIndex * RC_MATERIAL_MAP_META_TEXELS_PER_TRI + mapOffset;
   let meta0 = textureLoad(rc_materialMapMeta, rcMaterialMetaCoord(metaTexel), 0);
   let flags = u32(max(meta0.y, 0.0) + 0.5);
-  let useUv1 = ((flags >> 4u) & 0x3u) == 1u;
+  let texCoord = (flags >> 4u) & 0xFu;
 
   let p0 = rc_geom_position[hit.indices.x];
   let p1 = rc_geom_position[hit.indices.y];
@@ -511,38 +595,58 @@ fn rcMaterialTangentFrameForHit(
   let uv1a = rcPackedUvFromVec4(n0);
   let uv1b = rcPackedUvFromVec4(n1);
   let uv1c = rcPackedUvFromVec4(n2);
-  let ta = select(uv0a, uv1a, useUv1);
-  let tb = select(uv0b, uv1b, useUv1);
-  let tc = select(uv0c, uv1c, useUv1);
+  let ta = materialResolveUv(triIndex, texCoord, uv0a, uv1a);
+  let tb = materialResolveUv(triIndex, texCoord, uv0b, uv1b);
+  let tc = materialResolveUv(triIndex, texCoord, uv0c, uv1c);
 
-  let dp1 = p1.xyz - p0.xyz;
-  let dp2 = p2.xyz - p0.xyz;
+  var dp1 = p1.xyz - p0.xyz;
+  var dp2 = p2.xyz - p0.xyz;
+  var instanceHandedness = 1.0;
+  if (rc_u.bvhMode == 1u) {
+    let base = hit.instanceIndex * 4u;
+    if (base + 2u < tlasLocalToWorldColumnCount()) {
+      let l2w0 = tlasLoadLocalToWorldColumn(base);
+      let l2w1 = tlasLoadLocalToWorldColumn(base + 1u);
+      let l2w2 = tlasLoadLocalToWorldColumn(base + 2u);
+      dp1 = rcTransformDirectionCols(l2w0, l2w1, l2w2, dp1);
+      dp2 = rcTransformDirectionCols(l2w0, l2w1, l2w2, dp2);
+      instanceHandedness = rcTangentHandednessForLocalToWorld(l2w0, l2w1, l2w2);
+    } else {
+      dp1 = vec3f(0.0);
+      dp2 = vec3f(0.0);
+    }
+  }
   let duv1 = tb - ta;
   let duv2 = tc - ta;
   let det = duv1.x * duv2.y - duv1.y * duv2.x;
   var tangent = dp1;
   var bitangent = rcFallbackBitangentForNormal(frameNormal, tangent);
+  var desiredHandedness = 1.0;
   if (abs(det) > 1e-8) {
     let invDet = 1.0 / det;
     tangent = (dp1 * duv2.y - dp2 * duv1.y) * invDet;
     bitangent = (dp2 * duv1.x - dp1 * duv2.x) * invDet;
+    desiredHandedness = select(-1.0, 1.0, det >= 0.0) * instanceHandedness;
   }
 
   tangent = tangent - frameNormal * dot(frameNormal, tangent);
   let tLen2 = dot(tangent, tangent);
-  if (tLen2 < 1e-8) {
+  if (!rcFiniteVec3(tangent) || !rcFiniteF32(tLen2) || tLen2 < 1e-8) {
     let up = select(vec3f(0.0, 1.0, 0.0), vec3f(1.0, 0.0, 0.0), abs(frameNormal.y) > 0.95);
-    tangent = normalize(cross(up, frameNormal));
+    tangent = rcSafeNormalizeOr(cross(up, frameNormal), vec3f(1.0, 0.0, 0.0));
   } else {
     tangent = tangent * inverseSqrt(tLen2);
   }
 
   bitangent = bitangent - frameNormal * dot(frameNormal, bitangent) - tangent * dot(tangent, bitangent);
   let bLen2 = dot(bitangent, bitangent);
-  if (bLen2 < 1e-8) {
-    bitangent = rcFallbackBitangentForNormal(frameNormal, tangent);
+  if (!rcFiniteVec3(bitangent) || !rcFiniteF32(bLen2) || bLen2 < 1e-8) {
+    bitangent = rcFallbackBitangentForNormal(frameNormal, tangent) * desiredHandedness;
   } else {
     bitangent = bitangent * inverseSqrt(bLen2);
+    if (dot(cross(tangent, bitangent), frameNormal) * desiredHandedness < 0.0) {
+      bitangent = -bitangent;
+    }
   }
 
   return rcPreferAuthoredTangentFrameForHit(hit, frameNormal, tangent, bitangent);
@@ -580,15 +684,24 @@ fn rcApplyNormalMapAtOffsetForHit(
     rcMaterialMetaCoord(triIndex * RC_MATERIAL_MAP_META_TEXELS_PER_TRI + normalScaleOffset),
     0,
   );
+  if (!rcFiniteVec3(texelColor.rgb) || !rcFiniteF32(scaleMeta.x)) {
+    return fallbackNormal;
+  }
   let normalScale = max(scaleMeta.x, 0.0);
-  let tangentSample = normalize(vec3f(
+  let tangentSampleRaw = vec3f(
     (texelColor.r * 2.0 - 1.0) * normalScale,
     (texelColor.g * 2.0 - 1.0) * normalScale,
     texelColor.b * 2.0 - 1.0,
-  ));
+  );
+  let tangentSampleLen2 = dot(tangentSampleRaw, tangentSampleRaw);
+  if (!rcFiniteVec3(tangentSampleRaw) || !rcFiniteF32(tangentSampleLen2) || tangentSampleLen2 <= 1e-20) {
+    return fallbackNormal;
+  }
+  let tangentSample = tangentSampleRaw * inverseSqrt(tangentSampleLen2);
 
   let frame = rcMaterialTangentFrameForHit(hit, frameNormal, normalMapOffset);
-  let perturbed = normalize(frame.tangent * tangentSample.x + frame.bitangent * tangentSample.y + frameNormal * tangentSample.z);
+  let perturbedRaw = frame.tangent * tangentSample.x + frame.bitangent * tangentSample.y + frameNormal * tangentSample.z;
+  let perturbed = rcSafeNormalizeOr(perturbedRaw, fallbackNormal);
   return select(-perturbed, perturbed, dot(perturbed, frameNormal) >= 0.0);
 }
 
@@ -692,6 +805,55 @@ fn rcApplyBumpMapForHit(hit: IntersectionResult, shadingNormal: vec3f) -> vec3f 
   return select(-n, n, dot(n, shadingNormal) >= 0.0);
 }
 
+fn rcSampleFaceLayerControls(triIndex: u32, isFrontFace: bool) -> vec4f {
+  return select(
+    rcMaterialMetaLoadOrZero(triIndex, RC_MATERIAL_MAP_BACK_LAYER_TEXEL_OFFSET),
+    rcMaterialMetaLoadOrZero(triIndex, RC_MATERIAL_MAP_FRONT_LAYER_TEXEL_OFFSET),
+    isFrontFace,
+  );
+}
+
+fn rcSampleVolumeScatteringControls(triIndex: u32) -> vec4f {
+  let scatter = rcMaterialMetaLoadOrZero(
+    triIndex, RC_MATERIAL_MAP_VOLUME_SCATTERING_TEXEL_OFFSET,
+  );
+  return vec4f(max(scatter.rgb, vec3f(0.0)), clamp(scatter.a, -0.99, 0.99));
+}
+
+fn rcHomogeneousBeerTransmittanceRgb(sigmaT: vec3f, distance: f32) -> vec3f {
+  return exp(-max(sigmaT, vec3f(0.0)) * max(distance, 0.0));
+}
+
+fn rcHenyeyGreensteinPhase(cosTheta: f32, g: f32) -> f32 {
+  let anisotropy = clamp(g, -0.99, 0.99);
+  let denominator = 1.0 + anisotropy * anisotropy -
+    2.0 * anisotropy * clamp(cosTheta, -1.0, 1.0);
+  return (1.0 - anisotropy * anisotropy) /
+    (4.0 * RC_PI * denominator * sqrt(denominator));
+}
+
+fn rcApplyHomogeneousVolumeSingleScatter(
+  radiance: vec3f,
+  albedo: vec3f,
+  scatter: vec4f,
+  pathLength: f32,
+  normal: vec3f,
+  wo: vec3f,
+) -> vec3f {
+  let sigmaS = max(scatter.rgb, vec3f(0.0));
+  if (all(sigmaS <= vec3f(0.0)) || pathLength <= 0.0) { return radiance; }
+  let n = safe_normalize(normal);
+  let v = safe_normalize(wo);
+  let phase = rcHenyeyGreensteinPhase(dot(n, v), scatter.a);
+  let source = dot(max(radiance, vec3f(0.0)), vec3f(0.2126, 0.7152, 0.0722)) *
+    max(albedo, vec3f(0.0)) * phase;
+  let projectedCosine = abs(dot(n, v));
+  if (projectedCosine <= 0.0) { return source; }
+  let distance = pathLength / projectedCosine;
+  let transmittance = rcHomogeneousBeerTransmittanceRgb(sigmaS, distance);
+  return radiance * transmittance + source * (vec3f(1.0) - transmittance);
+}
+
 struct RCProbeHitMaterial {
   albedo: vec3f,
   roughness: f32,
@@ -705,6 +867,11 @@ struct RCProbeHitMaterial {
   anisotropyTangent: vec3f,
   anisotropyBitangent: vec3f,
   iridescence: vec4f,
+  layerTransmission: vec3f,
+  volumeScattering: vec4f,
+  transmission: f32,
+  opticalIor: vec3f,
+  bulkThickness: f32,
 }
 
 fn rcSampleProbeHitMaterial(
@@ -714,6 +881,9 @@ fn rcSampleProbeHitMaterial(
   scalarMetalness: f32,
   frameNormal: vec3f,
   shadingNormal: vec3f,
+  scalarTransmission: f32,
+  scalarIor: f32,
+  viewDirection: vec3f,
 ) -> RCProbeHitMaterial {
   var out: RCProbeHitMaterial;
   out.albedo = scalarBaseColor;
@@ -729,7 +899,27 @@ fn rcSampleProbeHitMaterial(
   out.anisotropyTangent = defaultAnisotropyFrame.tangent;
   out.anisotropyBitangent = defaultAnisotropyFrame.bitangent;
   out.iridescence = vec4f(0.0, 1.0, 0.0, 0.0);
+  out.layerTransmission = vec3f(1.0);
+  out.volumeScattering = vec4f(0.0);
+  out.transmission = scalarTransmission;
+  out.opticalIor = materialDispersionIorRgb(hit.indices.w, scalarIor);
+  out.bulkThickness = materialOpticalThickness(hit.indices.w);
   out.clearcoatNormal = rcApplyClearcoatNormalMapForHit(hit, frameNormal, shadingNormal);
+
+  let layerControls = rcSampleFaceLayerControls(hit.indices.w, hit.side >= 0.0);
+  out.roughness = select(out.roughness, clamp(layerControls.a, 0.0, 1.0), layerControls.a >= 0.0);
+  out.layerTransmission = clamp(layerControls.rgb, vec3f(0.0), vec3f(1.0));
+  out.volumeScattering = rcSampleVolumeScatteringControls(hit.indices.w);
+  let film = materialThinFilmResponse(
+    hit.indices.w,
+    hit.side >= 0.0,
+    abs(dot(shadingNormal, rcSafeNormalizeOr(viewDirection, shadingNormal))),
+  );
+  if (film.present != 0u) {
+    out.specular = vec4f(vec3f(1.0) + film.reflectance, 1.0);
+    out.iridescence = vec4f(0.0);
+    out.layerTransmission = out.layerTransmission * film.transmittance;
+  }
 
   let uvs = rcHitMaterialUvs(hit);
   if (uvs.valid == 0u) {
@@ -753,6 +943,11 @@ fn rcSampleProbeHitMaterial(
     uvs.uv1,
     scalarRoughness,
   );
+  out.roughness = select(
+    out.roughness,
+    clamp(layerControls.a, 0.0, 1.0),
+    layerControls.a >= 0.0,
+  );
   out.metalness = rcSampleMaterialScalarMap(
     hit.indices.w,
     RC_MATERIAL_MAP_SLOT_METALLIC,
@@ -770,5 +965,29 @@ fn rcSampleProbeHitMaterial(
   out.anisotropyTangent = anisotropyFrame.tangent;
   out.anisotropyBitangent = anisotropyFrame.bitangent;
   out.iridescence = rcSampleIridescenceControls(hit.indices.w, uvs.uv0, uvs.uv1);
+  let transmissionMap = rcSampleMaterialAtlasRawAtOffset(
+    hit.indices.w, RC_MATERIAL_MAP_TRANSMISSION_TEXEL_OFFSET, uvs.uv0, uvs.uv1,
+  );
+  if (transmissionMap.x >= 0.0) {
+    out.transmission = clamp(out.transmission * transmissionMap.r, 0.0, 1.0);
+  }
+  let thicknessMap = rcSampleMaterialAtlasRawAtOffset(
+    hit.indices.w, RC_MATERIAL_MAP_THICKNESS_TEXEL_OFFSET, uvs.uv0, uvs.uv1,
+  );
+  if (thicknessMap.x >= 0.0) {
+    out.bulkThickness = out.bulkThickness * clamp(thicknessMap.g, 0.0, 1.0);
+  }
+  // Mapped specular/iridescence values are substrate controls; a full authored
+  // thin-film stack is the outermost optical layer and therefore overrides
+  // them after texture sampling.
+  let mappedFilm = materialThinFilmResponse(
+    hit.indices.w,
+    hit.side >= 0.0,
+    abs(dot(shadingNormal, rcSafeNormalizeOr(viewDirection, shadingNormal))),
+  );
+  if (mappedFilm.present != 0u) {
+    out.specular = vec4f(vec3f(1.0) + mappedFilm.reflectance, 1.0);
+    out.iridescence = vec4f(0.0);
+  }
   return out;
 }`;

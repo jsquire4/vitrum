@@ -71,6 +71,12 @@ function makeEngine(caps: Partial<EngineCapabilities>): Engine {
     capabilities: makeCapabilities(caps),
     setScene: vi.fn(),
     renderFrame: vi.fn(() => SKIPPED),
+    ...(caps.supportsProgressiveSeedSource === true
+      ? { getProgressiveSeedTexture: vi.fn(() => ({ texture: {} as never, width: 1, height: 1 })) }
+      : {}),
+    ...(caps.supportsAccumulatorSeed === true
+      ? { seedAccumulator: vi.fn() }
+      : {}),
     reset: vi.fn(),
     pause: vi.fn(),
     resume: vi.fn(),
@@ -80,6 +86,8 @@ function makeEngine(caps: Partial<EngineCapabilities>): Engine {
 
 function makeCanvas(configure?: () => void): HTMLCanvasElement {
   return {
+    width: 1,
+    height: 1,
     getContext: (kind: string) => (
       kind === 'webgpu'
         ? { configure: configure ?? vi.fn() }
@@ -94,6 +102,7 @@ function installWebGpu(): GPUDevice {
     limits: {
       maxStorageBuffersPerShaderStage: 128,
       maxStorageTexturesPerShaderStage: 128,
+      maxSampledTexturesPerShaderStage: 128,
     },
     requestDevice: vi.fn(async () => fakeDevice),
   };

@@ -1,36 +1,38 @@
 // GlResources — the GL resource owner (plan/three-removal/02-gl-framework.md §5, §6).
 // Analog of pt-webgpu's GpuResources / the fork's PathTracingRenderer state. It owns:
 //   - the accumulation FBO + RGBA32F color texture (+ optional MRT gNormalDepth/gAlbedo),
-//   - the Regime-2 ping-pong blend pair (allocated lazily only when needed),
+//   - the radiance-only shader-composite ping-pong pair (allocated lazily),
 //   - the PT GlProgram (built from composeTraceGlsl + FULLSCREEN_VERT),
-//   - the Regime-2 BlendMaterial composite quad program,
+//   - the portable running-mean composite quad program,
 //   - a FullscreenQuad.
 //
 // The per-sample draw (drawAccumStep) replaces the fork's renderTask generator: bind the
-// accum FBO + MRT draw buffers, set the blend regime, bind scene textures + uniforms, and
+// accum FBO + MRT draw buffers, bind scene textures + uniforms, and
 // draw the fullscreen triangle (fork PathTracingRenderer.js:144-167, §6 of plan 02).
 //
 // D10.1 (2026-06-10): BDPT light-subpath machinery extracted to BdptSubpathBuilder.ts;
 // present-pass (tonemap/exposure/outputColorSpace) extracted to PresentPass.ts.
 
-import type { TraceFeatures, AccumRegime } from '../featureTypes.js';
+import type { TraceFeatures } from '../featureTypes.js';
 import { featureDefines } from '../featureTypes.js';
 import type { UploadedSceneTextures } from '../scene/sceneTextures.js';
-import { composeTraceGlsl } from '../glsl/composeTraceGlsl.js';
+import {
+  composeNeeCandidateGlsl,
+  composeNeeResolveGlsl,
+  composeTraceGlsl,
+} from '../glsl/composeTraceGlsl.js';
 import { GlProgram } from './glProgram.js';
 import { FullscreenQuad, FULLSCREEN_VERT } from './fullscreenQuad.js';
 import {
   createRenderTarget,
+  createNeeCandidateTarget,
   bindRenderTarget,
   clearRenderTarget,
+  type NeeCandidateTarget,
   type RenderTarget,
 } from './framebuffer.js';
-import { setBlendForRegime } from './blend.js';
 import { probeGlCaps, type GlCaps } from './glCaps.js';
-import {
-  SOBOL_TEXTURE_SIZE,
-  generateSobolTextureData,
-} from '@vitrum/shared-samplers';
+import { SOBOL_TEXTURE_SIZE, generateSobolTextureData } from '@vitrum/shared-samplers';
 import { BdptSubpathBuilder } from './BdptSubpathBuilder.js';
 import { PresentPass } from './PresentPass.js';
 import { uploadFrameUniforms } from './uploadFrameUniforms.js';
@@ -39,6 +41,14 @@ import {
   readOidnInputsFromWebGlFbos,
   type WebGlOidnReadbackResult,
 } from '../denoise/rgba32fReadback.js';
+import { allocGlTexture } from './texAlloc.js';
+import {
+  assertWebGl2RenderTargetRequest,
+  DEFAULT_RENDER_TARGET_BUDGET_BYTES,
+  estimateWebGl2DenoisedTargetBytes,
+  estimateWebGl2ResidentBytes,
+} from './renderTargetBudget.js';
+import { prepareProgramSequence } from './programPreparation.js';
 
 // ── D10.2: SCENE_TEXTURE_BINDINGS table ──────────────────────────────────────
 // Typed table that drives #bindSceneTextures. Each entry describes:
@@ -74,42 +84,50 @@ interface SceneTextureBinding {
    * and the lazily-allocated dummy textures (d2d = 2D dummy, d2a = 2DArray dummy).
    * Return null to fall through to the appropriate dummy for this kind.
    */
-  readonly source: (scene: UploadedSceneTextures, d2d: WebGLTexture, d2a: WebGLTexture) => WebGLTexture;
+  readonly source: (
+    scene: UploadedSceneTextures,
+    d2d: WebGLTexture,
+    d2a: WebGLTexture,
+  ) => WebGLTexture;
 }
 
 const SCENE_TEXTURE_BINDINGS: readonly SceneTextureBinding[] = [
   // BVH struct samplers (bvh_struct_definitions.glsl: BVH { usampler2D index; sampler2D position; ... })
-  { name: 'bvh.index',                  kind: 'tex2d',      source: (s) => s.bvhIndex },
-  { name: 'bvh.position',               kind: 'tex2d',      source: (s) => s.bvhPosition },
-  { name: 'bvh.bvhBounds',              kind: 'tex2d',      source: (s) => s.bvhBounds },
-  { name: 'bvh.bvhContents',            kind: 'tex2d',      source: (s) => s.bvhContents },
+  { name: 'bvh.index', kind: 'tex2d', source: (s) => s.bvhIndex },
+  { name: 'bvh.position', kind: 'tex2d', source: (s) => s.bvhPosition },
+  { name: 'bvh.bvhBounds', kind: 'tex2d', source: (s) => s.bvhBounds },
+  { name: 'bvh.bvhContents', kind: 'tex2d', source: (s) => s.bvhContents },
   // Per-triangle / per-material tables
-  { name: 'materialIndexAttribute',     kind: 'tex2d',      source: (s) => s.materialIndex },
-  { name: 'materials',                  kind: 'tex2d',      source: (s) => s.materials },
+  { name: 'materialIndexAttribute', kind: 'tex2d', source: (s) => s.materialIndex },
+  { name: 'materials', kind: 'tex2d', source: (s) => s.materials },
   // Vertex attribute array (normal / tangent / uv / color layers)
-  { name: 'attributesArray',            kind: 'tex2dArray', source: (s) => s.attributesArray },
+  { name: 'attributesArray', kind: 'tex2dArray', source: (s) => s.attributesArray },
   // Analytic lights (LightsInfo { sampler2D tex; uint count; })
-  { name: 'lights.tex',                 kind: 'tex2d',      source: (s) => s.lights },
+  { name: 'lights.tex', kind: 'tex2d', source: (s) => s.lights },
   // B4 — mesh-area triangle lights (dummy when scene has none → inert branch)
-  { name: 'uMeshLights',               kind: 'tex2d',      source: (s, d2d) => s.meshLights ?? d2d },
+  { name: 'uMeshLights', kind: 'tex2d', source: (s, d2d) => s.meshLights ?? d2d },
   // Optional samplers the fork GLSL declares — must be bound to a valid texture of
   // the matching type to avoid unit-0 collision (GL_INVALID_OPERATION → black).
   // bindTexture no-ops for inactive samplers so the dummy binds are always safe.
-  { name: 'textures',                   kind: 'tex2dArray', source: (s, _d2d, d2a) => s.textures2DArray ?? d2a },
+  { name: 'textures', kind: 'tex2dArray', source: (s, _d2d, d2a) => s.textures2DArray ?? d2a },
   // iesProfiles removed — IES profiles not in @vitrum/core contract (item 20).
-  { name: 'backgroundMap',              kind: 'tex2d',      source: (_s, d2d) => d2d },
-  { name: 'sobolTexture',               kind: 'tex2d',      source: (_s, d2d) => d2d },
-  { name: 'stratifiedTexture',          kind: 'tex2d',      source: (_s, d2d) => d2d },
-  { name: 'stratifiedOffsetTexture',    kind: 'tex2d',      source: (_s, d2d) => d2d },
+  { name: 'backgroundMap', kind: 'tex2d', source: (_s, d2d) => d2d },
+  { name: 'sobolTexture', kind: 'tex2d', source: (_s, d2d) => d2d },
+  { name: 'stratifiedTexture', kind: 'tex2d', source: (_s, d2d) => d2d },
+  { name: 'stratifiedOffsetTexture', kind: 'tex2d', source: (_s, d2d) => d2d },
   // A5 BDPT light-path texture (dummy here; overridden after the loop when bdpt is active).
   // NOTE: unit-0 collision warning — this MUST appear in the table so the sampler
   // unit is registered at link time.  The after-loop override replaces the dummy with
   // the real light-path texture when FEATURE_BDPT is compiled in and bdpt is active.
-  { name: 'uBdptLightPathTex',          kind: 'tex2d',      source: (_s, d2d) => d2d },
+  { name: 'uBdptLightPathTex', kind: 'tex2d', source: (_s, d2d) => d2d },
   // EquirectHdrInfo importance-sampling samplers
-  { name: 'envMapInfo.map',             kind: 'tex2d',      source: (s, d2d) => s.envMap ?? d2d },
-  { name: 'envMapInfo.marginalWeights', kind: 'tex2d',      source: (s, d2d) => s.envMarginal ?? d2d },
-  { name: 'envMapInfo.conditionalWeights', kind: 'tex2d',   source: (s, d2d) => s.envConditional ?? d2d },
+  { name: 'envMapInfo.map', kind: 'tex2d', source: (s, d2d) => s.envMap ?? d2d },
+  { name: 'envMapInfo.marginalWeights', kind: 'tex2d', source: (s, d2d) => s.envMarginal ?? d2d },
+  {
+    name: 'envMapInfo.conditionalWeights',
+    kind: 'tex2d',
+    source: (s, d2d) => s.envConditional ?? d2d,
+  },
 ] as const;
 
 /**
@@ -124,17 +142,13 @@ export interface FrameUniforms {
   readonly transmissiveBounces: number;
   readonly filterGlossyFactor: number;
   readonly materialLodDepth: number;
-  readonly radianceClamp: number;
   readonly cameraWorldMatrix: Float32Array; // inverse(viewMatrix)
   readonly invProjectionMatrix: Float32Array; // inverse(projMatrix)
   readonly environmentIntensity: number;
   readonly environmentRotation: Float32Array; // mat4
   readonly backgroundBlur: number;
   readonly spectralEnabled: boolean;
-  readonly causticStrategy: number; // 0=none, 1=manifold-nee, 2=photon-map
-  readonly mneeMaxIterations: number;
-  readonly mneeMaxChainLength: number;
-  readonly backgroundAlpha: number; // 1 = opaque visible env (default); <1 = transparent (alpha-composite)
+  readonly backgroundAlpha: number; // 1 = opaque visible env (default); <1 = transparent
   /**
    * A5 (2026-06-10): BDPT host-driver inputs. `bdpt` mirrors the FEATURE_BDPT
    * compile flag (so the driver knows to issue the light-subpath passes); when it
@@ -145,10 +159,14 @@ export interface FrameUniforms {
    */
   readonly bdpt: boolean;
   readonly bdptMaxLightBounces: number;
+  /** Bounding sphere used to launch directional/environment light paths on a disk. */
+  readonly bdptSceneCenter: readonly [number, number, number];
+  readonly bdptSceneRadius: number;
+  /** Shared hero wavelength/PDF for the global light path when BDPT + spectral are both active. */
+  readonly bdptSharedWavelengthNm: number;
+  readonly bdptSharedWavelengthPdf: number;
   /** Spectral global Cauchy IOR dispersion coefficients (H2 follow-on); 0/0/0 = no dispersion. */
   readonly iorCauchy: readonly [number, number, number];
-  /** Spectral global Jakob & Hanika reflectance coefficients (H2 follow-on); (0,0,0) = flat S≡½ no-op. */
-  readonly jakobCoeffs: readonly [number, number, number];
   /** Thin-lens DoF PhysicalCamera uniforms (flag-plumbing audit); null = pinhole (FEATURE_DOF off). */
   readonly dof: {
     readonly focusDistance: number;
@@ -179,30 +197,75 @@ export interface FrameUniforms {
   readonly outputColorSpace: number;
 }
 
+interface ProgramGraph {
+  readonly key: string;
+  readonly pt: GlProgram;
+  readonly candidate: GlProgram;
+  readonly resolve: GlProgram;
+  readonly blend: GlProgram;
+  readonly randomType: TraceFeatures['randomType'];
+  readonly debugMode: number;
+  /**
+   * The three path-tracing programs are intentionally linked serially.
+   * ANGLE's D3D11 translator otherwise runs three six-figure-source links at
+   * once and can spend minutes thrashing the same compiler worker pool.
+   */
+  prepareStage: number;
+}
+
+function programGraphKey(features: TraceFeatures): string {
+  return [
+    features.mis ? 1 : 0,
+    features.russianRoulette ? 1 : 0,
+    features.bdpt ? 1 : 0,
+    features.dof ? 1 : 0,
+    features.cameraType,
+    features.stainedGlassPerturbation ? 1 : 0,
+    features.fog ? 1 : 0,
+    features.backgroundMap ? 1 : 0,
+    features.randomType,
+    features.debugMode,
+    features.pathStepLimit,
+    features.basicMaterials ? 1 : 0,
+    features.scalarRichMaterials ? 1 : 0,
+    features.mappedPbrMaterials ? 1 : 0,
+    features.mappedRichMaterials ? 1 : 0,
+    features.analyticLights ? 1 : 0,
+    features.meshLights ? 1 : 0,
+    features.environmentLight ? 1 : 0,
+  ].join(':');
+}
+
 export class GlResources {
   readonly #gl: WebGL2RenderingContext;
   readonly #caps: GlCaps;
   /** Whether MRT aux g-buffers (gNormalDepth/gAlbedo) are allocated + written. */
   readonly #auxBuffers: boolean;
-  /** OES_draw_buffers_indexed — per-draw-buffer blend state, so the colour blend runs
-   *  on attachment 0 while the aux g-buffer attachments overwrite (no blend). null when
-   *  unavailable (the g-buffer is then best-effort; the colour path is always correct). */
-  readonly #drawBuffersIndexed: { disableiOES(target: number, index: number): void } | null;
   readonly #quad: FullscreenQuad;
+  readonly #maxRenderTargetBytes: number;
 
   /** The PT accumulation target (RGBA32F primary + optional MRT aux). */
   #accum: RenderTarget | null = null;
-  /** Regime-2 ping-pong blend pair — allocated lazily on first alpha-composite step. */
+  /** Four-attachment packed handoff from path replay to the no-loop NEE resolve. */
+  #neeCandidate: NeeCandidateTarget | null = null;
+  /** Radiance-only shader-composite pair, used for alpha compositing and when
+   * MRT auxiliaries require the PT target itself to remain an unblended sample. */
   #blend: [RenderTarget, RenderTarget] | null = null;
   /** Which slot of the blend pair currently holds the readable result. */
   #blendReadIndex = 0;
 
   #ptProgram: GlProgram | null = null;
+  #neeCandidateProgram: GlProgram | null = null;
+  #neeResolveProgram: GlProgram | null = null;
   #blendProgram: GlProgram | null = null;
+  #activeProgramKey: string | null = null;
+  #pendingProgramGraph: ProgramGraph | null = null;
   #randomType: 0 | 1 | 2 = 0;
+  #debugMode = 0;
 
   // ── Present pass (D10.1: extracted to PresentPass) ────────────────────────
   readonly #presentPass: PresentPass;
+  #denoisedLinearTex: WebGLTexture | null = null;
 
   #accumWidth = 0;
   #accumHeight = 0;
@@ -216,23 +279,37 @@ export class GlResources {
    * @param supportsAuxBuffers host policy for the MRT g-buffers; intersected here with the
    * device's MAX_DRAW_BUFFERS so a 1-MRT device degrades to attachment-0-only (plan 02 §4).
    */
-  constructor(gl: WebGL2RenderingContext, supportsAuxBuffers: boolean) {
+  constructor(
+    gl: WebGL2RenderingContext,
+    supportsAuxBuffers: boolean,
+    maxRenderTargetBytes = DEFAULT_RENDER_TARGET_BUDGET_BYTES,
+  ) {
     this.#gl = gl;
     this.#caps = probeGlCaps(gl);
     this.#auxBuffers = supportsAuxBuffers && this.#caps.maxDrawBuffers >= 3;
-    const dbi = gl.getExtension('OES_draw_buffers_indexed') as { disableiOES?: unknown } | null;
-    this.#drawBuffersIndexed =
-      dbi != null && typeof dbi.disableiOES === 'function'
-        ? (dbi as { disableiOES(target: number, index: number): void })
-        : null;
+    this.#maxRenderTargetBytes = maxRenderTargetBytes;
     this.#quad = new FullscreenQuad(gl);
     this.#presentPass = new PresentPass(gl, this.#quad);
     this.#bdptBuilder = new BdptSubpathBuilder(gl);
   }
 
-  /** Probed device capabilities (regime selection, MRT/sampler budgets). */
+  /** Probed device capabilities (float targets, MRT/sampler/texture budgets). */
   get caps(): GlCaps {
     return this.#caps;
+  }
+
+  /** Validate dimensions, device texture limits, safe arithmetic, and peak bytes. */
+  validateAccumRequest(w: number, h: number): number {
+    const replacingPublishedTargets =
+      this.#accum != null && (w !== this.#accumWidth || h !== this.#accumHeight);
+    return assertWebGl2RenderTargetRequest(
+      w,
+      h,
+      this.#auxBuffers,
+      this.#maxRenderTargetBytes,
+      this.#caps.maxTexSize,
+      replacingPublishedTargets ? this.#residentRenderTargetBytes() : 0,
+    );
   }
 
   /**
@@ -241,29 +318,165 @@ export class GlResources {
    * sample counter (fork PathTracingRenderer.setSize → reset, :358-374).
    */
   ensureAccumResources(w: number, h: number): boolean {
+    this.validateAccumRequest(w, h);
     if (w === this.#accumWidth && h === this.#accumHeight && this.#accum != null) return false;
-    this.#destroyTargets();
-    this.#accum = createRenderTarget(this.#gl, w, h, this.#auxBuffers);
+    const nextAccum = createRenderTarget(this.#gl, w, h, this.#auxBuffers);
+    let nextNeeCandidate: NeeCandidateTarget | null = null;
     // Present target — RGBA32F (deliberate: it is the public primaryRadiance
     // and must stay FLOAT-readable; see createPresentTexture).
-    this.#presentPass.allocate(w, h);
+    try {
+      nextNeeCandidate = createNeeCandidateTarget(this.#gl, w, h);
+      this.#presentPass.allocate(w, h);
+    } catch (error) {
+      nextAccum.destroy();
+      nextNeeCandidate?.destroy();
+      throw error;
+    }
+
+    const previousAccum = this.#accum;
+    const previousNeeCandidate = this.#neeCandidate;
+    const previousBlend = this.#blend;
+    this.#accum = nextAccum;
+    this.#neeCandidate = nextNeeCandidate;
+    this.#blend = null;
     this.#accumWidth = w;
     this.#accumHeight = h;
+    this.#blendReadIndex = 0;
     this.#samples = 0;
+    this.#clearDenoisedSource();
+    previousAccum?.destroy();
+    previousNeeCandidate?.destroy();
+    if (previousBlend != null) {
+      previousBlend[0].destroy();
+      previousBlend[1].destroy();
+    }
     return true;
   }
 
-  /** Build the PT program from `composeTraceGlsl(features)` once (idempotent). */
-  ensureProgram(features: TraceFeatures): void {
-    if (this.#ptProgram == null) {
-      this.#randomType = features.randomType;
-      this.#ptProgram = new GlProgram(
-        this.#gl,
-        FULLSCREEN_VERT,
-        composeTraceGlsl(features),
-        featureDefines(features),
-      );
+  /**
+   * Build/start/poll the complete draw-program graph. Returns false while any
+   * KHR_parallel_shader_compile job is pending; no draw may start until all
+   * programs are atomically ready for one complete MC sample.
+   */
+  ensureProgram(features: TraceFeatures): boolean {
+    const key = programGraphKey(features);
+    if (
+      this.#activeProgramKey === key &&
+      this.#ptProgram != null &&
+      this.#neeCandidateProgram != null &&
+      this.#neeResolveProgram != null &&
+      this.#blendProgram != null
+    ) {
+      return true;
     }
+    if (this.#pendingProgramGraph?.key !== key) {
+      this.#disposeProgramGraph(this.#pendingProgramGraph);
+      this.#pendingProgramGraph = null;
+      const baseDefines = featureDefines(features);
+      let ptProgram: GlProgram | null = null;
+      let candidateProgram: GlProgram | null = null;
+      let resolveProgram: GlProgram | null = null;
+      let blendProgram: GlProgram | null = null;
+      try {
+        ptProgram = new GlProgram(this.#gl, FULLSCREEN_VERT, composeTraceGlsl(features), {
+          ...baseDefines,
+          NEE_CANDIDATE_PASS: 0,
+        });
+        candidateProgram = new GlProgram(
+          this.#gl,
+          FULLSCREEN_VERT,
+          composeNeeCandidateGlsl(features),
+          {
+            ...baseDefines,
+            NEE_CANDIDATE_PASS: 1,
+          },
+        );
+        resolveProgram = new GlProgram(
+          this.#gl,
+          FULLSCREEN_VERT,
+          composeNeeResolveGlsl(features),
+          {
+            ...baseDefines,
+            NEE_CANDIDATE_PASS: 0,
+          },
+        );
+        blendProgram = new GlProgram(this.#gl, FULLSCREEN_VERT, BLEND_FRAG, {});
+      } catch (error) {
+        ptProgram?.dispose();
+        candidateProgram?.dispose();
+        resolveProgram?.dispose();
+        blendProgram?.dispose();
+        throw error;
+      }
+      if (
+        ptProgram == null ||
+        candidateProgram == null ||
+        resolveProgram == null ||
+        blendProgram == null
+      ) {
+        throw new Error('pt-webgl2: program construction completed without all pass programs');
+      }
+      this.#pendingProgramGraph = {
+        key,
+        pt: ptProgram,
+        candidate: candidateProgram,
+        resolve: resolveProgram,
+        blend: blendProgram,
+        randomType: features.randomType,
+        debugMode: features.debugMode,
+        prepareStage: 0,
+      };
+    }
+    const pending = this.#pendingProgramGraph;
+    if (pending == null) {
+      throw new Error('pt-webgl2: pending program graph is missing after construction');
+    }
+    try {
+      // Do not overlap the three large ANGLE/D3D11 jobs. Native Edge can
+      // compile each one successfully yet fail to finish any of their links
+      // when they contend concurrently for the translator worker pool.
+      const largePrograms = [pending.pt, pending.candidate, pending.resolve] as const;
+      const preparation = prepareProgramSequence(largePrograms, pending.prepareStage);
+      pending.prepareStage = preparation.nextIndex;
+      if (!preparation.ready) return false;
+      // These two programs are tiny and can be polled together after the large
+      // graph has linked without materially increasing compiler pressure.
+      const blendReady = pending.blend.prepare();
+      const presentReady = this.#presentPass.prepareProgram();
+      if (!blendReady || !presentReady) return false;
+    } catch (error) {
+      this.#disposeProgramGraph(pending);
+      this.#pendingProgramGraph = null;
+      throw error;
+    }
+
+    const previous: ProgramGraph | null =
+      this.#ptProgram != null &&
+      this.#neeCandidateProgram != null &&
+      this.#neeResolveProgram != null &&
+      this.#blendProgram != null &&
+      this.#activeProgramKey != null
+        ? {
+            key: this.#activeProgramKey,
+            pt: this.#ptProgram,
+            candidate: this.#neeCandidateProgram,
+            resolve: this.#neeResolveProgram,
+            blend: this.#blendProgram,
+            randomType: this.#randomType,
+            debugMode: this.#debugMode,
+            prepareStage: 3,
+          }
+        : null;
+    this.#ptProgram = pending.pt;
+    this.#neeCandidateProgram = pending.candidate;
+    this.#neeResolveProgram = pending.resolve;
+    this.#blendProgram = pending.blend;
+    this.#activeProgramKey = pending.key;
+    this.#randomType = pending.randomType;
+    this.#debugMode = pending.debugMode;
+    this.#pendingProgramGraph = null;
+    this.#disposeProgramGraph(previous);
+    return true;
   }
 
   /** The PT program (null before ensureProgram) — for the host to set uniforms/defines. */
@@ -273,7 +486,14 @@ export class GlResources {
 
   /** Clear all accumulation targets to (0,0,0,0) + reset the sample counter (fork reset()). */
   clearAccum(): void {
+    this.#clearDenoisedSource();
     if (this.#accum != null) clearRenderTarget(this.#gl, this.#accum);
+    if (this.#neeCandidate != null) {
+      this.#gl.bindFramebuffer(this.#gl.FRAMEBUFFER, this.#neeCandidate.fbo);
+      this.#gl.drawBuffers(this.#neeCandidate.drawBuffers);
+      this.#gl.clearColor(0, 0, 0, 0);
+      this.#gl.clear(this.#gl.COLOR_BUFFER_BIT);
+    }
     if (this.#blend != null) {
       clearRenderTarget(this.#gl, this.#blend[0]);
       clearRenderTarget(this.#gl, this.#blend[1]);
@@ -283,75 +503,113 @@ export class GlResources {
   }
 
   /**
-   * One accumulation step (plan 02 §6). Binds the accum FBO + MRT draw buffers, sets the
-   * blend regime, uploads the running-average opacity + seed, binds the scene textures and
-   * the params UBO, and draws the fullscreen triangle. For the alpha-composite regime it then
-   * runs the BlendMaterial composite into the ping-pong pair.
+   * One accumulation step (plan 02 §6). Binds the accum FBO + MRT draw buffers,
+   * uploads the sample seed, binds scene textures, and draws the fullscreen
+   * triangle. After separately resolving NEE into the raw radiance sample, it
+   * performs one portable shader running-mean update into the ping-pong pair.
    */
   drawAccumStep(
     scene: UploadedSceneTextures,
-    regime: AccumRegime,
     seed: number,
     frame: FrameUniforms,
   ): void {
     const gl = this.#gl;
-    if (this.#accum == null) throw new Error('pt-webgl2: drawAccumStep before ensureAccumResources');
-    if (this.#ptProgram == null) throw new Error('pt-webgl2: drawAccumStep before ensureProgram');
+    if (this.#accum == null)
+      throw new Error('pt-webgl2: drawAccumStep before ensureAccumResources');
+    if (
+      this.#ptProgram == null ||
+      this.#neeCandidateProgram == null ||
+      this.#neeResolveProgram == null
+    ) {
+      throw new Error('pt-webgl2: drawAccumStep before ensureProgram');
+    }
+    if (this.#neeCandidate == null) {
+      throw new Error('pt-webgl2: drawAccumStep before NEE candidate allocation');
+    }
+    this.#clearDenoisedSource();
     const prog = this.#ptProgram;
 
     // A5 — BDPT light subpath. Build the light-path vertex texture for THIS sample
     // (the subpath is reseeded per frame via the `seed`/rand bank) BEFORE the eye
     // pass, then bind it as `uBdptLightPathTex`. Only runs when bdpt is on; the
     // unidirectional path skips this entirely (byte-identical when bdpt:false).
-    const bdptResult =
-      frame.bdpt
-        ? this.#bdptBuilder.build(
-            prog,
-            scene,
-            seed,
-            frame,
-            (p, s, t) => this.#bindSceneTextures(p, s, t),
-            () => this.#quad.draw(gl),
-          )
-        : null;
+    const bdptResult = frame.bdpt
+      ? this.#bdptBuilder.build(
+          prog,
+          scene,
+          seed,
+          frame,
+          (p, s, t) => this.#bindSceneTextures(p, s, t),
+          () => this.#quad.draw(gl),
+        )
+      : null;
 
     bindRenderTarget(gl, this.#accum);
     gl.viewport(0, 0, this.#accumWidth, this.#accumHeight);
-    setBlendForRegime(gl, regime, this.#samples);
-    // The MRT g-buffer (gNormalDepth@1, gAlbedo@2) holds sample-invariant primary-hit
-    // data and must NOT accumulate: WebGL2 weights each draw buffer by its OWN output
-    // alpha, and gNormalDepth packs linear depth (>1) in alpha, so the colour-blend
-    // recurrence diverges → NaN. Disable blend on JUST the aux attachments (per-draw-buffer
-    // state) so they overwrite (latest sample = correct, primary-hit is deterministic)
-    // while the colour attachment keeps its EXACT running-average blend untouched. No
-    // extension → the g-buffer is best-effort (the colour path is always correct).
-    if (this.#auxBuffers && this.#drawBuffersIndexed != null) {
-      this.#drawBuffersIndexed.disableiOES(gl.BLEND, 1);
-      this.#drawBuffersIndexed.disableiOES(gl.BLEND, 2);
-    }
+    // Core WebGL2 cannot control blending independently per draw buffer. MRT
+    // samples therefore render unblended so attachments 1/2 overwrite with the
+    // latest primary-hit normal/depth and albedo. Attachment 0 is accumulated
+    // through the portable shader ping-pong pass below. This is an explicit
+    // last-sample auxiliary contract (important for DoF, where primary hits can
+    // vary); encoded normals and linear depth are never numerically blended.
+    // Main radiance and the separately-resolved NEE term must form ONE complete
+    // sample before the single running-mean update. Therefore every device uses
+    // the portable shader composite. Fixed-function float blending is not a
+    // valid alternate regime because it would blend every MRT attachment and
+    // would accumulate main radiance before the NEE sample is complete.
+    gl.disable(gl.BLEND);
 
     // Upload the per-frame individual uniforms (D11-6: extracted to
-    // uploadFrameUniforms). `prog.use()` + the whole setter sequence lives there,
-    // byte-identical to the old inline body.
-    uploadFrameUniforms(prog, this.#samples, seed, frame);
+    // uploadFrameUniforms). `prog.use()` and the live setter sequence live there.
+    const sampleOpacity = 1;
+    uploadFrameUniforms(prog, sampleOpacity, seed, frame);
     this.#bindSceneTextures(prog, scene, bdptResult);
     this.#quad.draw(gl);
 
-    if (regime === 'alpha-composite') this.#compositeBlendStep();
+    // Debug programs replace radiance with diagnostic output in the main pass.
+    // NEE is intentionally absent there: adding it after the replacement would
+    // corrupt depth/traversal/normal diagnostics with ordinary lighting.
+    if (this.#debugMode === 0) {
+      // Replay the exact continuation path into the four packed candidate
+      // attachments. Stateless reservoir replacement plus saved/restored light
+      // RNG leaves every continuation draw bit-identical to the main pass.
+      const candidateProgram = this.#neeCandidateProgram;
+      gl.bindFramebuffer(gl.FRAMEBUFFER, this.#neeCandidate.fbo);
+      gl.drawBuffers(this.#neeCandidate.drawBuffers);
+      gl.viewport(0, 0, this.#accumWidth, this.#accumHeight);
+      gl.disable(gl.BLEND);
+      uploadFrameUniforms(candidateProgram, 1, seed, frame);
+      this.#bindSceneTextures(candidateProgram, scene, bdptResult);
+      this.#quad.draw(gl);
+
+      // Resolve one retained vertex with no path loop and add it to the raw main
+      // sample. Alpha is zero in the resolve output, so primary/background alpha
+      // remains owned solely by the main trace.
+      bindRenderTarget(gl, this.#accum);
+      gl.drawBuffers([gl.COLOR_ATTACHMENT0]);
+      gl.viewport(0, 0, this.#accumWidth, this.#accumHeight);
+      gl.enable(gl.BLEND);
+      gl.blendEquation(gl.FUNC_ADD);
+      gl.blendFunc(gl.ONE, gl.ONE);
+      const resolveProgram = this.#neeResolveProgram;
+      uploadFrameUniforms(resolveProgram, 1, seed, frame);
+      this.#bindSceneTextures(resolveProgram, scene, bdptResult);
+      for (let attachment = 0; attachment < 4; attachment += 1) {
+        resolveProgram.bindTexture(
+          `uNeeCandidate${attachment}`,
+          this.#neeCandidate.textures[attachment]!,
+        );
+      }
+      this.#quad.draw(gl);
+      gl.disable(gl.BLEND);
+      gl.drawBuffers(this.#accum.drawBuffers);
+    }
+
+    this.#compositeBlendStep();
 
     this.#samples += 1;
 
-    // Present pass — blit the HDR accum through tonemap + OETF into the present target.
-    let srcTex: WebGLTexture | null = null;
-    if (this.#blend != null) {
-      const [a, b] = this.#blend;
-      srcTex = (this.#blendReadIndex === 0 ? a : b).color;
-    } else {
-      srcTex = this.#accum?.color ?? null;
-    }
-    if (srcTex != null) {
-      this.#presentPass.run(srcTex, this.#accumWidth, this.#accumHeight, frame.tonemapMode, frame.exposure, frame.outputColorSpace);
-    }
+    this.presentAccumulation(frame.tonemapMode, frame.exposure, frame.outputColorSpace);
 
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   }
@@ -361,6 +619,97 @@ export class GlResources {
     return { width: this.#accumWidth, height: this.#accumHeight };
   }
 
+  /** Re-run only tonemap/exposure/output-space over the current linear accumulator. */
+  presentAccumulation(tonemapMode: number, exposure: number, outputColorSpace: number): void {
+    const srcTex = this.#denoisedLinearTex ?? this.#linearResultTexture();
+    if (srcTex == null) return;
+    this.#presentPass.run(
+      srcTex,
+      this.#accumWidth,
+      this.#accumHeight,
+      tonemapMode,
+      exposure,
+      outputColorSpace,
+    );
+  }
+
+  /** Upload accepted linear-HDR OIDN RGB and present it through the existing output transform. */
+  presentDenoisedResult(
+    frame: { readonly rgb: Float32Array; readonly width: number; readonly height: number },
+    tonemapMode: number,
+    exposure: number,
+    outputColorSpace: number,
+  ): void {
+    if (frame.width !== this.#accumWidth || frame.height !== this.#accumHeight) {
+      throw new RangeError(
+        `pt-webgl2: OIDN result ${frame.width}×${frame.height} does not match accumulation ` +
+          `${this.#accumWidth}×${this.#accumHeight}`,
+      );
+    }
+    const pixelCount = frame.width * frame.height;
+    if (frame.rgb.length !== pixelCount * 3) {
+      throw new RangeError(
+        `pt-webgl2: OIDN result expected ${pixelCount * 3} RGB floats, got ${frame.rgb.length}`,
+      );
+    }
+    const nextDenoisedBytes = estimateWebGl2DenoisedTargetBytes(frame.width, frame.height);
+    const residentBytes = this.#residentRenderTargetBytes();
+    if (residentBytes > Number.MAX_SAFE_INTEGER - nextDenoisedBytes) {
+      throw new RangeError(
+        'pt-webgl2: OIDN target replacement peak overflows Number.MAX_SAFE_INTEGER',
+      );
+    }
+    const replacementPeakBytes = residentBytes + nextDenoisedBytes;
+    if (replacementPeakBytes > this.#maxRenderTargetBytes) {
+      throw new RangeError(
+        `pt-webgl2: OIDN target replacement peak requires ${replacementPeakBytes} bytes ` +
+          `(${residentBytes} resident + ${nextDenoisedBytes} new), exceeding ` +
+          `maxRenderTargetBytes=${this.#maxRenderTargetBytes}. ` +
+          `The previous complete denoised frame remains active.`,
+      );
+    }
+    const rgba = new Float32Array(pixelCount * 4);
+    // OIDNDispatcherCore exposes CPU images in the engine-wide top-left
+    // convention. texImage2D's first row is the texture's bottom row, and the
+    // fullscreen present pass samples vUv.y=0 at the screen bottom, so flip the
+    // rows back to GL orientation on upload.
+    for (let dstY = 0; dstY < frame.height; dstY += 1) {
+      const srcY = frame.height - 1 - dstY;
+      for (let x = 0; x < frame.width; x += 1) {
+        const src = (srcY * frame.width + x) * 3;
+        const dst = (dstY * frame.width + x) * 4;
+        rgba[dst] = frame.rgb[src]!;
+        rgba[dst + 1] = frame.rgb[src + 1]!;
+        rgba[dst + 2] = frame.rgb[src + 2]!;
+        rgba[dst + 3] = 1;
+      }
+    }
+    const next = allocGlTexture(this.#gl, {
+      kind: 'rect',
+      width: frame.width,
+      height: frame.height,
+      internalFormat: this.#gl.RGBA32F,
+      format: this.#gl.RGBA,
+      type: this.#gl.FLOAT,
+      data: rgba,
+      resourceName: 'OIDN denoised linear HDR',
+    });
+    const previous = this.#denoisedLinearTex;
+    this.#denoisedLinearTex = next;
+    try {
+      this.presentAccumulation(tonemapMode, exposure, outputColorSpace);
+    } catch (error) {
+      this.#denoisedLinearTex = previous;
+      this.#gl.deleteTexture(next);
+      throw error;
+    }
+    if (previous != null) this.#gl.deleteTexture(previous);
+  }
+
+  /** Stop presenting the accepted OIDN source and return to the live accumulator. */
+  clearDenoisedResult(): void {
+    this.#clearDenoisedSource();
+  }
   /**
    * The tonemapped present texture (the output of the most-recent present pass).
    * Always points to the presentTex (RGBA32F) written by PresentPass after
@@ -381,12 +730,23 @@ export class GlResources {
     return this.#accum?.color ?? null;
   }
 
-  /** The packed normal+depth g-buffer (null when MRT disabled). */
+  #linearResultTexture(): WebGLTexture | null {
+    if (this.#blend != null) {
+      const [a, b] = this.#blend;
+      return (this.#blendReadIndex === 0 ? a : b).color;
+    }
+    return this.#accum?.color ?? null;
+  }
+
+  /**
+   * Packed normal+depth from the latest path-trace sample (null when MRT is
+   * disabled). It is deliberately not averaged with progressive radiance.
+   */
   get normalDepthTex(): WebGLTexture | null {
     return this.#accum?.normalDepth ?? null;
   }
 
-  /** The albedo g-buffer (null when MRT disabled). */
+  /** Albedo from the latest path-trace sample (null when MRT is disabled). */
   get albedoTex(): WebGLTexture | null {
     return this.#accum?.albedo ?? null;
   }
@@ -419,27 +779,64 @@ export class GlResources {
 
   dispose(): void {
     const gl = this.#gl;
+    this.#disposeProgramGraph(this.#pendingProgramGraph);
+    this.#pendingProgramGraph = null;
     this.#destroyTargets();
     this.#presentPass.destroy();
     this.#presentPass.disposeProgram();
     this.#ptProgram?.dispose();
     this.#ptProgram = null;
+    this.#neeCandidateProgram?.dispose();
+    this.#neeCandidateProgram = null;
+    this.#neeResolveProgram?.dispose();
+    this.#neeResolveProgram = null;
     this.#blendProgram?.dispose();
     this.#blendProgram = null;
+    this.#activeProgramKey = null;
     this.#quad.dispose(gl);
     // H7 FIX (2026-06-09): delete the lazily-allocated dummy textures — dispose()
     // freed the programs/targets/quad but LEAKED these two GPU textures on every
     // engine teardown (Canvas remount / route change churn would accumulate them).
-    if (this.#dummy2dTex != null) { gl.deleteTexture(this.#dummy2dTex); this.#dummy2dTex = null; }
-    if (this.#dummy2dArrTex != null) { gl.deleteTexture(this.#dummy2dArrTex); this.#dummy2dArrTex = null; }
-    if (this.#sobolTex != null) { gl.deleteTexture(this.#sobolTex); this.#sobolTex = null; }
+    if (this.#dummy2dTex != null) {
+      gl.deleteTexture(this.#dummy2dTex);
+      this.#dummy2dTex = null;
+    }
+    if (this.#dummy2dArrTex != null) {
+      gl.deleteTexture(this.#dummy2dArrTex);
+      this.#dummy2dArrTex = null;
+    }
+    if (this.#sobolTex != null) {
+      gl.deleteTexture(this.#sobolTex);
+      this.#sobolTex = null;
+    }
     // A5 — free the BDPT light-path ping-pong pair + copy FBO (D10.1: via BdptSubpathBuilder).
     this.#bdptBuilder.dispose();
   }
 
   // ----- internals -------------------------------------------------------------------------
 
-  /** Composite the latest PT sample into the ping-pong pair (Regime 2; fork :156-165). */
+  #residentRenderTargetBytes(): number {
+    if (this.#accum == null) return 0;
+    return estimateWebGl2ResidentBytes(
+      this.#accumWidth,
+      this.#accumHeight,
+      this.#auxBuffers,
+      {
+        blend: this.#blend != null,
+        denoised: this.#denoisedLinearTex != null,
+      },
+    );
+  }
+
+  #disposeProgramGraph(graph: ProgramGraph | null): void {
+    if (graph == null) return;
+    graph.pt.dispose();
+    graph.candidate.dispose();
+    graph.resolve.dispose();
+    graph.blend.dispose();
+  }
+
+  /** Composite the latest PT radiance sample into the radiance-only ping-pong pair. */
   #compositeBlendStep(): void {
     const gl = this.#gl;
     const accum = this.#accum;
@@ -456,7 +853,9 @@ export class GlResources {
     gl.viewport(0, 0, this.#accumWidth, this.#accumHeight);
     gl.disable(gl.BLEND); // the composite math is done in-shader, not by fixed-function blend.
 
-    blendProg.use();
+    if (!blendProg.use()) {
+      throw new Error('pt-webgl2: blend pass reached draw before its program was ready');
+    }
     blendProg.setFloat('opacity', 1 / (this.#samples + 1));
     // target1 = prior accumulated result; target2 = the just-rendered PT sample.
     blendProg.bindTexture('target1', readTarget.color);
@@ -473,12 +872,18 @@ export class GlResources {
 
   #ensureBlendPair(): void {
     if (this.#blend != null) return;
-    this.#blend = [
-      createRenderTarget(this.#gl, this.#accumWidth, this.#accumHeight, false),
-      createRenderTarget(this.#gl, this.#accumWidth, this.#accumHeight, false),
-    ];
-    clearRenderTarget(this.#gl, this.#blend[0]);
-    clearRenderTarget(this.#gl, this.#blend[1]);
+    const first = createRenderTarget(this.#gl, this.#accumWidth, this.#accumHeight, false);
+    let second: RenderTarget | null = null;
+    try {
+      second = createRenderTarget(this.#gl, this.#accumWidth, this.#accumHeight, false);
+      clearRenderTarget(this.#gl, first);
+      clearRenderTarget(this.#gl, second);
+    } catch (error) {
+      first.destroy();
+      second?.destroy();
+      throw error;
+    }
+    this.#blend = [first, second];
     this.#blendReadIndex = 0;
   }
 
@@ -545,13 +950,15 @@ export class GlResources {
   #dummyTex2D(): WebGLTexture {
     const gl = this.#gl;
     if (this.#dummy2dTex == null) {
-      const t = gl.createTexture();
-      if (t == null) throw new Error('pt-webgl2: failed to create dummy 2D texture');
-      gl.bindTexture(gl.TEXTURE_2D, t);
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0, 0, 0, 255]));
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-      this.#dummy2dTex = t;
+      this.#dummy2dTex = allocGlTexture(gl, {
+        kind: '2d',
+        dim: 1,
+        internalFormat: gl.RGBA,
+        format: gl.RGBA,
+        type: gl.UNSIGNED_BYTE,
+        data: new Uint8Array([0, 0, 0, 255]),
+        resourceName: 'dummy 2D',
+      });
     }
     return this.#dummy2dTex;
   }
@@ -559,13 +966,16 @@ export class GlResources {
   #dummyTex2DArray(): WebGLTexture {
     const gl = this.#gl;
     if (this.#dummy2dArrTex == null) {
-      const t = gl.createTexture();
-      if (t == null) throw new Error('pt-webgl2: failed to create dummy 2D-array texture');
-      gl.bindTexture(gl.TEXTURE_2D_ARRAY, t);
-      gl.texImage3D(gl.TEXTURE_2D_ARRAY, 0, gl.RGBA, 1, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0, 0, 0, 255]));
-      gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-      gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-      this.#dummy2dArrTex = t;
+      this.#dummy2dArrTex = allocGlTexture(gl, {
+        kind: 'array',
+        dim: 1,
+        layers: 1,
+        internalFormat: gl.RGBA,
+        format: gl.RGBA,
+        type: gl.UNSIGNED_BYTE,
+        data: new Uint8Array([0, 0, 0, 255]),
+        resourceName: 'dummy 2D-array',
+      });
     }
     return this.#dummy2dArrTex;
   }
@@ -573,32 +983,32 @@ export class GlResources {
   #sobolTex2D(): WebGLTexture {
     const gl = this.#gl;
     if (this.#sobolTex == null) {
-      const t = gl.createTexture();
-      if (t == null) throw new Error('pt-webgl2: failed to create Sobol texture');
-      gl.bindTexture(gl.TEXTURE_2D, t);
-      gl.texImage2D(
-        gl.TEXTURE_2D,
-        0,
-        gl.RGBA32F,
-        SOBOL_TEXTURE_SIZE,
-        SOBOL_TEXTURE_SIZE,
-        0,
-        gl.RGBA,
-        gl.FLOAT,
-        generateSobolTextureData(),
-      );
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-      this.#sobolTex = t;
+      this.#sobolTex = allocGlTexture(gl, {
+        kind: '2d',
+        dim: SOBOL_TEXTURE_SIZE,
+        internalFormat: gl.RGBA32F,
+        format: gl.RGBA,
+        type: gl.FLOAT,
+        data: generateSobolTextureData(),
+        resourceName: 'Sobol',
+      });
     }
     return this.#sobolTex;
   }
 
+  #clearDenoisedSource(): void {
+    if (this.#denoisedLinearTex != null) {
+      this.#gl.deleteTexture(this.#denoisedLinearTex);
+      this.#denoisedLinearTex = null;
+    }
+  }
+
   #destroyTargets(): void {
+    this.#clearDenoisedSource();
     this.#accum?.destroy();
     this.#accum = null;
+    this.#neeCandidate?.destroy();
+    this.#neeCandidate = null;
     if (this.#blend != null) {
       this.#blend[0].destroy();
       this.#blend[1].destroy();
@@ -648,12 +1058,20 @@ export class GlResources {
     const fbo = source === 'output' ? this.#presentPass.fbo : this.#linearReadFbo();
     if (fbo == null) return null;
 
+    const previousFramebuffer = gl.getParameter(gl.FRAMEBUFFER_BINDING) as WebGLFramebuffer | null;
     gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+    const framebufferStatus = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
+    if (framebufferStatus !== gl.FRAMEBUFFER_COMPLETE) {
+      gl.bindFramebuffer(gl.FRAMEBUFFER, previousFramebuffer);
+      throw new Error(
+        `pt-webgl2: ${source} capture framebuffer is incomplete (status 0x${framebufferStatus.toString(16)})`,
+      );
+    }
     // Both targets are RGBA32F (accum AND present — see createPresentTexture),
     // so both read with the FLOAT path.
     const pixels = new Float32Array(w * h * 4);
     gl.readPixels(0, 0, w, h, gl.RGBA, gl.FLOAT, pixels);
-    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, previousFramebuffer);
 
     // WebGL readPixels writes bottom-left origin (row 0 = bottom).
     // Flip vertically so row 0 = top (the captureFrame contract: top-left origin).

@@ -11,7 +11,7 @@
  * The full tier appends the HDRI bookkeeping helpers (`hasEnvironmentMap`,
  * `environmentDimensions`, `sampleEnvironmentColor`, `environmentPdf`,
  * `sampleEnvironmentImportance`) and the area-light MIS connection functions;
- * the lite tier appends its stub / procedural-only implementations.
+ * the lite tier appends its disabled-feature / procedural-only implementations.
  * Both compositions remain byte-identical to the pre-extraction monolithic
  * strings.
  *

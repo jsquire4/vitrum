@@ -14,29 +14,60 @@ import { buildSTree, splitOverflowLeaves } from '../src/ppg/sTree.js';
 import { dTreeAccumulateFlux } from '../src/ppg/dTree.js';
 
 function makeSnapshot(): GIStateSnapshot {
-  const irrW = 6, irrH = 8, visW = 10, visH = 12;
+  // Canonical atlas geometry for dims 3×4×5: irradiance stride 5,
+  // visibility stride 18, with Y/Z stacked vertically.
+  const irrW = 15, irrH = 100, visW = 54, visH = 360;
   const irrData = new Uint16Array(irrW * irrH * 4);
   const visData = new Uint16Array(visW * visH * 4);
-  for (let i = 0; i < irrData.length; i++) irrData[i] = (i * 37 + 1) & 0xffff;
-  for (let i = 0; i < visData.length; i++) visData[i] = (i * 53 + 7) & 0xffff;
+  const probeStateW = 3, probeStateH = 20;
+  const probeStateData = new Float32Array(probeStateW * probeStateH * 4);
+  for (let i = 0; i < irrData.length; i++) irrData[i] = (i * 37 + 1) & 0x7bff;
+  for (let i = 0; i < visData.length; i++) visData[i] = (i * 53 + 7) & 0x7bff;
+  for (let i = 0; i < probeStateData.length; i++) {
+    probeStateData[i] = i % 4 === 3 ? Number(i % 8 === 3) : (i - 17) * 0.001;
+  }
   return {
     dims: { x: 3, y: 4, z: 5 },
     origin: [-1.5, 2.25, -3.75],
     spacing: 24,
     irrW, irrH, visW, visH,
     irrData, visData,
+    probeStateW, probeStateH, probeStateData,
   };
 }
 
-const RESTIR_GI_GRIS_STRIDE = 30; // GRIS/ReSTIR-PT reservoir stride (u32 per reservoir pixel)
+const RESTIR_GI_GRIS_STRIDE = 28; // GRIS DDGI-proxy reservoir stride (u32 per reservoir pixel)
 const RESTIR_GI_COMPACT_STRIDE = 20; // default Sprint-16/17 reservoir stride
+const RESTIR_BASE_FLOAT_LANES = [
+  0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 18,
+] as const;
+const RESTIR_GRIS_FLOAT_LANES = [20, 21, 22, 23, 26] as const;
 
 function makeRestirSection(strideU32 = RESTIR_GI_GRIS_STRIDE): RestirGISnapshot {
   const halfW = 5, halfH = 7;
   const bufU32Len = halfW * halfH * strideU32;
   const mk = (salt: number): Uint32Array => {
     const a = new Uint32Array(bufU32Len);
-    for (let i = 0; i < a.length; i++) a[i] = (i * 2654435761 + salt) >>> 0; // Knuth-ish fill
+    const f = new Float32Array(a.buffer);
+    const baseFloatLanes = [
+      0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 18,
+    ];
+    for (let record = 0; record < halfW * halfH; record += 1) {
+      const base = record * strideU32;
+      for (const lane of baseFloatLanes) {
+        f[base + lane] = (salt + record + lane) * 0.001;
+      }
+      a[base + 15] = (salt + record) >>> 0;
+      a[base + 19] = (salt * 17 + record) >>> 0;
+      if (strideU32 === RESTIR_GI_GRIS_STRIDE) {
+        for (const lane of [20, 21, 22, 23, 26]) {
+          f[base + lane] = (salt + record + lane) * 0.0001;
+        }
+        a[base + 24] = record >>> 0;
+        a[base + 25] = record & 1;
+        a[base + 27] = (salt + record) >>> 0;
+      }
+    }
     return a;
   };
   return {
@@ -81,13 +112,25 @@ describe('GI state snapshot serialization', () => {
     expect([back.irrW, back.irrH, back.visW, back.visH]).toEqual([s.irrW, s.irrH, s.visW, s.visH]);
     expect(Array.from(back.irrData)).toEqual(Array.from(s.irrData)); // identity
     expect(Array.from(back.visData)).toEqual(Array.from(s.visData));
+    expect([back.probeStateW, back.probeStateH]).toEqual([
+      s.probeStateW,
+      s.probeStateH,
+    ]);
+    expect(Array.from(back.probeStateData)).toEqual(
+      Array.from(s.probeStateData),
+    );
   });
 
   it('produces a single transferable ArrayBuffer sized header + both atlases', () => {
     const s = makeSnapshot();
     const buf = serializeGIState(s);
     expect(buf).toBeInstanceOf(ArrayBuffer);
-    expect(buf.byteLength).toBe(64 + s.irrData.byteLength + s.visData.byteLength);
+    expect(buf.byteLength).toBe(
+      64 +
+      s.irrData.byteLength +
+      s.visData.byteLength +
+      s.probeStateData.byteLength,
+    );
   });
 
   it('rejects a buffer with a bad magic', () => {
@@ -100,6 +143,29 @@ describe('GI state snapshot serialization', () => {
     const full = serializeGIState(s);
     const truncated = full.slice(0, full.byteLength - 16);
     expect(() => deserializeGIState(truncated)).toThrow(/too small/);
+  });
+
+  it('rejects non-finite and non-binary persisted probe-state texels', () => {
+    const s = makeSnapshot();
+    const stateOffset = 64 + s.irrData.byteLength + s.visData.byteLength;
+
+    const nonFinite = serializeGIState(s);
+    new DataView(nonFinite).setFloat32(stateOffset, Number.NaN, true);
+    expect(() => deserializeGIState(nonFinite)).toThrow(
+      /malformed DDGI probe-state/,
+    );
+
+    const nonBinary = serializeGIState(s);
+    new DataView(nonBinary).setFloat32(stateOffset + 12, 0.5, true);
+    expect(() => deserializeGIState(nonBinary)).toThrow(
+      /malformed DDGI probe-state/,
+    );
+  });
+
+  it('rejects malformed live probe state before allocating a snapshot buffer', () => {
+    const s = makeSnapshot();
+    s.probeStateData[0] = Number.POSITIVE_INFINITY;
+    expect(() => serializeGIState(s)).toThrow(/probe-state dimensions\/data/);
   });
 
   it('round-trips the ReSTIR-GI reservoir section losslessly (v3)', () => {
@@ -134,13 +200,18 @@ describe('GI state snapshot serialization', () => {
     const buf = serializeGIState(s);
     const r = s.restirGI;
     const reservoirBytes = 20 /* sub-header */ + r.current.byteLength + r.previous.byteLength + r.spatial.byteLength;
-    expect(buf.byteLength).toBe(64 + s.irrData.byteLength + s.visData.byteLength + reservoirBytes);
+    expect(buf.byteLength).toBe(
+      64 + s.irrData.byteLength + s.visData.byteLength
+        + s.probeStateData.byteLength + reservoirBytes,
+    );
   });
 
   it('omits the reservoir section when restirGI is absent (DDGI-only payload)', () => {
     const s = makeSnapshot(); // no restirGI
     const buf = serializeGIState(s);
-    expect(buf.byteLength).toBe(64 + s.irrData.byteLength + s.visData.byteLength);
+    expect(buf.byteLength).toBe(
+      64 + s.irrData.byteLength + s.visData.byteLength + s.probeStateData.byteLength,
+    );
     expect(deserializeGIState(buf).restirGI).toBeUndefined();
   });
 
@@ -161,6 +232,242 @@ describe('GI state snapshot serialization', () => {
     expect(() => deserializeGIState(buf)).toThrow(/unsupported version/);
   });
 
+  it('rejects a buffer shorter than the fixed header', () => {
+    expect(() => deserializeGIState(new ArrayBuffer(63))).toThrow(
+      /smaller than the fixed header/,
+    );
+  });
+
+  it.each([
+    ['dims.x = 0', 8, 0, /dims\.x/],
+    ['dims.y = 0', 12, 0, /dims\.y/],
+    ['dims.z = 0', 16, 0, /dims\.z/],
+    ['irrW = 0', 36, 0, /irrW/],
+    ['irrH = 0', 40, 0, /irrH/],
+    ['visW = 0', 44, 0, /visW/],
+    ['visH = 0', 48, 0, /visH/],
+    ['irrW disagrees with dims', 36, 16, /atlas dimensions/],
+  ] as const)('rejects corrupted header integer metadata: %s', (_label, offset, value, pattern) => {
+    const buf = serializeGIState(makeSnapshot());
+    new DataView(buf).setUint32(offset, value, true);
+    expect(() => deserializeGIState(buf)).toThrow(pattern);
+  });
+
+  it.each([
+    ['origin.x NaN', 20, Number.NaN, /origin/],
+    ['origin.y +Infinity', 24, Number.POSITIVE_INFINITY, /origin/],
+    ['origin.z -Infinity', 28, Number.NEGATIVE_INFINITY, /origin/],
+    ['spacing NaN', 32, Number.NaN, /spacing/],
+    ['spacing zero', 32, 0, /spacing/],
+    ['spacing +Infinity', 32, Number.POSITIVE_INFINITY, /spacing/],
+  ] as const)('rejects corrupted float metadata: %s', (_label, offset, value, pattern) => {
+    const buf = serializeGIState(makeSnapshot());
+    new DataView(buf).setFloat32(offset, value, true);
+    expect(() => deserializeGIState(buf)).toThrow(pattern);
+  });
+
+  it('rejects unknown section flags and undeclared trailing bytes', () => {
+    const valid = serializeGIState(makeSnapshot());
+    const unknownFlag = valid.slice(0);
+    const flags = new DataView(unknownFlag).getUint32(52, true);
+    new DataView(unknownFlag).setUint32(52, flags | 0x8000_0000, true);
+    expect(() => deserializeGIState(unknownFlag)).toThrow(/unknown section flags/);
+
+    const trailing = new Uint8Array(valid.byteLength + 4);
+    trailing.set(new Uint8Array(valid));
+    expect(() => deserializeGIState(trailing.buffer)).toThrow(/trailing snapshot bytes/);
+  });
+
+  it.each([0x7c00, 0xfc00, 0x7e00])(
+    'rejects a non-finite float16 atlas lane (0x%s)',
+    (bits) => {
+      const buf = serializeGIState(makeSnapshot());
+      new DataView(buf).setUint16(64, bits, true);
+      expect(() => deserializeGIState(buf)).toThrow(/non-finite float16/);
+    },
+  );
+
+  it('round-trips large-world metadata at its declared float32 precision', () => {
+    const origin = [
+      1_000_000_033,
+      -2_000_000_017,
+      3_000_000_049,
+    ] as const;
+    const spacing = 1_000_000.03125;
+    const back = deserializeGIState(
+      serializeGIState({ ...makeSnapshot(), origin, spacing }),
+    );
+
+    expect(back.origin).toEqual(origin.map(Math.fround));
+    expect(back.spacing).toBe(Math.fround(spacing));
+  });
+
+  it.each([
+    ['zero dimension', { dims: { x: 0, y: 4, z: 5 } }],
+    ['fractional dimension', { dims: { x: 3.5, y: 4, z: 5 } }],
+    ['NaN origin', { origin: [Number.NaN, 0, 0] as const }],
+    ['infinite origin', { origin: [0, Number.POSITIVE_INFINITY, 0] as const }],
+    ['zero spacing', { spacing: 0 }],
+    ['NaN spacing', { spacing: Number.NaN }],
+    ['unrepresentable spacing', { spacing: Number.MAX_VALUE }],
+  ])('rejects invalid live snapshot metadata before allocation: %s', (_label, overrides) => {
+    expect(() =>
+      serializeGIState({ ...makeSnapshot(), ...overrides }),
+    ).toThrow();
+  });
+
+  it('rejects live atlas lengths and non-finite half payloads that disagree with metadata', () => {
+    const shortIrr = makeSnapshot();
+    expect(() =>
+      serializeGIState({
+        ...shortIrr,
+        irrData: shortIrr.irrData.subarray(1),
+      }),
+    ).toThrow(/irradiance atlas length/);
+
+    const longVis = makeSnapshot();
+    expect(() =>
+      serializeGIState({
+        ...longVis,
+        visData: new Uint16Array(longVis.visData.length + 1),
+      }),
+    ).toThrow(/visibility atlas length/);
+
+    const nonFinite = makeSnapshot();
+    nonFinite.irrData[9] = 0x7e00;
+    expect(() => serializeGIState(nonFinite)).toThrow(/finite float16/);
+  });
+
+  it('rejects live ReSTIR buffers that do not match their declared layout', () => {
+    const restirGI = makeRestirSection();
+    expect(() =>
+      serializeGIState({
+        ...makeSnapshot(),
+        restirGI: {
+          ...restirGI,
+          spatial: restirGI.spatial.subarray(1),
+        },
+      }),
+    ).toThrow(/reservoir buffers do not match/);
+  });
+
+  it('rejects an unknown ReSTIR reservoir stride ABI', () => {
+    const restirGI = makeRestirSection(RESTIR_GI_GRIS_STRIDE);
+    expect(() =>
+      serializeGIState({
+        ...makeSnapshot(),
+        restirGI: {
+          ...restirGI,
+          strideU32: 30,
+          current: new Uint32Array(5 * 7 * 30),
+          previous: new Uint32Array(5 * 7 * 30),
+          spatial: new Uint32Array(5 * 7 * 30),
+        },
+      }),
+    ).toThrow(/compact or GRIS reservoir ABI/);
+  });
+
+  it.each(
+    (['current', 'previous', 'spatial'] as const).flatMap((bufferName) =>
+      [...RESTIR_BASE_FLOAT_LANES, ...RESTIR_GRIS_FLOAT_LANES].map(
+        (lane) => [bufferName, lane] as const,
+      ),
+    ),
+  )('rejects non-finite ReSTIR %s float lane %i before serialization', (bufferName, lane) => {
+    const restirGI = makeRestirSection();
+    restirGI[bufferName][lane] = 0x7fc0_0000;
+    expect(() =>
+      serializeGIState({ ...makeSnapshot(), restirGI }),
+    ).toThrow(/non-finite or invalid logical reservoir/);
+  });
+
+  it.each([0x7f80_0000, 0xff80_0000])(
+    'rejects ReSTIR infinity payload bits 0x%s during deserialization',
+    (bits) => {
+      const s = { ...makeSnapshot(), restirGI: makeRestirSection() };
+      const buf = serializeGIState(s);
+      const restirOffset =
+        64 +
+        s.irrData.byteLength +
+        s.visData.byteLength +
+        s.probeStateData.byteLength;
+      new DataView(buf).setUint32(restirOffset + 20, bits, true);
+      expect(() => deserializeGIState(buf)).toThrow(
+        /invalid logical reservoir/,
+      );
+    },
+  );
+
+  it('accepts full-domain u32 counters/IDs but rejects an unknown GRIS sampleKind', () => {
+    const restirGI = makeRestirSection();
+    for (const data of [
+      restirGI.current,
+      restirGI.previous,
+      restirGI.spatial,
+    ]) {
+      data[15] = 0xffff_ffff;
+      data[19] = 0xffff_ffff;
+      data[24] = 0xffff_ffff;
+      data[25] = 1;
+      data[27] = 0xffff_ffff;
+    }
+    expect(() =>
+      serializeGIState({ ...makeSnapshot(), restirGI }),
+    ).not.toThrow();
+
+    restirGI.previous[25] = 2;
+    expect(() =>
+      serializeGIState({ ...makeSnapshot(), restirGI }),
+    ).toThrow(/invalid logical reservoir/);
+  });
+
+  it('requires zero floor-padding tail words while ignoring them as float records', () => {
+    const makeFloorBuffer = (): Uint32Array => new Uint32Array(64);
+    const restirGI: RestirGISnapshot = {
+      halfW: 1,
+      halfH: 1,
+      strideU32: RESTIR_GI_COMPACT_STRIDE,
+      current: makeFloorBuffer(),
+      previous: makeFloorBuffer(),
+      spatial: makeFloorBuffer(),
+    };
+    expect(() =>
+      serializeGIState({ ...makeSnapshot(), restirGI }),
+    ).not.toThrow();
+
+    restirGI.spatial[63] = 0x7fc0_0000;
+    expect(() =>
+      serializeGIState({ ...makeSnapshot(), restirGI }),
+    ).toThrow(/invalid logical reservoir/);
+  });
+
+  it('rejects a non-zero ReSTIR reserved sub-header word', () => {
+    const s = { ...makeSnapshot(), restirGI: makeRestirSection() };
+    const buf = serializeGIState(s);
+    const restirOffset =
+      64 +
+      s.irrData.byteLength +
+      s.visData.byteLength +
+      s.probeStateData.byteLength;
+    new DataView(buf).setUint32(restirOffset + 16, 1, true);
+    expect(() => deserializeGIState(buf)).toThrow(/reserved sub-header/);
+  });
+
+  it.each([
+    ['PPG on v3', 3, 0x2],
+    ['DDGI probe state on v3', 3, 0x4],
+    ['DDGI probe state on v4', 4, 0x4],
+    ['DDGI probe state on v5', 5, 0x4],
+  ] as const)('rejects section flags invalid for the declared version: %s', (_label, version, invalidFlag) => {
+    const buf = serializeGIState(makeSnapshot());
+    const header = new DataView(buf);
+    header.setUint32(4, version, true);
+    header.setUint32(52, invalidFlag, true);
+    expect(() => deserializeGIState(buf)).toThrow(
+      /section flags are incompatible/,
+    );
+  });
+
   it('rejects a reservoir section truncated below its declared dims', () => {
     const s = { ...makeSnapshot(), restirGI: makeRestirSection() };
     const full = serializeGIState(s);
@@ -169,19 +476,35 @@ describe('GI state snapshot serialization', () => {
     expect(() => deserializeGIState(truncated)).toThrow(/ReSTIR-GI reservoir/);
   });
 
-  // ── v3 backward-compat: v3 buffers accepted, ppg absent (cold start) ───────
-  it('accepts a v3 (no PPG section) buffer and returns ppg:undefined', () => {
+  // ── v3-v5 backward-compat: no explicit probe state; synthesize active ─────
+  it.each([3, 4, 5])(
+    'accepts a v%i DDGI-only buffer and synthesizes zero-offset active state',
+    (version) => {
     const s = makeSnapshot();
-    const buf = serializeGIState(s);
-    // v3 snapshots have no SECTION_PPG bit, so deserialising returns ppg:undefined.
-    // Confirm that the current serializer produces v5 and the v3 path is via
-    // hand-patching the version word down to 3 (same layout, only section flags differ).
-    // Since no v3 snaps exist in the wild yet, we simulate one by writing version=3.
-    new DataView(buf).setUint32(4, 3, true);
-    const back = deserializeGIState(buf);
+    const current = serializeGIState(s);
+    const oldLength = 64 + s.irrData.byteLength + s.visData.byteLength;
+    const old = current.slice(0, oldLength);
+    const header = new DataView(old);
+    header.setUint32(4, version, true);
+    header.setUint32(52, 0, true); // no ReSTIR, PPG, or explicit DDGI-state section
+    header.setUint32(56, 0, true);
+    header.setUint32(60, 0, true);
+
+    const back = deserializeGIState(old);
     expect(back.ppg).toBeUndefined();
-    // Core fields still decoded correctly.
     expect(back.dims).toEqual(s.dims);
+    expect([back.probeStateW, back.probeStateH]).toEqual([
+      s.dims.x,
+      s.dims.y * s.dims.z,
+    ]);
+    for (let index = 0; index < back.probeStateData.length; index += 4) {
+      expect(Array.from(back.probeStateData.subarray(index, index + 4))).toEqual([
+        0,
+        0,
+        0,
+        1,
+      ]);
+    }
   });
 });
 
@@ -270,7 +593,10 @@ describe('GI state snapshot v5 PPG section', () => {
     const buf = serializeGIState(s);
     const reservoirBytes = 20 + restirGI.current.byteLength + restirGI.previous.byteLength + restirGI.spatial.byteLength;
     const ppgBytes = 48 /* PPG_SUBHEADER_BYTES */ + ppg.sTreeBuf.byteLength + ppg.dTreeBuf.byteLength + ppg.dTreeOffsets.byteLength;
-    expect(buf.byteLength).toBe(64 + s.irrData.byteLength + s.visData.byteLength + reservoirBytes + ppgBytes);
+    expect(buf.byteLength).toBe(
+      64 + s.irrData.byteLength + s.visData.byteLength
+        + s.probeStateData.byteLength + reservoirBytes + ppgBytes,
+    );
   });
 
   it('round-trips a non-default maxDTreeNodesPerCell in the v5 PPG sub-header', () => {
@@ -284,9 +610,18 @@ describe('GI state snapshot v5 PPG section', () => {
   it('defaults v4 PPG snapshots to the historical 341-node dTree cap', () => {
     const ppg = makePpgSnapshot(1024, 97);
     const s = { ...makeSnapshot(), ppg };
-    const buf = serializeGIState(s);
-    new DataView(buf).setUint32(4, 4, true); // v4 field [3] was not maxDTreeNodesPerCell.
-    const back = deserializeGIState(buf);
+    const current = new Uint8Array(serializeGIState(s));
+    const atlasEnd = 64 + s.irrData.byteLength + s.visData.byteLength;
+    const probeStateEnd = atlasEnd + s.probeStateData.byteLength;
+    const v4 = new Uint8Array(current.byteLength - s.probeStateData.byteLength);
+    v4.set(current.subarray(0, atlasEnd));
+    v4.set(current.subarray(probeStateEnd), atlasEnd);
+    const header = new DataView(v4.buffer);
+    header.setUint32(4, 4, true);
+    header.setUint32(52, 0x2, true); // v4 PPG only; explicit DDGI state is v6.
+    header.setUint32(56, 0, true);
+    header.setUint32(60, 0, true);
+    const back = deserializeGIState(v4.buffer);
     expect(back.ppg?.maxDTreeNodesPerCell).toBe(341);
   });
 
@@ -304,12 +639,13 @@ describe('GI state snapshot v5 PPG section', () => {
     const ppg = makePpgSnapshot();
     const s = { ...makeSnapshot(), ppg };
     const buf = serializeGIState(s);
-    // The PPG sub-header starts at HEADER_BYTES(64) + irrBytes + visBytes.
+    // The PPG sub-header starts after the fixed header and all DDGI payloads.
     const irrBytes = s.irrW * s.irrH * 8;
     const visBytes = s.visW * s.visH * 8;
-    const ppgSubheaderOffset = 64 + irrBytes + visBytes; // no ReSTIR section in this snapshot
+    const ppgSubheaderOffset =
+      64 + irrBytes + visBytes + s.probeStateData.byteLength; // no ReSTIR section
     // Field [2] (offset +8 from sub-header start) is dTreeCount.
     new DataView(buf).setUint32(ppgSubheaderOffset + 8, ppg.dTreeOffsets.length + 99, true);
-    expect(() => deserializeGIState(buf)).toThrow(/dTreeOffsets length/);
+    expect(() => deserializeGIState(buf)).toThrow(/dTreeOffsets .*length/);
   });
 });

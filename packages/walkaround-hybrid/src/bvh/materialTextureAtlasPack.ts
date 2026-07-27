@@ -5,6 +5,14 @@ import type {
   TextureRef,
   TextureWrapMode,
 } from '@vitrum/core';
+import {
+  MATERIAL_OPTICAL_META_TEXELS,
+  packMaterialOpticalMeta,
+} from './materialOptics.js';
+import {
+  isWalkaroundWebGpuTextureSource,
+  type WalkaroundWebGpuTextureSource,
+} from '../materialTextureSource.js';
 
 /**
  * Pure-CPU material-texture-atlas packing (I3-2).
@@ -19,7 +27,8 @@ import type {
  */
 
 export const BASE_COLOR_MAP_META_TEX_WIDTH = 4096;
-export const MATERIAL_MAP_META_TEXELS_PER_TRI = 62;
+export const MATERIAL_UV_AFFINE_LANE_BUDGET = 14;
+export const MATERIAL_MAP_META_TEXELS_PER_TRI = 157;
 export const MATERIAL_MAP_META_TEXEL_OFFSETS = {
   BASE_COLOR: 0,
   ROUGHNESS: 2,
@@ -60,7 +69,26 @@ export const MATERIAL_MAP_META_TEXEL_OFFSETS = {
   FRONT_LAYER_NORMAL_SCALE: 58,
   BACK_LAYER_NORMAL: 59,
   BACK_LAYER_NORMAL_SCALE: 61,
+  OPTICAL_HEADER: 62,
+  DISPERSION_IOR_RGB: 63,
+  SPECTRAL_SAMPLES: 64,
+  THIN_FILM_FRONT_REFLECTANCE: 96,
+  THIN_FILM_FRONT_TRANSMITTANCE: 104,
+  THIN_FILM_BACK_REFLECTANCE: 112,
+  THIN_FILM_BACK_TRANSMITTANCE: 120,
+  UV_AFFINE_BASE: 128,
+  SIDE_FLAGS: 156,
 } as const;
+
+export interface MaterialTriangleUvData {
+  /** Final BVH-reordered triangle indices, stride 3. */
+  readonly indices: Uint32Array;
+  /** Vertex-aligned legacy UV0/UV1 streams used as affine source charts. */
+  readonly uv0: Float32Array;
+  readonly uv1?: Float32Array;
+  /** Vertex-aligned arbitrary source streams keyed by actual TextureRef.texCoord. */
+  readonly uvSets?: ReadonlyMap<number, Float32Array>;
+}
 
 export type AtlasMapField =
   | 'baseColorMap'
@@ -91,10 +119,8 @@ export type AtlasColorSpace = 'srgb' | 'linear';
 export interface MaterialTextureAtlasDiagnostic {
   readonly code:
     | 'unreadable-material-texture-map'
-    | 'unsupported-material-texture-texcoord'
     | 'ambiguous-material-texture-stride'
-    | 'invalid-material-texture-transform'
-    | 'material-texture-sampler-policy-approximation';
+    | 'invalid-material-texture-transform';
   readonly materialIndex: number;
   readonly field: AtlasMapField;
   readonly colorSpace: AtlasColorSpace;
@@ -158,6 +184,9 @@ export interface MaterialTextureAtlasPayload {
   readonly atlasData: Float32Array;
   readonly atlasDim: number;
   readonly atlasLayerCount: number;
+  readonly atlasMipLevelCount: number;
+  /** Host-owned GPU subresources copied into their assigned atlas layers. */
+  readonly gpuSourceLayers: readonly MaterialTextureAtlasGpuSourceLayer[];
   readonly baseColorMetaData: Float32Array;
   readonly baseColorMetaWidth: number;
   readonly baseColorMetaHeight: number;
@@ -182,7 +211,22 @@ export interface MaterialTextureAtlasPayload {
   readonly readableIridescenceThicknessLayerCount: number;
   readonly readableThicknessLayerCount: number;
   readonly readableBumpLayerCount: number;
+  /**
+   * Retained CPU geometry needed to rebuild per-triangle high-UV affine lanes
+   * during material-only incremental updates.
+   */
+  readonly triangleUvs?: MaterialTriangleUvData;
   readonly diagnostics: readonly MaterialTextureAtlasDiagnostic[];
+}
+
+export interface MaterialTextureAtlasGpuSourceLayer {
+  readonly layer: number;
+  readonly source: WalkaroundWebGpuTextureSource;
+  /**
+   * True only for encoded-sRGB values in a non-sRGB GPU format. Native
+   * *-srgb formats are decoded by textureLoad and therefore set this false.
+   */
+  readonly decodeSrgb: boolean;
 }
 
 interface RawPixels {
@@ -190,6 +234,21 @@ interface RawPixels {
   readonly height: number;
   readonly data: Float32Array;
   readonly sourceColorSpace?: 'srgb' | 'linear';
+}
+
+interface AtlasLayerRecord {
+  readonly layer: number;
+  readonly width: number;
+  readonly height: number;
+  readonly source:
+    | { readonly kind: 'cpu'; readonly pixels: RawPixels }
+    | { readonly kind: 'gpu'; readonly descriptor: WalkaroundWebGpuTextureSource };
+}
+
+interface OrderedAtlasLayer {
+  readonly handle: unknown;
+  readonly colorSpace: AtlasColorSpace;
+  readonly record: Omit<AtlasLayerRecord, 'layer'>;
 }
 
 interface ReadHandlePixelsResult {
@@ -311,13 +370,6 @@ function sourceMetaFields(source: TextureRefSourceMetadata | undefined): {
   };
 }
 
-function hasAuthoredSamplerPolicy(ref: TextureRef): boolean {
-  const magFilter = ref.magFilter ?? 'nearest';
-  const minFilter = ref.minFilter ?? 'nearest';
-  const mipFilter = ref.mipFilter ?? 'none';
-  return magFilter !== minFilter || mipFilter !== 'none';
-}
-
 function readHandlePixels(handle: unknown): ReadHandlePixelsResult | null {
   const h = handle as {
     width?: number;
@@ -386,6 +438,19 @@ function readHandlePixels(handle: unknown): ReadHandlePixelsResult | null {
   };
 }
 
+function looksLikeUnwrappedGpuTexture(handle: unknown): boolean {
+  if (handle == null || typeof handle !== 'object') return false;
+  const candidate = handle as Record<string, unknown>;
+  return (
+    typeof candidate.createView === 'function' &&
+    typeof candidate.destroy === 'function' &&
+    typeof candidate.format === 'string' &&
+    typeof candidate.usage === 'number' &&
+    typeof candidate.width === 'number' &&
+    typeof candidate.height === 'number'
+  );
+}
+
 function blitAtlasLayer(
   px: RawPixels,
   dim: number,
@@ -422,7 +487,7 @@ function wrapIndex(mode: TextureWrapMode | undefined): number {
   }
 }
 
-function samplerPolicyPacked(ref: TextureRef, texCoord: number): number {
+function samplerPolicyPacked(ref: TextureRef, texCoordCode: number): number {
   const wrapS = wrapIndex(ref.wrapS);
   const wrapT = wrapIndex(ref.wrapT);
   const mipFilter = MIP_FILTER_INDEX[ref.mipFilter ?? 'none'];
@@ -431,10 +496,10 @@ function samplerPolicyPacked(ref: TextureRef, texCoord: number): number {
   return (
     wrapS +
     wrapT * 4 +
-    texCoord * 16 +
-    mipFilter * 64 +
-    magFilter * 256 +
-    minFilter * 512
+    texCoordCode * 16 +
+    mipFilter * 256 +
+    magFilter * 1024 +
+    minFilter * 2048
   );
 }
 
@@ -495,9 +560,10 @@ export function packMaterialTextureAtlas(
   materials: readonly MaterialSpec[],
   triMaterialIds: Uint32Array,
   triCount: number,
+  triangleUvs?: MaterialTriangleUvData,
 ): MaterialTextureAtlasPayload {
-  const readable = new Map<unknown, Partial<Record<AtlasColorSpace, { readonly layer: number; readonly pixels: RawPixels }>>>();
-  const ordered: { readonly handle: unknown; readonly pixels: RawPixels; readonly colorSpace: AtlasColorSpace }[] = [];
+  const readable = new Map<unknown, Partial<Record<AtlasColorSpace, AtlasLayerRecord>>>();
+  const ordered: OrderedAtlasLayer[] = [];
   const diagnostics: MaterialTextureAtlasDiagnostic[] = [];
   const fieldLayers: Record<AtlasMapField, Set<number>> = {
     baseColorMap: new Set<number>(),
@@ -548,43 +614,6 @@ export function packMaterialTextureAtlas(
     const ref = materialTextureRefForField(material, field);
     if (ref?.handle == null) return;
     const texCoord = ref.texCoord ?? 0;
-    if (texCoord !== 0 && texCoord !== 1) {
-      const source = textureRefSourceMetadata(ref);
-      diagnostics.push({
-        code: 'unsupported-material-texture-texcoord',
-        materialIndex,
-        field,
-        colorSpace,
-        texCoord,
-        ...sourceMetaFields(source),
-        message:
-          `${field} texture uses unsupported texCoord ${texCoord} ` +
-          `(walkaround material atlas supports UV sets 0 and 1 only)` +
-          `${source?.path !== undefined ? ` at ${source.path}` : ''}; the map is ignored.`,
-      });
-      return;
-    }
-    if (hasAuthoredSamplerPolicy(ref)) {
-      const source = textureRefSourceMetadata(ref);
-      diagnostics.push({
-        code: 'material-texture-sampler-policy-approximation',
-        materialIndex,
-        field,
-        colorSpace,
-        texCoord,
-        ...(ref.magFilter !== undefined ? { magFilter: ref.magFilter } : {}),
-        ...(ref.minFilter !== undefined ? { minFilter: ref.minFilter } : {}),
-        ...(ref.mipFilter !== undefined ? { mipFilter: ref.mipFilter } : {}),
-        ...sourceMetaFields(source),
-        message:
-          `${field} texture authors sampler filter/mip policy ` +
-          `(mag=${ref.magFilter ?? 'default'}, min=${ref.minFilter ?? 'default'}, mip=${ref.mipFilter ?? 'default'})` +
-          `${source?.path !== undefined ? ` at ${source.path}` : ''}; ` +
-          'walkaround material atlas honors footprint-independent nearest/linear filtering, but ' +
-          'this policy needs implicit LOD or min/mag footprint selection in compute passes; ' +
-          'the map remains atlas-backed with approximate mip/footprint filtering.',
-      });
-    }
     const pushInvalidTransformDiagnostic = (): void => {
       const transformComponents = invalidTextureTransformComponents(ref);
       if (transformComponents.length === 0) return;
@@ -611,6 +640,49 @@ export function packMaterialTextureAtlas(
       fieldLayers[field].add(existing.layer);
       return;
     }
+
+    if (isWalkaroundWebGpuTextureSource(ref.handle)) {
+      if (colorSpace === 'linear' && ref.handle.colorSpace !== 'linear') {
+        const source = textureRefSourceMetadata(ref);
+        throw new RangeError(
+          `packMaterialTextureAtlas: ${field} is a linear-data map, but its WebGPU ` +
+          `source declares ${ref.handle.colorSpace} values` +
+          `${source?.path !== undefined ? ` at ${source.path}` : ''}.`,
+        );
+      }
+      pushInvalidTransformDiagnostic();
+      const layer = ordered.length;
+      const record: AtlasLayerRecord = {
+        layer,
+        width: ref.handle.width,
+        height: ref.handle.height,
+        source: { kind: 'gpu', descriptor: ref.handle },
+      };
+      ordered.push({
+        handle: ref.handle,
+        colorSpace,
+        record: {
+          width: record.width,
+          height: record.height,
+          source: record.source,
+        },
+      });
+      perHandle ??= {};
+      perHandle[colorSpace] = record;
+      readable.set(ref.handle, perHandle);
+      fieldLayers[field].add(layer);
+      return;
+    }
+    if (looksLikeUnwrappedGpuTexture(ref.handle)) {
+      const source = textureRefSourceMetadata(ref);
+      throw new TypeError(
+        `packMaterialTextureAtlas: ${field} received a raw GPUTexture` +
+        `${source?.path !== undefined ? ` at ${source.path}` : ''}. ` +
+        'Wrap it with createWalkaroundWebGpuTextureSource so device, format, ' +
+        'ownership, selected subresource, and color space are explicit.',
+      );
+    }
+
     const read = readHandlePixels(ref.handle);
     if (read == null) {
       const source = textureRefSourceMetadata(ref);
@@ -621,8 +693,9 @@ export function packMaterialTextureAtlas(
         colorSpace,
         ...sourceMetaFields(source),
         message:
-          `${field} texture handle is not CPU-readable ` +
-          `(expected raw {width,height,data} or DataTexture-shaped image)` +
+          `${field} texture handle is not an atlas-supported source ` +
+          `(expected raw {width,height,data}, a DataTexture-shaped image, or ` +
+          `createWalkaroundWebGpuTextureSource(...))` +
           `${source?.path !== undefined ? ` at ${source.path}` : ''}; the map is ignored.`,
       });
       return;
@@ -650,9 +723,23 @@ export function packMaterialTextureAtlas(
     pushInvalidTransformDiagnostic();
     const pixels = read.pixels;
     const layer = ordered.length;
-    ordered.push({ handle: ref.handle, pixels, colorSpace });
+    const record: AtlasLayerRecord = {
+      layer,
+      width: pixels.width,
+      height: pixels.height,
+      source: { kind: 'cpu', pixels },
+    };
+    ordered.push({
+      handle: ref.handle,
+      colorSpace,
+      record: {
+        width: record.width,
+        height: record.height,
+        source: record.source,
+      },
+    });
     perHandle ??= {};
-    perHandle[colorSpace] = { layer, pixels };
+    perHandle[colorSpace] = record;
     readable.set(ref.handle, perHandle);
     fieldLayers[field].add(layer);
   };
@@ -663,19 +750,86 @@ export function packMaterialTextureAtlas(
     }
   });
 
-  const atlasDim = Math.max(1, ...ordered.map((entry) => Math.max(entry.pixels.width, entry.pixels.height)));
+  // Compact arbitrary authored texCoord indices into the 4-bit shader lane.
+  // UV0/UV1 keep codes 0/1; the remaining fourteen codes are assigned only to
+  // Atlas-backed maps that can actually be sampled by this renderer.
+  const activeHighTexCoords = new Set<number>();
+  const materialHighTexCoords = materials.map(() => new Set<number>());
+  materials.forEach((material, materialIndex) => {
+    for (const { field, colorSpace } of ATLAS_MAP_FIELDS) {
+      const ref = materialTextureRefForField(material, field);
+      const texCoord = ref?.texCoord ?? 0;
+      if (
+        texCoord > 1 && ref?.handle != null &&
+        readable.get(ref.handle)?.[colorSpace]?.layer != null
+      ) {
+        activeHighTexCoords.add(texCoord);
+        materialHighTexCoords[materialIndex]!.add(texCoord);
+      }
+    }
+  });
+  const sortedHighTexCoords = [...activeHighTexCoords].sort((a, b) => a - b);
+  if (sortedHighTexCoords.length > MATERIAL_UV_AFFINE_LANE_BUDGET) {
+    throw new RangeError(
+      `packMaterialTextureAtlas: scene references ${sortedHighTexCoords.length} atlas-backed high UV sets ` +
+      `(${sortedHighTexCoords.join(', ')}), exceeding the ${MATERIAL_UV_AFFINE_LANE_BUDGET}-lane material UV budget.`,
+    );
+  }
+  const compactTexCoordCode = new Map<number, number>([[0, 0], [1, 1]]);
+  sortedHighTexCoords.forEach((texCoord, lane) => compactTexCoordCode.set(texCoord, lane + 2));
+  if (sortedHighTexCoords.length > 0 && triangleUvs == null) {
+    throw new RangeError(
+      'packMaterialTextureAtlas: atlas-backed material maps reference UV sets above 1, but no triangle UV streams were supplied.',
+    );
+  }
+
+  const atlasDim = Math.max(
+    1,
+    ...ordered.map((entry) => Math.max(entry.record.width, entry.record.height)),
+  );
   const atlasLayerCount = Math.max(1, ordered.length);
+  const atlasMipLevelCount = Math.floor(Math.log2(atlasDim)) + 1;
   const atlasData = new Float32Array(atlasDim * atlasDim * 4 * atlasLayerCount);
+  const gpuSourceLayers: MaterialTextureAtlasGpuSourceLayer[] = [];
   if (ordered.length === 0) {
     atlasData.set([1, 1, 1, 1]);
   } else {
     ordered.forEach((entry, layer) => {
+      if (entry.record.source.kind === 'gpu') {
+        const source = entry.record.source.descriptor;
+        gpuSourceLayers.push({
+          layer,
+          source,
+          decodeSrgb: (
+            entry.colorSpace === 'srgb' &&
+            source.colorSpace === 'srgb' &&
+            !source.format.endsWith('-srgb')
+          ),
+        });
+        if (source.cpuMirror != null) {
+          const mirror = readHandlePixels(source.cpuMirror)?.pixels;
+          if (mirror == null) {
+            throw new TypeError(
+              `packMaterialTextureAtlas: GPU source layer ${layer} has an invalid CPU mirror.`,
+            );
+          }
+          blitAtlasLayer(
+            mirror,
+            atlasDim,
+            atlasData,
+            layer,
+            entry.colorSpace === 'srgb' && mirror.sourceColorSpace !== 'linear',
+          );
+        }
+        return;
+      }
+      const pixels = entry.record.source.pixels;
       blitAtlasLayer(
-        entry.pixels,
+        pixels,
         atlasDim,
         atlasData,
         layer,
-        entry.colorSpace === 'srgb' && entry.pixels.sourceColorSpace !== 'linear',
+        entry.colorSpace === 'srgb' && pixels.sourceColorSpace !== 'linear',
       );
     });
   }
@@ -684,6 +838,8 @@ export function packMaterialTextureAtlas(
   const baseColorMetaWidth = Math.min(BASE_COLOR_MAP_META_TEX_WIDTH, metaTexels);
   const baseColorMetaHeight = Math.ceil(metaTexels / baseColorMetaWidth);
   const baseColorMetaData = new Float32Array(baseColorMetaWidth * baseColorMetaHeight * 4);
+  const opticalMetaByMaterial = materials.map((material) => packMaterialOpticalMeta(material));
+  const emptyOpticalMeta = new Float32Array(MATERIAL_OPTICAL_META_TEXELS * 4);
 
   const writeMapMeta = (
     mat: MaterialSpec | undefined,
@@ -697,8 +853,9 @@ export function packMaterialTextureAtlas(
       return;
     }
     const texCoord = ref.texCoord ?? 0;
-    const layer = texCoord === 0 || texCoord === 1 ? readable.get(ref.handle)?.[colorSpace]?.layer : undefined;
-    if (layer == null) {
+    const texCoordCode = compactTexCoordCode.get(texCoord);
+    const layer = texCoordCode == null ? undefined : readable.get(ref.handle)?.[colorSpace]?.layer;
+    if (texCoordCode == null || layer == null) {
       writeDisabledMeta(baseColorMetaData, texel);
       return;
     }
@@ -707,7 +864,7 @@ export function packMaterialTextureAtlas(
     const b0 = texel * 4;
     const b1 = b0 + 4;
     baseColorMetaData[b0] = layer;
-    baseColorMetaData[b0 + 1] = samplerPolicyPacked(ref, texCoord);
+    baseColorMetaData[b0 + 1] = samplerPolicyPacked(ref, texCoordCode);
     baseColorMetaData[b0 + 2] = finiteOrFallback(t?.offset?.[0], 0);
     baseColorMetaData[b0 + 3] = finiteOrFallback(t?.offset?.[1], 0);
     baseColorMetaData[b1] = finiteOrFallback(t?.scale?.[0], 1);
@@ -815,14 +972,14 @@ export function packMaterialTextureAtlas(
     const b = texel * 4;
     const ref = asTextureRef(mat?.bumpMap);
     const texCoord = ref?.texCoord ?? 0;
-    const pixels = ref?.handle != null && (texCoord === 0 || texCoord === 1)
-      ? readable.get(ref.handle)?.linear?.pixels
+    const record = ref?.handle != null && compactTexCoordCode.has(texCoord)
+      ? readable.get(ref.handle)?.linear
       : undefined;
     baseColorMetaData[b] = Number.isFinite(mat?.bumpScale)
       ? mat?.bumpScale ?? 1
       : 1;
-    baseColorMetaData[b + 1] = pixels?.width ?? 0;
-    baseColorMetaData[b + 2] = pixels?.height ?? 0;
+    baseColorMetaData[b + 1] = record?.width ?? 0;
+    baseColorMetaData[b + 2] = record?.height ?? 0;
     baseColorMetaData[b + 3] = 0;
   };
 
@@ -852,6 +1009,70 @@ export function packMaterialTextureAtlas(
     baseColorMetaData[b + 3] = clampedSignedUnit(mat?.scatteringAnisotropy, 0);
   };
 
+  const uvAt = (stream: Float32Array, vertexIndex: number): readonly [number, number] => [
+    stream[vertexIndex * 2] ?? 0,
+    stream[vertexIndex * 2 + 1] ?? 0,
+  ];
+  const determinant = (
+    a: readonly [number, number], b: readonly [number, number], c: readonly [number, number],
+  ): number => (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
+  const writeUvAffine = (tri: number, texCoord: number, compactCode: number): void => {
+    const geometry = triangleUvs!;
+    const target = geometry.uvSets?.get(texCoord);
+    if (target == null) {
+      throw new RangeError(
+        `packMaterialTextureAtlas: triangle ${tri} material references texCoord ${texCoord}, but that UV stream is missing.`,
+      );
+    }
+    const i0 = geometry.indices[tri * 3] ?? 0;
+    const i1 = geometry.indices[tri * 3 + 1] ?? 0;
+    const i2 = geometry.indices[tri * 3 + 2] ?? 0;
+    const ta = uvAt(target, i0); const tb = uvAt(target, i1); const tc = uvAt(target, i2);
+    if (![...ta, ...tb, ...tc].every(Number.isFinite)) {
+      throw new RangeError(
+        `packMaterialTextureAtlas: triangle ${tri} material references texCoord ${texCoord}, but that primitive does not supply the UV stream.`,
+      );
+    }
+    const constantTarget =
+      Math.abs(ta[0] - tb[0]) + Math.abs(ta[1] - tb[1]) +
+      Math.abs(ta[0] - tc[0]) + Math.abs(ta[1] - tc[1]) <= 1e-12;
+    let source = geometry.uv0;
+    let sourceSelector = 0;
+    let sa = uvAt(source, i0); let sb = uvAt(source, i1); let sc = uvAt(source, i2);
+    let det = determinant(sa, sb, sc);
+    if (Math.abs(det) <= 1e-12 && geometry.uv1 != null) {
+      source = geometry.uv1;
+      sourceSelector = 1;
+      sa = uvAt(source, i0); sb = uvAt(source, i1); sc = uvAt(source, i2);
+      det = determinant(sa, sb, sc);
+    }
+    let m00 = 0; let m01 = 0; let b0 = ta[0];
+    let m10 = 0; let m11 = 0; let b1 = ta[1];
+    if (!constantTarget) {
+      if (Math.abs(det) <= 1e-12) {
+        throw new RangeError(
+          `packMaterialTextureAtlas: triangle ${tri} texCoord ${texCoord} cannot be reconstructed because both UV0 and UV1 source charts are degenerate.`,
+        );
+      }
+      const inv00 = (sc[1] - sa[1]) / det;
+      const inv01 = -(sc[0] - sa[0]) / det;
+      const inv10 = -(sb[1] - sa[1]) / det;
+      const inv11 = (sb[0] - sa[0]) / det;
+      const du0 = tb[0] - ta[0]; const du1 = tc[0] - ta[0];
+      const dv0 = tb[1] - ta[1]; const dv1 = tc[1] - ta[1];
+      m00 = du0 * inv00 + du1 * inv10;
+      m01 = du0 * inv01 + du1 * inv11;
+      m10 = dv0 * inv00 + dv1 * inv10;
+      m11 = dv0 * inv01 + dv1 * inv11;
+      b0 = ta[0] - m00 * sa[0] - m01 * sa[1];
+      b1 = ta[1] - m10 * sa[0] - m11 * sa[1];
+    }
+    const lane = compactCode - 2;
+    const texel0 = tri * MATERIAL_MAP_META_TEXELS_PER_TRI + MATERIAL_MAP_META_TEXEL_OFFSETS.UV_AFFINE_BASE + lane * 2;
+    const base = texel0 * 4;
+    baseColorMetaData.set([m00, m01, b0, sourceSelector, m10, m11, b1, 1], base);
+  };
+
   for (let tri = 0; tri < triCount; tri += 1) {
     const baseTexel = tri * MATERIAL_MAP_META_TEXELS_PER_TRI;
     const mat = materials[triMaterialIds[tri] ?? 0];
@@ -862,6 +1083,7 @@ export function packMaterialTextureAtlas(
     writeMapMeta(mat, 'aoMap', 'linear', baseTexel + offsets.AO);
     writeMapMeta(mat, 'alphaMap', 'linear', baseTexel + offsets.ALPHA);
     writeAlphaCoverageMeta(mat, baseTexel + offsets.ALPHA_COVERAGE);
+    writeScalarMeta(baseTexel + offsets.SIDE_FLAGS, mat?.doubleSided === true ? 1 : 0);
     writeMapMeta(mat, 'emissiveMap', 'srgb', baseTexel + offsets.EMISSIVE);
     writeMapMeta(mat, 'transmissionMap', 'linear', baseTexel + offsets.TRANSMISSION);
     writeMapMeta(mat, 'normalMap', 'linear', baseTexel + offsets.NORMAL);
@@ -895,12 +1117,22 @@ export function packMaterialTextureAtlas(
     writeFaceLayerNormalScaleMeta(mat?.frontLayer, baseTexel + offsets.FRONT_LAYER_NORMAL_SCALE);
     writeMapMeta(mat, 'backLayer.normalMap', 'linear', baseTexel + offsets.BACK_LAYER_NORMAL);
     writeFaceLayerNormalScaleMeta(mat?.backLayer, baseTexel + offsets.BACK_LAYER_NORMAL_SCALE);
+    baseColorMetaData.set(
+      opticalMetaByMaterial[triMaterialIds[tri] ?? 0] ?? emptyOpticalMeta,
+      (baseTexel + offsets.OPTICAL_HEADER) * 4,
+    );
+    const materialIndex = triMaterialIds[tri] ?? 0;
+    for (const texCoord of materialHighTexCoords[materialIndex] ?? []) {
+      writeUvAffine(tri, texCoord, compactTexCoordCode.get(texCoord)!);
+    }
   }
 
   return {
     atlasData,
     atlasDim,
     atlasLayerCount,
+    atlasMipLevelCount,
+    gpuSourceLayers,
     baseColorMetaData,
     baseColorMetaWidth,
     baseColorMetaHeight,
@@ -929,6 +1161,7 @@ export function packMaterialTextureAtlas(
     readableIridescenceThicknessLayerCount: fieldLayers.iridescenceThicknessMap.size,
     readableThicknessLayerCount: fieldLayers.thicknessMap.size,
     readableBumpLayerCount: fieldLayers.bumpMap.size,
+    ...(triangleUvs != null ? { triangleUvs } : {}),
     diagnostics,
   };
 }

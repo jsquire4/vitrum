@@ -79,6 +79,10 @@ export interface GiPropagationDeps {
  *   (caller keeps the cascade-bounds floor).
  */
 function rebuildRcMergedSceneCoreFirst(deps: GiPropagationDeps, rc: RCSubsystem): boolean {
+  if (deps.bvhBuffers != null && rc.sharesSceneGeometry) {
+    rc.syncRestirBvhBuffers(deps.bvhBuffers);
+    return true;
+  }
   if (deps.lastScene != null) {
     rc.setSceneFromCore(deps.lastScene);
     return true;

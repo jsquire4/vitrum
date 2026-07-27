@@ -9,6 +9,10 @@
 
 import type { GltfJson, GltfAccessor, GltfBufferView } from './gltfTypes.js';
 import { GltfComponentType } from './gltfTypes.js';
+import {
+  gltfArrayBufferByteLength,
+  type ImportResourceLedger,
+} from './importResourceBudget.js';
 
 export type GltfAccessorDiagnosticCode =
   | 'sparse-accessor-applied'
@@ -19,10 +23,11 @@ export type GltfAccessorDiagnosticCode =
   | 'sparse-indices-buffer-view-truncated'
   | 'sparse-values-buffer-view-truncated'
   | 'invalid-sparse-indices-component-type'
+  | 'sparse-indices-not-strictly-increasing'
   | 'sparse-index-out-of-range';
 
 export interface GltfAccessorDiagnostic {
-  readonly severity: 'warning';
+  readonly severity: 'warning' | 'error';
   readonly code: GltfAccessorDiagnosticCode;
   readonly path: string;
   readonly message: string;
@@ -45,6 +50,32 @@ const TYPE_COMPONENT_COUNT: Record<string, number> = {
   MAT3: 9,
   MAT4: 16,
 };
+
+export const GLTF_ACCESSOR_DECODE_BUDGET_BYTES = 512 * 1024 * 1024;
+
+function assertSafeNonNegativeInteger(value: unknown, label: string): asserts value is number {
+  if (!Number.isSafeInteger(value) || (value as number) < 0) {
+    throw new Error(`[vitrum/gltf-adapter] ${label} must be a non-negative safe integer.`);
+  }
+}
+
+function checkedProduct(a: number, b: number, label: string): number {
+  assertSafeNonNegativeInteger(a, `${label} left operand`);
+  assertSafeNonNegativeInteger(b, `${label} right operand`);
+  if (a !== 0 && b > Math.floor(Number.MAX_SAFE_INTEGER / a)) {
+    throw new Error(`[vitrum/gltf-adapter] ${label} exceeds the safe integer range.`);
+  }
+  return a * b;
+}
+
+function checkedSum(a: number, b: number, label: string): number {
+  assertSafeNonNegativeInteger(a, `${label} left operand`);
+  assertSafeNonNegativeInteger(b, `${label} right operand`);
+  if (b > Number.MAX_SAFE_INTEGER - a) {
+    throw new Error(`[vitrum/gltf-adapter] ${label} exceeds the safe integer range.`);
+  }
+  return a + b;
+}
 
 /**
  * Number of scalar components for an accessor `type` string.
@@ -113,6 +144,33 @@ export function componentByteSize(ct: GltfComponentType): number {
   }
 }
 
+/**
+ * Validate the core glTF normalization contract and return its effective value.
+ * Defaults apply only when the JSON property is absent.
+ */
+export function validateAccessorNormalization(
+  accessor: Pick<GltfAccessor, 'componentType' | 'normalized'>,
+  path: string,
+): boolean {
+  if (!Object.prototype.hasOwnProperty.call(accessor, 'normalized')) return false;
+  if (typeof accessor.normalized !== 'boolean') {
+    throw new TypeError(`[vitrum/gltf-adapter] ${path}.normalized must be a boolean.`);
+  }
+  if (
+    accessor.normalized &&
+    accessor.componentType !== GltfComponentType.BYTE &&
+    accessor.componentType !== GltfComponentType.UNSIGNED_BYTE &&
+    accessor.componentType !== GltfComponentType.SHORT &&
+    accessor.componentType !== GltfComponentType.UNSIGNED_SHORT
+  ) {
+    throw new TypeError(
+      `[vitrum/gltf-adapter] ${path}.normalized may be true only for BYTE, ` +
+        'UNSIGNED_BYTE, SHORT, or UNSIGNED_SHORT component types.',
+    );
+  }
+  return accessor.normalized;
+}
+
 export interface GltfAccessorBufferViewRange {
   readonly byteOffset: number;
   readonly byteStride: number;
@@ -125,17 +183,40 @@ export function accessorBufferViewRange(
   bufferView?: Pick<GltfBufferView, 'byteStride'>,
   componentCount = typeComponentCount(accessor.type),
 ): GltfAccessorBufferViewRange {
+  assertSafeNonNegativeInteger(accessor.count, 'accessor.count');
   const compSize = componentByteSize(accessor.componentType);
   const padding = matrixColumnPadding(accessor.type, compSize);
   // glTF §3.6.2.4: matrix accessors with sub-4-byte components pad each column
   // up to a 4-byte boundary, so the element occupies more bytes than the tight
   // `compSize * componentCount`.
-  const elementByteLength = padding !== null ? padding.elementByteLength : compSize * componentCount;
+  const elementByteLength = padding !== null
+    ? padding.elementByteLength
+    : checkedProduct(compSize, componentCount, 'accessor element byte length');
   const byteStride = bufferView?.byteStride ?? elementByteLength;
+  assertSafeNonNegativeInteger(byteStride, 'bufferView.byteStride');
+  if (byteStride < elementByteLength || byteStride % compSize !== 0 || byteStride > 252) {
+    throw new Error(
+      `[vitrum/gltf-adapter] bufferView.byteStride ${byteStride} must be component-aligned, ` +
+      `at least element byte length ${elementByteLength}, and no greater than 252.`,
+    );
+  }
   const byteOffset = accessor.byteOffset ?? 0;
-  const requiredByteLength = byteOffset + (accessor.count <= 0
+  assertSafeNonNegativeInteger(byteOffset, 'accessor.byteOffset');
+  if (byteOffset % compSize !== 0) {
+    throw new Error(`[vitrum/gltf-adapter] accessor.byteOffset ${byteOffset} is not component-aligned.`);
+  }
+  const elementsSpan = accessor.count <= 0
     ? 0
-    : (accessor.count - 1) * byteStride + elementByteLength);
+    : checkedSum(
+        checkedProduct(accessor.count - 1, byteStride, 'accessor byte span'),
+        elementByteLength,
+        'accessor byte span',
+      );
+  const requiredByteLength = checkedSum(
+    byteOffset,
+    elementsSpan,
+    'accessor required byte length',
+  );
   return {
     byteOffset,
     byteStride,
@@ -192,17 +273,32 @@ export function unpackAccessorFloat(
   accessorIndex: number,
   warnings: string[],
   onDiagnostic?: GltfAccessorDiagnosticSink,
+  resourceLedger?: ImportResourceLedger,
 ): Float32Array {
   const accessor = gltf.accessors?.[accessorIndex];
   if (!accessor) {
     throw new Error(`[vitrum/gltf-adapter] Accessor ${accessorIndex} not found`);
   }
 
+  assertSafeNonNegativeInteger(accessor.count, `accessors[${accessorIndex}].count`);
+  if (accessor.count === 0) {
+    throw new Error(`[vitrum/gltf-adapter] Accessor ${accessorIndex} count must be greater than zero.`);
+  }
+  validateAccessorNormalization(accessor, `accessors[${accessorIndex}]`);
+
   const componentCount = TYPE_COMPONENT_COUNT[accessor.type];
   if (componentCount === undefined) {
     throw new Error(`[vitrum/gltf-adapter] Unknown accessor type "${accessor.type}"`);
   }
-  const total = accessor.count * componentCount;
+  const total = checkedProduct(accessor.count, componentCount, `accessor ${accessorIndex} decoded element count`);
+  const decodedBytes = checkedProduct(total, Float32Array.BYTES_PER_ELEMENT, `accessor ${accessorIndex} decoded byte length`);
+  if (resourceLedger === undefined && decodedBytes > GLTF_ACCESSOR_DECODE_BUDGET_BYTES) {
+    throw new Error(
+      `[vitrum/gltf-adapter] Accessor ${accessorIndex} decoded byte length ${decodedBytes} exceeds ` +
+      `${GLTF_ACCESSOR_DECODE_BUDGET_BYTES} byte budget.`,
+    );
+  }
+  resourceLedger?.chargeDecodedGeometryBytes(decodedBytes, `accessors[${accessorIndex}]`);
   const result = new Float32Array(total);
 
   if (accessor.bufferView !== undefined) {
@@ -236,6 +332,12 @@ function _readBufferViewIntoResult(
   const bvOffset = bv.byteOffset ?? 0;
   const range = accessorBufferViewRange(accessor, bv, componentCount);
   validateBufferViewAccess(buf, bvIdx, bv, range.requiredByteLength, 'accessor');
+  if (bvOffset % compSize !== 0) {
+    throw new Error(
+      `[vitrum/gltf-adapter] accessor bufferView ${bvIdx}.byteOffset ${bvOffset} ` +
+        `is not aligned to component size ${compSize}.`,
+    );
+  }
 
   const dataView = new DataView(buf, bvOffset, bv.byteLength);
 
@@ -270,6 +372,8 @@ interface SparseViews {
   valByteOffset: number;
   valCt: GltfComponentType;
   valCompSize: number;
+  valElementByteLength: number;
+  valPadding: ReturnType<typeof matrixColumnPadding>;
   count: number;
 }
 
@@ -283,8 +387,8 @@ function _isSparseIndexComponentType(ct: GltfComponentType): boolean {
 
 /**
  * Resolve the DataViews and component metadata for an accessor's sparse patch.
- * Returns `null` (with a warning) if the required bufferViews or buffers are
- * unavailable, which allows callers to degrade gracefully.
+ * Malformed sparse storage is never recoverable: applying only part of the
+ * authored patch would silently change geometry, animation, or skin data.
  */
 function _resolveSparseViews(
   gltf: GltfJson,
@@ -294,28 +398,33 @@ function _resolveSparseViews(
   componentCount: number,
   warnings: string[] | null,
   onDiagnostic: GltfAccessorDiagnosticSink | undefined,
-): SparseViews | null {
+): SparseViews {
   const sparse = accessor.sparse!;
+  assertSafeNonNegativeInteger(sparse.count, `accessors[${accessorIndex}].sparse.count`);
+  if (sparse.count <= 0 || sparse.count > accessor.count) {
+    throw new Error(
+      `[vitrum/gltf-adapter] Accessor ${accessorIndex} sparse.count must be in [1, ${accessor.count}].`,
+    );
+  }
 
   const idxBv = gltf.bufferViews?.[sparse.indices.bufferView];
   if (!idxBv) {
-    const message = '[vitrum/gltf-adapter] Sparse indices bufferView not found; patch skipped.';
+    const message = '[vitrum/gltf-adapter] Sparse indices bufferView not found; accessor rejected.';
     emitAccessorDiagnostic(warnings, onDiagnostic, {
-      severity: 'warning',
+      severity: 'error',
       code: 'sparse-indices-buffer-view-not-found',
       path: `accessors[${accessorIndex}].sparse.indices.bufferView`,
       message,
       accessorIndex,
       bufferViewIndex: sparse.indices.bufferView,
     });
-    if (!warnings) throw new Error('[vitrum/gltf-adapter] Sparse indices bufferView not found');
-    return null;
+    throw new Error('[vitrum/gltf-adapter] Sparse indices bufferView not found');
   }
   const idxBuf = buffers.get(idxBv.buffer);
   if (!idxBuf) {
-    const message = `[vitrum/gltf-adapter] Sparse indices buffer ${idxBv.buffer} unavailable; patch skipped.`;
+    const message = `[vitrum/gltf-adapter] Sparse indices buffer ${idxBv.buffer} unavailable; accessor rejected.`;
     emitAccessorDiagnostic(warnings, onDiagnostic, {
-      severity: 'warning',
+      severity: 'error',
       code: 'sparse-indices-buffer-unavailable',
       path: `accessors[${accessorIndex}].sparse.indices.bufferView`,
       message,
@@ -323,29 +432,27 @@ function _resolveSparseViews(
       bufferViewIndex: sparse.indices.bufferView,
       bufferIndex: idxBv.buffer,
     });
-    if (!warnings) throw new Error(`[vitrum/gltf-adapter] Sparse indices buffer ${idxBv.buffer} unavailable`);
-    return null;
+    throw new Error(`[vitrum/gltf-adapter] Sparse indices buffer ${idxBv.buffer} unavailable`);
   }
 
   const valBv = gltf.bufferViews?.[sparse.values.bufferView];
   if (!valBv) {
-    const message = '[vitrum/gltf-adapter] Sparse values bufferView not found; patch skipped.';
+    const message = '[vitrum/gltf-adapter] Sparse values bufferView not found; accessor rejected.';
     emitAccessorDiagnostic(warnings, onDiagnostic, {
-      severity: 'warning',
+      severity: 'error',
       code: 'sparse-values-buffer-view-not-found',
       path: `accessors[${accessorIndex}].sparse.values.bufferView`,
       message,
       accessorIndex,
       bufferViewIndex: sparse.values.bufferView,
     });
-    if (!warnings) throw new Error('[vitrum/gltf-adapter] Sparse values bufferView not found');
-    return null;
+    throw new Error('[vitrum/gltf-adapter] Sparse values bufferView not found');
   }
   const valBuf = buffers.get(valBv.buffer);
   if (!valBuf) {
-    const message = `[vitrum/gltf-adapter] Sparse values buffer ${valBv.buffer} unavailable; patch skipped.`;
+    const message = `[vitrum/gltf-adapter] Sparse values buffer ${valBv.buffer} unavailable; accessor rejected.`;
     emitAccessorDiagnostic(warnings, onDiagnostic, {
-      severity: 'warning',
+      severity: 'error',
       code: 'sparse-values-buffer-unavailable',
       path: `accessors[${accessorIndex}].sparse.values.bufferView`,
       message,
@@ -353,8 +460,7 @@ function _resolveSparseViews(
       bufferViewIndex: sparse.values.bufferView,
       bufferIndex: valBv.buffer,
     });
-    if (!warnings) throw new Error(`[vitrum/gltf-adapter] Sparse values buffer ${valBv.buffer} unavailable`);
-    return null;
+    throw new Error(`[vitrum/gltf-adapter] Sparse values buffer ${valBv.buffer} unavailable`);
   }
 
   const idxCt = sparse.indices.componentType;
@@ -363,73 +469,128 @@ function _resolveSparseViews(
       `[vitrum/gltf-adapter] Sparse indices componentType ${idxCt} is invalid; ` +
       'expected UNSIGNED_BYTE, UNSIGNED_SHORT, or UNSIGNED_INT.';
     emitAccessorDiagnostic(warnings, onDiagnostic, {
-      severity: 'warning',
+      severity: 'error',
       code: 'invalid-sparse-indices-component-type',
       path: `accessors[${accessorIndex}].sparse.indices.componentType`,
-      message: `${message} Patch skipped.`,
+      message: `${message} Accessor rejected.`,
       accessorIndex,
       componentType: idxCt,
     });
-    if (!warnings) throw new Error(message);
-    return null;
+    throw new Error(message);
   }
   const idxCompSize = componentByteSize(idxCt);
   const valCt = accessor.componentType;
   const valCompSize = componentByteSize(valCt);
+  const valPadding = matrixColumnPadding(accessor.type, valCompSize);
+  const valElementByteLength =
+    valPadding?.elementByteLength ??
+    checkedProduct(componentCount, valCompSize, 'sparse value element byte length');
   const idxByteOffset = sparse.indices.byteOffset ?? 0;
   const valByteOffset = sparse.values.byteOffset ?? 0;
+  assertSafeNonNegativeInteger(
+    idxByteOffset,
+    `accessors[${accessorIndex}].sparse.indices.byteOffset`,
+  );
+  assertSafeNonNegativeInteger(
+    valByteOffset,
+    `accessors[${accessorIndex}].sparse.values.byteOffset`,
+  );
+  if (idxByteOffset % idxCompSize !== 0) {
+    throw new Error(
+      `[vitrum/gltf-adapter] accessors[${accessorIndex}].sparse.indices.byteOffset ` +
+        `${idxByteOffset} is not aligned to component size ${idxCompSize}.`,
+    );
+  }
+  if (valByteOffset % valCompSize !== 0) {
+    throw new Error(
+      `[vitrum/gltf-adapter] accessors[${accessorIndex}].sparse.values.byteOffset ` +
+        `${valByteOffset} is not aligned to component size ${valCompSize}.`,
+    );
+  }
+  const requiredSparseIndexBytes = checkedSum(
+    idxByteOffset,
+    checkedProduct(
+      sparse.count,
+      idxCompSize,
+      `accessors[${accessorIndex}] sparse indices byte length`,
+    ),
+    `accessors[${accessorIndex}] sparse indices required byte length`,
+  );
+  const requiredSparseValueBytes = checkedSum(
+    valByteOffset,
+    checkedProduct(
+      sparse.count,
+      valElementByteLength,
+      `accessors[${accessorIndex}] sparse values byte length`,
+    ),
+    `accessors[${accessorIndex}] sparse values required byte length`,
+  );
   try {
     validateBufferViewAccess(
       idxBuf,
       sparse.indices.bufferView,
       idxBv,
-      idxByteOffset + sparse.count * idxCompSize,
+      requiredSparseIndexBytes,
       'sparse indices',
     );
   } catch (error) {
-    const message = `${String(error)} Patch skipped.`;
+    const message = `${String(error)} Accessor rejected.`;
     emitAccessorDiagnostic(warnings, onDiagnostic, {
-      severity: 'warning',
+      severity: 'error',
       code: 'sparse-indices-buffer-view-truncated',
       path: `accessors[${accessorIndex}].sparse.indices.bufferView`,
       message,
       accessorIndex,
       bufferViewIndex: sparse.indices.bufferView,
     });
-    if (!warnings) throw error;
-    return null;
+    throw error;
   }
   try {
     validateBufferViewAccess(
       valBuf,
       sparse.values.bufferView,
       valBv,
-      valByteOffset + sparse.count * componentCount * valCompSize,
+      requiredSparseValueBytes,
       'sparse values',
     );
   } catch (error) {
-    const message = `${String(error)} Patch skipped.`;
+    const message = `${String(error)} Accessor rejected.`;
     emitAccessorDiagnostic(warnings, onDiagnostic, {
-      severity: 'warning',
+      severity: 'error',
       code: 'sparse-values-buffer-view-truncated',
       path: `accessors[${accessorIndex}].sparse.values.bufferView`,
       message,
       accessorIndex,
       bufferViewIndex: sparse.values.bufferView,
     });
-    if (!warnings) throw error;
-    return null;
+    throw error;
+  }
+  const idxBufferViewOffset = idxBv.byteOffset ?? 0;
+  const valBufferViewOffset = valBv.byteOffset ?? 0;
+  if (idxBufferViewOffset % idxCompSize !== 0) {
+    throw new Error(
+      `[vitrum/gltf-adapter] sparse indices bufferView ${sparse.indices.bufferView}.byteOffset ` +
+        `${idxBufferViewOffset} is not aligned to component size ${idxCompSize}.`,
+    );
+  }
+  if (valBufferViewOffset % valCompSize !== 0) {
+    throw new Error(
+      `[vitrum/gltf-adapter] sparse values bufferView ${sparse.values.bufferView}.byteOffset ` +
+        `${valBufferViewOffset} is not aligned to component size ${valCompSize}.`,
+    );
   }
 
   return {
-    idxView: new DataView(idxBuf, idxBv.byteOffset ?? 0, idxBv.byteLength),
+    idxView: new DataView(idxBuf, idxBufferViewOffset, idxBv.byteLength),
     idxByteOffset,
     idxCt,
     idxCompSize,
-    valView: new DataView(valBuf, valBv.byteOffset ?? 0, valBv.byteLength),
+    valView: new DataView(valBuf, valBufferViewOffset, valBv.byteLength),
     valByteOffset,
     valCt,
     valCompSize,
+    valElementByteLength,
+    valPadding,
     count: sparse.count,
   };
 }
@@ -453,26 +614,40 @@ function _applySparsePatch(
   });
 
   const sv = _resolveSparseViews(gltf, buffers, accessorIndex, accessor, componentCount, warnings, onDiagnostic);
-  if (!sv) return;
 
   const normalized = accessor.normalized ?? false;
+  let previousIndex = -1;
   for (let s = 0; s < sv.count; s++) {
     const idx = Math.round(readScalar(sv.idxView, sv.idxByteOffset + s * sv.idxCompSize, sv.idxCt, false));
-    if (idx < 0 || idx >= accessor.count) {
+    if (idx < 0 || idx >= accessor.count || idx <= previousIndex) {
+      const isOrderingViolation = idx <= previousIndex;
       emitAccessorDiagnostic(warnings, onDiagnostic, {
-        severity: 'warning',
-        code: 'sparse-index-out-of-range',
+        severity: 'error',
+        code: isOrderingViolation
+          ? 'sparse-indices-not-strictly-increasing'
+          : 'sparse-index-out-of-range',
         path: `accessors[${accessorIndex}].sparse.indices[${s}]`,
-        message: `[vitrum/gltf-adapter] Sparse index ${idx} is outside accessor count ${accessor.count}; patch entry skipped.`,
+        message: isOrderingViolation
+          ? `[vitrum/gltf-adapter] Sparse indices must be strictly increasing; ${idx} follows ${previousIndex}.`
+          : `[vitrum/gltf-adapter] Sparse index ${idx} is outside accessor count ${accessor.count}.`,
         accessorIndex,
         sparseEntryIndex: s,
       });
-      continue;
+      throw new Error(
+        isOrderingViolation
+          ? `[vitrum/gltf-adapter] Sparse indices for accessor ${accessorIndex} are not strictly increasing.`
+          : `[vitrum/gltf-adapter] Sparse index ${idx} is outside accessor count ${accessor.count}.`,
+      );
     }
+    previousIndex = idx;
     for (let c = 0; c < componentCount; c++) {
+      const componentByteOffset = sv.valPadding !== null
+        ? Math.floor(c / sv.valPadding.colLen) * sv.valPadding.colStride +
+          (c % sv.valPadding.colLen) * sv.valCompSize
+        : c * sv.valCompSize;
       result[idx * componentCount + c] = readScalar(
         sv.valView,
-        sv.valByteOffset + (s * componentCount + c) * sv.valCompSize,
+        sv.valByteOffset + s * sv.valElementByteLength + componentByteOffset,
         sv.valCt,
         normalized,
       );
@@ -490,14 +665,24 @@ export function unpackAccessorUint32(
   accessorIndex: number,
   warnings: string[] | null = null,
   onDiagnostic?: GltfAccessorDiagnosticSink,
+  resourceLedger?: ImportResourceLedger,
 ): Uint32Array {
   const accessor = gltf.accessors?.[accessorIndex];
   if (!accessor) {
     throw new Error(`[vitrum/gltf-adapter] Accessor ${accessorIndex} not found`);
   }
+  assertSafeNonNegativeInteger(accessor.count, `accessors[${accessorIndex}].count`);
+  if (accessor.count === 0) {
+    throw new Error(`[vitrum/gltf-adapter] Accessor ${accessorIndex} count must be greater than zero.`);
+  }
   if (accessor.type !== 'SCALAR') {
     throw new Error(
       `[vitrum/gltf-adapter] Index accessor must be SCALAR, got "${accessor.type}"`,
+    );
+  }
+  if (validateAccessorNormalization(accessor, `accessors[${accessorIndex}]`)) {
+    throw new TypeError(
+      `[vitrum/gltf-adapter] Index accessor ${accessorIndex} must not be normalized.`,
     );
   }
 
@@ -512,6 +697,18 @@ export function unpackAccessorUint32(
     );
   }
 
+  const decodedBytes = checkedProduct(
+    accessor.count,
+    Uint32Array.BYTES_PER_ELEMENT,
+    `accessor ${accessorIndex} decoded byte length`,
+  );
+  if (resourceLedger === undefined && decodedBytes > GLTF_ACCESSOR_DECODE_BUDGET_BYTES) {
+    throw new Error(
+      `[vitrum/gltf-adapter] Accessor ${accessorIndex} decoded byte length ${decodedBytes} exceeds ` +
+      `${GLTF_ACCESSOR_DECODE_BUDGET_BYTES} byte budget.`,
+    );
+  }
+  resourceLedger?.chargeDecodedGeometryBytes(decodedBytes, `accessors[${accessorIndex}]`);
   const result = new Uint32Array(accessor.count);
 
   if (accessor.bufferView !== undefined) {
@@ -523,6 +720,13 @@ export function unpackAccessorUint32(
     const bvOffset = bv.byteOffset ?? 0;
     const range = accessorBufferViewRange(accessor, bv, 1);
     validateBufferViewAccess(buf, bvIdx, bv, range.requiredByteLength, 'index accessor');
+    const compSize = componentByteSize(ct);
+    if (bvOffset % compSize !== 0) {
+      throw new Error(
+        `[vitrum/gltf-adapter] index accessor bufferView ${bvIdx}.byteOffset ${bvOffset} ` +
+          `is not aligned to component size ${compSize}.`,
+      );
+    }
     const dataView = new DataView(buf, bvOffset, bv.byteLength);
 
     for (let i = 0; i < accessor.count; i++) {
@@ -544,24 +748,46 @@ export function unpackAccessorUint32(
       accessorIndex,
     });
     const sv = _resolveSparseViews(gltf, buffers, accessorIndex, accessor, 1, warnings, onDiagnostic);
-    if (sv) {
-      for (let s = 0; s < sv.count; s++) {
+    let previousIndex = -1;
+    for (let s = 0; s < sv.count; s++) {
         const idx = Math.round(readScalar(sv.idxView, sv.idxByteOffset + s * sv.idxCompSize, sv.idxCt, false));
-        if (idx < 0 || idx >= accessor.count) {
+        if (idx < 0 || idx >= accessor.count || idx <= previousIndex) {
+          const isOrderingViolation = idx <= previousIndex;
           emitAccessorDiagnostic(warnings, onDiagnostic, {
-            severity: 'warning',
-            code: 'sparse-index-out-of-range',
+            severity: 'error',
+            code: isOrderingViolation
+              ? 'sparse-indices-not-strictly-increasing'
+              : 'sparse-index-out-of-range',
             path: `accessors[${accessorIndex}].sparse.indices[${s}]`,
-            message: `[vitrum/gltf-adapter] Sparse index ${idx} is outside accessor count ${accessor.count}`,
+            message: isOrderingViolation
+              ? `[vitrum/gltf-adapter] Sparse indices must be strictly increasing; ${idx} follows ${previousIndex}.`
+              : `[vitrum/gltf-adapter] Sparse index ${idx} is outside accessor count ${accessor.count}.`,
             accessorIndex,
             sparseEntryIndex: s,
           });
           throw new Error(
-            `[vitrum/gltf-adapter] Sparse index ${idx} is outside accessor count ${accessor.count}`,
+            isOrderingViolation
+              ? `[vitrum/gltf-adapter] Sparse indices for accessor ${accessorIndex} are not strictly increasing.`
+              : `[vitrum/gltf-adapter] Sparse index ${idx} is outside accessor count ${accessor.count}.`,
           );
         }
+        previousIndex = idx;
         result[idx] = Math.round(readScalar(sv.valView, sv.valByteOffset + s * sv.valCompSize, sv.valCt, false));
       }
+  }
+
+  const restartSentinel =
+    ct === GltfComponentType.UNSIGNED_BYTE
+      ? 0xff
+      : ct === GltfComponentType.UNSIGNED_SHORT
+        ? 0xffff
+        : 0xffff_ffff;
+  for (let index = 0; index < result.length; index += 1) {
+    if (result[index] === restartSentinel) {
+      throw new RangeError(
+        `[vitrum/gltf-adapter] Index accessor ${accessorIndex} uses reserved ` +
+          `primitive-restart value ${restartSentinel} at element ${index}.`,
+      );
     }
   }
 
@@ -593,10 +819,33 @@ export function validateBufferViewAccess(
 ): void {
   const byteOffset = bufferView.byteOffset ?? 0;
   const byteLength = bufferView.byteLength;
-  if (byteOffset < 0 || byteLength < 0 || byteOffset + byteLength > buffer.byteLength) {
+  assertSafeNonNegativeInteger(
+    byteOffset,
+    `${label} bufferView ${bufferViewIndex}.byteOffset`,
+  );
+  assertSafeNonNegativeInteger(
+    byteLength,
+    `${label} bufferView ${bufferViewIndex}.byteLength`,
+  );
+  assertSafeNonNegativeInteger(
+    requiredByteLength,
+    `${label} required byte length`,
+  );
+  const declaredEnd = checkedSum(
+    byteOffset,
+    byteLength,
+    `${label} bufferView ${bufferViewIndex} declared end`,
+  );
+  const intrinsicBufferByteLength = gltfArrayBufferByteLength(buffer);
+  if (intrinsicBufferByteLength === undefined) {
+    throw new TypeError(
+      `[vitrum/gltf-adapter] ${label} bufferView ${bufferViewIndex} does not reference a genuine ArrayBuffer.`,
+    );
+  }
+  if (declaredEnd > intrinsicBufferByteLength) {
     throw new Error(
       `[vitrum/gltf-adapter] ${label} bufferView ${bufferViewIndex} declares byte range ` +
-      `[${byteOffset}, ${byteOffset + byteLength}) outside buffer length ${buffer.byteLength}`,
+      `[${byteOffset}, ${declaredEnd}) outside buffer length ${intrinsicBufferByteLength}`,
     );
   }
   if (requiredByteLength > byteLength) {

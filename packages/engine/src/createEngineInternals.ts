@@ -34,6 +34,83 @@ export type WebGL2PathTracerAdvancedOptions = Partial<Omit<PTEngineWebGL2Options
 
 export type CreateEngineBackendId = EngineBackendId;
 
+const CREATE_ENGINE_BACKEND_IDS = new Set<CreateEngineBackendId>([
+  'walkaround-hybrid',
+  'pt-webgpu',
+  'pt-webgl2',
+]);
+
+/**
+ * Construction failed because the requested backend is unavailable on the
+ * current host. Only this error class is eligible for createEngine fallback;
+ * configuration, scene, shader, and implementation errors must propagate.
+ * @internal
+ */
+export class BackendUnavailableError extends Error {
+  readonly backend: CreateEngineBackendId;
+
+  constructor(
+    backend: CreateEngineBackendId,
+    message: string,
+    options?: ErrorOptions,
+  ) {
+    super(message, options);
+    this.name = 'BackendUnavailableError';
+    this.backend = backend;
+  }
+}
+
+/** @internal */
+export function isBackendUnavailableError(
+  error: unknown,
+): error is BackendUnavailableError {
+  return error instanceof BackendUnavailableError;
+}
+
+function assertPlainDataObject(
+  value: unknown,
+  label: string,
+  allowedKeys?: ReadonlySet<string>,
+): asserts value is Record<string, unknown> {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    throw new TypeError(`${label} must be a plain object`);
+  }
+  const prototype: unknown = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) {
+    throw new TypeError(`${label} must have Object.prototype or null prototype`);
+  }
+  for (const key of Reflect.ownKeys(value)) {
+    if (typeof key !== 'string') {
+      throw new TypeError(`${label} contains unsupported symbol key ${String(key)}`);
+    }
+    if (allowedKeys != null && !allowedKeys.has(key)) {
+      throw new TypeError(`${label} contains unknown key ${JSON.stringify(key)}`);
+    }
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (descriptor == null || !('value' in descriptor)) {
+      throw new TypeError(`${label}.${key} must be an own data property`);
+    }
+    if (!descriptor.enumerable) {
+      throw new TypeError(`${label}.${key} must be enumerable`);
+    }
+  }
+}
+
+function assertBackendId(value: unknown, label: string): asserts value is CreateEngineBackendId {
+  if (typeof value !== 'string' || !CREATE_ENGINE_BACKEND_IDS.has(value as CreateEngineBackendId)) {
+    throw new RangeError(
+      `${label} must be one of ${Array.from(CREATE_ENGINE_BACKEND_IDS, (entry) => JSON.stringify(entry)).join(', ')} ` +
+        `(got ${String(value)})`,
+    );
+  }
+}
+
+function describeValidationValue(value: unknown): string {
+  return value !== null && typeof value === 'object'
+    ? Object.prototype.toString.call(value)
+    : String(value);
+}
+
 export interface CreateEngineGltfAssetHint {
   readonly recommendedBackend?: {
     readonly backend: CreateEngineBackendId;
@@ -54,11 +131,29 @@ export interface CreateEngineAdvancedByBackend {
  *  `engine.backendId` matches the target backend — gate such casts on this field. */
 export interface EngineWithBackendId extends Engine, Partial<GIStatePersistable> {
   readonly backendId: CreateEngineBackendId;
+  /** Concrete backend profile selected at construction. Present for backends
+   *  whose runtime profile is narrower than their backend identity. */
+  readonly backendProfileId?: 'pt-webgpu' | 'pt-webgpu-lite';
+  /** Legacy-compatible profile identity. Forwarded verbatim when a backend supplies it. */
+  readonly profileId?: 'pt-webgpu' | 'pt-webgpu-lite';
+}
+
+/** Runtime identity accepted by lifecycle hosts. `progressive` is a composite
+ * walkaround + pt-webgpu facade, not a backend selectable by createEngine. */
+export type RuntimeEngineBackendId = CreateEngineBackendId | 'progressive';
+
+/** Engine accepted by attachVitrum and other lifecycle surfaces, including
+ * composite facades that are not selectable createEngine backends. */
+export interface RuntimeEngineWithBackendId extends Engine, Partial<GIStatePersistable> {
+  readonly backendId: RuntimeEngineBackendId;
+  readonly backendProfileId?: 'pt-webgpu' | 'pt-webgpu-lite';
+  readonly profileId?: 'pt-webgpu' | 'pt-webgpu-lite';
 }
 
 export type CreateEngineErrorPhase =
   | 'create:walkaround-hybrid'
   | 'create:pt-webgpu'
+  | 'create:progressive'
   | 'create:pt-webgl2'
   | 'canvas-configure'
   | 'attach:scene-controller'
@@ -73,7 +168,7 @@ export type CreateEngineErrorPhase =
 
 export interface CreateEngineErrorEvent {
   readonly phase: CreateEngineErrorPhase;
-  readonly backend?: CreateEngineBackendId;
+  readonly backend?: RuntimeEngineBackendId;
   readonly recoverable: boolean;
 }
 
@@ -136,6 +231,157 @@ export interface CreateEngineOptions {
    *  `console.warn` output such as fallback, ignored advanced options, and
    *  backend capability downgrades. */
   readonly onWarning?: (warning: EngineWarning) => void;
+}
+
+const CREATE_ENGINE_OPTION_KEYS = {
+  canvas: true,
+  scene: true,
+  prefer: true,
+  gltfAsset: true,
+  advanced: true,
+  advancedBackend: true,
+  advancedByBackend: true,
+  debug: true,
+  onAdapterProfile: true,
+  onError: true,
+  onWarning: true,
+} as const satisfies Readonly<Record<keyof CreateEngineOptions, true>>;
+
+const CREATE_ENGINE_PREFERENCES: ReadonlySet<string> = new Set([
+  'auto',
+  'realtime',
+  'quality',
+  'quality-webgpu',
+]);
+
+function assertNoOwnershipCriticalKeys(
+  value: Record<string, unknown>,
+  label: string,
+): void {
+  for (const key of OWNERSHIP_CRITICAL_KEYS) {
+    if (Object.prototype.hasOwnProperty.call(value, key)) {
+      throw new TypeError(
+        `${label}.${key} is ownership-critical and cannot be supplied through createEngine; ` +
+          'use the concrete backend factory to provide a device, canvas, or context',
+      );
+    }
+  }
+}
+
+/**
+ * Validate the createEngine payload before scene traversal, capability probes,
+ * adapter requests, or canvas-context acquisition. This deliberately rejects
+ * accessor-backed and ambiguous configuration instead of normalising it.
+ * @internal
+ */
+export function validateCreateEngineOptionsShape(
+  value: unknown,
+): asserts value is CreateEngineOptions {
+  assertPlainDataObject(
+    value,
+    'createEngine options',
+    new Set(Object.keys(CREATE_ENGINE_OPTION_KEYS)),
+  );
+
+  if (value.canvas == null || typeof value.canvas !== 'object') {
+    throw new TypeError('createEngine: opts.canvas is required and must be an object');
+  }
+  if (typeof (value.canvas as { readonly getContext?: unknown }).getContext !== 'function') {
+    throw new TypeError('createEngine: opts.canvas must expose getContext()');
+  }
+  for (const dimension of ['width', 'height'] as const) {
+    const component = (value.canvas as { readonly width?: unknown; readonly height?: unknown })[dimension];
+    if (typeof component !== 'number' || !Number.isSafeInteger(component) || component < 0) {
+      throw new RangeError(
+        `createEngine: opts.canvas.${dimension} must be a non-negative safe integer ` +
+          `(got ${String(component)})`,
+      );
+    }
+  }
+  if (value.scene == null || typeof value.scene !== 'object') {
+    throw new TypeError('createEngine: opts.scene is required and must be an object');
+  }
+
+  const preference: unknown = value.prefer;
+  if (
+    preference !== undefined &&
+    (typeof preference !== 'string' || !CREATE_ENGINE_PREFERENCES.has(preference))
+  ) {
+    throw new RangeError(
+      `createEngine: opts.prefer must be one of ` +
+        `${Array.from(CREATE_ENGINE_PREFERENCES, (entry) => JSON.stringify(entry)).join(', ')} ` +
+        `(got ${describeValidationValue(preference)})`,
+    );
+  }
+  if (value.debug !== undefined && typeof value.debug !== 'boolean') {
+    throw new TypeError('createEngine: opts.debug must be a boolean when supplied');
+  }
+  for (const callback of ['onAdapterProfile', 'onError', 'onWarning'] as const) {
+    if (value[callback] !== undefined && typeof value[callback] !== 'function') {
+      throw new TypeError(`createEngine: opts.${callback} must be a function when supplied`);
+    }
+  }
+
+  if (value.gltfAsset !== undefined) {
+    assertPlainDataObject(
+      value.gltfAsset,
+      'createEngine options.gltfAsset',
+      new Set(['recommendedBackend']),
+    );
+    if (value.gltfAsset.recommendedBackend !== undefined) {
+      assertPlainDataObject(
+        value.gltfAsset.recommendedBackend,
+        'createEngine options.gltfAsset.recommendedBackend',
+        new Set(['backend']),
+      );
+      assertBackendId(
+        value.gltfAsset.recommendedBackend.backend,
+        'createEngine options.gltfAsset.recommendedBackend.backend',
+      );
+    }
+  }
+
+  if (value.advancedBackend !== undefined) {
+    assertBackendId(value.advancedBackend, 'createEngine options.advancedBackend');
+  }
+  if (value.advanced !== undefined) {
+    assertPlainDataObject(value.advanced, 'createEngine options.advanced');
+    assertNoOwnershipCriticalKeys(value.advanced, 'createEngine options.advanced');
+  }
+  if (value.advancedByBackend !== undefined) {
+    assertPlainDataObject(
+      value.advancedByBackend,
+      'createEngine options.advancedByBackend',
+      CREATE_ENGINE_BACKEND_IDS,
+    );
+    for (const backend of CREATE_ENGINE_BACKEND_IDS) {
+      const advanced = value.advancedByBackend[backend];
+      if (advanced === undefined) continue;
+      assertPlainDataObject(
+        advanced,
+        `createEngine options.advancedByBackend[${JSON.stringify(backend)}]`,
+      );
+      assertNoOwnershipCriticalKeys(
+        advanced,
+        `createEngine options.advancedByBackend[${JSON.stringify(backend)}]`,
+      );
+    }
+  }
+
+  const legacyAdvancedKeys = value.advanced == null ? [] : Object.keys(value.advanced);
+  if (value.advancedByBackend !== undefined && (value.advanced !== undefined || value.advancedBackend !== undefined)) {
+    throw new TypeError(
+      'createEngine: advancedByBackend cannot be combined with legacy advanced or advancedBackend',
+    );
+  }
+  if (legacyAdvancedKeys.length > 0 && value.advancedBackend === undefined) {
+    throw new TypeError(
+      'createEngine: non-empty legacy advanced requires advancedBackend; use advancedByBackend for fallback-safe options',
+    );
+  }
+  if (value.advancedBackend !== undefined && value.advanced === undefined) {
+    throw new TypeError('createEngine: advancedBackend requires an advanced option bag');
+  }
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -229,36 +475,23 @@ type OwnershipCriticalKey = (typeof OWNERSHIP_CRITICAL_KEYS)[number];
 export function stripOwnershipCriticalKeys<T extends Record<string, unknown>>(
   advanced: T | undefined,
   backend: CreateEngineBackendId,
-  onWarning?: (warning: EngineWarning) => void,
+  _onWarning?: (warning: EngineWarning) => void,
 ): Omit<T, OwnershipCriticalKey> {
   if (advanced == null) return {} as Omit<T, OwnershipCriticalKey>;
-  const stripped = { ...advanced } as Record<string, unknown>;
   const overridden: string[] = [];
   for (const key of OWNERSHIP_CRITICAL_KEYS) {
-    if (key in stripped) {
+    if (Object.prototype.hasOwnProperty.call(advanced, key)) {
       overridden.push(key);
-      delete stripped[key];
     }
   }
   if (overridden.length > 0) {
-    const message =
-      `[vitrum/createEngine] advanced.${overridden.join('/')} was supplied but ` +
-      `createEngine owns the ${backend} device lifecycle — the supplied ` +
-      `${overridden.join('/')} key(s) have been ignored to prevent a double-dispose. ` +
-      `To bring your own device, use the backend factory directly.`;
-    emitCreateEngineWarning(
-      onWarning,
-      {
-        code: 'createEngine.advanced-ownership-key-ignored',
-        backend: 'createEngine',
-        phase: 'construction',
-        method: 'createEngine',
-        message,
-        details: { backend, keys: overridden },
-      },
+    throw new TypeError(
+      `[vitrum/createEngine] advanced ownership-critical key(s) ` +
+        `${overridden.join(', ')} cannot be supplied for ${backend}; ` +
+        'use the concrete backend factory to provide host-owned handles',
     );
   }
-  return stripped as Omit<T, OwnershipCriticalKey>;
+  return { ...advanced };
 }
 
 /**
@@ -274,50 +507,11 @@ export function stripOwnershipCriticalKeys<T extends Record<string, unknown>>(
  *
  * @internal Exported for unit-test access. Not part of the public API.
  */
-export function warnCrossBackendAdvanced(
-  advanced: CreateEngineOptions['advanced'],
-  preferredBackend: CreateEngineBackendId,
-  resolvedBackend: CreateEngineBackendId,
-  onWarning?: (warning: EngineWarning) => void,
-): void {
-  if (advanced == null) return;
-  const keys = Object.keys(advanced as Record<string, unknown>).filter(
-    (k) => (advanced as Record<string, unknown>)[k] !== undefined,
-  );
-  if (keys.length === 0) return;
-  const message =
-    `[vitrum/createEngine] advanced options (keys: ${keys.join(', ')}) were supplied ` +
-    `but the preferred backend '${preferredBackend}' was unavailable — they are now ` +
-    `being applied to the fallback backend '${resolvedBackend}'. Keys authored for ` +
-    `'${preferredBackend}' may be silently ignored or misinterpreted by '${resolvedBackend}'. ` +
-    `Pass prefer:'${resolvedBackend}' explicitly to suppress this warning.`;
-  emitCreateEngineWarning(
-    onWarning,
-    {
-      code: 'createEngine.advanced-cross-backend',
-      backend: 'createEngine',
-      phase: 'fallback',
-      method: 'createEngine',
-      message,
-      details: { preferredBackend, resolvedBackend, keys },
-    },
-  );
-}
-
 function advancedKeys(advanced: unknown): string[] {
   if (advanced == null || typeof advanced !== 'object') return [];
   return Object.keys(advanced as Record<string, unknown>).filter(
     (k) => (advanced as Record<string, unknown>)[k] !== undefined,
   );
-}
-
-function backendAdvancedKeys(advancedByBackend: CreateEngineAdvancedByBackend | undefined): string[] {
-  if (advancedByBackend == null) return [];
-  const keys: string[] = [];
-  for (const backend of Object.keys(advancedByBackend) as CreateEngineBackendId[]) {
-    if (advancedKeys(advancedByBackend[backend]).length > 0) keys.push(backend);
-  }
-  return keys;
 }
 
 /**
@@ -334,21 +528,13 @@ export function resolveAdvancedForBackend(
   backend: CreateEngineBackendId,
 ): CreateEngineOptions['advanced'] | undefined {
   const legacyKeys = advancedKeys(opts.advanced);
-  const keyedBackends = backendAdvancedKeys(opts.advancedByBackend);
 
   if (opts.advancedByBackend != null) {
     if (legacyKeys.length > 0) {
-      emitCreateEngineWarning(opts.onWarning, {
-        code: 'createEngine.advanced-legacy-ignored',
-        backend: 'createEngine',
-        phase: 'construction',
-        method: 'createEngine',
-        message:
-          `[vitrum/createEngine] advancedByBackend was supplied, so legacy advanced ` +
-          `keys (${legacyKeys.join(', ')}) are ignored. Put backend-specific keys under ` +
-          `advancedByBackend['${backend}'] to make auto selection deterministic.`,
-        details: { selectedBackend: backend, legacyKeys, advancedByBackend: keyedBackends },
-      });
+      throw new TypeError(
+        `[vitrum/createEngine] advancedByBackend cannot be combined with legacy ` +
+          `advanced keys (${legacyKeys.join(', ')})`,
+      );
     }
     return opts.advancedByBackend[backend];
   }
@@ -372,17 +558,10 @@ export function resolveAdvancedForBackend(
   }
 
   if ((opts.prefer == null || opts.prefer === 'auto') && opts.advancedBackend == null) {
-    emitCreateEngineWarning(opts.onWarning, {
-      code: 'createEngine.advanced-auto-backend-ambiguous',
-      backend: 'createEngine',
-      phase: 'construction',
-      method: 'createEngine',
-      message:
-        `[vitrum/createEngine] legacy advanced keys (${legacyKeys.join(', ')}) are being ` +
-        `applied to auto-selected backend '${backend}'. Pass advancedBackend or ` +
-        `advancedByBackend to make this deterministic across machines and scene changes.`,
-      details: { selectedBackend: backend, keys: legacyKeys },
-    });
+    throw new TypeError(
+      `[vitrum/createEngine] legacy advanced keys (${legacyKeys.join(', ')}) require ` +
+        'advancedBackend under auto selection; use advancedByBackend for fallback-safe options',
+    );
   }
 
   return opts.advanced;

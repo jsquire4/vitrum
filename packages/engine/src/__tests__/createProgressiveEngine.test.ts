@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
   HYBRID_WEBGPU_REQUIRED_LIMITS,
+  NRC_WEBGPU_REQUIRED_LIMITS,
 } from '@vitrum/walkaround-hybrid';
 import {
   PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
+  PT_WEBGPU_CWBVH_CLOSEST_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
+  PT_WEBGPU_CWBVH_CLOSEST_RESTIR_PT_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
   PT_WEBGPU_RESTIR_PT_REUSE_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
   PT_WEBGPU_FULL_REQUIRED_STORAGE_TEXTURES_PER_STAGE,
 } from '@vitrum/pt-webgpu';
@@ -47,14 +50,44 @@ describe('computeProgressiveLimitUnion', () => {
   it('combines the pt-webgpu buffer floor with the walkaround texture floor', () => {
     const union = computeProgressiveLimitUnion();
     expect(union['maxStorageBuffersPerShaderStage']).toBe(PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE);
-    expect(union['maxStorageTexturesPerShaderStage']).toBe(8);
+    expect(union['maxStorageTexturesPerShaderStage']).toBe(HYBRID_WEBGPU_REQUIRED_LIMITS['maxStorageTexturesPerShaderStage']);
   });
 
+
+  it('raises the shared-device floor for CWBVH closest-hit traversal', () => {
+    expect(computeProgressiveLimitUnion({ cwbvhClosest: true })[
+      'maxStorageBuffersPerShaderStage'
+    ]).toBe(PT_WEBGPU_CWBVH_CLOSEST_REQUIRED_STORAGE_BUFFERS_PER_STAGE);
+  });
+
+  it('uses the combined CWBVH + ReSTIR-PT floor when both optional layouts are enabled', () => {
+    expect(computeProgressiveLimitUnion({
+      cwbvhClosest: true,
+      restirPtReuse: true,
+    })['maxStorageBuffersPerShaderStage']).toBe(
+      PT_WEBGPU_CWBVH_CLOSEST_RESTIR_PT_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
+    );
+  });
   it('raises the shared-device buffer floor when converged ReSTIR-PT reuse is enabled', () => {
     const union = computeProgressiveLimitUnion({ restirPtReuse: true });
     expect(union['maxStorageBuffersPerShaderStage']).toBe(
       PT_WEBGPU_RESTIR_PT_REUSE_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
     );
-    expect(union['maxStorageTexturesPerShaderStage']).toBe(8);
+    expect(union['maxStorageTexturesPerShaderStage']).toBe(HYBRID_WEBGPU_REQUIRED_LIMITS['maxStorageTexturesPerShaderStage']);
+  });
+
+  it('includes every NRC device floor when realtime NRC is enabled', () => {
+    const union = computeProgressiveLimitUnion({ nrcEnabled: true });
+    for (const [key, required] of Object.entries(NRC_WEBGPU_REQUIRED_LIMITS)) {
+      expect(union[key]).toBeGreaterThanOrEqual(required);
+    }
+  });
+
+  it('uses the configured NRC trainer shape in the shared-device union', () => {
+    const union = computeProgressiveLimitUnion({
+      nrcEnabled: true,
+      nrcConfig: { width: 64, tileB: 64, useF16: false },
+    });
+    expect(union['maxComputeWorkgroupStorageSize']).toBe(32_768);
   });
 });

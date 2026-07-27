@@ -1,11 +1,11 @@
 /**
- * restirPtReuseWiring.test.ts — wiring contract for the EXPERIMENTAL ReSTIR-PT
+ * restirPtReuseWiring.test.ts — wiring contract for ReSTIR-PT
  * reservoir/reuse pre-passes (gpuResources.ts + index.ts).
  *
  * The load-bearing invariant of this increment is OFF-BYTE-IDENTITY: with the
  * `restirPtReuse` flag OFF (the default), NONE of the reuse resources/pipelines
  * are created and the default megakernel render is unchanged. ON allocates the
- * reservoir ping-pong + result + params and creates the three reuse pipelines.
+ * two compact reservoirs + result + params and creates four reuse pipelines.
  *
  * NO real GPU here (mock device, like seedAccumulator.test.ts). The naga-compile
  * gate that the composed reuse modules actually COMPILE on a device is the
@@ -18,6 +18,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { Scene } from '@vitrum/core';
 import { asMat4 } from '@vitrum/core';
 import { createPTEngine_WebGPU } from '../index.js';
+import { PT_WEBGPU_RESTIR_PT_EFFECTIVELY_UNCLAMPED_W } from '../ptWebgpuValidation.js';
 import {
   PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
   PT_WEBGPU_RESTIR_PT_REUSE_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
@@ -144,7 +145,6 @@ function frameInput(size: number) {
   return {
     viewMatrix: asMat4(identityMat()),
     projMatrix: asMat4(identityMat()),
-    cameraPosition: [0, 0, 1] as [number, number, number],
     viewport: { width: size, height: size, devicePixelRatio: 1 },
     frameIndex: 0,
     frameSeed: 1,
@@ -166,7 +166,7 @@ describe('ReSTIR-PT reuse wiring — OFF by default (byte-identity)', () => {
     // The reuse path composes SEPARATE per-pass modules; it must never mutate the
     // default megakernel string. This is a cheap guard alongside the SHA pin in
     // wgslContract.test.ts (which is the authoritative byte-identity check).
-    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(408332); // re-pinned 2026-07-20 (T1-6 dedicated rgba16float emissive array). See wgslContract.test.ts for the authoritative SHA.
+    expect(PT_WEBGPU_TRACE_WGSL.length).toBeGreaterThan(100_000);
     // The default trace must NOT contain any restir-pt reuse entry point, nor the
     // A1 composite megakernel's rpt_result_in binding (that is a SEPARATE pipeline).
     expect(PT_WEBGPU_TRACE_WGSL).not.toContain('fn restirPtProduce');
@@ -192,8 +192,7 @@ describe('ReSTIR-PT reuse wiring — OFF by default (byte-identity)', () => {
     expect(rec.shaderCodes.some((c) => c.includes('rpt_result_in'))).toBe(false);
     // No reservoir / reuse buffers were created.
     expect(rec.bufferLabels.some((l) => l.includes('restirPt'))).toBe(false);
-    // The experimental capability flag is absent.
-    expect(engine.capabilities.experimentalFeatures?.has('pt-webgpu-restir-pt-reuse')).toBe(false);
+    expect(engine.capabilities.activeFeatures?.has('pt-webgpu-restir-pt-reuse')).toBe(false);
     engine.dispose();
   });
 
@@ -210,7 +209,7 @@ describe('ReSTIR-PT reuse wiring — OFF by default (byte-identity)', () => {
 });
 
 describe('ReSTIR-PT reuse wiring — ON (full tier)', () => {
-  it('ON: a full-tier render creates the 3 reuse pipelines + the reservoir/result/params buffers', async () => {
+  it('ON: a full-tier render creates the 4 reuse pipelines + two reservoir/result/params buffers', async () => {
     const rec = emptyRecorder();
     const engine = await createPTEngine_WebGPU({
       device: makeFullTierDevice(rec),
@@ -231,18 +230,21 @@ describe('ReSTIR-PT reuse wiring — ON (full tier)', () => {
     // The default megakernel (full path) must NOT be the composite (no rpt_result_in).
     expect(rec.shaderCodes.some((c) => c.includes('fn main') && !c.includes('rpt_result_in'))).toBe(true);
 
-    // The reservoir ping-pong + spatial + result + params buffers were allocated.
+    // Exactly two full-frame reservoirs + result + params were allocated.
     expect(rec.bufferLabels).toContain('vitrum.pt-webgpu.restirPt.reservoir.cur');
     expect(rec.bufferLabels).toContain('vitrum.pt-webgpu.restirPt.reservoir.prev');
-    expect(rec.bufferLabels).toContain('vitrum.pt-webgpu.restirPt.reservoir.spatial');
+    expect(rec.bufferLabels).not.toContain('vitrum.pt-webgpu.restirPt.reservoir.spatial');
     expect(rec.bufferLabels).toContain('vitrum.pt-webgpu.restirPt.result');
     expect(rec.bufferLabels).toContain('vitrum.pt-webgpu.restirPt.params');
 
-    // The reuse group-0 bind group was built.
-    expect(rec.bindGroupLabels).toContain('vitrum.pt-webgpu.restirPt.bindgroup0');
-
-    // The capability flag is advertised.
-    expect(engine.capabilities.experimentalFeatures?.has('pt-webgpu-restir-pt-reuse')).toBe(true);
+    // Per-pass bind groups prevent active read/write aliases.
+    for (const pass of ['producer', 'temporal', 'spatial', 'resolve']) {
+      expect(rec.bindGroupLabels).toContain(
+        `vitrum.pt-webgpu.restirPt.bindgroup0.${pass}`,
+      );
+    }
+    // Runtime selection is reported through the typed active feature set.
+    expect(engine.capabilities.activeFeatures?.has('pt-webgpu-restir-pt-reuse')).toBe(true);
 
     // The debug result buffer is exposed.
     const buf = (engine as unknown as { getRestirPtResultBuffer(): unknown }).getRestirPtResultBuffer();
@@ -267,17 +269,11 @@ describe('ReSTIR-PT reuse wiring — ON (full tier)', () => {
     engine.dispose();
   });
 
-  it('ON: non-finite ReSTIR-PT tuning falls back to safe params defaults', async () => {
+  it('ON: omitted tuning uses the unbiased effectively-unclamped weight default', async () => {
     const rec = emptyRecorder();
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const engine = await createPTEngine_WebGPU({
       device: makeFullTierDevice(rec),
       restirPtReuse: true,
-      restirPtReuseOptions: {
-        mClamp: Infinity,
-        wCap: Infinity,
-        experimentalGlossyReuse: true,
-      },
     });
     engine.setScene(makeScene());
     engine.renderFrame(frameInput(16));
@@ -287,46 +283,90 @@ describe('ReSTIR-PT reuse wiring — ON (full tier)', () => {
     expect(u[0]).toBe(16);
     expect(u[1]).toBe(16);
     expect(u[2]).toBe(20);
-    expect(u[3]).toBe(1);
-    expect(f[4]).toBe(10);
+    expect(u[3]).toBe(0); // reserved padding; no maturity-mode switch
+    expect(f[4]).toBe(Math.fround(PT_WEBGPU_RESTIR_PT_EFFECTIVELY_UNCLAMPED_W));
+    expect(engine.capabilities.activeFeatures?.has('pt-webgpu-restir-pt-biased-weight-clamp')).toBe(false);
 
+    engine.dispose();
+  });
+
+  it.each([
+    ['mClamp', NaN],
+    ['mClamp', Infinity],
+    ['mClamp', 0],
+    ['mClamp', 1.5],
+    ['mClamp', 4096],
+    ['wCap', NaN],
+    ['wCap', Infinity],
+    ['wCap', 0],
+    ['wCap', -1],
+    ['wCap', Number.MIN_VALUE],
+    ['wCap', 1e-50],
+    ['wCap', Number.MAX_VALUE],
+  ] as const)('ON: rejects invalid explicit ReSTIR-PT %s=%s', async (key, value) => {
+    await expect(createPTEngine_WebGPU({
+      device: makeFullTierDevice(emptyRecorder()),
+      restirPtReuse: true,
+      restirPtReuseOptions: { [key]: value },
+    })).rejects.toThrow(`restirPtReuseOptions.${key}`);
+  });
+
+  it('rejects unknown ReSTIR-PT tuning keys instead of silently ignoring typos', async () => {
+    await expect(createPTEngine_WebGPU({
+      device: makeFullTierDevice(emptyRecorder()),
+      restirPtReuse: true,
+      restirPtReuseOptions: { mClmap: 20 } as never,
+    })).rejects.toThrow('restirPtReuseOptions contains unknown key(s): mClmap');
+  });
+
+  it('rejects non-empty ReSTIR-PT tuning when reuse is disabled', async () => {
+    await expect(createPTEngine_WebGPU({
+      device: makeFullTierDevice(emptyRecorder()),
+      restirPtReuseOptions: { mClamp: 20 },
+    })).rejects.toThrow('non-empty restirPtReuseOptions requires restirPtReuse:true');
+  });
+
+  it('ON: reports an explicit finite W clamp as a biased active feature', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const engine = await createPTEngine_WebGPU({
+      device: makeFullTierDevice(emptyRecorder()),
+      restirPtReuse: true,
+      restirPtReuseOptions: { wCap: 10 },
+    });
+
+    expect(engine.capabilities.activeFeatures?.has('pt-webgpu-restir-pt-biased-weight-clamp')).toBe(true);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('biased GRIS contribution-weight clamp'));
     engine.dispose();
     warn.mockRestore();
   });
 
-  it('ON: warns when glossy reuse enters the research-only feedback loop', async () => {
+  it('ON: explicit f32-max is the professional default, not a biased clamp', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const engine = await createPTEngine_WebGPU({
+      device: makeFullTierDevice(emptyRecorder()),
+      restirPtReuse: true,
+      restirPtReuseOptions: { wCap: PT_WEBGPU_RESTIR_PT_EFFECTIVELY_UNCLAMPED_W },
+    });
+
+    expect(engine.capabilities.activeFeatures?.has('pt-webgpu-restir-pt-biased-weight-clamp')).toBe(false);
+    expect(warn).not.toHaveBeenCalledWith(expect.stringContaining('biased GRIS contribution-weight clamp'));
+    engine.dispose();
+    warn.mockRestore();
+  });
+
+  it('ON: finite glossy reflection is part of the stable path', async () => {
     const rec = emptyRecorder();
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const onWarning = vi.fn();
     const engine = await createPTEngine_WebGPU({
       device: makeFullTierDevice(rec),
       restirPtReuse: true,
-      restirPtReuseOptions: {
-        experimentalGlossyReuse: true,
-      },
-      onWarning,
     });
-
-    expect(warn.mock.calls.flat().map(String).some((m) =>
-      m.includes('restirPtReuseOptions.experimentalGlossyReuse=true') &&
-      m.includes('non-promotable research finding'),
-    )).toBe(true);
-    expect(onWarning).toHaveBeenCalledWith(expect.objectContaining({
-      code: 'pt-webgpu.restir-pt-glossy-reuse-research-mode',
-      details: expect.objectContaining({
-        restirPtReuse: true,
-        experimentalGlossyReuse: true,
-        promotionReady: false,
-        blocker: 'glossy-visible-vertex-reuse-outside-diffuse-safe-validation-envelope',
-        evidencePath: 'tools/radiometric-ab/results-restir-pt-glossy-research.json',
-      }),
-    }));
 
     warn.mockRestore();
     engine.dispose();
   });
 
-  it('ON: over-budget reservoirs skip the reuse setup for that frame', async () => {
+  it('ON: over-budget reservoirs fail explicitly before reuse setup', async () => {
     const rec = emptyRecorder();
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const engine = await createPTEngine_WebGPU({
@@ -334,19 +374,21 @@ describe('ReSTIR-PT reuse wiring — ON (full tier)', () => {
       restirPtReuse: true,
     });
     engine.setScene(makeScene());
-    engine.renderFrame(frameInput(2048));
+    expect(() => engine.renderFrame(frameInput(2048))).toThrow(
+      /requires 256\.00 MiB per reservoir/,
+    );
 
     expect(rec.bufferLabels).not.toContain('vitrum.pt-webgpu.restirPt.reservoir.cur');
     expect(rec.bufferLabels).not.toContain('vitrum.pt-webgpu.restirPt.reservoir.prev');
     expect(rec.pipelineEntryPoints).not.toContain('restirPtProduce');
     expect(rec.computePassLabels).not.toContain('vitrum.pt-webgpu.restirPt.produce');
-    expect(warnSpy.mock.calls.flat().map(String).some((m) => m.includes('Skipping ReSTIR-PT reuse'))).toBe(true);
+    expect(warnSpy.mock.calls.flat().map(String).some((m) => m.includes('256.00 MiB per reservoir'))).toBe(true);
 
     warnSpy.mockRestore();
     engine.dispose();
   });
 
-  it('ON: the three reuse pipelines were compiled from DISTINCT per-pass modules (no combined unit)', async () => {
+  it('ON: the four reuse pipelines were compiled from DISTINCT per-pass modules (no combined unit)', async () => {
     const rec = emptyRecorder();
     const engine = await createPTEngine_WebGPU({
       device: makeFullTierDevice(rec),

@@ -9,7 +9,7 @@
 
 import { describe, it, expect } from 'vitest';
 import {
-  segmentSpreadTerm, accumulatedSpread, primarySpread, evaluateSpreadTermination,
+  segmentSpreadTerm, accumulatedSpread, accumulatedBounceSpread, primarySpread, evaluateSpreadTermination,
   type PathSegment,
 } from '../spreadTermination.ts';
 import { nrcSpreadTerminationWgsl } from '../wgsl/spreadTermination.wgsl.ts';
@@ -19,13 +19,30 @@ import { RIS_GI_NRC_BODY } from '../../../shaders/risGiNrc.wgsl.ts';
 describe('NRC spread term — per segment', () => {
   it('equals sqrt(d² / (p·|cosθ|))', () => {
     const seg: PathSegment = { dist: 2, pdf: 0.5, cosTheta: 0.8 };
-    expect(segmentSpreadTerm(seg)).toBeCloseTo(Math.sqrt((2 * 2) / (0.5 * 0.8)), 9);
+    expect(segmentSpreadTerm(seg)).toBeCloseTo(Math.sqrt((2 * 2) / (0.5 * 0.8)), 5);
   });
 
-  it('clamps a degenerate (near-zero pdf·cos) denominator → huge spread (early termination)', () => {
+  it('saturates a degenerate denominator only at the f32 footprint boundary', () => {
     const seg: PathSegment = { dist: 1, pdf: 0, cosTheta: 0 };
-    // denom clamped to 1e-12 → term = sqrt(1/1e-12) = 1e6.
-    expect(segmentSpreadTerm(seg)).toBeCloseTo(1e6, 0);
+    expect(segmentSpreadTerm(seg)).toBe(Math.fround(1.844674297e19));
+  });
+
+  it('matches the WGSL f32 boundary policy for subnormal, min-normal, huge, overflow, NaN, and Inf', () => {
+    const maxRoot = Math.fround(1.844674297e19);
+    const minSubnormal = 2 ** -149;
+    const minNormal = 2 ** -126;
+    const maxFinite = Math.fround(3.402823466e38);
+
+    expect(segmentSpreadTerm({ dist: 1, pdf: minSubnormal, cosTheta: 1 })).toBe(maxRoot);
+    expect(segmentSpreadTerm({ dist: 1, pdf: minNormal, cosTheta: 1 })).toBe(
+      Math.fround(1 / Math.fround(Math.sqrt(Math.fround(minNormal)))),
+    );
+    const hugePdfTerm = segmentSpreadTerm({ dist: 1, pdf: maxFinite, cosTheta: 1 });
+    expect(hugePdfTerm).toBeGreaterThan(0);
+    expect(hugePdfTerm).toBeLessThan(1e-18);
+    expect(segmentSpreadTerm({ dist: maxFinite, pdf: minNormal, cosTheta: 1 })).toBe(maxRoot);
+    expect(segmentSpreadTerm({ dist: Number.NaN, pdf: 1, cosTheta: 1 })).toBe(maxRoot);
+    expect(segmentSpreadTerm({ dist: 1, pdf: Number.POSITIVE_INFINITY, cosTheta: 1 })).toBe(maxRoot);
   });
 });
 
@@ -59,7 +76,7 @@ describe('NRC accumulated spread (Müller 2021 §5)', () => {
   it('a0 = (first-segment term)²', () => {
     const segs: PathSegment[] = [{ dist: 1.5, pdf: 0.5, cosTheta: 0.8 }, { dist: 1, pdf: 0.5, cosTheta: 0.5 }];
     const t0 = segmentSpreadTerm(segs[0]!);
-    expect(primarySpread(segs)).toBeCloseTo(t0 * t0, 9);
+    expect(primarySpread(segs)).toBe(Math.fround(t0 * t0));
   });
 });
 
@@ -78,7 +95,7 @@ describe('NRC cache-termination heuristic a(x) > c·a0', () => {
       { dist: 1, pdf: 0.5, cosTheta: 0.9 },   // spread grows
       { dist: 5, pdf: 0.05, cosTheta: 0.3 },  // big jump
     ];
-    const acc = accumulatedSpread(segs);
+    const acc = accumulatedBounceSpread(segs);
     const a0 = primarySpread(segs);
     // choose c so the threshold lands between segment 1 and 2.
     const c = (acc[1]! / a0 + acc[2]! / a0) / 2;
@@ -183,7 +200,7 @@ describe('NRC spread termination — c=0.01 production-default enforcement (H56-
 
   it('c=0.01: accumulated spread at the termination vertex exceeds c·a0', () => {
     const result = evaluateSpreadTermination(segsPdf1, C_PRODUCTION);
-    const acc = accumulatedSpread(segsPdf1);
+    const acc = accumulatedBounceSpread(segsPdf1);
     if (result.terminate) {
       const k = result.terminateAtSegment;
       expect(acc[k]!).toBeGreaterThan(C_PRODUCTION * result.a0);
@@ -278,10 +295,14 @@ describe('NRC spread termination — c=0.01 production-default enforcement (H56-
 });
 
 describe('NRC spread WGSL codegen — shape pins (oracle equivalence)', () => {
-  it('emits sqrt(d²/(p·|cosθ|)) with the same 1e-12 denom clamp', () => {
+  it('accepts positive f32 density without a magic epsilon and diagnoses only representability saturation', () => {
     const wgsl = nrcSpreadTerminationWgsl();
-    expect(wgsl).toContain('max(pdf * abs(cosTheta), 1e-12)');
-    expect(wgsl).toContain('sqrt((dist * dist) / denom)');
+    expect(wgsl).not.toContain('1e-12');
+    expect(wgsl).toContain('if (!(pdf > 0.0) || !(absCos > 0.0))');
+    expect(wgsl).toContain('let density = pdf * absCos;');
+    expect(wgsl).toContain('let logTerm = log2(absDist)');
+    expect(wgsl).toContain('const NRC_SPREAD_MAX_ROOT_F32: f32 = 1.844674297e19;');
+    expect(wgsl).toContain('nrcRecordSaturatedValue();');
   });
 
   it('accumulates the running sum and returns its square as a(x)', () => {
@@ -311,8 +332,14 @@ describe('NRC warm-up gate — cold cache predictions do not replace DDGI', () =
   });
 
   it('keeps spread-fired records but gates visible Lo substitution until the trainer is warm', () => {
-    expect(RIS_GI_NRC_BODY).toContain('let nrcCanSubstitute = nrcCfg.trainedSteps >= nrcCfg.warmupSteps;');
-    expect(RIS_GI_NRC_BODY).toContain('Lo = select(ddgiLo, nrcQueryRadiance(xs, ns, -wi, xsRough, xsAlbedo), nrcCanSubstitute);');
+    expect(RIS_GI_NRC_BODY).toContain(
+      'let nrcCanSubstitute = nrcCfg.trainedSteps >= nrcCfg.warmupSteps',
+    );
+    expect(RIS_GI_NRC_BODY).toContain(
+      '&& nrcInferenceArenaValid() && nrcRuntimeArenaValid();',
+    );
+    expect(RIS_GI_NRC_BODY).toContain('Lo = select(');
+    expect(RIS_GI_NRC_BODY).toContain('nrcCanSubstitute && !grisOn,');
     expect(RIS_GI_NRC_BODY).toContain('if (nrcFired) {');
     expect(RIS_GI_NRC_BODY).toContain('nrcWriteRecord(');
   });
@@ -322,10 +349,10 @@ describe('NRC warm-up gate — cold cache predictions do not replace DDGI', () =
 //
 // Pins three A6 changes to risGiNrc.wgsl:
 //   1. xsRough: real per-tri roughness from bvh_material (not hardcoded 1.0)
-//   2. Training target: r.Lo post-loop (not DDGI distillation inside the loop)
+//   2. Training target: a matched, independently traced bounded suffix
 //   3. Structural: candidate tracking before loop, record after loop
 
-describe('A6: NRC structural fixes — xsRough + reservoir training target (2026-06-10)', () => {
+describe('NRC structural fixes — xsRough + independent suffix target', () => {
   it('A6 xsRough: NRC body declares bvh_material binding (group 1, binding 14)', () => {
     // The NRC pass must bind the per-tri roughness texture at the same slot as
     // ris.wgsl / restirCastPrimary.wgsl / shade.wgsl (binding 14) so the MLP
@@ -342,24 +369,19 @@ describe('A6: NRC structural fixes — xsRough + reservoir training target (2026
     expect(RIS_GI_NRC_BODY).toContain('bvh_material');
   });
 
-  it('A6 training target: nrcWriteRecord is called POST-LOOP with r.Lo, not inside the loop with directLo', () => {
-    // The training record must use r.Lo (the ReSTIR-GI reservoir Lo) as the
-    // target, not a per-candidate DDGI estimate computed inside the RIS loop.
-    // Structural enforcement: nrcWriteRecord must appear after the RIS loop
-    // (after the closing `}` of `for ... i < M_GI`) and must reference r.Lo.
-    // Negative check: the old inside-loop record call with directLo is gone.
+  it('writes an independent matched target, never the DDGI/cache value', () => {
     expect(RIS_GI_NRC_BODY).not.toContain('let directLo =');
     expect(RIS_GI_NRC_BODY).not.toContain('nrcWriteRecord(pixelIdxGi % nrcCfg.recordCap, xs, ns, -wi,');
-    // Positive check: post-loop record write uses nrcTrackXs / r.Lo.
-    expect(RIS_GI_NRC_BODY).toContain('nrcTrackXs');
-    expect(RIS_GI_NRC_BODY).toContain('nrcTrackNs');
-    expect(RIS_GI_NRC_BODY).toContain('nrcFired');
-    expect(RIS_GI_NRC_BODY).toContain('r.Lo');
+    expect(RIS_GI_NRC_BODY).toContain('nrcTrackTarget = nrcTraceIndependentSuffix(');
+    expect(RIS_GI_NRC_BODY).not.toContain('nrcTrackTarget = ddgiLo');
   });
 
-  it('A6 training target: nrcWriteRecord is called with r.Lo as the last argument', () => {
-    // r.Lo is passed as the target argument (last positional arg) to nrcWriteRecord.
-    expect(RIS_GI_NRC_BODY).toContain('r.Lo,');
+  it('passes the independent target as the record label', () => {
+    const start = RIS_GI_NRC_BODY.indexOf('// Write one matched input/teacher record');
+    const end = RIS_GI_NRC_BODY.indexOf('// GRIS Phase-0', start);
+    const write = RIS_GI_NRC_BODY.slice(start, end);
+    expect(write).toContain('nrcTrackTarget,');
+    expect(write).not.toContain('r.Lo,');
   });
 
   it('A6 candidate tracking: NRC tracking vars are declared before the RIS loop', () => {
@@ -397,7 +419,7 @@ describe('A6: NRC structural fixes — xsRough + reservoir training target (2026
     const segs = [primarySeg, bounce1];
 
     const a0 = primarySpread(segs);
-    const acc = accumulatedSpread(segs);
+    const acc = accumulatedBounceSpread(segs);
 
     // a0 is tiny (high camPdf → small camera footprint).
     expect(a0).toBeLessThan(1e-4);

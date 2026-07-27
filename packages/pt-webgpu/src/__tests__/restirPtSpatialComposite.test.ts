@@ -31,16 +31,16 @@ describe('A1 — ReSTIR-PT spatial pass (GRIS full GBH)', () => {
     expect(wgsl).not.toContain('fn restirPtResolve(');
   });
 
-  it('uses the hybrid shift Jacobian + the GRIS finalize (W=w_sum/p̂, NO /M)', () => {
-    // The shift Jacobian re-roots a neighbour's reconnection edge onto the centre
-    // pixel and multiplies the half-G ratio by the source/target BSDF replay-pdf ratio.
+  it('uses the geometry-only prefix-1 Jacobian + GRIS finalize (W=w_sum/p̂, NO /M)', () => {
+    // Prefix-1 has no random-replayed prefix: the solid-angle change of variables
+    // is exactly the half-G geometry ratio. Proposal density already lives in W.
     expect(RESTIR_PT_SPATIAL_WGSL).toContain(
-      'restirPtHybridShiftJacobianForPair(rQ, rCenter, woQ, woCenter)',
+      'restirPtReconnectionJacobianForPair(rQ, rCenter)',
     );
-    expect(RESTIR_PT_SPATIAL_WGSL).toContain('let qReplayPdfAtR = restirPtVisibleReplayPdfForDomain(rCenter, woCenter, qR[i].xs);');
+    expect(RESTIR_PT_SPATIAL_WGSL).not.toContain('restirPtVisibleReplayPdfForDomain');
     // GRIS finalize (the m_i already sum to 1 — no /M).
     expect(RESTIR_PT_SPATIAL_WGSL).toContain(
-      'finaliseReservoirPTWGris(&rOut, rptParams.wCap, params.cameraPos.xyz);',
+      'finaliseReservoirPTWGris(&rOut, rptParams.wCap);',
     );
   });
 
@@ -80,10 +80,14 @@ describe('A1 — ReSTIR-PT composite megakernel (estimator split)', () => {
   it('the composite megakernel reads the resolve indirect at the relocated binding 23', () => {
     const composite = composePtWebgpuCompositeTraceWgsl(false);
     expect(composite).toContain('@group(0) @binding(23) var<storage, read_write> rpt_result_in: array<vec4f>;');
-    // For a pixel the producer contributed to it composites the indirect + breaks (E0-only).
-    expect(composite).toContain('let rptCompositeContributed = rptComposite.a > 0.5;');
+    // A valid producer sample is selected directly when it has no advanced peer,
+    // or by the complete-estimator mixture when BDPT/caustics are also active.
+    expect(composite).toContain('let rptProducerContributed = rptComposite.a > 0.5;');
+    expect(composite).toContain(
+      'let rptCompositeContributed = rptProducerContributed && rptMixtureSelected;',
+    );
     expect(composite).toContain('if (rptCompositeContributed) {');
-    expect(composite).toContain('radiance = radiance + rptComposite.rgb;');
+    expect(composite).toContain('outRadiance = outRadiance + rptComposite.rgb;');
   });
 
   it('the composite keeps analytic BSDF→light/env area-MIS but suppresses mesh-area double-counts', () => {

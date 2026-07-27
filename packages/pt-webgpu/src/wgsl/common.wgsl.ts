@@ -4,7 +4,7 @@ import { SAFE_INV_DIR_WGSL, MOLLER_TRUMBORE_WGSL } from '@vitrum/shared-bvh';
 export type PtWebgpuSamplingMode = 'pcg' | 'sobol';
 
 /**
- * Opt-in pt-webgpu low-discrepancy RNG module.
+ * pt-webgpu low-discrepancy RNG module.
  *
  * It intentionally preserves the existing pt-webgpu RNG symbol surface
  * (`pcgInit`, `pcgNext`, `rand_f32`, `rand2`, `rand3`) so the path-trace,
@@ -13,14 +13,26 @@ export type PtWebgpuSamplingMode = 'pcg' | 'sobol';
  * set plus JCGT/Laine-Karras hash-based Owen scrambling, but keeps it
  * binding-free for WebGPU.
  *
- * Promotion caveat: higher dimensions are hash-decorrelated over the first four
- * direction tables and the stream uses a small tiled ranked rotation. The
- * bounce/lobe/light dimension assignment is pinned by source-level regression
- * tests; measured equal-time RMSE promotion evidence is tracked separately.
+ * Dimensions 0 through 3 use fixed-stream Owen scrambles over the first-four
+ * direction-table basis. Dimension 4 and later use an independent PCG
+ * continuation seeded from the full pixel/frame/path identity and the crossing
+ * dimension. The 32-bit counter never wraps back into the Sobol prefix, and every
+ * 65,536-sample block receives a distinct fixed scramble key.
  */
 export const PT_WEBGPU_SOBOL_RNG_WGSL = /* wgsl */ `
+struct PtRngState {
+  sampleIndex: u32,
+  dimension: u32,
+  pixelX: u32,
+  pixelY: u32,
+  sequenceKey: u32,
+  rotationTile: u32,
+  fallbackState: u32,
+};
+
 const PT_SOBOL_FACTOR = 0.000000059604644775390625; // 1 / 2^24
 const PT_SOBOL_MAX_POINTS = 65536u;
+const PT_SOBOL_DIMENSION_COUNT = 4u;
 
 const PT_SOBOL_BLUE_NOISE_RANK_8X8 = array<u32, 64>(
   0u, 63u, 12u, 60u, 3u, 55u, 15u, 62u,
@@ -149,19 +161,49 @@ fn ptSobolBlueNoiseRotation(tile: u32, dim: u32) -> u32 {
   return ptSobolHash(ptSobolHashCombine(rank, dim)) & 0x00ffffffu;
 }
 
-fn pcgInit(px: u32, py: u32, frameSeed: u32) -> u32 {
+fn pcgInit(px: u32, py: u32, frameKey: u32) -> PtRngState {
   let pixelSeed = ptSobolHash(ptSobolHashCombine(ptSobolHash(px), py));
-  let sampleIndex = frameSeed & 0x0000ffffu;
-  let rotationTile = ptSobolHash(ptSobolHashCombine(pixelSeed, frameSeed >> 16u)) & 0xffu;
-  return (sampleIndex << 16u) | (rotationTile << 8u);
+  let sampleIndex = frameKey & 0x0000ffffu;
+  let sequenceKey = frameKey >> 16u;
+  var state: PtRngState;
+  state.sampleIndex = sampleIndex;
+  state.dimension = 0u;
+  state.pixelX = px;
+  state.pixelY = py;
+  state.sequenceKey = sequenceKey;
+  state.rotationTile = (px & 7u) | ((py & 7u) << 3u);
+  state.fallbackState = ptSobolHash(
+    ptSobolHashCombine(
+      ptSobolHashCombine(ptSobolHashCombine(pixelSeed, sequenceKey), sampleIndex),
+      PT_SOBOL_DIMENSION_COUNT,
+    ),
+  );
+  return state;
 }
 
-fn ptSobolNextU32(state: ptr<function, u32>) -> u32 {
-  let pathIndex = ((*state) >> 16u) & 0x0000ffffu;
-  let rotationTile = ((*state) >> 8u) & 0xffu;
-  let dim = (*state) & 0xffu;
-  let seed = ptSobolHash(ptSobolHashCombine(pathIndex, dim));
-  let shuffleSeed = ptSobolHashCombine(seed, 0u);
+fn ptSobolFallbackNext(state: ptr<function, PtRngState>) -> u32 {
+  (*state).fallbackState = (*state).fallbackState * 747796405u + 2891336453u;
+  var word = (((*state).fallbackState >> (((*state).fallbackState >> 28u) + 4u)) ^
+    (*state).fallbackState) * 277803737u;
+  word = (word >> 22u) ^ word;
+  return word;
+}
+
+fn ptSobolNextU32(state: ptr<function, PtRngState>) -> u32 {
+  let dim = (*state).dimension;
+  if (dim >= PT_SOBOL_DIMENSION_COUNT) {
+    if (dim != 0xffffffffu) {
+      (*state).dimension = dim + 1u;
+    }
+    return ptSobolFallbackNext(state);
+  }
+  let pathIndex = (*state).sampleIndex;
+  let pixelSeed = ptSobolHash(
+    ptSobolHashCombine(ptSobolHash((*state).pixelX), (*state).pixelY),
+  );
+  let streamSeed = ptSobolHash(ptSobolHashCombine(pixelSeed, (*state).sequenceKey));
+  let seed = ptSobolHash(ptSobolHashCombine(streamSeed, dim));
+  let shuffleSeed = ptSobolHashCombine(streamSeed, 0u);
   let shuffledIndex = ptSobolNestedUniformScrambleBase2(
     ptSobolReverseBits32(pathIndex),
     shuffleSeed,
@@ -169,24 +211,25 @@ fn ptSobolNextU32(state: ptr<function, u32>) -> u32 {
   var result = ptSobolTextureComponent(shuffledIndex, dim);
   let componentSeed = ptSobolHashCombine(seed, 1u + (dim & 3u));
   result = ptSobolNestedUniformScrambleBase2(result, componentSeed);
-  let rotated24 = (((result >> 8u) & 0x00ffffffu) + ptSobolBlueNoiseRotation(rotationTile, dim)) & 0x00ffffffu;
-  (*state) = (pathIndex << 16u) | (rotationTile << 8u) | ((dim + 1u) & 0xffu);
+  let rotated24 = (((result >> 8u) & 0x00ffffffu) +
+    ptSobolBlueNoiseRotation((*state).rotationTile, dim)) & 0x00ffffffu;
+  (*state).dimension = dim + 1u;
   return rotated24 << 8u;
 }
 
-fn pcgNext(state: ptr<function, u32>) -> u32 {
+fn pcgNext(state: ptr<function, PtRngState>) -> u32 {
   return ptSobolNextU32(state);
 }
 
-fn rand_f32(state: ptr<function, u32>) -> f32 {
+fn rand_f32(state: ptr<function, PtRngState>) -> f32 {
   return f32(ptSobolNextU32(state) >> 8u) * PT_SOBOL_FACTOR;
 }
 
-fn rand2(state: ptr<function, u32>) -> vec2f {
+fn rand2(state: ptr<function, PtRngState>) -> vec2f {
   return vec2f(rand_f32(state), rand_f32(state));
 }
 
-fn rand3(state: ptr<function, u32>) -> vec3f {
+fn rand3(state: ptr<function, PtRngState>) -> vec3f {
   return vec3f(rand_f32(state), rand_f32(state), rand_f32(state));
 }
 `;
@@ -197,11 +240,29 @@ fn ptRngFrameKey(frameSeed: u32, frameIndex: u32) -> u32 {
 }
 `;
 
-const SOBOL_FRAME_KEY_WGSL = /* wgsl */ `
+export const SOBOL_FRAME_KEY_WGSL = /* wgsl */ `
 fn ptRngFrameKey(frameSeed: u32, frameIndex: u32) -> u32 {
-  return (ptSobolHash(frameSeed) & 0xffff0000u) | (frameIndex & 0x0000ffffu);
+  let sampleBlock = frameIndex >> 16u;
+  let seedKey = ptSobolHash(frameSeed) & 0x0000ffffu;
+  let blockKey = (seedKey + sampleBlock * 0x00009e37u) & 0x0000ffffu;
+  return (blockKey << 16u) | (frameIndex & 0x0000ffffu);
 }
 `;
+
+/** Compose the exact RNG implementation and frame-key mapping for a mode. */
+export function composePtWebgpuRngWgsl(
+  sampling: PtWebgpuSamplingMode = 'pcg',
+): string {
+  const rng = sampling === 'sobol'
+    ? PT_WEBGPU_SOBOL_RNG_WGSL
+    : `alias PtRngState = u32;\n${PCG_WGSL}`;
+  const frameKey = sampling === 'sobol'
+    ? SOBOL_FRAME_KEY_WGSL
+    : PCG_FRAME_KEY_WGSL;
+  // Preserve the historical blank line between the two modules so every
+  // existing production composition remains byte-for-byte stable.
+  return `${rng}\n\n${frameKey}`;
+}
 
 /**
  * Early shared WGSL include for pt-webgpu.
@@ -216,8 +277,7 @@ fn ptRngFrameKey(frameSeed: u32, frameIndex: u32) -> u32 {
 export function composePtWebgpuCommonWgsl(
   sampling: PtWebgpuSamplingMode = 'pcg',
 ): string {
-  const rng = sampling === 'sobol' ? PT_WEBGPU_SOBOL_RNG_WGSL : PCG_WGSL;
-  const frameKey = sampling === 'sobol' ? SOBOL_FRAME_KEY_WGSL : PCG_FRAME_KEY_WGSL;
+  const rng = composePtWebgpuRngWgsl(sampling);
   return /* wgsl */ `
 const PI = 3.14159265358979;
 const INV_PI = 0.31830988618;
@@ -245,8 +305,6 @@ struct HitResult {
 };
 
 ${rng}
-
-${frameKey}
 
 fn safe_normalize(v: vec3f) -> vec3f {
   let len = length(v);

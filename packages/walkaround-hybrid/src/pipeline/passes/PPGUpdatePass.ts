@@ -1,9 +1,9 @@
 /**
- * PPGUpdatePass — Müller 2017 §3.3 path-guiding "update" pass (AFTER shade).
+ * PPGUpdatePass — Müller 2017 §3.3 path-guiding "update" pass (immediately after initial GI RIS).
  *
- * W9 — wires the real flat-buffer leaf-locator kernel. Reads accepted
- * ReSTIR-GI reservoirs `(xv, normalize(xs - xv), Lo)` and atomically
- * increments the dTree leaf flux counter for each. The CPU reads back the
+ * Reads ReSTIR-GI initial reservoirs `(xv, normalize(xs - xv), w_sum, M)` and deposits
+ * the unbiased arbitrary-bin histogram estimator `w_sum / M`. It must execute
+ * before GI temporal/spatial reuse mutates that reservoir.
  * atomic buffer at the end of each rebuild cycle and calls `splitOverflowLeaves` +
  * `refineDTree` to adapt the tree (topology changes are CPU-side per §5).
  *
@@ -13,10 +13,9 @@
  *   group(0):
  *     binding(0) reservoirGiCurrentBuffer (storage, read)
  *     binding(1) fluxAtomicsBuf           (storage, read_write)
- *     binding(2) sTreeBuf                 (storage, read)
- *     binding(3) dTreeBuf                 (storage, read)
- *     binding(4) dTreeOffsets             (storage, read)
- *     binding(5) cellSampleCountsBuf      (storage, read_write)  [A2]
+ *     binding(2) queryArenaBuf             (storage, read)
+ *       versioned header + sTree + dTrees + dTree offsets
+ *     binding(3) cellSampleCountsBuf       (storage, read_write)  [A2]
  *   group(1):
  *     binding(0) updateUboBuffer (uniform)
  */
@@ -32,7 +31,7 @@ import type { PassLabel } from '../timestampQueries.js';
 
 export class PPGUpdatePass implements Pass {
   readonly id = 'ppg-update' as const;
-  readonly dependencies: readonly string[] = ['shade'];
+  readonly dependencies: readonly string[] = ['gi-ris'];
   readonly passLabels: readonly PassLabel[] = ['ppg-update'];
 
   private readonly _pipeline: GPUComputePipeline;
@@ -59,7 +58,7 @@ export class PPGUpdatePass implements Pass {
     // Contract invariant: PPG resources are allocated whenever this pass is
     // registered. If a host bypasses the initialization branch, fail loudly
     // instead of silently skipping training.
-    if (!('sTreeBuf' in ppg) || !resources.restirGI.reservoirGiCurrentBuffer) {
+    if (!('queryArenaBuf' in ppg) || !resources.restirGI.reservoirGiCurrentBuffer) {
       throw new Error(
         '[PPG] update dispatch invariant violated: PPG resources are not allocated. ' +
         'This indicates ppgEnabled=true was claimed but allocatePPGResources was never called.',
@@ -69,9 +68,7 @@ export class PPGUpdatePass implements Pass {
     const ppgBindGroupResources = {
       reservoirGiCurrentBuffer: resources.restirGI.reservoirGiCurrentBuffer,
       fluxAtomicsBuf: ppg.fluxAtomicsBuf,
-      sTreeBuf: ppg.sTreeBuf,
-      dTreeBuf: ppg.dTreeBuf,
-      dTreeOffsetsBuf: ppg.dTreeOffsetsBuf,
+      queryArenaBuf: ppg.queryArenaBuf,
       cellSampleCountsBuf: ppg.cellSampleCountsBuf,
       updateUboBuffer: ppg.updateUboBuffer,
     };
@@ -83,9 +80,7 @@ export class PPGUpdatePass implements Pass {
     const bgPair = ctx.resourceCache?.bindGroup('pass:ppg-update', [
       ppgBindGroupResources.reservoirGiCurrentBuffer,
       ppgBindGroupResources.fluxAtomicsBuf,
-      ppgBindGroupResources.sTreeBuf,
-      ppgBindGroupResources.dTreeBuf,
-      ppgBindGroupResources.dTreeOffsetsBuf,
+      ppgBindGroupResources.queryArenaBuf,
       ppgBindGroupResources.cellSampleCountsBuf,
       ppgBindGroupResources.updateUboBuffer,
     ], buildBgs);

@@ -16,6 +16,10 @@ export {
   CWBVH_CHILD_BOUNDS_U16,
   CWBVH_CHILD_BOUNDS_PACKED_U32,
   CWBVH_CHILD_META_WORDS,
+  BVH_TRAVERSAL_STACK_DEPTH,
+  CWBVH_TRAVERSAL_STACK_DEPTH,
+  TLAS_TRAVERSAL_STACK_DEPTH,
+  BINARY_BVH_MAX_BUILD_DEPTH,
 } from './strides.js';
 export { pickPrimitiveCpu, type PickCamera } from './pickPrimitiveCpu.js';
 export { refitBvhBounds } from './refitBvhBounds.js';
@@ -34,6 +38,7 @@ export {
 } from './emitterCanonical.js';
 export {
   mergeWorldSpaceFromCore,
+  mergeUvSetFromCore,
   mergeUv1FromCore,
   materialSig,
   DEFAULT_MERGE_FILTER,
@@ -42,6 +47,14 @@ export {
   type WorldSpaceMergeOptions,
   type MergedMeshVertexRange,
 } from './worldSpaceMerge.js';
+export {
+  maybeDisplaceMeshPositions,
+  maybeMicrodisplaceMeshGeometry,
+  resolveDisplacedGeometry,
+  type DisplaceablePrimitive,
+  type MicrodisplacedMeshGeometry,
+  type ResolvedDisplacedGeometry,
+} from './vertexDisplacement.js';
 export * from './tlas.js';
 export {
   packSceneFromCore,
@@ -67,6 +80,8 @@ export * from './wgsl/tlasTraversal.wgsl.js';
 export * from './wgsl/tlasSceneHitTraversal.wgsl.js';
 export * from './wgsl/bvhCastShadowMask.wgsl.js';
 export * from './wgsl/materialAtlasOffsets.wgsl.js';
+export * from './wgsl/materialOptics.wgsl.js';
+export * from './wgsl/materialTransmission.wgsl.js';
 export {
   fingerprintBuffer,
   fingerprintBufferExact,

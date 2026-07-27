@@ -19,6 +19,7 @@
 // backends — only the snapshot-patch + invariant enforcement is canonical.
 
 import { validateAnalyticParams } from './analyticParams.js';
+import { validateScene } from './validation.js';
 import type { ScenePrimitive } from './primitives.js';
 import type { SceneEmitter } from './emitters.js';
 import type { Scene } from './index.js';
@@ -142,10 +143,12 @@ export function patchPrimitiveInScene(
   if (!matched) {
     throw new Error(`updatePrimitive: primitive "${id}" not found in current scene`);
   }
-  return {
+  const nextScene: Scene = {
     ...scene,
     primitives,
   };
+  validateScene(nextScene);
+  return nextScene;
 }
 
 /**
@@ -175,8 +178,10 @@ export function patchEmitterInScene(
   if (!matched) {
     throw new Error(`updateEmitter: emitter "${id}" not found in current scene`);
   }
-  return {
+  const nextScene: Scene = {
     ...scene,
     emitters,
   };
+  validateScene(nextScene);
+  return nextScene;
 }

@@ -1,11 +1,10 @@
 # Differentiable Ray Tracing — Inverse Rendering ("reference image → matching 3D scene")
 
-> **Status: FRONTIER, gated & de-prioritized** per `roadmap.md` §0.5. This is a captured
-> phased plan, **not** scheduled work. The near-term priority order is unchanged
-> (fidelity grind + WSL-GPU validation + finishing the in-flight waves). Nothing here
-> should preempt that. Phase 0 (finite-difference) is the one piece cheap enough to
-> prototype anytime; everything past it waits on a host signalling demand for the Tier-B
-> workflow. See `plan/tier4-vision-not-yet.md` for the gating rationale.
+> **Status: implemented with an explicitly narrow adjoint scope.** Finite-difference
+> sessions ship on pt-webgl2 and pt-webgpu. pt-webgpu path replay is certified only
+> for camera-visible material `emissive` under the session's one-bounce compatibility
+> checks. Every other parameter, including `baseColor` and `roughness`, resolves to
+> finite differences with a structured diagnostic.
 
 ## What this actually is
 
@@ -41,7 +40,7 @@ the 3D panel to match) instead of competing as a general moonshot.
 ```
 reference image
        ↓
-   loss(image_rendered, image_target)      ← L2, SSIM, perceptual (LPIPS)
+   loss(image_rendered, image_target)      ← L2 or L1
        ↓
    ∂loss/∂θ  for each optimizable θ          ← THIS is what diff-RT provides
        ↓
@@ -50,30 +49,31 @@ reference image
    re-render → repeat until match
 ```
 
-Optimizable `θ`: albedo / roughness / transmission textures (or low-res param grids),
-light direction / intensity / environment map; later vertex offsets, camera extrinsics,
-thin-film thickness.
+The shipping contract optimizes finite scalar, vec2, and RGB material/emitter fields.
+Texture variables and perceptual losses are not public modes.
 
-Illustrative API shape — the `createInverseSession` contract + Phase-0 finite-difference
-loop are now IN repo (`core/src/inverse.ts`, pt-webgpu impl); the `optimize()` generator
-below is illustrative, the shipped API uses `step()` (the GPU adjoint stays V24-gated):
+Current API shape — the host owns the optimization cadence and calls `step()`:
 
 ```ts
 const session = engine.createInverseSession({
-  targetImage: refBitmap,
-  loss: 'lpips',                 // or 'l2', 'ssim'
+  target: { data: referenceRgb, width, height, channels: 3 },
+  loss: 'l2',
+  method: 'finite-difference',
   parameters: [
-    { path: 'materials.panel-1.albedo', kind: 'texture' },
-    { path: 'emitters.sun.intensity',  kind: 'scalar'  },
+    { path: 'materials.panel-1.baseColor', kind: 'rgb' },
+    { path: 'emitters.sun.intensity', kind: 'scalar' },
   ],
 });
-for (const step of session.optimize({ maxSteps: 500 })) {
+for (let i = 0; i < 500; i += 1) {
+  const step = await session.step();
   onProgress(step.loss, step.preview);
 }
+session.dispose();
 ```
 
-Under the hood: forward render → loss pass → adjoint/backward through pt-webgpu → param
-update. Host stays dumb; vitrum owns the loop (consistent with the lifecycle contract).
+Under the hood: forward render → loss → finite-difference probes, or the certified
+pt-webgpu emissive adjoint → Adam update. The host owns cadence; one non-reentrant
+`step()` performs one transactional iteration.
 
 ## Why it's hard in a path tracer (and in the browser)
 
@@ -92,12 +92,16 @@ autograd through the whole kernel breaks at those jumps. Production approaches:
 
 These change the cost estimate and pin the main risk:
 
-1. **The optimizer half is already built, and a scoped Phase-1 adjoint now exists.**
+1. **The optimizer and a scoped Phase-1 adjoint ship.**
    The NRC fused MLP kernel is a WGSL training kernel with a *full backward pass*:
    i32 fixed-point atomic gradient accumulation, mixed-precision Adam, workgroup-resident
-   tiles, validated GPU==CPU-analytic to ~9.5e-7. `pt-webgpu` also now has a scoped
-   path-replay inverse pass for continuous direct-light shading gradients. What remains
-   unbuilt is broad adjoint parity: indirect/path-space derivatives, stochastic path
+   tiles, validated GPU==CPU-analytic to ~9.5e-7. `pt-webgpu` also has a
+   path-replay inverse pass. The native full-render gate
+   (`tools/gpu-env/inverse-fit-deno.ts`) certifies material `emissive`: all three
+   channels match finite-difference signs with 1.9–2.7% relative error on lavapipe.
+   `baseColor` and `roughness` differed by 13–22%, so they are deliberately routed
+   to finite differences. What remains unbuilt is broad adjoint parity:
+   indirect/path-space derivatives, stochastic path
    reuse, spectral/volume/layered material gradients, transmission/thickness/displacement,
    and the visibility-discontinuity cases that need finite-difference, reparameterization,
    or explicit unsupported diagnostics beyond Phase 1. The old "8-12 weeks" estimate
@@ -126,8 +130,8 @@ in-browser fork. **This fork should be settled before Phase 1 starts.**
 
 | Phase | Scope | Native to | Notes |
 |-------|-------|-----------|-------|
-| **0 — Prove the loop** | Finite-difference / coordinate descent on a tiny param vector (one material RGB + one light). No autograd. | vitrum (pt-webgpu only) | Ugly but validates the inverse-session UX/API. Cheap; available anytime. |
-| **1 — Differentiable shading on fixed paths** | One bounce, fixed triangle hit; optimize albedo/roughness. Path replay + backward through the BSDF. | vitrum | The core tier-4 item, scoped tight. Needs the architectural fork decided first. |
+| **0 — Prove the loop** | Finite differences on a bounded material/emitter vector. | vitrum | **Shipped** on pt-webgl2 and pt-webgpu with transactional lifecycle and strict validation. |
+| **1 — Differentiable shading on fixed paths** | One bounce, fixed triangle hit; camera-visible emissive path replay. | vitrum | **Shipped for `emissive` only.** Base-color/roughness candidates remain FD until the native gradient gate agrees. |
 | **2 — Texture optimization** | Gradients w.r.t. texture maps (spatial params). | vitrum | Where "paint the target look" starts to feel magic. |
 | **3 — Lighting + environment** | Sun direction, HDRI scaling. | vitrum | Huge for "match this photo's mood." |
 | **4 — Template scenes (stained glass)** | Parametric panel + lead came + glass layers; reference drives full layout fit. | product + vitrum | **The Tier-B headline / first shippable wow.** |
@@ -145,15 +149,15 @@ Phases 0–3 are vitrum-native; 4 is product + vitrum; 5 is ecosystem + vitrum.
 - **Two-backend split** — walkaround for a fast proxy loss during convergence, pt-webgpu for
   the final fit.
 
-What's missing is the **optimization API** (`createInverseSession`) and the **adjoint
-integrator** (gradient machinery for the forward kernel). The optimizer/grad-accumulation
-substrate now exists (NRC); the adjoint render pass does not.
+The optimization API, finite-difference engines, Adam state, and pt-webgpu emissive
+adjoint are present. Missing work is promotion of additional adjoint fields through the
+same native full-render gradient gate, plus any future texture/geometry parameter model.
 
 ## Feasibility filter (the project's own rule, applied)
 
 | Requirement | Status |
 |-------------|--------|
-| Public algorithm | ✅ Path-replay diff-PT, LPIPS loss — papers + dr.jit/Mitsuba 3 reference |
+| Public algorithm | ✅ Path-replay diff-PT — papers + dr.jit/Mitsuba 3 reference |
 | Portable to WebGPU/WGSL | ✅ Forward already there; backward is engineering, optimizer half built |
 | Not RTX-locked | ✅ |
 | Browser precedent | ⚠️ Few full diff-PT in browser — the browser-novelty *is* the contribution; NRC online-training is the adjacent proof it's tractable |

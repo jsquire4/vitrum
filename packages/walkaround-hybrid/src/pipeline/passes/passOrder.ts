@@ -61,13 +61,13 @@ const NON_DENOISER_PASS_ORDER: readonly NonDenoiserPassEntry[] = Object.freeze([
   // layout matches the dispatched labels exactly (Risk R2).
   { id: 'spatial-2', labels: ['spatial-1', 'spatial-2'] },
   { id: 'gi-ris', labels: ['gi-ris'] },
+  { id: 'ppg-update', labels: ['ppg-update'] },
   { id: 'gi-temporal', labels: ['gi-temporal'] },
   { id: 'gi-spatial-2', labels: ['gi-spatial-1', 'gi-spatial-2'] },
   { id: 'shade', labels: ['shade'] },
   { id: 'motion-vectors', labels: ['motion-vectors'] },
   { id: 'gtao', labels: ['gtao'] },
   { id: 'gtao-upsample', labels: ['gtao-upsample'] },
-  { id: 'ppg-update', labels: ['ppg-update'] },
   // Checkerboard pre-denoiser gap-fill — fills hdrColorTexture gap pixels
   // before the denoiser reads it.  Gated: only runs when checkerboard is ON
   // AND the active denoiser is one of the four real denoisers (svgf-real,

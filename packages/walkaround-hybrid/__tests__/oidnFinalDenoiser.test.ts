@@ -3,12 +3,12 @@
  *
  * Verifies that the OIDNFinalDenoiser wire is real:
  *   1. The disabled flag respects the modelUrl construction-time choice.
- *   2. `initialize` pre-warms the ONNX runtime via `preloadOIDNModel`.
+ *   2. `initialize` acquires an owned lease on the shared OIDN session.
  *   3. `dispatch` kicks off the background readback + inference + upload
  *      chain, calls `denoiseFinal` with color + albedo + normal aux inputs,
  *      and returns a GPU texture (the owned denoised output once an
  *      inference completes, the raw HDR target before that).
- *   4. `dispose` releases GPU resources AND clears the OIDN session cache.
+ *   4. `dispose` releases GPU resources and its owned OIDN session lease.
  *   5. After `registerBuiltinDenoisers` with `oidn.modelUrl`, the registry
  *      successfully looks up `'oidn-final'` (no "registered but disabled"
  *      error).
@@ -32,24 +32,26 @@ installWebGPUPolyfills();
 // bindings — vi.hoisted lets us define them in a hoisted scope that the
 // factory can read.
 
-const oidnMocks = vi.hoisted(() => ({
-  preloadOIDNModel: vi.fn(async (_opts: unknown) => undefined),
-  denoiseFinal: vi.fn(async (inputs: { color: Float32Array; width: number; height: number }) => {
-    // Echo input back as if OIDN denoised it (identity output is fine for the test).
-    return new Float32Array(inputs.color);
-  }),
-  releaseOIDNCacheEntry: vi.fn(() => undefined),
-  clearOIDNCache: vi.fn(() => undefined),
-}));
-const { preloadOIDNModel, denoiseFinal, releaseOIDNCacheEntry } = oidnMocks;
+const oidnMocks = vi.hoisted(() => {
+  const leaseRelease = vi.fn(() => undefined);
+  return {
+    leaseRelease,
+    acquireOIDNSession: vi.fn(async (_opts: unknown) => ({ release: leaseRelease })),
+    denoiseFinal: vi.fn(async (inputs: { color: Float32Array; width: number; height: number }) => {
+      // Echo input back as if OIDN denoised it (identity output is fine for the test).
+      return new Float32Array(inputs.color);
+    }),
+    clearOIDNCache: vi.fn(() => undefined),
+  };
+});
+const { acquireOIDNSession, denoiseFinal, leaseRelease } = oidnMocks;
 
 vi.mock('@vitrum/shared-denoisers', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@vitrum/shared-denoisers')>();
   return {
     ...actual,
-    preloadOIDNModel: oidnMocks.preloadOIDNModel,
+    acquireOIDNSession: oidnMocks.acquireOIDNSession,
     denoiseFinal: oidnMocks.denoiseFinal,
-    releaseOIDNCacheEntry: oidnMocks.releaseOIDNCacheEntry,
     clearOIDNCache: oidnMocks.clearOIDNCache,
   };
 });
@@ -102,6 +104,7 @@ function fakeDevice(): GPUDevice {
   return {
     createTexture: vi.fn(() => fakeTexture()),
     createBuffer: vi.fn((desc: GPUBufferDescriptor) => fakeReadbackBuffer(desc.size)),
+    createCommandEncoder: vi.fn(() => fakeEncoder()),
     queue: {
       writeTexture: vi.fn(),
       writeBuffer: vi.fn(),
@@ -139,13 +142,15 @@ function fakeDispatchCtx(
   hdr: GPUTexture,
   albedo: GPUTexture,
   normal: GPUTexture,
+  frameIndex = 0,
+  isMoving = false,
 ): DenoiserDispatchContext {
   return {
     device,
     encoder,
     width: 64,
     height: 32,
-    frameIndex: 0,
+    frameIndex,
     resources: {
       common: {
         hdrColorTexture: hdr,
@@ -158,7 +163,7 @@ function fakeDispatchCtx(
     gNormalDepthView: {} as GPUTextureView,
     atrousDirectSigmas: [128.0, 5.0, 0.05] as const,
     readAccum: {} as GPUTexture,
-    isMoving: false,
+    isMoving,
     wgX16: 4,
     wgY16: 2,
     computeDesc: (label) => ({ label }),
@@ -168,9 +173,10 @@ function fakeDispatchCtx(
 // ── Tests ──────────────────────────────────────────────────────────────────
 
 beforeEach(() => {
-  preloadOIDNModel.mockClear();
+  acquireOIDNSession.mockClear();
   denoiseFinal.mockClear();
-  releaseOIDNCacheEntry.mockClear();
+  leaseRelease.mockClear();
+  acquireOIDNSession.mockImplementation(async () => ({ release: leaseRelease }));
 });
 
 describe('OIDNFinalDenoiser — disabled flag (W11)', () => {
@@ -191,13 +197,13 @@ describe('OIDNFinalDenoiser — disabled flag (W11)', () => {
 });
 
 describe('OIDNFinalDenoiser.initialize', () => {
-  it('preloads the ONNX model via preloadOIDNModel with the supplied URL', async () => {
+  it('acquires an OIDN session lease with the supplied URL', async () => {
     const d = new OIDNFinalDenoiser({ modelUrl: '/models/test-model.onnx' });
     const device = fakeDevice();
     await d.initialize(fakeInitCtx(device));
 
-    expect(preloadOIDNModel).toHaveBeenCalledTimes(1);
-    const callArg = preloadOIDNModel.mock.calls[0]?.[0] as { modelUrl: string };
+    expect(acquireOIDNSession).toHaveBeenCalledTimes(1);
+    const callArg = acquireOIDNSession.mock.calls[0]?.[0] as { modelUrl: string };
     expect(callArg.modelUrl).toBe('/models/test-model.onnx');
   });
 
@@ -209,7 +215,7 @@ describe('OIDNFinalDenoiser.initialize', () => {
     const device = fakeDevice();
     await d.initialize(fakeInitCtx(device));
 
-    const callArg = preloadOIDNModel.mock.calls[0]?.[0] as {
+    const callArg = acquireOIDNSession.mock.calls[0]?.[0] as {
       modelUrl: string;
       executionProviders?: string[];
     };
@@ -233,6 +239,61 @@ describe('OIDNFinalDenoiser.initialize', () => {
     const device = fakeDevice();
     await expect(d.initialize(fakeInitCtx(device))).rejects.toThrow(/cannot initialize a placeholder/i);
   });
+
+  it('rolls back a failed candidate and can retry without publishing poisoned state', async () => {
+    const d = new OIDNFinalDenoiser({ modelUrl: '/retry-model.onnx' });
+    const device = fakeDevice();
+    acquireOIDNSession.mockRejectedValueOnce(new Error('mock preload failure'));
+
+    await expect(d.initialize(fakeInitCtx(device))).rejects.toThrow('mock preload failure');
+    const failedTexture = (device.createTexture as ReturnType<typeof vi.fn>)
+      .mock.results[0]?.value as GPUTexture;
+    expect(failedTexture.destroy).toHaveBeenCalledTimes(1);
+    expect(leaseRelease).not.toHaveBeenCalled();
+    expect(d.state()).toEqual({
+      status: 'failed',
+      reason: 'OIDN preload failed: mock preload failure',
+      retryable: true,
+    });
+
+    await d.initialize(fakeInitCtx(device));
+    const liveTexture = (device.createTexture as ReturnType<typeof vi.fn>)
+      .mock.results[1]?.value as GPUTexture;
+    expect(liveTexture.destroy).not.toHaveBeenCalled();
+    expect(d.state()).toEqual({
+      status: 'fallback',
+      reason: 'waiting for first OIDN output',
+    });
+  });
+
+  it('releases a late session and destroys the candidate when dispose wins initialization', async () => {
+    let resolveAcquire!: (
+      lease: Awaited<ReturnType<typeof acquireOIDNSession>>,
+    ) => void;
+    acquireOIDNSession.mockImplementationOnce(
+      () => new Promise((resolve) => { resolveAcquire = resolve; }),
+    );
+    const d = new OIDNFinalDenoiser({ modelUrl: '/late-model.onnx' });
+    const device = fakeDevice();
+
+    const initializing = d.initialize(fakeInitCtx(device));
+    await Promise.resolve();
+    const candidateTexture = (device.createTexture as ReturnType<typeof vi.fn>)
+      .mock.results[0]?.value as GPUTexture;
+    d.dispose();
+    d.dispose();
+    expect(leaseRelease).not.toHaveBeenCalled();
+    await expect(d.initialize(fakeInitCtx(device))).rejects.toThrow(/already in progress/i);
+
+    resolveAcquire({ release: leaseRelease });
+    await expect(initializing).rejects.toThrow(/cancelled by dispose/i);
+    expect(candidateTexture.destroy).toHaveBeenCalledTimes(1);
+    expect(leaseRelease).toHaveBeenCalledTimes(1);
+    expect(d.state()).toEqual({
+      status: 'fallback',
+      reason: 'OIDN denoiser has been disposed',
+    });
+  });
 });
 
 describe('OIDNFinalDenoiser.dispatch', () => {
@@ -252,7 +313,7 @@ describe('OIDNFinalDenoiser.dispatch', () => {
     expect(out).toBe(hdr);
   });
 
-  it('issues 3 copyTextureToBuffer calls (color + albedo + normal) on dispatch', () => {
+  it('issues 3 copyTextureToBuffer calls (color + albedo + normal) after frame submit', () => {
     const d = new OIDNFinalDenoiser({ modelUrl: '/m.onnx' });
     const device = fakeDevice();
     // Cannot await init because the test wants synchronous dispatch behaviour;
@@ -261,9 +322,12 @@ describe('OIDNFinalDenoiser.dispatch', () => {
       const encoder = fakeEncoder();
       const ctx = fakeDispatchCtx(device, encoder, fakeTexture(), fakeTexture(), fakeTexture());
       d.dispatch(ctx);
+      d.afterFrameSubmit();
 
       // Three readback copies (one per aux input).
-      expect(encoder.copyTextureToBuffer).toHaveBeenCalledTimes(3);
+      const readbackEncoder = (device.createCommandEncoder as ReturnType<typeof vi.fn>)
+        .mock.results[0]?.value as GPUCommandEncoder;
+      expect(readbackEncoder.copyTextureToBuffer).toHaveBeenCalledTimes(3);
     });
   });
 
@@ -275,6 +339,7 @@ describe('OIDNFinalDenoiser.dispatch', () => {
     const encoder = fakeEncoder();
     const ctx = fakeDispatchCtx(device, encoder, fakeTexture(), fakeTexture(), fakeTexture());
     d.dispatch(ctx);
+    d.afterFrameSubmit();
 
     // The background chain is awaited via microtasks. Let pending promises flush.
     // Two await boundaries (mapAsync × 3 then denoiseFinal); a single
@@ -311,15 +376,67 @@ describe('OIDNFinalDenoiser.dispatch', () => {
     // Kick the cycle and wait for the background chain to complete.
     const firstOut = d.dispatch(ctx);
     expect(firstOut).toBe(hdr); // first call: no inference completed yet
+    d.afterFrameSubmit();
     await new Promise((r) => setTimeout(r, 0));
     await new Promise((r) => setTimeout(r, 0));
     // queue.writeTexture should have been called (upload of denoised result).
     expect(device.queue.writeTexture).toHaveBeenCalled();
 
     // Second dispatch — _haveDenoisedOutput is now true → returns owned texture.
-    const secondOut = d.dispatch(ctx);
+    const secondOut = d.dispatch(
+      fakeDispatchCtx(device, encoder, hdr, fakeTexture(), fakeTexture(), 1),
+    );
     expect(secondOut).not.toBeNull();
     expect(secondOut).not.toBe(hdr); // it's now the owned denoised texture
+  });
+
+  it('drops an in-flight pre-reset result instead of publishing stale pixels', async () => {
+    const d = new OIDNFinalDenoiser({ modelUrl: '/m.onnx' });
+    const device = fakeDevice();
+    await d.initialize(fakeInitCtx(device));
+
+    let releaseInference!: () => void;
+    denoiseFinal.mockImplementationOnce(async (inputs: { color: Float32Array }) => {
+      await new Promise<void>((resolve) => { releaseInference = resolve; });
+      return new Float32Array(inputs.color);
+    });
+
+    const encoder = fakeEncoder();
+    const hdr = fakeTexture();
+    const stableCtx = fakeDispatchCtx(
+      device,
+      encoder,
+      hdr,
+      fakeTexture(),
+      fakeTexture(),
+      8,
+    );
+    expect(d.dispatch(stableCtx)).toBe(hdr);
+    d.afterFrameSubmit();
+
+    for (let i = 0; i < 8 && denoiseFinal.mock.calls.length === 0; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    expect(denoiseFinal).toHaveBeenCalledTimes(1);
+
+    const resetCtx = fakeDispatchCtx(
+      device,
+      encoder,
+      hdr,
+      fakeTexture(),
+      fakeTexture(),
+      0,
+    );
+    expect(d.dispatch(resetCtx)).toBe(hdr);
+    releaseInference();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(device.queue.writeTexture).not.toHaveBeenCalled();
+    expect(d.state()).toEqual({
+      status: 'fallback',
+      reason: 'waiting for first OIDN output',
+    });
   });
 
   it('skips stale result upload when resize happens during an in-flight inference cycle', async () => {
@@ -337,6 +454,7 @@ describe('OIDNFinalDenoiser.dispatch', () => {
     const hdr = fakeTexture();
     const ctx = fakeDispatchCtx(device, encoder, hdr, fakeTexture(), fakeTexture());
     expect(d.dispatch(ctx)).toBe(hdr);
+    d.afterFrameSubmit();
 
     for (let i = 0; i < 8 && denoiseFinal.mock.calls.length === 0; i += 1) {
       await new Promise((resolve) => setTimeout(resolve, 0));
@@ -371,6 +489,7 @@ describe('OIDNFinalDenoiser.dispatch', () => {
 
       const firstOut = d.dispatch(ctx);
       expect(firstOut).toBe(hdr);
+      d.afterFrameSubmit();
       await new Promise((r) => setTimeout(r, 0));
       await new Promise((r) => setTimeout(r, 0));
 
@@ -383,6 +502,7 @@ describe('OIDNFinalDenoiser.dispatch', () => {
 
       const retryOut = d.dispatch(ctx);
       expect(retryOut).toBe(hdr);
+      d.afterFrameSubmit();
       await new Promise((r) => setTimeout(r, 0));
       await new Promise((r) => setTimeout(r, 0));
 
@@ -412,6 +532,7 @@ describe('OIDNFinalDenoiser.dispatch', () => {
 
       const out = d.dispatch(ctx);
       expect(out).toBe(hdr);
+      d.afterFrameSubmit();
       await new Promise((r) => setTimeout(r, 0));
       await new Promise((r) => setTimeout(r, 0));
 
@@ -443,14 +564,15 @@ describe('OIDNFinalDenoiser.dispatch', () => {
 });
 
 describe('OIDNFinalDenoiser.dispose', () => {
-  it('releases the OIDN session cache entry via releaseOIDNCacheEntry', async () => {
+  it('releases its OIDN session lease exactly once', async () => {
     const d = new OIDNFinalDenoiser({ modelUrl: '/m.onnx' });
     const device = fakeDevice();
     await d.initialize(fakeInitCtx(device));
 
-    expect(releaseOIDNCacheEntry).not.toHaveBeenCalled();
+    expect(leaseRelease).not.toHaveBeenCalled();
     d.dispose();
-    expect(releaseOIDNCacheEntry).toHaveBeenCalledTimes(1);
+    d.dispose();
+    expect(leaseRelease).toHaveBeenCalledTimes(1);
   });
 
   it('destroys the owned denoised-output texture', async () => {
@@ -470,7 +592,38 @@ describe('OIDNFinalDenoiser.dispose', () => {
   it('is safe to call before initialize (no-op on undisposed state)', () => {
     const d = new OIDNFinalDenoiser({ modelUrl: '/m.onnx' });
     expect(() => d.dispose()).not.toThrow();
-    expect(releaseOIDNCacheEntry).toHaveBeenCalled();
+    expect(leaseRelease).not.toHaveBeenCalled();
+  });
+
+  it('defers exactly-once lease release until an active inference settles', async () => {
+    let resolveInference!: () => void;
+    denoiseFinal.mockImplementationOnce(
+      (_inputs: { color: Float32Array }) => new Promise((resolve) => {
+        resolveInference = () => resolve(new Float32Array(64 * 32 * 3));
+      }),
+    );
+    const d = new OIDNFinalDenoiser({ modelUrl: '/m.onnx' });
+    const device = fakeDevice();
+    await d.initialize(fakeInitCtx(device));
+    const hdr = fakeTexture();
+    d.dispatch(fakeDispatchCtx(device, fakeEncoder(), hdr, fakeTexture(), fakeTexture()));
+    d.afterFrameSubmit();
+
+    for (let i = 0; i < 8 && denoiseFinal.mock.calls.length === 0; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    expect(denoiseFinal).toHaveBeenCalledTimes(1);
+
+    d.dispose();
+    d.dispose();
+    expect(leaseRelease).not.toHaveBeenCalled();
+    resolveInference();
+    for (let i = 0; i < 8 && leaseRelease.mock.calls.length === 0; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+
+    expect(device.queue.writeTexture).not.toHaveBeenCalled();
+    expect(leaseRelease).toHaveBeenCalledTimes(1);
   });
 });
 

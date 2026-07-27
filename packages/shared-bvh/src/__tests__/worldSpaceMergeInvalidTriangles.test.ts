@@ -4,8 +4,14 @@ import { mergeWorldSpaceFromCore } from '../worldSpaceMerge.js';
 
 const MATERIAL: MaterialSpec = { baseColor: [1, 1, 1], roughness: 0.5, metallic: 0 };
 
-describe('mergeWorldSpaceFromCore malformed triangle filtering', () => {
-  it('filters out-of-range indexed triangles before they enter the merged stream', () => {
+function validNormals(vertexCount: number): Float32Array {
+  const normals = new Float32Array(vertexCount * 3);
+  for (let vertex = 0; vertex < vertexCount; vertex += 1) normals[vertex * 3 + 2] = 1;
+  return normals;
+}
+
+describe('mergeWorldSpaceFromCore malformed triangle rejection', () => {
+  it('rejects out-of-range indexed triangles before building a partial stream', () => {
     const scene: Scene = {
       primitives: [{
         kind: 'mesh',
@@ -18,7 +24,7 @@ describe('mergeWorldSpaceFromCore malformed triangle filtering', () => {
           0, 2, 0,
           2, 2, 0,
         ]),
-        normals: new Float32Array(18),
+        normals: validNormals(6),
         indices: new Uint32Array([
           0, 1, 2,
           3, 999, 5,
@@ -31,25 +37,16 @@ describe('mergeWorldSpaceFromCore malformed triangle filtering', () => {
 
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     try {
-      const merged = mergeWorldSpaceFromCore(scene, { positionStride: 4 });
-
-      expect(merged.triangleCount).toBe(1);
-      expect(merged.indices.length).toBe(3);
-      expect(merged.triMaterialId.length).toBe(1);
-      expect(merged.bvhTriToMergedTri.length).toBe(1);
-      expect(merged.mergedIndices.length).toBe(3);
-      expect(merged.mergedTriMaterialId.length).toBe(1);
-      expect(merged.meshVertexRanges[0]?.triCount).toBe(1);
-      for (const index of merged.indices) {
-        expect(index).toBeLessThan(merged.vertexCount);
-      }
-      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('out-of-range vertex index'));
+      expect(() => mergeWorldSpaceFromCore(scene, { positionStride: 4 })).toThrow(
+        /indices\[4\].*reference a vertex/,
+      );
+      expect(warnSpy).not.toHaveBeenCalled();
     } finally {
       warnSpy.mockRestore();
     }
   });
 
-  it('keeps returned warnings authoritative when onWarning throws', () => {
+  it('does not invoke onWarning for invalid input that must throw', () => {
     const scene: Scene = {
       primitives: [{
         kind: 'mesh',
@@ -62,7 +59,7 @@ describe('mergeWorldSpaceFromCore malformed triangle filtering', () => {
           0, 2, 0,
           2, 2, 0,
         ]),
-        normals: new Float32Array(18),
+        normals: validNormals(6),
         indices: new Uint32Array([
           0, 1, 2,
           3, 999, 5,
@@ -76,16 +73,13 @@ describe('mergeWorldSpaceFromCore malformed triangle filtering', () => {
       throw new Error('host warning callback failed');
     });
 
-    const merged = mergeWorldSpaceFromCore(scene, { positionStride: 4, onWarning });
-
-    expect(onWarning).toHaveBeenCalled();
-    expect(merged.triangleCount).toBe(1);
-    expect(merged.warnings).toEqual(expect.arrayContaining([
-      expect.stringContaining('out-of-range vertex index'),
-    ]));
+    expect(() => mergeWorldSpaceFromCore(scene, { positionStride: 4, onWarning })).toThrow(
+      /indices\[4\].*reference a vertex/,
+    );
+    expect(onWarning).not.toHaveBeenCalled();
   });
 
-  it('filters non-finite triangles without poisoning the merged bounding box', () => {
+  it('rejects non-finite triangles instead of returning a repaired bounding box', () => {
     const scene: Scene = {
       primitives: [{
         kind: 'mesh',
@@ -98,7 +92,7 @@ describe('mergeWorldSpaceFromCore malformed triangle filtering', () => {
           Number.NaN, 2, 0,
           2, 2, 0,
         ]),
-        normals: new Float32Array(18),
+        normals: validNormals(6),
         indices: new Uint32Array([
           0, 1, 2,
           3, 4, 5,
@@ -111,15 +105,10 @@ describe('mergeWorldSpaceFromCore malformed triangle filtering', () => {
 
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     try {
-      const merged = mergeWorldSpaceFromCore(scene, { positionStride: 4 });
-
-      expect(merged.triangleCount).toBe(1);
-      expect(Array.from(merged.mergedIndices)).toEqual([0, 1, 2]);
-      expect(merged.meshVertexRanges[0]?.triCount).toBe(1);
-      for (const value of [...merged.boundingBox.min, ...merged.boundingBox.max]) {
-        expect(Number.isFinite(value)).toBe(true);
-      }
-      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('non-finite transformed vertex coordinate'));
+      expect(() => mergeWorldSpaceFromCore(scene, { positionStride: 4 })).toThrow(
+        /positions\[12\].*finite/,
+      );
+      expect(warnSpy).not.toHaveBeenCalled();
     } finally {
       warnSpy.mockRestore();
     }

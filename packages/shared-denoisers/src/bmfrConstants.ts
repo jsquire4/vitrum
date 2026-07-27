@@ -25,8 +25,12 @@ export const BMFR_DEFAULT_TEMPORAL_ALPHA = 0.2 as const;
  * Characteristic world-space scale used to normalise block-local positions
  * before the squared feature terms are formed. The fit subtracts the block's
  * mean position and divides by this scale so `p` lands roughly in [-1, 1] and
- * `p²` in [0, 1], keeping the normal matrix well-conditioned regardless of the
+ * `p²` in [0, 1], keeping the rectangular feature matrix and direct QR solve
+ * well-conditioned regardless of the
  * scene's absolute world units. Hosts with very large or very small scenes
  * override via `BmfrWebGPUOptions.positionScale`.
  */
 export const BMFR_DEFAULT_POSITION_SCALE = 4.0 as const;
+
+/** Half-block overlap; at most four fits contribute to any interior pixel. */
+export const BMFR_DEFAULT_BLOCK_STRIDE = 16 as const;

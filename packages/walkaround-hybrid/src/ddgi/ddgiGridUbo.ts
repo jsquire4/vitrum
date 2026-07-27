@@ -50,7 +50,7 @@ function packGridParams(p: DDGIGridParamsInput): ArrayBuffer {
 }
 
 /** Zero-grid UBO — dimsX=1 gates `isDDGIWired()` false in shade.wgsl. */
-export function buildDDGIPlaceholderUBO(): Float32Array {
+export function buildDDGIPlaceholderUBO(): Float32Array<ArrayBuffer> {
   return new Float32Array(
     packGridParams({
       origin: { x: 0, y: 0, z: 0 },

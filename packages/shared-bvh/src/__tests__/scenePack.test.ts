@@ -171,7 +171,7 @@ describe('packSceneFromCore (SP-*)', () => {
     expect(merged.warnings).toEqual([]);
   });
 
-  it('carries glTF source paths into unreadable displacement warnings', () => {
+  it('carries glTF source paths into unreadable displacement errors', () => {
     const source = displacedTriScene();
     const primitive = source.primitives[0]!;
     const displacementMap = { handle: { id: 'height' } };
@@ -194,17 +194,13 @@ describe('packSceneFromCore (SP-*)', () => {
       ],
     };
 
-    const packed = packSceneFromCore(scene, { tlas: true, resolveMaterialId: () => 0 });
-
-    expect(packed.warnings).toEqual([
-      expect.stringContaining(
-        'Primitive "displaced" displacementMap at materials[0].extensions.VITRUM_displacement.displacementTexture',
-      ),
-    ]);
-    expect(packed.warnings[0]).toContain('displacement skipped');
+    expect(() => packSceneFromCore(scene, { tlas: true, resolveMaterialId: () => 0 }))
+      .toThrow(
+        'Primitive "displaced" displacementMap at materials[0].extensions.VITRUM_displacement.displacementTexture handle is not CPU-readable',
+      );
   });
 
-  it('treats plain Uint16Array displacement handles as normalized height pixels', () => {
+  it('rejects ambiguous Uint16Array displacement handles without a dataType', () => {
     const source = displacedTriScene();
     const primitive = source.primitives[0]!;
     const scene: Scene = {
@@ -229,14 +225,8 @@ describe('packSceneFromCore (SP-*)', () => {
       ],
     };
 
-    const packed = packSceneFromCore(scene, { tlas: true, resolveMaterialId: () => 0 });
-
-    expect(Array.from(packed.positions.slice(0, 12))).toEqual([
-      0, 0, expect.closeTo(0.15), 0,
-      1, 0, expect.closeTo(0.15), 0,
-      0, 1, expect.closeTo(0.15), 0,
-    ]);
-    expect(packed.warnings).toEqual([]);
+    expect(() => packSceneFromCore(scene, { tlas: true, resolveMaterialId: () => 0 }))
+      .toThrow('Uint16Array displacement pixels require explicit dataType');
   });
 
   it('keeps explicit float16 displacement handles available for half-float height pixels', () => {
@@ -627,6 +617,78 @@ describe('packSceneFromCore (SP-*)', () => {
     expect(rebuilt.tlasInstanceLocalToWorld[12]).toBeCloseTo(2, 5);
     expect(rebuilt.tlasInstanceWorldToLocal[12]).toBeCloseTo(-2, 5);
     expect(rebuilt.tlasNodes[0]).not.toBe(packed.tlasNodes[0]);
+  });
+
+  it('partially refits one instance without touching another instance or primitive', () => {
+    const scene: Scene = {
+      primitives: [
+        instancedMesh('inst', [translate(0), translate(2), translate(4)]),
+        unitTriMesh('other', translate(20)),
+      ],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+    const packed = packSceneFromCore(scene, {
+      tlas: true,
+      resolveMaterialId: () => 0,
+    });
+    const nodesBefore = new Uint32Array(packed.tlasNodes);
+    const worldToLocalBefore = new Float32Array(
+      packed.tlasInstanceWorldToLocal,
+    );
+    const localToWorldBefore = new Float32Array(
+      packed.tlasInstanceLocalToWorld,
+    );
+    const moved: Scene = {
+      ...scene,
+      primitives: [
+        instancedMesh('inst', [translate(0), translate(3), translate(4)]),
+        scene.primitives[1]!,
+      ],
+    };
+
+    const rebuilt = refitTlasTransforms(
+      moved,
+      packed.primitiveTlasBindings,
+      {
+        tlasNodes: packed.tlasNodes,
+        tlasInstanceIndices: packed.tlasInstanceIndices,
+        tlasBlasRoots: packed.tlasBlasRoots,
+        tlasInstanceWorldToLocal: packed.tlasInstanceWorldToLocal,
+        tlasInstanceLocalToWorld: packed.tlasInstanceLocalToWorld,
+      },
+      { primitiveId: 'inst' },
+    );
+
+    expect(rebuilt.ok).toBe(true);
+    if (!rebuilt.ok) return;
+    expect(Array.from(rebuilt.dirtyTlasTransformInstanceIndices ?? [])).toEqual([
+      1,
+    ]);
+    const dirtyNodes = new Set(rebuilt.dirtyTlasNodeIndices ?? []);
+    expect(dirtyNodes.size).toBeGreaterThan(0);
+    expect(dirtyNodes.size).toBeLessThan(packed.tlasNodeCount);
+    for (let node = 0; node < packed.tlasNodeCount; node += 1) {
+      if (dirtyNodes.has(node)) continue;
+      expect(
+        Array.from(rebuilt.tlasNodes.subarray(node * 8, node * 8 + 8)),
+      ).toEqual(Array.from(nodesBefore.subarray(node * 8, node * 8 + 8)));
+    }
+    for (const instance of [0, 2, 3]) {
+      const start = instance * 16;
+      expect(
+        Array.from(
+          rebuilt.tlasInstanceWorldToLocal.subarray(start, start + 16),
+        ),
+      ).toEqual(Array.from(worldToLocalBefore.subarray(start, start + 16)));
+      expect(
+        Array.from(
+          rebuilt.tlasInstanceLocalToWorld.subarray(start, start + 16),
+        ),
+      ).toEqual(Array.from(localToWorldBefore.subarray(start, start + 16)));
+    }
+    expect(rebuilt.tlasInstanceWorldToLocal[28]).toBeCloseTo(-3);
+    expect(rebuilt.tlasInstanceLocalToWorld[28]).toBeCloseTo(3);
   });
 
   it('H34-e: transform-only refit rejects a newly non-invertible transform', () => {

@@ -67,6 +67,7 @@ import {
   CIE_Z_TABLE,
   CIE_D65_TABLE,
 } from './cieCmf.js';
+import { requireFinite } from './numericGuards.js';
 
 const LAMBDA_MIN = CIE_LAMBDA_MIN;
 const LAMBDA_MAX = CIE_LAMBDA_MAX;
@@ -453,6 +454,9 @@ function rgbToJakobHanikaCoefficients(
   g: number,
   b: number,
 ): readonly [number, number, number] {
+  requireFinite(r, 'rgbToSpectralCoefficients.r');
+  requireFinite(g, 'rgbToSpectralCoefficients.g');
+  requireFinite(b, 'rgbToSpectralCoefficients.b');
   // Clamp to the representable sRGB cube. Components outside [0,1] (e.g. HDR
   // emission or out-of-gamut) are clamped; the sigmoid model represents
   // reflectances in [0,1] only.
@@ -497,8 +501,16 @@ export function evaluateSpectrum(
   coeffs: readonly [number, number, number],
   lambdaNm: number,
 ): number {
+  requireFinite(coeffs[0], 'evaluateSpectrum.coeffs[0]');
+  requireFinite(coeffs[1], 'evaluateSpectrum.coeffs[1]');
+  requireFinite(coeffs[2], 'evaluateSpectrum.coeffs[2]');
+  requireFinite(lambdaNm, 'evaluateSpectrum.lambdaNm');
   const [c0, c1, c2] = coeffs;
-  return sigmoid(c0 + c1 * lambdaNm + c2 * lambdaNm * lambdaNm);
+  const polynomial = c0 + lambdaNm * (c1 + lambdaNm * c2);
+  if (!Number.isFinite(polynomial)) {
+    throw new RangeError('evaluateSpectrum polynomial overflowed');
+  }
+  return sigmoid(polynomial);
 }
 
 /**
@@ -517,6 +529,9 @@ export function spectralCoefficientsToRGB(
 ): readonly [number, number, number] {
   // Re-evaluate in raw-nm space (the public coefficient convention) so this is
   // a true inverse of whatever `rgbToSpectralCoefficients` returned.
+  requireFinite(coeffs[0], 'spectralCoefficientsToRGB.coeffs[0]');
+  requireFinite(coeffs[1], 'spectralCoefficientsToRGB.coeffs[1]');
+  requireFinite(coeffs[2], 'spectralCoefficientsToRGB.coeffs[2]');
   const [c0, c1, c2] = coeffs;
   let X = 0;
   let Y = 0;
@@ -529,11 +544,15 @@ export function spectralCoefficientsToRGB(
     Y += s * wy[i]!;
     Z += s * wz[i]!;
   }
-  return [
+  const rgb = [
     3.2404542 * X - 1.5371385 * Y - 0.4985314 * Z,
     -0.9692660 * X + 1.8760108 * Y + 0.0415560 * Z,
     0.0556434 * X - 0.2040259 * Y + 1.0572252 * Z,
   ] as const;
+  requireFinite(rgb[0], 'spectralCoefficientsToRGB.result[0]');
+  requireFinite(rgb[1], 'spectralCoefficientsToRGB.result[1]');
+  requireFinite(rgb[2], 'spectralCoefficientsToRGB.result[2]');
+  return rgb;
 }
 
 // ── Exported constants ────────────────────────────────────────────────────────

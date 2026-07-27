@@ -9,10 +9,7 @@
 import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { composeTraceGlsl } from '../glsl/composeTraceGlsl.js';
-import {
-  DEFAULT_TRACE_FEATURES,
-  type TraceFeatures,
-} from '../featureTypes.js';
+import { DEFAULT_TRACE_FEATURES, type TraceFeatures } from '../featureTypes.js';
 
 function sha(s: string): string {
   return createHash('sha256').update(s, 'utf8').digest('hex');
@@ -27,15 +24,41 @@ const FEATURE_SETS: Record<string, TraceFeatures> = {
   dof: { ...DEFAULT_TRACE_FEATURES, dof: true },
 };
 
-// Byte-identity goldens captured 2026-07-20 on the pre-T3-D-split source.
+// Byte-identity goldens updated 2026-07-24 after bounded general BDPT gained an
+// eight-entry medium stack, exact majorant-ratio Beer transport, HG phase PDFs,
+// zero-preserving light-power selection, and both BSDF tiers gained exact-zero
+// discrete roughness plus cutoff-free authored-positive GGX/HG support. The
+// current capture additionally pins stable volume-particle HG inversion,
+// zero-vector TIR rejection, strict LIFO participating-medium exits, complete
+// medium SurfaceRecord initialization, and finite-light NEE measure ownership.
+// The 2026-07-27 closure removes unreachable global-medium Jakob and flat-
+// shading fork lanes, and pins the corrected punctual-spot back-axis convention.
 // length + sha256(utf8) of composeTraceGlsl(features) for each set.
 const GOLDENS: Record<string, { length: number; sha256: string }> = {
-  default: { length: 204466, sha256: '575bb96d6a9e1161194ed1f652d1e289d07170f9bf1fcd32b9bd728672bc77aa' },
-  bdptOn: { length: 233704, sha256: '170f99e69244bad1eb33c51bfb858833659865e989fb5ad270cbde8d49b89c88' },
-  bdptOff: { length: 204466, sha256: '575bb96d6a9e1161194ed1f652d1e289d07170f9bf1fcd32b9bd728672bc77aa' },
-  sobol: { length: 204466, sha256: '575bb96d6a9e1161194ed1f652d1e289d07170f9bf1fcd32b9bd728672bc77aa' },
-  orthographic: { length: 204466, sha256: '575bb96d6a9e1161194ed1f652d1e289d07170f9bf1fcd32b9bd728672bc77aa' },
-  dof: { length: 204466, sha256: '575bb96d6a9e1161194ed1f652d1e289d07170f9bf1fcd32b9bd728672bc77aa' },
+  default: {
+    length: 136186,
+    sha256: '2deb00681816ad03a64ace84bb3d5a6c42acb215e4b5f2da1be1401f10eb0705',
+  },
+  bdptOn: {
+    length: 183951,
+    sha256: '355a29e0574346bdd36d8c2b2942f1deb15d88ae6511ffd50f66bbbdbc00a356',
+  },
+  bdptOff: {
+    length: 136186,
+    sha256: '2deb00681816ad03a64ace84bb3d5a6c42acb215e4b5f2da1be1401f10eb0705',
+  },
+  sobol: {
+    length: 142058,
+    sha256: '44fae3ecf84e56a56d7e69df1d8640c7b4e32554876d76f8ce697ff7ff8ebbe5',
+  },
+  orthographic: {
+    length: 136186,
+    sha256: '2deb00681816ad03a64ace84bb3d5a6c42acb215e4b5f2da1be1401f10eb0705',
+  },
+  dof: {
+    length: 136186,
+    sha256: '2deb00681816ad03a64ace84bb3d5a6c42acb215e4b5f2da1be1401f10eb0705',
+  },
 };
 
 describe('composeTraceGlsl byte-identity golden (T3-D)', () => {
@@ -47,7 +70,9 @@ describe('composeTraceGlsl byte-identity golden (T3-D)', () => {
       // maintainer can paste them in. This keeps the test honest — an empty
       // golden fails until pinned.
       if (golden.sha256 === '') {
-        console.warn(`GOLDEN[${name}] = { length: ${composed.length}, sha256: '${sha(composed)}' }`);
+        console.warn(
+          `GOLDEN[${name}] = { length: ${composed.length}, sha256: '${sha(composed)}' }`,
+        );
       }
       expect(composed.length).toBe(golden.length);
       expect(sha(composed)).toBe(golden.sha256);

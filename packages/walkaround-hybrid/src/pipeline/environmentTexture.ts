@@ -28,6 +28,14 @@ export interface EnvironmentTextures {
   conditional: GPUTexture;
   sampler: GPUSampler;
   paramsBuffer: GPUBuffer;
+  /** World-to-unrotated-map Y rotation carried by EnvParams. */
+  rotationY: number;
+  /** Radiance multiplier carried by EnvParams; map texels stay unit-intensity. */
+  intensity: number;
+  /** True only when `map` contains a live directional environment payload.
+   *  The no-HDRI placeholder is still bindable, but must not suppress the
+   *  scalar-sky fallback in RC and the main/ReSTIR shading path. */
+  hasDirectionalEnvironment: boolean;
 }
 
 function createTex(
@@ -68,31 +76,82 @@ function writeParams(
 
 /** Create the placeholder (no-HDRI) env resource set. */
 export function createPlaceholderEnvironment(device: GPUDevice): EnvironmentTextures {
-  const map = createTex(device, 'vitrum.env.map.placeholder', 1, 1, 'rgba16float');
-  const marginal = createTex(device, 'vitrum.env.marginal.placeholder', 1, 1, 'r32float');
-  const conditional = createTex(device, 'vitrum.env.conditional.placeholder', 1, 1, 'r32float');
-  const sampler = device.createSampler({ label: 'vitrum.env.sampler' });
-  const paramsBuffer = device.createBuffer({
-    label: 'vitrum.env.params',
-    size: ENV_PARAMS_BYTES,
-    usage: UNIFORM | BUF_COPY_DST,
-  });
-  writeParams(device, paramsBuffer, false, 0, 0, 0, 0);
-  return { map, marginal, conditional, sampler, paramsBuffer };
+  const textures: GPUTexture[] = [];
+  let paramsBuffer: GPUBuffer | null = null;
+  try {
+    const map = createTex(device, 'vitrum.env.map.placeholder', 1, 1, 'rgba16float');
+    textures.push(map);
+    const marginal = createTex(device, 'vitrum.env.marginal.placeholder', 1, 1, 'r32float');
+    textures.push(marginal);
+    const conditional = createTex(device, 'vitrum.env.conditional.placeholder', 1, 1, 'r32float');
+    textures.push(conditional);
+    const sampler = device.createSampler({ label: 'vitrum.env.sampler' });
+    paramsBuffer = device.createBuffer({
+      label: 'vitrum.env.params',
+      size: ENV_PARAMS_BYTES,
+      usage: UNIFORM | BUF_COPY_DST,
+    });
+    writeParams(device, paramsBuffer, false, 0, 0, 0, 0);
+    return {
+      map,
+      marginal,
+      conditional,
+      sampler,
+      paramsBuffer,
+      rotationY: 0,
+      intensity: 0,
+      hasDirectionalEnvironment: false,
+    };
+  } catch (error) {
+    for (const texture of textures) texture.destroy();
+    paramsBuffer?.destroy();
+    throw error;
+  }
 }
 
-/** Write directional env data into an existing resource set.
+type EnvironmentTextureSet = Pick<EnvironmentTextures, 'map' | 'marginal' | 'conditional'>;
+
+function destroyTextureSet(set: EnvironmentTextureSet): void {
+  set.map.destroy();
+  set.marginal.destroy();
+  set.conditional.destroy();
+}
+
+function createEnvironmentTextureSet(
+  device: GPUDevice,
+  width: number,
+  height: number,
+  placeholder: boolean,
+): EnvironmentTextureSet {
+  const suffix = placeholder ? '.placeholder' : '';
+  const textures: GPUTexture[] = [];
+  try {
+    const map = createTex(device, `vitrum.env.map${suffix}`, width, height, 'rgba16float');
+    textures.push(map);
+    const marginal = createTex(device, `vitrum.env.marginal${suffix}`, height, 1, 'r32float');
+    textures.push(marginal);
+    const conditional = createTex(
+      device,
+      `vitrum.env.conditional${suffix}`,
+      width,
+      height,
+      'r32float',
+    );
+    textures.push(conditional);
+    return { map, marginal, conditional };
+  } catch (error) {
+    for (const texture of textures) texture.destroy();
+    throw error;
+  }
+}
+
+/** Transactionally replace directional environment texture content.
  *
- *  When the new dimensions match the existing textures (a rotation / intensity
- *  update, or a repeated upload of the same-resolution env), the three GPU
- *  textures are reused in-place via `writeTexture` — no destroy + recreate.
- *  Reuse preserves the GPUTexture object identities, which means the scene
- *  bind-group cache key (which includes the env texture views) is unchanged
- *  and the bind group is reused without invalidation.
- *
- *  When dimensions change (first upload from a 1×1 placeholder, or a
- *  different-resolution env), the old textures are destroyed and new ones
- *  allocated at the correct size. */
+ * All three candidate textures are allocated and every queue write is validated
+ * before the live texture set is retired. This intentionally replaces even a
+ * same-sized environment: preserving an old texture identity is not worth
+ * exposing a partially updated map/CDF set when a later upload fails.
+ */
 export function uploadEnvironment(
   device: GPUDevice,
   prev: EnvironmentTextures,
@@ -101,63 +160,71 @@ export function uploadEnvironment(
   intensity: number,
 ): EnvironmentTextures {
   const { width, height } = data;
-
-  // Probe the existing texture dimensions. GPUTexture exposes .width / .height
-  // as read-only properties (WebGPU spec §GPUTexture).  We compare against the
-  // required map dimensions; if they match we write in-place.
-  const prevW = (prev.map as unknown as { width: number }).width ?? 0;
-  const prevH = (prev.map as unknown as { height: number }).height ?? 0;
-  const dimsMatch = prevW === width && prevH === height;
-
-  let map        = prev.map;
-  let marginal   = prev.marginal;
-  let conditional = prev.conditional;
-
-  if (!dimsMatch) {
-    // Dimensions changed — destroy the old textures and allocate new ones at
-    // the required size.  Sampler + params buffer are always reused.
-    prev.map.destroy();
-    prev.marginal.destroy();
-    prev.conditional.destroy();
-    map        = createTex(device, 'vitrum.env.map',         width,  height, 'rgba16float');
-    marginal   = createTex(device, 'vitrum.env.marginal',    height, 1,      'r32float');
-    conditional = createTex(device, 'vitrum.env.conditional', width,  height, 'r32float');
+  if (!Number.isSafeInteger(width) || width <= 0 || !Number.isSafeInteger(height) || height <= 0) {
+    throw new RangeError(
+      `environment dimensions must be positive safe integers; got ${width}x${height}`,
+    );
   }
-
-  // env_map: rgba16float ← Float32 RGBA. WebGPU writeTexture accepts a Float32
-  // source for rgba16float? No — the bytes must already be half-float. We convert
-  // the radiance + pdf to Float16 on the CPU.
+  if (!Number.isFinite(rotationY) || !Number.isFinite(intensity) || intensity < 0) {
+    throw new RangeError('environment rotation must be finite and intensity finite/non-negative');
+  }
+  const pixels = width * height;
+  if (
+    data.map.length !== pixels * 4 ||
+    data.marginal.length !== height * 4 ||
+    data.conditional.length !== pixels * 4
+  ) {
+    throw new RangeError('environment map/CDF payload lengths do not match its dimensions');
+  }
+  const next = createEnvironmentTextureSet(device, width, height, false);
   const mapHalf = float32ArrayToFloat16(data.map);
-  device.queue.writeTexture(
-    { texture: map },
-    mapHalf.buffer,
-    { bytesPerRow: width * 4 * 2, rowsPerImage: height },
-    { width, height, depthOrArrayLayers: 1 },
-  );
-
-  // env_marginal: r32float, H×1 (width=height, height=1).
-  // The WGSL consumer reads: textureLoad(env_marginal, vec2i(row, 0), 0)
-  // where row ∈ [0, H), confirming the marginal is H wide and 1 tall.
-  // The marginal Float32Array is height×4 (RGBA); extract .r into a height-long row.
   const marginalR = extractR(data.marginal, height);
-  device.queue.writeTexture(
-    { texture: marginal },
-    marginalR.buffer,
-    { bytesPerRow: height * 4, rowsPerImage: 1 },
-    { width: height, height: 1, depthOrArrayLayers: 1 },
-  );
+  const conditionalR = extractR(data.conditional, pixels);
 
-  // env_conditional: r32float, W×H. Extract .r from the RGBA Float32Array.
-  const conditionalR = extractR(data.conditional, width * height);
-  device.queue.writeTexture(
-    { texture: conditional },
-    conditionalR.buffer,
-    { bytesPerRow: width * 4, rowsPerImage: height },
-    { width, height, depthOrArrayLayers: 1 },
-  );
+  try {
+    // env_map: rgba16float ← Float32 RGBA. WebGPU writeTexture accepts a Float32
+    // source for rgba16float? No — the bytes must already be half-float. We convert
+    // the radiance + pdf to Float16 on the CPU.
+    device.queue.writeTexture(
+      { texture: next.map },
+      mapHalf.buffer,
+      { bytesPerRow: width * 4 * 2, rowsPerImage: height },
+      { width, height, depthOrArrayLayers: 1 },
+    );
 
-  writeParams(device, prev.paramsBuffer, true, width, height, rotationY, intensity);
-  return { map, marginal, conditional, sampler: prev.sampler, paramsBuffer: prev.paramsBuffer };
+    // env_marginal: r32float, H×1 (width=height, height=1).
+    // The WGSL consumer reads: textureLoad(env_marginal, vec2i(row, 0), 0)
+    // where row ∈ [0, H), confirming the marginal is H wide and 1 tall.
+    // The marginal Float32Array is height×4 (RGBA); extract .r into a height-long row.
+    device.queue.writeTexture(
+      { texture: next.marginal },
+      marginalR.buffer,
+      { bytesPerRow: height * 4, rowsPerImage: 1 },
+      { width: height, height: 1, depthOrArrayLayers: 1 },
+    );
+
+    // env_conditional: r32float, W×H. Extract .r from the RGBA Float32Array.
+    device.queue.writeTexture(
+      { texture: next.conditional },
+      conditionalR.buffer,
+      { bytesPerRow: width * 4, rowsPerImage: height },
+      { width, height, depthOrArrayLayers: 1 },
+    );
+
+    writeParams(device, prev.paramsBuffer, true, width, height, rotationY, intensity);
+  } catch (error) {
+    destroyTextureSet(next);
+    throw error;
+  }
+  destroyTextureSet(prev);
+  return {
+    ...next,
+    sampler: prev.sampler,
+    paramsBuffer: prev.paramsBuffer,
+    rotationY,
+    intensity,
+    hasDirectionalEnvironment: true,
+  };
 }
 
 /** Reset a resource set back to the no-HDRI placeholder (hasEnv=0). */
@@ -165,14 +232,22 @@ export function clearEnvironment(
   device: GPUDevice,
   prev: EnvironmentTextures,
 ): EnvironmentTextures {
-  prev.map.destroy();
-  prev.marginal.destroy();
-  prev.conditional.destroy();
-  const map = createTex(device, 'vitrum.env.map.placeholder', 1, 1, 'rgba16float');
-  const marginal = createTex(device, 'vitrum.env.marginal.placeholder', 1, 1, 'r32float');
-  const conditional = createTex(device, 'vitrum.env.conditional.placeholder', 1, 1, 'r32float');
-  writeParams(device, prev.paramsBuffer, false, 0, 0, 0, 0);
-  return { map, marginal, conditional, sampler: prev.sampler, paramsBuffer: prev.paramsBuffer };
+  const next = createEnvironmentTextureSet(device, 1, 1, true);
+  try {
+    writeParams(device, prev.paramsBuffer, false, 0, 0, 0, 0);
+  } catch (error) {
+    destroyTextureSet(next);
+    throw error;
+  }
+  destroyTextureSet(prev);
+  return {
+    ...next,
+    sampler: prev.sampler,
+    paramsBuffer: prev.paramsBuffer,
+    rotationY: 0,
+    intensity: 0,
+    hasDirectionalEnvironment: false,
+  };
 }
 
 export function disposeEnvironment(env: EnvironmentTextures): void {
@@ -184,7 +259,7 @@ export function disposeEnvironment(env: EnvironmentTextures): void {
 
 /** Extract the .r channel from an interleaved RGBA Float32Array into a packed
  *  Float32Array of `count` elements. */
-function extractR(rgba: Float32Array, count: number): Float32Array {
+function extractR(rgba: Float32Array, count: number): Float32Array<ArrayBuffer> {
   const out = new Float32Array(count);
   for (let i = 0; i < count; i += 1) {
     out[i] = rgba[i * 4] ?? 0;
@@ -193,7 +268,7 @@ function extractR(rgba: Float32Array, count: number): Float32Array {
 }
 
 /** Convert a Float32Array to IEEE-754 half-precision (Uint16Array). */
-function float32ArrayToFloat16(src: Float32Array): Uint16Array {
+export function float32ArrayToFloat16(src: Float32Array): Uint16Array<ArrayBuffer> {
   const out = new Uint16Array(src.length);
   for (let i = 0; i < src.length; i += 1) {
     out[i] = floatToHalf(src[i] ?? 0);
@@ -209,22 +284,36 @@ function floatToHalf(value: number): number {
   f32View[0] = value;
   const x = u32View[0]!;
   const sign = (x >>> 16) & 0x8000;
-  let mantissa = x & 0x007fffff;
-  let exp = (x >>> 23) & 0xff;
-  if (exp === 0xff) {
-    // Inf / NaN.
-    return sign | 0x7c00 | (mantissa ? 0x0200 : 0);
+  const exp32 = (x >>> 23) & 0xff;
+  const mant32 = x & 0x007fffff;
+  if (exp32 === 0xff) {
+    return sign | (mant32 === 0 ? 0x7c00 : 0x7e00);
   }
-  exp = exp - 127 + 15;
-  if (exp >= 0x1f) {
-    return sign | 0x7c00; // overflow → inf
-  }
-  if (exp <= 0) {
-    if (exp < -10) {
-      return sign; // underflow → 0
+
+  let exp16 = exp32 - 127 + 15;
+  if (exp16 >= 0x1f) return sign | 0x7c00;
+  if (exp16 <= 0) {
+    if (exp16 < -10) return sign;
+    const mantissa = mant32 | 0x00800000;
+    const shift = 14 - exp16;
+    let rounded = mantissa >>> shift;
+    const remainder = mantissa & ((1 << shift) - 1);
+    const halfway = 1 << (shift - 1);
+    if (remainder > halfway || (remainder === halfway && (rounded & 1) !== 0)) {
+      rounded++;
     }
-    mantissa = (mantissa | 0x00800000) >>> (1 - exp);
-    return sign | (mantissa >>> 13);
+    return sign | rounded;
   }
-  return sign | (exp << 10) | (mantissa >>> 13);
+
+  let mant16 = mant32 >>> 13;
+  const remainder = mant32 & 0x1fff;
+  if (remainder > 0x1000 || (remainder === 0x1000 && (mant16 & 1) !== 0)) {
+    mant16++;
+    if (mant16 === 0x400) {
+      mant16 = 0;
+      exp16++;
+      if (exp16 >= 0x1f) return sign | 0x7c00;
+    }
+  }
+  return sign | (exp16 << 10) | mant16;
 }

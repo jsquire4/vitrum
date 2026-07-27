@@ -203,7 +203,7 @@ describe('B4 mesh-area NEE/forward MIS consistency', () => {
       fakeMerged(),
     );
 
-    expect(out.triLightCount).toBe(8);
+    expect(out.triLightCount).toBe(2);
     expect(out.totalEmissiveArea).toBeCloseTo(1, 6);
     expect(out.totalEmissivePower).toBeGreaterThan(0);
     expect(out.data![4]).toBeCloseTo(6, 6);

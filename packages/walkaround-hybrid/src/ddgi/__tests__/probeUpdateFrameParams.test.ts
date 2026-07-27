@@ -13,11 +13,9 @@ describe('probeUpdateFrameParams', () => {
   });
 
   it('blend params pack hysteresis constant', () => {
-    const buf = packProbeUpdateBlendParams(8);
+    const buf = packProbeUpdateBlendParams();
     const f32 = new Float32Array(buf);
-    const u32 = new Uint32Array(buf);
-    expect(u32[0]).toBe(2);
-    expect(f32[1]).toBeCloseTo(DDGI_PROBE_BLEND_HYSTERESIS, 6);
+    expect(f32[0]).toBeCloseTo(DDGI_PROBE_BLEND_HYSTERESIS, 6);
   });
 
   // H16 — `DDGI.invalidateProbeCache()` → `ProbeUpdatePass.requestFullBlend()`
@@ -29,13 +27,11 @@ describe('probeUpdateFrameParams', () => {
   // UBO surface of that fix so the override can't silently regress to the
   // steady-state constant.
   it('H16: full-replace override packs hysteresis=0 (vs steady-state 0.97)', () => {
-    const steady = new Float32Array(packProbeUpdateBlendParams(8));
-    const fullReplace = new Float32Array(packProbeUpdateBlendParams(8, undefined, 0.0));
-    expect(steady[1]).toBeCloseTo(0.97, 6);          // default = steady-state EMA
-    expect(fullReplace[1]).toBe(0);                  // invalidate path = clear
+    const steady = new Float32Array(packProbeUpdateBlendParams());
+    const fullReplace = new Float32Array(packProbeUpdateBlendParams(0.0));
+    expect(steady[0]).toBeCloseTo(0.97, 6);          // default = steady-state EMA
+    expect(fullReplace[0]).toBe(0);                  // invalidate path = clear
     // an arbitrary override is honoured verbatim (not clamped to the constant).
-    expect(new Float32Array(packProbeUpdateBlendParams(8, undefined, 0.5))[1]).toBeCloseTo(0.5, 6);
-    // probesPerFrame still derives from the divisor (override touches only hysteresis).
-    expect(new Uint32Array(packProbeUpdateBlendParams(8, undefined, 0.0))[0]).toBe(2);
+    expect(new Float32Array(packProbeUpdateBlendParams(0.5))[0]).toBeCloseTo(0.5, 6);
   });
 });

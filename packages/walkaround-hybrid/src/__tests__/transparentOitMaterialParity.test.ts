@@ -1,93 +1,85 @@
 import { describe, expect, it } from 'vitest';
 
+import { MATERIAL_ATLAS_WGSL } from '../shaders/materialAtlas.wgsl.js';
+import { SHADE_WGSL } from '../shaders/shade.wgsl.js';
 import { TRANSPARENT_OIT_MODULE, TRANSPARENT_OIT_WGSL } from '../shaders/transparentOit.wgsl.js';
 
-describe('transparent OIT material parity', () => {
-  it('shades camera-visible blend layers with extension-aware material BRDFs for sky, sun, point/spot, and finite emitters', () => {
-    expect(TRANSPARENT_OIT_WGSL).toContain('fn oitLayerRadiance(hit: IntersectionResult, hitPos: vec3f, rayDir: vec3f, materialWord: u32) -> vec3f');
-    expect(TRANSPARENT_OIT_WGSL).toContain('let payload = sampleRestirDIMaterialPayloadForHit(hit, normals.smoothNormal, normal, scalarBase, materialWord);');
-    expect(TRANSPARENT_OIT_WGSL).toContain('fn oitLayerSkyRadiance(payload: RestirDIMaterialPayload, normal: vec3f, wo: vec3f) -> vec3f');
-    expect(TRANSPARENT_OIT_WGSL).toContain('fn oitLayerEnvSampleRadiance(');
-    expect(TRANSPARENT_OIT_WGSL).toContain('light for both HDRI-backed scenes and no-HDRI scalar/procedural sky fallback.');
-    expect(TRANSPARENT_OIT_WGSL).toContain('let d1 = oitEnvSampleDir(normal,  0.70,  0.00);');
-    expect(TRANSPARENT_OIT_WGSL).toContain('return avg * (2.0 * PI / 5.0);');
-    expect(TRANSPARENT_OIT_WGSL).toContain('let skyAmbient = oitLayerSkyRadiance(payload, normal, wo);');
-    expect(TRANSPARENT_OIT_WGSL).toContain('let sunBrdf = evalGGXWithSpecularClearcoatSheenWithAnisotropyFrame(');
-    expect(TRANSPARENT_OIT_WGSL).toContain('payload.specular.rgb,');
-    expect(TRANSPARENT_OIT_WGSL).toContain('payload.anisotropy.x,');
-    expect(TRANSPARENT_OIT_WGSL).toContain('payload.anisotropyTangent,');
-    expect(TRANSPARENT_OIT_WGSL).toContain('payload.anisotropyBitangent,');
-    expect(TRANSPARENT_OIT_WGSL).toContain('payload.iridescence,');
-    expect(TRANSPARENT_OIT_WGSL).toContain('payload.clearcoatNormal,');
-    expect(TRANSPARENT_OIT_WGSL).toContain('payload.sheen.rgb,');
-    expect(TRANSPARENT_OIT_WGSL).toContain('let sunAngularRadius = max(ubo.sunAngular.x, 0.0);');
-    expect(TRANSPARENT_OIT_WGSL).toContain('let toSun = safe_normalize(sunBase + sunTan * (sunR * cos(sunPhi)) + sunBit * (sunR * sin(sunPhi)));');
-    expect(TRANSPARENT_OIT_WGSL).toContain('fn oitShadowTransmittance(origin: vec3f, dir: vec3f, tMax: f32, triEps: f32) -> vec3f');
-    expect(TRANSPARENT_OIT_WGSL).toContain('return traceSceneAlphaTintTransmittanceTextured(');
-    expect(TRANSPARENT_OIT_WGSL).toContain('bvh_material,');
-    expect(TRANSPARENT_OIT_WGSL).toContain('BVH_MATERIAL_TEX_WIDTH,');
-    expect(TRANSPARENT_OIT_WGSL).toContain('bvh_beer,');
-    expect(TRANSPARENT_OIT_WGSL).not.toContain('fn oitCastsShadow(');
-    expect(TRANSPARENT_OIT_WGSL).not.toContain('fn oitHitIsScalarGlass(');
-    expect(TRANSPARENT_OIT_WGSL).toContain('hitPos + hit.normal * 1e-3,');
-    expect(TRANSPARENT_OIT_WGSL).not.toContain('fn oitAlphaShadowTransmittance(');
-    expect(TRANSPARENT_OIT_WGSL).toContain('var sunVisibility = vec3f(1.0);');
-    expect(TRANSPARENT_OIT_WGSL).toContain('sunVisibility = oitShadowTransmittance(');
-    expect(TRANSPARENT_OIT_WGSL).toContain('let sunDirect = vec3f(ubo.sunIntensity) * sunBrdf * sunVisibility;');
-    expect(TRANSPARENT_OIT_WGSL).toContain('@group(1) @binding(13) var analytic_lights: texture_2d<f32>;');
-    expect(TRANSPARENT_OIT_WGSL).toContain('fn oitLayerAnalyticNEE(');
-    expect(TRANSPARENT_OIT_WGSL).toContain('let analyticHeader = textureLoad(analytic_lights, vec2i(0, 0), 0);');
-    expect(TRANSPARENT_OIT_WGSL).toContain('let count = u32(max(analyticHeader.x, 0.0));');
-    expect(TRANSPARENT_OIT_WGSL).toContain('let castShadowDisabled = light3.y > 0.5;');
-    expect(TRANSPARENT_OIT_WGSL).toContain('if (!castShadowDisabled) {');
-    expect(TRANSPARENT_OIT_WGSL).toContain('hitPos + geoNormal * 1e-3,');
-    expect(TRANSPARENT_OIT_WGSL).toContain('shadowT = oitShadowTransmittance(');
-    expect(TRANSPARENT_OIT_WGSL).toContain('let attenuation = oitPointSpotAttenuation(dist, cutoffDistance, decay, ubo.emitterDist2Floor);');
-    expect(TRANSPARENT_OIT_WGSL).toContain('Lo += lightLe * shadowT * brdf * cone * attenuation;');
-    expect(TRANSPARENT_OIT_WGSL).toContain('let analyticDirect = oitLayerAnalyticNEE(hitPos, normal, payload.clearcoatNormal, hit.normal, payload, wo);');
-    expect(TRANSPARENT_OIT_WGSL).toContain('@group(1) @binding(3) var<storage, read> emitters:     array<EmitterTri>;');
-    expect(TRANSPARENT_OIT_WGSL).toContain('fn oitLayerAreaEmitterNEE(');
-    expect(TRANSPARENT_OIT_WGSL).toContain('const OIT_AREA_EMITTER_SAMPLE_COUNT = 4u;');
-    expect(TRANSPARENT_OIT_WGSL).toContain('fn oitAreaEmitterXi(sampleIndex: u32) -> vec2f');
-    expect(TRANSPARENT_OIT_WGSL).toContain('for (var si = 0u; si < OIT_AREA_EMITTER_SAMPLE_COUNT; si = si + 1u)');
-    expect(TRANSPARENT_OIT_WGSL).toContain('let count = min(ubo.emitterCount, arrayLength(&emitters));');
-    expect(TRANSPARENT_OIT_WGSL).toContain('let ls = sampleEmitterPoint(e, xi);');
-    expect(TRANSPARENT_OIT_WGSL).toContain('let nlDotL = max(0.0, dot(-ls.normal, wi));');
-    expect(TRANSPARENT_OIT_WGSL).toContain('shadowT = oitShadowTransmittance(');
-    expect(TRANSPARENT_OIT_WGSL).toContain('let G = emitterGeometry(nlDotL, dist2, ubo.emitterDist2Floor);');
-    expect(TRANSPARENT_OIT_WGSL).toContain('let Le = sampleEmitterLeAtXi(e, xi);');
-    expect(TRANSPARENT_OIT_WGSL).toContain('Lo += Le * shadowT * brdf * G * ls.area * sampleWeight;');
-    expect(TRANSPARENT_OIT_WGSL).toContain('let areaDirect = oitLayerAreaEmitterNEE(hitPos, normal, payload.clearcoatNormal, hit.normal, payload, wo);');
-    expect(TRANSPARENT_OIT_WGSL).toContain('return applyVolumeScatteringApproximation(');
-    expect(TRANSPARENT_OIT_WGSL).toContain('((skyAmbient + sunDirect + analyticDirect + areaDirect) * viewFacing + emissive + baked) * payload.layerTransmission');
-    expect(TRANSPARENT_OIT_WGSL).toContain('payload.volumeScattering,');
-    expect(TRANSPARENT_OIT_WGSL).toContain('let hitPos = walkRay.origin + walkRay.direction * hit.dist;');
-    expect(TRANSPARENT_OIT_WGSL).toContain('oitLayerRadiance(hit, hitPos, primaryRay.direction, word);');
-    expect(TRANSPARENT_OIT_WGSL).not.toContain('sunDiffuse');
-    expect(TRANSPARENT_OIT_WGSL).not.toContain('vec3f(ubo.sunIntensity) * albedo * INV_PI');
-    expect(TRANSPARENT_OIT_WGSL).not.toContain('let skyAmbient = envRadiance(normal) * payload.albedo * INV_PI;');
-    expect(TRANSPARENT_OIT_WGSL).not.toContain('if (!envHasMap()) {');
-    expect(TRANSPARENT_OIT_WGSL).not.toContain('return envRadiance(normal) * max(payload.envMapIntensity, 0.0) * payload.albedo * INV_PI;');
-    expect(TRANSPARENT_OIT_WGSL).not.toContain('sunVisibility = select(1.0, 0.0, sunOccluded);');
+function functionBody(source: string, name: string): string {
+  const signature = source.indexOf(`fn ${name}(`);
+  expect(signature, `${name} is declared`).toBeGreaterThanOrEqual(0);
+  const open = source.indexOf('{', signature);
+  let depth = 0;
+  for (let i = open; i < source.length; i += 1) {
+    if (source[i] === '{') depth += 1;
+    if (source[i] === '}') {
+      depth -= 1;
+      if (depth === 0) return source.slice(open + 1, i);
+    }
+  }
+  throw new Error(`${name} has an unterminated body`);
+}
+
+describe('transparent OIT estimator and ownership', () => {
+  it('owns deterministic camera blend coverage while opaque primary shading skips it', () => {
+    const main = functionBody(TRANSPARENT_OIT_WGSL, 'transparentOitMain');
+    expect(SHADE_WGSL).toContain('traceSceneFirstHitAlphaMaskTexturedOpaqueOnly(');
+    expect(main).toContain('let coverage = clamp(alpha.coverage, 0.0, 1.0);');
+    expect(main).toContain('accum = accum + layerRadiance * coverage * transmittance;');
+    expect(main).toContain('transmittance = transmittance * (1.0 - coverage);');
+    expect(main).toContain('vec4f(accum + background * transmittance, 1.0)');
+    expect(MATERIAL_ATLAS_WGSL).toContain('fn materialAlphaBlendCoverageHash(');
   });
 
-  it('keeps camera-visible emissive/light-map terms while declaring BRDF dependencies', () => {
-    expect(TRANSPARENT_OIT_WGSL).toContain('sampleEmissiveMap(');
-    expect(TRANSPARENT_OIT_WGSL).toContain('sampleLightMap(');
+  it('uses a scene-derived saturated layer bound instead of a fixed black tail', () => {
+    const main = functionBody(TRANSPARENT_OIT_WGSL, 'transparentOitMain');
+    expect(main).toContain('let triangleCount = bvhIndexCount();');
+    expect(main).toContain('triangleCount > 0xffffffffu / instanceMultiplier');
+    expect(main).toContain('for (var layer = 0u; layer < layerBudget; layer = layer + 1u)');
+    expect(main).not.toMatch(/layer\s*<\s*32u/);
+    expect(main).not.toMatch(/layer\s*==\s*31u/);
+    expect(main).not.toContain('transmittance <= 0.001');
+
+    const layerCount = 64;
+    const coverage = 0.1;
+    const layerRadiance = 2;
+    const background = 0.25;
+    let transmittance = 1;
+    let accumulated = 0;
+    for (let i = 0; i < layerCount; i += 1) {
+      accumulated += layerRadiance * coverage * transmittance;
+      transmittance *= 1 - coverage;
+    }
+    const analyticT = (1 - coverage) ** layerCount;
+    const analytic = layerRadiance * (1 - analyticT) + background * analyticT;
+    expect(accumulated + background * transmittance).toBeCloseTo(analytic, 14);
+    expect(transmittance).toBeGreaterThan(0);
+  });
+
+  it('pairs its temporal environment proposal with the exact cosine PDF', () => {
+    const sky = functionBody(TRANSPARENT_OIT_WGSL, 'oitLayerSkyRadiance');
+    expect(sky).toContain('oitSamplingHashToF32(seed ^ 0x9e3779b9u)');
+    expect(sky).toContain('let wi = oitCosineHemisphereDir(normal, xi);');
+    expect(sky).toContain('let pdf = dot(normal, wi) * INV_PI;');
+    expect(sky).toContain('oitLayerEnvSampleRadiance(payload, normal, wo, wi) / pdf');
+  });
+
+  it('uses the configured DDGI/RC mixture for every layer and ULP ray offsets', () => {
+    const layer = functionBody(TRANSPARENT_OIT_WGSL, 'oitLayerRadiance');
+    const offset = functionBody(TRANSPARENT_OIT_WGSL, 'oitOffsetRayOrigin');
+    expect(layer).toContain(
+      'mix(ddgiIndirect, rcIndirect, clamp(rcParams.rcWeight, 0.0, 1.0))',
+    );
+    expect(layer).not.toMatch(/(?:ddgi|rc).*HasEnergy/i);
+    expect(offset).toContain('bitcast<f32>(bitcast<i32>(p.x)');
+    expect(offset).toContain('abs(p.x) < (1.0 / 32.0)');
+    expect(TRANSPARENT_OIT_WGSL).not.toMatch(/hitPos\s*[+-]\s*[^;]*(?:1e-3|0\.001)/);
+  });
+
+  it('retains mapped emission and receiver-local baked irradiance in primary shading', () => {
+    expect(SHADE_WGSL).toContain('sampleEmissiveMap(');
+    expect(SHADE_WGSL).toContain('let lightMapIrradiance = sampleLightMap(');
+    expect(SHADE_WGSL).toContain('let Lo_lightMap = albedo * INV_PI * lightMapIrradiance;');
     expect(TRANSPARENT_OIT_MODULE.requires).toContain('materialAtlas');
     expect(TRANSPARENT_OIT_MODULE.requires).toContain('surfaceTextures');
-    expect(TRANSPARENT_OIT_MODULE.requires).toContain('ggxBrdf');
-    expect(TRANSPARENT_OIT_MODULE.requires).toContain('emitterLeAtXi');
-  });
-
-  it('continues past zero-coverage blend layers before compositing fractional layers', () => {
-    const zeroCoverage = TRANSPARENT_OIT_WGSL.indexOf('if (alpha.mode == 2u && alpha.coverage <= 0.001)');
-    const fractional = TRANSPARENT_OIT_WGSL.indexOf('if (alpha.mode == 2u && alpha.coverage < 0.999)');
-    expect(zeroCoverage).toBeGreaterThanOrEqual(0);
-    expect(fractional).toBeGreaterThan(zeroCoverage);
-    const zeroCoverageBlock = TRANSPARENT_OIT_WGSL.slice(zeroCoverage, fractional);
-    expect(zeroCoverageBlock).toContain('traveled = traveled + hit.dist + step;');
-    expect(zeroCoverageBlock).toContain('walkRay.origin = primaryRay.origin + primaryRay.direction * traveled;');
-    expect(zeroCoverageBlock).toContain('continue;');
   });
 });

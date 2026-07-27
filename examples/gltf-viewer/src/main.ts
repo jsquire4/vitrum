@@ -13,34 +13,13 @@
 import { asMat4 } from '@vitrum/core';
 import type { Mat4, Scene, ScenePrimitive } from '@vitrum/core';
 import { loadGltfWithEngine } from '@vitrum/engine/gltf';
-import DracoDecoderModule from 'draco3d/draco_decoder_nodejs.js';
-import dracoDecoderWasmUrl from 'draco3d/draco_decoder.wasm?url';
-import { MeshoptDecoder } from 'meshoptimizer';
 
 const params = new URLSearchParams(location.search);
 const targetSpp = Number(params.get('vitrumSpp')) || 128;
 const requestedAssetId = params.get('vitrumGltfAsset') ?? '';
 const requestedBackend = params.get('vitrumBackend') ?? '';
 
-type BrowserDecodeKind = 'draco' | 'meshopt';
-type MeshoptMode = 'ATTRIBUTES' | 'TRIANGLES' | 'INDICES';
-type MeshoptFilter = 'NONE' | 'OCTAHEDRAL' | 'QUATERNION' | 'EXPONENTIAL';
-type DracoDecodeHook = (
-  compressed: Uint8Array,
-  attributeIds: Record<string, number>,
-) => { attributes: Record<string, Float32Array>; indices?: Uint32Array };
-type MeshoptDecodeHook = (
-  compressed: Uint8Array,
-  count: number,
-  byteStride: number,
-  mode: MeshoptMode,
-  filter: MeshoptFilter,
-) => Promise<Uint8Array> | Uint8Array;
-interface BrowserDecodeHooks {
-  readonly dracoDecode?: DracoDecodeHook;
-  readonly meshoptDecode?: MeshoptDecodeHook;
-  readonly report: Record<string, boolean | readonly string[]>;
-}
+type BrowserCompressionKind = 'draco' | 'meshopt';
 
 interface RealGltfAsset {
   readonly url: string;
@@ -48,7 +27,7 @@ interface RealGltfAsset {
   readonly minPrimitives: number;
   readonly minTextures: number;
   readonly requiredExtensions?: readonly string[];
-  readonly browserDecode?: readonly BrowserDecodeKind[];
+  readonly compression?: readonly BrowserCompressionKind[];
 }
 
 const REAL_GLTF_ASSETS: Record<string, RealGltfAsset> = {
@@ -64,7 +43,7 @@ const REAL_GLTF_ASSETS: Record<string, RealGltfAsset> = {
     minPrimitives: 1,
     minTextures: 0,
     requiredExtensions: ['KHR_draco_mesh_compression'],
-    browserDecode: ['draco'],
+    compression: ['draco'],
   },
   'meshopt-cube-real': {
     url: 'https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Assets/main/Models/MeshoptCubeTest/glTF-Meshopt/MeshoptCubeTest.gltf',
@@ -72,18 +51,13 @@ const REAL_GLTF_ASSETS: Record<string, RealGltfAsset> = {
     minPrimitives: 1,
     minTextures: 0,
     requiredExtensions: ['KHR_meshopt_compression'],
-    browserDecode: ['meshopt'],
+    compression: ['meshopt'],
   },
 };
 
 const canvas = document.getElementById('vitrum-canvas') as HTMLCanvasElement;
 
-const viewMatrix = asMat4(new Float32Array([
-  1, 0, 0, 0,
-  0, 1, 0, 0,
-  0, 0, 1, 0,
-  0, 0, -3, 1,
-]));
+const viewMatrix = asMat4(new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, -3, 1]));
 
 function projectionForCanvas(): Float32Array {
   const width = Math.max(1, canvas.clientWidth);
@@ -94,10 +68,22 @@ function projectionForCanvas(): Float32Array {
   const far = 100;
   const f = 1 / Math.tan(fovY / 2);
   return new Float32Array([
-    f / aspect, 0, 0, 0,
-    0, f, 0, 0,
-    0, 0, (far + near) / (near - far), -1,
-    0, 0, (2 * far * near) / (near - far), 0,
+    f / aspect,
+    0,
+    0,
+    0,
+    0,
+    f,
+    0,
+    0,
+    0,
+    0,
+    (far + near) / (near - far),
+    -1,
+    0,
+    0,
+    (2 * far * near) / (near - far),
+    0,
   ]);
 }
 
@@ -106,17 +92,18 @@ async function main(): Promise<void> {
   if (requestedAssetId && realAsset == null) {
     throw new Error(`[gltf-viewer example] unsupported vitrumGltfAsset "${requestedAssetId}"`);
   }
-  const browserDecodeHooks = realAsset == null ? emptyBrowserDecodeHooks() : await createBrowserDecodeHooks(realAsset);
+  const browserCompressionDecoders = compressionDecoderReport(realAsset);
   const result = await loadGltfWithEngine(realAsset?.url ?? createEmbeddedGltf(), {
     compatibilityMode: 'best-effort',
     ...(realAsset == null ? { decodeImage: decodeEmbeddedDemoImage } : {}),
-    ...(realAsset != null ? {
-      decodeTextures: true,
-      decodePixels: decodeBrowserImagePixels,
-      maxTextureSize: 4096,
-      warnOnNpotRepeatWrap: true,
-    } : {}),
-    ...browserDecodeHooks,
+    ...(realAsset != null
+      ? {
+          decodeTextures: true,
+          decodePixels: decodeBrowserImagePixels,
+          maxTextureSize: 4096,
+          warnOnNpotRepeatWrap: true,
+        }
+      : {}),
     ...(requestedBackend === 'pt-webgl2' ? { backend: 'pt-webgl2' as const } : {}),
     engineOptions: {
       canvas,
@@ -127,12 +114,17 @@ async function main(): Promise<void> {
     },
   });
   const engine = requireEngine(result.engine);
-  const renderScene = realAsset == null ? result.controller.scene : addRealAssetLighting(normalizeSceneForViewer(result.controller.scene));
+  const renderScene =
+    realAsset == null
+      ? result.controller.scene
+      : addRealAssetLighting(normalizeSceneForViewer(result.controller.scene));
   if (renderScene !== result.controller.scene) {
     engine.setScene(renderScene);
   }
 
-  (globalThis as Record<string, unknown>).VITRUM_CAPTURE_FRAME = async (colorSpace: 'linear' | 'output' = 'output') => {
+  (globalThis as Record<string, unknown>).VITRUM_CAPTURE_FRAME = async (
+    colorSpace: 'linear' | 'output' = 'output',
+  ) => {
     if (typeof engine.captureFrame !== 'function') return null;
     const frame = await engine.captureFrame({ colorSpace });
     if (frame == null) return null;
@@ -152,17 +144,17 @@ async function main(): Promise<void> {
     primitiveCount: result.controller.scene.primitives.length,
     extensionsUsed: result.asset.featureReport.extensions.used,
     extensionsRequired: result.asset.featureReport.extensions.required,
-    browserDecodeHooks: browserDecodeHooks.report,
+    browserCompressionDecoders,
     textureDecodeReport: result.textureDecodeReport,
     warnings: result.warnings,
     diagnostics: result.diagnostics,
     realAssetReady:
       realAsset == null ||
-      (
-        result.controller.scene.primitives.length >= realAsset.minPrimitives &&
+      (result.controller.scene.primitives.length >= realAsset.minPrimitives &&
         result.textureDecodeReport.mapCount >= realAsset.minTextures &&
-        (realAsset.requiredExtensions ?? []).every((ext) => result.asset.featureReport.extensions.used.includes(ext))
-      ),
+        (realAsset.requiredExtensions ?? []).every((ext) =>
+          result.asset.featureReport.extensions.used.includes(ext),
+        )),
   };
 
   let frameIndex = 0;
@@ -218,121 +210,14 @@ async function main(): Promise<void> {
   requestAnimationFrame(tick);
 }
 
-function emptyBrowserDecodeHooks(): BrowserDecodeHooks {
+function compressionDecoderReport(asset: RealGltfAsset | undefined): Record<string, unknown> {
+  const requested = asset?.compression ?? [];
   return {
-    report: {
-      requested: [],
-      draco: false,
-      meshopt: false,
-    },
-  };
-}
-
-async function createBrowserDecodeHooks(asset: RealGltfAsset): Promise<BrowserDecodeHooks> {
-  const needed = new Set(asset.browserDecode ?? []);
-  const report: Record<string, boolean | readonly string[]> = {
-    requested: [...needed],
-    draco: false,
-    meshopt: false,
-  };
-  const hooks: { dracoDecode?: DracoDecodeHook; meshoptDecode?: MeshoptDecodeHook } = {};
-
-  if (needed.has('draco')) {
-    hooks.dracoDecode = await createBrowserDracoDecode();
-    report.draco = true;
-  }
-  if (needed.has('meshopt')) {
-    hooks.meshoptDecode = await createBrowserMeshoptDecode();
-    report.meshopt = true;
-  }
-  return { ...hooks, report };
-}
-
-async function createBrowserDracoDecode(): Promise<DracoDecodeHook> {
-  const wasmBinary = await fetch(dracoDecoderWasmUrl).then((response) => {
-    if (!response.ok) throw new Error(`[gltf-viewer example] failed to fetch Draco WASM: ${response.status}`);
-    return response.arrayBuffer();
-  });
-  const module = await DracoDecoderModule({ wasmBinary });
-  return (compressed, attributeIds) => {
-    const decoder = new module.Decoder();
-    const buffer = new module.DecoderBuffer();
-    let mesh: ReturnType<typeof createDracoMesh> | null = null;
-    try {
-      buffer.Init(new Int8Array(compressed.buffer, compressed.byteOffset, compressed.byteLength), compressed.byteLength);
-      const geometryType = decoder.GetEncodedGeometryType(buffer);
-      if (geometryType !== module.TRIANGULAR_MESH) {
-        throw new Error(`[gltf-viewer example] unsupported Draco geometry type ${geometryType}`);
-      }
-      mesh = createDracoMesh(module);
-      const status = decoder.DecodeBufferToMesh(buffer, mesh);
-      if (!status.ok()) throw new Error(status.error_msg());
-
-      const attributes: Record<string, Float32Array> = {};
-      for (const [semantic, uniqueId] of Object.entries(attributeIds)) {
-        const attr = decoder.GetAttributeByUniqueId(mesh, uniqueId);
-        if (attr == null || attr.ptr === 0) {
-          throw new Error(`[gltf-viewer example] missing Draco attribute ${semantic} (${uniqueId})`);
-        }
-        const values = new module.DracoFloat32Array();
-        try {
-          decoder.GetAttributeFloatForAllPoints(mesh, attr, values);
-          const out = new Float32Array(values.size());
-          for (let i = 0; i < out.length; i += 1) out[i] = values.GetValue(i);
-          attributes[semantic] = out;
-        } finally {
-          module.destroy(values);
-        }
-      }
-
-      const face = new module.DracoInt32Array();
-      const indices = new Uint32Array(mesh.num_faces() * 3);
-      try {
-        for (let f = 0; f < mesh.num_faces(); f += 1) {
-          decoder.GetFaceFromMesh(mesh, f, face);
-          const offset = f * 3;
-          indices[offset] = face.GetValue(0);
-          indices[offset + 1] = face.GetValue(1);
-          indices[offset + 2] = face.GetValue(2);
-        }
-      } finally {
-        module.destroy(face);
-      }
-      return { attributes, indices };
-    } finally {
-      module.destroy(buffer);
-      if (mesh != null) module.destroy(mesh);
-      module.destroy(decoder);
-    }
-  };
-}
-
-function createDracoMesh(module: Awaited<ReturnType<typeof DracoDecoderModule>>) {
-  return new module.Mesh();
-}
-
-async function createBrowserMeshoptDecode(): Promise<MeshoptDecodeHook> {
-  await MeshoptDecoder.ready;
-  return (compressed, count, byteStride, mode, filter) => {
-    if (typeof MeshoptDecoder.decodeGltfBufferAsync === 'function') {
-      return MeshoptDecoder.decodeGltfBufferAsync(
-        count,
-        byteStride,
-        compressed,
-        mode,
-        filter === 'NONE' ? undefined : filter,
-      );
-    }
-    const target = new Uint8Array(count * byteStride);
-    MeshoptDecoder.decodeGltfBuffer(
-      target,
-      count,
-      byteStride,
-      compressed,
-      mode,
-      filter === 'NONE' ? undefined : filter,
-    );
-    return target;
+    policy: 'builtin',
+    requested,
+    hostOverrides: [],
+    draco: requested.includes('draco') ? 'builtin' : 'unused',
+    meshopt: requested.includes('meshopt') ? 'builtin' : 'unused',
   };
 }
 
@@ -342,10 +227,12 @@ function createEmbeddedGltf(): Parameters<typeof loadGltfWithEngine>[0] {
     asset: { version: '2.0', generator: 'vitrum examples/gltf-viewer' },
     scene: 0,
     extensionsUsed: ['KHR_materials_unlit', 'KHR_texture_transform'],
-    buffers: [{
-      byteLength: binary.byteLength,
-      uri: dataUri(binary, 'application/octet-stream'),
-    }],
+    buffers: [
+      {
+        byteLength: binary.byteLength,
+        uri: dataUri(binary, 'application/octet-stream'),
+      },
+    ],
     bufferViews: [
       { buffer: 0, byteOffset: 0, byteLength: 36, target: 34962 },
       { buffer: 0, byteOffset: 36, byteLength: 36, target: 34962 },
@@ -353,56 +240,77 @@ function createEmbeddedGltf(): Parameters<typeof loadGltfWithEngine>[0] {
       { buffer: 0, byteOffset: 96, byteLength: 6, target: 34963 },
     ],
     accessors: [
-      { bufferView: 0, componentType: 5126, count: 3, type: 'VEC3', min: [-0.9, -0.65, 0], max: [0.9, 0.8, 0] },
-      { bufferView: 1, componentType: 5126, count: 3, type: 'VEC3', min: [0, 0, 1], max: [0, 0, 1] },
+      {
+        bufferView: 0,
+        componentType: 5126,
+        count: 3,
+        type: 'VEC3',
+        min: [-0.9, -0.65, 0],
+        max: [0.9, 0.8, 0],
+      },
+      {
+        bufferView: 1,
+        componentType: 5126,
+        count: 3,
+        type: 'VEC3',
+        min: [0, 0, 1],
+        max: [0, 0, 1],
+      },
       { bufferView: 2, componentType: 5126, count: 3, type: 'VEC2', min: [0, 0], max: [1, 1] },
       { bufferView: 3, componentType: 5123, count: 3, type: 'SCALAR', min: [0], max: [2] },
     ],
     samplers: [{ wrapS: 33071, wrapT: 33648 }],
     images: [{ uri: 'data:image/png;base64,AAAA', mimeType: 'image/png' }],
     textures: [{ source: 0, sampler: 0 }],
-    materials: [{
-      name: 'unlit-textured-demo',
-      pbrMetallicRoughness: {
-        baseColorFactor: [1, 1, 1, 1],
-        baseColorTexture: {
-          index: 0,
-          texCoord: 0,
-          extensions: {
-            KHR_texture_transform: {
-              offset: [0, 0],
-              scale: [1, 1],
-              rotation: 0,
+    materials: [
+      {
+        name: 'unlit-textured-demo',
+        pbrMetallicRoughness: {
+          baseColorFactor: [1, 1, 1, 1],
+          baseColorTexture: {
+            index: 0,
+            texCoord: 0,
+            extensions: {
+              KHR_texture_transform: {
+                offset: [0, 0],
+                scale: [1, 1],
+                rotation: 0,
+              },
             },
           },
+          metallicFactor: 0,
+          roughnessFactor: 1,
         },
-        metallicFactor: 0,
-        roughnessFactor: 1,
+        extensions: { KHR_materials_unlit: {} },
       },
-      extensions: { KHR_materials_unlit: {} },
-    }],
-    meshes: [{
-      primitives: [{
-        attributes: { POSITION: 0, NORMAL: 1, TEXCOORD_0: 2 },
-        indices: 3,
-        material: 0,
-        mode: 4,
-      }],
-    }],
+    ],
+    meshes: [
+      {
+        primitives: [
+          {
+            attributes: { POSITION: 0, NORMAL: 1, TEXCOORD_0: 2 },
+            indices: 3,
+            material: 0,
+            mode: 4,
+          },
+        ],
+      },
+    ],
     nodes: [{ mesh: 0, name: 'triangle' }],
     scenes: [{ nodes: [0] }],
   };
 }
 
-async function decodeEmbeddedDemoImage(): Promise<{ width: number; height: number; data: Uint8Array }> {
+async function decodeEmbeddedDemoImage(): Promise<{
+  width: number;
+  height: number;
+  data: Uint8Array;
+}> {
   return {
     width: 2,
     height: 2,
     data: new Uint8Array([
-      255, 80, 40, 255,
-      40, 180, 255, 255,
-      255, 235, 80, 255,
-      180, 80, 255, 255,
+      255, 80, 40, 255, 40, 180, 255, 255, 255, 235, 80, 255, 180, 80, 255, 255,
     ]),
   };
 }
@@ -426,13 +334,18 @@ async function decodeBrowserImagePixels(
   const bitmap = await createImageBitmap(blob);
   const width = bitmap.width;
   const height = bitmap.height;
-  const canvas2d = typeof OffscreenCanvas !== 'undefined'
-    ? new OffscreenCanvas(width, height)
-    : document.createElement('canvas');
+  const canvas2d =
+    typeof OffscreenCanvas !== 'undefined'
+      ? new OffscreenCanvas(width, height)
+      : document.createElement('canvas');
   canvas2d.width = width;
   canvas2d.height = height;
-  const ctx = canvas2d.getContext('2d') as CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D | null;
-  if (ctx == null) throw new Error('[gltf-viewer example] 2D canvas unavailable for texture decode.');
+  const ctx = canvas2d.getContext('2d') as
+    | CanvasRenderingContext2D
+    | OffscreenCanvasRenderingContext2D
+    | null;
+  if (ctx == null)
+    throw new Error('[gltf-viewer example] 2D canvas unavailable for texture decode.');
   ctx.drawImage(bitmap, 0, 0);
   const pixels = ctx.getImageData(0, 0, width, height).data;
   bitmap.close();
@@ -461,19 +374,35 @@ function normalizeSceneForViewer(scene: Scene): Scene {
   );
   if (!(extent > 0)) return scene;
   const s = 1.35 / extent;
-  const normalization = asMat4(new Float32Array([
-    s, 0, 0, 0,
-    0, s, 0, 0,
-    0, 0, s, 0,
-    -center[0] * s, -center[1] * s, -center[2] * s, 1,
-  ]));
+  const normalization = asMat4(
+    new Float32Array([
+      s,
+      0,
+      0,
+      0,
+      0,
+      s,
+      0,
+      0,
+      0,
+      0,
+      s,
+      0,
+      -center[0] * s,
+      -center[1] * s,
+      -center[2] * s,
+      1,
+    ]),
+  );
   return {
     ...scene,
     primitives: scene.primitives.map((primitive) => {
       if (primitive.kind === 'instanced-mesh') {
         return {
           ...primitive,
-          instances: primitive.instances.map((instance) => asMat4(multiplyMat4(normalization, instance))),
+          instances: primitive.instances.map((instance) =>
+            asMat4(multiplyMat4(normalization, instance)),
+          ),
         };
       }
       return {
@@ -501,7 +430,9 @@ function addRealAssetLighting(scene: Scene): Scene {
     ],
     environment: {
       kind: 'procedural-sky',
-      sunDirection: [0.4, 1.0, 0.25],
+      // Core's procedural-sky contract requires a unit vector. This is the
+      // normalized form of the intended [0.4, 1.0, 0.25] key-light direction.
+      sunDirection: [0.36177250531690763, 0.9044312632922691, 0.22610781582306727],
       turbidity: 2.0,
       rayleigh: 1.0,
       mieCoefficient: 0.005,
@@ -511,12 +442,7 @@ function addRealAssetLighting(scene: Scene): Scene {
   };
 }
 
-const IDENTITY_MAT4 = asMat4(new Float32Array([
-  1, 0, 0, 0,
-  0, 1, 0, 0,
-  0, 0, 1, 0,
-  0, 0, 0, 1,
-]));
+const IDENTITY_MAT4 = asMat4(new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]));
 
 function multiplyMat4(a: Float32Array, b: Float32Array): Mat4 {
   const out = new Float32Array(16);
@@ -532,7 +458,9 @@ function multiplyMat4(a: Float32Array, b: Float32Array): Mat4 {
   return asMat4(out);
 }
 
-function sceneBounds(primitives: readonly ScenePrimitive[]): { min: [number, number, number]; max: [number, number, number] } | null {
+function sceneBounds(
+  primitives: readonly ScenePrimitive[],
+): { min: [number, number, number]; max: [number, number, number] } | null {
   let found = false;
   const min: [number, number, number] = [Infinity, Infinity, Infinity];
   const max: [number, number, number] = [-Infinity, -Infinity, -Infinity];
@@ -555,7 +483,12 @@ function sceneBounds(primitives: readonly ScenePrimitive[]): { min: [number, num
   return found ? { min, max } : null;
 }
 
-function transformPoint(m: Float32Array, x: number, y: number, z: number): [number, number, number] {
+function transformPoint(
+  m: Float32Array,
+  x: number,
+  y: number,
+  z: number,
+): [number, number, number] {
   return [
     m[0]! * x + m[4]! * y + m[8]! * z + m[12]!,
     m[1]! * x + m[5]! * y + m[9]! * z + m[13]!,
@@ -565,21 +498,9 @@ function transformPoint(m: Float32Array, x: number, y: number, z: number): [numb
 
 function createTriangleBuffer(): Uint8Array {
   const bytes = new Uint8Array(104);
-  writeF32(bytes, 0, [
-    -0.9, -0.65, 0,
-    0.9, -0.65, 0,
-    0.0, 0.8, 0,
-  ]);
-  writeF32(bytes, 36, [
-    0, 0, 1,
-    0, 0, 1,
-    0, 0, 1,
-  ]);
-  writeF32(bytes, 72, [
-    0, 0,
-    1, 0,
-    0.5, 1,
-  ]);
+  writeF32(bytes, 0, [-0.9, -0.65, 0, 0.9, -0.65, 0, 0.0, 0.8, 0]);
+  writeF32(bytes, 36, [0, 0, 1, 0, 0, 1, 0, 0, 1]);
+  writeF32(bytes, 72, [0, 0, 1, 0, 0.5, 1]);
   writeU16(bytes, 96, [0, 1, 2]);
   return bytes;
 }

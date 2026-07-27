@@ -180,6 +180,57 @@ describe('pt-webgl2 upload-gap guard — load-bearing uniforms ARE uploaded', ()
     expect(hdri.get('envMapInfo.totalSum')).toBeGreaterThan(0);
     expect(hdri.get('environmentIntensity')).toBe(2);
   });
+  it('H2: spectral mode survives reset, resize, scene replacement, and rejects use after dispose', async () => {
+    const record = new Map<string, unknown>();
+    const engine = await createPTEngine_WebGL2({
+      device: createMockGl(record),
+      spectral: true,
+    });
+    const assertSpectralFrame = () => {
+      const output = engine.renderFrame(frame(4));
+      expect(output.kind).toBe('rendered');
+      expect(record.get('uSpectralRendering')).toBe(1);
+      expect(record.has('uCmfX')).toBe(true);
+      expect(record.has('uYCmfCdf')).toBe(true);
+      expect(record.get('uYCmfIntegral')).toBeGreaterThan(0);
+    };
+
+    engine.setScene(sceneNoEmitters());
+    assertSpectralFrame();
+    record.clear();
+    engine.reset();
+    assertSpectralFrame();
+    record.clear();
+    expect(engine.setSize).toBeTypeOf('function');
+    engine.setSize!(16, 12);
+    assertSpectralFrame();
+    expect(record.get('resolution')).toEqual([16, 12]);
+    record.clear();
+    engine.setScene(sceneWithPointLight());
+    assertSpectralFrame();
+
+    engine.dispose();
+    expect(engine.state).toBe('disposed');
+    expect(() => engine.renderFrame(frame(4))).toThrow(/disposed/);
+  });
+
+  it('H2: spectral + general BDPT share one frame-wide wavelength under PCG and Sobol', async () => {
+    const samples: unknown[] = [];
+    for (const sampling of ['pcg', 'sobol'] as const) {
+      const rec = await renderAndRecord(sceneWithMeshAreaLight(), {
+        spectral: true,
+        bdpt: true,
+        sampling,
+      });
+      expect(rec.get('uSpectralRendering')).toBe(1);
+      expect(rec.has('uCmfX')).toBe(true);
+      expect(rec.get('uBdptMaxLightBounces')).toBe(4);
+      expect(rec.get('uBdptSharedWavelengthPdf')).toBeGreaterThan(0);
+      samples.push([rec.get('uBdptSharedWavelength'), rec.get('uBdptSharedWavelengthPdf')]);
+    }
+    expect(samples[0]).toEqual(samples[1]);
+  });
+
 
   it('B4: mesh-area NEE uniforms are uploaded (count + Σ area + Σ power) for an emissive mesh', async () => {
     const rec = await renderAndRecord(sceneWithMeshAreaLight());
@@ -221,7 +272,15 @@ describe('pt-webgl2 upload-gap guard — load-bearing uniforms ARE uploaded', ()
   });
 
   it('D10: explicit non-uploaded-uniform classifications remain real declarations', () => {
-    const declared = declaredUniformNames(composeTraceGlsl(DEFAULT_TRACE_FEATURES));
+    const declared = new Set([
+      ...declaredUniformNames(composeTraceGlsl(DEFAULT_TRACE_FEATURES)),
+      ...declaredUniformNames(
+        composeTraceGlsl({ ...DEFAULT_TRACE_FEATURES, randomType: 1 }),
+      ),
+      ...declaredUniformNames(
+        composeTraceGlsl({ ...DEFAULT_TRACE_FEATURES, randomType: 2 }),
+      ),
+    ]);
     for (const [name, reason] of EXPLICITLY_NON_UPLOADED_UNIFORMS) {
       expect(reason.length, `${name} must carry a reason`).toBeGreaterThan(10);
       expect(declared.has(name), `${name} classification should match a shader declaration`).toBe(true);
@@ -250,23 +309,23 @@ describe('pt-webgl2 upload-gap guard — load-bearing uniforms ARE uploaded', ()
     expect(rec.get('materialLodDepth')).toBe(2);
   });
 
-  it('A5: BDPT host-driver uniforms default to endpoint-only when bdpt:true', async () => {
+  it('A5: BDPT host-driver uniforms default to four light vertices', async () => {
     const rec = await renderAndRecord(sceneWithMeshAreaLight(), { bdpt: true });
-    // The eye pass sets the light-subpath pass flag to 0 and uploads the safe
-    // endpoint-only bounce count.
+    // The eye pass sets the light-subpath pass flag to 0 and uploads the bounded
+    // general-BDPT default depth.
     expect(rec.has('uBdptLightSubpathPass')).toBe(true);
     expect(rec.has('uBdptMaxLightBounces')).toBe(true);
-    expect(rec.get('uBdptMaxLightBounces')).toBe(1);
+    expect(rec.get('uBdptMaxLightBounces')).toBe(4);
   });
 
-  it('A5: BDPT host-driver uploads explicit multi-vertex research depth', async () => {
+  it('A5: BDPT host-driver accepts an explicit shorter production depth', async () => {
     const rec = await renderAndRecord(sceneWithMeshAreaLight(), {
       bdpt: true,
-      bdptOptions: { maxLightBounces: 3, experimentalMultiVertex: true },
+      bdptOptions: { maxLightBounces: 2 },
     });
     expect(rec.has('uBdptLightSubpathPass')).toBe(true);
     expect(rec.has('uBdptMaxLightBounces')).toBe(true);
-    expect(rec.get('uBdptMaxLightBounces')).toBe(3);
+    expect(rec.get('uBdptMaxLightBounces')).toBe(2);
   });
 
   it('A5: BDPT uniforms are NOT touched when bdpt:false (byte-identical invariant)', async () => {
@@ -374,39 +433,20 @@ describe('pt-webgl2 upload-gap guard — load-bearing uniforms ARE uploaded', ()
 
   // ── Item 22 — DOF × equirectangular regime guard ────────────────────────────
   //
-  // Thin-lens DOF applied to equirectangular projection is physically undefined:
-  // the aperture offset in camera space has no consistent meaning for a full-sphere
-  // projection.  The engine must (a) warn once and (b) force FEATURE_DOF=0 (i.e.
-  // physicalCamera.focusDistance is NOT uploaded) even when dof is supplied.
+  // Thin-lens DOF applied to equirectangular projection is physically undefined.
+  // The factory rejects the incoherent combination instead of silently ignoring
+  // the authored DOF payload.
 
-  it('item22: equirect + dof emits a console.warn naming the regime mismatch', async () => {
+  it('item22: equirect + dof fails construction without silent degradation', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
-      await renderAndRecord(sceneNoEmitters(), {
+      const gl = createMockGl();
+      await expect(createPTEngine_WebGL2({
+        device: gl,
         cameraType: 'equirectangular',
         dof: { focusDistance: 5, bokehSize: 2 },
-      });
-      const equirectDofWarns = warn.mock.calls.filter((a) =>
-        String(a[0]).includes('equirectangular'),
-      );
-      expect(equirectDofWarns.length).toBeGreaterThan(0);
-      expect(String(equirectDofWarns[0]![0])).toContain('dof');
-      expect(String(equirectDofWarns[0]![0])).toContain('pt-webgl2');
-    } finally {
-      warn.mockRestore();
-    }
-  });
-
-  it('item22: equirect + dof forces FEATURE_DOF=0 — physicalCamera.focusDistance is NOT uploaded', async () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    try {
-      const rec = await renderAndRecord(sceneNoEmitters(), {
-        cameraType: 'equirectangular',
-        dof: { focusDistance: 5, bokehSize: 2 },
-      });
-      // Even though dof was supplied, the engine must NOT upload the DOF uniform
-      // (FEATURE_DOF must be 0 — same as if dof were absent).
-      expect(rec.has('physicalCamera.focusDistance')).toBe(false);
+      })).rejects.toThrow(/dof is unsupported.*equirectangular/);
+      expect(warn).not.toHaveBeenCalled();
     } finally {
       warn.mockRestore();
     }
@@ -455,7 +495,11 @@ describe('pt-webgl2 upload-gap guard — load-bearing uniforms ARE uploaded', ()
     // to the pre-H6 IDENTITY_MAT4 constant.
     const scene: Scene = {
       ...sceneNoEmitters(),
-      environment: { kind: 'hdri', hdri: {}, intensity: 1 },
+      environment: {
+        kind: 'hdri',
+        hdri: { width: 1, height: 1, data: new Float32Array([0, 0, 0]) },
+        intensity: 1,
+      },
     };
     const rec = await renderAndRecord(scene);
     const mat = rec.get('environmentRotation');
@@ -476,7 +520,12 @@ describe('pt-webgl2 upload-gap guard — load-bearing uniforms ARE uploaded', ()
     // Check: m[0]=cos=0, m[2]=-sin=1, m[8]=sin=-1, m[10]=cos=0.
     const scene: Scene = {
       ...sceneNoEmitters(),
-      environment: { kind: 'hdri', hdri: {}, intensity: 1, rotationY: Math.PI / 2 },
+      environment: {
+        kind: 'hdri',
+        hdri: { width: 1, height: 1, data: new Float32Array([0, 0, 0]) },
+        intensity: 1,
+        rotationY: Math.PI / 2,
+      },
     };
     const rec = await renderAndRecord(scene);
     const mat = rec.get('environmentRotation');

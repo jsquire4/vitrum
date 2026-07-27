@@ -21,13 +21,18 @@
 // sample CDF and MIS PDF stay measure-consistent.
 
 import type { EngineWarning, SceneEnvironment } from '@vitrum/core';
-import { bakePreethamSkyEquirect, readEnvironmentMapPixels } from '@vitrum/shared-samplers';
+import {
+  bakePreethamSkyEquirect,
+  readEnvironmentMapPixels,
+  type EnvironmentMapHandleHint,
+  type EnvironmentMapPixels,
+} from '@vitrum/shared-samplers';
 import type { EnvTextureData } from './sceneTextures.js';
 
 interface EquirectSource {
   readonly width: number;
   readonly height: number;
-  readonly data: ArrayLike<number> | undefined;
+  readonly data: ArrayLike<number>;
 }
 
 export interface EquirectInfoBuildOptions {
@@ -36,21 +41,225 @@ export interface EquirectInfoBuildOptions {
   readonly warningMethod?: string;
 }
 
-function emitEnvironmentWarning(
+function hdriPayloadError(
+  handle: unknown,
   options: EquirectInfoBuildOptions | undefined,
-  warning: Omit<EngineWarning, 'backend' | 'phase' | 'method'>,
-): void {
-  const routed: EngineWarning = {
-    ...warning,
-    backend: 'pt-webgl2',
-    phase: options?.warningPhase ?? 'scene-upload',
-    ...(options?.warningMethod != null ? { method: options.warningMethod } : {}),
-  };
-  if (options?.onWarning != null) {
-    options.onWarning(routed);
-  } else {
-    console.warn(routed.message);
+  reason: string,
+): Error {
+  const operation = options?.warningMethod != null
+    ? ` during ${options.warningMethod}`
+    : '';
+  return new Error(
+    `[pt-webgl2] authored HDRI${operation} is not CPU-readable: ${reason}. ` +
+    'Provide one coherent raw { width, height, data } or DataTexture-shaped image ' +
+    'with exact RGB/RGBA typed-array pixels. ' +
+    `Handle type: ${handle == null ? 'null' : Object.prototype.toString.call(handle)}`,
+  );
+}
+
+function describePayloadValue(value: unknown): string {
+  return value !== null && typeof value === 'object'
+    ? Object.prototype.toString.call(value)
+    : String(value);
+}
+
+type HdriPayload = {
+  readonly width?: unknown;
+  readonly height?: unknown;
+  readonly data?: ArrayLike<number>;
+};
+
+type HdriHandle = HdriPayload & {
+  readonly image?: HdriPayload;
+  readonly __vitrum_hint__?: EnvironmentMapHandleHint;
+  readonly channels?: unknown;
+  readonly dataType?: unknown;
+  readonly colorSpace?: unknown;
+};
+
+const HDRI_DATA_TYPES = new Set([
+  'uint8',
+  'uint16',
+  'float16',
+  'half-float',
+  'float32',
+]);
+const HDRI_CPU_FLOAT_BUDGET = (512 * 1024 * 1024) / 4;
+
+function strictHdriPixels(
+  handle: unknown,
+  options: EquirectInfoBuildOptions | undefined,
+): EnvironmentMapPixels {
+  if (handle == null || typeof handle !== 'object') {
+    throw hdriPayloadError(handle, options, 'the handle is null or opaque');
   }
+  const h = handle as HdriHandle;
+  const payload = h.data != null ? h : h.image;
+  const src = payload?.data;
+  const width = payload?.width;
+  const height = payload?.height;
+  if (src == null || typeof src.length !== 'number') {
+    throw hdriPayloadError(handle, options, 'no raw or DataTexture-shaped pixel data was supplied');
+  }
+  if (
+    typeof width !== 'number' ||
+    typeof height !== 'number' ||
+    !Number.isSafeInteger(width) ||
+    !Number.isSafeInteger(height) ||
+    width <= 0 ||
+    height <= 0
+  ) {
+    throw hdriPayloadError(
+      handle,
+      options,
+      `width and height must be positive safe integers (received ${String(width)}×${String(height)})`,
+    );
+  }
+  if (!Number.isSafeInteger(src.length) || src.length < 0) {
+    throw hdriPayloadError(
+      handle,
+      options,
+      `data.length must be a finite non-negative safe integer (received ${String(src.length)})`,
+    );
+  }
+  const pixelCount = width * height;
+  if (!Number.isSafeInteger(pixelCount)) {
+    throw hdriPayloadError(handle, options, 'width×height exceeds the safe integer range');
+  }
+  // Peak construction retains decoded RGBA plus map/CDF outputs: 13 floats per
+  // pixel and five per row. Guard that complete allocation before decoding.
+  const constructionFloats = BigInt(pixelCount) * 13n + BigInt(height) * 5n;
+  if (constructionFloats > BigInt(HDRI_CPU_FLOAT_BUDGET)) {
+    throw hdriPayloadError(
+      handle,
+      options,
+      `the ${width}×${height} decode/CDF payload exceeds the 512 MiB CPU staging budget`,
+    );
+  }
+
+  const directHint = h.__vitrum_hint__;
+  if (directHint != null && (typeof directHint !== 'object' || Array.isArray(directHint))) {
+    throw hdriPayloadError(handle, options, '__vitrum_hint__ must be an object');
+  }
+  const hintedChannels = directHint?.channels ?? h.channels;
+  const hintedDataType = directHint?.dataType ?? h.dataType;
+  const hintedColorSpace = directHint?.colorSpace ?? h.colorSpace;
+  if (hintedChannels != null && hintedChannels !== 3 && hintedChannels !== 4) {
+    throw hdriPayloadError(
+      handle,
+      options,
+        `channels must be 3 (RGB) or 4 (RGBA), received ${describePayloadValue(hintedChannels)}`,
+      );
+    }
+    if (
+      hintedDataType != null &&
+      (typeof hintedDataType !== 'string' || !HDRI_DATA_TYPES.has(hintedDataType))
+    ) {
+      throw hdriPayloadError(
+        handle,
+        options,
+        `dataType "${describePayloadValue(hintedDataType)}" is unsupported`,
+      );
+  }
+  if (
+    hintedColorSpace != null &&
+    hintedColorSpace !== 'linear' &&
+    hintedColorSpace !== 'srgb'
+  ) {
+      throw hdriPayloadError(
+        handle,
+        options,
+        `colorSpace "${describePayloadValue(hintedColorSpace)}" is unsupported`,
+      );
+  }
+
+  let channels: 3 | 4;
+  if (hintedChannels === 3 || hintedChannels === 4) {
+    channels = hintedChannels;
+  } else if (src.length === pixelCount * 3) {
+    channels = 3;
+  } else if (src.length === pixelCount * 4) {
+    channels = 4;
+  } else {
+    throw hdriPayloadError(
+      handle,
+      options,
+      `data length ${src.length} must exactly equal ${pixelCount * 3} (RGB) or ${pixelCount * 4} (RGBA)`,
+    );
+  }
+  const expectedLength = pixelCount * channels;
+  if (src.length !== expectedLength) {
+    throw hdriPayloadError(
+      handle,
+      options,
+      `data length ${src.length} does not equal width×height×channels (${expectedLength})`,
+    );
+  }
+
+  const backingType = Object.prototype.toString.call(src);
+  let dataType = hintedDataType;
+  if (dataType == null) {
+    if (backingType === '[object Uint8Array]' || backingType === '[object Uint8ClampedArray]') {
+      dataType = 'uint8';
+    } else if (backingType === '[object Uint16Array]') {
+      dataType = 'uint16';
+    } else if (backingType === '[object Float32Array]') {
+      dataType = 'float32';
+    } else {
+      throw hdriPayloadError(
+        handle,
+        options,
+        `pixel backing ${backingType} cannot be inferred; use Uint8Array, Uint16Array, or Float32Array`,
+      );
+    }
+  }
+  const compatibleBacking =
+    (dataType === 'uint8' && (
+      backingType === '[object Uint8Array]' || backingType === '[object Uint8ClampedArray]'
+    )) ||
+    ((dataType === 'uint16' || dataType === 'float16' || dataType === 'half-float') &&
+      backingType === '[object Uint16Array]') ||
+    (dataType === 'float32' && backingType === '[object Float32Array]');
+  if (!compatibleBacking) {
+    const expected = dataType === 'uint8'
+      ? 'Uint8Array or Uint8ClampedArray'
+      : dataType === 'float32'
+        ? 'Float32Array'
+        : 'Uint16Array';
+    throw hdriPayloadError(
+      handle,
+      options,
+      `dataType "${String(dataType)}" requires ${expected}, received ${backingType}`,
+    );
+  }
+
+  const decoded = readEnvironmentMapPixels(handle);
+  if (
+    decoded == null ||
+    decoded.width !== width ||
+    decoded.height !== height ||
+    decoded.sourceChannels !== channels
+  ) {
+    throw hdriPayloadError(
+      handle,
+      options,
+      'every RGB radiance value and optional alpha value must decode to a finite float',
+    );
+  }
+  for (let p = 0; p < pixelCount; p += 1) {
+    const base = p * 4;
+    for (let channel = 0; channel < 3; channel += 1) {
+      const radiance = decoded.data[base + channel]!;
+      if (!Number.isFinite(radiance) || radiance < 0) {
+        throw hdriPayloadError(
+          handle,
+          options,
+          `radiance must be finite and nonnegative (pixel ${p}, channel ${channel}, value ${String(radiance)})`,
+        );
+      }
+    }
+  }
+  return decoded;
 }
 
 function colorToLuminance(r: number, g: number, b: number): number {
@@ -109,7 +318,6 @@ export function buildEquirectInfo(
   }
 
   let source: EquirectSource;
-  let hdriHandleForDiagnostic: unknown = null;
   if (env.kind === 'procedural-sky') {
     const baked = bakePreethamSkyEquirect({
       sunDirection: env.sunDirection,
@@ -121,66 +329,13 @@ export function buildEquirectInfo(
     });
     source = { width: baked.width, height: baked.height, data: baked.texels };
   } else {
-    hdriHandleForDiagnostic = env.hdri;
-    const raw = env.hdri as {
-      readonly width?: unknown;
-      readonly height?: unknown;
-      readonly data?: ArrayLike<number>;
-      readonly image?: {
-        readonly width?: unknown;
-        readonly height?: unknown;
-        readonly data?: ArrayLike<number>;
-      };
-    } | null;
-    const hdri = readEnvironmentMapPixels(env.hdri);
-    source = hdri == null
-      ? {
-          width: Number(raw?.width ?? raw?.image?.width ?? 0),
-          height: Number(raw?.height ?? raw?.image?.height ?? 0),
-          data: raw?.data ?? raw?.image?.data,
-        }
-      : { width: hdri.width, height: hdri.height, data: hdri.data };
+    const hdri = strictHdriPixels(env.hdri, options);
+    source = { width: hdri.width, height: hdri.height, data: hdri.data };
   }
 
   const width = source.width;
   const height = source.height;
   const src = source.data;
-
-  if (
-    !Number.isFinite(width) ||
-    !Number.isFinite(height) ||
-    width <= 0 ||
-    height <= 0 ||
-    src == null ||
-    typeof src.length !== 'number' ||
-    src.length < width * height * 4
-  ) {
-    // H7 (2026-06-09): warn explicitly so the host knows the HDRI was dropped.
-    // Without this, a missing/incorrectly-shaped HDRI payload results in a
-    // flat-black environment with no error signal (a frequent source of
-    // confusion during host integration).
-    const message =
-      '[pt-webgl2] HDRI environment is present (kind="hdri") but has no usable CPU pixel data. ' +
-        'pt-webgl2 requires a raw {width, height, data} or DataTexture-shaped {image:{width,height,data}} RGB/RGBA payload (or use the ' +
-        'sceneFromThreeJS on-ramp with texturePayload:"raw"). ' +
-        'The environment will be ignored (EMPTY_ENV fallback). ' +
-        `Received hdri handle: ${String(hdriHandleForDiagnostic)}, width=${width}, height=${height}, ` +
-        `src type=${src == null ? 'null' : Object.prototype.toString.call(src)}.`;
-    emitEnvironmentWarning(options, {
-      code: 'pt-webgl2.hdri-unreadable',
-      message,
-      details: {
-        width,
-        height,
-        sourceType: src == null ? 'null' : Object.prototype.toString.call(src),
-        handleType: hdriHandleForDiagnostic == null
-          ? 'null'
-          : Object.prototype.toString.call(hdriHandleForDiagnostic),
-        handle: String(hdriHandleForDiagnostic),
-      },
-    });
-    return EMPTY_ENV;
-  }
 
   const pixelCount = width * height;
 

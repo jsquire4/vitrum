@@ -6,9 +6,9 @@
  *   params.directionalLightCount records. Single-directional scenes are
  *   byte-identical to the old single-directional path.
  *
- * Item 2 — Mesh-area cap: MESH_AREA_LIGHT_TRI_CAP (65 536). An over-cap scene
- *   is capped to the largest-area triangles; under-cap is unchanged; a warning is
- *   emitted exactly once per over-cap emitter.
+ * Item 2 — Mesh-area exact-support limit: MESH_AREA_LIGHT_TRI_CAP (65 536).
+ *   Under-limit scenes are unchanged; over-limit scenes fail closed rather than
+ *   silently dropping triangles and biasing the light proposal.
  */
 
 import { describe, expect, it } from 'vitest';
@@ -188,6 +188,31 @@ describe('2-directional packing', () => {
   });
 });
 
+  it('keeps black directional slots so later light-tree indices stay aligned', () => {
+    const scene: Scene = {
+      ...baseScene(),
+      emitters: [
+        {
+          kind: 'directional', id: 'black-dir', direction: [0, -1, 0],
+          color: [0, 0, 0], intensity: 1,
+        },
+        {
+          kind: 'directional', id: 'lit-dir', direction: [1, -1, 0],
+          color: [2, 2, 2], intensity: 1,
+        },
+        {
+          kind: 'point', id: 'point', position: [0, 2, 0],
+          color: [3, 3, 3], intensity: 1,
+        },
+      ],
+    };
+    const tree = buildLightTreeInputForScene(scene);
+    expect(tree.powers).toHaveLength(3);
+    expect(tree.powers[0]).toBe(0);
+    expect(tree.powers[1]).toBeGreaterThan(0);
+    expect(tree.powers[2]).toBeGreaterThan(0);
+  });
+
 // ─── Item 2: mesh-area cap ────────────────────────────────────────────────────
 
 /**
@@ -223,7 +248,7 @@ function bigMeshScene(triCount: number): Scene {
   };
 }
 
-describe('mesh-area NEE cap (MESH_AREA_LIGHT_TRI_CAP)', () => {
+describe('mesh-area NEE exact-support limit (MESH_AREA_LIGHT_TRI_CAP)', () => {
   it('MESH_AREA_LIGHT_TRI_CAP constant is 65536', () => {
     expect(MESH_AREA_LIGHT_TRI_CAP).toBe(65536);
   });
@@ -236,37 +261,24 @@ describe('mesh-area NEE cap (MESH_AREA_LIGHT_TRI_CAP)', () => {
     expect(packed.warnings.filter((w) => w.includes('cap'))).toHaveLength(0);
   });
 
-  it('over-cap: packed count == MESH_AREA_LIGHT_TRI_CAP', () => {
+  it('over-limit: rejects instead of returning a partially supported proposal', () => {
     // Build a scene with MESH_AREA_LIGHT_TRI_CAP + 100 triangles.
     const overCount = MESH_AREA_LIGHT_TRI_CAP + 100;
     const scene = bigMeshScene(overCount);
-    const packed = packEmitterArrays(scene);
-    expect(packed.meshAreaLightCount).toBe(MESH_AREA_LIGHT_TRI_CAP);
-    expect(packed.meshAreaLightsData.length).toBe(MESH_AREA_LIGHT_TRI_CAP * 16);
+    expect(() => packEmitterArrays(scene)).toThrow(RangeError);
   });
 
-  it('over-cap: emits exactly one warning naming count and cap', () => {
+  it('over-limit: rejection names the authored count and supported limit', () => {
     const overCount = MESH_AREA_LIGHT_TRI_CAP + 1;
     const scene = bigMeshScene(overCount);
-    const packed = packEmitterArrays(scene);
-    const capWarnings = packed.warnings.filter((w) => w.includes('cap') || w.includes('exceeds'));
-    expect(capWarnings).toHaveLength(1);
-    // Warning should mention the original triangle count and cap.
-    expect(capWarnings[0]).toMatch(String(overCount));
-    expect(capWarnings[0]).toMatch(String(MESH_AREA_LIGHT_TRI_CAP));
+    expect(() => packEmitterArrays(scene)).toThrow(
+      new RegExp(`requires ${overCount} triangles, exceeding the exact-support limit of ${MESH_AREA_LIGHT_TRI_CAP}`),
+    );
   });
 
   it('over-cap: selected triangles are the largest-area ones (not the first N)', () => {
     // Build 5 triangles with areas 1, 2, 3, 4, 5 (index = area * 2 base).
-    // Use a cap of MESH_AREA_LIGHT_TRI_CAP is too large for this test, so we test
-    // the actual sort logic using direct packEmitterArrays with > cap triangles
-    // is implicitly verified by the over-cap count test above.
-    //
-    // Instead: verify the small case — 3 triangles with distinct areas; pack
-    // with a count that would include all 3 (no cap triggered). Verify areas are
-    // correctly recoverable (i.e. the largest triangle is present).
-    // We trust the sort logic via the over-cap count test above.
-    // This test just ensures the selection preserves the large triangles.
+    // Verify the small case — 3 triangles with distinct areas are preserved.
     const scene: Scene = {
       primitives: [{
         kind: 'mesh',

@@ -13,6 +13,7 @@
  */
 
 import type { WgslModule } from '../pipeline/wgslComposer.js';
+import { reservoirDiAccessorsWgsl } from './reservoirDi.wgsl.js';
 
 export const TEMPORAL_WGSL = /* wgsl */ `
 
@@ -22,17 +23,13 @@ export const TEMPORAL_WGSL = /* wgsl */ `
 @group(0) @binding(5) var<storage, read_write> currentReservoir:  array<u32>;
 @group(0) @binding(6) var<storage, read>       previousReservoir: array<u32>;
 
+${reservoirDiAccessorsWgsl({
+  loadReadWriteBinding: 'currentReservoir',
+  loadReadBinding: 'previousReservoir',
+  storeReadWriteBinding: 'currentReservoir',
+})}
+
 // bvh_index is array<vec4u>: .xyz=vertex indices, .w=packed RGBA8 material color+transmission
-@group(1) @binding(0) var<storage, read> bvh:          array<BVHNode>;
-@group(1) @binding(1) var<storage, read> bvh_index:    array<vec4u>;
-@group(1) @binding(2) var<storage, read> bvh_position: array<vec4f>;
-@group(1) @binding(3) var<storage, read> emitters:     array<EmitterTri>;
-@group(1) @binding(4) var<storage, read> emitterCdf:   array<f32>;
-@group(1) @binding(6) var<storage, read> tlasNodes: array<BVHNode>;
-@group(1) @binding(7) var<storage, read> tlasInstanceIndices: array<u32>;
-@group(1) @binding(8) var<storage, read> tlasBlasRoots: array<u32>;
-@group(1) @binding(9) var<storage, read> tlasInstanceWorldToLocal: array<vec4f>;
-@group(1) @binding(10) var<storage, read> tlasInstanceLocalToWorld: array<vec4f>;
 
 // WalkaroundUBO struct defined in COMMON_WGSL.
 @group(2) @binding(0) var<uniform> ubo: WalkaroundUBO;
@@ -67,7 +64,7 @@ fn temporalMain(@builtin(global_invocation_id) gid: vec3u) {
   let pixelIdx = gid.y * dims.x + gid.x;
   var rng = pcgInit(gid.x ^ 12345u, gid.y ^ 67890u, ubo.frameSeed ^ 0xABCDu);
 
-  var cur = loadReservoirDI_rw(&currentReservoir, pixelIdx);
+  var cur = loadReservoirDI_rw(pixelIdx);
 
   // Re-cast current pixel's primary ray to get the actual surface.
   let vp    = ubo.projMatrix * ubo.viewMatrix;
@@ -75,7 +72,7 @@ fn temporalMain(@builtin(global_invocation_id) gid: vec3u) {
   let curSurf = castPrimary(gid.xy, dims, ubo.cameraPos, invVP);
   if (!curSurf.hit) {
     // Sky pixel — nothing to project; pass-through.
-    storeReservoirDI_rw(&currentReservoir, pixelIdx, cur);
+    storeReservoirDI_rw(pixelIdx, cur);
     return;
   }
 
@@ -85,48 +82,37 @@ fn temporalMain(@builtin(global_invocation_id) gid: vec3u) {
   // sent prevPx far off-screen for ~half of the frame.
   let prevPx = reprojectToPrev(curSurf.pos, dims);
   if (any(prevPx < vec2i(0)) || any(prevPx >= vec2i(dims))) {
-    storeReservoirDI_rw(&currentReservoir, pixelIdx, cur);
+    storeReservoirDI_rw(pixelIdx, cur);
     return;
   }
 
   let prevIdx = u32(prevPx.y) * dims.x + u32(prevPx.x);
-  var prev = loadReservoirDI_ro(&previousReservoir, prevIdx);
+  var prev = loadReservoirDI_ro(prevIdx);
 
   // Note: there is no explicit disocclusion gate here.  The implicit gate is
   // the p̂ re-evaluation below — if the previous reservoir's lightId is
   // occluded or back-facing at the current surface, p̂≈0 and the sample
   // contributes ~nothing (w_prev → 0).
 
-  // M-clamp previous reservoir — UBO-driven for scene-independence.
-  prev.M = min(prev.M, ubo.temporalMClampDI);
+  // M-clamp previous reservoir — UBO-driven for scene-independence. Scale the
+  // generalized w_sum and both support counts together so W remains invariant.
+  scaleReservoirDIToM(&prev, ubo.temporalMClampDI);
 
   // Evaluate p̂ at CURRENT pixel for the previous reservoir's chosen light.
   // Wave 4: pass prev.xi so the ENV_SAMPLE_SENTINEL branch can recover the
   // stored HDRI direction (restir_di_compute_phat_xi handles both emitter and
   // env-sentinel lids — emitter path ignores xi, env path decodes xi → dir).
-  let pHatPrevAtCur = restir_di_compute_phat_xi(prev.lightId, prev.xi, curSurf);
-  let w_prev = pHatPrevAtCur * prev.W * f32(prev.M);
+  var w_prev = 0.0;
+  if (prev.M > 0u && prev.W > 0.0) {
+    let pHatPrevAtCur = restir_di_compute_phat_xi(prev.lightId, prev.xi, curSurf);
+    w_prev = pHatPrevAtCur * prev.W * f32(prev.M);
+  }
 
   // Combine reservoirs.
   var combined = cur;
-  let curIsEnv = cur.lightId == ENV_SAMPLE_SENTINEL;
-  let prevIsEnv = prev.lightId == ENV_SAMPLE_SENTINEL;
-  var areaSupportM = 0u;
-  var envSupportM = 0u;
-  if (cur.M > 0u) {
-    if (curIsEnv) {
-      envSupportM = envSupportM + cur.M;
-    } else {
-      areaSupportM = areaSupportM + cur.M;
-    }
-  }
-  if (prev.M > 0u) {
-    if (prevIsEnv) {
-      envSupportM = envSupportM + prev.M;
-    } else {
-      areaSupportM = areaSupportM + prev.M;
-    }
-  }
+  combined.areaM = cur.areaM + prev.areaM;
+  combined.envM = cur.envM + prev.envM;
+  combined.M = combined.areaM + combined.envM;
   combined.w_sum += w_prev;
   if (rand_f32(&rng) * combined.w_sum < w_prev && w_prev > 0.0) {
     combined.lightId = prev.lightId;
@@ -137,12 +123,13 @@ fn temporalMain(@builtin(global_invocation_id) gid: vec3u) {
   }
 
   // Recompute W. Wave 4: pass combined.xi for the env-sentinel path.
-  let pHatZ = restir_di_compute_phat_xi(combined.lightId, combined.xi, curSurf);
-  let combinedSupportM = select(areaSupportM, envSupportM, combined.lightId == ENV_SAMPLE_SENTINEL);
-  combined.M = max(1u, combinedSupportM);
-  combined.W = select(0.0, combined.w_sum / (f32(combined.M) * pHatZ), pHatZ > 0.0);
+  combined.W = 0.0;
+  if (combined.M > 0u && combined.w_sum > 0.0) {
+    let pHatZ = restir_di_compute_phat_xi(combined.lightId, combined.xi, curSurf);
+    combined.W = select(0.0, combined.w_sum / (f32(combined.M) * pHatZ), pHatZ > 0.0);
+  }
 
-  storeReservoirDI_rw(&currentReservoir, pixelIdx, combined);
+  storeReservoirDI_rw(pixelIdx, combined);
 }
 `;
 

@@ -24,9 +24,10 @@
 import { describe, expect, it } from 'vitest';
 import {
   SPPM_MAX_CELLS,
-  SPPM_CELL_CAPACITY,
+  SPPM_PHOTON_COUNT,
   SPPM_PHOTON_RECORD_BYTES,
   SPPM_PHOTON_CELLS_BYTES,
+  SPPM_PHOTON_CELLS_MAX_BYTES,
   SPPM_CELL_COUNTERS_BYTES,
   SPPM_STATS_BYTES,
   SPPM_ALPHA,
@@ -84,30 +85,17 @@ function sppmNeighbourhoodCellsTS(
   return cells;
 }
 
-function sppmReservoirSlotTS(rawSlot: number, capacity: number, xi: number): number | null {
-  if (rawSlot < capacity) return rawSlot;
-  const clamped = Math.max(0, Math.min(xi, 0.99999994));
-  const candidate = Math.floor(clamped * (rawSlot + 1));
-  return candidate < capacity ? candidate : null;
-}
-
-function sppmCellSampleScaleTS(totalInCell: number, stored: number): number {
-  return totalInCell / Math.max(stored, 1);
-}
-
 describe('SPPM hash-grid cell math (TS mirror of sppmCellIndex WGSL)', () => {
   it('constants are consistent with each other', () => {
     // SPPM_MAX_CELLS must be a prime-ish value in a sensible range (≥ 1000).
     expect(SPPM_MAX_CELLS).toBe(65521);
-    // R7a (2026-06-10): 64, not 128 — 128 made the cells buffer 402 MiB,
-    // exceeding WebGPU's DEFAULT maxBufferSize (256 MiB); photon-map failed
-    // buffer validation on every default-limit device. 64 ≈ 201 MiB fits.
-    expect(SPPM_CELL_CAPACITY).toBe(32);
+    expect(SPPM_PHOTON_COUNT).toBe(65536);
     expect(SPPM_PHOTON_RECORD_BYTES).toBe(48); // 3 × vec4f
-    expect(SPPM_PHOTON_CELLS_BYTES).toBe(SPPM_MAX_CELLS * SPPM_CELL_CAPACITY * SPPM_PHOTON_RECORD_BYTES);
-    // The whole grid must fit the WebGPU DEFAULT maxBufferSize so photon-map
-    // works without negotiated limits.
-    expect(SPPM_PHOTON_CELLS_BYTES).toBeLessThanOrEqual(128 * 1024 * 1024); // default maxStorageBufferBindingSize — the tighter limit
+    expect(SPPM_PHOTON_CELLS_BYTES).toBe(
+      SPPM_PHOTON_COUNT * SPPM_PHOTON_RECORD_BYTES,
+    );
+    expect(SPPM_PHOTON_CELLS_BYTES).toBe(3 * 1024 * 1024);
+    expect(SPPM_PHOTON_CELLS_MAX_BYTES).toBe(SPPM_PHOTON_CELLS_BYTES);
     expect(SPPM_CELL_COUNTERS_BYTES).toBe(SPPM_MAX_CELLS * 4);
     expect(SPPM_STATS_BYTES).toBe(32);
   });
@@ -189,33 +177,97 @@ describe('SPPM hash-grid cell math (TS mirror of sppmCellIndex WGSL)', () => {
     expect(dist2).toBeLessThanOrEqual(shrunkGatherRadius * shrunkGatherRadius);
   });
 
-  it('over-capacity cells use reservoir replacement instead of newest-photon modulo overwrite', () => {
-    expect(sppmReservoirSlotTS(31, SPPM_CELL_CAPACITY, 0.9)).toBe(31);
-    expect(sppmReservoirSlotTS(32, SPPM_CELL_CAPACITY, 0.0)).toBe(0);
-    expect(sppmReservoirSlotTS(32, SPPM_CELL_CAPACITY, 31.25 / 33)).toBe(31);
-    expect(sppmReservoirSlotTS(32, SPPM_CELL_CAPACITY, 32.25 / 33)).toBeNull();
-    expect(sppmReservoirSlotTS(63, SPPM_CELL_CAPACITY, 31.75 / 64)).toBe(31);
-    expect(sppmReservoirSlotTS(63, SPPM_CELL_CAPACITY, 32.25 / 64)).toBeNull();
+  it('one unique record per emitted lane forms a bounded collision chain', () => {
+    const bucketHeads = new Uint32Array(4);
+    const nextEncoded = new Uint32Array(6);
+    for (const photonIndex of [0, 2, 5]) {
+      const previousHead = bucketHeads[1]!;
+      nextEncoded[photonIndex] = previousHead;
+      bucketHeads[1] = photonIndex + 1;
+    }
+    const visited: number[] = [];
+    let encoded = bucketHeads[1]!;
+    while (encoded !== 0 && visited.length < nextEncoded.length) {
+      const photonIndex = encoded - 1;
+      visited.push(photonIndex);
+      encoded = nextEncoded[photonIndex]!;
+    }
+    expect(visited).toEqual([5, 2, 0]);
+    expect(new Set(visited).size).toBe(visited.length);
+    expect(visited).not.toContain(4); // a nondeposited record is never linked
+  });
+  it('valid atomic-exchange publication is acyclic and worst-case bounded', () => {
+    const nextEncoded = new Uint32Array(SPPM_PHOTON_COUNT);
+    let head = 0;
+    for (let photonIndex = 0; photonIndex < SPPM_PHOTON_COUNT; photonIndex++) {
+      nextEncoded[photonIndex] = head;
+      head = photonIndex + 1;
+    }
+    const seen = new Set<number>();
+    let encoded = head;
+    let traversed = 0;
+    while (encoded !== 0 && traversed < SPPM_PHOTON_COUNT) {
+      const photonIndex = encoded - 1;
+      expect(photonIndex).toBeLessThan(SPPM_PHOTON_COUNT);
+      expect(seen.has(photonIndex)).toBe(false);
+      seen.add(photonIndex);
+      encoded = nextEncoded[photonIndex]!;
+      traversed++;
+    }
+    expect(encoded).toBe(0);
+    expect(traversed).toBe(SPPM_PHOTON_COUNT);
+    expect(seen.has(0)).toBe(true);
   });
 
-  it('overflow compensation scales stored photons back to the cell insertion count', () => {
-    const totalInCell = 40;
-    const stored = SPPM_CELL_CAPACITY;
-    const storedHitsInDisk = 16;
-    const scale = sppmCellSampleScaleTS(totalInCell, stored);
+  it('corrupt indices and cycles terminate without revisiting records', () => {
+    const traverse = (head: number, next: Uint32Array): number[] => {
+      const nextHead = (encoded: number): number => {
+        if (encoded === 0) return 0;
+        const index = encoded - 1;
+        return index < next.length ? next[index]! : 0;
+      };
+      const visited: number[] = [];
+      let encoded = head;
+      let slow = head;
+      let fast = head;
+      while (encoded !== 0 && visited.length < next.length) {
+        const photonIndex = encoded - 1;
+        if (photonIndex >= next.length) break;
+        encoded = next[photonIndex]!;
+        slow = nextHead(slow);
+        fast = nextHead(nextHead(fast));
+        visited.push(photonIndex);
+        if (slow !== 0 && slow === fast) break;
+      }
+      return visited;
+    };
+    const corrupt = new Uint32Array(4);
+    expect(traverse(9, corrupt)).toEqual([]);
 
-    expect(scale).toBeCloseTo(1.25, 10);
-    expect(storedHitsInDisk).toBeLessThan(totalInCell);
-    expect(storedHitsInDisk * scale).toBeCloseTo(20, 10);
-    expect(sppmCellSampleScaleTS(12, 12)).toBe(1);
-    expect(Number.isFinite(sppmCellSampleScaleTS(0, 0))).toBe(true);
+    const cyclic = new Uint32Array(4);
+    cyclic[0] = 2;
+    cyclic[1] = 1;
+    const visited = traverse(1, cyclic);
+    expect(visited).toEqual([0, 1]);
+    expect(new Set(visited).size).toBe(visited.length);
+  });
+
+
+  it('deduplicates hash collisions among the 27 neighbourhood probes', () => {
+    const cells = [] as number[];
+    for (let dz = -1; dz <= 1; dz++) for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+      cells.push(sppmCellIndexTS(dx * 0.1, dy * 0.1, dz * 0.1, 0.1));
+    }
+    const unique = [...new Set(cells)];
+    expect(unique.length).toBeLessThanOrEqual(27);
+    expect(unique.length).toBeGreaterThan(0);
+    expect(unique.reduce((count) => count + 1, 0)).toBe(unique.length);
   });
 });
 
 // ── 2. Progressive radius schedule ────────────────────────────────────────────
 //
-// r(n) = r₀ × sqrt((n × α + α) / (n + 1))  for n ≥ 1
-// r(0) = r₀ × sqrt(α)                        (first frame)
+// Exact unit-M recurrence: N'=N+α, R'²=R²*N'/(N+1), frame n has n+1 steps.
 // α = 2/3 (Hachisuka & Jensen 2009, Eq. 4)
 
 describe('SPPM progressive radius schedule (sppmRadiusAtFrame)', () => {
@@ -229,18 +281,25 @@ describe('SPPM progressive radius schedule (sppmRadiusAtFrame)', () => {
     expect(sppmRadiusAtFrame(r0, 0)).toBeCloseTo(expected, 10);
   });
 
-  it('frame 1: r(1) = r₀ × sqrt((1×α+α)/(1+1)) = r₀ × sqrt(α)', () => {
-    // (α + α) / 2 = α, sqrt(α) — same as frame 0 due to the formula symmetry.
+  it('frame 1 applies the second Hachisuka radius update', () => {
     const r0 = 0.1;
-    const expected = r0 * Math.sqrt((1 * SPPM_ALPHA + SPPM_ALPHA) / (1 + 1));
+    const firstRatio = SPPM_ALPHA;
+    const secondRatio = (2 * SPPM_ALPHA) / (SPPM_ALPHA + 1);
+    const expected = r0 * Math.sqrt(firstRatio * secondRatio);
     expect(sppmRadiusAtFrame(r0, 1)).toBeCloseTo(expected, 10);
+    expect(sppmRadiusAtFrame(r0, 1)).toBeLessThan(sppmRadiusAtFrame(r0, 0));
   });
 
-  it('frame 10: r(10) = r₀ × sqrt((10α+α)/11)', () => {
+  it('frame 10 matches an independent recurrence', () => {
     const r0 = 0.05;
-    const n = 10;
-    const expected = r0 * Math.sqrt((n * SPPM_ALPHA + SPPM_ALPHA) / (n + 1));
-    expect(sppmRadiusAtFrame(r0, n)).toBeCloseTo(expected, 10);
+    let expectedRadius2 = r0 * r0;
+    let N = 0;
+    for (let step = 0; step <= 10; step++) {
+      const nextN = N + SPPM_ALPHA;
+      expectedRadius2 *= nextN / (N + 1);
+      N = nextN;
+    }
+    expect(sppmRadiusAtFrame(r0, 10)).toBeCloseTo(Math.sqrt(expectedRadius2), 10);
   });
 
   it('frame 100: radius shrinks relative to r₀ but stays positive', () => {
@@ -307,11 +366,15 @@ describe('SPPM WGSL structural assertions (A4)', () => {
     expect(SPPM_GROUP3_BINDINGS_WGSL).not.toContain('@group(4)');
   });
 
-  // D9.9 — sppmGather deleted 2026-06-10 (superseded by sppmGatherProgressive).
-  it('SPPM_GROUP3_BINDINGS_WGSL contains sppmGatherProgressive and sppmInsertPhoton', () => {
+  // D9.9 — the legacy bounded gather was replaced by progressive update/readback.
+  it('contains split progressive update/readback and photon insertion', () => {
     expect(SPPM_GROUP3_BINDINGS_WGSL).not.toContain('fn sppmGather('); // dead — deleted D9.9
-    expect(SPPM_GROUP3_BINDINGS_WGSL).toContain('fn sppmGatherProgressive(');
-    expect(SPPM_GROUP3_BINDINGS_WGSL).toContain('fn sppmInsertPhoton(pos: vec3f, flux: vec3f, dir: vec3f, radius: f32, reservoirXi: f32)');
+    expect(SPPM_GROUP3_BINDINGS_WGSL).toContain('fn sppmUpdateProgressiveKind(');
+    expect(SPPM_GROUP3_BINDINGS_WGSL).toContain('fn sppmCurrentProgressiveEstimate(');
+    expect(SPPM_GROUP3_BINDINGS_WGSL).toContain('fn sppmInsertPhoton(');
+    expect(SPPM_GROUP3_BINDINGS_WGSL).toContain('kind: u32');
+    expect(SPPM_GROUP3_BINDINGS_WGSL).toContain('mediumMatId: u32');
+    expect(SPPM_GROUP3_BINDINGS_WGSL).toContain('phaseG: f32');
     expect(SPPM_GROUP3_BINDINGS_WGSL).toContain('fn sppmCellIndex(');
   });
 
@@ -322,21 +385,35 @@ describe('SPPM WGSL structural assertions (A4)', () => {
     expect(SPPM_GROUP3_BINDINGS_WGSL).not.toContain('1.25');
   });
 
-  it('sppmGatherProgressive queries the stable insertion grid, not the shrunk gather radius', () => {
+  it('progressive update queries the stable insertion grid, not the shrunk gather radius', () => {
     expect(SPPM_GROUP3_BINDINGS_WGSL).toContain('let gridRadius = max(sppmStats.currentRadius, 1e-6);');
     expect(SPPM_GROUP3_BINDINGS_WGSL).toContain('* gridRadius');
     expect(SPPM_GROUP3_BINDINGS_WGSL).toContain('sppmCellIndex(probe, gridRadius)');
     expect(SPPM_GROUP3_BINDINGS_WGSL).not.toContain('sppmCellIndex(probe, r)');
   });
 
-  it('SPPM_GROUP3_BINDINGS_WGSL uses reservoir replacement and density compensation under cell overflow', () => {
-    expect(SPPM_GROUP3_BINDINGS_WGSL).toContain('if (rawSlot >= SPPM_CELL_CAPACITY_WGSL)');
-    expect(SPPM_GROUP3_BINDINGS_WGSL).toContain('let candidate = u32(floor(xi * f32(rawSlot + 1u)))');
-    expect(SPPM_GROUP3_BINDINGS_WGSL).not.toContain('rawSlot % SPPM_CELL_CAPACITY_WGSL');
-    expect(SPPM_GROUP3_BINDINGS_WGSL).toContain('let totalInCell = atomicLoad(&sppmCellCounters[cellIdx]);');
-    expect(SPPM_GROUP3_BINDINGS_WGSL).toContain('let cellSampleScale = f32(totalInCell) / f32(max(stored, 1u));');
-    expect(SPPM_GROUP3_BINDINGS_WGSL).toContain('* cellSampleScale');
-    expect(SPPM_GROUP3_BINDINGS_WGSL).toContain('M    = M + cellSampleScale');
+  it('uses a race-free per-frame linked grid with bounded deduplicated traversal', () => {
+    expect(SPPM_GROUP3_BINDINGS_WGSL).toContain('photonIndex + 1u');
+    expect(SPPM_GROUP3_BINDINGS_WGSL).toContain('atomicExchange(&sppmCellCounters[cellIdx]');
+    expect(SPPM_GROUP3_BINDINGS_WGSL).toContain('.nextEncoded = previousHead');
+    expect(SPPM_GROUP3_BINDINGS_WGSL).toContain('encodedPhoton = ph.nextEncoded');
+    expect(SPPM_GROUP3_BINDINGS_WGSL).not.toContain('bitcast<f32>(previousHead)');
+    expect(SPPM_GROUP3_BINDINGS_WGSL).toContain('var visitedCells: array<u32, 27>');
+    expect(SPPM_GROUP3_BINDINGS_WGSL).toContain('if (visitedCells[vi] == cellIdx)');
+    expect(SPPM_GROUP3_BINDINGS_WGSL).toContain('traversed >= nPhotons');
+    expect(SPPM_GROUP3_BINDINGS_WGSL).toContain('fn sppmNextEncodedHead(');
+    expect(SPPM_GROUP3_BINDINGS_WGSL).toContain('var cycleSlow = encodedPhoton');
+    expect(SPPM_GROUP3_BINDINGS_WGSL).toContain('var cycleFast = encodedPhoton');
+    expect(SPPM_GROUP3_BINDINGS_WGSL).toContain('cycleSlow == cycleFast');
+    expect(SPPM_GROUP3_BINDINGS_WGSL).not.toContain('atomicAdd(&sppmCellCounters');
+    expect(SPPM_GROUP3_BINDINGS_WGSL).not.toContain('reservoirXi');
+    expect(SPPM_GROUP3_BINDINGS_WGSL).not.toContain('cellSampleScale');
+  });
+
+  it('does not apply a second receiver cosine to the photon density estimate', () => {
+    expect(SPPM_GROUP3_BINDINGS_WGSL).toContain('if (nDotL > 0.0)');
+    expect(SPPM_GROUP3_BINDINGS_WGSL).toContain('throughput * brdf * ph.flux');
+    expect(SPPM_GROUP3_BINDINGS_WGSL).not.toContain('brdf * ph.flux * nDotL');
   });
 
   it('SPPM_PHOTON_PASS_WGSL contains the sppmEmitPhotons entry point', () => {
@@ -363,7 +440,7 @@ describe('SPPM WGSL structural assertions (A4)', () => {
 
   it('spmmGather uses the π r² density estimator (no hardcoded fudge)', () => {
     // The gather must divide by PI * r² — standard SPPM estimator.
-    expect(SPPM_GROUP3_BINDINGS_WGSL).toContain('PI * r2');
+    expect(SPPM_GROUP3_BINDINGS_WGSL).toContain('PI * pxStats.radius2');
     // No hardcoded scale factor: not ×1.25 or similar.
     expect(SPPM_GROUP3_BINDINGS_WGSL).not.toMatch(/\*\s*1\.25/);
     expect(SPPM_GROUP3_BINDINGS_WGSL).not.toMatch(/\*\s*1\.5/);
@@ -373,15 +450,14 @@ describe('SPPM WGSL structural assertions (A4)', () => {
 // ── 5. A4-progressive: SPPM_PIXEL_STATS_BYTES_PER_PIXEL constant ─────────────
 
 describe('SPPM_PIXEL_STATS_BYTES_PER_PIXEL constant (A4-progressive)', () => {
-  it('equals 32 (8 × f32)', () => {
-    // SppmPixelStats = tau.rgb (f32×3) + radius2 (f32) + N (f32) + _pad×3 (f32×3) = 8 f32.
-    expect(SPPM_PIXEL_STATS_BYTES_PER_PIXEL).toBe(32);
+  it('equals 64 (independent 8-f32 surface and volume records)', () => {
+    expect(SPPM_PIXEL_STATS_BYTES_PER_PIXEL).toBe(64);
   });
 
   it('buffer size for a 1920×1080 frame fits inside maxStorageBufferBindingSize default (128 MiB)', () => {
     const w = 1920, h = 1080;
     const bytes = w * h * SPPM_PIXEL_STATS_BYTES_PER_PIXEL;
-    // 1920 × 1080 × 32 = 66 355 200 bytes ≈ 63 MiB
+    // 1920 × 1080 × 64 = 132 710 400 bytes ≈ 126.6 MiB
     expect(bytes).toBeLessThan(128 * 1024 * 1024);
   });
 });
@@ -511,6 +587,32 @@ describe('A4-progressive SPPM recurrence (TS mirror vs closed form)', () => {
     // N after first frame = 0 + α·M
     expect(result.N).toBeCloseTo(SPPM_ALPHA * M, 10);
   });
+
+  it('normalizes photon power once and evaluates the receiver BRDF once', () => {
+    const sourcePower = 20;
+    const sourceSelectionPdf = 0.25;
+    const emittedPhotonCount = 100;
+    const gatheredPhotons = 10;
+    const receiverBrdf = 0.25;
+    const r0 = 2;
+
+    // The photon stores source power divided by source PMF, but not by N_e.
+    const storedPower = sourcePower / sourceSelectionPdf;
+    const phiM: [number, number, number] = [
+      gatheredPhotons * receiverBrdf * storedPower,
+      0,
+      0,
+    ];
+    const update = sppmUpdateStep([0, 0, 0], r0 * r0, 0, gatheredPhotons, phiM, SPPM_ALPHA);
+    const estimate = update.tau[0] / (emittedPhotonCount * Math.PI * update.radius2);
+    const independent =
+      gatheredPhotons * receiverBrdf * storedPower /
+      (emittedPhotonCount * Math.PI * r0 * r0);
+
+    expect(estimate).toBeCloseTo(independent, 12);
+    expect(estimate).not.toBeCloseTo(independent / emittedPhotonCount, 12);
+    expect(estimate).not.toBeCloseTo(independent * receiverBrdf, 12);
+  });
 });
 
 // ── 7. A4-progressive: WGSL structural assertions for binding(9) ─────────────
@@ -529,18 +631,19 @@ describe('A4-progressive WGSL structural assertions (binding 9 + progressive fn)
     expect(SPPM_GROUP3_BINDINGS_WGSL).toContain('N       : f32');
   });
 
-  it('SPPM_GROUP3_BINDINGS_WGSL contains sppmGatherProgressive (A4 entry point)', () => {
-    expect(SPPM_GROUP3_BINDINGS_WGSL).toContain('fn sppmGatherProgressive(');
+  it('declares distinct surface/volume update entry points', () => {
+    expect(SPPM_GROUP3_BINDINGS_WGSL).toContain('fn sppmUpdateSurfaceProgressive(');
+    expect(SPPM_GROUP3_BINDINGS_WGSL).toContain('fn sppmUpdateVolumeProgressive(');
   });
 
-  it('sppmGatherProgressive writes all three per-pixel stats fields back', () => {
+  it('progressive update writes all three per-pixel stats fields back', () => {
     // The update rule must persist tau', radius2', and N' after each frame.
-    expect(SPPM_GROUP3_BINDINGS_WGSL).toContain('sppmPixelStats[pixelIndex].tau');
-    expect(SPPM_GROUP3_BINDINGS_WGSL).toContain('sppmPixelStats[pixelIndex].radius2');
-    expect(SPPM_GROUP3_BINDINGS_WGSL).toContain('sppmPixelStats[pixelIndex].N');
+    expect(SPPM_GROUP3_BINDINGS_WGSL).toContain('sppmPixelStats[statsIndex].tau');
+    expect(SPPM_GROUP3_BINDINGS_WGSL).toContain('sppmPixelStats[statsIndex].radius2');
+    expect(SPPM_GROUP3_BINDINGS_WGSL).toContain('sppmPixelStats[statsIndex].N');
   });
 
-  it('sppmGatherProgressive contains the Hachisuka ratio guard (M=0 stability)', () => {
+  it('progressive update contains the Hachisuka ratio guard (M=0 stability)', () => {
     // The WGSL must guard M=0 to avoid 0/0.
     expect(SPPM_GROUP3_BINDINGS_WGSL).toContain('select(Nprime / NplusM, 1.0, M < 0.5)');
   });

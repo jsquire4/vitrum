@@ -78,6 +78,7 @@ const LEAFNODE_FLAG = 0xFFFF0000u;
 //
 // Layout offsets are pinned and host-side packers (pipeline/uboUpdater.ts)
 // rely on them. Bump documentation if the layout changes.
+// WGSL struct size 432 bytes (host constant: WALKAROUND_UBO_SIZE_BYTES).
 // ============================================================
 struct WalkaroundUBO {
   viewMatrix:                 mat4x4f, //  offset 0
@@ -182,14 +183,14 @@ struct WalkaroundUBO {
   regirCandidatesPerCell:     u32,     //  offset 400 — M: WRS candidates per sub-reservoir
   regirSurvivorsPerCell:      u32,     //  offset 404 — K: survivors stored per cell
   regirGridFloatOffset:       u32,     //  offset 408 — float offset of the grid region in the combined buffer
-  // GRIS / ReSTIR-PT reconnection-shift reuse gate (Lin et al. 2022). Was
+  // GRIS DDGI-proxy reconnection-shift reuse gate (Lin et al. 2022). Was
   // _regirPad. 0 ⇒ the GI spatial/temporal reuse runs the legacy clamped-
-  // Jacobian path bit-for-bit; 1 ⇒ the reuse applies the unbiased GRIS
-  // reconnection shift + reconnection visibility + pairwise generalized-
+  // Jacobian path bit-for-bit; 1 ⇒ the reuse applies the bounded GRIS DDGI-proxy
+  // reconnection shift + reconnection visibility + bounded all-technique transformed-density
   // balance MIS (grisReuse.wgsl). Host opt-in via HybridEngineOptions
-  // .restirPtReuse — the same OFF-is-bit-identical pattern as RC/PPG/ReGIR.
-  restirPtReuse:              u32,     //  offset 412 — GRIS reuse gate (was _regirPad)
-  sunAngular:                 vec4f,   //  offset 416 — x = direct sun cone radius in radians; yzw reserved; struct size 432 bytes
+  // .grisReuse — the same OFF-is-bit-identical pattern as RC/PPG/ReGIR.
+  grisReuse:              u32,     //  offset 412 — GRIS reuse gate (was _regirPad)
+  sunAngular:                 vec4f,   //  offset 416 — x = direct sun cone radius in radians; y bits = GRIS history epoch; z = generic refractive-caustic gate; w reserved
 };
 
 // T5 — stained-glass opt-in flag bit masks. Bit 0 gates the sun-caustic term,

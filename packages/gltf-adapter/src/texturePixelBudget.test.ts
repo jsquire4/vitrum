@@ -20,7 +20,7 @@ interface PixelHandle {
 }
 
 function makePixelHandle(width: number, height: number): PixelHandle {
-  // Deterministic ramp so nearest-sampled clamped output is checkable.
+  // Deterministic ramp so filtered clamped output is checkable.
   const data = new Uint8Array(width * height * 4);
   for (let i = 0; i < width * height; i += 1) {
     data[i * 4] = i % 256;
@@ -129,7 +129,7 @@ describe('decoded-texture pixel budget (maxDecodedTexturePixels)', () => {
     ).toBe(false);
   });
 
-  it('undefined / non-positive budget disables the guard', async () => {
+  it('accepts a small texture under the safe default and explicit zero opt-out', async () => {
     const handle = makePixelHandle(8, 8);
     const result = await decodeSceneTextures(sceneWith(handle), { target: 'cpu-linear' });
     expect(result.decodedCount).toBe(1);
@@ -176,8 +176,8 @@ describe('maxTextureSize clamp is applied BEFORE allocation (fused resize)', () 
     expect(decoded.__vitrum_hint__.maxTextureSize).toBe(8);
   });
 
-  it('nearest-sampled clamped output matches the source top-left texel', async () => {
-    // 2x1 source clamped to 1x1: nearest picks source (0,0).
+  it('area-filters clamped output in linear light', async () => {
+    // 2x1 source clamped to 1x1: red and green contribute equal energy.
     const handle: PixelHandle = {
       width: 2,
       height: 1,
@@ -198,11 +198,104 @@ describe('maxTextureSize clamp is applied BEFORE allocation (fused resize)', () 
     };
     expect(decoded.width).toBe(1);
     expect(decoded.height).toBe(1);
-    // srgb 255 → linear 1.0 for red channel of source texel (0,0).
-    expect(decoded.data[0]).toBeCloseTo(1, 5);
-    expect(decoded.data[1]).toBeCloseTo(0, 5);
+    expect(decoded.data[0]).toBeCloseTo(0.5, 5);
+    expect(decoded.data[1]).toBeCloseTo(0.5, 5);
     expect(decoded.data[2]).toBeCloseTo(0, 5);
     expect(decoded.data[3]).toBe(1);
+  });
+
+  it('preserves checkerboard energy during area downsampling', async () => {
+    const data = new Uint8Array(4 * 4 * 4);
+    for (let y = 0; y < 4; y += 1) {
+      for (let x = 0; x < 4; x += 1) {
+        const value = (x + y) % 2 === 0 ? 0 : 255;
+        const offset = (y * 4 + x) * 4;
+        data.set([value, value, value, 255], offset);
+      }
+    }
+    const result = await decodeSceneTextures(sceneWith({
+      width: 4,
+      height: 4,
+      data,
+      channels: 4,
+      dataType: 'uint8',
+      colorSpace: 'srgb',
+    }), {
+      target: 'cpu-linear',
+      maxTextureSize: 1,
+    });
+    const decoded = ((result.scene.primitives[0] as MeshPrimitive).material
+      .baseColorMap as TextureRef).handle as { data: Float32Array };
+    expect([...decoded.data]).toEqual([
+      expect.closeTo(0.5, 6),
+      expect.closeTo(0.5, 6),
+      expect.closeTo(0.5, 6),
+      1,
+    ]);
+  });
+
+  it('re-encodes an area-filtered sRGB output after linear-light averaging', async () => {
+    const result = await decodeSceneTextures(sceneWith({
+      width: 2,
+      height: 1,
+      data: new Uint8Array([
+        0, 0, 0, 255,
+        255, 255, 255, 255,
+      ]),
+      channels: 4,
+      dataType: 'uint8',
+      colorSpace: 'srgb',
+    }), {
+      target: 'webgpu',
+      maxTextureSize: 1,
+    });
+    const decoded = ((result.scene.primitives[0] as MeshPrimitive).material
+      .baseColorMap as TextureRef).handle as {
+        data: Float32Array;
+        __vitrum_hint__: { colorSpace: string };
+      };
+    const encodedLinearHalf = 1.055 * (0.5 ** (1 / 2.4)) - 0.055;
+    expect(decoded.__vitrum_hint__.colorSpace).toBe('srgb');
+    expect(decoded.data[0]).toBeCloseTo(encodedLinearHalf, 6);
+    expect(decoded.data[1]).toBeCloseTo(encodedLinearHalf, 6);
+    expect(decoded.data[2]).toBeCloseTo(encodedLinearHalf, 6);
+    expect(decoded.data[0]).not.toBeCloseTo(0.5, 2);
+  });
+
+  it('uses pixel-centred bilinear reconstruction when NPOT policy upsamples', async () => {
+    const result = await decodeSceneTextures(sceneWith({
+      width: 3,
+      height: 1,
+      data: new Uint8Array([
+        0, 0, 0, 255,
+        255, 255, 255, 255,
+        0, 0, 0, 255,
+      ]),
+      channels: 4,
+      dataType: 'uint8',
+      colorSpace: 'srgb',
+    }), {
+      target: 'cpu-linear',
+      npotRepeatWrapPolicy: 'resize-to-pot',
+    });
+    const decoded = ((result.scene.primitives[0] as MeshPrimitive).material
+      .baseColorMap as TextureRef).handle as {
+        width: number;
+        height: number;
+        data: Float32Array;
+      };
+    expect([decoded.width, decoded.height]).toEqual([4, 1]);
+    expect([
+      decoded.data[0],
+      decoded.data[4],
+      decoded.data[8],
+      decoded.data[12],
+    ]).toEqual([
+      expect.closeTo(0, 6),
+      expect.closeTo(0.625, 6),
+      expect.closeTo(0.625, 6),
+      expect.closeTo(0, 6),
+    ]);
   });
 
   it('leaves a within-size texture unchanged in dimensions', async () => {

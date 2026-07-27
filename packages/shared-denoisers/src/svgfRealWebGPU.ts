@@ -5,7 +5,7 @@
  *   1. svgfReprojMain           — bilinear reprojection + disocclusion + EMA history
  *   2. svgfVarianceFromMomentsMain — Eq. 5 variance from blended moments
  *   3. svgf7x7FallbackMain      — 7×7 spatial fallback for history < 4 pixels
- *   4. svgfAtrousMain (×5)      — variance-guided à-trous chain (reuses ATROUS_VARIANCE_WGSL)
+ *   4. svgfRealAtrousMain (×5)  — variance-prefiltered, variance-propagating à-trous chain
  *
  * GPU memory budget (see svgfRealConstants.ts for the compact input side):
  *   persistent inputs remain compact where portable; storage-write outputs use
@@ -39,6 +39,13 @@ import {
 import { ATROUS_VARIANCE_DEFAULT_ATROUS_UNIFORMS } from './atrousVarianceBindings.js';
 import { acquireDenoiseDevice } from './sharedWebGpuDevice.js';
 import { buildAtrousChain, makeResourceTracker } from './atrousChain.js';
+import {
+  assertFiniteFloatSlice,
+  assertFiniteNumber,
+  assertOneShotArrayLength,
+  assertOneShotDeviceLimits,
+  assertOneShotDimensions,
+} from './webGpuOneShotValidation.js';
 // NOTE: albedo demodulation differs INTENTIONALLY between this real-SVGF path
 // and atrousVarianceWebGPU.ts — see the demodulation cross-reference comment at
 // the `rgbForChain`/`prevForChain` site below.
@@ -99,7 +106,11 @@ export interface SVGFRealWebGPUOptions {
   readonly width: number;
   readonly height: number;
 
-  /** Previous-frame EMA color. If omitted, mirrors `rgb` (first frame). */
+  /**
+   * Previous-frame first-wavelet color. If omitted, mirrors `rgb` (first
+   * frame). A chainable call returns the matching value as
+   * `prevRadianceOut`.
+   */
   readonly prevRadianceRgb?: Float32Array;
   /** Screen-space motion vector (pixel delta, RG interleaved), length W*H*2. */
   readonly motionRg?: Float32Array;
@@ -154,12 +165,13 @@ export interface SVGFRealWebGPUOptions {
   readonly reuseSharedWebGpuDevice?: boolean;
 
   /**
-   * When true, the reprojection outputs (blended moments + per-pixel history
-   * length) are read back BEFORE the transient textures are destroyed and
-   * returned as `momentsOut` / `historyLengthOut`, so the caller can feed them
-   * back as `momentsIn` / `historyLengthIn` next frame — enabling multi-frame
-   * chaining. Default false (single-frame; `momentsOut`/`historyLengthOut`
-   * remain undefined and no extra readback is submitted).
+   * When true, the first-wavelet color history plus reprojection outputs
+   * (blended moments + per-pixel history length) are read back BEFORE the
+   * transient textures are destroyed and returned as `prevRadianceOut`,
+   * `momentsOut`, and `historyLengthOut`. Feed them back as
+   * `prevRadianceRgb`, `momentsIn`, and `historyLengthIn` next frame.
+   * Default false (single-frame; chaining outputs remain undefined and no
+   * extra readback is submitted).
    */
   readonly chainable?: boolean;
 }
@@ -168,28 +180,100 @@ export interface SVGFRealWebGPUOptions {
  * Result of a one-shot SVGF pass.
  *
  * `rgb` is always the filtered HDR RGB (length width*height*3). When the caller
- * sets `chainable: true`, `momentsOut` (blended M1/M2 interleaved, length W*H*2)
- * and `historyLengthOut` (per-pixel u32 history length, length W*H) are also
- * returned so they can be threaded into the next frame's `momentsIn` /
- * `historyLengthIn`; otherwise both are undefined.
+ * sets `chainable: true`, `prevRadianceOut` (the first-wavelet color history),
+ * `momentsOut` (blended M1/M2 interleaved), and `historyLengthOut` (per-pixel
+ * u32 history length) are also returned so they can be threaded into the next
+ * frame; otherwise all three are undefined.
  */
 export interface SVGFRealWebGPUResult {
   readonly rgb: Float32Array;
+  readonly prevRadianceOut?: Float32Array;
   readonly momentsOut?: Float32Array;
   readonly historyLengthOut?: Uint32Array;
 }
 
+/** Validate all CPU-backed inputs before device acquisition or GPU allocation. */
+export function assertSVGFRealWebGPUInputs(opts: SVGFRealWebGPUOptions): number {
+  const label = 'runSVGFRealWebGPU';
+  const px = assertOneShotDimensions(label, opts.width, opts.height);
+  const checkFloat = (name: string, value: Float32Array, length: number): void => {
+    assertOneShotArrayLength(label, name, value, length);
+    assertFiniteFloatSlice(label, name, value, length);
+  };
+  const checkU32 = (
+    name: string,
+    value: Uint32Array,
+    length: number,
+    max: number = 0xFFFFFFFF,
+  ): void => {
+    assertOneShotArrayLength(label, name, value, length);
+    if (max < 0xFFFFFFFF) {
+      for (let i = 0; i < length; i += 1) {
+        if (value[i]! > max) {
+          throw new Error(
+            `${label}: ${name}[${i}] must be <= ${max}; received ${value[i]}`,
+          );
+        }
+      }
+    }
+  };
+
+  checkFloat('rgb', opts.rgb, px * 3);
+  if (opts.prevRadianceRgb != null) {
+    checkFloat('prevRadianceRgb', opts.prevRadianceRgb, px * 3);
+  }
+  if (opts.motionRg != null) checkFloat('motionRg', opts.motionRg, px * 2);
+  if (opts.linearDepth != null) checkFloat('linearDepth', opts.linearDepth, px);
+  if (opts.gbufferNormalsRgb != null) {
+    checkFloat('gbufferNormalsRgb', opts.gbufferNormalsRgb, px * 3);
+  }
+  if (opts.prevLinearDepth != null) {
+    checkFloat('prevLinearDepth', opts.prevLinearDepth, px);
+  }
+  if (opts.prevNormalsRgb != null) {
+    checkFloat('prevNormalsRgb', opts.prevNormalsRgb, px * 3);
+  }
+  if (opts.albedoRgb != null) checkFloat('albedoRgb', opts.albedoRgb, px * 3);
+  if (opts.momentsIn != null) checkFloat('momentsIn', opts.momentsIn, px * 2);
+
+  if (opts.objectIds != null) checkU32('objectIds', opts.objectIds, px);
+  if (opts.prevObjectIds != null) checkU32('prevObjectIds', opts.prevObjectIds, px);
+  if (opts.historyLengthIn != null) {
+    checkU32('historyLengthIn', opts.historyLengthIn, px, 0xFFFF);
+  }
+  if (opts.prevHistoryLength != null) {
+    checkU32('prevHistoryLength', opts.prevHistoryLength, px, 0xFFFF);
+  }
+
+  assertFiniteNumber(
+    label,
+    'atrousIterations',
+    opts.atrousIterations ?? SVGF_REAL_DEFAULT_ATROUS_ITERATIONS,
+  );
+  assertFiniteNumber(label, 'sigmaColor', opts.sigmaColor ?? ATROUS_VARIANCE_DEFAULT_ATROUS_UNIFORMS.sigmaColor, { min: 0 });
+  assertFiniteNumber(label, 'sigmaNormal', opts.sigmaNormal ?? ATROUS_VARIANCE_DEFAULT_ATROUS_UNIFORMS.sigmaNormal, { min: 0 });
+  assertFiniteNumber(label, 'sigmaDepth', opts.sigmaDepth ?? ATROUS_VARIANCE_DEFAULT_ATROUS_UNIFORMS.sigmaDepth, { min: 0 });
+
+  const reproj = opts.reprojUniforms;
+  assertFiniteNumber(label, 'reprojUniforms.sigmaDepth', reproj?.sigmaDepth ?? SVGF_REPROJ_DEFAULT_UNIFORMS.sigmaDepth, { min: 0 });
+  assertFiniteNumber(label, 'reprojUniforms.sigmaNormal', reproj?.sigmaNormal ?? SVGF_REPROJ_DEFAULT_UNIFORMS.sigmaNormal, { min: 0 });
+  assertFiniteNumber(label, 'reprojUniforms.alphaMin', reproj?.alphaMin ?? SVGF_REPROJ_DEFAULT_UNIFORMS.alphaMin, { min: 0, max: 1 });
+  assertFiniteNumber(label, 'reprojUniforms.forceReset', reproj?.forceReset ?? SVGF_REPROJ_DEFAULT_UNIFORMS.forceReset ?? 0, { integer: true, min: 0, max: 1 });
+  return px;
+}
+
 /**
  * Run a full Schied 2017 SVGF denoiser pass on the given inputs.
- * Returns `{ rgb, momentsOut?, historyLengthOut? }`: `rgb` is the filtered HDR
- * RGB (length width*height*3); `momentsOut`/`historyLengthOut` are populated
- * only when `opts.chainable` is true (for multi-frame chaining).
+ * Returns `{ rgb, prevRadianceOut?, momentsOut?, historyLengthOut? }`: `rgb`
+ * is the filtered HDR RGB (length width*height*3); the remaining fields are
+ * populated only when `opts.chainable` is true (for multi-frame chaining).
  */
 export async function runSVGFRealWebGPU(
   opts: SVGFRealWebGPUOptions,
 ): Promise<SVGFRealWebGPUResult> {
   const w = opts.width;
   const h = opts.height;
+  const px = assertSVGFRealWebGPUInputs(opts);
   const rawAtrous = opts.atrousIterations ?? SVGF_REAL_DEFAULT_ATROUS_ITERATIONS;
   const atrousIterations = Math.min(
     SVGF_REAL_MAX_ATROUS_ITERATIONS,
@@ -216,6 +300,7 @@ export async function runSVGFRealWebGPU(
     makeResourceTracker(destroyEphemeral);
 
   try {
+    assertOneShotDeviceLimits(device, 'runSVGFRealWebGPU', w, h, opts.chainable === true ? 16 : 8);
     const { reprojPipeline, momentsPipeline, fallbackPipeline, atrousPipeline } =
       svgfRealPipelines(device);
 
@@ -358,11 +443,8 @@ export async function runSVGFRealWebGPU(
       }),
     );
 
-    // The atrous-variance pass computes spatial variance from moments, but for the
-    // svgf-real standalone path we already have a per-pixel variance estimate from
-    // the 7×7 spatial fallback (varFinalTex). We feed varFinalTex directly to
-    // svgfAtrousMain as the varianceMap, bypassing the atrous-variance step's own
-    // spatial variance output. A dummy texture satisfies the binding slot.
+    // The real-SVGF wavelet chain starts from the merged moment/short-history
+    // estimate in varFinalTex and then propagates variance in color alpha.
 
     // Atrous ping-pong
     const pingPongUsage = texS | texB | texC;
@@ -405,7 +487,6 @@ export async function runSVGFRealWebGPU(
     // original noisy `rgb` (no temporal moments there). The divergence is
     // intentional — do NOT unify; the algorithms differ (Schied SVGF vs
     // à-trous lookup).
-    const px = w * h;
     const rgbForChain =
       opts.albedoRgb != null ? svgfRealDemodulateAlbedo(opts.rgb, opts.albedoRgb, px) : opts.rgb;
     const prevForChain =
@@ -530,19 +611,19 @@ export async function runSVGFRealWebGPU(
     const fallbackBG = device.createBindGroup({
       layout: fallbackPipeline.getBindGroupLayout(0),
       entries: [
-        { binding: 0, resource: colorOutTex.createView() },
+        // Short-history variance is a spatial estimate of the current noisy
+        // signal, not of the already temporally blended reprojection output.
+        { binding: 0, resource: currColorTex.createView() },
         { binding: 1, resource: histOutTex.createView() },
         { binding: 2, resource: varMomOutTex.createView() },
         { binding: 3, resource: varFinalTex.createView() },
+        { binding: 4, resource: currNormTex.createView() },
+        { binding: 5, resource: currDepthTex.createView() },
       ],
     });
 
-    // Initial copy of colorOut → pingTex for atrous input
-    // We need a dummy variance UBO and varianceIn for the svgfVarianceMain we won't use —
-    // Instead we skip the atrous-variance's own variance pass and use varFinalTex directly
-    // as the varianceMap in all atrous iterations. The à-trous ping-pong itself
-    // (per-iter UBOs + alternating bind groups + dispatch) is delegated to the
-    // shared buildAtrousChain (atrousChain.ts) during command encoding below.
+    // Initial copy of colorOut → pingTex for wavelet iteration zero. The
+    // ping-pong scaffolding is delegated to buildAtrousChain below.
 
     // ── Command encoding ──────────────────────────────────────────────────────
     const wg = SVGF_REAL_REPROJECTION_WORKGROUP_SIZE;
@@ -583,10 +664,9 @@ export async function runSVGFRealWebGPU(
     // 4. Copy colorOut → pingTex (atrous input for iter 0)
     encoder.copyTextureToTexture({ texture: colorOutTex }, { texture: pingTex }, [w, h]);
 
-    // 5. À-trous chain — shared ping-pong (atrousChain.ts). Single source of
-    // truth with atrousVarianceWebGPU.ts: per-iter UBOs + alternating bind
-    // groups + parity-based readTex. Feeds the current-frame g-buffer (normal /
-    // depth) and the merged variance (varFinalTex) into every iteration.
+    // 5. À-trous chain — shared ping-pong scaffolding with a dedicated real-
+    // SVGF shader. Iteration zero reads varFinalTex; each output stores the
+    // squared-weight propagated variance in alpha for the next wavelet level.
     const readTex = buildAtrousChain({
       device,
       atrousPipeline,
@@ -604,6 +684,21 @@ export async function runSVGFRealWebGPU(
       varianceView: varFinalTex.createView(),
       uboLabelPrefix: 'svgf-real-atrous-ubo-',
       trackBuffer,
+      // Schied 2017 §4.3 uses the first wavelet level as the next frame's
+      // color history. colorOutTex is free after its initial copy to pingTex,
+      // so preserve level zero there before later ping-pong iterations run.
+      ...(opts.chainable === true
+        ? {
+            afterIteration: (iteration: number, _input: GPUTexture, output: GPUTexture) => {
+              if (iteration !== 0) return;
+              encoder.copyTextureToTexture(
+                { texture: output },
+                { texture: colorOutTex },
+                [w, h],
+              );
+            },
+          }
+        : {}),
     });
 
     device.queue.submit([encoder.finish()]);
@@ -617,15 +712,19 @@ export async function runSVGFRealWebGPU(
       svgfRealRemodulateAlbedo(result, opts.albedoRgb, px);
     }
 
-    // Multi-frame chaining: read the reprojection outputs (blended moments +
-    // per-pixel history length) back BEFORE the `finally` destroys the
-    // textures, so the caller can thread them into the next frame's
-    // `momentsIn` / `historyLengthIn`. momOutTex is rgba32float (M1/M2 in .rg);
+    // Multi-frame chaining: read the first-wavelet color plus reprojection
+    // outputs (blended moments + per-pixel history length) back BEFORE the
+    // `finally` destroys the textures. colorOutTex was overwritten by the
+    // level-zero copy above; momOutTex is rgba32float (M1/M2 in .rg);
     // histOutTex is r32uint. Skipped entirely when `chainable` is false.
     if (opts.chainable === true) {
+      const prevRadianceOut = await readRgba16fToRgb(device, colorOutTex, w, h);
+      if (opts.albedoRgb != null) {
+        svgfRealRemodulateAlbedo(prevRadianceOut, opts.albedoRgb, px);
+      }
       const momentsOut = await readRgba32fToRg(device, momOutTex, w, h);
       const historyLengthOut = await readR32UintToU32(device, histOutTex, w, h);
-      return { rgb: result, momentsOut, historyLengthOut };
+      return { rgb: result, prevRadianceOut, momentsOut, historyLengthOut };
     }
 
     return { rgb: result };

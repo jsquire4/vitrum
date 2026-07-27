@@ -1,6 +1,7 @@
 import { BVH_NODE_FLOATS } from '@vitrum/shared-bvh';
 import type { ScenePackResult, WorldSpaceMergeResult } from '@vitrum/shared-bvh';
 import { allocGlTexture } from '../gl/texAlloc.js';
+import { retireTexturesIndependently } from '../gl/resourceRetirement.js';
 
 /**
  * BVH texture-packing adapter — the inverse of three-mesh-bvh's
@@ -95,6 +96,12 @@ export function packBvhTextureData(pack: BvhTexturePackSource): BvhTextureData {
   // works unchanged because the GLSL does currNode + boundsInfo.y).
   const contentsDim = squareDim(nodeCount);
   const contents = new Uint32Array(contentsDim * contentsDim * 4);
+  // The GLSL traversal always starts at root texel 0, even when a Scene has no
+  // triangles. A zero-filled texel decodes as an interior node whose right
+  // child points back to itself, so the empty-scene placeholder must instead
+  // be an explicit zero-triangle leaf. This makes an empty BVH a bounded miss
+  // rather than a cyclic traversal through undefined stack writes.
+  if (nodeCount === 0) contents[0] = 0xffff0000;
   for (let i = 0; i < nodeCount; i += 1) {
     const n = i * BVH_NODE_FLOATS;
     contents[i * 4] = nodeU32[n + 7]!;
@@ -171,13 +178,37 @@ export function uploadBvhTextures(gl: WebGL2RenderingContext, d: BvhTextureData)
     allocGlTexture(gl, { kind: '2d', dim, internalFormat: gl.RGBA32F, format: gl.RGBA, type: gl.FLOAT, data, resourceName: name });
   const uTex = (dim: number, data: Uint32Array, name: string): WebGLTexture =>
     allocGlTexture(gl, { kind: '2d', dim, internalFormat: gl.RGBA32UI, format: gl.RGBA_INTEGER, type: gl.UNSIGNED_INT, data, resourceName: name });
-  const bounds = fTex(d.boundsDim, d.bounds, BVH_TEX_NAMES['f_bounds']!);
-  const contents = uTex(d.contentsDim, d.contents, BVH_TEX_NAMES['u_contents']!);
-  const position = fTex(d.positionDim, d.position, BVH_TEX_NAMES['f_position']!);
-  const index = uTex(d.indexDim, d.index, BVH_TEX_NAMES['u_index']!);
-  const materialIndex = uTex(d.materialIndexDim, d.materialIndex, BVH_TEX_NAMES['u_materialIndex']!);
+  const allocated: WebGLTexture[] = [];
+  const own = (texture: WebGLTexture): WebGLTexture => {
+    allocated.push(texture);
+    return texture;
+  };
+  let bounds: WebGLTexture;
+  let contents: WebGLTexture;
+  let position: WebGLTexture;
+  let index: WebGLTexture;
+  let materialIndex: WebGLTexture;
+  try {
+    bounds = own(fTex(d.boundsDim, d.bounds, BVH_TEX_NAMES['f_bounds']!));
+    contents = own(uTex(d.contentsDim, d.contents, BVH_TEX_NAMES['u_contents']!));
+    position = own(fTex(d.positionDim, d.position, BVH_TEX_NAMES['f_position']!));
+    index = own(uTex(d.indexDim, d.index, BVH_TEX_NAMES['u_index']!));
+    materialIndex = own(uTex(d.materialIndexDim, d.materialIndex, BVH_TEX_NAMES['u_materialIndex']!));
+  } catch (error) {
+    for (const texture of allocated) gl.deleteTexture(texture);
+    throw error;
+  }
+  let destroyed = false;
   return {
     bounds, contents, position, index, materialIndex,
-    destroy() { for (const t of [bounds, contents, position, index, materialIndex]) gl.deleteTexture(t); },
+    destroy() {
+      if (destroyed) return;
+      destroyed = true;
+      retireTexturesIndependently(
+        gl,
+        [bounds, contents, position, index, materialIndex],
+        'pt-webgl2: one or more BVH textures failed to retire',
+      );
+    },
   };
 }

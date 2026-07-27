@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import type { Scene, SpectralCurve, SurfaceAbsorptionLayer, ThinFilmStack } from '@vitrum/core';
 import { buildPackedScene } from '../scene/uploadSceneBuffers.js';
-import { materialToPackedVec4s, MATERIAL_FLOAT_STRIDE } from '../scene/materialPacking.js';
+import {
+  materialToPackedVec4s,
+  MATERIAL_FLOAT_STRIDE,
+  THIN_FILM_RGB_LUT_BINS,
+} from '../scene/materialPacking.js';
 import { PT_WEBGPU_TRACE_WGSL } from '../wgsl/pathTraceBruteforce.wgsl.js';
 
 describe('buildPackedScene material payload packing', () => {
@@ -27,7 +31,10 @@ describe('buildPackedScene material payload packing', () => {
       environment: { kind: 'none' },
     };
     const packed = buildPackedScene(scene);
-    expect(packed.materials.length).toBe(116); // VOL-THICKNESS: MATERIAL_FLOAT_STRIDE 112 → 116
+    expect(packed.materials.length).toBe(
+      MATERIAL_FLOAT_STRIDE + THIN_FILM_RGB_LUT_BINS * 16,
+    );
+    expect(packed.materials[28 * 4 + 2]).toBe(29);
     expect(packed.materials[10]).toBeCloseTo(0.8);
     expect(packed.materials[24]).toBeCloseTo(1);
     expect(packed.materials[28]).toBeCloseTo(2.1);
@@ -47,7 +54,7 @@ describe('buildPackedScene material payload packing', () => {
           frontLayer: { transmission: [-0.2, 0.5, 1.4], roughness: 1.6 },
           backLayer: { transmission: [2, 0.25, -5], roughness: -2 },
           thinFilmStack: { layers: [{ ior: -3, thicknessNm: -40 }] },
-          spectralAttenuation: { wavelengthStart: 380, wavelengthEnd: 780, values: new Float32Array([-1, 0.2, -0.3, 0.4]) },
+          spectralAttenuation: { wavelengthStart: 380, wavelengthEnd: 780, values: new Float32Array([0, 0.2, 0.3, 0.4]) },
         },
       }],
       emitters: [],
@@ -59,6 +66,30 @@ describe('buildPackedScene material payload packing', () => {
     expect(packed.materials[23]).toBeCloseTo(0);
     expect(packed.materials[29]).toBeGreaterThanOrEqual(0);
     expect(packed.materials[52]).toBeGreaterThanOrEqual(0);
+  });
+
+  it('fails closed instead of silently clamping invalid spectral samples', () => {
+    const scene: Scene = {
+      primitives: [{
+        kind: 'mesh',
+        id: 'tri-invalid-spectrum',
+        positions: new Float32Array([0,0,0, 1,0,0, 0,1,0]),
+        normals: new Float32Array([0,0,1, 0,0,1, 0,0,1]),
+        material: {
+          baseColor: [0.5, 0.6, 0.7], roughness: 0.3, metallic: 0,
+          spectralAttenuation: {
+            wavelengthStart: 380,
+            wavelengthEnd: 780,
+            values: new Float32Array([-1, 0.2, 0.3, 0.4]),
+          },
+        },
+      }],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+    expect(() => buildPackedScene(scene)).toThrow(
+      /sampleSpectralCurve\.values\[0\] must be finite and non-negative/,
+    );
   });
 });
 
@@ -226,6 +257,22 @@ describe('A3 spectral reflectance coefficient packing', () => {
     } as never);
     expect(pbr[SPEC_OFFSET + 3]).toBe(1);
     expect(unlit[SPEC_OFFSET + 3]).toBe(3);
+  });
+
+  it('packs MaterialSpec.doubleSided as bit2 and defaults it to false', () => {
+    const oneSided = materialToPackedVec4s({
+      baseColor: [0.2, 0.4, 0.8], roughness: 0.5, metallic: 0,
+    });
+    const twoSided = materialToPackedVec4s({
+      baseColor: [0.2, 0.4, 0.8], roughness: 0.5, metallic: 0, doubleSided: true,
+    });
+    const twoSidedUnlit = materialToPackedVec4s({
+      baseColor: [0.2, 0.4, 0.8], roughness: 0.5, metallic: 0,
+      doubleSided: true, shadingModel: 'unlit',
+    });
+    expect(oneSided[SPEC_OFFSET + 3]).toBe(1);
+    expect(twoSided[SPEC_OFFSET + 3]).toBe(5);
+    expect(twoSidedUnlit[SPEC_OFFSET + 3]).toBe(7);
   });
 
   it('round-trips a neutral grey to a flat spectrum (≈ albedo at all λ)', () => {

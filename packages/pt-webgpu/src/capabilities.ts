@@ -5,13 +5,12 @@
 // documented literal out of the engine class body while preserving BYTE-IDENTICAL
 // output: the getter now delegates to `ptWebgpuCapabilities(flags)`, passing the
 // engine's resolved private-field values as a plain flags record. No logic change.
-//
-// The `#postDenoiser instanceof OIDNFinalDispatcher` test stays in the engine (it
-// inspects a live instance); the caller passes the resolved boolean `isOidnFinal`.
 
 import type {
   AnalyticShape,
   EngineCapabilities,
+  EngineFeatureId,
+  MaterialSpec,
   Scene,
   SceneEmitter,
   ScenePrimitive,
@@ -23,16 +22,39 @@ import type { PtWebgpuTraceTier } from './traceTier.js';
 import type { PtWebgpuBvhTraversalMode } from './gpuResources.js';
 import type { PtWebgpuSamplingMode } from './wgsl/common.wgsl.js';
 
+/** Build a runtime-immutable ReadonlySet view. TypeScript's `ReadonlySet` alone
+ *  does not stop a host from casting back to `Set` and mutating a capability
+ *  snapshot; this view exposes no mutator and freezes its public surface. */
+function runtimeReadonlySet<T>(items: Iterable<T>): ReadonlySet<T> {
+  const values = new Set(items);
+  const view: ReadonlySet<T> = {
+    get size() { return values.size; },
+    has: (value) => values.has(value),
+    entries: () => values.entries(),
+    keys: () => values.keys(),
+    values: () => values.values(),
+    forEach: (callback, thisArg) => {
+      for (const value of values) callback.call(thisArg, value, value, view);
+    },
+    [Symbol.iterator]: () => values[Symbol.iterator](),
+  };
+  return Object.freeze(view);
+}
+
 /** Emitter kinds supported by the lite tier via texture packing (B12). */
-export const PT_WEBGPU_LITE_SUPPORTED_EMITTER_KINDS: ReadonlySet<SceneEmitter['kind']> =
-  new Set(['directional', 'point', 'spot', 'rect-area', 'disc-area']);
+export const PT_WEBGPU_LITE_SUPPORTED_EMITTER_KINDS: ReadonlySet<SceneEmitter['kind']> = new Set([
+  'directional',
+  'point',
+  'spot',
+  'rect-area',
+  'disc-area',
+]);
 /** Emitter kinds in the full-tier set but NOT in the lite tier (no NEE path in lite kernel). */
-export const PT_WEBGPU_LITE_UNSUPPORTED_EMITTER_KINDS: ReadonlySet<SceneEmitter['kind']> =
-  new Set(
-    [...PT_WEBGPU_SUPPORT.supportedEmitterKinds].filter(
-      (k) => !PT_WEBGPU_LITE_SUPPORTED_EMITTER_KINDS.has(k),
-    ),
-  );
+export const PT_WEBGPU_LITE_UNSUPPORTED_EMITTER_KINDS: ReadonlySet<SceneEmitter['kind']> = new Set(
+  [...PT_WEBGPU_SUPPORT.supportedEmitterKinds].filter(
+    (k) => !PT_WEBGPU_LITE_SUPPORTED_EMITTER_KINDS.has(k),
+  ),
+);
 
 /** Resolved engine state the capabilities object derives from. */
 export interface PtWebgpuCapabilitiesFlags {
@@ -41,18 +63,66 @@ export interface PtWebgpuCapabilitiesFlags {
   readonly maxBouncesLimit: number;
   readonly bdpt: boolean;
   readonly restirPtReuse: boolean;
+  readonly restirPtBiasedWeightClamp: boolean;
   readonly sampling: PtWebgpuSamplingMode;
   readonly bvhTraversal: PtWebgpuBvhTraversalMode;
   readonly causticStrategy: EngineCapabilities['causticStrategy'];
-  /** Resolved `#postDenoiser instanceof OIDNFinalDispatcher`. */
-  readonly isOidnFinal: boolean;
+  readonly spectral: boolean;
+  readonly denoiser: 'none' | 'oidn-final';
 }
+
+const PT_WEBGPU_FULL_INVERSE_RENDERING: NonNullable<
+  EngineCapabilities['inverseRendering']
+> = Object.freeze({
+  methods: Object.freeze({
+    'finite-difference': 'native',
+    'path-replay': 'native',
+  }),
+  pathReplay: Object.freeze({
+    failurePolicy: 'error',
+    materialFields: runtimeReadonlySet<keyof MaterialSpec>([
+      'emissive',
+    ]),
+    emitterFields: runtimeReadonlySet<'color' | 'intensity'>([]),
+    maxBounces: 1,
+    supportsSpectral: false,
+    supportsBdpt: false,
+    supportsRestirPtReuse: false,
+    supportsCausticStrategies: false,
+  }),
+});
+
+const PT_WEBGPU_LITE_INVERSE_RENDERING: NonNullable<
+  EngineCapabilities['inverseRendering']
+> = Object.freeze({
+  methods: Object.freeze({
+    'finite-difference': 'native',
+    'path-replay': 'unsupported',
+  }),
+});
 
 /**
  * Build the `EngineCapabilities` object for a pt-webgpu engine. Byte-identical to
  * the former inline literal in `PTEngineWebGPU.capabilities`.
  */
 export function ptWebgpuCapabilities(flags: PtWebgpuCapabilitiesFlags): EngineCapabilities {
+  const samplingSequences = BACKEND_PROMISE_LEDGER['pt-webgpu'].supportDetails.samplingSequences!;
+  const activeFeatures = new Set<EngineFeatureId>();
+  if (flags.bdpt && flags.traceTier !== 'lite') activeFeatures.add('pt-webgpu-bdpt');
+  if (flags.restirPtReuse) activeFeatures.add('pt-webgpu-restir-pt-reuse');
+  if (flags.restirPtReuse && flags.restirPtBiasedWeightClamp) {
+    activeFeatures.add('pt-webgpu-restir-pt-biased-weight-clamp');
+  }
+  if (flags.sampling === 'sobol') activeFeatures.add('pt-webgpu-sobol-sampling');
+  if (flags.bvhTraversal === 'cwbvh-closest') {
+    activeFeatures.add('pt-webgpu-cwbvh-closest-traversal');
+  }
+  if (flags.traceTier !== 'lite' && flags.causticStrategy === 'photon-map') {
+    activeFeatures.add('pt-webgpu-photon-map-sppm');
+  }
+  if (flags.spectral) activeFeatures.add('pt-webgpu-spectral');
+  if (flags.denoiser === 'oidn-final') activeFeatures.add('pt-webgpu-oidn-final');
+
   return {
     // Material / transform / positions primitive patches upload in place.
     // `topology: true` — every COUNT-changing patch updatePrimitive can legally
@@ -66,21 +136,22 @@ export function ptWebgpuCapabilities(flags: PtWebgpuCapabilitiesFlags): EngineCa
     // `id`/`kind` morphs throw (contract violation); whole-primitive add/remove
     // is `setScene`, not a patch — both correctly outside the `topology` flag.
     supportsIncrementalScene: true,
-    incrementalPatchSupport: flags.traceTier === 'lite'
-      ? {
-          transform: false,
-          positions: false,
-          material: true,
-          emitter: true,
-          topology: false,
-        }
-      : {
-          transform: true,
-          positions: true,
-          material: true,
-          emitter: true,
-          topology: true,
-        },
+    incrementalPatchSupport:
+      flags.traceTier === 'lite'
+        ? {
+            transform: false,
+            positions: false,
+            material: true,
+            emitter: true,
+            topology: false,
+          }
+        : {
+            transform: true,
+            positions: true,
+            material: true,
+            emitter: true,
+            topology: true,
+          },
     // Explicit whole-primitive add/remove API (addPrimitive / removePrimitive)
     // is implemented via a full buildPackedScene repack of the mutated scene.
     supportsAddRemovePrimitive: true,
@@ -99,8 +170,8 @@ export function ptWebgpuCapabilities(flags: PtWebgpuCapabilitiesFlags): EngineCa
     //   • Emitters: directional + point + spot + rect-area + disc-area
     //     (B12 — texture-packed). Mesh-area remains unsupported.
     //   • Environments: none + procedural-sky + hdri (B12 — texture-packed).
-    //   • No pt-webgpu-bdpt in experimentalFeatures even when bdpt:true was
-    //     passed at construction (BDPT requires the full-tier group-2 layout).
+    //   • BDPT is absent from activeFeatures when the lite tier is selected
+    //     because BDPT requires the full-tier group-2 layout.
     //
     // B12 (Wave B) — lite-tier fidelity cliff, SHIPPED.
     // The lite tier targets adapters reporting maxStorageBuffersPerShaderStage
@@ -124,20 +195,24 @@ export function ptWebgpuCapabilities(flags: PtWebgpuCapabilitiesFlags): EngineCa
     //
     // For the full tier the capability is derived from PT_WEBGPU_SUPPORT so
     // the declared set and the ingestion/packer behavior stay in sync.
-    supportedAnalyticShapes: flags.traceTier === 'lite'
-      ? new Set<AnalyticShape>()
-      : new Set(PT_WEBGPU_SUPPORT.supportedAnalyticShapes),
-    supportedEmitterKinds: flags.traceTier === 'lite'
-      // B12 — point/spot/rect/disc-area now supported via lite texture packing (liteLightTex).
-      ? new Set(PT_WEBGPU_LITE_SUPPORTED_EMITTER_KINDS)
-      : new Set(PT_WEBGPU_SUPPORT.supportedEmitterKinds),
-    supportedPrimitiveKinds: flags.traceTier === 'lite'
-      ? new Set<ScenePrimitive['kind']>(['mesh', 'skinned-mesh', 'instanced-mesh'])
-      : new Set(PT_WEBGPU_SUPPORT.supportedPrimitiveKinds),
-    supportedEnvironmentKinds: flags.traceTier === 'lite'
-      // B12 — HDRI env now supported via lite texture packing (liteEnvTex + liteEnvCdfTex).
-      ? new Set<Scene['environment']['kind']>(['none', 'procedural-sky', 'hdri'])
-      : new Set(PT_WEBGPU_SUPPORT.supportedEnvironmentKinds),
+    supportedAnalyticShapes:
+      flags.traceTier === 'lite'
+        ? new Set<AnalyticShape>()
+        : new Set(PT_WEBGPU_SUPPORT.supportedAnalyticShapes),
+    supportedEmitterKinds:
+      flags.traceTier === 'lite'
+        ? // B12 — point/spot/rect/disc-area now supported via lite texture packing (liteLightTex).
+          new Set(PT_WEBGPU_LITE_SUPPORTED_EMITTER_KINDS)
+        : new Set(PT_WEBGPU_SUPPORT.supportedEmitterKinds),
+    supportedPrimitiveKinds:
+      flags.traceTier === 'lite'
+        ? new Set<ScenePrimitive['kind']>(['mesh', 'skinned-mesh', 'instanced-mesh'])
+        : new Set(PT_WEBGPU_SUPPORT.supportedPrimitiveKinds),
+    supportedEnvironmentKinds:
+      flags.traceTier === 'lite'
+        ? // B12 — HDRI env now supported via lite texture packing (liteEnvTex + liteEnvCdfTex).
+          new Set<Scene['environment']['kind']>(['none', 'procedural-sky', 'hdri'])
+        : new Set(PT_WEBGPU_SUPPORT.supportedEnvironmentKinds),
     presentationMode: 'offscreen-texture',
     // H12 — lite-tier supportDetails must reflect what group-0 ACTUALLY binds,
     // not the full-tier ledger. Group-0 lite omits group-1 (analytic, env, lights)
@@ -192,27 +267,22 @@ export function ptWebgpuCapabilities(flags: PtWebgpuCapabilitiesFlags): EngineCa
               material: 'native',
               topology: 'fallback-rebuild',
             },
+            samplingSequences,
           }
-        : BACKEND_PROMISE_LEDGER['pt-webgpu'].supportDetails,
-    experimentalFeatures: new Set([
-      ...(flags.traceTier === 'lite' ? (['pt-webgpu-lite-tier'] as const) : []),
-      ...(flags.isOidnFinal
-        ? (['pt-webgpu-oidn-final'] as const)
-        : []),
-      // BDPT requires the full-tier group-2 layout; suppress from lite even
-      // when bdpt:true was passed at construction (the engine silently ignores
-      // the flag for lite — the shader does not have the bdptEnabled UBO slot
-      // and the BDPT sub-path pipeline is not created on the lite layout).
-      ...(flags.bdpt && flags.traceTier !== 'lite' ? (['pt-webgpu-bdpt'] as const) : []),
-      ...(flags.restirPtReuse ? (['pt-webgpu-restir-pt-reuse'] as const) : []),
-      ...(flags.sampling === 'sobol' ? (['pt-webgpu-sobol-sampling'] as const) : []),
-      ...(flags.bvhTraversal === 'cwbvh-closest-experimental'
-        ? (['pt-webgpu-cwbvh-closest-traversal'] as const)
-        : []),
-      ...(flags.traceTier !== 'lite' && flags.causticStrategy === 'photon-map'
-        ? (['pt-webgpu-photon-map-sppm'] as const)
-        : []),
-    ]),
+        : {
+            ...BACKEND_PROMISE_LEDGER['pt-webgpu'].supportDetails,
+            samplingSequences,
+          },
+    // Inverse rendering is a stable finite-difference surface on both tiers.
+    // Path replay is a separate, exact claim: only the full-tier material
+    // `emissive` gradient has passed the end-to-end GPU fit gate. The public
+    // engine rejects every out-of-domain path-replay request instead of
+    // silently changing the selected method.
+    inverseRendering:
+      flags.traceTier === 'full'
+        ? PT_WEBGPU_FULL_INVERSE_RENDERING
+        : PT_WEBGPU_LITE_INVERSE_RENDERING,
+    activeFeatures,
     causticStrategy: flags.traceTier === 'lite' ? 'none' : flags.causticStrategy,
     // W3-D8 — this engine exposes `debug.estimatedGpuMemoryBytes()`.
     debugSurface: true,

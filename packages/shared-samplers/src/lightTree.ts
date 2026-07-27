@@ -41,6 +41,15 @@
  *   - Estévez & Kulla 2018, "Importance Sampling of Many Lights with Adaptive
  *     Tree Splitting", Proc. ACM CGIT (distance-weighted importance descent).
  */
+import {
+  normalizedPairFirst,
+  requireFinite,
+  requireFiniteVec3,
+  requireInteger,
+  requireNonNegative,
+  requirePositive,
+  requireUnitRandom,
+} from './numericGuards.js';
 
 // ────────────────────────────────────────────────────────────────────────────
 // Public types
@@ -228,7 +237,11 @@ function unionAabb(
  */
 function sumPower(items: BuildItem[]): number {
   let total = 0;
-  for (const item of items) total += item.power;
+  for (const item of items) {
+    total += item.power;
+    if (!Number.isFinite(total)) throw new RangeError('buildLightTree total power overflowed');
+  }
+  if (!Number.isFinite(Math.fround(total))) throw new RangeError('buildLightTree total power exceeds f32');
   return total;
 }
 
@@ -285,7 +298,7 @@ function buildSubtree(items: BuildItem[], nodes: LightTreeNode[]): number {
     // descends correctly by power weighting. The spatial heuristic will be ineffective for
     // this subtree (no spatial separation), but the GPU traversal degrades gracefully to
     // pure power-weighted sampling.
-    const sorted = items.slice().sort((a, b) => b.power - a.power); // descending power
+    const sorted = items.slice().sort((a, b) => (b.power - a.power) || (a.emitterIndex - b.emitterIndex));
     const mid = Math.floor(sorted.length / 2);
     leftItems = sorted.slice(0, mid);
     rightItems = sorted.slice(mid);
@@ -293,7 +306,8 @@ function buildSubtree(items: BuildItem[], nodes: LightTreeNode[]): number {
     const axis = spanX >= spanY && spanX >= spanZ ? 0 : spanY >= spanZ ? 1 : 2;
 
     // Sort along longest axis
-    const sorted = items.slice().sort((a, b) => a.centroid[axis] - b.centroid[axis]);
+    const sorted = items.slice().sort((a, b) =>
+      (a.centroid[axis] - b.centroid[axis]) || (a.emitterIndex - b.emitterIndex));
 
     // Split at median (equal partition — sufficient for typical emitter counts <100)
     const mid = Math.floor(sorted.length / 2);
@@ -407,11 +421,37 @@ export function buildLightTree(input: LightTreeBuildInput): {
     const power = powers[i]!;
     const centroid = centroids[i]!;
     const aabb = aabbs[i]!;
+    requireNonNegative(power, `buildLightTree.powers[${i}]`);
+    if (!Number.isFinite(Math.fround(power))) throw new RangeError(`buildLightTree.powers[${i}] exceeds f32`);
+    requireFiniteVec3(centroid, `buildLightTree.centroids[${i}]`);
+    requireFiniteVec3(aabb.min, `buildLightTree.aabbs[${i}].min`);
+    requireFiniteVec3(aabb.max, `buildLightTree.aabbs[${i}].max`);
+    for (let axis = 0; axis < 3; axis++) {
+      const minValue = aabb.min[axis]!;
+      const maxValue = aabb.max[axis]!;
+      const centroidValue = centroid[axis]!;
+      if (minValue > maxValue) {
+        throw new RangeError(`buildLightTree.aabbs[${i}] has min > max on axis ${axis}`);
+      }
+      for (const value of [centroidValue, minValue, maxValue]) {
+        if (!Number.isFinite(Math.fround(value))) {
+          throw new RangeError(`buildLightTree emitter ${i} geometry exceeds f32`);
+        }
+      }
+    }
     // B8 — per-emitter orientation cone. Omitted ⇒ full sphere (no culling),
     // exactly the pre-B8 behaviour. A present entry defaults thetaE to π/2 (a
     // one-sided cosine emission lobe) and thetaO to 0 (a single sharp axis).
     const ci = cones?.[i];
     let cone: OrientationCone;
+    if (ci != null) {
+      requireFiniteVec3(ci.axis, `buildLightTree.cones[${i}].axis`);
+      const thetaO = ci.thetaO ?? 0;
+      const thetaE = ci.thetaE ?? Math.PI / 2;
+      requireFinite(thetaO, `buildLightTree.cones[${i}].thetaO`);
+      requireFinite(thetaE, `buildLightTree.cones[${i}].thetaE`);
+      if (thetaO < 0 || thetaO > Math.PI || thetaE < 0 || thetaE > Math.PI) throw new RangeError(`buildLightTree.cones[${i}] angles must be in [0, PI]`);
+    }
     if (ci == null || vlen(ci.axis) < 1e-8) {
       cone = FULL_SPHERE_CONE;
     } else {
@@ -478,9 +518,66 @@ export function buildLightTree(input: LightTreeBuildInput): {
  */
 export function packLightTreeForGPU(nodes: ReadonlyArray<LightTreeNode>): Float32Array {
   const FLOATS_PER_NODE = LIGHT_TREE_FLOATS_PER_NODE;
+  const maxExactF32Integer = 0x01000000;
+  const packedLength = nodes.length * FLOATS_PER_NODE;
+  if (!Number.isSafeInteger(packedLength) ||
+      packedLength > 0x7fffffff ||
+      nodes.length - 1 > maxExactF32Integer) {
+    throw new RangeError('packLightTreeForGPU node array is too large');
+  }
+  const parentCounts = new Uint32Array(nodes.length);
+  const leafEmitterIndices = new Set<number>();
   const out = new Float32Array(nodes.length * FLOATS_PER_NODE);
   for (let i = 0; i < nodes.length; i++) {
     const node = nodes[i]!;
+    requireInteger(node.emitterIndex, `packLightTreeForGPU.nodes[${i}].emitterIndex`, -1, maxExactF32Integer);
+    requireInteger(node.leftChild, `packLightTreeForGPU.nodes[${i}].leftChild`, -1, nodes.length - 1);
+    requireInteger(node.rightChild, `packLightTreeForGPU.nodes[${i}].rightChild`, -1, nodes.length - 1);
+    requireNonNegative(node.totalPower, `packLightTreeForGPU.nodes[${i}].totalPower`);
+    requireFiniteVec3(node.aabbMin, `packLightTreeForGPU.nodes[${i}].aabbMin`);
+    requireFiniteVec3(node.aabbMax, `packLightTreeForGPU.nodes[${i}].aabbMax`);
+    requireFiniteVec3(node.cone.axis, `packLightTreeForGPU.nodes[${i}].cone.axis`);
+    requireFinite(node.cone.thetaO, `packLightTreeForGPU.nodes[${i}].cone.thetaO`);
+    requireFinite(node.cone.thetaE, `packLightTreeForGPU.nodes[${i}].cone.thetaE`);
+    if (node.cone.thetaO < 0 || node.cone.thetaO > Math.PI ||
+        node.cone.thetaE < 0 || node.cone.thetaE > Math.PI) {
+      throw new RangeError(`packLightTreeForGPU.nodes[${i}].cone angles must be in [0, PI]`);
+    }
+    for (let axis = 0; axis < 3; axis++) {
+      if (node.aabbMin[axis]! > node.aabbMax[axis]!) {
+        throw new RangeError(`packLightTreeForGPU.nodes[${i}] has min > max on axis ${axis}`);
+      }
+    }
+    const coneAxisLength = Math.hypot(...node.cone.axis);
+    if (coneAxisLength < 1e-8 && node.cone.thetaO < Math.PI) {
+      throw new RangeError(
+        `packLightTreeForGPU.nodes[${i}] zero cone axis requires a full-sphere thetaO`,
+      );
+    }
+    const isLeaf = node.leftChild === -1 && node.rightChild === -1;
+    const isInternal = node.leftChild >= 0 && node.rightChild >= 0;
+    if (!isLeaf && !isInternal) {
+      throw new RangeError(`packLightTreeForGPU.nodes[${i}] must have zero or two children`);
+    }
+    if (isLeaf) {
+      if (node.emitterIndex < 0) {
+        throw new RangeError(`packLightTreeForGPU.nodes[${i}] leaf must name an emitter`);
+      }
+      if (leafEmitterIndices.has(node.emitterIndex)) {
+        throw new RangeError(`packLightTreeForGPU duplicate emitter index ${node.emitterIndex}`);
+      }
+      leafEmitterIndices.add(node.emitterIndex);
+    } else {
+      if (node.emitterIndex !== -1 || node.leftChild <= i || node.rightChild <= i) {
+        throw new RangeError(`packLightTreeForGPU.nodes[${i}] violates pre-order internal-node layout`);
+      }
+      parentCounts[node.leftChild]!++;
+      parentCounts[node.rightChild]!++;
+    }
+    for (const value of [node.totalPower, ...node.aabbMin, ...node.aabbMax, ...node.cone.axis]) {
+      if (!Number.isFinite(Math.fround(value))) throw new RangeError(`packLightTreeForGPU.nodes[${i}] exceeds f32`);
+    }
+
     const base = i * FLOATS_PER_NODE;
     out[base + 0] = node.emitterIndex;
     out[base + 1] = node.totalPower;
@@ -498,6 +595,14 @@ export function packLightTreeForGPU(nodes: ReadonlyArray<LightTreeNode>): Float3
     out[base + 13] = Math.cos(Math.min(Math.PI, node.cone.thetaO));
     out[base + 14] = Math.cos(Math.min(Math.PI, node.cone.thetaO + node.cone.thetaE));
     out[base + 15] = 0; // padding
+  }
+  for (let i = 0; i < parentCounts.length; i++) {
+    const expectedParents = i === 0 ? 0 : 1;
+    if (parentCounts[i] !== expectedParents) {
+      throw new RangeError(
+        `packLightTreeForGPU.nodes[${i}] has ${parentCounts[i]} parents; expected ${expectedParents}`,
+      );
+    }
   }
   return out;
 }
@@ -597,7 +702,9 @@ export function nodeImportance(
   const coneFactor = coneImportanceFactor(
     node.cone.axis, cosThetaO, cosThetaOE, px, py, pz, cx, cy, cz,
   );
-  return (node.totalPower / d2) * coneFactor;
+  const importance = (node.totalPower / d2) * coneFactor;
+  if (!Number.isFinite(importance)) return Number.MAX_VALUE;
+  return Math.min(importance, 3.4028234663852886e38);
 }
 
 /**
@@ -625,27 +732,33 @@ export function sampleLightTreeCPU(
   rand01: () => number,
 ): { emitterIndex: number; pdf: number } {
   if (nodes.length === 0) return { emitterIndex: -1, pdf: 0 };
+  requireFiniteVec3(x, 'sampleLightTreeCPU.x');
+  requirePositive(dist2Floor, 'sampleLightTreeCPU.dist2Floor');
   const [px, py, pz] = x;
   let nodeIdx = 0;
   let pdf = 1.0;
   // Bounded descent: a binary tree over N leaves has depth ≤ N; the explicit
   // cap mirrors the WGSL loop bound (a while-true is illegal there).
   for (let guard = 0; guard < nodes.length + 1; guard++) {
-    const node = nodes[nodeIdx]!;
+    const node = nodes[nodeIdx];
+    if (node == null) throw new RangeError('sampleLightTreeCPU encountered an invalid node index');
     if (node.leftChild < 0 || node.rightChild < 0) {
       // Leaf.
       return { emitterIndex: node.emitterIndex, pdf };
+    }
+    if (node.leftChild >= nodes.length || node.rightChild >= nodes.length) {
+      throw new RangeError('sampleLightTreeCPU encountered an out-of-range child index');
     }
     const left = nodes[node.leftChild]!;
     const right = nodes[node.rightChild]!;
     const impL = nodeImportance(left, px, py, pz, dist2Floor);
     const impR = nodeImportance(right, px, py, pz, dist2Floor);
-    const sum = impL + impR;
     // Degenerate: both subtrees contribute zero importance (e.g. all-zero
     // power under this node). Fall back to a uniform 50/50 split so the
     // descent terminates with a positive pdf.
-    const pL = sum > 0 ? impL / sum : 0.5;
-    if (rand01() < pL) {
+    const pL = normalizedPairFirst(impL, impR);
+    const random = requireUnitRandom(rand01(), 'sampleLightTreeCPU.rand01()');
+    if (random < pL) {
       pdf *= pL;
       nodeIdx = node.leftChild;
     } else {
@@ -679,6 +792,9 @@ export function lightTreePdfCPU(
   const [px, py, pz] = x;
   // Precompute, per node, whether the target emitter lies in its subtree.
   // (Leaf emitterIndex match, or one of its children's subtrees contains it.)
+  if (!Number.isSafeInteger(emitterIndex) || emitterIndex < 0) return 0;
+  requireFiniteVec3(x, 'lightTreePdfCPU.x');
+  requirePositive(dist2Floor, 'lightTreePdfCPU.dist2Floor');
   const contains = new Array<boolean>(nodes.length).fill(false);
   // Pre-order array ⇒ a child always has a higher index than its parent, so a
   // reverse pass propagates "contains target" up to the root in one sweep.
@@ -703,8 +819,7 @@ export function lightTreePdfCPU(
     const right = nodes[node.rightChild]!;
     const impL = nodeImportance(left, px, py, pz, dist2Floor);
     const impR = nodeImportance(right, px, py, pz, dist2Floor);
-    const sum = impL + impR;
-    const pL = sum > 0 ? impL / sum : 0.5;
+    const pL = normalizedPairFirst(impL, impR);
     if (contains[node.leftChild]) {
       pdf *= pL;
       nodeIdx = node.leftChild;

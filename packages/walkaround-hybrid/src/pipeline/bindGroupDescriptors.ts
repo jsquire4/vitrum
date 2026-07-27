@@ -57,9 +57,11 @@ type BindingKind =
   | 'storage-rw'                  // buffer: { type: 'storage' }
   | 'uniform'                     // buffer: { type: 'uniform' }
   | 'tex'                         // texture: { sampleType: 'unfilterable-float' }
+  | 'tex:f'                       // texture: { sampleType: 'float' }
   | 'tex-array'                   // texture: { sampleType: 'unfilterable-float', viewDimension: '2d-array' }
   | 'tex:uint'                    // texture: { sampleType: 'uint' }
   | 'sampler:nf'                  // sampler: { type: 'non-filtering' }
+  | 'sampler:f'                   // sampler: { type: 'filtering' }
   | 'storage-tex:rgba16float'     // storageTexture: write-only rgba16float
   | 'storage-tex:rgba32float'     // storageTexture: write-only rgba32float
   | 'storage-tex:r32uint';        // storageTexture: write-only r32uint
@@ -130,11 +132,6 @@ export const BIND_GROUP_TABLE: readonly BindGroupTableEntry[] = [
       // G-buffer-fill mode, and gRough/gAlbedo/motionVec are reserved for
       // the same upgrade. The 1×1 placeholder bound today makes the shader
       // a no-op for those reads without requiring a separate pipeline variant.
-      { binding: 0, kind: 'tex', note: 'gDepth — shade.wgsl @binding(0); 1×1 placeholder in primary-ray-cast mode' },
-      { binding: 1, kind: 'tex', note: 'gNormal — shade.wgsl @binding(1); 1×1 placeholder in primary-ray-cast mode' },
-      { binding: 2, kind: 'tex', note: 'gAlbedo — shade.wgsl @binding(2); 1×1 placeholder in primary-ray-cast mode' },
-      { binding: 3, kind: 'tex', note: 'gRough — shade.wgsl @binding(3); 1×1 placeholder in primary-ray-cast mode' },
-      { binding: 4, kind: 'tex', note: 'motionVec — shade.wgsl @binding(4); 1×1 placeholder in primary-ray-cast mode' },
       { binding: 5, kind: 'storage-rw', note: 'reservoirCurrent' },
       { binding: 6, kind: 'storage-ro', note: 'reservoirPrevious' },
       { binding: 7, kind: 'storage-rw', note: 'reservoirSpatial' },
@@ -169,11 +166,13 @@ export const BIND_GROUP_TABLE: readonly BindGroupTableEntry[] = [
     label: 'scene',
     visibility: 'compute',
     entries: [
-      { binding: 0, kind: 'storage-ro', note: 'bvhNodes' },
-      { binding: 1, kind: 'storage-ro', note: 'bvhIndex (vec4u: [0..2]=indices, [3]=RGBA8 raw attCol)' },
-      { binding: 2, kind: 'storage-ro', note: 'bvhPositions' },
-      { binding: 3, kind: 'storage-ro', note: 'emitters' },
-      { binding: 4, kind: 'storage-ro', note: 'emitterCdf' },
+      // The complete scene-storage contract is carried by three versioned raw
+      // arenas. Keeping geometry, TLAS instances, and lighting in distinct
+      // shards preserves targeted publication while every scene-consuming
+      // pipeline stays inside WebGPU's guaranteed eight-storage-buffer floor.
+      { binding: 0, kind: 'storage-ro', note: 'versioned scene geometry arena (BVH nodes/index/positions/normals)' },
+      { binding: 1, kind: 'storage-ro', note: 'versioned scene TLAS arena (nodes/indices/roots/transforms)' },
+      { binding: 2, kind: 'storage-ro', note: 'versioned scene lighting arena (emitters/CDF)' },
       // WS1 (2026-05-29) — bvh_beer (per-tri Beer-Lambert visible color, RGBA8
       // packed u32) moved from a storage buffer to a `texture_2d<u32>` (r32uint).
       // Textures do NOT count against maxStorageBuffersPerShaderStage, so this
@@ -182,19 +181,6 @@ export const BIND_GROUP_TABLE: readonly BindGroupTableEntry[] = [
       // shade pass references binding 5 (lo_emit); the other primary passes
       // declare a subset of the layout, so the texture is shade-only.
       { binding: 5, kind: 'tex:uint', note: 'bvh_beer (Beer-Lambert visible color, r32uint texture; shade-only)' },
-      { binding: 6, kind: 'storage-ro', note: 'tlasNodes' },
-      { binding: 7, kind: 'storage-ro', note: 'tlasInstanceIndices' },
-      { binding: 8, kind: 'storage-ro', note: 'tlasBlasRoots' },
-      { binding: 9, kind: 'storage-ro', note: 'tlasInstanceWorldToLocal (mat4 cols)' },
-      { binding: 10, kind: 'storage-ro', note: 'tlasInstanceLocalToWorld' },
-      // WS1 (2026-05-29) — per-vertex world-space normals (stride-4 vec4f, .w
-      // unused). Barycentric-blended in shade/ris/risGi/risGiNrc to produce a
-      // SMOOTH shading normal (was faceted geometric). Data is the same
-      // `shared.normals` already exposed as SceneBVHBuffers.emitterNormals. The
-      // GPU-skin kernel writes its inverse-transpose normals here at
-      // `baseVertex+vi` (the merged-BVH world-space slot). 1 storage buffer; the
-      // bvh_beer→texture swap above keeps the net storage count unchanged.
-      { binding: 11, kind: 'storage-ro', note: 'bvh_normal (per-vertex world-space smooth normals)' },
       // Camera-visible + GI-suffix emitters (2026-05-30; GI suffix 2026-06-20) —
       // per-triangle HDR emissive radiance
       // Le, rgba16float texture (texture, not storage — keeps the scene group at
@@ -229,7 +215,7 @@ export const BIND_GROUP_TABLE: readonly BindGroupTableEntry[] = [
       // Phase-3D material-map atlas and per-triangle metadata.
       // Both are textures (not storage buffers) so the scene group stays inside
       // the full-tier WebGPU storage-buffer floor.
-      { binding: 20, kind: 'tex-array', note: 'materialTextureAtlas (readable material maps as RGBA32F array layers)' },
+      { binding: 20, kind: 'tex-array', note: 'materialTextureAtlas (CPU pixels or nominal GPU sources as mipmapped RGBA32F array layers)' },
       { binding: 21, kind: 'tex', note: 'baseColorMapMeta (per-triangle map layer/wrap/transform/coverage metadata)' },
       { binding: 22, kind: 'tex', note: 'bvh_tangent (per-vertex authored/generated tangent.xyzw, rgba32float texture)' },
       { binding: 23, kind: 'tex', note: 'bvh_vertex_color (per-vertex COLOR_0 rgba, rgba32float texture)' },
@@ -316,8 +302,14 @@ export const BIND_GROUP_TABLE: readonly BindGroupTableEntry[] = [
     label: 'transparent-oit',
     visibility: 'compute',
     entries: [
-      { binding: 0, kind: 'tex', note: 'opaque/background combined radiance' },
-      { binding: 1, kind: 'storage-tex:rgba16float', note: 'transparent-composited radiance out' },
+      { binding: 0, kind: 'tex:f', note: 'DDGI irradiance atlas' },
+      { binding: 1, kind: 'tex:f', note: 'DDGI visibility atlas' },
+      { binding: 2, kind: 'sampler:f', note: 'DDGI linear sampler' },
+      { binding: 3, kind: 'uniform', note: 'DDGIGridUniform' },
+      { binding: 4, kind: 'storage-ro', note: 'RC cascade-0 radiance' },
+      { binding: 5, kind: 'uniform', note: 'RCParams' },
+      { binding: 6, kind: 'tex', note: 'opaque/background combined radiance' },
+      { binding: 7, kind: 'storage-tex:rgba16float', note: 'transparent-composited radiance out' },
     ],
   },
   {
@@ -370,8 +362,9 @@ export const BIND_GROUP_TABLE: readonly BindGroupTableEntry[] = [
     entries: [
       { binding: 0, kind: 'uniform', minSizeBytes: UBO_16_BYTES, note: 'CbPrefillUniforms (screenW/H, frameParity, pad)' },
       { binding: 1, kind: 'tex', note: 'readAccum — previous-frame accumulated radiance' },
-      { binding: 2, kind: 'tex', note: 'motionVectors — rgba32float NDC motion' },
-      { binding: 3, kind: 'storage-tex:rgba16float', note: 'hdrColorTexture — gap-pixel fill output' },
+      { binding: 2, kind: 'tex', note: 'motionVectors — rgba32float previous-current pixel delta' },
+      { binding: 3, kind: 'tex', note: 'current shaded-radiance snapshot for spatial reconstruction' },
+      { binding: 4, kind: 'storage-tex:rgba16float', note: 'hdrColorTexture — gap-pixel fill output' },
     ],
   },
 ];
@@ -423,12 +416,16 @@ function layoutResourceFor(
       return buffer('uniform');
     case 'tex':
       return { texture: { sampleType: 'unfilterable-float' } };
+    case 'tex:f':
+      return { texture: { sampleType: 'float' } };
     case 'tex-array':
       return { texture: { sampleType: 'unfilterable-float', viewDimension: '2d-array' } };
     case 'tex:uint':
       return { texture: { sampleType: 'uint' } };
     case 'sampler:nf':
       return { sampler: { type: 'non-filtering' } };
+    case 'sampler:f':
+      return { sampler: { type: 'filtering' } };
     case 'storage-tex:rgba16float':
       return { storageTexture: { access: 'write-only', format: 'rgba16float' } };
     case 'storage-tex:rgba32float':
@@ -457,7 +454,7 @@ function bindingResourceSize(resource: GPUBindingResource): number | undefined {
   if (resource == null || typeof resource !== 'object' || !('buffer' in resource)) {
     return undefined;
   }
-  const binding = resource as GPUBufferBinding;
+  const binding = resource;
   const buffer = binding.buffer as GPUBuffer & { readonly size?: number; readonly label?: string };
   if (typeof binding.size === 'number') return binding.size;
   if (typeof buffer.size !== 'number') return undefined;
@@ -469,7 +466,7 @@ function bindingResourceLabel(resource: GPUBindingResource): string {
   if (resource == null || typeof resource !== 'object' || !('buffer' in resource)) {
     return '';
   }
-  const buffer = (resource as GPUBufferBinding).buffer as GPUBuffer & { readonly label?: string };
+  const buffer = (resource).buffer as GPUBuffer & { readonly label?: string };
   return buffer.label ?? '';
 }
 

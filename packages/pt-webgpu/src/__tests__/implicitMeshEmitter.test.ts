@@ -14,7 +14,11 @@
 
 import { describe, expect, it } from 'vitest';
 import type { MaterialSpec, MeshPrimitive, Scene, TextureRef } from '@vitrum/core';
-import { packEmitterArrays, packMeshAreaAdjointReplayArrays } from '../scene/emitterPacking.js';
+import {
+  MESH_AREA_LIGHT_FLOAT_STRIDE,
+  packEmitterArrays,
+  packMeshAreaAdjointReplayArrays,
+} from '../scene/emitterPacking.js';
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -68,17 +72,15 @@ describe('packEmitterArrays — H14-A implicit mesh-area synthesis', () => {
     expect(packed.meshAreaLightCount).toBeGreaterThan(0);
     // The synthesized radiance = emissive * emissiveIntensity = [2, 1, 0.5].
     // Radiance is packed at float offset 12 (vec4f #3) per triangle.
-    const STRIDE = 16; // MESH_AREA_LIGHT_FLOAT_STRIDE
     const radR = packed.meshAreaLightsData[12]!;
     const radG = packed.meshAreaLightsData[13]!;
     const radB = packed.meshAreaLightsData[14]!;
     expect(radR).toBeCloseTo(2, 5);
     expect(radG).toBeCloseTo(1, 5);
     expect(radB).toBeCloseTo(0.5, 5);
-    void STRIDE;
   });
 
-  it('subdivides implicit mesh-area radiance for CPU-readable emissiveMap energy', () => {
+  it('retains full-triangle support and a positive power proxy for mapped implicit emission', () => {
     const scene: Scene = {
       primitives: [
         triMesh('mapped-glow', [2, 2, 2], 1, {
@@ -96,46 +98,101 @@ describe('packEmitterArrays — H14-A implicit mesh-area synthesis', () => {
       environment: { kind: 'none' },
     };
     const packed = packEmitterArrays(scene);
-    expect(packed.meshAreaLightCount).toBe(4);
+    expect(packed.meshAreaLightCount).toBe(1);
+    // The proposal stores unmodulated base Le so every potentially bright
+    // filtered texel has positive sampling support. Exact map Le is evaluated
+    // at the sampled barycentric point in WGSL.
     expect(packed.meshAreaLightsData[12]).toBeCloseTo(2, 5);
-    expect(packed.meshAreaLightsData[13]).toBeCloseTo(0, 5);
-    expect(packed.meshAreaLightsData[14]).toBeCloseTo(0, 5);
+    expect(packed.meshAreaLightsData[13]).toBeCloseTo(2, 5);
+    expect(packed.meshAreaLightsData[14]).toBeCloseTo(2, 5);
+    expect(packed.meshAreaLightsData[22]).toBe(1);
+    expect(packed.meshAreaLightsData[24]).toBeCloseTo(2, 5);
+    expect(packed.meshAreaLightsData[25]).toBeCloseTo(2, 5);
+    expect(packed.meshAreaLightsData[26]).toBeCloseTo(2, 5);
   });
 
-  it('clips CPU-readable emissiveMap UV footprints to exact texel cells', () => {
+  it('retains proposal support for mapped emission below the former 1e-6 cutoff', () => {
+    const scene: Scene = {
+      primitives: [
+        triMesh('very-dim-mapped-glow', [1, 1, 1], 1, {
+          emissiveMap: emissiveMap(new Float32Array([1e-8, 0, 0, 1]), 1, 1),
+        }),
+      ],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+
+    const packed = packEmitterArrays(scene);
+    expect(packed.meshAreaLightCount).toBe(1);
+    expect(Array.from(packed.meshAreaLightsData.slice(12, 15))).toEqual([1, 1, 1]);
+  });
+
+  it('keeps a black/non-black neighbour and repeat seam in proposal support', () => {
     const scene: Scene = {
       primitives: [{
         ...(triMesh('mapped-glow-exact', [2, 2, 2], 1, {
           emissiveMap: emissiveMap(
             new Float32Array([
+              0, 0, 0, 1,
               1, 0, 0, 1,
-              0, 1, 0, 1,
             ]),
             2,
             1,
           ),
         }) as MeshPrimitive),
-        uvs: new Float32Array([0, 0, 1, 0, 0, 1]),
+        uvs: new Float32Array([-0.01, 0, 0.01, 0, -0.01, 1]),
       }],
       emitters: [],
       environment: { kind: 'none' },
     };
     const packed = packEmitterArrays(scene);
-    expect(packed.meshAreaLightCount).toBe(3);
+    expect(packed.meshAreaLightCount).toBe(1);
     expect(packed.meshAreaLightsData[12]).toBeCloseTo(2, 5);
-    expect(packed.meshAreaLightsData[13]).toBeCloseTo(0, 5);
-    expect(packed.meshAreaLightsData[14]).toBeCloseTo(0, 5);
-    expect(Array.from({ length: packed.meshAreaLightCount }, (_, i) => {
-      const base = i * 16;
-      return [
-        packed.meshAreaLightsData[base + 12]!,
-        packed.meshAreaLightsData[base + 13]!,
-        packed.meshAreaLightsData[base + 14]!,
-      ].join(',');
-    })).toContain('0,2,0');
+    expect(packed.meshAreaLightsData[13]).toBeCloseTo(2, 5);
+    expect(packed.meshAreaLightsData[14]).toBeCloseTo(2, 5);
+    const packedUvs = Array.from(packed.meshAreaLightsData.slice(16, 22));
+    expect(packedUvs[0]).toBeCloseTo(-0.01, 6);
+    expect(packedUvs[2]).toBeCloseTo(0.01, 6);
+    expect(packedUvs[4]).toBeCloseTo(-0.01, 6);
+    expect([packedUvs[1], packedUvs[3], packedUvs[5]]).toEqual([0, 0, 1]);
   });
 
-  it('subdivides explicit mesh-area radiance through the referenced material emissiveMap', () => {
+  it('packs an arbitrary authored UV set for exact GPU emissive sampling', () => {
+    const scene: Scene = {
+      primitives: [{
+        ...(triMesh('mapped-glow-uv3', [2, 2, 2], 1, {
+          emissiveMap: {
+            ...emissiveMap(
+              new Float32Array([
+                1, 0, 0, 1,
+                0, 1, 0, 1,
+              ]),
+              2,
+              1,
+            ),
+            texCoord: 3,
+          },
+        }) as MeshPrimitive),
+        uvSets: [
+          undefined,
+          undefined,
+          undefined,
+          new Float32Array([0, 0, 1, 0, 0, 1]),
+        ],
+      }],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+
+    const packed = packEmitterArrays(scene);
+    expect(packed.meshAreaLightCount).toBe(1);
+    expect(Array.from(packed.meshAreaLightsData.slice(16, 22))).toEqual([
+      0, 0, 1, 0, 0, 1,
+    ]);
+    expect(packed.meshAreaLightsData[22]).toBe(1);
+  });
+
+  it('packs explicit mapped mesh emission as exact-sample metadata plus a power proxy', () => {
     const primitive = {
       ...triMesh('mapped-panel', [0, 0, 0], 0, {
         emissiveMap: emissiveMap(
@@ -163,10 +220,15 @@ describe('packEmitterArrays — H14-A implicit mesh-area synthesis', () => {
 
     const packed = packEmitterArrays(scene);
 
-    expect(packed.meshAreaLightCount).toBe(4);
-    expect(packed.meshAreaLightsData[12]).toBeCloseTo(0, 5);
+    expect(packed.meshAreaLightCount).toBe(1);
+    expect(packed.meshAreaLightsData[12]).toBeCloseTo(2, 5);
     expect(packed.meshAreaLightsData[13]).toBeCloseTo(2, 5);
-    expect(packed.meshAreaLightsData[14]).toBeCloseTo(0, 5);
+    expect(packed.meshAreaLightsData[14]).toBeCloseTo(2, 5);
+    expect(Array.from(packed.meshAreaLightsData.slice(16, 22))).toEqual([
+      0.75, 0, 0.75, 0, 0.75, 0,
+    ]);
+    expect(packed.meshAreaLightsData[24]).toBeCloseTo(2, 5);
+    expect(packed.meshAreaLightsData.length).toBe(MESH_AREA_LIGHT_FLOAT_STRIDE);
   });
 
   it('packs source factors for mapped explicit mesh-area emitters with zero authored color channels', () => {
@@ -192,11 +254,11 @@ describe('packEmitterArrays — H14-A implicit mesh-area synthesis', () => {
 
     expect(packed.meshAreaLightCount).toBe(1);
     expect(packed.meshAreaLightsData[12]).toBeCloseTo(0, 5);
-    expect(packed.meshAreaLightsData[13]).toBeCloseTo(0, 5);
+    expect(packed.meshAreaLightsData[13]).toBeCloseTo(2, 5);
     expect(packed.meshAreaLightsData[14]).toBeCloseTo(4, 5);
     expect(packed.meshAreaLightSourceFactorsData.length).toBe(4);
     expect(packed.meshAreaLightSourceFactorsData[0]).toBeCloseTo(1, 5);
-    expect(packed.meshAreaLightSourceFactorsData[1]).toBeCloseTo(0, 5);
+    expect(packed.meshAreaLightSourceFactorsData[1]).toBeCloseTo(1, 5);
     expect(packed.meshAreaLightSourceFactorsData[2]).toBeCloseTo(1, 5);
   });
 
@@ -228,7 +290,7 @@ describe('packEmitterArrays — H14-A implicit mesh-area synthesis', () => {
     expect(replay.meshAreaLightsData[13]).toBeCloseTo(0, 5);
     expect(replay.meshAreaLightsData[14]).toBeCloseTo(0, 5);
     expect(replay.meshAreaLightSourceFactorsData[0]).toBeCloseTo(1, 5);
-    expect(replay.meshAreaLightSourceFactorsData[1]).toBeCloseTo(0, 5);
+    expect(replay.meshAreaLightSourceFactorsData[1]).toBeCloseTo(1, 5);
     expect(replay.meshAreaLightSourceFactorsData[2]).toBeCloseTo(1, 5);
   });
 
@@ -246,7 +308,7 @@ describe('packEmitterArrays — H14-A implicit mesh-area synthesis', () => {
     expect(packed.meshAreaLightCount).toBe(0);
   });
 
-  it('warns and falls back to scalar emissive radiance for opaque emissiveMap handles', () => {
+  it('fails closed for opaque emissiveMap handles instead of biasing MIS', () => {
     const scene: Scene = {
       primitives: [
         triMesh('opaque-map', [1, 0.25, 0], 2, {
@@ -256,12 +318,8 @@ describe('packEmitterArrays — H14-A implicit mesh-area synthesis', () => {
       emitters: [],
       environment: { kind: 'none' },
     };
-    const packed = packEmitterArrays(scene);
-    expect(packed.meshAreaLightCount).toBe(1);
-    expect(packed.meshAreaLightsData[12]).toBeCloseTo(2, 5);
-    expect(packed.meshAreaLightsData[13]).toBeCloseTo(0.5, 5);
-    expect(packed.warnings).toContain(
-      '@vitrum/pt-webgpu: primitive "opaque-map" has an emissiveMap without CPU-readable texels; implicit mesh-area NEE uses scalar emissive radiance only.',
+    expect(() => packEmitterArrays(scene)).toThrow(
+      /emissiveMap without complete CPU-readable texels/,
     );
   });
 

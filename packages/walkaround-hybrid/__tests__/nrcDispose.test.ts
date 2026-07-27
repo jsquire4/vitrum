@@ -6,7 +6,7 @@
  * teardown, and `NrcSubsystem.dispose()` carried a comment admitting it could
  * not release them. This test pins:
  *
- *   1. FusedMlpTrainer.build() allocates exactly the 18 buffers we enumerate,
+ *   1. FusedMlpTrainer.build() allocates exactly the 33 buffers we enumerate,
  *      and dispose() calls .destroy() on every one EXACTLY ONCE.
  *   2. dispose() is IDEMPOTENT — a second call neither throws nor double-
  *      destroys.
@@ -64,12 +64,11 @@ const SPEC: FusedNetSpec = { inW: 16, W: 16, outW: 3, hidden: 2 };
 const CFG: FusedTrainerConfig = { useF16: false, tileB: 8 };
 const NUM_SAMPLES = 32;
 
-// The exact buffers build() allocates (see fusedMlpTrainer.ts build()). f32 path:
-//   18 original compute storage buffers
-// + 6 persistent UBOs now allocated in build() (_paramsUbo, _gradFinUboW/B/X,
-//   _adamUboW/B) — previously created lazily in record*() per step.
-// = 24 total. No downcast buffers (_downcastUboW/B) in the useF16=false path.
-const EXPECTED_BUILD_BUFFER_COUNT = 24;
+// The exact f32 build footprint is 18 original compute/storage buffers,
+// 8 buffers for the preallocated spare parameter/moment generation,
+// 6 persistent UBOs, and one standalone diagnostics buffer = 33 total.
+// No downcast UBOs (_downcastUboW/B) are allocated on the useF16=false path.
+const EXPECTED_BUILD_BUFFER_COUNT = 33;
 
 describe('NrcSubsystem config defaults', () => {
   it('merges partial host config over defaults', () => {
@@ -83,7 +82,7 @@ describe('NrcSubsystem config defaults', () => {
 });
 
 describe('FusedMlpTrainer.dispose()', () => {
-  it('allocates 24 buffers in build() and destroys each exactly once', async () => {
+  it('allocates 33 buffers in build() and destroys each exactly once', async () => {
     const { device, buffers } = mockDevice();
     const trainer = new FusedMlpTrainer(device, SPEC, CFG);
     await trainer.build(NUM_SAMPLES);
@@ -122,7 +121,7 @@ describe('NrcSubsystem.dispose() forwards to the trainer', () => {
     // a far heavier device mock). Inject a trainer stub directly and assert the
     // dispose forwards. The subsystem's own buffer fields are undefined → the
     // `?.destroy()` guards make dispose() safe.
-    const sub = Object.create(NrcSubsystem.prototype) as NrcSubsystem;
+      const sub = new NrcSubsystem(_device, {} as never, {});
     const disposeSpy = vi.fn();
     // _trainer is private; assign through an index cast for the test only.
     (sub as unknown as { _trainer: { dispose: () => void } })._trainer = {

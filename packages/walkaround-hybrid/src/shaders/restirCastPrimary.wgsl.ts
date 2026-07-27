@@ -54,11 +54,9 @@ fn castPrimary(px: vec2u, dims: vec2u, camPos: vec3f, invVP: mat4x4f) -> Primary
   let ray = generatePrimaryRay_common(px.x, px.y, dims.x, dims.y, camPos, invVP);
   let hit = traceSceneFirstHitAlphaMaskTexturedOpaqueOnly(
     ubo.bvhMode, ubo.tlasNodeCount,
-    &bvh_index, &bvh_position, &bvh,
-    &tlasNodes, &tlasInstanceIndices, &tlasBlasRoots,
-    &tlasInstanceWorldToLocal, &tlasInstanceLocalToWorld,
+
     ray, ubo.triIntersectEpsilon,
-    bvh_material, BVH_MATERIAL_TEX_WIDTH);
+    bvh_material, BVH_MATERIAL_TEX_WIDTH, 0u);
   s.hit = hit.didHit;
   if (!hit.didHit) {
     return s;
@@ -67,28 +65,33 @@ fn castPrimary(px: vec2u, dims: vec2u, camPos: vec3f, invVP: mat4x4f) -> Primary
   let geoNormal = hit.normal;
   let n_isTlas = ubo.bvhMode == 1u;
   let n_base = hit.instanceIndex * 4u;
-  let n_ok = n_isTlas && n_base + 2u < arrayLength(&tlasInstanceWorldToLocal);
+  let n_ok = n_isTlas && n_base + 2u < tlasWorldToLocalColumnCount();
   let n_i = select(0u, n_base, n_ok);
   let smoothNormal = smoothShadingNormal(
     hit, geoNormal,
-    bvh_normal[hit.indices.x].xyz, bvh_normal[hit.indices.y].xyz, bvh_normal[hit.indices.z].xyz,
+    sceneLoadBvhNormal(hit.indices.x).xyz, sceneLoadBvhNormal(hit.indices.y).xyz, sceneLoadBvhNormal(hit.indices.z).xyz,
     n_ok,
-    tlasInstanceWorldToLocal[n_i], tlasInstanceWorldToLocal[n_i + 1u], tlasInstanceWorldToLocal[n_i + 2u],
+    tlasLoadWorldToLocalColumn(n_i), tlasLoadWorldToLocalColumn(n_i + 1u), tlasLoadWorldToLocalColumn(n_i + 2u),
   );
   let normalMapped = applyNormalMapForHit(hit, smoothNormal);
   s.normal = applyBumpMapForHit(hit, normalMapped);
   s.wo     = -ray.direction;
-  let matColor = decodeMaterialColor(hit.matColorPacked);
+  let scalarMatColor = decodeMaterialColor(hit.matColorPacked);
+  let matColor = vec4f(
+    scalarMatColor.rgb,
+    sampleTransmissionMapForHit(hit, scalarMatColor.a),
+  );
   // B1 — real authored roughness/metalness from the per-tri bvh_material texture
   // (was hardcoded select(0.85,0.05,isGlass) / metal 0). The diffuse-default
   // invariant keeps default-diffuse surfaces at 0.85 / glass at 0.05.
   let rmCoord = vec2u(hit.indices.w % BVH_MATERIAL_TEX_WIDTH, hit.indices.w / BVH_MATERIAL_TEX_WIDTH);
   let materialWord = textureLoad(bvh_material, vec2i(rmCoord), 0).r;
-  let payload = sampleRestirDIMaterialPayloadForHit(hit, smoothNormal, s.normal, matColor.rgb, materialWord);
+  let payload = sampleRestirDIMaterialPayloadForHit(hit, smoothNormal, s.normal, matColor.rgb, materialWord, s.wo);
   s.clearcoatNormal = payload.clearcoatNormal;
   s.albedo = payload.albedo;
   s.rough  = payload.rough;
   s.metal  = payload.metal;
+  s.isGlass = materialHasTransmission(matColor.a);
   s.specular = payload.specular;
   s.anisotropy = payload.anisotropy;
   s.anisotropyTangent = payload.anisotropyTangent;
@@ -99,6 +102,7 @@ fn castPrimary(px: vec2u, dims: vec2u, camPos: vec3f, invVP: mat4x4f) -> Primary
   s.sheenRoughness = payload.sheenRoughness;
   s.layerTransmission = payload.layerTransmission;
   s.volumeScattering = payload.volumeScattering;
+  s.bulkThickness = payload.bulkThickness;
   s.envMapIntensity = payload.envMapIntensity;
   s.depth  = hit.dist;
   return s;

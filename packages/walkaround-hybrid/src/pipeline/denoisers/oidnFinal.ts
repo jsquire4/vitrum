@@ -19,9 +19,9 @@
  *
  *   1. On each `dispatch` call, if no inference is in flight, kick off a
  *      background pipeline:
- *        a. encoder.copyTextureToBuffer for hdrColor + albedo + normal-depth
- *           (we share `ctx.encoder` so the copy is folded into the same
- *           queue.submit as the frame's compute work — no extra submit).
+ *        a. after the primary frame is submitted, enqueue a second ordered
+ *           submission that copies hdrColor + albedo + normal-depth into
+ *           transient readback buffers.
  *        b. await mapAsync on the three readback buffers.
  *        c. unpack rgba16float → Float32Array RGB (HxWx3), decode normal
  *           from `xyz*2 - 1`.
@@ -38,8 +38,9 @@
  *
  * Errors during the background pipeline (ORT load failure, model file
  * missing, malformed model output) are caught and logged; the in-flight
- * flag clears so the next dispatch retries. The output texture stays
- * stale until a successful inference lands.
+ * flag clears so the next dispatch retries. A failed cycle returns raw HDR
+ * rather than presenting an older denoised frame as current; successful
+ * retry restores the denoised output.
  *
  * GPU memory budget: 1 owned full-res rgba16float output texture
  * (≈16 MB at 1080p) + 3 transient readback buffers allocated lazily on
@@ -47,11 +48,11 @@
  */
 
 import {
-  preloadOIDNModel,
+  acquireOIDNSession,
   denoiseFinal,
   deriveOidnState,
-  releaseOIDNCacheEntry,
   type OIDNDenoiseInputs,
+  type OIDNSessionLease,
 } from '@vitrum/shared-denoisers';
 import type { EngineWarning } from '@vitrum/core';
 import {
@@ -62,6 +63,8 @@ import {
   type DenoiserInitContext,
   type DenoiserState,
 } from './index.js';
+import { publishFrameState } from '../FramePublication.js';
+import { shouldResetDenoiserHistory } from './historyReset.js';
 
 /**
  * Construction-time configuration for {@link OIDNFinalDenoiser}.
@@ -146,6 +149,9 @@ export class OIDNFinalDenoiser implements Denoiser {
    *  Each `dispatch` call short-circuits if this is set, so concurrent
    *  kicks are not allowed. */
   private _inFlight = false;
+  /** Frame inputs awaiting the primary frame submission. The post-submit hook
+   *  consumes this exactly once and records copies in a separate encoder. */
+  private _pendingReadback: DenoiserDispatchContext | null = null;
   /** True while initialize() is preloading the ONNX runtime/session. */
   private _warmupInFlight = false;
   /** Last async preload/inference failure, surfaced via state() until retry. */
@@ -160,6 +166,19 @@ export class OIDNFinalDenoiser implements Denoiser {
    *  back — if the generation has changed, the texture is a different size
    *  and the write would be a stale-size validation error. */
   private _resizeGeneration = 0;
+  /**
+   * Accumulation/content cohort. Camera motion and every frame-zero
+   * accumulation reset (scene, lighting, material, or geometry mutation) bump
+   * this value. Async work from an older cohort is discarded before upload so
+   * a pre-mutation image can never replace the current frame.
+   */
+  private _contentGeneration = 0;
+  /** Explicit ownership claim on the bridge's shared model session. */
+  private _sessionLease: OIDNSessionLease | null = null;
+  /** Cancels an initialize candidate when dispose wins an async race. */
+  private _lifecycleGeneration = 0;
+  /** Keep the lease alive until this denoiser's in-flight call has settled. */
+  private _releaseSessionWhenIdle = false;
 
   constructor(opts?: OIDNFinalDenoiserOptions) {
     // No-modelUrl construction registers as a `disabled` placeholder.
@@ -183,19 +202,21 @@ export class OIDNFinalDenoiser implements Denoiser {
     if (this.disabled) {
       throw new Error(
         `[OIDNFinalDenoiser] cannot initialize a placeholder instance (no modelUrl supplied). ` +
-        `Pass HybridEngineOptions.extensions['walkaround-hybrid'].oidnModelUrl to enable.`,
+          `Pass HybridEngineOptions.extensions['walkaround-hybrid'].oidnModelUrl to enable.`,
       );
     }
-    this._device = ctx.device;
-    this._width = ctx.width;
-    this._height = ctx.height;
+    if (this._warmupInFlight) {
+      throw new Error('[OIDNFinalDenoiser] initialize is already in progress.');
+    }
+    if (this._inFlight) {
+      throw new Error('[OIDNFinalDenoiser] cannot initialize while inference is in flight.');
+    }
+    const lifecycleGeneration = ++this._lifecycleGeneration;
     this._disposed = false;
-    this._lastFailureReason = null;
-
-    // Owned output texture — full-res rgba16float, same layout / usage as
-    // the SVGF-real / atrous-variance ping-pongs so downstream
-    // temporalAccum can sample it identically.
-    this._denoisedOutputTexture = OIDNFinalDenoiser._createOutputTexture(ctx.device, ctx.width, ctx.height);
+    const previousTexture = this._denoisedOutputTexture;
+    const previousLease = this._sessionLease;
+    let candidateTexture: GPUTexture | null = null;
+    let candidateLease: OIDNSessionLease | null = null;
 
     // Pre-warm the ONNX runtime + session so the first dispatch doesn't
     // pay the ~500 ms — 5 s "first run" cost on top of the inference cost.
@@ -203,15 +224,54 @@ export class OIDNFinalDenoiser implements Denoiser {
     // denoiseFinal calls skip session creation.
     this._warmupInFlight = true;
     try {
-      await preloadOIDNModel({
+      candidateTexture = OIDNFinalDenoiser._createOutputTexture(
+        ctx.device,
+        ctx.width,
+        ctx.height,
+      );
+      if (candidateTexture === previousTexture) {
+        // A replacement must be a distinct ownership object. Preserve the live
+        // texture if a malformed device/mock aliases createTexture().
+        candidateTexture = null;
+        throw new Error('[OIDNFinalDenoiser] initialize candidate aliased the live output texture.');
+      }
+      candidateLease = await acquireOIDNSession({
         modelUrl: this._modelUrl,
         ...(this._executionProviders !== undefined
           ? { executionProviders: this._executionProviders }
           : {}),
       });
+      if (this._disposed || this._lifecycleGeneration !== lifecycleGeneration) {
+        throw new Error('[OIDNFinalDenoiser] initialize was cancelled by dispose.');
+      }
+
+      // Publish only after both GPU allocation and model acquisition succeed.
+      this._device = ctx.device;
+      this._width = ctx.width;
+      this._height = ctx.height;
+      this._denoisedOutputTexture = candidateTexture;
+      this._sessionLease = candidateLease;
+      this._resizeGeneration++;
+      this._pendingReadback = null;
+      this._haveDenoisedOutput = false;
+      this._lastFailureReason = null;
+      this._releaseSessionWhenIdle = false;
+      candidateTexture = null;
+      candidateLease = null;
+
+      try { previousTexture?.destroy(); } catch { /* retired candidate */ }
+      try { previousLease?.release(); } catch { /* best-effort retirement */ }
     } catch (err) {
-      this._lastFailureReason = `OIDN preload failed: ${errorReason(err)}`;
-      this._lastFailureRetryable = false;
+      try { candidateTexture?.destroy(); } catch { /* partial allocation */ }
+      try { candidateLease?.release(); } catch { /* partial acquisition */ }
+      if (
+        !this._disposed &&
+        this._lifecycleGeneration === lifecycleGeneration &&
+        previousTexture == null
+      ) {
+        this._lastFailureReason = `OIDN preload failed: ${errorReason(err)}`;
+        this._lastFailureRetryable = true;
+      }
       throw err;
     } finally {
       this._warmupInFlight = false;
@@ -263,25 +323,48 @@ export class OIDNFinalDenoiser implements Denoiser {
   dispatch(ctx: DenoiserDispatchContext): GPUTexture | null {
     if (!this._denoisedOutputTexture || !this._device) return null;
 
-    // Kick off the background readback + inference + upload chain when no
-    // inference is currently in flight. The chain reuses `ctx.encoder` for
-    // the readback copy so the copy lands inside the same queue.submit as
-    // the frame's compute work — no extra submission, no GPU stall.
-    if (!this._inFlight && !this._disposed) {
-      this._inFlight = true;
+    if (shouldResetDenoiserHistory(ctx.frameIndex, ctx.isMoving)) {
+      this._contentGeneration++;
+      this._pendingReadback = null;
+      this._haveDenoisedOutput = false;
       this._lastFailureReason = null;
-      void this._runInferenceCycle(ctx).finally(() => {
-        this._inFlight = false;
+    }
+
+    // Stage the background readback + inference + upload chain when idle.
+    // afterFrameSubmit() records the copies only after the frame encoder has
+    // been submitted, then relies on same-queue ordering before mapAsync
+    // observes the copied bytes.
+    if (!this._inFlight && this._pendingReadback == null && !this._disposed) {
+      publishFrameState(ctx.publication, () => {
+        // Re-check lifecycle state at the accepted boundary; resize/dispose are
+        // synchronous but this keeps the ownership rule explicit.
+        if (!this._inFlight && this._pendingReadback == null && !this._disposed) {
+          this._pendingReadback = ctx;
+        }
       });
     }
 
-    // Always return the owned output (stale by ≥1 frame). On the very
-    // first frame — before any inference has completed — fall back to the
-    // raw HDR target so downstream temporalAccum has a valid signal.
-    if (this._haveDenoisedOutput) {
+    // Return the latest completed output only while the denoiser is healthy.
+    // Before the first success, and after any failed cycle, return raw HDR so
+    // downstream passes never mistake a stale denoised frame for this frame.
+    if (this._haveDenoisedOutput && this._lastFailureReason == null) {
       return this._denoisedOutputTexture;
     }
     return ctx.resources.common.hdrColorTexture;
+  }
+
+  afterFrameSubmit(): void {
+    const ctx = this._pendingReadback;
+    this._pendingReadback = null;
+    if (ctx == null || this._inFlight || this._disposed || this._device == null) return;
+
+    this._inFlight = true;
+    void this._runInferenceCycle(ctx).finally(() => {
+      this._inFlight = false;
+      if (this._releaseSessionWhenIdle) {
+        this._releaseSessionLease();
+      }
+    });
   }
 
   /**
@@ -289,9 +372,9 @@ export class OIDNFinalDenoiser implements Denoiser {
    * GPU upload.  Delegates the three async stages to the private helpers
    * below so each concern can be read and tested in isolation.
    *
-   * Awaiting the queue submission is implicit — we let `encoder` finish +
-   * submit normally as part of the frame's loop, then map the readback
-   * buffers on the queue once that submit completes.
+   * The primary frame submit happens before this method is entered. Stage 1
+   * submits the readback copies on the same queue; queue ordering guarantees
+   * they observe the frame's texture writes before mapAsync resolves.
    */
   private async _runInferenceCycle(ctx: DenoiserDispatchContext): Promise<void> {
     const device = this._device!;
@@ -302,15 +385,23 @@ export class OIDNFinalDenoiser implements Denoiser {
     // changed and we abort instead of writing old-size data into the
     // new (different-size) texture (WebGPU validation error / stale frame).
     const dispatchGeneration = this._resizeGeneration;
+    const contentGeneration = this._contentGeneration;
 
-    const { colorReadback, albedoReadback, normalReadback, bytesPerRow } =
-      this._readbackTextures(device, ctx, W, H);
+    let readbacks: ReturnType<OIDNFinalDenoiser['_readbackTextures']> | null = null;
 
     try {
-      const { color, albedo, normal } =
-        await this._decodeReadbacks(colorReadback, albedoReadback, normalReadback, bytesPerRow, W, H);
+      readbacks = this._readbackTextures(device, ctx, W, H);
+      const { colorReadback, albedoReadback, normalReadback, bytesPerRow } = readbacks;
+      const { color, albedo, normal } = await this._decodeReadbacks(
+        colorReadback,
+        albedoReadback,
+        normalReadback,
+        bytesPerRow,
+        W,
+        H,
+      );
 
-      if (this._disposed) return;
+      if (this._disposed || this._contentGeneration !== contentGeneration) return;
 
       const inputs: OIDNDenoiseInputs = { color, albedo, normal, width: W, height: H };
       const denoised = await denoiseFinal(inputs, {
@@ -320,7 +411,11 @@ export class OIDNFinalDenoiser implements Denoiser {
           : {}),
       });
 
-      if (this._disposed || !this._denoisedOutputTexture) return;
+      if (
+        this._disposed ||
+        this._contentGeneration !== contentGeneration ||
+        !this._denoisedOutputTexture
+      ) return;
       // Abort if resize() was called while we were awaiting — the output
       // texture is now a different size, so writing W×H into it is wrong.
       if (this._resizeGeneration !== dispatchGeneration) return;
@@ -329,25 +424,38 @@ export class OIDNFinalDenoiser implements Denoiser {
       this._haveDenoisedOutput = true;
       this._lastFailureReason = null;
     } catch (err) {
-      // Swallow + report. The stale output texture remains visible; the next
-      // dispatch will retry. Hosts receive both a structured warning and the
-      // denoiser state transition (`failed`, retryable) through FrameStats.
+      if (this._disposed || this._contentGeneration !== contentGeneration) return;
+      // Swallow + report. Dispatch falls back to raw HDR until a later retry
+      // succeeds. Hosts receive both a structured warning and the denoiser
+      // state transition (`failed`, retryable) through FrameStats.
       const reason = `OIDN inference cycle failed: ${errorReason(err)}`;
       this._lastFailureReason = reason;
       this._lastFailureRetryable = true;
       this._warnInferenceFailure(reason, err, W, H);
     } finally {
       // Release the readback buffers — they're transient per-cycle.
-      try { colorReadback.destroy(); } catch { /* already destroyed */ }
-      try { albedoReadback.destroy(); } catch { /* already destroyed */ }
-      try { normalReadback.destroy(); } catch { /* already destroyed */ }
+      try {
+        readbacks?.colorReadback.destroy();
+      } catch {
+        /* already destroyed */
+      }
+      try {
+        readbacks?.albedoReadback.destroy();
+      } catch {
+        /* already destroyed */
+      }
+      try {
+        readbacks?.normalReadback.destroy();
+      } catch {
+        /* already destroyed */
+      }
     }
   }
 
   /**
-   * Stage 1 — Allocate three transient readback buffers and enqueue GPU
-   * `copyTextureToBuffer` commands into `ctx.encoder`.  The copies execute
-   * as part of the same `queue.submit` as the rest of the frame's work.
+   * Stage 1 — Allocate three transient readback buffers and submit their
+   * `copyTextureToBuffer` commands after the primary frame submission.
+   * Same-queue ordering makes the copies observe the completed frame writes.
    * WebGPU requires `bytesPerRow` to be a multiple of 256.
    */
   private _readbackTextures(
@@ -364,40 +472,64 @@ export class OIDNFinalDenoiser implements Denoiser {
     const bytesPerRow = alignedTextureCopyBytesPerRow(W, 8); // rgba16float = 8 B / texel
     const readSize = bytesPerRow * H;
     const common = ctx.resources.common;
+    const encoder = device.createCommandEncoder({ label: 'oidn-post-submit-readback' });
 
-    const colorReadback = device.createBuffer({
-      label: 'oidn-readback-color',
-      size: readSize,
-      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
-    });
-    const albedoReadback = device.createBuffer({
-      label: 'oidn-readback-albedo',
-      size: readSize,
-      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
-    });
-    const normalReadback = device.createBuffer({
-      label: 'oidn-readback-normal',
-      size: readSize,
-      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
-    });
+    let colorReadback: GPUBuffer | null = null;
+    let albedoReadback: GPUBuffer | null = null;
+    let normalReadback: GPUBuffer | null = null;
+    try {
+      colorReadback = device.createBuffer({
+        label: 'oidn-readback-color',
+        size: readSize,
+        usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+      });
+      albedoReadback = device.createBuffer({
+        label: 'oidn-readback-albedo',
+        size: readSize,
+        usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+      });
+      normalReadback = device.createBuffer({
+        label: 'oidn-readback-normal',
+        size: readSize,
+        usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+      });
 
-    ctx.encoder.copyTextureToBuffer(
-      { texture: common.hdrColorTexture },
-      { buffer: colorReadback, bytesPerRow },
-      { width: W, height: H, depthOrArrayLayers: 1 },
-    );
-    ctx.encoder.copyTextureToBuffer(
-      { texture: common.albedoTexture },
-      { buffer: albedoReadback, bytesPerRow },
-      { width: W, height: H, depthOrArrayLayers: 1 },
-    );
-    ctx.encoder.copyTextureToBuffer(
-      { texture: common.gNormalDepthTexture },
-      { buffer: normalReadback, bytesPerRow },
-      { width: W, height: H, depthOrArrayLayers: 1 },
-    );
+      encoder.copyTextureToBuffer(
+        { texture: common.hdrColorTexture },
+        { buffer: colorReadback, bytesPerRow },
+        { width: W, height: H, depthOrArrayLayers: 1 },
+      );
+      encoder.copyTextureToBuffer(
+        { texture: common.albedoTexture },
+        { buffer: albedoReadback, bytesPerRow },
+        { width: W, height: H, depthOrArrayLayers: 1 },
+      );
+      encoder.copyTextureToBuffer(
+        { texture: common.gNormalDepthTexture },
+        { buffer: normalReadback, bytesPerRow },
+        { width: W, height: H, depthOrArrayLayers: 1 },
+      );
+      device.queue.submit([encoder.finish()]);
 
-    return { colorReadback, albedoReadback, normalReadback, bytesPerRow };
+      return { colorReadback, albedoReadback, normalReadback, bytesPerRow };
+    } catch (err) {
+      try {
+        colorReadback?.destroy();
+      } catch {
+        /* already destroyed */
+      }
+      try {
+        albedoReadback?.destroy();
+      } catch {
+        /* already destroyed */
+      }
+      try {
+        normalReadback?.destroy();
+      } catch {
+        /* already destroyed */
+      }
+      throw err;
+    }
   }
 
   /**
@@ -417,18 +549,26 @@ export class OIDNFinalDenoiser implements Denoiser {
     H: number,
   ): Promise<{ color: Float32Array; albedo: Float32Array; normal: Float32Array }> {
     // mapAsync resolves once the GPU has finished writing the copy,
-    // i.e. once the pipeline's queue.submit has flushed.
+    // i.e. once the ordered readback submission has completed.
     await Promise.all([
       colorReadback.mapAsync(GPUMapMode.READ),
       albedoReadback.mapAsync(GPUMapMode.READ),
       normalReadback.mapAsync(GPUMapMode.READ),
     ]);
 
-    const color  = rgba16fBufferToRgbF32(colorReadback.getMappedRange().slice(0), bytesPerRow, W, H);
-    const albedo = rgba16fBufferToRgbF32(albedoReadback.getMappedRange().slice(0), bytesPerRow, W, H);
+    const color = rgba16fBufferToRgbF32(colorReadback.getMappedRange().slice(0), bytesPerRow, W, H);
+    const albedo = rgba16fBufferToRgbF32(
+      albedoReadback.getMappedRange().slice(0),
+      bytesPerRow,
+      W,
+      H,
+    );
     // gNormalDepth packs normals as xyz*0.5+0.5 in rgb; decode back to [-1,1].
     const normal = rgba16fBufferToRgbF32(
-      normalReadback.getMappedRange().slice(0), bytesPerRow, W, H,
+      normalReadback.getMappedRange().slice(0),
+      bytesPerRow,
+      W,
+      H,
       (r, g, b) => [r * 2 - 1, g * 2 - 1, b * 2 - 1],
     );
 
@@ -445,12 +585,7 @@ export class OIDNFinalDenoiser implements Denoiser {
    * Stage 3 — Pad the denoised Float32 RGB result to rgba16float and
    * upload it to the owned `_denoisedOutputTexture` via `queue.writeTexture`.
    */
-  private _uploadResult(
-    device: GPUDevice,
-    denoised: Float32Array,
-    W: number,
-    H: number,
-  ): void {
+  private _uploadResult(device: GPUDevice, denoised: Float32Array, W: number, H: number): void {
     const { buffer, bytesPerRow: uploadBpr } = rgbF32ToRgba16fRowAligned(denoised, W, H);
     device.queue.writeTexture(
       { texture: this._denoisedOutputTexture! },
@@ -489,24 +624,40 @@ export class OIDNFinalDenoiser implements Denoiser {
   }
 
   resize(width: number, height: number): void {
-    // Tear down + reallocate the output texture at the new size. Bump the
-    // generation counter so any in-flight inference cycle that captured
-    // the previous generation aborts its writeTexture instead of writing
-    // old-size data into the new (different-size) texture (which would be
-    // a WebGPU validation error or a stale partial frame).
+    // Allocate before publication so a failed resize leaves the live output
+    // texture, dimensions, generation, and in-flight inference state intact.
+    const previous = this._denoisedOutputTexture;
+    let replacement = previous;
+    if (previous != null && this._device != null) {
+      replacement = OIDNFinalDenoiser._createOutputTexture(this._device, width, height);
+      if (replacement === previous) {
+        throw new Error('OIDNFinalDenoiser.resize: replacement aliased the live output texture.');
+      }
+    }
+
     this._width = width;
     this._height = height;
     this._resizeGeneration++;
+    this._contentGeneration++;
+    this._pendingReadback = null;
     this._haveDenoisedOutput = false;
-    if (this._denoisedOutputTexture && this._device) {
-      try { this._denoisedOutputTexture.destroy(); } catch { /* ignore */ }
-      this._denoisedOutputTexture = OIDNFinalDenoiser._createOutputTexture(this._device, width, height);
+    this._denoisedOutputTexture = replacement;
+    if (replacement !== previous) {
+      try {
+        previous?.destroy();
+      } catch {
+        // A retired texture must not invalidate the successfully published one.
+      }
     }
   }
 
   /** Full-res rgba16float owned output texture (STORAGE|TEXTURE|COPY_DST|COPY_SRC).
    *  Single source of truth for the descriptor shared by `initialize` + `resize`. */
-  private static _createOutputTexture(device: GPUDevice, width: number, height: number): GPUTexture {
+  private static _createOutputTexture(
+    device: GPUDevice,
+    width: number,
+    height: number,
+  ): GPUTexture {
     return device.createTexture({
       label: 'oidn-final-denoised-output',
       size: [width, height],
@@ -520,23 +671,31 @@ export class OIDNFinalDenoiser implements Denoiser {
   }
 
   dispose(): void {
+    this._lifecycleGeneration++;
     this._disposed = true;
-    this._warmupInFlight = false;
-    this._inFlight = false;
+    this._pendingReadback = null;
     this._lastFailureReason = null;
     if (this._denoisedOutputTexture) {
-      try { this._denoisedOutputTexture.destroy(); } catch { /* ignore */ }
+      try {
+        this._denoisedOutputTexture.destroy();
+      } catch {
+        /* ignore */
+      }
       this._denoisedOutputTexture = null;
     }
     this._haveDenoisedOutput = false;
-    if (!this.disabled && this._modelUrl.length > 0) {
-      releaseOIDNCacheEntry({
-        modelUrl: this._modelUrl,
-        ...(this._executionProviders !== undefined
-          ? { executionProviders: this._executionProviders }
-          : {}),
-      });
+    if (this._inFlight) {
+      this._releaseSessionWhenIdle = true;
+    } else {
+      this._releaseSessionLease();
     }
     this._device = null;
+  }
+
+  private _releaseSessionLease(): void {
+    this._releaseSessionWhenIdle = false;
+    const lease = this._sessionLease;
+    this._sessionLease = null;
+    try { lease?.release(); } catch { /* disposal must not throw */ }
   }
 }

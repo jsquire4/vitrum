@@ -5,8 +5,8 @@
  * Resampling," SIGGRAPH 2021, §4.2 (initial-sample RIS).
  *
  * Per-pixel:
- *   1. Re-cast primary ray. Misses produce an empty reservoir; glass may walk
- *      one refraction interface to the first diffuse receiver (B1 tail), and
+ *   1. Re-cast primary ray. Misses produce an empty reservoir; glass walks up
+ *      to four dielectric interfaces to the first diffuse receiver, and
  *      rich receivers keep their material-aware lobe target below.
  *   2. RIS over M_GI = 8 candidates. Each candidate samples a
  *      cosine-weighted hemisphere direction; the reconnection vertex
@@ -37,7 +37,8 @@
  * reconstructs full-res indirect via reservoir read at gid.xy / 2.
  *
  * Bindings:
- *   group(0) — frame (same as shade; uses gNormalDepth + reservoir)
+ *   group(0) — compact GI frame group (reservoir only; the pass re-casts its
+ *              primary ray and therefore does not bind the raster G-buffer)
  *   group(1) — scene (BVH + emitters; reuse existing layout)
  *   group(2) — ubo (camera matrices, frameSeed, aoFullTexture)
  *   group(3) — hybrid (DDGI atlas + sampler + grid params at bindings 0-3;
@@ -50,24 +51,19 @@
 
 import type { WgslModule } from '../pipeline/wgslComposer.js';
 import {
+  RIS_GI_GLASS_TRANSPORT_PREFIX_WGSL,
   RIS_GI_GLASS_RESERVOIR_LOOP_WGSL,
   RIS_GI_GLASS_VISIBILITY_TAIL_WGSL,
 } from './risGiGlassWalk.wgsl.js';
+import { reservoirGiAccessorsWgsl } from './reservoirGi.wgsl.js';
 
 export const RIS_GI_WGSL = /* wgsl */ `
 
-@group(0) @binding(10) var gi_gNormalDepth: texture_2d<f32>;
 @group(0) @binding(11) var<storage, read_write> reservoirGiCurrent: array<u32>;
 
-@group(1) @binding(0) var<storage, read> bvh:          array<BVHNode>;
-@group(1) @binding(1) var<storage, read> bvh_index:    array<vec4u>;
-@group(1) @binding(2) var<storage, read> bvh_position: array<vec4f>;
+${reservoirGiAccessorsWgsl({ storeReadWriteBinding: 'reservoirGiCurrent' })}
+
 @group(1) @binding(5) var bvh_beer: texture_2d<u32>;
-@group(1) @binding(6) var<storage, read> tlasNodes: array<BVHNode>;
-@group(1) @binding(7) var<storage, read> tlasInstanceIndices: array<u32>;
-@group(1) @binding(8) var<storage, read> tlasBlasRoots: array<u32>;
-@group(1) @binding(9) var<storage, read> tlasInstanceWorldToLocal: array<vec4f>;
-@group(1) @binding(10) var<storage, read> tlasInstanceLocalToWorld: array<vec4f>;
 // WS1 (2026-05-29) — bvh_normal is declared by materialAtlas.wgsl so alpha
 // cutout traversal and GI shading share the same UV1/normal source.
 // B1-ior-per-tri (2026-06-10) — per-triangle roughness+metalness+IOR texture.
@@ -124,13 +120,11 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
   );
   let hit = traceSceneFirstHitAlphaMaskTexturedOpaqueOnly(
     ubo.bvhMode, ubo.tlasNodeCount,
-    &bvh_index, &bvh_position, &bvh,
-    &tlasNodes, &tlasInstanceIndices, &tlasBlasRoots,
-    &tlasInstanceWorldToLocal, &tlasInstanceLocalToWorld,
+
     primaryRay, ubo.triIntersectEpsilon,
-    bvh_material, BVH_MATERIAL_TEX_WIDTH);
+    bvh_material, BVH_MATERIAL_TEX_WIDTH, 0u);
   if (!hit.didHit) {
-    storeReservoirGI_rw(&reservoirGiCurrent, pixelIdxGi, emptyReservoirGI());
+    storeReservoirGI_rw(pixelIdxGi, emptyReservoirGI());
     return;
   }
 
@@ -141,13 +135,13 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
   let geoNormal = hit.normal;
   let n_isTlas = ubo.bvhMode == 1u;
   let n_base = hit.instanceIndex * 4u;
-  let n_ok = n_isTlas && n_base + 2u < arrayLength(&tlasInstanceWorldToLocal);
+  let n_ok = n_isTlas && n_base + 2u < tlasWorldToLocalColumnCount();
   let n_i = select(0u, n_base, n_ok);
   let smoothNormal = smoothShadingNormal(
     hit, geoNormal,
-    bvh_normal[hit.indices.x].xyz, bvh_normal[hit.indices.y].xyz, bvh_normal[hit.indices.z].xyz,
+    sceneLoadBvhNormal(hit.indices.x).xyz, sceneLoadBvhNormal(hit.indices.y).xyz, sceneLoadBvhNormal(hit.indices.z).xyz,
     n_ok,
-    tlasInstanceWorldToLocal[n_i], tlasInstanceWorldToLocal[n_i + 1u], tlasInstanceWorldToLocal[n_i + 2u],
+    tlasLoadWorldToLocalColumn(n_i), tlasLoadWorldToLocalColumn(n_i + 1u), tlasLoadWorldToLocalColumn(n_i + 2u),
   );
   let normalMapped = applyNormalMapForHit(hit, smoothNormal);
   let normal = applyBumpMapForHit(hit, normalMapped);
@@ -161,10 +155,10 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
   // lobes (for metals/glossy, shade.lo_indirectSpecular), so the old empty punt
   // is gone without widening the GI reservoir payload.
   //
-  // B1 tail (2026-06-10) — glass primaries NOW get a refracted GI reservoir.
-  // The reservoir is built at the FIRST DIFFUSE SURFACE reached by a 1-interface
-  // refraction walk (castPrimaryThroughGlass below). Multi-interface rough-glass
-  // is documented-out-of-scope (plan/residue-closure-plan-2026-06-10.md §B1 tail).
+  // Glass primaries build their reservoir at the first opaque surface reached
+  // by the bounded dielectric-prefix walk below. Every crossed interface gets
+  // its own Snell/Fresnel solve and medium-stack update; TIR or budget overflow
+  // fails closed rather than relabelling a glass exit face as the receiver.
   let scalarMatColor = decodeMaterialColor(hit.matColorPacked);
   let matColor = vec4f(
     scalarMatColor.rgb,
@@ -181,158 +175,15 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
     normal,
     scalarMatColor.rgb,
     receiverMaterialWord,
+    -primaryRay.direction,
   );
   let receiverClearcoatNormal = receiverPayload.clearcoatNormal;
   let receiverWo = -primaryRay.direction;
-  let isGlass = matColor.a > 0.3;
+  let isGlass = materialHasTransmission(matColor.a);
+  let grisOn = ubo.grisReuse == 1u;
+  let currentGrisEpoch = bitcast<u32>(ubo.sunAngular.y);
 
-  // ── Glass refracted GI: 1-interface refraction walk ─────────────────────
-  // B1-ior-per-tri (2026-06-10): decode per-tri IOR from the bvh_material texture
-  // (bits[15:8], quantized [1.0, 3.0]). Default 1.5 packs to byte 64, decodes
-  // to 1.502 (error < 0.003 — within glass dispersion spread).
-  // Maximum number of consecutive glass interfaces the walk passes through
-  // (straight-through approximation after the first refraction). Bounded at 2
-  // so the per-pixel cost stays O(1) BVH traversals.
-  const GLASS_WALK_MAX_EXTRA: u32 = 2u;
-
-  if (isGlass) {
-    // Decode the per-triangle IOR from the bvh_material texture.
-    let glassPrimaryRmCoord = vec2u(hit.indices.w % BVH_MATERIAL_TEX_WIDTH,
-                                    hit.indices.w / BVH_MATERIAL_TEX_WIDTH);
-    let glassPrimaryPacked = textureLoad(bvh_material, vec2i(glassPrimaryRmCoord), 0).r;
-    let glassPrimaryRm = decodeRoughMetal(glassPrimaryPacked);
-    let glassPrimaryRough = glassPrimaryRm.x;
-    let IOR_GLASS: f32 = decodeIor(glassPrimaryPacked);
-
-    // Refract the primary ray direction at the glass interface (Snell's law).
-    // Incident medium is air (eta_i=1), transmitted medium is glass (IOR_GLASS).
-    // Convention: 'normal' is the smooth SHADING normal pointing AWAY from the
-    // glass surface toward the incident medium (the camera side). If the ray is
-    // entering the glass from outside, dot(primaryRay.direction, normal) < 0 so
-    // cosI = -dot(d, n) > 0.
-    let d = primaryRay.direction;
-    let cosI = -dot(d, normal);   // cosine of incidence angle (positive = entering)
-    let etaRatio = select(IOR_GLASS, 1.0 / IOR_GLASS, cosI > 0.0);
-    // If cosI < 0 the ray is leaving glass → etaRatio = IOR_GLASS/1 (flip normal).
-    let nFlipped = select(-normal, normal, cosI > 0.0);
-    let cosI_pos = abs(cosI);
-    let sin2T = etaRatio * etaRatio * (1.0 - cosI_pos * cosI_pos);
-    // Total internal reflection: fall back to empty reservoir (TIR is rare for
-    // a camera ray hitting glass from outside; common only for steep exit angles).
-    if (sin2T > 1.0) {
-      storeReservoirGI_rw(&reservoirGiCurrent, pixelIdxGi, emptyReservoirGI());
-      return;
-    }
-    let cosT = sqrt(max(0.0, 1.0 - sin2T));
-    var refractDir = safe_normalize(etaRatio * d + (etaRatio * cosI_pos - cosT) * nFlipped);
-
-    // B1-ior-per-tri stretch: rough-glass GI direction perturbation (2026-06-10).
-    // For rough glass (roughness > ROUGH_GLASS_THRESHOLD), perturb the exact Snell
-    // refracted direction by a GGX-distributed micro-facet offset so frosted glass
-    // receives blurred GI instead of mirror-sharp refraction. One sample; uses the
-    // per-tri roughness decoded above (glassPrimaryRough). Smooth glass (rough below
-    // threshold) keeps the exact Snell direction → byte-identical for default glass
-    // (glassPrimaryRough = 0.05 < 0.1 threshold).
-    //
-    // Implementation: build an orthonormal frame around refractDir, draw a
-    // GGX-distributed tangent perturbation (Heitz 2018 VNDF simplified for a
-    // single-sample isotropic deflection), re-normalize. The perturbation is in
-    // the transmitted half-space; if it flips below the surface we clamp back to
-    // the geometric hemisphere (same guard as sampleCosineHemisphere).
-    const ROUGH_GLASS_THRESHOLD: f32 = 0.1;
-    if (glassPrimaryRough > ROUGH_GLASS_THRESHOLD) {
-      // Build tangent frame around refractDir.
-      let up = select(vec3f(0.0, 1.0, 0.0), vec3f(1.0, 0.0, 0.0),
-                      abs(refractDir.y) > 0.9);
-      let t1 = safe_normalize(cross(refractDir, up));
-      let t2 = cross(refractDir, t1);
-
-      // GGX-distributed microfacet perturbation: draw a 2D GGX sample in the
-      // tangent plane and add it to refractDir, then re-normalize.
-      // p(r) ∝ r · α² / (r² · (α²-1) + 1)²  — simplified isotropic GGX disk.
-      let alpha = glassPrimaryRough * glassPrimaryRough; // α = roughness² (GGX convention)
-      let xi1 = rand_f32(&rng);
-      let xi2 = rand_f32(&rng);
-      // Importance-sample GGX slope magnitude: r = α√(xi1/(1−xi1)).
-      let r2 = alpha * alpha * xi1 / max(1e-6, 1.0 - xi1);
-      let r = sqrt(r2);
-      let phi = 2.0 * 3.14159265 * xi2;
-      let dx = r * cos(phi);
-      let dy = r * sin(phi);
-      let perturbedDir = safe_normalize(refractDir + dx * t1 + dy * t2);
-      // Ensure perturbation stays on the transmitted side of the surface.
-      // nFlipped points into the glass from the entry side; the transmitted ray
-      // must have dot(perturbedDir, -nFlipped) > 0 (go through the surface).
-      if (dot(perturbedDir, -nFlipped) > 1e-4) {
-        refractDir = perturbedDir;
-      }
-      // else: perturbation flipped → keep exact Snell direction (rare at low-α).
-    }
-
-    // Walk through the glass pane to find the first non-glass diffuse surface.
-    // Origin: offset along the GEOMETRIC normal (same bias as bounce rays) in the
-    // TRANSMITTED direction so we start on the far side of the interface.
-    var walkOrigin = pos - geoNormal * NORMAL_BIAS_GI;   // enter the glass
-    var walkHit: IntersectionResult;
-    var walkHitPos: vec3f;
-    var walkHitNormal: vec3f;
-    var walkSmoothNormal: vec3f;
-    var foundSurface: bool = false;
-
-    for (var gi: u32 = 0u; gi <= GLASS_WALK_MAX_EXTRA; gi = gi + 1u) {
-      let walkRay = Ray(walkOrigin, refractDir);
-      walkHit = traceSceneFirstHitAlphaMaskTexturedOpaqueOnly(
-        ubo.bvhMode, ubo.tlasNodeCount,
-        &bvh_index, &bvh_position, &bvh,
-        &tlasNodes, &tlasInstanceIndices, &tlasBlasRoots,
-        &tlasInstanceWorldToLocal, &tlasInstanceLocalToWorld,
-        walkRay, ubo.triIntersectEpsilon,
-        bvh_material, BVH_MATERIAL_TEX_WIDTH,
-      );
-      if (!walkHit.didHit) { break; }
-
-      walkHitPos = walkOrigin + refractDir * walkHit.dist;
-      walkHitNormal = walkHit.normal;
-      let scalarWalkMat = decodeMaterialColor(walkHit.matColorPacked);
-      let walkMat = vec4f(
-        scalarWalkMat.rgb,
-        sampleTransmissionMapForHit(walkHit, scalarWalkMat.a),
-      );
-      let walkIsGlass = walkMat.a > 0.3;
-
-      if (!walkIsGlass) {
-        // Found the first diffuse surface. Compute smooth shading normal.
-        let wn_isTlas = ubo.bvhMode == 1u;
-        let wn_base = walkHit.instanceIndex * 4u;
-        let wn_ok = wn_isTlas && wn_base + 2u < arrayLength(&tlasInstanceWorldToLocal);
-        let wn_i = select(0u, wn_base, wn_ok);
-        walkSmoothNormal = smoothShadingNormal(
-          walkHit, walkHit.normal,
-          bvh_normal[walkHit.indices.x].xyz,
-          bvh_normal[walkHit.indices.y].xyz,
-          bvh_normal[walkHit.indices.z].xyz,
-          wn_ok,
-          tlasInstanceWorldToLocal[wn_i],
-          tlasInstanceWorldToLocal[wn_i + 1u],
-          tlasInstanceWorldToLocal[wn_i + 2u],
-        );
-        let walkNormalMapped = applyNormalMapForHit(walkHit, walkSmoothNormal);
-        walkHitNormal = applyBumpMapForHit(walkHit, walkNormalMapped);
-        foundSurface = true;
-        break;
-      }
-
-      // Another glass interface — straight-through approximation: continue along
-      // the same refractDir from the far side of this pane (no secondary refraction).
-      // This covers thin double-glazing; the error from skipping secondary IOR is
-      // a mild lateral shift (<1% for 2 mm glass at scene scale).
-      walkOrigin = walkHitPos + refractDir * NORMAL_BIAS_GI;
-    }
-
-    if (!foundSurface) {
-      storeReservoirGI_rw(&reservoirGiCurrent, pixelIdxGi, emptyReservoirGI());
-      return;
-    }
+${RIS_GI_GLASS_TRANSPORT_PREFIX_WGSL}
 
     // Build the reservoir AT the post-glass diffuse surface.
     // xv = post-glass surface position, nv = post-glass surface normal.
@@ -348,6 +199,7 @@ ${RIS_GI_GLASS_VISIBILITY_TAIL_WGSL}
   var r: ReservoirGI = emptyReservoirGI();
   r.xv = pos;
   r.nv = normal;
+  if (grisOn) { r.historyEpoch = currentGrisEpoch; }
 
   // Adaptive-sampling tier read at the full-res quad centre. Clamped to
   // [1,4] in case the sample-budget pass emits a bad/uninitialised value
@@ -367,7 +219,7 @@ ${RIS_GI_GLASS_VISIBILITY_TAIL_WGSL}
   //     receiver-lobe target divided by the cosine source pdf. For default
   //     diffuse receivers this algebraically reduces to luminance(Lo); rich
   //     material receivers now guide the reservoir by their actual lobes.
-  let ppgGuidedOn = (ubo.ppgEnabled == 1u);
+  let ppgGuidedOn = (ubo.ppgEnabled == 1u) && !grisOn;
   let alpha = select(0.0, ubo.ppgMixAlpha, ppgGuidedOn);
 
   for (var i: u32 = 0u; i < M_GI; i = i + 1u) {
@@ -389,26 +241,34 @@ ${RIS_GI_GLASS_VISIBILITY_TAIL_WGSL}
       wi = sampleCosineHemisphere(normal, &rng);
     }
     let cosTheta = max(0.0, dot(normal, wi));
-    if (cosTheta < 1e-4) { continue; }
+    if (!reservoirGiFinite(cosTheta) || !(cosTheta > 0.0)) {
+      if (grisOn) {
+        recordInvalidReservoirGICandidate(&r, GI_SAMPLE_SURFACE, currentGrisEpoch);
+      } else {
+        r.M = r.M + 1u;
+      }
+      continue;
+    }
 
     // Trace from the visible point along wi. Reconnection vertex is the
     // first BVH hit (or sky-miss at RECONNECT_MAX_DIST).
     // WS1 — offset the bounce-ray origin along the GEOMETRIC normal.
     let bounceRay = Ray(pos + geoNormal * NORMAL_BIAS_GI, wi);
-    let bounceHit = traceSceneFirstHitAlphaMaskTexturedOpaqueOnly(
+    let bounceHit = traceSceneFirstHitAlphaMaskTextured(
       ubo.bvhMode, ubo.tlasNodeCount,
-      &bvh_index, &bvh_position, &bvh,
-      &tlasNodes, &tlasInstanceIndices, &tlasBlasRoots,
-      &tlasInstanceWorldToLocal, &tlasInstanceLocalToWorld,
+
       bounceRay, ubo.triIntersectEpsilon,
       bvh_material, BVH_MATERIAL_TEX_WIDTH,
+      ubo.frameSeed ^ (i * 0x85ebca6bu) ^ 0x4749424eu,
     );
 
     var xs:  vec3f;
     var ns:  vec3f;
     var Lo:  vec3f;
+    var sampleKind: u32 = GI_SAMPLE_ENVIRONMENT;
 
     if (bounceHit.didHit) {
+      sampleKind = GI_SAMPLE_SURFACE;
       xs = bounceRay.origin + wi * bounceHit.dist;
       let smoothNs = restir_gi_smooth_normal_for_hit(bounceHit, bounceHit.normal);
       ns = applyBumpMapForHit(bounceHit, applyNormalMapForHit(bounceHit, smoothNs));
@@ -441,7 +301,12 @@ ${RIS_GI_GLASS_VISIBILITY_TAIL_WGSL}
         wi,
         xsMaterialWord,
       );
-      Lo = xsPayload.Lo;
+      if (grisOn) {
+        Lo = restir_gi_surface_source_for_hit(bounceHit, xsPayload.albedo)
+          + irrAtXs * xsPayload.albedo * INV_PI;
+      } else {
+        Lo = xsPayload.Lo;
+      }
     } else {
       // Sky miss — the GI ray escaped the scene. B3: sample the directional IBL
       // map along wi (rotationY-aware) as the reconnection radiance; envRadiance
@@ -452,19 +317,44 @@ ${RIS_GI_GLASS_VISIBILITY_TAIL_WGSL}
       Lo = envRadiance(wi);
     }
 
-    // p̂ at the visible point for this candidate. Diffuse defaults retain the
-    // old luminance(Lo)·cosθ/π target; rich receivers add glossy/clearcoat/sheen
-    // lobes so reservoir selection follows the material that will consume it.
-    let pHat = restir_gi_receiver_phat_from_payload(
-      pos,
-      normal,
-      receiverClearcoatNormal,
-      receiverWo,
-      receiverPayload,
-      xs,
-      Lo,
-    );
-    if (pHat < 1e-9) { continue; }
+    // The opt-in GRIS mode has one declared target: diffuse/geometric
+    // one-bounce DDGI proxy radiance, including visibility in every candidate.
+    // The default path keeps the richer receiver-lobe target and its historical
+    // selected-sample-only visibility test below.
+    var candidateVisibility: f32 = 1.0;
+    var pHat: f32;
+    if (grisOn) {
+      var tMax = 1e20;
+      if (sampleKind == GI_SAMPLE_SURFACE) {
+        tMax = max(0.0, length(xs - pos) - 2e-3);
+      }
+      let shadowTint = traceSceneAlphaTintTransmittanceTextured(
+        ubo.bvhMode, ubo.tlasNodeCount,
+
+        pos + geoNormal * NORMAL_BIAS_GI, wi, tMax, ubo.triIntersectEpsilon,
+        bvh_material, BVH_MATERIAL_TEX_WIDTH, bvh_beer,
+      );
+      candidateVisibility = clamp(luminance(shadowTint), 0.0, 1.0);
+      pHat = luminance(Lo) * cosTheta * INV_PI * candidateVisibility;
+    } else {
+      pHat = restir_gi_receiver_phat_from_payload(
+        pos,
+        normal,
+        receiverClearcoatNormal,
+        receiverWo,
+        receiverPayload,
+        xs,
+        Lo,
+      );
+    }
+    if (!reservoirGiFinite(pHat) || !(pHat > 0.0) || !reservoirGiFinite(candidateVisibility) || !(candidateVisibility > 0.0)) {
+      if (grisOn) {
+        recordInvalidReservoirGICandidate(&r, sampleKind, currentGrisEpoch);
+      } else {
+        r.M = r.M + 1u;
+      }
+      continue;
+    }
 
     // RIS candidate weight w = p̂ / p_src.
     //
@@ -481,20 +371,51 @@ ${RIS_GI_GLASS_VISIBILITY_TAIL_WGSL}
     //     p_cos   = cosθ/π                    (cosine-hemisphere solid-angle pdf)
     //     p_guide = ppgEvalPdf(pos, wi)       (dTree solid-angle pdf; mirrors
     //               the CPU dTreePdf in dTree.ts exactly)
-    var w: f32;
+    var pSrc: f32;
     if (alpha > 0.0) {
       let pCos = cosTheta * INV_PI;
       let pGuide = ppgEvalPdf(pos, wi);
-      let pSrc = alpha * pGuide + (1.0 - alpha) * pCos;
-      w = select(0.0, pHat / pSrc, pSrc > 1e-12);
+      pSrc = alpha * pGuide + (1.0 - alpha) * pCos;
     } else {
-      let pCos = cosTheta * INV_PI;
-      w = select(0.0, pHat / pCos, pCos > 1e-12);
+      pSrc = cosTheta * INV_PI;
     }
-    updateReservoirGI(&r, xs, ns, Lo, w, &rng);
+    if (!reservoirGiFinite(pSrc) || !(pSrc > 0.0)) {
+      if (grisOn) {
+        recordInvalidReservoirGICandidate(&r, sampleKind, currentGrisEpoch);
+      } else {
+        r.M = r.M + 1u;
+      }
+      continue;
+    }
+    let w = pHat / pSrc;
+    if (
+      !reservoirGiFinite(w) || !(w > 0.0) ||
+      !reservoirGiFinite(r.w_sum) || r.w_sum < 0.0 ||
+      w > 3.402823466e38 - r.w_sum
+    ) {
+      if (grisOn) {
+        recordInvalidReservoirGICandidate(&r, sampleKind, currentGrisEpoch);
+      } else {
+        r.M = r.M + 1u;
+      }
+      continue;
+    }
+    if (grisOn) {
+      updateReservoirGIWithMetadata(
+        &r, xs, ns, Lo, sampleKind, wi,
+        pHat, candidateVisibility, currentGrisEpoch, w, &rng,
+      );
+    } else {
+      updateReservoirGI(&r, xs, ns, Lo, w, &rng);
+    }
   }
 
-  // Final visibility test on the chosen sample.
+  if (grisOn) {
+    finaliseGIReservoirWFromPHat(&r, ubo.restirGiWCap, false, r.nativePHat);
+  }
+
+  // Default mode retains its selected-sample visibility evaluation.
+  if (!grisOn) {
   if (r.M > 0u && r.w_sum > 0.0) {
     let toS = r.xs - r.xv;
     let distS = length(toS);
@@ -505,14 +426,12 @@ ${RIS_GI_GLASS_VISIBILITY_TAIL_WGSL}
       // (light passes through glass; per-channel tinted-visibility handles tint).
       let shadowTint = traceSceneAlphaTintTransmittanceTextured(
         ubo.bvhMode, ubo.tlasNodeCount,
-        &bvh_index, &bvh_position, &bvh,
-        &tlasNodes, &tlasInstanceIndices, &tlasBlasRoots,
-        &tlasInstanceWorldToLocal, &tlasInstanceLocalToWorld,
+
         shadowOrig, wiZ, distS - 2e-3, ubo.triIntersectEpsilon,
         bvh_material, BVH_MATERIAL_TEX_WIDTH, bvh_beer,
       );
       let shadowT = clamp(luminance(shadowTint), 0.0, 1.0);
-      if (shadowT <= 0.001) {
+      if (!reservoirGiFinite(shadowT) || !(shadowT > 0.0)) {
         r.w_sum = 0.0;
         r.W = 0.0;
       } else {
@@ -526,34 +445,24 @@ ${RIS_GI_GLASS_VISIBILITY_TAIL_WGSL}
           r.Lo,
         );
         r.w_sum = r.w_sum * shadowT;
-        let W_raw = select(0.0, r.w_sum / (f32(r.M) * pHatZ), pHatZ > 1e-9);
-        // Cap W to bound firefly contribution from tiny pHat denominators
-        // (grazing cos or near-zero Lo luminance). Cornell default 16.0
-        // lives on ubo.restirGiWCap; see common.wgsl for the rationale.
-        r.W = min(W_raw, ubo.restirGiWCap);
+        finaliseGIReservoirWFromPHat(&r, ubo.restirGiWCap, false, pHatZ);
       }
     } else {
       r.W = 0.0;
       r.w_sum = 0.0;
     }
   }
+  }
 
-  // ── GRIS Phase-0 reconnection-shift cache (Lin et al. 2022, §5) ────────────
-  // Populate the appended ReservoirPT fields from the FINAL selected
-  // reconnection sample (xv → xs). These are WRITTEN here but READ BY NO PASS
-  // in Phase 0 — they do not touch the [0..19] fields, so the shade/temporal/
-  // spatial reads and therefore the rendered output stay BIT-IDENTICAL. Phase 1
-  // (GPU reconnection shift) and Phase 2 (GRIS pairwise MIS) will consume them:
-  //   • wi_recon / distRecon / cosReconOut → the base reconnection-edge half-G
-  //     (cosθ_out / dist²) numerator+denominator of the shift Jacobian.
-  //   • pdfReconBsdf → cached headroom (NOT read by the single-bounce reuse
-  //     weight: reservoir reuse is m·p̂·W·J, no /p_src — the W already bakes in
-  //     this pdf; see the spatialGi/temporalGi GRIS branches).
-  //   • prefixVertexCount → shift-compatibility gate (only paths with matching
-  //     prefix length take the reconnection shift; others fall back).
-  refreshPhase0Cache(&r);
+  // ── GRIS producer metadata (Lin et al. 2022, §5) ─────────────────────────
+  // The widened fields are consumed by the GRIS temporal/spatial variants and
+  // by the final shading visibility gate. refreshGrisMetadata derives the
+  // reconnection direction, distance, outgoing cosine, and prefix count from
+  // the selected edge; the winning candidate's sample kind, native target,
+  // visibility, and history epoch remain intact for transformed-density reuse.
+  refreshGrisMetadata(&r);
 
-  storeReservoirGI_rw(&reservoirGiCurrent, pixelIdxGi, r);
+  storeReservoirGI_rw(pixelIdxGi, r);
 }
 `;
 

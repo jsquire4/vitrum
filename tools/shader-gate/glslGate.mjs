@@ -65,12 +65,19 @@ if (!glslangBin) {
 // ── Import the production pt-webgl2 GLSL machinery ───────────────────────────
 // These imports use the @vitrum/* mappings from deno.json in this directory.
 // --sloppy-imports lets Deno load the .ts files without a build step.
-import { composeTraceGlsl } from "../../packages/pt-webgl2/src/glsl/composeTraceGlsl.ts";
+import {
+  composeNeeCandidateGlsl,
+  composeNeeResolveGlsl,
+  composeTraceGlsl,
+} from "../../packages/pt-webgl2/src/glsl/composeTraceGlsl.ts";
 import {
   buildVertexSource,
   buildFragmentSource,
 } from "../../packages/pt-webgl2/src/gl/glProgram.ts";
-import { featureDefines } from "../../packages/pt-webgl2/src/featureTypes.ts";
+import {
+  DEFAULT_TRACE_FEATURES,
+  featureDefines,
+} from "../../packages/pt-webgl2/src/featureTypes.ts";
 import { FULLSCREEN_VERT } from "../../packages/pt-webgl2/src/gl/fullscreenQuad.ts";
 
 // ── Production-reachable feature-combination matrix ──────────────────────────
@@ -78,7 +85,7 @@ import { FULLSCREEN_VERT } from "../../packages/pt-webgl2/src/gl/fullscreenQuad.
 //   - bdpt: driven by opts.bdpt (true/false). At compose time, bdpt=true adds the
 //     bdpt_light_subpath + bdpt_connection chunks; bdpt=false omits them entirely.
 //     Both are production-reachable. All other features are either always-on (mis,
-//     russianRoulette), pinned-off (fog, backgroundMap, stratified randomType=2,
+//     russianRoulette), scene-driven (fog), pinned-off (backgroundMap, stratified randomType=2,
 //     debugMode), or only affect #define values (not the composed chunk set).
 //   - dof: driven by opts.dof (truthy/null). FEATURE_DOF resolves in #if blocks.
 //   - cameraType: driven by opts.cameraType (0=perspective, 1=ortho, 2=equirect).
@@ -87,6 +94,9 @@ import { FULLSCREEN_VERT } from "../../packages/pt-webgl2/src/gl/fullscreenQuad.
 //     GLSL block. Compile-time meaningful; include one variant.
 //   - randomType: driven by opts.sampling for production PCG(0) and Sobol(1).
 //     Stratified(2) remains unexposed because its textures are still dummy-bound.
+//   - material tier + fog: derived from the installed Scene. Every one of the four
+//     tiers is production-reachable, and texture-free participating media select
+//     scalarRichMaterials + fog.
 //
 // Compose-time branching is ONLY on `bdpt` (composeTraceGlsl() branches on it to
 // include/exclude the BDPT render chunks). All other flags only affect #define
@@ -102,6 +112,9 @@ import { FULLSCREEN_VERT } from "../../packages/pt-webgl2/src/gl/fullscreenQuad.
 //   cameraType-equirect F    F       2           F           CAMERA_TYPE=2 #if paths
 //   stained-glass       F    F       0           T           perturbation #if path
 //   sobol-on            F    F       0           F           RANDOM_TYPE=1 Sobol RNG path
+//   material-basic      F    F       0           F           basic material compiler tier
+//   scalar-rich-fog     F    F       0           F           texture-free medium compiler tier
+//   material-mapped-pbr F    F       0           F           mapped base-PBR compiler tier
 //
 // (bdpt+dof+cameraType combinations not listed are not novel — no additional GLSL
 //  path branches open; all other define combos follow from the drivers above.)
@@ -110,6 +123,7 @@ const COMBOS = [
   {
     name: "baseline",
     features: {
+      ...DEFAULT_TRACE_FEATURES,
       mis: true, russianRoulette: true, bdpt: false, dof: false,
       cameraType: 0, stainedGlassPerturbation: false,
       fog: false, backgroundMap: false, randomType: 0, debugMode: 0,
@@ -118,14 +132,16 @@ const COMBOS = [
   {
     name: "bdpt-on",
     features: {
+      ...DEFAULT_TRACE_FEATURES,
       mis: true, russianRoulette: true, bdpt: true, dof: false,
       cameraType: 0, stainedGlassPerturbation: false,
-      fog: false, backgroundMap: false, randomType: 0, debugMode: 0,
+      fog: true, backgroundMap: false, randomType: 0, debugMode: 0,
     },
   },
   {
     name: "dof-on",
     features: {
+      ...DEFAULT_TRACE_FEATURES,
       mis: true, russianRoulette: true, bdpt: false, dof: true,
       cameraType: 0, stainedGlassPerturbation: false,
       fog: false, backgroundMap: false, randomType: 0, debugMode: 0,
@@ -134,6 +150,7 @@ const COMBOS = [
   {
     name: "cameraType-ortho",
     features: {
+      ...DEFAULT_TRACE_FEATURES,
       mis: true, russianRoulette: true, bdpt: false, dof: false,
       cameraType: 1, stainedGlassPerturbation: false,
       fog: false, backgroundMap: false, randomType: 0, debugMode: 0,
@@ -142,6 +159,7 @@ const COMBOS = [
   {
     name: "cameraType-equirect",
     features: {
+      ...DEFAULT_TRACE_FEATURES,
       mis: true, russianRoulette: true, bdpt: false, dof: false,
       cameraType: 2, stainedGlassPerturbation: false,
       fog: false, backgroundMap: false, randomType: 0, debugMode: 0,
@@ -150,6 +168,7 @@ const COMBOS = [
   {
     name: "stained-glass",
     features: {
+      ...DEFAULT_TRACE_FEATURES,
       mis: true, russianRoulette: true, bdpt: false, dof: false,
       cameraType: 0, stainedGlassPerturbation: true,
       fog: false, backgroundMap: false, randomType: 0, debugMode: 0,
@@ -158,9 +177,37 @@ const COMBOS = [
   {
     name: "sobol-on",
     features: {
+      ...DEFAULT_TRACE_FEATURES,
       mis: true, russianRoulette: true, bdpt: false, dof: false,
       cameraType: 0, stainedGlassPerturbation: false,
       fog: false, backgroundMap: false, randomType: 1, debugMode: 0,
+    },
+  },
+  {
+    name: "material-basic",
+    features: {
+      ...DEFAULT_TRACE_FEATURES,
+      basicMaterials: true,
+      mappedRichMaterials: false,
+      fog: false,
+    },
+  },
+  {
+    name: "scalar-rich-fog",
+    features: {
+      ...DEFAULT_TRACE_FEATURES,
+      scalarRichMaterials: true,
+      mappedRichMaterials: false,
+      fog: true,
+    },
+  },
+  {
+    name: "material-mapped-pbr",
+    features: {
+      ...DEFAULT_TRACE_FEATURES,
+      mappedPbrMaterials: true,
+      mappedRichMaterials: false,
+      fog: false,
     },
   },
 ];
@@ -211,11 +258,29 @@ const shaders = [];
 for (const combo of COMBOS) {
   const { name, features } = combo;
   const defines = featureDefines(features);
-  const defineMap = new Map(Object.entries(defines));
-  const fragBody = composeTraceGlsl(features);
-  const vertSrc = buildVertexSource(defineMap, FULLSCREEN_VERT);
-  const fragSrc = buildFragmentSource(defineMap, fragBody);
-  shaders.push({ name, vertSrc, fragSrc });
+  const variants = [
+    {
+      suffix: "main",
+      defines: { ...defines, NEE_CANDIDATE_PASS: 0 },
+      body: composeTraceGlsl(features),
+    },
+    {
+      suffix: "nee-candidate",
+      defines: { ...defines, NEE_CANDIDATE_PASS: 1 },
+      body: composeNeeCandidateGlsl(features),
+    },
+    {
+      suffix: "nee-resolve",
+      defines: { ...defines, NEE_CANDIDATE_PASS: 0 },
+      body: composeNeeResolveGlsl(features),
+    },
+  ];
+  for (const variant of variants) {
+    const defineMap = new Map(Object.entries(variant.defines));
+    const vertSrc = buildVertexSource(defineMap, FULLSCREEN_VERT);
+    const fragSrc = buildFragmentSource(defineMap, variant.body);
+    shaders.push({ name: `${name}/${variant.suffix}`, vertSrc, fragSrc });
+  }
 }
 
 // ── Self-test: inject a broken fragment program ───────────────────────────────

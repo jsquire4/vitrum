@@ -7,10 +7,11 @@
 // GlResources's drawAccumStep remains the coordinator without encoding the full
 // BDPT protocol inline.
 //
-// Protocol contract (unchanged):
+// Protocol contract:
 //   • build(prog, scene, seed, frame) is called BEFORE the eye-pass draw.
 //   • Returns the WebGLTexture holding all light-path vertex columns, or null when
-//     there is nothing to connect to (no analytic, mesh-area, or environment light).
+//     there is nothing to connect to (analytic, mesh-area, and environment sources
+//     all participate in the shader's emitted-power partition).
 //   • Allocates the ping-pong pair lazily on the first call; disposes on destroy().
 
 import type { FrameUniforms } from './glResources.js';
@@ -18,9 +19,9 @@ import type { UploadedSceneTextures } from '../scene/sceneTextures.js';
 import { GlProgram } from './glProgram.js';
 import { createRenderTarget, clearRenderTarget, type RenderTarget } from './framebuffer.js';
 
-/** A5 — BDPT light-path ping-pong dimensions (matches the GLSL kernel layout). */
-const BDPT_LIGHT_PATH_COLS = 3;
-const BDPT_LIGHT_PATH_ROWS = 5;
+/** Bounded general-BDPT light-path texture dimensions (matches the GLSL layout). */
+export const BDPT_LIGHT_PATH_COLS = 8;
+export const BDPT_LIGHT_PATH_ROWS = 8;
 
 /**
  * Manages the BDPT light-subpath ping-pong textures and issues the per-column
@@ -42,17 +43,17 @@ export class BdptSubpathBuilder {
    * A5 — build the BDPT light subpath for this sample and return the texture holding
    * all light-path vertex columns (to be bound as `uBdptLightPathTex` for the eye
    * pass's connection sweep). Returns null when there is nothing to connect to (no
-   * analytic, mesh-area, or environment light) — the caller then leaves the dummy
+   * uploaded light source) — the caller then leaves the dummy
    * bound and the frame renders unidirectionally.
    *
-   * Per-column protocol (one fullscreen draw over a 3×5 viewport per bounce):
+   * Per-column protocol (one fullscreen draw over an 8×8 viewport per bounce):
    *   read  = the texture holding columns < col already built this frame
    *   write = the other ping-pong slot
    *   1. blit read → write (copy already-built columns forward; the kernel `discard`s
    *      every column != uBdptVertexCol, so without this they'd be lost on the swap)
    *   2. set uBdptLightSubpathPass=1, uBdptVertexCol=col, uBdptMaxLightBounces
    *   3. bind read as uBdptLightPathTex (bounce k reads column k-1 from it)
-   *   4. draw → write column `col` is overwritten with the new vertex
+   *   4. draw → write column `col` plus predecessor row-0/row-2 density patches
    *   5. swap read/write
    * After the loop, `read` holds all columns. Reading and writing the SAME texture in
    * one draw is a WebGL2 feedback loop (undefined), which the read≠write ping-pong +
@@ -86,7 +87,9 @@ export class BdptSubpathBuilder {
     clearRenderTarget(gl, pair[0]);
     clearRenderTarget(gl, pair[1]);
 
-    prog.use();
+    if (!prog.use()) {
+      throw new Error('pt-webgl2: BDPT pass reached draw before its program was ready');
+    }
     // The light-subpath pass shares the eye program; flip the pass flag + upload the
     // per-pass scalars. The scene textures (BVH/materials/lights) are bound below.
     prog.setInt('seed', seed);
@@ -105,10 +108,25 @@ export class BdptSubpathBuilder {
     prog.setMat4('environmentRotation', frame.environmentRotation);
     prog.setMat4('cameraWorldMatrix', frame.cameraWorldMatrix);
     prog.setMat4('invProjectionMatrix', frame.invProjectionMatrix);
+    prog.setVec3(
+      'uBdptSceneCenter',
+      frame.bdptSceneCenter[0],
+      frame.bdptSceneCenter[1],
+      frame.bdptSceneCenter[2],
+    );
+    prog.setFloat('uBdptSceneRadius', frame.bdptSceneRadius);
 
     gl.disable(gl.BLEND); // vertex writes overwrite; no accumulation in the subpath.
 
     let readIdx = 0;
+    prog.setFloat('uBdptSharedWavelength', frame.bdptSharedWavelengthNm);
+    prog.setFloat('uBdptSharedWavelengthPdf', frame.bdptSharedWavelengthPdf);
+    // The light path must see the same wavelength-dependent dispersion state
+    // as the eye pass, including the first accumulated sample. Reflectance is
+    // material-local in the bound materials texture.
+    prog.setFloat('iorCauchyA', frame.iorCauchy[0]);
+    prog.setFloat('iorCauchyB', frame.iorCauchy[1]);
+    prog.setFloat('iorCauchyC', frame.iorCauchy[2]);
     for (let col = 0; col < cols; col += 1) {
       const read = pair[readIdx]!;
       const write = pair[1 - readIdx]!;
@@ -122,7 +140,9 @@ export class BdptSubpathBuilder {
       // the kernel ignores the texture; binding the read slot is harmless.)
       bindSceneTextures(prog, scene, read.color);
 
-      // 4. Draw the 3×5 viewport into the write slot.
+      // 4. Draw the 8×6 viewport into the write slot. The shader also overwrites
+      // predecessor row 0 (delta kind) and row 2 (reverse directional density)
+      // now that the successor direction is known.
       const { fbo } = write;
       gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
       gl.viewport(0, 0, BDPT_LIGHT_PATH_COLS, BDPT_LIGHT_PATH_ROWS);
@@ -155,12 +175,21 @@ export class BdptSubpathBuilder {
   #ensurePair(): void {
     if (this.#lightPath != null) return;
     const gl = this.#gl;
-    this.#lightPath = [
-      createRenderTarget(gl, BDPT_LIGHT_PATH_COLS, BDPT_LIGHT_PATH_ROWS, false),
-      createRenderTarget(gl, BDPT_LIGHT_PATH_COLS, BDPT_LIGHT_PATH_ROWS, false),
-    ];
-    this.#copyFbo = gl.createFramebuffer();
-    if (this.#copyFbo == null) throw new Error('pt-webgl2: failed to create BDPT copy FBO');
+    const first = createRenderTarget(gl, BDPT_LIGHT_PATH_COLS, BDPT_LIGHT_PATH_ROWS, false);
+    let second: RenderTarget | null = null;
+    let copyFbo: WebGLFramebuffer | null = null;
+    try {
+      second = createRenderTarget(gl, BDPT_LIGHT_PATH_COLS, BDPT_LIGHT_PATH_ROWS, false);
+      copyFbo = gl.createFramebuffer();
+      if (copyFbo == null) throw new Error('pt-webgl2: failed to create BDPT copy FBO');
+    } catch (error) {
+      first.destroy();
+      second?.destroy();
+      if (copyFbo != null) gl.deleteFramebuffer(copyFbo);
+      throw error;
+    }
+    this.#lightPath = [first, second];
+    this.#copyFbo = copyFbo;
   }
 
   /** Copy `src` color into `dst` color via a framebuffer blit (preserve built columns). */

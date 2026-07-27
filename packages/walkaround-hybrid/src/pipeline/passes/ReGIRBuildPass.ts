@@ -10,8 +10,8 @@
  * an unbiased estimate (same discipline as the light-tree path). See
  * `shaders/regir.wgsl.ts` for the full unbiasedness derivation.
  *
- * Bind group: a DEDICATED group(0) (combined buffer READ_WRITE + emitters +
- * ubo), built per frame from the live buffers. The read_write binding never
+ * Bind group: a DEDICATED group(0) (combined buffer READ_WRITE + ubo), built
+ * per frame from the live buffers. The read_write binding never
  * touches the RIS / shade layouts — RIS binds the SAME buffer read-only at its
  * group(3), so RIS stays at the 16 storage-buffer floor.
  *
@@ -29,13 +29,10 @@ import type { ReGIRCoordinator } from '../ReGIRCoordinator.js';
 import { buildRegirBuildBindGroup } from '../bindGroupBuilders.js';
 import { cachedBindGroup } from '../PipelineResourceCache.js';
 
-/** Resources the grid-build pass binds — resolved per frame so buffer
- *  re-uploads (emitter rebuild) are picked up without re-registering the pass. */
+/** Resources the grid-build pass binds — resolved per frame. */
 export interface ReGIRBuildResources {
   /** Combined light-tree + ReGIR-grid buffer (bound read_write here). */
   readonly combinedLightTreeBuffer: GPUBuffer;
-  /** Emitter list (for the per-cell q̂_c target). */
-  readonly emitterBuffer: GPUBuffer;
   /** WalkaroundUBO (grid geometry + M/K + frameSeed + gate). */
   readonly uboBuffer: GPUBuffer;
 }
@@ -43,7 +40,7 @@ export interface ReGIRBuildResources {
 export class ReGIRBuildPass implements Pass {
   readonly id = 'regir-build' as const;
   /** No DI-pass dependency: the grid only needs the (static) light tree +
-   *  emitters + the UBO, all ready before sample-budget. Runs first so RIS
+   *  the UBO, both ready before sample-budget. Runs first so RIS
    *  (which depends on sample-budget) sees a fresh grid. */
   readonly dependencies: readonly string[] = [];
   readonly passLabels: readonly PassLabel[] = ['regir-build'];
@@ -73,29 +70,25 @@ export class ReGIRBuildPass implements Pass {
 
   dispatch(ctx: PassDispatchContext): void {
     if (!this._coord.live) return;
-    const cells = this._coord.cellCount;
-    const k = this._coord.config.survivorsPerCell;
-    const total = cells * k;
-    if (total === 0) return;
+    const dispatchX = this._coord.buildDispatchWorkgroups;
+    if (dispatchX === 0) return;
 
     const res = this._resources();
     const buildBg = (): GPUBindGroup => buildRegirBuildBindGroup(
       ctx.device,
       this._bglCache,
       res.combinedLightTreeBuffer,
-      res.emitterBuffer,
       res.uboBuffer,
     );
     const bg = cachedBindGroup(ctx.resourceCache, 'pass:regir-build', [
       res.combinedLightTreeBuffer,
-      res.emitterBuffer,
       res.uboBuffer,
     ], buildBg);
     const pass = ctx.encoder.beginComputePass(ctx.computeDesc('regir-build'));
     pass.setPipeline(this._pipeline);
     pass.setBindGroup(0, bg);
     // 1-D dispatch over (cell × survivor); workgroup_size(64,1,1).
-    pass.dispatchWorkgroups(Math.ceil(total / 64), 1, 1);
+    pass.dispatchWorkgroups(dispatchX, 1, 1);
     pass.end();
   }
 

@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { EngineWarning, MaterialSpec, MeshPrimitive, Scene } from '@vitrum/core';
 import { buildReSTIRSceneBVHForCoreScene } from '../bvhCore.js';
 import type { ReSTIRBvhMode } from '../bvhTypes.js';
+import { MATERIAL_MAP_META_TEXEL_OFFSETS } from '../../bvh/materialTextureAtlasPack.js';
 
 function material(baseColor: readonly [number, number, number]): MaterialSpec {
   return { baseColor, roughness: 1, metallic: 0 };
@@ -21,6 +22,7 @@ function triangle(id: string, xOffset: number, mat: MaterialSpec): MeshPrimitive
       0, 0, 1,
       0, 0, 1,
     ]),
+    uvs: new Float32Array([0, 0, 1, 0, 0, 1]),
     indices: new Uint32Array([0, 1, 2]),
     material: mat,
   };
@@ -76,6 +78,124 @@ function scene(primitives: MeshPrimitive[]): Scene {
 }
 
 describe('ReSTIR bvhCore material resolver', () => {
+  it.each<ReSTIRBvhMode>(['merged', 'tlas'])(
+    'packs and importance-samples emissive texCoord 7 in %s mode',
+    (bvhMode) => {
+      const emissiveMap = {
+        handle: {
+          width: 2,
+          height: 2,
+          data: new Uint8Array([
+            255, 255, 255, 255, 128, 64, 32, 255,
+            32, 64, 128, 255, 255, 255, 255, 255,
+          ]),
+          __vitrum_hint__: { channels: 4 as const, dataType: 'uint8' as const },
+        },
+        texCoord: 7,
+      };
+      const primitive: MeshPrimitive = {
+        ...triangle('uv7-emitter', 0, {
+          ...material([1, 1, 1]),
+          emissive: [1, 1, 1],
+          emissiveIntensity: 2,
+          emissiveMap,
+        }),
+        uvs: new Float32Array([0, 0, 1, 0, 0, 1]),
+        uvSets: [
+          new Float32Array([0, 0, 1, 0, 0, 1]),
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          new Float32Array([0, 0, 1, 0, 0, 1]),
+        ],
+      };
+
+      const buffers = buildReSTIRSceneBVHForCoreScene(scene([primitive]), { bvhMode });
+      const emissiveMeta = MATERIAL_MAP_META_TEXEL_OFFSETS.EMISSIVE * 4;
+      expect(buffers.materialTextureAtlas.baseColorMetaData[emissiveMeta]).toBe(0);
+      expect(buffers.materialTextureAtlas.baseColorMetaData[emissiveMeta + 1]).toBe(2 * 16);
+      expect(buffers.materialTextureAtlas.triangleUvs?.uvSets?.get(7)).toBeDefined();
+      expect(buffers.emitterCount).toBeGreaterThan(0);
+      expect(buffers.totalEmissivePower).toBeGreaterThan(0);
+    },
+  );
+
+  it.each<ReSTIRBvhMode>(['merged', 'tlas'])(
+    'packs sparse UV ids at and above the native array-index ceiling in %s mode',
+    (bvhMode) => {
+      const nativeCeilingIndex = 0xffff_fffe;
+      const ordinaryPropertyIndex = 0x1_0000_0001;
+      const highUv = new Float32Array([0, 0, 1, 0, 0, 1]);
+      const uvSets: Array<Float32Array | undefined> = [];
+      uvSets[nativeCeilingIndex] = highUv;
+      uvSets[ordinaryPropertyIndex] = highUv;
+      const primitive: MeshPrimitive = {
+        ...triangle('array-boundary-uv', 0, {
+          ...material([1, 1, 1]),
+          baseColorMap: {
+            handle: {
+              width: 1,
+              height: 1,
+              data: new Uint8Array([255, 255, 255, 255]),
+              __vitrum_hint__: { channels: 4 as const, dataType: 'uint8' as const },
+            },
+            texCoord: ordinaryPropertyIndex,
+          },
+        }),
+        uvSets,
+      };
+
+      const buffers = buildReSTIRSceneBVHForCoreScene(scene([primitive]), { bvhMode });
+      expect(
+        buffers.materialTextureAtlas.triangleUvs?.uvSets?.get(nativeCeilingIndex),
+      ).toBeDefined();
+      expect(
+        buffers.materialTextureAtlas.triangleUvs?.uvSets?.get(ordinaryPropertyIndex),
+      ).toBeDefined();
+    },
+  );
+
+  it.each<ReSTIRBvhMode>(['merged', 'tlas'])(
+    'rejects a high-UV material on a primitive missing that stream in %s mode',
+    (bvhMode) => {
+      const highMapMaterial: MaterialSpec = {
+        ...material([1, 1, 1]),
+        baseColorMap: {
+          handle: {
+            width: 1,
+            height: 1,
+            data: new Uint8Array([255, 255, 255, 255]),
+            __vitrum_hint__: { channels: 4, dataType: 'uint8' },
+          },
+          texCoord: 7,
+        },
+      };
+      const missing = {
+        ...triangle('missing-uv7', 0, highMapMaterial),
+        uvs: new Float32Array([0, 0, 1, 0, 0, 1]),
+      } satisfies MeshPrimitive;
+      const suppliesElsewhere = {
+        ...triangle('supplies-uv7', 2, material([1, 1, 1])),
+        uvSets: [
+          undefined, undefined, undefined, undefined,
+          undefined, undefined, undefined,
+          new Float32Array([0, 0, 1, 0, 0, 1]),
+        ],
+      } satisfies MeshPrimitive;
+
+      const expectedError = bvhMode === 'merged'
+        ? /references TEXCOORD_7.*does not provide that UV stream/
+        : /packMaterialTextureAtlas: triangle 0 material references texCoord 7, but that primitive does not supply the UV stream/;
+      expect(() => buildReSTIRSceneBVHForCoreScene(
+        scene([missing, suppliesElsewhere]),
+        { bvhMode },
+      )).toThrow(expectedError);
+    },
+  );
+
   it('packs one material slot per unique mesh-like primitive in TLAS mode', () => {
     const buffers = buildReSTIRSceneBVHForCoreScene(scene([
       triangle('red-panel', 0, material([1, 0, 0])),
@@ -124,7 +244,7 @@ describe('ReSTIR bvhCore material resolver', () => {
   });
 
   it.each<ReSTIRBvhMode>(['merged', 'tlas'])(
-    'routes missing mesh-area emitter references through structured warnings in %s mode',
+    'rejects dangling mesh-area emitter references in %s mode',
     (bvhMode) => {
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
       const warnings: EngineWarning[] = [];
@@ -140,35 +260,21 @@ describe('ReSTIR bvhCore material resolver', () => {
         environment: { kind: 'none' },
       };
 
-      const buffers = buildReSTIRSceneBVHForCoreScene(sourceScene, {
+      expect(() => buildReSTIRSceneBVHForCoreScene(sourceScene, {
         bvhMode,
         onWarning: (warning) => warnings.push(warning),
         warningPhase: 'setScene',
         warningMethod: 'setScene',
-      });
+      })).toThrow(/meshId references missing primitive "missing-panel"/);
 
-      expect(buffers.emitterCount).toBeGreaterThanOrEqual(1);
       expect(warnSpy).not.toHaveBeenCalled();
-      expect(warnings).toEqual([
-        expect.objectContaining({
-          code: 'walkaround-hybrid.mesh-area-emitter-missing-mesh',
-          backend: 'walkaround-hybrid',
-          phase: 'setScene',
-          method: 'setScene',
-          details: {
-            emitterId: 'missing-emitter',
-            meshId: 'missing-panel',
-            source: 'bvh-emissive-override',
-            fallback: 'emitter skipped',
-          },
-        }),
-      ]);
+      expect(warnings).toEqual([]);
       warnSpy.mockRestore();
     },
   );
 
   it.each<ReSTIRBvhMode>(['merged', 'tlas'])(
-    'routes scene-pack vertex-displacement skips through structured warnings in %s mode',
+    'rejects unreadable vertex-displacement sources in %s mode',
     (bvhMode) => {
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
       const warnings: EngineWarning[] = [];
@@ -181,30 +287,14 @@ describe('ReSTIR bvhCore material resolver', () => {
         }),
       ]);
 
-      const buffers = buildReSTIRSceneBVHForCoreScene(sourceScene, {
+      expect(() => buildReSTIRSceneBVHForCoreScene(sourceScene, {
         bvhMode,
         onWarning: (warning) => warnings.push(warning),
         warningPhase: 'setScene',
         warningMethod: 'setScene',
-      });
-
-      const scenePackWarnings = buffers.warnings ?? [];
-      expect(scenePackWarnings.some((warning) =>
-        warning.includes('Primitive "panel" displacementMap') &&
-        warning.includes('displacement skipped'),
-      )).toBe(true);
+      })).toThrow(/Primitive "panel" displacementMap handle is not CPU-readable/);
       expect(warnSpy).not.toHaveBeenCalled();
-      expect(warnings).toContainEqual(expect.objectContaining({
-        code: 'walkaround-hybrid.vertex-displacement-skipped',
-        backend: 'walkaround-hybrid',
-        phase: 'setScene',
-        method: 'setScene',
-        details: expect.objectContaining({
-          source: 'shared-bvh',
-          fallback: 'displacement skipped',
-          warning: expect.stringContaining('Primitive "panel" displacementMap'),
-        }),
-      }));
+      expect(warnings).toEqual([]);
       warnSpy.mockRestore();
     },
   );
@@ -212,12 +302,12 @@ describe('ReSTIR bvhCore material resolver', () => {
 
 
   it.each<ReSTIRBvhMode>(['merged', 'tlas'])(
-    'preserves source-path details for capitalized displacement skips in %s mode',
+    'preserves source-path details when rejecting capitalized displacement sources in %s mode',
     (bvhMode) => {
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
       const warnings: EngineWarning[] = [];
-      const sourceScene = scene([
-        triangle('panel-high-uv', 0, {
+      const sourceScene = scene([{
+        ...triangle('panel-high-uv', 0, {
           ...material([1, 1, 1]),
           displacementMap: withTextureSourcePath({
             handle: { id: 'height' },
@@ -225,58 +315,58 @@ describe('ReSTIR bvhCore material resolver', () => {
           }, 'materials[0].extensions.VITRUM_displacement.displacementTexture'),
           displacementScale: 0.25,
         }),
-      ]);
+        uvSets: [
+          undefined,
+          undefined,
+          new Float32Array([0, 0, 1, 0, 0, 1]),
+        ],
+      }]);
 
-      buildReSTIRSceneBVHForCoreScene(sourceScene, {
+      expect(() => buildReSTIRSceneBVHForCoreScene(sourceScene, {
         bvhMode,
         onWarning: (warning) => warnings.push(warning),
         warningPhase: 'setScene',
         warningMethod: 'setScene',
-      });
-
-      expect(warnings).toContainEqual(expect.objectContaining({
-        code: 'walkaround-hybrid.vertex-displacement-skipped',
-        details: expect.objectContaining({
-          source: 'shared-bvh',
-          fallback: 'displacement skipped',
-          sourcePath: 'materials[0].extensions.VITRUM_displacement.displacementTexture',
-          warning: expect.stringContaining('requests TEXCOORD_2'),
-        }),
-      }));
+      })).toThrow(/materials\[0\]\.extensions\.VITRUM_displacement\.displacementTexture handle is not CPU-readable/);
+      expect(warnings).toEqual([]);
       expect(warnSpy).not.toHaveBeenCalled();
       warnSpy.mockRestore();
     },
   );
 
   it.each<ReSTIRBvhMode>(['merged', 'tlas'])(
-    'classifies microdisplacement fallback warnings in %s mode',
+    'rejects missing-high-UV microdisplacement input in %s mode',
     (bvhMode) => {
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
       const warnings: EngineWarning[] = [];
       const sourceScene = scene([
         triangle('panel-micro-high-uv', 0, {
           ...material([1, 1, 1]),
-          displacementMap: { handle: { id: 'height' }, texCoord: 2 },
+          displacementMap: {
+            handle: {
+              width: 1,
+              height: 1,
+              data: new Uint8Array([128]),
+              __vitrum_hint__: { channels: 1, dataType: 'uint8' },
+            },
+            texCoord: 2,
+          },
           displacementScale: 0.25,
           displacementSubdivisions: 1,
         }),
       ]);
 
-      buildReSTIRSceneBVHForCoreScene(sourceScene, {
+      const expectedError = bvhMode === 'merged'
+        ? /displacementMap\.texCoord references TEXCOORD_2.*does not provide that UV stream/
+        : /Primitive "panel-micro-high-uv" displacementMap requests TEXCOORD_2, but that exact UV channel is absent/;
+      expect(() => buildReSTIRSceneBVHForCoreScene(sourceScene, {
         bvhMode,
         onWarning: (warning) => warnings.push(warning),
         warningPhase: 'setScene',
         warningMethod: 'setScene',
-      });
+      })).toThrow(expectedError);
 
-      expect(warnings).toContainEqual(expect.objectContaining({
-        code: 'walkaround-hybrid.vertex-displacement-skipped',
-        details: expect.objectContaining({
-          source: 'shared-bvh',
-          fallback: 'microdisplacement fallback to vertex displacement',
-          warning: expect.stringContaining('Falling back to vertex displacement'),
-        }),
-      }));
+      expect(warnings).toEqual([]);
       expect(warnSpy).not.toHaveBeenCalled();
       warnSpy.mockRestore();
     },

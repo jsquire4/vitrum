@@ -17,7 +17,7 @@
  *   (c) a midpoint blends the two/eight neighbours (no single corner wins);
  *   (d) edge clamping — a point past the grand boundary clamps its corners
  *       into valid range and never reads out of bounds;
- *   (e) invalid-probe (Wsum ≤ 1e-4) corners are dropped + the surviving
+ *   (e) invalid-probe (Wsum ≤ 0) corners are dropped + the surviving
  *       weights renormalise, so zero radiance never leaks into the blend;
  *   (f) the `rcParams.enabled == 0` path returns EXACTLY vec3f(0) — the
  *       disabled path is bit-identical (shade.wgsl's RC-MIS relies on it).
@@ -31,6 +31,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
+import { PROBE_RAY_CAST_WGSL } from '@vitrum/walkaround-rc';
 import { SAMPLE_CASCADE_C0_WGSL } from '../src/shaders/sampleCascadeC0.wgsl.js';
 
 type Vec3 = [number, number, number];
@@ -96,7 +97,7 @@ const INV_PI = 1 / Math.PI;
 /**
  * CPU port of `sampleCascadeC0`.
  * `probeIrradiance(probeIdx)` returns the probe's `(rgb, Wsum)` estimate;
- * a probe with `Wsum ≤ 1e-4` is treated as invalid (dropped + renormalised),
+ * a probe with `Wsum ≤ 0` is treated as invalid (dropped + renormalised),
  * exactly like the WGSL `rcProbeIrradiance` guard.
  */
 function sampleCascadeC0CPU(
@@ -139,7 +140,7 @@ function sampleCascadeC0CPU(
     const pi = clampCorner(g0, d, count);
     const probeIdx = probeLinearIdx(pi, count);
     const probe = probeIrradiance(probeIdx);
-    const valid = probe.wsum > 1e-4;
+    const valid = probe.wsum > 0;
     corners.push({ probeIdx, wTri, valid });
     if (!valid) continue; // drop + renormalise
     blendL[0] += probe.rgb[0] * wTri;
@@ -148,7 +149,7 @@ function sampleCascadeC0CPU(
     weightSumSurviving += wTri;
   }
 
-  if (weightSumSurviving > 1e-4) {
+  if (weightSumSurviving > 0) {
     return {
       weightSumAll,
       weightSumSurviving,
@@ -266,7 +267,7 @@ describe('sampleCascadeC0 — trilinear weights (CPU port)', () => {
     expect(rMin.lo[0]).toBeCloseTo(0.3 * INV_PI, 10);
   });
 
-  // (e) Invalid probes (Wsum ≤ 1e-4) are dropped and the surviving weights
+  // (e) Invalid probes (Wsum ≤ 0) are dropped and the surviving weights
   // renormalise — a zero/uninitialised probe must NOT darken the blend.
   it('(e) invalid corners are dropped + surviving weights renormalise', () => {
     // Two-probe blend in x: probe A valid (colour C), probe B invalid (wsum 0).
@@ -347,9 +348,21 @@ describe('sampleCascadeC0 — WGSL structural pins', () => {
   });
 
   it('drops degenerate corners + renormalises by the surviving weight mass', () => {
-    expect(SAMPLE_CASCADE_C0_WGSL).toContain('if (probe.w <= 1e-4) { continue; }');
+    expect(SAMPLE_CASCADE_C0_WGSL).toContain('if (probe.w <= 0.0) { continue; }');
+    expect(SAMPLE_CASCADE_C0_WGSL).toContain('if (Wsum > 0.0)');
+    expect(SAMPLE_CASCADE_C0_WGSL).not.toContain('Wsum > 1e-4');
     expect(SAMPLE_CASCADE_C0_WGSL).toContain('weightSum = weightSum + wTri;');
     expect(SAMPLE_CASCADE_C0_WGSL).toContain('return blendL * INV_PI / weightSum;');
+  });
+
+  it('reconstructs the producer sample and applies the octahedral Jacobian weight', () => {
+    const sharedCall = 'rcStratifiedRayUV(probeIdx, ri, rcParams.rayGridSize, ubo.frameSeed)';
+    expect(SAMPLE_CASCADE_C0_WGSL).toContain(sharedCall);
+    expect(PROBE_RAY_CAST_WGSL).toContain(
+      'rcStratifiedRayUV(probeIdx, rayIdx, u.rayGridSize, u.frameSeed)',
+    );
+    expect(SAMPLE_CASCADE_C0_WGSL).toContain('rcStratifiedSampleSolidAngle(rayUV, rcParams.rayGridSize)');
+    expect(SAMPLE_CASCADE_C0_WGSL).not.toContain('Le * FOUR_PI_RC');
   });
 
   it('no longer quantises to the nearest probe', () => {

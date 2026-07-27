@@ -79,12 +79,12 @@ import {
   getTransparentOitBindGroupLayout,
   getLightTreeBindGroupLayout,
   getRegirBuildBindGroupLayout,
-  getNrcBindGroupLayout,
+  getNrcHybridLayersBindGroupLayout,
   type BGLCache,
 } from './bindGroupLayouts.js';
 import { buildRisGiNrcModule, type RisGiNrcConfig } from '../shaders/risGiNrc.wgsl.js';
 import { buildReservoirGiModule } from '../shaders/reservoirGi.wgsl.js';
-import { reservoirGiStrideU32ForRestirPtReuse } from '../gi/giLayout.js';
+import { reservoirGiStrideU32ForGrisReuse } from '../gi/giLayout.js';
 import {
   buildPpgUpdateWgsl,
   PPG_DEFAULT_MAX_DTREE_NODES_PER_CELL,
@@ -149,7 +149,7 @@ export async function compilePipelines(
     onWarning?: (warning: EngineWarning) => void;
     ppgEnabled?: boolean;
     regirEnabled?: boolean;
-    restirPtReuse?: boolean;
+    grisReuse?: boolean;
     /** NRC (Müller et al. 2021) — COMPILE-TIME structural gate. When set, the
      *  gi-ris pipeline is built with a 5th `@group(4)` NRC bind group + the
      *  inline-MLP-forward shader variant; when absent (default) gi-ris is the
@@ -168,16 +168,16 @@ export async function compilePipelines(
     ppgMaxDTreeNodesPerCell?: number;
   },
 ): Promise<CompiledPipelines> {
-  // GRIS / ReSTIR-PT reconnection-shift reuse is opt-in via the host flag
-  // `HybridEngineOptions.restirPtReuse`. The gate is COMPILE-TIME (the flag is
+  // GRIS DDGI-proxy reconnection-shift reuse is opt-in via the host flag
+  // `HybridEngineOptions.grisReuse`. The gate is COMPILE-TIME (the flag is
   // fixed at engine creation) because turning it on STRUCTURALLY changes the GI
   // spatial + temporal shader bodies and reservoir cache stride. Both default
   // and GRIS variants now use the same two-group layout: group(1) is the shared
   // scene/material group needed for receiver-lobe p-hat recasts, while the GRIS
   // variant also traces reconnection visibility through it. See
   // spatialGi.wgsl.ts / temporalGi.wgsl.ts headers.
-  const grisOn = opts?.restirPtReuse === true;
-  const reservoirGiStrideU32 = reservoirGiStrideU32ForRestirPtReuse(grisOn);
+  const grisOn = opts?.grisReuse === true;
+  const reservoirGiStrideU32 = reservoirGiStrideU32ForGrisReuse(grisOn);
   const wgslModules = new Map(WGSL_MODULES);
   wgslModules.set('reservoirGi', buildReservoirGiModule({ grisCache: grisOn }));
   // NRC (Müller et al. 2021) — COMPILE-TIME structural gate, same discipline as
@@ -391,31 +391,23 @@ export async function compilePipelines(
       ? composeWgsl(buildRisGiNrcModule(opts.nrcConfig!), wgslModules)
       : composeWgsl(RIS_GI_MODULE, wgslModules),
   });
-  const risGiLayout = nrcOn
-    ? device.createPipelineLayout({
-        bindGroupLayouts: [
-          getRisGiFrameBindGroupLayout(device, bglCache),
-          getSceneBindGroupLayout(device, bglCache),
-          getUboBindGroupLayout(device, bglCache),
-          getHybridLayersBindGroupLayout(device, bglCache),
-          getNrcBindGroupLayout(device, bglCache),
-        ],
-      })
-    : device.createPipelineLayout({
-        bindGroupLayouts: [
-          getRisGiFrameBindGroupLayout(device, bglCache),
-          getSceneBindGroupLayout(device, bglCache),
-          getUboBindGroupLayout(device, bglCache),
-          getHybridLayersBindGroupLayout(device, bglCache),
-        ],
-      });
+  const risGiLayout = device.createPipelineLayout({
+    bindGroupLayouts: [
+      getRisGiFrameBindGroupLayout(device, bglCache),
+      getSceneBindGroupLayout(device, bglCache),
+      getUboBindGroupLayout(device, bglCache),
+      nrcOn
+        ? getNrcHybridLayersBindGroupLayout(device, bglCache)
+        : getHybridLayersBindGroupLayout(device, bglCache),
+    ],
+  });
   pipelineDraft['risGiPipeline'] = await device.createComputePipelineAsync({
     label: 'risGi', layout: risGiLayout,
     compute: { module: risGiSM, entryPoint: 'risGiMain' },
   });
 
   // Sprint 17 — GI temporal + spatial reuse pipelines. Compose the GRIS variant
-  // (adds the reconnection-shift branch) only when restirPtReuse is ON; otherwise
+  // (adds the reconnection-shift branch) only when grisReuse is ON; otherwise
   // compose the standard reuse pass. Both variants bind group(1) for
   // receiver-material p-hat recasts, so the layout is shared.
   const temporalGiSM = device.createShaderModule({
@@ -461,7 +453,7 @@ export async function compilePipelines(
     const ppgUpdateModule = {
       name: 'ppgUpdate' as const,
       source: buildPpgUpdateWgsl(ppgMaxDTreeNodesPerCell, reservoirGiStrideU32),
-      requires: ['luminance', 'ppgTreeLayout'] as const,
+      requires: ['ppgTreeLayout'] as const,
     };
     const ppgUpdateSM = device.createShaderModule({ label: 'ppg-update', code: composeWgsl(ppgUpdateModule, wgslModules) });
     await checkShaderCompile(ppgUpdateSM, 'ppg-update', {

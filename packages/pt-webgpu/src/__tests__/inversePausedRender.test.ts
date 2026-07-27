@@ -2,12 +2,16 @@ import { describe, expect, it, vi } from 'vitest';
 import type { Scene } from '@vitrum/core';
 import { asMat4 } from '@vitrum/core';
 import { createPTEngine_WebGPU } from '../index.js';
-import { FrameParamsSlot } from '../scene/frameParamsLayout.js';
+import {
+  FRAME_PARAMS_BYTE_SIZE,
+  FrameParamsSlot,
+} from '../scene/frameParamsLayout.js';
 import { installGpuConstStubs, textureStubMethods } from './gpuStub.js';
 
 interface Recorder {
   readonly computePassLabels: string[];
   readonly directLightingModes: number[];
+  bufferCopies: number;
 }
 
 function makeScene(): Scene {
@@ -59,7 +63,6 @@ function frameInput(size = 1) {
   return {
     viewMatrix: asMat4(identityMat()),
     projMatrix: asMat4(identityMat()),
-    cameraPosition: [0, 0, 1] as [number, number, number],
     viewport: { width: size, height: size, devicePixelRatio: 1 },
     frameIndex: 0,
     frameSeed: 1,
@@ -83,12 +86,13 @@ function makeRenderAndReadbackDevice(rec: Recorder): GPUDevice {
     }),
     clearBuffer: vi.fn(),
     copyTextureToBuffer: vi.fn(),
+    copyBufferToBuffer: vi.fn(() => { rec.bufferCopies += 1; }),
     finish: vi.fn(() => ({})),
   };
   return {
     queue: {
       writeBuffer: vi.fn((_buffer: GPUBuffer, _offset: number, data: BufferSource) => {
-        if (data instanceof ArrayBuffer && data.byteLength >= 512) {
+        if (data instanceof ArrayBuffer && data.byteLength >= FRAME_PARAMS_BYTE_SIZE) {
           rec.directLightingModes.push(new Uint32Array(data)[FrameParamsSlot.directLightingMode] ?? -1);
         }
       }),
@@ -126,7 +130,7 @@ function makeRenderAndReadbackDevice(rec: Recorder): GPUDevice {
 
 describe('pt-webgpu inverse render while host-paused', () => {
   it('bypasses the public paused-frame fast-out only for inverse-session renders', async () => {
-    const rec: Recorder = { computePassLabels: [], directLightingModes: [] };
+    const rec: Recorder = { computePassLabels: [], directLightingModes: [], bufferCopies: 0 };
     const engine = await createPTEngine_WebGPU({ device: makeRenderAndReadbackDevice(rec) });
     engine.setScene(makeScene());
     engine.renderFrame(frameInput());
@@ -153,42 +157,73 @@ describe('pt-webgpu inverse render while host-paused', () => {
     expect(after).toBeGreaterThan(before);
     expect(rec.directLightingModes).toContain(0);
     expect(rec.directLightingModes).toContain(1);
+    expect(rec.bufferCopies).toBeGreaterThan(0);
     expect(engine.state).toBe('paused');
 
     session.dispose();
     engine.dispose();
   });
 
-  it('keeps real-engine path replay for multiple candidates because inverse renders sum direct light', async () => {
-    const rec: Recorder = { computePassLabels: [], directLightingModes: [] };
+  it('rejects uncertified real-engine replay fields and accepts certified replay', async () => {
+    const rec: Recorder = { computePassLabels: [], directLightingModes: [], bufferCopies: 0 };
     const warnings: unknown[] = [];
     const engine = await createPTEngine_WebGPU({
       device: makeRenderAndReadbackDevice(rec),
       onWarning: (warning) => warnings.push(warning),
     });
-    engine.setScene(makeMultiLightScene());
+    const scene = makeMultiLightScene();
+    engine.setScene(scene);
     engine.renderFrame(frameInput());
+    const retainedScene = engine.getScene!();
+    const retainedMaterial = retainedScene!.primitives[0]!.material;
 
-    const session = engine.createInverseSession!({
+    const common = {
       target: {
         data: new Float32Array([0.4, 0.4, 0.4]),
         width: 1,
         height: 1,
-        channels: 3,
+        channels: 3 as const,
       },
-      parameters: [{ path: 'materials.panel.baseColor', kind: 'rgb' }],
-      method: 'path-replay',
+      method: 'path-replay' as const,
       samplesPerStep: 1,
       optimizer: { learningRate: 0.01, fdEpsilon: 1e-3 },
-    });
+    };
 
-    expect(session.method).toBe('path-replay');
-    expect(session.diagnostics).not.toContainEqual(expect.objectContaining({
-      code: 'path-replay-unsupported-light-selection',
-    }));
+    for (const [field, kind] of [
+      ['specularColor', 'rgb'],
+      ['clearcoat', 'scalar'],
+    ] as const) {
+      const reported: unknown[] = [];
+      expect(() => engine.createInverseSession!({
+          ...common,
+          parameters: [{
+            path: `materials.panel.${field}`,
+            kind,
+            initial: kind === 'rgb' ? [0.9, 0.8, 0.7] : [0.1],
+          }],
+          onDiagnostic: (diagnostic) => reported.push(diagnostic),
+        }))
+        .toThrow(/requested path-replay is outside the certified pt-webgpu domain/);
+      const expected = expect.objectContaining({
+        code: 'path-replay-unsupported-field',
+        path: `materials.panel.${field}`,
+        details: expect.objectContaining({ proof: 'missing-end-to-end-gpu-fit' }),
+      });
+      expect(reported).toContainEqual(expected);
+      expect(engine.getScene!()).toBe(retainedScene);
+      expect(retainedMaterial.baseColor).toEqual([0.2, 0.2, 0.2]);
+      expect(retainedMaterial.roughness).toBe(0.5);
+    }
+
+    const emissive = engine.createInverseSession!({
+      ...common,
+      parameters: [{ path: 'materials.panel.emissive', kind: 'rgb' }],
+    });
+    expect(emissive.method).toBe('path-replay');
+    expect(emissive.diagnostics).toEqual([]);
     expect(warnings).toEqual([]);
 
-    session.dispose();
+    emissive.dispose();
     engine.dispose();
   });
 });

@@ -24,6 +24,7 @@
 
 import type { BGLCache } from '../bindGroupLayouts.js';
 import type { PipelineResourceCache } from '../PipelineResourceCache.js';
+import type { FramePublication } from '../FramePublication.js';
 import type { FrameResources } from '../resourceManager.js';
 import type { PassLabel } from '../timestampQueries.js';
 
@@ -76,7 +77,7 @@ export const DENOISER_PASS_LABELS: Readonly<Record<DenoiserId, readonly PassLabe
     'svgf-real-atrous-3',
     'svgf-real-atrous-4',
   ]),
-  'bmfr': Object.freeze(['bmfr']),
+  'bmfr': Object.freeze(['bmfr-fit', 'bmfr-resolve']),
   'neural': Object.freeze(['neural-pack', 'neural-unpack']),
   'oidn-final': Object.freeze([]),
 } as Record<DenoiserId, readonly PassLabel[]>);
@@ -139,6 +140,8 @@ export interface DenoiserDispatchContext {
   readonly width: number;
   readonly height: number;
   readonly frameIndex: number;
+  /** Post-submit publication boundary inherited from the pass context. */
+  readonly publication?: FramePublication;
   /** Concrete denoisers cast this to {@link FrameResources}. */
   readonly resources: FrameResources;
   /** Shared atrous pipeline; see field doc above. */
@@ -185,6 +188,11 @@ export interface Denoiser {
    *  pass-through (in which case the engine sources radiance from the
    *  raw HDR texture directly). */
   dispatch(ctx: DenoiserDispatchContext): GPUTexture | null;
+
+  /** Optional post-submit hook. Called immediately after the frame command
+   *  buffer has been submitted, allowing async/readback denoisers to enqueue
+   *  a separate queue-ordered copy before calling mapAsync. */
+  afterFrameSubmit?(): void;
 
   /** Resize callback — denoiser may reallocate persistent resources. */
   resize(width: number, height: number): void;

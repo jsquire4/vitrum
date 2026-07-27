@@ -4,7 +4,8 @@
  * Reprojects each pixel's primary-hit world position from the current frame
  * into the previous frame's clip space using the stored depth (gNormalDepthIn.w)
  * and the per-frame camera matrices from WalkaroundUBO. The resulting 2D
- * screen-space delta (uv_cur - uv_prev) is written to motionVectorsOut and
+ * previous-minus-current screen-space pixel delta is written to
+ * motionVectorsOut and
  * consumed by the SVGF reprojection pass for temporal history accumulation.
  *
  * Sky pixels (depth <= 1e-6) write (0,0) — SVGF discards them via the
@@ -50,8 +51,15 @@ fn motionVectorsMain(@builtin(global_invocation_id) gid: vec3u) {
 
   let currNdc = currClip.xy / currClip.w;
   let prevNdc = prevClip.xy / prevClip.w;
-  // Reprojection delta expected by SVGF: previous - current.
-  let motion = prevNdc - currNdc;
+  // Canonical reprojection delta: previous pixel - current pixel. NDC x grows
+  // right while framebuffer y grows down, hence the y sign inversion. Keeping
+  // this in pixel units lets every consumer use previous = current + motion
+  // exactly once (SVGF, checkerboard prefill/resolve, and the public aux view).
+  let ndcDelta = prevNdc - currNdc;
+  let motion = vec2f(
+    ndcDelta.x * f32(dims.x) * 0.5,
+    -ndcDelta.y * f32(dims.y) * 0.5,
+  );
   textureStore(motionVectorsOut, gid.xy, vec4f(motion, 0.0, 0.0));
 }
 `;

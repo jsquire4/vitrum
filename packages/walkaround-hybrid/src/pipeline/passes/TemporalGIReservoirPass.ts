@@ -22,12 +22,17 @@ import { cachedBindGroup } from '../PipelineResourceCache.js';
 
 export class TemporalGIReservoirPass implements Pass {
   readonly id = 'gi-temporal' as const;
-  readonly dependencies: readonly string[] = ['gi-ris'];
+  readonly dependencies: readonly string[];
   readonly passLabels: readonly PassLabel[] = ['gi-temporal'];
 
   private readonly _pipeline: GPUComputePipeline;
 
-  constructor(pipeline: GPUComputePipeline, _grisEnabled = false) {
+  constructor(
+    pipeline: GPUComputePipeline,
+    _grisEnabled = false,
+    ppgTrainingBeforeReuse = false,
+  ) {
+    this.dependencies = ppgTrainingBeforeReuse ? ['ppg-update'] : ['gi-ris'];
     this._pipeline = pipeline;
   }
 

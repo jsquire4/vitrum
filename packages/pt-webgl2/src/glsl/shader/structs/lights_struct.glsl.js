@@ -30,7 +30,6 @@ export const lights_struct = /* glsl */`
 		float power;
 
 		// spot light fields
-		float radius;
 		float decay;
 		float distance;
 		float coneCos;
@@ -77,7 +76,6 @@ export const lights_struct = /* glsl */`
 		if ( l.type == SPOT_LIGHT_TYPE || l.type == POINT_LIGHT_TYPE ) {
 
 			vec4 s4 = texelFetch1D( tex, i + 4u );
-			l.radius = s4.r;
 			l.decay = s4.g;
 			l.distance = s4.b;
 			l.coneCos = s4.a;
@@ -86,7 +84,6 @@ export const lights_struct = /* glsl */`
 
 		} else {
 
-			l.radius = 0.0;
 			l.decay = 0.0;
 			l.distance = 0.0;
 

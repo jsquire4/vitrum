@@ -6,30 +6,28 @@ import { hasMeshAreaLightForPrimitive, packMeshAreaLights, TRI_LIGHT_PIXELS } fr
 import { foldMeshAreaEmittersIntoMaterials } from './foldEmissiveEmitters.js';
 import { buildEquirectInfo } from './equirectHdrInfo.js';
 import type { UploadedSceneTextures } from './sceneTextures.js';
+import { retireTexturesIndependently } from '../gl/resourceRetirement.js';
 import {
   buildSceneGeometryTextureData,
   buildRefitSceneGeometryTextures,
   expandAnalyticPrimitiveFallbacks,
-  replaceRgba32f,
-  replaceRgba32fRect,
-  replaceRgba32fArray,
-  replaceRgba32ui,
   updateRgba32f,
   updateRgba32fRect,
   updateRgba32fArray,
   updateRgba32ui,
-  uploadRgba32f,
-  uploadRgba32fRect,
 } from './uploadSceneTextures.js';
 import {
   packTextureAtlas,
-  refreshTextureAtlasStorage,
   textureAtlasLayerCapacity,
   updateTextureAtlasLayers,
-  uploadTextureAtlas,
 } from './texturesArray.js';
 import type { TextureAtlasLayerMap, TextureSampleColorSpace } from './texturesArray.js';
 import { packBvhTextureData, squareDim, type BvhTextureData } from './bvhTextureAdapter.js';
+import {
+  ATTR_LAYER_UV,
+  ATTR_LAYER_UV1,
+  sameUvAttributeLayout,
+} from './uvAttributeLayout.js';
 
 export const TEXTURE_MAP_FIELDS: ReadonlySet<string> = new Set([
   'baseColorMap',
@@ -104,6 +102,7 @@ const GEOMETRY_TEXTURE_REFRESH_FIELDS: ReadonlySet<string> = new Set([
   'indices',
   'uvs',
   'uv1',
+  'uvSets',
   'tangents',
   'colors',
   'instances',
@@ -111,11 +110,13 @@ const GEOMETRY_TEXTURE_REFRESH_FIELDS: ReadonlySet<string> = new Set([
   'boneInverses',
   'skinIndices',
   'skinWeights',
+  'skinInfluencesPerVertex',
   'morphTargets',
   'morphTargetNormals',
   'morphTargetTangents',
   'morphTargetUvs',
   'morphTargetUv1s',
+  'morphTargetUvSets',
   'morphWeights',
 ]);
 
@@ -222,6 +223,28 @@ function texturePatchNeedsAtlasRefresh(
   return false;
 }
 
+function effectiveUvLayerMap(current: UploadedSceneTextures): ReadonlyMap<number, number> {
+  return current.uvLayerByTexCoord ?? new Map<number, number>([
+    [0, ATTR_LAYER_UV],
+    [1, ATTR_LAYER_UV1],
+  ]);
+}
+
+function texturePatchNeedsUvLayoutRefresh(
+  patch: Partial<ScenePrimitive> & { material: MaterialSpec },
+  current: UploadedSceneTextures,
+): boolean {
+  const layout = effectiveUvLayerMap(current);
+  for (const entry of textureMapPatchEntries(
+    patch.material as unknown as Record<string, unknown>,
+  )) {
+    if (entry.value == null || typeof entry.value !== 'object') continue;
+    const texCoord = (entry.value as { readonly texCoord?: number }).texCoord ?? 0;
+    if (!layout.has(texCoord)) return true;
+  }
+  return false;
+}
+
 function textureHandleOf(value: unknown): unknown {
   if (value == null || typeof value !== 'object') return null;
   return (value as { readonly handle?: unknown }).handle ?? null;
@@ -290,13 +313,9 @@ function updateResidentMeshLightTexture(
     updateRgba32f(gl, current.meshLights, nextMeshLightsData.data, nextMeshLightsData.dim, 'mesh-area lights');
     return current.meshLights;
   }
-  if (current.meshLights != null) {
-    replaceRgba32f(gl, current.meshLights, nextMeshLightsData.data, nextMeshLightsData.dim, 'mesh-area lights');
-    return current.meshLights;
-  }
-
-  const meshLights = uploadRgba32f(gl, nextMeshLightsData.data, nextMeshLightsData.dim, 'mesh-area lights');
-  return meshLights;
+  throw new Error(
+    'pt-webgl2: mesh-light storage replacement requires a transactional scene rebuild',
+  );
 }
 
 function updateResidentLightsTexture(
@@ -309,7 +328,7 @@ function updateResidentLightsTexture(
   if (currentLightsDim === nextLightsData.dim) {
     updateRgba32f(gl, current.lights, lights, nextLightsData.dim, 'scene lights');
   } else {
-    replaceRgba32f(gl, current.lights, lights, nextLightsData.dim, 'scene lights');
+    throw new Error('pt-webgl2: light storage replacement requires a transactional scene rebuild');
   }
   return current.lights;
 }
@@ -330,32 +349,14 @@ function updateNullableRectTexture(
     return null;
   }
   if (currentTexture == null) {
-    return uploadRgba32fRect(gl, nextData.data, nextData.width, nextData.height, resourceName);
+    throw new Error(`pt-webgl2: ${resourceName} allocation requires a transactional scene rebuild`);
   }
   if (currentWidth === nextData.width && currentHeight === nextData.height) {
     updateRgba32fRect(gl, currentTexture, nextData.data, nextData.width, nextData.height, resourceName);
   } else {
-    replaceRgba32fRect(gl, currentTexture, nextData.data, nextData.width, nextData.height, resourceName);
+    throw new Error(`pt-webgl2: ${resourceName} storage replacement requires a transactional scene rebuild`);
   }
   return currentTexture;
-}
-
-function replaceResidentBvhTextures(
-  gl: WebGL2RenderingContext,
-  current: UploadedSceneTextures,
-  nextBvh: BvhTextureData,
-): void {
-  replaceRgba32f(gl, current.bvhBounds, nextBvh.bounds, nextBvh.boundsDim, 'scene BVH bounds');
-  replaceRgba32ui(gl, current.bvhContents, nextBvh.contents, nextBvh.contentsDim, 'scene BVH contents');
-  replaceRgba32f(gl, current.bvhPosition, nextBvh.position, nextBvh.positionDim, 'scene BVH position');
-  replaceRgba32ui(gl, current.bvhIndex, nextBvh.index, nextBvh.indexDim, 'scene BVH index');
-  replaceRgba32ui(
-    gl,
-    current.materialIndex,
-    nextBvh.materialIndex,
-    nextBvh.materialIndexDim,
-    'scene BVH material index',
-  );
 }
 
 function updateResidentMaterialSlotTexture(
@@ -408,7 +409,7 @@ function uniqueMaterialSlotForPrimitive(geoPack: WorldSpaceMergeResult, primitiv
     }
   }
   if (ownSlots.size !== 1) return null;
-  const slot = ownSlots.values().next().value as number | undefined;
+  const slot = ownSlots.values().next().value;
   if (slot == null || otherSlots.has(slot)) return null;
   return slot;
 }
@@ -473,7 +474,7 @@ function withTextureReplacementsForGl(
     destroy(): void {
       if (destroyed) return;
       destroyed = true;
-      for (const t of [
+      retireTexturesIndependently(gl, [
         next.bvhBounds,
         next.bvhContents,
         next.bvhPosition,
@@ -487,26 +488,10 @@ function withTextureReplacementsForGl(
         next.envMarginal,
         next.envConditional,
         next.textures2DArray,
-      ]) {
-        if (t != null) gl.deleteTexture(t);
-      }
+      ], 'pt-webgl2: one or more mutated scene textures failed to retire');
     },
   };
   return next;
-}
-
-function uploadAtlasWithCapacity(
-  gl: WebGL2RenderingContext,
-  atlas: NonNullable<ReturnType<typeof packTextureAtlas>>,
-): { texture: WebGLTexture; capacity: number } {
-  const capacity = textureAtlasLayerCapacity(
-    atlas.layerCount,
-    gl.getParameter(gl.MAX_ARRAY_TEXTURE_LAYERS) as number,
-  );
-  return {
-    texture: uploadTextureAtlas(gl, atlas, { layerCapacity: capacity }),
-    capacity,
-  };
 }
 
 type MaterialAtlasRefreshReason =
@@ -576,10 +561,14 @@ function canUpdateAtlasInPlace(
 }
 
 function canRewriteMeshLightsResident(
-  _current: UploadedSceneTextures,
-  _meshLightsData: ReturnType<typeof packMeshAreaLights>,
+  current: UploadedSceneTextures,
+  meshLightsData: ReturnType<typeof packMeshAreaLights>,
 ): boolean {
-  return true;
+  if (meshLightsData.data == null) return true;
+  return (
+    current.meshLights != null &&
+    squareDim((current.meshLightCount ?? 0) * TRI_LIGHT_PIXELS) === meshLightsData.dim
+  );
 }
 
 function bvhStorageDimsMatch(currentMerged: WorldSpaceMergeResult, nextBvh: BvhTextureData): boolean {
@@ -600,6 +589,8 @@ function canRewriteGeometryStorageResident(
 ): boolean {
   if (!bvhStorageDimsMatch(currentMerged, built.bvhData)) return false;
   if (squareDim(currentMerged.vertexCount) !== built.attrData.dim) return false;
+  if ((current.attributeLayerCount ?? 5) !== built.attrData.layers) return false;
+  if (!sameUvAttributeLayout(effectiveUvLayerMap(current), built.uvLayerByTexCoord)) return false;
   return canRewriteMeshLightsResident(current, built.meshLightsData);
 }
 
@@ -610,6 +601,7 @@ function materialTextureDimMatches(
 ): boolean {
   const currentMaterialsData = packMaterialsTexture(currentMerged.materials, current.materialLayerMap ?? undefined, {
     vertexColorMaterialIds: current.vertexColorMaterialIds,
+    uvLayerByTexCoord: effectiveUvLayerMap(current),
   });
   return currentMaterialsData.dim === materialsData.dim;
 }
@@ -650,6 +642,9 @@ export function tryFastPathMaterialMutation(
     texturePatchNeedsAtlasRefresh(materialPatch, current.materialLayerMap) ||
     texturePatchMayCompactAtlas(geoPack.materials[slot], materialPatch)
   );
+  if (materialPatch != null && texturePatchNeedsUvLayoutRefresh(materialPatch, current)) {
+    return null;
+  }
 
   const structuredWarnings: EngineWarning[] = [];
 
@@ -669,19 +664,40 @@ export function tryFastPathMaterialMutation(
     nextGeoPack = { ...geoPack, materials: nextMaterials };
   }
 
+  const maxAtlasLayers = gl.getParameter(gl.MAX_ARRAY_TEXTURE_LAYERS) as number;
   const atlas = atlasRefreshNeeded
     ? packTextureAtlas(nextMaterials, {
         onWarning: (warning) => structuredWarnings.push(warning),
         warningPhase: 'mutation',
         warningMethod: 'updatePrimitive',
+        maxArrayTextureLayers: maxAtlasLayers,
       })
     : null;
+  const nextAtlasLayerCapacity = atlas != null
+    ? textureAtlasLayerCapacity(atlas.layerCount, maxAtlasLayers)
+    : 0;
+  const meshLightsData = hasMeshAreaLightForPrimitive(nextScene, primitiveId)
+    || (current.meshLightCount ?? 0) > 0
+    ? packMeshAreaLights(nextScene, nextGeoPack)
+    : null;
+  const meshLightStorageMatches = meshLightsData == null
+    || meshLightsData.data == null
+    || (
+      current.meshLights != null &&
+      squareDim((current.meshLightCount ?? 0) * TRI_LIGHT_PIXELS) === meshLightsData.dim
+    );
+  const atlasStorageMatches = !atlasRefreshNeeded
+    || atlas == null
+    || canUpdateAtlasInPlace(current, atlas, nextAtlasLayerCapacity);
+  if (!meshLightStorageMatches || !atlasStorageMatches) {
+    return null;
+  }
+
   let atlasTexture = current.textures2DArray;
   let materialAtlasDim = current.materialAtlasDim;
   let materialAtlasLayerCount = current.materialAtlasLayerCount;
   let materialAtlasLayerCapacity = current.materialAtlasLayerCapacity;
   let deleteOldAtlas = false;
-  const maxAtlasLayers = gl.getParameter(gl.MAX_ARRAY_TEXTURE_LAYERS) as number;
   if (atlasRefreshNeeded) {
     if (atlas == null) {
       const reason = materialAtlasRefreshReason(current, null, 0);
@@ -701,45 +717,19 @@ export function tryFastPathMaterialMutation(
         );
       }
     } else {
-      const nextLayerCapacity = textureAtlasLayerCapacity(atlas.layerCount, maxAtlasLayers);
-      if (canUpdateAtlasInPlace(current, atlas, nextLayerCapacity)) {
-        updateTextureAtlasLayers(gl, current.textures2DArray as WebGLTexture, atlas);
-        materialAtlasDim = atlas.dim;
-        materialAtlasLayerCount = atlas.layerCount;
-      } else {
-        const reason = materialAtlasRefreshReason(current, atlas, nextLayerCapacity);
-        const refreshedCapacity = current.textures2DArray != null
-          ? refreshTextureAtlasStorage(
-              gl,
-              current.textures2DArray,
-              atlas,
-              { layerCapacity: nextLayerCapacity },
-            )
-          : null;
-        const uploadedAtlas = refreshedCapacity == null ? uploadAtlasWithCapacity(gl, atlas) : null;
-        atlasTexture = current.textures2DArray ?? uploadedAtlas?.texture ?? null;
-        materialAtlasDim = atlas.dim;
-        materialAtlasLayerCount = atlas.layerCount;
-        materialAtlasLayerCapacity = refreshedCapacity ?? uploadedAtlas?.capacity ?? 0;
-        deleteOldAtlas = false;
-        if (reason != null) {
-          pushMaterialAtlasRefreshWarning(
-            structuredWarnings,
-            { method: 'updatePrimitive', primitiveId },
-            current,
-            atlas,
-            reason,
-            materialAtlasLayerCapacity,
-          );
-        }
-      }
+      updateTextureAtlasLayers(gl, current.textures2DArray as WebGLTexture, atlas);
+      materialAtlasDim = atlas.dim;
+      materialAtlasLayerCount = atlas.layerCount;
     }
   }
   const materialLayerMap = atlasRefreshNeeded ? atlas?.layerOfByColorSpace ?? null : current.materialLayerMap;
   const materialData = packMaterialsTexture(
     nextMaterials,
     materialLayerMap ?? undefined,
-    { vertexColorMaterialIds: current.vertexColorMaterialIds },
+    {
+      vertexColorMaterialIds: current.vertexColorMaterialIds,
+      uvLayerByTexCoord: effectiveUvLayerMap(current),
+    },
   );
   if (
     foldedMaterials == null &&
@@ -751,10 +741,6 @@ export function tryFastPathMaterialMutation(
     updateRgba32f(gl, current.materials, materialData.data as Float32Array, materialData.dim, 'scene materials');
   }
 
-  const meshLightsData = hasMeshAreaLightForPrimitive(nextScene, primitiveId)
-    || (current.meshLightCount ?? 0) > 0
-    ? packMeshAreaLights(nextScene, nextGeoPack)
-    : null;
   const deleteOldTextures: (WebGLTexture | null)[] = [];
   const meshLights = meshLightsData != null
     ? updateResidentMeshLightTexture(gl, current, meshLightsData, deleteOldTextures)
@@ -803,6 +789,13 @@ export function tryFastPathGeometryMutation(
     });
     if (refit != null) {
       const structuredWarnings: EngineWarning[] = [...refit.structuredWarnings];
+      if (
+        !canRewriteMeshLightsResident(current, refit.meshLightsData) ||
+        (current.attributeLayerCount ?? 5) !== refit.attrData.layers ||
+        !sameUvAttributeLayout(effectiveUvLayerMap(current), refit.uvLayerByTexCoord)
+      ) {
+        return null;
+      }
       for (const warning of refit.warnings) {
         structuredWarnings.push({
           code: 'pt-webgl2.scene-upload-warning',
@@ -821,7 +814,10 @@ export function tryFastPathGeometryMutation(
         ? packMaterialsTexture(
             refit.merged.materials,
             current.materialLayerMap ?? undefined,
-            { vertexColorMaterialIds: refit.vertexColorMaterialIds },
+            {
+              vertexColorMaterialIds: refit.vertexColorMaterialIds,
+              uvLayerByTexCoord: refit.uvLayerByTexCoord,
+            },
           )
         : null;
       updateRgba32f(gl, current.bvhBounds, refit.bvhData.bounds, refit.bvhData.boundsDim, 'scene BVH bounds');
@@ -850,6 +846,8 @@ export function tryFastPathGeometryMutation(
           totalEmissivePower: nextMeshLightsData.totalEmissivePower,
           triangleCount: refit.merged.triangleCount,
           vertexColorMaterialIds: refit.vertexColorMaterialIds,
+          uvLayerByTexCoord: refit.uvLayerByTexCoord,
+          attributeLayerCount: refit.attrData.layers,
         }),
         geoPack: refit.merged,
         deleteOldTextures,
@@ -858,13 +856,11 @@ export function tryFastPathGeometryMutation(
     }
   }
 
-  let geometryRefreshBuild: ReturnType<typeof buildSceneGeometryTextureData> | null = null;
   if (currentMerged != null) {
     const built = buildSceneGeometryTextureData(nextScene, {
       warningPhase: 'mutation',
       warningMethod: 'updatePrimitive',
     });
-    geometryRefreshBuild = built;
     const vertexColorMaterialIdsChanged = !sameNumberSet(
       current.vertexColorMaterialIds,
       built.vertexColorMaterialIds,
@@ -872,7 +868,10 @@ export function tryFastPathGeometryMutation(
     const materialsData = packMaterialsTexture(
       built.merged.materials,
       current.materialLayerMap ?? undefined,
-      { vertexColorMaterialIds: built.vertexColorMaterialIds },
+      {
+        vertexColorMaterialIds: built.vertexColorMaterialIds,
+        uvLayerByTexCoord: built.uvLayerByTexCoord,
+      },
     );
     if (canRewriteGeometryResident(current, currentMerged, built, materialsData)) {
       const structuredWarnings: EngineWarning[] = [...built.structuredWarnings];
@@ -920,6 +919,8 @@ export function tryFastPathGeometryMutation(
           totalEmissivePower: built.meshLightsData.totalEmissivePower,
           triangleCount: built.triangleCount,
           vertexColorMaterialIds: built.vertexColorMaterialIds,
+          uvLayerByTexCoord: built.uvLayerByTexCoord,
+          attributeLayerCount: built.attrData.layers,
         }),
         geoPack: built.merged,
         deleteOldTextures,
@@ -928,65 +929,7 @@ export function tryFastPathGeometryMutation(
     }
   }
 
-  const built = geometryRefreshBuild ?? buildSceneGeometryTextureData(nextScene, {
-    warningPhase: 'mutation',
-    warningMethod: 'updatePrimitive',
-  });
-  const structuredWarnings: EngineWarning[] = [...built.structuredWarnings];
-  for (const warning of built.warnings) {
-    structuredWarnings.push({
-      code: 'pt-webgl2.scene-upload-warning',
-      backend: 'pt-webgl2',
-      phase: 'mutation',
-      method: 'updatePrimitive',
-      message: `[vitrum/pt-webgl2] ${warning}`,
-      details: { warning, operation: 'geometry-texture-refresh' },
-    });
-  }
-  const vertexColorMaterialIdsChanged = !sameNumberSet(
-    current.vertexColorMaterialIds,
-    built.vertexColorMaterialIds,
-  );
-  const materialsData = vertexColorMaterialIdsChanged
-    ? packMaterialsTexture(
-        built.merged.materials,
-        current.materialLayerMap ?? undefined,
-        { vertexColorMaterialIds: built.vertexColorMaterialIds },
-      )
-    : null;
-  replaceResidentBvhTextures(gl, current, built.bvhData);
-  replaceRgba32fArray(
-    gl,
-    current.attributesArray,
-    built.attrData.data,
-    built.attrData.dim,
-    built.attrData.layers,
-    'vertex attributes',
-  );
-  if (materialsData != null) {
-    replaceRgba32f(gl, current.materials, materialsData.data as Float32Array, materialsData.dim, 'scene materials');
-  }
-  const deleteOldTextures: (WebGLTexture | null)[] = [];
-  const meshLights = updateResidentMeshLightTexture(gl, current, built.meshLightsData, deleteOldTextures);
-
-  return {
-    textures: withTextureReplacementsForGl(gl, current, {
-      meshLights,
-      meshLightCount: built.meshLightsData.triLightCount,
-      totalEmissiveArea: built.meshLightsData.totalEmissiveArea,
-      totalEmissivePower: built.meshLightsData.totalEmissivePower,
-      triangleCount: built.triangleCount,
-      vertexColorMaterialIds: built.vertexColorMaterialIds,
-    }),
-    geoPack: built.merged,
-    deleteOldTextures,
-    structuredWarnings,
-    mutationFallback: {
-      fallbackReason: 'geometry-bvh-texture-rebuild',
-      nativePatchMissing: 'targeted-primitive-geometry-splice',
-      textureRefreshMode: 'resident-storage-respecify',
-    },
-  };
+  return null;
 }
 
 export function tryFastPathPrimitiveListMutation(
@@ -1020,27 +963,43 @@ export function tryFastPathPrimitiveListMutation(
     });
   }
 
+  const maxAtlasLayers = gl.getParameter(gl.MAX_ARRAY_TEXTURE_LAYERS) as number;
   const atlas = packTextureAtlas(built.merged.materials, {
     onWarning: (warning) => structuredWarnings.push(warning),
     warningPhase: 'mutation',
     warningMethod: opts.method,
+    maxArrayTextureLayers: maxAtlasLayers,
   });
   const materialsData = packMaterialsTexture(
     built.merged.materials,
     atlas?.layerOfByColorSpace,
-    { vertexColorMaterialIds: built.vertexColorMaterialIds },
+    {
+      vertexColorMaterialIds: built.vertexColorMaterialIds,
+      uvLayerByTexCoord: built.uvLayerByTexCoord,
+    },
   );
-  const maxAtlasLayers = gl.getParameter(gl.MAX_ARRAY_TEXTURE_LAYERS) as number;
   const nextAtlasLayerCapacity = atlas != null
     ? textureAtlasLayerCapacity(atlas.layerCount, maxAtlasLayers)
     : 0;
+  const materialStorageMatches = currentMerged != null
+    && materialTextureDimMatches(current, currentMerged, materialsData);
+  const meshLightStorageMatches = built.meshLightsData.data == null
+    || (
+      current.meshLights != null
+      && squareDim((current.meshLightCount ?? 0) * TRI_LIGHT_PIXELS) === built.meshLightsData.dim
+    );
+  const atlasStorageMatches = atlas == null
+    || canUpdateAtlasInPlace(current, atlas, nextAtlasLayerCapacity);
   if (
     currentMerged != null &&
     canRewritePrimitiveListResident(
       current,
       currentMerged,
       built,
-    )
+    ) &&
+    materialStorageMatches &&
+    meshLightStorageMatches &&
+    atlasStorageMatches
   ) {
     const deleteOldTextures: (WebGLTexture | null)[] = [];
     updateRgba32f(gl, current.bvhBounds, built.bvhData.bounds, built.bvhData.boundsDim, 'scene BVH bounds');
@@ -1054,13 +1013,8 @@ export function tryFastPathPrimitiveListMutation(
         built.bvhData.materialIndexDim,
         'scene BVH material index',
       );
-    let materials = current.materials;
-    if (materialTextureDimMatches(current, currentMerged, materialsData)) {
-      updateRgba32f(gl, current.materials, materialsData.data as Float32Array, materialsData.dim, 'scene materials');
-    } else {
-      materials = uploadRgba32f(gl, materialsData.data as Float32Array, materialsData.dim, 'scene materials');
-      deleteOldTextures.push(current.materials);
-    }
+    const materials = current.materials;
+    updateRgba32f(gl, current.materials, materialsData.data as Float32Array, materialsData.dim, 'scene materials');
     updateRgba32fArray(
       gl,
       current.attributesArray,
@@ -1086,21 +1040,8 @@ export function tryFastPathPrimitiveListMutation(
       materialAtlasDim = atlas.dim;
       materialAtlasLayerCount = atlas.layerCount;
       materialLayerMap = atlas.layerOfByColorSpace;
-      if (canUpdateAtlasInPlace(current, atlas, nextAtlasLayerCapacity)) {
-        updateTextureAtlasLayers(gl, current.textures2DArray as WebGLTexture, atlas);
-        materialAtlasLayerCapacity = current.materialAtlasLayerCapacity;
-      } else if (current.textures2DArray != null) {
-        materialAtlasLayerCapacity = refreshTextureAtlasStorage(
-          gl,
-          current.textures2DArray,
-          atlas,
-          { layerCapacity: nextAtlasLayerCapacity },
-        );
-      } else {
-        const uploadedAtlas = uploadAtlasWithCapacity(gl, atlas);
-        textures2DArray = uploadedAtlas.texture;
-        materialAtlasLayerCapacity = uploadedAtlas.capacity;
-      }
+      updateTextureAtlasLayers(gl, current.textures2DArray as WebGLTexture, atlas);
+      materialAtlasLayerCapacity = current.materialAtlasLayerCapacity;
     }
     if (atlasRefreshReason != null) {
       pushMaterialAtlasRefreshWarning(
@@ -1127,6 +1068,8 @@ export function tryFastPathPrimitiveListMutation(
         totalEmissivePower: built.meshLightsData.totalEmissivePower,
         triangleCount: built.triangleCount,
         vertexColorMaterialIds: built.vertexColorMaterialIds,
+        uvLayerByTexCoord: built.uvLayerByTexCoord,
+        attributeLayerCount: built.attrData.layers,
       }),
       geoPack: built.merged,
       scene: mutationScene,
@@ -1135,74 +1078,7 @@ export function tryFastPathPrimitiveListMutation(
     };
   }
 
-  replaceResidentBvhTextures(gl, current, built.bvhData);
-  replaceRgba32fArray(
-    gl,
-    current.attributesArray,
-    built.attrData.data,
-    built.attrData.dim,
-    built.attrData.layers,
-    'vertex attributes',
-  );
-  const deleteOldTextures: (WebGLTexture | null)[] = [];
-  const meshLights = updateResidentMeshLightTexture(gl, current, built.meshLightsData, deleteOldTextures);
-  let textures2DArray: WebGLTexture | null = null;
-  let materialAtlasLayerCapacity = 0;
-  if (atlas != null) {
-    if (current.textures2DArray != null) {
-      materialAtlasLayerCapacity = refreshTextureAtlasStorage(
-        gl,
-        current.textures2DArray,
-        atlas,
-        { layerCapacity: nextAtlasLayerCapacity },
-      );
-      textures2DArray = current.textures2DArray;
-    } else {
-      const uploadedAtlas = uploadAtlasWithCapacity(gl, atlas);
-      textures2DArray = uploadedAtlas.texture;
-      materialAtlasLayerCapacity = uploadedAtlas.capacity;
-    }
-  }
-  const atlasRefreshReason = materialAtlasRefreshReason(current, atlas, nextAtlasLayerCapacity);
-  if (atlasRefreshReason != null) {
-    pushMaterialAtlasRefreshWarning(
-      structuredWarnings,
-      { method: opts.method, primitiveId: opts.primitiveId },
-      current,
-      atlas,
-      atlasRefreshReason,
-      materialAtlasLayerCapacity,
-    );
-  }
-  replaceRgba32f(gl, current.materials, materialsData.data as Float32Array, materialsData.dim, 'scene materials');
-
-  return {
-    textures: withTextureReplacementsForGl(gl, current, {
-      meshLights,
-      textures2DArray,
-      materialAtlasDim: atlas?.dim ?? 0,
-      materialAtlasLayerCount: atlas?.layerCount ?? 0,
-      materialAtlasLayerCapacity,
-      materialLayerMap: atlas?.layerOfByColorSpace ?? null,
-      meshLightCount: built.meshLightsData.triLightCount,
-      totalEmissiveArea: built.meshLightsData.totalEmissiveArea,
-      totalEmissivePower: built.meshLightsData.totalEmissivePower,
-      triangleCount: built.triangleCount,
-      vertexColorMaterialIds: built.vertexColorMaterialIds,
-    }),
-    geoPack: built.merged,
-    scene: mutationScene,
-    deleteOldTextures: [
-      ...deleteOldTextures,
-      ...(atlas == null && current.textures2DArray != null ? [current.textures2DArray] : []),
-    ],
-    structuredWarnings,
-    mutationFallback: {
-      fallbackReason: 'primitive-list-texture-refresh',
-      nativePatchMissing: 'targeted-primitive-list-splice',
-      textureRefreshMode: 'resident-storage-respecify',
-    },
-  };
+  return null;
 }
 
 export function tryFastPathEmitterMutation(
@@ -1217,8 +1093,18 @@ export function tryFastPathEmitterMutation(
   const isMeshAreaMutation = changed?.kind === 'mesh-area';
   const lightsData = packLightsTexture(nextScene.emitters);
   const structuredWarnings: EngineWarning[] = [];
-  const lights = updateResidentLightsTexture(gl, current, lightsData);
   const meshLightsData = packMeshAreaLights(nextScene, geoPack);
+  const lightsStorageMatches =
+    squareDim(current.lightCount * LIGHT_PIXELS) === lightsData.dim;
+  const meshLightStorageMatches = meshLightsData.data == null
+    || (
+      current.meshLights != null
+      && squareDim((current.meshLightCount ?? 0) * TRI_LIGHT_PIXELS) === meshLightsData.dim
+    );
+  if (!lightsStorageMatches || !meshLightStorageMatches) {
+    return null;
+  }
+  const lights = updateResidentLightsTexture(gl, current, lightsData);
   const deleteOldTextures: (WebGLTexture | null)[] = [];
   const meshLights = updateResidentMeshLightTexture(gl, current, meshLightsData, deleteOldTextures);
   const foldedMaterials = isMeshAreaMutation
@@ -1228,7 +1114,10 @@ export function tryFastPathEmitterMutation(
     const materialData = packMaterialsTexture(
       foldedMaterials.nextMaterials,
       current.materialLayerMap ?? undefined,
-      { vertexColorMaterialIds: current.vertexColorMaterialIds },
+      {
+        vertexColorMaterialIds: current.vertexColorMaterialIds,
+        uvLayerByTexCoord: effectiveUvLayerMap(current),
+      },
     );
     updateRgba32f(
       gl,
@@ -1266,6 +1155,28 @@ export function fastPathEnvironmentMutation(
     warningMethod: 'updateEnvironment',
   });
   const deleteOldTextures: (WebGLTexture | null)[] = [];
+  const canUpdateRectWithoutAllocation = (
+    currentTexture: WebGLTexture | null,
+    currentWidth: number,
+    currentHeight: number,
+    next: RectFloatTextureData | null,
+  ): boolean => next == null || (
+    currentTexture != null &&
+    currentWidth === next.width &&
+    currentHeight === next.height
+  );
+  if (
+    !canUpdateRectWithoutAllocation(current.envMap, current.envWidth, current.envHeight, env.map) ||
+    !canUpdateRectWithoutAllocation(
+      current.envMarginal,
+      current.envHeight,
+      current.envMarginal != null ? 1 : 0,
+      env.marginal,
+    ) ||
+    !canUpdateRectWithoutAllocation(current.envConditional, current.envWidth, current.envHeight, env.conditional)
+  ) {
+    return null;
+  }
   const envMap = updateNullableRectTexture(
     gl,
     current.envMap,

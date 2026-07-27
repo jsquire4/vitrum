@@ -8,8 +8,8 @@
  * documented:
  *   1. ris / restirCastPrimary / shade decode REAL roughness/metal from the
  *      bvh_material texture (no `select(0.85, 0.05, isGlass)` / `metal = 0.0`).
- *   2. shade lo_direct / lo_analyticNEE no longer early-out on isMetal
- *      (metals get DIRECT light); glass still skips.
+ *   2. shade direct terms retain conductor and glass reflection lobes; glass
+ *      does not acquire an opaque diffuse lobe.
  *   3. risGi / risGiNrc no longer punt metals to an empty GI reservoir.
  *      Primary glass pixels use the bounded refracted-GI walk instead of the old
  *      immediate empty-reservoir branch.
@@ -17,10 +17,9 @@
  *      against the ReSTIR-GI reservoir sample), routed to the un-demodulated
  *      direct channel.
  *   5. B1-ior-per-tri: materialDecode exposes `decodeIor`; risGi glass walk
- *      uses per-tri IOR instead of a fixed 1.5 constant; shade `lo_transmittedGI`
- *      derives F0 from per-tri IOR ((ior-1)/(ior+1))² instead of the
- *      hard-coded GLASS_F0=0.04; risGi rough-glass GI perturbation applied
- *      when roughness > ROUGH_GLASS_THRESHOLD.
+ *      uses per-tri IOR instead of a fixed 1.5 constant. Camera-prefix
+ *      Fresnel/Beer is producer-owned and authored rough transmission uses the
+ *      weighted GGX dielectric proposal instead of a delta-only approximation.
  */
 import { describe, it, expect } from 'vitest';
 import { RIS_WGSL } from '../ris.wgsl.js';
@@ -30,6 +29,8 @@ import { RIS_GI_NRC_BODY } from '../risGiNrc.wgsl.js';
 import { RESTIR_CAST_PRIMARY_WGSL } from '../restirCastPrimary.wgsl.js';
 import { MATERIAL_DECODE_WGSL } from '../materialDecode.wgsl.js';
 import { GGX_BRDF_WGSL } from '../ggxBrdf.wgsl.js';
+import { RESTIR_PHAT_WGSL } from '../restirPHat.wgsl.js';
+import { RESERVOIR_GI_WGSL } from '../reservoirGi.wgsl.js';
 
 describe('B1 — real per-tri roughness/metalness decode', () => {
   it('materialDecode provides decodeRoughMetal + the bvh_material texel width', () => {
@@ -68,7 +69,7 @@ function fnBody(src: string, name: string): string {
   return src.slice(start, next < 0 ? undefined : next);
 }
 
-describe('B1 — metals receive direct light (no isMetal early-out)', () => {
+describe('B1 — metals and glass receive direct reflection', () => {
   it('generic glass does not self-emit unless stained-glass sun-caustic is opted in', () => {
     const body = fnBody(SHADE_WGSL, 'lo_emit');
     expect(body).toContain('if (!isGlass) { return vec3f(0.0); }');
@@ -76,16 +77,31 @@ describe('B1 — metals receive direct light (no isMetal early-out)', () => {
     expect(body).toContain('return beerAlbedo * trans * ubo.sunIntensity * sunDot * texMod;');
   });
 
-  it('lo_direct early-out is glass-only', () => {
-    const body = fnBody(SHADE_WGSL, 'lo_direct');
-    expect(body).toContain('if (isGlass) { return vec3f(0.0); }');
-    expect(body).not.toContain('isGlass || isMetal');
+  it('direct, analytic, and sun estimators route glass through the reflection-only BRDF', () => {
+    const helper = fnBody(SHADE_WGSL, 'evalDirectSurfaceBrdf');
+    expect(helper).toContain('if (isGlass)');
+    expect(helper).toContain('return evalGGXSpecularOnlyWithSpecularClearcoatSheenWithAnisotropyFrame(');
+    expect(helper).toContain('return evalGGXWithSpecularClearcoatSheenWithAnisotropyFrame(');
+
+    for (const name of ['lo_direct', 'lo_analyticNEE', 'lo_sunNEE']) {
+      const body = fnBody(SHADE_WGSL, name);
+      expect(body).not.toContain('if (isGlass) { return vec3f(0.0); }');
+      expect(body).toContain('evalDirectSurfaceBrdf(');
+    }
   });
 
-  it('lo_analyticNEE early-out is glass-only', () => {
-    const body = fnBody(SHADE_WGSL, 'lo_analyticNEE');
-    expect(body).toContain('if (isGlass) { return vec3f(0.0); }');
-    expect(body).not.toContain('isGlass || isMetal');
+  it('ReSTIR target evaluation uses the same glass reflection-only domain', () => {
+    expect(RESERVOIR_GI_WGSL).toContain('isGlass: bool');
+    const body = fnBody(RESTIR_PHAT_WGSL, 'restir_di_eval_surface_brdf');
+    expect(body).toContain('if (surf.isGlass)');
+    expect(body).toContain('evalGGXSpecularOnlyWithSpecularClearcoatSheenWithAnisotropyFrame(');
+  });
+
+  it('a dielectric interface has a non-zero normal-incidence reflection term', () => {
+    const ior = 1.5;
+    const f0 = ((ior - 1) / (ior + 1)) ** 2;
+    expect(f0).toBeCloseTo(0.04, 12);
+    expect(f0).toBeGreaterThan(0);
   });
 });
 
@@ -94,13 +110,16 @@ describe('B1 — glossy/metal GI reservoir (no empty-reservoir punt for metal)',
     for (const src of [RIS_GI_WGSL, RIS_GI_NRC_BODY]) {
       expect(src).not.toContain('if (isGlass || isMetal)');
       expect(src).not.toContain(`if (isGlass) {
-    storeReservoirGI_rw(&reservoirGiCurrent, pixelIdxGi, emptyReservoirGI());
+    storeReservoirGI_rw(pixelIdxGi, emptyReservoirGI());
     return;
   }`);
-      expect(src).toContain('const GLASS_WALK_MAX_EXTRA: u32 = 2u;');
+      expect(src).not.toContain('if (grisOn && isGlass)');
+      expect(src).toContain('const GLASS_WALK_MAX_INTERFACES: u32 = 4u;');
       expect(src).toContain('var rGlass: ReservoirGI = emptyReservoirGI();');
+      expect(src).toContain('if (grisOn) { rGlass.historyEpoch = currentGrisEpoch; }');
+      expect(src).toContain('updateReservoirGIWithMetadata(');
       expect(src).toContain('rGlass.xv = walkHitPos;');
-      expect(src).toContain('storeReservoirGI_rw(&reservoirGiCurrent, pixelIdxGi, rGlass);');
+      expect(src).toContain('storeReservoirGI_rw(pixelIdxGi, rGlass);');
     }
   });
 
@@ -112,7 +131,9 @@ describe('B1 — glossy/metal GI reservoir (no empty-reservoir punt for metal)',
     expect(RIS_GI_WGSL).toContain('Lo = xsPayload.Lo;');
     expect(RIS_GI_WGSL).toContain('let receiverPayload = sampleRestirDIMaterialPayloadForHit(');
     expect(RIS_GI_WGSL).toContain('restir_gi_receiver_phat_from_payload(');
-    expect(RIS_GI_WGSL).toContain('w = select(0.0, pHat / pCos, pCos > 1e-12);');
+    expect(RIS_GI_WGSL).toContain('pSrc = alpha * pGuide + (1.0 - alpha) * pCos;');
+    expect(RIS_GI_WGSL).toContain('pSrc = cosTheta * INV_PI;');
+    expect(RIS_GI_WGSL).toContain('let w = pHat / pSrc;');
   });
 });
 
@@ -143,9 +164,27 @@ describe('B1 — glossy/metal specular indirect term', () => {
     // metal <= 0 && rough >= SPEC_GI_ROUGH_MAX && default rich controls -> zero.
     const body = fnBody(SHADE_WGSL, 'lo_indirectSpecular');
     expect(body).toContain('let specularDelta = max(');
-    expect(body).toContain('specularDelta <= 1e-4');
-    expect(body).toContain('abs(anisotropy.x) <= 1e-4');
-    expect(body).toContain('if (metal <= 0.0 && rough >= SPEC_GI_ROUGH_MAX && specularDelta <= 1e-4 && abs(anisotropy.x) <= 1e-4 && clearcoat.x < 1e-4 && sheen.a < 1e-4 && iridescence.x < 1e-4)');
+    expect(body).toContain('specularDelta <= 0.0');
+    expect(body).toContain('abs(anisotropy.x) <= 0.0');
+    expect(body).toContain('if (metal <= 0.0 && rough >= SPEC_GI_ROUGH_MAX && specularDelta <= 0.0 && abs(anisotropy.x) <= 0.0 && clearcoat.x <= 0.0 && sheen.a <= 0.0 && iridescence.x <= 0.0)');
+  });
+
+  it('consumes valid GRIS samples for glossy and metal receivers', () => {
+    const body = fnBody(SHADE_WGSL, 'lo_indirectSpecular');
+    expect(body).not.toContain('if (ubo.grisReuse == 1u)');
+    expect(body).toContain('let grisVisibility = giReservoirVisibility(g);');
+    expect(body).toContain('let toS = giReservoirDirectionVector(g, pos);');
+    expect(body).toContain('return g.Lo * specBrdf * g.W * grisVisibility;');
+  });
+
+  it('does not reinterpret the post-glass transmission reservoir as primary reflection', () => {
+    const consumer = fnBody(SHADE_WGSL, 'lo_indirectSpecular');
+    expect(consumer).toContain('if (isGlass) { return vec3f(0.0); }');
+    for (const producer of [RIS_GI_WGSL, RIS_GI_NRC_BODY]) {
+      expect(producer).toContain('rGlass.xv = walkHitPos;');
+      expect(producer).toContain('rGlass.nv = walkHitNormal;');
+      expect(producer).toContain('Lo_g = Lo_g * glassPathThroughput;');
+    }
   });
 });
 
@@ -177,27 +216,29 @@ describe('B1-ior-per-tri — per-triangle IOR lane structural pins', () => {
     expect(SHADE_WGSL).not.toContain('GLASS_F0 +');
   });
 
-  it('shade lo_transmittedGI derives F0 from per-tri IOR via physical formula', () => {
-    // Physical Schlick F0 = ((ior-1)/(ior+1))².
-    expect(SHADE_WGSL).toContain('decodeIor(packedG)');
-    expect(SHADE_WGSL).toContain('iorMinus1 / iorPlus1');
+  it('shade lo_transmittedGI does not reapply producer-owned interface Fresnel', () => {
+    const body = fnBody(SHADE_WGSL, 'lo_transmittedGI');
+    expect(body).not.toContain('decodeIor(');
+    expect(body).not.toContain('iorMinus1 / iorPlus1');
+    expect(body).toContain('camera-side dielectric throughput is already present in g.Lo');
   });
 
   it('shade lo_transmittedGI blends half-res GI reservoirs and uses the indirect clamp', () => {
     const body = fnBody(SHADE_WGSL, 'lo_transmittedGI');
     expect(body).toContain('let halfPxF = vec2f(gid) * 0.5;');
     expect(body).toContain('for (var k: u32 = 0u; k < 4u; k = k + 1u)');
-    expect(body).toContain('Lo_transmitted = Lo_transmitted + g.Lo * INV_PI * cosTheta * g.W * fresnelT * beerAlbedo * bw;');
+    expect(body).toContain('Lo_transmitted = Lo_transmitted + g.Lo * INV_PI * cosTheta * g.W * grisVisibility * bw;');
     expect(body).toContain('Lo_transmitted = Lo_transmitted / totalW;');
     expect(body).toContain('let scaledTransmitted = Lo_transmitted * ubo.glassMixScale;');
     expect(body).toContain('return min(scaledTransmitted, ubo.indirectFireflyClamp * ubo.glassMixScale);');
   });
 
-  it('risGi / risGiNrc rough-glass GI perturbation is gated on ROUGH_GLASS_THRESHOLD', () => {
-    // Smooth glass (rough < threshold) keeps exact Snell direction — byte-identical.
+  it('risGi / risGiNrc support authored rough dielectric transmission', () => {
     for (const src of [RIS_GI_WGSL, RIS_GI_NRC_BODY]) {
-      expect(src).toContain('const ROUGH_GLASS_THRESHOLD: f32 = 0.1;');
-      expect(src).toContain('if (glassPrimaryRough > ROUGH_GLASS_THRESHOLD)');
+      expect(src).toContain('ggxSampleDielectricTransmission(');
+      expect(src).toContain('faceLayerRoughness(');
+      expect(src).not.toContain('GLASS_GI_MAX_ROUGHNESS');
+      expect(src).not.toContain('ROUGH_GLASS_THRESHOLD');
     }
   });
 });

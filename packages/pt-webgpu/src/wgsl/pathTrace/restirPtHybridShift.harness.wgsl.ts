@@ -20,7 +20,7 @@ export { RESTIR_PT_HYBRID_SHIFT_WGSL };
 /** Floats per harness config record. A single-replayed-segment hybrid-shift config
  *  needs, for BOTH the source (q) and the offset (r) domain, the replayed bounce's
  *  geometry (vertex, shading normal, wo, wi) + material (baseColor, roughness,
- *  metallic, transmission, ior), PLUS the shared reconnection vertex x_s.
+ *  metallic, transmission, etaTOverI), PLUS the shared reconnection vertex x_s.
  *
  *  Layout (std430 vec4-aligned; 12 × vec4 = 48 floats):
  *   [ 0] xq.xyz, _            (source replayed-bounce vertex = pre-reconnection vtx)
@@ -33,9 +33,9 @@ export { RESTIR_PT_HYBRID_SHIFT_WGSL };
  *   [ 7] wir.xyz, _           (offset sampled prefix dir at xr, toward x_s)
  *   [ 8] xs.xyz, _            (shared reconnection vertex)
  *   [ 9] baseColor.rgb, rough (q-domain material; rough in .w)
- *   [10] metallic, transmission, ior, _   (q-domain material scalars)
+ *   [10] metallic, transmission, etaTOverI, _   (q-domain interface scalars)
  *   [11] baseColorR.rgb, roughR           (r-domain material; roughR in .w)
- *  (r-domain metallic/trans/ior reuse the q scalars in this harness — same surface
+ *  (r-domain metallic/trans/etaTOverI reuse the q scalars in this harness — same interface
  *   under the shift in the canonical case; the validator sets them equal. The WGSL
  *   fn takes them as explicit params so a future heterogeneous-surface replay can
  *   pass distinct values.) */
@@ -56,9 +56,9 @@ export function packRestirPtHybridShiftInput(cfg: {
   roughness: number;
   metallic: number;
   transmission: number;
-  ior: number;
+  etaTOverI: number;
 }): number[] {
-  const { xq, nq, woq, wiq, xr, nr, wor, wir, xs, baseColor, roughness, metallic, transmission, ior } = cfg;
+  const { xq, nq, woq, wiq, xr, nr, wor, wir, xs, baseColor, roughness, metallic, transmission, etaTOverI } = cfg;
   return [
     xq[0], xq[1], xq[2], 0,
     nq[0], nq[1], nq[2], 0,
@@ -70,7 +70,7 @@ export function packRestirPtHybridShiftInput(cfg: {
     wir[0], wir[1], wir[2], 0,
     xs[0], xs[1], xs[2], 0,
     baseColor[0], baseColor[1], baseColor[2], roughness,
-    metallic, transmission, ior, 0,
+    metallic, transmission, etaTOverI, 0,
     baseColor[0], baseColor[1], baseColor[2], roughness,
   ];
 }
@@ -124,7 +124,7 @@ struct HybridIn {
   wir: vec3f, _7: f32,
   xs: vec3f,  _8: f32,
   matQ: vec4f,   // baseColor.rgb, roughness
-  matQ2: vec4f,  // metallic, transmission, ior, _
+  matQ2: vec4f,  // metallic, transmission, etaTOverI, _
   matR: vec4f,   // baseColorR.rgb, roughnessR
 }
 @group(0) @binding(0) var<storage, read>       hIn:  array<HybridIn>;
@@ -143,23 +143,23 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   let roughnessQ = c.matQ.w;
   let metallicQ = c.matQ2.x;
   let transmissionQ = c.matQ2.y;
-  let iorQ = c.matQ2.z;
+  let etaTOverIQ = c.matQ2.z;
   let baseColorR = c.matR.xyz;
   let roughnessR = c.matR.w;
-  // r-domain metallic/trans/ior reuse the q scalars (same surface under the shift).
+  // r-domain metallic/trans/etaTOverI reuse the q scalars (same interface under the shift).
 
   let gSource = rptHybridReconnectionGeometryTerm(c.xq, c.xs, ns);
   let gTarget = rptHybridReconnectionGeometryTerm(c.xr, c.xs, ns);
   let jGeom   = rptHybridGeomJacobian(c.xq, c.xr, c.xs, ns);
-  let pq = rptHybridBsdfReplayPdf(baseColorQ, roughnessQ, metallicQ, transmissionQ, iorQ, c.nq, c.woq, c.wiq);
-  let pr = rptHybridBsdfReplayPdf(baseColorR, roughnessR, metallicQ, transmissionQ, iorQ, c.nr, c.wor, c.wir);
+  let pq = rptHybridBsdfReplayPdf(baseColorQ, roughnessQ, metallicQ, transmissionQ, etaTOverIQ, c.nq, c.woq, c.wiq);
+  let pr = rptHybridBsdfReplayPdf(baseColorR, roughnessR, metallicQ, transmissionQ, etaTOverIQ, c.nr, c.wor, c.wir);
   let jReplay = rptHybridReplaySegmentJacobian(
-    baseColorQ, roughnessQ, metallicQ, transmissionQ, iorQ, c.nq, c.woq, c.wiq,
-    baseColorR, roughnessR, metallicQ, transmissionQ, iorQ, c.nr, c.wor, c.wir);
+    baseColorQ, roughnessQ, metallicQ, transmissionQ, etaTOverIQ, c.nq, c.woq, c.wiq,
+    baseColorR, roughnessR, metallicQ, transmissionQ, etaTOverIQ, c.nr, c.wor, c.wir);
   let jHybrid = rptHybridShiftJacobian(
     c.xq, c.xr, c.xs, ns,
-    baseColorQ, roughnessQ, metallicQ, transmissionQ, iorQ, c.nq, c.woq, c.wiq,
-    baseColorR, roughnessR, metallicQ, transmissionQ, iorQ, c.nr, c.wor, c.wir);
+    baseColorQ, roughnessQ, metallicQ, transmissionQ, etaTOverIQ, c.nq, c.woq, c.wiq,
+    baseColorR, roughnessR, metallicQ, transmissionQ, etaTOverIQ, c.nr, c.wor, c.wir);
   let saSource = rptHybridSolidAngleAreaDeriv(c.xq, c.xs, ts, tt);
   let saTarget = rptHybridSolidAngleAreaDeriv(c.xr, c.xs, ts, tt);
 

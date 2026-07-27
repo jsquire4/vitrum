@@ -2,34 +2,36 @@ import { describe, expect, it } from 'vitest';
 import { makeProbeUpdateRaysWGSL } from '../../ddgi/wgsl/probeUpdateRays.wgsl.js';
 import { EMITTER_LE_AT_XI_WGSL } from '../emitterLeAtXi.wgsl.js';
 import { EMITTER_SAMPLING_WGSL } from '../emitterSampling.wgsl.js';
-import { RESERVOIR_DI_WGSL } from '../reservoirDi.wgsl.js';
+import { SCENE_STORAGE_ARENA_WGSL } from '../sceneStorageArena.wgsl.js';
 import { RIS_WGSL } from '../ris.wgsl.js';
 import { RIS_GI_WGSL } from '../risGi.wgsl.js';
 import { RIS_GI_NRC_BODY } from '../risGiNrc.wgsl.js';
 import { SHADING_TERMS_WGSL } from '../shadingTerms.wgsl.js';
-import { TEMPORAL_GI_GRIS_WGSL } from '../temporalGi.wgsl.js';
-import { SPATIAL_GI_GRIS_WGSL } from '../spatialGi.wgsl.js';
+import { TEMPORAL_GI_GRIS_MODULE } from '../temporalGi.wgsl.js';
+import { SPATIAL_GI_GRIS_MODULE } from '../spatialGi.wgsl.js';
+import { composeWgsl } from '../../pipeline/wgslComposer.js';
+import { WGSL_MODULES } from '../../pipeline/wgslModules.js';
 
 describe('emitter castShadow:false shader gates', () => {
   it('uses the sampled CDF segment as the flat emitter PMF', () => {
     expect(EMITTER_SAMPLING_WGSL).toContain('fn emitterCdfPmf(');
     expect(EMITTER_SAMPLING_WGSL).toContain('here - prev');
-    expect(RIS_WGSL).toContain('emitterSelPmf = emitterCdfPmf(&emitterCdf, emCount, lid);');
+    expect(RIS_WGSL).toContain('emitterSelPmf = emitterCdfPmf(emCount, lid);');
     expect(RIS_WGSL).not.toContain('luminance(emitters[lid].Le) * emitters[lid].area) / totalPower');
   });
 
   it('threads the shared EmitterTri castShadowDisabled lane through ReSTIR-DI visibility', () => {
-    expect(RESERVOIR_DI_WGSL).toContain('sourceTriIndex: f32');
-    expect(RESERVOIR_DI_WGSL).toContain('sourceSubdivLevel: f32');
-    expect(RESERVOIR_DI_WGSL).toContain('sourceSubdivOrdinal: f32');
-    expect(RESERVOIR_DI_WGSL).toContain('castShadowDisabled: f32');
+    expect(SCENE_STORAGE_ARENA_WGSL).toContain('sourceTriIndex: f32');
+    expect(SCENE_STORAGE_ARENA_WGSL).toContain('sourceSubdivLevel: f32');
+    expect(SCENE_STORAGE_ARENA_WGSL).toContain('sourceSubdivOrdinal: f32');
+    expect(SCENE_STORAGE_ARENA_WGSL).toContain('castShadowDisabled: f32');
     expect(RIS_WGSL).toContain('if (e.castShadowDisabled < 0.5)');
     expect(SHADING_TERMS_WGSL).toContain('if (e.castShadowDisabled < 0.5)');
     expect(RIS_WGSL).toContain('@group(1) @binding(5) var bvh_beer: texture_2d<u32>;');
-    expect(RIS_WGSL).toContain('traceSceneAlphaTintTransmittanceTextured(');
+    expect(RIS_WGSL).toContain('traceSceneAlphaTintTransmittanceTexturedWithOwnership(');
     expect(RIS_WGSL).toContain('restirDirectVisibilityScalar(shadowTint)');
     expect(RIS_WGSL).not.toContain('traceSceneAlphaTransmittanceTextured(');
-    expect(SHADING_TERMS_WGSL).toContain('traceSceneAlphaTintTransmittanceTextured(');
+    expect(SHADING_TERMS_WGSL).toContain('traceSceneAlphaTintTransmittanceTexturedWithOwnership(');
   });
 
   it('maps micro-emitter samples back to parent-triangle UV barycentrics', () => {
@@ -84,7 +86,10 @@ describe('emitter castShadow:false shader gates', () => {
       expect(src).toContain('BVH_MATERIAL_TEX_WIDTH');
     }
 
-    for (const src of [TEMPORAL_GI_GRIS_WGSL, SPATIAL_GI_GRIS_WGSL]) {
+    for (const src of [
+      composeWgsl(TEMPORAL_GI_GRIS_MODULE, WGSL_MODULES),
+      composeWgsl(SPATIAL_GI_GRIS_MODULE, WGSL_MODULES),
+    ]) {
       expect(src).toContain('traceSceneAnyAlphaMaskTextured(');
       expect(src).toContain('BVH_MATERIAL_TEX_WIDTH');
     }

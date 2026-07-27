@@ -34,7 +34,6 @@
   ],
   "exclude": [
     "src/neural/nrc/fusedMlpHarness.ts",
-    "src/neural/nrc/nrcQueryHarness.ts",
-    "src/neural/nrc/nrcEncodeBackwardHarness.ts"
+    "src/neural/nrc/nrcQueryHarness.ts"
   ]
 }

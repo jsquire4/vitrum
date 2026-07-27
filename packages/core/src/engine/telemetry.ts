@@ -119,6 +119,27 @@ export interface EngineError {
   readonly raw?: unknown;
 }
 
+/** Built-in warning producers plus an open extension lane for third-party
+ * Engine implementations. The intersection preserves editor completion for
+ * the built-ins without collapsing the public type to a bare string. */
+export type EngineWarningBackend =
+  | 'walkaround-hybrid'
+  | 'pt-webgl2'
+  | 'pt-webgpu'
+  | 'createEngine'
+  | (string & Record<never, never>);
+
+/** Built-in warning phases plus an open extension lane for third-party
+ * Engine implementations. */
+export type EngineWarningPhase =
+  | 'construction'
+  | 'fallback'
+  | 'setScene'
+  | 'mutation'
+  | 'renderFrame'
+  | 'lifecycle'
+  | (string & Record<never, never>);
+
 /**
  * Structured non-fatal warning emitted through {@link Engine.onWarning}.
  *
@@ -134,9 +155,9 @@ export interface EngineWarning {
   /** Human-readable warning text. Mirrors the associated console warning. */
   readonly message: string;
   /** Backend or facade that produced the warning. */
-  readonly backend?: 'walkaround-hybrid' | 'pt-webgl2' | 'pt-webgpu' | 'createEngine' | string;
+  readonly backend?: EngineWarningBackend;
   /** Coarse phase for filtering/telemetry. */
-  readonly phase?: 'construction' | 'fallback' | 'setScene' | 'mutation' | 'renderFrame' | 'lifecycle' | string;
+  readonly phase?: EngineWarningPhase;
   /** Engine/facade method whose call produced the warning, when applicable. */
   readonly method?: string;
   /** Structured context for hosts/tests. Keep JSON-serialisable where possible. */

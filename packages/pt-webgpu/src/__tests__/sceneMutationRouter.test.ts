@@ -3,6 +3,11 @@ import type { Scene, ScenePrimitive, SceneEmitter } from '@vitrum/core';
 import type { ScenePackResult } from '@vitrum/shared-bvh';
 import { SceneMutationRouter, type MutationHost } from '../sceneMutationRouter.js';
 import type { UploadedSceneBuffers } from '../scene/uploadSceneBuffers.js';
+import {
+  assertSpectralSceneSupported,
+  assertThinFilmSceneSupported,
+  assertVolumeSceneSupported,
+} from '../spectralSceneValidation.js';
 
 /**
  * Characterization tests for SceneMutationRouter against the MutationHost seam
@@ -62,6 +67,7 @@ function makeHost(over: Partial<HostState> = {}) {
     setSceneState: vi.fn<[Scene], void>((s) => {
       state.scene = s;
     }),
+    validateScene: vi.fn<[Scene], void>(),
     setGeoPack: vi.fn<[ScenePackResult], void>((g) => {
       state.geoPack = g;
     }),
@@ -77,6 +83,7 @@ function makeHost(over: Partial<HostState> = {}) {
     setGeoPack: calls.setGeoPack,
     invalidateBindGroups: calls.invalidateBindGroups,
     supportedAnalyticShapes: calls.supportedAnalyticShapes,
+    validateScene: calls.validateScene,
     cameraVisibleEmitters: () => false,
     repackScene: calls.repackScene,
     setScene: calls.setScene,
@@ -145,6 +152,119 @@ describe('SceneMutationRouter — routing contract (pt-webgpu Task 4.3)', () => 
     expect(calls.assertLive).toHaveBeenCalledWith('updatePrimitive');
     // Every fast path guards on sceneBuffers != null, so all miss → setScene.
     expect(calls.setScene).toHaveBeenCalledTimes(1);
+    expect(calls.reset).not.toHaveBeenCalled();
+    expect(calls.invalidateBindGroups).not.toHaveBeenCalled();
+  });
+
+  it('updatePrimitive: mapped analytics conservatively full-repack their fallback mesh layout', () => {
+    const mappedAnalytic: Scene = {
+      primitives: [{
+        kind: 'analytic',
+        id: 'mapped-sphere',
+        shape: 'sphere',
+        params: new Float32Array([0, 0, 0, 1]),
+        fallbackMesh: {
+          positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+          normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+          uvs: new Float32Array([0, 0, 1, 0, 0, 1]),
+        },
+        material: {
+          baseColor: [1, 1, 1],
+          roughness: 0.4,
+          metallic: 0,
+          baseColorMap: { handle: { id: 'albedo' } },
+        },
+      }],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+    const { host, calls } = makeHost({
+      scene: mappedAnalytic,
+      sceneBuffers: null,
+      geoPack: null,
+    });
+    const router = new SceneMutationRouter(host);
+
+    router.updatePrimitive('mapped-sphere', {
+      material: {
+        ...mappedAnalytic.primitives[0]!.material,
+        roughness: 0.2,
+      },
+    });
+
+    expect(calls.repackScene).toHaveBeenCalledTimes(1);
+    expect(calls.setScene).not.toHaveBeenCalled();
+  });
+
+  it('rejects invalid thin-film mutations transactionally and accepts the supported domain', () => {
+    const { host, state, calls } = makeHost({ sceneBuffers: null, geoPack: null });
+    calls.validateScene.mockImplementation((candidate) => {
+      assertSpectralSceneSupported(candidate);
+      assertThinFilmSceneSupported(candidate);
+    });
+    const router = new SceneMutationRouter(host);
+    const previous = state.scene;
+    expect(() => router.updatePrimitive('a', {
+      material: {
+        ...previous!.primitives[0]!.material,
+        iridescence: 1,
+        thinFilmStack: {
+          layers: [{ ior: 1.4, thicknessNm: 320 }],
+        },
+      },
+    })).toThrow(/RGB-integrated/);
+    expect(state.scene).toBe(previous);
+    expect(calls.setScene).not.toHaveBeenCalled();
+    expect(calls.reset).not.toHaveBeenCalled();
+    expect(() => router.updatePrimitive('a', {
+      material: {
+        ...previous!.primitives[0]!.material,
+        thinFilmStack: {
+          layers: [{ ior: 1.4, thicknessNm: 320 }],
+        },
+      },
+    })).toThrow(/thin-film scene validation/);
+    expect(state.scene).toBe(previous);
+    expect(calls.setScene).not.toHaveBeenCalled();
+    expect(calls.reset).not.toHaveBeenCalled();
+    expect(() => router.updatePrimitive('a', {
+      material: {
+        ...previous!.primitives[0]!.material,
+        roughness: 0,
+        metallic: 0,
+        transmission: 1,
+        ior: 1.52,
+        thinFilmStack: {
+          layers: [{ ior: 1.4, thicknessNm: 320 }],
+          angleDependent: true,
+        },
+      },
+    })).not.toThrow();
+    expect(calls.setScene).toHaveBeenCalledTimes(1);
+    const [accepted] = calls.setScene.mock.calls[0]!;
+    expect(accepted.primitives[0]!.material.iridescence ?? 0).toBe(0);
+    expect(accepted.primitives[0]!.material.thinFilmStack?.layers).toHaveLength(1);
+    expect(calls.reset).not.toHaveBeenCalled();
+
+  });
+
+  it('rejects invalid volume mutations before incremental publication', () => {
+    const { host, state, calls } = makeHost({ sceneBuffers: null, geoPack: null });
+    calls.validateScene.mockImplementation(assertVolumeSceneSupported);
+    const router = new SceneMutationRouter(host);
+    const previous = state.scene;
+
+    expect(() => router.updatePrimitive('a', {
+      material: {
+        ...previous!.primitives[0]!.material,
+        transmission: 1,
+        scatteringCoefficientRGB: [0.1, -0.2, 0.3],
+      },
+    })).toThrow(/scatteringCoefficientRGB/);
+
+    expect(state.scene).toBe(previous);
+    expect(calls.setScene).not.toHaveBeenCalled();
+    expect(calls.repackScene).not.toHaveBeenCalled();
     expect(calls.reset).not.toHaveBeenCalled();
     expect(calls.invalidateBindGroups).not.toHaveBeenCalled();
   });

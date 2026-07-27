@@ -20,10 +20,16 @@ import {
   BVH_CAST_SHADOW_PREDICATE_WGSL,
   BVH_INTERSECT_WGSL,
   TLAS_TRAVERSAL_WGSL,
+  MATERIAL_OPTICS_WGSL,
   buildMaterialAtlasOffsetConstsWGSL,
 } from '@vitrum/shared-bvh';
 import { RAYS_PER_PROBE } from '../ddgiConstants.js';
-import { IRR_STRIDE } from '../ddgiAtlasLayout.js';
+import {
+  IRR_PROBE_STATE_LOCAL_X,
+  IRR_PROBE_STATE_LOCAL_Y,
+  IRR_STRIDE,
+} from '../ddgiAtlasLayout.js';
+import { DDGI_PROBE_MAX_OFFSET_NORMALIZED } from '../probeState.js';
 import { DDGI_SH_WGSL } from './ddgiSH.wgsl.js';
 
 const WG_SIZE = 32;
@@ -47,6 +53,8 @@ const DDGI_MATERIAL_ATLAS_OFFSET_CONSTS = buildMaterialAtlasOffsetConstsWGSL({
     'TRANSMISSION_TEXEL_OFFSET',
     'NORMAL_TEXEL_OFFSET',
     'NORMAL_SCALE_TEXEL_OFFSET',
+    'LIGHT_TEXEL_OFFSET',
+    'LIGHT_INTENSITY_TEXEL_OFFSET',
     'SPECULAR_TEXEL_OFFSET',
     'CLEARCOAT_TEXEL_OFFSET',
     'SHEEN_COLOR_TEXEL_OFFSET',
@@ -181,7 +189,7 @@ const LIGHT_POINT: u32 = 1u;
 const LIGHT_SPOT:  u32 = 2u;
 const LIGHT_KIND_MASK: u32 = 0x7fffffffu;
 const LIGHT_CAST_SHADOW_DISABLED: u32 = 0x80000000u;
-const MAX_LIGHTS:  u32 = 16u;
+const DDGI_LIGHTS_ABI_MAGIC: u32 = 0x444c4131u;
 
 struct DDGILight {
   kind:       u32,
@@ -196,10 +204,9 @@ struct DDGILight {
   outerCone:  f32,
 }
 
-struct DDGILightUniforms {
-  count: u32,
-  _pad0: u32, _pad1: u32, _pad2: u32,
-  items: array<DDGILight, 16>,
+struct DDGIAliasDraw {
+  index: u32,
+  pmf: f32,
 }
 
 fn ddgiLightKind(light: DDGILight) -> u32 {
@@ -208,6 +215,74 @@ fn ddgiLightKind(light: DDGILight) -> u32 {
 
 fn ddgiLightCastShadowDisabled(light: DDGILight) -> bool {
   return (light.kind & LIGHT_CAST_SHADOW_DISABLED) != 0u;
+}
+
+fn ddgiPcgHashU32(seed: u32) -> u32 {
+  var state = seed * 747796405u + 2891336453u;
+  let word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+  return (word >> 22u) ^ word;
+}
+
+// Exact rejection-sampled modulo mapping: every alias-table column has equal
+// probability even when count is not a power of two.
+fn ddgiAliasColumn(seed: u32, count: u32) -> u32 {
+  let threshold = ((0xffffffffu % count) + 1u) % count;
+  var word = ddgiPcgHashU32(seed);
+  loop {
+    if (word >= threshold) { return word % count; }
+    word = ddgiPcgHashU32(word ^ 0x27d4eb2du);
+  }
+  return 0u;
+}
+
+fn ddgiRuntimeLightCount() -> u32 {
+  let words = arrayLength(&lights);
+  if (words < 4u || lights[3u] != DDGI_LIGHTS_ABI_MAGIC) { return 0u; }
+  let count = lights[0u];
+  let dataEnd = lights[1u] + count * 16u;
+  let aliasEnd = lights[2u] + count * 4u;
+  return select(0u, count, dataEnd <= words && aliasEnd <= words);
+}
+
+fn ddgiLoadLight(index: u32) -> DDGILight {
+  let base = lights[1u] + index * 16u;
+  var light: DDGILight;
+  light.kind = lights[base];
+  light.distance = bitcast<f32>(lights[base + 1u]);
+  light.decay = bitcast<f32>(lights[base + 2u]);
+  light._pad2 = bitcast<f32>(lights[base + 3u]);
+  light.position = bitcast<vec3f>(vec3u(lights[base + 4u], lights[base + 5u], lights[base + 6u]));
+  light.intensity = bitcast<f32>(lights[base + 7u]);
+  light.direction = bitcast<vec3f>(vec3u(lights[base + 8u], lights[base + 9u], lights[base + 10u]));
+  light.innerCone = bitcast<f32>(lights[base + 11u]);
+  light.color = bitcast<vec3f>(vec3u(lights[base + 12u], lights[base + 13u], lights[base + 14u]));
+  light.outerCone = bitcast<f32>(lights[base + 15u]);
+  return light;
+}
+
+fn ddgiLightAliasDraw(count: u32, seed: u32) -> DDGIAliasDraw {
+  let column = ddgiAliasColumn(seed, count);
+  let aliasOffset = lights[2u];
+  let base = aliasOffset + column * 4u;
+  let q = bitcast<f32>(lights[base]);
+  let aliasEntry = lights[base + 1u];
+  let selected = select(aliasEntry, column, pcgHashToF32Ddgi(seed ^ 0x85ebca6bu) < q);
+  var draw: DDGIAliasDraw;
+  draw.index = selected;
+  draw.pmf = bitcast<f32>(lights[aliasOffset + selected * 4u + 2u]);
+  return draw;
+}
+
+fn ddgiEmitterAliasDraw(count: u32, seed: u32) -> DDGIAliasDraw {
+  let column = ddgiAliasColumn(seed, count);
+  let aliasOffset = count * 5u;
+  let entry = ddgiEmitterTris[aliasOffset + column];
+  let aliasEntry = bitcast<u32>(entry.y);
+  let selected = select(aliasEntry, column, pcgHashToF32Ddgi(seed ^ 0x9e3779b9u) < entry.x);
+  var draw: DDGIAliasDraw;
+  draw.index = selected;
+  draw.pmf = ddgiEmitterTris[aliasOffset + selected].z;
+  return draw;
 }
 
 // -----------------------------------------------------------------
@@ -227,9 +302,6 @@ struct ProbeGridParams {
 struct FrameParams {
   randomRotation: vec3f,
   frameIndex:     u32,
-  totalProbes:    u32,
-  probesPerFrame: u32,
-  _pad0: u32, _pad1: u32,
   // Sky appearance for miss rays (B2 audit: previously hardcoded gradient).
   // Written by ProbeUpdatePass.setSkyParams(); defaults match the original
   // Cornell-tuned values so existing behaviour is unchanged.
@@ -263,14 +335,10 @@ struct FrameParams {
 // Ray result written by pass 1, read by pass 2
 // -----------------------------------------------------------------
 struct ProbeRay {
-  hitPosition:  vec3f,
-  hitDistance:  f32,
-  hitNormal:    vec3f,
-  hitMaterialId: u32,
-  hitRadiance:  vec3f,
-  isGlass:      u32,
-  direction:    vec3f,
-  _pad0:        f32,
+  hitRadiance: vec3f,
+  hitDistance: f32,
+  direction:   vec3f,
+  _pad0:       f32,
 }
 
 // -----------------------------------------------------------------
@@ -298,7 +366,7 @@ struct DdgiTraceParams {
 @group(0) @binding(10) var<uniform>       ddgiTrace:                DdgiTraceParams;
 
 @group(1) @binding(0) var<uniform> materials:     array<MaterialEntry, ${maxMaterials}>;
-@group(1) @binding(1) var<uniform> lights:        DDGILightUniforms;
+@group(1) @binding(1) var<storage, read> lights:   array<u32>;
 // H18 Stage 2 — packed area-emitter triangles for per-probe NEE (same layout as
 // the RC probeRayCast rc_emitters). Stride: 80 bytes / 20 f32 per tri.
 //   [0..2]  vA.xyz + sourceTriIndex (-1 = scalar fallback)
@@ -331,13 +399,8 @@ struct DdgiTraceParams {
 // ddgiEnvMap  : rgba16float equirect radiance (unit-intensity, .rgb; .a unused
 //               by DDGI — pdf lane is for DI MIS). A 1×1 placeholder is bound
 //               when hasEnv=0 so the bind group is always valid.
-// NOTE: the env look-up uses textureLoad (not textureSample), so NO sampler
-// binding exists here. Trust-audit F3 (2026-06-10): a declared-but-unused
-// ddgiEnvSamp sampler at binding(7) was stripped by the layout:'auto'
-// pipeline, while the dispatcher still passed an 8th bind-group entry; WebGPU
-// rejected the probe-update bind group on EVERY frame (probe radiance silently
-// never updated). Sampler removed on both sides.
 @group(2) @binding(6) var                      ddgiEnvMap:   texture_2d<f32>;
+@group(2) @binding(7) var                      ddgiEnvSamp:  sampler;
 
 ${DDGI_MATERIAL_ATLAS_OFFSET_CONSTS}
 
@@ -360,6 +423,12 @@ fn ddgiMaterialMetaLoadOrZero(triIndex: u32, metaOffset: u32) -> vec4f {
   }
   return textureLoad(ddgiMaterialMapMeta, ddgiMaterialMetaCoord(texel), 0);
 }
+
+fn materialOpticalLoad(triIndex: u32, metaOffset: u32) -> vec4f {
+  return ddgiMaterialMetaLoadOrZero(triIndex, metaOffset);
+}
+
+${MATERIAL_OPTICS_WGSL}
 
 fn ddgiWrapMaterialUv1(v: f32, mode: u32) -> f32 {
   if (mode == 1u) {
@@ -488,12 +557,15 @@ fn ddgiSmoothShadingNormalForHit(hit: IntersectionResult, geoNormal: vec3f) -> v
   let tBase = hit.instanceIndex * 4u;
   let tOk = isTlas && tBase + 2u < arrayLength(&tlasInstanceWorldToLocal);
   if (tOk) {
+    let w2l0 = tlasInstanceWorldToLocal[tBase];
+    let w2l1 = tlasInstanceWorldToLocal[tBase + 1u];
+    let w2l2 = tlasInstanceWorldToLocal[tBase + 2u];
     n = tlasTransformNormalFromLocalCols(
-      tlasInstanceWorldToLocal[tBase],
-      tlasInstanceWorldToLocal[tBase + 1u],
-      tlasInstanceWorldToLocal[tBase + 2u],
+      w2l0,
+      w2l1,
+      w2l2,
       n,
-    );
+    ) * tlasLinearOrientationSign(w2l0, w2l1, w2l2);
   }
   return n * hit.side;
 }
@@ -562,7 +634,7 @@ fn ddgiMaterialTangentFrameForHit(
   let metaTexel = triIndex * DDGI_MATERIAL_MAP_META_TEXELS_PER_TRI + mapOffset;
   let meta0 = textureLoad(ddgiMaterialMapMeta, ddgiMaterialMetaCoord(metaTexel), 0);
   let flags = u32(max(meta0.y, 0.0) + 0.5);
-  let useUv1 = ((flags >> 4u) & 0x3u) == 1u;
+  let texCoord = (flags >> 4u) & 0xFu;
 
   let p0 = bvh_position[hit.indices.x];
   let p1 = bvh_position[hit.indices.y];
@@ -576,9 +648,9 @@ fn ddgiMaterialTangentFrameForHit(
   let uv1a = ddgiPackedUvFromVec4(n0);
   let uv1b = ddgiPackedUvFromVec4(n1);
   let uv1c = ddgiPackedUvFromVec4(n2);
-  let ta = select(uv0a, uv1a, useUv1);
-  let tb = select(uv0b, uv1b, useUv1);
-  let tc = select(uv0c, uv1c, useUv1);
+  let ta = materialResolveUv(triIndex, texCoord, uv0a, uv1a);
+  let tb = materialResolveUv(triIndex, texCoord, uv0b, uv1b);
+  let tc = materialResolveUv(triIndex, texCoord, uv0c, uv1c);
 
   let dp1 = p1.xyz - p0.xyz;
   let dp2 = p2.xyz - p0.xyz;
@@ -648,8 +720,8 @@ fn ddgiSampleMaterialAtlasRawAtOffsetDelta(
     return vec4f(-1.0);
   }
   let wrapPacked = u32(max(meta0.y, 0.0) + 0.5);
-  let texCoord = (wrapPacked >> 4u) & 0x3u;
-  let uv = select(uv0, uv1, texCoord == 1u);
+  let texCoord = (wrapPacked >> 4u) & 0xFu;
+  let uv = materialResolveUv(triIndex, texCoord, uv0, uv1);
   let meta1 = textureLoad(ddgiMaterialMapMeta, ddgiMaterialMetaCoord(metaTexel + 1u), 0);
   let scaled = uv * meta1.xy;
   let transformed = vec2f(
@@ -734,7 +806,8 @@ fn ddgiApplyThicknessMapToBeerTint(hit: IntersectionResult, beerTint: vec3f) -> 
   if (thickness.y < 0.5) {
     return beerTint;
   }
-  return pow(max(beerTint, vec3f(1e-6)), vec3f(thickness.x));
+  if (thickness.x <= 0.0) { return vec3f(1.0); }
+  return pow(max(beerTint, vec3f(0.0)), vec3f(thickness.x));
 }
 
 fn ddgiSampleSpecularControls(triIndex: u32, uv0: vec2f, uv1: vec2f) -> vec4f {
@@ -805,7 +878,7 @@ fn ddgiSampleAnisotropyControls(triIndex: u32, uv0: vec2f, uv1: vec2f) -> vec2f 
   if (anisoMap.x >= 0.0) {
     strength = clamp(strength * anisoMap.b, 0.0, 1.0);
     let direction = anisoMap.rg * 2.0 - vec2f(1.0);
-    if (dot(direction, direction) > 1e-6) {
+    if (dot(direction, direction) > 0.0) {
       rotation += atan2(direction.y, direction.x);
     }
   }
@@ -854,38 +927,162 @@ fn ddgiSampleVolumeScatteringControls(triIndex: u32) -> vec4f {
   return vec4f(max(scatter.rgb, vec3f(0.0)), clamp(scatter.a, -0.99, 0.99));
 }
 
-fn ddgiVolumeScatteringStrength(scatter: vec4f) -> f32 {
-  let sigmaS = max(scatter.rgb, vec3f(0.0));
-  return clamp(max(sigmaS.r, max(sigmaS.g, sigmaS.b)) * 0.25, 0.0, 0.75);
+fn ddgiHomogeneousBeerTransmittanceRgb(sigmaT: vec3f, distance: f32) -> vec3f {
+  return exp(-max(sigmaT, vec3f(0.0)) * max(distance, 0.0));
 }
 
-fn ddgiVolumeScatteringTint(scatter: vec4f) -> vec3f {
-  let sigmaS = max(scatter.rgb, vec3f(0.0));
-  let majorant = max(sigmaS.r, max(sigmaS.g, sigmaS.b));
-  if (majorant <= 1e-6) {
-    return vec3f(1.0);
-  }
-  return clamp(sigmaS / majorant, vec3f(0.0), vec3f(1.0));
+fn ddgiHenyeyGreensteinPhase(cosTheta: f32, g: f32) -> f32 {
+  let anisotropy = clamp(g, -0.99, 0.99);
+  let denominator = 1.0 + anisotropy * anisotropy -
+    2.0 * anisotropy * clamp(cosTheta, -1.0, 1.0);
+  return (1.0 - anisotropy * anisotropy) /
+    (4.0 * PI * denominator * sqrt(denominator));
 }
 
-fn ddgiApplyVolumeScatteringApproximation(
+fn ddgiApplyHomogeneousVolumeSingleScatter(
   radiance: vec3f,
   albedo: vec3f,
   scatter: vec4f,
+  pathLength: f32,
   normal: vec3f,
   wo: vec3f,
 ) -> vec3f {
-  let strength = ddgiVolumeScatteringStrength(scatter);
-  if (strength <= 1e-6) {
-    return radiance;
+  let sigmaS = max(scatter.rgb, vec3f(0.0));
+  if (all(sigmaS <= vec3f(0.0)) || pathLength <= 0.0) { return radiance; }
+  let n = safe_normalize(normal);
+  let v = safe_normalize(wo);
+  let phase = ddgiHenyeyGreensteinPhase(dot(n, v), scatter.a);
+  let source = dot(max(radiance, vec3f(0.0)), vec3f(0.2126, 0.7152, 0.0722)) *
+    max(albedo, vec3f(0.0)) * phase;
+  let projectedCosine = abs(dot(n, v));
+  if (projectedCosine <= 0.0) { return source; }
+  let distance = pathLength / projectedCosine;
+  let transmittance = ddgiHomogeneousBeerTransmittanceRgb(sigmaS, distance);
+  return radiance * transmittance + source * (vec3f(1.0) - transmittance);
+}
+
+fn ddgiDistributionGGX(nDotH: f32, rough: f32) -> f32 {
+  if (nDotH <= 0.0 || rough <= 0.0) { return 0.0; }
+  let alpha = rough * rough;
+  let alpha2 = alpha * alpha;
+  let d = nDotH * nDotH * (alpha2 - 1.0) + 1.0;
+  return alpha2 / (PI * d * d);
+}
+
+fn ddgiSmithG1GGX(nDotV: f32, alpha2: f32) -> f32 {
+  if (nDotV <= 0.0) { return 0.0; }
+  return (2.0 * nDotV) /
+    (nDotV + sqrt(alpha2 + (1.0 - alpha2) * nDotV * nDotV));
+}
+
+fn ddgiDielectricFresnelExact(cosThetaI: f32, etaIncident: f32, etaTarget: f32) -> f32 {
+  if (etaIncident == etaTarget) { return 0.0; }
+  let ci = clamp(abs(cosThetaI), 0.0, 1.0);
+  let eta = etaIncident / etaTarget;
+  let sin2ThetaT = eta * eta * (1.0 - ci * ci);
+  if (sin2ThetaT >= 1.0) { return 1.0; }
+  let ct = sqrt(1.0 - sin2ThetaT);
+  let rs = (etaIncident * ci - etaTarget * ct) /
+    (etaIncident * ci + etaTarget * ct);
+  let rp = (etaTarget * ci - etaIncident * ct) /
+    (etaTarget * ci + etaIncident * ct);
+  return 0.5 * (rs * rs + rp * rp);
+}
+
+fn ddgiSampleVisibleGgxNormal(n: vec3f, wo: vec3f, rough: f32, xi: vec2f) -> vec3f {
+  if (rough <= 0.0) { return n; }
+  var up = vec3f(0.0, 1.0, 0.0);
+  if (abs(n.y) > 0.999) { up = vec3f(1.0, 0.0, 0.0); }
+  let tangent = normalize(cross(up, n));
+  let bitangent = cross(n, tangent);
+  let woT = vec3f(dot(wo, tangent), dot(wo, bitangent), dot(wo, n));
+  let alpha = rough * rough;
+  let vh = safe_normalize(vec3f(alpha * woT.x, alpha * woT.y, woT.z));
+  let lensq = vh.x * vh.x + vh.y * vh.y;
+  var t1 = vec3f(1.0, 0.0, 0.0);
+  if (lensq > 0.0) {
+    t1 = vec3f(-vh.y, vh.x, 0.0) * inverseSqrt(lensq);
   }
-  let tint = ddgiVolumeScatteringTint(scatter);
-  let viewEdge = 1.0 - abs(clamp(dot(safe_normalize(normal), safe_normalize(wo)), -1.0, 1.0));
-  let anisotropyBoost = clamp(1.0 + scatter.a * (0.25 + 0.75 * viewEdge), 0.35, 1.75);
-  let amount = clamp(strength * anisotropyBoost, 0.0, 0.85);
-  let lum = dot(radiance, vec3f(0.2126, 0.7152, 0.0722));
-  let scattered = radiance * tint + lum * albedo * tint * (1.0 / PI);
-  return mix(radiance, scattered, amount);
+  let t2 = cross(vh, t1);
+  let radius = sqrt(clamp(xi.x, 0.0, 1.0));
+  let phi = 2.0 * PI * clamp(xi.y, 0.0, 1.0);
+  let diskX = radius * cos(phi);
+  var diskY = radius * sin(phi);
+  let blend = 0.5 * (1.0 + vh.z);
+  diskY = (1.0 - blend) * sqrt(max(0.0, 1.0 - diskX * diskX)) +
+    blend * diskY;
+  let nh = diskX * t1 + diskY * t2 +
+    sqrt(max(0.0, 1.0 - diskX * diskX - diskY * diskY)) * vh;
+  let wmT = safe_normalize(vec3f(alpha * nh.x, alpha * nh.y, max(0.0, nh.z)));
+  return safe_normalize(wmT.x * tangent + wmT.y * bitangent + wmT.z * n);
+}
+
+struct DdgiGgxDielectricTransmissionSample {
+  direction: vec3f,
+  weight: f32,
+  transmission: f32,
+  valid: u32,
+};
+
+fn ddgiSampleGgxDielectricTransmission(
+  n: vec3f,
+  wo: vec3f,
+  rough: f32,
+  etaIncident: f32,
+  etaTarget: f32,
+  xi: vec2f,
+) -> DdgiGgxDielectricTransmissionSample {
+  var out: DdgiGgxDielectricTransmissionSample;
+  out.direction = vec3f(0.0);
+  out.weight = 0.0;
+  out.transmission = 0.0;
+  out.valid = 0u;
+  let nDotWo = dot(n, wo);
+  if (nDotWo <= 0.0 || etaIncident <= 0.0 || etaTarget <= 0.0) { return out; }
+  let eta = etaIncident / etaTarget;
+  let etap = etaTarget / etaIncident;
+  if (rough <= 0.0) {
+    let wi = refract(-wo, n, eta);
+    if (dot(wi, wi) <= 0.0) { return out; }
+    let interfaceT = 1.0 - ddgiDielectricFresnelExact(nDotWo, etaIncident, etaTarget);
+    if (interfaceT <= 0.0) { return out; }
+    out.direction = safe_normalize(wi);
+    out.weight = interfaceT / (etap * etap);
+    out.transmission = interfaceT;
+    out.valid = 1u;
+    return out;
+  }
+  let authoredRoughness = clamp(rough, 0.0, 1.0);
+  var wm = ddgiSampleVisibleGgxNormal(n, wo, authoredRoughness, xi);
+  if (dot(wm, n) < 0.0) { wm = -wm; }
+  let woDotM = dot(wo, wm);
+  if (woDotM <= 0.0) { return out; }
+  let wiRaw = refract(-wo, wm, eta);
+  if (dot(wiRaw, wiRaw) <= 0.0) { return out; }
+  let wi = safe_normalize(wiRaw);
+  let nDotWiAbs = abs(dot(n, wi));
+  let wiDotM = dot(wi, wm);
+  let denom = wiDotM + woDotM / etap;
+  if (dot(n, wi) >= 0.0 || nDotWiAbs <= 0.0 || wiDotM >= 0.0 || denom == 0.0) {
+    return out;
+  }
+  let alpha = authoredRoughness * authoredRoughness;
+  let alpha2 = alpha * alpha;
+  let D = ddgiDistributionGGX(dot(n, wm), authoredRoughness);
+  let G1o = ddgiSmithG1GGX(nDotWo, alpha2);
+  let G = G1o * ddgiSmithG1GGX(nDotWiAbs, alpha2);
+  let interfaceT = 1.0 - ddgiDielectricFresnelExact(woDotM, etaIncident, etaTarget);
+  let denom2 = denom * denom;
+  let pdf = (D * G1o * abs(woDotM) / nDotWo) * abs(wiDotM) / denom2;
+  if (D <= 0.0 || G <= 0.0 || interfaceT <= 0.0 || pdf <= 0.0) { return out; }
+  let ft = interfaceT * D * G *
+    abs(wiDotM * woDotM / (nDotWiAbs * nDotWo * denom2)) /
+    (etap * etap);
+  out.direction = wi;
+  out.weight = ft * nDotWiAbs / pdf;
+  out.transmission = interfaceT;
+  out.valid = 1u;
+  return out;
 }
 
 struct DdgiProbeHitMaterial {
@@ -903,6 +1100,8 @@ struct DdgiProbeHitMaterial {
   volumeScattering: vec4f,
   transmission: f32,
   beerTint: vec3f,
+  opticalIor: vec3f,
+  bulkThickness: f32,
 }
 
 fn ddgiSampleProbeHitMaterial(
@@ -914,6 +1113,7 @@ fn ddgiSampleProbeHitMaterial(
   scalarBeerTint: vec3f,
   frameNormal: vec3f,
   shadingNormal: vec3f,
+  viewDirection: vec3f,
 ) -> DdgiProbeHitMaterial {
   var out: DdgiProbeHitMaterial;
   out.albedo = scalarBaseColor;
@@ -930,10 +1130,28 @@ fn ddgiSampleProbeHitMaterial(
   out.volumeScattering = vec4f(0.0);
   out.transmission = scalarTransmission;
   out.beerTint = scalarBeerTint;
+  out.opticalIor = vec3f(1.5);
+  out.bulkThickness = materialOpticalThickness(hit.indices.w);
   out.clearcoatNormal = ddgiApplyClearcoatNormalMapForHit(hit, frameNormal, shadingNormal);
 
   let uvs = ddgiHitMaterialUvs(hit);
   if (uvs.valid == 0u) {
+    let layerControls = ddgiSampleFaceLayerControls(hit.indices.w, hit.side >= 0.0);
+    out.roughness = ddgiFaceLayerRoughness(out.roughness, layerControls);
+    out.layerTransmission = ddgiFaceLayerTransmission(layerControls);
+    out.volumeScattering = ddgiSampleVolumeScatteringControls(hit.indices.w);
+    out.opticalIor = materialDispersionIorRgb(hit.indices.w, 1.5);
+    out.beerTint = materialSpectralAttenuation(hit.indices.w, out.bulkThickness, out.beerTint);
+    let film = materialThinFilmResponse(
+      hit.indices.w,
+      hit.side >= 0.0,
+      abs(dot(shadingNormal, safe_normalize(viewDirection))),
+    );
+    if (film.present != 0u) {
+      out.specular = vec4f(vec3f(1.0) + film.reflectance, 1.0);
+      out.iridescence = vec4f(0.0);
+      out.layerTransmission = out.layerTransmission * film.transmittance;
+    }
     return out;
   }
 
@@ -973,18 +1191,39 @@ fn ddgiSampleProbeHitMaterial(
   out.layerTransmission = ddgiFaceLayerTransmission(layerControls);
   out.volumeScattering = ddgiSampleVolumeScatteringControls(hit.indices.w);
   out.transmission = ddgiSampleTransmissionMapForHit(hit, scalarTransmission);
-  out.beerTint = ddgiApplyThicknessMapToBeerTint(hit, scalarBeerTint);
+  let thicknessMap = ddgiSampleThicknessMapFactorForHit(hit);
+  out.bulkThickness = out.bulkThickness * select(1.0, thicknessMap.x, thicknessMap.y >= 0.5);
+  out.beerTint = materialSpectralAttenuation(
+    hit.indices.w,
+    out.bulkThickness,
+    ddgiApplyThicknessMapToBeerTint(hit, scalarBeerTint),
+  );
+  out.opticalIor = materialDispersionIorRgb(hit.indices.w, 1.5);
+  let film = materialThinFilmResponse(
+    hit.indices.w,
+    hit.side >= 0.0,
+    abs(dot(shadingNormal, safe_normalize(viewDirection))),
+  );
+  if (film.present != 0u) {
+    out.specular = vec4f(vec3f(1.0) + film.reflectance, 1.0);
+    out.iridescence = vec4f(0.0);
+    out.layerTransmission = out.layerTransmission * film.transmittance;
+  }
   return out;
 }
 
 fn ddgiProbeMaterialF0(mat: DdgiProbeHitMaterial) -> vec3f {
-  let dielectricF0 = vec3f(0.04) * mat.specular.rgb * mat.specular.a;
+  let dielectricF0 = select(
+    vec3f(0.04) * clamp(mat.specular.rgb, vec3f(0.0), vec3f(1.0)) * clamp(mat.specular.a, 0.0, 1.0),
+    clamp(mat.specular.rgb - vec3f(1.0), vec3f(0.0), vec3f(1.0)),
+    all(mat.specular.rgb >= vec3f(1.0)),
+  );
   return mix(dielectricF0, mat.albedo, clamp(mat.metalness, 0.0, 1.0));
 }
 
 fn ddgiIridescenceModifiedF0(baseF0: vec3f, iridescence: vec4f, vDotH: f32) -> vec3f {
   let factor = clamp(iridescence.x, 0.0, 1.0);
-  if (factor <= 1e-4) {
+  if (factor <= 0.0) {
     return baseF0;
   }
   let thickness = max(0.0, (iridescence.z + iridescence.w) * 0.5);
@@ -1203,6 +1442,28 @@ fn ddgiSampleEmissiveMap(hit: IntersectionResult, scalarEmission: vec3f) -> vec3
   return scalarEmission * texel.rgb;
 }
 
+fn ddgiSampleLightMapIrradiance(hit: IntersectionResult) -> vec3f {
+  let triIndex = hit.indices.w;
+  let uvs = ddgiHitMaterialUvs(hit);
+  if (uvs.valid == 0u) {
+    return vec3f(0.0);
+  }
+  let texel = ddgiSampleMaterialAtlasRawAtOffset(
+    triIndex,
+    DDGI_MATERIAL_MAP_LIGHT_TEXEL_OFFSET,
+    uvs.uv0,
+    uvs.uv1,
+  );
+  if (texel.x < 0.0) {
+    return vec3f(0.0);
+  }
+  let intensity = ddgiMaterialMetaLoadOrZero(
+    triIndex,
+    DDGI_MATERIAL_MAP_LIGHT_INTENSITY_TEXEL_OFFSET,
+  ).x;
+  return max(texel.rgb, vec3f(0.0)) * max(intensity, 0.0);
+}
+
 fn ddgiEmitterSubdivWeightAt(i: u32, j: u32, level: u32) -> vec3f {
   let invLevel = 1.0 / f32(max(level, 1u));
   let u = f32(i) * invLevel;
@@ -1325,7 +1586,19 @@ fn ddgiMaterialAlphaCoverageForHit(hit: IntersectionResult) -> DdgiAlphaCoverage
   return out;
 }
 
+fn ddgiMaterialSideAdmittedForHit(hit: IntersectionResult) -> bool {
+  if (hit.side >= 0.0) { return true; }
+  let matId = bvh_materialId[hit.indices.w];
+  let mat = materials[matId];
+  return (mat.flags & MATERIAL_FLAG_DOUBLE_SIDED) != 0u ||
+    (mat.flags & MATERIAL_FLAG_IS_GLASS) != 0u ||
+    mat.transmission > 0.0;
+}
+
 fn ddgiAlphaShadowTransmittanceForHit(hit: IntersectionResult) -> f32 {
+  if (!ddgiMaterialSideAdmittedForHit(hit)) {
+    return 1.0;
+  }
   let alpha = ddgiMaterialAlphaCoverageForHit(hit);
   if (alpha.mode == 0u) {
     return 0.0;
@@ -1360,27 +1633,41 @@ ${BVH_CAST_SHADOW_PREDICATE_WGSL}
 fn traceSceneFirstHitDdgi(ray: Ray) -> IntersectionResult {
   if (ddgiTrace.bvhMode == 1u && ddgiTrace.tlasNodeCount > 0u) {
     return traceTlasFirstHit(
-      &tlasNodes,
-      &tlasInstanceIndices,
-      &tlasBlasRoots,
-      &tlasInstanceWorldToLocal,
-      &tlasInstanceLocalToWorld,
       ddgiTrace.tlasNodeCount,
-      &bvh_index,
-      &bvh_position,
-      &bvh,
       ray,
       DDGI_TRI_EPSILON,
     );
   }
-  return bvhIntersectFirstHit(&bvh_index, &bvh_position, &bvh, ray, DDGI_TRI_EPSILON);
+  return bvhIntersectFirstHit(ray, DDGI_TRI_EPSILON);
 }
 
 fn bvhTraceFirstHit(ray: Ray) -> IntersectionResult {
   return traceSceneFirstHitDdgi(ray);
 }
 
-fn ddgiMaterialAlphaDiscardedForOpaqueProbeHit(hit: IntersectionResult) -> bool {
+fn ddgiAlphaBlendCoverageHash(hit: IntersectionResult, ray: Ray, layer: u32) -> f32 {
+  let originBits = bitcast<vec3u>(ray.origin);
+  let directionBits = bitcast<vec3u>(ray.direction);
+  var seed =
+    (hit.indices.w * 2654435761u) ^
+    (hit.instanceIndex * 1597334677u) ^
+    (originBits.x * 2246822519u) ^
+    (originBits.y * 3266489917u) ^
+    (originBits.z * 668265263u) ^
+    (directionBits.x * 374761393u) ^
+    (directionBits.y * 1274126177u) ^
+    (directionBits.z * 1431374977u) ^
+    (layer * 0x9e3779b9u) ^
+    (frameParams.frameIndex * 0x85ebca6bu);
+  seed = seed * 747796405u + 2891336453u;
+  let word = ((seed >> ((seed >> 28u) + 4u)) ^ seed) * 277803737u;
+  return f32((word >> 22u) ^ word) / 4294967296.0;
+}
+
+fn ddgiMaterialAlphaDiscardedForProbeHit(hit: IntersectionResult, ray: Ray, layer: u32) -> bool {
+  if (!ddgiMaterialSideAdmittedForHit(hit)) {
+    return true;
+  }
   let alpha = ddgiMaterialAlphaCoverageForHit(hit);
   if (alpha.mode == 0u) {
     return false;
@@ -1389,7 +1676,7 @@ fn ddgiMaterialAlphaDiscardedForOpaqueProbeHit(hit: IntersectionResult) -> bool 
     return alpha.coverage < alpha.cutoff;
   }
   if (alpha.mode == 2u) {
-    return alpha.coverage < 0.999;
+    return alpha.coverage < 1.0 && ddgiAlphaBlendCoverageHash(hit, ray, layer) >= alpha.coverage;
   }
   return alpha.coverage <= 0.0;
 }
@@ -1404,7 +1691,7 @@ fn ddgiTraceFirstHitAlphaMaskTextured(ray: Ray) -> IntersectionResult {
     if (!hit.didHit) {
       return hit;
     }
-    if (!ddgiMaterialAlphaDiscardedForOpaqueProbeHit(hit)) {
+    if (!ddgiMaterialAlphaDiscardedForProbeHit(hit, ray, layer)) {
       hit.dist = hit.dist + traveled;
       return hit;
     }
@@ -1413,9 +1700,7 @@ fn ddgiTraceFirstHitAlphaMaskTextured(ray: Ray) -> IntersectionResult {
   }
 
   var exhausted = traceSceneFirstHitDdgi(walkRay);
-  if (exhausted.didHit && ddgiMaterialAlphaDiscardedForOpaqueProbeHit(exhausted)) {
-    exhausted.didHit = false;
-  }
+  // Conservative overflow: a 33rd layer blocks instead of leaking through.
   if (exhausted.didHit) {
     exhausted.dist = exhausted.dist + traveled;
   }
@@ -1425,15 +1710,7 @@ fn ddgiTraceFirstHitAlphaMaskTextured(ray: Ray) -> IntersectionResult {
 fn bvhTraceAnyCastShadow(origin: vec3f, dir: vec3f, tMax: f32, skipGlass: bool) -> bool {
   if (ddgiTrace.bvhMode == 1u && ddgiTrace.tlasNodeCount > 0u) {
     return traceTlasAnyCastPredicate(
-      &tlasNodes,
-      &tlasInstanceIndices,
-      &tlasBlasRoots,
-      &tlasInstanceWorldToLocal,
-      &tlasInstanceLocalToWorld,
       ddgiTrace.tlasNodeCount,
-      &bvh_index,
-      &bvh_position,
-      &bvh,
       origin,
       dir,
       tMax,
@@ -1442,7 +1719,7 @@ fn bvhTraceAnyCastShadow(origin: vec3f, dir: vec3f, tMax: f32, skipGlass: bool) 
     );
   }
   return bvhIntersectAnyAtRootCastPredicate(
-    &bvh_index, &bvh_position, &bvh, origin, dir, tMax, DDGI_TRI_EPSILON, skipGlass, 0u,
+    origin, dir, tMax, DDGI_TRI_EPSILON, skipGlass, 0u,
   );
 }
 
@@ -1458,7 +1735,7 @@ fn ddgiTraceShadowVisibility(origin: vec3f, dir: vec3f, tMax: f32, skipGlass: bo
 
   for (var layer = 0u; layer < 32u; layer = layer + 1u) {
     let remaining = tMax - traveled;
-    if (remaining <= step || max(max(visibility.x, visibility.y), visibility.z) <= 0.001) {
+    if (remaining <= step || max(max(visibility.x, visibility.y), visibility.z) <= 0.0) {
       return clamp(visibility, vec3f(0.0), vec3f(1.0));
     }
 
@@ -1478,16 +1755,16 @@ fn ddgiTraceShadowVisibility(origin: vec3f, dir: vec3f, tMax: f32, skipGlass: bo
         advance = glassAdvanceStep;
       } else {
         let alphaT = ddgiAlphaShadowTransmittanceForHit(hit);
-        if (alphaT >= 0.999) {
+        if (alphaT >= 1.0) {
           // Fully transparent alpha-tested/alpha-blended blocker.
           advance = select(step, glassAdvanceStep, isGlass);
-        } else if (alphaT > 0.001) {
+        } else if (alphaT > 0.0) {
           visibility = visibility * alphaT;
         } else if (!isGlass) {
           return vec3f(0.0);
         }
 
-        if (isGlass && alphaT < 0.999) {
+        if (isGlass && alphaT < 1.0) {
           var exitRay: Ray;
           exitRay.origin = hitPos + dir * glassExitStep;
           exitRay.direction = dir;
@@ -1501,7 +1778,7 @@ fn ddgiTraceShadowVisibility(origin: vec3f, dir: vec3f, tMax: f32, skipGlass: bo
           let beerAtten = exp(-mat.attenuationColor * (pathLen / max(1e-4, mat.attenuationDistance)));
           let glassTransmission = ddgiSampleTransmissionMapForHit(hit, mat.transmission);
           visibility = visibility * glassTransmission * beerAtten;
-          if (max(max(visibility.x, visibility.y), visibility.z) <= 0.001) {
+          if (max(max(visibility.x, visibility.y), visibility.z) <= 0.0) {
             return vec3f(0.0);
           }
           advance = glassAdvanceStep;
@@ -1583,11 +1860,11 @@ fn traceSunVisibility(origin: vec3f, sunDir: vec3f) -> vec3f {
       continue;
     }
     let alphaT = ddgiAlphaShadowTransmittanceForHit(sHit);
-    if (alphaT >= 0.999) {
+    if (alphaT >= 1.0) {
       rayOrigin = entryPos + sunDir * (gridParams.spacing * 1e-4);
       continue;
     }
-    if (alphaT > 0.001) {
+    if (alphaT > 0.0) {
       visibility = visibility * alphaT;
       if ((sMat.flags & MATERIAL_FLAG_IS_GLASS) == 0u) {
         rayOrigin = entryPos + sunDir * (gridParams.spacing * 1e-4);
@@ -1646,7 +1923,7 @@ fn ddgiSoftSunHashToF32(seedIn: u32) -> f32 {
 
 fn ddgiSoftSunDirection(sunBase: vec3f, angularRadius: f32, hitPos: vec3f) -> vec3f {
   let radius = max(angularRadius, 0.0);
-  if (radius <= 1e-7) {
+  if (radius <= 0.0) {
     return sunBase;
   }
   let quant = vec3i(floor(hitPos / max(gridParams.spacing, 1e-4) * 1024.0));
@@ -1670,7 +1947,7 @@ fn ddgiSoftSunDirection(sunBase: vec3f, angularRadius: f32, hitPos: vec3f) -> ve
 fn evalSunLight(lightDir: vec3f, lightColor: vec3f, intensity: f32,
                 hitPos: vec3f, hitNormal: vec3f, castShadowDisabled: bool) -> vec3f {
   let nDotL = max(0.0, dot(hitNormal, lightDir));
-  if (nDotL < 1e-3) { return vec3f(0.0); }
+  if (nDotL <= 0.0) { return vec3f(0.0); }
 
   // Glass-aware multi-crossing visibility (replaces single-hit bvhTraceFirstHit
   // + binary glass-attenuation pre-fix).
@@ -1690,10 +1967,10 @@ fn evalPointLight(light: DDGILight, hitPos: vec3f, hitNormal: vec3f) -> vec3f {
   // geometry the probe ray hit). Without this, dist==0 yields toLight/dist
   // = NaN, and the downstream nDotL early-out does not catch NaN because any
   // NaN comparison is false, so the NaN propagates into the probe radiance.
-  if (dist < 1e-6) { return vec3f(0.0); }
+  if (!(dist > 0.0)) { return vec3f(0.0); }
   let lightDir = toLight / dist;
   let nDotL = max(0.0, dot(hitNormal, lightDir));
-  if (nDotL < 1e-3) { return vec3f(0.0); }
+  if (nDotL <= 0.0) { return vec3f(0.0); }
 
   // Spot cone falloff: light.direction is the spot beam/travel axis (unit for a
   // spot, 0 for a point fixture -> no cone). cosToP = dot(-axis, toLightDir) is
@@ -1702,10 +1979,11 @@ fn evalPointLight(light: DDGILight, hitPos: vec3f, hitNormal: vec3f) -> vec3f {
   // Cheap early-out: fully outside the cone contributes nothing, so skip the ray.
   let axisLen2 = dot(light.direction, light.direction);
   var coneFalloff = 1.0;
-  if (axisLen2 > 0.25) {
+  if (ddgiLightKind(light) == LIGHT_SPOT) {
+    if (!(axisLen2 > 0.0)) { return vec3f(0.0); }
     let cosToP = dot(-light.direction * inverseSqrt(axisLen2), lightDir);
     if (cosToP < light.outerCone) { return vec3f(0.0); }
-    if (abs(light.innerCone - light.outerCone) < 1e-5) {
+    if (light.innerCone == light.outerCone) {
       coneFalloff = 1.0;
     } else {
       coneFalloff = smoothstep(light.outerCone, light.innerCone, cosToP);
@@ -1719,17 +1997,16 @@ fn evalPointLight(light: DDGILight, hitPos: vec3f, hitNormal: vec3f) -> vec3f {
   if (!ddgiLightCastShadowDisabled(light)) {
     let shadowOrig = hitPos + hitNormal * normalBias_p;
     shadowVisibility = ddgiTraceShadowVisibility(shadowOrig, lightDir, dist - normalBias_p, false);
-    if (max(max(shadowVisibility.x, shadowVisibility.y), shadowVisibility.z) <= 0.001) {
+    if (max(max(shadowVisibility.x, shadowVisibility.y), shadowVisibility.z) <= 0.0) {
       return vec3f(0.0);
     }
   }
   var distanceAttenuation = 1.0;
-  if (light.decay > 0.01) {
-    if (abs(light.decay - 2.0) < 1e-5) {
-      distanceAttenuation = 1.0 / (dist * dist + 1.0);
-    } else {
-      distanceAttenuation = 1.0 / max(pow(max(dist, 1.0), light.decay), 1.0);
-    }
+  if (light.decay > 0.0) {
+    let dist2Floor = normalBias_p * normalBias_p;
+    let regularizedDist2 = max(dist * dist, dist2Floor);
+    if (!(regularizedDist2 > 0.0)) { return vec3f(0.0); }
+    distanceAttenuation = 1.0 / pow(sqrt(regularizedDist2), light.decay);
   }
   if (light.distance > 0.0) {
     let x = clamp(1.0 - pow(dist / light.distance, 4.0), 0.0, 1.0);
@@ -1739,32 +2016,38 @@ fn evalPointLight(light: DDGILight, hitPos: vec3f, hitNormal: vec3f) -> vec3f {
   return light.color * atten * nDotL * coneFalloff * shadowVisibility;
 }
 
-fn evalDirectLighting(hitPos: vec3f, hitNormal: vec3f) -> vec3f {
+fn evalDirectLighting(hitPos: vec3f, hitNormal: vec3f, seed0: u32) -> vec3f {
+  let lightCount = ddgiRuntimeLightCount();
+  if (lightCount == 0u) { return vec3f(0.0); }
+  let draw = ddgiLightAliasDraw(lightCount, seed0 ^ 0x3c6ef372u);
+  if (draw.pmf <= 0.0) { return vec3f(0.0); }
+  let light = ddgiLoadLight(draw.index);
+  let kind = ddgiLightKind(light);
   var result = vec3f(0.0);
-  for (var li = 0u; li < min(lights.count, MAX_LIGHTS); li = li + 1u) {
-    let light = lights.items[li];
-    let kind = ddgiLightKind(light);
-    if (kind == LIGHT_SUN) {
-      let dir = ddgiSoftSunDirection(normalize(-light.direction), light.innerCone, hitPos);
-      result = result + evalSunLight(
-        dir, light.color, light.intensity, hitPos, hitNormal,
-        ddgiLightCastShadowDisabled(light));
-    } else if (kind == LIGHT_POINT) {
-      result = result + evalPointLight(light, hitPos, hitNormal);
-    }
+  if (kind == LIGHT_SUN) {
+    let axisLen2 = dot(light.direction, light.direction);
+    if (axisLen2 <= 0.0) { return vec3f(0.0); }
+    let dir = ddgiSoftSunDirection(-light.direction * inverseSqrt(axisLen2), light.innerCone, hitPos);
+    result = evalSunLight(
+      dir, light.color, light.intensity, hitPos, hitNormal,
+      ddgiLightCastShadowDisabled(light));
+  } else if (kind == LIGHT_POINT || kind == LIGHT_SPOT) {
+    result = evalPointLight(light, hitPos, hitNormal);
   }
-  return result;
+  return result / draw.pmf;
 }
 
 // -----------------------------------------------------------------
 // H18 Stage 2 — Area-emitter NEE for probe rays
 //
-// One deterministic sample per emitter triangle (same "sum-all, weight by area"
-// pattern as RC probeRayCast.wgsl rcEmitterNEE). Gated on
+// One power-weighted alias sample from the emitter-triangle distribution.
+// The appended alias table supplies threshold/alias/represented PMF. Gated on
 // ddgiTrace.emitterTriCount > 0 so sun-only scenes are byte-identical.
 //
-// Estimator (area form, pdf = 1/area ⇒ 1/pdf = area):
-//   Lo += (albedo/π) · Le · (cosSurf · cosLight / dist²) · area · vis
+// Incident-irradiance estimator (area form, q = p_select/area):
+//   E = Le · (cosSurf · cosLight / dist²) · area/p_select · vis
+// The bounce surface converts E to Lo with albedo/π exactly once after all
+// direct-light estimators are combined.
 // Shadow test: material-aware alpha plus Beer/transmission/thickness glass
 // visibility. Bias via the same gridParams.spacing-derived normal offset as the
 // sun path.
@@ -1780,14 +2063,18 @@ fn pcgHashToF32Ddgi(seed: u32) -> f32 {
   return f32(s >> 8u) * (1.0 / 16777216.0);
 }
 
-fn ddgiEmitterNEE(hitPos: vec3f, n: vec3f, albedo: vec3f, seed0: u32) -> vec3f {
+fn ddgiEmitterNEE(hitPos: vec3f, n: vec3f, seed0: u32) -> vec3f {
   let count = ddgiTrace.emitterTriCount;
   if (count == 0u) { return vec3f(0.0); }
+  const sampleCount = 1u;
   let normalBias = gridParams.spacing * 0.001;
-  var Lo = vec3f(0.0);
-  for (var ei: u32 = 0u; ei < count; ei = ei + 1u) {
+  var irradiance = vec3f(0.0);
+  for (var sampleIndex = 0u; sampleIndex < sampleCount; sampleIndex = sampleIndex + 1u) {
+    let sampleSeed = seed0 ^ (sampleIndex * 0x9e3779b9u);
+    let draw = ddgiEmitterAliasDraw(count, sampleSeed ^ 0x61c88647u);
+    if (draw.pmf <= 0.0) { continue; }
     // Decode the 5-vec4f EmitterTri entry (80 bytes = 20 f32 = 5 vec4f).
-    let base = ei * 5u;
+    let base = draw.index * 5u;
     let vA  = ddgiEmitterTris[base + 0u].xyz;
     let vB  = ddgiEmitterTris[base + 1u].xyz;
     let vC  = ddgiEmitterTris[base + 2u].xyz;
@@ -1796,9 +2083,8 @@ fn ddgiEmitterNEE(hitPos: vec3f, n: vec3f, albedo: vec3f, seed0: u32) -> vec3f {
     let scalarLe = ddgiEmitterTris[base + 4u].xyz;
     let castShadowDisabled = ddgiEmitterTris[base + 4u].w > 0.5;
 
-    // Jittered uniform area sample (deterministic per emitter index).
-    let s0 = pcgHashToF32Ddgi(seed0 ^ (ei * 0x9E3779B9u + 0x1u));
-    let s1 = pcgHashToF32Ddgi((seed0 * 7919u) ^ (ei * 0x85EBCA6Bu + 0x2u));
+    let s0 = pcgHashToF32Ddgi(sampleSeed ^ 0x243f6a88u);
+    let s1 = pcgHashToF32Ddgi(sampleSeed ^ 0xb7e15162u);
     let su = sqrt(s0);
     let localBary = vec3f(1.0 - su, su * (1.0 - s1), su * s1);
     let pos = localBary.x * vA + localBary.y * vB + localBary.z * vC;
@@ -1817,12 +2103,15 @@ fn ddgiEmitterNEE(hitPos: vec3f, n: vec3f, albedo: vec3f, seed0: u32) -> vec3f {
     if (!castShadowDisabled) {
       // Material-aware shadow walk — stop just short of the light sample.
       shadowT = ddgiTraceShadowVisibility(hitPos + n * normalBias, wi, dist - normalBias, false);
-      if (max(max(shadowT.x, shadowT.y), shadowT.z) <= 0.001) { continue; }
+      if (max(max(shadowT.x, shadowT.y), shadowT.z) <= 0.0) { continue; }
     }
 
-    Lo = Lo + albedo * 0.31831 * Le * G * area * shadowT;   // 0.31831 = 1/π
+    // Return incident irradiance. The bounce surface applies its Lambertian
+    // albedo/π exactly once when direct_analytic and direct_emitter are combined.
+    irradiance = irradiance + Le * G * area * shadowT /
+      (f32(sampleCount) * draw.pmf);
   }
-  return Lo;
+  return irradiance;
 }
 `; }
 
@@ -1836,11 +2125,31 @@ function makeProbeMainEntryWGSL(): string { return /* wgsl */`
 // Probe world position from flat index
 // -----------------------------------------------------------------
 fn probeWorldPos(probeIdx: u32) -> vec3f {
-  let x = f32(probeIdx % gridParams.dims.x);
+  let px = probeIdx % gridParams.dims.x;
   let tmp = probeIdx / gridParams.dims.x;
-  let y = f32(tmp % gridParams.dims.y);
-  let z = f32(tmp / gridParams.dims.y);
-  return gridParams.origin + vec3f(x, y, z) * gridParams.spacing;
+  let py = tmp % gridParams.dims.y;
+  let pz = tmp / gridParams.dims.y;
+  // Relocation/classification is packed in the otherwise-unused (4,4)
+  // irradiance-cell ring texel. Offsets are normalized before f16 storage.
+  let state = textureLoad(irradiancePrev, vec2i(
+    i32(px * ${IRR_STRIDE}u + ${IRR_PROBE_STATE_LOCAL_X}u),
+    i32((py + pz * gridParams.dims.y) * ${IRR_STRIDE}u +
+      ${IRR_PROBE_STATE_LOCAL_Y}u),
+  ), 0);
+  var normalizedOffset = state.xyz;
+  let offsetLength2 = dot(normalizedOffset, normalizedOffset);
+  let maxOffset = ${DDGI_PROBE_MAX_OFFSET_NORMALIZED};
+  if (!(offsetLength2 >= 0.0) || !(offsetLength2 < 1.0e20)) {
+    normalizedOffset = vec3f(0.0);
+  } else if (offsetLength2 > maxOffset * maxOffset) {
+    normalizedOffset =
+      normalizedOffset *
+      ((maxOffset - 1.0e-6) * inverseSqrt(max(offsetLength2, 1.0e-12)));
+  }
+  return
+    gridParams.origin +
+    vec3f(f32(px), f32(py), f32(pz)) * gridParams.spacing +
+    normalizedOffset * gridParams.spacing;
 }
 
 // -----------------------------------------------------------------
@@ -1857,7 +2166,7 @@ fn probeWorldPos(probeIdx: u32) -> vec3f {
 //   theta = acos(clamp(lookupDir.y, -1, 1))
 //   u = fract(phi/(2π) + 0.5)        [same as: fract(phi*INV_PI*0.5 + 0.5)]
 //   v = clamp(theta/π, 0, 0.999999)
-//   texel = textureLoad(ddgiEnvMap, vec2i(floor(u*W), floor(v*H)), 0)
+//   texel = textureSampleLevel(ddgiEnvMap, ddgiEnvSamp, vec2f(u,v), 0)
 //   result = texel.rgb * max(envIntensity, 0)
 //
 // When hasEnv == 0u the existing procedural gradient is returned unchanged
@@ -1889,9 +2198,7 @@ fn sampleSkyColor(dir: vec3f) -> vec3f {
       let theta = acos(clamp(lookupDir.y, -1.0, 1.0));
       let u = fract(phi * (1.0 / (2.0 * PI)) + 0.5);
       let v = clamp(theta * (1.0 / PI), 0.0, 0.999999);
-      let ix = clamp(i32(floor(u * f32(w))), 0, w - 1);
-      let iy = clamp(i32(floor(v * f32(h))), 0, h - 1);
-      let texel = textureLoad(ddgiEnvMap, vec2i(ix, iy), 0);
+      let texel = textureSampleLevel(ddgiEnvMap, ddgiEnvSamp, vec2f(u, v), 0.0);
       return texel.rgb * max(frameParams.envIntensity, 0.0);
     }
   }
@@ -1940,27 +2247,26 @@ fn probeUpdateRays(
 
     var out: ProbeRay;
     out.direction = dir;
+    // Reserve a transient classification lane for the blend passes. The
+    // classifier overwrites the first record for each active probe; initialize
+    // every record so malformed/early classifier exits stay conservative.
+    out._pad0 = 0.0;
 
     if (!hit.didHit) {
       out.hitRadiance  = sampleSkyColor(dir);
       out.hitDistance  = BVH_INTERSECT_INFINITY;
-      out.hitNormal    = -dir;
-      out.hitPosition  = probeOrigin + dir * 1e6;
-      out.hitMaterialId = 0u;
-      out.isGlass       = 0u;
     } else {
       let matId = bvh_materialId[hit.indices.w];
       let mat   = materials[matId];
 
       // Backface hit — encode as negative distance per DDGI paper convention.
-      let backface = dot(-dir, hit.normal) < 0.0;
+      let backface = hit.side < 0.0 &&
+        (mat.flags & MATERIAL_FLAG_DOUBLE_SIDED) == 0u &&
+        (mat.flags & MATERIAL_FLAG_IS_GLASS) == 0u &&
+        mat.transmission <= 0.0;
       if (backface) {
         out.hitRadiance  = vec3f(0.0);
         out.hitDistance  = -hit.dist;
-        out.hitNormal    = hit.normal;
-        out.hitPosition  = probeOrigin + dir * hit.dist;
-        out.hitMaterialId = matId;
-        out.isGlass       = (mat.flags & MATERIAL_FLAG_IS_GLASS);
       } else {
         let hitWorldPos = probeOrigin + dir * hit.dist;
 
@@ -1968,26 +2274,29 @@ fn probeUpdateRays(
         let smoothNormal = ddgiSmoothShadingNormalForHit(hit, hit.normal);
         let normalMapped = ddgiApplyNormalMapForHit(hit, smoothNormal);
         let probeNormal = ddgiApplyBumpMapForHit(hit, normalMapped);
-        let probeMat = ddgiSampleProbeHitMaterial(hit, mat.baseColor, mat.roughness, mat.metalness, mat.transmission, mat.attenuationColor, smoothNormal, probeNormal);
+        let probeMat = ddgiSampleProbeHitMaterial(
+          hit, mat.baseColor, mat.roughness, mat.metalness, mat.transmission,
+          mat.attenuationColor, smoothNormal, probeNormal, -dir,
+        );
 
         // Direct lighting: analytic sun/fixture lights.
-        let direct_analytic = evalDirectLighting(hitWorldPos, probeNormal);
+        let directSeed = frameParams.frameIndex ^ (probeIdx * 0x9E3779B9u) ^ rayIdx;
+        let direct_analytic = evalDirectLighting(
+          hitWorldPos, probeNormal, directSeed ^ 0xa511e9b3u,
+        );
         // H18 Stage 2 — area-emitter NEE. Guard on emitterTriCount>0 is inside the
         // helper; emitter-less scenes get vec3f(0) at zero cost.
         let direct_emitter = ddgiEmitterNEE(
-          hitWorldPos, probeNormal, probeMat.albedo,
-          frameParams.frameIndex ^ (probeIdx * 0x9E3779B9u) ^ rayIdx,
+          hitWorldPos, probeNormal,
+          directSeed ^ 0x63d83595u,
         );
         let direct = direct_analytic + direct_emitter;
 
         // Previous-frame indirect feedback: sample the irradiance atlas at the
         // hit position so each frame folds in one more diffuse bounce; the
-        // temporal EMA then converges to the multi-bounce equilibrium. TWO
-        // fixes over the pre-2026-06-07 form, BOTH required and BOTH GPU-
-        // validated against a CPU f64 multi-bounce path-trace anchor
-        // (wsl-gpu/scripts/ddgi-indirect-pi-ab.ts, dzn RTX-4090: mean luminance
-        // error vs ground truth 71% [base] -> 63% [clamp only] -> 14% [both]):
-        //  1. CLAMP the cell index to [0, dims-1]. The old guard
+        // temporal EMA then converges to the multi-bounce equilibrium.
+        //
+        // Clamp the cell index to [0, dims-1]. The old guard
         //     'baseProbeIdx3 + 1 < dims' returned indirect=0 for EVERY hit on
         //     enclosing geometry (room walls/floor sit on or just past the grid
         //     boundary), which disabled wall->wall->receiver multi-bounce
@@ -1996,12 +2305,12 @@ fn probeUpdateRays(
         //     The receiver ddgiSample already clamps to its available probes;
         //     this makes the producer feedback consistent with it. After the
         //     clamp the index is always valid, so the guard is gone.
-        //  2. The atlas stores the cosine-weighted incoming-radiance MEAN = E/PI
-        //     (the blend pass and ddgiSample both reconstruct E by multiplying
-        //     by PI). 'direct' here is irradiance E, so the atlas read must also
-        //     be multiplied by PI to add like-for-like BEFORE the (baseColor/PI)
-        //     bounce factor below. The old code added E/PI to E, making the
-        //     indirect feedback PI-times too weak at every bounce.
+        //
+        // The current L2-SH atlas stores cosine-convolved irradiance
+        // coefficients, so ddgiSampleSHProbe returns E directly. The historical
+        // octahedral atlas stored a cosine-weighted mean E/PI and required a PI
+        // reconstruction here; carrying that factor into the SH representation
+        // would over-brighten every feedback bounce.
         let gridPos  = (hitWorldPos - gridParams.origin) / gridParams.spacing;
         let baseProbeIdx3 = clamp(vec3i(floor(gridPos)), vec3i(0), vec3i(gridParams.dims) - vec3i(1));
         let pi = u32(baseProbeIdx3.x) + u32(baseProbeIdx3.y) * gridParams.dims.x +
@@ -2037,11 +2346,10 @@ fn probeUpdateRays(
         //
         // Post-fix math contract (Majercik 2019 §3 Algorithm 1):
         //   producer : stores Lo = (baseColor_hit/PI) * E_hit, with
-        //              E_hit = direct + (atlas read)*PI  [atlas holds E/PI]
-        //   blend    : cosine-weights rays -> atlas holds the MEAN E/PI (NOT E;
-        //              a stale "atlas holds irradiance E" comment HERE is what
-        //              made the feedback skip the *PI for so long, see above)
-        //   receiver : reads atlas, reconstructs E (*PI), applies (albedo/PI)*E
+        //              E_hit = direct + SH irradiance feedback.
+        //   blend    : projects radiance and stores cosine-convolved SH
+        //              irradiance coefficients.
+        //   receiver : evaluates irradiance E and applies (albedo/PI)*E.
         //
         // History: M7 (e66429d Change 3) removed the producer factor,
         // diagnosing producer·receiver albedo as the "double-albedo error"
@@ -2103,7 +2411,7 @@ fn probeUpdateRays(
         // pre-B2 path when indirectFeedback = 0.
         //
         // probeMat carries atlas-sampled roughness/metalness/specular/
-        // clearcoat/sheens/anisotropy/iridescence controls when readable maps
+        // clearcoat/sheen/anisotropy/iridescence controls when atlas-backed maps
         // are present, falling back to MaterialEntry scalar slots and zeroed
         // extension lobes. No new bind layout is required because DDGI already
         // binds the material atlas and tangent texture for probe-hit maps.
@@ -2117,7 +2425,7 @@ fn probeUpdateRays(
         let sheenWeight = ddgiProbeSheenWeight(probeMat);
         let extensionSpecularWeight = ddgiProbeExtensionSpecularWeight(probeMat);
         var indirectRadiance: vec3f;
-        if (extensionSpecularWeight > 1e-4 && frameParams.indirectFeedback != 0u) {
+        if (extensionSpecularWeight > 0.0 && frameParams.indirectFeedback != 0u) {
           // Reflected probe-ray direction: mirror dir about the hit normal.
           // dir points FROM the probe TO the hit surface — so -dir is the
           // incoming direction at the surface. reflect(-dir, n) gives the
@@ -2139,7 +2447,7 @@ fn probeUpdateRays(
           let baseSpecularLo = f0Tint * (specularIrr * (1.0 / PI));
           let clearcoatLo = vec3f(0.04) * (clearcoatIrr * (1.0 / PI));
           let sheenLo = clamp(probeMat.sheen.rgb, vec3f(0.0), vec3f(1.0)) * (specularIrr * (1.0 / PI));
-          let lobeWeightSum = max(baseSpecularWeight + clearcoatWeight + sheenWeight, 1e-6);
+          let lobeWeightSum = baseSpecularWeight + clearcoatWeight + sheenWeight;
           let specularIndirectLo =
             (baseSpecularLo * baseSpecularWeight +
              clearcoatLo * clearcoatWeight +
@@ -2158,9 +2466,85 @@ fn probeUpdateRays(
         var radiance = directRadiance + indirectRadiance;
 
         if ((mat.flags & MATERIAL_FLAG_IS_GLASS) != 0u) {
-          // Glass: add transmitted environment contribution.
-          let transmitted = sampleSkyColor(dir) * probeMat.beerTint;
-          radiance = mix(radiance, transmitted, probeMat.transmission * frameParams.glassMixScale);
+          // Cross both interfaces of the local thin slab. Each boundary uses
+          // the same exact rough-dielectric BTDF as camera/ReSTIR transport;
+          // the reciprocal exit applies the opposite authored face layer.
+          let faceNormal = select(-probeNormal, probeNormal, dot(dir, probeNormal) < 0.0);
+          let reverseLayer = ddgiSampleFaceLayerControls(hit.indices.w, hit.side < 0.0);
+          let exitRoughness = ddgiFaceLayerRoughness(probeMat.roughness, reverseLayer);
+          let reverseTransmission = ddgiFaceLayerTransmission(reverseLayer);
+          let glassSeed = frameParams.frameIndex ^
+            (probeIdx * 0x9e3779b9u) ^ (rayIdx * 0x85ebca6bu);
+
+          let entryR = ddgiSampleGgxDielectricTransmission(
+            faceNormal, -dir, probeMat.roughness, 1.0, probeMat.opticalIor.r,
+            vec2f(
+              pcgHashToF32Ddgi(glassSeed ^ 0x243f6a88u),
+              pcgHashToF32Ddgi(glassSeed ^ 0xb7e15162u),
+            ),
+          );
+          let entryG = ddgiSampleGgxDielectricTransmission(
+            faceNormal, -dir, probeMat.roughness, 1.0, probeMat.opticalIor.g,
+            vec2f(
+              pcgHashToF32Ddgi(glassSeed ^ 0x13198a2eu),
+              pcgHashToF32Ddgi(glassSeed ^ 0x03707344u),
+            ),
+          );
+          let entryB = ddgiSampleGgxDielectricTransmission(
+            faceNormal, -dir, probeMat.roughness, 1.0, probeMat.opticalIor.b,
+            vec2f(
+              pcgHashToF32Ddgi(glassSeed ^ 0xa4093822u),
+              pcgHashToF32Ddgi(glassSeed ^ 0x299f31d0u),
+            ),
+          );
+          var transmitted = vec3f(0.0);
+          if (entryR.valid != 0u) {
+            let exitR = ddgiSampleGgxDielectricTransmission(
+              faceNormal, -entryR.direction, exitRoughness,
+              probeMat.opticalIor.r, 1.0,
+              vec2f(
+                pcgHashToF32Ddgi(glassSeed ^ 0x082efa98u),
+                pcgHashToF32Ddgi(glassSeed ^ 0xec4e6c89u),
+              ),
+            );
+            if (exitR.valid != 0u) {
+              transmitted.r = sampleSkyColor(exitR.direction).r *
+                entryR.weight * exitR.weight * reverseTransmission.r;
+            }
+          }
+          if (entryG.valid != 0u) {
+            let exitG = ddgiSampleGgxDielectricTransmission(
+              faceNormal, -entryG.direction, exitRoughness,
+              probeMat.opticalIor.g, 1.0,
+              vec2f(
+                pcgHashToF32Ddgi(glassSeed ^ 0x452821e6u),
+                pcgHashToF32Ddgi(glassSeed ^ 0x38d01377u),
+              ),
+            );
+            if (exitG.valid != 0u) {
+              transmitted.g = sampleSkyColor(exitG.direction).g *
+                entryG.weight * exitG.weight * reverseTransmission.g;
+            }
+          }
+          if (entryB.valid != 0u) {
+            let exitB = ddgiSampleGgxDielectricTransmission(
+              faceNormal, -entryB.direction, exitRoughness,
+              probeMat.opticalIor.b, 1.0,
+              vec2f(
+                pcgHashToF32Ddgi(glassSeed ^ 0xbe5466cfu),
+                pcgHashToF32Ddgi(glassSeed ^ 0x34e90c6cu),
+              ),
+            );
+            if (exitB.valid != 0u) {
+              transmitted.b = sampleSkyColor(exitB.direction).b *
+                entryB.weight * exitB.weight * reverseTransmission.b;
+            }
+          }
+          radiance = mix(
+            radiance,
+            transmitted * probeMat.beerTint,
+            probeMat.transmission * frameParams.glassMixScale,
+          );
         }
 
         // H18 — direct probe hits on plain emissive materials carry their
@@ -2174,22 +2558,21 @@ fn probeUpdateRays(
           max(mat.emissive.b, 0.0),
         );
         let surfaceEmission = ddgiSampleEmissiveMap(hit, scalarSurfaceEmission);
-        radiance = radiance + surfaceEmission;
+        let bakedOutgoing = probeMat.albedo * (1.0 / PI) *
+          ddgiSampleLightMapIrradiance(hit);
+        radiance = radiance + surfaceEmission + bakedOutgoing;
         radiance = radiance * probeMat.layerTransmission;
-        radiance = ddgiApplyVolumeScatteringApproximation(
+        radiance = ddgiApplyHomogeneousVolumeSingleScatter(
           radiance,
           probeMat.albedo,
           probeMat.volumeScattering,
+          probeMat.bulkThickness,
           probeNormal,
           -dir,
         );
 
         out.hitRadiance  = radiance;
         out.hitDistance  = hit.dist;
-        out.hitNormal    = probeNormal;
-        out.hitPosition  = hitWorldPos;
-        out.hitMaterialId = matId;
-        out.isGlass       = (mat.flags & MATERIAL_FLAG_IS_GLASS);
       }
     }
 

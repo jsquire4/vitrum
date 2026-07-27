@@ -1,62 +1,48 @@
-# Renderer fidelity matrix (living document)
+# Renderer fidelity matrix
 
-Last graded: 2026-06-15 (post-Road reconciliation pass — rows below re-verified against source).
+Last graded: 2026-07-24 (direct implementation audit).
 
-This matrix tracks **truthful** renderer capability claims for `@vitrum/pt-webgl2`
-(native WebGL2) and `@vitrum/pt-webgpu` (WebGPU-native).
+This matrix reports the implemented renderer contract for `@vitrum/pt-webgl2`
+(native WebGL2) and the full tier of `@vitrum/pt-webgpu` (WebGPU-native). The
+former fork-backed `@vitrum/pt-webgl` backend was removed with commit `e14000c`.
 
-> **Note:** The former `@vitrum/pt-webgl` (fork-backed) column was removed with
-> commit `e14000c` (THREE removal). `@vitrum/pt-webgl2` is the replacement native
-> backend. Its fidelity rows are graded from current source truth, not aspirational
-> state.
+Classification is based on the code path that actually runs: public option or
+scene-field acceptance, CPU packing/upload, shader consumption, estimator
+ownership/PDF logic, fail-closed validation, and executable tests. Captures and
+host-specific runs remain useful regression evidence, but are not prerequisites
+for an implementation-maturity grade and are intentionally outside this matrix.
 
 ## Legend
 
 | Tag | Meaning |
 |-----|---------|
-| supported | Implemented + unit tests + captured runtime evidence |
-| approximate | Known simplification; documented |
-| experimental | May change; incomplete MIS / sampling |
-| unsupported | Not implemented |
+| supported | Implemented end to end and executable within the stated contract/envelope. |
+| approximate | Implemented end to end with a deliberate, material model simplification stated in the row. |
+| unsupported | Not selectable on that backend, or explicitly rejected before rendering. |
 
 ## Feature rows
 
-| Feature | pt-webgl2 (WebGL2) | pt-webgpu full tier (WebGPU) | Mechanical evidence | Runtime evidence | Notes |
-|---------|--------------------|--------------------|---------------------|------------------|-------|
-| Hero-wavelength + CMF accumulation | experimental | supported | pt-webgl2: `uploadGapGuard.test.ts` pins `uSpectralRendering`, `uCmfX/Y/Z`, CDFs, and integrals upload when `spectral:true`; pt-webgpu: `heroWavelengthPlumbing.test.ts`; `spectral.test.ts` (66); `shared-samplers/wgsl/heroWavelength*.ts` | pt-webgl2: runtime A/B capture pending. pt-webgpu dzn (RTX 4090) spectral ON/OFF A/B (re-run-confirmed): hero-λ+CMF engaged, glass chroma red-leaning [0.456,0.266,0.278] vs neutral OFF [0.333,0.307,0.360]; baseline `tools/reference-renders/baseline/ptwgpu-spectral-hero.png` (sha256 `db9854d6…`, 512²/256spp/seed 4242) | pt-webgl2 H2 dead-uniform blocker is closed in source/tests; row stays `experimental` until pt-webgl2 spectral runtime A/B has a committed reference. |
-| Spectral Beer–Lambert (packed μ) | experimental | supported | pt-webgl2: `materialsTexture.test.ts` pins 32-sample μ grid in `s20..`; GLSL consumes `spectralAttenuationMuHero`; pt-webgpu: `scenePack.materials.test.ts`; `spectral.test.ts` | pt-webgl2: runtime A/B capture pending. pt-webgpu dzn (RTX 4090) μ-curve present-vs-absent A/B (re-run-confirmed): green-peaked packed μ shifts transmitted light magenta — Δ(present−absent)=+0.0254 | pt-webgl2 no longer has the old CMF/μ dead-path blocker, but remains unpromoted without a visual Beer-Lambert reference. |
-| Multi-layer thin film TMM | experimental | supported | pt-webgl2: `materialsTexture.test.ts` pins thin-film payload; `thin_film_tmm.glsl.js` is consumed from `bsdf_functions.glsl.js`; pt-webgpu: `wgslContract.test.ts`; per-λ TMM in kernel | pt-webgl2: runtime A/B capture pending. pt-webgpu dzn (RTX 4090) hue-vs-angle A/B (re-run-confirmed): thin-film ON shows angle-dependent chroma drift Δ(R/G)=0.118; baseline `tools/reference-renders/baseline/ptwgpu-thinfilm-angle.png` | pt-webgl2 layered/thin-film uniforms are now packed and consumed; row remains `experimental` pending angle/hue A/B. |
-| Cauchy dispersion | experimental | supported | pt-webgl2: `uploadGapGuard.test.ts` pins `iorCauchyA/B/C` upload when `spectral:true`; GLSL applies Cauchy delta with per-material `dispersionStrength`; pt-webgpu: `materialPacking` Abbe + `cauchyIorAtLambda` in WGSL | pt-webgl2: runtime A/B capture pending. pt-webgpu dzn (RTX 4090) Abbe-set-vs-absent A/B (re-run-confirmed): wavelength-dependent IOR alters refracted hue, meanAbsChromaΔ 0.127; baseline `tools/reference-renders/baseline/ptwgpu-cauchy-dispersion.png` | pt-webgl2 requires spectral mode, but no longer has an unsupported hero-path blocker; needs dispersion visual promotion. |
-| Layered front/back + transmission MIS | approximate | supported | pt-webgl2: material packer/GLSL consume front/back layer transmission, roughness, and face-selected nested normal-map/normal-scale payloads; `materialStrideParity.test.ts` pins decode and active-normal override. pt-webgpu: `wgslContract.test.ts` (`activeLayerWeightRgb`, η² PDF) plus descriptor tests for face-selected layer normals. | pt-webgl2: runtime A/B capture pending. pt-webgpu dzn (RTX 4090) front/back A/B (re-run-confirmed): layered ON diverges chroma \|Δ\|=0.0593 (×1016 OFF); baseline `tools/reference-renders/baseline/ptwgpu-layered-front.png` | PT field consumption is native for front/back layer normals; row remains `approximate` until runtime visual A/B promotes pt-webgl2 and the broader layered/transmission MIS behavior. |
-| SSS / translucent panels | approximate | supported | pt-webgl2: `materialsTexture.test.ts` pins `sssSigmaT`/`sssSigmaS`/aniso lanes; `composeTraceGlsl.test.ts` pins the SSS branch and σ_s/σ_t albedo derivation; pt-webgpu: `wgslContract.test.ts` (`isTranslucent` gate) | pt-webgl2: runtime A/B capture pending. pt-webgpu dzn (RTX 4090) mixed-panel toggle A/B (re-run-confirmed): SSS LOCALIZED to flagged panel — LEFT/RIGHT Δ-luma ratio 1190:1; baseline `tools/reference-renders/baseline/ptwgpu-sss-mixed-panels.png` | pt-webgl2 uses per-material SSS fields and now consumes `scatteringCoefficientRGB` as authored per-channel σ_s; still `approximate` until the scalar-majorant WebGL single-scatter model has visual promotion. |
-| Multi emitter direct lighting | approximate | supported | `scenePack.test.ts`; `wgslContract.test.ts`; `lightTreeImportance.test.ts`; `lightsTexture.test.ts`; `composeTraceGlsl.test.ts` | dzn (RTX 4090) baseline `tools/reference-renders/baseline/cornell-manylights.png` (sha256 `c857ba59…`, 512×512/256spp/seed 6121) | pt-webgl2: the old `1/N` selector-bias note is stale; `randomLightSample()` is power-weighted and `directLightContribution()` uses the shared selector variate. Grade remains `approximate` until unequal-power/mixed-emitter visual A/B promotion proves the full direct-light estimator, not because the old selector bug is still present. |
-| Cornell/core material fixture parity | experimental | supported | pt-webgl2: material packer/shader/readback evidence is pinned by `materialNativeEvidence.test.ts`, `materialsTexture.test.ts`, `materialStrideParity.test.ts`, and GLSL gate coverage; pt-webgpu: `scenePack.test.ts`; `capturePtWebgpu.mjs` | pt-webgl2: browser/runtime material-fidelity A/B capture pending; the committed browser real-glTF proof is currently fail-closed `HOST-BLOCKED` on this WSL host. pt-webgpu dzn (RTX 4090) strict-hash re-capture == committed `tools/reference-renders/baseline/ptwgpu-parity-material-fields.png` BYTE-FOR-BYTE (PSNR 999 dB; 1280×720/512spp/seed 777) | This is the Cornell/core fixture proof, not an exhaustive `MaterialSpec` parity claim. pt-webgpu still has explicitly approximate specialty rows in the promise ledger until inverse/BDPT/specialty-payload/reference proof carries every field end-to-end. pt-webgl2 field packing/GLSL consumption is implemented, but the row stays `experimental` until a real browser/WebGL2 runtime capture promotes it. |
-| Caustic strategies | approximate | supported | `factoryCapabilities.test.ts` | MNEE GPU-validated vs DETERMINISTIC references: reflection ratio 0.881, refraction+2-vertex glass 0.987/0.996; baseline `tools/reference-renders/baseline/mnee-glass-slab.png` | pt-webgl2: heuristic photon-map caustic (`causticStrategy:'manifold-nee'` option exists but routes to a phenomenological GLSL path, NOT Newton-solve MNEE — see H7-e / D2; grade 'approximate'). pt-webgpu `manifold-nee` is the validated reference. |
-| SVGF-real denoiser | unsupported | unsupported | `unsupportedDenoiserDegrade.test.ts` (warns + degrades to no-denoise) | n/a | Converged tracer → `oidn-final`; SVGF is real-time-only. Both converged backends warn on `'svgf-real'`. |
-| BDPT (eye↔light connections) | approximate | supported | `bdptDriver.test.ts`; `composeTraceGlsl.test.ts`; pt-webgpu `h51WarnCoercions.test.ts` pins `bdptOptions.experimentalMultiVertex:true` as a research opt-in | pt-webgpu GPU-validated (V18/V25); baseline `tools/reference-renders/baseline/cornell-bdpt-on.png`; `tools/radiometric-ab/results-bdpt.json` proves the `bdpt:true` safe default is endpoint-only and neutral against UNI | pt-webgl2: the old inert-driver note is stale. `bdpt:true` now issues ordered light-subpath build passes before the eye pass, and `bdpt:false`/no-light cases are structurally pinned. Grade remains `approximate` until pt-webgl2 BDPT has visual A/B promotion against simple emitter scenes. pt-webgpu `supported` here is the safe-default/connection-local proof boundary; opt-in multi-vertex (`maxLightBounces>1`) remains research-only with blocker `not-weighted-against-regular-eye-path-strategy` until those strategies are weighted against the ordinary eye-path estimator. |
+| Feature | pt-webgl2 (WebGL2) | pt-webgpu full tier (WebGPU) | Source and executable evidence | Contract / modeled envelope |
+|---------|--------------------|--------------------------------|--------------------------------|-----------------------------|
+| Hero-wavelength + CMF accumulation | supported | supported | pt-webgl2: `gl/frameUniformsPacker.ts`, `gl/uploadFrameUniforms.ts`, `glsl/renderMain.glsl.ts`, `__tests__/uploadGapGuard.test.ts`, `glsl/spectralGlslParity.test.ts`; pt-webgpu: `__tests__/heroWavelengthPlumbing.test.ts`, `__tests__/spectralProductionClosure.test.ts` | One sampled hero wavelength is reconstructed once through the CIE CMFs; RGB mode remains separately selectable. |
+| Spectral Beer–Lambert (packed μ) | supported | supported | pt-webgl2: `scene/materialsTexture.ts`, `glsl/render/attenuate_hit_function.glsl.js`, `materialsTexture.test.ts`; pt-webgpu: `scene/materialPacking.ts`, `scenePack.materials.test.ts`, `spectralProductionClosure.test.ts` | pt-webgl2 stores the authored curve on a 32-sample wavelength grid; pt-webgpu consumes its packed spectral material representation. |
+| Multi-layer thin-film TMM | supported | supported | pt-webgl2: `scene/materialsTexture.ts`, `glsl/shader/bsdf/thin_film_tmm.glsl.js`, `thinFilmLayerLimit.test.ts`; pt-webgpu: `thinFilmProductionClosure.test.ts`, `wgslContract.test.ts`; `core/src/engine/promiseLedger.ts` publishes both limits | Fail-closed layer cap: 35 layers on pt-webgl2 and 8 on pt-webgpu. Per-wavelength transfer-matrix evaluation is used inside the active BSDF. |
+| Cauchy / Abbe dispersion | supported | supported | pt-webgl2: `gl/uploadFrameUniforms.ts`, `glsl/shader/bsdf/bsdf_functions.glsl.js`, `uploadGapGuard.test.ts`, `spectralGlslParity.test.ts`; pt-webgpu: `scene/materialPacking.ts`, `wgsl/pathTrace/bsdf.wgsl.ts`, `spectralProductionClosure.test.ts` | Active when spectral rendering is enabled; authored Abbe/dispersion strength alters the wavelength-dependent transmission IOR and its matched PDF. |
+| Layered front/back + transmission MIS | supported | supported | core: `scene/material.ts`; pt-webgl2: `scene/materialsTexture.ts`, `glsl/render/get_surface_record_function.glsl.js`, `glsl/shader/bsdf/bsdf_functions.glsl.js`, `materialStrideParity.test.ts`; pt-webgpu: `wgsl/pathTrace/material.wgsl.ts`, `wgsl/pathTrace/bsdf.wgsl.ts`, `wgslContract.test.ts` | Supported against the core contract: infinitesimally thin absorption/tint layers without multiple scattering. Face selection, nested normal payloads, Walter transmission sampling, and matched selection/PDF terms are consumed. |
+| SSS / translucent panels | approximate | supported | pt-webgl2: `scene/materialsTexture.ts`, `glsl/shader/bsdf/bsdf_functions.glsl.js`, `composeTraceGlsl.test.ts`; pt-webgpu: `volumetricSss.test.ts`, `wgslContract.test.ts` | pt-webgl2 deliberately uses one back-face single-scatter event with a scalar free-flight majorant, per-channel σs/σt albedo, and HG phase. pt-webgpu uses its native per-channel volume transport path. |
+| Multi-emitter direct lighting | supported | supported | pt-webgl2: `scene/lightsTexture.ts`, `scene/meshAreaLights.ts`, `glsl/neeEstimator.test.ts`, `scene/meshAreaMis.test.ts`, `composeTraceGlsl.test.ts`; pt-webgpu: `scene/emitterPacking.ts`, `scenePack.emitters.test.ts`, `lightTreeImportance.test.ts`, `wgslContract.test.ts` | Both backends use exact selector PDFs for their power-weighted analytic and mesh-triangle streams and account for environment/distant families in the estimator denominator. |
+| Cornell/core material fixture parity | supported | supported | pt-webgl2: `scene/materialsTexture.test.ts`, `scene/materialStrideParity.test.ts`, `glsl/composeTraceGlsl.test.ts`; pt-webgpu: `__tests__/scenePack.materials.test.ts`, `__tests__/wgslContract.test.ts` | This row is strictly the named core fixture, not a blanket claim that every `MaterialSpec` field has identical semantics. Field-level differences remain authoritative in `BACKEND_PROMISE_LEDGER`. |
+| Manifold next-event estimation (MNEE) | unsupported | supported | pt-webgl2: `options.ts` and `options.validate.ts` accept only the `bdpt` caustic strategy; pt-webgpu: `scene/mneeFacetCandidates.ts`, `wgsl/pathTrace/mneeNewton.wgsl.ts`, `mneeNewton.test.ts`, `mneeBoundedChain.test.ts`, `mneeFacetCandidates.test.ts`, `mneeEstimatorInvariance.test.ts` | pt-webgpu solves chains of 1–8 planar, geometric-normal mesh/instanced/skinned delta interfaces. Analytic interfaces, varying interface normals, and normal/bump/layer-normal mapped interfaces fail closed before upload. Volume scattering is outside MNEE. |
+| Progressive photon mapping (SPPM; `photon-map`) | unsupported | supported | pt-webgl2: strict option union/validator has no photon-map value; pt-webgpu: `wgsl/pathTrace/caustic.wgsl.ts`, `wgsl/pathTrace/sppmBindings.wgsl.ts`, `sppmProductionClosure.test.ts`, `sppmPhotonEmission.test.ts` | Full-tier pt-webgpu only. Persistent progressive surface and homogeneous-medium state uses separate disk/sphere density updates and fails construction/dispatch when required buffers or pipelines are unavailable. |
+| SVGF-real denoiser | unsupported | unsupported | pt-webgl2: `options.ts`, `options.validate.ts`, `engineContract.test.ts`; pt-webgpu: `index.ts`, `unsupportedDenoiserDegrade.test.ts`; core promise ledger | Both converged tracers accept `none`, `auto`, or `oidn-final`. Realtime-only denoiser names are rejected rather than silently degraded. SVGF remains available to the realtime hybrid backend. |
+| BDPT (eye↔light connections) | supported | supported | pt-webgl2: `glsl/renderMain.glsl.ts`, `glsl/render/bdpt_connection.glsl.js`, `__tests__/bdptProductionEstimator.test.ts`; pt-webgpu: `wgsl/pathTrace/kernel.wgsl.ts`, `wgsl/bdpt/bdptConnection.wgsl.ts`, `__tests__/bdptEstimatorOwnership.test.ts`; both option validators | Bounded general BDPT with 1–8 stored light vertices (defaults: pt-webgl2 4, pt-webgpu 2). Finite c=0 and c≥1 surface/medium connections use Veach power-heuristic MIS; ordinary-eye finite NEE is disabled under BDPT while distant families retain a disjoint ownership partition. |
 
-## Evidence gates
+## Maintainer gate
 
-- Mechanical: `npm run typecheck`, `npm test`.
-- GPU: `tools/benchmark-runner` with `VITRUM_GPU_CAPTURE=1` and a capture adapter.
-  Rows must not be promoted to `supported` until this produces non-null hashes,
-  perf fields, and PASS status for the matching acceptance scenario.
-- **Note:** `npm run fork-shader-smoke` was removed with the `@vitrum/pt-webgl` fork
-  deletion (commit `e14000c`). The pre-push T1 GPU smoke (`wsl-gpu` lavapipe + dzn)
-  remains the primary compile-time gate for the runtime pass graph.
-- **Correctness vs perf:** several rows have correctness GPU-validated on dzn/lavapipe
-  per `HARDWARE-VALIDATION-NEEDS.md` but stay `experimental` because promotion additionally
-  requires a perf field + a strict committed-baseline hash on a real GPU.
-- **Browser portability (walkaround/RC = Chromium-only):** the walkaround-hybrid +
-  `@vitrum/walkaround-rc` production shaders use `ptr<storage>` function parameters
-  (shared-bvh TLAS traversal), which need the `unrestricted_pointer_parameters` WGSL
-  capability. Tint/Chrome accept it; **naga (Firefox) and Deno's wgpu-native REJECT** it
-  (no WebGPU `enable` path), so these runtime shaders currently run **only on Chromium**.
-  The shader gate compiles an `applyNagaFix`-patched derivative for its green path and
-  emits a separate non-fatal verbatim-compile tracked metric counting the naga rejections.
-  pt-webgpu shaders are gate-validated verbatim and are portable. Removing `ptr<storage>`
-  from the traversal core is a scoped tracked program in `plan/road-to-100.md`
-  (D4 decision: keep shipping, track + document; do not refactor yet).
-
-See also `plan/road-to-100.md`, `plan/fidelity-promotion-playbook.md`, and
-`items_to_fix.md` §H for current promotion blockers and historical fix context.
+Any future grade change must identify the selectable public contract, the
+packer/upload path, the consuming shader branch, estimator ownership/PDF where
+applicable, the modeled envelope or rejection boundary, and an executable test.
+`npm run renderer-fidelity-proof-check` pins the named source/evidence paths and
+required identifiers; it does not execute the cited tests. Focused workspace
+tests (or `npm test`) execute those tests, while `npm run typecheck` checks the
+typed contracts.

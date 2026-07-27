@@ -12,7 +12,7 @@
 import { SVGF_REPROJECTION_WGSL } from './wgsl/svgfReprojection.wgsl.js';
 import { SVGF_VARIANCE_FROM_MOMENTS_WGSL } from './wgsl/svgfVarianceFromMoments.wgsl.js';
 import { SVGF_7X7_SPATIAL_FALLBACK_WGSL } from './wgsl/svgf7x7SpatialFallback.wgsl.js';
-import { ATROUS_VARIANCE_WGSL } from './wgsl/atrousVariance.wgsl.js';
+import { SVGF_REAL_ATROUS_WGSL } from './wgsl/svgfAtrous.wgsl.js';
 import { makePerDevicePipelineCache } from './sharedWebGpuDevice.js';
 
 export interface SVGFRealPipelineBundle {
@@ -31,7 +31,7 @@ export const svgfRealPipelines = makePerDevicePipelineCache<SVGFRealPipelineBund
     const reprojSM         = device.createShaderModule({ label: 'svgf-reproj',                 code: SVGF_REPROJECTION_WGSL });
     const momentsSM        = device.createShaderModule({ label: 'svgf-moments',                code: SVGF_VARIANCE_FROM_MOMENTS_WGSL });
     const fallbackSM       = device.createShaderModule({ label: 'svgf-7x7',                    code: SVGF_7X7_SPATIAL_FALLBACK_WGSL });
-    const atrousVarianceSM = device.createShaderModule({ label: 'svgf-real-atrous-variance',   code: ATROUS_VARIANCE_WGSL });
+    const atrousSM         = device.createShaderModule({ label: 'svgf-real-atrous',            code: SVGF_REAL_ATROUS_WGSL });
 
     return {
       reprojPipeline: device.createComputePipeline({
@@ -52,7 +52,7 @@ export const svgfRealPipelines = makePerDevicePipelineCache<SVGFRealPipelineBund
       atrousPipeline: device.createComputePipeline({
         label: 'svgf-real-atrous',
         layout: 'auto',
-        compute: { module: atrousVarianceSM, entryPoint: 'svgfAtrousMain' },
+        compute: { module: atrousSM, entryPoint: 'svgfRealAtrousMain' },
       }),
     };
   },

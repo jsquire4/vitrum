@@ -1,24 +1,145 @@
-// options.validate — factory option validation + construction-time warning emission
-// for createPTEngine_WebGL2 (extracted from index.ts, T3-D / D11-1).
+// Factory-boundary validation for createPTEngine_WebGL2.
 //
-// BEHAVIOR-PRESERVING: the throw messages, the emitted EngineWarning
-// [code, message, details] sequences, and the resolved `effectiveOpts` are
-// byte-identical to the pre-extraction inline factory body. Pinned by
-// factoryWarningsPin.test.ts + engineContract.test.ts.
+// This module deliberately validates the runtime JavaScript payload rather than
+// trusting TypeScript. Deserialised options, plain JS hosts, and cast callers
+// must fail before capability probing or GL resource construction.
 
 import type { EngineWarning } from '@vitrum/core';
 import type { PTEngineWebGL2Options } from './options.js';
+import { WEBGL2_MAX_BOUNCES } from './limits.js';
+import { DEFAULT_RENDER_TARGET_BUDGET_BYTES } from './gl/renderTargetBudget.js';
 
-// A5 — light-subpath ping-pong width (one column per light bounce). MUST match the
-// `BDPT_MAX_LIGHT_BOUNCES=3` layout the GLSL light-subpath/connection kernels assume
-// (bdpt_light_subpath.glsl.js header; the connection sweep caps the merged path at
-// BDPT_MAX_MERGED=19 with n = c + e + 3, BDPT_MAX_EYE_DEPTH=8).
-export const BDPT_SAFE_DEFAULT_LIGHT_BOUNCES = 1;
-export const BDPT_MAX_LIGHT_BOUNCES = 3;
+// General BDPT uses a fixed-size texture stack: one endpoint plus up to seven
+// surface/medium extensions. Four vertices is the balanced production default;
+// hosts can explicitly trade work for depth anywhere in the bounded 1..8 range.
+export const BDPT_DEFAULT_LIGHT_BOUNCES = 4;
+export const BDPT_MAX_LIGHT_BOUNCES = 8;
+
+const GL_INT_MAX = 0x7fff_ffff;
+
+const TOP_LEVEL_KEY_RECORD = {
+  device: true,
+  maxBounces: true,
+  maxSamplesPerPixel: true,
+  denoiser: true,
+  onWarning: true,
+  causticStrategy: true,
+  causticOptions: true,
+  extensions: true,
+  maxRenderTargetBytes: true,
+  traceTier: true,
+  spectral: true,
+  bdpt: true,
+  sampling: true,
+  bdptOptions: true,
+  materialLodDepth: true,
+  backgroundAlpha: true,
+  backgroundBlur: true,
+  cameraType: true,
+  dof: true,
+  oidn: true,
+  oidnBridgeLoader: true,
+  oidnReadbackFn: true,
+} as const satisfies Readonly<Record<keyof PTEngineWebGL2Options, true>>;
+const TOP_LEVEL_KEYS = new Set(Object.keys(TOP_LEVEL_KEY_RECORD));
+const BDPT_OPTION_KEYS = new Set(['maxLightBounces']);
+const DOF_KEYS = new Set([
+  'focusDistance',
+  'bokehSize',
+  'apertureBlades',
+  'apertureRotation',
+  'anamorphicRatio',
+]);
+const OIDN_KEYS = new Set(['modelUrl', 'executionProviders']);
+const TRACE_TIERS = new Set(['full', 'lite']);
+const SAMPLING_MODES = new Set(['pcg', 'sobol']);
+const CAMERA_TYPES = new Set(['perspective', 'orthographic', 'equirectangular']);
+const CAUSTIC_STRATEGIES = new Set(['bdpt']);
+const WEBGL2_DENOISERS = new Set(['none', 'auto', 'oidn-final']);
+const OIDN_EXECUTION_PROVIDERS = new Set(['webnn', 'webgpu', 'wasm']);
+
+function assertKnownObject(
+  label: string,
+  value: unknown,
+  knownKeys: ReadonlySet<string>,
+): asserts value is Record<string, unknown> {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    throw new TypeError(`${label} must be a non-array object`);
+  }
+  if (ArrayBuffer.isView(value)) {
+    throw new TypeError(`${label} must be a plain object`);
+  }
+    const prototype: unknown = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) {
+    throw new TypeError(`${label} must have Object.prototype or null prototype`);
+  }
+  for (const key of Reflect.ownKeys(value)) {
+    if (typeof key !== 'string') {
+      throw new TypeError(`${label} contains unsupported symbol keys (${String(key)})`);
+    }
+    if (!knownKeys.has(key)) {
+      throw new TypeError(`${label} contains unsupported field "${key}"`);
+    }
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (descriptor == null || !('value' in descriptor) || !descriptor.enumerable) {
+      throw new TypeError(`${label}.${key} must be an enumerable own data property`);
+    }
+  }
+}
+
+function describeValidationValue(value: unknown): string {
+  return value !== null && typeof value === 'object'
+    ? Object.prototype.toString.call(value)
+    : String(value);
+}
+
+function isUnknownArray(value: unknown): value is readonly unknown[] {
+  return Array.isArray(value);
+}
+
+function assertExtensionBag(value: unknown): void {
+  if (value === undefined) return;
+  const extensionKeys = value != null && typeof value === 'object'
+    ? new Set(Object.getOwnPropertyNames(value))
+    : new Set<string>();
+  assertKnownObject('createPTEngine_WebGL2: extensions', value, extensionKeys);
+}
+
+function assertOptionalBoolean(label: string, value: unknown): void {
+  if (value !== undefined && typeof value !== 'boolean') {
+    throw new TypeError(`${label} must be a boolean (got ${describeValidationValue(value)})`);
+  }
+}
+
+function assertOptionalEnum(
+  label: string,
+  value: unknown,
+  supported: ReadonlySet<string>,
+): void {
+  if (value === undefined) return;
+  if (typeof value !== 'string' || !supported.has(value)) {
+    throw new RangeError(
+      `${label} must be one of ${Array.from(supported, (entry) => `"${entry}"`).join(', ')} ` +
+          `(got ${describeValidationValue(value)})`,
+    );
+  }
+}
+
+function assertFiniteNumber(label: string, value: unknown): asserts value is number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    throw new RangeError(`${label} must be finite (got ${String(value)})`);
+  }
+}
+
+function assertOptionalFunction(label: string, value: unknown): void {
+  if (value !== undefined && typeof value !== 'function') {
+    throw new TypeError(`${label} must be a function when supplied`);
+  }
+}
 
 export function resolveBdptMaxLightBounces(value: number | undefined): number {
-  if (value === undefined) return BDPT_SAFE_DEFAULT_LIGHT_BOUNCES;
-  return Math.max(1, Math.min(BDPT_MAX_LIGHT_BOUNCES, Math.floor(value)));
+  if (value === undefined) return BDPT_DEFAULT_LIGHT_BOUNCES;
+  return value;
 }
 
 export function emitWebgl2Warning(
@@ -35,7 +156,7 @@ export function emitWebgl2Warning(
 }
 
 function hasOidnModelUrl(opts: Pick<PTEngineWebGL2Options, 'oidn'>): boolean {
-  return typeof opts.oidn?.modelUrl === 'string' && opts.oidn.modelUrl.length > 0;
+  return typeof opts.oidn?.modelUrl === 'string' && opts.oidn.modelUrl.trim().length > 0;
 }
 
 export function resolveWebgl2AutoDenoiser(opts: PTEngineWebGL2Options): PTEngineWebGL2Options {
@@ -60,171 +181,271 @@ export function resolveWebgl2AutoDenoiser(opts: PTEngineWebGL2Options): PTEngine
   return { ...opts, denoiser: resolved };
 }
 
+function validateDof(value: unknown): void {
+  if (value === undefined) return;
+  assertKnownObject('createPTEngine_WebGL2: dof', value, DOF_KEYS);
+
+  assertFiniteNumber('createPTEngine_WebGL2: dof.focusDistance', value.focusDistance);
+  if (value.focusDistance <= 0) {
+    throw new RangeError(
+      `createPTEngine_WebGL2: dof.focusDistance must be > 0 ` +
+        `(got ${String(value.focusDistance)})`,
+    );
+  }
+  assertFiniteNumber('createPTEngine_WebGL2: dof.bokehSize', value.bokehSize);
+  if (value.bokehSize < 0) {
+    throw new RangeError(
+      `createPTEngine_WebGL2: dof.bokehSize must be >= 0 ` +
+        `(got ${String(value.bokehSize)})`,
+    );
+  }
+  if (value.apertureBlades !== undefined) {
+    const blades = value.apertureBlades;
+    if (
+      typeof blades !== 'number' ||
+      !Number.isSafeInteger(blades) ||
+      (blades !== 0 && (blades < 3 || blades > GL_INT_MAX))
+    ) {
+      throw new RangeError(
+        `createPTEngine_WebGL2: dof.apertureBlades must be 0 or an integer in ` +
+            `3..${GL_INT_MAX} (got ${describeValidationValue(blades)})`,
+      );
+    }
+  }
+  if (value.apertureRotation !== undefined) {
+    assertFiniteNumber(
+      'createPTEngine_WebGL2: dof.apertureRotation',
+      value.apertureRotation,
+    );
+  }
+  if (value.anamorphicRatio !== undefined) {
+    assertFiniteNumber(
+      'createPTEngine_WebGL2: dof.anamorphicRatio',
+      value.anamorphicRatio,
+    );
+    if (value.anamorphicRatio <= 0) {
+      throw new RangeError(
+        `createPTEngine_WebGL2: dof.anamorphicRatio must be > 0 ` +
+          `(got ${String(value.anamorphicRatio)})`,
+      );
+    }
+  }
+}
+
+function validateOidn(value: unknown): void {
+  if (value === undefined) return;
+  assertKnownObject('createPTEngine_WebGL2: oidn', value, OIDN_KEYS);
+  if (typeof value.modelUrl !== 'string' || value.modelUrl.trim().length === 0) {
+    throw new TypeError(
+      'createPTEngine_WebGL2: oidn.modelUrl must be a non-empty string',
+    );
+  }
+    if (value.executionProviders !== undefined) {
+      const executionProviders: unknown = value.executionProviders;
+      if (!isUnknownArray(executionProviders) || executionProviders.length === 0) {
+        throw new TypeError(
+          'createPTEngine_WebGL2: oidn.executionProviders must be a non-empty array',
+        );
+      }
+      for (let i = 0; i < executionProviders.length; i += 1) {
+        const provider = executionProviders[i];
+      if (typeof provider !== 'string' || !OIDN_EXECUTION_PROVIDERS.has(provider)) {
+        throw new RangeError(
+          `createPTEngine_WebGL2: oidn.executionProviders[${i}] is unsupported ` +
+            `(got ${String(provider)})`,
+        );
+      }
+    }
+  }
+}
+
 /**
- * Validate the factory options (throwing on hard errors), emit all construction
- * warnings, and resolve `denoiser:'auto'`. Returns the effective options the
- * engine constructor consumes. Byte-identical to the pre-extraction inline factory
- * validation body in createPTEngine_WebGL2.
+ * Validate the complete factory payload and resolve denoiser:auto.
+ * No capability query, shader work, GL allocation, or engine-state mutation may
+ * occur before this function succeeds.
  */
 export function validateAndResolveWebgl2Options(
   opts: PTEngineWebGL2Options,
+  internal?: { readonly deviceIndependent?: boolean },
 ): PTEngineWebGL2Options {
-  const gl = opts.device;
-  if (gl == null || typeof gl.createFramebuffer !== 'function') {
-    throw new TypeError('createPTEngine_WebGL2: device must be a WebGL2RenderingContext');
+  assertKnownObject('createPTEngine_WebGL2: options', opts, TOP_LEVEL_KEYS);
+
+  if (internal?.deviceIndependent !== true) {
+    const gl = opts.device;
+    if (gl == null || typeof gl !== 'object' || typeof gl.createFramebuffer !== 'function') {
+      throw new TypeError('createPTEngine_WebGL2: device must be a WebGL2RenderingContext');
+    }
   }
-  if (opts.maxBounces !== undefined && opts.maxBounces < 1) {
-    throw new RangeError(`createPTEngine_WebGL2: maxBounces must be >= 1 (got ${opts.maxBounces})`);
-  }
-  if (opts.maxSamplesPerPixel !== undefined && opts.maxSamplesPerPixel < 1) {
+  assertOptionalFunction('createPTEngine_WebGL2: onWarning', opts.onWarning);
+  assertExtensionBag(opts.extensions);
+  assertOptionalBoolean('createPTEngine_WebGL2: spectral', opts.spectral);
+  assertOptionalBoolean('createPTEngine_WebGL2: bdpt', opts.bdpt);
+  assertOptionalEnum('createPTEngine_WebGL2: traceTier', opts.traceTier, TRACE_TIERS);
+  assertOptionalEnum('createPTEngine_WebGL2: sampling', opts.sampling, SAMPLING_MODES);
+  assertOptionalEnum('createPTEngine_WebGL2: cameraType', opts.cameraType, CAMERA_TYPES);
+  assertOptionalEnum(
+    'createPTEngine_WebGL2: causticStrategy',
+    opts.causticStrategy,
+    CAUSTIC_STRATEGIES,
+  );
+  assertOptionalEnum('createPTEngine_WebGL2: denoiser', opts.denoiser, WEBGL2_DENOISERS);
+  assertOptionalFunction(
+    'createPTEngine_WebGL2: oidnBridgeLoader',
+    opts.oidnBridgeLoader,
+  );
+  assertOptionalFunction(
+    'createPTEngine_WebGL2: oidnReadbackFn',
+    opts.oidnReadbackFn,
+  );
+
+  if (
+    opts.maxBounces !== undefined &&
+    (!Number.isInteger(opts.maxBounces) ||
+      opts.maxBounces < 1 ||
+      opts.maxBounces > WEBGL2_MAX_BOUNCES)
+  ) {
     throw new RangeError(
-      `createPTEngine_WebGL2: maxSamplesPerPixel must be >= 1 (got ${opts.maxSamplesPerPixel})`,
+      `createPTEngine_WebGL2: maxBounces must be an integer in the supported range ` +
+        `1..${WEBGL2_MAX_BOUNCES} (got ${String(opts.maxBounces)})`,
+    );
+  }
+  if (
+    opts.maxRenderTargetBytes !== undefined &&
+    (!Number.isSafeInteger(opts.maxRenderTargetBytes) || opts.maxRenderTargetBytes <= 0)
+  ) {
+    throw new RangeError(
+      `createPTEngine_WebGL2: maxRenderTargetBytes must be a positive safe integer ` +
+        `(default ${DEFAULT_RENDER_TARGET_BUDGET_BYTES}; got ${String(opts.maxRenderTargetBytes)})`,
+    );
+  }
+  if (
+    opts.maxSamplesPerPixel !== undefined &&
+    (!Number.isSafeInteger(opts.maxSamplesPerPixel) || opts.maxSamplesPerPixel < 1)
+  ) {
+    throw new RangeError(
+      `createPTEngine_WebGL2: maxSamplesPerPixel must be a positive safe integer ` +
+        `(got ${String(opts.maxSamplesPerPixel)})`,
     );
   }
   if (
     opts.materialLodDepth !== undefined &&
-    (!Number.isFinite(opts.materialLodDepth) || opts.materialLodDepth < 0)
+    (!Number.isSafeInteger(opts.materialLodDepth) ||
+      opts.materialLodDepth < 0 ||
+      opts.materialLodDepth > GL_INT_MAX)
   ) {
     throw new RangeError(
-      `createPTEngine_WebGL2: materialLodDepth must be a finite number >= 0 (got ${opts.materialLodDepth})`,
+      `createPTEngine_WebGL2: materialLodDepth must be an integer in 0..${GL_INT_MAX} ` +
+        `(got ${String(opts.materialLodDepth)})`,
     );
   }
-  if (opts.causticStrategy === 'manifold-nee' || opts.causticStrategy === 'photon-map') {
-    const approximation = opts.causticStrategy === 'manifold-nee'
-      ? 'deterministic refraction-walk heuristic'
-      : 'deterministic cone-traced photon estimate';
-    emitWebgl2Warning(opts, {
-      code: 'pt-webgl2.caustic-strategy-approximation',
-      backend: 'pt-webgl2',
-      phase: 'construction',
-      method: 'createPTEngine_WebGL2',
-      message:
-        `[vitrum/pt-webgl2] causticStrategy="${opts.causticStrategy}" is an approximate WebGL2 ` +
-        `${approximation}, not the promoted pt-webgpu MNEE/BDPT reference path. ` +
-        'Use it for compatibility captures or approximate caustic hints; use pt-webgpu full tier for promoted caustic evidence.',
-      details: {
-        requested: opts.causticStrategy,
-        approximation,
-        fallback: 'approximate caustic contribution',
-      },
-    });
+
+  if (opts.causticOptions !== undefined) {
+    throw new RangeError(
+      'createPTEngine_WebGL2: causticOptions are not accepted for the "bdpt" ' +
+        'caustic strategy; use bdptOptions.maxLightBounces',
+    );
+  }
+  if (opts.causticStrategy === 'bdpt' && opts.bdpt === false) {
+    throw new RangeError(
+      'createPTEngine_WebGL2: causticStrategy:"bdpt" requires BDPT; omit bdpt ' +
+        'or set bdpt:true instead of bdpt:false',
+    );
+  }
+
+  if (opts.bdptOptions !== undefined) {
+    assertKnownObject(
+      'createPTEngine_WebGL2: bdptOptions',
+      opts.bdptOptions,
+      BDPT_OPTION_KEYS,
+    );
   }
   const bdptMaxLightBounces = opts.bdptOptions?.maxLightBounces;
   if (
     bdptMaxLightBounces !== undefined &&
-    (!Number.isFinite(bdptMaxLightBounces) || bdptMaxLightBounces < 1)
+    (!Number.isInteger(bdptMaxLightBounces) ||
+      bdptMaxLightBounces < 1 ||
+      bdptMaxLightBounces > BDPT_MAX_LIGHT_BOUNCES)
   ) {
     throw new RangeError(
-      `createPTEngine_WebGL2: bdptOptions.maxLightBounces must be a finite number >= 1 (got ${bdptMaxLightBounces})`,
+      `createPTEngine_WebGL2: bdptOptions.maxLightBounces must be an integer in ` +
+        `the supported range 1..${BDPT_MAX_LIGHT_BOUNCES} ` +
+        `(got ${String(bdptMaxLightBounces)})`,
     );
   }
-  if (bdptMaxLightBounces !== undefined && bdptMaxLightBounces > BDPT_MAX_LIGHT_BOUNCES) {
-    emitWebgl2Warning(opts, {
-      code: 'pt-webgl2.bdpt-max-light-bounces-clamped',
-      backend: 'pt-webgl2',
-      phase: 'construction',
-      method: 'createPTEngine_WebGL2',
-      message:
-        `[vitrum/pt-webgl2] bdptOptions.maxLightBounces=${bdptMaxLightBounces} requested, ` +
-        `clamping to supported WebGL2 BDPT light-subpath limit ${BDPT_MAX_LIGHT_BOUNCES}.`,
-      details: { requested: bdptMaxLightBounces, clampedTo: BDPT_MAX_LIGHT_BOUNCES },
-    });
-  }
+  const bdptSelected = opts.bdpt === true || opts.causticStrategy === 'bdpt';
   if (
-    bdptMaxLightBounces !== undefined &&
-    bdptMaxLightBounces <= BDPT_MAX_LIGHT_BOUNCES &&
-    !Number.isInteger(bdptMaxLightBounces)
+    opts.bdptOptions !== undefined &&
+    (Object.getOwnPropertyNames(opts.bdptOptions).length > 0 ||
+      bdptMaxLightBounces !== undefined) &&
+    !bdptSelected
   ) {
-    emitWebgl2Warning(opts, {
-      code: 'pt-webgl2.bdpt-max-light-bounces-rounded',
-      backend: 'pt-webgl2',
-      phase: 'construction',
-      method: 'createPTEngine_WebGL2',
-      message:
-        `[vitrum/pt-webgl2] bdptOptions.maxLightBounces=${bdptMaxLightBounces} requested, ` +
-        `rounding down to integer ${resolveBdptMaxLightBounces(bdptMaxLightBounces)}.`,
-      details: {
-        requested: bdptMaxLightBounces,
-        roundedTo: resolveBdptMaxLightBounces(bdptMaxLightBounces),
-      },
-    });
+    throw new RangeError(
+      'createPTEngine_WebGL2: bdptOptions requires bdpt:true or ' +
+        'causticStrategy:"bdpt"; BDPT-only tuning must not be inert',
+    );
   }
-  const resolvedBdptMaxLightBounces = resolveBdptMaxLightBounces(bdptMaxLightBounces);
-  if (opts.bdpt === true && resolvedBdptMaxLightBounces > BDPT_SAFE_DEFAULT_LIGHT_BOUNCES) {
-    if (opts.bdptOptions?.experimentalMultiVertex !== true) {
+
+  if (opts.backgroundAlpha !== undefined) {
+    assertFiniteNumber('createPTEngine_WebGL2: backgroundAlpha', opts.backgroundAlpha);
+    if (opts.backgroundAlpha < 0 || opts.backgroundAlpha > 1) {
       throw new RangeError(
-        'createPTEngine_WebGL2: bdptOptions.maxLightBounces > 1 activates the multi-vertex BDPT research path; ' +
-        'set bdptOptions.experimentalMultiVertex=true to opt in, or omit maxLightBounces for the endpoint-only safe default.',
+        `createPTEngine_WebGL2: backgroundAlpha must be in [0, 1] ` +
+          `(got ${String(opts.backgroundAlpha)})`,
       );
     }
-    emitWebgl2Warning(opts, {
-      code: 'pt-webgl2.bdpt-multivertex-research-mode',
-      backend: 'pt-webgl2',
-      phase: 'construction',
-      method: 'createPTEngine_WebGL2',
-      message:
-        `[vitrum/pt-webgl2] bdptOptions.maxLightBounces=${resolvedBdptMaxLightBounces} enables the ` +
-        'multi-vertex BDPT research path. Current radiometric promotion evidence is endpoint-only, ' +
-        'so this WebGL2 path requires experimentalMultiVertex:true; omit bdptOptions.maxLightBounces for the ' +
-        'endpoint-only safe default.',
-      details: {
-        requested: bdptMaxLightBounces,
-        resolved: resolvedBdptMaxLightBounces,
-        safeDefault: BDPT_SAFE_DEFAULT_LIGHT_BOUNCES,
-        experimentalMultiVertex: true,
-      },
-    });
   }
-  if (
-    opts.backgroundBlur !== undefined &&
-    (!Number.isFinite(opts.backgroundBlur) || opts.backgroundBlur < 0)
-  ) {
+  if (opts.backgroundBlur !== undefined) {
+    assertFiniteNumber('createPTEngine_WebGL2: backgroundBlur', opts.backgroundBlur);
+    if (opts.backgroundBlur < 0) {
+      throw new RangeError(
+        `createPTEngine_WebGL2: backgroundBlur must be >= 0 ` +
+          `(got ${String(opts.backgroundBlur)})`,
+      );
+    }
+  }
+
+  validateDof(opts.dof);
+  if (opts.cameraType === 'equirectangular' && opts.dof !== undefined) {
     throw new RangeError(
-      `createPTEngine_WebGL2: backgroundBlur must be a finite number >= 0 (got ${opts.backgroundBlur})`,
+      'createPTEngine_WebGL2: dof is unsupported when cameraType is "equirectangular"; ' +
+        'thin-lens depth of field has no coherent full-sphere focal plane',
     );
   }
-  const effectiveOpts = resolveWebgl2AutoDenoiser(opts);
-  // Unsupported realtime denoisers still degrade to no-denoise with a clear
-  // warning. `oidn-final` is handled by the engine constructor because it is a
-  // real asynchronous final-pass path that requires host-provided model config.
-  if (effectiveOpts.denoiser != null && effectiveOpts.denoiser !== 'none' && effectiveOpts.denoiser !== 'oidn-final') {
-    emitWebgl2Warning(effectiveOpts, {
-      code: 'pt-webgl2.unsupported-denoiser',
-      backend: 'pt-webgl2',
-      phase: 'construction',
-      method: 'createPTEngine_WebGL2',
-      message:
-        `[vitrum/pt-webgl2] denoiser="${effectiveOpts.denoiser}" requested, but pt-webgl2 only supports ` +
-        '`none` and the asynchronous final-pass `oidn-final` denoiser. ' +
-        'Degrading to no-denoise (denoiserState will report "disabled").',
-      details: { requested: effectiveOpts.denoiser },
-    });
+
+  validateOidn(opts.oidn);
+  if (
+    internal?.deviceIndependent === true &&
+    opts.denoiser === 'oidn-final' &&
+    !hasOidnModelUrl(opts)
+  ) {
+    throw new Error(
+      "createPTEngine_WebGL2: denoiser: 'oidn-final' requires oidn: { modelUrl }",
+    );
   }
-  // Item 22 — DOF × equirectangular regime guard (trust-remediation-plan §22).
-  // Thin-lens DOF applied to equirectangular projection is physically undefined:
-  // the blur direction has no meaning per sphere region (the GLSL DOF block
-  // translates ray.origin by an aperture sample in camera space, but the equirect
-  // ray directions span the full sphere — there is no consistent focal plane).
-  // Silently generating blurry/incorrect output is worse than ignoring the option,
-  // so we force DOF off for equirect and warn once so the host is not surprised.
-  //
-  // Orthographic + DOF is left as-is: the GLSL produces tilt-shift-style focus
-  // (focalPoint = fixed point on the -Z frustum; new ray.direction = focalPoint -
-  // shifted_origin) which is physically coherent — parallel projections plus an
-  // aperture offset is the standard orthographic-camera DOF model.
-  if (opts.cameraType === 'equirectangular' && opts.dof != null) {
-    emitWebgl2Warning(opts, {
-      code: 'pt-webgl2.equirectangular-dof-ignored',
-      backend: 'pt-webgl2',
-      phase: 'construction',
-      method: 'createPTEngine_WebGL2',
-      message:
-        '[vitrum/pt-webgl2] dof is ignored when cameraType is "equirectangular". ' +
-        'Thin-lens depth of field is physically undefined for full-sphere equirectangular ' +
-        'projection (blur direction has no meaning per sphere region). ' +
-        'The engine will render without DOF. Remove the dof option to suppress this warning.',
-      details: { cameraType: opts.cameraType },
-    });
+  if (internal?.deviceIndependent === true) return opts;
+  const effectiveOpts = resolveWebgl2AutoDenoiser(opts);
+  if (effectiveOpts.denoiser === 'oidn-final' && !hasOidnModelUrl(effectiveOpts)) {
+    throw new Error(
+      "createPTEngine_WebGL2: denoiser: 'oidn-final' is not turnkey - it " +
+        'requires TWO host-provided assets that vitrum does not ship: ' +
+        '(1) oidn: { modelUrl } - a non-empty URL to an OIDN ONNX model ' +
+        '(use oidn_rt_hdr_alb_nrm.onnx when supplying albedo + normal aux); ' +
+        "and (2) the 'onnxruntime-web' optional peer dependency installed in " +
+        'the host. Omit the `denoiser` option to render without a final denoise.',
+    );
   }
   return effectiveOpts;
+}
+
+/**
+ * Validate a createEngine advanced bag without touching a canvas or GL context.
+ * The exact same value-domain checks are used by the concrete backend factory.
+ */
+export function validateWebgl2AdvancedOptions(
+  opts: Partial<Omit<PTEngineWebGL2Options, 'device'>>,
+): void {
+  validateAndResolveWebgl2Options(
+    opts as PTEngineWebGL2Options,
+    { deviceIndependent: true },
+  );
 }

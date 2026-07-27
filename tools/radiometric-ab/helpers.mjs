@@ -28,6 +28,89 @@ import { patchDeviceForPt } from "../lib/ptNagaGapFix.mjs";
 
 // ── Device acquisition ─────────────────────────────────────────────────────────
 
+const PT_DEVICE_IDENTITIES = new WeakMap();
+const PT_IDENTITY_LIMITS = Object.freeze([
+  "maxBindGroups",
+  "maxBindingsPerBindGroup",
+  "maxBufferSize",
+  "maxStorageBufferBindingSize",
+  "maxStorageBuffersPerShaderStage",
+  "maxStorageTexturesPerShaderStage",
+  "maxComputeInvocationsPerWorkgroup",
+  "maxComputeWorkgroupStorageSize",
+  "maxComputeWorkgroupsPerDimension",
+]);
+
+function runtimeIdentity() {
+  if (globalThis.Deno != null) {
+    return {
+      kind: "deno",
+      version: {
+        deno: globalThis.Deno.version.deno,
+        v8: globalThis.Deno.version.v8,
+        typescript: globalThis.Deno.version.typescript,
+      },
+      build: {
+        target: globalThis.Deno.build.target,
+        arch: globalThis.Deno.build.arch,
+        os: globalThis.Deno.build.os,
+        vendor: globalThis.Deno.build.vendor,
+        env: globalThis.Deno.build.env,
+      },
+    };
+  }
+  return {
+    kind: "node",
+    version: process.version,
+    platform: process.platform,
+    arch: process.arch,
+  };
+}
+
+function environmentValue(name) {
+  try {
+    if (globalThis.Deno != null) return globalThis.Deno.env.get(name) ?? null;
+    return process.env[name] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function selectedLimits(limits) {
+  return Object.fromEntries(PT_IDENTITY_LIMITS.map((name) => [
+    name,
+    Number(limits?.[name] ?? 0),
+  ]));
+}
+
+function adapterIdentity(info) {
+  const identity = {};
+  for (const field of [
+    "vendor",
+    "architecture",
+    "device",
+    "description",
+    "backend",
+    "driver",
+  ]) {
+    const value = info?.[field];
+    if (typeof value === "string") identity[field] = value;
+  }
+  return identity;
+}
+
+function cloneJson(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
+export function getPtDeviceIdentity(device) {
+  const identity = PT_DEVICE_IDENTITIES.get(device);
+  if (identity == null) {
+    throw new Error("GPUDevice was not acquired through acquirePtDevice; adapter identity is unavailable");
+  }
+  return cloneJson(identity);
+}
+
 export async function acquirePtDevice(wantsFullTier) {
   const adapter = await navigator.gpu.requestAdapter();
   if (!adapter) throw new Error("No WebGPU adapter — is VK_ICD_FILENAMES set?");
@@ -40,7 +123,98 @@ export async function acquirePtDevice(wantsFullTier) {
   }
   const bg = adapter.limits.maxBindGroups ?? 4;
   if (bg > 4) limits.maxBindGroups = bg;
-  return adapter.requestDevice(Object.keys(limits).length ? { requiredLimits: limits } : {});
+  let info = null;
+  try {
+    info = adapter.info ?? (
+      typeof adapter.requestAdapterInfo === "function"
+        ? await adapter.requestAdapterInfo()
+        : null
+    );
+  } catch {
+    info = null;
+  }
+  const device = await adapter.requestDevice(
+    Object.keys(limits).length ? { requiredLimits: limits } : {},
+  );
+  PT_DEVICE_IDENTITIES.set(device, {
+    schema: "vitrum.radiometric-ab.device-identity.v1",
+    adapter: adapterIdentity(info),
+    adapterFeatures: [...adapter.features].sort(),
+    deviceFeatures: [...device.features].sort(),
+    advertisedLimits: selectedLimits(adapter.limits),
+    requestedLimits: Object.fromEntries(
+      Object.entries(limits).sort(([a], [b]) => a.localeCompare(b)),
+    ),
+    runtime: runtimeIdentity(),
+    vulkanIcdFilenames: environmentValue("VK_ICD_FILENAMES"),
+  });
+  return device;
+}
+
+const PT_SEED_MULTIPLIER = 6364136223846793005n;
+const PT_SEED_INCREMENT = 1442695040888963407n;
+const PT_RUN_SEED_STRIDE = 97n;
+
+export const PT_RADIOMETRIC_SEED_SCHEDULE = Object.freeze({
+  schema: "vitrum.radiometric-ab.seed-schedule.v1",
+  arithmetic: "unsigned-32-bit-wrap",
+  multiplier: PT_SEED_MULTIPLIER.toString(),
+  increment: PT_SEED_INCREMENT.toString(),
+  runStride: PT_RUN_SEED_STRIDE.toString(),
+  meanFormula: "u32((frame + seedOffset) * multiplier + increment)",
+  varianceFormula:
+    "u32((run * framesPerRun + frame) * multiplier + increment + run * runStride)",
+});
+
+function nonNegativeSafeInteger(value, label) {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new RangeError(`${label} must be a non-negative safe integer (got ${value})`);
+  }
+}
+
+export function ptRadiometricFrameSeed(frame, seedOffset = 0) {
+  nonNegativeSafeInteger(frame, "frame");
+  nonNegativeSafeInteger(seedOffset, "seedOffset");
+  return Number(BigInt.asUintN(
+    32,
+    BigInt(frame + seedOffset) * PT_SEED_MULTIPLIER + PT_SEED_INCREMENT,
+  ));
+}
+
+export function ptRadiometricRunFrameSeed(run, frame, framesPerRun) {
+  nonNegativeSafeInteger(run, "run");
+  nonNegativeSafeInteger(frame, "frame");
+  nonNegativeSafeInteger(framesPerRun, "framesPerRun");
+  if (frame >= framesPerRun) {
+    throw new RangeError(`frame ${frame} must be smaller than framesPerRun ${framesPerRun}`);
+  }
+  const globalFrame = BigInt(run * framesPerRun + frame);
+  return Number(BigInt.asUintN(
+    32,
+    globalFrame * PT_SEED_MULTIPLIER +
+      PT_SEED_INCREMENT +
+      BigInt(run) * PT_RUN_SEED_STRIDE,
+  ));
+}
+
+export function ptRadiometricSeedManifest(meanFrames, varianceRuns, varianceFramesPerRun) {
+  nonNegativeSafeInteger(meanFrames, "meanFrames");
+  nonNegativeSafeInteger(varianceRuns, "varianceRuns");
+  nonNegativeSafeInteger(varianceFramesPerRun, "varianceFramesPerRun");
+  return {
+    ...PT_RADIOMETRIC_SEED_SCHEDULE,
+    meanFrameSeeds: Array.from(
+      { length: meanFrames },
+      (_, frame) => ptRadiometricFrameSeed(frame),
+    ),
+    varianceRunFrameSeeds: Array.from(
+      { length: varianceRuns },
+      (_, run) => Array.from(
+        { length: varianceFramesPerRun },
+        (_, frame) => ptRadiometricRunFrameSeed(run, frame, varianceFramesPerRun),
+      ),
+    ),
+  };
 }
 
 // ── Camera ─────────────────────────────────────────────────────────────────────
@@ -167,7 +341,9 @@ export function buildCornellScene() {
   const emitters = [
     { kind: "rect-area", id: "ceiling-light",
       position: [0, 0.95, 0],
-      uAxis: [0, 0, 0.2], vAxis: [0.2, 0, 0],
+      // Core contract: uAxis × vAxis is the emission normal. Point it into
+      // the Cornell box (-Y), not out through the ceiling.
+      uAxis: [0.2, 0, 0], vAxis: [0, 0, 0.2],
       color: [1,1,1], intensity: 12.0 },
   ];
 
@@ -333,13 +509,102 @@ function splitHarnessOptions(engineOpts) {
   const {
     requireFullTier = false,
     requireRadiometricSignal = false,
+    seedOffset = 0,
+    captureRestirPtReservoirStats = false,
     ...ptOptions
   } = engineOpts;
-  return { requireFullTier, requireRadiometricSignal, ptOptions };
+  if (!Number.isSafeInteger(seedOffset) || seedOffset < 0) {
+    throw new RangeError(`seedOffset must be a non-negative safe integer (got ${seedOffset})`);
+  }
+  return { requireFullTier, requireRadiometricSignal, seedOffset, captureRestirPtReservoirStats, ptOptions };
+}
+
+const RESTIR_PT_RESERVOIR_WORDS = 56;
+const RESTIR_PT_RESERVOIR_BYTES = RESTIR_PT_RESERVOIR_WORDS * 4;
+
+function quantile(sorted, q) {
+  if (sorted.length === 0) return 0;
+  const index = Math.min(sorted.length - 1, Math.max(0, Math.floor(q * (sorted.length - 1))));
+  return sorted[index];
+}
+
+async function summarizeRestirPtReservoir(device, source, pixelCount, diagnosticClamp = 10) {
+  const byteSize = pixelCount * RESTIR_PT_RESERVOIR_BYTES;
+  const readback = device.createBuffer({
+    label: 'vitrum.radiometric-ab.restirPt.reservoir-readback',
+    size: byteSize,
+    usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+  });
+  try {
+    const encoder = device.createCommandEncoder({ label: 'vitrum.radiometric-ab.restirPt.reservoir-copy' });
+    encoder.copyBufferToBuffer(source, 0, readback, 0, byteSize);
+    device.queue.submit([encoder.finish()]);
+    await readback.mapAsync(GPUMapMode.READ);
+    const bytes = new Uint8Array(readback.getMappedRange()).slice();
+    readback.unmap();
+    const u32 = new Uint32Array(bytes.buffer, bytes.byteOffset, bytes.byteLength / 4);
+    const f32 = new Float32Array(bytes.buffer, bytes.byteOffset, bytes.byteLength / 4);
+    const weights = [];
+    const sourcePdfs = [];
+    let totalWeight = 0;
+    let clippedWeightMass = 0;
+    let aboveDiagnosticClampCount = 0;
+    for (let pixel = 0; pixel < pixelCount; pixel++) {
+      const base = pixel * RESTIR_PT_RESERVOIR_WORDS;
+      const candidateCount = u32[base + 15];
+      const weight = f32[base + 7];
+      const sourcePdf = f32[base + 19];
+      if (candidateCount === 0) continue;
+      if (!Number.isFinite(weight) || weight < 0 || !Number.isFinite(sourcePdf) || sourcePdf < 0) {
+        throw new Error(`non-finite/negative resolved reservoir at pixel ${pixel}: W=${weight}, pdfSrc=${sourcePdf}`);
+      }
+      if (weight <= 0) continue;
+      weights.push(weight);
+      sourcePdfs.push(sourcePdf);
+      totalWeight += weight;
+      if (weight > diagnosticClamp) {
+        aboveDiagnosticClampCount++;
+        clippedWeightMass += weight - diagnosticClamp;
+      }
+    }
+    weights.sort((a, b) => a - b);
+    sourcePdfs.sort((a, b) => a - b);
+    const nonEmptyCount = weights.length;
+    return {
+      pixelCount,
+      nonEmptyCount,
+      nonEmptyFraction: nonEmptyCount / pixelCount,
+      weight: {
+        min: weights[0] ?? 0,
+        p50: quantile(weights, 0.50),
+        p90: quantile(weights, 0.90),
+        p95: quantile(weights, 0.95),
+        p99: quantile(weights, 0.99),
+        max: weights.at(-1) ?? 0,
+        mean: nonEmptyCount > 0 ? totalWeight / nonEmptyCount : 0,
+      },
+      sourcePdf: {
+        min: sourcePdfs[0] ?? 0,
+        p50: quantile(sourcePdfs, 0.50),
+        p90: quantile(sourcePdfs, 0.90),
+        p99: quantile(sourcePdfs, 0.99),
+        max: sourcePdfs.at(-1) ?? 0,
+      },
+      diagnosticClamp,
+      totalWeight,
+      aboveDiagnosticClampCount,
+      aboveDiagnosticClampFraction: nonEmptyCount > 0 ? aboveDiagnosticClampCount / nonEmptyCount : 0,
+      clippedWeightMass,
+      clippedWeightMassFraction: totalWeight > 0 ? clippedWeightMass / totalWeight : 0,
+    };
+  } finally {
+    try { readback.unmap(); } catch { /* already unmapped or never mapped */ }
+    readback.destroy();
+  }
 }
 
 function assertRequiredTier(engine, requireFullTier, label) {
-  const resolvedLite = engine.capabilities.experimentalFeatures?.has("pt-webgpu-lite-tier") === true;
+  const resolvedLite = engine.backendProfileId === "pt-webgpu-lite";
   if (requireFullTier && resolvedLite) {
     throw new Error(
       `${label} requires pt-webgpu full tier, but the adapter resolved to lite. ` +
@@ -373,7 +638,13 @@ function assertRadiometricSignal(rgba, requireRadiometricSignal, label) {
  * @returns {Promise<{rgba: Float32Array, W: number, H: number, samples: number, device: GPUDevice, engine: object}>}
  */
 export async function renderScene(engineOpts, scene, totalFrames, device = null) {
-  const { requireFullTier, requireRadiometricSignal, ptOptions } = splitHarnessOptions(engineOpts);
+  const {
+    requireFullTier,
+    requireRadiometricSignal,
+    seedOffset,
+    captureRestirPtReservoirStats,
+    ptOptions,
+  } = splitHarnessOptions(engineOpts);
   const bdptOn = ptOptions.bdpt === true;
   const isLite = ptOptions.traceTier === "lite";
   let ownDevice = false;
@@ -382,10 +653,25 @@ export async function renderScene(engineOpts, scene, totalFrames, device = null)
     ownDevice = true;
   }
 
+  const reservoirBuffers = new Map();
+  const originalCreateBuffer = device.createBuffer.bind(device);
+  if (captureRestirPtReservoirStats) {
+    device.createBuffer = (descriptor) => {
+      const buffer = originalCreateBuffer(descriptor);
+      if (
+        descriptor.label === 'vitrum.pt-webgpu.restirPt.reservoir.prev' ||
+        descriptor.label === 'vitrum.pt-webgpu.restirPt.reservoir.spatial'
+      ) {
+        reservoirBuffers.set(descriptor.label, buffer);
+      }
+      return buffer;
+    };
+  }
   const unpatch = patchDeviceForPt(device, bdptOn);
   let engine = null;
   let rgba = null;
   let samples = 0;
+  let restirPtReservoirStats = null;
   let errorMsg = null;
 
   const { proj, view } = makePtCamera(W, H);
@@ -402,7 +688,7 @@ export async function renderScene(engineOpts, scene, totalFrames, device = null)
     engine.setScene(scene);
 
     for (let frame = 0; frame < totalFrames; frame++) {
-      const seed = Number(BigInt.asUintN(32, BigInt(frame) * 6364136223846793005n + 1442695040888963407n));
+      const seed = ptRadiometricFrameSeed(frame, seedOffset);
       engine.renderFrame({
         viewMatrix: view,
         projMatrix: proj,
@@ -414,6 +700,17 @@ export async function renderScene(engineOpts, scene, totalFrames, device = null)
       await device.queue.onSubmittedWorkDone();
     }
     samples = totalFrames;
+
+    if (captureRestirPtReservoirStats) {
+      const resolvedLabel = totalFrames % 2 === 0
+        ? 'vitrum.pt-webgpu.restirPt.reservoir.prev'
+        : 'vitrum.pt-webgpu.restirPt.reservoir.spatial';
+      const resolved = reservoirBuffers.get(resolvedLabel);
+      if (resolved == null) {
+        throw new Error(`did not capture the resolved ReSTIR-PT reservoir buffer ${resolvedLabel}`);
+      }
+      restirPtReservoirStats = await summarizeRestirPtReservoir(device, resolved, W * H);
+    }
 
     // captureFrame with colorSpace:'linear' → raw accumTexture (pre-tonemap float32)
     const captured = await engine.captureFrame({ colorSpace: "linear" });
@@ -427,12 +724,23 @@ export async function renderScene(engineOpts, scene, totalFrames, device = null)
     errorMsg = e.message ?? String(e);
   } finally {
     unpatch();
+    if (captureRestirPtReservoirStats) device.createBuffer = originalCreateBuffer;
   }
 
   if (errorMsg) throw new Error(errorMsg);
   if (!rgba) throw new Error("No frame captured");
 
-  return { rgba, W, H, samples, device, engine, ownDevice };
+  return {
+    rgba,
+    W,
+    H,
+    samples,
+    device,
+    deviceIdentity: getPtDeviceIdentity(device),
+    engine,
+    ownDevice,
+    restirPtReservoirStats,
+  };
 }
 
 /**
@@ -440,9 +748,13 @@ export async function renderScene(engineOpts, scene, totalFrames, device = null)
  * Returns an array of N Float32 RGBA images (each from a fresh engine instance
  * seeded differently via frameIndex offsets).
  */
-export async function renderMultipleRuns(engineOpts, scene, framesPerRun, numRuns) {
+export async function renderMultipleRuns(engineOpts, scene, framesPerRun, numRuns, device = null) {
   const { requireFullTier, requireRadiometricSignal, ptOptions } = splitHarnessOptions(engineOpts);
-  const device = await acquirePtDevice(ptOptions.traceTier !== "lite");
+  let ownDevice = false;
+  if (!device) {
+    device = await acquirePtDevice(ptOptions.traceTier !== "lite");
+    ownDevice = true;
+  }
   const results = [];
   const bdptOn = ptOptions.bdpt === true;
   const unpatch = patchDeviceForPt(device, bdptOn);
@@ -463,17 +775,14 @@ export async function renderMultipleRuns(engineOpts, scene, framesPerRun, numRun
 
         engine.setScene(scene);
 
-        // Offset frame seeds per-run so runs are independent
-        const seedOffset = run * 97;
         for (let frame = 0; frame < framesPerRun; frame++) {
-          const globalFrame = run * framesPerRun + frame;
-          const seed = Number(BigInt.asUintN(32, BigInt(globalFrame) * 6364136223846793005n + 1442695040888963407n));
+          const seed = ptRadiometricRunFrameSeed(run, frame, framesPerRun);
           engine.renderFrame({
             viewMatrix: view,
             projMatrix: proj,
             cameraPosition: EYE,
             viewport: { width: W, height: H, devicePixelRatio: 1 },
-            frameIndex: frame, frameSeed: seed + seedOffset,
+            frameIndex: frame, frameSeed: seed,
             quality: { samplesTarget: framesPerRun, bounces: 6, resolutionFactor: 1 },
           });
           await device.queue.onSubmittedWorkDone();
@@ -493,12 +802,18 @@ export async function renderMultipleRuns(engineOpts, scene, framesPerRun, numRun
     }
   } finally {
     unpatch();
-    try { device.destroy(); } catch { /* ignore */ }
+    if (ownDevice) {
+      try { device.destroy(); } catch { /* ignore */ }
+    }
   }
 
   if (results.length !== numRuns) {
     throw new Error(`renderMultipleRuns expected ${numRuns} captures, got ${results.length}`);
   }
+  Object.defineProperty(results, "deviceIdentity", {
+    value: getPtDeviceIdentity(device),
+    enumerable: false,
+  });
   return results;
 }
 

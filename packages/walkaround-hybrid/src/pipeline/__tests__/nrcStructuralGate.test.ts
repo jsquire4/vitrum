@@ -2,11 +2,11 @@
 //
 // NRC is allowed to change the gi-ris pipeline structure only when explicitly
 // opted in. The default ReSTIR-GI path must keep the 4-group DDGI-estimate
-// module; the NRC variant adds @group(4) plus a 5th bind group layout.
+// module; the NRC variant adds two packed storage arenas inside group 3 while
+// preserving the portable four-group layout.
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { compilePipelines } from '../pipelineCompiler.js';
-import type { BGLCache } from '../../bglTypes.js';
 import type { RisGiNrcConfig } from '../../shaders/risGiNrc.wgsl.js';
 
 interface RecordedLayout {
@@ -112,7 +112,7 @@ describe('NRC structural gate', () => {
   it('keeps the default gi-ris pass on the 4-group non-NRC module', async () => {
     const stub = makeCompileStub();
 
-    await compilePipelines(stub.device, {} as BGLCache, 'bgra8unorm');
+    await compilePipelines(stub.device, {}, 'bgra8unorm');
 
     expect(risGiGroupCount(stub.computePipelines)).toBe(4);
     const source = stub.shaderSources.get('risGi') ?? '';
@@ -121,15 +121,17 @@ describe('NRC structural gate', () => {
     expect(source).not.toContain('nrcWriteRecord');
   });
 
-  it('adds the 5th NRC bind group and NRC shader symbols only when nrcConfig is provided', async () => {
+  it('adds packed NRC arenas to group 3 only when nrcConfig is provided', async () => {
     const stub = makeCompileStub();
 
-    await compilePipelines(stub.device, {} as BGLCache, 'bgra8unorm', { nrcConfig });
+    await compilePipelines(stub.device, {}, 'bgra8unorm', { nrcConfig });
 
-    expect(risGiGroupCount(stub.computePipelines)).toBe(5);
+    expect(risGiGroupCount(stub.computePipelines)).toBe(4);
     const source = stub.shaderSources.get('risGi') ?? '';
-    expect(source).toContain('@group(4)');
-    expect(source).toContain('nrcWeights');
+    expect(source).not.toContain('@group(4)');
+    expect(source).toContain('@group(3) @binding(7)');
+    expect(source).toContain('nrcInferenceArena');
+    expect(source).toContain('nrcRuntimeArena');
     expect(source).toContain('nrcWriteRecord');
   });
 });

@@ -19,7 +19,12 @@ function quad(id: string, v: [number, number, number][]): MeshPrimitive {
     kind: 'mesh',
     id,
     positions: new Float32Array([...v[0]!, ...v[1]!, ...v[2]!, ...v[3]!]),
-    normals: new Float32Array(12),
+    normals: new Float32Array([
+      0, 0, 1,
+      0, 0, 1,
+      0, 0, 1,
+      0, 0, 1,
+    ]),
     uvs: new Float32Array(8),
     indices: new Uint32Array([0, 2, 1, 2, 0, 3]),
     material: GREY,
@@ -164,6 +169,24 @@ describe('BVH texture adapter — packed textures traverse correctly (vs brute f
     }
     expect(tested).toBe(60);
     expect(hits).toBeGreaterThan(0); // the sweep actually hits geometry (the test isn't vacuous)
+  });
+});
+
+describe('empty scene traversal sentinel', () => {
+  it('encodes root texel zero as a bounded zero-triangle leaf', () => {
+    const empty: Scene = {
+      primitives: [],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+    const packed = mergeWorldSpaceFromCore(empty, { positionStride: 4 });
+    const data = packBvhTextureData(packed);
+
+    expect(data.nodeCount).toBe(1);
+    expect(data.triangleCount).toBe(0);
+    expect(data.contents[0]).toBe(0xffff0000);
+    expect(data.contents[1]).toBe(0);
+    expect(traverseBvh(data, [0, 0, 1], [0, 0, -1]).tri).toBe(-1);
   });
 });
 

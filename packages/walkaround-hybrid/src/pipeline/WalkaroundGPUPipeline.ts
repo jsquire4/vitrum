@@ -44,8 +44,19 @@ import type { InferenceGraph } from '../neural/InferenceGraph.js';
 import type { ModelWeights } from '../neural/weights.js';
 import { updateUBO } from './uboUpdater.js';
 import { compilePipelines } from './pipelineCompiler.js';
+import type { CollectedBvhMutation } from './CollectingBvhUpdateSink.js';
 import { BvhBufferHost } from './BvhBufferHost.js';
-import { estimateFrameResourcesMemory, type GpuMemoryExternalSections } from './gpuMemoryEstimate.js';
+import {
+  prepareSceneMutations,
+  rethrowWithSceneMutationCleanup,
+  runSceneMutationCleanups,
+  type PreparedSceneMutation,
+  type SceneMutationCleanup,
+} from '../SceneMutationTransaction.js';
+import {
+  estimateFrameResourcesMemory,
+  type GpuMemoryExternalSections,
+} from './gpuMemoryEstimate.js';
 import type { GpuMemoryBreakdown } from '@vitrum/core';
 import {
   createFrameResources,
@@ -62,22 +73,21 @@ import {
 } from './pipelineBindGroupFactory.js';
 import { PipelineResourceCache } from './PipelineResourceCache.js';
 import { PPGCoordinator } from './PPGCoordinator.js';
-import { NrcSubsystem } from '../neural/nrc/nrcSubsystem.js';
+import {
+  DEFAULT_NRC_CONFIG,
+  NrcSubsystem,
+  resolveNrcConfig,
+  type NrcConfig,
+} from '../neural/nrc/nrcSubsystem.js';
+import { computeNrcResourceFootprint, preflightNrcResources } from '../neural/nrc/nrcPreflight.js';
+import type { NrcDiagnostics } from '../neural/nrc/nrcDiagnostics.js';
+import { fusedMlpWorkgroupStorageBytes } from '../neural/nrc/wgsl/fusedMlp.wgsl.js';
 import { ReGIRCoordinator, resolveReGIRConfig, type ReGIRConfig } from './ReGIRCoordinator.js';
 import { OptionalSubsystemBindingState } from './OptionalSubsystemBindingState.js';
-import {
-  DenoiserRegistry,
-  type Denoiser,
-  type DenoiserId,
-} from './denoisers/index.js';
+import { DenoiserRegistry, type Denoiser, type DenoiserId } from './denoisers/index.js';
 import { registerBuiltinDenoisers } from './denoisers/registerBuiltinDenoisers.js';
 import { PassRegistry } from './PassRegistry.js';
-import type {
-  Pass,
-  PassDispatchContext,
-  PassFrameState,
-  PassGateOptions,
-} from './Pass.js';
+import type { Pass, PassDispatchContext, PassFrameState, PassGateOptions } from './Pass.js';
 import {
   AtrousIndirectPass,
   CheckerboardPrefillPass,
@@ -115,19 +125,43 @@ import {
   type TimestampState,
   type PassLabel,
 } from './timestampQueries.js';
-import { reservoirGiStrideU32ForRestirPtReuse } from '../gi/giLayout.js';
-import type { RestirGISnapshot } from '../giStateSnapshot.js';
+import { reservoirGiStrideU32ForGrisReuse } from '../gi/giLayout.js';
+import {
+  isValidRestirGISnapshot,
+  type RestirGISnapshot,
+} from '../giStateSnapshot.js';
+
+/**
+ * Prepared ReSTIR-GI restore. Candidate buffers are fully populated before
+ * this handle is returned; commit only publishes their identities, while abort
+ * retires them without touching the live reservoir cohort.
+ */
+export interface RestirGIReservoirImportTransaction {
+  commit(): void;
+  abort(): void;
+}
 
 // D3.5 — PipelineFrame* interfaces extracted to pipelineFrameInputs.ts.
 // Re-exported here for back-compat (test harnesses import PipelineFrameInputs
 // and PipelineFrameFilter from this path).
-export type {
-  PipelineFrameFilter,
-  PipelineFrameInputs,
-} from './pipelineFrameInputs.js';
-import type {
-  PipelineFrameInputs,
-} from './pipelineFrameInputs.js';
+export type { PipelineFrameFilter, PipelineFrameInputs } from './pipelineFrameInputs.js';
+import type { PipelineFrameInputs } from './pipelineFrameInputs.js';
+import {
+  FramePublicationTransaction,
+  finishSubmitAndPublishFrame,
+  type FramePublication,
+} from './FramePublication.js';
+
+export function resolvePpgDispatchInterval(interval: number): number {
+  if (!Number.isFinite(interval)
+      || interval <= 0
+      || interval > Number.MAX_SAFE_INTEGER) {
+    throw new RangeError(
+      `PPG dispatch interval must be finite and positive; got ${interval}`,
+    );
+  }
+  return Math.max(1, Math.floor(interval));
+}
 
 /**
  * Dependencies the {@link registerPasses} free function needs to construct +
@@ -140,7 +174,7 @@ import type {
 interface RegisterPassesDeps {
   diSpatialPasses: 1 | 2;
   giSpatialPasses: 1 | 2;
-  restirPtReuseStructural: boolean;
+  grisReuseStructural: boolean;
   /** Checkerboard half-res shading flag (host opt-in). Threaded into the
    *  ResolvePass + CheckerboardPrefillPass ctors; OFF ⇒ passthrough
    *  (byte-identity). */
@@ -157,8 +191,6 @@ interface RegisterPassesDeps {
   regir: ReGIRCoordinator;
   bglCache: BGLCache;
   bvhBuffers: SceneBVHBuffers;
-  /** @group(4) NRC bind-group getter, or `undefined` when NRC is off. */
-  nrcBindGroup: (() => GPUBindGroup) | undefined;
   /** Per-frame NRC slot-claim clear encoder, or `undefined` when NRC is off. */
   nrcClearSlotClaims: ((encoder: GPUCommandEncoder) => void) | undefined;
   getActiveDenoiser: () => Denoiser;
@@ -166,7 +198,6 @@ interface RegisterPassesDeps {
   isDenoiserPassEnabled: () => boolean;
   getRegirResources: () => {
     combinedLightTreeBuffer: GPUBuffer;
-    emitterBuffer: GPUBuffer;
     uboBuffer: GPUBuffer;
   };
 }
@@ -187,11 +218,13 @@ function registerPasses(
   deps: RegisterPassesDeps,
 ): { registry: PassRegistry; compositePass: CompositePass } {
   const registry = new PassRegistry();
-  registry.register(new SampleBudgetPass(
-    compiled.sampleBudgetPipeline,
-    deps.sampleBudgetUboRef,
-    deps.sampleCountUboRef,
-  ));
+  registry.register(
+    new SampleBudgetPass(
+      compiled.sampleBudgetPipeline,
+      deps.sampleBudgetUboRef,
+      deps.sampleCountUboRef,
+    ),
+  );
   registry.register(new RISPass(compiled.risPipeline));
   registry.register(new TemporalReservoirPass(compiled.temporalPipeline));
   // Phase-0 — spatial pass count is preset-driven (1 or 2 ping-pong passes).
@@ -199,13 +232,28 @@ function registerPasses(
   // NRC ON ⇒ supply the @group(4) bind group getter so the gi-ris pass binds
   // slot 4 (the inline-MLP variant was compiled). OFF ⇒ no getter, verbatim
   // 4-group dispatch (the default-path structure is unchanged).
-  registry.register(new RISGIPass(
-    compiled.risGiPipeline,
-    deps.nrcBindGroup,
-    deps.nrcClearSlotClaims,
-  ));
-  registry.register(new TemporalGIReservoirPass(compiled.temporalGiPipeline, deps.restirPtReuseStructural));
-  registry.register(new SpatialGIReservoirPass(compiled.spatialGiPipeline, deps.giSpatialPasses, deps.restirPtReuseStructural));
+  registry.register(
+    new RISGIPass(compiled.risGiPipeline, deps.nrcClearSlotClaims),
+  );
+  // Train from the initial RIS reservoir. Temporal reuse depends on this pass
+  // when PPG is compiled so the trainer sees the proposal with known q.
+  if (compiled.ppgUpdatePipeline) {
+    registry.register(new PPGUpdatePass(compiled.ppgUpdatePipeline));
+  }
+  registry.register(
+    new TemporalGIReservoirPass(
+      compiled.temporalGiPipeline,
+      deps.grisReuseStructural,
+      compiled.ppgUpdatePipeline !== undefined,
+    ),
+  );
+  registry.register(
+    new SpatialGIReservoirPass(
+      compiled.spatialGiPipeline,
+      deps.giSpatialPasses,
+      deps.grisReuseStructural,
+    ),
+  );
   registry.register(new ShadePass(compiled.shadePipeline));
   registry.register(new MotionVectorsPass(compiled.motionVectorsPipeline));
   registry.register(new GTAOPass(compiled.gtaoPipeline));
@@ -215,42 +263,40 @@ function registerPasses(
   // checkerboardOn AND the active denoiser is one of the four real denoisers.
   // Byte-identical to today when checkerboard is off or a default denoiser
   // is active.
-  registry.register(new CheckerboardPrefillPass(
-    compiled.cbPrefillPipeline,
-    deps.cbPrefillUboRef,
-    deps.checkerboard,
-  ));
+  registry.register(
+    new CheckerboardPrefillPass(
+      compiled.cbPrefillPipeline,
+      deps.cbPrefillUboRef,
+      deps.checkerboard,
+    ),
+  );
   // Virtual pass — promotes the polymorphic denoiser dispatch into the
   // regular pass loop. Reads the active Denoiser through a getter so
   // the adapter stays valid across `_activeDenoiser` reassignment in
   // `dispose()` (where it is set to null AFTER the pass-list dispose
   // walk, so the getter never sees the null transition).
-  registry.register(new DenoiserAdapterPass(
-    deps.getActiveDenoiser,
-    deps.getAtrousPipeline,
-    deps.isDenoiserPassEnabled,
-  ));
-  registry.register(new IndirectTemporalAccumPass(
-    compiled.indirectTemporalAccumPipeline,
-    deps.indirectAccumPingPongRef,
-  ));
-  registry.register(new AtrousIndirectPass(
-    compiled.atrousPipeline,
-    deps.atrousIndirectUboRef,
-  ));
+  registry.register(
+    new DenoiserAdapterPass(
+      deps.getActiveDenoiser,
+      deps.getAtrousPipeline,
+      deps.isDenoiserPassEnabled,
+    ),
+  );
+  registry.register(
+    new IndirectTemporalAccumPass(
+      compiled.indirectTemporalAccumPipeline,
+      deps.indirectAccumPingPongRef,
+    ),
+  );
+  registry.register(new AtrousIndirectPass(compiled.atrousPipeline, deps.atrousIndirectUboRef));
   registry.register(new IndirectCombinePass(compiled.indirectCombinePipeline));
   registry.register(new TransparentOitPass(compiled.transparentOitPipeline));
   registry.register(new TemporalAccumPass(compiled.accumPipeline, deps.accumUboRef));
-  registry.register(new ResolvePass(compiled.resolvePipeline, deps.resolveUboRef, deps.checkerboard));
+  registry.register(
+    new ResolvePass(compiled.resolvePipeline, deps.resolveUboRef, deps.checkerboard),
+  );
   const compositePass = new CompositePass(compiled.compositePipeline, deps.compositeUboRef);
   registry.register(compositePass);
-  // PPG update pass — only register when the pipeline compiled successfully.
-  // The `gates()` predicate gates dispatch on `opts.ppgEnabled` so they
-  // can be registered unconditionally here, but skipping registration
-  // when the pipeline is undefined avoids holding a stale field.
-  if (compiled.ppgUpdatePipeline) {
-    registry.register(new PPGUpdatePass(compiled.ppgUpdatePipeline));
-  }
   // ReGIR grid-build (Boksansky 2021) — register only when the pipeline
   // compiled (opt-in). Topo-sort runs it FIRST (no deps; `regir-build` <
   // `sample-budget` lexically) so the grid is filled before RIS reads it.
@@ -258,122 +304,185 @@ function registerPasses(
   // Initialise the coordinator's grid geometry first so `live` is correct.
   deps.regir.initialize(deps.bvhBuffers, compiled.regirBuildPipeline !== undefined);
   if (compiled.regirBuildPipeline) {
-    registry.register(new ReGIRBuildPass(
-      compiled.regirBuildPipeline,
-      deps.regir,
-      deps.bglCache,
-      deps.getRegirResources,
-    ));
+    registry.register(
+      new ReGIRBuildPass(
+        compiled.regirBuildPipeline,
+        deps.regir,
+        deps.bglCache,
+        deps.getRegirResources,
+      ),
+    );
   }
   return { registry, compositePass };
 }
 
 /**
- * WebGPU device limits required by the layered-hybrid shade pipeline.
+ * Device limits required by the actual explicit pipeline layouts created in
+ * pipelineCompiler.ts. These are hard minima, not headroom:
  *
- * The composed ReSTIR shade pass declares 16 storage buffers:
- *   - 4 frame buffers (current + previous + spatial + GI reservoirs)
- *   - 6 merged-scene buffers (BVH nodes / index / position / emitters / CDF / normals)
- *   - 5 TLAS buffers (declared for full BGL compatibility)
- *   - 1 RC cascade-0 buffer (via sampleCascadeC0)
+ * - 8 storage buffers: RIS/shade/GI-RIS (packed scene/PPG/NRC arenas)
+ * - 7 storage textures: transparent-OIT (frame's six + OIT output)
+ * - 16 sampled textures: NRC GI-RIS (frame + scene + UBO + hybrid layers)
  *
- * WebGPU's default `maxStorageBuffersPerShaderStage` is 8. Library
- * consumers must pass these `requiredLimits` when calling
- * `navigator.gpu.requestAdapter().requestDevice({...})` or via the
- * three.js WebGPURenderer constructor's `requiredLimits` option.
- *
- * Caller pattern:
- *   const renderer = new WebGPURenderer({
- *     ...,
- *     requiredLimits: HYBRID_WEBGPU_REQUIRED_LIMITS,
- *   });
+ * The companion layout-derivation test records the real bind-group descriptors
+ * and recomputes all three peaks. If a layout changes, the test fails until this
+ * public request-device contract changes with it.
  */
-export const HYBRID_WEBGPU_REQUIRED_LIMITS: Record<string, number> = {
-  maxStorageBuffersPerShaderStage: 16,
-  // Sprint 18 + SVGF object IDs — shade writes 6 storage textures
-  // simultaneously (hdrColorOut, gNormalDepthOut, hdrIndirectOut, hdrTotalOut,
-  // albedo, objectId), above the default cap of 4. Lift to 8 so future
-  // additions still have headroom.
-  maxStorageTexturesPerShaderStage: 8,
-};
+export const HYBRID_WEBGPU_REQUIRED_LIMITS: Readonly<Record<string, number>> = Object.freeze({
+  maxStorageBuffersPerShaderStage: 8,
+  maxStorageTexturesPerShaderStage: 7,
+  maxSampledTexturesPerShaderStage: 16,
+});
 
 /**
- * Phase-0 productization — reduced device limits for the hybrid **lite** tier
- * (Class B/C adapters that cannot satisfy the full 16-buffer / 8-texture
- * floor but can still run a degraded realtime path).
- *
- * The lite tier runs the SAME shade pipeline as full — there is no WGSL fork
- * (Deliverable 3 decision: runtime UBO/pass gating over an N× pipeline
- * permutation). The win is on the **storage-buffer axis**: lite forces the
- * merged-BVH path (`bvhMode:'merged'`) and RC-off configuration, so the live
- * non-TLAS/non-RC footprint is 10. The composed shader still declares the five
- * TLAS buffers plus the RC cascade-0 buffer; lite viability therefore depends
- * on inactive binding stripping in that merged/RC-off path until a true lite
- * WGSL fork exists. The **texture** floor stays at 6 because the shade pass
- * structurally writes six storage textures simultaneously — that cannot drop
- * without forking shade.wgsl, which the lite-tier decision explicitly avoids.
- *
- * NOTE: these numbers are a *hypothesis* until a device requested with these
- * limits actually compiles + binds the merged-path shade pipeline on real
- * hardware (Risk R3 in `plan/phase0-productization.md`). The full 16/8 were
- * themselves "lift for headroom" choices, not hard minima, so the lite values
- * are a conservative reduction. The GPU-validation harness confirms them; see
- * the HARDWARE-VALIDATION lite-tier entry. Both axes MUST stay strictly below
- * `HYBRID_WEBGPU_REQUIRED_LIMITS` (asserted by a unit test) so the adapter
- * profile's lite-vs-full verdict is monotone.
+ * Lite currently compiles the same explicit bind-group layouts as full. Runtime
+ * gates and merged BVH reduce memory/work, but WebGPU validates every entry in a
+ * pipeline layout, including bindings unused by a selected shader path. Lite
+ * therefore has the same structural device floor until it gains a real layout
+ * fork. Advertising 10/6 made compliant hosts request a device that could not
+ * create scene-bgl (11 storage buffers) or transparentOitLayout (7 storage
+ * textures).
  */
-export const HYBRID_LITE_LIMITS: Record<string, number> = {
-  // Merged-path peak (no 5 TLAS scene-group buffers vs the full 16).
-  maxStorageBuffersPerShaderStage: 10,
-  // Shade's 6 simultaneous storage-texture writes; cannot go lower
-  // without a shade.wgsl fork (the lite decision avoids that fork).
-  maxStorageTexturesPerShaderStage: 6,
-};
+export const HYBRID_LITE_LIMITS: Readonly<Record<string, number>> = HYBRID_WEBGPU_REQUIRED_LIMITS;
+
+const WEBGPU_DEFAULT_LIMITS = {
+  maxStorageBuffersPerShaderStage: 8,
+  maxStorageTexturesPerShaderStage: 4,
+  maxSampledTexturesPerShaderStage: 16,
+  maxBindGroups: 4,
+  maxComputeWorkgroupStorageSize: 16_384,
+} as const;
+
+function limitValue(limits: GPUSupportedLimits, key: string, fallback: number): number {
+  const value = (limits as unknown as Record<string, number | undefined>)[key];
+  return typeof value === 'number' ? value : fallback;
+}
+
+/** Strict public checker for hosts and tests with a real GPUSupportedLimits. */
+export function assertHybridDeviceCapable(limits: GPUSupportedLimits): void {
+  const failed = Object.entries(HYBRID_WEBGPU_REQUIRED_LIMITS)
+    .map(([key, required]) => ({
+      key,
+      required,
+      actual: limitValue(
+        limits,
+        key,
+        WEBGPU_DEFAULT_LIMITS[key as keyof typeof WEBGPU_DEFAULT_LIMITS] ?? 0,
+      ),
+    }))
+    .filter(({ actual, required }) => actual < required);
+  if (failed.length === 0) return;
+
+  throw new TypeError(
+    `[HybridEngine] device limits cannot create the walkaround-hybrid pipeline layouts: ` +
+      failed
+        .map(({ key, required, actual }) => `${key}=${actual} (requires >= ${required})`)
+        .join(', ') +
+      `. The host owns device creation — pass HYBRID_WEBGPU_REQUIRED_LIMITS as ` +
+      `requiredLimits to GPUAdapter.requestDevice(), or select another backend.`,
+  );
+}
 
 /**
- * Extra device limits required ONLY when `nrcEnabled` (opt-in NRC). These exceed
- * the WebGPU defaults (maxBindGroups 4, maxStorageBuffersPerShaderStage 8,
- * maxComputeWorkgroupStorageSize 16384), so a host that opts into NRC must create
- * the device with these in `requiredLimits`.
- * GPU validation (2026-05-29, V20) confirmed NRC-ON renders on the dzn/RTX-4090
- * lane; keep the explicit constants below as the live required-limit source of
- * truth. The pipeline throws a clear error at init if the device is under-spec
- * (host-owns-lifecycle), rather than failing cryptically in createComputePipeline.
- * NRC is full-tier only — these are additive to {@link HYBRID_WEBGPU_REQUIRED_LIMITS},
- * never applicable on the lite tier.
+ * Production GPUDevice.limits always reports every standard key. Some unit-test
+ * doubles intentionally expose only the one limit under test; do not reinterpret
+ * those partial objects as real adapters.
  */
-export const NRC_REQUIRED_MAX_BIND_GROUPS = 5; // the @group(4) NRC bind group
-export const NRC_REQUIRED_MAX_STORAGE_BUFFERS_PER_SHADER_STAGE = 22; // gi-ris frame 1 + scene 11 + hybrid layers 4 + NRC 6
-export const NRC_REQUIRED_WORKGROUP_STORAGE_BYTES = 24576; // fused-MLP workgroup tiles
+export function assertHybridDeviceCapableIfReported(
+  limits: GPUSupportedLimits | null | undefined,
+): void {
+  if (limits == null) return;
+  const reported = limits as unknown as Record<string, unknown>;
+  if (!Object.keys(HYBRID_WEBGPU_REQUIRED_LIMITS).every((key) => typeof reported[key] === 'number'))
+    return;
+  assertHybridDeviceCapable(limits);
+}
 
 /**
- * Throw a clear, host-actionable error if a device cannot satisfy NRC's extra
- * limits. Called at pipeline init when `nrcEnabled` (host-owns-lifecycle): the
- * host owns device creation, so the remedy is to add these to `requiredLimits`.
- * Mirrors the lite-tier forbid — fail early + legibly, not cryptically inside
- * createComputePipeline.
+ * NRC extends hybrid group(3) with two packed storage arenas. The resulting
+ * GI-RIS layout remains at the portable four-group / eight-storage floor.
+ * Its default f32 fused trainer emits exactly two 32x64 workgroup arrays:
+ * 2 * 32 * 64 * 4 = 16384 bytes.
  */
-export function assertNrcDeviceCapable(limits: GPUSupportedLimits): void {
-  const maxBindGroups = limits.maxBindGroups ?? 4;
-  const maxStorageBuffers = limits.maxStorageBuffersPerShaderStage ?? 8;
-  const maxWgStorage = limits.maxComputeWorkgroupStorageSize ?? 16384;
-  if (maxBindGroups < NRC_REQUIRED_MAX_BIND_GROUPS
-    || maxStorageBuffers < NRC_REQUIRED_MAX_STORAGE_BUFFERS_PER_SHADER_STAGE
-    || maxWgStorage < NRC_REQUIRED_WORKGROUP_STORAGE_BYTES) {
-    throw new TypeError(
-      `[HybridEngine] nrcEnabled requires a device created with `
-      + `maxBindGroups >= ${NRC_REQUIRED_MAX_BIND_GROUPS} (the @group(4) NRC group; `
-      + `default is 4), maxStorageBuffersPerShaderStage >= `
-      + `${NRC_REQUIRED_MAX_STORAGE_BUFFERS_PER_SHADER_STAGE} (gi-ris uses frame/scene/`
-      + `hybrid-layer storage plus NRC query/train buffers; default is 8), and `
-      + `maxComputeWorkgroupStorageSize >= `
-      + `${NRC_REQUIRED_WORKGROUP_STORAGE_BYTES} (the fused-MLP workgroup tiles; `
-      + `default is 16384), but this device reports maxBindGroups=${maxBindGroups}, `
-      + `maxStorageBuffersPerShaderStage=${maxStorageBuffers}, `
-      + `maxComputeWorkgroupStorageSize=${maxWgStorage}. The host owns device `
-      + `creation — request these in requiredLimits, or omit nrcEnabled.`,
-    );
-  }
+export const NRC_REQUIRED_MAX_BIND_GROUPS = 4;
+export const NRC_REQUIRED_MAX_STORAGE_BUFFERS_PER_SHADER_STAGE = 8;
+export const NRC_REQUIRED_WORKGROUP_STORAGE_BYTES = fusedMlpWorkgroupStorageBytes({
+  useF16: DEFAULT_NRC_CONFIG.useF16,
+  W: DEFAULT_NRC_CONFIG.width,
+  TILE_B: DEFAULT_NRC_CONFIG.tileB,
+});
+
+/** Device limits for the actual resolved NRC shape rather than the historical
+ * default trainer tile. */
+export function nrcWebGpuRequiredLimitsForConfig(
+  config: Partial<NrcConfig> = {},
+): Readonly<Record<string, number>> {
+  const resolved = resolveNrcConfig(config);
+  return Object.freeze({
+    ...HYBRID_WEBGPU_REQUIRED_LIMITS,
+    maxBindGroups: NRC_REQUIRED_MAX_BIND_GROUPS,
+    maxStorageBuffersPerShaderStage: NRC_REQUIRED_MAX_STORAGE_BUFFERS_PER_SHADER_STAGE,
+    maxComputeWorkgroupStorageSize:
+      computeNrcResourceFootprint(resolved).workgroupStorageBytes,
+  });
+}
+
+/** Optional WebGPU features implied by the resolved trainer precision. */
+export function nrcWebGpuRequiredFeaturesForConfig(
+  config: Partial<NrcConfig> = {},
+): readonly GPUFeatureName[] {
+  return resolveNrcConfig(config).useF16 ? ['shader-f16'] : [];
+}
+
+export const NRC_WEBGPU_REQUIRED_LIMITS: Readonly<Record<string, number>> =
+  nrcWebGpuRequiredLimitsForConfig(DEFAULT_NRC_CONFIG);
+
+export function assertNrcDeviceCapable(
+  limits: GPUSupportedLimits,
+  config: Partial<NrcConfig> = {},
+): void {
+  const resolved = resolveNrcConfig(config);
+  const required = {
+    maxBindGroups: NRC_REQUIRED_MAX_BIND_GROUPS,
+    maxStorageBuffersPerShaderStage: NRC_REQUIRED_MAX_STORAGE_BUFFERS_PER_SHADER_STAGE,
+    maxComputeWorkgroupStorageSize:
+      computeNrcResourceFootprint(resolved).workgroupStorageBytes,
+  } as const;
+  const failed = Object.entries(required)
+    .map(([key, minimum]) => ({
+      key,
+      minimum,
+      actual: limitValue(
+        limits,
+        key,
+        WEBGPU_DEFAULT_LIMITS[key as keyof typeof WEBGPU_DEFAULT_LIMITS] ?? 0,
+      ),
+    }))
+    .filter(({ actual, minimum }) => actual < minimum);
+  if (failed.length === 0) return;
+
+  throw new TypeError(
+    `[HybridEngine] nrcEnabled requires additional device limits: ` +
+      failed
+        .map(({ key, minimum, actual }) => `${key}=${actual} (requires >= ${minimum})`)
+        .join(', ') +
+      `. The host owns device creation — request these together with ` +
+      `HYBRID_WEBGPU_REQUIRED_LIMITS, or omit nrcEnabled.`,
+  );
+}
+
+export function assertNrcDeviceCapableIfReported(
+  limits: GPUSupportedLimits,
+  config: Partial<NrcConfig> = {},
+): void {
+  const reported = limits as unknown as Record<string, unknown>;
+  const keys = [
+    'maxBindGroups',
+    'maxStorageBuffersPerShaderStage',
+    'maxComputeWorkgroupStorageSize',
+  ] as const;
+  if (!keys.every((key) => typeof reported[key] === 'number')) return;
+  assertNrcDeviceCapable(limits, config);
 }
 
 /**
@@ -454,8 +563,10 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
   private _res!: FrameResources;
 
   // Temporal accumulator ping-pong state
-  private _accumPingPongIndex = 0;       // 0 = read A, write B; 1 = swap
+  private _accumPingPongIndex = 0; // 0 = read A, write B; 1 = swap
   private _accumFrameIndex = 0;
+  private _grisHistoryEpoch = 1;
+  private _grisHistoryClearPending = false;
   private _lastCameraPos: [number, number, number] = [0, 0, 0];
 
   // DDGI atlas binding state (layered hybrid). Owns the optional host-
@@ -517,13 +628,13 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
   private _gtaoDownscale: 2 | 4 = 2;
   private _diSpatialPasses: 1 | 2 = 2;
   private _giSpatialPasses: 1 | 2 = 2;
-  /** GRIS / ReSTIR-PT reconnection-shift reuse (restirPtReuse). COMPILE-TIME
+  /** GRIS DDGI-proxy reconnection-shift reuse (grisReuse). COMPILE-TIME
    *  gate: when true, the GI spatial + temporal pipelines are built with the
    *  two-group layout + GRIS shader and the passes bind the scene group at
    *  @group(1). When false (default) the GI passes are the verbatim Sprint-17
    *  single-group pipeline (the known-good default). Resolved once in
    *  initialize() from the host flag — NOT a per-frame UBO decision. */
-  private _restirPtReuseStructural = false;
+  private _grisReuseStructural = false;
   /** Checkerboard half-res shading (HybridEngineOptions.checkerboardRendering).
    *  OFF by default ⇒ the RIS pass, the two DI spatial passes, and shade.wgsl all
    *  run full-res + ResolvePass passes through (byte-identity); ON ⇒ RIS, both
@@ -573,7 +684,7 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
   private _passRegistry: PassRegistry | null = null;
   /** Sorted pass list cached at boot; reused across frames. */
   private _sortedPasses: readonly Pass[] = [];
-  /** T2.H2 — neural denoiser InferenceGraph; kept for future W10 wiring. */
+  /** Active neural graph handle; pipeline disposal releases its GPU resources. */
   private _inferenceGraph: InferenceGraph | null = null;
   /** Audit B8 — populated at initialize() time from HybridEngineOptions. */
   private _cameraMoveResetThresholdSq = DEFAULT_CAMERA_MOVE_RESET_THRESHOLD_SQ;
@@ -614,16 +725,16 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
    * `dispose()` loop does not double-destroy it.
    */
   private _atrousIndirectUboRef: PassOwnedUboRef = { buf: undefined, __passOwned: true };
-  private _accumUboRef: UboRef  = { buf: undefined };
+  private _accumUboRef: UboRef = { buf: undefined };
   // Sprint 9 — adaptive sampling UBOs.
   private _sampleBudgetUboRef: UboRef = { buf: undefined };
-  private _sampleCountUboRef:  UboRef = { buf: undefined };
-  private _resolveUboRef:      UboRef = { buf: undefined };
+  private _sampleCountUboRef: UboRef = { buf: undefined };
+  private _resolveUboRef: UboRef = { buf: undefined };
   /** Checkerboard pre-denoiser gap-fill UBO (16 bytes: screenW/H, frameParity, _pad). */
-  private _cbPrefillUboRef:    UboRef = { buf: undefined };
+  private _cbPrefillUboRef: UboRef = { buf: undefined };
   /** Tonemap / exposure / outputColorSpace per-frame UBO for the composite pass
    *  (2026-06-10: FrameQualitySettings.tonemap / .exposure / .outputColorSpace). */
-  private _compositeUboRef:    UboRef = { buf: undefined };
+  private _compositeUboRef: UboRef = { buf: undefined };
   private get _perPassUboRefs(): readonly UboRef[] {
     return [
       this._accumUboRef,
@@ -701,7 +812,7 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
     return {
       halfW,
       halfH,
-      strideU32: reservoirGiStrideU32ForRestirPtReuse(this._restirPtReuseStructural),
+      strideU32: reservoirGiStrideU32ForGrisReuse(this._grisReuseStructural),
       current,
       previous,
       spatial,
@@ -709,35 +820,180 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
   }
 
   /**
-   * Upload previously-exported ReSTIR-GI reservoir buffers into the live
-   * reservoirs (the reservoir half of the restore). Returns false (no-op) when
-   * not yet initialized, when the snapshot's half-res grid / stride don't match
-   * the current pipeline, or when the buffer length doesn't match the live
-   * reservoir buffers (a different render size).
-   *
-   * Restoring `previous` seeds the next frame's temporal reuse; restoring
-   * `current` keeps the immediate shade read consistent until `gi-ris` overwrites
-   * it. Uses `writeBuffer` (no 256-row alignment needed for buffer uploads).
+   * Non-mutating compatibility check for a ReSTIR-GI reservoir restore.
+   * HybridEngine runs this before publishing any other required GI section.
    */
-  importRestirGIReservoirs(device: GPUDevice, snap: RestirGISnapshot): boolean {
-    if (!this._initialized) return false;
+  canImportRestirGIReservoirs(snap: RestirGISnapshot): boolean {
+    if (
+      !this._initialized ||
+      snap == null ||
+      typeof snap !== 'object' ||
+      !isValidRestirGISnapshot(snap)
+    ) {
+      return false;
+    }
     const r = this._res.restirGI;
     const halfW = Math.max(1, Math.floor(this._width / 2));
     const halfH = Math.max(1, Math.floor(this._height / 2));
     if (
+      !(snap.current instanceof Uint32Array) ||
+      !(snap.previous instanceof Uint32Array) ||
+      !(snap.spatial instanceof Uint32Array) ||
       snap.halfW !== halfW ||
       snap.halfH !== halfH ||
-      snap.strideU32 !== reservoirGiStrideU32ForRestirPtReuse(this._restirPtReuseStructural)
+      snap.strideU32 !== reservoirGiStrideU32ForGrisReuse(this._grisReuseStructural)
     ) {
       return false; // grid / stride mismatch — cannot restore into a different reservoir layout
     }
-    const expectU32 = r.reservoirGiCurrentBuffer.size / 4;
-    if (snap.current.length !== expectU32 || snap.previous.length !== expectU32 || snap.spatial.length !== expectU32) {
-      return false; // buffer-size mismatch (different render size)
+    if (
+      r.reservoirGiCurrentBuffer === r.reservoirGiPreviousBuffer ||
+      r.reservoirGiCurrentBuffer === r.reservoirGiSpatialBuffer ||
+      r.reservoirGiPreviousBuffer === r.reservoirGiSpatialBuffer ||
+      r.reservoirGiCurrentBuffer.size !== r.reservoirGiPreviousBuffer.size ||
+      r.reservoirGiCurrentBuffer.size !== r.reservoirGiSpatialBuffer.size ||
+      r.reservoirGiCurrentBuffer.size <= 0 ||
+      r.reservoirGiCurrentBuffer.size % Uint32Array.BYTES_PER_ELEMENT !== 0
+    ) {
+      return false;
     }
-    this.#uploadReservoir(device, r.reservoirGiCurrentBuffer, snap.current);
-    this.#uploadReservoir(device, r.reservoirGiPreviousBuffer, snap.previous);
-    this.#uploadReservoir(device, r.reservoirGiSpatialBuffer, snap.spatial);
+    const expectU32 = r.reservoirGiCurrentBuffer.size / 4;
+    return (
+      snap.current.length === expectU32 &&
+      snap.previous.length === expectU32 &&
+      snap.spatial.length === expectU32
+    );
+  }
+
+  /**
+   * Populate a complete replacement reservoir cohort without publishing it.
+   * Every fallible allocation/map/upload step happens before commit, so a
+   * synchronous failure cannot leave one or two live buffers overwritten.
+   */
+  prepareRestirGIReservoirImport(
+    device: GPUDevice,
+    snap: RestirGISnapshot,
+  ): RestirGIReservoirImportTransaction | null {
+    if (
+      device !== this._device ||
+      !this.canImportRestirGIReservoirs(snap)
+    ) {
+      return null;
+    }
+    const live = this._res.restirGI;
+    const size = live.reservoirGiCurrentBuffer.size;
+    const usage =
+      GPUBufferUsage.STORAGE |
+      GPUBufferUsage.COPY_SRC |
+      GPUBufferUsage.COPY_DST;
+    const candidates: GPUBuffer[] = [];
+    const liveBuffers = new Set<GPUBuffer>([
+      live.reservoirGiCurrentBuffer,
+      live.reservoirGiPreviousBuffer,
+      live.reservoirGiSpatialBuffer,
+    ]);
+    try {
+      const createCandidate = (
+        label: string,
+        data: Uint32Array,
+      ): GPUBuffer => {
+        const candidate = device.createBuffer({
+          label,
+          size,
+          usage,
+          mappedAtCreation: true,
+        });
+        candidates.push(candidate);
+        if (
+          candidate.size !== size ||
+          liveBuffers.has(candidate) ||
+          candidates.slice(0, -1).includes(candidate)
+        ) {
+          throw new Error(
+            'ReSTIR-GI import candidate aliases a live or sibling buffer.',
+          );
+        }
+        const mapped = candidate.getMappedRange();
+        if (mapped.byteLength !== size) {
+          throw new Error(
+            'ReSTIR-GI import candidate exposed an unexpected mapped size.',
+          );
+        }
+        new Uint32Array(mapped).set(data);
+        candidate.unmap();
+        return candidate;
+      };
+      const current = createCandidate(
+        'reservoir-gi-current.import-candidate',
+        snap.current,
+      );
+      const previous = createCandidate(
+        'reservoir-gi-previous.import-candidate',
+        snap.previous,
+      );
+      const spatial = createCandidate(
+        'reservoir-gi-spatial.import-candidate',
+        snap.spatial,
+      );
+      const replacement = Object.freeze({
+        reservoirGiCurrentBuffer: current,
+        reservoirGiPreviousBuffer: previous,
+        reservoirGiSpatialBuffer: spatial,
+      });
+      // Cache invalidation is deliberately staged before DDGI publication by
+      // HybridEngine. If a future cache implementation can throw, the required
+      // atlas cohort is still untouched and these candidates are retired.
+      this._resourceCache.clear();
+
+      let state: 'prepared' | 'committed' | 'aborted' = 'prepared';
+      return {
+        commit: () => {
+          if (state !== 'prepared') return;
+          this._res.restirGI = replacement;
+          state = 'committed';
+          candidates.length = 0;
+          for (const buffer of liveBuffers) {
+            try {
+              buffer.destroy();
+            } catch {
+              // The replacement cohort is already live; retirement is best-effort.
+            }
+          }
+        },
+        abort: () => {
+          if (state !== 'prepared') return;
+          state = 'aborted';
+          for (const candidate of new Set(candidates)) {
+            if (liveBuffers.has(candidate)) continue;
+            try {
+              candidate.destroy();
+            } catch {
+              // Preserve the original prepare/DDGI failure.
+            }
+          }
+          candidates.length = 0;
+        },
+      };
+    } catch (error) {
+      for (const candidate of new Set(candidates)) {
+        if (liveBuffers.has(candidate)) continue;
+        try {
+          candidate.destroy();
+        } catch {
+          // Preserve the allocation/map/upload failure.
+        }
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Transactional one-shot reservoir restore for callers that do not need to
+   * coordinate it with another GI section.
+   */
+  importRestirGIReservoirs(device: GPUDevice, snap: RestirGISnapshot): boolean {
+    const transaction = this.prepareRestirGIReservoirImport(device, snap);
+    if (transaction == null) return false;
+    transaction.commit();
     return true;
   }
 
@@ -767,7 +1023,7 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
 
   /** copyBufferToBuffer (size is a multiple of 4) → MAP_READ → unpadded Uint32Array. */
   async #readbackReservoir(device: GPUDevice, src: GPUBuffer): Promise<Uint32Array> {
-    const bytes = src.size; // already 4-aligned (stride is 30 u32; floor is 256)
+    const bytes = src.size; // already 4-aligned (stride is 28 u32; floor is 256)
     const staging = device.createBuffer({
       size: bytes,
       usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
@@ -782,11 +1038,6 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
     return out;
   }
 
-  /** writeBuffer from a tightly-packed u32 array (buffer-to-buffer needs no row alignment). */
-  #uploadReservoir(device: GPUDevice, dst: GPUBuffer, data: Uint32Array): void {
-    device.queue.writeBuffer(dst, 0, data as Uint32Array<ArrayBuffer>, 0, data.length);
-  }
-
   /**
    * Narrow debug-texture handle set consumed by dev overlays
    * (`HybridEngineDebug.giSignalTextures`). Returns `null` before
@@ -799,20 +1050,23 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
   getDebugTextures(): PipelineDebugTextures | null {
     if (!this._initialized) return null;
     return {
-      hdrColorTexture:   this._res.common.hdrColorTexture ?? null,
+      hdrColorTexture: this._res.common.hdrColorTexture ?? null,
       hdrIndirectTexture: this._res.common.hdrIndirectTexture ?? null,
-      aoFullTexture:     this._res.gtao.aoFullTexture ?? null,
+      aoFullTexture: this._res.gtao.aoFullTexture ?? null,
     };
   }
 
   /**
    * Aux G-buffer views surfaced through `FrameRendered.{normalDepth, albedo,
-   * motionVectors}` (the `EngineCapabilities.supportsAuxBuffers` contract). All
-   * three are full-res + ALWAYS allocated (they are core GI / denoiser inputs),
+   * variance, motionVectors}` (the `EngineCapabilities.supportsAuxBuffers`
+   * contract). All four are full-res + always allocated (they are core GI /
+   * denoiser inputs),
    * so this never partially returns:
-   *   normalDepth   — rgba16float, xyz = world-space normal, w = linear depth.
+   *   normalDepth   — rgba16float, xyz = normal * 0.5 + 0.5,
+   *                   w = signed linear depth.
    *   albedo        — rgba16float, demodulated visible-point diffuse albedo
    *                   (Schied 2017 §4.1) — lighting × albedo = final colour.
+   *   variance      — rgba16float, freshest full-resolution Welford estimate.
    *   motionVectors — rgba32float, (dx, dy) screen-space pixels in .xy.
    * Descriptor-free views are cached while resources are stable; owned by the
    * pipeline — callers MUST NOT destroy them, and the handles are invalidated on
@@ -821,6 +1075,7 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
   getAuxBufferTextures(): {
     normalDepth: GPUTextureView;
     albedo: GPUTextureView;
+    variance: GPUTextureView;
     motionVectors: GPUTextureView;
   } | null {
     if (!this._initialized) return null;
@@ -828,6 +1083,11 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
     return {
       normalDepth: this._resourceCache.textureView(c.gNormalDepthTexture),
       albedo: this._resourceCache.textureView(c.albedoTexture),
+      variance: this._resourceCache.textureView(
+        this._activeDenoiser?.welfordPing === 1
+          ? c.varianceBufferAux
+          : c.varianceBuffer,
+      ),
       motionVectors: this._resourceCache.textureView(c.motionVectorTexture),
     };
   }
@@ -915,7 +1175,7 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
     } = {},
   ) {
     this._device = device;
-    this._width  = width;
+    this._width = width;
     this._height = height;
     this._onError = diagnostics.onError ?? null;
     this._onWarning = diagnostics.onWarning ?? null;
@@ -943,6 +1203,11 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
     return readTimestampsOnce(this._device, this._tsState, layout);
   }
 
+  /** Snapshot the active NRC subsystem's cumulative diagnostics. */
+  getNrcDiagnostics(): NrcDiagnostics | null {
+    return this._nrc?.diagnostics() ?? null;
+  }
+
   /** Upload BVH data + compile shaders. Must be called once before renderFrame. */
   async initialize(
     bvhBuffers: SceneBVHBuffers,
@@ -958,8 +1223,8 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
        *  which the checkerboard sparse path is forced full-rate for that frame
        *  (only consulted when `checkerboard` is on). Default 0.0009 (0.03²). */
       checkerboardMotionThresholdSq?: number;
-      /** T2.H2 — neural denoiser InferenceGraph (required when denoiser='neural').
-       *  Kept on the options surface for forward compatibility with W10. */
+      /** Neural denoiser graph, required when the resolved mode is `'neural'`.
+       *  Its device/dimensions are validated before wrapper publication. */
       inferenceGraph?: InferenceGraph;
       /** T2.H2 — host-provided neural weights retained for graph reinitialize on resize. */
       neuralWeights?: ModelWeights;
@@ -994,7 +1259,7 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
       diSpatialPasses?: 1 | 2;
       /** Phase-0 — ReSTIR-GI spatial ping-pong pass count (1 or 2). Default 2. */
       giSpatialPasses?: 1 | 2;
-      /** GRIS / ReSTIR-PT reconnection-shift reuse (Lin et al. 2022) — opt-in.
+      /** GRIS DDGI-proxy reconnection-shift reuse (Lin et al. 2022) — opt-in.
        *  COMPILE-TIME structural gate: when true, the GI spatial + temporal
        *  pipelines are built with a `@group(1)` scene BVH/TLAS group (for the
        *  reconnection-visibility ray) + the GRIS combine shader; when false
@@ -1002,8 +1267,8 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
        *  MUST be a compile-time decision — a runtime UBO flag that bound an
        *  extra group on the default path regressed the default render to an
        *  all-black frame (f8df9a4). Host opt-in via
-       *  `HybridEngineOptions.restirPtReuse`. */
-      restirPtReuse?: boolean;
+       *  `HybridEngineOptions.grisReuse`. */
+      grisReuse?: boolean;
       /** Checkerboard half-res shading (HybridEngineOptions.checkerboardRendering).
        *  OFF (default) ⇒ shade.wgsl + both DI spatial passes shade every pixel and
        *  ResolvePass passes through (byte-identical to the pre-checkerboard
@@ -1023,10 +1288,8 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
        *  GRIS-class regression (f8df9a4). Full-tier-only (the ctor forbids
        *  `tier:'lite' + nrcEnabled`). */
       nrcEnabled?: boolean;
-      /** NRC trainer windows required before cache substitution may replace DDGI. */
-      nrcWarmupSteps?: number;
-      /** NRC spread-termination constant `c`. */
-      nrcSpreadC?: number;
+      /** Complete NRC query/trainer/allocation contract. */
+      nrcConfig?: Partial<NrcConfig>;
       /** Phase-0 — PPG train-pass dispatch cadence. The update pass dispatches
        *  only on frames where `frameCount % N === 0`. `1`
        *  (default) trains every frame; `N > 1` skips off-interval frames. The
@@ -1043,18 +1306,45 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
       regirConfig?: Partial<ReGIRConfig>;
     },
   ): Promise<void> {
+    assertHybridDeviceCapableIfReported(this._device.limits);
+    let effectiveOptions = options;
+    if (options?.nrcEnabled === true) {
+      const resolvedNrcConfig = resolveNrcConfig(options.nrcConfig ?? {});
+      assertNrcDeviceCapableIfReported(this._device.limits, resolvedNrcConfig);
+      const aabb = deriveSceneAABBFromBvhPositions(bvhBuffers);
+      // Exact buffer/binding/workgroup/feature preflight runs before any
+      // pipeline-owned allocation. In particular, useF16 checks the actually
+      // enabled shader-f16 device feature rather than assuming the default f32
+      // trainer shape.
+      preflightNrcResources(
+        this._device,
+        resolvedNrcConfig,
+        aabb.min,
+        aabb.max,
+      );
+      effectiveOptions = { ...options, nrcConfig: resolvedNrcConfig };
+    }
     const { _width: W, _height: H } = this;
 
     // D3.1 — initialize() is now a sequencer of three private phases.
     // Exact statement order is preserved across the extraction boundary —
     // init order is load-bearing (each phase's outputs feed the next).
-    const { compiled, ppgEnabled } = await this.#initGpuResources(bvhBuffers, swapChainFormat, options);
-    await this.#initPasses(compiled, bvhBuffers, options);
-    this.#initSubsystems(bvhBuffers, ppgEnabled, W, H, options);
+    const { compiled, ppgEnabled } = await this.#initGpuResources(
+      bvhBuffers,
+      swapChainFormat,
+      effectiveOptions,
+    );
+    await this.#initPasses(compiled, bvhBuffers, effectiveOptions);
+    this.#initSubsystems(bvhBuffers, ppgEnabled, W, H, effectiveOptions);
 
     this._initialized = true;
-    if (options?.verbose) {
-      console.log('[ReSTIR] Pipeline initialized', { W, H, bvhNodes: bvhBuffers.bvhNodes.count, emitters: bvhBuffers.emitterCount });
+    if (effectiveOptions?.verbose) {
+      console.log('[ReSTIR] Pipeline initialized', {
+        W,
+        H,
+        bvhNodes: bvhBuffers.bvhNodes.count,
+        emitters: bvhBuffers.emitterCount,
+      });
     }
   }
 
@@ -1088,6 +1378,7 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
     // SAME buffer — see ReGIRCoordinator / regir.wgsl). `gridRegionBytes()` is
     // 0 when ReGIR is off ⇒ the light-tree buffer is byte-identical to before.
     this._regir = new ReGIRCoordinator(resolveReGIRConfig(options?.regirConfig));
+    this._regir.assertDeviceLimits(d);
     this._bvhHost.setRegirGridBytes(this._regir.gridRegionBytes());
 
     // ── Upload BVH buffers ────────────────────────────────────────────────
@@ -1111,17 +1402,18 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
     this._denoiserMode = options?.denoiser ?? 'atrous-variance';
 
     // ── Resolve the GRIS structural gate BEFORE allocating frame resources ─
-    // restirPtReuse widens the GI reservoir buffers from the compact 20-u32
+    // grisReuse widens the GI reservoir buffers from the compact 20-u32
     // Sprint-16/17 layout to the 30-u32 GRIS cache layout, and also selects the
     // GI spatial + temporal shader/layout variants below.
-    this._restirPtReuseStructural = options?.restirPtReuse ?? false;
+    this._grisReuseStructural = options?.grisReuse ?? false;
 
     // ── Per-frame GPU resources ───────────────────────────────────────────
     this._res = createFrameResources(d, W, H, {
       gtaoDownscale: this._gtaoDownscale,
       svgfEnabled: this._denoiserMode === 'svgf-real',
-      restirPtReuse: this._restirPtReuseStructural,
+      grisReuse: this._grisReuseStructural,
       welfordPingPong: this._denoiserMode === 'atrous-variance',
+      checkerboard: options?.checkerboard === true,
     });
 
     // ── Resolve the checkerboard half-res-shading flag ─────────────────────
@@ -1132,7 +1424,7 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
     this._checkerboard = options?.checkerboard ?? false;
 
     // ── Resolve the NRC structural gate BEFORE compiling pipelines ─────────
-    // nrcEnabled is a COMPILE-TIME decision (mirrors restirPtReuse): it selects
+    // nrcEnabled is a COMPILE-TIME decision (mirrors grisReuse): it selects
     // the gi-ris pipeline layout (4-group DDGI default vs 5-group inline-MLP
     // variant) + shader variant. When ON we construct + initialize the
     // per-engine NrcSubsystem (which owns the MLP trainer + the @group(4) query
@@ -1146,15 +1438,9 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
       // NRC-ON capability gate (host-owns-lifecycle) — fail early + legibly if
       // the device lacks the @group(4) 5th bind group / the fused-MLP workgroup
       // storage, rather than cryptically in createComputePipeline.
-      assertNrcDeviceCapable(d.limits);
-      this._nrc = new NrcSubsystem(
-        d,
-        this._bglCache,
-        {
-          ...(options?.nrcWarmupSteps !== undefined ? { warmupSteps: options.nrcWarmupSteps } : {}),
-          ...(options?.nrcSpreadC !== undefined ? { spreadC: options.nrcSpreadC } : {}),
-        },
-      );
+      const nrcConfig = options.nrcConfig ?? {};
+      assertNrcDeviceCapableIfReported(d.limits, nrcConfig);
+      this._nrc = new NrcSubsystem(d, this._bglCache, nrcConfig);
       const aabb = deriveSceneAABBFromBvhPositions(bvhBuffers);
       await this._nrc.initialize(aabb.min, aabb.max);
     }
@@ -1172,7 +1458,7 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
         ? { ppgMaxDTreeNodesPerCell: options.ppgMaxDTreeNodesPerCell }
         : {}),
       regirEnabled: this._regir.config.enabled,
-      restirPtReuse: this._restirPtReuseStructural,
+      grisReuse: this._grisReuseStructural,
       // NRC ON ⇒ pass the subsystem's WGSL config so the gi-ris pipeline builds
       // the 5-group inline-MLP variant with byte-matching encoding sizes.
       ...(this._nrc !== null ? { nrcConfig: this._nrc.wgslConfig() } : {}),
@@ -1187,20 +1473,20 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
     // PPG train-pass cadence. Clamp to ≥ 1 (a 0/negative interval would make
     // `frameCount % N` undefined / skip the train passes forever). Floor any
     // fractional host value so the modulo is integer-clean.
-    this._ppgDispatchInterval = Math.max(1, Math.floor(options?.ppgDispatchInterval ?? 1));
-    this._cameraMoveResetThresholdSq = options?.cameraMoveResetThresholdSq
-      ?? DEFAULT_CAMERA_MOVE_RESET_THRESHOLD_SQ;
-    this._temporalAccumAlpha = options?.temporalAccumAlpha
-      ?? DEFAULT_TEMPORAL_ACCUM_ALPHA;
-    this._checkerboardMotionThresholdSq = options?.checkerboardMotionThresholdSq
-      ?? DEFAULT_CHECKERBOARD_MOTION_THRESHOLD_SQ;
+    this._ppgDispatchInterval = resolvePpgDispatchInterval(
+      options?.ppgDispatchInterval ?? 1,
+    );
+    this._cameraMoveResetThresholdSq =
+      options?.cameraMoveResetThresholdSq ?? DEFAULT_CAMERA_MOVE_RESET_THRESHOLD_SQ;
+    this._temporalAccumAlpha = options?.temporalAccumAlpha ?? DEFAULT_TEMPORAL_ACCUM_ALPHA;
+    this._checkerboardMotionThresholdSq =
+      options?.checkerboardMotionThresholdSq ?? DEFAULT_CHECKERBOARD_MOTION_THRESHOLD_SQ;
 
     // T2.H3 — PPG is enabled iff host opted-in AND both pipelines compiled.
     // The flag itself is computed here; `_ppg.initialize()` below acts on it
     // (allocates resources, builds sTree, uploads UBOs) once the pass
     // registry is wired.
-    const ppgEnabled = (options?.ppgEnabled ?? false) &&
-      compiled.ppgUpdatePipeline !== undefined;
+    const ppgEnabled = (options?.ppgEnabled ?? false) && compiled.ppgUpdatePipeline !== undefined;
 
     return { compiled, ppgEnabled };
   }
@@ -1212,7 +1498,7 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
    * Covers (in exact original order):
    *   - Denoiser registry construction, builtin registration, active-denoiser
    *     lookup + initialization
-   *   - InferenceGraph forward-compat handle store
+   *   - InferenceGraph ownership handle store
    *   - Timestamp query init
    *   - Eager pipeline-owned UBO allocation
    *   - Pass registry construction via `registerPasses` + sorted-pass cache
@@ -1236,9 +1522,7 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
       ...(options?.inferenceGraph !== undefined
         ? { neuralInferenceGraph: options.inferenceGraph }
         : {}),
-      ...(options?.neuralWeights !== undefined
-        ? { neuralWeights: options.neuralWeights }
-        : {}),
+      ...(options?.neuralWeights !== undefined ? { neuralWeights: options.neuralWeights } : {}),
       ...(this._onWarning !== null ? { onWarning: this._onWarning } : {}),
       // exactOptionalPropertyTypes-safe: only forward `oidn` when supplied.
       ...(options?.oidn !== undefined ? { oidn: options.oidn } : {}),
@@ -1252,12 +1536,8 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
       frameResources: this._res,
     });
 
-    // Forward-compat: a host may still supply an InferenceGraph via options
-    // even though the `neural` denoiser is `disabled: true` and lookup
-    // would have already thrown above. We store the handle (no error
-    // raised here) so a future test exercising W10 wiring can read it
-    // back. The walkaround path no longer silently substitutes
-    // atrous-variance for neural — that fallback was removed in W1-R3.
+    // Retain the configured graph so the pipeline owns and releases it. Registry
+    // lookup above has already rejected explicit neural mode when it is absent.
     if (options?.inferenceGraph) {
       this._inferenceGraph = options.inferenceGraph;
     }
@@ -1270,14 +1550,18 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
     // never blocks on first-frame buffer creation. Denoiser-owned UBOs
     // are allocated inside each `Denoiser.initialize()`.
     const U = GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST;
-    this._accumUboRef.buf  = d.createBuffer({ label: 'accum-ubo',  size: 16, usage: U });
+    this._accumUboRef.buf = d.createBuffer({ label: 'accum-ubo', size: 16, usage: U });
     // Sprint 9 — adaptive sampling UBOs (always allocated; passes always run).
-    this._sampleBudgetUboRef.buf = d.createBuffer({ label: 'sample-budget-ubo', size: 16, usage: U });
-    this._sampleCountUboRef.buf  = d.createBuffer({ label: 'sample-count-ubo',  size: 16, usage: U });
-    this._resolveUboRef.buf      = d.createBuffer({ label: 'resolve-ubo',       size: 16, usage: U });
-    this._cbPrefillUboRef.buf    = d.createBuffer({ label: 'cb-prefill-ubo',    size: 16, usage: U });
+    this._sampleBudgetUboRef.buf = d.createBuffer({
+      label: 'sample-budget-ubo',
+      size: 16,
+      usage: U,
+    });
+    this._sampleCountUboRef.buf = d.createBuffer({ label: 'sample-count-ubo', size: 16, usage: U });
+    this._resolveUboRef.buf = d.createBuffer({ label: 'resolve-ubo', size: 16, usage: U });
+    this._cbPrefillUboRef.buf = d.createBuffer({ label: 'cb-prefill-ubo', size: 16, usage: U });
     // 2026-06-10 — per-frame composite UBO (tonemap/exposure/outputColorSpace).
-    this._compositeUboRef.buf    = d.createBuffer({ label: 'composite-ubo',     size: 16, usage: U });
+    this._compositeUboRef.buf = d.createBuffer({ label: 'composite-ubo', size: 16, usage: U });
 
     // ── Pass registry: instantiate + register all non-denoiser passes ────
     // Order of registration is irrelevant; the registry topologically sorts.
@@ -1286,7 +1570,7 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
     const { registry, compositePass } = registerPasses(compiled, {
       diSpatialPasses: this._diSpatialPasses,
       giSpatialPasses: this._giSpatialPasses,
-      restirPtReuseStructural: this._restirPtReuseStructural,
+      grisReuseStructural: this._grisReuseStructural,
       checkerboard: this._checkerboard,
       cbPrefillUboRef: this._cbPrefillUboRef,
       sampleBudgetUboRef: this._sampleBudgetUboRef,
@@ -1299,14 +1583,13 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
       regir: this._regir,
       bglCache: this._bglCache,
       bvhBuffers,
-      nrcBindGroup: this._nrc !== null ? () => this._nrc!.bindGroup() : undefined,
-      nrcClearSlotClaims: this._nrc !== null ? (encoder) => this._nrc!.clearSlotClaims(encoder) : undefined,
+      nrcClearSlotClaims:
+        this._nrc !== null ? (encoder) => this._nrc!.clearSlotClaims(encoder) : undefined,
       getActiveDenoiser: () => this._activeDenoiser!,
       getAtrousPipeline: () => this._atrousPipeline,
       isDenoiserPassEnabled: () => this._denoiserPassEnabled,
       getRegirResources: () => ({
         combinedLightTreeBuffer: this._bvhHost.lightTreeBuffer(),
-        emitterBuffer: this._bvhHost.sceneBindGroupResources().emitterBuffer,
         uboBuffer: this._res.common.uboBuffer,
       }),
     });
@@ -1315,9 +1598,17 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
     // ── Initialize all passes in parallel ────────────────────────────────
     this._passRegistry = registry;
     this._sortedPasses = registry.sortedPasses();
-    await Promise.all(this._sortedPasses.map((p) => p.initialize({
-      device: d, width: W, height: H, bglCache: this._bglCache, frameResources: this._res,
-    })));
+    await Promise.all(
+      this._sortedPasses.map((p) =>
+        p.initialize({
+          device: d,
+          width: W,
+          height: H,
+          bglCache: this._bglCache,
+          frameResources: this._res,
+        }),
+      ),
+    );
   }
 
   /**
@@ -1337,7 +1628,12 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
     options: Parameters<WalkaroundGPUPipeline['initialize']>[2],
   ): void {
     this._ppg.initialize(
-      bvhBuffers, this._res, W, H, ppgEnabled, this._frameCount,
+      bvhBuffers,
+      this._res,
+      W,
+      H,
+      ppgEnabled,
+      this._frameCount,
       options?.ppgMaxSpatialCells,
       options?.ppgMaxDTreeNodesPerCell,
       options?.ppgMixAlpha,
@@ -1354,7 +1650,7 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
   updateEmitters(
     bvhBuffers: Pick<
       SceneBVHBuffers,
-      'emitters' | 'emitterCdf' | 'lightTree' | 'lightTreeNodeCount' | 'lightTreeEnabled'
+      'emitters' | 'emitterCdf' | 'emitterAlias' | 'lightTree' | 'lightTreeNodeCount' | 'lightTreeEnabled'
     >,
   ): void {
     this._bvhHost.updateEmitters(this._device, bvhBuffers);
@@ -1375,6 +1671,103 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
   updateAnalyticLights(scene: Scene): void {
     if (!this._bvhHost.initialized) return;
     this._bvhHost.updateAnalyticLights(this._device, scene);
+  }
+
+  /**
+   * Stage the complete pipeline-owned emitter-lighting publication.
+   *
+   * Candidate emitter/CDF/light-tree, camera-visible emissive, and analytic
+   * resources remain private until commit. ReGIR is prepared against the same
+   * candidate BVH, and the accumulator reset is reversible until the outer
+   * engine transaction finalizes. No queue submission occurs here.
+   */
+  prepareEmitterLightingMutation(
+    nextBvh: SceneBVHBuffers,
+    nextRenderScene: Scene,
+  ): PreparedSceneMutation {
+    if (!this._initialized) {
+      return {
+        commit: () => undefined,
+        rollback: () => undefined,
+        finalize: () => undefined,
+      };
+    }
+
+    const previousAccumFrame = this._accumFrameIndex;
+    const previousGrisEpoch = this._grisHistoryEpoch;
+    const previousGrisClearPending = this._grisHistoryClearPending;
+    let stateCommitted = false;
+    const accumulatorMutation: PreparedSceneMutation = {
+      commit: () => {
+        if (stateCommitted) return;
+        this._accumFrameIndex = 0;
+        this._invalidateGrisHistory();
+        stateCommitted = true;
+      },
+      rollback: () => {
+        if (!stateCommitted) return;
+        this._accumFrameIndex = previousAccumFrame;
+        this._grisHistoryEpoch = previousGrisEpoch;
+        this._grisHistoryClearPending = previousGrisClearPending;
+        stateCommitted = false;
+      },
+      finalize: () => undefined,
+    };
+    const prepared = prepareSceneMutations([
+      () => this._bvhHost.prepareEmitterLightingReplacement(
+        this._device,
+        nextBvh,
+        nextRenderScene,
+      ),
+      () => this._regir.prepareForSceneBvh(nextBvh),
+      () => accumulatorMutation,
+    ]);
+    let published = false;
+    let closed = false;
+    return {
+      commit: () => {
+        if (closed || published) return;
+        let committed = 0;
+        try {
+          for (; committed < prepared.length; committed += 1) {
+            prepared[committed]!.commit();
+          }
+          published = true;
+        } catch (error) {
+          const rollbacks = [...prepared]
+            .reverse()
+            .map((participant): SceneMutationCleanup => () => participant.rollback());
+          closed = true;
+          rethrowWithSceneMutationCleanup(
+            error,
+            rollbacks,
+            'emitter-lighting publication failed and rollback also failed',
+          );
+        }
+      },
+      rollback: () => {
+        if (closed) return;
+        closed = true;
+        runSceneMutationCleanups(
+          [...prepared].reverse().map(
+            (participant) => () => participant.rollback(),
+          ),
+          'emitter-lighting rollback failed',
+        );
+      },
+      finalize: () => {
+        if (closed) return;
+        closed = true;
+        runSceneMutationCleanups(
+          // BvhBufferHost is the resource provider; ReGIR and accumulator state
+          // are consumers. Retire consumers before the provider's old buffers.
+          [...prepared].reverse().map(
+            (participant) => () => participant.finalize(),
+          ),
+          'emitter-lighting retirement failed',
+        );
+      },
+    };
   }
 
   /**
@@ -1411,19 +1804,211 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
    * `positions` is uploaded byte-by-byte using `byteOffset` + `data` so
    * a small primitive only pays for its own slice.
    */
+  /**
+   * Prepare all pipeline-owned pieces of an incremental scene mutation.
+   *
+   * The returned participant must be the final participant committed by the
+   * whole-engine coordinator: its commit publishes reversible pointer/CPU
+   * state first and calls queue.submit exactly once as the final irreversible
+   * operation. No fallible work is performed after an accepted submit.
+   */
+  prepareSceneMutation(
+    mutation: CollectedBvhMutation,
+    nextBvh: SceneBVHBuffers,
+    prefixCommandBuffers: readonly GPUCommandBuffer[] = [],
+  ): PreparedSceneMutation {
+    if (!this._initialized) {
+      return { commit: () => undefined, rollback: () => undefined, finalize: () => undefined };
+    }
+    const encoder = this._device.createCommandEncoder({ label: 'scene-mutation-transaction' });
+    const geometryChanged =
+      mutation.nodes != null ||
+      mutation.tlas != null ||
+      mutation.replacement != null;
+    const previousLearningShadow = this._learningBvhPositionsCpuData;
+    const positionSlices = [
+      ...(mutation.positions ?? []),
+      ...(mutation.learningPositions ?? []),
+    ];
+    if (mutation.replacement == null && positionSlices.length > 0) {
+      if (previousLearningShadow == null) {
+        throw new Error('Learning BVH position shadow is not initialized.');
+      }
+      for (const slice of positionSlices) {
+        if (slice.byteOffset < 0 ||
+            slice.byteOffset + slice.data.byteLength > previousLearningShadow.byteLength) {
+          throw new RangeError('Learning BVH position slice is outside the live shadow.');
+        }
+      }
+    }
+    const previousShadowSlices =
+      mutation.replacement == null && previousLearningShadow != null
+        ? positionSlices.map((slice) => ({
+            byteOffset: slice.byteOffset,
+            data: previousLearningShadow.slice(
+              slice.byteOffset,
+              slice.byteOffset + slice.data.byteLength,
+            ),
+          }))
+        : [];
+    const replacementLearningShadow = mutation.replacement
+      ? nextBvh.bvhPositions.cpuData.slice(0)
+      : null;
+    const applyShadowSlices = (
+      slices: ReadonlyArray<{ readonly byteOffset: number; readonly data: ArrayBuffer }>,
+    ): void => {
+      const shadow = this._learningBvhPositionsCpuData;
+      if (shadow == null) return;
+      const target = new Uint8Array(shadow);
+      for (const slice of slices) {
+        const source = new Uint8Array(slice.data);
+        target.set(source, slice.byteOffset);
+      }
+    };
+    const previousAccumFrame = this._accumFrameIndex;
+    const previousGrisEpoch = this._grisHistoryEpoch;
+    const previousGrisClearPending = this._grisHistoryClearPending;
+    if (mutation.resetAccumulator && this._grisReuseStructural) {
+      encoder.clearBuffer(this._res.restirGI.reservoirGiCurrentBuffer);
+      encoder.clearBuffer(this._res.restirGI.reservoirGiPreviousBuffer);
+      encoder.clearBuffer(this._res.restirGI.reservoirGiSpatialBuffer);
+    }
+    let stateCommitted = false;
+    const stateMutation: PreparedSceneMutation = {
+      commit: () => {
+        if (stateCommitted) return;
+        if (replacementLearningShadow != null) {
+          this._learningBvhPositionsCpuData = replacementLearningShadow;
+        } else {
+          applyShadowSlices(positionSlices);
+        }
+        if (mutation.resetAccumulator) {
+          this._accumFrameIndex = 0;
+          this._invalidateGrisHistory();
+          this._grisHistoryClearPending = false;
+        }
+        stateCommitted = true;
+      },
+      rollback: () => {
+        if (!stateCommitted) return;
+        if (replacementLearningShadow != null) {
+          this._learningBvhPositionsCpuData = previousLearningShadow;
+        } else {
+          applyShadowSlices(previousShadowSlices);
+        }
+        this._accumFrameIndex = previousAccumFrame;
+        this._grisHistoryEpoch = previousGrisEpoch;
+        this._grisHistoryClearPending = previousGrisClearPending;
+        stateCommitted = false;
+      },
+      finalize: () => undefined,
+    };
+
+    const factories: Array<() => PreparedSceneMutation> = [
+      () => this._bvhHost.prepareMutation(this._device, encoder, mutation),
+    ];
+    if (geometryChanged) {
+      factories.push(
+        () => this._ppg.prepareResetForSceneBvh(
+          nextBvh,
+          this._res,
+          this._width,
+          this._height,
+          encoder,
+        ),
+      );
+      if (this._nrc != null) {
+        const aabb = deriveSceneAABBFromBvhPositions(nextBvh);
+        factories.push(() => this._nrc!.prepareSceneReset(encoder, aabb.min, aabb.max));
+      }
+    }
+    factories.push(
+      () => this._regir.prepareForSceneBvh(nextBvh),
+      () => stateMutation,
+    );
+
+    const prepared = prepareSceneMutations(factories);
+    let submitted = false;
+    let closed = false;
+    return {
+      commit: () => {
+        if (closed || submitted) return;
+        let committed = 0;
+        try {
+          for (; committed < prepared.length; committed += 1) {
+            prepared[committed]!.commit();
+          }
+          const commandBuffer = encoder.finish();
+          this._device.queue.submit([...prefixCommandBuffers, commandBuffer]);
+          submitted = true;
+        } catch (error) {
+          const rollbacks = [...prepared]
+            .reverse()
+            .map((participant): SceneMutationCleanup => () => participant.rollback());
+          closed = true;
+          rethrowWithSceneMutationCleanup(
+            error,
+            rollbacks,
+            'GPU scene publication failed and rollback also failed',
+          );
+        }
+      },
+      rollback: () => {
+        if (closed) return;
+        // An accepted WebGPU submit cannot be synchronously undone. The
+        // whole-engine coordinator therefore commits this participant last and
+        // never executes a fallible participant after it.
+        closed = true;
+        if (!submitted) {
+          runSceneMutationCleanups(
+            [...prepared].reverse().map(
+              (participant) => () => participant.rollback(),
+            ),
+            'GPU scene rollback failed',
+          );
+        }
+      },
+      finalize: () => {
+        if (closed) return;
+        closed = true;
+        runSceneMutationCleanups(
+          // PPG/NRC/ReGIR and CPU publication state depend on the BVH provider.
+          // Reverse retirement keeps old provider resources alive until every
+          // dependent has finished its own retirement step.
+          [...prepared].reverse().map(
+            (participant) => () => participant.finalize(),
+          ),
+          'GPU scene retirement failed',
+        );
+      },
+    };
+  }
   refreshBvhRefit(
     bvhNodesBytes: ArrayBuffer,
     positionsSlice: { byteOffset: number; data: ArrayBuffer },
+    bvhNodesByteOffset = 0,
   ): void {
     if (!this._initialized) return;
-    this._bvhHost.refreshBvhRefit(this._device, bvhNodesBytes, positionsSlice);
+    this._bvhHost.refreshBvhRefit(
+      this._device,
+      bvhNodesBytes,
+      positionsSlice,
+      bvhNodesByteOffset,
+    );
     this.#patchLearningBvhPositions(positionsSlice);
   }
 
   /** PR-7 — upload refit BVH nodes only (positions already on GPU). */
-  refreshBvhNodesOnly(bvhNodesBytes: ArrayBuffer): void {
+  refreshBvhNodesOnly(
+    bvhNodesBytes: ArrayBuffer,
+    bvhNodesByteOffset = 0,
+  ): void {
     if (!this._initialized) return;
-    this._bvhHost.refreshBvhNodesOnly(this._device, bvhNodesBytes);
+    this._bvhHost.refreshBvhNodesOnly(
+      this._device,
+      bvhNodesBytes,
+      bvhNodesByteOffset,
+    );
     this.#resetLearnedSceneStateFromShadow();
   }
 
@@ -1438,11 +2023,23 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
     return this._initialized ? this._bvhHost.getBvhPositionBuffer() : null;
   }
 
+  getBvhPositionBinding(): GPUBufferBinding | null {
+    return this._initialized ? this._bvhHost.getBvhPositionBinding() : null;
+  }
+
   /** Shared rect-area emitter buffer + tri count for RC emitter NEE. Null
    *  before init. Emitters are world-space triangles, so the same buffer the
    *  shade/ReSTIR-DI path uses is valid for the RC probe cast — no re-upload. */
-  getEmitterBufferAndCount(): { buffer: GPUBuffer; count: number } | null {
+  getEmitterBufferAndCount(): (GPUBufferBinding & { count: number }) | null {
     return this._initialized ? this._bvhHost.emitterBufferAndCount() : null;
+  }
+
+  getEmitterSamplingBufferAndCount(): (GPUBufferBinding & {
+    count: number;
+    emitterDataOffset: number;
+    emitterAliasOffset: number;
+  }) | null {
+    return this._initialized ? this._bvhHost.emitterSamplingBufferAndCount() : null;
   }
 
   /** A7 (2026-06-10): equirectangular env map texture view + sampler for RC
@@ -1450,7 +2047,13 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
    *  after init (a 1×1 black placeholder backs it until updateEnvironment
    *  is called with a real HDRI). Forward both to `RCSubsystem.dispatchFrame`
    *  so the last-cascade env sample reads the scene environment. */
-  getEnvBindings(): { textureView: GPUTextureView; sampler: GPUSampler } | null {
+  getEnvBindings(): {
+    textureView: GPUTextureView;
+    sampler: GPUSampler;
+    rotationY: number;
+    intensity: number;
+    hasDirectionalEnvironment: boolean;
+  } | null {
     return this._initialized ? this._bvhHost.envBindings() : null;
   }
 
@@ -1469,14 +2072,21 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
     return this._initialized ? this._bvhHost.getBvhNormalBuffer() : null;
   }
 
+  getBvhNormalBinding(): GPUBufferBinding | null {
+    return this._initialized ? this._bvhHost.getBvhNormalBinding() : null;
+  }
+
+  /** Live canonical scene-arena ranges consumed directly by RC. */
+  getSceneGeometryBufferBindings(): import('./BvhBufferHost.js').SceneGeometryBufferBindings | null {
+    return this._initialized ? this._bvhHost.sceneGeometryBufferBindings() : null;
+  }
+
   /** PR-4 — upload refit TLAS nodes + instance transforms (topology unchanged). */
   refreshTlasRefit(
-    tlasNodes: ArrayBuffer,
-    worldToLocal: ArrayBuffer,
-    localToWorld: ArrayBuffer,
+    mutation: import('./BvhUpdateSink.js').TlasRefitMutation,
   ): void {
     if (!this._initialized) return;
-    this._bvhHost.refreshTlasRefit(this._device, tlasNodes, worldToLocal, localToWorld);
+    this._bvhHost.refreshTlasRefit(this._device, mutation);
     this.#resetLearnedSceneStateFromShadow();
   }
 
@@ -1496,7 +2106,12 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
   ): void {
     if (!this._initialized) return;
     this._bvhHost.refreshBvhMaterialSlice(
-      this._device, indexSlice, beerFull, emissiveFull, roughMetalFull);
+      this._device,
+      indexSlice,
+      beerFull,
+      emissiveFull,
+      roughMetalFull,
+    );
   }
 
   refreshBvhEmissiveLe(emissiveFull: { data: ArrayBuffer; triCount: number }): void {
@@ -1509,8 +2124,17 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
     this._bvhHost.refreshMaterialTextureAtlas(this._device, materialTextureAtlas);
   }
 
+  replaceBvhAndEmitters(bvhBuffers: SceneBVHBuffers): void {
+    if (!this._initialized) return;
+    const learningPositionsCandidate = bvhBuffers.bvhPositions.cpuData.slice(0);
+    this._bvhHost.replaceBvhAndEmitters(this._device, bvhBuffers);
+    this._learningBvhPositionsCpuData = learningPositionsCandidate;
+    this.#resetLearnedSceneStateFromShadow();
+    this._regir.refreshAfterEmitterRebuild(bvhBuffers);
+  }
+
   /**
-   * Full BVH-buffer reupload — destroy + recreate the four BVH GPU
+   * Full BVH-buffer reupload — allocate candidates, then atomically replace BVH GPU
    * buffers/textures (nodes, index, beer, positions, normals, tangents, colors)
    * from a freshly-built
    * `SceneBVHBuffers`. Used by `HybridEngine.updatePrimitive`'s topology-
@@ -1520,13 +2144,24 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
    *
    * The pipeline shaders and bind-group layouts stay intact because
    * `buildSceneBindGroup` is re-invoked per-frame in `renderFrame()`
-   * from the live buffer handles, so the destroy + recreate is picked
+   * from the live buffer handles, so the committed replacement is picked
    * up automatically next frame.
    */
   refreshBvhFullRebuild(
     bvhBuffers: Pick<
       SceneBVHBuffers,
-      'bvhNodes' | 'bvhIndex' | 'bvhBeerColors' | 'bvhEmissiveLe' | 'materialTextureAtlas' | 'bvhRoughMetal' | 'bvhNormals' | 'bvhTangents' | 'bvhColors' | 'bvhPositions' | 'bvhMode' | 'tlas'
+      | 'bvhNodes'
+      | 'bvhIndex'
+      | 'bvhBeerColors'
+      | 'bvhEmissiveLe'
+      | 'materialTextureAtlas'
+      | 'bvhRoughMetal'
+      | 'bvhNormals'
+      | 'bvhTangents'
+      | 'bvhColors'
+      | 'bvhPositions'
+      | 'bvhMode'
+      | 'tlas'
     >,
   ): void {
     if (!this._initialized) return;
@@ -1559,11 +2194,11 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
 
   /**
    * Resize all per-frame GPU resources to a new render-surface size WITHOUT
-   * rebuilding the BVH or recompiling pipelines. Destroys the current
-   * `_res: FrameResources` (every full-res rgba16float texture, reservoir
-   * buffer, variance buffer, GTAO half/full, SVGF persistent textures, …)
-   * and reallocates them at the new dimensions. Resets ping-pong indices
-   * and frame counters because the new textures contain garbage.
+   * rebuilding the BVH or recompiling pipelines. It prepares a complete
+   * replacement resource set first, publishes it only after every optional
+   * subsystem accepts the new dimensions, then retires the old resources.
+   * Failure leaves the live size and resources unchanged. A successful commit
+   * resets ping-pong indices and frame counters.
    *
    * Cost: O(W·H) GPU memory churn (~1 GB at 4K), no shader recompilation,
    * no BVH rebuild. Call this from the host (via `HybridEngine.setSize`)
@@ -1584,37 +2219,39 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
       return;
     }
     if (width === this._width && height === this._height) return;
+    // Stage the complete replacement—including optional PPG and denoiser
+    // resources—before publishing dimensions or destroying the live frame set.
+    const replacement = createFrameResources(this._device, width, height, {
+      gtaoDownscale: this._gtaoDownscale,
+      svgfEnabled: this._denoiserMode === 'svgf-real',
+      grisReuse: this._grisReuseStructural,
+      welfordPingPong: this._denoiserMode === 'atrous-variance',
+      checkerboard: this._checkerboard,
+    });
+    try {
+      this._ppg.onResize(replacement, width, height, this._frameCount);
+      this._activeDenoiser?.resize(width, height);
+    } catch (error) {
+      destroyFrameResources(replacement);
+      throw error;
+    }
+
+    const previous = this._res;
+    this._res = replacement;
     this._width = width;
     this._height = height;
-    // Destroy + reallocate per-frame resources at the new size. Preserve the
-    // GTAO downscale resolved at initialize() so a resize keeps the AO target
-    // at the same quarter/half-res tier the host selected.
-    destroyFrameResources(this._res);
     this._resourceCache.clear();
-    this._res = createFrameResources(this._device, width, height, {
-      gtaoDownscale: this._gtaoDownscale,
-      // Preserve the init-time SVGF gating (G-P2.6) — the active denoiser is
-      // fixed for the pipeline's lifetime, so a resize keeps the same policy.
-      svgfEnabled: this._denoiserMode === 'svgf-real',
-      restirPtReuse: this._restirPtReuseStructural,
-      welfordPingPong: this._denoiserMode === 'atrous-variance',
-    });
-    // W9 — re-allocate PPG resolution-dependent buffers + re-upload the
-    // (unchanged) sTree topology so the new bind groups have valid GPU
-    // buffers to bind. The CPU sTree itself isn't size-dependent and
-    // survives the resize unchanged. No-op inside the coordinator when
-    // PPG is disabled.
-    this._ppg.onResize(this._res, width, height, this._frameCount);
-    // Reset transient per-frame state — ping-pong reads from the previous
-    // frame's texture, but the new textures are blank, so we must restart
-    // the accumulator at α=1 and re-seed history.
+
+    // The new textures are blank, so every temporal index restarts only after
+    // the resource transaction has committed.
     this._accumPingPongIndex = 0;
     this._accumFrameIndex = 0;
+    this._invalidateGrisHistory();
+    this._grisHistoryClearPending = false;
     this._indirectAccumPingPongRef.value = 0;
     this._lastCameraPos = [0, 0, 0];
-    // Denoiser-private ping-pong indices (Welford / SVGF) reset inside
-    // each Denoiser.resize implementation.
-    this._activeDenoiser?.resize(width, height);
+
+    destroyFrameResources(previous);
   }
 
   /** Dev A/B — when false, {@link DenoiserAdapterPass} is gated off (raw HDR). */
@@ -1632,7 +2269,7 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
    * to >= 1 so a bad host value cannot disable PPG training forever.
    */
   setPpgDispatchInterval(interval: number): void {
-    this._ppgDispatchInterval = Math.max(1, Math.floor(interval));
+    this._ppgDispatchInterval = resolvePpgDispatchInterval(interval);
   }
 
   /**
@@ -1660,12 +2297,14 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
     const encoder = d.createCommandEncoder({ label: 'composite-only' });
     const pass = encoder.beginRenderPass({
       label: 'composite-only',
-      colorAttachments: [{
-        view: swapChainView,
-        loadOp: 'clear',
-        storeOp: 'store',
-        clearValue: { r: 0, g: 0, b: 0, a: 1 },
-      }],
+      colorAttachments: [
+        {
+          view: swapChainView,
+          loadOp: 'clear',
+          storeOp: 'store',
+          clearValue: { r: 0, g: 0, b: 0, a: 1 },
+        },
+      ],
     });
     pass.setPipeline(compositePass.pipeline);
     pass.setBindGroup(0, bgComposite);
@@ -1685,8 +2324,16 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
    * Cost: one JS field write. No GPU work is dispatched. Called by
    * `HybridEngine.updateLighting()` whenever lighting parameters change.
    */
+  private _invalidateGrisHistory(): void {
+    if (!this._grisReuseStructural) return;
+    this._grisHistoryEpoch = (this._grisHistoryEpoch + 1) >>> 0;
+    if (this._grisHistoryEpoch === 0) this._grisHistoryEpoch = 1;
+    this._grisHistoryClearPending = true;
+  }
+
   requestAccumReset(): void {
     this._accumFrameIndex = 0;
+    this._invalidateGrisHistory();
   }
 
   /**
@@ -1695,10 +2342,12 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
    */
   renderFrame(inputs: PipelineFrameInputs): boolean {
     if (!this._initialized) return false;
+    const publication = new FramePublicationTransaction();
 
-    // D3.2 — renderFrame is now a sequencer of three private phases.
-    // Exact GPU-command order is preserved across the extraction boundary —
-    // the gpu-call-trace goldens pin the sequence.
+    try {
+      // D3.2 — renderFrame is now a sequencer of three private phases.
+      // Exact GPU-command order is preserved across the extraction boundary —
+      // the gpu-call-trace goldens pin the sequence.
 
     // ── Camera motion (computed up-front — shared by UBO packing and the
     //    checkerboard motion fallback).
@@ -1720,14 +2369,32 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
       parity: this._frameCount & 1,
     } as const;
 
-    const { passCtx, gateOpts, passLayout, encoder } =
-      this.#buildFrameContext(inputs, camMoveSqUpfront, checkerboardState);
+      const { passCtx, gateOpts, passLayout, encoder } = this.#buildFrameContext(
+        inputs,
+        camMoveSqUpfront,
+        checkerboardState,
+        publication,
+      );
 
-    this.#dispatchPasses(passCtx, gateOpts, passLayout, encoder);
-    this._tickSubsystemTraining(passLayout);
+      this.#dispatchPasses(
+        passCtx,
+        gateOpts,
+        passLayout,
+        encoder,
+        publication,
+      );
+      const ppgTrainingDispatched =
+        gateOpts.ppgEnabled && (gateOpts.ppgTrainThisFrame ?? true);
+      this._tickSubsystemTraining(passLayout, ppgTrainingDispatched);
 
-    this._frameCount++;
-    return true;
+      return true;
+    } catch (error) {
+      // If submit was accepted, accept() has already closed the transaction and
+      // abort is intentionally a no-op. Encode/finish/submit failures release
+      // staging resources and leave every persistent history source unchanged.
+      publication.abort();
+      throw error;
+    }
   }
 
   /**
@@ -1752,6 +2419,7 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
     inputs: PipelineFrameInputs,
     camMoveSqUpfront: number,
     checkerboardState: { readonly active: boolean; readonly parity: number },
+    publication: FramePublication,
   ): {
     passCtx: PassDispatchContext;
     gateOpts: PassGateOptions;
@@ -1775,13 +2443,21 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
     // into ResolveUniforms within this frame (it reads `passCtx.checkerboardOn`
     // set below), so the shade/spatial gap-out pixels match the resolve gap-fill
     // pixels exactly.
-    updateUBO(d, this._res.common.uboBuffer, inputs, {
-      enabled: this._ppg.enabled,
-      mixAlpha: this._ppg.mixAlpha,
-    }, this._regir.uboState(), {
-      enabled: cbActiveThisFrame,
-      frameParity: checkerboardState.parity,
-    });
+    updateUBO(
+      d,
+      this._res.common.uboBuffer,
+      inputs,
+      {
+        enabled: this._ppg.enabled,
+        mixAlpha: this._ppg.mixAlpha,
+      },
+      this._regir.uboState(),
+      {
+        enabled: cbActiveThisFrame,
+        frameParity: checkerboardState.parity,
+      },
+      this._grisHistoryEpoch,
+    );
 
     // H26 — update the NRC camera pdf every frame so the a0 primary footprint
     // reflects the current projection + internal render resolution.  No-op when
@@ -1807,6 +2483,7 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
       this._ddgi,
       placeholderView,
       this._resourceCache,
+      this._nrc?.queryBindings(),
     );
 
     // RIS-only light-tree bind group (group 3). Always built (a 1-node
@@ -1820,12 +2497,20 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
     );
 
     // ── Per-frame pre-computed scalars ───────────────────────────────────
-    const passLayout = buildPassLayout({ denoiserMode: this._denoiserMode, ...this._passLayoutConfig });
+    const passLayout = buildPassLayout({
+      denoiserMode: this._denoiserMode,
+      ...this._passLayoutConfig,
+    });
 
     const encoder = d.createCommandEncoder({ label: 'walkaround-restir' });
+    if (this._grisHistoryClearPending) {
+      encoder.clearBuffer(this._res.restirGI.reservoirGiCurrentBuffer);
+      encoder.clearBuffer(this._res.restirGI.reservoirGiPreviousBuffer);
+      encoder.clearBuffer(this._res.restirGI.reservoirGiSpatialBuffer);
+    }
 
-    const wgX  = Math.ceil(W / 8);
-    const wgY  = Math.ceil(H / 8);
+    const wgX = Math.ceil(W / 8);
+    const wgY = Math.ceil(H / 8);
     const wgX16 = Math.ceil(W / 16);
     const wgY16 = Math.ceil(H / 16);
     const halfWgX = Math.ceil(Math.floor(W / 2) / 8);
@@ -1858,15 +2543,17 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
     // finer `_checkerboardMotionThresholdSq` computed above). Reuses the same
     // `camMoveSqUpfront` delta so there is one motion magnitude, two thresholds.
     const isMoving = camMoveSqUpfront > this._cameraMoveResetThresholdSq;
-    if (isMoving) {
-      this._accumFrameIndex = 0;
-    }
+    const frameAccumIndex = isMoving ? 0 : this._accumFrameIndex;
 
     // Resolve the temporal-accumulator ping-pong slots for this frame.
-    const readAccum  = this._accumPingPongIndex === 0
-      ? this._res.common.accumTextureA : this._res.common.accumTextureB;
-    const writeAccum = this._accumPingPongIndex === 0
-      ? this._res.common.accumTextureB : this._res.common.accumTextureA;
+    const readAccum =
+      this._accumPingPongIndex === 0
+        ? this._res.common.accumTextureA
+        : this._res.common.accumTextureB;
+    const writeAccum =
+      this._accumPingPongIndex === 0
+        ? this._res.common.accumTextureB
+        : this._res.common.accumTextureA;
 
     const gNormalDepthView = this._resourceCache.textureView(this._res.common.gNormalDepthTexture);
 
@@ -1879,12 +2566,12 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
     // threshold — and the camera-motion path still forces α=1 on a real
     // move so motion responsiveness is unchanged (just slower to converge
     // back to steady state after a stop).
-    const alpha = this._accumFrameIndex === 0 ? 1.0 : this._temporalAccumAlpha;
+    const alpha = frameAccumIndex === 0 ? 1.0 : this._temporalAccumAlpha;
 
     // ── Build the shared per-pass dispatch context ───────────────────────
     const frameState: PassFrameState = {
-      denoisedDirect: this._res.common.hdrColorTexture,   // overwritten by denoiser dispatch
-      indirectAccumOut: this._res.common.indirectAccumPingTexture,  // overwritten by indirect-temporal-accum
+      denoisedDirect: this._res.common.hdrColorTexture, // overwritten by denoiser dispatch
+      indirectAccumOut: this._res.common.indirectAccumPingTexture, // overwritten by indirect-temporal-accum
       denoisedIndirect: this._res.common.indirectDenoisedPingTexture, // overwritten by atrous-indirect
       combinedDenoised: this._res.common.combinedDenoisedTexture,
       writeAccum,
@@ -1897,8 +2584,9 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
       encoder,
       width: W,
       height: H,
-      frameIndex: this._accumFrameIndex,
+      frameIndex: frameAccumIndex,
       frameCount: this._frameCount,
+      publication,
       bglCache: this._bglCache,
       resources: this._res,
       inputs,
@@ -1908,9 +2596,24 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
       uboBindGroup: bgUbo,
       hybridLayersBindGroup: bgHybrid,
       shadeHybridLayersBindGroup: bgShadeHybrid,
+      buildTransparentOitBindGroup: (background, output) =>
+        this._ddgi.buildTransparentOitBindGroup(
+          d,
+          this._bglCache,
+          this._res,
+          background,
+          output,
+          this._resourceCache,
+        ),
       lightTreeBindGroup: bgLightTree,
-      wgX, wgY, wgX16, wgY16, halfWgX, halfWgY,
-      checkerboardWgX, checkerboardWgY,
+      wgX,
+      wgY,
+      wgX16,
+      wgY16,
+      halfWgX,
+      halfWgY,
+      checkerboardWgX,
+      checkerboardWgY,
       // Checkerboard sparse dispatch state. When ON, ShadePass + SpatialReservoirPass
       // each compact their dispatch to ~half the threads (one per active-parity
       // pixel), and ResolvePass gap-fills the complementary half. This is the
@@ -1947,7 +2650,9 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
       // (every frame). The persisted tree + gi-ris guided sampling are
       // unaffected — this only skips flux accumulation on off-interval frames.
       // (`_ppgDispatchInterval` is clamped ≥ 1 in initialize().)
-      ppgTrainThisFrame: this._frameCount % this._ppgDispatchInterval === 0,
+      ppgTrainThisFrame:
+        this._ppg.trainingDispatchAllowed &&
+        this._frameCount % this._ppgDispatchInterval === 0,
       // Phase-0 — gate GTAO + its upsample when the preset disabled it.
       gtaoEnabled: this._gtaoEnabled,
       // Checkerboard pre-denoiser gap-fill gate. Mirrors `cbActiveThisFrame`
@@ -1980,9 +2685,8 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
     gateOpts: PassGateOptions,
     passLayout: ReturnType<typeof buildPassLayout>,
     encoder: GPUCommandEncoder,
+    publication: FramePublicationTransaction,
   ): void {
-    const d = this._device;
-
     // ── Unified pass loop ────────────────────────────────────────────────
     // Polymorphic denoiser dispatch is one of the sorted passes
     // ({@link DenoiserAdapterPass}); its dependency on `gtao-upsample` +
@@ -2001,9 +2705,23 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
     }
 
     // ── End-of-frame: swap-chain present sentinel + reservoir housekeeping ─
-    this._accumPingPongIndex = 1 - this._accumPingPongIndex;
-    this._accumFrameIndex++;
-    this._lastCameraPos = [...passCtx.inputs.camera.cameraPos];
+    // Stage all persistent CPU history state. The selected GPU sources/targets
+    // remain unchanged until finish + submit have both succeeded.
+    const nextAccumPingPongIndex = 1 - this._accumPingPongIndex;
+    const nextAccumFrameIndex = passCtx.frameIndex + 1;
+    const nextCameraPos = [...passCtx.inputs.camera.cameraPos] as [
+      number,
+      number,
+      number,
+    ];
+    const nextFrameCount = passCtx.frameCount + 1;
+    publication.stage(() => {
+      this._accumPingPongIndex = nextAccumPingPongIndex;
+      this._accumFrameIndex = nextAccumFrameIndex;
+      this._lastCameraPos = nextCameraPos;
+      this._frameCount = nextFrameCount;
+      this._grisHistoryClearPending = false;
+    });
 
     // Swap reservoir ping-pong for next frame (copy current → previous).
     // Sprint 17 + audit B6 fix: copies must be folded into the *same*
@@ -2020,34 +2738,88 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
     // orchestrator to know about it specially. Two lines here vs a 30-line
     // file is the right trade.
     encoder.copyBufferToBuffer(
-      this._res.restirDI.reservoirCurrentBuffer, 0,
-      this._res.restirDI.reservoirPreviousBuffer, 0,
+      this._res.restirDI.reservoirCurrentBuffer,
+      0,
+      this._res.restirDI.reservoirPreviousBuffer,
+      0,
       this._res.restirDI.reservoirCurrentBuffer.size,
     );
     encoder.copyBufferToBuffer(
-      this._res.restirGI.reservoirGiCurrentBuffer, 0,
-      this._res.restirGI.reservoirGiPreviousBuffer, 0,
+      this._res.restirGI.reservoirGiCurrentBuffer,
+      0,
+      this._res.restirGI.reservoirGiPreviousBuffer,
+      0,
       this._res.restirGI.reservoirGiCurrentBuffer.size,
     );
 
     // NRC ON ⇒ fold the self-training-record copy into THIS encoder (after the
     // gi-ris pass wrote the records, before submit) so the host gather sees the
     // current frame's records. No-op buffer when NRC is off (`_nrc` null).
-    this._nrc?.recordCopyForReadback(encoder);
+    this._nrc?.recordCopyForReadback(encoder, publication);
 
     // Resolve timestamps + copy into the inactive readback buffer.
     resolveTimestamps(encoder, this._tsState, this._frameCount, passLayout.slotCount);
 
-    d.queue.submit([encoder.finish()]);
+    this._submitAndRunPostSubmitHooks(
+      encoder,
+      publication,
+      passCtx.frameCount,
+      passLayout.labels,
+    );
+  }
 
-    // Kick async readback of the timestamp buffer we just copied into.
-    // Pass the layout labels so the async callback labels each slot
-    // correctly even if the pipeline reconfigures between frames.
-    kickTimestampReadback(this._tsState, this._frameCount, passLayout.labels);
-    // Mirror public telemetry fields from the state object so callers
-    // can read them as before.
-    this.lastGpuTimings      = this._tsState.lastGpuTimings;
+  /**
+   * Submit is the irreversible frame boundary. Failures before acceptance are
+   * rethrown so the host may retry; failures after acceptance are contained and
+   * reported as non-fatal diagnostics so an already-submitted frame is never
+   * misreported as retryable. Each post-submit hook is isolated from its peers.
+   */
+  private _submitAndRunPostSubmitHooks(
+    encoder: GPUCommandEncoder,
+    publication: FramePublicationTransaction,
+    frameCount: number,
+    labels: readonly PassLabel[],
+  ): void {
+    try {
+      finishSubmitAndPublishFrame(encoder, this._device.queue, publication);
+    } catch (error) {
+      if (publication.state !== 'accepted') throw error;
+      this._reportAcceptedFrameFailure('frame publication', error);
+    }
+
+    try {
+      this._activeDenoiser?.afterFrameSubmit?.();
+    } catch (error) {
+      this._reportAcceptedFrameFailure('denoiser afterFrameSubmit', error);
+    }
+
+    try {
+      // Pass the labels captured for this frame so an async completion remains
+      // correctly attributed even if the pipeline is reconfigured meanwhile.
+      kickTimestampReadback(this._tsState, frameCount, labels);
+    } catch (error) {
+      this._reportAcceptedFrameFailure('timestamp readback kickoff', error);
+    }
+
+    this.lastGpuTimings = this._tsState.lastGpuTimings;
     this.lastGpuTimingsFrame = this._tsState.lastGpuTimingsFrame;
+  }
+
+  private _reportAcceptedFrameFailure(stage: string, raw: unknown): void {
+    if (!this._initialized || this._onError == null) return;
+    const detail = raw instanceof Error ? raw.message : String(raw);
+    try {
+      this._onError({
+        kind: 'render',
+        message:
+          `[WalkaroundGPUPipeline] accepted frame post-submit hook '${stage}' failed; ` +
+          `GPU submission remains accepted. ${detail}`,
+        fatal: false,
+        raw,
+      });
+    } catch {
+      // A host diagnostics callback cannot retroactively fail an accepted frame.
+    }
   }
 
   /**
@@ -2066,18 +2838,31 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
     const detail = raw instanceof Error ? raw.message : String(raw);
     if (this._lastNrcTrainingErrorMessage === detail) return;
     this._lastNrcTrainingErrorMessage = detail;
-    this._onError({
-      kind: 'render',
-      message: `[WalkaroundGPUPipeline] NRC training failed; retaining previous NRC weights. ${detail}`,
-      fatal: false,
-      raw,
-    });
+    try {
+      this._onError({
+        kind: 'render',
+        message:
+          `[WalkaroundGPUPipeline] NRC training transaction failed; the last ` +
+          `committed NRC generation remains valid. ${detail}`,
+        fatal: false,
+        raw,
+      });
+    } catch {
+      // Training is post-submit; host diagnostics must never make it retryable.
+    }
   }
 
-  private _tickSubsystemTraining(_passLayout: ReturnType<typeof buildPassLayout>): void {
+  private _tickSubsystemTraining(
+    _passLayout: ReturnType<typeof buildPassLayout>,
+    ppgTrainingDispatched: boolean,
+  ): void {
     // W9 follow-up — periodic training/refine cycle:
     // fluxAtomics GPU readback -> CPU dTree/sTree refinement -> re-upload.
-    this._ppg.maybeRunTrainingRefine(this._res, this._frameCount);
+    try {
+      this._ppg.maybeRunTrainingRefine(this._res, ppgTrainingDispatched);
+    } catch (error) {
+      this._reportAcceptedFrameFailure('PPG training/refine', error);
+    }
 
     // NRC ON ⇒ read back this frame's self-training records and run ONE train
     // step (Müller §5 self-training; HOST-OWNS-CADENCE — one step per frame).
@@ -2087,9 +2872,20 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
     // non-fatal diagnostics while the pipeline is live; post-dispose failures
     // remain suppressed because they are expected during teardown/device loss.
     if (this._nrc !== null) {
-      void this._nrc.trainFromRecords()
-        .then(() => { this._lastNrcTrainingErrorMessage = null; })
-        .catch((err: unknown) => { this._reportNrcTrainingFailure(err); });
+      let training: Promise<void>;
+      try {
+        training = this._nrc.trainFromRecords();
+      } catch (error) {
+        this._reportNrcTrainingFailure(error);
+        return;
+      }
+      void training
+        .then(() => {
+          this._lastNrcTrainingErrorMessage = null;
+        })
+        .catch((err: unknown) => {
+          this._reportNrcTrainingFailure(err);
+        });
     }
   }
 
@@ -2110,7 +2906,7 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
     for (const pass of this._sortedPasses) pass.dispose();
     this._sortedPasses = [];
     this._passRegistry = null;
-    // T2.H2 — dispose the neural InferenceGraph if present (reserved for W10).
+    // Release the configured neural graph after the wrapper has stopped dispatching.
     this._inferenceGraph?.dispose();
     this._inferenceGraph = null;
     // Per-feature state objects (PPG / DDGI binding / ReGIR). None own
@@ -2143,11 +2939,13 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
    *    layout (origin vec3 + spacing f32 + dims vec3u + pad u32 +
    *    irradianceAtlasW/H + visibilityAtlasW/H).
    */
-  setDDGIInputs(inputs: {
-    irradianceTex: GPUTexture;
-    visibilityTex: GPUTexture;
-    gridParams: ArrayBuffer;
-  } | null): void {
+  setDDGIInputs(
+    inputs: {
+      irradianceTex: GPUTexture;
+      visibilityTex: GPUTexture;
+      gridParams: ArrayBuffer;
+    } | null,
+  ): void {
     this._ddgi.setInputs(inputs, this._res);
   }
 
@@ -2160,10 +2958,12 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
    * `HybridEngineRC.packRCParams(...)` — see that file for the WGSL-aligned
    * 64-byte layout.
    */
-  setRCInputs(inputs: {
-    cascade0Buffer: GPUBuffer;
-    paramsBytes: ArrayBuffer;
-  } | null): void {
+  setRCInputs(
+    inputs: {
+      cascade0Buffer: GPUBuffer;
+      paramsBytes: ArrayBuffer;
+    } | null,
+  ): void {
     this._ddgi.setRCInputs(inputs);
   }
 }

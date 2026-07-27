@@ -45,14 +45,33 @@ interface MockDeviceTracking {
   destroyedTextures: GPUTexture[];
 }
 
+function deferred<T>(): {
+  readonly promise: Promise<T>;
+  readonly resolve: (value: T) => void;
+} {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((accept) => { resolve = accept; });
+  return { promise, resolve };
+}
+
 /**
  * Build a mock GPUDevice that tracks every createBuffer and createTexture call.
  * Each allocated resource has a destroy() that records itself in the "destroyed"
  * arrays — so the test can assert that destroyed.length === created.length.
  */
-function makeMockDevice(tracking: MockDeviceTracking): GPUDevice {
+function makeMockDevice(
+  tracking: MockDeviceTracking,
+  options: { readonly failBufferAt?: number } = {},
+): GPUDevice {
+  let bufferCreateCount = 0;
+  let failureAvailable = true;
   return {
     createBuffer: vi.fn((desc: GPUBufferDescriptor) => {
+      bufferCreateCount++;
+      if (failureAvailable && bufferCreateCount === options.failBufferAt) {
+        failureAvailable = false;
+        throw new Error(`injected init buffer failure ${bufferCreateCount}`);
+      }
       const buf = {
         size: desc.size,
         destroy: vi.fn(() => { tracking.destroyedBuffers.push(buf); }),
@@ -129,6 +148,7 @@ describe('ProbeUpdatePass — dispose() destroys all allocated GPU resources', (
       adapterVendor: 'test',
       adapterArchitecture: 'test',
     });
+    vi.mocked(detectGpu).mockClear();
   });
 
   afterEach(() => {
@@ -169,8 +189,8 @@ describe('ProbeUpdatePass — dispose() destroys all allocated GPU resources', (
 
     pass.dispose();
 
-    // Every buffer allocated during init must be destroyed.  irrScratchTex /
-    // visScratchTex start null (only allocated on runFrame) so we only check
+    // Every buffer allocated during init must be destroyed. visScratchTex
+    // starts null (only allocated on runFrame) so we only check
     // the init-time allocations here.
     expect(tracking.destroyedBuffers.length).toBe(buffersAfterInit);
 
@@ -185,6 +205,7 @@ describe('ProbeUpdatePass — dispose() destroys all allocated GPU resources', (
       (t) => !tracking.destroyedTextures.includes(t),
     );
     expect(undestroyedTex).toHaveLength(0);
+    expect(mockDevice.destroy).not.toHaveBeenCalled();
   });
 
   it('double dispose() does not throw and does not call destroy() a second time', async () => {
@@ -321,6 +342,177 @@ describe('ProbeUpdatePass — dispose() destroys all allocated GPU resources', (
 
     pass.dispose();
   });
+
+  it('cleans a partial init allocation, publishes nothing, and retries successfully', async () => {
+    const bvh = new SceneBvh();
+    const grid = new ProbeGrid();
+    const pass = new ProbeUpdatePass(bvh, grid);
+    const failingDevice = makeMockDevice(tracking, { failBufferAt: 10 });
+    const rendererAdapter = {
+      backend: { device: failingDevice, isWebGPUBackend: true as const },
+    };
+
+    await expect(pass.init(rendererAdapter)).rejects.toThrow('injected init buffer failure 10');
+    const internal = pass as unknown as {
+      _gpu: unknown;
+      _initAttempted: boolean;
+    };
+    expect(internal._gpu).toBeNull();
+    expect(internal._initAttempted).toBe(false);
+    expect(tracking.createdBuffers).toHaveLength(9);
+    expect(tracking.destroyedBuffers).toHaveLength(9);
+    expect(tracking.destroyedTextures).toHaveLength(tracking.createdTextures.length);
+
+    await expect(pass.init(rendererAdapter)).resolves.toBe(true);
+    expect(internal._gpu).not.toBeNull();
+    pass.dispose();
+    expect(tracking.destroyedBuffers).toHaveLength(tracking.createdBuffers.length);
+    expect(tracking.destroyedTextures).toHaveLength(tracking.createdTextures.length);
+  });
+
+  it('coalesces concurrent init callers onto the exact same allocation promise', async () => {
+    const pass = new ProbeUpdatePass(new SceneBvh(), new ProbeGrid());
+    const device = makeMockDevice(tracking);
+    const firstPipeline = deferred<GPUComputePipeline>();
+    vi.mocked(device.createComputePipelineAsync)
+      .mockImplementationOnce(() => firstPipeline.promise)
+      .mockResolvedValue({ getBindGroupLayout: vi.fn(() => ({})) } as unknown as GPUComputePipeline);
+    const renderer = { backend: { device, isWebGPUBackend: true as const } };
+
+    const first = pass.init(renderer);
+    await vi.waitFor(() => {
+      expect(device.createComputePipelineAsync).toHaveBeenCalledTimes(1);
+    });
+    const second = pass.init(renderer);
+
+    expect(second).toBe(first);
+    expect(tracking.createdBuffers).toHaveLength(0);
+    firstPipeline.resolve({
+      getBindGroupLayout: vi.fn(() => ({})),
+    } as unknown as GPUComputePipeline);
+    await expect(first).resolves.toBe(true);
+    // rays + classify/relocate + two blends + visibility-border
+    expect(device.createComputePipelineAsync).toHaveBeenCalledTimes(5);
+    expect(tracking.createdBuffers.length).toBeGreaterThan(0);
+    pass.dispose();
+  });
+
+  it('cannot publish resources when dispose wins while pipeline compilation is pending', async () => {
+    const pass = new ProbeUpdatePass(new SceneBvh(), new ProbeGrid());
+    const device = makeMockDevice(tracking);
+    const firstPipeline = deferred<GPUComputePipeline>();
+    vi.mocked(device.createComputePipelineAsync)
+      .mockImplementationOnce(() => firstPipeline.promise)
+      .mockResolvedValue({ getBindGroupLayout: vi.fn(() => ({})) } as unknown as GPUComputePipeline);
+    const renderer = { backend: { device, isWebGPUBackend: true as const } };
+
+    const init = pass.init(renderer);
+    await vi.waitFor(() => {
+      expect(device.createComputePipelineAsync).toHaveBeenCalledTimes(1);
+    });
+    pass.dispose();
+    firstPipeline.resolve({
+      getBindGroupLayout: vi.fn(() => ({})),
+    } as unknown as GPUComputePipeline);
+
+    await expect(init).resolves.toBe(false);
+    expect(tracking.createdBuffers).toHaveLength(0);
+    expect(tracking.createdTextures).toHaveLength(0);
+    expect((pass as unknown as { _gpu: unknown })._gpu).toBeNull();
+    expect(device.destroy).not.toHaveBeenCalled();
+  });
+
+  it('destroys a navigator-fallback device only after its pass-owned resources', async () => {
+    const pass = new ProbeUpdatePass(new SceneBvh(), new ProbeGrid());
+    const fallbackDevice = makeMockDevice(tracking);
+    const requestDevice = vi.fn(async () => fallbackDevice);
+    vi.stubGlobal('navigator', {
+      gpu: { requestAdapter: vi.fn(async () => ({ requestDevice })) },
+    });
+
+    await expect(pass.init({})).resolves.toBe(true);
+    expect(requestDevice).toHaveBeenCalledTimes(1);
+    expect(fallbackDevice.destroy).not.toHaveBeenCalled();
+
+    pass.dispose();
+
+    expect(fallbackDevice.destroy).toHaveBeenCalledTimes(1);
+    const deviceDestroyOrder = vi.mocked(fallbackDevice.destroy).mock.invocationCallOrder[0]!;
+    const resourceDestroyOrders = [
+      ...tracking.createdBuffers,
+      ...tracking.createdTextures,
+    ].map((resource) => vi.mocked(resource.destroy).mock.invocationCallOrder[0]!);
+    expect(Math.max(...resourceDestroyOrders)).toBeLessThan(deviceDestroyOrder);
+  });
+
+  it('destroys a navigator-fallback device when compilation fails before publication', async () => {
+    const pass = new ProbeUpdatePass(new SceneBvh(), new ProbeGrid(), {
+      onWarning: vi.fn(),
+    });
+    const fallbackDevice = makeMockDevice(tracking);
+    vi.mocked(fallbackDevice.createComputePipelineAsync)
+      .mockRejectedValueOnce(new Error('injected fallback compile failure'));
+    vi.stubGlobal('navigator', {
+      gpu: {
+        requestAdapter: vi.fn(async () => ({
+          requestDevice: vi.fn(async () => fallbackDevice),
+        })),
+      },
+    });
+
+    await expect(pass.init({})).resolves.toBe(false);
+    expect((pass as unknown as { _gpu: unknown })._gpu).toBeNull();
+    expect(fallbackDevice.destroy).toHaveBeenCalledTimes(1);
+  });
+
+  it('destroys a navigator-fallback device when dispose wins an init race', async () => {
+    const pass = new ProbeUpdatePass(new SceneBvh(), new ProbeGrid());
+    const fallbackDevice = makeMockDevice(tracking);
+    const firstPipeline = deferred<GPUComputePipeline>();
+    vi.mocked(fallbackDevice.createComputePipelineAsync)
+      .mockImplementationOnce(() => firstPipeline.promise)
+      .mockResolvedValue({ getBindGroupLayout: vi.fn(() => ({})) } as unknown as GPUComputePipeline);
+    vi.stubGlobal('navigator', {
+      gpu: {
+        requestAdapter: vi.fn(async () => ({
+          requestDevice: vi.fn(async () => fallbackDevice),
+        })),
+      },
+    });
+
+    const init = pass.init({});
+    await vi.waitFor(() => {
+      expect(fallbackDevice.createComputePipelineAsync).toHaveBeenCalledTimes(1);
+    });
+    pass.dispose();
+    firstPipeline.resolve({
+      getBindGroupLayout: vi.fn(() => ({})),
+    } as unknown as GPUComputePipeline);
+
+    await expect(init).resolves.toBe(false);
+    expect(tracking.createdBuffers).toHaveLength(0);
+    expect(fallbackDevice.destroy).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps a transient pipeline-compilation failure retryable', async () => {
+    const pass = new ProbeUpdatePass(new SceneBvh(), new ProbeGrid(), {
+      onWarning: vi.fn(),
+    });
+    const device = makeMockDevice(tracking);
+    vi.mocked(device.createComputePipelineAsync)
+      .mockRejectedValueOnce(new Error('transient compile failure'));
+    const renderer = { backend: { device, isWebGPUBackend: true as const } };
+
+    await expect(pass.init(renderer)).resolves.toBe(false);
+    expect((pass as unknown as { _initAttempted: boolean })._initAttempted).toBe(false);
+    expect(tracking.createdBuffers).toHaveLength(0);
+
+    await expect(pass.init(renderer)).resolves.toBe(true);
+    // One failed attempt, then all five production DDGI pipelines.
+    expect(device.createComputePipelineAsync).toHaveBeenCalledTimes(6);
+    expect(tracking.createdBuffers.length).toBeGreaterThan(0);
+    pass.dispose();
+  });
 });
 
 describe('ProbeUpdatePass — _initAttempted guard prevents repeated init() on WebGPU failure', () => {
@@ -398,39 +590,32 @@ describe('ProbeUpdatePass — _initAttempted guard prevents repeated init() on W
     }));
   });
 
-  it('routes SwiftShader DDGI refusal through structured warnings', async () => {
+  it('accepts a conformant backend without adapter-provenance gates or debug globals', async () => {
     vi.mocked(detectGpu).mockResolvedValue({
       isWebGPU: true,
       adapterKind: 'swiftshader',
       adapterVendor: 'Google',
       adapterArchitecture: 'SwiftShader',
     });
-    const warnings: EngineWarning[] = [];
+    const tracking: MockDeviceTracking = {
+      createdBuffers: [],
+      destroyedBuffers: [],
+      createdTextures: [],
+      destroyedTextures: [],
+    };
+    const device = makeMockDevice(tracking);
+    const pass = new ProbeUpdatePass(new SceneBvh(), new ProbeGrid());
+    const sentinel = { untouched: true };
+    const debugWindow = { __WG__: sentinel };
+    vi.stubGlobal('window', debugWindow);
 
-    const bvh = new SceneBvh();
-    const grid = new ProbeGrid();
-    const pass = new ProbeUpdatePass(bvh, grid, {
-      onWarning: (warning) => warnings.push(warning),
-    });
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    await expect(pass.init({
+      backend: { device, isWebGPUBackend: true },
+    })).resolves.toBe(true);
 
-    await pass.runFrame({ backend: { device: {} as GPUDevice, isWebGPUBackend: true } }, 0, 1);
-
-    expect(warnSpy).not.toHaveBeenCalled();
-    expect(errorSpy).not.toHaveBeenCalled();
-    expect(warnings).toContainEqual(expect.objectContaining({
-      code: 'walkaround-hybrid.ddgi-swiftshader-disabled',
-      backend: 'walkaround-hybrid',
-      phase: 'renderFrame',
-      method: 'ProbeUpdatePass.init',
-      details: expect.objectContaining({
-        adapterKind: 'swiftshader',
-        adapterVendor: 'Google',
-        adapterArchitecture: 'SwiftShader',
-        fallback: 'disable-ddgi-probe-update',
-      }),
-    }));
+    expect(detectGpu).not.toHaveBeenCalled();
+    expect(debugWindow.__WG__).toBe(sentinel);
+    pass.dispose();
   });
 
   it('routes DDGI shader compilation failures through structured warnings', async () => {

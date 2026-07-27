@@ -1,14 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import type { FrameInput } from '@vitrum/core';
-import { asMat4 } from '@vitrum/core';
+import { asMat4, resolveFrameCameraPosition } from '@vitrum/core';
 import {
+  FRAME_PARAMS_BUFFER_ALLOC_BYTES,
   packFrameParams,
   type FrameParamsEngineConfig,
   type FrameParamsSceneInputs,
 } from '../frameParamsPacker.js';
 import { FrameParamsSlot } from '../scene/frameParamsLayout.js';
 import { invertMat4, multiplyMat4 } from '../math/mat4.js';
-import { X_CMF_INTEGRAL, Y_CMF_INTEGRAL, Z_CMF_INTEGRAL } from '@vitrum/shared-samplers';
 
 /**
  * GOLDEN / byte-identity test for the extracted FrameParamsPacker (Task 4.3).
@@ -39,7 +39,7 @@ function reconstructExpected(
   const vp = multiplyMat4(input.projMatrix, input.viewMatrix);
   const invVp = invertMat4(asMat4(vp));
   if (invVp == null) throw new Error('non-invertible vp');
-  const ab = new ArrayBuffer(512);
+  const ab = new ArrayBuffer(FRAME_PARAMS_BUFFER_ALLOC_BYTES);
   const u = new Uint32Array(ab);
   const f = new Float32Array(ab);
   u[FrameParamsSlot.width] = width;
@@ -72,9 +72,6 @@ function reconstructExpected(
   u[FrameParamsSlot.spectralEnabled] = config.spectralEnabled ? 1 : 0;
   f[FrameParamsSlot.heroLambdaNm] = 550.0;
   f[FrameParamsSlot.heroPdf] = 1.0;
-  f[FrameParamsSlot.cmfIntegralX] = X_CMF_INTEGRAL;
-  f[FrameParamsSlot.cmfIntegralY] = Y_CMF_INTEGRAL;
-  f[FrameParamsSlot.cmfIntegralZ] = Z_CMF_INTEGRAL;
   const bdptActive = config.bdpt && config.traceTier === 'full';
   u[FrameParamsSlot.bdptEnabled] = bdptActive ? 1 : 0;
   u[FrameParamsSlot.bdptMaxLightBounces] = config.bdptMaxLightBounces >>> 0;
@@ -93,18 +90,10 @@ function reconstructExpected(
     config.directLightingMode === 'summed-expectation' ? 1 : 0;
   // H14-E: HDRI intensity in its own slot (slot 31), separate from environmentSun.w.
   f[FrameParamsSlot.environmentHdriIntensity] = sb.environmentHdriIntensity;
-  f[FrameParamsSlot.cameraPos] = input.cameraPosition[0];
-  f[FrameParamsSlot.cameraPos + 1] = input.cameraPosition[1];
-  f[FrameParamsSlot.cameraPos + 2] = input.cameraPosition[2];
-  // D3/SHADOW-01 — cameraPos.w carries the signed soft-sun angular diameter
-  // mirror (was constant 1; 0 = exact delta directional; negative =
-  // first-directional castShadow:false encoded as -1 - angularDiameter).
-  f[FrameParamsSlot.cameraPos + 3] = sb.directionalAngularDiameter;
-  f[FrameParamsSlot.lightDir] = sb.directionalLight[0];
-  f[FrameParamsSlot.lightDir + 1] = sb.directionalLight[1];
-  f[FrameParamsSlot.lightDir + 2] = sb.directionalLight[2];
-  f[FrameParamsSlot.lightDir + 3] =
-    (sb.directionalIrradiance[0] + sb.directionalIrradiance[1] + sb.directionalIrradiance[2]) / 3;
+  const cameraPosition = resolveFrameCameraPosition(input);
+  f[FrameParamsSlot.cameraPos] = cameraPosition[0];
+  f[FrameParamsSlot.cameraPos + 1] = cameraPosition[1];
+  f[FrameParamsSlot.cameraPos + 2] = cameraPosition[2];
   f[FrameParamsSlot.environmentTint] = sb.environmentTint[0];
   f[FrameParamsSlot.environmentTint + 1] = sb.environmentTint[1];
   f[FrameParamsSlot.environmentTint + 2] = sb.environmentTint[2];
@@ -140,9 +129,6 @@ function makeSceneInputs(over: Partial<FrameParamsSceneInputs> = {}): FrameParam
     tlasNodeCount: 7,
     lightTreeEnabled: true,
     lightTreeNodeCount: 9,
-    directionalLight: [0.1, -0.9, 0.3],
-    directionalIrradiance: [1.2, 0.8, 0.5],
-    directionalAngularDiameter: 0,
     sceneCenter: [4, 5, 6],
     sceneRadius: 7,
     environmentTint: [0.95, 0.97, 1.0],
@@ -297,16 +283,16 @@ const MATRIX: ReadonlyArray<{
 ];
 
 describe('FrameParamsPacker — byte-identity golden (pt-webgpu Task 4.3)', () => {
-  it('produces a 512-byte buffer', () => {
+  it('produces an exact generated-size buffer', () => {
     const out = packFrameParams(makeConfig(), makeSceneInputs(), makeInput(), 800, 600);
-    expect(out.byteLength).toBe(512);
+    expect(out.byteLength).toBe(FRAME_PARAMS_BUFFER_ALLOC_BYTES);
   });
 
   for (const tc of MATRIX) {
     it(`byte-identical to legacy reconstruction — ${tc.name}`, () => {
       const got = new Uint8Array(packFrameParams(tc.config, tc.sb, tc.input, tc.width, tc.height));
       const want = new Uint8Array(reconstructExpected(tc.config, tc.sb, tc.input, tc.width, tc.height));
-      expect(got.length).toBe(512);
+      expect(got.length).toBe(FRAME_PARAMS_BUFFER_ALLOC_BYTES);
       expect(Array.from(got)).toEqual(Array.from(want));
     });
   }
@@ -334,18 +320,6 @@ describe('FrameParamsPacker — byte-identity golden (pt-webgpu Task 4.3)', () =
     const ab = packFrameParams(makeConfig(), makeSceneInputs({ environmentHdriRotationY: rotY }), makeInput(), 800, 600);
     const f = new Float32Array(ab);
     expect(f[FrameParamsSlot.environmentTint + 3]).toBeCloseTo(rotY, 6);
-  });
-
-  it('SHADOW-01 preserves signed directional angular-diameter mirror for lite', () => {
-    const ab = packFrameParams(
-      makeConfig({ traceTier: 'lite' }),
-      makeSceneInputs({ directionalAngularDiameter: -1.25 }),
-      makeInput(),
-      800,
-      600,
-    );
-    const f = new Float32Array(ab);
-    expect(f[FrameParamsSlot.cameraPos + 3]).toBeCloseTo(-1.25, 6);
   });
 
   it('item 24 — lite tier writes analyticCount=0 regardless of sb.analyticCount', () => {
@@ -389,14 +363,26 @@ describe('FrameParamsPacker — byte-identity golden (pt-webgpu Task 4.3)', () =
       400,
       300,
     ));
-    expect(FrameParamsSlot.directLightingMode).toBe(101);
+    expect(FrameParamsSlot.directLightingMode).toBe(93);
     expect(sampled[FrameParamsSlot.directLightingMode]).toBe(0);
     expect(summed[FrameParamsSlot.directLightingMode]).toBe(1);
   });
 
+  it('keeps neutral hero lanes because spectral sampling is invocation-local', () => {
+    const packed = new Float32Array(packFrameParams(
+      makeConfig({ spectralEnabled: true, bdpt: true }),
+      makeSceneInputs(),
+      makeInput(),
+      800,
+      600,
+    ));
+    expect(packed[FrameParamsSlot.heroLambdaNm]).toBe(550);
+    expect(packed[FrameParamsSlot.heroPdf]).toBe(1);
+  });
+
   it('frozen literal golden for the canonical baseline input', () => {
     // Pins the absolute u32/f32 slot values so the packer + the reconstruction
-    // cannot silently co-drift. Spot-checks the scalar header + the camera/light
+    // cannot silently co-drift. Spot-checks the scalar header + camera/environment
     // lanes (matrix lanes are covered by the byte-identity matrix above).
     const ab = packFrameParams(makeConfig(), makeSceneInputs(), makeInput(), 800, 600);
     const u = new Uint32Array(ab);
@@ -439,10 +425,7 @@ describe('FrameParamsPacker — byte-identity golden (pt-webgpu Task 4.3)', () =
     expect(f[FrameParamsSlot.cameraPos]).toBe(2);
     expect(f[FrameParamsSlot.cameraPos + 1]).toBe(3);
     expect(f[FrameParamsSlot.cameraPos + 2]).toBe(8);
-    // D3/SHADOW-01 — cameraPos.w = signed directionalAngularDiameter mirror
-    // (0 in the canonical input).
-    expect(f[FrameParamsSlot.cameraPos + 3]).toBe(0);
-    expect(f[FrameParamsSlot.lightDir + 3]).toBeCloseTo((1.2 + 0.8 + 0.5) / 3, 6);
+    expect(f[FrameParamsSlot.environmentHdriIntensity]).toBe(1);
     expect(f[FrameParamsSlot.environmentSun + 3]).toBe(3.5);
   });
 });

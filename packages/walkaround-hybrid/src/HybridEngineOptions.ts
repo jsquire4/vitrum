@@ -9,7 +9,7 @@
  * `HybridEngine` constructor — only the type shape itself moved.
  */
 
-import type { EngineOptions, EngineWarning } from '@vitrum/core';
+import type { EngineOptions } from '@vitrum/core';
 import type { DDGILight } from './ddgi/types.js';
 import type { ModelWeights } from './neural/weights.js';
 import type { CascadeDim } from '@vitrum/walkaround-rc';
@@ -34,6 +34,7 @@ export const VALID_DENOISERS = [
 type ValidDenoiser = (typeof VALID_DENOISERS)[number];
 import type { Tunables } from './HybridEngineTuning.js';
 import type { HybridEnvironmentMapResolver } from './environment/resolveHybridEnvironment.js';
+import type { NrcConfig } from './neural/nrc/nrcSubsystem.js';
 
 /**
  * Runtime-mutable lighting parameters for {@link HybridEngine.updateLighting}.
@@ -71,51 +72,87 @@ const LIGHTING_OPTION_KEYS = [
 const LIGHTING_OPTION_KEY_SET: ReadonlySet<string> = new Set(LIGHTING_OPTION_KEYS);
 
 /**
- * Cheap, non-throwing unknown-key guard for {@link HybridEngine.updateLighting}.
+ * Strict unknown-key guard for {@link HybridEngine.updateLighting}.
  *
  * `Engine.updateLighting` is contractually opaque (`Readonly<Record<string,
  * unknown>>` in `@vitrum/core`) — backends own their own lighting vocabulary.
- * To keep that opacity while still surfacing silent drops, this helper
- * `console.warn`s once per unrecognised key per call so hosts notice typos /
- * stale keys instead of having them silently ignored. (No cross-call dedup:
- * `updateLighting` is host-driven scrubbing, not a per-frame hot path.)
- *
- * Does NOT throw and does NOT mutate `opts`; the caller's field-by-field
- * application logic still runs unchanged for the keys it recognises.
+ * Backend opacity must not become a typo sink: any unrecognised key throws
+ * synchronously before the caller mutates lighting or GPU-facing state.
  */
-type LightingWarningSink = (warning: EngineWarning, ...consoleArgs: readonly unknown[]) => void;
-
 export function assertKnownLightingKeys(
   opts: Readonly<Record<string, unknown>>,
-  warn?: LightingWarningSink,
 ): void {
+  if (
+    opts == null || typeof opts !== 'object' || Array.isArray(opts)
+    || ArrayBuffer.isView(opts)
+  ) {
+    throw new TypeError(
+      '[@vitrum/walkaround-hybrid] updateLighting: options must be a plain object.',
+    );
+  }
   for (const k of Object.keys(opts)) {
     if (!LIGHTING_OPTION_KEY_SET.has(k)) {
-      const warning: EngineWarning = {
-        code: 'walkaround-hybrid.unknown-lighting-key',
-        backend: 'walkaround-hybrid',
-        phase: 'mutation',
-        method: 'updateLighting',
-        message: `[@vitrum/walkaround-hybrid] updateLighting: ignoring unknown key "${k}"`,
-        details: { key: k },
-      };
-      if (warn != null) {
-        warn(warning);
-      } else {
-        console.warn(warning.message);
-      }
+      throw new TypeError(
+        `[@vitrum/walkaround-hybrid] updateLighting: unknown key "${k}". ` +
+        `Supported keys: ${LIGHTING_OPTION_KEYS.join(', ')}.`,
+      );
     }
   }
+
+  const assertVec3 = (key: 'primaryLightDir' | 'skyTint', nonNegative: boolean): void => {
+    const value = opts[key];
+    if (value === undefined) return;
+    if (!Array.isArray(value) || value.length !== 3) {
+      throw new TypeError(
+        `[@vitrum/walkaround-hybrid] updateLighting: ${key} must be an exact ` +
+        `finite ${nonNegative ? 'non-negative ' : ''}[x, y, z] tuple.`,
+      );
+    }
+    const lanes: readonly unknown[] = value;
+    if (lanes.some((lane) =>
+      typeof lane !== 'number' || !Number.isFinite(lane) || (nonNegative && lane < 0)
+    )) {
+      throw new TypeError(
+        `[@vitrum/walkaround-hybrid] updateLighting: ${key} must be an exact ` +
+        `finite ${nonNegative ? 'non-negative ' : ''}[x, y, z] tuple.`,
+      );
+    }
+    const numericLanes = lanes as readonly number[];
+    if (key === 'primaryLightDir' && numericLanes.every((lane) => Math.abs(lane) <= 1e-12)) {
+      throw new TypeError(
+        '[@vitrum/walkaround-hybrid] updateLighting: primaryLightDir must be non-zero.',
+      );
+    }
+  };
+  const assertNonNegativeScalar = (
+    key: 'primaryLightIntensity' | 'skyIrradiance',
+  ): void => {
+    const value = opts[key];
+    if (value === undefined) return;
+    if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
+      throw new TypeError(
+        `[@vitrum/walkaround-hybrid] updateLighting: ${key} must be finite and non-negative.`,
+      );
+    }
+  };
+  assertVec3('primaryLightDir', false);
+  assertVec3('skyTint', true);
+  assertNonNegativeScalar('primaryLightIntensity');
+  assertNonNegativeScalar('skyIrradiance');
 }
 
 export interface HybridEngineOptions extends EngineOptions {
   /** WebGPU device (narrowed from the opaque `device: unknown` on EngineOptions). */
   readonly device: GPUDevice;
 
-  /** Physical pixel width of the render surface. */
+  /** Physical pixel width of the render surface. When neural denoising is
+   *  selected, the quality-preset-scaled internal width must be >= 8 and a
+   *  multiple of 8. */
   readonly width: number;
 
-  /** Physical pixel height of the render surface. */
+  /** Physical pixel height of the render surface. When neural denoising is
+   *  selected, the quality-preset-scaled internal height must be >= 8 and a
+   *  multiple of 8. */
   readonly height: number;
 
   /**
@@ -193,9 +230,9 @@ export interface HybridEngineOptions extends EngineOptions {
    *   scalar lookup; honest about what it does (not Schied 2017 SVGF).
    *
    *   `'auto'` — choose a concrete denoiser from host-supplied assets at engine
-   *   construction. Full tier prefers `neuralWeights`, then `oidnModelUrl`, then
-   *   falls back to the preset/default denoiser with a structured warning. The
-   *   package still ships no production neural weights.
+   *   construction. Full tier selects neural only for a production-ready v2
+   *   checkpoint, otherwise OIDN when configured, then resolves to the
+   *   preset/default denoiser with a structured diagnostic.
    *
    *   `'atrous'` — legacy three-pass edge-stopping à-trous only.
  *
@@ -211,16 +248,23 @@ export interface HybridEngineOptions extends EngineOptions {
    *
    *   `'bmfr'` — Koskela et al. 2019, "Blockwise Multi-Order Feature
    *   Regression for Real-Time Path-Tracing Reconstruction" (ACM TOG 38(5)).
-   *   Per 32×32 screen block, least-squares-fits the noisy 1-spp color to a
-   *   10-feature matrix [1, p.xyz, n.xyz, p².xyz] via Householder QR on the
-   *   normal equations and reconstructs `color = T·α`, then temporally
-   *   accumulates (EMA, reset on camera motion). Uses a screen-space position
-   *   proxy from the gNormalDepth depth channel — no dedicated world-position
-   *   G-buffer required. Owns a private rgba16float history ping-pong.
+   *   Overlapping 32×32 blocks least-squares-fit noisy 1-spp color to the
+   *   10-feature matrix [1, p.xyz, n.xyz, p².xyz] by cooperative direct
+   *   Householder TSQR (without forming normal equations). A second pass
+   *   deterministically averages covering reconstructions before temporal EMA.
+   *   The persistent walkaround path derives `p` from screen coordinates and
+   *   signed gNormalDepth depth; the standalone shared-denoiser entry point
+   *   instead requires world positions. BMFR owns a private rgba16float history
+   *   ping-pong plus a per-block coefficient buffer. It is explicit-only and
+   *   available on `tier:'full'`; it is never selected by `'auto'`.
    *
    *   `'neural'` — T2.H2 — GPU U-Net denoiser (Chaitanya et al. 2017 / Ronneberger
-   *   et al. 2015). Requires `neuralWeights` to be provided. Default still
-   *   `'atrous-variance'`; neural is opt-in. See tools/neural-denoiser-training/README.md.
+   *   et al. 2015). Requires `neuralWeights` to be provided. The canonical
+   *   three-level U-Net requires internal render width/height >= 8 and divisible
+   *   by 8. Construction rejects unsupported initial dimensions; an unsupported
+   *   resize records a durable selected-mode failure without publishing a
+   *   mismatched neural generation. Neural remains opt-in. See
+   *   tools/neural-denoiser-training/README.md.
    *
    *   `'oidn-final'` — W11 — Intel Open Image Denoise final-pass via ONNX
    *   Runtime Web (`@vitrum/shared-denoisers/oidnBridge`). Async/stale-by-
@@ -240,6 +284,10 @@ export interface HybridEngineOptions extends EngineOptions {
    *
    * If `denoiser === 'neural'` and `neuralWeights` is undefined, the engine
    * constructor throws with a helpful error pointing to the training README.
+   * The graph accepts every positive resolved internal width and height by
+   * padding its private U-Net lattice and cropping the output; query
+   * `capabilities.supportDetails.denoiserSpatialShapeRequirements.neural` for
+   * the machine-readable requirement.
    */
   readonly neuralWeights?: ModelWeights;
 
@@ -274,6 +322,13 @@ export interface HybridEngineOptions extends EngineOptions {
     readonly 'walkaround-hybrid'?: {
       readonly oidnModelUrl?: string;
       readonly oidnExecutionProviders?: ReadonlyArray<'webnn' | 'webgpu' | 'wasm'>;
+      /**
+       * Neural input/activation/output storage. `'auto'` (default) uses f16
+       * only for a certified checkpoint on a device with enabled shader-f16.
+       * Explicit `'f16'` fails during construction if either condition is
+       * missing; `'f32'` never silently upgrades.
+       */
+      readonly neuralTensorStorage?: 'auto' | 'f32' | 'f16';
       readonly bvhMode?: 'merged' | 'tlas';
       readonly resolveEnvironmentMap?: HybridEnvironmentMapResolver;
     };
@@ -301,13 +356,13 @@ export interface HybridEngineOptions extends EngineOptions {
    * Phase-0 productization — hybrid resource tier (Deliverable 3).
    *
    * - `'full'` (default) — the full pipeline: TLAS-capable, RC/PPG/neural
-   *   allowed, requires `HYBRID_WEBGPU_REQUIRED_LIMITS` (16 buf / 8 tex).
-   * - `'lite'` — a reduced-budget path for adapters that meet only
-   *   `HYBRID_LITE_LIMITS` (≈10 buf / 6 tex). Lite runs the SAME shade pipeline
-   *   (no WGSL fork) but:
-   *     - forces `extensions['walkaround-hybrid'].bvhMode = 'merged'` (drops the
-   *       5 TLAS scene-group storage buffers — the buffer-axis win) even when a
-   *       needs-TLAS scene would otherwise default to TLAS, with a `console.warn`
+   *   allowed, requires `HYBRID_WEBGPU_REQUIRED_LIMITS`.
+   * - `'lite'` — a reduced-work/memory path with the same structural device
+   *   limits as full because it compiles the SAME explicit layouts (no WGSL or
+   *   bind-group-layout fork), but:
+   *     - forces `extensions['walkaround-hybrid'].bvhMode = 'merged'` (skips
+   *       TLAS traversal while retaining dummy-compatible layout bindings) even
+   *       when a needs-TLAS scene would otherwise default to TLAS, with a warning
    *       that instanced-scene fidelity is reduced;
    *     - FORBIDS `rcEnabled` / `ppgEnabled` / `denoiser:'neural'` (they need
    *       extra GPU resources / weights) — the constructor throws an actionable
@@ -425,10 +480,10 @@ export interface HybridEngineOptions extends EngineOptions {
    * attenuation; generic scenes should leave this at defaults (no boost,
    * no clamp).
    *
-   * NOTE (T5): `caustic.boost` / `caustic.visClamp` only have any effect
-   * when {@link stainedGlass}`.sunCaustic` is also `true`. When the
-   * sun-caustic term is OFF (the default) the caustic-boost calibration is
-   * never reached because `lo_sg_caustic` early-returns `vec3f(0)`.
+   * `caustic.boost` / `caustic.visClamp` only affect the explicitly selected
+   * `causticStrategy:'refractive-trace'` estimator when
+   * {@link stainedGlass}`.sunCaustic` is also `true`. They never enable a
+   * caustic strategy by themselves.
    *
    * @default { boost: 1.0, visClamp: 1.0 }
    */
@@ -448,18 +503,17 @@ export interface HybridEngineOptions extends EngineOptions {
    * appropriate only for cathedral-window / Cornell-stained-glass scenes; a
    * generic scene received them anyway, which is incorrect.
    *
-   * T5 moved both terms into an opt-in WGSL module (`stainedGlassShade.wgsl.ts`,
-   * `lo_sg_caustic` / `lo_sg_aperture`) gated by a UBO flag bit — mirroring the
-   * Radiance-Cascades `sampleCascadeC0` precedent. When a flag is unset the
-   * helper early-returns `vec3f(0)`; flag-OFF is therefore bit-identical to "no
-   * such term" without a separate shader compile.
+   * The sky-aperture helper remains an opt-in WGSL term. `sunCaustic` now only
+   * enables the historical stained-glass boost/clamp calibration inside the
+   * separately selected `refractive-trace` estimator; it does not activate
+   * caustics while `causticStrategy` is `'none'`.
    *
    * **Default both `false`** → generic scenes get ZERO caustic / aperture
    * physics. Stained-glass hosts (e.g. the Cornell-stained-glass example) opt
    * in with `{ sunCaustic: true, skyAperture: true }`.
    *
-   * - `sunCaustic` — enable the through-glass sun-caustic term. Pairs with the
-   *   {@link caustic} boost/visClamp calibration.
+   * - `sunCaustic` — enable stained-glass boost/visClamp calibration for an
+   *   active `refractive-trace` strategy.
    * - `skyAperture` — enable the 5-tap diffuse-sky-aperture probe. Pairs with
    *   {@link skyTint} / {@link skyIrradiance}.
    *
@@ -550,117 +604,40 @@ export interface HybridEngineOptions extends EngineOptions {
    */
   readonly atrousIndirectSigmas?: readonly [number, number, number];
 
-  // ── GRIS / ReSTIR-PT reconnection-shift reuse (Lin et al. 2022) ───────────
+  // ── GRIS reuse for the one-bounce DDGI proxy (Lin et al. 2022) ────────────
 
   /**
-   * Enable the GRIS (Generalized Resampled Importance Sampling) reconnection-
-   * shift reuse in the ReSTIR-GI spatial + temporal passes.
+   * Enable GRIS spatiotemporal reuse for walkaround's one-bounce DDGI
+   * irradiance proxy.
    *
-   * When `true`, the reuse instead applies the UNBIASED GRIS *reconnection
-   * shift* (Lin, Kettunen, Bitterli, Pantaleoni, Jakob, Nowrouzezahrai —
-   * "Generalized Resampled Importance Sampling: Foundations of ReSTIR",
-   * SIGGRAPH 2022):
-   *   - re-roots the neighbour's reconnection vertex onto THIS pixel's primary
-   *     vertex via a fresh edge,
-   *   - re-weights by the exact change-of-variables Jacobian
-   *     `G(shifted)/G(base)` (Eq. 12; the destination-cosine "half-G" ratio,
-   *     mirroring `@vitrum/shared-samplers/reconnectionShift.ts`),
-   *   - traces a reconnection-VISIBILITY ray (required for unbiasedness — the
-   *     shift maps to zero contribution if the connecting edge is occluded,
-   *     degenerate, backfacing, or the path prefixes are incompatible), and
-   *   - combines samples with the GRIS generalized-balance (full GBH) MIS so
-   *     the fused reservoir is an unbiased RIS estimator of this pixel's GI
-   *     integral.
+   * This is deliberately narrower than ReSTIR PT: the reused sample is one
+   * cosine-sampled direction whose suffix radiance comes from DDGI (or the
+   * environment), and the receiver target is geometric diffuse
+   * `luminance(Lo) * cos(theta) / PI`. Receiver material response is applied
+   * later by shading and is not part of the reused target. When this mode is
+   * active, PPG and NRC proposal/suffix substitutions are bypassed so they
+   * cannot silently change the declared target or proposal.
    *
-   * The reuse passes traverse the scene BVH for the visibility ray, so this
-   * costs one extra shadow ray per accepted neighbour.
+   * The enabled path uses a reconnection shift for surface samples, an
+   * identity-direction shift for environment samples, exact shift Jacobians,
+   * transformed-density generalized-balance weights, and visibility-aware
+   * inverse-shift support. A history epoch prevents reservoirs from crossing
+   * scene, material, emitter, environment, or lighting mutations.
    *
-   * ─────────────────────────────────────────────────────────────────────────
-   * DEFAULT (false) — THE BIASED PATH AND ITS KNOWN BIAS SOURCES
-   * ─────────────────────────────────────────────────────────────────────────
+   * This option does not promise an unbiased path-tracing estimator. DDGI is a
+   * cached irradiance approximation and the default finite
+   * `restirGiIrrClamp` / `restirGiWCap` controls intentionally bound outliers.
+   * The option is fixed at engine creation because it changes the reservoir
+   * layout and GI shader variants.
    *
-   * The default (`restirPtReuse: false`, i.e. OFF) runs the pre-GRIS Sprint-17
-   * clamped-Jacobian reuse. This is the walkaround regime default: a realtime
-   * frame-budget constraint (the unbiased GRIS path adds one visibility ray per
-   * accepted spatial/temporal reuse candidate and the full-GBH MIS cross-
-   * evaluation over the whole neighbour set — linear in K_SPATIAL_GI = 5).
-   *
-   * The OFF path carries **four documented bias sources**. They are intentional
-   * and bounded for the walkaround regime, but discerning users (converged
-   * offline renders, A/B comparisons, V19 GPU validation) should enable
-   * `restirPtReuse: true`.
-   *
-   * **Bias source 1 — Jacobian clamp `[0.1, 10]`**
-   *   File: `shaders/jacobianShift.wgsl.ts`, function `jacobianReconnectionShift`,
-   *   line: `return clamp(J, 0.1, 10.0);`
-   *   The Jacobian of the reconnection shift (Lin 2022 Eq. 11 — cosine ratio ×
-   *   inverse-square distance ratio) can be arbitrarily large or small for
-   *   nearby/grazing neighbours. Clamping it to [0.1, 10] keeps the reservoir
-   *   weight bounded but systematically under-weights neighbours with J > 10
-   *   and over-weights those with J < 0.1. In practice: neighbours seen from
-   *   a very different distance (foreground/background boundary) are over- or
-   *   under-contributed relative to their actual solid-angle contribution.
-   *   Manifestation: subtle energy gain or loss at depth-discontinuity edges
-   *   (e.g. wall corners) under the indirect channel. The effect is
-   *   stationary — it does not grow with frame count.
-   *
-   * **Bias source 2 — No reconnection-visibility ray**
-   *   File: `shaders/spatialGi.wgsl.ts` (OFF variant, `SPATIAL_GI_WGSL`),
-   *   lines: `jacobianReconnectionShift(…)` → immediately folded with `w_q = pHatZ * rQ.W * Mq * J`.
-   *   File: `shaders/temporalGi.wgsl.ts` (OFF variant, `TEMPORAL_GI_WGSL`),
-   *   lines: `let J = jacobianReconnectionShift(…)` → `let w_prev = pHatZ_prev * rPrev.W * f32(prevM) * J`.
-   *   Bitterli 2020 / Lin 2022 require that a reused sample's shifted edge
-   *   (current pixel's visible point → neighbour's reconnection vertex) be
-   *   tested for occlusion; if occluded the sample contributes zero. Skipping
-   *   this test means occluded samples leak energy into the indirect channel.
-   *   Manifestation: indirect light bleeds through geometry at depth
-   *   discontinuities (walls, objects). The bleed is suppressed by the
-   *   geometric-consistency normal/depth test but is NOT eliminated for
-   *   neighbours that pass the consistency test yet are blocked in the
-   *   reconnection direction.
-   *
-   * **Bias source 3 — Pairwise MIS approximation (no full GBH)**
-   *   File: `shaders/spatialGi.wgsl.ts` (OFF variant), reuse weight:
-   *   `let w_q = pHatZ * rQ.W * f32(Mq) * J` (no MIS denominator).
-   *   File: `shaders/temporalGi.wgsl.ts` (OFF variant), reuse weight:
-   *   `let w_prev = pHatZ_prev * rPrev.W * f32(prevM) * J` (no MIS denominator).
-   *   The standard ReSTIR-GI combine (Ouyang 2021) uses the M-weighted p̂
-   *   directly as the reuse weight without the generalized-balance denominator.
-   *   For small M-count differences between pixels this is a good approximation,
-   *   but it is NOT the unbiased GBH estimator: the contribution weights do not
-   *   sum to 1 in the Lin 2022 sense, meaning the estimator is biased when the
-   *   M counts between the canonical and neighbour are substantially different.
-   *   Manifestation: slightly over-energised indirect on high-M regions (e.g.
-   *   static camera convergence) relative to low-M (camera motion onset).
-   *
-   * **Former bias source 4 — centroid p̂ in the canonical ReSTIR-DI target function**
-   *   This is closed in the current shader: `restir_di_compute_phat_xi()` evaluates
-   *   the target at the reservoir's stored sampled point `xi`, and RIS/finalization
-   *   use the same xi-aware p̂ path. It remains documented here only because older
-   *   audits called it out as an ON/OFF-shared bias; do not count it among the
-   *   current default-path bias sources unless that helper regresses.
-   *
-   * ─────────────────────────────────────────────────────────────────────────
-   * WHEN TO ENABLE `restirPtReuse: true`
-   * ─────────────────────────────────────────────────────────────────────────
-   * Enable when: (a) the scene is rendered in a converged / offline-ish mode
-   * (sustained camera still, progressive accumulation, A/B validation), (b) you
-   * observe energy bleed or soft light leak at depth discontinuities under the
-   * indirect channel and need the unbiased path to diagnose or fix it, or (c)
-   * you are running the V19 GPU unbiasedness validation.
-   *
-   * The gate is resolved at **PIPELINE-COMPILE time** (fixed at engine creation):
-   * when OFF the GI spatial + temporal passes are the single-group pre-GRIS
-   * pipeline; when ON they are built with a `@group(1)` scene BVH/TLAS group +
-   * the GRIS shader variant. This MUST be a compile-time structural decision —
-   * a previous runtime-UBO gate that bound an extra group on the default path
-   * regressed the default render to an all-black frame (f8df9a4). Same opt-in
-   * pattern as `rcEnabled`, `ppgEnabled`, and `regir`.
-   *
-   * @see `HARDWARE-VALIDATION-NEEDS.md` V19 for the GPU A/B converged-
-   *      unbiasedness validation this still needs.
-   * @see `plan/road-to-100.md` A8 for the architecture decision record.
    * @default false
+   */
+  readonly grisReuse?: boolean;
+
+  /**
+   * @deprecated Use {@link grisReuse}. This migration alias has identical
+   * semantics and will be removed in the next major version. Supplying both
+   * names with different values is rejected.
    */
   readonly restirPtReuse?: boolean;
 
@@ -690,7 +667,7 @@ export interface HybridEngineOptions extends EngineOptions {
    * Default: `false` — OFF shades/refines EVERY pixel and the resolve pass passes
    * through, so the render is BIT-IDENTICAL to the pre-checkerboard pipeline
    * (the OFF-is-bit-identical opt-in pattern shared by `rcEnabled` /
-   * `ppgEnabled` / `restirPtReuse` / `nrcEnabled` / `regir`). The flag flips
+   * `ppgEnabled` / `grisReuse` / `nrcEnabled` / `regir`). The flag flips
    * a few already-present UBO fields + the dispatch compaction + the ResolvePass
    * gate — it adds no bind groups, so it is NOT a compile-time structural decision.
    * The bare engine default (no quality preset ⇒ `ultra`) leaves this OFF; the
@@ -767,7 +744,7 @@ export interface HybridEngineOptions extends EngineOptions {
    * Each cell consumes memory for a flat dTree node buffer on the GPU.
    *
    * Default: 1 024 — large enough for meaningful spatial refinement while
-   * keeping VRAM bounded at ~6 MB. The absolute ceiling is 16 384; raise this
+   * keeping persistent PPG buffers bounded at ~12.2 MiB. The absolute ceiling is 16 384; raise this
    * only for dense, complex scenes where 1 024 cells are insufficient for
    * guided sampling coverage.
    *
@@ -800,9 +777,9 @@ export interface HybridEngineOptions extends EngineOptions {
    * Practical Path Guiding MIS mixture weight alpha.
    *
    * The GI RIS source pdf is
-   * `p_src = alpha * p_guide + (1 - alpha) * p_cosine`. `0` keeps PPG training
-   * and buffers live but samples from the cosine source only; `1` samples from
-   * the learned guide only. Values are clamped to `[0, 1]`.
+   * `p_src = alpha * p_guide + (1 - alpha) * p_cosine`. Alpha must be finite
+   * and strictly between `0` and `1`, preserving positive support from both
+   * proposal components; invalid endpoints are rejected.
    *
    * Default: 0.5 (Muller 2017 section 3.4).
    *
@@ -872,9 +849,9 @@ export interface HybridEngineOptions extends EngineOptions {
    * Enable the Sannikov 2023 Radiance Cascades subsystem inside HybridEngine.
    *
    * When `true`, the engine instantiates an {@link RCSubsystem} that:
-   *   - Builds a per-engine RC BVH (~50 ms for ~30K-tri scenes) on each
-   *     `setScene` call. Today this builds a SEPARATE BVH from the
-   *     ReSTIR-DI BVH — future W2-style work may unify them.
+   *   - Borrows the canonical hybrid scene-arena BLAS ranges. RC retains only
+   *     a compact material/TLAS adapter, so enabling it does not duplicate the
+   *     scene's large node/index/position/normal allocations.
    *   - Allocates raw `GPUBuffer`s for each of the 5 cascades (per
    *     `CASCADE_DIMS`) — memory cost depends on cascade sizing.
    *   - Dispatches the cascade compute pipeline (5 cast passes + 4 merge
@@ -885,12 +862,26 @@ export interface HybridEngineOptions extends EngineOptions {
    * balance-heuristic MIS (W8 Phase 3, rcWeight option). See
    * plan/w8-rc-mis-composition.md.
    *
-   * Default: `false` — RC is opt-in until Phase 3 demonstrates first-bounce
-   * indirect quality gain over DDGI-only.
+   * Default: `false`; hosts opt into the additional cascade memory and compute
+   * cost when its multiscale indirect signal is useful for their scene.
    *
    * @see plan/w8-rc-mis-composition.md for the full sprint plan.
    */
   readonly rcEnabled?: boolean;
+
+  /**
+   * Maximum number of dielectric interfaces one Radiance Cascades probe ray
+   * may cross before the transmitted path is terminated. Thin sheets consume
+   * two interfaces (entry plus their reciprocal virtual exit), while bulk
+   * dielectric boundaries consume one each.
+   *
+   * Must be an integer in [1, 8]. The default of 8 matches the shader's
+   * statically bounded medium stack and preserves the standalone RC default.
+   * Only meaningful when {@link rcEnabled} is `true`.
+   *
+   * @default 8
+   */
+  readonly rcTransmittedInterfaceBudget?: number;
 
   /**
    * W8 Phase 3 — Track-A balance-heuristic MIS weight for the Radiance
@@ -944,7 +935,7 @@ export interface HybridEngineOptions extends EngineOptions {
    * (hash-grid feature tables + MLP weights are trained JOINTLY) once per frame.
    *
    * **NRC is a BIASED estimator** — the cache is a learned approximation of the
-   * path suffix, not an unbiased Monte-Carlo estimate. Unlike RC/PPG/GRIS (which
+   * path suffix, not an unbiased Monte-Carlo estimate. Unlike the explicit RC/PPG paths (which
    * preserve the converged mean), the acceptance criterion for NRC is
    * *perceptual closeness to the no-NRC reference within tolerance, with faster
    * convergence / lower noise*. See `HARDWARE-VALIDATION-NEEDS.md` V20.
@@ -957,18 +948,40 @@ export interface HybridEngineOptions extends EngineOptions {
    * `nrcEnabled` is set with `tier:'lite'`, mirroring rcEnabled / ppgEnabled /
    * denoiser:'neural'.
    *
-   * When ON, the gi-ris pass compiles in its NRC variant (`risGiNrc`): once
-   * Müller's spread heuristic fires at the reconnection/suffix vertex, the MLP
-   * cache query REPLACES the DDGI estimate and a self-training record is written;
-   * `NrcSubsystem` runs one MLP + hash-grid-table training step per frame. Below
-   * the spread threshold the suffix keeps the DDGI estimate verbatim, so
-   * sub-threshold regions match the OFF pass. NRC is a BIASED cache — it records
-   * the selected GI radiance payload for self-training, not a ground-truth path
-   * integral (HARDWARE-VALIDATION-NEEDS.md V20).
+   * When ON, the gi-ris pass compiles in its NRC variant (`risGiNrc`). Once
+   * Müller's spread heuristic fires at an opaque suffix vertex, the MLP query
+   * replaces the DDGI estimate. A private four-vertex Monte Carlo suffix with
+   * finite/analytic/sun NEE, environment continuation, and Russian roulette
+   * supplies the matched online training label; it reads neither DDGI nor the
+   * cache prediction. `NrcSubsystem` trains the hash grid and MLP once per frame.
+   * NRC remains a biased learned approximation, and its independent teacher
+   * estimates a deliberately bounded rather than infinite path suffix. See
+   * `HARDWARE-VALIDATION-NEEDS.md` V20 for GPU acceptance evidence.
    *
    * @default false
    */
   readonly nrcEnabled?: boolean;
+
+  /**
+   * Complete Neural Radiance Cache configuration.
+   *
+   * Every field is resolved against {@link DEFAULT_NRC_CONFIG} and drives the
+   * matching executable path: hash-grid dimensions, MLP shape, spread gate,
+   * record capacity, both Adam learning rates, trainer precision/tile size,
+   * warmup, and the optional aggregate-residency policy. The same resolved
+   * object is used for device preflight, GPU allocation, query-shader
+   * compilation, and both trainers, so those layers cannot silently disagree.
+   *
+   * `useF16: true` requires a device with the `shader-f16` feature enabled.
+   * Facade-owned device creation requests that feature automatically; hosts
+   * supplying their own device must enable it when requesting the device.
+   *
+   * The legacy top-level `nrcWarmupSteps`, `nrcSpreadC`, and
+   * `nrcMaxResidentBytes` aliases remain accepted. Supplying an alias together
+   * with the corresponding `nrcConfig` field is allowed only when the values
+   * agree exactly; disagreement throws synchronously.
+   */
+  readonly nrcConfig?: Partial<NrcConfig>;
 
   /**
    * Completed NRC trainer windows required before cache predictions may replace
@@ -976,12 +989,14 @@ export interface HybridEngineOptions extends EngineOptions {
    *
    * NRC gathers training records immediately, but the GI shader keeps using the
    * DDGI suffix until `trainedSteps >= nrcWarmupSteps`. Lower values promote the
-   * biased cache earlier; higher values keep the unbiased DDGI suffix longer
+   * biased cache earlier; higher values keep the explicit DDGI suffix longer
    * while the cache settles. Values are clamped to integer `>= 0`.
    *
    * Default: 8.
    *
    * Only meaningful when `nrcEnabled: true`.
+   *
+   * @deprecated Use `nrcConfig: { warmupSteps }`.
    */
   readonly nrcWarmupSteps?: number;
 
@@ -995,6 +1010,20 @@ export interface HybridEngineOptions extends EngineOptions {
    * Default: 0.01.
    *
    * Only meaningful when `nrcEnabled: true`.
+   *
+   * @deprecated Use `nrcConfig: { spreadC }`.
    */
   readonly nrcSpreadC?: number;
+
+  /**
+   * Optional host policy for the NRC subsystem's peak resident GPU-buffer bytes,
+   * including its one permitted readback buffer. The default leaves aggregate
+   * residency uncapped because WebGPU reports no adapter-wide VRAM budget; all
+   * real per-buffer and binding limits remain enforced independently.
+   *
+   * Only meaningful when `nrcEnabled: true`. Must be a positive safe integer.
+   *
+   * @deprecated Use `nrcConfig: { maxNrcResidentBytes }`.
+   */
+  readonly nrcMaxResidentBytes?: number;
 }

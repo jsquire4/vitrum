@@ -3,45 +3,68 @@
  * Used to upload/read rgba16float atrous-variance ping-pong textures from CPU.
  */
 
-/** Pack float32 into binary16 bits (uint16). */
+const FLOAT32_SCRATCH = new Float32Array(1);
+const UINT32_SCRATCH = new Uint32Array(FLOAT32_SCRATCH.buffer);
+
+/**
+ * Pack a JavaScript number into IEEE-754 binary16 bits.
+ *
+ * The input is rounded to binary32 first, matching a GPU `f32 -> f16`
+ * conversion, then rounded to binary16 with round-to-nearest, ties-to-even.
+ * Finite overflow maps to signed infinity. NaNs are canonicalised to a quiet
+ * half NaN while preserving the binary32 sign lane.
+ */
 export function float32ToFloat16Bits(value: number): number {
-  const floatView = new Float32Array(1);
-  const int32View = new Int32Array(floatView.buffer);
-  floatView[0] = value;
-  const x = int32View[0]!;
+  FLOAT32_SCRATCH[0] = value;
+  const bits = UINT32_SCRATCH[0]!;
+  const sign = (bits >>> 16) & 0x8000;
+  const exponent = (bits >>> 23) & 0xff;
+  const mantissa = bits & 0x007f_ffff;
 
-  if ((x & 0x7fff_ffff) === 0) {
-    return ((x >> 16) & 0x8000) >>> 0;
+  if (exponent === 0xff) {
+    return sign | (mantissa === 0 ? 0x7c00 : 0x7e00);
   }
 
-  const sign = (x >> 16) & 0x8000;
-  const exponent = ((x >> 23) & 0xff) - 127 + 15;
-  let mantissa = x & 0x007f_ffff;
+  let halfExponent = exponent - 127 + 15;
+  if (halfExponent >= 31) return sign | 0x7c00;
 
-  if (exponent <= 0) {
-    if (exponent < -10) {
-      return (sign >>> 0);
+  if (halfExponent <= 0) {
+    // Values below half the least positive binary16 subnormal round to zero.
+    // At exactly half, ties-to-even also selects zero.
+    if (halfExponent < -10) return sign;
+
+    const significand = mantissa | 0x0080_0000;
+    const shift = 14 - halfExponent;
+    const divisor = 2 ** shift;
+    let halfMantissa = Math.floor(significand / divisor);
+    const remainder = significand - halfMantissa * divisor;
+    const halfway = divisor / 2;
+    if (
+      remainder > halfway ||
+      (remainder === halfway && (halfMantissa & 1) !== 0)
+    ) {
+      halfMantissa += 1;
     }
-    mantissa |= 0x0080_0000;
-    const shift = 14 - exponent;
-    const halfMantissa = mantissa >> (shift + 13);
-    const roundBit = (mantissa >> (shift + 12)) & 1;
-    return ((sign | (halfMantissa + roundBit)) & 0xffff) >>> 0;
+
+    // A rounded subnormal can carry into the minimum normal (0x0400).
+    return sign | halfMantissa;
   }
 
-  if (exponent >= 31) {
-    // Distinguish: was the f32 input already Inf/NaN (exp bits all-ones),
-    // or is this a finite f32 that overflows the fp16 range?
-    const expBits = (x & 0x7f80_0000) >>> 23; // biased f32 exponent
-    if (expBits === 0xff) {
-      // Input was Inf or NaN — preserve the NaN-vs-Inf distinction.
-      return ((sign | 0x7c00 | (mantissa !== 0 ? 0x0200 : 0)) & 0xffff) >>> 0;
+  let halfMantissa = mantissa >>> 13;
+  const remainder = mantissa & 0x1fff;
+  if (
+    remainder > 0x1000 ||
+    (remainder === 0x1000 && (halfMantissa & 1) !== 0)
+  ) {
+    halfMantissa += 1;
+    if (halfMantissa === 0x0400) {
+      halfMantissa = 0;
+      halfExponent += 1;
+      if (halfExponent >= 31) return sign | 0x7c00;
     }
-    // Input was finite but > 65504 — IEEE specifies saturation to ±Inf.
-    return ((sign | 0x7c00) & 0xffff) >>> 0;
   }
 
-  return ((sign | (exponent << 10) | (mantissa >> 13)) & 0xffff) >>> 0;
+  return sign | (halfExponent << 10) | halfMantissa;
 }
 
 /** Expand binary16 bits to float32. */

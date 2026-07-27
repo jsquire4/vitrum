@@ -8,6 +8,7 @@ import type { Scene, Engine } from '@vitrum/core';
 import {
   createPTEngine_WebGPU,
   ptWebgpuRequiredLimitsForAdapter,
+  validatePtWebgpuAdvancedOptions,
   type PTEngineWebGPUOptions,
 } from '@vitrum/pt-webgpu';
 import { configureWebGpuCanvas } from '../configureWebGpuCanvas.js';
@@ -15,6 +16,7 @@ import {
   resolveAdvancedForBackend,
   stripOwnershipCriticalKeys,
   reportCreateEngineError,
+  BackendUnavailableError,
   attachBackendId,
   wrapWithIdempotentDispose,
   type CreateEngineOptions,
@@ -35,10 +37,6 @@ export async function constructPathTracerWebGPU(
   vitrumScene: Scene,
   shared?: SharedDeviceCtx,
 ): Promise<Engine> {
-  const adapter = shared?.adapter ?? await navigator.gpu.requestAdapter();
-  if (adapter == null) {
-    throw new Error('createEngine: WebGPU adapter request returned null even though detectGpu reported support');
-  }
   const advancedWebGPURaw = resolveAdvancedForBackend(
     opts,
     'pt-webgpu',
@@ -48,11 +46,38 @@ export async function constructPathTracerWebGPU(
     'pt-webgpu',
     opts.onWarning,
   ) as Partial<PTEngineWebGPUOptions>;
-  const device = shared?.device ?? await adapter.requestDevice({
-    requiredLimits: ptWebgpuRequiredLimitsForAdapter(adapter, {
-      restirPtReuse: advancedWebGPURaw?.restirPtReuse === true,
-    }),
-  });
+  validatePtWebgpuAdvancedOptions(advancedWebGPU);
+
+  let adapter: GPUAdapter | null;
+  try {
+    adapter = shared?.adapter ?? await navigator.gpu.requestAdapter();
+  } catch (cause) {
+    throw new BackendUnavailableError(
+      'pt-webgpu',
+      'createEngine: WebGPU adapter acquisition failed for pt-webgpu',
+      { cause },
+    );
+  }
+  if (adapter == null) {
+    throw new BackendUnavailableError(
+      'pt-webgpu',
+      'createEngine: WebGPU adapter request returned null even though detectGpu reported support',
+    );
+  }
+  let device: GPUDevice;
+  try {
+    device = shared?.device ?? await adapter.requestDevice({
+      requiredLimits: ptWebgpuRequiredLimitsForAdapter(adapter, {
+        restirPtReuse: advancedWebGPURaw?.restirPtReuse === true,
+      }),
+    });
+  } catch (cause) {
+    throw new BackendUnavailableError(
+      'pt-webgpu',
+      'createEngine: WebGPU device acquisition failed for pt-webgpu',
+      { cause },
+    );
+  }
 
   let engine: Engine | null = null;
   try {

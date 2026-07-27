@@ -5,8 +5,8 @@
  * Shared golden-comparison thresholds for real-glTF capture harnesses.
  * Single source of truth so the browser pt-webgl2 capture harness and any other
  * capture lane stop re-hardcoding `{ maxRmse: 8, maxMeanAbs: 4, maxAbs: 48 }`.
- * NOTE: checker files (check-status.mjs / check-proofs.mjs / check-dzn-status.mjs
- * / check-validation-queue.mjs) keep their OWN independent pinned thresholds by
+ * NOTE: checker files (check-status.mjs / check-proofs.mjs / check-dzn-status.mjs)
+ * keep their OWN independent pinned thresholds by
  * design — this const is consumed by HARNESSES only.
  */
 export const REAL_GLTF_GOLDEN_THRESHOLDS = Object.freeze({ maxRmse: 8, maxMeanAbs: 4, maxAbs: 48 });

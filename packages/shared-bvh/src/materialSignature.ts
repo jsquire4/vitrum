@@ -77,7 +77,7 @@ function rawVecSig(
 
 function textureRefLike(value: unknown): TextureRef | undefined {
   if (value == null || typeof value !== 'object') return undefined;
-  if ('handle' in value) return value as TextureRef;
+  if ('handle' in value) return value;
   return { handle: value };
 }
 
@@ -119,7 +119,10 @@ function stableJsonSig(value: unknown): string {
       .map((key) => `${JSON.stringify(key)}:${stableJsonSig((value as Record<string, unknown>)[key])}`)
       .join(',')}}`;
   }
-  return String(value);
+  if (typeof value === 'bigint') return `${value.toString()}n`;
+  if (typeof value === 'symbol') return `symbol:${value.description ?? ''}`;
+  if (typeof value === 'function') return `function:${value.name}`;
+  return '';
 }
 
 /**

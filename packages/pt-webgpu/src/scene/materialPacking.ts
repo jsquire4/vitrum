@@ -6,6 +6,7 @@ import {
   sigmaAFromAttenuation,
 } from '@vitrum/shared-samplers';
 
+import { thinFilmRgb } from '../math/thinFilm.js';
 /** pt-webgpu thin-film layer capacity. Declared per-backend in
  *  `@vitrum/core` `BackendSupportDetails.thinFilmLayerLimit` (D1 = Option B);
  *  the WGSL `const THIN_FILM_LAYER_LIMIT = 8u;` in
@@ -34,9 +35,11 @@ export const THIN_FILM_LAYER_LIMIT = 8;
  *   25 iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
  *      castShadowDisabled (1.0 ⇔ source primitive set castShadow:false; 0.0 default)  ← H52 / SHADOW-01
  *   26 baseColor Jakob-Hanika sigmoid coeffs c0,c1,c2 (raw-nm),
- *      materialFlags: bit0 hasSpectralReflectance, bit1 unlit shadingModel  ← A3 / GLTF-unlit
+ *      materialFlags: bit0 hasSpectralReflectance, bit1 unlit shadingModel,
+ *      bit2 doubleSided                                                    ← A3 / GLTF material sides
  *   27 specularColor.rgb, specularIntensity                         ← SPEC-01
- *   28 volumeThickness, hasVolumeThickness, _, _                    ← VOL-THICKNESS
+ *   28 volumeThickness, hasVolumeThickness, thinFilmRgbLutBaseVec4, _
+ *      (the LUT offset is absolute; zero means no sparse RGB LUT)
  *
  * A3: vec4 #26 (`MATERIAL_VEC4_STRIDE` bumped 26 → 27) carries the Jakob &
  * Hanika 2019 RGB→spectrum upsampling coefficients for the material's baseColor,
@@ -45,7 +48,8 @@ export const THIN_FILM_LAYER_LIMIT = 8;
  * genuine SCALAR spectral reflectance through the path (replacing the RGB→
  * luminance tint). The .w flag's bit0 is set when the coefficients are valid
  * (always, for every material — black collapses to S≈0 via the solver's
- * pure-black shortcut). bit1 carries `MaterialSpec.shadingModel === 'unlit'`.
+ * pure-black shortcut). bit1 carries `MaterialSpec.shadingModel === 'unlit'`;
+ * bit2 carries `MaterialSpec.doubleSided === true` (false when omitted).
  * Ref: Jakob & Hanika 2019 (shared-samplers/jakobHanika.ts).
  *
  * WS4: vec4 #22 (`MATERIAL_VEC4_STRIDE` bumped 22 → 23) carries the RGB
@@ -61,7 +65,11 @@ export const THIN_FILM_LAYER_LIMIT = 8;
  * skipped when it is 0).
  * Refs: glTF KHR_materials_clearcoat, KHR_materials_sheen, KHR_materials_iridescence.
  */
-const MATERIAL_VEC4_STRIDE = 29;
+export const THIN_FILM_RGB_LUT_BINS = 64;
+const THIN_FILM_RGB_LUT_FLOATS_PER_BIN = 16;
+export const THIN_FILM_RGB_LUT_MAX_ABS_ERROR = 0.02;
+const THIN_FILM_RGB_LUT_CERTIFICATION_SAMPLES_PER_INTERVAL = 7;
+export const MATERIAL_VEC4_STRIDE = 29;
 export const MATERIAL_FLOAT_STRIDE = MATERIAL_VEC4_STRIDE * 4;
 
 // Visible-light 380→780 nm spectral grid sampling now lives in shared-samplers
@@ -76,6 +84,9 @@ export interface MaterialPackContext {
    *  into vec4 #25 .w (castShadowDisabled); `true`/undefined packs 0.0, which
    *  is byte-identical to the pre-SHADOW-01 pad. */
   readonly castShadow?: boolean | undefined;
+  /** Absolute vec4 offset into the materials storage buffer for the optional
+   * sparse RGB thin-film LUT. Zero is the no-LUT sentinel. */
+  readonly thinFilmRgbLutBaseVec4?: number | undefined;
 }
 
 export function materialToPackedVec4s(
@@ -121,7 +132,7 @@ export function materialToPackedVec4s(
   const thinFilmLayerCount = Math.min(thinFilmLayers.length, THIN_FILM_LAYER_LIMIT);
   const thinFilmEnabled = thinFilmLayerCount > 0 ? 1 : 0;
   const incidentIor = Math.max(finite(material.thinFilmStack?.incidentIor ?? 1, 1), 1);
-  const angleDependentFlag = material.thinFilmStack?.angleDependent === true ? 1 : 0;
+  const angleDependentFlag = material.thinFilmStack?.angleDependent !== false ? 1 : 0;
   const spectralCurve = material.spectralAttenuation;
   // 380→780 nm uniform grid μ(λ) sampling + avg/max/count, single-sourced with
   // pt-webgl2 via shared-samplers `sampleSpectralGrid`. pt-webgpu's original
@@ -254,7 +265,7 @@ export function materialToPackedVec4s(
   // at the hero wavelength to get a genuine scalar spectral reflectance, carried
   // through the path instead of an RGB→luminance tint. .w bit0 = coefficients
   // valid (always; pure black resolves to S≈0 via the solver's shortcut), bit1 =
-  // MaterialSpec.shadingModel === 'unlit'.
+  // MaterialSpec.shadingModel === 'unlit', bit2 = MaterialSpec.doubleSided.
   // Ref: Jakob & Hanika 2019, "A Low-Dimensional Function Space for Efficient
   //      Spectral Upsampling" (shared-samplers/jakobHanika.ts).
   const [specC0, specC1, specC2] = rgbToSpectralCoefficients(
@@ -262,7 +273,10 @@ export function materialToPackedVec4s(
     finite(base[1] ?? 0),
     finite(base[2] ?? 0),
   );
-  const materialFlags = 1 + (material.shadingModel === 'unlit' ? 2 : 0);
+  const materialFlags =
+    1 +
+    (material.shadingModel === 'unlit' ? 2 : 0) +
+    (material.doubleSided === true ? 4 : 0);
   packed.push(finite(specC0), finite(specC1), finite(specC2), materialFlags);
 
   // SPEC-01 — KHR_materials_specular scalar factors for dielectric F0. Defaults
@@ -282,7 +296,148 @@ export function materialToPackedVec4s(
   // flag preserves glTF's explicit thicknessFactor=0 "no volume" default while
   // letting attenuation paths distinguish "author supplied a slab clamp" from
   // "use geometric segment length".
-  packed.push(volumeThickness, hasVolumeThickness ? 1 : 0, 0, 0);
+  packed.push(volumeThickness, hasVolumeThickness ? 1 : 0,
+    Math.max(0, finite(context.thinFilmRgbLutBaseVec4 ?? 0)), 0);
 
   return packed;
+}
+
+/** CPU mirror of the shader's direction-aware cosine grid. For high-to-low
+ * index transport, bins are split at the critical angle so interpolation never
+ * crosses the TIR discontinuity. */
+export function thinFilmRgbLutCosTheta(
+  bin: number,
+  incidentIor: number,
+  substrateIor: number,
+  reverse: boolean,
+): number {
+  const clampedBin = Math.min(THIN_FILM_RGB_LUT_BINS - 1, Math.max(0, bin));
+  const etaIncident = reverse ? substrateIor : incidentIor;
+  const etaTransmitted = reverse ? incidentIor : substrateIor;
+  const criticalCos = etaIncident > etaTransmitted
+    ? Math.sqrt(Math.max(0, 1 - (etaTransmitted * etaTransmitted) /
+      (etaIncident * etaIncident)))
+    : 0;
+  if (criticalCos > 1e-6) {
+    const halfBins = THIN_FILM_RGB_LUT_BINS / 2;
+    if (clampedBin < halfBins) {
+      const u = clampedBin / (halfBins - 1);
+      return criticalCos * u * u;
+    }
+    const u = (clampedBin - halfBins) / (halfBins - 1);
+    return criticalCos + (1 - criticalCos) * u * u;
+  }
+  const u = clampedBin / (THIN_FILM_RGB_LUT_BINS - 1);
+  return u * u;
+}
+
+/** Inverse of {@link thinFilmRgbLutCosTheta}; mirrors the WGSL lookup exactly. */
+export function thinFilmRgbLutPosition(
+  cosTheta: number,
+  incidentIor: number,
+  substrateIor: number,
+  reverse: boolean,
+): number {
+  const cos = Math.min(1, Math.max(0, cosTheta));
+  const etaIncident = reverse ? substrateIor : incidentIor;
+  const etaTransmitted = reverse ? incidentIor : substrateIor;
+  const criticalCos = etaIncident > etaTransmitted
+    ? Math.sqrt(Math.max(0, 1 - (etaTransmitted * etaTransmitted) /
+      (etaIncident * etaIncident)))
+    : 0;
+  if (criticalCos > 1e-6) {
+    const halfBins = THIN_FILM_RGB_LUT_BINS / 2;
+    if (cos <= criticalCos) {
+      return Math.sqrt(Math.min(1, cos / criticalCos)) * (halfBins - 1);
+    }
+    return halfBins + Math.sqrt(Math.min(1,
+      (cos - criticalCos) / Math.max(1 - criticalCos, 1e-8),
+    )) * (halfBins - 1);
+  }
+  return Math.sqrt(cos) * (THIN_FILM_RGB_LUT_BINS - 1);
+}
+
+/** Build the optional RGB-mode thin-film payload for one material. The data is
+ * appended after the fixed-stride material table; non-film materials return an
+ * empty array and therefore pay zero storage-buffer cost. Each bin stores
+ * forward then reverse {R.rgb,T.rgb,R_Y,T_Y}. Hero mode bypasses this LUT. */
+export function thinFilmRgbLutForMaterial(material: MaterialSpec): number[] {
+  const layers = material.thinFilmStack?.layers.slice(0, THIN_FILM_LAYER_LIMIT) ?? [];
+  if (layers.length === 0) return [];
+  const finite = (v: number, fallback: number): number =>
+    Number.isFinite(v) ? v : fallback;
+  const incidentIor = Math.max(
+    finite(material.thinFilmStack?.incidentIor ?? 1, 1), 1,
+  );
+  const substrateIor = Math.max(finite(material.ior ?? 1.5, 1.5), 1);
+  const rgbInput = {
+    layers,
+    incidentIor,
+    substrateIor,
+    angleDependent: material.thinFilmStack?.angleDependent !== false,
+  };
+  const lut: number[] = [];
+  for (let bin = 0; bin < THIN_FILM_RGB_LUT_BINS; bin += 1) {
+    const forwardCos = thinFilmRgbLutCosTheta(bin, incidentIor, substrateIor, false);
+    const reverseCos = thinFilmRgbLutCosTheta(bin, incidentIor, substrateIor, true);
+    const forward = thinFilmRgb({ ...rgbInput, cosTheta: forwardCos, reverse: false });
+    const reverse = thinFilmRgb({ ...rgbInput, cosTheta: reverseCos, reverse: true });
+    lut.push(
+      ...forward.reflectance, ...forward.transmittance,
+      forward.reflectanceEnergy, forward.transmittanceEnergy,
+      ...reverse.reflectance, ...reverse.transmittance,
+      reverse.reflectanceEnergy, reverse.transmittanceEnergy,
+    );
+  }
+  // Per-stack admission certificate. Probe every interpolation interval in
+  // both directions, including the independently split TIR regions. This keeps
+  // the public domain truthful for unusually thick/high-Q stacks: a stack whose
+  // sparse table cannot meet the declared bound is rejected during setScene()
+  // instead of silently rendering an inaccurate approximation.
+  const packedLut = new Float32Array(lut);
+  let maxError = 0;
+  for (const reverse of [false, true]) {
+    const directionOffset = reverse ? 8 : 0;
+    for (let bin = 0; bin < THIN_FILM_RGB_LUT_BINS - 1; bin += 1) {
+      const cos0 = thinFilmRgbLutCosTheta(bin, incidentIor, substrateIor, reverse);
+      const cos1 = thinFilmRgbLutCosTheta(bin + 1, incidentIor, substrateIor, reverse);
+      if (cos1 <= cos0) continue;
+      for (
+        let probe = 1;
+        probe <= THIN_FILM_RGB_LUT_CERTIFICATION_SAMPLES_PER_INTERVAL;
+        probe += 1
+      ) {
+        const alpha = probe /
+          (THIN_FILM_RGB_LUT_CERTIFICATION_SAMPLES_PER_INTERVAL + 1);
+        const cosTheta = cos0 + (cos1 - cos0) * alpha;
+        const reference = thinFilmRgb({ ...rgbInput, cosTheta, reverse });
+        const expected = [
+          ...reference.reflectance, ...reference.transmittance,
+          reference.reflectanceEnergy, reference.transmittanceEnergy,
+        ];
+        const lutPosition = thinFilmRgbLutPosition(
+          cosTheta, incidentIor, substrateIor, reverse);
+        const lutAlpha = lutPosition - bin;
+        for (let lane = 0; lane < 8; lane += 1) {
+          const a = packedLut[bin * 16 + directionOffset + lane]!;
+          const b = packedLut[(bin + 1) * 16 + directionOffset + lane]!;
+          // Mirror f32 storage plus WGSL mix arithmetic conservatively.
+          const actual = Math.fround(
+            Math.fround(a) + Math.fround(Math.fround(b - a) * Math.fround(lutAlpha)),
+          );
+          maxError = Math.max(maxError, Math.abs(actual - expected[lane]!));
+        }
+      }
+    }
+  }
+  if (maxError > THIN_FILM_RGB_LUT_MAX_ABS_ERROR) {
+    throw new Error(
+      `pt-webgpu thin-film RGB LUT error ${maxError} exceeds ` +
+      `${THIN_FILM_RGB_LUT_MAX_ABS_ERROR}; use spectral mode or simplify the stack.`,
+    );
+  }
+  if (lut.length !== THIN_FILM_RGB_LUT_BINS * THIN_FILM_RGB_LUT_FLOATS_PER_BIN) {
+    throw new Error('pt-webgpu thin-film RGB LUT packing invariant failed.');
+  }
+  return lut;
 }

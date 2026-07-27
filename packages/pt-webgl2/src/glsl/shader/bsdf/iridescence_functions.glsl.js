@@ -109,7 +109,7 @@ export const iridescence_functions = /* glsl */`
 		vec3 phi = vec3( phi21 ) + phi23;
 
 		// Compound terms
-		vec3 R123 = clamp( R12 * R23, 1e-5, 0.9999 );
+    vec3 R123 = clamp( R12 * R23, 0.0, 0.9999 );
 		vec3 r123 = sqrt( R123 );
 		vec3 Rs = square( T121 ) * R23 / ( vec3( 1.0 ) - R123 );
 

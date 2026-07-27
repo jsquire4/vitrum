@@ -38,11 +38,13 @@ describe('BVH_CAST_SHADOW_MASK_WGSL (SHADOW-01)', () => {
 
   it('rewires the TLAS clone onto the masked BLAS variants (no unmasked leak)', () => {
     const tlasClone = BVH_CAST_SHADOW_MASK_WGSL.slice(
-      BVH_CAST_SHADOW_MASK_WGSL.indexOf('fn traceTlasAnyCastMask('),
+      BVH_CAST_SHADOW_MASK_WGSL.indexOf('fn tlasTraceInstanceAnyCastMask('),
     );
     // The merged fallback + per-instance BLAS probe both use the masked forms.
     expect(tlasClone).toContain('bvhIntersectAnyAtRootCastMask(');
     expect(tlasClone).toContain('bvhIntersectFirstHitAtRootCastMask(');
+    expect(tlasClone).toContain('fn tlasAnyFallbackCastMask(');
+    expect(tlasClone).toContain('return tlasAnyFallbackCastMask(');
     // No call to the UNMASKED functions remains inside the clone (word-boundary:
     // every masked name contains the unmasked name as a prefix, so check the
     // exact unmasked call forms).
@@ -67,6 +69,21 @@ describe('BVH_CAST_SHADOW_PREDICATE_WGSL (SHADOW-01)', () => {
     expect(BVH_CAST_SHADOW_PREDICATE_WGSL).toContain('fn bvhIntersectAnyAtRootCastPredicate(');
     expect(BVH_CAST_SHADOW_PREDICATE_WGSL).toContain('fn bvhIntersectFirstHitAtRootCastPredicate(');
     expect(BVH_CAST_SHADOW_PREDICATE_WGSL).toContain('fn traceTlasAnyCastPredicate(');
+    expect(BVH_CAST_SHADOW_PREDICATE_WGSL).toContain('fn tlasAnyFallbackCastPredicate(');
+    expect(BVH_CAST_SHADOW_PREDICATE_WGSL).toContain('return tlasAnyFallbackCastPredicate(');
     expect(BVH_CAST_SHADOW_PREDICATE_WGSL).toContain('if (bvhCastShadowDisabledForTri(triIdx)) { continue; }');
+  });
+});
+
+describe('BVH any-hit overflow policy', () => {
+  it('fails closed in canonical and derived shadow traversals', () => {
+    const overflowGuard =
+      /if \(stackPtr \+ 1u >= \d+u\) \{\s*return true;\s*\}/;
+    expect(BVH_INTERSECT_WGSL).toMatch(overflowGuard);
+    expect(BVH_CAST_SHADOW_MASK_WGSL).toMatch(overflowGuard);
+    expect(BVH_CAST_SHADOW_PREDICATE_WGSL).toMatch(overflowGuard);
+    expect(BVH_INTERSECT_WGSL).not.toMatch(
+      /if \(stackPtr \+ 1u >= \d+u\) \{\s*return false;\s*\}/,
+    );
   });
 });

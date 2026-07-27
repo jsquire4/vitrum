@@ -44,17 +44,24 @@ export function configureWebGpuCanvas(
 ): void {
   try {
     const ctx = canvas.getContext('webgpu');
-    if (ctx != null) {
-      const format = (typeof navigator !== 'undefined' && 'gpu' in navigator
-        ? (navigator.gpu as { getPreferredCanvasFormat?: () => GPUTextureFormat })
-            .getPreferredCanvasFormat?.() ?? ('bgra8unorm')
-        : ('bgra8unorm' as GPUTextureFormat));
-      ctx.configure({
-        device,
-        format,
-        alphaMode: 'opaque',
-      });
+    if (ctx == null) {
+      if (options?.required === true) {
+        throw new Error(
+          'configureWebGpuCanvas: canvas.getContext("webgpu") returned null',
+        );
+      }
+      return;
     }
+
+    const format = (typeof navigator !== 'undefined' && 'gpu' in navigator
+      ? (navigator.gpu as { getPreferredCanvasFormat?: () => GPUTextureFormat })
+          .getPreferredCanvasFormat?.() ?? ('bgra8unorm')
+      : ('bgra8unorm' as GPUTextureFormat));
+    ctx.configure({
+      device,
+      format,
+      alphaMode: 'opaque',
+    });
   } catch (err) {
     // Best-effort canvas configure for attachVitrum swap-chain plumbing.
     try {

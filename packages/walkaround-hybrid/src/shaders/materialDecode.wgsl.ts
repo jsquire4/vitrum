@@ -7,6 +7,13 @@
  */
 
 import type { WgslModule } from '../pipeline/wgslComposer.js';
+import { buildMaterialTransmissionPredicatesWGSL } from '@vitrum/shared-bvh';
+
+const MATERIAL_TRANSMISSION_PREDICATES_WGSL =
+  buildMaterialTransmissionPredicatesWGSL({
+    packedFunctionName: 'packedMaterialHasTransmission',
+    sampledFunctionName: 'materialHasTransmission',
+  });
 
 export const MATERIAL_DECODE_WGSL = /* wgsl */ `// B1 — fixed texel width of the per-triangle bvh_material (roughness+metalness)
 // r32uint texture. Matches BVH_BEER_TEX_WIDTH in bvhBeerTexture.ts (the
@@ -15,6 +22,10 @@ export const MATERIAL_DECODE_WGSL = /* wgsl */ `// B1 — fixed texel width of t
 // (not surfaceTextures) so ris/risGi/cast — which do not require surfaceTextures
 // — can address bvh_material without pulling in the surface-texture module.
 const BVH_MATERIAL_TEX_WIDTH: u32 = 4096u;
+
+// Physical transmission is the independent bvhIndex bits-7:4 lane. Alpha
+// blend/mask opacity is atlas metadata and is deliberately excluded.
+${MATERIAL_TRANSMISSION_PREDICATES_WGSL}
 
 // Decode RGB888 + (trans4|texType4) packed material data from bvhIndex[triIdx].w.
 // Returns vec4f(r, g, b, transmission) in [0, 1].  The texture-type id is

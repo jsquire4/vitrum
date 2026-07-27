@@ -114,17 +114,17 @@ describe('ReSTIR-PT specialty-lobe CPU/static reference', () => {
     ]);
   });
 
-  it('pins WGSL coverage from producer payload through reservoir serialization and resolve', () => {
+  it('pins WGSL coverage from producer through compact identity hydration and resolve', () => {
     for (const line of [
       'var clearcoatV = clamp(vMat.clearcoat * sampleClearcoatTexture',
       'var sheenV = vMat.sheen;',
       'var iridescenceV = clamp(vMat.iridescence * sampleIridescenceTexture',
       'var specularColorV = clamp(vMat.specularColor * sampleSpecularColorTexture',
       'var specularIntensityV = clamp(vMat.specularIntensity * sampleSpecularIntensityTexture',
-      'let anisotropyV = materialAnisotropy(vMatId, vHit.triIndex, vHit.baryVW);',
+      'let anisotropyV = materialAnisotropy(vMatId, vHit.triIndex, vHit.baryVW, vHit.instanceIndex);',
       'let wiRecon = rptSampleSourceReconnectionDirection(',
       'let pdfSrc = rptSourceDirectionalPdfFull(',
-      'let pHat = restirPtTargetForDomain(r, woV, xs, Lo);',
+      'let pHat = restirPtTargetForDomainAtHero(r, heroLambda, woV, xs, Lo);',
     ]) {
       expect(RESTIR_PT_PRODUCER_WGSL).toContain(line);
     }
@@ -136,11 +136,13 @@ describe('ReSTIR-PT specialty-lobe CPU/static reference', () => {
       'anisotropyV:       f32,',
       'specularColorV:    vec3f,',
       'specularIntensityV: f32,',
-      'buf[b + 31u] = bitcast<u32>(r.clearcoatV);',
-      'buf[b + 38u] = bitcast<u32>(r.iridescenceV);',
-      'buf[b + 42u] = bitcast<u32>(r.anisotropyV);',
-      'buf[b + 44u] = bitcast<u32>(r.specularColorV.x);',
-      'buf[b + 47u] = bitcast<u32>(r.specularIntensityV);',
+      'const RESERVOIR_PT_HERO_STRIDE: u32 = 16u;',
+      'fn rptHydrateVisibleDomain(r: ptr<function, ReservoirPTHero>)',
+      '(*r).clearcoatV = vm.clearcoat;',
+      '(*r).iridescenceV = vm.iridescence;',
+      '(*r).anisotropyV = vm.anisotropy;',
+      '(*r).specularColorV = vm.specularColor;',
+      '(*r).specularIntensityV = vm.specularIntensity;',
     ]) {
       expect(RESERVOIR_PT_HERO_WGSL).toContain(line);
     }
@@ -149,7 +151,8 @@ describe('ReSTIR-PT specialty-lobe CPU/static reference', () => {
       'r.clearcoatV, r.clearcoatRoughnessV, r.sheenV, r.sheenRoughnessV, r.sheenColorV,',
       'r.iridescenceV, r.iridescenceIorV, r.iridescenceThicknessMinV, r.iridescenceThicknessMaxV,',
       'r.anisotropyV, r.anisotropyRotationV,',
-      'let indirect = fBsdf * cosTheta * r.Lo * r.W;',
+      'let integrand = fBsdf * cosTheta * r.Lo;',
+      'let indirect = integrand * r.W;',
     ]) {
       expect(RESTIR_PT_RESOLVE_WGSL).toContain(line);
     }

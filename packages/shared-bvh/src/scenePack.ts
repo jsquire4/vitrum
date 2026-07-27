@@ -8,7 +8,7 @@
 import { asMat4, type Mat4, type Scene, type ScenePrimitive, type Vec3 } from '@vitrum/core';
 import { buildArrayBvh, isLeafSplit } from './buildArrayBvh.js';
 import { BVH_NODE_FLOATS, VERTEX_STRIDE_F32, MAT4_STRIDE_F32 } from './strides.js';
-import { buildTlas, refitTlas } from './tlas.js';
+import { buildTlas, refitTlas, refitTlasInstances } from './tlas.js';
 import { invertMat4 as _invertMat4 } from './mathUtils.js';
 import { rebaseLeafTriOffset as _rebaseLeafTriOffset, copyVec4Strided as _copyVec4Strided, rebaseIndexWords as _rebaseIndexWords } from './splicePack.js';
 import { resolveDisplacedGeometry } from './vertexDisplacement.js';
@@ -81,6 +81,7 @@ export interface TlasGpuSnapshot {
   readonly tlasInstanceIndices: Uint32Array;
   readonly tlasBlasRoots: Uint32Array;
   readonly tlasInstanceWorldToLocal: Float32Array;
+  readonly tlasInstanceLocalToWorld?: Float32Array;
 }
 
 export type RefitTlasResult =
@@ -91,6 +92,10 @@ export type RefitTlasResult =
       readonly tlasBlasRoots: Uint32Array;
       readonly tlasInstanceWorldToLocal: Float32Array;
       readonly tlasInstanceLocalToWorld: Float32Array;
+      /** Exact child-before-parent TLAS node records changed by a partial refit. */
+      readonly dirtyTlasNodeIndices?: Uint32Array;
+      /** Original-input matrix slots changed by a partial refit. */
+      readonly dirtyTlasTransformInstanceIndices?: Uint32Array;
       readonly warnings: readonly string[];
     }
   | {
@@ -1016,13 +1021,21 @@ export function refitTlasTransforms(
   scene: Scene,
   primitiveTlasBindings: readonly PrimitiveTlasBinding[],
   prevTlas?: TlasGpuSnapshot,
+  partial?: {
+    readonly primitiveId: string;
+    /** Positions/local bounds changed even when instance matrices did not. */
+    readonly localBoundsChanged?: boolean;
+  },
 ): RefitTlasResult {
   const primitiveById = mapPrimitivesById(scene);
   const warnings: string[] = [];
   const pendingTlasInstances: PendingTlasInstance[] = [];
   const refitAabbs: Array<{ min: readonly [number, number, number]; max: readonly [number, number, number] }> = [];
+  let partialInstanceStart = -1;
+  let partialInstanceCount = 0;
 
   for (const binding of primitiveTlasBindings) {
+    const bindingInstanceStart = pendingTlasInstances.length;
     const primitive = primitiveById.get(binding.primitiveId);
     if (primitive == null) {
       return {
@@ -1064,6 +1077,17 @@ export function refitTlasTransforms(
       refitAabbs.push({ min: instance.aabbMin, max: instance.aabbMax });
       pendingTlasInstances.push(instance);
     }
+    if (binding.primitiveId === partial?.primitiveId) {
+      partialInstanceStart = bindingInstanceStart;
+      partialInstanceCount = pendingTlasInstances.length - bindingInstanceStart;
+    }
+  }
+
+  if (partial != null && partialInstanceStart < 0) {
+    return {
+      ok: false,
+      reason: `refitTlasTransforms: primitive "${partial.primitiveId}" has no TLAS binding.`,
+    };
   }
 
   if (
@@ -1073,6 +1097,71 @@ export function refitTlasTransforms(
     prevTlas.tlasBlasRoots.length === refitAabbs.length &&
     prevTlas.tlasInstanceWorldToLocal.length === refitAabbs.length * MAT4_STRIDE_F32
   ) {
+    const previousLocalToWorld = prevTlas.tlasInstanceLocalToWorld;
+    if (
+      partial != null &&
+      previousLocalToWorld != null &&
+      previousLocalToWorld.length === refitAabbs.length * MAT4_STRIDE_F32
+    ) {
+      const dirtyTransforms: number[] = [];
+      for (
+        let instance = partialInstanceStart;
+        instance < partialInstanceStart + partialInstanceCount;
+        instance += 1
+      ) {
+        const pending = pendingTlasInstances[instance]!;
+        const matrixOffset = instance * MAT4_STRIDE_F32;
+        let changed = false;
+        for (let lane = 0; lane < MAT4_STRIDE_F32; lane += 1) {
+          if (
+            prevTlas.tlasInstanceWorldToLocal[matrixOffset + lane] !==
+              pending.worldToLocal[lane] ||
+            previousLocalToWorld[matrixOffset + lane] !== pending.localToWorld[lane]
+          ) {
+            changed = true;
+            break;
+          }
+        }
+        if (changed) dirtyTransforms.push(instance);
+      }
+      const refitInstances = partial.localBoundsChanged === true
+        ? Array.from(
+            { length: partialInstanceCount },
+            (_, index) => partialInstanceStart + index,
+          )
+        : dirtyTransforms;
+      const dirtyTlasNodeIndices = refitTlasInstances(
+        {
+          nodes: prevTlas.tlasNodes,
+          nodeCount: Math.floor(prevTlas.tlasNodes.length / BVH_NODE_FLOATS),
+          instanceIndices: prevTlas.tlasInstanceIndices,
+          blasRoots: prevTlas.tlasBlasRoots,
+          instanceTransforms: prevTlas.tlasInstanceWorldToLocal,
+        },
+        refitAabbs,
+        refitInstances,
+      );
+      for (const instance of dirtyTransforms) {
+        const matrixOffset = instance * MAT4_STRIDE_F32;
+        const pending = pendingTlasInstances[instance]!;
+        prevTlas.tlasInstanceWorldToLocal.set(
+          pending.worldToLocal,
+          matrixOffset,
+        );
+        previousLocalToWorld.set(pending.localToWorld, matrixOffset);
+      }
+      return {
+        ok: true,
+        tlasNodes: prevTlas.tlasNodes,
+        tlasInstanceIndices: prevTlas.tlasInstanceIndices,
+        tlasBlasRoots: prevTlas.tlasBlasRoots,
+        tlasInstanceWorldToLocal: prevTlas.tlasInstanceWorldToLocal,
+        tlasInstanceLocalToWorld: previousLocalToWorld,
+        dirtyTlasNodeIndices,
+        dirtyTlasTransformInstanceIndices: Uint32Array.from(dirtyTransforms),
+        warnings,
+      };
+    }
     const refitNodes = new Uint32Array(prevTlas.tlasNodes);
     refitTlas(
       {

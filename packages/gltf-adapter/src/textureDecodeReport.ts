@@ -16,6 +16,7 @@ import {
   inferDecodedChannels,
   inferDecodedDataType,
   isArrayLikeData,
+  isCpuReadableTexturePayloadValid,
   isPowerOfTwo,
   isRecord,
   materialForPrimitive,
@@ -34,9 +35,16 @@ export function buildTextureDecodeReport(scene: Scene): GltfTextureDecodeReport 
       const ref = material[field];
       if (!ref) continue;
       uniqueHandles.add(ref.handle);
-      const handleKind = classifyTextureHandle(ref.handle);
+      const classifiedHandleKind = classifyTextureHandle(ref.handle);
+      const handleKind =
+        (classifiedHandleKind === 'pixel-data' || classifiedHandleKind === 'data-texture') &&
+        !isCpuReadableTexturePayloadValid(ref.handle)
+          ? 'opaque'
+          : classifiedHandleKind;
       const handleColorSpace = textureHandleColorSpace(ref.handle);
-      const payloadFields = textureHandlePayloadReportFields(ref.handle);
+      const payloadFields = handleKind === 'opaque'
+        ? {}
+        : textureHandlePayloadReportFields(ref.handle);
       const samplerFields = textureSamplerReportFields(ref);
       const source = gltfTextureRefSource(ref);
       const dimensionFields = textureDimensionReportFields(ref.handle);
@@ -128,52 +136,79 @@ function textureDimensionReportFields(
 }
 
 function textureHandleDimensions(handle: unknown): { readonly width: number; readonly height: number } | null {
-  if (!isRecord(handle)) return null;
-  if (typeof handle.width === 'number' && typeof handle.height === 'number') {
-    return { width: handle.width, height: handle.height };
-  }
-  const image = handle.image;
-  if (isRecord(image) && typeof image.width === 'number' && typeof image.height === 'number') {
-    return { width: image.width, height: image.height };
+  try {
+    if (!isRecord(handle)) return null;
+    const width = handle.width;
+    const height = handle.height;
+    if (isPositiveSafeDimension(width) && isPositiveSafeDimension(height)) {
+      return { width, height };
+    }
+    const image = handle.image;
+    if (isRecord(image)) {
+      const imageWidth = image.width;
+      const imageHeight = image.height;
+      if (isPositiveSafeDimension(imageWidth) && isPositiveSafeDimension(imageHeight)) {
+        return { width: imageWidth, height: imageHeight };
+      }
+    }
+  } catch {
+    return null;
   }
   return null;
+}
+
+function isPositiveSafeDimension(value: unknown): value is number {
+  return Number.isSafeInteger(value) && (value as number) > 0;
 }
 
 function textureHandlePayloadReportFields(
   handle: unknown,
 ): Pick<GltfTextureDecodeReportEntry, 'handleChannels' | 'handleDataType'> {
-  const hint = textureHandlePayloadHint(handle);
-  if (hint !== null) return hint;
-  const pixels = decodedPixelsFromCpuReadableHandle(handle);
-  if (pixels === null) return {};
-  const width = Math.max(0, Math.floor(pixels.width));
-  const height = Math.max(0, Math.floor(pixels.height));
-  if (width <= 0 || height <= 0 || !isArrayLikeData(pixels.data)) return {};
-  return {
-    handleChannels: pixels.channels ?? inferDecodedChannels(pixels.data, width, height),
-    handleDataType: pixels.dataType ?? inferDecodedDataType(pixels.data),
-  };
+  try {
+    const hint = textureHandlePayloadHint(handle);
+    if (hint !== null) return hint;
+    const pixels = decodedPixelsFromCpuReadableHandle(handle);
+    if (pixels === null) return {};
+    const width = Math.max(0, Math.floor(pixels.width));
+    const height = Math.max(0, Math.floor(pixels.height));
+    if (width <= 0 || height <= 0 || !isArrayLikeData(pixels.data)) return {};
+    return {
+      handleChannels: pixels.channels ?? inferDecodedChannels(pixels.data, width, height),
+      handleDataType: pixels.dataType ?? inferDecodedDataType(pixels.data),
+    };
+  } catch {
+    return {};
+  }
 }
 
 function textureHandlePayloadHint(
   handle: unknown,
 ): Pick<GltfTextureDecodeReportEntry, 'handleChannels' | 'handleDataType'> | null {
-  if (!isRecord(handle)) return null;
-  const direct = texturePayloadHintFromRecord(handle);
-  if (direct !== null) return direct;
-  return isRecord(handle.image) ? texturePayloadHintFromRecord(handle.image, handle) : null;
+  try {
+    if (!isRecord(handle)) return null;
+    const direct = texturePayloadHintFromRecord(handle);
+    if (direct !== null) return direct;
+    const image = handle.image;
+    return isRecord(image) ? texturePayloadHintFromRecord(image, handle) : null;
+  } catch {
+    return null;
+  }
 }
 
 function texturePayloadHintFromRecord(
   record: Record<string, unknown>,
   metadata: Record<string, unknown> = record,
 ): Pick<GltfTextureDecodeReportEntry, 'handleChannels' | 'handleDataType'> | null {
-  const hint = isRecord(metadata.__vitrum_hint__) ? metadata.__vitrum_hint__ : metadata;
-  const channels = hint.channels;
-  const dataType = hint.dataType;
-  const out: { handleChannels?: 1 | 2 | 3 | 4; handleDataType?: 'uint8' | 'uint16' | 'float32' } = {};
-  if (channels === 1 || channels === 2 || channels === 3 || channels === 4) out.handleChannels = channels;
-  if (dataType === 'uint8' || dataType === 'uint16' || dataType === 'float32') out.handleDataType = dataType;
-  return out.handleChannels !== undefined || out.handleDataType !== undefined ? out : null;
+  try {
+    const metadataHint = metadata.__vitrum_hint__;
+    const hint = isRecord(metadataHint) ? metadataHint : metadata;
+    const channels = hint.channels;
+    const dataType = hint.dataType;
+    const out: { handleChannels?: 1 | 2 | 3 | 4; handleDataType?: 'uint8' | 'uint16' | 'float32' } = {};
+    if (channels === 1 || channels === 2 || channels === 3 || channels === 4) out.handleChannels = channels;
+    if (dataType === 'uint8' || dataType === 'uint16' || dataType === 'float32') out.handleDataType = dataType;
+    return out.handleChannels !== undefined || out.handleDataType !== undefined ? out : null;
+  } catch {
+    return null;
+  }
 }
-

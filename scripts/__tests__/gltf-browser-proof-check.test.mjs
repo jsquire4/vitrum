@@ -11,7 +11,6 @@ const checkScript = join(repoRoot, 'tools', 'gltf-browser-proof', 'check-status.
 const captureScript = join(repoRoot, 'tools', 'gltf-browser-proof', 'capture-pt-webgl2-real.mjs');
 const statusExitCodeHelper = join(repoRoot, 'tools', 'gltf-browser-proof', 'status-exit-code.mjs');
 const packageJsonPath = join(repoRoot, 'package.json');
-const validationQueueCheckerPath = join(repoRoot, 'tools', 'road-to-100', 'check-validation-queue.mjs');
 
 test('gltf browser capture harness fail-closes host-blocked and failed statuses', async () => {
   const { gltfBrowserProofStatusExitCode } = await import(pathToFileURL(statusExitCodeHelper).href);
@@ -89,7 +88,7 @@ test('gltf browser capture harness orders engine and browser readbacks by mode',
   assert.match(source, /hostBlockHint = 'engine-readback'/);
   assert.match(source, /snapshotPageDiagnostics\(page, 'pre-capture'\)/);
   assert.match(source, /attempt\.pauseBeforeCapture = pauseBeforeEngineCapture/);
-  assert.match(source, /attempt\.pausedAtCaptureStart = await page\.evaluate/);
+  assert.match(source, /attempt\.pausedAtCaptureStart = await page\s*\.evaluate/);
   assert.match(source, /attempt\.pauseProtocol = 'VITRUM_CAPTURE_PAUSED'/);
 
   const captureFnStart = source.indexOf('async function captureCanvasPng(page)');
@@ -174,16 +173,6 @@ test('gltf browser capture harness fails closed before per-asset readiness proof
 });
 
 
-test('Road checker pins glTF browser status provenance', async () => {
-  const validationQueueChecker = await readFile(validationQueueCheckerPath, 'utf8');
-
-  assert.match(validationQueueChecker, /REQUIRED_GLTF_BROWSER_PROVENANCE_GOLDEN_FILES/);
-  assert.match(validationQueueChecker, /vitrum\.gltf-browser-proof\.status-provenance\.v1/);
-  assert.match(validationQueueChecker, /assertGltfBrowserStatusProvenance/);
-  assert.match(validationQueueChecker, /captureHarnessSha256/);
-  assert.match(validationQueueChecker, /manifestSha256/);
-  assert.match(validationQueueChecker, /host-blocked missing-golden boundary/);
-});
 test('gltf browser proof package scripts check both committed host-block artifacts', async () => {
   const pkg = JSON.parse(await readFile(packageJsonPath, 'utf8'));
   const check = pkg.scripts?.['gltf-browser-proof-check'] ?? '';
@@ -554,6 +543,7 @@ function telemetryFor(assetId, overrides = {}) {
     assetId,
     backend: 'pt-webgl2',
     realAssetReady: true,
+    primitiveCount: overrides.primitiveCount ?? 1,
     extensionsUsed: overrides.extensionsUsed ?? [],
     extensionsRequired: overrides.extensionsRequired ?? [],
     browserDecodeHooks: overrides.browserDecodeHooks ?? { requested: [], draco: false, meshopt: false },

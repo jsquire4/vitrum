@@ -18,7 +18,7 @@ fn pcgNext(state: ptr<function, u32>) -> u32 {
 }
 
 fn rand_f32(state: ptr<function, u32>) -> f32 {
-  return f32(pcgNext(state)) / f32(0xFFFFFFFFu);
+  return f32(pcgNext(state) >> 8u) / 16777216.0;
 }
 
 fn rand2(state: ptr<function, u32>) -> vec2f {
@@ -46,6 +46,6 @@ export const PCG_HASH_TO_F32_WGSL = /* wgsl */ `
 fn pcgHashToF32(seed: u32) -> f32 {
   var s = seed * 747796405u + 2891336453u;
   let word = ((s >> ((s >> 28u) + 4u)) ^ s) * 277803737u;
-  return f32((word >> 22u) ^ word) / 4294967295.0;
+  return f32(((word >> 22u) ^ word) >> 8u) / 16777216.0;
 }
 `;

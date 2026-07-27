@@ -54,47 +54,62 @@ export const spectral_accumulator = /* glsl */`
 	uniform float uYCmfIntegral;
 	uniform float uZCmfIntegral;
 
-	// Non-zero enables experimental hero-wavelength RGB reconstruction. The
+	// Non-zero enables hero-wavelength RGB reconstruction. The
 	// default preview path stays RGB-stable because single-wavelength display
 	// has very high chroma variance at low SPP.
 	uniform int uSpectralRendering;
+
+	// Compiler-visible table selectors. Passing 81/82-element uniform arrays as
+	// GLSL function parameters made ANGLE lower each call as a whole-array value,
+	// multiplying D3D11 link work across X/Y/Z. Indexed access is semantically
+	// identical and keeps the arrays resident as uniforms throughout lowering.
+	const int CMF_STRATEGY_X = 0;
+	const int CMF_STRATEGY_Y = 1;
+	const int CMF_STRATEGY_Z = 2;
+
+	float cmfValue( int strategy, int index ) {
+		if ( strategy == CMF_STRATEGY_X ) return uCmfX[ index ];
+		if ( strategy == CMF_STRATEGY_Y ) return uCmfY[ index ];
+		return uCmfZ[ index ];
+	}
+
+	float cmfCdfValue( int strategy, int index ) {
+		if ( strategy == CMF_STRATEGY_X ) return uXCmfCdf[ index ];
+		if ( strategy == CMF_STRATEGY_Y ) return uYCmfCdf[ index ];
+		return uZCmfCdf[ index ];
+	}
 
 	// ── CMF linear interpolation ───────────────────────────────────────────────
 
 	// Linear interpolation helper for a 81-entry CMF table at 5 nm steps.
 	// Returns 0 for wavelengths outside [380, 780] nm (mirror of sampleTable in cieCmf.ts).
-	float sampleCmfTable81( float table[81], float lambda ) {
+	float sampleCmfTable81( int strategy, float lambda ) {
 		if ( lambda < 380.0 || lambda > 780.0 ) return 0.0;
 		float f = ( lambda - 380.0 ) / 5.0;
 		int lo = int( f );
 		int hi = min( lo + 1, 80 );
 		float t = f - float( lo );
-		return table[ lo ] + t * ( table[ hi ] - table[ lo ] );
+		float valueLo = cmfValue( strategy, lo );
+		return valueLo + t * ( cmfValue( strategy, hi ) - valueLo );
 	}
 
 	// Sample CIE x̄(λ) at an arbitrary wavelength (linear interpolation).
-	float sampleCmfX( float lambda ) { return sampleCmfTable81( uCmfX, lambda ); }
+	float sampleCmfX( float lambda ) { return sampleCmfTable81( CMF_STRATEGY_X, lambda ); }
 
 	// Sample CIE ȳ(λ) at an arbitrary wavelength (linear interpolation).
-	float sampleCmfY( float lambda ) { return sampleCmfTable81( uCmfY, lambda ); }
+	float sampleCmfY( float lambda ) { return sampleCmfTable81( CMF_STRATEGY_Y, lambda ); }
 
 	// Sample CIE z̄(λ) at an arbitrary wavelength (linear interpolation).
-	float sampleCmfZ( float lambda ) { return sampleCmfTable81( uCmfZ, lambda ); }
+	float sampleCmfZ( float lambda ) { return sampleCmfTable81( CMF_STRATEGY_Z, lambda ); }
 
 	// ── Hero wavelength importance sampling ────────────────────────────────────
-
-	// Wilkie 2015 §3.3 CMF strategy index — used for both per-strategy CDF
-	// dispatch in the MIS sampler and for the mixture pdf evaluation.
-	const int CMF_STRATEGY_X = 0;
-	const int CMF_STRATEGY_Y = 1;
-	const int CMF_STRATEGY_Z = 2;
 
 	// Linear interpolation helper for any of the 81-entry CMF tables, given
 	// the table-relative segment index 'lo' and segment fraction 't'.
 	// Returns CMF value at the interpolated wavelength.
-	float cmfAtSegment( float table[81], int lo, float t ) {
-		float vLo = table[ lo ];
-		float vHi = ( lo < 80 ) ? table[ lo + 1 ] : 0.0;
+	float cmfAtSegment( int strategy, int lo, float t ) {
+		float vLo = cmfValue( strategy, lo );
+		float vHi = ( lo < 80 ) ? cmfValue( strategy, lo + 1 ) : 0.0;
 		return vLo + t * ( vHi - vLo );
 	}
 
@@ -102,23 +117,48 @@ export const spectral_accumulator = /* glsl */`
 	// (starting at 0, ending at 1), returns the wavelength in [380, 780] nm
 	// and writes the CDF segment index + fraction into the out parameters.
 	// Caller can then look up CMF values at the sampled lambda via cmfAtSegment.
-	float sampleCmfCdfInverse( float u, float cdf[82], out int outLo, out float outT ) {
-		float uClamped = clamp( u, 0.0, 1.0 - 1e-7 );
+	float sampleCmfCdfInverse( float u, int strategy, out int outLo, out float outT ) {
+		float uClamped = max( u, 0.0 );
+		if ( uClamped >= 1.0 ) {
+			outLo = 79;
+			outT = 1.0;
+			return 780.0;
+		}
 
 		int lo = 0;
-		int hi = 80;
+		int hi = 79;
 		for ( int iter = 0; iter < 7; iter ++ ) {  // 2^7 = 128 > 82 entries
 			int mid = ( lo + hi ) / 2;
-			if ( cdf[ mid + 1 ] <= uClamped ) {
+			if ( cmfCdfValue( strategy, mid + 1 ) <= uClamped ) {
 				lo = mid + 1;
 			} else {
 				hi = mid;
 			}
 		}
 
-		float cdfLo = cdf[ lo ];
-		float cdfHi = cdf[ lo + 1 ];
-		float t = ( cdfHi > cdfLo ) ? ( uClamped - cdfLo ) / ( cdfHi - cdfLo ) : 0.0;
+		float cdfLo = cmfCdfValue( strategy, lo );
+		float cdfHi = cmfCdfValue( strategy, lo + 1 );
+		float vLo = cmfAtSegment( strategy, lo, 0.0 );
+		float vHi = cmfAtSegment( strategy, lo, 1.0 );
+		// The density is linear inside every physical wavelength interval, so
+		// its interval CDF is quadratic and must be inverted analytically.
+		float segmentFraction = ( cdfHi > cdfLo )
+			? ( uClamped - cdfLo ) / ( cdfHi - cdfLo )
+			: 0.0;
+		float segmentIntegral = 0.5 * ( vLo + vHi );
+		float targetIntegral = segmentFraction * segmentIntegral;
+		float slope = vHi - vLo;
+		float t = 0.0;
+		if ( segmentIntegral > 0.0 ) {
+			bool nearConstant = abs( slope ) <= 1e-7 * max( max( abs( vLo ), abs( vHi ) ), 1e-30 );
+			if ( nearConstant ) {
+				t = targetIntegral / vLo;
+			} else {
+				float denominator = vLo + sqrt( max( vLo * vLo + 2.0 * slope * targetIntegral, 0.0 ) );
+				t = denominator > 0.0 ? 2.0 * targetIntegral / denominator : 0.0;
+			}
+		}
+		t = clamp( t, 0.0, 1.0 );
 		float lambda = clamp( float( 380 + lo * 5 ) + t * 5.0, 380.0, 780.0 );
 
 		outLo = lo;
@@ -130,9 +170,9 @@ export const spectral_accumulator = /* glsl */`
 	// MIS multi-strategy samplers as the Monte Carlo weight denominator.
 	// pdf_mis(λ) = (X(λ)/∫X + Y(λ)/∫Y + Z(λ)/∫Z) / 3   (balance heuristic)
 	float misMixturePdf( int lo, float t ) {
-		float x = cmfAtSegment( uCmfX, lo, t );
-		float y = cmfAtSegment( uCmfY, lo, t );
-		float z = cmfAtSegment( uCmfZ, lo, t );
+		float x = cmfAtSegment( CMF_STRATEGY_X, lo, t );
+		float y = cmfAtSegment( CMF_STRATEGY_Y, lo, t );
+		float z = cmfAtSegment( CMF_STRATEGY_Z, lo, t );
 		float pX = ( uXCmfIntegral > 0.0 ) ? x / uXCmfIntegral : 0.0;
 		float pY = ( uYCmfIntegral > 0.0 ) ? y / uYCmfIntegral : 0.0;
 		float pZ = ( uZCmfIntegral > 0.0 ) ? z / uZCmfIntegral : 0.0;
@@ -152,11 +192,11 @@ export const spectral_accumulator = /* glsl */`
 		float t;
 		float lambda;
 		if ( s < 1.0 / 3.0 ) {
-			lambda = sampleCmfCdfInverse( uLambda, uXCmfCdf, lo, t );
+			lambda = sampleCmfCdfInverse( uLambda, CMF_STRATEGY_X, lo, t );
 		} else if ( s < 2.0 / 3.0 ) {
-			lambda = sampleCmfCdfInverse( uLambda, uYCmfCdf, lo, t );
+			lambda = sampleCmfCdfInverse( uLambda, CMF_STRATEGY_Y, lo, t );
 		} else {
-			lambda = sampleCmfCdfInverse( uLambda, uZCmfCdf, lo, t );
+			lambda = sampleCmfCdfInverse( uLambda, CMF_STRATEGY_Z, lo, t );
 		}
 		pdf = misMixturePdf( lo, t );
 		return lambda;
@@ -177,23 +217,21 @@ export const spectral_accumulator = /* glsl */`
 	// GLSL mirror of @vitrum/shared-samplers/src/wavelengthSampling.ts::wavelengthToRGB.
 	vec3 wavelengthToRGB( float lambda, vec3 throughput, float pdfLambda ) {
 		if ( uSpectralRendering == 0 ) return throughput;
-		if ( pdfLambda <= 0.0 ) return vec3( 0.0 );
+		if ( ! ( pdfLambda > 0.0 ) || isnan( pdfLambda ) || isinf( pdfLambda ) ) return vec3( 0.0 );
 
 		float x = sampleCmfX( lambda );
 		float y = sampleCmfY( lambda );
 		float z = sampleCmfZ( lambda );
 
-		// H2-class upload-gap guard: if uYCmfIntegral was never uploaded (defaults to 0)
-		// the old max(..., 1e-6) floor silently turned a missing-uniform bug into extreme
-		// overbright. Fail loud instead: return black so the missing upload is obvious,
-		// not blinding. The 1e-3 threshold is well above any legitimate tiny integral
-		// (CIE Y integral ~106.857) and well below any real CMF table value.
-		if ( uYCmfIntegral < 1e-3 ) return vec3( 0.0 );
+		// An unassigned uniform is exactly zero. Reject only non-positive/non-finite
+		// normalization; every representable positive wavelength density keeps its
+		// exact reciprocal weight.
+		if ( ! ( uYCmfIntegral > 0.0 ) || isnan( uYCmfIntegral ) || isinf( uYCmfIntegral ) ) return vec3( 0.0 );
 
 		float scalarThroughput = throughput.r;
-		// pdfLambda floor (1e-6) guards against legitimate near-zero wavelength densities
-		// at the edges of the CMF support (not the same issue as the uYCmfIntegral guard).
-		float weight = scalarThroughput / max( pdfLambda * uYCmfIntegral, 1e-6 );
+		float spectralDenominator = pdfLambda * uYCmfIntegral;
+		if ( ! ( spectralDenominator > 0.0 ) || isnan( spectralDenominator ) || isinf( spectralDenominator ) ) return vec3( 0.0 );
+		float weight = scalarThroughput / spectralDenominator;
 		vec3 xyz = vec3( x, y, z ) * weight;
 
 		// XYZ → linear sRGB (Bradford-adapted D65 matrix, IEC 61966-2-1:1999)

@@ -36,14 +36,24 @@
 import type { WorldSpaceMergeResult } from '@vitrum/shared-bvh';
 import { squareDim } from './bvhTextureAdapter.js';
 import type { LayeredTexelGrid } from './sceneTextures.js';
+import {
+  ATTR_FIXED_LAYER_COUNT,
+  ATTR_LAYER_COLOR,
+  ATTR_LAYER_NORMAL,
+  ATTR_LAYER_TANGENT,
+  ATTR_LAYER_UV,
+  ATTR_LAYER_UV1,
+} from './uvAttributeLayout.js';
 
-/** Layer assignment in the 5-layer attribute array (fork-verified order + uv1 extension). */
-export const ATTR_LAYER_NORMAL = 0;
-export const ATTR_LAYER_TANGENT = 1;
-export const ATTR_LAYER_UV = 2;
-export const ATTR_LAYER_COLOR = 3;
-export const ATTR_LAYER_UV1 = 4;
-export const ATTR_LAYER_COUNT = 5;
+/** Stable compatibility assignments; additional UV sets occupy dense layers 5..N. */
+export {
+  ATTR_LAYER_COLOR,
+  ATTR_LAYER_NORMAL,
+  ATTR_LAYER_TANGENT,
+  ATTR_LAYER_UV,
+  ATTR_LAYER_UV1,
+};
+export const ATTR_LAYER_COUNT = ATTR_FIXED_LAYER_COUNT;
 
 /**
  * A `WorldSpaceMergeResult` that additionally carries an optional `uv1` array
@@ -56,6 +66,8 @@ interface MergeWithOptionalAttrs extends WorldSpaceMergeResult {
   /** Per-vertex uv1, stride 2 (same vertex order as `merged.uvs`). Optional;
    *  when absent layer 4 (ATTR_UV1) copies uv0 per vertex. */
   readonly uv1?: Float32Array;
+  /** Dense arbitrary UV streams for attribute layers 5..N. */
+  readonly extraUvLayers?: readonly Float32Array[];
 }
 
 /** A flat readonly accessor returning component `c` (0..3) of vertex `v` from a
@@ -95,6 +107,7 @@ export function packAttributesArray(merged: MergeWithOptionalAttrs): LayeredTexe
   const normals = merged.normals;
   const uvs = merged.uvs;
   const uv1 = merged.uv1; // optional — stride 2, same vertex order as uvs
+  const extraUvLayers = merged.extraUvLayers ?? [];
   const colors = merged.colors;
   const colorStride = colors === undefined
     ? 4
@@ -110,7 +123,8 @@ export function packAttributesArray(merged: MergeWithOptionalAttrs): LayeredTexe
   const dim = squareDim(vertexCount);
   const texelsPerLayer = dim * dim;
   const floatsPerLayer = texelsPerLayer * 4;
-  const data = new Float32Array(floatsPerLayer * ATTR_LAYER_COUNT);
+  const layerCount = ATTR_FIXED_LAYER_COUNT + extraUvLayers.length;
+  const data = new Float32Array(floatsPerLayer * layerCount);
 
   const normalBase = ATTR_LAYER_NORMAL * floatsPerLayer;
   const tangentBase = ATTR_LAYER_TANGENT * floatsPerLayer;
@@ -148,6 +162,15 @@ export function packAttributesArray(merged: MergeWithOptionalAttrs): LayeredTexe
     }
     data[uv1Base + o + 2] = 0;
     data[uv1Base + o + 3] = 0;
+
+    for (let extra = 0; extra < extraUvLayers.length; extra += 1) {
+      const extraBase = (ATTR_FIXED_LAYER_COUNT + extra) * floatsPerLayer;
+      const source = extraUvLayers[extra];
+      data[extraBase + o] = vComp(source, v, 0, uvStride, 0);
+      data[extraBase + o + 1] = vComp(source, v, 1, uvStride, 0);
+      data[extraBase + o + 2] = 0;
+      data[extraBase + o + 3] = 0;
+    }
   }
 
   // ── layer 1: tangent — derive per-vertex tangents ─────────────────────────
@@ -250,5 +273,5 @@ export function packAttributesArray(merged: MergeWithOptionalAttrs): LayeredTexe
     data[tangentBase + o + 3] = handedness;
   }
 
-  return { data, dim, layers: ATTR_LAYER_COUNT };
+  return { data, dim, layers: layerCount };
 }

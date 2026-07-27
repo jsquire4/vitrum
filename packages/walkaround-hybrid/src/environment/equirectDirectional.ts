@@ -134,7 +134,7 @@ export function buildDirectionalEnv(payload: RawEquirectPayload): DirectionalEnv
     cdfMarginal[y] = cumulativeMarginal;
   }
 
-  if (totalWeight <= 1e-12) return null;
+  if (!(totalWeight > 0) || !Number.isFinite(totalWeight)) return null;
 
   for (let y = 0; y < height; y += 1) {
     cdfMarginal[y] = cdfMarginal[y]! / cumulativeMarginal;

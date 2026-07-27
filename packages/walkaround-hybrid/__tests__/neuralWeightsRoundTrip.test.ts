@@ -124,6 +124,7 @@ function makeStubDevice(rec: AllocRecord): GPUDevice {
     createPipelineLayout: () => ({}),
     createCommandEncoder: () => encoder,
     queue: { writeBuffer() {}, submit() {} },
+    limits: { maxComputeWorkgroupsPerDimension: 65_535 },
   } as unknown as GPUDevice;
 }
 
@@ -155,7 +156,7 @@ describe('neural weights capture→train→export→load round-trip', () => {
   it('binary starts with the vitrum-model magic + version', () => {
     const view = new DataView(binary);
     expect(view.getUint32(0, true)).toBe(0xDEAF1984 >>> 0);
-    expect(view.getUint32(4, true)).toBe(1);
+    expect(view.getUint32(4, true)).toBe(2);
     expect(view.getUint32(8, true)).toBe(14); // layerCount
   });
 

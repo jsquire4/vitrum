@@ -1,3 +1,11 @@
+import {
+	MATERIAL_ALPHA_TRANSFORM_TEXEL,
+	MATERIAL_LAYER_NORMAL_TEXEL_OFFSET,
+	MATERIAL_THICKNESS_TRANSFORM_TEXEL,
+	MATERIAL_TRANSFORM_TEXEL,
+	MATERIAL_WRAP_TEXEL_OFFSET,
+} from '../shader/structs/materialStride.js';
+
 export const attenuate_hit_function = /* glsl */`
 
 	// step through multiple surface hits and accumulate color attenuation based on transmissive surfaces
@@ -13,37 +21,63 @@ export const attenuate_hit_function = /* glsl */`
 
 		int traversals = state.traversals;
 		int transmissiveTraversals = state.transmissiveTraversals;
-		bool isShadowRay = state.isShadowRay;
-		Material fogMaterial = state.fogMaterial;
+                bool isShadowRay = state.isShadowRay;
+                FogMaterial fogMaterial = state.fogMaterial;
+                MediumStack mediumStack = state.mediumStack;
 
 		vec3 startPoint = ray.origin;
 
 		// hit results
 		SurfaceHit surfaceHit;
 
-		color = vec3( 1.0 );
+                color = vec3( 1.0 );
 
-		bool result = true;
-		for ( int i = 0; i < traversals; i ++ ) {
+                bool result = true;
+                int remainingTraversals = max( traversals, 0 );
+                // A monotonic, statically bounded loop is required here. This helper is
+                // called from inside the path-bounce loop; nesting a uniform-bounded loop
+                // caused ANGLE/SwiftShader to emit a non-terminating shader. The engine
+                // caps each of the ordinary and transmissive budgets at 32, so 64 steps
+                // preserves the full traversal budget without relying on loop-counter
+                // rewinds that some GLSL compilers miscompile.
+                for ( int attenuationStep = 0; attenuationStep < 64; attenuationStep ++ ) {
+
+                        if ( remainingTraversals <= 0 ) break;
+                        remainingTraversals --;
 
 			sobolBounceIndex ++;
 
-			int hitType = traceScene( ray, fogMaterial, surfaceHit );
+                        bool surfaceFound = bvhIntersectFirstHit(
+                                bvh,
+                                ray.origin,
+                                ray.direction,
+                                surfaceHit.faceIndices,
+                                surfaceHit.faceNormal,
+                                surfaceHit.barycoord,
+                                surfaceHit.side,
+                                surfaceHit.dist
+                        );
+                        float traveled = distance( startPoint, ray.origin );
+                        float remainingDistance = max( rayDist - traveled, 0.0 );
+                        float segmentDistance = surfaceFound
+                                ? min( max( surfaceHit.dist, 0.0 ), remainingDistance )
+                                : remainingDistance;
+                        #if FEATURE_FOG
+                        if ( fogMaterial.fogVolume ) {
+                                color *= fogSegmentTransmittance(
+                                        materials,
+                                        fogMaterial,
+                                        segmentDistance,
+                                        state.wavelength
+                                );
+                        }
+                        #endif
+                        if ( ! surfaceFound || surfaceHit.dist > remainingDistance ) {
+                                result = false;
+                                break;
+                        }
 
-			if ( hitType == FOG_HIT ) {
-
-				result = true;
-				break;
-
-			} else if ( hitType == SURFACE_HIT ) {
-
-				float totalDist = distance( startPoint, ray.origin + ray.direction * surfaceHit.dist );
-				if ( totalDist > rayDist ) {
-
-					result = false;
-					break;
-
-				}
+                        {
 
 				// Shadow visibility through transmissive layers is intentionally a
 				// bounded attenuation approximation here: this helper answers whether
@@ -53,7 +87,8 @@ export const attenuate_hit_function = /* glsl */`
 				// estimators rather than this visibility predicate.
 
 				uint materialIndex = uTexelFetch1D( materialIndexAttribute, surfaceHit.faceIndices.w ).r;
-				Material material = readMaterialInfo( materials, materialIndex );
+				Material material;
+				readMaterialInfo( materials, materialIndex, material );
 
 				// adjust the ray to the new surface
 				bool isEntering = surfaceHit.side == 1.0;
@@ -61,13 +96,27 @@ export const attenuate_hit_function = /* glsl */`
 
 				#if FEATURE_FOG
 
-				if ( material.fogVolume ) {
+                                if ( material.fogVolume ) {
+                                        bool stackValid = surfaceHit.side == 1.0
+                                                ? enterMedium(
+                                                        mediumStack, materialIndex,
+                                                        materials, fogMaterial
+                                                )
+                                                : leaveMedium(
+                                                        mediumStack, materialIndex,
+                                                        materials, fogMaterial
+                                                );
+                                        if ( ! stackValid ) {
+                                                result = true;
+                                                break;
+                                        }
+                                        if ( transmissiveTraversals > 0 ) {
 
-					fogMaterial = material;
-					fogMaterial.fogVolume = surfaceHit.side == 1.0;
-					i -= sign( transmissiveTraversals );
-					transmissiveTraversals --;
-					continue;
+                                                remainingTraversals ++;
+                                                transmissiveTraversals --;
+
+                                        }
+                                        continue;
 
 				}
 
@@ -79,18 +128,19 @@ export const attenuate_hit_function = /* glsl */`
 
 				}
 
-				vec2 uv = textureSampleBarycoord( attributesArray, ATTR_UV, surfaceHit.barycoord, surfaceHit.faceIndices.xyz ).xy;
-				vec2 uv1 = textureSampleBarycoord( attributesArray, ATTR_UV1, surfaceHit.barycoord, surfaceHit.faceIndices.xyz ).xy;
 				vec4 vertexColor = textureSampleBarycoord( attributesArray, ATTR_COLOR, surfaceHit.barycoord, surfaceHit.faceIndices.xyz );
 
-				#define ATTENUATE_MAP_UV(bit) ( ( ( material.uvTexCoordMask >> (bit) ) & 1u ) != 0u ? uv1 : uv )
+				#define ATTENUATE_MAP_UV(mapIndex) textureSampleBarycoord( attributesArray, readMaterialMapUvLayer( materials, materialIndex, mapIndex ), surfaceHit.barycoord, surfaceHit.faceIndices.xyz ).xy
+				#define ATTENUATE_MAP_SAMPLE(layer,transformOffset,policyOffset,uvCoord) sampleMappedMaterialTexture( materials, textures, materialIndex, layer, transformOffset, policyOffset, uvCoord )
 
 				// albedo
 				vec4 albedo = vec4( material.color, material.opacity );
 				if ( material.map != - 1 ) {
 
-					vec3 uvPrime = material.mapTransform * vec3( ATTENUATE_MAP_UV( 0u ), 1 );
-					albedo *= sampleMaterialTexture( textures, uvPrime.xy, material.map, material.mapWrap );
+					albedo *= ATTENUATE_MAP_SAMPLE(
+						material.map, ${MATERIAL_TRANSFORM_TEXEL.baseColorMap}u,
+						${MATERIAL_WRAP_TEXEL_OFFSET + 0}u, ATTENUATE_MAP_UV( 0u )
+					);
 
 				}
 
@@ -103,8 +153,10 @@ export const attenuate_hit_function = /* glsl */`
 				// alphaMap
 				if ( material.alphaMap != - 1 ) {
 
-					vec3 uvPrime = material.alphaMapTransform * vec3( ATTENUATE_MAP_UV( 6u ), 1 );
-					albedo.a *= sampleMaterialTexture( textures, uvPrime.xy, material.alphaMap, material.alphaMapWrap ).x;
+					albedo.a *= ATTENUATE_MAP_SAMPLE(
+						material.alphaMap, ${MATERIAL_ALPHA_TRANSFORM_TEXEL}u,
+						${MATERIAL_WRAP_TEXEL_OFFSET + 6}u, ATTENUATE_MAP_UV( 6u )
+					).x;
 
 				}
 
@@ -112,8 +164,10 @@ export const attenuate_hit_function = /* glsl */`
 				float transmission = material.transmission;
 				if ( material.transmissionMap != - 1 ) {
 
-					vec3 uvPrime = material.transmissionMapTransform * vec3( ATTENUATE_MAP_UV( 3u ), 1 );
-					transmission *= sampleMaterialTexture( textures, uvPrime.xy, material.transmissionMap, material.transmissionMapWrap ).r;
+					transmission *= ATTENUATE_MAP_SAMPLE(
+						material.transmissionMap, ${MATERIAL_TRANSFORM_TEXEL.transmissionMap}u,
+						${MATERIAL_WRAP_TEXEL_OFFSET + 3}u, ATTENUATE_MAP_UV( 3u )
+					).r;
 
 				}
 
@@ -121,8 +175,10 @@ export const attenuate_hit_function = /* glsl */`
 				float metalness = material.metalness;
 				if ( material.metalnessMap != - 1 ) {
 
-					vec3 uvPrime = material.metalnessMapTransform * vec3( ATTENUATE_MAP_UV( 1u ), 1 );
-					metalness *= sampleMaterialTexture( textures, uvPrime.xy, material.metalnessMap, material.metalnessMapWrap ).b;
+					metalness *= ATTENUATE_MAP_SAMPLE(
+						material.metalnessMap, ${MATERIAL_TRANSFORM_TEXEL.metallicMap}u,
+						${MATERIAL_WRAP_TEXEL_OFFSET + 1}u, ATTENUATE_MAP_UV( 1u )
+					).b;
 
 				}
 
@@ -150,7 +206,8 @@ export const attenuate_hit_function = /* glsl */`
 				if ( surfaceHit.side == 1.0 && isEntering ) {
 
 					// only attenuate by surface color on the way in
-					color *= mix( vec3( 1.0 ), albedo.rgb, transmissionFactor );
+					vec3 surfaceTransmission = mix( vec3( 1.0 ), albedo.rgb, transmissionFactor );
+					color *= pathThroughputFromRgb( surfaceTransmission, state.wavelength );
 
 				} else if ( surfaceHit.side == - 1.0 ) {
 
@@ -160,12 +217,9 @@ export const attenuate_hit_function = /* glsl */`
 						float attenuationThickness = material.thickness;
 						if ( material.thicknessMap != - 1 ) {
 
-							vec3 uvPrime = material.thicknessMapTransform * vec3( ATTENUATE_MAP_UV( 20u ), 1 );
-							attenuationThickness *= sampleMaterialTexture(
-								textures,
-								uvPrime.xy,
-								material.thicknessMap,
-								material.thicknessMapWrap
+							attenuationThickness *= ATTENUATE_MAP_SAMPLE(
+								material.thicknessMap, ${MATERIAL_THICKNESS_TRANSFORM_TEXEL}u,
+								${MATERIAL_WRAP_TEXEL_OFFSET + 20}u, ATTENUATE_MAP_UV( 20u )
 							).g;
 
 						}
@@ -199,22 +253,25 @@ export const attenuate_hit_function = /* glsl */`
 				bool frontFaceHitForNormal = surfaceHit.side == 1.0 || transmission == 0.0;
 				bool hasFaceLayerForNormal = frontFaceHitForNormal ? material.hasFrontLayer : material.hasBackLayer;
 				int activeShadowNormalMap = material.normalMap;
-				mat3 activeShadowNormalMapTransform = material.normalMapTransform;
+				uint activeShadowNormalMapTransformOffset = ${MATERIAL_TRANSFORM_TEXEL.normalMap}u;
 				vec2 activeShadowNormalScale = material.normalScale;
-				vec4 activeShadowNormalMapWrap = material.normalMapWrap;
-				vec2 activeShadowNormalUv = ATTENUATE_MAP_UV( 5u );
+				uint activeShadowNormalMapPolicyOffset = ${MATERIAL_WRAP_TEXEL_OFFSET + 5}u;
+				int activeShadowNormalUvLayer = readMaterialMapUvLayer( materials, materialIndex, 5u );
+				vec2 activeShadowNormalUv = textureSampleBarycoord( attributesArray, activeShadowNormalUvLayer, surfaceHit.barycoord, surfaceHit.faceIndices.xyz ).xy;
 				if ( hasFaceLayerForNormal && frontFaceHitForNormal && material.frontLayerNormalMap != - 1 ) {
 					activeShadowNormalMap = material.frontLayerNormalMap;
-					activeShadowNormalMapTransform = material.frontLayerNormalMapTransform;
+					activeShadowNormalMapTransformOffset = ${MATERIAL_LAYER_NORMAL_TEXEL_OFFSET + 1}u;
 					activeShadowNormalScale = material.frontLayerNormalScale;
-					activeShadowNormalMapWrap = material.frontLayerNormalMapWrap;
-					activeShadowNormalUv = material.frontLayerNormalTexCoord > 0.5 ? uv1 : uv;
+					activeShadowNormalMapPolicyOffset = ${MATERIAL_LAYER_NORMAL_TEXEL_OFFSET + 5}u;
+					activeShadowNormalUvLayer = int( round( material.frontLayerNormalTexCoord ) );
+					activeShadowNormalUv = textureSampleBarycoord( attributesArray, activeShadowNormalUvLayer, surfaceHit.barycoord, surfaceHit.faceIndices.xyz ).xy;
 				} else if ( hasFaceLayerForNormal && ! frontFaceHitForNormal && material.backLayerNormalMap != - 1 ) {
 					activeShadowNormalMap = material.backLayerNormalMap;
-					activeShadowNormalMapTransform = material.backLayerNormalMapTransform;
+					activeShadowNormalMapTransformOffset = ${MATERIAL_LAYER_NORMAL_TEXEL_OFFSET + 3}u;
 					activeShadowNormalScale = material.backLayerNormalScale;
-					activeShadowNormalMapWrap = material.backLayerNormalMapWrap;
-					activeShadowNormalUv = material.backLayerNormalTexCoord > 0.5 ? uv1 : uv;
+					activeShadowNormalMapPolicyOffset = ${MATERIAL_LAYER_NORMAL_TEXEL_OFFSET + 6}u;
+					activeShadowNormalUvLayer = int( round( material.backLayerNormalTexCoord ) );
+					activeShadowNormalUv = textureSampleBarycoord( attributesArray, activeShadowNormalUvLayer, surfaceHit.barycoord, surfaceHit.faceIndices.xyz ).xy;
 				}
 
 				if ( isShadowRay && activeShadowNormalMap != - 1 ) {
@@ -226,46 +283,41 @@ export const attenuate_hit_function = /* glsl */`
 						surfaceHit.faceIndices.xyz
 					);
 
-					// Tangent attribute may be (0,0,0) for geometry without
-					// computed tangents — skip in that case (no perturbation
-					// would be physically meaningful without a TBN basis).
-					if ( length( tangentSample.xyz ) > 0.0 ) {
-
-						vec3 faceN = surfaceHit.faceNormal * surfaceHit.side;
-						vec3 tangent = normalize( tangentSample.xyz );
-						float tangentHandedness = tangentSample.w < 0.0 ? -1.0 : 1.0;
-						vec3 bitangent = normalize( cross( faceN, tangent ) * tangentHandedness );
-						vec3 nuvPrime = activeShadowNormalMapTransform * vec3( activeShadowNormalUv, 1 );
-						vec3 texNormal =
-							sampleMaterialTexture( textures, nuvPrime.xy, activeShadowNormalMap, activeShadowNormalMapWrap ).xyz * 2.0 - 1.0;
+					vec3 faceN = surfaceHit.faceNormal * surfaceHit.side;
+					mat3 shadowBasis = getBasisFromSelectedUv(
+						bvh.position, attributesArray, activeShadowNormalUvLayer,
+						surfaceHit.faceIndices.xyz, faceN, tangentSample
+					);
+					vec3 tangent = shadowBasis[ 0 ];
+					vec3 bitangent = shadowBasis[ 1 ];
+						vec3 texNormal = ATTENUATE_MAP_SAMPLE(
+							activeShadowNormalMap,
+							activeShadowNormalMapTransformOffset,
+							activeShadowNormalMapPolicyOffset,
+							activeShadowNormalUv
+						).xyz * 2.0 - 1.0;
 						texNormal.xy *= activeShadowNormalScale;
 						// World-space perturbation vector in the tangent plane.
 						vec3 dN = tangent * texNormal.x + bitangent * texNormal.y;
 						float perturbStrength = ( material.ior - 1.0 ) * 0.1;
 						ray.direction = normalize( ray.direction + dN * perturbStrength );
 
-					}
-
 				}
 
 				#endif
 
+				#undef ATTENUATE_MAP_SAMPLE
 				#undef ATTENUATE_MAP_UV
 
 				bool isTransmissiveRay = dot( ray.direction, surfaceHit.faceNormal * surfaceHit.side ) < 0.0;
-				if ( ( isTransmissiveRay || isEntering ) && transmissiveTraversals > 0 ) {
+                                if ( ( isTransmissiveRay || isEntering ) && transmissiveTraversals > 0 ) {
 
-					i -= sign( transmissiveTraversals );
-					transmissiveTraversals --;
+                                        remainingTraversals ++;
+                                        transmissiveTraversals --;
 
 				}
 
-			} else {
-
-				result = false;
-				break;
-
-			}
+                        }
 
 		}
 

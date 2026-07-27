@@ -40,7 +40,7 @@ describe('H34-a: buildArrayBvh 16-bit leaf count guard', () => {
       buildArrayBvh(positions, indices, matIds, {
         positionStride: 4,
         indexStride: 4,
-        maxLeafTriangles: N + 1,  // ensure leaf path (not SAH)
+        maxLeafTriangles: N,
       }),
     ).not.toThrow();
   });
@@ -52,7 +52,8 @@ describe('H34-a: buildArrayBvh 16-bit leaf count guard', () => {
       buildArrayBvh(positions, indices, matIds, {
         positionStride: 4,
         indexStride: 4,
-        maxLeafTriangles: N + 1,
+        maxLeafTriangles: 0xffff,
+        maxDepth: 0,
       }),
     ).toThrow(/16-bit limit/);
   });
@@ -76,6 +77,6 @@ describe('H34-a: buildTlas 16-bit leaf count guard', () => {
     const instances = makeFlatTlasInstances(0x10000);
     expect(() =>
       buildTlas(instances, { maxLeafInstances: 0x10000 + 1 }),
-    ).toThrow(/16-bit limit/);
+    ).toThrow(/finite safe integer.*65535/);
   });
 });

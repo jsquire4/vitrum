@@ -20,10 +20,12 @@ import { installWebGPUPolyfills } from './helpers/webgpuPolyfills.js';
 // that references them (NeuralDenoiser.initialize touches these constants).
 installWebGPUPolyfills();
 import { NeuralDenoiser } from '../src/pipeline/denoisers/neural.js';
-import { NEURAL_PACK_WGSL } from '../src/shaders/neuralPack.wgsl.js';
-import { NEURAL_UNPACK_WGSL } from '../src/shaders/neuralUnpack.wgsl.js';
+import { NEURAL_PACK_WGSL, buildNeuralPackWgsl } from '../src/shaders/neuralPack.wgsl.js';
+import { NEURAL_UNPACK_WGSL, buildNeuralUnpackWgsl } from '../src/shaders/neuralUnpack.wgsl.js';
+import { NEURAL_LEGACY_PREPROCESSING_CONTRACT } from '../src/neural/preprocessing.js';
 import type { InferenceGraph } from '../src/neural/InferenceGraph.js';
 import type { ModelWeights } from '../src/neural/weights.js';
+import { NEURAL_F32_TENSOR_STORAGE } from '../src/neural/tensorPrecision.js';
 
 // ─── Mock device factory ────────────────────────────────────────────────────
 
@@ -122,7 +124,10 @@ function makeDispatchContext(device: GPUDevice, width: number, height: number, h
 }
 
 /** Minimal InferenceGraph stub — enough for NeuralDenoiser to treat itself as enabled. */
-const fakeGraph = { run: vi.fn() } as unknown as InferenceGraph;
+const fakeGraph = {
+  run: vi.fn(),
+  tensorStorage: NEURAL_F32_TENSOR_STORAGE,
+} as unknown as InferenceGraph;
 
 // ─── Issue 1: resize state-consistency ────────────────────────────────────────
 
@@ -156,41 +161,16 @@ describe('NeuralDenoiser.resize — state consistency (Issue 1 fix)', () => {
     expect(bufsAfterInit).toBeGreaterThanOrEqual(4); // noisy + albedo + normals + output
     expect(texsAfterInit).toBeGreaterThanOrEqual(1); // output texture
 
-    // resize UP
+    // A graph without retained weights cannot be resized. The published
+    // generation remains intact and the selected neural mode fails durably.
     d.resize(1280, 720);
-
-    // After resize: new buffers + texture created for the larger size.
-    // Old buffers must have been destroyed.
-    const oldBufs = buffers.slice(buffers.length - (buffers.length - bufsAfterInit), bufsAfterInit);
-    // The resize must have called _reallocForSize synchronously — so the
-    // newly-created buffers exist RIGHT NOW (not deferred to the next dispatch).
-    const newBufs = buffers.slice(bufsAfterInit);
-    const newTexs = textures.slice(texsAfterInit);
-
-    // At least 4 new storage buffers and 1 new texture must be present.
-    expect(newBufs.length).toBeGreaterThanOrEqual(4);
-    expect(newTexs.length).toBeGreaterThanOrEqual(1);
-
-    // Old storage buffers (size 640*360*3*4) must have been destroyed.
-    const oldStorageBufs = oldBufs.filter((b) => b.label.startsWith('neural-denoiser-noisy') ||
-      b.label.startsWith('neural-denoiser-albedo') ||
-      b.label.startsWith('neural-denoiser-normals') ||
-      b.label.startsWith('neural-denoiser-output'));
-    for (const b of oldStorageBufs) {
-      expect(b.destroy).toHaveBeenCalled();
-    }
-
-    // New buffers are sized for 1280×720.
-    const expectedBytes = Math.max(4, 1280 * 720 * 3 * 4);
-    const storageBufs = newBufs.filter((b) =>
-      b.label === 'neural-denoiser-noisy' ||
-      b.label === 'neural-denoiser-albedo' ||
-      b.label === 'neural-denoiser-normals' ||
-      b.label === 'neural-denoiser-output',
-    );
-    for (const b of storageBufs) {
-      expect(b.size).toBe(expectedBytes);
-    }
+    expect(buffers).toHaveLength(bufsAfterInit);
+    expect(textures).toHaveLength(texsAfterInit);
+    expect(buffers.every(buffer => !vi.mocked(buffer.destroy).mock.calls.length)).toBe(true);
+    expect(d.state()).toMatchObject({
+      status: 'failed',
+      reason: expect.stringContaining('without retained model weights'),
+    });
   });
 
   it('resize UP then DOWN — no dangling / null buffers when device is present', async () => {
@@ -201,37 +181,14 @@ describe('NeuralDenoiser.resize — state consistency (Issue 1 fix)', () => {
 
     const afterInit = { bufs: buffers.length, texs: textures.length };
 
-    // Resize up.
     d.resize(1280, 720);
     const afterUp = { bufs: buffers.length, texs: textures.length };
-    expect(afterUp.bufs).toBeGreaterThan(afterInit.bufs);
-    expect(afterUp.texs).toBeGreaterThan(afterInit.texs);
+    expect(afterUp).toEqual(afterInit);
 
-    // Resize down — should trigger another realloc (dimensions differ from current 1280×720).
     d.resize(320, 180);
     const afterDown = { bufs: buffers.length, texs: textures.length };
-    expect(afterDown.bufs).toBeGreaterThan(afterUp.bufs);
-    expect(afterDown.texs).toBeGreaterThan(afterUp.texs);
-
-    // The 1280×720 storage buffers must have been destroyed on the resize-down.
-    const upStorageBufs = buffers
-      .slice(afterInit.bufs, afterUp.bufs)
-      .filter((b) => ['neural-denoiser-noisy', 'neural-denoiser-albedo',
-                       'neural-denoiser-normals', 'neural-denoiser-output'].includes(b.label));
-    for (const b of upStorageBufs) {
-      expect(b.destroy).toHaveBeenCalled();
-    }
-
-    // The 320×180 storage buffers are present and correctly sized.
-    const expectedBytes = Math.max(4, 320 * 180 * 3 * 4);
-    const downStorageBufs = buffers
-      .slice(afterUp.bufs)
-      .filter((b) => ['neural-denoiser-noisy', 'neural-denoiser-albedo',
-                       'neural-denoiser-normals', 'neural-denoiser-output'].includes(b.label));
-    expect(downStorageBufs.length).toBe(4);
-    for (const b of downStorageBufs) {
-      expect(b.size).toBe(expectedBytes);
-    }
+    expect(afterDown).toEqual(afterInit);
+    expect(buffers.every(buffer => !vi.mocked(buffer.destroy).mock.calls.length)).toBe(true);
   });
 
   it('same-size resize is a no-op (guard path)', async () => {
@@ -252,6 +209,8 @@ describe('NeuralDenoiser.resize — state consistency (Issue 1 fix)', () => {
     const graph = {
       initialize: vi.fn(async () => {}),
       run: vi.fn(),
+      owns: vi.fn(() => true),
+      tensorStorage: NEURAL_F32_TENSOR_STORAGE,
     } as unknown as InferenceGraph;
     const d = new NeuralDenoiser({ inferenceGraph: graph, modelWeights });
     await d.initialize({ device, width: 64, height: 64, bglCache: {} as never, frameResources: {} as never });
@@ -276,10 +235,11 @@ describe('NeuralDenoiser.resize — state consistency (Issue 1 fix)', () => {
     expect(d.state()).toEqual({ status: 'ready' });
   });
 
-  it('dispatch falls back to raw HDR when the inference graph throws', async () => {
+  it('dispatch failure is durable and never reports raw HDR as neural output', async () => {
     const { device } = makeMockDevice();
     const throwingGraph = {
       run: vi.fn(() => { throw new Error('synthetic graph failure'); }),
+      tensorStorage: NEURAL_F32_TENSOR_STORAGE,
     } as unknown as InferenceGraph;
     const d = new NeuralDenoiser({ inferenceGraph: throwingGraph });
     await d.initialize({ device, width: 64, height: 64, bglCache: {} as never, frameResources: {} as never });
@@ -287,18 +247,152 @@ describe('NeuralDenoiser.resize — state consistency (Issue 1 fix)', () => {
     const hdr = makeTexture('hdr');
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
-      const result = d.dispatch(makeDispatchContext(device, 64, 64, hdr) as never);
-
-      expect(result).toBe(hdr);
+      expect(() => d.dispatch(makeDispatchContext(device, 64, 64, hdr) as never)).toThrow(
+        /synthetic graph failure/,
+      );
       expect(d.state()).toEqual({
-        status: 'fallback',
+        status: 'failed',
         reason: 'inference graph dispatch failed: synthetic graph failure',
+        retryable: false,
       });
       expect(warnSpy.mock.calls.flat().join('\n')).toContain('synthetic graph failure');
     } finally {
       warnSpy.mockRestore();
       d.dispose();
     }
+  });
+});
+
+describe('NeuralDenoiser transactional generations', () => {
+  it('keeps the previous generation dispatchable after a resize failure and rejects the failed target durably', async () => {
+    const { device, buffers, textures } = makeMockDevice();
+    const modelWeights = { layers: [] } as unknown as ModelWeights;
+    const graph = {
+      initialize: vi.fn(async () => { throw new Error('resize allocation rejected'); }),
+      run: vi.fn(),
+      owns: vi.fn(() => true),
+      tensorStorage: NEURAL_F32_TENSOR_STORAGE,
+    } as unknown as InferenceGraph;
+    const d = new NeuralDenoiser({ inferenceGraph: graph, modelWeights });
+    await d.initialize({ device, width: 64, height: 64, bglCache: {} as never, frameResources: {} as never });
+    const oldBuffers = buffers.slice();
+    const oldTextures = textures.slice();
+
+    d.resize(128, 128);
+    await (d as unknown as { _graphReinitPromise: Promise<void> | null })._graphReinitPromise;
+
+    expect(d.state()).toEqual({ status: 'ready' });
+    expect(d.dispatch(makeDispatchContext(device, 64, 64) as never)).not.toBeNull();
+    expect(graph.run).toHaveBeenCalledTimes(1);
+    expect(() => d.dispatch(makeDispatchContext(device, 128, 128) as never)).toThrow(
+      /resize allocation rejected/,
+    );
+    expect(graph.initialize).toHaveBeenCalledTimes(1);
+    expect(oldBuffers.every(buffer => vi.mocked(buffer.destroy).mock.calls.length === 0)).toBe(true);
+    expect(oldTextures.every(texture => vi.mocked(texture.destroy).mock.calls.length === 0)).toBe(true);
+    expect(buffers.slice(oldBuffers.length).every(
+      buffer => vi.mocked(buffer.destroy).mock.calls.length === 1,
+    )).toBe(true);
+    expect(textures.slice(oldTextures.length).every(
+      texture => vi.mocked(texture.destroy).mock.calls.length === 1,
+    )).toBe(true);
+    d.dispose();
+  });
+
+  it('publishes only the newest concurrent resize generation', async () => {
+    const { device, buffers } = makeMockDevice();
+    const modelWeights = { layers: [] } as unknown as ModelWeights;
+    let ownedWidth = 64;
+    let ownedHeight = 64;
+    const pending: Array<{
+      width: number;
+      height: number;
+      resolve: () => void;
+    }> = [];
+    const graph = {
+      initialize: vi.fn((_device: GPUDevice, _weights: ModelWeights, width: number, height: number) =>
+        new Promise<void>(resolve => {
+          pending.push({
+            width,
+            height,
+            resolve: () => {
+              ownedWidth = width;
+              ownedHeight = height;
+              resolve();
+            },
+          });
+        })),
+      run: vi.fn(),
+      owns: vi.fn((_device: GPUDevice, width: number, height: number) =>
+        width === ownedWidth && height === ownedHeight),
+      tensorStorage: NEURAL_F32_TENSOR_STORAGE,
+    } as unknown as InferenceGraph;
+    const d = new NeuralDenoiser({ inferenceGraph: graph, modelWeights });
+    await d.initialize({ device, width: 64, height: 64, bglCache: {} as never, frameResources: {} as never });
+    const initialBufferCount = buffers.length;
+
+    d.resize(128, 128);
+    await vi.waitFor(() => expect(pending).toHaveLength(1));
+    d.resize(256, 256);
+    pending[0]!.resolve();
+    await vi.waitFor(() => expect(pending).toHaveLength(2));
+    pending[1]!.resolve();
+    await (d as unknown as { _graphReinitPromise: Promise<void> | null })._graphReinitPromise;
+
+    expect(graph.initialize).toHaveBeenNthCalledWith(1, device, modelWeights, 128, 128);
+    expect(graph.initialize).toHaveBeenNthCalledWith(2, device, modelWeights, 256, 256);
+    expect((d as unknown as { _graphW: number })._graphW).toBe(256);
+    expect((d as unknown as { _graphH: number })._graphH).toBe(256);
+    expect(d.state()).toEqual({ status: 'ready' });
+    expect(d.dispatch(makeDispatchContext(device, 256, 256) as never)).not.toBeNull();
+    expect(buffers.slice(initialBufferCount, initialBufferCount + 4).every(
+      buffer => vi.mocked(buffer.destroy).mock.calls.length === 1,
+    )).toBe(true);
+    d.dispose();
+  });
+
+  it('dispose during initialize prevents publication and destroys the late candidate exactly once', async () => {
+    const { device, buffers, textures } = makeMockDevice();
+    let resolveFirstPipeline!: (pipeline: GPUComputePipeline) => void;
+    vi.mocked(device.createComputePipelineAsync)
+      .mockImplementationOnce(() => new Promise(resolve => { resolveFirstPipeline = resolve; }))
+      .mockResolvedValue({ getBindGroupLayout: vi.fn(() => ({})) } as unknown as GPUComputePipeline);
+    const d = new NeuralDenoiser({ inferenceGraph: fakeGraph });
+
+    const initializing = d.initialize({
+      device,
+      width: 64,
+      height: 64,
+      bglCache: {} as never,
+      frameResources: {} as never,
+    });
+    d.dispose();
+    resolveFirstPipeline({ getBindGroupLayout: vi.fn(() => ({})) } as unknown as GPUComputePipeline);
+
+    await expect(initializing).rejects.toThrow(/superseded before publication/);
+    expect(d.state()).toMatchObject({ status: 'failed', reason: 'neural denoiser has been disposed' });
+    expect(buffers.every(buffer => vi.mocked(buffer.destroy).mock.calls.length === 1)).toBe(true);
+    expect(textures.every(texture => vi.mocked(texture.destroy).mock.calls.length === 1)).toBe(true);
+  });
+
+  it('rejects a dispatch from a different device and records a durable selected-mode failure', async () => {
+    const { device } = makeMockDevice();
+    const { device: otherDevice } = makeMockDevice();
+    const d = new NeuralDenoiser({ inferenceGraph: fakeGraph });
+    await d.initialize({ device, width: 64, height: 64, bglCache: {} as never, frameResources: {} as never });
+
+    expect(() => d.dispatch(makeDispatchContext(otherDevice, 64, 64) as never)).toThrow(
+      /device does not match/,
+    );
+    expect(d.state()).toMatchObject({
+      status: 'failed',
+      reason: expect.stringContaining('device does not match'),
+      retryable: false,
+    });
+    expect(() => d.dispatch(makeDispatchContext(device, 64, 64) as never)).toThrow(
+      /device does not match/,
+    );
+    d.dispose();
   });
 });
 
@@ -313,8 +407,8 @@ describe('NeuralDenoiser WGSL extraction byte-identity (Issue 2)', () => {
 
     // First shader compiled = pack, second = unpack (matches declaration order in initialize).
     expect(shaderCodes.length).toBeGreaterThanOrEqual(2);
-    expect(shaderCodes[0]).toBe(NEURAL_PACK_WGSL);
-    expect(shaderCodes[1]).toBe(NEURAL_UNPACK_WGSL);
+    expect(shaderCodes[0]).toBe(buildNeuralPackWgsl(NEURAL_LEGACY_PREPROCESSING_CONTRACT));
+    expect(shaderCodes[1]).toBe(buildNeuralUnpackWgsl(NEURAL_LEGACY_PREPROCESSING_CONTRACT));
   });
 
   it('NEURAL_PACK_WGSL contains the pack entry-point declaration', () => {
@@ -322,9 +416,8 @@ describe('NeuralDenoiser WGSL extraction byte-identity (Issue 2)', () => {
     expect(NEURAL_PACK_WGSL).toMatch(/@compute\s+@workgroup_size\s*\(\s*256/);
     expect(NEURAL_PACK_WGSL).toMatch(/fn\s+main\s*\(/);
     expect(NEURAL_PACK_WGSL).toMatch(/noisyOut\[base/);
-    // The bare normalize(nd * 2.0 - 1.0) is gone — replaced by the NaN-guard
-    // (item 12): select(normalize(nd_remapped), fallback, dot-length-check).
-    expect(NEURAL_PACK_WGSL).toMatch(/normalize\s*\(\s*nd_remapped\s*\)/);
+    // Runtime normals are already signed world-space vectors.
+    expect(NEURAL_PACK_WGSL).toMatch(/return\s+normalize\s*\(\s*safe\s*\)/);
   });
 
   it('NEURAL_UNPACK_WGSL contains the unpack entry-point declaration', () => {
@@ -332,6 +425,6 @@ describe('NeuralDenoiser WGSL extraction byte-identity (Issue 2)', () => {
     expect(NEURAL_UNPACK_WGSL).toMatch(/@compute\s+@workgroup_size\s*\(\s*256/);
     expect(NEURAL_UNPACK_WGSL).toMatch(/fn\s+main\s*\(/);
     expect(NEURAL_UNPACK_WGSL).toMatch(/textureStore\s*\(denoisedOut/);
-    expect(NEURAL_UNPACK_WGSL).toMatch(/max\s*\(\s*0\.0\s*,\s*denoisedIn\[base/);
+    expect(NEURAL_UNPACK_WGSL).toMatch(/neuralPostprocessRadiance\s*\(\s*denoisedIn\[base/);
   });
 });

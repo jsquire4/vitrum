@@ -13,8 +13,7 @@
  * reservoir with the EXACT generalized balance heuristic (Σ m_i = 1):
  *
  *   1. Geometric-consistency reject (normal alignment + coplanarity to centre).
- *   2. Prefix-match + non-degenerate hybrid shift Jacobian
- *      (half-G × BSDF replay-pdf ratio).
+ *   2. Prefix-match + non-degenerate half-G reconnection Jacobian.
  *   3. Reconnection VISIBILITY ray (xv → q.xs through the scene) — required for
  *      unbiasedness; an occluded shifted edge maps to zero contribution.
  *   4. Pass-1 GATHER accepted neighbours into a fixed array (≤ K), then Pass-2
@@ -22,23 +21,22 @@
  *        m_i(z) = c_i·p̂_i(z) / Σ_j c_j·p̂_j(T_{·→j} z)
  *      where the per-domain target is restirPtTargetAt(xv_j, nv_j, wo_j, mat_j,
  *      z.xs, z.Lo) (the hero target re-rooted onto domain j's visible vertex).
- *   5. Finalise W = w_sum/p̂ (GRIS, NO /M — the m_i already sum to 1), then refresh
- *      the reconnection-shift cache from the chosen edge.
+ *   5. Finalise W = w_sum/p̂ (GRIS, NO /M — the m_i already sum to 1), then
+ *      validate the selected reconnection edge.
  *
  * ════════════════════════════════════════════════════════════════════════════
  * THE LOAD-BEARING LESSON (mirrored from temporalGi/spatialGi GRIS)
  * ════════════════════════════════════════════════════════════════════════════
  * The reused (neighbour) reservoir's resampling weight is
- *     w_q = m_q · p̂_r(T z_q) · W_q · J          (J = hybrid shift Jacobian)
- * with NO division by a source pdf. rQ is a RESERVOIR: its W_q already bakes in
- * the source pdf. An extra /p_src would over-energise the reservoir → divergence
+ *     w_q = m_q · p̂_r(T z_q) · W_q · J          (J = half-G ratio)
+ * with NO division by a source pdf. rQ is a RESERVOIR: its W_q already carries
+ * the complete prior GRIS normalization, potentially from many source domains.
+ * An extra /p_src would over-energise the reservoir → divergence
  * in the feedback loop (the V19 grison-divergence). REPLICATED HERE EXACTLY.
  *
- * The per-domain eye direction wo for the target function: the scene is static
- * and all reservoirs are this-frame full-res, so the eye direction at each
- * domain's visible vertex is normalize(cameraPos − xv) (p̂ only sets resampling
- * variance, not the mean, so this is an unbiased choice for the resampling
- * heuristic — the resolve reconstructs with the real BRDF + the real wo).
+ * Each reservoir carries the native eye direction of its producer domain.
+ * Re-evaluating every target with that wo keeps glossy targets correct during
+ * camera motion.
  *
  * ── Bind groups (relocated to @group(0) high bindings by the compose step) ───
  *   @binding(1) rpt_resSpatialIn  (read)        — the temporal pass output (read-
@@ -63,7 +61,7 @@ const RPT_SPATIAL_M_CLAMP: u32 = 500u;    // per-neighbour confidence clamp
 const RPT_SPATIAL_NORMAL_BIAS: f32 = 1e-3;
 
 // Uniform disc sample in pixels (radius RPT_SPATIAL_RADIUS).
-fn rptSpatialDiscPx(rng: ptr<function, u32>) -> vec2f {
+fn rptSpatialDiscPx(rng: ptr<function, PtRngState>) -> vec2f {
   let r = RPT_SPATIAL_RADIUS * sqrt(rand_f32(rng));
   let theta = 6.2831853 * rand_f32(rng);
   return vec2f(r * cos(theta), r * sin(theta));
@@ -96,11 +94,13 @@ fn restirPtSpatial(@builtin(global_invocation_id) gid: vec3u) {
   var rng = pcgInit(
     gid.x ^ (params.frameSeed * 0xA127u),
     gid.y ^ (params.frameSeed * 0x271Au),
-    params.frameSeed ^ 0xBCD3u,
+    ptRngFrameKey(params.frameSeed ^ 0xBCD3u, params.frameIndex),
   );
 
-  let woCenter = restirpt_safe_normalize(params.cameraPos.xyz - rCenter.xv);
-  let pHatCanonNative = restirPtTargetForDomain(rCenter, woCenter, rCenter.xs, rCenter.Lo);
+  let woCenter = rCenter.woV;
+  let pHatCanonNative = restirPtTargetForDomainAtHero(
+    rCenter, rCenter.heroLambdaV, woCenter, rCenter.xs, rCenter.Lo,
+  );
   let cR = f32(rCenter.M);
 
   // ── Pass-1 GATHER accepted neighbours (full-GBH needs the domain set up front)
@@ -128,19 +128,20 @@ fn restirPtSpatial(@builtin(global_invocation_id) gid: vec3u) {
     let planeDist = abs(dot(rQ.xv - rCenter.xv, rCenter.nv));
     if (planeDist > RPT_SPATIAL_COPLANAR_TOL) { continue; }
 
-    // Prefix-match + non-degenerate hybrid shift.
-    if (rQ.prefixVertexCount != rCenter.prefixVertexCount
-     || rQ.prefixVertexCount == 0u) { continue; }
-
-    let woQ = restirpt_safe_normalize(params.cameraPos.xyz - rQ.xv);
-    // Shift Jacobian |∂T/∂·| = half-G target/source × BSDF replay-pdf source/target.
-    let J = restirPtHybridShiftJacobianForPair(rQ, rCenter, woQ, woCenter);
-    if (J <= 0.0) { continue; }
+    let woQ = rQ.woV;
+    // One-edge shift Jacobian |∂T/∂·| = half-G target/source. There is no
+    // replayed random prefix and source proposal density is already in W.
+    let J = restirPtReconnectionJacobianForPair(rQ, rCenter);
+    if (!rptFinitePositive(J)) { continue; }
 
     // Non-degenerate shifted + native targets, else q contributes nothing.
-    let pHatQ_atR = restirPtTargetForDomain(rCenter, woCenter, rQ.xs, rQ.Lo);
+    let pHatQ_atR = restirPtTargetForDomainAtHero(
+      rCenter, rQ.heroLambdaV, woCenter, rQ.xs, rQ.Lo,
+    );
     if (pHatQ_atR < 1e-9) { continue; }
-    let pHatQ_native = restirPtTargetForDomain(rQ, woQ, rQ.xs, rQ.Lo);
+    let pHatQ_native = restirPtTargetForDomainAtHero(
+      rQ, rQ.heroLambdaV, woQ, rQ.xs, rQ.Lo,
+    );
     if (pHatQ_native < 1e-9) { continue; }
 
     // Reconnection VISIBILITY — required for unbiasedness.
@@ -159,42 +160,57 @@ fn restirPtSpatial(@builtin(global_invocation_id) gid: vec3u) {
   if (rCenter.M > 0u && pHatCanonNative > 1e-9) {
     var denomR = cR * pHatCanonNative; // canonical's own native term
     for (var j: u32 = 0u; j < nQ; j = j + 1u) {
-      denomR += qC[j] * restirPtTargetForDomain(qR[j], qWo[j], rCenter.xs, rCenter.Lo);
+      denomR += qC[j] * restirPtTargetForDomainAtHero(
+        qR[j], rCenter.heroLambdaV, qWo[j], rCenter.xs, rCenter.Lo,
+      );
     }
     let m_canon = select(0.0, (cR * pHatCanonNative) / denomR, denomR > 1e-12);
     // Canonical: no shift (already at this pixel; J = 1).
     let w_canon = m_canon * pHatCanonNative * rCenter.W;
     let oldM = rOut.M;
-    let canonReplayPdf = restirPtVisibleReplayPdfForDomain(rCenter, woCenter, rCenter.xs);
-    updateReservoirPTWithHybrid(&rOut, rCenter.xs, rCenter.ns, rCenter.Lo, rCenter.pdfSrc, 1.0, canonReplayPdf, rCenter.rngSeed, w_canon, &rng);
-    rOut.M = oldM + rCenter.M;
+    if (updateReservoirPT(
+      &rOut, rCenter.xs, rCenter.ns, rCenter.Lo, rCenter.heroLambdaV,
+      rCenter.pdfSrc, w_canon, &rng,
+    )) {
+      rOut.M = rptSaturatingAddU32(oldM, rCenter.M);
+    }
   }
 
   // ── Pass-2 FOLD: each neighbour's sample with its full-GBH weight ──
   for (var i: u32 = 0u; i < nQ; i = i + 1u) {
-    let pHatQ_native = restirPtTargetForDomain(qR[i], qWo[i], qR[i].xs, qR[i].Lo);
+    let pHatQ_native = restirPtTargetForDomainAtHero(
+      qR[i], qR[i].heroLambdaV, qWo[i], qR[i].xs, qR[i].Lo,
+    );
     // GBH denominator: canonical's target for z_q + every neighbour's target.
-    var denomQ = cR * restirPtTargetForDomain(rCenter, woCenter, qR[i].xs, qR[i].Lo);
+    var denomQ = cR * restirPtTargetForDomainAtHero(
+      rCenter, qR[i].heroLambdaV, woCenter, qR[i].xs, qR[i].Lo,
+    );
     for (var j: u32 = 0u; j < nQ; j = j + 1u) {
-      denomQ += qC[j] * restirPtTargetForDomain(qR[j], qWo[j], qR[i].xs, qR[i].Lo);
+      denomQ += qC[j] * restirPtTargetForDomainAtHero(
+        qR[j], qR[i].heroLambdaV, qWo[j], qR[i].xs, qR[i].Lo,
+      );
     }
     let m_q = select(0.0, (qC[i] * pHatQ_native) / denomQ, denomQ > 1e-12);
     // p̂_r(T z_q): q's sample re-rooted onto the canonical visible vertex.
-    let pHatQ_atR = restirPtTargetForDomain(rCenter, woCenter, qR[i].xs, qR[i].Lo);
+    let pHatQ_atR = restirPtTargetForDomainAtHero(
+      rCenter, qR[i].heroLambdaV, woCenter, qR[i].xs, qR[i].Lo,
+    );
     let w_q = m_q * pHatQ_atR * qW[i] * qJ[i];
     let oldM = rOut.M;
-    // Pass the neighbour's real source BSDF pdf (pdfSrc) — NOT the unbiased contribution
-    // weight W. W already bakes in 1/pdfSrc (W = w_sum/p̂ after finalise); passing W here
-    // would store an energy-scaled pdf that corrupts the reconstructed path when this
-    // neighbour's sample wins. pdfSrc is the denominator for the resolve unbiased estimator.
-    let qReplayPdfAtR = restirPtVisibleReplayPdfForDomain(rCenter, woCenter, qR[i].xs);
-    updateReservoirPTWithHybrid(&rOut, qR[i].xs, qR[i].ns, qR[i].Lo, qR[i].pdfSrc, qJ[i], qReplayPdfAtR, qR[i].rngSeed, w_q, &rng);
-    rOut.M = oldM + u32(qC[i]);
+    // Preserve the selected neighbour sample's source proposal metadata. The
+    // reusable contribution weight is qR[i].W and is already folded into w_q;
+    // pdfSrc is not a resolve denominator and must not be replaced by W.
+    if (updateReservoirPT(
+      &rOut, qR[i].xs, qR[i].ns, qR[i].Lo, qR[i].heroLambdaV,
+      qR[i].pdfSrc, w_q, &rng,
+    )) {
+      rOut.M = rptSaturatingAddU32(oldM, u32(qC[i]));
+    }
   }
 
   // GRIS finalise: W = w_sum / p̂ (the MIS weights already sum to 1 — no /M).
-  finaliseReservoirPTWGris(&rOut, rptParams.wCap, params.cameraPos.xyz);
-  refreshReconnectionCachePT(&rOut, params.cameraPos.xyz, params.frameSeed ^ pixelIdx);
+  finaliseReservoirPTWGris(&rOut, rptParams.wCap);
+  refreshReconnectionStatePT(&rOut);
 
   storeReservoirPTHero_rw(&rpt_resSpatialOut, pixelIdx, rOut);
 }

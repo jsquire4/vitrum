@@ -50,9 +50,9 @@ fn indirectCombineMain(@builtin(global_invocation_id) gid: vec3u) {
   // ic_denoisedIndirect carries demodulated lighting (L without albedo).
   let filteredLighting = textureLoad(ic_denoisedIndirect, gid.xy, 0).rgb;
   // Re-modulate: filtered_lighting × albedo = physically correct denoised indirect.
-  // Clamp albedo to [1e-3, 1] to avoid divide-by-near-zero artefacts from
-  // black surfaces (black albedo → near-zero indirect anyway, so no visible change).
-  let albedo          = max(vec3f(1e-3), textureLoad(ic_albedo, gid.xy, 0).rgb);
+  // Re-modulation uses the authored albedo exactly. In particular, a black
+  // channel remains black instead of receiving an invented 1e-3 reflectance.
+  let albedo          = clamp(textureLoad(ic_albedo, gid.xy, 0).rgb, vec3f(0.0), vec3f(1.0));
   let indirect        = filteredLighting * albedo;
   textureStore(ic_combinedOut, gid.xy, vec4f(direct + indirect, 1.0));
 }

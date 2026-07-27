@@ -90,7 +90,7 @@ describe('sampleHG', () => {
       [0.5, 0.25],
       [0.5, 0.5],
       [0.5, 0.75],
-      [0.5, 1.0],
+      [0.5, 1 - Number.EPSILON],
     ];
     for (const [u1, u2] of pairs) {
       const [, , z] = sampleHG(u1, u2, 0);
@@ -99,6 +99,12 @@ describe('sampleHG', () => {
     }
   });
 
+  it('rejects random variates outside the half-open [0, 1) domain', () => {
+    expect(() => sampleHG(1, 0.5, 0)).toThrow(RangeError);
+    expect(() => sampleHG(0.5, 1, 0)).toThrow(RangeError);
+    expect(() => sampleHG(-Number.EPSILON, 0.5, 0)).toThrow(RangeError);
+    expect(() => sampleHG(0.5, Number.NaN, 0)).toThrow(RangeError);
+  });
   it('g=0.9 (forward): z > 0 for most samples', () => {
     let positiveCount = 0;
     const N = 100;

@@ -1,3 +1,5 @@
+import { requireFinite, requirePositive } from './numericGuards.js';
+
 /**
  * cauchyIor.ts — Per-wavelength index of refraction via the Cauchy dispersion formula.
  *
@@ -59,7 +61,13 @@ export function cauchyIOR(
   // Convert wavelength from nm to µm for standard Cauchy coefficient units.
   const lambdaUm = lambdaNm * 1e-3; // 1 nm = 0.001 µm
   const lam2 = lambdaUm * lambdaUm;
-  return A + B / lam2 + C / (lam2 * lam2);
+  requirePositive(lambdaNm, 'cauchyIOR.lambdaNm');
+  requireFinite(A, 'cauchyIOR.A');
+  requireFinite(B, 'cauchyIOR.B');
+  requireFinite(C, 'cauchyIOR.C');
+  const result = A + B / lam2 + C / (lam2 * lam2);
+  if (!Number.isFinite(result)) throw new RangeError('cauchyIOR result overflowed');
+  return result;
 }
 
 // ── Standard glass coefficients ───────────────────────────────────────────────
@@ -144,5 +152,7 @@ export function abbeNumber(A: number, B: number, C = 0): number {
   const nD = cauchyIOR(FRAUNHOFER_D_NM, A, B, C);
   const nF = cauchyIOR(FRAUNHOFER_F_NM, A, B, C);
   const nC = cauchyIOR(FRAUNHOFER_C_NM, A, B, C);
-  return (nD - 1) / (nF - nC);
+  const dispersion = nF - nC;
+  if (dispersion === 0) return Number.POSITIVE_INFINITY;
+  return (nD - 1) / dispersion;
 }

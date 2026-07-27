@@ -35,23 +35,29 @@ const R16U_BPP    = 2  as const;
  * For byte-level uploads (e.g. f16 packed via DataView), pass Uint8Array as
  * the ctor and bytesPerElement=1; the rowStride argument is then in bytes.
  */
-function uploadTexture2D<T extends Float32Array | Uint8Array | Uint32Array>(
+type ArrayBufferUploadView =
+  | Float32Array<ArrayBuffer>
+  | Uint8Array<ArrayBuffer>
+  | Uint32Array<ArrayBuffer>;
+
+function uploadTexture2D<T extends ArrayBufferUploadView>(
   device: GPUDevice,
   texture: GPUTexture,
   width: number,
   height: number,
   bpp: number,
-  TypedArrayCtor: new (lengthInElements: number) => T,
+  TypedArrayCtor: new (buffer: ArrayBuffer) => T,
   bytesPerElement: number,
   fill: (buf: T, rowStrideElements: number) => void,
 ): void {
   const bpr = alignedTextureCopyBytesPerRow(width, bpp);
   const rowStrideElements = bpr / bytesPerElement;
-  const upload = new TypedArrayCtor(rowStrideElements * height);
+  const backing = new ArrayBuffer(rowStrideElements * height * bytesPerElement);
+  const upload = new TypedArrayCtor(backing);
   fill(upload, rowStrideElements);
   device.queue.writeTexture(
     { texture },
-    upload.buffer,
+    backing,
     { bytesPerRow: bpr, rowsPerImage: height },
     [width, height],
   );
@@ -315,11 +321,13 @@ export async function readRgba32fToRgb(
     size: bpr * height,
     usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
   });
-  const encoder = device.createCommandEncoder();
-  encoder.copyTextureToBuffer({ texture }, { buffer: buf, bytesPerRow: bpr }, [width, height]);
-  device.queue.submit([encoder.finish()]);
+  let mappedForRead = false;
   try {
+    const encoder = device.createCommandEncoder();
+    encoder.copyTextureToBuffer({ texture }, { buffer: buf, bytesPerRow: bpr }, [width, height]);
+    device.queue.submit([encoder.finish()]);
     await buf.mapAsync(GPUMapMode.READ);
+    mappedForRead = true;
     const mapped = new Float32Array(buf.getMappedRange());
     const out = new Float32Array(width * height * 3);
     for (let y = 0; y < height; y += 1) {
@@ -332,10 +340,12 @@ export async function readRgba32fToRgb(
         out[di + 2] = mapped[si + 2] ?? 0;
       }
     }
-    buf.unmap();
     return out;
   } finally {
-    buf.destroy();
+    if (mappedForRead) {
+      try { buf.unmap(); } catch { /* best-effort teardown */ }
+    }
+    try { buf.destroy(); } catch { /* best-effort teardown */ }
   }
 }
 
@@ -358,11 +368,13 @@ export async function readRgba32fToRg(
     size: bpr * height,
     usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
   });
-  const encoder = device.createCommandEncoder();
-  encoder.copyTextureToBuffer({ texture }, { buffer: buf, bytesPerRow: bpr }, [width, height]);
-  device.queue.submit([encoder.finish()]);
+  let mappedForRead = false;
   try {
+    const encoder = device.createCommandEncoder();
+    encoder.copyTextureToBuffer({ texture }, { buffer: buf, bytesPerRow: bpr }, [width, height]);
+    device.queue.submit([encoder.finish()]);
     await buf.mapAsync(GPUMapMode.READ);
+    mappedForRead = true;
     const mapped = new Float32Array(buf.getMappedRange());
     const out = new Float32Array(width * height * 2);
     for (let y = 0; y < height; y += 1) {
@@ -374,10 +386,12 @@ export async function readRgba32fToRg(
         out[di + 1] = mapped[si + 1] ?? 0;
       }
     }
-    buf.unmap();
     return out;
   } finally {
-    buf.destroy();
+    if (mappedForRead) {
+      try { buf.unmap(); } catch { /* best-effort teardown */ }
+    }
+    try { buf.destroy(); } catch { /* best-effort teardown */ }
   }
 }
 
@@ -398,11 +412,13 @@ export async function readR32UintToU32(
     size: bpr * height,
     usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
   });
-  const encoder = device.createCommandEncoder();
-  encoder.copyTextureToBuffer({ texture }, { buffer: buf, bytesPerRow: bpr }, [width, height]);
-  device.queue.submit([encoder.finish()]);
+  let mappedForRead = false;
   try {
+    const encoder = device.createCommandEncoder();
+    encoder.copyTextureToBuffer({ texture }, { buffer: buf, bytesPerRow: bpr }, [width, height]);
+    device.queue.submit([encoder.finish()]);
     await buf.mapAsync(GPUMapMode.READ);
+    mappedForRead = true;
     const mapped = new Uint32Array(buf.getMappedRange());
     const out = new Uint32Array(width * height);
     const rowStride = bpr / 4;
@@ -412,10 +428,12 @@ export async function readR32UintToU32(
         out[y * width + x] = mapped[rowOff + x] ?? 0;
       }
     }
-    buf.unmap();
     return out;
   } finally {
-    buf.destroy();
+    if (mappedForRead) {
+      try { buf.unmap(); } catch { /* best-effort teardown */ }
+    }
+    try { buf.destroy(); } catch { /* best-effort teardown */ }
   }
 }
 
@@ -434,11 +452,13 @@ export async function readRgba16fToRgb(
     size: bpr * height,
     usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
   });
-  const encoder = device.createCommandEncoder();
-  encoder.copyTextureToBuffer({ texture }, { buffer: buf, bytesPerRow: bpr }, [width, height]);
-  device.queue.submit([encoder.finish()]);
+  let mappedForRead = false;
   try {
+    const encoder = device.createCommandEncoder();
+    encoder.copyTextureToBuffer({ texture }, { buffer: buf, bytesPerRow: bpr }, [width, height]);
+    device.queue.submit([encoder.finish()]);
     await buf.mapAsync(GPUMapMode.READ);
+    mappedForRead = true;
     const raw = new Uint8Array(buf.getMappedRange());
     const dv  = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
     const out = new Float32Array(width * height * 3);
@@ -451,9 +471,11 @@ export async function readRgba16fToRgb(
         out[di + 2] = float16BitsToFloat32(dv.getUint16(byte + 4, true));
       }
     }
-    buf.unmap();
     return out;
   } finally {
-    buf.destroy();
+    if (mappedForRead) {
+      try { buf.unmap(); } catch { /* best-effort teardown */ }
+    }
+    try { buf.destroy(); } catch { /* best-effort teardown */ }
   }
 }

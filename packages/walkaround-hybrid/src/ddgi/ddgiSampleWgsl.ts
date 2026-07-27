@@ -21,7 +21,14 @@
  * call site's 16 arguments.
  */
 
-import { VIS_CELL, IRR_STRIDE, VIS_STRIDE } from './ddgiAtlasLayout.js';
+import {
+  IRR_PROBE_STATE_LOCAL_X,
+  IRR_PROBE_STATE_LOCAL_Y,
+  IRR_STRIDE,
+  VIS_CELL,
+  VIS_STRIDE,
+} from './ddgiAtlasLayout.js';
+import { DDGI_PROBE_MAX_OFFSET_NORMALIZED } from './probeState.js';
 import type { WgslModule } from '../wgslTypes.js';
 
 // Atlas-layout constants are template-substituted at module-load time so
@@ -49,7 +56,7 @@ fn ddgiSample(
   // walls/floors — gridPos on an integer plane) has its trilinear interpolation
   // collapse onto the IN-PLANE probes, whose direction to the receiver is
   // perpendicular to the surface normal → the cosine weight max(0, dot(n, dir))
-  // is 0 for all of them → totalWeight < 1e-4 → this returns vec3f(0). That
+  // is 0 for all of them → totalWeight == 0 → this returns vec3f(0). That
   // zeroed the entire DDGI→ReSTIR-GI handoff (the GI reconnection points are
   // surface points), so the default realtime GI was DEAD (indirect ~0; only the
   // off-default RC path produced GI). Root-caused 2026-06-07 via gidiag A/B:
@@ -64,6 +71,10 @@ fn ddgiSample(
 
   var sum         = vec3f(0.0);
   var totalWeight = 0.0;
+  var fallbackIrr = vec3f(0.0);
+  var fallbackVisibility = 0.0;
+  var fallbackDistance = 1.0e30;
+  var hasFallback = false;
 
   for (var i = 0u; i < 8u; i = i + 1u) {
     let co  = vec3u((i & 1u), (i >> 1u) & 1u, (i >> 2u) & 1u);
@@ -73,7 +84,25 @@ fn ddgiSample(
     let probeFlatIdx = u32(pi3.x) +
                        u32(pi3.y) * gridDims.x +
                        u32(pi3.z) * gridDims.x * gridDims.y;
-    let probeWorld   = gridOrigin + vec3f(pi3) * gridSpacing;
+    let stateCoord = vec2i(
+      pi3.x * i32(${IRR_STRIDE}) + i32(${IRR_PROBE_STATE_LOCAL_X}),
+      (pi3.y + pi3.z * i32(gridDims.y)) * i32(${IRR_STRIDE}) +
+        i32(${IRR_PROBE_STATE_LOCAL_Y}),
+    );
+    let state = textureLoad(irradianceAtlas, stateCoord, 0);
+    if (state.w < 0.5) { continue; }
+    var normalizedOffset = state.xyz;
+    let offsetLength2 = dot(normalizedOffset, normalizedOffset);
+    let maxOffset = ${DDGI_PROBE_MAX_OFFSET_NORMALIZED};
+    if (!(offsetLength2 >= 0.0) || !(offsetLength2 < 1.0e20)) {
+      normalizedOffset = vec3f(0.0);
+    } else if (offsetLength2 > maxOffset * maxOffset) {
+      normalizedOffset =
+        normalizedOffset *
+        ((maxOffset - 1.0e-6) * inverseSqrt(max(offsetLength2, 1.0e-12)));
+    }
+    let probeWorld =
+      gridOrigin + vec3f(pi3) * gridSpacing + normalizedOffset * gridSpacing;
 
     // Trilinear weight.
     let tw = mix(vec3f(1.0) - frac, frac, vec3f(co));
@@ -116,7 +145,16 @@ fn ddgiSample(
     let probeDist = length(toProbe);
 
     // Octahedral-encode the surface→probe direction (visibility lookup).
-    let probeDirToSurf = normalize(biasedPos - probeWorld);
+    let probeToSurface = biasedPos - probeWorld;
+    let probeToSurfaceLen2 = dot(probeToSurface, probeToSurface);
+    // A relocated probe may exactly coincide with the biased receiver. Avoid
+    // normalize(vec3f(0)) → NaN octahedral UVs; the deterministic +Y fallback
+    // is visible at one zero-measure point only and keeps textureLoad finite.
+    let probeDirToSurf = select(
+      vec3f(0.0, 1.0, 0.0),
+      probeToSurface * inverseSqrt(max(probeToSurfaceLen2, 1.0e-12)),
+      probeToSurfaceLen2 > 1.0e-12,
+    );
     let dirV       = -probeDirToSurf;
     let absV       = abs(dirV);
     let nv         = dirV / (absV.x + absV.y + absV.z);
@@ -139,8 +177,9 @@ fn ddgiSample(
     let vis       = textureSampleLevel(visibilityAtlas, samp, visUv, 0.0).rg;
     let mean      = vis.x;
     let variance  = abs(vis.y - mean * mean);
+    let occlusionDelta = max(0.0, probeDist - mean);
     let chebyshev = select(
-      variance / (variance + max(0.0, probeDist - mean) * max(0.0, probeDist - mean)),
+      variance / max(variance + occlusionDelta * occlusionDelta, 1.0e-8),
       1.0,
       probeDist <= mean,
     );
@@ -170,14 +209,25 @@ fn ddgiSample(
       + textureLoad(irradianceAtlas, vec2u(ix + 1u, iy + 2u), 0).rgb * (1.092548 * surfaceNormal.x * surfaceNormal.z)
       + textureLoad(irradianceAtlas, vec2u(ix + 2u, iy + 2u), 0).rgb * (0.546274 * (surfaceNormal.x * surfaceNormal.x - surfaceNormal.y * surfaceNormal.y));
 
+    if (probeDist < fallbackDistance) {
+      fallbackDistance = probeDist;
+      fallbackIrr = irr;
+      fallbackVisibility = max(chebyshev, 0.0);
+      hasFallback = true;
+    }
     sum         = sum + irr * w;
     totalWeight = totalWeight + w;
   }
 
-  if (totalWeight < 1e-4) {
-    // No probes contributed — return zero indirect (conservative, matches
-    // shade.wgsl ddgiSampleFromBindings; was vec3f(0.05) prior to consolidation).
-    return vec3f(0.0);
+  if (!(totalWeight > 0.0)) {
+    // If every active probe had zero trilinear/Chebyshev weight, use the
+    // closest active probe only when its own visibility survives. Otherwise
+    // return conservative zero; inactive probes are never reintroduced.
+    return select(
+      vec3f(0.0),
+      fallbackIrr * fallbackVisibility,
+      hasFallback && fallbackVisibility > 0.0,
+    );
   }
   // Each probe's SH eval already returns irradiance E (the cosine convolution
   // is baked into the stored coefficients at blend time), so the trilinear-
@@ -233,7 +283,6 @@ struct DDGIGridUBO {
   visH:      f32,
 };
 @group(3) @binding(3) var<uniform> ddgiGrid: DDGIGridUBO;
-
 // sampleDDGIAtPoint — thin wrapper over ddgiSample using the ddgiGrid UBO fields.
 // D5.2 dedup: extracted from duplicate definitions in risGi + risGiNrc (2026-06-10).
 // The ddgiIrradiance / ddgiVisibility / ddgiSampler bindings are declared in

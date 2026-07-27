@@ -25,6 +25,7 @@ import {
   resolveRoughMetal,
   packRoughMetalIorBytes,
 } from '../../packingHelpers.js';
+import { quantizePackedMaterialTransmission } from '@vitrum/shared-bvh';
 
 interface ColorLike {
   readonly r: number;
@@ -75,7 +76,7 @@ function applyBeerLambert(
  */
 function resolveTriColor(mat: PbrMaterialLike, applyBeer: boolean): ColorLike {
   const transmission = (mat.transmission ?? 0);
-  const isTransmissive = transmission > 0.01;
+  const isTransmissive = transmission > 0;
   const attenColor = mat.attenuationColor;
   if (isTransmissive && attenColor) {
     if (applyBeer) {
@@ -123,7 +124,7 @@ function packBVHIndexWTri(
     const metalness = (mat.metalness ?? 0);
     isMetal = metalness > 1e-4 ? 1 : 0;
   }
-  const trans4 = Math.min(15, Math.round(transmission * 15)) & 0xF;
+  const trans4 = quantizePackedMaterialTransmission(transmission);
   const lowByte = ((trans4 << 4) | (isMetal << 3) | (texTypeId & 0x7)) & 0xFF;
   indexBuf[base4 + 3] = (r << 24) | (g << 16) | (b << 8) | lowByte;
 }

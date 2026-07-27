@@ -3,6 +3,19 @@ import type { Scene } from '@vitrum/core';
 import { packAnalyticPointSpotEmitters } from '../emitterHelpers.js';
 
 describe('packAnalyticPointSpotEmitters', () => {
+  it('returns an exact empty payload for a scene with no analytic lights', () => {
+    const scene: Scene = {
+      primitives: [],
+      environment: { kind: 'none' },
+      emitters: [],
+    };
+
+    const packed = packAnalyticPointSpotEmitters(scene);
+
+    expect(packed.count).toBe(0);
+    expect(packed.data).toHaveLength(0);
+  });
+
   it('packs authored point and spot distance/decay into the analytic-light texture lanes', () => {
     const scene: Scene = {
       primitives: [],

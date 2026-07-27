@@ -8,7 +8,7 @@
  *
  * Two test suites:
  *   1. STRUCTURAL — the WGSL exposes smithG1GGX, uses it in ggxVndfReflectionPdf
- *      (not geometrySchlickGGX), and shares the alpha floor max(rough², 1e-4)
+ *      (not geometrySchlickGGX), and uses the authored positive alpha exactly
  *      between ggxSampleVndf and ggxVndfReflectionPdf.
  *   2. SAMPLER/PDF IDENTITY TEST — for each sampled direction wi, the ratio
  *      D(h)·G1(v,h) / (4·NdotV) / pdf(wi) must equal 1 within float tolerance
@@ -47,15 +47,18 @@ function smithG1GGX(nv: number, a2: number): number {
 
 /** VNDF reflection pdf — mirrors ggxVndfReflectionPdf in WGSL (B16 version). */
 function ggxVndfReflectionPdf(n: Vec3, wo: Vec3, wi: Vec3, rough: number): number {
+  if (!(rough > 0)) return 0;
   const h = normalize(add(wo, wi));
-  const NdotV = Math.max(1e-4, dot(n, wo));
-  const NdotH = Math.max(0, dot(n, h));
+  const NdotV = dot(n, wo);
+  const NdotL = dot(n, wi);
+  if (NdotV <= 0 || NdotL <= 0) return 0;
+  const NdotH = dot(n, h);
   if (NdotH <= 0) return 0;
-  const a2 = Math.max(rough * rough, 1e-4);
-  const a = Math.sqrt(a2);
-  const D = distributionGGX(NdotH, a);
-  const g1 = smithG1GGX(NdotV, a2);
-  return (D * g1) / Math.max(4 * NdotV, 1e-6);
+  const alpha = rough * rough;
+  const alpha2 = alpha * alpha;
+  const D = distributionGGX(NdotH, rough);
+  const g1 = smithG1GGX(NdotV, alpha2);
+  return (D * g1) / (4 * NdotV);
 }
 
 // ── Minimal vec3 helpers ───────────────────────────────────────────────────────
@@ -99,7 +102,11 @@ function buildOnb(n: Vec3): [Vec3, Vec3] {
  * wo = outgoing dir toward camera, n = surface normal, sampleIdx → Halton.
  */
 function ggxSampleVndf(n: Vec3, wo: Vec3, rough: number, sampleIdx: number): Vec3 {
-  const alpha = Math.max(rough * rough, 1e-4); // B16: same floor as pdf
+  if (!(rough > 0)) {
+    const nDotWo = dot(n, wo);
+    return [2*nDotWo*n[0]-wo[0], 2*nDotWo*n[1]-wo[1], 2*nDotWo*n[2]-wo[2]];
+  }
+  const alpha = rough * rough;
   const [t, b] = buildOnb(n);
   const woT: Vec3 = [dot(wo, t), dot(wo, b), dot(wo, n)];
 
@@ -123,7 +130,7 @@ function ggxSampleVndf(n: Vec3, wo: Vec3, rough: number, sampleIdx: number): Vec
   const sq = Math.sqrt(Math.max(0, 1 - t1*t1 - t2*t2));
   const NhX = alpha * (t1*T1[0] + t2*T2[0] + sq*Vh[0]);
   const NhY = alpha * (t1*T1[1] + t2*T2[1] + sq*Vh[1]);
-  const NhZ = Math.max(1e-6, t1*T1[2] + t2*T2[2] + sq*Vh[2]);
+  const NhZ = Math.max(0, t1*T1[2] + t2*T2[2] + sq*Vh[2]);
   const Nh = normalize([NhX, NhY, NhZ]);
 
   // hT → world space.
@@ -139,7 +146,7 @@ function ggxSampleVndf(n: Vec3, wo: Vec3, rough: number, sampleIdx: number): Vec
 
 // ── Structural tests ──────────────────────────────────────────────────────────
 
-describe('B16 — structural gates (alpha floor + G1 form)', () => {
+describe('B16 — structural gates (exact authored alpha + G1 form)', () => {
   it('ggxBrdf exposes smithG1GGX', () => {
     expect(GGX_BRDF_WGSL).toContain('fn smithG1GGX(');
   });
@@ -153,22 +160,24 @@ describe('B16 — structural gates (alpha floor + G1 form)', () => {
     expect(pdfBody).not.toContain('geometrySchlickGGX(');
   });
 
-  it('ggxSampleVndf uses alpha floor max(rough*rough, 1e-4)', () => {
+  it('ggxSampleVndf uses the authored positive roughness without a floor', () => {
     const sStart = GGX_BRDF_WGSL.indexOf('fn ggxSampleVndf(');
     expect(sStart).toBeGreaterThanOrEqual(0);
     const sEnd = GGX_BRDF_WGSL.indexOf('\nfn ', sStart + 1);
     const sBody = GGX_BRDF_WGSL.slice(sStart, sEnd < 0 ? undefined : sEnd);
-    expect(sBody).toContain('max(rough * rough, 1e-4)');
-    expect(sBody).not.toContain('1e-3');
+    expect(sBody).toContain('if (rough <= 0.0) { return reflect(-wo, n); }');
+    expect(sBody).toContain('let alpha = rough * rough;');
+    expect(sBody).not.toContain('max(rough * rough');
   });
 
-  it('ggxVndfReflectionPdf uses alpha floor max(rough*rough, 1e-4)', () => {
+  it('ggxVndfReflectionPdf uses the same unfloored authored alpha', () => {
     const pStart = GGX_BRDF_WGSL.indexOf('fn ggxVndfReflectionPdf(');
     expect(pStart).toBeGreaterThanOrEqual(0);
     const pEnd = GGX_BRDF_WGSL.indexOf('\nfn ', pStart + 1);
     const pBody = GGX_BRDF_WGSL.slice(pStart, pEnd < 0 ? undefined : pEnd);
-    expect(pBody).toContain('max(rough * rough, 1e-4)');
-    expect(pBody).not.toContain('max(0.01, rough)');
+    expect(pBody).toContain('if (rough <= 0.0) { return 0.0; }');
+    expect(pBody).toContain('let alpha = rough * rough;');
+    expect(pBody).not.toContain('max(rough * rough');
   });
 });
 
@@ -205,16 +214,16 @@ describe('B16 — sampler/pdf identity at rough ∈ {0.02, 0.05, 0.3}', () => {
         if (NdotL <= 0) continue;
 
         const h = normalize(add(wo, wi));
-        const NdotV = Math.max(1e-4, dot(n, wo));
+        const NdotV = dot(n, wo);
         const NdotH = Math.max(0, dot(n, h));
         if (NdotH <= 0) continue;
 
         // Recompute D and G1 directly (same formulas as pdf, no intermediary).
-        const a2 = Math.max(rough * rough, 1e-4);
-        const a = Math.sqrt(a2);
-        const D = distributionGGX(NdotH, a);
-        const g1 = smithG1GGX(NdotV, a2);
-        const numerator = (D * g1) / Math.max(4 * NdotV, 1e-6);
+        const alpha = rough * rough;
+        const alpha2 = alpha * alpha;
+        const D = distributionGGX(NdotH, rough);
+        const g1 = smithG1GGX(NdotV, alpha2);
+        const numerator = (D * g1) / (4 * NdotV);
 
         const pdfVal = ggxVndfReflectionPdf(n, wo, wi, rough);
         if (pdfVal <= 0) continue;

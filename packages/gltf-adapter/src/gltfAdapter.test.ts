@@ -21,7 +21,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { GltfImportError, gltfToScene } from './gltfToScene.js';
 import { analyzeGltfAsset } from './featureReport.js';
 import { GltfParseFailed } from './errors.js';
-import { solveSkin } from '@vitrum/core';
+import { solveSkin, validateScene } from '@vitrum/core';
 import type { GltfJson } from './gltfTypes.js';
 import type {
   DirectionalEmitter,
@@ -58,6 +58,14 @@ function u8Buffer(values: number[]): ArrayBuffer {
   const buf = new ArrayBuffer(values.length);
   const view = new DataView(buf);
   values.forEach((v, i) => view.setUint8(i, v));
+  return buf;
+}
+
+/** Encode an Int8Array as a glTF buffer. */
+function i8Buffer(values: number[]): ArrayBuffer {
+  const buf = new ArrayBuffer(values.length);
+  const view = new DataView(buf);
+  values.forEach((v, i) => view.setInt8(i, v));
   return buf;
 }
 
@@ -300,6 +308,54 @@ describe('ArrayBuffer input parsing', () => {
 // Test 1 — Minimal triangle
 // ────────────────────────────────────────────────────────────────────────────
 
+describe('glTF version compatibility boundary', () => {
+  it.each([
+    { version: '2.7', minVersion: undefined },
+    { version: '2.7', minVersion: '2.0' },
+  ])('accepts forward-compatible glTF $version with minVersion $minVersion', async ({
+    version,
+    minVersion,
+  }) => {
+    const { gltf, buffers } = makeMinimalTriangleGltf();
+    gltf.asset = { version, ...(minVersion !== undefined ? { minVersion } : {}) };
+
+    await expect(gltfToScene(gltf, { buffers })).resolves.toMatchObject({
+      scene: { primitives: [expect.any(Object)] },
+    });
+  });
+
+  it('rejects a forward minor version that explicitly requires newer features', async () => {
+    const { gltf, buffers } = makeMinimalTriangleGltf();
+    gltf.asset = { version: '2.7', minVersion: '2.1' };
+
+    await expect(gltfToScene(gltf, { buffers })).rejects.toMatchObject({
+      name: 'GltfImportError',
+      diagnostics: [expect.objectContaining({
+        code: 'unsupported-version',
+        path: 'asset.minVersion',
+      })],
+    });
+  });
+
+  it.each([
+    { asset: { version: '3.0' }, path: 'asset.version' },
+    { asset: { version: '2' }, path: 'asset.version' },
+    { asset: { version: '2.0', minVersion: '2.1' }, path: 'asset.minVersion' },
+    { asset: { version: '2.7', minVersion: 'not-a-version' }, path: 'asset.minVersion' },
+  ])('rejects unsupported or malformed version metadata at $path', async ({ asset, path }) => {
+    const { gltf, buffers } = makeMinimalTriangleGltf();
+    gltf.asset = asset;
+
+    await expect(gltfToScene(gltf, { buffers })).rejects.toMatchObject({
+      name: 'GltfImportError',
+      diagnostics: [expect.objectContaining({
+        code: 'unsupported-version',
+        path,
+      })],
+    });
+  });
+});
+
 describe('minimal triangle', () => {
   it('produces one MeshPrimitive with correct positions', async () => {
     const { gltf, buffers } = makeMinimalTriangleGltf();
@@ -311,7 +367,7 @@ describe('minimal triangle', () => {
     expect(Array.from(prim.positions)).toEqual(TRIANGLE_POSITIONS);
   });
 
-  it('generates flat normals when NORMAL is absent', async () => {
+  it('generates vertex normals when NORMAL is absent', async () => {
     const { gltf, buffers } = makeMinimalTriangleGltf();
     const { scene, warnings, diagnostics } = await gltfToScene(gltf, { buffers });
 
@@ -321,7 +377,7 @@ describe('minimal triangle', () => {
     expect(prim.normals[2]).toBeCloseTo(1, 5); // vertex 0, z
     expect(prim.normals[5]).toBeCloseTo(1, 5); // vertex 1, z
     expect(prim.normals[8]).toBeCloseTo(1, 5); // vertex 2, z
-    expect(warnings.some(w => w.includes('flat normals'))).toBe(true);
+    expect(warnings.some(w => w.includes('vertex normals'))).toBe(true);
     expect(diagnostics).toContainEqual(expect.objectContaining({
       code: 'generated-flat-normals',
       path: 'meshes[0].primitives[0].attributes.NORMAL',
@@ -358,24 +414,22 @@ describe('minimal triangle', () => {
     }));
   });
 
-  it('drops a texCoord 2 tangent-space map when the primitive has no TEXCOORD_2 accessor', async () => {
+  it('rejects a texCoord 2 tangent-space map when the primitive has no TEXCOORD_2 accessor', async () => {
     const { gltf, buffers } = makeUv1NormalMappedTriangleGltf({
       normalTexCoord: 2,
       includeUv0: true,
     });
-    const { scene, diagnostics, warnings } = await gltfToScene(gltf, { buffers });
-
-    const prim = scene.primitives[0] as MeshPrimitive;
-    expect(prim.tangents).toBeUndefined();
-    expect(prim.material.normalMap).toBeUndefined();
-    expect(warnings.some((w) => w.includes('normalMap') && w.includes('TEXCOORD_2'))).toBe(true);
-    expect(diagnostics).toContainEqual(expect.objectContaining({
-      code: 'ignored-material-texcoord',
-      path: 'materials[0].normalTexture',
-    }));
+    await expect(gltfToScene(gltf, { buffers })).rejects.toMatchObject({
+      name: 'GltfImportError',
+      diagnostics: [expect.objectContaining({
+        severity: 'error',
+        code: 'missing-material-texcoord',
+        path: 'materials[0].normalTexture',
+      })],
+    });
   });
 
-  it('remaps one high material UV set into core uv1 when the accessor exists', async () => {
+  it('preserves one high material UV set in its indexed core uvSets lane', async () => {
     const fixture = makeUv1NormalMappedTriangleGltf({
       normalTexCoord: 2,
       includeUv0: true,
@@ -395,8 +449,13 @@ describe('minimal triangle', () => {
     const { scene, diagnostics, warnings } = await gltfToScene(fixture.gltf, { buffers: fixture.buffers });
 
     const prim = scene.primitives[0] as MeshPrimitive;
-    expect((prim.material.normalMap as TextureRef | undefined)?.texCoord).toBe(1);
+    expect((prim.material.normalMap)?.texCoord).toBe(2);
     expect(Array.from(prim.uv1 ?? [])).toEqual([
+      0, 0,
+      0, 1,
+      1, 0,
+    ]);
+    expect(Array.from(prim.uvSets?.[2] ?? [])).toEqual([
       0.25, 0.25,
       0.75, 0.25,
       0.25, 0.75,
@@ -406,7 +465,7 @@ describe('minimal triangle', () => {
     expect(diagnostics.some((d) => d.code === 'ignored-material-texcoord')).toBe(false);
   });
 
-  it('drops a high-UV material map when the remap accessor is not VEC2', async () => {
+  it('rejects a high-UV material map when the accessor is not VEC2', async () => {
     const fixture = makeUv1NormalMappedTriangleGltf({
       normalTexCoord: 2,
       includeUv0: true,
@@ -423,30 +482,18 @@ describe('minimal triangle', () => {
     );
     fixture.gltf.meshes![0]!.primitives[0]!.attributes.TEXCOORD_2 = uv2;
 
-    const { scene, diagnostics } = await gltfToScene(fixture.gltf, { buffers: fixture.buffers });
-
-    const prim = scene.primitives[0] as MeshPrimitive;
-    expect(prim.material.normalMap).toBeUndefined();
-    expect(Array.from(prim.uv1 ?? [])).toEqual([
-      0, 0,
-      0, 1,
-      1, 0,
-    ]);
-    expect(prim.tangents).toBeUndefined();
-    expect(diagnostics).toEqual(expect.arrayContaining([
-      expect.objectContaining({
+    await expect(gltfToScene(fixture.gltf, { buffers: fixture.buffers })).rejects.toMatchObject({
+      name: 'GltfImportError',
+      diagnostics: [expect.objectContaining({
+        severity: 'error',
         code: 'invalid-primitive-attribute',
         path: 'meshes[0].primitives[0].attributes.TEXCOORD_2',
         message: expect.stringContaining('TEXCOORD_2 accessor must be VEC2'),
-      }),
-      expect.objectContaining({
-        code: 'ignored-material-texcoord',
-        path: 'materials[0].normalTexture',
-      }),
-    ]));
+      })],
+    });
   });
 
-  it('routes a second material-visible UV set through uv0 when texCoord 1 is already used', async () => {
+  it('preserves independent material-visible UV sets 1 and 2 without remapping', async () => {
     const fixture = makeUv1NormalMappedTriangleGltf({
       normalTexCoord: 2,
       includeUv0: true,
@@ -473,20 +520,21 @@ describe('minimal triangle', () => {
     const { scene, diagnostics, warnings } = await gltfToScene(fixture.gltf, { buffers: fixture.buffers });
 
     const prim = scene.primitives[0] as MeshPrimitive;
-    expect((prim.material.baseColorMap as TextureRef | undefined)?.texCoord).toBe(1);
-    expect((prim.material.normalMap as TextureRef | undefined)?.texCoord).toBe(0);
-    expect(Array.from(prim.uvs ?? [])).toEqual(uv2Values);
+    expect((prim.material.baseColorMap)?.texCoord).toBe(1);
+    expect((prim.material.normalMap)?.texCoord).toBe(2);
+    expect(Array.from(prim.uvs ?? [])).toEqual(Array.from(new Float32Array(TRIANGLE_UVS)));
     expect(Array.from(prim.uv1 ?? [])).toEqual([
       0, 0,
       0, 1,
       1, 0,
     ]);
+    expect(Array.from(prim.uvSets?.[2] ?? [])).toEqual(Array.from(new Float32Array(uv2Values)));
     expect(prim.tangents).toBeInstanceOf(Float32Array);
     expect(warnings.some((w) => w.includes('sampled with the wrong UV channel'))).toBe(false);
     expect(diagnostics.some((d) => d.code === 'ignored-material-texcoord')).toBe(false);
   });
 
-  it('routes two high material-visible UV sets through uv0 and uv1 when both accessors exist', async () => {
+  it('preserves two high material-visible UV sets in distinct indexed lanes', async () => {
     const fixture = makeUv1NormalMappedTriangleGltf({
       normalTexCoord: 3,
       includeUv0: true,
@@ -515,13 +563,134 @@ describe('minimal triangle', () => {
     const { scene, diagnostics, warnings } = await gltfToScene(fixture.gltf, { buffers: fixture.buffers });
 
     const prim = scene.primitives[0] as MeshPrimitive;
-    expect((prim.material.baseColorMap as TextureRef | undefined)?.texCoord).toBe(0);
-    expect((prim.material.normalMap as TextureRef | undefined)?.texCoord).toBe(1);
-    expect(Array.from(prim.uvs ?? [])).toEqual(Array.from(new Float32Array(uv2Values)));
-    expect(Array.from(prim.uv1 ?? [])).toEqual(Array.from(new Float32Array(uv3Values)));
+    expect((prim.material.baseColorMap)?.texCoord).toBe(2);
+    expect((prim.material.normalMap)?.texCoord).toBe(3);
+    expect(Array.from(prim.uvs ?? [])).toEqual(Array.from(new Float32Array(TRIANGLE_UVS)));
+    expect(Array.from(prim.uv1 ?? [])).toEqual([0, 0, 0, 1, 1, 0]);
+    expect(Array.from(prim.uvSets?.[2] ?? [])).toEqual(Array.from(new Float32Array(uv2Values)));
+    expect(Array.from(prim.uvSets?.[3] ?? [])).toEqual(Array.from(new Float32Array(uv3Values)));
     expect(prim.tangents).toBeInstanceOf(Float32Array);
     expect(warnings.some((w) => w.includes('sampled with the wrong UV channel'))).toBe(false);
     expect(diagnostics.some((d) => d.code === 'ignored-material-texcoord')).toBe(false);
+  });
+
+  it('preserves sparse UV/color/morph lanes through fallback remap above the JS array-index ceiling', async () => {
+    const nativeCeilingIndex = 0xffff_fffe;
+    const ordinaryPropertyIndex = 0x1_0000_0001;
+    const fixture = makeMinimalTriangleGltf();
+    const uvValues = [
+      0.2, 0.3,
+      0.8, 0.3,
+      0.2, 0.9,
+    ];
+    const colorValues = [
+      1, 0, 0,
+      0, 1, 0,
+      0, 0, 1,
+    ];
+    const uvDelta = [
+      0.1, 0.2,
+      0.1, 0.2,
+      0.1, 0.2,
+    ];
+    const uvAccessor = appendF32Accessor(fixture, uvValues, 'VEC2', 3);
+    const colorAccessor = appendF32Accessor(fixture, colorValues, 'VEC3', 3);
+    const morphAccessor = appendF32Accessor(fixture, uvDelta, 'VEC2', 3);
+    const primitive = fixture.gltf.meshes![0]!.primitives[0]!;
+    primitive.attributes[`TEXCOORD_${nativeCeilingIndex}`] = uvAccessor;
+    primitive.attributes[`TEXCOORD_${ordinaryPropertyIndex}`] = uvAccessor;
+    primitive.attributes[`COLOR_${nativeCeilingIndex}`] = colorAccessor;
+    primitive.attributes[`COLOR_${ordinaryPropertyIndex}`] = colorAccessor;
+    primitive.targets = [{
+      [`TEXCOORD_${ordinaryPropertyIndex}`]: morphAccessor,
+    }];
+    primitive.mode = 1; // exercise point/line attribute + morph remapping
+    fixture.gltf.meshes![0]!.weights = [0.5];
+
+    const { scene } = await gltfToScene(fixture.gltf, { buffers: fixture.buffers });
+    const imported = scene.primitives[0] as SkinnedMeshPrimitive;
+    const remappedVertexCount = imported.positions.length / 3;
+
+    expect(imported.kind).toBe('skinned-mesh');
+    expect(imported.uvSets?.[nativeCeilingIndex]).toHaveLength(remappedVertexCount * 2);
+    expect(imported.uvSets?.[ordinaryPropertyIndex]).toHaveLength(remappedVertexCount * 2);
+    expect(imported.colorSets?.[nativeCeilingIndex]?.length).toBeGreaterThanOrEqual(
+      remappedVertexCount * 3,
+    );
+    expect(imported.colorSets?.[ordinaryPropertyIndex]?.length).toBeGreaterThanOrEqual(
+      remappedVertexCount * 3,
+    );
+    expect(imported.morphTargetUvSets?.[ordinaryPropertyIndex]).toHaveLength(1);
+    expect(() => validateScene(scene)).not.toThrow();
+
+    const solved = solveSkin(imported);
+    expect(solved.uvSets?.[ordinaryPropertyIndex]).toHaveLength(remappedVertexCount * 2);
+    expect(Object.keys(imported.uvSets ?? [])).toEqual(
+      expect.arrayContaining([
+        String(nativeCeilingIndex),
+        String(ordinaryPropertyIndex),
+      ]),
+    );
+  });
+
+  it.each([
+    ['TEXCOORD_02', 'attributes.TEXCOORD_02'],
+    ['COLOR_00', 'attributes.COLOR_00'],
+    ['TEXCOORD_9007199254740992', 'attributes.TEXCOORD_9007199254740992'],
+    ['JOINTS_00', 'attributes.JOINTS_00'],
+    ['WEIGHTS_9007199254740992', 'attributes.WEIGHTS_9007199254740992'],
+    ['JOINTS_-1', 'attributes.JOINTS_-1'],
+    ['WEIGHTS_1e2', 'attributes.WEIGHTS_1e2'],
+    ['TEXCOORD_', 'attributes.TEXCOORD_'],
+  ])('rejects noncanonical or unsafe reserved primitive semantic %s', async (semantic, path) => {
+    const fixture = makeMinimalTriangleGltf();
+    fixture.gltf.meshes![0]!.primitives[0]!.attributes[semantic] = 0;
+
+    await expect(gltfToScene(fixture.gltf, { buffers: fixture.buffers })).rejects.toMatchObject({
+      name: 'GltfImportError',
+      diagnostics: [expect.objectContaining({
+        code: 'ignored-primitive-attribute',
+        path: `meshes[0].primitives[0].${path}`,
+      })],
+    });
+  });
+
+  it.each([
+    'JOINTS_00',
+    'WEIGHTS_9007199254740992',
+    'JOINTS_-1',
+    'WEIGHTS_1e2',
+    'TEXCOORD_',
+  ])('rejects malformed reserved semantic %s during feature inventory preflight', (semantic) => {
+    const fixture = makeMinimalTriangleGltf();
+    fixture.gltf.meshes![0]!.primitives[0]!.attributes[semantic] = 0;
+
+    expect(() => analyzeGltfAsset(fixture.gltf)).toThrow(
+      /not canonical|safe-integer semantic range|non-negative canonical integer/,
+    );
+  });
+
+  it('rejects an unknown non-application primitive semantic during feature inventory preflight', () => {
+    const fixture = makeMinimalTriangleGltf();
+    fixture.gltf.meshes![0]!.primitives[0]!.attributes.CUSTOM_WEIGHT = 0;
+
+    expect(() => analyzeGltfAsset(fixture.gltf)).toThrow(
+      /unknown non-application primitive semantic "CUSTOM_WEIGHT"/,
+    );
+  });
+
+  it('rejects a leading-zero TEXCOORD morph semantic before it can alias a canonical lane', async () => {
+    const fixture = makeMinimalTriangleGltf();
+    fixture.gltf.meshes![0]!.primitives[0]!.targets = [{ TEXCOORD_02: 0 }];
+    fixture.gltf.meshes![0]!.weights = [0];
+
+    await expect(gltfToScene(fixture.gltf, { buffers: fixture.buffers })).rejects.toMatchObject({
+      name: 'GltfImportError',
+      diagnostics: [expect.objectContaining({
+        code: 'ignored-morph-target-attribute',
+        path: 'meshes[0].primitives[0].targets[0].TEXCOORD_02',
+      })],
+    });
   });
 
   it('imports COLOR_0 vertex colors onto the core mesh primitive', async () => {
@@ -559,7 +728,7 @@ describe('minimal triangle', () => {
     ]);
   });
 
-  it('drops malformed TEXCOORD_0 and TEXCOORD_1 accessors instead of forwarding invalid UV buffers', async () => {
+  it('rejects malformed TEXCOORD_0 and TEXCOORD_1 accessors', async () => {
     const posBuf = f32Buffer(TRIANGLE_POSITIONS);
     const uv0Buf = f32Buffer([
       0, 0, 0,
@@ -591,28 +760,18 @@ describe('minimal triangle', () => {
       buffers: [{ byteLength: packed.byteLength }],
     };
 
-    const { scene, diagnostics } = await gltfToScene(gltf, { buffers: new Map([[0, packed]]) });
-
-    const prim = scene.primitives[0] as MeshPrimitive;
-    expect(prim.uvs).toBeUndefined();
-    expect(prim.uv1).toBeUndefined();
-    expect(diagnostics).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        severity: 'warning',
+    await expect(gltfToScene(gltf, { buffers: new Map([[0, packed]]) })).rejects.toMatchObject({
+      name: 'GltfImportError',
+      diagnostics: [expect.objectContaining({
+        severity: 'error',
         code: 'invalid-primitive-attribute',
         path: 'meshes[0].primitives[0].attributes.TEXCOORD_0',
         message: expect.stringContaining('TEXCOORD_0 accessor must be VEC2'),
-      }),
-      expect.objectContaining({
-        severity: 'warning',
-        code: 'invalid-primitive-attribute',
-        path: 'meshes[0].primitives[0].attributes.TEXCOORD_1',
-        message: expect.stringContaining('TEXCOORD_1 accessor must be VEC2'),
-      }),
-    ]));
+      })],
+    });
   });
 
-  it('drops malformed COLOR_0 accessors instead of forwarding invalid vertex-color buffers', async () => {
+  it('rejects malformed COLOR_0 accessors', async () => {
     const posBuf = f32Buffer(TRIANGLE_POSITIONS);
     const colorBuf = f32Buffer([
       1, 0,
@@ -637,19 +796,18 @@ describe('minimal triangle', () => {
       buffers: [{ byteLength: packed.byteLength }],
     };
 
-    const { scene, diagnostics } = await gltfToScene(gltf, { buffers: new Map([[0, packed]]) });
-
-    const prim = scene.primitives[0] as MeshPrimitive;
-    expect(prim.colors).toBeUndefined();
-    expect(diagnostics).toContainEqual(expect.objectContaining({
-      severity: 'warning',
-      code: 'invalid-primitive-attribute',
-      path: 'meshes[0].primitives[0].attributes.COLOR_0',
-      message: expect.stringContaining('COLOR_0 accessor must be VEC3 or VEC4'),
-    }));
+    await expect(gltfToScene(gltf, { buffers: new Map([[0, packed]]) })).rejects.toMatchObject({
+      name: 'GltfImportError',
+      diagnostics: [expect.objectContaining({
+        severity: 'error',
+        code: 'invalid-primitive-attribute',
+        path: 'meshes[0].primitives[0].attributes.COLOR_0',
+        message: expect.stringContaining('COLOR_0 accessor must be VEC3 or VEC4'),
+      })],
+    });
   });
 
-  it('warns when secondary vertex color sets are ignored', async () => {
+  it('preserves every secondary vertex color set without degradation', async () => {
     const posBuf = f32Buffer(TRIANGLE_POSITIONS);
     const color0Buf = f32Buffer([
       1, 0, 0,
@@ -689,31 +847,119 @@ describe('minimal triangle', () => {
       0, 1, 0,
       0, 0, 1,
     ]);
-    expect(diagnostics).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        severity: 'warning',
-        code: 'ignored-vertex-color-set',
-        path: 'meshes[0].primitives[0].attributes.COLOR_1',
-      }),
-    ]));
-    expect(warnings.some(w => w.includes('COLOR_1') && w.includes('ignored'))).toBe(true);
+    expect(Array.from(prim.colorSets?.[1] ?? [])).toEqual([
+      0.25, 0.25, 0.25,
+      0.50, 0.50, 0.50,
+      0.75, 0.75, 0.75,
+    ]);
+    expect(diagnostics.some((entry) => entry.code === 'ignored-vertex-color-set')).toBe(false);
+    expect(warnings.some(w => w.includes('COLOR_1') && w.includes('ignored'))).toBe(false);
   });
 
-  it('surfaces unknown primitive attributes as structured diagnostics', async () => {
+  it('loads through application-specific primitive attributes with a structured degradation diagnostic', async () => {
     const { gltf, buffers } = makeMinimalTriangleGltf();
     gltf.meshes![0]!.primitives[0]!.attributes._CUSTOM_WEIGHT = 0;
 
     const { diagnostics, scene, warnings } = await gltfToScene(gltf, { buffers });
 
     expect(scene.primitives).toHaveLength(1);
-    expect(warnings.some((warning) => warning.includes('_CUSTOM_WEIGHT') && warning.includes('ignored'))).toBe(true);
-    expect(diagnostics).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        severity: 'warning',
+    expect(diagnostics).toContainEqual(expect.objectContaining({
+      severity: 'warning',
+      code: 'ignored-primitive-attribute',
+      path: 'meshes[0].primitives[0].attributes._CUSTOM_WEIGHT',
+    }));
+    expect(warnings.some((warning) => warning.includes('_CUSTOM_WEIGHT'))).toBe(true);
+  });
+
+  it('still rejects unknown non-application primitive semantics', async () => {
+    const { gltf, buffers } = makeMinimalTriangleGltf();
+    gltf.meshes![0]!.primitives[0]!.attributes.CUSTOM_WEIGHT = 0;
+
+    await expect(gltfToScene(gltf, { buffers })).rejects.toMatchObject({
+      name: 'GltfImportError',
+      diagnostics: [expect.objectContaining({
+        severity: 'error',
         code: 'ignored-primitive-attribute',
-        path: 'meshes[0].primitives[0].attributes._CUSTOM_WEIGHT',
-      }),
-    ]));
+        path: 'meshes[0].primitives[0].attributes.CUSTOM_WEIGHT',
+      })],
+    });
+  });
+
+  it.each(['TEXCOORD_CUSTOM', 'COLOR_CUSTOM'])(
+    'rejects malformed reserved primitive semantic %s',
+    async (semantic) => {
+      const { gltf, buffers } = makeMinimalTriangleGltf();
+      gltf.meshes![0]!.primitives[0]!.attributes[semantic] = 0;
+
+      await expect(gltfToScene(gltf, { buffers })).rejects.toMatchObject({
+        name: 'GltfImportError',
+        diagnostics: [expect.objectContaining({
+          severity: 'error',
+          code: 'ignored-primitive-attribute',
+          path: `meshes[0].primitives[0].attributes.${semantic}`,
+        })],
+      });
+    },
+  );
+
+  it('preserves the base stream and diagnoses optional COLOR_n morph deltas it cannot represent', async () => {
+    const fixture = makeMinimalTriangleGltf();
+    const baseColorAccessor = appendF32Accessor(
+      fixture,
+      [1, 0, 0, 0, 1, 0, 0, 0, 1],
+      'VEC3',
+      3,
+    );
+    const colorDeltaAccessor = appendF32Accessor(
+      fixture,
+      [-0.25, 0.25, 0, 0.25, -0.25, 0, 0, 0.25, -0.25],
+      'VEC3',
+      3,
+    );
+    const primitive = fixture.gltf.meshes![0]!.primitives[0]!;
+    primitive.attributes.COLOR_0 = baseColorAccessor;
+    primitive.targets = [{ COLOR_0: colorDeltaAccessor }];
+    fixture.gltf.meshes![0]!.weights = [1];
+
+    const { diagnostics, scene } = await gltfToScene(fixture.gltf, {
+      buffers: fixture.buffers,
+    });
+    const imported = scene.primitives[0] as MeshPrimitive;
+
+    expect(Array.from(imported.colors ?? [])).toEqual([
+      1, 0, 0,
+      0, 1, 0,
+      0, 0, 1,
+    ]);
+    expect(diagnostics).toContainEqual(expect.objectContaining({
+      severity: 'warning',
+      code: 'ignored-morph-target-attribute',
+      path: 'meshes[0].primitives[0].targets[0].COLOR_0',
+    }));
+  });
+
+  it('still rejects unknown non-application morph-target semantics', async () => {
+    const { gltf, buffers } = makeMinimalTriangleGltf();
+    gltf.meshes![0]!.primitives[0]!.targets = [{ CUSTOM_DELTA: 0 }];
+    gltf.meshes![0]!.weights = [0];
+
+    await expect(gltfToScene(gltf, { buffers })).rejects.toMatchObject({
+      name: 'GltfImportError',
+      diagnostics: [expect.objectContaining({
+        severity: 'error',
+        code: 'ignored-morph-target-attribute',
+        path: 'meshes[0].primitives[0].targets[0].CUSTOM_DELTA',
+      })],
+    });
+  });
+
+  it('rejects an unknown non-application morph-target semantic during feature inventory preflight', () => {
+    const fixture = makeMinimalTriangleGltf();
+    fixture.gltf.meshes![0]!.primitives[0]!.targets = [{ CUSTOM_DELTA: 0 }];
+
+    expect(() => analyzeGltfAsset(fixture.gltf)).toThrow(
+      /unknown non-application morph-target semantic "CUSTOM_DELTA"/,
+    );
   });
 
   it('scene has empty emitters and none environment', async () => {
@@ -771,7 +1017,54 @@ describe('minimal triangle', () => {
     expect(warnings.some((warning) => warning.includes('EXT_mesh_gpu_instancing'))).toBe(false);
   });
 
-  it('falls back to one mesh with a structured diagnostic when EXT_mesh_gpu_instancing accessors disagree', async () => {
+  it('imports spec-legal normalized BYTE instancing rotations', async () => {
+    const fixture = makeMinimalTriangleGltf();
+    const { gltf, buffers } = fixture;
+    const rotations = i8Buffer([
+      0, 0, 0, 127,
+      0, 0, 90, 90,
+    ]);
+    const base = buffers.get(0)!;
+    const byteOffset = base.byteLength;
+    const packed = concatBuffers(base, rotations);
+    buffers.set(0, packed);
+    const bufferView = gltf.bufferViews!.length;
+    gltf.bufferViews!.push({
+      buffer: 0,
+      byteOffset,
+      byteLength: rotations.byteLength,
+    });
+    const rotationAccessor = gltf.accessors!.length;
+    gltf.accessors!.push({
+      bufferView,
+      componentType: 5120,
+      normalized: true,
+      count: 2,
+      type: 'VEC4',
+    });
+    gltf.buffers![0] = { byteLength: packed.byteLength };
+    gltf.extensionsUsed = ['EXT_mesh_gpu_instancing'];
+    gltf.extensionsRequired = ['EXT_mesh_gpu_instancing'];
+    gltf.nodes![0] = {
+      ...gltf.nodes![0]!,
+      extensions: {
+        EXT_mesh_gpu_instancing: {
+          attributes: { ROTATION: rotationAccessor },
+        },
+      },
+    };
+
+    const { scene } = await gltfToScene(gltf, { buffers });
+    const prim = scene.primitives[0] as InstancedMeshPrimitive;
+    expect(prim.instances).toHaveLength(2);
+    expect(prim.instances[0]![0]).toBeCloseTo(1, 5);
+    expect(prim.instances[1]![0]).toBeCloseTo(0, 4);
+    expect(prim.instances[1]![1]).toBeCloseTo(1, 4);
+    expect(prim.instances[1]![4]).toBeCloseTo(-1, 4);
+    expect(prim.instances[1]![5]).toBeCloseTo(0, 4);
+  });
+
+  it('rejects EXT_mesh_gpu_instancing accessors that disagree', async () => {
     const fixture = makeMinimalTriangleGltf();
     const { gltf, buffers } = fixture;
     const translationAccessor = appendF32Accessor(
@@ -802,16 +1095,15 @@ describe('minimal triangle', () => {
       },
     };
 
-    const { scene, diagnostics } = await gltfToScene(gltf, { buffers });
-
-    expect(scene.primitives).toHaveLength(1);
-    expect(scene.primitives[0]!.kind).toBe('mesh');
-    expect(diagnostics).toContainEqual(expect.objectContaining({
-      severity: 'warning',
-      code: 'ignored-gpu-instancing',
-      path: 'nodes[0].extensions.EXT_mesh_gpu_instancing.attributes.SCALE',
-      message: expect.stringContaining('does not match instance count'),
-    }));
+    await expect(gltfToScene(gltf, { buffers })).rejects.toMatchObject({
+      name: 'GltfImportError',
+      diagnostics: [expect.objectContaining({
+        severity: 'error',
+        code: 'ignored-gpu-instancing',
+        path: 'nodes[0].extensions.EXT_mesh_gpu_instancing.attributes.SCALE',
+        message: expect.stringContaining('does not match instance count'),
+      })],
+    });
   });
 
   it('generates tangents for a normal-mapped primitive that omits TANGENT', async () => {
@@ -839,7 +1131,7 @@ describe('minimal triangle', () => {
     }));
   });
 
-  it('drops malformed authored TANGENT and regenerates when the material needs a tangent frame', async () => {
+  it('rejects malformed authored TANGENT data', async () => {
     const { gltf, buffers } = makeNormalMappedTriangleGltf([
       1, 0, 0,
       1, 0, 0,
@@ -850,25 +1142,18 @@ describe('minimal triangle', () => {
       type: 'VEC3',
     };
 
-    const { scene, diagnostics } = await gltfToScene(gltf, {
+    await expect(gltfToScene(gltf, {
       buffers,
       decodeImage: async () => ({ kind: 'decoded-normal' }),
+    })).rejects.toMatchObject({
+      name: 'GltfImportError',
+      diagnostics: [expect.objectContaining({
+        severity: 'error',
+        code: 'invalid-primitive-attribute',
+        path: 'meshes[0].primitives[0].attributes.TANGENT',
+        message: expect.stringContaining('TANGENT accessor must be VEC4'),
+      })],
     });
-
-    const prim = scene.primitives[0] as MeshPrimitive;
-    expect(prim.tangents).toBeInstanceOf(Float32Array);
-    expect(prim.tangents).toHaveLength(12);
-    expect(diagnostics).toContainEqual(expect.objectContaining({
-      severity: 'warning',
-      code: 'invalid-primitive-attribute',
-      path: 'meshes[0].primitives[0].attributes.TANGENT',
-      message: expect.stringContaining('TANGENT accessor must be VEC4'),
-    }));
-    expect(diagnostics).toContainEqual(expect.objectContaining({
-      severity: 'warning',
-      code: 'generated-tangents',
-      path: 'meshes[0].primitives[0].attributes.TANGENT',
-    }));
   });
 
   it('does not report clean generated tangents when every UV triangle is degenerate', async () => {
@@ -897,22 +1182,20 @@ describe('minimal triangle', () => {
     }));
   });
 
-  it('emits a structured diagnostic when tangent generation lacks TEXCOORD_0', async () => {
+  it('rejects a normal map when tangent generation lacks TEXCOORD_0', async () => {
     const { gltf, buffers } = makeNormalMappedTriangleGltf();
     delete gltf.meshes![0]!.primitives[0]!.attributes.TEXCOORD_0;
-    const { scene, diagnostics } = await gltfToScene(gltf, {
+    await expect(gltfToScene(gltf, {
       buffers,
       decodeImage: async () => ({ kind: 'decoded-normal' }),
+    })).rejects.toMatchObject({
+      name: 'GltfImportError',
+      diagnostics: [expect.objectContaining({
+        severity: 'error',
+        code: 'missing-material-texcoord',
+        path: 'materials[0].normalTexture',
+      })],
     });
-
-    const prim = scene.primitives[0] as MeshPrimitive;
-    expect(prim.tangents).toBeUndefined();
-    expect(diagnostics).toContainEqual(expect.objectContaining({
-      severity: 'warning',
-      code: 'missing-tangent-texcoord',
-      path: 'meshes[0].primitives[0].attributes.TEXCOORD_0',
-      message: expect.stringContaining('has no TEXCOORD_0'),
-    }));
   });
 
   it('preserves authored tangents instead of regenerating them', async () => {
@@ -1043,7 +1326,7 @@ describe('material field mapping', () => {
     expect(mat.roughness).toBeCloseTo(0.7);
   });
 
-  it('emits a structured diagnostic while preserving doubleSided materials', async () => {
+  it('maps glTF doubleSided into the first-class material contract without degradation', async () => {
     const { gltf, buffers } = makeGltfWithMaterial({
       name: 'leaf',
       doubleSided: true,
@@ -1055,31 +1338,28 @@ describe('material field mapping', () => {
     const { scene, warnings, diagnostics } = await gltfToScene(gltf, { buffers });
 
     const mat = (scene.primitives[0] as MeshPrimitive).material;
-    expect(mat.extensions?.doubleSided).toBe(true);
-    expect(diagnostics).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        severity: 'warning',
-        code: 'double-sided-material',
-        path: 'materials[0].doubleSided',
-      }),
-    ]));
-    expect(warnings.some((warning) =>
-      warning.includes('Material "leaf" sets doubleSided=true') &&
-      warning.includes('preserved at MaterialSpec.extensions.doubleSided'),
-    )).toBe(true);
+    expect(mat.doubleSided).toBe(true);
+    expect(mat.extensions?.doubleSided).toBeUndefined();
+    expect(diagnostics.some((diagnostic) => diagnostic.path === 'materials[0].doubleSided')).toBe(false);
+    expect(warnings.some((warning) => warning.includes('doubleSided'))).toBe(false);
+
+    const falseFixture = makeGltfWithMaterial({ doubleSided: false });
+    const falseResult = await gltfToScene(falseFixture.gltf, { buffers: falseFixture.buffers });
+    expect((falseResult.scene.primitives[0] as MeshPrimitive).material.doubleSided).toBe(false);
   });
 
   it('preserves KHR_texture_transform texCoord override on texture refs', async () => {
     const posBuf = f32Buffer(TRIANGLE_POSITIONS);
+    const uv1Buf = f32Buffer(TRIANGLE_UVS);
     const imageBuf = u8Buffer([0x89, 0x50, 0x4e, 0x47]);
-    const totalBuf = concatBuffers(posBuf, imageBuf);
+    const totalBuf = concatBuffers(posBuf, uv1Buf, imageBuf);
     const handle = { kind: 'decoded-texture' };
     const gltf: GltfJson = {
       asset: { version: '2.0' },
       scenes: [{ nodes: [0] }],
       scene: 0,
       nodes: [{ mesh: 0 }],
-      meshes: [{ primitives: [{ attributes: { POSITION: 0 }, material: 0 }] }],
+      meshes: [{ primitives: [{ attributes: { POSITION: 0, TEXCOORD_1: 1 }, material: 0 }] }],
       materials: [{
         pbrMetallicRoughness: {
           baseColorTexture: {
@@ -1097,11 +1377,19 @@ describe('material field mapping', () => {
         },
       }],
       textures: [{ source: 0 }],
-      images: [{ bufferView: 1, mimeType: 'image/png' }],
-      accessors: [{ bufferView: 0, componentType: 5126, count: 3, type: 'VEC3' }],
+      images: [{ bufferView: 2, mimeType: 'image/png' }],
+      accessors: [
+        { bufferView: 0, componentType: 5126, count: 3, type: 'VEC3' },
+        { bufferView: 1, componentType: 5126, count: 3, type: 'VEC2' },
+      ],
       bufferViews: [
         { buffer: 0, byteOffset: 0, byteLength: posBuf.byteLength },
-        { buffer: 0, byteOffset: posBuf.byteLength, byteLength: imageBuf.byteLength },
+        { buffer: 0, byteOffset: posBuf.byteLength, byteLength: uv1Buf.byteLength },
+        {
+          buffer: 0,
+          byteOffset: posBuf.byteLength + uv1Buf.byteLength,
+          byteLength: imageBuf.byteLength,
+        },
       ],
       buffers: [{ byteLength: totalBuf.byteLength }],
     };
@@ -1126,15 +1414,16 @@ describe('material field mapping', () => {
 
   it('keeps MASK baseColorTexture alpha on baseColorMap instead of inventing alphaMap', async () => {
     const posBuf = f32Buffer(TRIANGLE_POSITIONS);
+    const uvBuf = f32Buffer(TRIANGLE_UVS);
     const imageBuf = u8Buffer(PNG_MAGIC);
-    const totalBuf = concatBuffers(posBuf, imageBuf);
+    const totalBuf = concatBuffers(posBuf, uvBuf, imageBuf);
     const handle = { kind: 'decoded-masked-base-color' };
     const gltf: GltfJson = {
       asset: { version: '2.0' },
       scenes: [{ nodes: [0] }],
       scene: 0,
       nodes: [{ mesh: 0 }],
-      meshes: [{ primitives: [{ attributes: { POSITION: 0 }, material: 0 }] }],
+      meshes: [{ primitives: [{ attributes: { POSITION: 0, TEXCOORD_0: 1 }, material: 0 }] }],
       materials: [{
         alphaMode: 'MASK',
         alphaCutoff: 0.45,
@@ -1143,11 +1432,19 @@ describe('material field mapping', () => {
         },
       }],
       textures: [{ source: 0 }],
-      images: [{ bufferView: 1, mimeType: 'image/png' }],
-      accessors: [{ bufferView: 0, componentType: 5126, count: 3, type: 'VEC3' }],
+      images: [{ bufferView: 2, mimeType: 'image/png' }],
+      accessors: [
+        { bufferView: 0, componentType: 5126, count: 3, type: 'VEC3' },
+        { bufferView: 1, componentType: 5126, count: 3, type: 'VEC2' },
+      ],
       bufferViews: [
         { buffer: 0, byteOffset: 0, byteLength: posBuf.byteLength },
-        { buffer: 0, byteOffset: posBuf.byteLength, byteLength: imageBuf.byteLength },
+        { buffer: 0, byteOffset: posBuf.byteLength, byteLength: uvBuf.byteLength },
+        {
+          buffer: 0,
+          byteOffset: posBuf.byteLength + uvBuf.byteLength,
+          byteLength: imageBuf.byteLength,
+        },
       ],
       buffers: [{ byteLength: totalBuf.byteLength }],
     };
@@ -1166,6 +1463,8 @@ describe('material field mapping', () => {
 
   it('decodes baseColorTexture images embedded as data: URIs', async () => {
     const posBuf = f32Buffer(TRIANGLE_POSITIONS);
+    const uvBuf = f32Buffer(TRIANGLE_UVS);
+    const vertexBuf = concatBuffers(posBuf, uvBuf);
     const handle = { kind: 'decoded-data-uri-texture' };
     const decodeImage = vi.fn(async (bytes: Uint8Array, mimeType: string) => {
       expect(Array.from(bytes)).toEqual([1, 2, 3]);
@@ -1177,17 +1476,23 @@ describe('material field mapping', () => {
       scenes: [{ nodes: [0] }],
       scene: 0,
       nodes: [{ mesh: 0 }],
-      meshes: [{ primitives: [{ attributes: { POSITION: 0 }, material: 0 }] }],
+      meshes: [{ primitives: [{ attributes: { POSITION: 0, TEXCOORD_0: 1 }, material: 0 }] }],
       materials: [{ pbrMetallicRoughness: { baseColorTexture: { index: 0 } } }],
       textures: [{ source: 0 }],
       images: [{ uri: 'data:image/png;base64,AQID' }],
-      accessors: [{ bufferView: 0, componentType: 5126, count: 3, type: 'VEC3' }],
-      bufferViews: [{ buffer: 0, byteLength: posBuf.byteLength }],
-      buffers: [{ byteLength: posBuf.byteLength }],
+      accessors: [
+        { bufferView: 0, componentType: 5126, count: 3, type: 'VEC3' },
+        { bufferView: 1, componentType: 5126, count: 3, type: 'VEC2' },
+      ],
+      bufferViews: [
+        { buffer: 0, byteOffset: 0, byteLength: posBuf.byteLength },
+        { buffer: 0, byteOffset: posBuf.byteLength, byteLength: uvBuf.byteLength },
+      ],
+      buffers: [{ byteLength: vertexBuf.byteLength }],
     };
 
     const { scene } = await gltfToScene(gltf, {
-      buffers: new Map([[0, posBuf]]),
+      buffers: new Map([[0, vertexBuf]]),
       decodeImage,
     });
 
@@ -1197,7 +1502,7 @@ describe('material field mapping', () => {
     expect(ref.handle).toBe(handle);
   });
 
-  it('warns and skips external URI images instead of handing them to decodeImage', async () => {
+  it('rejects unresolved external URI images instead of handing them to decodeImage', async () => {
     const posBuf = f32Buffer(TRIANGLE_POSITIONS);
     const decodeImage = vi.fn(async () => ({ kind: 'should-not-be-used' }));
     const gltf: GltfJson = {
@@ -1214,21 +1519,27 @@ describe('material field mapping', () => {
       buffers: [{ byteLength: posBuf.byteLength }],
     };
 
-    const { scene, warnings, diagnostics } = await gltfToScene(gltf, {
+    const importPromise = gltfToScene(gltf, {
       buffers: new Map([[0, posBuf]]),
       decodeImage,
     });
 
+    await expect(importPromise).rejects.toMatchObject({
+      name: 'GltfImportError',
+      diagnostics: expect.arrayContaining([
+        expect.objectContaining({
+          severity: 'warning',
+          code: 'external-image-uri',
+          path: 'images[0].uri',
+        }),
+        expect.objectContaining({
+          severity: 'error',
+          code: 'material-texture-unresolved',
+          path: 'materials[0].pbrMetallicRoughness.baseColorTexture',
+        }),
+      ]),
+    });
     expect(decodeImage).not.toHaveBeenCalled();
-    const mat = (scene.primitives[0] as MeshPrimitive).material;
-    expect(mat.baseColorMap).toBeUndefined();
-    expect(warnings.some((w) => w.includes('external image URIs'))).toBe(true);
-    expect(diagnostics).toContainEqual(expect.objectContaining({
-      severity: 'warning',
-      code: 'external-image-uri',
-      path: 'images[0].uri',
-      message: expect.stringContaining('external image URIs'),
-    }));
   });
 
   it('maps emissiveFactor', async () => {
@@ -1297,6 +1608,22 @@ describe('material field mapping', () => {
     const { scene } = await gltfToScene(gltf, { buffers });
     const mat = (scene.primitives[0] as MeshPrimitive).material;
     expect(mat.alphaMode).toBe('blend');
+  });
+
+  it('rejects an invalid alphaMode instead of silently treating it as opaque', async () => {
+    const { gltf, buffers } = makeGltfWithMaterial({
+      alphaMode: 'INVALID' as never,
+    });
+    await expect(gltfToScene(gltf, { buffers })).rejects.toMatchObject({
+      name: 'GltfImportError',
+      diagnostics: [
+        expect.objectContaining({
+          severity: 'error',
+          code: 'invalid-material-alpha-mode',
+          path: 'materials[0].alphaMode',
+        }),
+      ],
+    });
   });
 
   it('ignores baseColor alpha for opaque materials in conversion and feature reporting', async () => {
@@ -1719,8 +2046,16 @@ describe('Draco without a decode hook', () => {
     gltf.meshes![0]!.primitives[0]!.extensions = {
       KHR_draco_mesh_compression: { bufferView: 0, attributes: { POSITION: 0 } },
     };
-    const { scene, warnings } = await gltfToScene(gltf, { buffers });
-    expect(warnings.some(w => w.includes('KHR_draco_mesh_compression'))).toBe(true);
+    const { diagnostics, scene, warnings } = await gltfToScene(gltf, {
+      buffers,
+      compressionDecoderPolicy: 'host-only',
+    });
+    expect(warnings.some(w => w.includes('fully validated uncompressed fallback accessors'))).toBe(true);
+    expect(diagnostics).toContainEqual(expect.objectContaining({
+      severity: 'warning',
+      code: 'draco-fallback-accessors-used',
+      path: 'meshes[0].primitives[0].extensions.KHR_draco_mesh_compression',
+    }));
     // Fallback accessors keep the primitive alive.
     expect(scene.primitives).toHaveLength(1);
   });
@@ -1739,44 +2074,49 @@ describe('Draco without a decode hook', () => {
 // ────────────────────────────────────────────────────────────────────────────
 
 describe('out-of-scope feature warnings', () => {
-  it('drops a malformed animation (no channels) with a warning', async () => {
+  it('preserves earlier material diagnostics when a later animation error rejects the import', async () => {
     const { gltf, buffers } = makeMinimalTriangleGltf();
+    gltf.materials = [{ extensions: { VENDOR_material_magic: { mode: 'hint' } } }];
+    gltf.meshes![0]!.primitives[0]!.material = 0;
     gltf.animations = [{
       name: 'walk',
       channels: [{ sampler: 0, target: { node: 0, path: 'translation' } }],
       samplers: [],
     }];
-    const { animations, diagnostics, warnings } = await gltfToScene(gltf, { buffers });
-    expect(animations).toHaveLength(0);
-    expect(warnings.some(w => w.includes('sampler 0'))).toBe(true);
-    expect(warnings.some(w => w.includes('no importable channels'))).toBe(true);
+    const failure = await gltfToScene(gltf, { buffers }).then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    expect(failure).toBeInstanceOf(GltfImportError);
+    const diagnostics = (failure as GltfImportError).diagnostics;
     expect(diagnostics).toEqual(expect.arrayContaining([
       expect.objectContaining({
         severity: 'warning',
+        code: 'unknown-material-extension',
+        path: 'materials[0].extensions.VENDOR_material_magic',
+      }),
+      expect.objectContaining({
+        severity: 'error',
         code: 'missing-animation-sampler',
         path: 'animations[0].samplers[0]',
       }),
-      expect.objectContaining({
-        severity: 'warning',
-        code: 'dropped-animation',
-        path: 'animations[0]',
-      }),
     ]));
+    expect(diagnostics.filter((diagnostic) =>
+      diagnostic.code === 'missing-animation-sampler')).toHaveLength(1);
   });
 
-  it('warns about skins (rest pose; host drives the pose)', async () => {
+  it('rejects a skin binding whose primitive omits skin streams', async () => {
     const { gltf, buffers } = makeMinimalTriangleGltf();
     gltf.skins = [{ joints: [0] }];
     gltf.nodes![0] = { ...gltf.nodes![0]!, skin: 0 };
-    const { warnings, diagnostics } = await gltfToScene(gltf, { buffers });
-    expect(warnings.some(w => w.toLowerCase().includes('skin'))).toBe(true);
-    expect(diagnostics).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        severity: 'warning',
-        code: 'skin-rest-pose',
-        path: 'skins[0]',
-      }),
-    ]));
+    await expect(gltfToScene(gltf, { buffers })).rejects.toMatchObject({
+      name: 'GltfImportError',
+      diagnostics: [expect.objectContaining({
+        severity: 'error',
+        code: 'incomplete-skin-attributes',
+        path: 'meshes[0].primitives[0].attributes.JOINTS_0',
+      })],
+    });
   });
 
   it('surfaces ignored cameras as structured import diagnostics', async () => {
@@ -1821,6 +2161,118 @@ describe('out-of-scope feature warnings', () => {
     expect(cameras[0]!.worldMatrix[13]).toBeCloseTo(2);
     expect(cameras[0]!.worldMatrix[14]).toBeCloseTo(3);
   });
+
+  it.each([
+    {
+      label: 'missing camera type',
+      camera: {},
+      path: 'cameras[0].type',
+    },
+    {
+      label: 'unknown camera type',
+      camera: { type: 'panoramic' },
+      path: 'cameras[0].type',
+    },
+    {
+      label: 'missing perspective object',
+      camera: { type: 'perspective' },
+      path: 'cameras[0].perspective',
+    },
+    {
+      label: 'missing perspective yfov',
+      camera: { type: 'perspective', perspective: { znear: 0.1 } },
+      path: 'cameras[0].perspective.yfov',
+    },
+    {
+      label: 'non-positive perspective yfov',
+      camera: { type: 'perspective', perspective: { yfov: 0, znear: 0.1 } },
+      path: 'cameras[0].perspective.yfov',
+    },
+    {
+      label: 'non-positive perspective znear',
+      camera: { type: 'perspective', perspective: { yfov: 0.7, znear: 0 } },
+      path: 'cameras[0].perspective.znear',
+    },
+    {
+      label: 'perspective zfar not beyond znear',
+      camera: { type: 'perspective', perspective: { yfov: 0.7, znear: 1, zfar: 1 } },
+      path: 'cameras[0].perspective.zfar',
+    },
+    {
+      label: 'non-positive perspective aspect ratio',
+      camera: { type: 'perspective', perspective: { yfov: 0.7, znear: 0.1, aspectRatio: -1 } },
+      path: 'cameras[0].perspective.aspectRatio',
+    },
+    {
+      label: 'non-finite perspective field',
+      camera: { type: 'perspective', perspective: { yfov: Number.NaN, znear: 0.1 } },
+      path: 'cameras[0].perspective.yfov',
+    },
+    {
+      label: 'missing orthographic object',
+      camera: { type: 'orthographic' },
+      path: 'cameras[0].orthographic',
+    },
+    {
+      label: 'zero orthographic magnification',
+      camera: {
+        type: 'orthographic',
+        orthographic: { xmag: 0, ymag: 1, znear: 0, zfar: 10 },
+      },
+      path: 'cameras[0].orthographic.xmag',
+    },
+    {
+      label: 'negative orthographic znear',
+      camera: {
+        type: 'orthographic',
+        orthographic: { xmag: 1, ymag: 1, znear: -1, zfar: 10 },
+      },
+      path: 'cameras[0].orthographic.znear',
+    },
+    {
+      label: 'orthographic zfar not beyond znear',
+      camera: {
+        type: 'orthographic',
+        orthographic: { xmag: 1, ymag: 1, znear: 2, zfar: 1 },
+      },
+      path: 'cameras[0].orthographic.zfar',
+    },
+    {
+      label: 'projection object inconsistent with type',
+      camera: {
+        type: 'perspective',
+        perspective: { yfov: 0.7, znear: 0.1 },
+        orthographic: { xmag: 1, ymag: 1, znear: 0, zfar: 10 },
+      },
+      path: 'cameras[0].orthographic',
+    },
+  ])('rejects reachable $label with a structured camera diagnostic', async ({ camera, path }) => {
+    const { gltf, buffers } = makeMinimalTriangleGltf();
+    gltf.cameras = [camera];
+    gltf.nodes![0] = { ...gltf.nodes![0]!, camera: 0 };
+
+    await expect(gltfToScene(gltf, { buffers })).rejects.toMatchObject({
+      name: 'GltfImportError',
+      diagnostics: expect.arrayContaining([
+        expect.objectContaining({
+          severity: 'error',
+          code: 'invalid-camera',
+          path,
+        }),
+      ]),
+    });
+  });
+
+  it('does not reject malformed cameras outside the selected scene', async () => {
+    const { gltf, buffers } = makeMinimalTriangleGltf();
+    gltf.cameras = [{ type: 'perspective' }];
+    gltf.nodes!.push({ camera: 0 });
+
+    const result = await gltfToScene(gltf, { buffers });
+
+    expect(result.cameras).toEqual([]);
+    expect(result.diagnostics.some((diagnostic) => diagnostic.code === 'invalid-camera')).toBe(false);
+  });
 });
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -1861,148 +2313,129 @@ describe('index buffer types', () => {
 // ────────────────────────────────────────────────────────────────────────────
 
 describe('texture info mapping', () => {
-  it('surfaces missing texture image indices as structured diagnostics', async () => {
+  it('rejects missing texture image indices with structured diagnostics', async () => {
     const { gltf, buffers } = makeUv1NormalMappedTriangleGltf({ normalTexCoord: 0, includeUv0: true });
     gltf.textures![0]!.source = 99;
 
-    const { diagnostics, scene, warnings } = await gltfToScene(gltf, { buffers });
-
-    expect((scene.primitives[0] as MeshPrimitive).material.normalMap).toBeUndefined();
-    expect(warnings.some((warning) => warning.includes('missing image index 99'))).toBe(true);
-    expect(diagnostics).toEqual(expect.arrayContaining([
-      expect.objectContaining({
+    await expect(gltfToScene(gltf, { buffers })).rejects.toMatchObject({
+      name: 'GltfImportError',
+      diagnostics: expect.arrayContaining([
+        expect.objectContaining({
+          severity: 'warning',
         code: 'image-not-found',
         path: 'textures[0].source',
         textureIndex: 0,
         imageIndex: 99,
-      }),
-      expect.objectContaining({
+        }),
+        expect.objectContaining({
+        severity: 'error',
         code: 'material-texture-unresolved',
         path: 'materials[0].normalTexture',
         materialIndex: 0,
         textureIndex: 0,
-      }),
-    ]));
+        }),
+      ]),
+    });
   });
 
-  it('surfaces material texture infos that reference missing texture indices', async () => {
+  it('rejects material texture infos that reference missing texture indices', async () => {
     const { gltf, buffers } = makeUv1NormalMappedTriangleGltf({ normalTexCoord: 0, includeUv0: true });
     gltf.materials![0]!.normalTexture = { index: 99 };
 
-    const { diagnostics, scene, warnings } = await gltfToScene(gltf, { buffers });
-
-    expect((scene.primitives[0] as MeshPrimitive).material.normalMap).toBeUndefined();
-    expect(warnings.some((warning) => warning.includes('missing texture index 99'))).toBe(true);
-    expect(diagnostics).toEqual(expect.arrayContaining([
-      expect.objectContaining({
+    await expect(gltfToScene(gltf, { buffers })).rejects.toMatchObject({
+      name: 'GltfImportError',
+      diagnostics: [expect.objectContaining({
+        severity: 'error',
         code: 'material-texture-not-found',
         path: 'materials[0].normalTexture.index',
         materialIndex: 0,
         textureIndex: 99,
-      }),
-    ]));
+      })],
+    });
   });
 
-  it('surfaces missing embedded image bufferViews as structured diagnostics', async () => {
+  it('rejects missing embedded image bufferViews with structured diagnostics', async () => {
     const { gltf, buffers } = makeUv1NormalMappedTriangleGltf({ normalTexCoord: 0, includeUv0: true });
     gltf.images![0]!.bufferView = 99;
 
-    const { diagnostics, scene, warnings } = await gltfToScene(gltf, { buffers });
-
-    expect((scene.primitives[0] as MeshPrimitive).material.normalMap).toBeUndefined();
-    expect(warnings.some((warning) => warning.includes('missing bufferView 99'))).toBe(true);
-    expect(diagnostics).toEqual(expect.arrayContaining([
-      expect.objectContaining({
+    await expect(gltfToScene(gltf, { buffers })).rejects.toMatchObject({
+      name: 'GltfImportError',
+      diagnostics: expect.arrayContaining([
+        expect.objectContaining({
+        severity: 'warning',
         code: 'image-buffer-view-not-found',
         path: 'images[0].bufferView',
         textureIndex: 0,
         imageIndex: 0,
         bufferViewIndex: 99,
-      }),
-    ]));
+        }),
+        expect.objectContaining({ severity: 'error', code: 'material-texture-unresolved' }),
+      ]),
+    });
   });
 
-  it('surfaces unavailable embedded image buffers as structured diagnostics', async () => {
+  it('rejects unavailable embedded image buffers with structured diagnostics', async () => {
     const { gltf, buffers } = makeUv1NormalMappedTriangleGltf({ normalTexCoord: 0, includeUv0: true });
     const imageBufferView = gltf.images![0]!.bufferView!;
     gltf.bufferViews![imageBufferView] = { buffer: 99, byteOffset: 0, byteLength: 4 };
 
-    const { diagnostics, scene, warnings } = await gltfToScene(gltf, { buffers });
-
-    expect((scene.primitives[0] as MeshPrimitive).material.normalMap).toBeUndefined();
-    expect(warnings.some((warning) => warning.includes('unavailable buffer 99'))).toBe(true);
-    expect(diagnostics).toEqual(expect.arrayContaining([
-      expect.objectContaining({
+    await expect(gltfToScene(gltf, { buffers })).rejects.toMatchObject({
+      name: 'GltfImportError',
+      diagnostics: expect.arrayContaining([
+        expect.objectContaining({
+        severity: 'warning',
         code: 'image-buffer-unavailable',
         path: `bufferViews[${imageBufferView}].buffer`,
         textureIndex: 0,
         imageIndex: 0,
         bufferViewIndex: imageBufferView,
         bufferIndex: 99,
-      }),
-    ]));
+        }),
+        expect.objectContaining({ severity: 'error', code: 'material-texture-unresolved' }),
+      ]),
+    });
   });
 
-  it('surfaces images without bufferView or URI as structured diagnostics', async () => {
+  it('rejects images without bufferView or URI with structured diagnostics', async () => {
     const { gltf, buffers } = makeUv1NormalMappedTriangleGltf({ normalTexCoord: 0, includeUv0: true });
     gltf.images![0] = { name: 'empty-image' };
 
-    const { diagnostics, scene, warnings } = await gltfToScene(gltf, { buffers });
-
-    expect((scene.primitives[0] as MeshPrimitive).material.normalMap).toBeUndefined();
-    expect(warnings.some((warning) => warning.includes('neither bufferView nor uri'))).toBe(true);
-    expect(diagnostics).toEqual(expect.arrayContaining([
-      expect.objectContaining({
+    await expect(gltfToScene(gltf, { buffers })).rejects.toMatchObject({
+      name: 'GltfImportError',
+      diagnostics: expect.arrayContaining([
+        expect.objectContaining({
+        severity: 'warning',
         code: 'image-source-missing',
         path: 'images[0]',
         textureIndex: 0,
         imageIndex: 0,
-      }),
-    ]));
+        }),
+        expect.objectContaining({ severity: 'error', code: 'material-texture-unresolved' }),
+      ]),
+    });
   });
 
   it('maps normalTexture scale', async () => {
-    const posBuf = f32Buffer(TRIANGLE_POSITIONS);
-    const gltf: GltfJson = {
-      asset: { version: '2.0' },
-      scenes: [{ nodes: [0] }],
-      scene: 0,
-      nodes: [{ mesh: 0 }],
-      meshes: [{ primitives: [{ attributes: { POSITION: 0 }, material: 0 }] }],
-      materials: [{
-        normalTexture: { index: 0, scale: 0.5 },
-        // textures/images arrays are absent → handle resolves to undefined → normalMap is undefined
-      }],
-      accessors: [{ bufferView: 0, componentType: 5126, count: 3, type: 'VEC3' }],
-      bufferViews: [{ buffer: 0, byteLength: posBuf.byteLength }],
-      buffers: [{ byteLength: posBuf.byteLength }],
-    };
-    const { scene } = await gltfToScene(gltf, { buffers: new Map([[0, posBuf]]) });
+    const { gltf, buffers } = makeNormalMappedTriangleGltf();
+    gltf.materials![0]!.normalTexture = { index: 0, scale: 0.5 };
+    const { scene } = await gltfToScene(gltf, {
+      buffers,
+      decodeImage: async () => ({ kind: 'decoded-normal' }),
+    });
     const mat = (scene.primitives[0] as MeshPrimitive).material;
-    // The texture index 0 has no entry in handleMap → normalMap should be undefined.
-    // normalScale should be 0.5 from the material spec if the map resolves, else omitted.
-    // (no textures array → handle is undefined → normalMap undefined)
-    expect(mat.normalMap).toBeUndefined();
+    expect(mat.normalMap).toBeDefined();
+    expect(mat.normalScale).toBeCloseTo(0.5);
   });
 
   it('maps occlusionTexture strength to aoMapIntensity', async () => {
-    const posBuf = f32Buffer(TRIANGLE_POSITIONS);
-    const gltf: GltfJson = {
-      asset: { version: '2.0' },
-      scenes: [{ nodes: [0] }],
-      scene: 0,
-      nodes: [{ mesh: 0 }],
-      meshes: [{ primitives: [{ attributes: { POSITION: 0 }, material: 0 }] }],
-      materials: [{
-        occlusionTexture: { index: 0, strength: 0.75 },
-      }],
-      accessors: [{ bufferView: 0, componentType: 5126, count: 3, type: 'VEC3' }],
-      bufferViews: [{ buffer: 0, byteLength: posBuf.byteLength }],
-      buffers: [{ byteLength: posBuf.byteLength }],
-    };
-    const { scene } = await gltfToScene(gltf, { buffers: new Map([[0, posBuf]]) });
+    const { gltf, buffers } = makeNormalMappedTriangleGltf();
+    gltf.materials![0]!.occlusionTexture = { index: 0, strength: 0.75 };
+    const { scene } = await gltfToScene(gltf, {
+      buffers,
+      decodeImage: async () => ({ kind: 'decoded-ao' }),
+    });
     const mat = (scene.primitives[0] as MeshPrimitive).material;
-    // aoMapIntensity should be 0.75 even when the texture image can't be resolved
+    expect(mat.aoMap).toBeDefined();
     expect(mat.aoMapIntensity).toBeCloseTo(0.75);
   });
 });
@@ -2282,28 +2715,79 @@ describe('skin → SkinnedMeshPrimitive', () => {
     expect(prim.skinWeights[3]).toBeCloseTo(0);
   });
 
-  it('collapses secondary skin influence sets into strongest four unique joints', async () => {
+  it('normalizes a non-unit single WEIGHTS_0 set per vertex', async () => {
+    const { gltf, buffers } = makeSkinnedGltf(5121);
+    const weightsView = gltf.bufferViews![2]!;
+    const weights = new Float32Array(
+      buffers.get(weightsView.buffer)!,
+      weightsView.byteOffset ?? 0,
+      12,
+    );
+    weights.set([
+      2, 1, 1, 0,
+      2, 1, 1, 0,
+      2, 1, 1, 0,
+    ]);
+
+    const { scene } = await gltfToScene(gltf, { buffers });
+    const prim = scene.primitives[0] as SkinnedMeshPrimitive;
+    expect(Array.from(prim.skinWeights.slice(0, 4))).toEqual([
+      expect.closeTo(0.5, 6),
+      expect.closeTo(0.25, 6),
+      expect.closeTo(0.25, 6),
+      expect.closeTo(0, 6),
+    ]);
+    expect(
+      prim.skinWeights[0]! +
+      prim.skinWeights[1]! +
+      prim.skinWeights[2]! +
+      prim.skinWeights[3]!,
+    ).toBeCloseTo(1, 6);
+  });
+
+  it('rejects a vertex whose skin influence weight sum is zero', async () => {
+    const { gltf, buffers } = makeSkinnedGltf(5121);
+    const weightsView = gltf.bufferViews![2]!;
+    const weights = new Float32Array(
+      buffers.get(weightsView.buffer)!,
+      weightsView.byteOffset ?? 0,
+      12,
+    );
+    weights.fill(0, 0, 4);
+
+    await expect(gltfToScene(gltf, { buffers })).rejects.toMatchObject({
+      name: 'GltfImportError',
+      diagnostics: [
+        expect.objectContaining({
+          severity: 'error',
+          code: 'unreadable-skin-weights',
+          path: 'meshes[0].primitives[0].attributes.WEIGHTS_0',
+        }),
+      ],
+    });
+  });
+
+  it('preserves every positive secondary skin influence without truncation', async () => {
     const { gltf, buffers } = makeSkinnedSecondaryInfluencesGltf();
     const { scene, diagnostics } = await gltfToScene(gltf, { buffers });
     const prim = scene.primitives[0] as SkinnedMeshPrimitive;
 
     expect(prim.kind).toBe('skinned-mesh');
-    expect(Array.from(prim.skinIndices.slice(0, 4))).toEqual([0, 1, 2, 4]);
-    expect(prim.skinWeights[0]).toBeCloseTo(0.35 / 0.91);
-    expect(prim.skinWeights[1]).toBeCloseTo(0.26 / 0.91);
-    expect(prim.skinWeights[2]).toBeCloseTo(0.18 / 0.91);
-    expect(prim.skinWeights[3]).toBeCloseTo(0.12 / 0.91);
-    expect(diagnostics).toContainEqual(expect.objectContaining({
-      code: 'collapsed-skin-influence-sets',
-      path: 'meshes[0].primitives[0].attributes.JOINTS_1',
-    }));
+    expect(prim.skinInfluencesPerVertex).toBe(6);
+    expect(Array.from(prim.skinIndices.slice(0, 6))).toEqual([0, 1, 2, 4, 3, 5]);
+    expect(Array.from(prim.skinWeights.slice(0, 6))).toEqual(expect.arrayContaining([
+      expect.closeTo(0.35, 6),
+      expect.closeTo(0.26, 6),
+      expect.closeTo(0.18, 6),
+      expect.closeTo(0.12, 6),
+      expect.closeTo(0.05, 6),
+      expect.closeTo(0.04, 6),
+    ]));
+    expect(diagnostics.some((diagnostic) => diagnostic.code === 'collapsed-skin-influence-sets')).toBe(false);
 
     const report = analyzeGltfAsset(gltf);
-    expect(report.primitives.hasCollapsedSkinInfluenceSets).toBe(true);
-    expect(report.primitives.issuePaths.collapsedSkinInfluenceSets).toEqual([
-      'meshes[0].primitives[0].attributes.JOINTS_1',
-      'meshes[0].primitives[0].attributes.WEIGHTS_1',
-    ]);
+    expect(report.primitives.hasCollapsedSkinInfluenceSets).toBe(false);
+    expect(report.primitives.issuePaths.collapsedSkinInfluenceSets).toBeUndefined();
   });
 
   it('boneInverses are the identity matrices for both joints', async () => {
@@ -2538,29 +3022,35 @@ describe('KHR_lights_punctual → SceneEmitter[]', () => {
     expect(unsupportedWarn).toBeUndefined();
   });
 
-  it('surfaces malformed punctual light references as structured diagnostics', async () => {
+  it('rejects unsupported punctual light types with a structured diagnostic', async () => {
     const { gltf, buffers } = makeLightsGltf();
-    gltf.nodes![1]!.extensions = { KHR_lights_punctual: { light: 99 } };
     const punctual = gltf.extensions!.KHR_lights_punctual as { lights: Array<{ type: string; name?: string }> };
     punctual.lights[2] = {
       type: 'tube',
       name: 'bad tube',
     };
 
-    const { diagnostics, scene, warnings } = await gltfToScene(gltf, { buffers });
-
-    expect(scene.emitters).toHaveLength(1);
-    expect(warnings.some((warning) => warning.includes('light index 99'))).toBe(true);
-    expect(warnings.some((warning) => warning.includes('unsupported type "tube"'))).toBe(true);
-    expect(diagnostics).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        code: 'missing-punctual-light',
-        path: 'nodes[1].extensions.KHR_lights_punctual.light',
-      }),
-      expect.objectContaining({
+    await expect(gltfToScene(gltf, { buffers })).rejects.toMatchObject({
+      name: 'GltfImportError',
+      diagnostics: [expect.objectContaining({
+        severity: 'error',
         code: 'unsupported-punctual-light-type',
         path: 'extensions.KHR_lights_punctual.lights[2].type',
-      }),
-    ]));
+      })],
+    });
+  });
+
+  it('rejects missing punctual light references with a structured diagnostic', async () => {
+    const { gltf, buffers } = makeLightsGltf();
+    gltf.nodes![1]!.extensions = { KHR_lights_punctual: { light: 99 } };
+
+    await expect(gltfToScene(gltf, { buffers })).rejects.toMatchObject({
+      name: 'GltfImportError',
+      diagnostics: [expect.objectContaining({
+        severity: 'error',
+        code: 'missing-punctual-light',
+        path: 'nodes[1].extensions.KHR_lights_punctual.light',
+      })],
+    });
   });
 });

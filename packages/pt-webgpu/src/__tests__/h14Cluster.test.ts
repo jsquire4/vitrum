@@ -15,6 +15,8 @@ import type { EngineWarning } from '@vitrum/core';
 import { createPTEngine_WebGPU } from '../index.js';
 import { readOidnInputsFromTextures } from '../denoise/rgba16fReadback.js';
 import { GpuResources } from '../gpuResources.js';
+import { PT_WEBGPU_BDPT_CONNECTION_WGSL } from '../wgsl/bdpt/bdptConnection.wgsl.js';
+import { PT_WEBGPU_PATH_TRACE_MATERIAL_WGSL } from '../wgsl/pathTrace/material.wgsl.js';
 import {
   PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
   PT_WEBGPU_RESTIR_PT_REUSE_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
@@ -169,7 +171,7 @@ describe('H14-D: readOidnInputsFromTextures destroys all buffers on mapAsync rej
 describe('H14-F: buffer-ceiling warns fire at most once per engine instance', () => {
   beforeAll(() => { installAllGpuStubs(); });
 
-  it('BDPT eye-stack ceiling warn fires exactly once across 100 calls over the ceiling', () => {
+  it('BDPT private path state has no viewport-sized compatibility allocation', () => {
     const warns: string[] = [];
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation((...args: unknown[]) => {
       warns.push(String(args[0]));
@@ -184,15 +186,16 @@ describe('H14-F: buffer-ceiling warns fire at most once per engine instance', ()
 
     const gpu = new GpuResources(device, 'full', /* bdpt */ true);
 
-    // ensureBdptEyeStack with a size beyond the 384 MiB cap triggers the warn.
-    // BDPT_EYE_STACK_MAX_BYTES ~ 402,653,184 B; at 64 B/pixel a 2560x2560
-    // frame uses 419,430,400 B (> cap). We use 10000x10000 to be safe.
-    for (let i = 0; i < 100; i++) {
-      gpu.ensureBdptEyeStack(10000, 10000, 8, /* bdptActive */ true);
-    }
-
     const bdptWarns = warns.filter((w) => w.includes('BDPT eye-stack'));
-    expect(bdptWarns.length).toBe(1);
+    expect(bdptWarns).toHaveLength(0);
+    expect(device.createBuffer).not.toHaveBeenCalled();
+    expect(gpu).not.toHaveProperty('bdptEyeStackBuffer');
+    expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain(
+      'var<private> bdptEyeStackPrivate: array<BdptEyeVtx, 8>;',
+    );
+    expect(PT_WEBGPU_PATH_TRACE_MATERIAL_WGSL).toContain(
+      'var<private> bdptLightPath: array<vec4f, 56>;',
+    );
 
     warnSpy.mockRestore();
   });
@@ -213,12 +216,11 @@ describe('H14-F: buffer-ceiling warns fire at most once per engine instance', ()
     // restirPtReuse=true required for ensureReservoirBuffers to be non-trivial.
     const gpu = new GpuResources(device, 'full', /* bdpt */ false, /* restirPtReuse */ true);
 
-    // RESTIR_PT_RESERVOIR_MAX_BYTES ~ 402 MiB; 10000x10000 exceeds it.
     for (let i = 0; i < 100; i++) {
-      gpu.ensureReservoirBuffers(10000, 10000);
+      expect(() => gpu.ensureReservoirBuffers(10000, 10000)).toThrow(RangeError);
     }
 
-    const rptWarns = warns.filter((w) => w.includes('ReSTIR-PT reservoir'));
+    const rptWarns = warns.filter((w) => w.includes('ReSTIR-PT at'));
     expect(rptWarns.length).toBe(1);
 
     warnSpy.mockRestore();
@@ -238,27 +240,28 @@ describe('H14-F: buffer-ceiling warns fire at most once per engine instance', ()
     const gpu = new GpuResources(
       device,
       'full',
-      /* bdpt */ true,
-      /* restirPtReuse */ false,
+      /* bdpt */ false,
+      /* restirPtReuse */ true,
       (warning) => structured.push(warning),
     );
 
     for (let i = 0; i < 5; i++) {
-      gpu.ensureBdptEyeStack(10000, 10000, 8, /* bdptActive */ true);
+      expect(() => gpu.ensureReservoirBuffers(10000, 10000)).toThrow(RangeError);
     }
 
     expect(warnSpy).not.toHaveBeenCalled();
     expect(structured).toEqual([
       expect.objectContaining({
-        code: 'pt-webgpu.bdpt-eye-stack-ceiling',
+        code: 'pt-webgpu.restir-pt-reservoir-ceiling',
         backend: 'pt-webgpu',
         phase: 'renderFrame',
         method: 'renderFrame',
         details: expect.objectContaining({
           width: 10000,
           height: 10000,
-          maxDepth: 8,
-          fallback: 'skip-bdpt-connections',
+          bytesPerPixel: 64,
+          reservoirCount: 2,
+          fallback: 'throw',
         }),
       }),
     ]);

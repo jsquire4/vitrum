@@ -1,6 +1,16 @@
 {
+  "schema": "vitrum.radiometric-ab.result.v1",
+  "provenance": {
+    "schema": "vitrum.radiometric-ab.result-provenance.v1",
+    "scriptPath": "tools/radiometric-ab/ab-sppm.mjs",
+    "resultPath": "tools/radiometric-ab/results-sppm.json",
+    "scriptSha256": "e4b49ec6bca944969d6fad5e3332177c3d75d61e29642e85ceac15e341c40b26",
+    "helperPath": "tools/radiometric-ab/resultProvenance.mjs",
+    "helperSha256": "cc87985755e7391d19fbf98e19dc218df7264beb9b218f0a7eacf819761642e3",
+    "generatedBy": "vitrum radiometric A/B harness"
+  },
   "ab": "sppm-vs-manifold-nee",
-  "date": "2026-06-23T17:57:10.284Z",
+  "date": "2026-07-23T01:38:29.699Z",
   "resolution": {
     "W": 80,
     "H": 80
@@ -14,42 +24,33 @@
   "reference": {
     "strategy": "manifold-nee",
     "frames": 80,
-    "roiLum": 0.8828836518787202,
-    "globalLum": 0.924072089807511
+    "roiLum": 1.2272169965587794,
+    "globalLum": 1.2364785719547293
   },
   "sppm": [
     {
       "frames": 20,
-      "lum": 0.660152142066592,
-      "globalLum": 0.774050957715033,
-      "rmse": 0.2632101411203452,
-      "relErr": 0.2522773066849406
+      "lum": 0.9869128205915175,
+      "globalLum": 1.0925902333488469,
+      "rmse": 0.6678889238947096,
+      "relErr": 0.19581229451767304
     },
     {
       "frames": 50,
-      "lum": 0.6738861629464284,
-      "globalLum": 0.7756019185962687,
-      "rmse": 0.26921137891749675,
-      "relErr": 0.2367214394417185
+      "lum": 1.0150332361421124,
+      "globalLum": 1.096892022945399,
+      "rmse": 0.5418964261455195,
+      "relErr": 0.17289832280000053
     },
     {
       "frames": 80,
-      "lum": 0.6762538594215032,
-      "globalLum": 0.7764703096656743,
-      "rmse": 0.23917522614653486,
-      "relErr": 0.23403966311701657
+      "lum": 1.0251661717819935,
+      "globalLum": 1.0983321568756117,
+      "rmse": 0.4809802309222708,
+      "relErr": 0.16464148177816432
     }
   ],
   "verdict": "PASS",
   "converging": true,
-  "inBallpark": true,
-  "provenance": {
-    "schema": "vitrum.radiometric-ab.result-provenance.v1",
-    "scriptPath": "tools/radiometric-ab/ab-sppm.mjs",
-    "resultPath": "tools/radiometric-ab/results-sppm.json",
-    "scriptSha256": "08e668c31a7b60514c80bc6b722030d91012b0490e89ccd5eaf708e496f291de",
-    "helperPath": "tools/radiometric-ab/resultProvenance.mjs",
-    "helperSha256": "cc87985755e7391d19fbf98e19dc218df7264beb9b218f0a7eacf819761642e3",
-    "generatedBy": "vitrum radiometric A/B harness"
-  }
+  "inBallpark": true
 }

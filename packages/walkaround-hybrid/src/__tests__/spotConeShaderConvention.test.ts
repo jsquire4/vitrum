@@ -28,7 +28,7 @@ describe('walkaround spot cone shader convention', () => {
     const analytic = functionBody(SHADING_TERMS_WGSL, 'lo_analyticNEE');
 
     expect(helper).toContain('let cosTheta = dot(-axis, wi);');
-    expect(helper).toContain('abs(cosInner - cosOuter) < 1e-5');
+    expect(helper).toContain('cosInner == cosOuter');
     expect(analytic).toContain('let cone = analyticSpotConeFalloff(lightDir, wi, cosInner, cosOuter);');
     expect(analytic).toContain('let cutoffDistance = light3.z;');
     expect(analytic).toContain('let decay = light3.w;');
@@ -41,7 +41,7 @@ describe('walkaround spot cone shader convention', () => {
     const analytic = functionBody(TRANSPARENT_OIT_WGSL, 'oitLayerAnalyticNEE');
 
     expect(helper).toContain('let cosTheta = dot(-axis, wi);');
-    expect(helper).toContain('abs(cosInner - cosOuter) < 1e-5');
+    expect(helper).toContain('cosInner == cosOuter');
     expect(analytic).toContain('let cone = oitSpotConeFalloff(lightDir, wi, cosInner, cosOuter);');
     expect(analytic).toContain('let cutoffDistance = light3.z;');
     expect(analytic).toContain('let decay = light3.w;');
@@ -53,12 +53,12 @@ describe('walkaround spot cone shader convention', () => {
     const opaque = functionBody(SHADING_TERMS_WGSL, 'lo_analyticNEE');
     const transparent = functionBody(TRANSPARENT_OIT_WGSL, 'oitLayerAnalyticNEE');
 
-    expect(opaque).toContain('let brdf = evalGGXWithSpecularClearcoatSheenWithAnisotropyFrame(');
-    expect(opaque).toContain('Lo += lightLe * shadowT * brdf * cone * attenuation;');
+    expect(opaque).toContain('let brdf = evalDirectSurfaceBrdf(');
+    expect(opaque).toContain('Lo += lightLe * shadowT * brdf * cone * attenuation * estimatorWeight;');
     expect(opaque).not.toContain('Lo += lightLe * brdf * nDotL');
 
     expect(transparent).toContain('let brdf = evalGGXWithSpecularClearcoatSheenWithAnisotropyFrame(');
-    expect(transparent).toContain('Lo += lightLe * shadowT * brdf * cone * attenuation;');
+    expect(transparent).toContain('Lo += lightLe * shadowT * brdf * cone * attenuation * estimatorWeight;');
     expect(transparent).not.toContain('Lo += lightLe * brdf * nDotL');
   });
 });

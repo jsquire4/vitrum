@@ -35,4 +35,12 @@ tools/benchmark-runner/results/acceptance/
 
 # Local GPU capture scratch (not committed baselines)
 tools/reference-renders/tmp/
+
+# Local run-status snapshots (regression diagnostics, never maturity authority)
+tools/radiometric-ab/*-status.json
+tools/radiometric-ab/pt-promotion-status.json
+tools/renderer-fidelity-proof/pt-webgl2-local-status.json
+tools/renderer-fidelity-proof/promotion-status.json
+tools/behavioral-gate/cwbvh-default-promotion-status.json
+tools/behavioral-gate/cwbvh-default-promotion-repeat-status.json
 .gitnexus

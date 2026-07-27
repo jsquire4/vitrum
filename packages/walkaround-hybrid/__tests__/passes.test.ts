@@ -236,7 +236,7 @@ describe('Pass entries — W1-R5 shape invariants', () => {
   it('PPGUpdatePass: gated on ppgEnabled', () => {
     const p = new PPGUpdatePass(stubPipeline);
     expect(p.id).toBe('ppg-update');
-    expect(p.dependencies).toEqual(['shade']);
+    expect(p.dependencies).toEqual(['gi-ris']);
     expect(p.gates({ ...DEFAULT_GATE, ppgEnabled: false })).toBe(false);
     expect(p.gates({ ...DEFAULT_GATE, ppgEnabled: true })).toBe(true);
   });

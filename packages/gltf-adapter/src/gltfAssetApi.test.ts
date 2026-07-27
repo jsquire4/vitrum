@@ -25,7 +25,22 @@ import {
   rankGltfBackends,
 } from './index.js';
 import type { DecodeGltfTexturePixelsFn, GltfAssetFetchResponse, GltfJson } from './index.js';
-import type { InstancedMeshPrimitive, MeshPrimitive, Scene, SkinnedMeshPrimitive, TextureRef } from '@vitrum/core';
+import type { InstancedMeshPrimitive, MeshPrimitive, Scene, TextureRef } from '@vitrum/core';
+
+async function expectGltfImportFailure(
+  promise: Promise<unknown>,
+  code: string,
+  path: string,
+): Promise<void> {
+  const failure = await promise.then(
+    () => undefined,
+    (error: unknown) => error,
+  );
+  expect(failure).toBeInstanceOf(GltfImportError);
+  expect((failure as GltfImportError).diagnostics).toEqual(expect.arrayContaining([
+    expect.objectContaining({ severity: 'error', code, path }),
+  ]));
+}
 
 function f32Buffer(values: number[]): ArrayBuffer {
   const buf = new ArrayBuffer(values.length * 4);
@@ -207,27 +222,58 @@ function makeExternalTexturedGltf(): GltfJson {
   };
 }
 
-function makeInlineTriangleGltf(): { gltf: GltfJson; buffers: Map<number, ArrayBuffer> } {
-  const vertexData = f32Buffer([
-    0, 0, 0, 1, 0, 0, 0, 1, 0,
-    0, 0, 1, 0, 0, 1, 0, 0, 1,
-  ]);
-  const positionByteLength = 9 * 4;
-  const normalByteLength = 9 * 4;
+function makeInlineTriangleGltf(
+  opts: { readonly includeUvSets?: boolean } = {},
+): { gltf: GltfJson; buffers: Map<number, ArrayBuffer> } {
+  const positions = f32Buffer([0, 0, 0, 1, 0, 0, 0, 1, 0]);
+  const normals = f32Buffer([0, 0, 1, 0, 0, 1, 0, 0, 1]);
+  const uv0 = f32Buffer([0, 0, 1, 0, 0, 1]);
+  const uv1 = f32Buffer([0, 0, 0, 1, 1, 0]);
+  const includeUvSets = opts.includeUvSets !== false;
+  const chunks = includeUvSets ? [positions, normals, uv0, uv1] : [positions, normals];
+  const vertexData = concatArrayBuffers(chunks);
+  const positionByteLength = positions.byteLength;
+  const normalByteLength = normals.byteLength;
   return {
     gltf: {
       asset: { version: '2.0' },
       scene: 0,
       scenes: [{ nodes: [0] }],
       nodes: [{ mesh: 0 }],
-      meshes: [{ primitives: [{ attributes: { POSITION: 0, NORMAL: 1 } }] }],
+      meshes: [{ primitives: [{
+        attributes: {
+          POSITION: 0,
+          NORMAL: 1,
+          ...(includeUvSets ? { TEXCOORD_0: 2, TEXCOORD_1: 3 } : {}),
+        },
+      }] }],
       accessors: [
         { bufferView: 0, componentType: 5126, count: 3, type: 'VEC3' },
         { bufferView: 1, componentType: 5126, count: 3, type: 'VEC3' },
+        ...(includeUvSets
+          ? [
+              { bufferView: 2, componentType: 5126 as const, count: 3, type: 'VEC2' as const },
+              { bufferView: 3, componentType: 5126 as const, count: 3, type: 'VEC2' as const },
+            ]
+          : []),
       ],
       bufferViews: [
         { buffer: 0, byteOffset: 0, byteLength: positionByteLength },
         { buffer: 0, byteOffset: positionByteLength, byteLength: normalByteLength },
+        ...(includeUvSets
+          ? [
+              {
+                buffer: 0,
+                byteOffset: positionByteLength + normalByteLength,
+                byteLength: uv0.byteLength,
+              },
+              {
+                buffer: 0,
+                byteOffset: positionByteLength + normalByteLength + uv0.byteLength,
+                byteLength: uv1.byteLength,
+              },
+            ]
+          : []),
       ],
       buffers: [{ byteLength: vertexData.byteLength }],
     },
@@ -620,6 +666,7 @@ function makeInlineMaterialPointerAnimationGltf(): { gltf: GltfJson; buffers: Ma
 
 function makeInlineTexturedVariantGltf(): { gltf: GltfJson; buffers: Map<number, ArrayBuffer> } {
   const positions = f32Buffer([0, 0, 0, 1, 0, 0, 0, 1, 0]);
+  const uvs = f32Buffer([0, 0, 1, 0, 0, 1]);
   const imageBytes = bytes([0x89, 0x50, 0x4e, 0x47]);
   return {
     gltf: {
@@ -636,7 +683,7 @@ function makeInlineTexturedVariantGltf(): { gltf: GltfJson; buffers: Map<number,
       },
       meshes: [{
         primitives: [{
-          attributes: { POSITION: 0 },
+          attributes: { POSITION: 0, TEXCOORD_0: 1 },
           material: 0,
           extensions: {
             KHR_materials_variants: {
@@ -657,25 +704,32 @@ function makeInlineTexturedVariantGltf(): { gltf: GltfJson; buffers: Map<number,
       ],
       textures: [{ source: 0 }],
       images: [{ bufferView: 1, mimeType: 'image/png' }],
-      accessors: [{ bufferView: 0, componentType: 5126, count: 3, type: 'VEC3' }],
+      accessors: [
+        { bufferView: 0, componentType: 5126, count: 3, type: 'VEC3' },
+        { bufferView: 2, componentType: 5126, count: 3, type: 'VEC2' },
+      ],
       bufferViews: [
         { buffer: 0, byteOffset: 0, byteLength: positions.byteLength },
         { buffer: 1, byteOffset: 0, byteLength: imageBytes.byteLength },
+        { buffer: 2, byteOffset: 0, byteLength: uvs.byteLength },
       ],
       buffers: [
         { byteLength: positions.byteLength },
         { byteLength: imageBytes.byteLength },
+        { byteLength: uvs.byteLength },
       ],
     },
     buffers: new Map([
       [0, positions],
       [1, imageBytes],
+      [2, uvs],
     ]),
   };
 }
 
 function makeInlineSpecGlossVariantGltf(): { gltf: GltfJson; buffers: Map<number, ArrayBuffer> } {
   const positions = f32Buffer([0, 0, 0, 1, 0, 0, 0, 1, 0]);
+  const uvs = f32Buffer([0, 0, 1, 0, 0, 1]);
   const imageBytes = bytes([0x89, 0x50, 0x4e, 0x47]);
   return {
     gltf: {
@@ -692,7 +746,7 @@ function makeInlineSpecGlossVariantGltf(): { gltf: GltfJson; buffers: Map<number
       },
       meshes: [{
         primitives: [{
-          attributes: { POSITION: 0 },
+          attributes: { POSITION: 0, TEXCOORD_0: 1 },
           material: 0,
           extensions: {
             KHR_materials_variants: {
@@ -717,19 +771,25 @@ function makeInlineSpecGlossVariantGltf(): { gltf: GltfJson; buffers: Map<number
       ],
       textures: [{ source: 0 }],
       images: [{ bufferView: 1, mimeType: 'image/png' }],
-      accessors: [{ bufferView: 0, componentType: 5126, count: 3, type: 'VEC3' }],
+      accessors: [
+        { bufferView: 0, componentType: 5126, count: 3, type: 'VEC3' },
+        { bufferView: 2, componentType: 5126, count: 3, type: 'VEC2' },
+      ],
       bufferViews: [
         { buffer: 0, byteOffset: 0, byteLength: positions.byteLength },
         { buffer: 1, byteOffset: 0, byteLength: imageBytes.byteLength },
+        { buffer: 2, byteOffset: 0, byteLength: uvs.byteLength },
       ],
       buffers: [
         { byteLength: positions.byteLength },
         { byteLength: imageBytes.byteLength },
+        { byteLength: uvs.byteLength },
       ],
     },
     buffers: new Map([
       [0, positions],
       [1, imageBytes],
+      [2, uvs],
     ]),
   };
 }
@@ -796,21 +856,28 @@ function makeInlineAnimatedInstancedGltf(): { gltf: GltfJson; buffers: Map<numbe
 }
 
 function makeInlineTexturedGltf(
-  imageBytes: Uint8Array<ArrayBuffer> = new Uint8Array([0x89, 0x50, 0x4e, 0x47]),
+  imageBytes: Uint8Array<ArrayBuffer> = makePngBytes(1, 1, [255, 255, 255, 255]),
 ): { gltf: GltfJson; buffers: Map<number, ArrayBuffer>; png: Uint8Array<ArrayBuffer> } {
   const positions = f32Buffer([0, 0, 0, 1, 0, 0, 0, 1, 0]);
   const normals = f32Buffer([0, 0, 1, 0, 0, 1, 0, 0, 1]);
-  const total = new Uint8Array(positions.byteLength + normals.byteLength + imageBytes.byteLength);
+  const uvs = f32Buffer([0, 0, 1, 0, 0, 1]);
+  const total = new Uint8Array(
+    positions.byteLength + normals.byteLength + uvs.byteLength + imageBytes.byteLength,
+  );
   total.set(new Uint8Array(positions), 0);
   total.set(new Uint8Array(normals), positions.byteLength);
-  total.set(imageBytes, positions.byteLength + normals.byteLength);
+  total.set(new Uint8Array(uvs), positions.byteLength + normals.byteLength);
+  total.set(imageBytes, positions.byteLength + normals.byteLength + uvs.byteLength);
   return {
     gltf: {
       asset: { version: '2.0' },
       scene: 0,
       scenes: [{ nodes: [0] }],
       nodes: [{ mesh: 0 }],
-      meshes: [{ primitives: [{ attributes: { POSITION: 0, NORMAL: 1 }, material: 0 }] }],
+      meshes: [{ primitives: [{
+        attributes: { POSITION: 0, NORMAL: 1, TEXCOORD_0: 2 },
+        material: 0,
+      }] }],
       materials: [{
         pbrMetallicRoughness: {
           baseColorFactor: [1, 1, 1, 1],
@@ -818,21 +885,42 @@ function makeInlineTexturedGltf(
         },
       }],
       textures: [{ source: 0 }],
-      images: [{ bufferView: 2, mimeType: 'image/png' }],
+      images: [{ bufferView: 3, mimeType: 'image/png' }],
       accessors: [
         { bufferView: 0, componentType: 5126, count: 3, type: 'VEC3' },
         { bufferView: 1, componentType: 5126, count: 3, type: 'VEC3' },
+        { bufferView: 2, componentType: 5126, count: 3, type: 'VEC2' },
       ],
       bufferViews: [
         { buffer: 0, byteOffset: 0, byteLength: positions.byteLength },
         { buffer: 0, byteOffset: positions.byteLength, byteLength: normals.byteLength },
-        { buffer: 0, byteOffset: positions.byteLength + normals.byteLength, byteLength: imageBytes.byteLength },
+        {
+          buffer: 0,
+          byteOffset: positions.byteLength + normals.byteLength,
+          byteLength: uvs.byteLength,
+        },
+        {
+          buffer: 0,
+          byteOffset: positions.byteLength + normals.byteLength + uvs.byteLength,
+          byteLength: imageBytes.byteLength,
+        },
       ],
       buffers: [{ byteLength: total.byteLength }],
     },
     buffers: new Map([[0, total.buffer]]),
     png: imageBytes,
   };
+}
+
+function makeInlineUnsupportedTexturedGltf(): ReturnType<typeof makeInlineTexturedGltf> {
+  const fixture = makeInlineTexturedGltf(
+    new Uint8Array([0x47, 0x49, 0x46, 0x38, 0x39, 0x61]),
+  );
+  fixture.gltf.images![0] = {
+    ...fixture.gltf.images![0]!,
+    mimeType: 'image/gif',
+  };
+  return fixture;
 }
 
 function makePngBytes(
@@ -886,7 +974,7 @@ async function makeWebpBytes(
 function makeInlineNormalMappedGltf(
   opts: { readonly texCoord?: number; readonly includeUv0?: boolean } = {},
 ): { gltf: GltfJson; buffers: Map<number, ArrayBuffer> } {
-  const fixture = makeInlineTriangleGltf();
+  const fixture = makeInlineTriangleGltf({ includeUvSets: false });
   const uv = f32Buffer([0, 0, 1, 0, 0, 1]);
   const image = bytes([0x89, 0x50, 0x4e, 0x47]);
   const uvAccessor = fixture.gltf.accessors!.length;
@@ -927,17 +1015,26 @@ function makeInlineNormalMappedGltf(
 
 function makeInlineSpecGlossTexturedGltf(): { gltf: GltfJson; buffers: Map<number, ArrayBuffer> } {
   const positions = f32Buffer([0, 0, 0, 1, 0, 0, 0, 1, 0]);
+  const uv0 = f32Buffer([0, 0, 1, 0, 0, 1]);
+  const uv1 = f32Buffer([0, 0, 0, 1, 1, 0]);
   const imageBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47]);
-  const total = new Uint8Array(positions.byteLength + imageBytes.byteLength);
+  const total = new Uint8Array(
+    positions.byteLength + uv0.byteLength + uv1.byteLength + imageBytes.byteLength,
+  );
   total.set(new Uint8Array(positions), 0);
-  total.set(imageBytes, positions.byteLength);
+  total.set(new Uint8Array(uv0), positions.byteLength);
+  total.set(new Uint8Array(uv1), positions.byteLength + uv0.byteLength);
+  total.set(imageBytes, positions.byteLength + uv0.byteLength + uv1.byteLength);
   return {
     gltf: {
       asset: { version: '2.0' },
       scene: 0,
       scenes: [{ nodes: [0] }],
       nodes: [{ mesh: 0 }],
-      meshes: [{ primitives: [{ attributes: { POSITION: 0 }, material: 0 }] }],
+      meshes: [{ primitives: [{
+        attributes: { POSITION: 0, TEXCOORD_0: 1, TEXCOORD_1: 2 },
+        material: 0,
+      }] }],
       materials: [{
         extensions: {
           KHR_materials_pbrSpecularGlossiness: {
@@ -961,11 +1058,25 @@ function makeInlineSpecGlossTexturedGltf(): { gltf: GltfJson; buffers: Map<numbe
       }],
       textures: [{ source: 0, sampler: 0 }],
       samplers: [{ wrapS: 33071, wrapT: 33648 }],
-      images: [{ bufferView: 1, mimeType: 'image/png' }],
-      accessors: [{ bufferView: 0, componentType: 5126, count: 3, type: 'VEC3' }],
+      images: [{ bufferView: 3, mimeType: 'image/png' }],
+      accessors: [
+        { bufferView: 0, componentType: 5126, count: 3, type: 'VEC3' },
+        { bufferView: 1, componentType: 5126, count: 3, type: 'VEC2' },
+        { bufferView: 2, componentType: 5126, count: 3, type: 'VEC2' },
+      ],
       bufferViews: [
         { buffer: 0, byteOffset: 0, byteLength: positions.byteLength },
-        { buffer: 0, byteOffset: positions.byteLength, byteLength: imageBytes.byteLength },
+        { buffer: 0, byteOffset: positions.byteLength, byteLength: uv0.byteLength },
+        {
+          buffer: 0,
+          byteOffset: positions.byteLength + uv0.byteLength,
+          byteLength: uv1.byteLength,
+        },
+        {
+          buffer: 0,
+          byteOffset: positions.byteLength + uv0.byteLength + uv1.byteLength,
+          byteLength: imageBytes.byteLength,
+        },
       ],
       buffers: [{ byteLength: total.byteLength }],
     },
@@ -1063,30 +1174,26 @@ describe('loadGltfAsset', () => {
     expect(Array.from(primitive.positions.slice(0, 3))).toEqual([0.25, -0.25, -0.25]);
   });
 
-  it('fallback-expands EXT_mesh_gpu_instancing on morphed meshes into skinned primitives', async () => {
+  it('imports morphed EXT_mesh_gpu_instancing as one native instanced primitive', async () => {
     const { gltf, buffers } = makeInlineTriangleGltf();
     addMorphedGpuInstancing(gltf, buffers);
 
     const asset = await loadGltfAsset(gltf, { buffers });
 
-    expect(asset.scene.primitives).toHaveLength(2);
-    const first = asset.scene.primitives[0] as SkinnedMeshPrimitive;
-    const second = asset.scene.primitives[1] as SkinnedMeshPrimitive;
-    expect(first.kind).toBe('skinned-mesh');
-    expect(second.kind).toBe('skinned-mesh');
-    expect(String(first.id)).toMatch(/-instance-0$/);
-    expect(String(second.id)).toMatch(/-instance-1$/);
-    expect(first.transform?.[12]).toBeCloseTo(0);
-    expect(second.transform?.[12]).toBeCloseTo(2);
-    expect(first.morphTargets).toHaveLength(1);
-    expect(second.morphTargets).toHaveLength(1);
-    expect(asset.diagnostics).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        severity: 'warning',
-        code: 'fallback-expanded-gpu-instancing',
-        path: 'nodes[0].extensions.EXT_mesh_gpu_instancing',
-      }),
-    ]));
+    expect(asset.scene.primitives).toHaveLength(1);
+    const primitive = asset.scene.primitives[0] as InstancedMeshPrimitive;
+    expect(primitive.kind).toBe('instanced-mesh');
+    expect(primitive.id).toBe('gltf-prim-0');
+    expect(primitive.instances).toHaveLength(2);
+    expect(primitive.instances[0]![12]).toBeCloseTo(0);
+    expect(primitive.instances[1]![12]).toBeCloseTo(2);
+    expect(asset.instancingBindings).toHaveLength(1);
+    expect(asset.instancingBindings?.[0]?.deformationSource).toMatchObject({
+      kind: 'skinned-mesh',
+      id: 'gltf-prim-0',
+      morphTargets: [expect.any(Float32Array)],
+    });
+    expect(asset.diagnostics).toEqual([]);
   });
 
   it('throws a deterministic error for relative external resources without a baseUri', async () => {
@@ -1176,6 +1283,31 @@ describe('loadGltfAsset', () => {
     });
   });
 
+  it('rejects an incompatible asset version before fetching dependent resources', async () => {
+    const fetch = vi.fn(async (): Promise<GltfAssetFetchResponse> => {
+      throw new Error('dependent resource fetch must not run');
+    });
+    const gltf: GltfJson = {
+      asset: { version: '2.7', minVersion: '2.1' },
+      scene: 0,
+      scenes: [{ nodes: [0] }],
+      nodes: [{ mesh: 0 }],
+      meshes: [{ primitives: [{ attributes: { POSITION: 0 } }] }],
+      accessors: [{ bufferView: 0, componentType: 5126, count: 3, type: 'VEC3' }],
+      bufferViews: [{ buffer: 0, byteLength: 36 }],
+      buffers: [{ uri: 'external.bin', byteLength: 36 }],
+    };
+
+    await expect(loadGltfAsset(gltf, { fetch })).rejects.toMatchObject({
+      name: 'GltfImportError',
+      diagnostics: [expect.objectContaining({
+        code: 'unsupported-version',
+        path: 'asset.minVersion',
+      })],
+    });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it('throws typed parse failures for malformed GLB containers', async () => {
     await expect(loadGltfAsset(glbBuffer('{"asset":{"version":"2.0"}}', 1))).rejects.toBeInstanceOf(GltfParseFailed);
     await expect(loadGltfAsset(glbBuffer('{"asset":{"version":"2.0"}}', 1))).rejects.toMatchObject({
@@ -1248,7 +1380,7 @@ describe('loadGltfAsset', () => {
   });
 
   it('returns a textureDecodeReport for raw image fallback handles', async () => {
-    const { gltf, buffers } = makeInlineTexturedGltf();
+    const { gltf, buffers } = makeInlineUnsupportedTexturedGltf();
     const result = await loadGltfAndDecodeTextures(gltf, { buffers });
 
     expect(result.textureDecodeReport).toMatchObject({
@@ -1556,8 +1688,10 @@ describe('loadGltfAsset', () => {
     });
   });
 
-  it('loadGltfAndDecodeTextures uses browser image and canvas readback when no pixel decoder is supplied', async () => {
-    const { gltf, buffers } = makeInlineTexturedGltf();
+  it('uses deterministic PNG pixels instead of browser color-managed canvas readback', async () => {
+    const { gltf, buffers } = makeInlineTexturedGltf(
+      makePngBytes(1, 1, [255, 255, 255, 255]),
+    );
     const rgba = new Uint8ClampedArray(4 * 4 * 4);
     rgba.set([128, 64, 255, 128], 0);
     rgba.fill(255, 4);
@@ -1566,9 +1700,9 @@ describe('loadGltfAsset', () => {
       await withOffscreenCanvasReadbackStub(rgba, async (ctx) => {
         const result = await loadGltfAndDecodeTextures(gltf, { buffers });
 
-        expect(createImageBitmap).toHaveBeenCalledTimes(1);
-        expect(ctx.drawImage).toHaveBeenCalledTimes(1);
-        expect(ctx.getImageData).toHaveBeenCalledWith(0, 0, 4, 4);
+        expect(createImageBitmap).not.toHaveBeenCalled();
+        expect(ctx.drawImage).not.toHaveBeenCalled();
+        expect(ctx.getImageData).not.toHaveBeenCalled();
         expect(result.decodedTextureCount).toBe(1);
         expect(result.unchangedTextureCount).toBe(0);
         expect(result.textureDecodeDiagnostics).toEqual([]);
@@ -1588,20 +1722,20 @@ describe('loadGltfAsset', () => {
           data: Float32Array;
           __vitrum_hint__: { colorSpace: string };
         };
-        expect(handle.width).toBe(4);
-        expect(handle.height).toBe(4);
+        expect(handle.width).toBe(1);
+        expect(handle.height).toBe(1);
         expect(handle.__vitrum_hint__.colorSpace).toBe('linear');
-        expect(handle.data[0]).toBeCloseTo(srgbToLinearForTest(128 / 255));
-        expect(handle.data[1]).toBeCloseTo(srgbToLinearForTest(64 / 255));
+        expect(handle.data[0]).toBeCloseTo(1);
+        expect(handle.data[1]).toBeCloseTo(1);
         expect(handle.data[2]).toBeCloseTo(1);
-        expect(handle.data[3]).toBeCloseTo(128 / 255);
+        expect(handle.data[3]).toBeCloseTo(1);
         expect(result.textureDecodeReport.entries).toEqual([
           expect.objectContaining({
             materialField: 'baseColorMap',
             handleKind: 'pixel-data',
             handleColorSpace: 'linear',
-            width: 4,
-            height: 4,
+            width: 1,
+            height: 1,
             textureIndex: 0,
             imageIndex: 0,
           }),
@@ -1781,7 +1915,12 @@ describe('loadGltfAsset', () => {
   });
 
   it('keeps raw images with a structured diagnostic when browser pixel readback is unavailable', async () => {
-    const { gltf, buffers } = makeInlineTexturedGltf();
+    const webpBytes = await makeWebpBytes(1, 1, [255, 255, 255, 255]);
+    const { gltf, buffers } = makeInlineTexturedGltf(webpBytes);
+    gltf.images![0] = {
+      ...gltf.images![0]!,
+      mimeType: 'image/webp',
+    };
 
     await withCreateImageBitmapStub(async (createImageBitmap) => {
       const result = await loadGltfAndDecodeTextures(gltf, { buffers });
@@ -1881,14 +2020,25 @@ describe('loadGltfAsset', () => {
 
   it('keeps spec-gloss alpha degradation until every authored spec-gloss texture path is baked', async () => {
     const { gltf, buffers } = makeInlineSpecGlossTexturedGltf();
-    gltf.meshes![0]!.primitives.push({ attributes: { POSITION: 0 }, material: 1 });
+    const opaqueImage = bytes([0]);
+    const opaqueBuffer = gltf.buffers!.length;
+    const opaqueBufferView = gltf.bufferViews!.length;
+    gltf.buffers!.push({ byteLength: opaqueImage.byteLength });
+    gltf.bufferViews!.push({ buffer: opaqueBuffer, byteOffset: 0, byteLength: opaqueImage.byteLength });
+    gltf.images!.push({ bufferView: opaqueBufferView, mimeType: 'image/png' });
+    gltf.textures!.push({ source: 1 });
+    buffers.set(opaqueBuffer, opaqueImage);
+    gltf.meshes![0]!.primitives.push({
+      attributes: { POSITION: 0, TEXCOORD_0: 1, TEXCOORD_1: 2 },
+      material: 1,
+    });
     gltf.materials!.push({
       extensions: {
         KHR_materials_pbrSpecularGlossiness: {
           diffuseFactor: [1, 1, 1, 1],
           specularFactor: [1, 1, 1],
           glossinessFactor: 0.25,
-          specularGlossinessTexture: { index: 99 },
+          specularGlossinessTexture: { index: 1 },
         },
       },
     });
@@ -1904,6 +2054,9 @@ describe('loadGltfAsset', () => {
     const result = await loadGltfAndDecodeTextures(gltf, {
       buffers,
       decodePixels,
+      decodeImage: async (data, mimeType) => data.byteLength === opaqueImage.byteLength
+        ? { kind: 'opaque-spec-gloss' }
+        : { kind: 'raw-image', data, mimeType },
     });
 
     expect(decodePixels).toHaveBeenCalledTimes(1);
@@ -2055,6 +2208,46 @@ describe('decodeSceneTextures', () => {
     ]);
   });
 
+  it('decodes two-channel pixels as luminance-alpha rather than red-green', async () => {
+    const pixelHandle = {
+      width: 1,
+      height: 1,
+      data: new Uint8Array([128, 64]),
+      channels: 2 as const,
+      dataType: 'uint8' as const,
+      colorSpace: 'srgb' as const,
+    };
+    const scene: Scene = {
+      primitives: [{
+        kind: 'mesh',
+        id: 'luminance-alpha-mesh',
+        positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+        normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+        material: {
+          baseColor: [1, 1, 1],
+          roughness: 1,
+          metallic: 0,
+          baseColorMap: { handle: pixelHandle },
+        },
+      }],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+
+    const result = await decodeSceneTextures(scene, { target: 'cpu-linear' });
+    const material = (result.scene.primitives[0] as MeshPrimitive).material;
+    const handle = (material.baseColorMap as TextureRef).handle as {
+      data: Float32Array;
+    };
+    const luminance = srgbToLinearForTest(128 / 255);
+    expect(Array.from(handle.data)).toEqual([
+      expect.closeTo(luminance, 6),
+      expect.closeTo(luminance, 6),
+      expect.closeTo(luminance, 6),
+      expect.closeTo(64 / 255, 6),
+    ]);
+  });
+
   it('reports decoded lightMap handles as walkaround-ready', async () => {
     const scene: Scene = {
       primitives: [
@@ -2067,9 +2260,21 @@ describe('decodeSceneTextures', () => {
             baseColor: [1, 1, 1],
             roughness: 1,
             metallic: 0,
-            lightMap: { handle: { kind: 'raw-image', uri: 'light.png' } },
+            lightMap: {
+              handle: {
+                kind: 'raw-image',
+                mimeType: 'image/png',
+                data: new Uint8Array([1]),
+              },
+            },
             lightMapIntensity: 2,
-            bumpMap: { handle: { kind: 'raw-image', uri: 'bump.png' } },
+            bumpMap: {
+              handle: {
+                kind: 'raw-image',
+                mimeType: 'image/png',
+                data: new Uint8Array([2]),
+              },
+            },
             bumpScale: 0.5,
           },
         },
@@ -2192,7 +2397,7 @@ describe('decodeSceneTextures', () => {
   });
 
   it('warns and preserves raw-image texture refs when no CPU decode hook is supplied', async () => {
-    const { gltf, buffers } = makeInlineTexturedGltf();
+    const { gltf, buffers } = makeInlineUnsupportedTexturedGltf();
     const asset = await loadGltfAsset(gltf, { buffers });
     const warnings: string[] = [];
 
@@ -2223,7 +2428,7 @@ describe('decodeSceneTextures', () => {
   });
 
   it('guards throwing texture decode diagnostic callbacks', async () => {
-    const { gltf, buffers } = makeInlineTexturedGltf();
+    const { gltf, buffers } = makeInlineUnsupportedTexturedGltf();
     const asset = await loadGltfAsset(gltf, { buffers });
     const onDiagnostic = vi.fn(() => {
       throw new Error('host diagnostic callback failed');
@@ -2349,11 +2554,11 @@ describe('decodeSceneTextures', () => {
     };
     expect(handle.width).toBe(2);
     expect(handle.height).toBe(1);
-    expect(handle.data[0]).toBeCloseTo(0);
+    expect(handle.data[0]).toBeCloseTo(0.25);
     expect(handle.data[1]).toBeCloseTo(0.25);
     expect(handle.data[2]).toBeCloseTo(0.5);
     expect(handle.data[3]).toBeCloseTo(1);
-    expect(handle.data[4]).toBeCloseTo(0.2);
+    expect(handle.data[4]).toBeCloseTo(0.45);
     expect(handle.data[5]).toBeCloseTo(0.25);
     expect(handle.data[6]).toBeCloseTo(0.5);
     expect(handle.data[7]).toBeCloseTo(1);
@@ -2947,10 +3152,10 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
       { bufferView: 0, componentType: 5126, count: 2, type: 'VEC3' },
     ];
     gltf.animations = [{
-      samplers: [{ input: 2, output: 3, interpolation: 'BEZIER' as never }],
+      samplers: [{ input: 2, output: 3, interpolation: 'BEZIER' }],
       channels: [
         { sampler: 0, target: { node: 0, path: 'translation' } },
-        { sampler: 0, target: { node: 0, path: 'pointer' as never } },
+        { sampler: 0, target: { node: 0, path: 'pointer' } },
       ],
     }];
 
@@ -3028,7 +3233,7 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
     expect(walkaroundCompatibility.issues).toContainEqual(expect.objectContaining({
       category: 'material',
       name: 'dispersionAbbeNumber',
-      support: 'unsupported',
+      support: 'approximate',
       path: 'materials[0].extensions.KHR_materials_dispersion.dispersion',
     }));
   });
@@ -3044,7 +3249,7 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
           null,
         ],
       },
-    } as never;
+    };
     gltf.nodes![0] = {
       ...gltf.nodes![0]!,
       extensions: { KHR_lights_punctual: { light: 99 } },
@@ -3501,10 +3706,9 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
       ],
     });
     expect(report.animations.malformedChannels).toContainEqual(expect.objectContaining({
-      kind: 'invalid-output-count',
-      path: 'animations[0].channels[1].sampler',
-      expectedOutputFloats: 8,
-      actualOutputFloats: 2,
+      kind: 'invalid-pointer-output-accessor',
+      path: 'animations[0].samplers[1].output',
+      reason: 'expected VEC4 but found SCALAR',
     }));
 
     const compatibility = evaluateGltfBackendCompatibility(report, 'pt-webgl2');
@@ -3516,9 +3720,9 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
     }));
     expect(compatibility.issues).toContainEqual(expect.objectContaining({
       category: 'animation',
-      name: 'channel.invalid-output-count',
+      name: 'channel.invalid-pointer-output-accessor',
       support: 'unsupported',
-      path: 'animations[0].channels[1].sampler',
+      path: 'animations[0].samplers[1].output',
     }));
   });
 
@@ -3718,10 +3922,10 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
       { source: 0, sampler: 7 },
     ];
     gltf.samplers = [{
-      wrapS: 123 as never,
-      wrapT: 456 as never,
-      magFilter: 111 as never,
-      minFilter: 222 as never,
+      wrapS: 123,
+      wrapT: 456,
+      magFilter: 111,
+      minFilter: 222,
     }];
 
     const report = analyzeGltfAsset(gltf);
@@ -4104,7 +4308,7 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
     }));
   });
 
-  it('reports material textures that require UV sets beyond the core Scene contract', () => {
+  it('reports high material UV sets whose primitive base stream is absent', () => {
     const gltf = makeExternalTexturedGltf();
     gltf.materials![0]!.pbrMetallicRoughness!.baseColorTexture = { index: 0, texCoord: 2 };
 
@@ -4118,10 +4322,10 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
       support: 'unsupported',
       path: 'materials[0].pbrMetallicRoughness.baseColorTexture.texCoord',
     }));
-    expect(uvIssue?.message).toContain('only UV sets 0 and 1');
+    expect(uvIssue?.message).toContain('does not provide the matching TEXCOORD_2');
   });
 
-  it('does not reject a single high material UV set that can be remapped into uv1', () => {
+  it('does not reject a single high material UV set with a matching indexed stream', () => {
     const gltf = makeExternalTexturedGltf();
     gltf.materials![0]!.pbrMetallicRoughness!.baseColorTexture = { index: 0, texCoord: 2 };
     gltf.meshes![0]!.primitives[0]!.attributes.TEXCOORD_2 = 1;
@@ -4134,7 +4338,7 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
     expect(compatibility.issues.some((issue) => issue.name === 'TEXCOORD_2')).toBe(false);
   });
 
-  it('does not reject two material UV sets that can be projected into core uv0 and uv1', () => {
+  it('does not reject two high material UV sets with matching indexed streams', () => {
     const gltf = makeExternalTexturedGltf();
     gltf.materials![0] = {
       pbrMetallicRoughness: {
@@ -4154,7 +4358,7 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
     expect(compatibility.issues.some((issue) => issue.name === 'TEXCOORD_3')).toBe(false);
   });
 
-  it('still rejects material UV routing that needs more than two core UV lanes', () => {
+  it('accepts material routing across more than two core UV lanes', () => {
     const gltf = makeExternalTexturedGltf();
     gltf.materials![0] = {
       pbrMetallicRoughness: {
@@ -4167,15 +4371,10 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
 
     const report = analyzeGltfAsset(gltf);
     expect(report.materials.uvSets).toEqual([0, 1, 2]);
-    expect(report.materials.unrepresentableUvSets).toEqual([2]);
+    expect(report.materials.unrepresentableUvSets).toEqual([]);
 
     const compatibility = evaluateGltfBackendCompatibility(report, 'walkaround-hybrid');
-    const uvIssue = compatibility.issues.find((issue) => issue.name === 'TEXCOORD_2');
-    expect(uvIssue).toEqual(expect.objectContaining({
-      category: 'material',
-      support: 'unsupported',
-      path: 'materials[0].normalTexture.texCoord',
-    }));
+    expect(compatibility.issues.some((issue) => issue.name === 'TEXCOORD_2')).toBe(false);
   });
 
   it('does not reject a variant material high UV set that can be remapped on its mapped primitive', () => {
@@ -4286,7 +4485,7 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
     expect(webgpuRows[1]!.unsupportedCount).toBe(0);
   });
 
-  it('routes glTF dispersion materials away from walkaround in the planner', async () => {
+  it('reports walkaround glTF dispersion as approximate and permits reject-unsupported mode', async () => {
     const { gltf, buffers } = makeInlineTriangleGltf();
     gltf.extensionsUsed = ['KHR_materials_dispersion'];
     gltf.materials = [{
@@ -4313,53 +4512,40 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
     });
     expect(walkaround).toMatchObject({
       backend: 'walkaround-hybrid',
-      unsupportedCount: 1,
+      unsupportedCount: 0,
       issues: expect.arrayContaining([
         expect.objectContaining({
           category: 'material',
           name: 'dispersionAbbeNumber',
-          support: 'unsupported',
+          support: 'approximate',
           path: 'materials[0].extensions.KHR_materials_dispersion.dispersion',
         }),
       ]),
     });
 
-    let error: unknown;
-    try {
-      await loadGltfForEngine(gltf, {
-        buffers,
-        backend: 'walkaround-hybrid',
-        compatibilityMode: 'reject-unsupported',
-        createEngine: async () => ({ setScene: vi.fn() }),
-      });
-    } catch (err) {
-      error = err;
-    }
-
-    expect(error).toBeInstanceOf(GltfCompatibilityError);
-    expect((error as GltfCompatibilityError).failures).toContain(
-      'material:dispersionAbbeNumber=unsupported at materials[0].extensions.KHR_materials_dispersion.dispersion',
-    );
-    expect((error as GltfCompatibilityError).failureDetails).toContainEqual(expect.objectContaining({
-      source: 'compatibility-issue',
-      category: 'material',
-      name: 'dispersionAbbeNumber',
-      support: 'unsupported',
-      path: 'materials[0].extensions.KHR_materials_dispersion.dispersion',
-    }));
+    const setScene = vi.fn();
+    const createEngine = vi.fn(async () => ({ setScene }));
+    await loadGltfForEngine(gltf, {
+      buffers,
+      backend: 'walkaround-hybrid',
+      compatibilityMode: 'reject-unsupported',
+      createEngine,
+    });
+    expect(createEngine).toHaveBeenCalledTimes(1);
+    expect(setScene).toHaveBeenCalledTimes(1);
   });
 
   it('reports malformed sparse POSITION storage before backend selection', () => {
     const { gltf } = makeInlineTriangleGltf();
+    const missingValuesBufferView = gltf.bufferViews!.length + 1;
     gltf.accessors![0] = {
       ...gltf.accessors![0]!,
       sparse: {
         count: 1,
-        indices: { bufferView: 2, componentType: 5123 },
-        values: { bufferView: 3 },
+        indices: { bufferView: 0, componentType: 5123 },
+        values: { bufferView: missingValuesBufferView },
       },
     };
-    gltf.bufferViews!.push({ buffer: 0, byteOffset: 0, byteLength: 2 });
 
     const report = analyzeGltfAsset(gltf);
 
@@ -4368,7 +4554,7 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
       path: 'accessors[0].sparse.values.bufferView',
       accessorIndex: 0,
       sparseIssueKind: 'missing-sparse-values-buffer-view',
-      bufferViewIndex: 3,
+      bufferViewIndex: missingValuesBufferView,
     }));
 
     const compatibility = evaluateGltfBackendCompatibility(report, 'pt-webgl2');
@@ -4383,6 +4569,13 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
   it('reports malformed sparse storage on optional primitive streams as degraded import issues', () => {
     const { gltf, buffers } = makeInlineTriangleGltf();
     addMorphedGpuInstancing(gltf, buffers);
+    const primitive = gltf.meshes![0]!.primitives[0]!;
+    const normalAccessor = primitive.attributes.NORMAL!;
+    const morphPositionAccessor = primitive.targets![0]!.POSITION!;
+    const instancing = gltf.nodes![0]!.extensions!.EXT_mesh_gpu_instancing as {
+      attributes: { TRANSLATION: number };
+    };
+    const translationAccessor = instancing.attributes.TRANSLATION;
     const inverseBindAccessor = gltf.accessors!.length;
     gltf.nodes![0] = { ...gltf.nodes![0]!, skin: 0 };
     gltf.nodes!.push({ name: 'joint' });
@@ -4398,24 +4591,24 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
         values: { bufferView: 102 },
       },
     });
-    gltf.accessors![1] = {
-      ...gltf.accessors![1]!,
+    gltf.accessors![normalAccessor] = {
+      ...gltf.accessors![normalAccessor]!,
       sparse: {
         count: 1,
         indices: { bufferView: 0, componentType: 5123 },
         values: { bufferView: 99 },
       },
     };
-    gltf.accessors![2] = {
-      ...gltf.accessors![2]!,
+    gltf.accessors![morphPositionAccessor] = {
+      ...gltf.accessors![morphPositionAccessor]!,
       sparse: {
         count: 1,
         indices: { bufferView: 0, componentType: 5123 },
         values: { bufferView: 100 },
       },
     };
-    gltf.accessors![3] = {
-      ...gltf.accessors![3]!,
+    gltf.accessors![translationAccessor] = {
+      ...gltf.accessors![translationAccessor]!,
       sparse: {
         count: 1,
         indices: { bufferView: 0, componentType: 5123 },
@@ -4428,8 +4621,8 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
     expect(report.primitives.accessorStorageIssues).toEqual(expect.arrayContaining([
       expect.objectContaining({
         semantic: 'attributes.NORMAL',
-        accessorIndex: 1,
-        path: 'accessors[1].sparse.values.bufferView',
+        accessorIndex: normalAccessor,
+        path: `accessors[${normalAccessor}].sparse.values.bufferView`,
         sparseIssueKind: 'missing-sparse-values-buffer-view',
         meshIndex: 0,
         primitiveIndex: 0,
@@ -4437,8 +4630,8 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
       }),
       expect.objectContaining({
         semantic: 'targets.POSITION',
-        accessorIndex: 2,
-        path: 'accessors[2].sparse.values.bufferView',
+        accessorIndex: morphPositionAccessor,
+        path: `accessors[${morphPositionAccessor}].sparse.values.bufferView`,
         sparseIssueKind: 'missing-sparse-values-buffer-view',
         meshIndex: 0,
         primitiveIndex: 0,
@@ -4447,8 +4640,8 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
       }),
       expect.objectContaining({
         semantic: 'instancing.TRANSLATION',
-        accessorIndex: 3,
-        path: 'accessors[3].sparse.values.bufferView',
+        accessorIndex: translationAccessor,
+        path: `accessors[${translationAccessor}].sparse.values.bufferView`,
         sparseIssueKind: 'missing-sparse-values-buffer-view',
         nodeIndex: 0,
         bufferViewIndex: 101,
@@ -4469,19 +4662,19 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
         category: 'primitive',
         name: 'accessor.attributes.NORMAL.missing-sparse-values-buffer-view',
         support: 'approximate',
-        path: 'accessors[1].sparse.values.bufferView',
+        path: `accessors[${normalAccessor}].sparse.values.bufferView`,
       }),
       expect.objectContaining({
         category: 'primitive',
         name: 'accessor.targets.POSITION.missing-sparse-values-buffer-view',
         support: 'approximate',
-        path: 'accessors[2].sparse.values.bufferView',
+        path: `accessors[${morphPositionAccessor}].sparse.values.bufferView`,
       }),
       expect.objectContaining({
         category: 'primitive',
         name: 'accessor.instancing.TRANSLATION.missing-sparse-values-buffer-view',
         support: 'approximate',
-        path: 'accessors[3].sparse.values.bufferView',
+        path: `accessors[${translationAccessor}].sparse.values.bufferView`,
       }),
       expect.objectContaining({
         category: 'primitive',
@@ -4628,7 +4821,7 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
         type: 'VEC3',
         sparse: {
           count: 1,
-          indices: { bufferView: 2, componentType: 5126 as never },
+          indices: { bufferView: 2, componentType: 5126 },
           values: { bufferView: 3 },
         },
       },
@@ -4932,7 +5125,7 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
     }
   });
 
-  it('reports EXT_mesh_gpu_instancing on morphed meshes as a fallback-expanded combined primitive case', () => {
+  it('reports EXT_mesh_gpu_instancing on morphed meshes as a native combined primitive case', () => {
     const { gltf, buffers } = makeInlineTriangleGltf();
     addMorphedGpuInstancing(gltf, buffers);
 
@@ -4949,12 +5142,9 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
     ]);
 
     const compatibility = evaluateGltfBackendCompatibility(report, 'pt-webgl2');
-    expect(compatibility.issues).toContainEqual(expect.objectContaining({
-      category: 'primitive',
-      name: 'EXT_mesh_gpu_instancing.skinnedOrMorphed',
-      support: 'fallback-generated-mesh',
-      path: 'nodes[0].extensions.EXT_mesh_gpu_instancing',
-    }));
+    expect(compatibility.issues.some((issue) =>
+      issue.name === 'EXT_mesh_gpu_instancing.skinnedOrMorphed'
+    )).toBe(false);
   });
 
   it('reports skin attributes without node.skin as unsupported ignored primitive data', () => {
@@ -5029,7 +5219,7 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
     }));
   });
 
-  it('attaches source paths to compatibility issues, including cameras and double-sided materials', () => {
+  it('attaches source paths to compatibility issues while native double-sided materials stay clean', () => {
     const report = analyzeGltfAsset({
       asset: { version: '2.0' },
       extensionsUsed: ['EXT_unknown_feature', 'KHR_draco_mesh_compression'],
@@ -5083,12 +5273,6 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
       }),
       expect.objectContaining({
         category: 'material',
-        name: 'doubleSided',
-        support: 'approximate',
-        path: 'materials[0].doubleSided',
-      }),
-      expect.objectContaining({
-        category: 'material',
         name: 'KHR_materials_pbrSpecularGlossiness',
         support: 'approximate',
         path: 'materials[0].extensions.KHR_materials_pbrSpecularGlossiness',
@@ -5101,6 +5285,9 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
       }),
     ]));
     expect(compatibility.issues.some((issue) =>
+      issue.category === 'material' && issue.name === 'doubleSided'
+    )).toBe(false);
+    expect(compatibility.issues.some((issue) =>
       issue.category === 'extension' &&
       issue.name === 'KHR_draco_mesh_compression' &&
       issue.support === 'requires-hook',
@@ -5109,6 +5296,98 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
 });
 
 describe('loadGltfForEngine', () => {
+  it('classifies host-only compressed-geometry fallback as degraded', async () => {
+    const { gltf, buffers } = makeInlineTriangleGltf({ includeUvSets: false });
+    const compressedBufferIndex = gltf.buffers!.length;
+    const compressedBufferViewIndex = gltf.bufferViews!.length;
+    const compressed = bytes([0x44]);
+    gltf.buffers!.push({ byteLength: compressed.byteLength });
+    gltf.bufferViews!.push({
+      buffer: compressedBufferIndex,
+      byteOffset: 0,
+      byteLength: compressed.byteLength,
+    });
+    buffers.set(compressedBufferIndex, compressed);
+    gltf.extensionsUsed = ['KHR_draco_mesh_compression'];
+    gltf.meshes![0]!.primitives[0]!.extensions = {
+      KHR_draco_mesh_compression: {
+        bufferView: compressedBufferViewIndex,
+        attributes: { POSITION: 0, NORMAL: 1 },
+      },
+    };
+    const createEngine = vi.fn(async () => ({
+      backendId: 'pt-webgl2' as const,
+      setScene: vi.fn(),
+    }));
+
+    await expect(loadGltfForEngine(gltf, {
+      buffers,
+      backend: 'pt-webgl2',
+      compressionDecoderPolicy: 'host-only',
+      compatibilityMode: 'reject-degraded',
+      createEngine,
+    })).rejects.toThrow(/draco-fallback-accessors-used=approximate/);
+    expect(createEngine).not.toHaveBeenCalled();
+
+    await expect(loadGltfForEngine(gltf, {
+      buffers,
+      backend: 'pt-webgl2',
+      compressionDecoderPolicy: 'host-only',
+      compatibilityMode: 'reject-unsupported',
+      createEngine,
+    })).resolves.toMatchObject({ backend: 'pt-webgl2' });
+  });
+
+  it('accepts required Draco through the built-in decoder in reject-degraded mode', async () => {
+    const { gltf, buffers } = makeInlineTriangleGltf({ includeUvSets: false });
+    const compressed = bytes([
+      68, 82, 65, 67, 79, 2, 2, 1, 0, 0, 0, 1, 3, 1, 0, 1,
+      2, 1, 2, 0, 9, 3, 0, 0, 1, 9, 3, 0, 1, 0, 0, 0,
+      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 128, 63, 0,
+      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 128, 63, 0,
+      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 128, 63, 0,
+      0, 0, 0, 0, 0, 0, 0, 0, 0, 128, 63, 0, 0, 0, 0, 0,
+      0, 0, 0, 0, 0, 128, 63,
+    ]);
+    const compressedBufferIndex = gltf.buffers!.length;
+    const compressedBufferViewIndex = gltf.bufferViews!.length;
+    gltf.buffers!.push({ byteLength: compressed.byteLength });
+    gltf.bufferViews!.push({
+      buffer: compressedBufferIndex,
+      byteOffset: 0,
+      byteLength: compressed.byteLength,
+    });
+    buffers.set(compressedBufferIndex, compressed);
+    gltf.extensionsUsed = ['KHR_draco_mesh_compression'];
+    gltf.extensionsRequired = ['KHR_draco_mesh_compression'];
+    const primitive = gltf.meshes![0]!.primitives[0]!;
+    delete primitive.indices;
+    primitive.extensions = {
+      KHR_draco_mesh_compression: {
+        bufferView: compressedBufferViewIndex,
+        attributes: { POSITION: 0, NORMAL: 1 },
+      },
+    };
+    const engine = { backendId: 'pt-webgl2' as const, setScene: vi.fn() };
+    const createEngine = vi.fn(async () => engine);
+
+    const result = await loadGltfForEngine(gltf, {
+      buffers,
+      backend: 'pt-webgl2',
+      compatibilityMode: 'reject-degraded',
+      createEngine,
+    });
+
+    expect(createEngine).toHaveBeenCalledOnce();
+    expect(result.backend).toBe('pt-webgl2');
+    expect(result.asset.diagnostics.some((diagnostic) =>
+      diagnostic.code === 'draco-fallback-accessors-used'
+    )).toBe(false);
+    const decoded = result.asset.scene.primitives[0] as MeshPrimitive;
+    expect(Array.from(decoded.indices ?? [])).toEqual([0, 1, 2]);
+    expect(engine.setScene).toHaveBeenCalledWith(result.asset.scene);
+  });
+
   it('loads, selects the recommended backend, constructs an injected engine, and attaches a controller', async () => {
     const { gltf, buffers } = makeInlineTriangleGltf();
     const engine = { setScene: vi.fn(), updatePrimitive: vi.fn() };
@@ -5139,7 +5418,10 @@ describe('loadGltfForEngine', () => {
       { mesh: 0 },
       { mesh: 1, camera: 0 },
     ];
-    gltf.cameras = [{}];
+    gltf.cameras = [{
+      type: 'perspective',
+      perspective: { yfov: 0.7, znear: 0.1 },
+    }];
     gltf.materials = [
       { pbrMetallicRoughness: { baseColorFactor: [1, 1, 1, 1] } },
       { doubleSided: true, pbrMetallicRoughness: { baseColorFactor: [1, 1, 1, 1] } },
@@ -5160,8 +5442,7 @@ describe('loadGltfForEngine', () => {
 
     expect(clean.asset.scene.primitives).toHaveLength(1);
     expect(clean.asset.diagnostics.some((diagnostic) =>
-      diagnostic.code === 'ignored-camera' ||
-      diagnostic.code === 'double-sided-material',
+      diagnostic.code === 'ignored-camera',
     )).toBe(false);
     const selectedCompatibility = clean.asset.backendCompatibility.find((entry) =>
       entry.profileId === 'pt-webgl2'
@@ -5302,6 +5583,12 @@ describe('loadGltfForEngine', () => {
 
   it('fetches selected-scene sparse animation patch buffers before conversion', async () => {
     const { gltf, buffers } = makeInlineTriangleGltf();
+    const inputAccessor = gltf.accessors!.length;
+    const outputAccessor = inputAccessor + 1;
+    const timeBufferView = gltf.bufferViews!.length;
+    const valueBufferView = timeBufferView + 1;
+    const sparseIndicesBufferView = valueBufferView + 1;
+    const sparseValuesBufferView = sparseIndicesBufferView + 1;
     const originalBuffer = buffers.get(0)!;
     const times = f32Buffer([0, 1]);
     const baseValues = f32Buffer([0, 0, 0, 0, 0, 0]);
@@ -5310,20 +5597,21 @@ describe('loadGltfForEngine', () => {
     const valueOffset = timeOffset + times.byteLength;
     const sparseIndices = u16Buffer([1]);
     const sparseValues = f32Buffer([2, 3, 4]);
-    const sparseBuffer = concatArrayBuffers([sparseIndices, sparseValues]);
+    const sparsePadding = new Uint8Array(2).buffer;
+    const sparseBuffer = concatArrayBuffers([sparseIndices, sparsePadding, sparseValues]);
     buffers.set(0, baseBuffer);
     gltf.accessors = [
       ...(gltf.accessors ?? []),
-      { bufferView: 2, componentType: 5126, count: 2, type: 'SCALAR' },
+      { bufferView: timeBufferView, componentType: 5126, count: 2, type: 'SCALAR' },
       {
-        bufferView: 3,
+        bufferView: valueBufferView,
         componentType: 5126,
         count: 2,
         type: 'VEC3',
         sparse: {
           count: 1,
-          indices: { bufferView: 4, componentType: 5123 },
-          values: { bufferView: 5 },
+          indices: { bufferView: sparseIndicesBufferView, componentType: 5123 },
+          values: { bufferView: sparseValuesBufferView },
         },
       },
     ];
@@ -5332,7 +5620,7 @@ describe('loadGltfForEngine', () => {
       { buffer: 0, byteOffset: timeOffset, byteLength: times.byteLength },
       { buffer: 0, byteOffset: valueOffset, byteLength: baseValues.byteLength },
       { buffer: 1, byteOffset: 0, byteLength: sparseIndices.byteLength },
-      { buffer: 1, byteOffset: sparseIndices.byteLength, byteLength: sparseValues.byteLength },
+      { buffer: 1, byteOffset: 4, byteLength: sparseValues.byteLength },
     ];
     gltf.buffers = [
       { byteLength: baseBuffer.byteLength },
@@ -5340,7 +5628,7 @@ describe('loadGltfForEngine', () => {
     ];
     gltf.animations = [{
       name: 'selected-sparse-motion',
-      samplers: [{ input: 2, output: 3 }],
+      samplers: [{ input: inputAccessor, output: outputAccessor }],
       channels: [{ sampler: 0, target: { node: 0, path: 'translation' } }],
     }];
     const fetch = vi.fn(async (url: string) => {
@@ -5373,6 +5661,12 @@ describe('loadGltfForEngine', () => {
 
   it('fetches selected-scene KHR_animation_pointer material sampler buffers before conversion', async () => {
     const { gltf, buffers } = makeInlineTriangleGltf();
+    const inputAccessor = gltf.accessors!.length;
+    const outputAccessor = inputAccessor + 1;
+    const timeBufferView = gltf.bufferViews!.length;
+    const valueBufferView = timeBufferView + 1;
+    const sparseIndicesBufferView = valueBufferView + 1;
+    const sparseValuesBufferView = sparseIndicesBufferView + 1;
     const originalBuffer = buffers.get(0)!;
     gltf.extensionsUsed = ['KHR_animation_pointer'];
     gltf.extensionsRequired = ['KHR_animation_pointer'];
@@ -5391,19 +5685,20 @@ describe('loadGltfForEngine', () => {
     const valueOffset = times.byteLength;
     const sparseIndices = u16Buffer([1]);
     const sparseValues = f32Buffer([0, 1, 0, 1]);
-    const sparseBuffer = concatArrayBuffers([sparseIndices, sparseValues]);
+    const sparsePadding = new Uint8Array(2).buffer;
+    const sparseBuffer = concatArrayBuffers([sparseIndices, sparsePadding, sparseValues]);
     gltf.accessors = [
       ...(gltf.accessors ?? []),
-      { bufferView: 2, componentType: 5126, count: 2, type: 'SCALAR' },
+      { bufferView: timeBufferView, componentType: 5126, count: 2, type: 'SCALAR' },
       {
-        bufferView: 3,
+        bufferView: valueBufferView,
         componentType: 5126,
         count: 2,
         type: 'VEC4',
         sparse: {
           count: 1,
-          indices: { bufferView: 4, componentType: 5123 },
-          values: { bufferView: 5 },
+          indices: { bufferView: sparseIndicesBufferView, componentType: 5123 },
+          values: { bufferView: sparseValuesBufferView },
         },
       },
     ];
@@ -5412,7 +5707,7 @@ describe('loadGltfForEngine', () => {
       { buffer: 1, byteOffset: timeOffset, byteLength: times.byteLength },
       { buffer: 1, byteOffset: valueOffset, byteLength: baseValues.byteLength },
       { buffer: 2, byteOffset: 0, byteLength: sparseIndices.byteLength },
-      { buffer: 2, byteOffset: sparseIndices.byteLength, byteLength: sparseValues.byteLength },
+      { buffer: 2, byteOffset: 4, byteLength: sparseValues.byteLength },
     ];
     gltf.buffers = [
       { byteLength: originalBuffer.byteLength },
@@ -5421,7 +5716,7 @@ describe('loadGltfForEngine', () => {
     ];
     gltf.animations = [{
       name: 'selected-material-pointer',
-      samplers: [{ input: 2, output: 3 }],
+      samplers: [{ input: inputAccessor, output: outputAccessor }],
       channels: [{
         sampler: 0,
         target: {
@@ -5845,13 +6140,11 @@ describe('loadGltfForEngine', () => {
     expect(engine.setScene).not.toHaveBeenCalled();
   });
 
-  it('rechecks strict compatibility against pt-webgpu lite engines that expose only capabilities', async () => {
+  it('rechecks strict compatibility against the typed pt-webgpu lite profile', async () => {
     const { gltf, buffers } = makeInlineTexturedGltf();
     const engine = {
       backendId: 'pt-webgpu' as const,
-      capabilities: {
-        experimentalFeatures: new Set(['pt-webgpu-lite-tier']),
-      },
+      backendProfileId: 'pt-webgpu-lite' as const,
       setScene: vi.fn(),
     };
 
@@ -5867,13 +6160,11 @@ describe('loadGltfForEngine', () => {
     expect(engine.setScene).not.toHaveBeenCalled();
   });
 
-  it('keeps existing pt-webgpu engines on the full profile when no lite marker is present', async () => {
+  it('keeps existing pt-webgpu engines on the full profile when no runtime profile is present', async () => {
     const { gltf, buffers } = makeInlineTriangleGltf();
     const engine = {
       backendId: 'pt-webgpu' as const,
-      capabilities: {
-        experimentalFeatures: new Set<string>(),
-      },
+
       setScene: vi.fn(),
     };
 
@@ -5949,12 +6240,13 @@ describe('loadGltfForEngine', () => {
 
   it('rechecks strict compatibility against the actual factory backend before attaching', async () => {
     const { gltf, buffers } = makeInlineTexturedGltf();
+    const close = vi.fn();
     const engine = { backendId: 'walkaround-hybrid' as const, setScene: vi.fn(), dispose: vi.fn() };
     const createEngine = vi.fn(async () => engine);
 
     await expect(loadGltfForEngine(gltf, {
       buffers,
-      decodeImage: async () => ({ kind: 'decoded-texture' }),
+      decodeImage: async () => ({ kind: 'decoded-texture', close }),
       backend: 'pt-webgl2',
       compatibilityMode: 'reject-degraded',
       opaqueTextureHandlesReady: ['pt-webgl2'],
@@ -5964,6 +6256,7 @@ describe('loadGltfForEngine', () => {
     expect(createEngine).toHaveBeenCalledTimes(1);
     expect(engine.setScene).not.toHaveBeenCalled();
     expect(engine.dispose).toHaveBeenCalledTimes(1);
+    expect(close).toHaveBeenCalledTimes(1);
   });
 
   it('does not dispose a caller-owned engine after actual backend rejection', async () => {
@@ -5988,19 +6281,17 @@ describe('loadGltfForEngine', () => {
     delete gltf.meshes![0]!.primitives[0]!.attributes.POSITION;
     const createEngine = vi.fn(async () => ({ setScene: vi.fn() }));
 
-    await expect(loadGltfForEngine(gltf, {
+    await expectGltfImportFailure(loadGltfForEngine(gltf, {
       buffers,
       backend: 'pt-webgl2',
       compatibilityMode: 'reject-unsupported',
       createEngine,
-    })).rejects.toThrow(
-      'import:missing-position=unsupported at meshes[0].primitives[0].attributes.POSITION',
-    );
+    }), 'missing-position', 'meshes[0].primitives[0].attributes.POSITION');
 
     expect(createEngine).not.toHaveBeenCalled();
   });
 
-  it('rejects ignored secondary vertex-color diagnostics in reject-unsupported mode', async () => {
+  it('accepts preserved secondary vertex-color streams in reject-unsupported mode', async () => {
     const { gltf, buffers } = makeInlineTriangleGltf();
     addSecondaryVertexColorSet(gltf, buffers);
     const createEngine = vi.fn(async () => ({ setScene: vi.fn() }));
@@ -6010,11 +6301,9 @@ describe('loadGltfForEngine', () => {
       backend: 'pt-webgl2',
       compatibilityMode: 'reject-unsupported',
       createEngine,
-    })).rejects.toThrow(
-      'import:ignored-vertex-color-set=unsupported at meshes[0].primitives[0].attributes.COLOR_1',
-    );
+    })).resolves.toBeDefined();
 
-    expect(createEngine).not.toHaveBeenCalled();
+    expect(createEngine).toHaveBeenCalledOnce();
   });
 
   it('accepts supported morph-target TEXCOORD_0 diagnostics in reject-unsupported mode', async () => {
@@ -6037,14 +6326,12 @@ describe('loadGltfForEngine', () => {
     addMorphTargetTexcoord(gltf, buffers, { semantic: 'TEXCOORD_2' });
     const createEngine = vi.fn(async () => ({ setScene: vi.fn() }));
 
-    await expect(loadGltfForEngine(gltf, {
+    await expectGltfImportFailure(loadGltfForEngine(gltf, {
       buffers,
       backend: 'pt-webgl2',
       compatibilityMode: 'reject-unsupported',
       createEngine,
-    })).rejects.toThrow(
-      'import:ignored-morph-target-texcoord=unsupported at meshes[0].primitives[0].targets[0].TEXCOORD_2',
-    );
+    }), 'ignored-morph-target-texcoord', 'meshes[0].primitives[0].targets[0].TEXCOORD_2');
 
     expect(createEngine).not.toHaveBeenCalled();
   });
@@ -6077,14 +6364,12 @@ describe('loadGltfForEngine', () => {
     }];
     const createEngine = vi.fn(async () => ({ setScene: vi.fn() }));
 
-    await expect(loadGltfForEngine(gltf, {
+    await expectGltfImportFailure(loadGltfForEngine(gltf, {
       buffers,
       backend: 'pt-webgl2',
       compatibilityMode: 'reject-unsupported',
       createEngine,
-    })).rejects.toThrow(
-      'import:missing-animation-sampler=unsupported at animations[0].samplers[0]',
-    );
+    }), 'missing-animation-sampler', 'animations[0].samplers[0]');
 
     expect(createEngine).not.toHaveBeenCalled();
   });
@@ -6093,7 +6378,7 @@ describe('loadGltfForEngine', () => {
     const { gltf, buffers } = makeInlineTriangleGltf();
     gltf.animations = [{
       name: 'pointerish',
-      channels: [{ sampler: 0, target: { node: 0, path: 'pointer' as any } }],
+      channels: [{ sampler: 0, target: { node: 0, path: 'pointer' } }],
       samplers: [{ input: 0, output: 1, interpolation: 'LINEAR' }],
     }];
     const createEngine = vi.fn(async () => ({ setScene: vi.fn() }));
@@ -6110,7 +6395,7 @@ describe('loadGltfForEngine', () => {
     expect(createEngine).not.toHaveBeenCalled();
   });
 
-  it('allows double-sided diagnostics in reject-unsupported mode but rejects them in reject-degraded mode', async () => {
+  it('accepts native double-sided materials in reject-degraded mode without import diagnostics', async () => {
     const { gltf, buffers } = makeInlineTriangleGltf();
     gltf.meshes![0]!.primitives[0] = {
       ...gltf.meshes![0]!.primitives[0]!,
@@ -6122,28 +6407,13 @@ describe('loadGltfForEngine', () => {
     const accepted = await loadGltfForEngine(gltf, {
       buffers,
       backend: 'pt-webgl2',
-      compatibilityMode: 'reject-unsupported',
+      compatibilityMode: 'reject-degraded',
       createEngine: createAcceptedEngine,
     });
-    expect(accepted.diagnostics).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        code: 'double-sided-material',
-        path: 'materials[0].doubleSided',
-      }),
-    ]));
+    expect(accepted.diagnostics.some((diagnostic) =>
+      diagnostic.path === 'materials[0].doubleSided'
+    )).toBe(false);
     expect(createAcceptedEngine).toHaveBeenCalledTimes(1);
-
-    const createRejectedEngine = vi.fn(async () => ({ setScene: vi.fn() }));
-    await expect(loadGltfForEngine(gltf, {
-      buffers,
-      backend: 'pt-webgl2',
-      compatibilityMode: 'reject-degraded',
-      createEngine: createRejectedEngine,
-    })).rejects.toThrow(
-      'import:double-sided-material=approximate at materials[0].doubleSided',
-    );
-
-    expect(createRejectedEngine).not.toHaveBeenCalled();
   });
 
   it('allows skin rest-pose diagnostics in reject-unsupported mode but rejects them in reject-degraded mode', async () => {
@@ -6271,7 +6541,7 @@ describe('loadGltfForEngine', () => {
     expect(createRejectedEngine).not.toHaveBeenCalled();
   });
 
-  it('classifies malformed authored tangents as degraded import diagnostics', async () => {
+  it('rejects malformed authored tangents before engine construction', async () => {
     const { gltf, buffers } = makeInlineNormalMappedGltf();
     const tangentData = f32Buffer([
       1, 0, 0,
@@ -6302,42 +6572,17 @@ describe('loadGltfForEngine', () => {
     gltf.buffers!.push({ byteLength: tangentData.byteLength });
     buffers.set(tangentBuffer, tangentData);
 
-    const createAcceptedEngine = vi.fn(async () => ({ setScene: vi.fn() }));
-    const accepted = await loadGltfForEngine(gltf, {
+    const createEngine = vi.fn(async () => ({ setScene: vi.fn() }));
+    await expectGltfImportFailure(loadGltfForEngine(gltf, {
       buffers,
       decodeImage: async () => ({ kind: 'decoded-texture' }),
       backend: 'pt-webgl2',
       compatibilityMode: 'reject-unsupported',
       opaqueTextureHandlesReady: ['pt-webgl2'],
-      createEngine: createAcceptedEngine,
-    });
+      createEngine,
+    }), 'invalid-primitive-attribute', 'meshes[0].primitives[0].attributes.TANGENT');
 
-    expect(accepted.diagnostics).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        code: 'invalid-primitive-attribute',
-        path: 'meshes[0].primitives[0].attributes.TANGENT',
-      }),
-      expect.objectContaining({
-        code: 'generated-tangents',
-        path: 'meshes[0].primitives[0].attributes.TANGENT',
-      }),
-    ]));
-    expect(createAcceptedEngine).toHaveBeenCalledTimes(1);
-
-    const createRejectedEngine = vi.fn(async () => ({ setScene: vi.fn() }));
-    await expect(loadGltfForEngine(gltf, {
-      buffers,
-      decodeImage: async () => ({ kind: 'decoded-texture' }),
-      backend: 'pt-webgl2',
-      compatibilityMode: 'reject-degraded',
-      opaqueTextureHandlesReady: ['pt-webgl2'],
-      createEngine: createRejectedEngine,
-    })).rejects.toThrow(
-      'primitive:accessor.attributes.TANGENT.invalid-accessor-type=approximate ' +
-      `at accessors[${tangentAccessor}].type`,
-    );
-
-    expect(createRejectedEngine).not.toHaveBeenCalled();
+    expect(createEngine).not.toHaveBeenCalled();
   });
 
   it('allows generated flat normals in reject-unsupported mode but rejects them in reject-degraded mode', async () => {
@@ -6376,16 +6621,14 @@ describe('loadGltfForEngine', () => {
     const { gltf, buffers } = makeInlineNormalMappedGltf({ includeUv0: false });
     const createEngine = vi.fn(async () => ({ setScene: vi.fn() }));
 
-    await expect(loadGltfForEngine(gltf, {
+    await expectGltfImportFailure(loadGltfForEngine(gltf, {
       buffers,
       decodeImage: async () => ({ kind: 'decoded-texture' }),
       backend: 'pt-webgl2',
       compatibilityMode: 'reject-degraded',
       opaqueTextureHandlesReady: ['pt-webgl2'],
       createEngine,
-    })).rejects.toThrow(
-      'import:missing-tangent-texcoord=approximate at meshes[0].primitives[0].attributes.TEXCOORD_0',
-    );
+    }), 'missing-material-texcoord', 'materials[0].normalTexture');
 
     expect(createEngine).not.toHaveBeenCalled();
   });
@@ -6395,15 +6638,13 @@ describe('loadGltfForEngine', () => {
     gltf.images![0]!.bufferView = 99;
     const createEngine = vi.fn(async () => ({ setScene: vi.fn() }));
 
-    await expect(loadGltfForEngine(gltf, {
+    await expectGltfImportFailure(loadGltfForEngine(gltf, {
       buffers,
       backend: 'pt-webgl2',
       compatibilityMode: 'reject-degraded',
       opaqueTextureHandlesReady: ['pt-webgl2'],
       createEngine,
-    })).rejects.toThrow(
-      'import:image-buffer-view-not-found=approximate at images[0].bufferView',
-    );
+    }), 'material-texture-unresolved', 'materials[0].normalTexture');
 
     expect(createEngine).not.toHaveBeenCalled();
   });
@@ -6413,15 +6654,13 @@ describe('loadGltfForEngine', () => {
     gltf.materials![0]!.normalTexture = { index: 99 };
     const createEngine = vi.fn(async () => ({ setScene: vi.fn() }));
 
-    await expect(loadGltfForEngine(gltf, {
+    await expectGltfImportFailure(loadGltfForEngine(gltf, {
       buffers,
       backend: 'pt-webgl2',
       compatibilityMode: 'reject-degraded',
       opaqueTextureHandlesReady: ['pt-webgl2'],
       createEngine,
-    })).rejects.toThrow(
-      'import:material-texture-not-found=approximate at materials[0].normalTexture.index',
-    );
+    }), 'material-texture-not-found', 'materials[0].normalTexture.index');
 
     expect(createEngine).not.toHaveBeenCalled();
   });
@@ -6449,15 +6688,13 @@ describe('loadGltfForEngine', () => {
     ]));
     const createEngine = vi.fn(async () => ({ setScene: vi.fn() }));
 
-    await expect(loadGltfForEngine(gltf, {
+    await expectGltfImportFailure(loadGltfForEngine(gltf, {
       buffers,
       backend: 'pt-webgl2',
       compatibilityMode: 'reject-degraded',
       opaqueTextureHandlesReady: ['pt-webgl2'],
       createEngine,
-    })).rejects.toThrow(
-      'import:material-not-found=approximate at meshes[0].primitives[0].material',
-    );
+    }), 'material-not-found', 'meshes[0].primitives[0].material');
 
     expect(createEngine).not.toHaveBeenCalled();
   });
@@ -6466,21 +6703,19 @@ describe('loadGltfForEngine', () => {
     const { gltf, buffers } = makeInlineNormalMappedGltf({ texCoord: 2 });
     const createEngine = vi.fn(async () => ({ setScene: vi.fn() }));
 
-    await expect(loadGltfForEngine(gltf, {
+    await expectGltfImportFailure(loadGltfForEngine(gltf, {
       buffers,
       backend: 'pt-webgl2',
       compatibilityMode: 'reject-degraded',
       opaqueTextureHandlesReady: ['pt-webgl2'],
       createEngine,
-    })).rejects.toThrow(
-      'import:ignored-material-texcoord=approximate at materials[0].normalTexture',
-    );
+    }), 'missing-material-texcoord', 'materials[0].normalTexture');
 
     expect(createEngine).not.toHaveBeenCalled();
   });
 
   it('rejects opaque texture handles in reject-degraded mode unless the host opts in', async () => {
-    const { gltf, buffers } = makeInlineTexturedGltf();
+    const { gltf, buffers } = makeInlineUnsupportedTexturedGltf();
     const createEngine = vi.fn(async () => ({ setScene: vi.fn() }));
 
     await expect(loadGltfForEngine(gltf, {
@@ -6500,13 +6735,13 @@ describe('loadGltfForEngine', () => {
     gltf.images![0] = { uri: 'data:image/png;base64' };
     const createEngine = vi.fn(async () => ({ setScene: vi.fn() }));
 
-    await expect(loadGltfForEngine(gltf, {
+    await expectGltfImportFailure(loadGltfForEngine(gltf, {
       buffers,
       backend: 'pt-webgl2',
       compatibilityMode: 'reject-degraded',
       opaqueTextureHandlesReady: ['pt-webgl2'],
       createEngine,
-    })).rejects.toThrow('import:malformed-data-uri=approximate at images[0].uri');
+    }), 'material-texture-unresolved', 'materials[0].pbrMetallicRoughness.baseColorTexture');
 
     expect(createEngine).not.toHaveBeenCalled();
   });
@@ -6523,14 +6758,12 @@ describe('loadGltfForEngine', () => {
     };
     const createEngine = vi.fn(async () => ({ setScene: vi.fn() }));
 
-    await expect(loadGltfForEngine(gltf, {
+    await expectGltfImportFailure(loadGltfForEngine(gltf, {
       buffers,
       backend: 'pt-webgl2',
       compatibilityMode: 'reject-degraded',
       createEngine,
-    })).rejects.toThrow(
-      'import:invalid-sparse-indices-component-type=approximate at accessors[0].sparse.indices.componentType',
-    );
+    }), 'unreadable-position', 'meshes[0].primitives[0].attributes.POSITION');
 
     expect(createEngine).not.toHaveBeenCalled();
   });
@@ -6871,7 +7104,7 @@ describe('loadGltfForEngine', () => {
     expect(frame.usedSetScene).toBe(false);
     expect(engine.updatePrimitive).toHaveBeenCalledTimes(1);
     const patch = engine.updatePrimitive.mock.calls[0]![1] as { material: MeshPrimitive['material'] };
-    const roughness = patch.material.roughnessMap as TextureRef | undefined;
+    const roughness = patch.material.roughnessMap;
     expect(roughness).toBeDefined();
     const handle = roughness!.handle as { width: number; height: number; data: Float32Array; __vitrum_hint__: unknown };
     expect(handle.width).toBe(1);
@@ -7010,7 +7243,10 @@ describe('loadGltfForEngine', () => {
   it('keeps structured import diagnostic details on strict compatibility errors', async () => {
     const { gltf, buffers } = makeInlineTriangleGltf();
     gltf.nodes = [{ mesh: 0, camera: 0 }];
-    gltf.cameras = [{}];
+    gltf.cameras = [{
+      type: 'perspective',
+      perspective: { yfov: 0.7, znear: 0.1 },
+    }];
     const createEngine = vi.fn(async () => ({ setScene: vi.fn() }));
 
     let error: unknown;
@@ -7036,93 +7272,54 @@ describe('loadGltfForEngine', () => {
     expect(createEngine).not.toHaveBeenCalled();
   });
 
-  it('reports malformed material texture samplers during best-effort import', async () => {
+  it('rejects malformed material texture samplers during import', async () => {
     const { gltf, buffers } = makeInlineTexturedGltf();
     gltf.textures![0] = { ...gltf.textures![0]!, sampler: 0 };
     gltf.samplers = [{
-      wrapS: 123 as never,
-      magFilter: 111 as never,
-      minFilter: 222 as never,
+      wrapS: 123,
+      magFilter: 111,
+      minFilter: 222,
     }];
 
-    const result = await loadGltfAsset(gltf, {
+    await expectGltfImportFailure(loadGltfAsset(gltf, {
       buffers,
       decodeImage: async () => ({ kind: 'decoded-texture' }),
-    });
-
-    expect(result.diagnostics).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        code: 'invalid-material-texture-sampler',
-        path: 'samplers[0].wrapS',
-        materialIndex: 0,
-        textureIndex: 0,
-        samplerIndex: 0,
-        samplerProperty: 'wrapS',
-        samplerValue: 123,
-      }),
-      expect.objectContaining({
-        code: 'invalid-material-texture-sampler',
-        path: 'samplers[0].minFilter',
-        materialIndex: 0,
-        textureIndex: 0,
-        samplerIndex: 0,
-        samplerProperty: 'minFilter',
-        samplerValue: 222,
-      }),
-    ]));
-    const baseColor = result.scene.primitives[0]!.material.baseColorMap as TextureRef;
-    expect(baseColor.wrapS).toBeUndefined();
-    expect(baseColor.magFilter).toBeUndefined();
-    expect(baseColor.minFilter).toBeUndefined();
+    }), 'invalid-material-texture-sampler', 'samplers[0].wrapS');
   });
 
-  it('keeps malformed sampler diagnostics visible while reject-unsupported accepts the approximation', async () => {
+  it('rejects malformed sampler diagnostics regardless of compatibility mode', async () => {
     const { gltf, buffers } = makeInlineTexturedGltf();
     gltf.textures![0] = { ...gltf.textures![0]!, sampler: 0 };
     gltf.samplers = [{
-      wrapS: 123 as never,
-      minFilter: 222 as never,
+      wrapS: 123,
+      minFilter: 222,
     }];
     const createEngine = vi.fn(async () => ({ setScene: vi.fn() }));
 
-    const result = await loadGltfForEngine(gltf, {
+    await expectGltfImportFailure(loadGltfForEngine(gltf, {
       buffers,
       decodeImage: async () => ({ kind: 'decoded-texture' }),
       backend: 'pt-webgl2',
       compatibilityMode: 'reject-unsupported',
       createEngine,
-    });
+    }), 'invalid-material-texture-sampler', 'samplers[0].wrapS');
 
-    expect(createEngine).toHaveBeenCalledTimes(1);
-    expect(result.diagnostics).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        code: 'invalid-material-texture-sampler',
-        path: 'samplers[0].wrapS',
-        samplerProperty: 'wrapS',
-        samplerValue: 123,
-      }),
-      expect.objectContaining({
-        code: 'invalid-material-texture-sampler',
-        path: 'samplers[0].minFilter',
-        samplerProperty: 'minFilter',
-        samplerValue: 222,
-      }),
-    ]));
+    expect(createEngine).not.toHaveBeenCalled();
   });
 
   it('rejects malformed texture sampler policies before constructing an engine', async () => {
     const { gltf, buffers } = makeInlineTexturedGltf();
     gltf.textures![0] = { ...gltf.textures![0]!, sampler: 0 };
-    gltf.samplers = [{ minFilter: 222 as never }];
+    gltf.samplers = [{ minFilter: 222 }];
     const createEngine = vi.fn(async () => ({ setScene: vi.fn() }));
 
-    await expect(loadGltfForEngine(gltf, {
+    await expectGltfImportFailure(loadGltfForEngine(gltf, {
       buffers,
       decodeImage: async () => ({ kind: 'decoded-texture' }),
       backend: 'pt-webgl2',
       compatibilityMode: 'reject-degraded',
       createEngine,
-    })).rejects.toThrow('material:baseColorMap.samplerPolicy.invalid-min-filter=approximate at samplers[0].minFilter');
+    }), 'invalid-material-texture-sampler', 'samplers[0].minFilter');
     expect(createEngine).not.toHaveBeenCalled();
   });
 
@@ -7189,7 +7386,7 @@ describe('loadGltfForEngine', () => {
     expect(message).not.toContain('spec-gloss-texture-alpha-approximation');
   });
 
-  it('does not satisfy spec-gloss alpha degradation with an unrelated decoded roughnessMap', async () => {
+  it('rejects a missing spec-gloss texture before an unrelated roughness map can mask it', async () => {
     const { gltf, buffers } = makeInlineSpecGlossTexturedGltf();
     const specGloss = gltf.materials![0]!.extensions!.KHR_materials_pbrSpecularGlossiness!;
     specGloss.specularGlossinessTexture = { index: 99 };
@@ -7210,17 +7407,16 @@ describe('loadGltfForEngine', () => {
       colorSpace: context.colorSpace,
     }));
 
-    await expect(loadGltfForEngine(gltf, {
+    await expectGltfImportFailure(loadGltfForEngine(gltf, {
       buffers,
       decodePixels,
       backend: 'pt-webgl2',
       compatibilityMode: 'reject-degraded',
       createEngine,
-    })).rejects.toThrow(
-      'material:KHR_materials_pbrSpecularGlossiness.specularGlossinessTexture.glossinessAlpha=approximate',
-    );
+    }), 'material-texture-not-found',
+    'materials[0].extensions.KHR_materials_pbrSpecularGlossiness.specularGlossinessTexture.index');
 
-    expect(decodePixels).toHaveBeenCalledTimes(1);
+    expect(decodePixels).not.toHaveBeenCalled();
     expect(createEngine).not.toHaveBeenCalled();
   });
 
@@ -7346,7 +7542,7 @@ describe('loadGltfForEngine', () => {
     },
   );
 
-  it('allows fallback-expanded instanced morphed meshes in reject-unsupported mode before constructing an engine', async () => {
+  it('allows native instanced morphed meshes in reject-unsupported mode before constructing an engine', async () => {
     const { gltf, buffers } = makeInlineTriangleGltf();
     addMorphedGpuInstancing(gltf, buffers);
     const setScene = vi.fn();
@@ -7361,10 +7557,9 @@ describe('loadGltfForEngine', () => {
 
     expect(createEngine).toHaveBeenCalledTimes(1);
     expect(setScene).toHaveBeenCalledTimes(1);
-    expect(result.asset.scene.primitives).toHaveLength(2);
-    expect(result.asset.diagnostics).toEqual(expect.arrayContaining([
-      expect.objectContaining({ code: 'fallback-expanded-gpu-instancing' }),
-    ]));
+    expect(result.asset.scene.primitives).toHaveLength(1);
+    expect(result.asset.scene.primitives[0]?.kind).toBe('instanced-mesh');
+    expect(result.asset.instancingBindings?.[0]?.deformationSource?.morphTargets).toHaveLength(1);
   });
 
   it('allows native EXT_mesh_gpu_instancing in reject-degraded mode before constructing an engine', async () => {
@@ -7384,25 +7579,26 @@ describe('loadGltfForEngine', () => {
     expect(setScene).toHaveBeenCalledTimes(1);
     expect(result.asset.scene.primitives).toHaveLength(1);
     expect(result.asset.scene.primitives[0]?.kind).toBe('instanced-mesh');
-    expect(result.asset.diagnostics).not.toEqual(expect.arrayContaining([
-      expect.objectContaining({ code: 'fallback-expanded-gpu-instancing' }),
-    ]));
+    expect(result.asset.diagnostics).toEqual([]);
   });
 
-  it('rejects fallback-expanded instanced morphed meshes in reject-degraded mode before constructing an engine', async () => {
+  it('allows native instanced morphed meshes in reject-degraded mode before constructing an engine', async () => {
     const { gltf, buffers } = makeInlineTriangleGltf();
     addMorphedGpuInstancing(gltf, buffers);
-    const createEngine = vi.fn(async () => ({ setScene: vi.fn() }));
+    const setScene = vi.fn();
+    const createEngine = vi.fn(async () => ({ setScene }));
 
-    await expect(loadGltfForEngine(gltf, {
+    const result = await loadGltfForEngine(gltf, {
       buffers,
       backend: 'pt-webgl2',
       compatibilityMode: 'reject-degraded',
       createEngine,
-    })).rejects.toThrow(
-      'primitive:EXT_mesh_gpu_instancing.skinnedOrMorphed=fallback-generated-mesh at nodes[0].extensions.EXT_mesh_gpu_instancing',
-    );
-    expect(createEngine).not.toHaveBeenCalled();
+    });
+
+    expect(createEngine).toHaveBeenCalledTimes(1);
+    expect(setScene).toHaveBeenCalledTimes(1);
+    expect(result.asset.scene.primitives).toHaveLength(1);
+    expect(result.asset.scene.primitives[0]?.kind).toBe('instanced-mesh');
   });
 
   it('rejects unbound skin attributes in reject-unsupported mode before constructing an engine', async () => {
@@ -7434,19 +7630,18 @@ describe('loadGltfForEngine', () => {
     }));
   });
 
-  it('returns structured diagnostics for skin nodes with missing skin streams in best-effort mode', async () => {
+  it('rejects reachable skin nodes with missing skin streams', async () => {
     const { gltf, buffers } = makeInlineTriangleGltf();
     gltf.nodes![0] = { ...gltf.nodes![0]!, skin: 0 };
     gltf.nodes!.push({ name: 'joint' });
+    gltf.scenes![0]!.nodes!.push(1);
     gltf.skins = [{ joints: [1] }];
 
-    const asset = await loadGltfAsset(gltf, { buffers });
-
-    expect(asset.scene.primitives[0]?.kind).toBe('mesh');
-    expect(asset.diagnostics).toContainEqual(expect.objectContaining({
-      code: 'incomplete-skin-attributes',
-      path: 'meshes[0].primitives[0].attributes.JOINTS_0',
-    }));
+    await expectGltfImportFailure(
+      loadGltfAsset(gltf, { buffers }),
+      'incomplete-skin-attributes',
+      'meshes[0].primitives[0].attributes.JOINTS_0',
+    );
   });
 
   it('allows reject-degraded to use an optional texture-source extension fallback without a hook', async () => {
@@ -7509,7 +7704,7 @@ describe('loadGltfForEngine', () => {
     },
   );
 
-  it('rejects selected optional texture-source extensions without an image decode hook', async () => {
+  it('does not require a custom image hook for selected WebP sources', async () => {
     const { gltf, buffers } = makeInlineTexturedGltf();
     gltf.extensionsUsed = ['EXT_texture_webp'];
     gltf.textures![0] = {
@@ -7523,9 +7718,10 @@ describe('loadGltfForEngine', () => {
       backend: 'pt-webgl2',
       compatibilityMode: 'reject-degraded',
       textureSourceExtensions: ['EXT_texture_webp'],
+      opaqueTextureHandlesReady: ['pt-webgl2'],
       createEngine,
-    })).rejects.toThrow('extension:EXT_texture_webp=requires-hook at textures[0].extensions.EXT_texture_webp');
-    expect(createEngine).not.toHaveBeenCalled();
+    })).resolves.toBeDefined();
+    expect(createEngine).toHaveBeenCalledOnce();
   });
 
   it('accepts selected optional texture-source extensions with an explicit image decode hook', async () => {
@@ -7643,7 +7839,7 @@ describe('loadGltfForEngine', () => {
       entry.backend === 'pt-webgl2' && entry.profileId === 'pt-webgl2'
     );
     expect(preDecodePtWebgl2).toMatchObject({
-      requiresHookCount: 2,
+      requiresHookCount: 1,
     });
     expect(postDecodePtWebgl2).toMatchObject({
       requiresHookCount: 0,
@@ -7654,7 +7850,7 @@ describe('loadGltfForEngine', () => {
     expect(postDecodePtWebgl2?.nativeCount).toBeGreaterThan(0);
   });
 
-  it('accepts selected WebP texture-source extensions through the built-in Node decode bridge', async () => {
+  it('decodes selected WebP texture sources by default through the built-in Node bridge', async () => {
     const webpBytes = await makeWebpBytes(2, 2, [
       224, 96, 32, 255,
       224, 96, 32, 255,
@@ -7678,7 +7874,6 @@ describe('loadGltfForEngine', () => {
       backend: 'pt-webgl2',
       compatibilityMode: 'reject-degraded',
       textureSourceExtensions: ['EXT_texture_webp'],
-      decodeTextures: true,
       createEngine,
     });
 

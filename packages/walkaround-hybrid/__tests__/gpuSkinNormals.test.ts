@@ -56,8 +56,15 @@ describe('GPU normal-skinning WGSL', () => {
     // buffer at the SAME world-space slot (outIdx), so the smooth-shading-
     // normal blend consumes the skinned normal. The old mesh-local `vi` write
     // (dropped by applyGpuSkinnedRefit) is gone.
-    expect(GPU_SKIN_BVH_WITH_NORMALS_WGSL).toContain('skinnedNormals[outIdx] = vec4f(safeN, 0.0)');
-    expect(GPU_SKIN_BVH_WITH_NORMALS_WGSL).not.toContain('skinnedNormals[vi] = vec4f(safeN, 0.0)');
+    expect(GPU_SKIN_BVH_WITH_NORMALS_WGSL).toContain(
+      'let uv1Pack = skinnedNormals[outIdx].w',
+    );
+    expect(GPU_SKIN_BVH_WITH_NORMALS_WGSL).toContain(
+      'skinnedNormals[outIdx] = vec4f(safeN, uv1Pack)',
+    );
+    expect(GPU_SKIN_BVH_WITH_NORMALS_WGSL).not.toContain(
+      'skinnedNormals[vi] = vec4f(safeN, uv1Pack)',
+    );
   });
 
   it('with-normals kernel still skins positions into bvhPositions', () => {

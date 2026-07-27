@@ -12,6 +12,7 @@ import {
   buildSceneBindGroup,
   buildUboBindGroup,
   buildCompositeBindGroup,
+  type NrcHybridLayerBindings,
 } from './bindGroupBuilders.js';
 import type { SceneBindGroupResources } from './BvhBufferHost.js';
 import type { OptionalSubsystemBindingState } from './OptionalSubsystemBindingState.js';
@@ -35,10 +36,10 @@ export function buildPerFrameBindGroups(
   ddgi: OptionalSubsystemBindingState,
   placeholderView: GPUTextureView,
   resourceCache?: PipelineResourceCache,
+  nrcBindings?: NrcHybridLayerBindings,
 ): PerFrameBindGroups {
   const { common, restirDI, restirGI, gtao, svgf } = resources;
   const buildFrame = (): GPUBindGroup => buildFrameBindGroup(device, cache, {
-    placeholderView,
     reservoirCurrentBuffer: restirDI.reservoirCurrentBuffer,
     reservoirPreviousBuffer: restirDI.reservoirPreviousBuffer,
     reservoirSpatialBuffer: restirDI.reservoirSpatialBuffer,
@@ -55,9 +56,7 @@ export function buildPerFrameBindGroups(
   const buildRisGiFrame = (): GPUBindGroup => buildRisGiFrameBindGroup(
     device,
     cache,
-    common.gNormalDepthTexture,
     restirGI.reservoirGiCurrentBuffer,
-    resourceCache,
   );
   const aoFullView = resourceCache?.textureView(gtao.aoFullTexture) ?? gtao.aoFullTexture.createView();
   const tierView = resourceCache?.textureView(common.tierTexture) ?? common.tierTexture.createView();
@@ -81,18 +80,8 @@ export function buildPerFrameBindGroups(
   // are reused across env swaps (stable identity) but are listed for
   // completeness so a future lifecycle change can't silently desync.
   const sceneKey = [
-    scene.bvhNodesBuffer,
-    scene.bvhIndexBuffer,
-    scene.bvhPositionBuffer,
-    scene.emitterBuffer,
-    scene.emitterCdfBuffer,
+    ...scene.sceneStorageArenaBuffers,
     scene.bvhBeerTextureView,        // 5
-    scene.tlasNodesBuffer,
-    scene.tlasInstanceIndicesBuffer,
-    scene.tlasBlasRootsBuffer,
-    scene.tlasInstanceWorldToLocalBuffer,
-    scene.tlasInstanceLocalToWorldBuffer,
-    scene.bvhNormalBuffer,           // 11
     scene.bvhEmissiveTextureView,    // 12
     scene.analyticLightsTextureView, // 13 — recreated by updateAnalyticLights
     scene.bvhRoughMetalTextureView,  // 14 — B1
@@ -108,7 +97,6 @@ export function buildPerFrameBindGroups(
   ] as const;
   return {
     frame: cachedBindGroup(resourceCache, 'per-frame:frame', [
-      placeholderView,
       restirDI.reservoirCurrentBuffer,
       restirDI.reservoirPreviousBuffer,
       restirDI.reservoirSpatialBuffer,
@@ -122,7 +110,6 @@ export function buildPerFrameBindGroups(
       svgf.svgfCurrentObjectIdTexture,
     ], buildFrame),
     risGiFrame: cachedBindGroup(resourceCache, 'per-frame:ris-gi-frame', [
-      common.gNormalDepthTexture,
       restirGI.reservoirGiCurrentBuffer,
     ], buildRisGiFrame),
     scene: cachedBindGroup(resourceCache, 'per-frame:scene', sceneKey, buildScene),
@@ -131,7 +118,7 @@ export function buildPerFrameBindGroups(
       gtao.aoFullTexture,
       common.tierTexture,
     ], buildUbo),
-    hybridLayers: ddgi.buildBindGroup(device, cache, resources, resourceCache),
+    hybridLayers: ddgi.buildBindGroup(device, cache, resources, resourceCache, nrcBindings),
     shadeHybridLayers: ddgi.buildShadeBindGroup(device, cache, resources, resourceCache),
   };
 }

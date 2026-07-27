@@ -42,13 +42,11 @@
  *                     As fixes land, the agent fixing the config updates the
  *                     table to 'ok' and removes reason/planItem.
  *
- * ── Naga gap patches ─────────────────────────────────────────────────────────
+ * WGSL portability
  *
  * - pt-webgpu: bdptLightPath storage texture → sampled texture when bdpt=off;
  *   isNan/isInf polyfills; strip 3-arg textureLoad mip level.
- * - walkaround-hybrid: uses the production nagaFix.mjs from tools/shader-gate/
- *   (ptr<storage> parameter rewrite, among others). Relative import — no
- *   absolute paths.
+ * - walkaround-hybrid: production WGSL is passed to the device verbatim.
  *
  * IMPORTANT: all @vitrum/* imports are resolved via deno.json in this directory
  * (relative paths). Do NOT add absolute paths — see the stale-import lesson in
@@ -74,7 +72,6 @@ import { patchDeviceForPt } from "../lib/ptNagaGapFix.mjs";
 import {
   makePerspectiveMatrix,
   makeLookAtMatrix,
-  patchDeviceForWh,
   acquireWhDevice,
   readbackBgra8,
 } from "../lib/whHarness.mjs";
@@ -202,8 +199,8 @@ const EXPECTATION_TABLE = {
 
 const PT_CONFIGS = [
   { label: "pt/default",          eng: {},                                    scene: { ptSmokeLight: "rect" } },
-  // F1 proof lane — opt-in hash-based Owen-scrambled Sobol remains experimental,
-  // but these behavioral configs prove the composed full/lite/BDPT/ReSTIR-PT
+  // F1 proof lane — stable hash-based Owen-scrambled Sobol. These behavioral
+  // configs prove the composed full/lite/BDPT/ReSTIR-PT
   // variants render finite non-black images on the same adapter gate as PCG.
   { label: "pt/sobol-default",    eng: { sampling: "sobol" },                 scene: { ptSmokeLight: "rect" } },
   { label: "pt/sobol-bdpt",       eng: { sampling: "sobol", bdpt: true },      scene: {} },
@@ -1884,10 +1881,10 @@ const WH_CENTER = [0, 0, 0];
 const whProj    = asMat4(makePerspectiveMatrix(60, W / H, 0.1, 50));
 const whView    = asMat4(makeLookAtMatrix(WH_EYE, WH_CENTER, [0,1,0]));
 
-// ── Naga gap patches (pt-webgpu) + WH harness scaffolding ─────────────────────
+// Pt-webgpu naga gap patches + walkaround harness scaffolding
 // stripBdptMipArg / addBdptMipArg / applyPtNagaGapFix / patchDeviceForPt now live
 // in tools/lib/ptNagaGapFix.mjs (shared with radiometric-ab/helpers.mjs — D17-4).
-// makePerspectiveMatrix / makeLookAtMatrix / patchDeviceForWh / acquireWhDevice /
+// makePerspectiveMatrix / makeLookAtMatrix / acquireWhDevice /
 // readbackBgra8 now live in tools/lib/whHarness.mjs (shared harness — D17-5).
 // Both are imported at the top of this file.
 
@@ -2294,7 +2291,7 @@ async function runPtConfig(label, engineOpts, sceneOpts) {
         ...baseEngineOpts,
         bvhTraversal: "binary",
       });
-      traceTier = engine.capabilities.experimentalFeatures?.has("pt-webgpu-lite-tier") ? "lite" : "full";
+      traceTier = engine.backendProfileId === "pt-webgpu-lite" ? "lite" : "full";
       engine.setScene(await buildGateScene(sceneOpts));
       const binaryResult = await renderFramesAndReadback();
       const binaryPixels = binaryResult.pixels;
@@ -2304,9 +2301,9 @@ async function runPtConfig(label, engineOpts, sceneOpts) {
 
       engine = await createPTEngine_WebGPU({
         ...baseEngineOpts,
-        bvhTraversal: "cwbvh-closest-experimental",
+        bvhTraversal: "cwbvh-closest",
       });
-      traceTier = engine.capabilities.experimentalFeatures?.has("pt-webgpu-lite-tier") ? "lite" : "full";
+      traceTier = engine.backendProfileId === "pt-webgpu-lite" ? "lite" : "full";
       engine.setScene(await buildGateScene(sceneOpts));
       const cwbvhResult = await renderFramesAndReadback();
       pixels = cwbvhResult.pixels;
@@ -2320,7 +2317,7 @@ async function runPtConfig(label, engineOpts, sceneOpts) {
         maxSamplesPerPixel: SPP,
         ...requestedEngineOpts,
       });
-      traceTier = engine.capabilities.experimentalFeatures?.has("pt-webgpu-lite-tier") ? "lite" : "full";
+      traceTier = engine.backendProfileId === "pt-webgpu-lite" ? "lite" : "full";
 
       const scene = await buildGateScene(sceneOpts);
       engine.setScene(scene);
@@ -2405,8 +2402,6 @@ async function runWhConfig(label, engineOpts, sceneOpts) {
   let errCount = 0;
   device.pushErrorScope("validation");
   device.pushErrorScope("out-of-memory");
-
-  patchDeviceForWh(device);
 
   let engine   = null;
   let pixels   = null;

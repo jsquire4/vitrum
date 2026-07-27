@@ -2,9 +2,9 @@ import { describe, expect, it } from 'vitest';
 import {
   unpackAccessorFloat,
   unpackAccessorUint32,
-  type GltfAccessorDiagnostic,
 } from './accessors.js';
 import { GltfComponentType, type GltfJson } from './gltfTypes.js';
+import { ImportResourceLedger } from './importResourceBudget.js';
 
 function bytes(values: number[]): ArrayBuffer {
   return new Uint8Array(values).buffer;
@@ -33,6 +33,23 @@ function concat(...parts: ArrayBuffer[]): ArrayBuffer {
     offset += part.byteLength;
   }
   return out.buffer;
+}
+
+function scalarFloatAccessorGltf(
+  bufferView: NonNullable<GltfJson['bufferViews']>[number],
+  count = 1,
+): GltfJson {
+  return {
+    asset: { version: '2.0' },
+    accessors: [{
+      bufferView: 0,
+      componentType: GltfComponentType.FLOAT,
+      count,
+      type: 'SCALAR',
+    }],
+    bufferViews: [bufferView],
+    buffers: [{ byteLength: 32 }],
+  };
 }
 
 describe('unpackAccessorFloat sparse accessors', () => {
@@ -72,7 +89,8 @@ describe('unpackAccessorFloat sparse accessors', () => {
     const base = concat(
       f32([1, 2, 99, 3, 4, 99, 5, 6, 99]),
       bytes([123, 1]),
-      bytes([77]),
+      bytes([0, 0]),
+      bytes([77, 0, 0, 0]),
       f32([8, 9]),
     );
     const gltf: GltfJson = {
@@ -91,14 +109,14 @@ describe('unpackAccessorFloat sparse accessors', () => {
           },
           values: {
             bufferView: 2,
-            byteOffset: 1,
+            byteOffset: 4,
           },
         },
       }],
       bufferViews: [
         { buffer: 0, byteOffset: 0, byteLength: 36, byteStride: 12 },
         { buffer: 0, byteOffset: 36, byteLength: 2 },
-        { buffer: 0, byteOffset: 38, byteLength: 9 },
+        { buffer: 0, byteOffset: 40, byteLength: 12 },
       ],
       buffers: [{ byteLength: base.byteLength }],
     };
@@ -106,10 +124,10 @@ describe('unpackAccessorFloat sparse accessors', () => {
     expect(Array.from(out)).toEqual([1, 2, 8, 9, 5, 6]);
   });
 
-  it('warns and skips sparse entries outside the accessor count', () => {
+  it('rejects sparse entries outside the accessor count', () => {
     const indices = bytes([1, 4]);
     const values = f32([7, 8, 9, 10]);
-    const buffer = concat(indices, values);
+    const buffer = concat(indices, bytes([0, 0]), values);
     const gltf: GltfJson = {
       asset: { version: '2.0' },
       accessors: [{
@@ -124,25 +142,15 @@ describe('unpackAccessorFloat sparse accessors', () => {
       }],
       bufferViews: [
         { buffer: 0, byteOffset: 0, byteLength: indices.byteLength },
-        { buffer: 0, byteOffset: indices.byteLength, byteLength: values.byteLength },
+        { buffer: 0, byteOffset: 4, byteLength: values.byteLength },
       ],
       buffers: [{ byteLength: buffer.byteLength }],
     };
-    const warnings: string[] = [];
-    const diagnostics: GltfAccessorDiagnostic[] = [];
-    const out = unpackAccessorFloat(gltf, new Map([[0, buffer]]), 0, warnings, (diagnostic) => {
-      diagnostics.push(diagnostic);
-    });
-    expect(Array.from(out)).toEqual([0, 0, 7, 8, 0, 0]);
-    expect(diagnostics).toContainEqual(expect.objectContaining({
-      code: 'sparse-index-out-of-range',
-      path: 'accessors[0].sparse.indices[1]',
-      accessorIndex: 0,
-      sparseEntryIndex: 1,
-    }));
+    expect(() => unpackAccessorFloat(gltf, new Map([[0, buffer]]), 0, []))
+      .toThrow('Sparse index 4 is outside accessor count 3');
   });
 
-  it('warns and skips sparse patches with invalid signed index component types', () => {
+  it('rejects sparse patches with invalid signed index component types', () => {
     const indices = bytes([1]);
     const values = f32([7, 8]);
     const buffer = concat(indices, values);
@@ -164,18 +172,8 @@ describe('unpackAccessorFloat sparse accessors', () => {
       ],
       buffers: [{ byteLength: buffer.byteLength }],
     };
-    const warnings: string[] = [];
-    const diagnostics: GltfAccessorDiagnostic[] = [];
-    const out = unpackAccessorFloat(gltf, new Map([[0, buffer]]), 0, warnings, (diagnostic) => {
-      diagnostics.push(diagnostic);
-    });
-    expect(Array.from(out)).toEqual([0, 0, 0, 0]);
-    expect(diagnostics).toContainEqual(expect.objectContaining({
-      code: 'invalid-sparse-indices-component-type',
-      path: 'accessors[0].sparse.indices.componentType',
-      accessorIndex: 0,
-      componentType: GltfComponentType.BYTE,
-    }));
+    expect(() => unpackAccessorFloat(gltf, new Map([[0, buffer]]), 0, []))
+      .toThrow('Sparse indices componentType 5120 is invalid');
   });
 
   it('rejects base accessors that read past the declared bufferView byteLength', () => {
@@ -196,10 +194,10 @@ describe('unpackAccessorFloat sparse accessors', () => {
       .toThrow('requires 24 bytes from bufferView 0, but it declares byteLength 8');
   });
 
-  it('warns and skips sparse patches that read past declared bufferView byteLength', () => {
+  it('rejects sparse patches that read past declared bufferView byteLength', () => {
     const indices = bytes([1]);
     const values = f32([7, 8, 9, 10]);
-    const buffer = concat(indices, values);
+    const buffer = concat(indices, bytes([0, 0, 0]), values);
     const gltf: GltfJson = {
       asset: { version: '2.0' },
       accessors: [{
@@ -214,23 +212,12 @@ describe('unpackAccessorFloat sparse accessors', () => {
       }],
       bufferViews: [
         { buffer: 0, byteOffset: 0, byteLength: indices.byteLength },
-        { buffer: 0, byteOffset: indices.byteLength, byteLength: 4 },
+        { buffer: 0, byteOffset: 4, byteLength: 4 },
       ],
       buffers: [{ byteLength: buffer.byteLength }],
     };
-    const diagnostics: GltfAccessorDiagnostic[] = [];
-
-    const out = unpackAccessorFloat(gltf, new Map([[0, buffer]]), 0, [], (diagnostic) => {
-      diagnostics.push(diagnostic);
-    });
-
-    expect(Array.from(out)).toEqual([0, 0, 0, 0]);
-    expect(diagnostics).toContainEqual(expect.objectContaining({
-      code: 'sparse-values-buffer-view-truncated',
-      path: 'accessors[0].sparse.values.bufferView',
-      accessorIndex: 0,
-      bufferViewIndex: 1,
-    }));
+    expect(() => unpackAccessorFloat(gltf, new Map([[0, buffer]]), 0, []))
+      .toThrow('sparse values requires 8 bytes from bufferView 1, but it declares byteLength 4');
   });
 });
 
@@ -239,7 +226,7 @@ describe('unpackAccessorUint32 sparse accessors', () => {
     const base = u16([0, 1, 2]);
     const indices = bytes([1]);
     const values = u16([7]);
-    const buffer = concat(base, indices, values);
+    const buffer = concat(base, indices, bytes([0]), values);
     const gltf: GltfJson = {
       asset: { version: '2.0' },
       accessors: [{
@@ -256,7 +243,7 @@ describe('unpackAccessorUint32 sparse accessors', () => {
       bufferViews: [
         { buffer: 0, byteOffset: 0, byteLength: base.byteLength },
         { buffer: 0, byteOffset: base.byteLength, byteLength: indices.byteLength },
-        { buffer: 0, byteOffset: base.byteLength + indices.byteLength, byteLength: values.byteLength },
+        { buffer: 0, byteOffset: 8, byteLength: values.byteLength },
       ],
       buffers: [{ byteLength: buffer.byteLength }],
     };
@@ -316,5 +303,204 @@ describe('unpackAccessorUint32 sparse accessors', () => {
 
     expect(() => unpackAccessorUint32(gltf, new Map([[0, buffer]]), 0))
       .toThrow('requires 6 bytes from bufferView 0, but it declares byteLength 4');
+  });
+});
+
+describe('accessor range validation and aggregate accounting', () => {
+  it('rejects NaN and fractional bufferView range fields before DataView coercion', () => {
+    const buffer = new ArrayBuffer(32);
+    const nanOffset = scalarFloatAccessorGltf({
+      buffer: 0,
+      byteOffset: Number.NaN,
+      byteLength: 4,
+    });
+    expect(() => unpackAccessorFloat(nanOffset, new Map([[0, buffer]]), 0, []))
+      .toThrow(/byteOffset must be a non-negative safe integer/);
+
+    const fractionalLength = scalarFloatAccessorGltf({
+      buffer: 0,
+      byteOffset: 0,
+      byteLength: 4.5,
+    });
+    expect(() => unpackAccessorFloat(fractionalLength, new Map([[0, buffer]]), 0, []))
+      .toThrow(/byteLength must be a non-negative safe integer/);
+  });
+
+  it('uses the intrinsic ArrayBuffer byte length when an own property shadows byteLength', () => {
+    const validBuffer = f32([7]);
+    Object.defineProperty(validBuffer, 'byteLength', { value: 0 });
+    const validGltf = scalarFloatAccessorGltf({
+      buffer: 0,
+      byteOffset: 0,
+      byteLength: 4,
+    });
+    expect(Array.from(unpackAccessorFloat(
+      validGltf,
+      new Map([[0, validBuffer]]),
+      0,
+      [],
+    ))).toEqual([7]);
+
+    const truncatedBuffer = f32([7]);
+    Object.defineProperty(truncatedBuffer, 'byteLength', { value: 1024 });
+    const truncatedGltf = scalarFloatAccessorGltf({
+      buffer: 0,
+      byteOffset: 0,
+      byteLength: 8,
+    }, 2);
+    expect(() => unpackAccessorFloat(
+      truncatedGltf,
+      new Map([[0, truncatedBuffer]]),
+      0,
+      [],
+    )).toThrow(/outside buffer length 4/);
+  });
+
+  it('rejects a base bufferView offset that is not component-aligned', () => {
+    const buffer = new ArrayBuffer(8);
+    const gltf = scalarFloatAccessorGltf({
+      buffer: 0,
+      byteOffset: 2,
+      byteLength: 4,
+    });
+
+    expect(() => unpackAccessorFloat(gltf, new Map([[0, buffer]]), 0, []))
+      .toThrow(/bufferView 0\.byteOffset 2 is not aligned to component size 4/);
+  });
+
+  it('rejects unaligned sparse indices and values byte offsets', () => {
+    const indexMisaligned: GltfJson = {
+      asset: { version: '2.0' },
+      accessors: [{
+        componentType: GltfComponentType.FLOAT,
+        count: 1,
+        type: 'SCALAR',
+        sparse: {
+          count: 1,
+          indices: {
+            bufferView: 0,
+            byteOffset: 1,
+            componentType: GltfComponentType.UNSIGNED_SHORT,
+          },
+          values: { bufferView: 1 },
+        },
+      }],
+      bufferViews: [
+        { buffer: 0, byteOffset: 0, byteLength: 3 },
+        { buffer: 0, byteOffset: 4, byteLength: 4 },
+      ],
+      buffers: [{ byteLength: 8 }],
+    };
+    expect(() => unpackAccessorFloat(
+      indexMisaligned,
+      new Map([[0, new ArrayBuffer(8)]]),
+      0,
+      [],
+    )).toThrow(/sparse\.indices\.byteOffset 1 is not aligned to component size 2/);
+
+    const valueMisaligned: GltfJson = {
+      asset: { version: '2.0' },
+      accessors: [{
+        componentType: GltfComponentType.FLOAT,
+        count: 1,
+        type: 'SCALAR',
+        sparse: {
+          count: 1,
+          indices: {
+            bufferView: 0,
+            componentType: GltfComponentType.UNSIGNED_BYTE,
+          },
+          values: { bufferView: 1, byteOffset: 2 },
+        },
+      }],
+      bufferViews: [
+        { buffer: 0, byteOffset: 0, byteLength: 1 },
+        { buffer: 0, byteOffset: 4, byteLength: 6 },
+      ],
+      buffers: [{ byteLength: 10 }],
+    };
+    expect(() => unpackAccessorFloat(
+      valueMisaligned,
+      new Map([[0, new ArrayBuffer(10)]]),
+      0,
+      [],
+    )).toThrow(/sparse\.values\.byteOffset 2 is not aligned to component size 4/);
+  });
+
+  it('reports duplicate and descending sparse indices with a distinct structured code', () => {
+    for (const indices of [[1, 1], [2, 1]]) {
+      const sparseIndices = bytes(indices);
+      const sparseValues = f32([7, 8]);
+      const buffer = concat(sparseIndices, bytes([0, 0]), sparseValues);
+      const gltf: GltfJson = {
+        asset: { version: '2.0' },
+        accessors: [{
+          componentType: GltfComponentType.FLOAT,
+          count: 3,
+          type: 'SCALAR',
+          sparse: {
+            count: 2,
+            indices: {
+              bufferView: 0,
+              componentType: GltfComponentType.UNSIGNED_BYTE,
+            },
+            values: { bufferView: 1 },
+          },
+        }],
+        bufferViews: [
+          { buffer: 0, byteOffset: 0, byteLength: sparseIndices.byteLength },
+          { buffer: 0, byteOffset: 4, byteLength: sparseValues.byteLength },
+        ],
+        buffers: [{ byteLength: buffer.byteLength }],
+      };
+      const diagnostics: Array<{ code: string }> = [];
+
+      expect(() => unpackAccessorFloat(
+        gltf,
+        new Map([[0, buffer]]),
+        0,
+        [],
+        (diagnostic) => diagnostics.push(diagnostic),
+      )).toThrow(/not strictly increasing/);
+      expect(diagnostics).toContainEqual(expect.objectContaining({
+        code: 'sparse-indices-not-strictly-increasing',
+      }));
+    }
+  });
+
+  it('shares one decoded-geometry budget across separate accessor decodes', () => {
+    const buffer = f32([1, 2]);
+    const gltf: GltfJson = {
+      asset: { version: '2.0' },
+      accessors: [0, 1].map(() => ({
+        bufferView: 0,
+        componentType: GltfComponentType.FLOAT,
+        count: 2,
+        type: 'SCALAR',
+      })),
+      bufferViews: [{ buffer: 0, byteOffset: 0, byteLength: buffer.byteLength }],
+      buffers: [{ byteLength: buffer.byteLength }],
+    };
+    const ledger = new ImportResourceLedger({
+      maxDecodedGeometryBytes: 12,
+    });
+
+    expect(Array.from(unpackAccessorFloat(
+      gltf,
+      new Map([[0, buffer]]),
+      0,
+      [],
+      undefined,
+      ledger,
+    ))).toEqual([1, 2]);
+    expect(() => unpackAccessorFloat(
+      gltf,
+      new Map([[0, buffer]]),
+      1,
+      [],
+      undefined,
+      ledger,
+    )).toThrow(/decoded-geometry-bytes/);
+    expect(ledger.decodedGeometryBytes).toBe(8);
   });
 });

@@ -8,6 +8,7 @@ import {
   createPlaceholderEnvironment,
   uploadEnvironment,
   clearEnvironment,
+  float32ArrayToFloat16,
 } from '../environmentTexture.js';
 import { buildDirectionalEnv } from '../../environment/equirectDirectional.js';
 
@@ -52,9 +53,12 @@ function readParams(data: ArrayBuffer) {
 describe('environmentTexture — B3 directional IBL host', () => {
   it('placeholder writes hasEnv=0', () => {
     const { device, writeBufferCalls } = mockDevice();
-    createPlaceholderEnvironment(device);
+    const env = createPlaceholderEnvironment(device);
     expect(writeBufferCalls).toHaveLength(1);
     expect(readParams(writeBufferCalls[0]!.data).hasEnv).toBe(0);
+    expect(env.rotationY).toBe(0);
+    expect(env.intensity).toBe(0);
+    expect(env.hasDirectionalEnvironment).toBe(false);
   });
 
   it('upload writes hasEnv=1 + dims + rotationY + intensity', () => {
@@ -64,7 +68,7 @@ describe('environmentTexture — B3 directional IBL host', () => {
       width: 4, height: 2, stride: 3,
       data: new Float32Array(4 * 2 * 3).fill(1),
     })!;
-    void uploadEnvironment(device, env, data, 0.5, 2.0);
+    const uploaded = uploadEnvironment(device, env, data, 0.5, 2.0);
     const last = writeBufferCalls.at(-1)!;
     const p = readParams(last.data);
     expect(p.hasEnv).toBe(1);
@@ -72,6 +76,9 @@ describe('environmentTexture — B3 directional IBL host', () => {
     expect(p.height).toBe(2);
     expect(p.rotationY).toBeCloseTo(0.5);
     expect(p.intensity).toBeCloseTo(2.0);
+    expect(uploaded.rotationY).toBeCloseTo(0.5);
+    expect(uploaded.intensity).toBeCloseTo(2.0);
+    expect(uploaded.hasDirectionalEnvironment).toBe(true);
     // map + marginal + conditional → 3 writeTexture calls.
     expect(writeTextureCalls.length).toBe(3);
   });
@@ -83,8 +90,11 @@ describe('environmentTexture — B3 directional IBL host', () => {
       width: 2, height: 1, stride: 3, data: new Float32Array([1, 1, 1, 2, 2, 2]),
     })!;
     const env1 = uploadEnvironment(device, env0, data, 0, 1);
-    void clearEnvironment(device, env1);
+    const cleared = clearEnvironment(device, env1);
     expect(readParams(writeBufferCalls.at(-1)!.data).hasEnv).toBe(0);
+    expect(cleared.rotationY).toBe(0);
+    expect(cleared.intensity).toBe(0);
+    expect(cleared.hasDirectionalEnvironment).toBe(false);
   });
 
   it('env_map is created as rgba16float; CDF textures as r32float', () => {
@@ -99,9 +109,9 @@ describe('environmentTexture — B3 directional IBL host', () => {
     expect((env.conditional as unknown as { format: string }).format).toBe('r32float');
   });
 
-  // ── Item 17b: same-size reuse (write-in-place, no destroy+recreate) ─────────
+  // ── Transactional replacement, including same-size uploads ─────────────────
 
-  it('same-size re-upload reuses the existing GPUTexture objects (no destroy)', () => {
+  it('same-size re-upload stages a complete replacement before retiring the old set', () => {
     // Build a mock device whose createTexture reports width=4 / height=2 so the
     // existing textures appear to already be the right size.
     const { device } = mockDevice({ width: 4, height: 2 });
@@ -116,16 +126,14 @@ describe('environmentTexture — B3 directional IBL host', () => {
 
     env = uploadEnvironment(device, env, data, 0.1, 1.5);
 
-    // The GPUTexture objects must be the same references — not destroyed and
-    // recreated — because the dimensions already match.
-    expect(env.map).toBe(mapBefore);
-    expect(env.marginal).toBe(marginalBefore);
-    expect(env.conditional).toBe(conditionalBefore);
-
-    // destroy() must NOT have been called on the old textures.
-    expect((mapBefore as unknown as { destroy: ReturnType<typeof vi.fn> }).destroy).not.toHaveBeenCalled();
-    expect((marginalBefore as unknown as { destroy: ReturnType<typeof vi.fn> }).destroy).not.toHaveBeenCalled();
-    expect((conditionalBefore as unknown as { destroy: ReturnType<typeof vi.fn> }).destroy).not.toHaveBeenCalled();
+    // Even same-sized updates stage a complete replacement so a later failed
+    // write cannot partially mutate the live environment.
+    expect(env.map).not.toBe(mapBefore);
+    expect(env.marginal).not.toBe(marginalBefore);
+    expect(env.conditional).not.toBe(conditionalBefore);
+    expect((mapBefore as unknown as { destroy: ReturnType<typeof vi.fn> }).destroy).toHaveBeenCalledOnce();
+    expect((marginalBefore as unknown as { destroy: ReturnType<typeof vi.fn> }).destroy).toHaveBeenCalledOnce();
+    expect((conditionalBefore as unknown as { destroy: ReturnType<typeof vi.fn> }).destroy).toHaveBeenCalledOnce();
   });
 
   it('different-size re-upload destroys old textures and creates new ones', () => {
@@ -161,5 +169,40 @@ describe('environmentTexture — B3 directional IBL host', () => {
     const marginal = env.marginal as unknown as { width: number; height: number };
     expect(marginal.width).toBe(h);   // H wide
     expect(marginal.height).toBe(1);  // 1 tall
+  });
+
+  it('preserves the live environment and destroys candidates when an upload fails', () => {
+    const { device } = mockDevice();
+    const env = createPlaceholderEnvironment(device);
+    const oldTextures = [env.map, env.marginal, env.conditional] as unknown as MockTexture[];
+    const data = buildDirectionalEnv({
+      width: 4, height: 2, stride: 3,
+      data: new Float32Array(4 * 2 * 3).fill(0.5),
+    })!;
+    const writeTexture = device.queue.writeTexture as unknown as AnyMockFn;
+    writeTexture
+      .mockImplementationOnce(() => undefined)
+      .mockImplementationOnce(() => { throw new Error('injected upload failure'); });
+
+    expect(() => uploadEnvironment(device, env, data, 0, 1))
+      .toThrow('injected upload failure');
+
+    for (const texture of oldTextures) expect(texture.destroy).not.toHaveBeenCalled();
+    const createTexture = device.createTexture as unknown as AnyMockFn;
+    const candidates = createTexture.mock.results.slice(-3)
+      .map((result) => result.value as MockTexture);
+    for (const texture of candidates) expect(texture.destroy).toHaveBeenCalledOnce();
+  });
+
+  it('rounds environment radiance to IEEE f16 ties-to-even', () => {
+    const bits = float32ArrayToFloat16(new Float32Array([
+      2 ** -24, 2 ** -25, 1 + 2 ** -11, 1 + 3 * 2 ** -11,
+      1.99951171875, 65504, Number.POSITIVE_INFINITY, Number.NaN,
+    ]));
+    expect(Array.from(bits.slice(0, 7))).toEqual([
+      0x0001, 0x0000, 0x3c00, 0x3c02, 0x4000, 0x7bff, 0x7c00,
+    ]);
+    expect(bits[7]! & 0x7c00).toBe(0x7c00);
+    expect(bits[7]! & 0x03ff).not.toBe(0);
   });
 });

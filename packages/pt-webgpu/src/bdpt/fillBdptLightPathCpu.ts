@@ -1,27 +1,20 @@
 /**
- * CPU reference fill of the BDPT light-path scratch buffer (bounce 0 only).
- * Production uses GPU `bdptExtendLightSubpath` (col 0 + extension); kept for tests/oracles.
- *
- * The light path is a read_write storage BUFFER of vec4f (NOT a storage texture —
- * `rgba32float` read_write storage textures are not in core WebGPU; gpuweb #4651).
- * Flattened row-minor as `idx = col * 5 + row` (matches WGSL `bdptLightPathIndex`):
+ * CPU reference packing of one invocation-private BDPT light path.
+ * Production writes the same seven-row columns into bounded private WGSL memory;
+ * this flat array exists only so tests can inspect the byte/row contract.
+ * Flattened row-minor as `idx = col * 7 + row` (matches WGSL `bdptLightPathIndex`):
  * per light-vertex column, row 0 = pos (+ kind in .w), row 1 = normal + pdfFwd,
  * row 2 = throughput + pdfRev, row 3 = (A9) matId (.w) + wo-toward-prev (.xyz),
- * row 4 = hit-local material payload (triIndex, baryVW, instanceIndex).
+ * row 4 = hit-local material payload (triIndex, baryVW, instanceIndex),
+ * row 5 = interface eta metadata, row 6 = both medium sides and budgets.
  * Bounce 0 is the emitter (matId < 0 ⇒ Lambertian/emission profile).
  */
 
-import type { UploadedSceneBuffers } from '../scene/uploadSceneBuffers.js';
-import {
-  bdptEmitterCount,
-  bdptEmitterPower,
-  bdptPickEmitterFlat,
-  sampleBdptBounce0Cpu,
-} from './bdptEmitterPickCpu.js';
+import { sampleBdptBounce0Cpu } from './bdptEmitterPickCpu.js';
 
 const KIND_INVALID = 3;
 const KIND_LIGHT = 0;
-const LIGHT_PATH_ROWS = 5;
+const LIGHT_PATH_ROWS = 7;
 /** A9 — row-3 .w sentinel marking the emitter vertex (Lambertian/emission). */
 const LV_EMITTER_MATID = -1;
 
@@ -29,8 +22,43 @@ const LV_EMITTER_MATID = -1;
 export function bdptLightPathColumnIndex(col: number, row: number): number {
   return (col * LIGHT_PATH_ROWS + row) * 4;
 }
+export interface BdptMediumSideRow {
+  readonly incidentMatId: number;
+  readonly incidentRemainingDistance: number;
+  readonly transmittedMatId: number;
+  readonly transmittedRemainingDistance: number;
+}
 
-/** Flat vec4f light-path buffer contents (`col * 5 + row` ordering). */
+/** CPU oracle for WGSL row 6: two bitcast u32 IDs and two f32 budgets. */
+export function writeBdptMediumSideRow(
+  data: Float32Array,
+  col: number,
+  row: BdptMediumSideRow,
+): void {
+  const offset = bdptLightPathColumnIndex(col, 6);
+  const words = new Uint32Array(data.buffer, data.byteOffset, data.length);
+  words[offset + 0] = row.incidentMatId >>> 0;
+  data[offset + 1] = row.incidentRemainingDistance;
+  words[offset + 2] = row.transmittedMatId >>> 0;
+  data[offset + 3] = row.transmittedRemainingDistance;
+}
+
+export function readBdptMediumSideRow(
+  data: Float32Array,
+  col: number,
+): BdptMediumSideRow {
+  const offset = bdptLightPathColumnIndex(col, 6);
+  const words = new Uint32Array(data.buffer, data.byteOffset, data.length);
+  return {
+    incidentMatId: words[offset + 0]!,
+    incidentRemainingDistance: data[offset + 1]!,
+    transmittedMatId: words[offset + 2]!,
+    transmittedRemainingDistance: data[offset + 3]!,
+  };
+}
+
+
+/** Flat vec4f light-path buffer contents (`col * 7 + row` ordering). */
 export function packBdptLightPathColumns(
   width: number,
   bounce0: ReturnType<typeof sampleBdptBounce0Cpu>,
@@ -40,9 +68,21 @@ export function packBdptLightPathColumns(
     data[bdptLightPathColumnIndex(col, 0) + 3] = KIND_INVALID;
     // A9 — every column's row-3 .w defaults to the emitter sentinel (Lambertian).
     data[bdptLightPathColumnIndex(col, 3) + 3] = LV_EMITTER_MATID;
+    // A neutral interface is required for invalid/emitter columns because the
+    // connection shader reads eta_t/eta_i directly from row 5.
+    const etaOffset = bdptLightPathColumnIndex(col, 5);
+    data[etaOffset + 0] = 1;
+    data[etaOffset + 1] = 1;
+    data[etaOffset + 2] = 1;
   }
   if (bounce0 == null) return data;
   const col = 0;
+    writeBdptMediumSideRow(data, col, {
+      incidentMatId: 0xffffffff,
+      incidentRemainingDistance: Math.fround(3.402823e38),
+      transmittedMatId: 0xffffffff,
+      transmittedRemainingDistance: Math.fround(3.402823e38),
+    });
   const o0 = bdptLightPathColumnIndex(col, 0);
   const o1 = bdptLightPathColumnIndex(col, 1);
   const o2 = bdptLightPathColumnIndex(col, 2);
@@ -62,46 +102,10 @@ export function packBdptLightPathColumns(
   // A9/PTWG-BDPT-01 — bounce-0 is an emitter vertex: finite area emitters use
   // -2 so the connection treats row-2 throughput as Le/(pdfPick*pdfArea);
   // legacy pseudo emitters/point lights use -1.
-  data[o3 + 0] = bounce0.emitNormal[0];
-  data[o3 + 1] = bounce0.emitNormal[1];
-  data[o3 + 2] = bounce0.emitNormal[2];
+  const endpointData = bounce0.endpointData ?? bounce0.emitNormal;
+  data[o3 + 0] = endpointData[0];
+  data[o3 + 1] = endpointData[1];
+  data[o3 + 2] = endpointData[2];
   data[o3 + 3] = bounce0.lvMatId ?? LV_EMITTER_MATID;
   return data;
-}
-
-/**
- * Fill the light-path scratch buffer (bounce-0 column) from a CPU-picked emitter.
- *
- * @internal CPU oracle for the GPU `bdptExtendLightSubpath` pass — deliberately
- * un-exported from the package (production uses GPU fill); _-prefixed to satisfy
- * the no-unused-vars rule while keeping the oracle in-tree for test harnesses.
- */
-function _fillBdptLightPathCpu(
-  device: GPUDevice,
-  buffer: GPUBuffer,
-  maxLightBounces: number,
-  sceneBuffers: UploadedSceneBuffers,
-  frameSeed: number,
-): void {
-  const width = maxLightBounces;
-  const emitterCount = bdptEmitterCount(sceneBuffers);
-  if (emitterCount === 0) {
-    writeBuffer(device, buffer, packBdptLightPathColumns(width, null));
-    return;
-  }
-
-  let totalPower = 0;
-  for (let i = 0; i < emitterCount; i += 1) {
-    totalPower += bdptEmitterPower(sceneBuffers, i);
-  }
-  const uPick = ((frameSeed * 2654435761) >>> 0) / 2 ** 32;
-  const uHemi = (((frameSeed + 1) * 1597334677) >>> 0) / 2 ** 32;
-  const flat = bdptPickEmitterFlat(sceneBuffers, uPick * totalPower, totalPower, emitterCount);
-  const discretePdf = bdptEmitterPower(sceneBuffers, flat) / Math.max(totalPower, 1e-20);
-  const sample = sampleBdptBounce0Cpu(sceneBuffers, flat, discretePdf, uHemi);
-  writeBuffer(device, buffer, packBdptLightPathColumns(width, sample));
-}
-
-function writeBuffer(device: GPUDevice, buffer: GPUBuffer, data: Float32Array): void {
-  device.queue.writeBuffer(buffer, 0, new Float32Array(data));
 }

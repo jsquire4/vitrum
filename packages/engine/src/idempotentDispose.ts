@@ -63,6 +63,7 @@ type OptionalMethodName =
   | 'onWarning'
   | 'createInverseSession'
   | 'getRestirPtResultBuffer'
+  | 'getPresentationSource'
   // Scene read-back — optional on Engine; all three shipping backends implement it.
   | 'getScene'
   // Async GPU→CPU pixel readback — optional on Engine; all three shipping backends.
@@ -119,21 +120,26 @@ export const OPTIONAL_METHOD_PROXIES: readonly OptionalMethodProxy[] = [
   // other subscription methods.
   { method: 'onWarning', disposedBehavior: 'empty-unsub' },
   // WS5 — inverse-rendering (differentiable RT) sessions. After dispose the
-  // proxy refuses to open a NEW session (the engine is torn down); an
-  // already-open session the host holds keeps working until the host disposes
-  // it. Sessions outlive a single frame but not the engine.
+  // proxy refuses to open a NEW session (the engine is torn down). Existing
+  // sessions do not outlive the engine: an in-flight or later step rejects,
+  // and the host should dispose each session before or with the engine.
   {
     method: 'createInverseSession',
     disposedBehavior: 'throw',
     throwMessage: 'createInverseSession: engine is disposed',
   },
-  // H61 — debug/experimental accessor for the ReSTIR-PT reuse output buffer
-  // (pt-webgpu, gated by the 'pt-webgpu-restir-pt-reuse' experimental feature).
+  // H61 — debug accessor for the ReSTIR-PT reuse output buffer
+  // (pt-webgpu, gated by active feature 'pt-webgpu-restir-pt-reuse').
   // Added to the Engine contract in H14-C; without this row the createEngine
   // facade silently hid it. After dispose the buffer is destroyed → null
   // (the contract type is `unknown | null`, so null is the correct sentinel,
   // not undefined; use 'null' behavior not 'noop').
   { method: 'getRestirPtResultBuffer', disposedBehavior: 'null' },
+
+  // Offscreen presentation handoff. The source texture is only valid while the
+  // backend is live; after disposal the facade must return the contract's null
+  // sentinel without touching destroyed GPU state.
+  { method: 'getPresentationSource', disposedBehavior: 'null' },
 
   // Scene read-back — optional on Engine; all three shipping backends implement
   // it. Disposed → null: the contract says no method except state/capabilities
@@ -193,6 +199,12 @@ export function wrapWithIdempotentDispose(
   onDisposeError?: (err: unknown) => void,
 ): Engine & Partial<GIStatePersistable> {
   let disposed = false;
+  const backendProfileId = (engine as {
+    readonly backendProfileId?: 'pt-webgpu' | 'pt-webgpu-lite';
+  }).backendProfileId;
+  const profileId = (engine as {
+    readonly profileId?: 'pt-webgpu' | 'pt-webgpu-lite';
+  }).profileId;
   const patchSupport = engine.capabilities.incrementalPatchSupport;
   const primitivePatchAdvertised = patchSupport == null
     ? engine.capabilities.supportsIncrementalScene
@@ -245,6 +257,11 @@ export function wrapWithIdempotentDispose(
     // surface still exists but most methods will return null / empty
     // because the underlying _ddgi / _pipeline / _bvhBuffers are torn down.
     ...(engine.debug ? { debug: engine.debug } : {}),
+    // Construction identity is immutable metadata, so preserve it across the
+    // lifecycle proxy just like state/capabilities. GLTF compatibility routing
+    // must use this resolved profile instead of inferring tier from features.
+    ...(backendProfileId != null ? { backendProfileId } : {}),
+    ...(profileId != null ? { profileId } : {}),
   };
 
   // Data-driven optional-method forwarding. Each row reproduces the exact

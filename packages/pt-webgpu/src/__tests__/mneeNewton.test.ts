@@ -123,7 +123,12 @@ describe('MNEE half-vector Newton solve (real-MNEE core)', () => {
     expect(MNEE_NEWTON_WGSL).toContain('fn mneeNewtonSolve(');
     expect(MNEE_NEWTON_WGSL).toContain('let jac = mneeResidualJacobian(v, recv, light, nm, tu, tv, etaI, etaT)');
     expect(MNEE_NEWTON_WGSL).toContain('let det = j00 * j11 - j01 * j10');
-    expect(MNEE_NEWTON_WGSL).toContain('if (rmag < 1e-5) { return out; }'); // convergence exit
+    expect(MNEE_NEWTON_WGSL).toContain(
+      'if (rmag < mneeResidualToleranceFromScales(solverScales))',
+    );
+    expect(MNEE_NEWTON_WGSL).toContain(
+      'if (!mneeScalesRepresentable(solverScales)) { return out; }',
+    );
   });
 
   it('analytic residual Jacobian ∂r/∂(a,b) — validated analytic == FD on GPU', () => {
@@ -161,7 +166,12 @@ describe('MNEE half-vector Newton solve (real-MNEE core)', () => {
     expect(MNEE_NEWTON_WGSL).toContain('fn mneePdfJacobianDet(');
     // The solid-angle projection + the basis-free 2×2 determinant (cross product).
     expect(MNEE_NEWTON_WGSL).toContain('let dw_ds = (dv_ds - w * dot(w, dv_ds)) / dist');
-    expect(MNEE_NEWTON_WGSL).toContain('return length(cross(dw_ds, dw_dt))');
+    expect(MNEE_NEWTON_WGSL).toContain(
+      'let determinant = length(cross(dw_ds, dw_dt))',
+    );
+    expect(MNEE_NEWTON_WGSL).toContain(
+      'if (!(determinant >= 0.0) || !(determinant < INFINITY))',
+    );
     expect(MNEE_PDF_HARNESS_WGSL).toContain(MNEE_NEWTON_WGSL); // byte-identical core
     expect(MNEE_PDF_HARNESS_WGSL).toContain('let det = mneePdfJacobianDet(r.vertex, c.recv, jac.dadL, jac.dbdL, tu, tv)');
   });
@@ -170,7 +180,9 @@ describe('MNEE half-vector Newton solve (real-MNEE core)', () => {
     expect(MNEE_NEWTON_WGSL).toContain('fn mneePdfJacobianDetAxes(');
     expect(MNEE_NEWTON_WGSL).toContain('let da_ds = dot(dadL, lightU);');
     expect(MNEE_NEWTON_WGSL).toContain('let db_dt = dot(dbdL, lightV);');
-    expect(MNEE_NEWTON_WGSL).toContain('return length(cross(dw_ds, dw_dt)) / areaScale;');
+    expect(MNEE_NEWTON_WGSL).toContain(
+      'let determinant = length(cross(dw_ds, dw_dt)) / areaScale;',
+    );
   });
 
   it('2-vertex chain solve (glass enter+exit) — block-tridiagonal Newton', () => {
@@ -195,7 +207,8 @@ describe('MNEE half-vector Newton solve (real-MNEE core)', () => {
     // solve's Schur block form S⁻¹(C·A⁻¹·r_top − r_bot).
     expect(MNEE_CHAIN_WGSL).toContain('fn mneeChainPdfJacobianDet(');
     expect(MNEE_CHAIN_WGSL).toContain('let dab2_ds = Sinv * (CAinv * r_s.xy - r_s.zw);'); // the IFT (a2,b2) rows
-    expect(MNEE_CHAIN_WGSL).toContain('return length(cross(dw_ds, dw_dt));');             // basis-free determinant
+    expect(MNEE_CHAIN_WGSL).toContain('let determinant = length(cross(dw_ds, dw_dt));'); // basis-free determinant
+    expect(MNEE_CHAIN_WGSL).toContain('if (!mneeMat2Invertible(S)) { return 0.0; }');
     expect(MNEE_CHAIN_PDF_HARNESS_WGSL).toContain(MNEE_CHAIN_WGSL);                       // byte-identical core
     expect(MNEE_CHAIN_PDF_HARNESS_WGSL).toContain('let det = mneeChainPdfJacobianDet(res.v1, res.v2');
   });
@@ -207,7 +220,12 @@ describe('MNEE half-vector Newton solve (real-MNEE core)', () => {
     // multiplies it by the receiver BRDF + visibility.
     expect(MNEE_CONNECTION_WGSL).toContain('fn mneeReflectionIrradiance(');
     expect(MNEE_CONNECTION_WGSL).toContain('let dTotal = length(lightPos - v) + length(recv - v);'); // unfolded path = dist(image,recv)
-    expect(MNEE_CONNECTION_WGSL).toContain('return lightIntensity * nDotL / max(dTotal * dTotal, 1e-8);');
+    expect(MNEE_CONNECTION_WGSL).toContain(
+      'if (dTotal <= mneeLengthFloorFromScales(solverScales))',
+    );
+    expect(MNEE_CONNECTION_WGSL).toContain(
+      'return lightIntensity * nDotL / (dTotal * dTotal);',
+    );
     expect(MNEE_REFLECTION_HARNESS_WGSL).toContain(MNEE_NEWTON_WGSL);  // composes the validated solve
     expect(MNEE_REFLECTION_HARNESS_WGSL).toContain(MNEE_CONNECTION_WGSL);
   });

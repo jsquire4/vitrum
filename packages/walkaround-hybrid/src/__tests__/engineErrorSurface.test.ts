@@ -21,6 +21,7 @@ import type { EngineError, Scene } from '@vitrum/core';
 import { HybridEngine } from '../HybridEngine.js';
 import type { HybridEngineOptions } from '../HybridEngine.js';
 import type { DDGI } from '../ddgi/DDGI.js';
+import type { NrcDiagnostics } from '../neural/nrc/nrcDiagnostics.js';
 
 // ── Mock device builder ───────────────────────────────────────────────────────
 
@@ -149,6 +150,18 @@ describe('walkaround-hybrid EngineError surface — onError subscription', () =>
     const unsub = engine.onError((err) => received.push(err));
     unsub();
     unsub(); // idempotent — must not throw
+    engine.dispose();
+  });
+
+  it('exposes a typed NRC diagnostics snapshot without private subsystem access', () => {
+    const ctrl = makeControlledDevice();
+    const engine = new HybridEngine(makeBaseOpts(ctrl.device));
+    expect(engine.getNrcDiagnostics()).toBeNull();
+    const diagnostics = { trainedSteps: 7 } as NrcDiagnostics;
+    (engine as unknown as {
+      _pipeline: { getNrcDiagnostics(): NrcDiagnostics; dispose(): void };
+    })._pipeline = { getNrcDiagnostics: () => diagnostics, dispose: vi.fn() };
+    expect(engine.getNrcDiagnostics()).toBe(diagnostics);
     engine.dispose();
   });
 });

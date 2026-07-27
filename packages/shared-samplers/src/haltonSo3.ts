@@ -1,4 +1,7 @@
+import { requireInteger } from './numericGuards.js';
+
 /**
+
  * Deterministic Halton-Shoemake SO(3) sampler.
  *
  * The returned vec3 is an axis-angle rotation: direction is the rotation axis
@@ -20,6 +23,7 @@ function haltonBase(i: number, base: number): number {
 
 /** Axis-angle vec3 for a frame-indexed, deterministic uniform SO(3) sequence. */
 export function haltonSO3AxisAngleFromFrameIndex(frameIndex: number): [number, number, number] {
+  requireInteger(frameIndex, 'haltonSO3AxisAngleFromFrameIndex.frameIndex', 0, Number.MAX_SAFE_INTEGER - 1);
   const fi = frameIndex + 1;
   const u1 = haltonBase(fi, 2);
   const u2 = haltonBase(fi, 3);

@@ -8,9 +8,10 @@
  * dispatches; the same string is also composed into the GPU validation harness
  * (`../../inverse/adjointHarness.wgsl.ts`) and string-shape-pinned against the
  * CPU oracle by `__tests__/brdfAdjoint.test.ts`. `inverse/inverseSession.ts`
- * resolves the effective method to 'path-replay' (NOT finite-difference)
- * whenever the engine supplies the `computeAdjointGradient` hook AND every
- * optimized parameter is in the currently differentiable set (baseColor,
+ * resolves the effective method to 'path-replay' only when the engine supplies
+ * the `computeAdjointGradient` hook, every target is implementation-compatible,
+ * and every target appears in the end-to-end proof set. The implementation set
+ * includes baseColor,
  * roughness, metallic, aoMapIntensity, lightMapIntensity, envMapIntensity,
  * emissive, specularColor,
  * specularIntensity, clearcoat, clearcoatRoughness, sheen, sheenColor,
@@ -20,11 +21,16 @@
  * scale derivatives are replay-local in `adjointPass.wgsl.ts` because they
  * chain through the direct-light/environment contribution and sampled normal /
  * height / clearcoat-normal maps, not through standalone BRDF partials here.
- * GPU-validated on lavapipe for the original V24 path: the baseColor/roughness
- * partials match the FD oracle to f32 precision, the chain rule + fixed-point
- * accumulation match an on-device finite-difference, and
- * baseColor/roughness/emissive end-to-end inverse fits converge + sign-match
- * the full-render FD (`v24-inverse-fit.mjs`, `v24-emissive-fit.mjs`). Later
+ * The baseColor/roughness local partials match the isolated FD oracle to f32
+ * precision, and the chain rule + fixed-point accumulation have on-device
+ * mechanical coverage. The executable production-function gate
+ * (`tools/gpu-env/inverse-direct-proof-deno.ts`) validates local derivative
+ * machinery for baseColor, roughness, metallic, and emitter color/intensity; it
+ * is not a full-forward replay-vs-render certification and therefore does not
+ * promote those fields. `inverse-fit-deno.ts` is the full-forward gate and
+ * currently certifies only camera-direct emissive (8% maximum component-wise
+ * relative error, non-zero finite reference components, and matching signs).
+ * Later
  * specular/metallic/AO/clearcoat/sheen/iridescence/anisotropy partials are
  * CPU-FD-oracle + WGSL-shape + shader-gate covered until their GPU inverse-fit
  * recaptures land.
@@ -63,9 +69,8 @@
  * indirect transport, and visibility / lobe-choice discontinuities stay outside
  * this scoped pass and are gated in `inverseSession.ts`. Only continuous local
  * shading terms are differentiated. With Phase-1's single-bounce scope the
- * per-pixel replay state is a single hit record, far under the
- * `GpuResources.BDPT_EYE_STACK_MAX_BYTES` (384 MiB) ceiling that forced
- * path-replay over a stored adjoint graph.
+ * per-pixel replay state is a single hit record; replay avoids retaining a
+ * viewport-sized adjoint graph.
  *
  * The gradient of the image-space L2 loss w.r.t. a parameter θ is
  *   dLoss/dθ = Σ_pixels  2·(rendered_p − target_p) · dRendered_p/dθ,
@@ -81,6 +86,12 @@
  *      39(4), SIGGRAPH 2020. BRDF: PBR 4th ed. §9.6–9.8.
  */
 
+import {
+  PT_WEBGPU_MICROFACET_ALPHA_FLOOR,
+  roughDielectricSmithG1DerivativeWgsl,
+} from '../../math/roughDielectric.js';
+import { PT_WEBGPU_GGX_MULTISCATTER_WGSL } from './ggxMultiscatter.wgsl.js';
+
 /** Fixed-point scale for gradient atomics — matches fusedMlp.wgsl.ts NRC_GRAD_FP. */
 export const ADJOINT_GRAD_FP = 1048576.0; // 2^20
 
@@ -88,6 +99,10 @@ export const PT_WEBGPU_PATH_TRACE_ADJOINT_WGSL = /* wgsl */ `
 // Fixed-point scale for the i32 gradient atomics (2^20). Mirrors NRC_GRAD_FP so
 // the adjoint and the NRC trainer share one fixed-point convention.
 const ADJOINT_GRAD_FP = ${ADJOINT_GRAD_FP};
+
+${PT_WEBGPU_GGX_MULTISCATTER_WGSL}
+
+${roughDielectricSmithG1DerivativeWgsl('adjointSmithG1RoughnessDerivative')}
 
 fn adjointMaterialSpecularF0(
   baseColor: vec3f,
@@ -101,6 +116,56 @@ fn adjointMaterialSpecularF0(
     vec3f(1.0),
   );
   return mix(dielectricF0, baseColor, metallic);
+}
+
+const ADJOINT_MULTISCATTER_ROUGHNESS_DERIV_STEP = 1e-4;
+
+// Per-channel derivative of the Kulla-Conty colour series with respect to F0.
+// Directional-albedo lookups are achromatic, so this is diagonal in RGB.
+fn adjointGgxMultiscatterDerivativeF0(
+  f0: vec3f,
+  roughness: f32,
+  nDotV: f32,
+  nDotL: f32,
+) -> vec3f {
+  let eAvg = ggxAverageAlbedo(roughness);
+  let oneMinusEavg = 1.0 - eAvg;
+  if (oneMinusEavg <= 0.0) { return vec3f(0.0); }
+  let eo = ggxDirectionalAlbedo(nDotV, roughness);
+  let ei = ggxDirectionalAlbedo(nDotL, roughness);
+  let fAvg = f0 + (vec3f(1.0) - f0) * (1.0 / 21.0);
+  let seriesDenom = vec3f(1.0) - fAvg * oneMinusEavg;
+  if (any(seriesDenom <= vec3f(0.0))) { return vec3f(0.0); }
+  let numerator = eAvg *
+    (2.0 * fAvg - fAvg * fAvg * oneMinusEavg);
+  let shape = (1.0 - eo) * (1.0 - ei) / (PI * oneMinusEavg);
+  let result = shape * (20.0 / 21.0) * numerator /
+    (seriesDenom * seriesDenom);
+  let finite = all(result == result) &&
+    all(abs(result) <= vec3f(3.402823e38));
+  return select(vec3f(0.0), result, finite);
+}
+
+// The E tables are piecewise linear in roughness. A replay-local symmetric
+// derivative mirrors the exact production lookup, including clamp boundaries,
+// without replacing the table with an unrelated analytic fit.
+fn adjointGgxMultiscatterDerivativeRoughness(
+  f0: vec3f,
+  roughness: f32,
+  nDotV: f32,
+  nDotL: f32,
+) -> vec3f {
+  let rp = clamp(
+    roughness + ADJOINT_MULTISCATTER_ROUGHNESS_DERIV_STEP, 0.0, 1.0,
+  );
+  let rm = clamp(
+    roughness - ADJOINT_MULTISCATTER_ROUGHNESS_DERIV_STEP, 0.0, 1.0,
+  );
+  let denom = rp - rm;
+  if (denom <= 1e-8) { return vec3f(0.0); }
+  let fp = ggxMultiscatterLobe(f0, rp, nDotV, nDotL);
+  let fm = ggxMultiscatterLobe(f0, rm, nDotV, nDotL);
+  return (fp - fm) / denom;
 }
 
 // ── analytic ∂(evaluateBrdf)_c / ∂baseColor_c (diagonal Jacobian) ───────────
@@ -126,11 +191,17 @@ fn dBrdf_dBaseColorWithSpecular(
   let h = safe_normalize(wi + wo);
   let nDotH = max(dot(normal, h), 0.0);
   let vDotH = max(dot(wo, h), 0.0);
-  let alpha = max(roughness * roughness, 1e-3);
+  let alpha = max(roughness * roughness, ${PT_WEBGPU_MICROFACET_ALPHA_FLOOR});
   let d = ggxD(nDotH, alpha);
   let g = smithG1(nDotV, roughness) * smithG1(nDotL, roughness);
   let specScale = (d * g) / max(4.0 * nDotV * nDotL, 1e-6);
   let kd0 = 1.0 - metallic;
+  let currentF0 = adjointMaterialSpecularF0(
+    baseColor, metallic, specularColor, specularIntensity,
+  );
+  let dMs_dF0 = adjointGgxMultiscatterDerivativeF0(
+    currentF0, roughness, nDotV, nDotL,
+  );
   let m = clamp(1.0 - vDotH, 0.0, 1.0);
   let m2 = m * m;
   let m5 = m2 * m2 * m;
@@ -143,14 +214,15 @@ fn dBrdf_dBaseColorWithSpecular(
     let dfc = (1.0 - m5) * metallic;               // df_c/dbaseColor_c
     let dDiff = kd0 * INV_PI * ((1.0 - fc) + bc * (-dfc));
     let dSpec = specScale * dfc;
-    outv[c] = dDiff + dSpec;
+    outv[c] = dDiff + dSpec + dMs_dF0[c] * metallic;
   }
   return outv;
 }
 
 // ── analytic ∂(evaluateBrdf)_c / ∂roughness (per channel) ───────────────────
 // Mirror of inverse/brdfAdjoint.ts:dBrdf_dRoughness. Diffuse term is
-// roughness-independent; only the specular D·G product carries the derivative.
+// roughness-independent; the derivative is carried by the specular D·G product
+// and the Kulla-Conty multiscatter compensation lobe.
 fn dBrdf_dRoughness(
   baseColor: vec3f, roughness: f32, metallic: f32,
   normal: vec3f, wo: vec3f, wi: vec3f,
@@ -173,33 +245,32 @@ fn dBrdf_dRoughnessWithSpecular(
   let f0 = adjointMaterialSpecularF0(baseColor, metallic, specularColor, specularIntensity);
   let f = fresnelSchlick(vDotH, f0);
 
-  let alpha = max(roughness * roughness, 1e-3);
-  let alphaClamped = (roughness * roughness) < 1e-3;
+  let alpha = max(roughness * roughness, ${PT_WEBGPU_MICROFACET_ALPHA_FLOOR});
+  let alphaClamped = (roughness * roughness) < ${PT_WEBGPU_MICROFACET_ALPHA_FLOOR};
   let dAlpha_dRough = select(2.0 * roughness, 0.0, alphaClamped);
 
   // dD/da²  (den = nDotH²(a²-1)+1) ; da²/droughness = 2·alpha·dAlpha_dRough.
   let a2 = alpha * alpha;
-  let den = nDotH * nDotH * (a2 - 1.0) + 1.0;
-  let dD_da2 = (den - 2.0 * a2 * (nDotH * nDotH)) / max(PI * den * den * den, 1e-12);
+  let n2 = clamp(nDotH * nDotH, 0.0, 1.0);
+  let den = (1.0 - n2) + n2 * a2;
+  let dD_da2 = (den - 2.0 * a2 * n2) / (PI * den * den * den);
   let da2_dRough = 2.0 * alpha * dAlpha_dRough;
   let dD_dRough = dD_da2 * da2_dRough;
   let d = ggxD(nDotH, alpha);
 
-  // dG1/droughness. k = (roughness+1)²/8 ; dk/droughness = (roughness+1)/4.
-  let k = (roughness + 1.0) * (roughness + 1.0) * 0.125;
-  let dk_dRough = (roughness + 1.0) * 0.25;
   let g1V = smithG1(nDotV, roughness);
   let g1L = smithG1(nDotL, roughness);
-  let denV = nDotV * (1.0 - k) + k;
-  let denL = nDotL * (1.0 - k) + k;
-  let dG1V = select((-nDotV * (1.0 - nDotV) / (denV * denV)) * dk_dRough, 0.0, denV <= 1e-6);
-  let dG1L = select((-nDotL * (1.0 - nDotL) / (denL * denL)) * dk_dRough, 0.0, denL <= 1e-6);
   let g = g1V * g1L;
-  let dG_dRough = dG1V * g1L + g1V * dG1L;
+  let dG_dRough =
+    adjointSmithG1RoughnessDerivative(nDotV, roughness) * g1L +
+    g1V * adjointSmithG1RoughnessDerivative(nDotL, roughness);
 
   let invDenom = 1.0 / max(4.0 * nDotV * nDotL, 1e-6);
   let dSpecScale = (dD_dRough * g + d * dG_dRough) * invDenom;
-  return f * dSpecScale;
+  let dMs = adjointGgxMultiscatterDerivativeRoughness(
+    f0, roughness, nDotV, nDotL,
+  );
+  return f * dSpecScale + dMs;
 }
 
 // ── analytic ∂(evaluateBrdf)_c / ∂metallic (per channel) ────────────────────
@@ -214,11 +285,17 @@ fn dBrdf_dMetallic(
   let h = safe_normalize(wi + wo);
   let nDotH = max(dot(normal, h), 0.0);
   let vDotH = max(dot(wo, h), 0.0);
-  let alpha = max(roughness * roughness, 1e-3);
+  let alpha = max(roughness * roughness, ${PT_WEBGPU_MICROFACET_ALPHA_FLOOR});
   let d = ggxD(nDotH, alpha);
   let g = smithG1(nDotV, roughness) * smithG1(nDotL, roughness);
   let specScale = (d * g) / max(4.0 * nDotV * nDotL, 1e-6);
   let kd0 = 1.0 - metallic;
+  let currentF0 = adjointMaterialSpecularF0(
+    baseColor, metallic, specularColor, specularIntensity,
+  );
+  let dMs_dF0 = adjointGgxMultiscatterDerivativeF0(
+    currentF0, roughness, nDotV, nDotL,
+  );
   let m = clamp(1.0 - vDotH, 0.0, 1.0);
   let m2 = m * m;
   let m5 = m2 * m2 * m;
@@ -231,7 +308,8 @@ fn dBrdf_dMetallic(
     let dfc = (1.0 - m5) * (bc - dielectricF0);
     let dDiff = bc * INV_PI * (-kd0 * dfc - (1.0 - fc));
     let dSpec = specScale * dfc;
-    outv[c] = dDiff + dSpec;
+    let dF0_dMetallic = bc - dielectricF0;
+    outv[c] = dDiff + dSpec + dMs_dF0[c] * dF0_dMetallic;
   }
   return outv;
 }
@@ -240,6 +318,7 @@ fn dBrdf_dMetallic(
 fn dBrdf_dSpecularF0(
   baseColor: vec3f, roughness: f32, metallic: f32,
   normal: vec3f, wo: vec3f, wi: vec3f,
+  currentF0: vec3f,
   dF0: vec3f,
 ) -> vec3f {
   let nDotL = max(dot(normal, wi), 0.0);
@@ -248,7 +327,7 @@ fn dBrdf_dSpecularF0(
   let h = safe_normalize(wi + wo);
   let nDotH = max(dot(normal, h), 0.0);
   let vDotH = max(dot(wo, h), 0.0);
-  let alpha = max(roughness * roughness, 1e-3);
+  let alpha = max(roughness * roughness, ${PT_WEBGPU_MICROFACET_ALPHA_FLOOR});
   let d = ggxD(nDotH, alpha);
   let g = smithG1(nDotV, roughness) * smithG1(nDotL, roughness);
   let specScale = (d * g) / max(4.0 * nDotV * nDotL, 1e-6);
@@ -256,7 +335,13 @@ fn dBrdf_dSpecularF0(
   let m = clamp(1.0 - vDotH, 0.0, 1.0);
   let m2 = m * m;
   let m5 = m2 * m2 * m;
-  return dF0 * (1.0 - m5) * (vec3f(specScale) - kd0 * baseColor * INV_PI);
+  let dMs_dF0 = adjointGgxMultiscatterDerivativeF0(
+    currentF0, roughness, nDotV, nDotL,
+  );
+  return dF0 * (
+    (1.0 - m5) * (vec3f(specScale) - kd0 * baseColor * INV_PI) +
+    dMs_dF0
+  );
 }
 fn dBrdf_dSpecularColor(
   baseColor: vec3f, roughness: f32, metallic: f32,
@@ -264,15 +349,25 @@ fn dBrdf_dSpecularColor(
   specularColor: vec3f, specularIntensity: f32,
 ) -> vec3f {
   let dF0 = vec3f(0.04 * clamp(specularIntensity, 0.0, 1.0) * (1.0 - metallic));
-  return dBrdf_dSpecularF0(baseColor, roughness, metallic, normal, wo, wi, dF0);
+  let currentF0 = adjointMaterialSpecularF0(
+    baseColor, metallic, specularColor, specularIntensity,
+  );
+  return dBrdf_dSpecularF0(
+    baseColor, roughness, metallic, normal, wo, wi, currentF0, dF0,
+  );
 }
 fn dBrdf_dSpecularIntensity(
   baseColor: vec3f, roughness: f32, metallic: f32,
   normal: vec3f, wo: vec3f, wi: vec3f,
-  specularColor: vec3f,
+  specularColor: vec3f, specularIntensity: f32,
 ) -> vec3f {
   let dF0 = 0.04 * clamp(specularColor, vec3f(0.0), vec3f(1.0)) * (1.0 - metallic);
-  return dBrdf_dSpecularF0(baseColor, roughness, metallic, normal, wo, wi, dF0);
+  let currentF0 = adjointMaterialSpecularF0(
+    baseColor, metallic, specularColor, specularIntensity,
+  );
+  return dBrdf_dSpecularF0(
+    baseColor, roughness, metallic, normal, wo, wi, currentF0, dF0,
+  );
 }
 
 // ── KHR_materials_iridescence scalar partials ───────────────────────────────
@@ -366,14 +461,19 @@ fn dBrdf_dIridescence(
   baseColor: vec3f, roughness: f32, metallic: f32,
   normal: vec3f, wo: vec3f, wi: vec3f,
   specularColor: vec3f, specularIntensity: f32,
-  iridescenceIor: f32, iridescenceThicknessMin: f32, iridescenceThicknessMax: f32,
+  iridescence: f32, iridescenceIor: f32,
+  iridescenceThicknessMin: f32, iridescenceThicknessMax: f32,
 ) -> vec3f {
   let h = safe_normalize(wi + wo);
   let vDotH = max(dot(wo, h), 0.0);
   let baseF0 = adjointMaterialSpecularF0(baseColor, metallic, specularColor, specularIntensity);
   let thicknessNm = mix(iridescenceThicknessMin, iridescenceThicknessMax, clamp(vDotH, 0.0, 1.0));
   let iridF = adjointEvalIridescence(1.0, iridescenceIor, vDotH, thicknessNm, baseF0);
-  return dBrdf_dSpecularF0(baseColor, roughness, metallic, normal, wo, wi, iridF - baseF0);
+  let currentF0 = mix(baseF0, iridF, clamp(iridescence, 0.0, 1.0));
+  return dBrdf_dSpecularF0(
+    baseColor, roughness, metallic, normal, wo, wi,
+    currentF0, iridF - baseF0,
+  );
 }
 fn dBrdf_dIridescenceIor(
   baseColor: vec3f, roughness: f32, metallic: f32,
@@ -382,7 +482,7 @@ fn dBrdf_dIridescenceIor(
   iridescence: f32, iridescenceIor: f32,
   iridescenceThicknessMin: f32, iridescenceThicknessMax: f32,
 ) -> vec3f {
-  if (iridescence < 1e-4) { return vec3f(0.0); }
+  if (iridescence <= 0.0) { return vec3f(0.0); }
   let h = safe_normalize(wi + wo);
   let vDotH = max(dot(wo, h), 0.0);
   let baseF0 = adjointMaterialSpecularF0(baseColor, metallic, specularColor, specularIntensity);
@@ -391,10 +491,15 @@ fn dBrdf_dIridescenceIor(
   let iorM = max(1.0, iridescenceIor - IRIDESCENCE_IOR_DERIV_STEP);
   let denom = iorP - iorM;
   if (denom <= 1e-6) { return vec3f(0.0); }
+  let currentIridF = adjointEvalIridescence(
+    1.0, iridescenceIor, vDotH, thicknessNm, baseF0,
+  );
+  let currentF0 = mix(baseF0, currentIridF, iridescence);
   let fp = adjointEvalIridescence(1.0, iorP, vDotH, thicknessNm, baseF0);
   let fm = adjointEvalIridescence(1.0, iorM, vDotH, thicknessNm, baseF0);
   return dBrdf_dSpecularF0(
     baseColor, roughness, metallic, normal, wo, wi,
+    currentF0,
     iridescence * (fp - fm) / denom,
   );
 }
@@ -411,7 +516,7 @@ fn dBrdf_dIridescenceThicknessRange(
   iridescenceThicknessMin: f32, iridescenceThicknessMax: f32,
   iridescenceThicknessTexel: f32,
 ) -> IridescenceThicknessRangePartial {
-  if (iridescence < 1e-4) {
+  if (iridescence <= 0.0) {
     return IridescenceThicknessRangePartial(vec3f(0.0), vec3f(0.0));
   }
   let h = safe_normalize(wi + wo);
@@ -425,10 +530,15 @@ fn dBrdf_dIridescenceThicknessRange(
   if (denom <= 1e-6) {
     return IridescenceThicknessRangePartial(vec3f(0.0), vec3f(0.0));
   }
+  let currentIridF = adjointEvalIridescence(
+    1.0, iridescenceIor, vDotH, thicknessNm, baseF0,
+  );
+  let currentF0 = mix(baseF0, currentIridF, iridescence);
   let fp = adjointEvalIridescence(1.0, iridescenceIor, vDotH, tp, baseF0);
   let fm = adjointEvalIridescence(1.0, iridescenceIor, vDotH, tm, baseF0);
   let dBrdf_dThickness = dBrdf_dSpecularF0(
     baseColor, roughness, metallic, normal, wo, wi,
+    currentF0,
     iridescence * (fp - fm) / denom,
   );
   return IridescenceThicknessRangePartial(
@@ -470,7 +580,7 @@ fn adjointEvalBrdfSpecAnisotropic(
   let h = safe_normalize(wi + wo);
   let vDotH = max(dot(wo, h), 1e-6);
   let f = fresnelSchlick(vDotH, f0);
-  let alpha = max(roughness * roughness, 1e-3);
+  let alpha = max(roughness * roughness, ${PT_WEBGPU_MICROFACET_ALPHA_FLOOR});
   let aspect = sqrt(max(1.0 - 0.9 * anisotropy, 1e-4));
   let ax = max(alpha / aspect, 1e-4);
   let ay = max(alpha * aspect, 1e-4);
@@ -536,6 +646,53 @@ fn adjointEvaluateBrdfWithAnisotropyAndIridescence(
   );
 }
 
+fn adjointAnisotropicAxes(alpha: f32, anisotropy: f32) -> vec2f {
+  let aspect = sqrt(max(1.0 - 0.9 * anisotropy, 1e-4));
+  return vec2f(max(alpha / aspect, 1e-4), max(alpha * aspect, 1e-4));
+}
+
+fn adjointAnisotropicProjectedRoughness(
+  dir: vec3f,
+  t: vec3f,
+  b: vec3f,
+  roughness: f32,
+  anisotropy: f32,
+) -> f32 {
+  let alpha = max(roughness * roughness, ${PT_WEBGPU_MICROFACET_ALPHA_FLOOR});
+  let axes = adjointAnisotropicAxes(alpha, anisotropy);
+  let dT = dot(dir, t);
+  let dB = dot(dir, b);
+  let tangentLen2 = dT * dT + dB * dB;
+  let projectionBlend = clamp(0.15 * anisotropy, 0.0, 0.15);
+  if (tangentLen2 <= 1e-6) {
+    let projectedNormal = sqrt(clamp(0.5 * (axes.x + axes.y), 1e-4, 1.0));
+    return mix(roughness, projectedNormal, projectionBlend);
+  }
+  let alphaEff = sqrt(
+    ((dT * axes.x) * (dT * axes.x) + (dB * axes.y) * (dB * axes.y)) /
+      tangentLen2,
+  );
+  let projected = sqrt(clamp(alphaEff, 1e-4, 1.0));
+  return mix(roughness, projected, projectionBlend);
+}
+
+fn adjointAnisotropicAverageRoughness(roughness: f32, anisotropy: f32) -> f32 {
+  let alpha = max(roughness * roughness, ${PT_WEBGPU_MICROFACET_ALPHA_FLOOR});
+  let axes = adjointAnisotropicAxes(alpha, anisotropy);
+  let alphaRms = sqrt(0.5 * (axes.x * axes.x + axes.y * axes.y));
+  let projected = sqrt(clamp(alphaRms, 1e-4, 1.0));
+  return mix(roughness, projected, clamp(0.15 * anisotropy, 0.0, 0.15));
+}
+
+fn adjointAnisotropicMultiscatterScale(
+  anisotropy: f32,
+  roughnessForScale: f32,
+) -> f32 {
+  let anisoReduction = smoothstep(0.0, 0.35, clamp(anisotropy, 0.0, 1.0));
+  return mix(1.0, 0.6, anisoReduction) *
+    smoothstep(0.35, 0.9, roughnessForScale);
+}
+
 fn adjointEvaluateBrdfWithAnisotropyF0(
   baseColor: vec3f,
   roughness: f32,
@@ -555,23 +712,40 @@ fn adjointEvaluateBrdfWithAnisotropyF0(
   let vDotH = max(dot(wo, h), 0.0);
   let f = fresnelSchlick(vDotH, f0);
   let diff = (vec3f(1.0) - f) * (1.0 - metallic) * baseColor * INV_PI;
-  if (anisotropy <= 1e-4) {
-    let alpha = max(roughness * roughness, 1e-3);
+  var spec: vec3f;
+  var ms: vec3f;
+  if (anisotropy <= 0.0) {
+    let alpha = max(roughness * roughness, ${PT_WEBGPU_MICROFACET_ALPHA_FLOOR});
     let d = ggxD(nDotH, alpha);
     let g = smithG1(nDotV, roughness) * smithG1(nDotL, roughness);
-    let spec = (d * g) * f / max(4.0 * nDotV * nDotL, 1e-6);
-    return diff + spec;
+    spec = (d * g) * f / max(4.0 * nDotV * nDotL, 1e-6);
+    ms = ggxMultiscatterLobe(f0, roughness, nDotV, nDotL);
+  } else {
+    let tanT = adjointBuildTangent(normal);
+    let tanB = cross(normal, tanT);
+    let c = cos(anisotropyRotation);
+    let s = sin(anisotropyRotation);
+    let anisoT = c * tanT + s * tanB;
+    let anisoB = -s * tanT + c * tanB;
+    spec = adjointEvalBrdfSpecAnisotropic(
+      f0, roughness, anisotropy, normal, anisoT, anisoB, wo, wi,
+    );
+    let roughnessAvg = adjointAnisotropicAverageRoughness(roughness, anisotropy);
+    ms = adjointAnisotropicMultiscatterScale(anisotropy, roughnessAvg) *
+      ggxMultiscatterLobeRoughness(
+        f0,
+        adjointAnisotropicProjectedRoughness(
+          wo, anisoT, anisoB, roughness, anisotropy,
+        ),
+        adjointAnisotropicProjectedRoughness(
+          wi, anisoT, anisoB, roughness, anisotropy,
+        ),
+        roughnessAvg,
+        nDotV,
+        nDotL,
+      );
   }
-  let tanT = adjointBuildTangent(normal);
-  let tanB = cross(normal, tanT);
-  let c = cos(anisotropyRotation);
-  let s = sin(anisotropyRotation);
-  let anisoT = c * tanT + s * tanB;
-  let anisoB = -s * tanT + c * tanB;
-  let spec = adjointEvalBrdfSpecAnisotropic(
-    f0, roughness, anisotropy, normal, anisoT, anisoB, wo, wi,
-  );
-  return diff + spec;
+  return diff + spec + ms;
 }
 
 fn adjointPerturbChannelClamped(v: vec3f, channel: u32, delta: f32) -> vec3f {
@@ -592,7 +766,7 @@ fn dBrdf_dBaseColorWithAnisotropy(
   specularColor: vec3f,
   specularIntensity: f32,
 ) -> vec3f {
-  if (anisotropy <= 1e-4) {
+  if (anisotropy <= 0.0) {
     return dBrdf_dBaseColorWithSpecular(
       baseColor, roughness, metallic, normal, wo, wi, specularColor, specularIntensity,
     );
@@ -629,7 +803,7 @@ fn dBrdf_dRoughnessWithAnisotropy(
   specularColor: vec3f,
   specularIntensity: f32,
 ) -> vec3f {
-  if (anisotropy <= 1e-4) {
+  if (anisotropy <= 0.0) {
     return dBrdf_dRoughnessWithSpecular(
       baseColor, roughness, metallic, normal, wo, wi, specularColor, specularIntensity,
     );
@@ -661,7 +835,7 @@ fn dBrdf_dMetallicWithAnisotropy(
   specularColor: vec3f,
   specularIntensity: f32,
 ) -> vec3f {
-  if (anisotropy <= 1e-4) {
+  if (anisotropy <= 0.0) {
     return dBrdf_dMetallic(
       baseColor, roughness, metallic, normal, wo, wi, specularColor, specularIntensity,
     );
@@ -693,7 +867,7 @@ fn dBrdf_dSpecularColorWithAnisotropy(
   specularColor: vec3f,
   specularIntensity: f32,
 ) -> vec3f {
-  if (anisotropy <= 1e-4) {
+  if (anisotropy <= 0.0) {
     return dBrdf_dSpecularColor(
       baseColor, roughness, metallic, normal, wo, wi, specularColor, specularIntensity,
     );
@@ -730,9 +904,10 @@ fn dBrdf_dSpecularIntensityWithAnisotropy(
   specularColor: vec3f,
   specularIntensity: f32,
 ) -> vec3f {
-  if (anisotropy <= 1e-4) {
+  if (anisotropy <= 0.0) {
     return dBrdf_dSpecularIntensity(
-      baseColor, roughness, metallic, normal, wo, wi, specularColor,
+      baseColor, roughness, metallic, normal, wo, wi,
+      specularColor, specularIntensity,
     );
   }
   let ip = clamp(specularIntensity + ANISOTROPIC_BASE_PARAM_DERIV_STEP, 0.0, 1.0);
@@ -766,7 +941,7 @@ fn dBrdf_dBaseColorWithAnisotropyAndIridescence(
   iridescenceThicknessMin: f32,
   iridescenceThicknessMax: f32,
 ) -> vec3f {
-  if (iridescence <= 1e-4) {
+  if (iridescence <= 0.0) {
     return dBrdf_dBaseColorWithAnisotropy(
       baseColor, roughness, metallic, normal, wo, wi,
       anisotropy, anisotropyRotation, specularColor, specularIntensity,
@@ -810,7 +985,7 @@ fn dBrdf_dRoughnessWithAnisotropyAndIridescence(
   iridescenceThicknessMin: f32,
   iridescenceThicknessMax: f32,
 ) -> vec3f {
-  if (iridescence <= 1e-4) {
+  if (iridescence <= 0.0) {
     return dBrdf_dRoughnessWithAnisotropy(
       baseColor, roughness, metallic, normal, wo, wi,
       anisotropy, anisotropyRotation, specularColor, specularIntensity,
@@ -849,7 +1024,7 @@ fn dBrdf_dMetallicWithAnisotropyAndIridescence(
   iridescenceThicknessMin: f32,
   iridescenceThicknessMax: f32,
 ) -> vec3f {
-  if (iridescence <= 1e-4) {
+  if (iridescence <= 0.0) {
     return dBrdf_dMetallicWithAnisotropy(
       baseColor, roughness, metallic, normal, wo, wi,
       anisotropy, anisotropyRotation, specularColor, specularIntensity,
@@ -888,7 +1063,7 @@ fn dBrdf_dSpecularColorWithAnisotropyAndIridescence(
   iridescenceThicknessMin: f32,
   iridescenceThicknessMax: f32,
 ) -> vec3f {
-  if (iridescence <= 1e-4) {
+  if (iridescence <= 0.0) {
     return dBrdf_dSpecularColorWithAnisotropy(
       baseColor, roughness, metallic, normal, wo, wi,
       anisotropy, anisotropyRotation, specularColor, specularIntensity,
@@ -932,7 +1107,7 @@ fn dBrdf_dSpecularIntensityWithAnisotropyAndIridescence(
   iridescenceThicknessMin: f32,
   iridescenceThicknessMax: f32,
 ) -> vec3f {
-  if (iridescence <= 1e-4) {
+  if (iridescence <= 0.0) {
     return dBrdf_dSpecularIntensityWithAnisotropy(
       baseColor, roughness, metallic, normal, wo, wi,
       anisotropy, anisotropyRotation, specularColor, specularIntensity,
@@ -994,7 +1169,7 @@ fn dBrdf_dAnisotropyRotation(
   specularColor: vec3f,
   specularIntensity: f32,
 ) -> vec3f {
-  if (anisotropy <= 1e-4) { return vec3f(0.0); }
+  if (anisotropy <= 0.0) { return vec3f(0.0); }
   let fp = adjointEvaluateBrdfWithAnisotropy(
     baseColor, roughness, metallic, normal, wo, wi,
     anisotropy, anisotropyRotation + ANISOTROPY_ROTATION_DERIV_STEP,
@@ -1019,7 +1194,7 @@ fn adjointClearcoatLobe(
   wo: vec3f,
   wi: vec3f,
 ) -> vec3f {
-  if (clearcoat < 1e-4) { return vec3f(0.0); }
+  if (clearcoat <= 0.0) { return vec3f(0.0); }
   let nDotL = max(dot(normal, wi), 0.0);
   let nDotV = max(dot(normal, wo), 0.0);
   if (nDotL <= 1e-5 || nDotV <= 1e-5) { return vec3f(0.0); }
@@ -1027,7 +1202,7 @@ fn adjointClearcoatLobe(
   let nDotH = max(dot(normal, h), 0.0);
   let vDotH = max(dot(wo, h), 0.0);
   let f = fresnelSchlick(vDotH, vec3f(0.04));
-  let alpha = max(clearcoatRoughness * clearcoatRoughness, 1e-3);
+  let alpha = max(clearcoatRoughness * clearcoatRoughness, ${PT_WEBGPU_MICROFACET_ALPHA_FLOOR});
   let d = ggxD(nDotH, alpha);
   let g = smithG1(nDotV, clearcoatRoughness) * smithG1(nDotL, clearcoatRoughness);
   let specScale = (d * g) / max(4.0 * nDotV * nDotL, 1e-6);
@@ -1048,7 +1223,7 @@ fn dBrdf_dClearcoatRoughness(
   wo: vec3f,
   wi: vec3f,
 ) -> vec3f {
-  if (clearcoat < 1e-4) { return vec3f(0.0); }
+  if (clearcoat <= 0.0) { return vec3f(0.0); }
   let nDotL = max(dot(normal, wi), 0.0);
   let nDotV = max(dot(normal, wo), 0.0);
   if (nDotL <= 1e-5 || nDotV <= 1e-5) { return vec3f(0.0); }
@@ -1057,27 +1232,24 @@ fn dBrdf_dClearcoatRoughness(
   let vDotH = max(dot(wo, h), 0.0);
   let f = fresnelSchlick(vDotH, vec3f(0.04));
 
-  let alpha = max(clearcoatRoughness * clearcoatRoughness, 1e-3);
-  let alphaClamped = (clearcoatRoughness * clearcoatRoughness) < 1e-3;
+  let alpha = max(clearcoatRoughness * clearcoatRoughness, ${PT_WEBGPU_MICROFACET_ALPHA_FLOOR});
+  let alphaClamped = (clearcoatRoughness * clearcoatRoughness) < ${PT_WEBGPU_MICROFACET_ALPHA_FLOOR};
   let dAlpha_dRough = select(2.0 * clearcoatRoughness, 0.0, alphaClamped);
 
   let a2 = alpha * alpha;
-  let den = nDotH * nDotH * (a2 - 1.0) + 1.0;
-  let dD_da2 = (den - 2.0 * a2 * (nDotH * nDotH)) / max(PI * den * den * den, 1e-12);
+  let n2 = clamp(nDotH * nDotH, 0.0, 1.0);
+  let den = (1.0 - n2) + n2 * a2;
+  let dD_da2 = (den - 2.0 * a2 * n2) / (PI * den * den * den);
   let da2_dRough = 2.0 * alpha * dAlpha_dRough;
   let dD_dRough = dD_da2 * da2_dRough;
   let d = ggxD(nDotH, alpha);
 
-  let k = (clearcoatRoughness + 1.0) * (clearcoatRoughness + 1.0) * 0.125;
-  let dk_dRough = (clearcoatRoughness + 1.0) * 0.25;
   let g1V = smithG1(nDotV, clearcoatRoughness);
   let g1L = smithG1(nDotL, clearcoatRoughness);
-  let denV = nDotV * (1.0 - k) + k;
-  let denL = nDotL * (1.0 - k) + k;
-  let dG1V = select((-nDotV * (1.0 - nDotV) / (denV * denV)) * dk_dRough, 0.0, denV <= 1e-6);
-  let dG1L = select((-nDotL * (1.0 - nDotL) / (denL * denL)) * dk_dRough, 0.0, denL <= 1e-6);
   let g = g1V * g1L;
-  let dG_dRough = dG1V * g1L + g1V * dG1L;
+  let dG_dRough =
+    adjointSmithG1RoughnessDerivative(nDotV, clearcoatRoughness) * g1L +
+    g1V * adjointSmithG1RoughnessDerivative(nDotL, clearcoatRoughness);
 
   let invDenom = 1.0 / max(4.0 * nDotV * nDotL, 1e-6);
   let dSpecScale = (dD_dRough * g + d * dG_dRough) * invDenom;
@@ -1105,13 +1277,13 @@ fn adjointSheenLobe(
   wo: vec3f,
   wi: vec3f,
 ) -> vec3f {
-  if (sheen < 1e-4) { return vec3f(0.0); }
+  if (sheen <= 0.0) { return vec3f(0.0); }
   let nDotL = max(dot(normal, wi), 0.0);
   let nDotV = max(dot(normal, wo), 0.0);
   if (nDotL <= 1e-5 || nDotV <= 1e-5) { return vec3f(0.0); }
   let h = safe_normalize(wi + wo);
   let nDotH = max(dot(normal, h), 0.0);
-  let alpha = max(sheenRoughness * sheenRoughness, 1e-3);
+  let alpha = max(sheenRoughness * sheenRoughness, ${PT_WEBGPU_MICROFACET_ALPHA_FLOOR});
   let d = adjointCharlieD(nDotH, alpha);
   let vis = adjointSheenVisibility(nDotL, nDotV);
   return sheen * sheenColor * d * vis;
@@ -1142,7 +1314,7 @@ fn dBrdf_dSheenRoughness(
   wo: vec3f,
   wi: vec3f,
 ) -> vec3f {
-  if (sheen < 1e-4) { return vec3f(0.0); }
+  if (sheen <= 0.0) { return vec3f(0.0); }
   let nDotL = max(dot(normal, wi), 0.0);
   let nDotV = max(dot(normal, wo), 0.0);
   if (nDotL <= 1e-5 || nDotV <= 1e-5) { return vec3f(0.0); }
@@ -1150,10 +1322,10 @@ fn dBrdf_dSheenRoughness(
   let nDotH = max(dot(normal, h), 0.0);
   let sinThetaH = sqrt(max(0.0, 1.0 - nDotH * nDotH));
   let alphaRaw = sheenRoughness * sheenRoughness;
-  let dAlpha_dRough = select(2.0 * sheenRoughness, 0.0, alphaRaw < 1e-3);
+  let dAlpha_dRough = select(2.0 * sheenRoughness, 0.0, alphaRaw < ${PT_WEBGPU_MICROFACET_ALPHA_FLOOR});
   if (sinThetaH <= 1e-6 || dAlpha_dRough == 0.0) { return vec3f(0.0); }
 
-  let alpha = max(alphaRaw, 1e-3);
+  let alpha = max(alphaRaw, ${PT_WEBGPU_MICROFACET_ALPHA_FLOOR});
   let q = 1.0 / max(alpha, 1e-4);
   let powTerm = pow(sinThetaH, q);
   let logSin = log(sinThetaH);

@@ -28,19 +28,15 @@ describe('ReSTIR-GI material parity', () => {
     expect(RESTIR_GI_MATERIAL_WGSL).toContain('applyBumpMapForHit(hit, normalMapped)');
   });
 
-  it('routes rich GI suffix materials through extension-aware BRDF shading', () => {
-    expect(RESTIR_GI_MATERIAL_WGSL).toContain('restir_gi_has_rich_suffix_payload(payload)');
-    expect(RESTIR_GI_MATERIAL_WGSL).toContain('payload.metal > 1e-4');
-    expect(RESTIR_GI_MATERIAL_WGSL).toContain('payload.rough < 0.84');
-    expect(RESTIR_GI_MATERIAL_WGSL).toContain('payload.clearcoat.x > 1e-4');
-    expect(RESTIR_GI_MATERIAL_WGSL).toContain('payload.sheen.a > 1e-4');
-    expect(RESTIR_GI_MATERIAL_WGSL).toContain('payload.iridescence.x > 1e-4');
-    expect(RESTIR_GI_MATERIAL_WGSL).toContain('evalGGXWithSpecularClearcoatSheenWithAnisotropyFrame(');
-    expect(RESTIR_GI_MATERIAL_WGSL).toContain('payload.anisotropyTangent,');
-    expect(RESTIR_GI_MATERIAL_WGSL).toContain('payload.anisotropyBitangent,');
-    expect(RESTIR_GI_MATERIAL_WGSL).toContain('out.Lo = applyVolumeScatteringApproximation(');
-    expect(RESTIR_GI_MATERIAL_WGSL).toContain('(surfaceEmission + incomingIrradiance * brdf) * payload.layerTransmission');
-    expect(RESTIR_GI_MATERIAL_WGSL).toContain('(surfaceEmission + diffuseLo) * payload.layerTransmission');
+  it('keeps the irradiance-fed suffix measure-correct while preserving layers and volume', () => {
+    expect(RESTIR_GI_MATERIAL_WGSL).not.toContain('restir_gi_proxy_incoming_dir');
+    expect(RESTIR_GI_MATERIAL_WGSL).not.toContain('restir_gi_has_rich_suffix_payload');
+    expect(RESTIR_GI_MATERIAL_WGSL).not.toContain('incomingIrradiance * brdf');
+    expect(RESTIR_GI_MATERIAL_WGSL).toContain(
+      'let diffuseLo = incomingIrradiance * payload.albedo * INV_PI;',
+    );
+    expect(RESTIR_GI_MATERIAL_WGSL).toContain('out.Lo = applyHomogeneousVolumeSingleScatter(');
+    expect(RESTIR_GI_MATERIAL_WGSL).toContain('(surfaceSource + diffuseLo) * payload.layerTransmission');
     expect(RESTIR_GI_MATERIAL_WGSL).toContain('payload.volumeScattering,');
   });
 
@@ -51,7 +47,8 @@ describe('ReSTIR-GI material parity', () => {
     expect(RESTIR_GI_MATERIAL_WGSL).toContain('hit.indices.w % BVH_MATERIAL_TEX_WIDTH');
     expect(RESTIR_GI_MATERIAL_WGSL).toContain('sampleEmissiveMap(');
     expect(RESTIR_GI_MATERIAL_WGSL).toContain('materialAtlasUv1ForHit(hit)');
-    expect(RESTIR_GI_MATERIAL_WGSL).toContain('let surfaceEmission = restir_gi_surface_emission_for_hit(hit);');
+    expect(RESTIR_GI_MATERIAL_WGSL).toContain('let surfaceSource = restir_gi_surface_source_for_hit(hit, payload.albedo);');
+    expect(RESTIR_GI_MATERIAL_WGSL).toContain('sampleLightMap(hit)');
   });
 
   it('defines receiver-lobe p-hat helpers for rich-material GI reuse', () => {
@@ -60,7 +57,8 @@ describe('ReSTIR-GI material parity', () => {
     expect(RESTIR_GI_MATERIAL_WGSL).toContain('evalGGXSpecularOnlyWithSpecularClearcoatSheenWithAnisotropyFrame(');
     expect(RESTIR_GI_MATERIAL_WGSL).toContain('contribution = contribution + Lo * specBrdf;');
     expect(RESTIR_GI_MATERIAL_WGSL).toContain('payload.volumeScattering = surf.volumeScattering;');
-    expect(RESTIR_GI_MATERIAL_WGSL).toContain('return applyVolumeScatteringApproximation(');
+    expect(RESTIR_GI_MATERIAL_WGSL).toContain('return applyHomogeneousVolumeSingleScatter(');
+    expect(RESTIR_GI_MATERIAL_WGSL).toContain('payload.bulkThickness,');
     expect(RESTIR_GI_MATERIAL_WGSL).toContain('contribution * payload.layerTransmission');
   });
 
@@ -89,7 +87,9 @@ describe('ReSTIR-GI material parity', () => {
     expect(body).toContain('let normalMapped = applyNormalMapForHit(hit, smoothNormal);');
     expect(body).toContain('let normal = applyBumpMapForHit(hit, normalMapped);');
     expect(body).toContain('let xsPayload = sampleRestirGIHitMaterialForHit(');
-    expect(body).toContain('let ddgiLo = xsPayload.Lo;');
+    // Default NRC uses the full extension-aware suffix; GRIS deliberately uses
+    // the diffuse proxy required by its reconnection-shift density model.
+    expect(body).toContain('let ddgiLo = select(xsPayload.Lo, ddgiProxyLo, grisOn);');
     expect(body).toContain('let xsAlbedo = xsPayload.albedo;');
     expect(body).toContain('let xsRough = xsPayload.rough;');
     expect(body).toContain('let receiverPayload = sampleRestirDIMaterialPayloadForHit(');
@@ -102,7 +102,7 @@ describe('ReSTIR-GI material parity', () => {
 
   it('keeps primary-glass GI branches on the same PPG defensive mixture as opaque GI', () => {
     for (const body of [RIS_GI_WGSL, nrcModule.source]) {
-      expect(body).toContain('let ppgGuidedOn_g = (ubo.ppgEnabled == 1u);');
+      expect(body).toContain('let ppgGuidedOn_g = (ubo.ppgEnabled == 1u) && !grisOn;');
       expect(body).toContain('let alpha_g = select(0.0, ubo.ppgMixAlpha, ppgGuidedOn_g);');
       expect(body).toContain('wi = ppgSampleGuidedDir(walkHitPos, &rng);');
       expect(body).toContain('let pGuide_g = ppgEvalPdf(walkHitPos, wi);');
@@ -116,8 +116,13 @@ describe('ReSTIR-GI material parity', () => {
       expect(module.requires).toContain('restirCastPrimary');
       expect(module.requires).toContain('restirGiMaterial');
     }
-    for (const shader of [TEMPORAL_GI_WGSL, SPATIAL_GI_WGSL]) {
-      expect(shader).toContain('@group(1) @binding(0) var<storage, read> bvh');
+    for (const [module, shader] of [
+      [TEMPORAL_GI_MODULE, TEMPORAL_GI_WGSL],
+      [SPATIAL_GI_MODULE, SPATIAL_GI_WGSL],
+    ] as const) {
+      const composed = composeWgsl(module, WGSL_MODULES);
+      expect(composed).toContain('@group(1) @binding(0) var<storage, read> sceneGeometryArena');
+      expect(composed).toContain('fn bvhLoadNode(');
       expect(
         shader.includes('let centerSurf = castPrimary(') ||
         shader.includes('let curSurf = castPrimary('),

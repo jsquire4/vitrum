@@ -52,6 +52,15 @@ describe('configureWebGpuCanvas', () => {
     expect(() => configureWebGpuCanvas(makeCanvas(null), FAKE_DEVICE)).not.toThrow();
   });
 
+  it('required:true reports and throws when the canvas has no webgpu context', () => {
+    const onError = vi.fn();
+    expect(() =>
+      configureWebGpuCanvas(makeCanvas(null), FAKE_DEVICE, onError, { required: true }),
+    ).toThrow('canvas.getContext("webgpu") returned null');
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(onError.mock.calls[0]?.[0]).toBeInstanceOf(Error);
+  });
+
   it('swallows a throwing configure (best-effort)', () => {
     Object.defineProperty(globalThis, 'navigator', { value: { gpu: {} }, configurable: true });
     const configure = vi.fn(() => { throw new Error('boom'); });

@@ -29,11 +29,12 @@
  *     before the denoiser-adapter:
  *       … → gtao-upsample → cb-prefill → denoiser-adapter → …
  *
- * Bind group (`cb-prefill` BGL, 4 bindings):
+ * Bind group (`cb-prefill` BGL, 5 bindings):
  *   0  CbPrefillUniforms UBO  (16 bytes: screenW/H, frameParity, _pad)
  *   1  readAccum              (previous-frame accumulated radiance, sampled)
  *   2  motionVectorTexture    (rgba32float, sampled)
- *   3  hdrColorTexture        (rgba16float, storage write — gap pixels only)
+ *   3  checkerboard snapshot  (immutable current-frame active-parity samples)
+ *   4  hdrColorTexture        (rgba16float, storage write — gap pixels only)
  *
  * The pass has its own `_cbPrefillUboRef` buffer (16 bytes). Values are the
  * same semantics as `RESOLVE_UBO` (frameParity, screenW/H) but packed into
@@ -97,7 +98,7 @@ export class CheckerboardPrefillPass implements Pass {
   async initialize(_ctx: PassInitContext): Promise<void> {}
 
   dispatch(ctx: PassDispatchContext): void {
-    const { device, bglCache, frameState, frameCount, width, height, resourceCache } = ctx;
+    const { device, encoder, bglCache, frameState, frameCount, width, height, resourceCache } = ctx;
 
     // Pack CbPrefillUniforms: screenW/H + frameParity + padding.
     const uboBytes = new ArrayBuffer(CB_PREFILL_UBO.sizeBytes);
@@ -109,17 +110,29 @@ export class CheckerboardPrefillPass implements Pass {
     });
     device.queue.writeBuffer(this._uboRef.buf!, 0, uboBytes);
 
+    // The shader writes gap pixels back into hdrColorTexture. Snapshot first so
+    // it can legally sample the four fresh active-parity neighbours without a
+    // same-subresource sampled/storage alias (forbidden by WebGPU validation).
+    encoder.copyTextureToTexture(
+      { texture: ctx.resources.common.hdrColorTexture },
+      { texture: ctx.resources.common.checkerboardRadianceSnapshotTexture },
+      { width, height, depthOrArrayLayers: 1 },
+    );
+
     const buildBg = (): GPUBindGroup => buildCbPrefillBindGroup(
       device, bglCache,
       this._uboRef.buf!,
       resourceCache?.textureView(frameState.readAccum) ?? frameState.readAccum.createView(),
       resourceCache?.textureView(ctx.resources.common.motionVectorTexture) ?? ctx.resources.common.motionVectorTexture.createView(),
+      resourceCache?.textureView(ctx.resources.common.checkerboardRadianceSnapshotTexture)
+        ?? ctx.resources.common.checkerboardRadianceSnapshotTexture.createView(),
       resourceCache?.textureView(ctx.resources.common.hdrColorTexture) ?? ctx.resources.common.hdrColorTexture.createView(),
     );
     const bg = cachedBindGroup(resourceCache, 'pass:cb-prefill', [
       this._uboRef.buf,
       frameState.readAccum,
       ctx.resources.common.motionVectorTexture,
+      ctx.resources.common.checkerboardRadianceSnapshotTexture,
       ctx.resources.common.hdrColorTexture,
     ], buildBg);
 

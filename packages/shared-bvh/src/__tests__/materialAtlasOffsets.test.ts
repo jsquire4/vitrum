@@ -5,19 +5,21 @@ import {
 } from '../wgsl/materialAtlasOffsets.wgsl.js';
 
 /**
- * Pins the single-sourced 62-texel material-atlas offset ABI (T4-2,
+ * Pins the single-sourced 157-texel material-atlas offset ABI (T4-2,
  * 2026-07-20). The three WGSL consumers (shade / DDGI / RC) generate their
  * offset-const block from this data; the composed-WGSL byte-identity is pinned
  * downstream (shade/DDGI composed goldens + walkaround-rc
  * `probeRayCastByteIdentity.test.ts`). These tests guard the generator itself.
  */
 describe('materialAtlas offset ABI generator', () => {
-  it('carries the frozen 62-texel stride and canonical values', () => {
+  it('carries the optical + arbitrary-UV stride and canonical values', () => {
     const byName = new Map(MATERIAL_ATLAS_OFFSETS);
-    expect(byName.get('META_TEXELS_PER_TRI')).toBe(62);
+    expect(byName.get('META_TEXELS_PER_TRI')).toBe(157);
     expect(byName.get('SLOT_BASE_COLOR')).toBe(0);
     expect(byName.get('EMISSIVE_TEXEL_OFFSET')).toBe(11);
     expect(byName.get('BACK_LAYER_NORMAL_SCALE_TEXEL_OFFSET')).toBe(61);
+    expect(byName.get('OPTICAL_HEADER_TEXEL_OFFSET')).toBe(62);
+    expect(byName.get('UV_AFFINE_BASE_TEXEL_OFFSET')).toBe(128);
   });
 
   it('emits the requested subset in canonical order regardless of input order', () => {
@@ -27,7 +29,7 @@ describe('materialAtlas offset ABI generator', () => {
       include: ['EMISSIVE_TEXEL_OFFSET', 'META_TEXELS_PER_TRI', 'SLOT_BASE_COLOR'],
     });
     expect(out).toBe(
-      'const RC_MATERIAL_MAP_META_TEXELS_PER_TRI: u32 = 62u;\n' +
+      'const RC_MATERIAL_MAP_META_TEXELS_PER_TRI: u32 = 157u;\n' +
         'const RC_MATERIAL_MAP_SLOT_BASE_COLOR: u32 = 0u;\n' +
         'const RC_MATERIAL_MAP_EMISSIVE_TEXEL_OFFSET: u32 = 11u;',
     );
@@ -38,7 +40,7 @@ describe('materialAtlas offset ABI generator', () => {
       prefix: '',
       include: ['META_TEXELS_PER_TRI'],
     });
-    expect(out).toBe('const MATERIAL_MAP_META_TEXELS_PER_TRI: u32 = 62u;');
+    expect(out).toBe('const MATERIAL_MAP_META_TEXELS_PER_TRI: u32 = 157u;');
   });
 
   it('throws on an unknown offset suffix (single-source drift guard)', () => {

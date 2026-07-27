@@ -45,7 +45,7 @@ const DISPLACEMENT_FIELDS = [
   'displacementSubdivisions',
 ] as const;
 
-const WALKAROUND_PERMANENT_UNSUPPORTED_OPTICAL_FIELDS = [
+const WALKAROUND_APPROXIMATE_OPTICAL_FIELDS = [
   'spectralAttenuation',
   'dispersionAbbeNumber',
   'thinFilmStack',
@@ -60,10 +60,6 @@ const WALKAROUND_APPROXIMATE_VOLUME_LAYER_FIELDS = [
 ] as const;
 
 const WALKAROUND_TRANSPARENT_TRANSPORT_BOUNDARY_FIELDS = [
-  'alphaMode',
-  'alphaCutoff',
-  'opacity',
-  'alphaMap',
   'transmission',
   'transmissionMap',
   'thickness',
@@ -117,11 +113,11 @@ describe('BACKEND_PROMISE_LEDGER Road-to-100 future-contract boundaries', () => 
     }
   });
 
-  it('walkaround specialty optical rows retain explicit unsupported/approximate boundaries', () => {
+  it('walkaround specialty optical/volume rows retain explicit approximate boundaries', () => {
     const materials = BACKEND_PROMISE_LEDGER['walkaround-hybrid'].supportDetails.materials;
 
-    for (const field of WALKAROUND_PERMANENT_UNSUPPORTED_OPTICAL_FIELDS) {
-      expect(materials?.[field], field).toBe('unsupported');
+    for (const field of WALKAROUND_APPROXIMATE_OPTICAL_FIELDS) {
+      expect(materials?.[field], field).toBe('approximate');
     }
     for (const field of WALKAROUND_APPROXIMATE_VOLUME_LAYER_FIELDS) {
       expect(materials?.[field], field).toBe('approximate');
@@ -136,11 +132,6 @@ describe('BACKEND_PROMISE_LEDGER Road-to-100 future-contract boundaries', () => 
     }
   });
 
-  it('receiveShadow remains unsupported on every backend until the core contract changes', () => {
-    for (const [backend, record] of Object.entries(BACKEND_PROMISE_LEDGER)) {
-      expect(record.supportDetails.shadows.receiveShadow, backend).toBe('unsupported');
-    }
-  });
 });
 
 // ── pt-webgl2 ─────────────────────────────────────────────────────────────────
@@ -188,7 +179,7 @@ describe('BACKEND_PROMISE_LEDGER["pt-webgl2"] vs PT_WEBGL2_SUPPORT', () => {
     expect(mutations.topology).toBe('fallback-rebuild');
     expect(mutations.addPrimitive).toBe('fallback-rebuild');
     expect(mutations.removePrimitive).toBe('fallback-rebuild');
-    expect(mutations.lighting).toBe('unsupported');
+    expect(mutations.lighting).toBe('fallback-rebuild');
   });
 
   it('debugSurface matches the method promise row', () => {
@@ -253,6 +244,32 @@ describe('BACKEND_PROMISE_LEDGER["walkaround-hybrid"] structural self-consistenc
   it('accumulates is false (realtime GI, not converged PT)', () => {
     expect(ledger.accumulates).toBe(false);
   });
+
+  it('publishes the bounded refractive-trace estimator boundary for host negotiation', () => {
+    const detail = ledger.supportDetails.causticStrategies?.['refractive-trace'];
+    expect(detail?.mode).toBe('approximate');
+    expect(detail?.emitterKinds.directional).toBe('native');
+    expect(detail?.emitterKinds.environment).toBe('unsupported');
+    expect(detail?.emitterKinds.point).toBe('unsupported');
+    expect(detail?.emitterKinds.spot).toBe('unsupported');
+    expect(detail?.emitterKinds['rect-area']).toBe('unsupported');
+    expect(detail?.emitterKinds['disc-area']).toBe('unsupported');
+    expect(detail?.emitterKinds['mesh-area']).toBe('unsupported');
+    expect(detail?.volumeScattering).toBe('unsupported');
+    expect(detail?.estimatorScope).toContain('not Newton manifold NEE');
+    expect(detail?.incompatibleFeatures).toEqual(['manifold-nee', 'photon-map']);
+  });
+
+  it('publishes implemented bounded transmissive material profiles', () => {
+    expect(ledger.supportDetails.materialProfiles).toEqual({
+      deltaTransmission: 'approximate',
+      roughTransmission: 'approximate',
+      layeredTransmission: 'approximate',
+      normalMappedTransmission: 'approximate',
+      participatingMedia: 'approximate',
+      faceLayers: 'approximate',
+    });
+  });
 });
 
 // ── pt-webgpu ─────────────────────────────────────────────────────────────────
@@ -294,5 +311,28 @@ describe('BACKEND_PROMISE_LEDGER["pt-webgpu"] structural self-consistency', () =
 
   it('accumulates is true (converged PT)', () => {
     expect(ledger.accumulates).toBe(true);
+  });
+
+  it('publishes both implemented full-tier caustic strategies and the MNEE fail-closed envelope', () => {
+    const mnee = ledger.supportDetails.causticStrategies?.['manifold-nee'];
+    const sppm = ledger.supportDetails.causticStrategies?.['photon-map'];
+
+    expect(mnee?.mode).toBe('native');
+    expect(mnee?.estimatorScope).toContain('one-to-eight planar geometric-normal');
+    expect(mnee?.estimatorScope).toContain('fail closed before upload');
+    expect(mnee?.volumeScattering).toBe('unsupported');
+    expect(mnee?.emitterKinds).toEqual({
+      directional: 'native',
+      point: 'native',
+      spot: 'native',
+      'rect-area': 'native',
+      'disc-area': 'native',
+      'mesh-area': 'native',
+      environment: 'native',
+    });
+    expect(mnee?.incompatibleFeatures).toEqual([]);
+
+    expect(sppm?.mode).toBe('native');
+    expect(sppm?.volumeScattering).toBe('native');
   });
 });

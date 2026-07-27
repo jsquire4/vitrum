@@ -96,6 +96,7 @@ vi.mock('@vitrum/shared-denoisers', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@vitrum/shared-denoisers')>();
   return {
     ...actual,
+    acquireOIDNSession: vi.fn(async () => ({ release: vi.fn() })),
     preloadOIDNModel: vi.fn(async () => undefined),
     denoiseFinal: vi.fn(
       async (inputs: { color: Float32Array }) => new Float32Array(inputs.color),
@@ -205,9 +206,13 @@ describe('Item 2 — OIDNFinalDenoiser resize stale-write guard', () => {
 
 import { NeuralDenoiser } from '../src/pipeline/denoisers/neural.js';
 import type { InferenceGraph } from '../src/neural/InferenceGraph.js';
+import { NEURAL_F32_TENSOR_STORAGE } from '../src/neural/tensorPrecision.js';
 import type { DenoiserDispatchContext } from '../src/pipeline/denoisers/index.js';
 
-const fakeInferenceGraph = { run: vi.fn() } as unknown as InferenceGraph;
+const fakeInferenceGraph = {
+  run: vi.fn(),
+  tensorStorage: NEURAL_F32_TENSOR_STORAGE,
+} as unknown as InferenceGraph;
 
 function makeNeuralDevice(): GPUDevice {
   return {
@@ -272,38 +277,39 @@ describe('Item 3 — NeuralDenoiser uses _graphW/_graphH for size guard', () => 
     expect((d as unknown as { _graphH: number })._graphH).toBe(64);
   });
 
-  it('dispatch() at new (post-resize) dims falls back with a size-changed reason', async () => {
+  it('dispatch() after a resize without retained weights fails durably', async () => {
     const device = makeNeuralDevice();
     const d = new NeuralDenoiser({ inferenceGraph: fakeInferenceGraph });
     await d.initialize({ device, width: 64, height: 64, bglCache: {} as never, frameResources: {} as never });
 
     d.resize(128, 128);
     const ctx = makeNeuralDispatchCtx(128, 128, device);
-    d.dispatch(ctx);
+    expect(() => d.dispatch(ctx)).toThrow(/without retained model weights/i);
 
     const state = d.state();
-    expect(state.status).toBe('fallback');
-    if (state.status === 'fallback') {
-      expect(state.reason).toContain('size changed');
+    expect(state.status).toBe('failed');
+    if (state.status === 'failed') {
+      expect(state.reason).toMatch(/without retained model weights/i);
+      expect(state.retryable).toBe(false);
     }
   });
 
-  it('dispatch() at boot dims (after resize-back) does NOT produce a size-changed reason', async () => {
+  it('does not silently clear selected-mode resize failure by resizing back', async () => {
     const device = makeNeuralDevice();
     const d = new NeuralDenoiser({ inferenceGraph: fakeInferenceGraph });
     await d.initialize({ device, width: 64, height: 64, bglCache: {} as never, frameResources: {} as never });
 
     d.resize(128, 128);
-    d.resize(64, 64); // back to boot dims — graph should match again
+    d.resize(64, 64);
 
     const ctx = makeNeuralDispatchCtx(64, 64, device);
-    d.dispatch(ctx);
+    expect(() => d.dispatch(ctx)).toThrow(/without retained model weights/i);
 
     const state = d.state();
-    // State might be fallback for other reasons (pipelines async), but must NOT
-    // be "size changed" — that guard fires only on _graphW/_graphH mismatch.
-    if (state.status === 'fallback') {
-      expect(state.reason).not.toContain('size changed');
+    expect(state.status).toBe('failed');
+    if (state.status === 'failed') {
+      expect(state.reason).toMatch(/without retained model weights/i);
+      expect(state.retryable).toBe(false);
     }
   });
 });
@@ -315,6 +321,7 @@ describe('Item 3 — NeuralDenoiser uses _graphW/_graphH for size guard', () => 
 import { PPGCoordinator } from '../src/pipeline/PPGCoordinator.js';
 import { PPG_MIS_ALPHA } from '../src/ppg/ppgConstants.js';
 import type { FrameResources } from '../src/pipeline/resourceManager.js';
+import { computePPGResourceFootprint } from '../src/pipeline/resourceManager.js';
 
 function makeMinimalPPGDevice(): GPUDevice {
   return {
@@ -338,9 +345,9 @@ function makeMinimalFrameResources(): FrameResources {
     ({ label, size, destroy: vi.fn() }) as unknown as GPUBuffer;
   return {
     ppg: {
-      sTreeBuf: mkBuf('sTree', 256),
-      dTreeBuf: mkBuf('dTree', 256),
-      dTreeOffsetsBuf: mkBuf('ppg-dTreeOffsets', 1024 * 4),
+      queryArenaBuf: mkBuf('ppg-query-arena', 1),
+      queryArenaLayout: {},
+      queryArenaEpoch: 0,
       fluxAtomicsBuf: mkBuf('ppg-flux-atomics', 1024 * 341 * 4),
       cellSampleCountsBuf: mkBuf('ppg-cellSampleCounts', 1024 * 4),
       updateUboBuffer: mkBuf('ppg-update-ubo', 16),
@@ -386,15 +393,19 @@ describe('Item 4 — PPGCoordinator onResize retains maxSpatialCells + bumps gen
 
     expect((coord as unknown as { _maxDTreeNodesPerCell: number | undefined })._maxDTreeNodesPerCell).toBe(17);
     expect(lastCreatedBufferSize(device, 'ppg-fluxAtomics')).toBe(8 * 17 * 4);
-    expect(lastCreatedBufferSize(device, 'ppg-dTreeBuf')).toBe(8 * (4 + 17 * 8) * 4);
+    expect(lastCreatedBufferSize(device, 'ppg-query-arena')).toBe(
+      computePPGResourceFootprint(8, 17).queryArenaBytes,
+    );
 
     coord.onResize(makeMinimalFrameResources(), 128, 128, 1);
 
     expect(lastCreatedBufferSize(device, 'ppg-fluxAtomics')).toBe(8 * 17 * 4);
-    expect(lastCreatedBufferSize(device, 'ppg-dTreeBuf')).toBe(8 * (4 + 17 * 8) * 4);
+    expect(lastCreatedBufferSize(device, 'ppg-query-arena')).toBe(
+      computePPGResourceFootprint(8, 17).queryArenaBytes,
+    );
   });
 
-  it('stores a clamped ppgMixAlpha from initialize() args', () => {
+  it('stores valid ppgMixAlpha values without clamping', () => {
     const device = makeMinimalPPGDevice();
     const coord = new PPGCoordinator(device);
     const fr = makeMinimalFrameResources();
@@ -404,10 +415,10 @@ describe('Item 4 — PPGCoordinator onResize retains maxSpatialCells + bumps gen
       fr, 64, 64, true, 0,
       8,
       17,
-      1.25,
+      0.75,
     );
 
-    expect(coord.mixAlpha).toBe(1);
+    expect(coord.mixAlpha).toBe(0.75);
 
     coord.initialize(
       { bvhPositions: { cpuData: new Float32Array(4).buffer, count: 1 } } as never,
@@ -637,6 +648,9 @@ function makeMatchingSnap(
     visW: 4, visH: 4,
     irrData: new Uint16Array(4 * 4 * 4),
     visData: new Uint16Array(4 * 4 * 4),
+    probeStateW: dims.x,
+    probeStateH: dims.y * dims.z,
+    probeStateData: new Float32Array(dims.x * dims.y * dims.z * 4),
   };
 }
 
@@ -698,54 +712,44 @@ describe('Item 6 — importGIState grid-layout guard', () => {
   });
 });
 
-// ──────────────────────────────────────────────────────────────────────────────
-// §7 — PPG flux u32 saturation WGSL pattern
-// ──────────────────────────────────────────────────────────────────────────────
+// ───────────────────────────────────────────────────────────────────────────────
+// §7 — PPG atomic-f32 accumulation WGSL pattern
+// ───────────────────────────────────────────────────────────────────────────────
 
 import { buildPpgUpdateWgsl } from '../src/ppg/ppgUpdate.wgsl.ts';
 
-describe('Item 7 — PPG flux atomicAdd u32 saturation', () => {
-  it('buildPpgUpdateWgsl contains the saturation guard (oldVal + overflow check + atomicMax)', () => {
+describe('Item 7 — PPG atomic f32 accumulation', () => {
+  it('uses a bounded weak-CAS loop over IEEE-754 bits with finite-range guards', () => {
     const wgsl = buildPpgUpdateWgsl(341);
-    // Must read the old value from atomicAdd (not just add and discard).
-    expect(wgsl).toContain('let oldVal = atomicAdd');
-    // Must compare against 0xFFFFFFFFu - increment.
-    expect(wgsl).toMatch(/0xFFFFFFFFu\s*-\s*increment/);
-    // Must saturate via atomicMax to 0xFFFFFFFFu.
-    expect(wgsl).toContain('atomicMax(&ppgFluxAtomics[slot], 0xFFFFFFFFu)');
+    expect(wgsl).toContain('bitcast<f32>(oldBits)');
+    expect(wgsl).toContain('atomicCompareExchangeWeak(');
+    expect(wgsl).toContain('&ppgFluxAtomics[slot], oldBits');
+    expect(wgsl).toContain('MAX_FLUX_CAS_ATTEMPTS: u32 = 256u');
+    expect(wgsl).toContain('nextValue = MAX_FINITE_F32');
+    expect(wgsl).not.toContain('atomicAdd(&ppgFluxAtomics[slot]');
   });
 
-  it('saturation pattern is present for multiple dTreeNodes values (not an artifact)', () => {
-    const wgsl1 = buildPpgUpdateWgsl(171);
-    const wgsl2 = buildPpgUpdateWgsl(511);
-    for (const wgsl of [wgsl1, wgsl2]) {
-      expect(wgsl).toContain('let oldVal = atomicAdd');
-      expect(wgsl).toContain('0xFFFFFFFFu');
-      expect(wgsl).toContain('atomicMax');
+  it('keeps the f32 CAS contract for multiple dTree-node caps', () => {
+    for (const wgsl of [buildPpgUpdateWgsl(171), buildPpgUpdateWgsl(511)]) {
+      expect(wgsl).toContain('atomicLoad(&ppgFluxAtomics[slot])');
+      expect(wgsl).toContain('bitcast<u32>(nextValue)');
+      expect(wgsl).toContain('MAX_FLUX_CAS_ATTEMPTS');
+      expect(wgsl).not.toContain('0xFFFFFFFFu - increment');
     }
   });
 
-  it('CPU simulation of the saturation arithmetic is monotone-clamping', () => {
-    // Simulates the WGSL saturation logic in JavaScript arithmetic.
-    function saturatingAdd(current: number, increment: number): number {
-      const MAX = 0xFFFFFFFF;
-      const cur = current >>> 0;
-      const inc = increment >>> 0;
-      if (cur > (MAX - inc)) return MAX;
-      return (cur + inc) >>> 0;
-    }
+  it('CPU f32 oracle clamps overflow while preserving ordinary additions', () => {
+    const MAX_F32 = 3.402823466e38;
+    const accumulate = (current: number, deposit: number): number => {
+      if (!(deposit > 0) || !Number.isFinite(deposit)) return current;
+      if (!(current >= 0) || !Number.isFinite(current)) return Math.fround(deposit);
+      const sum = Math.fround(current + deposit);
+      return Number.isFinite(sum) && sum <= MAX_F32 ? sum : MAX_F32;
+    };
 
-    expect(saturatingAdd(0, 0)).toBe(0);
-    expect(saturatingAdd(0, 100)).toBe(100);
-    expect(saturatingAdd(100, 200)).toBe(300);
-    // Near-overflow cases saturate.
-    expect(saturatingAdd(0xFFFFFF00, 0x1000)).toBe(0xFFFFFFFF);
-    expect(saturatingAdd(0xFFFFFFFE, 2)).toBe(0xFFFFFFFF);
-    expect(saturatingAdd(0xFFFFFFFF, 1)).toBe(0xFFFFFFFF);
-    // At max, any positive increment stays at max.
-    expect(saturatingAdd(0xFFFFFFFF, 0)).toBe(0xFFFFFFFF);
-    expect(saturatingAdd(0xFFFFFFFF, 1000)).toBe(0xFFFFFFFF);
-    // Result is always ≥ both operands.
-    expect(saturatingAdd(0x80000000, 0x80000000)).toBeGreaterThanOrEqual(0x80000000);
+    expect(accumulate(1, 2)).toBe(3);
+    expect(accumulate(Number.NaN, 4)).toBe(4);
+    expect(accumulate(10, Number.NaN)).toBe(10);
+    expect(accumulate(MAX_F32, MAX_F32)).toBe(MAX_F32);
   });
 });

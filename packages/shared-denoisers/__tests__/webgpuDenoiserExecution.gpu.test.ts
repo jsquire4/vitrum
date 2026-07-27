@@ -3,6 +3,7 @@ import { disposeSharedWebGPUDevice } from '../src/sharedWebGpuDevice.js';
 import { runBmfrWebGPU } from '../src/bmfrWebGPU.js';
 import { runSVGFRealWebGPU } from '../src/svgfRealWebGPU.js';
 import { runHdrLuminanceBilateralWebGPU } from '../src/hdrLuminanceBilateralWebGPU.js';
+import { bmfrCpuOverlapOracle } from './bmfrCpuOverlapOracle.js';
 
 const hasWebGpu =
   typeof navigator !== 'undefined' &&
@@ -60,35 +61,63 @@ describe.skipIf(!hasWebGpu)('exported WebGPU denoiser execution smokes', () => {
     expectFinitePrefix(out, 12);
   });
 
-  it('executes runBmfrWebGPU and returns an RGB buffer', async () => {
-    const width = 8;
-    const height = 8;
+  it('matches an independent CPU overlap oracle on non-divisible dimensions', async () => {
+    const width = 11;
+    const height = 7;
     const rgb = new Float32Array(width * height * 3);
     const worldPosRgb = new Float32Array(width * height * 3);
+    const normalsRgb = new Float32Array(width * height * 3);
+    const validityW = new Float32Array(width * height).fill(1);
     for (let y = 0; y < height; y++) {
       for (let x = 0; x < width; x++) {
         const pi = y * width + x;
-        rgb[pi * 3] = 0.2 + x * 0.01;
-        rgb[pi * 3 + 1] = 0.3 + y * 0.01;
-        rgb[pi * 3 + 2] = 0.4;
-        worldPosRgb[pi * 3] = x / width;
-        worldPosRgb[pi * 3 + 1] = y / height;
-        worldPosRgb[pi * 3 + 2] = 0;
+        const px = x / 5;
+        const py = y / 4;
+        const pz = (x * y) / 50;
+        worldPosRgb[pi * 3] = px;
+        worldPosRgb[pi * 3 + 1] = py;
+        worldPosRgb[pi * 3 + 2] = pz;
+        normalsRgb[pi * 3] = 0.5 + x * 0.005;
+        normalsRgb[pi * 3 + 1] = 0.5 + y * 0.007;
+        normalsRgb[pi * 3 + 2] = 0.98;
+        rgb[pi * 3] = 0.15 + 0.04 * px + 0.02 * py * py;
+        rgb[pi * 3 + 1] = 0.25 + 0.03 * py + 0.01 * px * px;
+        rgb[pi * 3 + 2] = 0.35 + 0.02 * pz;
       }
     }
+    // Exercise the explicit pass-through path inside several overlapping fits.
+    validityW[width + 1] = 0;
 
     const out = await runBmfrWebGPU({
       rgb,
       worldPosRgb,
+      validityW,
+      gbufferNormalsRgb: normalsRgb,
       width,
       height,
       blockSize: 8,
-      blockStride: 8,
+      blockStride: 4,
+      positionScale: 4,
+      regularisation: 1e-3,
       reuseSharedWebGpuDevice: true,
+    });
+    const expected = bmfrCpuOverlapOracle({
+      rgb,
+      worldPosRgb,
+      validityW,
+      normalsRgb,
+      width,
+      height,
+      blockSize: 8,
+      blockStride: 4,
+      positionScale: 4,
+      regularisation: 1e-3,
     });
 
     expect(out.length).toBe(width * height * 3);
-    expectFinitePrefix(out, 12);
+    for (let i = 0; i < out.length; i += 1) {
+      expect(out[i]).toBeCloseTo(expected[i]!, 2);
+    }
   });
 });
 
@@ -117,6 +146,7 @@ describe('exported WebGPU denoiser availability', () => {
     await expect(
       runBmfrWebGPU({
         rgb: new Float32Array(12),
+        worldPosRgb: new Float32Array(12),
         width: 2,
         height: 2,
       }),

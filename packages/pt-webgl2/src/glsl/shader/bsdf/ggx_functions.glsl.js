@@ -10,7 +10,11 @@ export const ggx_functions = /* glsl */`
 
 	// trowbridge-reitz === GGX === GTR
 
-	vec3 ggxDirection( vec3 incidentDir, vec2 roughness, vec2 uv ) {
+        vec3 ggxDirection( vec3 incidentDir, vec2 roughness, vec2 uv ) {
+
+                if ( ! ( roughness.x > 0.0 ) || ! ( roughness.y > 0.0 ) ) {
+                        return vec3( 0.0, 0.0, 1.0 );
+                }
 
 		// Fork-compatible implementation from reference [1]. The WebGPU backend
 		// has a VNDF-specific path; this WebGL2 port keeps the paired sampler/PDF
@@ -70,10 +74,11 @@ export const ggx_functions = /* glsl */`
 	}
 
 	// See equation (33) from reference [0]
-	float ggxDistribution( vec3 halfVector, float roughness ) {
+        float ggxDistribution( vec3 halfVector, float roughness ) {
 
-		float a2 = roughness * roughness;
-		a2 = max( EPSILON, a2 );
+                if ( ! ( roughness > 0.0 ) || halfVector.z <= 0.0 ) return 0.0;
+                float a2 = roughness * roughness;
+                if ( ! ( a2 > 0.0 ) ) return 0.0;
 		float cosTheta = halfVector.z;
 		float cosTheta4 = pow( cosTheta, 4.0 );
 
@@ -83,15 +88,17 @@ export const ggx_functions = /* glsl */`
 		float tanTheta = tan( theta );
 		float tanTheta2 = pow( tanTheta, 2.0 );
 
-		float denom = PI * cosTheta4 * pow( a2 + tanTheta2, 2.0 );
-		return ( a2 / denom );
+                float denom = PI * cosTheta4 * pow( a2 + tanTheta2, 2.0 );
+                if ( ! ( denom > 0.0 ) ) return 0.0;
+                return ( a2 / denom );
 
 	}
 
 	// See equation (3) from reference [2]
-	float ggxPDF( vec3 wi, vec3 halfVector, float roughness ) {
+        float ggxPDF( vec3 wi, vec3 halfVector, float roughness ) {
 
-		float incidentTheta = acos( wi.z );
+                if ( ! ( wi.z > 0.0 ) ) return 0.0;
+                float incidentTheta = acos( wi.z );
 		float D = ggxDistribution( halfVector, roughness );
 		float G1 = ggxShadowMaskG1( incidentTheta, roughness );
 
@@ -140,11 +147,11 @@ export const ggx_functions = /* glsl */`
 		float Ei = ggxDirectionalAlbedo( NdotL, rough );
 		float Eavg = ggxAverageAlbedo( rough );
 		float oneMinusEavg = 1.0 - Eavg;
-		if ( oneMinusEavg < 1e-4 ) return vec3( 0.0 );
+                if ( ! ( oneMinusEavg > 0.0 ) ) return vec3( 0.0 );
 		float fms = ( 1.0 - Eo ) * ( 1.0 - Ei ) / ( PI * oneMinusEavg );
 		// Fms = Favg² · Eavg / (1 − Favg·(1−Eavg)) — the geometric series of
 		// repeated Fresnel-weighted bounces (Kulla-Conty eq. 9 / Fdez-Agüera).
-		vec3 Fms = ( Favg * Favg * Eavg ) / max( vec3( 1.0 ) - Favg * oneMinusEavg, vec3( 1e-4 ) );
+                vec3 Fms = ( Favg * Favg * Eavg ) / ( vec3( 1.0 ) - Favg * oneMinusEavg );
 		// Carry the wi.z (NdotL) cosine to match specularEval's color term.
 		return fms * Fms * NdotL;
 

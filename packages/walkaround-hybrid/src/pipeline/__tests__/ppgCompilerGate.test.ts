@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import type { BGLCache } from '../../bglTypes.js';
 import { PPGUpdatePass } from '../passes/PPGUpdatePass.js';
 import { compilePipelines } from '../pipelineCompiler.js';
 
@@ -89,7 +88,7 @@ describe('PPG compiler/runtime gates', () => {
   it('omits the PPG update pipeline by default', async () => {
     const stub = makeCompileStub();
 
-    const compiled = await compilePipelines(stub.device, {} as BGLCache, 'bgra8unorm');
+    const compiled = await compilePipelines(stub.device, {}, 'bgra8unorm');
 
     expect(compiled.ppgUpdatePipeline).toBeUndefined();
     expect(stub.shaderSources.has('ppg-update')).toBe(false);
@@ -99,7 +98,7 @@ describe('PPG compiler/runtime gates', () => {
   it('compiles the PPG update pipeline only when ppgEnabled is true', async () => {
     const stub = makeCompileStub();
 
-    const compiled = await compilePipelines(stub.device, {} as BGLCache, 'bgra8unorm', {
+    const compiled = await compilePipelines(stub.device, {}, 'bgra8unorm', {
       ppgEnabled: true,
       ppgMaxDTreeNodesPerCell: 128,
     });
@@ -115,16 +114,16 @@ describe('PPG compiler/runtime gates', () => {
     expect(source).toMatch(/RESERVOIR_GI_STRIDE_LOCAL\s*:\s*u32\s*=\s*20u/);
   });
 
-  it('threads the GRIS reservoir stride into the PPG update shader when ReSTIR-PT reuse is enabled', async () => {
+  it('threads the GRIS reservoir stride into the PPG update shader when DDGI-proxy GRIS reuse is enabled', async () => {
     const stub = makeCompileStub();
 
-    await compilePipelines(stub.device, {} as BGLCache, 'bgra8unorm', {
+    await compilePipelines(stub.device, {}, 'bgra8unorm', {
       ppgEnabled: true,
-      restirPtReuse: true,
+      grisReuse: true,
     });
 
     const source = stub.shaderSources.get('ppg-update') ?? '';
-    expect(source).toMatch(/RESERVOIR_GI_STRIDE_LOCAL\s*:\s*u32\s*=\s*30u/);
+    expect(source).toMatch(/RESERVOIR_GI_STRIDE_LOCAL\s*:\s*u32\s*=\s*28u/);
   });
 
   it('PPGUpdatePass gates training on ppgEnabled and ppgTrainThisFrame', () => {

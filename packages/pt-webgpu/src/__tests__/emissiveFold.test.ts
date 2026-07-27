@@ -21,6 +21,9 @@ import { MATERIAL_FLOAT_STRIDE } from '../scene/materialPacking.js';
 import { SceneMutationRouter } from '../sceneMutationRouter.js';
 import type { MutationHost } from '../sceneMutationRouter.js';
 import type { UploadedSceneBuffers } from '../scene/uploadSceneBuffers.js';
+import { installGpuConstStubs } from './gpuStub.js';
+
+installGpuConstStubs();
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -113,6 +116,52 @@ describe('packFoldedMaterialEntry (H10 helper)', () => {
     expect(packed[EMISSIVE_OFFSET + 2]).toBeCloseTo(0, 5);
   });
 
+  it('zeros an explicit emitter-owned material when visibility is off, preventing a mismatched hit integrand', () => {
+    const mismatched = meshEmitterScene([2, 0.5, 0.1], 3);
+    const primitive = mismatched.primitives[0]!;
+    if (primitive.kind === 'analytic') throw new Error('test fixture must be a mesh');
+    const authored = {
+      ...primitive,
+      material: {
+        ...primitive.material,
+        emissive: [9, 8, 7] as [number, number, number],
+        emissiveIntensity: 4,
+        emissiveMap: { handle: { width: 1, height: 1, data: new Float32Array([0.25, 0.5, 1, 1]) } },
+      },
+    };
+    const sceneWithMismatch: Scene = { ...mismatched, primitives: [authored] };
+
+    const off = packFoldedMaterialEntry(authored, sceneWithMismatch, false);
+    expect(off.slice(EMISSIVE_OFFSET, EMISSIVE_OFFSET + 3)).toEqual([0, 0, 0]);
+
+    const on = packFoldedMaterialEntry(authored, sceneWithMismatch, true);
+    expect(on[EMISSIVE_OFFSET]).toBeCloseTo(6, 5);
+    expect(on[EMISSIVE_OFFSET + 1]).toBeCloseTo(1.5, 5);
+    expect(on[EMISSIVE_OFFSET + 2]).toBeCloseTo(0.3, 5);
+
+    const offScene = buildPackedScene(sceneWithMismatch, { cameraVisibleEmitters: false });
+    expect(emissiveFromMaterials(offScene.materials)).toEqual([0, 0, 0]);
+    // NEE remains owned by the explicit emitter and carries its base radiance;
+    // exact texture evaluation occurs in sampleMeshAreaLightRadiance on the GPU.
+    expect(offScene.meshAreaLightsData[24]).toBeCloseTo(6, 5);
+    expect(offScene.meshAreaLightsData[25]).toBeCloseTo(1.5, 5);
+    expect(offScene.meshAreaLightsData[26]).toBeCloseTo(0.3, 5);
+  });
+
+  it('rejects multiple explicit mesh-area emitters that claim the same primitive', () => {
+    const duplicateScene: Scene = {
+      ...scene,
+      emitters: [
+        ...scene.emitters,
+        { kind: 'mesh-area', id: 'light-duplicate', meshId: 'panel', color: [0, 1, 0], intensity: 2 },
+      ],
+    };
+    expect(() => packFoldedMaterialEntry(prim, duplicateScene, true)).toThrow(/multiple mesh-area emitters/);
+    expect(() => buildPackedScene(duplicateScene, { cameraVisibleEmitters: false })).toThrow(
+      /multiple mesh-area emitters/,
+    );
+  });
+
   it('does NOT apply the fold when the primitive has no mesh-area emitter backing', () => {
     const otherPrim = { id: 'other', material: prim.material };
     const packed = packFoldedMaterialEntry(otherPrim, scene, true);
@@ -149,14 +198,21 @@ describe('buildPackedScene emissive fold (H10)', () => {
 function makeHostWithScene(scene: Scene, cameraVisible: boolean): {
   host: MutationHost;
   sceneRef: { current: Scene };
+  sceneBuffers: UploadedSceneBuffers;
   materialsBuffer: Float32Array;
   meshAreaLightsData: Float32Array;
   writeCalls: Array<{ byteOffset: number; data: Float32Array }>;
+  stagedCopy: {
+    copyBufferToBuffer: ReturnType<typeof vi.fn>;
+    submit: ReturnType<typeof vi.fn>;
+  };
 } {
   const packed = buildPackedScene(scene, { cameraVisibleEmitters: cameraVisible });
   const materialsBuffer = new Float32Array(packed.materials);
   const meshAreaLightsData = new Float32Array(packed.meshAreaLightsData);
   const writeCalls: Array<{ byteOffset: number; data: Float32Array }> = [];
+  const copyBufferToBuffer = vi.fn();
+  const submit = vi.fn();
 
   // Stub UploadedSceneBuffers — only the materials fields matter for H10 tests.
   const sceneBuffers = {
@@ -207,6 +263,15 @@ function makeHostWithScene(scene: Scene, cameraVisible: boolean): {
 
   const host: MutationHost = {
     device: {
+      createBuffer: vi.fn((desc: GPUBufferDescriptor) => ({
+        label: desc.label,
+        size: Number(desc.size),
+        destroy: vi.fn(),
+      })),
+      createCommandEncoder: vi.fn(() => ({
+        copyBufferToBuffer,
+        finish: vi.fn(() => ({})),
+      })),
       queue: {
         writeBuffer: vi.fn(
           (_buf: unknown, byteOffset: number, buffer: ArrayBuffer, offset: number, length: number) => {
@@ -216,6 +281,7 @@ function makeHostWithScene(scene: Scene, cameraVisible: boolean): {
             });
           },
         ),
+        submit,
       },
     } as unknown as GPUDevice,
     assertLive: vi.fn(),
@@ -232,48 +298,55 @@ function makeHostWithScene(scene: Scene, cameraVisible: boolean): {
     reset: vi.fn(),
   };
 
-  return { host, sceneRef, materialsBuffer, meshAreaLightsData, writeCalls };
+  return {
+    host, sceneRef, sceneBuffers, materialsBuffer, meshAreaLightsData, writeCalls,
+    stagedCopy: { copyBufferToBuffer, submit },
+  };
 }
 
 describe('SceneMutationRouter fold-preservation (H10)', () => {
   it('fold preserved after updateEmitter color patch (cameraVisibleEmitters=true)', () => {
     const scene = meshEmitterScene([1, 0, 0], 2);
-    const { host, materialsBuffer } = makeHostWithScene(scene, true);
+    const { host, sceneBuffers, stagedCopy } = makeHostWithScene(scene, true);
     // Initial fold = [2, 0, 0]
-    expect(materialsBuffer[EMISSIVE_OFFSET]).toBeCloseTo(2, 5);
+    expect(sceneBuffers.materials[EMISSIVE_OFFSET]).toBeCloseTo(2, 5);
 
     const router = new SceneMutationRouter(host);
     // Patch the emitter to a new color
     router.updateEmitter('light', { color: [0, 1, 0] });
+    expect(stagedCopy.copyBufferToBuffer).toHaveBeenCalled();
+    expect(stagedCopy.submit).toHaveBeenCalledTimes(1);
 
     // New fold = [0, 2, 0] (new color [0,1,0] * intensity 2)
-    expect(materialsBuffer[EMISSIVE_OFFSET]).toBeCloseTo(0, 5);
-    expect(materialsBuffer[EMISSIVE_OFFSET + 1]).toBeCloseTo(2, 5);
-    expect(materialsBuffer[EMISSIVE_OFFSET + 2]).toBeCloseTo(0, 5);
+    expect(sceneBuffers.materials[EMISSIVE_OFFSET]).toBeCloseTo(0, 5);
+    expect(sceneBuffers.materials[EMISSIVE_OFFSET + 1]).toBeCloseTo(2, 5);
+    expect(sceneBuffers.materials[EMISSIVE_OFFSET + 2]).toBeCloseTo(0, 5);
   });
 
   it('fold preserved after updatePrimitive roughness patch (material fast path)', () => {
     const scene = meshEmitterScene([1, 0.5, 0], 4);
-    const { host, materialsBuffer } = makeHostWithScene(scene, true);
+    const { host, sceneBuffers, stagedCopy } = makeHostWithScene(scene, true);
     // Initial fold = [4, 2, 0]
-    expect(materialsBuffer[EMISSIVE_OFFSET]).toBeCloseTo(4, 5);
+    expect(sceneBuffers.materials[EMISSIVE_OFFSET]).toBeCloseTo(4, 5);
 
     const router = new SceneMutationRouter(host);
     // Patch roughness (material-only fast path) — must NOT strip the fold
     router.updatePrimitive('panel', { material: { baseColor: [0.5, 0.5, 0.5], roughness: 0.2, metallic: 0 } });
+    expect(stagedCopy.copyBufferToBuffer).toHaveBeenCalled();
+    expect(stagedCopy.submit).toHaveBeenCalledTimes(1);
 
     // Fold must still be [4, 2, 0] after the roughness patch
-    expect(materialsBuffer[EMISSIVE_OFFSET]).toBeCloseTo(4, 5);
-    expect(materialsBuffer[EMISSIVE_OFFSET + 1]).toBeCloseTo(2, 5);
-    expect(materialsBuffer[EMISSIVE_OFFSET + 2]).toBeCloseTo(0, 5);
+    expect(sceneBuffers.materials[EMISSIVE_OFFSET]).toBeCloseTo(4, 5);
+    expect(sceneBuffers.materials[EMISSIVE_OFFSET + 1]).toBeCloseTo(2, 5);
+    expect(sceneBuffers.materials[EMISSIVE_OFFSET + 2]).toBeCloseTo(0, 5);
   });
 
   it('emissive material patch re-packs the implicit mesh-area emitter', () => {
     const scene = implicitEmissiveScene([1, 0, 0], 2);
-    const { host, materialsBuffer, meshAreaLightsData } = makeHostWithScene(scene, true);
+    const { host, sceneBuffers, stagedCopy } = makeHostWithScene(scene, true);
     // Initial implicit NEE emitter radiance = emissive * intensity = [2, 0, 0].
-    expect(meshAreaLightsData[MESH_AREA_RADIANCE_OFFSET]).toBeCloseTo(2, 5);
-    expect(meshAreaLightsData[MESH_AREA_RADIANCE_OFFSET + 1]).toBeCloseTo(0, 5);
+    expect(sceneBuffers.meshAreaLightsData[MESH_AREA_RADIANCE_OFFSET]).toBeCloseTo(2, 5);
+    expect(sceneBuffers.meshAreaLightsData[MESH_AREA_RADIANCE_OFFSET + 1]).toBeCloseTo(0, 5);
 
     const router = new SceneMutationRouter(host);
     router.updatePrimitive('panel', {
@@ -286,27 +359,33 @@ describe('SceneMutationRouter fold-preservation (H10)', () => {
       },
     });
 
+    // Material camera-hit emission
+    expect(stagedCopy.copyBufferToBuffer).toHaveBeenCalled();
+    expect(stagedCopy.submit).toHaveBeenCalledTimes(1);
+
     // Material camera-hit emission and the synthesized mesh-area NEE emitter
     // both move to the new green radiance (material packing stores
     // emissive * emissiveIntensity).
-    expect(materialsBuffer[EMISSIVE_OFFSET]).toBeCloseTo(0, 5);
-    expect(materialsBuffer[EMISSIVE_OFFSET + 1]).toBeCloseTo(3, 5);
-    expect(materialsBuffer[EMISSIVE_OFFSET + 2]).toBeCloseTo(0, 5);
-    expect(meshAreaLightsData[MESH_AREA_RADIANCE_OFFSET]).toBeCloseTo(0, 5);
-    expect(meshAreaLightsData[MESH_AREA_RADIANCE_OFFSET + 1]).toBeCloseTo(3, 5);
-    expect(meshAreaLightsData[MESH_AREA_RADIANCE_OFFSET + 2]).toBeCloseTo(0, 5);
+    expect(sceneBuffers.materials[EMISSIVE_OFFSET]).toBeCloseTo(0, 5);
+    expect(sceneBuffers.materials[EMISSIVE_OFFSET + 1]).toBeCloseTo(3, 5);
+    expect(sceneBuffers.materials[EMISSIVE_OFFSET + 2]).toBeCloseTo(0, 5);
+    expect(sceneBuffers.meshAreaLightsData[MESH_AREA_RADIANCE_OFFSET]).toBeCloseTo(0, 5);
+    expect(sceneBuffers.meshAreaLightsData[MESH_AREA_RADIANCE_OFFSET + 1]).toBeCloseTo(3, 5);
+    expect(sceneBuffers.meshAreaLightsData[MESH_AREA_RADIANCE_OFFSET + 2]).toBeCloseTo(0, 5);
   });
 
   it('fold NOT applied when cameraVisibleEmitters=false (control case)', () => {
     const scene = meshEmitterScene([1, 0.5, 0], 4);
-    const { host, materialsBuffer } = makeHostWithScene(scene, false);
+    const { host, sceneBuffers, stagedCopy } = makeHostWithScene(scene, false);
     // No fold — emissive stays zero
-    expect(materialsBuffer[EMISSIVE_OFFSET]).toBeCloseTo(0, 5);
+    expect(sceneBuffers.materials[EMISSIVE_OFFSET]).toBeCloseTo(0, 5);
 
     const router = new SceneMutationRouter(host);
     router.updateEmitter('light', { color: [0, 1, 0] });
+    expect(stagedCopy.copyBufferToBuffer).toHaveBeenCalled();
+    expect(stagedCopy.submit).toHaveBeenCalledTimes(1);
 
     // Still no fold
-    expect(materialsBuffer[EMISSIVE_OFFSET]).toBeCloseTo(0, 5);
+    expect(sceneBuffers.materials[EMISSIVE_OFFSET]).toBeCloseTo(0, 5);
   });
 });

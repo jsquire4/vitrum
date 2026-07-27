@@ -16,6 +16,7 @@ import { afterEach, describe, it, expect, vi } from 'vitest';
 import {
   denoiseFinal,
   preloadOIDNModel,
+  acquireOIDNSession,
   clearOIDNCache,
   _hwcToNchw,
   _nchwToHwc,
@@ -55,6 +56,10 @@ describe('oidnBridge exports', () => {
     // Must not throw when called before any session is created.
     expect(() => clearOIDNCache()).not.toThrow();
   });
+
+  it('exports acquireOIDNSession as an async lease factory', () => {
+    expect(typeof acquireOIDNSession).toBe('function');
+  });
 });
 
 // ── clearOIDNCache ────────────────────────────────────────────────────────────
@@ -68,7 +73,9 @@ describe('clearOIDNCache', () => {
   it('releases cached ORT sessions before clearing the map', async () => {
     vi.resetModules();
     const release = vi.fn();
-    const run = vi.fn(async () => ({ output: { data: new Float32Array(3) } }));
+    const run = vi.fn(async (_feeds: Record<string, unknown>) => ({
+      output: { data: new Float32Array(3), dims: [1, 3, 1, 1] },
+    }));
     vi.doMock('onnxruntime-web', () => ({
       Tensor: class {
         constructor(..._args: unknown[]) {}
@@ -96,7 +103,9 @@ describe('clearOIDNCache', () => {
     vi.resetModules();
     const releases = [vi.fn(), vi.fn()];
     let createCount = 0;
-    const run = vi.fn(async () => ({ output: { data: new Float32Array(3) } }));
+    const run = vi.fn(async () => ({
+      output: { data: new Float32Array(3), dims: [1, 3, 1, 1] },
+    }));
     vi.doMock('onnxruntime-web', () => ({
       Tensor: class {
         constructor(..._args: unknown[]) {}
@@ -134,7 +143,9 @@ describe('OIDN concurrent first-use (promise cache)', () => {
     vi.resetModules();
     let createCount = 0;
     let releaseSession = () => {};
-    const run = vi.fn(async () => ({ output: { data: new Float32Array(3) } }));
+    const run = vi.fn(async () => ({
+      output: { data: new Float32Array(3), dims: [1, 3, 1, 1] },
+    }));
     vi.doMock('onnxruntime-web', () => ({
       Tensor: class {
         constructor(..._args: unknown[]) {}
@@ -170,7 +181,9 @@ describe('OIDN concurrent first-use (promise cache)', () => {
   it('a rejected create removes its cache entry (no poisoning)', async () => {
     vi.resetModules();
     let attempt = 0;
-    const run = vi.fn(async () => ({ output: { data: new Float32Array(3) } }));
+    const run = vi.fn(async () => ({
+      output: { data: new Float32Array(3), dims: [1, 3, 1, 1] },
+    }));
     vi.doMock('onnxruntime-web', () => ({
       Tensor: class {
         constructor(..._args: unknown[]) {}
@@ -197,6 +210,201 @@ describe('OIDN concurrent first-use (promise cache)', () => {
       bridge.preloadOIDNModel({ modelUrl: '/poison.onnx', executionProviders: ['wasm'] }),
     ).resolves.toBeUndefined();
     expect(attempt).toBe(2);
+  });
+});
+
+describe('OIDN shared session leases', () => {
+  it('keeps one shared session alive until both engine leases are released', async () => {
+    vi.resetModules();
+    const release = vi.fn();
+    const run = vi.fn(async () => ({
+      output: { data: new Float32Array(3).fill(2), dims: [1, 3, 1, 1] },
+    }));
+    const create = vi.fn(async () => ({ run, release }));
+    vi.doMock('onnxruntime-web', () => ({
+      Tensor: class {
+        constructor(..._args: unknown[]) {}
+      },
+      InferenceSession: { create },
+    }));
+
+    const bridge = await import('../src/oidnBridge.js');
+    const opts = { modelUrl: '/shared.onnx', executionProviders: ['wasm'] as const };
+    const [leaseA, leaseB] = await Promise.all([
+      bridge.acquireOIDNSession(opts),
+      bridge.acquireOIDNSession(opts),
+    ]);
+    expect(create).toHaveBeenCalledTimes(1);
+
+    leaseA.release();
+    await Promise.resolve();
+    expect(release).not.toHaveBeenCalled();
+
+    await expect(bridge.denoiseFinal(
+      { color: new Float32Array(3), width: 1, height: 1 },
+      opts,
+    )).resolves.toEqual(new Float32Array(3).fill(2));
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(run).toHaveBeenCalledTimes(1);
+
+    leaseB.release();
+    await Promise.resolve();
+    expect(release).toHaveBeenCalledTimes(1);
+    leaseB.release();
+    await Promise.resolve();
+    expect(release).toHaveBeenCalledTimes(1);
+  });
+
+  it('defers final release until an in-flight inference has resolved', async () => {
+    vi.resetModules();
+    const release = vi.fn();
+    let resolveRun!: (value: {
+      output: { data: Float32Array; dims: number[] };
+    }) => void;
+    const run = vi.fn(() => new Promise<{
+      output: { data: Float32Array; dims: number[] };
+    }>(resolve => {
+      resolveRun = resolve;
+    }));
+    vi.doMock('onnxruntime-web', () => ({
+      Tensor: class {
+        constructor(..._args: unknown[]) {}
+      },
+      InferenceSession: {
+        create: vi.fn(async () => ({ run, release })),
+      },
+    }));
+
+    const bridge = await import('../src/oidnBridge.js');
+    const opts = { modelUrl: '/in-flight.onnx', executionProviders: ['wasm'] as const };
+    const lease = await bridge.acquireOIDNSession(opts);
+    const inference = bridge.denoiseFinal(
+      { color: new Float32Array(3), width: 1, height: 1 },
+      opts,
+    );
+    await vi.waitFor(() => expect(run).toHaveBeenCalledTimes(1));
+
+    lease.release();
+    bridge.clearOIDNCache();
+    await Promise.resolve();
+    expect(release).not.toHaveBeenCalled();
+
+    resolveRun({
+      output: {
+        data: new Float32Array(3).fill(4),
+        dims: [1, 3, 1, 1],
+      },
+    });
+    await expect(inference).resolves.toEqual(new Float32Array(3).fill(4));
+    await Promise.resolve();
+    expect(release).toHaveBeenCalledTimes(1);
+  });
+
+  it('rolls back a failed lease acquisition so a later engine can retry', async () => {
+    vi.resetModules();
+    let attempts = 0;
+    const release = vi.fn();
+    vi.doMock('onnxruntime-web', () => ({
+      Tensor: class {
+        constructor(..._args: unknown[]) {}
+      },
+      InferenceSession: {
+        create: vi.fn(async () => {
+          attempts++;
+          if (attempts === 1) throw new Error('transient create failure');
+          return {
+              run: vi.fn(async () => ({
+                output: {
+                  data: new Float32Array(3),
+                  dims: [1, 3, 1, 1],
+                },
+              })),
+            release,
+          };
+        }),
+      },
+    }));
+
+    const bridge = await import('../src/oidnBridge.js');
+    const opts = { modelUrl: '/retry.onnx', executionProviders: ['wasm'] as const };
+    await expect(bridge.acquireOIDNSession(opts)).rejects.toThrow('transient create failure');
+    const lease = await bridge.acquireOIDNSession(opts);
+    expect(attempts).toBe(2);
+    lease.release();
+    await Promise.resolve();
+    expect(release).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('OIDN model input negotiation', () => {
+  it('omits optional auxiliary feeds that a color-only model does not declare', async () => {
+    vi.resetModules();
+    const run = vi.fn(async (_feeds: Record<string, unknown>) => ({
+      output: {
+        data: new Float32Array([0.25, 0.5, 0.75]),
+        dims: [1, 3, 1, 1],
+      },
+    }));
+    vi.doMock('onnxruntime-web', () => ({
+      Tensor: class {
+        constructor(..._args: unknown[]) {}
+      },
+      InferenceSession: {
+        create: vi.fn(async () => ({
+          inputNames: ['color'],
+          run,
+          release: vi.fn(),
+        })),
+      },
+    }));
+
+    const bridge = await import('../src/oidnBridge.js');
+    await expect(bridge.denoiseFinal(
+      {
+        color: new Float32Array([1, 2, 3]),
+        normal: new Float32Array([0, 0, 1]),
+        albedo: new Float32Array([0.5, 0.5, 0.5]),
+        width: 1,
+        height: 1,
+      },
+      { modelUrl: '/color-only.onnx', executionProviders: ['wasm'] },
+    )).resolves.toEqual(new Float32Array([0.25, 0.5, 0.75]));
+
+    const feeds = run.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(Object.keys(feeds)).toEqual(['color']);
+  });
+
+  it('rejects an explicitly configured auxiliary name absent from the model', async () => {
+    vi.resetModules();
+    const run = vi.fn();
+    vi.doMock('onnxruntime-web', () => ({
+      Tensor: class {
+        constructor(..._args: unknown[]) {}
+      },
+      InferenceSession: {
+        create: vi.fn(async () => ({
+          inputNames: ['color'],
+          run,
+          release: vi.fn(),
+        })),
+      },
+    }));
+
+    const bridge = await import('../src/oidnBridge.js');
+    await expect(bridge.denoiseFinal(
+      {
+        color: new Float32Array([1, 2, 3]),
+        normal: new Float32Array([0, 0, 1]),
+        width: 1,
+        height: 1,
+      },
+      {
+        modelUrl: '/color-only.onnx',
+        executionProviders: ['wasm'],
+        tensorNames: { normal: 'surface_normal' },
+      },
+    )).rejects.toThrow(/configured normal input 'surface_normal'.*not declared/i);
+    expect(run).not.toHaveBeenCalled();
   });
 });
 

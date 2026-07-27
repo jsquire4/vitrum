@@ -25,7 +25,7 @@
 // host opts into `nrcEnabled` (a compile-time engine-creation flag). When OFF
 // (the default), the gi-ris pipeline is byte-for-byte the pre-NRC pass — NO
 // @group(4), NO NRC symbols, NO layout delta. This mirrors the GRIS
-// (`restirPtReuse`) compile-time gate; a runtime-only UBO flag that bound an
+// (`grisReuse`) compile-time gate; a runtime-only UBO flag that bound an
 // extra group on the default path is exactly what regressed the default
 // walkaround render to a black frame (f8df9a4). The structure is gated at
 // compile time so the default pipeline is provably untouched.
@@ -37,6 +37,18 @@
 // the offsets the trainer wrote.
 
 import type { NrcEncodeWgslOptions } from './nrcEncoding.wgsl.js';
+import { NRC_DIAGNOSTIC_CONSTANTS_WGSL } from '../nrcDiagnostics.js';
+import {
+  NRC_INFERENCE_ARENA_MAGIC,
+  NRC_INFERENCE_ARENA_SCHEMA,
+  NRC_INFERENCE_ARENA_VERSION,
+  NRC_INFERENCE_HEADER_FIELD,
+  NRC_RUNTIME_ARENA_MAGIC,
+  NRC_RUNTIME_ARENA_SCHEMA,
+  NRC_RUNTIME_ARENA_VERSION,
+  NRC_RUNTIME_HEADER_FIELD,
+  NRC_RUNTIME_HEADER_WORD_OFFSET,
+} from '../nrcArena.js';
 
 export interface NrcQueryWgslOptions extends NrcEncodeWgslOptions {
   /** Hidden width W (Müller: 64). */
@@ -108,7 +120,7 @@ export function nrcQueryLayerPlan(o: NrcQueryWgslOptions): QueryLayerPlan {
 export function nrcQueryWgsl(o: NrcQueryWgslOptions): string {
   const plan = nrcQueryLayerPlan(o);
   const L = o.levels, F = o.featuresPerEntry, K = o.oneBlobBins, W = o.width;
-  const G = o.group ?? 4;
+  const G = o.group ?? 3;
   const inWidth = L * F + 2 * K + 7; // hash-grid + one-blob(u,v) + normal(3)+rough(1)+albedo(3)
   // Per-weight-layer offset constants (mirror the trainer's concatenated layout).
   const wOffArr = plan.wOff.join('u, ') + 'u';
@@ -138,7 +150,7 @@ const NRC_LINW  = array<u32, ${plan.wlayers}>(${inWArr});
 const NRC_LOUTW = array<u32, ${plan.wlayers}>(${outWArr});
 
 // Per-level hash-grid descriptor (resolution, table rows, scalar table offset).
-// Defined here (not pulled from nrcHashGridForwardWgsl) because that module's
+// Defined here because the live query directly owns its module-scope table binding;
 // forward helper takes a storage POINTER argument, which WGSL forbids; the
 // inline forward below reads nrcTables directly. Mirrors nrcEncoding.ts level.
 struct NrcLevelDesc {
@@ -155,30 +167,106 @@ struct NrcCfgUBO {
   recordCap  : u32,           // max training records this frame (record buffer capacity)
   recordStride    : u32,      // f32s per record = NRC_IN_W + OUT_W + 3 world-position floats
   // H26 — camera per-pixel solid-angle pdf (host-updated every frame).
-  // For a pinhole camera: pdf = cot²(fovY/2) · W · H / 4.
-  // Used as the primary-edge pdf in nrcSegmentSpreadTerm so a0 is the
-  // correct Müller camera footprint instead of the old hard-coded 1.0.
+  // Centre-pixel pinhole approximation: pdf = |fx·fy| · W · H / 4.
+  // Used as the primary-edge pdf in nrcSegmentSpreadTerm so a0 accounts for
+  // projection aspect and resolution instead of the old hard-coded 1.0.
   cameraPixelPdf  : f32,
   trainedSteps    : u32,      // completed host trainer windows
   warmupSteps     : u32,      // query substitution gate; records still gather below this
 }
 
-@group(${G}) @binding(0) var<storage, read>       nrcWeights : array<f32>;
-@group(${G}) @binding(1) var<storage, read>       nrcBiases  : array<f32>;
-@group(${G}) @binding(2) var<storage, read>       nrcTables  : array<f32>;
-@group(${G}) @binding(3) var<storage, read>       nrcLevels  : array<NrcLevelDesc>;
-// Record-gather buffer. We use a deterministic per-pixel slot = pixelIdxGi %
-// recordCap, which is race-free because each invocation owns one pixel. Records
+@group(${G}) @binding(7) var<storage, read> nrcInferenceArena : array<u32>;
+// Record-gather buffer. The producer supplies an explicit slot; production GI-RIS
+// assigns one frame-varying pixel from each disjoint slot-owned block. Records
 // are [NRC_IN_W encoded input | OUT_W radiance target | 3 query WORLD pos]
 // (recordStride = NRC_IN_W + OUT_W + 3). Host gather treats all-zero encoded
 // input as empty; zero radiance targets are valid training samples.
-@group(${G}) @binding(4) var<storage, read_write> nrcRecords    : array<f32>;
-@group(${G}) @binding(5) var<uniform>             nrcCfg        : NrcCfgUBO;
+@group(${G}) @binding(8) var<storage, read_write> nrcRuntimeArena : array<atomic<u32>>;
+@group(${G}) @binding(9) var<uniform> nrcCfg : NrcCfgUBO;
 // H27 — per-slot claim flags (atomic u32, one per recordCap slot). 0=unclaimed,
 // 1=claimed. A compare-exchange in nrcWriteRecord ensures the first invocation to
 // claim a slot wins; subsequent racers see 1 and skip the write (torn-record fix).
 // The host clears this buffer to zero at the start of each frame window.
-@group(${G}) @binding(6) var<storage, read_write> nrcSlotClaims : array<atomic<u32>>;
+${NRC_DIAGNOSTIC_CONSTANTS_WGSL}
+const NRC_INF_MAGIC   : u32 = ${NRC_INFERENCE_ARENA_MAGIC}u;
+const NRC_INF_VERSION : u32 = ${NRC_INFERENCE_ARENA_VERSION}u;
+const NRC_INF_SCHEMA  : u32 = ${NRC_INFERENCE_ARENA_SCHEMA}u;
+const NRC_RT_MAGIC    : u32 = ${NRC_RUNTIME_ARENA_MAGIC}u;
+const NRC_RT_VERSION  : u32 = ${NRC_RUNTIME_ARENA_VERSION}u;
+const NRC_RT_SCHEMA   : u32 = ${NRC_RUNTIME_ARENA_SCHEMA}u;
+const NRC_RT_HEADER   : u32 = ${NRC_RUNTIME_HEADER_WORD_OFFSET}u;
+const NRC_INF_WEIGHTS_OFFSET : u32 = ${NRC_INFERENCE_HEADER_FIELD.weightsOffset}u;
+const NRC_INF_BIASES_OFFSET  : u32 = ${NRC_INFERENCE_HEADER_FIELD.biasesOffset}u;
+const NRC_INF_TABLES_OFFSET  : u32 = ${NRC_INFERENCE_HEADER_FIELD.tablesOffset}u;
+const NRC_INF_LEVELS_OFFSET  : u32 = ${NRC_INFERENCE_HEADER_FIELD.levelsOffset}u;
+const NRC_RT_CLAIMS_OFFSET   : u32 = ${NRC_RUNTIME_HEADER_FIELD.claimsOffset}u;
+const NRC_RT_RECORDS_OFFSET  : u32 = ${NRC_RUNTIME_HEADER_FIELD.recordsOffset}u;
+const NRC_RT_DIAGNOSTICS_OFFSET : u32 = ${NRC_RUNTIME_HEADER_FIELD.diagnosticsOffset}u;
+
+fn nrcInferenceArenaValid() -> bool {
+  return nrcInferenceArena[0] == NRC_INF_MAGIC
+    && nrcInferenceArena[1] == NRC_INF_VERSION
+    && nrcInferenceArena[2] != 0u
+    && nrcInferenceArena[3] == NRC_INF_SCHEMA;
+}
+fn nrcRuntimeArenaValid() -> bool {
+  return atomicLoad(&nrcRuntimeArena[NRC_RT_HEADER + 0u]) == NRC_RT_MAGIC
+    && atomicLoad(&nrcRuntimeArena[NRC_RT_HEADER + 1u]) == NRC_RT_VERSION
+    && atomicLoad(&nrcRuntimeArena[NRC_RT_HEADER + 2u]) != 0u
+    && atomicLoad(&nrcRuntimeArena[NRC_RT_HEADER + 3u]) == NRC_RT_SCHEMA;
+}
+fn nrcLoadWeight(index: u32) -> f32 {
+  return bitcast<f32>(nrcInferenceArena[nrcInferenceArena[NRC_INF_WEIGHTS_OFFSET] + index]);
+}
+fn nrcLoadBias(index: u32) -> f32 {
+  return bitcast<f32>(nrcInferenceArena[nrcInferenceArena[NRC_INF_BIASES_OFFSET] + index]);
+}
+fn nrcLoadTable(index: u32) -> f32 {
+  return bitcast<f32>(nrcInferenceArena[nrcInferenceArena[NRC_INF_TABLES_OFFSET] + index]);
+}
+fn nrcLoadLevel(index: u32) -> NrcLevelDesc {
+  let base = nrcInferenceArena[NRC_INF_LEVELS_OFFSET] + index * 4u;
+  return NrcLevelDesc(
+    nrcInferenceArena[base], nrcInferenceArena[base + 1u],
+    nrcInferenceArena[base + 2u], nrcInferenceArena[base + 3u],
+  );
+}
+fn nrcRuntimeDiagnosticsBase() -> u32 {
+  return atomicLoad(&nrcRuntimeArena[NRC_RT_HEADER + NRC_RT_DIAGNOSTICS_OFFSET]);
+}
+fn nrcRuntimeClaimsBase() -> u32 {
+  return atomicLoad(&nrcRuntimeArena[NRC_RT_HEADER + NRC_RT_CLAIMS_OFFSET]);
+}
+fn nrcRuntimeRecordsBase() -> u32 {
+  return atomicLoad(&nrcRuntimeArena[NRC_RT_HEADER + NRC_RT_RECORDS_OFFSET]);
+}
+fn nrcAddDiagnostic(index: u32) {
+  atomicAdd(&nrcRuntimeArena[nrcRuntimeDiagnosticsBase() + index], 1u);
+}
+const NRC_RECORD_CAS_ATTEMPTS : u32 = 64u;
+const NRC_MAX_TRAIN_TARGET    : f32 = 1024.0;
+
+fn nrcFinite(v: f32) -> bool {
+  return v == v && abs(v) <= 3.402823e38;
+}
+fn nrcFinite3(v: vec3f) -> bool {
+  return nrcFinite(v.x) && nrcFinite(v.y) && nrcFinite(v.z);
+}
+fn nrcRecordInvalidPdf() {
+  if (nrcRuntimeArenaValid()) {
+    atomicAdd(&nrcRuntimeArena[nrcRuntimeDiagnosticsBase() + NRC_DIAG_INVALID_PDF], 1u);
+  }
+}
+fn nrcRecordSaturatedValue() {
+  if (nrcRuntimeArenaValid()) {
+    atomicAdd(&nrcRuntimeArena[nrcRuntimeDiagnosticsBase() + NRC_DIAG_SATURATED], 1u);
+  }
+}
+fn nrcRecordNonFiniteValue() {
+  if (nrcRuntimeArenaValid()) {
+    atomicAdd(&nrcRuntimeArena[nrcRuntimeDiagnosticsBase() + NRC_DIAG_NONFINITE], 1u);
+  }
+}
 
 // ── One-blob encode of a scalar into NRC_BLOB_BINS bins, L1-normalised. Writes
 // the bins into a function-local scratch (exact mirror of nrcEncoding.ts). ──
@@ -239,7 +327,7 @@ fn nrcHashLevelForwardInline(
     let row = nrcSpatialHash3D(i0.x + cx, i0.y + cy, i0.z + cz, desc.tableSize);
     let rb = desc.tableOffset + row * NRC_FEAT;
     for (var f: u32 = 0u; f < NRC_FEAT; f = f + 1u) {
-      (*feat)[outBase + f] = (*feat)[outBase + f] + weight * nrcTables[rb + f];
+      (*feat)[outBase + f] = (*feat)[outBase + f] + weight * nrcLoadTable(rb + f);
     }
   }
 }
@@ -254,7 +342,7 @@ fn nrcAssembleInput(
   // directly into feat[0 .. L·F-1] by the inlined per-level trilinear forward).
   let nrm = nrcNormalizeToAabb(pos, nrcCfg.aabbMin, nrcCfg.aabbMax);
   for (var l: u32 = 0u; l < NRC_LEVELS; l = l + 1u) {
-    nrcHashLevelForwardInline(nrm, nrcLevels[l], l * NRC_FEAT, feat);
+    nrcHashLevelForwardInline(nrm, nrcLoadLevel(l), l * NRC_FEAT, feat);
   }
   var o: u32 = NRC_LEVELS * NRC_FEAT;
   // One-blob of octahedral (u,v).
@@ -280,9 +368,11 @@ fn nrcAssembleInput(
 fn nrcMlpForward(feat: ptr<function, array<f32, NRC_IN_W>>) -> vec3f {
   var actA: array<f32, ${W}>;
   var actB: array<f32, ${W}>;
-  // Node-layer 0: padded raw input (zero-pad beyond NRC_IN_W).
-  for (var i: u32 = 0u; i < NRC_W; i = i + 1u) {
-    actA[i] = select(0.0, (*feat)[i], i < NRC_IN_W);
+  // Node-layer 0: padded raw input. WGSL select evaluates both operands, so a
+  // select-based pad would still read feat[i] out of bounds when i >= NRC_IN_W.
+  for (var i: u32 = 0u; i < NRC_W; i = i + 1u) { actA[i] = 0.0; }
+  for (var i: u32 = 0u; i < NRC_IN_W; i = i + 1u) {
+    actA[i] = (*feat)[i];
   }
   for (var l: u32 = 0u; l < NRC_WLAYERS; l = l + 1u) {
     let inW = NRC_LINW[l];
@@ -291,12 +381,12 @@ fn nrcMlpForward(feat: ptr<function, array<f32, NRC_IN_W>>) -> vec3f {
     let bo = NRC_BOFF[l];
     let isOut = (l == NRC_WLAYERS - 1u);
     for (var ocol: u32 = 0u; ocol < outW; ocol = ocol + 1u) {
-      var acc: f32 = nrcBiases[bo + ocol];
+      var acc: f32 = nrcLoadBias(bo + ocol);
       let wBase = wo + ocol * inW;
       if ((l & 1u) == 0u) {
-        for (var i: u32 = 0u; i < inW; i = i + 1u) { acc = acc + nrcWeights[wBase + i] * actA[i]; }
+        for (var i: u32 = 0u; i < inW; i = i + 1u) { acc = acc + nrcLoadWeight(wBase + i) * actA[i]; }
       } else {
-        for (var i: u32 = 0u; i < inW; i = i + 1u) { acc = acc + nrcWeights[wBase + i] * actB[i]; }
+        for (var i: u32 = 0u; i < inW; i = i + 1u) { acc = acc + nrcLoadWeight(wBase + i) * actB[i]; }
       }
       let a = select(max(0.0, acc), acc, isOut);
       if ((l & 1u) == 0u) { actB[ocol] = a; } else { actA[ocol] = a; }
@@ -321,25 +411,30 @@ fn nrcMlpForward(feat: ptr<function, array<f32, NRC_IN_W>>) -> vec3f {
 // Predict outgoing radiance at the suffix vertex (the cache QUERY). The MLP
 // predicts radiance directly; we clamp to non-negative (radiance ≥ 0).
 fn nrcQueryRadiance(pos: vec3f, normal: vec3f, viewDir: vec3f, roughness: f32, albedo: vec3f) -> vec3f {
+  if (!nrcInferenceArenaValid() || !nrcRuntimeArenaValid()) { return vec3f(0.0); }
   var feat: array<f32, NRC_IN_W>;
   nrcAssembleInput(pos, normal, viewDir, roughness, albedo, &feat);
-  return max(nrcMlpForward(&feat), vec3f(0.0));
+  let raw = nrcMlpForward(&feat);
+  if (!nrcFinite3(raw)) {
+    nrcAddDiagnostic(NRC_DIAG_NONFINITE);
+    return vec3f(0.0);
+  }
+  let bounded = clamp(raw, vec3f(0.0), vec3f(65504.0));
+  if (any(bounded != raw)) {
+    nrcAddDiagnostic(NRC_DIAG_SATURATED);
+  }
+  return bounded;
 }
 
 // Write one self-training record for the host gather.
 //
-// H27 first-writer-wins claim (torn-record fix): although each invocation uses
-// a deterministic slot (pixelIdxGi % recordCap), two invocations at different
-// pixels CAN alias to the same slot when recordCap < pixelCount. Without a
-// claim gate the two writes interleave (torn record). The atomicCompareExchangeWeak
-// ensures only the FIRST writer to arrive on a given slot succeeds; subsequent
-// racers observe claimed=1 and skip. The host clears nrcSlotClaims to 0 at the
-// start of each frame so every slot is available again.
+// H27 first-writer-wins claim (torn-record fix). The current bounded producer
+// assigns at most one eligible invocation per slot, but this generic writer keeps
+// the atomic gate so future producers cannot interleave a record accidentally.
+// The host clears nrcSlotClaims to 0 at the start of each frame.
 //
-// target is the outgoing radiance the path computed at this suffix vertex
-// (Muller §5 self-training: the cache learns the radiance the path carried).
-// H27: target is now direct-sun + one-DDGI-bounce Lo (not bare DDGI irradiance)
-// — the improved target is computed in the gi-ris main body and passed as tgt.
+// target is a matched, independently traced four-vertex path-suffix estimate for
+// the same encoded vertex/direction. It reads neither DDGI nor the cache output.
 //
 // Record layout (recordStride = NRC_IN_W + OUT_W + 3 f32s):
 //   [ NRC_IN_W encoded input | OUT_W radiance target | 3 query WORLD pos ]
@@ -350,23 +445,57 @@ fn nrcWriteRecord(
   slot: u32, pos: vec3f, normal: vec3f, viewDir: vec3f, roughness: f32, albedo: vec3f,
   tgt: vec3f,
 ) {
-  if (slot >= nrcCfg.recordCap) { return; }
-  // First-writer-wins: try to claim the slot atomically. If we see old=0 →
-  // new=1 (exchanged=true), we are the first writer and proceed. If the slot
-  // was already claimed (exchanged=false), skip to avoid tearing.
-  let claimed = atomicCompareExchangeWeak(&nrcSlotClaims[slot], 0u, 1u);
-  if (!claimed.exchanged) { return; }
+  if (!nrcInferenceArenaValid() || !nrcRuntimeArenaValid()) { return; }
+  if (slot >= nrcCfg.recordCap) {
+    nrcAddDiagnostic(NRC_DIAG_DROPPED_RECORD);
+    return;
+  }
+  if (!nrcFinite3(pos) || !nrcFinite3(normal) || !nrcFinite3(viewDir)
+      || !nrcFinite(roughness) || !nrcFinite3(albedo) || !nrcFinite3(tgt)) {
+    nrcAddDiagnostic(NRC_DIAG_NONFINITE);
+    return;
+  }
+
+  // Weak CAS may fail spuriously. Retry while the observed value remains 0;
+  // stop immediately if another invocation really owns the slot.
+  var ownsSlot = false;
+  for (var attempt: u32 = 0u; attempt < NRC_RECORD_CAS_ATTEMPTS; attempt = attempt + 1u) {
+    let claimed = atomicCompareExchangeWeak(&nrcRuntimeArena[nrcRuntimeClaimsBase() + slot], 0u, 1u);
+    if (claimed.exchanged) {
+      ownsSlot = true;
+      break;
+    }
+    if (claimed.old_value != 0u) { break; }
+  }
+  if (!ownsSlot) {
+    nrcAddDiagnostic(NRC_DIAG_DROPPED_RECORD);
+    return;
+  }
+
   var feat: array<f32, NRC_IN_W>;
   nrcAssembleInput(pos, normal, viewDir, roughness, albedo, &feat);
-  let base = slot * nrcCfg.recordStride;
-  for (var i: u32 = 0u; i < NRC_IN_W; i = i + 1u) { nrcRecords[base + i] = feat[i]; }
-  nrcRecords[base + NRC_IN_W + 0u] = tgt.x;
-  nrcRecords[base + NRC_IN_W + 1u] = tgt.y;
-  nrcRecords[base + NRC_IN_W + 2u] = tgt.z;
-  // raw query world position (drives the encode-backward trilinear scatter).
-  nrcRecords[base + NRC_IN_W + 3u] = pos.x;
-  nrcRecords[base + NRC_IN_W + 4u] = pos.y;
-  nrcRecords[base + NRC_IN_W + 5u] = pos.z;
+  for (var i: u32 = 0u; i < NRC_IN_W; i = i + 1u) {
+    if (!nrcFinite(feat[i])) {
+      atomicStore(&nrcRuntimeArena[nrcRuntimeClaimsBase() + slot], 0u);
+      nrcAddDiagnostic(NRC_DIAG_NONFINITE);
+      return;
+    }
+  }
+
+  let boundedTgt = clamp(tgt, vec3f(0.0), vec3f(NRC_MAX_TRAIN_TARGET));
+  if (any(boundedTgt != tgt)) {
+    nrcAddDiagnostic(NRC_DIAG_SATURATED);
+  }
+  let base = nrcRuntimeRecordsBase() + slot * nrcCfg.recordStride;
+  for (var i: u32 = 0u; i < NRC_IN_W; i = i + 1u) {
+    atomicStore(&nrcRuntimeArena[base + i], bitcast<u32>(feat[i]));
+  }
+  atomicStore(&nrcRuntimeArena[base + NRC_IN_W + 0u], bitcast<u32>(boundedTgt.x));
+  atomicStore(&nrcRuntimeArena[base + NRC_IN_W + 1u], bitcast<u32>(boundedTgt.y));
+  atomicStore(&nrcRuntimeArena[base + NRC_IN_W + 2u], bitcast<u32>(boundedTgt.z));
+  atomicStore(&nrcRuntimeArena[base + NRC_IN_W + 3u], bitcast<u32>(pos.x));
+  atomicStore(&nrcRuntimeArena[base + NRC_IN_W + 4u], bitcast<u32>(pos.y));
+  atomicStore(&nrcRuntimeArena[base + NRC_IN_W + 5u], bitcast<u32>(pos.z));
 }
 `;
 }

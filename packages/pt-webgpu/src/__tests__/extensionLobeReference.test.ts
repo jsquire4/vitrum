@@ -274,7 +274,7 @@ describe('pt-webgpu extension lobe CPU references', () => {
     expectVecClose(mix3(baseF0, iridescentF0, 0), baseF0);
     expectVecClose(mix3(baseF0, iridescentF0, 0.4), [0.108, 0.192, 0.384]);
 
-    expect(PT_WEBGPU_PATH_TRACE_BSDF_WGSL).toContain('if (iridescence < 1e-4) {');
+    expect(PT_WEBGPU_PATH_TRACE_BSDF_WGSL).toContain('if (iridescence <= 0.0) {');
     expect(PT_WEBGPU_PATH_TRACE_BSDF_WGSL).toContain('return baseF0; // zero-default: numerically identical to pre-H52 path.');
     expect(PT_WEBGPU_PATH_TRACE_BSDF_WGSL).toContain('return mix(baseF0, iridF, iridescence);');
   });

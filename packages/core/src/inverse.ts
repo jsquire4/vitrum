@@ -14,7 +14,7 @@
 // loop. This is what lets a host show live convergence, pause, or cancel.
 //
 // Two gradient strategies are exposed, mirroring the research literature:
-//   • 'finite-difference' (Phase 0) — perturb each parameter by ±ε, re-render,
+//   • 'finite-difference' (Phase 0) — perturb each parameter by +ε, re-render,
 //     forward-difference the loss. Backend-agnostic, no adjoint shader, O(P)
 //     renders per step. The honest baseline that validates the session UX.
 //   • 'path-replay' (Phase 1) — re-trace the forward path with the SAME frozen
@@ -42,12 +42,8 @@ import type { BackendTexture } from './frame.js';
  *  selects the target the way the illustrative API in `plan/differentiable-rt.md`
  *  does: `materials.<primitiveId>.<field>` or `emitters.<emitterId>.<field>`.
  *
- *  Phase-0/Phase-1 scope (this wave): scalar, vec2, and rgb
- *  material/emitter params.
- *  `texture` is reserved for Phase 2 (texture optimization) and is part of the
- *  FIXED contract surface now so adding it later is not a breaking change —
- *  backends that don't yet differentiate textures throw on it. */
-export type InverseParamKind = 'scalar' | 'vec2' | 'rgb' | 'texture';
+ *  Supported scope: scalar, vec2, and rgb material/emitter parameters. */
+export type InverseParamKind = 'scalar' | 'vec2' | 'rgb';
 
 /** One optimizable parameter. `path` is a dotted address into the live scene
  *  (`'materials.panel-1.roughness'`, `'materials.panel-1.albedo'`,
@@ -79,19 +75,19 @@ export interface InverseParam {
 // ────────────────────────────────────────────────────────────────────────────
 
 /** Image-space loss between the rendered image and the target. `'l2'` is the
- *  mean-squared per-pixel RGB error (the Phase-0/1 default). `'l1'` is the mean
- *  absolute error. `'ssim'` / `'lpips'` are reserved perceptual losses (named
- *  now so they don't churn the contract later); backends that don't implement a
- *  requested loss throw at session creation. */
-export type InverseLoss = 'l2' | 'l1' | 'ssim' | 'lpips';
+ *  mean-squared per-pixel RGB error (the default). `'l1'` is the mean absolute
+ *  error. */
+export type InverseLoss = 'l2' | 'l1';
 
 /** Gradient strategy. See the module header for the literature mapping. */
 export type InverseGradientMethod = 'finite-difference' | 'path-replay';
 
-/** Structured reason an inverse-rendering backend downgraded or scoped a
+/** Structured reason an inverse-rendering backend could not honor all of a
  * requested optimization path. These diagnostics are intentionally contract
  * level, not backend-log strings, so hosts can surface predictable UI and
- * compatibility reports for arbitrary assets. */
+ * compatibility reports for arbitrary assets. Depending on the backend's
+ * published inverse failure policy, they may accompany a whole-session
+ * fallback or be emitted immediately before session creation throws. */
 export interface InverseSessionDiagnostic {
   readonly severity: 'info' | 'warning';
   readonly code:
@@ -128,8 +124,8 @@ export interface InverseOptimizerConfig {
   readonly beta2?: number;
   /** Adam ε (numerical floor). Default: 1e-8. */
   readonly epsilon?: number;
-  /** Finite-difference probe size (only used when method ===
-   *  'finite-difference'). Default: 1e-3. */
+  /** Finite-difference probe size, used when the session's effective method is
+   *  finite-difference. Default: 1e-3. */
   readonly fdEpsilon?: number;
 }
 
@@ -149,13 +145,15 @@ export interface InverseSessionOptions {
   readonly method?: InverseGradientMethod;
   /** Samples-per-pixel to accumulate before measuring the loss each step.
    *  Higher = less Monte-Carlo noise in the gradient, slower steps.
-   *  Default: backend-specific (typically a small fixed budget). */
+   *  Default: 8. */
   readonly samplesPerStep?: number;
   /** Optimizer hyper-parameters. */
   readonly optimizer?: InverseOptimizerConfig;
-  /** Optional structured diagnostics emitted during session creation, most
-   *  commonly when a requested `'path-replay'` session downgrades to
-   *  `'finite-difference'` for a specific asset/material/light feature. */
+  /** Optional structured diagnostics emitted during session creation when the
+   *  requested method is outside a backend's supported domain. A backend with
+   *  `capabilities.inverseRendering.pathReplay.failurePolicy === 'error'` emits
+   *  these callbacks before throwing and returns no session; a backend that
+   *  advertises finite-difference fallback may return a downgraded session. */
   readonly onDiagnostic?: (diagnostic: InverseSessionDiagnostic) => void;
 }
 
@@ -210,15 +208,22 @@ export interface InverseSession {
   /** The number of optimizable parameters (= `options.parameters.length`). */
   readonly parameterCount: number;
 
-  /** The gradient method actually in use (resolved from options + backend
-   *  capability — a backend may fall back from 'path-replay' to
-   *  'finite-difference' for a parameter kind it can't yet differentiate, and
-   *  reports the effective method here). */
+  /** The gradient method actually in use for this successfully-created session.
+   *  A method/domain mismatch is handled according to the backend's published
+   *  inverse failure policy: either creation throws, or the whole session is
+   *  explicitly returned as finite-difference. */
   readonly method: InverseGradientMethod;
 
-  /** Creation-time diagnostics for method downgrades or scoped inverse-rendering
-   *  support. Empty/omitted means the requested method was accepted without a
-   *  compatibility caveat. */
+  /** Gradient route used for each parameter, in the same order as
+   *  `InverseSessionOptions.parameters`. Shipping public backends select one
+   *  route for the complete session rather than hiding a mixed estimator; this
+   *  array is retained as an auditable per-parameter record. */
+  readonly parameterMethods: readonly InverseGradientMethod[];
+
+  /** Creation-time diagnostics for a successfully-created session. Empty or
+   *  omitted means the requested method was accepted without a compatibility
+   *  caveat. Rejected creations report through `onDiagnostic` before throwing
+   *  because no session object exists to retain them. */
   readonly diagnostics?: readonly InverseSessionDiagnostic[];
 
   /** Advance the optimizer by one step: render at the target resolution,

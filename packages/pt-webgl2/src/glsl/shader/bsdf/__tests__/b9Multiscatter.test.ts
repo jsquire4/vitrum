@@ -51,7 +51,7 @@ function ggxMultiscatterScalarNoCos(rough: number, NdotV: number, NdotL: number)
   const Ei = ggxDirectionalAlbedo(NdotL, rough);
   const Eavg = ggxAverageAlbedo(rough);
   const oneMinusEavg = 1 - Eavg;
-  if (oneMinusEavg < 1e-4) return 0;
+  if (!(oneMinusEavg > 0)) return 0;
   const fms = ((1 - Eo) * (1 - Ei)) / (PI * oneMinusEavg);
   // Favg = 1 → Fms = (1·Eavg)/(1 − (1−Eavg)) = Eavg/Eavg = 1.
   return fms; // Fms = 1 for the perfect conductor
@@ -62,6 +62,8 @@ describe('B9 — pt-webgl2 GGX multiscatter (structural)', () => {
     expect(ggx_functions).toContain('ggxDirectionalAlbedo');
     expect(ggx_functions).toContain('ggxAverageAlbedo');
     expect(ggx_functions).toContain('ggxMultiscatter');
+    expect(ggx_functions).toContain('if ( ! ( oneMinusEavg > 0.0 ) )');
+    expect(ggx_functions).not.toContain('oneMinusEavg = max(');
   });
 
   it('specularEval folds the multiscatter lobe into the specular color', () => {

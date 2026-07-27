@@ -106,16 +106,18 @@ describe('pt-webgpu anisotropyMap packer offset — UNTESTED-promise closure (it
     it('WGSL materialAnisotropy reads vec4[5].z for the anisotropyMap layer index', () => {
       const wgsl = PT_WEBGPU_PATH_TRACE_MATERIAL_FULL_BINDINGS_GROUP3_WGSL;
       // The accessor reads descriptor[base + 5u].z for the anisotropy map index.
-      expect(wgsl).toContain('fn materialAnisotropy(matId: u32, triIndex: u32, baryVW: vec2f) -> f32');
+      expect(wgsl).toContain('fn materialAnisotropy(matId: u32, triIndex: u32, baryVW: vec2f, instanceIndex: u32) -> f32');
       // The anisotropy map index is read from vec4[5].z (b+5u offset, .z channel).
       expect(wgsl).toContain('let anisoIdx = i32(materialTexDescriptors[base + 5u].z)');
     });
 
     it('WGSL materialAnisotropyRotation reads vec4[5].z for the anisotropyMap index', () => {
       const wgsl = PT_WEBGPU_PATH_TRACE_MATERIAL_FULL_BINDINGS_GROUP3_WGSL;
-      expect(wgsl).toContain('fn materialAnisotropyRotation(matId: u32, triIndex: u32, baryVW: vec2f) -> f32');
+      expect(wgsl).toContain('fn materialAnisotropyRotation(matId: u32, triIndex: u32, baryVW: vec2f, shadingNormal: vec3f, instanceIndex: u32) -> f32');
       // The anisotropy rotation accessor also uses the map index from vec4[5].z.
       expect(wgsl).toContain('materialTexDescriptors[base + 5u].z');
+      expect(wgsl).toContain('materialTexDescriptors[base + MATERIAL_TEX_UV_ANISOTROPY].x');
+      expect(wgsl).toContain('cos(rot) * frame.tangent + sin(rot) * frame.bitangent');
     });
 
     it('WGSL anisotropy strength reads vec4[5].x and map B-channel modulates it', () => {
@@ -124,7 +126,7 @@ describe('pt-webgpu anisotropyMap packer offset — UNTESTED-promise closure (it
       expect(wgsl).toContain('materialTexDescriptors[base + 5u].x');
       // Map modulates strength via the B channel (KHR_materials_anisotropy spec).
       expect(wgsl).toContain(
-        'sampleMaterialLayerLinear(anisoIdx, base, triIndex, baryVW, MATERIAL_TEX_UV_ANISOTROPY, materialTexDescriptors[base + 11u].xy, materialTexDescriptors[base + 17u].xy, MATERIAL_TEX_MIP_ANISOTROPY).b',
+        'sampleMaterialLayerLinear(anisoIdx, base, triIndex, baryVW, instanceIndex, MATERIAL_TEX_UV_ANISOTROPY, materialTexDescriptors[base + 11u].xy, materialTexDescriptors[base + 17u].xy, MATERIAL_TEX_MIP_ANISOTROPY).b',
       );
     });
 

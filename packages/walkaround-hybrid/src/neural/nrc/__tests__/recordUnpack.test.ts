@@ -120,8 +120,12 @@ describe('unpackRecords — NRC record gap detection + dense repack', () => {
 
   it('clears record payloads at the same frame boundary as slot claims', () => {
     const source = readFileSync(new URL('../nrcSubsystem.ts', import.meta.url), 'utf8');
-    const method = source.match(/clearSlotClaims\(encoder: GPUCommandEncoder\): void \{[\s\S]*?\n  \}/)?.[0] ?? '';
-    expect(method).toContain('encoder.clearBuffer(this._slotClaimsBuf);');
-    expect(method).toContain('encoder.clearBuffer(this._recordsBuf);');
+    const method = source.match(/clearSlotClaims\(encoder: GPUCommandEncoder\): void \{[\s\S]*?\n {2}\}/)?.[0] ?? '';
+    expect(method).toContain(
+      'encoder.clearBuffer(this._runtimeArena!, layout.claimsByteOffset, layout.claimsBytes);',
+    );
+    expect(method).toContain(
+      'encoder.clearBuffer(this._runtimeArena!, layout.recordsByteOffset, layout.recordsBytes);',
+    );
   });
 });

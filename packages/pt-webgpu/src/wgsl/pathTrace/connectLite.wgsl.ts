@@ -37,6 +37,9 @@ fn environmentDimensions() -> vec2u {
 // absent (hasEnvironmentMap()=false).
 fn liteEnvLookup(dir: vec3f) -> vec4f {
   if (!hasEnvironmentMap()) {
+    if (params.environmentSun.w > 0.0) {
+      return vec4f(sampleSky(dir), 0.25 * INV_PI);
+    }
     return vec4f(0.0);
   }
   let dims = environmentDimensions();
@@ -69,7 +72,7 @@ fn environmentPdf(dir: vec3f) -> f32 {
 // B12 — importance sample the lite env CDF via binary search over liteEnvCdfTex.
 // The CDF is stored as a W×H texture: texel at (x, y).r = cdf[(y*W + x) + 1].
 // cdf[0] = 0 is implicit.  Returns pdf ≤ 0 on failure (no env or empty CDF).
-fn sampleEnvironmentImportance(rng: ptr<function, u32>) -> BsdfSample {
+fn sampleEnvironmentImportance(rng: ptr<function, PtRngState>) -> BsdfSample {
   var result: BsdfSample;
   result.wi = vec3f(0.0, 1.0, 0.0);
   result.value = vec3f(0.0);
@@ -117,6 +120,18 @@ fn sampleEnvironmentImportance(rng: ptr<function, u32>) -> BsdfSample {
   return result;
 }
 
+fn environmentImportanceSamplerReady() -> bool {
+  let dims = environmentDimensions();
+  return hasEnvironmentMap() && dims.x > 0u && dims.y > 0u;
+}
+
+fn environmentNeeProposalPdf(dir: vec3f, normal: vec3f) -> f32 {
+  if (environmentImportanceSamplerReady()) {
+    return max(environmentPdf(dir), 1e-8);
+  }
+  return 0.25 * INV_PI;
+}
+
 fn liteRectLightBase() -> u32 {
   return params.directionalLightCount * 2u + params.pointLightCount * 3u + params.spotLightCount * 4u;
 }
@@ -130,9 +145,12 @@ fn intersectLiteRectAreaLightRay(li: u32, rayOrigin: vec3f, rayDir: vec3f, distO
   let vAxis = textureLoad(liteLightTex, vec2i(i32(rb + 2u), 0), 0).xyz;
   let rshape = textureLoad(liteLightTex, vec2i(i32(rb + 3u), 0), 0);
   let isDisc = abs(rshape.w - 1.0) < 0.5;
-  let lightNormal = safe_normalize(cross(uAxis, vAxis));
+  let axisCross = cross(uAxis, vAxis);
+  let axisCrossLen2 = dot(axisCross, axisCross);
+  if (axisCrossLen2 <= 0.0) { return false; }
+  let lightNormal = axisCross * inverseSqrt(axisCrossLen2);
   let denom = dot(lightNormal, rayDir);
-  if (abs(denom) < 1e-6) {
+  if (denom == 0.0) {
     return false;
   }
   let t = dot(lightNormal, rectPos - rayOrigin) / denom;
@@ -141,8 +159,9 @@ fn intersectLiteRectAreaLightRay(li: u32, rayOrigin: vec3f, rayDir: vec3f, distO
   }
   let p = rayOrigin + rayDir * t;
   let rel = p - rectPos;
-  let uLen2 = max(dot(uAxis, uAxis), 1e-6);
-  let vLen2 = max(dot(vAxis, vAxis), 1e-6);
+  let uLen2 = dot(uAxis, uAxis);
+  let vLen2 = dot(vAxis, vAxis);
+  if (uLen2 <= 0.0 || vLen2 <= 0.0) { return false; }
   let uCoord = dot(rel, uAxis) / uLen2;
   let vCoord = dot(rel, vAxis) / vLen2;
   let inside = select(
@@ -158,12 +177,13 @@ fn intersectLiteRectAreaLightRay(li: u32, rayOrigin: vec3f, rayDir: vec3f, distO
     return false;
   }
   let area = select(
-    max(4.0 * length(cross(uAxis, vAxis)), 1e-6),
-    max(PI * dot(uAxis, uAxis), 1e-6),
+    4.0 * sqrt(axisCrossLen2),
+    PI * uLen2,
     isDisc,
   );
+  if (area <= 0.0) { return false; }
   *distOut = t;
-  *lightPdfOut = (t * t) / max(cosLight * area, 1e-6);
+  *lightPdfOut = (t * t) / (cosLight * area);
   return true;
 }
 
@@ -176,7 +196,7 @@ fn bsdfAreaLightConnectionContribution(
   roughness: f32,
   metallic: f32,
   transmission: f32,
-  ior: f32,
+  etaTOverI: f32,
   clearcoat: f32,
   clearcoatRoughness: f32,
   sheen: f32,
@@ -191,22 +211,23 @@ fn bsdfAreaLightConnectionContribution(
   throughputAtVertex: vec3f,
   heroLambda: f32,
 ) -> vec3f {
-  let nDotL = max(dot(normal, wi), 0.0);
-  if (nDotL <= 1e-5) {
+  let nDotL = abs(dot(normal, wi));
+  if (nDotL <= 0.0) {
     return vec3f(0.0);
   }
   let bsdfPdf = brdfDirectionalPdfFullSampled(
-    baseColor, roughness, metallic, transmission, ior, normal, wo, wi,
+    baseColor, roughness, metallic, transmission, etaTOverI, normal, wo, wi,
     clearcoat, clearcoatRoughness, sheen, sheenRoughness,
     iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
     specularColor, specularIntensity,
     0.0, 0.0,
   );
-  if (bsdfPdf <= 1e-6) {
+  if (bsdfPdf <= 0.0) {
     return vec3f(0.0);
   }
 
-  let offsetOrigin = hitPos + normal * 1e-3;
+  let offsetNormal = select(-normal, normal, dot(normal, wi) > 0.0);
+  let offsetOrigin = hitPos + offsetNormal * 1e-3;
   var bestDist = INFINITY;
   var bestLightPdf = 0.0;
   var bestEmission = vec3f(0.0);
@@ -224,20 +245,21 @@ fn bsdfAreaLightConnectionContribution(
       }
     }
   }
-  if (bestDist >= INFINITY || bestLightPdf <= 1e-6) {
+  if (bestDist >= INFINITY || bestLightPdf <= 0.0) {
     return vec3f(0.0);
   }
 
-  let brdf = evaluateBrdfFull(
-    baseColor, roughness, metallic, normal, wo, wi,
+  let brdf = evaluateFiniteBsdfFullWithClearcoatNormal(
+    baseColor, roughness, metallic, transmission, etaTOverI,
+    normal, normal, wo, wi,
     clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
     iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
     specularColor, specularIntensity,
-    0.0, 0.0,
+    0.0, 0.0, false,
   );
   let emitOut = select(bestEmission, spectralEmissionAtHero(bestEmission, heroLambda), params.spectralEnabled != 0u);
   let misWeight = powerHeuristic(bsdfPdf, bestLightPdf);
-  return throughputAtVertex * brdf * nDotL * emitOut * misWeight / max(bsdfPdf, 1e-6);
+  return throughputAtVertex * brdf * nDotL * emitOut * misWeight / bsdfPdf;
 }
 
 fn bsdfEnvironmentConnectionContribution(
@@ -249,7 +271,7 @@ fn bsdfEnvironmentConnectionContribution(
   roughness: f32,
   metallic: f32,
   transmission: f32,
-  ior: f32,
+  etaTOverI: f32,
   clearcoat: f32,
   clearcoatRoughness: f32,
   sheen: f32,
@@ -262,29 +284,33 @@ fn bsdfEnvironmentConnectionContribution(
   specularColor: vec3f,
   specularIntensity: f32,
   throughputAtVertex: vec3f,
+  heroLambda: f32,
 ) -> vec3f {
-  let nDotL = max(dot(normal, wi), 0.0);
-  if (nDotL <= 1e-5) { return vec3f(0.0); }
+  let nDotL = abs(dot(normal, wi));
+  if (nDotL <= 0.0) { return vec3f(0.0); }
   let bsdfPdf = brdfDirectionalPdfFullSampled(
-    baseColor, roughness, metallic, transmission, ior, normal, wo, wi,
+    baseColor, roughness, metallic, transmission, etaTOverI, normal, wo, wi,
     clearcoat, clearcoatRoughness, sheen, sheenRoughness,
     iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
     specularColor, specularIntensity,
     0.0, 0.0,
   );
-  if (bsdfPdf <= 1e-6) { return vec3f(0.0); }
-  let shadowRay = Ray(hitPos + normal * 1e-3, wi);
+  if (bsdfPdf <= 0.0) { return vec3f(0.0); }
+  let offsetNormal = select(-normal, normal, dot(normal, wi) > 0.0);
+  let shadowRay = Ray(hitPos + offsetNormal * 1e-3, wi);
   if (traceAny(shadowRay, 1e-4, INFINITY)) { return vec3f(0.0); }
-  let envPdf = environmentPdf(wi);
-  let envColor = sampleEnvironmentColor(wi);
+  let envPdf = environmentNeeProposalPdf(wi, normal);
+  let envRgb = sampleEnvironmentColor(wi);
+  let envColor = select(envRgb, spectralEmissionAtHero(envRgb, heroLambda), params.spectralEnabled != 0u);
   let misWeight = powerHeuristic(bsdfPdf, envPdf);
-  let brdf = evaluateBrdfFull(
-    baseColor, roughness, metallic, normal, wo, wi,
+  let brdf = evaluateFiniteBsdfFullWithClearcoatNormal(
+    baseColor, roughness, metallic, transmission, etaTOverI,
+    normal, normal, wo, wi,
     clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
     iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
     specularColor, specularIntensity,
-    0.0, 0.0,
+    0.0, 0.0, false,
   );
-  return throughputAtVertex * brdf * nDotL * envColor * misWeight / max(bsdfPdf, 1e-6);
+  return throughputAtVertex * brdf * nDotL * envColor * misWeight / bsdfPdf;
 }
 `;

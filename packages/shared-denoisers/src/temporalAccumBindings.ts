@@ -22,13 +22,9 @@
  * Pattern follows `atrousVarianceBindings.ts` (W2-C13: `defineUbo` replaces
  * any hand-rolled DataView packing for small UBOs).
  *
- * Note for wiring: `walkaround-hybrid`'s `bindGroupBuilders.ts` already
- * packs this UBO via an inline `defineUbo([{ name:'alpha', type:'f32' }])`
- * called `ACCUM_UBO`. That consumer can be switched to import
- * `TEMPORAL_ACCUM_UBO_SIZE_BYTES` + `packTemporalAccumUniforms` from here
- * once the two are verified byte-identical (they are — both are single f32
- * padded to 16 bytes by `defineUbo`). The switch is a separate task; this
- * file provides the canonical helper for that migration.
+ * `walkaround-hybrid` imports this size and packer directly for its
+ * TemporalAccumPass UBO. Other backends can share the same byte contract
+ * without cloning a local `defineUbo` declaration.
  */
 
 import { defineUbo } from '@vitrum/shared-samplers';

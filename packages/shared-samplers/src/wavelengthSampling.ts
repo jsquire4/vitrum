@@ -9,7 +9,7 @@
  * Technique: hero-wavelength spectral path tracing.
  *   Each path samples one wavelength λ from pdf(λ) ∝ Y(λ), traces the path
  *   in that monochromatic mode, then converts the scalar throughput to an RGB
- *   contribution via the CIE CMF and D65 illuminant at that wavelength.
+ *   contribution via the CIE CMFs and the D65-whitepoint XYZ-to-sRGB transform.
  *
  * PDF: pdf(λ) = Y(λ) / ∫Y(λ)dλ  (Y normalised to integrate to 1)
  *
@@ -46,6 +46,7 @@ import {
 } from './cieCmf.js';
 
 // ── Build CDF from Y table at module load ─────────────────────────────────────
+import { requireFinite, requireUnitRandom } from './numericGuards.js';
 // This is a one-time O(N) cost; the resulting CDF is used for all sampling.
 // Both Y_INTEGRAL and Y_CDF are derived from the same trapezoidal pass, so
 // they are computed together to remove the ordering hazard of two sequential
@@ -74,12 +75,16 @@ function buildIntegralAndCdf(table: Readonly<Float32Array>): { integral: number;
 
   const cdf = new Float64Array(CIE_TABLE_LENGTH + 1);
   cdf[0] = 0;
-  for (let i = 1; i <= CIE_TABLE_LENGTH; i++) {
+  // There are N-1 physical intervals between N tabulated wavelengths. Keep the
+  // historical N+1 storage shape for GPU uniform compatibility, but duplicate
+  // the terminal CDF value instead of inventing a [780,785] nm interval.
+  for (let i = 1; i < CIE_TABLE_LENGTH; i++) {
     const vPrev = table[i - 1] ?? 0;
-    const vCurr = i < CIE_TABLE_LENGTH ? (table[i] ?? 0) : 0;
+    const vCurr = table[i] ?? 0;
     cdf[i] = (cdf[i - 1] ?? 0) + (vPrev + vCurr) * 0.5 * CIE_LAMBDA_STEP;
   }
-  const total = cdf[CIE_TABLE_LENGTH] ?? integral;
+  const total = cdf[CIE_TABLE_LENGTH - 1] ?? integral;
+  cdf[CIE_TABLE_LENGTH] = total;
   for (let i = 0; i <= CIE_TABLE_LENGTH; i++) {
     cdf[i] = (cdf[i] ?? 0) / total;
   }
@@ -123,10 +128,16 @@ function sampleCmfCdfInverse(
   cdf: Float64Array,
   integral: number,
 ): { lambdaNm: number; pdf: number } {
-  const uClamped = Math.max(0, Math.min(1 - 1e-7, u));
+  if (u >= 1) {
+    return {
+      lambdaNm: CIE_LAMBDA_MAX,
+      pdf: (table[CIE_TABLE_LENGTH - 1] ?? 0) / integral,
+    };
+  }
+  const uClamped = Math.max(0, u);
 
   let lo = 0;
-  let hi = CIE_TABLE_LENGTH - 1;
+  let hi = CIE_TABLE_LENGTH - 2;
   while (lo < hi) {
     const mid = (lo + hi) >> 1;
     if ((cdf[mid + 1] ?? 0) <= uClamped) {
@@ -141,7 +152,26 @@ function sampleCmfCdfInverse(
   const vLo = table[lo] ?? 0;
   const vHi = table[lo + 1] ?? 0;
 
-  const t = cdfHi > cdfLo ? (uClamped - cdfLo) / (cdfHi - cdfLo) : 0;
+  // The CMF is linearly interpolated within a wavelength interval, so its CDF
+  // is quadratic there. Inverting the CDF fraction linearly biases samples
+  // toward the low-density side and makes the returned point PDF inconsistent.
+  const segmentFraction = cdfHi > cdfLo ? (uClamped - cdfLo) / (cdfHi - cdfLo) : 0;
+  const segmentIntegral = 0.5 * (vLo + vHi);
+  const targetIntegral = segmentFraction * segmentIntegral;
+  const slope = vHi - vLo;
+  let t = 0;
+  if (segmentIntegral > 0) {
+    const nearConstant = Math.abs(slope) <=
+      Number.EPSILON * Math.max(Math.abs(vLo), Math.abs(vHi), Number.MIN_VALUE);
+    if (nearConstant) {
+      t = targetIntegral / vLo;
+    } else {
+      const discriminant = Math.max(vLo * vLo + 2 * slope * targetIntegral, 0);
+      const denominator = vLo + Math.sqrt(discriminant);
+      t = denominator > 0 ? 2 * targetIntegral / denominator : 0;
+    }
+  }
+  t = Math.min(1, Math.max(0, t));
   const lambdaNm = CIE_LAMBDA_MIN + lo * CIE_LAMBDA_STEP + t * CIE_LAMBDA_STEP;
   const lambdaClamped = Math.max(CIE_LAMBDA_MIN, Math.min(CIE_LAMBDA_MAX, lambdaNm));
 
@@ -151,6 +181,21 @@ function sampleCmfCdfInverse(
   return { lambdaNm: lambdaClamped, pdf };
 }
 
+
+/** @internal Numerical oracle for the shader's piecewise-linear CMF inverse. */
+export function _sampleCmfCdfInverseForTest(
+  u: number,
+  table: Readonly<Float32Array>,
+  cdf: Readonly<Float64Array>,
+  integral: number,
+): { lambdaNm: number; pdf: number } {
+  return sampleCmfCdfInverse(
+    u,
+    table,
+    cdf,
+    integral,
+  );
+}
 /**
  * misMixturePdf — evaluate the balance-heuristic mixture PDF at λ.
  *
@@ -167,6 +212,7 @@ function misMixturePdf(lambdaNm: number): number {
 }
 
 export function sampleHeroWavelength(u: number): { lambdaNm: number; pdf: number } {
+  requireUnitRandom(u, 'sampleHeroWavelength.u');
   return sampleCmfCdfInverse(u, CIE_Y_TABLE, Y_CDF, Y_INTEGRAL);
 }
 
@@ -207,6 +253,8 @@ export function sampleHeroWavelengthMIS(
   uLambda: number,
 ): { lambdaNm: number; pdf: number } {
   const s = Math.max(0, Math.min(1 - 1e-7, uStrategy));
+  requireUnitRandom(uStrategy, 'sampleHeroWavelengthMIS.uStrategy');
+  requireUnitRandom(uLambda, 'sampleHeroWavelengthMIS.uLambda');
   let lambdaNm: number;
   if (s < 1 / 3) {
     lambdaNm = sampleCmfCdfInverse(uLambda, CIE_X_TABLE, X_CDF, X_INTEGRAL).lambdaNm;
@@ -229,9 +277,9 @@ export function sampleHeroWavelengthMIS(
  *   RGB += [x̄(λ), ȳ(λ), z̄(λ)] · throughput / (pdfLambda × Y_CMF_INTEGRAL)
  * converted from CIE XYZ to linear sRGB.
  *
- * The D65 illuminant is baked into the `throughput` value by convention: the
- * fork shader multiplies the emitter's spectral power by the D65 SPD at λ
- * during emission sampling.  This function does pure CMF-based reconstruction.
+ * This function injects no illuminant SPD: `throughput` must already carry the
+ * emitter's spectral radiance at λ. RGB-only emitters are spectrally upsampled
+ * by the renderer before this pure CMF-based reconstruction step.
  *
  * @param lambdaNm  - Hero wavelength in nm.
  * @param throughput - Scalar path throughput (energy fraction, dimensionless).
@@ -244,8 +292,10 @@ export function wavelengthToRGB(
   throughput: number,
   pdfLambda: number,
 ): readonly [number, number, number] {
+  requireFinite(lambdaNm, 'wavelengthToRGB.lambdaNm');
+  requireFinite(throughput, 'wavelengthToRGB.throughput');
+  requireFinite(pdfLambda, 'wavelengthToRGB.pdfLambda');
   if (pdfLambda <= 0) return [0, 0, 0] as const;
-
   const [x, y, z] = sampleCMF(lambdaNm);
   const weight = throughput / (pdfLambda * Y_INTEGRAL);
   const [r, g, b] = xyzToLinearSRGB(x * weight, y * weight, z * weight);

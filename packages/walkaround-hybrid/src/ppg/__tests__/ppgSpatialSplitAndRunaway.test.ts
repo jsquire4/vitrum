@@ -212,7 +212,10 @@ describe('PPG refine-loop runaway bound (per-window flux decay)', () => {
     const totals: number[] = [];
     for (let w = 0; w < windows; w++) {
       // Decay the carried-over accumulator (no-op on the very first window).
-      if (w > 0) decayAccumulators(t, decay);
+      // `decayAccumulators` deliberately rejects 1 because production decay=1
+      // is the unbounded regime. Skip decay entirely for the negative-control
+      // branch below so that test can still demonstrate the historical runaway.
+      if (w > 0 && decay < 1) decayAccumulators(t, decay);
       // Fresh deposit for this window into a fixed direction.
       dTreeAccumulateFlux(dTree, [0.7, 0.3], F);
       totals.push(dTree.totalFlux);

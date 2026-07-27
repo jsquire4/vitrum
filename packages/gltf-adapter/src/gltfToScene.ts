@@ -3,7 +3,7 @@
 // Entry point: gltfToScene(input, opts) → Promise<{ scene, warnings }>
 //
 // Design constraints:
-//   - Zero runtime dependencies (hand-rolled GLB parsing + accessor unpacking).
+//   - Browser + Node compatible, with compressed-geometry codecs loaded lazily.
 //   - Browser + Node compatible (no DOM-only APIs in core path; image decode is
 //     pluggable via opts.decodeImage).
 //   - Honest scope: v1 supports the core profile; exclusions are documented in
@@ -32,11 +32,9 @@
 //     (TRANSLATION/ROTATION/SCALE accessors; nodeWorld baked into instances;
 //     local instance matrices are returned for GltfSceneController animation).
 //
-//   - KHR_draco_mesh_compression / EXT/KHR_meshopt_compression → resolved via
-//     HOST-SUPPLIED decoder hooks (opts.dracoDecode / opts.meshoptDecode; the
-//     package bundles no decoder). Without a hook the spec fallback is used
-//     when present (Draco fallback accessors / meshopt fallback buffer);
-//     extensionsRequired without a hook or fallback throws. See compression.ts.
+//   - KHR_draco_mesh_compression / EXT/KHR_meshopt_compression → resolved by
+//     lazy built-in decoders, with optional host overrides. `host-only` policy
+//     keeps explicit fallback/error behavior for controlled runtimes.
 //
 // Cameras are reported as metadata for host inspection, but are not injected
 // into @vitrum/core Scene because Vitrum render cameras are frame-owned.
@@ -55,12 +53,18 @@
 
 import {
   asMat4,
+  cloneSparseArray,
+  solveSkin,
+  sparseArrayHasDefinedEntry,
+  sparseArrayOwnIndices,
+  validateScene as validateCoreScene,
   type AnimationClip,
   type MaterialSpec,
   type Mat4,
   type Scene,
   type SceneEmitter,
   type ScenePrimitive,
+  type SkinnedMeshPrimitive,
   type TextureRef,
 } from '@vitrum/core';
 import type {
@@ -80,11 +84,12 @@ import {
   type GltfTextureAcquisitionDiagnosticCode,
   type GltfTextureSourceExtension,
 } from './textures.js';
-import { parseGlb } from './glbParser.js';
+import { decodeGltfUtf8, parseGlb } from './glbParser.js';
 import {
   accessorBufferViewRange,
   unpackAccessorFloat,
   unpackAccessorUint32,
+  validateAccessorNormalization,
   validateBufferViewAccess,
   type GltfAccessorDiagnostic,
   type GltfAccessorDiagnosticCode,
@@ -92,13 +97,19 @@ import {
 import { buildWorldTransforms, composeTrsMat4, mat4Invert, mat4Mul } from './transforms.js';
 import {
   convertMaterial,
+  GltfMaterialImportError,
   GLTF_DEFAULT_MATERIAL,
   type GltfMaterialDiagnostic,
   type GltfMaterialDiagnosticCode,
 } from './materials.js';
-import { generateFlatNormals } from './normals.js';
+import { generateVertexNormals } from './normals.js';
 import { generateTangents } from './tangents.js';
-import { animationNodeId, convertAnimations, type GltfAnimationImportDiagnosticCode } from './animations.js';
+import {
+  animationNodeId,
+  convertAnimations,
+  GltfAnimationImportError,
+  type GltfAnimationImportDiagnosticCode,
+} from './animations.js';
 import { resolveCompression } from './compression.js';
 import type {
   DracoDecodeFn,
@@ -106,6 +117,7 @@ import type {
   GltfCompressionDiagnosticCode,
   MeshoptDecodeFn,
 } from './compression.js';
+import { createImportBuiltinCompressionDecoders } from './builtinCompressionDecoders.js';
 import {
   GLTF_MODE_TRIANGLE_FAN,
   GLTF_MODE_TRIANGLE_STRIP,
@@ -118,14 +130,46 @@ import {
   isPointLineMode,
   pointLineModeName,
 } from './primitiveModeFallback.js';
-import { collectGltfSceneReachability } from './sceneScope.js';
+import {
+  collectGltfSceneReachability,
+  gltfPrimitiveKey,
+  type GltfSceneReachability,
+} from './sceneScope.js';
 import { analyzeGltfAsset } from './featureReport.js';
-import { collectSceneCameras, type GltfSceneCamera } from './cameraMetadata.js';
+import {
+  collectSceneCameras,
+  validateGltfCameraMetadata,
+  type GltfSceneCamera,
+} from './cameraMetadata.js';
+import {
+  attachGltfResourceOwner,
+  createAsyncResourceLimiter,
+  DecodedImageHandleOwner,
+  GLTF_INPUT_RESOURCE_KEY,
+  gltfArrayBufferByteLength,
+  gltfBufferResourceKey,
+  GltfResourceLimitError,
+  ImportResourceLedger,
+  type GltfImportResourceContext,
+  type GltfImportResourceLimits,
+} from './importResourceBudget.js';
+export type { GltfImportResourceLimits } from './importResourceBudget.js';
 export type {
   GltfOrthographicCameraProjection,
   GltfPerspectiveCameraProjection,
   GltfSceneCamera,
 } from './cameraMetadata.js';
+
+function mapSparseArray<T, U>(
+  values: ReadonlyArray<T | undefined>,
+  mapEntry: (value: T | undefined, index: number) => U | undefined,
+): Array<U | undefined> {
+  const mapped: Array<U | undefined> = [];
+  for (const index of sparseArrayOwnIndices(values)) {
+    mapped[index] = mapEntry(values[index], index);
+  }
+  return mapped;
+}
 
 const GLTF_PRIMITIVE_MODE_TRIANGLES = 4;
 
@@ -154,7 +198,10 @@ const MATERIAL_TEXTURE_REF_FIELDS = [
   'lightMap',
 ] as const satisfies readonly (keyof MaterialSpec)[];
 
-export type MaterialTextureRefField = typeof MATERIAL_TEXTURE_REF_FIELDS[number];
+export type MaterialTextureRefField = (typeof MATERIAL_TEXTURE_REF_FIELDS)[number];
+
+/** Compressed-geometry decoder selection. Built-ins are lazy and are the default. */
+export type GltfCompressionDecoderPolicy = 'builtin' | 'host-only';
 
 const SUPPORTED_REQUIRED_EXTENSIONS = new Set([
   'KHR_draco_mesh_compression',
@@ -175,6 +222,7 @@ const SUPPORTED_REQUIRED_EXTENSIONS = new Set([
   'KHR_materials_variants',
   'KHR_materials_pbrSpecularGlossiness',
   'KHR_animation_pointer',
+  'KHR_node_visibility',
   // Accessor unpacking already converts BYTE/SHORT normalized attributes to
   // float32, which is the representation contract KHR_mesh_quantization needs.
   'KHR_mesh_quantization',
@@ -183,6 +231,12 @@ const SUPPORTED_REQUIRED_EXTENSIONS = new Set([
 ]);
 
 export interface GltfToSceneOptions {
+  /**
+   * Import-wide memory and concurrency ceilings. A value of 0 disables an
+   * individual byte/pixel ceiling; operation concurrency must remain positive.
+   */
+  readonly resourceLimits?: GltfImportResourceLimits;
+
   /**
    * Pre-loaded buffer data for .gltf files with external buffer URIs.
    * Key = buffer index (0-based), value = the loaded ArrayBuffer.
@@ -251,24 +305,24 @@ export interface GltfToSceneOptions {
   readonly sceneIndex?: number;
 
   /**
-   * Host-supplied Draco decode hook for `KHR_draco_mesh_compression`.
-   *
-   * The adapter bundles NO decoder; wire one from `draco3d` /
-   * `DracoDecoderModule` (see README "Compressed geometry"). Receives the
+   * Optional host override for the lazy built-in
+   * `KHR_draco_mesh_compression` decoder. Receives the
    * compressed blob plus the extension's semantic → Draco-attribute-unique-id
-   * map; must return decoded typed arrays whose counts/types match the
-   * primitive's declared accessors (which per spec describe the decoded
+   * map. Its optional third context argument supplies the declared schema for
+   * each Draco-owned accessor. The hook must return decoded typed arrays whose
+   * counts/types match those accessors (which per spec describe the decoded
    * data — the adapter then applies its standard accessor conversion,
    * including `normalized` handling). May be sync or async.
    *
-   * Without this hook: primitives with uncompressed fallback accessors import
-   * from the fallback (warn); otherwise the primitive is skipped (warn), or
-   * an Error is thrown when the extension is in `extensionsRequired`.
+   * With `compressionDecoderPolicy: 'host-only'` and no hook, optional
+   * primitives use fully validated uncompressed fallbacks when available;
+   * required or fallback-free compressed geometry fails closed.
    */
   readonly dracoDecode?: DracoDecodeFn;
 
   /**
-   * Host-supplied meshopt decode hook for `EXT_meshopt_compression`.
+   * Optional host override for the lazy built-in
+   * `EXT/KHR_meshopt_compression` decoder.
    *
    * Mirrors `MeshoptDecoder.decodeGltfBuffer` from `meshoptimizer` (see README
    * "Compressed geometry"): receives the compressed bytes plus the extension's
@@ -277,13 +331,19 @@ export interface GltfToSceneOptions {
    * resolution, so geometry, animation and image consumers all transparently
    * see decompressed data. May be sync or async.
    *
-   * Without this hook: bufferViews whose underlying buffer is a real (non
-   * `fallback: true`) uncompressed fallback are read directly (warn);
-   * otherwise dependent accessors fail and their primitives are skipped
-   * (warn), or an Error is thrown when the extension is in
-   * `extensionsRequired`.
+   * With `compressionDecoderPolicy: 'host-only'` and no hook, optional
+   * bufferViews use validated fallback bytes when available;
+   * required or fallback-free compressed data fails closed.
    */
   readonly meshoptDecode?: MeshoptDecodeFn;
+
+  /**
+   * Selects whether missing compression hooks fall back to the adapter's lazy
+   * built-in Draco/meshoptimizer decoders. Defaults to `builtin`. Use
+   * `host-only` only when the host deliberately controls codec availability;
+   * explicit `dracoDecode` / `meshoptDecode` hooks always take precedence.
+   */
+  readonly compressionDecoderPolicy?: GltfCompressionDecoderPolicy;
 
   /**
    * Half-width, in asset units, for generated mesh fallback geometry used when
@@ -361,6 +421,19 @@ export interface GltfToSceneResult {
    * instance matrices when a node or ancestor animates.
    */
   readonly instancingBindings?: ReadonlyArray<GltfInstancingBinding>;
+  /**
+   * Punctual-emitter provenance. The scene controller uses this to recompute
+   * point/spot positions and spot/directional directions when a light node or
+   * any ancestor is animated.
+   */
+  readonly punctualEmitterBindings?: ReadonlyArray<GltfPunctualEmitterBinding>;
+  /**
+   * Complete imported visual-object inventory before KHR_node_visibility is
+   * applied. Hidden objects are absent from `scene`, but the controller retains
+   * these snapshots so an animated visibility pointer can restore them.
+   */
+  readonly nodeVisibilityPrimitives?: ReadonlyArray<ScenePrimitive>;
+  readonly nodeVisibilityEmitters?: ReadonlyArray<SceneEmitter>;
   /** Non-fatal issues encountered during conversion. Inspect these for skipped
    *  primitives, unsupported extensions, missing buffers, sparse patches, etc. */
   readonly warnings: string[];
@@ -390,6 +463,7 @@ export interface GltfMaterialVariantPrimitivePatch {
   readonly droppedTextureFields?: readonly MaterialTextureRefField[];
   readonly uvs?: Float32Array | undefined;
   readonly uv1?: Float32Array | undefined;
+  readonly uvSets?: ReadonlyArray<Float32Array | undefined> | undefined;
   readonly tangents?: Float32Array | undefined;
 }
 
@@ -403,11 +477,18 @@ export interface GltfInstancingBinding {
   readonly nodeIndex: number;
   readonly localInstanceTransforms: ReadonlyArray<Mat4>;
   /**
-   * Present when EXT_mesh_gpu_instancing was fallback-expanded into one
-   * ordinary primitive per authored instance because the primitive also needs
-   * skin/morph state.
+   * Rest-pose deformation source for an instanced skinned or morphed mesh.
+   * The rendered scene primitive remains one real `InstancedMeshPrimitive`;
+   * `GltfSceneController` CPU-solves this shared vertex stream once per pose
+   * and patches that stream together with the complete instance array.
    */
-  readonly expandedPrimitiveInstanceIndex?: number;
+  readonly deformationSource?: SkinnedMeshPrimitive;
+}
+
+export interface GltfPunctualEmitterBinding {
+  readonly emitterId: string;
+  readonly nodeIndex: number;
+  readonly lightIndex: number;
 }
 
 export type GltfImportDiagnosticCode =
@@ -418,13 +499,14 @@ export type GltfImportDiagnosticCode =
   | GltfCompressionDiagnosticCode
   | 'unsupported-version'
   | 'unsupported-required-extension'
+  | 'invalid-camera'
   | 'ignored-camera'
-  | 'double-sided-material'
   | 'generated-tangents'
   | 'generated-flat-normals'
   | 'unreadable-normal'
   | 'unreadable-optional-attribute'
   | 'missing-tangent-texcoord'
+  | 'missing-material-texcoord'
   | 'tangent-generation-failed'
   | 'skin-rest-pose'
   | 'singular-skin-transform'
@@ -437,10 +519,8 @@ export type GltfImportDiagnosticCode =
   | 'scene-not-found'
   | 'ignored-gpu-instancing'
   | 'ignored-gpu-instancing-attribute'
-  | 'fallback-expanded-gpu-instancing'
   | 'unsupported-primitive-mode'
   | 'fallback-generated-primitive-mode'
-  | 'unresolved-compression'
   | 'missing-position'
   | 'unreadable-position'
   | 'unreadable-indices'
@@ -458,7 +538,6 @@ export type GltfImportDiagnosticCode =
   | 'ignored-morph-target-attribute'
   | 'invalid-morph-target-delta-length'
   | 'morph-weight-count-mismatch'
-  | 'morph-identity-skin-promotion'
   | 'missing-punctual-light'
   | 'unsupported-punctual-light-type';
 
@@ -479,6 +558,20 @@ export class GltfImportError extends Error {
   }
 }
 
+function diagnosticChainWithTerminal(
+  diagnostics: readonly GltfImportDiagnostic[],
+  terminal: GltfImportDiagnostic,
+): readonly GltfImportDiagnostic[] {
+  const alreadyRecorded = diagnostics.some(
+    (diagnostic) =>
+      diagnostic === terminal ||
+      (diagnostic.code === terminal.code &&
+        diagnostic.path === terminal.path &&
+        diagnostic.message === terminal.message),
+  );
+  return alreadyRecorded ? [...diagnostics] : [...diagnostics, terminal];
+}
+
 function emitImportDiagnostic(
   warnings: string[],
   diagnostics: GltfImportDiagnostic[],
@@ -486,6 +579,268 @@ function emitImportDiagnostic(
 ): void {
   diagnostics.push(diagnostic);
   warnings.push(diagnostic.message);
+}
+
+function throwImportBoundaryError(
+  code: GltfImportDiagnosticCode,
+  path: string,
+  message: string,
+): never {
+  throw new GltfImportError(message, [{ severity: 'error', code, path, message }]);
+}
+
+function parseCanonicalSetSemantic(
+  semantic: string,
+  prefix: 'TEXCOORD' | 'COLOR' | 'JOINTS' | 'WEIGHTS',
+  path: string,
+  code: 'ignored-primitive-attribute' | 'ignored-morph-target-attribute',
+): number | undefined {
+  if (semantic !== prefix && !semantic.startsWith(`${prefix}_`)) return undefined;
+  const match = new RegExp(`^${prefix}_(\\d+)$`, 'u').exec(semantic);
+  if (match == null) {
+    throwImportBoundaryError(
+      code,
+      path,
+      `[vitrum/gltf-adapter] Reserved semantic "${semantic}" must use the ` +
+        `${prefix}_<non-negative canonical integer> form.`,
+    );
+  }
+  const suffix = match[1]!;
+  const index = Number(suffix);
+  if (!Number.isSafeInteger(index)) {
+    throwImportBoundaryError(
+      code,
+      path,
+      `[vitrum/gltf-adapter] Reserved semantic "${semantic}" exceeds the supported non-negative safe-integer range.`,
+    );
+  }
+  const canonical = `${prefix}_${index}`;
+  if (semantic !== canonical) {
+    throwImportBoundaryError(
+      code,
+      path,
+      `[vitrum/gltf-adapter] Reserved semantic "${semantic}" is not canonical; use "${canonical}".`,
+    );
+  }
+  return index;
+}
+
+const PRIMITIVE_ATTRIBUTE_SEMANTICS = new Set(['POSITION', 'NORMAL', 'TANGENT']);
+const MORPH_TARGET_ATTRIBUTE_SEMANTICS = new Set(['POSITION', 'NORMAL', 'TANGENT']);
+const INDEXED_ATTRIBUTE_SEMANTIC_PREFIXES = [
+  'TEXCOORD',
+  'COLOR',
+  'JOINTS',
+  'WEIGHTS',
+] as const;
+
+function validatePrimitiveAttributeSemantic(semantic: string, path: string): void {
+  if (PRIMITIVE_ATTRIBUTE_SEMANTICS.has(semantic) || semantic.startsWith('_')) return;
+  for (const prefix of INDEXED_ATTRIBUTE_SEMANTIC_PREFIXES) {
+    if (
+      parseCanonicalSetSemantic(
+        semantic,
+        prefix,
+        path,
+        'ignored-primitive-attribute',
+      ) !== undefined
+    ) {
+      return;
+    }
+  }
+  throwImportBoundaryError(
+    'ignored-primitive-attribute',
+    path,
+    `[vitrum/gltf-adapter] Unknown primitive attribute "${semantic}" cannot be represented exactly.`,
+  );
+}
+
+function validateMorphTargetAttributeSemantic(semantic: string, path: string): void {
+  if (MORPH_TARGET_ATTRIBUTE_SEMANTICS.has(semantic) || semantic.startsWith('_')) return;
+  for (const prefix of INDEXED_ATTRIBUTE_SEMANTIC_PREFIXES) {
+    const setIndex = parseCanonicalSetSemantic(
+      semantic,
+      prefix,
+      path,
+      'ignored-morph-target-attribute',
+    );
+    if (setIndex === undefined) continue;
+    if (prefix === 'TEXCOORD' || prefix === 'COLOR') return;
+    break;
+  }
+  throwImportBoundaryError(
+    'ignored-morph-target-attribute',
+    path,
+    `[vitrum/gltf-adapter] Unknown morph-target attribute "${semantic}" cannot be represented exactly.`,
+  );
+}
+
+function validateReachablePrimitiveSemantics(
+  gltf: GltfJson,
+  reachability: GltfSceneReachability,
+): void {
+  for (const [meshIndex, mesh] of (gltf.meshes ?? []).entries()) {
+    for (const [primitiveIndex, primitive] of mesh.primitives.entries()) {
+      if (!reachability.primitiveKeys.has(gltfPrimitiveKey(meshIndex, primitiveIndex))) {
+        continue;
+      }
+      const primitivePath = `meshes[${meshIndex}].primitives[${primitiveIndex}]`;
+      for (const semantic of Object.keys(primitive.attributes ?? {})) {
+        validatePrimitiveAttributeSemantic(
+          semantic,
+          `${primitivePath}.attributes.${semantic}`,
+        );
+      }
+      for (const [targetIndex, target] of (primitive.targets ?? []).entries()) {
+        for (const semantic of Object.keys(target)) {
+          validateMorphTargetAttributeSemantic(
+            semantic,
+            `${primitivePath}.targets[${targetIndex}].${semantic}`,
+          );
+        }
+      }
+    }
+  }
+}
+
+function rethrowResourceLimitError(error: unknown): void {
+  if (error instanceof GltfResourceLimitError) throw error;
+}
+
+function describeImportBoundaryValue(value: unknown): string {
+  return value !== null && typeof value === 'object'
+    ? Object.prototype.toString.call(value)
+    : String(value);
+}
+
+interface ParsedGltfVersion {
+  readonly major: number;
+  readonly minor: number;
+  readonly source: string;
+}
+
+function parseGltfVersion(value: unknown, path: 'asset.version' | 'asset.minVersion'): ParsedGltfVersion {
+  if (typeof value !== 'string') {
+    throwImportBoundaryError(
+      'unsupported-version',
+      path,
+      `[vitrum/gltf-adapter] glTF ${path} must use the "<major>.<minor>" string form; received ${JSON.stringify(value)}.`,
+    );
+  }
+  const match = /^(\d+)\.(\d+)$/u.exec(value);
+  const major = match === null ? Number.NaN : Number(match[1]);
+  const minor = match === null ? Number.NaN : Number(match[2]);
+  if (!Number.isSafeInteger(major) || !Number.isSafeInteger(minor)) {
+    throwImportBoundaryError(
+      'unsupported-version',
+      path,
+      `[vitrum/gltf-adapter] glTF ${path} must use allocation-safe integer major/minor components; received ${JSON.stringify(value)}.`,
+    );
+  }
+  return { major, minor, source: value };
+}
+
+function compareGltfVersions(a: ParsedGltfVersion, b: ParsedGltfVersion): number {
+  if (a.major !== b.major) return a.major < b.major ? -1 : 1;
+  if (a.minor !== b.minor) return a.minor < b.minor ? -1 : 1;
+  return 0;
+}
+
+/** @internal Shared by the low-level converter and the high-level resource loader. */
+export function assertSupportedGltfVersion(gltf: GltfJson): void {
+  const asset = gltf.asset as
+    | { readonly version?: unknown; readonly minVersion?: unknown }
+    | undefined;
+  const implemented: ParsedGltfVersion = { major: 2, minor: 0, source: '2.0' };
+  const version = parseGltfVersion(asset?.version, 'asset.version');
+  if (version.major !== implemented.major) {
+    throwImportBoundaryError(
+      'unsupported-version',
+      'asset.version',
+      `[vitrum/gltf-adapter] glTF asset.version ${JSON.stringify(version.source)} targets unsupported major version ${version.major}; this adapter implements glTF 2.x.`,
+    );
+  }
+  if (asset?.minVersion === undefined) return;
+
+  const minVersion = parseGltfVersion(asset.minVersion, 'asset.minVersion');
+  if (compareGltfVersions(minVersion, version) > 0) {
+    throwImportBoundaryError(
+      'unsupported-version',
+      'asset.minVersion',
+      `[vitrum/gltf-adapter] glTF asset.minVersion ${JSON.stringify(minVersion.source)} exceeds asset.version ${JSON.stringify(version.source)}.`,
+    );
+  }
+  if (compareGltfVersions(minVersion, implemented) > 0) {
+    throwImportBoundaryError(
+      'unsupported-version',
+      'asset.minVersion',
+      `[vitrum/gltf-adapter] glTF asset.minVersion ${JSON.stringify(minVersion.source)} requires features newer than this adapter's glTF 2.0 implementation.`,
+    );
+  }
+}
+
+function resolveValidatedSceneIndex(
+  gltf: GltfJson,
+  requestedSceneIndex: number | undefined,
+): number {
+  const scenesValue: unknown = gltf.scenes;
+  if (scenesValue !== undefined && !Array.isArray(scenesValue)) {
+    throwImportBoundaryError(
+      'scene-not-found',
+      'scenes',
+      '[vitrum/gltf-adapter] glTF scenes must be an array when supplied.',
+    );
+  }
+  const scenes = scenesValue as GltfJson['scenes'];
+  const declaredDefault: unknown = gltf.scene;
+  if (declaredDefault !== undefined) {
+    if (!Number.isSafeInteger(declaredDefault) || (declaredDefault as number) < 0) {
+      throwImportBoundaryError(
+        'scene-not-found',
+        'scene',
+        `[vitrum/gltf-adapter] glTF scene must be a non-negative safe integer; received ${describeImportBoundaryValue(declaredDefault)}.`,
+      );
+    }
+    const defaultSceneIndex = declaredDefault as number;
+    if (scenes == null || scenes[defaultSceneIndex] == null) {
+      throwImportBoundaryError(
+        'scene-not-found',
+        'scene',
+        `[vitrum/gltf-adapter] glTF scene points at nonexistent scenes[${defaultSceneIndex}].`,
+      );
+    }
+  }
+  if (requestedSceneIndex !== undefined) {
+    if (!Number.isSafeInteger(requestedSceneIndex) || requestedSceneIndex < 0) {
+      throwImportBoundaryError(
+        'scene-not-found',
+        'options.sceneIndex',
+        `[vitrum/gltf-adapter] opts.sceneIndex must be a non-negative safe integer; received ${String(requestedSceneIndex)}.`,
+      );
+    }
+    if (scenes == null || scenes[requestedSceneIndex] == null) {
+      throwImportBoundaryError(
+        'scene-not-found',
+        'options.sceneIndex',
+        `[vitrum/gltf-adapter] opts.sceneIndex ${requestedSceneIndex} does not identify an existing glTF scene.`,
+      );
+    }
+    return requestedSceneIndex;
+  }
+  if (declaredDefault !== undefined) return declaredDefault as number;
+  if (scenes !== undefined) {
+    if (scenes[0] == null) {
+      throwImportBoundaryError(
+        'scene-not-found',
+        'scenes[0]',
+        '[vitrum/gltf-adapter] glTF declares a scenes array but has no valid implicit scene 0.',
+      );
+    }
+    return 0;
+  }
+  // glTF permits assets without scenes. With no explicit/default selection,
+  // this legitimately maps to an empty core Scene.
+  return 0;
 }
 
 /**
@@ -512,6 +867,7 @@ interface BuildPrimitiveContext {
   readonly materialBindings: GltfMaterialBinding[];
   readonly instancingBindings: GltfInstancingBinding[];
   readonly primId: { value: number };
+  readonly resourceLedger: ImportResourceLedger;
 }
 
 interface BuildPrimitiveNodeContext {
@@ -525,7 +881,6 @@ interface BuildPrimitiveNodeContext {
   readonly bones: Float32Array | undefined;
   readonly boneInverses: Float32Array | undefined;
   readonly instanceTransforms: MeshGpuInstancingTransforms | undefined;
-  readonly instanceFallbackWarned: { value: boolean };
 }
 
 // Section-8 inner loop body (D15-4): builds/pushes the ScenePrimitive(s) for one
@@ -533,7 +888,7 @@ interface BuildPrimitiveNodeContext {
 // loop; the primitive-loop-level `continue;` statements became `return;` (nested
 // skin-influence-set-loop `continue;` are preserved). All previously outer-scope
 // state is threaded via ctx (function-scope constants + accumulators) and nodeCtx
-// (per-node state); `primIdCounter` and `instanceFallbackWarned` are mutable holders.
+// (per-node state); `primIdCounter` is a mutable holder.
 function buildPrimitiveFromMeshPrimitive(
   ctx: BuildPrimitiveContext,
   nodeCtx: BuildPrimitiveNodeContext,
@@ -541,11 +896,32 @@ function buildPrimitiveFromMeshPrimitive(
   primitiveIndex: number,
 ): void {
   const {
-    gltf, buffers, warnings, diagnostics, onAccessorDiagnostic, coreMaterials,
-    opts, selectedMaterialVariant, primitives, animationTargets,
-    materialVariantBindings, materialBindings, instancingBindings,
+    gltf,
+    buffers,
+    warnings,
+    diagnostics,
+    onAccessorDiagnostic,
+    coreMaterials,
+    opts,
+    selectedMaterialVariant,
+    primitives,
+    animationTargets,
+    materialVariantBindings,
+    materialBindings,
+    instancingBindings,
+    resourceLedger,
   } = ctx;
-  const { node, nodeIdx, meshIndex, mesh, worldMat, skinData, bones, boneInverses, instanceTransforms } = nodeCtx;
+  const {
+    node,
+    nodeIdx,
+    meshIndex,
+    mesh,
+    worldMat,
+    skinData,
+    bones,
+    boneInverses,
+    instanceTransforms,
+  } = nodeCtx;
   const primitivePath = `meshes[${node.mesh}].primitives[${primitiveIndex}]`;
   // Mode check — native triangle modes plus deterministic generated-mesh
   // fallback for point/line modes. Unknown modes are still skipped.
@@ -556,62 +932,63 @@ function buildPrimitiveFromMeshPrimitive(
     mode !== GLTF_MODE_TRIANGLE_FAN &&
     !isPointLineMode(mode)
   ) {
-    emitImportDiagnostic(warnings, diagnostics, {
-      severity: 'warning',
-      code: 'unsupported-primitive-mode',
-      path: `meshes[${node.mesh}].primitives[${primitiveIndex}].mode`,
-      message:
-        `[vitrum/gltf-adapter] Mesh "${mesh.name ?? node.mesh}" primitive has unsupported ` +
-        `mode ${mode} (${pointLineModeName(mode)}). Supported modes are POINTS (0), ` +
-        'LINES (1), LINE_LOOP (2), LINE_STRIP (3), TRIANGLES (4), ' +
-        'TRIANGLE_STRIP (5) and TRIANGLE_FAN (6). This primitive is SKIPPED.',
-    });
-    return;
-  }
-
-  // Compression left UNRESOLVED by resolveCompression (no hook + no spec
-  // fallback, or the decode hook failed) — skip honestly.
-  const primExtKeys = Object.keys(prim.extensions ?? {});
-  if (primExtKeys.includes('KHR_draco_mesh_compression')) {
-    emitImportDiagnostic(warnings, diagnostics, {
-      severity: 'warning',
-      code: 'unresolved-compression',
-      path: `meshes[${node.mesh}].primitives[${primitiveIndex}].extensions.KHR_draco_mesh_compression`,
-      message:
-        `[vitrum/gltf-adapter] Mesh "${mesh.name ?? node.mesh}" primitive has unresolved ` +
-        'KHR_draco_mesh_compression geometry (no opts.dracoDecode hook / decode failed, ' +
-        'and no uncompressed fallback). Primitive SKIPPED.',
-    });
-    return;
+    throwImportBoundaryError(
+      'unsupported-primitive-mode',
+      `${primitivePath}.mode`,
+      `[vitrum/gltf-adapter] Mesh "${mesh.name ?? node.mesh}" primitive has unsupported mode ${String(mode)}.`,
+    );
   }
 
   // ── Unpack attributes ──────────────────────────────────────────────────
   const posIdx = prim.attributes['POSITION'];
   if (posIdx === undefined) {
-    emitImportDiagnostic(warnings, diagnostics, {
-      severity: 'warning',
-      code: 'missing-position',
-      path: `meshes[${node.mesh}].primitives[${primitiveIndex}].attributes.POSITION`,
-      message:
-        `[vitrum/gltf-adapter] Mesh "${mesh.name ?? node.mesh}" primitive has no POSITION ` +
-        'attribute. Primitive SKIPPED.',
-    });
-    return;
+    throwImportBoundaryError(
+      'missing-position',
+      `${primitivePath}.attributes.POSITION`,
+      `[vitrum/gltf-adapter] Mesh "${mesh.name ?? node.mesh}" primitive has no POSITION attribute.`,
+    );
+  }
+
+  const positionAccessor = gltf.accessors?.[posIdx];
+  const meshQuantization = _usesMeshQuantization(gltf);
+  if (
+    positionAccessor === undefined ||
+    positionAccessor.type !== 'VEC3' ||
+    positionAccessor.count <= 0 ||
+    !_validPositionEncoding(positionAccessor, meshQuantization)
+  ) {
+    throwImportBoundaryError(
+      'invalid-primitive-attribute',
+      `${primitivePath}.attributes.POSITION`,
+      `[vitrum/gltf-adapter] Mesh "${mesh.name ?? node.mesh}" POSITION accessor ${posIdx} must be a non-empty VEC3/FLOAT accessor, or a BYTE/UNSIGNED_BYTE/SHORT/UNSIGNED_SHORT accessor when KHR_mesh_quantization is declared.`,
+    );
   }
 
   let positions: Float32Array;
   try {
-    positions = unpackAccessorFloat(gltf, buffers, posIdx, warnings, onAccessorDiagnostic);
+    positions = unpackAccessorFloat(
+      gltf,
+      buffers,
+      posIdx,
+      warnings,
+      onAccessorDiagnostic,
+      resourceLedger,
+    );
   } catch (e) {
-    emitImportDiagnostic(warnings, diagnostics, {
-      severity: 'warning',
-      code: 'unreadable-position',
-      path: `meshes[${node.mesh}].primitives[${primitiveIndex}].attributes.POSITION`,
-      message:
-        `[vitrum/gltf-adapter] Failed to read POSITION for mesh "${mesh.name ?? node.mesh}": ` +
-        String(e) + ' Primitive SKIPPED.',
-    });
-    return;
+    rethrowResourceLimitError(e);
+    throwImportBoundaryError(
+      'unreadable-position',
+      `${primitivePath}.attributes.POSITION`,
+      `[vitrum/gltf-adapter] Failed to read POSITION for mesh "${mesh.name ?? node.mesh}": ${String(e)}`,
+    );
+  }
+
+  if (positions.some((value) => !Number.isFinite(value))) {
+    throwImportBoundaryError(
+      'invalid-primitive-attribute',
+      `${primitivePath}.attributes.POSITION`,
+      `[vitrum/gltf-adapter] Mesh "${mesh.name ?? node.mesh}" POSITION accessor ${posIdx} contains non-finite values.`,
+    );
   }
 
   const vertexCount = Math.floor(positions.length / 3);
@@ -620,17 +997,34 @@ function buildPrimitiveFromMeshPrimitive(
   let indices: Uint32Array | undefined;
   if (prim.indices !== undefined) {
     try {
-      indices = unpackAccessorUint32(gltf, buffers, prim.indices, null, onAccessorDiagnostic);
+      indices = unpackAccessorUint32(
+        gltf,
+        buffers,
+        prim.indices,
+        null,
+        onAccessorDiagnostic,
+        resourceLedger,
+      );
     } catch (e) {
-      emitImportDiagnostic(warnings, diagnostics, {
-        severity: 'warning',
-        code: 'unreadable-indices',
-        path: `meshes[${node.mesh}].primitives[${primitiveIndex}].indices`,
-        message:
-          `[vitrum/gltf-adapter] Failed to read indices for mesh "${mesh.name ?? node.mesh}": ` +
-          String(e) + ' Primitive SKIPPED.',
-      });
-      return;
+      rethrowResourceLimitError(e);
+      throwImportBoundaryError(
+        'unreadable-indices',
+        `${primitivePath}.indices`,
+        `[vitrum/gltf-adapter] Failed to read indices for mesh "${mesh.name ?? node.mesh}": ${String(e)}`,
+      );
+    }
+  }
+
+  if (indices !== undefined) {
+    for (let i = 0; i < indices.length; i++) {
+      const vertexIndex = indices[i]!;
+      if (vertexIndex >= vertexCount) {
+        throwImportBoundaryError(
+          'invalid-primitive-attribute',
+          `${primitivePath}.indices`,
+          `[vitrum/gltf-adapter] Mesh "${mesh.name ?? node.mesh}" index accessor ${prim.indices} contains vertex index ${vertexIndex} at element ${i}, outside POSITION count ${vertexCount}.`,
+        );
+      }
     }
   }
 
@@ -638,8 +1032,19 @@ function buildPrimitiveFromMeshPrimitive(
   // Works for indexed and non-indexed inputs; degenerate (repeated-index)
   // triangles are dropped per glTF §3.7.2.1 winding rules.
   if (mode === GLTF_MODE_TRIANGLE_STRIP || mode === GLTF_MODE_TRIANGLE_FAN) {
-    const src = indices ?? sequentialIndices(positions.length / 3);
-    const tris = triangulateTopology(src, mode);
+    const src =
+      indices ??
+      sequentialIndices(
+        positions.length / 3,
+        resourceLedger,
+        `${primitivePath} sequential topology`,
+      );
+    const tris = triangulateTopology(
+      src,
+      mode,
+      resourceLedger,
+      `${primitivePath} triangulated topology`,
+    );
     if (tris.length === 0) {
       emitImportDiagnostic(warnings, diagnostics, {
         severity: 'warning',
@@ -655,21 +1060,49 @@ function buildPrimitiveFromMeshPrimitive(
     indices = tris;
   }
 
+  if (mode === GLTF_PRIMITIVE_MODE_TRIANGLES && (indices?.length ?? vertexCount) % 3 !== 0) {
+    throwImportBoundaryError(
+      'invalid-primitive-attribute',
+      primitivePath,
+      `[vitrum/gltf-adapter] Mesh "${mesh.name ?? node.mesh}" TRIANGLES primitive has ${indices?.length ?? vertexCount} vertices/indices; the count must be divisible by 3.`,
+    );
+  }
+
   const usesPointLineFallback = isPointLineMode(mode);
 
   // Normals — generate flat normals if absent or unreadable.
   // Point/line fallback generates its own mesh normals below, so reporting
   // normal generation for the discarded source topology would be misleading.
   const normIdx = prim.attributes['NORMAL'];
-  const normAttempt = usesPointLineFallback
-    ? undefined
-    : _tryUnpackFloat(
-        gltf, buffers, normIdx,
-        `NORMAL for mesh "${mesh.name ?? node.mesh}"`, warnings, onAccessorDiagnostic,
-        diagnostics,
-        'unreadable-normal',
-        `${primitivePath}.attributes.NORMAL`,
-      );
+  const normalAccessor = normIdx === undefined ? undefined : gltf.accessors?.[normIdx];
+  const validNormalAccessor =
+    normIdx === undefined ||
+    (normalAccessor !== undefined &&
+      normalAccessor.type === 'VEC3' &&
+      normalAccessor.count === vertexCount &&
+      _validNormalEncoding(normalAccessor, meshQuantization));
+  if (!usesPointLineFallback && !validNormalAccessor) {
+    throwImportBoundaryError(
+      'invalid-primitive-attribute',
+      `${primitivePath}.attributes.NORMAL`,
+      `[vitrum/gltf-adapter] Mesh "${mesh.name ?? node.mesh}" NORMAL accessor ${normIdx} must be VEC3 with count ${vertexCount} and a valid FLOAT or KHR_mesh_quantization encoding.`,
+    );
+  }
+  const normAttempt =
+    usesPointLineFallback || !validNormalAccessor
+      ? undefined
+      : _tryUnpackFloat(
+          gltf,
+          buffers,
+          normIdx,
+          `NORMAL for mesh "${mesh.name ?? node.mesh}"`,
+          warnings,
+          onAccessorDiagnostic,
+          diagnostics,
+          'unreadable-normal',
+          `${primitivePath}.attributes.NORMAL`,
+          resourceLedger,
+        );
   if (!usesPointLineFallback && normAttempt === undefined && normIdx === undefined) {
     emitImportDiagnostic(warnings, diagnostics, {
       severity: 'warning',
@@ -677,21 +1110,18 @@ function buildPrimitiveFromMeshPrimitive(
       path: `${primitivePath}.attributes.NORMAL`,
       message:
         `[vitrum/gltf-adapter] Mesh "${mesh.name ?? node.mesh}" has no NORMAL attribute. ` +
-        'Generating flat normals.',
-    });
-  } else if (!usesPointLineFallback && normAttempt === undefined) {
-    emitImportDiagnostic(warnings, diagnostics, {
-      severity: 'warning',
-      code: 'unreadable-normal',
-      path: `${primitivePath}.attributes.NORMAL`,
-      message:
-        `[vitrum/gltf-adapter] NORMAL unreadable for mesh "${mesh.name ?? node.mesh}". ` +
-        'Generating flat normals.',
+        'Generating vertex normals (area-weighted for indexed geometry).',
     });
   }
   let normals: Float32Array = usesPointLineFallback
-    ? new Float32Array(positions.length)
-    : normAttempt ?? generateFlatNormals(positions, indices);
+    ? new Float32Array(0)
+    : (normAttempt ??
+      generateVertexNormals(
+        positions,
+        indices,
+        resourceLedger,
+        `${primitivePath} generated normals`,
+      ));
 
   // UVs — optional, but glTF TEXCOORD_N accessors must be VEC2.
   const uv0Idx = prim.attributes['TEXCOORD_0'];
@@ -707,11 +1137,16 @@ function buildPrimitiveFromMeshPrimitive(
     diagnostics,
   )
     ? _tryUnpackFloat(
-        gltf, buffers, uv0Idx,
-        `TEXCOORD_0 for "${mesh.name ?? node.mesh}"`, warnings, onAccessorDiagnostic,
+        gltf,
+        buffers,
+        uv0Idx,
+        `TEXCOORD_0 for "${mesh.name ?? node.mesh}"`,
+        warnings,
+        onAccessorDiagnostic,
         diagnostics,
         'unreadable-optional-attribute',
         `${primitivePath}.attributes.TEXCOORD_0`,
+        resourceLedger,
       )
     : undefined;
   const uv1Idx = prim.attributes['TEXCOORD_1'];
@@ -727,15 +1162,59 @@ function buildPrimitiveFromMeshPrimitive(
     diagnostics,
   )
     ? _tryUnpackFloat(
-        gltf, buffers, uv1Idx,
-        `TEXCOORD_1 for "${mesh.name ?? node.mesh}"`, warnings, onAccessorDiagnostic,
+        gltf,
+        buffers,
+        uv1Idx,
+        `TEXCOORD_1 for "${mesh.name ?? node.mesh}"`,
+        warnings,
+        onAccessorDiagnostic,
         diagnostics,
         'unreadable-optional-attribute',
         `${primitivePath}.attributes.TEXCOORD_1`,
+        resourceLedger,
       )
     : undefined;
   let primitiveUvs = uvs;
   let primitiveUv1 = uv1;
+  let uvSets: Array<Float32Array | undefined> = [];
+  if (uvs !== undefined) uvSets[0] = uvs;
+  if (uv1 !== undefined) uvSets[1] = uv1;
+  for (const attrName of Object.keys(prim.attributes).sort()) {
+    const texCoord = parseCanonicalSetSemantic(
+      attrName,
+      'TEXCOORD',
+      `${primitivePath}.attributes.${attrName}`,
+      'ignored-primitive-attribute',
+    );
+    if (texCoord === undefined) continue;
+    if (texCoord < 2) continue;
+    const accessorIndex = prim.attributes[attrName];
+    uvSets[texCoord] = _validatePrimitiveAttributeAccessor(
+      gltf,
+      accessorIndex,
+      ['VEC2'],
+      vertexCount,
+      attrName,
+      `${mesh.name ?? node.mesh}`,
+      `${primitivePath}.attributes.${attrName}`,
+      warnings,
+      diagnostics,
+    )
+      ? _tryUnpackFloat(
+          gltf,
+          buffers,
+          accessorIndex,
+          `${attrName} for "${mesh.name ?? node.mesh}"`,
+          warnings,
+          onAccessorDiagnostic,
+          diagnostics,
+          'unreadable-optional-attribute',
+          `${primitivePath}.attributes.${attrName}`,
+          resourceLedger,
+        )
+      : undefined;
+  }
+  let primitiveUvSets = uvSets;
 
   // Tangents — optional (xyzw per vertex).
   const tangentIdx = prim.attributes['TANGENT'];
@@ -751,15 +1230,21 @@ function buildPrimitiveFromMeshPrimitive(
     diagnostics,
   )
     ? _tryUnpackFloat(
-        gltf, buffers, tangentIdx,
-        `TANGENT for "${mesh.name ?? node.mesh}"`, warnings, onAccessorDiagnostic,
+        gltf,
+        buffers,
+        tangentIdx,
+        `TANGENT for "${mesh.name ?? node.mesh}"`,
+        warnings,
+        onAccessorDiagnostic,
         diagnostics,
         'unreadable-optional-attribute',
         `${primitivePath}.attributes.TANGENT`,
+        resourceLedger,
       )
     : undefined;
 
-  // Vertex colors — optional (COLOR_0).
+  // Vertex colors — preserve every COLOR_n lane. COLOR_0 is also exposed
+  // through the source-compatible `colors` alias in the core Scene contract.
   const color0Idx = prim.attributes['COLOR_0'];
   let colors = _validatePrimitiveAttributeAccessor(
     gltf,
@@ -773,24 +1258,54 @@ function buildPrimitiveFromMeshPrimitive(
     diagnostics,
   )
     ? _tryUnpackFloat(
-        gltf, buffers, color0Idx,
-        `COLOR_0 for "${mesh.name ?? node.mesh}"`, warnings, onAccessorDiagnostic,
+        gltf,
+        buffers,
+        color0Idx,
+        `COLOR_0 for "${mesh.name ?? node.mesh}"`,
+        warnings,
+        onAccessorDiagnostic,
         diagnostics,
         'unreadable-optional-attribute',
         `${primitivePath}.attributes.COLOR_0`,
+        resourceLedger,
       )
     : undefined;
+  let colorSets: Array<Float32Array | undefined> = [];
+  if (colors !== undefined) colorSets[0] = colors;
   for (const attrName of Object.keys(prim.attributes).sort()) {
-    if (/^COLOR_[1-9][0-9]*$/.test(attrName)) {
-      emitImportDiagnostic(warnings, diagnostics, {
-        severity: 'warning',
-        code: 'ignored-vertex-color-set',
-        path: `${primitivePath}.attributes.${attrName}`,
-        message:
-          `[vitrum/gltf-adapter] Mesh "${mesh.name ?? node.mesh}" primitive includes ${attrName}, ` +
-          'but the core Scene contract currently imports only COLOR_0. This secondary vertex-color set is ignored.',
-      });
-    }
+    const colorSet = parseCanonicalSetSemantic(
+      attrName,
+      'COLOR',
+      `${primitivePath}.attributes.${attrName}`,
+      'ignored-primitive-attribute',
+    );
+    if (colorSet === undefined) continue;
+    if (colorSet < 1) continue;
+    const accessorIndex = prim.attributes[attrName];
+    colorSets[colorSet] = _validatePrimitiveAttributeAccessor(
+      gltf,
+      accessorIndex,
+      ['VEC3', 'VEC4'],
+      vertexCount,
+      attrName,
+      `${mesh.name ?? node.mesh}`,
+      `${primitivePath}.attributes.${attrName}`,
+      warnings,
+      diagnostics,
+    )
+      ? _tryUnpackFloat(
+          gltf,
+          buffers,
+          accessorIndex,
+          `${attrName} for "${mesh.name ?? node.mesh}"`,
+          warnings,
+          onAccessorDiagnostic,
+          diagnostics,
+          'unreadable-optional-attribute',
+          `${primitivePath}.attributes.${attrName}`,
+          resourceLedger,
+        )
+      : undefined;
   }
 
   // ── Skinning attributes ────────────────────────────────────────────────
@@ -799,7 +1314,11 @@ function buildPrimitiveFromMeshPrimitive(
   // so strict one-call loading can reject the degradation before rendering.
   let skinIndices: Uint32Array | undefined;
   let skinWeights: Float32Array | undefined;
-  const skinInfluenceSetIndices = collectSkinInfluenceSetIndices(prim.attributes);
+  let skinInfluencesPerVertex: number | undefined;
+  const skinInfluenceSetIndices = collectSkinInfluenceSetIndices(
+    prim.attributes,
+    primitivePath,
+  );
   const jointsIdx = prim.attributes['JOINTS_0'];
   const weightsIdx = prim.attributes['WEIGHTS_0'];
   if (!skinData && skinInfluenceSetIndices.length > 0) {
@@ -808,9 +1327,10 @@ function buildPrimitiveFromMeshPrimitive(
     emitImportDiagnostic(warnings, diagnostics, {
       severity: 'warning',
       code: 'ignored-skin-attributes',
-      path: firstJoints !== undefined
-        ? `${primitivePath}.attributes.JOINTS_${firstSet}`
-        : `${primitivePath}.attributes.WEIGHTS_${firstSet}`,
+      path:
+        firstJoints !== undefined
+          ? `${primitivePath}.attributes.JOINTS_${firstSet}`
+          : `${primitivePath}.attributes.WEIGHTS_${firstSet}`,
       message:
         `[vitrum/gltf-adapter] Mesh "${mesh.name ?? node.mesh}" primitive includes ` +
         'JOINTS_N/WEIGHTS_N data, but the node does not bind a skin. ' +
@@ -820,130 +1340,176 @@ function buildPrimitiveFromMeshPrimitive(
   if (skinData && bones && boneInverses) {
     if (jointsIdx !== undefined && weightsIdx !== undefined) {
       const decodedSets: SkinInfluenceSet[] = [];
-      let primaryReadable = true;
       for (const setIndex of skinInfluenceSetIndices) {
         const setJointsIdx = prim.attributes[`JOINTS_${setIndex}`];
         const setWeightsIdx = prim.attributes[`WEIGHTS_${setIndex}`];
         if (setJointsIdx === undefined || setWeightsIdx === undefined) {
-          emitImportDiagnostic(warnings, diagnostics, {
-            severity: 'warning',
-            code: 'incomplete-skin-attributes',
-            path: `${primitivePath}.attributes.${setJointsIdx === undefined ? `JOINTS_${setIndex}` : `WEIGHTS_${setIndex}`}`,
-            message:
-              `[vitrum/gltf-adapter] Mesh "${mesh.name ?? node.mesh}" node binds a skin, ` +
-              `but influence set ${setIndex} does not provide both JOINTS_${setIndex} and WEIGHTS_${setIndex}. ` +
-              (setIndex === 0
-                ? 'Skinning is omitted and the primitive is imported as a static mesh.'
-                : 'That secondary influence set is ignored.'),
-          });
-          if (setIndex === 0) primaryReadable = false;
-          continue;
+          throwImportBoundaryError(
+            'incomplete-skin-attributes',
+            `${primitivePath}.attributes.${setJointsIdx === undefined ? `JOINTS_${setIndex}` : `WEIGHTS_${setIndex}`}`,
+            `[vitrum/gltf-adapter] Mesh "${mesh.name ?? node.mesh}" node binds a skin, but influence set ${setIndex} does not provide both JOINTS_${setIndex} and WEIGHTS_${setIndex}.`,
+          );
         }
 
-        let decodedJoints: Uint32Array | undefined;
-        let decodedWeights: Float32Array | undefined;
+        let decodedJoints: Uint32Array;
+        let decodedWeights: Float32Array;
         try {
-          decodedJoints = _unpackJoints(gltf, buffers, setJointsIdx, onAccessorDiagnostic, `JOINTS_${setIndex}`);
+          decodedJoints = _unpackJoints(
+            gltf,
+            buffers,
+            setJointsIdx,
+            onAccessorDiagnostic,
+            `JOINTS_${setIndex}`,
+            resourceLedger,
+          );
         } catch (e) {
-          emitImportDiagnostic(warnings, diagnostics, {
-            severity: 'warning',
-            code: 'unreadable-skin-joints',
-            path: `${primitivePath}.attributes.JOINTS_${setIndex}`,
-            message:
-              `[vitrum/gltf-adapter] Failed to read JOINTS_${setIndex} for "${mesh.name ?? node.mesh}": ` +
-              String(e) +
-              (setIndex === 0 ? '. Falling back to static mesh.' : '. Secondary influence set skipped.'),
-          });
-          if (setIndex === 0) primaryReadable = false;
+          rethrowResourceLimitError(e);
+          const message =
+            `[vitrum/gltf-adapter] Failed to read JOINTS_${setIndex} for ` +
+            `"${mesh.name ?? node.mesh}": ${String(e)}`;
+          throw new GltfImportError(
+            message,
+            diagnosticChainWithTerminal(diagnostics, {
+              severity: 'error',
+              code: 'unreadable-skin-joints',
+              path: `${primitivePath}.attributes.JOINTS_${setIndex}`,
+              message,
+            }),
+          );
         }
         try {
-          decodedWeights = unpackAccessorFloat(gltf, buffers, setWeightsIdx, warnings, onAccessorDiagnostic);
+          decodedWeights = unpackAccessorFloat(
+            gltf,
+            buffers,
+            setWeightsIdx,
+            warnings,
+            onAccessorDiagnostic,
+            resourceLedger,
+          );
         } catch (e) {
-          emitImportDiagnostic(warnings, diagnostics, {
-            severity: 'warning',
-            code: 'unreadable-skin-weights',
-            path: `${primitivePath}.attributes.WEIGHTS_${setIndex}`,
-            message:
-              `[vitrum/gltf-adapter] Failed to read WEIGHTS_${setIndex} for "${mesh.name ?? node.mesh}": ` +
-              String(e) +
-              (setIndex === 0 ? '. Falling back to static mesh.' : '. Secondary influence set skipped.'),
-          });
-          if (setIndex === 0) primaryReadable = false;
+          rethrowResourceLimitError(e);
+          throwImportBoundaryError(
+            'unreadable-skin-weights',
+            `${primitivePath}.attributes.WEIGHTS_${setIndex}`,
+            `[vitrum/gltf-adapter] Failed to read WEIGHTS_${setIndex} for "${mesh.name ?? node.mesh}": ${String(e)}`,
+          );
         }
 
-        if (!decodedJoints || !decodedWeights) continue;
         const expectedLength = Math.floor(positions.length / 3) * 4;
         if (decodedJoints.length !== expectedLength || decodedWeights.length !== expectedLength) {
-          emitImportDiagnostic(warnings, diagnostics, {
-            severity: 'warning',
-            code: 'invalid-primitive-attribute',
-            path: `${primitivePath}.attributes.JOINTS_${setIndex}`,
-            message:
-              `[vitrum/gltf-adapter] Mesh "${mesh.name ?? node.mesh}" influence set ${setIndex} has ` +
-              `JOINTS_${setIndex}/WEIGHTS_${setIndex} length mismatch for ${expectedLength / 4} vertices. ` +
-              (setIndex === 0
-                ? 'Skinning is omitted and the primitive is imported as a static mesh.'
-                : 'That secondary influence set is ignored.'),
-          });
-          if (setIndex === 0) primaryReadable = false;
-          continue;
+          throwImportBoundaryError(
+            'invalid-primitive-attribute',
+            `${primitivePath}.attributes.JOINTS_${setIndex}`,
+            `[vitrum/gltf-adapter] Mesh "${mesh.name ?? node.mesh}" influence set ${setIndex} has JOINTS_${setIndex}/WEIGHTS_${setIndex} length mismatch for ${expectedLength / 4} vertices.`,
+          );
+        }
+        const jointCount = Math.floor(bones.length / 16);
+        for (let lane = 0; lane < expectedLength; lane++) {
+          const joint = decodedJoints[lane]!;
+          const weight = decodedWeights[lane]!;
+          if (!Number.isSafeInteger(joint) || joint < 0 || joint >= jointCount) {
+            throwImportBoundaryError(
+              'unreadable-skin-joints',
+              `${primitivePath}.attributes.JOINTS_${setIndex}`,
+              `[vitrum/gltf-adapter] JOINTS_${setIndex} lane ${lane} references joint ${joint}; skin has ${jointCount} joints.`,
+            );
+          }
+          if (!Number.isFinite(weight) || weight < 0) {
+            throwImportBoundaryError(
+              'unreadable-skin-weights',
+              `${primitivePath}.attributes.WEIGHTS_${setIndex}`,
+              `[vitrum/gltf-adapter] WEIGHTS_${setIndex} lane ${lane} must be finite and non-negative; received ${String(weight)}.`,
+            );
+          }
         }
         decodedSets.push({ setIndex, joints: decodedJoints, weights: decodedWeights });
       }
 
-      if (primaryReadable && decodedSets.length > 0) {
+      if (decodedSets.length > 0) {
+        const vertexCount = Math.floor(positions.length / 3);
+        for (let vertex = 0; vertex < vertexCount; vertex += 1) {
+          const weightSum = mergedSkinInfluencesForVertex(decodedSets, vertex)
+            .reduce((sum, [, weight]) => sum + weight, 0);
+          if (!(weightSum > 0) || !Number.isFinite(weightSum)) {
+            throwImportBoundaryError(
+              'unreadable-skin-weights',
+              `${primitivePath}.attributes.WEIGHTS_0`,
+              `[vitrum/gltf-adapter] Mesh "${mesh.name ?? node.mesh}" skin weights for ` +
+                `vertex ${vertex} have no positive finite influence.`,
+            );
+          }
+        }
+
         const hasSecondarySets = decodedSets.some((set) => set.setIndex !== 0);
         if (hasSecondarySets) {
-          const collapsed = collapseSkinInfluenceSets(decodedSets, Math.floor(positions.length / 3));
-          skinIndices = collapsed.skinIndices;
-          skinWeights = collapsed.skinWeights;
-          emitImportDiagnostic(warnings, diagnostics, {
-            severity: 'warning',
-            code: 'collapsed-skin-influence-sets',
-            path: `${primitivePath}.attributes.JOINTS_1`,
-            message:
-              `[vitrum/gltf-adapter] Mesh "${mesh.name ?? node.mesh}" provides ${decodedSets.length} ` +
-              'skinning influence sets. The core Scene contract carries four unique joint weights per vertex, ' +
-              'so the importer retained the strongest four, merged duplicate joints, and renormalized weights' +
-              (collapsed.droppedPositiveInfluences > 0
-                ? ` (${collapsed.droppedPositiveInfluences} positive lower-weight influences dropped).`
-                : '.'),
-          });
+          const packed = packSkinInfluenceSets(
+            decodedSets,
+            vertexCount,
+            resourceLedger,
+            `${primitivePath} collapsed skin influences`,
+          );
+          skinIndices = packed.skinIndices;
+          skinWeights = packed.skinWeights;
+          skinInfluencesPerVertex = packed.skinInfluencesPerVertex;
         } else {
-          skinIndices = decodedSets[0]!.joints;
-          skinWeights = decodedSets[0]!.weights;
+          const onlySet = decodedSets[0]!;
+          for (let vertex = 0; vertex < vertexCount; vertex += 1) {
+            const base = vertex * 4;
+            const sum =
+              onlySet.weights[base]! +
+              onlySet.weights[base + 1]! +
+              onlySet.weights[base + 2]! +
+              onlySet.weights[base + 3]!;
+            for (let lane = 0; lane < 4; lane += 1) {
+              onlySet.weights[base + lane] = onlySet.weights[base + lane]! / sum;
+            }
+          }
+          skinIndices = onlySet.joints;
+          skinWeights = onlySet.weights;
         }
       }
     } else {
-      emitImportDiagnostic(warnings, diagnostics, {
-        severity: 'warning',
-        code: 'incomplete-skin-attributes',
-        path: `${primitivePath}.attributes.${jointsIdx === undefined ? 'JOINTS_0' : 'WEIGHTS_0'}`,
-        message:
-          `[vitrum/gltf-adapter] Mesh "${mesh.name ?? node.mesh}" node binds a skin, ` +
-          'but the primitive does not provide both JOINTS_0 and WEIGHTS_0. ' +
-          'Skinning is omitted and the primitive is imported as a static mesh.',
-      });
+      throwImportBoundaryError(
+        'incomplete-skin-attributes',
+        `${primitivePath}.attributes.${jointsIdx === undefined ? 'JOINTS_0' : 'WEIGHTS_0'}`,
+        `[vitrum/gltf-adapter] Mesh "${mesh.name ?? node.mesh}" node binds a skin, but the primitive does not provide both JOINTS_0 and WEIGHTS_0.`,
+      );
     }
   }
 
   // Warn on unsupported primitive attributes.
   for (const attrName of Object.keys(prim.attributes)) {
     if (
-      !['POSITION', 'NORMAL', 'TEXCOORD_0', 'TEXCOORD_1', 'TANGENT', 'COLOR_0',
-        'JOINTS_0', 'WEIGHTS_0'].includes(attrName) &&
+      ![
+        'POSITION',
+        'NORMAL',
+        'TEXCOORD_0',
+        'TEXCOORD_1',
+        'TANGENT',
+        'COLOR_0',
+        'JOINTS_0',
+        'WEIGHTS_0',
+      ].includes(attrName) &&
       !isSkinInfluenceAttribute(attrName) &&
-      !attrName.startsWith('TEXCOORD_') &&
-      !attrName.startsWith('COLOR_')
+      !/^TEXCOORD_\d+$/u.test(attrName) &&
+      !/^COLOR_\d+$/u.test(attrName)
     ) {
-      emitImportDiagnostic(warnings, diagnostics, {
-        severity: 'warning',
-        code: 'ignored-primitive-attribute',
-        path: `${primitivePath}.attributes.${attrName}`,
-        message:
-          `[vitrum/gltf-adapter] Unknown primitive attribute "${attrName}" in mesh ` +
-          `"${mesh.name ?? node.mesh}" is ignored.`,
-      });
+      if (attrName.startsWith('_')) {
+        emitImportDiagnostic(warnings, diagnostics, {
+          severity: 'warning',
+          code: 'ignored-primitive-attribute',
+          path: `${primitivePath}.attributes.${attrName}`,
+          message:
+            `[vitrum/gltf-adapter] Application-specific primitive attribute "${attrName}" ` +
+            `in mesh "${mesh.name ?? node.mesh}" is not consumed by the core Scene contract and was ignored.`,
+        });
+        continue;
+      }
+      throwImportBoundaryError(
+        'ignored-primitive-attribute',
+        `${primitivePath}.attributes.${attrName}`,
+        `[vitrum/gltf-adapter] Unknown primitive attribute "${attrName}" in mesh "${mesh.name ?? node.mesh}" cannot be represented exactly.`,
+      );
     }
   }
 
@@ -962,42 +1528,45 @@ function buildPrimitiveFromMeshPrimitive(
     materialIndex !== undefined &&
     (!Number.isInteger(materialIndex) || materialIndex < 0 || materialIndex >= coreMaterials.length)
   ) {
-    emitImportDiagnostic(warnings, diagnostics, {
-      severity: 'warning',
-      code: 'material-not-found',
-      path: `${primitivePath}.material`,
-      message:
-        `[vitrum/gltf-adapter] Mesh "${mesh.name ?? node.mesh}" primitive references missing ` +
-        `material ${String(materialIndex)}. Default material is used.`,
-    });
+    throwImportBoundaryError(
+      'material-not-found',
+      `${primitivePath}.material`,
+      `[vitrum/gltf-adapter] Mesh "${mesh.name ?? node.mesh}" primitive references missing material ${String(materialIndex)}.`,
+    );
   }
   const material =
     materialIndex !== undefined && materialIndex < coreMaterials.length
       ? (coreMaterials[materialIndex] ?? GLTF_DEFAULT_MATERIAL)
       : GLTF_DEFAULT_MATERIAL;
   const uvResolvedMaterial = _resolvePrimitiveUvMaterial(
-    gltf,
-    buffers,
-    prim,
     material,
     uvs,
     uv1,
-    vertexCount,
+    uvSets,
     warnings,
     diagnostics,
     primitivePath,
     mesh.name ?? meshIndex,
-    onAccessorDiagnostic,
   );
   uvs = uvResolvedMaterial.uvs;
   uv1 = uvResolvedMaterial.uv1;
+  uvSets = cloneSparseArray(uvResolvedMaterial.uvSets ?? []);
 
   // Morph targets (GLTF-04) — POSITION/NORMAL/TANGENT plus the
   // glTF UV semantics currently carried in core uvs/uv1 + node/mesh weights.
   let morph = _extractMorphTargets(
-    gltf, buffers, prim.targets, node.weights ?? mesh.weights,
-    positions.length / 3, uvs, uvResolvedMaterial.uvSourceTexCoord, uv1, uvResolvedMaterial.uv1SourceTexCoord,
-    `${mesh.name ?? node.mesh}`, primitivePath, warnings, diagnostics, onAccessorDiagnostic,
+    gltf,
+    buffers,
+    prim.targets,
+    node.weights ?? mesh.weights,
+    positions.length / 3,
+    uvSets,
+    `${mesh.name ?? node.mesh}`,
+    primitivePath,
+    warnings,
+    diagnostics,
+    onAccessorDiagnostic,
+    resourceLedger,
   );
   if (usesPointLineFallback) {
     const originalVertexCount = Math.floor(positions.length / 3);
@@ -1006,6 +1575,8 @@ function buildPrimitiveFromMeshPrimitive(
       indices,
       mode,
       opts.pointLineFallbackRadius,
+      resourceLedger,
+      `${primitivePath} point/line fallback`,
     );
     if (fallback == null) {
       emitImportDiagnostic(warnings, diagnostics, {
@@ -1028,33 +1599,99 @@ function buildPrimitiveFromMeshPrimitive(
         `(${pointLineModeName(mode)}) was imported as fallback-generated mesh geometry ` +
         `(radius ${fallback.radius}). Topology fidelity is approximate, but the primitive is renderable.`,
     });
-    uvs = remapVec2Attribute(uvs, fallback.sourceVertices);
-    uv1 = remapVec2Attribute(uv1, fallback.sourceVertices);
-    primitiveUvs = remapVec2Attribute(primitiveUvs, fallback.sourceVertices);
-    primitiveUv1 = remapVec2Attribute(primitiveUv1, fallback.sourceVertices);
-    colors = remapVertexColors(colors, originalVertexCount, fallback.sourceVertices);
+    const remapPath = `${primitivePath} point/line remap`;
+    uvs = remapVec2Attribute(uvs, fallback.sourceVertices, resourceLedger, `${remapPath}.uvs`);
+    uv1 = remapVec2Attribute(uv1, fallback.sourceVertices, resourceLedger, `${remapPath}.uv1`);
+    uvSets = mapSparseArray(uvSets, (stream, texCoord) =>
+      remapVec2Attribute(
+        stream,
+        fallback.sourceVertices,
+        resourceLedger,
+        `${remapPath}.uvSets[${texCoord}]`,
+      ),
+    );
+    primitiveUvs = remapVec2Attribute(
+      primitiveUvs,
+      fallback.sourceVertices,
+      resourceLedger,
+      `${remapPath}.primitiveUvs`,
+    );
+    primitiveUv1 = remapVec2Attribute(
+      primitiveUv1,
+      fallback.sourceVertices,
+      resourceLedger,
+      `${remapPath}.primitiveUv1`,
+    );
+    primitiveUvSets = mapSparseArray(primitiveUvSets, (stream, texCoord) =>
+      remapVec2Attribute(
+        stream,
+        fallback.sourceVertices,
+        resourceLedger,
+        `${remapPath}.primitiveUvSets[${texCoord}]`,
+      ),
+    );
+    colors = remapVertexColors(
+      colors,
+      originalVertexCount,
+      fallback.sourceVertices,
+      resourceLedger,
+      `${remapPath}.colors`,
+    );
+    colorSets = mapSparseArray(colorSets, (stream, colorSet) =>
+      remapVertexColors(
+        stream,
+        originalVertexCount,
+        fallback.sourceVertices,
+        resourceLedger,
+        `${remapPath}.colorSets[${colorSet}]`,
+      ),
+    );
     tangents = undefined;
     if (skinIndices && skinWeights) {
-      skinIndices = remapVec4UintAttribute(skinIndices, fallback.sourceVertices);
-      skinWeights = remapVec4FloatAttribute(skinWeights, fallback.sourceVertices);
+      const influenceCount = skinInfluencesPerVertex ?? 4;
+      skinIndices = remapPackedUintAttribute(
+        skinIndices,
+        influenceCount,
+        fallback.sourceVertices,
+        resourceLedger,
+        `${remapPath}.skinIndices`,
+      );
+      skinWeights = remapPackedFloatAttribute(
+        skinWeights,
+        influenceCount,
+        fallback.sourceVertices,
+        resourceLedger,
+        `${remapPath}.skinWeights`,
+      );
     }
-    morph = remapMorphData(morph, fallback.sourceVertices);
+    morph = remapMorphData(morph, fallback.sourceVertices, resourceLedger, `${remapPath}.morph`);
     positions = fallback.positions;
     normals = fallback.normals;
     indices = fallback.indices;
   }
-  const finalTangents = tangents ?? _maybeGenerateTangents(
-    positions,
-    normals,
-    uvs,
-    uv1,
-    indices,
-    uvResolvedMaterial.material,
-    `${mesh.name ?? node.mesh}`,
-    warnings,
-    diagnostics,
-    primitivePath,
-  );
+  const finalTangents =
+    tangents ??
+    _maybeGenerateTangents(
+      positions,
+      normals,
+      uvs,
+      uv1,
+      uvSets,
+      indices,
+      uvResolvedMaterial.material,
+      `${mesh.name ?? node.mesh}`,
+      warnings,
+      diagnostics,
+      primitivePath,
+      resourceLedger,
+    );
+  if (morph?.morphTargetTangents && !finalTangents) {
+    throwImportBoundaryError(
+      'missing-tangent-texcoord',
+      `${primitivePath}.targets[].TANGENT`,
+      `[vitrum/gltf-adapter] Mesh "${mesh.name ?? node.mesh}" authors TANGENT morph deltas but has no representable base tangent stream.`,
+    );
+  }
 
   const id = `gltf-prim-${ctx.primId.value++}`;
   const registerPrimitiveProvenance = (primitiveId: string): void => {
@@ -1076,26 +1713,23 @@ function buildPrimitiveFromMeshPrimitive(
       primitiveIndex,
       ...(prim.material !== undefined ? { baseMaterialIndex: prim.material } : {}),
       basePatch: _buildPrimitiveMaterialVariantPatch(
-        gltf,
-        buffers,
-        prim,
         coreMaterials,
         prim.material,
         positions,
         normals,
         primitiveUvs,
         primitiveUv1,
+        primitiveUvSets,
         indices,
         tangents,
         `${mesh.name ?? node.mesh}`,
         warnings,
         diagnostics,
         primitivePath,
-        onAccessorDiagnostic,
+        resourceLedger,
       ),
       variantPatches: _buildPrimitiveMaterialVariantPatches(
         gltf,
-        buffers,
         prim,
         coreMaterials,
         prim.material,
@@ -1103,25 +1737,28 @@ function buildPrimitiveFromMeshPrimitive(
         normals,
         primitiveUvs,
         primitiveUv1,
+        primitiveUvSets,
         indices,
         tangents,
         `${mesh.name ?? node.mesh}`,
         warnings,
         diagnostics,
         primitivePath,
-        onAccessorDiagnostic,
+        resourceLedger,
       ),
     });
   };
 
-  let skinArg = (skinIndices && skinWeights && bones && boneInverses)
-    ? {
-        skinIndices,
-        skinWeights,
-        bones,
-        boneInverses,
-      }
-    : undefined;
+  let skinArg =
+    skinIndices && skinWeights && bones && boneInverses
+      ? {
+          skinIndices,
+          skinWeights,
+          ...(skinInfluencesPerVertex != null ? { skinInfluencesPerVertex } : {}),
+          bones,
+          boneInverses,
+        }
+      : undefined;
 
   // Morphed-but-unskinned mesh: core carries morph targets only on
   // SkinnedMeshPrimitive (solveSkin pre-blends morphs before LBS), so we
@@ -1132,82 +1769,290 @@ function buildPrimitiveFromMeshPrimitive(
   // bindMatrix is only needed for world-space bone chains).
   if (morph && !skinArg) {
     const vertexCount = positions.length / 3;
-    const identitySkinWeights = new Float32Array(vertexCount * 4);
+    const influenceAllocation = geometryArrayAllocation(
+      [vertexCount, 4],
+      Float32Array.BYTES_PER_ELEMENT,
+      `${primitivePath} identity skin influences`,
+    );
+    const identityMatrixBytes = 16 * Float32Array.BYTES_PER_ELEMENT;
+    resourceLedger.chargeDecodedGeometryBytes(
+      checkedGeometrySum(
+        [
+          influenceAllocation.byteLength,
+          influenceAllocation.byteLength,
+          identityMatrixBytes,
+          identityMatrixBytes,
+        ],
+        `${primitivePath} identity skin byte length`,
+      ),
+      `${primitivePath} identity skin`,
+    );
+    const identitySkinWeights = new Float32Array(influenceAllocation.elementCount);
     for (let v = 0; v < vertexCount; v++) identitySkinWeights[v * 4] = 1;
     const identityBone = new Float32Array(16);
-    identityBone[0] = 1; identityBone[5] = 1; identityBone[10] = 1; identityBone[15] = 1;
+    identityBone[0] = 1;
+    identityBone[5] = 1;
+    identityBone[10] = 1;
+    identityBone[15] = 1;
     skinArg = {
-      skinIndices: new Uint32Array(vertexCount * 4), // all bone 0
+      skinIndices: new Uint32Array(influenceAllocation.elementCount), // all bone 0
       skinWeights: identitySkinWeights,
       bones: identityBone,
       boneInverses: new Float32Array(identityBone),
     };
-    emitImportDiagnostic(warnings, diagnostics, {
-      severity: 'warning',
-      code: 'morph-identity-skin-promotion',
-      path: `${primitivePath}.targets`,
-      message:
-        `[vitrum/gltf-adapter] Mesh "${mesh.name ?? node.mesh}" has morph targets but no skin; ` +
-        'promoted to SkinnedMeshPrimitive with a synthesized identity skeleton (1 bone). ' +
-        'Drive morphWeights and re-solve via @vitrum/core solveSkin to animate the blend shapes.',
-    });
   }
 
   const primitiveInstances = instanceTransforms?.worldInstanceTransforms;
-  if (primitiveInstances && skinArg && instanceTransforms) {
-    if (!nodeCtx.instanceFallbackWarned.value) {
-      emitImportDiagnostic(warnings, diagnostics, {
-        severity: 'warning',
-        code: 'fallback-expanded-gpu-instancing',
-        path: `nodes[${nodeIdx}].extensions.EXT_mesh_gpu_instancing`,
-        message:
-          `[vitrum/gltf-adapter] Node "${node.name ?? nodeIdx}" uses EXT_mesh_gpu_instancing ` +
-          'on a skinned or morphed mesh. The importer expanded it to one SkinnedMeshPrimitive ' +
-          'per authored instance so every instance remains renderable under the existing core contract.',
-      });
-      nodeCtx.instanceFallbackWarned.value = true;
-    }
-    for (const [instanceIndex, instanceWorld] of primitiveInstances.entries()) {
-      const instanceId = `${id}-instance-${instanceIndex}`;
-      registerPrimitiveProvenance(instanceId);
-      registerPrimitiveVariants(instanceId);
-      instancingBindings.push({
-        primitiveId: instanceId,
-        nodeIndex: nodeIdx,
-        localInstanceTransforms: instanceTransforms.localInstanceTransforms,
-        expandedPrimitiveInstanceIndex: instanceIndex,
-      });
-      primitives.push(_buildPrimitive(
-        instanceId, instanceWorld, positions, normals, indices,
-        uvs, uvResolvedMaterial.uv1, finalTangents, colors, uvResolvedMaterial.material, skinArg, morph, undefined,
-      ));
-    }
-    return;
-  }
   if (primitiveInstances && instanceTransforms) {
     registerPrimitiveProvenance(id);
     registerPrimitiveVariants(id);
+    let deformationSource: SkinnedMeshPrimitive | undefined;
+    let renderedPositions = positions;
+    let renderedNormals = normals;
+    let renderedUvs = uvs;
+    let renderedUv1 = uv1;
+    let renderedUvSets: ReadonlyArray<Float32Array | undefined> = uvSets;
+    let renderedTangents = finalTangents;
+    if (skinArg) {
+      const source = _buildPrimitive(
+        id,
+        worldMat,
+        positions,
+        normals,
+        indices,
+        uvs,
+        uv1,
+        uvSets,
+        finalTangents,
+        colors,
+        colorSets,
+        uvResolvedMaterial.material,
+        skinArg,
+        morph,
+        undefined,
+      );
+      if (source.kind !== 'skinned-mesh') {
+        throw new Error('[vitrum/gltf-adapter] Internal error: deformation source is not skinned.');
+      }
+      deformationSource = source;
+      chargeSolveSkinAllocations(resourceLedger, source, `${primitivePath} instanced skin solve`);
+      const solved = solveSkin(source);
+      renderedPositions = solved.positions;
+      renderedNormals = solved.normals;
+      renderedUvs = solved.uvs;
+      renderedUv1 = solved.uv1;
+      renderedUvSets = solved.uvSets ?? uvSets;
+      renderedTangents = solved.tangents;
+    }
     instancingBindings.push({
       primitiveId: id,
       nodeIndex: nodeIdx,
       localInstanceTransforms: instanceTransforms.localInstanceTransforms,
+      ...(deformationSource ? { deformationSource } : {}),
     });
+    primitives.push(
+      _buildPrimitive(
+        id,
+        worldMat,
+        renderedPositions,
+        renderedNormals,
+        indices,
+        renderedUvs,
+        renderedUv1,
+        renderedUvSets,
+        renderedTangents,
+        colors,
+        colorSets,
+        uvResolvedMaterial.material,
+        undefined,
+        undefined,
+        primitiveInstances,
+      ),
+    );
+    return;
   }
 
   if (!primitiveInstances) {
     registerPrimitiveProvenance(id);
     registerPrimitiveVariants(id);
   }
-  primitives.push(_buildPrimitive(
-    id, worldMat, positions, normals, indices,
-    uvs, uvResolvedMaterial.uv1, finalTangents, colors, uvResolvedMaterial.material, skinArg, morph, primitiveInstances,
-  ));
+  primitives.push(
+    _buildPrimitive(
+      id,
+      worldMat,
+      positions,
+      normals,
+      indices,
+      uvs,
+      uv1,
+      uvSets,
+      finalTangents,
+      colors,
+      colorSets,
+      uvResolvedMaterial.material,
+      skinArg,
+      morph,
+      primitiveInstances,
+    ),
+  );
+}
+
+function assertGltfBufferIndex(value: unknown, path: string): asserts value is number {
+  if (!Number.isSafeInteger(value) || (value as number) < 0) {
+    throw new TypeError(`[vitrum/gltf-adapter] ${path} must be a non-negative safe integer.`);
+  }
+}
+
+function gltfBufferMapEntries(value: object): Iterable<unknown> | undefined {
+  let entriesMethod: unknown;
+  let getMethod: unknown;
+  let iteratorMethod: unknown;
+  try {
+    const candidate = value as {
+      readonly entries?: unknown;
+      readonly get?: unknown;
+      readonly [Symbol.iterator]?: unknown;
+    };
+    entriesMethod = candidate.entries;
+    getMethod = candidate.get;
+    iteratorMethod = candidate[Symbol.iterator];
+  } catch (cause) {
+    throw new TypeError(
+      '[vitrum/gltf-adapter] options.buffers map methods could not be inspected.',
+      { cause },
+    );
+  }
+  if (
+    typeof entriesMethod !== 'function' ||
+    typeof getMethod !== 'function' ||
+    typeof iteratorMethod !== 'function'
+  ) {
+    return undefined;
+  }
+  let entries: unknown;
+  try {
+    entries = Reflect.apply(entriesMethod, value, []);
+  } catch (cause) {
+    throw new TypeError('[vitrum/gltf-adapter] options.buffers.entries() failed.', { cause });
+  }
+  if (
+    entries == null ||
+    (typeof entries !== 'object' && typeof entries !== 'function') ||
+    typeof (entries as { readonly [Symbol.iterator]?: unknown })[Symbol.iterator] !== 'function'
+  ) {
+    throw new TypeError('[vitrum/gltf-adapter] options.buffers.entries() must return an iterable.');
+  }
+  return entries as Iterable<unknown>;
+}
+
+function seedGltfBufferEntry(
+  rawIndex: unknown,
+  value: unknown,
+  path: string,
+  resourceLedger: ImportResourceLedger,
+  output: Map<number, ArrayBuffer>,
+): void {
+  assertGltfBufferIndex(rawIndex, `${path} key`);
+  const byteLength = gltfArrayBufferByteLength(value);
+  if (byteLength === undefined) {
+    throw new TypeError(
+      `[vitrum/gltf-adapter] ${path}[${rawIndex}] must be a non-shared ArrayBuffer.`,
+    );
+  }
+  resourceLedger.chargeEncodedBytes(
+    gltfBufferResourceKey(rawIndex),
+    byteLength,
+    `${path}[${rawIndex}]`,
+  );
+  output.set(rawIndex, value as ArrayBuffer);
+}
+
+function seedGltfOptionBuffers(
+  value: GltfToSceneOptions['buffers'] | undefined,
+  resourceLedger: ImportResourceLedger,
+  output: Map<number, ArrayBuffer>,
+): void {
+  if (value === undefined) return;
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    throw new TypeError(
+      '[vitrum/gltf-adapter] options.buffers must be a map or numeric-keyed object.',
+    );
+  }
+  const mapEntries = gltfBufferMapEntries(value);
+  if (mapEntries !== undefined) {
+    for (const entry of mapEntries) {
+      if (!Array.isArray(entry) || entry.length < 2) {
+        throw new TypeError(
+          '[vitrum/gltf-adapter] options.buffers map entries must be [index, ArrayBuffer] pairs.',
+        );
+      }
+      seedGltfBufferEntry(entry[0], entry[1], 'options.buffers', resourceLedger, output);
+    }
+    return;
+  }
+
+  for (const [key, buffer] of Object.entries(value)) {
+    if (!/^(?:0|[1-9]\d*)$/.test(key)) {
+      throw new TypeError(
+        `[vitrum/gltf-adapter] options.buffers key "${key}" must be a canonical non-negative integer.`,
+      );
+    }
+    const bufferIndex = Number(key);
+    seedGltfBufferEntry(bufferIndex, buffer, 'options.buffers', resourceLedger, output);
+  }
+}
+
+const SHARED_ARRAY_BUFFER_BYTE_LENGTH_DESCRIPTOR =
+  typeof globalThis.SharedArrayBuffer === 'function'
+    ? Object.getOwnPropertyDescriptor(globalThis.SharedArrayBuffer.prototype, 'byteLength')
+    : undefined;
+const SHARED_ARRAY_BUFFER_BYTE_LENGTH_GETTER =
+  // eslint-disable-next-line @typescript-eslint/unbound-method -- Invoked only with an explicit candidate receiver.
+  SHARED_ARRAY_BUFFER_BYTE_LENGTH_DESCRIPTOR?.get;
+
+function isSharedArrayBufferValue(value: unknown): boolean {
+  if (SHARED_ARRAY_BUFFER_BYTE_LENGTH_GETTER === undefined) return false;
+  try {
+    Reflect.apply(SHARED_ARRAY_BUFFER_BYTE_LENGTH_GETTER, value, []);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export async function gltfToScene(
   input: ArrayBuffer | GltfJson,
   opts: GltfToSceneOptions = {},
 ): Promise<GltfToSceneResult> {
+  const ledger = new ImportResourceLedger(opts.resourceLimits);
+  const decodedImageHandles = new DecodedImageHandleOwner();
+  const resourceContext: GltfImportResourceContext = {
+    ledger,
+    limiter: createAsyncResourceLimiter(ledger.limits.maxConcurrentResourceOperations),
+    decodedImageHandles,
+  };
+  try {
+    const result = await gltfToSceneWithResourceContext(input, opts, resourceContext);
+    return attachGltfResourceOwner(result, decodedImageHandles);
+  } catch (error) {
+    decodedImageHandles.rollback();
+    throw error;
+  }
+}
+
+/**
+ * Internal loader bridge. The caller owns the already-created context so
+ * fetch, image decode, accessor decode, and generated geometry share one
+ * monotonic budget without resetting between stages.
+ *
+ * @internal Not re-exported from the package index.
+ */
+export async function gltfToSceneWithResourceContext(
+  input: ArrayBuffer | GltfJson,
+  opts: GltfToSceneOptions,
+  resourceContext: GltfImportResourceContext,
+): Promise<GltfToSceneResult> {
+  const { ledger: resourceLedger } = resourceContext;
   const warnings: string[] = [];
 
   // ── 1. Parse input ─────────────────────────────────────────────────────────
@@ -1215,28 +2060,38 @@ export async function gltfToScene(
   const buffers = new Map<number, ArrayBuffer>();
 
   // Seed from opts.buffers.
-  if (opts.buffers) {
-    if (opts.buffers instanceof Map) {
-      for (const [k, v] of opts.buffers as Map<number, ArrayBuffer>) buffers.set(k, v);
-    } else {
-      for (const [k, v] of Object.entries(opts.buffers as Record<string, ArrayBuffer>)) {
-        buffers.set(Number(k), v);
-      }
-    }
-  }
+  seedGltfOptionBuffers(opts.buffers, resourceLedger, buffers);
 
-  if (input instanceof ArrayBuffer) {
+  const inputByteLength = gltfArrayBufferByteLength(input);
+  if (inputByteLength !== undefined) {
+    const inputBuffer = input as ArrayBuffer;
+    resourceLedger.chargeEncodedBytes(GLTF_INPUT_RESOURCE_KEY, inputByteLength, 'input');
     // Detect GLB by magic bytes.
-    if (input.byteLength >= 4 && new DataView(input).getUint32(0, true) === 0x46546c67) {
-      const glb = parseGlb(input);
+    if (inputByteLength >= 4 && new DataView(inputBuffer).getUint32(0, true) === 0x46546c67) {
+      const hasOverride = buffers.has(0);
+      const binResourceKey = hasOverride
+        ? `${gltfBufferResourceKey(0)}:unused-glb-copy`
+        : gltfBufferResourceKey(0);
+      const glb = parseGlb(inputBuffer, {
+        beforeBinChunkCopy: ({ byteLength }) => {
+          resourceLedger.ensureEncodedBytes(binResourceKey, byteLength, 'GLB BIN chunk');
+        },
+      });
       gltf = glb.json;
-      if (glb.binChunk !== undefined && !buffers.has(0)) {
-        buffers.set(0, glb.binChunk);
+      if (glb.binChunk !== undefined) {
+        const binByteLength = gltfArrayBufferByteLength(glb.binChunk);
+        if (binByteLength === undefined) {
+          throw new TypeError(
+            '[vitrum/gltf-adapter] Parsed GLB BIN chunk is not a genuine ArrayBuffer.',
+          );
+        }
+        resourceLedger.chargeEncodedBytes(binResourceKey, binByteLength, 'GLB BIN chunk');
+        if (!hasOverride) buffers.set(0, glb.binChunk);
       }
     } else {
       // Treat as UTF-8 JSON.
-      const text = new TextDecoder().decode(input);
       try {
+        const text = decodeGltfUtf8(inputBuffer);
         gltf = JSON.parse(text) as GltfJson;
       } catch (cause) {
         throw new GltfParseFailed({
@@ -1248,8 +2103,24 @@ export async function gltfToScene(
       }
     }
   } else {
-    gltf = input;
+    if (isSharedArrayBufferValue(input)) {
+      throw new TypeError('[vitrum/gltf-adapter] input must not be a SharedArrayBuffer.');
+    }
+    if (ArrayBuffer.isView(input)) {
+      throw new TypeError(
+        '[vitrum/gltf-adapter] input must be an ArrayBuffer, not an ArrayBuffer view.',
+      );
+    }
+    if (!isObject(input)) {
+      throw new TypeError(
+        '[vitrum/gltf-adapter] input must be a glTF JSON object or non-shared ArrayBuffer.',
+      );
+    }
+    gltf = input as GltfJson;
   }
+
+  assertSupportedGltfVersion(gltf);
+  const sceneIndex = resolveValidatedSceneIndex(gltf, opts.sceneIndex);
 
   const diagnostics: GltfImportDiagnostic[] = [];
   const onAccessorDiagnostic = (diagnostic: GltfAccessorDiagnostic): void => {
@@ -1261,25 +2132,33 @@ export async function gltfToScene(
   const onCompressionDiagnostic = (diagnostic: GltfCompressionDiagnostic): void => {
     diagnostics.push(diagnostic);
   };
-  const sceneIndex = opts.sceneIndex ?? gltf.scene ?? 0;
-  const sceneReachability = collectGltfSceneReachability(gltf, sceneIndex, opts.textureSourceExtensions ?? []);
+  const sceneReachability = collectGltfSceneReachability(
+    gltf,
+    sceneIndex,
+    opts.textureSourceExtensions ?? [],
+  );
+  validateReachablePrimitiveSemantics(gltf, sceneReachability);
+  const cameraMetadataIssues = validateGltfCameraMetadata(
+    gltf,
+    sceneReachability.cameraIndices,
+  );
+  if (cameraMetadataIssues.length > 0) {
+    throw new GltfImportError(
+      cameraMetadataIssues[0]!.message,
+      cameraMetadataIssues.map((issue) => ({
+        severity: 'error',
+        code: 'invalid-camera',
+        path: issue.path,
+        message: issue.message,
+      })),
+    );
+  }
   const scopedFeatureReport = analyzeGltfAsset(gltf, {
-    ...(opts.textureSourceExtensions ? { textureSourceExtensions: opts.textureSourceExtensions } : {}),
+    ...(opts.textureSourceExtensions
+      ? { textureSourceExtensions: opts.textureSourceExtensions }
+      : {}),
     sceneIndex,
   });
-
-  // ── 2. Validate version ────────────────────────────────────────────────────
-  const version = gltf.asset?.version;
-  if (version && !version.startsWith('2.')) {
-    emitImportDiagnostic(warnings, diagnostics, {
-      severity: 'warning',
-      code: 'unsupported-version',
-      path: 'asset.version',
-      message:
-        `[vitrum/gltf-adapter] glTF asset version is "${version}"; only 2.x is supported. ` +
-        'Conversion will proceed but results may be incorrect.',
-    });
-  }
 
   const requiredExtensions = scopedFeatureReport.extensions.required;
   for (let i = 0; i < requiredExtensions.length; i += 1) {
@@ -1288,14 +2167,17 @@ export async function gltfToScene(
       const message =
         `[vitrum/gltf-adapter] extensionsRequired includes unsupported extension "${ext}". ` +
         'Required glTF extensions cannot be safely ignored.';
-      throw new GltfImportError(message, [{
-        severity: 'error',
-        code: 'unsupported-required-extension',
-        path: scopedFeatureReport.extensions.sourcePaths[ext]?.find((path) =>
-          path.startsWith('extensionsRequired['),
-        ) ?? `extensionsRequired[${i}]`,
-        message,
-      }]);
+      throw new GltfImportError(message, [
+        {
+          severity: 'error',
+          code: 'unsupported-required-extension',
+          path:
+            scopedFeatureReport.extensions.sourcePaths[ext]?.find((path) =>
+              path.startsWith('extensionsRequired['),
+            ) ?? `extensionsRequired[${i}]`,
+          message,
+        },
+      ]);
     }
   }
 
@@ -1316,7 +2198,8 @@ export async function gltfToScene(
     emitImportDiagnostic(warnings, diagnostics, {
       severity: 'warning',
       code: 'skin-rest-pose',
-      path: [...sceneReachability.skinIndices].sort((a, b) => a - b)
+      path: [...sceneReachability.skinIndices]
+        .sort((a, b) => a - b)
         .map((skinIndex) => `skins[${skinIndex}]`)
         .join(','),
       message:
@@ -1331,20 +2214,39 @@ export async function gltfToScene(
   const extUsed = gltf.extensionsUsed ?? [];
 
   // ── 3.5. Resolve compressed geometry (GLTF-02) ─────────────────────────────
-  // KHR_draco_mesh_compression + EXT_meshopt_compression via the host-supplied
-  // opts.dracoDecode / opts.meshoptDecode hooks. Runs BEFORE texture/accessor
+  // KHR_draco_mesh_compression + EXT_meshopt_compression via host overrides or
+  // the adapter's lazy built-in decoders. Runs BEFORE texture/accessor
   // reads so every downstream consumer sees decompressed bufferViews. Returns
   // a clone when compression is present (the caller's GltfJson is never
-  // mutated); throws when a hook-less required extension has no spec fallback.
+  // mutated); required decode failures and optional data without an exact
+  // fallback fail closed before accessor conversion.
+  const builtinCompressionDecoders =
+    opts.compressionDecoderPolicy === 'host-only'
+      ? undefined
+      : createImportBuiltinCompressionDecoders(resourceLedger);
+  const dracoDecode = opts.dracoDecode ?? builtinCompressionDecoders?.dracoDecode;
+  const meshoptDecode = opts.meshoptDecode ?? builtinCompressionDecoders?.meshoptDecode;
   gltf = await resolveCompression(
     gltf,
     buffers,
-    { dracoDecode: opts.dracoDecode, meshoptDecode: opts.meshoptDecode },
+    {
+      dracoDecode,
+      meshoptDecode,
+    },
     warnings,
     onCompressionDiagnostic,
     {
       sceneReachability,
       bufferViewIndices: sceneReachability.bufferViewIndices,
+      resourceLedger,
+      hookOutputPrecharged: {
+        draco:
+          dracoDecode !== undefined &&
+          dracoDecode === builtinCompressionDecoders?.dracoDecode,
+        meshopt:
+          meshoptDecode !== undefined &&
+          meshoptDecode === builtinCompressionDecoders?.meshoptDecode,
+      },
     },
   );
 
@@ -1360,12 +2262,14 @@ export async function gltfToScene(
       diagnostics.push(diagnostic);
     },
     sceneReachability.textureIndices,
+    resourceContext,
   );
 
   // ── 5. Pre-convert materials ───────────────────────────────────────────────
-  const coreMaterials = (gltf.materials ?? []).map((m, materialIndex) =>
-    sceneReachability.materialIndices.has(materialIndex)
-      ? convertMaterial(
+  const coreMaterials = (gltf.materials ?? []).map((m, materialIndex) => {
+    if (!sceneReachability.materialIndices.has(materialIndex)) return GLTF_DEFAULT_MATERIAL;
+    try {
+      return convertMaterial(
         m,
         handleMap,
         warnings,
@@ -1373,23 +2277,20 @@ export async function gltfToScene(
         materialIndex,
         opts.textureSourceExtensions,
         onMaterialDiagnostic,
-      )
-      : GLTF_DEFAULT_MATERIAL,
-  );
-  for (const [materialIndex, material] of (gltf.materials ?? []).entries()) {
-    if (!sceneReachability.materialIndices.has(materialIndex)) continue;
-    if (material.doubleSided !== true) continue;
-    emitImportDiagnostic(warnings, diagnostics, {
-      severity: 'warning',
-      code: 'double-sided-material',
-      path: `materials[${materialIndex}].doubleSided`,
-      message:
-        `[vitrum/gltf-adapter] Material "${material.name ?? materialIndex}" sets doubleSided=true. ` +
-        'The flag is preserved at MaterialSpec.extensions.doubleSided for host/backend inspection, ' +
-        'but @vitrum/core has no first-class two-sided/backface-normal material contract; ' +
-        'backend compatibility may report an approximate doubleSided row.',
-    });
-  }
+      );
+    } catch (error) {
+      if (error instanceof GltfMaterialImportError) {
+        // Preserve acquisition/selection diagnostics collected before the
+        // terminal material-resolution failure.  Import is atomic, but callers
+        // still need the complete structured cause chain to repair the asset.
+        throw new GltfImportError(
+          error.message,
+          diagnosticChainWithTerminal(diagnostics, error.diagnostic),
+        );
+      }
+      throw error;
+    }
+  });
   const selectedMaterialVariant = _resolveMaterialVariantSelection(
     gltf,
     opts.materialVariant,
@@ -1401,21 +2302,15 @@ export async function gltfToScene(
   const gltfScene = gltf.scenes?.[sceneIndex];
   const rootNodes = gltfScene?.nodes ?? [];
 
-  if (gltf.scenes && !gltfScene) {
-    emitImportDiagnostic(warnings, diagnostics, {
-      severity: 'warning',
-      code: 'scene-not-found',
-      path: `scenes[${sceneIndex}]`,
-      message:
-        `[vitrum/gltf-adapter] Scene index ${sceneIndex} not found (total: ${gltf.scenes.length}). ` +
-        'Falling back to an empty scene.',
-    });
-  }
-
   // ── 7. Build world transforms for all nodes ────────────────────────────────
-  const worldTransforms = buildWorldTransforms(gltf, rootNodes);
+  const worldTransforms = buildWorldTransforms(
+    gltf,
+    rootNodes,
+    resourceLedger,
+    'scene node transforms',
+  );
 
-  const cameras = collectSceneCameras(gltf, worldTransforms);
+  const cameras = collectSceneCameras(gltf, worldTransforms, resourceLedger, 'scene cameras');
 
   // ── 8. Flatten node → mesh → primitives ───────────────────────────────────
   const primitives: ScenePrimitive[] = [];
@@ -1426,9 +2321,21 @@ export async function gltfToScene(
   const primId = { value: 0 };
 
   const buildPrimitiveCtx: BuildPrimitiveContext = {
-    gltf, buffers, warnings, diagnostics, onAccessorDiagnostic, coreMaterials,
-    opts, selectedMaterialVariant, primitives, animationTargets,
-    materialVariantBindings, materialBindings, instancingBindings, primId,
+    gltf,
+    buffers,
+    warnings,
+    diagnostics,
+    onAccessorDiagnostic,
+    coreMaterials,
+    opts,
+    selectedMaterialVariant,
+    primitives,
+    animationTargets,
+    materialVariantBindings,
+    materialBindings,
+    instancingBindings,
+    primId,
+    resourceLedger,
   };
 
   const gltfNodes = gltf.nodes ?? [];
@@ -1447,8 +2354,8 @@ export async function gltfToScene(
       warnings,
       diagnostics,
       onAccessorDiagnostic,
+      resourceLedger,
     );
-    const instanceFallbackWarned = { value: false };
 
     const mesh = gltfMeshes[node.mesh];
     if (!mesh) continue;
@@ -1457,12 +2364,29 @@ export async function gltfToScene(
     // glTF 2.0 §3.8: a node may reference a skin by index. All primitives in
     // the node's mesh share the same skin.
     const skinData = _extractSkinData(
-      gltf, buffers, gltfSkins, node.skin, worldMat, worldTransforms, warnings, diagnostics, onAccessorDiagnostic,
+      gltf,
+      buffers,
+      gltfSkins,
+      node.skin,
+      worldMat,
+      worldTransforms,
+      warnings,
+      diagnostics,
+      onAccessorDiagnostic,
+      resourceLedger,
     );
     const { bones, boneInverses } = skinData ?? {};
 
     const nodeCtx: BuildPrimitiveNodeContext = {
-      node, nodeIdx, meshIndex: node.mesh, mesh, worldMat, skinData, bones, boneInverses, instanceTransforms, instanceFallbackWarned,
+      node,
+      nodeIdx,
+      meshIndex: node.mesh,
+      mesh,
+      worldMat,
+      skinData,
+      bones,
+      boneInverses,
+      instanceTransforms,
     };
     for (const [primitiveIndex, prim] of mesh.primitives.entries()) {
       buildPrimitiveFromMeshPrimitive(buildPrimitiveCtx, nodeCtx, prim, primitiveIndex);
@@ -1487,32 +2411,47 @@ export async function gltfToScene(
   //   This is consistent with how three.js PointLight/DirectionalLight expose
   //   intensity post–three.js r155 (they pass glTF values straight through).
   const emitters: SceneEmitter[] = [];
+  const punctualEmitterBindings: GltfPunctualEmitterBinding[] = [];
   let emitterIdCounter = 0;
 
   if (extUsed.includes('KHR_lights_punctual')) {
-    const rootExt = gltf.extensions?.['KHR_lights_punctual'] as KhrLightsPunctualRoot | undefined;
+    const rawRootExt = gltf.extensions?.['KHR_lights_punctual'];
+    if (rawRootExt !== undefined && (!isObject(rawRootExt) || !Array.isArray(rawRootExt.lights))) {
+      throwImportBoundaryError(
+        'missing-punctual-light',
+        'extensions.KHR_lights_punctual',
+        '[vitrum/gltf-adapter] KHR_lights_punctual root extension must contain a lights array.',
+      );
+    }
+    const rootExt = rawRootExt as KhrLightsPunctualRoot | undefined;
     const lights = rootExt?.lights ?? [];
 
     for (const [nodeIdx, worldMat] of worldTransforms) {
       const node = gltfNodes[nodeIdx];
       if (!node?.extensions) continue;
 
-      const nodeLightRef = node.extensions['KHR_lights_punctual'] as
-        | { light: number }
-        | undefined;
-      if (nodeLightRef === undefined || typeof nodeLightRef.light !== 'number') continue;
+      const rawNodeLightRef = node.extensions['KHR_lights_punctual'];
+      if (rawNodeLightRef === undefined) continue;
+      if (
+        !isObject(rawNodeLightRef) ||
+        !Number.isSafeInteger(rawNodeLightRef.light) ||
+        (rawNodeLightRef.light as number) < 0
+      ) {
+        throwImportBoundaryError(
+          'missing-punctual-light',
+          `nodes[${nodeIdx}].extensions.KHR_lights_punctual.light`,
+          `[vitrum/gltf-adapter] Node ${nodeIdx} KHR_lights_punctual light must be a non-negative safe integer.`,
+        );
+      }
+      const nodeLightRef = rawNodeLightRef as { light: number };
 
       const light = lights[nodeLightRef.light];
       if (!light) {
-        emitImportDiagnostic(warnings, diagnostics, {
-          severity: 'warning',
-          code: 'missing-punctual-light',
-          path: `nodes[${nodeIdx}].extensions.KHR_lights_punctual.light`,
-          message:
-            `[vitrum/gltf-adapter] Node ${nodeIdx} references KHR_lights_punctual light ` +
-            `index ${nodeLightRef.light} which does not exist. Emitter skipped.`,
-        });
-        continue;
+        throwImportBoundaryError(
+          'missing-punctual-light',
+          `nodes[${nodeIdx}].extensions.KHR_lights_punctual.light`,
+          `[vitrum/gltf-adapter] Node ${nodeIdx} references missing KHR_lights_punctual light ${nodeLightRef.light}.`,
+        );
       }
 
       const id = `gltf-light-${emitterIdCounter++}`;
@@ -1524,23 +2463,72 @@ export async function gltfToScene(
         diagnostics,
         `extensions.KHR_lights_punctual.lights[${nodeLightRef.light}]`,
       );
-      if (emitter) emitters.push(emitter);
+      emitters.push(emitter);
+      punctualEmitterBindings.push({
+        emitterId: id,
+        nodeIndex: nodeIdx,
+        lightIndex: nodeLightRef.light,
+      });
     }
   }
 
   // ── 10. Convert animations (GLTF-03) ───────────────────────────────────────
-  const animations = convertAnimations(gltf, buffers, warnings, (diagnostic) => {
-    diagnostics.push(diagnostic);
-  }, onAccessorDiagnostic, {
-    reachableNodeIndices: sceneReachability.nodeIndices,
-    reachableMaterialIndices: sceneReachability.materialIndices,
-  });
+  let animations: AnimationClip[];
+  try {
+    animations = convertAnimations(
+      gltf,
+      buffers,
+      warnings,
+      (diagnostic) => {
+        diagnostics.push(diagnostic);
+      },
+      onAccessorDiagnostic,
+      {
+        reachableNodeIndices: sceneReachability.nodeIndices,
+        reachableMaterialIndices: sceneReachability.materialIndices,
+        reachableCameraIndices: sceneReachability.cameraIndices,
+        reachablePunctualLightIndices: sceneReachability.punctualLightIndices,
+        resourceLedger,
+      },
+    );
+  } catch (error) {
+    if (error instanceof GltfAnimationImportError) {
+      throw new GltfImportError(
+        error.message,
+        diagnosticChainWithTerminal(diagnostics, error.diagnostic),
+      );
+    }
+    throw error;
+  }
+
+  // KHR_node_visibility is inherited down the node hierarchy. Hidden visual
+  // objects are omitted from the core Scene, while cameras intentionally remain
+  // in metadata per the extension specification. The complete object arrays are
+  // returned separately for controller-driven visibility animation.
+  const effectiveNodeVisibility = buildEffectiveNodeVisibility(gltf, rootNodes);
+  const visiblePrimitiveIds = new Set<string>();
+  for (const [nodeIndex, visible] of effectiveNodeVisibility) {
+    if (!visible) continue;
+    for (const primitiveId of animationTargets[animationNodeId(nodeIndex)] ?? []) {
+      visiblePrimitiveIds.add(primitiveId);
+    }
+  }
+  const visibleEmitterIds = new Set(
+    punctualEmitterBindings
+      .filter((binding) => effectiveNodeVisibility.get(binding.nodeIndex) !== false)
+      .map((binding) => binding.emitterId),
+  );
+  const visiblePrimitives = primitives.filter((primitive) =>
+    visiblePrimitiveIds.has(String(primitive.id)),
+  );
+  const visibleEmitters = emitters.filter((emitter) => visibleEmitterIds.has(String(emitter.id)));
 
   const scene: Scene = {
-    primitives,
-    emitters,
+    primitives: visiblePrimitives,
+    emitters: visibleEmitters,
     environment: { kind: 'none' },
   };
+  validateCoreScene(scene);
 
   return {
     scene,
@@ -1551,9 +2539,33 @@ export async function gltfToScene(
     materialVariantBindings,
     materialBindings,
     instancingBindings,
+    punctualEmitterBindings,
+    nodeVisibilityPrimitives: primitives,
+    nodeVisibilityEmitters: emitters,
     warnings,
     diagnostics,
   };
+}
+
+function buildEffectiveNodeVisibility(
+  gltf: GltfJson,
+  rootNodeIndices: readonly number[],
+): Map<number, boolean> {
+  const result = new Map<number, boolean>();
+  const nodes = gltf.nodes ?? [];
+  const stack = rootNodeIndices.map((nodeIndex) => ({ nodeIndex, parentVisible: true }));
+  while (stack.length > 0) {
+    const { nodeIndex, parentVisible } = stack.pop()!;
+    const node = nodes[nodeIndex];
+    if (!node || result.has(nodeIndex)) continue;
+    const ownVisible = node.extensions?.KHR_node_visibility?.visible !== false;
+    const visible = parentVisible && ownVisible;
+    result.set(nodeIndex, visible);
+    for (const child of node.children ?? []) {
+      stack.push({ nodeIndex: child, parentVisible: visible });
+    }
+  }
+  return result;
 }
 
 // ── Private helpers ──────────────────────────────────────────────────────────
@@ -1660,50 +2672,48 @@ function _coreMaterialForIndex(
 }
 
 function _buildPrimitiveMaterialVariantPatch(
-  gltf: GltfJson,
-  buffers: Map<number, ArrayBuffer>,
-  primitive: GltfPrimitive,
   coreMaterials: readonly MaterialSpec[],
   materialIndex: number | undefined,
   positions: Float32Array,
   normals: Float32Array,
   uvs: Float32Array | undefined,
   primitiveUv1: Float32Array | undefined,
+  primitiveUvSets: ReadonlyArray<Float32Array | undefined>,
   indices: Uint32Array | undefined,
   authoredTangents: Float32Array | undefined,
   meshLabel: string,
   warnings: string[],
   diagnostics: GltfImportDiagnostic[],
   primitivePath: string,
-  onAccessorDiagnostic: (diagnostic: GltfAccessorDiagnostic) => void,
+  resourceLedger: ImportResourceLedger,
 ): GltfMaterialVariantPrimitivePatch {
   const material = _coreMaterialForIndex(coreMaterials, materialIndex);
   const uvResolved = _resolvePrimitiveUvMaterial(
-    gltf,
-    buffers,
-    primitive,
     material,
     uvs,
     primitiveUv1,
-    positions.length / 3,
+    primitiveUvSets,
     warnings,
     diagnostics,
     primitivePath,
     meshLabel,
-    onAccessorDiagnostic,
   );
-  const finalTangents = authoredTangents ?? _maybeGenerateTangents(
-    positions,
-    normals,
-    uvResolved.uvs,
-    uvResolved.uv1,
-    indices,
-    uvResolved.material,
-    meshLabel,
-    warnings,
-    diagnostics,
-    primitivePath,
-  );
+  const finalTangents =
+    authoredTangents ??
+    _maybeGenerateTangents(
+      positions,
+      normals,
+      uvResolved.uvs,
+      uvResolved.uv1,
+      uvResolved.uvSets,
+      indices,
+      uvResolved.material,
+      meshLabel,
+      warnings,
+      diagnostics,
+      primitivePath,
+      resourceLedger,
+    );
   return {
     ...(materialIndex !== undefined ? { materialIndex } : {}),
     materialRouting: uvResolved.material,
@@ -1712,13 +2722,13 @@ function _buildPrimitiveMaterialVariantPatch(
       ? { droppedTextureFields: uvResolved.droppedTextureFields }
       : {}),
     uv1: uvResolved.uv1,
+    uvSets: uvResolved.uvSets,
     tangents: finalTangents,
   };
 }
 
 function _buildPrimitiveMaterialVariantPatches(
   gltf: GltfJson,
-  buffers: Map<number, ArrayBuffer>,
   primitive: GltfPrimitive,
   coreMaterials: readonly MaterialSpec[],
   baseMaterialIndex: number | undefined,
@@ -1726,13 +2736,14 @@ function _buildPrimitiveMaterialVariantPatches(
   normals: Float32Array,
   uvs: Float32Array | undefined,
   primitiveUv1: Float32Array | undefined,
+  primitiveUvSets: ReadonlyArray<Float32Array | undefined>,
   indices: Uint32Array | undefined,
   authoredTangents: Float32Array | undefined,
   meshLabel: string,
   warnings: string[],
   diagnostics: GltfImportDiagnostic[],
   primitivePath: string,
-  onAccessorDiagnostic: (diagnostic: GltfAccessorDiagnostic) => void,
+  resourceLedger: ImportResourceLedger,
 ): GltfMaterialVariantPatch[] {
   const patches = new Map<number, GltfMaterialVariantPatch>();
   const mappings = primitive.extensions?.KHR_materials_variants?.mappings ?? [];
@@ -1763,22 +2774,20 @@ function _buildPrimitiveMaterialVariantPatches(
       patches.set(variantIndex, {
         variantIndex,
         patch: _buildPrimitiveMaterialVariantPatch(
-          gltf,
-          buffers,
-          primitive,
           coreMaterials,
           materialIndex,
           positions,
           normals,
           uvs,
           primitiveUv1,
+          primitiveUvSets,
           indices,
           authoredTangents,
           meshLabel,
           warnings,
           diagnostics,
           primitivePath,
-          onAccessorDiagnostic,
+          resourceLedger,
         ),
       });
     }
@@ -1791,61 +2800,49 @@ function _maybeGenerateTangents(
   normals: Float32Array,
   uvs: Float32Array | undefined,
   uv1: Float32Array | undefined,
+  uvSets: ReadonlyArray<Float32Array | undefined> | undefined,
   indices: Uint32Array | undefined,
   material: MaterialSpec,
   meshLabel: string,
   warnings: string[],
   diagnostics: GltfImportDiagnostic[],
   primitivePath: string,
+  resourceLedger: ImportResourceLedger,
 ): Float32Array | undefined {
   if (!materialNeedsTangentFrame(material)) return undefined;
   const tangentUvSet = tangentFrameTexCoord(material);
   if (tangentUvSet == null) {
-    emitImportDiagnostic(warnings, diagnostics, {
-      severity: 'warning',
-      code: 'missing-tangent-texcoord',
-      path: `${primitivePath}.attributes.TANGENT`,
-      message:
-        `[vitrum/gltf-adapter] Mesh "${meshLabel}" uses tangent-space material maps ` +
-        'on multiple UV channels, but @vitrum/core carries one generated tangent frame per primitive. ' +
-        'Tangents could not be generated; provide authored TANGENT data for this asset.',
-    });
+    // A single authored/generated tangent stream cannot represent multiple UV
+    // parameterisations. All shipping backends derive each selected texture
+    // lane's exact cotangent frame from its own UV derivatives, so omission is
+    // the lossless representation and is not a degradation diagnostic.
     return undefined;
   }
-  if (tangentUvSet > 1) {
-    emitImportDiagnostic(warnings, diagnostics, {
-      severity: 'warning',
-      code: 'missing-tangent-texcoord',
-      path: `${primitivePath}.attributes.TEXCOORD_${tangentUvSet}`,
-      message:
-        `[vitrum/gltf-adapter] Mesh "${meshLabel}" uses a tangent-space material map ` +
-        `on TEXCOORD_${tangentUvSet}, but @vitrum/core currently imports only TEXCOORD_0 ` +
-        'and TEXCOORD_1. Tangents could not be generated; normal-map-like texture(s) may be ignored or approximate.',
-    });
-    return undefined;
-  }
-  const tangentUvs = tangentUvSet === 1 ? uv1 : uvs;
+  const tangentUvs =
+    uvSets?.[tangentUvSet] ?? (tangentUvSet === 1 ? uv1 : tangentUvSet === 0 ? uvs : undefined);
   if (!tangentUvs) {
-    emitImportDiagnostic(warnings, diagnostics, {
-      severity: 'warning',
-      code: 'missing-tangent-texcoord',
-      path: `${primitivePath}.attributes.TEXCOORD_${tangentUvSet}`,
-      message:
-        `[vitrum/gltf-adapter] Mesh "${meshLabel}" uses a tangent-space material map ` +
-        `on TEXCOORD_${tangentUvSet}, but the primitive has no TEXCOORD_${tangentUvSet}. ` +
-        'Tangents could not be generated; normal-map-like texture(s) may be ignored or approximate.',
-    });
-    return undefined;
+    throwImportBoundaryError(
+      'missing-material-texcoord',
+      `${primitivePath}.attributes.TEXCOORD_${tangentUvSet}`,
+      `[vitrum/gltf-adapter] Mesh "${meshLabel}" references missing TEXCOORD_${tangentUvSet} for a tangent-space material map.`,
+    );
   }
-  const generated = generateTangents(positions, normals, tangentUvs, indices);
+  const generated = generateTangents(
+    positions,
+    normals,
+    tangentUvs,
+    indices,
+    resourceLedger,
+    `${primitivePath} generated tangents`,
+  );
   if (!generated) {
     emitImportDiagnostic(warnings, diagnostics, {
       severity: 'warning',
       code: 'tangent-generation-failed',
       path: `${primitivePath}.attributes.TANGENT`,
       message:
-        `[vitrum/gltf-adapter] Mesh "${meshLabel}" uses a tangent-space material map ` +
-        `but tangents could not be generated from POSITION/NORMAL/TEXCOORD_${tangentUvSet}.`,
+        `[vitrum/gltf-adapter] Mesh "${meshLabel}" has a degenerate TEXCOORD_${tangentUvSet} ` +
+        'parameterisation, so a stable per-vertex tangent stream cannot be generated.',
     });
     return undefined;
   }
@@ -1861,10 +2858,12 @@ function _maybeGenerateTangents(
 }
 
 function materialNeedsTangentFrame(material: MaterialSpec): boolean {
-  return material.normalMap !== undefined ||
+  return (
+    material.normalMap !== undefined ||
     material.clearcoatNormalMap !== undefined ||
     material.bumpMap !== undefined ||
-    material.anisotropyMap !== undefined;
+    material.anisotropyMap !== undefined
+  );
 }
 
 function tangentFrameTexCoord(material: MaterialSpec): number | null {
@@ -1875,7 +2874,7 @@ function tangentFrameTexCoord(material: MaterialSpec): number | null {
     material.anisotropyMap?.texCoord,
   ].filter((texCoord): texCoord is number => texCoord !== undefined);
   if (candidates.length === 0) return 0;
-  const channels = new Set(candidates.map((texCoord) => Math.max(0, Math.floor(texCoord))));
+  const channels = new Set(candidates);
   if (channels.size > 1) return null;
   return channels.values().next().value ?? 0;
 }
@@ -1900,35 +2899,26 @@ function _extractMeshGpuInstancing(
   warnings: string[],
   diagnostics: GltfImportDiagnostic[],
   onAccessorDiagnostic: (diagnostic: GltfAccessorDiagnostic) => void,
+  resourceLedger: ImportResourceLedger,
 ): MeshGpuInstancingTransforms | undefined {
   const extension = node.extensions?.EXT_mesh_gpu_instancing;
   if (extension === undefined) return undefined;
   const pathBase = `nodes[${nodeIdx}].extensions.EXT_mesh_gpu_instancing`;
   const attributes = isObject(extension) ? extension.attributes : undefined;
   if (!isObject(extension) || !isObject(attributes)) {
-    emitImportDiagnostic(warnings, diagnostics, {
-      severity: 'warning',
-      code: 'ignored-gpu-instancing',
-      path: pathBase,
-      message:
-        `[vitrum/gltf-adapter] Node "${node.name ?? nodeIdx}" uses EXT_mesh_gpu_instancing ` +
-        'without an attributes object. The base mesh is imported once with the node transform.',
-    });
-    return undefined;
+    throwImportBoundaryError(
+      'ignored-gpu-instancing',
+      pathBase,
+      `[vitrum/gltf-adapter] Node "${node.name ?? nodeIdx}" uses EXT_mesh_gpu_instancing without an attributes object.`,
+    );
   }
 
   const attrs = attributes;
-  let failed = false;
   let instanceCount: number | undefined;
+  let rotationNormalizationTolerance = 1e-4;
 
-  const fail = (path: string, message: string): void => {
-    failed = true;
-    emitImportDiagnostic(warnings, diagnostics, {
-      severity: 'warning',
-      code: 'ignored-gpu-instancing',
-      path,
-      message,
-    });
+  const fail = (path: string, message: string): never => {
+    throwImportBoundaryError('ignored-gpu-instancing', path, message);
   };
 
   const readAccessor = (
@@ -1937,53 +2927,93 @@ function _extractMeshGpuInstancing(
     const rawAccessorIndex = attrs[semantic];
     if (rawAccessorIndex === undefined) return undefined;
     const attrPath = `${pathBase}.attributes.${semantic}`;
-    if (typeof rawAccessorIndex !== 'number' || !Number.isInteger(rawAccessorIndex) || rawAccessorIndex < 0) {
-      fail(
+    if (
+      typeof rawAccessorIndex !== 'number' ||
+      !Number.isInteger(rawAccessorIndex) ||
+      rawAccessorIndex < 0
+    ) {
+      return fail(
         attrPath,
         `[vitrum/gltf-adapter] Node "${node.name ?? nodeIdx}" EXT_mesh_gpu_instancing ` +
-          `${semantic} must reference a non-negative accessor index. The base mesh is imported once.`,
+          `${semantic} must reference a non-negative accessor index.`,
       );
-      return undefined;
     }
     const accessorIndex = rawAccessorIndex;
     const accessor = gltf.accessors?.[accessorIndex];
     const spec = GPU_INSTANCE_ATTRIBUTE_SPECS[semantic];
     if (!accessor) {
-      fail(
+      return fail(
         attrPath,
         `[vitrum/gltf-adapter] Node "${node.name ?? nodeIdx}" EXT_mesh_gpu_instancing ` +
-          `${semantic} references missing accessor ${accessorIndex}. The base mesh is imported once.`,
+          `${semantic} references missing accessor ${accessorIndex}.`,
       );
-      return undefined;
     }
-    if (accessor.type !== spec.type) {
-      fail(
+    const isFloatTransform =
+      accessor.componentType === GltfComponentType.FLOAT &&
+      accessor.normalized !== true;
+    const isQuantizedRotation =
+      semantic === 'ROTATION' &&
+      (accessor.componentType === GltfComponentType.BYTE ||
+        accessor.componentType === GltfComponentType.SHORT) &&
+      accessor.normalized === true;
+    if (
+      accessor.type !== spec.type ||
+      (!isFloatTransform && !isQuantizedRotation) ||
+      !Number.isSafeInteger(accessor.count) ||
+      accessor.count <= 0
+    ) {
+      const format =
+        semantic === 'ROTATION'
+          ? 'FLOAT, normalized BYTE, or normalized SHORT VEC4'
+          : `non-normalized FLOAT ${spec.type}`;
+      return fail(
         attrPath,
         `[vitrum/gltf-adapter] Node "${node.name ?? nodeIdx}" EXT_mesh_gpu_instancing ` +
-          `${semantic} accessor must be ${spec.type}, got ${accessor.type}. The base mesh is imported once.`,
+          `${semantic} accessor must be a non-empty ${format} accessor.`,
       );
-      return undefined;
+    }
+    if (semantic === 'ROTATION') {
+      rotationNormalizationTolerance =
+        accessor.componentType === GltfComponentType.BYTE
+          ? 2 / 127
+          : accessor.componentType === GltfComponentType.SHORT
+            ? 2 / 32767
+            : 1e-4;
     }
     if (instanceCount === undefined) {
       instanceCount = accessor.count;
     } else if (accessor.count !== instanceCount) {
-      fail(
+      return fail(
         attrPath,
         `[vitrum/gltf-adapter] Node "${node.name ?? nodeIdx}" EXT_mesh_gpu_instancing ` +
           `${semantic} count ${accessor.count} does not match instance count ${instanceCount}. ` +
-          'The base mesh is imported once.',
+          'All transform attributes must have identical counts.',
       );
-      return undefined;
     }
     try {
-      return unpackAccessorFloat(gltf, buffers, accessorIndex, warnings, onAccessorDiagnostic);
+      const decoded = unpackAccessorFloat(
+        gltf,
+        buffers,
+        accessorIndex,
+        warnings,
+        onAccessorDiagnostic,
+        resourceLedger,
+      );
+      const components = semantic === 'ROTATION' ? 4 : 3;
+      if (decoded.length !== accessor.count * components || !decoded.every(Number.isFinite)) {
+        return fail(
+          attrPath,
+          `[vitrum/gltf-adapter] EXT_mesh_gpu_instancing ${semantic} decoded to an invalid value count or non-finite values.`,
+        );
+      }
+      return decoded;
     } catch (e) {
-      fail(
+      rethrowResourceLimitError(e);
+      return fail(
         attrPath,
         `[vitrum/gltf-adapter] Failed to read EXT_mesh_gpu_instancing ${semantic} for ` +
-          `node "${node.name ?? nodeIdx}": ${String(e)} The base mesh is imported once.`,
+          `node "${node.name ?? nodeIdx}": ${String(e)}`,
       );
-      return undefined;
     }
   };
 
@@ -1993,38 +3023,26 @@ function _extractMeshGpuInstancing(
 
   for (const key of Object.keys(attrs)) {
     if (key in GPU_INSTANCE_ATTRIBUTE_SPECS) continue;
-    emitImportDiagnostic(warnings, diagnostics, {
-      severity: 'warning',
-      code: 'ignored-gpu-instancing-attribute',
-      path: `${pathBase}.attributes.${key}`,
-      message:
-        `[vitrum/gltf-adapter] Node "${node.name ?? nodeIdx}" EXT_mesh_gpu_instancing ` +
-        `attribute "${key}" is custom/non-transform data and is ignored.`,
-    });
+    throwImportBoundaryError(
+      'ignored-gpu-instancing-attribute',
+      `${pathBase}.attributes.${key}`,
+      `[vitrum/gltf-adapter] Node "${node.name ?? nodeIdx}" EXT_mesh_gpu_instancing attribute "${key}" cannot be represented exactly.`,
+    );
   }
 
-  if (failed) return undefined;
   if (instanceCount === undefined || instanceCount <= 0) {
-    emitImportDiagnostic(warnings, diagnostics, {
-      severity: 'warning',
-      code: 'ignored-gpu-instancing',
-      path: `${pathBase}.attributes`,
-      message:
-        `[vitrum/gltf-adapter] Node "${node.name ?? nodeIdx}" uses EXT_mesh_gpu_instancing ` +
-        'without TRANSLATION, ROTATION, or SCALE accessors. The base mesh is imported once.',
-    });
-    return undefined;
+    throwImportBoundaryError(
+      'ignored-gpu-instancing',
+      `${pathBase}.attributes`,
+      `[vitrum/gltf-adapter] Node "${node.name ?? nodeIdx}" uses EXT_mesh_gpu_instancing without TRANSLATION, ROTATION, or SCALE accessors.`,
+    );
   }
 
   const worldInstanceTransforms: Mat4[] = [];
   const localInstanceTransforms: Mat4[] = [];
   for (let i = 0; i < instanceCount; i += 1) {
     const t: [number, number, number] = translations
-      ? [
-          translations[i * 3 + 0] ?? 0,
-          translations[i * 3 + 1] ?? 0,
-          translations[i * 3 + 2] ?? 0,
-        ]
+      ? [translations[i * 3 + 0] ?? 0, translations[i * 3 + 1] ?? 0, translations[i * 3 + 2] ?? 0]
       : [0, 0, 0];
     const r: [number, number, number, number] = rotations
       ? [
@@ -2034,16 +3052,30 @@ function _extractMeshGpuInstancing(
           rotations[i * 4 + 3] ?? 1,
         ]
       : [0, 0, 0, 1];
+    if (rotations) {
+      const length = Math.hypot(r[0], r[1], r[2], r[3]);
+      if (
+        !Number.isFinite(length) ||
+        length <= 1e-10 ||
+        Math.abs(length - 1) > rotationNormalizationTolerance
+      ) {
+        throwImportBoundaryError(
+          'ignored-gpu-instancing',
+          `${pathBase}.attributes.ROTATION`,
+          `[vitrum/gltf-adapter] EXT_mesh_gpu_instancing ROTATION instance ${i} must be a normalized quaternion.`,
+        );
+      }
+    }
     const s: [number, number, number] = scales
-      ? [
-          scales[i * 3 + 0] ?? 1,
-          scales[i * 3 + 1] ?? 1,
-          scales[i * 3 + 2] ?? 1,
-        ]
+      ? [scales[i * 3 + 0] ?? 1, scales[i * 3 + 1] ?? 1, scales[i * 3 + 2] ?? 1]
       : [1, 1, 1];
-    const local = asMat4(composeTrsMat4(t, r, s));
+    const local = asMat4(
+      composeTrsMat4(t, r, s, resourceLedger, `${pathBase}.instances[${i}].localMatrix`),
+    );
     localInstanceTransforms.push(local);
-    worldInstanceTransforms.push(asMat4(mat4Mul(worldMat, local)));
+    worldInstanceTransforms.push(
+      asMat4(mat4Mul(worldMat, local, resourceLedger, `${pathBase}.instances[${i}].worldMatrix`)),
+    );
   }
   return { worldInstanceTransforms, localInstanceTransforms };
 }
@@ -2052,11 +3084,7 @@ function isObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
-/**
- * Attempt to unpack a float accessor, returning `undefined` and appending a
- * warning on failure.  Used for optional attributes (NORMAL, TEXCOORD_*, etc.)
- * that the caller may substitute or skip when missing.
- */
+/** Read an authored optional accessor. Absence is optional; malformed data is not. */
 function _tryUnpackFloat(
   gltf: GltfJson,
   buffers: Map<number, ArrayBuffer>,
@@ -2067,24 +3095,68 @@ function _tryUnpackFloat(
   diagnostics?: GltfImportDiagnostic[],
   diagnosticCode: GltfImportDiagnosticCode = 'unreadable-optional-attribute',
   diagnosticPath?: string,
+  resourceLedger?: ImportResourceLedger,
 ): Float32Array | undefined {
   if (accessorIndex === undefined) return undefined;
   try {
-    return unpackAccessorFloat(gltf, buffers, accessorIndex, warnings, onAccessorDiagnostic);
-  } catch (e) {
-    const message = `[vitrum/gltf-adapter] Failed to read ${label}: ${String(e)}`;
-    if (diagnostics && diagnosticPath) {
-      emitImportDiagnostic(warnings, diagnostics, {
-        severity: 'warning',
-        code: diagnosticCode,
-        path: diagnosticPath,
-        message,
-      });
-    } else {
-      warnings.push(message);
+    const decoded = unpackAccessorFloat(
+      gltf,
+      buffers,
+      accessorIndex,
+      warnings,
+      onAccessorDiagnostic,
+      resourceLedger,
+    );
+    if (!decoded.every(Number.isFinite)) {
+      throw new Error(`accessor ${accessorIndex} contains non-finite values`);
     }
-    return undefined;
+    return decoded;
+  } catch (e) {
+    rethrowResourceLimitError(e);
+    const message = `[vitrum/gltf-adapter] Failed to read ${label}: ${String(e)}`;
+    void diagnostics;
+    throwImportBoundaryError(
+      diagnosticCode,
+      diagnosticPath ?? `accessors[${accessorIndex}]`,
+      message,
+    );
   }
+}
+
+function _usesMeshQuantization(gltf: GltfJson): boolean {
+  return (
+    gltf.extensionsUsed?.includes('KHR_mesh_quantization') === true ||
+    gltf.extensionsRequired?.includes('KHR_mesh_quantization') === true
+  );
+}
+
+function _validPositionEncoding(accessor: GltfAccessor, meshQuantization: boolean): boolean {
+  if (accessor.componentType === GltfComponentType.FLOAT) {
+    return accessor.normalized !== true;
+  }
+  if (!meshQuantization) return false;
+  // KHR_mesh_quantization permits both normalized and unnormalized signed or
+  // unsigned 8/16-bit POSITION storage; authored node/skin transforms carry
+  // any required dequantization scale and offset.
+  return (
+    accessor.componentType === GltfComponentType.BYTE ||
+    accessor.componentType === GltfComponentType.UNSIGNED_BYTE ||
+    accessor.componentType === GltfComponentType.SHORT ||
+    accessor.componentType === GltfComponentType.UNSIGNED_SHORT
+  );
+}
+
+function _validNormalEncoding(accessor: GltfAccessor, meshQuantization: boolean): boolean {
+  if (accessor.componentType === GltfComponentType.FLOAT) {
+    return accessor.normalized !== true;
+  }
+  if (!meshQuantization || accessor.normalized !== true) return false;
+  // KHR_mesh_quantization permits signed normalized 8/16-bit normals. Unsigned
+  // encodings cannot represent the required [-1, 1] normal range.
+  return (
+    accessor.componentType === GltfComponentType.BYTE ||
+    accessor.componentType === GltfComponentType.SHORT
+  );
 }
 
 function _validatePrimitiveAttributeAccessor(
@@ -2100,23 +3172,52 @@ function _validatePrimitiveAttributeAccessor(
 ): boolean {
   if (accessorIndex === undefined) return true;
   const accessor = gltf.accessors?.[accessorIndex];
-  if (!accessor) return true;
+  if (!accessor) {
+    throwImportBoundaryError(
+      'invalid-primitive-attribute',
+      path,
+      `[vitrum/gltf-adapter] Mesh "${meshLabel}" ${attributeName} references missing accessor ${accessorIndex}.`,
+    );
+  }
   if (allowedTypes.includes(accessor.type) && accessor.count === expectedCount) return true;
-  emitImportDiagnostic(warnings, diagnostics, {
-    severity: 'warning',
-    code: 'invalid-primitive-attribute',
+  void warnings;
+  void diagnostics;
+  throwImportBoundaryError(
+    'invalid-primitive-attribute',
     path,
-    message:
-      `[vitrum/gltf-adapter] Mesh "${meshLabel}" ${attributeName} accessor must be ` +
+    `[vitrum/gltf-adapter] Mesh "${meshLabel}" ${attributeName} accessor must be ` +
       `${allowedTypes.join(' or ')} with count ${expectedCount}, but accessor ${accessorIndex} ` +
-      `is ${accessor.type} with count ${accessor.count}. Attribute ignored.`,
-  });
-  return false;
+      `is ${accessor.type} with count ${accessor.count}.`,
+  );
 }
 
 interface SkinData {
   bones: Float32Array;
   boneInverses: Float32Array;
+}
+
+function writeMat4Product(
+  out: Float32Array,
+  outOffset: number,
+  a: ArrayLike<number>,
+  b: ArrayLike<number>,
+): void {
+  for (let column = 0; column < 4; column += 1) {
+    for (let row = 0; row < 4; row += 1) {
+      let sum = 0;
+      for (let k = 0; k < 4; k += 1) {
+        sum += (a[k * 4 + row] ?? 0) * (b[column * 4 + k] ?? 0);
+      }
+      out[outOffset + column * 4 + row] = sum;
+    }
+  }
+}
+
+function mat4RangeIsFinite(values: Float32Array, offset: number): boolean {
+  for (let component = 0; component < 16; component += 1) {
+    if (!Number.isFinite(values[offset + component])) return false;
+  }
+  return true;
 }
 
 /**
@@ -2133,67 +3234,138 @@ function _extractSkinData(
   warnings: string[],
   diagnostics: GltfImportDiagnostic[],
   onAccessorDiagnostic: (diagnostic: GltfAccessorDiagnostic) => void,
+  resourceLedger: ImportResourceLedger,
 ): SkinData | undefined {
   if (skinIdx === undefined) return undefined;
   const gltfSkin = gltfSkins[skinIdx];
-  if (!gltfSkin) return undefined;
-  const meshWorldInverse = mat4Invert(meshWorld);
-  if (!meshWorldInverse) {
-    emitImportDiagnostic(warnings, diagnostics, {
-      severity: 'warning',
-      code: 'singular-skin-transform',
-      path: `skins[${skinIdx}]`,
-      message:
-        `[vitrum/gltf-adapter] Skinned mesh node for skin "${gltfSkin.name ?? skinIdx}" has a ` +
-        'singular world transform. Skinning was omitted for this mesh.',
-    });
-    return undefined;
+  if (!Number.isSafeInteger(skinIdx) || skinIdx < 0 || !gltfSkin) {
+    throwImportBoundaryError(
+      'unreadable-skin-joints',
+      'nodes[].skin',
+      `[vitrum/gltf-adapter] Skinned mesh references missing skin ${String(skinIdx)}.`,
+    );
   }
 
   const jointCount = gltfSkin.joints.length;
-  const bones = new Float32Array(jointCount * 16);
+  if (jointCount === 0) {
+    throwImportBoundaryError(
+      'unreadable-skin-joints',
+      `skins[${skinIdx}].joints`,
+      `[vitrum/gltf-adapter] Skin "${gltfSkin.name ?? skinIdx}" must contain at least one joint.`,
+    );
+  }
+  const bonesAllocation = geometryArrayAllocation(
+    [jointCount, 16],
+    Float32Array.BYTES_PER_ELEMENT,
+    `skins[${skinIdx}] rest-pose bones`,
+  );
+  resourceLedger.chargeDecodedGeometryBytes(
+    checkedGeometrySum(
+      [
+        bonesAllocation.byteLength,
+        ...(gltfSkin.inverseBindMatrices === undefined ? [bonesAllocation.byteLength] : []),
+      ],
+      `skins[${skinIdx}] rest-pose matrix byte length`,
+    ),
+    `skins[${skinIdx}] rest-pose matrices`,
+  );
+  const meshWorldInverse = mat4Invert(
+    meshWorld,
+    resourceLedger,
+    `skins[${skinIdx}] mesh world inverse`,
+  );
+  if (!meshWorldInverse) {
+    throwImportBoundaryError(
+      'singular-skin-transform',
+      `skins[${skinIdx}]`,
+      `[vitrum/gltf-adapter] Skinned mesh node for skin "${gltfSkin.name ?? skinIdx}" has a singular world transform.`,
+    );
+  }
+
+  const bones = new Float32Array(bonesAllocation.elementCount);
   for (let j = 0; j < jointCount; j++) {
     const jointNodeIdx = gltfSkin.joints[j]!;
+    if (!Number.isSafeInteger(jointNodeIdx) || jointNodeIdx < 0 || !gltf.nodes?.[jointNodeIdx]) {
+      throwImportBoundaryError(
+        'unreadable-skin-joints',
+        `skins[${skinIdx}].joints[${j}]`,
+        `[vitrum/gltf-adapter] Skin "${gltfSkin.name ?? skinIdx}" references missing joint node ${String(jointNodeIdx)}.`,
+      );
+    }
     const jointWorld = worldTransforms.get(jointNodeIdx);
-    if (jointWorld) {
-      const jointMeshLocal = mat4Mul(meshWorldInverse, jointWorld);
-      bones.set(jointMeshLocal, j * 16);
-    } else {
-      // Joint node not in the scene graph — use identity in mesh-local space.
-      bones[j * 16 + 0] = 1; bones[j * 16 + 5] = 1;
-      bones[j * 16 + 10] = 1; bones[j * 16 + 15] = 1;
+    if (!jointWorld) {
+      throwImportBoundaryError(
+        'unreadable-skin-joints',
+        `skins[${skinIdx}].joints[${j}]`,
+        `[vitrum/gltf-adapter] Joint node ${jointNodeIdx} for skin "${gltfSkin.name ?? skinIdx}" has no resolved world transform.`,
+      );
+    }
+    const boneOffset = j * 16;
+    writeMat4Product(bones, boneOffset, meshWorldInverse, jointWorld);
+    if (!mat4RangeIsFinite(bones, boneOffset)) {
+      throwImportBoundaryError(
+        'unreadable-skin-joints',
+        `skins[${skinIdx}].joints[${j}]`,
+        `[vitrum/gltf-adapter] Joint node ${jointNodeIdx} produced a non-finite rest-pose transform.`,
+      );
     }
   }
 
-  let boneInverses: Float32Array | undefined;
-  if (gltfSkin.inverseBindMatrices !== undefined) {
+  let boneInverses: Float32Array;
+  if (gltfSkin.inverseBindMatrices === undefined) {
+    // glTF 2.0 defines an omitted inverseBindMatrices accessor as identity.
+    boneInverses = new Float32Array(bonesAllocation.elementCount);
+    for (let j = 0; j < jointCount; j++) {
+      boneInverses[j * 16 + 0] = 1;
+      boneInverses[j * 16 + 5] = 1;
+      boneInverses[j * 16 + 10] = 1;
+      boneInverses[j * 16 + 15] = 1;
+    }
+  } else {
+    const accessorIndex = gltfSkin.inverseBindMatrices;
+    const accessor = gltf.accessors?.[accessorIndex];
+    if (
+      !Number.isSafeInteger(accessorIndex) ||
+      accessorIndex < 0 ||
+      !accessor ||
+      accessor.type !== 'MAT4' ||
+      accessor.componentType !== GltfComponentType.FLOAT ||
+      accessor.normalized === true ||
+      accessor.count !== jointCount
+    ) {
+      throwImportBoundaryError(
+        'unreadable-inverse-bind-matrices',
+        `skins[${skinIdx}].inverseBindMatrices`,
+        `[vitrum/gltf-adapter] Skin "${gltfSkin.name ?? skinIdx}" inverseBindMatrices must reference a FLOAT MAT4 accessor with exactly ${jointCount} entries.`,
+      );
+    }
     try {
       boneInverses = unpackAccessorFloat(
         gltf,
         buffers,
-        gltfSkin.inverseBindMatrices,
+        accessorIndex,
         warnings,
         onAccessorDiagnostic,
+        resourceLedger,
       );
     } catch (e) {
-      emitImportDiagnostic(warnings, diagnostics, {
-        severity: 'warning',
-        code: 'unreadable-inverse-bind-matrices',
-        path: `skins[${skinIdx}].inverseBindMatrices`,
-        message:
-          `[vitrum/gltf-adapter] Failed to read inverseBindMatrices for skin "${gltfSkin.name ?? skinIdx}": ` +
-          String(e) + '. Using identity inverses.',
-      });
+      rethrowResourceLimitError(e);
+      throwImportBoundaryError(
+        'unreadable-inverse-bind-matrices',
+        `skins[${skinIdx}].inverseBindMatrices`,
+        `[vitrum/gltf-adapter] Failed to read inverseBindMatrices for skin "${gltfSkin.name ?? skinIdx}": ${String(e)}`,
+      );
     }
-  }
-  if (!boneInverses || boneInverses.length < jointCount * 16) {
-    boneInverses = new Float32Array(jointCount * 16);
-    for (let j = 0; j < jointCount; j++) {
-      boneInverses[j * 16 + 0] = 1; boneInverses[j * 16 + 5] = 1;
-      boneInverses[j * 16 + 10] = 1; boneInverses[j * 16 + 15] = 1;
+    if (boneInverses.length !== jointCount * 16 || !boneInverses.every(Number.isFinite)) {
+      throwImportBoundaryError(
+        'unreadable-inverse-bind-matrices',
+        `skins[${skinIdx}].inverseBindMatrices`,
+        `[vitrum/gltf-adapter] Skin "${gltfSkin.name ?? skinIdx}" inverseBindMatrices decoded to ${boneInverses.length} values; expected ${jointCount * 16} finite values.`,
+      );
     }
   }
 
+  void diagnostics;
   return { bones, boneInverses };
 }
 
@@ -2201,32 +3373,17 @@ interface PrimitiveUvMaterialResolution {
   readonly material: MaterialSpec;
   readonly droppedTextureFields?: readonly MaterialTextureRefField[];
   readonly uvs?: Float32Array;
-  /** glTF TEXCOORD_N semantic assigned to core `uvs`.
-   *  Usually 0, but material-visible UV sets can be losslessly projected into
-   *  the two renderable core UV lanes on a per-primitive basis. Morph-target UV
-   *  deltas must follow this same source. */
+  /** glTF TEXCOORD_0 compatibility alias carried by core `uvs`. */
   readonly uvSourceTexCoord?: number;
   readonly uv1?: Float32Array;
-  /** glTF TEXCOORD_N semantic assigned to core `uv1`.
-   *  Usually 1, but material-visible UV sets can be losslessly projected into
-   *  the two renderable core UV lanes on a per-primitive basis. Morph-target UV
-   *  deltas must follow this same source. */
+  /** glTF TEXCOORD_1 compatibility alias carried by core `uv1`. */
   readonly uv1SourceTexCoord?: number;
+  /** Sparse, index-preserving glTF TEXCOORD_N streams. */
+  readonly uvSets?: ReadonlyArray<Float32Array | undefined>;
 }
 
 function _isTextureRef(value: unknown): value is TextureRef {
   return value !== null && typeof value === 'object' && 'handle' in value;
-}
-
-function _cloneMaterialWithTextureRef(
-  material: MaterialSpec,
-  field: MaterialTextureRefField,
-  ref: TextureRef,
-): MaterialSpec {
-  return {
-    ...material,
-    [field]: ref,
-  };
 }
 
 function _cloneMaterialWithoutTextureRefs(
@@ -2241,175 +3398,138 @@ function _cloneMaterialWithoutTextureRefs(
 function uvLaneResult(
   material: MaterialSpec,
   uvs: Float32Array | undefined,
-  uvSourceTexCoord: number | undefined,
   uv1: Float32Array | undefined,
-  uv1SourceTexCoord: number | undefined,
+  uvSets: ReadonlyArray<Float32Array | undefined>,
   droppedTextureFields?: readonly MaterialTextureRefField[],
 ): PrimitiveUvMaterialResolution {
+  const normalizedUvSets = cloneSparseArray(uvSets);
+  const uv0 = uvs ?? normalizedUvSets[0];
+  const uvOne = uv1 ?? normalizedUvSets[1];
+  if (uv0 != null) normalizedUvSets[0] = uv0;
+  if (uvOne != null) normalizedUvSets[1] = uvOne;
   return {
     material,
-    ...(droppedTextureFields != null && droppedTextureFields.length > 0 ? { droppedTextureFields } : {}),
-    ...(uvs != null ? { uvs, uvSourceTexCoord: uvSourceTexCoord ?? 0 } : {}),
-    ...(uv1 != null ? { uv1, uv1SourceTexCoord: uv1SourceTexCoord ?? 1 } : {}),
+    ...(droppedTextureFields != null && droppedTextureFields.length > 0
+      ? { droppedTextureFields }
+      : {}),
+    ...(uv0 != null ? { uvs: uv0, uvSourceTexCoord: 0 } : {}),
+    ...(uvOne != null ? { uv1: uvOne, uv1SourceTexCoord: 1 } : {}),
+    ...(sparseArrayHasDefinedEntry(normalizedUvSets) ? { uvSets: normalizedUvSets } : {}),
   };
 }
 
 function _resolvePrimitiveUvMaterial(
-  gltf: GltfJson,
-  buffers: Map<number, ArrayBuffer>,
-  primitive: GltfPrimitive,
   material: MaterialSpec,
   uvs: Float32Array | undefined,
   uv1: Float32Array | undefined,
-  vertexCount: number,
+  uvSets: ReadonlyArray<Float32Array | undefined>,
   warnings: string[],
   diagnostics: GltfImportDiagnostic[],
   primitivePath: string,
   meshName: string | number,
-  onAccessorDiagnostic: (diagnostic: GltfAccessorDiagnostic) => void,
 ): PrimitiveUvMaterialResolution {
   const textureFields: { field: MaterialTextureRefField; ref: TextureRef; texCoord: number }[] = [];
-  const materialUvSets = new Set<number>();
 
   for (const field of MATERIAL_TEXTURE_REF_FIELDS) {
     const ref = material[field];
     if (!_isTextureRef(ref)) continue;
-    const texCoord = Math.max(0, Math.floor(ref.texCoord ?? 0));
+    const texCoord = ref.texCoord ?? 0;
+    if (!Number.isSafeInteger(texCoord) || texCoord < 0) {
+      const source = gltfTextureRefSource(ref);
+      throwImportBoundaryError(
+        'missing-material-texcoord',
+        source?.path ?? `${primitivePath}.material.${field}.texCoord`,
+        `[vitrum/gltf-adapter] Mesh "${meshName}" material field "${field}" has invalid texCoord ${String(texCoord)}.`,
+      );
+    }
     textureFields.push({ field, ref, texCoord });
-    materialUvSets.add(texCoord);
   }
 
-  if (textureFields.length === 0) {
-    return uvLaneResult(material, uvs, 0, uv1, 1);
+  const streamFor = (texCoord: number): Float32Array | undefined =>
+    uvSets[texCoord] ?? (texCoord === 0 ? uvs : texCoord === 1 ? uv1 : undefined);
+  const missingFields = textureFields.filter(({ texCoord }) => streamFor(texCoord) == null);
+  if (missingFields.length === 0) return uvLaneResult(material, uvs, uv1, uvSets);
+  const { field, ref, texCoord } = missingFields[0]!;
+  const source = gltfTextureRefSource(ref);
+  throwImportBoundaryError(
+    'missing-material-texcoord',
+    source?.path ?? `${primitivePath}.material.${field}`,
+    `[vitrum/gltf-adapter] Mesh "${meshName}" material field "${field}" references TEXCOORD_${texCoord}, but the primitive has no readable TEXCOORD_${texCoord} accessor.`,
+  );
+}
+
+function checkedGeometryProduct(factors: readonly number[], allocationPath: string): number {
+  let product = 1;
+  for (const factor of factors) {
+    if (!Number.isSafeInteger(factor) || factor < 0) {
+      throw new RangeError(
+        `[vitrum/gltf-adapter] ${allocationPath} dimensions must be non-negative safe integers.`,
+      );
+    }
+    if (product !== 0 && factor > Math.floor(Number.MAX_SAFE_INTEGER / product)) {
+      throw new RangeError(
+        `[vitrum/gltf-adapter] ${allocationPath} exceeds the safe integer range.`,
+      );
+    }
+    product *= factor;
   }
+  return product;
+}
 
-  const highFields = textureFields.filter(({ texCoord }) => texCoord > 1);
-  if (highFields.length === 0) {
-    return uvLaneResult(material, uvs, 0, uv1, 1);
+function checkedGeometrySum(values: readonly number[], allocationPath: string): number {
+  let total = 0;
+  for (const value of values) {
+    if (!Number.isSafeInteger(value) || value < 0 || value > Number.MAX_SAFE_INTEGER - total) {
+      throw new RangeError(
+        `[vitrum/gltf-adapter] ${allocationPath} exceeds the safe integer range.`,
+      );
+    }
+    total += value;
   }
+  return total;
+}
 
-  const sourceUvs = new Map<number, Float32Array | undefined>([
-    [0, uvs],
-    [1, uv1],
-  ]);
-  const readUvSource = (texCoord: number): Float32Array | undefined => {
-    if (sourceUvs.has(texCoord)) return sourceUvs.get(texCoord);
-    const attrName = `TEXCOORD_${texCoord}`;
-    const attrIndex = primitive.attributes[attrName];
-    const source = _validatePrimitiveAttributeAccessor(
-      gltf,
-      attrIndex,
-      ['VEC2'],
-      vertexCount,
-      attrName,
-      `${meshName}`,
-      `${primitivePath}.attributes.${attrName}`,
-      warnings,
-      diagnostics,
-    )
-      ? _tryUnpackFloat(
-          gltf,
-          buffers,
-          attrIndex,
-          `${attrName} for "${meshName}"`,
-          warnings,
-          onAccessorDiagnostic,
-          diagnostics,
-          'unreadable-optional-attribute',
-          `${primitivePath}.attributes.${attrName}`,
-        )
-      : undefined;
-    sourceUvs.set(texCoord, source);
-    return source;
-  };
+function geometryArrayAllocation(
+  dimensions: readonly number[],
+  bytesPerElement: number,
+  allocationPath: string,
+): { readonly elementCount: number; readonly byteLength: number } {
+  const elementCount = checkedGeometryProduct(dimensions, `${allocationPath} element count`);
+  const byteLength = checkedGeometryProduct(
+    [elementCount, bytesPerElement],
+    `${allocationPath} byte length`,
+  );
+  return { elementCount, byteLength };
+}
 
-  const requestedTexCoords = [...materialUvSets].sort((a, b) => a - b);
-  const highTexCoords = requestedTexCoords.filter((texCoord) => texCoord > 1);
-  const missingHighTexCoords = new Set<number>();
-  if (requestedTexCoords.length <= 2) {
-    for (const texCoord of highTexCoords) {
-      if (readUvSource(texCoord) === undefined) missingHighTexCoords.add(texCoord);
-    }
-  }
-
-  if (requestedTexCoords.length <= 2 && missingHighTexCoords.size === 0) {
-    const assigned = new Map<number, 0 | 1>();
-    const usedLanes = new Set<0 | 1>();
-    if (requestedTexCoords.length === 1 && (requestedTexCoords[0] ?? 0) > 1) {
-      // Preserve the historical single-high-UV bridge: one TEXCOORD_N>1 is
-      // routed through uv1 so UV0 remains the authored TEXCOORD_0 lane.
-      assigned.set(requestedTexCoords[0]!, 1);
-      usedLanes.add(1);
-    }
-    for (const texCoord of requestedTexCoords) {
-      if (texCoord === 0) {
-        assigned.set(texCoord, 0);
-        usedLanes.add(0);
-      }
-    }
-    for (const texCoord of requestedTexCoords) {
-      if (texCoord === 1 && !usedLanes.has(1)) {
-        assigned.set(texCoord, 1);
-        usedLanes.add(1);
-      }
-    }
-    for (const texCoord of requestedTexCoords) {
-      if (assigned.has(texCoord)) continue;
-      const lane: 0 | 1 = usedLanes.has(0) ? 1 : 0;
-      assigned.set(texCoord, lane);
-      usedLanes.add(lane);
-    }
-
-    let remapped = material;
-    for (const { field, ref, texCoord } of textureFields) {
-      const lane = assigned.get(texCoord) ?? 0;
-      if (lane !== (ref.texCoord ?? 0)) {
-        remapped = _cloneMaterialWithTextureRef(remapped, field, { ...ref, texCoord: lane });
-      }
-    }
-
-    let uv0Source: number | undefined;
-    let uv1Source: number | undefined;
-    for (const [source, lane] of assigned) {
-      if (lane === 0) uv0Source = source;
-      else uv1Source = source;
-    }
-    return uvLaneResult(
-      remapped,
-      uv0Source !== undefined ? readUvSource(uv0Source) : undefined,
-      uv0Source,
-      uv1Source !== undefined ? readUvSource(uv1Source) : undefined,
-      uv1Source,
-    );
-  }
-
-  const dropFields = highFields.map(({ field }) => field);
-  const dropped = _cloneMaterialWithoutTextureRefs(material, dropFields);
-  const conflictReason = requestedTexCoords.length > 2
-    ? `material references more than two material-visible UV sets (${requestedTexCoords.map((n) => `TEXCOORD_${n}`).join(', ')}), but the core Scene contract can route at most two renderable UV lanes per primitive`
-    : `primitive has no readable ${[...missingHighTexCoords].sort((a, b) => a - b).map((n) => `TEXCOORD_${n}`).join(' / ')} accessor`;
-
-  for (const { field, ref, texCoord } of highFields) {
-    const source = gltfTextureRefSource(ref);
-    emitImportDiagnostic(warnings, diagnostics, {
-      severity: 'warning',
-      code: 'ignored-material-texcoord',
-      path: source?.path ?? `${primitivePath}.material`,
-      message:
-        `[vitrum/gltf-adapter] Mesh "${meshName}" material field "${field}" references ` +
-        `TEXCOORD_${texCoord}, but ${conflictReason}. The texture field is ignored ` +
-        'for this primitive instead of being sampled with the wrong UV channel.',
-    });
-  }
-  return uvLaneResult(dropped, uvs, 0, uv1, 1, dropFields);
+function allocateGeometryFloat32(
+  resourceLedger: ImportResourceLedger,
+  dimensions: readonly number[],
+  allocationPath: string,
+): Float32Array {
+  const allocation = geometryArrayAllocation(
+    dimensions,
+    Float32Array.BYTES_PER_ELEMENT,
+    allocationPath,
+  );
+  resourceLedger.chargeDecodedGeometryBytes(allocation.byteLength, allocationPath);
+  return new Float32Array(allocation.elementCount);
 }
 
 function remapVec2Attribute(
   attr: Float32Array | undefined,
   sourceVertices: Uint32Array,
+  resourceLedger: ImportResourceLedger,
+  allocationPath: string,
 ): Float32Array | undefined {
   if (attr == null) return undefined;
-  const out = new Float32Array(sourceVertices.length * 2);
+  const allocation = geometryArrayAllocation(
+    [sourceVertices.length, 2],
+    Float32Array.BYTES_PER_ELEMENT,
+    allocationPath,
+  );
+  resourceLedger.chargeDecodedGeometryBytes(allocation.byteLength, allocationPath);
+  const out = new Float32Array(allocation.elementCount);
   for (let i = 0; i < sourceVertices.length; i += 1) {
     const src = sourceVertices[i]! * 2;
     out[i * 2 + 0] = attr[src + 0] ?? 0;
@@ -2422,10 +3542,18 @@ function remapVertexColors(
   colors: Float32Array | undefined,
   sourceVertexCount: number,
   sourceVertices: Uint32Array,
+  resourceLedger: ImportResourceLedger,
+  allocationPath: string,
 ): Float32Array | undefined {
   if (colors == null || sourceVertexCount <= 0) return undefined;
   const components = Math.max(1, Math.floor(colors.length / sourceVertexCount));
-  const out = new Float32Array(sourceVertices.length * components);
+  const allocation = geometryArrayAllocation(
+    [sourceVertices.length, components],
+    Float32Array.BYTES_PER_ELEMENT,
+    allocationPath,
+  );
+  resourceLedger.chargeDecodedGeometryBytes(allocation.byteLength, allocationPath);
+  const out = new Float32Array(allocation.elementCount);
   for (let i = 0; i < sourceVertices.length; i += 1) {
     const src = sourceVertices[i]! * components;
     const dst = i * components;
@@ -2434,20 +3562,44 @@ function remapVertexColors(
   return out;
 }
 
-function remapVec4UintAttribute(values: Uint32Array, sourceVertices: Uint32Array): Uint32Array {
-  const out = new Uint32Array(sourceVertices.length * 4);
+function remapPackedUintAttribute(
+  values: Uint32Array,
+  components: number,
+  sourceVertices: Uint32Array,
+  resourceLedger: ImportResourceLedger,
+  allocationPath: string,
+): Uint32Array {
+  const allocation = geometryArrayAllocation(
+    [sourceVertices.length, components],
+    Uint32Array.BYTES_PER_ELEMENT,
+    allocationPath,
+  );
+  resourceLedger.chargeDecodedGeometryBytes(allocation.byteLength, allocationPath);
+  const out = new Uint32Array(allocation.elementCount);
   for (let i = 0; i < sourceVertices.length; i += 1) {
-    const src = sourceVertices[i]! * 4;
-    out.set(values.subarray(src, src + 4), i * 4);
+    const src = sourceVertices[i]! * components;
+    out.set(values.subarray(src, src + components), i * components);
   }
   return out;
 }
 
-function remapVec4FloatAttribute(values: Float32Array, sourceVertices: Uint32Array): Float32Array {
-  const out = new Float32Array(sourceVertices.length * 4);
+function remapPackedFloatAttribute(
+  values: Float32Array,
+  components: number,
+  sourceVertices: Uint32Array,
+  resourceLedger: ImportResourceLedger,
+  allocationPath: string,
+): Float32Array {
+  const allocation = geometryArrayAllocation(
+    [sourceVertices.length, components],
+    Float32Array.BYTES_PER_ELEMENT,
+    allocationPath,
+  );
+  resourceLedger.chargeDecodedGeometryBytes(allocation.byteLength, allocationPath);
+  const out = new Float32Array(allocation.elementCount);
   for (let i = 0; i < sourceVertices.length; i += 1) {
-    const src = sourceVertices[i]! * 4;
-    out.set(values.subarray(src, src + 4), i * 4);
+    const src = sourceVertices[i]! * components;
+    out.set(values.subarray(src, src + components), i * components);
   }
   return out;
 }
@@ -2455,28 +3607,106 @@ function remapVec4FloatAttribute(values: Float32Array, sourceVertices: Uint32Arr
 function remapMorphData(
   morph: MorphData | undefined,
   sourceVertices: Uint32Array,
+  resourceLedger: ImportResourceLedger,
+  allocationPath: string,
 ): MorphData | undefined {
   if (morph == null) return undefined;
+  resourceLedger.chargeDecodedGeometryBytes(
+    morph.morphWeights.byteLength,
+    `${allocationPath}.morphWeights`,
+  );
   return {
-    morphTargets: morph.morphTargets.map((target) => remapVec3Attribute(target, sourceVertices)),
+    morphTargets: morph.morphTargets.map((target, index) =>
+      remapVec3Attribute(
+        target,
+        sourceVertices,
+        resourceLedger,
+        `${allocationPath}.morphTargets[${index}]`,
+      ),
+    ),
     ...(morph.morphTargetNormals != null
-      ? { morphTargetNormals: morph.morphTargetNormals.map((target) => remapVec3Attribute(target, sourceVertices)) }
+      ? {
+          morphTargetNormals: morph.morphTargetNormals.map((target, index) =>
+            remapVec3Attribute(
+              target,
+              sourceVertices,
+              resourceLedger,
+              `${allocationPath}.morphTargetNormals[${index}]`,
+            ),
+          ),
+        }
       : {}),
     ...(morph.morphTargetTangents != null
-      ? { morphTargetTangents: morph.morphTargetTangents.map((target) => remapVec3Attribute(target, sourceVertices)) }
+      ? {
+          morphTargetTangents: morph.morphTargetTangents.map((target, index) =>
+            remapVec3Attribute(
+              target,
+              sourceVertices,
+              resourceLedger,
+              `${allocationPath}.morphTargetTangents[${index}]`,
+            ),
+          ),
+        }
       : {}),
     ...(morph.morphTargetUvs != null
-      ? { morphTargetUvs: morph.morphTargetUvs.map((target) => remapVec2Attribute(target, sourceVertices)!) }
+      ? {
+          morphTargetUvs: morph.morphTargetUvs.map(
+            (target, index) =>
+              remapVec2Attribute(
+                target,
+                sourceVertices,
+                resourceLedger,
+                `${allocationPath}.morphTargetUvs[${index}]`,
+              )!,
+          ),
+        }
       : {}),
     ...(morph.morphTargetUv1s != null
-      ? { morphTargetUv1s: morph.morphTargetUv1s.map((target) => remapVec2Attribute(target, sourceVertices)!) }
+      ? {
+          morphTargetUv1s: morph.morphTargetUv1s.map(
+            (target, index) =>
+              remapVec2Attribute(
+                target,
+                sourceVertices,
+                resourceLedger,
+                `${allocationPath}.morphTargetUv1s[${index}]`,
+              )!,
+          ),
+        }
+      : {}),
+    ...(morph.morphTargetUvSets != null
+      ? {
+          morphTargetUvSets: mapSparseArray(
+            morph.morphTargetUvSets,
+            (targets, texCoord) => targets?.map(
+              (target, index) =>
+                remapVec2Attribute(
+                  target,
+                  sourceVertices,
+                  resourceLedger,
+                  `${allocationPath}.morphTargetUvSets[${texCoord}][${index}]`,
+                )!,
+            ),
+          ),
+        }
       : {}),
     morphWeights: new Float32Array(morph.morphWeights),
   };
 }
 
-function remapVec3Attribute(values: Float32Array, sourceVertices: Uint32Array): Float32Array {
-  const out = new Float32Array(sourceVertices.length * 3);
+function remapVec3Attribute(
+  values: Float32Array,
+  sourceVertices: Uint32Array,
+  resourceLedger: ImportResourceLedger,
+  allocationPath: string,
+): Float32Array {
+  const allocation = geometryArrayAllocation(
+    [sourceVertices.length, 3],
+    Float32Array.BYTES_PER_ELEMENT,
+    allocationPath,
+  );
+  resourceLedger.chargeDecodedGeometryBytes(allocation.byteLength, allocationPath);
+  const out = new Float32Array(allocation.elementCount);
   for (let i = 0; i < sourceVertices.length; i += 1) {
     const src = sourceVertices[i]! * 3;
     out[i * 3 + 0] = values[src + 0] ?? 0;
@@ -2484,6 +3714,81 @@ function remapVec3Attribute(values: Float32Array, sourceVertices: Uint32Array): 
     out[i * 3 + 2] = values[src + 2] ?? 0;
   }
   return out;
+}
+
+function skinPrimitiveUvSet(
+  primitive: SkinnedMeshPrimitive,
+  texCoord: number,
+): Float32Array | undefined {
+  return (
+    primitive.uvSets?.[texCoord] ??
+    (texCoord === 0 ? primitive.uvs : texCoord === 1 ? primitive.uv1 : undefined)
+  );
+}
+
+/**
+ * `solveSkin` is a core helper and intentionally has no adapter dependency.
+ * Account its complete no-output-buffer allocation path here before invoking
+ * it so one import-wide geometry ceiling also governs this derived geometry.
+ */
+function chargeSolveSkinAllocations(
+  resourceLedger: ImportResourceLedger,
+  primitive: SkinnedMeshPrimitive,
+  allocationPath: string,
+): void {
+  const byteLengths: number[] = [
+    primitive.positions.byteLength,
+    primitive.normals.byteLength,
+    primitive.bones.byteLength,
+    2 * 9 * Float32Array.BYTES_PER_ELEMENT,
+  ];
+  if (primitive.tangents != null) {
+    byteLengths.push(primitive.tangents.byteLength);
+  }
+
+  const morphActive =
+    primitive.morphTargets != null &&
+    primitive.morphWeights != null &&
+    primitive.morphTargets.length > 0 &&
+    primitive.morphWeights.some((weight) => weight !== 0);
+  if (morphActive) {
+    byteLengths.push(primitive.positions.byteLength);
+    if (primitive.morphTargetNormals != null) {
+      byteLengths.push(primitive.normals.byteLength);
+    }
+    if (primitive.morphTargetTangents != null && primitive.tangents != null) {
+      byteLengths.push(
+        geometryArrayAllocation(
+          [primitive.positions.length / 3, 3],
+          Float32Array.BYTES_PER_ELEMENT,
+          `${allocationPath} morphed tangents`,
+        ).byteLength,
+      );
+    }
+
+    let copiedUv0 = false;
+    let copiedUv1 = false;
+    if (primitive.morphTargetUvSets != null) {
+      for (const texCoord of sparseArrayOwnIndices(primitive.morphTargetUvSets)) {
+        if (primitive.morphTargetUvSets[texCoord] == null) continue;
+        const base = skinPrimitiveUvSet(primitive, texCoord);
+        if (base != null) byteLengths.push(base.byteLength);
+        if (texCoord === 0) copiedUv0 = true;
+        if (texCoord === 1) copiedUv1 = true;
+      }
+    }
+    if (!copiedUv0 && primitive.morphTargetUvs != null && primitive.uvs != null) {
+      byteLengths.push(primitive.uvs.byteLength);
+    }
+    if (!copiedUv1 && primitive.morphTargetUv1s != null && primitive.uv1 != null) {
+      byteLengths.push(primitive.uv1.byteLength);
+    }
+  }
+
+  resourceLedger.chargeDecodedGeometryBytes(
+    checkedGeometrySum(byteLengths, `${allocationPath} byte length`),
+    allocationPath,
+  );
 }
 
 /**
@@ -2499,12 +3804,15 @@ function _buildPrimitive(
   indices: Uint32Array | undefined,
   uvs: Float32Array | undefined,
   uv1: Float32Array | undefined,
+  uvSets: ReadonlyArray<Float32Array | undefined>,
   tangents: Float32Array | undefined,
   colors: Float32Array | undefined,
+  colorSets: ReadonlyArray<Float32Array | undefined>,
   material: MaterialSpec,
   skin?: {
     skinIndices: Uint32Array;
     skinWeights: Float32Array;
+    skinInfluencesPerVertex?: number;
     bones: Float32Array;
     boneInverses: Float32Array;
     bindMatrix?: Float32Array;
@@ -2519,8 +3827,10 @@ function _buildPrimitive(
     normals,
     ...(uvs ? { uvs } : {}),
     ...(uv1 ? { uv1 } : {}),
+    ...(sparseArrayHasDefinedEntry(uvSets) ? { uvSets } : {}),
     ...(tangents ? { tangents } : {}),
     ...(colors ? { colors } : {}),
+    ...(sparseArrayHasDefinedEntry(colorSets) ? { colorSets } : {}),
     ...(indices ? { indices } : {}),
     material,
   };
@@ -2531,18 +3841,26 @@ function _buildPrimitive(
       transform: worldMat,
       skinIndices: skin.skinIndices,
       skinWeights: skin.skinWeights,
+      ...(skin.skinInfluencesPerVertex != null
+        ? { skinInfluencesPerVertex: skin.skinInfluencesPerVertex }
+        : {}),
       bones: skin.bones,
       boneInverses: skin.boneInverses,
       ...(skin.bindMatrix ? { bindMatrix: skin.bindMatrix } : {}),
       ...(skin.bindMatrixInverse ? { bindMatrixInverse: skin.bindMatrixInverse } : {}),
-      ...(morph ? {
-        morphTargets: morph.morphTargets,
-        ...(morph.morphTargetNormals ? { morphTargetNormals: morph.morphTargetNormals } : {}),
-        ...(morph.morphTargetTangents ? { morphTargetTangents: morph.morphTargetTangents } : {}),
-        ...(morph.morphTargetUvs ? { morphTargetUvs: morph.morphTargetUvs } : {}),
-        ...(morph.morphTargetUv1s ? { morphTargetUv1s: morph.morphTargetUv1s } : {}),
-        morphWeights: morph.morphWeights,
-      } : {}),
+      ...(morph
+        ? {
+            morphTargets: morph.morphTargets,
+            ...(morph.morphTargetNormals ? { morphTargetNormals: morph.morphTargetNormals } : {}),
+            ...(morph.morphTargetTangents
+              ? { morphTargetTangents: morph.morphTargetTangents }
+              : {}),
+            ...(morph.morphTargetUvs ? { morphTargetUvs: morph.morphTargetUvs } : {}),
+            ...(morph.morphTargetUv1s ? { morphTargetUv1s: morph.morphTargetUv1s } : {}),
+            ...(morph.morphTargetUvSets ? { morphTargetUvSets: morph.morphTargetUvSets } : {}),
+            morphWeights: morph.morphWeights,
+          }
+        : {}),
     };
   }
   if (instances) {
@@ -2569,14 +3887,12 @@ interface MorphData {
    *  base VEC4 tangent handedness). Present only when at least one target
    *  carries TANGENT; targets without one get zeros. */
   morphTargetTangents?: Float32Array[];
-  /** Per-target deltas for the glTF TEXCOORD_N semantic assigned to core uvs.
-   *  Usually TEXCOORD_0, or whichever material-visible UV set was projected
-   *  into core uvs for this primitive. */
+  /** Per-target TEXCOORD_0 compatibility alias. */
   morphTargetUvs?: Float32Array[];
-  /** Per-target deltas for the glTF TEXCOORD_N semantic assigned to core uv1.
-   *  Usually TEXCOORD_1, or whichever material-visible UV set was projected
-   *  into core uv1 for this primitive. */
+  /** Per-target TEXCOORD_1 compatibility alias. */
   morphTargetUv1s?: Float32Array[];
+  /** Per-UV-set, per-target TEXCOORD_N deltas. */
+  morphTargetUvSets?: Array<Float32Array[] | undefined>;
   /** Initial per-target weights from `node.weights ?? mesh.weights` (zeros
    *  when neither is authored). */
   morphWeights: Float32Array;
@@ -2587,11 +3903,9 @@ interface MorphData {
  *
  * glTF §3.7.2.2: each target maps attribute names to accessors carrying
  * DELTAS from the base attribute (sparse accessors are common here and are
- * handled by `unpackAccessorFloat`). POSITION, NORMAL, TANGENT, TEXCOORD_0,
- * and the glTF TEXCOORD_N semantic currently assigned to core uv1 map onto the
- * matching `SkinnedMeshPrimitive` morph arrays. Higher TEXCOORD_N sets are
- * supported only when the matching base high UV stream was losslessly remapped
- * into core uv1 for this primitive.
+ * handled by `unpackAccessorFloat`). POSITION, NORMAL, TANGENT, and every
+ * TEXCOORD_N with a matching base stream map onto the corresponding scalable
+ * `SkinnedMeshPrimitive` morph arrays.
  *
  * Returns `undefined` when the primitive has no targets.
  */
@@ -2601,15 +3915,13 @@ function _extractMorphTargets(
   targets: ReadonlyArray<Record<string, number>> | undefined,
   authoredWeights: number[] | undefined,
   vertexCount: number,
-  baseUvs: Float32Array | undefined,
-  uvSourceTexCoord: number | undefined,
-  baseUv1: Float32Array | undefined,
-  uv1SourceTexCoord: number | undefined,
+  baseUvSets: ReadonlyArray<Float32Array | undefined>,
   meshLabel: string,
   primitivePath: string,
   warnings: string[],
   diagnostics: GltfImportDiagnostic[],
   onAccessorDiagnostic: (diagnostic: GltfAccessorDiagnostic) => void,
+  resourceLedger: ImportResourceLedger,
 ): MorphData | undefined {
   if (!targets || targets.length === 0) return undefined;
   const tCount = targets.length;
@@ -2617,213 +3929,298 @@ function _extractMorphTargets(
   const morphTargets: Float32Array[] = [];
   const normalDeltas: (Float32Array | null)[] = [];
   const tangentDeltas: (Float32Array | null)[] = [];
-  const uvDeltas: (Float32Array | null)[] = [];
-  const uv1Deltas: (Float32Array | null)[] = [];
+  const morphUvSetIndexSet = new Set<number>();
+  for (let targetIndex = 0; targetIndex < targets.length; targetIndex += 1) {
+    for (const semantic of Object.keys(targets[targetIndex]!)) {
+      const texCoord = parseCanonicalSetSemantic(
+        semantic,
+        'TEXCOORD',
+        `${primitivePath}.targets[${targetIndex}].${semantic}`,
+        'ignored-morph-target-attribute',
+      );
+      if (texCoord === undefined) continue;
+      morphUvSetIndexSet.add(texCoord);
+    }
+  }
+  const morphUvSetIndices = [...morphUvSetIndexSet].sort((a, b) => a - b);
+  const uvSetDeltas: Array<Array<Float32Array | null> | undefined> = [];
+  for (const texCoord of morphUvSetIndices) uvSetDeltas[texCoord] = [];
+  const populatedUvSets = new Set<number>();
   let anyNormals = false;
   let anyTangents = false;
-  let anyUvs = false;
-  let anyUv1 = false;
 
   for (let t = 0; t < tCount; t++) {
     const target = targets[t]!;
 
     // POSITION delta.
-    let posDelta = _tryUnpackFloat(
-      gltf, buffers, target['POSITION'],
-      `morph target ${t} POSITION for "${meshLabel}"`, warnings, onAccessorDiagnostic,
+    _validatePrimitiveAttributeAccessor(
+      gltf,
+      target['POSITION'],
+      ['VEC3'],
+      vertexCount,
+      'POSITION morph delta',
+      meshLabel,
+      `${primitivePath}.targets[${t}].POSITION`,
+      warnings,
+      diagnostics,
+    );
+    const posDelta = _tryUnpackFloat(
+      gltf,
+      buffers,
+      target['POSITION'],
+      `morph target ${t} POSITION for "${meshLabel}"`,
+      warnings,
+      onAccessorDiagnostic,
       diagnostics,
       'unreadable-optional-attribute',
       `${primitivePath}.targets[${t}].POSITION`,
+      resourceLedger,
     );
     if (posDelta && posDelta.length !== vertexCount * 3) {
-      emitImportDiagnostic(warnings, diagnostics, {
-        severity: 'warning',
-        code: 'invalid-morph-target-delta-length',
-        path: `${primitivePath}.targets[${t}].POSITION`,
-        message:
-          `[vitrum/gltf-adapter] Morph target ${t} POSITION delta length ${posDelta.length} ` +
-          `!= ${vertexCount * 3} for "${meshLabel}". Using zero deltas for this target.`,
-      });
-      posDelta = undefined;
+      throwImportBoundaryError(
+        'invalid-morph-target-delta-length',
+        `${primitivePath}.targets[${t}].POSITION`,
+        `[vitrum/gltf-adapter] Morph target ${t} POSITION delta length ${posDelta.length} != ${vertexCount * 3} for "${meshLabel}".`,
+      );
     }
-    morphTargets.push(posDelta ?? new Float32Array(vertexCount * 3));
+    morphTargets.push(
+      posDelta ??
+        allocateGeometryFloat32(
+          resourceLedger,
+          [vertexCount, 3],
+          `${primitivePath}.targets[${t}].POSITION default delta`,
+        ),
+    );
 
     // NORMAL delta.
-    let nrmDelta = _tryUnpackFloat(
-      gltf, buffers, target['NORMAL'],
-      `morph target ${t} NORMAL for "${meshLabel}"`, warnings, onAccessorDiagnostic,
+    _validatePrimitiveAttributeAccessor(
+      gltf,
+      target['NORMAL'],
+      ['VEC3'],
+      vertexCount,
+      'NORMAL morph delta',
+      meshLabel,
+      `${primitivePath}.targets[${t}].NORMAL`,
+      warnings,
+      diagnostics,
+    );
+    const nrmDelta = _tryUnpackFloat(
+      gltf,
+      buffers,
+      target['NORMAL'],
+      `morph target ${t} NORMAL for "${meshLabel}"`,
+      warnings,
+      onAccessorDiagnostic,
       diagnostics,
       'unreadable-optional-attribute',
       `${primitivePath}.targets[${t}].NORMAL`,
+      resourceLedger,
     );
     if (nrmDelta && nrmDelta.length !== vertexCount * 3) {
-      emitImportDiagnostic(warnings, diagnostics, {
-        severity: 'warning',
-        code: 'invalid-morph-target-delta-length',
-        path: `${primitivePath}.targets[${t}].NORMAL`,
-        message:
-          `[vitrum/gltf-adapter] Morph target ${t} NORMAL delta length ${nrmDelta.length} ` +
-          `!= ${vertexCount * 3} for "${meshLabel}". Using zero deltas for this target.`,
-      });
-      nrmDelta = undefined;
+      throwImportBoundaryError(
+        'invalid-morph-target-delta-length',
+        `${primitivePath}.targets[${t}].NORMAL`,
+        `[vitrum/gltf-adapter] Morph target ${t} NORMAL delta length ${nrmDelta.length} != ${vertexCount * 3} for "${meshLabel}".`,
+      );
     }
     if (nrmDelta) anyNormals = true;
     normalDeltas.push(nrmDelta ?? null);
 
     // TANGENT direction delta (glTF morph target TANGENT is VEC3; base tangent
     // handedness remains in the base TANGENT.w lane).
-    let tanDelta = _tryUnpackFloat(
-      gltf, buffers, target['TANGENT'],
-      `morph target ${t} TANGENT for "${meshLabel}"`, warnings, onAccessorDiagnostic,
+    _validatePrimitiveAttributeAccessor(
+      gltf,
+      target['TANGENT'],
+      ['VEC3'],
+      vertexCount,
+      'TANGENT morph delta',
+      meshLabel,
+      `${primitivePath}.targets[${t}].TANGENT`,
+      warnings,
+      diagnostics,
+    );
+    const tanDelta = _tryUnpackFloat(
+      gltf,
+      buffers,
+      target['TANGENT'],
+      `morph target ${t} TANGENT for "${meshLabel}"`,
+      warnings,
+      onAccessorDiagnostic,
       diagnostics,
       'unreadable-optional-attribute',
       `${primitivePath}.targets[${t}].TANGENT`,
+      resourceLedger,
     );
     if (tanDelta && tanDelta.length !== vertexCount * 3) {
-      emitImportDiagnostic(warnings, diagnostics, {
-        severity: 'warning',
-        code: 'invalid-morph-target-delta-length',
-        path: `${primitivePath}.targets[${t}].TANGENT`,
-        message:
-          `[vitrum/gltf-adapter] Morph target ${t} TANGENT delta length ${tanDelta.length} ` +
-          `!= ${vertexCount * 3} for "${meshLabel}". Using zero deltas for this target.`,
-      });
-      tanDelta = undefined;
+      throwImportBoundaryError(
+        'invalid-morph-target-delta-length',
+        `${primitivePath}.targets[${t}].TANGENT`,
+        `[vitrum/gltf-adapter] Morph target ${t} TANGENT delta length ${tanDelta.length} != ${vertexCount * 3} for "${meshLabel}".`,
+      );
     }
     if (tanDelta) anyTangents = true;
     tangentDeltas.push(tanDelta ?? null);
 
-    const uvTargetSemantic = uvSourceTexCoord != null ? `TEXCOORD_${uvSourceTexCoord}` : 'TEXCOORD_0';
-    let uvDelta = _tryUnpackFloat(
-      gltf, buffers, target[uvTargetSemantic],
-      `morph target ${t} ${uvTargetSemantic} for "${meshLabel}"`, warnings, onAccessorDiagnostic,
-      diagnostics,
-      'unreadable-optional-attribute',
-      `${primitivePath}.targets[${t}].${uvTargetSemantic}`,
-    );
-    if (uvDelta && baseUvs == null) {
-      emitImportDiagnostic(warnings, diagnostics, {
-        severity: 'warning',
-        code: 'ignored-morph-target-texcoord',
-        path: `${primitivePath}.targets[${t}].${uvTargetSemantic}`,
-        message:
-          `[vitrum/gltf-adapter] Morph target ${t} ${uvTargetSemantic} delta in mesh ` +
-          `"${meshLabel}" is ignored because the primitive has no matching base ${uvTargetSemantic} stream.`,
-      });
-      uvDelta = undefined;
+    for (const texCoord of morphUvSetIndices) {
+      const semantic = `TEXCOORD_${texCoord}`;
+      _validatePrimitiveAttributeAccessor(
+        gltf,
+        target[semantic],
+        ['VEC2'],
+        vertexCount,
+        `${semantic} morph delta`,
+        meshLabel,
+        `${primitivePath}.targets[${t}].${semantic}`,
+        warnings,
+        diagnostics,
+      );
+      const delta = _tryUnpackFloat(
+        gltf,
+        buffers,
+        target[semantic],
+        `morph target ${t} ${semantic} for "${meshLabel}"`,
+        warnings,
+        onAccessorDiagnostic,
+        diagnostics,
+        'unreadable-optional-attribute',
+        `${primitivePath}.targets[${t}].${semantic}`,
+        resourceLedger,
+      );
+      if (delta && baseUvSets[texCoord] == null) {
+        throwImportBoundaryError(
+          'ignored-morph-target-texcoord',
+          `${primitivePath}.targets[${t}].${semantic}`,
+          `[vitrum/gltf-adapter] Morph target ${t} ${semantic} delta in mesh "${meshLabel}" has no matching base ${semantic} stream.`,
+        );
+      }
+      if (delta && delta.length !== vertexCount * 2) {
+        throwImportBoundaryError(
+          'invalid-morph-target-delta-length',
+          `${primitivePath}.targets[${t}].${semantic}`,
+          `[vitrum/gltf-adapter] Morph target ${t} ${semantic} delta length ${delta.length} != ${vertexCount * 2} for "${meshLabel}".`,
+        );
+      }
+      if (delta) populatedUvSets.add(texCoord);
+      uvSetDeltas[texCoord]!.push(delta ?? null);
     }
-    if (uvDelta && uvDelta.length !== vertexCount * 2) {
-      emitImportDiagnostic(warnings, diagnostics, {
-        severity: 'warning',
-        code: 'invalid-morph-target-delta-length',
-        path: `${primitivePath}.targets[${t}].${uvTargetSemantic}`,
-        message:
-          `[vitrum/gltf-adapter] Morph target ${t} ${uvTargetSemantic} delta length ${uvDelta.length} ` +
-          `!= ${vertexCount * 2} for "${meshLabel}". Using zero deltas for this target.`,
-      });
-      uvDelta = undefined;
-    }
-    if (uvDelta) anyUvs = true;
-    uvDeltas.push(uvDelta ?? null);
-
-    const uv1TargetSemantic = uv1SourceTexCoord != null ? `TEXCOORD_${uv1SourceTexCoord}` : 'TEXCOORD_1';
-    let uv1Delta = _tryUnpackFloat(
-      gltf, buffers, target[uv1TargetSemantic],
-      `morph target ${t} ${uv1TargetSemantic} for "${meshLabel}"`, warnings, onAccessorDiagnostic,
-      diagnostics,
-      'unreadable-optional-attribute',
-      `${primitivePath}.targets[${t}].${uv1TargetSemantic}`,
-    );
-    if (uv1Delta && baseUv1 == null) {
-      emitImportDiagnostic(warnings, diagnostics, {
-        severity: 'warning',
-        code: 'ignored-morph-target-texcoord',
-        path: `${primitivePath}.targets[${t}].${uv1TargetSemantic}`,
-        message:
-          `[vitrum/gltf-adapter] Morph target ${t} ${uv1TargetSemantic} delta in mesh ` +
-          `"${meshLabel}" is ignored because the primitive has no matching base ${uv1TargetSemantic} stream.`,
-      });
-      uv1Delta = undefined;
-    }
-    if (uv1Delta && uv1Delta.length !== vertexCount * 2) {
-      emitImportDiagnostic(warnings, diagnostics, {
-        severity: 'warning',
-        code: 'invalid-morph-target-delta-length',
-        path: `${primitivePath}.targets[${t}].${uv1TargetSemantic}`,
-        message:
-          `[vitrum/gltf-adapter] Morph target ${t} ${uv1TargetSemantic} delta length ${uv1Delta.length} ` +
-          `!= ${vertexCount * 2} for "${meshLabel}". Using zero deltas for this target.`,
-      });
-      uv1Delta = undefined;
-    }
-    if (uv1Delta) anyUv1 = true;
-    uv1Deltas.push(uv1Delta ?? null);
 
     for (const attr of Object.keys(target)) {
-      if (attr !== 'POSITION' && attr !== 'NORMAL' && attr !== 'TANGENT' && attr !== uvTargetSemantic && attr !== uv1TargetSemantic) {
-        if (/^TEXCOORD_\d+$/.test(attr)) {
-          emitImportDiagnostic(warnings, diagnostics, {
-            severity: 'warning',
-            code: 'ignored-morph-target-texcoord',
-            path: `${primitivePath}.targets[${t}].${attr}`,
-            message:
-              `[vitrum/gltf-adapter] Morph target ${t} attribute "${attr}" in mesh ` +
-              `"${meshLabel}" is ignored because @vitrum/core carries morph UV deltas only for ` +
-              `${uvTargetSemantic} and ${uv1TargetSemantic} on this primitive.`,
-          });
-        } else {
+      const colorSet = parseCanonicalSetSemantic(
+        attr,
+        'COLOR',
+        `${primitivePath}.targets[${t}].${attr}`,
+        'ignored-morph-target-attribute',
+      );
+      if (
+        attr !== 'POSITION' &&
+        attr !== 'NORMAL' &&
+        attr !== 'TANGENT' &&
+        !/^TEXCOORD_\d+$/.test(attr)
+      ) {
+        if (colorSet !== undefined || attr.startsWith('_')) {
           emitImportDiagnostic(warnings, diagnostics, {
             severity: 'warning',
             code: 'ignored-morph-target-attribute',
             path: `${primitivePath}.targets[${t}].${attr}`,
             message:
               `[vitrum/gltf-adapter] Morph target ${t} attribute "${attr}" in mesh ` +
-              `"${meshLabel}" is ignored.`,
+              `"${meshLabel}" is valid optional/application-specific glTF data but is not ` +
+              'represented by the core Scene morph contract and was ignored.',
           });
+          continue;
         }
+        throwImportBoundaryError(
+          'ignored-morph-target-attribute',
+          `${primitivePath}.targets[${t}].${attr}`,
+          `[vitrum/gltf-adapter] Morph target ${t} attribute "${attr}" in mesh "${meshLabel}" cannot be represented exactly.`,
+        );
       }
     }
   }
 
   // Initial weights: node-level overrides mesh-level per glTF §3.7.2.2;
   // absent weights default to 0 (rest pose).
-  const morphWeights = new Float32Array(tCount);
+  const morphWeights = allocateGeometryFloat32(
+    resourceLedger,
+    [tCount],
+    `${primitivePath}.weights`,
+  );
   if (authoredWeights) {
     if (authoredWeights.length !== tCount) {
-      emitImportDiagnostic(warnings, diagnostics, {
-        severity: 'warning',
-        code: 'morph-weight-count-mismatch',
-        path: `${primitivePath}.weights`,
-        message:
-          `[vitrum/gltf-adapter] Mesh "${meshLabel}" morph weights length ` +
-          `${authoredWeights.length} != target count ${tCount}; extra entries are ` +
-          'dropped / missing entries default to 0.',
-      });
+      throwImportBoundaryError(
+        'morph-weight-count-mismatch',
+        `${primitivePath}.weights`,
+        `[vitrum/gltf-adapter] Mesh "${meshLabel}" morph weights length ${authoredWeights.length} != target count ${tCount}.`,
+      );
     }
-    for (let t = 0; t < tCount; t++) morphWeights[t] = authoredWeights[t] ?? 0;
+    for (let t = 0; t < tCount; t++) {
+      const weight = authoredWeights[t]!;
+      if (!Number.isFinite(weight)) {
+        throwImportBoundaryError(
+          'morph-weight-count-mismatch',
+          `${primitivePath}.weights[${t}]`,
+          `[vitrum/gltf-adapter] Mesh "${meshLabel}" morph weight ${t} must be finite; received ${String(weight)}.`,
+        );
+      }
+      morphWeights[t] = weight;
+    }
   }
+
+  const morphTargetUvSets: Array<Float32Array[] | undefined> = mapSparseArray(
+    uvSetDeltas,
+    (deltas, texCoord) =>
+      populatedUvSets.has(texCoord)
+        ? deltas!.map(
+            (delta, targetIndex) =>
+              delta ??
+              allocateGeometryFloat32(
+                resourceLedger,
+                [vertexCount, 2],
+                `${primitivePath}.targets[${targetIndex}].TEXCOORD_${texCoord} default delta`,
+              ),
+          )
+        : undefined,
+  );
+  const anyMorphUvSets = sparseArrayHasDefinedEntry(morphTargetUvSets);
 
   return {
     morphTargets,
     ...(anyNormals
-      ? { morphTargetNormals: normalDeltas.map(n => n ?? new Float32Array(vertexCount * 3)) }
+      ? {
+          morphTargetNormals: normalDeltas.map(
+            (normal, targetIndex) =>
+              normal ??
+              allocateGeometryFloat32(
+                resourceLedger,
+                [vertexCount, 3],
+                `${primitivePath}.targets[${targetIndex}].NORMAL default delta`,
+              ),
+          ),
+        }
       : {}),
     ...(anyTangents
-      ? { morphTargetTangents: tangentDeltas.map(t => t ?? new Float32Array(vertexCount * 3)) }
+      ? {
+          morphTargetTangents: tangentDeltas.map(
+            (tangent, targetIndex) =>
+              tangent ??
+              allocateGeometryFloat32(
+                resourceLedger,
+                [vertexCount, 3],
+                `${primitivePath}.targets[${targetIndex}].TANGENT default delta`,
+              ),
+          ),
+        }
       : {}),
-    ...(anyUvs
-      ? { morphTargetUvs: uvDeltas.map(u => u ?? new Float32Array(vertexCount * 2)) }
-      : {}),
-    ...(anyUv1
-      ? { morphTargetUv1s: uv1Deltas.map(u => u ?? new Float32Array(vertexCount * 2)) }
-      : {}),
+    ...(morphTargetUvSets[0] ? { morphTargetUvs: morphTargetUvSets[0] } : {}),
+    ...(morphTargetUvSets[1] ? { morphTargetUv1s: morphTargetUvSets[1] } : {}),
+    ...(anyMorphUvSets ? { morphTargetUvSets } : {}),
     morphWeights,
   };
 }
 
 /**
  * Convert one KHR_lights_punctual light (with its node world transform) to a
- * core SceneEmitter. Returns `null` if the light type is unsupported.
+ * core SceneEmitter. Invalid or unsupported payloads fail at the import boundary.
  */
 function _convertPunctualLight(
   light: NonNullable<KhrLightsPunctualRoot['lights']>[number],
@@ -2832,25 +4229,72 @@ function _convertPunctualLight(
   warnings: string[],
   diagnostics: GltfImportDiagnostic[],
   lightPath: string,
-): SceneEmitter | null {
+): SceneEmitter {
+  if (!isObject(light)) {
+    throwImportBoundaryError(
+      'missing-punctual-light',
+      lightPath,
+      '[vitrum/gltf-adapter] KHR_lights_punctual light must be an object.',
+    );
+  }
+  if (
+    light.color !== undefined &&
+    (!Array.isArray(light.color) ||
+      light.color.length !== 3 ||
+      !light.color.every((value) => Number.isFinite(value) && value >= 0))
+  ) {
+    throwImportBoundaryError(
+      'missing-punctual-light',
+      `${lightPath}.color`,
+      '[vitrum/gltf-adapter] KHR_lights_punctual color must contain exactly three finite non-negative values.',
+    );
+  }
   const color: [number, number, number] = light.color
     ? [light.color[0], light.color[1], light.color[2]]
     : [1, 1, 1];
   const intensity = light.intensity ?? 1;
+  if (!Number.isFinite(intensity) || intensity < 0) {
+    throwImportBoundaryError(
+      'missing-punctual-light',
+      `${lightPath}.intensity`,
+      '[vitrum/gltf-adapter] KHR_lights_punctual intensity must be finite and non-negative.',
+    );
+  }
+  if (light.range !== undefined && (!Number.isFinite(light.range) || light.range <= 0)) {
+    throwImportBoundaryError(
+      'missing-punctual-light',
+      `${lightPath}.range`,
+      '[vitrum/gltf-adapter] KHR_lights_punctual range must be finite and greater than zero when present.',
+    );
+  }
 
   // Column-major 4×4: translation at indices 12, 13, 14.
   const px = worldMat[12] ?? 0;
   const py = worldMat[13] ?? 0;
   const pz = worldMat[14] ?? 0;
+  if (![px, py, pz].every(Number.isFinite)) {
+    throwImportBoundaryError(
+      'missing-punctual-light',
+      lightPath,
+      '[vitrum/gltf-adapter] KHR_lights_punctual node transform produced a non-finite position.',
+    );
+  }
 
   // glTF lights point along -Z in local space; world -Z column is at indices 8,9,10.
   const lzx = -(worldMat[8] ?? 0);
   const lzy = -(worldMat[9] ?? 0);
   const lzz = -(worldMat[10] ?? 0);
   const lzLen = Math.hypot(lzx, lzy, lzz);
-  const dirX = lzLen > 1e-10 ? lzx / lzLen : 0;
-  const dirY = lzLen > 1e-10 ? lzy / lzLen : 0;
-  const dirZ = lzLen > 1e-10 ? lzz / lzLen : 1;
+  if (!Number.isFinite(lzLen) || lzLen <= 1e-10) {
+    throwImportBoundaryError(
+      'missing-punctual-light',
+      lightPath,
+      '[vitrum/gltf-adapter] KHR_lights_punctual node transform has no finite light direction.',
+    );
+  }
+  const dirX = lzx / lzLen;
+  const dirY = lzy / lzLen;
+  const dirZ = lzz / lzLen;
 
   switch (light.type) {
     case 'point':
@@ -2866,7 +4310,21 @@ function _convertPunctualLight(
 
     case 'spot': {
       const inner = light.spot?.innerConeAngle ?? 0;
-      const outer = light.spot?.outerConeAngle ?? (Math.PI / 4);
+      const outer = light.spot?.outerConeAngle ?? Math.PI / 4;
+      if (
+        !Number.isFinite(inner) ||
+        !Number.isFinite(outer) ||
+        inner < 0 ||
+        outer <= 0 ||
+        inner >= outer ||
+        outer > Math.PI / 2
+      ) {
+        throwImportBoundaryError(
+          'missing-punctual-light',
+          `${lightPath}.spot`,
+          '[vitrum/gltf-adapter] Spot cone angles must satisfy 0 <= innerConeAngle < outerConeAngle <= PI/2.',
+        );
+      }
       const penumbra = outer > 1e-10 ? 1 - inner / outer : 0;
       return {
         kind: 'spot',
@@ -2893,15 +4351,13 @@ function _convertPunctualLight(
       };
 
     default:
-      emitImportDiagnostic(warnings, diagnostics, {
-        severity: 'warning',
-        code: 'unsupported-punctual-light-type',
-        path: `${lightPath}.type`,
-        message:
-          `[vitrum/gltf-adapter] KHR_lights_punctual light "${light.name ?? id}" ` +
-          `has unsupported type "${(light as { type: string }).type}". Emitter skipped.`,
-      });
-      return null;
+      void warnings;
+      void diagnostics;
+      throwImportBoundaryError(
+        'unsupported-punctual-light-type',
+        `${lightPath}.type`,
+        `[vitrum/gltf-adapter] KHR_lights_punctual light "${light.name ?? id}" has unsupported type "${String((light as { type?: unknown }).type)}".`,
+      );
   }
 }
 
@@ -2920,64 +4376,100 @@ interface SkinInfluenceSet {
   readonly weights: Float32Array;
 }
 
-interface CollapsedSkinInfluences {
+interface PackedSkinInfluences {
   readonly skinIndices: Uint32Array;
   readonly skinWeights: Float32Array;
-  readonly droppedPositiveInfluences: number;
+  readonly skinInfluencesPerVertex: number;
 }
 
 function isSkinInfluenceAttribute(attrName: string): boolean {
-  return /^JOINTS_[0-9]+$/.test(attrName) || /^WEIGHTS_[0-9]+$/.test(attrName);
+  const match = /^(JOINTS|WEIGHTS)_([0-9]+)$/u.exec(attrName);
+  if (match == null) return false;
+  const setIndex = Number(match[2]);
+  return Number.isSafeInteger(setIndex) &&
+    attrName === `${match[1]}_${setIndex}`;
 }
 
-function collectSkinInfluenceSetIndices(attributes: GltfPrimitive['attributes']): number[] {
+function collectSkinInfluenceSetIndices(
+  attributes: GltfPrimitive['attributes'],
+  primitivePath: string,
+): number[] {
   const sets = new Set<number>();
   for (const attrName of Object.keys(attributes ?? {})) {
-    const match = /^(?:JOINTS|WEIGHTS)_([0-9]+)$/.exec(attrName);
+    const match = /^(JOINTS|WEIGHTS)_([0-9]+)$/u.exec(attrName);
     if (!match) continue;
-    const setIndex = Number(match[1]);
-    if (Number.isSafeInteger(setIndex) && setIndex >= 0) sets.add(setIndex);
+    const setIndex = parseCanonicalSetSemantic(
+      attrName,
+      match[1] as 'JOINTS' | 'WEIGHTS',
+      `${primitivePath}.attributes.${attrName}`,
+      'ignored-primitive-attribute',
+    );
+    if (setIndex !== undefined) sets.add(setIndex);
   }
   return [...sets].sort((a, b) => a - b);
 }
 
-function collapseSkinInfluenceSets(
+function packSkinInfluenceSets(
   sets: readonly SkinInfluenceSet[],
   vertexCount: number,
-): CollapsedSkinInfluences {
-  const skinIndices = new Uint32Array(vertexCount * 4);
-  const skinWeights = new Float32Array(vertexCount * 4);
-  let droppedPositiveInfluences = 0;
+  resourceLedger: ImportResourceLedger,
+  allocationPath: string,
+): PackedSkinInfluences {
+  if (!Number.isSafeInteger(vertexCount) || vertexCount < 0) {
+    throw new RangeError(
+      `[vitrum/gltf-adapter] ${allocationPath} vertex count must be a non-negative safe integer.`,
+    );
+  }
+  let skinInfluencesPerVertex = 4;
 
   for (let v = 0; v < vertexCount; v++) {
-    const merged = new Map<number, number>();
-    for (const set of sets) {
-      const base = v * 4;
-      for (let lane = 0; lane < 4; lane++) {
-        const weight = set.weights[base + lane] ?? 0;
-        if (!Number.isFinite(weight) || weight <= 0) continue;
-        const joint = set.joints[base + lane] ?? 0;
-        merged.set(joint, (merged.get(joint) ?? 0) + weight);
-      }
-    }
+    const sortedInfluences = mergedSkinInfluencesForVertex(sets, v);
+    skinInfluencesPerVertex = Math.max(skinInfluencesPerVertex, sortedInfluences.length);
+  }
 
-    const sortedInfluences = [...merged.entries()]
-      .sort(([jointA, weightA], [jointB, weightB]) => weightB - weightA || jointA - jointB);
-    const retained = sortedInfluences.slice(0, 4);
-    for (const [, weight] of sortedInfluences.slice(4)) {
-      if (weight > 1e-7) droppedPositiveInfluences++;
-    }
-
-    const sum = retained.reduce((acc, [, weight]) => acc + weight, 0);
+  const outputAllocation = geometryArrayAllocation(
+    [vertexCount, skinInfluencesPerVertex],
+    Uint32Array.BYTES_PER_ELEMENT,
+    allocationPath,
+  );
+  resourceLedger.chargeDecodedGeometryBytes(
+    checkedGeometryProduct([outputAllocation.byteLength, 2], `${allocationPath} byte length`),
+    allocationPath,
+  );
+  const skinIndices = new Uint32Array(outputAllocation.elementCount);
+  const skinWeights = new Float32Array(outputAllocation.elementCount);
+  for (let v = 0; v < vertexCount; v += 1) {
+    const influences = mergedSkinInfluencesForVertex(sets, v);
+    const sum = influences.reduce((acc, [, weight]) => acc + weight, 0);
     if (sum <= 0) continue;
-    for (let lane = 0; lane < retained.length; lane++) {
-      const [joint, weight] = retained[lane]!;
-      skinIndices[v * 4 + lane] = joint;
-      skinWeights[v * 4 + lane] = weight / sum;
+    for (let lane = 0; lane < influences.length; lane += 1) {
+      const [joint, weight] = influences[lane]!;
+      const offset = v * skinInfluencesPerVertex + lane;
+      skinIndices[offset] = joint;
+      skinWeights[offset] = weight / sum;
     }
   }
 
-  return { skinIndices, skinWeights, droppedPositiveInfluences };
+  return { skinIndices, skinWeights, skinInfluencesPerVertex };
+}
+
+function mergedSkinInfluencesForVertex(
+  sets: readonly SkinInfluenceSet[],
+  vertex: number,
+): Array<readonly [joint: number, weight: number]> {
+  const merged = new Map<number, number>();
+  for (const set of sets) {
+    const base = vertex * 4;
+    for (let lane = 0; lane < 4; lane += 1) {
+      const weight = set.weights[base + lane] ?? 0;
+      if (!Number.isFinite(weight) || weight <= 0) continue;
+      const joint = set.joints[base + lane] ?? 0;
+      merged.set(joint, (merged.get(joint) ?? 0) + weight);
+    }
+  }
+  return [...merged.entries()].sort(
+    ([jointA, weightA], [jointB, weightB]) => weightB - weightA || jointA - jointB,
+  );
 }
 
 function _unpackJoints(
@@ -2985,7 +4477,8 @@ function _unpackJoints(
   buffers: Map<number, ArrayBuffer>,
   accessorIndex: number,
   onAccessorDiagnostic: (diagnostic: GltfAccessorDiagnostic) => void,
-  semantic = 'JOINTS_0',
+  semantic: string,
+  resourceLedger: ImportResourceLedger,
 ): Uint32Array {
   const accessor = gltf.accessors?.[accessorIndex];
   if (!accessor) {
@@ -2996,6 +4489,9 @@ function _unpackJoints(
       `[vitrum/gltf-adapter] ${semantic} accessor must be VEC4, got "${accessor.type}"`,
     );
   }
+  if (validateAccessorNormalization(accessor, `accessors[${accessorIndex}]`)) {
+    throw new TypeError(`[vitrum/gltf-adapter] ${semantic} accessor must not be normalized.`);
+  }
   const ct = accessor.componentType;
   if (ct !== GltfComponentType.UNSIGNED_BYTE && ct !== GltfComponentType.UNSIGNED_SHORT) {
     throw new Error(
@@ -3005,7 +4501,16 @@ function _unpackJoints(
   }
 
   const count = accessor.count;
-  const result = new Uint32Array(count * 4);
+  const resultAllocation = geometryArrayAllocation(
+    [count, 4],
+    Uint32Array.BYTES_PER_ELEMENT,
+    `accessors[${accessorIndex}] ${semantic}`,
+  );
+  resourceLedger.chargeDecodedGeometryBytes(
+    resultAllocation.byteLength,
+    `accessors[${accessorIndex}] ${semantic}`,
+  );
+  const result = new Uint32Array(resultAllocation.elementCount);
 
   const compSize = ct === GltfComponentType.UNSIGNED_BYTE ? 1 : 2;
 
@@ -3016,14 +4521,18 @@ function _unpackJoints(
 
     const buf = buffers.get(bv.buffer);
     if (!buf) {
-      throw new Error(
-        `[vitrum/gltf-adapter] Buffer ${bv.buffer} is not available (${semantic}).`,
-      );
+      throw new Error(`[vitrum/gltf-adapter] Buffer ${bv.buffer} is not available (${semantic}).`);
     }
 
     const bvOffset = bv.byteOffset ?? 0;
     const range = accessorBufferViewRange(accessor, bv, 4);
     validateBufferViewAccess(buf, bvIdx, bv, range.requiredByteLength, `${semantic} accessor`);
+    if (bvOffset % compSize !== 0) {
+      throw new Error(
+        `[vitrum/gltf-adapter] ${semantic} bufferView ${bvIdx}.byteOffset ${bvOffset} ` +
+          `is not aligned to component size ${compSize}.`,
+      );
+    }
     const dataView = new DataView(buf, bvOffset, bv.byteLength);
 
     for (let i = 0; i < count; i++) {
@@ -3035,7 +4544,15 @@ function _unpackJoints(
   }
 
   if (accessor.sparse) {
-    applySparseJointPatch(gltf, buffers, accessorIndex, accessor, result, onAccessorDiagnostic, semantic);
+    applySparseJointPatch(
+      gltf,
+      buffers,
+      accessorIndex,
+      accessor,
+      result,
+      onAccessorDiagnostic,
+      semantic,
+    );
   }
 
   return result;
@@ -3051,6 +4568,11 @@ function applySparseJointPatch(
   semantic: string,
 ): void {
   const sparse = accessor.sparse!;
+  if (!Number.isSafeInteger(sparse.count) || sparse.count <= 0 || sparse.count > accessor.count) {
+    throw new RangeError(
+      `[vitrum/gltf-adapter] ${semantic} sparse.count must be a positive safe integer no greater than accessor.count.`,
+    );
+  }
   onAccessorDiagnostic({
     severity: 'warning',
     code: 'sparse-accessor-applied',
@@ -3061,54 +4583,58 @@ function applySparseJointPatch(
 
   const indicesBufferView = gltf.bufferViews?.[sparse.indices.bufferView];
   if (!indicesBufferView) {
+    const message = '[vitrum/gltf-adapter] Sparse indices bufferView not found; accessor rejected.';
     onAccessorDiagnostic({
-      severity: 'warning',
+      severity: 'error',
       code: 'sparse-indices-buffer-view-not-found',
       path: `accessors[${accessorIndex}].sparse.indices.bufferView`,
-      message: '[vitrum/gltf-adapter] Sparse indices bufferView not found; patch skipped.',
+      message,
       accessorIndex,
       bufferViewIndex: sparse.indices.bufferView,
     });
-    return;
+    throw new Error(message);
   }
   const indicesBuffer = buffers.get(indicesBufferView.buffer);
   if (!indicesBuffer) {
+    const message = `[vitrum/gltf-adapter] Sparse indices buffer ${indicesBufferView.buffer} unavailable; accessor rejected.`;
     onAccessorDiagnostic({
-      severity: 'warning',
+      severity: 'error',
       code: 'sparse-indices-buffer-unavailable',
       path: `accessors[${accessorIndex}].sparse.indices.bufferView`,
-      message: `[vitrum/gltf-adapter] Sparse indices buffer ${indicesBufferView.buffer} unavailable; patch skipped.`,
+      message,
       accessorIndex,
       bufferViewIndex: sparse.indices.bufferView,
       bufferIndex: indicesBufferView.buffer,
     });
-    return;
+    throw new Error(message);
   }
 
   const valuesBufferView = gltf.bufferViews?.[sparse.values.bufferView];
   if (!valuesBufferView) {
+    const message = '[vitrum/gltf-adapter] Sparse values bufferView not found; accessor rejected.';
     onAccessorDiagnostic({
-      severity: 'warning',
+      severity: 'error',
       code: 'sparse-values-buffer-view-not-found',
       path: `accessors[${accessorIndex}].sparse.values.bufferView`,
-      message: '[vitrum/gltf-adapter] Sparse values bufferView not found; patch skipped.',
+      message,
       accessorIndex,
       bufferViewIndex: sparse.values.bufferView,
     });
-    return;
+    throw new Error(message);
   }
   const valuesBuffer = buffers.get(valuesBufferView.buffer);
   if (!valuesBuffer) {
+    const message = `[vitrum/gltf-adapter] Sparse values buffer ${valuesBufferView.buffer} unavailable; accessor rejected.`;
     onAccessorDiagnostic({
-      severity: 'warning',
+      severity: 'error',
       code: 'sparse-values-buffer-unavailable',
       path: `accessors[${accessorIndex}].sparse.values.bufferView`,
-      message: `[vitrum/gltf-adapter] Sparse values buffer ${valuesBufferView.buffer} unavailable; patch skipped.`,
+      message,
       accessorIndex,
       bufferViewIndex: sparse.values.bufferView,
       bufferIndex: valuesBufferView.buffer,
     });
-    return;
+    throw new Error(message);
   }
 
   const sparseIndexComponentType = sparse.indices.componentType;
@@ -3117,87 +4643,142 @@ function applySparseJointPatch(
     sparseIndexComponentType !== GltfComponentType.UNSIGNED_SHORT &&
     sparseIndexComponentType !== GltfComponentType.UNSIGNED_INT
   ) {
+    const message =
+      `[vitrum/gltf-adapter] Sparse indices componentType ${sparseIndexComponentType} is invalid; ` +
+      'expected UNSIGNED_BYTE, UNSIGNED_SHORT, or UNSIGNED_INT. Accessor rejected.';
     onAccessorDiagnostic({
-      severity: 'warning',
+      severity: 'error',
       code: 'invalid-sparse-indices-component-type',
       path: `accessors[${accessorIndex}].sparse.indices.componentType`,
-      message:
-        `[vitrum/gltf-adapter] Sparse indices componentType ${sparseIndexComponentType} is invalid; ` +
-        'expected UNSIGNED_BYTE, UNSIGNED_SHORT, or UNSIGNED_INT. Patch skipped.',
+      message,
       accessorIndex,
       componentType: sparseIndexComponentType,
     });
-    return;
+    throw new Error(message);
   }
 
-  const indexCompSize = sparseIndexComponentType === GltfComponentType.UNSIGNED_BYTE
-    ? 1
-    : sparseIndexComponentType === GltfComponentType.UNSIGNED_SHORT
-      ? 2
-      : 4;
+  const indexCompSize =
+    sparseIndexComponentType === GltfComponentType.UNSIGNED_BYTE
+      ? 1
+      : sparseIndexComponentType === GltfComponentType.UNSIGNED_SHORT
+        ? 2
+        : 4;
   const valueCompSize = accessor.componentType === GltfComponentType.UNSIGNED_BYTE ? 1 : 2;
   const indexByteOffset = sparse.indices.byteOffset ?? 0;
   const valueByteOffset = sparse.values.byteOffset ?? 0;
+  const requiredIndexBytes = checkedGeometrySum(
+    [
+      indexByteOffset,
+      checkedGeometryProduct(
+        [sparse.count, indexCompSize],
+        `accessors[${accessorIndex}] sparse ${semantic} index byte length`,
+      ),
+    ],
+    `accessors[${accessorIndex}] sparse ${semantic} index range`,
+  );
+  const requiredValueBytes = checkedGeometrySum(
+    [
+      valueByteOffset,
+      checkedGeometryProduct(
+        [sparse.count, 4, valueCompSize],
+        `accessors[${accessorIndex}] sparse ${semantic} value byte length`,
+      ),
+    ],
+    `accessors[${accessorIndex}] sparse ${semantic} value range`,
+  );
+  if (indexByteOffset % indexCompSize !== 0) {
+    throw new Error(
+      `[vitrum/gltf-adapter] sparse ${semantic} indices byteOffset ${indexByteOffset} ` +
+        `is not aligned to component size ${indexCompSize}.`,
+    );
+  }
+  if (valueByteOffset % valueCompSize !== 0) {
+    throw new Error(
+      `[vitrum/gltf-adapter] sparse ${semantic} values byteOffset ${valueByteOffset} ` +
+        `is not aligned to component size ${valueCompSize}.`,
+    );
+  }
   try {
     validateBufferViewAccess(
       indicesBuffer,
       sparse.indices.bufferView,
       indicesBufferView,
-      indexByteOffset + sparse.count * indexCompSize,
+      requiredIndexBytes,
       `sparse ${semantic} indices`,
     );
     validateBufferViewAccess(
       valuesBuffer,
       sparse.values.bufferView,
       valuesBufferView,
-      valueByteOffset + sparse.count * 4 * valueCompSize,
+      requiredValueBytes,
       `sparse ${semantic} values`,
     );
   } catch (error) {
+    const message = `${String(error)} Accessor rejected.`;
     onAccessorDiagnostic({
-      severity: 'warning',
+      severity: 'error',
       code: String(error).includes('indices')
         ? 'sparse-indices-buffer-view-truncated'
         : 'sparse-values-buffer-view-truncated',
       path: String(error).includes('indices')
         ? `accessors[${accessorIndex}].sparse.indices.bufferView`
         : `accessors[${accessorIndex}].sparse.values.bufferView`,
-      message: `${String(error)} Patch skipped.`,
+      message,
       accessorIndex,
       bufferViewIndex: String(error).includes('indices')
         ? sparse.indices.bufferView
         : sparse.values.bufferView,
     });
-    return;
+    throw new Error(message, { cause: error });
+  }
+  const indexBufferViewOffset = indicesBufferView.byteOffset ?? 0;
+  const valueBufferViewOffset = valuesBufferView.byteOffset ?? 0;
+  if (indexBufferViewOffset % indexCompSize !== 0) {
+    throw new Error(
+      `[vitrum/gltf-adapter] sparse ${semantic} indices bufferView ` +
+        `${sparse.indices.bufferView}.byteOffset ${indexBufferViewOffset} is not aligned ` +
+        `to component size ${indexCompSize}.`,
+    );
+  }
+  if (valueBufferViewOffset % valueCompSize !== 0) {
+    throw new Error(
+      `[vitrum/gltf-adapter] sparse ${semantic} values bufferView ` +
+        `${sparse.values.bufferView}.byteOffset ${valueBufferViewOffset} is not aligned ` +
+        `to component size ${valueCompSize}.`,
+    );
   }
   const indexView = new DataView(
     indicesBuffer,
-    indicesBufferView.byteOffset ?? 0,
+    indexBufferViewOffset,
     indicesBufferView.byteLength,
   );
-  const valueView = new DataView(
-    valuesBuffer,
-    valuesBufferView.byteOffset ?? 0,
-    valuesBufferView.byteLength,
-  );
+  const valueView = new DataView(valuesBuffer, valueBufferViewOffset, valuesBufferView.byteLength);
 
+  let previousIndex = -1;
   for (let s = 0; s < sparse.count; s += 1) {
     const jointIndex = readSparseIndexComponent(
       indexView,
       indexByteOffset + s * indexCompSize,
       sparseIndexComponentType,
     );
-    if (jointIndex < 0 || jointIndex >= accessor.count) {
+    if (jointIndex < 0 || jointIndex >= accessor.count || jointIndex <= previousIndex) {
+      const isOrderingViolation = jointIndex <= previousIndex;
+      const message = isOrderingViolation
+        ? `[vitrum/gltf-adapter] Sparse indices must be strictly increasing; ${jointIndex} follows ${previousIndex}.`
+        : `[vitrum/gltf-adapter] Sparse index ${jointIndex} is outside accessor count ${accessor.count}.`;
       onAccessorDiagnostic({
-        severity: 'warning',
-        code: 'sparse-index-out-of-range',
+        severity: 'error',
+        code: isOrderingViolation
+          ? 'sparse-indices-not-strictly-increasing'
+          : 'sparse-index-out-of-range',
         path: `accessors[${accessorIndex}].sparse.indices[${s}]`,
-        message: `[vitrum/gltf-adapter] Sparse index ${jointIndex} is outside accessor count ${accessor.count}; patch entry skipped.`,
+        message,
         accessorIndex,
         sparseEntryIndex: s,
       });
-      continue;
+      throw new Error(message);
     }
+    previousIndex = jointIndex;
     for (let c = 0; c < 4; c += 1) {
       result[jointIndex * 4 + c] = readJointComponent(
         valueView,

@@ -16,23 +16,18 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { MockInstance } from 'vitest';
-import type { EngineWarning, Scene, ScenePrimitive } from '@vitrum/core';
+import type { EngineWarning, MaterialSpec, Scene, ScenePrimitive } from '@vitrum/core';
 import { BACKEND_PROMISE_LEDGER, MATERIAL_SPEC_FIELDS } from '@vitrum/core';
 import {
   categorizeUnconsumedMaterialFields,
   CONSUMED_MATERIAL_FIELDS,
-  collectApproximateAlphaBlendPrimitiveIds,
-  collectApproximateEmissiveMapTexelPdfPrimitiveIds,
-  collectApproximateLightMapPrimitiveIds,
-  collectApproximateRichMaterialPrimitiveFields,
-  collectApproximateVolumeLayerPrimitiveFields,
+  collectUnsupportedVolumeLayerPrimitiveFields,
+  assertNoRcDirectSunTransmissionProfiles,
+  assertNoUnsupportedLayeredTransmissionProfiles,
+  assertNoUnsupportedRoughTransmissionProfiles,
   collectUnconsumedMaterialFields,
   collectUnconsumedMaterialFieldsForMaterial,
   collectUnconsumedMaterialPrimitiveFields,
-  EMISSIVE_MAP_TEXEL_PDF_APPROXIMATION_DETAILS,
-  LIGHT_MAP_CAMERA_VISIBLE_APPROXIMATION_DETAILS,
-  RICH_MATERIAL_GI_APPROXIMATION_DETAILS,
-  VOLUME_LAYER_TRANSPORT_APPROXIMATION_DETAILS,
 } from '../restir/consumedMaterialFields.js';
 import { HybridEngine } from '../HybridEngine.js';
 import type { HybridEngineOptions } from '../HybridEngine.js';
@@ -73,7 +68,7 @@ type PrimLike = {
   readonly colors?: Float32Array;
 };
 
-const WALKAROUND_PERMANENT_UNSUPPORTED_MATERIAL: Record<string, unknown> = {
+const WALKAROUND_APPROXIMATE_OPTICAL_MATERIAL: Record<string, unknown> = {
   spectralAttenuation: {
     wavelengthStart: 380,
     wavelengthEnd: 700,
@@ -83,11 +78,11 @@ const WALKAROUND_PERMANENT_UNSUPPORTED_MATERIAL: Record<string, unknown> = {
   thinFilmStack: { layers: [{ ior: 1.4, thicknessNm: 300 }] },
 };
 
-const WALKAROUND_PERMANENT_UNSUPPORTED_FIELDS = [
+const WALKAROUND_APPROXIMATE_OPTICAL_FIELDS = [
   'dispersionAbbeNumber',
   'spectralAttenuation',
   'thinFilmStack',
-];
+] as const satisfies readonly (keyof MaterialSpec)[];
 
 /** A scene with only consumed fields in its material. */
 function consumedOnlyScene(): Scene {
@@ -98,6 +93,7 @@ function consumedOnlyScene(): Scene {
         id: 'm1',
         positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
         normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+        uvs: new Float32Array([0, 0, 1, 0, 0, 1]),
         material: { baseColor: [0.5, 0.5, 0.5], roughness: 0.5, metallic: 0 },
       } as unknown as ScenePrimitive,
     ],
@@ -115,6 +111,7 @@ function layerNormalMapScene(): Scene {
         id: 'm2',
         positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
         normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+        uvs: new Float32Array([0, 0, 1, 0, 0, 1]),
         material: {
           baseColor: [1, 1, 1],
           roughness: 0.3,
@@ -122,7 +119,13 @@ function layerNormalMapScene(): Scene {
           baseColorMap: { handle: { width: 1, height: 1, data: new Uint8Array([255, 255, 255, 255]) } },
           frontLayer: {
             transmission: [1, 0.5, 0.25],
-            normalMap: { handle: 'front-layer-normal' },
+            normalMap: {
+              handle: {
+                width: 1,
+                height: 1,
+                data: new Uint8Array([128, 128, 255, 255]),
+              },
+            },
           },
         },
       } as unknown as ScenePrimitive,
@@ -151,9 +154,6 @@ describe('CONSUMED_MATERIAL_FIELDS allowlist', () => {
       'anisotropy', 'anisotropyRotation', 'anisotropyMap',
       'iridescence', 'iridescenceIor', 'iridescenceThicknessRange',
       'iridescenceMap', 'iridescenceThicknessMap',
-      'scatteringCoefficient', 'scatteringCoefficientRGB', 'scatteringAnisotropy',
-      'frontLayer', 'frontLayer.normalMap', 'frontLayer.normalScale',
-      'backLayer', 'backLayer.normalMap', 'backLayer.normalScale',
     ]) {
       expect(CONSUMED_MATERIAL_FIELDS.has(f)).toBe(true);
     }
@@ -175,9 +175,11 @@ describe('CONSUMED_MATERIAL_FIELDS allowlist', () => {
     }
   });
 
-  it('does NOT contain permanently unsupported walkaround fields', () => {
-    for (const f of WALKAROUND_PERMANENT_UNSUPPORTED_FIELDS) {
-      expect(CONSUMED_MATERIAL_FIELDS.has(f)).toBe(false);
+  it('contains every implemented approximate optical field', () => {
+    for (const f of WALKAROUND_APPROXIMATE_OPTICAL_FIELDS) {
+      expect(CONSUMED_MATERIAL_FIELDS.has(f)).toBe(true);
+      expect(BACKEND_PROMISE_LEDGER['walkaround-hybrid'].supportDetails.materials?.[f])
+        .toBe('approximate');
     }
   });
 });
@@ -190,7 +192,7 @@ describe('collectUnconsumedMaterialFields', () => {
     )).toEqual([]);
   });
 
-  it('does not report layer-local normal maps as unconsumed', () => {
+  it('consumes the implemented face-layer profile when it carries a normal map', () => {
     const scene = layerNormalMapScene();
     expect(collectUnconsumedMaterialFields(
       scene.primitives as unknown as ReadonlyArray<PrimLike>,
@@ -215,17 +217,17 @@ describe('collectUnconsumedMaterialFields', () => {
     expect(categorizeUnconsumedMaterialFields(fields)).toEqual({});
   });
 
-  it('reports every permanently unsupported walkaround material family from a material patch', () => {
+  it('does not report implemented approximate optical fields from a material patch', () => {
     expect(collectUnconsumedMaterialFieldsForMaterial({
       baseColor: [1, 1, 1],
       roughness: 1,
       metallic: 0,
       envMapIntensity: 0.25,
-      ...WALKAROUND_PERMANENT_UNSUPPORTED_MATERIAL,
-    })).toEqual(WALKAROUND_PERMANENT_UNSUPPORTED_FIELDS);
+      ...WALKAROUND_APPROXIMATE_OPTICAL_MATERIAL,
+    })).toEqual([]);
   });
 
-  it('does not report approximate walkaround volume scattering fields as unconsumed', () => {
+  it('reports implemented walkaround volume scattering fields as consumed', () => {
     expect(collectUnconsumedMaterialFieldsForMaterial({
       baseColor: [1, 1, 1],
       roughness: 1,
@@ -236,7 +238,7 @@ describe('collectUnconsumedMaterialFields', () => {
     })).toEqual([]);
   });
 
-  it('collects approximate volume scattering and face-layer transport fields', () => {
+  it('does not collect implemented volume scattering and face-layer transport fields', () => {
     const prims: ReadonlyArray<PrimLike> = [
       {
         id: 'volume-layer-pane',
@@ -267,25 +269,78 @@ describe('collectUnconsumedMaterialFields', () => {
       },
     ];
 
-    expect(collectApproximateVolumeLayerPrimitiveFields(prims)).toEqual([{
-      primitiveId: 'volume-layer-pane',
-      fields: [
-        'backLayer',
-        'frontLayer',
-        'scatteringAnisotropy',
-        'scatteringCoefficient',
-        'scatteringCoefficientRGB',
-      ],
-    }]);
+    expect(collectUnsupportedVolumeLayerPrimitiveFields(prims)).toEqual([]);
+  });
+
+  it('accepts rough, mapped, and anisotropic transmissive profiles', () => {
+    const primitive = (material: Record<string, unknown>): PrimLike[] => [{
+      id: 'conditional-glass',
+      kind: 'mesh',
+      material: { baseColor: [1, 1, 1], metallic: 0, transmission: 1, ...material },
+    }];
+
+    expect(() => assertNoUnsupportedRoughTransmissionProfiles(
+      primitive({ roughness: 0.001 }), 'setScene',
+    )).not.toThrow();
+    expect(() => assertNoUnsupportedRoughTransmissionProfiles(
+      primitive({ roughness: 0, roughnessMap: { handle: 'roughness' } }), 'setScene',
+    )).not.toThrow();
+    expect(() => assertNoUnsupportedRoughTransmissionProfiles(
+      primitive({ roughness: 0, anisotropy: 0.25 }), 'updatePrimitive',
+    )).not.toThrow();
+    expect(() => assertNoUnsupportedRoughTransmissionProfiles(
+      primitive({ roughness: 0, anisotropyMap: { handle: 'anisotropy' } }), 'setScene',
+    )).not.toThrow();
+    expect(() => assertNoUnsupportedRoughTransmissionProfiles(
+      primitive({
+        roughness: 0,
+        normalMap: { handle: 'normal' },
+        normalScale: 0.8,
+        bumpMap: { handle: 'bump' },
+        bumpScale: 0.2,
+      }),
+      'setScene',
+    )).not.toThrow();
+  });
+
+  it('accepts layered opaque lobes combined with transmission', () => {
+    const primitive = (material: Record<string, unknown>): PrimLike[] => [{
+      id: 'layered-glass',
+      kind: 'mesh',
+      material: {
+        baseColor: [1, 1, 1], roughness: 0, metallic: 0, transmission: 1,
+        ...material,
+      },
+    }];
+    for (const material of [
+      { metallic: 0.2 },
+      { clearcoat: 0.5 },
+      { sheenColorMap: { handle: 'sheen' } },
+      { specularIntensity: 0.5 },
+      { iridescenceMap: { handle: 'film' } },
+    ]) {
+      expect(() => assertNoUnsupportedLayeredTransmissionProfiles(
+        primitive(material), 'setScene',
+      )).not.toThrow();
+    }
+    expect(() => assertNoUnsupportedLayeredTransmissionProfiles(
+      primitive({ normalMap: { handle: 'normal' } }), 'setScene',
+    )).not.toThrow();
+  });
+
+  it('accepts RC plus authored transmission through the dielectric transport path', () => {
+    expect(() => assertNoRcDirectSunTransmissionProfiles([{
+      id: 'rc-glass', kind: 'mesh',
+      material: { baseColor: [1, 1, 1], roughness: 0, metallic: 0, transmission: 1 },
+    }], 'setScene')).not.toThrow();
+    expect(() => assertNoRcDirectSunTransmissionProfiles([{
+      id: 'opaque', kind: 'mesh',
+      material: { baseColor: [1, 1, 1], roughness: 0.5, metallic: 0 },
+    }], 'setScene')).not.toThrow();
   });
 
   it('categorizes unconsumed fields for structured warning consumers', () => {
-    expect(categorizeUnconsumedMaterialFields([
-      'unknownFutureField',
-      ...WALKAROUND_PERMANENT_UNSUPPORTED_FIELDS,
-    ])).toEqual({
-      spectral: ['dispersionAbbeNumber', 'spectralAttenuation'],
-      layered: ['thinFilmStack'],
+    expect(categorizeUnconsumedMaterialFields(['unknownFutureField'])).toEqual({
       unknown: ['unknownFutureField'],
     });
   });
@@ -295,13 +350,11 @@ describe('collectUnconsumedMaterialFields', () => {
       { id: 'pane-a', kind: 'mesh', material: { baseColor: [1, 0, 0], frontLayer: { transmission: [1, 1, 1], normalMap: { handle: 'normal' } } } },
       { id: 'pane-b', kind: 'mesh', material: { baseColor: [0, 1, 0], thinFilmStack: { layers: [] }, anisotropy: 0.5 } },
     ];
-    expect(collectUnconsumedMaterialFields(prims)).toEqual(['thinFilmStack']);
-    expect(collectUnconsumedMaterialPrimitiveFields(prims)).toEqual([
-      { primitiveId: 'pane-b', fields: ['thinFilmStack'] },
-    ]);
+    expect(collectUnconsumedMaterialFields(prims)).toEqual([]);
+    expect(collectUnconsumedMaterialPrimitiveFields(prims)).toEqual([]);
   });
 
-  it('surfaces representative layered and thin-film drops while iridescence is consumed', () => {
+  it('consumes representative rich, thin-film, and iridescence controls', () => {
     const prims: ReadonlyArray<PrimLike> = [
       {
         kind: 'mesh',
@@ -312,6 +365,7 @@ describe('collectUnconsumedMaterialFields', () => {
           alphaMode: 'mask',
           alphaCutoff: 0.35,
           opacity: 0.5,
+          doubleSided: true,
           alphaMap: { handle: 'alpha' },
           normalScale: 0.5,
           specularColor: [0.8, 0.7, 0.6],
@@ -332,127 +386,11 @@ describe('collectUnconsumedMaterialFields', () => {
           iridescenceThicknessRange: [200, 800],
           iridescenceMap: { handle: 'iridescence' },
           iridescenceThicknessMap: { handle: 'iridescenceThickness' },
-          frontLayer: { transmission: [1, 0.5, 0.25] },
-          backLayer: { transmission: [0.25, 0.5, 1] },
           thinFilmStack: { layers: [{ ior: 1.4, thicknessNm: 300 }] },
         },
       },
     ];
-    expect(collectUnconsumedMaterialFields(prims)).toEqual([
-      'thinFilmStack',
-    ]);
-  });
-
-  it('reports only fractional blend primitives for the alpha approximation warning', () => {
-    const prims: ReadonlyArray<PrimLike> = [
-      { id: 'opaque', kind: 'mesh', material: { baseColor: [1, 1, 1], alphaMode: 'opaque', opacity: 0.5 } },
-      { id: 'mask', kind: 'mesh', material: { baseColor: [1, 1, 1], alphaMode: 'mask', opacity: 0.25, alphaCutoff: 0.5 } },
-      { id: 'transparent', kind: 'mesh', material: { baseColor: [1, 1, 1], alphaMode: 'blend', opacity: 0 } },
-      { id: 'fractional', kind: 'mesh', material: { baseColor: [1, 1, 1], alphaMode: 'blend', opacity: 0.5 } },
-      { id: 'base-alpha', kind: 'mesh', material: { baseColor: [1, 1, 1, 0.4], alphaMode: 'blend' } },
-      {
-        id: 'base-map-rgb',
-        kind: 'mesh',
-        material: {
-          baseColor: [1, 1, 1],
-          alphaMode: 'blend',
-          baseColorMap: {
-            handle: {
-              width: 1,
-              height: 1,
-              data: new Uint8Array([255, 255, 255]),
-              __vitrum_hint__: { channels: 3, dataType: 'uint8' },
-            },
-          },
-        },
-      },
-      {
-        id: 'base-map-alpha',
-        kind: 'mesh',
-        material: {
-          baseColor: [1, 1, 1],
-          alphaMode: 'blend',
-          baseColorMap: {
-            handle: {
-              width: 1,
-              height: 1,
-              data: new Uint8Array([255, 255, 255, 128]),
-              __vitrum_hint__: { channels: 4, dataType: 'uint8' },
-            },
-          },
-        },
-      },
-      { id: 'alpha-map', kind: 'mesh', material: { baseColor: [1, 1, 1], alphaMode: 'blend', alphaMap: { handle: 'alpha' } } },
-      { id: 'transparent-map', kind: 'mesh', material: { baseColor: [1, 1, 1], alphaMode: 'blend', opacity: 0, alphaMap: { handle: 'alpha' } } },
-      { id: 'solid', kind: 'mesh', material: { baseColor: [1, 1, 1], alphaMode: 'blend', opacity: 1 } },
-      {
-        id: 'vertex-alpha',
-        kind: 'mesh',
-        positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
-        colors: new Float32Array([1, 1, 1, 1, 1, 1, 1, 0.5, 1, 1, 1, 1]),
-        material: { baseColor: [1, 1, 1], alphaMode: 'blend', opacity: 1 },
-      },
-      {
-        id: 'vertex-rgb',
-        kind: 'mesh',
-        positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
-        colors: new Float32Array([1, 0, 0, 0, 1, 0, 0, 0, 1]),
-        material: { baseColor: [1, 1, 1], alphaMode: 'blend', opacity: 1 },
-      },
-    ];
-    expect(collectApproximateAlphaBlendPrimitiveIds(prims)).toEqual([
-      'alpha-map',
-      'base-alpha',
-      'base-map-alpha',
-      'fractional',
-      'vertex-alpha',
-    ]);
-  });
-
-  it('reports emissive-map materials lit by scalar energy or mesh-area emitters for the texel-PDF warning', () => {
-    const prims: ReadonlyArray<PrimLike> = [
-      { id: 'non-emissive-map', kind: 'mesh', material: { emissive: [0, 0, 0], emissiveMap: { handle: 'map' } } },
-      { id: 'zero-intensity', kind: 'mesh', material: { emissive: [1, 1, 1], emissiveIntensity: 0, emissiveMap: { handle: 'map' } } },
-      { id: 'scalar-only', kind: 'mesh', material: { emissive: [1, 1, 1] } },
-      { id: 'mapped-emitter', kind: 'mesh', material: { emissive: [0.2, 0.1, 0], emissiveIntensity: 3, emissiveMap: { handle: 'map' } } },
-      { id: 'mesh-panel', kind: 'mesh', material: { emissive: [0, 0, 0], emissiveMap: { handle: 'map' } } },
-      { id: 'dark-mesh-panel', kind: 'mesh', material: { emissive: [0, 0, 0], emissiveMap: { handle: 'map' } } },
-      { id: 'point', kind: 'point', material: { emissive: [1, 1, 1], emissiveMap: { handle: 'map' } } },
-    ];
-    expect(collectApproximateEmissiveMapTexelPdfPrimitiveIds(prims, [
-      { id: 'panel-light', kind: 'mesh-area', meshId: 'mesh-panel', color: [1, 1, 1], intensity: 4 },
-      { id: 'dark-panel-light', kind: 'mesh-area', meshId: 'dark-mesh-panel', color: [1, 1, 1], intensity: 0 },
-    ])).toEqual(['mapped-emitter', 'mesh-panel']);
-  });
-
-  it('reports only positive light-map materials for the camera-visible warning', () => {
-    const prims: ReadonlyArray<PrimLike> = [
-      { id: 'none', kind: 'mesh', material: { baseColor: [1, 1, 1] } },
-      { id: 'zero', kind: 'mesh', material: { lightMap: { handle: 'lm' }, lightMapIntensity: 0 } },
-      { id: 'mapped', kind: 'mesh', material: { lightMap: { handle: 'lm' } } },
-      { id: 'scaled', kind: 'mesh', material: { lightMap: { handle: 'lm' }, lightMapIntensity: 0.25 } },
-      { id: 'point', kind: 'point', material: { lightMap: { handle: 'lm' } } },
-    ];
-
-    expect(collectApproximateLightMapPrimitiveIds(prims)).toEqual(['mapped', 'scaled']);
-  });
-
-  it('documents exact direct-emitter texel support separately from residual all-path approximation', () => {
-    expect(EMISSIVE_MAP_TEXEL_PDF_APPROXIMATION_DETAILS).toMatchObject({
-      directEmitterPdf: 'exact-texel-cell-subtriangles-when-eligible',
-      fallbackDirectEmitterPdf: 'uv-local-barycentric-micro-emitter-selection',
-      giSuffixEmission: 'uv-local-emissive-texel-sampled-on-hit',
-      probeHitEmission: 'uv-local-emissive-texel-sampled-on-direct-probe-hit',
-      residualApproximation: 'global-texel-selection-pdf',
-      missing: 'global-exact-texel-alias-pdf',
-    });
-    expect(EMISSIVE_MAP_TEXEL_PDF_APPROXIMATION_DETAILS.exactDirectEmitterConditions).toContain('cpu-readable-emissive-map');
-    expect(EMISSIVE_MAP_TEXEL_PDF_APPROXIMATION_DETAILS.approximatePaths).toEqual([
-      'ReSTIR-GI-texel-selection-pdf',
-      'RC-non-direct-texel-selection-pdf',
-      'DDGI-non-direct-texel-selection-pdf',
-      'fallback-direct-emitter',
-    ]);
+    expect(collectUnconsumedMaterialFields(prims)).toEqual([]);
   });
 
   it('ignores null/undefined field values', () => {
@@ -464,73 +402,6 @@ describe('collectUnconsumedMaterialFields', () => {
 
   it('returns empty array for an empty primitives list', () => {
     expect(collectUnconsumedMaterialFields([])).toEqual([]);
-  });
-});
-
-describe('collectApproximateRichMaterialPrimitiveFields', () => {
-  it('reports active consumed rich-material fields without flagging default scalar metadata', () => {
-    const scene = consumedOnlyScene();
-    const base = scene.primitives[0]!;
-    const richScene: Scene = {
-      ...scene,
-      primitives: [
-        {
-          ...base,
-          id: 'rich-defaults',
-          material: {
-            ...base.material,
-            specularColor: [1, 1, 1],
-            specularIntensity: 1,
-            clearcoat: 0,
-            clearcoatRoughness: 0,
-            sheen: 0,
-            sheenColor: [0, 0, 0],
-            iridescence: 0,
-            iridescenceIor: 1.3,
-            iridescenceThicknessRange: [100, 400],
-          },
-        },
-        {
-          ...base,
-          id: 'active-rich',
-          material: {
-            ...base.material,
-            specularColor: [0.8, 0.7, 0.6],
-            specularIntensity: 0.4,
-            clearcoat: 0.5,
-            clearcoatRoughness: 0.2,
-            clearcoatNormalMap: { handle: 'cc-normal' },
-            clearcoatNormalScale: 0.5,
-            sheen: 0.3,
-            sheenColorMap: { handle: 'sheen' },
-            anisotropy: 0.4,
-            anisotropyRotation: 0.25,
-            iridescence: 0.6,
-            iridescenceThicknessMap: { handle: 'thin-film' },
-          },
-        },
-      ],
-    };
-
-    expect(collectApproximateRichMaterialPrimitiveFields(
-      richScene.primitives as unknown as ReadonlyArray<PrimLike>,
-    )).toEqual([{
-      primitiveId: 'active-rich',
-      fields: [
-        'anisotropy',
-        'anisotropyRotation',
-        'clearcoat',
-        'clearcoatNormalMap',
-        'clearcoatNormalScale',
-        'clearcoatRoughness',
-        'iridescence',
-        'iridescenceThicknessMap',
-        'sheen',
-        'sheenColorMap',
-        'specularColor',
-        'specularIntensity',
-      ],
-    }]);
   });
 });
 
@@ -563,25 +434,23 @@ describe('HybridEngine.setScene unconsumed-field warning', () => {
     }
   });
 
-  it('does not warn for layer-local normal maps when baseColorMap is also supplied', () => {
+  it('publishes implemented layer-local normal maps without approximation warnings', () => {
     const structured: EngineWarning[] = [];
     const engine = new HybridEngine({
       ...makeOpts(),
       onWarning: (w) => structured.push(w),
     });
     try {
-      engine.setScene(layerNormalMapScene());
-      const warnMessages = warnSpy.mock.calls.flat().map(String);
-      expect(warnMessages.some((m) => m.includes('not consumed'))).toBe(false);
-      expect(structured.some((w) =>
-        w.code === 'walkaround-hybrid.unconsumed-material-fields',
-      )).toBe(false);
+      const scene = layerNormalMapScene();
+      expect(() => engine.setScene(scene)).not.toThrow();
+      expect(engine.getScene()).toEqual(scene);
+      expect(structured).toEqual([]);
     } finally {
       engine.dispose();
     }
   });
 
-  it('emits structured warnings for every permanently unsupported material field', () => {
+  it('does not emit unconsumed warnings for implemented optical material fields', () => {
     const structured: EngineWarning[] = [];
     const engine = new HybridEngine({
       ...makeOpts(),
@@ -598,76 +467,25 @@ describe('HybridEngine.setScene unconsumed-field warning', () => {
             id: 'unsupported-material-fields',
             material: {
               ...basePrim.material,
-              ...WALKAROUND_PERMANENT_UNSUPPORTED_MATERIAL,
+              ...WALKAROUND_APPROXIMATE_OPTICAL_MATERIAL,
               envMapIntensity: 0.35,
             },
-          } as unknown as ScenePrimitive,
+          },
         ],
       };
 
       engine.setScene(scene);
       const materialWarn = warnSpy.mock.calls.flat().map(String).find((m) => m.includes('not consumed'));
-      expect(materialWarn).toBeDefined();
-      for (const field of WALKAROUND_PERMANENT_UNSUPPORTED_FIELDS) {
-        expect(materialWarn).toContain(field);
-      }
-      expect(materialWarn).not.toContain('envMapIntensity');
+      expect(materialWarn).toBeUndefined();
       expect(structured.some((w) =>
-        w.code === 'walkaround-hybrid.unconsumed-material-fields' &&
-        JSON.stringify(w.details?.fields) === JSON.stringify(WALKAROUND_PERMANENT_UNSUPPORTED_FIELDS) &&
-        JSON.stringify(w.details?.categories) === JSON.stringify({
-          spectral: ['dispersionAbbeNumber', 'spectralAttenuation'],
-          layered: ['thinFilmStack'],
-        }) &&
-        JSON.stringify(w.details?.primitiveFields) === JSON.stringify([{
-          primitiveId: 'unsupported-material-fields',
-          fields: WALKAROUND_PERMANENT_UNSUPPORTED_FIELDS,
-        }]),
-      )).toBe(true);
+        w.code === 'walkaround-hybrid.unconsumed-material-fields'
+      )).toBe(false);
     } finally {
       engine.dispose();
     }
   });
 
-  it('emits a structured setScene warning for reserved receiveShadow:false', () => {
-    const structured: EngineWarning[] = [];
-    const engine = new HybridEngine({
-      ...makeOpts(),
-      onWarning: (w) => structured.push(w),
-    });
-    try {
-      const baseScene = consumedOnlyScene();
-      const basePrim = baseScene.primitives[0]!;
-      const scene: Scene = {
-        ...baseScene,
-        primitives: [
-          {
-            ...basePrim,
-            receiveShadow: false,
-          } as unknown as ScenePrimitive,
-        ],
-      };
-
-      engine.setScene(scene);
-
-      const warning = structured.find((w) =>
-        w.code === 'walkaround-hybrid.reserved-receive-shadow',
-      );
-      expect(warning).toMatchObject({
-        backend: 'walkaround-hybrid',
-        phase: 'setScene',
-        method: 'setScene',
-        details: { primitiveIds: ['m1'] },
-      });
-      expect(warnSpy.mock.calls.flat().map(String).some((m) =>
-        m.includes('receiveShadow:false') && m.includes('m1'),
-      )).toBe(true);
-    } finally {
-      engine.dispose();
-    }
-  });
-
-  it('warns only once per distinct field set across repeated setScene calls', () => {
+  it('rejects unknown material keys before scene publication', () => {
     const engine = new HybridEngine(makeOpts());
     const baseScene = consumedOnlyScene();
     const basePrim = baseScene.primitives[0]!;
@@ -678,22 +496,21 @@ describe('HybridEngine.setScene unconsumed-field warning', () => {
           ...basePrim,
           material: {
             ...basePrim.material,
-            thinFilmStack: { layers: [] },
+            unknownFutureField: { mode: 'future' },
           },
         } as unknown as ScenePrimitive,
       ],
     };
     try {
-      engine.setScene(unsupportedScene);
-      engine.setScene(unsupportedScene); // same field set — should NOT warn again
-      const materialWarns = warnSpy.mock.calls.flat().map(String).filter((m) => m.includes('not consumed'));
-      expect(materialWarns).toHaveLength(1);
+      expect(() => engine.setScene(unsupportedScene)).toThrow(/unknownFutureField.*known contract field/);
+      expect(engine.getScene()).toBeNull();
+      expect(warnSpy).not.toHaveBeenCalled();
     } finally {
       engine.dispose();
     }
   });
 
-  it('emits a structured warning for residual alpha blend approximation', () => {
+  it('does not warn for ordered/stochastic alpha blend transport', () => {
     const structured: EngineWarning[] = [];
     const engine = new HybridEngine({
       ...makeOpts(),
@@ -719,8 +536,7 @@ describe('HybridEngine.setScene unconsumed-field warning', () => {
       const alphaWarnings = structured.filter((w) =>
         w.code === 'walkaround-hybrid.alpha-blend-approximation',
       );
-      expect(alphaWarnings).toHaveLength(1);
-      expect(alphaWarnings[0]?.details?.primitiveIds).toContain('blend-pane');
+      expect(alphaWarnings).toHaveLength(0);
     } finally {
       engine.dispose();
     }
@@ -764,7 +580,7 @@ describe('HybridEngine.setScene unconsumed-field warning', () => {
     }
   });
 
-  it('treats uint16 baseColorMap alpha as normalized coverage for blend diagnostics', () => {
+  it('does not warn for uint16 baseColorMap blend coverage', () => {
     const structured: EngineWarning[] = [];
     const engine = new HybridEngine({
       ...makeOpts(),
@@ -797,14 +613,13 @@ describe('HybridEngine.setScene unconsumed-field warning', () => {
       const alphaWarnings = structured.filter((w) =>
         w.code === 'walkaround-hybrid.alpha-blend-approximation'
       );
-      expect(alphaWarnings).toHaveLength(1);
-      expect(alphaWarnings[0]?.details?.primitiveIds).toContain('uint16-alpha-pane');
+      expect(alphaWarnings).toHaveLength(0);
     } finally {
       engine.dispose();
     }
   });
 
-  it('emits a structured alpha approximation warning for vertex-color alpha blend', () => {
+  it('does not warn for vertex-color alpha blend', () => {
     const structured: EngineWarning[] = [];
     const engine = new HybridEngine({
       ...makeOpts(),
@@ -833,14 +648,13 @@ describe('HybridEngine.setScene unconsumed-field warning', () => {
       const alphaWarnings = structured.filter((w) =>
         w.code === 'walkaround-hybrid.alpha-blend-approximation',
       );
-      expect(alphaWarnings).toHaveLength(1);
-      expect(alphaWarnings[0]?.details?.primitiveIds).toContain('vertex-alpha-pane');
+      expect(alphaWarnings).toHaveLength(0);
     } finally {
       engine.dispose();
     }
   });
 
-  it('emits a structured warning for emissive-map texel-PDF approximation', () => {
+  it('uses an exact whole-triangle density for a readable one-texel emissive map', () => {
     const structured: EngineWarning[] = [];
     const engine = new HybridEngine({
       ...makeOpts(),
@@ -864,26 +678,13 @@ describe('HybridEngine.setScene unconsumed-field warning', () => {
       };
       engine.setScene(emissiveScene);
       engine.setScene(emissiveScene);
-      const texelPdfWarnings = structured.filter((w) =>
-        w.code === 'walkaround-hybrid.emissive-map-texel-pdf-approximation',
-      );
-      expect(texelPdfWarnings).toHaveLength(1);
-      expect(texelPdfWarnings[0]?.details?.primitiveIds).toContain('mapped-glow');
-      expect(texelPdfWarnings[0]?.details).toMatchObject({
-        directEmitterPdf: 'exact-texel-cell-subtriangles-when-eligible',
-        fallbackDirectEmitterPdf: 'uv-local-barycentric-micro-emitter-selection',
-        giSuffixEmission: 'uv-local-emissive-texel-sampled-on-hit',
-        probeHitEmission: 'uv-local-emissive-texel-sampled-on-direct-probe-hit',
-        residualApproximation: 'global-texel-selection-pdf',
-        missing: 'global-exact-texel-alias-pdf',
-      });
-      expect(texelPdfWarnings[0]?.message).toContain('exact texel-cell sub-triangles');
+      expect(structured).toHaveLength(0);
     } finally {
       engine.dispose();
     }
   });
 
-  it('emits a structured warning for rich-material GI approximation', () => {
+  it('does not warn for implemented rich-material lobes', () => {
     const structured: EngineWarning[] = [];
     const engine = new HybridEngine({
       ...makeOpts(),
@@ -915,12 +716,7 @@ describe('HybridEngine.setScene unconsumed-field warning', () => {
       const richWarnings = structured.filter((w) =>
         w.code === 'walkaround-hybrid.rich-material-gi-approximation',
       );
-      expect(richWarnings).toHaveLength(1);
-      expect(richWarnings[0]?.details?.primitiveFields).toEqual([{
-        primitiveId: 'rich-panel',
-        fields: ['anisotropy', 'clearcoat', 'clearcoatNormalMap', 'iridescenceMap', 'sheen', 'specularColor'],
-      }]);
-      expect(richWarnings[0]?.details).toMatchObject(RICH_MATERIAL_GI_APPROXIMATION_DETAILS);
+      expect(richWarnings).toHaveLength(0);
     } finally {
       engine.dispose();
     }
@@ -945,7 +741,7 @@ describe('HybridEngine.setScene unconsumed-field warning', () => {
               ...prim.material,
               baseColorMap: { handle: { id: 'gpu-only-texture' } },
             },
-          } as unknown as ScenePrimitive,
+          },
         ],
       });
 
@@ -966,19 +762,17 @@ describe('HybridEngine.setScene unconsumed-field warning', () => {
     }
   });
 
-  it('emits structured warnings for unknown updateLighting keys', () => {
+  it('rejects unknown updateLighting keys before lighting mutation', () => {
     const structured: EngineWarning[] = [];
     const engine = new HybridEngine({
       ...makeOpts(),
       onWarning: (w) => structured.push(w),
     });
     try {
-      engine.updateLighting({ typoIntensity: 2 } as never);
-      expect(warnSpy.mock.calls.flat().map(String).some((m) => m.includes('typoIntensity'))).toBe(true);
-      expect(structured.some((w) =>
-        w.code === 'walkaround-hybrid.unknown-lighting-key' &&
-        w.details?.key === 'typoIntensity',
-      )).toBe(true);
+      expect(() => engine.updateLighting({ typoIntensity: 2 } as never))
+        .toThrow(/unknown key "typoIntensity"/);
+      expect(warnSpy).not.toHaveBeenCalled();
+      expect(structured).toHaveLength(0);
     } finally {
       engine.dispose();
     }
@@ -1013,7 +807,7 @@ describe('HybridEngine.setScene unconsumed-field warning', () => {
     }
   });
 
-  it('emits a structured warning for volume/layer transport approximation', () => {
+  it('publishes implemented volume/layer profiles without approximation warnings', () => {
     const structured: EngineWarning[] = [];
     const engine = new HybridEngine({
       ...makeOpts(),
@@ -1033,41 +827,32 @@ describe('HybridEngine.setScene unconsumed-field warning', () => {
               scatteringCoefficient: 0.1,
               scatteringAnisotropy: -0.2,
               frontLayer: { transmission: [0.8, 0.7, 0.6] },
-              backLayer: { normalMap: { handle: 'back-normal' } },
+              backLayer: {
+                transmission: [1, 1, 1],
+                normalMap: {
+                  handle: {
+                    width: 1,
+                    height: 1,
+                    data: new Uint8Array([128, 128, 255, 255]),
+                  },
+                },
+              },
             },
           } as unknown as ScenePrimitive,
         ],
       };
 
-      engine.setScene(volumeLayerScene);
-      engine.setScene(volumeLayerScene);
-
-      const warnings = structured.filter((w) =>
+      expect(() => engine.setScene(volumeLayerScene)).not.toThrow();
+      expect(engine.getScene()).toEqual(volumeLayerScene);
+      expect(structured.some((w) =>
         w.code === 'walkaround-hybrid.volume-layer-transport-approximation',
-      );
-      expect(warnings).toHaveLength(1);
-      expect(warnings[0]).toMatchObject({
-        backend: 'walkaround-hybrid',
-        phase: 'setScene',
-        method: 'setScene',
-        details: {
-          primitiveFields: [{
-            primitiveId: 'volume-layer-pane',
-            fields: ['backLayer', 'frontLayer', 'scatteringAnisotropy', 'scatteringCoefficient'],
-          }],
-          fields: ['backLayer', 'frontLayer', 'scatteringAnisotropy', 'scatteringCoefficient'],
-          ...VOLUME_LAYER_TRANSPORT_APPROXIMATION_DETAILS,
-        },
-      });
-      expect(warnSpy.mock.calls.flat().map(String).some((m) =>
-        m.includes('participating-media') && m.includes('volume-layer-pane'),
-      )).toBe(true);
+      )).toBe(false);
     } finally {
       engine.dispose();
     }
   });
 
-  it('emits a structured warning for camera-visible-only light maps', () => {
+  it('does not warn for GI-propagated light maps', () => {
     const structured: EngineWarning[] = [];
     const engine = new HybridEngine({
       ...makeOpts(),
@@ -1095,19 +880,10 @@ describe('HybridEngine.setScene unconsumed-field warning', () => {
       const lightMapWarnings = structured.filter((w) =>
         w.code === 'walkaround-hybrid.light-map-camera-visible-approximation',
       );
-      expect(lightMapWarnings).toHaveLength(1);
-      expect(lightMapWarnings[0]).toMatchObject({
-        backend: 'walkaround-hybrid',
-        phase: 'setScene',
-        method: 'setScene',
-        details: {
-          primitiveIds: ['baked-panel'],
-          ...LIGHT_MAP_CAMERA_VISIBLE_APPROXIMATION_DETAILS,
-        },
-      });
+      expect(lightMapWarnings).toHaveLength(0);
       expect(warnSpy.mock.calls.flat().map(String).some((m) =>
         m.includes('camera-visible baked') && m.includes('baked-panel'),
-      )).toBe(true);
+      )).toBe(false);
     } finally {
       engine.dispose();
     }

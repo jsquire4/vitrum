@@ -20,6 +20,7 @@ import { FusedMlpTrainerProbe } from "./fusedMlpTrainerProbe.ts";
 import { HashGridTableTrainer } from "./hashGridTableTrainer.ts";
 import { gradFinalizeWgsl } from "./wgsl/fusedMlp.wgsl.ts";
 import { nrcEncodeBackwardWgsl } from "./wgsl/nrcEncodeBackward.wgsl.ts";
+import { NRC_DIAGNOSTIC_BYTES } from "./nrcDiagnostics.ts";
 import {
   hashGridForward, hashGridBackward, levelResolution,
   type HashGridConfig, type HashGridLevel,
@@ -115,6 +116,10 @@ async function main() {
   const tablesBuf = device.createBuffer({ size: tableScalars * 4, usage: ST });
   const posBuf = device.createBuffer({ size: B * 3 * 4, usage: ST });
   const levelsBuf = device.createBuffer({ size: L * 16, usage: ST });
+  const diagnosticsBuf = device.createBuffer({
+    size: NRC_DIAGNOSTIC_BYTES,
+    usage: ST,
+  });
 
   // pack levels + tables identical to nrcSubsystem
   const levelDescs = new Uint32Array(L * 4); let off = 0;
@@ -149,7 +154,8 @@ async function main() {
     const bg = device.createBindGroup({ layout: pEnc.getBindGroupLayout(0), entries: [
       { binding: 0, resource: { buffer: posBuf } }, { binding: 1, resource: { buffer: trainer.gradInputF! } },
       { binding: 2, resource: { buffer: levelsBuf } }, { binding: 3, resource: { buffer: gradTablesFx } },
-      { binding: 4, resource: { buffer: encParams } } ] });
+      { binding: 4, resource: { buffer: encParams } },
+      { binding: 5, resource: { buffer: diagnosticsBuf } } ] });
     const p = e.beginComputePass(); p.setPipeline(pEnc); p.setBindGroup(0, bg); p.dispatchWorkgroups(Math.ceil(B / 64)); p.end();
     // finalize
     const u = new Uint32Array(4); u[0] = tableScalars;

@@ -1,40 +1,20 @@
 /**
- * BmfrDenoiser — BMFR (Koskela et al. 2019) blockwise multi-order feature
- * regression for the walkaround-hybrid realtime pipeline.
+ * Persistent BMFR denoiser for the walkaround pipeline.
  *
- * Per frame, a single compute pass fits each 32×32 screen block's noisy 1-spp
- * color to a 10-feature matrix [1, p.xyz, n.xyz, p².xyz] via Householder QR on
- * the normal equations and reconstructs `color = T·α`, then temporally
- * accumulates the reconstruction against the previous frame's result (EMA).
+ * The fit pass performs direct, chunked Householder QR on each overlapping
+ * block and stores one private coefficient record. The resolve pass evaluates
+ * and averages all records covering each pixel, then applies temporal EMA.
+ * Signed gNormalDepth values are converted to absolute depth for regression so
+ * negative glass depths remain valid surfaces; only zero denotes sky.
  *
- * Inputs (from FrameResources.common):
- *   - hdrColorTexture     — noisy direct-channel HDR radiance (the fit target)
- *   - gNormalDepthTexture — .xyz = packed world normal, .w = signed linear depth
- *
- * The walkaround pipeline has no dedicated world-position G-buffer, so this
- * entry runs the kernel in `positionMode = 1` (screen-space position proxy):
- * the regression position is `(pixelX, pixelY, depth)`, reading depth from the
- * gNormalDepth `.w` channel. Per-screen-block regression is well-posed with the
- * screen-space proxy (positions are block-local-normalised before the squared
- * features), and it avoids allocating + filling a full world-position buffer
- * every frame.
- *
- * Temporal history is a private ping-pong pair owned by this denoiser
- * (rgba16float, full internal-res). It is reset (hasHistory = 0) on the first
- * frame, whenever the camera moves (`ctx.isMoving`), and after
- * `requestAccumReset()` schedules a frame-zero mutation reset, so fresh
- * disocclusions or scene/light edits do not blend stale history.
- *
- * Pipeline uses `layout: 'auto'`; the UBO is allocated once and re-packed only
- * when the moving / history state changes.
- *
- * Refs: Koskela, Immonen, Mäkitalo, Foi, Viitanen, Jääskeläinen, Kultala,
- * Takala. "Blockwise Multi-Order Feature Regression for Real-Time Path-Tracing
- * Reconstruction." ACM TOG 38(5), 2019.
+ * Reference: Koskela et al. Blockwise Multi-Order Feature Regression for
+ * Real-Time Path-Tracing Reconstruction. ACM TOG 38(5), 2019.
  */
 
 import {
+  BMFR_BLOCK_FIT_SIZE_BYTES,
   BMFR_DEFAULT_UNIFORMS,
+  BMFR_RESOLVE_WORKGROUP_SIZE,
   BMFR_UNIFORMS_SIZE_BYTES,
   packBmfrUniforms,
   type BmfrUniforms,
@@ -51,145 +31,338 @@ import {
   type DenoiserInitContext,
   type DenoiserState,
 } from './index.js';
+import { publishFrameState } from '../FramePublication.js';
 import { shouldResetDenoiserHistory } from './historyReset.js';
+
+interface BmfrSizedResources {
+  readonly historyA: GPUTexture;
+  readonly historyB: GPUTexture;
+  readonly blockFits: GPUBuffer;
+  readonly width: number;
+  readonly height: number;
+}
+
+function destroyResource(resource: { destroy(): void } | null | undefined): void {
+  try {
+    resource?.destroy();
+  } catch {
+    // GPU resource retirement is best-effort. A lost-device implementation or
+    // hostile host wrapper may throw from destroy(); independent resources must
+    // still be retired and an already-published replacement stays successful.
+  }
+}
+
+function destroySizedResources(resources: BmfrSizedResources | null): void {
+  destroyResource(resources?.historyA);
+  destroyResource(resources?.historyB);
+  destroyResource(resources?.blockFits);
+}
+
+function blockFitBufferSize(width: number, height: number): number {
+  const stride = BMFR_DEFAULT_UNIFORMS.blockStride;
+  return (
+    Math.ceil(width / stride) *
+    Math.ceil(height / stride) *
+    BMFR_BLOCK_FIT_SIZE_BYTES
+  );
+}
 
 export class BmfrDenoiser implements Denoiser {
   readonly id = 'bmfr' as const;
-  readonly passLabels = DENOISER_PASS_LABELS['bmfr'];
+  readonly passLabels = DENOISER_PASS_LABELS.bmfr;
 
-  private _device!: GPUDevice;
-  private _pipeline!: GPUComputePipeline;
-  private _ubo!: GPUBuffer;
-  /** Last-packed (movingOrFirst) state so the UBO is only re-written on change. */
+  private _device: GPUDevice | null = null;
+  private _fitPipeline: GPUComputePipeline | null = null;
+  private _resolvePipeline: GPUComputePipeline | null = null;
+  private _ubo: GPUBuffer | null = null;
+  private _sized: BmfrSizedResources | null = null;
   private _lastHasHistory = -1;
-
-  // Private persistent temporal-history ping-pong (full internal-res).
-  private _historyA: GPUTexture | null = null;
-  private _historyB: GPUTexture | null = null;
   private _pingPong = 0;
-  /** True until the first dispatch / after a resize — forces hasHistory = 0. */
   private _historyValid = false;
+  private _lifecycleGeneration = 0;
 
   async initialize(ctx: DenoiserInitContext): Promise<void> {
+    const generation = ++this._lifecycleGeneration;
     const { device, width, height } = ctx;
-    this._device = device;
-
     const code = composeWgsl(BMFR_MODULE, WGSL_MODULES);
-    const sm = device.createShaderModule({ label: 'bmfr', code });
-    await checkShaderCompile(sm, 'bmfr');
-    this._pipeline = await device.createComputePipelineAsync({
-      label: 'bmfr',
-      layout: 'auto',
-      compute: { module: sm, entryPoint: 'bmfrMain' },
-    });
+    const shader = device.createShaderModule({ label: 'bmfr', code });
+    await checkShaderCompile(shader, 'bmfr');
+    const [fitPipeline, resolvePipeline] = await Promise.all([
+      device.createComputePipelineAsync({
+        label: 'bmfr-fit',
+        layout: 'auto',
+        compute: { module: shader, entryPoint: 'bmfrMain' },
+      }),
+      device.createComputePipelineAsync({
+        label: 'bmfr-resolve',
+        layout: 'auto',
+        compute: { module: shader, entryPoint: 'bmfrResolve' },
+      }),
+    ]);
+    if (generation !== this._lifecycleGeneration) {
+      throw new Error('BMFR initialization was superseded by dispose or reinitialize');
+    }
 
-    this._ubo = device.createBuffer({
-      label: 'bmfr-ubo',
-      size: BMFR_UNIFORMS_SIZE_BYTES,
-      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-    });
+    let nextUbo: GPUBuffer | null = null;
+    let nextSized: BmfrSizedResources | null = null;
+    try {
+      nextUbo = device.createBuffer({
+        label: 'bmfr-ubo',
+        size: BMFR_UNIFORMS_SIZE_BYTES,
+        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+      });
+      nextSized = this._createSizedResources(device, width, height);
+    } catch (error) {
+      destroyResource(nextUbo);
+      destroySizedResources(nextSized);
+      throw error;
+    }
 
-    this._allocHistory(width, height);
+    const previousUbo = this._ubo;
+    const previousSized = this._sized;
+    this._device = device;
+    this._fitPipeline = fitPipeline;
+    this._resolvePipeline = resolvePipeline;
+    this._ubo = nextUbo;
+    this._sized = nextSized;
+    this._lastHasHistory = -1;
+    this._pingPong = 0;
+    this._historyValid = false;
+    destroyResource(previousUbo);
+    destroySizedResources(previousSized);
   }
 
   state(): DenoiserState {
     return DENOISER_READY_STATE;
   }
 
-  private _allocHistory(width: number, height: number): void {
-    this._historyA?.destroy();
-    this._historyB?.destroy();
-    const usage =
+  private _createSizedResources(
+    device: GPUDevice,
+    width: number,
+    height: number,
+  ): BmfrSizedResources {
+    if (!Number.isSafeInteger(width) || width <= 0) {
+      throw new RangeError('BMFR width must be a positive safe integer');
+    }
+    if (!Number.isSafeInteger(height) || height <= 0) {
+      throw new RangeError('BMFR height must be a positive safe integer');
+    }
+    const fitBytes = blockFitBufferSize(width, height);
+    if (!Number.isSafeInteger(fitBytes)) {
+      throw new RangeError('BMFR block-fit buffer size exceeds the safe integer range');
+    }
+    if (
+      typeof device.limits?.maxBufferSize === 'number' &&
+      fitBytes > device.limits.maxBufferSize
+    ) {
+      throw new RangeError('BMFR block-fit buffer exceeds device maxBufferSize');
+    }
+    if (
+      typeof device.limits?.maxStorageBufferBindingSize === 'number' &&
+      fitBytes > device.limits.maxStorageBufferBindingSize
+    ) {
+      throw new RangeError(
+        'BMFR block-fit buffer exceeds device maxStorageBufferBindingSize',
+      );
+    }
+
+    const textureUsage =
       GPUTextureUsage.TEXTURE_BINDING |
       GPUTextureUsage.STORAGE_BINDING |
       GPUTextureUsage.COPY_SRC |
       GPUTextureUsage.COPY_DST;
-    this._historyA = this._device.createTexture({ label: 'bmfr-history-a', size: [width, height], format: 'rgba16float', usage });
-    this._historyB = this._device.createTexture({ label: 'bmfr-history-b', size: [width, height], format: 'rgba16float', usage });
-    this._pingPong = 0;
-    this._historyValid = false;
+    let historyA: GPUTexture | null = null;
+    let historyB: GPUTexture | null = null;
+    let blockFits: GPUBuffer | null = null;
+    try {
+      historyA = device.createTexture({
+        label: 'bmfr-history-a',
+        size: [width, height],
+        format: 'rgba16float',
+        usage: textureUsage,
+      });
+      historyB = device.createTexture({
+        label: 'bmfr-history-b',
+        size: [width, height],
+        format: 'rgba16float',
+        usage: textureUsage,
+      });
+      blockFits = device.createBuffer({
+        label: 'bmfr-block-fits',
+        size: fitBytes,
+        usage: GPUBufferUsage.STORAGE,
+      });
+      return { historyA, historyB, blockFits, width, height };
+    } catch (error) {
+      destroyResource(historyA);
+      destroyResource(historyB);
+      destroyResource(blockFits);
+      throw error;
+    }
   }
 
   private _packUniforms(hasHistory: number): void {
+    if (this._device == null || this._ubo == null) {
+      throw new Error('BMFR denoiser is not initialized');
+    }
     if (this._lastHasHistory === hasHistory) return;
     const scratch = new ArrayBuffer(BMFR_UNIFORMS_SIZE_BYTES);
-    const u: BmfrUniforms = {
+    const uniforms: BmfrUniforms = {
       ...BMFR_DEFAULT_UNIFORMS,
-      // Walkaround pipeline → screen-space position proxy from gNormalDepth.w.
       positionMode: 1,
       hasHistory,
     };
-    packBmfrUniforms(u, scratch);
+    packBmfrUniforms(uniforms, scratch);
     this._device.queue.writeBuffer(this._ubo, 0, scratch);
     this._lastHasHistory = hasHistory;
   }
 
   dispatch(ctx: DenoiserDispatchContext): GPUTexture {
-    const { device, encoder, resources, computeDesc, isMoving, resourceCache } = ctx;
-    const common = resources.common;
-    const w = ctx.width;
-    const h = ctx.height;
+    const fitPipeline = this._fitPipeline;
+    const resolvePipeline = this._resolvePipeline;
+    const ubo = this._ubo;
+    const sized = this._sized;
+    if (
+      this._device == null ||
+      fitPipeline == null ||
+      resolvePipeline == null ||
+      ubo == null ||
+      sized == null
+    ) {
+      throw new Error('BMFR denoiser is not initialized');
+    }
+    if (ctx.width !== sized.width || ctx.height !== sized.height) {
+      throw new Error(
+        'BMFR dispatch dimensions do not match allocated resources; call resize first',
+      );
+    }
 
-    // Camera motion / frame-zero reset → drop history so disocclusions and
-    // mutation-triggered accumulator resets do not blend stale samples.
+    const { device, encoder, resources, computeDesc, isMoving, resourceCache } =
+      ctx;
+    const common = resources.common;
     const resetHistory = shouldResetDenoiserHistory(ctx.frameIndex, isMoving);
     const useHistory = this._historyValid && !resetHistory;
     this._packUniforms(useHistory ? 1 : 0);
 
-    const histRead = this._pingPong === 0 ? this._historyA! : this._historyB!;
-    const histWrite = this._pingPong === 0 ? this._historyB! : this._historyA!;
+    const historyRead =
+      this._pingPong === 0 ? sized.historyA : sized.historyB;
+    const historyWrite =
+      this._pingPong === 0 ? sized.historyB : sized.historyA;
+    const colorView =
+      resourceCache?.textureView(common.hdrColorTexture) ??
+      common.hdrColorTexture.createView();
+    const normalDepthView =
+      resourceCache?.textureView(common.gNormalDepthTexture) ??
+      common.gNormalDepthTexture.createView();
 
-    const buildBg = (): GPUBindGroup => device.createBindGroup({
-      label: 'bmfr-bg',
-      layout: this._pipeline.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: resourceCache?.textureView(common.hdrColorTexture) ?? common.hdrColorTexture.createView() },
-        { binding: 1, resource: resourceCache?.textureView(common.gNormalDepthTexture) ?? common.gNormalDepthTexture.createView() },
-        { binding: 2, resource: resourceCache?.textureView(common.gNormalDepthTexture) ?? common.gNormalDepthTexture.createView() },
-        { binding: 3, resource: resourceCache?.textureView(histRead) ?? histRead.createView() },
-        { binding: 4, resource: resourceCache?.textureView(histWrite) ?? histWrite.createView() },
-        { binding: 5, resource: { buffer: this._ubo } },
+    const fitBindGroup = cachedBindGroup(
+      resourceCache,
+      'denoiser:bmfr-fit',
+      [common.hdrColorTexture, common.gNormalDepthTexture, sized.blockFits, ubo],
+      () =>
+        device.createBindGroup({
+          label: 'bmfr-fit-bg',
+          layout: fitPipeline.getBindGroupLayout(0),
+          entries: [
+            { binding: 0, resource: colorView },
+            { binding: 1, resource: normalDepthView },
+            { binding: 2, resource: normalDepthView },
+            { binding: 4, resource: { buffer: sized.blockFits } },
+            { binding: 5, resource: { buffer: ubo } },
+          ],
+        }),
+    );
+    const resolveBindGroup = cachedBindGroup(
+      resourceCache,
+      'denoiser:bmfr-resolve',
+      [
+        common.hdrColorTexture,
+        common.gNormalDepthTexture,
+        historyRead,
+        historyWrite,
+        sized.blockFits,
+        ubo,
       ],
+      () =>
+        device.createBindGroup({
+          label: 'bmfr-resolve-bg',
+          layout: resolvePipeline.getBindGroupLayout(0),
+          entries: [
+            { binding: 0, resource: colorView },
+            { binding: 1, resource: normalDepthView },
+            { binding: 2, resource: normalDepthView },
+            {
+              binding: 3,
+              resource:
+                resourceCache?.textureView(historyRead) ??
+                historyRead.createView(),
+            },
+            { binding: 4, resource: { buffer: sized.blockFits } },
+            { binding: 5, resource: { buffer: ubo } },
+            {
+              binding: 6,
+              resource:
+                resourceCache?.textureView(historyWrite) ??
+                historyWrite.createView(),
+            },
+          ],
+        }),
+    );
+
+    const stride = BMFR_DEFAULT_UNIFORMS.blockStride;
+    const fitPass = encoder.beginComputePass(computeDesc('bmfr-fit'));
+    fitPass.setPipeline(fitPipeline);
+    fitPass.setBindGroup(0, fitBindGroup);
+    fitPass.dispatchWorkgroups(
+      Math.ceil(ctx.width / stride),
+      Math.ceil(ctx.height / stride),
+      1,
+    );
+    fitPass.end();
+
+    const resolvePass = encoder.beginComputePass(computeDesc('bmfr-resolve'));
+    resolvePass.setPipeline(resolvePipeline);
+    resolvePass.setBindGroup(0, resolveBindGroup);
+    resolvePass.dispatchWorkgroups(
+      Math.ceil(ctx.width / BMFR_RESOLVE_WORKGROUP_SIZE),
+      Math.ceil(ctx.height / BMFR_RESOLVE_WORKGROUP_SIZE),
+      1,
+    );
+    resolvePass.end();
+
+    const nextPingPong = 1 - this._pingPong;
+    publishFrameState(ctx.publication, () => {
+      this._pingPong = nextPingPong;
+      this._historyValid = true;
     });
-    const bg = cachedBindGroup(resourceCache, 'denoiser:bmfr', [
-      common.hdrColorTexture,
-      common.gNormalDepthTexture,
-      histRead,
-      histWrite,
-      this._ubo,
-    ], buildBg);
-
-    // One workgroup per 32×32 block. Each thread owns a 2×2 patch, so a
-    // 16×16 workgroup covers a full block.
-    const block = BMFR_DEFAULT_UNIFORMS.blockSize;
-    const blocksX = Math.ceil(w / block);
-    const blocksY = Math.ceil(h / block);
-
-    const pass = encoder.beginComputePass(computeDesc('bmfr'));
-    pass.setPipeline(this._pipeline);
-    pass.setBindGroup(0, bg);
-    pass.dispatchWorkgroups(blocksX, blocksY, 1);
-    pass.end();
-
-    // The write half is BOTH this frame's denoised output AND next frame's
-    // history-read. Flip the ping-pong so next frame reads what we just wrote.
-    this._pingPong = 1 - this._pingPong;
-    this._historyValid = true;
-
-    return histWrite;
+    return historyWrite;
   }
 
   resize(width: number, height: number): void {
-    if (this._historyA == null) return; // not yet initialized
-    this._allocHistory(width, height);
-    this._lastHasHistory = -1; // force re-pack on next dispatch
+    const device = this._device;
+    if (device == null || this._sized == null) return;
+    const next = this._createSizedResources(device, width, height);
+    const previous = this._sized;
+    this._sized = next;
+    this._pingPong = 0;
+    this._historyValid = false;
+    this._lastHasHistory = -1;
+    destroySizedResources(previous);
   }
 
   dispose(): void {
-    this._historyA?.destroy();
-    this._historyB?.destroy();
-    this._historyA = null;
-    this._historyB = null;
-    this._ubo?.destroy();
+    this._lifecycleGeneration += 1;
+    const sized = this._sized;
+    const ubo = this._ubo;
+    this._sized = null;
+    this._ubo = null;
+    this._fitPipeline = null;
+    this._resolvePipeline = null;
+    this._device = null;
+    this._lastHasHistory = -1;
+    this._pingPong = 0;
+    this._historyValid = false;
+    destroySizedResources(sized);
+    destroyResource(ubo);
   }
 }

@@ -5,109 +5,54 @@
 // audits do not repeatedly rediscover the same intentional rows as code gaps.
 
 const ROOTS = ["packages"];
-const SOURCE_EXTENSIONS = [".ts", ".tsx", ".wgsl.ts", ".glsl.js"];
-const MARKER_RE = /\b(TODO|FIXME|not implemented|stub|stubs)\b/i;
+const SOURCE_EXTENSIONS = [".ts", ".tsx", ".js", ".mjs"];
+const MARKER_RE = /\b(?:TODO|FIXME|TBD|unimplemented|not[ -]implemented|partial(?:ly)?[ -]implemented|partial[ -]implementation|incomplete[ -]implementation|implementation[ -]incomplete|unfinished[ -]implementation|stub|stubs)\b/i;
 
-const ALLOWED_MARKERS = Object.freeze([
-  {
-    path: "packages/gltf-adapter/src/compression.ts",
-    includes: "stub), else warn and leave the data unresolved",
-    reason: "EXT_meshopt fallback-stub contract comment; real decoder-hook handling is implemented.",
-  },
-  {
-    path: "packages/gltf-adapter/src/compression.ts",
-    includes: "Keep gltf.buffers index-consistent (pad any gap with zero-length stubs).",
-    reason: "Internal buffer-index preservation for compression fallback analysis.",
-  },
-  {
-    path: "packages/gltf-adapter/src/compression.ts",
-    includes: "unless that buffer is a `fallback: true` stub",
-    reason: "glTF meshopt fallback-buffer semantics, not a no-op implementation.",
-  },
-  {
-    path: "packages/gltf-adapter/src/gltfTypes.ts",
-    includes: "EXT_meshopt_compression `fallback: true` stubs",
-    reason: "Schema field documentation for meshopt fallback buffers.",
-  },
-  {
-    path: "packages/dev/src/react/DenoiserABToggle.tsx",
-    includes: "Other backends render a stub badge and log once if the debug surface is absent.",
-    reason: "Dev overlay intentionally degrades when an engine lacks the optional debug surface.",
-  },
-  {
-    path: "packages/dev/src/react/DenoiserABToggle.tsx",
-    includes: "engine.debug.setDenoiserEnabled() is not implemented on this backend",
-    reason: "Optional debug control warning, not a core rendering feature gap.",
-  },
-  {
-    path: "packages/dev/src/react/DenoiserABToggle.tsx",
-    includes: "? 'denoiser [stub]'",
-    reason: "Dev overlay badge for optional debug-control absence.",
-  },
+export const ALLOWED_MARKERS = Object.freeze([
   {
     path: "packages/engine/src/progressiveHandoff.ts",
-    includes: "fully unit-testable with stub engines",
+    line: "// no GPU calls of its own — so it is fully unit-testable with stub engines.",
     reason: "Testability comment for orchestration code.",
   },
   {
     path: "packages/engine/src/adapterProfile.ts",
-    includes: "`{ limits }` stub. `selectPtWebgpuTraceTier`",
+    line: "*  `{ limits }` stub. `selectPtWebgpuTraceTier` reads only the two storage",
     reason: "Adapter profile helper accepts minimal limit objects for tests/hosts.",
   },
   {
     path: "packages/engine/src/adapterProfile.ts",
-    includes: "test stubs handle that",
+    line: "*  assumed to support WebGL2 (test stubs handle that). */",
     reason: "Capability-probe documentation for test doubles.",
   },
   {
-    path: "packages/walkaround-hybrid/src/HybridEngine.ts",
-    includes: "Non-'none' strategies are not implemented for this backend.",
-    reason: "Structured caustic-strategy rejection on walkaround; PT backends own those paths.",
-  },
-  {
     path: "packages/walkaround-hybrid/src/neural/nrc/nrcQueryHarness.ts",
-    includes: "Stub the spread-termination + reservoir symbols the query module does NOT",
+    line: "// Stub the spread-termination + reservoir symbols the query module does NOT",
     reason: "Standalone NRC validation harness isolates nrcQuery forward math from unrelated GI spread/reservoir code.",
   },
   {
     path: "packages/walkaround-hybrid/src/ppg/ppgUpdate.wgsl.ts",
-    includes: "line acknowledged this as a stub). This module replaces that",
+    line: "* `_ = vIdx` line acknowledged this as a stub). This module replaces that",
     reason: "Historical comment documenting a removed PPG stub.",
   },
   {
     path: "packages/walkaround-hybrid/src/ppg/ppgUpdate.wgsl.ts",
-    includes: "no more uniform-grid stub",
+    line: "// W9: real flat-buffer leaf location (no more uniform-grid stub).",
     reason: "Historical comment documenting the real flat-buffer PPG implementation.",
   },
   {
     path: "packages/walkaround-hybrid/src/pipeline/BvhUpdateSink.ts",
-    includes: "tested with a lightweight stub instead of a real GPU pipeline",
+    line: "* can be tested with a lightweight stub instead of a real GPU pipeline.",
     reason: "Dependency-injection testability comment.",
   },
   {
     path: "packages/walkaround-hybrid/src/environment/equirectDirectional.ts",
-    includes: "the fork carries a TODO",
+    line: "* NOTE vs that port: we include the sinθ solid-angle term (the fork carries a TODO",
     reason: "Comment notes this implementation fixed the inherited TODO by including solid angle.",
   },
   {
     path: "packages/pt-webgl2/src/scene/equirectHdrInfo.ts",
-    includes: "unlike the original fork TODO",
+    line: "// NOTE: unlike the original fork TODO, the per-pixel importance weight includes",
     reason: "Comment notes this implementation fixed the inherited TODO by including solid angle.",
-  },
-  {
-    path: "packages/pt-webgpu/src/bdpt/bdptLightPathBufferWebGPU.ts",
-    includes: "tests use stub devices without global GPUBufferUsage",
-    reason: "Host/test-device compatibility comment.",
-  },
-  {
-    path: "packages/pt-webgpu/src/wgsl/pathTrace/causticLite.wgsl.ts",
-    includes: "Lite caustic stubs",
-    reason: "Lite-tier caustic paths are intentionally disabled and capability-gated.",
-  },
-  {
-    path: "packages/pt-webgpu/src/wgsl/pathTrace/connectCore.wgsl.ts",
-    includes: "lite tier appends its stub / procedural-only implementations",
-    reason: "WGSL include comment for lite-tier compatibility implementations.",
   },
 ]);
 
@@ -145,51 +90,106 @@ async function* walk(dir) {
   }
 }
 
-const allowByPath = new Map();
-for (const marker of ALLOWED_MARKERS) {
-  const rows = allowByPath.get(marker.path) ?? [];
-  rows.push(marker);
-  allowByPath.set(marker.path, rows);
-}
+/** @typedef {{ path: string, line: string, reason: string }} AllowedMarker */
 
-/** @type {{ path: string; line: number; text: string }[]} */
-const unclassified = [];
-/** @type {Set<string>} */
-const seenAllowed = new Set();
+/**
+ * Validate all source entries against an exact-line allowlist. Trimming only
+ * ignores indentation/trailing whitespace; adding any other text — including a
+ * second gap marker — makes the line unclassified and fails closed.
+ *
+ * @param {{ path: string, text: string }[]} entries
+ * @param {readonly AllowedMarker[]} [allowedMarkers]
+ * @returns {{ classifiedCount: number, unclassifiedCount: number }}
+ */
+export function checkSourceEntries(entries, allowedMarkers = ALLOWED_MARKERS) {
+  /** @type {Map<string, AllowedMarker[]>} */
+  const allowByPath = new Map();
+  /** @type {Set<string>} */
+  const allowedMarkerKeys = new Set();
+  for (const marker of allowedMarkers) {
+    if (
+      typeof marker.path !== "string" || marker.path.trim() === "" ||
+      typeof marker.line !== "string" || marker.line.trim() === "" ||
+      typeof marker.reason !== "string" || marker.reason.trim() === ""
+    ) {
+      fail("each allowed marker requires a nonempty path, exact trimmed full line, and reason");
+    }
+    if (marker.line !== marker.line.trim()) {
+      fail(`allowed marker line must already be trimmed: ${marker.path}: ${marker.line}`);
+    }
+    if (!MARKER_RE.test(marker.line)) {
+      fail(`allowed marker line does not contain a recognized gap marker: ${marker.path}: ${marker.line}`);
+    }
+    const key = `${marker.path}\n${marker.line}`;
+    if (allowedMarkerKeys.has(key)) {
+      fail(`duplicate allowed marker: ${marker.path}: ${marker.line}`);
+    }
+    allowedMarkerKeys.add(key);
+    const rows = allowByPath.get(marker.path) ?? [];
+    rows.push(marker);
+    allowByPath.set(marker.path, rows);
+  }
 
-for (const root of ROOTS) {
-  for await (const path of walk(root)) {
-    const text = await Deno.readTextFile(repoUrl(path));
+  /** @type {{ path: string; line: number; text: string }[]} */
+  const unclassified = [];
+  /** @type {Map<string, number>} */
+  const allowedHitCounts = new Map();
+
+  for (const { path, text } of entries) {
     const lines = text.split(/\r?\n/);
     for (let i = 0; i < lines.length; i += 1) {
       const line = lines[i];
       if (!MARKER_RE.test(line)) continue;
-      const allowed = (allowByPath.get(path) ?? []).find((marker) => line.includes(marker.includes));
-      if (allowed) {
-        seenAllowed.add(`${allowed.path}\n${allowed.includes}`);
+      const allowed = (allowByPath.get(path) ?? []).filter((marker) =>
+        line.trim() === marker.line
+      );
+      if (allowed.length > 1) {
+        fail(`ambiguous allowed marker match at ${path}:${i + 1}`);
+      }
+      if (allowed.length === 1) {
+        const key = `${allowed[0].path}\n${allowed[0].line}`;
+        const count = (allowedHitCounts.get(key) ?? 0) + 1;
+        if (count > 1) fail(`allowed marker matched more than once: ${allowed[0].path}: ${allowed[0].line}`);
+        allowedHitCounts.set(key, count);
       } else {
         unclassified.push({ path, line: i + 1, text: line.trim() });
       }
     }
   }
+  if (unclassified.length > 0) {
+    const details = unclassified
+      .map((hit) => `  ${hit.path}:${hit.line}: ${hit.text}`)
+      .join("\n");
+    fail(`unclassified production gap markers found:\n${details}`);
+  }
+
+  const staleAllowed = allowedMarkers.filter((marker) =>
+    (allowedHitCounts.get(`${marker.path}\n${marker.line}`) ?? 0) !== 1
+  );
+  if (staleAllowed.length > 0) {
+    const details = staleAllowed
+      .map((marker) => `  ${marker.path}: ${marker.line}`)
+      .join("\n");
+    fail(`allowed marker list is stale; expected exact line disappeared:\n${details}`);
+  }
+
+  return {
+    classifiedCount: allowedMarkers.length,
+    unclassifiedCount: unclassified.length,
+  };
 }
 
-if (unclassified.length > 0) {
-  const details = unclassified
-    .map((hit) => `  ${hit.path}:${hit.line}: ${hit.text}`)
-    .join("\n");
-  fail(`unclassified production gap markers found:\n${details}`);
+if (import.meta.main) {
+  /** @type {{ path: string, text: string }[]} */
+  const entries = [];
+  for (const root of ROOTS) {
+    for await (const path of walk(root)) {
+      entries.push({ path, text: await Deno.readTextFile(repoUrl(path)) });
+    }
+  }
+  const result = checkSourceEntries(entries);
+  console.log(
+    `[road-to-100-source-gap-scan] PASS (${result.classifiedCount} classified production markers, ` +
+    `${result.unclassifiedCount} unclassified)`,
+  );
 }
-
-const staleAllowed = ALLOWED_MARKERS.filter((marker) => !seenAllowed.has(`${marker.path}\n${marker.includes}`));
-if (staleAllowed.length > 0) {
-  const details = staleAllowed
-    .map((marker) => `  ${marker.path}: ${marker.includes}`)
-    .join("\n");
-  fail(`allowed marker list is stale; expected marker text disappeared:\n${details}`);
-}
-
-console.log(
-  `[road-to-100-source-gap-scan] PASS (${ALLOWED_MARKERS.length} classified production markers, ` +
-  `${unclassified.length} unclassified)`,
-);

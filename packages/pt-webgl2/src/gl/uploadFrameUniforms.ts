@@ -1,8 +1,8 @@
 // uploadFrameUniforms — the per-draw uniform-upload body extracted from
 // GlResources.drawAccumStep (T3-D / D11-6). Sets every individual GLSL uniform the
 // copied fork trace shader reads (no FrameParams UBO — a UBO bind alone renders
-// black on a real driver; verified). BEHAVIOR-PRESERVING: the exact same setter
-// sequence, gates, and CMF-upload constants as the pre-extraction inline body.
+// black on a real driver; verified). The manifest/exhaustiveness gate keeps this
+// sequence aligned with the live shader surface.
 
 import type { GlProgram } from './glProgram.js';
 import type { FrameUniforms } from './glResources.js';
@@ -25,38 +25,37 @@ const CMF_YCDF_F32 = Float32Array.from(Y_CMF_CDF);
 const CMF_ZCDF_F32 = Float32Array.from(Z_CMF_CDF);
 
 /**
- * Upload the per-frame individual uniforms for one accumulation draw. `samples` is
- * the count already accumulated since the last clear (drives opacity 1/(N+1)).
+ * Upload the per-frame individual uniforms for one path-trace draw.
+ * `sampleOpacity` is the alpha written by the trace shader: fixed-function
+ * radiance accumulation passes 1/(N+1), while portable shader compositing
+ * passes 1 so the raw sample (and its coverage alpha) is not pre-weighted.
  * The caller must have called `prog.use()`-equivalent binding beforehand — this
  * fn calls `prog.use()` itself (byte-identical to the inline body which did so).
  */
 export function uploadFrameUniforms(
   prog: GlProgram,
-  samples: number,
+  sampleOpacity: number,
   seed: number,
   frame: FrameUniforms,
 ): void {
-  prog.use();
+  if (!prog.use()) {
+    throw new Error('pt-webgl2: trace pass reached uniform upload before its program was ready');
+  }
   // The copied fork GLSL reads INDIVIDUAL uniforms (no FrameParams UBO).
   prog.setInt('seed', seed);
-  prog.setFloat('opacity', 1 / (samples + 1));
+  prog.setFloat('opacity', sampleOpacity);
   prog.setVec2('resolution', frame.resolution[0], frame.resolution[1]);
   prog.setInt('bounces', frame.bounces);
   prog.setInt('transmissiveBounces', frame.transmissiveBounces);
   prog.setFloat('filterGlossyFactor', frame.filterGlossyFactor);
   prog.setInt('materialLodDepth', frame.materialLodDepth);
-  prog.setFloat('uRadianceClamp', frame.radianceClamp);
   prog.setMat4('cameraWorldMatrix', frame.cameraWorldMatrix);
   prog.setMat4('invProjectionMatrix', frame.invProjectionMatrix);
   prog.setFloat('environmentIntensity', frame.environmentIntensity);
   prog.setFloat('backgroundBlur', frame.backgroundBlur);
-  // H3 FIX (2026-06-09): upload backgroundAlpha. Directly-visible background
-  // (NO_HIT first ray) sets `pc_fragColor.a = backgroundAlpha`, then the running
-  // average multiplies by `opacity`; in the 'normal' regime the SRC_ALPHA blend
-  // weights the fragment by that alpha. Never uploaded → defaulted to 0 → the
-  // background contributed `src*0 + dst*1` every frame and NEVER accumulated
-  // (directly-visible sky/HDRI rendered black). 1 = opaque (accumulates like
-  // geometry); <1 routes to the alpha-composite regime (see #regime).
+  // Directly-visible background coverage is carried into the portable
+  // alpha-aware running-mean compositor. Never uploading this uniform used to
+  // default it to zero, so sky/HDRI pixels never accumulated.
   prog.setFloat('backgroundAlpha', frame.backgroundAlpha);
   prog.setMat4('environmentRotation', frame.environmentRotation);
   prog.setInt('uSpectralRendering', frame.spectralEnabled ? 1 : 0);
@@ -66,8 +65,6 @@ export function uploadFrameUniforms(
     // CDFs, and the integrals all defaulted to 0 → wavelengthPdf=0 →
     // wavelengthToRGB() returned vec3(0) → `spectral: true` rendered BLACK.
     // Constant data, cheap re-upload; gated so non-spectral frames skip it.
-    // (u_jakobCoeffs / iorCauchy stay at their flat-spectrum / no-dispersion
-    // defaults — those refine spectral reflectance colour, not black-vs-lit.)
     prog.setFloatArray('uCmfX', CMF_X_F32);
     prog.setFloatArray('uCmfY', CMF_Y_F32);
     prog.setFloatArray('uCmfZ', CMF_Z_F32);
@@ -78,14 +75,8 @@ export function uploadFrameUniforms(
     prog.setFloat('uYCmfIntegral', Y_CMF_INTEGRAL);
     prog.setFloat('uZCmfIntegral', Z_CMF_INTEGRAL);
   }
-  prog.setInt('uCausticStrategy', frame.causticStrategy);
-  prog.setFloat('uMneeMaxIterations', frame.mneeMaxIterations);
-  prog.setFloat('uMneeMaxChainLength', frame.mneeMaxChainLength);
-  // H2 follow-on: scene-global spectral dispersion + reflectance coefficients.
-  // Default (0,0,0)/(0,0,0) keep the no-dispersion / flat-S≡½ no-op path, so a
-  // non-dispersive spectral frame is unchanged. Set unconditionally (cheap scalar
-  // uploads; gated to nothing-but-defaults when the host supplies no dispersion).
-  prog.setVec3('u_jakobCoeffs', frame.jakobCoeffs[0], frame.jakobCoeffs[1], frame.jakobCoeffs[2]);
+  // Scene-global Cauchy dispersion coefficients. Reflectance coefficients are
+  // material-local and arrive through the packed materials texture.
   prog.setFloat('iorCauchyA', frame.iorCauchy[0]);
   prog.setFloat('iorCauchyB', frame.iorCauchy[1]);
   prog.setFloat('iorCauchyC', frame.iorCauchy[2]);
@@ -107,5 +98,14 @@ export function uploadFrameUniforms(
   if (frame.bdpt) {
     prog.setInt('uBdptLightSubpathPass', 0);
     prog.setInt('uBdptMaxLightBounces', frame.bdptMaxLightBounces);
+    prog.setVec3(
+      'uBdptSceneCenter',
+      frame.bdptSceneCenter[0],
+      frame.bdptSceneCenter[1],
+      frame.bdptSceneCenter[2],
+    );
+    prog.setFloat('uBdptSceneRadius', frame.bdptSceneRadius);
+    prog.setFloat('uBdptSharedWavelength', frame.bdptSharedWavelengthNm);
+    prog.setFloat('uBdptSharedWavelengthPdf', frame.bdptSharedWavelengthPdf);
   }
 }

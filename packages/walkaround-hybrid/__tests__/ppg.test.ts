@@ -326,7 +326,7 @@ describe('PPG WGSL — training-signal contract', () => {
   it('ppgUpdate kernel trains from accepted ReSTIR-GI reservoirs, not dead sample buffers', () => {
     // The prior scaffold allocated ppgSamplesPos/Dir/Li buffers but never wrote
     // them. The live kernel must read accepted reservoir records instead:
-    // xv at [0..2], xs at [8..10], M at [15], and Lo at [16..18].
+    // xv at [0..2], xs at [8..10], RIS w_sum at [11], and M at [15].
     expect(PPG_UPDATE_WGSL).not.toMatch(/Lo_clamp|Lo_outgoing|outgoingRadiance/);
     expect(PPG_UPDATE_WGSL).not.toMatch(/ppgSamplesPos|ppgSamplesDir|ppgLiSamples/);
     expect(PPG_UPDATE_WGSL).toContain('ppgReservoirGiCurrent');
@@ -334,7 +334,7 @@ describe('PPG WGSL — training-signal contract', () => {
     expect(PPG_UPDATE_WGSL).toContain('b + 0u');
     expect(PPG_UPDATE_WGSL).toContain('b + 8u');
     expect(PPG_UPDATE_WGSL).toContain('b + 15u');
-    expect(PPG_UPDATE_WGSL).toContain('b + 16u');
+    expect(PPG_UPDATE_WGSL).toContain('b + 11u');
   });
 
   it('ppgUpdate kernel includes a workgroup_size declaration (sanity check)', () => {

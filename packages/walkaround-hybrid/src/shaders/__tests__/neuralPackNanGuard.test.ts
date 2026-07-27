@@ -4,8 +4,8 @@
  * `normalize(vec3f(0))` is undefined behaviour per the WGSL spec and produces
  * NaN on real hardware when the normal buffer holds (0,0,0) at sky pixels,
  * background regions, or un-rendered areas.  The fix replaces the bare
- * `normalize` with a `select`-guarded form that falls back to (0,1,0) when
- * the remapped vector is near-zero.
+ * the decoded vector is first replaced with a safe (0,1,0) fallback, then
+ * normalised. The source texture stores the canonical affine-packed normal.
  *
  * This structural test pins the guard in the WGSL source so a future
  * simplification cannot silently reintroduce the NaN path.
@@ -16,27 +16,25 @@
 import { describe, it, expect } from 'vitest';
 import { NEURAL_PACK_WGSL } from '../neuralPack.wgsl.js';
 
-describe('neuralPack — NaN guard for zero-length normals', () => {
-  it('does NOT call bare normalize on the remapped normal (would NaN on sky pixels)', () => {
-    // Detect the un-guarded pattern: normalize(nd * 2.0 - 1.0) with no length
-    // check.  After the fix the remapped vec is in a local variable and guarded
-    // with select + a length² threshold before normalize is called.
-    const bareNormalize = /normalize\(\s*nd\s*\*\s*2\.0\s*-\s*1\.0\s*\)/;
-    expect(NEURAL_PACK_WGSL).not.toMatch(bareNormalize);
+describe('neuralPack — world-normal contract and NaN guard', () => {
+  it('decodes normalDepth.xyz from affine-packed to signed world normal', () => {
+    expect(NEURAL_PACK_WGSL).toContain('textureLoad(normalDepthTex');
+    expect(NEURAL_PACK_WGSL).toContain(
+      'decodeNormalDepthWorldNormal(textureLoad(normalDepthTex, xy, 0).xyz)',
+    );
+    expect(NEURAL_PACK_WGSL).toContain(
+      'return encoded * 2.0 - vec3f(1.0);',
+    );
   });
 
-  it('uses select to guard against zero-length normals (fallback to (0,1,0))', () => {
-    // The guard must use select (WGSL's ternary) with a dot-product length check
-    // and a (0,1,0) fallback — the two structural pillars of the fix.
-    expect(NEURAL_PACK_WGSL).toContain('select(');
-    expect(NEURAL_PACK_WGSL).toContain('0.0, 1.0, 0.0');
-    // The dot-product length² threshold replaces the implicit zero-guard.
-    expect(NEURAL_PACK_WGSL).toContain('dot(nd_remapped, nd_remapped)');
+  it('uses select to replace zero-length normals before normalization', () => {
+    expect(NEURAL_PACK_WGSL).toMatch(
+      /select\(vec3f\(0\.0, 1\.0, 0\.0\), finiteValue,[\s\S]*lengthSquared >= 1e-6\)/,
+    );
   });
 
-  it('normalizes the remapped vector after the guard (not before)', () => {
-    // normalize must appear INSIDE the select expression, not on the raw input.
-    // The pattern: select(normalize(nd_remapped), …) or select(…, normalize(…)).
-    expect(NEURAL_PACK_WGSL).toMatch(/select\(\s*normalize\(nd_remapped\)/);
+  it('normalizes only the non-zero safe vector', () => {
+    expect(NEURAL_PACK_WGSL).toContain('return normalize(safe);');
+    expect(NEURAL_PACK_WGSL).not.toContain('normalize(finiteValue)');
   });
 });

@@ -4,7 +4,7 @@
  * pt-webgpu's selectable-light enumeration order is fixed:
  *
  *   directional? · point[stride12] · spot[stride16] · rect-area[stride16]
- *     · mesh-triangle-area[stride16] · env?
+ *     · mesh-triangle-area[stride28] · env?
  *
  * H51-D bumped the strides: point 8→12 (added distance/decay vec4),
  * spot 12→16 (added penumbra inner-cone cosine in slot 2.w + distance/decay vec4).
@@ -42,7 +42,7 @@ export type Vec3 = [number, number, number];
 export const POINT_LIGHT_STRIDE = 12;
 export const SPOT_LIGHT_STRIDE = 16;
 export const RECT_AREA_LIGHT_STRIDE = 16;
-export const MESH_AREA_LIGHT_STRIDE = 16;
+export const MESH_AREA_LIGHT_STRIDE = 28;
 
 /** A single positional light, decoded from its packed stride layout. */
 export type PositionalEmitter =
@@ -59,7 +59,9 @@ export type PositionalEmitter =
       readonly position: Vec3;
       /** Spot axis as packed (NOT renormalized — consumers normalize as needed). */
       readonly axis: Vec3;
+      readonly cosOuter: number;
       readonly radiance: Vec3;
+      readonly cosInner: number;
     }
   | {
       readonly kind: 'rect';
@@ -125,7 +127,9 @@ export function* walkPositionalEmitters(
       index: i,
       position: v3(sb.spotLightsData, o),
       axis: v3(sb.spotLightsData, o + 4),
+      cosOuter: sb.spotLightsData[o + 7] ?? 0,
       radiance: v3(sb.spotLightsData, o + 8),
+      cosInner: sb.spotLightsData[o + 11] ?? 0,
     };
   }
   for (let i = 0; i < sb.rectAreaLightCount; i += 1) {

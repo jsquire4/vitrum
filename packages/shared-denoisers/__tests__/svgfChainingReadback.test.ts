@@ -6,9 +6,13 @@
  *          - prev* inputs (prevLinearDepth/prevNormalsRgb/prevObjectIds/
  *            prevHistoryLength) are uploaded to the PREV textures when present;
  *          - the current-frame fallback (prev == curr) still holds when absent;
- *          - the return is { rgb, momentsOut?, historyLengthOut? }: momentsOut /
- *            historyLengthOut appear ONLY when chainable:true, and they are read
- *            back (i.e. survive) rather than being destroyed before return.
+ *          - the return is
+ *            { rgb, prevRadianceOut?, momentsOut?, historyLengthOut? }:
+ *            chaining outputs appear ONLY when chainable:true, and they are
+ *            read back (i.e. survive) rather than being destroyed before
+ *            return;
+ *          - first-wavelet output, rather than the unfiltered temporal result,
+ *            is copied into and returned as the next color history.
  *   (V3-5) readback try/finally: readRgba32fToRg / readR32UintToU32 destroy the
  *          staging buffer even when mapAsync rejects.
  */
@@ -59,7 +63,8 @@ function createStubDevice() {
       const t: StubTexture & { createView: () => unknown; destroy: () => void } = {
         label: desc?.label,
         destroyed: false,
-        createView: vi.fn(() => ({})),
+        // Preserve texture identity in bind-group assertions below.
+        createView: vi.fn(() => t),
         destroy: vi.fn(() => { t.destroyed = true; }),
       };
       textures.push(t);
@@ -69,7 +74,7 @@ function createStubDevice() {
       label: desc?.label,
       destroy: vi.fn(),
     })),
-    createBindGroup: vi.fn(() => ({})),
+    createBindGroup: vi.fn((desc: unknown) => desc),
     createCommandEncoder: vi.fn(() => ({
       beginComputePass: vi.fn(() => ({
         setPipeline: vi.fn(), setBindGroup: vi.fn(), dispatchWorkgroups: vi.fn(), end: vi.fn(),
@@ -114,21 +119,68 @@ describe('one-shot SVGF chaining plumbing + return shape (V3-3)', () => {
     });
     expect(out.rgb).toBeInstanceOf(Float32Array);
     expect(out.rgb.length).toBe(W * H * 3);
+    expect(out.prevRadianceOut).toBeUndefined();
     expect(out.momentsOut).toBeUndefined();
     expect(out.historyLengthOut).toBeUndefined();
-    // No chaining → the moments/history readbacks are never submitted.
+    // No chaining → the history/moments readbacks are never submitted.
+    expect(uploadMocks.readRgba16fToRgb).toHaveBeenCalledTimes(1);
     expect(uploadMocks.readRgba32fToRg).not.toHaveBeenCalled();
     expect(uploadMocks.readR32UintToU32).not.toHaveBeenCalled();
   });
 
-  it('returns momentsOut + historyLengthOut read back BEFORE teardown when chainable:true', async () => {
+  it('binds current noisy color and geometry to the 7x7 fallback', async () => {
+    const device = createStubDevice();
+    await runSVGFRealWebGPU({
+      device: device as unknown as GPUDevice,
+      rgb, width: W, height: H, atrousIterations: 1,
+    });
+
+    const fallbackCall = device.createBindGroup.mock.calls.find((call) => {
+      const entries = (call[0] as { entries?: Array<{ resource?: StubTexture }> }).entries;
+      return entries?.[0]?.resource?.label === 'svgf-curr-color'
+        && entries.length === 6;
+    });
+    const entries =
+      (fallbackCall?.[0] as { entries: Array<{ resource: StubTexture }> } | undefined)?.entries;
+    expect(entries?.map((entry) => entry.resource.label)).toEqual([
+      'svgf-curr-color',
+      'svgf-hist-out',
+      'svgf-var-mom',
+      'svgf-var-final',
+      'svgf-norm',
+      'svgf-depth',
+    ]);
+  });
+
+  it('returns first-wavelet color + moments + history read back before teardown', async () => {
     const device = createStubDevice();
     const out = await runSVGFRealWebGPU({
       device: device as unknown as GPUDevice,
       rgb, width: W, height: H, atrousIterations: 1, chainable: true,
     });
     expect(out.rgb.length).toBe(W * H * 3);
-    // The reprojection outputs are read back and returned (not destroyed first).
+    // Final output plus first-wavelet history are independently read back.
+    expect(uploadMocks.readRgba16fToRgb).toHaveBeenCalledTimes(2);
+    expect(out.prevRadianceOut).toBeInstanceOf(Float32Array);
+    expect(out.prevRadianceOut).toHaveLength(W * H * 3);
+    const finalReadTex = labelOfArg(uploadMocks.readRgba16fToRgb.mock.calls[0]?.[1]);
+    const historyReadTex = labelOfArg(uploadMocks.readRgba16fToRgb.mock.calls[1]?.[1]);
+    expect(finalReadTex).toBe('svgf-pong');
+    expect(historyReadTex).toBe('svgf-color-out');
+
+    // Iteration zero writes pong and immediately preserves that exact level in
+    // color-out before any later wavelet level could reuse the ping-pong pair.
+    const encoder = device.createCommandEncoder.mock.results[0]?.value as {
+      copyTextureToTexture: ReturnType<typeof vi.fn>;
+    };
+    const historyCopy = encoder.copyTextureToTexture.mock.calls.find(
+      (call) =>
+        labelOfArg((call[0] as { texture?: StubTexture }).texture) === 'svgf-pong'
+        && labelOfArg((call[1] as { texture?: StubTexture }).texture) === 'svgf-color-out',
+    );
+    expect(historyCopy).toBeDefined();
+
+    // The reprojection outputs are also read back and returned (not destroyed first).
     expect(uploadMocks.readRgba32fToRg).toHaveBeenCalledTimes(1);
     expect(uploadMocks.readR32UintToU32).toHaveBeenCalledTimes(1);
     expect(out.momentsOut).toBeInstanceOf(Float32Array);
@@ -237,5 +289,34 @@ describe('webGpuTextureUpload readback try/finally (V3-5)', () => {
       .rejects.toThrow('mock mapAsync failure');
 
     expect(destroyed).toEqual([true, true]);
+  });
+
+  it('destroys the staging buffer when command encoding fails before mapAsync', async () => {
+    const real = await vi.importActual<typeof import('../src/webGpuTextureUpload.js')>(
+      '../src/webGpuTextureUpload.js',
+    );
+    const destroy = vi.fn();
+    const mapAsync = vi.fn();
+    const device = {
+      createBuffer: vi.fn(() => ({
+        mapAsync,
+        getMappedRange: vi.fn(),
+        unmap: vi.fn(),
+        destroy,
+      })),
+      createCommandEncoder: vi.fn(() => {
+        throw new Error('mock encoder failure');
+      }),
+      queue: { submit: vi.fn() },
+    } as unknown as GPUDevice;
+
+    vi.stubGlobal('GPUBufferUsage', { COPY_DST: 2, MAP_READ: 1 });
+
+    await expect(
+      real.readRgba16fToRgb(device, {} as GPUTexture, 2, 2),
+    ).rejects.toThrow('mock encoder failure');
+
+    expect(mapAsync).not.toHaveBeenCalled();
+    expect(destroy).toHaveBeenCalledTimes(1);
   });
 });

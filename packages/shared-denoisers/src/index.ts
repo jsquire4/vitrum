@@ -26,6 +26,7 @@ export {
 export {
   ATROUS_VARIANCE_WGSL,
   ATROUS_VARIANCE_COMPUTE_WORKGROUP_SIZE,
+  buildAtrousVarianceWgsl,
 } from './wgsl/atrousVariance.wgsl.js';
 export {
   ATROUS_VARIANCE_TEMPORAL_MIN_FRAME_COUNT,
@@ -51,12 +52,14 @@ export type {
 export {
   denoiseFinal,
   preloadOIDNModel,
+  acquireOIDNSession,
   clearOIDNCache,
   releaseOIDNCacheEntry,
 } from './oidnBridge.js';
 export type {
   OIDNDenoiseInputs,
   OIDNDenoiseOptions,
+  OIDNSessionLease,
 } from './oidnBridge.js';
 
 // HDR bilateral (WebGPU compute, luminance edge-stop — no G-buffer)
@@ -91,6 +94,7 @@ export type { AtrousChainArgs, ResourceTracker } from './atrousChain.js';
 export {
   SVGF_REPROJECTION_WGSL,
   SVGF_REAL_REPROJECTION_WORKGROUP_SIZE,
+  buildSvgfReprojectionWgsl,
 } from './wgsl/svgfReprojection.wgsl.js';
 export {
   SVGF_VARIANCE_FROM_MOMENTS_WGSL,
@@ -101,7 +105,13 @@ export {
   SVGF_7X7_SPATIAL_FALLBACK_WGSL,
   SVGF_SPATIAL_FALLBACK_HISTORY_THRESHOLD,
   SVGF_7X7_SPATIAL_FALLBACK_WORKGROUP_SIZE,
+  buildSvgf7x7SpatialFallbackWgsl,
 } from './wgsl/svgf7x7SpatialFallback.wgsl.js';
+export {
+  SVGF_REAL_ATROUS_WGSL,
+  SVGF_REAL_ATROUS_WORKGROUP_SIZE,
+  buildSvgfRealAtrousWgsl,
+} from './wgsl/svgfAtrous.wgsl.js';
 // Constants:
 export {
   SVGF_REAL_DEFAULT_ALPHA_MIN,
@@ -135,6 +145,8 @@ export {
   svgfReprojCPU,
   svgfVarianceFromMomentsCPU,
   svgf7x7FallbackCPU,
+  svgfPrefilterVariance3x3CPU,
+  svgfPropagateAtrousVarianceCPU,
 } from './svgfRealCpu.js';
 export {
   svgfRealDemodulateAlbedo,
@@ -153,19 +165,27 @@ export type {
 // Per-32×32-block least-squares fit of noisy color against [1, p, n, p²] via
 // Householder QR, + temporal EMA. WGSL kernel + one-shot host pipeline + the
 // CPU-unit-testable regression core.
-export { BMFR_WGSL, BMFR_WORKGROUP_SIZE, BMFR_WGSL_FEATURE_COUNT } from './wgsl/bmfr.wgsl.js';
+export {
+  BMFR_WGSL,
+  BMFR_WORKGROUP_SIZE,
+  BMFR_RESOLVE_WORKGROUP_SIZE,
+  BMFR_BLOCK_FIT_SIZE_BYTES,
+  BMFR_WGSL_FEATURE_COUNT,
+} from './wgsl/bmfr.wgsl.js';
 export {
   BMFR_FEATURE_COUNT,
   BMFR_BLOCK_SIZE,
   BMFR_QR_REGULARISATION,
   bmfrFeatureRow,
   bmfrSolveChannel,
+  householderLeastSquares,
   householderSolve,
   bmfrFitBlock,
 } from './bmfrRegression.js';
 export {
   BMFR_DEFAULT_TEMPORAL_ALPHA,
   BMFR_DEFAULT_POSITION_SCALE,
+  BMFR_DEFAULT_BLOCK_STRIDE,
 } from './bmfrConstants.js';
 export {
   BMFR_UNIFORMS_SIZE_BYTES,
@@ -191,6 +211,7 @@ export type {
   OIDNFinalDispatcherOptions,
   DenoisedFrame,
   OIDNBridgeLike,
+  OIDNSessionLeaseLike,
   OIDNBridgeLoader,
   ReadbackResult,
   ReadbackFn,
@@ -216,3 +237,12 @@ export {
   rgba16fBufferToRgbF32,
   rgbF32ToRgba16fRowAligned,
 } from './rgba16fConversions.js';
+export {
+  NORMAL_DEPTH_NO_HIT_NORMAL,
+  NORMAL_DEPTH_DECODE_WGSL,
+  PACKED_NORMAL_DEPTH_TEXTURE_LAYOUT,
+  STANDALONE_DEPTH_TEXTURE_LAYOUT,
+  decodeNormalDepthWorldNormal,
+  normalDepthWgslDepthComponent,
+} from './normalDepthEncoding.js';
+export type { NormalDepthTextureLayout } from './normalDepthEncoding.js';

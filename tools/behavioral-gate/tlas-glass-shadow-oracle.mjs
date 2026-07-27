@@ -19,7 +19,6 @@
 
 import { BVH_INTERSECT_WGSL } from "../../packages/shared-bvh/src/wgsl/bvhIntersect.wgsl.ts";
 import { TLAS_TRAVERSAL_WGSL } from "../../packages/shared-bvh/src/wgsl/tlasTraversal.wgsl.ts";
-import { applyNagaFix } from "../shader-gate/nagaFix.mjs";
 
 const LEAF_FLAG = 0xffff0000;
 
@@ -82,15 +81,7 @@ fn main() {
 
   // Glass is in range, opaque is not.
   result[0] = select(0u, 1u, traceTlasAny(
-    &tlasNodes,
-    &tlasInstanceIndices,
-    &tlasBlasRoots,
-    &tlasInstanceWorldToLocal,
-    &tlasInstanceLocalToWorld,
     1u,
-    &bvh_index,
-    &bvh_position,
-    &bvh,
     origin,
     dir,
     1.5,
@@ -100,15 +91,7 @@ fn main() {
 
   // Same segment: glass is ignored, no opaque occluder yet.
   result[1] = select(0u, 1u, traceTlasAny(
-    &tlasNodes,
-    &tlasInstanceIndices,
-    &tlasBlasRoots,
-    &tlasInstanceWorldToLocal,
-    &tlasInstanceLocalToWorld,
     1u,
-    &bvh_index,
-    &bvh_position,
-    &bvh,
     origin,
     dir,
     1.5,
@@ -118,15 +101,7 @@ fn main() {
 
   // Longer segment: glass is ignored, then opaque geometry is found.
   result[2] = select(0u, 1u, traceTlasAny(
-    &tlasNodes,
-    &tlasInstanceIndices,
-    &tlasBlasRoots,
-    &tlasInstanceWorldToLocal,
-    &tlasInstanceLocalToWorld,
     1u,
-    &bvh_index,
-    &bvh_position,
-    &bvh,
     origin,
     dir,
     3.0,
@@ -136,15 +111,7 @@ fn main() {
 
   // Sanity guard: nothing should hit before the glass pane.
   result[3] = select(0u, 1u, traceTlasAny(
-    &tlasNodes,
-    &tlasInstanceIndices,
-    &tlasBlasRoots,
-    &tlasInstanceWorldToLocal,
-    &tlasInstanceLocalToWorld,
     1u,
-    &bvh_index,
-    &bvh_position,
-    &bvh,
     origin,
     dir,
     0.5,
@@ -154,7 +121,7 @@ fn main() {
 
 }
 `;
-  return applyNagaFix(raw);
+  return raw;
 }
 
 function makeBuffer(device, label, data, usage) {

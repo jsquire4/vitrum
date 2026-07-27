@@ -21,7 +21,8 @@ describe('RC out-of-model confidence blend', () => {
     const body = fnBody(SHADING_TERMS_WGSL, 'lo_indirect');
 
     expect(body).toContain('let Lo_rc = sampleCascadeC0(pos, normal);');
-    expect(body).toContain('let rcHasEnergy = max(Lo_rc.r, max(Lo_rc.g, Lo_rc.b)) > 1e-6;');
+    expect(body).toContain('let rcHasEnergy = max(Lo_rc.r, max(Lo_rc.g, Lo_rc.b)) > 0.0;');
+    expect(body).not.toContain('rcHasEnergy = max(Lo_rc.r, max(Lo_rc.g, Lo_rc.b)) > 1e-6');
     expect(body).toContain(
       'let cRc = clamp(rcParams.rcWeight, 0.0, 1.0) * (1.0 - m) * select(0.0, 1.0, rcHasEnergy);',
     );
@@ -37,8 +38,13 @@ describe('checkerboard sparse-shading resolve path', () => {
     expect(RESOLVE_WGSL).toContain('if (checkerboardOn == 0u) { return true; }');
     expect(RESOLVE_WGSL).toContain('return ((px + py) & 1u) == frameParity;');
     expect(RESOLVE_WGSL).toContain('let temporal = textureLoad(t_prev_radiance, prevXY, 0);');
-    expect(RESOLVE_WGSL).toMatch(/let spatial\s*=\s*\(textureLoad\(t_current_radiance,\s*xL,\s*0\)/);
-    expect(RESOLVE_WGSL).toContain('radiance = mix(spatial, temporal, wTemporal);');
+    expect(RESOLVE_WGSL).toContain('let spatial = (cL + cR + cU + cD) * 0.25;');
+    expect(RESOLVE_WGSL).toContain(
+      'radiance = mix(spatial, temporalClipped, wTemporal);',
+    );
+    expect(RESOLVE_WGSL).toContain(
+      'let historyAccepted = temporalFinite && maxHistoryDelta <= 0.25 * historyScale;',
+    );
   });
 
   it('prefill writes only gap-parity pixels before real denoisers read hdrColorTexture', () => {
@@ -46,7 +52,11 @@ describe('checkerboard sparse-shading resolve path', () => {
 
     expect(src).toContain('fn cbPrefillKernel(');
     expect(src).toContain('if (((px + py) & 1u) == u_cb.frameParity) { return; }');
-    expect(src).toContain('let filled = textureLoad(t_prev_radiance, prevXY, 0);');
+    expect(src).toContain('let temporal = textureLoad(t_prev_radiance, prevXY, 0);');
+    expect(src).toContain('let filled = mix(spatial, temporalClipped, temporalWeight);');
+    expect(src).toContain(
+      'let historyAccepted = temporalFinite && maxHistoryDelta <= 0.25 * historyScale;',
+    );
     expect(src).toContain('textureStore(t_hdr_out, vec2<u32>(px, py), filled);');
     expect(src).not.toContain('t_hdr_in');
   });

@@ -7,6 +7,8 @@ vitrum builds on decades of foundational work in physically-based rendering, rea
 - **three.js** — MIT — Mr.doob et al. — `https://github.com/mrdoob/three.js`
 - **three-gpu-pathtracer** — MIT — Garrett Johnson (gkjohnson) — `https://github.com/gkjohnson/three-gpu-pathtracer`
 - **three-mesh-bvh** — MIT — Garrett Johnson — `https://github.com/gkjohnson/three-mesh-bvh`
+- **Google Draco 1.5.7** — Apache-2.0 — Google — <https://github.com/google/draco>. `@vitrum/gltf-adapter` ships the matching decoder WASM and a mechanically browser-cleaned ESM wrapper derived from `draco_decoder_nodejs.js`; the transformation removes Node `fs`/`path` branches, replaces the UMD footer, and preserves the upstream function-scoped browser loader declarations required by strict ESM without changing decoder logic. Vendored paths: `packages/gltf-adapter/src/assets/draco_decoder.wasm` (SHA-256 `2516a4e43526d71787bf2f678f951329f7f858f8f15f42d4bc9e370b31a0da3a`) and `packages/gltf-adapter/src/vendor/draco_decoder_browser.js` (SHA-256 `7ec0115432825e898de8796e696b2b6a424405307295b4ab4eae14ade8b2d375`). The full license is retained at `packages/gltf-adapter/src/assets/LICENSE.draco.txt`.
+- **meshoptimizer 1.1.1** — MIT — Arseny Kapoulkine — <https://github.com/zeux/meshoptimizer>. Its lazy JavaScript/WASM decoder implements the built-in `EXT/KHR_meshopt_compression` path in `@vitrum/gltf-adapter`.
 
 ## Ecosystem / prior art (not direct dependencies)
 
@@ -103,12 +105,12 @@ Each technique is cited at its implementation site in the source code. This list
 
 Foundational textbooks cited from JSDoc comments across the codebase:
 
-- **PBR4e** — Matt Pharr, Wenzel Jakob, Greg Humphreys, "Physically Based Rendering: From Theory to Implementation," 4th edition, MIT Press, 2023. Cited from `shared-samplers/src/{bdptVertex,bdptMIS,hgPhase}.ts`, `shared-samplers/__tests__/pdfNormalization.test.ts`, `pt-webgpu/src/wgsl/pathTrace/*.wgsl.ts`. Referenced for: HG phase normalisation (§11.4), equi-angular volume PDF (§14.1.2), BDPT MIS recursive ratio (§16.3.5 Eq. 16.16), hero-wavelength MIS reconstruction (§4.6.2), barycentric reconstruction (§6.8).
+- **PBR4e** — Matt Pharr, Wenzel Jakob, Greg Humphreys, "Physically Based Rendering: From Theory to Implementation," 4th edition, MIT Press, 2023. Cited from `shared-samplers/src/{bdptMIS,equiAngular,hgPhase}.ts`, `shared-samplers/__tests__/pdfNormalization.test.ts`, `pt-webgpu/src/wgsl/pathTrace/*.wgsl.ts`. Referenced for: HG phase normalisation (§11.4), equi-angular volume PDF (§14.1.2), BDPT MIS recursive ratio (§16.3.5 Eq. 16.16), hero-wavelength MIS reconstruction (§4.6.2), barycentric reconstruction (§6.8).
 - **Veach 1997** — Eric Veach, "Robust Monte Carlo Methods for Light Transport Simulation," PhD thesis, Stanford University. Cited from `shared-samplers/src/bdptMIS.ts` (§10.3 BDPT MIS connection formulae). The canonical reference for multiple-importance-sampling theory.
 
 ## Candidate techniques (not yet implemented)
 
-The following techniques are tracked as roadmap candidates. They are documented here for transparency about what vitrum is *not* yet shipping, and to credit the prior art that future implementations would build on. See `plan/` for current status.
+The following techniques are tracked as roadmap candidates. They are documented here for transparency about what vitrum is _not_ yet shipping, and to credit the prior art that future implementations would build on. See `plan/` for current status.
 
 - **ReSTIR BDPT** — Hedstrom et al., "Bidirectional ReSTIR Path Tracing with Caustics," ACM TOG 2025. Not implemented as of 2026-05-17.
 - **Vertex Connection and Merging (VCM)** — Iliyan Georgiev, Jaroslav Křivánek, Tomáš Davidovič, Philipp Slusallek, "Light Transport Simulation with Vertex Connection and Merging," ACM TOG 2012. Not implemented as of 2026-05-17.

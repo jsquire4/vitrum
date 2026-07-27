@@ -22,49 +22,11 @@
  */
 
 import { OCTAHEDRAL_CORE_WGSL } from '@vitrum/shared-samplers';
+import { RC_OCTAHEDRAL_SOLID_ANGLE_WGSL } from './octahedralSampling.wgsl.js';
 
 export const CASCADE_MERGE_WGSL = /* wgsl */`
 ${OCTAHEDRAL_CORE_WGSL}
-
-// ─── octCellSolidAngle ───────────────────────────────────────────────────────
-// Per-bin solid-angle estimate for a cell at grid position (cx, cy) in an
-// N×N octahedral direction grid.
-//
-// The octahedral mapping is NOT solid-angle-uniform: cells near the fold
-// edges subtend a smaller solid angle than central cells.  This helper
-// computes the solid angle numerically by decoding the four corners of the
-// cell into unit directions and summing the two-triangle spherical quad area.
-//
-// The merge kernel uses this to weight children by their actual solid-angle
-// coverage instead of the Sannikov-paper ÷4 assumption, which is only valid
-// when each parent covers exactly 4 children.  With the non-Sannikov probe
-// scaling in CASCADE_DIMS, the ÷4 assumption is incorrect.
-//
-// Reference: Cigolle et al. 2014, "A Survey of Efficient Representations for
-// Independent Unit Vectors", JCGT §A.2 — octahedral Jacobian / texel area.
-// Reference: Sannikov 2023, §3 — cascade conservation law.
-
-// Spherical quad area via two-triangle cross-product approximation.
-fn sphericalQuadAreaForMerge(p00: vec3f, p10: vec3f, p01: vec3f, p11: vec3f) -> f32 {
-  let d1 = cross(p10 - p00, p01 - p00);
-  let d2 = cross(p10 - p11, p01 - p11);
-  return (length(d1) + length(d2)) * 0.5;
-}
-
-// Solid angle of cell (cx, cy) in an N×N octahedral grid.
-// cx, cy are 0-based column/row indices.  N = gridSize (e.g. 4, 8, 16, 32).
-fn octCellSolidAngle(cx: u32, cy: u32, N: u32) -> f32 {
-  let cellWidth = 2.0 / f32(N);
-  let u0 = -1.0 + f32(cx) * cellWidth;
-  let v0 = -1.0 + f32(cy) * cellWidth;
-  let u1 = u0 + cellWidth;
-  let v1 = v0 + cellWidth;
-  let p00 = octDecode(vec2f(u0, v0));
-  let p10 = octDecode(vec2f(u1, v0));
-  let p01 = octDecode(vec2f(u0, v1));
-  let p11 = octDecode(vec2f(u1, v1));
-  return sphericalQuadAreaForMerge(p00, p10, p01, p11);
-}
+${RC_OCTAHEDRAL_SOLID_ANGLE_WGSL}
 
 // ─── MergeUniforms struct ─────────────────────────────────────────────────────
 // Must match buildMergeUniformData() layout in cascadeDispatch.ts
@@ -188,13 +150,13 @@ fn cascadeMergeKernel(@builtin(global_invocation_id) globalId: vec3u) {
     let childRayIdx = childGx + childGy * uMerge.upperRayGridSize;
 
     let childRad   = trilinearSampleUpper(probePos, childRayIdx, uMerge);
-    let childOmega = octCellSolidAngle(childGx, childGy, uMerge.upperRayGridSize);
+    let childOmega = rcOctCellSolidAngle(childGx, childGy, uMerge.upperRayGridSize);
 
     merged     = merged + childRad * childOmega;
     omegaTotal = omegaTotal + childOmega;
   }
-  // Normalize by total child solid angle; guard against degenerate zero.
-  merged = merged / max(omegaTotal, 1e-6);
+  // Normalize only when at least one represented solid-angle cell contributed.
+  if (omegaTotal > 0.0) { merged = merged / omegaTotal; }
 
   rc_lowerCascade[lowerOutIdx] = vec4f(local.rgb + merged, 1.0);
 }

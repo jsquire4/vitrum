@@ -1,8 +1,9 @@
-// blendFrag — the Regime-2 alpha-composite quad fragment shader (extracted from
-// glResources.ts, T3-D / D11-6). Verbatim port of the fork's BlendMaterial.js:31-59
-// (GL_FragColor → pc_fragColor). Lerps target1/target2 by `opacity = 1/(samples+1)`
-// with alpha-weighted compositing, written into the ping-pong pair. Moved BYTE-
-// IDENTICAL — the GlProgram compiles this string unchanged.
+// blendFrag — portable running-mean composite fragment shader.
+//
+// The raw trace target already contains the complete main + resolved-NEE sample.
+// This pass performs its sole accumulation update with
+// `opacity = 1/(samples+1)`, preserving transparent-background coverage while
+// the auxiliary MRT attachments remain last-sample data.
 
 export const BLEND_FRAG = `
 in vec2 vUv;

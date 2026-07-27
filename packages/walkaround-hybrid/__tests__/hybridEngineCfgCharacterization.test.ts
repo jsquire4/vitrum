@@ -14,8 +14,9 @@
  *
  *   1. `_cfg` itself equals `deriveHybridEngineConfig(opts, preset)` — i.e. the
  *      engine holds the parsed config verbatim.
- *   2. `_initStaticConfig()` carries the same per-field values the old splatted
- *      `_x` fields produced (golden = derived from the same options).
+ *   2. `_initStaticConfig()` carries the construction-immutable values, while
+ *      `_buildInitHost()` carries the runtime-mutable PPG cadence through its
+ *      live getter (golden = derived from the same options).
  *   3. `_denoiserFilterDeps()` carries the same tuple-cluster values.
  *   4. `_buildFrameDeps()` carries the same per-frame config values.
  *   5. `capabilities.maxBounces` (read from the migrated `_maxBounces`) is
@@ -67,7 +68,7 @@ function richOpts(overrides: Partial<HybridEngineOptions> = {}): HybridEngineOpt
     indirectFireflyClamp: [2.0, 3.0, 4.0],
     atrousDirectSigmas: [100, 6, 0.06],
     atrousIndirectSigmas: [30, 18, 0.4],
-    restirPtReuse: true,
+    grisReuse: true,
     nrcEnabled: false,
     nrcWarmupSteps: 3,
     gtaoMode: 'quarter',
@@ -143,11 +144,15 @@ describe('HybridEngine._initStaticConfig — migrated config values unchanged', 
     expect(cfg['gtaoMode']).toBe(golden.gtaoMode);
     expect(cfg['diSpatialPasses']).toBe(golden.diSpatialPasses);
     expect(cfg['giSpatialPasses']).toBe(golden.giSpatialPasses);
-    // restirPtReuse / nrcEnabled forwarded as booleans (=== 1).
-    expect(cfg['restirPtReuse']).toBe(golden.restirPtReuse === 1);
+    // grisReuse / nrcEnabled forwarded as booleans (=== 1).
+    expect(cfg['grisReuse']).toBe(golden.grisReuse === 1);
     expect(cfg['nrcEnabled']).toBe(golden.nrcEnabled === 1);
-    expect(cfg['nrcWarmupSteps']).toBe(golden.nrcWarmupSteps);
-    expect(cfg['ppgDispatchInterval']).toBe(golden.ppgDispatchInterval);
+    expect(cfg['nrcConfig']).toEqual(golden.nrcConfig);
+    // Runtime-mutable: intentionally excluded from the static snapshot so
+    // reset/rebuild observes the latest setPpgDispatchInterval() value.
+    expect('ppgDispatchInterval' in cfg).toBe(false);
+    const initHost = callPrivate(engine, '_buildInitHost');
+    expect(initHost['ppgDispatchInterval']).toBe(golden.ppgDispatchInterval);
     expect(cfg['ppgMaxSpatialCells']).toBe(golden.ppgMaxSpatialCells);
     expect(cfg['ppgMaxDTreeNodesPerCell']).toBe(golden.ppgMaxDTreeNodesPerCell);
     expect(cfg['ppgMixAlpha']).toBe(golden.ppgMixAlpha);
@@ -170,7 +175,7 @@ describe('HybridEngine._denoiserFilterDeps — tuple cluster unchanged', () => {
     expect(deps['atrousDirectSigmas']).toEqual(golden.atrousDirectSigmas);
     expect(deps['atrousIndirectSigmas']).toEqual(golden.atrousIndirectSigmas);
     expect(deps['stainedGlassFlags']).toBe(golden.stainedGlassFlags);
-    expect(deps['restirPtReuse']).toBe(golden.restirPtReuse);
+    expect(deps['grisReuse']).toBe(golden.grisReuse);
     expect(deps['nrcEnabled']).toBe(golden.nrcEnabled);
   });
 });
@@ -202,7 +207,7 @@ describe('HybridEngine._buildFrameDeps — per-frame config values unchanged', (
     expect(filter['atrousDirectSigmas']).toEqual(golden.atrousDirectSigmas);
     expect(filter['atrousIndirectSigmas']).toEqual(golden.atrousIndirectSigmas);
     expect(filter['stainedGlassFlags']).toBe(golden.stainedGlassFlags);
-    expect(filter['restirPtReuse']).toBe(golden.restirPtReuse);
+    expect(filter['grisReuse']).toBe(golden.grisReuse);
     expect(filter['nrcEnabled']).toBe(golden.nrcEnabled);
   });
 
@@ -257,7 +262,7 @@ describe('HybridEngine._cfg — default options identity', () => {
     expect(cfg['denoiser']).toBe('atrous-variance');
     expect(cfg['maxBounces']).toBe(4);
     expect(cfg['indirectFireflyClamp']).toEqual([1.0, 1.0, 1.0]);
-    expect(cfg['restirPtReuse']).toBe(0);
+    expect(cfg['grisReuse']).toBe(0);
     expect(cfg['nrcEnabled']).toBe(0);
     expect(cfg['tunables']).toEqual(golden.tunables);
   });

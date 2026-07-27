@@ -12,13 +12,11 @@
  * store each handle as a private field.
  *
  * W1-R2 (2026-05-17) — the formerly 41-field flat `FrameResources` god-struct
- * is now split into 8 per-algorithm sub-structs (`common`, `restirDI`,
- * `restirGI`, `ddgi`, `gtao`, `svgf`, `ppg`, `neural`). Sub-struct boundaries
- * map to the per-algorithm passes in `pipeline/passes/*`. The `ppg` and
- * `neural` sub-structs were empty placeholders at the W1-R2 landing time;
- * both have since been populated — `ppg` by the W9 finish (PPG GPU dTree
- * traversal + per-pixel position binding), `neural` — InferenceGraph owns its
- * tensor buffers; NeuralFrameResources is an empty placeholder. See
+ * is split into resource-owning per-algorithm sub-structs (`common`, `restirDI`,
+ * `restirGI`, `ddgi`, `gtao`, `svgf`, `ppg`). Sub-struct boundaries map to the
+ * passes in `pipeline/passes/*`. PPG owns its query/training buffers here;
+ * neural resources are owned by InferenceGraph, so no empty placeholder bucket
+ * is retained. See
  * plan/premium-grade-refactor-20260517.md §W1-R2
  * and complexity-sweep-20260517 findings A3 + B6.
  */
@@ -36,12 +34,17 @@ import { createDdgiFrameResources } from './frameResources/createDdgiFrameResour
 import { createRestirDIFrameResources } from './frameResources/createRestirDIFrameResources.js';
 import { createRestirGIFrameResources } from './frameResources/createRestirGIFrameResources.js';
 import { createGtaoFrameResources } from './frameResources/createGtaoFrameResources.js';
-import { createNeuralFrameResources } from './frameResources/createNeuralFrameResources.js';
 import { createSvgfFrameResources } from './frameResources/createSvgfFrameResources.js';
 import {
   PPG_DEFAULT_MAX_DTREE_NODES_PER_CELL,
   PPG_DEFAULT_SPATIAL_CELLS,
+  PPG_MAX_DTREE_NODES_PER_CELL,
+  PPG_MAX_SPATIAL_CELLS,
 } from '../ppg/ppgConstants.js';
+import {
+  createPpgQueryArenaLayout,
+  type PpgQueryArenaLayout,
+} from '../ppg/ppgQueryArena.js';
 
 // ─── Per-algorithm sub-struct interfaces ─────────────────────────────────────
 
@@ -69,6 +72,14 @@ export interface CommonFrameResources {
   compositeSampler: GPUSampler;
   /** Screen-space motion (RG32F), written each frame by MotionVectorsPass. */
   motionVectorTexture: GPUTexture;
+  /**
+   * Immutable current-frame radiance snapshot used by the checkerboard
+   * pre-denoiser reconstruction pass. The pass writes gap pixels back into
+   * `hdrColorTexture`, so WebGPU cannot legally sample that same subresource;
+   * this copy supplies the four fresh shaded neighbours used for temporal
+   * color-box rejection. It is full resolution only when checkerboard is on.
+   */
+  checkerboardRadianceSnapshotTexture: GPUTexture;
   /**
    * Sprint 9 — Per-pixel sample tier (r32uint, 1 / 2 / 4). Written by the
    * sample-budget pass each frame; available for downstream consumption by
@@ -165,13 +176,12 @@ export interface RestirDIFrameResources {
 export interface RestirGIFrameResources {
   /**
    * Sprint 16 — half-res ReSTIR-GI reservoir buffer.
-   * Layout: 20 u32 (80 bytes) per pixel by default; 30 u32 (120 bytes) when
-   * `restirPtReuse` enables the GRIS/ReSTIR-PT reconnection-shift cache.
+   * Layout: 20 u32 (80 bytes) per pixel by default; 28 u32 (112 bytes) when
+   * `grisReuse` enables the GRIS DDGI-proxy reconnection-shift cache.
    *   [0..19] = Sprint-16/17 reconnection sample (byte-identical to the
-   *             original 80-byte layout); [20..29] = GRIS reconnection-shift
-   *             cache (Lin 2022) — READ by the GRIS reuse variants of the
-   *             temporal/spatial GI passes (e.g. temporalGi.wgsl.ts:317 reads
-   *             cosReconOut/distRecon); active when built with restirPtReuse
+   *             original 80-byte layout); [20..27] = GRIS reconnection-shift
+   *             metadata (Lin 2022) — READ by the GRIS reuse variants of the
+   *             temporal/spatial GI passes; active when built with grisReuse
    *             (off by default). See shaders/reservoirGi.wgsl.ts.
    * Size: (W/2) × (H/2) × stride bytes.
    * Written by `risGiMain`; read by temporal/spatial passes and shade.
@@ -193,6 +203,8 @@ export interface RestirGIFrameResources {
 export interface DDGIFrameResources {
   ddgiPlaceholderRgba16f: GPUTexture;
   ddgiPlaceholderVisRgba16f: GPUTexture;
+  /** Linear sampler used only by DDGI atlas receivers. */
+  ddgiSampler: GPUSampler;
   ddgiUboBuffer: GPUBuffer;
 }
 
@@ -224,15 +236,6 @@ export interface GTAOFrameResources {
 
 /** SVGF ('svgf-real' mode) persistent textures — object IDs, history, moments, prev-rad, variance. */
 export interface SVGFFrameResources {
-  /**
-   * T2.H1 legacy fallback — 1×1 r32uint placeholder for current object-ID
-   * inputs. Real frame dispatch binds {@link svgfCurrentObjectIdTexture}; this
-   * remains only for defensive fallback paths / tests that construct partial
-   * resource bundles.
-   */
-  svgfObjIdPlaceholderTexture: GPUTexture;
-  /** Conservative prev-object-id fallback placeholder (value 1). */
-  svgfPrevObjIdPlaceholderTexture: GPUTexture;
   /**
    * Current-frame stable object/primitive/triangle ID (r32uint).
    * Full-res only when `svgf-real` is active; otherwise a 1×1 frame-layout
@@ -271,9 +274,11 @@ export interface SVGFFrameResources {
   /** T2.H1 — Per-pixel moments B (ping-pong pair). */
   svgfMomentsTextureB: GPUTexture;
   /**
-   * T2.H1 — Previous-frame EMA radiance A (rgba16float, full-res).
+   * T2.H1 — Previous-frame first-wavelet radiance A (rgba16float, full-res).
    * Ping-pong pair with svgfPrevRadianceTextureB.
-   * Read as prevColor; written as colorOut. Swapped each frame.
+   * Reprojection writes its temporal color, then à-trous iteration zero
+   * replaces it with the filtered history prescribed by Schied 2017 §4.3.
+   * Read as prevColor on the next frame; swapped each accepted submission.
    * Memory per texture at 1080p: 1920×1080×8 ≈ 16 MB.
    */
   svgfPrevRadianceTextureA: GPUTexture;
@@ -297,7 +302,7 @@ export interface SVGFFrameResources {
  * (W9, opt-in via `HybridEngineOptions.ppgEnabled`).
  *
  * All fields are required: instances are only created by
- * {@link allocatePPGResources}, which allocates and returns all six buffers
+ * {@link allocatePPGResources}, which allocates and returns all four buffers
  * together. Exported so `PPGCoordinator` and bind-group builders can reference
  * it directly (D3.12 factory pattern).
  *
@@ -305,10 +310,10 @@ export interface SVGFFrameResources {
  * See `ppg/serialise.ts` for the tree buffer layout.
  */
 export interface PPGFrameResources {
-  /** Serialised spatial kd-tree (Float32Array). */
-  sTreeBuf: GPUBuffer;
-  dTreeBuf: GPUBuffer;
-  dTreeOffsetsBuf: GPUBuffer;
+  /** Versioned sTree+dTree+offset packed query arena. */
+  queryArenaBuf: GPUBuffer;
+  readonly queryArenaLayout: PpgQueryArenaLayout;
+  queryArenaEpoch: number;
   /** Atomic u32 accumulator — one slot per dTree node (matches dTreeBuf layout). */
   fluxAtomicsBuf: GPUBuffer;
   /**
@@ -320,19 +325,6 @@ export interface PPGFrameResources {
   cellSampleCountsBuf: GPUBuffer;
   /** Update kernel UBO. */
   updateUboBuffer: GPUBuffer;
-}
-
-/**
- * Neural denoiser GPU resources — empty placeholder.
- *
- * W10 (neural denoiser finish) will populate this sub-struct with the
- * weight buffers, intermediate tensors, and any required UBOs. Declared
- * now so consumers can pattern-match on `res.neural` without conditional
- * access.
- */
-export interface NeuralFrameResources {
-  /** Reserved for W10. */
-  readonly _empty?: never;
 }
 
 /**
@@ -354,7 +346,6 @@ export interface FrameResources {
   svgf: SVGFFrameResources;
   /** Populated by {@link allocatePPGResources} when PPG is enabled; empty record otherwise. */
   ppg: PPGFrameResources | Record<never, never>;
-  neural: NeuralFrameResources;
 }
 
 /**
@@ -368,9 +359,14 @@ export function uploadBuffer(device: GPUDevice, data: ArrayBuffer, usage: number
     usage: usage | GPUBufferUsage.COPY_DST,
     mappedAtCreation: true,
   });
-  new Uint8Array(buf.getMappedRange()).set(new Uint8Array(data));
-  buf.unmap();
-  return buf;
+  try {
+    new Uint8Array(buf.getMappedRange()).set(new Uint8Array(data));
+    buf.unmap();
+    return buf;
+  } catch (error) {
+    try { buf.destroy(); } catch { /* preserve the upload failure */ }
+    throw error;
+  }
 }
 
 /**
@@ -390,15 +386,60 @@ export function uploadBufferPadded(
   extraBytes: number,
   usage: number,
 ): GPUBuffer {
-  const size = Math.max(data.byteLength + Math.max(0, extraBytes), 16);
+  if (!Number.isSafeInteger(extraBytes) || extraBytes < 0) {
+    throw new RangeError(
+      `[ReGIR] storage-buffer padding must be a non-negative safe integer; ` +
+        `received ${String(extraBytes)}.`,
+    );
+  }
+  const combinedBytes = data.byteLength + extraBytes;
+  if (!Number.isSafeInteger(combinedBytes)) {
+    throw new RangeError('[ReGIR] combined light-tree/grid buffer size is not a safe integer.');
+  }
+  if (extraBytes > 0) {
+    if ((data.byteLength & 3) !== 0 || (extraBytes & 3) !== 0) {
+      throw new RangeError(
+        '[ReGIR] combined light-tree/grid storage must be four-byte aligned.',
+      );
+    }
+    const combinedFloatElements = BigInt(combinedBytes / 4);
+    if (combinedFloatElements > 0x1_0000_0000n) {
+      throw new RangeError(
+        '[ReGIR] combined light-tree/grid storage exceeds the WGSL u32 element-index domain.',
+      );
+    }
+  }
+  const size = Math.max(combinedBytes, 16);
+  const maxBufferSize = reportedDeviceLimit(device, 'maxBufferSize');
+  if (maxBufferSize !== undefined && size > maxBufferSize) {
+    throw new RangeError(
+      `[ReGIR] combined light-tree/grid buffer requires ${size} bytes, exceeding ` +
+        `device maxBufferSize=${maxBufferSize}.`,
+    );
+  }
+  const maxStorageBindingSize = reportedDeviceLimit(
+    device,
+    'maxStorageBufferBindingSize',
+  );
+  if (maxStorageBindingSize !== undefined && size > maxStorageBindingSize) {
+    throw new RangeError(
+      `[ReGIR] combined light-tree/grid buffer requires ${size} bytes, exceeding ` +
+        `device maxStorageBufferBindingSize=${maxStorageBindingSize}.`,
+    );
+  }
   const buf = device.createBuffer({
     size,
     usage: usage | GPUBufferUsage.COPY_DST,
     mappedAtCreation: true,
   });
-  new Uint8Array(buf.getMappedRange()).set(new Uint8Array(data));
-  buf.unmap();
-  return buf;
+  try {
+    new Uint8Array(buf.getMappedRange()).set(new Uint8Array(data));
+    buf.unmap();
+    return buf;
+  } catch (error) {
+    try { buf.destroy(); } catch { /* preserve the upload failure */ }
+    throw error;
+  }
 }
 
 /** Zeroed storage buffer for unused scene-BGL slots (merged BVH mode).
@@ -443,9 +484,7 @@ export function createVarianceBuffer(device: GPUDevice, w: number, h: number): G
     size: [w, h],
     format: 'rgba32float',
     usage:
-      GPUTextureUsage.STORAGE_BINDING |
-      GPUTextureUsage.TEXTURE_BINDING |
-      GPUTextureUsage.COPY_SRC,
+      GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC,
   });
 }
 
@@ -465,13 +504,15 @@ export interface FrameResourceOptions {
    *  because shade writes it through the shared frame bind group. Defaults to
    *  `true` so callers that omit it keep the legacy full-allocation behavior. */
   readonly svgfEnabled?: boolean;
-  /** Allocate the widened 30-u32 GRIS/ReSTIR-PT GI reservoir layout. */
-  readonly restirPtReuse?: boolean;
+  /** Allocate the widened 30-u32 GRIS DDGI-proxy GI reservoir layout. */
+  readonly grisReuse?: boolean;
   /** Allocate full-res Welford ping-pong/variance-estimate textures. This is
    *  needed only by the `atrous-variance` denoiser; other modes keep 1x1
    *  placeholders while preserving the FrameResources shape. Defaults to true
    *  so direct callers keep the legacy allocation policy. */
   readonly welfordPingPong?: boolean;
+  /** Allocate the full-resolution checkerboard reconstruction snapshot. */
+  readonly checkerboard?: boolean;
 }
 
 /**
@@ -490,31 +531,57 @@ export function createFrameResources(
   H: number,
   options?: FrameResourceOptions,
 ): FrameResources {
-  const common = createCommonFrameResources(device, W, H, {
-    welfordPingPong: options?.welfordPingPong ?? true,
+  const created: DestroyableResource[] = [];
+  const trackedDevice = new Proxy(device, {
+    get(target, property) {
+      if (property === 'createBuffer') {
+        return (descriptor: GPUBufferDescriptor): GPUBuffer => {
+          const resource = target.createBuffer(descriptor);
+          created.push(resource);
+          return resource;
+        };
+      }
+      if (property === 'createTexture') {
+        return (descriptor: GPUTextureDescriptor): GPUTexture => {
+          const resource = target.createTexture(descriptor);
+          created.push(resource);
+          return resource;
+        };
+      }
+      const value = Reflect.get(target, property, target) as unknown;
+      if (typeof value !== 'function') return value;
+      return (...args: unknown[]): unknown =>
+        Reflect.apply(value, target, args) as unknown;
+    },
   });
-  const restirDI = createRestirDIFrameResources(device, W, H);
-  const restirGI = createRestirGIFrameResources(device, W, H, {
-    restirPtReuse: options?.restirPtReuse === true,
-  });
-  const gtao = createGtaoFrameResources(device, W, H, options?.gtaoDownscale ?? 2);
-  const ddgi = createDdgiFrameResources(device);
-  const svgf = createSvgfFrameResources(device, W, H, options?.svgfEnabled ?? true);
 
-  // ── Assemble per-algorithm sub-structs ────────────────────────────────────
-  // Allocation above is unchanged from the legacy flat layout; the bucketing
-  // below is a pure organisational layer. W1-R2 maps each of the 41 legacy
-  // sibling fields to exactly one sub-struct — see plan/premium-grade-refactor
-  // -20260517.md §W1-R2 for the canonical mapping table.
+  try {
+    const common = createCommonFrameResources(trackedDevice, W, H, {
+      welfordPingPong: options?.welfordPingPong ?? true,
+      checkerboardSnapshot: options?.checkerboard === true,
+    });
+    const restirDI = createRestirDIFrameResources(trackedDevice, W, H);
+    const restirGI = createRestirGIFrameResources(trackedDevice, W, H, {
+      grisReuse: options?.grisReuse === true,
+    });
+    const gtao = createGtaoFrameResources(trackedDevice, W, H, options?.gtaoDownscale ?? 2);
+    const ddgi = createDdgiFrameResources(trackedDevice);
+    const svgf = createSvgfFrameResources(trackedDevice, W, H, options?.svgfEnabled ?? true);
 
-  // PPG resources are allocated lazily by `allocatePPGResources` when
-  // `HybridEngineOptions.ppgEnabled === true`. Default is an empty record so
-  // the pipeline can treat PPG as truly opt-in; the ppg field is
-  // `PPGFrameResources | Record<never, never>` in FrameResources.
-  const ppg: FrameResources['ppg'] = {};
-  const neural = createNeuralFrameResources();
-
-  return { common, restirDI, restirGI, ddgi, gtao, svgf, ppg, neural };
+    // PPG resources are allocated lazily by `allocatePPGResources` when
+    // `HybridEngineOptions.ppgEnabled === true`.
+    const ppg: FrameResources['ppg'] = {};
+    return { common, restirDI, restirGI, ddgi, gtao, svgf, ppg };
+  } catch (error) {
+    for (let i = created.length - 1; i >= 0; i--) {
+      try {
+        created[i]!.destroy();
+      } catch {
+        // Cleanup must preserve the allocation failure that caused rollback.
+      }
+    }
+    throw error;
+  }
 }
 
 /** Minimal interface for GPU resources that own a `destroy()` handle. */
@@ -553,6 +620,7 @@ function buildDestroyQueue(r: FrameResources): DestroyableResource[] {
     r.common.varianceBufferAux,
     r.common.atrousVarianceEstimateTexture,
     r.common.motionVectorTexture,
+    r.common.checkerboardRadianceSnapshotTexture,
     r.common.tierTexture,
     r.common.resolvedTexture,
     // gtao
@@ -574,8 +642,6 @@ function buildDestroyQueue(r: FrameResources): DestroyableResource[] {
     r.common.indirectAccumPongTexture,
     r.common.albedoTexture,
     // svgf
-    r.svgf.svgfObjIdPlaceholderTexture,
-    r.svgf.svgfPrevObjIdPlaceholderTexture,
     r.svgf.svgfCurrentObjectIdTexture,
     r.svgf.svgfPreviousObjectIdTexture,
     r.svgf.svgfPrevNormalDepthTexture,
@@ -589,13 +655,10 @@ function buildDestroyQueue(r: FrameResources): DestroyableResource[] {
     r.svgf.svgfVarianceMomentsIntermedTexture,
   ];
   // ppg — only present when allocatePPGResources was called (opt-in).
-  if (ppg.sTreeBuf)            queue.push(ppg.sTreeBuf);
-  if (ppg.dTreeBuf)            queue.push(ppg.dTreeBuf);
-  if (ppg.dTreeOffsetsBuf)     queue.push(ppg.dTreeOffsetsBuf);
-  if (ppg.fluxAtomicsBuf)      queue.push(ppg.fluxAtomicsBuf);
+  if (ppg.queryArenaBuf) queue.push(ppg.queryArenaBuf);
+  if (ppg.fluxAtomicsBuf) queue.push(ppg.fluxAtomicsBuf);
   if (ppg.cellSampleCountsBuf) queue.push(ppg.cellSampleCountsBuf);
-  if (ppg.updateUboBuffer)     queue.push(ppg.updateUboBuffer);
-  // neural — empty placeholder; nothing to destroy until W10.
+  if (ppg.updateUboBuffer) queue.push(ppg.updateUboBuffer);
   return queue;
 }
 
@@ -608,7 +671,14 @@ function buildDestroyQueue(r: FrameResources): DestroyableResource[] {
  * same sequence of `.destroy()` calls (see `buildDestroyQueue`).
  */
 export function destroyFrameResources(r: FrameResources): void {
-  for (const res of buildDestroyQueue(r)) res.destroy();
+  for (const res of buildDestroyQueue(r)) {
+    try {
+      res.destroy();
+    } catch {
+      // GPU wrappers can throw during device-loss teardown. Each object is an
+      // independent owner, so one hostile destroy must not leak the remainder.
+    }
+  }
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -631,14 +701,145 @@ export function destroyFrameResources(r: FrameResources): void {
  *
  * The old buffers are NOT destroyed here (the caller owns their lifecycle).
  */
+export interface PPGResourceFootprint {
+  readonly maxSpatialCells: number;
+  readonly maxDTreeNodesPerCell: number;
+  readonly maxSTreeNodes: number;
+  readonly sTreeBytes: number;
+  readonly dTreeBytes: number;
+  readonly dTreeOffsetsBytes: number;
+  readonly queryArenaBytes: number;
+  readonly fluxAtomicsBytes: number;
+  readonly cellSampleCountsBytes: number;
+  readonly updateUboBytes: number;
+  readonly totalBytes: number;
+}
+
+function checkedIntegerProduct(label: string, ...factors: number[]): number {
+  let value = 1;
+  for (const factor of factors) {
+    if (!Number.isSafeInteger(factor) || factor < 0) {
+      throw new RangeError(`[PPG] ${label} has an invalid sizing factor: ${factor}.`);
+    }
+    value *= factor;
+    if (!Number.isSafeInteger(value)) {
+      throw new RangeError(`[PPG] ${label} exceeds JavaScript safe-integer sizing.`);
+    }
+  }
+  return value;
+}
+
+/** Compute the exact persistent GPU allocation made by PPG. */
+export function computePPGResourceFootprint(
+  maxSpatialCells: number = PPG_DEFAULT_SPATIAL_CELLS,
+  maxDTreeNodesPerCell: number = PPG_DEFAULT_MAX_DTREE_NODES_PER_CELL,
+): PPGResourceFootprint {
+  if (!Number.isSafeInteger(maxSpatialCells) || maxSpatialCells < 1 || maxSpatialCells > PPG_MAX_SPATIAL_CELLS) {
+    throw new RangeError(`[PPG] maxSpatialCells must be an integer in [1, ${PPG_MAX_SPATIAL_CELLS}].`);
+  }
+  if (!Number.isSafeInteger(maxDTreeNodesPerCell) || maxDTreeNodesPerCell < 1 || maxDTreeNodesPerCell > PPG_MAX_DTREE_NODES_PER_CELL) {
+    throw new RangeError(`[PPG] maxDTreeNodesPerCell must be an integer in [1, ${PPG_MAX_DTREE_NODES_PER_CELL}].`);
+  }
+  // A full binary sTree with L leaf cells has 2L-1 nodes. The previous
+  // allocation used L nodes and overflowed once refinement crossed L/2 leaves.
+  const maxSTreeNodes = checkedIntegerProduct('sTree node capacity', 2, maxSpatialCells) - 1;
+  const sTreeBytes = Math.max(16, checkedIntegerProduct('sTree buffer', 4 + 16 * maxSTreeNodes, 4));
+  const dTreeBytes = Math.max(16, checkedIntegerProduct('dTree buffer', maxSpatialCells, 4 + 8 * maxDTreeNodesPerCell, 4));
+  const dTreeOffsetsBytes = Math.max(16, checkedIntegerProduct('dTree offsets', maxSpatialCells, 4));
+  const queryArenaLayout = createPpgQueryArenaLayout({
+    sTreeCapacityBytes: sTreeBytes,
+    dTreeCapacityBytes: dTreeBytes,
+    dTreeOffsetsCapacityBytes: dTreeOffsetsBytes,
+    maxSpatialCells,
+    maxDTreeNodesPerCell,
+  });
+  const queryArenaBytes = queryArenaLayout.byteLength;
+  const fluxAtomicsBytes = Math.max(16, checkedIntegerProduct('flux atomics', maxSpatialCells, maxDTreeNodesPerCell, 4));
+  const cellSampleCountsBytes = Math.max(16, checkedIntegerProduct('cell sample counts', maxSpatialCells, 4));
+  const updateUboBytes = 16;
+  const totalBytes = checkedIntegerProduct(
+    'total allocation',
+    queryArenaBytes + fluxAtomicsBytes + cellSampleCountsBytes + updateUboBytes,
+  );
+  return {
+    maxSpatialCells,
+    maxDTreeNodesPerCell,
+    maxSTreeNodes,
+    sTreeBytes,
+    dTreeBytes,
+    dTreeOffsetsBytes,
+    queryArenaBytes,
+    fluxAtomicsBytes,
+    cellSampleCountsBytes,
+    updateUboBytes,
+    totalBytes,
+  };
+}
+
+function reportedDeviceLimit(device: GPUDevice, name: string): number | undefined {
+  const raw = (device.limits as unknown as Record<string, unknown> | undefined)?.[name];
+  return typeof raw === 'number' && Number.isFinite(raw) && raw > 0 ? raw : undefined;
+}
+
+function assertPPGDeviceLimits(
+  device: GPUDevice,
+  footprint: PPGResourceFootprint,
+  width: number,
+  height: number,
+): void {
+  if (!Number.isSafeInteger(width) || width <= 0
+      || !Number.isSafeInteger(height) || height <= 0) {
+    throw new RangeError(
+      `[PPG] render dimensions must be positive safe integers; got ${width}x${height}.`,
+    );
+  }
+  const storageLimit = reportedDeviceLimit(device, 'maxStorageBufferBindingSize');
+  const bufferLimit = reportedDeviceLimit(device, 'maxBufferSize');
+  const storageBuffers: ReadonlyArray<readonly [string, number]> = [
+    ['queryArenaBuf', footprint.queryArenaBytes],
+    ['fluxAtomicsBuf', footprint.fluxAtomicsBytes],
+    ['cellSampleCountsBuf', footprint.cellSampleCountsBytes],
+  ];
+  for (const [label, bytes] of storageBuffers) {
+    if (storageLimit !== undefined && bytes > storageLimit) {
+      throw new RangeError(`[PPG] ${label} requires ${bytes} bytes, exceeding device maxStorageBufferBindingSize=${storageLimit}.`);
+    }
+    if (bufferLimit !== undefined && bytes > bufferLimit) {
+      throw new RangeError(`[PPG] ${label} requires ${bytes} bytes, exceeding device maxBufferSize=${bufferLimit}.`);
+    }
+  }
+  const workgroupSize = 64;
+  const invocations = reportedDeviceLimit(device, 'maxComputeInvocationsPerWorkgroup');
+  const workgroupX = reportedDeviceLimit(device, 'maxComputeWorkgroupSizeX');
+  if (invocations !== undefined && workgroupSize > invocations) {
+    throw new RangeError(`[PPG] update workgroup size ${workgroupSize} exceeds maxComputeInvocationsPerWorkgroup=${invocations}.`);
+  }
+  if (workgroupX !== undefined && workgroupSize > workgroupX) {
+    throw new RangeError(`[PPG] update workgroup X ${workgroupSize} exceeds maxComputeWorkgroupSizeX=${workgroupX}.`);
+  }
+  const halfW = Math.max(1, Math.floor(width / 2));
+  const halfH = Math.max(1, Math.floor(height / 2));
+  const sampleCount = checkedIntegerProduct('training sample count', halfW, halfH);
+  if (sampleCount > 0xffff_ffff) {
+    throw new RangeError(
+      `[PPG] training sample count ${sampleCount} cannot be represented by the update UBO u32.`,
+    );
+  }
+  const dispatchX = Math.max(1, Math.ceil(sampleCount / workgroupSize));
+  const dispatchLimit = reportedDeviceLimit(device, 'maxComputeWorkgroupsPerDimension');
+  if (dispatchLimit !== undefined && dispatchX > dispatchLimit) {
+    throw new RangeError(`[PPG] update dispatch requires ${dispatchX} workgroups in X, exceeding maxComputeWorkgroupsPerDimension=${dispatchLimit}.`);
+  }
+}
+
 export function allocatePPGResources(
   device: GPUDevice,
-  _width: number,
-  _height: number,
+  width: number,
+  height: number,
   opts?: {
     /**
      * Hard cap on sTree leaf count. Default 1 024 — large enough for
-     * meaningful spatial refinement while keeping VRAM bounded at ~6 MB.
+     * meaningful spatial refinement while keeping persistent PPG buffers bounded at ~12.2 MiB.
      * Hosts that expect dense scenes can raise this up to
      * 16 384 (the maximum supported).
      */
@@ -653,49 +854,53 @@ export function allocatePPGResources(
 ): PPGFrameResources {
   const maxSpatialCells = opts?.maxSpatialCells ?? PPG_DEFAULT_SPATIAL_CELLS;
   const maxDTreeNodesPerCell = opts?.maxDTreeNodesPerCell ?? PPG_DEFAULT_MAX_DTREE_NODES_PER_CELL;
+  const footprint = computePPGResourceFootprint(maxSpatialCells, maxDTreeNodesPerCell);
+  assertPPGDeviceLimits(device, footprint, width, height);
 
-  // Layout constants — must match serialise.ts.
-  const STREE_HEADER_F32 = 4;
-  const STREE_NODE_F32 = 16;
-  const DTREE_HEADER_F32 = 4;
-  const DTREE_NODE_F32 = 8;
-
-  const sTreeBufF32 = STREE_HEADER_F32 + maxSpatialCells * STREE_NODE_F32;
-  const dTreeBufF32 =
-    maxSpatialCells * (DTREE_HEADER_F32 + maxDTreeNodesPerCell * DTREE_NODE_F32);
-  const fluxAtomicsCount = maxSpatialCells * maxDTreeNodesPerCell;
-
-  return {
-    sTreeBuf: device.createBuffer({
-      label: 'ppg-sTreeBuf',
-      size: Math.max(16, sTreeBufF32 * 4),
-      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-    }),
-    dTreeBuf: device.createBuffer({
-      label: 'ppg-dTreeBuf',
-      size: Math.max(16, dTreeBufF32 * 4),
-      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-    }),
-    dTreeOffsetsBuf: device.createBuffer({
-      label: 'ppg-dTreeOffsets',
-      size: Math.max(16, maxSpatialCells * 4),
-      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-    }),
-    fluxAtomicsBuf: device.createBuffer({
-      label: 'ppg-fluxAtomics',
-      size: Math.max(16, fluxAtomicsCount * 4),
-      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
-    }),
-    // A2 — per-spatial-cell sample counter: one atomic u32 per spatial cell.
-    cellSampleCountsBuf: device.createBuffer({
-      label: 'ppg-cellSampleCounts',
-      size: Math.max(16, maxSpatialCells * 4),
-      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
-    }),
-    updateUboBuffer: device.createBuffer({
-      label: 'ppg-update-ubo',
-      size: 16, // 4 × u32 — see PPGUpdateUBO in ppgUpdate.wgsl.ts.
-      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-    }),
+  const created: GPUBuffer[] = [];
+  const create = (descriptor: GPUBufferDescriptor): GPUBuffer => {
+    const buffer = device.createBuffer(descriptor);
+    created.push(buffer);
+    return buffer;
   };
+
+  try {
+    const queryArenaLayout = createPpgQueryArenaLayout({
+      sTreeCapacityBytes: footprint.sTreeBytes,
+      dTreeCapacityBytes: footprint.dTreeBytes,
+      dTreeOffsetsCapacityBytes: footprint.dTreeOffsetsBytes,
+      maxSpatialCells,
+      maxDTreeNodesPerCell,
+    });
+    return {
+      queryArenaBuf: create({
+        label: 'ppg-query-arena',
+        size: footprint.queryArenaBytes,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+      }),
+      queryArenaLayout,
+      queryArenaEpoch: 0,
+      fluxAtomicsBuf: create({
+        label: 'ppg-fluxAtomics',
+        size: footprint.fluxAtomicsBytes,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
+      }),
+      // A2 — per-spatial-cell sample counter: one atomic u32 per spatial cell.
+      cellSampleCountsBuf: create({
+        label: 'ppg-cellSampleCounts',
+        size: footprint.cellSampleCountsBytes,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
+      }),
+      updateUboBuffer: create({
+        label: 'ppg-update-ubo',
+        size: footprint.updateUboBytes, // 4 × u32 — see PPGUpdateUBO in ppgUpdate.wgsl.ts.
+        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+      }),
+    };
+  } catch (error) {
+    for (const buffer of created) {
+      try { buffer.destroy(); } catch { /* preserve the allocation failure */ }
+    }
+    throw error;
+  }
 }

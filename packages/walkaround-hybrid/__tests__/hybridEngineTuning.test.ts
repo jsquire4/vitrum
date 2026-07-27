@@ -221,6 +221,15 @@ describe('validateHybridEngineOptions — throws (parse split, pure)', () => {
       extensions: { 'walkaround-hybrid': { oidnModelUrl: '/m.onnx' } },
     }))).not.toThrow();
   });
+
+  it('rejects ReGIR values and cross-field products outside the WGSL u32 domain', () => {
+    expect(() => validateHybridEngineOptions(baseOpts({
+      regir: { enabled: true, candidatesPerCell: 0x1_0000_0000 },
+    }))).toThrow(/candidatesPerCell.*4294967295/);
+    expect(() => validateHybridEngineOptions(baseOpts({
+      regir: { enabled: true, cellsPerAxis: 1_024, survivorsPerCell: 4 },
+    }))).toThrow(/invocation domain/);
+  });
 });
 
 // ── parse split: derive ──────────────────────────────────────────────────────
@@ -244,7 +253,7 @@ describe('deriveHybridEngineConfig — defaulting record (parse split)', () => {
     expect(cfg.denoiser).toBe('atrous-variance');
     expect(cfg.maxBounces).toBe(4);
     expect(cfg.indirectFireflyClamp).toEqual([1.0, 1.0, 1.0]);
-    expect(cfg.restirPtReuse).toBe(0);
+    expect(cfg.grisReuse).toBe(0);
     expect(cfg.nrcEnabled).toBe(0);
     // Resolved tunables all at default.
     for (const def of TUNABLE_DEFINITIONS) {
@@ -252,10 +261,28 @@ describe('deriveHybridEngineConfig — defaulting record (parse split)', () => {
     }
   });
 
-  it('normalizes invalid maxBounces values to the documented direct-only regime', () => {
-    expect(derive(baseOpts({ maxBounces: 0 })).maxBounces).toBe(1);
-    expect(derive(baseOpts({ maxBounces: -2 })).maxBounces).toBe(1);
-    expect(derive(baseOpts({ maxBounces: Number.NaN })).maxBounces).toBe(1);
+  it.each([0, -2, Number.NaN])(
+    'rejects invalid maxBounces %s instead of normalizing it',
+    (maxBounces) => {
+      expect(() => validateHybridEngineOptions(baseOpts({ maxBounces })))
+        .toThrow(/maxBounces.*positive safe integer/i);
+    },
+  );
+
+  it.each([
+    [{ targetFrameIntervalMs: Number.NaN }, /targetFrameIntervalMs.*finite/i],
+    [{ indirectFireflyClamp: [Number.NaN, 2, 3] }, /indirectFireflyClamp\[0\].*finite/i],
+    [{ atrousDirectSigmas: [1, Number.POSITIVE_INFINITY, 3] }, /atrousDirectSigmas\[1\].*finite/i],
+    [{ cameraMoveResetThresholdSq: Number.NaN }, /cameraMoveResetThresholdSq.*finite/i],
+    [{ temporalAccumAlpha: Number.POSITIVE_INFINITY }, /temporalAccumAlpha.*finite/i],
+    [{ checkerboardMotionThresholdSq: Number.NEGATIVE_INFINITY }, /checkerboardMotionThresholdSq.*finite/i],
+    [{ ddgiUpdateDivisor: Number.NaN }, /ddgiUpdateDivisor.*safe integer/i],
+    [{ ppgDispatchInterval: Number.POSITIVE_INFINITY }, /ppgDispatchInterval.*safe integer/i],
+    [{ ppgMaxSpatialCells: Number.NaN }, /ppgMaxSpatialCells.*integer/i],
+    [{ ppgMaxDTreeNodesPerCell: Number.NEGATIVE_INFINITY }, /ppgMaxDTreeNodesPerCell.*integer/i],
+    [{ tuning: { directFireflyClamp: Number.NaN } }, /directFireflyClamp.*finite/i],
+  ] as const)('rejects malformed public tuning value %# before GPU state', (value, message) => {
+    expect(() => validateHybridEngineOptions(baseOpts(value))).toThrow(message);
   });
 
   it('produces an identical config record over an option matrix', () => {

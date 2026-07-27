@@ -1,16 +1,19 @@
 /**
  * ProbeUpdatePass — DDGI probe update via raw WebGPU compute.
  *
- * Uses the raw GPUDevice to run two compute passes per frame:
+ * Uses the raw GPUDevice to run three compute stages per frame:
  *  Pass 1 (probeUpdateRays): for each active probe, fire 192 rays via
  *          inline BVH traversal, collect radiance at hit points.
- *  Pass 2 (probeUpdateBlend): blend ray results into the L2-SH irradiance
+ *  Pass 2 (probeClassifyRelocate): update bounded per-probe offsets and
+ *          active/inactive classification from those ray records.
+ *  Pass 3 (probeUpdateBlend): blend valid ray results into the L2-SH irradiance
  *          atlas and the octahedral visibility atlas with EWMA temporal
  *          hysteresis.
  *
  * Raw WebGPU is used because the compute shaders have custom @group/@binding
- * layouts that the engine manages directly. The GPUDevice is supplied by the
- * caller (HybridEngine); this class does not own the device lifetime.
+ * layouts that the engine manages directly. A GPUDevice supplied by the caller
+ * is borrowed. In the standalone navigator fallback only, this pass requests
+ * and owns a private device and releases it after all pass-owned resources.
  *
  * The irradiance atlas stores 9-coefficient L2 spherical harmonics in a 3×3
  * texel block per probe (IRR_CELL=3); the visibility atlas uses a 16×16
@@ -28,19 +31,22 @@ import {
 import {
   DDGI_MAX_MATERIALS,
   DDGI_MATERIAL_STRIDE_BYTES,
+  assertDDGIMaterialCapacity,
   packDDGIMaterialsFromCoreN,
   packDDGIMaterialsN,
 } from './probeUpdateMaterials.js';
+import { buildAliasTable, luminance } from '@vitrum/shared-samplers';
 import type { EngineWarning, MaterialSpec } from '@vitrum/core';
 import type { PbrScalarSource } from '../pbrScalars.js';
-import type { ProbeGrid } from './probeGrid.js';
-import type { DDGILight } from './types.js';
+import { rethrowWithSceneMutationCleanup } from '../SceneMutationTransaction.js';
+import type { AtlasTextureSlot, ProbeGrid } from './probeGrid.js';
+import { snapshotDdgiLights, type DDGILight } from './types.js';
 import { isRestirTlasOnlyRefit, type RestirBvhSnapshot } from '../restir/restirBvhSnapshot.js';
 import { makeProbeUpdateRaysWGSL } from './wgsl/probeUpdateRays.wgsl.js';
+import { PROBE_CLASSIFY_RELOCATE_WGSL } from './wgsl/probeClassifyRelocate.wgsl.js';
 import { makeProbeUpdateBlendIrrWGSL, makeProbeUpdateBlendVisWGSL } from './wgsl/probeUpdateBlend.wgsl.js';
 import { makeProbeUpdateBorderVisWGSL } from './wgsl/probeUpdateBorder.wgsl.js';
 import { packDDGIGridParams } from './ddgiGridUbo.js';
-import { detectGpu } from '@vitrum/core';
 import { RAYS_PER_PROBE } from './ddgiConstants.js';
 import { DDGI_PROBE_LIGHTS_BUFFER_BYTES, packDDGIProbeLights } from './probeUpdateLights.js';
 import {
@@ -55,9 +61,11 @@ import {
 } from './probeUpdateFrameParams.js';
 import { ProbeUpdateAtlasTextureCache } from './probeUpdateAtlasCache.js';
 import {
+  copyProbeIrradianceAndPackedStateForward,
   dispatchProbeUpdateBlendIrrPass,
   dispatchProbeUpdateBlendVisPass,
   dispatchProbeUpdateBorderVisPass,
+  dispatchProbeClassifyRelocatePass,
   dispatchProbeUpdateRaysPass,
   uploadProbeUpdateBorderUbo,
 } from './probeUpdateDispatcher.js';
@@ -68,11 +76,29 @@ import {
   PROBE_RAY_STRIDE_BYTES,
 } from './probeUpdateUbos.js';
 import { EMITTER_TRI_STRIDE_BYTES } from '../restir/emitterList.js';
+import type { PreparedSceneMutation } from '../SceneMutationTransaction.js';
+import {
+  assertDdgiBoolean,
+  assertDdgiInteger,
+  assertDdgiUnitInterval,
+  assertFiniteDdgiNumber,
+  assertFiniteDdgiVec3,
+  assertNonNegativeDdgiNumber,
+  assertPositiveDdgiInteger,
+  assertValidDdgiLights,
+} from './inputValidation.js';
+import {
+  isValidProbeStateData,
+  readPackedProbeStateFromIrradianceAtlas,
+  writePackedProbeStateToIrradianceAtlas,
+} from './probeState.js';
 
 const DDGI_PLACEHOLDER_MATERIAL_ATLAS: MaterialTextureAtlasPayload = {
   atlasData: new Float32Array([1, 1, 1, 1]),
   atlasDim: 1,
   atlasLayerCount: 1,
+  atlasMipLevelCount: 1,
+  gpuSourceLayers: [],
   baseColorMetaData: new Float32Array([-1, 0, 0, 0]),
   baseColorMetaWidth: 1,
   baseColorMetaHeight: 1,
@@ -131,16 +157,117 @@ export interface ProbeUpdatePassOptions {
   onWarning?: (warning: EngineWarning) => void;
 }
 
+/** Transaction-safe snapshot of a full-blend invalidation generation. */
+export interface ProbeFullBlendState {
+  readonly generation: number;
+  readonly stride: number;
+  readonly pendingStrata: readonly number[];
+}
+
+/**
+ * Finish and submit one probe-update command buffer, then publish CPU-side
+ * state. Keeping the publication callback behind both fallible operations makes
+ * retries exact: an encoder or queue failure cannot consume invalidation state,
+ * advance frame counters, or swap the atlas identities.
+ *
+ * @internal Exported for deterministic failure-injection tests.
+ */
+export function submitProbeUpdateCommand(
+  encoder: Pick<GPUCommandEncoder, 'finish'>,
+  queue: Pick<GPUQueue, 'submit'>,
+  publishAccepted: () => void,
+): void {
+  const commandBuffer = encoder.finish();
+  queue.submit([commandBuffer]);
+  publishAccepted();
+}
+
+function destroyProbeResourceBestEffort(resource: GPUBuffer | GPUTexture | null): void {
+  if (resource == null) return;
+  try { resource.destroy(); } catch { /* preserve the resource transaction outcome */ }
+}
+
+function destroyProbeDeviceBestEffort(device: GPUDevice | null): void {
+  if (device == null) return;
+  try { device.destroy(); } catch { /* terminal fallback-device teardown */ }
+}
+
+function assertEmitterTriPayload(tris: Float32Array, count: number): number {
+  if (!Number.isSafeInteger(count) || count < 0) {
+    throw new RangeError(
+      'DDGI emitter triangle count must be a non-negative safe integer.',
+    );
+  }
+  const floatsPerTri = EMITTER_TRI_STRIDE_BYTES / Float32Array.BYTES_PER_ELEMENT;
+  const requiredFloats = count * floatsPerTri;
+  if (!Number.isSafeInteger(requiredFloats)) {
+    throw new RangeError('DDGI emitter triangle payload size is not safe.');
+  }
+  if (tris.length < requiredFloats) {
+    throw new RangeError(
+      `DDGI emitter triangle payload contains ${tris.length} floats for ${count} ` +
+      `triangles; expected at least ${requiredFloats}.`,
+    );
+  }
+  for (let index = 0; index < requiredFloats; index += 1) {
+    assertFiniteDdgiNumber(tris[index]!, `DDGI emitter triangles[${index}]`);
+  }
+  for (let tri = 0; tri < count; tri += 1) {
+    const base = tri * floatsPerTri;
+    assertNonNegativeDdgiNumber(
+      tris[base + 15]!,
+      `DDGI emitter triangles[${tri}].area`,
+    );
+    for (let channel = 0; channel < 3; channel += 1) {
+      assertNonNegativeDdgiNumber(
+        tris[base + 16 + channel]!,
+        `DDGI emitter triangles[${tri}].radiance[${channel}]`,
+      );
+    }
+  }
+  return requiredFloats;
+}
+
+function packEmitterTriSamplingPayload(
+  tris: Float32Array,
+  count: number,
+): Float32Array<ArrayBuffer> {
+  const recordFloats = assertEmitterTriPayload(tris, count);
+  const aliasFloats = count * 4;
+  const packed = new Float32Array(recordFloats + aliasFloats);
+  packed.set(tris.subarray(0, recordFloats));
+  if (count === 0) return packed;
+
+  const floatsPerTri = EMITTER_TRI_STRIDE_BYTES / Float32Array.BYTES_PER_ELEMENT;
+  const weights = Array.from({ length: count }, (_, tri) => {
+    const base = tri * floatsPerTri;
+    return packed[base + 15]! * luminance(
+      packed[base + 16]!,
+      packed[base + 17]!,
+      packed[base + 18]!,
+    );
+  });
+  const alias = buildAliasTable(weights);
+  new Uint8Array(packed.buffer).set(
+    new Uint8Array(alias.data),
+    recordFloats * Float32Array.BYTES_PER_ELEMENT,
+  );
+  return packed;
+}
+
 export class ProbeUpdatePass {
   private _bvh:  SceneBvh;
   private _grid: ProbeGrid;
   private _gpu:  ProbeUpdateGpuState | null = null;
+  /** Non-null only for a navigator fallback device requested by this pass. */
+  private _ownedDevice: GPUDevice | null = null;
   private _atlasCache = new ProbeUpdateAtlasTextureCache();
   /** When set, probe rays use ReSTIR buffers (PR-5.1) instead of SceneBvh rebuild. */
   private _restirSnapshot: RestirBvhSnapshot | null = null;
   private _lastBvhVersion = -1;
   private _lastBlasVersion = -1;
   private _lastTlasVersion = -1;
+  private _lastMaterialVersion = -1;
   private _lastMaterialAtlasPayload: MaterialTextureAtlasPayload | null = null;
   private _lastTangentSource: ArrayBuffer | null = null;
   private _lastVertexColorSource: ArrayBuffer | null = null;
@@ -152,6 +279,8 @@ export class ProbeUpdatePass {
   // (which leaves _gpu null) does not re-issue navigator.gpu.requestAdapter
   // on every subsequent runFrame call. Pattern matches DDGI._inited / _gpuOk.
   private _initAttempted = false;
+  private _initInFlight: Promise<boolean> | null = null;
+  private _disposed = false;
   // Multiplier applied to every light's intensity when packing the
   // probe-update light UBO. Defaults to 1 so unrelated callers keep the
   // original behaviour. The hybrid pipeline calls setSunIntensityMultiplier(5.0)
@@ -190,18 +319,17 @@ export class ProbeUpdatePass {
   private _envMapView:    GPUTextureView | null = null;
   private _envSampler:    GPUSampler | null = null;
 
-  // Phase-0 productization — DDGI round-robin probe-update divisor. The ray
-  // pass + the blend pass MUST agree on `probesPerFrame = ceil(total/N)`, so
-  // both pack functions read this single field. Default 4 reproduces the
-  // historical hardcoded `/4` (a 4-frame full-grid update cycle). Higher
-  // values (8/16) update fewer probes per frame for the medium/low presets.
+  // DDGI round-robin probe-update divisor. This directly controls the active
+  // probe stratum assembled and dispatched by runFrame.
   private _probeUpdateDivisor = 4;
 
-  // H16 — when true, the next _uploadBlendParams call uploads hysteresis=0.0
-  // (full replace) instead of the steady-state 0.97, then clears this flag.
-  // Set by requestFullBlend() (called from DDGI.invalidateProbeCache()) so
-  // lighting changes converge in ONE stride window rather than hundreds of frames.
-  private _pendingFullBlend = false;
+  // Full-blend invalidation is generation + stratum based. Every stratum in the
+  // active round-robin must submit once with hysteresis=0 before the generation
+  // is complete; clearing a one-shot boolean after stratum zero leaves the other
+  // strata carrying stale lighting indefinitely.
+  private _fullBlendGeneration = 0;
+  private _fullBlendStride = 1;
+  private _pendingFullBlendStrata = new Set<number>();
 
   // Max materials for the WGSL compile-time array size (M9 audit remediation).
   private _ddgiMaxMaterials: number;
@@ -210,25 +338,26 @@ export class ProbeUpdatePass {
   // H18 Stage 2 — packed EmitterTri array for area-emitter NEE in the probe kernel.
   // Each EmitterTri is 80 bytes (5 × vec4f) matching the RC probeRayCast layout.
   // Updated via setEmitterTris() from HybridEngine after BVH rebuild.
-  private _emitterTrisData: Float32Array = new Float32Array(0);
+  private _emitterTrisData: Float32Array<ArrayBuffer> = new Float32Array(0);
   private _emitterTrisCount = 0;
 
   constructor(bvh: SceneBvh, grid: ProbeGrid, opts: ProbeUpdatePassOptions = {}) {
+    if (opts.debug !== undefined) {
+      assertDdgiBoolean(opts.debug, 'DDGI probe pass debug');
+    }
     this._bvh  = bvh;
     this._grid = grid;
     this._debug = opts.debug ?? false;
     this._onWarning = opts.onWarning;
     this._ddgiMaxMaterials = opts.maxMaterials ?? DDGI_MAX_MATERIALS;
+    if (
+      !Number.isFinite(this._ddgiMaxMaterials) ||
+      !Number.isInteger(this._ddgiMaxMaterials)
+    ) {
+      throw new RangeError('DDGI maxMaterials must be a finite integer.');
+    }
     if (this._ddgiMaxMaterials < 1) {
-      this._warn({
-        code: 'walkaround-hybrid.ddgi-invalid-max-materials',
-        backend: 'walkaround-hybrid',
-        phase: 'construction',
-        method: 'ProbeUpdatePass.constructor',
-        message: `[DDGI] ProbeUpdatePass: maxMaterials=${this._ddgiMaxMaterials} is invalid; clamping to 1.`,
-        details: { requested: this._ddgiMaxMaterials, clampedTo: 1 },
-      });
-      this._ddgiMaxMaterials = 1;
+      throw new RangeError('DDGI maxMaterials must be at least 1.');
     }
   }
 
@@ -242,17 +371,31 @@ export class ProbeUpdatePass {
 
   /** PR-5.1 — share ReSTIR scene buffers; pass `null` to fall back to SceneBvh. */
   setRestirBvhSnapshot(snapshot: RestirBvhSnapshot | null): void {
+    if (snapshot != null) {
+      const materialCount = snapshot.coreMaterials.length > 0
+        ? snapshot.coreMaterials.length
+        : snapshot.materials.length;
+      assertDDGIMaterialCapacity(materialCount, this._ddgiMaxMaterials);
+    }
+    if (snapshot == null && this._restirSnapshot != null) {
+      this._lastBvhVersion = -1;
+      this._lastBlasVersion = -1;
+      this._lastTlasVersion = -1;
+      this._lastMaterialVersion = -1;
+    }
     this._restirSnapshot = snapshot;
   }
 
   setLights(lights: DDGILight[]): void {
-    this._lights = lights;
+    assertValidDdgiLights(lights);
+    this._lights = snapshotDdgiLights(lights);
   }
 
   /** Multiplier on the sun's stored intensity. Hybrid pipeline
    *  calls this with primaryLightIntensity (5.0) so DDGI's bake of
    *  the sun's Le matches shade.wgsl's Lo_emit. */
   setSunIntensityMultiplier(mul: number): void {
+    assertNonNegativeDdgiNumber(mul, 'DDGI sun intensity multiplier');
     this._sunIntensityMul = mul;
   }
 
@@ -270,7 +413,12 @@ export class ProbeUpdatePass {
    *                   unit-white sky, which suits open-outdoor scenes.
    */
   setSkyParams(tint: [number, number, number], irradiance: number): void {
-    this._skyTint = tint;
+    assertFiniteDdgiVec3(tint, 'DDGI sky tint');
+    tint.forEach((channel, index) => {
+      assertNonNegativeDdgiNumber(channel, `DDGI sky tint[${index}]`);
+    });
+    assertNonNegativeDdgiNumber(irradiance, 'DDGI sky irradiance');
+    this._skyTint = [...tint];
     this._skyIrradiance = irradiance;
   }
 
@@ -283,6 +431,7 @@ export class ProbeUpdatePass {
    * tint entirely) or lower toward 0 to suppress sky tinting through glass.
    */
   setGlassMixScale(value: number): void {
+    assertDdgiUnitInterval(value, 'DDGI glass mix scale');
     this._glassMixScale = value;
   }
 
@@ -296,6 +445,7 @@ export class ProbeUpdatePass {
    * bounce cap — the realtime DDGI/ReSTIR passes have a fixed pass-graph budget.
    */
   setIndirectFeedback(enabled: boolean): void {
+    assertDdgiBoolean(enabled, 'DDGI indirect feedback');
     this._indirectFeedback = enabled;
   }
 
@@ -339,15 +489,38 @@ export class ProbeUpdatePass {
     intensity: number,
     hasEnv: boolean,
   ): void {
+    assertFiniteDdgiNumber(rotationY, 'DDGI environment rotation');
+    assertNonNegativeDdgiNumber(intensity, 'DDGI environment intensity');
+    assertDdgiBoolean(hasEnv, 'DDGI environment hasEnv');
+    if (hasEnv && view == null) {
+      throw new TypeError('DDGI environment view is required when hasEnv is true.');
+    }
+    const previous = {
+      hasEnv: this._hasEnv,
+      rotationY: this._envRotationY,
+      intensity: this._envIntensity,
+      view: this._envMapView,
+      sampler: this._envSampler,
+    };
     this._hasEnv       = hasEnv;
     this._envRotationY = rotationY;
     this._envIntensity = intensity;
     this._envMapView   = view;
     this._envSampler   = sampler;
-    // If GPU is already up, update the env fields in the GpuState immediately
-    // so the next runFrame bind-group creation picks them up without a re-init.
-    if (this._gpu) {
-      this._syncEnvViewsToGpu();
+    try {
+      // If GPU is already up, update the env fields in the GpuState immediately
+      // so the next runFrame bind-group creation picks them up without a re-init.
+      if (this._gpu) this._syncEnvViewsToGpu();
+    } catch (error) {
+      // _syncEnvViewsToGpu prepares any owned placeholder before publication,
+      // so restoring the host mirrors is enough to leave CPU and GPU state on
+      // the same accepted generation.
+      this._hasEnv = previous.hasEnv;
+      this._envRotationY = previous.rotationY;
+      this._envIntensity = previous.intensity;
+      this._envMapView = previous.view;
+      this._envSampler = previous.sampler;
+      throw error;
     }
   }
 
@@ -371,87 +544,281 @@ export class ProbeUpdatePass {
    * @param count Number of emitter triangles in `tris`.
    */
   setEmitterTris(tris: Float32Array, count: number): void {
-    this._emitterTrisData = tris;
-    this._emitterTrisCount = count;
-    // If the GPU state is already initialised, re-upload immediately.
-    if (this._gpu) {
-      this._uploadEmitterTris(this._gpu.device);
+    const nextTris = packEmitterTriSamplingPayload(tris, count);
+    if (this._gpu == null) {
+      // The pass owns the deferred upload payload. Never retain a host-owned
+      // ArrayBuffer/SharedArrayBuffer alias across the setter boundary.
+      this._emitterTrisData = nextTris;
+      this._emitterTrisCount = count;
+      return;
+    }
+
+    // A live pass must not publish its CPU payload before the replacement GPU
+    // buffer is completely allocated and populated. Reuse the same prepared
+    // transaction as the engine-level lighting mutation.
+    const mutation = this.prepareLightingMutation(
+      this._lights,
+      this._sunIntensityMul,
+      tris,
+      count,
+    );
+    try {
+      mutation.commit();
+    } catch (error) {
+      rethrowWithSceneMutationCleanup(
+        error,
+        [() => mutation.rollback()],
+        'DDGI emitter publication failed and rollback also failed',
+      );
+    }
+    mutation.finalize();
+  }
+
+  /**
+   * Stage a complete DDGI lighting replacement without touching the live
+   * light list or emitter-triangle GPU buffer.
+   *
+   * A fresh emitter buffer is allocated and populated at preparation time.
+   * Commit is therefore pointer/CPU-state publication only; rollback can
+   * restore the previous buffer and host mirrors without issuing GPU work.
+   */
+  prepareLightingMutation(
+    lights: readonly DDGILight[],
+    sunIntensityMultiplier: number,
+    tris: Float32Array,
+    count: number,
+  ): PreparedSceneMutation {
+    assertValidDdgiLights(lights);
+    assertNonNegativeDdgiNumber(
+      sunIntensityMultiplier,
+      'DDGI sun intensity multiplier',
+    );
+    const nextLights = snapshotDdgiLights(lights);
+    const nextTris = packEmitterTriSamplingPayload(tris, count);
+    const gpu = this._gpu;
+    const previousGpuBuffer = gpu?.emitterTrisBuf ?? null;
+    const previousGpuCount = gpu?.emitterTrisCount ?? 0;
+    let candidateGpuBuffer: GPUBuffer | null = null;
+
+    if (gpu != null && count > 0) {
+      const byteLength = nextTris.byteLength;
+      const candidate = gpu.device.createBuffer({
+        label: 'ddgi.emitter-tris.candidate',
+        size: Math.max(EMITTER_TRI_STRIDE_BYTES, byteLength),
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+        mappedAtCreation: true,
+      });
+      if (candidate === previousGpuBuffer) {
+        throw new Error('DDGI emitter candidate aliases the live GPU buffer.');
+      }
+      try {
+        new Uint8Array(candidate.getMappedRange()).set(
+          new Uint8Array(nextTris.buffer, nextTris.byteOffset, nextTris.byteLength),
+        );
+        candidate.unmap();
+        candidateGpuBuffer = candidate;
+      } catch (error) {
+        rethrowWithSceneMutationCleanup(
+          error,
+          [() => candidate.destroy()],
+          'DDGI emitter preparation failed and candidate cleanup also failed',
+        );
+      }
+    }
+
+    const previousLights = this._lights;
+    const previousSunIntensityMultiplier = this._sunIntensityMul;
+    const previousTris = this._emitterTrisData;
+    const previousCount = this._emitterTrisCount;
+    let committed = false;
+    let closed = false;
+
+    const destroyCandidate = (): void => {
+      if (candidateGpuBuffer == null) return;
+      const candidate = candidateGpuBuffer;
+      candidateGpuBuffer = null;
+      candidate.destroy();
+    };
+
+    return {
+      commit: () => {
+        if (closed || committed) return;
+        this._lights = nextLights;
+        this._sunIntensityMul = sunIntensityMultiplier;
+        this._emitterTrisData = nextTris;
+        this._emitterTrisCount = count;
+        if (gpu != null) {
+          if (candidateGpuBuffer != null) gpu.emitterTrisBuf = candidateGpuBuffer;
+          gpu.emitterTrisCount = count;
+        }
+        committed = true;
+      },
+      rollback: () => {
+        if (closed) return;
+        closed = true;
+        if (committed) {
+          this._lights = previousLights;
+          this._sunIntensityMul = previousSunIntensityMultiplier;
+          this._emitterTrisData = previousTris;
+          this._emitterTrisCount = previousCount;
+          if (gpu != null) {
+            gpu.emitterTrisBuf = previousGpuBuffer!;
+            gpu.emitterTrisCount = previousGpuCount;
+          }
+        }
+        destroyCandidate();
+      },
+      finalize: () => {
+        if (closed) return;
+        closed = true;
+        if (committed && candidateGpuBuffer != null) {
+          candidateGpuBuffer = null;
+          previousGpuBuffer?.destroy();
+        } else {
+          destroyCandidate();
+        }
+      },
+    };
+  }
+
+  /**
+   * Set the DDGI round-robin probe-update divisor. Higher ⇒ fewer probes
+   * updated per frame ⇒ cheaper per-frame cost but slower GI response to
+   * lighting changes. Default 4 (the historical hardcoded value). The active
+   * stratum built by runFrame is the single source of dispatch coverage.
+   */
+  setProbeUpdateDivisor(divisor: number): void {
+    assertPositiveDdgiInteger(divisor, 'DDGI probe update divisor');
+    const next = divisor;
+    if (next === this._probeUpdateDivisor) return;
+    this._probeUpdateDivisor = next;
+    if (this._pendingFullBlendStrata.size > 0) {
+      this.requestFullBlend(next);
     }
   }
 
   /**
-   * Phase-0 productization — set the DDGI round-robin probe-update divisor
-   * (`probesPerFrame = ceil(totalProbes / divisor)`). Higher ⇒ fewer probes
-   * updated per frame ⇒ cheaper per-frame cost but slower GI response to
-   * lighting changes. Default 4 (the historical hardcoded value). The ray pass
-   * and the blend pass both read this so their coverage stays in lockstep.
-   * Clamped to ≥ 1 (a divisor < 1 would request more probes than exist).
+   * Request a full-replace blend for every round-robin stratum.
+   *
+   * A new generation supersedes any older pending set. A stratum is removed
+   * only after its command buffer is accepted by `queue.submit`; encoder finish
+   * or submit failures leave it pending for an exact retry.
    */
-  setProbeUpdateDivisor(divisor: number): void {
-    this._probeUpdateDivisor = Math.max(1, Math.floor(divisor));
+  requestFullBlend(stride = this._probeUpdateDivisor): void {
+    assertPositiveDdgiInteger(stride, 'DDGI full-blend stride');
+    const normalizedStride = stride;
+    this._fullBlendGeneration = (this._fullBlendGeneration + 1) >>> 0;
+    if (this._fullBlendGeneration === 0) this._fullBlendGeneration = 1;
+    this._fullBlendStride = normalizedStride;
+    this._pendingFullBlendStrata = new Set(
+      Array.from({ length: normalizedStride }, (_, index) => index),
+    );
   }
 
-  /**
-   * H16 — request a full-replace blend on the next runFrame call.
-   *
-   * Sets `_pendingFullBlend`, which makes `_uploadBlendParams` write
-   * `hysteresis = 0.0` (EMA weight = 0 → full replace of every texel)
-   * for exactly one frame, then reverts to the steady-state 0.97.
-   * Called by `DDGI.invalidateProbeCache()` so lighting changes converge
-   * in a single stride window rather than fading over hundreds of frames.
-   */
-  requestFullBlend(): void {
-    this._pendingFullBlend = true;
+  get pendingFullBlend(): boolean {
+    return this._pendingFullBlendStrata.size > 0;
+  }
+
+  setPendingFullBlend(value: boolean): void {
+    if (value) {
+      this.requestFullBlend(this._probeUpdateDivisor);
+    } else {
+      this._pendingFullBlendStrata.clear();
+    }
+  }
+
+  get pendingFullBlendCount(): number {
+    return this._pendingFullBlendStrata.size;
+  }
+
+  get fullBlendGeneration(): number {
+    return this._fullBlendGeneration;
+  }
+
+  captureFullBlendState(): ProbeFullBlendState {
+    return {
+      generation: this._fullBlendGeneration,
+      stride: this._fullBlendStride,
+      pendingStrata: [...this._pendingFullBlendStrata].sort((a, b) => a - b),
+    };
+  }
+
+  restoreFullBlendState(state: ProbeFullBlendState): void {
+    assertPositiveDdgiInteger(state.stride, 'DDGI full-blend stride');
+    if (!Number.isSafeInteger(state.generation) || state.generation < 0) {
+      throw new RangeError('DDGI full-blend generation must be a non-negative safe integer.');
+    }
+    const nextStrata = new Set<number>();
+    for (const stratum of state.pendingStrata) {
+      assertDdgiInteger(stratum, 'DDGI full-blend stratum');
+      if (stratum < 0 || stratum >= state.stride) {
+        throw new RangeError('DDGI full-blend stratum must be within the stride.');
+      }
+      nextStrata.add(stratum);
+    }
+    this._fullBlendGeneration = state.generation >>> 0;
+    this._fullBlendStride = state.stride;
+    this._pendingFullBlendStrata = nextStrata;
   }
 
   /**
    * Initialize GPU resources. Returns false if WebGPU is unavailable.
    * Tries the renderer's WebGPU backend first; falls back to navigator.gpu.
    */
-  async init(renderer: { backend?: { device?: GPUDevice; isWebGPUBackend?: boolean } }): Promise<boolean> {
+  init(renderer: { backend?: { device?: GPUDevice; isWebGPUBackend?: boolean } }): Promise<boolean> {
+    if (this._disposed) return Promise.resolve(false);
+    if (this._gpu != null) return Promise.resolve(true);
+    if (this._initInFlight != null) return this._initInFlight;
+    const operation = this._initOwned(renderer);
+    const owned = operation.finally(() => {
+      if (this._initInFlight === owned) this._initInFlight = null;
+    });
+    this._initInFlight = owned;
+    return owned;
+  }
+
+  private async _initOwned(
+    renderer: { backend?: { device?: GPUDevice; isWebGPUBackend?: boolean } },
+  ): Promise<boolean> {
     this._initAttempted = true;
-    const device = await this._acquireDevice(renderer);
-    if (!device) return false;
-    const pipelines = await this._compilePipelines(device);
-    if (!pipelines) return false;
-    this._allocateResources(device, pipelines);
-    return true;
+    const acquired = await this._acquireDevice(renderer);
+    if (acquired == null) return false;
+    const { device, ownedByPass } = acquired;
+    let published = false;
+    try {
+      if (this._disposed) return false;
+      const pipelines = await this._compilePipelines(device);
+      if (!pipelines) {
+        // Pipeline compilation can fail transiently during device recovery. Do
+        // not poison the pass the way a definitive no-device result does.
+        this._initAttempted = false;
+        return false;
+      }
+      if (this._disposed) return false;
+      this._allocateResources(device, pipelines);
+      if (ownedByPass) this._ownedDevice = device;
+      published = true;
+      return true;
+    } catch (error) {
+      // Allocation failure is transient (OOM/device pressure/failure injection),
+      // unlike an explicit unsupported-device result. Leave the pass retryable.
+      this._initAttempted = false;
+      throw error;
+    } finally {
+      if (ownedByPass && !published) destroyProbeDeviceBestEffort(device);
+    }
   }
 
   /** Acquire a GPUDevice from the renderer backend or navigator.gpu. */
   private async _acquireDevice(
     renderer: { backend?: { device?: GPUDevice; isWebGPUBackend?: boolean } },
-  ): Promise<GPUDevice | null> {
-    // Hardware-GPU gate. detectGpu() publishes window.__WG__ BEFORE we
-    // touch the device, so e2e validation can read the flag even if we
-    // refuse to proceed. SwiftShader (Chromium's software rasterizer)
-    // compiles WGSL but produces low-chroma "almost passes" — fail-fast
-    // here so validation rounds never silently mistake software output
-    // for hardware-GPU output.
-    const gpu = await detectGpu();
-    if (gpu.isWebGPU && gpu.adapterKind === 'swiftshader') {
-      this._warn({
-        code: 'walkaround-hybrid.ddgi-swiftshader-disabled',
-        backend: 'walkaround-hybrid',
-        phase: 'renderFrame',
-        method: 'ProbeUpdatePass.init',
-        message:
-          `[DDGI] SwiftShader detected (vendor='${gpu.adapterVendor}', architecture='${gpu.adapterArchitecture}'). ` +
-          'Refusing to initialize DDGI on software rasterizer. Launch Chrome with hardware GPU enabled to validate DDGI output.',
-        details: {
-          adapterKind: gpu.adapterKind,
-          adapterVendor: gpu.adapterVendor,
-          adapterArchitecture: gpu.adapterArchitecture,
-          fallback: 'disable-ddgi-probe-update',
-        },
-      });
-      return null;
-    }
-
-    // Try renderer's backend first (accepts any WebGPU-capable renderer backend).
+  ): Promise<{ readonly device: GPUDevice; readonly ownedByPass: boolean } | null> {
+    // Adapter provenance is a validation-harness concern, not a production
+    // capability gate. Any WebGPU-conformant renderer device is accepted.
+    // Try the renderer's backend first.
     const backend = renderer.backend;
     if (backend?.isWebGPUBackend && backend.device) {
-      return backend.device;
+      return { device: backend.device, ownedByPass: false };
     }
     if (typeof navigator !== 'undefined' && navigator.gpu) {
       // Direct WebGPU path — used when the renderer uses WebGL but the browser
@@ -459,7 +826,7 @@ export class ProbeUpdatePass {
       try {
         const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
         if (adapter) {
-          return await adapter.requestDevice();
+          return { device: await adapter.requestDevice(), ownedByPass: true };
         }
       } catch (e) {
         this._warn({
@@ -484,9 +851,10 @@ export class ProbeUpdatePass {
     return null;
   }
 
-  /** Compile all four compute pipelines. Returns null on compilation failure. */
+  /** Compile all five compute pipelines. Returns null on compilation failure. */
   private async _compilePipelines(device: GPUDevice): Promise<{
     raysPipeline: GPUComputePipeline;
+    classifyRelocatePipeline: GPUComputePipeline;
     blendIrrPipeline: GPUComputePipeline;
     blendVisPipeline: GPUComputePipeline;
     borderVisPipeline: GPUComputePipeline;
@@ -498,6 +866,17 @@ export class ProbeUpdatePass {
       const raysPipeline = await device.createComputePipelineAsync({
         layout: 'auto',
         compute: { module: raysModule, entryPoint: 'probeUpdateRays' },
+      });
+
+      const classifyRelocateModule = device.createShaderModule({
+        code: PROBE_CLASSIFY_RELOCATE_WGSL,
+      });
+      const classifyRelocatePipeline = await device.createComputePipelineAsync({
+        layout: 'auto',
+        compute: {
+          module: classifyRelocateModule,
+          entryPoint: 'probeClassifyRelocate',
+        },
       });
 
       const blendIrrModule = device.createShaderModule({ code: makeProbeUpdateBlendIrrWGSL() });
@@ -516,7 +895,13 @@ export class ProbeUpdatePass {
         layout: 'auto',
         compute: { module: borderVisModule, entryPoint: 'probeUpdateBorderVisibility' },
       });
-      return { raysPipeline, blendIrrPipeline, blendVisPipeline, borderVisPipeline };
+      return {
+        raysPipeline,
+        classifyRelocatePipeline,
+        blendIrrPipeline,
+        blendVisPipeline,
+        borderVisPipeline,
+      };
     } catch (e) {
       this._warn({
         code: 'walkaround-hybrid.ddgi-shader-compilation-failed',
@@ -536,97 +921,134 @@ export class ProbeUpdatePass {
     device: GPUDevice,
     pipelines: {
       raysPipeline: GPUComputePipeline;
+      classifyRelocatePipeline: GPUComputePipeline;
       blendIrrPipeline: GPUComputePipeline;
       blendVisPipeline: GPUComputePipeline;
       borderVisPipeline: GPUComputePipeline;
     },
   ): void {
-    const linearSampler = device.createSampler({
-      magFilter: 'linear',
-      minFilter: 'linear',
-      addressModeU: 'clamp-to-edge',
-      addressModeV: 'clamp-to-edge',
-    });
-
-    // Allocate placeholder buffers (1 element each, replaced on first update).
-    // WebGPU validates unsized storage-array bindings against at least one
-    // element of the declared WGSL type. BVHNode is 32 bytes, so a generic
-    // 16-byte placeholder is invalid for array<BVHNode> even when TLAS is off.
-    const BVH_NODE_PLACEHOLDER_BYTES = 32;
-    const VEC4_PLACEHOLDER_BYTES = 16;
-    const U32_PLACEHOLDER_BYTES = 16;
-    const makeBuffer = (label: string, size: number, usage: number) =>
-      device.createBuffer({ label, size: Math.max(size, 16), usage });
-
-    const RO = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST;
-    const RW = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST;
-    const UB = GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST;
-
-    // Wave 4 — HDRI into DDGI probe misses: create a 1×1 placeholder env
-    // map texture so the bind group is always valid (hasEnv=0 in FrameParams
-    // prevents it from ever being sampled when no HDRI is present).
-    const TEX_BINDING = 0x04;
-    const COPY_DST_TEX = 0x02;
-    const placeholderEnvTex = device.createTexture({
-      label: 'vitrum.ddgi.env.placeholder',
-      size: { width: 1, height: 1, depthOrArrayLayers: 1 },
-      format: 'rgba16float',
-      usage: TEX_BINDING | COPY_DST_TEX,
-    });
-    const placeholderMaterialAtlas =
-      uploadMaterialTextureAtlas(device, DDGI_PLACEHOLDER_MATERIAL_ATLAS);
-    const placeholderTangents = uploadTangentTexture(device, new Float32Array(4), 1);
-    const placeholderVertexColors = uploadVertexColorTexture(device, new Float32Array([1, 1, 1, 1]), 1);
-
-    this._gpu = {
-      device,
-      ...pipelines,
-      irrScratchTex:  null,
-      visScratchTex:  null,
-      bvhBuf:          makeBuffer('ddgi.bvh.nodes.placeholder', BVH_NODE_PLACEHOLDER_BYTES, RO),
-      posBuf:          makeBuffer('ddgi.bvh.positions.placeholder', VEC4_PLACEHOLDER_BYTES, RO),
-      idxBuf:          makeBuffer('ddgi.bvh.indices.placeholder', VEC4_PLACEHOLDER_BYTES, RO),
-      normBuf:         makeBuffer('ddgi.bvh.normals.placeholder', VEC4_PLACEHOLDER_BYTES, RO),
-      matIdBuf:        makeBuffer('ddgi.bvh.material-ids.placeholder', U32_PLACEHOLDER_BYTES, RO),
-      tlasNodesBuf:    makeBuffer('ddgi.tlas.nodes.placeholder', BVH_NODE_PLACEHOLDER_BYTES, RO),
-      tlasInstIdxBuf:  makeBuffer('ddgi.tlas.instance-indices.placeholder', U32_PLACEHOLDER_BYTES, RO),
-      tlasBlasRootsBuf: makeBuffer('ddgi.tlas.blas-roots.placeholder', U32_PLACEHOLDER_BYTES, RO),
-      tlasW2lBuf:      makeBuffer('ddgi.tlas.world-to-local.placeholder', VEC4_PLACEHOLDER_BYTES, RO),
-      tlasL2wBuf:      makeBuffer('ddgi.tlas.local-to-world.placeholder', VEC4_PLACEHOLDER_BYTES, RO),
-      traceParamsBuf:  makeBuffer('ddgi.trace-params', 16, UB),
-      materialsBuf:    makeBuffer('ddgi.materials', this._ddgiMaxMaterials * DDGI_MATERIAL_STRIDE_BYTES, UB),
-      lightsBuf:       makeBuffer('ddgi.lights', DDGI_PROBE_LIGHTS_BUFFER_BYTES, UB),
-      gridParamsBuf:   makeBuffer('ddgi.grid-params', 64, UB),
-      frameParamsBuf:  makeBuffer('ddgi.frame-params', DDGI_FRAME_PARAMS_UBO.sizeBytes, UB),
-      blendParamsBuf:  makeBuffer('ddgi.blend-params', 16, UB),
-      borderVisUboBuf: makeBuffer('ddgi.border-vis-ubo', DDGI_BORDER_UBO_BYTES, UB),
-      rayResultsBuf:   makeBuffer('ddgi.ray-results', PROBE_RAY_STRIDE_BYTES, RW),
-      activeProbesBuf: makeBuffer('ddgi.active-probes', 4, RO),
-      // H18 — one full packed EmitterTri record. The shader statically indexes
-      // five vec4 lanes per candidate, so layout:auto validates a 32+ byte
-      // storage binding even when traceParams.emitterTriCount is zero.
-      emitterTrisBuf:  makeBuffer('ddgi.emitter-tris.placeholder', EMITTER_TRI_STRIDE_BYTES, RO),
-      emitterTrisCount: 0,
-      materialTextureAtlas: placeholderMaterialAtlas.atlasTexture,
-      materialTextureAtlasView: placeholderMaterialAtlas.atlasTextureView,
-      materialTextureAtlasMeta: placeholderMaterialAtlas.baseColorMetaTexture,
-      materialTextureAtlasMetaView: placeholderMaterialAtlas.baseColorMetaTextureView,
-      bvhTangentTexture: placeholderTangents.texture,
-      bvhTangentTextureView: placeholderTangents.texture.createView(),
-      bvhVertexColorTexture: placeholderVertexColors.texture,
-      bvhVertexColorTextureView: placeholderVertexColors.texture.createView(),
-      linearSampler,
-      // Wave 4 — env map: placeholder initially; real view + sampler wired via
-      // setEnvironment() (called from the engine before runFrame).
-      envMapView:         placeholderEnvTex.createView(),
-      envMapOwnedByPass:  true,
-      envMapPlaceholderTex: placeholderEnvTex,
-      envSamplerForProbe:  linearSampler,
+    const candidateBuffers = new Set<GPUBuffer>();
+    const candidateTextures = new Set<GPUTexture>();
+    const cleanupCandidates = (): void => {
+      for (const buffer of candidateBuffers) destroyProbeResourceBestEffort(buffer);
+      for (const texture of candidateTextures) destroyProbeResourceBestEffort(texture);
     };
-    this._lastMaterialAtlasPayload = DDGI_PLACEHOLDER_MATERIAL_ATLAS;
-    // If setEnvironment() was called before init (engine wires env before GPU is
-    // ready), apply those values now.
-    this._syncEnvViewsToGpu();
+    const makeBuffer = (label: string, size: number, usage: number): GPUBuffer => {
+      const buffer = device.createBuffer({ label, size: Math.max(size, 16), usage });
+      candidateBuffers.add(buffer);
+      return buffer;
+    };
+    const registerTexture = (texture: GPUTexture): GPUTexture => {
+      candidateTextures.add(texture);
+      return texture;
+    };
+
+    try {
+      const linearSampler = device.createSampler({
+        magFilter: 'linear',
+        minFilter: 'linear',
+        addressModeU: 'clamp-to-edge',
+        addressModeV: 'clamp-to-edge',
+      });
+
+      // Allocate placeholder buffers (1 element each, replaced on first update).
+      // WebGPU validates unsized storage-array bindings against at least one
+      // element of the declared WGSL type. BVHNode is 32 bytes, so a generic
+      // 16-byte placeholder is invalid for array<BVHNode> even when TLAS is off.
+      const BVH_NODE_PLACEHOLDER_BYTES = 32;
+      const VEC4_PLACEHOLDER_BYTES = 16;
+      const U32_PLACEHOLDER_BYTES = 16;
+      const RO = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST;
+      const RW = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST;
+      const UB = GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST;
+
+      let placeholderEnvTex: GPUTexture | null = null;
+      let envMapView = this._envMapView;
+      if (envMapView == null) {
+        placeholderEnvTex = registerTexture(device.createTexture({
+          label: 'vitrum.ddgi.env.placeholder',
+          size: { width: 1, height: 1, depthOrArrayLayers: 1 },
+          format: 'rgba16float',
+          usage: 0x04 | 0x02, // TEXTURE_BINDING | COPY_DST
+        }));
+        envMapView = placeholderEnvTex.createView();
+      }
+
+      const placeholderMaterialAtlas =
+        uploadMaterialTextureAtlas(device, DDGI_PLACEHOLDER_MATERIAL_ATLAS);
+      registerTexture(placeholderMaterialAtlas.atlasTexture);
+      registerTexture(placeholderMaterialAtlas.baseColorMetaTexture);
+      const placeholderTangents = uploadTangentTexture(device, new Float32Array(4), 1);
+      registerTexture(placeholderTangents.texture);
+      const placeholderTangentView = placeholderTangents.texture.createView();
+      const placeholderVertexColors = uploadVertexColorTexture(
+        device,
+        new Float32Array([1, 1, 1, 1]),
+        1,
+      );
+      registerTexture(placeholderVertexColors.texture);
+      const placeholderVertexColorView = placeholderVertexColors.texture.createView();
+
+      const candidateGpu: ProbeUpdateGpuState = {
+        device,
+        ...pipelines,
+        visScratchTex: null,
+        bvhBuf: makeBuffer('ddgi.bvh.nodes.placeholder', BVH_NODE_PLACEHOLDER_BYTES, RO),
+        posBuf: makeBuffer('ddgi.bvh.positions.placeholder', VEC4_PLACEHOLDER_BYTES, RO),
+        idxBuf: makeBuffer('ddgi.bvh.indices.placeholder', VEC4_PLACEHOLDER_BYTES, RO),
+        normBuf: makeBuffer('ddgi.bvh.normals.placeholder', VEC4_PLACEHOLDER_BYTES, RO),
+        matIdBuf: makeBuffer('ddgi.bvh.material-ids.placeholder', U32_PLACEHOLDER_BYTES, RO),
+        tlasNodesBuf: makeBuffer('ddgi.tlas.nodes.placeholder', BVH_NODE_PLACEHOLDER_BYTES, RO),
+        tlasInstIdxBuf: makeBuffer('ddgi.tlas.instance-indices.placeholder', U32_PLACEHOLDER_BYTES, RO),
+        tlasBlasRootsBuf: makeBuffer('ddgi.tlas.blas-roots.placeholder', U32_PLACEHOLDER_BYTES, RO),
+        tlasW2lBuf: makeBuffer('ddgi.tlas.world-to-local.placeholder', VEC4_PLACEHOLDER_BYTES, RO),
+        tlasL2wBuf: makeBuffer('ddgi.tlas.local-to-world.placeholder', VEC4_PLACEHOLDER_BYTES, RO),
+        traceParamsBuf: makeBuffer('ddgi.trace-params', 16, UB),
+        materialsBuf: makeBuffer(
+          'ddgi.materials',
+          this._ddgiMaxMaterials * DDGI_MATERIAL_STRIDE_BYTES,
+          UB,
+        ),
+        lightsBuf: makeBuffer('ddgi.lights', DDGI_PROBE_LIGHTS_BUFFER_BYTES, RO),
+        lightsCapacityBytes: DDGI_PROBE_LIGHTS_BUFFER_BYTES,
+        gridParamsBuf: makeBuffer('ddgi.grid-params', 64, UB),
+        frameParamsBuf: makeBuffer('ddgi.frame-params', DDGI_FRAME_PARAMS_UBO.sizeBytes, UB),
+        blendParamsBuf: makeBuffer('ddgi.blend-params', 16, UB),
+        borderVisUboBuf: makeBuffer('ddgi.border-vis-ubo', DDGI_BORDER_UBO_BYTES, UB),
+        rayResultsBuf: makeBuffer('ddgi.ray-results', PROBE_RAY_STRIDE_BYTES, RW),
+        activeProbesBuf: makeBuffer('ddgi.active-probes', 4, RO),
+        // H18 — one full packed EmitterTri record. The shader statically indexes
+        // five vec4 lanes per candidate, so layout:auto validates a 32+ byte
+        // storage binding even when traceParams.emitterTriCount is zero.
+        emitterTrisBuf: makeBuffer(
+          'ddgi.emitter-tris.placeholder',
+          EMITTER_TRI_STRIDE_BYTES,
+          RO,
+        ),
+        emitterTrisCount: 0,
+        materialTextureAtlas: placeholderMaterialAtlas.atlasTexture,
+        materialTextureAtlasView: placeholderMaterialAtlas.atlasTextureView,
+        materialTextureAtlasMeta: placeholderMaterialAtlas.baseColorMetaTexture,
+        materialTextureAtlasMetaView: placeholderMaterialAtlas.baseColorMetaTextureView,
+        bvhTangentTexture: placeholderTangents.texture,
+        bvhTangentTextureView: placeholderTangentView,
+        bvhVertexColorTexture: placeholderVertexColors.texture,
+        bvhVertexColorTextureView: placeholderVertexColorView,
+        linearSampler,
+        envMapView,
+        envMapOwnedByPass: placeholderEnvTex != null,
+        envMapPlaceholderTex: placeholderEnvTex,
+        envSamplerForProbe: this._envSampler ?? linearSampler,
+      };
+
+      // Publish only after every buffer, texture upload, and view creation has
+      // completed. The candidate sets become owned by _gpu at this point.
+      this._gpu = candidateGpu;
+      this._lastMaterialAtlasPayload = DDGI_PLACEHOLDER_MATERIAL_ATLAS;
+    } catch (error) {
+      cleanupCandidates();
+      throw error;
+    }
   }
 
   /**
@@ -641,24 +1063,35 @@ export class ProbeUpdatePass {
    * @param offset    Which stratum to update this frame (0 … stride-1)
    * @param stride    Number of update strata (the probe-update divisor)
    */
-  async runFrame(renderer: { backend?: { device?: GPUDevice; isWebGPUBackend?: boolean } }, offset: number, stride: number): Promise<void> {
+  async runFrame(renderer: { backend?: { device?: GPUDevice; isWebGPUBackend?: boolean } }, offset: number, stride: number): Promise<boolean> {
+    if (this._disposed) return false;
+    assertPositiveDdgiInteger(stride, 'DDGI probe update stride');
+    assertDdgiInteger(offset, 'DDGI probe update offset');
     if (!this._gpu) {
       // If init was already attempted and failed (e.g. hard WebGPU-init failure
       // where navigator.gpu.requestAdapter returned null), do not re-issue the
       // adapter request on every subsequent frame.  Pattern mirrors DDGI._inited
       // / _gpuOk so the two classes have consistent guards.
-      if (this._initAttempted) return;
+      if (this._initAttempted) return false;
       await this.init(renderer);
-      if (!this._gpu) return;
+      if (!this._gpu) return false;
     }
     const { device } = this._gpu;
     const snap = this._restirSnapshot;
     const legacyBuffers = snap == null ? this._bvh.buffers : null;
-    if (snap == null && legacyBuffers == null) return;
-    if (this._grid.dirty) this._grid.allocateAtlases();
+    if (snap == null && legacyBuffers == null) return false;
+    if (this._grid.dirty) this.reallocateGridAtlases();
 
     const probeCount = this._grid.probeCount;
-    if (probeCount === 0) return;
+    if (probeCount === 0) return false;
+
+    const normalizedStride = stride;
+    const normalizedOffset =
+      ((offset % normalizedStride) + normalizedStride) % normalizedStride;
+    const fullBlendGeneration = this._fullBlendGeneration;
+    const fullBlendThisStratum =
+      this._fullBlendStride === normalizedStride &&
+      this._pendingFullBlendStrata.has(normalizedOffset);
 
     if (snap != null) {
       if (snap.contentVersion !== this._lastBvhVersion) {
@@ -667,6 +1100,7 @@ export class ProbeUpdatePass {
           isRestirTlasOnlyRefit(snap, {
             blasContentVersion: this._lastBlasVersion,
             tlasContentVersion: this._lastTlasVersion,
+            materialContentVersion: this._lastMaterialVersion,
           });
         if (tlasOnly && snap.tlas != null) {
           refitProbeTlasBuffersInPlace(device, this._gpu, snap.tlas);
@@ -678,6 +1112,7 @@ export class ProbeUpdatePass {
         this._lastBvhVersion = snap.contentVersion;
         this._lastBlasVersion = snap.blasContentVersion;
         this._lastTlasVersion = snap.tlasContentVersion;
+        this._lastMaterialVersion = snap.materialContentVersion;
       }
       this._uploadTraceParams(device, snap);
       this._syncMaterialTextureAtlas(device, snap.materialTextureAtlas);
@@ -695,35 +1130,33 @@ export class ProbeUpdatePass {
 
     // Reallocate ray results buffer if probe count changed.
     const maxProbes = probeCount;
-    if (maxProbes !== this._maxProbes) {
-      this._gpu.rayResultsBuf.destroy();
-      this._gpu.rayResultsBuf = device.createBuffer({
-        label: 'ddgi.ray-results',
-        size: maxProbes * RAYS_PER_PROBE * PROBE_RAY_STRIDE_BYTES,
-        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-      });
-      this._maxProbes = maxProbes;
-    }
+    this._ensureRayResultsCapacity(device, maxProbes);
 
     // Determine which probes are active this frame.
     const activeProbes: number[] = [];
-    for (let i = offset; i < probeCount; i += stride) {
+    for (let i = normalizedOffset; i < probeCount; i += normalizedStride) {
       activeProbes.push(i);
     }
-    if (activeProbes.length === 0) return;
+    if (activeProbes.length === 0) {
+      submitProbeUpdateCommand(
+        device.createCommandEncoder(),
+        device.queue,
+        () => {
+          this._frameIndex++;
+          this._acknowledgeFullBlendStratum(
+            fullBlendGeneration,
+            normalizedStride,
+            normalizedOffset,
+            fullBlendThisStratum,
+          );
+        },
+      );
+      return true;
+    }
 
     // Upload active probe indices.
     const activeArr = new Uint32Array(activeProbes);
-    const activeSize = activeArr.byteLength;
-    if (this._gpu.activeProbesBuf.size < activeSize) {
-      this._gpu.activeProbesBuf.destroy();
-      this._gpu.activeProbesBuf = device.createBuffer({
-        label: 'ddgi.active-probes',
-        size: activeSize,
-        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-      });
-    }
-    device.queue.writeBuffer(this._gpu.activeProbesBuf, 0, activeArr);
+    this._uploadActiveProbeIndices(device, activeArr);
 
     // Update uniforms. Material source priority (core-first wherever available):
     //   1. PRODUCTION ReSTIR snapshot, core path — `snap.coreMaterials` (deduped
@@ -750,10 +1183,12 @@ export class ProbeUpdatePass {
     this._uploadEmitterTris(device);  // H18 — area-emitter NEE tris
     this._uploadGridParams(device);
     this._uploadFrameParams(device);
-    this._uploadBlendParams(device);
+    this._uploadBlendParams(device, fullBlendThisStratum);
 
     // Ensure grid atlases are allocated.
-    if (!this._grid.irradianceA) this._grid.allocateAtlases();
+    if (!this._grid.irradianceA) {
+      this.reallocateGridAtlases();
+    }
 
     // Get/create GPU textures for the atlases.
     const irrReadTex  = this._atlasCache.getOrCreateAtlasTexture(device, this._grid.irradianceReadTex, 'rgba16float');
@@ -762,13 +1197,35 @@ export class ProbeUpdatePass {
     // support rg16float as a storage texture. The WGSL shader declares rgba16float too.
     const visReadTex  = this._atlasCache.getOrCreateAtlasTexture(device, this._grid.visibilityReadTex, 'rgba16float');
     const visWriteTex = this._atlasCache.getOrCreateAtlasTexture(device, this._grid.visibilityWriteTex, 'rgba16float');
-
     // Run compute passes.
     const encoder = device.createCommandEncoder();
     const gpu = this._gpu;
-    dispatchProbeUpdateRaysPass(encoder, gpu, activeProbes.length, irrReadTex);
+    // Preserve every inactive probe's SH coefficients and packed state before
+    // the classifier/blend overwrite only this frame's active stratum. This
+    // copy must precede the classifier because state lives in the irradiance
+    // atlas's reserved (4,4) ring texel.
+    copyProbeIrradianceAndPackedStateForward(encoder, irrReadTex, irrWriteTex);
+    encoder.copyTextureToTexture(
+      { texture: visReadTex },
+      { texture: visWriteTex },
+      { width: visReadTex.width, height: visReadTex.height, depthOrArrayLayers: 1 },
+    );
 
-    // CRITICAL: copy read→write so inactive probes' cells stay in sync.
+    dispatchProbeUpdateRaysPass(
+      encoder,
+      gpu,
+      activeProbes.length,
+      irrReadTex,
+    );
+    dispatchProbeClassifyRelocatePass(
+      encoder,
+      gpu,
+      activeProbes.length,
+      irrReadTex,
+      irrWriteTex,
+    );
+
+    // CRITICAL: the read→write copies above keep inactive probes' cells in sync.
     // Without this, the per-frame ping-pong (`swap()` below) combined with
     // round-robin updates (STRIDE=8, only 1/8 of probes active per frame)
     // produces a structural bug: every probe always writes to the SAME
@@ -779,19 +1236,20 @@ export class ProbeUpdatePass {
     // despite per-ray red-wall radiance of ~6.0. Copying read→write
     // before blend means inactive probes' cells already hold the latest
     // value (from when they were last active, one full STRIDE cycle ago).
-    encoder.copyTextureToTexture(
-      { texture: irrReadTex },
-      { texture: irrWriteTex },
-      { width: irrReadTex.width, height: irrReadTex.height, depthOrArrayLayers: 1 },
+    dispatchProbeUpdateBlendIrrPass(
+      encoder,
+      gpu,
+      activeProbes.length,
+      irrReadTex,
+      irrWriteTex,
     );
-    encoder.copyTextureToTexture(
-      { texture: visReadTex },
-      { texture: visWriteTex },
-      { width: visReadTex.width, height: visReadTex.height, depthOrArrayLayers: 1 },
+    dispatchProbeUpdateBlendVisPass(
+      encoder,
+      gpu,
+      activeProbes.length,
+      visReadTex,
+      visWriteTex,
     );
-
-    dispatchProbeUpdateBlendIrrPass(encoder, gpu, activeProbes.length, irrReadTex, irrWriteTex);
-    dispatchProbeUpdateBlendVisPass(encoder, gpu, activeProbes.length, visReadTex, visWriteTex);
 
     // Border fill pass (Item 3 — Majercik 2019 §3.2) — VISIBILITY ONLY.
     //
@@ -805,20 +1263,27 @@ export class ProbeUpdatePass {
     // as both `texture_2d` (read) and `texture_storage_2d` (write) in one pass,
     // so use a scratch ping-pong: copy write → scratch, then the border pass
     // reads scratch and writes the border pixels into write.
-    const visScratch = this._atlasCache.getOrCreateScratchTexture(device, gpu, visWriteTex, 'vis');
+    const visScratch = this._atlasCache.getOrCreateScratchTexture(device, gpu, visWriteTex);
     encoder.copyTextureToTexture(
       { texture: visWriteTex },
       { texture: visScratch },
       { width: visWriteTex.width, height: visWriteTex.height, depthOrArrayLayers: 1 },
     );
-    uploadProbeUpdateBorderUbo(device, gpu, this._grid, visWriteTex, 'vis');
+    uploadProbeUpdateBorderUbo(device, gpu, this._grid, visWriteTex);
     dispatchProbeUpdateBorderVisPass(encoder, gpu, probeCount, visScratch, visWriteTex);
 
-    device.queue.submit([encoder.finish()]);
-
-    // Swap ping-pong atlases.
-    this._grid.swap();
-    this._frameIndex++;
+    submitProbeUpdateCommand(encoder, device.queue, () => {
+      // Publish the ping-pong identities, accepted-frame counter, and
+      // invalidation acknowledgement atomically after queue.submit succeeds.
+      this._grid.swap();
+      this._frameIndex++;
+      this._acknowledgeFullBlendStratum(
+        fullBlendGeneration,
+        normalizedStride,
+        normalizedOffset,
+        fullBlendThisStratum,
+      );
+    });
 
     // Expose internal state for debug/e2e inspection when opted in.
     if (this._debug && typeof window !== 'undefined') {
@@ -828,6 +1293,52 @@ export class ProbeUpdatePass {
         activeCount: activeProbes.length,
       };
     }
+    return true;
+  }
+
+  private _ensureRayResultsCapacity(device: GPUDevice, maxProbes: number): void {
+    if (maxProbes === this._maxProbes) return;
+    const gpu = this._gpu!;
+    const previous = gpu.rayResultsBuf;
+    const candidate = device.createBuffer({
+      label: 'ddgi.ray-results',
+      size: maxProbes * RAYS_PER_PROBE * PROBE_RAY_STRIDE_BYTES,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
+    if (candidate === previous) {
+      throw new Error('DDGI ray-results candidate aliases the live buffer.');
+    }
+    gpu.rayResultsBuf = candidate;
+    this._maxProbes = maxProbes;
+    destroyProbeResourceBestEffort(previous);
+  }
+
+  private _uploadActiveProbeIndices(
+    device: GPUDevice,
+    activeArr: Uint32Array<ArrayBuffer>,
+  ): void {
+    const gpu = this._gpu!;
+    const previous = gpu.activeProbesBuf;
+    if (previous.size >= activeArr.byteLength) {
+      device.queue.writeBuffer(previous, 0, activeArr);
+      return;
+    }
+    const candidate = device.createBuffer({
+      label: 'ddgi.active-probes',
+      size: activeArr.byteLength,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
+    if (candidate === previous) {
+      throw new Error('DDGI active-probes candidate aliases the live buffer.');
+    }
+    try {
+      device.queue.writeBuffer(candidate, 0, activeArr);
+    } catch (error) {
+      destroyProbeResourceBestEffort(candidate);
+      throw error;
+    }
+    gpu.activeProbesBuf = candidate;
+    destroyProbeResourceBestEffort(previous);
   }
 
   private _uploadTraceParams(
@@ -848,24 +1359,6 @@ export class ProbeUpdatePass {
   }
 
   private _uploadMaterials(device: GPUDevice, mats: PbrScalarSource[]): void {
-    // M9: runtime warning when scene exceeds the compiled-in cap.
-    if (mats.length > this._ddgiMaxMaterials) {
-      this._warn({
-        code: 'walkaround-hybrid.ddgi-material-cap-exceeded',
-        backend: 'walkaround-hybrid',
-        phase: 'renderFrame',
-        method: 'ProbeUpdatePass._uploadMaterials',
-        message:
-          `[DDGI] Scene has ${mats.length} materials but ddgiMaxMaterials=${this._ddgiMaxMaterials}. ` +
-          `Materials beyond the cap are ignored. Raise ddgiMaxMaterials in HybridEngineOptions to fix.`,
-        details: {
-          materialCount: mats.length,
-          maxMaterials: this._ddgiMaxMaterials,
-          ignoredMaterialCount: mats.length - this._ddgiMaxMaterials,
-          source: 'pbr-scalar',
-        },
-      });
-    }
     const buf = packDDGIMaterialsN(mats, this._ddgiMaxMaterials);
     device.queue.writeBuffer(this._gpu!.materialsBuf, 0, buf);
   }
@@ -875,43 +1368,83 @@ export class ProbeUpdatePass {
    *  production convention — no `THREE.Material` round-trip. See
    *  `packDDGIMaterialsFromCoreN`. */
   private _uploadCoreMaterials(device: GPUDevice, mats: readonly MaterialSpec[]): void {
-    if (mats.length > this._ddgiMaxMaterials) {
-      this._warn({
-        code: 'walkaround-hybrid.ddgi-material-cap-exceeded',
-        backend: 'walkaround-hybrid',
-        phase: 'renderFrame',
-        method: 'ProbeUpdatePass._uploadCoreMaterials',
-        message:
-          `[DDGI] Scene has ${mats.length} materials but ddgiMaxMaterials=${this._ddgiMaxMaterials}. ` +
-          `Materials beyond the cap are ignored. Raise ddgiMaxMaterials in HybridEngineOptions to fix.`,
-        details: {
-          materialCount: mats.length,
-          maxMaterials: this._ddgiMaxMaterials,
-          ignoredMaterialCount: mats.length - this._ddgiMaxMaterials,
-          source: 'core-material',
-        },
-      });
-    }
     const buf = packDDGIMaterialsFromCoreN(mats, this._ddgiMaxMaterials);
     device.queue.writeBuffer(this._gpu!.materialsBuf, 0, buf);
   }
 
   private _uploadLights(device: GPUDevice): void {
-    const buf = packDDGIProbeLights(this._lights, this._sunIntensityMul, this._onWarning);
-    device.queue.writeBuffer(this._gpu!.lightsBuf, 0, buf);
+    const payload = packDDGIProbeLights(this._lights, this._sunIntensityMul);
+    const gpu = this._gpu!;
+    if (payload.byteLength <= gpu.lightsCapacityBytes) {
+      device.queue.writeBuffer(gpu.lightsBuf, 0, payload);
+      return;
+    }
+
+    const maxBufferSize = device.limits?.maxBufferSize;
+    if (typeof maxBufferSize === 'number' && payload.byteLength > maxBufferSize) {
+      throw new RangeError(
+        `[DDGI] ${this._lights.length} lights require ${payload.byteLength} bytes, ` +
+        `exceeding device.limits.maxBufferSize=${maxBufferSize}.`,
+      );
+    }
+    const maxStorageBinding = device.limits?.maxStorageBufferBindingSize;
+    if (typeof maxStorageBinding === 'number' && payload.byteLength > maxStorageBinding) {
+      throw new RangeError(
+        `[DDGI] ${this._lights.length} lights require a ${payload.byteLength}-byte storage binding, ` +
+        `exceeding device.limits.maxStorageBufferBindingSize=${maxStorageBinding}.`,
+      );
+    }
+
+    const hardwareLimit = Math.min(
+      typeof maxBufferSize === 'number' ? maxBufferSize : Number.MAX_SAFE_INTEGER,
+      typeof maxStorageBinding === 'number' ? maxStorageBinding : Number.MAX_SAFE_INTEGER,
+    );
+    const doubled = gpu.lightsCapacityBytes * 2;
+    const nextCapacity = Math.min(
+      hardwareLimit,
+      Math.max(payload.byteLength, Number.isSafeInteger(doubled) ? doubled : payload.byteLength),
+    );
+    let candidate: GPUBuffer | null = null;
+    try {
+      candidate = device.createBuffer({
+        label: 'ddgi.lights',
+        size: nextCapacity,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+      });
+      device.queue.writeBuffer(candidate, 0, payload);
+    } catch (error) {
+      destroyProbeResourceBestEffort(candidate);
+      throw error;
+    }
+
+    const previous = gpu.lightsBuf;
+    gpu.lightsBuf = candidate;
+    gpu.lightsCapacityBytes = nextCapacity;
+    destroyProbeResourceBestEffort(previous);
   }
 
   private _syncMaterialTextureAtlas(device: GPUDevice, payload: MaterialTextureAtlasPayload): void {
     const gpu = this._gpu;
     if (gpu == null || this._lastMaterialAtlasPayload === payload) return;
     const next = uploadMaterialTextureAtlas(device, payload);
-    gpu.materialTextureAtlas.destroy();
-    gpu.materialTextureAtlasMeta.destroy();
+    const previousAtlas = gpu.materialTextureAtlas;
+    const previousMeta = gpu.materialTextureAtlasMeta;
+    if (next.atlasTexture === previousAtlas || next.baseColorMetaTexture === previousMeta) {
+      destroyProbeResourceBestEffort(
+        next.atlasTexture === previousAtlas ? null : next.atlasTexture,
+      );
+      destroyProbeResourceBestEffort(
+        next.baseColorMetaTexture === previousMeta ? null : next.baseColorMetaTexture,
+      );
+      throw new Error('DDGI material-atlas candidate aliases a live texture.');
+    }
     gpu.materialTextureAtlas = next.atlasTexture;
     gpu.materialTextureAtlasView = next.atlasTextureView;
     gpu.materialTextureAtlasMeta = next.baseColorMetaTexture;
     gpu.materialTextureAtlasMetaView = next.baseColorMetaTextureView;
     this._lastMaterialAtlasPayload = payload;
+    destroyProbeResourceBestEffort(previousAtlas);
+    destroyProbeResourceBestEffort(previousMeta);
   }
 
   private _syncTangentTexture(device: GPUDevice, tangents: ArrayBuffer | null): void {
@@ -923,10 +1456,21 @@ export class ProbeUpdatePass {
       : new Float32Array(4);
     const vertexCount = Math.max(1, Math.floor(data.length / 4));
     const next = uploadTangentTexture(device, data, vertexCount);
-    gpu.bvhTangentTexture.destroy();
+    const previous = gpu.bvhTangentTexture;
+    if (next.texture === previous) {
+      throw new Error('DDGI tangent candidate aliases the live texture.');
+    }
+    let nextView: GPUTextureView;
+    try {
+      nextView = next.texture.createView();
+    } catch (error) {
+      destroyProbeResourceBestEffort(next.texture);
+      throw error;
+    }
     gpu.bvhTangentTexture = next.texture;
-    gpu.bvhTangentTextureView = next.texture.createView();
+    gpu.bvhTangentTextureView = nextView;
     this._lastTangentSource = tangents;
+    destroyProbeResourceBestEffort(previous);
   }
 
   private _syncVertexColorTexture(device: GPUDevice, colors: ArrayBuffer | null): void {
@@ -938,10 +1482,21 @@ export class ProbeUpdatePass {
       : new Float32Array([1, 1, 1, 1]);
     const vertexCount = Math.max(1, Math.floor(data.length / 4));
     const next = uploadVertexColorTexture(device, data, vertexCount);
-    gpu.bvhVertexColorTexture.destroy();
+    const previous = gpu.bvhVertexColorTexture;
+    if (next.texture === previous) {
+      throw new Error('DDGI vertex-color candidate aliases the live texture.');
+    }
+    let nextView: GPUTextureView;
+    try {
+      nextView = next.texture.createView();
+    } catch (error) {
+      destroyProbeResourceBestEffort(next.texture);
+      throw error;
+    }
     gpu.bvhVertexColorTexture = next.texture;
-    gpu.bvhVertexColorTextureView = next.texture.createView();
+    gpu.bvhVertexColorTextureView = nextView;
     this._lastVertexColorSource = colors;
+    destroyProbeResourceBestEffort(previous);
   }
 
   /** H18 Stage 2 — upload the packed emitter-tri array (or keep a dummy if count==0). */
@@ -956,12 +1511,25 @@ export class ProbeUpdatePass {
     }
     const needed = data.byteLength;
     if (gpu.emitterTrisBuf.size < needed) {
-      gpu.emitterTrisBuf.destroy();
-      gpu.emitterTrisBuf = device.createBuffer({
+      const previous = gpu.emitterTrisBuf;
+      const candidate = device.createBuffer({
         label: 'ddgi.emitter-tris',
         size: needed,
         usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
       });
+      if (candidate === previous) {
+        throw new Error('DDGI emitter-triangle candidate aliases the live buffer.');
+      }
+      try {
+        device.queue.writeBuffer(candidate, 0, data.buffer, data.byteOffset, data.byteLength);
+      } catch (error) {
+        destroyProbeResourceBestEffort(candidate);
+        throw error;
+      }
+      gpu.emitterTrisBuf = candidate;
+      gpu.emitterTrisCount = count;
+      destroyProbeResourceBestEffort(previous);
+      return;
     }
     device.queue.writeBuffer(gpu.emitterTrisBuf, 0, data.buffer, data.byteOffset, data.byteLength);
     gpu.emitterTrisCount = count;
@@ -977,11 +1545,9 @@ export class ProbeUpdatePass {
   private _uploadFrameParams(device: GPUDevice): void {
     const data = packProbeUpdateFrameParams({
       frameIndex: this._frameIndex,
-      totalProbes: this._grid.probeCount,
       skyTint: this._skyTint,
       skyIrradiance: this._skyIrradiance,
       glassMixScale: this._glassMixScale,
-      updateDivisor: this._probeUpdateDivisor,
       indirectFeedback: this._indirectFeedback,
       // Wave 4 (2026-06-10) — HDRI into DDGI probe misses.
       hasEnv:       this._hasEnv,
@@ -998,14 +1564,16 @@ export class ProbeUpdatePass {
     const gpu = this._gpu;
     if (!gpu) return;
     if (this._envMapView !== null) {
-      // External view provided: destroy the pass-owned placeholder (once).
-      if (gpu.envMapOwnedByPass && gpu.envMapPlaceholderTex !== null) {
-        gpu.envMapPlaceholderTex.destroy();
-        gpu.envMapPlaceholderTex = null;
-        gpu.envMapOwnedByPass = false;
-      }
+      // Publish the borrowed view first; retirement of the old placeholder is
+      // best-effort and cannot prevent the environment transition.
+      const previousPlaceholder = gpu.envMapOwnedByPass
+        ? gpu.envMapPlaceholderTex
+        : null;
       gpu.envMapView = this._envMapView;
       gpu.envSamplerForProbe = this._envSampler ?? gpu.linearSampler;
+      gpu.envMapPlaceholderTex = null;
+      gpu.envMapOwnedByPass = false;
+      destroyProbeResourceBestEffort(previousPlaceholder);
     } else {
       // HDRI disabled/reset. If the current view came from an external pipeline
       // texture, drop that borrowed view immediately and bind a fresh pass-owned
@@ -1021,29 +1589,44 @@ export class ProbeUpdatePass {
         format: 'rgba16float',
         usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
       });
+      let placeholderView: GPUTextureView;
+      try {
+        placeholderView = placeholder.createView();
+      } catch (error) {
+        destroyProbeResourceBestEffort(placeholder);
+        throw error;
+      }
       gpu.envMapPlaceholderTex = placeholder;
-      gpu.envMapView = placeholder.createView();
+      gpu.envMapView = placeholderView;
       gpu.envMapOwnedByPass = true;
       gpu.envSamplerForProbe = gpu.linearSampler;
     }
   }
 
-  private _uploadBlendParams(device: GPUDevice): void {
+  private _uploadBlendParams(
+    device: GPUDevice,
+    fullBlend = false,
+  ): void {
     // Same divisor as the ray pass so the blend coverage matches the rays
     // written this frame (a mismatch would blend uncovered probes).
-    // H16 — when _pendingFullBlend is set, use hysteresis=0.0 (EMA weight=0,
-    // full replace) for exactly this one frame so a lighting change takes
-    // effect immediately instead of fading in over hundreds of frames.
-    // The flag is cleared HERE (after the upload) so only one frame fires
-    // with hysteresis=0; subsequent frames revert to the steady-state 0.97.
-    const hysteresisOverride = this._pendingFullBlend ? 0.0 : undefined;
-    this._pendingFullBlend = false;
-    const data = packProbeUpdateBlendParams(
-      this._grid.probeCount,
-      this._probeUpdateDivisor,
-      hysteresisOverride,
-    );
+    // Full-replace is staged for this stratum. The pending set is acknowledged
+    // only after encoder.finish + queue.submit succeed in runFrame.
+    const hysteresisOverride = fullBlend ? 0.0 : undefined;
+    const data = packProbeUpdateBlendParams(hysteresisOverride);
     device.queue.writeBuffer(this._gpu!.blendParamsBuf, 0, data);
+  }
+
+  private _acknowledgeFullBlendStratum(
+    generation: number,
+    stride: number,
+    offset: number,
+    wasFullBlend: boolean,
+  ): void {
+    if (!wasFullBlend) return;
+    if (generation !== this._fullBlendGeneration || stride !== this._fullBlendStride) {
+      return;
+    }
+    this._pendingFullBlendStrata.delete(offset);
   }
 
   /**
@@ -1056,7 +1639,10 @@ export class ProbeUpdatePass {
    * (see _getOrCreateAtlasTexture above), so they're directly bindable as
    * `texture_2d<f32>` in the shade pass.
    */
-  getReadAtlasGPUTextures(): { irradiance: GPUTexture; visibility: GPUTexture } | null {
+  getReadAtlasGPUTextures(): {
+    irradiance: GPUTexture;
+    visibility: GPUTexture;
+  } | null {
     const irrTex = this._grid.irradianceReadTex;
     const visTex = this._grid.visibilityReadTex;
     if (!irrTex || !visTex) return null;
@@ -1067,21 +1653,60 @@ export class ProbeUpdatePass {
   }
 
   /**
+   * Replace the ProbeGrid's backend-agnostic slots and retire every GPU atlas
+   * cached for the displaced slots. ProbeUpdatePass owns those GPU textures;
+   * ProbeGrid intentionally owns no backend handles.
+   */
+  reallocateGridAtlases(): void {
+    const displaced = [
+      this._grid.irradianceA,
+      this._grid.irradianceB,
+      this._grid.visibilityA,
+      this._grid.visibilityB,
+    ].filter((slot): slot is AtlasTextureSlot => slot != null);
+    this._grid.allocateAtlases();
+    this._atlasCache.retireAtlasSlots(displaced);
+  }
+
+  /**
    * Read the converged probe atlases back to CPU (the "cached light field" export).
    * Returns the raw rgba16float texels + atlas dims, or null if the atlases aren't
    * allocated yet. Async (mapAsync).
    */
   async exportAtlasData(device: GPUDevice): Promise<{
     irrW: number; irrH: number; visW: number; visH: number;
+    probeStateW: number; probeStateH: number;
     irrData: Uint16Array; visData: Uint16Array;
+    probeStateData: Float32Array;
   } | null> {
     const tex = this.getReadAtlasGPUTextures();
     const irrSlot = this._grid.irradianceReadTex;
     const visSlot = this._grid.visibilityReadTex;
     if (!tex || !irrSlot || !visSlot) return null;
-    const irrData = await this.#readbackRgba16f(device, tex.irradiance, irrSlot.width, irrSlot.height);
-    const visData = await this.#readbackRgba16f(device, tex.visibility, visSlot.width, visSlot.height);
-    return { irrW: irrSlot.width, irrH: irrSlot.height, visW: visSlot.width, visH: visSlot.height, irrData, visData };
+    const irrData = await this._readbackRgba16f(device, tex.irradiance, irrSlot.width, irrSlot.height);
+    const visData = await this._readbackRgba16f(device, tex.visibility, visSlot.width, visSlot.height);
+    const probeStateData = readPackedProbeStateFromIrradianceAtlas(irrData, {
+      dimsX: this._grid.dims.x,
+      dimsY: this._grid.dims.y,
+      dimsZ: this._grid.dims.z,
+      irradianceWidth: irrSlot.width,
+      irradianceHeight: irrSlot.height,
+      spacing: this._grid.worldSpacing,
+    });
+    if (!isValidProbeStateData(probeStateData, this._grid.worldSpacing)) {
+      throw new Error('DDGI packed probe state readback is invalid.');
+    }
+    return {
+      irrW: irrSlot.width,
+      irrH: irrSlot.height,
+      visW: visSlot.width,
+      visH: visSlot.height,
+      probeStateW: this._grid.dims.x,
+      probeStateH: this._grid.dims.y * this._grid.dims.z,
+      irrData,
+      visData,
+      probeStateData,
+    };
   }
 
   /**
@@ -1092,23 +1717,101 @@ export class ProbeUpdatePass {
    */
   importAtlasData(
     device: GPUDevice,
-    snap: { irrW: number; irrH: number; visW: number; visH: number; irrData: Uint16Array; visData: Uint16Array },
+    snap: {
+      irrW: number; irrH: number; visW: number; visH: number;
+      probeStateW: number; probeStateH: number;
+      irrData: Uint16Array; visData: Uint16Array;
+      probeStateData: Float32Array;
+    },
   ): boolean {
     const tex = this.getReadAtlasGPUTextures();
     const irrSlot = this._grid.irradianceReadTex;
     const visSlot = this._grid.visibilityReadTex;
     if (!tex || !irrSlot || !visSlot) return false;
     if (irrSlot.width !== snap.irrW || irrSlot.height !== snap.irrH ||
-        visSlot.width !== snap.visW || visSlot.height !== snap.visH) {
+        visSlot.width !== snap.visW || visSlot.height !== snap.visH ||
+        this._grid.dims.x !== snap.probeStateW ||
+        this._grid.dims.y * this._grid.dims.z !== snap.probeStateH) {
       return false; // grid mismatch — cannot restore into a differently-sized atlas
     }
-    this.#uploadRgba16f(device, tex.irradiance, snap.irrW, snap.irrH, snap.irrData);
-    this.#uploadRgba16f(device, tex.visibility, snap.visW, snap.visH, snap.visData);
+    if (snap.irrData.length !== snap.irrW * snap.irrH * 4 ||
+        snap.visData.length !== snap.visW * snap.visH * 4 ||
+        snap.probeStateData.length !== snap.probeStateW * snap.probeStateH * 4 ||
+        !isValidProbeStateData(snap.probeStateData, this._grid.worldSpacing)) {
+      return false;
+    }
+    const irradianceData = snap.irrData.slice();
+    try {
+      writePackedProbeStateToIrradianceAtlas(
+        irradianceData,
+        snap.probeStateData,
+        {
+          dimsX: this._grid.dims.x,
+          dimsY: this._grid.dims.y,
+          dimsZ: this._grid.dims.z,
+          irradianceWidth: snap.irrW,
+          irradianceHeight: snap.irrH,
+          spacing: this._grid.worldSpacing,
+        },
+      );
+    } catch {
+      return false;
+    }
+
+    const usage =
+      GPUTextureUsage.STORAGE_BINDING |
+      GPUTextureUsage.TEXTURE_BINDING |
+      GPUTextureUsage.COPY_SRC |
+      GPUTextureUsage.COPY_DST;
+    const candidates: GPUTexture[] = [];
+    try {
+      const irradiance = device.createTexture({
+        label: 'ddgi.import.irradiance.candidate',
+        size: [snap.irrW, snap.irrH, 1],
+        format: 'rgba16float',
+        usage,
+      });
+      candidates.push(irradiance);
+      const visibility = device.createTexture({
+        label: 'ddgi.import.visibility.candidate',
+        size: [snap.visW, snap.visH, 1],
+        format: 'rgba16float',
+        usage,
+      });
+      candidates.push(visibility);
+      if (irradiance === tex.irradiance || irradiance === tex.visibility ||
+          visibility === tex.irradiance || visibility === tex.visibility ||
+          visibility === irradiance) {
+        throw new Error('DDGI atlas-import candidate aliases a live or sibling texture.');
+      }
+
+      this.#uploadRgba16f(device, irradiance, snap.irrW, snap.irrH, irradianceData);
+      this.#uploadRgba16f(device, visibility, snap.visW, snap.visH, snap.visData);
+      this._atlasCache.replaceCachedAtlasCohort([
+        { slot: irrSlot, texture: irradiance },
+        { slot: visSlot, texture: visibility },
+      ]);
+      candidates.length = 0;
+    } catch (error) {
+      for (const candidate of new Set(candidates)) {
+        if (
+          candidate === tex.irradiance ||
+          candidate === tex.visibility
+        ) continue;
+        destroyProbeResourceBestEffort(candidate);
+      }
+      throw error;
+    }
     return true;
   }
 
   /** copyTextureToBuffer (256-aligned rows) → unpadded Uint16Array of rgba16float. */
-  async #readbackRgba16f(device: GPUDevice, tex: GPUTexture, w: number, h: number): Promise<Uint16Array> {
+  private async _readbackRgba16f(
+    device: GPUDevice,
+    tex: GPUTexture,
+    w: number,
+    h: number,
+  ): Promise<Uint16Array> {
     const unpadded = w * 8; // rgba16float = 8 bytes/texel
     const bytesPerRow = Math.ceil(unpadded / 256) * 256;
     const staging = device.createBuffer({
@@ -1116,13 +1819,25 @@ export class ProbeUpdatePass {
       size: bytesPerRow * h,
       usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
     });
-    const enc = device.createCommandEncoder();
-    enc.copyTextureToBuffer({ texture: tex }, { buffer: staging, bytesPerRow, rowsPerImage: h }, [w, h, 1]);
-    device.queue.submit([enc.finish()]);
-    await staging.mapAsync(GPUMapMode.READ);
-    const padded = new Uint8Array(staging.getMappedRange().slice(0));
-    staging.unmap();
-    staging.destroy();
+    let mapped = false;
+    let padded: Uint8Array;
+    try {
+      const enc = device.createCommandEncoder();
+      enc.copyTextureToBuffer(
+        { texture: tex },
+        { buffer: staging, bytesPerRow, rowsPerImage: h },
+        [w, h, 1],
+      );
+      device.queue.submit([enc.finish()]);
+      await staging.mapAsync(GPUMapMode.READ);
+      mapped = true;
+      padded = new Uint8Array(staging.getMappedRange().slice(0));
+    } finally {
+      if (mapped) {
+        try { staging.unmap(); } catch { /* continue retirement */ }
+      }
+      destroyProbeResourceBestEffort(staging);
+    }
     const out = new Uint16Array(w * h * 4);
     const outBytes = new Uint8Array(out.buffer);
     for (let y = 0; y < h; y++) {
@@ -1142,46 +1857,50 @@ export class ProbeUpdatePass {
   }
 
   dispose(): void {
-    if (!this._gpu) return;
+    if (this._disposed && this._gpu == null && this._ownedDevice == null) return;
+    this._disposed = true;
+    this._pendingFullBlendStrata.clear();
     const g = this._gpu;
-    g.bvhBuf.destroy();
-    g.posBuf.destroy();
-    g.idxBuf.destroy();
-    g.normBuf.destroy();
-    g.matIdBuf.destroy();
-    // TLAS buffers (allocated in init / rebuildProbeBvhFrom*) — previously
-    // omitted, causing a GPU memory leak on dispose. All five are real
-    // GPUBuffers from ProbeUpdateBvhGpuBuffers; traceParamsBuf is from
-    // ProbeUpdateGpuState.
-    g.tlasNodesBuf.destroy();
-    g.tlasInstIdxBuf.destroy();
-    g.tlasBlasRootsBuf.destroy();
-    g.tlasW2lBuf.destroy();
-    g.tlasL2wBuf.destroy();
-    g.traceParamsBuf.destroy();
-    g.materialsBuf.destroy();
-    g.lightsBuf.destroy();
-    g.emitterTrisBuf.destroy();  // H18
-    g.materialTextureAtlas.destroy();
-    g.materialTextureAtlasMeta.destroy();
-    g.bvhTangentTexture.destroy();
-    g.bvhVertexColorTexture.destroy();
-    g.gridParamsBuf.destroy();
-    g.frameParamsBuf.destroy();
-    g.blendParamsBuf.destroy();
-    g.borderVisUboBuf.destroy();
-    g.irrScratchTex?.destroy();
-    g.visScratchTex?.destroy();
-    g.rayResultsBuf.destroy();
-    g.activeProbesBuf.destroy();
-    // Wave 4 — destroy the pass-owned placeholder env texture (if we own it).
-    if (g.envMapOwnedByPass && g.envMapPlaceholderTex !== null) {
-      g.envMapPlaceholderTex.destroy();
-    }
+    const ownedDevice = this._ownedDevice;
     this._gpu = null;
+    this._ownedDevice = null;
     this._lastMaterialAtlasPayload = null;
     this._lastTangentSource = null;
     this._lastVertexColorSource = null;
-    this._atlasCache.dispose();
+    if (g != null) {
+      const owned = new Set<GPUBuffer | GPUTexture>([
+        g.bvhBuf,
+        g.posBuf,
+        g.idxBuf,
+        g.normBuf,
+        g.matIdBuf,
+        g.tlasNodesBuf,
+        g.tlasInstIdxBuf,
+        g.tlasBlasRootsBuf,
+        g.tlasW2lBuf,
+        g.tlasL2wBuf,
+        g.traceParamsBuf,
+        g.materialsBuf,
+        g.lightsBuf,
+        g.emitterTrisBuf,
+        g.materialTextureAtlas,
+        g.materialTextureAtlasMeta,
+        g.bvhTangentTexture,
+        g.bvhVertexColorTexture,
+        g.gridParamsBuf,
+        g.frameParamsBuf,
+        g.blendParamsBuf,
+        g.borderVisUboBuf,
+        g.rayResultsBuf,
+        g.activeProbesBuf,
+      ]);
+      if (g.visScratchTex != null) owned.add(g.visScratchTex);
+      if (g.envMapOwnedByPass && g.envMapPlaceholderTex != null) {
+        owned.add(g.envMapPlaceholderTex);
+      }
+      for (const resource of owned) destroyProbeResourceBestEffort(resource);
+    }
+    try { this._atlasCache.dispose(); } catch { /* terminal teardown remains complete */ }
+    destroyProbeDeviceBestEffort(ownedDevice);
   }
 }

@@ -1,3 +1,5 @@
+import { requireFinite, requireInteger } from './numericGuards.js';
+
 /**
  * Canonical Rec.709 luminance helper.
  *
@@ -17,11 +19,20 @@
  * callers should import it rather than re-inlining the Rec.709 coefficients.
  */
 export function luminance(r: number, g: number, b: number): number {
-  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  requireFinite(r, 'luminance.r');
+  requireFinite(g, 'luminance.g');
+  requireFinite(b, 'luminance.b');
+  const result = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  if (!Number.isFinite(result)) throw new RangeError('luminance result overflowed');
+  return result;
 }
 
 /** Rec.709 luminance applied to a Float32Array RGB triple at the given index.
  *  `i` is the base index of the R channel; G is at `i+1`, B at `i+2`. */
 export function luminanceAt(rgb: Float32Array, i: number): number {
-  return 0.2126 * (rgb[i] ?? 0) + 0.7152 * (rgb[i + 1] ?? 0) + 0.0722 * (rgb[i + 2] ?? 0);
+  requireInteger(i, 'luminanceAt.i');
+  if (i + 2 >= rgb.length) {
+    throw new RangeError(`luminanceAt RGB triple at ${i} exceeds array length ${rgb.length}`);
+  }
+  return luminance(rgb[i]!, rgb[i + 1]!, rgb[i + 2]!);
 }

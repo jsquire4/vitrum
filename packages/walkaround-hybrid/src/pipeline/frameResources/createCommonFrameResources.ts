@@ -16,6 +16,8 @@ export function createCommonFrameResources(
      *  SampleBudgetPass reads only `varianceBuffer` when no denoiser exposes a
      *  Welford ping index. Defaults to true for legacy direct callers. */
     readonly welfordPingPong?: boolean;
+    /** Allocate the checkerboard prefill's current-radiance snapshot at full resolution. */
+    readonly checkerboardSnapshot?: boolean;
   },
 ): CommonFrameResources {
   const hdrColorTexture = device.createTexture({
@@ -156,6 +158,14 @@ export function createCommonFrameResources(
     { offset: 0, bytesPerRow },
     { width, height, depthOrArrayLayers: 1 },
   );
+  const checkerboardSnapshotW = options?.checkerboardSnapshot === true ? width : 1;
+  const checkerboardSnapshotH = options?.checkerboardSnapshot === true ? height : 1;
+  const checkerboardRadianceSnapshotTexture = device.createTexture({
+    label: 'checkerboard-current-radiance-snapshot',
+    size: [checkerboardSnapshotW, checkerboardSnapshotH],
+    format: 'rgba16float',
+    usage: GPUTextureUsage.COPY_DST | GPUTextureUsage.TEXTURE_BINDING,
+  });
 
   const tierTexture = device.createTexture({
     label: 'sample-tier',
@@ -195,6 +205,7 @@ export function createCommonFrameResources(
     nearestSampler,
     compositeSampler,
     motionVectorTexture,
+    checkerboardRadianceSnapshotTexture,
     tierTexture,
     resolvedTexture,
     hdrTotalTexture,

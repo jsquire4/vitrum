@@ -6,8 +6,8 @@
 //   buildPresentFragBody, #ensurePresentProgram, #runPresentPass,
 //   #presentTex, #presentFbo, #presentProgram.
 //
-// The present-pass reads the HDR accumulation texture (or the ping-pong read slot
-// for Regime-2 alpha-composite paths) and writes the tonemapped result to an
+// The present-pass reads the portable running-mean ping-pong result and writes
+// the tonemapped result to an
 // allocated RGBA32F texture (presentTex).
 //
 // Usage pattern:
@@ -20,7 +20,7 @@
 
 import { GlProgram } from './glProgram.js';
 import { FullscreenQuad, FULLSCREEN_VERT } from './fullscreenQuad.js';
-import { createPresentTexture } from './framebuffer.js';
+import { createRenderTarget, type RenderTarget } from './framebuffer.js';
 import * as TonemapFunctions from '../glsl/shader/common/tonemap_functions.glsl.js';
 
 /**
@@ -73,8 +73,7 @@ void main() {
 export class PresentPass {
   readonly #gl: WebGL2RenderingContext;
   readonly #quad: FullscreenQuad;
-  #tex: WebGLTexture | null = null;
-  #fbo: WebGLFramebuffer | null = null;
+  #target: RenderTarget | null = null;
   #program: GlProgram | null = null;
 
   constructor(gl: WebGL2RenderingContext, quad: FullscreenQuad) {
@@ -84,33 +83,33 @@ export class PresentPass {
 
   /** The tonemapped present texture (null before first allocate). */
   get tex(): WebGLTexture | null {
-    return this.#tex;
+    return this.#target?.color ?? null;
+  }
+
+  /** Start or poll the present program without issuing a draw. */
+  prepareProgram(): boolean {
+    return this.#ensureProgram().prepare();
   }
 
   /**
    * Allocate (or reallocate) the present target at the given dimensions.
    * Call whenever ensureAccumResources reallocates (width or height changed).
    * RGBA32F — deliberate; the present texture is the public primaryRadiance
-   * and must stay FLOAT-readable (see createPresentTexture's format note).
+   * and must stay FLOAT-readable (see framebuffer.ts's present-format note).
    */
   allocate(w: number, h: number): void {
-    this.destroy();
-    const gl = this.#gl;
-    this.#tex = createPresentTexture(gl, w, h);
-    const fbo = gl.createFramebuffer();
-    if (fbo == null) throw new Error('pt-webgl2: failed to create present-pass FBO');
-    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
-    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this.#tex, 0);
-    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-    this.#fbo = fbo;
+    const next = createRenderTarget(this.#gl, w, h, false);
+    const previous = this.#target;
+    this.#target = next;
+    previous?.destroy();
   }
 
   /**
    * Run the present pass: blit the provided HDR source texture through the
    * tonemap + OETF chain into the present target.
    *
-   * Called once per drawAccumStep, after the PT accumulation draw and the
-   * optional alpha-composite step. The present target is already allocated by
+   * Called once per drawAccumStep, after the PT sample and running-mean
+   * composite. The present target is already allocated by
    * `allocate` so this is a no-alloc hot path.
    */
   run(
@@ -122,7 +121,7 @@ export class PresentPass {
     outputColorSpace: number,
   ): void {
     const gl = this.#gl;
-    const fbo = this.#fbo;
+    const fbo = this.#target?.fbo ?? null;
     if (fbo == null) return;
 
     const prog = this.#ensureProgram();
@@ -131,7 +130,9 @@ export class PresentPass {
     gl.viewport(0, 0, width, height);
     gl.disable(gl.BLEND); // no blending in the present pass — overwrite only
 
-    prog.use();
+    if (!prog.use()) {
+      throw new Error('pt-webgl2: present pass reached draw before its program was ready');
+    }
     prog.bindTexture('uAccumTex', srcTex);
     prog.setInt('uTonemapMode', tonemapMode);
     prog.setFloat('uExposure', exposure);
@@ -143,14 +144,14 @@ export class PresentPass {
 
   /** The present FBO (for readPixels source selection). */
   get fbo(): WebGLFramebuffer | null {
-    return this.#fbo;
+    return this.#target?.fbo ?? null;
   }
 
   /** Destroy the present target textures and FBO (NOT the shared quad/program). */
   destroy(): void {
-    const gl = this.#gl;
-    if (this.#tex != null) { gl.deleteTexture(this.#tex); this.#tex = null; }
-    if (this.#fbo != null) { gl.deleteFramebuffer(this.#fbo); this.#fbo = null; }
+    const target = this.#target;
+    this.#target = null;
+    target?.destroy();
   }
 
   /** Destroy everything including the program. Call on full engine dispose. */

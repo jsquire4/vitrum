@@ -19,13 +19,13 @@ const DIMS: CascadeDim[] = [
 ];
 
 function installWebGpuConstants(): void {
-  vi.stubGlobal('GPUBufferUsage', { STORAGE: 1, COPY_DST: 2 });
+  vi.stubGlobal('GPUBufferUsage', { STORAGE: 1, COPY_DST: 2, COPY_SRC: 4, UNIFORM: 8 });
   vi.stubGlobal('GPUTextureUsage', { TEXTURE_BINDING: 1, COPY_DST: 2 });
   vi.stubGlobal('GPUShaderStage', { COMPUTE: 1 });
 }
 
-function makeBuffer(label: string): GPUBuffer {
-  return { label, destroy: vi.fn() } as unknown as GPUBuffer;
+function makeBuffer(label: string, size = 64): GPUBuffer {
+  return { label, size, usage: 5, destroy: vi.fn() } as unknown as GPUBuffer;
 }
 function makeView(label: string): GPUTextureView {
   return { label } as unknown as GPUTextureView;
@@ -50,14 +50,16 @@ function makeMockDevice() {
     createBindGroup,
     createSampler: vi.fn(() => ({})),
     createTexture: vi.fn(() => ({ createView: vi.fn(() => ({})), destroy: vi.fn() })),
-    createBuffer: vi.fn((desc: { label?: string; size?: number }) => ({
+    createBuffer: vi.fn((desc: { label?: string; size?: number; usage?: number }) => ({
       label: desc.label,
       size: desc.size,
+      usage: desc.usage,
       getMappedRange: () => new ArrayBuffer(Math.max(desc.size ?? 16, 16)),
       unmap: vi.fn(),
       destroy: vi.fn(),
     })),
     createCommandEncoder: vi.fn(() => ({
+      copyBufferToBuffer: vi.fn(),
       beginComputePass: vi.fn(() => pass),
       finish: vi.fn(() => ({})),
     })),
@@ -77,7 +79,7 @@ function fullOpts(device: GPUDevice): RCDispatchOptsRaw {
     bvhNormalsBuf: makeBuffer('bvh-normals'),
     materialsBuf: makeBuffer('materials'),
     triMaterialIdBuf: makeBuffer('tri-mat-id'),
-    cascadeBufs: [makeBuffer('cascade-0'), makeBuffer('cascade-1')],
+    cascadeBufs: [makeBuffer('cascade-0', 256), makeBuffer('cascade-1', 1024)],
     probeOriginWorld: [0, 0, 0],
     roomSize: [1, 1, 1],
     sunDirection: [0, 1, 0],
@@ -86,8 +88,8 @@ function fullOpts(device: GPUDevice): RCDispatchOptsRaw {
     bvhMode: 'tlas',
     tlasNodeCount: 1,
     tlasNodesBuf: makeBuffer('tlas-nodes'),
-    tlasInstanceIndicesBuf: makeBuffer('tlas-inst'),
-    tlasBlasRootsBuf: makeBuffer('tlas-blas'),
+    tlasInstanceIndicesBuf: makeBuffer('tlas-inst', 4),
+    tlasBlasRootsBuf: makeBuffer('tlas-blas', 4),
     tlasInstanceWorldToLocalBuf: makeBuffer('tlas-w2l'),
     tlasInstanceLocalToWorldBuf: makeBuffer('tlas-l2w'),
     envTextureView: makeView('env'),
@@ -96,21 +98,29 @@ function fullOpts(device: GPUDevice): RCDispatchOptsRaw {
     materialMapMetaTextureView: makeView('meta'),
     bvhTangentTextureView: makeView('tangent'),
     bvhVertexColorTextureView: makeView('vcolor'),
-    emittersBuf: makeBuffer('emitters'),
-    lightsBuf: makeBuffer('lights'),
+    emittersBuf: makeBuffer('emitters', 160),
+    emittersOffset: 0,
+    emittersSize: 80,
+    lightsBuf: makeBuffer('lights', 16),
   };
 }
 
 // For each binding field: a mutation that produces a DIFFERENT value.
 const MUTATIONS: Array<[string, (o: RCDispatchOptsRaw) => Partial<RCDispatchOptsRaw>]> = [
-  ['bvhMode', () => ({ bvhMode: 'merged' })],
+  ['bvhMode', () => ({
+    bvhMode: 'merged',
+    tlasNodeCount: 0,
+    tlasNodesBuf: undefined,
+    tlasInstanceIndicesBuf: undefined,
+    tlasBlasRootsBuf: undefined,
+    tlasInstanceWorldToLocalBuf: undefined,
+    tlasInstanceLocalToWorldBuf: undefined,
+  } as unknown as Partial<RCDispatchOptsRaw>)],
   ['bvhNodesBuf', () => ({ bvhNodesBuf: makeBuffer('bvh-nodes-b') })],
   ['bvhIndicesBuf', () => ({ bvhIndicesBuf: makeBuffer('bvh-indices-b') })],
   ['bvhPositionsBuf', () => ({ bvhPositionsBuf: makeBuffer('bvh-positions-b') })],
   ['bvhNormalsBuf', () => ({ bvhNormalsBuf: makeBuffer('bvh-normals-b') })],
-  ['materialsBuf', () => ({ materialsBuf: makeBuffer('materials-b') })],
-  ['triMaterialIdBuf', () => ({ triMaterialIdBuf: makeBuffer('tri-mat-id-b') })],
-  ['cascadeBufs', () => ({ cascadeBufs: [makeBuffer('cascade-0b'), makeBuffer('cascade-1b')] })],
+  ['cascadeBufs', () => ({ cascadeBufs: [makeBuffer('cascade-0b', 256), makeBuffer('cascade-1b', 1024)] })],
   ['probeOriginWorld', () => ({ probeOriginWorld: [9, 0, 0] })],
   ['roomSize', () => ({ roomSize: [9, 1, 1] })],
   ['envTextureView', () => ({ envTextureView: makeView('env-b') })],
@@ -119,13 +129,22 @@ const MUTATIONS: Array<[string, (o: RCDispatchOptsRaw) => Partial<RCDispatchOpts
   ['materialMapMetaTextureView', () => ({ materialMapMetaTextureView: makeView('meta-b') })],
   ['bvhTangentTextureView', () => ({ bvhTangentTextureView: makeView('tangent-b') })],
   ['bvhVertexColorTextureView', () => ({ bvhVertexColorTextureView: makeView('vcolor-b') })],
-  ['tlasNodesBuf', () => ({ tlasNodesBuf: makeBuffer('tlas-nodes-b') })],
-  ['tlasInstanceIndicesBuf', () => ({ tlasInstanceIndicesBuf: makeBuffer('tlas-inst-b') })],
-  ['tlasBlasRootsBuf', () => ({ tlasBlasRootsBuf: makeBuffer('tlas-blas-b') })],
-  ['tlasInstanceWorldToLocalBuf', () => ({ tlasInstanceWorldToLocalBuf: makeBuffer('tlas-w2l-b') })],
-  ['tlasInstanceLocalToWorldBuf', () => ({ tlasInstanceLocalToWorldBuf: makeBuffer('tlas-l2w-b') })],
-  ['emittersBuf', () => ({ emittersBuf: makeBuffer('emitters-b') })],
-  ['lightsBuf', () => ({ lightsBuf: makeBuffer('lights-b') })],
+  ['emittersBuf', () => ({ emittersBuf: makeBuffer('emitters-b', 160) })],
+  ['emittersOffset', () => ({ emittersOffset: 80 })],
+  ['emittersSize', () => ({ emittersSize: 160 })],
+  ['emitterDataOffset', () => ({ emitterDataOffset: 4 })],
+  ['emitterAliasOffset', () => ({ emitterAliasOffset: 4 })],
+  ['lightsBuf', () => ({ lightsBuf: makeBuffer('lights-b', 16) })],
+  ['lightsOffset', () => ({
+    lightsBuf: makeBuffer('lights-offset', 32),
+    lightsOffset: 16,
+    lightsSize: 16,
+  })],
+  ['lightsSize', () => ({
+    lightsBuf: makeBuffer('lights-size', 176),
+    lightsSize: 176,
+    lightCount: 2,
+  })],
 ];
 
 describe('binding-signature registry behavior', () => {

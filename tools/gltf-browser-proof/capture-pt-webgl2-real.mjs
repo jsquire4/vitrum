@@ -21,7 +21,8 @@ const MANIFEST_PATH = 'tools/reference-renders/gltf-real-browser-pt-webgl2/manif
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(scriptDir, '../..');
 const exampleDir = resolve(repoRoot, 'examples/gltf-viewer');
-const updateGolden = process.argv.includes('--update-golden') || process.argv.includes('--update-goldens');
+const updateGolden =
+  process.argv.includes('--update-golden') || process.argv.includes('--update-goldens');
 const selectedAssetIds = readMultiFlag('--asset');
 const width = Number(process.env.VITRUM_WIDTH ?? '64');
 const height = Number(process.env.VITRUM_HEIGHT ?? '64');
@@ -32,9 +33,10 @@ const screenshotTimeoutMs = Number(process.env.VITRUM_SCREENSHOT_TIMEOUT_MS ?? '
 const dataUrlTimeoutMs = Number(process.env.VITRUM_DATA_URL_TIMEOUT_MS ?? '15000');
 const statusPath = resolveStatusPath(process.env.VITRUM_GLTF_BROWSER_STATUS_PATH);
 const browserExtraArgs = parseEnvArgs(process.env.VITRUM_CHROMIUM_EXTRA_ARGS);
-const pauseBeforeEngineCapture = process.env.VITRUM_PAUSE_BEFORE_CAPTURE == null
-  ? true
-  : parseBooleanEnv(process.env.VITRUM_PAUSE_BEFORE_CAPTURE);
+const pauseBeforeEngineCapture =
+  process.env.VITRUM_PAUSE_BEFORE_CAPTURE == null
+    ? true
+    : parseBooleanEnv(process.env.VITRUM_PAUSE_BEFORE_CAPTURE);
 const engineCaptureMode = parseEngineCaptureMode(process.env.VITRUM_ENGINE_CAPTURE_MODE);
 const DEFAULT_GOLDEN_THRESHOLDS = REAL_GLTF_GOLDEN_THRESHOLDS;
 // Prevent browser readback failures from becoming white/black "successful" goldens.
@@ -43,13 +45,14 @@ const structureThresholds = {
   minUniqueColorCount: 16,
   minNonDominantFraction: 0.05,
 };
-// Harness-only per-asset fields (golden path, hook + texture expectations) keyed
+// Harness-only per-asset fields (golden path, decoder + texture expectations) keyed
 // by the shared manifest id. assetId / kind / requiredExtensions are sourced from
 // tools/gltf-real-asset-sweep/assetManifest.mjs (REAL_GLTF_ASSETS) so those rows
 // stop drifting from the sweep/proof lanes. Checkers keep their own pins.
 const BROWSER_ASSET_HARNESS_FIELDS = {
   'box-textured-glb': {
-    goldenPath: 'tools/reference-renders/gltf-real-browser-pt-webgl2/pt-webgl2-gltf-real-box-textured.png',
+    goldenPath:
+      'tools/reference-renders/gltf-real-browser-pt-webgl2/pt-webgl2-gltf-real-box-textured.png',
     minTextures: 1,
     requiredHooks: [],
   },
@@ -59,7 +62,8 @@ const BROWSER_ASSET_HARNESS_FIELDS = {
     requiredHooks: ['draco'],
   },
   'meshopt-cube-real': {
-    goldenPath: 'tools/reference-renders/gltf-real-browser-pt-webgl2/pt-webgl2-gltf-real-meshopt.png',
+    goldenPath:
+      'tools/reference-renders/gltf-real-browser-pt-webgl2/pt-webgl2-gltf-real-meshopt.png',
     minTextures: 0,
     requiredHooks: ['meshopt'],
   },
@@ -104,8 +108,12 @@ const server = spawn(
 );
 
 let serverLog = '';
-server.stdout.on('data', (chunk) => { serverLog += chunk.toString(); });
-server.stderr.on('data', (chunk) => { serverLog += chunk.toString(); });
+server.stdout.on('data', (chunk) => {
+  serverLog += chunk.toString();
+});
+server.stderr.on('data', (chunk) => {
+  serverLog += chunk.toString();
+});
 
 let finalExitCode = 0;
 try {
@@ -162,12 +170,20 @@ function readMultiFlag(name) {
     if (arg === name && process.argv[i + 1]) values.push(process.argv[i + 1]);
     if (arg?.startsWith(`${name}=`)) values.push(arg.slice(name.length + 1));
   }
-  return values.flatMap((value) => value.split(',').map((item) => item.trim()).filter(Boolean));
+  return values.flatMap((value) =>
+    value
+      .split(',')
+      .map((item) => item.trim())
+      .filter(Boolean),
+  );
 }
 
 function parseEnvArgs(rawValue) {
   if (rawValue == null || rawValue.trim().length === 0) return [];
-  return rawValue.split(/[\s,]+/u).map((arg) => arg.trim()).filter(Boolean);
+  return rawValue
+    .split(/[\s,]+/u)
+    .map((arg) => arg.trim())
+    .filter(Boolean);
 }
 
 function parseBooleanEnv(rawValue) {
@@ -177,12 +193,15 @@ function parseBooleanEnv(rawValue) {
 }
 
 function parseEngineCaptureMode(rawValue) {
-  const normalized = String(rawValue ?? 'engine-first').trim().toLowerCase();
+  const normalized = String(rawValue ?? 'engine-first')
+    .trim()
+    .toLowerCase();
   if (normalized === 'first' || normalized === 'engine-first') return 'engine-first';
   if (normalized === 'fallback' || normalized === 'engine-fallback') return 'engine-fallback';
   if (normalized === 'canvas-only' || normalized === 'canvas-only-no-engine') return 'canvas-only';
   if (normalized === 'canvas-first' || normalized === 'browser-first') return 'canvas-first';
-  if (normalized === 'off' || normalized === 'disabled' || normalized === 'none') return 'canvas-only';
+  if (normalized === 'off' || normalized === 'disabled' || normalized === 'none')
+    return 'canvas-only';
   return 'canvas-first';
 }
 
@@ -195,11 +214,7 @@ async function preflightBrowserReadbackProbe() {
     const { chromium } = await import('playwright');
     browser = await chromium.launch({
       headless: true,
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        ...browserExtraArgs,
-      ],
+      args: ['--no-sandbox', '--disable-setuid-sandbox', ...browserExtraArgs],
     });
     const browserVersion = typeof browser.version === 'function' ? browser.version() : null;
     activeBrowser = browser;
@@ -225,8 +240,10 @@ async function preflightBrowserReadbackProbe() {
           };
         }
         const debugInfo = gl.getExtension('WEBGL_debug_renderer_info');
-        const renderer = debugInfo == null ? null : String(gl.getParameter(debugInfo.UNMASKED_RENDERER_WEBGL));
-        const vendor = debugInfo == null ? null : String(gl.getParameter(debugInfo.UNMASKED_VENDOR_WEBGL));
+        const renderer =
+          debugInfo == null ? null : String(gl.getParameter(debugInfo.UNMASKED_RENDERER_WEBGL));
+        const vendor =
+          debugInfo == null ? null : String(gl.getParameter(debugInfo.UNMASKED_VENDOR_WEBGL));
         const extensions = gl.getSupportedExtensions() ?? [];
         gl.viewport(0, 0, 2, 2);
         gl.clearColor(0.25, 0.5, 0.75, 1.0);
@@ -246,7 +263,12 @@ async function preflightBrowserReadbackProbe() {
             prefix: url.slice(0, 22),
           };
         } catch (error) {
-          dataUrl = { status: 'FAIL', length: 0, prefix: '', error: String(error?.message ?? error) };
+          dataUrl = {
+            status: 'FAIL',
+            length: 0,
+            prefix: '',
+            error: String(error?.message ?? error),
+          };
         }
         let floatReadback = { status: 'SKIPPED', reason: 'EXT_color_buffer_float-unavailable' };
         if (gl.getExtension('EXT_color_buffer_float') != null) {
@@ -350,19 +372,31 @@ async function capture(asset) {
   captureStep = 'launch-browser';
   const browser = await chromium.launch({
     headless: true,
-    args: [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      ...browserExtraArgs,
-    ],
+    args: ['--no-sandbox', '--disable-setuid-sandbox', ...browserExtraArgs],
   });
   activeBrowser = browser;
   try {
     captureStep = 'new-page';
     const page = await browser.newPage({ viewport: { width, height } });
     const consoleLines = [];
-    page.on('console', (msg) => consoleLines.push(`${msg.type()}: ${msg.text()}`));
-    page.on('pageerror', (err) => consoleLines.push(`pageerror: ${String(err)}`));
+    const consoleErrors = [];
+    const pageErrors = [];
+    const decoderResponses = [];
+    page.on('console', (msg) => {
+      const line = `${msg.type()}: ${msg.text()}`;
+      consoleLines.push(line);
+      if (msg.type() === 'error') consoleErrors.push(line);
+    });
+    page.on('pageerror', (err) => {
+      const line = `pageerror: ${String(err?.stack ?? err)}`;
+      consoleLines.push(line);
+      pageErrors.push(line);
+    });
+    page.on('response', (response) => {
+      if (isCompressionDecoderResponse(response.url())) {
+        decoderResponses.push({ url: response.url(), status: response.status() });
+      }
+    });
     const url = new URL(`http://127.0.0.1:${port}/`);
     url.searchParams.set('vitrumGltfAsset', asset.assetId);
     url.searchParams.set('vitrumBackend', 'pt-webgl2');
@@ -371,11 +405,16 @@ async function capture(asset) {
     captureStep = 'goto';
     await page.goto(url.toString(), { waitUntil: 'domcontentloaded', timeout: timeoutMs });
     captureStep = 'wait-for-capture-ready';
-    const ready = await page.waitForFunction(
-      () => globalThis.VITRUM_CAPTURE_READY === true || globalThis.VITRUM_CAPTURE_ERROR != null,
-      null,
-      { timeout: timeoutMs },
-    ).then(() => true, () => false);
+    const ready = await page
+      .waitForFunction(
+        () => globalThis.VITRUM_CAPTURE_READY === true || globalThis.VITRUM_CAPTURE_ERROR != null,
+        null,
+        { timeout: timeoutMs },
+      )
+      .then(
+        () => true,
+        () => false,
+      );
     captureStep = 'read-telemetry';
     const telemetry = await page.evaluate(() => ({
       ready: globalThis.VITRUM_CAPTURE_READY === true,
@@ -440,9 +479,12 @@ async function capture(asset) {
     const pass =
       summarizedTelemetry?.backend === 'pt-webgl2' &&
       summarizedTelemetry?.assetId === asset.assetId &&
+      (summarizedTelemetry?.primitiveCount ?? 0) > 0 &&
       summarizedTelemetry?.realAssetReady === true &&
       requiredExtensionsPresent(asset, summarizedTelemetry) &&
-      requiredHooksPresent(asset, summarizedTelemetry) &&
+      requiredCompressionDecodersPresent(asset, summarizedTelemetry, decoderResponses) &&
+      consoleErrors.length === 0 &&
+      pageErrors.length === 0 &&
       luminance > 0.005 &&
       captureLooksInformative(structure) &&
       compare.pass === true;
@@ -465,6 +507,7 @@ async function capture(asset) {
       structure,
       pageDiagnostics,
       telemetry: summarizedTelemetry,
+      browserCompressionDecoderResponses: decoderResponses,
       golden: compare,
       console: consoleLines.slice(-80),
     };
@@ -482,9 +525,8 @@ async function captureCanvasPng(page) {
   if (engineCaptureMode === 'engine-first') {
     try {
       captureStep = 'engine-captureFrame-output';
-      return await captureAttempt(
-        'engine-captureFrame-output',
-        (attempt) => captureEngineFramePng(page, timeout, attempt),
+      return await captureAttempt('engine-captureFrame-output', (attempt) =>
+        captureEngineFramePng(page, timeout, attempt),
       );
     } catch (error) {
       engineError = error;
@@ -508,9 +550,12 @@ async function captureCanvasPng(page) {
     let clipError = null;
     try {
       captureStep = 'page-canvas-clip-screenshot';
-      return await captureAttempt(
-        'page-canvas-clip-screenshot',
-        () => withTimeout(pageCanvasClipScreenshot(page, timeout), timeout + 1000, 'page clipped screenshot timed out'),
+      return await captureAttempt('page-canvas-clip-screenshot', () =>
+        withTimeout(
+          pageCanvasClipScreenshot(page, timeout),
+          timeout + 1000,
+          'page clipped screenshot timed out',
+        ),
       );
     } catch (error) {
       clipError = error;
@@ -519,9 +564,12 @@ async function captureCanvasPng(page) {
     let screenshotError = null;
     try {
       captureStep = 'canvas-screenshot';
-      return await captureAttempt(
-        'playwright-screenshot',
-        () => withTimeout(canvas.screenshot({ type: 'png', timeout }), timeout + 1000, 'canvas element screenshot timed out'),
+      return await captureAttempt('playwright-screenshot', () =>
+        withTimeout(
+          canvas.screenshot({ type: 'png', timeout }),
+          timeout + 1000,
+          'canvas element screenshot timed out',
+        ),
       );
     } catch (error) {
       screenshotError = error;
@@ -530,9 +578,8 @@ async function captureCanvasPng(page) {
     if (engineCaptureMode === 'engine-fallback') {
       try {
         captureStep = 'engine-captureFrame-output';
-        return await captureAttempt(
-          'engine-captureFrame-output',
-          (attempt) => captureEngineFramePng(page, timeout, attempt),
+        return await captureAttempt('engine-captureFrame-output', (attempt) =>
+          captureEngineFramePng(page, timeout, attempt),
         );
       } catch (fallbackEngineError) {
         engineError = fallbackEngineError;
@@ -540,7 +587,9 @@ async function captureCanvasPng(page) {
     }
 
     captureStep = 'canvas-data-url';
-    return await captureAttempt('canvas-data-url', () => captureCanvasDataUrlPng(page, engineError, screenshotError, clipError));
+    return await captureAttempt('canvas-data-url', () =>
+      captureCanvasDataUrlPng(page, engineError, screenshotError, clipError),
+    );
   } finally {
     if (canvasPaused) await resumeExampleRendering(page, 1000);
   }
@@ -565,14 +614,15 @@ async function snapshotPageDiagnostics(page, phase) {
         canvasHeight: canvas instanceof HTMLCanvasElement ? canvas.height : null,
         canvasClientWidth: canvas instanceof HTMLCanvasElement ? canvas.clientWidth : null,
         canvasClientHeight: canvas instanceof HTMLCanvasElement ? canvas.clientHeight : null,
-        canvasRect: rect == null
-          ? null
-          : {
-              x: rect.x,
-              y: rect.y,
-              width: rect.width,
-              height: rect.height,
-            },
+        canvasRect:
+          rect == null
+            ? null
+            : {
+                x: rect.x,
+                y: rect.y,
+                width: rect.width,
+                height: rect.height,
+              },
         devicePixelRatio: globalThis.devicePixelRatio ?? null,
       };
     }, phase);
@@ -640,7 +690,8 @@ async function captureEngineFramePng(page, timeout, attempt = null) {
   }
   if (pauseBeforeEngineCapture) await pauseExampleRendering(page, timeout);
   if (attempt != null) {
-    attempt.pausedAtCaptureStart = await page.evaluate(() => globalThis.VITRUM_CAPTURE_PAUSED === true)
+    attempt.pausedAtCaptureStart = await page
+      .evaluate(() => globalThis.VITRUM_CAPTURE_PAUSED === true)
       .catch(() => false);
   }
   let frame;
@@ -659,7 +710,8 @@ async function captureEngineFramePng(page, timeout, attempt = null) {
   } finally {
     if (pauseBeforeEngineCapture) await resumeExampleRendering(page, 1000);
   }
-  if (frame == null || typeof frame !== 'object') throw new Error('engine captureFrame returned no frame');
+  if (frame == null || typeof frame !== 'object')
+    throw new Error('engine captureFrame returned no frame');
   const width = Number(frame.width);
   const height = Number(frame.height);
   const rgba = frame.rgba;
@@ -667,7 +719,9 @@ async function captureEngineFramePng(page, timeout, attempt = null) {
     throw new Error(`engine captureFrame returned invalid dimensions ${width}x${height}`);
   }
   if (!Array.isArray(rgba) || rgba.length !== width * height * 4) {
-    throw new Error(`engine captureFrame returned invalid rgba payload length ${Array.isArray(rgba) ? rgba.length : typeof rgba}`);
+    throw new Error(
+      `engine captureFrame returned invalid rgba payload length ${Array.isArray(rgba) ? rgba.length : typeof rgba}`,
+    );
   }
   const png = new PNG({ width, height });
   for (let i = 0; i < rgba.length; i += 1) {
@@ -721,15 +775,18 @@ async function captureCanvasDataUrlPng(page, engineError, screenshotError, clipE
     dataUrlTimeout,
     'canvas PNG data URL fallback timed out',
   ).catch((fallbackError) => {
-    const enginePart = engineError == null
-      ? 'engine captureFrame fallback was not attempted'
-      : `engine captureFrame fallback failed (${engineError instanceof Error ? engineError.message : String(engineError)})`;
-    const screenshotPart = screenshotError == null
-      ? 'Playwright canvas screenshot was not attempted'
-      : `Playwright canvas screenshot failed (${screenshotError instanceof Error ? screenshotError.message : String(screenshotError)})`;
-    const clipPart = clipError == null
-      ? 'page clipped screenshot was not attempted'
-      : `page clipped screenshot failed (${clipError instanceof Error ? clipError.message : String(clipError)})`;
+    const enginePart =
+      engineError == null
+        ? 'engine captureFrame fallback was not attempted'
+        : `engine captureFrame fallback failed (${engineError instanceof Error ? engineError.message : String(engineError)})`;
+    const screenshotPart =
+      screenshotError == null
+        ? 'Playwright canvas screenshot was not attempted'
+        : `Playwright canvas screenshot failed (${screenshotError instanceof Error ? screenshotError.message : String(screenshotError)})`;
+    const clipPart =
+      clipError == null
+        ? 'page clipped screenshot was not attempted'
+        : `page clipped screenshot failed (${clipError instanceof Error ? clipError.message : String(clipError)})`;
     throw new Error(
       `${enginePart}; ` +
         `${screenshotPart}; ` +
@@ -752,7 +809,7 @@ function summarizeTelemetry(telemetry) {
     primitiveCount: telemetry.primitiveCount,
     extensionsUsed: telemetry.extensionsUsed ?? [],
     extensionsRequired: telemetry.extensionsRequired ?? [],
-    browserDecodeHooks: telemetry.browserDecodeHooks ?? {},
+    browserCompressionDecoders: telemetry.browserCompressionDecoders ?? null,
     textureDecodeReport: {
       mapCount: telemetry.textureDecodeReport?.mapCount ?? 0,
       uniqueHandleCount: telemetry.textureDecodeReport?.uniqueHandleCount ?? 0,
@@ -768,12 +825,41 @@ function summarizeTelemetry(telemetry) {
 
 function requiredExtensionsPresent(asset, telemetry) {
   const used = telemetry?.extensionsUsed ?? [];
-  return asset.requiredExtensions.every((ext) => used.includes(ext));
+  const required = telemetry?.extensionsRequired ?? [];
+  return asset.requiredExtensions.every((ext) => used.includes(ext) && required.includes(ext));
 }
 
-function requiredHooksPresent(asset, telemetry) {
-  const hooks = telemetry?.browserDecodeHooks ?? {};
-  return asset.requiredHooks.every((hook) => hooks[hook] === true);
+function requiredCompressionDecodersPresent(asset, telemetry, responses) {
+  const report = telemetry?.browserCompressionDecoders;
+  if (asset.requiredHooks.length === 0) return true;
+  if (report == null || typeof report !== 'object') return false;
+  if (report.policy !== 'builtin') return false;
+  if (!Array.isArray(report.hostOverrides) || report.hostOverrides.length !== 0) return false;
+  if (!Array.isArray(report.requested)) return false;
+  return asset.requiredHooks.every(
+    (decoder) =>
+      report.requested.includes(decoder) &&
+      report[decoder] === 'builtin' &&
+      responses.some(
+        ({ url, status }) => status >= 200 && status < 300 && decoderResponseMatches(decoder, url),
+      ),
+  );
+}
+
+function isCompressionDecoderResponse(url) {
+  return decoderResponseMatches('draco', url) || decoderResponseMatches('meshopt', url);
+}
+
+function decoderResponseMatches(decoder, url) {
+  let pathname;
+  try {
+    pathname = new URL(url).pathname.toLowerCase();
+  } catch {
+    pathname = String(url).toLowerCase();
+  }
+  return decoder === 'draco'
+    ? /draco_decoder[^/]*\.wasm$/u.test(pathname)
+    : /meshopt(?:imizer)?(?:_|\/|-)?decoder[^/]*\.js$/u.test(pathname);
 }
 
 function hostBlockedStatus(asset, error) {
@@ -801,22 +887,26 @@ function hostBlockedStatus(asset, error) {
 }
 
 function classifyHostBlock(error, attempts) {
-  const failedAttempts = attempts.filter((attempt) => attempt.status === 'failed' || attempt.status === 'started');
+  const failedAttempts = attempts.filter(
+    (attempt) => attempt.status === 'failed' || attempt.status === 'started',
+  );
   const methods = Array.from(new Set(failedAttempts.map((attempt) => attempt.method)));
   const fragments = [
     String(error?.message ?? error ?? ''),
-    ...failedAttempts.map((attempt) => `${attempt.method}: ${attempt.error ?? ''} ${attempt.hostBlockHint ?? ''}`),
+    ...failedAttempts.map(
+      (attempt) => `${attempt.method}: ${attempt.error ?? ''} ${attempt.hostBlockHint ?? ''}`,
+    ),
   ].join('\n');
-  const hasEngineReadback = failedAttempts.some((attempt) =>
-    attempt.method === 'engine-captureFrame-output' &&
-    (
-      attempt.hostBlockHint === 'engine-readback' ||
-      String(attempt.error ?? '').includes('engine captureFrame fallback timed out')
-    )
+  const hasEngineReadback = failedAttempts.some(
+    (attempt) =>
+      attempt.method === 'engine-captureFrame-output' &&
+      (attempt.hostBlockHint === 'engine-readback' ||
+        String(attempt.error ?? '').includes('engine captureFrame fallback timed out')),
   );
-  const hasCanvasScreenshot = failedAttempts.some((attempt) =>
-    attempt.method === 'playwright-screenshot' ||
-    attempt.method === 'page-canvas-clip-screenshot'
+  const hasCanvasScreenshot = failedAttempts.some(
+    (attempt) =>
+      attempt.method === 'playwright-screenshot' ||
+      attempt.method === 'page-canvas-clip-screenshot',
   );
   const hasCanvasDataUrl = failedAttempts.some((attempt) => attempt.method === 'canvas-data-url');
   const timedOut = /timed out|Timeout/i.test(fragments);
@@ -825,21 +915,24 @@ function classifyHostBlock(error, attempts) {
     return {
       class: 'engine-readback-timeout',
       methods,
-      reason: 'pt-webgl2 engine.captureFrame readPixels timed out before browser fallback could run safely',
+      reason:
+        'pt-webgl2 engine.captureFrame readPixels timed out before browser fallback could run safely',
     };
   }
   if (hasEngineReadback && (hasCanvasScreenshot || hasCanvasDataUrl)) {
     return {
       class: 'multi-readback-timeout',
       methods,
-      reason: 'engine captureFrame and browser canvas readback paths did not return pixels on this host',
+      reason:
+        'engine captureFrame and browser canvas readback paths did not return pixels on this host',
     };
   }
   if ((hasCanvasScreenshot || hasCanvasDataUrl) && timedOut) {
     return {
       class: 'browser-canvas-readback-timeout',
       methods,
-      reason: 'browser canvas screenshot/data-url readback timed out after the real glTF page became capture-ready',
+      reason:
+        'browser canvas screenshot/data-url readback timed out after the real glTF page became capture-ready',
     };
   }
   return {
@@ -855,13 +948,17 @@ function snapshotCaptureAttempts() {
 
 function summarize(results) {
   const pass = results.every((result) => result.verdict === 'PASS');
-  const hostBlocked = results.every((result) => result.verdict === 'PASS' || result.verdict === 'HOST-BLOCKED');
-  const hostBlockClasses = Array.from(new Set(
-    results
-      .filter((result) => result.verdict === 'HOST-BLOCKED')
-      .map((result) => result.hostBlockClass)
-      .filter(Boolean),
-  ));
+  const hostBlocked = results.every(
+    (result) => result.verdict === 'PASS' || result.verdict === 'HOST-BLOCKED',
+  );
+  const hostBlockClasses = Array.from(
+    new Set(
+      results
+        .filter((result) => result.verdict === 'HOST-BLOCKED')
+        .map((result) => result.hostBlockClass)
+        .filter(Boolean),
+    ),
+  );
   return {
     generatedAt: new Date().toISOString(),
     harness: 'gltf-browser-proof:pt-webgl2-real',
@@ -878,13 +975,26 @@ function summarize(results) {
 async function compareOrUpdate(pngBytes, png, goldenPath, thresholds) {
   if (updateGolden) {
     await writeFile(goldenPath, pngBytes);
-    return { pass: true, updated: true, path: relative(goldenPath), rmse: 0, meanAbs: 0, maxAbs: 0, thresholds };
+    return {
+      pass: true,
+      updated: true,
+      path: relative(goldenPath),
+      rmse: 0,
+      meanAbs: 0,
+      maxAbs: 0,
+      thresholds,
+    };
   }
   let baseline;
   try {
     baseline = PNG.sync.read(await readFile(goldenPath));
   } catch (error) {
-    return { pass: false, path: relative(goldenPath), error: `missing/unreadable golden PNG: ${error.message}`, thresholds };
+    return {
+      pass: false,
+      path: relative(goldenPath),
+      error: `missing/unreadable golden PNG: ${error.message}`,
+      thresholds,
+    };
   }
   if (baseline.width !== png.width || baseline.height !== png.height) {
     return {
@@ -896,7 +1006,10 @@ async function compareOrUpdate(pngBytes, png, goldenPath, thresholds) {
   }
   const metrics = comparePixels(png.data, baseline.data);
   return {
-    pass: metrics.rmse <= thresholds.maxRmse && metrics.meanAbs <= thresholds.maxMeanAbs && metrics.maxAbs <= thresholds.maxAbs,
+    pass:
+      metrics.rmse <= thresholds.maxRmse &&
+      metrics.meanAbs <= thresholds.maxMeanAbs &&
+      metrics.maxAbs <= thresholds.maxAbs,
     path: relative(goldenPath),
     ...metrics,
     thresholds,
@@ -906,7 +1019,8 @@ async function compareOrUpdate(pngBytes, png, goldenPath, thresholds) {
 async function waitForServer(serverPort, timeout) {
   const deadline = Date.now() + timeout;
   while (Date.now() < deadline) {
-    if (server.exitCode != null) throw new Error(`vite exited early with code ${server.exitCode}: ${serverLog}`);
+    if (server.exitCode != null)
+      throw new Error(`vite exited early with code ${server.exitCode}: ${serverLog}`);
     try {
       const response = await fetch(`http://127.0.0.1:${serverPort}/`);
       if (response.ok) return;
@@ -977,10 +1091,12 @@ async function buildStatusProvenance() {
     captureHarnessSha256: await sha256RepoPath(CAPTURE_HARNESS_PATH),
     manifestPath: MANIFEST_PATH,
     manifestSha256: await sha256RepoPath(MANIFEST_PATH),
-    goldenFiles: await Promise.all(REAL_BROWSER_ASSETS.map(async (asset) => ({
-      assetId: asset.assetId,
-      ...(await repoFileState(asset.goldenPath)),
-    }))),
+    goldenFiles: await Promise.all(
+      REAL_BROWSER_ASSETS.map(async (asset) => ({
+        assetId: asset.assetId,
+        ...(await repoFileState(asset.goldenPath)),
+      })),
+    ),
   };
 }
 
@@ -1020,7 +1136,8 @@ function comparePixels(candidate, baseline) {
 function meanLuminance(pixels) {
   let sum = 0;
   for (let i = 0; i < pixels.length; i += 4) {
-    sum += 0.2126 * (pixels[i] / 255) + 0.7152 * (pixels[i + 1] / 255) + 0.0722 * (pixels[i + 2] / 255);
+    sum +=
+      0.2126 * (pixels[i] / 255) + 0.7152 * (pixels[i + 1] / 255) + 0.0722 * (pixels[i + 2] / 255);
   }
   return sum / (pixels.length / 4);
 }
@@ -1067,13 +1184,19 @@ function captureLooksInformative(structure) {
 function structureFailureReason(structure) {
   const reasons = [];
   if (structure.lumaRange < structureThresholds.minLumaRange) {
-    reasons.push(`lumaRange ${structure.lumaRange.toFixed(3)} < ${structureThresholds.minLumaRange}`);
+    reasons.push(
+      `lumaRange ${structure.lumaRange.toFixed(3)} < ${structureThresholds.minLumaRange}`,
+    );
   }
   if (structure.uniqueColorCount < structureThresholds.minUniqueColorCount) {
-    reasons.push(`uniqueColorCount ${structure.uniqueColorCount} < ${structureThresholds.minUniqueColorCount}`);
+    reasons.push(
+      `uniqueColorCount ${structure.uniqueColorCount} < ${structureThresholds.minUniqueColorCount}`,
+    );
   }
   if (structure.nonDominantFraction < structureThresholds.minNonDominantFraction) {
-    reasons.push(`nonDominantFraction ${structure.nonDominantFraction.toFixed(4)} < ${structureThresholds.minNonDominantFraction}`);
+    reasons.push(
+      `nonDominantFraction ${structure.nonDominantFraction.toFixed(4)} < ${structureThresholds.minNonDominantFraction}`,
+    );
   }
   return reasons.join('; ');
 }
@@ -1083,7 +1206,8 @@ function relative(path) {
 }
 
 function pngBytesFromDataUrl(dataUrl) {
-  if (typeof dataUrl !== 'string') throw new Error(`canvas PNG data URL must be a string, got ${typeof dataUrl}`);
+  if (typeof dataUrl !== 'string')
+    throw new Error(`canvas PNG data URL must be a string, got ${typeof dataUrl}`);
   const match = /^data:image\/png;base64,(.+)$/i.exec(dataUrl);
   if (match == null) throw new Error('canvas PNG data URL fallback did not return image/png data');
   return Buffer.from(match[1], 'base64');
@@ -1095,6 +1219,7 @@ function floatToByte(value) {
 }
 
 function resolveStatusPath(rawPath) {
-  if (rawPath == null || rawPath.length === 0) return resolve(scriptDir, 'pt-webgl2-real-status.json');
+  if (rawPath == null || rawPath.length === 0)
+    return resolve(scriptDir, 'pt-webgl2-real-status.json');
   return resolve(repoRoot, rawPath);
 }

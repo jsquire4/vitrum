@@ -78,10 +78,10 @@ packages without a build step.
 | `walkaround-hybrid` — NRC | `buildRisGiNrcModule(cfg)` (skipped on adapters with maxBindGroups < 5) |
 | `shared-denoisers` — standalone | temporal accumulation, à-trous variance, SVGF reprojection + variance + 7x7 fallback, BMFR, HDR luminance bilateral, Welford variance |
 
-The `composeWgsl` walkaround-hybrid shaders are transformed by `nagaFix.mjs`
-before compilation.  The transforms handle the naga/wgpu gap around
-`ptr<storage>` function parameters, which are valid in Tint/Dawn but rejected
-by naga.  See comments in `nagaFix.mjs` for the full list of transforms.
+The `composeWgsl` walkaround-hybrid shaders and the walkaround-rc exports are
+compiled exactly as emitted. The gate does not rewrite WGSL for naga. A fatal
+30-shader portability inventory prevents either source drift or a hidden
+validator-specific derivative.
 
 After shader-module compilation, `gate.mjs` creates compute pipelines for every
 named compute entry in the pt-webgpu, shared-denoiser, and walkaround-rc inventory.

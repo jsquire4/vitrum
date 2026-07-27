@@ -109,12 +109,10 @@
  *       lobe is the exact pushforward of `cosineHemisphereSample`. The replay
  *       ratio p_q/p_r for those lobes is GPU-validated (analytic == FD of the
  *       actual replay map) in restir-pt-hybrid-shift-validate.ts.
- *     – smithG1 here is the Schlick-GGX/UE4 approximation k=(roughness+1)²/8 (NOT
- *       the exact Smith Λ), because that is what the engine's sampler+pdf use; the
- *       Jacobian must match the sampler that GENERATED the path, so using the
- *       engine's own approximate G1 is CORRECT for this engine (the Jacobian is a
- *       property of the sampler, not of an idealized BSDF). A different engine with
- *       a different sampler would need its own p_j.
+ *     – smithG1 is the exact isotropic Smith masking term required by the Heitz
+ *       VNDF sampler. Its WGSL is emitted by the same shared rough-dielectric
+ *       oracle as the forward sampler/pdf, so replay cannot silently drift to a
+ *       direct-light approximation.
  *     – The lobe-MIXING (the discrete diffuse/spec/trans partition) is assumed to
  *       be replayed identically across domains (same random stream → same lobe
  *       choice). If a future replay re-rolled the lobe choice from a re-evaluated
@@ -132,6 +130,11 @@
  *   - Heitz 2018, "Sampling the GGX Distribution of Visible Normals," JCGT 7(4) —
  *     the VNDF sampler whose pushforward density IS the replay pdf used here.
  */
+
+import {
+  PT_WEBGPU_MICROFACET_ALPHA_FLOOR,
+  roughDielectricSmithG1Wgsl,
+} from '../../math/roughDielectric.js';
 
 /* NOTE: this module is intentionally self-contained — its WGSL inlines the tiny
  * set of microfacet primitives it needs (so the GPU validator compiles ONE
@@ -167,20 +170,16 @@ fn rptHybrid_luminance(c: vec3f) -> f32 {
   return dot(c, vec3f(0.2126, 0.7152, 0.0722));
 }
 
-// Schlick GGX / UE4 G1 (the engine's smithG1: k = (roughness+1)²/8). The Jacobian
-// MUST use the SAME G1 the engine's sampler+pdf use — the replay pdf is a property
-// of the sampler that generated the path, not of an idealized Smith Λ.
-fn rptHybrid_smithG1(nDotV: f32, roughness: f32) -> f32 {
-  let r = roughness + 1.0;
-  let k = (r * r) * 0.125;
-  return nDotV / max(nDotV * (1.0 - k) + k, 1e-6);
-}
+// Exact isotropic GGX Smith masking, matching the production Heitz VNDF sampler.
+// The replay density must use the sampler's G1, not a direct-light approximation.
+${roughDielectricSmithG1Wgsl('rptHybrid_smithG1')}
 
 // Trowbridge-Reitz / GGX NDF (identical to bsdf.wgsl.ts ggxD).
 fn rptHybrid_ggxD(nDotH: f32, alpha: f32) -> f32 {
   let a2 = alpha * alpha;
-  let d = nDotH * nDotH * (a2 - 1.0) + 1.0;
-  return a2 / max(RPT_PI * d * d, 1e-6);
+  let n2 = clamp(nDotH * nDotH, 0.0, 1.0);
+  let d = (1.0 - n2) + n2 * a2;
+  return a2 / (RPT_PI * d * d);
 }
 
 fn rptHybrid_fresnelSchlick(cosTheta: f32, f0: vec3f) -> vec3f {
@@ -189,6 +188,24 @@ fn rptHybrid_fresnelSchlick(cosTheta: f32, f0: vec3f) -> vec3f {
   let m5 = m2 * m2 * m;
   return f0 + (vec3f(1.0) - f0) * m5;
 }
+fn rptHybrid_frDielectric(cosThetaIInput: f32, etaTOverIInput: f32) -> f32 {
+  var cosThetaI = clamp(cosThetaIInput, -1.0, 1.0);
+  var etaTOverI = max(etaTOverIInput, 1e-4);
+  if (cosThetaI < 0.0) {
+    etaTOverI = 1.0 / etaTOverI;
+    cosThetaI = -cosThetaI;
+  }
+  let sin2ThetaI = max(0.0, 1.0 - cosThetaI * cosThetaI);
+  let sin2ThetaT = sin2ThetaI / (etaTOverI * etaTOverI);
+  if (sin2ThetaT >= 1.0) { return 1.0; }
+  let cosThetaT = sqrt(max(0.0, 1.0 - sin2ThetaT));
+  let rParallel =
+    (etaTOverI * cosThetaI - cosThetaT) / (etaTOverI * cosThetaI + cosThetaT);
+  let rPerpendicular =
+    (cosThetaI - etaTOverI * cosThetaT) / (cosThetaI + etaTOverI * cosThetaT);
+  return 0.5 * (rParallel * rParallel + rPerpendicular * rPerpendicular);
+}
+
 
 // ── (A) reconnection-edge geometry: the destination-cosine half-G + its ratio ──
 // IDENTICAL to restirPtShift.wgsl.ts (re-stated by value; we do not edit that
@@ -212,14 +229,14 @@ fn rptHybridGeomJacobian(xq: vec3f, xr: vec3f, xs: vec3f, ns: vec3f) -> f32 {
   return gTarget / gSource;
 }
 
-// ── (B) replayed-segment BSDF sampling pdf — BYTE-IDENTICAL to brdfDirectionalPdf ─
-// The engine's forward solid-angle sampling density at one replayed bounce: the
-// three-lobe MIS mixture (diffuse cosine + VNDF specular + η² refraction) with the
-// SAME lobe-selection probabilities the sampler partitions on. This is the p_j the
-// random-replay change of variables uses. (Mirrors bsdf.wgsl.ts:40-94 EXACTLY,
-// with the local _-prefixed primitives.)
+// ── (B) replayed-segment BSDF sampling pdf ─────────────────────────────────
+// The finite solid-angle density matches the engine sampler exactly: a
+// transmissive dielectric uses R for VNDF reflection and (1-R)(1-t) for cosine
+// reflection. Its opposite-hemisphere transmission event is delta and therefore
+// has zero finite density. etaTOverI is the actual interface ratio, not a material
+// IOR interpreted without medium state.
 fn rptHybridBsdfReplayPdf(
-  baseColor: vec3f, roughness: f32, metallic: f32, transmission: f32, ior: f32,
+  baseColor: vec3f, roughness: f32, metallic: f32, transmission: f32, etaTOverI: f32,
   normal: vec3f, wo: vec3f, wi: vec3f,
 ) -> f32 {
   let wiDotN = dot(normal, wi);
@@ -228,35 +245,33 @@ fn rptHybridBsdfReplayPdf(
   if (nDotV <= 1e-5) { return 0.0; }
   let h = rptHybrid_safe_normalize(wi + wo);
   let nDotH = max(dot(normal, h), 0.0);
-  let vDotH = max(dot(wo, h), 1e-6);
-  let f0 = mix(vec3f(0.04), baseColor, metallic);
-  let fresnel = rptHybrid_fresnelSchlick(vDotH, f0);
-  let baseSpecProb = clamp(mix(0.04, 0.96, max(rptHybrid_luminance(fresnel), metallic)), 0.04, 0.96);
-  let baseTransProb = clamp(transmission * (1.0 - metallic), 0.0, 0.95);
-  let baseDiffProb = max(0.0, (1.0 - metallic) * (1.0 - transmission));
-  let sumProb = max(baseSpecProb + baseTransProb + baseDiffProb, 1e-4);
-  let specProb = baseSpecProb / sumProb;
-  let transProb = baseTransProb / sumProb;
-  let diffProb = baseDiffProb / sumProb;
-  let sameHemisphere = wiDotN * woDotN > 0.0;
-  if (!sameHemisphere) {
-    // Refraction lobe (opposite hemispheres): cosine on transmitted side · η²
-    // (PBRT Dielectric / Walter 2007 hemisphere Jacobian).
-    let eta = select(ior, 1.0 / max(ior, 1.0), woDotN > 0.0);
-    let nDotT = max(abs(wiDotN), 1e-5);
-    let pdfTransApprox = nDotT * eta * eta * RPT_INV_PI;
-    return max(transProb * pdfTransApprox, 1e-8);
+  var specWeight: f32;
+  var diffWeight: f32;
+  if (transmission > 0.0 && metallic == 0.0) {
+    let fresnelProbability = rptHybrid_frDielectric(abs(nDotV), etaTOverI);
+    specWeight = fresnelProbability;
+    diffWeight =
+      (1.0 - fresnelProbability) * (1.0 - clamp(transmission, 0.0, 1.0));
+  } else {
+    let f0 = mix(vec3f(0.04), baseColor, metallic);
+    let fresnel = rptHybrid_fresnelSchlick(nDotV, f0);
+    specWeight =
+      clamp(mix(0.04, 0.96, max(rptHybrid_luminance(fresnel), metallic)), 0.04, 0.96);
+    diffWeight = 1.0 - specWeight;
   }
+  let sameHemisphere = wiDotN * woDotN > 0.0;
+  // The sampled transmission event is a Dirac delta, not a finite density.
+  if (!sameHemisphere) { return 0.0; }
   let nDotL = max(wiDotN, 0.0);
   if (nDotL <= 1e-5) { return 0.0; }
-  let alpha = max(roughness * roughness, 1e-3);
+  let alpha = max(roughness * roughness, ${PT_WEBGPU_MICROFACET_ALPHA_FLOOR});
   let d = rptHybrid_ggxD(nDotH, alpha);
   // VNDF reflection pdf (Heitz 2018 Eq. 17 with the 1/(4·wo·h) reflection Jacobian):
   //   p_VNDF(wi|wo) = D(h)·G1(wo) / (4·N·wo) — matches glossyReflectionSample.
   let g1Wo = rptHybrid_smithG1(nDotV, roughness);
   let pdfSpec = (d * g1Wo) / max(4.0 * nDotV, 1e-6);
   let pdfDiff = nDotL * RPT_INV_PI;
-  return diffProb * pdfDiff + specProb * pdfSpec;
+  return diffWeight * pdfDiff + specWeight * pdfSpec;
 }
 
 // Replay factor for ONE replayed prefix segment: p_BSDF^q / p_BSDF^r (SOURCE pdf in
@@ -267,14 +282,14 @@ fn rptHybridBsdfReplayPdf(
 // unreachable). This is the gradient-domain random-replay shift Jacobian (Kettunen
 // 2015) for one bounce.
 fn rptHybridReplaySegmentJacobian(
-  baseColorQ: vec3f, roughnessQ: f32, metallicQ: f32, transmissionQ: f32, iorQ: f32,
+  baseColorQ: vec3f, roughnessQ: f32, metallicQ: f32, transmissionQ: f32, etaTOverIQ: f32,
   nq: vec3f, woq: vec3f, wiq: vec3f,
-  baseColorR: vec3f, roughnessR: f32, metallicR: f32, transmissionR: f32, iorR: f32,
+  baseColorR: vec3f, roughnessR: f32, metallicR: f32, transmissionR: f32, etaTOverIR: f32,
   nr: vec3f, wor: vec3f, wir: vec3f,
 ) -> f32 {
-  let pq = rptHybridBsdfReplayPdf(baseColorQ, roughnessQ, metallicQ, transmissionQ, iorQ, nq, woq, wiq);
+  let pq = rptHybridBsdfReplayPdf(baseColorQ, roughnessQ, metallicQ, transmissionQ, etaTOverIQ, nq, woq, wiq);
   if (pq <= 0.0) { return 0.0; }
-  let pr = rptHybridBsdfReplayPdf(baseColorR, roughnessR, metallicR, transmissionR, iorR, nr, wor, wir);
+  let pr = rptHybridBsdfReplayPdf(baseColorR, roughnessR, metallicR, transmissionR, etaTOverIR, nr, wor, wir);
   if (pr <= 0.0) { return 0.0; }
   return pq / pr;
 }
@@ -289,16 +304,16 @@ fn rptHybridShiftJacobian(
   // reconnection edge: last pre-reconnection vertices + shared x_s/n_s
   xq: vec3f, xr: vec3f, xs: vec3f, ns: vec3f,
   // the single replayed bounce in each domain (at xq / xr)
-  baseColorQ: vec3f, roughnessQ: f32, metallicQ: f32, transmissionQ: f32, iorQ: f32,
+  baseColorQ: vec3f, roughnessQ: f32, metallicQ: f32, transmissionQ: f32, etaTOverIQ: f32,
   nq: vec3f, woq: vec3f, wiq: vec3f,
-  baseColorR: vec3f, roughnessR: f32, metallicR: f32, transmissionR: f32, iorR: f32,
+  baseColorR: vec3f, roughnessR: f32, metallicR: f32, transmissionR: f32, etaTOverIR: f32,
   nr: vec3f, wor: vec3f, wir: vec3f,
 ) -> f32 {
   let jGeom = rptHybridGeomJacobian(xq, xr, xs, ns);
   if (jGeom <= 0.0) { return 0.0; }
   let jReplay = rptHybridReplaySegmentJacobian(
-    baseColorQ, roughnessQ, metallicQ, transmissionQ, iorQ, nq, woq, wiq,
-    baseColorR, roughnessR, metallicR, transmissionR, iorR, nr, wor, wir);
+    baseColorQ, roughnessQ, metallicQ, transmissionQ, etaTOverIQ, nq, woq, wiq,
+    baseColorR, roughnessR, metallicR, transmissionR, etaTOverIR, nr, wor, wir);
   if (jReplay <= 0.0) { return 0.0; }
   return jGeom * jReplay;
 }

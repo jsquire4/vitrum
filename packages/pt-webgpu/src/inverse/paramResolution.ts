@@ -7,8 +7,7 @@
  * `@vitrum/core` (`inverse-scaffolding.ts`, `MATERIAL_PARAM_DESCRIPTORS` /
  * `EMITTER_PARAM_DESCRIPTORS`) as the single source of truth shared with
  * pt-webgl2. This module re-exports those symbols and adapts the two validators
- * whose signatures carry a per-backend detail: `validateParam` throws on the
- * reserved `texture` kind here (pt-webgpu raises it in the validator) and gates
+ * whose signatures carry a per-backend detail: `validateParam` gates
  * material/emitter fields against the active runtime profile's
  * `BackendSupportMode` — that runtime-profile capability gate is a pt-webgpu-only
  * availability flag the shared table carries but pt-webgl2 leaves unset. Scene
@@ -45,8 +44,8 @@ export {
 
 import type { ParamSlot } from '@vitrum/core/inverse-scaffolding';
 
-/** Validate a resolved parameter for the pt-webgpu runtime: the `texture` kind
- *  is rejected here, and material/emitter fields are gated against the active
+/** Validate a resolved parameter for the pt-webgpu runtime: material/emitter
+ *  fields are gated against the active
  *  runtime profile's support details (a field/emitter kind reported
  *  `unsupported` is not optimizable). */
 export function validateParam(
@@ -58,7 +57,6 @@ export function validateParam(
 ): void {
   sharedValidateParam(scene, param, target, {
     backend: 'pt-webgpu',
-    throwOnTextureKind: true,
     ...(materialSupportDetails != null
       ? { materialSupportDetails: materialSupportDetails }
       : {}),

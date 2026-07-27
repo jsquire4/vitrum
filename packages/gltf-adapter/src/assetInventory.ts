@@ -26,7 +26,18 @@ import {
   gltfPrimitiveKey,
   type GltfSceneReachability,
 } from './sceneScope.js';
-import { resolveGltfMaterialAnimationPointer } from './materialPointerAnimation.js';
+import {
+  gltfAnimationPointerInterpolationError,
+  gltfAnimationPointerOutputAccessorError,
+  gltfAnimationPointerTargetComponentCount,
+  gltfAnimationPointerTargetDefinitionError,
+  gltfAnimationPointerTargetIdentity,
+  gltfAnimationTargetsConflict,
+  gltfNativeAnimationTargetIdentity,
+  isGltfAnimationPointerTargetReachable,
+  resolveGltfAnimationPointer,
+  type GltfAnimationTargetIdentity,
+} from './animationPointer.js';
 import type {
   AnalyzeGltfAssetOptions,
   GltfAnimationFeatureReport,
@@ -74,6 +85,7 @@ const REQUIRED_EXTENSION_SUPPORT = new Set([
   'KHR_materials_variants',
   'KHR_materials_pbrSpecularGlossiness',
   'KHR_animation_pointer',
+  'KHR_node_visibility',
   'KHR_mesh_quantization',
   'KHR_texture_transform',
   'KHR_texture_basisu',
@@ -83,11 +95,7 @@ const REQUIRED_EXTENSION_SUPPORT = new Set([
 ]);
 
 const EXTENSIONS_REQUIRING_HOST_HOOK = new Set([
-  'KHR_draco_mesh_compression',
-  'EXT_meshopt_compression',
-  'KHR_meshopt_compression',
   'KHR_texture_basisu',
-  'EXT_texture_webp',
   'MSFT_texture_dds',
 ]);
 
@@ -145,6 +153,7 @@ export function analyzeGltfAsset(
   const sceneScope = options.sceneIndex === undefined
     ? undefined
     : collectGltfSceneReachability(gltf, options.sceneIndex);
+  validateAssetPrimitiveSemantics(gltf, sceneScope);
   const extensions = analyzeExtensions(gltf, selectedTextureSourceExtensions, sceneScope);
   const resources = analyzeResources(gltf);
   const primitives = analyzePrimitives(gltf, sceneScope);
@@ -237,12 +246,6 @@ function extensionRequiresHostHook(
   sceneScope: GltfSceneReachability | undefined,
 ): boolean {
   if (!EXTENSIONS_REQUIRING_HOST_HOOK.has(ext)) return false;
-  if (ext === 'KHR_draco_mesh_compression') {
-    return dracoCompressionRequiresHostHook(gltf, required.includes(ext), sceneScope);
-  }
-  if (MESHOPT_COMPRESSION_EXTENSIONS.has(ext)) {
-    return meshoptCompressionRequiresHostHook(gltf, required.includes(ext), sceneScope);
-  }
   if (!TEXTURE_SOURCE_EXTENSIONS.has(ext)) return true;
 
   // Required texture-source extensions cannot be safely ignored. Optional
@@ -261,53 +264,6 @@ function extensionRequiresHostHook(
   );
 }
 
-function dracoCompressionRequiresHostHook(
-  gltf: GltfJson,
-  isRequired: boolean,
-  sceneScope: GltfSceneReachability | undefined,
-): boolean {
-  if (isRequired) return true;
-
-  for (const [meshIndex, mesh] of (gltf.meshes ?? []).entries()) {
-    for (const [primitiveIndex, primitive] of mesh.primitives.entries()) {
-      if (sceneScope !== undefined && !sceneScope.primitiveKeys.has(gltfPrimitiveKey(meshIndex, primitiveIndex))) continue;
-      if (primitive.extensions?.KHR_draco_mesh_compression === undefined) continue;
-      if (!dracoPrimitiveHasRealFallback(gltf, primitive)) return true;
-    }
-  }
-
-  return false;
-}
-
-function dracoPrimitiveHasRealFallback(
-  gltf: GltfJson,
-  primitive: NonNullable<NonNullable<GltfJson['meshes']>[number]['primitives']>[number],
-): boolean {
-  const accessorIndices = [
-    ...Object.values(primitive.attributes ?? {}).filter((value): value is number => typeof value === 'number'),
-    ...(primitive.indices !== undefined ? [primitive.indices] : []),
-  ];
-  return accessorIndices.length > 0 &&
-    accessorIndices.every((accessorIndex) => gltf.accessors?.[accessorIndex]?.bufferView !== undefined);
-}
-
-function meshoptCompressionRequiresHostHook(
-  gltf: GltfJson,
-  isRequired: boolean,
-  sceneScope: GltfSceneReachability | undefined,
-): boolean {
-  if (isRequired) return true;
-  const scopedBufferViews = sceneScope?.bufferViewIndices;
-
-  for (const [bufferViewIndex, bufferView] of (gltf.bufferViews ?? []).entries()) {
-    if (scopedBufferViews !== undefined && !scopedBufferViews.has(bufferViewIndex)) continue;
-    if (!hasMeshoptCompressionExtension(bufferView.extensions)) continue;
-    if (!meshoptBufferViewHasRealFallback(gltf, bufferView.buffer)) return true;
-  }
-
-  return false;
-}
-
 function requiredExtensionAppliesToScope(
   ext: string,
   sceneScope: GltfSceneReachability | undefined,
@@ -321,28 +277,9 @@ function requiredExtensionAppliesToScope(
   return !REQUIRED_EXTENSION_SUPPORT.has(ext);
 }
 
-function meshoptBufferViewHasRealFallback(gltf: GltfJson, bufferIndex: number): boolean {
-  const buffer = gltf.buffers?.[bufferIndex];
-  if (!buffer) return false;
-  const meshoptExt = meshoptCompressionExtensionValue(buffer.extensions);
-  if (meshoptExt == null || typeof meshoptExt !== 'object' || Array.isArray(meshoptExt)) {
-    return true;
-  }
-  return (meshoptExt as { readonly fallback?: unknown }).fallback !== true;
-}
-
 function hasMeshoptCompressionExtension(extensions: Record<string, unknown> | undefined): boolean {
   if (!extensions) return false;
   return [...MESHOPT_COMPRESSION_EXTENSIONS].some((name) => extensions[name] !== undefined);
-}
-
-function meshoptCompressionExtensionValue(extensions: Record<string, unknown> | undefined): unknown {
-  if (!extensions) return undefined;
-  for (const name of MESHOPT_COMPRESSION_EXTENSIONS) {
-    const value = extensions[name];
-    if (value !== undefined) return value;
-  }
-  return undefined;
 }
 
 function textureSourceExtensionHasImageSource(value: unknown): boolean {
@@ -364,6 +301,7 @@ function collectTextureSourceExtensionUses(
       const requiredUse = required.includes(extension);
       const selectedUse = selectedTextureSourceExtensions.has(extension);
       const hasBaseSource = texture.source !== undefined;
+      const codecRequiresHostHook = EXTENSIONS_REQUIRING_HOST_HOOK.has(extension);
       uses.push({
         extension,
         textureIndex,
@@ -372,7 +310,7 @@ function collectTextureSourceExtensionUses(
         selected: selectedUse,
         required: requiredUse,
         hasBaseSource,
-        requiresHook: requiredUse || selectedUse || !hasBaseSource,
+        requiresHook: codecRequiresHostHook && (requiredUse || selectedUse || !hasBaseSource),
         ...(gltf.images?.[source]?.mimeType !== undefined ? { mimeType: gltf.images[source].mimeType } : {}),
       });
     }
@@ -404,13 +342,128 @@ function classifyImage(image: GltfImage, index: number): GltfResourceUse {
   return { index, kind: 'external-uri', uri: image.uri, ...mime };
 }
 
-function collectSkinInfluenceSetIndices(attributes: GltfPrimitive['attributes'] | undefined): number[] {
+const PRIMITIVE_ATTRIBUTE_SEMANTICS = new Set(['POSITION', 'NORMAL', 'TANGENT']);
+const MORPH_TARGET_ATTRIBUTE_SEMANTICS = new Set(['POSITION', 'NORMAL', 'TANGENT']);
+const INDEXED_ATTRIBUTE_SEMANTIC_PREFIXES = [
+  'TEXCOORD',
+  'COLOR',
+  'JOINTS',
+  'WEIGHTS',
+] as const;
+
+function parseCanonicalIndexedAttributeSemantic(
+  semantic: string,
+  path: string,
+): {
+  readonly prefix: (typeof INDEXED_ATTRIBUTE_SEMANTIC_PREFIXES)[number];
+  readonly setIndex: number;
+} | undefined {
+  const prefix = INDEXED_ATTRIBUTE_SEMANTIC_PREFIXES.find(
+    (candidate) => semantic === candidate || semantic.startsWith(`${candidate}_`),
+  );
+  if (prefix === undefined) return undefined;
+  const match = new RegExp(`^${prefix}_(\\d+)$`, 'u').exec(semantic);
+  if (match == null) {
+    throw new TypeError(
+      `[vitrum/gltf-adapter] ${path} must use the ` +
+        `${prefix}_<non-negative canonical integer> form.`,
+    );
+  }
+  const setIndex = Number(match[1]);
+  if (!Number.isSafeInteger(setIndex)) {
+    throw new RangeError(
+      `[vitrum/gltf-adapter] ${path} exceeds the supported non-negative ` +
+        'safe-integer semantic range.',
+    );
+  }
+  const canonical = `${prefix}_${setIndex}`;
+  if (semantic !== canonical) {
+    throw new TypeError(
+      `[vitrum/gltf-adapter] ${path} is not canonical; use "${canonical}".`,
+    );
+  }
+  return { prefix, setIndex };
+}
+
+function validatePrimitiveAttributeSemantic(semantic: string, path: string): void {
+  if (
+    PRIMITIVE_ATTRIBUTE_SEMANTICS.has(semantic) ||
+    semantic.startsWith('_') ||
+    parseCanonicalIndexedAttributeSemantic(semantic, path) !== undefined
+  ) {
+    return;
+  }
+  throw new TypeError(
+    `[vitrum/gltf-adapter] ${path} uses unknown non-application primitive ` +
+      `semantic "${semantic}".`,
+  );
+}
+
+function validateMorphTargetAttributeSemantic(semantic: string, path: string): void {
+  if (MORPH_TARGET_ATTRIBUTE_SEMANTICS.has(semantic) || semantic.startsWith('_')) return;
+  const indexed = parseCanonicalIndexedAttributeSemantic(semantic, path);
+  if (indexed?.prefix === 'TEXCOORD' || indexed?.prefix === 'COLOR') return;
+  throw new TypeError(
+    `[vitrum/gltf-adapter] ${path} uses unknown non-application morph-target ` +
+      `semantic "${semantic}".`,
+  );
+}
+
+function validateAssetPrimitiveSemantics(
+  gltf: GltfJson,
+  sceneScope: GltfSceneReachability | undefined,
+): void {
+  for (const [meshIndex, mesh] of (gltf.meshes ?? []).entries()) {
+    for (const [primitiveIndex, primitive] of mesh.primitives.entries()) {
+      if (
+        sceneScope !== undefined &&
+        !sceneScope.primitiveKeys.has(gltfPrimitiveKey(meshIndex, primitiveIndex))
+      ) {
+        continue;
+      }
+      const primitivePath = `meshes[${meshIndex}].primitives[${primitiveIndex}]`;
+      for (const semantic of Object.keys(primitive.attributes ?? {})) {
+        validatePrimitiveAttributeSemantic(
+          semantic,
+          `${primitivePath}.attributes.${semantic}`,
+        );
+      }
+      for (const [targetIndex, target] of (primitive.targets ?? []).entries()) {
+        for (const semantic of Object.keys(target)) {
+          validateMorphTargetAttributeSemantic(
+            semantic,
+            `${primitivePath}.targets[${targetIndex}].${semantic}`,
+          );
+        }
+      }
+    }
+  }
+}
+
+function collectSkinInfluenceSetIndices(
+  attributes: GltfPrimitive['attributes'] | undefined,
+  primitivePath: string,
+): number[] {
   const sets = new Set<number>();
   for (const attrName of Object.keys(attributes ?? {})) {
-    const match = /^(?:JOINTS|WEIGHTS)_([0-9]+)$/.exec(attrName);
+    const match = /^(JOINTS|WEIGHTS)_([0-9]+)$/u.exec(attrName);
     if (!match) continue;
-    const setIndex = Number(match[1]);
-    if (Number.isSafeInteger(setIndex) && setIndex >= 0) sets.add(setIndex);
+    const suffix = match[2]!;
+    const setIndex = Number(suffix);
+    if (!Number.isSafeInteger(setIndex)) {
+      throw new RangeError(
+        `[vitrum/gltf-adapter] ${primitivePath}.attributes.${attrName} ` +
+          'exceeds the supported non-negative safe-integer semantic range.',
+      );
+    }
+    const canonical = `${match[1]}_${setIndex}`;
+    if (attrName !== canonical) {
+      throw new TypeError(
+        `[vitrum/gltf-adapter] ${primitivePath}.attributes.${attrName} is not ` +
+          `canonical; use "${canonical}".`,
+      );
+    }
+    sets.add(setIndex);
   }
   return [...sets].sort((a, b) => a - b);
 }
@@ -433,12 +486,16 @@ function analyzePrimitives(
   let hasMorphTargetTexcoords = false;
   let hasUnsupportedMorphTargetTexcoords = false;
   let hasVertexColors = false;
+  // Retained in the report shape for source compatibility. The scalable core
+  // color contract now preserves every valid COLOR_n stream.
   const ignoredVertexColorSets = new Set<string>();
   let hasUv1 = false;
   let hasBoundSkinAttrs = false;
   let hasInstancing = false;
   let hasInstancedSkinnedOrMorphed = false;
-  let hasCollapsedSkinInfluenceSets = false;
+  // Retained in the report shape for compatibility. The scalable core skin
+  // contract now preserves all complete JOINTS_N/WEIGHTS_N sets.
+  const hasCollapsedSkinInfluenceSets = false;
   let hasIgnoredSkinAttributes = false;
   let hasIncompleteSkinAttributes = false;
   const malformedPrimitives: GltfMalformedPrimitiveIssue[] = [];
@@ -483,7 +540,10 @@ function analyzePrimitives(
         : undefined;
       const meshHasSkinnedNode = meshNodesWithSkin.has(meshIndex);
       const meshHasUnskinnedNode = meshNodesWithoutSkin.has(meshIndex);
-      const skinInfluenceSetIndices = collectSkinInfluenceSetIndices(primitive.attributes);
+      const skinInfluenceSetIndices = collectSkinInfluenceSetIndices(
+        primitive.attributes,
+        primitivePath,
+      );
       for (const [semantic, accessorIndex] of Object.entries(primitive.attributes ?? {})) {
         attributeSemantics.add(semantic);
         if (semantic !== 'POSITION' && accessorIndex !== undefined) {
@@ -509,8 +569,8 @@ function analyzePrimitives(
           hasVertexColors = true;
           addSourcePath(issuePaths, 'vertexColors', `${primitivePath}.attributes.COLOR_0`);
         } else if (/^COLOR_[1-9][0-9]*$/.test(semantic)) {
-          ignoredVertexColorSets.add(semantic);
-          addSourcePath(issuePaths, `ignoredVertexColorSet:${semantic}`, `${primitivePath}.attributes.${semantic}`);
+          hasVertexColors = true;
+          addSourcePath(issuePaths, 'vertexColors', `${primitivePath}.attributes.${semantic}`);
         }
         if (semantic === 'TEXCOORD_1') hasUv1 = true;
       }
@@ -525,19 +585,7 @@ function analyzePrimitives(
             if (setIndex === 0) continue;
             const hasSetJoints = primitive.attributes?.[`JOINTS_${setIndex}`] !== undefined;
             const hasSetWeights = primitive.attributes?.[`WEIGHTS_${setIndex}`] !== undefined;
-            if (hasSetJoints && hasSetWeights) {
-              hasCollapsedSkinInfluenceSets = true;
-              addSourcePath(
-                issuePaths,
-                'collapsedSkinInfluenceSets',
-                `${primitivePath}.attributes.JOINTS_${setIndex}`,
-              );
-              addSourcePath(
-                issuePaths,
-                'collapsedSkinInfluenceSets',
-                `${primitivePath}.attributes.WEIGHTS_${setIndex}`,
-              );
-            } else if (hasSetJoints || hasSetWeights) {
+            if (!(hasSetJoints && hasSetWeights) && (hasSetJoints || hasSetWeights)) {
               hasIncompleteSkinAttributes = true;
               addSourcePath(issuePaths, 'incompleteSkinAttributes', primitivePath);
             }
@@ -591,7 +639,7 @@ function analyzePrimitives(
               hasMorphTargetTexcoords = true;
               addSourcePath(issuePaths, 'morphTargetTexcoords', `${primitivePath}.targets[${targetIndex}].${attr}`);
               const uvIndex = Number(attr.slice('TEXCOORD_'.length));
-              if (!primitiveMorphTexcoordIsRepresentable(gltf, primitive, uvIndex)) {
+              if (!primitiveMorphTexcoordIsRepresentable(primitive, uvIndex)) {
                 hasUnsupportedMorphTargetTexcoords = true;
                 addSourcePath(issuePaths, 'unsupportedMorphTargetTexcoords', `${primitivePath}.targets[${targetIndex}].${attr}`);
               }
@@ -1391,11 +1439,10 @@ function analyzeUnrepresentableMaterialUvSets(
         const sortedUvSets = [...uvSets].sort((a, b) => a - b);
         const highUvSets = sortedUvSets.filter((uvSet) => uvSet > 1);
         if (highUvSets.length === 0) continue;
-        const canProjectIntoCoreLanes =
-          sortedUvSets.length <= 2 &&
-          highUvSets.every((uvSet) => primitive.attributes?.[`TEXCOORD_${uvSet}`] !== undefined);
-        if (!canProjectIntoCoreLanes) {
-          for (const uvSet of highUvSets) unrepresentable.add(uvSet);
+        for (const uvSet of highUvSets) {
+          if (primitive.attributes?.[`TEXCOORD_${uvSet}`] === undefined) {
+            unrepresentable.add(uvSet);
+          }
         }
       }
     }
@@ -1412,43 +1459,11 @@ function analyzeUnrepresentableMaterialUvSets(
 }
 
 function primitiveMorphTexcoordIsRepresentable(
-  gltf: GltfJson,
   primitive: GltfPrimitive,
   uvIndex: number,
 ): boolean {
   const baseSemantic = `TEXCOORD_${uvIndex}`;
-  if (primitive.attributes?.[baseSemantic] === undefined) return false;
-  if (uvIndex <= 1) return true;
-
-  for (const materialIndex of collectPrimitiveMaterialIndices(primitive)) {
-    const material = gltf.materials?.[materialIndex];
-    if (material == null) continue;
-    const uvSets = materialTextureUvSets(material);
-    const sortedUvSets = [...uvSets].sort((a, b) => a - b);
-    const highUvSets = sortedUvSets.filter((uvSet) => uvSet > 1);
-    const canProjectIntoCoreLanes =
-      sortedUvSets.includes(uvIndex) &&
-      sortedUvSets.length <= 2 &&
-      highUvSets.every((uvSet) => primitive.attributes?.[`TEXCOORD_${uvSet}`] !== undefined);
-    if (canProjectIntoCoreLanes) {
-      return true;
-    }
-  }
-  return false;
-}
-
-function materialTextureUvSets(material: GltfMaterial): ReadonlySet<number> {
-  const uvSets = new Set<number>();
-  const visit = (value: unknown): void => {
-    if (value == null || typeof value !== 'object' || Array.isArray(value)) return;
-    const object = value as Record<string, unknown>;
-    if (typeof object.index === 'number') {
-      uvSets.add(textureInfoUvSet(object as unknown as GltfTextureInfo));
-    }
-    for (const child of Object.values(object)) visit(child);
-  };
-  visit(material);
-  return uvSets;
+  return primitive.attributes?.[baseSemantic] !== undefined;
 }
 
 function analyzeMaterials(
@@ -1545,6 +1560,7 @@ function analyzeMaterials(
     if (mat.alphaCutoff !== undefined) addField('alphaCutoff', `${matPath}.alphaCutoff`);
     if (mat.doubleSided) {
       doubleSidedCount += 1;
+      addField('doubleSided', `${matPath}.doubleSided`);
       addSourcePath(issuePaths, 'doubleSided', `${matPath}.doubleSided`);
     }
 
@@ -2036,15 +2052,16 @@ function analyzeAnimations(
   let channelCount = 0;
   for (const [animationIndex, animation] of (gltf.animations ?? []).entries()) {
     let animationHasReachableChannel = sceneScope === undefined;
+    const claimedTargets: GltfAnimationTargetIdentity[] = [];
     for (const [channelIndex, channel] of (animation.channels ?? []).entries()) {
       const targetPath = channel.target.path;
       if (targetPath === 'pointer') {
         const pointer = channel.target.extensions?.KHR_animation_pointer?.pointer;
-        const pointerTarget = resolveGltfMaterialAnimationPointer(pointer);
+        const pointerTarget = resolveGltfAnimationPointer(pointer);
         if (
           sceneScope !== undefined &&
           pointerTarget !== undefined &&
-          !sceneScope.materialIndices.has(pointerTarget.materialIndex)
+          !isGltfAnimationPointerTargetReachable(pointerTarget, sceneScope)
         ) {
           continue;
         }
@@ -2060,6 +2077,19 @@ function analyzeAnimations(
               ? `animations[${animationIndex}].channels[${channelIndex}].target.path`
               : `animations[${animationIndex}].channels[${channelIndex}].target.extensions.KHR_animation_pointer.pointer`,
           );
+          continue;
+        }
+        const definitionError = gltfAnimationPointerTargetDefinitionError(gltf, pointerTarget);
+        if (definitionError !== undefined) {
+          malformedChannels.push({
+            kind: 'pointer-target-undefined',
+            path: `animations[${animationIndex}].channels[${channelIndex}].target.extensions.KHR_animation_pointer.pointer`,
+            animationIndex,
+            channelIndex,
+            targetPath,
+            pointer: pointerTarget.pointer,
+            reason: definitionError,
+          });
           continue;
         }
         const sampler = animation.samplers?.[channel.sampler];
@@ -2085,6 +2115,43 @@ function analyzeAnimations(
           malformedChannels.push(...samplerAccessorIssues);
           continue;
         }
+        const pointerAccessorError = gltfAnimationPointerOutputAccessorError(
+          gltf,
+          pointerTarget,
+          gltf.accessors?.[sampler.output],
+        );
+        if (pointerAccessorError !== undefined) {
+          malformedChannels.push({
+            kind: 'invalid-pointer-output-accessor',
+            path: `animations[${animationIndex}].samplers[${channel.sampler}].output`,
+            animationIndex,
+            channelIndex,
+            targetPath,
+            samplerIndex: channel.sampler,
+            accessorIndex: sampler.output,
+            accessorRole: 'output',
+            pointer: pointerTarget.pointer,
+            reason: pointerAccessorError,
+          });
+          continue;
+        }
+        const pointerInterpolationError = gltfAnimationPointerInterpolationError(
+          pointerTarget,
+          (sampler.interpolation ?? 'LINEAR') as 'LINEAR' | 'STEP' | 'CUBICSPLINE',
+        );
+        if (pointerInterpolationError !== undefined) {
+          malformedChannels.push({
+            kind: 'invalid-pointer-interpolation',
+            path: `animations[${animationIndex}].samplers[${channel.sampler}].interpolation`,
+            animationIndex,
+            channelIndex,
+            targetPath,
+            samplerIndex: channel.sampler,
+            pointer: pointerTarget.pointer,
+            reason: pointerInterpolationError,
+          });
+          continue;
+        }
         const outputCountIssue = animationOutputCountIssue(
           gltf,
           animationIndex,
@@ -2092,7 +2159,30 @@ function analyzeAnimations(
           channel,
           sampler,
         );
-        if (outputCountIssue !== undefined) malformedChannels.push(outputCountIssue);
+        if (outputCountIssue !== undefined) {
+          malformedChannels.push(outputCountIssue);
+          continue;
+        }
+        const pointerIdentity = gltfAnimationPointerTargetIdentity(pointerTarget);
+        if (claimedTargets.some((claimed) => gltfAnimationTargetsConflict(claimed, pointerIdentity))) {
+          malformedChannels.push({
+            kind: 'duplicate-animation-target',
+            path: `animations[${animationIndex}].channels[${channelIndex}].target`,
+            animationIndex,
+            channelIndex,
+            targetPath,
+            pointer: pointerTarget.pointer,
+          });
+          continue;
+        }
+        claimedTargets.push(pointerIdentity);
+        if (
+          pointerTarget.kind === 'node' ||
+          pointerTarget.kind === 'node-weight' ||
+          pointerTarget.kind === 'node-visibility'
+        ) {
+          targetNodes.add(pointerTarget.nodeIndex);
+        }
         continue;
       }
       if (
@@ -2166,7 +2256,23 @@ function analyzeAnimations(
         channel,
         sampler,
       );
-      if (outputCountIssue !== undefined) malformedChannels.push(outputCountIssue);
+      if (outputCountIssue !== undefined) {
+        malformedChannels.push(outputCountIssue);
+        continue;
+      }
+      const nativeIdentity = gltfNativeAnimationTargetIdentity(channel.target.node, targetPath);
+      if (claimedTargets.some((claimed) => gltfAnimationTargetsConflict(claimed, nativeIdentity))) {
+        malformedChannels.push({
+          kind: 'duplicate-animation-target',
+          path: `animations[${animationIndex}].channels[${channelIndex}].target`,
+          animationIndex,
+          channelIndex,
+          targetPath,
+          nodeIndex: channel.target.node,
+        });
+        continue;
+      }
+      claimedTargets.push(nativeIdentity);
       targetNodes.add(channel.target.node);
     }
     if (!animationHasReachableChannel) continue;
@@ -2396,12 +2502,16 @@ function animationOutputCountIssue(
   if (actualOutputFloats === undefined) return undefined;
   const targetPath = channel.target.path;
   if (targetPath === 'pointer') {
-    const pointerTarget = resolveGltfMaterialAnimationPointer(
+    const pointerTarget = resolveGltfAnimationPointer(
       channel.target.extensions?.KHR_animation_pointer?.pointer,
     );
     if (pointerTarget !== undefined) {
-      const expectedOutputFloats = inputAccessor.count * pointerTarget.components * cubicFactor;
-      if (actualOutputFloats === expectedOutputFloats) return undefined;
+      const expectedStride = inputAccessor.count * cubicFactor;
+      const components = gltfAnimationPointerTargetComponentCount(gltf, pointerTarget);
+      if (components === undefined) return undefined;
+      const expectedOutputFloats = expectedStride * components;
+      const validOutputCount = actualOutputFloats === expectedOutputFloats;
+      if (validOutputCount) return undefined;
       return {
         kind: 'invalid-output-count',
         path: `animations[${animationIndex}].channels[${channelIndex}].sampler`,
@@ -2563,6 +2673,21 @@ function collectScopedNestedExtensionNames(
   }
   if (out.has('KHR_materials_variants')) {
     addSourcePath(sourcePaths, 'KHR_materials_variants', 'extensions.KHR_materials_variants');
+  }
+  for (const [animationIndex, animation] of (gltf.animations ?? []).entries()) {
+    for (const [channelIndex, channel] of (animation.channels ?? []).entries()) {
+      if (channel.target.path !== 'pointer') continue;
+      const target = resolveGltfAnimationPointer(
+        channel.target.extensions?.KHR_animation_pointer?.pointer,
+      );
+      if (target === undefined || !isGltfAnimationPointerTargetReachable(target, sceneScope)) continue;
+      out.add('KHR_animation_pointer');
+      addSourcePath(
+        sourcePaths,
+        'KHR_animation_pointer',
+        `animations[${animationIndex}].channels[${channelIndex}].target.extensions.KHR_animation_pointer`,
+      );
+    }
   }
 }
 

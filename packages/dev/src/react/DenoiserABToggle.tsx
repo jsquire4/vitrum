@@ -2,7 +2,9 @@
 //
 // Calls engine.debug.setDenoiserEnabled / isDenoiserEnabled (EngineDebugSurface).
 // HybridEngine wires this via DenoiserAdapterPass (walkaround-hybrid only).
-// Other backends render a stub badge and log once if the debug surface is absent.
+// Other backends render a non-interactive unavailable status when the debug
+// surface is absent. They never install a keyboard shortcut or imply that a
+// local-only state change affected the renderer.
 
 import React, { type FC, useCallback, useState } from 'react';
 import type { DebuggableEngine } from '../types.js';
@@ -31,13 +33,12 @@ const BADGE_STYLE: React.CSSProperties = {
   padding: '4px 8px',
   borderRadius: 4,
   userSelect: 'none',
-  cursor: 'pointer',
   zIndex: 9998,
 };
 
 const ENABLED_COLOR = '#7dfa7d';
 const DISABLED_COLOR = '#fa7d7d';
-const STUB_COLOR = '#ffb347';
+const UNAVAILABLE_COLOR = '#ffb347';
 
 export const DenoiserABToggle: FC<DenoiserABToggleProps> = ({
   engine,
@@ -53,44 +54,43 @@ export const DenoiserABToggle: FC<DenoiserABToggleProps> = ({
     typeof engine.debug?.setDenoiserEnabled === 'function';
 
   const doToggle = useCallback((): void => {
+    if (!hasDebug) return;
     const next = !enabled;
-
-    if (hasDebug) {
-      engine.debug!.setDenoiserEnabled!(next);
-      setEnabled(next);
-    } else {
-
-      console.warn(
-        '[DenoiserABToggle] engine.debug.setDenoiserEnabled() is not implemented on this backend' +
-        ' — the toggle UI shows state locally but the engine denoiser won\'t change.'
-      );
-      // Keep UI state honest when backend wiring is unavailable.
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [enabled, hasDebug]);
+    engine.debug!.setDenoiserEnabled!(next);
+    setEnabled(next);
+  }, [enabled, engine, hasDebug]);
 
   // Keyboard handler — useKeyToggle re-registers when doToggle identity changes,
   // capturing the current `enabled` closure (same semantics as the original useEffect).
-  useKeyToggle(toggleKey ?? null, doToggle);
+  useKeyToggle(hasDebug ? (toggleKey ?? null) : null, doToggle);
 
-  const stateColor = !hasDebug ? STUB_COLOR : enabled ? ENABLED_COLOR : DISABLED_COLOR;
+  const stateColor = !hasDebug ? UNAVAILABLE_COLOR : enabled ? ENABLED_COLOR : DISABLED_COLOR;
   const stateLabel = !hasDebug
-    ? 'denoiser [stub]'
+    ? 'denoiser unavailable'
     : `denoiser ${enabled ? '■ on' : '□ off'}`;
-  const keyLabel = toggleKey !== null ? ` [${toggleKey.toUpperCase()}]` : '';
+  const keyLabel = hasDebug && toggleKey !== null ? ` [${toggleKey.toUpperCase()}]` : '';
 
   return (
     <div
       className={className}
-      style={{ ...BADGE_STYLE, borderLeft: `3px solid ${stateColor}` }}
-      role="button"
-      tabIndex={0}
-      aria-pressed={enabled}
-      aria-label={`Toggle denoiser${keyLabel}`}
-      onClick={doToggle}
-      onKeyDown={(e) => {
-        if (e.key === 'Enter' || e.key === ' ') doToggle();
+      style={{
+        ...BADGE_STYLE,
+        borderLeft: `3px solid ${stateColor}`,
+        cursor: hasDebug ? 'pointer' : 'default',
       }}
+      role={hasDebug ? 'button' : 'status'}
+      tabIndex={hasDebug ? 0 : undefined}
+      aria-pressed={hasDebug ? enabled : undefined}
+      aria-disabled={hasDebug ? undefined : true}
+      aria-label={hasDebug
+        ? `Toggle denoiser${keyLabel}`
+        : 'Denoiser toggle unavailable on this backend'}
+      onClick={hasDebug ? doToggle : undefined}
+      onKeyDown={hasDebug
+        ? (e) => {
+          if (e.key === 'Enter' || e.key === ' ') doToggle();
+        }
+        : undefined}
     >
       {stateLabel}{keyLabel}
     </div>

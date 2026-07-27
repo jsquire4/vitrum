@@ -16,6 +16,7 @@ import {
   type Mat4,
   type SampledChannel,
   type Scene,
+  type SceneEmitter,
   type ScenePrimitive,
   type SkinnedMeshPrimitive,
   type TextureRef,
@@ -26,6 +27,7 @@ import type {
   GltfMaterialBinding,
   GltfMaterialVariantBinding,
   GltfMaterialVariantPrimitivePatch,
+  GltfPunctualEmitterBinding,
   GltfSceneCamera,
   GltfToSceneResult,
 } from './gltfToScene.js';
@@ -39,13 +41,16 @@ import {
   nodeLocalMatrix,
 } from './transforms.js';
 import {
-  applyGltfMaterialPointerValue,
-  resolveGltfMaterialAnimationPointer,
-} from './materialPointerAnimation.js';
+  applyGltfMaterialAnimationPointerValue,
+  gltfAnimationPointerSampleValueError,
+  resolveGltfAnimationPointer,
+  type GltfAnimationPointerTarget,
+} from './animationPointer.js';
 
 export interface GltfScenePatchTarget {
   setScene(scene: Scene): void;
   updatePrimitive?(id: string, patch: Partial<ScenePrimitive>): void;
+  updateEmitter?(id: string, patch: Partial<SceneEmitter>): void;
   reset?(): void;
 }
 
@@ -58,6 +63,12 @@ export interface GltfSceneControllerInput extends Omit<GltfToSceneResult, 'camer
 export interface GltfSceneControllerOptions {
   readonly engine?: GltfScenePatchTarget;
   readonly setSceneOnAttach?: boolean;
+  /**
+   * Maximum number of warnings and structured diagnostics retained in the
+   * controller-wide history. Per-operation result arrays are never truncated.
+   * Default: 256. Set to 0 to disable retained history.
+   */
+  readonly diagnosticHistoryLimit?: number;
 }
 
 export type GltfClipSelector = number | string | AnimationClip;
@@ -95,6 +106,11 @@ export interface GltfPrimitivePatchRecord {
   readonly patch: Partial<ScenePrimitive>;
 }
 
+export interface GltfEmitterPatchRecord {
+  readonly id: string;
+  readonly patch: Partial<SceneEmitter>;
+}
+
 export type GltfSceneControllerDiagnosticCode =
   | 'animation-matrix-overridden'
   | 'animation-morph-target-missing'
@@ -102,9 +118,13 @@ export type GltfSceneControllerDiagnosticCode =
   | 'animation-skin-mesh-transform-noninvertible'
   | 'animation-pointer-material-missing'
   | 'animation-pointer-material-unmapped'
+  | 'animation-pointer-camera-unmapped'
+  | 'animation-pointer-light-unmapped'
+  | 'animation-pointer-value-invalid'
   | 'animation-pointer-unsupported'
   | 'animation-target-node-unmapped'
   | 'controller-update-primitive-failed'
+  | 'controller-update-emitter-failed'
   | 'morph-weight-count-mismatch'
   | 'variant-bindings-missing'
   | 'variant-converted-materials-missing'
@@ -123,6 +143,7 @@ export interface GltfSceneControllerDiagnostic {
   readonly message: string;
   readonly caller: 'applyAnimation' | 'blend' | 'setVariant' | 'resetPose';
   readonly primitiveId?: string;
+  readonly emitterId?: string;
   readonly nodeIndex?: number;
   readonly jointNodeIndex?: number;
   readonly variantIndex?: number;
@@ -136,6 +157,7 @@ export interface GltfAnimationApplyResult {
   readonly requestedTime: number;
   readonly localTime: number;
   readonly primitivePatches: readonly GltfPrimitivePatchRecord[];
+  readonly emitterPatches: readonly GltfEmitterPatchRecord[];
   readonly cameras: readonly GltfSceneCamera[];
   readonly scene: Scene;
   readonly warnings: readonly string[];
@@ -149,6 +171,7 @@ export interface GltfBlendApplyResult {
   readonly localTimes: readonly number[];
   readonly weights: readonly number[];
   readonly primitivePatches: readonly GltfPrimitivePatchRecord[];
+  readonly emitterPatches: readonly GltfEmitterPatchRecord[];
   readonly cameras: readonly GltfSceneCamera[];
   readonly scene: Scene;
   readonly warnings: readonly string[];
@@ -190,10 +213,44 @@ interface GltfSceneControllerDiagnosticFrame {
   readonly caller: GltfSceneControllerDiagnostic['caller'];
 }
 
+interface ResolvedPointerSample {
+  readonly sample: SampledChannel;
+  readonly target: GltfAnimationPointerTarget;
+}
+
 const NODE_ID_PREFIX = 'gltf-node-';
+const DEFAULT_DIAGNOSTIC_HISTORY_LIMIT = 256;
 
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+function diagnosticHistoryLimit(value: number | undefined): number {
+  if (value === undefined) return DEFAULT_DIAGNOSTIC_HISTORY_LIMIT;
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new Error(
+      '[vitrum/gltf-adapter] GltfSceneController: diagnosticHistoryLimit must be a ' +
+      `non-negative safe integer; received ${String(value)}.`,
+    );
+  }
+  return value;
+}
+
+function appendBounded<T>(
+  target: T[],
+  incoming: readonly T[],
+  limit: number,
+): void {
+  if (limit === 0 || incoming.length === 0) return;
+  const start = Math.max(0, incoming.length - limit);
+  const retainedIncoming = incoming.length - start;
+  const keepExisting = Math.max(0, limit - retainedIncoming);
+  if (target.length > keepExisting) {
+    target.splice(0, target.length - keepExisting);
+  }
+  for (let i = start; i < incoming.length; i += 1) {
+    target.push(incoming[i]!);
+  }
 }
 
 function resetAfterIncrementalPrimitivePatch(target: GltfScenePatchTarget): void {
@@ -203,6 +260,15 @@ function resetAfterIncrementalPrimitivePatch(target: GltfScenePatchTarget): void
 function primitiveResetPatch(primitive: ScenePrimitive): Partial<ScenePrimitive> {
   const patch: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(primitive as unknown as Record<string, unknown>)) {
+    if (key === 'id' || key === 'kind') continue;
+    patch[key] = value;
+  }
+  return patch;
+}
+
+function emitterResetPatch(emitter: SceneEmitter): Partial<SceneEmitter> {
+  const patch: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(emitter as unknown as Record<string, unknown>)) {
     if (key === 'id' || key === 'kind') continue;
     patch[key] = value;
   }
@@ -243,18 +309,27 @@ export class GltfSceneController {
   readonly #sceneIndex: number;
   readonly #baseLocals: readonly NodeLocalState[];
   readonly #nodeToPrimitiveIds: ReadonlyMap<number, readonly string[]>;
+  readonly #primitiveNodeById: ReadonlyMap<string, number>;
+  readonly #emitterNodeById: ReadonlyMap<string, number>;
+  readonly #allPrimitiveIds: readonly string[];
+  readonly #allEmitterIds: readonly string[];
   readonly #basePrimitiveById: Map<string, ScenePrimitive>;
   readonly #convertedMaterials: readonly MaterialSpec[];
   readonly #materialVariantBindings: readonly GltfMaterialVariantBinding[];
   readonly #materialBindingsByMaterialIndex: Map<number, string[]>;
   readonly #materialIndexByPrimitiveId: Map<string, number>;
   readonly #instancingBindingsByPrimitiveId: ReadonlyMap<string, GltfInstancingBinding>;
+  readonly #punctualEmitterBindings: readonly GltfPunctualEmitterBinding[];
+  readonly #baseEmitterById: ReadonlyMap<string, SceneEmitter>;
+  readonly #baseNodeVisibility: readonly boolean[];
   readonly #skinBindingsByPrimitiveId: ReadonlyMap<string, SkinBinding>;
   readonly #warnings: string[] = [];
   readonly #diagnostics: GltfSceneControllerDiagnostic[] = [];
   readonly #warnedMatrixOverrideNodes = new Set<number>();
+  readonly #diagnosticHistoryLimit: number;
 
   constructor(input: GltfSceneControllerInput, options: GltfSceneControllerOptions = {}) {
+    this.#diagnosticHistoryLimit = diagnosticHistoryLimit(options.diagnosticHistoryLimit);
     this.gltf = input.gltf;
     this.animations = input.animations;
     this.animationTargets = input.animationTargets;
@@ -268,7 +343,10 @@ export class GltfSceneController {
       );
     this.#cameras = this.#baseCameras;
     this.#nodeToPrimitiveIds = parseAnimationTargets(input.animationTargets);
-    this.#basePrimitiveById = new Map(input.scene.primitives.map((p) => [String(p.id), p]));
+    this.#primitiveNodeById = invertNodePrimitiveBindings(this.#nodeToPrimitiveIds);
+    const allPrimitives = input.nodeVisibilityPrimitives ?? input.scene.primitives;
+    this.#allPrimitiveIds = allPrimitives.map((primitive) => String(primitive.id));
+    this.#basePrimitiveById = new Map(allPrimitives.map((p) => [String(p.id), p]));
     this.#convertedMaterials = input.convertedMaterials ?? [];
     this.#materialVariantBindings = input.materialVariantBindings ?? [];
     const materialBindings = input.materialBindings ?? [];
@@ -277,6 +355,16 @@ export class GltfSceneController {
     this.#instancingBindingsByPrimitiveId = new Map(
       (input.instancingBindings ?? []).map((binding) => [binding.primitiveId, binding]),
     );
+    this.#punctualEmitterBindings = input.punctualEmitterBindings ?? [];
+    this.#emitterNodeById = new Map(
+      this.#punctualEmitterBindings.map((binding) => [binding.emitterId, binding.nodeIndex]),
+    );
+    const allEmitters = input.nodeVisibilityEmitters ?? input.scene.emitters;
+    this.#allEmitterIds = allEmitters.map((emitter) => String(emitter.id));
+    this.#baseEmitterById = new Map(
+      allEmitters.map((emitter) => [String(emitter.id), emitter]),
+    );
+    this.#baseNodeVisibility = (input.gltf.nodes ?? []).map(nodeOwnVisibility);
     this.#skinBindingsByPrimitiveId = buildSkinBindings(input.gltf, this.#nodeToPrimitiveIds);
     this.#engine = options.engine;
     if (options.engine && (options.setSceneOnAttach ?? true)) {
@@ -312,11 +400,27 @@ export class GltfSceneController {
     return this.#playing;
   }
 
+  /** Release retained warning/diagnostic objects without affecting scene state. */
+  clearDiagnosticHistory(): void {
+    this.#warnings.length = 0;
+    this.#diagnostics.length = 0;
+  }
+
+  /** Release the attached engine reference; later calls may pass an engine explicitly. */
+  detachEngine(): void {
+    this.#engine = undefined;
+  }
+
   attachEngine(engine: GltfScenePatchTarget, options: { readonly setScene?: boolean } = {}): void {
     this.#engine = engine;
     if (options.setScene ?? true) {
       engine.setScene(this.#scene);
     }
+  }
+
+  #recordDiagnosticFrame(frame: GltfSceneControllerDiagnosticFrame): void {
+    appendBounded(this.#warnings, frame.warnings, this.#diagnosticHistoryLimit);
+    appendBounded(this.#diagnostics, frame.diagnostics, this.#diagnosticHistoryLimit);
   }
 
   setActiveClip(selector: GltfClipSelector, time = 0): AnimationClip {
@@ -390,6 +494,7 @@ export class GltfSceneController {
       requestedTime: time,
       localTime,
       primitivePatches: applied.primitivePatches,
+      emitterPatches: applied.emitterPatches,
       cameras: applied.cameras,
       scene: applied.scene,
       warnings: frameWarnings,
@@ -443,6 +548,7 @@ export class GltfSceneController {
       localTimes,
       weights: positiveWeights,
       primitivePatches: applied.primitivePatches,
+      emitterPatches: applied.emitterPatches,
       cameras: applied.cameras,
       scene: applied.scene,
       warnings: frameWarnings,
@@ -502,13 +608,13 @@ export class GltfSceneController {
           });
           continue;
         }
-        if (!findPrimitive(this.#scene, binding.primitiveId)) {
+        if (!this.#basePrimitiveById.has(binding.primitiveId)) {
           emitControllerDiagnostic(frame, {
             code: 'variant-primitive-missing-in-scene',
             path: `scene.primitives["${binding.primitiveId}"]`,
             message:
               `[vitrum/gltf-adapter] GltfSceneController.setVariant: primitive "${binding.primitiveId}" ` +
-              'is no longer present in the controller scene; patch skipped.',
+              'is no longer present in the controller visual inventory; patch skipped.',
             primitiveId: binding.primitiveId,
           });
           continue;
@@ -550,7 +656,8 @@ export class GltfSceneController {
 
     const usedSetScene = this.#commitSceneChange(
       target,
-      primitivePatches,
+      primitivePatches.filter(({ id }) => findPrimitive(this.#scene, id) !== undefined),
+      [],
       nextScene,
       frame,
       options.forceSetScene ?? false,
@@ -564,8 +671,7 @@ export class GltfSceneController {
       const base = this.#basePrimitiveById.get(id);
       if (base) this.#basePrimitiveById.set(id, { ...base, ...patch } as ScenePrimitive);
     }
-    if (frameWarnings.length > 0) this.#warnings.push(...frameWarnings);
-    if (frameDiagnostics.length > 0) this.#diagnostics.push(...frameDiagnostics);
+    this.#recordDiagnosticFrame(frame);
 
     return {
       requestedVariant: selector,
@@ -581,11 +687,27 @@ export class GltfSceneController {
   resetPose(options: GltfResetPoseOptions = {}): void {
     const target = options.engine ?? this.#engine;
     const previousScene = this.#scene;
-    const nextScene = {
+    const effectiveVisibility = buildEffectiveNodeVisibilityForController(
+      this.gltf,
+      this.#rootNodes(),
+      this.#baseNodeVisibility,
+    );
+    const nextScene: Scene = {
       ...this.#scene,
-      primitives: this.#scene.primitives.map((primitive) =>
-        this.#basePrimitiveById.get(String(primitive.id)) ?? primitive,
-      ),
+      primitives: this.#allPrimitiveIds.flatMap((id) => {
+        const nodeIndex = this.#primitiveNodeById.get(id);
+        const primitive = this.#basePrimitiveById.get(id);
+        return primitive && (nodeIndex === undefined || effectiveVisibility.get(nodeIndex) !== false)
+          ? [primitive]
+          : [];
+      }),
+      emitters: this.#allEmitterIds.flatMap((id) => {
+        const nodeIndex = this.#emitterNodeById.get(id);
+        const emitter = this.#baseEmitterById.get(id);
+        return emitter && (nodeIndex === undefined || effectiveVisibility.get(nodeIndex) !== false)
+          ? [emitter]
+          : [];
+      }),
     };
     this.#scene = nextScene;
     this.#cameras = this.#baseCameras;
@@ -595,47 +717,46 @@ export class GltfSceneController {
       this.#playing = false;
     }
     if (!target) return;
-    if (options.forceSetScene !== true && target.updatePrimitive) {
-      const patches = nextScene.primitives
-        .map((primitive, index) => ({
-          id: String(primitive.id),
-          patch: primitiveResetPatch(primitive),
-          changed: previousScene.primitives[index] !== primitive,
-        }))
-        .filter((entry) => entry.changed);
-      if (patches.length === 0) return;
-      const frame: GltfSceneControllerDiagnosticFrame = {
-        warnings: [],
-        diagnostics: [],
-        caller: 'resetPose',
-      };
-      let attemptedPrimitiveId: string | undefined;
-      try {
-        for (const { id, patch } of patches) {
-          attemptedPrimitiveId = id;
-          target.updatePrimitive(id, patch);
-        }
-        resetAfterIncrementalPrimitivePatch(target);
-        return;
-      } catch (err) {
-        const message = errorMessage(err);
-        emitControllerDiagnostic(frame, {
-          code: 'controller-update-primitive-failed',
-          path: attemptedPrimitiveId
-            ? `scene.primitives["${attemptedPrimitiveId}"]`
-            : 'scene.primitives',
-          message:
-            `[vitrum/gltf-adapter] GltfSceneController.resetPose: ` +
-            `engine.updatePrimitive failed; falling back to setScene(nextScene). ${message}`,
-          ...(attemptedPrimitiveId !== undefined ? { primitiveId: attemptedPrimitiveId } : {}),
-        });
-        this.#warnings.push(...frame.warnings);
-        this.#diagnostics.push(...frame.diagnostics);
-        target.setScene(this.#scene);
-        return;
-      }
+    const previousPrimitiveIds = new Set(previousScene.primitives.map((primitive) => String(primitive.id)));
+    const previousEmitterIds = new Set(previousScene.emitters.map((emitter) => String(emitter.id)));
+    const nextPrimitiveIds = new Set(nextScene.primitives.map((primitive) => String(primitive.id)));
+    const nextEmitterIds = new Set(nextScene.emitters.map((emitter) => String(emitter.id)));
+    const visibilityChanged =
+      !setsEqual(previousPrimitiveIds, nextPrimitiveIds) || !setsEqual(previousEmitterIds, nextEmitterIds);
+    const primitivePatches = nextScene.primitives
+      .map((primitive) => ({
+        id: String(primitive.id),
+        patch: primitiveResetPatch(primitive),
+        changed: findPrimitive(previousScene, String(primitive.id)) !== primitive,
+      }))
+      .filter((entry) => entry.changed)
+      .map(({ id, patch }) => ({ id, patch }));
+    const emitterPatches = nextScene.emitters
+      .map((emitter) => ({
+        id: String(emitter.id),
+        patch: emitterResetPatch(emitter),
+        changed: findEmitter(previousScene, String(emitter.id)) !== emitter,
+      }))
+      .filter((entry) => entry.changed)
+      .map(({ id, patch }) => ({ id, patch }));
+    if (primitivePatches.length === 0 && emitterPatches.length === 0 && !visibilityChanged) {
+      if (options.forceSetScene === true) target.setScene(this.#scene);
+      return;
     }
-    target.setScene(this.#scene);
+    const frame: GltfSceneControllerDiagnosticFrame = {
+      warnings: [],
+      diagnostics: [],
+      caller: 'resetPose',
+    };
+    this.#commitSceneChange(
+      target,
+      primitivePatches,
+      emitterPatches,
+      nextScene,
+      frame,
+      (options.forceSetScene ?? false) || visibilityChanged,
+    );
+    this.#recordDiagnosticFrame(frame);
   }
 
   /**
@@ -649,32 +770,56 @@ export class GltfSceneController {
   #commitSceneChange(
     target: GltfScenePatchTarget | undefined,
     primitivePatches: readonly GltfPrimitivePatchRecord[],
+    emitterPatches: readonly GltfEmitterPatchRecord[],
     nextScene: Scene,
     frame: GltfSceneControllerDiagnosticFrame,
     forceSetScene: boolean,
   ): boolean {
-    if (!(target && primitivePatches.length > 0)) return false;
-    if (!forceSetScene && target.updatePrimitive) {
+    if (!target) return false;
+    if (forceSetScene) {
+      target.setScene(nextScene);
+      return true;
+    }
+    if (primitivePatches.length === 0 && emitterPatches.length === 0) return false;
+    const canPatchPrimitives = primitivePatches.length === 0 || target.updatePrimitive !== undefined;
+    const canPatchEmitters = emitterPatches.length === 0 || target.updateEmitter !== undefined;
+    if (canPatchPrimitives && canPatchEmitters) {
       let attemptedPrimitiveId: string | undefined;
+      let attemptedEmitterId: string | undefined;
       try {
         for (const { id, patch } of primitivePatches) {
           attemptedPrimitiveId = id;
-          target.updatePrimitive(id, patch);
+          target.updatePrimitive!(id, patch);
+        }
+        for (const { id, patch } of emitterPatches) {
+          attemptedEmitterId = id;
+          target.updateEmitter!(id, patch);
         }
         resetAfterIncrementalPrimitivePatch(target);
         return false;
       } catch (err) {
         const message = errorMessage(err);
-        emitControllerDiagnostic(frame, {
-          code: 'controller-update-primitive-failed',
-          path: attemptedPrimitiveId
-            ? `scene.primitives["${attemptedPrimitiveId}"]`
-            : 'scene.primitives',
-          message:
-            `[vitrum/gltf-adapter] GltfSceneController.${frame.caller}: ` +
-            `engine.updatePrimitive failed; falling back to setScene(nextScene). ${message}`,
-          ...(attemptedPrimitiveId !== undefined ? { primitiveId: attemptedPrimitiveId } : {}),
-        });
+        if (attemptedEmitterId !== undefined) {
+          emitControllerDiagnostic(frame, {
+            code: 'controller-update-emitter-failed',
+            path: `scene.emitters["${attemptedEmitterId}"]`,
+            message:
+              `[vitrum/gltf-adapter] GltfSceneController.${frame.caller}: ` +
+              `engine.updateEmitter failed; falling back to setScene(nextScene). ${message}`,
+            emitterId: attemptedEmitterId,
+          });
+        } else {
+          emitControllerDiagnostic(frame, {
+            code: 'controller-update-primitive-failed',
+            path: attemptedPrimitiveId
+              ? `scene.primitives["${attemptedPrimitiveId}"]`
+              : 'scene.primitives',
+            message:
+              `[vitrum/gltf-adapter] GltfSceneController.${frame.caller}: ` +
+              `engine.updatePrimitive failed; falling back to setScene(nextScene). ${message}`,
+            ...(attemptedPrimitiveId !== undefined ? { primitiveId: attemptedPrimitiveId } : {}),
+          });
+        }
         target.setScene(nextScene);
         return true;
       }
@@ -783,33 +928,109 @@ export class GltfSceneController {
     frame: GltfSceneControllerDiagnosticFrame,
   ): {
     primitivePatches: readonly GltfPrimitivePatchRecord[];
+    emitterPatches: readonly GltfEmitterPatchRecord[];
     cameras: readonly GltfSceneCamera[];
     scene: Scene;
     usedSetScene: boolean;
   } {
     const locals = cloneLocalStates(this.#baseLocals);
     const morphWeightsByNode = new Map<number, Float32Array>();
-    const materialPointerSamples: SampledChannel[] = [];
+    const materialPointerSamples: ResolvedPointerSample[] = [];
+    const cameraPointerSamples: ResolvedPointerSample[] = [];
+    const lightPointerSamples: ResolvedPointerSample[] = [];
+    const directNodeVisibility = [...this.#baseNodeVisibility];
 
     for (const sample of samples) {
       if (sample.path === 'pointer') {
-        materialPointerSamples.push(sample);
+        const target = resolveGltfAnimationPointer(sample.pointer);
+        if (target === undefined) {
+          emitControllerDiagnostic(frame, {
+            code: 'animation-pointer-unsupported',
+            path: `animations.channels.target.extensions.KHR_animation_pointer.pointer["${sample.pointer ?? ''}"]`,
+            message:
+              `[vitrum/gltf-adapter] GltfSceneController.${frame.caller}: unsupported ` +
+              `KHR_animation_pointer target "${String(sample.pointer)}"; channel skipped.`,
+          });
+          continue;
+        }
+        const sampledValueError = gltfAnimationPointerSampleValueError(this.gltf, target, sample.value);
+        if (sampledValueError !== undefined) {
+          emitControllerDiagnostic(frame, {
+            code: 'animation-pointer-value-invalid',
+            path: target.pointer,
+            message:
+              `[vitrum/gltf-adapter] GltfSceneController.${frame.caller}: sampled ` +
+              `KHR_animation_pointer value for "${target.pointer}" is invalid: ` +
+              `${sampledValueError}. Channel skipped without clamping.`,
+          });
+          continue;
+        }
+        if (target.kind === 'node') {
+          this.#applySampleToLocals({
+            node: `${NODE_ID_PREFIX}${target.nodeIndex}`,
+            path: target.path,
+            value: sample.value,
+          }, locals, morphWeightsByNode, frame);
+          continue;
+        }
+        if (target.kind === 'node-weight') {
+          const weights = morphWeightsByNode.get(target.nodeIndex)
+            ?? baseMorphWeightsForNode(this.gltf, target.nodeIndex);
+          if (weights === undefined || target.weightIndex >= weights.length) {
+            emitControllerDiagnostic(frame, {
+              code: 'animation-morph-target-missing',
+              path: `nodes[${target.nodeIndex}].weights[${target.weightIndex}]`,
+              message:
+                `[vitrum/gltf-adapter] GltfSceneController.${frame.caller}: weight pointer ` +
+                `"${target.pointer}" does not resolve to an imported morph target; channel skipped.`,
+              nodeIndex: target.nodeIndex,
+            });
+          } else {
+            weights[target.weightIndex] = sample.value[0]!;
+            morphWeightsByNode.set(target.nodeIndex, weights);
+          }
+          continue;
+        }
+        if (target.kind === 'node-visibility') {
+          if (directNodeVisibility[target.nodeIndex] === undefined) {
+            emitControllerDiagnostic(frame, {
+              code: 'animation-target-node-unmapped',
+              path: `nodes[${target.nodeIndex}]`,
+              message:
+                `[vitrum/gltf-adapter] GltfSceneController.${frame.caller}: visibility pointer ` +
+                `"${target.pointer}" references a missing glTF node; channel skipped.`,
+              nodeIndex: target.nodeIndex,
+            });
+          } else {
+            directNodeVisibility[target.nodeIndex] = (sample.value[0] ?? 0) !== 0;
+          }
+          continue;
+        }
+        const resolved = { sample, target };
+        if (target.kind === 'material-property' || target.kind === 'material-texture-transform') {
+          materialPointerSamples.push(resolved);
+        } else if (target.kind === 'camera') {
+          cameraPointerSamples.push(resolved);
+        } else {
+          lightPointerSamples.push(resolved);
+        }
         continue;
       }
       this.#applySampleToLocals(sample, locals, morphWeightsByNode, frame);
     }
 
     const worldTransforms = buildWorldTransformsForLocals(this.gltf, this.#rootNodes(), locals);
-    const cameras = (this.gltf.cameras?.length ?? 0) > 0
+    let cameras = (this.gltf.cameras?.length ?? 0) > 0
       ? collectSceneCameras(this.gltf, worldTransforms)
       : this.#baseCameras;
+    cameras = applyCameraPointerSamples(cameras, cameraPointerSamples, frame);
     const patchMap = new Map<string, Partial<ScenePrimitive>>();
 
     for (const [nodeIndex, primitiveIds] of this.#nodeToPrimitiveIds) {
       const world = worldTransforms.get(nodeIndex);
       if (!world) continue;
       for (const id of primitiveIds) {
-        const current = findPrimitive(this.#scene, id);
+        const current = findPrimitive(this.#scene, id) ?? this.#basePrimitiveById.get(id);
         if (!current) continue;
         const instancingBinding = this.#instancingBindingsByPrimitiveId.get(id);
         if (instancingBinding && isInstancedMesh(current)) {
@@ -819,101 +1040,192 @@ export class GltfSceneController {
           }
           continue;
         }
-        const expandedInstanceTransform = instancingBinding
-          ? buildExpandedInstanceTransform(world, instancingBinding)
-          : undefined;
-        if (expandedInstanceTransform) {
-          if (!mat4AlmostEqual(primitiveTransform(current), expandedInstanceTransform)) {
-            mergePrimitivePatch(patchMap, id, { transform: expandedInstanceTransform });
-          }
-          continue;
-        }
         if (!mat4AlmostEqual(primitiveTransform(current), world)) {
           mergePrimitivePatch(patchMap, id, { transform: world });
         }
       }
     }
 
+    const sampledMorphWeightsByPrimitiveId = new Map<string, Float32Array>();
     for (const [nodeIndex, weights] of morphWeightsByNode) {
       const primitiveIds = this.#nodeToPrimitiveIds.get(nodeIndex) ?? [];
       for (const id of primitiveIds) {
-        const patch = this.#buildMorphPatch(id, weights, frame);
-        if (patch) mergePrimitivePatch(patchMap, id, patch);
+        const source = this.#deformationSource(id);
+        if (!source?.morphTargets || source.morphTargets.length === 0) {
+          throw new Error(
+            `[vitrum/gltf-adapter] Animation weights target resolved to primitive "${id}", but that primitive has no morph targets.`,
+          );
+        }
+        sampledMorphWeightsByPrimitiveId.set(
+          id,
+          fitMorphWeights(weights, source.morphTargets.length, id, frame),
+        );
       }
     }
 
+    // Morph-only meshes use a synthesized identity skin and therefore have no
+    // glTF skin binding. Solve their shared stream here. True skinned meshes
+    // are solved below so joint pose and morph weights publish atomically.
+    for (const id of this.#allPrimitiveIds) {
+      if (this.#skinBindingsByPrimitiveId.has(id)) continue;
+      const source = this.#deformationSource(id);
+      if (!source?.morphTargets || source.morphTargets.length === 0) continue;
+      const weights = sampledMorphWeightsByPrimitiveId.get(id)
+        ?? source.morphWeights
+        ?? new Float32Array(source.morphTargets.length);
+      const patch = this.#buildMorphPatch(id, weights);
+      if (patch) mergePrimitivePatch(patchMap, id, patch);
+    }
+
     for (const [id, binding] of this.#skinBindingsByPrimitiveId) {
-      const patch = this.#buildSkinPatch(id, binding, worldTransforms, patchMap.get(id), frame);
+      const patch = this.#buildSkinPatch(
+        id,
+        binding,
+        worldTransforms,
+        sampledMorphWeightsByPrimitiveId.get(id),
+        frame,
+      );
       if (patch) mergePrimitivePatch(patchMap, id, patch);
     }
     this.#applyMaterialPointerSamples(materialPointerSamples, patchMap, frame);
 
     const primitivePatches = Array.from(patchMap, ([id, patch]) => ({ id, patch }));
+    const emitterPatches = this.#buildAnimatedEmitterPatches(worldTransforms, lightPointerSamples, frame);
+    const effectiveVisibility = buildEffectiveNodeVisibilityForController(
+      this.gltf,
+      this.#rootNodes(),
+      directNodeVisibility,
+    );
+    const visiblePrimitiveIds = new Set(this.#allPrimitiveIds.filter((id) => {
+      const nodeIndex = this.#primitiveNodeById.get(id);
+      return nodeIndex === undefined || effectiveVisibility.get(nodeIndex) !== false;
+    }));
+    const visibleEmitterIds = new Set(this.#allEmitterIds.filter((id) => {
+      const nodeIndex = this.#emitterNodeById.get(id);
+      return nodeIndex === undefined || effectiveVisibility.get(nodeIndex) !== false;
+    }));
     const target = options.engine ?? this.#engine;
-    let nextScene = this.#scene;
-    for (const { id, patch } of primitivePatches) {
-      nextScene = patchPrimitiveInScene(nextScene, id, patch);
-    }
+    const currentPrimitiveIds = new Set(this.#scene.primitives.map((primitive) => String(primitive.id)));
+    const currentEmitterIds = new Set(this.#scene.emitters.map((emitter) => String(emitter.id)));
+    const nextScene: Scene = {
+      ...this.#scene,
+      primitives: this.#allPrimitiveIds.flatMap((id) => {
+        if (!visiblePrimitiveIds.has(id)) return [];
+        const source = findPrimitive(this.#scene, id) ?? this.#basePrimitiveById.get(id);
+        if (!source) return [];
+        const patch = patchMap.get(id);
+        return [patch ? ({ ...source, ...patch } as ScenePrimitive) : source];
+      }),
+      emitters: this.#allEmitterIds.flatMap((id) => {
+        if (!visibleEmitterIds.has(id)) return [];
+        const source = findEmitter(this.#scene, id) ?? this.#baseEmitterById.get(id);
+        if (!source) return [];
+        const patch = emitterPatches.find((entry) => entry.id === id)?.patch;
+        return [patch ? ({ ...source, ...patch } as SceneEmitter) : source];
+      }),
+    };
+    const visibilityChanged =
+      !setsEqual(currentPrimitiveIds, visiblePrimitiveIds) ||
+      !setsEqual(currentEmitterIds, visibleEmitterIds);
+    const committedPrimitivePatches = primitivePatches.filter(({ id }) =>
+      currentPrimitiveIds.has(id) && visiblePrimitiveIds.has(id)
+    );
+    const committedEmitterPatches = emitterPatches.filter(({ id }) =>
+      currentEmitterIds.has(id) && visibleEmitterIds.has(id)
+    );
 
     const usedSetScene = this.#commitSceneChange(
       target,
-      primitivePatches,
+      committedPrimitivePatches,
+      committedEmitterPatches,
       nextScene,
       frame,
-      options.forceSetScene ?? false,
+      (options.forceSetScene ?? false) || visibilityChanged,
     );
 
     this.#scene = nextScene;
     this.#cameras = cameras;
-    if (frame.warnings.length > 0) this.#warnings.push(...frame.warnings);
-    if (frame.diagnostics.length > 0) this.#diagnostics.push(...frame.diagnostics);
+    this.#recordDiagnosticFrame(frame);
 
     return {
-      primitivePatches,
+      primitivePatches: primitivePatches.filter(({ id }) => visiblePrimitiveIds.has(id)),
+      emitterPatches: emitterPatches.filter(({ id }) => visibleEmitterIds.has(id)),
       cameras,
       scene: this.#scene,
       usedSetScene,
     };
   }
 
+  #buildAnimatedEmitterPatches(
+    worldTransforms: ReadonlyMap<number, Mat4>,
+    pointerSamples: readonly ResolvedPointerSample[],
+    frame: GltfSceneControllerDiagnosticFrame,
+  ): GltfEmitterPatchRecord[] {
+    const patches: GltfEmitterPatchRecord[] = [];
+    const mappedLightIndices = new Set(this.#punctualEmitterBindings.map((binding) => binding.lightIndex));
+    for (const { target } of pointerSamples) {
+      if (target.kind !== 'punctual-light' || mappedLightIndices.has(target.lightIndex)) continue;
+      emitControllerDiagnostic(frame, {
+        code: 'animation-pointer-light-unmapped',
+        path: `extensions.KHR_lights_punctual.lights[${target.lightIndex}]`,
+        message:
+          `[vitrum/gltf-adapter] GltfSceneController.${frame.caller}: light pointer ` +
+          `"${target.pointer}" has no punctual emitter in the imported scene; channel skipped.`,
+      });
+    }
+    for (const binding of this.#punctualEmitterBindings) {
+      const world = worldTransforms.get(binding.nodeIndex);
+      const current = findEmitter(this.#scene, binding.emitterId) ?? this.#baseEmitterById.get(binding.emitterId);
+      if (!world || !current) continue;
+      const posePatch = punctualEmitterPosePatch(current, world) ?? {};
+      const lightSamples = pointerSamples.filter(({ target }) =>
+        target.kind === 'punctual-light' && target.lightIndex === binding.lightIndex
+      );
+      const pointerPatch = punctualEmitterPointerPatch(current, lightSamples, frame);
+      const patch = { ...posePatch, ...pointerPatch } as Partial<SceneEmitter>;
+      if (Object.keys(patch).length > 0 && emitterPatchChanges(current, patch)) {
+        patches.push({ id: binding.emitterId, patch });
+      }
+    }
+    return patches;
+  }
+
+  #deformationSource(primitiveId: string): SkinnedMeshPrimitive | undefined {
+    const base = this.#basePrimitiveById.get(primitiveId);
+    if (isSkinnedMesh(base)) return base;
+    return this.#instancingBindingsByPrimitiveId.get(primitiveId)?.deformationSource;
+  }
+
   #buildMorphPatch(
     primitiveId: string,
-    weights: Float32Array,
-    frame: GltfSceneControllerDiagnosticFrame,
+    morphWeights: Float32Array,
   ): Partial<ScenePrimitive> | undefined {
-    const base = this.#basePrimitiveById.get(primitiveId);
-    if (!isSkinnedMesh(base) || !base.morphTargets || base.morphTargets.length === 0) {
-      emitControllerDiagnostic(frame, {
-        code: 'animation-morph-target-missing',
-        path: `scene.primitives["${primitiveId}"].morphTargets`,
-        message:
-          `[vitrum/gltf-adapter] Animation weights target resolved to primitive "${primitiveId}", ` +
-          'but that primitive has no morph targets; channel skipped.',
-        primitiveId,
-      });
-      return undefined;
-    }
-    const morphWeights = fitMorphWeights(weights, base.morphTargets.length, primitiveId, frame);
-    const solved = solveSkin({ ...base, morphWeights });
-    return {
-      morphWeights,
+    const source = this.#deformationSource(primitiveId);
+    if (!source?.morphTargets || source.morphTargets.length === 0) return undefined;
+    const solved = solveSkin({ ...source, morphWeights });
+    const patch: Record<string, unknown> = {
       positions: solved.positions,
       normals: solved.normals,
       ...(solved.tangents ? { tangents: solved.tangents } : {}),
       ...(solved.uvs ? { uvs: solved.uvs } : {}),
       ...(solved.uv1 ? { uv1: solved.uv1 } : {}),
+      ...(solved.uvSets ? { uvSets: solved.uvSets } : {}),
     };
+    if (isSkinnedMesh(this.#basePrimitiveById.get(primitiveId))) {
+      patch.morphWeights = morphWeights;
+    }
+    return patch;
   }
 
   #buildSkinPatch(
     primitiveId: string,
     binding: SkinBinding,
     worldTransforms: ReadonlyMap<number, Mat4>,
-    existingPatch: Partial<ScenePrimitive> | undefined,
+    sampledMorphWeights: Float32Array | undefined,
     frame: GltfSceneControllerDiagnosticFrame,
   ): Partial<ScenePrimitive> | undefined {
-    const base = this.#basePrimitiveById.get(primitiveId);
-    if (!isSkinnedMesh(base)) return undefined;
+    const source = this.#deformationSource(primitiveId);
+    if (!source) return undefined;
 
     const meshWorld = worldTransforms.get(binding.meshNodeIndex);
     const meshWorldInverse = meshWorld ? mat4Invert(meshWorld) : null;
@@ -950,33 +1262,36 @@ export class GltfSceneController {
       }
     }
 
-    const patchedMorphWeights = patchMorphWeights(existingPatch);
-    if (matArrayAlmostEqual(base.bones, bones) && !patchedMorphWeights) {
+    const morphWeights = source.morphTargets && source.morphTargets.length > 0
+      ? sampledMorphWeights
+        ?? source.morphWeights
+        ?? new Float32Array(source.morphTargets.length)
+      : undefined;
+    if (matArrayAlmostEqual(source.bones, bones) && morphWeights === undefined) {
       return undefined;
     }
-
-    const currentPrimitive = findPrimitive(this.#scene, primitiveId);
-    const currentMorphWeights =
-      patchedMorphWeights
-        ?? (isSkinnedMesh(currentPrimitive) ? currentPrimitive.morphWeights : undefined)
-        ?? base.morphWeights;
     const solved = solveSkin({
-      ...base,
+      ...source,
       bones,
-      ...(currentMorphWeights ? { morphWeights: currentMorphWeights } : {}),
+      ...(morphWeights ? { morphWeights } : {}),
     });
-    return {
-      bones,
+    const patch: Record<string, unknown> = {
       positions: solved.positions,
       normals: solved.normals,
       ...(solved.tangents ? { tangents: solved.tangents } : {}),
       ...(solved.uvs ? { uvs: solved.uvs } : {}),
       ...(solved.uv1 ? { uv1: solved.uv1 } : {}),
+      ...(solved.uvSets ? { uvSets: solved.uvSets } : {}),
     };
+    if (isSkinnedMesh(this.#basePrimitiveById.get(primitiveId))) {
+      patch.bones = bones;
+      if (morphWeights) patch.morphWeights = morphWeights;
+    }
+    return patch;
   }
 
   #applyMaterialPointerSamples(
-    samples: readonly SampledChannel[],
+    samples: readonly ResolvedPointerSample[],
     patchMap: Map<string, Partial<ScenePrimitive>>,
     frame: GltfSceneControllerDiagnosticFrame,
   ): void {
@@ -984,18 +1299,8 @@ export class GltfSceneController {
     const animatedMaterials = new Map<number, MaterialSpec>();
     const touchedMaterials = new Set<number>();
 
-    for (const sample of samples) {
-      const target = resolveGltfMaterialAnimationPointer(sample.pointer);
-      if (target === undefined) {
-        emitControllerDiagnostic(frame, {
-          code: 'animation-pointer-unsupported',
-          path: `animations.channels.target.extensions.KHR_animation_pointer.pointer["${sample.pointer ?? ''}"]`,
-          message:
-            `[vitrum/gltf-adapter] GltfSceneController.${frame.caller}: unsupported ` +
-            `KHR_animation_pointer target "${String(sample.pointer)}"; channel skipped.`,
-        });
-        continue;
-      }
+    for (const { sample, target } of samples) {
+      if (target.kind !== 'material-property' && target.kind !== 'material-texture-transform') continue;
 
       const base = animatedMaterials.get(target.materialIndex)
         ?? this.#convertedMaterials[target.materialIndex];
@@ -1014,7 +1319,7 @@ export class GltfSceneController {
 
       animatedMaterials.set(
         target.materialIndex,
-        applyGltfMaterialPointerValue(base, target, sample.value),
+        applyGltfMaterialAnimationPointerValue(base, target, sample.value),
       );
       touchedMaterials.add(target.materialIndex);
     }
@@ -1022,6 +1327,22 @@ export class GltfSceneController {
     for (const materialIndex of touchedMaterials) {
       const material = animatedMaterials.get(materialIndex);
       if (!material) continue;
+      const thicknessRange = material.iridescenceThicknessRange;
+      if (
+        thicknessRange !== undefined &&
+        !(thicknessRange[0] >= 0 && thicknessRange[0] <= thicknessRange[1])
+      ) {
+        emitControllerDiagnostic(frame, {
+          code: 'animation-pointer-value-invalid',
+          path: `materials[${materialIndex}].extensions.KHR_materials_iridescence`,
+          message:
+            `[vitrum/gltf-adapter] GltfSceneController.${frame.caller}: sampled iridescence ` +
+            `thickness range [${thicknessRange[0]}, ${thicknessRange[1]}] does not satisfy ` +
+            '0 <= minimum <= maximum. Material pointer updates skipped without clamping.',
+          materialIndex,
+        });
+        continue;
+      }
       const primitiveIds = this.#materialBindingsByMaterialIndex.get(materialIndex) ?? [];
       if (primitiveIds.length === 0) {
         emitControllerDiagnostic(frame, {
@@ -1037,7 +1358,7 @@ export class GltfSceneController {
       }
 
       for (const id of primitiveIds) {
-        if (!findPrimitive(this.#scene, id)) continue;
+        if (!this.#basePrimitiveById.has(id)) continue;
         mergePrimitivePatch(patchMap, id, {
           material: materialReplacementPatch(material),
         });
@@ -1107,6 +1428,53 @@ function parseAnimationTargets(
     if (nodeIndex != null) out.set(nodeIndex, primitiveIds);
   }
   return out;
+}
+
+function invertNodePrimitiveBindings(
+  bindings: ReadonlyMap<number, readonly string[]>,
+): Map<string, number> {
+  const out = new Map<string, number>();
+  for (const [nodeIndex, primitiveIds] of bindings) {
+    for (const primitiveId of primitiveIds) out.set(primitiveId, nodeIndex);
+  }
+  return out;
+}
+
+function nodeOwnVisibility(node: GltfNode): boolean {
+  return node.extensions?.KHR_node_visibility?.visible !== false;
+}
+
+function baseMorphWeightsForNode(gltf: GltfJson, nodeIndex: number): Float32Array | undefined {
+  const node = gltf.nodes?.[nodeIndex];
+  if (!node || node.mesh === undefined) return undefined;
+  const mesh = gltf.meshes?.[node.mesh];
+  const targetCount = mesh?.primitives[0]?.targets?.length ?? 0;
+  if (targetCount <= 0) return undefined;
+  const source = node.weights ?? mesh?.weights ?? [];
+  const result = new Float32Array(targetCount);
+  for (let index = 0; index < targetCount; index += 1) result[index] = source[index] ?? 0;
+  return result;
+}
+
+function buildEffectiveNodeVisibilityForController(
+  gltf: GltfJson,
+  rootNodeIndices: readonly number[],
+  directVisibility: readonly boolean[],
+): Map<number, boolean> {
+  const result = new Map<number, boolean>();
+  const nodes = gltf.nodes ?? [];
+  const stack = rootNodeIndices.map((nodeIndex) => ({ nodeIndex, parentVisible: true }));
+  while (stack.length > 0) {
+    const { nodeIndex, parentVisible } = stack.pop()!;
+    const node = nodes[nodeIndex];
+    if (!node || result.has(nodeIndex)) continue;
+    const visible = parentVisible && (directVisibility[nodeIndex] ?? true);
+    result.set(nodeIndex, visible);
+    for (const child of node.children ?? []) {
+      stack.push({ nodeIndex: child, parentVisible: visible });
+    }
+  }
+  return result;
 }
 
 function buildSkinBindings(
@@ -1421,6 +1789,7 @@ function scenePrimitivePatchForMaterialVariant(
     material: materialReplacementPatch(material),
     uvs: patch.uvs,
     uv1: patch.uv1,
+    uvSets: patch.uvSets,
     tangents: patch.tangents,
   };
 }
@@ -1572,6 +1941,167 @@ function findPrimitive(scene: Scene, id: string): ScenePrimitive | undefined {
   return scene.primitives.find((primitive) => String(primitive.id) === id);
 }
 
+function findEmitter(scene: Scene, id: string): SceneEmitter | undefined {
+  return scene.emitters.find((emitter) => String(emitter.id) === id);
+}
+
+function applyCameraPointerSamples(
+  cameras: readonly GltfSceneCamera[],
+  samples: readonly ResolvedPointerSample[],
+  frame: GltfSceneControllerDiagnosticFrame,
+): GltfSceneCamera[] {
+  const cameraSamples = samples.filter((entry) => entry.target.kind === 'camera');
+  const matchedPointers = new Set<string>();
+  const result = cameras.map((camera) => {
+    const matching = cameraSamples.filter(({ target }) =>
+      target.kind === 'camera' &&
+      camera.cameraIndex === target.cameraIndex &&
+      camera.type === target.cameraType
+    );
+    if (matching.length === 0) return camera;
+    let candidate = camera;
+    for (const { sample, target } of matching) {
+      if (target.kind !== 'camera') continue;
+      matchedPointers.add(target.pointer);
+      const value = sample.value[0]!;
+      candidate = target.cameraType === 'perspective'
+        ? {
+            ...candidate,
+            perspective: { ...(candidate.perspective ?? {}), [target.field]: value },
+          }
+        : {
+            ...candidate,
+            orthographic: { ...(candidate.orthographic ?? {}), [target.field]: value },
+          };
+    }
+    const projection = candidate.type === 'perspective'
+      ? candidate.perspective
+      : candidate.orthographic;
+    if (
+      projection?.znear !== undefined &&
+      projection.zfar !== undefined &&
+      !(projection.zfar > projection.znear)
+    ) {
+      emitControllerDiagnostic(frame, {
+        code: 'animation-pointer-value-invalid',
+        path: `cameras[${camera.cameraIndex}].${camera.type}`,
+        message:
+          `[vitrum/gltf-adapter] GltfSceneController.${frame.caller}: sampled camera projection ` +
+          `has zfar=${projection.zfar} but znear=${projection.znear}; zfar must be greater than ` +
+          'znear. Camera pointer updates skipped without clamping.',
+      });
+      return camera;
+    }
+    return candidate;
+  });
+  for (const { target } of cameraSamples) {
+    if (target.kind === 'camera' && !matchedPointers.has(target.pointer)) {
+      emitControllerDiagnostic(frame, {
+        code: 'animation-pointer-camera-unmapped',
+        path: `cameras[${target.cameraIndex}].${target.cameraType}.${target.field}`,
+        message:
+          `[vitrum/gltf-adapter] GltfSceneController.${frame.caller}: camera pointer ` +
+          `"${target.pointer}" has no camera instance in the imported scene; channel skipped.`,
+      });
+    }
+  }
+  return result;
+}
+
+function punctualEmitterPointerPatch(
+  emitter: SceneEmitter,
+  samples: readonly ResolvedPointerSample[],
+  frame: GltfSceneControllerDiagnosticFrame,
+): Partial<SceneEmitter> {
+  const patch: Record<string, unknown> = {};
+  let outerCone = emitter.kind === 'spot' ? emitter.angle : 0;
+  let innerCone = emitter.kind === 'spot'
+    ? emitter.angle * (1 - (emitter.penumbra ?? 0))
+    : 0;
+  let coneChanged = false;
+  for (const { sample, target } of samples) {
+    if (target.kind !== 'punctual-light') continue;
+    if (target.field === 'color') {
+      patch.color = [sample.value[0]!, sample.value[1]!, sample.value[2]!];
+    } else if (target.field === 'intensity') {
+      patch.intensity = sample.value[0]!;
+    } else if (target.field === 'range' && (emitter.kind === 'point' || emitter.kind === 'spot')) {
+      patch.distance = sample.value[0]!;
+    } else if (target.field === 'spotInnerConeAngle' && emitter.kind === 'spot') {
+      innerCone = sample.value[0]!;
+      coneChanged = true;
+    } else if (target.field === 'spotOuterConeAngle' && emitter.kind === 'spot') {
+      outerCone = sample.value[0]!;
+      coneChanged = true;
+    }
+  }
+  if (emitter.kind === 'spot' && coneChanged) {
+    if (innerCone <= outerCone) {
+      patch.angle = outerCone;
+      patch.penumbra = 1 - innerCone / outerCone;
+    } else {
+      emitControllerDiagnostic(frame, {
+        code: 'animation-pointer-value-invalid',
+        path: 'extensions.KHR_lights_punctual.lights.spot',
+        message:
+          `[vitrum/gltf-adapter] GltfSceneController.${frame.caller}: sampled spot-light ` +
+          `innerConeAngle=${innerCone} exceeds outerConeAngle=${outerCone}. Cone pointer updates ` +
+          'skipped without clamping.',
+      });
+    }
+  }
+  return patch;
+}
+
+function emitterPatchChanges(emitter: SceneEmitter, patch: Partial<SceneEmitter>): boolean {
+  const source = emitter as unknown as Record<string, unknown>;
+  for (const [key, next] of Object.entries(patch as unknown as Record<string, unknown>)) {
+    const current = source[key];
+    if (Array.isArray(current) && Array.isArray(next)) {
+      if (!matArrayAlmostEqual(current, next)) return true;
+    } else if (!Object.is(current, next)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function setsEqual<T>(a: ReadonlySet<T>, b: ReadonlySet<T>): boolean {
+  if (a.size !== b.size) return false;
+  for (const value of a) if (!b.has(value)) return false;
+  return true;
+}
+
+function punctualEmitterPosePatch(
+  emitter: SceneEmitter,
+  world: Mat4,
+): Partial<SceneEmitter> | undefined {
+  const position: [number, number, number] = [
+    world[12] ?? 0,
+    world[13] ?? 0,
+    world[14] ?? 0,
+  ];
+  const forward = normalizeDirection([
+    -(world[8] ?? 0),
+    -(world[9] ?? 0),
+    -(world[10] ?? 0),
+  ]);
+  if (emitter.kind === 'point') return { position };
+  if (emitter.kind === 'spot') return { position, direction: forward };
+  if (emitter.kind === 'directional') {
+    return { direction: [-forward[0], -forward[1], -forward[2]] };
+  }
+  return undefined;
+}
+
+function normalizeDirection(
+  value: readonly [number, number, number],
+): [number, number, number] {
+  const length = Math.hypot(value[0], value[1], value[2]);
+  if (!(length > 1e-10) || !Number.isFinite(length)) return [0, 0, 1];
+  return [value[0] / length, value[1] / length, value[2] / length];
+}
+
 function primitiveTransform(primitive: ScenePrimitive): Mat4 | undefined {
   if (primitive.kind === 'instanced-mesh') return undefined;
   return primitive.transform;
@@ -1582,16 +2112,6 @@ function buildAnimatedInstanceTransforms(
   localInstances: ReadonlyArray<Mat4>,
 ): readonly Mat4[] {
   return localInstances.map((local) => asMat4(mat4Mul(nodeWorld, local)));
-}
-
-function buildExpandedInstanceTransform(
-  nodeWorld: Mat4,
-  binding: GltfInstancingBinding,
-): Mat4 | undefined {
-  const index = binding.expandedPrimitiveInstanceIndex;
-  if (index === undefined) return undefined;
-  const local = binding.localInstanceTransforms[index];
-  return local ? asMat4(mat4Mul(nodeWorld, local)) : undefined;
 }
 
 function instanceMatricesAlmostEqual(
@@ -1607,10 +2127,6 @@ function instanceMatricesAlmostEqual(
   return true;
 }
 
-function patchMorphWeights(patch: Partial<ScenePrimitive> | undefined): Float32Array | undefined {
-  const value = (patch as { readonly morphWeights?: unknown } | undefined)?.morphWeights;
-  return value instanceof Float32Array ? value : undefined;
-}
 
 function mat4AlmostEqual(a: ArrayLike<number> | undefined, b: ArrayLike<number>, eps = 1e-5): boolean {
   const aa = a ?? IDENTITY_MAT4;
@@ -1640,15 +2156,8 @@ function fitMorphWeights(
   frame: GltfSceneControllerDiagnosticFrame,
 ): Float32Array {
   if (weights.length === targetCount) return new Float32Array(weights);
-  emitControllerDiagnostic(frame, {
-    code: 'morph-weight-count-mismatch',
-    path: `scene.primitives["${primitiveId}"].morphWeights`,
-    message:
-      `[vitrum/gltf-adapter] Animation weights for primitive "${primitiveId}" have length ` +
-      `${weights.length}, expected ${targetCount}; extra entries are dropped and missing entries default to 0.`,
-    primitiveId,
-  });
-  const out = new Float32Array(targetCount);
-  for (let i = 0; i < targetCount; i += 1) out[i] = weights[i] ?? 0;
-  return out;
+  void frame;
+  throw new Error(
+    `[vitrum/gltf-adapter] Animation weights for primitive "${primitiveId}" have length ${weights.length}; expected exactly ${targetCount}.`,
+  );
 }

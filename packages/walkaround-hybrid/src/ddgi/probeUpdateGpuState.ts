@@ -19,11 +19,17 @@ import type { ProbeUpdateBvhGpuBuffers } from './probeUpdateBvhBuffers.js';
  *
  * Slots (id → keyed on):
  *  - `raysG0`       BVH buffers (11 entries) — keyed on `bvhBuf` (all 11 rebuild atomically).
- *  - `raysG1`       materials/lights/emitters/atlas/tangent/color — keyed on all six identities.
- *  - `raysG2`       per-frame — keyed on irrReadTex + rayResultsBuf + activeProbesBuf + envMapView.
- *  - `blendIrrG0`   stable buffers — keyed on rayResultsBuf + activeProbesBuf.
+ *  - `raysG1`       materials/lights/emitters/atlas/tangent/color — keyed on all seven identities.
+ *  - `raysG2`       per-frame — keyed on irrReadTex + rayResultsBuf +
+ *                     activeProbesBuf + envMapView + envSamplerForProbe.
+ *  - `classifyG0`   ray/state resources — keyed on rayResultsBuf +
+ *                     activeProbesBuf + exact active-prefix byte length +
+ *                     irrReadTex + irrWriteTex.
+ *  - `blendIrrG0`   stable buffers — keyed on rayResultsBuf +
+ *                     activeProbesBuf.
  *  - `blendIrrG1`   atlas textures — keyed on irrReadTex + irrWriteTex.
- *  - `blendVisG0`   stable buffers — keyed on rayResultsBuf + activeProbesBuf.
+ *  - `blendVisG0`   stable buffers — keyed on rayResultsBuf +
+ *                     activeProbesBuf.
  *  - `blendVisG1`   atlas textures — keyed on visReadTex + visWriteTex.
  *  - `borderG0`     per-atlas — keyed on scratchTex + writeAtlas.
  */
@@ -61,14 +67,16 @@ export interface ProbeUpdateGpuState extends ProbeUpdateBvhGpuBuffers {
   bgCache?: DispatchBindGroupCache;
   device: GPUDevice;
   raysPipeline: GPUComputePipeline;
+  classifyRelocatePipeline: GPUComputePipeline;
   blendIrrPipeline: GPUComputePipeline;
   blendVisPipeline: GPUComputePipeline;
   borderVisPipeline: GPUComputePipeline;   // irradiance is SH (seam-free) — no irr border pass
-  irrScratchTex: GPUTexture | null;
   visScratchTex: GPUTexture | null;
   traceParamsBuf: GPUBuffer;
   materialsBuf: GPUBuffer;
   lightsBuf: GPUBuffer;
+  /** Allocated byte capacity of the runtime-sized DDGI light storage buffer. */
+  lightsCapacityBytes: number;
   /** H18 Stage 2 — packed EmitterTri array for rect/disc area-emitter NEE in the
    *  probe-ray kernel. Matches the RC `rc_emitters` layout (5 × vec4f = 80 bytes
    *  per tri). A one-record dummy when emitterCount == 0 so the bind group is
@@ -76,7 +84,7 @@ export interface ProbeUpdateGpuState extends ProbeUpdateBvhGpuBuffers {
   emitterTrisBuf: GPUBuffer;
   /** Number of valid emitter triangles in emitterTrisBuf (0 when sun-only). */
   emitterTrisCount: number;
-  /** DDGI-local copy of the readable material texture atlas for probe-hit emission maps. */
+  /** DDGI-local copy of the atlas-backed material textures for probe-hit maps. */
   materialTextureAtlas: GPUTexture;
   materialTextureAtlasView: GPUTextureView;
   /** Per-triangle material-map metadata texture paired with {@link materialTextureAtlas}. */

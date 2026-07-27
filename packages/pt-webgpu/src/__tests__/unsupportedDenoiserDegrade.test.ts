@@ -8,6 +8,7 @@ function makeStubDevice(): GPUDevice {
       maxStorageTexturesPerShaderStage: 8,
     },
     createCommandEncoder: vi.fn(),
+    createBuffer: vi.fn(),
     addEventListener: vi.fn(),
     removeEventListener: vi.fn(),
     lost: new Promise<never>(() => {}),
@@ -17,23 +18,19 @@ function makeStubDevice(): GPUDevice {
 /**
  * pt-webgpu is a converged progressive path tracer; its only wired denoisers are
  * 'none' and 'oidn-final'. 'svgf-real' is a real-time 1-spp spatiotemporal filter
- * and is intentionally NOT wired here — it joins the already-warned unsupported set
- * (atrous / atrous-variance / bmfr / neural) and degrades to no-denoise.
+ * and is intentionally NOT wired here. Explicit unsupported requests fail
+ * construction; only `auto` may deliberately resolve to another concrete mode.
  */
-describe('pt-webgpu unsupported denoisers degrade to no-denoise', () => {
-  it("'svgf-real' warns (pointing at oidn-final) and degrades to no-denoise", async () => {
+describe('pt-webgpu denoiser resolution is strict', () => {
+  it("'svgf-real' rejects before allocation instead of degrading to no-denoise", async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const engine = await createPTEngine_WebGPU({
-      device: makeStubDevice(),
-      denoiser: 'svgf-real',
-    });
-    const svgfWarn = warn.mock.calls.find((c) => String(c[0]).includes('denoiser="svgf-real"'));
-    expect(svgfWarn).toBeDefined();
-    expect(String(svgfWarn?.[0])).toContain('oidn-final');
-    // svgf-real must NOT register as a wired/experimental feature.
-    expect(engine.capabilities.experimentalFeatures?.has('pt-webgpu-svgf-real')).toBe(false);
-    expect(engine.capabilities.experimentalFeatures?.has('pt-webgpu-oidn-final')).toBe(false);
-    engine.dispose();
+    const device = makeStubDevice();
+    await expect(createPTEngine_WebGPU({
+      device,
+      denoiser: 'svgf-real' as never,
+    })).rejects.toThrow(/denoiser="svgf-real".*unsupported.*not degraded/s);
+    expect(device.createBuffer).not.toHaveBeenCalled();
+    expect(warn).not.toHaveBeenCalled();
     warn.mockRestore();
   });
 
@@ -47,24 +44,24 @@ describe('pt-webgpu unsupported denoisers degrade to no-denoise', () => {
       warn.mock.calls.some((c) => String(c[0]).includes("denoiser:'auto' resolved to 'none'")),
     ).toBe(true);
     expect(warn.mock.calls.some((c) => String(c[0]).includes('unsupported-denoiser'))).toBe(false);
-    expect(engine.capabilities.experimentalFeatures?.has('pt-webgpu-oidn-final')).toBe(false);
+    expect(engine.capabilities.activeFeatures).toEqual(new Set());
     engine.dispose();
     warn.mockRestore();
   });
 
   it.each(['atrous', 'atrous-variance', 'bmfr', 'neural'] as const)(
-    "'%s' warns and degrades to no-denoise",
+    "'%s' rejects instead of degrading to no-denoise",
     async (denoiser) => {
       const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-      const engine = await createPTEngine_WebGPU({
-        device: makeStubDevice(),
-        denoiser,
-      });
-      expect(
-        warn.mock.calls.some((c) => String(c[0]).includes(`denoiser="${denoiser}"`)),
-      ).toBe(true);
-      expect(engine.capabilities.experimentalFeatures?.has('pt-webgpu-oidn-final')).toBe(false);
-      engine.dispose();
+      const device = makeStubDevice();
+      await expect(createPTEngine_WebGPU({
+        device,
+        denoiser: denoiser as never,
+      })).rejects.toThrow(
+        new RegExp(`denoiser="${denoiser}".*unsupported.*not degraded`, 's'),
+      );
+      expect(device.createBuffer).not.toHaveBeenCalled();
+      expect(warn).not.toHaveBeenCalled();
       warn.mockRestore();
     },
   );
@@ -76,6 +73,7 @@ describe('pt-webgpu unsupported denoisers degrade to no-denoise', () => {
       denoiser: 'none',
     });
     expect(warn.mock.calls.some((c) => String(c[0]).includes('denoiser='))).toBe(false);
+    expect(engine.capabilities.activeFeatures).toEqual(new Set());
     engine.dispose();
     warn.mockRestore();
   });

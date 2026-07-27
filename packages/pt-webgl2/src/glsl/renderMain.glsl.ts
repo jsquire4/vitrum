@@ -1,3 +1,5 @@
+import { WEBGL2_MAX_PATH_STEPS } from '../limits.js';
+
 // renderMain.glsl — the pt-webgl2 trace-shader main() render-loop section
 // constants (extracted from composeTraceGlsl.ts, T3-D / D11-3). PURE DATA: these
 // GLSL string constants are assembled by composeTraceGlsl into the fragment body.
@@ -21,6 +23,26 @@
 
 // ── Section 1: function header + RNG init + BDPT light-subpath pass ───────
 const RENDER_MAIN_BDPT_SUBPATH = /* glsl */ `
+					float neeReservoirReplacementU( uint candidateOrdinal ) {
+
+						// A stateless stream reserved for vertex-reservoir replacement. It
+						// deliberately does not call rand()/pcgRand(), so the candidate pass
+						// replays the continuation path with the exact same RNG state as the
+						// main radiance pass. The light proposal and visibility trace save and
+						// restore their mutable RNG state separately at the capture site.
+						uint h = uint( gl_FragCoord.x ) * 0x9e3779b9u;
+						h ^= uint( gl_FragCoord.y ) * 0x85ebca6bu;
+						h ^= uint( seed ) * 0xc2b2ae35u;
+						h ^= candidateOrdinal * 0x27d4eb2fu;
+						h ^= h >> 16u;
+						h *= 0x7feb352du;
+						h ^= h >> 15u;
+						h *= 0x846ca68bu;
+						h ^= h >> 16u;
+						return float( h ) * ( 1.0 / 4294967296.0 );
+
+					}
+
 					void main() {
 
 						// init
@@ -28,7 +50,7 @@ const RENDER_MAIN_BDPT_SUBPATH = /* glsl */ `
 						sobolPixelIndex = ( uint( gl_FragCoord.x ) << 16 ) | uint( gl_FragCoord.y );
 						sobolPathIndex = uint( seed );
 
-						#if FEATURE_BDPT
+                                                #if FEATURE_BDPT && ! NEE_CANDIDATE_PASS
 
 						// Sprint 10c — dedicated light-subpath draw (one column per dispatch).
 						if ( uBdptLightSubpathPass != 0 ) {
@@ -37,10 +59,10 @@ const RENDER_MAIN_BDPT_SUBPATH = /* glsl */ `
 							// column), 2026-06-10 — RENDER-CHANGING for bdpt:true only; off-path
 							// byte-identical.
 							//
-							// The texture is 5 rows × N columns. Five fragments (one per row)
+                                                        // The texture is 8 rows × 8 columns. Eight fragments (one per row)
 							// cooperate to write one vertex: row 0 = position|kind, row 1 =
 							// normal|pdfFwd, row 2 = throughput|pdfRev, row 3 = BSDF state,
-							// row 4 = hit/material payload
+                                                        // row 4 = hit/material payload, rows 5..7 = medium stack
 							// (see bdpt_light_subpath.glsl.js).
 							// The original rng_initialize(gl_FragCoord.xy, seed) seeded with the
 							// Y coordinate, so each of the five fragments at column C traced a
@@ -54,7 +76,9 @@ const RENDER_MAIN_BDPT_SUBPATH = /* glsl */ `
 							// the same path. The main-entry rng_initialize(gl_FragCoord.xy, seed)
 							// above is left untouched — the eye pass still seeds with the full
 							// (x,y) pixel coordinate as before.
-							rng_initialize( vec2( gl_FragCoord.x, 0.0 ), seed );
+							// Predecessor patches are rendered by fragments in column k-1, so seed
+							// from the logical vertex column rather than the fragment's x coordinate.
+							rng_initialize( vec2( float( uBdptVertexCol ) + 0.5, 0.0 ), seed );
 
 							envRotation3x3 = mat3( environmentRotation );
 							invEnvRotation3x3 = inverse( envRotation3x3 );
@@ -69,44 +93,54 @@ const RENDER_MAIN_BDPT_SUBPATH = /* glsl */ `
 							);
 
 							RenderState bdptState = initRenderState();
-							bdptState.wavelength = sampleHeroWavelengthMIS( rand( 30 ), rand( 31 ), bdptState.wavelengthPdf );
-							#if FEATURE_FOG
-
-							Ray fogRay;
-							fogRay.origin = vec3( 0.0 );
-							fogRay.direction = vec3( 0.0, 1.0, 0.0 );
-							bdptState.fogMaterial.fogVolume = bvhIntersectFogVolumeHit(
-								fogRay.origin, - fogRay.direction,
-								materialIndexAttribute, materials,
-								bdptState.fogMaterial
-							);
-
-							#endif
-
-							vec4 bdptV0;
+							if ( uSpectralRendering != 0 ) {
+								bdptState.wavelength = uBdptSharedWavelength;
+								bdptState.wavelengthPdf = uBdptSharedWavelengthPdf;
+							} else {
+								bdptState.wavelength = sampleHeroWavelengthMIS( rand( 30 ), rand( 31 ), bdptState.wavelengthPdf );
+							}
+                                                        vec4 bdptV0;
 							vec4 bdptV1;
 							vec4 bdptV2;
 							vec4 bdptV3;
 							vec4 bdptV4;
+                                                        vec4 bdptV5;
+                                                        vec4 bdptV6;
+                                                        vec4 bdptV7;
+							vec4 bdptPredecessor0;
+							vec4 bdptPredecessor2;
 							writeLightSubpathVertex(
 								uBdptVertexCol,
 								uBdptMaxLightBounces,
-								uBdptLightPathTex,
-								bdptState.fogMaterial,
-								bdptState.wavelength,
+                                                                uBdptLightPathTex,
+                                                                bdptState.fogMaterial,
+                                                                bdptState.mediumStack,
+                                                                bdptState.wavelength,
 								bdptV0,
 								bdptV1,
 								bdptV2,
 								bdptV3,
-								bdptV4
+								bdptV4,
+                                                                bdptV5,
+                                                                bdptV6,
+                                                                bdptV7,
+								bdptPredecessor0,
+								bdptPredecessor2
 							);
 
-							if ( int( gl_FragCoord.x ) != uBdptVertexCol ) {
-								discard;
-							}
-
+							int bdptCol = int( gl_FragCoord.x );
 							int bdptRow = int( gl_FragCoord.y );
-							if ( bdptRow == 0 ) {
+							if ( bdptCol == uBdptVertexCol - 1 && bdptRow == 0 ) {
+								pc_fragColor = bdptPredecessor0;
+                                                        } else if (
+                                                                uBdptVertexCol >= 2 &&
+                                                                bdptCol == uBdptVertexCol - 2 &&
+                                                                bdptRow == 2
+                                                        ) {
+                                                                pc_fragColor = bdptPredecessor2;
+							} else if ( bdptCol != uBdptVertexCol ) {
+								discard;
+							} else if ( bdptRow == 0 ) {
 								pc_fragColor = bdptV0;
 							} else if ( bdptRow == 1 ) {
 								pc_fragColor = bdptV1;
@@ -114,10 +148,16 @@ const RENDER_MAIN_BDPT_SUBPATH = /* glsl */ `
 								pc_fragColor = bdptV2;
 							} else if ( bdptRow == 3 ) {
 								pc_fragColor = bdptV3;
-							} else {
+							} else if ( bdptRow == 4 ) {
 								pc_fragColor = bdptV4;
-							}
-							gNormalDepth = vec4( 0.0 );
+                                                        } else if ( bdptRow == 5 ) {
+                                                                pc_fragColor = bdptV5;
+                                                        } else if ( bdptRow == 6 ) {
+                                                                pc_fragColor = bdptV6;
+                                                        } else {
+                                                                pc_fragColor = bdptV7;
+                                                        }
+							gNormalDepth = vec4( 0.5, 1.0, 0.5, 0.0 );
 							gAlbedo = vec4( 0.0 );
 							return;
 						}
@@ -129,6 +169,7 @@ const RENDER_MAIN_BDPT_SUBPATH = /* glsl */ `
 const RENDER_MAIN_GBUFFER = /* glsl */ `
 						// get camera ray
 						Ray ray = getCameraRay();
+						vec3 primaryRayOrigin = ray.origin;
 
 						// inverse environment rotation
 						envRotation3x3 = mat3( environmentRotation );
@@ -144,10 +185,23 @@ const RENDER_MAIN_GBUFFER = /* glsl */ `
 							( environmentIntensity != 0.0 && envMapInfo.totalSum != 0.0 ? 1u : 0u )
 						);
 
+						#if NEE_CANDIDATE_PASS
+
+						// One uniformly selected NEE vertex is retained per continuation path.
+						// The final resolve multiplies by K (the number of eligible vertices),
+						// which is the exact Horvitz-Thompson compensation for inclusion 1/K.
+						uint neeCandidateCount = 0u;
+						vec4 neeCandidate0 = vec4( 0.0 );
+						vec4 neeCandidate1 = vec4( 0.0 );
+						vec4 neeCandidate2 = vec4( 0.0 );
+						vec4 neeCandidate3 = vec4( 0.0 );
+
+						#endif
+
 						// Sprint 5: G-buffer accumulators (written at primary hit; sky fallback if NO_HIT).
 						// gNormalDepth.rgb = world normal encoded to [0,1] via (n*0.5+0.5).
 						//   Sky sentinel: vec3(0.5,1.0,0.5) decodes to world-up (0,1,0).
-						// gNormalDepth.w   = linear depth (camera-space, always positive); 0.0 for sky.
+						// gNormalDepth.w   = primary-ray hit distance in scene units; 0.0 for sky.
 						// gAlbedo.rgb      = demodulated base color (surf.color), no lighting.
 						bool gbufWritten = false;
 						vec3 gbufNormalEnc = vec3( 0.5, 1.0, 0.5 ); // sky sentinel
@@ -160,8 +214,13 @@ const RENDER_MAIN_GBUFFER = /* glsl */ `
 						// surface results
 						SurfaceHit surfaceHit;
 						ScatterRecord scatterRec;
+                                                scatterRec.specularPdf = 0.0;
+                                                scatterRec.pdf = 0.0;
+                                                scatterRec.direction = vec3( 0.0 );
+                                                scatterRec.throughput = vec3( 0.0 );
+                                                scatterRec.sampledDelta = false;
 
-						#if FEATURE_BDPT
+                                                #if FEATURE_BDPT
 						// BDPT eye-subpath scratch stack (per-invocation local arrays — the
 						// WebGL2 analogue of @vitrum/pt-webgpu's read_write storage stack).
 						//   pos/nrm    — eye vertex geometry
@@ -174,13 +233,17 @@ const RENDER_MAIN_GBUFFER = /* glsl */ `
 						float bdptEyePdfFwd[ BDPT_MAX_EYE_DEPTH ];
 						float bdptEyePdfRev[ BDPT_MAX_EYE_DEPTH ];
 						bool  bdptEyeSpec[ BDPT_MAX_EYE_DEPTH ];
+						bool  bdptEyeMedium[ BDPT_MAX_EYE_DEPTH ];
 						int   bdptEyeDepth = 0;                 // depth of the current eye vertex
 						// Forward scatter pdf at the previous eye vertex (camera importance
 						// 1.0 at the pinhole — the one vertex without an aperture model; this
 						// replaces the old hardcoded eyePdfFwd=1.0 for scene-surface vertices).
 						float bdptPrevScatterPdf = 1.0;
 						vec3  bdptPrevPos = ( cameraWorldMatrix * vec4( 0.0, 0.0, 0.0, 1.0 ) ).xyz;
-						#endif
+                                                float bdptEyeSegmentDensity = 1.0;
+                                                float bdptEyeSegmentReverseDensity = 1.0;
+                                                float bdptPendingEnvironmentMisWeight = 1.0;
+                                                #endif
 
 						// path tracing state
 						RenderState state = initRenderState();
@@ -188,28 +251,84 @@ const RENDER_MAIN_GBUFFER = /* glsl */ `
 						// dim 30 for strategy selection, dim 31 for inverse-CDF on
 						// the chosen strategy. Returned pdf is the mixture pdf
 						// (balance heuristic), the correct MC denominator.
+						#if FEATURE_BDPT
+						if ( uSpectralRendering != 0 ) {
+							// The BDPT light path is global for this sample, so every eye
+							// connection must use the exact same hero wavelength and PDF.
+							state.wavelength = uBdptSharedWavelength;
+							state.wavelengthPdf = uBdptSharedWavelengthPdf;
+						} else {
+							state.wavelength = sampleHeroWavelengthMIS( rand( 30 ), rand( 31 ), state.wavelengthPdf );
+						}
+						#else
 						state.wavelength = sampleHeroWavelengthMIS( rand( 30 ), rand( 31 ), state.wavelengthPdf );
+						#endif
 						state.transmissiveTraversals = transmissiveBounces;
 						#if FEATURE_FOG
 
-						state.fogMaterial.fogVolume = bvhIntersectFogVolumeHit(
-							ray.origin, - ray.direction,
-							materialIndexAttribute, materials,
-							state.fogMaterial
-						);
+                                                bool initialMediumStackValid = bvhBuildMediumStack(
+                                                        ray.origin, - ray.direction,
+                                                        materialIndexAttribute, materials,
+                                                        state.mediumStack,
+                                                        state.fogMaterial
+                                                );
+                                                if ( ! initialMediumStackValid ) {
+                                                        pc_fragColor = vec4( 0.0 );
+                                                        gNormalDepth = vec4( 0.5, 1.0, 0.5, 0.0 );
+                                                        gAlbedo = vec4( 0.0 );
+                                                        #if NEE_CANDIDATE_PASS
+                                                        gNeeCandidate3 = vec4( 0.0 );
+                                                        #endif
+                                                        return;
+                                                }
 
 						#endif
 
-						for ( int i = 0; i < bounces; i ++ ) {
+                                                // bounces is a validated uniform, but several WebGL2 drivers only
+                                                // accept trace loops whose maximum trip count is statically visible.
+                                                // i preserves the physical-depth accounting below: transparent and
+                                                // volume crossings rewind it, while pathStep always advances and
+                                                // proves termination after at most 2 * WEBGL2_MAX_BOUNCES iterations.
+                                                for ( int pathStep = 0, i = 0; pathStep < ${WEBGL2_MAX_PATH_STEPS}; pathStep ++, i ++ ) {
 
-							sobolBounceIndex ++;
+                                                        if ( i >= bounces ) {
 
-							state.depth ++;
-							state.traversals = bounces - i;
-							state.firstRay = i == 0 && state.transmissiveTraversals == transmissiveBounces;
+                                                                break;
 
-							int hitType = traceScene( ray, state.fogMaterial, surfaceHit );
-							vec3 throughputRgb = wavelengthToRGB( state.wavelength, state.throughput, state.wavelengthPdf );
+                                                        }
+
+                                                        sobolBounceIndex ++;
+
+                                                        state.depth ++;
+                                                        state.traversals = bounces - i;
+                                                        state.firstRay = i == 0 && state.transmissiveTraversals == transmissiveBounces;
+
+                                                        int hitType = traceScene( ray, state.fogMaterial, surfaceHit );
+                                                        #if FEATURE_FOG
+                                                        if ( state.fogMaterial.fogVolume && hitType != NO_HIT ) {
+                                                                state.throughput *= fogFreeFlightRatioWeight(
+                                                                        materials,
+                                                                        state.fogMaterial,
+                                                                        max( surfaceHit.dist, 0.0 ),
+                                                                        state.wavelength
+                                                                );
+                                                        }
+                                                        #endif
+                                                        #if FEATURE_BDPT
+                                                        if ( state.fogMaterial.fogVolume && hitType != NO_HIT ) {
+                                                                float bdptSigmaT = max( state.fogMaterial.opacity, 0.0 );
+                                                                float bdptSurvival = exp( - bdptSigmaT * max( surfaceHit.dist, 0.0 ) );
+                                                                bdptEyeSegmentDensity *= hitType == FOG_HIT
+                                                                        ? bdptSigmaT * bdptSurvival
+                                                                        : bdptSurvival;
+                                                                // Reverse collision density belongs at
+                                                                // the edge origin, so it is seeded after
+                                                                // accepting that origin vertex.  Every
+                                                                // traversed segment contributes only its
+                                                                // symmetric survival factor here.
+                                                                bdptEyeSegmentReverseDensity *= bdptSurvival;
+							}
+							#endif
 `;
 
 // ── Section 3: forward analytic-light hit + NO_HIT/env + surface setup ────
@@ -228,9 +347,11 @@ const RENDER_MAIN_BDPT_EYE = /* glsl */ `
 							// silently assumed UNIFORM selection (count * discretePdf == 1) — exact
 							// only for a single light or equal powers; with >=2 unequal-power area
 							// lights it biased the MIS weight. Latent until H1 uploaded lights.count.
-							float sumLightPower = 0.0;
-							for ( uint pi = 0u; pi < lights.count; pi ++ ) {
-								sumLightPower += max( readLightInfo( lights.tex, pi ).power, 1e-20 );
+                                                        float sumLightPower = 0.0;
+                                                        for ( uint pi = 0u; pi < lights.count; pi ++ ) {
+                                                                sumLightPower += finitePositiveLightPower(
+                                                                        readLightInfo( lights.tex, pi ).power
+                                                                );
 							}
 							for ( uint i = 0u; i < lights.count; i ++ ) {
 
@@ -248,19 +369,34 @@ const RENDER_MAIN_BDPT_EYE = /* glsl */ `
 								}
 
 							}
-							if ( forwardAreaLightHit ) {
+                                                        if ( forwardAreaLightHit ) {
 
-								vec3 forwardAreaLightRgb = forwardAreaLightRec.emission * throughputRgb;
+                                                                vec3 forwardAreaLightThroughput = state.throughput * pathThroughputFromRgb( forwardAreaLightRec.emission, state.wavelength );
+                                                                vec3 forwardAreaLightRgb = wavelengthToRGB( state.wavelength, forwardAreaLightThroughput, state.wavelengthPdf );
 
-								#if FEATURE_MIS
+                                                                #if FEATURE_BDPT
+
+                                                                // Finite-emitter paths are a single BDPT family. The c=0
+                                                                // endpoint connection owns non-delta arrivals; only camera
+                                                                // and delta-chain hits are unique forward strategies.
+                                                                if ( state.firstRay || scatterRec.sampledDelta ) {
+                                                                        pc_fragColor.rgb += forwardAreaLightRgb;
+                                                                }
+                                                                break;
+
+                                                                #else
+
+                                                                #if FEATURE_MIS
 
 								// NOTE: Only area lights are supported for forward sampling and can be hit.
 								// Camera-visible and transmissive paths have no matching NEE strategy at the
 								// previous vertex, so they keep full emission.
 								if ( ! state.firstRay && ! state.transmissiveRay ) {
-									float discreteSelectPdf = sumLightPower > 1e-30
-										? max( readLightInfo( lights.tex, forwardAreaLightIndex ).power, 1e-20 ) / sumLightPower
-										: 1.0 / max( float( lights.count ), 1.0 );
+                                                                        float discreteSelectPdf = sumLightPower > 0.0
+                                                                                ? finitePositiveLightPower(
+                                                                                        readLightInfo( lights.tex, forwardAreaLightIndex ).power
+                                                                                ) / sumLightPower
+                                                                                : 0.0;
 									float lightSamplePdf = forwardAreaLightRec.pdf / lightsDenom * float( lights.count ) * discreteSelectPdf;
 									float misWeight = misHeuristic( scatterRec.pdf, lightSamplePdf );
 									forwardAreaLightRgb *= misWeight;
@@ -268,64 +404,96 @@ const RENDER_MAIN_BDPT_EYE = /* glsl */ `
 
 								#endif
 
-								pc_fragColor.rgb += forwardAreaLightRgb;
-								break;
+                                                                pc_fragColor.rgb += forwardAreaLightRgb;
+                                                                break;
 
-							}
+                                                                #endif
+
+                                                        }
 
 							if ( hitType == NO_HIT ) {
 
-								if ( state.firstRay || state.transmissiveRay ) {
+                                                                #if FEATURE_BDPT
+                                                                if ( state.firstRay || scatterRec.sampledDelta ) {
+                                                                #else
+                                                                if ( state.firstRay || state.transmissiveRay ) {
+                                                                #endif
 
-									pc_fragColor.rgb += sampleBackground( ray.direction, rand2( 2 ) ) * throughputRgb;
+									vec3 background = sampleBackground( ray.direction, rand2( 2 ) );
+									vec3 backgroundThroughput = state.throughput * pathThroughputFromRgb( background, state.wavelength );
+									pc_fragColor.rgb += wavelengthToRGB( state.wavelength, backgroundThroughput, state.wavelengthPdf );
 									pc_fragColor.a = backgroundAlpha;
 
-								} else {
+                                                                } else {
 
-									#if FEATURE_MIS
+                                                                        #if FEATURE_MIS
 
 									// get the PDF of the hit envmap point
-									vec3 envColor;
-									float envPdf = sampleEquirect( envRotation3x3 * ray.direction, envColor );
-									envPdf /= lightsDenom;
+                                                                        vec3 envColor;
+                                                                        float envPdf = sampleEquirect( envRotation3x3 * ray.direction, envColor );
+                                                                        #if ! FEATURE_BDPT
+                                                                        envPdf /= lightsDenom;
+                                                                        #endif
 
 									// and weight the contribution
 									// D3 — state.envMapIntensity scales the BSDF half of the env
 									// estimator by the LAST shaded surface's per-material env scale
 									// (the NEE half applies the same factor in
 									// directLightContribution → consistent MIS, radiance-only).
-									float misWeight = misHeuristic( scatterRec.pdf, envPdf );
-									pc_fragColor.rgb += state.envMapIntensity * environmentIntensity * envColor * throughputRgb * misWeight;
+                                                                        #if FEATURE_BDPT
+                                                                        float misWeight =
+                                                                                bdptPendingEnvironmentMisWeight;
+                                                                        #else
+                                                                        float misWeight =
+                                                                                misHeuristic( scatterRec.pdf, envPdf );
+                                                                        #endif
+									vec3 environmentThroughput = state.throughput * pathThroughputFromRgb( envColor, state.wavelength );
+									pc_fragColor.rgb += state.envMapIntensity * environmentIntensity * wavelengthToRGB( state.wavelength, environmentThroughput, state.wavelengthPdf ) * misWeight;
 
 									#else
 
-									pc_fragColor.rgb +=
-										state.envMapIntensity *
-										environmentIntensity *
-										sampleEquirectColor( envMapInfo.map, envRotation3x3 * ray.direction ) *
-										throughputRgb;
+									vec3 envColor = sampleEquirectColor( envMapInfo.map, envRotation3x3 * ray.direction );
+									vec3 environmentThroughput = state.throughput * pathThroughputFromRgb( envColor, state.wavelength );
+									pc_fragColor.rgb += state.envMapIntensity * environmentIntensity * wavelengthToRGB( state.wavelength, environmentThroughput, state.wavelengthPdf );
 
-									#endif
+                                                                        #endif
 
-								}
+                                                                }
 								break;
 
 							}
 
 							uint materialIndex = uTexelFetch1D( materialIndexAttribute, surfaceHit.faceIndices.w ).r;
-							Material material = readMaterialInfo( materials, materialIndex );
+							MaterialControl materialControl;
+							readMaterialControl( materials, materialIndex, materialControl );
+							bool activeMaterialMatte = materialControl.matte;
+							bool activeMaterialCastShadow = materialControl.castShadow;
+							bool activeMaterialUnlit = materialControl.unlit;
+							bool activeMaterialMeshEmitterCastShadowDisabled = materialControl.meshEmitterCastShadowDisabled;
+							uint activeMaterialFlags = materialControl.flags;
 
 							#if FEATURE_FOG
 
 							if ( hitType == FOG_HIT ) {
 
-								material = state.fogMaterial;
+								activeMaterialMatte = state.fogMaterial.matte;
+								activeMaterialCastShadow = state.fogMaterial.castShadow;
+								activeMaterialUnlit = state.fogMaterial.unlit;
+								activeMaterialMeshEmitterCastShadowDisabled = state.fogMaterial.meshEmitterCastShadowDisabled;
+								activeMaterialFlags = state.fogMaterial.flags;
 								state.accumulatedRoughness += 0.2;
 
-							} else if ( material.fogVolume ) {
-
-								state.fogMaterial = material;
-								state.fogMaterial.fogVolume = surfaceHit.side == 1.0;
+                                                        } else if ( materialControl.fogVolume ) {
+                                                                bool mediumStackValid = surfaceHit.side == 1.0
+                                                                        ? enterMedium(
+                                                                                state.mediumStack, materialIndex,
+                                                                                materials, state.fogMaterial
+                                                                        )
+                                                                        : leaveMedium(
+                                                                                state.mediumStack, materialIndex,
+                                                                                materials, state.fogMaterial
+                                                                        );
+                                                                if ( ! mediumStackValid ) break;
 
 								ray.origin = stepRayOrigin( ray.origin, ray.direction, - surfaceHit.faceNormal, surfaceHit.dist );
 
@@ -338,7 +506,7 @@ const RENDER_MAIN_BDPT_EYE = /* glsl */ `
 							#endif
 
 							// early out if this is a matte material
-							if ( material.matte && state.firstRay ) {
+							if ( activeMaterialMatte && state.firstRay ) {
 
 								pc_fragColor = vec4( 0.0 );
 								break;
@@ -347,7 +515,7 @@ const RENDER_MAIN_BDPT_EYE = /* glsl */ `
 
 							// if we've determined that this is a shadow ray and we've hit an item with no shadow casting
 							// then skip it
-							if ( ! material.castShadow && state.isShadowRay ) {
+							if ( ! activeMaterialCastShadow && state.isShadowRay ) {
 
 								ray.origin = stepRayOrigin( ray.origin, ray.direction, - surfaceHit.faceNormal, surfaceHit.dist );
 								continue;
@@ -355,13 +523,21 @@ const RENDER_MAIN_BDPT_EYE = /* glsl */ `
 							}
 
 							SurfaceRecord surf;
-							if (
-								getSurfaceRecord(
-									material, materialIndex, surfaceHit, attributesArray,
+							int surfaceStatus = HIT_SURFACE;
+							if ( hitType == FOG_HIT ) {
+
+								setFogSurfaceRecord( state.fogMaterial, surf );
+
+							} else {
+
+								surfaceStatus = getSurfaceRecord(
+									materialIndex, surfaceHit, attributesArray,
 									state.accumulatedRoughness, int( state.depth ), state.wavelength,
 									surf
-								) == SKIP_SURFACE
-							) {
+								);
+
+							}
+							if ( surfaceStatus == SKIP_SURFACE ) {
 
 								// only allow a limited number of transparency discards otherwise we could
 								// crash the context with too long a loop.
@@ -376,29 +552,22 @@ const RENDER_MAIN_BDPT_EYE = /* glsl */ `
 
 // ── Section 5: G-buffer capture + surface shading + NEE + BDPT connection ─
 const RENDER_MAIN_SURFACE_BDPT_EYE = /* glsl */ `
+
 							// Sprint 5: G-buffer primary-hit capture (once per path, at first real surface hit).
-							// Linear depth: project world-space hit point onto camera -Z axis.
-							//   camForward = camera's -Z world-space direction (Three.js convention).
-							//   camPos     = camera world-space position.
-							//   linearDepth = dot( hitPoint - camPos, camForward ) — always positive in front of camera.
-							if ( state.firstRay && ! gbufWritten ) {
-								vec3 hitPos = ray.origin + ray.direction * surfaceHit.dist;
-								// Camera forward direction in world space: cameraWorldMatrix * (0,0,-1,0)
-								vec3 camForward = normalize( ( cameraWorldMatrix * vec4( 0.0, 0.0, - 1.0, 0.0 ) ).xyz );
-								// Camera world position: cameraWorldMatrix * (0,0,0,1)
-								vec3 camPos = ( cameraWorldMatrix * vec4( 0.0, 0.0, 0.0, 1.0 ) ).xyz;
-								// Linear (positive) depth along camera -Z axis.
-								gbufLinearDepth = dot( hitPos - camPos, camForward );
+							// Depth is distance from the original primary-ray origin to the
+							// first accepted hit; alpha pass-through is not a hit.
+							if ( ! gbufWritten ) {
+								gbufLinearDepth = distance( ray.origin + ray.direction * surfaceHit.dist, primaryRayOrigin );
 								// World normal encoded to [0,1] (decode: xyz*2-1).
 								gbufNormalEnc = surf.normal * 0.5 + 0.5;
 								// Demodulated base color: surf.color holds baseColor x ao (no lighting).
-								gbufAlbedo = surf.color;
+								gbufAlbedo = surf.rgbColor;
 								gbufWritten = true;
 							}
 
-							if ( material.unlit ) {
+							if ( activeMaterialUnlit ) {
 
-								pc_fragColor.rgb += surf.color * throughputRgb;
+								pc_fragColor.rgb += wavelengthToRGB( state.wavelength, state.throughput * pathThroughputFromRgb( surf.color, state.wavelength ), state.wavelengthPdf );
 								break;
 
 							}
@@ -414,187 +583,276 @@ const RENDER_MAIN_SURFACE_BDPT_EYE = /* glsl */ `
 							// On the primary hit there is no prior scatter (camera) → handled by
 							// the firstRay branch at the emission site.
 							float incomingBsdfPdf = scatterRec.pdf;
-							bool incomingWasSpecular = scatterRec.specularPdf > 0.999;
+                                                        bool incomingWasDelta = scatterRec.sampledDelta;
 
+							// Emission belongs to the path that already arrived at this surface,
+							// so it is accumulated before selecting local NEE versus continuation.
+                                                        #if FEATURE_BDPT
+                                                        // The c=0 endpoint connection owns every ordinary finite
+                                                        // mesh-emitter arrival. Preserve only camera/delta-chain hits.
+                                                        bool skipForwardMeshEmission =
+                                                                ! state.firstRay && ! incomingWasDelta;
+                                                        #else
+                                                        bool skipForwardMeshEmission =
+                                                                activeMaterialMeshEmitterCastShadowDisabled &&
+                                                                ! state.firstRay && ! incomingWasDelta;
+                                                        #endif
+							if ( ! skipForwardMeshEmission ) {
+								if (
+									uMeshLightCount != 0u &&
+                                                                        uTotalEmissivePower > 0.0 &&
+                                                                        ! state.firstRay &&
+                                                                        ! incomingWasDelta &&
+									surf.emission != vec3( 0.0 )
+								) {
+									float cosLight = dot( surf.faceNormal, ray.direction );
+									float neePdf = meshAreaLightForwardPdf(
+										surfaceHit.dist * surfaceHit.dist,
+										cosLight,
+										uTotalEmissivePower,
+										surf.emission
+									) / lightsDenom;
+									float emisMisWeight = misHeuristic( incomingBsdfPdf, neePdf );
+									pc_fragColor.rgb += wavelengthToRGB(
+										state.wavelength,
+										state.throughput * pathThroughputFromRgb(
+											surf.emission, state.wavelength
+										),
+										state.wavelengthPdf
+									) * emisMisWeight;
+								} else {
+									pc_fragColor.rgb += wavelengthToRGB(
+										state.wavelength,
+										state.throughput * pathThroughputFromRgb(
+											surf.emission, state.wavelength
+										),
+										state.wavelengthPdf
+									);
+								}
+							}
 							// Sprint 7: gate SSS by per-material TRANSLUCENT_BIT and back-face traversal.
 							// Falls back to standard BSDF sampling for non-translucent materials.
 							bool canUseSss =
 								surf.sssSigmaT > 0.0 &&
-								( ( material.flags & TRANSLUCENT_BIT ) != 0u ) &&
+								( ( activeMaterialFlags & TRANSLUCENT_BIT ) != 0u ) &&
 								! surf.frontFace;
 							if ( canUseSss ) {
+
 								scatterRec = sssSample( - ray.direction, surf, state.wavelength );
 								scatterRec.throughput *= activeLayerThroughput( surf, state.wavelength );
+
 							} else {
+
 								scatterRec = bsdfSample( - ray.direction, surf, state.wavelength );
+
 							}
 							state.isShadowRay = scatterRec.specularPdf < rand( 4 );
 
 							bool isBelowSurface = ! surf.volumeParticle && dot( scatterRec.direction, surf.faceNormal ) < 0.0;
-							vec3 hitPoint = stepRayOrigin( ray.origin, ray.direction, isBelowSurface ? - surf.faceNormal : surf.faceNormal, surfaceHit.dist );
+							vec3 geometricHitPoint =
+								ray.origin + ray.direction * surfaceHit.dist;
+                                                        vec3 hitPoint = stepRayOrigin( ray.origin, ray.direction, isBelowSurface ? - surf.faceNormal : surf.faceNormal, surfaceHit.dist );
 
-							// next event estimation
-							#if FEATURE_MIS
+                                                        #if FEATURE_BDPT
+                                                        // Both the radiance draw and the NEE replay need the
+                                                        // same eye stack so s=0/s=1 can share the explicit
+                                                        // s>=2 power-heuristic denominator.
+                                                        bool bdptEyeIsSpec = scatterRec.sampledDelta;
+                                                        if ( bdptEyeDepth < BDPT_MAX_EYE_DEPTH ) {
+                                                                bdptEyePos[ bdptEyeDepth ] = hitPoint;
+                                                                bdptEyeNrm[ bdptEyeDepth ] = surf.volumeParticle
+                                                                        ? vec3( 0.0 )
+                                                                        : surf.normal;
+                                                                bdptEyePdfFwd[ bdptEyeDepth ] = 0.0;
+                                                                bdptEyePdfRev[ bdptEyeDepth ] =
+                                                                        bdptPrevScatterPdf * bdptEyeSegmentDensity;
+                                                                bdptEyeSpec[ bdptEyeDepth ] = bdptEyeIsSpec;
+                                                                bdptEyeMedium[ bdptEyeDepth ] = surf.volumeParticle;
+                                                        }
+                                                        #endif
 
-							pc_fragColor.rgb += directLightContribution( - ray.direction, surf, state, hitPoint );
+							// Next-event estimation is captured in a dedicated path-replay pass.
+							// The layered direct BSDF is then evaluated by a separate fragment
+							// program with no path-bounce loop, avoiding the ANGLE/SwiftShader
+							// non-termination triggered by nesting that evaluator in this loop.
+							#if FEATURE_MIS && NEE_CANDIDATE_PASS
+
+							neeCandidateCount ++;
+							if (
+								neeReservoirReplacementU( neeCandidateCount ) <
+								1.0 / float( neeCandidateCount )
+							) {
+
+								// A replacement always overwrites the prior record, including when
+								// this vertex's single light proposal is invalid or occluded. Zero
+								// proposals are part of the original proposal distribution and must
+								// never condition either K or the reservoir.
+								neeCandidate0 = vec4( 0.0 );
+								neeCandidate1 = vec4( 0.0 );
+								neeCandidate2 = vec4( 0.0 );
+								neeCandidate3 = vec4( 0.0 );
+
+								#if RANDOM_TYPE != 2
+								uvec4 neeSavedWhiteNoiseSeed = WHITE_NOISE_SEED;
+								#endif
+								uint neeSavedSobolBounceIndex = sobolBounceIndex;
+
+                                                                        DirectLightSample neeLightSample = sampleDirectLight(
+                                                                                surf, geometricHitPoint
+                                                                        );
+                                                                        neeLightSample = prepareDirectLightSample(
+                                                                        surf, state, geometricHitPoint, neeLightSample
+                                                                );
+
+								#if RANDOM_TYPE != 2
+								WHITE_NOISE_SEED = neeSavedWhiteNoiseSeed;
+								#endif
+                                                                sobolBounceIndex = neeSavedSobolBounceIndex;
+
+                                                                float neeCrossFamilyMisWeight = 1.0;
+                                                                #if FEATURE_BDPT
+                                                                if (
+                                                                        neeLightSample.valid &&
+                                                                        neeLightSample.bdptInfiniteKind > 0.5 &&
+                                                                        bdptEyeDepth < BDPT_MAX_EYE_DEPTH
+                                                                ) {
+                                                                        neeCrossFamilyMisWeight =
+                                                                                bdptInfiniteEyeFamilyWeight(
+                                                                                        1,
+                                                                                        neeLightSample.bdptInfiniteKind < 1.5,
+                                                                                        false,
+                                                                                        neeLightSample.pdf,
+                                                                                        neeLightSample.bdptLaunchPdf,
+                                                                                        neeLightSample.direction,
+                                                                                        surf,
+                                                                                        hitPoint,
+                                                                                        - ray.direction,
+                                                                                        state.wavelength,
+                                                                                        bdptEyeDepth,
+                                                                                        bdptEyePos,
+                                                                                        bdptEyeNrm,
+                                                                                        bdptEyePdfFwd,
+                                                                                        bdptEyePdfRev,
+                                                                                        bdptEyeSpec,
+                                                                                        bdptEyeMedium
+                                                                                );
+                                                                        if ( neeCrossFamilyMisWeight <= 0.0 ) {
+                                                                                neeLightSample.valid = false;
+                                                                        }
+                                                                }
+                                                                #endif
+
+                                                                if ( neeLightSample.valid ) {
+
+									uint neeFlags = 1u;
+									if ( surf.volumeParticle ) neeFlags |= 2u;
+									if ( neeLightSample.delta > 0.5 ) neeFlags |= 4u;
+									neeFlags |= ( min( state.depth, 127u ) << 3u );
+
+                                                                        neeCandidate0 = vec4( ray.origin, state.accumulatedRoughness );
+                                                                        neeCandidate1 = vec4( ray.direction, state.wavelength );
+                                                                        neeCandidate3 = vec4(
+                                                                                neeOctEncodeDirection(
+                                                                                        neeLightSample.direction
+                                                                                ),
+                                                                                neeCrossFamilyMisWeight,
+                                                                                uintBitsToFloat( neeFlags )
+                                                                        );
+
+									if ( surf.volumeParticle ) {
+
+                                                                                // Fog has a closed-form HG phase function. Resolve it here without
+                                                                                // invoking the layered evaluator; the no-loop pass only applies K.
+                                                                                float fogPdf = mediumPhasePdf(
+                                                                                        - ray.direction,
+                                                                                        neeLightSample.direction,
+                                                                                        surf.sssAnisotropyG
+                                                                                );
+                                                                                vec3 fogColor = surf.color * fogPdf;
+                                                                                vec3 fogContribution =
+                                                                                        evaluatePreparedDirectLightSample(
+                                                                                                state,
+                                                                                                neeLightSample,
+                                                                                                fogColor,
+												fogPdf,
+                                                                                                1.0,
+                                                                                                1.0
+                                                                                        );
+                                                                                #if FEATURE_BDPT
+                                                                                float legacyFogMisWeight =
+                                                                                        neeLightSample.delta > 0.5
+                                                                                                ? 1.0
+                                                                                                : misHeuristic(
+                                                                                                        neeLightSample.pdf,
+                                                                                                        fogPdf
+                                                                                                );
+                                                                                if ( legacyFogMisWeight > 0.0 ) {
+                                                                                        fogContribution *=
+                                                                                                neeCrossFamilyMisWeight /
+                                                                                                legacyFogMisWeight;
+                                                                                } else {
+                                                                                        fogContribution = vec3( 0.0 );
+                                                                                }
+                                                                                #endif
+                                                                                neeCandidate2 = vec4(
+                                                                                        fogContribution,
+                                                                                        neeLightSample.pdf
+                                                                                );
+
+									} else {
+
+										vec3 neeSourceThroughput =
+											state.throughput *
+											pathThroughputFromRgb(
+												neeLightSample.emission,
+												state.wavelength
+											) * neeLightSample.contributionScale;
+										neeCandidate2 = vec4(
+											neeSourceThroughput,
+											neeLightSample.pdf
+										);
+
+									}
+
+								}
+
+							}
 
 							#endif
 
-							// Sprint 10c — BDPT explicit connections (depth > 0 only; skip primary hit).
-							// At each indirect bounce the eye subpath attempts an explicit connection
-							// to every stored light-subpath vertex in uBdptLightPathTex.
-							// Primary hit (state.firstRay) is skipped to avoid double-counting with
-							// the unidirectional NEE path above (direct_light_contribution_function).
-							#if FEATURE_BDPT
+                                                        // General BDPT explicit connections. At every eye vertex, including
+                                                        // the primary hit, the eye subpath attempts an explicit connection
+                                                        // to every stored light-subpath vertex in uBdptLightPathTex.
+                                                        // Finite ordinary NEE is disabled while this estimator owns the family;
+                                                        // Infinite emitters share one cross-family denominator across
+                                                        // forward escape (s=0), replay NEE (s=1), and c>=1 BDPT.
+                                                        #if FEATURE_BDPT && ! NEE_CANDIDATE_PASS
 
 							// uBdptLightPathTex validity is enforced by the host bridge:
 							// driveForkMaterialUniforms() forces uBdptEnabled=false when the
 							// texture is null, so FEATURE_BDPT=1 implies the texture is bound.
 							//
-							// Push this eye vertex (E_bdptEyeDepth) onto the local scratch stack
-							// BEFORE connecting: pdfRev = forward scatter pdf at the previous
-							// vertex that produced it (camera importance 1.0 at the primary hit).
-							// pdfFwd is filled one bounce later by the swapped reverse density
-							// (and overridden by the connection straddle when this is E_e/E_{e-1}).
-							bool bdptEyeIsSpec = ( surf.transmission > 0.5 && surf.filteredRoughness < 0.05 );
-							if ( bdptEyeDepth < BDPT_MAX_EYE_DEPTH ) {
-								bdptEyePos[ bdptEyeDepth ] = hitPoint;
-								bdptEyeNrm[ bdptEyeDepth ] = surf.normal;
-								bdptEyePdfFwd[ bdptEyeDepth ] = 0.0; // filled next bounce / overridden
-								bdptEyePdfRev[ bdptEyeDepth ] = bdptPrevScatterPdf;
-								bdptEyeSpec[ bdptEyeDepth ] = bdptEyeIsSpec;
-							}
-								// Skip the primary hit: an explicit connection there double-counts
-								// with the unidirectional NEE above (fork !state.firstRay).
-								if ( ! state.firstRay && bdptEyeDepth < BDPT_MAX_EYE_DEPTH ) {
-									vec3 throughputRgbBdpt = wavelengthToRGB( state.wavelength, state.throughput, state.wavelengthPdf );
-									// bdptLvi=0 is the emitter endpoint, which matches the same
-									// per-bounce direct-light strategy already estimated by NEE.
-									// Start at the first scattered light vertex so the safe
-									// maxLightBounces=1 default remains radiometrically neutral.
-									for ( int bdptLvi = 1; bdptLvi < uBdptMaxLightBounces; bdptLvi ++ ) {
+                                                                if ( bdptEyeDepth < BDPT_MAX_EYE_DEPTH ) {
+                                                                        // Start at c=0 so maxLightBounces=1 is the finite direct
+                                                                        // endpoint strategy, then extend through c>=1 scattering vertices.
+                                                                        for ( int bdptLvi = 0; bdptLvi < 8; bdptLvi ++ ) {
+										if ( bdptLvi >= uBdptMaxLightBounces ) break;
 										pc_fragColor.rgb += evaluateBdptConnection(
 											hitPoint,
 											surf.normal,
 										- ray.direction,    // worldWo at eye vertex
-										throughputRgbBdpt,
+										state.throughput,
 										surf,
 										state,
 										bdptEyeDepth,
-										bdptEyePos, bdptEyeNrm, bdptEyePdfFwd, bdptEyePdfRev, bdptEyeSpec,
-										bdptLvi
-									);
+											bdptEyePos, bdptEyeNrm, bdptEyePdfFwd, bdptEyePdfRev,
+											bdptEyeSpec, bdptEyeMedium,
+											bdptLvi
+										);
 								}
 							}
 
 							#endif
-`;
-
-// ── Section 6: caustic manifold-NEE heuristic (strategy 1) ─────────────── 
-const RENDER_MAIN_CAUSTIC_MANIFOLD = /* glsl */ `
-							// RFE-05 strategy behavior hook:
-							// strategy 1 ('manifold-nee') => deterministic refraction-walk heuristic.
-							//   NOT the Newton-solve MNEE of pt-webgpu. Walks the refracted chain,
-							//   treats escape-to-environment as reachedLight=true, adds
-							//   throughput * color * pow(dot(walkDir,-rayDir), 10) as a focus weight.
-							//   No constraint manifold, no Newton solver — a heuristic approximation.
-							//   Port of the real pt-webgpu MNEE is a road-to-100 fidelity item.
-							// strategy 2 ('photon-map') => deterministic cone-traced density estimate.
-							//   Casts 8 cone sample rays, uses an inverse-distance kernel for hits and
-							//   adds 1.0 for escaped rays (no-hit). Known approximation: the escaped-ray
-							//   energy-add (~21% energy bias at typical cone sizes) is a deliberate
-							//   trade-off for visual clarity over physical accuracy, not a full
-							//   bidirectional photon map.
-							if ( uCausticStrategy > 0 && surf.transmission > 0.0 ) {
-								if ( uCausticStrategy == 1 ) {
-									// Skip manifold mode on rough refractive surfaces: the fixed-step
-									// walk is intended for near-specular interfaces.
-									if ( surf.filteredRoughness < 0.12 ) {
-										float etaM = surf.frontFace ? ( 1.0 / max( surf.ior, 1.0 ) ) : max( surf.ior, 1.0 );
-										vec3 walkDir = refract( ray.direction, surf.normal, etaM );
-										if ( length( walkDir ) > 0.0 ) {
-											walkDir = normalize( walkDir );
-											vec3 walkOrigin = hitPoint;
-											int maxWalkIter = int( clamp( floor( uMneeMaxIterations + 0.5 ), 1.0, 16.0 ) );
-											int maxChain = int( clamp( floor( uMneeMaxChainLength + 0.5 ), 1.0, 8.0 ) );
-											int traversedChain = 0;
-											bool reachedLight = false;
-											float chainAttenuation = 1.0;
-											for ( int walkIter = 0; walkIter < 16; walkIter ++ ) {
-												if ( walkIter >= maxWalkIter || traversedChain >= maxChain ) break;
-												Ray walkRay;
-												walkRay.origin = walkOrigin;
-												walkRay.direction = walkDir;
-												SurfaceHit walkHit;
-												int walkHitType = traceScene( walkRay, state.fogMaterial, walkHit );
-												if ( walkHitType == NO_HIT ) {
-													reachedLight = true;
-													break;
-												}
-												uint walkMaterialIndex = uTexelFetch1D( materialIndexAttribute, walkHit.faceIndices.w ).r;
-												Material walkMaterial = readMaterialInfo( materials, walkMaterialIndex );
-												if ( walkMaterial.transmission <= 0.0 ) {
-													break;
-												}
-												vec3 walkHitPoint = stepRayOrigin( walkOrigin, walkDir, walkHit.faceNormal, walkHit.dist );
-												float etaWalk = walkHit.side > 0.0
-													? ( 1.0 / max( walkMaterial.ior, 1.0 ) )
-													: max( walkMaterial.ior, 1.0 );
-												vec3 nextDir = refract( walkDir, walkHit.faceNormal, etaWalk );
-												if ( length( nextDir ) <= 1e-5 ) {
-													break;
-												}
-												walkOrigin = walkHitPoint;
-												walkDir = normalize( nextDir );
-												chainAttenuation *= clamp( walkMaterial.transmission, 0.0, 1.0 );
-												traversedChain ++;
-											}
-											if ( reachedLight ) {
-												float focus = pow( max( dot( walkDir, - ray.direction ), 0.0 ), 10.0 );
-												float chainNorm = 1.0 / max( float( traversedChain + 1 ), 1.0 );
-												float manifoldWeight = focus * chainNorm * chainAttenuation;
-												pc_fragColor.rgb += throughputRgb * surf.color * manifoldWeight;
-											}
-										}
-									}
-								} else if ( uCausticStrategy == 2 ) {`;
-
-// ── Section 7: caustic photon-density estimate (strategy 2) ─────────────── 
-const RENDER_MAIN_CAUSTIC_PHOTON = /* glsl */ `
-									// Photon-density style estimate: cast a deterministic refracted cone
-									// and estimate visible light density with an inverse-distance kernel.
-									float etaP = surf.frontFace ? ( 1.0 / max( surf.ior, 1.0 ) ) : max( surf.ior, 1.0 );
-									vec3 refrDir = refract( ray.direction, surf.normal, etaP );
-									if ( length( refrDir ) > 0.0 ) {
-										refrDir = normalize( refrDir );
-										vec3 tangentA = normalize( abs( refrDir.x ) > 0.5 ? cross( refrDir, vec3( 0.0, 1.0, 0.0 ) ) : cross( refrDir, vec3( 1.0, 0.0, 0.0 ) ) );
-										vec3 tangentB = normalize( cross( refrDir, tangentA ) );
-										float coneRadius = mix( 0.01, 0.12, clamp( surf.filteredRoughness, 0.0, 1.0 ) );
-										float photonAccum = 0.0;
-										const int PHOTON_SAMPLES = 8;
-										for ( int p = 0; p < PHOTON_SAMPLES; p ++ ) {
-											float u = ( float( p ) + 0.5 ) / float( PHOTON_SAMPLES );
-											float v = rand( 42 + p );
-											float r = coneRadius * sqrt( u );
-											float phi = 6.28318530718 * v;
-											vec3 coneDir = normalize( refrDir + ( cos( phi ) * r ) * tangentA + ( sin( phi ) * r ) * tangentB );
-											Ray photonRay;
-											photonRay.origin = hitPoint;
-											photonRay.direction = coneDir;
-											SurfaceHit photonHit;
-											int photonHitType = traceScene( photonRay, state.fogMaterial, photonHit );
-											if ( photonHitType == NO_HIT ) {
-												photonAccum += 1.0;
-											} else {
-												float d = max( photonHit.dist, 1e-3 );
-												photonAccum += 1.0 / ( 1.0 + d * d );
-											}
-										}
-										float density = photonAccum / float( PHOTON_SAMPLES );
-										pc_fragColor.rgb += throughputRgb * surf.color * density * surf.transmission;
-									}
-								}
-							}
 `;
 
 // ── Section 8: roughness accum + emissive MIS + scatter + throughput + RR ─
@@ -606,12 +864,13 @@ const RENDER_MAIN_SCATTER = /* glsl */ `
 							if ( ! surf.volumeParticle ) {
 
 								bool sampledTransmissionLobe =
-									surf.transmission > 0.001 &&
+                                                                surf.transmission > 0.0 &&
 									( isBelowSurface || dot( scatterRec.direction, surf.faceNormal * surfaceHit.side ) < 0.0 );
 								if ( sampledTransmissionLobe ) {
 
-									vec3 transmissionWo = normalize( surf.normalInvBasis * - ray.direction );
-									vec3 transmissionWi = normalize( surf.normalInvBasis * scatterRec.direction );
+									mat3 transmissionInvBasis = transpose( surf.normalBasis );
+									vec3 transmissionWo = normalize( transmissionInvBasis * - ray.direction );
+									vec3 transmissionWi = normalize( transmissionInvBasis * scatterRec.direction );
 									vec3 transmissionHalf = getHalfVector( transmissionWi, transmissionWo, surf.eta );
 									state.accumulatedRoughness += sin( acosApprox( clamp( abs( transmissionHalf.z ), 0.0, 1.0 ) ) );
 
@@ -628,36 +887,6 @@ const RENDER_MAIN_SCATTER = /* glsl */ `
 
 								}
 
-							}
-
-							// accumulate emissive color
-							// B4 — MIS the forward emissive hit against the mesh-area NEE strategy.
-							// The fold (foldEmissiveEmitters) puts every mesh-area emitter's
-							// radiance on its material, so any emissive (surf.emission > 0) surface is ALSO
-							// a mesh-NEE triangle light. The forward hit (BSDF sampling) and the
-							// NEE sample (light sampling) are the two MIS strategies; the forward
-							// hit's weight is misHeuristic(bsdfPdf_incoming, neePdf). neePdf is the
-								// emitted-power pdf (meshAreaLightForwardPdf), scaled by the
-								// 1/lightsDenom strategy-selection probability.
-							//   • primary hit / specular incoming: NEE could not have made this
-							//     sample → weight 1 (full emission), no double-count.
-							//   • else: balance/power-heuristic split with the NEE estimate.
-							// When uMeshLightCount==0 this reduces to the raw add (byte-identical).
-							bool skipForwardMeshEmission = material.meshEmitterCastShadowDisabled &&
-								! state.firstRay && ! incomingWasSpecular;
-							if ( ! skipForwardMeshEmission ) {
-									if ( uMeshLightCount != 0u && uTotalEmissivePower > 0.0 &&
-										! state.firstRay && ! incomingWasSpecular &&
-										surf.emission != vec3( 0.0 ) && hitType != NO_HIT ) {
-										float cosLight = dot( surf.faceNormal, ray.direction );
-										float neePdf = meshAreaLightForwardPdf(
-											surfaceHit.dist * surfaceHit.dist, cosLight, uTotalEmissivePower, surf.emission
-										) / lightsDenom;
-									float emisMisWeight = misHeuristic( incomingBsdfPdf, neePdf );
-									pc_fragColor.rgb += ( surf.emission * throughputRgb * emisMisWeight );
-								} else {
-									pc_fragColor.rgb += ( surf.emission * throughputRgb );
-								}
 							}
 
 							// skip the sample if our PDF or ray is impossible
@@ -699,7 +928,9 @@ const RENDER_MAIN_SCATTER = /* glsl */ `
 
 							}
 
-							#if FEATURE_RUSSIAN_ROULETTE
+							// Fixed-depth BDPT keeps q=1 on the eye path: the reverse strategies do
+							// not carry camera-throughput-dependent roulette survival probabilities.
+							#if FEATURE_RUSSIAN_ROULETTE && ! FEATURE_BDPT
 
 							// russian roulette path termination
 							// https://www.arnoldrenderer.com/research/physically_based_shader_design_in_arnold.pdf
@@ -707,18 +938,19 @@ const RENDER_MAIN_SCATTER = /* glsl */ `
 							float depthProb = float( state.depth < minBounces );
 
 							float scatterScalar = max( scatterRec.throughput.r, max( scatterRec.throughput.g, scatterRec.throughput.b ) );
-							float rrProb = scatterScalar / max( scatterRec.pdf, 1e-6 );
+                                                        float rrProb = scatterRec.pdf > 0.0
+                                                                ? scatterScalar / scatterRec.pdf
+                                                                : 0.0;
 							rrProb = sqrt( rrProb );
 							rrProb = max( rrProb, depthProb );
 							rrProb = min( rrProb, 1.0 );
-							if ( rand( 8 ) > rrProb ) {
+                                                        if ( rrProb <= 0.0 || rand( 8 ) > rrProb ) {
 
 								break;
 
 							}
 
-							// perform sample clamping here to avoid bright pixels
-							state.throughput *= min( 1.0 / rrProb, 20.0 );
+                                                        state.throughput /= rrProb;
 
 							#endif
 
@@ -732,7 +964,7 @@ const RENDER_MAIN_SCATTER = /* glsl */ `
 
 							//
 
-							#if FEATURE_BDPT
+                                                        #if FEATURE_BDPT
 							// BDPT eye-stack bookkeeping (mirrors @vitrum/pt-webgpu kernel).
 							// scatterRec.pdf is the real forward scatter pdf at this eye vertex —
 							// fed to the next vertex as its reverse density (the old hardcoded
@@ -742,13 +974,69 @@ const RENDER_MAIN_SCATTER = /* glsl */ `
 							if ( bdptEyeDepth < BDPT_MAX_EYE_DEPTH ) {
 								if ( bdptEyeDepth >= 1 ) {
 									vec3 bdptToPrev = normalize( bdptPrevPos - hitPoint );
-									vec3 bdptSwapColor;
-									float bdptSwappedRev = bsdfResult( scatterRec.direction, bdptToPrev, surf, state.wavelength, bdptSwapColor );
-									bdptEyePdfFwd[ bdptEyeDepth - 1 ] = bdptSwappedRev;
-								}
-								bdptPrevScatterPdf = max( scatterRec.pdf, 0.0 );
-								bdptPrevPos = hitPoint;
-								bdptEyeDepth ++;
+                                                                        bool bdptSwappedDelta;
+                                                                        float bdptSwappedRev = bsdfPdfResult(
+                                                                                scatterRec.direction,
+                                                                                bdptToPrev,
+                                                                                surf,
+                                                                                state.wavelength,
+                                                                                bdptSwappedDelta
+                                                                        );
+                                                                        bdptEyePdfFwd[ bdptEyeDepth - 1 ] =
+                                                                                bdptSwappedRev *
+                                                                                bdptEyeSegmentReverseDensity;
+                                                                }
+                                                                #if ! NEE_CANDIDATE_PASS
+                                                                if (
+                                                                        envMapInfo.totalSum > 0.0 &&
+                                                                        environmentIntensity > 0.0
+                                                                ) {
+                                                                        vec3 pendingEnvironmentColor;
+                                                                        float pendingEnvironmentPdf = sampleEquirect(
+                                                                                envRotation3x3 * scatterRec.direction,
+                                                                                pendingEnvironmentColor
+                                                                        );
+                                                                        float pendingNeePdf =
+                                                                                pendingEnvironmentPdf /
+                                                                                bdptDistantNeeDenom();
+                                                                        float pendingLaunchPdf =
+                                                                                bdptEnvironmentEmitterPower() /
+                                                                                bdptTotalEmitterPower() *
+                                                                                pendingEnvironmentPdf /
+                                                                                (
+                                                                                        PI * uBdptSceneRadius * uBdptSceneRadius
+                                                                                );
+                                                                        bdptPendingEnvironmentMisWeight =
+                                                                                bdptInfiniteEyeFamilyWeight(
+                                                                                        0,
+                                                                                        true,
+                                                                                        scatterRec.sampledDelta,
+                                                                                        pendingNeePdf,
+                                                                                        pendingLaunchPdf,
+                                                                                        scatterRec.direction,
+                                                                                        surf,
+                                                                                        hitPoint,
+                                                                                        - ray.direction,
+                                                                                        state.wavelength,
+                                                                                        bdptEyeDepth,
+                                                                                        bdptEyePos,
+                                                                                        bdptEyeNrm,
+                                                                                        bdptEyePdfFwd,
+                                                                                        bdptEyePdfRev,
+                                                                                        bdptEyeSpec,
+                                                                                        bdptEyeMedium
+                                                                                );
+                                                                } else {
+                                                                        bdptPendingEnvironmentMisWeight = 1.0;
+                                                                }
+                                                                #endif
+                                                                bdptPrevScatterPdf = max( scatterRec.pdf, 0.0 );
+                                                            bdptPrevPos = hitPoint;
+                                                            bdptEyeSegmentDensity = 1.0;
+                                                            bdptEyeSegmentReverseDensity = surf.volumeParticle
+                                                                    ? max( state.fogMaterial.opacity, 0.0 )
+                                                                    : 1.0;
+                                                            bdptEyeDepth ++;
 							}
 							#endif
 
@@ -759,15 +1047,8 @@ const RENDER_MAIN_SCATTER = /* glsl */ `
 						}
 `;
 
-// ── Section 9: post-loop radiance clamp + alpha + debug + G-buffer write ──
+// ── Section 9: post-loop alpha + debug + G-buffer write ──────────────────
 const RENDER_MAIN_POST_LOOP = /* glsl */ `
-						if ( uRadianceClamp > 0.0 ) {
-							float sampleLuminance = dot( pc_fragColor.rgb, vec3( 0.2126, 0.7152, 0.0722 ) );
-							if ( sampleLuminance > uRadianceClamp ) {
-								pc_fragColor.rgb *= uRadianceClamp / sampleLuminance;
-							}
-						}
-
 						pc_fragColor.a *= opacity;
 
 						#if DEBUG_MODE == 1
@@ -783,6 +1064,24 @@ const RENDER_MAIN_POST_LOOP = /* glsl */ `
 
 						#endif
 
+						#if NEE_CANDIDATE_PASS
+
+						// K is packed only after the path terminates, so every eligible vertex
+						// contributes to the inclusion probability even if the retained light
+						// proposal was a null/occluded sample. K is bounded by the static path
+						// step limit and range-checked again by the resolve shader.
+						uint neeFinalFlags = floatBitsToUint( neeCandidate3.w );
+						neeFinalFlags |= ( min( neeCandidateCount, 127u ) << 10u );
+						pc_fragColor = neeCandidate0;
+						gNormalDepth = neeCandidate1;
+						gAlbedo = neeCandidate2;
+						gNeeCandidate3 = vec4(
+							neeCandidate3.xyz,
+							uintBitsToFloat( neeFinalFlags )
+						);
+
+						#else
+
 						// Sprint 5: Write G-buffer outputs.
 						// If gbufWritten == false (sky/miss on first ray), sky sentinels are used:
 						//   gNormalDepth.rgb = (0.5,1.0,0.5) → decodes to world-up (0,1,0)
@@ -790,6 +1089,8 @@ const RENDER_MAIN_POST_LOOP = /* glsl */ `
 						//   gAlbedo.rgb      = (0,0,0) (no surface albedo)
 						gNormalDepth = vec4( gbufNormalEnc, gbufLinearDepth );
 						gAlbedo      = vec4( gbufAlbedo, 1.0 );
+
+						#endif
 
 					}
 `;
@@ -804,8 +1105,6 @@ export const RENDER_MAIN_SECTIONS = [
   RENDER_MAIN_GBUFFER,
   RENDER_MAIN_BDPT_EYE,
   RENDER_MAIN_SURFACE_BDPT_EYE,
-  RENDER_MAIN_CAUSTIC_MANIFOLD,
-  RENDER_MAIN_CAUSTIC_PHOTON,
   RENDER_MAIN_SCATTER,
   RENDER_MAIN_POST_LOOP,
 ] as const;

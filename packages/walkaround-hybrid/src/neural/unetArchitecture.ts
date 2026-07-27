@@ -13,7 +13,9 @@
  * from the `layers` array by {@link deriveParamCount}. The previous hardcoded
  * literal (426,075) erroneously excluded the three strided down-conv layers
  * (enc1_down, enc2_down, enc3_down = 109,032 params).
- * Intermediate GPU memory at 1080p (f32): ~461 MB; fp16 halves this to ~230 MB.
+ * Canonical 1080p f32 tensor storage: 2,326,579,200 logical bytes without
+ * reuse, 945,561,600 physical bytes across 8 liveness-planned slots, and
+ * 622,080,000 peak live bytes. Pinned by tensorMemoryPlanner.test.ts.
  *
  * Skip-connection invariant: skip-connection spatial shapes are explicitly
  * documented per layer so dec3_up (H/4) pairs with enc3 (H/4-pre-stride output)
@@ -65,13 +67,17 @@ export interface LayerSpec {
   readonly weightLayout: LayerWeightLayout;
 }
 
-interface LayerParams {
+export interface LayerParams {
   readonly inC:     number;
   readonly outC:    number;
   readonly kH?:     number;   // kernel height (default 1)
   readonly kW?:     number;   // kernel width  (default 1)
   readonly stride?: number;   // (default 1)
   readonly padding?: number;  // (default 0 for transposed, 1 for conv2d with 3×3)
+  /** ConvTranspose2d kernel dilation (default 1; illegal for other kinds). */
+  readonly dilation?: number;
+  /** ConvTranspose2d output padding (default 0; must be smaller than stride). */
+  readonly outputPadding?: number;
 }
 
 // ── UNet spec ─────────────────────────────────────────────────────────────────
@@ -160,14 +166,14 @@ export function buildUNetSpec(): UNetSpec {
       name: 'enc1_relu',
       kind: 'relu',
       inputs: ['enc1_feat'],
-      output: 'enc1_feat',
+      output: 'enc1_relu_out',
       params: { inC: 24, outC: 24 },
       weightLayout: 'none',
     },
     {
       name: 'enc1_down',
       kind: 'conv2d',
-      inputs: ['enc1_feat'],
+      inputs: ['enc1_relu_out'],
       output: 'enc1_out',    // H/2 × W/2 × 24
       params: { inC: 24, outC: 24, kH: 3, kW: 3, stride: 2, padding: 1 },
       weightLayout: 'OIKW',
@@ -186,14 +192,14 @@ export function buildUNetSpec(): UNetSpec {
       name: 'enc2_relu',
       kind: 'relu',
       inputs: ['enc2_feat'],
-      output: 'enc2_feat',
+      output: 'enc2_relu_out',
       params: { inC: 48, outC: 48 },
       weightLayout: 'none',
     },
     {
       name: 'enc2_down',
       kind: 'conv2d',
-      inputs: ['enc2_feat'],
+      inputs: ['enc2_relu_out'],
       output: 'enc2_out',    // H/4 × W/4 × 48
       params: { inC: 48, outC: 48, kH: 3, kW: 3, stride: 2, padding: 1 },
       weightLayout: 'OIKW',
@@ -212,14 +218,14 @@ export function buildUNetSpec(): UNetSpec {
       name: 'enc3_relu',
       kind: 'relu',
       inputs: ['enc3_feat'],
-      output: 'enc3_feat',
+      output: 'enc3_relu_out',
       params: { inC: 96, outC: 96 },
       weightLayout: 'none',
     },
     {
       name: 'enc3_down',
       kind: 'conv2d',
-      inputs: ['enc3_feat'],
+      inputs: ['enc3_relu_out'],
       output: 'enc3_out',    // H/8 × W/8 × 96
       params: { inC: 96, outC: 96, kH: 3, kW: 3, stride: 2, padding: 1 },
       weightLayout: 'OIKW',
@@ -238,7 +244,7 @@ export function buildUNetSpec(): UNetSpec {
       name: 'bn_relu',
       kind: 'relu',
       inputs: ['bn_out'],
-      output: 'bn_out',
+      output: 'bn_relu_out',
       params: { inC: 192, outC: 192 },
       weightLayout: 'none',
     },
@@ -249,7 +255,7 @@ export function buildUNetSpec(): UNetSpec {
     {
       name: 'dec3_up',
       kind: 'transposedConv2d',
-      inputs: ['bn_out'],
+      inputs: ['bn_relu_out'],
       output: 'dec3_up_out',  // H/4 × W/4 × 96
       params: { inC: 192, outC: 96, kH: 2, kW: 2, stride: 2, padding: 0 },
       weightLayout: 'IOKW',
@@ -257,7 +263,7 @@ export function buildUNetSpec(): UNetSpec {
     {
       name: 'dec3_skip',
       kind: 'skipAdd',
-      inputs: ['dec3_up_out', 'enc3_feat'],  // both H/4 × W/4 × 96  ✓
+      inputs: ['dec3_up_out', 'enc3_relu_out'],  // both H/4 × W/4 × 96  ✓
       output: 'dec3_sum',
       params: { inC: 96, outC: 96 },
       weightLayout: 'none',
@@ -274,7 +280,7 @@ export function buildUNetSpec(): UNetSpec {
       name: 'dec3_relu',
       kind: 'relu',
       inputs: ['dec3_out'],
-      output: 'dec3_out',
+      output: 'dec3_relu_out',
       params: { inC: 96, outC: 96 },
       weightLayout: 'none',
     },
@@ -285,7 +291,7 @@ export function buildUNetSpec(): UNetSpec {
     {
       name: 'dec2_up',
       kind: 'transposedConv2d',
-      inputs: ['dec3_out'],
+      inputs: ['dec3_relu_out'],
       output: 'dec2_up_out',  // H/2 × W/2 × 48
       params: { inC: 96, outC: 48, kH: 2, kW: 2, stride: 2, padding: 0 },
       weightLayout: 'IOKW',
@@ -293,7 +299,7 @@ export function buildUNetSpec(): UNetSpec {
     {
       name: 'dec2_skip',
       kind: 'skipAdd',
-      inputs: ['dec2_up_out', 'enc2_feat'],  // both H/2 × W/2 × 48  ✓
+      inputs: ['dec2_up_out', 'enc2_relu_out'],  // both H/2 × W/2 × 48  ✓
       output: 'dec2_sum',
       params: { inC: 48, outC: 48 },
       weightLayout: 'none',
@@ -310,7 +316,7 @@ export function buildUNetSpec(): UNetSpec {
       name: 'dec2_relu',
       kind: 'relu',
       inputs: ['dec2_out'],
-      output: 'dec2_out',
+      output: 'dec2_relu_out',
       params: { inC: 48, outC: 48 },
       weightLayout: 'none',
     },
@@ -321,7 +327,7 @@ export function buildUNetSpec(): UNetSpec {
     {
       name: 'dec1_up',
       kind: 'transposedConv2d',
-      inputs: ['dec2_out'],
+      inputs: ['dec2_relu_out'],
       output: 'dec1_up_out',  // H × W × 24
       params: { inC: 48, outC: 24, kH: 2, kW: 2, stride: 2, padding: 0 },
       weightLayout: 'IOKW',
@@ -329,7 +335,7 @@ export function buildUNetSpec(): UNetSpec {
     {
       name: 'dec1_skip',
       kind: 'skipAdd',
-      inputs: ['dec1_up_out', 'enc1_feat'],  // both H × W × 24  ✓
+      inputs: ['dec1_up_out', 'enc1_relu_out'],  // both H × W × 24  ✓
       output: 'dec1_sum',
       params: { inC: 24, outC: 24 },
       weightLayout: 'none',
@@ -346,7 +352,7 @@ export function buildUNetSpec(): UNetSpec {
       name: 'dec1_relu',
       kind: 'relu',
       inputs: ['dec1_out'],
-      output: 'dec1_out',
+      output: 'dec1_relu_out',
       params: { inC: 24, outC: 24 },
       weightLayout: 'none',
     },
@@ -355,7 +361,7 @@ export function buildUNetSpec(): UNetSpec {
     {
       name: 'proj',
       kind: 'conv2d',
-      inputs: ['dec1_out'],
+      inputs: ['dec1_relu_out'],
       output: 'denoised',    // H × W × 3
       params: { inC: 24, outC: 3, kH: 1, kW: 1, stride: 1, padding: 0 },
       weightLayout: 'OIKW',

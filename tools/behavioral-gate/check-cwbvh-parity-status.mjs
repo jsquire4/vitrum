@@ -4,6 +4,7 @@
 const STATUS_PATH = "tools/behavioral-gate/cwbvh-parity-status.json";
 const SCRIPT_PATH = "tools/behavioral-gate/cwbvh-parity-oracle.mjs";
 
+/** @param {string} message @returns {never} */
 function fail(message) {
   throw new Error(`[cwbvh-parity-proof-check] ${message}`);
 }
@@ -20,7 +21,7 @@ if (status.verdict !== "PASS") fail(`committed verdict is ${status.verdict}`);
 if (status.command !== "npm run behavioral-gate:cwbvh -- --write-status") {
   fail(`unexpected command ${status.command}`);
 }
-if (!Number.isInteger(status.rayCount) || status.rayCount < 5) {
+if (!Number.isInteger(status.rayCount) || status.rayCount < 500) {
   fail(`rayCount ${status.rayCount} is too small`);
 }
 if (status.rootCount !== 2) {
@@ -28,6 +29,9 @@ if (status.rootCount !== 2) {
 }
 if (!Number.isInteger(status.nonzeroRoot) || status.nonzeroRoot <= 0) {
   fail(`nonzeroRoot ${status.nonzeroRoot} does not prove root remapping`);
+}
+if (status.statusRootCount !== 4) {
+  fail(`statusRootCount ${status.statusRootCount} does not prove COMPLETE/OVERFLOW/INVALID coverage`);
 }
 if (!Number.isInteger(status.cwbvhNodeCount) || status.cwbvhNodeCount <= 1) {
   fail(`cwbvhNodeCount ${status.cwbvhNodeCount} does not prove multi-node traversal`);
@@ -42,6 +46,10 @@ for (const key of [
   "anySkipGlass",
   "nonzeroRootClosest",
   "nonzeroRootAny",
+  "emptyLiveChildInvalid",
+  "zeroCountLeafInvalid",
+  "invalidBoundsInvalid",
+  "stackOverflowDistinct",
 ]) {
   if (status.checks?.[key] !== true) fail(`missing check flag ${key}`);
 }

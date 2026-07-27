@@ -46,6 +46,8 @@ function wgslTypeInfo(type: string): WgslTypeInfo {
     case 'u32':
     case 'f32':
       return { size: 4, align: 4 };
+    case 'vec3f':
+      return { size: 12, align: 16 };
     case 'vec4f':
       return { size: 16, align: 16 };
     case 'mat4x4f':
@@ -153,7 +155,7 @@ describe('FrameParamsSlot ↔ WGSL struct derivational cross-check (H55-a)', () 
   });
 
   it('the cameraPos field is at the expected 16-byte alignment boundary', () => {
-    // cameraPos is vec4f; it must be at a 16-byte boundary.
+    // cameraPos is vec3f; it still begins at a 16-byte boundary.
     const camSlot = FrameParamsSlot.cameraPos;
     expect(camSlot * 4).toBe(derivedSlots.get('cameraPos')! * 4);
     expect((camSlot * 4) % 16).toBe(0);

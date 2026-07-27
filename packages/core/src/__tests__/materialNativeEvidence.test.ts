@@ -20,6 +20,7 @@ type EvidenceKind = 'packer+shader' | 'shared-classifier' | 'readback-oracle';
 interface EvidenceSnippet {
   readonly path: string;
   readonly includes: readonly string[];
+  readonly excludes?: readonly string[];
 }
 
 interface MaterialNativeEvidence {
@@ -55,6 +56,26 @@ const WALKAROUND_EMISSIVE = evidence('shared-classifier', [
   'packages/walkaround-hybrid/src/restir/packingHelpers.ts',
 ]);
 
+const WALKAROUND_EMISSIVE_MAP = evidence('packer+shader', [
+  'packages/walkaround-hybrid/src/__tests__/materialTextureAtlas.test.ts',
+  'packages/walkaround-hybrid/src/__tests__/consumedMaterialFields.test.ts',
+], [
+  'packages/walkaround-hybrid/src/bvh/materialTextureAtlasPack.ts',
+  'packages/walkaround-hybrid/src/shaders/materialAtlas.wgsl.ts',
+  'packages/walkaround-hybrid/src/shaders/shade.wgsl.ts',
+], [
+  {
+    path: 'packages/walkaround-hybrid/src/__tests__/materialTextureAtlas.test.ts',
+    includes: [
+      'packs emissiveMap as an sRGB-decoded atlas slot for visible emitter glow',
+    ],
+  },
+  {
+    path: 'packages/walkaround-hybrid/src/shaders/materialAtlas.wgsl.ts',
+    includes: ['fn sampleEmissiveMap('],
+  },
+]);
+
 const WALKAROUND_EXTENSIONS = evidence('shared-classifier', [
   'packages/walkaround-hybrid/__tests__/surfaceTextureIds.test.ts',
   'packages/walkaround-hybrid/__tests__/consumedMaterialFields.test.ts',
@@ -74,6 +95,56 @@ const WALKAROUND_ENV_INTENSITY = evidence('packer+shader', [
   'packages/walkaround-hybrid/src/shaders/ris.wgsl.ts',
   'packages/walkaround-hybrid/src/shaders/restirPHat.wgsl.ts',
   'packages/walkaround-hybrid/src/shaders/shadingTerms.wgsl.ts',
+]);
+
+const WALKAROUND_DOUBLE_SIDED = evidence('packer+shader', [
+  'packages/shared-bvh/src/__tests__/materialEntry.test.ts',
+  'packages/walkaround-hybrid/src/__tests__/doubleSidedTransport.test.ts',
+  'packages/walkaround-rc/__tests__/doubleSidedTransport.test.ts',
+], [
+  'packages/shared-bvh/src/materialEntry.ts',
+  'packages/shared-bvh/src/wgsl/tlasTraversal.wgsl.ts',
+  'packages/walkaround-hybrid/src/bvh/materialTextureAtlasPack.ts',
+  'packages/walkaround-hybrid/src/shaders/materialAtlas.wgsl.ts',
+  'packages/walkaround-hybrid/src/ddgi/wgsl/probeUpdateRays.wgsl.ts',
+  'packages/walkaround-rc/src/wgsl/probeRayCast.wgsl.ts',
+]);
+
+const WALKAROUND_ALPHA = evidence('packer+shader', [
+  'packages/walkaround-hybrid/src/__tests__/materialTextureAtlas.test.ts',
+  'packages/walkaround-hybrid/src/__tests__/transparentAlphaTransportContract.test.ts',
+  'packages/walkaround-hybrid/src/__tests__/transparentOitMaterialParity.test.ts',
+], [
+  'packages/walkaround-hybrid/src/shaders/materialAtlas.wgsl.ts',
+  'packages/walkaround-hybrid/src/shaders/transparentOit.wgsl.ts',
+  'packages/walkaround-hybrid/src/ddgi/wgsl/probeUpdateRays.wgsl.ts',
+  'packages/walkaround-rc/src/wgsl/probeRayCast.wgsl.ts',
+]);
+
+const WALKAROUND_LIGHT_MAP = evidence('packer+shader', [
+  'packages/walkaround-hybrid/src/__tests__/materialTextureAtlas.test.ts',
+  'packages/walkaround-hybrid/src/__tests__/transparentAlphaTransportContract.test.ts',
+  'packages/walkaround-hybrid/src/ddgi/__tests__/ddgiMaterialMapSemantics.test.ts',
+  'packages/walkaround-rc/__tests__/probeRayCastWgsl.test.ts',
+], [
+  'packages/walkaround-hybrid/src/shaders/shade.wgsl.ts',
+  'packages/walkaround-hybrid/src/shaders/restirGiMaterial.wgsl.ts',
+  'packages/walkaround-hybrid/src/ddgi/wgsl/probeUpdateRays.wgsl.ts',
+  'packages/walkaround-rc/src/wgsl/probeRayCast.wgsl.ts',
+]);
+
+const WALKAROUND_RICH_LOBES = evidence('packer+shader', [
+  'packages/walkaround-hybrid/src/__tests__/materialTextureAtlas.test.ts',
+  'packages/walkaround-hybrid/src/__tests__/restirDiMaterialParity.test.ts',
+  'packages/walkaround-hybrid/src/__tests__/restirGiMaterialParity.test.ts',
+  'packages/walkaround-hybrid/src/ddgi/__tests__/ddgiGlossyProbeBounce.test.ts',
+], [
+  'packages/walkaround-hybrid/src/shaders/ggxBrdf.wgsl.ts',
+  'packages/walkaround-hybrid/src/shaders/materialAtlas.wgsl.ts',
+  'packages/walkaround-hybrid/src/shaders/shadingTerms.wgsl.ts',
+  'packages/walkaround-hybrid/src/shaders/restirPHat.wgsl.ts',
+  'packages/walkaround-hybrid/src/shaders/restirGiMaterial.wgsl.ts',
+  'packages/walkaround-rc/src/wgsl/rcBrdf.wgsl.ts',
 ]);
 
 const PT_WEBGL2_SCALARS = evidence('packer+shader', [
@@ -97,6 +168,26 @@ const PT_WEBGL2_TEXTURES = evidence('packer+shader', [
   'packages/pt-webgl2/src/glsl/shader/structs/material_struct.glsl.js',
   'packages/pt-webgl2/src/glsl/render/get_surface_record_function.glsl.js',
   'packages/pt-webgl2/src/glsl/render/attenuate_hit_function.glsl.js',
+]);
+
+const PT_WEBGL2_DOUBLE_SIDED = evidence('packer+shader', [
+  'packages/pt-webgl2/src/scene/materialsTexture.test.ts',
+  'packages/pt-webgl2/src/glsl/composeTraceGlsl.test.ts',
+], [
+  'packages/pt-webgl2/src/scene/materialsTexture.ts',
+  'packages/pt-webgl2/src/glsl/shader/structs/material_struct.glsl.js',
+  'packages/pt-webgl2/src/glsl/render/get_surface_record_function.glsl.js',
+], [
+  {
+    path: 'packages/pt-webgl2/src/scene/materialsTexture.test.ts',
+    includes: [
+      'packs authored double-sided opaque surfaces while preserving closed-volume exit traversal',
+    ],
+  },
+  {
+    path: 'packages/pt-webgl2/src/scene/materialsTexture.ts',
+    includes: ["if (m.doubleSided === true || (!isThinFilm && transmission > 0.0))"],
+  },
 ]);
 
 const PT_WEBGPU_SCALARS = evidence('packer+shader', [
@@ -146,9 +237,65 @@ const PT_WEBGPU_TEXTURES = evidence('packer+shader', [
   'packages/pt-webgpu/src/wgsl/pathTrace/material.wgsl.ts',
 ]);
 
+const PT_WEBGPU_RICH_LOBES = evidence('packer+shader', [
+  'packages/pt-webgpu/src/__tests__/scenePack.materials.test.ts',
+  'packages/pt-webgpu/src/__tests__/materialTextures.test.ts',
+  'packages/pt-webgpu/src/__tests__/extensionLobeReference.test.ts',
+  'packages/pt-webgpu/src/__tests__/wgslContract.test.ts',
+], [
+  'packages/pt-webgpu/src/scene/materialPacking.ts',
+  'packages/pt-webgpu/src/scene/materialTextures.ts',
+  'packages/pt-webgpu/src/wgsl/pathTrace/material.wgsl.ts',
+  'packages/pt-webgpu/src/wgsl/pathTrace/bsdf.wgsl.ts',
+  'packages/pt-webgpu/src/wgsl/pathTrace/kernel.wgsl.ts',
+], [
+  {
+    path: 'packages/pt-webgpu/src/__tests__/scenePack.materials.test.ts',
+    includes: ['SPEC-01 specular scalar packing'],
+  },
+  {
+    path: 'packages/pt-webgpu/src/__tests__/materialTextures.test.ts',
+    includes: [
+      'collects extension-lobe maps into the correct color-space source arrays',
+      'packs extension-lobe wrap modes and UV metadata',
+    ],
+  },
+]);
+
+const PT_WEBGPU_DOUBLE_SIDED = evidence('packer+shader', [
+  'packages/pt-webgpu/src/__tests__/scenePack.materials.test.ts',
+  'packages/pt-webgpu/src/__tests__/doubleSidedTraversal.test.ts',
+], [
+  'packages/pt-webgpu/src/scene/materialPacking.ts',
+  'packages/pt-webgpu/src/wgsl/pathTrace/material.wgsl.ts',
+], [
+  {
+    path: 'packages/pt-webgpu/src/__tests__/scenePack.materials.test.ts',
+    includes: ['packs MaterialSpec.doubleSided as bit2 and defaults it to false'],
+  },
+  {
+    path: 'packages/pt-webgpu/src/wgsl/pathTrace/material.wgsl.ts',
+    includes: ['return mat.doubleSided || mat.transmission > 0.0;'],
+    excludes: ['return mat.doubleSided || mat.transmission > 1e-6;'],
+  },
+]);
+
 const MATERIAL_NATIVE_EVIDENCE: Record<BackendWithMaterialEvidence, Record<string, MaterialNativeEvidence>> = {
   'walkaround-hybrid': {
     ...group(['emissive', 'emissiveIntensity'], WALKAROUND_EMISSIVE),
+    emissiveMap: WALKAROUND_EMISSIVE_MAP,
+    ...group(['alphaMode', 'alphaCutoff', 'opacity', 'alphaMap'], WALKAROUND_ALPHA),
+    doubleSided: WALKAROUND_DOUBLE_SIDED,
+    ...group(['lightMap', 'lightMapIntensity'], WALKAROUND_LIGHT_MAP),
+    ...group([
+      'clearcoatMap', 'clearcoatRoughnessMap', 'clearcoatNormalMap',
+      'clearcoatNormalScale', 'sheenColorMap', 'sheenRoughnessMap',
+      'iridescenceMap', 'iridescenceThicknessMap', 'anisotropyMap',
+      'specularColorMap', 'specularIntensityMap', 'sheen', 'sheenColor',
+      'sheenRoughness', 'clearcoat', 'clearcoatRoughness', 'iridescence',
+      'iridescenceIor', 'iridescenceThicknessRange', 'specularIntensity',
+      'specularColor', 'anisotropy', 'anisotropyRotation',
+    ], WALKAROUND_RICH_LOBES),
     envMapIntensity: WALKAROUND_ENV_INTENSITY,
     extensions: WALKAROUND_EXTENSIONS,
   },
@@ -172,6 +319,7 @@ const MATERIAL_NATIVE_EVIDENCE: Record<BackendWithMaterialEvidence, Record<strin
       'anisotropyMap', 'specularColorMap', 'specularIntensityMap', 'bumpMap',
       'lightMap', 'frontLayer', 'backLayer',
     ], PT_WEBGL2_TEXTURES),
+    doubleSided: PT_WEBGL2_DOUBLE_SIDED,
   },
   'pt-webgpu': {
     ...group([
@@ -190,6 +338,13 @@ const MATERIAL_NATIVE_EVIDENCE: Record<BackendWithMaterialEvidence, Record<strin
       'transmissionMap', 'emissiveMap', 'alphaMap', 'aoMap',
       'bumpMap', 'lightMap', 'frontLayer', 'backLayer',
     ], PT_WEBGPU_TEXTURES),
+    ...group([
+      'clearcoatMap', 'clearcoatRoughnessMap', 'clearcoatNormalMap',
+      'sheenColorMap', 'sheenRoughnessMap', 'iridescenceMap',
+      'iridescenceThicknessMap', 'specularColorMap', 'specularIntensityMap',
+      'specularIntensity', 'specularColor',
+    ], PT_WEBGPU_RICH_LOBES),
+    doubleSided: PT_WEBGPU_DOUBLE_SIDED,
   },
 };
 
@@ -241,6 +396,12 @@ describe('GATE-02 native material evidence', () => {
               text.includes(needle),
               `${backend}.${field}: ${snippet.path} must contain ${needle}`,
             ).toBe(true);
+          }
+          for (const needle of snippet.excludes ?? []) {
+            expect(
+              text.includes(needle),
+              `${backend}.${field}: ${snippet.path} must not contain ${needle}`,
+            ).toBe(false);
           }
         }
       }

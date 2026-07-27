@@ -29,14 +29,10 @@
  * Bind groups:
  *
  *   group 0 — variance estimation pass (svgfVarianceMain):
- *     binding 0 — texture_2d<f32>                        inputColor     (noisy RGBA16F)
- *     binding 1 — texture_2d<f32>                        prevRadiance   (previous frame RGBA16F)
- *     binding 2 — texture_2d<f32>                        gbufferNormal  (RGBA16F, .xyz = world normal)
- *     binding 3 — texture_2d<f32>                        gbufferDepth   (RGBA16F or R32F, .x = linear depth)
- *     binding 4 — texture_2d<f32>                        motionVectors  (RG32F, .xy = screen-space motion)
- *     binding 5 — texture_2d<f32>                        varianceIn     (RG32F — WelfordVariance mean+m2)
- *     binding 6 — texture_storage_2d<rgba32float, write> varianceOut    (estimated scalar variance per pixel)
- *     binding 7 — var<uniform> AtrousVarianceVarianceUBO
+ *     binding 0 — texture_2d<f32>                        inputColor   (noisy RGBA16F)
+ *     binding 1 — texture_2d<f32>                        varianceIn   (RG32F — WelfordVariance mean+m2)
+ *     binding 2 — texture_storage_2d<rgba32float, write> varianceOut  (estimated scalar variance per pixel)
+ *     binding 3 — var<uniform> AtrousVarianceVarianceUBO
  *
  *   group 0 — à-trous pass (svgfAtrousMain):
  *     binding 0 — texture_2d<f32>                        inputColor     (RGBA16F — ping-pong input)
@@ -80,11 +76,20 @@ import { LUMINANCE_WGSL } from '@vitrum/shared-samplers';
 import { ATROUS_VARIANCE_TEMPORAL_MIN_FRAME_COUNT } from '../atrousVarianceConstants.js';
 import { WELFORD_VARIANCE_WGSL } from './welfordVariance.wgsl.js';
 import { ATROUS_VARIANCE_KERNEL_WGSL } from './atrousKernel.wgsl.js';
+import {
+  STANDALONE_DEPTH_TEXTURE_LAYOUT,
+  normalDepthWgslDepthComponent,
+  type NormalDepthTextureLayout,
+} from '../normalDepthEncoding.js';
 
 /** Must match `@workgroup_size` in this module's compute entry points. */
 export const ATROUS_VARIANCE_COMPUTE_WORKGROUP_SIZE = 16 as const;
 
-export const ATROUS_VARIANCE_WGSL = /* wgsl */ `
+export function buildAtrousVarianceWgsl(
+  depthLayout: NormalDepthTextureLayout = STANDALONE_DEPTH_TEXTURE_LAYOUT,
+): string {
+  const depthComponent = normalDepthWgslDepthComponent(depthLayout);
+  return /* wgsl */ `
 // Canonical Rec.709 luminance — @vitrum/shared-samplers/wgsl/luminance.wgsl.
 // Provides const LUM_W709 + fn luminance(c: vec3f) -> f32. The local fn
 // luminance defined below at "Variance Estimation Pass" delegates to this.
@@ -141,13 +146,9 @@ struct AtrousVarianceAtrousUBO {
 // ============================================================
 
 @group(0) @binding(0) var varIn_inputColor:   texture_2d<f32>;
-@group(0) @binding(1) var varIn_prevRadiance:  texture_2d<f32>;
-@group(0) @binding(2) var varIn_gbufNormal:    texture_2d<f32>;
-@group(0) @binding(3) var varIn_gbufDepth:     texture_2d<f32>;
-@group(0) @binding(4) var varIn_motionVec:     texture_2d<f32>;
-@group(0) @binding(5) var varIn_varianceIn:    texture_2d<f32>;
-@group(0) @binding(6) var varOut_varianceOut:  texture_storage_2d<rgba32float, write>;
-@group(0) @binding(7) var<uniform>  varUBO:   AtrousVarianceVarianceUBO;
+@group(0) @binding(1) var varIn_varianceIn:    texture_2d<f32>;
+@group(0) @binding(2) var varOut_varianceOut:  texture_storage_2d<rgba32float, write>;
+@group(0) @binding(3) var<uniform>  varUBO:   AtrousVarianceVarianceUBO;
 
 // fn luminance(c: vec3f) — canonical from LUMINANCE_WGSL above; uses LUM_W709.
 
@@ -230,9 +231,10 @@ fn svgfAtrousMain(@builtin(global_invocation_id) gid: vec3u) {
   if (any(gid.xy >= dims)) { return; }
 
   let cCenter = textureLoad(atrous_inputColor, gid.xy, 0).rgb;
-  // Match walkaround atrous.wgsl: packed normal (0..1) → world normal; depth in .x
+  // Normal uses the packed affine encoding; depth component is selected by the
+  // host-declared physical texture layout.
   let nCenter = textureLoad(atrous_gbufNormal, gid.xy, 0).xyz * 2.0 - 1.0;
-  let zCenter = textureLoad(atrous_gbufDepth, gid.xy, 0).x;
+  let zCenter = textureLoad(atrous_gbufDepth, gid.xy, 0).${depthComponent};
 
   // Sky / miss pixels pass through unfiltered.
   if (zCenter <= 0.0) {
@@ -264,7 +266,7 @@ fn svgfAtrousMain(@builtin(global_invocation_id) gid: vec3u) {
 
       let cP = textureLoad(atrous_inputColor, pu, 0).rgb;
       let nP = textureLoad(atrous_gbufNormal, pu, 0).xyz * 2.0 - 1.0;
-      let zP = textureLoad(atrous_gbufDepth,  pu, 0).x;
+      let zP = textureLoad(atrous_gbufDepth,  pu, 0).${depthComponent};
 
       let kIdx = u32((dy + 2) * 5 + (dx + 2));
       let h    = ATROUS_VARIANCE_KERNEL[kIdx];
@@ -296,3 +298,7 @@ fn svgfAtrousMain(@builtin(global_invocation_id) gid: vec3u) {
   textureStore(atrous_outputColor, gid.xy, vec4f(result, 1.0));
 }
 `;
+}
+
+/** Standalone ABI: depth is supplied by a dedicated R texture. */
+export const ATROUS_VARIANCE_WGSL = buildAtrousVarianceWgsl();

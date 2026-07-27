@@ -12,9 +12,9 @@
 //     have to plumb GPU primitives,
 //   - returns the @vitrum/core Engine contract with an idempotent dispose.
 //
-// Note on resize: HybridEngine (WebGPU) requires setSize(w, h) for in-flight
-// resizes; attachVitrum() owns the ResizeObserver and calls it automatically.
-// Generic PT engines honour FrameInput.viewport per-frame. createEngine()
+// Note on resize: every backend honours FrameInput.viewport per-frame.
+// HybridEngine also exposes setSize(w, h) as an eager allocation hook;
+// attachVitrum() owns a ResizeObserver and calls it automatically. createEngine()
 // itself does NOT attach an observer.
 //
 // C1 refactor: backend constructor bodies live in backends/{walkaround,ptWebgpu,
@@ -22,7 +22,7 @@
 // createEngine.ts is now a thin facade + dispatch table.
 
 import type { Scene } from '@vitrum/core';
-import { auditSceneNeedsTlas, detectGpu } from '@vitrum/core';
+import { auditSceneNeedsTlas, detectGpu, validateScene } from '@vitrum/core';
 import {
   pickBackend,
   deriveScaleDefaults,
@@ -40,6 +40,8 @@ export type {
   CreateEngineErrorPhase,
   CreateEngineErrorEvent,
   CreateEngineOptions,
+  RuntimeEngineBackendId,
+  RuntimeEngineWithBackendId,
   EngineWithBackendId,
   SharedDeviceCtx,
 } from './createEngineInternals.js';
@@ -47,7 +49,6 @@ export {
   mergeWalkaroundTlasExtension,
   resolveAdvancedForBackend,
   stripOwnershipCriticalKeys,
-  warnCrossBackendAdvanced,
 } from './createEngineInternals.js';
 
 import type {
@@ -58,8 +59,9 @@ import type {
 } from './createEngineInternals.js';
 import {
   emitCreateEngineWarning,
-  warnCrossBackendAdvanced,
+  isBackendUnavailableError,
   reportCreateEngineError,
+  validateCreateEngineOptionsShape,
 } from './createEngineInternals.js';
 
 // Backend constructors (extracted bodies)
@@ -94,13 +96,40 @@ const BACKEND_CONSTRUCTORS: Record<CreateEngineBackendId, BackendConstructor> = 
   'pt-webgl2': constructPathTracerForDispatch,
 };
 
+async function validateCreateEngineBackendAdvancedOptions(
+  opts: CreateEngineOptions,
+): Promise<void> {
+  const entries: Array<readonly [CreateEngineBackendId, Record<string, unknown>]> = [];
+  if (opts.advancedByBackend != null) {
+    for (const backend of ['walkaround-hybrid', 'pt-webgpu', 'pt-webgl2'] as const) {
+      const bag = opts.advancedByBackend[backend];
+      if (bag != null) entries.push([backend, bag]);
+    }
+  } else if (opts.advanced != null && opts.advancedBackend != null) {
+    entries.push([opts.advancedBackend, opts.advanced]);
+  }
+
+  for (const [backend, bag] of entries) {
+    if (backend === 'pt-webgpu') {
+      const module = await import('@vitrum/pt-webgpu');
+      module.validatePtWebgpuAdvancedOptions(bag);
+      continue;
+    }
+    if (backend === 'pt-webgl2') {
+      const module = await import('@vitrum/pt-webgl2');
+      module.validateWebgl2AdvancedOptions(bag);
+      continue;
+    }
+    const module: typeof import('@vitrum/walkaround-hybrid') =
+      await import('@vitrum/walkaround-hybrid');
+    module.validateHybridEngineAdvancedOptions(bag);
+  }
+}
+
 export async function createEngine(opts: CreateEngineOptions): Promise<EngineWithBackendId> {
-  if (opts.canvas == null) {
-    throw new TypeError('createEngine: opts.canvas is required');
-  }
-  if (opts.scene == null) {
-    throw new TypeError('createEngine: opts.scene is required');
-  }
+  validateCreateEngineOptionsShape(opts);
+  validateScene(opts.scene);
+  await validateCreateEngineBackendAdvancedOptions(opts);
 
   const vitrumScene: Scene = opts.scene;
 
@@ -163,6 +192,7 @@ export async function createEngine(opts: CreateEngineOptions): Promise<EngineWit
     try {
       return await BACKEND_CONSTRUCTORS['walkaround-hybrid'](opts, vitrumScene, aabb, tlasAudit.needsTlas);
     } catch (err) {
+      if (!isBackendUnavailableError(err)) throw err;
       reportCreateEngineError(opts, err, {
         phase: 'create:walkaround-hybrid',
         backend: 'walkaround-hybrid',
@@ -183,7 +213,6 @@ export async function createEngine(opts: CreateEngineOptions): Promise<EngineWit
         `[vitrum/createEngine] walkaround-hybrid unavailable; falling back to ${fallbackBackend}.`,
         err,
       );
-      warnCrossBackendAdvanced(opts.advanced, 'walkaround-hybrid', fallbackBackend, opts.onWarning);
       return await constructPathTracerFallback(opts, vitrumScene, aabb, tlasAudit.needsTlas, gpu.isWebGPU);
     }
   }
@@ -191,6 +220,7 @@ export async function createEngine(opts: CreateEngineOptions): Promise<EngineWit
     try {
       return await BACKEND_CONSTRUCTORS['pt-webgpu'](opts, vitrumScene, aabb, tlasAudit.needsTlas);
     } catch (err) {
+      if (!isBackendUnavailableError(err)) throw err;
       reportCreateEngineError(opts, err, {
         phase: 'create:pt-webgpu',
         backend: 'pt-webgpu',
@@ -210,7 +240,6 @@ export async function createEngine(opts: CreateEngineOptions): Promise<EngineWit
         '[vitrum/createEngine] pt-webgpu unavailable; falling back to pt-webgl2.',
         err,
       );
-      warnCrossBackendAdvanced(opts.advanced, 'pt-webgpu', 'pt-webgl2', opts.onWarning);
       return await constructPathTracerWebGLFallback(opts, vitrumScene, aabb, tlasAudit.needsTlas);
     }
   }
@@ -232,6 +261,7 @@ async function constructPathTracerFallback(
     try {
       return await BACKEND_CONSTRUCTORS['pt-webgpu'](opts, vitrumScene, aabb, needsTlas);
     } catch (err) {
+      if (!isBackendUnavailableError(err)) throw err;
       reportCreateEngineError(opts, err, {
         phase: 'create:pt-webgpu',
         backend: 'pt-webgpu',

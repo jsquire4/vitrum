@@ -78,8 +78,9 @@ export type PassLabel =
   | 'svgf-real-atrous-2'
   | 'svgf-real-atrous-3'
   | 'svgf-real-atrous-4'
-  // BMFR — single per-block feature-regression compute pass (Koskela 2019)
-  | 'bmfr'
+  // BMFR — per-block direct-QR fit followed by deterministic overlap resolve.
+  | 'bmfr-fit'
+  | 'bmfr-resolve'
   // Neural U-Net denoiser — input-pack + output-unpack compute passes (the
   // InferenceGraph itself is self-managing and does not emit timestamp slots).
   | 'neural-pack'
@@ -280,7 +281,14 @@ export function kickTimestampReadback(
   const periodNs = state.periodNs;
   const N = labels.length;
 
-  target.mapAsync(GPUMapMode.READ).then(() => {
+  let mapping: Promise<void>;
+  try {
+    mapping = target.mapAsync(GPUMapMode.READ);
+  } catch (error) {
+    state.readbackInFlight = null;
+    throw error;
+  }
+  mapping.then(() => {
     try {
       const range = target.getMappedRange();
       const view = new BigInt64Array(range.slice(0));

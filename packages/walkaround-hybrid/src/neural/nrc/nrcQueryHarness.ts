@@ -20,6 +20,13 @@
 import { nrcEncodeHelpersWgsl } from './wgsl/nrcEncoding.wgsl.ts';
 import { nrcQueryWgsl, nrcQueryLayerPlan, type NrcQueryWgslOptions } from './wgsl/nrcQuery.wgsl.ts';
 import { nrcInputWidth, type NrcEncodingConfig, levelResolution } from './nrcEncoding.ts';
+import {
+  buildNrcInferenceArenaHeader,
+  buildNrcRuntimeArenaHeader,
+  createNrcInferenceArenaLayout,
+  createNrcRuntimeArenaLayout,
+} from './nrcArena.ts';
+import { NRC_DIAGNOSTIC_BYTES } from './nrcDiagnostics.ts';
 
 declare const Deno: { exit: (c?: number) => never };
 
@@ -65,16 +72,7 @@ async function main() {
   if (!gpu) { console.log(JSON.stringify({ ok: false, reason: 'no navigator.gpu' })); Deno.exit(1); }
   const adapter = await gpu.requestAdapter({ powerPreference: 'high-performance' });
   if (!adapter) { console.log(JSON.stringify({ ok: false, reason: 'no adapter' })); Deno.exit(1); }
-  // The test kernel binds 9 storage buffers (the query module's 6 incl. the H27
-  // nrcSlotClaims + the 3 harness-only qins/qout/qfeat) — above the WebGPU
-  // default maxStorageBuffersPerShaderStage of 8, so request headroom (same
-  // clamp-to-adapter discipline as fusedMlpHarness).
-  const device = await adapter.requestDevice({
-    requiredLimits: {
-      maxStorageBuffersPerShaderStage:
-        Math.min(adapter.limits.maxStorageBuffersPerShaderStage ?? 10, 10),
-    },
-  });
+  const device = await adapter.requestDevice();
   device.addEventListener?.('uncapturederror', (ev: unknown) => {
     const e = ev as { error?: { message?: string } };
     console.log('WGPU UNCAPTURED ERROR:', e?.error?.message ?? ev);
@@ -143,9 +141,9 @@ async function main() {
   const kernel = /* wgsl */`
 ${queryWgsl}
 struct QIn { pos: vec3f, rough: f32, n: vec3f, _p0: f32, d: vec3f, _p1: f32, alb: vec3f, _p2: f32 }
-@group(0) @binding(7) var<storage, read> qins : array<QIn>;
-@group(0) @binding(8) var<storage, read_write> qout : array<vec4f>;
-@group(0) @binding(9) var<storage, read_write> qfeat : array<f32>;
+@group(0) @binding(10) var<storage, read> qins : array<QIn>;
+@group(0) @binding(11) var<storage, read_write> qout : array<vec4f>;
+@group(0) @binding(12) var<storage, read_write> qfeat : array<f32>;
 @compute @workgroup_size(1,1,1)
 fn queryMain(@builtin(global_invocation_id) gid: vec3u) {
   let i = gid.x;
@@ -179,15 +177,38 @@ fn queryMain(@builtin(global_invocation_id) gid: vec3u) {
     device.queue.writeBuffer(buf, 0, data as unknown as GPUAllowSharedBufferSource);
     return buf;
   };
-  const wBuf = mk(w), bBuf = mk(b), tBuf = mk(tables), lBuf = mk(levelDescs);
   // Production record layout: [inW input | 3 target | 3 query world pos]
   // (nrcWriteRecord writes through base + inW + 5; the old `inW + 3` stride
   // silently clamped the last record's pos tail out of bounds).
   const recStride = inW + 3 + 3;
-  const recBuf = device.createBuffer({ size: Math.max(16, N * recStride * 4), usage: ST });
-  // H27 per-slot claim flags (atomic u32, one per record slot; zero = unclaimed).
-  const claimsBuf = device.createBuffer({ size: Math.max(16, N * 4), usage: ST });
-  device.queue.writeBuffer(claimsBuf, 0, new Uint32Array(N));
+  const inferenceLayout = createNrcInferenceArenaLayout({
+    weightsBytes: w.byteLength,
+    biasesBytes: b.byteLength,
+    tablesBytes: tables.byteLength,
+    levelsBytes: levelDescs.byteLength,
+  });
+  const inferenceBytes = new Uint8Array(inferenceLayout.byteSize);
+  const inferenceHeader = buildNrcInferenceArenaHeader(inferenceLayout, {
+    weightsBytes: w.byteLength,
+    biasesBytes: b.byteLength,
+    tablesBytes: tables.byteLength,
+    levelsBytes: levelDescs.byteLength,
+  }, 1, 0);
+  inferenceBytes.set(new Uint8Array(inferenceHeader.buffer));
+  inferenceBytes.set(new Uint8Array(w.buffer), inferenceLayout.weightsByteOffset);
+  inferenceBytes.set(new Uint8Array(b.buffer), inferenceLayout.biasesByteOffset);
+  inferenceBytes.set(new Uint8Array(tables.buffer), inferenceLayout.tablesByteOffset);
+  inferenceBytes.set(new Uint8Array(levelDescs.buffer), inferenceLayout.levelsByteOffset);
+  const inferenceArena = mk(new Uint32Array(inferenceBytes.buffer));
+  const runtimeLayout = createNrcRuntimeArenaLayout({
+    diagnosticsBytes: NRC_DIAGNOSTIC_BYTES,
+    claimsBytes: N * 4,
+    recordsBytes: N * recStride * 4,
+  });
+  const runtimeBytes = new Uint8Array(runtimeLayout.byteSize);
+  const runtimeHeader = buildNrcRuntimeArenaHeader(runtimeLayout, 1, 0, N, recStride);
+  runtimeBytes.set(new Uint8Array(runtimeHeader.buffer), runtimeLayout.headerByteOffset);
+  const runtimeArena = mk(new Uint32Array(runtimeBytes.buffer));
   // cfg UBO
   const cfgAb = new ArrayBuffer(48);
   const cf = new Float32Array(cfgAb), cu = new Uint32Array(cfgAb);
@@ -215,16 +236,12 @@ fn queryMain(@builtin(global_invocation_id) gid: vec3u) {
   const bg = device.createBindGroup({
     layout: pipe.getBindGroupLayout(0),
     entries: [
-      { binding: 0, resource: { buffer: wBuf } },
-      { binding: 1, resource: { buffer: bBuf } },
-      { binding: 2, resource: { buffer: tBuf } },
-      { binding: 3, resource: { buffer: lBuf } },
-      { binding: 4, resource: { buffer: recBuf } },
-      { binding: 5, resource: { buffer: cfgBuf } },
-      { binding: 6, resource: { buffer: claimsBuf } },
-      { binding: 7, resource: { buffer: qinBuf } },
-      { binding: 8, resource: { buffer: qoutBuf } },
-      { binding: 9, resource: { buffer: qfeatBuf } },
+      { binding: 7, resource: { buffer: inferenceArena } },
+      { binding: 8, resource: { buffer: runtimeArena } },
+      { binding: 9, resource: { buffer: cfgBuf } },
+      { binding: 10, resource: { buffer: qinBuf } },
+      { binding: 11, resource: { buffer: qoutBuf } },
+      { binding: 12, resource: { buffer: qfeatBuf } },
     ],
   });
   const e = device.createCommandEncoder();

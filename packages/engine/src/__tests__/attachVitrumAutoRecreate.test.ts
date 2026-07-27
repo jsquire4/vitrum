@@ -126,7 +126,7 @@ describe('attachVitrum auto-recreate scene tracking', () => {
       kind: 'device-lost',
       fatal: true,
       message: 'lost',
-    } as EngineError);
+    });
 
     await vi.waitFor(() => expect(createEngineMock).toHaveBeenCalledTimes(2));
     expect(createEngineMock.mock.calls[1]![0].scene).toBe(sceneB);
@@ -152,7 +152,7 @@ describe('attachVitrum auto-recreate scene tracking', () => {
       kind: 'device-lost',
       fatal: true,
       message: 'lost',
-    } as EngineError);
+    });
 
     await vi.waitFor(() => expect(createEngineMock).toHaveBeenCalledTimes(2));
     expect(createEngineMock.mock.calls[1]![0].scene).toBe(sceneC);
@@ -182,7 +182,7 @@ describe('attachVitrum auto-recreate scene tracking', () => {
       kind: 'device-lost',
       fatal: true,
       message: 'lost',
-    } as EngineError);
+    });
 
     await vi.waitFor(() => expect(createEngineMock).toHaveBeenCalledTimes(2));
     expect(createEngineMock.mock.calls[1]![0].scene).toBe(sceneB);
@@ -228,7 +228,7 @@ describe('attachVitrum auto-recreate scene tracking', () => {
       kind: 'device-lost',
       fatal: true,
       message: 'lost',
-    } as EngineError);
+    });
 
     await vi.waitFor(() => expect(createEngineMock).toHaveBeenCalledTimes(2));
     expect(onError).toHaveBeenCalledWith(snapshotError, {
@@ -263,7 +263,7 @@ describe('attachVitrum auto-recreate scene tracking', () => {
       kind: 'device-lost',
       fatal: true,
       message: 'lost',
-    } as EngineError);
+    });
 
     await vi.waitFor(() => expect(createEngineMock).toHaveBeenCalledTimes(1));
     expect(createEngineMock.mock.calls[0]![0].scene).toBe(sceneB);
@@ -304,7 +304,7 @@ describe('attachVitrum auto-recreate scene tracking', () => {
       kind: 'device-lost',
       fatal: true,
       message: 'lost',
-    } as EngineError);
+    });
 
     await vi.waitFor(() => expect(handle.engine.renderFrame).toBe(second.engine.renderFrame));
     expect(recreateEngine).toHaveBeenCalledTimes(1);
@@ -339,10 +339,52 @@ describe('attachVitrum auto-recreate scene tracking', () => {
       kind: 'device-lost',
       fatal: true,
       message: 'lost',
-    } as EngineError);
+    });
 
     await vi.waitFor(() => expect(handle.backendId).toBe('walkaround-hybrid'));
 
+    handle.dispose();
+  });
+
+  it('updates profile and active-feature identity through auto-recreate', async () => {
+    const firstActive = new Set(['pt-webgpu-sobol-sampling'] as const);
+    const secondActive = new Set(['pt-webgpu-spectral'] as const);
+    const first = makeEngine('pt-webgpu');
+    const second = makeEngine('pt-webgpu');
+    Object.assign(first.engine, {
+      backendProfileId: 'pt-webgpu-lite',
+      profileId: 'pt-webgpu-lite',
+      capabilities: { activeFeatures: firstActive },
+    });
+    Object.assign(second.engine, {
+      backendProfileId: 'pt-webgpu',
+      profileId: 'pt-webgpu',
+      capabilities: { activeFeatures: secondActive },
+    });
+    createEngineMock
+      .mockResolvedValueOnce(first.engine)
+      .mockResolvedValueOnce(second.engine);
+
+    const handle = await attachVitrum({
+      canvas: makeCanvas(),
+      scene: sceneA,
+      camera: makeCamera(),
+      autoRecreateOnDeviceLoss: true,
+    });
+
+    expect(handle.backendProfileId).toBe('pt-webgpu-lite');
+    expect(handle.profileId).toBe('pt-webgpu-lite');
+    expect(handle.engine.capabilities.activeFeatures).toBe(firstActive);
+
+    first.errorCallbacks[0]!({
+      kind: 'device-lost',
+      fatal: true,
+      message: 'lost',
+    });
+
+    await vi.waitFor(() => expect(handle.backendProfileId).toBe('pt-webgpu'));
+    expect(handle.profileId).toBe('pt-webgpu');
+    expect(handle.engine.capabilities.activeFeatures).toBe(secondActive);
     handle.dispose();
   });
 
@@ -358,7 +400,7 @@ describe('attachVitrum auto-recreate scene tracking', () => {
 
     const swapChainView = { tag: 'view-after-recreate' } as unknown as GPUTextureView;
     const webgpuContext = {
-      getConfiguration: vi.fn(() => ({ format: 'rgba8unorm' as GPUTextureFormat })),
+      getConfiguration: vi.fn(() => ({ format: 'rgba8unorm' })),
       getCurrentTexture: vi.fn(() => ({
         createView: vi.fn(() => swapChainView),
       })),
@@ -387,7 +429,7 @@ describe('attachVitrum auto-recreate scene tracking', () => {
       kind: 'device-lost',
       fatal: true,
       message: 'lost',
-    } as EngineError);
+    });
 
     await vi.waitFor(() => expect(handle.backendId).toBe('walkaround-hybrid'));
 

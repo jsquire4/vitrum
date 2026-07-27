@@ -124,16 +124,20 @@ describe('path-tracer resize and lighting optional methods follow ledger rows', 
       });
 
       if (!rec.methodPromises.setSize) delete (engine as Partial<Engine>).setSize;
-      delete (engine as Partial<Engine>).updateLighting;
+      if (!rec.methodPromises.updateLighting) {
+        delete (engine as Partial<Engine>).updateLighting;
+      }
 
       const proxy = wrapWithIdempotentDispose(engine, () => {});
 
-      expect(rec.supportDetails.mutations.resize).toBe(backendId === 'pt-webgl2' ? 'native' : 'unsupported');
-      expect(rec.supportDetails.mutations.lighting).toBe('unsupported');
-      expect(rec.methodPromises.setSize).toBe(backendId === 'pt-webgl2');
-      expect(rec.methodPromises.updateLighting).toBe(false);
-      expect(typeof proxy.setSize === 'function').toBe(backendId === 'pt-webgl2');
-      expect(proxy.updateLighting).toBeUndefined();
+      expect(rec.supportDetails.mutations.resize).toBe('native');
+      expect(rec.supportDetails.mutations.lighting).toBe(
+        backendId === 'pt-webgl2' ? 'fallback-rebuild' : 'native',
+      );
+      expect(rec.methodPromises.setSize).toBe(true);
+      expect(rec.methodPromises.updateLighting).toBe(true);
+      expect(typeof proxy.setSize).toBe('function');
+      expect(typeof proxy.updateLighting).toBe('function');
     });
   }
 });

@@ -13,6 +13,17 @@
 import type { SceneBVHBuffers } from '../restir/bvhTypes.js';
 import type { MaterialTextureAtlasPayload } from './materialTextureAtlas.js';
 
+export interface BvhBufferSlice {
+  readonly byteOffset: number;
+  readonly data: ArrayBuffer;
+}
+
+export interface TlasRefitMutation {
+  readonly nodes: readonly BvhBufferSlice[];
+  readonly worldToLocal: readonly BvhBufferSlice[];
+  readonly localToWorld: readonly BvhBufferSlice[];
+}
+
 /**
  * Sink for BVH-mutation + accumulator-reset calls issued by
  * {@link transformRefit}, {@link positionsRefit},
@@ -32,6 +43,7 @@ export interface BvhUpdateSink {
   refreshBvhRefit(
     bvhNodesBytes: ArrayBuffer,
     positionsSlice: { byteOffset: number; data: ArrayBuffer },
+    bvhNodesByteOffset?: number,
   ): void;
 
   /**
@@ -48,18 +60,30 @@ export interface BvhUpdateSink {
     normalsSlice: { byteOffset: number; data: ArrayBuffer },
   ): void;
 
-  /** PR-7 — upload refit BVH nodes only (positions already on GPU). */
-  refreshBvhNodesOnly(bvhNodesBytes: ArrayBuffer): void;
-
-  /** PR-4 — upload refit TLAS nodes + instance transforms (topology unchanged). */
-  refreshTlasRefit(
-    tlasNodes: ArrayBuffer,
-    worldToLocal: ArrayBuffer,
-    localToWorld: ArrayBuffer,
+  /**
+   * CPU position bytes changed although the GPU position buffer was written by
+   * an earlier command in the same pending transaction (GPU skinning).
+   */
+  recordLearningBvhPositionsSlice?(
+    positionsSlice: { byteOffset: number; data: ArrayBuffer },
   ): void;
 
+  /** PR-7 — upload refit BVH nodes only (positions already on GPU). */
+  refreshBvhNodesOnly(
+    bvhNodesBytes: ArrayBuffer,
+    bvhNodesByteOffset?: number,
+  ): void;
+
+  /** Upload exact refit TLAS node + changed-instance matrix slices. */
+  refreshTlasRefit(mutation: TlasRefitMutation): void;
+
+  /** Transactionally replace geometry, BLAS/TLAS, and emitter-selection GPU
+   * resources. Implementations must leave all live bindings untouched when any
+   * candidate allocation/upload fails. */
+  replaceBvhAndEmitters(bvhBuffers: SceneBVHBuffers): void;
+
   /**
-   * Full BVH-buffer reupload — destroy + recreate the four BVH GPU buffers
+   * Full BVH-buffer reupload — allocate candidates, then replace the BVH GPU buffers
    * from a freshly-built `SceneBVHBuffers`. Emitter buffers are NOT touched —
    * call `updateEmitters` separately if the emitter list also changed.
    */
@@ -83,7 +107,7 @@ export interface BvhUpdateSink {
   updateEmitters(
     bvhBuffers: Pick<
       SceneBVHBuffers,
-      'emitters' | 'emitterCdf' | 'lightTree' | 'lightTreeNodeCount' | 'lightTreeEnabled'
+      'emitters' | 'emitterCdf' | 'emitterAlias' | 'lightTree' | 'lightTreeNodeCount' | 'lightTreeEnabled'
     >,
   ): void;
 

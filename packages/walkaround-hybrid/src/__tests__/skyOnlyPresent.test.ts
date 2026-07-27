@@ -92,7 +92,7 @@ function makeDeps(
       atrousDirectSigmas: [1, 1, 1],
       atrousIndirectSigmas: [1, 1, 1],
       stainedGlassFlags: 0,
-      restirPtReuse: 0,
+      grisReuse: 0,
       nrcEnabled: 0,
     },
     telemetry: {

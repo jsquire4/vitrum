@@ -15,16 +15,16 @@
  *   - `intersectTriangle(origin, dir, a, b, c, triEps) -> IntersectionResult`
  *     — the algorithm itself; storage-agnostic (takes three world-space
  *     vertex positions).
- *   - `bvhIntersectFirstHit(bvh_index, bvh_position, bvh, ray, triEps) ->
+ *   - `bvhIntersectFirstHit(ray, triEps) ->
  *     IntersectionResult` — full ordered-stack closest-hit traversal for
  *     `array<vec4u>` / `array<vec4f>` storage (ReSTIR's pre-canonical form).
  *     Delegates to `bvhIntersectFirstHitAtRoot` with skipGlass=false.
- *   - `bvhIntersectFirstHitAtRoot(bvh_index, bvh_position, bvh, ray, triEps,
+ *   - `bvhIntersectFirstHitAtRoot(ray, triEps,
  *     rootNode, skipGlass: bool) -> IntersectionResult` — same traversal from
  *     an arbitrary BLAS root. H32: the new `skipGlass` parameter mirrors the
  *     same filter as `bvhIntersectAny` so TLAS shadow rays can skip glass with
  *     one traversal instead of an any-hit pre-test + closest-hit follow-up.
- *   - `bvhIntersectAny(bvh_index, bvh_position, bvh, origin, dir, tMax,
+ *   - `bvhIntersectAny(origin, dir, tMax,
  *     triEps, skipGlass: bool) -> bool` — shadow-ray any-hit traversal
  *     with caller-chosen glass-skip behaviour.
  *   - `bvhIntersectFirstHitV3(bvh_index, bvh_position, bvh, ray, triEps) ->
@@ -58,6 +58,14 @@
  *
  * @see CREDITS.md (Möller & Trumbore 1997; three-mesh-bvh; Williams 2005)
  */
+import { BVH_TRAVERSAL_STACK_DEPTH } from '../strides.js';
+import { buildMaterialTransmissionPredicatesWGSL } from './materialTransmission.wgsl.js';
+
+const BVH_MATERIAL_TRANSMISSION_PREDICATE_WGSL =
+  buildMaterialTransmissionPredicatesWGSL({
+    packedFunctionName: 'bvhPackedMaterialHasTransmission',
+  });
+
 
 // ─── Williams 2005 §4 IEEE-safe inverse-direction helper (standalone) ────────
 // Extracted as its own export so renderer-agnostic consumers (e.g.
@@ -178,9 +186,33 @@ fn mollerTrumboreCore(
  * for any real scene; matches three-mesh-bvh upstream. (TLAS traversal uses
  * 64 — see tlasTraversal.wgsl.ts for the documented divergence.)
  */
-export const BVH_INTERSECT_STACK_DEPTH = 60;
+export const BVH_INTERSECT_STACK_DEPTH = BVH_TRAVERSAL_STACK_DEPTH;
 
-export const BVH_INTERSECT_WGSL = /* wgsl */ `
+/**
+ * Default module-global loader implementation. Packed-storage consumers
+ * compose the core with their own functions of these exact signatures.
+ */
+export const BVH_INTERSECT_GLOBAL_LOADERS_WGSL = /* wgsl */ `
+fn bvhLoadNode(index: u32) -> BVHNode {
+  return bvh[index];
+}
+
+fn bvhLoadIndex(index: u32) -> vec4u {
+  return bvh_index[index];
+}
+
+fn bvhLoadPosition(index: u32) -> vec4f {
+  return bvh_position[index];
+}
+`;
+
+/**
+ * Binding-agnostic canonical traversal core. It deliberately contains no
+ * storage-pointer parameters and no module-scope resource declarations.
+ */
+export const BVH_INTERSECT_CORE_WGSL = /* wgsl */ `
+${BVH_MATERIAL_TRANSMISSION_PREDICATE_WGSL}
+
 ${SAFE_INV_DIR_WGSL}
 ${MOLLER_TRUMBORE_WGSL}
 
@@ -295,19 +327,13 @@ fn intersectTriangle(
 // closest-hit and any-hit paths agree on which triangles occlude.  Pass false
 // everywhere the old call sites were to preserve byte-identical semantics.
 fn bvhIntersectFirstHit(
-  bvh_index:    ptr<storage, array<vec4u>,   read>,
-  bvh_position: ptr<storage, array<vec4f>,   read>,
-  bvh:          ptr<storage, array<BVHNode>, read>,
   ray: Ray,
   triEps: f32,
 ) -> IntersectionResult {
-  return bvhIntersectFirstHitAtRoot(bvh_index, bvh_position, bvh, ray, triEps, 0u, false);
+  return bvhIntersectFirstHitAtRoot(ray, triEps, 0u, false);
 }
 
 fn bvhIntersectFirstHitAtRoot(
-  bvh_index:    ptr<storage, array<vec4u>,   read>,
-  bvh_position: ptr<storage, array<vec4f>,   read>,
-  bvh:          ptr<storage, array<BVHNode>, read>,
   ray: Ray,
   triEps: f32,
   rootNode: u32,
@@ -328,7 +354,7 @@ fn bvhIntersectFirstHitAtRoot(
   loop {
     if (pointer < 0 || pointer >= i32(BVH_INTERSECT_STACK_DEPTH)) { break; }
     let currNodeIdx = stack[pointer];
-    let node        = (*bvh)[currNodeIdx];
+    let node        = bvhLoadNode(currNodeIdx);
     pointer = pointer - 1;
 
     let bmin = vec3f(node.boundsMin[0], node.boundsMin[1], node.boundsMin[2]);
@@ -347,18 +373,16 @@ fn bvhIntersectFirstHitAtRoot(
       let triOffset = node.rightChildOrTriOffset;
       for (var i = 0u; i < triCount; i = i + 1u) {
         let triIdx   = triOffset + i;
-        let idxEntry = (*bvh_index)[triIdx];
+        let idxEntry = bvhLoadIndex(triIdx);
         let idx      = idxEntry.xyz;
-        // H32 — mirror the any-hit glass-skip filter. Triangles whose
-        // transmission nibble (bits [7:4] of idxEntry.w) > 4 are skipped when
-        // skipGlass is true, so TLAS shadow-ray closest-hit and any-hit agree.
+        // Mirror the any-hit glass-skip filter. Any nonzero physical-
+        // transmission nibble is skipped, so closest-hit and any-hit agree.
         if (skipGlass) {
-          let trans4 = (idxEntry.w >> 4u) & 0xFu;
-          if (trans4 > 4u) { continue; }
+          if (bvhPackedMaterialHasTransmission(idxEntry.w)) { continue; }
         }
-        let pa4 = (*bvh_position)[idx.x];
-        let pb4 = (*bvh_position)[idx.y];
-        let pc4 = (*bvh_position)[idx.z];
+        let pa4 = bvhLoadPosition(idx.x);
+        let pb4 = bvhLoadPosition(idx.y);
+        let pc4 = bvhLoadPosition(idx.z);
         let tri = intersectTriangle(
           ray.origin, ray.direction,
           pa4.xyz, pb4.xyz, pc4.xyz,
@@ -413,31 +437,25 @@ fn bvhIntersectFirstHitAtRoot(
 // intersection on shadow rays cast from a hit point.
 //
 // skipGlass selects the glass filter behaviour:
-//   true  → treat triangles whose (bvh_index[i].w >> 4 & 0xF) exceeds 4 as
-//           transparent (light passes through). Matches ReSTIR's pre-canonical
-//           filter (common.wgsl.ts:545  if (trans4 > 4u) continue), which
+//   true  → treat triangles whose physical-transmission lane is nonzero as
+//           transparent (light passes through). This is the canonical packed
+//           predicate; alpha coverage remains independent material metadata.
 //           lets sun rays cast through glass to produce caustic-relevant
 //           direct lighting; pHat evaluation in shade.wgsl then handles the
 //           glass tint via the per-channel tinted-visibility helper in
 //           surfaceTextures.wgsl.
 //   false → treat all hits as occluders (no glass-aware filter).
 fn bvhIntersectAny(
-  bvh_index:    ptr<storage, array<vec4u>,   read>,
-  bvh_position: ptr<storage, array<vec4f>,   read>,
-  bvh:          ptr<storage, array<BVHNode>, read>,
   origin: vec3f,
   dir:    vec3f,
   tMax:   f32,
   triEps: f32,
   skipGlass: bool,
 ) -> bool {
-  return bvhIntersectAnyAtRoot(bvh_index, bvh_position, bvh, origin, dir, tMax, triEps, skipGlass, 0u);
+  return bvhIntersectAnyAtRoot(origin, dir, tMax, triEps, skipGlass, 0u);
 }
 
 fn bvhIntersectAnyAtRoot(
-  bvh_index:    ptr<storage, array<vec4u>,   read>,
-  bvh_position: ptr<storage, array<vec4f>,   read>,
-  bvh:          ptr<storage, array<BVHNode>, read>,
   origin: vec3f,
   dir:    vec3f,
   tMax:   f32,
@@ -454,7 +472,7 @@ fn bvhIntersectAnyAtRoot(
   while (stackPtr > 0u) {
     stackPtr = stackPtr - 1u;
     let nodeIdx = stack[stackPtr];
-    let node = (*bvh)[nodeIdx];
+    let node = bvhLoadNode(nodeIdx);
 
     let nMin = vec3f(node.boundsMin[0], node.boundsMin[1], node.boundsMin[2]);
     let nMax = vec3f(node.boundsMax[0], node.boundsMax[1], node.boundsMax[2]);
@@ -470,17 +488,16 @@ fn bvhIntersectAnyAtRoot(
       let offset = node.rightChildOrTriOffset;
       for (var i = 0u; i < count; i = i + 1u) {
         let triIdx = offset + i;
-        let idxEntry = (*bvh_index)[triIdx];
+        let idxEntry = bvhLoadIndex(triIdx);
         let idx = idxEntry.xyz;
         if (skipGlass) {
-          // Transmission is a 4-bit unorm in bits [7:4] of idxEntry.w;
-          // glass has transmission > ~0.3 → packed > 4.
-          let trans4 = (idxEntry.w >> 4u) & 0xFu;
-          if (trans4 > 4u) { continue; }
+          // Physical transmission is a 4-bit unorm in bits [7:4]. Code zero
+          // alone means opaque; alpha coverage is not part of this decision.
+          if (bvhPackedMaterialHasTransmission(idxEntry.w)) { continue; }
         }
-        let a = (*bvh_position)[idx.x].xyz;
-        let b = (*bvh_position)[idx.y].xyz;
-        let c = (*bvh_position)[idx.z].xyz;
+        let a = bvhLoadPosition(idx.x).xyz;
+        let b = bvhLoadPosition(idx.y).xyz;
+        let c = bvhLoadPosition(idx.z).xyz;
         let tri = intersectTriangle(origin, dir, a, b, c, triEps);
         if (tri.didHit && tri.dist > 1e-4 && tri.dist < tMax) { return true; }
       }
@@ -491,10 +508,12 @@ fn bvhIntersectAnyAtRoot(
       let leftToRight = dir[axis] >= 0.0;
       let nearChild   = select(rightChild,   nodeIdx + 1u, leftToRight);
       let farChild    = select(nodeIdx + 1u, rightChild,   leftToRight);
-      // Stack-overflow guard: bail out with not-yet-occluded (false) rather
-      // than silently dropping the far subtree.
+      // Stack-overflow guard: fail closed. Returning "unoccluded" here would
+      // silently drop the pending subtree and leak light through geometry.
+      // Built trees cannot approach this depth, but deserialized/hostile trees
+      // must remain conservative.
       if (stackPtr + 1u >= ${BVH_INTERSECT_STACK_DEPTH}u) {
-        return false;
+        return true;
       }
       stack[stackPtr] = farChild;  stackPtr = stackPtr + 1u;
       stack[stackPtr] = nearChild; stackPtr = stackPtr + 1u;
@@ -503,18 +522,10 @@ fn bvhIntersectAnyAtRoot(
   return false;
 }
 
-// ─── BVH ordered closest-hit traversal — vec3 storage (DDGI / RC) ────────────
-// Identical algorithm to bvhIntersectFirstHit, but reads bvh_index and
-// bvh_position as array<vec3u> / array<vec3f> (DDGI / RC three-mesh-bvh
-// upstream storage form). The pre-canonical DDGI and RC consumers used
-// this layout; this entry point preserves their behaviour byte-for-byte
-// while sharing the algorithm with the vec4-storage variant. The returned
-// IntersectionResult has matColorPacked = 0u and uv = vec2f(0) — neither
-// is meaningful for stride-3 storage (no .w payload).
+// Compatibility entry point for legacy callers that only consume xyz lanes.
+// It uses the same value-return loaders as the canonical vec4 traversal, so it
+// remains portable and does not impose a second storage-buffer type on modules.
 fn bvhIntersectFirstHitV3(
-  bvh_index:    ptr<storage, array<vec3u>,   read>,
-  bvh_position: ptr<storage, array<vec3f>,   read>,
-  bvh:          ptr<storage, array<BVHNode>, read>,
   ray: Ray,
   triEps: f32,
 ) -> IntersectionResult {
@@ -533,7 +544,7 @@ fn bvhIntersectFirstHitV3(
   loop {
     if (pointer < 0 || pointer >= i32(BVH_INTERSECT_STACK_DEPTH)) { break; }
     let currNodeIdx = stack[pointer];
-    let node        = (*bvh)[currNodeIdx];
+    let node        = bvhLoadNode(currNodeIdx);
     pointer = pointer - 1;
 
     let bmin = vec3f(node.boundsMin[0], node.boundsMin[1], node.boundsMin[2]);
@@ -552,10 +563,10 @@ fn bvhIntersectFirstHitV3(
       let triOffset = node.rightChildOrTriOffset;
       for (var i = 0u; i < triCount; i = i + 1u) {
         let triIdx = triOffset + i;
-        let idx    = (*bvh_index)[triIdx];
-        let a = (*bvh_position)[idx.x];
-        let b = (*bvh_position)[idx.y];
-        let c = (*bvh_position)[idx.z];
+        let idx = bvhLoadIndex(triIdx).xyz;
+        let a = bvhLoadPosition(idx.x).xyz;
+        let b = bvhLoadPosition(idx.y).xyz;
+        let c = bvhLoadPosition(idx.z).xyz;
         let tri = intersectTriangle(
           ray.origin, ray.direction,
           a, b, c,
@@ -586,4 +597,10 @@ fn bvhIntersectFirstHitV3(
   return best;
 }
 
+`;
+
+/** Convenience composition for the ordinary three-buffer storage layout. */
+export const BVH_INTERSECT_WGSL = /* wgsl */ `
+${BVH_INTERSECT_CORE_WGSL}
+${BVH_INTERSECT_GLOBAL_LOADERS_WGSL}
 `;

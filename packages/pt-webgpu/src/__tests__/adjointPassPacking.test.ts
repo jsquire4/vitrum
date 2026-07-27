@@ -208,7 +208,7 @@ function makeFrame(): FrameInput {
   return {
     viewMatrix: identity,
     projMatrix: identity,
-    cameraPosition: [0, 0, 4],
+    cameraPosition: [0, 0, 0],
     viewport: { width: 1, height: 1, devicePixelRatio: 1 },
     frameIndex: 0,
     frameSeed: 0,
@@ -387,6 +387,11 @@ describe('AdjointPass host packing', () => {
         shape: 'box',
         params: new Float32Array([0, 0, 0, 1, 1, 1]),
         material: base.material,
+        fallbackMesh: {
+          positions: new Float32Array([99, 0, 0, 100, 0, 0, 99, 1, 0]),
+          normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+          indices: new Uint32Array([0, 1, 2]),
+        },
       }],
     };
 
@@ -399,6 +404,7 @@ describe('AdjointPass host packing', () => {
     expect(override).not.toBeNull();
     expect(override!.triangleCount).toBe(12);
     expect(override!.positions.length).toBeGreaterThan(0);
+    expect(Math.max(...override!.positions)).toBeLessThanOrEqual(1);
     expect(Array.from(override!.triMaterialIds)).toEqual(new Array(12).fill(9));
   });
 
@@ -487,7 +493,7 @@ describe('AdjointPass host packing', () => {
       const sourceFactorsBuffer = (sourceFactorsEntry!.resource as { buffer: FakeBuffer }).buffer;
       expect(meshAreaLightsBuffer).not.toBe(sb.meshAreaLightsBuffer);
       expect(sourceFactorsBuffer).not.toBe(sb.meshAreaLightSourceFactorsBuffer);
-      expect(meshAreaLightsBuffer.size).toBe(16 * Float32Array.BYTES_PER_ELEMENT);
+      expect(meshAreaLightsBuffer.size).toBe(28 * Float32Array.BYTES_PER_ELEMENT);
       expect(sourceFactorsBuffer.size).toBe(4 * Float32Array.BYTES_PER_ELEMENT);
     } finally {
       restoreWebGpuConstants();

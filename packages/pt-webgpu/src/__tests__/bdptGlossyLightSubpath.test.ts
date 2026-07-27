@@ -1,7 +1,7 @@
 /**
  * A9 — BDPT production-quality structure tests: the REAL glossy/specular light
- * subpath, the 5-row light-path vertex carrying the light-vertex BSDF plus
- * hit-local material payload for the §10.3 connection, the raised bounce cap,
+ * subpath, the 7-row light-path vertex carrying the light-vertex BSDF, hit-local
+ * material payload, and interface eta metadata, the raised bounce cap,
  * and the isotropic point emitter.
  *
  * These pin the WGSL structure + the host-side caps + the CPU oracle parity. The
@@ -13,8 +13,11 @@ import { describe, expect, it } from 'vitest';
 import { PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL } from '../wgsl/bdpt/bdptLightSubpath.wgsl.js';
 import { PT_WEBGPU_BDPT_CONNECTION_WGSL } from '../wgsl/bdpt/bdptConnection.wgsl.js';
 import { PT_WEBGPU_PATH_TRACE_MATERIAL_WGSL } from '../wgsl/pathTrace/material.wgsl.js';
-import { BdptLightPathBufferWebGPU } from '../bdpt/bdptLightPathBufferWebGPU.js';
-
+import {
+  bdptEmitterThroughputOracle,
+  spectralCombinedReflectanceAtHeroOracle,
+  spectralRgbFactorAtHeroOracle,
+} from './spectralScalarOracle.js';
 const FRONT_FACE_BIT = 0x80000000 >>> 0;
 const TRI_INDEX_MASK = 0x7fffffff >>> 0;
 
@@ -126,8 +129,9 @@ function sampleBdptPayloadMaterialOracle(
   mat: BdptPayloadMaterialFixture,
   opts: { isFrontFace: boolean; spectralEnabled: boolean; heroLambdaNm: number; thinFilmEnabled: boolean },
 ) {
+  const authoredBaseColor = mat.baseColor;
   let baseColor = scale3(mul3(mul3(mat.baseColor, mat.vertexColor), mat.baseColorTex), mat.ao);
-  const roughnessFromOrm = clamp(mat.roughness * mat.orm[1], 0.02, 1);
+  const roughnessFromOrm = clamp(mat.roughness * mat.orm[1], 0, 1);
   const metallic = clamp(mat.metallic * mat.orm[2], 0, 1);
   const transmission = clamp(mat.transmission * mat.transmissionTex, 0, 1);
   const ior =
@@ -147,7 +151,7 @@ function sampleBdptPayloadMaterialOracle(
   const specularIntensity = clamp(mat.specularIntensity * mat.specularIntensityTex, 0, 1);
   const layerTx = clamp3(opts.isFrontFace ? mat.frontLayerTx : mat.backLayerTx);
   const layerRoughness = opts.isFrontFace ? mat.frontLayerRoughness : mat.backLayerRoughness;
-  const roughness = layerRoughness >= 0 ? clamp(layerRoughness, 0.02, 1) : roughnessFromOrm;
+  const roughness = layerRoughness >= 0 ? clamp(layerRoughness, 0, 1) : roughnessFromOrm;
   baseColor = mul3(baseColor, layerTx);
   if (opts.thinFilmEnabled) {
     const layerStrength = clamp(0.12 + 0.06 * mat.thinFilmLayerCount, 0, 0.55);
@@ -155,9 +159,12 @@ function sampleBdptPayloadMaterialOracle(
     baseColor = mix3(baseColor, mul3(baseColor, clamp3(mat.thinFilmReflectTint)), filmStrength);
   }
   if (opts.spectralEnabled) {
-    const refl = mat.hasSpectralReflectance
+    const authoredReflectance = mat.hasSpectralReflectance
       ? jakobHanikaReflectanceOracle(mat.spectralReflCoeffs, opts.heroLambdaNm)
-      : Math.max(baseColor[0] * 0.2126 + baseColor[1] * 0.7152 + baseColor[2] * 0.0722, 0);
+      : spectralRgbFactorAtHeroOracle(authoredBaseColor, opts.heroLambdaNm);
+    const refl = spectralCombinedReflectanceAtHeroOracle(
+      baseColor, authoredBaseColor, authoredReflectance, opts.heroLambdaNm,
+    );
     baseColor = [refl, refl, refl];
   }
 
@@ -199,69 +206,66 @@ describe('A9 — glossy/specular BDPT light subpath', () => {
     expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('let bsPrev = sampleNextBounceDirectionWithClearcoatNormal(');
     expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('prevMat.clearcoat,');
     expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('prevMat.sheenRoughness,');
-    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('let f0BasePrev = materialSpecularF0(prevBc, prevMetal, prevMat.specularColor, prevMat.specularIntensity);');
+    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('let f0BasePrev = materialSpecularF0(');
     expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('let f0Prev = iridescenceModifiedF0(');
     expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('prevMat.iridescenceThicknessMax,');
     // f and throughput computed at prevPos (prevMat/prevNormal/woAtPrev/scatterDir).
-    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('fPrev = evaluateBrdfFullWithClearcoatNormal(');
-    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('prevMat.specularColor, prevMat.specularIntensity,');
-    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('let newThroughput = prevThroughput * fPrev * cosPrev / pdfFwd;');
+    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('surfaceThroughputMul = bsPrev.throughputMul;');
+    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('surfaceRayOrigin = bsPrev.newRayOrigin;');
+    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('var newThroughput = prevThroughput * surfaceThroughputMul * segmentWeight;');
     // pdfFwd = scatter pdf at prevPos (SA, no baked-in geometry term).
-    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('pdfScatter = brdfDirectionalPdfFullSampledWithClearcoatNormal(prevBc, prevRough, prevMetal, 0.0, prevMat.ior,');
-    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('let pdfFwd = pdfScatter;');
+    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('pdfScatter = bsPrev.sampledEventPdf;');
+    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('let pdfFwd = pdfScatter * segmentForwardDensity;');
     // pdfRev(prevCol) is patched to the TRUE reverse density (Item-3 fix 2026-06-10):
     // for surface vertices, brdfDirectionalPdf(prevNormal, scatterDir, woAtPrev) —
     // NOT pdfFwd, which was the forward pdf and only equal for symmetric BSDFs.
     // For emitter vertices (prevMatId < 0), Lambertian cosine hemisphere IS symmetric
     // so pdfFwd == pdfRev; the emitter branch correctly falls back to pdfFwd.
-    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('bdptLightPath[bdptLightPathIndex(prevCol, 2u)] = vec4f(old_r2prev.xyz, pdfRevAtPrev);');
-    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('pdfRevAtPrev = brdfDirectionalPdfFullSampledWithClearcoatNormal(prevBcRev, prevRoughRev, prevMetalRev, 0.0,');
+    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('let predecessorCol = prevCol - 1;');
+    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('swappedDirectionalPdf = bdptMarginalSurfacePdf(');
+    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('swappedDirectionalPdf * reverseEdgeDensity,');
   });
 
-  it('finite-area emitter extension keeps the needed π factor, legacy pseudo emitters do not double-apply it', () => {
-    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain(
-      'fPrev = select(vec3f(INV_PI), vec3f(1.0), prevMatId == BDPT_LV_AREA_EMITTER_MATID);',
-    );
+  it('finite-area emitter extension keeps the needed π factor without a bounce-0 direction PDF', () => {
+    const rgbThroughput = bdptEmitterThroughputOracle([4, 2, 1], 630, 0.2, false);
+    expectVecClose(rgbThroughput, [20, 10, 5], 12);
+
+    const spectralThroughput = bdptEmitterThroughputOracle([4, 2, 1], 630, 0.2, true);
+    expect(spectralThroughput[0]).toBeGreaterThan(0);
+    expect(spectralThroughput[1]).toBe(spectralThroughput[0]);
+    expect(spectralThroughput[2]).toBe(spectralThroughput[0]);
+    const twicePdf = bdptEmitterThroughputOracle([4, 2, 1], 630, 0.4, true);
+    expect(spectralThroughput[0] / twicePdf[0]).toBeCloseTo(2, 12);
+
+    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('if (prevMatId == BDPT_LV_AREA_EMITTER_MATID) {');
+    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('let hemi = cosineHemisphereSample(&rng, prevNormal);');
+    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('fPrev = vec3f(1.0);');
     // Surface vertices still use the real extension-aware BRDF.
-    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('fPrev = evaluateBrdfFullWithClearcoatNormal(');
-    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('prevMat.specularColor, prevMat.specularIntensity,');
+    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('surfaceThroughputMul = bsPrev.throughputMul;');
+    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('newThroughput = prevThroughput * fPrev * cosPrev / pdfScatter * segmentWeight;');
   });
 
-  it('directional bounce-0 uses packed RGB records and scene-scaled pseudo distance', () => {
+  it('launches directional and environment roots from the scene-bounding disk', () => {
     const code = PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL
-      .split('\n')
-      .filter((line) => !line.trim().startsWith('//'))
-      .join('\n');
-
-    expect(code).toContain('var n = params.directionalLightCount;');
-    expect(code).toContain('for (var di = 0u; di < params.directionalLightCount; di = di + 1u)');
-    expect(code).toContain('let dDirAD = directionalLights[dBase];');
-    expect(code).toContain('let dIrrMean = directionalLights[dBase + 1u];');
-    expect(code).toContain('bdptDistantEmitterPosition(lightDir)');
-    expect(code).toContain('bdptFinishBounce0(col, emitPos, lightDir, dIrrMean.rgb, discretePdf, dDirAD.w < 0.0, rng);');
-    expect(code).not.toContain('params.lightDir.w');
-    expect(code).not.toContain('* 50.0');
+      .split("\n")
+      .filter((line) => !line.trim().startsWith("//"))
+      .join("\n");
+    expect(code).toContain('params.directionalLightCount');
+    expect(code).toContain('fn bdptInfiniteLaunchDisk(');
+    expect(code).toContain('BDPT_LV_DIRECTIONAL_EMITTER_MATID');
+    expect(code).toContain('BDPT_LV_ENVIRONMENT_EMITTER_MATID');
+    expect(code).toContain('1.0 / (PI * radius * radius),');
   });
 
   it('mirrors emitter castShadow:false into BDPT bounce-0 connection visibility', () => {
+    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('fn bdptWriteLvEmitterPayload(');
     expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain(
-      'fn bdptWriteLvEmitterPayload(col: i32, castShadowDisabled: bool)',
+      'select(0.0, 1.0, castShadowDisabled), cutoffDistance, decay, spotCosOuter,',
     );
-    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain(
-      'bdptLightPath[bdptLightPathIndex(col, 4u)] = vec4f(select(0.0, 1.0, castShadowDisabled), 0.0, 0.0, 0.0);',
-    );
-    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain(
-      'bdptFinishBounce0Isotropic(col, pos, rad, discretePdf, ptExtra.z > 0.5, rng);',
-    );
-    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain(
-      'bdptFinishBounce0(col, spos, spotDir, srad, discretePdf, spExtra.z > 0.5, rng);',
-    );
-    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain(
-      'bdptFinishBounce0Area(col, emitPos, emitNormal, rr, discretePdf, 1.0 / areaS, rbase.w > 0.5, rng);',
-    );
-    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain(
-      'bdptFinishBounce0Area(col, emitPos, emitNormal, mr, discretePdf, 1.0 / areaM, meshAreaLights[mb + 3u].w > 0.5, rng);',
-    );
+    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('ptExtra.z > 0.5,');
+    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('spExtra.z > 0.5,');
+    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('rbase.w > 0.5,');
+    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('meshAreaLights[mb + 3u].w > 0.5,');
     expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain(
       'let lightEmitterCastShadowDisabled = lightVtxIdx == 0 && lvMatId < 0.0 && lv4.x > 0.5;',
     );
@@ -290,7 +294,7 @@ describe('A9 — glossy/specular BDPT light subpath', () => {
       'let prevPayload = bdptLightPath[bdptLightPathIndex(prevCol, 4u)];',
     );
     expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain(
-      'let prevMat = bdptSampleMaterialAtPayload(u32(prevMatId), prevPayload, prevNormal, woAtPrev, params.heroLambdaNm);',
+      'let prevMat = bdptSampleMaterialAtPayload(',
     );
     expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('let triWord = bitcast<u32>(payload.x);');
     expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('let triIndex = triWord & 0x7fffffffu;');
@@ -322,11 +326,11 @@ describe('A9 — glossy/specular BDPT light subpath', () => {
 
   it('samples texture-map material payloads before BDPT light-subpath scatter', () => {
     expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain(
-      'out.baseColor = mat.baseColor * sampleVertexColor(triIndex, baryVW).rgb * sampleBaseColorTexture(matId, triIndex, baryVW).rgb;',
+      'out.baseColor = mat.baseColor * sampleVertexColor(triIndex, baryVW).rgb * sampleBaseColorTexture(matId, triIndex, baryVW, instanceIndex).rgb;',
     );
-    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('let orm = sampleOrmTexture(matId, triIndex, baryVW);');
+    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('let orm = sampleOrmTexture(matId, triIndex, baryVW, instanceIndex);');
     expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain(
-      'out.clearcoat = clamp(mat.clearcoat * sampleClearcoatTexture(matId, triIndex, baryVW), 0.0, 1.0);',
+      'out.clearcoat = clamp(mat.clearcoat * sampleClearcoatTexture(matId, triIndex, baryVW, instanceIndex), 0.0, 1.0);',
     );
     expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain(
       'out.clearcoatNormal = applyClearcoatNormalMap(matId, triIndex, baryVW, shadingNormal, instanceIndex);',
@@ -334,14 +338,13 @@ describe('A9 — glossy/specular BDPT light subpath', () => {
     expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('prevNormal,');
     expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('prevMat.clearcoatNormal,');
     expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain(
-      'out.specularColor = clamp(mat.specularColor * sampleSpecularColorTexture(matId, triIndex, baryVW), vec3f(0.0), vec3f(1.0));',
+      'out.specularColor = clamp(mat.specularColor * sampleSpecularColorTexture(matId, triIndex, baryVW, instanceIndex), vec3f(0.0), vec3f(1.0));',
     );
     expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain(
       'nsFront = applyNormalMap(matIdx, hit.triIndex, hit.baryVW, nsFront, hit.instanceIndex, isFrontFaceHit);',
     );
-    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain(
-      'prevMat.anisotropy, prevMat.anisotropyRotation',
-    );
+    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('prevMat.anisotropy,');
+    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('prevMat.anisotropyRotation,');
   });
 
   it('numeric oracle pins mapped material payload transforms used by BDPT light vertices', () => {
@@ -394,8 +397,8 @@ describe('A9 — glossy/specular BDPT light subpath', () => {
       thinFilmEnabled: true,
     });
 
-    expectVecClose(sampled.baseColor, [0.0529488, 0.018531, 0.0225]);
-    expect(sampled.roughness).toBeCloseTo(0.02, 8);
+    expectVecClose(sampled.baseColor, [0.0527544, 0.0184905, 0.0225]);
+    expect(sampled.roughness).toBeCloseTo(0.01, 8);
     expect(sampled.metallic).toBeCloseTo(1, 8);
     expect(sampled.transmission).toBeCloseTo(0.3, 8);
     expect(sampled.ior).toBeCloseTo(1.5, 8);
@@ -422,23 +425,20 @@ describe('A9 — glossy/specular BDPT light subpath', () => {
     expect(backSide.roughness).toBeCloseTo(0.6, 8);
   });
 
-  it('applies layer, thin-film, spectral albedo, and Cauchy IOR to BDPT light-side material payloads', () => {
+  it('applies layer, spectral albedo, and Cauchy IOR to BDPT light-side material payloads', () => {
     for (const line of [
       'out.ior = cauchyIorAtLambda(heroLambda, mat.ior, mat.dispersionAbbe);',
       'let layerTx = clamp(select(mat.backLayerTx, mat.frontLayerTx, isFrontFace), vec3f(0.0), vec3f(1.0));',
-      'out.roughness = clamp(layerRoughness, 0.02, 1.0);',
+      'out.roughness = clamp(layerRoughness, 0.0, 1.0);',
       'activeLayerWeightRgb(layerTx, heroLambda, true)',
-      'let viewCos = clamp(dot(shadingNormal, woTowardPrev), 0.0, 1.0);',
-      'let rt = thinFilmTmmRt(',
-      'out.baseColor = mix(out.baseColor, out.baseColor * thinFilmReflectTint, filmStrength);',
-      'evalJakobHanikaSpectrum(mat.spectralReflCoeffs, heroLambda)',
+      'spectralCombinedReflectanceAtHero(',
       'out.baseColor = vec3f(reflScalar);',
     ]) {
       expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain(line);
     }
   });
 
-  it('numeric oracle pins spectral Cauchy IOR and Jakob-Hanika override on BDPT light vertices', () => {
+  it('numeric oracle preserves Jakob-Hanika while applying runtime base factors at hero lambda', () => {
     const fixture: BdptPayloadMaterialFixture = {
       baseColor: [0.9, 0.6, 0.3],
       vertexColor: [0.5, 0.25, 0.75],
@@ -487,32 +487,45 @@ describe('A9 — glossy/specular BDPT light subpath', () => {
       heroLambdaNm: 510,
       thinFilmEnabled: true,
     });
+    const authoredOnly = sampleBdptPayloadMaterialOracle({
+      ...fixture,
+      vertexColor: [1, 1, 1],
+      baseColorTex: [1, 1, 1],
+      ao: 1,
+      frontLayerTx: [1, 1, 1],
+      frontLayerRoughness: -1,
+    }, {
+      isFrontFace: true, spectralEnabled: true, heroLambdaNm: 510, thinFilmEnabled: false,
+    });
+
 
     expect(sampled.ior).toBeCloseTo(1.52012509542473, 10);
-    expectVecClose(sampled.baseColor, [0.8122284453397484, 0.8122284453397484, 0.8122284453397484], 10);
+    expectVecClose(authoredOnly.baseColor, [0.8122284453397484, 0.8122284453397484, 0.8122284453397484], 10);
+    expectVecClose(sampled.baseColor, [0.03699294454299884, 0.03699294454299884, 0.03699294454299884], 10);
+    expect(sampled.baseColor[0]).toBeLessThan(authoredOnly.baseColor[0]);
   });
 
   it('the §10.3 connection evaluates the REAL light-vertex BSDF + pdfs for a surface vertex', () => {
     expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain('eyeClearcoatNormal: vec3f,');
     expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain('specularColor: vec3f,');
     expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain('specularIntensity: f32,');
-    expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain('let eyeBrdf = evaluateBrdfFullWithClearcoatNormal(');
+    expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain('eyeBrdf = evaluateFiniteBsdfFullWithClearcoatNormal(');
     expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain(
-      'baseColor, roughness, metallic, eyeNormal, eyeClearcoatNormal, eyeWo, connDir,',
+      'baseColor, roughness, metallic, transmission, etaTOverI,',
     );
     expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain('specularColor, specularIntensity,');
-    expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain('let revLc = brdfDirectionalPdfFullSampledWithClearcoatNormal(');
+    expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain('var revLc = 0.0;');
     // lightBsdfCosTheta uses the real BSDF when matId >= 0 (was always cosθ/π),
     // without re-multiplying cosLight (the geometry term owns edge cosines).
     expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain('let lv4 = bdptLightPath[bdptLightPathIndex(lightVtxIdx, 4u)];');
     expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain('if (lvMatId >= 0.0) {');
-    expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain('let lvMat = bdptSampleMaterialAtPayload(u32(lvMatId), lv4, lightNormal, lvWoPrev, params.heroLambdaNm);');
-    expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain('let lvBrdf = evaluateBrdfFullWithClearcoatNormal(');
-    expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain('lightNormal, lvMat.clearcoatNormal, -connDir, lvWoPrev,');
+    expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain('let lvMat = bdptSampleMaterialAtPayload(u32(lvMatId), lv4, lightNormal, lvWoPrev, bdptInvocationHeroLambdaNm);');
+    expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain('let lvBrdf = evaluateFiniteBsdfFullWithClearcoatNormal(');
+    expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain('lightNormal, lvMat.clearcoatNormal, lvWoPrev, -connDir,');
     expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain('lightBsdfCosTheta = lvBrdf;');
     // The MIS pdf bookkeeping (fwdEe + revLcMinus) also uses the real BSDF pdf.
     expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain('fwdEe = brdfDirectionalPdfFullSampledWithClearcoatNormal(');
-    expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain('let revLc = brdfDirectionalPdfFullSampledWithClearcoatNormal(');
+    expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain('revLc = brdfDirectionalPdfFullSampledWithClearcoatNormal(');
     expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain('lightNormal, lvMatF.clearcoatNormal, lvWoPrev, lcToE,');
     expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain(
       'lvMatF.clearcoat, lvMatF.clearcoatRoughness, lvMatF.sheen, lvMatF.sheenRoughness,',
@@ -524,38 +537,48 @@ describe('A9 — glossy/specular BDPT light subpath', () => {
     expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('const BDPT_LV_AREA_EMITTER_MATID: f32 = -2.0;');
   });
 
-  it('the light-path vertex is 5 rows (row 4 = tri/bary/instance/side material payload)', () => {
-    expect(PT_WEBGPU_PATH_TRACE_MATERIAL_WGSL).toContain('const BDPT_LIGHT_PATH_ROWS = 5u;');
+  it('the light-path vertex is 7 rows (row 6 = both medium-side budgets)', () => {
+    expect(PT_WEBGPU_PATH_TRACE_MATERIAL_WGSL).toContain('const BDPT_LIGHT_PATH_ROWS = 7u;');
+    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain(
+      'bdptWriteLvInterfaceEta(col, hitEtaTOverI, incidentIor, transmittedIor);',
+    );
     expect(PT_WEBGPU_PATH_TRACE_MATERIAL_WGSL).toContain(
       'hit-local tri/bary/instance payload for texture-map material sampling. The high',
     );
     expect(PT_WEBGPU_PATH_TRACE_MATERIAL_WGSL).toContain(
       'bit of row-4.x stores the front-face flag; real triangle indices are required to',
     );
+    expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain(
+      'var<private> bdptEyeStackPrivate: array<BdptEyeVtx, 8>;',
+    );
+    expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain('bdptEyeStackPrivate[d] = v;');
+    expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain(
+      'incidentMediumMatId: u32,',
+    );
+  });
+
+  it('keeps the eye stack invocation-local with the production depth bound', () => {
+    expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain('const BDPT_MAX_EYE_DEPTH: u32 = 8u;');
+    expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).not.toContain('var<storage');
+    expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).not.toContain('bdptCurrentPixel');
   });
 });
 
 describe('A9 — raised bounce cap + isotropic point emitter', () => {
-  it('the light-path buffer accepts maxLightBounces up to 8 (was capped at 3)', () => {
-    const sized: { size: number }[] = [];
-    const fakeDevice = {
-      createBuffer(desc: { size: number }) {
-        sized.push({ size: desc.size });
-        return { destroy() {} } as unknown as GPUBuffer;
-      },
-    } as unknown as GPUDevice;
-    const buf = new BdptLightPathBufferWebGPU(fakeDevice, { maxLightBounces: 8 });
-    expect(buf.maxLightBounces).toBe(8);
-    // 8 columns × 5 rows × 16 B.
-    expect(sized[0]!.size).toBe(8 * 5 * 16);
-    expect(() => new BdptLightPathBufferWebGPU(fakeDevice, { maxLightBounces: 9 })).toThrow(
-      /maxLightBounces must be 1..8/,
+  it('bounds the invocation-local light path to eight 7-row vertices', () => {
+    expect(PT_WEBGPU_PATH_TRACE_MATERIAL_WGSL).toContain('const BDPT_MAX_LIGHT_DEPTH = 8u;');
+    expect(PT_WEBGPU_PATH_TRACE_MATERIAL_WGSL).toContain(
+      'var<private> bdptLightPath: array<vec4f, 56>;',
     );
+    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain(
+      'let maxB = i32(min(params.bdptMaxLightBounces, BDPT_MAX_LIGHT_DEPTH));',
+    );
+    expect(PT_WEBGPU_PATH_TRACE_MATERIAL_WGSL).not.toContain('@group(2) @binding(5)');
   });
 
   it('the point emitter is ISOTROPIC (uniform sphere, 1/4π), not cosine-up', () => {
-    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('fn bdptFinishBounce0Isotropic(');
-    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('let pdfDir = 0.25 * INV_PI;');
-    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('bdptFinishBounce0Isotropic(col, pos, rad, discretePdf, ptExtra.z > 0.5, rng);');
+    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('scatterDir = uniformSphere(vec2f(rand_f32(&rng), rand_f32(&rng)));');
+    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('pdfScatter = 0.25 * INV_PI;');
+    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('BDPT_LV_POINT_EMITTER_MATID,');
   });
 });

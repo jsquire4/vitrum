@@ -106,9 +106,8 @@ const sampler = {} as GPUSampler;
  * of arguments. Returns the captured bind-group binding indices.
  */
 const BUILDER_DRIVERS: Record<BindGroupTableId, (d: GPUDevice, c: BGLCache) => GPUBindGroup> = {
-  frame: (d, c) => buildFrameBindGroup(d, c, {
-    placeholderView: view,
-    reservoirCurrentBuffer: buf, reservoirPreviousBuffer: buf, reservoirSpatialBuffer: buf,
+    frame: (d, c) => buildFrameBindGroup(d, c, {
+      reservoirCurrentBuffer: buf, reservoirPreviousBuffer: buf, reservoirSpatialBuffer: buf,
     hdrColorTexture: { createView: () => view } as unknown as GPUTexture,
     nearestSampler: sampler,
     gNormalDepthTexture: { createView: () => view } as unknown as GPUTexture,
@@ -117,19 +116,16 @@ const BUILDER_DRIVERS: Record<BindGroupTableId, (d: GPUDevice, c: BGLCache) => G
     hdrTotalTexture: { createView: () => view } as unknown as GPUTexture,
     albedoTexture: { createView: () => view } as unknown as GPUTexture,
     svgfCurrentObjectIdTexture: { createView: () => view } as unknown as GPUTexture,
-  }),
-  scene: (d, c) => buildSceneBindGroup(d, c, {
-    bvhNodesBuffer: buf, bvhIndexBuffer: buf, bvhPositionBuffer: buf,
-    emitterBuffer: buf, emitterCdfBuffer: buf,
-    // WS1 — beer is a uint texture (binding 5); bvh_normal is storage (binding 11).
-    bvhBeerTextureView: view, bvhNormalBuffer: buf, bvhEmissiveTextureView: view,
-    bvhRoughMetalTextureView: view,
-    materialTextureAtlasView: view, baseColorMapMetaTextureView: view,
-    bvhTangentTextureView: view,
-    bvhVertexColorTextureView: view,
-    tlasNodesBuffer: buf, tlasInstanceIndicesBuffer: buf, tlasBlasRootsBuffer: buf,
-    tlasInstanceWorldToLocalBuffer: buf, tlasInstanceLocalToWorldBuffer: buf,
-    analyticLightsTextureView: view,
+    }),
+    scene: (d, c) => buildSceneBindGroup(d, c, {
+      sceneStorageArenaBuffers: [buf, buf, buf],
+      // WS1 — beer is a uint texture (binding 5).
+      bvhBeerTextureView: view, bvhEmissiveTextureView: view,
+      bvhRoughMetalTextureView: view,
+      materialTextureAtlasView: view, baseColorMapMetaTextureView: view,
+      bvhTangentTextureView: view,
+      bvhVertexColorTextureView: view,
+      analyticLightsTextureView: view,
     // B3 — directional IBL env resources (bindings 15-19).
     envMapTextureView: view, envMarginalTextureView: view, envConditionalTextureView: view,
     envSampler: sampler, envParamsBuffer: buf,
@@ -138,7 +134,7 @@ const BUILDER_DRIVERS: Record<BindGroupTableId, (d: GPUDevice, c: BGLCache) => G
   composite: (d, c) => buildCompositeBindGroup(d, c, view, sampler, buf),
   sampleBudget: (d, c) => buildSampleBudgetBindGroup(d, c, view, view, buf, buf),
   resolve: (d, c) => buildResolveBindGroup(d, c, buf, view, view, view, view),
-  cbPrefill: (d, c) => buildCbPrefillBindGroup(d, c, buf, view, view, view),
+  cbPrefill: (d, c) => buildCbPrefillBindGroup(d, c, buf, view, view, view, view),
   motionVectors: (d, c) => buildMotionVectorsBindGroup(d, c, view, view, buf),
   gtao: (d, c) => buildGTAOBindGroup(d, c, view, view, buf, view),
   gtaoUpsample: (d, c) => buildGTAOUpsampleBindGroup(d, c, view, view, view, buf),
@@ -146,7 +142,9 @@ const BUILDER_DRIVERS: Record<BindGroupTableId, (d: GPUDevice, c: BGLCache) => G
   spatialGi: (d, c) => buildSpatialGiBindGroup(d, c, buf, buf, buf, 'spatial-gi-bg-1'),
   indirectTemporalAccum: (d, c) => buildIndirectTemporalAccumBindGroup(d, c, view, view, view),
   indirectCombine: (d, c) => buildIndirectCombineBindGroup(d, c, view, view, view, view),
-  transparentOit: (d, c) => buildTransparentOitBindGroup(d, c, view, view),
+  transparentOit: (d, c) => buildTransparentOitBindGroup(
+    d, c, view, view, sampler, buf, buf, buf, view, view,
+  ),
 };
 
 const LAYOUT_FACTORIES: Record<BindGroupTableId, (d: GPUDevice, c: BGLCache) => GPUBindGroupLayout> = {
@@ -201,20 +199,23 @@ describe('bind-group descriptor parity (T9-stepB)', () => {
     },
   );
 
-  it('table binding indices are contiguous from 0 (no gaps / dupes)', () => {
+  it('table binding indices are strictly ascending and duplicate-free', () => {
     for (const entry of BIND_GROUP_TABLE) {
       const bindings = entry.entries.map((e) => e.binding);
-      const expected = bindings.map((_, i) => i);
-      expect(bindings, `family '${entry.id}'`).toEqual(expected);
+      expect(bindings.every((binding) => Number.isInteger(binding) && binding >= 0))
+        .toBe(true);
+      expect(bindings, `family '${entry.id}'`).toEqual(
+        [...new Set(bindings)].sort((a, b) => a - b),
+      );
     }
   });
 
   it('every inert/placeholder binding retains its rationale note', () => {
-    // The frame G-buffer placeholders (0-4) + shade-only outputs (10/12/13/14/15)
-    // and the ubo adaptive-tier slot (2) are load-bearing-but-inert; their
-    // notes are the only record of why they must stay bound. Guard them.
+    // The shade-only outputs (10/12/13/14/15) and the ubo adaptive-tier slot (2)
+    // are load-bearing-but-inert in peer passes; their notes are the only record
+    // of why they must stay bound. Guard them.
     const frame = BIND_GROUP_TABLE.find((e) => e.id === 'frame')!;
-    for (const b of [0, 1, 2, 3, 4, 10, 12, 13, 14, 15]) {
+    for (const b of [10, 12, 13, 14, 15]) {
       const e = frame.entries.find((x) => x.binding === b)!;
       expect(e.note, `frame binding ${b} note`).toBeTruthy();
     }

@@ -111,8 +111,8 @@ function buildMaskedAnyAtRoot(): string {
   );
   fn = mustReplace(
     fn,
-    '        let idxEntry = (*bvh_index)[triIdx];\n',
-    '        let idxEntry = (*bvh_index)[triIdx];\n' + CAST_MASK_SKIP_LINE,
+    '        let idxEntry = bvhLoadIndex(triIdx);\n',
+    '        let idxEntry = bvhLoadIndex(triIdx);\n' + CAST_MASK_SKIP_LINE,
     'any-at-root leaf skip',
   );
   return fn;
@@ -128,8 +128,8 @@ function buildPredicateAnyAtRoot(): string {
   );
   fn = mustReplace(
     fn,
-    '        let idxEntry = (*bvh_index)[triIdx];\n',
-    '        let idxEntry = (*bvh_index)[triIdx];\n' + CAST_PREDICATE_SKIP_LINE,
+    '        let idxEntry = bvhLoadIndex(triIdx);\n',
+    '        let idxEntry = bvhLoadIndex(triIdx);\n' + CAST_PREDICATE_SKIP_LINE,
     'predicate any-at-root leaf skip',
   );
   return fn;
@@ -151,8 +151,8 @@ function buildMaskedFirstHitAtRoot(): string {
   );
   fn = mustReplace(
     fn,
-    '        let idxEntry = (*bvh_index)[triIdx];\n',
-    '        let idxEntry = (*bvh_index)[triIdx];\n' + CAST_MASK_SKIP_LINE,
+    '        let idxEntry = bvhLoadIndex(triIdx);\n',
+    '        let idxEntry = bvhLoadIndex(triIdx);\n' + CAST_MASK_SKIP_LINE,
     'first-hit-at-root leaf skip',
   );
   return fn;
@@ -168,9 +168,50 @@ function buildPredicateFirstHitAtRoot(): string {
   );
   fn = mustReplace(
     fn,
-    '        let idxEntry = (*bvh_index)[triIdx];\n',
-    '        let idxEntry = (*bvh_index)[triIdx];\n' + CAST_PREDICATE_SKIP_LINE,
+    '        let idxEntry = bvhLoadIndex(triIdx);\n',
+    '        let idxEntry = bvhLoadIndex(triIdx);\n' + CAST_PREDICATE_SKIP_LINE,
     'predicate first-hit-at-root leaf skip',
+  );
+  return fn;
+}
+
+function buildMaskedTlasInstanceAny(): string {
+  let fn = extractFn(TLAS_TRAVERSAL_WGSL, 'fn tlasTraceInstanceAny(');
+  fn = mustReplace(
+    fn,
+    'fn tlasTraceInstanceAny(',
+    'fn tlasTraceInstanceAnyCastMask(',
+    'tlas-instance-any rename',
+  );
+  fn = mustReplace(
+    fn,
+    '  skipGlass: bool,\n) -> bool {',
+    '  skipGlass: bool,\n  castMask: texture_2d<u32>,\n  castMaskWidth: u32,\n) -> bool {',
+    'tlas-instance-any mask params',
+  );
+  fn = mustReplace(
+    fn,
+    'let localHit = bvhIntersectFirstHitAtRoot(localRay, triEps, blasRoot, skipGlass);',
+    'let localHit = bvhIntersectFirstHitAtRootCastMask(localRay, triEps, blasRoot, skipGlass, castMask, castMaskWidth);',
+    'tlas-instance-any per-instance BLAS rewire',
+  );
+  return fn;
+}
+
+function buildMaskedTlasAnyFallback(): string {
+  let fn = extractFn(TLAS_TRAVERSAL_WGSL, 'fn tlasAnyFallback(');
+  fn = mustReplace(fn, 'fn tlasAnyFallback(', 'fn tlasAnyFallbackCastMask(', 'tlas-any fallback rename');
+  fn = mustReplace(
+    fn,
+    'fn tlasAnyFallbackCastMask(ray: Ray, tMax: f32, triEps: f32, skipGlass: bool) -> bool {',
+    'fn tlasAnyFallbackCastMask(ray: Ray, tMax: f32, triEps: f32, skipGlass: bool, castMask: texture_2d<u32>, castMaskWidth: u32) -> bool {',
+    'tlas-any fallback mask params',
+  );
+  fn = mustReplace(
+    fn,
+    'tlasTraceInstanceAny(tlasLoadInstanceIndex(permIdx), ray, tMax, triEps, skipGlass)',
+    'tlasTraceInstanceAnyCastMask(tlasLoadInstanceIndex(permIdx), ray, tMax, triEps, skipGlass, castMask, castMaskWidth)',
+    'tlas-any fallback instance rewire',
   );
   return fn;
 }
@@ -186,15 +227,55 @@ function buildMaskedTlasAny(): string {
   );
   fn = mustReplace(
     fn,
-    'return bvhIntersectAny(bvh_index, bvh_position, bvh, origin, dir, tMax, triEps, skipGlass);',
-    'return bvhIntersectAnyAtRootCastMask(bvh_index, bvh_position, bvh, origin, dir, tMax, triEps, skipGlass, 0u, castMask, castMaskWidth);',
+    'return bvhIntersectAny(origin, dir, tMax, triEps, skipGlass);',
+    'return bvhIntersectAnyAtRootCastMask(origin, dir, tMax, triEps, skipGlass, 0u, castMask, castMaskWidth);',
     'tlas-any merged fallback rewire',
   );
   fn = mustReplace(
     fn,
-    'let localHit = bvhIntersectFirstHitAtRoot(\n          bvh_index, bvh_position, bvh, localRay, triEps, blasRoot, skipGlass,\n        );',
-    'let localHit = bvhIntersectFirstHitAtRootCastMask(\n          bvh_index, bvh_position, bvh, localRay, triEps, blasRoot, skipGlass, castMask, castMaskWidth,\n        );',
-    'tlas-any per-instance BLAS rewire',
+    'tlasTraceInstanceAny(tlasLoadInstanceIndex(permIdx), ray, tMax, triEps, skipGlass)',
+    'tlasTraceInstanceAnyCastMask(tlasLoadInstanceIndex(permIdx), ray, tMax, triEps, skipGlass, castMask, castMaskWidth)',
+    'tlas-any instance helper rewire',
+  );
+  fn = mustReplace(
+    fn,
+    'return tlasAnyFallback(ray, tMax, triEps, skipGlass);',
+    'return tlasAnyFallbackCastMask(ray, tMax, triEps, skipGlass, castMask, castMaskWidth);',
+    'tlas-any fallback rewire',
+  );
+  return fn;
+}
+
+function buildPredicateTlasInstanceAny(): string {
+  let fn = extractFn(TLAS_TRAVERSAL_WGSL, 'fn tlasTraceInstanceAny(');
+  fn = mustReplace(
+    fn,
+    'fn tlasTraceInstanceAny(',
+    'fn tlasTraceInstanceAnyCastPredicate(',
+    'predicate tlas-instance-any rename',
+  );
+  fn = mustReplace(
+    fn,
+    'let localHit = bvhIntersectFirstHitAtRoot(localRay, triEps, blasRoot, skipGlass);',
+    'let localHit = bvhIntersectFirstHitAtRootCastPredicate(localRay, triEps, blasRoot, skipGlass);',
+    'predicate tlas-instance-any per-instance BLAS rewire',
+  );
+  return fn;
+}
+
+function buildPredicateTlasAnyFallback(): string {
+  let fn = extractFn(TLAS_TRAVERSAL_WGSL, 'fn tlasAnyFallback(');
+  fn = mustReplace(
+    fn,
+    'fn tlasAnyFallback(',
+    'fn tlasAnyFallbackCastPredicate(',
+    'predicate tlas-any fallback rename',
+  );
+  fn = mustReplace(
+    fn,
+    'tlasTraceInstanceAny(tlasLoadInstanceIndex(permIdx), ray, tMax, triEps, skipGlass)',
+    'tlasTraceInstanceAnyCastPredicate(tlasLoadInstanceIndex(permIdx), ray, tMax, triEps, skipGlass)',
+    'predicate tlas-any fallback instance rewire',
   );
   return fn;
 }
@@ -204,15 +285,21 @@ function buildPredicateTlasAny(): string {
   fn = mustReplace(fn, 'fn traceTlasAny(', 'fn traceTlasAnyCastPredicate(', 'predicate tlas-any rename');
   fn = mustReplace(
     fn,
-    'return bvhIntersectAny(bvh_index, bvh_position, bvh, origin, dir, tMax, triEps, skipGlass);',
-    'return bvhIntersectAnyAtRootCastPredicate(bvh_index, bvh_position, bvh, origin, dir, tMax, triEps, skipGlass, 0u);',
+    'return bvhIntersectAny(origin, dir, tMax, triEps, skipGlass);',
+    'return bvhIntersectAnyAtRootCastPredicate(origin, dir, tMax, triEps, skipGlass, 0u);',
     'predicate tlas-any merged fallback rewire',
   );
   fn = mustReplace(
     fn,
-    'let localHit = bvhIntersectFirstHitAtRoot(\n          bvh_index, bvh_position, bvh, localRay, triEps, blasRoot, skipGlass,\n        );',
-    'let localHit = bvhIntersectFirstHitAtRootCastPredicate(\n          bvh_index, bvh_position, bvh, localRay, triEps, blasRoot, skipGlass,\n        );',
-    'predicate tlas-any per-instance BLAS rewire',
+    'tlasTraceInstanceAny(tlasLoadInstanceIndex(permIdx), ray, tMax, triEps, skipGlass)',
+    'tlasTraceInstanceAnyCastPredicate(tlasLoadInstanceIndex(permIdx), ray, tMax, triEps, skipGlass)',
+    'predicate tlas-any instance helper rewire',
+  );
+  fn = mustReplace(
+    fn,
+    'return tlasAnyFallback(ray, tMax, triEps, skipGlass);',
+    'return tlasAnyFallbackCastPredicate(ray, tMax, triEps, skipGlass);',
+    'predicate tlas-any fallback rewire',
   );
   return fn;
 }
@@ -229,6 +316,10 @@ ${buildMaskedAnyAtRoot()}
 
 ${buildMaskedFirstHitAtRoot()}
 
+${buildMaskedTlasInstanceAny()}
+
+${buildMaskedTlasAnyFallback()}
+
 ${buildMaskedTlasAny()}
 `;
 
@@ -242,6 +333,10 @@ export const BVH_CAST_SHADOW_PREDICATE_WGSL = /* wgsl */ `
 ${buildPredicateAnyAtRoot()}
 
 ${buildPredicateFirstHitAtRoot()}
+
+${buildPredicateTlasInstanceAny()}
+
+${buildPredicateTlasAnyFallback()}
 
 ${buildPredicateTlasAny()}
 `;

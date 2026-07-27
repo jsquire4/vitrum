@@ -4,7 +4,7 @@
 // Sprint 3 (Phase 6): light tree CDF (CPU-side build + GPU pack), mixture PDF / MIS heuristics.
 // Sprint 7 (Phase 6): HG phase function + equi-angular volume distance sampling.
 // Sprint 8b (Phase 6): Jakob+Hanika spectral upsampling.
-// Sprint 10c (Phase 6): BDPT vertex layout + connection-PMF MIS weights.
+// Sprint 10c (Phase 6): connection-PMF MIS weights.
 // Sprint 12 (Phase 6): CIE CMF tables, hero-wavelength sampling, Cauchy IOR.
 
 export * from './wgsl/hammersley.wgsl.js';
@@ -29,6 +29,10 @@ export {
   SOBOL_TEXTURE_CHANNELS,
   SOBOL_BLUE_NOISE_TILE_SIZE,
   SOBOL_BLUE_NOISE_RANK_8X8,
+  SOBOL_SAMPLE_BLOCK_SIZE,
+  SOBOL_DIMENSION_COUNT,
+  SOBOL_DIMENSION_EXHAUSTION,
+  type OwenScrambledSobolStreamState,
   reverseBits32,
   maskedSobol,
   sobolHash,
@@ -38,13 +42,23 @@ export {
   sobolTextureComponentBits,
   sobolBlueNoiseRotationBits,
   initOwenScrambledSobolState,
+  initOwenScrambledSobolStream,
+  sobolFrameKey,
   sobolTexturePoint,
   owenScrambledSobolU32,
   owenScrambledSobolFloat,
+  nextOwenScrambledSobolU32,
+  nextOwenScrambledSobolFloat,
   generateSobolTextureData,
 } from './sobol.js';
 export { BSDF_PRIMITIVES_WGSL, BSDF_PRIMITIVES_MODULE_NAME } from './wgsl/bsdfPrimitives.wgsl.js';
 export { luminance, luminanceAt } from './luminance.js';
+export {
+  ALIAS_TABLE_ENTRY_BYTES,
+  aliasColumnFromU32,
+  buildAliasTable,
+  type AliasTable,
+} from './aliasTable.js';
 export { vecLength, vecCross, vecNormalize, tangentBasis } from './vecMath.js';
 export type { Vec3Tuple } from './vecMath.js';
 export { haltonSO3AxisAngleFromFrameIndex } from './haltonSo3.js';
@@ -108,23 +122,9 @@ export {
   evaluateSpectrum,
   spectralCoefficientsToRGB,
 } from './jakobHanika.js';
-// ── Sprint 10c (BDPT) ────────────────────────────────────────────────────────
-// Sprint 10c (BDPT) — applied 2026-05-12. See external_requests/IMPLEMENTATION-STATUS.md §Sprint 10c.
-// The _full MIS helpers (T2.H4) are the canonical consumer-facing API.
-export {
-  BDPT_KIND_LIGHT,
-  BDPT_KIND_EYE,
-  BDPT_KIND_CONNECTION,
-  BDPT_KIND_INVALID,
-  BDPT_VERTEX_FLOATS,
-  BDPT_VERTEX_BYTES,
-  BDPT_MAX_LIGHT_BOUNCES,
-  BDPT_MAX_EYE_BOUNCES,
-  packBDPTVertex,
-  unpackBDPTVertex,
-} from './bdptVertex.js';
-export type { BDPTVertex } from './bdptVertex.js';
-// T2.H4 — Full Veach §10.3 BDPT MIS strategy enumeration.
+// ── BDPT MIS ─────────────────────────────────────────────────────────────────
+// Full Veach §10.3 BDPT MIS strategy enumeration. Vertex-storage ABIs are
+// backend-owned: WebGL2 and WebGPU carry different transport state and layouts.
 // Sprint-10c `_partial` variants removed 2026-05-18 (no production consumers).
 export { geometricTermG, buildBDPTStrategyPDFs_full, bdptConnectionMIS_full } from './bdptMIS.js';
 export type { BDPTFullVertex } from './bdptMIS.js';
@@ -195,7 +195,6 @@ export type {
 // the pt-webgpu and pt-webgl2 material packers (layouts stay per-backend; only
 // the scalar math is shared).
 export {
-  ATTENUATION_TRANSMITTANCE_EPSILON,
   SPECTRAL_GRID_SAMPLE_COUNT,
   SPECTRAL_GRID_START_NM,
   SPECTRAL_GRID_END_NM,

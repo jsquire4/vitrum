@@ -174,6 +174,17 @@ export interface MaterialSpec {
   /** Base coverage alpha ∈ [0,1] (multiplies `alphaMap` and baseColor alpha).
    *  Default 1. Only meaningful when `alphaMode` is 'mask' or 'blend'. */
   readonly opacity?: number;
+  /**
+   * Render both geometric orientations of an otherwise one-sided surface.
+   * Default `false`, matching glTF `material.doubleSided`.
+   *
+   * When true, back-facing hits participate in visibility and their shading
+   * normal is reversed before BRDF evaluation. This does not disable the
+   * interior exit-interface traversal required by a closed transmissive
+   * volume: backface culling is a surface-visibility policy, not a license to
+   * strand a refracted path inside the medium.
+   */
+  readonly doubleSided?: boolean;
 
   // ── Transmission / refraction ───────────────────────────────────────────
   readonly transmission?: number;        // 0 = opaque, 1 = fully transparent
@@ -195,8 +206,9 @@ export interface MaterialSpec {
   readonly thicknessMap?: TextureRef;
   readonly emissiveMap?: TextureRef;
   /** Coverage/alpha map. Consumed by pt-webgl2, pt-webgpu, and
-   *  walkaround-hybrid's atlas-backed alpha-test traversal for readable
-   *  handles. Fractional `alphaMode:'blend'` remains backend-specific. */
+   *  walkaround-hybrid's atlas-backed mask, ordered-primary-OIT, and seeded
+   *  secondary-coverage traversal. Fractional `alphaMode:'blend'` remains
+   *  backend-specific as declared by the alphaMode contract above. */
   readonly alphaMap?: TextureRef;
   /** Ambient occlusion map (glTF occlusionTexture).
    *  Consumed by pt-webgl2 (D3), pt-webgpu (D3), and walkaround-hybrid's
@@ -242,12 +254,12 @@ export interface MaterialSpec {
    *  their safety budget. */
   readonly displacementSubdivisions?: number;
   /** Baked diffuse irradiance / light map (additive to emissive).
-   *  Consumed by pt-webgl2 (D3), pt-webgpu (D3), and approximately by
-   *  walkaround-hybrid's atlas-backed camera-visible shade path. */
+   *  Consumed by pt-webgl2 (D3), pt-webgpu (D3), and walkaround-hybrid's
+   *  atlas-backed visible, ReSTIR-GI, DDGI, and RC receiver paths. */
   readonly lightMap?: TextureRef;
   /** Light map intensity multiplier. Default 1.
-   *  Consumed by pt-webgl2 (D3), pt-webgpu (D3), and approximately by
-   *  walkaround-hybrid's atlas-backed camera-visible shade path. */
+   *  Consumed by pt-webgl2 (D3), pt-webgpu (D3), and walkaround-hybrid's
+   *  atlas-backed receiver paths. */
   readonly lightMapIntensity?: number;
 
   // ── Disney BSDF extensions (optional) ───────────────────────────────────
@@ -307,7 +319,10 @@ export interface MaterialSpec {
    * Higher values = lower dispersion. When set, the engine computes
    * wavelength-dependent IOR via the two-term Cauchy approximation and uses
    * hero-wavelength sampling so each path traces a single wavelength.
-   * Range: 20 (dense flint, high dispersion) to 90 (crown glass, low).
+   * Must be finite and positive. Values around 20 (dense flint, high
+   * dispersion) to 90 (crown glass, low) cover common optical glasses, but
+   * larger values are valid and are required to losslessly represent glTF's
+   * `KHR_materials_dispersion` relation `dispersion = 20 / Abbe number`.
    * Default: undefined (no dispersion).
    *
    * Reference: OpenPBR Surface v1.1.1 `transmission_dispersion_abbe_number`.

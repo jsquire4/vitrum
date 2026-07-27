@@ -23,7 +23,6 @@ import type { GpuSkinningHost } from '../src/skin/GpuSkinningSubsystem.js';
 // It does no real work — its only job is to let the GPU path run to completion
 // so the routing decision is observable via the host callbacks.
 function makeFakeDevice(): GPUDevice {
-  const fakeBuffer = { destroy: vi.fn() } as unknown as GPUBuffer;
   const fakePass = {
     setPipeline: vi.fn(),
     setBindGroup: vi.fn(),
@@ -39,7 +38,7 @@ function makeFakeDevice(): GPUDevice {
   };
   return {
     createCommandEncoder: vi.fn(() => fakeEncoder),
-    createBuffer: vi.fn(() => fakeBuffer),
+    createBuffer: vi.fn(() => ({ destroy: vi.fn() }) as unknown as GPUBuffer),
     createShaderModule: vi.fn(() => ({}) as GPUShaderModule),
     createComputePipeline: vi.fn(() => fakePipeline),
     createBindGroup: vi.fn(() => ({}) as GPUBindGroup),
@@ -88,9 +87,18 @@ function makeHost(meshIds: string[]): {
   host: GpuSkinningHost;
   updatePrimitive: ReturnType<typeof vi.fn>;
   applyGpuSkinnedRefit: ReturnType<typeof vi.fn>;
+  applySkinningBatch: ReturnType<typeof vi.fn>;
 } {
   const updatePrimitive = vi.fn();
   const applyGpuSkinnedRefit = vi.fn();
+  const applySkinningBatch = vi.fn(
+    (updates: Parameters<GpuSkinningHost['applySkinningBatch']>[0]) => {
+      for (const update of updates) {
+        if (update.gpuWritten) applyGpuSkinnedRefit(update.id);
+        else updatePrimitive(update.id, update.patch);
+      }
+    },
+  );
   const host: GpuSkinningHost = {
     getGpuSkinningBvhBuffer: () => ({ destroy: vi.fn() }) as unknown as GPUBuffer,
     getGpuSkinningNormalBuffer: () => ({ destroy: vi.fn() }) as unknown as GPUBuffer,
@@ -106,9 +114,15 @@ function makeHost(meshIds: string[]): {
     getBvhMode: () => 'merged',
     getPrimitiveTlasBindings: () => null,
     updatePrimitive,
+    applySkinningBatch,
     applyGpuSkinnedRefit,
   };
-  return { host, updatePrimitive, applyGpuSkinnedRefit };
+  return {
+    host,
+    updatePrimitive,
+    applyGpuSkinnedRefit,
+    applySkinningBatch: applySkinningBatch as ReturnType<typeof vi.fn>,
+  };
 }
 
 describe('GpuSkinningSubsystem — bindMatrix routing', () => {
@@ -229,5 +243,40 @@ describe('GpuSkinningSubsystem — bindMatrix routing', () => {
     // Free → GPU.
     expect(applyGpuSkinnedRefit).toHaveBeenCalledTimes(1);
     expect(applyGpuSkinnedRefit).toHaveBeenCalledWith(freeId);
+  });
+
+  it('publishes two CPU fallbacks plus one GPU job through one unsubmitted batch', () => {
+    const nonIdentityBind = {
+      bindMatrix: new Float32Array([
+        1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 2, 0, 0, 1,
+      ]),
+      bindMatrixInverse: new Float32Array([
+        1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, -2, 0, 0, 1,
+      ]),
+    };
+    const cpuA = makeSkinnedMesh('cpu-a', nonIdentityBind);
+    const cpuB = makeSkinnedMesh('cpu-b', nonIdentityBind);
+    const gpu = makeSkinnedMesh('gpu');
+    const { host, applySkinningBatch } = makeHost(['cpu-a', 'cpu-b', 'gpu']);
+    const device = makeFakeDevice();
+
+    new GpuSkinningSubsystem(device, true).run(
+      host,
+      sceneOf(cpuA, cpuB, gpu),
+    );
+
+    expect(applySkinningBatch).toHaveBeenCalledTimes(1);
+    const [updates, commandBuffer] = applySkinningBatch.mock.calls[0] as [
+      Array<{ id: string; gpuWritten: boolean }>,
+      GPUCommandBuffer,
+    ];
+    expect(updates.map(({ id, gpuWritten }) => ({ id, gpuWritten }))).toEqual([
+      { id: 'cpu-a', gpuWritten: false },
+      { id: 'cpu-b', gpuWritten: false },
+      { id: 'gpu', gpuWritten: true },
+    ]);
+    expect(commandBuffer).toBeDefined();
+    expect(device.queue.submit).not.toHaveBeenCalled();
+    expect(device.createCommandEncoder).toHaveBeenCalledTimes(1);
   });
 });

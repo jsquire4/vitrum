@@ -18,10 +18,9 @@
 //       field (e.g. 'material.clearcoatMap != - 1') confirming the consumption is wired.
 //
 // texCoord finding (closed):
-//   pt-webgl2 now packs a per-map uv-set bitmask in texel 86.a and the GLSL
-//   MAP_UV(bit) selector chooses ATTR_UV1 for maps whose TextureRef.texCoord is 1.
-//   The tests below pin that behavior so future material-layout work cannot
-//   silently regress back to uv0-only sampling.
+//   pt-webgl2 packs one dense attribute-layer selector for every mapped-rich
+//   slot. MAP_UV(mapIndex) decodes that selector and barycentrically interpolates
+//   the exact scene-local layer, supporting arbitrary non-negative texCoord ids.
 
 import { describe, it, expect } from 'vitest';
 import type { MaterialSpec } from '@vitrum/core';
@@ -31,13 +30,28 @@ import { packMaterialsTexture, MATERIAL_PIXELS } from './materialsTexture.js';
 // in glsl-modules.d.ts (which cannot declare named exports). We pull named string
 // exports via namespace imports cast to Record<string,string> — the same pattern
 // used in src/glsl/bvh/index.ts.
-import * as MaterialStructNS from '../glsl/shader/structs/material_struct.glsl.js';
+import { MATERIAL_MAPPED_RICH_GLSL } from '../glsl/shader/structs/material_mapped_rich.glsl.js';
 import * as GetSurfaceNS from '../glsl/render/get_surface_record_function.glsl.js';
 import * as AttenuateHitNS from '../glsl/render/attenuate_hit_function.glsl.js';
+import * as UtilNS from '../glsl/shader/common/util_functions.glsl.js';
+import { GET_SURFACE_RECORD_MAPPED_PBR_GLSL } from '../glsl/render/get_surface_record_mapped_pbr.glsl.js';
 
-const material_struct: string = (MaterialStructNS as Record<string, string>)['material_struct'] ?? '';
+const material_struct = MATERIAL_MAPPED_RICH_GLSL;
 const get_surface_record_function: string = (GetSurfaceNS as Record<string, string>)['get_surface_record_function'] ?? '';
 const attenuate_hit_function: string = (AttenuateHitNS as Record<string, string>)['attenuate_hit_function'] ?? '';
+const util_functions: string = (UtilNS as Record<string, string>)['util_functions'] ?? '';
+const compactSurface = get_surface_record_function.replace(/\s+/g, ' ');
+const compactAttenuation = attenuate_hit_function.replace(/\s+/g, ' ');
+const compactUtil = util_functions.replace(/\s+/g, ' ');
+const compactMappedPbr = GET_SURFACE_RECORD_MAPPED_PBR_GLSL.replace(/\s+/g, ' ');
+
+function decoderTexel(texel: number): string {
+  const marker = `s = texelFetch1D( tex, i + ${texel}u );`;
+  const start = material_struct.indexOf(marker);
+  expect(start, `material decoder texel ${texel}`).toBeGreaterThanOrEqual(0);
+  const next = material_struct.indexOf('\n  s = texelFetch1D(', start + marker.length);
+  return material_struct.slice(start, next < 0 ? undefined : next);
+}
 
 // Helper: float offset of pixel `s`, channel `c` (0=r,1=g,2=b,3=a) for material 0.
 function f(s: number, c: number): number {
@@ -71,7 +85,7 @@ describe('pt-webgl2 D3 material-map packer offsets — UNTESTED-promise closure 
     // s5.r = clearcoatMap layer id
     expect(d[f(5, 0)]).toBe(7);
     // decoder side: GLSL material_struct reads s5.r as clearcoatMap
-    expect(material_struct).toContain('m.clearcoatMap = int( round( s5.r ) )');
+    expect(decoderTexel(5)).toContain('m.clearcoatMap = int( round( s.r ) )');
   });
 
   // clearcoatRoughnessMap — packer sample 5 channel 2 (s5.b); GLSL: m.clearcoatRoughnessMap = int(round(s5.b))
@@ -79,7 +93,7 @@ describe('pt-webgl2 D3 material-map packer offsets — UNTESTED-promise closure 
     const handle = {};
     const d = pack(matWithMap('clearcoatRoughnessMap', handle), handle, 3);
     expect(d[f(5, 2)]).toBe(3);
-    expect(material_struct).toContain('m.clearcoatRoughnessMap = int( round( s5.b ) )');
+    expect(decoderTexel(5)).toContain('m.clearcoatRoughnessMap = int( round( s.b ) )');
   });
 
   // clearcoatNormalMap — packer sample 5 channel 3 (s5.a); GLSL: m.clearcoatNormalMap = int(round(s5.a))
@@ -87,7 +101,7 @@ describe('pt-webgl2 D3 material-map packer offsets — UNTESTED-promise closure 
     const handle = {};
     const d = pack(matWithMap('clearcoatNormalMap', handle), handle, 5);
     expect(d[f(5, 3)]).toBe(5);
-    expect(material_struct).toContain('m.clearcoatNormalMap = int( round( s5.a ) )');
+    expect(decoderTexel(5)).toContain('m.clearcoatNormalMap = int( round( s.a ) )');
   });
 
   // sheenColorMap — packer sample 7 channel 3 (s7.a); GLSL: m.sheenColorMap = int(round(s7.a))
@@ -95,7 +109,7 @@ describe('pt-webgl2 D3 material-map packer offsets — UNTESTED-promise closure 
     const handle = {};
     const d = pack(matWithMap('sheenColorMap', handle), handle, 2);
     expect(d[f(7, 3)]).toBe(2);
-    expect(material_struct).toContain('m.sheenColorMap = int( round( s7.a ) )');
+    expect(decoderTexel(7)).toContain('m.sheenColorMap = int( round( s.a ) )');
   });
 
   // sheenRoughnessMap — packer sample 8 channel 1 (s8.g); GLSL: m.sheenRoughnessMap = int(round(s8.g))
@@ -103,7 +117,7 @@ describe('pt-webgl2 D3 material-map packer offsets — UNTESTED-promise closure 
     const handle = {};
     const d = pack(matWithMap('sheenRoughnessMap', handle), handle, 9);
     expect(d[f(8, 1)]).toBe(9);
-    expect(material_struct).toContain('m.sheenRoughnessMap = int( round( s8.g ) )');
+    expect(decoderTexel(8)).toContain('m.sheenRoughnessMap = int( round( s.g ) )');
   });
 
   // iridescenceMap — packer sample 8 channel 2 (s8.b); GLSL: m.iridescenceMap = int(round(s8.b))
@@ -111,7 +125,7 @@ describe('pt-webgl2 D3 material-map packer offsets — UNTESTED-promise closure 
     const handle = {};
     const d = pack(matWithMap('iridescenceMap', handle), handle, 4);
     expect(d[f(8, 2)]).toBe(4);
-    expect(material_struct).toContain('m.iridescenceMap = int( round( s8.b ) )');
+    expect(decoderTexel(8)).toContain('m.iridescenceMap = int( round( s.b ) )');
   });
 
   // iridescenceThicknessMap — packer sample 8 channel 3 (s8.a); GLSL: m.iridescenceThicknessMap = int(round(s8.a))
@@ -119,7 +133,7 @@ describe('pt-webgl2 D3 material-map packer offsets — UNTESTED-promise closure 
     const handle = {};
     const d = pack(matWithMap('iridescenceThicknessMap', handle), handle, 6);
     expect(d[f(8, 3)]).toBe(6);
-    expect(material_struct).toContain('m.iridescenceThicknessMap = int( round( s8.a ) )');
+    expect(decoderTexel(8)).toContain('m.iridescenceThicknessMap = int( round( s.a ) )');
   });
 
   // specularColorMap — packer sample 10 channel 3 (s10.a); GLSL: m.specularColorMap = int(round(s10.a))
@@ -127,7 +141,7 @@ describe('pt-webgl2 D3 material-map packer offsets — UNTESTED-promise closure 
     const handle = {};
     const d = pack(matWithMap('specularColorMap', handle), handle, 1);
     expect(d[f(10, 3)]).toBe(1);
-    expect(material_struct).toContain('m.specularColorMap = int( round( s10.a ) )');
+    expect(decoderTexel(10)).toContain('m.specularColorMap = int( round( s.a ) )');
   });
 
   // specularIntensityMap — packer sample 11 channel 1 (s11.g); GLSL: m.specularIntensityMap = int(round(s11.g))
@@ -135,7 +149,7 @@ describe('pt-webgl2 D3 material-map packer offsets — UNTESTED-promise closure 
     const handle = {};
     const d = pack(matWithMap('specularIntensityMap', handle), handle, 8);
     expect(d[f(11, 1)]).toBe(8);
-    expect(material_struct).toContain('m.specularIntensityMap = int( round( s11.g ) )');
+    expect(decoderTexel(11)).toContain('m.specularIntensityMap = int( round( s.g ) )');
   });
 
   // Absent maps should be packed as -1 at those offsets.
@@ -263,22 +277,22 @@ describe('pt-webgl2 filteredGlossyFactor upload — UNTESTED promise (item 25)',
   });
 });
 
-describe('pt-webgl2 texCoord — uv1 selection IMPLEMENTED (item 25 closure)', () => {
-  // TextureRef.texCoord is now CONSUMED by pt-webgl2. The packer packs a
-  // uv-set bitmask at texel 86.a (former pad lane): bit k set = map k samples
-  // uv1 (ATTR_UV1, attribute layer 4) instead of uv0 (ATTR_UV, layer 2).
-  // The GLSL reads uv1 from ATTR_UV1 and selects per-map via the MAP_UV macro.
+describe('pt-webgl2 texCoord — scalable UV-layer selection', () => {
+  // TextureRef.texCoord is consumed through one dense attribute-layer selector
+  // per map slot at texels 130..135. MAP_UV interpolates that layer directly.
+  // Texel 86.a remains only as a backwards-compatible texCoord-1 mirror.
 
   it('pt-webgl2 MATERIAL_PIXELS stride includes alphaMapTransform, sampler policy, spectral, and layer-normal texels', () => {
     // The bitmask lives at texel 86.a; texels 93/94 carry alphaMapTransform;
     // texels 95/96 carry anisotropyMapTransform; texel 97 carries thickness;
     // texels 98/99 carry thicknessMapTransform; texels 100..120 carry per-map sampler policy;
     // texel 121 carries per-material spectral reflectance coefficients;
-    // texels 122..129 carry front/back layer normal map payloads.
-    expect(MATERIAL_PIXELS).toBe(130);
+    // texels 122..129 carry front/back layer normal map payloads; 130..135
+    // carry four dense UV attribute-layer selectors per texel.
+    expect(MATERIAL_PIXELS).toBe(136);
   });
 
-  it('packer writes non-zero bitmask when any map has texCoord:1', () => {
+  it('packer retains the legacy UV1 mirror when a map has texCoord:1', () => {
     const handle = {};
     const layerOf = new Map<unknown, number>([[handle, 0]]);
     // baseColorMap at texCoord:1 → bit 0 set = 1.
@@ -302,7 +316,7 @@ describe('pt-webgl2 texCoord — uv1 selection IMPLEMENTED (item 25 closure)', (
     expect(d[86 * 4 + 3]).toBe(0); // no bit set
   });
 
-  it('bitmask correctly encodes multiple maps selecting uv1', () => {
+  it('legacy UV1 mirror correctly encodes multiple texCoord-1 maps', () => {
     const handle1 = {}; const handle2 = {};
     const layerOf = new Map<unknown, number>([[handle1, 0], [handle2, 1]]);
     // roughnessMap (bit 2) + emissiveMap (bit 4) both at texCoord:1
@@ -318,64 +332,124 @@ describe('pt-webgl2 texCoord — uv1 selection IMPLEMENTED (item 25 closure)', (
     expect(mask & (1 << 0)).toBe(0);     // baseColorMap not set
   });
 
-  it('GLSL get_surface_record fetches ATTR_UV1 and contains MAP_UV selector', () => {
+  it('GLSL get_surface_record dynamically interpolates the packed per-map layer', () => {
     const sr = get_surface_record_function;
-    // uv1 is fetched from ATTR_UV1
-    expect(sr).toContain('ATTR_UV1');
-    // MAP_UV macro is defined and used for map sampling
     expect(sr).toContain('MAP_UV');
-    // uv0 is still fetched (ATTR_UV used for baseline)
-    expect(sr).toContain('ATTR_UV');
+    expect(sr).toContain('readMaterialMapUvLayer( materials, materialIndex, mapIndex )');
+    expect(sr).toContain('textureSampleBarycoord( attributesArray');
   });
 
-  it('GLSL MAP_UV macro selects uv1 for baseColorMap (bit 0)', () => {
-    // The macro is defined as: MAP_UV(bit) selects uv1 when that bit is set.
-    // For bit 0 (baseColorMap) the albedo sampling uses MAP_UV(0u).
+  it('derives tangent frames from triangle positions and the exact selected UV layer', () => {
+    expect(compactUtil).toContain(
+      'mat3 getBasisFromSelectedUv( sampler2D positionAttr, sampler2DArray attributesArray, int uvLayer',
+    );
+    expect(compactUtil).toContain('vec3 p0 = texelFetch1D( positionAttr, faceIndices.x ).xyz;');
+    expect(compactUtil).toContain(
+      'vec2 uv0 = texelFetch1D( attributesArray, uvLayer, faceIndices.x ).xy;',
+    );
+    expect(compactUtil).toContain(
+      'float determinant = delta1.x * delta2.y - delta1.y * delta2.x;',
+    );
+    expect(compactUtil).toContain(
+      'tangent = ( edge1 * delta2.y - edge2 * delta1.y ) * inverseDeterminant;',
+    );
+    expect(compactUtil).toContain('if ( uvLayer == ATTR_UV && length( uv0TangentSample.xyz ) > 1e-6 )');
+  });
+
+  it('uses selected-UV tangent frames for mapped-rich normal, bump, layer, and clearcoat maps', () => {
+    expect(compactSurface).toContain(
+      'int activeNormalUvLayer = readMaterialMapUvLayer( materials, materialIndex, 5u );',
+    );
+    expect(compactSurface).toContain(
+      'bvh.position, attributesArray, activeNormalUvLayer, surfaceHit.faceIndices.xyz, normal, tangentSample',
+    );
+    expect(compactSurface).toContain(
+      'int bumpUvLayer = readMaterialMapUvLayer( materials, materialIndex, 18u );',
+    );
+    expect(compactSurface).toContain(
+      'int clearcoatNormalUvLayer = readMaterialMapUvLayer( materials, materialIndex, 9u );',
+    );
+    expect(compactSurface).toContain(
+      'activeNormalUvLayer = int( round( material.frontLayerNormalTexCoord ) );',
+    );
+    expect(compactAttenuation).toContain(
+      'bvh.position, attributesArray, activeShadowNormalUvLayer, surfaceHit.faceIndices.xyz, faceN, tangentSample',
+    );
+  });
+
+  it('uses selected-UV tangent frames in the mapped-PBR normal and bump tier', () => {
+    expect(compactMappedPbr).toContain(
+      'int normalUvLayer = readMaterialMapUvLayer( materials, materialIndex, 5u );',
+    );
+    expect(compactMappedPbr).toContain(
+      'bvh.position, attributesArray, normalUvLayer, surfaceHit.faceIndices.xyz, normal, tangentSample',
+    );
+    expect(compactMappedPbr).toContain(
+      'int bumpUvLayer = readMaterialMapUvLayer( materials, materialIndex, 18u );',
+    );
+    expect(compactMappedPbr).toContain(
+      'bvh.position, attributesArray, bumpUvLayer, surfaceHit.faceIndices.xyz, normal, tangentSample',
+    );
+  });
+
+  it('GLSL MAP_UV macro reads the baseColorMap selector at map index 0', () => {
+    // Map index 0 addresses the baseColorMap layer selector.
     const sr = get_surface_record_function;
     expect(sr).toContain('MAP_UV( 0u )');
   });
 
   it('GLSL alphaMap sampling consumes its transform in surface and attenuation paths', () => {
-    const sr = get_surface_record_function;
-    expect(material_struct).toContain('mat3 alphaMapTransform');
-    expect(material_struct).toContain('m.alphaMapTransform = m.alphaMap == - 1 ? mat3( 1.0 ) : readTextureTransform( tex, i + 93u )');
-    expect(sr).toContain('material.alphaMapTransform * vec3( MAP_UV( 6u ), 1 )');
-    expect(sr).toContain('sampleMaterialTexture( textures, uvPrime.xy, material.alphaMap, material.alphaMapWrap ).x');
-    expect(attenuate_hit_function).toContain('material.alphaMapTransform * vec3( ATTENUATE_MAP_UV( 6u ), 1 )');
-    expect(attenuate_hit_function).toContain('sampleMaterialTexture( textures, uvPrime.xy, material.alphaMap, material.alphaMapWrap ).x');
+    expect(material_struct).toContain('mat3 readMaterialMapTransform(');
+    expect(material_struct).not.toContain('mat3 alphaMapTransform');
+    expect(compactSurface).toContain('material.alphaMap, 93u, 106u, MAP_UV( 6u )');
+    expect(compactAttenuation).toContain(
+      'material.alphaMap, 93u, 106u, ATTENUATE_MAP_UV( 6u )',
+    );
   });
 
-  it('material_struct carries uvTexCoordMask field decoded from s21.a', () => {
+  it('material_struct carries uvTexCoordMask decoded from texel 86.a', () => {
     const ms = material_struct;
     expect(ms).toContain('uvTexCoordMask');
-    expect(ms).toContain('m.uvTexCoordMask = uint( round( s21.a ) )');
+    expect(decoderTexel(86)).toContain('m.uvTexCoordMask = uint( round( s.a ) )');
   });
 
-  it('material_struct decodes per-map wrap modes and exposes the wrap-aware sample helper', () => {
-    expect(material_struct).toContain('sampleMaterialTexture( sampler2DArray tex, vec2 uv, int layer, vec4 samplerPolicy )');
+  it('material_struct lazily decodes per-map policies and exposes the wrap-aware sample helper', () => {
+    expect(material_struct).toContain('vec4 sampleMaterialTexture(');
+    expect(material_struct).toContain('sampler2DArray tex, vec2 uv, int layer, vec4 policy');
     expect(material_struct).toContain('sampleMaterialTextureLinearLevel');
-    expect(material_struct).toContain('m.mapWrap = texelFetch1D( tex, i + 100u )');
-    expect(material_struct).toContain('m.metalnessMapWrap = texelFetch1D( tex, i + 101u )');
-    expect(material_struct).toContain('m.bumpMapWrap = texelFetch1D( tex, i + 118u )');
+    expect(material_struct).toContain('vec4 readMaterialMapPolicy(');
+    expect(material_struct).not.toContain('vec4 mapWrap;');
+    expect(compactSurface).toContain('material.map, 55u, 100u, MAP_UV( 0u )');
+    expect(compactSurface).toContain('material.metalnessMap, 57u, 101u, MAP_UV( 1u )');
+    expect(get_surface_record_function).toContain('MAP_POLICY( 118u )');
   });
 
   it('GLSL material fetches use wrap-aware sampling instead of raw texture2D calls', () => {
     const sr = get_surface_record_function;
-    expect(sr).toContain('sampleMaterialTexture( textures, uvPrime.xy, material.map, material.mapWrap )');
-    expect(sr).toContain('sampleMaterialTexture( textures, uvPrime.xy, material.alphaMap, material.alphaMapWrap )');
-    expect(sr).toContain('sampleMaterialTexture( textures, uvPrime.xy, material.bumpMap, material.bumpMapWrap )');
-    expect(sr).toContain('material.specularIntensityMapWrap');
+    expect(compactSurface).toContain('material.map, 55u, 100u, MAP_UV( 0u )');
+    expect(compactSurface).toContain('material.alphaMap, 93u, 106u, MAP_UV( 6u )');
+    expect(sr).toContain('vec4 bumpMapPolicy = MAP_POLICY( 118u );');
+    expect(sr).toContain('material.specularIntensityMap,');
+    expect(compactSurface).toContain(
+      'material.specularIntensityMap, 83u, 115u, MAP_UV( 15u )',
+    );
     expect(sr).not.toContain('texture2D( textures');
   });
 
-  it('attenuation path uses uv1 selection and wrap-aware material sampling', () => {
+  it('attenuation path uses dynamic UV-layer selection and wrap-aware material sampling', () => {
     const ah = attenuate_hit_function;
-    expect(ah).toContain('ATTR_UV1');
+    expect(ah).toContain('readMaterialMapUvLayer( materials, materialIndex, mapIndex )');
     expect(ah).toContain('ATTENUATE_MAP_UV( 0u )');
     expect(ah).toContain('ATTENUATE_MAP_UV( 6u )');
-    expect(ah).toContain('sampleMaterialTexture( textures, uvPrime.xy, material.map, material.mapWrap )');
-    expect(ah).toContain('sampleMaterialTexture( textures, uvPrime.xy, material.alphaMap, material.alphaMapWrap )');
-    expect(ah).toContain('sampleMaterialTexture( textures, uvPrime.xy, material.transmissionMap, material.transmissionMapWrap )');
+    expect(compactAttenuation).toContain(
+      'material.map, 55u, 100u, ATTENUATE_MAP_UV( 0u )',
+    );
+    expect(compactAttenuation).toContain(
+      'material.alphaMap, 93u, 106u, ATTENUATE_MAP_UV( 6u )',
+    );
+    expect(compactAttenuation).toContain(
+      'material.transmissionMap, 61u, 103u, ATTENUATE_MAP_UV( 3u )',
+    );
     expect(ah).not.toContain('texture2D( textures');
   });
 });

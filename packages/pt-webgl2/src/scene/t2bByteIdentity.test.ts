@@ -5,9 +5,11 @@
 // byte-for-byte identical (the packed texels are the wire format the GLSL decoder
 // reads). The golden arrays are captured from pre-refactor code; any drift fails.
 //
-// To (re)capture: run with T2B_CAPTURE=1 and paste the printed arrays into the
-// goldens JSON below. Under any behavior-preserving refactor the goldens are frozen.
+// To (re)capture: run with T2B_CAPTURE=1, inspect /tmp/t2bGoldens.json, then
+// replace the pinned JSON intentionally. Under behavior-preserving refactors
+// the goldens are frozen.
 
+import { writeFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { packMaterialsTexture } from './materialsTexture.js';
 import { packLightsTexture } from './lightsTexture.js';
@@ -31,10 +33,11 @@ const materials = packMaterialsTexture([richMaterial, plainMaterial], layerOf).d
 const lights = packLightsTexture(emitters).data;
 
 if (process.env['T2B_CAPTURE'] === '1') {
-  console.log(
-    'T2B_GOLDENS_JSON=' +
-      JSON.stringify({ materials: serialize(materials), lights: serialize(lights) }),
+  writeFileSync(
+    '/tmp/t2bGoldens.json',
+    JSON.stringify({ materials: serialize(materials), lights: serialize(lights) }),
   );
+  console.log('T2B_GOLDENS_JSON=/tmp/t2bGoldens.json');
 }
 
 describe('T2-B byte-identity goldens', () => {

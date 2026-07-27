@@ -197,7 +197,7 @@ describe('BRDF adjoint — analytic KHR_materials_specular partials == finite di
     const h = 1e-4;
     const analytic = dBrdf_dSpecularIntensity(
       cfg.baseColor, cfg.roughness, cfg.metallic, cfg.normal, cfg.wo, cfg.wi,
-      cfg.specularColor,
+      cfg.specularColor, cfg.specularIntensity,
     );
     const fp = evaluateBrdf(
       cfg.baseColor, cfg.roughness, cfg.metallic, cfg.normal, cfg.wo, cfg.wi,
@@ -248,21 +248,36 @@ describe('BRDF adjoint — analytic KHR_materials_clearcoat partials == finite d
   });
 
   it('matches FD for clearcoatRoughness over the unclamped interior', () => {
-    const h = 1e-4;
-    const analytic = dBrdf_dClearcoatRoughness(
-      cfg.clearcoat, cfg.clearcoatRoughness, cfg.normal, cfg.wo, cfg.wi,
-    );
-    const fp = evaluateBrdfWithClearcoat(
-      cfg.baseColor, cfg.roughness, cfg.metallic, cfg.normal, cfg.wo, cfg.wi,
-      cfg.clearcoat, cfg.clearcoatRoughness + h, cfg.specularColor, cfg.specularIntensity,
-    );
-    const fm = evaluateBrdfWithClearcoat(
-      cfg.baseColor, cfg.roughness, cfg.metallic, cfg.normal, cfg.wo, cfg.wi,
-      cfg.clearcoat, cfg.clearcoatRoughness - h, cfg.specularColor, cfg.specularIntensity,
-    );
-    for (let c = 0; c < 3; c++) {
-      const fd = (fp[c]! - fm[c]!) / (2 * h);
-      expect(Math.abs(analytic[c]! - fd)).toBeLessThan(1e-4);
+    const h = 1e-5;
+    for (const clearcoatRoughness of [0.04, 0.08, 0.2, 0.42, 0.75, 0.95]) {
+      const analytic = dBrdf_dClearcoatRoughness(
+        cfg.clearcoat, clearcoatRoughness, cfg.normal, cfg.wo, cfg.wi,
+      );
+      const fp = evaluateBrdfWithClearcoat(
+        cfg.baseColor, cfg.roughness, cfg.metallic, cfg.normal, cfg.wo, cfg.wi,
+        cfg.clearcoat, clearcoatRoughness + h, cfg.specularColor, cfg.specularIntensity,
+      );
+      const fm = evaluateBrdfWithClearcoat(
+        cfg.baseColor, cfg.roughness, cfg.metallic, cfg.normal, cfg.wo, cfg.wi,
+        cfg.clearcoat, clearcoatRoughness - h, cfg.specularColor, cfg.specularIntensity,
+      );
+      const withUnitClearcoat = evaluateBrdfWithClearcoat(
+        cfg.baseColor, cfg.roughness, cfg.metallic, cfg.normal, cfg.wo, cfg.wi,
+        1, clearcoatRoughness, cfg.specularColor, cfg.specularIntensity,
+      );
+      const withoutClearcoat = evaluateBrdfWithClearcoat(
+        cfg.baseColor, cfg.roughness, cfg.metallic, cfg.normal, cfg.wo, cfg.wi,
+        0, clearcoatRoughness, cfg.specularColor, cfg.specularIntensity,
+      );
+      const unitLobe = dBrdf_dClearcoat(
+        clearcoatRoughness, cfg.normal, cfg.wo, cfg.wi,
+      );
+      for (let c = 0; c < 3; c++) {
+        expect(Number.isFinite(fp[c]!)).toBe(true);
+        expect(withUnitClearcoat[c]! - withoutClearcoat[c]!).toBeCloseTo(unitLobe[c]!, 12);
+        const fd = (fp[c]! - fm[c]!) / (2 * h);
+        expect(Math.abs(analytic[c]! - fd)).toBeLessThan(1e-4);
+      }
     }
   });
 });
@@ -367,6 +382,7 @@ describe('BRDF adjoint — analytic KHR_materials_iridescence scalar partial == 
       cfg.normal,
       cfg.wo,
       cfg.wi,
+      cfg.iridescence,
       cfg.iridescenceIor,
       cfg.iridescenceThicknessMin,
       cfg.iridescenceThicknessMax,
@@ -749,11 +765,14 @@ describe('BRDF adjoint — WGSL codegen shape pins (oracle equivalence)', () => 
     expect(wgsl).toContain('let dDiff = kd0 * INV_PI * ((1.0 - fc) + bc * (-dfc));');
   });
 
-  it('roughness partial uses the same da²/droughness and dk/droughness terms', () => {
+  it('roughness partial uses the same alpha and exact-Smith derivatives', () => {
     expect(wgsl).toContain('let da2_dRough = 2.0 * alpha * dAlpha_dRough;');
-    expect(wgsl).toContain('let dk_dRough = (roughness + 1.0) * 0.25;');
+    expect(wgsl).toContain('fn adjointSmithG1RoughnessDerivative(');
+    expect(wgsl).toContain('adjointSmithG1RoughnessDerivative(nDotV, roughness)');
     // alpha clamp boundary handled (derivative 0 below roughness²<1e-3).
     expect(wgsl).toContain('let dAlpha_dRough = select(2.0 * roughness, 0.0, alphaClamped);');
+    expect(wgsl).toContain('fn adjointGgxMultiscatterDerivativeRoughness(');
+    expect(wgsl).toContain('return f * dSpecScale + dMs;');
   });
 
   it('metallic partial differentiates both the diffuse fade-out and F0 blend', () => {
@@ -766,7 +785,9 @@ describe('BRDF adjoint — WGSL codegen shape pins (oracle equivalence)', () => 
 	    expect(wgsl).toContain('fn adjointMaterialSpecularF0(');
 	    expect(wgsl).toContain('let dF0 = vec3f(0.04 * clamp(specularIntensity, 0.0, 1.0) * (1.0 - metallic));');
 	    expect(wgsl).toContain('let dF0 = 0.04 * clamp(specularColor, vec3f(0.0), vec3f(1.0)) * (1.0 - metallic);');
-	    expect(wgsl).toContain('return dF0 * (1.0 - m5) * (vec3f(specScale) - kd0 * baseColor * INV_PI);');
+	    expect(wgsl).toContain('fn adjointGgxMultiscatterDerivativeF0(');
+	    expect(wgsl).toContain('(1.0 - m5) * (vec3f(specScale) - kd0 * baseColor * INV_PI) +');
+	    expect(wgsl).toContain('dMs_dF0');
 	  });
 
 	  it('clearcoat partials mirror the additive fixed-F0 clearcoat lobe', () => {
@@ -793,7 +814,8 @@ describe('BRDF adjoint — WGSL codegen shape pins (oracle equivalence)', () => 
 	    expect(wgsl).toContain('fn dBrdf_dIridescenceThicknessRange(');
 	    expect(wgsl).toContain('fn adjointEvalIridescence(');
 	    expect(wgsl).toContain('let iridF = adjointEvalIridescence(1.0, iridescenceIor, vDotH, thicknessNm, baseF0);');
-	    expect(wgsl).toContain('return dBrdf_dSpecularF0(baseColor, roughness, metallic, normal, wo, wi, iridF - baseF0);');
+	    expect(wgsl).toContain('let currentF0 = mix(baseF0, iridF, clamp(iridescence, 0.0, 1.0));');
+	    expect(wgsl).toContain('currentF0, iridF - baseF0');
 	    expect(wgsl).toContain('const IRIDESCENCE_IOR_DERIV_STEP = 1e-3;');
 	    expect(wgsl).toContain('const IRIDESCENCE_THICKNESS_DERIV_STEP = 1e-2;');
 	    expect(wgsl).toContain('let fp = adjointEvalIridescence(1.0, iorP, vDotH, thicknessNm, baseF0);');

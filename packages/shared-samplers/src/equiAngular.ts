@@ -23,8 +23,9 @@
  *   5. PDF: p(t) = D / ((1 + ((t - t_closest)/D)²) · (θ_max - θ_min) · D²)
  *            = 1 / (D · (θ_max - θ_min) · (1 + ((t - t_closest)/D)²))
  *
- * Volume scope: uniform homogeneous medium only (per Decision 7 in the roadmap).
- * Per-region density volumes are explicitly out of scope for Sprint 7.
+ * Volume scope: uniform homogeneous media. This exported CPU sampler is a
+ * standalone host/oracle building block; active render backends keep their
+ * shader-language transport implementations at the backend boundary.
  *
  * References:
  *   Kulla & Fajardo 2012, "Importance Sampling Techniques for Path Tracing
@@ -36,9 +37,11 @@
  *
  *   Pharr, Jakob, Humphreys "Physically Based Rendering" 4th ed., §14.1.2.
  *
- *   Phase 6 Sprint 7 spec: plan/archive/phase-6-roadmap.md §Sprint 7.
- *   Fork GLSL mirror: plan/archive/sprint-7-pt-fork-patch.md §volume_march.glsl.js.
+ *   Historical implementation record:
+ *   plan/archive/phase-6-roadmap.md §Sprint 7.
  */
+
+import { requireFiniteVec3, requirePositive, requireUnitRandom } from './numericGuards.js';
 
 // ────────────────────────────────────────────────────────────────────────────
 // Public API
@@ -105,21 +108,31 @@ export function sampleEquiAngular(
   lightPos: readonly [number, number, number],
   opts?: EquiAngularOptions,
 ): EquiAngularSample {
-  const sceneTMax = opts?.sceneTMax ?? 1e6;
-  const degenerateFallbackLength = opts?.degenerateFallbackLength ?? 100;
+  requireUnitRandom(u, 'sampleEquiAngular.u');
+  requireFiniteVec3(rayOrigin, 'sampleEquiAngular.rayOrigin');
+  requireFiniteVec3(rayDir, 'sampleEquiAngular.rayDir');
+  requireFiniteVec3(lightPos, 'sampleEquiAngular.lightPos');
+  const sceneTMax = requirePositive(opts?.sceneTMax ?? 1e6, 'sampleEquiAngular.sceneTMax');
+  const degenerateFallbackLength = requirePositive(
+    opts?.degenerateFallbackLength ?? 100,
+    'sampleEquiAngular.degenerateFallbackLength',
+  );
+  const rayDirLength = Math.hypot(rayDir[0], rayDir[1], rayDir[2]);
+  if (rayDirLength < 1e-12) throw new RangeError('sampleEquiAngular.rayDir must be non-zero');
   // Step 1: project light onto ray
   const deltaX = lightPos[0] - rayOrigin[0];
   const deltaY = lightPos[1] - rayOrigin[1];
   const deltaZ = lightPos[2] - rayOrigin[2];
 
   // t at closest approach: t_c = dot(lightPos - rayOrigin, rayDir)
-  const tClosest = deltaX * rayDir[0] + deltaY * rayDir[1] + deltaZ * rayDir[2];
+  const tClosest =
+    (deltaX * rayDir[0] + deltaY * rayDir[1] + deltaZ * rayDir[2]) / rayDirLength;
 
   // Step 2: perpendicular distance D = ||(lightPos - rayOrigin) - t_c * rayDir||
-  const perpX = deltaX - tClosest * rayDir[0];
-  const perpY = deltaY - tClosest * rayDir[1];
-  const perpZ = deltaZ - tClosest * rayDir[2];
-  const D = Math.sqrt(perpX * perpX + perpY * perpY + perpZ * perpZ);
+  const perpX = deltaX - tClosest * (rayDir[0] / rayDirLength);
+  const perpY = deltaY - tClosest * (rayDir[1] / rayDirLength);
+  const perpZ = deltaZ - tClosest * (rayDir[2] / rayDirLength);
+  const D = Math.hypot(perpX, perpY, perpZ);
 
   // Degenerate: light is on the ray.  Fall back to uniform sampling on [0, L].
   if (D < 1e-6) {

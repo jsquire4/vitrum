@@ -425,7 +425,9 @@ describe('compressedWideBvh', () => {
       1, 0, 0, 0,
       0, 1, 0, 0,
     ]);
-    const glassPayload = 5 << 4;
+    // The lowest positive packed transmission code is already glass; alpha and
+    // other low-nibble metadata are intentionally outside this predicate.
+    const glassPayload = 1 << 4;
     const built = buildCompressedWideBvh(
       positions,
       new Uint32Array([0, 1, 2, glassPayload]),

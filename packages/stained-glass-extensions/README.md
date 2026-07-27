@@ -29,16 +29,34 @@ prim.userData.surfaceTextureId = SURFACE_TEXTURE_ID.waterglass; // → 5
 Packs H-channel came geometry (segments + nodes) into std140-aligned
 `Float32Array` buffers ready for host upload to a shader UBO.
 
-**Reserved:** no vitrum backend currently consumes these arrays directly.
-The host application is responsible for uploading them to its own shader.
-A future first-class `h-channel-came` backend path may consume this layout
-when that feature lands (road-to-100).
+This is a complete host-owned ABI. No vitrum backend implicitly consumes these
+arrays; the host application uploads them to its own shader binding.
 
 ```ts
 import { packCameUBO } from '@vitrum/stained-glass-extensions';
 const { segments, nodes, segmentCount, nodeCount } = packCameUBO(segs, nodes);
 // → upload segments / nodes to your own UBO binding
 ```
+
+The default capacity is 500 segments and 200 nodes. Exceeding either capacity
+throws so the host cannot accidentally render incomplete came geometry. A host
+that deliberately accepts truncation must opt in explicitly:
+
+```ts
+packCameUBO(segs, nodes, {
+  maxSegments: 256,
+  maxNodes: 128,
+  overflow: 'truncate',
+});
+```
+
+Caps must be positive, allocation-safe integers. Their combined segment and node
+authorization cannot exceed the 256 MiB pack-operation budget, and unknown
+option keys are rejected instead of being silently ignored. Coordinates must be
+finite float32 values; segment endpoints must remain distinct after float32
+conversion; rail width, block height, web thickness, and node radius must remain
+positive after float32 conversion. Truncation warnings are emitted only after a
+complete pack succeeds.
 
 ## What was removed
 

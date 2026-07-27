@@ -48,7 +48,7 @@
  *   offset 400: regirCandidatesPerCell      (u32 = 4 bytes) — M per sub-reservoir
  *   offset 404: regirSurvivorsPerCell       (u32 = 4 bytes) — K survivors per cell
  *   offset 408: regirGridFloatOffset        (u32 = 4 bytes) — grid-region float offset in combined buffer
- *   offset 412: restirPtReuse               (u32 = 4 bytes) — GRIS reconnection-shift reuse gate (was _regirPad)
+ *   offset 412: grisReuse               (u32 = 4 bytes) — GRIS reconnection-shift reuse gate (was _regirPad)
  *   offset 416: sunAngular.x                (f32 = 4 bytes) — direct sun cone radius in radians
  *   offset 420: sunAngular.yzw              (3×f32 = 12 bytes) — padding / future sun controls
  * Total: 432 bytes (432 % 16 == 0).
@@ -73,8 +73,8 @@ export const SHADE_FLAG_DIRECT_SUN_SHADOW_DISABLED = 4; // bit 2
 /**
  * Pack the per-engine stained-glass opt-in booleans into the `u32` bitfield
  * that lands at UBO offset 344. Default (both `false`) → `0`, which makes
- * `lo_sg_caustic` / `lo_sg_aperture` early-return `vec3f(0)` — a generic scene
- * gets ZERO stained-glass caustic / aperture physics.
+ * `lo_sg_aperture` early-returns `vec3f(0)` and the generic refractive estimator
+ * skips its stained-glass boost/clamp calibration.
  */
 export function packStainedGlassFlags(opts: {
   sunCaustic?: boolean | undefined;
@@ -180,6 +180,7 @@ export function packWalkaroundUBO(
   ppg: PpgUboState = { enabled: false, mixAlpha: 0 },
   regir: RegirUboState = REGIR_OFF,
   checkerboard: CheckerboardUboState = CHECKERBOARD_OFF,
+  grisHistoryEpoch = 0,
 ): ArrayBuffer {
   const data = new ArrayBuffer(WALKAROUND_UBO_SIZE_BYTES);
   const f32  = new Float32Array(data);
@@ -271,19 +272,27 @@ export function packWalkaroundUBO(
   u32[100] = r.candidatesPerCell >>> 0; // offset 400 — regirCandidatesPerCell (M)
   u32[101] = r.survivorsPerCell >>> 0;  // offset 404 — regirSurvivorsPerCell (K)
   u32[102] = r.gridFloatOffset >>> 0;   // offset 408 — regirGridFloatOffset
-  // GRIS / ReSTIR-PT reconnection-shift reuse gate (offset 412 — the former
+  // GRIS DDGI-proxy reconnection-shift reuse gate (offset 412 — the former
   // _regirPad slot). 0 keeps the GI spatial/temporal reuse on the legacy
-  // clamped-Jacobian path bit-for-bit; 1 turns on the unbiased GRIS shift +
-  // reconnection visibility + pairwise MIS. Absent ⇒ 0 (OFF), so callers and
+  // clamped-Jacobian path bit-for-bit; 1 turns on the bounded GRIS DDGI-proxy shift +
+  // reconnection visibility + bounded all-technique density matrix. Absent ⇒ 0 (OFF), so callers and
   // existing tests that never set it are byte-identical to before.
-  u32[103] = (inputs.restirGI.restirPtReuse ?? 0) >>> 0; // offset 412 — restirPtReuse
+  u32[103] = (inputs.restirGI.grisReuse ?? 0) >>> 0; // offset 412 — grisReuse
   const sunAngularRadius = inputs.lighting.sunAngularRadius;
   f32[104] = typeof sunAngularRadius === 'number' && Number.isFinite(sunAngularRadius)
     ? Math.max(0, sunAngularRadius)
     : WALKAROUND_DEFAULT_SUN_ANGULAR_RADIUS; // offset 416 — sunAngular.x
-  f32[105] = 0; // offset 420 — sunAngular.y reserved
-  f32[106] = 0; // offset 424 — sunAngular.z reserved
-  f32[107] = 0; // offset 428 — sunAngular.w reserved
+  u32[105] = grisHistoryEpoch >>> 0; // offset 420 — sunAngular.y carries GRIS history epoch bits
+  f32[106] = inputs.lighting.genericRefractiveCaustics ?? 0; // offset 424 — strategy code: 0 off, 1 path trace, 2 manifold NEE
+  const mneeIterations = Math.max(1, Math.min(32, inputs.lighting.mneeMaxIterations ?? 8));
+  const mneeChainLength = Math.max(1, Math.min(8, inputs.lighting.mneeMaxChainLength ?? 3));
+  const mneeMultiplicityTrials = Math.max(
+    1,
+    Math.min(32, inputs.lighting.mneeMultiplicityTrials ?? 8),
+  );
+  u32[107] = (mneeIterations & 0xff) |
+    ((mneeChainLength & 0xff) << 8) |
+    ((mneeMultiplicityTrials & 0xff) << 16); // offset 428 — bounded MNEE/SMS config bits
 
   return data;
 }
@@ -306,7 +315,8 @@ export function updateUBO(
    *  full-shade path with frameParity=0/checkerboardOn=0 — both pad slots stay
    *  zero, so the UBO is byte-identical to the pre-checkerboard layout. */
   checkerboard: CheckerboardUboState = CHECKERBOARD_OFF,
+  grisHistoryEpoch = 0,
 ): void {
-  const data = packWalkaroundUBO(inputs, ppg, regir, checkerboard);
+  const data = packWalkaroundUBO(inputs, ppg, regir, checkerboard, grisHistoryEpoch);
   device.queue.writeBuffer(uboBuffer, 0, data);
 }

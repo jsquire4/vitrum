@@ -12,9 +12,7 @@
   },
   "dependencies": {
     "@vitrum/core": "file:../../packages/core",
-    "@vitrum/engine": "file:../../packages/engine",
-    "draco3d": "^1.5.7",
-    "meshoptimizer": "^1.1.1"
+    "@vitrum/engine": "file:../../packages/engine"
   },
   "devDependencies": {
     "@webgpu/types": "^0.1.40",

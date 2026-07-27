@@ -10,10 +10,13 @@ import {
   CWBVH_CHILD_BOUNDS_U16,
   CWBVH_CHILD_META_WORDS,
 } from './strides.js';
+import { packedMaterialHasTransmission } from './wgsl/materialTransmission.wgsl.js';
 
 export const CWBVH_CHILD_EMPTY = 0 as const;
 export const CWBVH_CHILD_NODE = 1 as const;
 export const CWBVH_CHILD_LEAF = 2 as const;
+/** Host-side invalid-layout sentinel; valid wide nodes always have 0..8 children. */
+export const CWBVH_CHILD_COUNT_INVALID = 0xffffffff as const;
 
 export type CwbvhChildKind =
   | typeof CWBVH_CHILD_EMPTY
@@ -69,8 +72,13 @@ export interface CwbvhTraverseOptions {
   readonly tMax?: number;
   /**
    * Mirror the WGSL glass-skip filter: when true, stride-4 triangle payloads
-   * whose transmission nibble `(payload >> 4) & 0xf` exceeds 4 do not occlude.
+   * whose physical-transmission nibble is nonzero do not occlude.
    */
+  /**
+   * CPU-oracle stack bound. Defaults to unbounded; tests can lower it to force
+   * the same explicit fallback condition as the fixed-depth WGSL traversal.
+   */
+  readonly maxStackDepth?: number;
   readonly skipGlass?: boolean;
 }
 
@@ -121,17 +129,34 @@ function clampU16(v: number): number {
   return Math.max(0, Math.min(65535, Math.round(v)));
 }
 
-function quantizeBound(value: number, min: number, max: number, mode: 'floor' | 'ceil'): number {
+function stableUnitOffset(value: number, min: number, max: number): number | null {
+  if (![value, min, max].every(Number.isFinite) || min > max) {
+    return null;
+  }
+  if (max === min) return 0;
   const extent = max - min;
-  if (!(extent > 0)) return mode === 'floor' ? 0 : 65535;
-  const q = ((value - min) / extent) * 65535;
-  return clampU16(mode === 'floor' ? Math.floor(q) : Math.ceil(q));
+  if (Number.isFinite(extent)) return (value - min) / extent;
+  const halfExtent = max * 0.5 - min * 0.5;
+  if (!(halfExtent > 0) || !Number.isFinite(halfExtent)) return null;
+  return (value * 0.5 - min * 0.5) / halfExtent;
+}
+
+function quantizeBound(value: number, min: number, max: number, mode: 'floor' | 'ceil'): number {
+  const normalized = stableUnitOffset(value, min, max);
+  if (normalized == null) return 0;
+  if (max === min) return mode === 'floor' ? 0 : 65535;
+  const q = normalized * 65535;
+  const rounded = mode === 'floor' ? Math.floor(q) : Math.ceil(q);
+  return clampU16(mode === 'floor' ? rounded - 1 : rounded + 1);
 }
 
 function dequantizeBound(q: number, min: number, max: number): number {
-  const extent = max - min;
-  if (!(extent > 0)) return min;
-  return min + (q / 65535) * extent;
+  if (![min, max].every(Number.isFinite) || min > max) return Number.NaN;
+  if (max === min) return min;
+  if (q <= 0) return min;
+  if (q >= 65535) return max;
+  const t = q / 65535;
+  return min * (1 - t) + max * t;
 }
 
 function collectWideChildren(bvhNodes: Float32Array, binaryRoot: number): number[] {
@@ -165,20 +190,18 @@ function collectWideChildren(bvhNodes: Float32Array, binaryRoot: number): number
 
 /**
  * Collapse the canonical binary BVH into a packed 8-wide, quantized-bounds CPU
- * representation. This remains the shared build/oracle primitive for the
- * pt-webgpu opt-in CWBVH traversal while default promotion waits on throughput
- * evidence.
+ * representation shared by CPU validation and renderer traversal.
  */
 export function buildCompressedWideBvhFromArrayBvh(
   binary: CpuBvhBuildResult,
 ): CompressedWideBvhBuildResult {
   const binaryNodeCount = Math.floor(binary.bvhNodes.length / 8);
-  const emptyWideRoot = (): CompressedWideBvhBuildResult => ({
+  const emptyWideRoot = (invalid = false): CompressedWideBvhBuildResult => ({
     ...binary,
     cwbvhNodeBounds: new Float32Array(6),
     cwbvhChildBounds: new Uint16Array(CWBVH_CHILDREN * CWBVH_CHILD_BOUNDS_U16),
     cwbvhChildMeta: new Uint32Array(CWBVH_CHILDREN * CWBVH_CHILD_META_WORDS),
-    cwbvhChildCount: new Uint32Array(1),
+    cwbvhChildCount: new Uint32Array([invalid ? CWBVH_CHILD_COUNT_INVALID : 0]),
     cwbvhNodeCount: 1,
   });
   if (binaryNodeCount === 0) {
@@ -195,6 +218,18 @@ export function buildCompressedWideBvhFromArrayBvh(
     return emptyWideRoot();
   }
 
+  if (binary.bvhNodes.length % 8 !== 0) return emptyWideRoot(true);
+  for (let nodeIndex = 0; nodeIndex < binaryNodeCount; nodeIndex += 1) {
+    const node = readBinaryNode(binary.bvhNodes, nodeIndex);
+    for (let axis = 0; axis < 3; axis += 1) {
+      const min = node.min[axis]!;
+      const max = node.max[axis]!;
+      if (stableUnitOffset(min, min, max) == null) {
+        return emptyWideRoot(true);
+      }
+    }
+  }
+
   const root = readBinaryNode(binary.bvhNodes, 0);
   if (binaryNodeCount === 1 && isLeafSplit(root.splitAxisOrTriCount) && (root.splitAxisOrTriCount & 0xffff) === 0) {
     return emptyWideRoot();
@@ -204,6 +239,7 @@ export function buildCompressedWideBvhFromArrayBvh(
   const childBounds: number[] = [];
   const childMeta: number[] = [];
   const childCount: number[] = [];
+  let traversalValid = true;
 
   const allocNode = (node: BinaryNodeInfo): number => {
     const nodeIndex = nodeBounds.length / 6;
@@ -220,6 +256,19 @@ export function buildCompressedWideBvhFromArrayBvh(
     parent: BinaryNodeInfo,
     child: BinaryNodeInfo,
   ): void => {
+    for (let axis = 0; axis < 3; axis += 1) {
+      const parentMin = parent.min[axis]!;
+      const parentMax = parent.max[axis]!;
+      const childMin = child.min[axis]!;
+      const childMax = child.max[axis]!;
+      if (
+        childMin < parentMin || childMax > parentMax || childMin > childMax ||
+        stableUnitOffset(childMin, parentMin, parentMax) == null ||
+        stableUnitOffset(childMax, parentMin, parentMax) == null
+      ) {
+        traversalValid = false;
+      }
+    }
     const base = wideNodeIndex * CWBVH_CHILDREN * CWBVH_CHILD_BOUNDS_U16 + slot * CWBVH_CHILD_BOUNDS_U16;
     childBounds[base + 0] = quantizeBound(child.min[0], parent.min[0], parent.max[0], 'floor');
     childBounds[base + 1] = quantizeBound(child.min[1], parent.min[1], parent.max[1], 'floor');
@@ -269,6 +318,11 @@ export function buildCompressedWideBvhFromArrayBvh(
   };
 
   buildWide(0);
+  // A public caller may traverse a nonzero root (for example a renderer-shaped
+  // concatenated forest). Mark every root candidate invalid when conversion
+  // discovered a global parent/child layout violation; a node-0-only sentinel
+  // let an explicitly selected nonzero root bypass the corruption gate.
+  if (!traversalValid) childCount.fill(CWBVH_CHILD_COUNT_INVALID);
 
   return {
     ...binary,
@@ -394,7 +448,14 @@ function positionAt(
   stride: number,
 ): [number, number, number] {
   const o = index * stride;
-  return [positions[o] ?? 0, positions[o + 1] ?? 0, positions[o + 2] ?? 0];
+  if (!Number.isInteger(index) || index < 0 || o + 2 >= positions.length) {
+    throw new Error(`CWBVH position index ${index} is out of range`);
+  }
+  const value: [number, number, number] = [positions[o]!, positions[o + 1]!, positions[o + 2]!];
+  if (!value.every(Number.isFinite)) {
+    throw new Error(`CWBVH position ${index} is non-finite`);
+  }
+  return value;
 }
 
 function intersectTriangle(
@@ -459,8 +520,7 @@ function shouldSkipGlassTriangle(
 ): boolean {
   if (!skipGlass || indexStride < 4) return false;
   const payload = reorderedIndices[tri * indexStride + 3] ?? 0;
-  const trans4 = (payload >>> 4) & 0xf;
-  return trans4 > 4;
+  return packedMaterialHasTransmission(payload);
 }
 
 function resolveCwbvhRoot(cwbvh: CompressedWideBvhBuildResult, root: number | undefined): number {
@@ -469,6 +529,75 @@ function resolveCwbvhRoot(cwbvh: CompressedWideBvhBuildResult, root: number | un
     throw new RangeError(`CWBVH root ${resolved} is outside 0..${Math.max(0, cwbvh.cwbvhNodeCount - 1)}`);
   }
   return resolved;
+}
+
+function validatedCwbvhChildCount(cwbvh: CompressedWideBvhBuildResult, nodeIndex: number): number {
+  if (!Number.isInteger(nodeIndex) || nodeIndex < 0 || nodeIndex >= cwbvh.cwbvhNodeCount) {
+    throw new Error(`CWBVH node reference ${nodeIndex} is out of range`);
+  }
+  const count = cwbvh.cwbvhChildCount[nodeIndex] ?? CWBVH_CHILD_COUNT_INVALID;
+  if (count > CWBVH_CHILDREN) {
+    throw new Error(`CWBVH node ${nodeIndex} has invalid child count ${count}`);
+  }
+  return count;
+}
+
+function validateCwbvhTraversalInputs(
+  cwbvh: CompressedWideBvhBuildResult,
+  positions: Float32Array,
+  ray: CwbvhRay,
+  positionStride: number,
+  indexStride: number,
+  triEps: number,
+  tMin: number,
+  tMax: number,
+): void {
+  if (!Number.isInteger(cwbvh.cwbvhNodeCount) || cwbvh.cwbvhNodeCount < 0) {
+    throw new Error(`CWBVH node count ${cwbvh.cwbvhNodeCount} is invalid`);
+  }
+  const nodeCount = cwbvh.cwbvhNodeCount;
+  if (
+    cwbvh.cwbvhNodeBounds.length < nodeCount * 6 ||
+    cwbvh.cwbvhChildBounds.length < nodeCount * CWBVH_CHILDREN * CWBVH_CHILD_BOUNDS_U16 ||
+    cwbvh.cwbvhChildMeta.length < nodeCount * CWBVH_CHILDREN * CWBVH_CHILD_META_WORDS ||
+    cwbvh.cwbvhChildCount.length < nodeCount
+  ) {
+    throw new Error('CWBVH traversal buffers are shorter than cwbvhNodeCount');
+  }
+  if (!Number.isInteger(positionStride) || positionStride < 3 || positions.length % positionStride !== 0) {
+    throw new Error(`CWBVH position stride ${positionStride} is invalid for ${positions.length} words`);
+  }
+  if (
+    !Number.isInteger(indexStride) ||
+    indexStride < 3 ||
+    cwbvh.reorderedIndices.length % indexStride !== 0
+  ) {
+    throw new Error(`CWBVH index stride ${indexStride} is invalid for ${cwbvh.reorderedIndices.length} words`);
+  }
+  if (!Number.isFinite(triEps) || triEps <= 0) {
+    throw new Error(`CWBVH triangle epsilon ${triEps} is invalid`);
+  }
+  if (!Number.isFinite(tMin) || tMin < 0 || Number.isNaN(tMax) || tMax < tMin) {
+    throw new Error(`CWBVH traversal interval [${tMin}, ${tMax}) is invalid`);
+  }
+  if (!ray.origin.every(Number.isFinite) || !ray.direction.every(Number.isFinite)) {
+    throw new Error('CWBVH ray contains non-finite components');
+  }
+}
+
+function validateCwbvhBounds(
+  bounds: { min: readonly [number, number, number]; max: readonly [number, number, number] },
+  label: string,
+): void {
+  if (
+    !bounds.min.every(Number.isFinite) ||
+    !bounds.max.every(Number.isFinite) ||
+    bounds.min[0] > bounds.max[0] ||
+    bounds.min[1] > bounds.max[1] ||
+    bounds.min[2] > bounds.max[2]
+  ) {
+    throw new Error(`${label} has invalid bounds`);
+  }
 }
 
 function cwbvhNodeBounds(
@@ -502,6 +631,11 @@ export function intersectCompressedWideBvhFirstHit(
   const tMin = opts.tMin ?? triEps;
   let closest = opts.tMax ?? Number.POSITIVE_INFINITY;
   const skipGlass = opts.skipGlass ?? false;
+  const maxStackDepth = opts.maxStackDepth ?? Number.POSITIVE_INFINITY;
+  validateCwbvhTraversalInputs(cwbvh, positions, ray, positionStride, indexStride, triEps, tMin, closest);
+  if (!Number.isInteger(maxStackDepth) && maxStackDepth !== Number.POSITIVE_INFINITY || maxStackDepth < 1) {
+    throw new RangeError('CWBVH maxStackDepth must be a positive integer or Infinity');
+  }
   let hitTriangle = -1;
   let hitSourceTriangle = -1;
   let hitBary: readonly [number, number, number] = [0, 0, 0];
@@ -511,7 +645,9 @@ export function intersectCompressedWideBvhFirstHit(
   }
 
   const root = resolveCwbvhRoot(cwbvh, opts.root);
+  validatedCwbvhChildCount(cwbvh, root);
   const rootBounds = cwbvhNodeBounds(cwbvh, root);
+  validateCwbvhBounds(rootBounds, `CWBVH node ${root}`);
   if (intersectAabb(ray, rootBounds.min, rootBounds.max, tMin, closest) == null) {
     return { didHit: false, dist: closest, triangleIndex: -1, sourceTriangleIndex: -1, bary: hitBary };
   }
@@ -519,22 +655,36 @@ export function intersectCompressedWideBvhFirstHit(
   const stack: number[] = [root];
   while (stack.length > 0) {
     const nodeIndex = stack.pop()!;
-    const count = Math.min(CWBVH_CHILDREN, cwbvh.cwbvhChildCount[nodeIndex] ?? 0);
+    const count = validatedCwbvhChildCount(cwbvh, nodeIndex);
     for (let slot = 0; slot < count; slot += 1) {
       const mb = nodeIndex * CWBVH_CHILDREN * CWBVH_CHILD_META_WORDS + slot * CWBVH_CHILD_META_WORDS;
       const kind = cwbvh.cwbvhChildMeta[mb] ?? CWBVH_CHILD_EMPTY;
-      if (kind === CWBVH_CHILD_EMPTY) continue;
+      if (kind === CWBVH_CHILD_EMPTY) {
+        throw new Error(`CWBVH node ${nodeIndex} has an empty live child at slot ${slot}`);
+      }
       const bounds = cwbvhChildBounds(cwbvh, nodeIndex, slot);
+      validateCwbvhBounds(bounds, `CWBVH node ${nodeIndex} child ${slot}`);
       if (intersectAabb(ray, bounds.min, bounds.max, tMin, closest) == null) continue;
 
       if (kind === CWBVH_CHILD_NODE) {
-        stack.push(cwbvh.cwbvhChildMeta[mb + 1] ?? 0);
+        const childNode = cwbvh.cwbvhChildMeta[mb + 1]!;
+        if (childNode >= cwbvh.cwbvhNodeCount) {
+          throw new Error(`CWBVH child node reference ${childNode} is out of range`);
+        }
+        if (stack.length >= maxStackDepth) {
+          throw new Error(`CWBVH traversal stack overflow at capacity ${maxStackDepth}`);
+        }
+        stack.push(childNode);
         continue;
       }
 
       if (kind === CWBVH_CHILD_LEAF) {
         const triOffset = cwbvh.cwbvhChildMeta[mb + 1] ?? 0;
         const triCount = cwbvh.cwbvhChildMeta[mb + 2] ?? 0;
+        const triangleCount = cwbvh.reorderedIndices.length / indexStride;
+        if (triCount === 0 || triOffset > triangleCount || triCount > triangleCount - triOffset) {
+          throw new Error(`CWBVH leaf range ${triOffset}+${triCount} is out of range`);
+        }
         for (let i = 0; i < triCount; i += 1) {
           const tri = triOffset + i;
           if (shouldSkipGlassTriangle(cwbvh.reorderedIndices, tri, indexStride, skipGlass)) continue;
@@ -546,13 +696,15 @@ export function intersectCompressedWideBvhFirstHit(
           const b = positionAt(positions, i1, positionStride);
           const c = positionAt(positions, i2, positionStride);
           const hit = intersectTriangle(ray, a, b, c, triEps);
-          if (hit != null && hit.t >= tMin && hit.t < closest) {
+          if (hit != null && hit.t > tMin && hit.t < closest) {
             closest = hit.t;
             hitTriangle = tri;
             hitSourceTriangle = cwbvh.reorderedToSourceTriangle[tri] ?? tri;
             hitBary = hit.bary;
           }
         }
+      } else {
+        throw new Error(`CWBVH child kind ${kind} is invalid`);
       }
     }
   }
@@ -576,7 +728,7 @@ export function intersectCompressedWideBvhAnyHit(
   const indexStride = opts.indexStride ?? 4;
   const triEps = opts.triEps ?? 1e-5;
   // Reconciled with intersectCompressedWideBvhFirstHit: same default tMin
-  // (triEps) and the same inclusive `>=` acceptance below. anyHit must not
+  // (triEps) and the same strict open-interval `>` acceptance below. anyHit must not
   // report a *miss* where firstHit reports a *hit* at the same epsilon boundary,
   // or shadow/occlusion rays would under-occlude relative to the closest-hit
   // geometry.
@@ -584,31 +736,51 @@ export function intersectCompressedWideBvhAnyHit(
   const tMax = opts.tMax ?? Number.POSITIVE_INFINITY;
   const skipGlass = opts.skipGlass ?? false;
 
+  const maxStackDepth = opts.maxStackDepth ?? Number.POSITIVE_INFINITY;
+  validateCwbvhTraversalInputs(cwbvh, positions, ray, positionStride, indexStride, triEps, tMin, tMax);
+  if (!Number.isInteger(maxStackDepth) && maxStackDepth !== Number.POSITIVE_INFINITY || maxStackDepth < 1) {
+    throw new RangeError('CWBVH maxStackDepth must be a positive integer or Infinity');
+  }
   if (cwbvh.cwbvhNodeCount === 0) return false;
 
   const root = resolveCwbvhRoot(cwbvh, opts.root);
+  validatedCwbvhChildCount(cwbvh, root);
   const rootBounds = cwbvhNodeBounds(cwbvh, root);
+  validateCwbvhBounds(rootBounds, `CWBVH node ${root}`);
   if (intersectAabb(ray, rootBounds.min, rootBounds.max, tMin, tMax) == null) return false;
 
   const stack: number[] = [root];
   while (stack.length > 0) {
     const nodeIndex = stack.pop()!;
-    const count = Math.min(CWBVH_CHILDREN, cwbvh.cwbvhChildCount[nodeIndex] ?? 0);
+    const count = validatedCwbvhChildCount(cwbvh, nodeIndex);
     for (let slot = 0; slot < count; slot += 1) {
       const mb = nodeIndex * CWBVH_CHILDREN * CWBVH_CHILD_META_WORDS + slot * CWBVH_CHILD_META_WORDS;
       const kind = cwbvh.cwbvhChildMeta[mb] ?? CWBVH_CHILD_EMPTY;
-      if (kind === CWBVH_CHILD_EMPTY) continue;
+      if (kind === CWBVH_CHILD_EMPTY) {
+        throw new Error(`CWBVH node ${nodeIndex} has an empty live child at slot ${slot}`);
+      }
       const bounds = cwbvhChildBounds(cwbvh, nodeIndex, slot);
+      validateCwbvhBounds(bounds, `CWBVH node ${nodeIndex} child ${slot}`);
       if (intersectAabb(ray, bounds.min, bounds.max, tMin, tMax) == null) continue;
 
       if (kind === CWBVH_CHILD_NODE) {
-        stack.push(cwbvh.cwbvhChildMeta[mb + 1] ?? 0);
+        const childNode = cwbvh.cwbvhChildMeta[mb + 1]!;
+        if (childNode >= cwbvh.cwbvhNodeCount) {
+          throw new Error(`CWBVH child node reference ${childNode} is out of range`);
+        }
+        if (stack.length >= maxStackDepth) {
+          throw new Error(`CWBVH traversal stack overflow at capacity ${maxStackDepth}`);
+        }
+        stack.push(childNode);
         continue;
       }
-
       if (kind === CWBVH_CHILD_LEAF) {
         const triOffset = cwbvh.cwbvhChildMeta[mb + 1] ?? 0;
         const triCount = cwbvh.cwbvhChildMeta[mb + 2] ?? 0;
+        const triangleCount = cwbvh.reorderedIndices.length / indexStride;
+        if (triCount === 0 || triOffset > triangleCount || triCount > triangleCount - triOffset) {
+          throw new Error(`CWBVH leaf range ${triOffset}+${triCount} is out of range`);
+        }
         for (let i = 0; i < triCount; i += 1) {
           const tri = triOffset + i;
           if (shouldSkipGlassTriangle(cwbvh.reorderedIndices, tri, indexStride, skipGlass)) continue;
@@ -620,8 +792,10 @@ export function intersectCompressedWideBvhAnyHit(
           const b = positionAt(positions, i1, positionStride);
           const c = positionAt(positions, i2, positionStride);
           const hit = intersectTriangle(ray, a, b, c, triEps);
-          if (hit != null && hit.t >= tMin && hit.t < tMax) return true;
+          if (hit != null && hit.t > tMin && hit.t < tMax) return true;
         }
+      } else {
+        throw new Error(`CWBVH child kind ${kind} is invalid`);
       }
     }
   }

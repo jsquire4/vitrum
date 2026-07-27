@@ -8,16 +8,19 @@ import {
   rmseROI,
   W,
 } from './helpers.mjs';
-import { radiometricResultProvenance } from './resultProvenance.mjs';
+import {
+  PT_RADIOMETRIC_RUNTIME_SOURCE_ROOTS,
+  radiometricResultProvenance,
+} from './resultProvenance.mjs';
 
 const REF_FRAMES = 40;
 const CANDIDATE_FRAMES = 12;
 const RESULT_PATH = new URL('./results-sobol.json', import.meta.url);
 const FULL_ROI = { x0: 0, y0: 0, x1: W - 1, y1: H - 1 };
-const PROMOTION = {
-  defaultReady: false,
+const DEFAULT_SELECTION = {
+  selected: false,
   evidenceClass: 'wsl-lite-equal-frame-proxy',
-  reason: 'WSL-lite evidence bounds correctness but does not show equal-time convergence superiority.',
+  reason: 'PCG remains the default until full-tier equal-time measurements justify changing it.',
   requiredEvidence: 'full-tier/real-adapter equal-time Sobol RMSE A/B',
 };
 
@@ -93,10 +96,15 @@ function compareScene(sceneCase, reference, pcg, sobol) {
   const sobolRoiRmse = rmseOverRoi(sobol.rgba, reference.rgba, sceneCase.roi);
   const pcgRoiSpatialVariance = luminanceVarianceROI(pcg.rgba, sceneCase.roi);
   const sobolRoiSpatialVariance = luminanceVarianceROI(sobol.rgba, sceneCase.roi);
+  // Persist millisecond measurements at 3 decimals, then derive ratios from
+  // those exact persisted values so the strict result validator can reproduce
+  // every claimed metric without access to discarded timer precision.
+  const pcgElapsedMs = Number(pcg.elapsedMs.toFixed(3));
+  const sobolElapsedMs = Number(sobol.elapsedMs.toFixed(3));
   const globalRmseRatio = ratioOrInfinity(sobolGlobalRmse, pcgGlobalRmse);
   const roiRmseRatio = ratioOrInfinity(sobolRoiRmse, pcgRoiRmse);
   const roiSpatialVarianceRatio = ratioOrInfinity(sobolRoiSpatialVariance, pcgRoiSpatialVariance);
-  const timeRatio = ratioOrInfinity(sobol.elapsedMs, pcg.elapsedMs);
+  const timeRatio = ratioOrInfinity(sobolElapsedMs, pcgElapsedMs);
 
   return {
     id: sceneCase.id,
@@ -105,13 +113,13 @@ function compareScene(sceneCase, reference, pcg, sobol) {
     referenceFrames: REF_FRAMES,
     candidateFrames: CANDIDATE_FRAMES,
     pcg: {
-      elapsedMs: Number(pcg.elapsedMs.toFixed(3)),
+      elapsedMs: pcgElapsedMs,
       globalRmse: pcgGlobalRmse,
       roiRmse: pcgRoiRmse,
       roiSpatialVariance: pcgRoiSpatialVariance,
     },
     sobol: {
-      elapsedMs: Number(sobol.elapsedMs.toFixed(3)),
+      elapsedMs: sobolElapsedMs,
       globalRmse: sobolGlobalRmse,
       roiRmse: sobolRoiRmse,
       roiSpatialVariance: sobolRoiSpatialVariance,
@@ -126,6 +134,7 @@ function compareScene(sceneCase, reference, pcg, sobol) {
       globalRmse: relativeError(sobolGlobalRmse, pcgGlobalRmse),
       roiRmse: relativeError(sobolRoiRmse, pcgRoiRmse),
       roiSpatialVariance: relativeError(sobolRoiSpatialVariance, pcgRoiSpatialVariance),
+      elapsedMs: relativeError(sobolElapsedMs, pcgElapsedMs),
     },
     pass: finiteNumber(globalRmseRatio)
       && finiteNumber(roiRmseRatio)
@@ -178,7 +187,16 @@ async function main() {
 
   const verdict = scenes.every((scene) => scene.pass) ? 'PASS' : 'FAIL';
   const result = {
-    provenance: await radiometricResultProvenance(import.meta.url, 'tools/radiometric-ab/ab-sobol.mjs', 'tools/radiometric-ab/results-sobol.json'),
+    schema: 'vitrum.radiometric-ab.result.v1',
+    provenance: await radiometricResultProvenance(
+      import.meta.url,
+      'tools/radiometric-ab/ab-sobol.mjs',
+      'tools/radiometric-ab/results-sobol.json',
+      {
+        repoRootImportMetaUrl: new URL('../../', import.meta.url).href,
+        sourceRoots: PT_RADIOMETRIC_RUNTIME_SOURCE_ROOTS,
+      },
+    ),
     ab: 'sobol-equal-frame-rmse',
     verdict,
     generatedAt: new Date().toISOString(),
@@ -190,17 +208,12 @@ async function main() {
     },
     candidateFrames: CANDIDATE_FRAMES,
     traceTier: 'lite',
-    promotion: PROMOTION,
-    researchFindings: {
-      sobolDefault: {
-        defaultReady: PROMOTION.defaultReady,
-        evidenceClass: PROMOTION.evidenceClass,
-        requiredEvidence: PROMOTION.requiredEvidence,
-        maxGlobalRmseRatio: maxSceneRatio(scenes, 'globalRmse'),
-        maxRoiRmseRatio: maxSceneRatio(scenes, 'roiRmse'),
-        maxElapsedMsRatio: maxSceneRatio(scenes, 'elapsedMs'),
-        evidencePath: 'tools/radiometric-ab/results-sobol.json',
-      },
+    defaultSelection: {
+      ...DEFAULT_SELECTION,
+      maxGlobalRmseRatio: maxSceneRatio(scenes, 'globalRmse'),
+      maxRoiRmseRatio: maxSceneRatio(scenes, 'roiRmse'),
+      maxElapsedMsRatio: maxSceneRatio(scenes, 'elapsedMs'),
+      evidencePath: 'tools/radiometric-ab/results-sobol.json',
     },
     thresholds: {
       maxGlobalRmseRatio: 1.5,

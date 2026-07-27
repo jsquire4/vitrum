@@ -18,8 +18,8 @@
 //     MEMORY. The next layer is computed into a second shared tile; we ping-pong
 //     between them across all layers. Activations DO NOT round-trip to global
 //     memory between layers during the sweep.
-//   * Each layer's weight matrix is staged from global into a shared tile and
-//     consumed by a shared-memory-staged GEMM (standard register/shared tiling).
+//   * Each layer's weight matrix is streamed directly from global memory while
+//     the activation tile remains resident in workgroup memory.
 //   * Backward mirrors forward: the delta tile stays resident in shared and
 //     ping-pongs across layers; weights are re-streamed.
 //   * Gradient accumulation over the tile is a WORKGROUP REDUCTION in shared
@@ -35,9 +35,8 @@
 //   W=64, f16:
 //     actA  [TILE_B×W] = 64*64*2 = 8192 B
 //     actB  [TILE_B×W] = 8192 B
-//     wTile [W×W]      = 8192 B
-//   = 24576 B  < 32768 B  ✓   (f32 doubles each → 49152 B > 32768 → f32 needs a
-//   smaller TILE_B or W-split; see TS harness which picks TILE_B accordingly.)
+//   = 16384 B. The default f32 TILE_B=32 path has the same 16384 B footprint,
+//   exactly matching WebGPU's guaranteed workgroup-storage floor.
 //
 // LAYER SHAPES (modeled NRC core): node-layers
 //   L0(IN_W) → L1(64) → … → L6(64) → L7(OUT_W=3)
@@ -48,6 +47,7 @@
 // This module emits the WGSL as a string templated on f16-vs-f32 so the harness
 // can pick the path the adapter supports.
 
+import { NRC_DIAGNOSTIC_CONSTANTS_WGSL } from '../nrcDiagnostics.js';
 export interface FusedMlpWgslOptions {
   /** Emit `enable f16;` and use f16 storage/arith for weights+activations. */
   useF16: boolean;
@@ -60,6 +60,18 @@ export interface FusedMlpWgslOptions {
   /** Samples processed per workgroup (tile). Must be <= W and a multiple of
    *  the reduction granularity; harness picks 64 for f16, 32 for f32. */
   TILE_B: number;
+}
+
+/** Exact workgroup-memory footprint of either fused kernel.
+ *
+ * Both forward and backward declare two `TILE_B * W` workgroup arrays and no
+ * third weight tile. Keep host-side capability checks coupled to that actual
+ * declaration instead of the stale three-tile design note that pre-dated the
+ * current streamed-weight implementation.
+ */
+export function fusedMlpWorkgroupStorageBytes(o: Pick<FusedMlpWgslOptions, 'useF16' | 'W' | 'TILE_B'>): number {
+  const scalarBytes = o.useF16 ? 2 : 4;
+  return 2 * o.TILE_B * o.W * scalarBytes;
 }
 
 // ── Shared emitter helper ──────────────────────────────────────────────────────
@@ -244,6 +256,47 @@ fn fusedForward(@builtin(workgroup_id) wg : vec3<u32>,
 // is linear, so no relu' factor). The first L·F entries of dL/dX are dL/dfeature
 // for the multiresolution hash-grid encode; the encode-backward kernel scatters
 // them into the trainable feature tables (Müller 2022 Instant-NGP §4). Without
+function safeFixedAtomicAddWgsl(functionName: string, bufferName: string): string {
+  return /* wgsl */`
+fn ${functionName}(index: u32, value: f32) {
+  if (!nrcTrainFinite(value)) {
+    atomicAdd(&nrcDiagnostics[NRC_DIAG_NONFINITE], 1u);
+    return;
+  }
+  let scaled = value * GRAD_FP;
+  if (!nrcTrainFinite(scaled)) {
+    atomicAdd(&nrcDiagnostics[NRC_DIAG_NONFINITE], 1u);
+    return;
+  }
+  let bounded = clamp(scaled, -2147483000.0, 2147483000.0);
+  let delta = i32(bounded);
+  let inputSaturated = bounded != scaled;
+  for (var attempt: u32 = 0u; attempt < 64u; attempt = attempt + 1u) {
+    let old = atomicLoad(&${bufferName}[index]);
+    var next = old;
+    var accumulatorSaturated = false;
+    if (delta > 0 && old > 2147483000 - delta) {
+      next = 2147483000;
+      accumulatorSaturated = true;
+    } else if (delta < 0 && old < -2147483000 - delta) {
+      next = -2147483000;
+      accumulatorSaturated = true;
+    } else {
+      next = old + delta;
+    }
+    let exchanged = atomicCompareExchangeWeak(&${bufferName}[index], old, next);
+    if (exchanged.exchanged) {
+      if (inputSaturated || accumulatorSaturated) {
+        atomicAdd(&nrcDiagnostics[NRC_DIAG_SATURATED], 1u);
+      }
+      return;
+    }
+  }
+  atomicAdd(&nrcDiagnostics[NRC_DIAG_DROPPED_UPDATE], 1u);
+}
+`;
+}
+
 // this the hash tables stay frozen at random init and only the MLP learns.
 export function fusedBackwardWgsl(o: FusedMlpWgslOptions): string {
   const d = fusedMlpDerived(o);
@@ -276,6 +329,12 @@ struct BwdParams {
 // trainable feature tables (Müller 2022 Instant-NGP §4): the first L·F entries
 // of dL/dX are exactly dL/dfeature for the multiresolution hash encoding.
 @group(0) @binding(7) var<storage, read_write>  gradInputFx : array<atomic<i32>>;
+@group(0) @binding(8) var<storage, read_write>  nrcDiagnostics : array<atomic<u32>>;
+${NRC_DIAGNOSTIC_CONSTANTS_WGSL}
+fn nrcTrainFinite(value: f32) -> bool { return value == value && abs(value) <= 3.402823e38; }
+${safeFixedAtomicAddWgsl('nrcAddGradWeight', 'gradWfx')}
+${safeFixedAtomicAddWgsl('nrcAddGradBias', 'gradBfx')}
+${safeFixedAtomicAddWgsl('nrcAddGradInput', 'gradInputFx')}
 fn wOff(l : u32) -> u32 { return p.lay[l].x; }
 fn bOff(l : u32) -> u32 { return p.lay[l].y; }
 fn layInW(l : u32) -> u32 { return p.lay[l].z; }
@@ -345,7 +404,7 @@ fn fusedBackward(@builtin(workgroup_id) wg : vec3<u32>,
           accB = accB + d;
         }
       }
-      atomicAdd(&gradBfx[bo + col], i32(accB * GRAD_FP));
+      nrcAddGradBias(bo + col, accB);
     }
 
     // (1) weight grad: there are outW*inW cells. Distribute across the W
@@ -366,7 +425,7 @@ fn fusedBackward(@builtin(workgroup_id) wg : vec3<u32>,
           accW = accW + d * aPrev;
         }
       }
-      atomicAdd(&gradWfx[wo + o * inW + i], i32(accW * GRAD_FP));
+      nrcAddGradWeight(wo + o * inW + i, accW);
       c = c + W;
     }
     workgroupBarrier();
@@ -425,7 +484,7 @@ fn fusedBackward(@builtin(workgroup_id) wg : vec3<u32>,
               let dd = f32(select(deltaB[s * W + o], deltaA[s * W + o], curIsA));
               acc = acc + f32(weights[wo + o * inW + col]) * dd;
             }
-            atomicAdd(&gradInputFx[S * p.inW + col], i32(acc * GRAD_FP));
+            nrcAddGradInput(S * p.inW + col, acc);
           }
         }
       }

@@ -3,7 +3,7 @@
  * GRIS black-frame bug (f8df9a4) shipped.
  *
  * Root cause of f8df9a4: the GRIS reconnection-shift reuse (opt-in via
- * `restirPtReuse`) changed the GI spatial AND temporal passes UNCONDITIONALLY,
+ * `grisReuse`) changed the GI spatial AND temporal passes UNCONDITIONALLY,
  * gated only by a runtime `ubo` check. The default path inherited a pipeline
  * structure and shader branch it could not safely execute, regressing the
  * default walkaround render to an all-black frame on real GPUs (Mesa dzn) AND
@@ -14,7 +14,7 @@
  * structure at all. It asserts at two layers:
  *
  *   1. SHADER STRUCTURE — composing the spatial + temporal GI WGSL with
- *      restirPtReuse OFF yields text with NONE of the GRIS identifiers
+ *      grisReuse OFF yields text with NONE of the GRIS identifiers
  *      (reconnection-visibility fn / grisReuse symbols). With ON, those ARE
  *      present. Both variants now bind `@group(1)` for receiver-lobe p-hat
  *      material recasts.
@@ -47,18 +47,18 @@ installWebGPUPolyfills();
 // GRIS identifiers that MUST NOT appear in the default (OFF) GI passes — these
 // are the branch/math symbols the f8df9a4 commit leaked onto the default path.
 const SPATIAL_GRIS_IDENTS = [
-  'grisReconnectionVisible',  // the visibility-trace fn
-  'grisShiftJacobian',        // grisReuse shift symbol
-  'grisPairwiseDenomNeighbor',// grisReuse pairwise-MIS symbol
+  'grisProxyVisibilityAt',
+  'grisDomainToCanonicalJacobian',
+  'grisTransformedDensity',
 ] as const;
 
 const TEMPORAL_GRIS_IDENTS = [
-  'tgiReconnectionVisible',   // the visibility-trace fn
-  'grisShiftJacobian',
-  'grisPairwiseDenomNeighbor',
+  'grisProxyVisibilityAt',   // the visibility-trace fn
+  'grisDomainToCanonicalJacobian',
+  'grisTransformedDensity',
 ] as const;
 
-describe('GI pass SHADER structure — default (restirPtReuse OFF) has no GRIS branch', () => {
+describe('GI pass SHADER structure — default (grisReuse OFF) has no GRIS branch', () => {
   it('spatialGi OFF composes with receiver-lobe group(1) but NO GRIS identifiers', () => {
     const off = composeWgsl(SPATIAL_GI_MODULE, WGSL_MODULES);
     expect(off).toContain('@group(1)');
@@ -145,36 +145,36 @@ function recordingDevice(recorded: RecordedPipeline[], shaders: RecordedShader[]
   return dev as unknown as GPUDevice;
 }
 
-async function compileAndFind(restirPtReuse: boolean): Promise<Record<string, number>> {
+async function compileAndFind(grisReuse: boolean): Promise<Record<string, number>> {
   const recorded: RecordedPipeline[] = [];
   const device = recordingDevice(recorded);
   const bglCache: BGLCache = {} as BGLCache;
-  await compilePipelines(device, bglCache, 'bgra8unorm', { restirPtReuse });
+  await compilePipelines(device, bglCache, 'bgra8unorm', { grisReuse });
   const byLabel: Record<string, number> = {};
   for (const r of recorded) byLabel[r.label] = r.bglCount;
   return byLabel;
 }
 
 async function compileAndRecordShaders(
-  restirPtReuse: boolean,
+  grisReuse: boolean,
   opts: { ppgEnabled?: boolean } = {},
 ): Promise<RecordedShader[]> {
   const recorded: RecordedPipeline[] = [];
   const shaders: RecordedShader[] = [];
   const device = recordingDevice(recorded, shaders);
   const bglCache: BGLCache = {} as BGLCache;
-  await compilePipelines(device, bglCache, 'bgra8unorm', { restirPtReuse, ...opts });
+  await compilePipelines(device, bglCache, 'bgra8unorm', { grisReuse, ...opts });
   return shaders;
 }
 
 describe('GI pass PIPELINE LAYOUT — group count gated at compile time', () => {
-  it('default (restirPtReuse OFF): temporalGi + spatialGi use the receiver-material two-group layout', async () => {
+  it('default (grisReuse OFF): temporalGi + spatialGi use the receiver-material two-group layout', async () => {
     const byLabel = await compileAndFind(false);
     expect(byLabel.temporalGi, 'default temporalGi pipeline must have 2 bind-group layouts').toBe(2);
     expect(byLabel.spatialGi, 'default spatialGi pipeline must have 2 bind-group layouts').toBe(2);
   });
 
-  it('opt-in (restirPtReuse ON): temporalGi + spatialGi use a TWO-group layout', async () => {
+  it('opt-in (grisReuse ON): temporalGi + spatialGi use a TWO-group layout', async () => {
     const byLabel = await compileAndFind(true);
     expect(byLabel.temporalGi, 'GRIS temporalGi pipeline must have 2 bind-group layouts').toBe(2);
     expect(byLabel.spatialGi, 'GRIS spatialGi pipeline must have 2 bind-group layouts').toBe(2);
@@ -187,14 +187,14 @@ describe('H24 GI reservoir stride — shader source follows the structural gate'
     const risGi = shaders.find((s) => s.label === 'risGi')!.code;
     expect(risGi).toContain('const RESERVOIR_GI_STRIDE: u32 = 20u;');
     expect(risGi).toContain('Compact default layout: no appended GRIS cache stores.');
-    expect(risGi).not.toContain('buf[b + 29u] = r._padPT2;');
+    expect(risGi).not.toContain('words[27u] = r.historyEpoch;');
   });
 
-  it('GRIS compile path uses the widened 30-u32 reservoir module', async () => {
+  it('GRIS compile path uses the widened 28-u32 reservoir module', async () => {
     const shaders = await compileAndRecordShaders(true);
     const risGi = shaders.find((s) => s.label === 'risGi')!.code;
-    expect(risGi).toContain('const RESERVOIR_GI_STRIDE: u32 = 30u;');
-    expect(risGi).toContain('buf[b + 29u] = r._padPT2;');
+    expect(risGi).toContain('const RESERVOIR_GI_STRIDE: u32 = 28u;');
+    expect(risGi).toContain('words[27u] = r.historyEpoch;');
   });
 
   it('PPG update bakes the same reservoir stride as the GI reservoir module', async () => {
@@ -204,6 +204,6 @@ describe('H24 GI reservoir stride — shader source follows the structural gate'
     const offPpg = offShaders.find((s) => s.label === 'ppg-update')!.code;
     const onPpg = onShaders.find((s) => s.label === 'ppg-update')!.code;
     expect(offPpg).toMatch(/RESERVOIR_GI_STRIDE_LOCAL\s*:\s*u32\s*=\s*20u/);
-    expect(onPpg).toMatch(/RESERVOIR_GI_STRIDE_LOCAL\s*:\s*u32\s*=\s*30u/);
+    expect(onPpg).toMatch(/RESERVOIR_GI_STRIDE_LOCAL\s*:\s*u32\s*=\s*28u/);
   });
 });

@@ -3,7 +3,11 @@
  */
 import { defineUbo } from '@vitrum/shared-samplers';
 
-export const PROBE_RAY_STRIDE_BYTES = 64;
+/**
+ * Compact producer/consumer record shared by the DDGI ray and blend passes:
+ * hitRadiance.xyz + hitDistance, then direction.xyz + one alignment lane.
+ */
+export const PROBE_RAY_STRIDE_BYTES = 32;
 
 export const DDGI_BORDER_UBO = defineUbo([
   { name: 'numProbes',   type: 'u32' },
@@ -26,10 +30,6 @@ export const DDGI_BORDER_UBO_BYTES: number = DDGI_BORDER_UBO.sizeBytes;
 export const DDGI_FRAME_PARAMS_UBO = defineUbo([
   { name: 'randomRotation', type: 'vec3f' },
   { name: 'frameIndex',     type: 'u32'   },
-  { name: 'totalProbes',    type: 'u32'   },
-  { name: 'probesPerFrame', type: 'u32'   },
-  { name: '_pad0',          type: 'u32'   },
-  { name: '_pad1',          type: 'u32'   },
   { name: 'skyTint',        type: 'vec3f' },
   { name: 'skyIrradiance',  type: 'f32'   },
   { name: 'glassMixScale',  type: 'f32'   },
@@ -47,15 +47,12 @@ export const DDGI_FRAME_PARAMS_UBO = defineUbo([
   // Item 18d: the real UBO byte size is DDGI_FRAME_PARAMS_UBO.sizeBytes (computed by defineUbo).
   // Field offsets (std140/WGSL §14.4.4, maxAlign=16):
   //   randomRotation  @ 0   (vec3f, align=16, size=12) → cursor 12
-  //   frameIndex      @ 12  (u32,   size=4) → 16  totalProbes  @ 16 → 20  probesPerFrame @ 20 → 24
-  //   _pad0 @ 24 → 28  _pad1 @ 28 → 32  skyTint @ 32 (vec3f, align=16) → 44  skyIrradiance @ 44 → 48
-  //   glassMixScale @ 48 → 52  indirectFeedback @ 52 → 56  hasEnv @ 56 → 60
-  //   envRotationY @ 60 → 64  envIntensity @ 64 → 68
-  //   structSize = alignUp(68, 16) = 80 bytes.  (Wave 4 grew from the pre-hasEnv 64 bytes to 80.)
+  //   frameIndex @ 12; skyTint @ 16; skyIrradiance @ 28;
+  //   glassMixScale @ 32; indirectFeedback @ 36; hasEnv @ 40;
+  //   envRotationY @ 44; envIntensity @ 48; struct size = 64 bytes.
   { name: 'envIntensity',   type: 'f32'   },
 ] as const);
 
 export const DDGI_BLEND_PARAMS_UBO = defineUbo([
-  { name: 'probesPerFrame', type: 'u32' },
-  { name: 'hysteresis',     type: 'f32' },
+  { name: 'hysteresis', type: 'f32' },
 ] as const);

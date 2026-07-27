@@ -15,6 +15,7 @@ function fakeSession(): InverseSession {
   return {
     parameterCount: 1,
     method: 'finite-difference',
+    parameterMethods: ['finite-difference'],
     step: async () => ({ step: 0, loss: 0, values: [[0]], gradient: [[0]] }),
     currentValues: () => [[0]],
     dispose: vi.fn(),

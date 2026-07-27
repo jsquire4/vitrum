@@ -58,6 +58,7 @@ describe('syncDdgiFromCoreScene', () => {
       ddgi,
       pipeline,
       ctorLights: [{ kind: 'sun', on: true, color: { r: 10, g: 10, b: 10 }, intensity: 99 }],
+      hostSunWarningState: { warned: false },
       primaryLightIntensity: 1,
       onWarning: (warning) => warnings.push(warning),
     }, scene);
@@ -98,6 +99,7 @@ describe('syncDdgiFromCoreScene', () => {
       ddgi,
       pipeline,
       ctorLights: [],
+      hostSunWarningState: { warned: false },
       primaryLightIntensity: 1,
     }, scene);
 
@@ -128,6 +130,7 @@ describe('syncDdgiFromCoreScene', () => {
       ddgi,
       pipeline: null,
       ctorLights: [],
+      hostSunWarningState: { warned: false },
       primaryLightIntensity: 1,
       primaryLightDir: [1, 0, 0],
     }, scene);
@@ -143,5 +146,68 @@ describe('syncDdgiFromCoreScene', () => {
       expect(sun.direction.y).toBeCloseTo(0);
       expect(sun.direction.z).toBeCloseTo(0);
     }
+  });
+
+  it('routes every core emitter kind into either analytic lights or DDGI area NEE', () => {
+    const scene: Scene = {
+      primitives: [{
+        kind: 'mesh',
+        id: 'mesh-panel',
+        positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+        normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+        indices: new Uint32Array([0, 1, 2]),
+        material: { baseColor: [1, 1, 1], roughness: 1, metallic: 0 },
+      }],
+      emitters: [
+        {
+          kind: 'directional', id: 'directional', direction: [0, -1, 0],
+          color: [1, 1, 1], intensity: 1,
+        },
+        {
+          kind: 'point', id: 'point', position: [0, 2, 0],
+          color: [1, 1, 1], intensity: 2,
+        },
+        {
+          kind: 'spot', id: 'spot', position: [1, 2, 0], direction: [0, -1, 0],
+          angle: Math.PI / 4, color: [1, 1, 1], intensity: 3,
+        },
+        {
+          kind: 'rect-area', id: 'rect', position: [0, 2, 0],
+          uAxis: [1, 0, 0], vAxis: [0, 0, 1], color: [1, 1, 1], intensity: 4,
+        },
+        {
+          kind: 'disc-area', id: 'disc', position: [0, 2, 0], normal: [0, -1, 0],
+          radius: 0.5, color: [1, 1, 1], intensity: 5,
+        },
+        {
+          kind: 'mesh-area', id: 'mesh-area', meshId: 'mesh-panel',
+          color: [1, 1, 1], intensity: 6,
+        },
+      ],
+      environment: { kind: 'none' },
+    };
+    const ddgi = {
+      setSunIntensityMultiplier: vi.fn(),
+      setLights: vi.fn(),
+      setEmitterTris: vi.fn(),
+    } as unknown as DDGI;
+
+    syncDdgiFromCoreScene({
+      ddgi,
+      pipeline: null,
+      ctorLights: [],
+      hostSunWarningState: { warned: false },
+      primaryLightIntensity: 1,
+    }, scene);
+
+    const analytic = vi.mocked(ddgi.setLights).mock.calls[0]?.[0] ?? [];
+    expect(analytic.map((light) => light.id)).toEqual(['directional', 'point', 'spot']);
+    expect(analytic.map((light) => light.kind)).toEqual(['sun', 'fixture', 'fixture']);
+
+    const emitterUpload = vi.mocked(ddgi.setEmitterTris).mock.calls[0];
+    expect(emitterUpload).toBeDefined();
+    // rect = 2 triangles, disc = 32-triangle equal-area fan, mesh-area = 1.
+    expect(emitterUpload?.[1]).toBe(35);
+    expect(emitterUpload?.[0].length).toBe(35 * 20);
   });
 });

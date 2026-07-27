@@ -297,6 +297,7 @@ function makeDispatchCtx(
     uboBindGroup: {} as unknown as GPUBindGroup,
     hybridLayersBindGroup: {} as unknown as GPUBindGroup,
     shadeHybridLayersBindGroup: {} as unknown as GPUBindGroup,
+    buildTransparentOitBindGroup: () => ({} as unknown as GPUBindGroup),
     lightTreeBindGroup: {} as unknown as GPUBindGroup,
     wgX: Math.ceil(width / 8), wgY: Math.ceil(height / 8),
     wgX16: 0, wgY16: 0, halfWgX: 0, halfWgY: 0,

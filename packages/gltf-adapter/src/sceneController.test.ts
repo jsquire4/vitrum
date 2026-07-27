@@ -129,6 +129,49 @@ function animatedCameraGltf(): { gltf: GltfJson; buffers: Map<number, ArrayBuffe
   };
 }
 
+function animatedPunctualLightGltf(): {
+  gltf: GltfJson;
+  buffers: Map<number, ArrayBuffer>;
+} {
+  const packed = packF32([
+    [0, 1],
+    [0, 0, 0, 2, 3, 4],
+  ]);
+  return {
+    buffers: new Map([[0, packed.buffer]]),
+    gltf: {
+      asset: { version: '2.0' },
+      extensionsUsed: ['KHR_lights_punctual'],
+      scene: 0,
+      scenes: [{ nodes: [0] }],
+      nodes: [
+        { name: 'LightRig', children: [1] },
+        {
+          name: 'Lamp',
+          translation: [1, 0, 0],
+          extensions: { KHR_lights_punctual: { light: 0 } },
+        },
+      ],
+      extensions: {
+        KHR_lights_punctual: {
+          lights: [{ type: 'point', color: [1, 0.5, 0.25], intensity: 4 }],
+        },
+      },
+      accessors: [
+        { bufferView: 0, componentType: 5126, count: 2, type: 'SCALAR' },
+        { bufferView: 1, componentType: 5126, count: 2, type: 'VEC3' },
+      ],
+      bufferViews: packed.views,
+      buffers: [{ byteLength: packed.buffer.byteLength }],
+      animations: [{
+        name: 'move-light-rig',
+        samplers: [{ input: 0, output: 1, interpolation: 'LINEAR' }],
+        channels: [{ sampler: 0, target: { node: 0, path: 'translation' } }],
+      }],
+    },
+  };
+}
+
 function animatedInstancedGltf(): { gltf: GltfJson; buffers: Map<number, ArrayBuffer> } {
   const packed = packF32([
     [0, 0, 0, 1, 0, 0, 0, 1, 0],
@@ -204,6 +247,7 @@ function addMorphTargetToFirstPrimitive(
     ...fixture.gltf.meshes![0]!.primitives[0]!,
     targets: [{ POSITION: accessorIndex }],
   };
+  fixture.gltf.meshes![0]!.weights = [0.5];
   fixture.buffers.set(bufferIndex, morph.buffer.slice(morph.byteOffset, morph.byteOffset + morph.byteLength));
 }
 
@@ -778,6 +822,49 @@ describe('GltfSceneController', () => {
     expect(controller.cameras[0]!.worldMatrix[13]).toBeCloseTo(4);
   });
 
+  it('animates punctual-light nodes through incremental emitter patches', async () => {
+    const { gltf, buffers } = animatedPunctualLightGltf();
+    const result = await gltfToScene(gltf, { buffers });
+    const updateEmitter = vi.fn();
+    const reset = vi.fn();
+    const setScene = vi.fn();
+    const engine: GltfScenePatchTarget = { setScene, updateEmitter, reset };
+    const controller = createGltfSceneController({ gltf, ...result });
+
+    expect(result.punctualEmitterBindings).toEqual([{
+      emitterId: 'gltf-light-0',
+      nodeIndex: 1,
+      lightIndex: 0,
+    }]);
+    expect(result.scene.emitters[0]).toMatchObject({
+      kind: 'point',
+      position: [1, 0, 0],
+    });
+
+    const frame = controller.applyAnimation('move-light-rig', 1, { engine });
+
+    expect(frame.primitivePatches).toEqual([]);
+    expect(frame.emitterPatches).toEqual([{
+      id: 'gltf-light-0',
+      patch: { position: [3, 3, 4] },
+    }]);
+    expect(updateEmitter).toHaveBeenCalledWith('gltf-light-0', {
+      position: [3, 3, 4],
+    });
+    expect(reset).toHaveBeenCalledOnce();
+    expect(setScene).not.toHaveBeenCalled();
+    expect(frame.scene.emitters[0]).toMatchObject({ position: [3, 3, 4] });
+
+    updateEmitter.mockClear();
+    reset.mockClear();
+    controller.resetPose({ engine });
+    expect(updateEmitter).toHaveBeenCalledWith('gltf-light-0', expect.objectContaining({
+      position: [1, 0, 0],
+    }));
+    expect(reset).toHaveBeenCalledOnce();
+    expect(controller.scene.emitters[0]).toMatchObject({ position: [1, 0, 0] });
+  });
+
   it('falls back to setScene when the target has no updatePrimitive method', async () => {
     const { gltf, buffers } = animatedHierarchyGltf();
     const result = await gltfToScene(gltf, { buffers });
@@ -962,7 +1049,7 @@ describe('GltfSceneController', () => {
     expect(primitive.instances[1]![13]).toBeCloseTo(3);
   });
 
-  it('patches fallback-expanded skinned/morphed EXT_mesh_gpu_instancing transforms when the node animates', async () => {
+  it('patches one shared morphed stream and all native instances atomically when the node animates', async () => {
     const fixture = animatedInstancedGltf();
     addMorphTargetToFirstPrimitive(fixture);
     const result = await gltfToScene(fixture.gltf, { buffers: fixture.buffers });
@@ -970,30 +1057,43 @@ describe('GltfSceneController', () => {
     const reset = vi.fn();
     const controller = createGltfSceneController({ gltf: fixture.gltf, ...result });
 
-    expect(controller.scene.primitives).toHaveLength(2);
-    expect(result.diagnostics).toEqual(expect.arrayContaining([
-      expect.objectContaining({ code: 'fallback-expanded-gpu-instancing' }),
-    ]));
+    expect(controller.scene.primitives).toHaveLength(1);
+    expect(result.diagnostics).toEqual([
+      expect.objectContaining({ code: 'generated-flat-normals' }),
+    ]);
 
     const frame = controller.applyAnimation('instance-slide', 0.5, {
       engine: { setScene: vi.fn(), updatePrimitive, reset },
     });
 
     expect(frame.usedSetScene).toBe(false);
-    expect(updatePrimitive).toHaveBeenCalledTimes(2);
+    expect(updatePrimitive).toHaveBeenCalledTimes(1);
     expect(reset).toHaveBeenCalledTimes(1);
-    const byId = new Map(frame.primitivePatches.map((record) => [record.id, record.patch]));
-    expect((byId.get('gltf-prim-0-instance-0') as { transform?: Float32Array }).transform?.[12]).toBeCloseTo(14);
-    expect((byId.get('gltf-prim-0-instance-0') as { transform?: Float32Array }).transform?.[13]).toBeCloseTo(0);
-    expect((byId.get('gltf-prim-0-instance-1') as { transform?: Float32Array }).transform?.[12]).toBeCloseTo(12);
-    expect((byId.get('gltf-prim-0-instance-1') as { transform?: Float32Array }).transform?.[13]).toBeCloseTo(3);
-    const first = controller.scene.primitives[0] as SkinnedMeshPrimitive;
-    const second = controller.scene.primitives[1] as SkinnedMeshPrimitive;
-    expect(first.kind).toBe('skinned-mesh');
-    expect(second.kind).toBe('skinned-mesh');
-    expect(first.transform?.[12]).toBeCloseTo(14);
-    expect(second.transform?.[12]).toBeCloseTo(12);
-    expect(second.transform?.[13]).toBeCloseTo(3);
+    expect(frame.primitivePatches).toHaveLength(1);
+    const patch = frame.primitivePatches[0]!.patch as {
+      instances: ReadonlyArray<Float32Array>;
+      positions: Float32Array;
+      transform?: Float32Array;
+    };
+    expect(frame.primitivePatches[0]!.id).toBe('gltf-prim-0');
+    expect(patch.transform).toBeUndefined();
+    expect(patch.instances).toHaveLength(2);
+    expect(patch.instances[0]![12]).toBeCloseTo(14);
+    expect(patch.instances[0]![13]).toBeCloseTo(0);
+    expect(patch.instances[1]![12]).toBeCloseTo(12);
+    expect(patch.instances[1]![13]).toBeCloseTo(3);
+    expect(Array.from(patch.positions.slice(0, 2))).toEqual([0, 0]);
+    expect(Array.from(patch.positions.slice(3, 5))).toEqual([1, 0]);
+    expect(Array.from(patch.positions.slice(6, 8))).toEqual([0, 1]);
+    expect(patch.positions[2]).toBeCloseTo(0.05);
+    expect(patch.positions[5]).toBeCloseTo(0.05);
+    expect(patch.positions[8]).toBeCloseTo(0.05);
+    expect(updatePrimitive).toHaveBeenCalledWith('gltf-prim-0', patch);
+    const primitive = controller.scene.primitives[0] as InstancedMeshPrimitive;
+    expect(primitive.kind).toBe('instanced-mesh');
+    expect(primitive.instances[0]![12]).toBeCloseTo(14);
+    expect(primitive.instances[1]![12]).toBeCloseTo(12);
+    expect(Array.from(primitive.positions)).toEqual(Array.from(patch.positions));
   });
 
   it('switches KHR_materials_variants via primitive patches', async () => {
@@ -1117,7 +1217,7 @@ describe('GltfSceneController', () => {
     expect((controller.scene.primitives[0] as MeshPrimitive).material.baseColor).toEqual([1, 0, 0]);
   });
 
-  it('switches high-UV variant materials with matching uv1 patches and clears them on reset', async () => {
+  it('switches high-UV variant materials without remapping their indexed UV lane', async () => {
     const { gltf, buffers } = materialVariantHighUvGltf();
     const result = await gltfToScene(gltf, { buffers });
     const updatePrimitive = vi.fn();
@@ -1125,6 +1225,7 @@ describe('GltfSceneController', () => {
     const basePrimitive = controller.scene.primitives[0] as MeshPrimitive;
 
     expect(basePrimitive.uv1).toBeUndefined();
+    expect(basePrimitive.uvSets?.[2]).toBeInstanceOf(Float32Array);
     expect(basePrimitive.material.baseColorMap).toBeUndefined();
 
     const frame = controller.setVariant('uv2-textured', {
@@ -1133,9 +1234,10 @@ describe('GltfSceneController', () => {
 
     expect(frame.usedSetScene).toBe(false);
     const patch = frame.primitivePatches[0]!.patch as Partial<MeshPrimitive>;
-    expect((patch.material as MaterialSpec).baseColorMap).toEqual(expect.objectContaining({ texCoord: 1 }));
-    expect(patch.uv1).toBeInstanceOf(Float32Array);
-    expect(Array.from(patch.uv1 as Float32Array)).toEqual([
+    expect((patch.material as MaterialSpec).baseColorMap).toEqual(expect.objectContaining({ texCoord: 2 }));
+    expect(patch.uv1).toBeUndefined();
+    expect(patch.uvSets?.[2]).toBeInstanceOf(Float32Array);
+    expect(Array.from(patch.uvSets?.[2] as Float32Array)).toEqual([
       0.25, 0.25,
       0.5, 0.25,
       0.25, 0.5,
@@ -1143,20 +1245,21 @@ describe('GltfSceneController', () => {
     expect(updatePrimitive).toHaveBeenCalledWith(
       'gltf-prim-0',
       expect.objectContaining({
-        uv1: expect.any(Float32Array),
+        uvSets: expect.any(Array),
         material: expect.objectContaining({
-          baseColorMap: expect.objectContaining({ texCoord: 1 }),
+          baseColorMap: expect.objectContaining({ texCoord: 2 }),
         }),
       }),
     );
-    expect((controller.scene.primitives[0] as MeshPrimitive).uv1).toBeInstanceOf(Float32Array);
+    expect((controller.scene.primitives[0] as MeshPrimitive).uvSets?.[2]).toBeInstanceOf(Float32Array);
 
     const reset = controller.setVariant(undefined);
     const resetPatch = reset.primitivePatches[0]!.patch as Partial<MeshPrimitive>;
-    expect(Object.prototype.hasOwnProperty.call(resetPatch, 'uv1')).toBe(true);
     expect(resetPatch.uv1).toBeUndefined();
+    expect(resetPatch.uvSets?.[2]).toBeInstanceOf(Float32Array);
     expect((resetPatch.material as MaterialSpec).baseColorMap).toBeUndefined();
     expect((controller.scene.primitives[0] as MeshPrimitive).uv1).toBeUndefined();
+    expect((controller.scene.primitives[0] as MeshPrimitive).uvSets?.[2]).toBeInstanceOf(Float32Array);
     expect((controller.scene.primitives[0] as MeshPrimitive).material.baseColorMap).toBeUndefined();
   });
 
@@ -1334,5 +1437,186 @@ describe('GltfSceneController', () => {
     expect(world[0]).toBeCloseTo(6);
     expect(world[1]).toBeCloseTo(0);
     expect(world[2]).toBeCloseTo(0);
+  });
+
+  it('bounds retained diagnostic history without truncating per-operation results', async () => {
+    const { gltf, buffers } = materialVariantGltf();
+    const result = await gltfToScene(gltf, { buffers });
+    const controller = createGltfSceneController(
+      { gltf, ...result, materialVariantBindings: [] },
+      { diagnosticHistoryLimit: 3 },
+    );
+
+    let lastFrame = controller.setVariant('blue');
+    for (let i = 1; i < 100; i += 1) {
+      lastFrame = controller.setVariant('blue');
+    }
+
+    expect(lastFrame.diagnostics).toHaveLength(1);
+    expect(lastFrame.warnings).toHaveLength(1);
+    expect(controller.diagnostics).toHaveLength(3);
+    expect(controller.warnings).toHaveLength(3);
+
+    controller.clearDiagnosticHistory();
+    expect(controller.diagnostics).toHaveLength(0);
+    expect(controller.warnings).toHaveLength(0);
+  });
+
+  it('can disable retained history while preserving call-local diagnostics', async () => {
+    const { gltf, buffers } = materialVariantGltf();
+    const result = await gltfToScene(gltf, { buffers });
+    const controller = createGltfSceneController(
+      { gltf, ...result, materialVariantBindings: [] },
+      { diagnosticHistoryLimit: 0 },
+    );
+
+    const frame = controller.setVariant('blue');
+
+    expect(frame.diagnostics).toHaveLength(1);
+    expect(frame.warnings).toHaveLength(1);
+    expect(controller.diagnostics).toHaveLength(0);
+    expect(controller.warnings).toHaveLength(0);
+  });
+
+  it.each([Number.NaN, Number.POSITIVE_INFINITY, -1, 1.5])(
+    'rejects invalid diagnostic history capacity %s',
+    (diagnosticHistoryLimit) => {
+      expect(() => createGltfSceneController(
+        manualSkinnedInput(),
+        { diagnosticHistoryLimit },
+      )).toThrow(/diagnosticHistoryLimit.*non-negative safe integer/);
+    },
+  );
+
+  it('detachEngine releases the retained engine target', () => {
+    const input = manualSkinnedInput();
+    const updatePrimitive = vi.fn();
+    const engine: GltfScenePatchTarget = {
+      setScene: vi.fn(),
+      updatePrimitive,
+    };
+    const controller = createGltfSceneController(input, {
+      engine,
+      setSceneOnAttach: false,
+    });
+    controller.detachEngine();
+
+    controller.applyAnimation('joint-slide', 1);
+
+    expect(updatePrimitive).not.toHaveBeenCalled();
+  });
+
+  it('applies camera/light pointers and rejects invalid sampled cross-property states without clamping', async () => {
+    const packed = packF32([[0, 0, 0, 1, 0, 0, 0, 1, 0]]);
+    const gltf: GltfJson = {
+      asset: { version: '2.0' },
+      extensionsUsed: ['KHR_lights_punctual'],
+      scene: 0,
+      scenes: [{ nodes: [0, 1, 2] }],
+      nodes: [
+        { mesh: 0 },
+        { camera: 0 },
+        { extensions: { KHR_lights_punctual: { light: 0 } } },
+      ],
+      meshes: [{ primitives: [{ attributes: { POSITION: 0 }, material: 0 }] }],
+      materials: [{
+        pbrMetallicRoughness: { baseColorFactor: [1, 1, 1, 1] },
+        extensions: {
+          KHR_materials_iridescence: {
+            iridescenceFactor: 1,
+            iridescenceThicknessMinimum: 100,
+            iridescenceThicknessMaximum: 400,
+          },
+        },
+      }],
+      cameras: [{
+        type: 'perspective',
+        perspective: { yfov: 1, znear: 0.1, zfar: 100, aspectRatio: 1.5 },
+      }],
+      extensions: {
+        KHR_lights_punctual: {
+          lights: [{
+            type: 'spot',
+            color: [1, 1, 1],
+            intensity: 1,
+            range: 10,
+            spot: { innerConeAngle: 0, outerConeAngle: 0.5 },
+          }],
+        },
+      },
+      accessors: [{ bufferView: 0, componentType: 5126, count: 3, type: 'VEC3' }],
+      bufferViews: packed.views,
+      buffers: [{ byteLength: packed.buffer.byteLength }],
+    };
+    const imported = await gltfToScene(gltf, { buffers: new Map([[0, packed.buffer]]) });
+    const pointerChannel = (pointer: string, from: number, to: number) => ({
+      target: { node: `gltf-pointer:${pointer}`, path: 'pointer' as const, pointer },
+      sampler: {
+        times: new Float32Array([0, 1]),
+        values: new Float32Array([from, to]),
+        interpolation: 'LINEAR' as const,
+      },
+    });
+    const animations: AnimationClip[] = [
+      {
+        name: 'valid-camera-light',
+        duration: 1,
+        channels: [
+          pointerChannel('/cameras/0/perspective/zfar', 100, 200),
+          pointerChannel('/extensions/KHR_lights_punctual/lights/0/intensity', 1, 3),
+        ],
+      },
+      {
+        name: 'invalid-camera-range',
+        duration: 1,
+        channels: [pointerChannel('/cameras/0/perspective/znear', 0.1, 150)],
+      },
+      {
+        name: 'invalid-spot-cones',
+        duration: 1,
+        channels: [pointerChannel(
+          '/extensions/KHR_lights_punctual/lights/0/spot/innerConeAngle',
+          0,
+          0.8,
+        )],
+      },
+      {
+        name: 'invalid-iridescence-range',
+        duration: 1,
+        channels: [pointerChannel(
+          '/materials/0/extensions/KHR_materials_iridescence/iridescenceThicknessMinimum',
+          100,
+          500,
+        )],
+      },
+    ];
+    const controller = createGltfSceneController({ gltf, ...imported, animations });
+
+    const valid = controller.applyAnimation('valid-camera-light', 1);
+    expect(valid.cameras[0]?.perspective?.zfar).toBeCloseTo(200);
+    expect(valid.scene.emitters[0]?.intensity).toBeCloseTo(3);
+
+    const cameraInvalid = controller.applyAnimation('invalid-camera-range', 1);
+    expect(cameraInvalid.cameras[0]?.perspective).toMatchObject({ znear: 0.1, zfar: 100 });
+    expect(cameraInvalid.diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'animation-pointer-value-invalid' }),
+    ]));
+
+    const spotBefore = controller.scene.emitters[0];
+    const coneInvalid = controller.applyAnimation('invalid-spot-cones', 1);
+    expect(coneInvalid.scene.emitters[0]).toMatchObject({
+      angle: spotBefore?.kind === 'spot' ? spotBefore.angle : undefined,
+      penumbra: spotBefore?.kind === 'spot' ? spotBefore.penumbra : undefined,
+    });
+    expect(coneInvalid.diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'animation-pointer-value-invalid' }),
+    ]));
+
+    const rangeInvalid = controller.applyAnimation('invalid-iridescence-range', 1);
+    expect((rangeInvalid.scene.primitives[0] as MeshPrimitive).material.iridescenceThicknessRange)
+      .toEqual([100, 400]);
+    expect(rangeInvalid.diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'animation-pointer-value-invalid' }),
+    ]));
   });
 });

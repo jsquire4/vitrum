@@ -7,19 +7,29 @@
  * dependency through a mixed module.
  */
 
-import type { EngineWarning, MaterialSpec, Scene, ScenePrimitive } from '@vitrum/core';
+import {
+  sparseArrayOwnIndices,
+  type EngineWarning,
+  type MaterialSpec,
+  type PrimitiveUvSets,
+  type Scene,
+  type ScenePrimitive,
+} from '@vitrum/core';
 import {
   collapseIndicesToStride3,
+  isLeafSplit,
   materialSig,
   mergeUv1FromCore,
   mergeWorldSpaceFromCore,
   packSceneFromCore,
   rebuildPrimitiveBlas,
+  resolveDisplacedGeometry,
   toProductionEmissiveRadiance,
   type PrimitiveTlasBinding,
   type ScenePackResult,
   type WorldSpaceMergeResult,
 } from '@vitrum/shared-bvh';
+import { buildAliasTable } from '@vitrum/shared-samplers';
 import {
   packUVIntoPositionW,
   packUVIntoVec4W,
@@ -54,7 +64,6 @@ export interface CoreBvhBuildOptions {
   bvhMode?: ReSTIRBvhMode;
   primaryLightDir?: Vector3Like;
   primaryLightIntensity?: number;
-  proxyMeshNames?: Set<string>;
   onWarning?: (warning: EngineWarning) => void;
   warningPhase?: EngineWarning['phase'];
   warningMethod?: string;
@@ -73,6 +82,14 @@ function sceneHasCoreMeshes(scene: Scene): boolean {
   );
 }
 
+/**
+ * Compatibility preflight retained for callers. Mapped emitters now use a
+ * bounded-memory parent-triangle proposal and evaluate the exact atlas sample
+ * at candidate barycentrics, so texture dimensions, wrap modes, and filtering
+ * never make scene publication fail.
+ */
+export function assertExactEmissiveMapSamplingForCoreScene(_scene: Scene): void {}
+
 export function resolveReSTIRBvhMode(scene: Scene, override?: ReSTIRBvhMode): ReSTIRBvhMode {
   if (override != null) return override;
   const meshLike = scene.primitives.filter(
@@ -81,6 +98,67 @@ export function resolveReSTIRBvhMode(scene: Scene, override?: ReSTIRBvhMode): Re
   if (meshLike.some((p) => p.kind === 'instanced-mesh')) return 'tlas';
   if (meshLike.length > 1) return 'tlas';
   return 'merged';
+}
+
+function buildMergedPrimitiveRefitNodeIndices(
+  merged: WorldSpaceMergeResult,
+): ReadonlyMap<string, Uint32Array> {
+  const totalNodes = merged.bvhNodes.length / 8;
+  const words = new Uint32Array(
+    merged.bvhNodes.buffer,
+    merged.bvhNodes.byteOffset,
+    merged.bvhNodes.length,
+  );
+  const ownerByMergedTriangle = new Int32Array(merged.triangleCount);
+  ownerByMergedTriangle.fill(-1);
+  merged.meshVertexRanges.forEach((range, owner) => {
+    for (let tri = range.triStart; tri < range.triStart + range.triCount; tri += 1) {
+      ownerByMergedTriangle[tri] = owner;
+    }
+  });
+  const parents = new Int32Array(totalNodes);
+  parents.fill(-1);
+  const leavesByOwner = merged.meshVertexRanges.map(() => new Set<number>());
+  const pending = totalNodes > 0 ? [0] : [];
+  while (pending.length > 0) {
+    const node = pending.pop()!;
+    const base = node * 8;
+    const splitOrCount = words[base + 7]!;
+    if (!isLeafSplit(splitOrCount)) {
+      const left = node + 1;
+      const right = node + words[base + 6]!;
+      parents[left] = node;
+      parents[right] = node;
+      pending.push(right, left);
+      continue;
+    }
+    const triangleOffset = words[base + 6]!;
+    const triangleCount = splitOrCount & 0xffff;
+    for (
+      let tri = triangleOffset;
+      tri < triangleOffset + triangleCount;
+      tri += 1
+    ) {
+      const mergedTri = merged.bvhTriToMergedTri[tri];
+      const owner = mergedTri == null ? -1 : ownerByMergedTriangle[mergedTri]!;
+      if (owner >= 0) leavesByOwner[owner]!.add(node);
+    }
+  }
+
+  return new Map(merged.meshVertexRanges.map((range, owner) => {
+    const affected = new Set<number>();
+    for (const leaf of leavesByOwner[owner]!) {
+      for (let node = leaf; node >= 0; node = parents[node]!) {
+        affected.add(node);
+      }
+    }
+    // Preorder indices guarantee children > parents, so descending order is
+    // the required leaf-to-root refit order.
+    return [
+      range.name,
+      Uint32Array.from([...affected].sort((a, b) => b - a)),
+    ] as const;
+  }));
 }
 
 function makeStorageHandle(
@@ -474,6 +552,9 @@ function coreEmitterBuffers(
   const mergedUv1 = options.packSourceTriIndex === true
     ? mergeUv1FromCore(scene, merged.meshVertexRanges, merged.vertexCount)
     : undefined;
+  const mergedHighUvSets = options.packSourceTriIndex === true
+    ? mergeHighUvSetsFromCore(scene, merged.meshVertexRanges, merged.vertexCount)
+    : undefined;
   const { emitterFloats, cdfArray, totalEmissivePower, treeInput } = buildEmitterListFromCore(
     merged.indices,
     merged.positions,
@@ -486,9 +567,13 @@ function coreEmitterBuffers(
       ...(sourceTriIndexForTriangle != null ? { sourceTriIndexForTriangle } : {}),
       ...(options.packSourceTriIndex === true ? { uvs: merged.uvs } : {}),
       ...(mergedUv1 != null ? { uv1s: mergedUv1 } : {}),
+      ...(mergedHighUvSets != null && mergedHighUvSets.size > 0
+        ? { uvSets: mergedHighUvSets }
+        : {}),
     },
   );
   const emitterCount = cdfArray.length;
+  const emitterAlias = buildAliasTable(treeInput.powers);
   const lightTreeBuf = buildLightTreeBuffer(treeInput);
   return {
     emitters: {
@@ -499,6 +584,11 @@ function coreEmitterBuffers(
     emitterCdf: {
       cpuData: cdfArray.buffer as ArrayBuffer,
       byteLength: cdfArray.byteLength,
+      count: emitterCount,
+    },
+    emitterAlias: {
+      cpuData: emitterAlias.data,
+      byteLength: emitterAlias.data.byteLength,
       count: emitterCount,
     },
     emitterCount,
@@ -538,6 +628,149 @@ function stride4UvsToStride2Uv1(uvs4: Float32Array, vertCount: number): Float32A
   return out;
 }
 
+interface MneeFacetDomainInput {
+  readonly triStart: number;
+  readonly triCount: number;
+  readonly instanceStart: number;
+  readonly instanceCount: number;
+}
+
+/**
+ * Pack disjoint facet domains plus a Walker/Vose entry per domain. The alias
+ * weight is exactly the represented pair cardinality; the shared alias builder
+ * stores the quantized distribution's represented PMF, so shader weighting
+ * divides by the distribution that is actually on the wire.
+ */
+export function packMneeFacetDomains(
+  inputs: readonly MneeFacetDomainInput[],
+): Uint32Array {
+  for (const domain of inputs) {
+    for (const [name, value] of Object.entries(domain)) {
+      if (!Number.isSafeInteger(value) || value < 0 || value > 0xffff_ffff) {
+        throw new RangeError(
+          `[HybridEngine] manifold facet-domain ${name} must be a nonnegative u32.`,
+        );
+      }
+    }
+    if (domain.triStart + domain.triCount > 0x1_0000_0000 ||
+        domain.instanceStart + domain.instanceCount > 0x1_0000_0000) {
+      throw new RangeError(
+        '[HybridEngine] manifold facet-domain half-open range exceeds the u32 address space.',
+      );
+    }
+  }
+  const domains = inputs.filter(
+    (domain) => domain.triCount > 0 && domain.instanceCount > 0,
+  );
+  const weights = domains.map((domain) => {
+    const pairs = domain.triCount * domain.instanceCount;
+    if (!Number.isSafeInteger(pairs) || pairs <= 0) {
+      throw new RangeError(
+        '[HybridEngine] manifold facet-domain cardinality must be a positive safe integer.',
+      );
+    }
+    return pairs;
+  });
+  const alias = buildAliasTable(weights);
+  const aliasWords = new Uint32Array(alias.data);
+  const records = new Uint32Array(domains.length * 8);
+  for (let index = 0; index < domains.length; index += 1) {
+    const domain = domains[index]!;
+    const base = index * 8;
+    records[base] = domain.triStart >>> 0;
+    records[base + 1] = domain.triCount >>> 0;
+    records[base + 2] = domain.instanceStart >>> 0;
+    records[base + 3] = domain.instanceCount >>> 0;
+    records[base + 4] = aliasWords[index * 4]!;
+    records[base + 5] = aliasWords[index * 4 + 1]!;
+    records[base + 6] = aliasWords[index * 4 + 2]!;
+    records[base + 7] = 0;
+  }
+  return records;
+}
+
+function packMergedMneeFacetDomains(triangleCount: number): Uint32Array {
+  return packMneeFacetDomains([{
+    triStart: 0,
+    triCount: triangleCount,
+    instanceStart: 0,
+    instanceCount: 1,
+  }]);
+}
+
+/** Compact exact representation of every `(triangle, instance)` TLAS pair. */
+function packTlasMneeFacetDomains(
+  bindings: readonly PrimitiveTlasBinding[],
+): Uint32Array {
+  let instanceStart = 0;
+  const domains: MneeFacetDomainInput[] = [];
+  for (const binding of bindings) {
+    domains.push({
+      triStart: binding.triStart,
+      triCount: binding.triCount,
+      instanceStart,
+      instanceCount: binding.instanceCount,
+    });
+    instanceStart += binding.instanceCount;
+    if (!Number.isSafeInteger(instanceStart) || instanceStart > 0xffff_ffff) {
+      throw new RangeError(
+        '[HybridEngine] manifold facet-domain instance range exceeds u32.',
+      );
+    }
+  }
+  return packMneeFacetDomains(domains);
+}
+
+interface CoreUvMergeRange {
+  readonly name: string;
+  readonly sourcePrimitiveId?: string;
+  readonly vertexStart: number;
+  readonly vertexCount: number;
+}
+
+/**
+ * Rebuild vertex-aligned TEXCOORD_2+ streams in the exact merged/TLAS vertex
+ * order. Missing per-primitive streams remain NaN so material-atlas packing
+ * fails explicitly instead of silently sampling (0,0).
+ */
+function mergeHighUvSetsFromCore(
+  scene: Scene,
+  ranges: readonly CoreUvMergeRange[],
+  totalVertexCount: number,
+): ReadonlyMap<number, Float32Array> {
+  const sourceByPrimitiveId = new Map<string, PrimitiveUvSets>();
+  const highSetIndices = new Set<number>();
+  for (const primitive of scene.primitives) {
+    if (primitive.kind !== 'mesh' && primitive.kind !== 'skinned-mesh' && primitive.kind !== 'instanced-mesh') {
+      continue;
+    }
+    const resolved = resolveDisplacedGeometry(primitive, () => undefined);
+    const sets = resolved.baseUvSets;
+    if (sets == null) continue;
+    sourceByPrimitiveId.set(String(primitive.id), sets);
+    for (const texCoord of sparseArrayOwnIndices(sets)) {
+      if (texCoord < 2) continue;
+      if (sets[texCoord] != null) highSetIndices.add(texCoord);
+    }
+  }
+
+  const result = new Map<number, Float32Array>();
+  for (const texCoord of [...highSetIndices].sort((a, b) => a - b)) {
+    const out = new Float32Array(totalVertexCount * 2);
+    out.fill(Number.NaN);
+    for (const range of ranges) {
+      const source = sourceByPrimitiveId.get(range.sourcePrimitiveId ?? range.name)?.[texCoord];
+      if (source == null) continue;
+      for (let vertex = 0; vertex < range.vertexCount; vertex += 1) {
+        out[(range.vertexStart + vertex) * 2] = source[vertex * 2] ?? Number.NaN;
+        out[(range.vertexStart + vertex) * 2 + 1] = source[vertex * 2 + 1] ?? Number.NaN;
+      }
+    }
+    result.set(texCoord, out);
+  }
+  return result;
+}
+
 function buffersFromCoreScenePack(
   scene: Scene,
   geo: ScenePackResult,
@@ -556,10 +789,25 @@ function buffersFromCoreScenePack(
   const uv1Stride2 = stride4UvsToStride2Uv1(geo.uvs, vertCount);
   const normalsWithUV1 = packUVIntoVec4W(geo.normals, { array: uv1Stride2 }, vertCount);
   const triIndices3 = collapseIndicesToStride3(geo.indices);
+  const mneeFacetDomains = packTlasMneeFacetDomains(geo.primitiveTlasBindings);
+  const rawMeshVertexRanges = geo.primitiveTlasBindings.map((b) => ({
+    name: b.primitiveId,
+    sourcePrimitiveId: b.primitiveId,
+    vertexStart: b.vertexStart,
+    vertexCount: b.vertexCount,
+    triStart: b.triStart,
+    triCount: b.triCount,
+  }));
+  const highUvSets = mergeHighUvSetsFromCore(scene, rawMeshVertexRanges, vertCount);
 
   const indexBuf = packBVHIndexWFromCore(triIndices3, geo.triMaterialIds, coreMaterials, triCount);
   const beerBuf = packBVHBeerColorsFromCore(geo.triMaterialIds, coreMaterials, triCount);
-  const materialTextureAtlas = packMaterialTextureAtlas(coreMaterials, geo.triMaterialIds, triCount);
+  const materialTextureAtlas = packMaterialTextureAtlas(coreMaterials, geo.triMaterialIds, triCount, {
+    indices: triIndices3,
+    uv0: uv0Stride2,
+    uv1: uv1Stride2,
+    uvSets: highUvSets,
+  });
   // B1 — per-triangle roughness+metalness lane (diffuse-default invariant inside).
   const roughMetalBuf = packBVHRoughMetalFromCore(geo.triMaterialIds, coreMaterials, triCount);
   // H23 — apply mesh-area emitter Le overrides to the emissive-Le glow buffer so
@@ -576,13 +824,6 @@ function buffersFromCoreScenePack(
     positionStride: 4,
     filter: (p: ScenePrimitive) => p.kind !== 'instanced-mesh',
   });
-  const rawMeshVertexRanges = geo.primitiveTlasBindings.map((b) => ({
-    name: b.primitiveId,
-    vertexStart: b.vertexStart,
-    vertexCount: b.vertexCount,
-    triStart: b.triStart,
-    triCount: b.triCount,
-  }));
   warnScenePackWarnings(options, geo.warnings);
 
   return {
@@ -598,8 +839,10 @@ function buffersFromCoreScenePack(
     bvhNormals: makeStorageHandle(normalsWithUV1, 16),
     bvhTangents: makeStorageHandle(geo.tangents, 16),
     bvhColors: makeStorageHandle(geo.colors, 16),
+    mneeFacetDomains: makeStorageHandle(mneeFacetDomains, 32),
     emitters: emitterSlice.emitters,
     emitterCdf: emitterSlice.emitterCdf,
+    emitterAlias: emitterSlice.emitterAlias,
     emitterCount: emitterSlice.emitterCount,
     totalEmissivePower: emitterSlice.totalEmissivePower,
     lightTree: emitterSlice.lightTree,
@@ -647,6 +890,7 @@ function buildReSTIRSceneBVHFromCoreMerged(
     splitMaterialsByCastShadow: true,
   });
   const triCount = merged.indices.length / 3;
+  const mneeFacetDomains = packMergedMneeFacetDomains(triCount);
   const vertCount = merged.positions.length / 4;
   // H15 — pass merged.uvs (stride-2, same vertex order as merged.positions) so
   // every vertex's .w lane carries the packed UV pair.  WorldSpaceMergeResult.uvs
@@ -654,6 +898,7 @@ function buildReSTIRSceneBVHFromCoreMerged(
   // { array } path expects (reads array[i*2] / array[i*2+1]).
   const positionsWithUV = packUVIntoPositionW(merged.positions, { array: merged.uvs }, vertCount);
   const mergedUv1 = mergeUv1FromCore(scene, merged.meshVertexRanges, merged.vertexCount);
+  const highUvSets = mergeHighUvSetsFromCore(scene, merged.meshVertexRanges, merged.vertexCount);
   const normalsWithUV1 = packUVIntoVec4W(merged.normals, mergedUv1 == null ? undefined : { array: mergedUv1 }, vertCount);
   const indexBuf = packBVHIndexWFromCore(
     merged.indices,
@@ -662,7 +907,12 @@ function buildReSTIRSceneBVHFromCoreMerged(
     triCount,
   );
   const beerBuf = packBVHBeerColorsFromCore(merged.triMaterialId, merged.materials, triCount);
-  const materialTextureAtlas = packMaterialTextureAtlas(merged.materials, merged.triMaterialId, triCount);
+  const materialTextureAtlas = packMaterialTextureAtlas(merged.materials, merged.triMaterialId, triCount, {
+    indices: merged.indices,
+    uv0: merged.uvs,
+    ...(mergedUv1 != null ? { uv1: mergedUv1 } : {}),
+    uvSets: highUvSets,
+  });
   // B1 — per-triangle roughness+metalness lane (diffuse-default invariant inside).
   const roughMetalBuf = packBVHRoughMetalFromCore(merged.triMaterialId, merged.materials, triCount);
   // H23 — apply mesh-area emitter Le overrides (same as TLAS path) so the emissive
@@ -694,8 +944,10 @@ function buildReSTIRSceneBVHFromCoreMerged(
     bvhNormals: makeStorageHandle(normalsWithUV1, 16),
     bvhTangents: makeStorageHandle(merged.tangents, 16),
     bvhColors: makeStorageHandle(merged.colors, 16),
+    mneeFacetDomains: makeStorageHandle(mneeFacetDomains, 32),
     emitters: emitterSlice.emitters,
     emitterCdf: emitterSlice.emitterCdf,
+    emitterAlias: emitterSlice.emitterAlias,
     emitterCount: emitterSlice.emitterCount,
     totalEmissivePower: emitterSlice.totalEmissivePower,
     lightTree: emitterSlice.lightTree,
@@ -704,6 +956,7 @@ function buildReSTIRSceneBVHFromCoreMerged(
     mergedGeometry: makeMergedGeometry(merged.boundingBox.min, merged.boundingBox.max),
     meshVertexRanges: enrichMeshVertexRangesWithCoreMatrix(scene, merged.meshVertexRanges),
     bvhIndicesStride3: merged.indices,
+    primitiveRefitNodeIndices: buildMergedPrimitiveRefitNodeIndices(merged),
     buildMaterials: [],
     coreMaterials: merged.materials,
     emitterNormals: merged.normals,

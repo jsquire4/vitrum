@@ -89,8 +89,8 @@ describe('RIS WGSL — selection pdf enters the WRS source weight', () => {
   });
 
   it('the flat-CDF fallback path uses the actual sampled CDF segment as pmf', () => {
-    expect(RIS_WGSL).toContain('sampleEmitterIdx(&emitterCdf, emCount');
-    expect(RIS_WGSL).toContain('emitterSelPmf = emitterCdfPmf(&emitterCdf, emCount, lid);');
+    expect(RIS_WGSL).toContain('sampleEmitterIdx(emCount, xiEm)');
+    expect(RIS_WGSL).toContain('emitterSelPmf = emitterCdfPmf(emCount, lid);');
   });
 
   it('the WRS source pdf pX multiplies the chosen selection pmf by the area pdf', () => {
@@ -98,7 +98,7 @@ describe('RIS WGSL — selection pdf enters the WRS source weight', () => {
     // drew from (tree pdf OR flat-CDF pmf), times the uniform-area triangle
     // pdf. This is the divisor in w = p̂ / pX, so it must be the exact source.
     expect(RIS_WGSL).toContain('emitterSelPmf * ls.pdfArea');
-    expect(RIS_WGSL).toContain('let w = select(0.0, pHat / pX, pHat > 0.0)');
+    expect(RIS_WGSL).toContain('if (pHat > 0.0 && pX > 0.0) { w = pHat / pX; }');
   });
 });
 

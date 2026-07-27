@@ -115,6 +115,9 @@ fn lo_emit(
     f32((beerPacked >>  8u) & 0xFFu) / 255.0,
   );
   beerAlbedo = applyThicknessMapToBeerTint(triIndex, uv, uv1, beerAlbedo);
+  beerAlbedo = materialSpectralAttenuation(
+    triIndex, materialOpticalThickness(triIndex), beerAlbedo,
+  );
   return beerAlbedo * trans * ubo.sunIntensity * sunDot * texMod;
 }
 
@@ -149,8 +152,104 @@ fn lo_emitterGlow(triIndex: u32) -> vec3f {
 // Shadow: deterministic shadow ray (not stochastic — no variance per pixel,
 // no need for reservoir denoising). skipGlass=true (same as lo_direct).
 //
-// Glass/metal: skip (same policy as lo_direct — their Lo_emit drives).
+// Metals receive their conductor lobe; glass receives reflection-only while
+// its transmission remains owned by the bounded dielectric transport path.
 ${analyticLightFalloffWgsl('analytic')}
+
+// Strategy code 2 is manifold-nee. In that mode the explicit specular-path
+// estimator owns material-transmission paths, so ordinary NEE keeps alpha-only
+// visibility but cannot also pass directly through a refractive boundary.
+fn manifoldNeeOwnsMaterialTransmission() -> bool {
+  return ubo.sunAngular.z >= 1.5;
+}
+
+// Direct illumination at a transmissive dielectric is reflection-only at the
+// primary interface. Its base color belongs to Beer/transmission transport and
+// must not create an opaque Lambertian lobe, but its Fresnel/GGX, clearcoat,
+// sheen, and iridescence reflection families remain visible.
+fn evalDirectSurfaceBrdf(
+  albedo: vec3f,
+  rough: f32,
+  metal: f32,
+  specular: vec4f,
+  anisotropy: vec2f,
+  anisotropyTangent: vec3f,
+  anisotropyBitangent: vec3f,
+  iridescence: vec4f,
+  clearcoat: vec2f,
+  sheen: vec4f,
+  sheenRoughness: f32,
+  normal: vec3f,
+  clearcoatNormal: vec3f,
+  wo: vec3f,
+  wi: vec3f,
+  isGlass: bool,
+) -> vec3f {
+  if (isGlass) {
+    return evalGGXSpecularOnlyWithSpecularClearcoatSheenWithAnisotropyFrame(
+      albedo, rough, metal, specular.rgb, specular.a,
+      anisotropy.x, anisotropy.y, iridescence,
+      clearcoat.x, clearcoat.y, sheen.a, sheenRoughness, sheen.rgb,
+      anisotropyTangent, anisotropyBitangent,
+      normal, clearcoatNormal, wo, wi,
+    );
+  }
+  return evalGGXWithSpecularClearcoatSheenWithAnisotropyFrame(
+    albedo, rough, metal, specular.rgb, specular.a,
+    anisotropy.x, anisotropy.y, iridescence,
+    clearcoat.x, clearcoat.y, sheen.a, sheenRoughness, sheen.rgb,
+    anisotropyTangent, anisotropyBitangent,
+    normal, clearcoatNormal, wo, wi,
+  );
+}
+
+struct AnalyticNeeAliasDraw {
+  index: u32,
+  pmf: f32,
+}
+
+fn analyticNeeHashU32(seed: u32) -> u32 {
+  var state = seed * 747796405u + 2891336453u;
+  let word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+  return (word >> 22u) ^ word;
+}
+
+fn analyticNeeHashToF32(seed: u32) -> f32 {
+  return f32(analyticNeeHashU32(seed) >> 8u) * (1.0 / 16777216.0);
+}
+
+fn analyticNeeAliasColumn(seed: u32, count: u32) -> u32 {
+  let threshold = ((0xffffffffu % count) + 1u) % count;
+  var word = analyticNeeHashU32(seed);
+  loop {
+    if (word >= threshold) { return word % count; }
+    word = analyticNeeHashU32(word ^ 0x27d4eb2du);
+  }
+  return 0u;
+}
+
+fn analyticNeeAliasDraw(
+  count: u32,
+  aliasOffset: u32,
+  dims: vec2u,
+  seed: u32,
+) -> AnalyticNeeAliasDraw {
+  let column = analyticNeeAliasColumn(seed, count);
+  let coord = aliasOffset + column;
+  let entry = textureLoad(analytic_lights, vec2i(i32(coord % dims.x), i32(coord / dims.x)), 0);
+  let aliasIndex = bitcast<u32>(entry.y);
+  let selected = select(aliasIndex, column, analyticNeeHashToF32(seed ^ 0x85ebca6bu) < entry.x);
+  let selectedCoord = aliasOffset + selected;
+  let selectedEntry = textureLoad(
+    analytic_lights,
+    vec2i(i32(selectedCoord % dims.x), i32(selectedCoord / dims.x)),
+    0,
+  );
+  var draw: AnalyticNeeAliasDraw;
+  draw.index = selected;
+  draw.pmf = selectedEntry.z;
+  return draw;
+}
 
 fn lo_analyticNEE(
   pos:      vec3f,
@@ -172,11 +271,8 @@ fn lo_analyticNEE(
   isGlass:  bool,
   isMetal:  bool,
 ) -> vec3f {
-  // B1 — metals now receive DIRECT light (the isMetal early-out is removed):
-  // evalGGX evaluates the GGX specular lobe with the real conductor F0
-  // (= baseColor when metal). Glass still skips here (its Lo_emit / refracted
-  // path drives it; refracted analytic NEE is out of scope this pass).
-  if (isGlass) { return vec3f(0.0); }
+  // Opaque materials receive the full BRDF. Glass receives its Fresnel/GGX
+  // reflection families only; refracted analytic NEE is a separate estimator.
   // V28/H41 analytic-light texture layout: texel 0 is a self-describing header
   // (x = light count), followed by 4×vec4f per point/spot light. The header is
   // required because the CPU side must allocate a non-empty placeholder texture
@@ -185,9 +281,31 @@ fn lo_analyticNEE(
   let analyticDims = textureDimensions(analytic_lights);
   let analyticHeader = textureLoad(analytic_lights, vec2i(0, 0), 0);
   let count = u32(max(analyticHeader.x, 0.0));
-  if (count == 0u) { return vec3f(0.0); }
+  let aliasOffset = u32(max(analyticHeader.y, 0.0));
+  let texelCount = analyticDims.x * analyticDims.y;
+  if (
+    count == 0u ||
+    aliasOffset != 1u + count * 4u ||
+    aliasOffset + count > texelCount
+  ) { return vec3f(0.0); }
   var Lo = vec3f(0.0);
-  for (var li = 0u; li < count; li++) {
+  let sampleCount = min(count, 4u);
+  let posBits = bitcast<vec3u>(pos);
+  let seedBase = ubo.frameSeed ^ posBits.x ^ (posBits.y * 0x9e3779b9u) ^ (posBits.z * 0x85ebca6bu);
+  for (var sampleIndex = 0u; sampleIndex < sampleCount; sampleIndex++) {
+    var li = sampleIndex;
+    var estimatorWeight = 1.0;
+    if (count > 4u) {
+      let draw = analyticNeeAliasDraw(
+        count,
+        aliasOffset,
+        analyticDims,
+        seedBase ^ (sampleIndex * 0xc2b2ae35u),
+      );
+      if (draw.pmf <= 0.0) { continue; }
+      li = draw.index;
+      estimatorWeight = 1.0 / (f32(sampleCount) * draw.pmf);
+    }
     let base = 1u + li * 4u;
     let light0 = textureLoad(analytic_lights, vec2i(i32(base % analyticDims.x), i32(base / analyticDims.x)), 0);
     let light1 = textureLoad(analytic_lights, vec2i(i32((base + 1u) % analyticDims.x), i32((base + 1u) / analyticDims.x)), 0);
@@ -221,34 +339,30 @@ fn lo_analyticNEE(
       // SHADOW-01 / ALPHA-03 — DI shadow rays skip castShadow:false geometry
       // and attenuate through readable alpha-blend coverage in the material atlas;
       // transparent glass additionally applies the Beer/material tint per channel.
-      shadowT = traceSceneAlphaTintTransmittanceTextured(
+      shadowT = traceSceneAlphaTintTransmittanceTexturedWithOwnership(
         ubo.bvhMode, ubo.tlasNodeCount,
-        &bvh_index, &bvh_position, &bvh,
-        &tlasNodes, &tlasInstanceIndices, &tlasBlasRoots,
-        &tlasInstanceWorldToLocal, &tlasInstanceLocalToWorld,
+
         pos + geoNormal * 1e-3, wi, dist - 2e-3, ubo.triIntersectEpsilon,
-        bvh_material, BVH_MATERIAL_TEX_WIDTH, bvh_beer);
-      if (max(max(shadowT.x, shadowT.y), shadowT.z) <= 0.001) { continue; }
+        bvh_material, BVH_MATERIAL_TEX_WIDTH, bvh_beer,
+        manifoldNeeOwnsMaterialTransmission());
+      if (max(max(shadowT.x, shadowT.y), shadowT.z) <= 0.0) { continue; }
     }
 
     // Authored range/decay falloff; default decay=2 preserves inverse-square.
     let attenuation = analyticPointSpotAttenuation(dist, cutoffDistance, decay, ubo.emitterDist2Floor);
-    let brdf = evalGGXWithSpecularClearcoatSheenWithAnisotropyFrame(albedo, rough, metal, specular.rgb, specular.a, anisotropy.x, anisotropy.y, iridescence, clearcoat.x, clearcoat.y, sheen.a, sheenRoughness, sheen.rgb, anisotropyTangent, anisotropyBitangent, normal, clearcoatNormal, wo, wi);
+    let brdf = evalDirectSurfaceBrdf(albedo, rough, metal, specular, anisotropy, anisotropyTangent, anisotropyBitangent, iridescence, clearcoat, sheen, sheenRoughness, normal, clearcoatNormal, wo, wi, isGlass);
     // evalGGX* already includes the receiver cosine; nDotL is only a gate here.
-    Lo += lightLe * shadowT * brdf * cone * attenuation;
+    Lo += lightLe * shadowT * brdf * cone * attenuation * estimatorWeight;
   }
   return Lo;
 }
 
 // --- Direct lighting (ReSTIR DI) ---
 //
-// Gated to !isGlass — on a near-mirror glass primary hit (rough=0.05) the GGX BRDF
-// sample of a NEIGHBOURING emitter cell pulls in that cell's color and
-// mixes it into the cell being shaded — chromatic pollution that washes
-// saturated authored colors toward pastel.
-// Came / solder (isMetal) skip Lo_direct: ReSTIR DI's single-sample
-// variance produces high-amplitude firefly speckle on thin metallic
-// strips that atrous can't smooth.
+// The ReSTIR target and this consumer share the same material-domain rule:
+// opaque receivers use the full BRDF, while transmissive dielectrics use only
+// reflection families. Their separately sampled transmission is not folded
+// into this direct-light reservoir.
 fn lo_direct(
   pixelIdx: u32,
   pos:      vec3f,
@@ -272,12 +386,8 @@ fn lo_direct(
   isMetal:  bool,
   rng:      ptr<function, u32>,
 ) -> vec3f {
-  // B1 — metals now receive DIRECT light via the GGX specular lobe (real
-  // conductor F0 from baseColor). Only glass skips ReSTIR-DI here (the
-  // near-mirror chromatic-pollution rationale below); refracted DI is out of
-  // scope. The prior firefly-speckle rationale for skipping metals is addressed
-  // by the existing direct firefly clamp + the (now physically-tight) GGX lobe.
-  if (isGlass) { return vec3f(0.0); }
+  // Glass is deliberately not an early-out: evalDirectSurfaceBrdf retains its
+  // Fresnel/GGX reflection lobe without inventing an opaque diffuse lobe.
   let r = loadSpatialDI(pixelIdx);
   if (r.W <= 0.0 || r.M == 0u) { return vec3f(0.0); }
   let lid = r.lightId;
@@ -292,23 +402,22 @@ fn lo_direct(
     if (!envHasMap()) { return vec3f(0.0); }
     let envDir = envDirFromXi(r.xi);
     let nDotL = max(0.0, dot(normal, envDir));
-    if (nDotL < 1e-6) { return vec3f(0.0); }
+    if (nDotL <= 0.0) { return vec3f(0.0); }
     let envColor = envRadiance(envDir) * max(envMapIntensity, 0.0);
-    let brdfE = evalGGXWithSpecularClearcoatSheenWithAnisotropyFrame(albedo, rough, metal, specular.rgb, specular.a, anisotropy.x, anisotropy.y, iridescence, clearcoat.x, clearcoat.y, sheen.a, sheenRoughness, sheen.rgb, anisotropyTangent, anisotropyBitangent, normal, clearcoatNormal, wo, envDir);
-    let shadowTint = traceSceneAlphaTintTransmittanceTextured(
+    let brdfE = evalDirectSurfaceBrdf(albedo, rough, metal, specular, anisotropy, anisotropyTangent, anisotropyBitangent, iridescence, clearcoat, sheen, sheenRoughness, normal, clearcoatNormal, wo, envDir, isGlass);
+    let shadowTint = traceSceneAlphaTintTransmittanceTexturedWithOwnership(
       ubo.bvhMode, ubo.tlasNodeCount,
-      &bvh_index, &bvh_position, &bvh,
-      &tlasNodes, &tlasInstanceIndices, &tlasBlasRoots,
-      &tlasInstanceWorldToLocal, &tlasInstanceLocalToWorld,
+
       pos + geoNormal * 1e-3, envDir, 1e20, ubo.triIntersectEpsilon,
-      bvh_material, BVH_MATERIAL_TEX_WIDTH, bvh_beer);
+      bvh_material, BVH_MATERIAL_TEX_WIDTH, bvh_beer,
+      manifoldNeeOwnsMaterialTransmission());
     let shadowScalar = clamp(luminance(shadowTint), 0.0, 1.0);
-    if (shadowScalar <= 0.001) { return vec3f(0.0); }
-    return envColor * brdfE * r.W * (shadowTint / vec3f(max(shadowScalar, 1e-4)));
+    if (shadowScalar <= 0.0) { return vec3f(0.0); }
+    return envColor * brdfE * r.W * (shadowTint / vec3f(shadowScalar));
   }
 
   if (lid >= ubo.emitterCount) { return vec3f(0.0); }
-  let e  = emitters[lid];
+  let e  = sceneLoadEmitter(lid);
   // Consume the exact sample that won the reservoir. Re-rolling a fresh point
   // here breaks the ReSTIR identity between candidate p̂, finalization p̂, and
   // shaded contribution for large close emitters.
@@ -319,34 +428,33 @@ fn lo_direct(
   let wi    = toL / dist;
   let nDotL = max(0.0, dot(normal, wi));
   let nlDotL = max(0.0, dot(-e.normal, wi));
-  if (nDotL <= 1e-6 || nlDotL <= 1e-6) { return vec3f(0.0); }
+  if (nDotL <= 0.0 || nlDotL <= 0.0) { return vec3f(0.0); }
   if (e.castShadowDisabled < 0.5) {
     // skipGlass=true: matches pre-canonical ReSTIR shadow-ray glass filter
     // (light passes through glass; per-channel tinted-visibility handles tint).
     // WS1 — offset the shadow-ray origin along the GEOMETRIC normal (the smooth
     // shading normal can dip below the surface near silhouettes → self-hit).
     // SHADOW-01 / ALPHA-03 — DI shadow rays skip castShadow:false geometry,
-    // apply readable texture-alpha cutouts, and carry glass Beer tint through
+    // apply atlas-backed texture-alpha cutouts, and carry glass Beer tint through
     // the material atlas. The producer scalarizes that RGB visibility for the
     // reservoir W; divide by the same scalar here so the final contribution
     // preserves color instead of becoming gray attenuation.
-    let shadowTint = traceSceneAlphaTintTransmittanceTextured(
+    let shadowTint = traceSceneAlphaTintTransmittanceTexturedWithOwnership(
       ubo.bvhMode, ubo.tlasNodeCount,
-      &bvh_index, &bvh_position, &bvh,
-      &tlasNodes, &tlasInstanceIndices, &tlasBlasRoots,
-      &tlasInstanceWorldToLocal, &tlasInstanceLocalToWorld,
+
       pos + geoNormal * 1e-3, wi, dist - 2e-3, ubo.triIntersectEpsilon,
-      bvh_material, BVH_MATERIAL_TEX_WIDTH, bvh_beer);
+      bvh_material, BVH_MATERIAL_TEX_WIDTH, bvh_beer,
+      manifoldNeeOwnsMaterialTransmission());
     let shadowScalar = clamp(luminance(shadowTint), 0.0, 1.0);
-    if (shadowScalar <= 0.001) { return vec3f(0.0); }
-    let shadowColorCorrection = shadowTint / vec3f(max(shadowScalar, 1e-4));
+    if (shadowScalar <= 0.0) { return vec3f(0.0); }
+    let shadowColorCorrection = shadowTint / vec3f(shadowScalar);
     let G    = emitterGeometry(nlDotL, dist * dist, ubo.emitterDist2Floor);
-    let brdf = evalGGXWithSpecularClearcoatSheenWithAnisotropyFrame(albedo, rough, metal, specular.rgb, specular.a, anisotropy.x, anisotropy.y, iridescence, clearcoat.x, clearcoat.y, sheen.a, sheenRoughness, sheen.rgb, anisotropyTangent, anisotropyBitangent, normal, clearcoatNormal, wo, wi);
+    let brdf = evalDirectSurfaceBrdf(albedo, rough, metal, specular, anisotropy, anisotropyTangent, anisotropyBitangent, iridescence, clearcoat, sheen, sheenRoughness, normal, clearcoatNormal, wo, wi, isGlass);
     let Le = sampleEmitterLeAtXi(e, r.xi);
     return Le * brdf * G * r.W * shadowColorCorrection;
   }
   let G    = emitterGeometry(nlDotL, dist * dist, ubo.emitterDist2Floor);
-  let brdf = evalGGXWithSpecularClearcoatSheenWithAnisotropyFrame(albedo, rough, metal, specular.rgb, specular.a, anisotropy.x, anisotropy.y, iridescence, clearcoat.x, clearcoat.y, sheen.a, sheenRoughness, sheen.rgb, anisotropyTangent, anisotropyBitangent, normal, clearcoatNormal, wo, wi);
+  let brdf = evalDirectSurfaceBrdf(albedo, rough, metal, specular, anisotropy, anisotropyTangent, anisotropyBitangent, iridescence, clearcoat, sheen, sheenRoughness, normal, clearcoatNormal, wo, wi, isGlass);
   let Le = sampleEmitterLeAtXi(e, r.xi);
   return Le * brdf * G * r.W;
 }
@@ -354,9 +462,8 @@ fn lo_direct(
 // --- Direct sun NEE (default-on, item 4 plan/residue-closure-plan-2026-06-10.md) ----
 //
 // Casts one deterministic shadow ray toward the sun direction and evaluates the
-// full BRDF (diffuse + GGX specular via evalGGX) when the sun lane is live
-// (sunIntensity > eps). Default-ON for opaque, non-glass surfaces; glass keeps
-// its existing paths (lo_emit + lo_sg_caustic when stained-glass flag set).
+// full opaque BRDF or the glass reflection families when the sun lane is live
+// (sunIntensity > eps). Transmission and stained-glass caustics stay separate.
 //
 // ── No-double-count argument ───────────────────────────────────────────────────
 // DDGI probes evaluate evalSunLight at the PROBE BOUNCE SURFACE (walls, floor,
@@ -384,8 +491,8 @@ fn lo_direct(
 // the sun, but: (a) it only fires when the stainedGlassFlags bit is set (default
 // OFF), (b) it applies a glass-tinted tinted-visibility traversal
 // (bvhTraceTintedVisibility) + a causticBoost multiplier designed for stained-glass
-// calibration, (c) it gates glass-or-metal (same as here). lo_sunNEE gates on
-// isGlass ONLY so opaque-metal surfaces receive direct sun specular. When the
+// calibration, (c) it excludes glass-or-metal receivers. lo_sunNEE instead
+// retains conductor and dielectric reflection lobes. When the
 // stained-glass flag is set on a scene, both lo_sg_caustic AND lo_sunNEE can fire on
 // the same opaque pixel — lo_sg_caustic adds tinted-glass-transmitted caustic light,
 // lo_sunNEE adds direct (unobstructed or opaque-occluded) sun NEE. They are
@@ -419,18 +526,14 @@ fn lo_sunNEE(
   isGlass:   bool,
 ) -> vec3f {
   // Skip if sun is absent (no directional emitter or intensity essentially zero).
-  if (ubo.sunIntensity < 1e-5) { return vec3f(0.0); }
-  // Glass surfaces use lo_emit (Beer-Lambert self-emission) and optionally
-  // lo_sg_caustic for transmitted caustics. lo_sunNEE is for opaque surfaces only.
-  if (isGlass) { return vec3f(0.0); }
-
+  if (!(ubo.sunIntensity > 0.0)) { return vec3f(0.0); }
   // Sun direction: ubo.sunDirection is the unit vector from world origin toward
   // the sun. Apply the same authored soft-sun angular spread as lo_sg_caustic.
-  // Per-pixel deterministic: no per-frame temporal variance; same pattern as
-  // lo_sg_caustic so the two terms have consistent directional sampling.
+  // Frame-scramble the per-pixel disk sample so temporal accumulation integrates
+  // the finite sun instead of converging to one permanently frozen direction.
   let sunBase = ubo.sunDirection;
   let sunAngularRadius = max(ubo.sunAngular.x, 0.0);
-  let xi = pixelHash2(gid, 0x53474341u);
+  let xi = pixelHash2(gid, ubo.frameSeed ^ 0x53474341u);
   let upRef = select(vec3f(1.0, 0.0, 0.0), vec3f(0.0, 1.0, 0.0), abs(sunBase.y) < 0.99);
   let tan = safe_normalize(cross(upRef, sunBase));
   let bit = cross(sunBase, tan);
@@ -439,7 +542,7 @@ fn lo_sunNEE(
   let toSun = safe_normalize(sunBase + tan * (r2 * cos(phi)) + bit * (r2 * sin(phi)));
 
   let nDotSun = dot(normal, toSun);
-  if (nDotSun <= 1e-6) { return vec3f(0.0); }
+  if (nDotSun <= 0.0) { return vec3f(0.0); }
 
   // Shadow ray — offset along geometric normal (same pattern as lo_direct / lo_analyticNEE).
   // Generic direct sun now uses the same RGB alpha/transmission/thickness/Beer
@@ -449,19 +552,18 @@ fn lo_sunNEE(
   // attenuate through readable alpha-blend coverage in the material atlas.
   var sunShadowT = vec3f(1.0);
   if ((ubo.stainedGlassFlags & SHADE_FLAG_DIRECT_SUN_SHADOW_DISABLED) == 0u) {
-    sunShadowT = traceSceneAlphaTintTransmittanceTextured(
+    sunShadowT = traceSceneAlphaTintTransmittanceTexturedWithOwnership(
       ubo.bvhMode, ubo.tlasNodeCount,
-      &bvh_index, &bvh_position, &bvh,
-      &tlasNodes, &tlasInstanceIndices, &tlasBlasRoots,
-      &tlasInstanceWorldToLocal, &tlasInstanceLocalToWorld,
+
       pos + geoNormal * 1e-3, toSun, 1e6, ubo.triIntersectEpsilon,
-      bvh_material, BVH_MATERIAL_TEX_WIDTH, bvh_beer);
-    if (max(max(sunShadowT.x, sunShadowT.y), sunShadowT.z) <= 0.001) { return vec3f(0.0); }
+      bvh_material, BVH_MATERIAL_TEX_WIDTH, bvh_beer,
+      manifoldNeeOwnsMaterialTransmission());
+    if (max(max(sunShadowT.x, sunShadowT.y), sunShadowT.z) <= 0.0) { return vec3f(0.0); }
   }
 
-  // Full BRDF evaluation (diffuse + GGX specular) — same pattern as lo_analyticNEE.
-  // evalGGX already folds in nDotSun as its NdotL term (returns 0 when NdotL<1e-6).
-  let brdf = evalGGXWithSpecularClearcoatSheenWithAnisotropyFrame(albedo, rough, metal, specular.rgb, specular.a, anisotropy.x, anisotropy.y, iridescence, clearcoat.x, clearcoat.y, sheen.a, sheenRoughness, sheen.rgb, anisotropyTangent, anisotropyBitangent, normal, clearcoatNormal, wo, toSun);
+  // Opaque full-BRDF / glass reflection-only evaluation. The helper already
+  // folds in nDotSun as its NdotL term.
+  let brdf = evalDirectSurfaceBrdf(albedo, rough, metal, specular, anisotropy, anisotropyTangent, anisotropyBitangent, iridescence, clearcoat, sheen, sheenRoughness, normal, clearcoatNormal, wo, toSun, isGlass);
   // Sun irradiance: ubo.sunIntensity is the directional emitter intensity.
   // No distance falloff — directional lights have infinite distance.
   return vec3f(ubo.sunIntensity) * brdf * sunShadowT;
@@ -501,6 +603,18 @@ fn lo_sunNEE(
 // accumulator could not converge to a fixed point.  Blending 4 neighbours
 // with bilinear weights at half-res fractional coord (gid*0.5) eliminates
 // the quad grid.
+fn giReservoirVisibility(g: ReservoirGI) -> f32 {
+  if (ubo.grisReuse != 1u) { return 1.0; }
+  if (g.historyEpoch != bitcast<u32>(ubo.sunAngular.y)) { return 0.0; }
+  return clamp(g.sampleVisibility, 0.0, 1.0);
+}
+
+fn giReservoirDirectionVector(g: ReservoirGI, receiverPosition: vec3f) -> vec3f {
+  if (ubo.grisReuse == 1u && g.sampleKind == GI_SAMPLE_ENVIRONMENT) {
+    return g.wi_recon;
+  }
+  return g.xs - receiverPosition;
+}
 fn lo_indirect(
   gid:     vec2u,
   dims:    vec2u,
@@ -524,15 +638,17 @@ ${giBilinearWeightsWgsl()}
   for (var k: u32 = 0u; k < 4u; k = k + 1u) {
 ${giBilinearCornerSelectWgsl()}
     let giIdx = hy * halfDims.x + hx;
-    let g = loadReservoirGI_rw(&reservoirGiCurrent, giIdx);
+    let g = loadReservoirGI_rw(giIdx);
     if (g.W <= 0.0 || g.M == 0u) { continue; }
-    let toS = g.xs - pos;
+    let grisVisibility = giReservoirVisibility(g);
+    if (grisVisibility <= 0.0) { continue; }
+    let toS = giReservoirDirectionVector(g, pos);
     let distS = length(toS);
     if (distS <= 1e-4) { continue; }
     let wi = toS / distS;
     let cosTheta = max(0.0, dot(normal, wi));
     // Item 24: omit albedo here; indirectCombine applies it post-denoising.
-    Lo_indirect = Lo_indirect + g.Lo * INV_PI * cosTheta * g.W * bw;
+    Lo_indirect = Lo_indirect + g.Lo * INV_PI * cosTheta * g.W * grisVisibility * bw;
     Maccum = Maccum + f32(g.M) * bw;
     totalW = totalW + bw;
   }
@@ -541,7 +657,7 @@ ${giBilinearCornerSelectWgsl()}
   // confidence-ratio below hands full weight to RC (or, if RC is also off,
   // returns 0).
   var Meff: f32 = 0.0;
-  if (totalW > 1e-3) {
+  if (totalW > 0.0) {
     Lo_indirect = Lo_indirect / totalW;
     Meff = Maccum / totalW;
   }
@@ -594,77 +710,32 @@ ${giBilinearCornerSelectWgsl()}
   // gate guards RC-off / empty-cascade pixels, NOT a light-model mismatch.)
   // Bit-identity preserved both ways — RC off ⇒ rcWeight=0 AND Lo_rc=0, RC
   // on-with-energy ⇒ the gate is 1.0 and the blend is unchanged.
-  let rcHasEnergy = max(Lo_rc.r, max(Lo_rc.g, Lo_rc.b)) > 1e-6;
+  let rcHasEnergy = max(Lo_rc.r, max(Lo_rc.g, Lo_rc.b)) > 0.0;
   let cRc = clamp(rcParams.rcWeight, 0.0, 1.0) * (1.0 - m) * select(0.0, 1.0, rcHasEnergy);
   let cSum = cRestir + cRc;
   // max() in the denominator keeps the (always-evaluated) select arm finite —
   // no inf/NaN to leak even though select discards it when cSum ≈ 0.
-  let wRc = select(0.0, cRc / max(cSum, 1e-6), cSum > 1e-6);
+  var wRc = 0.0;
+  if (cSum > 0.0) { wRc = cRc / cSum; }
   let wRestirGi = 1.0 - wRc;
   return wRestirGi * Lo_indirect + wRc * Lo_rc;
 }
 
-// --- B1 tail: Glass TRANSMITTED GI (2026-06-10) — refracted-GI reservoir consumption --
+// --- Glass TRANSMITTED GI — bounded dielectric-prefix reservoir consumption --
 //
-// When the primary hit is glass, risGi now builds a reservoir at the FIRST DIFFUSE
-// surface reached by a 1-interface refraction walk (see risGi.wgsl.ts, B1 tail).
-// The reservoir stores (xv=postGlassPos, nv=postGlassNormal, xs, Lo, W) — the
-// same layout as the opaque-surface reservoir.
-//
-// Shade consumption: the stored Lo at the post-glass diffuse surface is the
-// outgoing irradiance THROUGH the glass. Weight it by:
-//   1. Fresnel TRANSMISSION factor at the glass interface (1 - Fresnel reflection,
-//      scalar Schlick approximation at the camera-ray → glass incidence angle).
-//      B1-ior-per-tri (2026-06-10): F0 is derived from the per-tri IOR (decodeIor)
-//      via the physical formula F0 = ((ior−1)/(ior+1))².
-//      Default IOR=1.5 → F0 = ((0.5/2.5)²) = 0.04 (preserves prior behaviour).
-//   2. Beer-Lambert tint: the bvh_beer texture carries the pre-computed
-//      attenuationColor^(thickness/attDist) for this glass triangle. Multiply
-//      as a per-channel scale (same source as lo_emit).
-//
-// The result is the indirect contribution BEHIND the glass surface — it joins the
-// direct channel (not the demodulated indirect channel) because its albedo is
-// the glass transmittance (beerAlbedo), not the Lambertian baseColor of the receiver.
-//
-// Multi-interface: out of scope. A glass pixel with no valid reservoir (W=0 or M=0)
-// returns vec3f(0).
+// risGi follows the camera ray through up to four dielectric interfaces, with
+// Snell refraction at every boundary, nested-medium IOR state, RGB Fresnel,
+// mapped transmission, and actual-segment Beer/spectral attenuation. The full
+// camera-prefix throughput is already folded into each stored g.Lo and its
+// matching p-hat. This consumer therefore applies only the post-glass diffuse
+// receiver's cosine/π estimator; applying Fresnel or Beer here would count the
+// camera prefix twice. Budget overflow and TIR produce an empty reservoir.
 fn lo_transmittedGI(
-  gid:          vec2u,
-  dims:         vec2u,
-  pos:          vec3f,
-  normal:       vec3f,
-  wo:           vec3f,
-  matColor:     vec4f,
-  isGlass:      bool,
-  triIndex:     u32,
-  uv:           vec2f,
-  uv1:          vec2f,
+  gid:     vec2u,
+  dims:    vec2u,
+  isGlass: bool,
 ) -> vec3f {
   if (!isGlass) { return vec3f(0.0); }
-  // B1-ior-per-tri: decode per-tri IOR → compute physical Schlick F0.
-  //   F0 = ((ior−1)/(ior+1))²   (normal-incidence Fresnel reflectance)
-  //   Default IOR=1.5 → F0 = (0.5/2.5)² = 0.04 (matches prior GLASS_F0 constant).
-  let rmCoordG = vec2u(triIndex % BVH_MATERIAL_TEX_WIDTH, triIndex / BVH_MATERIAL_TEX_WIDTH);
-  let packedG = textureLoad(bvh_material, vec2i(rmCoordG), 0).r;
-  let glassIor = decodeIor(packedG);
-  let iorMinus1 = glassIor - 1.0;
-  let iorPlus1  = glassIor + 1.0;
-  let glassF0 = (iorMinus1 / iorPlus1) * (iorMinus1 / iorPlus1);
-
-  // Fresnel transmission: scalar Schlick at camera-to-glass incidence.
-  let cosI = max(0.0, dot(wo, normal));  // wo = -primaryRay.direction (camera facing)
-  let fresnelR = glassF0 + (1.0 - glassF0) * pow(max(0.0, 1.0 - cosI), 5.0);
-  let fresnelT = max(0.0, 1.0 - fresnelR);
-
-  // Beer-Lambert tint (same bvh_beer read as lo_emit).
-  let beerCoord = vec2u(triIndex % BVH_BEER_TEX_WIDTH, triIndex / BVH_BEER_TEX_WIDTH);
-  let beerPacked = textureLoad(bvh_beer, vec2i(beerCoord), 0).r;
-  var beerAlbedo = vec3f(
-    f32((beerPacked >> 24u) & 0xFFu) / 255.0,
-    f32((beerPacked >> 16u) & 0xFFu) / 255.0,
-    f32((beerPacked >>  8u) & 0xFFu) / 255.0,
-  );
-  beerAlbedo = applyThicknessMapToBeerTint(triIndex, uv, uv1, beerAlbedo);
 
   // Match lo_indirect's 4-neighbour half-res blend for transmission too. The
   // previous nearest-neighbour lookup made an entire 2x2 full-res quad inherit
@@ -677,29 +748,29 @@ ${giBilinearWeightsWgsl()}
 ${giBilinearCornerSelectWgsl()}
 
     let giIdx = hy * halfDims.x + hx;
-    let g = loadReservoirGI_rw(&reservoirGiCurrent, giIdx);
+    let g = loadReservoirGI_rw(giIdx);
     if (g.W <= 0.0 || g.M == 0u) { continue; }
 
     // Direction from the post-glass diffuse receiver vertex xv toward the stored
     // reconnect sample xs. The receiver's Lambertian albedo was folded into g.Lo
-    // by risGi; this consumer applies the remaining cosine/π transport plus the
-    // camera-side glass Fresnel/Beer attenuation.
-    let toS = g.xs - g.xv;
+    // by risGi; this consumer applies the remaining cosine/π transport. The
+    // camera-side dielectric throughput is already present in g.Lo.
+    let grisVisibility = giReservoirVisibility(g);
+    if (grisVisibility <= 0.0) { continue; }
+    let toS = giReservoirDirectionVector(g, g.xv);
     let distS = length(toS);
     if (distS <= 1e-4) { continue; }
     let wi = toS / distS;
     let cosTheta = max(0.0, dot(g.nv, wi));
-    Lo_transmitted = Lo_transmitted + g.Lo * INV_PI * cosTheta * g.W * fresnelT * beerAlbedo * bw;
+    Lo_transmitted = Lo_transmitted + g.Lo * INV_PI * cosTheta * g.W * grisVisibility * bw;
     totalW = totalW + bw;
   }
-  if (totalW > 1e-3) {
+  if (totalW > 0.0) {
     Lo_transmitted = Lo_transmitted / totalW;
   }
-  // Walkaround's single-interface glass transport is intentionally approximate:
-  // DDGI probe rays already use glassMixScale as the host-visible blend for
-  // transmissive propagation, and the shade-side transmitted-GI consumer must
-  // obey the same scalar so generic glass does not promote an unbounded realtime
-  // estimate to full path-traced energy.
+  // glassMixScale is the explicit host-facing strength of this bounded realtime
+  // estimator. It is not a substitute for transport terms; those were applied
+  // per interface by the producer above.
   let scaledTransmitted = Lo_transmitted * ubo.glassMixScale;
   return min(scaledTransmitted, ubo.indirectFireflyClamp * ubo.glassMixScale);
 }
@@ -758,18 +829,20 @@ fn lo_indirectSpecular(
     max(abs(specular.r - 1.0), abs(specular.g - 1.0)),
     max(abs(specular.b - 1.0), abs(specular.a - 1.0)),
   );
-  if (metal <= 0.0 && rough >= SPEC_GI_ROUGH_MAX && specularDelta <= 1e-4 && abs(anisotropy.x) <= 1e-4 && clearcoat.x < 1e-4 && sheen.a < 1e-4 && iridescence.x < 1e-4) { return vec3f(0.0); }
+  if (metal <= 0.0 && rough >= SPEC_GI_ROUGH_MAX && specularDelta <= 0.0 && abs(anisotropy.x) <= 0.0 && clearcoat.x <= 0.0 && sheen.a <= 0.0 && iridescence.x <= 0.0) { return vec3f(0.0); }
   let halfDims = dims / 2u;
   let hx = min(gid.x / 2u, halfDims.x - 1u);
   let hy = min(gid.y / 2u, halfDims.y - 1u);
   let giIdx = hy * halfDims.x + hx;
-  let g = loadReservoirGI_rw(&reservoirGiCurrent, giIdx);
+  let g = loadReservoirGI_rw(giIdx);
   if (g.W <= 0.0 || g.M == 0u) { return vec3f(0.0); }
-  let toS = g.xs - pos;
+  let grisVisibility = giReservoirVisibility(g);
+  if (grisVisibility <= 0.0) { return vec3f(0.0); }
+  let toS = giReservoirDirectionVector(g, pos);
   let distS = length(toS);
   if (distS <= 1e-4) { return vec3f(0.0); }
   let wi = toS / distS;
   // evalGGXSpecularOnly already includes the NdotL cosine + conductor F0.
   let specBrdf = evalGGXSpecularOnlyWithSpecularClearcoatSheenWithAnisotropyFrame(albedo, rough, metal, specular.rgb, specular.a, anisotropy.x, anisotropy.y, iridescence, clearcoat.x, clearcoat.y, sheen.a, sheenRoughness, sheen.rgb, anisotropyTangent, anisotropyBitangent, normal, clearcoatNormal, wo, wi);
-  return g.Lo * specBrdf * g.W;
+  return g.Lo * specBrdf * g.W * grisVisibility;
 }`;

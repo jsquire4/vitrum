@@ -10,9 +10,9 @@
 //   - per-light power (luminance·intensity·area),
 //   - spot cone cosines (outer from `angle`, inner from `angle·(1−penumbra)`).
 //
-// It also documents the two KNOWN feature-parity gaps (tracked in
-// `items_to_fix.md`): pt-webgl2 hardcodes the spot soft-source radius to 0, and
-// pt-webgl2 excludes `mesh-area` emitters from its analytic light list.
+// It also pins two deliberate contract/stream boundaries: spots are
+// delta-position sources in the core contract, and mesh-area emitters use the
+// dedicated triangle-light stream rather than either backend's analytic list.
 
 import { describe, expect, it } from 'vitest';
 import type { Scene, SceneEmitter } from '@vitrum/core';
@@ -123,6 +123,22 @@ describe('T1-2 emitter canonicalizer cross-backend parity', () => {
     expect(webgpuCosInner).toBeCloseTo(spotCanon.cone!.cosInner, 6);
   });
 
+  it('pins the core spot emitter as a delta-position source in both backend packers', () => {
+    const webgl2 = packLightsTexture(emitters);
+    const spotIndex = emitters.findIndex((e) => e.kind === 'spot');
+    const base = spotIndex * LIGHT_PIXELS * 4;
+
+    expect(spotCanon.area).toBe(0);
+    expect(webgl2.data[base + 3 * 4 + 3]).toBe(0); // s3.a: source area
+    expect(webgl2.data[base + 4 * 4 + 0]).toBe(0); // s4.r: legacy radius lane
+
+    const webgpu = packEmitterArrays(scene);
+    expect(webgpu.spotLightCount).toBe(1);
+    // The WebGPU spot record has no radius/area payload; one spot is exactly
+    // the canonical fixed-size delta-light record.
+    expect(webgpu.spotLightsData).toHaveLength(16);
+  });
+
   it('agrees on per-light rect-area + disc-area power (luminance·intensity·area)', () => {
     // pt-webgl2 stores the rect/disc "power" in s2.a; disc power carries the
     // π/4 rectangle→disc correction on a (2r)² axis span, i.e. luminance·I·π·r².
@@ -148,9 +164,9 @@ describe('T1-2 emitter canonicalizer cross-backend parity', () => {
     const webgpu = packEmitterArrays(scene);
     const dirCanon = canonical.find((c) => c.kind === 'directional')!;
     // Packed stream is Float32Array — compare at f32 precision (~6 digits).
-    expect(webgpu.directionalLightsData[0]!).toBeCloseTo(dirCanon.towardLight![0], 6);
-    expect(webgpu.directionalLightsData[1]!).toBeCloseTo(dirCanon.towardLight![1], 6);
-    expect(webgpu.directionalLightsData[2]!).toBeCloseTo(dirCanon.towardLight![2], 6);
+    expect(webgpu.directionalLightsData[0]).toBeCloseTo(dirCanon.towardLight![0], 6);
+    expect(webgpu.directionalLightsData[1]).toBeCloseTo(dirCanon.towardLight![1], 6);
+    expect(webgpu.directionalLightsData[2]).toBeCloseTo(dirCanon.towardLight![2], 6);
   });
 
   it('resolves SHADOW-01 castShadow:false identically', () => {
@@ -166,10 +182,10 @@ describe('T1-2 emitter canonicalizer cross-backend parity', () => {
     expect(c.shadowDisabled).toBe(true);
     // pt-webgpu point vec4[2].z carries castShadowDisabled.
     const webgpu = packEmitterArrays(fixtureScene([shadowed]));
-    expect(webgpu.pointLightsData[2 * 4 + 2]!).toBe(1);
+    expect(webgpu.pointLightsData[2 * 4 + 2]).toBe(1);
   });
 
-  it('documents the mesh-area analytic-list parity gap (pt-webgl2 excludes them)', () => {
+  it('keeps mesh-area emitters out of the analytic list for the dedicated triangle-light stream', () => {
     const meshEmitter: SceneEmitter = {
       kind: 'mesh-area',
       id: 'panel',

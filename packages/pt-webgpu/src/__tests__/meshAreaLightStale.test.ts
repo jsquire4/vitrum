@@ -18,6 +18,9 @@ import { buildPackedScene, scenePackResultFromPacked } from '../scene/uploadScen
 import { SceneMutationRouter } from '../sceneMutationRouter.js';
 import type { MutationHost } from '../sceneMutationRouter.js';
 import type { UploadedSceneBuffers } from '../scene/uploadSceneBuffers.js';
+import { installGpuConstStubs } from './gpuStub.js';
+
+installGpuConstStubs();
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -87,6 +90,10 @@ function makeHostWithEmitterScene(scene: Scene): {
   sceneRef: { current: Scene };
   meshAreaLightsData: Float32Array;
   meshAreaLightsWriteCalls: Float32Array[];
+  stagedCopy: {
+    copyBufferToBuffer: ReturnType<typeof vi.fn<[unknown, number, unknown, number, number], void>>;
+    submit: ReturnType<typeof vi.fn>;
+  };
 } {
   const packed = buildPackedScene(scene, {});
   // Extract a real geoPack so the geometry fast paths (which gate on `geoPack != null`) fire.
@@ -102,7 +109,27 @@ function makeHostWithEmitterScene(scene: Scene): {
     destroy: vi.fn(),
   } as unknown as GPUBuffer;
 
-  // Minimal sceneBuffers stub — H11 only reads/writes the emitter-related fields
+  const stagingWrites = new Map<unknown, Uint8Array>();
+  const meshAreaGpuBytes = new Uint8Array(meshAreaLightsData.byteLength);
+  meshAreaGpuBytes.set(new Uint8Array(
+    meshAreaLightsData.buffer, meshAreaLightsData.byteOffset, meshAreaLightsData.byteLength,
+  ));
+  const copyBufferToBuffer = vi.fn((
+    source: unknown, sourceOffset: number, destination: unknown,
+    destinationOffset: number, size: number,
+  ) => {
+    if (destination !== meshAreaLightsBuffer) return;
+    const staged = stagingWrites.get(source);
+    if (!staged) throw new Error('missing staged bytes for incremental copy');
+    const copied = staged.slice(sourceOffset, sourceOffset + size);
+    meshAreaGpuBytes.set(copied, destinationOffset);
+    const snapshot = meshAreaGpuBytes.slice();
+    meshAreaLightsWriteCalls.push(new Float32Array(snapshot.buffer));
+  });
+  const submit = vi.fn();
+
+
+  // Minimal sceneBuffers stub — H11 reads/writes emitter-related fields
   // and their GPU buffer handles.
   const sceneBuffers = {
     ...packed,
@@ -147,20 +174,23 @@ function makeHostWithEmitterScene(scene: Scene): {
 
   const host: MutationHost = {
     device: {
+      createBuffer: vi.fn((desc: GPUBufferDescriptor) => ({
+        label: desc.label,
+        size: Number(desc.size),
+        destroy: vi.fn(),
+      })),
+      createCommandEncoder: vi.fn(() => ({
+        copyBufferToBuffer,
+        finish: vi.fn(() => ({})),
+      })),
       queue: {
         writeBuffer: vi.fn(
-          (buf: unknown, byteOffset: number, data: ArrayBuffer, srcOffset: number, length: number) => {
-            // Capture writes to the mesh-area lights buffer only.
-            if (buf === meshAreaLightsBuffer) {
-              meshAreaLightsWriteCalls.push(new Float32Array(data, srcOffset, length / 4));
-            }
-            // Also update the in-memory mirror directly (simulate GPU upload).
-            if (buf === meshAreaLightsBuffer && byteOffset === 0) {
-              const src = new Float32Array(data, srcOffset, length / 4);
-              meshAreaLightsData.set(src);
-            }
+          (buf: unknown, _byteOffset: number, data: ArrayBuffer, srcOffset: number, length: number) => {
+            const bytes = new Uint8Array(data, srcOffset, length);
+            stagingWrites.set(buf, new Uint8Array(bytes));
           },
         ),
+        submit,
       },
     } as unknown as GPUDevice,
     assertLive: vi.fn(),
@@ -178,14 +208,17 @@ function makeHostWithEmitterScene(scene: Scene): {
     reset: vi.fn(),
   };
 
-  return { host, sceneRef, meshAreaLightsData, meshAreaLightsWriteCalls };
+  return {
+    host, sceneRef, meshAreaLightsData, meshAreaLightsWriteCalls,
+    stagedCopy: { copyBufferToBuffer, submit },
+  };
 }
 
 describe('SceneMutationRouter — H11 mesh-area emitter triangle staleness', () => {
   it('positions patch on emitter-backed mesh → meshAreaLightsBuffer carries new world-space triangles', () => {
     const origPositions = new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]);
     const scene = emitterScene(origPositions);
-    const { host, meshAreaLightsWriteCalls } = makeHostWithEmitterScene(scene);
+    const { host, meshAreaLightsWriteCalls, stagedCopy } = makeHostWithEmitterScene(scene);
 
     // After initial pack, the mesh-area triangles hold the original positions.
     const router = new SceneMutationRouter(host);
@@ -196,6 +229,9 @@ describe('SceneMutationRouter — H11 mesh-area emitter triangle staleness', () 
       positions: newPositions,
       normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
     });
+
+    expect(stagedCopy.copyBufferToBuffer).toHaveBeenCalled();
+    expect(stagedCopy.submit).toHaveBeenCalledTimes(1);
 
     // At least one write to meshAreaLightsBuffer must have occurred.
     expect(meshAreaLightsWriteCalls.length).toBeGreaterThan(0);
@@ -212,7 +248,7 @@ describe('SceneMutationRouter — H11 mesh-area emitter triangle staleness', () 
 
   it('transform patch on emitter-backed mesh → meshAreaLightsBuffer carries transformed world-space triangles', () => {
     const scene = emitterScene(new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]));
-    const { host, meshAreaLightsWriteCalls } = makeHostWithEmitterScene(scene);
+    const { host, meshAreaLightsWriteCalls, stagedCopy } = makeHostWithEmitterScene(scene);
 
     const router = new SceneMutationRouter(host);
     router.updatePrimitive('emitter-panel', {
@@ -224,6 +260,9 @@ describe('SceneMutationRouter — H11 mesh-area emitter triangle staleness', () 
       ])),
     });
 
+    expect(stagedCopy.copyBufferToBuffer).toHaveBeenCalled();
+    expect(stagedCopy.submit).toHaveBeenCalledTimes(1);
+
     expect(meshAreaLightsWriteCalls.length).toBeGreaterThan(0);
     const written = meshAreaLightsWriteCalls[meshAreaLightsWriteCalls.length - 1]!;
     expect(written[2]).toBeCloseTo(7, 4);
@@ -232,7 +271,7 @@ describe('SceneMutationRouter — H11 mesh-area emitter triangle staleness', () 
   it('non-emitter-backed mesh position patch does NOT trigger emitter re-upload', () => {
     const positions = new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]);
     const scene = sceneWithoutEmitter(positions);
-    const { host, meshAreaLightsWriteCalls } = makeHostWithEmitterScene(scene);
+    const { host, meshAreaLightsWriteCalls, stagedCopy } = makeHostWithEmitterScene(scene);
 
     const router = new SceneMutationRouter(host);
     const newPositions = new Float32Array([0, 0, 5, 1, 0, 5, 0, 1, 5]);
@@ -240,6 +279,9 @@ describe('SceneMutationRouter — H11 mesh-area emitter triangle staleness', () 
       positions: newPositions,
       normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
     });
+
+    expect(stagedCopy.copyBufferToBuffer).toHaveBeenCalled();
+    expect(stagedCopy.submit).toHaveBeenCalledTimes(1);
 
     // No emitter re-upload should occur (meshAreaLightCount=0 so no buffer to write).
     expect(meshAreaLightsWriteCalls.length).toBe(0);

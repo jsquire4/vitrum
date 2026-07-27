@@ -10,7 +10,6 @@ type HybridSkyVec3 = [number, number, number];
 
 type HybridEnvironmentResolveMode =
   | 'none'
-  | 'hdri-intensity-only'
   | 'hdri-raw-average'
   | 'hdri-extension-resolver'
   | 'procedural-sky-baked';
@@ -43,7 +42,7 @@ export interface HybridResolvedEnvironment {
   readonly directionalIntensity?: number;
 }
 
-export interface HybridEnvironmentMapResolverResult {
+interface HybridEnvironmentMapResolverResultBase {
   /**
    * Unit-intensity tint for the opaque environment map handle. The resolver
    * applies SceneEnvironment.intensity to skyIrradiance after this callback.
@@ -61,14 +60,30 @@ export interface HybridEnvironmentMapResolverResult {
    * `skyTint` / `skyIrradiance` remain optional scalar fallback overrides; when
    * omitted, they are derived from this payload's solid-angle-weighted average.
    */
-  readonly rawHdri?: EnvironmentMapRef;
   readonly warnings?: readonly string[];
 }
+
+/**
+ * Opaque HDRI handles must be resolved deliberately. A resolver either exposes
+ * a CPU-readable equirectangular radiance payload, or explicitly opts into the
+ * lower-fidelity scalar-only contract. There is no implicit intensity-only
+ * fallback: silently discarding authored directional radiance is a correctness
+ * failure, not a recoverable approximation.
+ */
+export type HybridEnvironmentMapResolverResult =
+  | (HybridEnvironmentMapResolverResultBase & {
+    readonly kind: 'raw-hdri';
+    readonly rawHdri: EnvironmentMapRef;
+  })
+  | (HybridEnvironmentMapResolverResultBase & {
+    readonly kind: 'scalar-only';
+    readonly rawHdri?: never;
+  });
 
 export type HybridEnvironmentMapResolver = (
   hdri: EnvironmentMapRef,
   environment: HdriEnvironment,
-) => HybridEnvironmentMapResolverResult | null | undefined;
+) => HybridEnvironmentMapResolverResult;
 
 interface HybridEnvironmentResolverExtensionNamespace {
   readonly resolveEnvironmentMap?: HybridEnvironmentMapResolver;
@@ -91,16 +106,46 @@ interface RawNumericHdriPayload {
 
 type RawPayloadRead =
   | { readonly kind: 'raw'; readonly payload: RawNumericHdriPayload }
-  | { readonly kind: 'malformed'; readonly warning: string }
+  | { readonly kind: 'malformed'; readonly reason: string }
   | { readonly kind: 'opaque' };
 
 const DEFAULT_SUN_DIRECTION: HybridSkyVec3 = [0, 1, 0];
+const ENVIRONMENT_KEYS: Readonly<Record<SceneEnvironment['kind'], ReadonlySet<string>>> = {
+  none: new Set(['kind']),
+  hdri: new Set(['kind', 'hdri', 'intensity', 'rotationY']),
+  'procedural-sky': new Set([
+    'kind',
+    'sunDirection',
+    'turbidity',
+    'rayleigh',
+    'mieCoefficient',
+    'mieDirectionalG',
+    'intensity',
+  ]),
+};
+
+function assertKnownEnvironmentKeys(value: unknown): asserts value is SceneEnvironment {
+  if (value == null || typeof value !== 'object' || Array.isArray(value)) {
+    throw new TypeError('Scene environment must be a plain object or null.');
+  }
+  const kind = (value as { readonly kind?: unknown }).kind;
+  if (kind !== 'none' && kind !== 'hdri' && kind !== 'procedural-sky') {
+    throw new TypeError(`Scene environment has unsupported kind ${JSON.stringify(kind)}.`);
+  }
+  const allowed = ENVIRONMENT_KEYS[kind];
+  for (const key of Object.keys(value)) {
+    if (!allowed.has(key)) {
+      throw new TypeError(`Scene environment '${kind}' has unknown key "${key}".`);
+    }
+  }
+}
 
 export function resolveHybridEnvironment(
   environment: SceneEnvironment | null,
   options: ResolveHybridEnvironmentOptions = {},
 ): HybridResolvedEnvironment {
   const env = environment ?? { kind: 'none' };
+  assertKnownEnvironmentKeys(env);
   switch (env.kind) {
     case 'none':
       return { mode: 'none', skyIrradiance: 0, warnings: [] };
@@ -145,7 +190,9 @@ function resolveProceduralSkyEnvironment(
   const directional = buildDirectionalEnv(payload) ?? undefined;
   return {
     mode: 'procedural-sky-baked',
-    skyTint: average.skyTint,
+    // Preserve the procedural default chroma when intensity is explicitly zero;
+    // strict all-black raw HDRIs use [0,0,0] instead so authored black is exact.
+    skyTint: average.skyIrradiance === 0 ? whiteSkyTint() : average.skyTint,
     skyIrradiance: average.skyIrradiance,
     proceduralSunDirection: baked.sunDirection as HybridSkyVec3,
     // The baked equirect already contains the sun disk/corona and is sampled
@@ -163,15 +210,15 @@ function resolveHdriEnvironment(
   options: ResolveHybridEnvironmentOptions,
 ): HybridResolvedEnvironment {
   const warnings: string[] = [];
-  const intensity = finiteNonNegativeScalar(env.intensity, 1, warnings, 'HDRI intensity');
+  const intensity = strictFiniteNonNegativeScalar(env.intensity, 1, 'HDRI intensity');
   const raw = readRawNumericHdriPayload(env.hdri);
   if (raw.kind === 'raw') {
-    const rotationY = finiteRotationY(env.rotationY, warnings);
+    const rotationY = strictRotationY(env.rotationY);
     return resolveRawHdriAverage(raw.payload, intensity, rotationY, warnings);
   }
 
   if (raw.kind === 'malformed') {
-    warnings.push(raw.warning);
+    throw new TypeError(`Malformed HDRI raw payload: ${raw.reason}`);
   }
 
   const resolver = options.extensions?.['walkaround-hybrid']?.resolveEnvironmentMap;
@@ -179,14 +226,12 @@ function resolveHdriEnvironment(
     return resolveHdriWithExtensionResolver(env, resolver, intensity, warnings);
   }
 
-  warnings.push(
-    'HDRI environment handle is opaque to walkaround-hybrid; applying intensity only and leaving skyTint unchanged.',
+  throw new TypeError(
+    'HDRI environment handle is opaque to walkaround-hybrid. Supply a '
+      + "'walkaround-hybrid'.resolveEnvironmentMap extension that returns either "
+      + "{ kind: 'raw-hdri', rawHdri } or an explicitly selected "
+      + "{ kind: 'scalar-only', ... } result.",
   );
-  return {
-    mode: 'hdri-intensity-only',
-    skyIrradiance: intensity,
-    warnings,
-  };
 }
 
 function resolveHdriWithExtensionResolver(
@@ -199,41 +244,46 @@ function resolveHdriWithExtensionResolver(
   try {
     resolved = resolver(env.hdri, env);
   } catch (err) {
-    warnings.push(
-      `HDRI environment resolver threw (${errorMessage(err)}); applying intensity only.`,
+    throw new Error(
+      `HDRI environment resolver threw: ${errorMessage(err)}`,
+      { cause: err },
     );
-    return {
-      mode: 'hdri-intensity-only',
-      skyIrradiance: intensity,
-      warnings,
-    };
   }
 
   if (resolved == null) {
-    warnings.push(
-      'HDRI environment resolver returned no result; applying intensity only and leaving skyTint unchanged.',
+    throw new TypeError(
+      'HDRI environment resolver returned no result. It must return an explicit '
+        + "'raw-hdri' or 'scalar-only' result.",
     );
-    return {
-      mode: 'hdri-intensity-only',
-      skyIrradiance: intensity,
-      warnings,
-    };
   }
 
   if (resolved.warnings !== undefined) {
     warnings.push(...resolved.warnings.map((warning) => String(warning)));
   }
-  const rawResolved = resolveResolverRawHdri(resolved.rawHdri, intensity, env.rotationY, warnings);
-  const tint = finiteVec3(resolved.skyTint, warnings, 'HDRI resolver skyTint') ?? rawResolved?.skyTint;
+  if (resolved.kind !== 'raw-hdri' && resolved.kind !== 'scalar-only') {
+    throw new TypeError(
+      `HDRI environment resolver returned unsupported kind ${String((resolved as { kind?: unknown }).kind)}.`,
+    );
+  }
+  if (resolved.kind === 'scalar-only' && 'rawHdri' in resolved) {
+    throw new TypeError(
+      "HDRI resolver kind 'scalar-only' must not include rawHdri; select kind 'raw-hdri' instead.",
+    );
+  }
+
+  const rawResolved = resolved.kind === 'raw-hdri'
+    ? resolveResolverRawHdri(resolved.rawHdri, intensity, env.rotationY, warnings)
+    : null;
+  const tint = strictOptionalRadianceVec3(resolved.skyTint, 'HDRI resolver skyTint')
+    ?? rawResolved?.skyTint;
   return {
     mode: 'hdri-extension-resolver',
     ...(tint !== undefined ? { skyTint: tint } : {}),
     skyIrradiance:
       resolved.skyIrradiance !== undefined
-        ? finiteNonNegativeScalar(
+        ? strictFiniteNonNegativeScalar(
           resolved.skyIrradiance,
           1,
-          warnings,
           'HDRI resolver skyIrradiance',
         ) * intensity
         : rawResolved?.skyIrradiance ?? intensity,
@@ -249,7 +299,7 @@ function resolveHdriWithExtensionResolver(
 }
 
 function resolveResolverRawHdri(
-  rawHdri: EnvironmentMapRef | undefined,
+  rawHdri: EnvironmentMapRef,
   intensity: number,
   rotationYInput: number | undefined,
   warnings: string[],
@@ -257,10 +307,9 @@ function resolveResolverRawHdri(
   HybridResolvedEnvironment,
   'skyTint' | 'skyIrradiance' | 'directional' | 'rotationY' | 'directionalIntensity'
 > | null {
-  if (rawHdri === undefined) return null;
   const raw = readRawNumericHdriPayload(rawHdri);
   if (raw.kind === 'raw') {
-    const rotationY = finiteRotationY(rotationYInput, warnings);
+    const rotationY = strictRotationY(rotationYInput);
     const resolved = resolveRawHdriAverage(raw.payload, intensity, rotationY, warnings);
     return {
       ...(resolved.skyTint !== undefined ? { skyTint: resolved.skyTint } : {}),
@@ -275,13 +324,11 @@ function resolveResolverRawHdri(
     };
   }
   if (raw.kind === 'malformed') {
-    warnings.push(`HDRI resolver rawHdri was malformed: ${raw.warning}`);
-  } else {
-    warnings.push(
-      'HDRI resolver rawHdri was opaque; using scalar resolver output only.',
-    );
+    throw new TypeError(`HDRI resolver rawHdri was malformed: ${raw.reason}`);
   }
-  return null;
+  throw new TypeError(
+    "HDRI resolver kind 'raw-hdri' must provide a CPU-readable { width, height, data } payload.",
+  );
 }
 
 function resolveRawHdriAverage(
@@ -316,11 +363,10 @@ function resolveRawHdriAverage(
   };
 }
 
-function finiteRotationY(value: number | undefined, warnings: string[]): number {
+function strictRotationY(value: number | undefined): number {
   if (value === undefined) return 0;
   if (!Number.isFinite(value)) {
-    warnings.push('HDRI rotationY is not finite; defaulting to 0.');
-    return 0;
+    throw new TypeError('HDRI rotationY must be finite.');
   }
   return value;
 }
@@ -342,12 +388,14 @@ function readRawNumericHdriPayload(value: EnvironmentMapRef): RawPayloadRead {
     return { kind: 'opaque' };
   }
 
-  const width = Number(candidate.width);
-  const height = Number(candidate.height);
+  const width = candidate.width;
+  const height = candidate.height;
   const data = candidate.data as { readonly length?: unknown } | null | undefined;
   if (
-    !Number.isInteger(width) ||
-    !Number.isInteger(height) ||
+    typeof width !== 'number' ||
+    typeof height !== 'number' ||
+    !Number.isSafeInteger(width) ||
+    !Number.isSafeInteger(height) ||
     width <= 0 ||
     height <= 0 ||
     data == null ||
@@ -355,8 +403,8 @@ function readRawNumericHdriPayload(value: EnvironmentMapRef): RawPayloadRead {
   ) {
     return {
       kind: 'malformed',
-      warning:
-        'HDRI raw payload must provide positive integer width/height and array-like numeric data; applying intensity only.',
+      reason:
+        'width and height must be positive safe integers and data must be array-like.',
     };
   }
 
@@ -364,22 +412,49 @@ function readRawNumericHdriPayload(value: EnvironmentMapRef): RawPayloadRead {
   if (!Number.isSafeInteger(pixelCount) || pixelCount <= 0) {
     return {
       kind: 'malformed',
-      warning:
-        'HDRI raw payload dimensions overflow a safe pixel count; applying intensity only.',
+      reason: 'dimensions overflow a safe pixel count.',
     };
   }
 
   const length = data.length;
-  if (!Number.isInteger(length) || length < pixelCount * 3) {
+  if (!Number.isSafeInteger(length)) {
     return {
       kind: 'malformed',
-      warning:
-        'HDRI raw payload data is shorter than width * height * 3; applying intensity only.',
+      reason: 'data.length must be a non-negative safe integer.',
     };
   }
 
   const exactStride = length / pixelCount;
-  const stride: 3 | 4 = exactStride === 4 ? 4 : 3;
+  if (exactStride !== 3 && exactStride !== 4) {
+    return {
+      kind: 'malformed',
+      reason:
+        'data.length must equal width * height * 3 (RGB) or width * height * 4 (RGBA).',
+    };
+  }
+  const stride: 3 | 4 = exactStride;
+  const numericData = candidate.data as ArrayLike<number>;
+  for (let pixel = 0; pixel < pixelCount; pixel += 1) {
+    const offset = pixel * stride;
+    for (let channel = 0; channel < 3; channel += 1) {
+      const sample = numericData[offset + channel];
+      if (typeof sample !== 'number' || !Number.isFinite(sample) || sample < 0) {
+        return {
+          kind: 'malformed',
+          reason: `RGB radiance sample ${offset + channel} must be a finite non-negative number.`,
+        };
+      }
+    }
+    if (stride === 4) {
+      const alpha = numericData[offset + 3];
+      if (typeof alpha !== 'number' || !Number.isFinite(alpha)) {
+        return {
+          kind: 'malformed',
+          reason: `RGBA alpha sample ${offset + 3} must be finite.`,
+        };
+      }
+    }
+  }
   return {
     kind: 'raw',
     payload: {
@@ -391,6 +466,20 @@ function readRawNumericHdriPayload(value: EnvironmentMapRef): RawPayloadRead {
   };
 }
 
+function strictFiniteNonNegativeScalar(
+  value: number | undefined,
+  fallback: number,
+  label: string,
+): number {
+  if (value === undefined) return fallback;
+  if (!Number.isFinite(value) || value < 0) {
+    throw new TypeError(`${label} must be a finite non-negative number.`);
+  }
+  return value;
+}
+
+/** Procedural-sky authoring keeps its historical finite fallback/clamp policy;
+ * strict HDRI ingestion is deliberately separate from procedural defaults. */
 function finiteNonNegativeScalar(
   value: number | undefined,
   fallback: number,
@@ -462,9 +551,7 @@ function averageRawRadiancePayload(
   }
 
   if (clampedSamples > 0) {
-    warnings.push(
-      `${label} had ${clampedSamples} non-finite or negative radiance sample(s); clamped them to 0.`,
-    );
+    throw new TypeError(`${label} contains non-finite or negative radiance samples.`);
   }
   if (weightSum <= 0) {
     return { skyTint: whiteSkyTint(), skyIrradiance: 0 };
@@ -477,7 +564,7 @@ function averageRawRadiancePayload(
   ];
   const maxChannel = Math.max(average[0], average[1], average[2], 0);
   if (maxChannel <= 1e-12) {
-    return { skyTint: whiteSkyTint(), skyIrradiance: 0 };
+    return { skyTint: [0, 0, 0], skyIrradiance: 0 };
   }
   return {
     skyTint: [
@@ -489,18 +576,22 @@ function averageRawRadiancePayload(
   };
 }
 
-function finiteVec3(
+function strictOptionalRadianceVec3(
   value: readonly [number, number, number] | undefined,
-  warnings: string[],
   label: string,
 ): HybridSkyVec3 | undefined {
   if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.length !== 3) {
+    throw new TypeError(`${label} must contain exactly three numbers.`);
+  }
   const x = Number(value[0]);
   const y = Number(value[1]);
   const z = Number(value[2]);
-  if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) {
-    warnings.push(`${label} must contain finite numbers; ignoring it.`);
-    return undefined;
+  if (
+    !Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)
+    || x < 0 || y < 0 || z < 0
+  ) {
+    throw new TypeError(`${label} must contain finite non-negative numbers.`);
   }
   return [x, y, z];
 }

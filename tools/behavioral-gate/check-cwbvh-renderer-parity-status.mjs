@@ -3,14 +3,17 @@
 
 const STATUS_PATH = "tools/behavioral-gate/behavioral-gate-cwbvh-status.json";
 
+/** @param {string} message @returns {never} */
 function fail(message) {
   throw new Error(`[cwbvh-renderer-parity-proof-check] ${message}`);
 }
 
+/** @param {unknown} a @param {unknown} b */
 function sameJson(a, b) {
   return JSON.stringify(a) === JSON.stringify(b);
 }
 
+/** @param {Record<string, any>} config @param {string} key */
 function requireFinite(config, key) {
   const value = config[key];
   if (!Number.isFinite(value)) fail(`${key} must be finite, got ${value}`);
@@ -29,8 +32,9 @@ if (status.summary?.totalConfigs !== 2 || status.summary?.failures !== 0) {
   fail(`unexpected summary ${JSON.stringify(status.summary)}`);
 }
 
+/** @param {string} label */
 function validateConfig(label) {
-  const config = status.configs?.find((entry) => entry.label === label);
+  const config = status.configs?.find((/** @type {any} */ entry) => entry.label === label);
   if (config == null) fail(`missing ${label} config`);
   if (config.verdict !== "PASS") fail(`${label} verdict is ${config.verdict}`);
   if (config.rawStatus !== "OK") fail(`${label} rawStatus is ${config.rawStatus}`);

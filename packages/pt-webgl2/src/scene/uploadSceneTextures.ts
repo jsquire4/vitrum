@@ -21,21 +21,22 @@ import type { EngineCapabilities, EngineWarning, Scene, ScenePrimitive } from '@
 import { analyticPrimitiveToMesh, partitionSceneBySupport } from '@vitrum/core';
 import {
   mergeWorldSpaceFromCore,
-  mergeUv1FromCore,
   refitBvhBounds,
   type WorldSpaceMergeResult,
 } from '@vitrum/shared-bvh';
 import { packBvhTextureData, uploadBvhTextures, type BvhTextureData } from './bvhTextureAdapter.js';
 import { allocGlTexture } from '../gl/texAlloc.js';
+import { retireIndependently } from '../gl/resourceRetirement.js';
 import { foldMeshAreaEmittersIntoMaterials } from './foldEmissiveEmitters.js';
 import { packAttributesArray } from './attributesTextureArray.js';
 import { packMaterialsTexture } from './materialsTexture.js';
 import { packTextureAtlas, textureAtlasLayerCapacity, uploadTextureAtlas } from './texturesArray.js';
 import { packLightsTexture } from './lightsTexture.js';
-import { packMeshAreaLights } from './meshAreaLights.js';
+import { assertSceneEmissiveMapsCpuReadable, packMeshAreaLights } from './meshAreaLights.js';
 import { buildEquirectInfo } from './equirectHdrInfo.js';
 import { solveSkinPrimitives } from './solveSkinPrimitives.js';
 import type { UploadedSceneTextures } from './sceneTextures.js';
+import { buildUvAttributeLayout, type UvAttributeLayout } from './uvAttributeLayout.js';
 
 export interface SceneTexturesBuild {
   readonly textures: UploadedSceneTextures;
@@ -57,6 +58,7 @@ export interface SceneGeometryTexturesBuild {
   readonly triangleCount: number;
   readonly merged: WorldSpaceMergeResult;
   readonly vertexColorMaterialIds: ReadonlySet<number>;
+  readonly uvLayerByTexCoord: ReadonlyMap<number, number>;
   readonly warnings: readonly string[];
   readonly structuredWarnings: readonly EngineWarning[];
 }
@@ -68,6 +70,7 @@ export interface SceneGeometryTextureDataBuild {
   readonly triangleCount: number;
   readonly merged: WorldSpaceMergeResult;
   readonly vertexColorMaterialIds: ReadonlySet<number>;
+  readonly uvLayerByTexCoord: ReadonlyMap<number, number>;
   readonly warnings: readonly string[];
   readonly structuredWarnings: readonly EngineWarning[];
 }
@@ -78,6 +81,7 @@ export interface RefitSceneGeometryTexturesBuild {
   readonly meshLightsData: ReturnType<typeof packMeshAreaLights>;
   readonly merged: WorldSpaceMergeResult;
   readonly vertexColorMaterialIds: ReadonlySet<number>;
+  readonly uvLayerByTexCoord: ReadonlyMap<number, number>;
   readonly warnings: readonly string[];
   readonly structuredWarnings: readonly EngineWarning[];
 }
@@ -86,6 +90,7 @@ interface GeometryBuildInputs {
   readonly skinnedScene: Scene;
   readonly merged: WorldSpaceMergeResult;
   readonly attrData: ReturnType<typeof packAttributesArray>;
+  readonly uvLayout: UvAttributeLayout;
 }
 
 function vertexDisplacementWarningDetails(message: string): Readonly<Record<string, unknown>> {
@@ -122,18 +127,32 @@ function buildGeometryInputs(
       });
     },
   });
-  const mergedUv1 = mergeUv1FromCore(skinnedScene, merged.meshVertexRanges, merged.vertexCount);
+  const uvLayout = buildUvAttributeLayout(skinnedScene, merged, merged.materials);
   const mergedTangents = mergeTangentsFromCore(skinnedScene, merged.meshVertexRanges, merged.vertexCount);
   const mergedColors = mergeColorsFromCore(skinnedScene, merged.meshVertexRanges, merged.vertexCount);
   const attrData = packAttributesArray(
     {
       ...merged,
-      ...(mergedUv1 != null ? { uv1: mergedUv1 } : {}),
+      uv1: uvLayout.mergedByTexCoord.get(1)!,
+      extraUvLayers: uvLayout.extraUvLayers,
       ...(mergedTangents != null ? { tangents: mergedTangents } : {}),
       ...(mergedColors != null ? { colors: mergedColors } : {}),
     },
   );
-  return { skinnedScene, merged, attrData };
+  return { skinnedScene, merged, attrData, uvLayout };
+}
+
+function assertAttributeLayerBudget(
+  gl: WebGL2RenderingContext,
+  requiredLayers: number,
+): void {
+  const limit = gl.getParameter(gl.MAX_ARRAY_TEXTURE_LAYERS) as number;
+  if (Number.isFinite(limit) && limit > 0 && requiredLayers > limit) {
+    throw new RangeError(
+      `pt-webgl2: vertex attributes require ${requiredLayers} texture-array layers, ` +
+      `but this device exposes MAX_ARRAY_TEXTURE_LAYERS=${limit}`,
+    );
+  }
 }
 
 export function buildSceneGeometryTextures(
@@ -145,18 +164,27 @@ export function buildSceneGeometryTextures(
   },
 ): SceneGeometryTexturesBuild {
   const data = buildSceneGeometryTextureData(scene, opts);
+  assertAttributeLayerBudget(gl, data.attrData.layers);
   const bvh = uploadBvhTextures(gl, data.bvhData);
-  const meshLights =
-    data.meshLightsData.data != null
-      ? uploadRgba32f(gl, data.meshLightsData.data, data.meshLightsData.dim, 'mesh-area lights')
-      : null;
-  const attributesArray = uploadRgba32fArray(
-    gl,
-    data.attrData.data,
-    data.attrData.dim,
-    data.attrData.layers,
-    'vertex attributes',
-  );
+  let meshLights: WebGLTexture | null = null;
+  let attributesArray: WebGLTexture;
+  try {
+    meshLights =
+      data.meshLightsData.data != null
+        ? uploadRgba32f(gl, data.meshLightsData.data, data.meshLightsData.dim, 'mesh-area lights')
+        : null;
+    attributesArray = uploadRgba32fArray(
+      gl,
+      data.attrData.data,
+      data.attrData.dim,
+      data.attrData.layers,
+      'vertex attributes',
+    );
+  } catch (error) {
+    bvh.destroy();
+    if (meshLights != null) gl.deleteTexture(meshLights);
+    throw error;
+  }
   return {
     bvh,
     attributesArray,
@@ -167,6 +195,7 @@ export function buildSceneGeometryTextures(
     triangleCount: data.triangleCount,
     merged: data.merged,
     vertexColorMaterialIds: data.vertexColorMaterialIds,
+    uvLayerByTexCoord: data.uvLayerByTexCoord,
     warnings: data.warnings,
     structuredWarnings: data.structuredWarnings,
   };
@@ -187,7 +216,11 @@ export function buildSceneGeometryTextureData(
   };
   const geometry = buildGeometryInputs(scene, warningOptions);
   const bvhData = packBvhTextureData(geometry.merged);
-  const meshLightsData = packMeshAreaLights(scene, geometry.merged);
+  const meshLightsData = packMeshAreaLights(
+    scene,
+    geometry.merged,
+    geometry.uvLayout.mergedByTexCoord,
+  );
   const vertexColorMaterialIds = collectVertexColorMaterialIds(geometry.skinnedScene, geometry.merged);
   return {
     bvhData,
@@ -196,6 +229,7 @@ export function buildSceneGeometryTextureData(
     triangleCount: geometry.merged.triangleCount,
     merged: geometry.merged,
     vertexColorMaterialIds,
+    uvLayerByTexCoord: geometry.uvLayout.layerByTexCoord,
     warnings: [...geometry.merged.warnings, ...meshLightsData.warnings],
     structuredWarnings,
   };
@@ -288,7 +322,11 @@ export function buildRefitSceneGeometryTextures(
   };
 
   const bvhData = packBvhTextureData(refitMerged);
-  const meshLightsData = packMeshAreaLights(scene, refitMerged);
+  const meshLightsData = packMeshAreaLights(
+    scene,
+    refitMerged,
+    geometry.uvLayout.mergedByTexCoord,
+  );
   const vertexColorMaterialIds = collectVertexColorMaterialIds(geometry.skinnedScene, refitMerged);
 
   return {
@@ -297,6 +335,7 @@ export function buildRefitSceneGeometryTextures(
     meshLightsData,
     merged: refitMerged,
     vertexColorMaterialIds,
+    uvLayerByTexCoord: geometry.uvLayout.layerByTexCoord,
     warnings: [...geometry.merged.warnings, ...meshLightsData.warnings],
     structuredWarnings,
   };
@@ -318,6 +357,9 @@ export function buildSceneTextures(
   // (1) capability filter
   const { supported, warnings } = partitionSceneBySupport(analyticExpansion.scene, caps);
   warnings.unshift(...analyticExpansion.warnings);
+  // This must precede every GL allocation below. An opaque emissive map would
+  // otherwise be sampled by forward hits while mesh-light NEE used scalar Le.
+  assertSceneEmissiveMapsCpuReadable(supported);
   const structuredWarnings: EngineWarning[] = [];
   const warningOptions = {
     onWarning: (warning: EngineWarning) => structuredWarnings.push(warning),
@@ -335,20 +377,24 @@ export function buildSceneTextures(
   const geometry = buildGeometryInputs(supported, warningOptions);
   const skinnedScene = geometry.skinnedScene;
   const merged = geometry.merged;
+  assertAttributeLayerBudget(gl, geometry.attrData.layers);
 
-  // (3) BVH data textures (+ per-tri materialIndex)
+  // Complete every CPU pack and authored-input validation before the first GL
+  // allocation. A malformed material map or HDRI must leave no candidate GPU
+  // writes for the caller to clean up.
+  // (3) BVH data textures (+ per-tri materialIndex), CPU payload.
   const bvhData = packBvhTextureData(merged);
-  const bvh = uploadBvhTextures(gl, bvhData);
 
   // (4a) material-map atlas — gather every readable map texture into a sampler2DArray
   //      and a handle→layer map (null when the scene has no usable textures).
-  const atlas = packTextureAtlas(merged.materials, warningOptions);
+  const maxAtlasLayers = gl.getParameter(gl.MAX_ARRAY_TEXTURE_LAYERS) as number;
+  const atlas = packTextureAtlas(merged.materials, {
+    ...warningOptions,
+    maxArrayTextureLayers: maxAtlasLayers,
+  });
   const materialAtlasLayerCapacity = atlas != null
-    ? textureAtlasLayerCapacity(atlas.layerCount, gl.getParameter(gl.MAX_ARRAY_TEXTURE_LAYERS) as number)
+    ? textureAtlasLayerCapacity(atlas.layerCount, maxAtlasLayers)
     : 0;
-  const textures2DArray = atlas != null
-    ? uploadTextureAtlas(gl, atlas, { layerCapacity: materialAtlasLayerCapacity })
-    : null;
 
   // (4b) materials — the merged result already dedups the scene's unique
   //      MaterialSpecs in first-seen order (triMaterialId indexes into it), so it
@@ -358,30 +404,24 @@ export function buildSceneTextures(
   const vertexColorMaterialIds = collectVertexColorMaterialIds(skinnedScene, merged);
   const materialsData = packMaterialsTexture(merged.materials, atlas?.layerOfByColorSpace, {
     vertexColorMaterialIds,
+    uvLayerByTexCoord: geometry.uvLayout.layerByTexCoord,
     ...warningOptions,
   });
-  const materials = uploadRgba32f(gl, materialsData.data, materialsData.dim, 'scene materials');
 
   // (5) lights (6px/light) — driven from the original scene's emitters.
   const lightsData = packLightsTexture(supported.emitters);
-  const lights = uploadRgba32f(gl, lightsData.data, lightsData.dim, 'scene lights');
 
   // (5b) B4 — mesh-area triangle lights for NEE, built from explicit mesh-area
   //      emitters plus implicit emissive-material meshes over the merged world-
   //      space geometry. null when the scene has no emissive mesh triangles.
-  const meshLightsData = packMeshAreaLights(supported, merged);
-  const meshLights =
-    meshLightsData.data != null ? uploadRgba32f(gl, meshLightsData.data, meshLightsData.dim, 'mesh-area lights') : null;
+  const meshLightsData = packMeshAreaLights(
+    supported,
+    merged,
+    geometry.uvLayout.mergedByTexCoord,
+  );
 
   // (6) environment importance-sampling (null for non-HDRI scenes).
   const env = buildEquirectInfo(supported.environment, warningOptions);
-  const envMap = env.map ? uploadRgba32fRect(gl, env.map.data, env.map.width, env.map.height, 'environment map') : null;
-  const envMarginal = env.marginal
-    ? uploadRgba32fRect(gl, env.marginal.data, env.marginal.width, env.marginal.height, 'environment marginal CDF')
-    : null;
-  const envConditional = env.conditional
-    ? uploadRgba32fRect(gl, env.conditional.data, env.conditional.width, env.conditional.height, 'environment conditional CDF')
-    : null;
 
   // (7) vertex-attribute array (normal / tangent / uv0 / color / uv1), 5 layers.
   // Build a merged uv1 array from the scene primitives using the same vertex-range
@@ -389,7 +429,34 @@ export function buildSceneTextures(
   // primitive carries no uv1 (see packAttributesArray).
   // D10.7: uses mergeUv1FromCore from @vitrum/shared-bvh, colocated with worldSpaceMerge.ts.
   const attrData = geometry.attrData;
-  const attributesArray = uploadRgba32fArray(gl, attrData.data, attrData.dim, attrData.layers, 'vertex attributes');
+
+  // CPU preflight is complete. GPU failures below remain recoverable through
+  // the BVH uploader's local transaction and this bundle-level owned list.
+  const bvh = uploadBvhTextures(gl, bvhData);
+  const allocated: WebGLTexture[] = [];
+  const own = (texture: WebGLTexture): WebGLTexture => {
+    allocated.push(texture);
+    return texture;
+  };
+  try {
+  const textures2DArray = atlas != null
+    ? own(uploadTextureAtlas(gl, atlas, { layerCapacity: materialAtlasLayerCapacity }))
+    : null;
+  const materials = own(uploadRgba32f(gl, materialsData.data, materialsData.dim, 'scene materials'));
+  const lights = own(uploadRgba32f(gl, lightsData.data, lightsData.dim, 'scene lights'));
+  const meshLights = meshLightsData.data != null
+    ? own(uploadRgba32f(gl, meshLightsData.data, meshLightsData.dim, 'mesh-area lights'))
+    : null;
+  const envMap = env.map
+    ? own(uploadRgba32fRect(gl, env.map.data, env.map.width, env.map.height, 'environment map'))
+    : null;
+  const envMarginal = env.marginal
+    ? own(uploadRgba32fRect(gl, env.marginal.data, env.marginal.width, env.marginal.height, 'environment marginal CDF'))
+    : null;
+  const envConditional = env.conditional
+    ? own(uploadRgba32fRect(gl, env.conditional.data, env.conditional.width, env.conditional.height, 'environment conditional CDF'))
+    : null;
+  const attributesArray = own(uploadRgba32fArray(gl, attrData.data, attrData.dim, attrData.layers, 'vertex attributes'));
 
   // (8) assemble the bundle.
   let destroyed = false;
@@ -419,23 +486,26 @@ export function buildSceneTextures(
     materialAtlasLayerCapacity,
     materialLayerMap: atlas?.layerOfByColorSpace ?? null,
     vertexColorMaterialIds,
+    uvLayerByTexCoord: geometry.uvLayout.layerByTexCoord,
+    attributeLayerCount: attrData.layers,
     triangleCount: merged.triangleCount,
     destroy(): void {
       if (destroyed) return;
       destroyed = true;
-      bvh.destroy();
-      for (const t of [
-        materials,
-        attributesArray,
-        lights,
-        meshLights,
-        envMap,
-        envMarginal,
-        envConditional,
-        textures2DArray,
-      ]) {
-        if (t != null) gl.deleteTexture(t);
-      }
+      retireIndependently([
+        () => bvh.destroy(),
+        ...[
+          materials,
+          attributesArray,
+          lights,
+          meshLights,
+          envMap,
+          envMarginal,
+          envConditional,
+          textures2DArray,
+        ].filter((texture): texture is WebGLTexture => texture != null)
+          .map((texture) => () => gl.deleteTexture(texture)),
+      ], 'pt-webgl2: one or more scene textures failed to retire');
     },
   };
 
@@ -446,6 +516,11 @@ export function buildSceneTextures(
     structuredWarnings,
     supported,
   };
+  } catch (error) {
+    bvh.destroy();
+    for (const texture of allocated) gl.deleteTexture(texture);
+    throw error;
+  }
 }
 
 export function expandAnalyticPrimitiveFallbacks(scene: Scene): { readonly scene: Scene; readonly warnings: string[] } {
@@ -528,39 +603,37 @@ function mergeTangentsFromCore(
   if (!meshLike.some((p) => p.tangents != null && p.tangents.length > 0)) return undefined;
 
   const out = new Float32Array(totalVertexCount * 4);
-  let rangeIdx = 0;
-  for (const prim of meshLike) {
+  const primitiveById = new Map(
+    meshLike.map((primitive) => [String(primitive.id), primitive] as const),
+  );
+  const legacyInstanceCursor = new Map<string, number>();
+  for (const range of ranges) {
+    const sourceId = String(range.sourcePrimitiveId ?? range.name);
+    const prim = primitiveById.get(sourceId);
+    if (prim == null) continue;
     const localVertexCount = Math.floor(prim.positions.length / 3);
-    if (localVertexCount < 3) continue;
-    const localIndexCount = prim.indices?.length ?? localVertexCount;
-    if (Math.floor(localIndexCount / 3) === 0) continue;
+    const src = prim.tangents;
+    if (localVertexCount < 1 || src == null || src.length === 0) continue;
 
-    const instanceCount = prim.kind === 'instanced-mesh' ? prim.instances.length : 1;
-    for (let inst = 0; inst < instanceCount; inst += 1) {
-      const range = ranges[rangeIdx];
-      if (range == null) break;
-      rangeIdx += 1;
-
-      const src = prim.tangents;
-      if (src == null || src.length === 0) continue;
-
-      const transform = prim.kind === 'instanced-mesh'
-        ? (prim.instances[inst] ?? IDENTITY_MAT4)
-        : (prim.transform ?? IDENTITY_MAT4);
-      const handednessScale = determinant4(transform) < 0 ? -1 : 1;
-      for (let v = 0; v < range.vertexCount; v += 1) {
-        const local = Math.min(v, localVertexCount - 1);
-        const sx = src[local * 4] ?? 0;
-        const sy = src[local * 4 + 1] ?? 0;
-        const sz = src[local * 4 + 2] ?? 0;
-        const sw = (src[local * 4 + 3] ?? 1) < 0 ? -1 : 1;
-        const [tx, ty, tz] = transformDirection(transform, sx, sy, sz);
-        const o = (range.vertexStart + v) * 4;
-        out[o] = tx;
-        out[o + 1] = ty;
-        out[o + 2] = tz;
-        out[o + 3] = sw * handednessScale;
-      }
+    const legacyInstanceIndex = legacyInstanceCursor.get(sourceId) ?? 0;
+    legacyInstanceCursor.set(sourceId, legacyInstanceIndex + 1);
+    const sourceInstanceIndex = range.sourceInstanceIndex ?? legacyInstanceIndex;
+    const transform = prim.kind === 'instanced-mesh'
+      ? (prim.instances[sourceInstanceIndex] ?? IDENTITY_MAT4)
+      : (prim.transform ?? IDENTITY_MAT4);
+    const handednessScale = determinant4(transform) < 0 ? -1 : 1;
+    for (let v = 0; v < range.vertexCount; v += 1) {
+      const local = Math.min(v, localVertexCount - 1);
+      const sx = src[local * 4] ?? 0;
+      const sy = src[local * 4 + 1] ?? 0;
+      const sz = src[local * 4 + 2] ?? 0;
+      const sw = (src[local * 4 + 3] ?? 1) < 0 ? -1 : 1;
+      const [tx, ty, tz] = transformDirection(transform, sx, sy, sz);
+      const o = (range.vertexStart + v) * 4;
+      out[o] = tx;
+      out[o + 1] = ty;
+      out[o + 2] = tz;
+      out[o + 3] = sw * handednessScale;
     }
   }
 
@@ -584,8 +657,12 @@ function mergeColorsFromCore(
     out[o + 3] = 1;
   }
 
-  let rangeIdx = 0;
-  for (const prim of meshLike) {
+  const primitiveById = new Map(
+    meshLike.map((primitive) => [String(primitive.id), primitive] as const),
+  );
+  for (const range of ranges) {
+    const prim = primitiveById.get(String(range.sourcePrimitiveId ?? range.name));
+    if (prim == null) continue;
     const localVertexCount = Math.floor(prim.positions.length / 3);
     if (localVertexCount < 1) continue;
     const src = prim.colors;
@@ -593,22 +670,16 @@ function mergeColorsFromCore(
       ? 4
       : Math.max(3, Math.min(4, Math.floor(src.length / Math.max(1, localVertexCount))));
 
-    const instanceCount = prim.kind === 'instanced-mesh' ? prim.instances.length : 1;
-    for (let inst = 0; inst < instanceCount; inst += 1) {
-      const range = ranges[rangeIdx];
-      if (range == null) break;
-      rangeIdx += 1;
-      if (src == null || src.length === 0) continue;
+    if (src == null || src.length === 0) continue;
 
-      for (let v = 0; v < range.vertexCount; v += 1) {
-        const local = Math.min(v, localVertexCount - 1);
-        const so = local * colorStride;
-        const o = (range.vertexStart + v) * 4;
-        out[o] = src[so] ?? 1;
-        out[o + 1] = src[so + 1] ?? 1;
-        out[o + 2] = src[so + 2] ?? 1;
-        out[o + 3] = colorStride >= 4 ? (src[so + 3] ?? 1) : 1;
-      }
+    for (let v = 0; v < range.vertexCount; v += 1) {
+      const local = Math.min(v, localVertexCount - 1);
+      const so = local * colorStride;
+      const o = (range.vertexStart + v) * 4;
+      out[o] = src[so] ?? 1;
+      out[o + 1] = src[so + 1] ?? 1;
+      out[o + 2] = src[so + 2] ?? 1;
+      out[o + 3] = colorStride >= 4 ? (src[so + 3] ?? 1) : 1;
     }
   }
 
@@ -621,19 +692,17 @@ export function collectVertexColorMaterialIds(
 ): ReadonlySet<number> {
   const ids = new Set<number>();
   const meshLike = scene.primitives.filter(isMeshLikePrimitive);
-  let rangeIdx = 0;
-  for (const prim of meshLike) {
+  const primitiveById = new Map(
+    meshLike.map((primitive) => [String(primitive.id), primitive] as const),
+  );
+  for (const range of merged.meshVertexRanges) {
+    const prim = primitiveById.get(String(range.sourcePrimitiveId ?? range.name));
+    if (prim == null) continue;
     const hasColors = prim.colors != null && prim.colors.length > 0;
-    const instanceCount = prim.kind === 'instanced-mesh' ? prim.instances.length : 1;
-    for (let inst = 0; inst < instanceCount; inst += 1) {
-      const range = merged.meshVertexRanges[rangeIdx];
-      if (range == null) break;
-      rangeIdx += 1;
-      if (!hasColors) continue;
-      for (let t = range.triStart; t < range.triStart + range.triCount; t += 1) {
-        const materialId = merged.mergedTriMaterialId[t];
-        if (materialId !== undefined) ids.add(materialId);
-      }
+    if (!hasColors) continue;
+    for (let t = range.triStart; t < range.triStart + range.triCount; t += 1) {
+      const materialId = merged.mergedTriMaterialId[t];
+      if (materialId !== undefined) ids.add(materialId);
     }
   }
   return ids;
@@ -669,82 +738,6 @@ function guardTextureSubUpload(gl: WebGL2RenderingContext, resourceName: string)
       `pt-webgl2: WebGL context lost — cannot update ${resourceName} texture`,
     );
   }
-}
-
-function guardTextureImageUpload(
-  gl: WebGL2RenderingContext,
-  resourceName: string,
-  dim: number,
-  layers?: number,
-): void {
-  guardTextureSubUpload(gl, resourceName);
-  const maxSize = gl.getParameter(gl.MAX_TEXTURE_SIZE) as number;
-  if (dim > maxSize) {
-    throw new Error(
-      `pt-webgl2: ${resourceName} needs a ${dim}² texture but this device only supports ` +
-        `${maxSize}² — reduce scene complexity.`,
-    );
-  }
-  if (layers !== undefined) {
-    const maxLayers = gl.getParameter(gl.MAX_ARRAY_TEXTURE_LAYERS) as number;
-    if (layers > maxLayers) {
-      throw new Error(
-        `pt-webgl2: ${resourceName} needs ${layers} array-texture layers but this device only supports ` +
-          `${maxLayers} — reduce the number of unique material textures in the scene.`,
-      );
-    }
-  }
-}
-
-/** Re-specify an existing square RGBA32F sampler2D payload, preserving texture identity. */
-export function replaceRgba32f(
-  gl: WebGL2RenderingContext,
-  texture: WebGLTexture,
-  data: Float32Array,
-  dim: number,
-  resourceName: string,
-): void {
-  guardTextureImageUpload(gl, resourceName, dim);
-  gl.bindTexture(gl.TEXTURE_2D, texture);
-  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, dim, dim, 0, gl.RGBA, gl.FLOAT, data);
-}
-
-/** Re-specify an existing square RGBA32UI sampler2D payload, preserving texture identity. */
-export function replaceRgba32ui(
-  gl: WebGL2RenderingContext,
-  texture: WebGLTexture,
-  data: Uint32Array,
-  dim: number,
-  resourceName: string,
-): void {
-  guardTextureImageUpload(gl, resourceName, dim);
-  gl.bindTexture(gl.TEXTURE_2D, texture);
-  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32UI, dim, dim, 0, gl.RGBA_INTEGER, gl.UNSIGNED_INT, data);
-}
-
-/** Re-specify an existing RGBA32F sampler2DArray payload, preserving texture identity. */
-export function replaceRgba32fArray(
-  gl: WebGL2RenderingContext,
-  texture: WebGLTexture,
-  data: Float32Array,
-  dim: number,
-  layers: number,
-  resourceName: string,
-): void {
-  guardTextureImageUpload(gl, resourceName, dim, layers);
-  gl.bindTexture(gl.TEXTURE_2D_ARRAY, texture);
-  gl.texImage3D(
-    gl.TEXTURE_2D_ARRAY,
-    0,
-    gl.RGBA32F,
-    dim,
-    dim,
-    layers,
-    0,
-    gl.RGBA,
-    gl.FLOAT,
-    data,
-  );
 }
 
 /** In-place replacement for an existing square RGBA32F sampler2D payload. */
@@ -787,20 +780,6 @@ export function uploadRgba32fRect(
     data,
     resourceName,
   });
-}
-
-/** Re-specify an existing non-square RGBA32F sampler2D payload, preserving texture identity. */
-export function replaceRgba32fRect(
-  gl: WebGL2RenderingContext,
-  texture: WebGLTexture,
-  data: Float32Array,
-  width: number,
-  height: number,
-  resourceName: string,
-): void {
-  guardTextureImageUpload(gl, resourceName, Math.max(width, height));
-  gl.bindTexture(gl.TEXTURE_2D, texture);
-  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, width, height, 0, gl.RGBA, gl.FLOAT, data);
 }
 
 /** In-place replacement for an existing non-square RGBA32F sampler2D payload. */

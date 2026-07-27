@@ -34,15 +34,30 @@ import {
 } from './fusedMlpTrainer.js';
 import { HashGridTableTrainer } from './hashGridTableTrainer.js';
 import { unpackRecords } from './recordUnpack.js';
-import {
-  levelResolution,
-  nrcInputWidth,
-  type NrcEncodingConfig,
-} from './nrcEncoding.js';
+import { computeNrcResourceFootprint, preflightNrcResources, validateNrcAabb } from './nrcPreflight.js';
 import type { RisGiNrcConfig } from '../../shaders/risGiNrc.wgsl.js';
-import { getNrcBindGroupLayout } from './nrcBindGroupLayout.js';
 import type { BGLCache } from '../../pipeline/bindGroupLayouts.js';
 import type { PipelineSubsystem } from '../../pipeline/PipelineSubsystem.js';
+import {
+  rethrowWithSceneMutationCleanup,
+  runSceneMutationCleanups,
+  type PreparedSceneMutation,
+  type SceneMutationCleanup,
+} from '../../SceneMutationTransaction.js';
+import type { FramePublication } from '../../pipeline/FramePublication.js';
+import {
+  NRC_DIAGNOSTIC_BYTES,
+  NRC_DIAGNOSTIC_COUNT,
+  NRC_DIAGNOSTIC_INDEX,
+  type NrcDiagnostics,
+} from './nrcDiagnostics.js';
+import {
+  buildNrcInferenceArenaHeader,
+  buildNrcRuntimeArenaHeader,
+  nextNrcArenaEpoch,
+  type NrcInferenceArenaLayout,
+  type NrcRuntimeArenaLayout,
+} from './nrcArena.js';
 
 /** Resolved NRC config (encoding + MLP + self-training cadence). The WGSL gi-ris
  *  NRC variant and the trainer net-spec are both derived from this so the query
@@ -67,8 +82,8 @@ export interface NrcConfig {
   /** Müller §5 spread-termination constant c. */
   readonly spreadC: number;
   /** Max self-training records gathered per frame (= record buffer capacity).
-   *  The gi-ris pass writes one record per half-res pixel into slot
-   *  (pixelIdx % recordCap); a larger cap captures more distinct vertices. */
+   *  The gi-ris pass partitions half-res pixels into disjoint slot-owned blocks
+   *  and traces at most one independent suffix per slot each frame. */
   readonly recordCap: number;
   /** Adam learning rate per train step (the MLP weights). */
   readonly learningRate: number;
@@ -82,11 +97,16 @@ export interface NrcConfig {
   /** Trainer tile size (samples per workgroup). */
   readonly tileB: number;
   /** Completed trainer windows required before NRC predictions may replace DDGI suffixes. */
+  /** Optional host policy for total NRC GPU-buffer residency at the ordinary
+   * readback peak. WebGPU does not expose an adapter-wide VRAM budget, so hosts
+   * that have one must provide it explicitly; per-resource adapter limits are
+   * always checked independently. */
+  readonly maxNrcResidentBytes?: number;
   readonly warmupSteps?: number;
 }
 
 /** Müller-core-sized default NRC config, sized to be full-tier viable. */
-const DEFAULT_NRC_CONFIG: NrcConfig = {
+export const DEFAULT_NRC_CONFIG: NrcConfig = {
   levels: 8,
   featuresPerEntry: 2,
   tableSize: 4096,
@@ -104,29 +124,71 @@ const DEFAULT_NRC_CONFIG: NrcConfig = {
   warmupSteps: 8,
 };
 
-const OUT_W = 3; // RGB radiance
-
-/** The encoding config the WGSL sizes + the trainer input width derive from. */
-function encodingConfig(cfg: NrcConfig, aabbMin: readonly [number, number, number], aabbMax: readonly [number, number, number]): NrcEncodingConfig {
-  const levels = [];
-  for (let l = 0; l < cfg.levels; l++) {
-    levels.push({
-      resolution: levelResolution(cfg.nMin, cfg.growth, l),
-      tableSize: cfg.tableSize,
-      table: new Float32Array(cfg.tableSize * cfg.featuresPerEntry),
-    });
+/** Resolve and validate a partial NRC configuration without allocating GPU
+ * resources. This is the single construction-time source used by the public
+ * HybridEngine option parser, device negotiation, shader compilation, and the
+ * subsystem itself. */
+export function resolveNrcConfig(partial: Partial<NrcConfig> = {}): NrcConfig {
+  const cfg: NrcConfig = { ...DEFAULT_NRC_CONFIG, ...partial };
+  const positiveIntegers: ReadonlyArray<keyof Pick<
+    NrcConfig,
+    'levels' | 'featuresPerEntry' | 'tableSize' | 'nMin' | 'oneBlobBins' |
+    'width' | 'recordCap' | 'tileB'
+  >> = [
+    'levels', 'featuresPerEntry', 'tableSize', 'nMin', 'oneBlobBins',
+    'width', 'recordCap', 'tileB',
+  ];
+  for (const key of positiveIntegers) {
+    const value = cfg[key];
+    if (!Number.isSafeInteger(value) || value <= 0) {
+      throw new RangeError(`NRC ${key} must be a positive safe integer; got ${value}`);
+    }
   }
-  return {
-    hashGrid: {
-      dim: 3,
-      featuresPerEntry: cfg.featuresPerEntry,
-      levels,
-      aabbMin,
-      aabbMax,
-    },
-    oneBlob: { bins: cfg.oneBlobBins, sigma: 1 / cfg.oneBlobBins },
-  };
+  if (!Number.isSafeInteger(cfg.hidden) || cfg.hidden < 0) {
+    throw new RangeError(`NRC hidden must be a non-negative safe integer; got ${cfg.hidden}`);
+  }
+  const positiveFinite: ReadonlyArray<keyof Pick<
+    NrcConfig,
+    'growth' | 'learningRate' | 'tableLearningRate'
+  >> = ['growth', 'learningRate', 'tableLearningRate'];
+  for (const key of positiveFinite) {
+    const value = cfg[key];
+    if (!Number.isFinite(value) || value <= 0) {
+      throw new RangeError(`NRC ${key} must be finite and positive; got ${value}`);
+    }
+  }
+  if (!Number.isFinite(cfg.spreadC) || cfg.spreadC < 0) {
+    throw new RangeError(`NRC spreadC must be finite and non-negative; got ${cfg.spreadC}`);
+  }
+  const warmup = cfg.warmupSteps ?? DEFAULT_NRC_CONFIG.warmupSteps ?? 8;
+  if (!Number.isSafeInteger(warmup) || warmup < 0 || warmup > 0xffff_ffff) {
+    throw new RangeError(
+      `NRC warmupSteps must be a non-negative u32 integer; got ${warmup}`,
+    );
+  }
+  if (typeof cfg.useF16 !== 'boolean') {
+    throw new TypeError(`NRC useF16 must be a boolean; got ${String(cfg.useF16)}`);
+  }
+  if (cfg.maxNrcResidentBytes !== undefined
+      && (!Number.isSafeInteger(cfg.maxNrcResidentBytes)
+          || cfg.maxNrcResidentBytes <= 0)) {
+    throw new RangeError(
+      `NRC maxNrcResidentBytes must be a positive safe integer; got ${cfg.maxNrcResidentBytes}`,
+    );
+  }
+  const inputWidth =
+    cfg.levels * cfg.featuresPerEntry + 2 * cfg.oneBlobBins + 7;
+  if (!Number.isSafeInteger(inputWidth) || inputWidth > cfg.width) {
+    throw new RangeError(
+      `NRC encoded input width ${inputWidth} exceeds MLP width ${cfg.width}`,
+    );
+  }
+  return cfg;
 }
+
+const OUT_W = 3; // RGB radiance
+const U32_MAX = 0xffff_ffff;
+
 
 function initialHashGridTableData(tableScalars: number): Float32Array {
   const tableData = new Float32Array(tableScalars);
@@ -153,52 +215,182 @@ function packNrcConfigUbo(
   u[7] = cfg.recordCap >>> 0;
   u[8] = recordStride >>> 0;
   f[9] = 1.0;
-  u[10] = trainedSteps >>> 0;
-  u[11] = Math.max(0, Math.floor(cfg.warmupSteps ?? DEFAULT_NRC_CONFIG.warmupSteps ?? 8)) >>> 0;
+
+  u[10] = Math.min(U32_MAX, trainedSteps) >>> 0;
+  u[11] = Math.min(
+    U32_MAX,
+    cfg.warmupSteps ?? DEFAULT_NRC_CONFIG.warmupSteps ?? 8,
+  ) >>> 0;
   return ab;
 }
 
+export type NrcSubsystemLifecycleState =
+  | 'new'
+  | 'initializing'
+  | 'ready'
+  | 'disposed';
+
+interface NrcReadbackTicket {
+  readonly buffer: GPUBuffer;
+  readonly generation: number;
+  readonly sequence: number;
+  destroyed: boolean;
+}
+
+type NrcReadbackState =
+  | { readonly kind: 'idle' }
+  | { readonly kind: 'copy-pending'; readonly ticket: NrcReadbackTicket }
+  | { readonly kind: 'copy-recorded'; readonly ticket: NrcReadbackTicket }
+  | { readonly kind: 'mapping'; readonly ticket: NrcReadbackTicket }
+  | { readonly kind: 'disposed' };
+interface NrcInitializationCandidate {
+  trainer?: FusedMlpTrainer;
+  tableTrainer?: HashGridTableTrainer;
+  tablesBuf?: GPUBuffer;
+  levelsBuf?: GPUBuffer;
+  inferenceArenaA?: GPUBuffer;
+  inferenceArenaB?: GPUBuffer;
+  runtimeArena?: GPUBuffer;
+  cfgUbo?: GPUBuffer;
+}
+
+function destroyCandidateBuffer(buffer: GPUBuffer | undefined): void {
+  if (!buffer) return;
+  try {
+    if (buffer.mapState === 'mapped' || buffer.mapState === 'pending') {
+      buffer.unmap();
+    }
+  } catch {
+    // Rollback must continue so one broken wrapper cannot leak later buffers.
+  }
+  try {
+    buffer.destroy();
+  } catch {
+    // Best-effort cleanup continues through every candidate resource.
+  }
+}
+
+function rollbackNrcInitialization(candidate: NrcInitializationCandidate): void {
+  try { candidate.tableTrainer?.dispose(); } catch { /* continue rollback */ }
+  destroyCandidateBuffer(candidate.cfgUbo);
+  destroyCandidateBuffer(candidate.runtimeArena);
+  destroyCandidateBuffer(candidate.inferenceArenaB);
+  destroyCandidateBuffer(candidate.inferenceArenaA);
+  destroyCandidateBuffer(candidate.levelsBuf);
+  destroyCandidateBuffer(candidate.tablesBuf);
+  try { candidate.trainer?.dispose(); } catch { /* continue rollback */ }
+}
 export class NrcSubsystem implements PipelineSubsystem {
   readonly cfg: NrcConfig;
   private readonly _device: GPUDevice;
-  private readonly _bglCache: BGLCache;
 
-  private _trainer!: FusedMlpTrainer;
+  private _trainer: FusedMlpTrainer | undefined;
   /** Raw encoded input width (MLP inW). */
   private _inW = 0;
   /** Record stride in f32s (= inW + OUT_W + 3 query-world-pos). */
   private _recordStride = 0;
 
-  // GPU resources the gi-ris NRC query @group(4) binds.
-  private _tablesBuf!: GPUBuffer;   // hash-grid feature tables (f32, concatenated)
-  private _levelsBuf!: GPUBuffer;   // NrcLevelDesc[] (resolution, tableSize, tableOffset, _pad)
-  private _recordsBuf!: GPUBuffer;  // self-training records (read_write)
-  private _cfgUbo!: GPUBuffer;      // NrcCfgUBO
-  private _recordReadback!: GPUBuffer; // MAP_READ staging for the record gather
-  // H27 — per-slot atomic claim flags (one u32 per recordCap slot). Prevents
-  // torn records when two invocations alias to the same slot.  Cleared at the
-  // start of each active frame via clearSlotClaims().
-  private _slotClaimsBuf!: GPUBuffer;
-  private _bindGroup!: GPUBindGroup;
+  // Trainer-owned trainables remain private. The renderer sees one immutable,
+  // versioned inference snapshot and one packed mutable runtime arena.
+  private _tablesBuf: GPUBuffer | undefined;   // hash-grid feature tables (f32, concatenated)
+  private _levelsBuf: GPUBuffer | undefined;   // NrcLevelDesc[] (resolution, tableSize, tableOffset, _pad)
+  private _cfgUbo: GPUBuffer | undefined;      // NrcCfgUBO
+  private _activeInferenceArena: GPUBuffer | undefined;
+  private _spareInferenceArena: GPUBuffer | undefined;
+  private _runtimeArena: GPUBuffer | undefined;
+  private _inferenceLayout: NrcInferenceArenaLayout | undefined;
+  private _runtimeLayout: NrcRuntimeArenaLayout | undefined;
+  private _inferenceEpoch = 0;
+  private _runtimeEpoch = 0;
+  private _recordByteSize = 0;
+  private _readbackByteSize = 0;
 
   // ── Hash-grid TABLE training (the trainable encoding). ──
   // Encode-backward scatter → grad finalize → Adam over _tablesBuf with its own
   // moment state. This is what makes the multiresolution encoding LEARN (Müller
   // 2022 Instant-NGP §4); without it the tables stay frozen at random init. The
   // pipeline + its GPU buffers live in the peer {@link HashGridTableTrainer}.
-  private _tableTrainer!: HashGridTableTrainer;
+  private _tableTrainer: HashGridTableTrainer | undefined;
 
   // Host-side staging for the train batch (re-used each frame).
-  private _batchX!: Float32Array;
-  private _batchY!: Float32Array;
-  private _batchPos!: Float32Array;  // [recordCap × 3] dense query positions
-  private _readPending = false;
+  private _batchX: Float32Array | undefined;
+  private _batchY: Float32Array | undefined;
+  private _batchPos: Float32Array | undefined;  // [recordCap × 3] dense query positions
+  private _readbackState: NrcReadbackState = { kind: 'idle' };
+  private _readbackSequence = 0;
+  private _lastGpuDiagnostics = new Uint32Array(NRC_DIAGNOSTIC_COUNT);
+  private _hostDroppedNonFiniteRecords = 0;
+  private _hostClampedTargets = 0;
+  private _readbackOverlapSkips = 0;
+  private _staleReadbacks = 0;
+  private _trainingFailures = 0;
   private _trainedSteps = 0;
+  private _generation = 0;
+  private _lifecycleState: NrcSubsystemLifecycleState = 'new';
 
-  constructor(device: GPUDevice, bglCache: BGLCache, cfg: Partial<NrcConfig> = {}) {
+  constructor(device: GPUDevice, _bglCache: BGLCache, cfg: Partial<NrcConfig> = {}) {
     this._device = device;
-    this._bglCache = bglCache;
-    this.cfg = { ...DEFAULT_NRC_CONFIG, ...cfg };
+    this.cfg = resolveNrcConfig(cfg);
+  }
+
+  /**
+   * Explicit lifecycle contract. Failed initialization rolls back to `new` and
+   * may be retried. `disposed` is terminal; a disposed subsystem never rebuilds.
+   */
+  get lifecycleState(): NrcSubsystemLifecycleState {
+    return this._lifecycleState;
+  }
+
+  private _assertReady(method: string): void {
+    if (this._lifecycleState !== 'ready') {
+      throw new Error(
+        `NrcSubsystem.${method}() requires state 'ready'; current state is ` +
+        `'${this._lifecycleState}'`,
+      );
+    }
+  }
+
+  private _destroyReadbackTicket(ticket: NrcReadbackTicket): void {
+    if (ticket.destroyed) return;
+    ticket.destroyed = true;
+    try {
+      if (ticket.buffer.mapState === 'mapped' || ticket.buffer.mapState === 'pending') ticket.buffer.unmap();
+    } catch {
+      // Mapping may already have been cancelled by device loss.
+    }
+    try { ticket.buffer.destroy(); } catch { /* wrapper invalidation is terminal */ }
+  }
+
+  /** Last completed GPU epoch plus cumulative host-side rejection telemetry. */
+  diagnostics(): NrcDiagnostics {
+    const footprint = computeNrcResourceFootprint(this.cfg);
+    return {
+      droppedRecords: this._lastGpuDiagnostics[NRC_DIAGNOSTIC_INDEX.droppedRecords] ?? 0,
+      saturatedValues: this._lastGpuDiagnostics[NRC_DIAGNOSTIC_INDEX.saturatedValues] ?? 0,
+      nonFiniteValues: this._lastGpuDiagnostics[NRC_DIAGNOSTIC_INDEX.nonFiniteValues] ?? 0,
+      invalidPdfs: this._lastGpuDiagnostics[NRC_DIAGNOSTIC_INDEX.invalidPdfs] ?? 0,
+      droppedUpdates: this._lastGpuDiagnostics[NRC_DIAGNOSTIC_INDEX.droppedUpdates] ?? 0,
+      hostDroppedNonFiniteRecords: this._hostDroppedNonFiniteRecords,
+      hostClampedTargets: this._hostClampedTargets,
+      readbackOverlapSkips: this._readbackOverlapSkips,
+      staleReadbacks: this._staleReadbacks,
+      trainingFailures: this._trainingFailures,
+      trainedSteps: this._trainedSteps,
+      persistentBufferCount: footprint.persistentBufferCount,
+      persistentBufferBytes: footprint.persistentBufferBytes,
+      peakResidentBufferCount: footprint.peakResidentBufferCount,
+      peakResidentBufferBytes: footprint.peakResidentBufferBytes,
+    };
+  }
+
+  private _assertInitializationActive(): void {
+    if (this._lifecycleState !== 'initializing') {
+      throw new Error(
+        this._lifecycleState === 'disposed'
+          ? 'NrcSubsystem was disposed during initialize(); disposed is terminal'
+          : `NrcSubsystem initialization left the initializing state unexpectedly`,
+      );
+    }
   }
 
   /** The encoding/MLP config the gi-ris NRC WGSL bakes its sizes from. MUST be
@@ -220,131 +412,370 @@ export class NrcSubsystem implements PipelineSubsystem {
     aabbMin: readonly [number, number, number],
     aabbMax: readonly [number, number, number],
   ): Promise<void> {
-    const d = this._device;
-    const cfg = this.cfg;
-    this._trainedSteps = 0;
-    const enc = encodingConfig(cfg, aabbMin, aabbMax);
-    this._inW = nrcInputWidth(enc);
+    if (this._lifecycleState === 'disposed') {
+      throw new Error(
+        'NrcSubsystem.initialize() called after dispose(); disposed is terminal',
+      );
+    }
+    if (this._lifecycleState === 'initializing') {
+      throw new Error('NrcSubsystem.initialize() is already in progress');
+    }
+    if (this._lifecycleState === 'ready') {
+      throw new Error(
+        'NrcSubsystem.initialize() called while ready; use resetForSceneBounds()',
+      );
+    }
+
+    this._lifecycleState = 'initializing';
+    const candidate: NrcInitializationCandidate = {};
+    try {
+      const d = this._device;
+      const cfg = this.cfg;
+      const footprint = preflightNrcResources(d, cfg, aabbMin, aabbMax);
+      const inW = footprint.inW;
     // record = [inW encoded input | OUT_W radiance target | 3 query world pos].
     // The +3 carries the raw query position so the hash-grid encode-backward can
     // recompute the trilinear corners (the encoded input alone is not invertible
     // — the hash forward collides). Data-only: the gate-OFF path writes no
-    // records, so this stride change is byte-invisible when nrcEnabled=0.
-    this._recordStride = this._inW + OUT_W + 3;
+      // records, so this stride change is byte-invisible when nrcEnabled=0.
+      const recordStride = footprint.recordStride;
+      const recordByteSize = footprint.recordBytes;
+      const readbackByteSize = recordByteSize + NRC_DIAGNOSTIC_BYTES;
+      const runtimeLayout = footprint.runtimeArenaLayout;
+      const runtimeEpoch = 1;
+      const runtimeArena = d.createBuffer({
+        label: 'nrc-runtime-arena',
+        size: runtimeLayout.byteSize,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
+      });
+      candidate.runtimeArena = runtimeArena;
+      d.queue.writeBuffer(
+        runtimeArena,
+        runtimeLayout.headerByteOffset,
+        buildNrcRuntimeArenaHeader(
+          runtimeLayout, runtimeEpoch, 0, cfg.recordCap, recordStride,
+        ) as unknown as BufferSource,
+      );
 
     // ── Trainer (the cache MLP) ──
-    const spec: FusedNetSpec = { inW: this._inW, W: cfg.width, outW: OUT_W, hidden: cfg.hidden };
-    const tcfg: FusedTrainerConfig = { useF16: cfg.useF16, tileB: cfg.tileB };
-    this._trainer = new FusedMlpTrainer(d, spec, tcfg);
-    await this._trainer.build(cfg.recordCap);
-    // He-init the MLP so the query is well-conditioned from frame 0.
-    const { w, b } = heInit(this._trainer);
-    this._trainer.setWeights(w, b);
+      const spec: FusedNetSpec = { inW, W: cfg.width, outW: OUT_W, hidden: cfg.hidden };
+      const tcfg: FusedTrainerConfig = { useF16: cfg.useF16, tileB: cfg.tileB };
+      // Diagnostics occupy words 0..N of the runtime arena, preserving the
+      // trainer kernels' existing zero-based array<atomic<u32>> contract.
+      const trainer = new FusedMlpTrainer(d, spec, tcfg, runtimeArena);
+      candidate.trainer = trainer;
+      await trainer.build(cfg.recordCap);
+      this._assertInitializationActive();
+      // He-init the MLP so the query is well-conditioned from frame 0.
+      const { w, b } = heInit(trainer);
+      trainer.setWeights(w, b);
 
     // ── Hash-grid feature tables (concatenated f32, all levels) ──
     const F = cfg.featuresPerEntry;
     let totalRows = 0;
     const levelDescs = new Uint32Array(cfg.levels * 4);
-    const tableOffsets: number[] = [];
     for (let l = 0; l < cfg.levels; l++) {
-      tableOffsets.push(totalRows * F);
-      levelDescs[l * 4 + 0] = levelResolution(cfg.nMin, cfg.growth, l) >>> 0;
+      levelDescs[l * 4 + 0] = footprint.levelResolutions[l]! >>> 0;
       levelDescs[l * 4 + 1] = cfg.tableSize >>> 0;
       levelDescs[l * 4 + 2] = (totalRows * F) >>> 0; // tableOffset in scalar units
       levelDescs[l * 4 + 3] = 0;
       totalRows += cfg.tableSize;
     }
-    const tableScalars = totalRows * F;
+    const tableScalars = footprint.tableScalars;
     // Small random table init (Instant-NGP §3: U(-1e-4, 1e-4)).
     const tableData = initialHashGridTableData(tableScalars);
 
     const ST = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST;
     // The tables buffer is now WRITTEN-EVERY-FRAME by the table Adam step (it was
     // previously write-once → frozen). It also needs COPY_SRC for liveness probes.
-    this._tablesBuf = d.createBuffer({
-      label: 'nrc-tables', size: Math.max(16, tableScalars * 4),
-      usage: ST | GPUBufferUsage.COPY_SRC,
-    });
-    d.queue.writeBuffer(this._tablesBuf, 0, tableData as unknown as BufferSource);
-    this._levelsBuf = d.createBuffer({ label: 'nrc-levels', size: Math.max(16, cfg.levels * 16), usage: ST });
-    d.queue.writeBuffer(this._levelsBuf, 0, levelDescs);
+      const tablesBuf = d.createBuffer({
+        label: 'nrc-tables', size: Math.max(16, tableScalars * 4),
+        usage: ST | GPUBufferUsage.COPY_SRC,
+      });
+
+      candidate.tablesBuf = tablesBuf;
+      d.queue.writeBuffer(tablesBuf, 0, tableData as unknown as BufferSource);
+      const levelsBuf = d.createBuffer({
+        // Republished into the spare inference arena after every successful
+        // training transaction, so the descriptor source must be copyable.
+        label: 'nrc-levels',
+        size: Math.max(16, cfg.levels * 16),
+        usage: ST | GPUBufferUsage.COPY_SRC,
+      });
+      candidate.levelsBuf = levelsBuf;
+      d.queue.writeBuffer(levelsBuf, 0, levelDescs);
 
     // ── Hash-grid TABLE trainer (the trainable encoding). ──
     // Owns the encode-backward scatter + grad-finalize + table-Adam pipeline and
     // its GPU buffers (gradTablesFx/F, m/vTables, posBuf, encBwdParams + the two
     // persistent UBOs). It Adam-updates _tablesBuf in place using _trainer's
     // finalized dL/dX. (Müller 2022 Instant-NGP §4.)
-    this._tableTrainer = new HashGridTableTrainer(d, {
-      levels: cfg.levels,
-      featuresPerEntry: cfg.featuresPerEntry,
-      inW: this._inW,
-      tableScalars,
-      recordCap: cfg.recordCap,
-      tableLearningRate: cfg.tableLearningRate,
-    });
-    await this._tableTrainer.build(
-      { gradInputF: this._trainer.gradInputF!, tablesBuf: this._tablesBuf, levelsBuf: this._levelsBuf },
-      aabbMin, aabbMax,
-    );
+      const tableTrainer = new HashGridTableTrainer(d, {
+        levels: cfg.levels,
+        featuresPerEntry: cfg.featuresPerEntry,
+        inW,
+        tableScalars,
+        recordCap: cfg.recordCap,
+        tableLearningRate: cfg.tableLearningRate,
+        }, runtimeArena);
+      candidate.tableTrainer = tableTrainer;
+      await tableTrainer.build(
+        { gradInputF: trainer.gradInputF!, tablesBuf, levelsBuf },
+        aabbMin, aabbMax,
+      );
+      this._assertInitializationActive();
 
-    // ── Record-gather buffer (read_write from the shader; COPY_SRC for readback) ──
-    const recordScalars = cfg.recordCap * this._recordStride;
-    this._recordsBuf = d.createBuffer({
-      label: 'nrc-records',
-      size: Math.max(16, recordScalars * 4),
-      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
-    });
-    this._recordReadback = d.createBuffer({
-      label: 'nrc-records-readback',
-      size: Math.max(16, recordScalars * 4),
-      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
-    });
+      const inferenceLayout = footprint.inferenceArenaLayout;
+      const inferencePayload = {
+        weightsBytes: w.byteLength,
+        biasesBytes: b.byteLength,
+        tablesBytes: tableData.byteLength,
+        levelsBytes: levelDescs.byteLength,
+      };
+      const inferenceEpoch = 1;
+      const makeInferenceArena = (label: string): GPUBuffer => {
+        const buffer = d.createBuffer({
+          label,
+          size: inferenceLayout.byteSize,
+          usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+          mappedAtCreation: true,
+        });
+        const bytes = new Uint8Array(buffer.getMappedRange());
+        bytes.set(new Uint8Array(
+          buildNrcInferenceArenaHeader(inferenceLayout, inferencePayload, inferenceEpoch, 0).buffer,
+        ));
+        bytes.set(new Uint8Array(w.buffer, w.byteOffset, w.byteLength), inferenceLayout.weightsByteOffset);
+        bytes.set(new Uint8Array(b.buffer, b.byteOffset, b.byteLength), inferenceLayout.biasesByteOffset);
+        bytes.set(new Uint8Array(tableData.buffer), inferenceLayout.tablesByteOffset);
+        bytes.set(new Uint8Array(levelDescs.buffer), inferenceLayout.levelsByteOffset);
+        buffer.unmap();
+        return buffer;
+      };
+      const inferenceArenaA = makeInferenceArena('nrc-inference-arena-active');
+      candidate.inferenceArenaA = inferenceArenaA;
+      const inferenceArenaB = makeInferenceArena('nrc-inference-arena-spare');
+      candidate.inferenceArenaB = inferenceArenaB;
 
     // ── Config UBO (matches NrcCfgUBO in nrcQuery.wgsl: vec3+f32, vec3+u32, ...) ──
-    this._cfgUbo = d.createBuffer({ label: 'nrc-cfg', size: 48, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
-    // f[9] = cameraPixelPdf — initialised to 1.0 (pinhole, unit resolution).
-    // Updated every frame by updateCameraPixelPdf() once the host supplies the
-    // camera projection matrix and render resolution.
-    d.queue.writeBuffer(this._cfgUbo, 0, packNrcConfigUbo(
-      cfg, this._trainedSteps, this._recordStride, aabbMin, aabbMax,
-    ));
+      const cfgUbo = d.createBuffer({
+        label: 'nrc-cfg', size: 48,
+        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+      });
+      candidate.cfgUbo = cfgUbo;
+      // f[9] = cameraPixelPdf — initialised to 1.0 (pinhole, unit resolution).
+      // Updated every frame by updateCameraPixelPdf() once the host supplies the
+      // camera projection matrix and render resolution.
+      d.queue.writeBuffer(cfgUbo, 0, packNrcConfigUbo(
+        cfg, 0, recordStride, aabbMin, aabbMax,
+      ));
 
-    // ── H27 — per-slot atomic claim flags (one u32 per recordCap slot). ──
-    // The GPU shader uses atomicCompareExchangeWeak at @group(4) @binding(6)
-    // to ensure only the first invocation to claim a slot writes its record
-    // (preventing torn records when two pixels alias to the same slot).
-    // The host clears this buffer to zero each frame via clearSlotClaims(),
-    // which also clears stale record payloads for slots no invocation claims.
-    this._slotClaimsBuf = d.createBuffer({
-      label: 'nrc-slot-claims',
-      size: Math.max(16, cfg.recordCap * 4),
-      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-    });
-    // Initialize to all-zeros (all slots unclaimed).
-    d.queue.writeBuffer(this._slotClaimsBuf, 0, new Uint32Array(cfg.recordCap));
+      // Host staging is also candidate state: allocation failure rolls back GPU ownership.
+      const batchX = new Float32Array(cfg.recordCap * inW);
+      const batchY = new Float32Array(cfg.recordCap * OUT_W);
+      const batchPos = new Float32Array(cfg.recordCap * 3);
+      this._assertInitializationActive();
 
-    // ── The @group(4) bind group. nrcWeights/nrcBiases are the trainer's f32
-    //    MASTER buffers (always full-precision regardless of useF16). ──
-    this._bindGroup = d.createBindGroup({
-      label: 'nrc-bind-group',
-      layout: getNrcBindGroupLayout(d, this._bglCache),
-      entries: [
-        { binding: 0, resource: { buffer: this._trainer.wMasterGpu! } },
-        { binding: 1, resource: { buffer: this._trainer.bMasterGpu! } },
-        { binding: 2, resource: { buffer: this._tablesBuf } },
-        { binding: 3, resource: { buffer: this._levelsBuf } },
-        { binding: 4, resource: { buffer: this._recordsBuf } },
-        { binding: 5, resource: { buffer: this._cfgUbo } },
-        { binding: 6, resource: { buffer: this._slotClaimsBuf } },
-      ],
-    });
+      // Publish only after every async build, allocation, upload, and bind succeeds.
+      this._trainer = trainer;
+      this._tableTrainer = tableTrainer;
+      this._tablesBuf = tablesBuf;
+      this._levelsBuf = levelsBuf;
+      this._cfgUbo = cfgUbo;
+      this._activeInferenceArena = inferenceArenaA;
+      this._spareInferenceArena = inferenceArenaB;
+      this._runtimeArena = runtimeArena;
+      this._inferenceLayout = inferenceLayout;
+      this._runtimeLayout = runtimeLayout;
+      this._inferenceEpoch = inferenceEpoch;
+      this._runtimeEpoch = runtimeEpoch;
+      this._batchX = batchX;
+      this._batchY = batchY;
+      this._batchPos = batchPos;
+      this._inW = inW;
+      this._recordStride = recordStride;
+      this._recordByteSize = recordByteSize;
+      this._readbackByteSize = readbackByteSize;
+      this._trainedSteps = 0;
+      this._readbackState = { kind: 'idle' };
+      this._lifecycleState = 'ready';
+    } catch (error) {
+      rollbackNrcInitialization(candidate);
+      if (this.lifecycleState !== 'disposed') {
+        this._lifecycleState = 'new';
+      }
+      throw error;
+    }
+  }
+  prepareSceneReset(
+    encoder: GPUCommandEncoder,
+    aabbMin: readonly [number, number, number],
+    aabbMax: readonly [number, number, number],
+  ): PreparedSceneMutation {
+    this._assertReady('prepareSceneReset');
+    validateNrcAabb(aabbMin, aabbMax);
+    const d = this._device;
+    const trainer = this._trainer!;
+    const tableTrainer = this._tableTrainer!;
+    const tablesBuf = this._tablesBuf!;
+    const levelsBuf = this._levelsBuf!;
+    const cfgUbo = this._cfgUbo!;
+    const inferenceLayout = this._inferenceLayout!;
+    const runtimeLayout = this._runtimeLayout!;
+    const inferenceCandidate = this._spareInferenceArena!;
+    const runtimeArena = this._runtimeArena!;
+    const nextEpoch = nextNrcArenaEpoch(Math.max(this._inferenceEpoch, this._runtimeEpoch));
+    const nextGeneration = (this._generation + 1) >>> 0;
+    const staging: GPUBuffer[] = [];
+    const stage = (data: ArrayBufferView | ArrayBuffer): GPUBuffer => {
+      const bytes = data instanceof ArrayBuffer
+        ? new Uint8Array(data)
+        : new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+      const buffer = d.createBuffer({
+        label: 'nrc-scene-reset-staging',
+        size: Math.max(4, (bytes.byteLength + 3) & ~3),
+        usage: GPUBufferUsage.COPY_SRC,
+        mappedAtCreation: true,
+      });
+      staging.push(buffer);
+      new Uint8Array(buffer.getMappedRange()).set(bytes);
+      buffer.unmap();
+      return buffer;
+    };
 
-    // (The EncBwdParams UBO + the grad-finalize count UBO are written once inside
-    // HashGridTableTrainer.build() above.)
+    let trainerReset: ReturnType<FusedMlpTrainer['prepareSceneReset']> | null = null;
+    let tableReset: ReturnType<HashGridTableTrainer['prepareSceneReset']> | null = null;
+    try {
+      trainerReset = trainer.prepareSceneReset(encoder);
+      tableReset = tableTrainer.prepareSceneReset(encoder, aabbMin, aabbMax);
+      const tableScalars = this.cfg.levels * this.cfg.tableSize * this.cfg.featuresPerEntry;
+      const tableData = initialHashGridTableData(tableScalars);
+      const tableSource = stage(tableData);
+      encoder.copyBufferToBuffer(tableSource, 0, tablesBuf, 0, tableData.byteLength);
+      // Build the complete spare snapshot from the reset trainer/table state.
+      // Header publication is encoded last, so an interrupted command build can
+      // never make a partially copied candidate live.
+      encoder.copyBufferToBuffer(
+        trainer.wMasterGpu!, 0, inferenceCandidate,
+        inferenceLayout.weightsByteOffset, trainer.wMaster.length * 4,
+      );
+      encoder.copyBufferToBuffer(
+        trainer.bMasterGpu!, 0, inferenceCandidate,
+        inferenceLayout.biasesByteOffset, trainer.bMaster.length * 4,
+      );
+      encoder.copyBufferToBuffer(
+        tablesBuf, 0, inferenceCandidate,
+        inferenceLayout.tablesByteOffset, tableData.byteLength,
+      );
+      encoder.copyBufferToBuffer(
+        levelsBuf, 0, inferenceCandidate,
+        inferenceLayout.levelsByteOffset, this.cfg.levels * 16,
+      );
+      const cfgData = packNrcConfigUbo(
+        this.cfg, 0, this._recordStride, aabbMin, aabbMax,
+      );
+      const cfgSource = stage(cfgData);
+      encoder.copyBufferToBuffer(cfgSource, 0, cfgUbo, 0, cfgData.byteLength);
+      encoder.clearBuffer(runtimeArena, runtimeLayout.recordsByteOffset, runtimeLayout.recordsBytes);
+      encoder.clearBuffer(runtimeArena, runtimeLayout.diagnosticsByteOffset, runtimeLayout.diagnosticsBytes);
+      encoder.clearBuffer(runtimeArena, runtimeLayout.claimsByteOffset, runtimeLayout.claimsBytes);
+      const inferenceHeader = buildNrcInferenceArenaHeader(inferenceLayout, {
+        weightsBytes: trainer.wMaster.length * 4,
+        biasesBytes: trainer.bMaster.length * 4,
+        tablesBytes: tableData.byteLength,
+        levelsBytes: this.cfg.levels * 16,
+      }, nextEpoch, nextGeneration);
+      const runtimeHeader = buildNrcRuntimeArenaHeader(
+        runtimeLayout, nextEpoch, nextGeneration, this.cfg.recordCap, this._recordStride,
+      );
+      const inferenceHeaderSource = stage(inferenceHeader);
+      const runtimeHeaderSource = stage(runtimeHeader);
+      encoder.copyBufferToBuffer(inferenceHeaderSource, 0, inferenceCandidate, 0, inferenceHeader.byteLength);
+      encoder.copyBufferToBuffer(
+        runtimeHeaderSource, 0, runtimeArena, runtimeLayout.headerByteOffset, runtimeHeader.byteLength,
+      );
+    } catch (error) {
+      const cleanups: SceneMutationCleanup[] = [];
+      if (trainerReset) {
+        const reset = trainerReset;
+        cleanups.push(() => reset.rollback());
+      }
+      if (tableReset) {
+        const reset = tableReset;
+        cleanups.push(() => reset.rollback());
+      }
+      cleanups.push(...staging.map((buffer) => () => buffer.destroy()));
+      rethrowWithSceneMutationCleanup(
+        error,
+        cleanups,
+        'NRC scene-reset preparation failed and cleanup also failed',
+      );
+    }
 
-    this._batchX = new Float32Array(cfg.recordCap * this._inW);
-    this._batchY = new Float32Array(cfg.recordCap * OUT_W);
-    this._batchPos = new Float32Array(cfg.recordCap * 3);
+    const oldGeneration = this._generation;
+    const oldTrainedSteps = this._trainedSteps;
+    const oldActiveInference = this._activeInferenceArena!;
+    const oldSpareInference = this._spareInferenceArena!;
+    const oldInferenceEpoch = this._inferenceEpoch;
+    const oldRuntimeEpoch = this._runtimeEpoch;
+    let committed = false;
+    const oldGpuDiagnostics = this._lastGpuDiagnostics.slice();
+    let closed = false;
+    const destroyStaging = (): void => {
+      runSceneMutationCleanups(
+        [
+          () => trainerReset.finalize(),
+          () => tableReset.finalize(),
+          ...staging.map((buffer) => () => buffer.destroy()),
+        ],
+        'NRC scene-reset retirement failed',
+      );
+    };
+    return {
+      commit: () => {
+        if (closed || committed) return;
+        trainerReset.commitCpu();
+        tableReset.commitCpu();
+        this._generation = nextGeneration;
+        this._activeInferenceArena = oldSpareInference;
+        this._spareInferenceArena = oldActiveInference;
+        this._inferenceEpoch = nextEpoch;
+        this._runtimeEpoch = nextEpoch;
+        this._lastGpuDiagnostics.fill(0);
+        this._trainedSteps = 0;
+        committed = true;
+      },
+      rollback: () => {
+        if (closed) return;
+        closed = true;
+        runSceneMutationCleanups(
+          [
+            () => trainerReset.rollback(),
+            () => tableReset.rollback(),
+            () => {
+              if (!committed) return;
+              this._generation = oldGeneration;
+              this._activeInferenceArena = oldActiveInference;
+              this._spareInferenceArena = oldSpareInference;
+              this._inferenceEpoch = oldInferenceEpoch;
+              this._runtimeEpoch = oldRuntimeEpoch;
+              this._trainedSteps = oldTrainedSteps;
+              this._lastGpuDiagnostics.set(oldGpuDiagnostics);
+            },
+            ...staging.map((buffer) => () => buffer.destroy()),
+          ],
+          'NRC scene-reset rollback failed',
+        );
+      },
+      finalize: () => {
+        if (closed) return;
+        try {
+          void d.queue.onSubmittedWorkDone().then(destroyStaging, destroyStaging);
+        } catch {
+          destroyStaging();
+        }
+        closed = true;
+      },
+    };
   }
 
   /**
@@ -359,41 +790,35 @@ export class NrcSubsystem implements PipelineSubsystem {
     aabbMin: readonly [number, number, number],
     aabbMax: readonly [number, number, number],
   ): void {
-    const d = this._device;
-    const cfg = this.cfg;
-    this._readPending = false;
-    this._trainedSteps = 0;
-
-    const { w, b } = heInit(this._trainer);
-    this._trainer.setWeights(w, b);
-    this._trainer.adamT = 0;
-
-    const tableScalars = cfg.levels * cfg.tableSize * cfg.featuresPerEntry;
-    d.queue.writeBuffer(this._tablesBuf, 0, initialHashGridTableData(tableScalars) as unknown as BufferSource);
-    this._tableTrainer.resetForSceneBounds(aabbMin, aabbMax);
-    d.queue.writeBuffer(this._cfgUbo, 0, packNrcConfigUbo(
-      cfg, this._trainedSteps, this._recordStride, aabbMin, aabbMax,
-    ));
-
-    const encoder = d.createCommandEncoder({ label: 'nrc-scene-reset-clear' });
-    encoder.clearBuffer(this._recordsBuf);
-    encoder.clearBuffer(this._slotClaimsBuf);
-    encoder.clearBuffer(this._trainer.gradWfx!);
-    encoder.clearBuffer(this._trainer.gradBfx!);
-    encoder.clearBuffer(this._trainer.gradInputFx!);
-    encoder.clearBuffer(this._trainer.gradWf!);
-    encoder.clearBuffer(this._trainer.gradBf!);
-    encoder.clearBuffer(this._trainer.gradInputF!);
-    encoder.clearBuffer(this._trainer.mW!);
-    encoder.clearBuffer(this._trainer.vW!);
-    encoder.clearBuffer(this._trainer.mB!);
-    encoder.clearBuffer(this._trainer.vB!);
-    d.queue.submit([encoder.finish()]);
+    this._assertReady('resetForSceneBounds');
+    validateNrcAabb(aabbMin, aabbMax);
+    const encoder = this._device.createCommandEncoder({ label: 'nrc-scene-reset' });
+    const mutation = this.prepareSceneReset(encoder, aabbMin, aabbMax);
+    try {
+      mutation.commit();
+      this._device.queue.submit([encoder.finish()]);
+    } catch (error) {
+      rethrowWithSceneMutationCleanup(
+        error,
+        [() => mutation.rollback()],
+        'NRC scene reset failed and rollback also failed',
+      );
+    }
+    mutation.finalize();
   }
 
-  /** The `@group(4)` NRC bind group the gi-ris NRC pipeline binds at slot 4. */
-  bindGroup(): GPUBindGroup {
-    return this._bindGroup;
+  /** Resources appended to the NRC-specific hybrid-layers group at bindings 7..9. */
+  queryBindings(): {
+    readonly inferenceArenaBuffer: GPUBuffer;
+    readonly runtimeArenaBuffer: GPUBuffer;
+    readonly configBuffer: GPUBuffer;
+  } {
+    this._assertReady('queryBindings');
+    return {
+      inferenceArenaBuffer: this._activeInferenceArena!,
+      runtimeArenaBuffer: this._runtimeArena!,
+      configBuffer: this._cfgUbo!,
+    };
   }
 
   /**
@@ -409,8 +834,13 @@ export class NrcSubsystem implements PipelineSubsystem {
    * empty-slot contract for slots no invocation fills this frame.
    */
   clearSlotClaims(encoder: GPUCommandEncoder): void {
-    encoder.clearBuffer(this._slotClaimsBuf);
-    encoder.clearBuffer(this._recordsBuf);
+    this._assertReady('clearSlotClaims');
+    const layout = this._runtimeLayout!;
+    encoder.clearBuffer(this._runtimeArena!, layout.claimsByteOffset, layout.claimsBytes);
+    encoder.clearBuffer(this._runtimeArena!, layout.recordsByteOffset, layout.recordsBytes);
+    encoder.clearBuffer(
+      this._runtimeArena!, layout.diagnosticsByteOffset, layout.diagnosticsBytes,
+    );
   }
 
   /**
@@ -420,11 +850,11 @@ export class NrcSubsystem implements PipelineSubsystem {
    * of the hard-coded 1.0 fallback.
    *
    * For a pinhole camera with a column-major perspective projection matrix:
-   *   - projMatrix[5] = 1/tan(fovY/2)  (the y-focal-length element)
-   *   - Pixel solid angle ≈ 4·tan²(fovY/2) / (W·H) = 4 / (projMatrix[5]² · W · H)
-   *   - Camera pdf = 1 / solidAngle = projMatrix[5]² · W · H / 4
+   *   - projMatrix[0], [5] are the x/y focal-length elements fx/fy.
+   *   - Centre-pixel solid angle ≈ 4 / (|fx·fy| · W · H).
+   *   - The corresponding within-pixel directional pdf is its reciprocal.
    *
-   * @param projMatrix  Column-major 4×4 perspective matrix (element [5] = cotfovY).
+   * @param projMatrix  Column-major 4×4 perspective matrix.
    * @param renderWidth  Render resolution width in pixels (internal, not CSS).
    * @param renderHeight Render resolution height in pixels (internal, not CSS).
    */
@@ -433,95 +863,322 @@ export class NrcSubsystem implements PipelineSubsystem {
     renderWidth: number,
     renderHeight: number,
   ): void {
-    // projMatrix[5] (column-major) = element at row 1, col 1 = 1/tan(fovY/2).
-    const cotFovY = projMatrix[5] ?? 1.0;
-    const pdf = Math.max(1e-6, (cotFovY * cotFovY * renderWidth * renderHeight) / 4);
+    this._assertReady('updateCameraPixelPdf');
+    if (projMatrix.length < 16) {
+      throw new RangeError(
+        `NRC projection matrix must contain 16 elements; got ${projMatrix.length}`,
+      );
+    }
+    const focalX = projMatrix[0]!;
+    const focalY = projMatrix[5]!;
+    if (!Number.isFinite(focalX) || focalX === 0
+        || !Number.isFinite(focalY) || focalY === 0) {
+      throw new RangeError(
+        `NRC projection focal terms must be finite and non-zero; got [${focalX}, ${focalY}]`,
+      );
+    }
+    if (!Number.isSafeInteger(renderWidth) || renderWidth <= 0
+        || !Number.isSafeInteger(renderHeight) || renderHeight <= 0) {
+      throw new RangeError(
+        `NRC render dimensions must be positive safe integers; got ${renderWidth}x${renderHeight}`,
+      );
+    }
+    // Centre-pixel solid angle is 4/(fx*fy*W*H). Using fy² is only correct for
+    // a square viewport and overestimates the camera PDF by the aspect ratio.
+    const rawPdf = Math.abs(focalX * focalY) * renderWidth * renderHeight / 4;
+    const pdf = Math.fround(rawPdf);
+    if (!Number.isFinite(pdf) || !(pdf > 0)) {
+      throw new RangeError(
+        `NRC camera pixel PDF must be finite, positive, and representable as f32; got ${rawPdf}`,
+      );
+    }
     const tmp = new Float32Array(1);
     tmp[0] = pdf;
     // Byte offset 36 = f32 index 9 in the UBO (after aabbMin, spreadC, aabbMax,
     // recordCap, recordStride — see nrcQuery.wgsl NrcCfgUBO layout).
-    this._device.queue.writeBuffer(this._cfgUbo, 36, tmp);
+    this._device.queue.writeBuffer(this._cfgUbo!, 36, tmp);
   }
 
-  private _writeTrainingGateState(): void {
+  private _writeTrainingGateState(trainedSteps = this._trainedSteps): void {
     const tmp = new Uint32Array(2);
-    tmp[0] = this._trainedSteps >>> 0;
-    tmp[1] = Math.max(0, Math.floor(this.cfg.warmupSteps ?? DEFAULT_NRC_CONFIG.warmupSteps ?? 8)) >>> 0;
-    this._device.queue.writeBuffer(this._cfgUbo, 40, tmp);
+    tmp[0] = Math.min(U32_MAX, trainedSteps) >>> 0;
+    tmp[1] = Math.min(
+      U32_MAX,
+      this.cfg.warmupSteps ?? DEFAULT_NRC_CONFIG.warmupSteps ?? 8,
+    ) >>> 0;
+    this._device.queue.writeBuffer(this._cfgUbo!, 40, tmp);
   }
 
-  /** Copy this frame's gathered records into the MAP_READ staging buffer. Called
-   *  by the engine on its own command encoder AFTER the gi-ris pass ran (so the
-   *  records the gi-ris pass wrote are present). Cheap (one B2B copy). */
-  recordCopyForReadback(encoder: GPUCommandEncoder): void {
-    encoder.copyBufferToBuffer(
-      this._recordsBuf, 0, this._recordReadback, 0, this._recordReadback.size,
-    );
-  }
-
-  /**
-   * Read back the gathered records and run ONE train step (host-owns-cadence).
-   * Async (maps the readback buffer); the engine awaits or fires-and-forgets per
-   * its cadence policy. Re-entrancy guarded: a still-pending readback skips this
-   * frame's train (the next frame picks up fresh records). An unfilled slot
-   * (NRC spread never fired for that pixel) has all-zero ENCODED INPUT — the
-   * GPU initialises the record buffer to zero and nrcWriteRecord only runs when
-   * nrcFired is true. Empty slots are detected by scanning the entire encoded-
-   * input prefix via unpackRecords; this keeps valid records whose first encoded
-   * feature is zero but later features are non-zero.
-   *
-   * A6 note: a FILLED slot whose target r.Lo is zero (occluded surface, r.W=0)
-   * is a VALID zero-radiance training sample — the NRC should predict black for
-   * occluded surfaces. The old all-zero-TARGET skip was replaced with the
-   * all-zero-ENCODED-INPUT skip so zero-radiance records are trained correctly.
-   */
-  async trainFromRecords(): Promise<void> {
-    if (this._readPending) return;
-    this._readPending = true;
+  /** Record one generation-tagged record+diagnostic snapshot for later mapping. */
+  recordCopyForReadback(
+    encoder: GPUCommandEncoder,
+    publication?: FramePublication,
+  ): void {
+    if (this._lifecycleState === 'disposed') return;
+    this._assertReady('recordCopyForReadback');
+    if (this._readbackState.kind !== 'idle') {
+      this._readbackOverlapSkips++;
+      return;
+    }
+    const buffer = this._device.createBuffer({
+      label: `nrc-readback-${this._readbackSequence + 1}`,
+      size: this._readbackByteSize,
+      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+    });
+    const ticket: NrcReadbackTicket = {
+      buffer,
+      generation: this._generation,
+      sequence: this._readbackSequence + 1,
+      destroyed: false,
+    };
+    // Reserve the unique readback slot before publication. A frame transaction
+    // may remain open while another caller attempts to encode work, and leaving
+    // the state idle here would allocate overlapping tickets that can overwrite
+    // each other (or be resurrected by a late publication after dispose()).
+    this._readbackState = { kind: 'copy-pending', ticket };
     try {
-      await this._recordReadback.mapAsync(GPUMapMode.READ);
-      const raw = new Float32Array(this._recordReadback.getMappedRange());
-      // Gap-detection + dense repack (A6 empty-slot semantics documented at
-      // unpackRecords). The pos column (offset inW + OUT_W) is repacked in
-      // lockstep so sample index s in the trainer batch == sample index s in
-      // posBuf == dL/dX row s. Re-uses the pre-allocated staging arrays.
-      const { filled } = unpackRecords(
-        raw, this.cfg.recordCap, this._recordStride, this._inW,
-        { x: this._batchX, y: this._batchY, pos: this._batchPos },
+      const layout = this._runtimeLayout!;
+      encoder.copyBufferToBuffer(
+        this._runtimeArena!, layout.recordsByteOffset,
+        buffer, 0, this._recordByteSize,
       );
-      this._recordReadback.unmap();
-      if (filled === 0) return; // nothing to learn this frame
-      this._trainer.setBatch(this._batchX, this._batchY);
-      // MLP step over only the dense filled prefix — also finalizes dL/dX into
-      // trainer.gradInputF (the encode-backward upstream signal). Then scatter
-      // dL/dfeature into the trainable hash-grid tables + run the TABLE Adam step
-      // (Müller 2022 Instant-NGP §4). Unfilled zero-padded tail rows no longer
-      // participate in either the loss normalization or dispatch extent.
-      this._trainer.trainStep(this.cfg.learningRate, filled);
-      // TABLE training step (encode-backward scatter → grad finalize → table
-      // Adam). Owned by the peer HashGridTableTrainer; it reads the trainer's
-      // finalized dL/dX + the dense query positions and Adam-updates _tablesBuf.
-      this._tableTrainer.step(this._batchPos, filled);
-      this._trainedSteps++;
-      this._writeTrainingGateState();
+      encoder.copyBufferToBuffer(
+        this._runtimeArena!, layout.diagnosticsByteOffset,
+        buffer, this._recordByteSize, NRC_DIAGNOSTIC_BYTES,
+      );
+      if (publication == null) {
+        // Standalone NRC harnesses submit their own encoder immediately.
+        this._readbackSequence = ticket.sequence;
+        this._readbackState = { kind: 'copy-recorded', ticket };
+      } else {
+        publication.stage(
+          () => {
+            if (this._lifecycleState === 'ready'
+                && ticket.generation === this._generation
+                && this._readbackState.kind === 'copy-pending'
+                && this._readbackState.ticket === ticket
+                && !ticket.destroyed) {
+              this._readbackSequence = ticket.sequence;
+              this._readbackState = { kind: 'copy-recorded', ticket };
+              return;
+            }
+            this._destroyReadbackTicket(ticket);
+            if (this._lifecycleState === 'ready'
+                && this._readbackState.kind === 'copy-pending'
+                && this._readbackState.ticket === ticket) {
+              this._readbackState = { kind: 'idle' };
+            }
+          },
+          () => {
+            this._destroyReadbackTicket(ticket);
+            if (this._lifecycleState === 'ready'
+                && this._readbackState.kind === 'copy-pending'
+                && this._readbackState.ticket === ticket) {
+              this._readbackState = { kind: 'idle' };
+            }
+          },
+        );
+      }
+    } catch (error) {
+      this._destroyReadbackTicket(ticket);
+      if (this._lifecycleState === 'ready'
+          && this._readbackState.kind === 'copy-pending'
+          && this._readbackState.ticket === ticket) {
+        this._readbackState = { kind: 'idle' };
+      }
+      throw error;
+    }
+  }
+
+  /** Map the unique snapshot, discard stale generations, then submit both trainers atomically. */
+  async trainFromRecords(): Promise<void> {
+    if (this._lifecycleState === 'disposed') return;
+    this._assertReady('trainFromRecords');
+    if (this._readbackState.kind !== 'copy-recorded') return;
+    const ticket = this._readbackState.ticket;
+    this._readbackState = { kind: 'mapping', ticket };
+    const trainer = this._trainer!;
+    const tableTrainer = this._tableTrainer!;
+    let mlpTransaction: ReturnType<FusedMlpTrainer['recordTrainStep']> = null;
+    let tableTransaction: ReturnType<HashGridTableTrainer['recordStep']> | null = null;
+    let publicationHeaderStaging: GPUBuffer | undefined;
+    let published = false;
+    let failureAlreadyCounted = false;
+    try {
+      await ticket.buffer.mapAsync(GPUMapMode.READ);
+      if (ticket.destroyed || this.lifecycleState === 'disposed') return;
+      const mapped = ticket.buffer.getMappedRange(0, this._readbackByteSize);
+      if (ticket.generation !== this._generation) {
+        this._staleReadbacks++;
+        return;
+      }
+      this._lastGpuDiagnostics.set(new Uint32Array(
+        mapped, this._recordByteSize, NRC_DIAGNOSTIC_COUNT,
+      ));
+      const unpacked = unpackRecords(
+        new Float32Array(mapped, 0, this._recordByteSize / Float32Array.BYTES_PER_ELEMENT),
+        this.cfg.recordCap,
+        this._recordStride,
+        this._inW,
+        { x: this._batchX!, y: this._batchY!, pos: this._batchPos! },
+      );
+      this._hostDroppedNonFiniteRecords += unpacked.droppedNonFinite;
+      this._hostClampedTargets += unpacked.clampedTargets;
+      if (unpacked.filled === 0) return;
+
+      trainer.setBatch(this._batchX!, this._batchY!);
+      const encoder = this._device.createCommandEncoder({ label: `nrc-train-${ticket.sequence}` });
+      mlpTransaction = trainer.recordTrainStep(encoder, this.cfg.learningRate, unpacked.filled);
+      if (!mlpTransaction) return;
+      tableTransaction = tableTrainer.recordStep(encoder, this._batchPos!, unpacked.filled);
+      const inferenceLayout = this._inferenceLayout!;
+      const inferenceCandidate = this._spareInferenceArena!;
+      const nextInferenceEpoch = nextNrcArenaEpoch(this._inferenceEpoch);
+      const weightsBytes = trainer.wMaster.length * Float32Array.BYTES_PER_ELEMENT;
+      const biasesBytes = trainer.bMaster.length * Float32Array.BYTES_PER_ELEMENT;
+      const tablesBytes = this.cfg.levels * this.cfg.tableSize
+        * this.cfg.featuresPerEntry * Float32Array.BYTES_PER_ELEMENT;
+      const levelsBytes = this.cfg.levels * 16;
+      encoder.copyBufferToBuffer(
+        mlpTransaction.candidateWeightBuffer, 0,
+        inferenceCandidate, inferenceLayout.weightsByteOffset, weightsBytes,
+      );
+      encoder.copyBufferToBuffer(
+        mlpTransaction.candidateBiasBuffer, 0,
+        inferenceCandidate, inferenceLayout.biasesByteOffset, biasesBytes,
+      );
+      encoder.copyBufferToBuffer(
+        tableTransaction.candidateTableBuffer, 0,
+        inferenceCandidate, inferenceLayout.tablesByteOffset, tablesBytes,
+      );
+      encoder.copyBufferToBuffer(
+        this._levelsBuf!, 0,
+        inferenceCandidate, inferenceLayout.levelsByteOffset, levelsBytes,
+      );
+      const publicationHeader = buildNrcInferenceArenaHeader(
+        inferenceLayout,
+        { weightsBytes, biasesBytes, tablesBytes, levelsBytes },
+        nextInferenceEpoch,
+        this._generation,
+      );
+      publicationHeaderStaging = this._device.createBuffer({
+        label: `nrc-inference-header-${ticket.sequence}`,
+        size: publicationHeader.byteLength,
+        usage: GPUBufferUsage.COPY_SRC,
+        mappedAtCreation: true,
+      });
+      new Uint8Array(publicationHeaderStaging.getMappedRange()).set(
+        new Uint8Array(publicationHeader.buffer),
+      );
+      publicationHeaderStaging.unmap();
+      // Publication header is the final encoded copy. The active arena remains
+      // unchanged until submit + completion + training-gate write all succeed.
+      encoder.copyBufferToBuffer(
+        publicationHeaderStaging, 0, inferenceCandidate, 0, publicationHeader.byteLength,
+      );
+      const commandBuffer = encoder.finish();
+      if (ticket.generation !== this._generation || this._lifecycleState !== 'ready') {
+        this._staleReadbacks++;
+        mlpTransaction.rollback();
+        tableTransaction.rollback();
+        return;
+      }
+      this._device.queue.submit([commandBuffer]);
+      await this._device.queue.onSubmittedWorkDone();
+      if (ticket.generation !== this._generation || this._lifecycleState !== 'ready') {
+        this._staleReadbacks++;
+        mlpTransaction.rollback();
+        tableTransaction.rollback();
+        return;
+      }
+      // The gate write is the final fallible operation. Once the live handles
+      // below are swapped, publication is irreversible and retirement cleanup
+      // must never try to resurrect buffers that may already have been freed.
+      const nextTrainedSteps = Math.min(U32_MAX, this._trainedSteps + 1);
+      this._writeTrainingGateState(nextTrainedSteps);
+      mlpTransaction.commitCpu();
+      tableTransaction.commitCpu();
+      this._tablesBuf = tableTransaction.candidateTableBuffer;
+      const retiredInference = this._activeInferenceArena!;
+      this._activeInferenceArena = inferenceCandidate;
+      this._spareInferenceArena = retiredInference;
+      this._inferenceEpoch = nextInferenceEpoch;
+      this._trainedSteps = nextTrainedSteps;
+      published = true;
+
+      // Retirement is best-effort after publication. A failed destroy must not
+      // roll back to an already-partially-destroyed live set.
+      const retirementErrors: unknown[] = [];
+      try { mlpTransaction.finalizeSuccess(); } catch (error) { retirementErrors.push(error); }
+      try { tableTransaction.finalizeSuccess(); } catch (error) { retirementErrors.push(error); }
+      if (retirementErrors.length > 0) {
+        this._trainingFailures += retirementErrors.length;
+        failureAlreadyCounted = true;
+        throw new AggregateError(
+          retirementErrors,
+          'NRC published a training generation but failed to retire one or more previous resources',
+        );
+      }
+    } catch (error) {
+      if (!published) {
+        try { mlpTransaction?.rollback(); } catch { /* continue rollback */ }
+        try { tableTransaction?.rollback(); } catch { /* continue rollback */ }
+      }
+      if (this.lifecycleState !== 'disposed' && !failureAlreadyCounted) {
+        this._trainingFailures++;
+      }
+      // The pipeline owns the engine-facing error channel. Do not convert a
+      // failed transaction into a fulfilled promise: callers need the original
+      // failure after rollback so HybridEngine.onError can report it.
+      throw error;
     } finally {
-      this._readPending = false;
+      destroyCandidateBuffer(publicationHeaderStaging);
+      this._destroyReadbackTicket(ticket);
+      if (this._lifecycleState === 'ready'
+          && this._readbackState.kind === 'mapping'
+          && this._readbackState.ticket === ticket) {
+        this._readbackState = { kind: 'idle' };
+      }
     }
   }
 
   dispose(): void {
-    this._tablesBuf?.destroy();
-    this._levelsBuf?.destroy();
-    this._recordsBuf?.destroy();
-    this._recordReadback?.destroy();
-    this._cfgUbo?.destroy();
-    this._slotClaimsBuf?.destroy();
-    // The hash-grid TABLE trainer owns its ~8 GPU buffers (grad scatter/finalize,
-    // Adam moments, pos staging, persistent UBOs); release them now. dispose() is
-    // idempotent + safe if init never ran.
-    this._tableTrainer?.dispose();
-    // The MLP trainer owns its own ~18 GPU buffers; release them now (it was built
-    // in initialize()). dispose() is idempotent + safe if init never ran.
-    this._trainer?.dispose();
+    if (this._lifecycleState === 'disposed') return;
+    const pendingTicket = this._readbackState.kind === 'copy-pending'
+      || this._readbackState.kind === 'copy-recorded'
+      || this._readbackState.kind === 'mapping'
+      ? this._readbackState.ticket
+      : undefined;
+    this._lifecycleState = 'disposed';
+    this._readbackState = { kind: 'disposed' };
+    this._generation = (this._generation + 1) >>> 0;
+    if (pendingTicket) this._destroyReadbackTicket(pendingTicket);
+    try { this._tableTrainer?.dispose(); } catch { /* continue disposing */ }
+    destroyCandidateBuffer(this._cfgUbo);
+    destroyCandidateBuffer(this._runtimeArena);
+    destroyCandidateBuffer(this._spareInferenceArena);
+    destroyCandidateBuffer(this._activeInferenceArena);
+    destroyCandidateBuffer(this._levelsBuf);
+    destroyCandidateBuffer(this._tablesBuf);
+    try { this._trainer?.dispose(); } catch { /* continue disposing */ }
+    this._trainer = undefined;
+    this._tableTrainer = undefined;
+    this._tablesBuf = undefined;
+    this._levelsBuf = undefined;
+    this._cfgUbo = undefined;
+    this._activeInferenceArena = undefined;
+    this._spareInferenceArena = undefined;
+    this._runtimeArena = undefined;
+    this._inferenceLayout = undefined;
+    this._runtimeLayout = undefined;
+    this._inferenceEpoch = 0;
+    this._runtimeEpoch = 0;
+    this._batchX = undefined;
+    this._batchY = undefined;
+    this._batchPos = undefined;
+    this._inW = 0;
+    this._recordStride = 0;
+    this._recordByteSize = 0;
+    this._readbackByteSize = 0;
   }
 }

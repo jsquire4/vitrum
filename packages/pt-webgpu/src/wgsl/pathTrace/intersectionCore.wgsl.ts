@@ -19,6 +19,8 @@
  * No leading/trailing newline is added here: each tier interpolates this const
  * directly where the shared body used to be inlined.
  */
+import { BVH_INTERSECT_STACK_DEPTH } from '@vitrum/shared-bvh';
+
 export const PT_WEBGPU_INTERSECTION_CORE_WGSL = /* wgsl */ `fn intersectAabb(ray: Ray, bmin: vec3f, bmax: vec3f, tMin: f32, tMax: f32) -> bool {
   let invDir = safeInvDir(ray.direction);
   let t1 = (bmin - ray.origin) * invDir;
@@ -33,6 +35,10 @@ struct SceneHit {
   dist: f32,
   triIndex: u32,
   normal: vec3f,
+  // Geometric-winding orientation at the accepted hit. Unlike the interpolated
+  // shading normal above, this is stable under authored vertex normals and is
+  // parity-corrected when a BLAS hit crosses a mirrored TLAS transform.
+  frontFace: bool,
   // Barycentric weights (v, w) of the hit on its triangle (u = 1 - v - w),
   // computed in BLAS-local space alongside the shading normal. The kernel
   // interpolates per-vertex UVs with these for texture sampling. Space-invariant
@@ -61,10 +67,13 @@ fn transformDirectionCols(c0: vec4f, c1: vec4f, c2: vec4f, d: vec3f) -> vec3f {
 }
 
 fn transformNormalFromWorldToLocalCols(w2l0: vec4f, w2l1: vec4f, w2l2: vec4f, nLocal: vec3f) -> vec3f {
+  // Column-major local-to-world transforms require transpose(worldToLocal)
+  // for normals. Each output component is a dot with one W2L column; using
+  // rows would incorrectly apply W2L and only pass diagonal-scale tests.
   return safe_normalize(vec3f(
-    dot(vec3f(w2l0.x, w2l1.x, w2l2.x), nLocal),
-    dot(vec3f(w2l0.y, w2l1.y, w2l2.y), nLocal),
-    dot(vec3f(w2l0.z, w2l1.z, w2l2.z), nLocal),
+    dot(w2l0.xyz, nLocal),
+    dot(w2l1.xyz, nLocal),
+    dot(w2l2.xyz, nLocal),
   ));
 }
 
@@ -260,12 +269,15 @@ fn intersectHChannelLocal(ray: Ray, lengthX: f32, railWidth: f32, blockHeight: f
 // geometry camera-visible. Both tiers compose the material module that
 // declares \`materials\` / \`triMaterialIds\` / MATERIAL_VEC4_STRIDE before this
 // module, so the symbols resolve in every composition.
-fn triShadowCastDisabled(triIdx: u32) -> bool {
-  if (triIdx >= arrayLength(&triMaterialIds)) { return false; }
-  let matId = triMaterialIds[triIdx];
+fn materialShadowCastDisabled(matId: u32) -> bool {
   let vecIndex = matId * MATERIAL_VEC4_STRIDE + 25u;
   if (vecIndex >= arrayLength(&materials)) { return false; }
   return materials[vecIndex].w > 0.5;
+}
+
+fn triShadowCastDisabled(triIdx: u32) -> bool {
+  if (triIdx >= arrayLength(&triMaterialIds)) { return false; }
+  return materialShadowCastDisabled(triMaterialIds[triIdx]);
 }
 
 // Mesh BVH traversal — closest: shrinking ray interval (hit.dist) for slab tests
@@ -280,19 +292,18 @@ fn traceMeshBvh(
   rootNode: u32,
   captureShadingDetails: bool,
 ) -> bool {
+  (*hit).didHit = false;
+  (*hit).dist = tMaxBound;
+  (*hit).triIndex = 0u;
+  (*hit).normal = vec3f(0.0, 1.0, 0.0);
+  (*hit).frontFace = false;
+  (*hit).baryVW = vec2f(0.0);
+  (*hit).instanceIndex = INVALID_TLAS_INSTANCE_INDEX;
   if (params.bvhNodeCount == 0u || arrayLength(&bvhNodes) == 0u || rootNode >= min(params.bvhNodeCount, arrayLength(&bvhNodes))) {
     return false;
   }
-  if (closest) {
-    (*hit).didHit = false;
-    (*hit).dist = tMaxBound;
-    (*hit).triIndex = 0u;
-    (*hit).normal = vec3f(0.0, 1.0, 0.0);
-    (*hit).baryVW = vec2f(0.0);
-    (*hit).instanceIndex = INVALID_TLAS_INSTANCE_INDEX;
-  }
 
-  var stack: array<u32, 64>;
+  var stack: array<u32, ${BVH_INTERSECT_STACK_DEPTH}>;
   var stackPtr = 0u;
   stack[stackPtr] = rootNode;
   stackPtr = stackPtr + 1u;
@@ -345,6 +356,8 @@ fn traceMeshBvh(
             return true;
           }
           var shadeNormal = vec3f(0.0, 1.0, 0.0);
+          let geometricNormal = cross(b - a, c - a);
+          let frontFace = dot(ray.direction, geometricNormal) < 0.0;
           // baryVW (v,w) of the hit — captured with the shading normal so the
           // kernel can interpolate per-vertex UVs. Defaults to 0 (→ vertex-0 UV)
           // for any-hit traversals that skip shading details. (P2)
@@ -359,23 +372,26 @@ fn traceMeshBvh(
             let d11 = dot(ac, ac);
             let d20 = dot(ap, ab);
             let d21 = dot(ap, ac);
-            let denom = max(d00 * d11 - d01 * d01, 1e-8);
-            let v = clamp((d11 * d20 - d01 * d21) / denom, 0.0, 1.0);
-            let w = clamp((d00 * d21 - d01 * d20) / denom, 0.0, 1.0);
-            let u = max(0.0, 1.0 - v - w);
-            shadeBaryVW = vec2f(v, w);
             shadeNormal = safe_normalize(cross(ab, ac));
-            if (tri.x < arrayLength(&normals) && tri.y < arrayLength(&normals) && tri.z < arrayLength(&normals)) {
-              let na = normals[tri.x].xyz;
-              let nb = normals[tri.y].xyz;
-              let nc = normals[tri.z].xyz;
-              shadeNormal = safe_normalize(na * u + nb * v + nc * w);
+            let denom = d00 * d11 - d01 * d01;
+            if (denom > 0.0) {
+              let v = clamp((d11 * d20 - d01 * d21) / denom, 0.0, 1.0);
+              let w = clamp((d00 * d21 - d01 * d20) / denom, 0.0, 1.0);
+              let u = max(0.0, 1.0 - v - w);
+              shadeBaryVW = vec2f(v, w);
+              if (tri.x < arrayLength(&normals) && tri.y < arrayLength(&normals) && tri.z < arrayLength(&normals)) {
+                let na = normals[tri.x].xyz;
+                let nb = normals[tri.y].xyz;
+                let nc = normals[tri.z].xyz;
+                shadeNormal = safe_normalize(na * u + nb * v + nc * w);
+              }
             }
           }
           (*hit).didHit = true;
           (*hit).dist = hitT;
           (*hit).triIndex = t;
           (*hit).normal = shadeNormal;
+          (*hit).frontFace = frontFace;
           (*hit).baryVW = shadeBaryVW;
           (*hit).instanceIndex = INVALID_TLAS_INSTANCE_INDEX;
         }
@@ -387,19 +403,16 @@ fn traceMeshBvh(
       // relative-offset encoding used by shared-bvh/normalizeBvhInteriorOffsets
       // and walkaround-hybrid/common.wgsl. Invariant: 1 <= offset < totalNodes.
       let rightChild = nodeIdx + node.rightChildOrTriOffset;
-      if (stackPtr + 2u < 64u) {
+      if (stackPtr + 2u <= ${BVH_INTERSECT_STACK_DEPTH}u) {
         stack[stackPtr] = rightChild;
         stackPtr = stackPtr + 1u;
         stack[stackPtr] = leftChild;
         stackPtr = stackPtr + 1u;
       } else {
-        // Stack overflow: bail out with current best-hit (already
-        // written into *hit if closest, else simply 'no hit found yet')
-        // rather than silently dropping both children.  At depth 64 a
-        // balanced BVH spans 2^64 triangles so this branch is
-        // unreachable for any real scene; the guard exists for invariant
-        // clarity and to surface degenerate inputs deterministically.
-        return (*hit).didHit;
+        // Canonical builds are depth-capped below this budget. Corrupt or
+        // externally supplied layouts fail closed for occlusion rather than
+        // silently leaking light; closest-hit preserves the best complete hit.
+        return select(true, (*hit).didHit, closest);
       }
     }
   }

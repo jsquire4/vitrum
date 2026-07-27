@@ -52,6 +52,7 @@ import {
   type DenoiserInitContext,
   type DenoiserState,
 } from './index.js';
+import { publishFrameState } from '../FramePublication.js';
 import { shouldResetDenoiserHistory } from './historyReset.js';
 
 const ATROUS_VARIANCE_ATROUS_UBO_BINDING_STRIDE_BYTES = 256;
@@ -82,12 +83,8 @@ function buildWelfordBindGroup(
 }
 
 /**
- * The variance kernel reads only inputColor (0), varianceIn (5), and writes
- * varianceOut (6) + reads varUBO (7). Bindings 1..4 are declared in the
- * WGSL but unreferenced by the kernel body — Dawn's `layout: 'auto'`
- * drops unreferenced bindings, so attempting to bind them yields "binding
- * index N not present in the bind group layout" and the whole command
- * buffer is rejected.
+ * The variance kernel exposes only its four live resources: input color,
+ * Welford state, variance output, and the frame-count UBO.
  */
 function buildAtrousVarianceVarianceBindGroup(
   device: GPUDevice,
@@ -102,9 +99,9 @@ function buildAtrousVarianceVarianceBindGroup(
     layout: variancePipeline.getBindGroupLayout(0),
     entries: [
       { binding: 0, resource: hdrColor },
-      { binding: 5, resource: welfordWrite },
-      { binding: 6, resource: varianceEstimate },
-      { binding: 7, resource: { buffer: ubo } },
+      { binding: 1, resource: welfordWrite },
+      { binding: 2, resource: varianceEstimate },
+      { binding: 3, resource: { buffer: ubo } },
     ],
   });
 }
@@ -349,10 +346,13 @@ export class AtrousVarianceDenoiser implements Denoiser {
       labelFor: (iter) => `atrous-variance-atrous-${iter}` as PassLabel,
     });
 
-    // Flip the Welford ping-pong for next frame. The legacy pipeline
-    // bumped this AFTER the dispatch returned; mirror that exactly so
-    // frame N's `welfordRead` reads the buffer written by frame N-1.
-    this._welfordPing = 1 - this._welfordPing;
+    // The write side becomes readable history only after queue.submit accepts
+    // this frame. A failed encode/finish/submit therefore retries the identical
+    // read/write pair instead of advancing onto unwritten variance.
+    const nextWelfordPing = 1 - this._welfordPing;
+    publishFrameState(ctx.publication, () => {
+      this._welfordPing = nextWelfordPing;
+    });
 
     return denoised;
   }

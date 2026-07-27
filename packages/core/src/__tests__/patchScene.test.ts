@@ -18,6 +18,11 @@ function makeScene(): Scene {
           0, 0, 1,
           0, 0, 1,
         ]),
+        uvs: new Float32Array([
+          0, 0,
+          1, 0,
+          0, 1,
+        ]),
         material: {
           baseColor: [0.1, 0.2, 0.3],
           roughness: 0.5,
@@ -284,5 +289,32 @@ describe('patchScene helpers', () => {
         },
       }),
     ).toThrow(/cannot accept analytic "fallbackMesh"/);
+  });
+
+  it('rejects unknown and cross-kind primitive patch fields without mutating the source', () => {
+    const scene = makeScene();
+    const retainedPrimitive = scene.primitives[0];
+    expect(() => patchPrimitiveInScene(scene, 'mesh-a', {
+      unknownPrimitivePatch: true,
+    } as never)).toThrow(/unknownPrimitivePatch.*known contract field/);
+    expect(() => patchPrimitiveInScene(scene, 'mesh-a', {
+      instances: [],
+    })).toThrow(/instances.*known contract field/);
+    expect(() => patchPrimitiveInScene(scene, 'mesh-a', {
+      material: { unknownMaterialPatch: true },
+    } as never)).toThrow(/unknownMaterialPatch.*known contract field/);
+    expect(scene.primitives[0]).toBe(retainedPrimitive);
+  });
+
+  it('rejects unknown and cross-kind emitter patch fields without mutating the source', () => {
+    const scene = makeScene();
+    const retainedEmitter = scene.emitters[0];
+    expect(() => patchEmitterInScene(scene, 'sun', {
+      unknownEmitterPatch: true,
+    } as never)).toThrow(/unknownEmitterPatch.*known contract field/);
+    expect(() => patchEmitterInScene(scene, 'sun', {
+      position: [0, 0, 0],
+    } as never)).toThrow(/position.*known contract field/);
+    expect(scene.emitters[0]).toBe(retainedEmitter);
   });
 });

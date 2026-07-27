@@ -20,12 +20,45 @@ import {
   type DenoiserInitContext,
   type DenoiserState,
 } from './index.js';
+import { publishFrameState } from '../FramePublication.js';
 import type { EngineWarning } from '@vitrum/core';
 import type { InferenceGraph } from '../../neural/InferenceGraph.js';
 import type { ModelWeights } from '../../neural/weights.js';
-import { NEURAL_PACK_WGSL } from '../../shaders/neuralPack.wgsl.js';
-import { NEURAL_UNPACK_WGSL } from '../../shaders/neuralUnpack.wgsl.js';
+import { buildNeuralPackWgsl } from '../../shaders/neuralPack.wgsl.js';
+import { buildNeuralUnpackWgsl } from '../../shaders/neuralUnpack.wgsl.js';
+import { preprocessingContractForCheckpoint } from '../../neural/preprocessing.js';
+import { withNeuralGpuErrorScopes } from '../../neural/gpuValidation.js';
+import {
+  WALKAROUND_NEURAL_DENOISER_SHAPE_REQUIREMENT,
+  assertWalkaroundNeuralDenoiserShape,
+  walkaroundNeuralDenoiserShapeError,
+} from '../../neural/shapeContract.js';
+import {
+  NEURAL_F32_TENSOR_STORAGE,
+  resolveNeuralTensorStorage,
+  type NeuralTensorStorageContract,
+} from '../../neural/tensorPrecision.js';
 
+
+type NeuralLifecycleState = 'idle' | 'initializing' | 'ready' | 'failed' | 'disposed';
+
+interface NeuralTensorBuffers {
+  noisyBuf: GPUBuffer;
+  albedoBuf: GPUBuffer;
+  normalsBuf: GPUBuffer;
+  outputBuf: GPUBuffer;
+  outputTex: GPUTexture;
+  width: number;
+  height: number;
+  storage: NeuralTensorStorageContract;
+}
+
+interface NeuralWrapperCandidate extends NeuralTensorBuffers {
+  packPipeline: GPUComputePipeline;
+  unpackPipeline: GPUComputePipeline;
+  packParamsBuf: GPUBuffer;
+  unpackParamsBuf: GPUBuffer;
+}
 export class NeuralDenoiser implements Denoiser {
   readonly id = 'neural' as const;
   readonly disabled: boolean;
@@ -46,10 +79,19 @@ export class NeuralDenoiser implements Denoiser {
   private _loggedSizeMismatch = false;
   private _loggedDispatchFailure = false;
   private _loggedGraphReinitFailure = false;
+  private _loggedUnsupportedShape = false;
   private _graphReinitGeneration = 0;
   private _graphReinitPromise: Promise<void> | null = null;
   private _graphReinitChain: Promise<void> = Promise.resolve();
   private _graphReinitReason: string | null = null;
+  private _lifecycleState: NeuralLifecycleState = 'idle';
+  private _resizeFailure: {
+    readonly width: number;
+    readonly height: number;
+    readonly reason: string;
+  } | null = null;
+  private _lifecycleGeneration = 0;
+  private _failureReason: string | null = null;
   private _disposed = false;
 
   private _device: GPUDevice | null = null;
@@ -61,15 +103,7 @@ export class NeuralDenoiser implements Denoiser {
   /** The four GPU tensor buffers + output texture, grouped so they are
    *  allocated, checked, and destroyed together.  Null until the first
    *  `_allocTensorBuffers` call (i.e. until `initialize` or `dispatch`). */
-  private _tensorBuffers: {
-    noisyBuf: GPUBuffer;
-    albedoBuf: GPUBuffer;
-    normalsBuf: GPUBuffer;
-    outputBuf: GPUBuffer;
-    outputTex: GPUTexture;
-    width: number;
-    height: number;
-  } | null = null;
+  private _tensorBuffers: NeuralTensorBuffers | null = null;
 
   private _lastFallbackReason: string | null = null;
   private readonly _onWarning: ((warning: EngineWarning) => void) | null;
@@ -86,76 +120,105 @@ export class NeuralDenoiser implements Denoiser {
   }
 
   async initialize(ctx: DenoiserInitContext): Promise<void> {
-    this._disposed = false;
+    if (this._lifecycleState === 'disposed') {
+      throw new Error('[NeuralDenoiser] cannot initialize after dispose');
+    }
     if (this._inferenceGraph == null) {
       this._lastFallbackReason = 'inference graph not supplied';
       return;
     }
-    this._width = ctx.width;
-    this._height = ctx.height;
-    // Record the InferenceGraph's fixed dims — these never change.
-    this._graphW = ctx.width;
-    this._graphH = ctx.height;
-    const device = ctx.device;
-    this._device = device;
+    assertWalkaroundNeuralDenoiserShape(ctx.width, ctx.height);
 
-    const packSM = device.createShaderModule({
-      label: 'neural-denoiser-pack',
-      code: NEURAL_PACK_WGSL,
-    });
-    const unpackSM = device.createShaderModule({
-      label: 'neural-denoiser-unpack',
-      code: NEURAL_UNPACK_WGSL,
-    });
-    this._packPipeline = await device.createComputePipelineAsync({
-      label: 'neural-denoiser-pack-pipeline',
-      layout: 'auto',
-      compute: { module: packSM, entryPoint: 'main' },
-    });
-    this._unpackPipeline = await device.createComputePipelineAsync({
-      label: 'neural-denoiser-unpack-pipeline',
-      layout: 'auto',
-      compute: { module: unpackSM, entryPoint: 'main' },
-    });
+    const generation = ++this._lifecycleGeneration;
+    const hadReadyGeneration = this._lifecycleState === 'ready';
+    this._lifecycleState = 'initializing';
+    this._failureReason = null;
 
-    this._packParamsBuf = device.createBuffer({
-      label: 'neural-denoiser-pack-params',
-      size: 16,
-      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-    });
-    this._unpackParamsBuf = device.createBuffer({
-      label: 'neural-denoiser-unpack-params',
-      size: 16,
-      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-    });
-    this._allocTensorBuffers(device, ctx.width, ctx.height);
-    this._lastFallbackReason = null;
+    try {
+      const candidate = await withNeuralGpuErrorScopes(
+        ctx.device,
+        `NeuralDenoiser ${ctx.width}x${ctx.height} generation ${generation}`,
+        () => this._buildWrapperCandidate(ctx.device, ctx.width, ctx.height),
+        disposeWrapperCandidate,
+      );
+      if (this._isDisposed() || generation !== this._lifecycleGeneration) {
+        disposeWrapperCandidate(candidate);
+        throw new Error(`[NeuralDenoiser] generation ${generation} was superseded before publication`);
+      }
+      const graphOwns = (this._inferenceGraph as InferenceGraph & {
+        owns?: (device: GPUDevice, width: number, height: number) => boolean;
+      }).owns;
+      if (typeof graphOwns === 'function' &&
+          !graphOwns.call(this._inferenceGraph, ctx.device, ctx.width, ctx.height)) {
+        disposeWrapperCandidate(candidate);
+        throw new Error('[NeuralDenoiser] supplied inference graph does not own the initialization device and dimensions');
+      }
+      if (candidate.storage.precision !== this._inferenceGraph.tensorStorage.precision) {
+        disposeWrapperCandidate(candidate);
+        throw new Error('[NeuralDenoiser] wrapper and inference graph resolved different tensor precision');
+      }
+
+      const previousTensors = this._tensorBuffers;
+      const previousPackParams = this._packParamsBuf;
+      const previousUnpackParams = this._unpackParamsBuf;
+      this._device = ctx.device;
+      this._width = ctx.width;
+      this._height = ctx.height;
+      this._graphW = ctx.width;
+      this._graphH = ctx.height;
+      this._packPipeline = candidate.packPipeline;
+      this._unpackPipeline = candidate.unpackPipeline;
+      this._packParamsBuf = candidate.packParamsBuf;
+      this._unpackParamsBuf = candidate.unpackParamsBuf;
+      this._tensorBuffers = candidate;
+      this._lastFallbackReason = null;
+      this._failureReason = null;
+      this._lifecycleState = 'ready';
+      this._resizeFailure = null;
+
+      destroyTensorBuffers(previousTensors);
+      destroyBuffer(previousPackParams);
+      destroyBuffer(previousUnpackParams);
+    } catch (err) {
+      if (generation === this._lifecycleGeneration && !this._isDisposed()) {
+        this._failureReason = `neural denoiser initialization failed: ${errorMessage(err)}`;
+        this._lastFallbackReason = this._failureReason;
+        this._lifecycleState = hadReadyGeneration ? 'ready' : 'failed';
+      }
+      throw err;
+    }
   }
 
   state(): DenoiserState {
     if (this.disabled) {
       return { status: 'fallback', reason: 'inference graph not supplied' };
     }
-    if (this._graphReinitPromise != null) {
+    if (this._lifecycleState === 'disposed') {
+      return { status: 'failed', reason: 'neural denoiser has been disposed', retryable: false };
+    }
+    if (this._lifecycleState === 'initializing' || this._graphReinitPromise != null) {
       return {
         status: 'warming-up',
-        reason: this._graphReinitReason ?? 'neural graph reinitializing for resized output',
+        reason: this._graphReinitReason ?? 'neural denoiser initializing',
       };
     }
-    if (this._lastFallbackReason != null) {
-      return { status: 'fallback', reason: this._lastFallbackReason };
+    if (this._lifecycleState === 'failed') {
+      return {
+        status: 'failed',
+        reason: this._failureReason ?? 'neural denoiser initialization failed',
+        retryable: false,
+      };
     }
     if (
+      this._lifecycleState !== 'ready' ||
       this._device == null ||
       this._packPipeline == null ||
       this._unpackPipeline == null ||
       this._packParamsBuf == null ||
-      this._unpackParamsBuf == null
+      this._unpackParamsBuf == null ||
+      this._tensorBuffers == null
     ) {
-      return { status: 'fallback', reason: 'neural denoiser is not initialized' };
-    }
-    if (this._tensorBuffers == null) {
-      return { status: 'fallback', reason: 'neural tensor buffers are not allocated' };
+      return { status: 'failed', reason: 'neural denoiser is not initialized', retryable: true };
     }
     return DENOISER_READY_STATE;
   }
@@ -165,14 +228,28 @@ export class NeuralDenoiser implements Denoiser {
       this._lastFallbackReason = 'inference graph not supplied';
       return null;
     }
+    if (this._lifecycleState === 'failed' || this._failureReason != null) {
+      throw new Error(this._failureReason ?? 'neural denoiser is in a failed state');
+    }
+    if (this._lifecycleState === 'disposed') {
+      throw new Error('neural denoiser has been disposed');
+    }
+    if (this._device != null && ctx.device !== this._device) {
+      throw this._recordFailure('neural dispatch device does not match the initialized device');
+    }
+    if (walkaroundNeuralDenoiserShapeError(ctx.width, ctx.height) != null) {
+      this._setUnsupportedShapeFailure(ctx.width, ctx.height, 'renderFrame');
+      throw this._recordFailure(this._lastFallbackReason ?? 'unsupported neural render size');
+    }
+
     if (
+      this._lifecycleState !== 'ready' ||
       this._packPipeline == null ||
       this._unpackPipeline == null ||
       this._packParamsBuf == null ||
       this._unpackParamsBuf == null
     ) {
-      this._lastFallbackReason = 'neural denoiser is not initialized';
-      return ctx.resources.common.hdrColorTexture;
+      throw this._recordFailure('neural denoiser is not initialized');
     }
     if (this._graphReinitPromise != null) {
       this._lastFallbackReason = this._graphReinitReason ?? 'neural graph reinitializing for resized output';
@@ -183,6 +260,9 @@ export class NeuralDenoiser implements Denoiser {
     // arrives at a new size and weights are available, start the same in-place
     // graph reinitialize path instead of requiring engine recreation.
     if (ctx.width !== this._graphW || ctx.height !== this._graphH) {
+      if (this._resizeFailure?.width === ctx.width && this._resizeFailure.height === ctx.height) {
+        throw new Error(`[NeuralDenoiser] ${this._resizeFailure.reason}`);
+      }
       if (this._device != null && this._modelWeights != null) {
         this._scheduleGraphReinitialize(ctx.width, ctx.height);
         this._lastFallbackReason = this._graphReinitReason;
@@ -193,32 +273,40 @@ export class NeuralDenoiser implements Denoiser {
         `${ctx.width}x${ctx.height}; recreate engine to resize neural denoiser`;
       if (!this._loggedSizeMismatch) {
         this._loggedSizeMismatch = true;
-        this._warnFallback({
-          code: 'walkaround-hybrid.neural-size-mismatch-fallback',
+        this._warn({
+          code: 'walkaround-hybrid.neural-size-mismatch-failed',
           message:
             `[NeuralDenoiser] size changed from ${this._graphW}x${this._graphH} ` +
-            `to ${ctx.width}x${ctx.height}; falling back to hdrColorTexture. ` +
-            `No model weights were retained for in-place graph reinitialization.`,
+            `to ${ctx.width}x${ctx.height}; neural mode is now failed because ` +
+            `no model weights were retained for graph reinitialization.`,
           details: {
             previousWidth: this._graphW,
             previousHeight: this._graphH,
             width: ctx.width,
             height: ctx.height,
-            fallback: 'hdrColorTexture',
+            state: 'failed',
             missing: 'retained model weights',
           },
         });
       }
-      return ctx.resources.common.hdrColorTexture;
+      throw this._recordFailure(this._lastFallbackReason);
     }
     const device = ctx.device;
-    this._allocTensorBuffers(device, ctx.width, ctx.height);
     const tb = this._tensorBuffers;
     if (tb == null) {
-      this._lastFallbackReason = 'neural tensor buffers are not allocated';
-      return ctx.resources.common.hdrColorTexture;
+      throw this._recordFailure('neural tensor buffers are not allocated');
     }
-    this._lastFallbackReason = null;
+    if (tb.width !== ctx.width || tb.height !== ctx.height) {
+      throw this._recordFailure(
+        `neural tensor dimensions ${tb.width}x${tb.height} do not match dispatch ${ctx.width}x${ctx.height}`,
+      );
+    }
+    // A successful encode does not clear fallback telemetry until the frame is
+    // actually accepted. If a later pass/finish/submit fails, retry retains the
+    // prior diagnostic and the same graph generation.
+    publishFrameState(ctx.publication, () => {
+      this._lastFallbackReason = null;
+    });
     const packPipeline = this._packPipeline;
     const unpackPipeline = this._unpackPipeline;
     const packParamsBuf = this._packParamsBuf;
@@ -271,19 +359,19 @@ export class NeuralDenoiser implements Denoiser {
       this._lastFallbackReason = reason;
       if (!this._loggedDispatchFailure) {
         this._loggedDispatchFailure = true;
-        this._warnFallback({
+        this._warn({
           code: 'walkaround-hybrid.neural-dispatch-failed',
-          message: `[NeuralDenoiser] ${reason}; falling back to hdrColorTexture.`,
+          message: `[NeuralDenoiser] ${reason}; neural mode is now failed.`,
           details: {
             reason,
             width: ctx.width,
             height: ctx.height,
-            fallback: 'hdrColorTexture',
+            state: 'failed',
           },
           raw: err,
         });
       }
-      return ctx.resources.common.hdrColorTexture;
+      throw this._recordFailure(reason);
     }
 
     const buildUnpackBg = (): GPUBindGroup => device.createBindGroup({
@@ -311,36 +399,55 @@ export class NeuralDenoiser implements Denoiser {
   }
 
   resize(w: number, h: number): void {
-    // Issue 1 fix: resize must leave the denoiser in a consistent allocated
-    // state, not a torn-down intermediate state. If a device is available
-    // (initialize has been called), _allocTensorBuffers handles both teardown +
-    // realloc atomically and the denoiser is immediately ready to dispatch.
-    // If no device yet (resize called before initialize), just update the
-    // target dimensions so initialize uses the new size.
+    if (this._lifecycleState === 'disposed') return;
     this._width = w;
+    this._resizeFailure = null;
     this._height = h;
     this._loggedSizeMismatch = false;
     this._loggedDispatchFailure = false;
-    this._lastFallbackReason = null;
-    if (this._device != null) {
-      this._allocTensorBuffers(this._device, w, h);
-      if (this._modelWeights != null) {
-        this._scheduleGraphReinitialize(w, h);
-      }
+    this._loggedUnsupportedShape = false;
+
+    const shapeError = walkaroundNeuralDenoiserShapeError(w, h);
+    if (shapeError != null) {
+      this._graphReinitGeneration++;
+      this._graphReinitPromise = null;
+      this._graphReinitReason = null;
+      this._setUnsupportedShapeFailure(w, h, 'resize');
+      this._recordFailure(this._lastFallbackReason ?? shapeError);
+      return;
     }
-    // When _device is null (pre-initialize), buffers are already null and
-    // _allocTensorBuffers will be called from dispatch/initialize — no torn-down
-    // window because there was nothing allocated to begin with.
+
+    if (this._device == null) return;
+    if (
+      this._graphReinitPromise == null &&
+      this._graphW === w &&
+      this._graphH === h &&
+      this._tensorBuffers?.width === w &&
+      this._tensorBuffers.height === h
+    ) {
+      return;
+    }
+    if (this._modelWeights == null) {
+      this._recordFailure(
+        `cannot resize neural graph from ${this._graphW}x${this._graphH} to ${w}x${h} without retained model weights`,
+      );
+      return;
+    }
+    this._scheduleGraphReinitialize(w, h);
   }
 
   dispose(): void {
     this._disposed = true;
+    this._lifecycleGeneration++;
+    this._lifecycleState = 'disposed';
+    this._failureReason = 'neural denoiser has been disposed';
     this._graphReinitGeneration++;
     this._graphReinitPromise = null;
     this._graphReinitReason = null;
     this._destroyTensorBuffers();
-    this._packParamsBuf?.destroy();
-    this._unpackParamsBuf?.destroy();
+    this._resizeFailure = null;
+    destroyBuffer(this._packParamsBuf);
+    destroyBuffer(this._unpackParamsBuf);
     this._packParamsBuf = null;
     this._unpackParamsBuf = null;
     this._packPipeline = null;
@@ -367,39 +474,63 @@ export class NeuralDenoiser implements Denoiser {
     this._graphReinitReason = reason;
     this._lastFallbackReason = reason;
 
+    let candidate: NeuralTensorBuffers | null = null;
     const run = this._graphReinitChain
       .catch(() => undefined)
       .then(async () => {
         if (this._disposed || generation !== this._graphReinitGeneration) return;
+        candidate = await withNeuralGpuErrorScopes(
+          device,
+          `NeuralDenoiser resize ${w}x${h} generation ${generation}`,
+          () => this._createTensorBuffers(device, w, h),
+          destroyTensorBuffers,
+        );
         await graph.initialize(device, weights, w, h);
-        if (this._disposed) {
-          graph.dispose();
+        if (this._disposed || generation !== this._graphReinitGeneration) {
+          destroyTensorBuffers(candidate);
+          candidate = null;
           return;
         }
-        if (generation !== this._graphReinitGeneration) return;
+        if (!graph.owns(device, w, h)) {
+          throw new Error('candidate inference graph failed device/dimension ownership validation');
+        }
+
+        const previous = this._tensorBuffers;
+        this._tensorBuffers = candidate;
+        candidate = null;
         this._graphW = w;
         this._graphH = h;
+        this._width = w;
+        this._height = h;
         this._lastFallbackReason = null;
+        this._failureReason = null;
+        this._lifecycleState = 'ready';
         this._graphReinitReason = null;
         this._loggedSizeMismatch = false;
+        this._resizeFailure = null;
         this._loggedGraphReinitFailure = false;
+        destroyTensorBuffers(previous);
       })
       .catch((err: unknown) => {
+        destroyTensorBuffers(candidate);
+        candidate = null;
         if (this._disposed || generation !== this._graphReinitGeneration) return;
         const failureReason = `neural graph resize reinitialization failed: ${errorMessage(err)}`;
+        this._resizeFailure = { width: w, height: h, reason: failureReason };
         this._lastFallbackReason = failureReason;
+        this._failureReason = null;
+        this._lifecycleState = 'ready';
         this._graphReinitReason = null;
         if (!this._loggedGraphReinitFailure) {
           this._loggedGraphReinitFailure = true;
-          this._warnFallback({
+          this._warn({
             code: 'walkaround-hybrid.neural-resize-reinit-failed',
-            message: `[NeuralDenoiser] ${failureReason}; falling back to hdrColorTexture.`,
+            message: `[NeuralDenoiser] ${failureReason}; the previous neural generation remains ready.`,
             method: 'resize',
             details: {
               reason: failureReason,
               width: w,
               height: h,
-              fallback: 'hdrColorTexture',
             },
             raw: err,
           });
@@ -415,14 +546,123 @@ export class NeuralDenoiser implements Denoiser {
     this._graphReinitChain = run.catch(() => undefined);
   }
 
+  private _isDisposed(): boolean {
+    return this._lifecycleState === 'disposed';
+  }
+
+
+  private _recordFailure(reason: string): Error {
+    this._failureReason = reason;
+    this._lastFallbackReason = reason;
+    this._lifecycleState = 'failed';
+    return new Error(`[NeuralDenoiser] ${reason}`);
+  }
+  private async _buildWrapperCandidate(
+    device: GPUDevice,
+    width: number,
+    height: number,
+  ): Promise<NeuralWrapperCandidate> {
+    let packParamsBuf: GPUBuffer | null = null;
+    let unpackParamsBuf: GPUBuffer | null = null;
+    let tensors: NeuralTensorBuffers | null = null;
+    try {
+      const storage = this._tensorStorageForDevice(device);
+      const packSM = device.createShaderModule({
+        label: 'neural-denoiser-pack',
+        code: buildNeuralPackWgsl(preprocessingContractForCheckpoint(this._modelWeights?.checkpoint), storage),
+      });
+      const unpackSM = device.createShaderModule({
+        label: 'neural-denoiser-unpack',
+        code: buildNeuralUnpackWgsl(preprocessingContractForCheckpoint(this._modelWeights?.checkpoint), storage),
+      });
+      const packPipeline = await device.createComputePipelineAsync({
+        label: 'neural-denoiser-pack-pipeline',
+        layout: 'auto',
+        compute: { module: packSM, entryPoint: 'main' },
+      });
+      const unpackPipeline = await device.createComputePipelineAsync({
+        label: 'neural-denoiser-unpack-pipeline',
+        layout: 'auto',
+        compute: { module: unpackSM, entryPoint: 'main' },
+      });
+      packParamsBuf = device.createBuffer({
+        label: 'neural-denoiser-pack-params',
+        size: 16,
+        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+      });
+      unpackParamsBuf = device.createBuffer({
+        label: 'neural-denoiser-unpack-params',
+        size: 16,
+        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+      });
+      tensors = this._createTensorBuffers(device, width, height);
+      return {
+        ...tensors,
+        packPipeline,
+        unpackPipeline,
+        packParamsBuf,
+        unpackParamsBuf,
+      };
+    } catch (err) {
+      destroyTensorBuffers(tensors);
+      destroyBuffer(packParamsBuf);
+      destroyBuffer(unpackParamsBuf);
+      throw err;
+    }
+  }
+
+  private _createTensorBuffers(
+    device: GPUDevice,
+    w: number,
+    h: number,
+  ): NeuralTensorBuffers {
+    assertWalkaroundNeuralDenoiserShape(w, h);
+    const pixelCount = w * h;
+    const storage = this._tensorStorageForDevice(device);
+    const bytes = Math.max(4, pixelCount * 3 * storage.bytesPerScalar);
+    const createdBuffers: GPUBuffer[] = [];
+    let outputTex: GPUTexture | null = null;
+    const mkStorage = (label: string): GPUBuffer => {
+      const buffer = device.createBuffer({
+        label,
+        size: bytes,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
+      });
+      createdBuffers.push(buffer);
+      return buffer;
+    };
+    try {
+      const noisyBuf = mkStorage('neural-denoiser-noisy');
+      const albedoBuf = mkStorage('neural-denoiser-albedo');
+      const normalsBuf = mkStorage('neural-denoiser-normals');
+      const outputBuf = mkStorage('neural-denoiser-output');
+      outputTex = device.createTexture({
+        label: 'neural-denoiser-output-texture',
+        size: [w, h],
+        format: 'rgba16float',
+        usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
+      });
+      return { noisyBuf, albedoBuf, normalsBuf, outputBuf, outputTex, width: w, height: h, storage };
+    } catch (err) {
+      try { outputTex?.destroy(); } catch { /* teardown is best-effort */ }
+      for (const buffer of createdBuffers) destroyBuffer(buffer);
+      throw err;
+    }
+  }
+
+  private _tensorStorageForDevice(device: GPUDevice): NeuralTensorStorageContract {
+    if (this._inferenceGraph != null) {
+      return this._inferenceGraph.tensorStorage;
+    }
+    if (this._modelWeights != null) {
+      return resolveNeuralTensorStorage(device, this._modelWeights);
+    }
+    return NEURAL_F32_TENSOR_STORAGE;
+  }
+
   /** Destroy the current `_tensorBuffers` record (if any) and null it out. */
   private _destroyTensorBuffers(): void {
-    if (this._tensorBuffers == null) return;
-    this._tensorBuffers.outputTex.destroy();
-    this._tensorBuffers.noisyBuf.destroy();
-    this._tensorBuffers.albedoBuf.destroy();
-    this._tensorBuffers.normalsBuf.destroy();
-    this._tensorBuffers.outputBuf.destroy();
+    destroyTensorBuffers(this._tensorBuffers);
     this._tensorBuffers = null;
   }
 
@@ -432,6 +672,7 @@ export class NeuralDenoiser implements Denoiser {
    * Mirrors `bmfr.ts _allocHistory` in shape.
    */
   private _allocTensorBuffers(device: GPUDevice, w: number, h: number): void {
+    assertWalkaroundNeuralDenoiserShape(w, h);
     if (
       this._tensorBuffers != null &&
       this._tensorBuffers.width === w &&
@@ -439,32 +680,38 @@ export class NeuralDenoiser implements Denoiser {
     ) {
       return;
     }
-    this._destroyTensorBuffers();
-    const pixelCount = w * h;
-    const bytes = Math.max(4, pixelCount * 3 * 4);
-    const mkStorage = (label: string) =>
-      device.createBuffer({
-        label,
-        size: bytes,
-        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
-      });
-    this._tensorBuffers = {
-      noisyBuf:   mkStorage('neural-denoiser-noisy'),
-      albedoBuf:  mkStorage('neural-denoiser-albedo'),
-      normalsBuf: mkStorage('neural-denoiser-normals'),
-      outputBuf:  mkStorage('neural-denoiser-output'),
-      outputTex:  device.createTexture({
-        label: 'neural-denoiser-output-texture',
-        size: [w, h],
-        format: 'rgba16float',
-        usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
-      }),
-      width:  w,
-      height: h,
-    };
+    const next = this._createTensorBuffers(device, w, h);
+    const previous = this._tensorBuffers;
+    this._tensorBuffers = next;
+    destroyTensorBuffers(previous);
   }
 
-  private _warnFallback(warning: {
+  private _setUnsupportedShapeFailure(
+    width: number,
+    height: number,
+    method: 'renderFrame' | 'resize',
+  ): void {
+    const shapeError = walkaroundNeuralDenoiserShapeError(width, height) ?? 'unknown shape error';
+    const reason = `unsupported neural internal render size ${width}x${height}: ${shapeError}`;
+    this._lastFallbackReason = reason;
+    if (this._loggedUnsupportedShape) return;
+    this._loggedUnsupportedShape = true;
+    this._warn({
+      code: 'walkaround-hybrid.neural-unsupported-shape-failed',
+      message: `[NeuralDenoiser] ${reason}; neural mode is now failed without allocating neural tensors.`,
+      method,
+      details: {
+        width,
+        height,
+        requirement: WALKAROUND_NEURAL_DENOISER_SHAPE_REQUIREMENT,
+        state: 'failed',
+        neuralAllocationAttempted: false,
+      },
+    });
+  }
+
+
+  private _warn(warning: {
     readonly code: string;
     readonly message: string;
     readonly method?: string;
@@ -484,12 +731,32 @@ export class NeuralDenoiser implements Denoiser {
       try {
         this._onWarning(routed);
       } catch {
-        // Host warning callbacks must not break denoiser fallback.
+        // Host warning callbacks must not break the denoiser lifecycle.
       }
       return;
     }
     console.warn(routed.message);
   }
+}
+
+function destroyBuffer(buffer: GPUBuffer | null): void {
+  if (buffer == null) return;
+  try { buffer.destroy(); } catch { /* teardown is best-effort */ }
+}
+
+function destroyTensorBuffers(tensors: NeuralTensorBuffers | null): void {
+  if (tensors == null) return;
+  try { tensors.outputTex.destroy(); } catch { /* teardown is best-effort */ }
+  destroyBuffer(tensors.noisyBuf);
+  destroyBuffer(tensors.albedoBuf);
+  destroyBuffer(tensors.normalsBuf);
+  destroyBuffer(tensors.outputBuf);
+}
+
+function disposeWrapperCandidate(candidate: NeuralWrapperCandidate): void {
+  destroyTensorBuffers(candidate);
+  destroyBuffer(candidate.packParamsBuf);
+  destroyBuffer(candidate.unpackParamsBuf);
 }
 
 function errorMessage(err: unknown): string {

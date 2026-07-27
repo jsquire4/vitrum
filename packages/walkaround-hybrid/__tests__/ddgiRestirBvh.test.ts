@@ -35,6 +35,7 @@ function minimalSceneBVH(overrides: Partial<SceneBVHBuffers> = {}): SceneBVHBuff
     bvhColors: { cpuData: new ArrayBuffer(16), byteLength: 16, count: 1 },
     emitters: { cpuData: new ArrayBuffer(64), byteLength: 64, count: 0 },
     emitterCdf: { cpuData: new ArrayBuffer(4), byteLength: 4, count: 0 },
+    emitterAlias: { cpuData: new ArrayBuffer(16), byteLength: 16, count: 0 },
     emitterCount: 0,
     totalEmissivePower: 0,
     lightTree: { cpuData: new ArrayBuffer(48), byteLength: 48, count: 1 },
@@ -153,6 +154,30 @@ describe('makeRestirBvhSnapshot (PR-5.1)', () => {
     expect(snapA.contentVersion).not.toBe(snapB.contentVersion);
   });
 
+  it('versions semantic material bytes even when every geometry byte is unchanged', () => {
+    const buffers = minimalSceneBVH({
+      coreMaterials: [{
+        baseColor: [0.2, 0.3, 0.4],
+        roughness: 0.5,
+        metallic: 0,
+      }],
+    });
+    const snapA = makeRestirBvhSnapshot(buffers);
+    const snapB = makeRestirBvhSnapshot({
+      ...buffers,
+      coreMaterials: [{
+        baseColor: [0.9, 0.3, 0.4],
+        roughness: 0.5,
+        metallic: 0,
+      }],
+    });
+
+    expect(snapA.blasContentVersion).toBe(snapB.blasContentVersion);
+    expect(snapA.tlasContentVersion).toBe(snapB.tlasContentVersion);
+    expect(snapA.materialContentVersion).not.toBe(snapB.materialContentVersion);
+    expect(snapA.contentVersion).not.toBe(snapB.contentVersion);
+  });
+
   it('splits blas vs tlas content versions on transform-only TLAS refit', () => {
     const w2lA = new Float32Array(16);
     w2lA[12] = 0;
@@ -178,12 +203,22 @@ describe('makeRestirBvhSnapshot (PR-5.1)', () => {
       isRestirTlasOnlyRefit(snapB, {
         blasContentVersion: snapA.blasContentVersion,
         tlasContentVersion: snapA.tlasContentVersion,
+        materialContentVersion: snapA.materialContentVersion,
       }),
     ).toBe(true);
     expect(
       isRestirTlasOnlyRefit(snapB, {
         blasContentVersion: snapB.blasContentVersion,
         tlasContentVersion: snapB.tlasContentVersion,
+        materialContentVersion: snapB.materialContentVersion,
+      }),
+    ).toBe(false);
+
+    expect(
+      isRestirTlasOnlyRefit(snapB, {
+        blasContentVersion: snapA.blasContentVersion,
+        tlasContentVersion: snapA.tlasContentVersion,
+        materialContentVersion: snapA.materialContentVersion ^ 1,
       }),
     ).toBe(false);
   });

@@ -34,9 +34,9 @@ function makeStubEngine(convergeAt = Infinity) {
 }
 
 function input(x: number): FrameInput {
-  // Encode the camera position in the X translation so motion is controllable.
+  // A view matrix translates the world by the inverse camera translation.
   return {
-    viewMatrix: asMat4(new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, x, 0, 0, 1])),
+    viewMatrix: asMat4(new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, -x, 0, 0, 1])),
     projMatrix: asMat4(new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1])),
     cameraPosition: [x, 0, 0],
   } as unknown as FrameInput;
@@ -203,7 +203,7 @@ describe('ProgressiveHandoffCoordinator', () => {
     expect(c.getScene()).toBe(scene);
 
     const material = { baseColor: [0.1, 0.2, 0.3] as [number, number, number], roughness: 0.65, metallic: 0.15 };
-    c.updatePrimitive('p', { material } as Partial<ScenePrimitive>);
+    c.updatePrimitive('p', { material });
 
     const patched = c.getScene();
     expect(patched).not.toBe(scene);
@@ -225,7 +225,7 @@ describe('ProgressiveHandoffCoordinator', () => {
       stillFramesBeforeHandoff: 1,
     });
 
-    c.updatePrimitive('p', { positions: nextPositions } as Partial<ScenePrimitive>);
+    c.updatePrimitive('p', { positions: nextPositions });
 
     expect(rt.updatePrimitive).not.toHaveBeenCalled();
     expect(rt.setScene).toHaveBeenCalledTimes(1);
@@ -247,10 +247,65 @@ describe('ProgressiveHandoffCoordinator', () => {
     });
 
     expect(() => {
-      c.updatePrimitive('p', { positions: new Float32Array(9) } as Partial<ScenePrimitive>);
+      c.updatePrimitive('p', { positions: new Float32Array(9) });
     }).toThrow(/both engines must implement updatePrimitive/);
     expect(rt.updatePrimitive).not.toHaveBeenCalled();
     expect(cv.setScene).not.toHaveBeenCalled();
+  });
+
+  it('enters a terminal synchronization state when the first setScene partially commits', () => {
+    const rt = makeStubEngine();
+    const cv = makeStubEngine();
+    const sceneError = new Error('converged initial scene failure');
+    cv.setScene.mockImplementationOnce(() => { throw sceneError; });
+    const c = new ProgressiveHandoffCoordinator({
+      realtime: rt.engine,
+      converged: cv.engine,
+    });
+
+    let thrown: unknown;
+    try {
+      c.setScene(sceneWithPrimitive());
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(AggregateError);
+    expect((thrown as AggregateError).errors).toEqual([sceneError]);
+    expect(c.synchronizationError).toBe(thrown);
+    expect(c.getScene()).toBeNull();
+    expect(() => c.frame(input(0))).toThrow(thrown as Error);
+    expect(() => c.captureFrame()).toThrow(thrown as Error);
+    expect(() => c.updatePrimitive('p', {})).toThrow(thrown as Error);
+    expect(() => c.setScene(sceneWithPrimitive())).toThrow(thrown as Error);
+    expect(rt.renderFrame).not.toHaveBeenCalled();
+    expect(cv.renderFrame).not.toHaveBeenCalled();
+  });
+
+  it('enters a terminal synchronization state when an untracked incremental mutation splits the pair', () => {
+    const rt = makeStubEngine();
+    const cv = makeStubEngine();
+    const mutationError = new Error('converged untracked patch failure');
+    cv.updatePrimitive.mockImplementationOnce(() => { throw mutationError; });
+    const c = new ProgressiveHandoffCoordinator({
+      realtime: rt.engine,
+      converged: cv.engine,
+    });
+
+    let thrown: unknown;
+    try {
+      c.updatePrimitive('p', { material: undefined } as never);
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(rt.updatePrimitive).toHaveBeenCalledTimes(1);
+    expect(cv.updatePrimitive).toHaveBeenCalledTimes(1);
+    expect(thrown).toBeInstanceOf(AggregateError);
+    expect((thrown as AggregateError).errors).toEqual([mutationError]);
+    expect(c.synchronizationError).toBe(thrown);
+    expect(() => c.frame(input(0))).toThrow(thrown as Error);
+    expect(() => c.removePrimitive('p')).toThrow(thrown as Error);
   });
 
   it('preserves core patch invariants when building a scene fallback', () => {
@@ -265,7 +320,7 @@ describe('ProgressiveHandoffCoordinator', () => {
     });
 
     expect(() => {
-      c.updatePrimitive('missing', { positions: new Float32Array(9) } as Partial<ScenePrimitive>);
+      c.updatePrimitive('missing', { positions: new Float32Array(9) });
     }).toThrow(/primitive "missing" not found/);
     expect(rt.setScene).not.toHaveBeenCalled();
     expect(cv.setScene).not.toHaveBeenCalled();
@@ -342,7 +397,7 @@ describe('ProgressiveHandoffCoordinator', () => {
       stillFramesBeforeHandoff: 1,
     });
 
-    c.updatePrimitive('p', { positions: nextPositions } as Partial<ScenePrimitive>);
+    c.updatePrimitive('p', { positions: nextPositions });
 
     expect(rt.updatePrimitive).toHaveBeenCalledTimes(1);
     expect(cv.updatePrimitive).toHaveBeenCalledTimes(1);
@@ -350,6 +405,148 @@ describe('ProgressiveHandoffCoordinator', () => {
     expect(cv.setScene).toHaveBeenCalledTimes(1);
     const patched = cv.setScene.mock.calls[0]![0] as Scene;
     expect((patched.primitives[0] as { positions: Float32Array }).positions).toBe(nextPositions);
+  });
+
+  it('restores both engines and leaves scene authority uncommitted when second-phase recovery fails', () => {
+    const rt = makeStubEngine();
+    const cv = makeStubEngine();
+    const incrementalError = new Error('converged incremental failure');
+    const rebuildError = new Error('converged rebuild failure');
+    cv.updatePrimitive.mockImplementationOnce(() => { throw incrementalError; });
+    cv.setScene.mockImplementationOnce(() => { throw rebuildError; });
+    const previous = sceneWithPrimitive();
+    const nextPositions = new Float32Array([8, 0, 0, 1, 0, 0, 0, 1, 0]);
+    const c = new ProgressiveHandoffCoordinator({
+      realtime: rt.engine,
+      converged: cv.engine,
+      scene: previous,
+      stillFramesBeforeHandoff: 1,
+    });
+
+    let thrown: unknown;
+    try {
+      c.updatePrimitive('p', { positions: nextPositions });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(AggregateError);
+    expect((thrown as AggregateError).errors).toEqual([
+      incrementalError,
+      rebuildError,
+    ]);
+    expect(c.getScene()).toBe(previous);
+    const forwardScene = rt.setScene.mock.calls[0]![0] as Scene;
+    expect((forwardScene.primitives[0] as { positions: Float32Array }).positions)
+      .toBe(nextPositions);
+    expect(rt.setScene.mock.calls[1]?.[0]).toBe(previous);
+    expect(cv.setScene.mock.calls[1]?.[0]).toBe(previous);
+    expect(c.phase).toBe('realtime');
+  });
+
+  it('accounts for restoration failures without partially committing authoritative scene state', () => {
+    const rt = makeStubEngine();
+    const cv = makeStubEngine();
+    const incrementalError = new Error('converged incremental failure');
+    const rebuildError = new Error('converged rebuild failure');
+    const restorationError = new Error('realtime restoration failure');
+    cv.updatePrimitive.mockImplementationOnce(() => { throw incrementalError; });
+    cv.setScene.mockImplementationOnce(() => { throw rebuildError; });
+    const previous = sceneWithPrimitive();
+    rt.setScene.mockImplementation((scene: Scene) => {
+      if (scene === previous) throw restorationError;
+    });
+    const c = new ProgressiveHandoffCoordinator({
+      realtime: rt.engine,
+      converged: cv.engine,
+      scene: previous,
+      stillFramesBeforeHandoff: 1,
+    });
+
+    let thrown: unknown;
+    try {
+      c.updatePrimitive('p', {
+        positions: new Float32Array([7, 0, 0, 1, 0, 0, 0, 1, 0]),
+      });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(AggregateError);
+    expect((thrown as AggregateError).errors).toEqual([
+      incrementalError,
+      rebuildError,
+      restorationError,
+    ]);
+    expect(c.getScene()).toBe(previous);
+    expect(cv.setScene.mock.calls[1]?.[0]).toBe(previous);
+    expect(c.phase).toBe('realtime');
+    expect(c.synchronizationError).toBe(thrown);
+    expect(() => c.frame(input(0))).toThrow(thrown as Error);
+    expect(() => c.captureFrame()).toThrow(thrown as Error);
+  });
+
+  it('fans resize out to the converged phase even when realtime rejects it', () => {
+    const rt = makeStubEngine();
+    const cv = makeStubEngine();
+    const realtimeError = new Error('realtime resize failure');
+    const realtimeSetSize = vi.fn(() => { throw realtimeError; });
+    const convergedSetSize = vi.fn();
+    (rt.engine as Engine & { setSize(width: number, height: number): void }).setSize = realtimeSetSize;
+    (cv.engine as Engine & { setSize(width: number, height: number): void }).setSize = convergedSetSize;
+    const c = new ProgressiveHandoffCoordinator({
+      realtime: rt.engine,
+      converged: cv.engine,
+      scene: sceneWithPrimitive(),
+    });
+
+    let thrown: unknown;
+    try {
+      c.setSize(640, 360);
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(realtimeSetSize).toHaveBeenCalledWith(640, 360);
+    expect(convergedSetSize).toHaveBeenCalledWith(640, 360);
+    expect(thrown).toBeInstanceOf(AggregateError);
+    expect((thrown as AggregateError).errors).toEqual([realtimeError]);
+    expect(c.phase).toBe('realtime');
+    expect(c.synchronizationError).toBe(thrown);
+    expect(() => c.frame(input(0))).toThrow(thrown as Error);
+    expect(() => c.captureFrame()).toThrow(thrown as Error);
+  });
+
+  it('rolls both phases back to the last committed size and remains usable', () => {
+    const rt = makeStubEngine();
+    const cv = makeStubEngine();
+    const resizeError = new Error('realtime second resize failure');
+    const realtimeSetSize = vi.fn((width: number) => {
+      if (width === 640) throw resizeError;
+    });
+    const convergedSetSize = vi.fn();
+    (rt.engine as Engine & { setSize(width: number, height: number): void }).setSize = realtimeSetSize;
+    (cv.engine as Engine & { setSize(width: number, height: number): void }).setSize = convergedSetSize;
+    const c = new ProgressiveHandoffCoordinator({
+      realtime: rt.engine,
+      converged: cv.engine,
+      scene: sceneWithPrimitive(),
+    });
+    c.setSize(320, 180);
+
+    let thrown: unknown;
+    try {
+      c.setSize(640, 360);
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(AggregateError);
+    expect((thrown as AggregateError).errors).toEqual([resizeError]);
+    expect(realtimeSetSize.mock.calls).toEqual([[320, 180], [640, 360], [320, 180]]);
+    expect(convergedSetSize.mock.calls).toEqual([[320, 180], [640, 360], [320, 180]]);
+    expect(c.synchronizationError).toBeNull();
+    expect(c.frame(input(0)).phase).toBe('realtime');
   });
 
   it('reset() forces back to real-time and re-arms the converged reset', () => {
@@ -474,7 +671,7 @@ describe('ProgressiveHandoffCoordinator', () => {
     const nextPositions = new Float32Array([3, 0, 0, 1, 0, 0, 0, 1, 0]);
     const advance = vi.fn(
       (_deltaSeconds: number, options?: Parameters<ProgressiveHandoffController['advance']>[1]) => {
-        options?.engine?.updatePrimitive?.('p', { positions: nextPositions } as Partial<ScenePrimitive>);
+        options?.engine?.updatePrimitive?.('p', { positions: nextPositions });
       },
     );
     const controller: ProgressiveHandoffController = { animations: [{}], advance };

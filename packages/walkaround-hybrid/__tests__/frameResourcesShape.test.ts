@@ -2,14 +2,14 @@
  * W1-R2 — FrameResources shape contract test.
  *
  * The legacy `FrameResources` interface had 41 sibling fields. W1-R2 grouped
- * them into 8 per-algorithm sub-structs (common, restirDI, restirGI, ddgi,
- * gtao, svgf, ppg, neural). This test pins the field-path migration map so
+ * them into resource-owning sub-structs (common, restirDI, restirGI, ddgi,
+ * gtao, svgf, ppg). This test pins the field-path migration map so
  * that any future reshuffle is forced to update the test in lockstep —
  * making the migration auditable field-by-field for any downstream consumer
  * who reads `res.X` and needs to find the new path.
  *
- * PPG resources are lazy opt-in; neural inference resources are owned by the
- * inference graph rather than this frame-resource bundle.
+ * PPG resources are lazy opt-in. Neural inference resources are owned by the
+ * inference graph and therefore are not represented by an empty frame bucket.
  *
  * See plan/premium-grade-refactor-20260517.md §W1-R2 and
  * complexity-sweep-20260517 findings A3 + B6.
@@ -55,6 +55,7 @@ const FIELD_MIGRATION_TABLE = [
   ['varianceBuffer',                 'common'],
   ['varianceBufferAux',              'common'],
   ['atrousVarianceEstimateTexture',  'common'],
+  ['checkerboardRadianceSnapshotTexture', 'common'],
 
   // restirDI ──────────────────────────────────────────────────────────────
   ['reservoirCurrentBuffer',         'restirDI'],
@@ -69,6 +70,7 @@ const FIELD_MIGRATION_TABLE = [
   // ddgi ──────────────────────────────────────────────────────────────────
   ['ddgiPlaceholderRgba16f',         'ddgi'],
   ['ddgiPlaceholderVisRgba16f',      'ddgi'],
+  ['ddgiSampler',                    'ddgi'],
   ['ddgiUboBuffer',                  'ddgi'],
 
   // gtao ──────────────────────────────────────────────────────────────────
@@ -77,8 +79,6 @@ const FIELD_MIGRATION_TABLE = [
   ['gtaoUboBuffer',                  'gtao'],
 
   // svgf ──────────────────────────────────────────────────────────────────
-  ['svgfObjIdPlaceholderTexture',    'svgf'],
-  ['svgfPrevObjIdPlaceholderTexture','svgf'],
   ['svgfCurrentObjectIdTexture',     'svgf'],
   ['svgfPreviousObjectIdTexture',    'svgf'],
   ['svgfPrevNormalDepthTexture',     'svgf'],
@@ -105,10 +105,10 @@ function makeMockDevice() {
 }
 
 describe('FrameResources shape — W1-R2 per-algorithm sub-structs', () => {
-  it('returns exactly the 8 declared sub-structs', () => {
+  it('returns exactly the declared resource-owning sub-structs', () => {
     const res = createFrameResources(makeMockDevice(), 64, 64);
     expect(Object.keys(res).sort()).toEqual(
-      ['common', 'ddgi', 'gtao', 'neural', 'ppg', 'restirDI', 'restirGI', 'svgf'],
+      ['common', 'ddgi', 'gtao', 'ppg', 'restirDI', 'restirGI', 'svgf'],
     );
   });
 
@@ -125,8 +125,9 @@ describe('FrameResources shape — W1-R2 per-algorithm sub-structs', () => {
   it('migration table is exhaustive — covers every legacy FrameResources sibling field', () => {
     // The legacy interface had 46 sibling fields (the "41-field god-struct"
     // shorthand in the W1-R2 brief is approximate — actual count when
-    // enumerated: common 25 + restirDI 3 + restirGI 3 + ddgi 3 + gtao 3 +
-    // svgf 13 = 50). Every entry must appear exactly once.
+    // enumerated: common 26 + restirDI 3 + restirGI 3 + ddgi 3 + gtao 3 +
+    // svgf 11 + the dedicated DDGI receiver sampler = 50). Every entry must
+    // appear exactly once.
     expect(FIELD_MIGRATION_TABLE.length).toBe(50);
     const seen = new Set<string>();
     for (const [field] of FIELD_MIGRATION_TABLE) {
@@ -135,18 +136,16 @@ describe('FrameResources shape — W1-R2 per-algorithm sub-structs', () => {
     }
   });
 
-  it('ppg starts empty (lazy-populated by allocatePPGResources); neural starts empty (lazy-populated when InferenceGraph is supplied)', () => {
+  it('ppg starts empty and no fictitious neural frame-resource bucket is exposed', () => {
     const res = createFrameResources(makeMockDevice(), 64, 64);
     expect(res.ppg).toBeDefined();
-    expect(res.neural).toBeDefined();
-    // W9: ppg is `{}` by default; `allocatePPGResources` populates it only
-    // when the host opts in via `ppgEnabled: true`. neural is `{}` by default;
-    // populated when an InferenceGraph is supplied (W10 shipped).
+    // PPG is `{}` by default; `allocatePPGResources` populates it only when the
+    // host opts in via `ppgEnabled: true`.
     expect(Object.keys(res.ppg)).toEqual([]);
-    expect(Object.keys(res.neural)).toEqual([]);
+    expect('neural' in res).toBe(false);
   });
 
-  it('svgf gating (svgfEnabled:false, G-P2.6) preserves the exact 13-field svgf shape', () => {
+  it('svgf gating (svgfEnabled:false, G-P2.6) preserves the exact 11-field svgf shape', () => {
     // The full-res SVGF textures are gated off when the active denoiser is not
     // svgf-real. The struct shape MUST stay identical (every field non-null) so
     // nothing off the svgf-real dispatch path observes a missing field — the

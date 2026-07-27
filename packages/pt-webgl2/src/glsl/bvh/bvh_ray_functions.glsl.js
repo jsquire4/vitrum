@@ -200,9 +200,19 @@ bool _bvhIntersectFirstHit(
 				faceIndices, faceNormal, barycoord, side, dist
 			) || found;
 
-		} else {
+} else {
 
-			uint leftIndex = currNodeIndex + 1u;
+// Reserve both stack slots before writing them. A valid packed BVH is
+// bounded by BVH_STACK_DEPTH, but this guard also turns malformed or
+// cyclic texture data into a conservative miss instead of an
+// out-of-bounds local-array write (undefined GLSL behaviour).
+if ( pointer + 2 >= BVH_STACK_DEPTH ) {
+
+continue;
+
+}
+
+uint leftIndex = currNodeIndex + 1u;
 			uint splitAxis = boundsInfo.x & 0x0000ffffu;
 			uint rightIndex = currNodeIndex + boundsInfo.y;
 

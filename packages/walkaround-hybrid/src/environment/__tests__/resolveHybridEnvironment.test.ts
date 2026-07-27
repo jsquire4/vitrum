@@ -27,26 +27,18 @@ describe('resolveHybridEnvironment', () => {
     });
   });
 
-  it('maps an opaque HDRI handle to intensity-only with an explicit warning', () => {
-    const resolved = resolveHybridEnvironment({
+  it('rejects an opaque HDRI handle without an explicit resolver contract', () => {
+    expect(() => resolveHybridEnvironment({
       kind: 'hdri',
       hdri: { texture: 'opaque-host-handle' },
       intensity: 2.5,
       rotationY: 1.3,
-    });
-
-    expect(resolved.mode).toBe('hdri-intensity-only');
-    expect(resolved.skyIrradiance).toBe(2.5);
-    expect(resolved.skyTint).toBeUndefined();
-    expect(resolved.warnings).toHaveLength(1);
-    expect(resolved.warnings[0]).toContain('opaque');
+    })).toThrow(/opaque.*resolveEnvironmentMap/i);
   });
 
-  it('defaults an HDRI intensity-only fallback to 1', () => {
-    const resolved = resolveHybridEnvironment({ kind: 'hdri', hdri: {} });
-
-    expect(resolved.mode).toBe('hdri-intensity-only');
-    expect(resolved.skyIrradiance).toBe(1);
+  it('rejects an empty opaque HDRI handle instead of inventing scalar energy', () => {
+    expect(() => resolveHybridEnvironment({ kind: 'hdri', hdri: {} }))
+      .toThrow(/opaque/i);
   });
 
   it('derives skyTint and skyIrradiance from a raw RGB HDRI payload', () => {
@@ -116,12 +108,12 @@ describe('resolveHybridEnvironment', () => {
     });
 
     expect(resolved.mode).toBe('hdri-raw-average');
-    expect(resolved.skyTint).toEqual([1, 1, 1]);
+    expect(resolved.skyTint).toEqual([0, 0, 0]);
     expect(resolved.skyIrradiance).toBe(0);
   });
 
-  it('falls back cleanly for malformed raw HDRI payloads', () => {
-    const resolved = resolveHybridEnvironment({
+  it('rejects malformed raw HDRI payloads synchronously', () => {
+    expect(() => resolveHybridEnvironment({
       kind: 'hdri',
       intensity: 3,
       hdri: {
@@ -129,11 +121,7 @@ describe('resolveHybridEnvironment', () => {
         height: 4,
         data: new Float32Array([1, 1, 1]),
       },
-    });
-
-    expect(resolved.mode).toBe('hdri-intensity-only');
-    expect(resolved.skyIrradiance).toBe(3);
-    expect(resolved.warnings.join('\n')).toContain('shorter than width * height * 3');
+    })).toThrow(/data\.length must equal/i);
   });
 
   it('bakes procedural-sky into directional IBL data with scalar fallback averages', () => {
@@ -184,6 +172,7 @@ describe('resolveHybridEnvironment', () => {
 
   it('uses the extension resolver for opaque HDRI handles and applies SceneEnvironment intensity', () => {
     const resolver: HybridEnvironmentMapResolver = vi.fn(() => ({
+      kind: 'scalar-only',
       skyTint: [0.2, 0.4, 1],
       skyIrradiance: 2,
       warnings: ['host resolver used a precomputed cubemap average'],
@@ -211,6 +200,7 @@ describe('resolveHybridEnvironment', () => {
   it('uses resolver-provided raw HDRI payloads for directional IBL while deriving scalar fallback', () => {
     const hdri = { texture: 'opaque-host-handle' };
     const resolver: HybridEnvironmentMapResolver = vi.fn(() => ({
+      kind: 'raw-hdri',
       rawHdri: {
         width: 2,
         height: 1,
@@ -252,6 +242,7 @@ describe('resolveHybridEnvironment', () => {
         extensions: {
           'walkaround-hybrid': {
             resolveEnvironmentMap: () => ({
+              kind: 'raw-hdri',
               rawHdri: {
                 width: 1,
                 height: 1,
@@ -272,20 +263,59 @@ describe('resolveHybridEnvironment', () => {
     expect(resolved.directionalIntensity).toBe(2);
   });
 
-  it('falls back to intensity-only when the extension resolver declines', () => {
-    const resolved = resolveHybridEnvironment(
+  it('rejects a resolver that declines instead of discarding directionality', () => {
+    const resolver = (() => undefined) as unknown as HybridEnvironmentMapResolver;
+    expect(() => resolveHybridEnvironment(
       { kind: 'hdri', hdri: { texture: 'opaque-host-handle' }, intensity: 1.25 },
       {
         extensions: {
           'walkaround-hybrid': {
-            resolveEnvironmentMap: () => undefined,
+            resolveEnvironmentMap: resolver,
           },
         },
       },
-    );
+    )).toThrow(/returned no result/i);
+  });
 
-    expect(resolved.mode).toBe('hdri-intensity-only');
-    expect(resolved.skyIrradiance).toBe(1.25);
-    expect(resolved.warnings.join('\n')).toContain('returned no result');
+  it('rejects resolver throws, opaque raw-hdri results, and malformed radiance', () => {
+    const opaque = { kind: 'hdri' as const, hdri: { texture: 'opaque' } };
+    expect(() => resolveHybridEnvironment(opaque, {
+      extensions: {
+        'walkaround-hybrid': {
+          resolveEnvironmentMap: () => { throw new Error('decode failed'); },
+        },
+      },
+    })).toThrow(/resolver threw: decode failed/i);
+
+    expect(() => resolveHybridEnvironment(opaque, {
+      extensions: {
+        'walkaround-hybrid': {
+          resolveEnvironmentMap: () => ({
+            kind: 'raw-hdri',
+            rawHdri: { texture: 'still opaque' },
+          }),
+        },
+      },
+    })).toThrow(/must provide a CPU-readable/i);
+
+    expect(() => resolveHybridEnvironment({
+      kind: 'hdri',
+      hdri: { width: 1, height: 1, data: [1, Number.NaN, 1] },
+    })).toThrow(/finite non-negative/i);
+    expect(() => resolveHybridEnvironment({
+      kind: 'hdri',
+      hdri: { width: 1, height: 1, data: [1, -0.1, 1] },
+    })).toThrow(/finite non-negative/i);
+  });
+
+  it('rejects unknown environment keys and accepts only exact RGB/RGBA layouts', () => {
+    expect(() => resolveHybridEnvironment({
+      kind: 'none',
+      intenstiy: 2,
+    } as unknown as SceneEnvironment)).toThrow(/unknown key "intenstiy"/i);
+    expect(() => resolveHybridEnvironment({
+      kind: 'hdri',
+      hdri: { width: 1, height: 1, data: [1, 1, 1, 1, 1] },
+    })).toThrow(/must equal.*RGB.*RGBA/i);
   });
 });

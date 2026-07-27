@@ -22,20 +22,18 @@
  *      The 8 corners are clamped to `[0, count−1]` so edge/out-of-bounds
  *      shading points degrade to a (partly-degenerate) blend of the
  *      boundary probes rather than reading out of range. A corner whose
- *      per-probe cosine weight `Wsum ≤ 1e-4` (no ray faces the receiver
+ *      per-probe cosine weight `Wsum ≤ 0` (no ray faces the receiver
  *      normal, or an uninitialised probe) is dropped from the blend and
  *      its trilinear weight is redistributed across the remaining corners
  *      (re-normalised), so a zero-radiance probe never leaks darkness into
  *      the interpolated estimate. When ALL 8 corners are degenerate the
  *      result is vec3f(0), matching the old nearest-probe Wsum guard.
  *   3. Each corner probe integrates the stored rays cosine-weighted by
- *      `dot(normal, ω_k)`, where
- *      `ω_k = octDecode((vec2f(gx, gy) + 0.5) / rayGridSize · 2 − 1)`
- *      matches the producer's ray-direction generation in
- *      probeRayCast.wgsl.ts:216-221 (unjittered ray-center direction).
- *      A degenerate blend (shading point exactly on one probe, all weight
- *      on a single corner) reduces bit-for-bit to the previous
- *      nearest-probe estimate.
+ *      `dot(normal, ω_k)`. It reconstructs the producer's exact per-frame
+ *      jittered octahedral UV sample and weights that sample by the
+ *      octahedral map Jacobian. This is the Monte Carlo estimator required
+ *      for a producer stratified uniformly in octahedral UV rather than in
+ *      solid angle. A single-corner blend reduces to that probe's estimate.
  *
  * The producer stores `L_i(ω_k)` per ray (radiance through that ray
  * direction). The cosine-weighted sum approximates
@@ -51,8 +49,10 @@
  */
 
 import type { WgslModule } from '../pipeline/wgslComposer.js';
+import { RC_OCTAHEDRAL_STRATIFIED_SAMPLING_WGSL } from '@vitrum/walkaround-rc';
 
 export const SAMPLE_CASCADE_C0_WGSL = /* wgsl */`
+${RC_OCTAHEDRAL_STRATIFIED_SAMPLING_WGSL}
 
 // ─── Bind group: RC cascade-0 storage + params UBO ────────────────────
 // Packed into group(3) (alongside DDGI's irradiance/visibility/sampler/grid
@@ -85,53 +85,36 @@ struct RCParams {
 // cosine-weight mass in .w (so the trilinear caller can detect a
 // degenerate / uninitialised probe and renormalise around it).
 //
-// A7 receiver fix (2026-06-10): the estimator is a Monte Carlo irradiance
-// integral over the full sphere. The producer casts N rays uniformly
-// distributed over 4π steradians (uniform octahedral tiling), each with
-// solid angle Ω_k ≈ 4π/N. The irradiance estimate is:
+// The producer draws one uniform UV sample inside each octahedral cell. The
+// octahedral parameterisation is not uniform in solid angle, so each term uses
+// the cell UV area multiplied by the local Jacobian:
 //
-//   E(n) = Σ_k L_k · max(0, n·ω_k) · Ω_k
-//        = (4π/N) · Σ_k L_k · cos_k
-//        = 4π · Le / raysPerProbe          (Le = Σ L_k·cos_k)
+//   E(n) = Σ_k L_k · max(0, n·ω_k) · (4/N²) J(uv_k)
 //
 // The 1/π Lambertian factor is applied once by the caller after the blend,
 // giving the final indirect signal (E/π).
-//
-// Previous formula (Le/Wsum * raysPerProbe * 0.5) computed the
-// cosine-weighted MEAN radiance times N/2, which grows linearly with N and
-// over-estimates by a factor of ≈ 2.55 at the default N=16 — any
-// cascadeDims override silently changed scene brightness. The new formula is
-// ray-count-independent: at N=16 AND N=64 a unit-radiance isotropic field
-// returns E ≈ π (the correct Lambertian irradiance for L=1 uniform field).
 //
 // Wsum is still returned in .w so the trilinear caller can detect and skip
 // degenerate / uninitialised probes (the probe normal-facing guard is
 // unchanged — a probe with no rays facing the receiver normal returns 0).
 //
-// Reference: Veach 1997 §2.3 — MC estimator (1/N) · Σ f/pdf with
-// pdf = 1/(4π) for uniform sphere → estimate = (4π/N) · Σ L cos.
-const FOUR_PI_RC: f32 = 12.56637061436;   // 4π, precomputed to avoid /0 on pure-zero Wsum
+// Reference: Veach 1997 §2.3 — stratified Monte Carlo estimator.
 fn rcProbeIrradiance(probeIdx: u32, normal: vec3f) -> vec4f {
   let base = probeIdx * rcParams.raysPerProbe;
   var Le: vec3f = vec3f(0.0);
   var Wsum: f32 = 0.0;
-  let inv_rg = 1.0 / f32(rcParams.rayGridSize);
   for (var ri: u32 = 0u; ri < rcParams.raysPerProbe; ri = ri + 1u) {
-    let gx = f32(ri % rcParams.rayGridSize);
-    let gy = f32(ri / rcParams.rayGridSize);
-    let rayUV = (vec2f(gx, gy) + 0.5) * inv_rg;
-    // octDecode expects [-1,1] octahedral coords; matches producer
-    // octDecode(rayUV * 2 - 1) exactly.
+    let rayUV = rcStratifiedRayUV(probeIdx, ri, rcParams.rayGridSize, ubo.frameSeed);
     let dir = octDecode(rayUV * 2.0 - 1.0);
     let cosTheta = max(0.0, dot(normal, dir));
-    if (cosTheta < 1e-4) { continue; }
+    if (cosTheta <= 0.0) { continue; }
     let L = rcCascade0[base + ri].rgb;
-    Le = Le + L * cosTheta;
-    Wsum = Wsum + cosTheta;
+    let solidAngleWeight = rcStratifiedSampleSolidAngle(rayUV, rcParams.rayGridSize);
+    Le = Le + L * cosTheta * solidAngleWeight;
+    Wsum = Wsum + cosTheta * solidAngleWeight;
   }
-  if (Wsum > 1e-4) {
-    // A7: E = (4π/N) · Σ L_k·cos_k = 4π · Le / raysPerProbe (N-independent).
-    return vec4f(Le * FOUR_PI_RC / f32(rcParams.raysPerProbe), Wsum);
+  if (Wsum > 0.0) {
+    return vec4f(Le, Wsum);
   }
   return vec4f(0.0);
 }
@@ -153,7 +136,7 @@ fn sampleCascadeC0(worldPos: vec3f, normal: vec3f) -> vec3f {
   let cmax = count - vec3f(1.0);
 
   // 2. Trilinear blend of the 8 surrounding probes. A corner with no
-  //    cosine mass (Wsum ≤ 1e-4 — uninitialised / normal-facing-away) is
+  //    cosine mass (Wsum ≤ 0 — uninitialised / normal-facing-away) is
   //    dropped and its weight redistributed via the running weightSum
   //    renormalisation, so zero radiance never leaks into the blend.
   var blendL: vec3f = vec3f(0.0);
@@ -173,7 +156,7 @@ fn sampleCascadeC0(worldPos: vec3f, normal: vec3f) -> vec3f {
                  + pi.y * rcParams.probeCount.x
                  + pi.x;
     let probe = rcProbeIrradiance(probeIdx, normal);
-    if (probe.w <= 1e-4) { continue; }     // degenerate corner — skip + renorm
+    if (probe.w <= 0.0) { continue; }      // degenerate corner — skip + renorm
     blendL = blendL + probe.rgb * wTri;
     weightSum = weightSum + wTri;
   }
@@ -181,7 +164,7 @@ fn sampleCascadeC0(worldPos: vec3f, normal: vec3f) -> vec3f {
   // Apply the Lambertian BRDF response (1/π) once, after renormalising the
   // blend by the surviving trilinear weight mass. We return the lighting
   // signal only (indirectCombine re-multiplies by albedo).
-  if (weightSum > 1e-4) {
+  if (weightSum > 0.0) {
     return blendL * INV_PI / weightSum;
   }
   return vec3f(0.0);

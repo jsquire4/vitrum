@@ -4,7 +4,7 @@
  *
  * Before the fix: `DDGI.updateFrame` hardcoded `STRIDE = 8` when calling
  * `ProbeUpdatePass.runFrame(adapter, offset, stride)`, and `setProbeUpdateDivisor`
- * only forwarded a value into the `probesPerFrame` UBO field — which NO shader
+ * formerly only forwarded a value into the now-removed `probesPerFrame` UBO field
  * reads (the kernels iterate `arrayLength(&activeProbes)`). So the quality
  * preset's `ddgiUpdateDivisor` knob was a no-op: every tier ran an 8-frame
  * cadence regardless.
@@ -72,6 +72,7 @@ describe('H1 — probe-update divisor drives the round-robin stride', () => {
     vi.spyOn(ProbeUpdatePass.prototype, 'runFrame').mockImplementation(
       async (_adapter, offset: number, stride: number) => {
         calls.push({ offset, stride });
+        return true;
       },
     );
 
@@ -114,9 +115,9 @@ describe('H1 — probe-update divisor drives the round-robin stride', () => {
     expect(smallStratum).toBeGreaterThan(largeStratum);
   });
 
-  it('divisor < 1 is clamped to a stride of 1 (every probe active each frame)', async () => {
-    const { calls, probeCount } = await captureRunFrameArgs(0);
-    expect(calls[0]!.stride).toBe(1);
-    expect(stratumSize(probeCount, calls[0]!.offset, calls[0]!.stride)).toBe(probeCount);
+  it('rejects a non-positive divisor instead of poisoning the cadence', async () => {
+    await expect(captureRunFrameArgs(0)).rejects.toThrow(
+      'DDGI probe update divisor must be a positive safe integer.',
+    );
   });
 });

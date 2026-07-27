@@ -49,6 +49,7 @@ function makeFrameResources(): FrameResources {
     ddgi: {
       ddgiPlaceholderRgba16f: makeTexture(),
       ddgiPlaceholderVisRgba16f: makeTexture(),
+      ddgiSampler: {} as GPUSampler,
       ddgiUboBuffer: { size: 64, usage: GPUBufferUsage.UNIFORM } as GPUBuffer,
     },
     ppg: {},

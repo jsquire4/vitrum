@@ -29,6 +29,7 @@ import {
   type ReSTIRBvhMode,
   type SceneBVHBuffers,
 } from '../restir/bvhCore.js';
+import type { CollectedBvhMutation } from '../pipeline/CollectingBvhUpdateSink.js';
 
 function makeDeviceStub(): GPUDevice {
   return {
@@ -121,6 +122,9 @@ function skinnedScene(): Scene {
 }
 
 function makePipeline() {
+  const prepareSceneMutation = vi.fn((_mutation: CollectedBvhMutation) => ({
+    commit: vi.fn(), rollback: vi.fn(), finalize: vi.fn(),
+  }));
   return {
     dispose: vi.fn(),
     refreshBvhMaterialSlice: vi.fn(),
@@ -128,13 +132,21 @@ function makePipeline() {
     refreshBvhNormalsSlice: vi.fn(),
     refreshBvhRefit: vi.fn(),
     refreshBvhFullRebuild: vi.fn(),
+    replaceBvhAndEmitters: vi.fn(),
     refreshMaterialTextureAtlas: vi.fn(),
     refreshTlasRefit: vi.fn(),
     updateEmitters: vi.fn(),
     updateAnalyticLights: vi.fn(),
     updateDirectionalEnvironment: vi.fn(),
-    getEnvBindings: vi.fn((): { textureView: GPUTextureView; sampler: GPUSampler } | null => null),
+    getEnvBindings: vi.fn((): {
+      textureView: GPUTextureView;
+      sampler: GPUSampler;
+      rotationY: number;
+      intensity: number;
+      hasDirectionalEnvironment: boolean;
+    } | null => null),
     requestAccumReset: vi.fn(),
+    prepareSceneMutation,
     resize: vi.fn(),
   };
 }
@@ -148,6 +160,9 @@ function makeDdgi() {
     setLights: vi.fn(),
     setSunIntensityMultiplier: vi.fn(),
     setEmitterTris: vi.fn(),
+    prepareSceneMutation: vi.fn(() => ({
+      commit: vi.fn(), rollback: vi.fn(), finalize: vi.fn(),
+    })),
     setEnvironment: vi.fn(),
     dispose: vi.fn(),
   };
@@ -183,11 +198,12 @@ function seedEngine(scene: Scene, bvhMode: ReSTIRBvhMode = 'tlas') {
 /** The four routing markers — exactly ONE (or the specified combination) fires
  *  per routed path, so asserting the tuple pins the branch decision. */
 function routeMarkers(pipeline: ReturnType<typeof makePipeline>) {
+  const mutations = pipeline.prepareSceneMutation.mock.calls.map(([mutation]) => mutation);
   return {
-    transformRefit: pipeline.refreshTlasRefit.mock.calls.length,
-    positionsRefit: pipeline.refreshBvhNormalsSlice.mock.calls.length,
-    topologyRebuild: pipeline.refreshBvhFullRebuild.mock.calls.length,
-    materialPatch: pipeline.refreshBvhMaterialSlice.mock.calls.length,
+    transformRefit: mutations.filter((mutation) => mutation.tlas != null).length,
+    positionsRefit: mutations.filter((mutation) => mutation.nodes != null && mutation.replacement == null).length,
+    topologyRebuild: mutations.filter((mutation) => mutation.replacement != null).length,
+    materialPatch: mutations.filter((mutation) => mutation.material != null).length,
   };
 }
 
@@ -316,12 +332,21 @@ describe('HybridEngine _routePrimitiveUpdate (patch shape → routed path) matri
     const { engine, pipeline } = seedEngine(skinnedScene());
     try {
       engine.updatePrimitive('skin-a', {
-        bones: identityMat4(),
+        bones: mat4Translate(2),
         material: { baseColor: [0.1, 0.9, 0.2], roughness: 0.3, metallic: 0 },
       });
       expect(routeMarkers(pipeline)).toEqual({
         transformRefit: 0, positionsRefit: 0, topologyRebuild: 1, materialPatch: 0,
       });
+      const internals = engine as unknown as HybridEngineInternals;
+      const authored = internals._lastScene!.primitives[0] as SkinnedMeshPrimitive;
+      const rendered = internals._renderScene!.primitives[0] as SkinnedMeshPrimitive;
+      expect(Array.from(authored.positions)).toEqual([
+        0, 0, 0, 1, 0, 0, 0, 1, 0,
+      ]);
+      expect(Array.from(rendered.positions)).toEqual([
+        2, 0, 0, 3, 0, 0, 2, 1, 0,
+      ]);
     } finally {
       engine.dispose();
     }
@@ -346,4 +371,38 @@ describe('HybridEngine _routePrimitiveUpdate (patch shape → routed path) matri
       engine.dispose();
     }
   });
+});
+
+describe('solved render-scene retention', () => {
+  it.each([
+    [
+      'material',
+      { material: { baseColor: [0.1, 0.9, 0.2], roughness: 0.3, metallic: 0 } },
+    ],
+    [
+      'topology',
+      { uvs: new Float32Array([0, 0, 0.5, 0, 0, 0.5]) },
+    ],
+  ] satisfies ReadonlyArray<readonly [string, Partial<SkinnedMeshPrimitive>]>)(
+    'preserves solved render geometry across a later %s mutation',
+    (_label, patch) => {
+      const { engine } = seedEngine(skinnedScene());
+      try {
+        engine.updatePrimitive('skin-a', { bones: mat4Translate(2) });
+        engine.updatePrimitive('skin-a', patch);
+
+        const internals = engine as unknown as HybridEngineInternals;
+        const authored = internals._lastScene!.primitives[0] as SkinnedMeshPrimitive;
+        const rendered = internals._renderScene!.primitives[0] as SkinnedMeshPrimitive;
+        expect(Array.from(authored.positions)).toEqual([
+          0, 0, 0, 1, 0, 0, 0, 1, 0,
+        ]);
+        expect(Array.from(rendered.positions)).toEqual([
+          2, 0, 0, 3, 0, 0, 2, 1, 0,
+        ]);
+      } finally {
+        engine.dispose();
+      }
+    },
+  );
 });

@@ -81,7 +81,7 @@ function makeFrameDeps(capture: { inputs: PipelineFrameInputs | null }): HybridE
       atrousDirectSigmas: [128, 5, 0.05],
       atrousIndirectSigmas: [32, 20, 0.5],
       stainedGlassFlags: 0,
-      restirPtReuse: 0,
+      grisReuse: 0,
       nrcEnabled: 0,
     },
     telemetry: {

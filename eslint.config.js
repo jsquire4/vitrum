@@ -36,12 +36,16 @@ export default tseslint.config(
       '**/coverage/**',
       '**/*.tsbuildinfo',
       '_staging/**',
+      // Disabled generated GitNexus helper; it is not part of the runtime or
+      // the active validation workflow (see AGENTS.md).
+      '.gitnexus/**',
       'plan/**',
       'external_requests/**',
       'tools/reference-renders/**',
       // Generated / vendored / non-source assets
       '**/*.wgsl',
       '**/*.glsl',
+      'packages/gltf-adapter/src/vendor/draco_decoder_browser.js',
     ],
   },
 

@@ -11,7 +11,8 @@
  *
  * Constraints pinned:
  *   - the smooth normal is unit-length over random triangles (oracle);
- *   - the 4 primary passes consume `bvh_normal` (no computed-but-unconsumed);
+ *   - the 4 primary passes consume normals through `sceneLoadBvhNormal`
+ *     (no computed-but-unconsumed loader result);
  *   - the GEOMETRIC normal (hit.normal) is still used for the ray offset /
  *     backface bias — the smooth normal is shading-only;
  *   - the per-triangle Beer-Lambert tint moved off the scene storage group
@@ -150,8 +151,9 @@ describe('WS1 codegen — smooth-normal helper + consumption', () => {
     ['spatial', composeWgsl(SPATIAL_MODULE, WGSL_MODULES)],
   ];
 
-  it.each(composedNormalBindingPasses)('composed %s declares bvh_normal at @group(1) @binding(11)', (_name, src) => {
-    expect(src).toMatch(/@group\(1\)\s*@binding\(11\)\s*var<storage,\s*read>\s*bvh_normal/);
+  it.each(composedNormalBindingPasses)('composed %s declares the geometry arena and normal loader once', (_name, src) => {
+    expect(src.match(/@group\(1\)\s*@binding\(0\)\s*var<storage,\s*read>\s*sceneGeometryArena/g)).toHaveLength(1);
+    expect(src.match(/fn\s+sceneLoadBvhNormal\s*\(/g)).toHaveLength(1);
   });
 
   it.each(composedNormalBindingPasses)('composed %s declares bvh_tangent as a texture at @group(1) @binding(22)', (_name, src) => {
@@ -159,7 +161,7 @@ describe('WS1 codegen — smooth-normal helper + consumption', () => {
   });
 
   it.each(passes)('%s actually CONSUMES the smooth normal (calls smoothShadingNormal)', (_name, src) => {
-    // No computed-but-unconsumed: every pass that declares bvh_normal must use it.
+    // No computed-but-unconsumed: every primary pass must use the shared helper.
     expect(src).toMatch(/smoothShadingNormal\s*\(/);
   });
 
@@ -179,7 +181,7 @@ describe('WS1 codegen — smooth-normal helper + consumption', () => {
     // left smooth shading dormant on every multi-mesh / instanced (TLAS) scene —
     // must be GONE.
     expect(src).toMatch(/instanceIndex\s*\*\s*4u/);
-    expect(src).toMatch(/tlasInstanceWorldToLocal\[n_i\]/);
+    expect(src).toMatch(/tlasLoadWorldToLocalColumn\(n_i\)/);
     expect(src).not.toMatch(/geoNormal,\s*ubo\.bvhMode\s*==\s*1u/);
   });
 
@@ -187,15 +189,15 @@ describe('WS1 codegen — smooth-normal helper + consumption', () => {
     expect(RESTIR_CAST_PRIMARY_WGSL).toMatch(/let\s+geoNormal\s*=\s*hit\.normal/);
     expect(RESTIR_CAST_PRIMARY_WGSL).toMatch(/let\s+smoothNormal\s*=\s*smoothShadingNormal\s*\(/);
     expect(RESTIR_CAST_PRIMARY_WGSL).toMatch(/s\.normal\s*=\s*applyBumpMapForHit\(hit,\s*normalMapped\)/);
-    expect(RESTIR_CAST_PRIMARY_WGSL).toMatch(/bvh_normal\[hit\.indices\.x\]\.xyz/);
-    expect(RESTIR_CAST_PRIMARY_WGSL).toMatch(/tlasInstanceWorldToLocal\[n_i\]/);
+    expect(RESTIR_CAST_PRIMARY_WGSL).toMatch(/sceneLoadBvhNormal\(hit\.indices\.x\)\.xyz/);
+    expect(RESTIR_CAST_PRIMARY_WGSL).toMatch(/tlasLoadWorldToLocalColumn\(n_i\)/);
   });
 
   it.each([
     ['temporal', composeWgsl(TEMPORAL_MODULE, WGSL_MODULES)],
     ['spatial', composeWgsl(SPATIAL_MODULE, WGSL_MODULES)],
-  ])('composed %s declares bvh_normal for castPrimary smooth-normal evaluation', (_name, src) => {
-    expect(src).toMatch(/@group\(1\)\s*@binding\(11\)\s*var<storage,\s*read>\s*bvh_normal/);
+  ])('composed %s provides the arena-backed normal loader for castPrimary', (_name, src) => {
+    expect(src.match(/fn\s+sceneLoadBvhNormal\s*\(/g)).toHaveLength(1);
   });
 
   it('smoothShadingNormal takes isTlas + world-to-local columns and transforms the local blend', () => {
@@ -207,15 +209,16 @@ describe('WS1 codegen — smooth-normal helper + consumption', () => {
 
   it('material atlas transforms derived fallback tangent frames for TLAS hits', () => {
     expect(MATERIAL_ATLAS_WGSL).toMatch(/let\s+dp1\s*=\s*p1\.xyz\s*-\s*p0\.xyz/);
-    expect(MATERIAL_ATLAS_WGSL).toMatch(/let\s+tOk\s*=\s*isTlas\s*&&\s*tBase\s*\+\s*2u\s*<\s*arrayLength\(&tlasInstanceLocalToWorld\)/);
-    expect(MATERIAL_ATLAS_WGSL).toMatch(/tangent\s*=\s*transformDirectionCols\(\s*tlasInstanceLocalToWorld\[tBase\]/);
-    expect(MATERIAL_ATLAS_WGSL).toMatch(/bitangent\s*=\s*transformDirectionCols\(\s*tlasInstanceLocalToWorld\[tBase\]/);
+    expect(MATERIAL_ATLAS_WGSL).toMatch(/let\s+tOk\s*=\s*isTlas\s*&&\s*tBase\s*\+\s*2u\s*<\s*tlasLocalToWorldColumnCount\(\)/);
+    expect(MATERIAL_ATLAS_WGSL).toMatch(/tangent\s*=\s*transformDirectionCols\(\s*tlasLoadLocalToWorldColumn\(tBase\)/);
+    expect(MATERIAL_ATLAS_WGSL).toMatch(/bitangent\s*=\s*transformDirectionCols\(\s*tlasLoadLocalToWorldColumn\(tBase\)/);
   });
 
   it('DDGI probe material path transforms TLAS smooth normals and fallback tangents', () => {
     const src = makeProbeUpdateRaysWGSL(64);
     expect(src).toMatch(/fn\s+ddgiSmoothShadingNormalForHit\s*\(/);
-    expect(src).toMatch(/tlasTransformNormalFromLocalCols\(\s*tlasInstanceWorldToLocal\[tBase\]/);
+    expect(src).toMatch(/let\s+w2l0\s*=\s*tlasInstanceWorldToLocal\[tBase\]/);
+    expect(src).toMatch(/tlasTransformNormalFromLocalCols\(\s*w2l0/);
     expect(src).toMatch(/let\s+smoothNormal\s*=\s*ddgiSmoothShadingNormalForHit\(hit,\s*hit\.normal\)/);
     expect(src).toMatch(/tangent\s*=\s*ddgiTransformDirectionCols\(\s*tlasInstanceLocalToWorld\[tBase\]/);
     expect(src).toMatch(/bitangent\s*=\s*ddgiTransformDirectionCols\(\s*tlasInstanceLocalToWorld\[tBase\]/);
@@ -224,7 +227,7 @@ describe('WS1 codegen — smooth-normal helper + consumption', () => {
   it('IntersectionResult carries instanceIndex + the TLAS traversal sets it', () => {
     const composedShade = composeWgsl(SHADE_MODULE, WGSL_MODULES);
     expect(composedShade).toMatch(/instanceIndex\s*:\s*u32/);
-    expect(composedShade).toMatch(/best\.instanceIndex\s*=\s*instIdx/);
+    expect(composedShade).toMatch(/\(\*best\)\.instanceIndex\s*=\s*instIdx/);
   });
 
   it('shade declares bvh_beer as a uint texture (moved off the storage group)', () => {
@@ -260,15 +263,15 @@ describe('WS1 codegen — smooth-normal helper + consumption', () => {
 // ── 3. Scene bind-group storage-buffer budget (≤ 16 floor) ───────────────────
 
 describe('WS1 scene bind-group storage budget', () => {
-  it('scene group has bvh_normal as storage and bvh_beer/bvh_tangent/COLOR_0 as textures', () => {
+  it('scene group packs normals in the geometry arena and keeps beer/tangent/COLOR_0 as textures', () => {
     const scene = BIND_GROUP_TABLE.find((e) => e.id === 'scene')!;
+    const geometryArena = scene.entries.find((e) => e.binding === 0)!;
     const beer = scene.entries.find((e) => e.binding === 5)!;
-    const normal = scene.entries.find((e) => e.binding === 11)!;
     const tangent = scene.entries.find((e) => e.binding === 22)!;
     const colors = scene.entries.find((e) => e.binding === 23)!;
+    expect(geometryArena.kind).toBe('storage-ro');
+    expect(geometryArena.note).toMatch(/geometry arena.*normals/i);
     expect(beer.kind).toBe('tex:uint');
-    expect(normal.kind).toBe('storage-ro');
-    expect(normal.note).toMatch(/normal/i);
     expect(tangent.kind).toBe('tex');
     expect(tangent.note).toMatch(/tangent/i);
     expect(colors.kind).toBe('tex');
@@ -280,10 +283,9 @@ describe('WS1 scene bind-group storage budget', () => {
     const storageCount = scene.entries.filter(
       (e) => e.kind === 'storage-ro' || e.kind === 'storage-rw',
     ).length;
-    // Scene group's own storage buffers. The shade pass adds 4 frame-group
-    // storage buffers → 12 + 4 = 16, exactly the WebGPU storage-buffer floor.
-    // H41 (analytic-NEE binding 13) raised the scene-group count from 11→12.
-    expect(storageCount).toBeLessThanOrEqual(12);
+    // Geometry, TLAS, and lighting are the only storage buffers in the scene
+    // group. Shade adds four frame buffers and one RC buffer: 3 + 4 + 1 = 8.
+    expect(storageCount).toBe(3);
   });
 });
 

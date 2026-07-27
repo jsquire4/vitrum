@@ -30,6 +30,7 @@
  */
 
 import type { WgslModule } from '../pipeline/wgslComposer.js';
+import { reservoirDiAccessorsWgsl } from './reservoirDi.wgsl.js';
 
 export const SPATIAL_WGSL = /* wgsl */ `
 
@@ -39,17 +40,12 @@ export const SPATIAL_WGSL = /* wgsl */ `
 @group(0) @binding(5) var<storage, read_write> currentReservoir:  array<u32>;
 @group(0) @binding(7) var<storage, read_write> spatialReservoir:  array<u32>;
 
+${reservoirDiAccessorsWgsl({
+  loadReadWriteBinding: 'currentReservoir',
+  storeReadWriteBinding: 'spatialReservoir',
+})}
+
 // bvh_index is array<vec4u>: .xyz=vertex indices, .w=packed RGBA8 material color+transmission
-@group(1) @binding(0) var<storage, read> bvh:          array<BVHNode>;
-@group(1) @binding(1) var<storage, read> bvh_index:    array<vec4u>;
-@group(1) @binding(2) var<storage, read> bvh_position: array<vec4f>;
-@group(1) @binding(3) var<storage, read> emitters:     array<EmitterTri>;
-@group(1) @binding(4) var<storage, read> emitterCdf:   array<f32>;
-@group(1) @binding(6) var<storage, read> tlasNodes: array<BVHNode>;
-@group(1) @binding(7) var<storage, read> tlasInstanceIndices: array<u32>;
-@group(1) @binding(8) var<storage, read> tlasBlasRoots: array<u32>;
-@group(1) @binding(9) var<storage, read> tlasInstanceWorldToLocal: array<vec4f>;
-@group(1) @binding(10) var<storage, read> tlasInstanceLocalToWorld: array<vec4f>;
 
 // WalkaroundUBO struct defined in COMMON_WGSL.
 @group(2) @binding(0) var<uniform> ubo: WalkaroundUBO;
@@ -113,22 +109,12 @@ fn spatialMain(@builtin(global_invocation_id) gid: vec3u) {
   let pixelIdx = pix.y * dims.x + pix.x;
   var rng = pcgInit(pix.x ^ 54321u, pix.y ^ 98765u, ubo.frameSeed ^ 0xCAFEu);
 
-  var r = loadReservoirDI_rw(&currentReservoir, pixelIdx);
+  var r = loadReservoirDI_rw(pixelIdx);
 
   // M-scale down before spatial.
-  if (r.M > M_SCALE) {
-    r.w_sum = r.w_sum * f32(M_SCALE) / f32(r.M);
-    r.M = M_SCALE;
-  }
-  var areaSupportM = 0u;
-  var envSupportM = 0u;
-  if (r.M > 0u) {
-    if (r.lightId == ENV_SAMPLE_SENTINEL) {
-      envSupportM = envSupportM + r.M;
-    } else {
-      areaSupportM = areaSupportM + r.M;
-    }
-  }
+  scaleReservoirDIToM(&r, M_SCALE);
+  var areaSupportM = r.areaM;
+  var envSupportM = r.envM;
 
   // Re-cast the center pixel's primary ray to get the actual surface — needed
   // both for the similarity gate (we compare against neighbor surfaces, not
@@ -138,7 +124,7 @@ fn spatialMain(@builtin(global_invocation_id) gid: vec3u) {
   let center = castPrimary(pix, dims, ubo.cameraPos, invVP);
   if (!center.hit) {
     // Sky pixel — no reservoir to combine; pass current through unchanged.
-    storeReservoirDI_rw(&spatialReservoir, pixelIdx, r);
+    storeReservoirDI_rw(pixelIdx, r);
     return;
   }
 
@@ -161,20 +147,21 @@ fn spatialMain(@builtin(global_invocation_id) gid: vec3u) {
     let normalDot = dot(center.normal, nbr_surf.normal);
     if (depthDiff > depthTol || normalDot < 0.9) { continue; }
 
-    let nbr  = loadReservoirDI_rw(&currentReservoir, nbrIdx);
-    let nbrM = max(1u, nbr.M / M_SCALE);
-    if (nbr.lightId == ENV_SAMPLE_SENTINEL) {
-      envSupportM = envSupportM + nbrM;
-    } else {
-      areaSupportM = areaSupportM + nbrM;
-    }
+    var nbr = loadReservoirDI_rw(nbrIdx);
+    let nbrTargetM = select(0u, max(1u, nbr.M / M_SCALE), nbr.M > 0u);
+    scaleReservoirDIToM(&nbr, nbrTargetM);
+    let nbrM = nbr.M;
+    areaSupportM = areaSupportM + nbr.areaM;
+    envSupportM = envSupportM + nbr.envM;
 
     // Re-evaluate p̂ at the CENTER surface for the neighbor's chosen light.
     // Wave 4: pass nbr.xi for the ENV_SAMPLE_SENTINEL path.
-    let pHatNbrAtCenter = restir_di_compute_phat_xi(nbr.lightId, nbr.xi, center);
-    let w = pHatNbrAtCenter * nbr.W * f32(nbrM);
+    var w = 0.0;
+    if (nbrM > 0u && nbr.W > 0.0) {
+      let pHatNbrAtCenter = restir_di_compute_phat_xi(nbr.lightId, nbr.xi, center);
+      w = pHatNbrAtCenter * nbr.W * f32(nbrM);
+    }
 
-    r.M += nbrM;
     r.w_sum += w;
     if (rand_f32(&rng) * r.w_sum < w && w > 0.0) {
       r.lightId = nbr.lightId;
@@ -187,12 +174,16 @@ fn spatialMain(@builtin(global_invocation_id) gid: vec3u) {
 
   // Recompute W.
   // Wave 4: use xi-aware pHat so ENV_SAMPLE_SENTINEL reservoirs get correct W.
-  let pHatZ = restir_di_compute_phat_xi(r.lightId, r.xi, center);
-  let supportM = select(areaSupportM, envSupportM, r.lightId == ENV_SAMPLE_SENTINEL);
-  r.M = max(1u, supportM);
-  r.W = select(0.0, r.w_sum / (f32(r.M) * pHatZ), pHatZ > 0.0);
+  r.areaM = areaSupportM;
+  r.envM = envSupportM;
+  r.M = areaSupportM + envSupportM;
+  r.W = 0.0;
+  if (r.M > 0u && r.w_sum > 0.0) {
+    let pHatZ = restir_di_compute_phat_xi(r.lightId, r.xi, center);
+    r.W = select(0.0, r.w_sum / (f32(r.M) * pHatZ), pHatZ > 0.0);
+  }
 
-  storeReservoirDI_rw(&spatialReservoir, pixelIdx, r);
+  storeReservoirDI_rw(pixelIdx, r);
 }
 `;
 

@@ -2,7 +2,11 @@
  * animationSampler.test.ts — P3 CPU clip sampler (sampleAnimationClip).
  */
 import { describe, it, expect } from 'vitest';
-import { sampleAnimationClip, type AnimationClip } from '../scene/animation.js';
+import {
+  sampleAnimationClip,
+  validateAnimationClip,
+  type AnimationClip,
+} from '../scene/animation.js';
 
 function clip(channels: AnimationClip['channels']): AnimationClip {
   return { duration: 2, channels };
@@ -104,5 +108,77 @@ describe('sampleAnimationClip (P3)', () => {
     const clamped = sampleAnimationClip(c, 99)[0]!.value;
     expect(Array.from(step)).toEqual([0, 0, 0, 1]);
     expect(Array.from(clamped)).toEqual([0, 0, 0, 1]);
+  });
+
+  it('rejects non-finite sample time and non-finite, unsorted, or negative key times', () => {
+    const base = clip([{
+      target: { node: 'n', path: 'translation' },
+      sampler: {
+        times: new Float32Array([0, 1]),
+        values: new Float32Array([0, 0, 0, 1, 1, 1]),
+      },
+    }]);
+    expect(() => sampleAnimationClip(base, Number.NaN)).toThrow(/time must be finite/);
+    expect(() => validateAnimationClip({
+      ...base,
+      channels: [{
+        ...base.channels[0]!,
+        sampler: { ...base.channels[0]!.sampler, times: new Float32Array([0, Number.NaN]) },
+      }],
+    })).toThrow(/times\[1\].*finite/);
+    expect(() => validateAnimationClip({
+      ...base,
+      channels: [{
+        ...base.channels[0]!,
+        sampler: { ...base.channels[0]!.sampler, times: new Float32Array([1, 1]) },
+      }],
+    })).toThrow(/strictly greater/);
+    expect(() => validateAnimationClip({
+      ...base,
+      channels: [{
+        ...base.channels[0]!,
+        sampler: { ...base.channels[0]!.sampler, times: new Float32Array([-1, 1]) },
+      }],
+    })).toThrow(/must be >= 0/);
+  });
+
+  it('rejects malformed output strides instead of floor-dividing and zero-filling', () => {
+    expect(() => validateAnimationClip(clip([{
+      target: { node: 'n', path: 'weights' },
+      sampler: {
+        times: new Float32Array([0, 1]),
+        values: new Float32Array([0, 1, 2]),
+      },
+    }]))).toThrow(/positive integral component count/);
+    expect(() => validateAnimationClip(clip([{
+      target: { node: 'n', path: 'rotation' },
+      sampler: {
+        times: new Float32Array([0, 1]),
+        values: new Float32Array([0, 0, 0, 1, 0, 0, 1]),
+      },
+    }]))).toThrow(/expected 8/);
+  });
+
+  it('rejects zero rotation knots rather than silently replacing them with identity', () => {
+    expect(() => validateAnimationClip(clip([{
+      target: { node: 'n', path: 'rotation' },
+      sampler: {
+        times: new Float32Array([0]),
+        values: new Float32Array([0, 0, 0, 0]),
+      },
+    }]))).toThrow(/zero-length rotation quaternion/);
+  });
+
+  it('requires pointer metadata only for pointer channels and rejects duplicate targets', () => {
+    expect(() => validateAnimationClip(clip([{
+      target: { node: 'p', path: 'pointer' },
+      sampler: { times: new Float32Array([0]), values: new Float32Array([1]) },
+    }]))).toThrow(/pointer must be a non-empty string/);
+    const channel = {
+      target: { node: 'n', path: 'scale' as const },
+      sampler: { times: new Float32Array([0]), values: new Float32Array([1, 1, 1]) },
+    };
+    expect(() => validateAnimationClip(clip([channel, channel])))
+      .toThrow(/duplicates an earlier channel target/);
   });
 });

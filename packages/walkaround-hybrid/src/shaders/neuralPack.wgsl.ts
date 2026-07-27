@@ -1,29 +1,28 @@
-/**
- * Neural denoiser input-pack shader.
- *
- * Reads noisy/albedo/normalDepth textures and packs each pixel's RGB
- * channels into three interleaved f32 storage buffers (noisyOut, albedoOut,
- * normalsOut).  The normal channel is remapped from [0,1] to [-1,1] and
- * normalised before storage so the inference graph receives unit-length
- * surface normals.
- *
- * Binding layout (group 0):
- *   0 — noisyTex        (texture_2d<f32>)
- *   1 — albedoTex       (texture_2d<f32>)
- *   2 — normalDepthTex  (texture_2d<f32>)
- *   3 — noisyOut        (storage, read_write  f32[])
- *   4 — albedoOut       (storage, read_write  f32[])
- *   5 — normalsOut      (storage, read_write  f32[])
- *   6 — params          (uniform PackParams)
- *
- * Extracted from NeuralDenoiser.initialize inline literal (Issue 2 /
- * complexity-sweep 2026-06-02) — character-identical to the original
- * embedded string.
- */
-
+/** Neural input texture-to-buffer staging with finite sanitization. */
 import type { WgslModule } from '../pipeline/wgslComposer.js';
+import { NORMAL_DEPTH_DECODE_WGSL } from '@vitrum/shared-denoisers';
+import {
+  NEURAL_PREPROCESSING_CONTRACT,
+  neuralPreprocessingWgsl,
+  type NeuralPreprocessingContract,
+} from '../neural/preprocessing.js';
+import {
+  NEURAL_F32_TENSOR_STORAGE,
+  neuralTensorWgslPreamble,
+  neuralTensorWgslType,
+  type NeuralTensorStorageContract,
+} from '../neural/tensorPrecision.js';
 
-export const NEURAL_PACK_WGSL = /* wgsl */`
+export function buildNeuralPackWgsl(
+  contract: NeuralPreprocessingContract = NEURAL_PREPROCESSING_CONTRACT,
+  storage: NeuralTensorStorageContract = NEURAL_F32_TENSOR_STORAGE,
+): string {
+  const tensor = neuralTensorWgslType(storage);
+  const store = (value: string): string => storage.precision === 'f16' ? `f16(${value})` : value;
+  return /* wgsl */`
+${neuralTensorWgslPreamble(storage)}
+${neuralPreprocessingWgsl(contract)}
+${NORMAL_DEPTH_DECODE_WGSL}
 struct PackParams {
   width: u32,
   height: u32,
@@ -33,43 +32,36 @@ struct PackParams {
 @group(0) @binding(0) var noisyTex: texture_2d<f32>;
 @group(0) @binding(1) var albedoTex: texture_2d<f32>;
 @group(0) @binding(2) var normalDepthTex: texture_2d<f32>;
-@group(0) @binding(3) var<storage, read_write> noisyOut: array<f32>;
-@group(0) @binding(4) var<storage, read_write> albedoOut: array<f32>;
-@group(0) @binding(5) var<storage, read_write> normalsOut: array<f32>;
+@group(0) @binding(3) var<storage, read_write> noisyOut: array<${tensor}>;
+@group(0) @binding(4) var<storage, read_write> albedoOut: array<${tensor}>;
+@group(0) @binding(5) var<storage, read_write> normalsOut: array<${tensor}>;
 @group(0) @binding(6) var<uniform> params: PackParams;
 
 @compute @workgroup_size(256, 1, 1)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let p = gid.x;
   if (p >= params.pixelCount) { return; }
-  let x = p % params.width;
-  let y = p / params.width;
-  let n = textureLoad(noisyTex, vec2i(i32(x), i32(y)), 0).rgb;
-  let a = textureLoad(albedoTex, vec2i(i32(x), i32(y)), 0).rgb;
-  let nd = textureLoad(normalDepthTex, vec2i(i32(x), i32(y)), 0).xyz;
-  // Guard against zero-length normal vectors (sky pixels, background, or
-  // un-rendered regions write (0,0,0) into the normal buffer).  Calling
-  // normalize(vec3f(0)) produces a NaN per the WGSL spec, which propagates
-  // silently into the inference buffers and causes undefined denoiser output.
-  // When the remapped vector has no length we fall back to the geometric-up
-  // direction (0,1,0) — a valid, well-conditioned normal that keeps the
-  // denoiser stable over sky pixels.
-  let nd_remapped = nd * 2.0 - 1.0;
-  let nrm = select(normalize(nd_remapped), vec3f(0.0, 1.0, 0.0), dot(nd_remapped, nd_remapped) < 1e-6);
+  let xy = vec2i(i32(p % params.width), i32(p / params.width));
+  let noisy = textureLoad(noisyTex, xy, 0).rgb;
+  let albedo = textureLoad(albedoTex, xy, 0).rgb;
+  let normal = neuralSanitizeNormal(
+    decodeNormalDepthWorldNormal(textureLoad(normalDepthTex, xy, 0).xyz),
+  );
   let base = p * 3u;
-  noisyOut[base + 0u] = n.r;
-  noisyOut[base + 1u] = n.g;
-  noisyOut[base + 2u] = n.b;
-  albedoOut[base + 0u] = a.r;
-  albedoOut[base + 1u] = a.g;
-  albedoOut[base + 2u] = a.b;
-  normalsOut[base + 0u] = nrm.r;
-  normalsOut[base + 1u] = nrm.g;
-  normalsOut[base + 2u] = nrm.b;
+  noisyOut[base] = ${store('neuralSanitizeSigned(noisy.r)')};
+  noisyOut[base + 1u] = ${store('neuralSanitizeSigned(noisy.g)')};
+  noisyOut[base + 2u] = ${store('neuralSanitizeSigned(noisy.b)')};
+  albedoOut[base] = ${store('neuralSanitizeAlbedo(albedo.r)')};
+  albedoOut[base + 1u] = ${store('neuralSanitizeAlbedo(albedo.g)')};
+  albedoOut[base + 2u] = ${store('neuralSanitizeAlbedo(albedo.b)')};
+  normalsOut[base] = ${store('normal.x')};
+  normalsOut[base + 1u] = ${store('normal.y')};
+  normalsOut[base + 2u] = ${store('normal.z')};
 }
 `;
+}
 
-/** Neural denoiser input-pack compute shader module. Self-contained; no deps. */
+export const NEURAL_PACK_WGSL = buildNeuralPackWgsl();
 export const NEURAL_PACK_MODULE: WgslModule = {
   name: 'neuralPack',
   source: NEURAL_PACK_WGSL,

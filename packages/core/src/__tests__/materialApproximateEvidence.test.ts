@@ -88,36 +88,9 @@ const WALKAROUND_COMPACT_TRIANGLE = evidence(
   ],
 );
 
-const WALKAROUND_ALPHA = evidence(
-  'atlas+truthfulness-surface',
-  'camera/OIT alpha is rendered, while fractional transport remains explicitly approximate',
-  [
-    'packages/walkaround-hybrid/src/restir/__tests__/roughMetalPacking.test.ts',
-    'packages/walkaround-hybrid/src/__tests__/materialTextureAtlas.test.ts',
-    'packages/walkaround-hybrid/src/__tests__/transparentAlphaTransportContract.test.ts',
-    'packages/walkaround-hybrid/src/__tests__/transparentOitMaterialParity.test.ts',
-    'packages/walkaround-hybrid/src/__tests__/consumedMaterialFields.test.ts',
-  ],
-  [
-    'packages/walkaround-hybrid/src/restir/packingHelpers.ts',
-    'packages/walkaround-hybrid/src/shaders/materialAtlas.wgsl.ts',
-    'packages/walkaround-hybrid/src/shaders/transparentOit.wgsl.ts',
-    'packages/walkaround-hybrid/src/restir/consumedMaterialFields.ts',
-  ],
-  [
-    {
-      path: 'packages/walkaround-hybrid/src/restir/consumedMaterialFields.ts',
-      includes: [
-        'collectApproximateAlphaBlendPrimitiveIds',
-        'ReSTIR/GI participation remains approximate',
-      ],
-    },
-  ],
-);
-
 const WALKAROUND_ATLAS_MAPS = evidence(
   'atlas+truthfulness-surface',
-  'readable material maps are atlas-backed and sampled by shade/traversal, with compact-GI limits',
+  'CPU pixel payloads and nominal GPU texture sources are mipmapped, atlas-backed, and sampled by shade/traversal with a bounded projected-triangle footprint model; compact-GI limits remain',
   [
     'packages/walkaround-hybrid/src/__tests__/materialTextureAtlas.test.ts',
     'packages/walkaround-hybrid/src/__tests__/restirDiMaterialParity.test.ts',
@@ -150,158 +123,65 @@ const WALKAROUND_ATLAS_MAPS = evidence(
   ],
 );
 
-const WALKAROUND_EMISSIVE_MAP = evidence(
-  'atlas+truthfulness-surface',
-  'visible/direct mapped emission is consumed, while all-path texel-PDF exactness is still a promotion tail',
+const WALKAROUND_OPTICAL_REDUCTION = evidence(
+  'volume-approximation',
+  'spectral attenuation, Abbe dispersion, and thin-film TMM are preintegrated into bounded RGB/angle tables shared by realtime paths rather than transporting wavelengths per path',
   [
+    'packages/walkaround-hybrid/src/__tests__/materialOptics.test.ts',
     'packages/walkaround-hybrid/src/__tests__/materialTextureAtlas.test.ts',
-    'packages/walkaround-hybrid/src/restir/__tests__/emissiveLePacking.test.ts',
     'packages/walkaround-hybrid/src/__tests__/consumedMaterialFields.test.ts',
-    'packages/walkaround-hybrid/src/__tests__/restirGiMaterialParity.test.ts',
   ],
   [
-    'packages/walkaround-hybrid/src/pipeline/materialTextureAtlas.ts',
+    'packages/walkaround-hybrid/src/bvh/materialOptics.ts',
+    'packages/shared-bvh/src/wgsl/materialOptics.wgsl.ts',
     'packages/walkaround-hybrid/src/shaders/materialAtlas.wgsl.ts',
-    'packages/walkaround-hybrid/src/shaders/restirGiMaterial.wgsl.ts',
-    'packages/walkaround-hybrid/src/restir/consumedMaterialFields.ts',
   ],
   [
     {
-      path: 'packages/walkaround-hybrid/src/restir/consumedMaterialFields.ts',
+      path: 'packages/walkaround-hybrid/src/__tests__/materialOptics.test.ts',
       includes: [
-        'EMISSIVE_MAP_TEXEL_PDF_APPROXIMATION_DETAILS',
-        'global-exact-texel-alias-pdf',
+        'reduces positive Abbe dispersion to ordered red/green/blue IORs',
+        'preintegrates finite energy-bounded forward and reverse thin-film responses',
+      ],
+    },
+    {
+      path: 'packages/shared-bvh/src/wgsl/materialOptics.wgsl.ts',
+      includes: [
+        'fn materialSpectralAttenuation(',
+        'fn materialThinFilmResponse(',
       ],
     },
   ],
 );
 
-const WALKAROUND_LIGHT_MAP = evidence(
-  'atlas+truthfulness-surface',
-  'light maps are camera-visible baked radiance, not global transport participants',
+const WALKAROUND_VOLUME_LAYER_REDUCTION = evidence(
+  'volume-approximation',
+  'face layers are reduced to one face-local transmission/roughness/normal record and volume scattering to a bounded homogeneous single-scatter model',
   [
     'packages/walkaround-hybrid/src/__tests__/materialTextureAtlas.test.ts',
-    'packages/walkaround-hybrid/src/__tests__/transparentOitMaterialParity.test.ts',
-    'packages/walkaround-hybrid/src/__tests__/consumedMaterialFields.test.ts',
-  ],
-  [
-    'packages/walkaround-hybrid/src/pipeline/materialTextureAtlas.ts',
-    'packages/walkaround-hybrid/src/shaders/materialAtlas.wgsl.ts',
-    'packages/walkaround-hybrid/src/shaders/transparentOit.wgsl.ts',
-    'packages/walkaround-hybrid/src/restir/consumedMaterialFields.ts',
-  ],
-  [
-    {
-      path: 'packages/walkaround-hybrid/src/restir/consumedMaterialFields.ts',
-      includes: [
-        'LIGHT_MAP_CAMERA_VISIBLE_APPROXIMATION_DETAILS',
-        'global-transport-light-map-participation',
-      ],
-    },
-  ],
-);
-
-const WALKAROUND_RICH_LOBES = evidence(
-  'atlas+truthfulness-surface',
-  'rich lobes are consumed by shade/DI/GI payloads but still await furnace/reference promotion',
-  [
-    'packages/walkaround-hybrid/src/__tests__/materialTextureAtlas.test.ts',
-    'packages/walkaround-hybrid/src/__tests__/restirDiMaterialParity.test.ts',
     'packages/walkaround-hybrid/src/__tests__/restirGiMaterialParity.test.ts',
     'packages/walkaround-hybrid/src/__tests__/consumedMaterialFields.test.ts',
   ],
   [
-    'packages/walkaround-hybrid/src/pipeline/materialTextureAtlas.ts',
+    'packages/walkaround-hybrid/src/bvh/materialTextureAtlasPack.ts',
     'packages/walkaround-hybrid/src/shaders/materialAtlas.wgsl.ts',
     'packages/walkaround-hybrid/src/shaders/shade.wgsl.ts',
     'packages/walkaround-hybrid/src/shaders/restirGiMaterial.wgsl.ts',
-    'packages/walkaround-hybrid/src/restir/consumedMaterialFields.ts',
-  ],
-  [
-    {
-      path: 'packages/walkaround-hybrid/src/restir/consumedMaterialFields.ts',
-      includes: [
-        'RICH_MATERIAL_GI_APPROXIMATION_DETAILS',
-        'collectApproximateRichMaterialPrimitiveFields',
-      ],
-    },
-    {
-      path: 'packages/walkaround-hybrid/src/__tests__/materialTextureAtlas.test.ts',
-      includes: [
-        'fn sampleSpecularControls(',
-        'fn sampleClearcoatControls(',
-        'fn sampleSheenControls(',
-        'fn sampleAnisotropyControls(',
-        'fn sampleIridescenceControls(',
-        'fn applyBumpMapForHit(',
-      ],
-    },
-  ],
-);
-
-const WALKAROUND_FACE_LAYERS = evidence(
-  'atlas+truthfulness-surface',
-  'per-face absorption layers are scalar-atlas metadata with explicit layer-normal residual warnings',
-  [
-    'packages/walkaround-hybrid/src/__tests__/materialTextureAtlas.test.ts',
-    'packages/walkaround-hybrid/src/__tests__/restirDiMaterialParity.test.ts',
-    'packages/walkaround-hybrid/src/__tests__/restirGiMaterialParity.test.ts',
-    'packages/walkaround-hybrid/src/__tests__/transparentOitMaterialParity.test.ts',
-    'packages/walkaround-hybrid/src/__tests__/consumedMaterialFields.test.ts',
-  ],
-  [
-    'packages/walkaround-hybrid/src/pipeline/materialTextureAtlas.ts',
-    'packages/walkaround-hybrid/src/shaders/materialAtlas.wgsl.ts',
-    'packages/walkaround-hybrid/src/shaders/shade.wgsl.ts',
-    'packages/walkaround-hybrid/src/shaders/restirGiMaterial.wgsl.ts',
-    'packages/walkaround-hybrid/src/ddgi/wgsl/probeUpdateRays.wgsl.ts',
-    'packages/walkaround-hybrid/src/restir/consumedMaterialFields.ts',
   ],
   [
     {
       path: 'packages/walkaround-hybrid/src/__tests__/materialTextureAtlas.test.ts',
       includes: [
         'packs frontLayer/backLayer transmission, roughness, and layer-local normal maps',
-      ],
-    },
-    {
-      path: 'packages/walkaround-hybrid/src/restir/consumedMaterialFields.ts',
-      includes: [
-        'frontLayer.normalMap',
-        'backLayer.normalScale',
-      ],
-    },
-  ],
-);
-
-const WALKAROUND_VOLUME_SCATTERING = evidence(
-  'volume-approximation',
-  'sigma_s and anisotropy are scalar-atlas metadata consumed by bounded single-scatter tinting, not full volumetric path tracing',
-  [
-    'packages/walkaround-hybrid/src/__tests__/materialTextureAtlas.test.ts',
-    'packages/walkaround-hybrid/src/__tests__/restirDiMaterialParity.test.ts',
-    'packages/walkaround-hybrid/src/__tests__/restirGiMaterialParity.test.ts',
-    'packages/walkaround-hybrid/src/ddgi/__tests__/ddgiGlossyProbeBounce.test.ts',
-  ],
-  [
-    'packages/walkaround-hybrid/src/pipeline/materialTextureAtlas.ts',
-    'packages/walkaround-hybrid/src/shaders/materialAtlas.wgsl.ts',
-    'packages/walkaround-hybrid/src/shaders/shade.wgsl.ts',
-    'packages/walkaround-hybrid/src/shaders/restirPHat.wgsl.ts',
-    'packages/walkaround-hybrid/src/shaders/restirGiMaterial.wgsl.ts',
-    'packages/walkaround-hybrid/src/ddgi/wgsl/probeUpdateRays.wgsl.ts',
-  ],
-  [
-    {
-      path: 'packages/walkaround-hybrid/src/__tests__/materialTextureAtlas.test.ts',
-      includes: [
         'packs volume scattering sigmaS and anisotropy metadata',
       ],
     },
     {
-      path: 'packages/walkaround-hybrid/src/shaders/materialAtlas.wgsl.ts',
+      path: 'packages/walkaround-hybrid/src/shaders/shade.wgsl.ts',
       includes: [
-        'fn applyVolumeScatteringApproximation(',
+        'let layerControls = sampleFaceLayerControls(',
+        'let volumeScattering = sampleVolumeScatteringControls(',
+        'applyHomogeneousVolumeSingleScatter(',
       ],
     },
   ],
@@ -349,8 +229,8 @@ const PT_WEBGL2_UNLIT = evidence(
     {
       path: 'packages/pt-webgl2/src/glsl/composeTraceGlsl.test.ts',
       includes: [
-        'bool unlit;',
-        'if ( material.unlit )',
+        'bool activeMaterialUnlit = materialControl.unlit;',
+        'if ( activeMaterialUnlit )',
       ],
     },
   ],
@@ -505,29 +385,22 @@ const MATERIAL_APPROXIMATE_EVIDENCE: Record<BackendWithApproximateEvidence, Reco
       'transmission', 'ior', 'attenuationColor', 'attenuationDistance',
       'thickness', 'aoMapIntensity',
     ], WALKAROUND_COMPACT_TRIANGLE),
-    ...group(['alphaMode', 'alphaCutoff', 'opacity', 'alphaMap'], WALKAROUND_ALPHA),
     ...group([
       'baseColorMap', 'roughnessMap', 'metallicMap', 'normalMap', 'normalScale',
-      'transmissionMap', 'thicknessMap', 'aoMap',
+      'transmissionMap', 'thicknessMap', 'aoMap', 'bumpMap', 'bumpScale',
     ], WALKAROUND_ATLAS_MAPS),
-    emissiveMap: WALKAROUND_EMISSIVE_MAP,
-    ...group(['lightMap', 'lightMapIntensity'], WALKAROUND_LIGHT_MAP),
     ...group([
-      'clearcoatMap', 'clearcoatRoughnessMap', 'clearcoatNormalMap',
-      'clearcoatNormalScale', 'sheenColorMap', 'sheenRoughnessMap',
-      'iridescenceMap', 'iridescenceThicknessMap', 'anisotropyMap',
-      'specularColorMap', 'specularIntensityMap', 'bumpMap', 'bumpScale',
-      'sheen', 'sheenColor', 'sheenRoughness', 'clearcoat',
-      'clearcoatRoughness', 'iridescence', 'iridescenceIor',
-      'iridescenceThicknessRange', 'specularIntensity', 'specularColor',
-      'anisotropy', 'anisotropyRotation',
-    ], WALKAROUND_RICH_LOBES),
-    ...group(['frontLayer', 'backLayer'], WALKAROUND_FACE_LAYERS),
+      'spectralAttenuation',
+      'dispersionAbbeNumber',
+      'thinFilmStack',
+    ], WALKAROUND_OPTICAL_REDUCTION),
     ...group([
       'scatteringCoefficient',
       'scatteringAnisotropy',
       'scatteringCoefficientRGB',
-    ], WALKAROUND_VOLUME_SCATTERING),
+      'frontLayer',
+      'backLayer',
+    ], WALKAROUND_VOLUME_LAYER_REDUCTION),
     ...group(['displacementMap', 'displacementScale', 'displacementBias', 'displacementSubdivisions'], SHARED_VERTEX_DISPLACEMENT),
   },
   'pt-webgl2': {
@@ -540,11 +413,7 @@ const MATERIAL_APPROXIMATE_EVIDENCE: Record<BackendWithApproximateEvidence, Reco
     shadingModel: PT_WEBGPU_UNLIT,
     ...group(['thickness', 'thicknessMap'], PT_WEBGPU_THICKNESS),
     ...group([
-      'clearcoatMap', 'clearcoatRoughnessMap', 'clearcoatNormalMap',
-      'sheenColorMap', 'sheenRoughnessMap', 'iridescenceMap',
-      'iridescenceThicknessMap', 'anisotropyMap', 'specularColorMap',
-      'specularIntensityMap', 'specularIntensity', 'specularColor',
-      'anisotropy', 'anisotropyRotation',
+      'anisotropyMap', 'anisotropy', 'anisotropyRotation',
     ], PT_WEBGPU_RICH_LOBES),
     ...group(['displacementMap', 'displacementScale', 'displacementBias', 'displacementSubdivisions'], SHARED_VERTEX_DISPLACEMENT),
   },

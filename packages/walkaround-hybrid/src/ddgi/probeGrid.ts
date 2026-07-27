@@ -22,6 +22,10 @@
 // Atlas-layout constants imported from the canonical source so producer
 // and consumers (ddgiSampleWgsl.ts + shade.wgsl.ts) stay in lockstep.
 import { IRR_CELL, VIS_CELL, BORDER } from './ddgiAtlasLayout.js';
+import {
+  assertFiniteDdgiNumber,
+  assertPositiveDdgiInteger,
+} from './inputValidation.js';
 
 /**
  * D6.10 — PlainAabbArrayLike covers @vitrum/shared-bvh PlainAabb where
@@ -182,6 +186,23 @@ export class ProbeGrid {
     maxProbesPerAxis = 16,
   ): boolean {
     const box = _normaliseBounds(boundingBox);
+    const axes = ['x', 'y', 'z'] as const;
+    for (const axis of axes) {
+      assertFiniteDdgiNumber(box.min[axis], `DDGI probe bounds min.${axis}`);
+      assertFiniteDdgiNumber(box.max[axis], `DDGI probe bounds max.${axis}`);
+      if (box.min[axis] > box.max[axis]) {
+        throw new RangeError(
+          `DDGI probe bounds min.${axis} must be <= max.${axis}.`,
+        );
+      }
+    }
+    if (spacingInches !== undefined) {
+      assertFiniteDdgiNumber(spacingInches, 'DDGI probe spacing');
+      if (spacingInches <= 0) {
+        throw new RangeError('DDGI probe spacing must be > 0.');
+      }
+    }
+    assertPositiveDdgiInteger(maxProbesPerAxis, 'DDGI max probes per axis');
     const size = new ProbeGridVector3Value();
     const min = new ProbeGridVector3Value();
     size.set(
@@ -196,7 +217,10 @@ export class ProbeGrid {
     // block stair-step shadows on a 2-unit Cornell box; at 13³ the cells
     // are ~0.17 units which sit below the resolution-limited blur of the
     // 8-probe stencil, hiding the grid.
-    const autoSpacing = Math.max(size.x, size.y, size.z) / 12;
+    const maxExtent = Math.max(size.x, size.y, size.z);
+    // A point/fully-degenerate AABB still needs a finite grid. One scene unit is
+    // the least-surprising fallback when no positive extent exists to derive it.
+    const autoSpacing = maxExtent > 0 ? maxExtent / 12 : 1;
     const PROBE_SPACING = spacingInches ?? autoSpacing;
 
     const nx = Math.max(3, Math.ceil(size.x / PROBE_SPACING) + 1);
@@ -242,7 +266,6 @@ export class ProbeGrid {
     // required by WebGPU (rg16float is not in the required set).
     this.visibilityA = makeSlot(visW, visH);
     this.visibilityB = makeSlot(visW, visH);
-
     this._params = {
       origin:   this.worldOrigin.clone(),
       spacing:  this.worldSpacing,

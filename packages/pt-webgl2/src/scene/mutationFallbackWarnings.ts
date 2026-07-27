@@ -30,6 +30,7 @@ export const GEOMETRY_REBUILD_PATCH_FIELDS = new Set([
   'indices',
   'uvs',
   'uv1',
+  'uvSets',
   'tangents',
   'colors',
   'instances',
@@ -40,6 +41,7 @@ export const GEOMETRY_REBUILD_PATCH_FIELDS = new Set([
   'morphTargetTangents',
   'morphTargetUvs',
   'morphTargetUv1s',
+  'morphTargetUvSets',
   'morphWeights',
 ]);
 
@@ -59,11 +61,13 @@ export const ANIMATION_REBUILD_PATCH_FIELDS = new Set([
   'boneInverses',
   'skinIndices',
   'skinWeights',
+  'skinInfluencesPerVertex',
   'morphTargets',
   'morphTargetNormals',
   'morphTargetTangents',
   'morphTargetUvs',
   'morphTargetUv1s',
+  'morphTargetUvSets',
   'morphWeights',
 ]);
 

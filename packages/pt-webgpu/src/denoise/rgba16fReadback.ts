@@ -1,7 +1,9 @@
 import {
+  alignedTextureCopyBytesPerRow,
+  decodeNormalDepthWorldNormal,
   float16BitsToFloat32 as f16ToF32,
+  rgba16fBufferToRgbF32,
 } from '@vitrum/shared-denoisers';
-import { alignedTextureCopyBytesPerRow } from '@vitrum/shared-denoisers';
 
 /**
  * Row-major rgba16float GPU buffer → interleaved RGBA Float32, top-left origin.
@@ -28,33 +30,6 @@ export function rgba16fBufferToRgbaF32(
       dst[dstIdx + 1] = f16ToF32(view.getUint16(texOff + 2, true));
       dst[dstIdx + 2] = f16ToF32(view.getUint16(texOff + 4, true));
       dst[dstIdx + 3] = f16ToF32(view.getUint16(texOff + 6, true));
-    }
-  }
-  return dst;
-}
-
-/** Row-major rgba16float → interleaved RGB Float32 (OIDN layout). */
-function rgba16fBufferToRgbF32(
-  src: ArrayBuffer,
-  bytesPerRow: number,
-  width: number,
-  height: number,
-  decode?: (r: number, g: number, b: number) => [number, number, number],
-): Float32Array {
-  const dst = new Float32Array(width * height * 3);
-  const view = new DataView(src);
-  for (let y = 0; y < height; y++) {
-    const rowOff = y * bytesPerRow;
-    for (let x = 0; x < width; x++) {
-      const texOff = rowOff + x * 8;
-      const r = f16ToF32(view.getUint16(texOff, true));
-      const g = f16ToF32(view.getUint16(texOff + 2, true));
-      const b = f16ToF32(view.getUint16(texOff + 4, true));
-      const [or, og, ob] = decode ? decode(r, g, b) : [r, g, b];
-      const dstIdx = (y * width + x) * 3;
-      dst[dstIdx] = or;
-      dst[dstIdx + 1] = og;
-      dst[dstIdx + 2] = ob;
     }
   }
   return dst;
@@ -196,7 +171,7 @@ export async function readOidnInputsFromTextures(
         bytesPerRow,
         width,
         height,
-        (r, g, b) => [r * 2 - 1, g * 2 - 1, b * 2 - 1],
+        decodeNormalDepthWorldNormal,
       );
       normalReadback.unmap();
       safeDestroy(normalReadback);

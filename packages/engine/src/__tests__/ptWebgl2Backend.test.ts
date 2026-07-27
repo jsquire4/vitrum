@@ -13,6 +13,7 @@ const ptWebgl2Factory = vi.hoisted(() => vi.fn());
 
 vi.mock('@vitrum/pt-webgl2', () => ({
   createPTEngine_WebGL2: ptWebgl2Factory,
+  validateWebgl2AdvancedOptions: vi.fn(),
 }));
 
 import { constructPathTracer } from '../backends/ptWebgl2.js';
@@ -35,17 +36,18 @@ function makeEngine(): Engine {
 }
 
 function makeCanvasWithGl() {
+  const loseContext = vi.fn();
   const gl = {
-    getExtension: vi.fn(() => ({ loseContext: vi.fn() })),
+    getExtension: vi.fn(() => ({ loseContext })),
   } as unknown as WebGL2RenderingContext;
   const canvas = {
     getContext: vi.fn((kind: string) => (kind === 'webgl2' ? gl : null)),
   } as unknown as HTMLCanvasElement;
-  return { canvas, gl };
+  return { canvas, gl, loseContext };
 }
 
-describe('constructPathTracer (pt-webgl2) — V1-6 ownership-key strip', () => {
-  it('strips advanced.device so a host-supplied device cannot reach the factory or clobber the owned gl', async () => {
+describe('constructPathTracer (pt-webgl2) ownership boundary', () => {
+  it('rejects advanced.device before context acquisition or factory invocation', async () => {
     ptWebgl2Factory.mockReset();
     const built = makeEngine();
     ptWebgl2Factory.mockResolvedValue(built);
@@ -59,19 +61,35 @@ describe('constructPathTracer (pt-webgl2) — V1-6 ownership-key strip', () => {
       scene,
       // Host smuggles a device (and canvas) through the advanced bag.
       advanced: { device: hostDevice, canvas: {} } as never,
+      advancedBackend: 'pt-webgl2',
       onWarning: (w: unknown) => warnings.push(w),
     } as unknown as CreateEngineOptions;
 
-    await constructPathTracer(opts, scene);
+    await expect(constructPathTracer(opts, scene)).rejects.toThrow(
+      /ownership-critical key.*device, canvas/i,
+    );
 
-    expect(ptWebgl2Factory).toHaveBeenCalledTimes(1);
-    const merged = ptWebgl2Factory.mock.calls[0]![0] as { device: unknown };
-    // The engine-owned gl context wins; the host device was stripped.
-    expect(merged.device).toBe(gl);
-    expect(merged.device).not.toBe(hostDevice);
-    // The strip helper emits the ownership-key-ignored warning.
-    expect(warnings).toContainEqual(expect.objectContaining({
-      code: 'createEngine.advanced-ownership-key-ignored',
-    }));
+    expect(canvas.getContext).not.toHaveBeenCalled();
+    expect(ptWebgl2Factory).not.toHaveBeenCalled();
+    expect(warnings).toEqual([]);
+    expect(gl).not.toBe(hostDevice);
+  });
+
+  it('releases engine resources without deliberately losing the canvas context', async () => {
+    ptWebgl2Factory.mockReset();
+    const built = makeEngine();
+    ptWebgl2Factory.mockResolvedValue(built);
+    const { canvas, loseContext } = makeCanvasWithGl();
+
+    const wrapped = await constructPathTracer({
+      canvas,
+      scene,
+    }, scene);
+
+    wrapped.dispose();
+    wrapped.dispose();
+
+    expect(built.dispose).toHaveBeenCalledTimes(1);
+    expect(loseContext).not.toHaveBeenCalled();
   });
 });

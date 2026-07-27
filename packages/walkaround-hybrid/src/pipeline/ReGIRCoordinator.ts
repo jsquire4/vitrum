@@ -27,6 +27,7 @@ import type { SceneBVHBuffers } from '../restir/bvhTypes.js';
 import { REGIR_OFF } from './uboUpdater.js';
 import type { RegirUboState } from './uboUpdater.js';
 import type { PipelineSubsystem } from './PipelineSubsystem.js';
+import type { PreparedSceneMutation } from '../SceneMutationTransaction.js';
 
 // Light-tree node stride in floats = `LIGHT_TREE_FLOATS_PER_NODE` (imported from
 // shared-samplers — single source of truth; B8 grew it 12→16). The grid region
@@ -45,14 +46,77 @@ export interface ReGIRConfig {
   readonly survivorsPerCell: number;
 }
 
+const REGIR_U32_MAX = 0xffff_ffff;
+const REGIR_U32_ELEMENT_CAPACITY = BigInt(REGIR_U32_MAX) + 1n;
+export const REGIR_BUILD_WORKGROUP_SIZE = 64;
+
+function finitePositiveInt(
+  value: number | undefined,
+  fallback: number,
+  label: string,
+): number {
+  if (value === undefined || !Number.isFinite(value)) return fallback;
+  const resolved = Math.max(1, Math.floor(value));
+  if (!Number.isSafeInteger(resolved) || resolved > REGIR_U32_MAX) {
+    throw new RangeError(
+      `[ReGIR] ${label} must resolve to an integer representable by WGSL u32.`,
+    );
+  }
+  return resolved;
+}
+
+function capacity(config: ReGIRConfig): {
+  readonly cells: bigint;
+  readonly survivors: bigint;
+  readonly floats: bigint;
+} {
+  const axis = BigInt(config.cellsPerAxis);
+  const cells = axis * axis * axis;
+  const survivors = cells * BigInt(config.survivorsPerCell);
+  const floats = survivors * BigInt(REGIR_FLOATS_PER_SURVIVOR);
+  if (cells > BigInt(REGIR_U32_MAX)) {
+    throw new RangeError(
+      '[ReGIR] cellsPerAxis³ exceeds the WGSL u32 cell-index domain.',
+    );
+  }
+  if (survivors > BigInt(REGIR_U32_MAX)) {
+    throw new RangeError(
+      '[ReGIR] cellsPerAxis³ × survivorsPerCell exceeds the WGSL u32 invocation domain.',
+    );
+  }
+  if (floats > REGIR_U32_ELEMENT_CAPACITY) {
+    throw new RangeError(
+      '[ReGIR] grid storage exceeds the WGSL u32 element-index domain.',
+    );
+  }
+  return { cells, survivors, floats };
+}
+
+function reportedDeviceLimit(device: GPUDevice, name: string): number | undefined {
+  const raw = (device.limits as unknown as Record<string, unknown> | undefined)?.[name];
+  return typeof raw === 'number' && Number.isFinite(raw) && raw > 0
+    ? raw
+    : undefined;
+}
+
 /** Resolve a partial host config to the full {@link ReGIRConfig} with defaults. */
 export function resolveReGIRConfig(opts?: Partial<ReGIRConfig>): ReGIRConfig {
-  return {
+  const resolved: ReGIRConfig = {
     enabled: opts?.enabled ?? false,
-    cellsPerAxis: Math.max(1, Math.floor(opts?.cellsPerAxis ?? 16)),
-    candidatesPerCell: Math.max(1, Math.floor(opts?.candidatesPerCell ?? 32)),
-    survivorsPerCell: Math.max(1, Math.floor(opts?.survivorsPerCell ?? 8)),
+    cellsPerAxis: finitePositiveInt(opts?.cellsPerAxis, 16, 'cellsPerAxis'),
+    candidatesPerCell: finitePositiveInt(
+      opts?.candidatesPerCell,
+      32,
+      'candidatesPerCell',
+    ),
+    survivorsPerCell: finitePositiveInt(
+      opts?.survivorsPerCell,
+      8,
+      'survivorsPerCell',
+    ),
   };
+  if (resolved.enabled) capacity(resolved);
+  return resolved;
 }
 
 export class ReGIRCoordinator implements PipelineSubsystem {
@@ -60,6 +124,7 @@ export class ReGIRCoordinator implements PipelineSubsystem {
   /** True only when the host opted in AND the light tree is live (ReGIR seeds
    *  cells via the tree) AND the grid-build pipeline compiled. */
   private _live = false;
+  private _gridBuildPipelineReady = false;
   private _origin: [number, number, number] = [0, 0, 0];
   /** Uniform cubic cell size (max axis span / cellsPerAxis). */
   private _cellSize = 1;
@@ -85,6 +150,62 @@ export class ReGIRCoordinator implements PipelineSubsystem {
     return this._dims[0] * this._dims[1] * this._dims[2];
   }
 
+  /** Number of 64-wide workgroups required by the live grid geometry. */
+  get buildDispatchWorkgroups(): number {
+    if (!this._live) return 0;
+    return Math.ceil(
+      (this.cellCount * this._config.survivorsPerCell) /
+        REGIR_BUILD_WORKGROUP_SIZE,
+    );
+  }
+
+  /**
+   * Fail before any ReGIR-backed GPU allocation when the configured maximum
+   * grid cannot be represented by the shader or dispatched on this device.
+   * The allocation is sized for `cellsPerAxis³`, so preflighting that same
+   * upper bound also covers every later scene-bounds/emitter mutation.
+   */
+  assertDeviceLimits(device: GPUDevice): void {
+    if (!this._config.enabled) return;
+    const { survivors } = capacity(this._config);
+    const workgroupInvocations = reportedDeviceLimit(
+      device,
+      'maxComputeInvocationsPerWorkgroup',
+    );
+    if (
+      workgroupInvocations !== undefined &&
+      REGIR_BUILD_WORKGROUP_SIZE > workgroupInvocations
+    ) {
+      throw new RangeError(
+        `[ReGIR] build workgroup size ${REGIR_BUILD_WORKGROUP_SIZE} exceeds ` +
+          `maxComputeInvocationsPerWorkgroup=${workgroupInvocations}.`,
+      );
+    }
+    const workgroupSizeX = reportedDeviceLimit(device, 'maxComputeWorkgroupSizeX');
+    if (
+      workgroupSizeX !== undefined &&
+      REGIR_BUILD_WORKGROUP_SIZE > workgroupSizeX
+    ) {
+      throw new RangeError(
+        `[ReGIR] build workgroup X ${REGIR_BUILD_WORKGROUP_SIZE} exceeds ` +
+          `maxComputeWorkgroupSizeX=${workgroupSizeX}.`,
+      );
+    }
+    const dispatchX =
+      (survivors + BigInt(REGIR_BUILD_WORKGROUP_SIZE - 1)) /
+      BigInt(REGIR_BUILD_WORKGROUP_SIZE);
+    const dispatchLimit = reportedDeviceLimit(
+      device,
+      'maxComputeWorkgroupsPerDimension',
+    );
+    if (dispatchLimit !== undefined && dispatchX > BigInt(dispatchLimit)) {
+      throw new RangeError(
+        `[ReGIR] build dispatch requires ${dispatchX} workgroups in X, exceeding ` +
+          `maxComputeWorkgroupsPerDimension=${dispatchLimit}.`,
+      );
+    }
+  }
+
   /**
    * Byte count of the ReGIR grid region appended to the light-tree buffer. The
    * pipeline passes this to `BvhBufferHost.setRegirGridBytes` BEFORE
@@ -95,9 +216,13 @@ export class ReGIRCoordinator implements PipelineSubsystem {
    */
   gridRegionBytes(): number {
     if (!this._config.enabled) return 0;
-    const cells = this._config.cellsPerAxis ** 3;
-    const floats = cells * this._config.survivorsPerCell * REGIR_FLOATS_PER_SURVIVOR;
-    return floats * 4;
+    const bytes = capacity(this._config).floats * 4n;
+    if (bytes > BigInt(Number.MAX_SAFE_INTEGER)) {
+      throw new RangeError(
+        '[ReGIR] configured grid byte length exceeds Number.MAX_SAFE_INTEGER.',
+      );
+    }
+    return Number(bytes);
   }
 
   /**
@@ -109,9 +234,10 @@ export class ReGIRCoordinator implements PipelineSubsystem {
    * compute pipeline compiled (false ⇒ ReGIR stays off even if config asked).
    */
   initialize(bvh: SceneBVHBuffers, gridBuildPipelineReady: boolean): void {
+    this._gridBuildPipelineReady = gridBuildPipelineReady;
     const lightTreeLive = !!bvh.lightTreeEnabled && (bvh.lightTreeNodeCount ?? 0) > 0;
     this._live = this._config.enabled && lightTreeLive && gridBuildPipelineReady;
-    if (!this._live) {
+    if (!this._config.enabled || !gridBuildPipelineReady) {
       this._dims = [0, 0, 0];
       this._gridFloatOffset = 0;
       return;
@@ -132,21 +258,44 @@ export class ReGIRCoordinator implements PipelineSubsystem {
       Math.min(N, Math.max(1, Math.ceil(spanY / this._cellSize))),
       Math.min(N, Math.max(1, Math.ceil(spanZ / this._cellSize))),
     ];
-    this._gridFloatOffset = (bvh.lightTreeNodeCount ?? 0) * LIGHT_TREE_FLOATS_PER_NODE;
+    this._gridFloatOffset = this._checkedGridFloatOffset(
+      bvh.lightTreeNodeCount ?? 0,
+    );
   }
 
   /**
    * Re-derive the grid-region float offset after an emitter rebuild (the light
    * tree's node count may have changed, moving the grid region). Cheap; called
-   * from the pipeline's `updateEmitters`. No-op when ReGIR is not live.
+   * from `updateEmitters`; this can disable or re-enable ReGIR as the tree changes.
    */
-  refreshAfterEmitterRebuild(bvh: Pick<SceneBVHBuffers, 'lightTreeNodeCount' | 'lightTreeEnabled'>): void {
+  refreshAfterEmitterRebuild(
+    bvh: Pick<SceneBVHBuffers, 'lightTreeNodeCount' | 'lightTreeEnabled'>,
+  ): void {
     if (!this._config.enabled) return;
-    // If the tree became degenerate (< 2 emitters), drop ReGIR for this scene
-    // state — RIS falls back to the flat-CDF/tree path until the tree is live.
     const lightTreeLive = !!bvh.lightTreeEnabled && (bvh.lightTreeNodeCount ?? 0) > 0;
-    this._live = this._live && lightTreeLive;
-    this._gridFloatOffset = (bvh.lightTreeNodeCount ?? 0) * LIGHT_TREE_FLOATS_PER_NODE;
+    this._live = this._gridBuildPipelineReady && lightTreeLive;
+    this._gridFloatOffset = this._checkedGridFloatOffset(
+      bvh.lightTreeNodeCount ?? 0,
+    );
+  }
+
+  private _checkedGridFloatOffset(lightTreeNodeCount: number): number {
+    if (
+      !Number.isSafeInteger(lightTreeNodeCount) ||
+      lightTreeNodeCount < 0
+    ) {
+      throw new RangeError(
+        '[ReGIR] lightTreeNodeCount must be a non-negative safe integer.',
+      );
+    }
+    const offset =
+      BigInt(lightTreeNodeCount) * BigInt(LIGHT_TREE_FLOATS_PER_NODE);
+    if (offset > BigInt(REGIR_U32_MAX)) {
+      throw new RangeError(
+        '[ReGIR] light-tree grid offset exceeds the WGSL u32 element-index domain.',
+      );
+    }
+    return Number(offset);
   }
 
   /** Per-frame UBO state. Returns an OFF state (gate 0) when not live, so RIS
@@ -166,6 +315,45 @@ export class ReGIRCoordinator implements PipelineSubsystem {
     };
   }
 
+  prepareForSceneBvh(bvh: SceneBVHBuffers): PreparedSceneMutation {
+    const candidate = new ReGIRCoordinator(this._config);
+    candidate.initialize(bvh, this._gridBuildPipelineReady);
+    const previous = {
+      live: this._live,
+      origin: this._origin,
+      cellSize: this._cellSize,
+      dims: this._dims,
+      gridFloatOffset: this._gridFloatOffset,
+    };
+    let committed = false;
+    let closed = false;
+    return {
+      commit: () => {
+        if (closed || committed) return;
+        this._live = candidate._live;
+        this._origin = candidate._origin;
+        this._cellSize = candidate._cellSize;
+        this._dims = candidate._dims;
+        this._gridFloatOffset = candidate._gridFloatOffset;
+        committed = true;
+      },
+      rollback: () => {
+        if (closed) return;
+        if (committed) {
+          this._live = previous.live;
+          this._origin = previous.origin;
+          this._cellSize = previous.cellSize;
+          this._dims = previous.dims;
+          this._gridFloatOffset = previous.gridFloatOffset;
+        }
+        closed = true;
+      },
+      finalize: () => {
+        closed = true;
+      },
+    };
+  }
+
   /**
    * Reset all coordinator state. ReGIRCoordinator owns no GPU resources of its
    * own — the grid data lives in {@link BvhBufferHost}'s combined light-tree +
@@ -175,6 +363,7 @@ export class ReGIRCoordinator implements PipelineSubsystem {
    */
   dispose(): void {
     this._live = false;
+    this._gridBuildPipelineReady = false;
     this._origin = [0, 0, 0];
     this._cellSize = 1;
     this._dims = [0, 0, 0];

@@ -91,6 +91,7 @@ const LEDGER_METHOD_KEYS: ReadonlyArray<Exclude<keyof BackendMethodPromises, 'de
   'captureFrame',
   'createInverseSession',
   'getRestirPtResultBuffer',
+  'getPresentationSource',
   'getProgressiveSeedTexture',
   'seedAccumulator',
   'giStatePersistence',
@@ -121,6 +122,7 @@ const ENGINE_SURFACE_KEYS = new Set<string>([
   'createInverseSession',
   'captureFrame',
   'getRestirPtResultBuffer',
+  'getPresentationSource',
   // GIStatePersistable methods
   'exportGIState',
   'importGIState',

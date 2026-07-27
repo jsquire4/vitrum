@@ -60,24 +60,24 @@ fn sampleEmitterLeAtXi(e: EmitterTri, xi: vec2f) -> vec3f {
   let mirroredSourceTri = encodedSourceTri < -1;
   let sourceTri = select(encodedSourceTri, -encodedSourceTri - 2, mirroredSourceTri);
   let triIndex = u32(sourceTri);
-  if (triIndex >= arrayLength(&bvh_index)) {
+  if (triIndex >= bvhIndexCount()) {
     return e.Le;
   }
-  let tri = bvh_index[triIndex].xyz;
-  if (tri.x >= arrayLength(&bvh_position) || tri.y >= arrayLength(&bvh_position) || tri.z >= arrayLength(&bvh_position) ||
-      tri.x >= arrayLength(&bvh_normal) || tri.y >= arrayLength(&bvh_normal) || tri.z >= arrayLength(&bvh_normal)) {
+  let tri = bvhLoadIndex(triIndex).xyz;
+  if (tri.x >= bvhPositionCount() || tri.y >= bvhPositionCount() || tri.z >= bvhPositionCount() ||
+      tri.x >= sceneBvhNormalCount() || tri.y >= sceneBvhNormalCount() || tri.z >= sceneBvhNormalCount()) {
     return e.Le;
   }
   var bary = emitterParentBarycentricFromXi(e, xi);
   if (mirroredSourceTri) {
     bary = vec3f(bary.z, bary.y, bary.x);
   }
-  let uv0a = materialAtlasPackedUvFromVec4(bvh_position[tri.x]);
-  let uv0b = materialAtlasPackedUvFromVec4(bvh_position[tri.y]);
-  let uv0c = materialAtlasPackedUvFromVec4(bvh_position[tri.z]);
-  let uv1a = materialAtlasPackedUvFromVec4(bvh_normal[tri.x]);
-  let uv1b = materialAtlasPackedUvFromVec4(bvh_normal[tri.y]);
-  let uv1c = materialAtlasPackedUvFromVec4(bvh_normal[tri.z]);
+  let uv0a = materialAtlasPackedUvFromVec4(bvhLoadPosition(tri.x));
+  let uv0b = materialAtlasPackedUvFromVec4(bvhLoadPosition(tri.y));
+  let uv0c = materialAtlasPackedUvFromVec4(bvhLoadPosition(tri.z));
+  let uv1a = materialAtlasPackedUvFromVec4(sceneLoadBvhNormal(tri.x));
+  let uv1b = materialAtlasPackedUvFromVec4(sceneLoadBvhNormal(tri.y));
+  let uv1c = materialAtlasPackedUvFromVec4(sceneLoadBvhNormal(tri.z));
   let uv0 = bary.x * uv0a + bary.y * uv0b + bary.z * uv0c;
   let uv1 = bary.x * uv1a + bary.y * uv1b + bary.z * uv1c;
   return sampleEmissiveMap(triIndex, uv0, uv1, e.Le);

@@ -1,3 +1,5 @@
+import { NEURAL_FINITE_WGSL } from '../preprocessing.js';
+
 /**
  * bilinearUpsample.wgsl.ts — 2× bilinear upsample kernel.
  *
@@ -17,10 +19,10 @@
  *   @group(0) @binding(3)  output : array<f32>       — output [2H × 2W × C]
  *   @group(0) @binding(4)  params : UpsampleParams   — shape
  *
- * Bindings 1 and 2 not used (host passes placeholder 4-byte buffers).
+ * Bindings 1 and 2 are undeclared and omitted by the host.
  */
 
-export const BILINEAR_UPSAMPLE_WGSL = /* wgsl */`
+export const BILINEAR_UPSAMPLE_WGSL = /* wgsl */`${NEURAL_FINITE_WGSL}
 struct UpsampleParams {
   inputH  : u32,
   inputW  : u32,
@@ -32,10 +34,10 @@ struct UpsampleParams {
 @group(0) @binding(3) var<storage, read_write> outputBuf : array<f32>;
 @group(0) @binding(4) var<uniform>             params    : UpsampleParams;
 
-fn sampleInput(iy: u32, ix: u32, ch: u32) -> f32 {
-  let clampedY = min(iy, params.inputH - 1u);
-  let clampedX = min(ix, params.inputW - 1u);
-  return inputBuf[clampedY * params.inputW * params.channels + clampedX * params.channels + ch];
+fn sampleInput(iy: i32, ix: i32, ch: u32) -> f32 {
+  let clampedY = u32(clamp(iy, 0, i32(params.inputH) - 1));
+  let clampedX = u32(clamp(ix, 0, i32(params.inputW) - 1));
+  return neuralSanitizeSigned(inputBuf[clampedY * params.inputW * params.channels + clampedX * params.channels + ch]);
 }
 
 @compute @workgroup_size(8, 8, 1)
@@ -55,10 +57,14 @@ fn bilinearUpsampleMain(@builtin(global_invocation_id) gid: vec3<u32>) {
   let fy = (f32(oy) + 0.5) / 2.0 - 0.5;
   let fx = (f32(ox) + 0.5) / 2.0 - 0.5;
 
-  let iy0 = u32(max(0.0, floor(fy)));
-  let ix0 = u32(max(0.0, floor(fx)));
-  let iy1 = iy0 + 1u;
-  let ix1 = ix0 + 1u;
+  // Keep the signed, unclamped footprint. Clamping each sample independently
+  // reproduces edge-value padding: at -0.25 both taps address row/column zero.
+  // Clamping the base before deriving the second tap incorrectly blends the
+  // first output row/column with the interior.
+  let iy0 = i32(floor(fy));
+  let ix0 = i32(floor(fx));
+  let iy1 = iy0 + 1;
+  let ix1 = ix0 + 1;
 
   let ty = fy - floor(fy);
   let tx = fx - floor(fx);
@@ -74,6 +80,6 @@ fn bilinearUpsampleMain(@builtin(global_invocation_id) gid: vec3<u32>) {
           + v11 * ty * tx;
 
   let outIdx = oy * outW * params.channels + ox * params.channels + ch;
-  outputBuf[outIdx] = val;
+  outputBuf[outIdx] = neuralSanitizeSigned(val);
 }
 `;

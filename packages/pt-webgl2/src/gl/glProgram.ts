@@ -50,43 +50,31 @@ export function buildFragmentSource(defines: ReadonlyMap<string, number>, fragBo
 // GLSL sampler keywords whose declared uniforms consume a texture unit.
 const SAMPLER_TYPE_RE = /\b(?:[iu]?sampler2D(?:Array)?|[iu]?sampler3D|[iu]?samplerCube)\b/;
 
-function compileShader(gl: WebGL2RenderingContext, type: GLenum, src: string): WebGLShader {
-  const sh = gl.createShader(type);
-  if (sh == null) throw new Error('pt-webgl2: gl.createShader returned null');
-  gl.shaderSource(sh, src);
-  gl.compileShader(sh);
-  if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) {
-    const log = gl.getShaderInfoLog(sh) ?? '(no info log)';
-    gl.deleteShader(sh);
-    const kind = type === gl.VERTEX_SHADER ? 'vertex' : 'fragment';
-    throw new Error(`pt-webgl2: ${kind} shader compile failed:\n${log}`);
-  }
-  return sh;
+interface ParallelShaderCompileExtension {
+  readonly COMPLETION_STATUS_KHR: GLenum;
 }
 
-function linkProgram(gl: WebGL2RenderingContext, vertSrc: string, fragSrc: string): WebGLProgram {
-  const vs = compileShader(gl, gl.VERTEX_SHADER, vertSrc);
-  const fs = compileShader(gl, gl.FRAGMENT_SHADER, fragSrc);
-  const program = gl.createProgram();
-  if (program == null) {
-    gl.deleteShader(vs);
-    gl.deleteShader(fs);
-    throw new Error('pt-webgl2: gl.createProgram returned null');
-  }
-  gl.attachShader(program, vs);
-  gl.attachShader(program, fs);
-  gl.linkProgram(program);
-  // Shaders can be detached + deleted once linked; the program retains the binary.
-  gl.detachShader(program, vs);
-  gl.detachShader(program, fs);
-  gl.deleteShader(vs);
-  gl.deleteShader(fs);
-  if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
-    const log = gl.getProgramInfoLog(program) ?? '(no info log)';
-    gl.deleteProgram(program);
-    throw new Error(`pt-webgl2: program link failed:\n${log}`);
-  }
-  return program;
+interface PendingProgramLink {
+  readonly program: WebGLProgram;
+  readonly vertexShader: WebGLShader;
+  readonly fragmentShader: WebGLShader;
+  readonly startedAtMs: number;
+}
+
+export interface GlProgramOptions {
+  /**
+   * Maximum elapsed monotonic wall time a KHR_parallel_shader_compile link may
+   * remain incomplete. The deadline is observed on the next prepare()/use()
+   * poll; no background timer is installed.
+   */
+  readonly linkTimeoutMs?: number;
+}
+
+/** Long enough for cold ANGLE compilation, but bounded so a broken driver cannot hang forever. */
+export const DEFAULT_PROGRAM_LINK_TIMEOUT_MS = 120_000;
+
+function monotonicNowMs(): number {
+  return globalThis.performance?.now() ?? Date.now();
 }
 
 /**
@@ -136,6 +124,10 @@ export class GlProgram {
   readonly #fragSrcBody: string;
   readonly #defines = new Map<string, number>();
   #program: WebGLProgram | null = null;
+  #pendingLink: PendingProgramLink | null = null;
+  #parallelCompile: ParallelShaderCompileExtension | null | undefined;
+  #linkFailure: Error | null = null;
+  readonly #linkTimeoutMs: number;
   readonly #uniformLoc = new Map<string, WebGLUniformLocation | null>();
   readonly #samplerUnit = new Map<string, number>();
   #dirty = true;
@@ -145,10 +137,16 @@ export class GlProgram {
     vertSrc: string,
     fragSrcBody: string,
     defines: Record<string, number>,
+    options: GlProgramOptions = {},
   ) {
     this.#gl = gl;
     this.#vertSrc = vertSrc;
     this.#fragSrcBody = fragSrcBody;
+    const linkTimeoutMs = options.linkTimeoutMs ?? DEFAULT_PROGRAM_LINK_TIMEOUT_MS;
+    if (!Number.isFinite(linkTimeoutMs) || linkTimeoutMs <= 0) {
+      throw new RangeError('pt-webgl2: GlProgram linkTimeoutMs must be finite and > 0');
+    }
+    this.#linkTimeoutMs = linkTimeoutMs;
     for (const [k, v] of Object.entries(defines)) this.#defines.set(k, v);
   }
 
@@ -160,14 +158,29 @@ export class GlProgram {
   setDefine(name: string, value: number): boolean {
     if (this.#defines.get(name) === value) return false;
     this.#defines.set(name, value);
+    this.#discardPendingLink();
+    this.#linkFailure = null;
     this.#dirty = true;
     return true;
   }
 
-  /** Bind the program, relinking first if a define changed since the last use. */
-  use(): void {
-    if (this.#dirty || this.#program == null) this.#relink();
+  /**
+   * Start or poll compilation/linking without blocking on LINK_STATUS when
+   * KHR_parallel_shader_compile is available. Returns false while the driver is
+   * still compiling and throws on a compile/link error or deadline expiry.
+   */
+  prepare(): boolean {
+    if (this.#linkFailure != null) throw this.#linkFailure;
+    if (!this.#dirty && this.#program != null) return true;
+    if (this.#pendingLink == null) this.#beginLink();
+    return this.#pollPendingLink();
+  }
+
+  /** Bind the program when ready; return false without changing GL state while pending. */
+  use(): boolean {
+    if (!this.prepare()) return false;
     this.#gl.useProgram(this.#program);
+    return true;
   }
 
   setFloat(name: string, v: number): void {
@@ -248,25 +261,139 @@ export class GlProgram {
   }
 
   dispose(): void {
+    this.#discardPendingLink();
     if (this.#program != null) {
       this.#gl.deleteProgram(this.#program);
       this.#program = null;
     }
     this.#uniformLoc.clear();
     this.#samplerUnit.clear();
+    this.#linkFailure = null;
     this.#dirty = true;
   }
 
-  #relink(): void {
+  #beginLink(): void {
     const gl = this.#gl;
-    if (this.#program != null) gl.deleteProgram(this.#program);
     const vert = buildVertexSource(this.#defines, this.#vertSrc);
     const frag = buildFragmentSource(this.#defines, this.#fragSrcBody);
-    this.#program = linkProgram(gl, vert, frag);
+    const vertexShader = gl.createShader(gl.VERTEX_SHADER);
+    const fragmentShader = gl.createShader(gl.FRAGMENT_SHADER);
+    if (vertexShader == null || fragmentShader == null) {
+      if (vertexShader != null) gl.deleteShader(vertexShader);
+      if (fragmentShader != null) gl.deleteShader(fragmentShader);
+      throw new Error('pt-webgl2: gl.createShader returned null');
+    }
+    const program = gl.createProgram();
+    if (program == null) {
+      gl.deleteShader(vertexShader);
+      gl.deleteShader(fragmentShader);
+      throw new Error('pt-webgl2: gl.createProgram returned null');
+    }
+    try {
+      gl.shaderSource(vertexShader, vert);
+      gl.compileShader(vertexShader);
+      gl.shaderSource(fragmentShader, frag);
+      gl.compileShader(fragmentShader);
+      gl.attachShader(program, vertexShader);
+      gl.attachShader(program, fragmentShader);
+      gl.linkProgram(program);
+      this.#pendingLink = {
+        program,
+        vertexShader,
+        fragmentShader,
+        startedAtMs: monotonicNowMs(),
+      };
+    } catch (error) {
+      gl.deleteProgram(program);
+      gl.deleteShader(vertexShader);
+      gl.deleteShader(fragmentShader);
+      throw error;
+    }
+  }
+
+  #pollPendingLink(): boolean {
+    const pending = this.#pendingLink;
+    if (pending == null) return !this.#dirty && this.#program != null;
+    const extension = this.#parallelShaderCompile();
+    if (extension != null) {
+      const complete = Boolean(
+        this.#gl.getProgramParameter(pending.program, extension.COMPLETION_STATUS_KHR),
+      );
+      if (!complete) {
+        const elapsedMs = monotonicNowMs() - pending.startedAtMs;
+        if (elapsedMs < this.#linkTimeoutMs) return false;
+        const error = new Error(
+          `pt-webgl2: program link did not complete within ${this.#linkTimeoutMs} ms ` +
+            `(fragment source ${this.#fragSrcBody.length} chars)`,
+        );
+        this.#discardPendingLink();
+        this.#linkFailure = error;
+        throw error;
+      }
+    }
+    this.#finalizePendingLink(pending);
+    return true;
+  }
+
+  #finalizePendingLink(pending: PendingProgramLink): void {
+    const gl = this.#gl;
+    const vertexOk = Boolean(gl.getShaderParameter(pending.vertexShader, gl.COMPILE_STATUS));
+    const fragmentOk = Boolean(gl.getShaderParameter(pending.fragmentShader, gl.COMPILE_STATUS));
+    const linkOk = Boolean(gl.getProgramParameter(pending.program, gl.LINK_STATUS));
+    const vertexLog = gl.getShaderInfoLog(pending.vertexShader) ?? '';
+    const fragmentLog = gl.getShaderInfoLog(pending.fragmentShader) ?? '';
+    const programLog = gl.getProgramInfoLog(pending.program) ?? '';
+    this.#releasePendingShaders(pending);
+    this.#pendingLink = null;
+
+    let failure: Error | null = null;
+    if (!vertexOk) {
+      failure = new Error(`pt-webgl2: vertex shader compile failed:\n${vertexLog || '(no info log)'}`);
+    } else if (!fragmentOk) {
+      failure = new Error(
+        `pt-webgl2: fragment shader compile failed:\n${fragmentLog || '(no info log)'}`,
+      );
+    } else if (!linkOk) {
+      failure = new Error(`pt-webgl2: program link failed:\n${programLog || '(no info log)'}`);
+    }
+    if (failure != null) {
+      gl.deleteProgram(pending.program);
+      this.#linkFailure = failure;
+      throw failure;
+    }
+
+    const previous = this.#program;
+    this.#program = pending.program;
+    if (previous != null) gl.deleteProgram(previous);
     this.#uniformLoc.clear();
     this.#samplerUnit.clear();
     assignSamplerUnits(gl, this.#program, this.#uniformLoc, this.#samplerUnit);
     this.#dirty = false;
+  }
+
+  #parallelShaderCompile(): ParallelShaderCompileExtension | null {
+    if (this.#parallelCompile === undefined) {
+      this.#parallelCompile = this.#gl.getExtension(
+        'KHR_parallel_shader_compile',
+      );
+    }
+    return this.#parallelCompile;
+  }
+
+  #releasePendingShaders(pending: PendingProgramLink): void {
+    const gl = this.#gl;
+    gl.detachShader(pending.program, pending.vertexShader);
+    gl.detachShader(pending.program, pending.fragmentShader);
+    gl.deleteShader(pending.vertexShader);
+    gl.deleteShader(pending.fragmentShader);
+  }
+
+  #discardPendingLink(): void {
+    const pending = this.#pendingLink;
+    if (pending == null) return;
+    this.#pendingLink = null;
+    this.#releasePendingShaders(pending);
+    this.#gl.deleteProgram(pending.program);
   }
 
   #loc(name: string): WebGLUniformLocation | null {

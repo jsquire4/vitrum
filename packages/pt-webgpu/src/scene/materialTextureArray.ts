@@ -12,21 +12,26 @@
 // DataTexture's `{ data, width, height }`), or one of those payloads directly.
 // No `import 'three'` — pt-webgpu stays host-agnostic.
 //
-// Layers share the array's dimensions (the max across sources), but each layer
-// also exposes a UV-fit scale so the descriptor packer can remap samples into the
-// copied source rectangle. A textureless scene gets a 1×1 white dummy layer so
-// the binding is always satisfied (the descriptors are all -1, so the kernel
-// never samples it and the render stays byte-identical to pre-P2).
+// Layers share the array's dimensions (the max across sources), but every
+// source is first uploaded and mipmapped in its own native-size scratch texture.
+// Each native mip rectangle is then copied into the corresponding array mip.
+// The shader derives the exact integer source extent from the per-layer UV-fit
+// scale and performs source-rectangle-aware wrap/filtering with textureLoad.
+// Consequently heterogeneous layers never filter against padded texels and
+// retain independent mip chains. A textureless scene gets a 1×1 white dummy
+// layer so the binding is always satisfied (the descriptors are all -1).
 
 import type { MaterialTextureLayerInfo, MaterialTextureLayerUse } from './materialTextures.js';
+import {
+  isPtWebgpuTextureSource,
+  type PtWebgpuTextureSource,
+} from '../materialTextureSource.js';
 
 export type MaterialTextureLayerUvScale = readonly [number, number];
 
 export type MaterialTextureArrayWarningCode =
   | 'texture-unreadable'
-  | 'texture-size-mismatch'
-  | 'texture-unsupported-layout'
-  | 'texture-sampler-policy-approximation';
+  | 'texture-unsupported-layout';
 
 export interface MaterialTextureArrayWarning {
   readonly code: MaterialTextureArrayWarningCode;
@@ -39,15 +44,6 @@ export interface MaterialTextureArrayWarning {
   readonly arrayWidth?: number;
   readonly arrayHeight?: number;
   readonly byteLength?: number;
-  readonly requestedSamplerPolicies?: readonly MaterialTextureSamplerPolicyUse[];
-}
-
-export interface MaterialTextureSamplerPolicyUse {
-  readonly materialIndex: number;
-  readonly field: string;
-  readonly magFilter?: string;
-  readonly minFilter?: string;
-  readonly mipFilter?: string;
 }
 
 export interface MaterialTextureArray {
@@ -56,7 +52,7 @@ export interface MaterialTextureArray {
   readonly sampler: GPUSampler;
   /** Array layer count (≥ 1; 1 = the white dummy when there are no sources). */
   readonly layerCount: number;
-  /** Number of mip levels allocated/generated for every array layer. */
+  /** Maximum allocated mip count; each layer owns its exact native-size prefix. */
   readonly mipLevelCount: number;
   /** Per-layer source-rect UV scale: [copyWidth / arrayWidth, copyHeight / arrayHeight]. */
   readonly layerUvScales: readonly MaterialTextureLayerUvScale[];
@@ -71,28 +67,78 @@ interface ImagePayload {
   readonly data?: ArrayBufferView;
   /** Present for GPU-copyable external images → copyExternalImageToTexture path. */
   readonly external?: GPUCopyExternalImageSource;
+  /** Explicit same-device GPU source → shader conversion path, no readback. */
+  readonly gpuSource?: PtWebgpuTextureSource;
+}
+
+/** Conservative per-array peak for destination mips + retained/decoded inputs. */
+export const MATERIAL_TEXTURE_ARRAY_PEAK_BUDGET_BYTES = 512 * 1024 * 1024;
+
+function positiveSafeDimension(value: unknown, label: string): number {
+  if (!Number.isSafeInteger(value) || (value as number) < 1) {
+    throw new RangeError(
+      `[materialTextureArray] ${label} must be a positive safe integer; received ${String(value)}.`,
+    );
+  }
+  return value as number;
+}
+
+function looksLikeRawGpuTexture(value: unknown): value is GPUTexture {
+  if (value == null || typeof value !== 'object') return false;
+  const candidate = value as Partial<GPUTexture>;
+  return (
+    typeof candidate.createView === 'function' &&
+    typeof candidate.width === 'number' &&
+    typeof candidate.height === 'number' &&
+    typeof candidate.format === 'string'
+  );
 }
 
 /** Duck-type a host texture handle into an upload payload, or null if unusable. */
 function payloadOf(source: unknown): ImagePayload | null {
+  if (isPtWebgpuTextureSource(source)) {
+    return {
+      width: positiveSafeDimension(source.width, 'GPU source width'),
+      height: positiveSafeDimension(source.height, 'GPU source height'),
+      gpuSource: source,
+    };
+  }
+  if (looksLikeRawGpuTexture(source)) {
+    throw new TypeError(
+      '[materialTextureArray] raw GPUTexture handles are ambiguous. Wrap the texture ' +
+      'with createPtWebgpuTextureSource so device, format, color space, and selected ' +
+      'subresource are explicit.',
+    );
+  }
   if (source == null || typeof source !== 'object') return null;
   // THREE.Texture-like: unwrap `.image`; otherwise treat the source as the image.
   const img = ('image' in source && (source as { image?: unknown }).image != null
     ? (source).image
     : source) as Record<string, unknown>;
   if (img == null || typeof img !== 'object') return null;
-  const width = typeof img.width === 'number' ? img.width : 0;
-  const height = typeof img.height === 'number' ? img.height : 0;
-  if (width <= 0 || height <= 0) return null;
+  const width = img.width;
+  const height = img.height;
+  if (
+    !Number.isSafeInteger(width) ||
+    !Number.isSafeInteger(height) ||
+    (width as number) < 1 ||
+    (height as number) < 1
+  ) {
+    return null;
+  }
   // DataTexture-style { data, width, height } → writeTexture.
   if (ArrayBuffer.isView(img.data)) {
-    return { width, height, data: img.data };
+    return { width: width as number, height: height as number, data: img.data };
   }
   // ImageBitmap / HTMLCanvasElement / HTMLImageElement / OffscreenCanvas /
   // VideoFrame — all valid copyExternalImageToTexture sources. We can't
   // `instanceof`-check headlessly, so accept any object with positive
   // dimensions that isn't raw data and let the device validate it.
-  return { width, height, external: img as unknown as GPUCopyExternalImageSource };
+  return {
+    width: width as number,
+    height: height as number,
+    external: img as unknown as GPUCopyExternalImageSource,
+  };
 }
 
 interface NormalizedRgba8Upload {
@@ -155,24 +201,21 @@ function float32ToFloat16(value: number): number {
 }
 
 function byteViewOf(data: ArrayBufferView): Uint8Array<ArrayBuffer> | null {
-  const bytesPerElement = (data as { readonly BYTES_PER_ELEMENT?: number }).BYTES_PER_ELEMENT;
-  if (!(data instanceof DataView) && bytesPerElement !== 1) return null;
+  if (!(data instanceof Uint8Array) && !(data instanceof Uint8ClampedArray)) {
+    return null;
+  }
   return new Uint8Array(new Uint8Array(data.buffer, data.byteOffset, data.byteLength));
 }
 
 function numericChannelMax(data: ArrayBufferView): number | null {
-  if (data instanceof Float32Array || data instanceof Float64Array) return 1;
+  if (data instanceof Float32Array) return 1;
   if (data instanceof Uint16Array) return 65535;
-  if (data instanceof Uint32Array) return 4294967295;
-  if (data instanceof Int16Array) return 32767;
-  if (data instanceof Int32Array) return 2147483647;
   return null;
 }
 
 function normalizedNumberToByte(value: number, maxValue: number): number {
-  if (!Number.isFinite(value)) return 0;
   const unit = maxValue === 1 ? value : value / maxValue;
-  return Math.round(Math.min(1, Math.max(0, unit)) * 255);
+  return Math.round(unit * 255);
 }
 
 function numericChannelAt(data: ArrayBufferView, index: number): number {
@@ -222,6 +265,19 @@ function normalizeRawNumericRgba8(
   if (pixelCount <= 0 || length == null) return null;
   const channels = length / pixelCount;
   if (![1, 2, 3, 4].includes(channels) || !Number.isInteger(channels)) return null;
+  for (let i = 0; i < length; i += 1) {
+    const value = numericChannelAt(data, i);
+    if (!Number.isFinite(value)) {
+      throw new RangeError(
+        `[materialTextureArray] raw sample ${i} must be finite.`,
+      );
+    }
+    if (data instanceof Float32Array && (value < 0 || value > 1)) {
+      throw new RangeError(
+        `[materialTextureArray] rgba8 float sample ${i} must be in [0, 1]; received ${value}.`,
+      );
+    }
+  }
   const rgba = new Uint8Array(pixelCount * 4);
   for (let i = 0; i < pixelCount; i += 1) {
     const src = i * channels;
@@ -269,6 +325,7 @@ function normalizeRawTextureUploadFloat(
   data: ArrayBufferView,
   width: number,
   height: number,
+  floatInputIsLinear = true,
 ): NormalizedFloatUpload | null {
   const pixelCount = width * height;
   if (pixelCount <= 0) return null;
@@ -302,11 +359,24 @@ function normalizeRawTextureUploadFloat(
   if (length == null) return null;
   const channels = length / pixelCount;
   if (![1, 2, 3, 4].includes(channels) || !Number.isInteger(channels)) return null;
-  const isLinearFloat = data instanceof Float32Array || data instanceof Float64Array;
+  const isLinearFloat = data instanceof Float32Array && floatInputIsLinear;
   const encodeRgb = (v: number): number =>
     isLinearFloat ? v : srgbToLinear(v / maxValue);
   const encodeAlpha = (v: number): number => (isLinearFloat ? v : v / maxValue);
   const out = new Uint16Array(pixelCount * 4);
+  for (let i = 0; i < length; i += 1) {
+    const value = numericChannelAt(data, i);
+    if (!Number.isFinite(value)) {
+      throw new RangeError(
+        `[materialTextureArray] raw HDR sample ${i} must be finite.`,
+      );
+    }
+    if (isLinearFloat && Math.abs(value) > 65504) {
+      throw new RangeError(
+        `[materialTextureArray] raw HDR sample ${i} exceeds finite rgba16float range: ${value}.`,
+      );
+    }
+  }
   for (let i = 0; i < pixelCount; i += 1) {
     const src = i * channels;
     const dst = i * 4;
@@ -341,7 +411,7 @@ function makeSampler(device: GPUDevice): GPUSampler {
   });
 }
 
-const MATERIAL_TEXTURE_MIPMAP_WGSL = /* wgsl */ `
+export const MATERIAL_TEXTURE_MIPMAP_WGSL = /* wgsl */ `
 struct VsOut {
   @builtin(position) position: vec4f,
   @location(0) uv: vec2f,
@@ -370,10 +440,189 @@ fn fsMain(in: VsOut) -> @location(0) vec4f {
 }
 `;
 
-function generateTextureArrayMips(
+const GPU_MATERIAL_SOURCE_FORMATS: ReadonlySet<string> = new Set([
+  'r8unorm',
+  'r8snorm',
+  'rg8unorm',
+  'rg8snorm',
+  'rgba8unorm',
+  'rgba8unorm-srgb',
+  'rgba8snorm',
+  'bgra8unorm',
+  'bgra8unorm-srgb',
+  'r16float',
+  'rg16float',
+  'rgba16float',
+  'r32float',
+  'rg32float',
+  'rgba32float',
+  'rgb10a2unorm',
+  'rg11b10ufloat',
+  'rgb9e5ufloat',
+  'rgba16unorm',
+  'rgba16snorm',
+]);
+
+export const MATERIAL_TEXTURE_GPU_SOURCE_BLIT_WGSL = /* wgsl */ `
+override decodeSrgb: f32 = 0.0;
+
+struct VsOut {
+  @builtin(position) position: vec4f,
+};
+
+@vertex
+fn vsMain(@builtin(vertex_index) vertexIndex: u32) -> VsOut {
+  var positions = array<vec2f, 3>(
+    vec2f(-1.0, -1.0),
+    vec2f( 3.0, -1.0),
+    vec2f(-1.0,  3.0),
+  );
+  var out: VsOut;
+  out.position = vec4f(positions[vertexIndex], 0.0, 1.0);
+  return out;
+}
+
+@group(0) @binding(0) var sourceTexture: texture_2d<f32>;
+
+fn srgbChannelToLinear(value: f32) -> f32 {
+  let c = clamp(value, 0.0, 1.0);
+  if (c <= 0.04045) { return c / 12.92; }
+  return pow((c + 0.055) / 1.055, 2.4);
+}
+
+@fragment
+fn fsMain(@builtin(position) position: vec4f) -> @location(0) vec4f {
+  let sourceSize = textureDimensions(sourceTexture);
+  let coord = min(vec2u(position.xy), sourceSize - vec2u(1u));
+  var value = textureLoad(sourceTexture, vec2i(coord), 0);
+  if (decodeSrgb > 0.5) {
+    value = vec4f(
+      srgbChannelToLinear(value.r),
+      srgbChannelToLinear(value.g),
+      srgbChannelToLinear(value.b),
+      value.a,
+    );
+  }
+  return value;
+}
+`;
+
+function validateGpuMaterialSources(
+  device: GPUDevice,
+  payloads: readonly (ImagePayload | null)[],
+  forbiddenResources: ReadonlySet<object>,
+): void {
+  for (let layer = 0; layer < payloads.length; layer += 1) {
+    const source = payloads[layer]?.gpuSource;
+    if (source == null) continue;
+    if (source.device !== device) {
+      throw new Error(
+        `[materialTextureArray] GPU source ${layer} belongs to a different GPUDevice.`,
+      );
+    }
+    if (!GPU_MATERIAL_SOURCE_FORMATS.has(source.format)) {
+      throw new Error(
+        `[materialTextureArray] GPU source ${layer} format ${source.format} is not a ` +
+        'float-sampleable color format accepted by the material conversion pass.',
+      );
+    }
+    if ((source.texture.usage & GPUTextureUsage.TEXTURE_BINDING) === 0) {
+      throw new Error(
+        `[materialTextureArray] GPU source ${layer} lacks GPUTextureUsage.TEXTURE_BINDING.`,
+      );
+    }
+    if (forbiddenResources.has(source.texture)) {
+      throw new Error(
+        `[materialTextureArray] GPU source ${layer} aliases an engine-owned scene texture.`,
+      );
+    }
+  }
+}
+
+function blitGpuMaterialSourceLayer(
+  device: GPUDevice,
+  source: PtWebgpuTextureSource,
+  target: GPUTexture,
+  targetFormat: GPUTextureFormat,
+  layer: number,
+  copyW: number,
+  copyH: number,
+): void {
+  const module = device.createShaderModule({
+    label: 'vitrum.pt-webgpu.scene.materialTextures.gpuSource.module',
+    code: MATERIAL_TEXTURE_GPU_SOURCE_BLIT_WGSL,
+  });
+  const bindGroupLayout = device.createBindGroupLayout({
+    label: 'vitrum.pt-webgpu.scene.materialTextures.gpuSource.bindings',
+    entries: [{
+      binding: 0,
+      visibility: GPUShaderStage.FRAGMENT,
+      texture: {
+        sampleType: 'unfilterable-float',
+        viewDimension: '2d',
+        multisampled: false,
+      },
+    }],
+  });
+  const pipeline = device.createRenderPipeline({
+    label: 'vitrum.pt-webgpu.scene.materialTextures.gpuSource.pipeline',
+    layout: device.createPipelineLayout({
+      label: 'vitrum.pt-webgpu.scene.materialTextures.gpuSource.pipelineLayout',
+      bindGroupLayouts: [bindGroupLayout],
+    }),
+    vertex: { module, entryPoint: 'vsMain' },
+    fragment: {
+      module,
+      entryPoint: 'fsMain',
+      constants: {
+        decodeSrgb: source.colorSpace === 'srgb' && !source.format.endsWith('-srgb') ? 1 : 0,
+      },
+      targets: [{ format: targetFormat }],
+    },
+    primitive: { topology: 'triangle-list' },
+  });
+  const sourceView = source.texture.createView({
+    label: `vitrum.pt-webgpu.scene.materialTextures.gpuSource.${layer}`,
+    dimension: '2d',
+    baseMipLevel: source.baseMipLevel,
+    mipLevelCount: 1,
+    baseArrayLayer: source.arrayLayer,
+    arrayLayerCount: 1,
+  });
+  const bindGroup = device.createBindGroup({
+    label: `vitrum.pt-webgpu.scene.materialTextures.gpuSource.${layer}.bindGroup`,
+    layout: bindGroupLayout,
+    entries: [{ binding: 0, resource: sourceView }],
+  });
+  const encoder = device.createCommandEncoder({
+    label: `vitrum.pt-webgpu.scene.materialTextures.gpuSource.${layer}.encoder`,
+  });
+  const pass = encoder.beginRenderPass({
+    label: `vitrum.pt-webgpu.scene.materialTextures.gpuSource.${layer}.pass`,
+    colorAttachments: [{
+      view: target.createView({
+        dimension: '2d',
+        baseMipLevel: 0,
+        mipLevelCount: 1,
+        baseArrayLayer: layer,
+        arrayLayerCount: 1,
+      }),
+      clearValue: { r: 0, g: 0, b: 0, a: 1 },
+      loadOp: 'clear',
+      storeOp: 'store',
+    }],
+  });
+  pass.setPipeline(pipeline);
+  pass.setBindGroup(0, bindGroup);
+  pass.setViewport(0, 0, copyW, copyH, 0, 1);
+  pass.draw(3);
+  pass.end();
+  device.queue.submit([encoder.finish()]);
+}
+
+function generateTextureMips(
   device: GPUDevice,
   texture: GPUTexture,
-  layerCount: number,
   format: GPUTextureFormat,
   mipLevelCount: number,
 ): void {
@@ -399,20 +648,19 @@ function generateTextureArrayMips(
     label: 'vitrum.pt-webgpu.scene.materialTextures.mipmap.encoder',
   });
 
-  for (let layer = 0; layer < layerCount; layer += 1) {
-    for (let mip = 1; mip < mipLevelCount; mip += 1) {
+  for (let mip = 1; mip < mipLevelCount; mip += 1) {
       const sourceView = texture.createView({
         dimension: '2d',
         baseMipLevel: mip - 1,
         mipLevelCount: 1,
-        baseArrayLayer: layer,
+        baseArrayLayer: 0,
         arrayLayerCount: 1,
       });
       const targetView = texture.createView({
         dimension: '2d',
         baseMipLevel: mip,
         mipLevelCount: 1,
-        baseArrayLayer: layer,
+        baseArrayLayer: 0,
         arrayLayerCount: 1,
       });
       const bindGroup = device.createBindGroup({
@@ -436,7 +684,6 @@ function generateTextureArrayMips(
       pass.setBindGroup(0, bindGroup);
       pass.draw(3);
       pass.end();
-    }
   }
 
   device.queue.submit([encoder.finish()]);
@@ -458,6 +705,7 @@ function blitExternalSrgbToFloatLayer(
   layer: number,
   copyW: number,
   copyH: number,
+  forbiddenResources: ReadonlySet<object>,
 ): void {
   const scratch = device.createTexture({
     label: 'vitrum.pt-webgpu.scene.materialTextures.emissive.srgbStage',
@@ -465,6 +713,13 @@ function blitExternalSrgbToFloatLayer(
     format: 'rgba8unorm-srgb',
     usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT,
   });
+  const scratchIsOwned = scratch !== target && !forbiddenResources.has(scratch);
+  try {
+  if (!scratchIsOwned) {
+    throw new Error(
+      '[pt-webgpu] emissive staging texture aliased another live texture',
+    );
+  }
   device.queue.copyExternalImageToTexture(
     { source: external, flipY: false },
     { texture: scratch, origin: { x: 0, y: 0, z: 0 } },
@@ -521,18 +776,33 @@ function blitExternalSrgbToFloatLayer(
   pass.draw(3);
   pass.end();
   device.queue.submit([encoder.finish()]);
-  scratch.destroy();
+  } finally {
+    // The staging texture is a transaction-local allocation.  It must not leak
+    // when copy, pipeline construction, encoding, or submission throws.
+    try {
+      if (scratchIsOwned) scratch.destroy();
+    } catch { /* preserve the original outcome */ }
+  }
 }
 
 /** 1×1 white single-layer array — the always-bound placeholder for scenes with
  *  no sampled textures (kernel never reads it; descriptors are all -1). */
-function createDummyArray(device: GPUDevice, format: GPUTextureFormat): MaterialTextureArray {
+function createDummyArray(
+  device: GPUDevice,
+  format: GPUTextureFormat,
+  forbiddenResources: ReadonlySet<object>,
+): MaterialTextureArray {
   const texture = device.createTexture({
     label: DUMMY_LABEL,
     size: { width: 1, height: 1, depthOrArrayLayers: 1 },
     format,
     usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
   });
+  if (forbiddenResources.has(texture)) {
+    throw new Error(
+      '[pt-webgpu] material texture candidate aliased an existing scene resource',
+    );
+  }
   // rgba16float dummy carries a linear-white half-float texel (1.0 → 0x3c00);
   // 8-bit formats keep the byte-white texel. The kernel never samples the dummy
   // (all descriptor indices are -1), so this only satisfies the binding.
@@ -540,23 +810,37 @@ function createDummyArray(device: GPUDevice, format: GPUTextureFormat): Material
   const dummyTexel = isFloat
     ? new Uint16Array([0x3c00, 0x3c00, 0x3c00, 0x3c00])
     : new Uint8Array([255, 255, 255, 255]);
-  device.queue.writeTexture(
-    { texture, origin: { x: 0, y: 0, z: 0 } },
-    dummyTexel,
-    { bytesPerRow: isFloat ? 8 : 4, rowsPerImage: 1 },
-    { width: 1, height: 1, depthOrArrayLayers: 1 },
-  );
-  return {
-    texture,
-    view: texture.createView({ dimension: '2d-array' }),
-    sampler: makeSampler(device),
-    layerCount: 1,
-    mipLevelCount: 1,
-    layerUvScales: [[1, 1]],
-    warnings: [],
-    structuredWarnings: [],
-  };
+  try {
+    device.queue.writeTexture(
+      { texture, origin: { x: 0, y: 0, z: 0 } },
+      dummyTexel,
+      { bytesPerRow: isFloat ? 8 : 4, rowsPerImage: 1 },
+      { width: 1, height: 1, depthOrArrayLayers: 1 },
+    );
+    return {
+      texture,
+      view: texture.createView({ dimension: '2d-array' }),
+      sampler: makeSampler(device),
+      layerCount: 1,
+      mipLevelCount: 1,
+      layerUvScales: [[1, 1]],
+      warnings: [],
+      structuredWarnings: [],
+    };
+  } catch (error) {
+    try { texture.destroy(); } catch { /* preserve the upload failure */ }
+    throw error;
+  }
 }
+
+type MaterialTextureArrayPreflight = {
+  readonly payloads: readonly (ImagePayload | null)[];
+  readonly width: number;
+  readonly height: number;
+  readonly mipLevelCount: number;
+  readonly isFloatArray: boolean;
+  readonly estimatedPeakBytes: number;
+};
 
 function layerUses(
   layerInfos: ReadonlyArray<MaterialTextureLayerInfo> | undefined,
@@ -565,47 +849,139 @@ function layerUses(
   return layerInfos?.[layer]?.uses ?? [];
 }
 
-function samplerPolicyIsNativeForPtWebgpu(_use: MaterialTextureLayerUse): boolean {
-  // Forward and adjoint material samplers consume per-map mip/filter policy for
-  // every packed material texture. Bump maps still finite-difference in raw UV
-  // space by one uploaded source texel, but each height read is now policy-aware.
-  return true;
-}
-
-function requestedSamplerPolicy(use: MaterialTextureLayerUse): MaterialTextureSamplerPolicyUse {
-  return {
-    materialIndex: use.materialIndex,
-    field: use.field,
-    ...(use.magFilter != null ? { magFilter: use.magFilter } : {}),
-    ...(use.minFilter != null ? { minFilter: use.minFilter } : {}),
-    ...(use.mipFilter != null ? { mipFilter: use.mipFilter } : {}),
-  };
-}
-
-function appendSamplerPolicyWarnings(
-  warnings: string[],
-  structuredWarnings: MaterialTextureArrayWarning[],
-  layerInfos: ReadonlyArray<MaterialTextureLayerInfo> | undefined,
-): void {
-  if (layerInfos == null) return;
-  for (const info of layerInfos) {
-    const nonNative = info.uses.filter((use) => !samplerPolicyIsNativeForPtWebgpu(use));
-    if (nonNative.length === 0) continue;
-    const fields = Array.from(new Set(nonNative.map((use) => use.field))).join(', ');
-    const warning =
-      `[materialTextureArray] source ${info.layer} requests sampler policy outside pt-webgpu's ` +
-      `native material-map sampler support for fields ${fields}; ` +
-      'the texture remains uploadable, but filtering behavior is approximate for those fields.';
-    warnings.push(warning);
-    structuredWarnings.push({
-      code: 'texture-sampler-policy-approximation',
-      warning,
-      layer: info.layer,
-      uses: nonNative,
-      fallback: 'nearest-native-sampler-policy',
-      requestedSamplerPolicies: nonNative.map(requestedSamplerPolicy),
-    });
+function preflightMaterialTextureArray(
+  device: GPUDevice,
+  sources: ReadonlyArray<unknown>,
+  format: GPUTextureFormat,
+  forbiddenResources: ReadonlySet<object>,
+): MaterialTextureArrayPreflight {
+  if (
+    format !== 'rgba8unorm-srgb' &&
+    format !== 'rgba8unorm' &&
+    format !== 'rgba16float'
+  ) {
+    throw new RangeError(
+      `[materialTextureArray] unsupported destination format ${format}.`,
+    );
   }
+  const isFloatArray = format === 'rgba16float';
+  if (sources.length === 0) {
+    return {
+      payloads: [],
+      width: 1,
+      height: 1,
+      mipLevelCount: 1,
+      isFloatArray,
+      estimatedPeakBytes: isFloatArray ? 8 : 4,
+    };
+  }
+  const maxLayers = positiveSafeDimension(
+    device.limits.maxTextureArrayLayers,
+    'device maxTextureArrayLayers',
+  );
+  if (sources.length > maxLayers) {
+    throw new RangeError(
+      `[materialTextureArray] ${sources.length} layers exceed device maxTextureArrayLayers ${maxLayers}.`,
+    );
+  }
+  const payloads = sources.map(payloadOf);
+  validateGpuMaterialSources(device, payloads, forbiddenResources);
+  const maxDim = positiveSafeDimension(
+    device.limits.maxTextureDimension2D,
+    'device maxTextureDimension2D',
+  );
+  let width = 1;
+  let height = 1;
+  for (let layer = 0; layer < payloads.length; layer += 1) {
+    const payload = payloads[layer];
+    if (payload == null) continue;
+    if (payload.width > maxDim || payload.height > maxDim) {
+      throw new RangeError(
+        `[materialTextureArray] source ${layer} dimensions ${payload.width}x${payload.height} exceed ` +
+        `device maxTextureDimension2D ${maxDim}; truncation is not permitted.`,
+      );
+    }
+    width = Math.max(width, payload.width);
+    height = Math.max(height, payload.height);
+  }
+  const mipLevelCount = materialTextureMipLevelCount(width, height);
+  let mipStorageBytes = 0;
+  for (let mip = 0; mip < mipLevelCount; mip += 1) {
+    const mipWidth = Math.max(1, Math.floor(width / 2 ** mip));
+    const mipHeight = Math.max(1, Math.floor(height / 2 ** mip));
+    mipStorageBytes +=
+      mipWidth * mipHeight * sources.length * (isFloatArray ? 8 : 4);
+  }
+  let retainedMirrorBytes = 0;
+  let largestDecodedBytes = 0;
+  let largestStagingBytes = 0;
+  let largestNativeMipStorageBytes = 0;
+  for (const payload of payloads) {
+    if (payload == null) continue;
+    const pixelCount = payload.width * payload.height;
+    if (!Number.isSafeInteger(pixelCount)) {
+      throw new RangeError('[materialTextureArray] source pixel count exceeds safe integer range.');
+    }
+    if (payload.data != null) {
+      largestDecodedBytes = Math.max(
+        largestDecodedBytes,
+        pixelCount * (isFloatArray ? 8 : 4),
+      );
+    }
+    if (isFloatArray && payload.external != null) {
+      largestStagingBytes = Math.max(largestStagingBytes, pixelCount * 4);
+    }
+    const nativeMipCount = materialTextureMipLevelCount(payload.width, payload.height);
+    let nativeMipBytes = 0;
+    for (let mip = 0; mip < nativeMipCount; mip += 1) {
+      nativeMipBytes +=
+        Math.max(1, Math.floor(payload.width / 2 ** mip)) *
+        Math.max(1, Math.floor(payload.height / 2 ** mip)) *
+        (isFloatArray ? 8 : 4);
+    }
+    largestNativeMipStorageBytes = Math.max(
+      largestNativeMipStorageBytes,
+      nativeMipBytes,
+    );
+    const mirror = payload.gpuSource?.cpuMirror;
+    if (mirror != null) {
+      const bytesPerElement = mirror.dataType === 'uint8'
+        ? 1
+        : mirror.dataType === 'float32'
+          ? 4
+          : 2;
+      retainedMirrorBytes += mirror.data.length * bytesPerElement;
+    }
+  }
+  const estimatedPeakBytes =
+    mipStorageBytes +
+    retainedMirrorBytes +
+    largestDecodedBytes +
+    largestStagingBytes +
+    largestNativeMipStorageBytes;
+  if (
+    !Number.isSafeInteger(estimatedPeakBytes) ||
+    estimatedPeakBytes > MATERIAL_TEXTURE_ARRAY_PEAK_BUDGET_BYTES
+  ) {
+    throw new RangeError(
+      `[materialTextureArray] estimated array upload peak ${estimatedPeakBytes} bytes exceeds ` +
+      `${MATERIAL_TEXTURE_ARRAY_PEAK_BUDGET_BYTES}-byte budget ` +
+      '(destination mips + CPU mirrors + decoded/staging peak + one native mip chain).',
+    );
+  }
+  return { payloads, width, height, mipLevelCount, isFloatArray, estimatedPeakBytes };
+}
+
+/** Read-only validation/estimation used to reject a three-atlas upload before its first allocation. */
+export function estimateMaterialTextureArrayPeakBytes(
+  device: GPUDevice,
+  sources: ReadonlyArray<unknown>,
+  format: GPUTextureFormat,
+  forbiddenResources: ReadonlySet<object> = new Set(),
+): number {
+  return preflightMaterialTextureArray(
+    device, sources, format, forbiddenResources,
+  ).estimatedPeakBytes;
 }
 
 /**
@@ -618,46 +994,71 @@ export function createMaterialTextureArray(
   sources: ReadonlyArray<unknown>,
   format: GPUTextureFormat = 'rgba8unorm-srgb',
   layerInfos?: ReadonlyArray<MaterialTextureLayerInfo>,
+  forbiddenResources: ReadonlySet<object> = new Set(),
 ): MaterialTextureArray {
-  if (sources.length === 0) return createDummyArray(device, format);
+  const preflight = preflightMaterialTextureArray(
+    device, sources, format, forbiddenResources,
+  );
+  if (sources.length === 0) return createDummyArray(device, format, forbiddenResources);
 
   const warnings: string[] = [];
   const structuredWarnings: MaterialTextureArrayWarning[] = [];
-  appendSamplerPolicyWarnings(warnings, structuredWarnings, layerInfos);
-  const payloads = sources.map(payloadOf);
-  const maxDim = device.limits.maxTextureDimension2D;
-  let width = 1;
-  let height = 1;
-  for (const p of payloads) {
-    if (p == null) continue;
-    width = Math.max(width, Math.min(p.width, maxDim));
-    height = Math.max(height, Math.min(p.height, maxDim));
-  }
-  const mipLevelCount = materialTextureMipLevelCount(width, height);
+  const { payloads, width, height, mipLevelCount, isFloatArray } = preflight;
   // rgba16float is a LINEAR (non-sRGB) format. Raw-data uploads apply the sRGB
   // decode on the CPU (normalizeRawTextureUploadFloat); external images (which
   // carry sRGB-encoded 8-bit samples and get NO hardware sRGB decode when copied
   // into a float target) are staged through an rgba8unorm-srgb texture and blit
   // via a render pass so the sampler applies the sRGB→linear decode — keeping LDR
   // emissive visually identical to the previous sRGB-8-bit array path.
-  const isFloatArray = format === 'rgba16float';
+  // Decode/validate every raw payload before allocating the destination. A
+  // malformed typed layout, non-finite float or lossy rgba8 float is rejected
+  // synchronously and cannot leave a partially black material layer behind.
+  const normalizedUploads = payloads.map((p, layer) => {
+    if (p == null) return null;
+    if (p.data == null) return null;
+    const upload = isFloatArray
+      ? normalizeRawTextureUploadFloat(
+          p.data,
+          p.width,
+          p.height,
+          (layerInfos?.[layer]?.uses.length ?? 0) === 0 ||
+            (layerInfos?.[layer]?.uses.every((use) => use.field === 'emissiveMap') ?? false),
+        )
+      : normalizeRawTextureUpload(p.data, p.width, p.height);
+    if (upload == null) {
+      throw new TypeError(
+        `[materialTextureArray] source ${layer} has unsupported raw layout ` +
+        `(${p.data.constructor.name}, ${p.data.byteLength} bytes for ${p.width}x${p.height}); ` +
+        'accepted payloads are tightly packed Uint8/Uint8Clamped, normalized Uint16, ' +
+        'or Float32 with exactly 1, 2, 3, or 4 channels per pixel.',
+      );
+    }
+    return upload;
+  });
 
   const texture = device.createTexture({
     label: ARRAY_LABEL,
     size: { width, height, depthOrArrayLayers: sources.length },
     mipLevelCount,
     format,
-    // RENDER_ATTACHMENT lets us downsample base uploads into a real mip chain.
+    // Native source mip chains are copied into this max-size array.
     usage:
       GPUTextureUsage.TEXTURE_BINDING |
-      GPUTextureUsage.COPY_DST |
-      GPUTextureUsage.RENDER_ATTACHMENT,
+      GPUTextureUsage.COPY_DST,
   });
+  if (forbiddenResources.has(texture)) {
+    try { texture.destroy(); } catch { /* preserve alias failure */ }
+    throw new Error(
+      '[pt-webgpu] material texture candidate aliased an existing scene resource',
+    );
+  }
 
+  try {
   for (let layer = 0; layer < payloads.length; layer += 1) {
     const p = payloads[layer];
     if (p == null) {
-      const warning = `[materialTextureArray] source ${layer} has no usable image; layer left black.`;
+      const warning =
+        `[materialTextureArray] source ${layer} has no usable image; layer left black.`;
       warnings.push(warning);
       structuredWarnings.push({
         code: 'texture-unreadable',
@@ -668,67 +1069,78 @@ export function createMaterialTextureArray(
       });
       continue;
     }
-    if (p.width !== width || p.height !== height) {
-      const warning =
-        `[materialTextureArray] source ${layer} is ${p.width}×${p.height} but the array is ` +
-          `${width}×${height}; copied at native size and sampled through a per-layer UV-fit scale. ` +
-          `Use same-size textures when exact mip/border filtering parity is required.`;
-      warnings.push(warning);
-      structuredWarnings.push({
-        code: 'texture-size-mismatch',
-        warning,
-        layer,
-        uses: layerUses(layerInfos, layer),
-        width: p.width,
-        height: p.height,
-        arrayWidth: width,
-        arrayHeight: height,
-      });
+    const copyW = p.width;
+    const copyH = p.height;
+    const nativeMipLevelCount = materialTextureMipLevelCount(copyW, copyH);
+    const nativeTexture = device.createTexture({
+      label: `${ARRAY_LABEL}.native.${layer}`,
+      size: { width: copyW, height: copyH, depthOrArrayLayers: 1 },
+      mipLevelCount: nativeMipLevelCount,
+      format,
+      usage:
+        GPUTextureUsage.TEXTURE_BINDING |
+        GPUTextureUsage.COPY_SRC |
+        GPUTextureUsage.COPY_DST |
+        GPUTextureUsage.RENDER_ATTACHMENT,
+    });
+    if (forbiddenResources.has(nativeTexture) || nativeTexture === texture) {
+      try { nativeTexture.destroy(); } catch { /* preserve alias failure */ }
+      throw new Error(
+        '[pt-webgpu] native material texture staging aliased a live scene resource',
+      );
     }
-    const copyW = Math.min(p.width, width);
-    const copyH = Math.min(p.height, height);
-    if (p.external != null) {
-      if (isFloatArray) {
-        // sRGB-decode staging blit into the linear float layer (see isFloatArray).
-        blitExternalSrgbToFloatLayer(device, p.external, texture, layer, copyW, copyH);
-      } else {
-        device.queue.copyExternalImageToTexture(
-          { source: p.external, flipY: false },
-          { texture, origin: { x: 0, y: 0, z: layer } },
+    try {
+      if (p.gpuSource != null) {
+        blitGpuMaterialSourceLayer(
+          device, p.gpuSource, nativeTexture, format, 0, copyW, copyH,
+        );
+      } else if (p.external != null) {
+        if (isFloatArray) {
+          blitExternalSrgbToFloatLayer(
+            device,
+            p.external,
+            nativeTexture,
+            0,
+            copyW,
+            copyH,
+            new Set([...forbiddenResources, texture]),
+          );
+        } else {
+          device.queue.copyExternalImageToTexture(
+            { source: p.external, flipY: false },
+            { texture: nativeTexture, origin: { x: 0, y: 0, z: 0 } },
+            { width: copyW, height: copyH },
+          );
+        }
+      } else if (p.data != null) {
+        const upload = normalizedUploads[layer]!;
+        device.queue.writeTexture(
+          { texture: nativeTexture, origin: { x: 0, y: 0, z: 0 } },
+          upload.data,
+          { bytesPerRow: upload.bytesPerRow, rowsPerImage: upload.rowsPerImage },
           { width: copyW, height: copyH },
         );
       }
-    } else if (p.data != null) {
-      const upload = isFloatArray
-        ? normalizeRawTextureUploadFloat(p.data, p.width, p.height)
-        : normalizeRawTextureUpload(p.data, p.width, p.height);
-      if (upload == null) {
-        const warning =
-          `[materialTextureArray] source ${layer} has raw data with unsupported byte layout ` +
-            `(${p.data.byteLength} bytes for ${p.width}×${p.height}); expected 1, 2, 3, or 4 ` +
-            `8-bit or normalized numeric channel(s) per pixel. Layer left black.`;
-        warnings.push(warning);
-        structuredWarnings.push({
-          code: 'texture-unsupported-layout',
-          warning,
-          layer,
-          uses: layerUses(layerInfos, layer),
-          width: p.width,
-          height: p.height,
-          byteLength: p.data.byteLength,
-          fallback: 'black-layer',
-        });
-        continue;
+      generateTextureMips(device, nativeTexture, format, nativeMipLevelCount);
+      const copyEncoder = device.createCommandEncoder({
+        label: `${ARRAY_LABEL}.native.${layer}.copy`,
+      });
+      for (let mip = 0; mip < nativeMipLevelCount; mip += 1) {
+        copyEncoder.copyTextureToTexture(
+          { texture: nativeTexture, mipLevel: mip },
+          { texture, mipLevel: mip, origin: { x: 0, y: 0, z: layer } },
+          {
+            width: Math.max(1, Math.floor(copyW / 2 ** mip)),
+            height: Math.max(1, Math.floor(copyH / 2 ** mip)),
+            depthOrArrayLayers: 1,
+          },
+        );
       }
-      device.queue.writeTexture(
-        { texture, origin: { x: 0, y: 0, z: layer } },
-        upload.data,
-        { bytesPerRow: upload.bytesPerRow, rowsPerImage: upload.rowsPerImage },
-        { width: copyW, height: copyH },
-      );
+      device.queue.submit([copyEncoder.finish()]);
+    } finally {
+      try { nativeTexture.destroy(); } catch { /* preserve the upload outcome */ }
     }
   }
-  generateTextureArrayMips(device, texture, sources.length, format, mipLevelCount);
 
   return {
     texture,
@@ -745,4 +1157,10 @@ export function createMaterialTextureArray(
     warnings,
     structuredWarnings,
   };
+  } catch (error) {
+    // createMaterialTextureArray owns the texture until it returns.  Outer scene
+    // upload tracking cannot see it during a failed copy/mip/view stage.
+    try { texture.destroy(); } catch { /* preserve the upload failure */ }
+    throw error;
+  }
 }

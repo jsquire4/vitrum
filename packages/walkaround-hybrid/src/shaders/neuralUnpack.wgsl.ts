@@ -1,30 +1,33 @@
-/**
- * Neural denoiser output-unpack shader.
- *
- * Reads the denoised f32 storage buffer produced by InferenceGraph and
- * writes it back to an rgba16float output texture, clamping each channel
- * to [0, ∞) to eliminate any spurious negative artefacts from the network.
- *
- * Binding layout (group 0):
- *   0 — denoisedIn   (storage, read  f32[])
- *   1 — denoisedOut  (texture_storage_2d<rgba16float, write>)
- *   2 — params       (uniform UnpackParams)
- *
- * Extracted from NeuralDenoiser.initialize inline literal (Issue 2 /
- * complexity-sweep 2026-06-02) — character-identical to the original
- * embedded string.
- */
-
+/** Neural output buffer-to-texture decode with finite sanitization. */
 import type { WgslModule } from '../pipeline/wgslComposer.js';
+import {
+  NEURAL_PREPROCESSING_CONTRACT,
+  neuralPreprocessingWgsl,
+  type NeuralPreprocessingContract,
+} from '../neural/preprocessing.js';
+import {
+  NEURAL_F32_TENSOR_STORAGE,
+  neuralTensorWgslPreamble,
+  neuralTensorWgslType,
+  type NeuralTensorStorageContract,
+} from '../neural/tensorPrecision.js';
 
-export const NEURAL_UNPACK_WGSL = /* wgsl */`
+export function buildNeuralUnpackWgsl(
+  contract: NeuralPreprocessingContract = NEURAL_PREPROCESSING_CONTRACT,
+  storage: NeuralTensorStorageContract = NEURAL_F32_TENSOR_STORAGE,
+): string {
+  const tensor = neuralTensorWgslType(storage);
+  const load = (value: string): string => storage.precision === 'f16' ? `f32(${value})` : value;
+  return /* wgsl */`
+${neuralTensorWgslPreamble(storage)}
+${neuralPreprocessingWgsl(contract)}
 struct UnpackParams {
   width: u32,
   height: u32,
   pixelCount: u32,
   _pad0: u32,
 }
-@group(0) @binding(0) var<storage, read> denoisedIn: array<f32>;
+@group(0) @binding(0) var<storage, read> denoisedIn: array<${tensor}>;
 @group(0) @binding(1) var denoisedOut: texture_storage_2d<rgba16float, write>;
 @group(0) @binding(2) var<uniform> params: UnpackParams;
 
@@ -35,16 +38,17 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let x = p % params.width;
   let y = p / params.width;
   let base = p * 3u;
-  let c = vec3f(
-    max(0.0, denoisedIn[base + 0u]),
-    max(0.0, denoisedIn[base + 1u]),
-    max(0.0, denoisedIn[base + 2u]),
+  let color = vec3f(
+    neuralPostprocessRadiance(${load('denoisedIn[base]')}),
+    neuralPostprocessRadiance(${load('denoisedIn[base + 1u]')}),
+    neuralPostprocessRadiance(${load('denoisedIn[base + 2u]')}),
   );
-  textureStore(denoisedOut, vec2u(x, y), vec4f(c, 1.0));
+  textureStore(denoisedOut, vec2u(x, y), vec4f(color, 1.0));
 }
 `;
+}
 
-/** Neural denoiser output-unpack compute shader module. Self-contained; no deps. */
+export const NEURAL_UNPACK_WGSL = buildNeuralUnpackWgsl();
 export const NEURAL_UNPACK_MODULE: WgslModule = {
   name: 'neuralUnpack',
   source: NEURAL_UNPACK_WGSL,

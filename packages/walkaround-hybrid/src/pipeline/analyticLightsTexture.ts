@@ -8,11 +8,39 @@ import {
 const ANALYTIC_LIGHT_TEX_WIDTH = 4096;
 const ANALYTIC_LIGHT_HEADER_VEC4S = 1;
 const ANALYTIC_LIGHT_STRIDE_VEC4S = 4;
+const ANALYTIC_LIGHT_ALIAS_STRIDE_VEC4S = 1;
 
 export interface AnalyticLightsTexture {
   texture: GPUTexture;
   width: number;
   height: number;
+}
+
+function assertAnalyticLightsPayload(
+  packed: Float32Array,
+  lightCount: number,
+): number {
+  if (!Number.isSafeInteger(lightCount) || lightCount < 0) {
+    throw new RangeError(
+      `analyticLights lightCount must be a non-negative safe integer; received ${String(lightCount)}`,
+    );
+  }
+  const payloadFloats = lightCount *
+    (ANALYTIC_LIGHT_STRIDE_VEC4S + ANALYTIC_LIGHT_ALIAS_STRIDE_VEC4S) * 4;
+  if (!Number.isSafeInteger(payloadFloats)) {
+    throw new RangeError(`analyticLights payload size is not a safe integer for ${lightCount} lights`);
+  }
+  if (packed.length !== payloadFloats) {
+    throw new RangeError(
+      `analyticLights payload length must be exactly ${payloadFloats} floats for ${lightCount} lights; received ${packed.length}`,
+    );
+  }
+  for (let i = 0; i < packed.length; i++) {
+    if (!Number.isFinite(packed[i])) {
+      throw new TypeError(`analyticLights payload[${i}] must be finite`);
+    }
+  }
+  return payloadFloats;
 }
 
 function analyticLightsTextureSize(vec4Count: number): { width: number; height: number } {
@@ -27,8 +55,13 @@ export function uploadAnalyticLightsTexture(
   packed: Float32Array,
   lightCount: number,
 ): AnalyticLightsTexture {
-  const count = Math.max(0, Math.floor(lightCount));
-  const vec4Count = Math.max(4, ANALYTIC_LIGHT_HEADER_VEC4S + count * ANALYTIC_LIGHT_STRIDE_VEC4S);
+  assertAnalyticLightsPayload(packed, lightCount);
+  const count = lightCount;
+  const vec4Count = Math.max(
+    4,
+    ANALYTIC_LIGHT_HEADER_VEC4S +
+      count * (ANALYTIC_LIGHT_STRIDE_VEC4S + ANALYTIC_LIGHT_ALIAS_STRIDE_VEC4S),
+  );
   const { width, height } = analyticLightsTextureSize(vec4Count);
   assertBvhTextureFitsDevice('analyticLights', device, width, height, vec4Count);
   const texture = uploadElementTexture(device, {
@@ -50,12 +83,17 @@ export function refreshAnalyticLightsTexture(
   packed: Float32Array,
   lightCount: number,
 ): void {
-  const count = Math.max(0, Math.floor(lightCount));
+  assertAnalyticLightsPayload(packed, lightCount);
+  const count = lightCount;
   assertBvhTextureRefreshCapacity(
     'analyticLights',
     tex.width,
     tex.height,
-    Math.max(4, ANALYTIC_LIGHT_HEADER_VEC4S + count * ANALYTIC_LIGHT_STRIDE_VEC4S),
+    Math.max(
+      4,
+      ANALYTIC_LIGHT_HEADER_VEC4S +
+        count * (ANALYTIC_LIGHT_STRIDE_VEC4S + ANALYTIC_LIGHT_ALIAS_STRIDE_VEC4S),
+    ),
   );
   writeElementTexture(device, tex.texture, {
     width: tex.width,
@@ -67,14 +105,10 @@ export function refreshAnalyticLightsTexture(
   });
 }
 
-/** Populate the padded rgba32float grid: light count in texel 0, packed
- *  point/spot payload starting at the header offset. */
+/** Populate header (count + alias offset), payload records, then aliases. */
 function fillAnalyticLights(padded: Float32Array, packed: Float32Array, lightCount: number): void {
   padded[0] = lightCount;
+  padded[1] = ANALYTIC_LIGHT_HEADER_VEC4S + lightCount * ANALYTIC_LIGHT_STRIDE_VEC4S;
   const payloadOffset = ANALYTIC_LIGHT_HEADER_VEC4S * 4;
-  const payloadFloats = lightCount * ANALYTIC_LIGHT_STRIDE_VEC4S * 4;
-  padded.set(
-    packed.subarray(0, Math.min(packed.length, payloadFloats, padded.length - payloadOffset)),
-    payloadOffset,
-  );
+  padded.set(packed, payloadOffset);
 }

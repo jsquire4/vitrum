@@ -36,7 +36,8 @@ describe('WS2 — light-tree WGSL consumption + gating', () => {
   it('FULL trace CONSUMES the light-tree buffer (sampleLightTree reads lightTree[])', () => {
     // The traversal function must exist AND be called in the kernel.
     expect(PT_WEBGPU_TRACE_WGSL).toContain('fn sampleLightTree(');
-    expect(PT_WEBGPU_TRACE_WGSL).toMatch(/let lt = sampleLightTree\(hitPos,/);
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('fn sampleCanonicalDirectLight(');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('let selected = sampleLightTree(');
     // And the buffer is actually dereferenced inside the traversal (not dead).
     expect(PT_WEBGPU_TRACE_WGSL).toMatch(/lightTree\[base \+ 1u\]/); // power read
     expect(PT_WEBGPU_TRACE_WGSL).toMatch(/lightTree\[base \+ 2u\]/); // leftChild read
@@ -44,17 +45,25 @@ describe('WS2 — light-tree WGSL consumption + gating', () => {
 
   it('FULL trace gates the tree pick at COMPILE-consumed runtime flags (not an unconditional path)', () => {
     expect(PT_WEBGPU_TRACE_WGSL).toContain(
-      'let lightTreeActive = params.lightTreeEnabled != 0u && params.lightTreeNodeCount > 0u;',
+      'params.lightTreeEnabled != 0u && params.lightTreeNodeCount > 0u;',
     );
     // The selection reciprocal comes from the tree on the active path and from
     // the uniform fallback otherwise.
-    expect(PT_WEBGPU_TRACE_WGSL).toContain('lightSelectInvPdf = 1.0 / lt.pdf;');
-    expect(PT_WEBGPU_TRACE_WGSL).toContain('lightSelectInvPdf = f32(lightCount);');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain(
+      'u32(selected.emitterIndex), 1.0 / selected.pdf,',
+    );
+    expect(PT_WEBGPU_TRACE_WGSL).toContain(
+      'return DirectLightSelection(index, f32(lightCount));',
+    );
     // EVERY NEE branch compensates the selection OUTSIDE the MIS heuristic by
     // multiplying its contribution by directLightingScale. Ordinary renders use
     // lightSelectInvPdf; inverse summed-direct renders pin the scale to 1.
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('var lightSelection: DirectLightSelection;');
     expect(PT_WEBGPU_TRACE_WGSL).toContain(
-      'let directLightingScale = select(lightSelectInvPdf, 1.0, sumDirectLighting);',
+      'lightSelection = sampleDistantDirectLight(',
+    );
+    expect(PT_WEBGPU_TRACE_WGSL).toContain(
+      'lightSelection = sampleCanonicalDirectLight(',
     );
     expect(PT_WEBGPU_TRACE_WGSL).toMatch(/\* directLightingScale;/);
   });

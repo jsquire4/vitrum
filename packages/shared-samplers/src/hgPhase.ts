@@ -41,6 +41,8 @@
 // ────────────────────────────────────────────────────────────────────────────
 // Public API
 // ────────────────────────────────────────────────────────────────────────────
+import { requireFinite, requireUnitRandom } from './numericGuards.js';
+
 
 const INV_4PI = 1 / (4 * Math.PI);
 
@@ -53,6 +55,9 @@ const INV_4PI = 1 / (4 * Math.PI);
  *                 Integrates to 1 over the full sphere.
  */
 export function evaluateHG(cosTheta: number, g: number): number {
+  requireFinite(cosTheta, 'evaluateHG.cosTheta');
+  requireFinite(g, 'evaluateHG.g');
+  cosTheta = Math.max(-1, Math.min(1, cosTheta));
   // Clamp g away from exact ±1 to avoid division by zero in the denominator.
   g = Math.max(-0.9999, Math.min(0.9999, g));
   const g2 = g * g;
@@ -78,6 +83,9 @@ export function sampleHG(
   u2: number,
   g: number,
 ): readonly [number, number, number] {
+  requireUnitRandom(u1, 'sampleHG.u1');
+  requireUnitRandom(u2, 'sampleHG.u2');
+  requireFinite(g, 'sampleHG.g');
   g = Math.max(-0.9999, Math.min(0.9999, g));
 
   let cosTheta: number;

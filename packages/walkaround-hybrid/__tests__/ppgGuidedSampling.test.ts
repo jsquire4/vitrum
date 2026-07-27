@@ -79,7 +79,8 @@ function gpuPortEvalPdf(
   const leafBase = gpuTraverseDTreeLeaf(cellBuf, guideUV);
   const leafFlux = cellBuf[leafBase + 4]!;
   const solidAng = cellBuf[leafBase + 5]!;
-  return (leafFlux / totalFlux) / Math.max(solidAng, 1e-12);
+  if (!(leafFlux > 0) || !(solidAng > 0)) return 1 / FOUR_PI;
+  return (leafFlux / totalFlux) / solidAng;
 }
 
 // ── The exact gi-ris explicit RIS weight (CPU port of risGi.wgsl) ───────────
@@ -93,11 +94,11 @@ function risGiWeight(
   pGuide: number,
 ): number {
   const pHat = luminance(Lo) * cosTheta * INV_PI;
-  if (pHat < 1e-9) return 0;
+  if (!(pHat > 0) || !Number.isFinite(pHat)) return 0;
   if (alpha > 0) {
     const pCos = cosTheta * INV_PI;
     const pSrc = alpha * pGuide + (1 - alpha) * pCos;
-    return pSrc > 1e-12 ? pHat / pSrc : 0;
+    return pSrc > 0 && Number.isFinite(pSrc) ? pHat / pSrc : 0;
   }
   return luminance(Lo);
 }
@@ -409,12 +410,14 @@ describe('W9 gi-ris — WGSL structure pins', () => {
 
   it('risGi computes the explicit mixture weight w = p̂ / p_src on the α>0 path', () => {
     expect(RIS_GI_WGSL).toContain('let pGuide = ppgEvalPdf(pos, wi)');
-    expect(RIS_GI_WGSL).toContain('let pSrc = alpha * pGuide + (1.0 - alpha) * pCos');
-    expect(RIS_GI_WGSL).toContain('w = select(0.0, pHat / pSrc, pSrc > 1e-12)');
+    expect(RIS_GI_WGSL).toContain('pSrc = alpha * pGuide + (1.0 - alpha) * pCos');
+    expect(RIS_GI_WGSL).toContain('if (!reservoirGiFinite(pSrc) || !(pSrc > 0.0))');
+    expect(RIS_GI_WGSL).toContain('let w = pHat / pSrc;');
   });
 
   it('risGi keeps the receiver-lobe target on the α==0 path', () => {
-    expect(RIS_GI_WGSL).toMatch(/\} else \{\s*\n\s*let pCos = cosTheta \* INV_PI;\s*\n\s*w = select\(0\.0, pHat \/ pCos, pCos > 1e-12\);/);
+    expect(RIS_GI_WGSL).toMatch(/} else {\s*\n\s*pSrc = cosTheta \* INV_PI;/);
+    expect(RIS_GI_WGSL).toContain('let w = pHat / pSrc;');
     expect(RIS_GI_WGSL).toContain('restir_gi_receiver_phat_from_payload(');
   });
 
@@ -422,14 +425,19 @@ describe('W9 gi-ris — WGSL structure pins', () => {
     expect(RIS_GI_MODULE.requires).toContain('ppgPdf');
   });
 
-  it('ppgPdf declares the three PPG tree buffers on group(3) bindings 6/7/8', () => {
-    expect(PPG_PDF_WGSL).toContain('@group(3) @binding(6) var<storage, read> ppgSTreeBuf_gi');
-    expect(PPG_PDF_WGSL).toContain('@group(3) @binding(7) var<storage, read> ppgDTreeBuf_gi');
-    expect(PPG_PDF_WGSL).toContain('@group(3) @binding(8) var<storage, read> ppgDTreeOffsets_gi');
+  it('ppgPdf reads all PPG trees through the packed group(3) query arena', () => {
+    expect(PPG_PDF_WGSL).toContain('@group(3) @binding(6) var<storage, read> ppgQueryArena_gi');
+    expect(PPG_PDF_WGSL).toContain('ppgQueryArena_gi[ppgQueryArena_gi[4] + word]');
+    expect(PPG_PDF_WGSL).toContain('ppgQueryArena_gi[ppgQueryArena_gi[7] + word]');
+    expect(PPG_PDF_WGSL).toContain('ppgQueryArena_gi[ppgQueryArena_gi[10] + word]');
+    expect(PPG_PDF_WGSL).not.toContain('@group(3) @binding(7)');
+    expect(PPG_PDF_WGSL).not.toContain('@group(3) @binding(8)');
   });
 
   it('ppgPdf evaluates p_guide as (leafFlux/totalFlux)/solidAngle (mirrors dTreePdf)', () => {
-    expect(PPG_PDF_WGSL).toContain('(leafFlux / totalFlux) / max(solidAng, 1e-12)');
+    expect(PPG_PDF_WGSL).toContain('if (!(leafFlux > 0.0) || !(solidAng > 0.0))');
+    expect(PPG_PDF_WGSL).toContain('(leafFlux / totalFlux) / solidAng');
+    expect(PPG_PDF_WGSL).not.toContain('max(solidAng, 1e-12)');
     expect(PPG_PDF_WGSL).toContain('if (totalFlux <= 0.0) { return 1.0 / PPG_FOUR_PI; }');
   });
 });

@@ -16,7 +16,10 @@ import {
   type AdjointGradientRequest,
 } from '../inverse/inverseSession.js';
 import { l2Loss, l1Loss, lossValue, Adam, parseParamPath, paramLength } from '../inverse/optimizer.js';
-import { MESH_AREA_LIGHT_TRI_CAP } from '../scene/emitterPacking.js';
+import {
+  MESH_AREA_LIGHT_TRI_CAP,
+  packMeshAreaAdjointReplayArrays,
+} from '../scene/emitterPacking.js';
 
 // ── a fittable fake forward model ─────────────────────────────────────────────
 //
@@ -35,7 +38,12 @@ function makeScene(): Scene {
         id: 'panel',
         positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
         normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
-        material: { baseColor: [0.2, 0.2, 0.2], roughness: 0.5, metallic: 0 },
+        material: {
+          baseColor: [0.2, 0.2, 0.2],
+          roughness: 0.5,
+          metallic: 0,
+          emissive: [0.2, 0.2, 0.2],
+        },
       },
     ],
     emitters: [
@@ -52,6 +60,20 @@ interface FakeEngine {
   lastSeedSequences: number[][];
 }
 
+function deferred<T>(): {
+  readonly promise: Promise<T>;
+  resolve(value: T): void;
+  reject(error: unknown): void;
+} {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
 /** Build hooks over a mutable scene; the render maps baseColor → flat image.
  *  `seedLog` records (per render) the per-sample seed sequence the session
  *  would use — we model the determinism contract: same scene + same seed
@@ -65,6 +87,37 @@ function makeFakeEngine(W = 2, H = 2): FakeEngine {
   };
   fake.hooks = {
     getScene: () => fake.scene,
+    // Unit-test capability manifest: these tests exercise every implemented
+    // scatter/diagnostic route with a fake adjoint. The real engine omits this
+    // override and therefore advertises only the GPU-fit-proven emissive field.
+    getPathReplayProofManifest: () => ({
+      materialFields: [
+        'baseColor',
+        'roughness',
+        'metallic',
+        'aoMapIntensity',
+        'lightMapIntensity',
+        'emissive',
+        'emissiveIntensity',
+        'specularColor',
+        'specularIntensity',
+        'clearcoat',
+        'clearcoatRoughness',
+        'sheen',
+        'sheenColor',
+        'sheenRoughness',
+        'iridescence',
+        'iridescenceIor',
+        'iridescenceThicknessRange',
+        'anisotropy',
+        'anisotropyRotation',
+        'envMapIntensity',
+        'normalScale',
+        'bumpScale',
+        'clearcoatNormalScale',
+      ],
+      emitterFields: ['color', 'intensity'],
+    }),
     renderAndReadback: async (width, height, _samples) => {
       fake.renderCount += 1;
       const mat = fake.scene.primitives[0]!.material;
@@ -299,22 +352,6 @@ describe('InverseSession — path resolution + validation throws', () => {
     })).toThrow(/at least one parameter/);
   });
 
-  it("throws on the reserved 'texture' kind (Phase 2, not yet differentiable)", () => {
-    const fake = makeFakeEngine();
-    expect(() => new PtWebgpuInverseSession(fake.hooks, {
-      target: targetImage(2, 2, [0, 0, 0]),
-      parameters: [{ path: 'materials.panel.baseColorMap', kind: 'texture' }],
-    })).toThrow(/texture/);
-  });
-
-  it("throws on a reserved perceptual loss ('lpips')", () => {
-    const fake = makeFakeEngine();
-    expect(() => new PtWebgpuInverseSession(fake.hooks, {
-      target: targetImage(2, 2, [0, 0, 0]),
-      parameters: [{ path: 'materials.panel.baseColor', kind: 'rgb' }],
-      loss: 'lpips',
-    })).toThrow(/perceptual loss/);
-  });
 });
 
 describe('InverseSession — Phase-0 finite-difference loop converges', () => {
@@ -817,6 +854,235 @@ describe('InverseSession — dispose is idempotent + blocks further steps', () =
   });
 });
 
+describe('InverseSession — transactional lifecycle', () => {
+  it('rejects reentrant steps and invalidates a baseline await when disposed', async () => {
+    const fake = makeFakeEngine();
+    const pending = deferred<{ rgb: Float32Array; channels: 3 }>();
+    const session = new PtWebgpuInverseSession({
+      ...fake.hooks,
+      renderAndReadback: () => pending.promise,
+    }, {
+      target: targetImage(2, 2, [0.5, 0.5, 0.5]),
+      parameters: [{ path: 'materials.panel.roughness', kind: 'scalar' }],
+    });
+    const first = session.step();
+    await expect(session.step()).rejects.toThrow(/already in progress/);
+    session.dispose();
+    pending.resolve({ rgb: new Float32Array(12), channels: 3 });
+    await expect(first).rejects.toThrow(/disposed while the step was in progress/);
+    expect(session.currentValues()).toEqual([[0.5]]);
+    expect(fake.scene.primitives[0]!.material.roughness).toBe(0.5);
+  });
+
+  it('invalidates an adjoint await when disposed without publishing a step', async () => {
+    const fake = makeFakeEngine();
+    const started = deferred<void>();
+    const pending = deferred<Float32Array>();
+    const session = new PtWebgpuInverseSession({
+      ...fake.hooks,
+      computeAdjointGradient: async () => {
+        started.resolve();
+        return pending.promise;
+      },
+    }, {
+      target: targetImage(2, 2, [0.8, 0.1, 0.1]),
+      parameters: [{ path: 'materials.panel.baseColor', kind: 'rgb' }],
+      method: 'path-replay',
+    });
+    const step = session.step();
+    await started.promise;
+    session.dispose();
+    pending.resolve(new Float32Array(3));
+    await expect(step).rejects.toThrow(/disposed while the step was in progress/);
+    expect(session.currentValues()[0]).toEqual([
+      expect.closeTo(0.2, 6),
+      expect.closeTo(0.2, 6),
+      expect.closeTo(0.2, 6),
+    ]);
+    expect(fake.scene.primitives[0]!.material.baseColor).toEqual([
+      expect.closeTo(0.2, 6),
+      expect.closeTo(0.2, 6),
+      expect.closeTo(0.2, 6),
+    ]);
+  });
+
+  it('restores a finite-difference perturbation when probe rendering rejects', async () => {
+    const fake = makeFakeEngine();
+    const render = fake.hooks.renderAndReadback;
+    let renders = 0;
+    const session = new PtWebgpuInverseSession({
+      ...fake.hooks,
+      renderAndReadback: async (...args) => {
+        renders += 1;
+        if (renders === 2) throw new Error('probe render failed');
+        return render(...args);
+      },
+    }, {
+      target: targetImage(2, 2, [0.8, 0.1, 0.1]),
+      parameters: [{
+        path: 'materials.panel.baseColor',
+        kind: 'rgb',
+        initial: [0.3, 0.1, 0.1],
+      }],
+    });
+    await expect(session.step()).rejects.toThrow(/probe render failed/);
+    expect(session.currentValues()[0]).toEqual([
+      expect.closeTo(0.3, 6),
+      expect.closeTo(0.1, 6),
+      expect.closeTo(0.1, 6),
+    ]);
+    expect(fake.scene.primitives[0]!.material.baseColor).toEqual([
+      expect.closeTo(0.3, 6),
+      expect.closeTo(0.1, 6),
+      expect.closeTo(0.1, 6),
+    ]);
+  });
+
+  it('rolls back partial constructor overrides and aggregates rollback failure', () => {
+    const fake = makeFakeEngine();
+    const patchMaterial = fake.hooks.patchMaterial;
+    let patchCount = 0;
+    expect(() => new PtWebgpuInverseSession({
+      ...fake.hooks,
+      patchMaterial: (...args) => {
+        patchCount += 1;
+        if (patchCount === 2) throw new Error('second initial patch failed');
+        patchMaterial(...args);
+      },
+    }, {
+      target: targetImage(2, 2, [0, 0, 0]),
+      parameters: [
+        { path: 'materials.panel.baseColor', kind: 'rgb', initial: [0.9, 0.8, 0.7] },
+        { path: 'materials.panel.roughness', kind: 'scalar', initial: [0.25] },
+      ],
+    })).toThrow(/second initial patch failed/);
+    expect(fake.scene.primitives[0]!.material.baseColor).toEqual([0.2, 0.2, 0.2]);
+
+    const broken = makeFakeEngine();
+    const brokenPatch = broken.hooks.patchMaterial;
+    let brokenCount = 0;
+    expect(() => new PtWebgpuInverseSession({
+      ...broken.hooks,
+      patchMaterial: (...args) => {
+        brokenCount += 1;
+        if (brokenCount >= 2) throw new Error('patch unavailable');
+        brokenPatch(...args);
+      },
+    }, {
+      target: targetImage(2, 2, [0, 0, 0]),
+      parameters: [
+        { path: 'materials.panel.baseColor', kind: 'rgb', initial: [0.9, 0.8, 0.7] },
+        { path: 'materials.panel.roughness', kind: 'scalar', initial: [0.25] },
+      ],
+    })).toThrow(AggregateError);
+  });
+
+  it('poisons the session when rollback cannot restore the scene', async () => {
+    const fake = makeFakeEngine();
+    const patchMaterial = fake.hooks.patchMaterial;
+    let fail = false;
+    const session = new PtWebgpuInverseSession({
+      ...fake.hooks,
+      patchMaterial: (...args) => {
+        if (fail) throw new Error('scene patch unavailable');
+        patchMaterial(...args);
+      },
+    }, {
+      target: targetImage(2, 2, [0, 0, 0]),
+      parameters: [{ path: 'materials.panel.roughness', kind: 'scalar' }],
+    });
+    fail = true;
+    await expect(session.step()).rejects.toThrow(AggregateError);
+    fail = false;
+    await expect(session.step()).rejects.toThrow(/session is poisoned/);
+  });
+
+  it('restores Adam state so a retry follows the same trajectory as a clean step', async () => {
+    const options: InverseSessionOptions = {
+      target: targetImage(2, 2, [0.8, 0.1, 0.1]),
+      parameters: [{ path: 'materials.panel.baseColor', kind: 'rgb' }],
+      method: 'path-replay',
+      optimizer: { learningRate: 0.05 },
+    };
+    const failedFake = makeFakeEngine();
+    const failedPatch = failedFake.hooks.patchMaterial;
+    let patchCount = 0;
+    const failedSession = new PtWebgpuInverseSession({
+      ...failedFake.hooks,
+      patchMaterial: (...args) => {
+        patchCount += 1;
+        if (patchCount === 3) throw new Error('updated scene patch failed');
+        failedPatch(...args);
+      },
+      computeAdjointGradient: async () => new Float32Array([-1, 0, 0]),
+    }, options);
+    await expect(failedSession.step()).rejects.toThrow(/updated scene patch failed/);
+    expect(failedSession.currentValues()[0]![0]).toBeCloseTo(0.2, 6);
+
+    const cleanFake = makeFakeEngine();
+    const cleanSession = new PtWebgpuInverseSession({
+      ...cleanFake.hooks,
+      computeAdjointGradient: async () => new Float32Array([-1, 0, 0]),
+    }, options);
+    const [retry, clean] = await Promise.all([failedSession.step(), cleanSession.step()]);
+    expect(retry).toEqual(clean);
+    expect(failedFake.scene.primitives[0]!.material.baseColor)
+      .toEqual(cleanFake.scene.primitives[0]!.material.baseColor);
+  });
+
+  it('rejects malformed readbacks and non-finite adjoint gradients transactionally', async () => {
+    const malformedFake = makeFakeEngine();
+    const malformed = new PtWebgpuInverseSession({
+      ...malformedFake.hooks,
+      renderAndReadback: async () => ({ rgb: new Float32Array(2), channels: 3 }),
+    }, {
+      target: targetImage(2, 2, [0, 0, 0]),
+      parameters: [{ path: 'materials.panel.roughness', kind: 'scalar' }],
+    });
+    await expect(malformed.step()).rejects.toThrow(/data length/);
+
+    const adjointFake = makeFakeEngine();
+    const adjoint = new PtWebgpuInverseSession({
+      ...adjointFake.hooks,
+      computeAdjointGradient: async () =>
+        new Float32Array([Number.NaN, 0, 0]),
+    }, {
+      target: targetImage(2, 2, [0.8, 0.1, 0.1]),
+      parameters: [{ path: 'materials.panel.baseColor', kind: 'rgb' }],
+      method: 'path-replay',
+    });
+    await expect(adjoint.step()).rejects.toThrow(/non-finite/);
+    expect(adjoint.currentValues()[0]).toEqual([
+      expect.closeTo(0.2, 6),
+      expect.closeTo(0.2, 6),
+      expect.closeTo(0.2, 6),
+    ]);
+  });
+
+  it('normalizes non-Error hook rejections before exposing them', async () => {
+    const fake = makeFakeEngine();
+    const session = new PtWebgpuInverseSession({
+      ...fake.hooks,
+      renderAndReadback: async () => {
+        // eslint-disable-next-line @typescript-eslint/only-throw-error -- verifies rejection normalization
+        throw undefined;
+      },
+    }, {
+      target: targetImage(2, 2, [0, 0, 0]),
+      parameters: [{ path: 'materials.panel.roughness', kind: 'scalar' }],
+    });
+    let caught: unknown;
+    try {
+      await session.step();
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).message).toContain('non-Error value');
+    expect(fake.scene.primitives[0]!.material.roughness).toBe(0.5);
+  });
+});
+
 describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
   const eligibleOpts = (): InverseSessionOptions => ({
     target: targetImage(2, 2, [0.8, 0.1, 0.1]),
@@ -835,6 +1101,163 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
     expect(session.method).toBe('path-replay');
     expect(session.diagnostics).toEqual([]);
     session.dispose();
+  });
+
+  it('defaults to the executable release proof and reports uncertified fields as FD', () => {
+    const fake = makeFakeEngine();
+    const {
+      getPathReplayProofManifest: testOnlyProof,
+      ...conservativeHooks
+    } = fake.hooks;
+    const hooks: InverseEngineHooks = {
+      ...conservativeHooks,
+      computeAdjointGradient: async ({ gradientLength }) =>
+        new Float32Array(gradientLength),
+    };
+    const proven = new PtWebgpuInverseSession(hooks, {
+      ...eligibleOpts(),
+      parameters: [{ path: 'materials.panel.emissive', kind: 'rgb' }],
+    });
+    expect(proven.method).toBe('path-replay');
+    expect(proven.parameterMethods).toEqual(['path-replay']);
+    proven.dispose();
+
+    for (const [field, kind] of [
+      ['specularColor', 'rgb'],
+      ['clearcoat', 'scalar'],
+    ] as const) {
+      const reported: unknown[] = [];
+      const unproven = new PtWebgpuInverseSession(hooks, {
+        ...eligibleOpts(),
+        parameters: [{ path: `materials.panel.${field}`, kind }],
+        onDiagnostic: (diagnostic) => reported.push(diagnostic),
+      });
+      expect(unproven.method).toBe('finite-difference');
+      expect(unproven.parameterMethods).toEqual(['finite-difference']);
+      const expected = expect.objectContaining({
+        code: 'path-replay-unsupported-field',
+        path: `materials.panel.${field}`,
+        details: expect.objectContaining({ proof: 'missing-end-to-end-gpu-fit' }),
+      });
+      expect(unproven.diagnostics).toContainEqual(expected);
+      expect(reported).toContainEqual(expected);
+      expect((unproven.diagnostics[0]?.message ?? '')).toContain(
+        'using finite-difference.',
+      );
+      unproven.dispose();
+    }
+    void testOnlyProof;
+  });
+
+  it('fails closed before scene mutation when the public policy requests an uncertified path', () => {
+    const fake = makeFakeEngine();
+    const {
+      getPathReplayProofManifest: testOnlyProof,
+      ...conservativeHooks
+    } = fake.hooks;
+    const diagnostics: unknown[] = [];
+    const before = fake.scene.primitives[0]!.material.specularColor;
+
+    expect(() => new PtWebgpuInverseSession({
+      ...conservativeHooks,
+      pathReplayFailurePolicy: 'error',
+      computeAdjointGradient: async ({ gradientLength }) =>
+        new Float32Array(gradientLength),
+    }, {
+      ...eligibleOpts(),
+      parameters: [{
+        path: 'materials.panel.specularColor',
+        kind: 'rgb',
+        initial: [0.9, 0.8, 0.7],
+      }],
+      onDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
+    })).toThrow(/outside the certified pt-webgpu domain/);
+
+    expect(fake.scene.primitives[0]!.material.specularColor).toBe(before);
+    expect(diagnostics).toContainEqual(expect.objectContaining({
+      code: 'path-replay-unsupported-field',
+      path: 'materials.panel.specularColor',
+      details: expect.objectContaining({ proof: 'missing-end-to-end-gpu-fit' }),
+    }));
+    const productionMessage = (diagnostics[0] as { message?: string } | undefined)?.message ?? '';
+    expect(productionMessage).toContain('request will be rejected');
+    expect(productionMessage).not.toContain('using finite-difference');
+    void testOnlyProof;
+  });
+
+  it('accepts the certified emissive path under the public fail-closed policy', () => {
+    const fake = makeFakeEngine();
+    const {
+      getPathReplayProofManifest: testOnlyProof,
+      ...conservativeHooks
+    } = fake.hooks;
+    const session = new PtWebgpuInverseSession({
+      ...conservativeHooks,
+      pathReplayFailurePolicy: 'error',
+      computeAdjointGradient: async ({ gradientLength }) =>
+        new Float32Array(gradientLength),
+    }, {
+      ...eligibleOpts(),
+      parameters: [{ path: 'materials.panel.emissive', kind: 'rgb' }],
+    });
+
+    expect(session.method).toBe('path-replay');
+    expect(session.parameterMethods).toEqual(['path-replay']);
+    expect(session.diagnostics).toEqual([]);
+    session.dispose();
+    void testOnlyProof;
+  });
+
+  it('never reports a finite-difference fallback for production implementation failures', () => {
+    const fake = makeFakeEngine();
+    const diagnostics: Array<{ message: string }> = [];
+
+    expect(() => new PtWebgpuInverseSession({
+      ...fake.hooks,
+      pathReplayFailurePolicy: 'error',
+      getPathReplayRenderContext: () => ({ spectral: true }),
+      computeAdjointGradient: async ({ gradientLength }) =>
+        new Float32Array(gradientLength),
+    }, {
+      ...eligibleOpts(),
+      parameters: [{ path: 'materials.panel.emissive', kind: 'rgb' }],
+      onDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
+    })).toThrow(/outside the certified pt-webgpu domain/);
+
+    expect(diagnostics).not.toHaveLength(0);
+    for (const diagnostic of diagnostics) {
+      expect(diagnostic.message).toContain('request will be rejected');
+      expect(diagnostic.message).not.toContain('using finite-difference');
+    }
+  });
+
+  it('reports the actual route of every slot in a mixed session', () => {
+    const fake = makeFakeEngine();
+    const {
+      getPathReplayProofManifest: testOnlyProof,
+      ...conservativeHooks
+    } = fake.hooks;
+    const session = new PtWebgpuInverseSession({
+      ...conservativeHooks,
+      computeAdjointGradient: async ({ gradientLength }) =>
+        new Float32Array(gradientLength),
+    }, {
+      target: targetImage(2, 2, [0.8, 0.1, 0.1]),
+      parameters: [
+        { path: 'materials.panel.emissive', kind: 'rgb' },
+        { path: 'materials.panel.specularColor', kind: 'rgb' },
+        { path: 'materials.panel.roughness', kind: 'scalar' },
+      ],
+      method: 'path-replay',
+    });
+    expect(session.method).toBe('finite-difference');
+    expect(session.parameterMethods).toEqual([
+      'path-replay',
+      'finite-difference',
+      'finite-difference',
+    ]);
+    session.dispose();
+    void testOnlyProof;
   });
 
   it('keeps path-replay for a single-bounce RGB render context', () => {
@@ -1285,7 +1708,7 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
     session.dispose();
   });
 
-  it('keeps capped mesh-area emitter targets on path-replay through adjoint owner tags', async () => {
+  it('fails capped mesh-area replay closed and falls back to finite difference', () => {
     const fake = makeFakeEngine();
     const triangleCount = MESH_AREA_LIGHT_TRI_CAP + 1;
     const positions = new Float32Array(triangleCount * 9);
@@ -1313,27 +1736,29 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
         meshId: 'panel',
       }],
     };
-    let captured: AdjointGradientRequest | null = null;
     const hooks: InverseEngineHooks = {
       ...fake.hooks,
-      computeAdjointGradient: async (req) => {
-        captured = req;
-        return new Float32Array([0.6]);
-      },
+      computeAdjointGradient: async () => new Float32Array([0.6]),
     };
+    expect(() => packMeshAreaAdjointReplayArrays(fake.scene)).toThrow(
+      new RegExp(`exact adjoint mesh-area replay requires ${triangleCount}.*limit of ${MESH_AREA_LIGHT_TRI_CAP}`),
+    );
     const session = new PtWebgpuInverseSession(hooks, {
       target: targetImage(2, 2, [0.8, 0.1, 0.1]),
       parameters: [{ path: 'emitters.mesh-light.intensity', kind: 'scalar' }],
       method: 'path-replay',
     });
-    expect(session.method).toBe('path-replay');
-    expect(session.diagnostics).toEqual([]);
-    const result = await session.step();
-    expect(captured).not.toBeNull();
-    expect(captured!.params).toEqual([
-      { domain: 'emitters', id: 'mesh-light', field: 'intensity', offset: 0, length: 1 },
-    ]);
-    expect(result.gradient).toEqual([[expect.closeTo(0.6, 6)]]);
+    expect(session.method).toBe('finite-difference');
+    expect(session.diagnostics).toContainEqual(expect.objectContaining({
+      code: 'path-replay-unsupported-emitter',
+      path: 'emitters.mesh-light.intensity',
+      details: expect.objectContaining({
+        emitterKind: 'mesh-area',
+        triangleCount,
+        triangleLimit: MESH_AREA_LIGHT_TRI_CAP,
+        finiteDifferenceReason: 'mesh-area-replay-capacity',
+      }),
+    }));
     session.dispose();
   });
 
@@ -2220,7 +2645,7 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
     session.dispose();
   });
 
-  it('keeps stably-opaque mask alpha scalars on path-replay as zero-gradient lanes', () => {
+  it('keeps stably-opaque mask alpha scalars on FD without a proof bypass', () => {
     const fake = makeFakeEngine();
     fake.scene = {
       ...fake.scene,
@@ -2248,14 +2673,28 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
       method: 'path-replay',
     });
 
-    expect(session.method).toBe('path-replay');
-    expect(session.diagnostics).toEqual([]);
+    expect(session.method).toBe('finite-difference');
+    expect(session.parameterMethods).toEqual([
+      'finite-difference',
+      'finite-difference',
+    ]);
+    expect(session.diagnostics).toHaveLength(2);
+    expect(session.diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: 'path-replay-unsupported-field',
+        path: 'materials.panel.opacity',
+      }),
+      expect.objectContaining({
+        code: 'path-replay-unsupported-field',
+        path: 'materials.panel.alphaCutoff',
+      }),
+    ]));
     expect(session.currentValues()[0]).toEqual([expect.closeTo(0.75, 6)]);
     expect(session.currentValues()[1]).toEqual([expect.closeTo(0.4, 6)]);
     session.dispose();
   });
 
-  it('keeps opaque alpha scalars on path-replay as zero-gradient lanes without FD probes', async () => {
+  it('finite-differences opaque alpha scalars even when the local derivative is zero', async () => {
     const fake = makeFakeEngine();
     fake.scene = {
       ...fake.scene,
@@ -2290,11 +2729,15 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
       method: 'path-replay',
     });
 
-    expect(session.method).toBe('path-replay');
-    expect(session.diagnostics).toEqual([]);
+    expect(session.method).toBe('finite-difference');
+    expect(session.parameterMethods).toEqual([
+      'finite-difference',
+      'finite-difference',
+    ]);
+    expect(session.diagnostics).toHaveLength(2);
     const before = fake.renderCount;
     const result = await session.step();
-    expect(fake.renderCount - before).toBe(1);
+    expect(fake.renderCount - before).toBe(3);
     expect(adjointCalled).toBe(false);
     expect(result.gradient).toEqual([
       [expect.closeTo(0, 6)],
@@ -4431,6 +4874,46 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
     session.dispose();
   });
 
+  it('fails closed before a textured analytic can enter triangle replay', () => {
+    const fake = makeFakeEngine();
+    const baseMesh = fake.scene.primitives[0]!;
+    if (baseMesh.kind !== 'mesh') throw new Error('test fixture expected a mesh primitive');
+    fake.scene = {
+      ...fake.scene,
+      primitives: [{
+        kind: 'analytic',
+        id: 'panel',
+        shape: 'sphere',
+        params: new Float32Array([0, 0, 0, 1]),
+        material: {
+          ...baseMesh.material,
+          baseColorMap: {
+            handle: { width: 1, height: 1, data: new Float32Array([0.8, 0.7, 0.6, 1]) },
+          },
+        },
+      }],
+    };
+    const hooks: InverseEngineHooks = {
+      ...fake.hooks,
+      getPathReplayGeometryCapabilities: () => ({ supportedAnalyticShapes: new Set() }),
+      computeAdjointGradient: async () => new Float32Array(3),
+    };
+
+    const session = new PtWebgpuInverseSession(hooks, {
+      target: targetImage(2, 2, [0.8, 0.1, 0.1]),
+      parameters: [{ path: 'materials.panel.emissive', kind: 'rgb' }],
+      method: 'path-replay',
+    });
+
+    expect(session.method).toBe('finite-difference');
+    expect(session.diagnostics).toContainEqual(expect.objectContaining({
+      code: 'path-replay-unsupported-primitive',
+      path: 'materials.panel.emissive',
+      message: expect.stringContaining('no exact path-replay geometry implementation'),
+    }));
+    session.dispose();
+  });
+
   it('keeps path-replay for supported analytic material targets via tessellated replay', () => {
     const fake = makeFakeEngine();
     const baseMesh = fake.scene.primitives[0]!;
@@ -4621,9 +5104,9 @@ describe('inverse optimizer helpers — pure unit math', () => {
     expect(() => parseParamPath('materials.x')).toThrow(/must be/);
   });
 
-  it('paramLength: scalar=1, rgb=3, texture throws', () => {
+  it('paramLength maps every supported kind', () => {
     expect(paramLength({ path: 'p', kind: 'scalar' })).toBe(1);
+    expect(paramLength({ path: 'p', kind: 'vec2' })).toBe(2);
     expect(paramLength({ path: 'p', kind: 'rgb' })).toBe(3);
-    expect(() => paramLength({ path: 'p', kind: 'texture' })).toThrow(/texture/);
   });
 });

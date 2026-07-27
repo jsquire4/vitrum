@@ -73,10 +73,11 @@ const MATERIAL_POINTER_SPECS: Readonly<Record<string, PointerSpec>> = Object.fre
 
 export function resolveGltfMaterialAnimationPointer(pointer: string | undefined): GltfMaterialPointerTarget | undefined {
   if (typeof pointer !== 'string') return undefined;
-  const match = /^\/materials\/(\d+)\/(.+)$/.exec(pointer);
+  const match = /^\/materials\/(0|[1-9]\d*)\/(.+)$/.exec(pointer);
   if (!match) return undefined;
   const materialIndex = Number(match[1]);
   const path = decodePointerPath(match[2] ?? '');
+  if (path === undefined) return undefined;
   const spec = MATERIAL_POINTER_SPECS[path];
   if (!Number.isSafeInteger(materialIndex) || materialIndex < 0 || spec === undefined) return undefined;
   return {
@@ -96,134 +97,131 @@ export function applyGltfMaterialPointerValue(
   value: Float32Array,
 ): MaterialSpec {
   const out: Record<string, unknown> = { ...material };
-  const scalar = finiteOr(value[0], 0);
+  // KHR_animation_pointer requires output values to be valid for the target
+  // property. Validation happens during import and again after runtime
+  // sampling; this application layer therefore preserves accepted values
+  // exactly instead of hiding malformed data through clamping/fallbacks.
+  const scalar = value[0]!;
   switch (target.field) {
     case 'baseColorFactor': {
       out.baseColor = [
-        finiteOr(value[0], 1),
-        finiteOr(value[1], 1),
-        finiteOr(value[2], 1),
+        value[0]!,
+        value[1]!,
+        value[2]!,
       ] satisfies Vec3;
-      const alpha = finiteOr(value[3], 1);
-      out.opacity = material.alphaMode !== 'opaque' && alpha < 1 ? clamp01(alpha) : undefined;
+      const alpha = value[3]!;
+      out.opacity = material.alphaMode !== 'opaque' && alpha < 1 ? alpha : undefined;
       break;
     }
     case 'metallicFactor':
-      out.metallic = clamp01(scalar);
+      out.metallic = scalar;
       break;
     case 'roughnessFactor':
-      out.roughness = clamp01(scalar);
+      out.roughness = scalar;
       break;
     case 'emissiveFactor':
       out.emissive = [
-        Math.max(0, finiteOr(value[0], 0)),
-        Math.max(0, finiteOr(value[1], 0)),
-        Math.max(0, finiteOr(value[2], 0)),
+        value[0]!,
+        value[1]!,
+        value[2]!,
       ] satisfies Vec3;
       break;
     case 'alphaCutoff':
-      out.alphaCutoff = clamp01(scalar);
+      out.alphaCutoff = scalar;
       break;
     case 'normalScale':
-      out.normalScale = Math.max(0, scalar);
+      out.normalScale = scalar;
       break;
     case 'aoMapIntensity':
-      out.aoMapIntensity = Math.max(0, scalar);
+      out.aoMapIntensity = scalar;
       break;
     case 'emissiveStrength':
-      out.emissiveIntensity = Math.max(0, scalar);
+      out.emissiveIntensity = scalar;
       break;
     case 'transmissionFactor':
-      out.transmission = clamp01(scalar);
+      out.transmission = scalar;
       break;
     case 'thicknessFactor':
-      out.thickness = Math.max(0, scalar);
+      out.thickness = scalar;
       break;
     case 'attenuationColor':
       out.attenuationColor = [
-        clamp01(finiteOr(value[0], 1)),
-        clamp01(finiteOr(value[1], 1)),
-        clamp01(finiteOr(value[2], 1)),
+        value[0]!,
+        value[1]!,
+        value[2]!,
       ] satisfies Vec3;
       break;
     case 'attenuationDistance':
-      out.attenuationDistance = scalar > 0 ? scalar : Infinity;
+      out.attenuationDistance = scalar;
       break;
     case 'ior':
-      out.ior = Math.max(1, scalar);
+      out.ior = scalar;
       break;
     case 'specularFactor':
-      out.specularIntensity = clamp01(scalar);
+      out.specularIntensity = scalar;
       break;
     case 'specularColorFactor':
       out.specularColor = [
-        clamp01(finiteOr(value[0], 1)),
-        clamp01(finiteOr(value[1], 1)),
-        clamp01(finiteOr(value[2], 1)),
+        value[0]!,
+        value[1]!,
+        value[2]!,
       ] satisfies Vec3;
       break;
     case 'clearcoatFactor':
-      out.clearcoat = clamp01(scalar);
+      out.clearcoat = scalar;
       break;
     case 'clearcoatRoughnessFactor':
-      out.clearcoatRoughness = clamp01(scalar);
+      out.clearcoatRoughness = scalar;
       break;
     case 'clearcoatNormalScale':
-      out.clearcoatNormalScale = Math.max(0, scalar);
+      out.clearcoatNormalScale = scalar;
       break;
     case 'sheenColorFactor':
       out.sheen = 1;
       out.sheenColor = [
-        clamp01(finiteOr(value[0], 0)),
-        clamp01(finiteOr(value[1], 0)),
-        clamp01(finiteOr(value[2], 0)),
+        value[0]!,
+        value[1]!,
+        value[2]!,
       ] satisfies Vec3;
       break;
     case 'sheenRoughnessFactor':
       out.sheen = 1;
-      out.sheenRoughness = clamp01(scalar);
+      out.sheenRoughness = scalar;
       break;
     case 'iridescenceFactor':
-      out.iridescence = clamp01(scalar);
+      out.iridescence = scalar;
       break;
     case 'iridescenceIor':
-      out.iridescenceIor = Math.max(1, scalar);
+      out.iridescenceIor = scalar;
       break;
     case 'iridescenceThicknessMinimum': {
       const [, max = 400] = material.iridescenceThicknessRange ?? [100, 400];
-      out.iridescenceThicknessRange = [Math.max(0, scalar), max] as const;
+      out.iridescenceThicknessRange = [scalar, max] as const;
       break;
     }
     case 'iridescenceThicknessMaximum': {
       const [min = 100] = material.iridescenceThicknessRange ?? [100, 400];
-      out.iridescenceThicknessRange = [min, Math.max(0, scalar)] as const;
+      out.iridescenceThicknessRange = [min, scalar] as const;
       break;
     }
     case 'anisotropyStrength':
-      out.anisotropy = clamp01(scalar);
+      out.anisotropy = scalar;
       break;
     case 'anisotropyRotation':
-      out.anisotropyRotation = finiteOr(value[0], 0);
+      out.anisotropyRotation = scalar;
       break;
     case 'dispersion':
-      out.dispersionAbbeNumber = scalar > 0 ? 20 / scalar : undefined;
+      out.dispersionAbbeNumber = scalar === 0 ? undefined : 20 / scalar;
       break;
   }
   return out as unknown as MaterialSpec;
 }
 
-function decodePointerPath(path: string): string {
-  return path
-    .split('/')
-    .map((segment) => segment.replace(/~1/g, '/').replace(/~0/g, '~'))
-    .join('/');
-}
-
-function finiteOr(value: number | undefined, fallback: number): number {
-  return value !== undefined && Number.isFinite(value) ? value : fallback;
-}
-
-function clamp01(value: number): number {
-  if (!Number.isFinite(value)) return 0;
-  return Math.min(1, Math.max(0, value));
+function decodePointerPath(path: string): string | undefined {
+  const decoded: string[] = [];
+  for (const segment of path.split('/')) {
+    if (/~(?:[^01]|$)/.test(segment)) return undefined;
+    decoded.push(segment.replace(/~1/g, '/').replace(/~0/g, '~'));
+  }
+  return decoded.join('/');
 }

@@ -1,9 +1,9 @@
 // compression.ts — KHR_draco_mesh_compression + EXT/KHR_meshopt_compression
-// resolution via HOST-SUPPLIED decoder hooks (GLTF-02).
+// resolution via built-in or host-supplied decoder hooks (GLTF-02).
 //
-// The adapter stays dependency-free: it never bundles a Draco or meshoptimizer
-// decoder. Instead the host injects decode functions through
-// `GltfToSceneOptions.dracoDecode` / `.meshoptDecode`, and this module rewrites
+// The adapter supplies lazy Draco and meshoptimizer decoders by default. Hosts
+// may override them through `GltfToSceneOptions.dracoDecode` /
+// `.meshoptDecode`; this module rewrites
 // the (cloned) glTF JSON + buffers map so the rest of the pipeline sees plain
 // uncompressed data:
 //
@@ -11,21 +11,16 @@
 //     is decoded into a synthetic buffer and the bufferView is repointed at it,
 //     so ALL downstream consumers (attribute/index/animation accessors, image
 //     bufferViews) transparently read decompressed bytes.
-//   - KHR_draco_mesh_compression sits on MESH PRIMITIVES. The decoded typed
-//     arrays are written into synthetic buffers/bufferViews and the primitive's
-//     EXISTING accessors are repointed at them — accessor `count`, `type`,
-//     `componentType` and `normalized` still describe the decoded data per
-//     spec, so the standard accessor unpacking (incl. normalization) applies
-//     unchanged.
+//   - KHR_draco_mesh_compression sits on MESH PRIMITIVES. Decoded typed arrays
+//     become synthetic buffers/bufferViews/accessors and the cloned primitive
+//     is repointed at them. A missing base index accessor is synthesized from
+//     Draco's decoded face list rather than dropping connectivity.
 //
-// Failure-mode contract (honest, mirrors extensionsRequired semantics):
-//   - extension in `extensionsRequired` + no hook (and no usable fallback)
-//     → throw a clear Error (the asset cannot be represented without it).
-//   - extension optional + no hook → use the spec-defined fallback when it
-//     exists (Draco: uncompressed fallback accessors; meshopt: the
-//     bufferView's own `buffer`, unless that buffer is a `fallback: true`
-//     stub), else warn and leave the data unresolved (affected primitives are
-//     skipped downstream with their own warnings).
+// Failure-mode contract:
+//   - required extension decode failure always throws;
+//   - optional decode failure uses only a fully validated spec fallback;
+//   - optional data without an exact fallback throws rather than publishing
+//     malformed, partial, or unresolved geometry.
 //
 // Async: `gltfToScene` is already async, so hooks may return their result
 // either synchronously or as a Promise — both are awaited.
@@ -35,13 +30,29 @@
 //     https://github.com/KhronosGroup/glTF/blob/main/extensions/2.0/Khronos/KHR_draco_mesh_compression/README.md
 //   - EXT_meshopt_compression
 //     https://github.com/KhronosGroup/glTF/blob/main/extensions/2.0/Vendor/EXT_meshopt_compression/README.md
-//   - KHR_meshopt_compression (used by Khronos MeshoptCubeTest sample assets)
-//     https://github.khronos.org/glTF-Sample-Viewer-Release/
+//   - KHR_meshopt_compression
+//     https://github.com/KhronosGroup/glTF/blob/main/extensions/2.0/Khronos/KHR_meshopt_compression/README.md
 
-import type { GltfJson, GltfAccessor } from './gltfTypes.js';
-import { GltfComponentType } from './gltfTypes.js';
-import { componentByteSize, typeComponentCount } from './accessors.js';
+import type { GltfJson } from './gltfTypes.js';
 import { gltfPrimitiveKey, type GltfSceneReachability } from './sceneScope.js';
+import { validateGltfPropertyExtensions } from './gltfPropertyValidation.js';
+import { validateDeclaredBufferRange } from './bufferRangeValidation.js';
+import {
+  chargeCompressionHookOutput,
+  checkedCompressionSum,
+  CompressionAllocationLedger,
+  compressionTypedArrayInfo,
+  type CompressionDecodeState,
+} from './compressionLimits.js';
+import {
+  preflightDracoCompressionDeclarations,
+  resolveDracoStrict,
+} from './strictDracoCompression.js';
+import {
+  gltfArrayBufferByteLength,
+  GltfResourceLimitError,
+  type ImportResourceLedger,
+} from './importResourceBudget.js';
 
 const DRACO_EXT = 'KHR_draco_mesh_compression';
 const MESHOPT_EXT = 'EXT_meshopt_compression';
@@ -51,8 +62,7 @@ const MESHOPT_EXTENSIONS = [MESHOPT_EXT, MESHOPT_KHR_EXT] as const;
 // ── Public hook types ────────────────────────────────────────────────────────
 
 /** Typed arrays a Draco decode hook may return per attribute / for indices. */
-export type DracoTypedArray =
-  | Int8Array | Uint8Array | Int16Array | Uint16Array | Uint32Array | Float32Array;
+export type DracoTypedArray = Int8Array | Uint8Array | Int16Array | Uint16Array | Float32Array;
 
 export interface DracoDecodeResult {
   /**
@@ -61,12 +71,32 @@ export interface DracoDecodeResult {
    *   - match the declared accessor's `componentType` exactly (the adapter
    *     then applies the accessor's `normalized` flag itself), or
    *   - be a `Float32Array` of already-dequantized values (accepted for any
-   *     declared componentType; normalization is considered done).
+   *     declared componentType except `JOINTS_n`; normalization is considered
+   *     done). Joint indices must preserve the accessor's unsigned integer
+   *     representation so skinning indices cannot be rounded or normalized.
    * Length must equal `accessor.count × components(accessor.type)`.
    */
   readonly attributes: Readonly<Record<string, DracoTypedArray>>;
-  /** Decoded triangle indices (length must equal the index accessor's count). */
-  readonly indices?: Uint8Array | Uint16Array | Uint32Array;
+  /**
+   * Decoded triangle-list face indices. TRIANGLE_STRIP source primitives are
+   * converted to TRIANGLES with a fresh accessor count when Draco's face list
+   * differs from the source strip accessor.
+   */
+  readonly indices: Uint8Array | Uint16Array | Uint32Array;
+}
+
+export type DracoAccessorComponentType = 5120 | 5121 | 5122 | 5123 | 5126;
+
+export interface DracoAttributeDecodeSchema {
+  readonly componentType: DracoAccessorComponentType;
+  readonly normalized: boolean;
+  readonly count: number;
+  readonly type: 'SCALAR' | 'VEC2' | 'VEC3' | 'VEC4';
+}
+
+export interface DracoDecodeContext {
+  /** Declared accessor schema for every Draco-owned attribute semantic. */
+  readonly attributes: Readonly<Record<string, DracoAttributeDecodeSchema>>;
 }
 
 /**
@@ -76,17 +106,20 @@ export interface DracoDecodeResult {
  * @param attributeIds - The extension's `attributes` map: glTF semantic →
  *                       Draco attribute unique id (pass each id to
  *                       `decoder.GetAttributeByUniqueId`).
+ * @param context      - Adapter-supplied declared accessor schemas. Optional so
+ *                       existing two-argument host hooks remain compatible.
  * May return synchronously or as a Promise.
  */
 export type DracoDecodeFn = (
   compressed: Uint8Array,
   attributeIds: Readonly<Record<string, number>>,
+  context?: DracoDecodeContext,
 ) => DracoDecodeResult | Promise<DracoDecodeResult>;
 
 /** EXT/KHR_meshopt_compression `mode` values. */
 export type MeshoptMode = 'ATTRIBUTES' | 'TRIANGLES' | 'INDICES';
 /** EXT/KHR_meshopt_compression `filter` values. */
-export type MeshoptFilter = 'NONE' | 'OCTAHEDRAL' | 'QUATERNION' | 'EXPONENTIAL';
+export type MeshoptFilter = 'NONE' | 'OCTAHEDRAL' | 'QUATERNION' | 'EXPONENTIAL' | 'COLOR';
 
 /**
  * Host-supplied meshopt decode hook (EXT/KHR_meshopt_compression). The signature
@@ -111,26 +144,20 @@ export interface GltfDecodeHooks {
 export interface GltfCompressionScope {
   readonly sceneReachability?: GltfSceneReachability | undefined;
   readonly bufferViewIndices?: ReadonlySet<number> | undefined;
+  readonly resourceLedger?: ImportResourceLedger | undefined;
+  readonly hookOutputPrecharged?: {
+    readonly draco?: boolean | undefined;
+    readonly meshopt?: boolean | undefined;
+  } | undefined;
 }
 
 export type GltfCompressionDiagnosticCode =
-  | 'draco-accessor-missing'
-  | 'draco-attribute-component-type-mismatch'
-  | 'draco-attribute-count-mismatch'
-  | 'draco-attribute-fallback-used'
-  | 'draco-attribute-missing'
-  | 'draco-attribute-unmapped'
-  | 'draco-buffer-view-unavailable'
-  | 'draco-decode-hook-failed'
-  | 'draco-decode-hook-missing'
   | 'draco-fallback-accessors-used'
-  | 'draco-geometry-unusable'
-  | 'draco-index-count-mismatch'
-  | 'draco-indices-fallback-used'
-  | 'draco-indices-missing'
   | 'meshopt-buffer-unavailable'
+  | 'meshopt-codec-version-unsupported'
+  | 'meshopt-invalid-bitstream-header'
+  | 'meshopt-compression-budget-exceeded'
   | 'meshopt-decode-hook-failed'
-  | 'meshopt-decode-hook-missing'
   | 'meshopt-decoded-byte-length-mismatch'
   | 'meshopt-fallback-buffer-used';
 
@@ -139,7 +166,10 @@ export interface GltfCompressionDiagnostic {
   readonly code: GltfCompressionDiagnosticCode;
   readonly path: string;
   readonly message: string;
-  readonly extension: 'KHR_draco_mesh_compression' | 'EXT_meshopt_compression' | 'KHR_meshopt_compression';
+  readonly extension:
+    | 'KHR_draco_mesh_compression'
+    | 'EXT_meshopt_compression'
+    | 'KHR_meshopt_compression';
   readonly meshIndex?: number;
   readonly primitiveIndex?: number;
   readonly bufferViewIndex?: number;
@@ -161,10 +191,10 @@ interface MeshoptBufferViewExt {
   filter?: MeshoptFilter;
 }
 
-interface DracoPrimitiveExt {
-  bufferView: number;
-  attributes: Record<string, number>;
-}
+type ValidatedMeshoptExtension = MeshoptBufferViewExt & {
+  readonly byteOffset: number;
+  readonly filter: MeshoptFilter;
+};
 
 // ── Entry point ──────────────────────────────────────────────────────────────
 
@@ -176,9 +206,8 @@ interface DracoPrimitiveExt {
  * accessors rewritten to synthetic uncompressed buffers (added to `buffers`).
  * The caller's `gltf` object is never mutated.
  *
- * @throws when an extension is listed in `extensionsRequired`, no hook is
- *         supplied, and no spec-defined fallback data exists (or required
- *         decode fails).
+ * @throws when required decoding fails, or optional compressed data has no
+ *         fully valid spec-defined fallback.
  */
 export async function resolveCompression(
   gltf: GltfJson,
@@ -194,25 +223,129 @@ export async function resolveCompression(
       getMeshoptBufferViewExtension(bv) !== undefined,
   );
   const hasDraco = (gltf.meshes ?? []).some((m, meshIndex) =>
-    m.primitives.some((p, primitiveIndex) =>
-      (scope.sceneReachability === undefined ||
-        scope.sceneReachability.primitiveKeys.has(gltfPrimitiveKey(meshIndex, primitiveIndex))) &&
-      p.extensions?.[DRACO_EXT] !== undefined
-    ),
+    m.primitives.some((p, primitiveIndex) => {
+      const extensions = hasOwn(p, 'extensions') ? p.extensions : undefined;
+      return (
+        (scope.sceneReachability === undefined ||
+          scope.sceneReachability.primitiveKeys.has(gltfPrimitiveKey(meshIndex, primitiveIndex))) &&
+        extensions !== undefined &&
+        hasOwn(extensions, DRACO_EXT) &&
+        extensions[DRACO_EXT] !== undefined
+      );
+    }),
   );
   if (!hasMeshopt && !hasDraco) return gltf;
 
-  // Copy-on-write: clone the JSON so the caller's object is never mutated.
-  const out = structuredClone(gltf) as GltfJson;
+  // structuredClone intentionally ignores symbol-keyed properties. Validate
+  // the caller-owned declarations first so an enumerable symbol cannot vanish
+  // and accidentally turn malformed JSON into accepted input.
+  if (hasMeshopt) {
+    validateMeshoptFallbackBufferReferences(gltf);
+    for (const [index, bufferView] of (gltf.bufferViews ?? []).entries()) {
+      if (scope.bufferViewIndices !== undefined && !scope.bufferViewIndices.has(index)) continue;
+      const meshopt = getMeshoptBufferViewExtension(bufferView);
+      if (meshopt === undefined) continue;
+      const ext = validateMeshoptExtension(
+        meshopt.value,
+        `bufferViews[${index}].extensions.${meshopt.name}`,
+        meshopt.name,
+      );
+      validateDeclaredBufferRange(
+        gltf,
+        ext.buffer,
+        ext.byteOffset,
+        ext.byteLength,
+        `bufferViews[${index}].extensions.${meshopt.name} source`,
+      );
+      const parent = validateMeshoptParentLayout(gltf, index, meshopt.name, ext);
+      validateMeshoptBufferMarker(gltf, parent.bufferIndex, meshopt.name);
+      validateMeshoptBufferMarker(gltf, ext.buffer, meshopt.name);
+    }
+  }
+  if (hasDraco) {
+    preflightDracoCompressionDeclarations(gltf, scope.sceneReachability);
+  }
+
+  // Copy-on-write across BOTH externally visible products. Synthetic buffers
+  // are staged in a private Map and published only after every reachable decode
+  // and rewrite has succeeded. A late Draco failure therefore cannot leak the
+  // meshopt buffers produced earlier in the same call.
+  const out = structuredClone(gltf);
+  const initialBufferEntries = new Map(buffers);
+  const stagedBuffers = new Map(initialBufferEntries);
+  const stagedWarnings: string[] = [];
+  const stagedDiagnostics: GltfCompressionDiagnostic[] = [];
+  // A top-level import already has separate, typed encoded-resource and decoded-
+  // geometry ledgers. Do not superimpose the legacy fixed compression ceiling:
+  // it would contradict an explicit public zero opt-out (and would also combine
+  // two independently governed resource domains). The local ledger still
+  // validates every cumulative sum against the safe-integer range. Standalone
+  // internal calls without an import ledger retain the conservative default.
+  const allocationLedger = new CompressionAllocationLedger(
+    scope.resourceLedger === undefined ? undefined : 0,
+  );
+  const decodeState: CompressionDecodeState = { attemptsDisabled: false };
   const required = new Set(out.extensionsRequired ?? []);
 
   // meshopt first: it operates at bufferView level, so a (theoretical) Draco
   // blob inside a meshopt-wrapped view would already be decompressed.
   if (hasMeshopt) {
-    await _resolveMeshopt(out, buffers, hooks.meshoptDecode, required, warnings, onDiagnostic, scope.bufferViewIndices);
+    await _resolveMeshopt(
+      out,
+      stagedBuffers,
+      hooks.meshoptDecode,
+      required,
+      stagedWarnings,
+      (diagnostic) => stagedDiagnostics.push(diagnostic),
+      scope.bufferViewIndices,
+      allocationLedger,
+      decodeState,
+      scope.resourceLedger,
+      scope.hookOutputPrecharged?.meshopt === true,
+    );
   }
   if (hasDraco) {
-    await _resolveDraco(out, buffers, hooks.dracoDecode, required.has(DRACO_EXT), warnings, onDiagnostic, scope.sceneReachability);
+    await resolveDracoStrict(
+      out,
+      stagedBuffers,
+      hooks.dracoDecode,
+      required.has(DRACO_EXT),
+      stagedWarnings,
+      (diagnostic) => stagedDiagnostics.push(diagnostic),
+      scope.sceneReachability,
+      allocationLedger,
+      decodeState,
+      scope.resourceLedger,
+      scope.hookOutputPrecharged?.draco === true,
+    );
+  }
+  for (const [index, initialBuffer] of initialBufferEntries) {
+    if (!buffers.has(index) || buffers.get(index) !== initialBuffer) {
+      throw new Error(
+        `[vitrum/gltf-adapter] Caller buffer Map entry ${index} changed during compressed geometry decoding; no adapter-owned buffers were published.`,
+      );
+    }
+  }
+  const stagedNewBuffers: Array<readonly [number, ArrayBuffer]> = [];
+  for (const [index, buffer] of stagedBuffers) {
+    if (initialBufferEntries.has(index)) continue;
+    if (buffers.has(index)) {
+      throw new Error(
+        `[vitrum/gltf-adapter] Caller buffer Map claimed synthetic buffer index ${index} during compressed geometry decoding; no adapter-owned buffers were published.`,
+      );
+    }
+    stagedNewBuffers.push([index, buffer]);
+  }
+  for (const [index, buffer] of stagedNewBuffers) {
+    buffers.set(index, buffer);
+  }
+  warnings.push(...stagedWarnings);
+  for (const diagnostic of stagedDiagnostics) {
+    try {
+      onDiagnostic?.(diagnostic);
+    } catch {
+      // Diagnostics are observational and cannot invalidate a completed decode.
+    }
   }
   return out;
 }
@@ -221,7 +354,17 @@ export async function resolveCompression(
 
 function _nextBufferIndex(gltf: GltfJson, buffers: Map<number, ArrayBuffer>): number {
   let next = gltf.buffers?.length ?? 0;
-  for (const k of buffers.keys()) if (k >= next) next = k + 1;
+  // Map entries that are not backed by glTF buffer descriptors are host data,
+  // not an instruction to allocate every intervening array slot. In
+  // particular, never let one stray huge key drive unbounded descriptor
+  // padding. Start at the first descriptor-free index and skip only exact
+  // occupied collisions.
+  while (buffers.has(next)) {
+    if (next >= Number.MAX_SAFE_INTEGER) {
+      throw new RangeError('[vitrum/gltf-adapter] No safe synthetic buffer index remains.');
+    }
+    next += 1;
+  }
   return next;
 }
 
@@ -230,41 +373,25 @@ function _addSyntheticBuffer(
   gltf: GltfJson,
   buffers: Map<number, ArrayBuffer>,
   bytes: Uint8Array,
+  allocationLedger: CompressionAllocationLedger,
+  allocationPath: string,
+  resourceLedger: ImportResourceLedger | undefined,
 ): number {
+  const info = compressionTypedArrayInfo(bytes);
+  if (info?.kind !== 'Uint8Array' || info.shared) {
+    throw new TypeError(`[vitrum/gltf-adapter] ${allocationPath} must be a non-shared Uint8Array.`);
+  }
+  allocationLedger.charge(info.byteLength, `${allocationPath} retained copy`);
+  resourceLedger?.chargeDecodedGeometryBytes(info.byteLength, `${allocationPath} retained copy`);
   const idx = _nextBufferIndex(gltf, buffers);
   const copy = new Uint8Array(bytes); // exact-size copy, detached from source
   buffers.set(idx, copy.buffer);
-  // Keep gltf.buffers index-consistent (pad any gap with zero-length stubs).
+  // Keep gltf.buffers index-consistent if an exact host-map collision caused a
+  // small descriptor gap.
   const list = (gltf.buffers ??= []);
   while (list.length < idx) list.push({ byteLength: 0 });
   list.push({ byteLength: copy.byteLength });
   return idx;
-}
-
-/** Register a tightly-packed synthetic bufferView over `bytes`; returns its index. */
-function _addSyntheticBufferView(
-  gltf: GltfJson,
-  buffers: Map<number, ArrayBuffer>,
-  bytes: Uint8Array,
-): number {
-  const bufIdx = _addSyntheticBuffer(gltf, buffers, bytes);
-  const views = (gltf.bufferViews ??= []);
-  views.push({ buffer: bufIdx, byteOffset: 0, byteLength: bytes.byteLength });
-  return views.length - 1;
-}
-
-function _viewBytes(a: ArrayBufferView): Uint8Array {
-  return new Uint8Array(a.buffer, a.byteOffset, a.byteLength);
-}
-
-function _typedArrayComponentType(a: ArrayBufferView): GltfComponentType | undefined {
-  if (a instanceof Int8Array) return GltfComponentType.BYTE;
-  if (a instanceof Uint8Array) return GltfComponentType.UNSIGNED_BYTE;
-  if (a instanceof Int16Array) return GltfComponentType.SHORT;
-  if (a instanceof Uint16Array) return GltfComponentType.UNSIGNED_SHORT;
-  if (a instanceof Uint32Array) return GltfComponentType.UNSIGNED_INT;
-  if (a instanceof Float32Array) return GltfComponentType.FLOAT;
-  return undefined;
 }
 
 function _stripExtension(holder: { extensions?: Record<string, unknown> }, name: string): void {
@@ -286,31 +413,485 @@ function emitCompressionDiagnostic(
   }
 }
 
-function getMeshoptBufferViewExtension(
-  bufferView: { readonly extensions?: Record<string, unknown> },
-): { readonly name: typeof MESHOPT_EXTENSIONS[number]; readonly value: MeshoptBufferViewExt } | undefined {
-  for (const name of MESHOPT_EXTENSIONS) {
-    const value = bufferView.extensions?.[name] as MeshoptBufferViewExt | undefined;
-    if (value !== undefined) return { name, value };
+function getMeshoptBufferViewExtension(bufferView: {
+  readonly extensions?: Record<string, unknown>;
+}): { readonly name: (typeof MESHOPT_EXTENSIONS)[number]; readonly value: unknown } | undefined {
+  const extensions = hasOwn(bufferView, 'extensions') ? bufferView.extensions : undefined;
+  const extValue =
+    extensions !== undefined && hasOwn(extensions, MESHOPT_EXT)
+      ? extensions[MESHOPT_EXT]
+      : undefined;
+  const khrValue =
+    extensions !== undefined && hasOwn(extensions, MESHOPT_KHR_EXT)
+      ? extensions[MESHOPT_KHR_EXT]
+      : undefined;
+  if (extValue !== undefined && khrValue !== undefined) {
+    throw new Error(
+      `[vitrum/gltf-adapter] ${MESHOPT_EXT} and ${MESHOPT_KHR_EXT} ` +
+        'must not coexist on one bufferView.',
+    );
+  }
+  if (extValue !== undefined) return { name: MESHOPT_EXT, value: extValue };
+  if (khrValue !== undefined) return { name: MESHOPT_KHR_EXT, value: khrValue };
+  return undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value != null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function hasOwn(value: object, key: PropertyKey): boolean {
+  return Object.prototype.hasOwnProperty.call(value, key);
+}
+
+function assertExactEnumerableKeys(
+  value: object,
+  allowed: ReadonlySet<string>,
+  path: string,
+): void {
+  for (const key of Reflect.ownKeys(value)) {
+    if (!Object.prototype.propertyIsEnumerable.call(value, key)) continue;
+    if (typeof key !== 'string' || !allowed.has(key)) {
+      const rendered = typeof key === 'symbol' ? key.toString() : JSON.stringify(key);
+      throw new TypeError(
+        `[vitrum/gltf-adapter] ${path} contains unsupported enumerable field ${rendered}.`,
+      );
+    }
+  }
+}
+
+function requireSafeInteger(value: unknown, path: string, minimum: number): number {
+  if (!Number.isSafeInteger(value) || (value as number) < minimum) {
+    throw new RangeError(
+      `[vitrum/gltf-adapter] ${path} must be a safe integer >= ${minimum}; received ${String(value)}.`,
+    );
+  }
+  return value as number;
+}
+
+function checkedProduct(a: number, b: number, path: string): number {
+  const result = a * b;
+  if (!Number.isSafeInteger(result)) {
+    throw new RangeError(`[vitrum/gltf-adapter] ${path} is not a safe integer.`);
+  }
+  return result;
+}
+
+function formatUnknownError(error: unknown): string {
+  try {
+    return String(error);
+  } catch {
+    return 'unknown decoder failure';
+  }
+}
+
+function validateMeshoptExtension(
+  raw: unknown,
+  path: string,
+  name: (typeof MESHOPT_EXTENSIONS)[number],
+): ValidatedMeshoptExtension {
+  if (!isRecord(raw)) {
+    throw new TypeError(`[vitrum/gltf-adapter] ${path} must be an object.`);
+  }
+  assertExactEnumerableKeys(
+    raw,
+    new Set([
+      'buffer',
+      'byteOffset',
+      'byteLength',
+      'byteStride',
+      'count',
+      'mode',
+      'filter',
+      'extensions',
+      'extras',
+    ]),
+    path,
+  );
+  validateGltfPropertyExtensions(raw, path);
+  for (const key of ['buffer', 'byteLength', 'byteStride', 'count', 'mode'] as const) {
+    if (!hasOwn(raw, key)) {
+      throw new TypeError(`[vitrum/gltf-adapter] ${path}.${key} must be an own property.`);
+    }
+  }
+  const buffer = requireSafeInteger(raw.buffer, `${path}.buffer`, 0);
+  const byteOffset =
+    !hasOwn(raw, 'byteOffset') || raw.byteOffset === undefined
+      ? 0
+      : requireSafeInteger(raw.byteOffset, `${path}.byteOffset`, 0);
+  const byteLength = requireSafeInteger(raw.byteLength, `${path}.byteLength`, 1);
+  const byteStride = requireSafeInteger(raw.byteStride, `${path}.byteStride`, 1);
+  if (byteStride > 256) {
+    throw new RangeError(`[vitrum/gltf-adapter] ${path}.byteStride must be <= 256.`);
+  }
+  const count = requireSafeInteger(raw.count, `${path}.count`, 1);
+  checkedProduct(count, byteStride, `${path}.count * byteStride`);
+  if (raw.mode !== 'ATTRIBUTES' && raw.mode !== 'TRIANGLES' && raw.mode !== 'INDICES') {
+    throw new TypeError(
+      `[vitrum/gltf-adapter] ${path}.mode must be ATTRIBUTES, TRIANGLES, or INDICES.`,
+    );
+  }
+  const filter = hasOwn(raw, 'filter') ? raw.filter : 'NONE';
+  if (
+    filter !== 'NONE' &&
+    filter !== 'OCTAHEDRAL' &&
+    filter !== 'QUATERNION' &&
+    filter !== 'EXPONENTIAL' &&
+    filter !== 'COLOR'
+  ) {
+    throw new TypeError(
+      `[vitrum/gltf-adapter] ${path}.filter must be NONE, OCTAHEDRAL, ` +
+        'QUATERNION, EXPONENTIAL, or COLOR.',
+    );
+  }
+  if (filter === 'COLOR' && name !== MESHOPT_KHR_EXT) {
+    throw new TypeError(
+      `[vitrum/gltf-adapter] ${path}.filter COLOR is only valid for ${MESHOPT_KHR_EXT}.`,
+    );
+  }
+  if (raw.mode === 'ATTRIBUTES' && byteStride % 4 !== 0) {
+    throw new RangeError(
+      `[vitrum/gltf-adapter] ${path}.byteStride must be a multiple of 4 for ATTRIBUTES.`,
+    );
+  }
+  if (raw.mode !== 'ATTRIBUTES') {
+    if (byteStride !== 2 && byteStride !== 4) {
+      throw new RangeError(
+        `[vitrum/gltf-adapter] ${path}.byteStride must be 2 or 4 for ${raw.mode}.`,
+      );
+    }
+    if (filter !== 'NONE') {
+      throw new TypeError(`[vitrum/gltf-adapter] ${path}.filter must be NONE for ${raw.mode}.`);
+    }
+    if (raw.mode === 'TRIANGLES' && count % 3 !== 0) {
+      throw new RangeError(
+        `[vitrum/gltf-adapter] ${path}.count must be divisible by 3 for TRIANGLES.`,
+      );
+    }
+  } else if (filter === 'OCTAHEDRAL' && byteStride !== 4 && byteStride !== 8) {
+    throw new RangeError(`[vitrum/gltf-adapter] ${path}.byteStride must be 4 or 8 for OCTAHEDRAL.`);
+  } else if (filter === 'QUATERNION' && byteStride !== 8) {
+    throw new RangeError(`[vitrum/gltf-adapter] ${path}.byteStride must be 8 for QUATERNION.`);
+  } else if (filter === 'EXPONENTIAL' && byteStride % 4 !== 0) {
+    throw new RangeError(
+      `[vitrum/gltf-adapter] ${path}.byteStride must be a multiple of 4 for EXPONENTIAL.`,
+    );
+  } else if (filter === 'COLOR' && byteStride !== 4 && byteStride !== 8) {
+    throw new RangeError(`[vitrum/gltf-adapter] ${path}.byteStride must be 4 or 8 for COLOR.`);
+  }
+  return {
+    buffer,
+    byteOffset,
+    byteLength,
+    byteStride,
+    count,
+    mode: raw.mode,
+    filter,
+  };
+}
+
+function validateMeshoptBufferMarker(
+  gltf: GltfJson,
+  bufferIndex: number,
+  preferredName: (typeof MESHOPT_EXTENSIONS)[number],
+): { readonly fallback?: boolean } | undefined {
+  const descriptor = gltf.buffers?.[bufferIndex];
+  const extensions =
+    descriptor !== undefined && hasOwn(descriptor, 'extensions')
+      ? descriptor.extensions
+      : undefined;
+  const extValue =
+    extensions !== undefined && hasOwn(extensions, MESHOPT_EXT)
+      ? extensions[MESHOPT_EXT]
+      : undefined;
+  const khrValue =
+    extensions !== undefined && hasOwn(extensions, MESHOPT_KHR_EXT)
+      ? extensions[MESHOPT_KHR_EXT]
+      : undefined;
+  if (extValue !== undefined && khrValue !== undefined) {
+    throw new Error(
+      `[vitrum/gltf-adapter] ${MESHOPT_EXT} and ${MESHOPT_KHR_EXT} ` +
+        `must not coexist on buffer ${bufferIndex}.`,
+    );
+  }
+  const markerName =
+    extValue !== undefined ? MESHOPT_EXT : khrValue !== undefined ? MESHOPT_KHR_EXT : preferredName;
+  const raw =
+    extensions !== undefined && hasOwn(extensions, markerName) ? extensions[markerName] : undefined;
+  if (raw === undefined) return undefined;
+  const path = `buffers[${bufferIndex}].extensions.${markerName}`;
+  if (!isRecord(raw)) {
+    throw new TypeError(`[vitrum/gltf-adapter] ${path} must be an object.`);
+  }
+  assertExactEnumerableKeys(raw, new Set(['fallback', 'extensions', 'extras']), path);
+  validateGltfPropertyExtensions(raw, path);
+  const fallback = hasOwn(raw, 'fallback') ? raw.fallback : undefined;
+  if (fallback !== undefined && typeof fallback !== 'boolean') {
+    throw new TypeError(`[vitrum/gltf-adapter] ${path}.fallback must be boolean.`);
+  }
+  if (fallback === true && markerName !== preferredName) {
+    throw new Error(
+      `[vitrum/gltf-adapter] buffer ${bufferIndex} uses ${markerName} ` +
+        `fallback:true, but its referencing bufferView uses ${preferredName}.`,
+    );
+  }
+  return fallback === undefined ? {} : { fallback };
+}
+
+/**
+ * Validate the asset-wide ownership rule for buffers tagged `fallback:true`.
+ *
+ * Both meshopt specifications reserve such a buffer for uncompressed fallback
+ * storage: every bufferView that points at it must carry the matching meshopt
+ * extension, and a meshopt extension must never point at it as compressed input.
+ * This is necessarily global rather than scoped to the currently imported scene.
+ */
+function validateMeshoptFallbackBufferReferences(gltf: GltfJson): void {
+  const fallbackBuffers = new Map<number, (typeof MESHOPT_EXTENSIONS)[number]>();
+
+  for (const [bufferIndex, descriptor] of (gltf.buffers ?? []).entries()) {
+    if (descriptor == null) continue;
+    const extensions = hasOwn(descriptor, 'extensions') ? descriptor.extensions : undefined;
+    const extValue =
+      extensions !== undefined && hasOwn(extensions, MESHOPT_EXT)
+        ? extensions[MESHOPT_EXT]
+        : undefined;
+    const khrValue =
+      extensions !== undefined && hasOwn(extensions, MESHOPT_KHR_EXT)
+        ? extensions[MESHOPT_KHR_EXT]
+        : undefined;
+    if (extValue !== undefined && khrValue !== undefined) {
+      throw new Error(
+        `[vitrum/gltf-adapter] ${MESHOPT_EXT} and ${MESHOPT_KHR_EXT} ` +
+          `must not coexist on buffer ${bufferIndex}.`,
+      );
+    }
+    const markerName =
+      extValue !== undefined ? MESHOPT_EXT : khrValue !== undefined ? MESHOPT_KHR_EXT : undefined;
+    if (markerName === undefined) continue;
+    const marker = validateMeshoptBufferMarker(gltf, bufferIndex, markerName);
+    if (marker?.fallback === true) fallbackBuffers.set(bufferIndex, markerName);
+  }
+
+  if (fallbackBuffers.size === 0) return;
+
+  for (const [bufferViewIndex, bufferView] of (gltf.bufferViews ?? []).entries()) {
+    const meshopt = getMeshoptBufferViewExtension(bufferView);
+    const parentFallbackName = fallbackBuffers.get(bufferView.buffer);
+    if (parentFallbackName !== undefined) {
+      if (meshopt === undefined) {
+        throw new Error(
+          `[vitrum/gltf-adapter] buffer ${bufferView.buffer} is marked ` +
+            `${parentFallbackName} fallback:true, so bufferViews[${bufferViewIndex}] ` +
+            `must carry ${parentFallbackName}.`,
+        );
+      }
+      if (meshopt.name !== parentFallbackName) {
+        throw new Error(
+          `[vitrum/gltf-adapter] buffer ${bufferView.buffer} is marked ` +
+            `${parentFallbackName} fallback:true, but bufferViews[${bufferViewIndex}] ` +
+            `carries ${meshopt.name}.`,
+        );
+      }
+    }
+    if (meshopt === undefined) continue;
+    const extensionPath = `bufferViews[${bufferViewIndex}].extensions.${meshopt.name}`;
+    const ext = validateMeshoptExtension(meshopt.value, extensionPath, meshopt.name);
+    const sourceFallbackName = fallbackBuffers.get(ext.buffer);
+    if (sourceFallbackName !== undefined) {
+      throw new Error(
+        `[vitrum/gltf-adapter] ${extensionPath}.buffer references buffer ` +
+          `${ext.buffer}, which is marked ${sourceFallbackName} fallback:true ` +
+          'and cannot be used as compressed source data.',
+      );
+    }
+  }
+}
+
+function validateMeshoptParentLayout(
+  gltf: GltfJson,
+  bufferViewIndex: number,
+  name: (typeof MESHOPT_EXTENSIONS)[number],
+  ext: ValidatedMeshoptExtension,
+): {
+  readonly bufferIndex: number;
+  readonly byteOffset: number;
+  readonly byteLength: number;
+} {
+  const path = `bufferViews[${bufferViewIndex}]`;
+  const bv = gltf.bufferViews?.[bufferViewIndex];
+  if (bv == null) throw new Error(`[vitrum/gltf-adapter] ${path} is missing.`);
+  if (!hasOwn(bv, 'buffer') || !hasOwn(bv, 'byteLength')) {
+    throw new TypeError(
+      `[vitrum/gltf-adapter] ${path}.buffer and ${path}.byteLength must be own properties.`,
+    );
+  }
+  const bufferIndex = requireSafeInteger(bv.buffer, `${path}.buffer`, 0);
+  const byteOffset =
+    !hasOwn(bv, 'byteOffset') || bv.byteOffset === undefined
+      ? 0
+      : requireSafeInteger(bv.byteOffset, `${path}.byteOffset`, 0);
+  const byteLength = requireSafeInteger(bv.byteLength, `${path}.byteLength`, 1);
+  const expected = checkedProduct(ext.count, ext.byteStride, `${path} decoded byte length`);
+  if (byteLength !== expected) {
+    throw new RangeError(
+      `[vitrum/gltf-adapter] ${path}.byteLength must equal decoded count * ` +
+        `byteStride (${expected}); received ${byteLength}.`,
+    );
+  }
+  const parentStride =
+    !hasOwn(bv, 'byteStride') || bv.byteStride === undefined
+      ? undefined
+      : requireSafeInteger(bv.byteStride, `${path}.byteStride`, 4);
+  if (parentStride !== undefined && (parentStride > 252 || parentStride % 4 !== 0)) {
+    throw new RangeError(
+      `[vitrum/gltf-adapter] ${path}.byteStride must be a multiple of 4 ` +
+        `between 4 and 252; received ${parentStride}.`,
+    );
+  }
+  if (name === MESHOPT_EXT && parentStride !== undefined && parentStride !== ext.byteStride) {
+    throw new RangeError(
+      `[vitrum/gltf-adapter] ${path}.byteStride must equal ${ext.byteStride} ` +
+        `for ${MESHOPT_EXT}; received ${parentStride}.`,
+    );
+  }
+  validateDeclaredBufferRange(gltf, bufferIndex, byteOffset, byteLength, path);
+  return { bufferIndex, byteOffset, byteLength };
+}
+
+function checkedByteSlice(
+  buffer: ArrayBuffer,
+  byteOffset: number,
+  byteLength: number,
+  path: string,
+): Uint8Array {
+  const end = byteOffset + byteLength;
+  const intrinsicByteLength = gltfArrayBufferByteLength(buffer);
+  if (
+    intrinsicByteLength === undefined ||
+    !Number.isSafeInteger(end) ||
+    end > intrinsicByteLength
+  ) {
+    throw new RangeError(
+      `[vitrum/gltf-adapter] ${path} range [${byteOffset}, ${String(end)}) exceeds buffer length ${String(intrinsicByteLength)}.`,
+    );
+  }
+  return new Uint8Array(buffer, byteOffset, byteLength);
+}
+
+function meshoptHeaderFailure(
+  name: (typeof MESHOPT_EXTENSIONS)[number],
+  ext: ValidatedMeshoptExtension,
+  compressed: Uint8Array,
+): { readonly reason: string; readonly code: GltfCompressionDiagnosticCode } | undefined {
+  const header = compressed[0];
+  if (ext.mode === 'ATTRIBUTES') {
+    if (name === MESHOPT_EXT && header === 0xa1) {
+      return {
+        reason: `${MESHOPT_EXT} does not permit the meshopt ATTRIBUTES codec v1 header 0xa1`,
+        code: 'meshopt-codec-version-unsupported',
+      };
+    }
+    if (name === MESHOPT_EXT ? header !== 0xa0 : header !== 0xa0 && header !== 0xa1) {
+      const expected = name === MESHOPT_EXT ? '0xa0' : '0xa0 or 0xa1';
+      return {
+        reason:
+          `${name} ATTRIBUTES data has invalid header ` +
+          `${header === undefined ? 'undefined' : `0x${header.toString(16)}`}; expected ${expected}`,
+        code: 'meshopt-invalid-bitstream-header',
+      };
+    }
+    return undefined;
+  }
+  const expected = ext.mode === 'TRIANGLES' ? 0xe1 : 0xd1;
+  if (header !== expected) {
+    return {
+      reason:
+        `${name} ${ext.mode} data has invalid header ` +
+        `${header === undefined ? 'undefined' : `0x${header.toString(16)}`}; ` +
+        `expected 0x${expected.toString(16)}`,
+      code: 'meshopt-invalid-bitstream-header',
+    };
   }
   return undefined;
 }
 
-function getMeshoptFallbackExtension(
-  buffer: { readonly extensions?: Record<string, unknown> } | undefined,
-  preferredName: string,
-): { readonly fallback?: boolean } | undefined {
-  const preferred = buffer?.extensions?.[preferredName];
-  if (preferred != null && typeof preferred === 'object' && !Array.isArray(preferred)) {
-    return preferred as { readonly fallback?: boolean };
+function validateMeshoptFallback(
+  gltf: GltfJson,
+  buffers: Map<number, ArrayBuffer>,
+  bufferViewIndex: number,
+  name: (typeof MESHOPT_EXTENSIONS)[number],
+  ext: ValidatedMeshoptExtension,
+): {
+  readonly bufferIndex: number;
+  readonly byteOffset: number;
+  readonly byteLength: number;
+  readonly bytes: Uint8Array;
+  readonly markedFallback: boolean;
+} {
+  const path = `bufferViews[${bufferViewIndex}]`;
+  const parent = validateMeshoptParentLayout(gltf, bufferViewIndex, name, ext);
+  const marker = validateMeshoptBufferMarker(gltf, parent.bufferIndex, name);
+  const fallback = buffers.get(parent.bufferIndex);
+  if (fallback == null) {
+    throw new Error(
+      `[vitrum/gltf-adapter] ${path} fallback buffer ${parent.bufferIndex} is unavailable.`,
+    );
   }
+  const bytes = checkedByteSlice(
+    fallback,
+    parent.byteOffset,
+    parent.byteLength,
+    `${path} fallback`,
+  );
+  return {
+    ...parent,
+    bytes,
+    markedFallback: marker?.fallback === true,
+  };
+}
+
+function clearMeshoptFallbackMarker(gltf: GltfJson, bufferIndex: number): void {
+  const descriptor = gltf.buffers?.[bufferIndex];
+  if (descriptor?.extensions === undefined) return;
   for (const name of MESHOPT_EXTENSIONS) {
-    const value = buffer?.extensions?.[name];
-    if (value != null && typeof value === 'object' && !Array.isArray(value)) {
-      return value as { readonly fallback?: boolean };
-    }
+    const raw = descriptor.extensions[name];
+    if (!isRecord(raw) || raw.fallback !== true) continue;
+    delete raw.fallback;
+    if (Object.keys(raw).length === 0) delete descriptor.extensions[name];
   }
-  return undefined;
+  if (Object.keys(descriptor.extensions).length === 0) {
+    delete descriptor.extensions;
+  }
+}
+
+function hasUnresolvedMeshoptReference(
+  gltf: GltfJson,
+  bufferIndex: number,
+  exceptBufferViewIndex: number,
+): boolean {
+  return (gltf.bufferViews ?? []).some(
+    (candidate, candidateIndex) =>
+      candidateIndex !== exceptBufferViewIndex &&
+      candidate.buffer === bufferIndex &&
+      getMeshoptBufferViewExtension(candidate) !== undefined,
+  );
+}
+
+function hasUnresolvedMeshoptReferenceOutsideScope(
+  gltf: GltfJson,
+  bufferIndex: number,
+  exceptBufferViewIndex: number,
+  scopedBufferViews: ReadonlySet<number> | undefined,
+): boolean {
+  if (scopedBufferViews === undefined) return false;
+  return (gltf.bufferViews ?? []).some(
+    (candidate, candidateIndex) =>
+      candidateIndex !== exceptBufferViewIndex &&
+      !scopedBufferViews.has(candidateIndex) &&
+      candidate.buffer === bufferIndex &&
+      getMeshoptBufferViewExtension(candidate) !== undefined,
+  );
 }
 
 // ── EXT/KHR_meshopt_compression ──────────────────────────────────────────────
@@ -323,6 +904,10 @@ async function _resolveMeshopt(
   warnings: string[],
   onDiagnostic: GltfCompressionDiagnosticSink | undefined,
   scopedBufferViews: ReadonlySet<number> | undefined,
+  allocationLedger: CompressionAllocationLedger,
+  decodeState: CompressionDecodeState,
+  resourceLedger: ImportResourceLedger | undefined,
+  hookOutputPrecharged: boolean,
 ): Promise<void> {
   const views = gltf.bufferViews ?? [];
   for (let i = 0; i < views.length; i++) {
@@ -330,484 +915,202 @@ async function _resolveMeshopt(
     const bv = views[i]!;
     const meshopt = getMeshoptBufferViewExtension(bv);
     if (!meshopt) continue;
-    const { name, value: ext } = meshopt;
+    const { name } = meshopt;
+    const extensionPath = `bufferViews[${i}].extensions.${name}`;
+    const ext = validateMeshoptExtension(meshopt.value, extensionPath, name);
+    validateDeclaredBufferRange(
+      gltf,
+      ext.buffer,
+      ext.byteOffset,
+      ext.byteLength,
+      `${extensionPath} source`,
+    );
+    const parent = validateMeshoptParentLayout(gltf, i, name, ext);
     const isRequired = required.has(name);
-
-    if (!decode) {
-      // Spec fallback: the bufferView's OWN buffer holds uncompressed data,
-      // unless that buffer is a `fallback: true` stub (no real payload).
-      const fallbackStub = getMeshoptFallbackExtension(gltf.buffers?.[bv.buffer], name)?.fallback === true;
-      const fallbackAvailable = !fallbackStub && buffers.has(bv.buffer);
-      if (fallbackAvailable) {
-        emitCompressionDiagnostic(warnings, onDiagnostic, {
-          severity: 'warning',
-          code: 'meshopt-fallback-buffer-used',
-          path: `bufferViews[${i}].extensions.${name}`,
-          extension: name,
-          bufferViewIndex: i,
-          message:
-            `[vitrum/gltf-adapter] BufferView ${i} uses ${name} but no ` +
-            'opts.meshoptDecode hook was supplied. Falling back to the uncompressed ' +
-            'fallback buffer (larger download, identical data).',
-        });
-        _stripExtension(bv, name);
-        continue;
-      }
+    const expected = ext.count * ext.byteStride;
+    const useFallback = (reason: string, code: GltfCompressionDiagnosticCode): void => {
       if (isRequired) {
         throw new Error(
-          `[vitrum/gltf-adapter] ${name} is listed in extensionsRequired ` +
-            `but no opts.meshoptDecode hook was supplied and bufferView ${i} has no ` +
-            'uncompressed fallback buffer. Supply a decode hook (e.g. meshoptimizer’s ' +
-            'MeshoptDecoder.decodeGltfBuffer — see the README "Compressed geometry" section).',
+          `[vitrum/gltf-adapter] ${name} is listed in extensionsRequired, so bufferView ${i} ` +
+            `must decode successfully: ${reason}`,
+        );
+      }
+      let fallback: ReturnType<typeof validateMeshoptFallback>;
+      try {
+        fallback = validateMeshoptFallback(gltf, buffers, i, name, ext);
+      } catch (fallbackError) {
+        throw new Error(
+          `[vitrum/gltf-adapter] ${name} bufferView ${i} could not decode (${reason}) and has no fully valid uncompressed fallback: ${formatUnknownError(fallbackError)}`,
         );
       }
       emitCompressionDiagnostic(warnings, onDiagnostic, {
         severity: 'warning',
-        code: 'meshopt-decode-hook-missing',
-        path: `bufferViews[${i}].extensions.${name}`,
+        code,
+        path: extensionPath,
         extension: name,
         bufferViewIndex: i,
         message:
-          `[vitrum/gltf-adapter] BufferView ${i} uses ${name} with no ` +
-          'opts.meshoptDecode hook and no uncompressed fallback buffer. Dependent ' +
-          'accessors cannot be read; affected primitives will be skipped.',
+          `[vitrum/gltf-adapter] ${name} bufferView ${i} could not decode (${reason}). ` +
+          'Using its fully validated uncompressed fallback buffer.',
       });
-      continue;
-    }
-
-    const src = buffers.get(ext.buffer);
-    if (!src) {
-      const msg =
-        `[vitrum/gltf-adapter] ${name} bufferView ${i} references ` +
-        `buffer ${ext.buffer} which is not available (supply it via opts.buffers).`;
-      if (isRequired) throw new Error(msg);
-      emitCompressionDiagnostic(warnings, onDiagnostic, {
-        severity: 'warning',
-        code: 'meshopt-buffer-unavailable',
-        path: `bufferViews[${i}].extensions.${name}.buffer`,
-        extension: name,
-        bufferViewIndex: i,
-        message: msg + ' BufferView left unresolved.',
-      });
-      continue;
-    }
-
-    const compressed = new Uint8Array(src, ext.byteOffset ?? 0, ext.byteLength);
-    let decoded: Uint8Array;
-    try {
-      decoded = await decode(compressed, ext.count, ext.byteStride, ext.mode, ext.filter ?? 'NONE');
-    } catch (e) {
-      const msg =
-        `[vitrum/gltf-adapter] meshoptDecode hook failed for bufferView ${i} ` +
-        `(mode=${ext.mode}, filter=${ext.filter ?? 'NONE'}): ${String(e)}`;
-      if (isRequired) throw new Error(msg);
-      emitCompressionDiagnostic(warnings, onDiagnostic, {
-        severity: 'warning',
-        code: 'meshopt-decode-hook-failed',
-        path: `bufferViews[${i}].extensions.${name}`,
-        extension: name,
-        bufferViewIndex: i,
-        message: msg + ' BufferView left unresolved.',
-      });
-      continue;
-    }
-
-    const expected = ext.count * ext.byteStride;
-    if (decoded.byteLength !== expected) {
-      const msg =
-        `[vitrum/gltf-adapter] meshoptDecode hook returned ${decoded.byteLength} bytes for ` +
-        `bufferView ${i}; expected count × byteStride = ${ext.count} × ${ext.byteStride} = ${expected}.`;
-      if (isRequired) throw new Error(msg);
-      emitCompressionDiagnostic(warnings, onDiagnostic, {
-        severity: 'warning',
-        code: 'meshopt-decoded-byte-length-mismatch',
-        path: `bufferViews[${i}].extensions.${name}`,
-        extension: name,
-        bufferViewIndex: i,
-        message: msg + ' BufferView left unresolved.',
-      });
-      continue;
-    }
-
-    const bufIdx = _addSyntheticBuffer(gltf, buffers, decoded);
-    bv.buffer = bufIdx;
-    bv.byteOffset = 0;
-    bv.byteLength = expected;
-    // Decoded ATTRIBUTES data is interleaved at the extension's byteStride;
-    // TRIANGLES / INDICES data is tightly packed scalar elements.
-    if (ext.mode === 'ATTRIBUTES') bv.byteStride = ext.byteStride;
-    else delete bv.byteStride;
-    _stripExtension(bv, name);
-  }
-}
-
-// ── KHR_draco_mesh_compression ───────────────────────────────────────────────
-
-async function _resolveDraco(
-  gltf: GltfJson,
-  buffers: Map<number, ArrayBuffer>,
-  decode: DracoDecodeFn | undefined,
-  isRequired: boolean,
-  warnings: string[],
-  onDiagnostic: GltfCompressionDiagnosticSink | undefined,
-  sceneReachability: GltfSceneReachability | undefined,
-): Promise<void> {
-  const meshes = gltf.meshes ?? [];
-  for (let mi = 0; mi < meshes.length; mi++) {
-    const mesh = meshes[mi]!;
-    const label = mesh.name ?? mi;
-    for (const [primitiveIndex, prim] of mesh.primitives.entries()) {
-      if (
-        sceneReachability !== undefined &&
-        !sceneReachability.primitiveKeys.has(gltfPrimitiveKey(mi, primitiveIndex))
-      ) {
-        continue;
-      }
-      const primitivePath = `meshes[${mi}].primitives[${primitiveIndex}]`;
-      const ext = prim.extensions?.[DRACO_EXT] as DracoPrimitiveExt | undefined;
-      if (!ext) continue;
-
-      if (!decode) {
-        _handleDracoNoHook(gltf, prim, label, isRequired, warnings, onDiagnostic, mi, primitiveIndex);
-        continue;
-      }
-
-      // Read the compressed blob.
-      const bv = gltf.bufferViews?.[ext.bufferView];
-      const buf = bv ? buffers.get(bv.buffer) : undefined;
-      if (!bv || !buf) {
-        const msg =
-          `[vitrum/gltf-adapter] KHR_draco_mesh_compression on mesh "${label}" references ` +
-          `bufferView ${ext.bufferView} whose data is not available.`;
-        if (isRequired) throw new Error(msg);
-        emitCompressionDiagnostic(warnings, onDiagnostic, {
-          severity: 'warning',
-          code: 'draco-buffer-view-unavailable',
-          path: `${primitivePath}.extensions.${DRACO_EXT}.bufferView`,
-          extension: DRACO_EXT,
-          meshIndex: mi,
-          primitiveIndex,
-          bufferViewIndex: ext.bufferView,
-          message: msg + ' Primitive left unresolved (will be skipped).',
-        });
-        continue;
-      }
-      const compressed = new Uint8Array(buf, bv.byteOffset ?? 0, bv.byteLength);
-
-      let result: DracoDecodeResult;
-      try {
-        result = await decode(compressed, ext.attributes);
-      } catch (e) {
-        const msg =
-          `[vitrum/gltf-adapter] dracoDecode hook failed for mesh "${label}": ${String(e)}`;
-        if (isRequired) throw new Error(msg);
-        emitCompressionDiagnostic(warnings, onDiagnostic, {
-          severity: 'warning',
-          code: 'draco-decode-hook-failed',
-          path: `${primitivePath}.extensions.${DRACO_EXT}`,
-          extension: DRACO_EXT,
-          meshIndex: mi,
-          primitiveIndex,
-          message: msg + ' Primitive left unresolved (will be skipped).',
-        });
-        continue;
-      }
-
-      let failed = false;
-
-      // Attributes: repoint each declared accessor at the decoded data. The
-      // accessor keeps describing the decoded data (count/type/componentType/
-      // normalized per spec), so unpackAccessorFloat applies normalization etc.
-      for (const semantic of Object.keys(ext.attributes)) {
-        const accIdx = prim.attributes[semantic];
-        if (accIdx === undefined) {
-          emitCompressionDiagnostic(warnings, onDiagnostic, {
-            severity: 'warning',
-            code: 'draco-attribute-unmapped',
-            path: `${primitivePath}.extensions.${DRACO_EXT}.attributes.${semantic}`,
-            extension: DRACO_EXT,
-            meshIndex: mi,
-            primitiveIndex,
-            semantic,
-            message:
-              `[vitrum/gltf-adapter] Draco extension on mesh "${label}" declares attribute ` +
-              `"${semantic}" with no matching primitive attribute. Ignored.`,
-          });
-          continue;
-        }
-        const acc = gltf.accessors?.[accIdx];
-        if (!acc) {
-          emitCompressionDiagnostic(warnings, onDiagnostic, {
-            severity: 'warning',
-            code: 'draco-accessor-missing',
-            path: `accessors[${accIdx}]`,
-            extension: DRACO_EXT,
-            meshIndex: mi,
-            primitiveIndex,
-            accessorIndex: accIdx,
-            semantic,
-            message:
-              `[vitrum/gltf-adapter] Draco attribute "${semantic}" on mesh "${label}" ` +
-              `references missing accessor ${accIdx}. Ignored.`,
-          });
-          if (semantic === 'POSITION') failed = true;
-          continue;
-        }
-        const arr = result.attributes[semantic];
-        if (!arr) {
-          const hasFallback = acc.bufferView !== undefined;
-          emitCompressionDiagnostic(warnings, onDiagnostic, {
-            severity: 'warning',
-            code: hasFallback ? 'draco-attribute-fallback-used' : 'draco-attribute-missing',
-            path: `${primitivePath}.extensions.${DRACO_EXT}.attributes.${semantic}`,
-            extension: DRACO_EXT,
-            meshIndex: mi,
-            primitiveIndex,
-            accessorIndex: accIdx,
-            semantic,
-            message:
-              `[vitrum/gltf-adapter] dracoDecode hook did not return attribute "${semantic}" ` +
-              `for mesh "${label}".` +
-              (hasFallback
-                ? ' Using the accessor’s uncompressed fallback data.'
-                : ''),
-          });
-          if (semantic === 'POSITION' && acc.bufferView === undefined) failed = true;
-          continue;
-        }
-        if (!_rewriteDracoAccessor(
+      // A fallback:true buffer can be shared by reachable and unreachable
+      // compressed views. Stripping only this view's extension while keeping
+      // it on that buffer would violate the fallback-buffer ownership rule;
+      // clearing the shared marker would erase the declaration needed by the
+      // unresolved sibling. Materialize just this fallback range instead.
+      const hasUnresolvedReference =
+        fallback.markedFallback && hasUnresolvedMeshoptReference(gltf, fallback.bufferIndex, i);
+      const sharedWithOutOfScopeView =
+        fallback.markedFallback &&
+        hasUnresolvedMeshoptReferenceOutsideScope(gltf, fallback.bufferIndex, i, scopedBufferViews);
+      if (sharedWithOutOfScopeView) {
+        bv.buffer = _addSyntheticBuffer(
           gltf,
           buffers,
-          acc,
-          arr,
-          semantic,
-          label,
-          warnings,
-          onDiagnostic,
-          primitivePath,
-          mi,
-          primitiveIndex,
-          accIdx,
-        )) {
-          if (semantic === 'POSITION') failed = true;
-        }
+          fallback.bytes,
+          allocationLedger,
+          `${extensionPath} materialized fallback`,
+          resourceLedger,
+        );
+        bv.byteOffset = 0;
+        bv.byteLength = fallback.byteLength;
       }
+      _stripExtension(bv, name);
+      if (fallback.markedFallback && !hasUnresolvedReference) {
+        clearMeshoptFallbackMarker(gltf, fallback.bufferIndex);
+      }
+    };
 
-      // Indices.
-      if (prim.indices !== undefined) {
-        const idxAcc = gltf.accessors?.[prim.indices];
-        if (idxAcc) {
-          if (!result.indices) {
-            const hasFallback = idxAcc.bufferView !== undefined;
-            emitCompressionDiagnostic(warnings, onDiagnostic, {
-              severity: 'warning',
-              code: hasFallback ? 'draco-indices-fallback-used' : 'draco-indices-missing',
-              path: `${primitivePath}.indices`,
-              extension: DRACO_EXT,
-              meshIndex: mi,
-              primitiveIndex,
-              accessorIndex: prim.indices,
-              message:
-                `[vitrum/gltf-adapter] dracoDecode hook did not return indices for mesh ` +
-                `"${label}".` +
-                (hasFallback
-                  ? ' Using the accessor’s uncompressed fallback data.'
-                  : ' The index accessor has no fallback; primitive will be skipped.'),
-            });
-            if (idxAcc.bufferView === undefined) failed = true;
-          } else if (result.indices.length !== idxAcc.count) {
-            emitCompressionDiagnostic(warnings, onDiagnostic, {
-              severity: 'warning',
-              code: 'draco-index-count-mismatch',
-              path: `${primitivePath}.indices`,
-              extension: DRACO_EXT,
-              meshIndex: mi,
-              primitiveIndex,
-              accessorIndex: prim.indices,
-              message:
-                `[vitrum/gltf-adapter] dracoDecode hook returned ${result.indices.length} indices ` +
-                `for mesh "${label}"; the index accessor declares count=${idxAcc.count}. ` +
-                'Indices rejected.',
-            });
-            if (idxAcc.bufferView === undefined) failed = true;
-          } else {
-            // Re-encode into the accessor's declared componentType so the
-            // standard index unpacking path applies unchanged.
-            const ct = idxAcc.componentType;
-            const typed =
-              ct === GltfComponentType.UNSIGNED_BYTE ? new Uint8Array(result.indices)
-              : ct === GltfComponentType.UNSIGNED_SHORT ? new Uint16Array(result.indices)
-              : new Uint32Array(result.indices);
-            if (ct !== GltfComponentType.UNSIGNED_BYTE &&
-                ct !== GltfComponentType.UNSIGNED_SHORT &&
-                ct !== GltfComponentType.UNSIGNED_INT) {
-              idxAcc.componentType = GltfComponentType.UNSIGNED_INT;
-            }
-            idxAcc.bufferView = _addSyntheticBufferView(gltf, buffers, _viewBytes(typed));
-            idxAcc.byteOffset = 0;
-          }
-        }
-      }
+    if (!decode || decodeState.attemptsDisabled) {
+      useFallback(
+        decode === undefined
+          ? 'no meshoptDecode hook was supplied'
+          : 'compressed decode attempts were disabled after an earlier allocation-budget failure',
+        decode === undefined
+          ? 'meshopt-fallback-buffer-used'
+          : 'meshopt-compression-budget-exceeded',
+      );
+      continue;
+    }
 
-      if (failed) {
-        emitCompressionDiagnostic(warnings, onDiagnostic, {
-          severity: 'warning',
-          code: 'draco-geometry-unusable',
-          path: `${primitivePath}.extensions.${DRACO_EXT}`,
-          extension: DRACO_EXT,
-          meshIndex: mi,
-          primitiveIndex,
-          message:
-            `[vitrum/gltf-adapter] Draco decode for mesh "${label}" did not yield usable ` +
-            'POSITION/index data. Primitive left unresolved (will be skipped).',
-        });
-        if (isRequired) {
-          throw new Error(
-            `[vitrum/gltf-adapter] KHR_draco_mesh_compression is listed in extensionsRequired ` +
-              `but the decode of mesh "${label}" did not yield usable geometry (see warnings).`,
-          );
-        }
-        continue; // keep the extension marker → downstream skip
+    let compressed: Uint8Array;
+    try {
+      const sourceMarker = validateMeshoptBufferMarker(gltf, ext.buffer, name);
+      if (sourceMarker?.fallback === true) {
+        throw new Error(`compressed source buffer ${ext.buffer} is marked fallback-only`);
       }
-      _stripExtension(prim, DRACO_EXT);
+      const src = buffers.get(ext.buffer);
+      if (src == null) throw new Error(`compressed buffer ${ext.buffer} is unavailable`);
+      compressed = checkedByteSlice(src, ext.byteOffset, ext.byteLength, `${extensionPath} source`);
+    } catch (error) {
+      useFallback(formatUnknownError(error), 'meshopt-buffer-unavailable');
+      continue;
+    }
+
+    const headerFailure = meshoptHeaderFailure(name, ext, compressed);
+    if (headerFailure !== undefined) {
+      useFallback(headerFailure.reason, headerFailure.code);
+      continue;
+    }
+
+    try {
+      const totalCost = checkedCompressionSum(
+        [ext.byteLength, expected, expected],
+        `${extensionPath} decode allocation`,
+      );
+      allocationLedger.ensureAvailable(totalCost, `${extensionPath} decode`);
+    } catch (error) {
+      useFallback(formatUnknownError(error), 'meshopt-compression-budget-exceeded');
+      continue;
+    }
+
+    const decodedGeometryCost = checkedCompressionSum(
+      [expected, expected],
+      `${extensionPath} decoded geometry allocation`,
+    );
+    resourceLedger?.ensureDecodedGeometryBytes(
+      decodedGeometryCost,
+      `${extensionPath} decoded output and retained copy`,
+    );
+
+    let candidate: unknown;
+    try {
+      allocationLedger.charge(ext.byteLength, `${extensionPath} compressed input copy`);
+      candidate = await decode(
+        new Uint8Array(compressed),
+        ext.count,
+        ext.byteStride,
+        ext.mode,
+        ext.filter,
+      );
+    } catch (error) {
+      if (error instanceof GltfResourceLimitError) throw error;
+      useFallback(formatUnknownError(error), 'meshopt-decode-hook-failed');
+      continue;
+    }
+    const candidateInfo = compressionTypedArrayInfo(candidate);
+    if (candidateInfo !== undefined) {
+      if (!hookOutputPrecharged) {
+        resourceLedger?.chargeDecodedGeometryBytes(
+          candidateInfo.byteLength,
+          `${extensionPath} hook output allocation`,
+        );
+      }
+      try {
+        chargeCompressionHookOutput(
+          allocationLedger,
+          decodeState,
+          candidateInfo.byteLength,
+          `${extensionPath} hook output allocation`,
+        );
+      } catch (error) {
+        useFallback(formatUnknownError(error), 'meshopt-compression-budget-exceeded');
+        continue;
+      }
+    }
+    if (candidateInfo?.kind !== 'Uint8Array' || candidateInfo.shared) {
+      useFallback(
+        `meshoptDecode returned ${candidateInfo?.shared === true ? 'shared storage' : typeof candidate}, not a non-shared Uint8Array`,
+        'meshopt-decode-hook-failed',
+      );
+      continue;
+    }
+    if (candidateInfo.byteLength !== expected) {
+      useFallback(
+        `meshoptDecode returned ${candidateInfo.byteLength} bytes; expected count × ` +
+          `byteStride = ${ext.count} × ${ext.byteStride} = ${expected}`,
+        'meshopt-decoded-byte-length-mismatch',
+      );
+      continue;
+    }
+    const decoded = candidate as Uint8Array;
+
+    try {
+      const bufIdx = _addSyntheticBuffer(
+        gltf,
+        buffers,
+        decoded,
+        allocationLedger,
+        `${extensionPath} decoded output`,
+        resourceLedger,
+      );
+      bv.buffer = bufIdx;
+      bv.byteOffset = 0;
+      bv.byteLength = expected;
+      // Preserve the parent bufferView layout. In particular,
+      // KHR_meshopt_compression permits its declared codec stride to differ from
+      // the parent bufferView byteStride.
+      _stripExtension(bv, name);
+      const parentMarker = validateMeshoptBufferMarker(gltf, parent.bufferIndex, name);
+      if (
+        parentMarker?.fallback === true &&
+        !hasUnresolvedMeshoptReference(gltf, parent.bufferIndex, i)
+      ) {
+        clearMeshoptFallbackMarker(gltf, parent.bufferIndex);
+      }
+    } catch (error) {
+      if (error instanceof GltfResourceLimitError) throw error;
+      useFallback(formatUnknownError(error), 'meshopt-decode-hook-failed');
     }
   }
-}
-
-/**
- * No-hook handling for a Draco primitive: use the spec fallback (uncompressed
- * accessors, valid when the extension is NOT in extensionsRequired and every
- * referenced accessor carries a bufferView), throw when required, else warn
- * and leave the primitive unresolved.
- */
-function _handleDracoNoHook(
-  gltf: GltfJson,
-  prim: { attributes: Record<string, number | undefined>; indices?: number; extensions?: Record<string, unknown> },
-  label: string | number,
-  isRequired: boolean,
-  warnings: string[],
-  onDiagnostic: GltfCompressionDiagnosticSink | undefined,
-  meshIndex: number,
-  primitiveIndex: number,
-): void {
-  const primitivePath = `meshes[${meshIndex}].primitives[${primitiveIndex}]`;
-  const accessorIndices = [
-    ...Object.values(prim.attributes).filter((v): v is number => v !== undefined),
-    ...(prim.indices !== undefined ? [prim.indices] : []),
-  ];
-  const hasFallback =
-    accessorIndices.length > 0 &&
-    accessorIndices.every((ai) => gltf.accessors?.[ai]?.bufferView !== undefined);
-
-  if (isRequired) {
-    throw new Error(
-      '[vitrum/gltf-adapter] KHR_draco_mesh_compression is listed in extensionsRequired ' +
-        `but no opts.dracoDecode hook was supplied for mesh "${label}". ` +
-        (hasFallback
-          ? 'The primitive has uncompressed fallback accessors, but required Draco assets must decode the required extension. '
-          : 'The primitive also has no uncompressed fallback accessors. ') +
-        'Supply a decode hook (e.g. via draco3d — see the README ' +
-        '"Compressed geometry" section).',
-    );
-  }
-  if (hasFallback) {
-    emitCompressionDiagnostic(warnings, onDiagnostic, {
-      severity: 'warning',
-      code: 'draco-fallback-accessors-used',
-      path: `${primitivePath}.extensions.${DRACO_EXT}`,
-      extension: DRACO_EXT,
-      meshIndex,
-      primitiveIndex,
-      message:
-        `[vitrum/gltf-adapter] Mesh "${label}" uses KHR_draco_mesh_compression but no ` +
-        'opts.dracoDecode hook was supplied. Using the primitive’s uncompressed ' +
-        'fallback accessors.',
-    });
-    _stripExtension(prim, DRACO_EXT);
-    return;
-  }
-  emitCompressionDiagnostic(warnings, onDiagnostic, {
-    severity: 'warning',
-    code: 'draco-decode-hook-missing',
-    path: `${primitivePath}.extensions.${DRACO_EXT}`,
-    extension: DRACO_EXT,
-    meshIndex,
-    primitiveIndex,
-    message:
-      `[vitrum/gltf-adapter] Mesh "${label}" uses KHR_draco_mesh_compression with no ` +
-      'opts.dracoDecode hook and no uncompressed fallback accessors. Primitive will be skipped.',
-  });
-}
-
-/**
- * Point `acc` at a synthetic bufferView holding the decoded attribute data.
- * Accepts arrays matching the accessor's componentType (normalization stays
- * with the standard unpack path) or already-dequantized Float32Arrays.
- * Returns false (with a warning) when the array is unusable.
- */
-function _rewriteDracoAccessor(
-  gltf: GltfJson,
-  buffers: Map<number, ArrayBuffer>,
-  acc: GltfAccessor,
-  arr: DracoTypedArray,
-  semantic: string,
-  label: string | number,
-  warnings: string[],
-  onDiagnostic: GltfCompressionDiagnosticSink | undefined,
-  primitivePath: string,
-  meshIndex: number,
-  primitiveIndex: number,
-  accessorIndex: number,
-): boolean {
-  const comps = typeComponentCount(acc.type);
-  const expectedElems = acc.count * comps;
-  if (arr.length !== expectedElems) {
-    emitCompressionDiagnostic(warnings, onDiagnostic, {
-      severity: 'warning',
-      code: 'draco-attribute-count-mismatch',
-      path: `${primitivePath}.attributes.${semantic}`,
-      extension: DRACO_EXT,
-      meshIndex,
-      primitiveIndex,
-      accessorIndex,
-      semantic,
-      message:
-        `[vitrum/gltf-adapter] dracoDecode returned ${arr.length} elements for "${semantic}" ` +
-        `on mesh "${label}"; the accessor declares count × components = ` +
-        `${acc.count} × ${comps} = ${expectedElems}. Attribute rejected.`,
-    });
-    return false;
-  }
-
-  const arrCt = _typedArrayComponentType(arr);
-  if (arrCt === acc.componentType) {
-    // Exact match: the accessor's normalized flag is applied by the standard
-    // unpack path. Sanity-check byte size (guaranteed by the element check).
-    void componentByteSize(acc.componentType);
-  } else if (arr instanceof Float32Array) {
-    // Decoder dequantized for us — describe the data as raw floats.
-    acc.componentType = GltfComponentType.FLOAT;
-    acc.normalized = false;
-  } else {
-    emitCompressionDiagnostic(warnings, onDiagnostic, {
-      severity: 'warning',
-      code: 'draco-attribute-component-type-mismatch',
-      path: `${primitivePath}.attributes.${semantic}`,
-      extension: DRACO_EXT,
-      meshIndex,
-      primitiveIndex,
-      accessorIndex,
-      semantic,
-      message:
-        `[vitrum/gltf-adapter] dracoDecode returned a ${arr.constructor.name} for "${semantic}" ` +
-        `on mesh "${label}" but the accessor declares componentType ${acc.componentType}. ` +
-        'Return an array matching the accessor componentType, or a dequantized ' +
-        'Float32Array. Attribute rejected.',
-    });
-    return false;
-  }
-
-  acc.bufferView = _addSyntheticBufferView(gltf, buffers, _viewBytes(arr));
-  acc.byteOffset = 0;
-  return true;
 }

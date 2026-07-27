@@ -29,6 +29,19 @@ import type {
   TextureWrapMode,
   UvTransform,
 } from '@vitrum/core';
+import {
+  DecodedImageHandleOwner,
+  ImportResourceLedger,
+  createAsyncResourceLimiter,
+  gltfArrayBufferByteLength,
+  gltfBufferResourceKey,
+  gltfImageResourceKey,
+  GltfResourceLimitError,
+  type GltfImportResourceContext,
+} from './importResourceBudget.js';
+import { localUint8ArrayView } from './intrinsicTypedArrays.js';
+import { readEncodedImageDimensions } from './rawImageDimensions.js';
+import { validateDeclaredBufferRange } from './bufferRangeValidation.js';
 
 export type GltfTextureSourceExtension =
   | 'KHR_texture_basisu'
@@ -41,6 +54,17 @@ export const GLTF_TEXTURE_SOURCE_EXTENSIONS: readonly GltfTextureSourceExtension
   'MSFT_texture_dds',
 ];
 
+/**
+ * Decode one glTF image into a texture handle.
+ *
+ * Ownership transfers to the import for every resolved callback result. The
+ * adapter closes a closable handle on import rejection, when successful texture
+ * normalization supersedes it, or when the host calls `releaseGltfResources()`
+ * on the successful result. Within one import, shared identities close once.
+ * A host cache that shares a closable identity across imports must retain
+ * ownership itself (for example with a non-closable wrapper) or provide
+ * idempotent/reference-counted `close()` semantics.
+ */
 export type DecodeImageFn = (
   bytes: Uint8Array,
   mimeType: string,
@@ -68,6 +92,10 @@ export interface RawImageHandle {
 }
 
 const GLTF_TEXTURE_REF_SOURCE = Symbol('vitrum.gltf.textureRefSource');
+// Capture the intrinsic copy operation once. Image byte views can retain a
+// host-owned backing ArrayBuffer whose own `slice` property is untrusted.
+// eslint-disable-next-line @typescript-eslint/unbound-method -- Invoked only with an explicit typed-array receiver.
+const UINT8_ARRAY_SLICE = Uint8Array.prototype.slice;
 
 export interface GltfTextureRefSource {
   readonly path: string;
@@ -121,10 +149,14 @@ interface SelectedTextureImageSource {
 
 export function attachGltfTextureRefSource(ref: TextureRef, source: GltfTextureRefSource | undefined): TextureRef {
   if (source === undefined) return ref;
-  return {
-    ...ref,
-    [GLTF_TEXTURE_REF_SOURCE]: source,
-  } as GltfTextureRefWithSource;
+  const tagged = { ...ref } as GltfTextureRefWithSource;
+  Object.defineProperty(tagged, GLTF_TEXTURE_REF_SOURCE, {
+    value: source,
+    enumerable: false,
+    configurable: false,
+    writable: false,
+  });
+  return tagged;
 }
 
 export function gltfTextureRefSource(ref: TextureRef): GltfTextureRefSource | undefined {
@@ -145,6 +177,7 @@ function getImageBytes(
   onDiagnostic?: GltfTextureAcquisitionDiagnosticSink,
   externalImages?: ReadonlyMap<number, GltfImageBytes>,
   selectedSource?: SelectedTextureImageSource,
+  resourceContext?: GltfImportResourceContext,
 ): { bytes: Uint8Array; mimeType: string } | undefined {
   const image = gltf.images?.[imageIndex];
   if (!image) {
@@ -180,8 +213,14 @@ function getImageBytes(
       });
       return undefined;
     }
-    const buf = buffers.get(bv.buffer);
-    if (!buf) {
+    // Preserve the adapter's structured "resource unavailable" path when the
+    // host did not supply the referenced buffer at all. Malformed indices still
+    // fall through to the strict declared-range validator below.
+    if (
+      Number.isSafeInteger(bv.buffer) &&
+      bv.buffer >= 0 &&
+      !buffers.has(bv.buffer)
+    ) {
       emitTextureAcquisitionDiagnostic(warnings, onDiagnostic, {
         severity: 'warning',
         code: 'image-buffer-unavailable',
@@ -196,21 +235,80 @@ function getImageBytes(
       });
       return undefined;
     }
-    const bytes = new Uint8Array(buf, bv.byteOffset ?? 0, bv.byteLength);
+    const range = validateDeclaredBufferRange(
+      gltf,
+      bv.buffer,
+      bv.byteOffset ?? 0,
+      bv.byteLength,
+      `bufferViews[${image.bufferView}]`,
+    );
+    const buf = buffers.get(range.bufferIndex);
+    if (!buf) {
+      emitTextureAcquisitionDiagnostic(warnings, onDiagnostic, {
+        severity: 'warning',
+        code: 'image-buffer-unavailable',
+        path: `bufferViews[${image.bufferView}].buffer`,
+        textureIndex,
+        imageIndex,
+        bufferViewIndex: image.bufferView,
+        bufferIndex: range.bufferIndex,
+        message:
+          `[vitrum/gltf-adapter] Image "${image.name ?? imageIndex}" bufferView ${image.bufferView} ` +
+          `references unavailable buffer ${range.bufferIndex}. Image skipped.`,
+      });
+      return undefined;
+    }
+    const loadedByteLength = gltfArrayBufferByteLength(buf);
+    if (loadedByteLength === undefined) {
+      throw new TypeError(
+        `[vitrum/gltf-adapter] buffers[${bv.buffer}] must be a non-shared ArrayBuffer.`,
+      );
+    }
+    if (range.end > loadedByteLength) {
+      throw new RangeError(
+        `[vitrum/gltf-adapter] bufferViews[${image.bufferView}] range ` +
+        `[${range.byteOffset}, ${range.end}) exceeds loaded buffers[${range.bufferIndex}] ` +
+        `byteLength ${loadedByteLength}.`,
+      );
+    }
+    const bytes = new Uint8Array(
+      buf,
+      range.byteOffset,
+      range.byteLength,
+    );
     const mimeType = image.mimeType ?? 'image/png';
+    // A bufferView is a non-owning view of the already-observed parent buffer,
+    // not a second encoded resource. Re-observe the parent identity so direct
+    // internal callers still account for it while public imports deduplicate it.
+    resourceContext?.ledger.chargeEncodedBytes(
+      gltfBufferResourceKey(range.bufferIndex),
+      loadedByteLength,
+      `buffers[${range.bufferIndex}]`,
+    );
     return { bytes, mimeType };
   }
 
   if (image.uri) {
     if (image.uri.startsWith('data:')) {
-      const decoded = decodeDataUri(image.uri, warnings, imageIndex, image.name ?? String(imageIndex), onDiagnostic);
+      const decoded = decodeDataUri(
+        image.uri,
+        warnings,
+        imageIndex,
+        image.name ?? String(imageIndex),
+        onDiagnostic,
+        resourceContext,
+      );
       if (decoded != null) return decoded;
       const external = externalImages?.get(imageIndex);
-      if (external != null) return external;
+      if (external != null) {
+        return validatedExternalImageBytes(external, imageIndex, resourceContext);
+      }
       return undefined;
     }
     const external = externalImages?.get(imageIndex);
-    if (external != null) return external;
+    if (external != null) {
+      return validatedExternalImageBytes(external, imageIndex, resourceContext);
+    }
     emitTextureAcquisitionDiagnostic(warnings, onDiagnostic, {
       severity: 'warning',
       code: 'external-image-uri',
@@ -244,6 +342,7 @@ function decodeDataUri(
   imageIndex: number,
   label: string,
   onDiagnostic?: GltfTextureAcquisitionDiagnosticSink,
+  resourceContext?: GltfImportResourceContext,
 ): { bytes: Uint8Array; mimeType: string } | undefined {
   const comma = uri.indexOf(',');
   if (comma < 0) {
@@ -262,6 +361,14 @@ function decodeDataUri(
   const parts = meta.split(';').filter(Boolean);
   const mimeType = parts.find((p) => !p.includes('=')) ?? 'application/octet-stream';
   const isBase64 = parts.some((p) => p.toLowerCase() === 'base64');
+  const resourceKey = gltfImageResourceKey(imageIndex);
+  const path = `images[${imageIndex}].uri`;
+  resourceContext?.ledger.ensureEncodedBytes(
+    resourceKey,
+    dataUriDecodedByteUpperBound(payload, isBase64),
+    path,
+  );
+  let bytes: Uint8Array;
   try {
     if (isBase64) {
       if (typeof globalThis.atob !== 'function') {
@@ -278,11 +385,11 @@ function decodeDataUri(
         return undefined;
       }
       const bin = globalThis.atob(payload.replace(/\s+/g, ''));
-      const bytes = new Uint8Array(bin.length);
+      bytes = new Uint8Array(bin.length);
       for (let i = 0; i < bin.length; i += 1) bytes[i] = bin.charCodeAt(i);
-      return { bytes, mimeType };
+    } else {
+      bytes = new TextEncoder().encode(decodeURIComponent(payload));
     }
-    return { bytes: new TextEncoder().encode(decodeURIComponent(payload)), mimeType };
   } catch (err) {
     emitTextureAcquisitionDiagnostic(warnings, onDiagnostic, {
       severity: 'warning',
@@ -296,6 +403,124 @@ function decodeDataUri(
     });
     return undefined;
   }
+  resourceContext?.ledger.chargeEncodedBytes(
+    resourceKey,
+    bytes.byteLength,
+    path,
+  );
+  return { bytes, mimeType };
+}
+
+function validatedExternalImageBytes(
+  image: GltfImageBytes,
+  imageIndex: number,
+  resourceContext: GltfImportResourceContext | undefined,
+): GltfImageBytes {
+  const bytes = localUint8ArrayView(image.bytes);
+  if (bytes === null) {
+    throw new TypeError(
+      `[vitrum/gltf-adapter] imageBytes[${imageIndex}].bytes must be a non-shared Uint8Array.`,
+    );
+  }
+  if (typeof image.mimeType !== 'string' || image.mimeType.length === 0) {
+    throw new TypeError(
+      `[vitrum/gltf-adapter] imageBytes[${imageIndex}].mimeType must be a non-empty string.`,
+    );
+  }
+  resourceContext?.ledger.chargeEncodedBytes(
+    gltfImageResourceKey(imageIndex),
+    bytes.byteLength,
+    `imageBytes[${imageIndex}].bytes`,
+  );
+  return { bytes, mimeType: image.mimeType };
+}
+
+function dataUriDecodedByteUpperBound(
+  payload: string,
+  isBase64: boolean,
+): number {
+  return isBase64
+    ? base64DecodedByteUpperBound(payload)
+    : percentDecodedByteUpperBound(payload);
+}
+
+function base64DecodedByteUpperBound(payload: string): number {
+  let encodedLength = 0;
+  let previous = -1;
+  let last = -1;
+  for (let i = 0; i < payload.length; i += 1) {
+    const code = payload.charCodeAt(i);
+    if (isDataUriWhitespaceCodeUnit(code)) continue;
+    encodedLength += 1;
+    previous = last;
+    last = code;
+  }
+  const padding = last === 0x3d ? (previous === 0x3d ? 2 : 1) : 0;
+  const completeGroups = Math.floor(encodedLength / 4);
+  const remainder = encodedLength % 4;
+  const upperBound =
+    completeGroups * 3 +
+    Math.floor((remainder * 6) / 8) -
+    padding;
+  return Math.max(0, upperBound);
+}
+
+function isDataUriWhitespaceCodeUnit(code: number): boolean {
+  return (
+    (code >= 0x09 && code <= 0x0d) ||
+    code === 0x20 ||
+    code === 0xa0 ||
+    code === 0x1680 ||
+    (code >= 0x2000 && code <= 0x200a) ||
+    code === 0x2028 ||
+    code === 0x2029 ||
+    code === 0x202f ||
+    code === 0x205f ||
+    code === 0x3000 ||
+    code === 0xfeff
+  );
+}
+
+function percentDecodedByteUpperBound(payload: string): number {
+  let byteLength = 0;
+  for (let i = 0; i < payload.length; i += 1) {
+    if (
+      payload.charCodeAt(i) === 0x25 &&
+      i + 2 < payload.length &&
+      isHexCodeUnit(payload.charCodeAt(i + 1)) &&
+      isHexCodeUnit(payload.charCodeAt(i + 2))
+    ) {
+      byteLength = checkedByteLengthAdd(byteLength, 1);
+      i += 2;
+      continue;
+    }
+    const codePoint = payload.codePointAt(i)!;
+    const width =
+      codePoint <= 0x7f ? 1 :
+      codePoint <= 0x7ff ? 2 :
+      codePoint <= 0xffff ? 3 :
+      4;
+    byteLength = checkedByteLengthAdd(byteLength, width);
+    if (codePoint > 0xffff) i += 1;
+  }
+  return byteLength;
+}
+
+function checkedByteLengthAdd(total: number, additional: number): number {
+  if (additional > Number.MAX_SAFE_INTEGER - total) {
+    throw new RangeError(
+      '[vitrum/gltf-adapter] data: URI decoded byte length exceeds the safe integer range.',
+    );
+  }
+  return total + additional;
+}
+
+function isHexCodeUnit(code: number): boolean {
+  return (
+    (code >= 0x30 && code <= 0x39) ||
+    (code >= 0x41 && code <= 0x46) ||
+    (code >= 0x61 && code <= 0x66)
+  );
 }
 
 /** Decode a single glTF image to an opaque handle via the provided callback. */
@@ -306,31 +531,145 @@ async function decodeImage(
   warnings: string[],
   imageIndex: number,
   onDiagnostic?: GltfTextureAcquisitionDiagnosticSink,
+  resourceContext?: GltfImportResourceContext,
 ): Promise<unknown> {
+  const path = `images[${imageIndex}]`;
+  let handle: unknown;
   if (decodeFn) {
-    return decodeFn(bytes, mimeType);
+    handle = await decodeFn(bytes, mimeType);
+  } else if (typeof createImageBitmap !== 'undefined') {
+    // Browser path: createImageBitmap
+    const ownedBytes = Reflect.apply(UINT8_ARRAY_SLICE, bytes, []) as Uint8Array;
+    // Intrinsic Uint8Array#slice always creates a new, non-shared ArrayBuffer.
+    const blob = new Blob([ownedBytes.buffer as ArrayBuffer], { type: mimeType });
+    handle = await createImageBitmap(blob);
+  } else {
+    // Node / non-browser: return raw bytes.
+    emitTextureAcquisitionDiagnostic(warnings, onDiagnostic, {
+      severity: 'warning',
+      code: 'image-decoder-missing',
+      path,
+      imageIndex,
+      message:
+        '[vitrum/gltf-adapter] No decodeImage callback provided and createImageBitmap is not ' +
+        'available (non-browser environment). Images are returned as { kind: "raw-image", data, mimeType }. ' +
+        'pt-webgpu and pt-webgl2 expect ImageBitmap or a canvas-compatible handle; supply ' +
+        'opts.decodeImage to convert raw bytes to an appropriate backend handle.',
+    });
+    handle = { kind: 'raw-image', mimeType, data: bytes } satisfies RawImageHandle;
   }
 
-  // Browser path: createImageBitmap
-  if (typeof createImageBitmap !== 'undefined') {
-    const slice = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
-    const blob = new Blob([slice as ArrayBuffer], { type: mimeType });
-    return createImageBitmap(blob);
+  resourceContext?.decodedImageHandles.track(handle);
+  if (resourceContext !== undefined) {
+    const decodedDimensions = decodedHandleDimensions(handle);
+    if (decodedDimensions !== null) {
+      try {
+        const pixels = checkedPixelCount(
+          decodedDimensions.width,
+          decodedDimensions.height,
+          path,
+        );
+        resourceContext.ledger.chargeDecodedTexturePixels(pixels, path);
+      } catch (cause) {
+        resourceContext.decodedImageHandles.closeTracked(handle);
+        throw cause;
+      }
+    }
   }
+  return handle;
+}
 
-  // Node / non-browser: return raw bytes.
-  emitTextureAcquisitionDiagnostic(warnings, onDiagnostic, {
-    severity: 'warning',
-    code: 'image-decoder-missing',
-    path: `images[${imageIndex}]`,
-    imageIndex,
-    message:
-      '[vitrum/gltf-adapter] No decodeImage callback provided and createImageBitmap is not ' +
-      'available (non-browser environment). Images are returned as { kind: "raw-image", data, mimeType }. ' +
-      'pt-webgpu and pt-webgl2 expect ImageBitmap or a canvas-compatible handle; supply ' +
-      'opts.decodeImage to convert raw bytes to an appropriate backend handle.',
-  });
-  return { kind: 'raw-image', mimeType, data: bytes } satisfies RawImageHandle;
+interface DecodedHandleDimensions {
+  readonly width: number;
+  readonly height: number;
+}
+
+function decodedHandleDimensions(
+  handle: unknown,
+): DecodedHandleDimensions | null {
+  if (handle === null || (typeof handle !== 'object' && typeof handle !== 'function')) {
+    return null;
+  }
+  let width: unknown;
+  let height: unknown;
+  try {
+    const candidate = handle as { readonly width?: unknown; readonly height?: unknown };
+    width = candidate.width;
+    height = candidate.height;
+  } catch {
+    return null;
+  }
+  if (
+    typeof width !== 'number' ||
+    !Number.isFinite(width) ||
+    typeof height !== 'number' ||
+    !Number.isFinite(height)
+  ) {
+    return null;
+  }
+  return { width, height };
+}
+
+function checkedPixelCount(
+  width: number,
+  height: number,
+  path: string,
+): number {
+  if (
+    !Number.isSafeInteger(width) ||
+    width <= 0 ||
+    !Number.isSafeInteger(height) ||
+    height <= 0
+  ) {
+    throw new RangeError(
+      `[vitrum/gltf-adapter] ${path} decoded dimensions must be positive safe integers; ` +
+      `received ${String(width)}x${String(height)}.`,
+    );
+  }
+  if (width > Number.MAX_SAFE_INTEGER / height) {
+    throw new RangeError(
+      `[vitrum/gltf-adapter] ${path} decoded pixel count exceeds the safe integer range.`,
+    );
+  }
+  return width * height;
+}
+
+function ensureDecodedTexturePixels(
+  ledger: ImportResourceLedger,
+  pixelCount: number,
+  path: string,
+  reservedPixelCount = 0,
+): void {
+  const perTextureLimit = ledger.limits.maxDecodedTexturePixels;
+  if (perTextureLimit !== 0 && pixelCount > perTextureLimit) {
+    throw new GltfResourceLimitError({
+      limitKind: 'decoded-texture-pixels',
+      limit: perTextureLimit,
+      actual: pixelCount,
+      path,
+    });
+  }
+  if (
+    reservedPixelCount > Number.MAX_SAFE_INTEGER - ledger.totalDecodedTexturePixels ||
+    pixelCount > Number.MAX_SAFE_INTEGER - ledger.totalDecodedTexturePixels - reservedPixelCount
+  ) {
+    throw new RangeError(
+      `[vitrum/gltf-adapter] ${path} total decoded texture pixels exceed the safe integer range.`,
+    );
+  }
+  const total =
+    ledger.totalDecodedTexturePixels +
+    reservedPixelCount +
+    pixelCount;
+  const totalLimit = ledger.limits.maxTotalDecodedTexturePixels;
+  if (totalLimit !== 0 && total > totalLimit) {
+    throw new GltfResourceLimitError({
+      limitKind: 'total-decoded-texture-pixels',
+      limit: totalLimit,
+      actual: total,
+      path,
+    });
+  }
 }
 
 /**
@@ -348,20 +687,27 @@ export async function buildTextureHandleMap(
   textureSourceExtensions: readonly GltfTextureSourceExtension[] = [],
   onDiagnostic?: GltfTextureAcquisitionDiagnosticSink,
   textureIndices?: ReadonlySet<number>,
+  resourceContext?: GltfImportResourceContext,
 ): Promise<Map<number, unknown>> {
+  const effectiveResourceContext =
+    resourceContext ?? createTextureImportResourceContext();
   const textures = gltf.textures ?? [];
-  const imageHandles = new Map<number, Promise<unknown>>();
+  const imageInputs = new Map<number, {
+    readonly bytes: Uint8Array;
+    readonly mimeType: string;
+  }>();
   const textureImageSources = new Map<number, SelectedTextureImageSource>();
   const externalImageMap = normalizeImageBytesMap(externalImages);
   const sourceExtensions = new Set(textureSourceExtensions);
+  let reservedDecodedPixels = 0;
 
-  // Kick off unique image decodes in parallel.
+  // Resolve and preflight every unique image before starting any decoder work.
   for (const [textureIndex, tex] of textures.entries()) {
     if (textureIndices !== undefined && !textureIndices.has(textureIndex)) continue;
     const selectedSource = resolveTextureImageSource(tex, textureIndex, sourceExtensions, warnings, onDiagnostic);
     textureImageSources.set(textureIndex, selectedSource);
     const imageIdx = selectedSource.imageIndex;
-    if (imageIdx !== undefined && !imageHandles.has(imageIdx)) {
+    if (imageIdx !== undefined && !imageInputs.has(imageIdx)) {
       const imgData = getImageBytes(
         gltf,
         buffers,
@@ -371,28 +717,93 @@ export async function buildTextureHandleMap(
         onDiagnostic,
         externalImageMap,
         selectedSource,
+        effectiveResourceContext,
       );
       if (imgData) {
-        imageHandles.set(
-          imageIdx,
-          decodeImage(imgData.bytes, imgData.mimeType, decodeFn, warnings, imageIdx, onDiagnostic),
-        );
+        const path = `images[${imageIdx}]`;
+        // Only signature-recognized containers are preflighted here. Hosts may
+        // intentionally use opaque/custom payloads under a conventional MIME
+        // label; their returned dimensions are still enforced after decode.
+        const encodedDimensions = readEncodedImageDimensions(imgData.bytes);
+        if (encodedDimensions !== null) {
+          const pixels = checkedPixelCount(
+            encodedDimensions.width,
+            encodedDimensions.height,
+            path,
+          );
+          ensureDecodedTexturePixels(
+            effectiveResourceContext.ledger,
+            pixels,
+            path,
+            reservedDecodedPixels,
+          );
+          reservedDecodedPixels += pixels;
+        }
+        imageInputs.set(imageIdx, {
+          bytes: imgData.bytes,
+          mimeType: imgData.mimeType,
+        });
       }
     }
   }
 
-  // Await all.
+  const imageEntries = [...imageInputs].map(([imageIndex, input]) => [
+    imageIndex,
+    effectiveResourceContext.limiter.run(() =>
+      decodeImage(
+        input.bytes,
+        input.mimeType,
+        decodeFn,
+        warnings,
+        imageIndex,
+        onDiagnostic,
+        effectiveResourceContext,
+      )),
+  ] as const);
+  const settledImages = await Promise.allSettled(
+    imageEntries.map(([, handle]) => handle),
+  );
+  const resolvedImages = new Map<number, unknown>();
+  let hasFailure = false;
+  let firstFailure: unknown;
+  for (let i = 0; i < settledImages.length; i += 1) {
+    const settled = settledImages[i]!;
+    if (settled.status === 'rejected') {
+      if (!hasFailure) firstFailure = settled.reason;
+      hasFailure = true;
+      continue;
+    }
+    resolvedImages.set(imageEntries[i]![0], settled.value);
+  }
+  if (hasFailure) {
+    effectiveResourceContext.decodedImageHandles.rollback();
+    throw firstFailure;
+  }
+
+  // Map each glTF texture index back to its deduplicated decoded image.
   const resolved = new Map<number, unknown>();
   for (const [texIdx] of textures.entries()) {
     if (textureIndices !== undefined && !textureIndices.has(texIdx)) continue;
     const imageIdx = textureImageSources.get(texIdx)?.imageIndex;
     if (imageIdx !== undefined) {
-      const p = imageHandles.get(imageIdx);
-      if (p) resolved.set(texIdx, await p);
+      if (resolvedImages.has(imageIdx)) {
+        resolved.set(texIdx, resolvedImages.get(imageIdx));
+      }
     }
   }
 
   return resolved;
+}
+
+function createTextureImportResourceContext(): GltfImportResourceContext {
+  const ledger = new ImportResourceLedger();
+  return {
+    ledger,
+    limiter: createAsyncResourceLimiter(
+      ledger.limits.maxConcurrentResourceOperations,
+    ),
+    decodedImageHandles: new DecodedImageHandleOwner(),
+  };
 }
 
 function resolveTextureImageSource(
@@ -468,10 +879,23 @@ function normalizeImageBytesMap(
   images: GltfImageBytesMap | undefined,
 ): ReadonlyMap<number, GltfImageBytes> | undefined {
   if (images == null) return undefined;
-  if (images instanceof Map) return images;
+  if (isReadonlyImageBytesMap(images)) return images;
   const out = new Map<number, GltfImageBytes>();
   for (const [k, v] of Object.entries(images)) out.set(Number(k), v);
   return out;
+}
+
+function isReadonlyImageBytesMap(
+  value: GltfImageBytesMap,
+): value is ReadonlyMap<number, GltfImageBytes> {
+  const candidate = value as unknown as {
+    readonly get?: unknown;
+    readonly entries?: unknown;
+    readonly size?: unknown;
+  };
+  return typeof candidate.get === 'function' &&
+    typeof candidate.entries === 'function' &&
+    typeof candidate.size === 'number';
 }
 
 /** Extract a UvTransform from a KHR_texture_transform extension block. */

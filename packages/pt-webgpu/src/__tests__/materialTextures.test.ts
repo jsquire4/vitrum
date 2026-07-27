@@ -1,7 +1,7 @@
 /**
  * materialTextures.test.ts — P2 host-side texture collection + descriptor pack.
  */
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import {
   applyMaterialTextureUvFitScales,
   collectMaterialTextures,
@@ -133,13 +133,17 @@ function expectedExtensionUvMetaOffset(slot: number): number {
 }
 
 describe('collectMaterialTextures (P2 host)', () => {
-  it('dedups shared texture handles and drops unsupported high-UV maps', () => {
+  it('dedups shared texture handles and compacts sparse high-UV maps', () => {
     const tex = { id: 'A' };
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    try {
-      const { sources, sourceInfos, descriptors, unsupportedTexCoordWarnings } = collectMaterialTextures([
+    const {
+      sources,
+      sourceInfos,
+      descriptors,
+      unsupportedTexCoordWarnings,
+      uvSetTexCoords,
+    } = collectMaterialTextures([
         mat({ baseColorMap: { handle: tex, texCoord: 1 } }),
-        mat({ baseColorMap: { handle: tex, texCoord: 2 } }),
+        mat({ baseColorMap: { handle: tex, texCoord: 8_192 } }),
         mat({}), // no map
       ]);
       expect(sources).toEqual([tex]);
@@ -148,30 +152,16 @@ describe('collectMaterialTextures (P2 host)', () => {
           layer: 0,
           uses: [
             { materialIndex: 0, field: 'baseColorMap', colorSpace: 'srgb', texCoord: 1 },
+            { materialIndex: 1, field: 'baseColorMap', colorSpace: 'srgb', texCoord: 8_192 },
           ],
         },
       ]);
       expect(descriptors[0]).toBe(0);
-      expect(descriptors[MATERIAL_TEX_FLOAT_STRIDE]).toBe(-1);
+      expect(descriptors[MATERIAL_TEX_FLOAT_STRIDE]).toBe(0);
       expect(descriptors[2 * MATERIAL_TEX_FLOAT_STRIDE]).toBe(-1);
-      expect(descriptors[MATERIAL_TEX_FLOAT_STRIDE + 7]).toBe(0);
-      expect(unsupportedTexCoordWarnings).toHaveLength(1);
-      expect(unsupportedTexCoordWarnings[0]).toMatchObject({
-        code: 'pt-webgpu.material-texture-unsupported-texcoord',
-        backend: 'pt-webgpu',
-        phase: 'setScene',
-        method: 'setScene',
-        details: {
-          materialIndex: 1,
-          field: 'baseColorMap',
-          texCoord: 2,
-          fallback: 'map-ignored',
-        },
-      });
-      expect(warn).toHaveBeenCalledWith(expect.stringContaining('texCoord 2 is unsupported'));
-    } finally {
-      warn.mockRestore();
-    }
+      expect(descriptors[MATERIAL_TEX_FLOAT_STRIDE + 7]).toBe(2);
+      expect(unsupportedTexCoordWarnings).toEqual([]);
+      expect(uvSetTexCoords).toEqual([0, 1, 8_192]);
   });
 
   it('packs alpha-mode, cutoff, opacity, texCoord, and the UV transform', () => {
@@ -958,13 +948,14 @@ describe('material-texture host↔WGSL contract (P2 lockstep)', () => {
     expect(wgsl).toContain('return meshVertexColors[tri.x] * u + meshVertexColors[tri.y] * v + meshVertexColors[tri.z] * w;');
     expect(wgsl).toContain('fn sampleAlphaTexture(');
     expect(wgsl).toContain('sampleVertexColor(triIndex, baryVW).a');
-    expect(wgsl).toContain('sampleAlphaTexture(matId, triIndex, baryVW)');
+    expect(wgsl).toContain('sampleAlphaTexture(matId, triIndex, baryVW, instanceIndex)');
     expect(wgsl).toContain('fn sampleTransmissionTexture(');
     expect(wgsl).toContain('fn sampleVolumeThicknessTexture(');
     expect(wgsl).toContain('fn sampleClearcoatTexture(');
     expect(wgsl).toContain('fn sampleSpecularIntensityTexture(');
     expect(wgsl).toContain('fn applyClearcoatNormalMap(');
-    expect(wgsl).toContain('wrappedUv * uvFitScale');
+    expect(wgsl).toContain('fn materialTextureSourceBaseSize(arraySize: vec2u, uvFitScale: vec2f) -> vec2u');
+    expect(wgsl).toContain('vec2u(round(vec2f(arraySize) * uvFitScale))');
     expect(wgsl).toContain('materialTexDescriptors[base + 7u].xy');
     expect(wgsl).toContain('materialTexDescriptors[base + 8u].zw');
     expect(wgsl).toContain('materialTexDescriptors[base + 11u].zw');
@@ -997,10 +988,15 @@ describe('material-texture host↔WGSL contract (P2 lockstep)', () => {
     expect(wgsl).toContain(
       'fn applyNormalMap(matId: u32, triIndex: u32, baryVW: vec2f, geomNormal: vec3f, instanceIndex: u32, isFrontFace: bool)',
     );
-    expect(wgsl).toContain('fn buildShadingTangentFrame(triIndex: u32, baryVW: vec2f, normal: vec3f, instanceIndex: u32)');
+    expect(wgsl).toContain('fn buildShadingTangentFrame(triIndex: u32, baryVW: vec2f, normal: vec3f, gpuUvSlot: u32, instanceIndex: u32)');
+    expect(wgsl).toContain('if (gpuUvSlot == 0u && tri.x < arrayLength(&meshTangents)');
+    expect(wgsl).toContain('let uv0 = materialUvForVertex(tri.x, gpuUvSlot);');
     expect(wgsl).toContain('let ta = meshTangents[tri.x];');
     expect(wgsl).toContain('let handednessRaw = ta.w * u + tb.w * v + tc.w * w;');
     expect(wgsl).toContain('frame.bitangent = cross(normal, tangent) * handedness;');
+    expect(wgsl).toContain('let linearDeterminant = dot(cross(l2w0.xyz, l2w1.xyz), l2w2.xyz);');
+    expect(wgsl).toContain('var bitangent = f * (-duv2.x * e1 + duv1.x * e2);');
+    expect(wgsl).toContain('dot(cross(normal, tangent), bitangent) >= 0.0');
     expect(wgsl).toContain('if (instanceIndex != INVALID_TLAS_INSTANCE_INDEX && params.tlasNodeCount != 0u)');
     expect(wgsl).toContain('let l2w0 = tlasInstanceLocalToWorld[m];');
     expect(wgsl).toContain('tangent = transformDirectionCols(l2w0, l2w1, l2w2, tangent);');
@@ -1008,6 +1004,12 @@ describe('material-texture host↔WGSL contract (P2 lockstep)', () => {
     expect(wgsl).toContain('let layerIdx = select(i32(layerNormal.z), i32(layerNormal.x), isFrontFace);');
     expect(wgsl).toContain('normalUvMetaOffset = select(MATERIAL_TEX_UV_BACK_LAYER_NORMAL, MATERIAL_TEX_UV_FRONT_LAYER_NORMAL, isFrontFace);');
     expect(wgsl).toContain('normalUvFitScale = select(layerUvFit.zw, layerUvFit.xy, isFrontFace);');
+    expect(wgsl).toContain('let normalGpuUvSlot = u32(materialTexDescriptors[base + normalUvMetaOffset].x);');
+    expect(wgsl).toContain('triIndex, baryVW, geomNormal, normalGpuUvSlot, instanceIndex');
+    expect(wgsl).toContain('let clearcoatNormalGpuUvSlot = u32(');
+    expect(wgsl).toContain('triIndex, baryVW, clearcoatNormal, clearcoatNormalGpuUvSlot, instanceIndex');
+    expect(wgsl).toContain('let bumpGpuUvSlot = u32(uvMeta.x);');
+    expect(wgsl).toContain('triIndex, baryVW, shadingNormal, bumpGpuUvSlot, instanceIndex');
     expect(wgsl).toContain('tn.x = tn.x * normalScale;');
     expect(wgsl).toContain('tn.y = tn.y * normalScale;');
   });
@@ -1015,35 +1017,38 @@ describe('material-texture host↔WGSL contract (P2 lockstep)', () => {
   it('group-3 WGSL samples every consumed map with its own UV metadata slot', () => {
     const wgsl = PT_WEBGPU_PATH_TRACE_MATERIAL_FULL_BINDINGS_GROUP3_WGSL;
     expect(wgsl).toContain('let uvMeta = materialTexDescriptors[base + uvMetaOffset];');
-    expect(wgsl).toContain('let mipCount = f32(textureNumLevels(materialTextures));');
-    expect(wgsl).toContain('let mipCount = f32(textureNumLevels(materialTexturesLinear));');
+    expect(wgsl).toContain('let sourceMipCount = f32(materialTextureSourceMipCount(sourceBaseSize));');
     expect(wgsl).toContain('let mipPolicy = materialTextureMipPolicy(base, mipPolicySlot);');
-    expect(wgsl).toContain('let policyLod = materialTexturePolicyLod(lod, mipCount, mipPolicy);');
+    expect(wgsl).toContain('let policyLod = materialTexturePolicyLod(lod, sourceMipCount, mipPolicy);');
     expect(wgsl).toContain('let filterPolicy = materialTextureFilterPolicy(base, mipPolicySlot);');
-    expect(wgsl).toContain('textureLoad(materialTextures, coord0, layerIdx, lod0u)');
-    expect(wgsl).toContain('textureLoad(materialTexturesLinear, coord0, layerIdx, lod0u)');
-    expect(wgsl).toContain('textureSampleLevel(materialTextures, materialTexSampler, fittedUv, layerIdx, policyLod)');
-    expect(wgsl).toContain('textureSampleLevel(materialTexturesLinear, materialTexSampler, fittedUv, layerIdx, policyLod)');
-    expect(wgsl).toContain('sampleMaterialLayer(i32(materialTexDescriptors[base].x), base, triIndex, baryVW, MATERIAL_TEX_UV_BASE_COLOR');
+    expect(wgsl).toContain('fn sampleMaterialSrgbSourceRect(');
+    expect(wgsl).toContain('fn sampleMaterialLinearSourceRect(');
+    expect(wgsl).toContain('return textureLoad(materialTextures, coord, layerIdx, mip);');
+    expect(wgsl).toContain('return textureLoad(materialTexturesLinear, coord, layerIdx, mip);');
+    expect(wgsl).toContain('return sampleMaterialSrgbSourceRect(');
+    expect(wgsl).toContain('return sampleMaterialLinearSourceRect(');
+    expect(wgsl).toContain('sampleMaterialLayer(i32(materialTexDescriptors[base].x), base, triIndex, baryVW, instanceIndex, MATERIAL_TEX_UV_BASE_COLOR');
     // T1-6 — emissive samples the dedicated rgba16float emissive array.
-    expect(wgsl).toContain('sampleMaterialLayerEmissive(i32(materialTexDescriptors[base].w), base, triIndex, baryVW, MATERIAL_TEX_UV_EMISSIVE');
-    expect(wgsl).toContain('textureSampleLevel(materialTexturesEmissive, materialTexSampler, fittedUv, layerIdx, policyLod)');
+    expect(wgsl).toContain('sampleMaterialLayerEmissive(i32(materialTexDescriptors[base].w), base, triIndex, baryVW, instanceIndex, MATERIAL_TEX_UV_EMISSIVE');
+    expect(wgsl).toContain('fn sampleMaterialEmissiveSourceRect(');
+    expect(wgsl).toContain('return textureLoad(materialTexturesEmissive, coord, layerIdx, mip);');
+    expect(wgsl).toContain('return sampleMaterialEmissiveSourceRect(');
     expect(wgsl).toContain('@group(3) @binding(17) var materialTexturesEmissive: texture_2d_array<f32>;');
-    expect(wgsl).toContain('sampleMaterialLayerLinear(normalIdx, base, triIndex, baryVW, normalUvMetaOffset, normalUvFitScale, normalWrapMode');
+    expect(wgsl).toContain('sampleMaterialLayerLinear(normalIdx, base, triIndex, baryVW, instanceIndex, normalUvMetaOffset, normalUvFitScale, normalWrapMode');
     expect(wgsl).toContain('normalMipPolicySlot = select(MATERIAL_TEX_MIP_BACK_LAYER_NORMAL, MATERIAL_TEX_MIP_FRONT_LAYER_NORMAL, isFrontFace);');
     expect(wgsl).toContain('MATERIAL_TEX_UV_ROUGHNESS');
     expect(wgsl).toContain('MATERIAL_TEX_UV_METALLIC');
-    expect(wgsl).toContain('sampleMaterialLayerLinear(aoIdx, base, triIndex, baryVW, MATERIAL_TEX_UV_AO');
-    expect(wgsl).toContain('sampleMaterialLayerLinear(lmIdx, base, triIndex, baryVW, MATERIAL_TEX_UV_LIGHT');
-    expect(wgsl).toContain('sampleMaterialLayerLinear(anisoIdx, base, triIndex, baryVW, MATERIAL_TEX_UV_ANISOTROPY');
-    expect(wgsl).toContain('sampleMaterialLayerLinearRawUvPolicy(bumpIdx, base, triIndex, baryVW, rawUv, MATERIAL_TEX_UV_BUMP');
-    expect(wgsl).toContain('sampleMaterialLayerLinear(alphaIdx, base, triIndex, baryVW, MATERIAL_TEX_UV_ALPHA');
-    expect(wgsl).toContain('sampleMaterialLayerLinear(transmissionIdx, base, triIndex, baryVW, MATERIAL_TEX_UV_TRANSMISSION');
-    expect(wgsl).toContain('sampleMaterialLayerLinear(thicknessIdx, base, triIndex, baryVW, MATERIAL_TEX_UV_THICKNESS');
-    expect(wgsl).toContain('sampleMaterialLayerLinear(idx, base, triIndex, baryVW, MATERIAL_TEX_UV_CLEARCOAT');
-    expect(wgsl).toContain('sampleMaterialLayer(idx, base, triIndex, baryVW, MATERIAL_TEX_UV_SHEEN_COLOR');
-    expect(wgsl).toContain('sampleMaterialLayer(idx, base, triIndex, baryVW, MATERIAL_TEX_UV_SPECULAR_COLOR');
-    expect(wgsl).toContain('sampleMaterialLayerLinear(idx, base, triIndex, baryVW, MATERIAL_TEX_UV_SPECULAR_INTENSITY');
+    expect(wgsl).toContain('sampleMaterialLayerLinear(aoIdx, base, triIndex, baryVW, instanceIndex, MATERIAL_TEX_UV_AO');
+    expect(wgsl).toContain('sampleMaterialLayerLinear(lmIdx, base, triIndex, baryVW, instanceIndex, MATERIAL_TEX_UV_LIGHT');
+    expect(wgsl).toContain('sampleMaterialLayerLinear(anisoIdx, base, triIndex, baryVW, instanceIndex, MATERIAL_TEX_UV_ANISOTROPY');
+    expect(wgsl).toContain('sampleMaterialLayerLinearRawUvPolicy(bumpIdx, base, triIndex, baryVW, instanceIndex, rawUv, MATERIAL_TEX_UV_BUMP');
+    expect(wgsl).toContain('sampleMaterialLayerLinear(alphaIdx, base, triIndex, baryVW, instanceIndex, MATERIAL_TEX_UV_ALPHA');
+    expect(wgsl).toContain('sampleMaterialLayerLinear(transmissionIdx, base, triIndex, baryVW, instanceIndex, MATERIAL_TEX_UV_TRANSMISSION');
+    expect(wgsl).toContain('sampleMaterialLayerLinear(thicknessIdx, base, triIndex, baryVW, instanceIndex, MATERIAL_TEX_UV_THICKNESS');
+    expect(wgsl).toContain('sampleMaterialLayerLinear(idx, base, triIndex, baryVW, instanceIndex, MATERIAL_TEX_UV_CLEARCOAT');
+    expect(wgsl).toContain('sampleMaterialLayer(idx, base, triIndex, baryVW, instanceIndex, MATERIAL_TEX_UV_SHEEN_COLOR');
+    expect(wgsl).toContain('sampleMaterialLayer(idx, base, triIndex, baryVW, instanceIndex, MATERIAL_TEX_UV_SPECULAR_COLOR');
+    expect(wgsl).toContain('sampleMaterialLayerLinear(idx, base, triIndex, baryVW, instanceIndex, MATERIAL_TEX_UV_SPECULAR_INTENSITY');
     expect(wgsl).toContain('clearcoatNormalIdx,');
     expect(wgsl).not.toContain('All maps of a material share its baseColor UV transform');
   });
@@ -1053,16 +1058,16 @@ describe('material-texture host↔WGSL contract (P2 lockstep)', () => {
     expect(wgsl).toContain('fn sampleMaterialLayerLinearRawUvPolicy(');
     expect(wgsl).toContain('let mipPolicy = materialTextureMipPolicy(base, mipPolicySlot);');
     expect(wgsl).toContain('let filterPolicy = materialTextureFilterPolicy(base, mipPolicySlot);');
-    expect(wgsl).toContain('textureSampleLevel(materialTexturesLinear, materialTexSampler, fittedUv, layerIdx, policyLod)');
+    expect(wgsl).toContain('return sampleMaterialLinearSourceRect(');
     expect(wgsl).toContain('MATERIAL_TEX_MIP_BUMP');
-    expect(wgsl).toContain('let rawUv0 = uva.xy * u + uvb.xy * v + uvc.xy * w;');
-    expect(wgsl).toContain('let rawUv1 = uva.zw * u + uvb.zw * v + uvc.zw * w;');
+    expect(wgsl).toContain('fn materialUvForVertex(vertexIndex: u32, gpuUvSlot: u32) -> vec2f');
+    expect(wgsl).toContain('materialUvForVertex(tri.x, bumpGpuUvSlot) * u');
     expect(wgsl).toContain('let linearDims = vec2f(textureDimensions(materialTexturesLinear, 0));');
     expect(wgsl).toContain('let sourceDims = max(linearDims * bumpUvFitScale, vec2f(1.0));');
     expect(wgsl).toContain('let texelStep = vec2f(1.0 / sourceDims.x, 1.0 / sourceDims.y);');
     expect(wgsl).toContain('rawUv + vec2f(texelStep.x, 0.0)');
     expect(wgsl).toContain('rawUv + vec2f(0.0, texelStep.y)');
-    expect(wgsl).not.toContain('textureSampleLevel(materialTexturesLinear, materialTexSampler, fittedUv, layerIdx, 0.0)');
+    expect(wgsl).not.toContain('textureSampleLevel(materialTexturesLinear');
     expect(wgsl).not.toContain('1.0 / 512.0');
   });
 });

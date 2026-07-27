@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createHash } from 'node:crypto';
 import { PT_WEBGPU_TRACE_LITE_WGSL } from '../wgsl/pathTraceBruteforceLite.wgsl.js';
+import { activeLayerWeightRgbOracle } from './spectralScalarOracle.js';
 
 // ── Theme-C byte-identity pin ───────────────────────────────────────────────
 // See wgslContract.test.ts for the rationale. The lite-tier composed trace must
@@ -124,8 +125,21 @@ describe('pt-webgpu lite WGSL byte-identity (Theme-C dedup pin)', () => {
     // RENDER-CHANGING for rough anisotropic materials.
     // Re-pinned 2026-06-21: ptRngFrameKey preserves PCG's old frameSeed^frameIndex
     // expression while letting Sobol use a monotonic sample key in the opt-in module.
-    expect(digest).toBe('3bb32f0c477805a0685da0b407f94ad887ab293c73a54bb6ed2f350a706d77e9');
-    expect(PT_WEBGPU_TRACE_LITE_WGSL.length).toBe(161995);
+    // Re-pinned 2026-07-23: distant-direct (environment/directional) proposal
+    // selection is now separated from finite-emitter light-tree selection so
+    // both proposal families retain their own normalized PDFs and MIS ownership.
+    // Re-pinned 2026-07-23: lite now honors MaterialSpec.doubleSided in both
+    // closest-hit and visibility traversal while preserving transmissive exits.
+    // Re-pinned 2026-07-24: exact-zero delta classification and the
+    // transmission-aware finite-BSDF helper are now shared with the full tier.
+    // Re-pinned 2026-07-27: transmissive eval/PDF/sampling now share the same
+    // coloured KHR specular/iridescence Fresnel model as the full tier.
+    // Re-pinned 2026-07-27: removed unread CMF/light-direction UBO payload and
+    // made cameraPos a semantic vec3f beside the live HDRI-intensity scalar.
+    // Re-pinned 2026-07-27: finite-BSDF sampling now shares one finalization
+    // path instead of retaining obsolete per-caller normalization helpers.
+    expect(digest).toBe('a64a28a322ecfa192f0b1b5a536fe57102fcf4436c6cdc1fedb38b22216de1db');
+    expect(PT_WEBGPU_TRACE_LITE_WGSL.length).toBe(207789);
   });
 });
 
@@ -140,8 +154,8 @@ describe('pt-webgpu lite WGSL contract', () => {
     expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('specularIntensity: f32,');
   });
 
-  it('routes lite scalar extension lobes through full BRDF helpers with zero anisotropy', () => {
-    expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('let brdf = evaluateBrdfFull(');
+  it('routes lite scalar extension lobes through transmission-aware full BRDF helpers with zero anisotropy', () => {
+    expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('let brdf = evaluateFiniteBsdfFullWithClearcoatNormal(');
     expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('let brdfPdf = brdfDirectionalPdfFullSampled(');
     expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('mat.clearcoatRoughness,');
     expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('0.0, 0.0);');
@@ -156,6 +170,21 @@ describe('pt-webgpu lite WGSL contract', () => {
     expect(PT_WEBGPU_TRACE_LITE_WGSL).not.toMatch(
       /_ = throughputAtVertex;\s+return vec3f\(0\.0\);\s+}\s+fn bsdfEnvironmentConnectionContribution/,
     );
+  });
+
+  it('keeps finite-emitter measures exact and MIS-accountable across rough transmission', () => {
+    expect(PT_WEBGPU_TRACE_LITE_WGSL).not.toContain('max(PI * rradL * rradL, 1e-6)');
+    expect(PT_WEBGPU_TRACE_LITE_WGSL).not.toContain('max(4.0 * length(cross(ru, rv)), 1e-6)');
+    expect(PT_WEBGPU_TRACE_LITE_WGSL).not.toContain('max(cosLight * area, 1e-6)');
+    expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('let nDotL = abs(dot(normal, wi));');
+    expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('let brdf = evaluateFiniteBsdfFullWithClearcoatNormal(');
+    expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain(
+      'let offsetNormal = select(-normal, normal, dot(normal, wi) > 0.0);',
+    );
+    expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain(
+      'envDir = uniformSphere(vec2f(rand_f32(&rng), rand_f32(&rng)));',
+    );
+    expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('envPdf = 0.25 * INV_PI;');
   });
 
   it('passes scalar clearcoat and sheen into the lite main bounce sampler', () => {
@@ -190,19 +219,41 @@ describe('pt-webgpu lite WGSL contract', () => {
     expect(PT_WEBGPU_TRACE_LITE_WGSL).not.toContain('Procedural-sky fallback: uniform-sphere sample + sky eval.');
   });
 
-  it('gates emissive-on-hit to camera + refraction paths (camera-visible emitters)', () => {
+  it('gates emissive-on-hit to paths without an MIS-accountable prior event', () => {
     // Mirrors the full-tier gate so lite emitters are also camera-visible without
-    // double-counting against the analytic BSDF↔light connection.
+    // double-counting against the analytic BSDF↔light connection. Rough
+    // transmission has a finite directional density and remains MIS-accountable;
+    // only camera/delta events bypass the connection.
     expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('var prevSampleAllowsAreaMis = false;');
     expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('if (!prevSampleAllowsAreaMis) {');
     expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('prevSampleAllowsAreaMis = sampleAllowsAreaMis;');
   });
 
   // Theme-D — the shared material FUNCS block (activeLayerWeightRgb) is composed
+
+  it('suppresses the raw environment miss after an MIS-accounted BSDF connection', () => {
+    expect(PT_WEBGPU_TRACE_LITE_WGSL).toMatch(
+      /if \(!hit\.didHit\) \{[\s\S]*?if \(!prevSampleAllowsAreaMis\) \{[\s\S]*?radiance = radiance \+ throughput \* envContribution;[\s\S]*?\}\s*break;/,
+    );
+    const rawMissAdds = (
+      PT_WEBGPU_TRACE_LITE_WGSL.match(
+        /radiance = radiance \+ throughput \* envContribution;/g,
+      ) ?? []
+    ).length;
+    expect(rawMissAdds).toBe(1);
+    expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain(
+      'radiance = radiance + bsdfEnvironmentConnectionContribution(',
+    );
+  });
   // into the lite tier too; LUMINANCE_WGSL is composed ahead of it
   // (pathTraceBruteforceLite.wgsl.ts:24), so the dedup applies in lite as well.
-  it('activeLayerWeightRgb uses canonical luminance() in the lite tier', () => {
-    expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('let lum = max(luminance(layerRgb), 0.0);');
+  it('activeLayerWeightRgb stays scalar at the hero wavelength in the lite tier', () => {
+    const blue = activeLayerWeightRgbOracle([0.1, 0.2, 1], 440, true);
+    const red = activeLayerWeightRgbOracle([0.1, 0.2, 1], 650, true);
+    expect(blue[0]).toBe(blue[1]);
+    expect(blue[1]).toBe(blue[2]);
+    expect(blue[0]).toBeGreaterThan(red[0]);
+    expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('spectralRgbFactorAtHero(layerRgb, heroLambda)');
     const inlineDots = (
       PT_WEBGPU_TRACE_LITE_WGSL.match(/dot\([^)]*vec3f\(0\.2126, 0\.7152, 0\.0722\)\)/g) ?? []
     ).length;

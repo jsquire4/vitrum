@@ -56,11 +56,9 @@ describe('makePerDevicePipelineCache', () => {
 
 describe('acquireDenoiseDevice', () => {
   it('returns the provided device and a no-op dispose when device is passed', async () => {
-    // The navigator.gpu guard runs first (matching every dispatcher's original
-    // preamble), so a minimal stub is installed regardless of host WebGPU. The
-    // explicit-device branch then returns the device verbatim and must NEVER
-    // destroy it — the host owns the device lifecycle.
-    vi.stubGlobal('navigator', { gpu: {} });
+    // Explicit devices are usable in workers/test hosts without navigator.gpu;
+    // the caller owns the device lifecycle.
+    vi.stubGlobal('navigator', undefined);
     try {
       const destroy = vi.fn();
       const fakeDevice = { destroy } as unknown as GPUDevice;

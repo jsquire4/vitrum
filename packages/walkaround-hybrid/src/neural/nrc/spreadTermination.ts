@@ -58,16 +58,45 @@ export interface PathSegment {
   readonly cosTheta: number;
 }
 
+const SPREAD_MAX_FINITE_F32 = Math.fround(3.402823466e38);
+const SPREAD_MAX_ROOT_F32 = Math.fround(1.844674297e19);
+
 /**
- * The per-segment spread term sqrt( d² / (p · |cosθ|) ). Guards against a
- * zero/near-zero denominator (degenerate grazing or delta-pdf) by clamping to a
- * tiny epsilon — a degenerate segment yields a very LARGE spread term, which
- * makes the path terminate early (the correct conservative behaviour: we cannot
- * usefully extend a path whose footprint has blown up).
+ * GPU-f32 oracle for sqrt(d² / (p · |cosθ|)). Ordinary values use direct f32
+ * arithmetic. If p·|cosθ| over/underflows, the same ratio is evaluated in log2
+ * space. Saturation occurs only at sqrt(max-finite-f32), the representability
+ * boundary required to keep the squared footprint finite.
  */
 export function segmentSpreadTerm(seg: PathSegment): number {
-  const denom = Math.max(seg.pdf * Math.abs(seg.cosTheta), 1e-12);
-  return Math.sqrt((seg.dist * seg.dist) / denom);
+  const dist = Math.fround(seg.dist);
+  const pdf = Math.fround(seg.pdf);
+  const cosTheta = Math.fround(seg.cosTheta);
+  if (!Number.isFinite(dist) || !Number.isFinite(pdf) || !Number.isFinite(cosTheta)) {
+    return SPREAD_MAX_ROOT_F32;
+  }
+  const absCos = Math.abs(cosTheta);
+  if (!(pdf > 0) || !(absCos > 0)) return SPREAD_MAX_ROOT_F32;
+  const absDist = Math.abs(dist);
+  if (absDist === 0) return 0;
+
+  const density = Math.fround(pdf * absCos);
+  let term: number;
+  if (Number.isFinite(density) && density > 0) {
+    term = Math.fround(absDist / Math.fround(Math.sqrt(density)));
+  } else {
+    const logPdfCos = Math.fround(
+      Math.fround(Math.log2(pdf)) + Math.fround(Math.log2(absCos)),
+    );
+    const logTerm = Math.fround(
+      Math.fround(Math.log2(absDist)) - Math.fround(0.5 * logPdfCos),
+    );
+    if (!Number.isFinite(logTerm) || logTerm >= 64) return SPREAD_MAX_ROOT_F32;
+    term = Math.fround(2 ** logTerm);
+  }
+  if (!Number.isFinite(term) || term > SPREAD_MAX_ROOT_F32) {
+    return SPREAD_MAX_ROOT_F32;
+  }
+  return term;
 }
 
 /**
@@ -79,8 +108,32 @@ export function accumulatedSpread(segments: readonly PathSegment[]): Float32Arra
   const out = new Float32Array(segments.length);
   let runningSum = 0;
   for (let i = 0; i < segments.length; i++) {
-    runningSum += segmentSpreadTerm(segments[i]!);
-    out[i] = runningSum * runningSum;
+    const next = Math.fround(runningSum + segmentSpreadTerm(segments[i]!));
+    runningSum = Number.isFinite(next) && next <= SPREAD_MAX_ROOT_F32
+      ? Math.max(next, 0)
+      : SPREAD_MAX_ROOT_F32;
+    out[i] = Math.min(Math.fround(runningSum * runningSum), SPREAD_MAX_FINITE_F32);
+  }
+  return out;
+}
+
+/**
+ * Production termination spread, indexed like `segments`. `segments[0]` is the
+ * camera-to-primary edge and defines a0 separately; it is deliberately excluded
+ * from this running sum. Element 0 is therefore zero, and element k (k >= 1)
+ * mirrors k calls to the WGSL bounce accumulator beginning from runningSum=0.
+ */
+export function accumulatedBounceSpread(
+  segments: readonly PathSegment[],
+): Float32Array {
+  const out = new Float32Array(segments.length);
+  let runningSum = 0;
+  for (let i = 1; i < segments.length; i++) {
+    const next = Math.fround(runningSum + segmentSpreadTerm(segments[i]!));
+    runningSum = Number.isFinite(next) && next <= SPREAD_MAX_ROOT_F32
+      ? Math.max(next, 0)
+      : SPREAD_MAX_ROOT_F32;
+    out[i] = Math.min(Math.fround(runningSum * runningSum), SPREAD_MAX_FINITE_F32);
   }
   return out;
 }
@@ -89,7 +142,7 @@ export function accumulatedSpread(segments: readonly PathSegment[]): Float32Arra
 export function primarySpread(segments: readonly PathSegment[]): number {
   if (segments.length === 0) return 0;
   const t0 = segmentSpreadTerm(segments[0]!);
-  return t0 * t0;
+  return Math.min(Math.fround(t0 * t0), SPREAD_MAX_FINITE_F32);
 }
 
 export interface SpreadTerminationResult {
@@ -120,7 +173,7 @@ export function evaluateSpreadTermination(
   c: number,
 ): SpreadTerminationResult {
   const a0 = primarySpread(segments);
-  const acc = accumulatedSpread(segments);
+    const acc = accumulatedBounceSpread(segments);
   // Start at segment index 1: never terminate at the primary vertex (k=0).
   for (let k = 1; k < segments.length; k++) {
     if (acc[k]! > c * a0) {

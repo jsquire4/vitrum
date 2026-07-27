@@ -1,11 +1,13 @@
+import { NEURAL_FINITE_WGSL } from '../preprocessing.js';
+
 /**
  * transposedConv2d.wgsl.ts — 2D transposed convolution (deconvolution) kernel.
  *
- * Matches PyTorch ConvTranspose2d(kernel_size=2, stride=2, padding=0):
- *   outputH = inputH * stride   (when padding=0, kH=2, stride=2)
- *   outputW = inputW * stride
- *
- * Uses kH=2, padding=0, so output = input × stride exactly.
+ * Matches PyTorch ConvTranspose2d:
+ *   outputH = (inputH - 1) * stride - 2 * padding
+ *           + dilation * (kH - 1) + outputPadding + 1
+ *   outputW = (inputW - 1) * stride - 2 * padding
+ *           + dilation * (kW - 1) + outputPadding + 1
  *
  * Weight layout: IOKW — inputC × outputC × kH × kW (standard PyTorch ConvTranspose2d).
  * Each weight at [i, o, kh, kw] → index: i*outC*kH*kW + o*kH*kW + kh*kW + kw
@@ -20,7 +22,7 @@
  * Workgroup: 8×8×1 over (outH, outW, outC).
  */
 
-export const TRANSPOSED_CONV2D_WGSL = /* wgsl */`
+export const TRANSPOSED_CONV2D_WGSL = /* wgsl */`${NEURAL_FINITE_WGSL}
 struct TConv2DParams {
   inputH  : u32,
   inputW  : u32,
@@ -30,6 +32,10 @@ struct TConv2DParams {
   kW      : u32,   // kernel width  (vitrum U-Net uses kW=2)
   stride  : u32,   // (vitrum U-Net uses stride=2)
   padding : u32,   // (vitrum U-Net uses padding=0)
+  dilation: u32,   // kernel spacing (vitrum U-Net uses dilation=1)
+  outputPadding: u32, // output-shape adjustment (vitrum U-Net uses 0)
+  _reserved0: u32,
+  _reserved1: u32,
 }
 
 // Canonical binding layout:
@@ -42,9 +48,14 @@ struct TConv2DParams {
 
 @compute @workgroup_size(8, 8, 1)
 fn transposedConv2dMain(@builtin(global_invocation_id) gid: vec3<u32>) {
-  // Output size: inputH*stride × inputW*stride (for kH=2, stride=2, padding=0)
-  let outH = params.inputH * params.stride;
-  let outW = params.inputW * params.stride;
+  let effectiveKH = params.dilation * (params.kH - 1u) + 1u;
+  let effectiveKW = params.dilation * (params.kW - 1u) + 1u;
+  // Add all positive terms before subtracting padding so valid shapes cannot
+  // transiently underflow u32 arithmetic.
+  let outH = (params.inputH - 1u) * params.stride
+           + effectiveKH + params.outputPadding - 2u * params.padding;
+  let outW = (params.inputW - 1u) * params.stride
+           + effectiveKW + params.outputPadding - 2u * params.padding;
 
   let oy = gid.x;  // output row
   let ox = gid.y;  // output col
@@ -52,22 +63,26 @@ fn transposedConv2dMain(@builtin(global_invocation_id) gid: vec3<u32>) {
 
   if (oy >= outH || ox >= outW || oc >= params.outC) { return; }
 
-  var acc: f32 = biases[oc];
+  var acc: f32 = neuralSanitizeSigned(biases[oc]);
 
   // Transposed convolution: output(oy, ox) accumulates from input pixels
   // whose strided conv would have contributed to (oy, ox).
   // Equivalent: for each input (iy, ix), add input[iy,ix,ic] * weight[ic,oc,oy-iy*s, ox-ix*s]
   // when oy-iy*s ∈ [0, kH) and ox-ix*s ∈ [0, kW).
   for (var kh: u32 = 0u; kh < params.kH; kh++) {
-    if (oy < kh) { continue; }
-    let iy_r = oy - kh;
+    let oyPadded = oy + params.padding;
+    let khOffset = kh * params.dilation;
+    if (oyPadded < khOffset) { continue; }
+    let iy_r = oyPadded - khOffset;
     if (iy_r % params.stride != 0u) { continue; }
     let iy = iy_r / params.stride;
     if (iy >= params.inputH) { continue; }
 
     for (var kw: u32 = 0u; kw < params.kW; kw++) {
-      if (ox < kw) { continue; }
-      let ix_r = ox - kw;
+      let oxPadded = ox + params.padding;
+      let kwOffset = kw * params.dilation;
+      if (oxPadded < kwOffset) { continue; }
+      let ix_r = oxPadded - kwOffset;
       if (ix_r % params.stride != 0u) { continue; }
       let ix = ix_r / params.stride;
       if (ix >= params.inputW) { continue; }
@@ -80,13 +95,15 @@ fn transposedConv2dMain(@builtin(global_invocation_id) gid: vec3<u32>) {
                  + oc * params.kH * params.kW
                  + kh * params.kW
                  + kw;
-        acc += input[inIdx] * weights[wIdx];
+        acc = neuralSanitizeSigned(
+          acc + neuralSanitizeSigned(input[inIdx]) * neuralSanitizeSigned(weights[wIdx]),
+        );
       }
     }
   }
 
   // Output index: [oy, ox, oc]
   let outIdx = oy * outW * params.outC + ox * params.outC + oc;
-  output[outIdx] = acc;
+  output[outIdx] = neuralSanitizeSigned(acc);
 }
 `;

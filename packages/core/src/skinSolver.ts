@@ -41,7 +41,54 @@
  * `@vitrum/walkaround-hybrid`) is shipped and gives ~10× headroom.
  */
 
-import type { SkinnedMeshPrimitive } from './scene/primitives.js';
+import {
+  getPrimitiveUvSet,
+  sparseArrayHasDefinedEntry,
+  sparseArrayOwnIndices,
+  type PrimitiveUvSets,
+  type SkinnedMeshPrimitive,
+} from './scene/primitives.js';
+
+function assertFiniteFloat32Array(value: unknown, label: string): asserts value is Float32Array {
+  if (!(value instanceof Float32Array)) {
+    throw new TypeError(`solveSkin: ${label} must be a Float32Array.`);
+  }
+  for (let index = 0; index < value.length; index += 1) {
+    const component = value[index];
+    if (!Number.isFinite(component)) {
+      throw new Error(`solveSkin: ${label}[${index}] is not finite (${String(component)}).`);
+    }
+  }
+}
+
+function isRuntimeArray(value: unknown): boolean {
+  return Array.isArray(value);
+}
+
+function assertMorphStream(
+  stream: readonly Float32Array[] | undefined,
+  targetCount: number,
+  expectedLength: number,
+  streamName: string,
+  baseName: string,
+): void {
+  if (stream == null) return;
+  if (!isRuntimeArray(stream)) {
+    throw new TypeError(`solveSkin: ${streamName} must be an array.`);
+  }
+  if (stream.length !== targetCount) {
+    throw new Error(`solveSkin: ${streamName} length ${stream.length} != morphTargets ${targetCount}.`);
+  }
+  for (let target = 0; target < stream.length; target += 1) {
+    const delta = stream[target];
+    assertFiniteFloat32Array(delta, `${streamName}[${target}]`);
+    if (delta.length !== expectedLength) {
+      throw new Error(
+        `solveSkin: ${streamName}[${target}] length ${delta.length} != ${baseName} ${expectedLength}.`,
+      );
+    }
+  }
+}
 
 /**
  * Multiply two column-major 4x4 matrices: `out[outOff..+16] = a[aOff..+16] · b[bOff..+16]`.
@@ -76,6 +123,19 @@ export function combineSkinMatrices(
   boneInverses: Float32Array,
   boneCount: number,
 ): Float32Array {
+  assertFiniteFloat32Array(bones, 'bones');
+  assertFiniteFloat32Array(boneInverses, 'boneInverses');
+  if (!Number.isSafeInteger(boneCount) || boneCount <= 0) {
+    throw new Error(`solveSkin: boneCount must be a positive safe integer (got ${String(boneCount)}).`);
+  }
+  if (bones.length !== boneCount * 16) {
+    throw new Error(`solveSkin: bones length ${bones.length} expected ${boneCount * 16}.`);
+  }
+  if (boneInverses.length !== bones.length) {
+    throw new Error(
+      `solveSkin: boneInverses length ${boneInverses.length} != bones length ${bones.length}.`,
+    );
+  }
   const combined = new Float32Array(boneCount * 16);
   for (let i = 0; i < boneCount; i++) {
     const off = i * 16;
@@ -188,33 +248,57 @@ export function solveSkin(
   outTangents?: Float32Array,
   outUvs?: Float32Array,
   outUv1?: Float32Array,
+  outUvSets?: PrimitiveUvSets,
 ): {
   positions: Float32Array;
   normals: Float32Array;
   tangents?: Float32Array;
   uvs?: Float32Array;
   uv1?: Float32Array;
+  uvSets?: PrimitiveUvSets;
 } {
+  assertFiniteFloat32Array(prim.positions, 'positions');
+  assertFiniteFloat32Array(prim.normals, 'normals');
+  if (prim.positions.length === 0 || prim.positions.length % 3 !== 0) {
+    throw new Error(
+      `solveSkin: positions length ${prim.positions.length} must be a positive multiple of 3.`,
+    );
+  }
   const vertCount = prim.positions.length / 3;
+  const influencesPerVertex = prim.skinInfluencesPerVertex ?? 4;
+  if (!Number.isSafeInteger(influencesPerVertex) || influencesPerVertex <= 0) {
+    throw new Error(
+      `solveSkin: skinInfluencesPerVertex must be a positive safe integer (got ${String(influencesPerVertex)}).`,
+    );
+  }
   if (prim.normals.length !== vertCount * 3) {
     throw new Error(
       `solveSkin: normals length ${prim.normals.length} does not match positions ${prim.positions.length}.`,
     );
   }
-  if (prim.skinIndices.length !== vertCount * 4) {
+  if (!(prim.skinIndices instanceof Uint32Array)) {
+    throw new TypeError('solveSkin: skinIndices must be a Uint32Array.');
+  }
+  if (!(prim.skinWeights instanceof Float32Array)) {
+    throw new TypeError('solveSkin: skinWeights must be a Float32Array.');
+  }
+  const expectedInfluenceCount = vertCount * influencesPerVertex;
+  if (prim.skinIndices.length !== expectedInfluenceCount) {
     throw new Error(
-      `solveSkin: skinIndices length ${prim.skinIndices.length} expected ${vertCount * 4}.`,
+      `solveSkin: skinIndices length ${prim.skinIndices.length} expected ${expectedInfluenceCount}.`,
     );
   }
-  if (prim.skinWeights.length !== vertCount * 4) {
+  if (prim.skinWeights.length !== expectedInfluenceCount) {
     throw new Error(
-      `solveSkin: skinWeights length ${prim.skinWeights.length} expected ${vertCount * 4}.`,
+      `solveSkin: skinWeights length ${prim.skinWeights.length} expected ${expectedInfluenceCount}.`,
     );
   }
-  const boneCount = prim.bones.length / 16;
-  if (boneCount === 0 || boneCount * 16 !== prim.bones.length) {
+  assertFiniteFloat32Array(prim.bones, 'bones');
+  assertFiniteFloat32Array(prim.boneInverses, 'boneInverses');
+  if (prim.bones.length === 0 || prim.bones.length % 16 !== 0) {
     throw new Error(`solveSkin: bones length ${prim.bones.length} not a multiple of 16.`);
   }
+  const boneCount = prim.bones.length / 16;
   if (prim.boneInverses.length !== boneCount * 16) {
     throw new Error(
       `solveSkin: boneInverses length ${prim.boneInverses.length} != bones length ${prim.bones.length}.`,
@@ -235,14 +319,139 @@ export function solveSkin(
     }
   }
   for (let vertex = 0; vertex < vertCount; vertex += 1) {
-    const offset = vertex * 4;
-    const sum =
-      prim.skinWeights[offset]! +
-      prim.skinWeights[offset + 1]! +
-      prim.skinWeights[offset + 2]! +
-      prim.skinWeights[offset + 3]!;
+    const offset = vertex * influencesPerVertex;
+    let sum = 0;
+    for (let influence = 0; influence < influencesPerVertex; influence += 1) {
+      sum += prim.skinWeights[offset + influence]!;
+    }
     if (Math.abs(sum - 1) > 1e-4) {
       throw new Error(`solveSkin: skinWeights for vertex ${vertex} sum to ${sum}; expected 1.`);
+    }
+  }
+
+  if (prim.uvs != null) assertFiniteFloat32Array(prim.uvs, 'uvs');
+  if (prim.uv1 != null) assertFiniteFloat32Array(prim.uv1, 'uv1');
+  if (prim.uvSets != null) {
+    if (!isRuntimeArray(prim.uvSets)) {
+      throw new TypeError('solveSkin: uvSets must be an array.');
+    }
+    for (const texCoord of sparseArrayOwnIndices(prim.uvSets)) {
+      const stream = prim.uvSets[texCoord];
+      if (stream == null) continue;
+      assertFiniteFloat32Array(stream, `uvSets[${texCoord}]`);
+      if (stream.length !== vertCount * 2) {
+        throw new Error(
+          `solveSkin: uvSets[${texCoord}] length ${stream.length} expected ${vertCount * 2}.`,
+        );
+      }
+    }
+  }
+  if (prim.tangents != null) assertFiniteFloat32Array(prim.tangents, 'tangents');
+
+  const morphTargets = prim.morphTargets;
+  const morphRelatedWithoutPositions =
+    morphTargets == null && (
+      prim.morphWeights != null || prim.morphTargetNormals != null ||
+      prim.morphTargetTangents != null || prim.morphTargetUvs != null ||
+      prim.morphTargetUv1s != null || prim.morphTargetUvSets != null
+    );
+  if (morphRelatedWithoutPositions) {
+    throw new Error('solveSkin: morphTargets are required when morph weights or delta streams are supplied.');
+  }
+  if (morphTargets != null) {
+    if (!isRuntimeArray(morphTargets)) {
+      throw new TypeError('solveSkin: morphTargets must be an array.');
+    }
+    const targetCount = morphTargets.length;
+    for (let target = 0; target < targetCount; target += 1) {
+      const delta = morphTargets[target];
+      assertFiniteFloat32Array(delta, `morphTargets[${target}]`);
+      if (delta.length !== prim.positions.length) {
+        throw new Error(
+          `solveSkin: morphTargets[${target}] length ${delta.length} != positions ${prim.positions.length}.`,
+        );
+      }
+    }
+    if (prim.morphWeights != null) {
+      assertFiniteFloat32Array(prim.morphWeights, 'morphWeights');
+      if (prim.morphWeights.length !== targetCount) {
+        throw new Error(
+          `solveSkin: morphWeights length ${prim.morphWeights.length} != morphTargets ${targetCount}.`,
+        );
+      }
+    }
+    assertMorphStream(
+      prim.morphTargetNormals,
+      targetCount,
+      prim.normals.length,
+      'morphTargetNormals',
+      'normals',
+    );
+    if (prim.morphTargetTangents != null && prim.tangents == null) {
+      throw new Error('solveSkin: morphTargetTangents supplied but primitive has no tangents stream.');
+    }
+    assertMorphStream(
+      prim.morphTargetTangents,
+      targetCount,
+      vertCount * 3,
+      'morphTargetTangents',
+      'tangents',
+    );
+    if (prim.morphTargetUvs != null && prim.uvs == null) {
+      throw new Error('solveSkin: morphTargetUvs supplied but primitive has no uvs stream.');
+    }
+    assertMorphStream(
+      prim.morphTargetUvs,
+      targetCount,
+      vertCount * 2,
+      'morphTargetUvs',
+      'uvs',
+    );
+    if (prim.morphTargetUv1s != null && prim.uv1 == null) {
+      throw new Error('solveSkin: morphTargetUv1s supplied but primitive has no uv1 stream.');
+    }
+    assertMorphStream(
+      prim.morphTargetUv1s,
+      targetCount,
+      vertCount * 2,
+      'morphTargetUv1s',
+      'uv1',
+    );
+    if (prim.morphTargetUvSets != null) {
+      if (!isRuntimeArray(prim.morphTargetUvSets)) {
+        throw new TypeError('solveSkin: morphTargetUvSets must be an array.');
+      }
+      for (const texCoord of sparseArrayOwnIndices(prim.morphTargetUvSets)) {
+        const targets = prim.morphTargetUvSets[texCoord];
+        if (targets == null) continue;
+        if (getPrimitiveUvSet(prim, texCoord) == null) {
+          throw new Error(
+            `solveSkin: morphTargetUvSets[${texCoord}] supplied but primitive has no uvSets[${texCoord}] stream.`,
+          );
+        }
+        assertMorphStream(
+          targets,
+          targetCount,
+          vertCount * 2,
+          `morphTargetUvSets[${texCoord}]`,
+          `uvSets[${texCoord}]`,
+        );
+      }
+    }
+  }
+
+  const bm = prim.bindMatrix;
+  const bmi = prim.bindMatrixInverse;
+  if ((bm == null) !== (bmi == null)) {
+    throw new Error('solveSkin: bindMatrix and bindMatrixInverse must be supplied together.');
+  }
+  if (bm != null && bmi != null) {
+    assertFiniteFloat32Array(bm, 'bindMatrix');
+    assertFiniteFloat32Array(bmi, 'bindMatrixInverse');
+    if (bm.length !== 16 || bmi.length !== 16) {
+      throw new Error(
+        'solveSkin: bindMatrix / bindMatrixInverse must be 16-element column-major matrices.',
+      );
     }
   }
 
@@ -280,6 +489,21 @@ export function solveSkin(
   if (outUv1 != null && outUv1.length !== vertCount * 2) {
     throw new Error(`solveSkin: outUv1 length ${outUv1.length} expected ${vertCount * 2}.`);
   }
+  if (outUvSets != null) {
+    if (!isRuntimeArray(outUvSets)) {
+      throw new TypeError('solveSkin: outUvSets must be an array.');
+    }
+    for (const texCoord of sparseArrayOwnIndices(outUvSets)) {
+      const stream = outUvSets[texCoord];
+      if (stream == null) continue;
+      assertFiniteFloat32Array(stream, `outUvSets[${texCoord}]`);
+      if (stream.length !== vertCount * 2) {
+        throw new Error(
+          `solveSkin: outUvSets[${texCoord}] length ${stream.length} expected ${vertCount * 2}.`,
+        );
+      }
+    }
+  }
 
   const combined = combineSkinMatrices(prim.bones, prim.boneInverses, boneCount);
 
@@ -292,6 +516,7 @@ export function solveSkin(
   let morphedTangents: Float32Array | null = null;
   let morphedUvs: Float32Array | null = null;
   let morphedUv1: Float32Array | null = null;
+  let morphedUvSets: Array<Float32Array | undefined> | null = null;
   if (prim.morphTargets != null && prim.morphWeights != null && prim.morphTargets.length > 0) {
     let anyActive = false;
     for (let t = 0; t < prim.morphWeights.length; t++) {
@@ -324,7 +549,34 @@ export function solveSkin(
         morphedTangents = mt;
         blendMorphStream(mt, prim.morphTargetTangents, prim.morphWeights, tCount, 'morphTargetTangents', 'tangents', true);
       }
-      if (prim.morphTargetUvs != null) {
+      if (prim.morphTargetUvSets != null) {
+        const sets: Array<Float32Array | undefined> = [];
+        for (const texCoord of sparseArrayOwnIndices(prim.morphTargetUvSets)) {
+          const targets = prim.morphTargetUvSets[texCoord];
+          if (targets == null) continue;
+          const base = getPrimitiveUvSet(prim, texCoord);
+          if (base == null) {
+            throw new Error(
+              `solveSkin: morphTargetUvSets[${texCoord}] supplied but primitive has no uvSets[${texCoord}] stream.`,
+            );
+          }
+          const morphed = new Float32Array(base);
+          blendMorphStream(
+            morphed,
+            targets,
+            prim.morphWeights,
+            tCount,
+            `morphTargetUvSets[${texCoord}]`,
+            `uvSets[${texCoord}]`,
+            true,
+          );
+          sets[texCoord] = morphed;
+          if (texCoord === 0) morphedUvs = morphed;
+          if (texCoord === 1) morphedUv1 = morphed;
+        }
+        if (sparseArrayHasDefinedEntry(sets)) morphedUvSets = sets;
+      }
+      if (morphedUvs == null && prim.morphTargetUvs != null) {
         if (prim.uvs == null) {
           throw new Error('solveSkin: morphTargetUvs supplied but primitive has no uvs stream.');
         }
@@ -332,7 +584,7 @@ export function solveSkin(
         morphedUvs = mu;
         blendMorphStream(mu, prim.morphTargetUvs, prim.morphWeights, tCount, 'morphTargetUvs', 'uvs', true);
       }
-      if (prim.morphTargetUv1s != null) {
+      if (morphedUv1 == null && prim.morphTargetUv1s != null) {
         if (prim.uv1 == null) {
           throw new Error('solveSkin: morphTargetUv1s supplied but primitive has no uv1 stream.');
         }
@@ -350,14 +602,7 @@ export function solveSkin(
   // bindMatrix, we must pre-transform rest positions to bind-pose-world
   // space, apply the LBS, then untransform back. glTF-typical hosts skip
   // these branches because `bindMatrix` is identity (omitted).
-  const bm = prim.bindMatrix;
-  const bmi = prim.bindMatrixInverse;
   const hasBind = bm != null && bmi != null;
-  if (hasBind && (bm.length !== 16 || bmi.length !== 16)) {
-    throw new Error(
-      `solveSkin: bindMatrix / bindMatrixInverse must be 16-element column-major matrices.`,
-    );
-  }
 
   // Per-vertex accumulation. We do not allocate a per-vertex 4x4 skinMatrix;
   // instead we accumulate the 12 entries needed for point + direction
@@ -398,10 +643,11 @@ export function solveSkin(
     let s10 = 0, s11 = 0, s12 = 0, s13 = 0;
     let s20 = 0, s21 = 0, s22 = 0, s23 = 0;
 
-    for (let k = 0; k < 4; k++) {
-      const w = prim.skinWeights[v * 4 + k]!;
+    const influenceBase = v * influencesPerVertex;
+    for (let k = 0; k < influencesPerVertex; k++) {
+      const w = prim.skinWeights[influenceBase + k]!;
       if (w === 0) continue;
-      const bIdx = prim.skinIndices[v * 4 + k]!;
+      const bIdx = prim.skinIndices[influenceBase + k]!;
       const off = bIdx * 16;
       // Column-major: m[r + c*4]
       s00 += w * combined[off + 0]!;
@@ -501,16 +747,32 @@ export function solveSkin(
     tangents?: Float32Array;
     uvs?: Float32Array;
     uv1?: Float32Array;
+    uvSets?: PrimitiveUvSets;
   } = tangents != null ? { positions, normals, tangents } : { positions, normals };
-  if (morphedUvs != null) {
-    const uvs = outUvs ?? morphedUvs;
-    if (uvs !== morphedUvs) uvs.set(morphedUvs);
-    result.uvs = uvs;
+  const solvedUvSets: Array<Float32Array | undefined> = [];
+  if (morphedUvSets != null) {
+    for (const texCoord of sparseArrayOwnIndices(morphedUvSets)) {
+      const morphed = morphedUvSets[texCoord];
+      if (morphed == null) continue;
+      const output = outUvSets?.[texCoord] ??
+        (texCoord === 0 ? outUvs : texCoord === 1 ? outUv1 : undefined) ??
+        morphed;
+      if (output !== morphed) output.set(morphed);
+      solvedUvSets[texCoord] = output;
+      if (texCoord === 0) result.uvs = output;
+      if (texCoord === 1) result.uv1 = output;
+    }
+    result.uvSets = solvedUvSets;
   }
-  if (morphedUv1 != null) {
-    const uv1 = outUv1 ?? morphedUv1;
-    if (uv1 !== morphedUv1) uv1.set(morphedUv1);
-    result.uv1 = uv1;
+  if (morphedUvs != null && result.uvs == null) {
+    const output = outUvs ?? morphedUvs;
+    if (output !== morphedUvs) output.set(morphedUvs);
+    result.uvs = output;
+  }
+  if (morphedUv1 != null && result.uv1 == null) {
+    const output = outUv1 ?? morphedUv1;
+    if (output !== morphedUv1) output.set(morphedUv1);
+    result.uv1 = output;
   }
   return result;
 }

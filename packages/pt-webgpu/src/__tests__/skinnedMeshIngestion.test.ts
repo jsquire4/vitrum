@@ -6,7 +6,7 @@
  *    when the skinned-mesh carries bone data.
  * 2. A bones-only `updatePrimitive` patch on a skinned-mesh re-solves and routes
  *    through the geometry fast path (positions in the GPU buffer are updated).
- * 3. A skinned-mesh with zero bones (boneCount=0) is packed as rest-pose (no crash).
+ * 3. Morph and arbitrary UV-set changes are solved and reach the GPU geometry path.
  *
  * The independent CPU expectation is built by running `solveSkin` directly,
  * mirroring how core's skinSolver tests construct a known-pose fixture.
@@ -15,9 +15,11 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { EngineWarning, Scene, SkinnedMeshPrimitive } from '@vitrum/core';
 import { solveSkin } from '@vitrum/core';
+import * as core from '@vitrum/core';
 import { buildPackedScene, scenePackResultFromPacked } from '../scene/uploadSceneBuffers.js';
 import { SceneMutationRouter } from '../sceneMutationRouter.js';
 import type { MutationHost } from '../sceneMutationRouter.js';
+import { installGpuConstStubs } from './gpuStub.js';
 import type { UploadedSceneBuffers } from '../scene/uploadSceneBuffers.js';
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
@@ -41,6 +43,16 @@ function translate4(tx: number, ty: number, tz: number): Float32Array {
     tx, ty, tz, 1,
   ]);
 }
+/** Column-major scale(sx, sy, sz). */
+function scale4(sx: number, sy: number, sz: number): Float32Array {
+  return new Float32Array([
+    sx, 0, 0, 0,
+    0, sy, 0, 0,
+    0, 0, sz, 0,
+    0, 0, 0, 1,
+  ]);
+}
+
 
 /**
  * Build a single-bone skinned-mesh primitive. All vertices are fully influenced
@@ -141,8 +153,44 @@ describe('buildPackedScene — Item 1: skinned-mesh LBS at ingestion', () => {
     expect(packed.positions[2]).toBeCloseTo(0, 4);
     expect(packed.positions[4]).toBeCloseTo(1, 4);
   });
+  it('applies active morphs on a zero-bone rest-pose primitive', () => {
+    const influenceWidth = 8;
+    const skinIndices = new Uint32Array(3 * influenceWidth);
+    const skinWeights = new Float32Array(3 * influenceWidth);
+    for (let vertex = 0; vertex < 3; vertex += 1) {
+      skinWeights[vertex * influenceWidth] = 1;
+    }
+    const prim: SkinnedMeshPrimitive = {
+      ...makeSkinnedPrim({
+        id: 'morph-only',
+        positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+        normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+        bonesMatrix: ident4(),
+      }),
+      bones: new Float32Array(0),
+      boneInverses: new Float32Array(0),
+      skinIndices,
+      skinWeights,
+      skinInfluencesPerVertex: influenceWidth,
+      uvs: new Float32Array([0, 0, 1, 0, 0, 1]),
+      morphTargets: [
+        new Float32Array([2, 0, 0, 0, 0, 0, 0, 0, 0]),
+      ],
+      morphTargetUvs: [
+        new Float32Array([0.25, 0.125, 0, 0, 0, 0]),
+      ],
+      morphWeights: new Float32Array([1]),
+    };
 
-  it('routes initial solveSkin failures through structured warnings when provided', () => {
+    const packed = buildPackedScene(makeScene(prim), {});
+
+    expect(packed.positions[0]).toBeCloseTo(2, 4);
+    expect(packed.uvs[0]).toBeCloseTo(0.25, 4);
+    expect(packed.uvs[1]).toBeCloseTo(0.125, 4);
+  });
+
+
+  it('rejects initial solveSkin failures instead of uploading a rest-pose fallback', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
       const restPositions = new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]);
@@ -158,28 +206,13 @@ describe('buildPackedScene — Item 1: skinned-mesh LBS at ingestion', () => {
       };
       const warnings: EngineWarning[] = [];
 
-      const packed = buildPackedScene(makeScene(prim), {
+      expect(() => buildPackedScene(makeScene(prim), {
         onWarning: (warning) => warnings.push(warning),
         warningPhase: 'setScene',
         warningMethod: 'setScene',
-      });
-
-      expect(packed.positions[0]).toBeCloseTo(0, 4);
-      expect(packed.positions[4]).toBeCloseTo(1, 4);
+      })).toThrow(/solveSkin failed for primitive "bad-bone-inverses".*scene upload was rejected.*boneInverses length/);
       expect(warn).not.toHaveBeenCalled();
-      expect(warnings).toHaveLength(1);
-      expect(warnings[0]!).toMatchObject({
-        code: 'pt-webgpu.set-scene-skin-fallback',
-        backend: 'pt-webgpu',
-        phase: 'setScene',
-        method: 'setScene',
-        details: {
-          primitiveId: 'bad-bone-inverses',
-          fallback: 'rest-pose',
-        },
-      });
-      expect(warnings[0]!.message).toContain('using rest pose');
-      expect(String(warnings[0]!.raw)).toContain('boneInverses length');
+      expect(warnings).toHaveLength(0);
     } finally {
       warn.mockRestore();
     }
@@ -253,52 +286,77 @@ describe('buildPackedScene — Item 1: skinned-mesh LBS at ingestion', () => {
 // ─── bones patch: updatePrimitive re-solves and routes geometry fast path ─────
 
 describe('SceneMutationRouter — Item 1: bones patch re-solves skin', () => {
+  installGpuConstStubs();
   function makeHostWithSkinnedScene(scene: Scene): {
     host: MutationHost;
     sceneRef: { current: Scene };
     positionsWriteCalls: Float32Array[];
     tangentsWriteCalls: Float32Array[];
+    normalsWriteCalls: Float32Array[];
+    uvsWriteCalls: Float32Array[];
   } {
     const packed = buildPackedScene(scene, {});
     const geoPack = scenePackResultFromPacked(packed);
 
     const positionsWriteCalls: Float32Array[] = [];
     const tangentsWriteCalls: Float32Array[] = [];
+    const normalsWriteCalls: Float32Array[] = [];
+    const uvsWriteCalls: Float32Array[] = [];
 
-    const positionsBuffer = {
-      size: Math.max(16, packed.positions.byteLength),
+    const testBuffer = (label: string, byteLength: number): GPUBuffer => ({
+      label,
+      size: Math.max(16, byteLength),
       destroy: vi.fn(),
-    } as unknown as GPUBuffer;
-    const tangentsBuffer = {
-      size: Math.max(16, packed.tangents.byteLength),
-      destroy: vi.fn(),
-    } as unknown as GPUBuffer;
+    } as unknown as GPUBuffer);
+    const positionsBuffer = testBuffer(
+      'vitrum.pt-webgpu.scene.positions',
+      packed.positions.byteLength,
+    );
+    const normalsBuffer = testBuffer(
+      'vitrum.pt-webgpu.scene.normals',
+      packed.normals.byteLength,
+    );
+    const tangentsBuffer = testBuffer(
+      'vitrum.pt-webgpu.scene.tangents',
+      packed.tangents.byteLength,
+    );
+    const uvsBuffer = testBuffer(
+      'vitrum.pt-webgpu.scene.uvs',
+      packed.uvs.byteLength,
+    );
 
     const sceneBuffers: UploadedSceneBuffers = {
       ...packed,
       positionsBuffer,
-      normalsBuffer: { size: Math.max(16, packed.normals.byteLength), destroy: vi.fn() } as unknown as GPUBuffer,
+      normalsBuffer,
       indicesBuffer: { size: Math.max(16, packed.indices.byteLength), destroy: vi.fn() } as unknown as GPUBuffer,
       triMaterialIdsBuffer: { size: Math.max(16, packed.triMaterialIds.byteLength), destroy: vi.fn() } as unknown as GPUBuffer,
       materialsBuffer: { size: Math.max(16, packed.materials.byteLength), destroy: vi.fn() } as unknown as GPUBuffer,
       bvhNodesBuffer: { size: Math.max(16, packed.bvhNodes.byteLength), destroy: vi.fn() } as unknown as GPUBuffer,
+      cwbvhNodeBoundsBuffer: testBuffer('cwbvhNodeBounds', packed.cwbvhNodeBounds.byteLength),
+      cwbvhChildBoundsPackedBuffer: testBuffer('cwbvhChildBoundsPacked', packed.cwbvhChildBoundsPacked.byteLength),
+      cwbvhChildMetaBuffer: testBuffer('cwbvhChildMeta', packed.cwbvhChildMeta.byteLength),
+      cwbvhChildCountBuffer: testBuffer('cwbvhChildCount', packed.cwbvhChildCount.byteLength),
+      cwbvhTlasBlasRootsBuffer: testBuffer('cwbvhTlasBlasRoots', packed.cwbvhTlasBlasRoots.byteLength),
       analyticHeadersBuffer: { size: 16, destroy: vi.fn() } as unknown as GPUBuffer,
       analyticParamsBuffer: { size: 16, destroy: vi.fn() } as unknown as GPUBuffer,
       analyticLocalToWorldBuffer: { size: 16, destroy: vi.fn() } as unknown as GPUBuffer,
       analyticWorldToLocalBuffer: { size: 16, destroy: vi.fn() } as unknown as GPUBuffer,
       environmentMapTexelsBuffer: { size: 16, destroy: vi.fn() } as unknown as GPUBuffer,
       environmentMapCdfBuffer: { size: 16, destroy: vi.fn() } as unknown as GPUBuffer,
+      directionalLightsBuffer: testBuffer('directionalLights', packed.directionalLightsData.byteLength),
       pointLightsBuffer: { size: 16, destroy: vi.fn() } as unknown as GPUBuffer,
       spotLightsBuffer: { size: 16, destroy: vi.fn() } as unknown as GPUBuffer,
       rectAreaLightsBuffer: { size: 16, destroy: vi.fn() } as unknown as GPUBuffer,
       meshAreaLightsBuffer: { size: 16, destroy: vi.fn() } as unknown as GPUBuffer,
+      meshAreaLightSourceFactorsBuffer: testBuffer('meshAreaLightSourceFactors', packed.meshAreaLightSourceFactorsData.byteLength),
       tlasNodesBuffer: { size: Math.max(16, packed.tlasNodes.byteLength), destroy: vi.fn() } as unknown as GPUBuffer,
       tlasInstanceIndicesBuffer: { size: Math.max(16, packed.tlasInstanceIndices.byteLength), destroy: vi.fn() } as unknown as GPUBuffer,
       tlasBlasRootsBuffer: { size: Math.max(16, packed.tlasBlasRoots.byteLength), destroy: vi.fn() } as unknown as GPUBuffer,
       tlasInstanceWorldToLocalBuffer: { size: Math.max(16, packed.tlasInstanceWorldToLocal.byteLength), destroy: vi.fn() } as unknown as GPUBuffer,
       tlasInstanceLocalToWorldBuffer: { size: Math.max(16, packed.tlasInstanceLocalToWorld.byteLength), destroy: vi.fn() } as unknown as GPUBuffer,
       lightTreeBuffer: { size: 16, destroy: vi.fn() } as unknown as GPUBuffer,
-      uvsBuffer: { size: 16, destroy: vi.fn() } as unknown as GPUBuffer,
+      uvsBuffer,
       tangentsBuffer,
       colorsBuffer: { size: Math.max(16, packed.colors.byteLength), destroy: vi.fn() } as unknown as GPUBuffer,
       materialTexDescriptorsBuffer: { size: 16, destroy: vi.fn() } as unknown as GPUBuffer,
@@ -316,18 +374,64 @@ describe('SceneMutationRouter — Item 1: bones patch re-solves skin', () => {
 
     const sceneRef = { current: scene };
 
+    const bytesOf = (data: ArrayBufferView): Uint8Array => new Uint8Array(
+      data.buffer,
+      data.byteOffset,
+      data.byteLength,
+    ).slice();
+    const gpuBytes = new Map<unknown, Uint8Array>([
+      [positionsBuffer, bytesOf(packed.positions)],
+      [normalsBuffer, bytesOf(packed.normals)],
+      [tangentsBuffer, bytesOf(packed.tangents)],
+      [uvsBuffer, bytesOf(packed.uvs)],
+    ]);
+    const writeBuffer = vi.fn((
+      buffer: unknown,
+      byteOffset: number,
+      data: ArrayBuffer,
+      sourceOffset: number,
+      length: number,
+    ) => {
+      const previous = gpuBytes.get(buffer)
+        ?? new Uint8Array(Number((buffer as { size?: number }).size ?? length));
+      previous.set(new Uint8Array(data, sourceOffset, length), byteOffset);
+      gpuBytes.set(buffer, previous);
+    });
+    const copyBufferToBuffer = vi.fn((
+      source: unknown,
+      sourceOffset: number,
+      destination: unknown,
+      destinationOffset: number,
+      length: number,
+    ) => {
+      const sourceBytes = gpuBytes.get(source);
+      if (sourceBytes == null) throw new Error('test source buffer was not uploaded');
+      const destinationBytes = gpuBytes.get(destination)
+        ?? new Uint8Array(Number((destination as { size?: number }).size ?? 0));
+      destinationBytes.set(
+        sourceBytes.subarray(sourceOffset, sourceOffset + length),
+        destinationOffset,
+      );
+      gpuBytes.set(destination, destinationBytes);
+      const snapshot = new Float32Array(destinationBytes.slice().buffer);
+      if (destination === positionsBuffer) positionsWriteCalls.push(snapshot);
+      if (destination === normalsBuffer) normalsWriteCalls.push(snapshot);
+      if (destination === tangentsBuffer) tangentsWriteCalls.push(snapshot);
+      if (destination === uvsBuffer) uvsWriteCalls.push(snapshot);
+    });
+
     const host: MutationHost = {
       device: {
-        queue: {
-          writeBuffer: vi.fn((buf: unknown, _byteOffset: number, data: ArrayBuffer, srcOffset: number, length: number) => {
-            if (buf === positionsBuffer) {
-              positionsWriteCalls.push(new Float32Array(data, srcOffset, Math.floor(length / 4)));
-            }
-            if (buf === tangentsBuffer) {
-              tangentsWriteCalls.push(new Float32Array(data, srcOffset, Math.floor(length / 4)));
-            }
-          }),
-        },
+        createBuffer: vi.fn((desc: GPUBufferDescriptor) => ({
+          label: desc.label,
+          size: Number(desc.size),
+          destroy: vi.fn(),
+        })),
+        createCommandEncoder: vi.fn(() => ({
+          copyBufferToBuffer,
+          finish: vi.fn(() => ({})),
+        })),
+        queue: { writeBuffer, submit: vi.fn() },
       } as unknown as GPUDevice,
       assertLive: vi.fn(),
       getScene: () => sceneRef.current,
@@ -343,8 +447,157 @@ describe('SceneMutationRouter — Item 1: bones patch re-solves skin', () => {
       reset: vi.fn(),
     };
 
-    return { host, sceneRef, positionsWriteCalls, tangentsWriteCalls };
+    return { host, sceneRef, positionsWriteCalls, normalsWriteCalls, tangentsWriteCalls, uvsWriteCalls };
   }
+
+  it('does not solve skin for a non-emissive material-only patch', () => {
+    const prim = makeSkinnedPrim({
+      positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+      normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+      bonesMatrix: ident4(),
+    });
+    const { host, positionsWriteCalls } = makeHostWithSkinnedScene(makeScene(prim));
+    const solve = vi.spyOn(core, 'solveSkin');
+    solve.mockClear();
+
+    try {
+      new SceneMutationRouter(host).updatePrimitive('skinned', {
+        material: {
+          baseColor: [0.5, 0.5, 0.5],
+          roughness: 0.25,
+          metallic: 0,
+        },
+      });
+
+      expect(solve).not.toHaveBeenCalled();
+      expect(positionsWriteCalls).toHaveLength(0);
+    } finally {
+      solve.mockRestore();
+    }
+  });
+
+  it('re-solves when skin weights or bind matrices change', () => {
+    const positions = new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]);
+    const normals = new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]);
+    const vertexCount = positions.length / 3;
+    const skinIndices = new Uint32Array(vertexCount * 4);
+    const initialWeights = new Float32Array(vertexCount * 4);
+    for (let vertex = 0; vertex < vertexCount; vertex += 1) {
+      skinIndices[vertex * 4 + 1] = 1;
+      initialWeights[vertex * 4] = 1;
+    }
+    const bones = new Float32Array(32);
+    bones.set(ident4(), 0);
+    bones.set(translate4(4, 0, 0), 16);
+    const boneInverses = new Float32Array(32);
+    boneInverses.set(ident4(), 0);
+    boneInverses.set(ident4(), 16);
+    const weightedPrimitive: SkinnedMeshPrimitive = {
+      kind: 'skinned-mesh',
+      id: 'skinned',
+      positions,
+      normals,
+      skinIndices,
+      skinWeights: initialWeights,
+      bones,
+      boneInverses,
+      material: { baseColor: [0.5, 0.5, 0.5], roughness: 0.5, metallic: 0 },
+    };
+    const weightedHost = makeHostWithSkinnedScene(makeScene(weightedPrimitive));
+    const nextWeights = new Float32Array(vertexCount * 4);
+    for (let vertex = 0; vertex < vertexCount; vertex += 1) {
+      nextWeights[vertex * 4 + 1] = 1;
+    }
+
+    new SceneMutationRouter(weightedHost.host).updatePrimitive('skinned', {
+      skinWeights: nextWeights,
+    });
+    expect(weightedHost.positionsWriteCalls.at(-1)?.[0]).toBeCloseTo(4, 4);
+
+    const bindPrimitive: SkinnedMeshPrimitive = {
+      ...makeSkinnedPrim({
+        positions,
+        normals,
+        bonesMatrix: scale4(2, 1, 1),
+      }),
+      bindMatrix: ident4(),
+      bindMatrixInverse: ident4(),
+    };
+    const bindHost = makeHostWithSkinnedScene(makeScene(bindPrimitive));
+    new SceneMutationRouter(bindHost.host).updatePrimitive('skinned', {
+      bindMatrix: translate4(1, 0, 0),
+      bindMatrixInverse: translate4(-1, 0, 0),
+    });
+    expect(bindHost.positionsWriteCalls.at(-1)?.[0]).toBeCloseTo(1, 4);
+  });
+
+  it('re-solves base and morph UV changes under active morph weights', () => {
+    const positions = new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]);
+    const prim: SkinnedMeshPrimitive = {
+      ...makeSkinnedPrim({
+        positions,
+        normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+        bonesMatrix: ident4(),
+      }),
+      uvs: new Float32Array([0, 0, 1, 0, 0, 1]),
+      morphTargets: [new Float32Array(positions.length)],
+      morphTargetUvs: [
+        new Float32Array([0.25, 0.125, 0, 0, 0, 0]),
+      ],
+      morphWeights: new Float32Array([1]),
+    };
+    const { host, sceneRef, uvsWriteCalls } =
+      makeHostWithSkinnedScene(makeScene(prim));
+    const router = new SceneMutationRouter(host);
+    const nextBaseUvs = new Float32Array([0.5, 0.25, 1, 0, 0, 1]);
+
+    router.updatePrimitive('skinned', { uvs: nextBaseUvs });
+    expect(uvsWriteCalls.at(-1)?.[0]).toBeCloseTo(0.75, 4);
+    expect(uvsWriteCalls.at(-1)?.[1]).toBeCloseTo(0.375, 4);
+
+    const nextMorphUvs = [
+      new Float32Array([0.5, -0.125, 0, 0, 0, 0]),
+    ];
+    router.updatePrimitive('skinned', { morphTargetUvs: nextMorphUvs });
+    expect(uvsWriteCalls.at(-1)?.[0]).toBeCloseTo(1, 4);
+    expect(uvsWriteCalls.at(-1)?.[1]).toBeCloseTo(0.125, 4);
+
+    const stored = sceneRef.current.primitives[0];
+    expect(stored?.kind).toBe('skinned-mesh');
+    if (stored?.kind === 'skinned-mesh') {
+      expect(stored.uvs).toBe(nextBaseUvs);
+      expect(stored.morphTargetUvs).toBe(nextMorphUvs);
+    }
+  });
+
+  it('applies a morph-weight patch on a valid one-bone primitive', () => {
+    const positions = new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]);
+    const prim: SkinnedMeshPrimitive = {
+      ...makeSkinnedPrim({
+        positions,
+        normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+        bonesMatrix: ident4(),
+      }),
+      uvs: new Float32Array([0, 0, 1, 0, 0, 1]),
+      morphTargets: [
+        new Float32Array([3, 0, 0, 0, 0, 0, 0, 0, 0]),
+      ],
+      morphTargetUvs: [
+        new Float32Array([0.5, 0.25, 0, 0, 0, 0]),
+      ],
+      morphWeights: new Float32Array([0]),
+    };
+    const { host, positionsWriteCalls, uvsWriteCalls } =
+      makeHostWithSkinnedScene(makeScene(prim));
+
+    new SceneMutationRouter(host).updatePrimitive('skinned', {
+      morphWeights: new Float32Array([1]),
+    });
+
+    expect(positionsWriteCalls.at(-1)?.[0]).toBeCloseTo(3, 4);
+    expect(uvsWriteCalls.at(-1)?.[0]).toBeCloseTo(0.5, 4);
+    expect(uvsWriteCalls.at(-1)?.[1]).toBeCloseTo(0.25, 4);
+  });
 
   it('bones-only patch re-solves skin and writes solved positions to GPU', () => {
     const restPositions = new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]);
@@ -377,6 +630,85 @@ describe('SceneMutationRouter — Item 1: bones patch re-solves skin', () => {
     expect(written[2]).toBeCloseTo(0, 3);
   });
 
+  it('repeated bone patches always solve from authored rest pose instead of compounding prior poses', () => {
+    const restPositions = new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]);
+    const restNormals = new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]);
+    const prim = makeSkinnedPrim({
+      positions: restPositions,
+      normals: restNormals,
+      bonesMatrix: ident4(),
+    });
+    const { host, sceneRef, positionsWriteCalls } = makeHostWithSkinnedScene(makeScene(prim));
+    const router = new SceneMutationRouter(host);
+
+    router.updatePrimitive('skinned', { bones: translate4(3, 0, 0) });
+    expect(positionsWriteCalls.at(-1)?.[0]).toBeCloseTo(3, 4);
+    router.updatePrimitive('skinned', { bones: translate4(7, 0, 0) });
+
+    // A transient-pose scene would produce 10 here (3 + 7). The authored
+    // scene must retain x=0 and the new solve must produce exactly x=7.
+    expect(positionsWriteCalls.at(-1)?.[0]).toBeCloseTo(7, 4);
+    const stored = sceneRef.current.primitives[0];
+    expect(stored?.kind).toBe('skinned-mesh');
+    if (stored?.kind === 'skinned-mesh') {
+      expect(stored.positions).toBe(restPositions);
+      expect(stored.positions[0]).toBeCloseTo(0, 4);
+      expect(stored.bones[12]).toBeCloseTo(7, 4);
+    }
+  });
+
+  it('treats explicit positions and normals patches as new authored rest data for later poses', () => {
+    const restPositions = new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]);
+    const restNormals = new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]);
+    const prim = makeSkinnedPrim({
+      positions: restPositions,
+      normals: restNormals,
+      bonesMatrix: translate4(2, 0, 0),
+    });
+    const {
+      host,
+      sceneRef,
+      positionsWriteCalls,
+      normalsWriteCalls,
+    } = makeHostWithSkinnedScene(makeScene(prim));
+    const router = new SceneMutationRouter(host);
+    const editedRestPositions = new Float32Array([
+      5, 0, 0,
+      6, 0, 0,
+      5, 1, 0,
+    ]);
+    const editedRestNormals = new Float32Array([
+      0, 1, 0,
+      0, 1, 0,
+      0, 1, 0,
+    ]);
+
+    router.updatePrimitive('skinned', {
+      positions: editedRestPositions,
+      normals: editedRestNormals,
+    });
+    expect(positionsWriteCalls.at(-1)?.[0]).toBeCloseTo(7, 4);
+    expect(normalsWriteCalls.at(-1)?.[0]).toBeCloseTo(0, 4);
+    expect(normalsWriteCalls.at(-1)?.[1]).toBeCloseTo(1, 4);
+    let stored = sceneRef.current.primitives[0];
+    expect(stored?.kind).toBe('skinned-mesh');
+    if (stored?.kind === 'skinned-mesh') {
+      expect(stored.positions).toBe(editedRestPositions);
+      expect(stored.normals).toBe(editedRestNormals);
+      expect(stored.positions[0]).toBeCloseTo(5, 4);
+    }
+
+    router.updatePrimitive('skinned', { bones: translate4(3, 0, 0) });
+    expect(positionsWriteCalls.at(-1)?.[0]).toBeCloseTo(8, 4);
+    expect(normalsWriteCalls.at(-1)?.[1]).toBeCloseTo(1, 4);
+    stored = sceneRef.current.primitives[0];
+    if (stored?.kind === 'skinned-mesh') {
+      expect(stored.positions).toBe(editedRestPositions);
+      expect(stored.normals).toBe(editedRestNormals);
+      expect(stored.bones[12]).toBeCloseTo(3, 4);
+    }
+  });
+
   it('bones patch preserves bone matrices in scene state for future solves', () => {
     const restPositions = new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]);
     const restNormals = new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]);
@@ -400,7 +732,7 @@ describe('SceneMutationRouter — Item 1: bones patch re-solves skin', () => {
     }
   });
 
-  it('morphWeights patch re-solves morph tangent deltas into the tangent GPU buffer', () => {
+  it('morphWeights patch re-solves tangent and UV deltas into the geometry buffers', () => {
     const restPositions = new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]);
     const restNormals = new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]);
     const restTangents = new Float32Array([
@@ -408,6 +740,8 @@ describe('SceneMutationRouter — Item 1: bones patch re-solves skin', () => {
       1, 0, 0, 1,
       1, 0, 0, 1,
     ]);
+    const restUvs = new Float32Array([0, 0, 1, 0, 0, 1]);
+    const restUv1 = new Float32Array([0.5, 0.5, 1.5, 0.5, 0.5, 1.5]);
     const prim: SkinnedMeshPrimitive = {
       ...makeSkinnedPrim({
         positions: restPositions,
@@ -415,12 +749,16 @@ describe('SceneMutationRouter — Item 1: bones patch re-solves skin', () => {
         bonesMatrix: ident4(),
       }),
       tangents: restTangents,
+      uvs: restUvs,
+      uv1: restUv1,
       morphTargets: [new Float32Array(restPositions.length)],
       morphTargetTangents: [new Float32Array([0, 1, 0, 0, 0, 0, 0, 0, 0])],
       morphWeights: new Float32Array([0]),
+      morphTargetUvs: [new Float32Array([0.25, 0.125, 0, 0, 0, 0])],
+      morphTargetUv1s: [new Float32Array([0.2, -0.1, 0, 0, 0, 0])],
     };
     const scene = makeScene(prim);
-    const { host, tangentsWriteCalls } = makeHostWithSkinnedScene(scene);
+    const { host, sceneRef, tangentsWriteCalls, uvsWriteCalls } = makeHostWithSkinnedScene(scene);
 
     const router = new SceneMutationRouter(host);
     router.updatePrimitive('skinned', { morphWeights: new Float32Array([1]) });
@@ -432,5 +770,14 @@ describe('SceneMutationRouter — Item 1: bones patch re-solves skin', () => {
     expect(written[1]).toBeCloseTo(invSqrt2, 4);
     expect(written[2]).toBeCloseTo(0, 4);
     expect(written[3]).toBeCloseTo(1, 4);
+    expect(uvsWriteCalls.length).toBeGreaterThan(0);
+    const writtenUvs = uvsWriteCalls[uvsWriteCalls.length - 1]!;
+    expect(writtenUvs[0]).toBeCloseTo(0.25, 4);
+    expect(writtenUvs[1]).toBeCloseTo(0.125, 4);
+    expect(writtenUvs[2]).toBeCloseTo(0.7, 4);
+    expect(writtenUvs[3]).toBeCloseTo(0.4, 4);
+    const stored = sceneRef.current.primitives[0];
+    expect(stored?.kind).toBe('skinned-mesh');
+    if (stored?.kind === 'skinned-mesh') expect(stored.uvs).toBe(restUvs);
   });
 });

@@ -89,9 +89,9 @@ describe('Wave 4 — env DI NEE candidate call sites', () => {
     expect(src).toContain('mAreaSupport = mAreaSupport + 1u;');
     expect(src).toContain('mEnvSupport = mEnvSupport + 1u;');
     expect(src).toContain('let pHatZ = restir_di_compute_phat_xi(lid, r.xi, surf);');
-    expect(src).toContain('let supportM = max(1u, mEnvSupport);');
-    expect(src).toContain('let supportM = max(1u, mAreaSupport);');
-    expect(src).toContain('r.M = supportM;');
+    expect(src).toContain('r.areaM = mAreaSupport;');
+    expect(src).toContain('r.envM = mEnvSupport;');
+    expect(src).toContain('r.M = mAreaSupport + mEnvSupport;');
     expect(countOccurrences(src, 'restir_di_compute_phat_from_surface(')).toBe(1);
   });
 

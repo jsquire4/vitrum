@@ -67,7 +67,7 @@ const pointRad: [V3, V3] = [
 // (area convention at sppmBindings.wgsl.ts:495).
 const rectLe: V3 = [3, 2, 1];
 const rectArea = 4 * (0.8 * 0.5);
-// Constant procedural sky (environmentSun.w > 1e-6 ⇒ env counts as a source,
+// Constant procedural sky (environmentSun.w > 0 ⇒ env counts as a source,
 // sppmBindings.wgsl.ts:385-387; no HDRI map).
 const skyL0: V3 = [0.3, 0.4, 0.5];
 const sceneExtent = 5; // sppmStats.sceneExtent
@@ -82,8 +82,16 @@ const refPoint: [V3, V3] = [
   [4 * PI * pointRad[0][0], 4 * PI * pointRad[0][1], 4 * PI * pointRad[0][2]],
   [4 * PI * pointRad[1][0], 4 * PI * pointRad[1][1], 4 * PI * pointRad[1][2]],
 ];
-const refRect: V3 = [PI * rectArea * rectLe[0], PI * rectArea * rectLe[1], PI * rectArea * rectLe[2]];
-const refEnv: V3 = [4 * PI * skyL0[0] * diskArea, 4 * PI * skyL0[1] * diskArea, 4 * PI * skyL0[2] * diskArea];
+const refRect: V3 = [
+  PI * rectArea * rectLe[0],
+  PI * rectArea * rectLe[1],
+  PI * rectArea * rectLe[2],
+];
+const refEnv: V3 = [
+  4 * PI * skyL0[0] * diskArea,
+  4 * PI * skyL0[1] * diskArea,
+  4 * PI * skyL0[2] * diskArea,
+];
 
 function referenceTotalForSources(sources: readonly SourceId[]): V3 {
   const total: V3 = [0, 0, 0];
@@ -234,10 +242,15 @@ describe('SPPM oracle — photon flux energy conservation (lightSelectInvPdf)', 
     const wrongAllLightPdf = emitTotalFlux(N, 20260618, K, activeSources).total;
     for (const c of CH) {
       const ratio = total[c] / activeRef[c];
-      expect(ratio, `channel ${c}: active-source ΣΦ/ΣP = ${ratio.toFixed(4)}`).toBeGreaterThan(0.97);
+      expect(ratio, `channel ${c}: active-source ΣΦ/ΣP = ${ratio.toFixed(4)}`).toBeGreaterThan(
+        0.97,
+      );
       expect(ratio).toBeLessThan(1.03);
       const wrongRatio = wrongAllLightPdf[c] / activeRef[c];
-      expect(wrongRatio, `channel ${c}: all-light PDF would over-scale to ${wrongRatio.toFixed(4)}`).toBeGreaterThan(4 / 3 - 0.08);
+      expect(
+        wrongRatio,
+        `channel ${c}: all-light PDF would over-scale to ${wrongRatio.toFixed(4)}`,
+      ).toBeGreaterThan(4 / 3 - 0.08);
       expect(wrongRatio).toBeLessThan(4 / 3 + 0.08);
     }
   });

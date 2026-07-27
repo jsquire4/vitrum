@@ -134,6 +134,34 @@ describe('solveSkin', () => {
     expect(positions[2]).toBeCloseTo(0);
   });
 
+  it('preserves and solves more than four influences per vertex', () => {
+    const bones = new Float32Array(6 * 16);
+    const inverses = new Float32Array(6 * 16);
+    for (let bone = 0; bone < 6; bone += 1) {
+      bones.set(IDENT4(), bone * 16);
+      inverses.set(IDENT4(), bone * 16);
+      bones[bone * 16 + 12] = bone;
+    }
+    const prim: SkinnedMeshPrimitive = {
+      kind: 'skinned-mesh',
+      id: 'six-influences',
+      positions: new Float32Array([0, 0, 0]),
+      normals: new Float32Array([0, 1, 0]),
+      skinIndices: new Uint32Array([0, 1, 2, 3, 4, 5]),
+      skinWeights: new Float32Array([0.1, 0.1, 0.1, 0.1, 0.1, 0.5]),
+      skinInfluencesPerVertex: 6,
+      bones,
+      boneInverses: inverses,
+      material: { baseColor: [1, 1, 1], roughness: 0.5, metallic: 0 },
+    };
+
+    const solved = solveSkin(prim);
+
+    expect(solved.positions[0]).toBeCloseTo(3.5, 6);
+    expect(solved.positions[1]).toBeCloseTo(0, 6);
+    expect(solved.normals[1]).toBeCloseTo(1, 6);
+  });
+
   it('writes in-place into caller-provided buffers when supplied', () => {
     const prim = singleBonePrim({
       positions: new Float32Array([7, 8, 9]),
@@ -295,6 +323,86 @@ describe('solveSkin', () => {
     expect(positions[1]).toBeCloseTo(7);
     expect(Array.from(uvs ?? [])).toEqual(Array.from(new Float32Array([0.05, 0.1, 0.4, 0.55])));
     expect(Array.from(uv1 ?? [])).toEqual(Array.from(new Float32Array([0.5, 0.25, 0.75, 0.625])));
+  });
+
+  it('applies arbitrary sparse morphTargetUvSets and reuses caller output storage', () => {
+    const uv2 = new Float32Array([0.2, 0.4, 0.6, 0.8]);
+    const prim: SkinnedMeshPrimitive = {
+      ...singleBonePrim({
+        positions: new Float32Array([0, 0, 0, 1, 0, 0]),
+        normals: new Float32Array([0, 0, 1, 0, 0, 1]),
+        bonesMatrix: IDENT4(),
+      }),
+      uvSets: [undefined, undefined, uv2],
+      morphTargets: [new Float32Array(6)],
+      morphTargetUvSets: [
+        undefined,
+        undefined,
+        [new Float32Array([0.4, -0.2, -0.2, 0.4])],
+      ],
+      morphWeights: new Float32Array([0.5]),
+    };
+    const outUv2 = new Float32Array(4);
+
+    const solved = solveSkin(
+      prim,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      [undefined, undefined, outUv2],
+    );
+
+    expect(solved.uvSets?.[2]).toBe(outUv2);
+    expect(Array.from(outUv2)).toEqual(Array.from(new Float32Array([0.4, 0.3, 0.5, 1])));
+    expect(solved.uvs).toBeUndefined();
+    expect(solved.uv1).toBeUndefined();
+  });
+
+  it('solves morph UV lanes at the native index ceiling and above 2^32-1', () => {
+    const indices = [0xffff_fffe, 0x1_0000_0001] as const;
+    const uvSets: Array<Float32Array | undefined> = [];
+    const morphTargetUvSets: Array<readonly Float32Array[] | undefined> = [];
+    const outUvSets: Array<Float32Array | undefined> = [];
+    for (const texCoord of indices) {
+      uvSets[texCoord] = new Float32Array([0.2, 0.4, 0.6, 0.8]);
+      morphTargetUvSets[texCoord] = [
+        new Float32Array([0.4, -0.2, -0.2, 0.4]),
+      ];
+      outUvSets[texCoord] = new Float32Array(4);
+    }
+    const prim: SkinnedMeshPrimitive = {
+      ...singleBonePrim({
+        positions: new Float32Array([0, 0, 0, 1, 0, 0]),
+        normals: new Float32Array([0, 0, 1, 0, 0, 1]),
+        bonesMatrix: IDENT4(),
+      }),
+      uvSets,
+      morphTargets: [new Float32Array(6)],
+      morphTargetUvSets,
+      morphWeights: new Float32Array([0.5]),
+    };
+
+    const solved = solveSkin(
+      prim,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      outUvSets,
+    );
+
+    for (const texCoord of indices) {
+      expect(solved.uvSets?.[texCoord]).toBe(outUvSets[texCoord]);
+      expect(Array.from(outUvSets[texCoord] ?? [])).toEqual(
+        Array.from(new Float32Array([0.4, 0.3, 0.5, 1])),
+      );
+    }
+    expect(Object.keys(solved.uvSets ?? []).sort()).toEqual(
+      indices.map(String).sort(),
+    );
   });
 
   it('throws when morphTargetNormals count does not match morphTargets for active morphs', () => {
@@ -667,5 +775,103 @@ describe('solveSkin', () => {
       skinWeights: new Float32Array([Number.NaN, 0, 0, 0]),
     };
     expect(() => solveSkin(bad)).toThrow(/skinWeights\[0\] is invalid/);
+  });
+
+  it('rejects a positions stream whose length is not divisible by three', () => {
+    const bad = {
+      ...singleBonePrim({
+        positions: new Float32Array([0, 0, 0]),
+        normals: new Float32Array([0, 1, 0]),
+        bonesMatrix: IDENT4(),
+      }),
+      positions: new Float32Array([0, 0, 0, 1]),
+      normals: new Float32Array([0, 1, 0, 0]),
+    };
+    expect(() => solveSkin(bad)).toThrow(/positions length 4.*multiple of 3/);
+  });
+
+  it('rejects runtime skin streams with the wrong typed-array representation', () => {
+    const base = singleBonePrim({
+      positions: new Float32Array([0, 0, 0]),
+      normals: new Float32Array([0, 1, 0]),
+      bonesMatrix: IDENT4(),
+    });
+    expect(() => solveSkin({
+      ...base,
+      skinIndices: new Uint16Array([0, 0, 0, 0]) as unknown as Uint32Array,
+    })).toThrow(/skinIndices must be a Uint32Array/);
+    expect(() => solveSkin({
+      ...base,
+      skinWeights: [1, 0, 0, 0] as unknown as Float32Array,
+    })).toThrow(/skinWeights must be a Float32Array/);
+  });
+
+  it('rejects bone buffers with a trailing partial matrix', () => {
+    const bad = {
+      ...singleBonePrim({
+        positions: new Float32Array([0, 0, 0]),
+        normals: new Float32Array([0, 1, 0]),
+        bonesMatrix: IDENT4(),
+      }),
+      bones: new Float32Array(17),
+    };
+    expect(() => solveSkin(bad)).toThrow(/bones length 17 not a multiple of 16/);
+  });
+
+  it('rejects non-finite geometry and bone-matrix values', () => {
+    const geometry = singleBonePrim({
+      positions: new Float32Array([Number.NaN, 0, 0]),
+      normals: new Float32Array([0, 1, 0]),
+      bonesMatrix: IDENT4(),
+    });
+    expect(() => solveSkin(geometry)).toThrow(/positions\[0\].*not finite/);
+    const matrix = singleBonePrim({
+      positions: new Float32Array([0, 0, 0]),
+      normals: new Float32Array([0, 1, 0]),
+      bonesMatrix: new Float32Array([
+        Number.POSITIVE_INFINITY, 0, 0, 0,
+        0, 1, 0, 0,
+        0, 0, 1, 0,
+        0, 0, 0, 1,
+      ]),
+    });
+    expect(() => solveSkin(matrix)).toThrow(/bones\[0\].*not finite/);
+  });
+
+  it('validates inactive morph targets and optional streams', () => {
+    const base = singleBonePrim({
+      positions: new Float32Array([0, 0, 0]),
+      normals: new Float32Array([0, 1, 0]),
+      bonesMatrix: IDENT4(),
+    });
+    expect(() => solveSkin({
+      ...base,
+      morphTargets: [new Float32Array(2)],
+      morphWeights: new Float32Array([0]),
+    })).toThrow(/morphTargets\[0\] length 2 != positions 3/);
+    expect(() => solveSkin({
+      ...base,
+      morphTargets: [new Float32Array(3)],
+      morphTargetNormals: [new Float32Array([0, Number.NaN, 0])],
+      morphWeights: new Float32Array([0]),
+    })).toThrow(/morphTargetNormals\[0\]\[1\].*not finite/);
+    expect(() => solveSkin({
+      ...base,
+      morphWeights: new Float32Array([0]),
+    })).toThrow(/morphTargets are required/);
+  });
+
+  it('requires bind matrices as a complete finite pair', () => {
+    const base = singleBonePrim({
+      positions: new Float32Array([0, 0, 0]),
+      normals: new Float32Array([0, 1, 0]),
+      bonesMatrix: IDENT4(),
+    });
+    expect(() => solveSkin({ ...base, bindMatrix: IDENT4() }))
+      .toThrow(/must be supplied together/);
+    const inverse = IDENT4();
+    inverse[4] = Number.NaN;
+    expect(() => solveSkin({ ...base, bindMatrix: IDENT4(), bindMatrixInverse: inverse }))
+      .toThrow(/bindMatrixInverse\[4\].*not finite/);
   });
 });

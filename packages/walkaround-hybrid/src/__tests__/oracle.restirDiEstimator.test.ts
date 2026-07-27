@@ -8,10 +8,10 @@
  *      - BRDF-to-emitter candidates invert hit barycentrics back to that same
  *        `xi`,
  *      - HDRI candidates store ENV_SAMPLE_SENTINEL plus an encoded direction.
- *   2. W finalization re-evaluates p̂ with `restir_di_compute_phat_xi(lid,
- *      r.xi, surf)`, traces visibility to the selected sample/direction, and
- *      divides by the support-family count only (`mAreaSupport` for finite
- *      emitters, `mEnvSupport` for HDRI).
+ *   2. Finite-emitter and HDRI source weights are scaled by
+ *      `Mtotal / nDomain`; attempted `areaM` / `envM` (including null draws)
+ *      are persisted, and W finalization divides the resulting tagged-union
+ *      `w_sum` by `Mtotal * p̂(selected)`.
  *   3. Shade consumption uses the stored `r.xi` for both finite emitters and
  *      env sentinels, so candidate p̂, finalization p̂, visibility, and the
  *      shaded contribution all refer to the same sample.
@@ -114,53 +114,6 @@ function evalGGX(albedo: V3, rough: number, metal: number, n: V3, wo: V3, wi: V3
 const emitterGeometry = (nlDotL: number, dist2: number, dist2Floor: number) =>
   nlDotL / Math.max(dist2, dist2Floor);
 
-// ggxBrdf.wgsl.ts:170-218 — VNDF sampler (world space) + exact pdf
-function buildOnb(n: V3): [V3, V3] {
-  // ggxBuildOnb mirrors the standard up-vector ONB; exact frame choice does
-  // not affect the estimator (isotropic lobe), only the sample stream.
-  const up: V3 = Math.abs(n[1]) > 0.999 ? [1, 0, 0] : [0, 1, 0];
-  const t = norm(cross(up, n));
-  const b = cross(n, t);
-  return [t, b];
-}
-function ggxSampleVndf(n: V3, wo: V3, rough: number, rng: () => number): V3 {
-  const alpha = Math.max(rough * rough, 1e-4); // B16 floor [ggxBrdf:209]
-  const [t, b] = buildOnb(n);
-  const woT: V3 = [dot(wo, t), dot(wo, b), dot(wo, n)];
-  // ggxSampleVndfTangent [ggxBrdf:184-203]
-  const Vh = norm([alpha * woT[0], alpha * woT[1], woT[2]]);
-  const lensq = Vh[0] * Vh[0] + Vh[1] * Vh[1];
-  const T1: V3 = lensq > 1e-10 ? scale([-Vh[1], Vh[0], 0], 1 / Math.sqrt(lensq)) : [1, 0, 0];
-  const T2 = cross(Vh, T1);
-  const u1 = rng();
-  const u2 = rng();
-  const r = Math.sqrt(u1);
-  const phi = 2 * PI * u2;
-  const t1 = r * Math.cos(phi);
-  let t2 = r * Math.sin(phi);
-  const s = 0.5 * (1 + Vh[2]);
-  t2 = (1 - s) * Math.sqrt(Math.max(0, 1 - t1 * t1)) + s * t2;
-  const NhT = add(add(scale(T1, t1), scale(T2, t2)), scale(Vh, Math.sqrt(Math.max(0, 1 - t1 * t1 - t2 * t2))));
-  const hT = norm([alpha * NhT[0], alpha * NhT[1], Math.max(1e-6, NhT[2])]);
-  const h = norm(add(add(scale(t, hT[0]), scale(b, hT[1])), scale(n, hT[2])));
-  // reflect(-wo, h)
-  const d = dot(scale(wo, -1), h);
-  return sub(scale(wo, -1), scale(h, 2 * d));
-}
-// ggxBrdf.wgsl.ts:228-251 — smithG1GGX (exact) + ggxVndfReflectionPdf
-const smithG1GGX = (nv: number, a2: number) => (2 * nv) / (nv + Math.sqrt(a2 + (1 - a2) * nv * nv));
-function ggxVndfReflectionPdf(n: V3, wo: V3, wi: V3, rough: number): number {
-  const h = norm(add(wo, wi));
-  const NdotV = Math.max(1e-4, dot(n, wo));
-  const NdotH = Math.max(0, dot(n, h));
-  if (NdotH <= 0) return 0;
-  const a2 = Math.max(rough * rough, 1e-4);
-  const a = Math.sqrt(a2);
-  const D = distributionGGX(NdotH, a);
-  const g1 = smithG1GGX(NdotV, a2);
-  return (D * g1) / Math.max(4 * NdotV, 1e-6);
-}
-
 // ── emitter model (EmitterTri, reservoirDi.wgsl.ts:21-32) ─────────────────────
 interface EmitterTri {
   vA: V3;
@@ -203,36 +156,25 @@ interface ReservoirDI {
   w_sum: number;
   W: number;
   xi: V2;
+  areaM: number;
+  envM: number;
 }
 function updateReservoirDI(r: ReservoirDI, lid: number, xi: V2, w: number, rng: () => number): void {
-  r.M += 1;
   r.w_sum += w;
   if (rng() * r.w_sum < w) {
     r.lightId = lid;
     r.xi = xi;
   }
 }
-
-// Möller–Trumbore returning (bA,bB,bC) barycentrics — used by the M_BRDF
-// candidate's emitter intersection (ris.wgsl.ts:311-332). Any correct
-// intersector is equivalent here; the xi inversion [L319-328] is what must
-// match sampleEmitterPoint, and it is asserted by the round-trip below.
-function intersectTriangle(orig: V3, dir: V3, e: EmitterTri): { hit: boolean; dist: number; bary: V3 } {
-  const e1 = sub(e.vB, e.vA);
-  const e2 = sub(e.vC, e.vA);
-  const p = cross(dir, e2);
-  const det = dot(e1, p);
-  if (Math.abs(det) < 1e-12) return { hit: false, dist: 0, bary: [0, 0, 0] };
-  const inv = 1 / det;
-  const tv = sub(orig, e.vA);
-  const u = dot(tv, p) * inv;
-  if (u < 0 || u > 1) return { hit: false, dist: 0, bary: [0, 0, 0] };
-  const q = cross(tv, e1);
-  const v = dot(dir, q) * inv;
-  if (v < 0 || u + v > 1) return { hit: false, dist: 0, bary: [0, 0, 0] };
-  const t = dot(e2, q) * inv;
-  if (t <= 0) return { hit: false, dist: 0, bary: [0, 0, 0] };
-  return { hit: true, dist: t, bary: [1 - u - v, u, v] };
+function updateReservoirDIHistorical(
+  r: ReservoirDI,
+  lid: number,
+  xi: V2,
+  w: number,
+  rng: () => number,
+): void {
+  r.M += 1;
+  updateReservoirDI(r, lid, xi, w, rng);
 }
 
 // ── scene / receiver ──────────────────────────────────────────────────────────
@@ -273,7 +215,6 @@ function envImportanceSample(rng: () => number): { dir: V3; pdf: number; color: 
 }
 
 const M_LIGHT = 64; // ris.wgsl.ts:82
-const M_BRDF = 1; // ris.wgsl.ts:83
 const M_ENV = 1; // ris.wgsl.ts:93
 
 interface SceneCfg {
@@ -328,15 +269,29 @@ function computePhatXi(cfg: SceneCfg, lid: number, xi: V2): number {
 type Variant = 'shader' | 'historical';
 
 function runRis(cfg: SceneCfg, rng: () => number, variant: Variant = 'shader'): ReservoirDI {
-  const r: ReservoirDI = { lightId: 0, M: 0, w_sum: 0, W: 0, xi: [0, 0] };
+  const r: ReservoirDI = {
+    lightId: 0,
+    M: 0,
+    w_sum: 0,
+    W: 0,
+    xi: [0, 0],
+    areaM: 0,
+    envM: 0,
+  };
   let areaSupportM = 0;
   let envSupportM = 0;
+  const scheduledAreaM = M_LIGHT;
+  const scheduledEnvM = cfg.envHasMap ? M_ENV : 0;
+  const scheduledTotalM = scheduledAreaM + scheduledEnvM;
+  const areaRisScale = scheduledTotalM / Math.max(1, scheduledAreaM);
+  const envRisScale = scheduledTotalM / Math.max(1, scheduledEnvM);
   const totalPower = Math.max(
     cfg.emitters.reduce((s, e) => s + luminance(e.Le) * e.area, 0),
     1e-8,
   ); // L188 (host totalEmPower = Σ lum·area)
   // M_LIGHT loop [L208-263], flat power CDF branch [L228-233]
   for (let i = 0; i < M_LIGHT; i++) {
+    areaSupportM += 1;
     const xiEm = rng();
     // sampleEmitterIdx over the power CDF [emitterSampling.wgsl.ts:42-58]
     let cum = 0;
@@ -354,79 +309,50 @@ function runRis(cfg: SceneCfg, rng: () => number, variant: Variant = 'shader'): 
     const ls = sampleEmitterPoint(e, xiTri); // L236
     const toL = sub(ls.pos, pos);
     const dist2 = dot(toL, toL);
-    if (dist2 < 1e-8) continue; // L240 — M NOT incremented
+    if (dist2 < 1e-8) continue; // zero-weight attempt remains in support M
     const wi = scale(toL, 1 / Math.sqrt(dist2));
     const nDotL = Math.max(0, dot(normal, wi));
     const nlDotL = Math.max(0, dot(scale(e.normal, -1), wi));
-    if (nDotL < 1e-6 || nlDotL < 1e-6) continue; // L244 — M NOT incremented
+    if (nDotL < 1e-6 || nlDotL < 1e-6) continue;
     const G = emitterGeometry(nlDotL, dist2, dist2Floor); // L251
     const brdf = evalGGX(albedo, roughness, metalness, normal, wo, wi); // L252
     const pHat = luminance(scale(mulv(e.Le, brdf), G)); // L253 — SAMPLED-POINT p̂
     const pX = Math.max(1e-15, emitterSelPmf * ls.pdfArea); // L260
     const w = pHat > 0 ? pHat / pX : 0; // L261
-    updateReservoirDI(r, lid, xiTri, w, rng); // L262
-    areaSupportM += 1;
-  }
-  // M_BRDF loop [L291-352]
-  for (let bi = 0; bi < M_BRDF; bi++) {
-    const wiB = ggxSampleVndf(normal, wo, roughness, rng); // L293
-    const nDotLB = dot(normal, wiB);
-    if (nDotLB <= 1e-6) continue; // L295 — M NOT incremented
-    const pdfSa = ggxVndfReflectionPdf(normal, wo, wiB, roughness); // L296
-    if (pdfSa <= 1e-8) continue; // L297
-    const brdfOrig = add(pos, scale(normal, 1e-3)); // L304 (geoNormal = normal)
-    let bestT = 1e30;
-    let bestLid = 0;
-    let bestXi: V2 = [0, 0];
-    let bestLe: V3 = [0, 0, 0];
-    let bestNl: V3 = [0, 0, 0];
-    let found = false;
-    for (let li = 0; li < cfg.emitters.length; li++) {
-      const eb = cfg.emitters[li]!;
-      const it = intersectTriangle(brdfOrig, wiB, eb);
-      if (!it.hit || it.dist <= 1e-4 || it.dist >= bestT) continue; // L314
-      if (dot(eb.normal, wiB) >= 0) continue; // L316 front-face gate
-      bestT = it.dist;
-      bestLid = li;
-      // xi inversion [L319-328]
-      const bA = it.bary[0];
-      const bB = it.bary[1];
-      const bC = it.bary[2];
-      const sInv = Math.min(Math.max(1 - bA, 0), 1);
-      const xiX = sInv * sInv;
-      const bcSum = Math.max(bB + bC, 1e-8);
-      const xiY = Math.min(Math.max(bB / bcSum, 0), 1);
-      bestXi = [xiX, xiY];
-      bestLe = eb.Le;
-      bestNl = eb.normal;
-      found = true;
+    if (variant === 'historical') {
+      updateReservoirDIHistorical(r, lid, xiTri, w, rng);
+    } else {
+      updateReservoirDI(r, lid, xiTri, w * areaRisScale, rng);
     }
-    if (!found) continue; // L333 — M NOT incremented (HYB-GI-02 skip)
-    const hitPos = add(brdfOrig, scale(wiB, bestT)); // L337
-    const toLB = sub(hitPos, pos);
-    const dist2B = Math.max(dot(toLB, toLB), 1e-8);
-    const nlDotLB = Math.max(0, dot(scale(bestNl, -1), wiB));
-    if (nlDotLB < 1e-6) continue; // L341
-    const Gb = emitterGeometry(nlDotLB, dist2B, dist2Floor); // L342
-    const brdfB = evalGGX(albedo, roughness, metalness, normal, wo, wiB); // L343
-    const pHatB = luminance(scale(mulv(bestLe, brdfB), Gb)); // L344
-    const pAreaB = (pdfSa * dist2B) / Math.max(nlDotLB, 1e-6); // L348
-    const wB = pHatB > 0 ? pHatB / Math.max(1e-15, pAreaB) : 0; // L349-350
-    updateReservoirDI(r, bestLid, bestXi, wB, rng); // L351
-    areaSupportM += 1;
   }
   // M_ENV loop [L375-389]
   for (let ei = 0; ei < M_ENV; ei++) {
     const envS = envImportanceSample(rng); // L376
-    if (envS.pdf <= 1e-8 || !cfg.envHasMap) continue; // L377
+    if (!cfg.envHasMap) continue;
+    envSupportM += 1;
+    if (envS.pdf <= 1e-8) continue;
     const nDotL = Math.max(0, dot(normal, envS.dir));
     if (nDotL < 1e-6) continue; // L379
     const brdfE = evalGGX(albedo, roughness, metalness, normal, wo, envS.dir); // L380
     const pHatE = luminance(scale(mulv(envS.color, brdfE), envMapIntensityForCfg(cfg))); // L382 — SA measure, no G
     const pXe = Math.max(1e-15, envS.pdf); // L384
     const wE = pHatE > 0 ? pHatE / pXe : 0; // L385
-    updateReservoirDI(r, ENV_SENTINEL, envDirToXi(envS.dir), wE, rng); // L388
-    envSupportM += 1;
+    if (variant === 'historical') {
+      updateReservoirDIHistorical(r, ENV_SENTINEL, envDirToXi(envS.dir), wE, rng);
+    } else {
+      updateReservoirDI(
+        r,
+        ENV_SENTINEL,
+        envDirToXi(envS.dir),
+        wE * envRisScale,
+        rng,
+      );
+    }
+  }
+  if (variant === 'shader') {
+    r.areaM = areaSupportM;
+    r.envM = envSupportM;
+    r.M = areaSupportM + envSupportM;
   }
   // W finalize [L392-461] — unoccluded scene, so the shadow tests pass.
   if (r.M > 0 && r.w_sum > 0) {
@@ -434,14 +360,7 @@ function runRis(cfg: SceneCfg, rng: () => number, variant: Variant = 'shader'): 
       variant === 'historical' && r.lightId !== ENV_SENTINEL
         ? computePhatCentroid(cfg, r.lightId)
         : computePhatXi(cfg, r.lightId, r.xi);
-    const supportM =
-      variant === 'historical'
-        ? r.M
-        : r.lightId === ENV_SENTINEL
-          ? Math.max(1, envSupportM)
-          : Math.max(1, areaSupportM);
-    r.M = supportM;
-    r.W = pHatZ > 0 ? r.w_sum / (supportM * pHatZ) : 0; // L420 / L458
+    r.W = pHatZ > 0 ? r.w_sum / (r.M * pHatZ) : 0;
   }
   return r;
 }
@@ -608,17 +527,16 @@ describe('HYB-GI-01/02 oracle — walkaround ReSTIR-DI estimator vs brute force'
   });
 
   it('REGRESSION HYB-GI-01: selected-xi finalize/shade path is unbiased (≈1.000)', () => {
-    // Same transcribed candidate generation (including all the `continue`
-    // skips that drop BOTH weight and count), but W finalized with p̂ at the
-    // SELECTED r.xi and shade consuming r.xi. Restores E ≈ I:
+    // Same transcribed candidate generation, with every scheduled proposal
+    // counted even when a `continue` turns it into a zero-weight/null draw.
+    // W is finalized with p̂ at the SELECTED r.xi and shade consumes r.xi.
+    // This restores E ≈ I because:
     //   (a) pins the lights-only bias on the centroid/fresh-xi consumption
     //       seam (HYB-GI-01), not on candidate generation; and
-    //   (b) shows the consistent skip (no weight AND no count,
-    //       ris.wgsl.ts:240/244/333) is NOT a bias source — each included
-    //       candidate has E[w·f/p̂] = I regardless of the realized M, so the
-    //       HYB-GI-02 "skipped proposals undercount M" suspicion is refuted
-    //       for the skip class. (The env 1/M inflation below is the real
-    //       M-accounting defect.)
+    //   (b) the tagged generalized-RIS scaling averages each support family
+    //       over its scheduled attempts and then sums the two domain estimates.
+    //       Null proposals therefore contribute zero weight and a real count;
+    //       conditioning M on successful candidates would be biased.
     const cfg: SceneCfg = { emitters: [TRI1, TRI2], envHasMap: false };
     const measured = measurePipeline(cfg, 24_000, 314159);
     const truth = groundTruthLights(cfg.emitters, 400_000, 271828);

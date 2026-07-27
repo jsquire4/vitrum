@@ -3,13 +3,10 @@
  * graph: intermediate tensor buffers, per-layer compute pipelines, weight/bias
  * buffers, uniform buffers, and bind groups.
  *
- * Extracted from InferenceGraph (Task 4.5 Theme I) so the executor itself is
- * just the dispatch orchestrator. All `device.createBuffer` /
- * `createComputePipelineAsync` / `createBindGroup` calls for the graph layers
- * live here. Behaviorally identical to the pre-extraction inline code — the
- * buffer labels, sizes, usages, bind-group entry order, and pipeline entry
- * points are unchanged (pinned by `__tests__/inferenceGraphDimsOnce.test.ts`
- * and the existing neural tests).
+ * The executor delegates resource construction here. Tensor slots follow exact
+ * liveness intervals, and bind groups contain only the bindings declared by
+ * each WGSL kernel's auto-layout. Real-WebGPU canonical-graph coverage pins
+ * those layouts in cpuGpuParity.gpu.test.ts.
  */
 
 import type { UNetSpec, LayerSpec, LayerKind } from './unetArchitecture.js';
@@ -19,12 +16,24 @@ import { TRANSPOSED_CONV2D_WGSL } from './wgsl/transposedConv2d.wgsl.js';
 import { RELU_WGSL } from './wgsl/relu.wgsl.js';
 import { SKIP_CONNECTION_WGSL } from './wgsl/skipConnection.wgsl.js';
 import { BILINEAR_UPSAMPLE_WGSL } from './wgsl/bilinearUpsample.wgsl.js';
-import { INPUT_PACKER_WGSL, INPUT_PACKER_ENTRY } from './inputPacker.js';
+import { buildInputPackerWgsl, INPUT_PACKER_ENTRY } from './inputPacker.js';
+import { buildOutputCropWgsl, OUTPUT_CROP_ENTRY } from './outputCrop.js';
+import { preprocessingContractForCheckpoint } from './preprocessing.js';
 import {
   type TensorDims,
-  validateSkipShapes,
   packLayerUniform,
 } from './tensorDimSolver.js';
+import {
+  buildTensorAllocationPlan,
+  estimateNeuralMemory,
+  type NeuralMemoryTelemetry,
+} from './tensorMemoryPlanner.js';
+import { neuralLayerWgslForStorage } from './mixedPrecisionWgsl.js';
+import {
+  NEURAL_F32_TENSOR_STORAGE,
+  type NeuralTensorStorageContract,
+} from './tensorPrecision.js';
+
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -69,10 +78,10 @@ const WGSL_SOURCE: Partial<Record<LayerKind, string>> = {
   bilinearUpsample:BILINEAR_UPSAMPLE_WGSL,  // extension point — see note above
 };
 
-// Uniform buffer size: 5 u32 fields, padded to 32 bytes (8×u32).
-const UNIFORM_BUF_BYTES = 32;
+// Largest layer uniform is TConv2DParams: 10 fields, padded to 48 bytes.
+const UNIFORM_BUF_BYTES = 48;
 
-// Placeholder buffer size for unused bindings (weights/biases on relu/skip).
+// Placeholder buffer size for defensive missing-buffer fallbacks.
 const PLACEHOLDER_BYTES = 4;
 
 /** Everything the InferenceGraph executor needs after allocation. */
@@ -82,6 +91,8 @@ export interface AllocatedGraph {
   placeholderBuf: GPUBuffer;
   inputPackPipeline: GPUComputePipeline;
   inputPackUniformBuf: GPUBuffer;
+  outputCropPipeline: GPUComputePipeline;
+  outputCropUniformBuf: GPUBuffer;
   /** All non-tensor buffers (weights/biases/uniforms/placeholder/input-pack
    *  uniform) tracked so dispose() can destroy them. */
   allocatedBuffers: GPUBuffer[];
@@ -89,6 +100,7 @@ export interface AllocatedGraph {
   weightsByName: Map<string, LayerWeights>;
   /** Uniform-write count incurred during allocation (init-time writes). */
   uniformWriteCount: number;
+  memoryTelemetry: NeuralMemoryTelemetry;
 }
 
 /**
@@ -103,16 +115,23 @@ export async function allocateGraph(
   W: number,
   H: number,
   tensorDimsMap: Map<string, TensorDims>,
+  storage: NeuralTensorStorageContract = NEURAL_F32_TENSOR_STORAGE,
+  inferenceW: number = W,
+  inferenceH: number = H,
 ): Promise<AllocatedGraph> {
   const allocatedBuffers: GPUBuffer[] = [];
   let uniformWriteCount = 0;
+  const tensors = new Map<string, TensorBuffer>();
+  const tensorSlotBuffers: GPUBuffer[] = [];
+
+  try {
 
   // Build the weight lookup by name (retained for bind-group rebuild in run()).
   const weightsByName = new Map<string, LayerWeights>(
     weights.layers.map(lw => [lw.name, lw]),
   );
 
-  // Placeholder buffer (for unused binding slots).
+  // Placeholder buffer for defensive missing-buffer fallbacks.
   const placeholderBuf = device.createBuffer({
     label: 'neural/placeholder',
     size: PLACEHOLDER_BYTES,
@@ -123,7 +142,7 @@ export async function allocateGraph(
   // ── Compile the input-packer compute pipeline once.
   const packModule = device.createShaderModule({
     label: 'neural/inputPacker',
-    code: INPUT_PACKER_WGSL,
+    code: buildInputPackerWgsl(preprocessingContractForCheckpoint(weights.checkpoint), storage),
   });
   const inputPackPipeline = await device.createComputePipelineAsync({
     label: 'neural-pipeline-inputPack',
@@ -131,7 +150,17 @@ export async function allocateGraph(
     compute: { module: packModule, entryPoint: INPUT_PACKER_ENTRY },
   });
 
-  // Uniform buffer for input packer: holds the per-frame pixelCount (H*W).
+  const cropModule = device.createShaderModule({
+    label: 'neural/outputCrop',
+    code: buildOutputCropWgsl(storage),
+  });
+  const outputCropPipeline = await device.createComputePipelineAsync({
+    label: 'neural-pipeline-outputCrop',
+    layout: 'auto',
+    compute: { module: cropModule, entryPoint: OUTPUT_CROP_ENTRY },
+  });
+
+  // Logical and padded extents used to zero-fill the private inference lattice.
   const inputPackUniformBuf = device.createBuffer({
     label: 'neural-uniform-inputPack',
     size: 16,
@@ -139,25 +168,42 @@ export async function allocateGraph(
   });
   allocatedBuffers.push(inputPackUniformBuf);
   {
-    const u32 = new Uint32Array(4);
-    u32[0] = H * W;
+    const u32 = new Uint32Array([W, H, inferenceW, inferenceH]);
     device.queue.writeBuffer(inputPackUniformBuf, 0, u32.buffer);
   }
 
-  // ── Allocate intermediate tensors ─────────────────────────────────────
-  const tensors = new Map<string, TensorBuffer>();
-  for (const [name, dims] of tensorDimsMap) {
-    const floatCount = dims.H * dims.W * dims.C;
+  const outputCropUniformBuf = device.createBuffer({
+    label: 'neural-uniform-outputCrop',
+    size: 16,
+    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+  });
+  allocatedBuffers.push(outputCropUniformBuf);
+  device.queue.writeBuffer(
+    outputCropUniformBuf,
+    0,
+    new Uint32Array([W, H, inferenceW, 0]).buffer,
+  );
+
+  // Allocate the liveness-planned physical tensor slots. Multiple logical
+  // tensors may share a slot only when the earlier value's final consumer is
+  // strictly before the later producer.
+  const tensorPlan = buildTensorAllocationPlan(spec, tensorDimsMap, storage);
+  for (const slot of tensorPlan.slots) {
     const buf = device.createBuffer({
-      label: `neural/${name}`,
-      size: floatCount * 4,
+      label: `neural/slot-${slot.index}:${slot.logicalTensors.join(',')}`,
+      size: slot.byteSize,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
     });
+    tensorSlotBuffers.push(buf);
+  }
+  for (const [name, slotIndex] of tensorPlan.tensorToSlot) {
+    const dims = tensorDimsMap.get(name);
+    const buf = tensorSlotBuffers[slotIndex];
+    if (dims == null || buf == null) {
+      throw new Error(`[InferenceGraph] incomplete tensor allocation plan for '${name}'`);
+    }
     tensors.set(name, { buf, dims, label: `neural/${name}` });
   }
-
-  // Verify skip-connection shapes (both operands must match H×W×C).
-  validateSkipShapes(spec, tensorDimsMap);
 
   // ── Build pipelines + layer states ────────────────────────────────────
   const N = spec.layers.length;
@@ -177,7 +223,10 @@ export async function allocateGraph(
       continue;
     }
 
-    const sm = device.createShaderModule({ label: `neural-${layer.name}`, code: wgsl });
+    const sm = device.createShaderModule({
+      label: `neural-${layer.name}`,
+      code: neuralLayerWgslForStorage(layer.kind, wgsl, storage),
+    });
     const pipeline = await device.createComputePipelineAsync({
       label: `neural-pipeline-${layer.name}`,
       layout: 'auto',
@@ -192,23 +241,18 @@ export async function allocateGraph(
     allocatedBuffers.push(uniformBuf);
 
     // Write the uniform buffer now with actual shape params.
-    device.queue.writeBuffer(uniformBuf, 0, packLayerUniform(layer, tensorDimsMap, H, W));
+    device.queue.writeBuffer(
+      uniformBuf,
+      0,
+      packLayerUniform(
+        layer,
+        tensorDimsMap,
+        inferenceH,
+        inferenceW,
+        device.limits.maxComputeWorkgroupsPerDimension,
+      ),
+    );
     uniformWriteCount++;
-
-    // H28 — ReLU in-place aliasing fix (see patchReLUInPlaceAliasing): a relu
-    // layer whose input name == output name would alias the same GPU buffer at
-    // binding 0 (read) and binding 3 (read_write). Falls through to the normal
-    // path when the input tensor is missing (returns null).
-    if (layer.kind === 'relu' && layer.inputs[0] === layer.output) {
-      const patched = patchReLUInPlaceAliasing(
-        device, pipeline, layer, weightsByName, uniformBuf,
-        tensors, placeholderBuf, allocatedBuffers,
-      );
-      if (patched) {
-        layerStates[i] = patched;
-        continue;
-      }
-    }
 
     const { bindGroup, bufKeys } = buildBindGroup(
       device, pipeline, layer, weightsByName, uniformBuf,
@@ -230,86 +274,33 @@ export async function allocateGraph(
     placeholderBuf,
     inputPackPipeline,
     inputPackUniformBuf,
+    outputCropPipeline,
+    outputCropUniformBuf,
     allocatedBuffers,
     weightsByName,
     uniformWriteCount,
+    memoryTelemetry: estimateNeuralMemory(spec, weights, tensorDimsMap, storage),
   };
-}
-
-/**
- * H28 — ReLU in-place aliasing fix (D7.9: extracted from the allocateGraph loop).
- * When a relu layer lists the same name as both input and output (e.g.
- * `inputs: ['enc1_feat'], output: 'enc1_feat'`), `buildBindGroup` would
- * assign the SAME GPU buffer to binding 0 (read) AND binding 3 (read_write),
- * which is undefined behavior in WebGPU (aliased storage bindings with
- * mixed access modes). Fix: allocate a distinct `${layer.name}_out` buffer
- * for the relu output, build the bind group with that as binding 3, then
- * remap `tensors` so downstream layers reading `layer.output` see the
- * relu-written buffer. This is host-only; no WGSL changes are required.
- *
- * Tensor-map mutations are identical to the previous inline block:
- *   • `${layer.name}_out`     → the new distinct relu output buffer
- *   • `${layer.name}_in_orig` → the original input tensor (leak guard: the
- *     remap below overwrites the only reference to the relu's binding-0 INPUT
- *     buffer — the upstream conv's output. Without preserving it, dispose()'s
- *     tensor-map loop would never destroy it → GPU memory leak on engine
- *     teardown, 7 such buffers in the default UNet spec. The key is never read
- *     by any layer's bind-group build.)
- *   • `inName`                → remapped to the relu-written buffer so
- *     downstream readers of `layer.output` see it.
- * The new output buffer is deliberately NOT pushed to allocatedBuffers — it
- * lives in `tensors` and is destroyed via the tensors cleanup, consistent with
- * other tensors.
- *
- * Returns the layer's GPU state, or null when the input tensor is missing
- * (caller falls through to the unpatched buildBindGroup path).
- */
-function patchReLUInPlaceAliasing(
-  device: GPUDevice,
-  pipeline: GPUComputePipeline,
-  layer: LayerSpec,
-  weightsByName: Map<string, LayerWeights>,
-  uniformBuf: GPUBuffer,
-  tensors: Map<string, TensorBuffer>,
-  placeholderBuf: GPUBuffer,
-  allocatedBuffers: GPUBuffer[],
-): LayerGPUState | null {
-  const inName = layer.inputs[0]!;
-  const outKey = `${layer.name}_out`;
-  const srcTb  = tensors.get(inName);
-  if (!srcTb) return null;
-
-  const floatCount = srcTb.dims.H * srcTb.dims.W * srcTb.dims.C;
-  const outBuf = device.createBuffer({
-    label: `neural/${outKey}`,
-    size: floatCount * 4,
-    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
-  });
-  const outTb: TensorBuffer = { buf: outBuf, dims: srcTb.dims, label: `neural/${outKey}` };
-  // Temporarily inject the distinct output tensor so buildBindGroup picks
-  // it up as binding 3 while keeping the original for binding 0.
-  tensors.set(outKey, outTb);
-  // Swap the output name → outKey for this layer's bind-group build.
-  const patchedLayer = { ...layer, output: outKey };
-  const { bindGroup, bufKeys } = buildBindGroup(
-    device, pipeline, patchedLayer, weightsByName, uniformBuf,
-    tensors, placeholderBuf, allocatedBuffers,
-  );
-  tensors.set(`${layer.name}_in_orig`, srcTb); // leak guard (see doc comment)
-  tensors.set(inName, outTb);                  // downstream remap
-  return {
-    layerName:      layer.name,
-    pipeline,
-    uniformBuf,
-    cachedBindGroup: bindGroup,
-    cachedBufKeys:   bufKeys,
-  };
+  } catch (err) {
+    const buffersToDestroy = new Set<GPUBuffer>(allocatedBuffers);
+    for (const buffer of tensorSlotBuffers) {
+      buffersToDestroy.add(buffer);
+    }
+    for (const tensor of tensors.values()) {
+      buffersToDestroy.add(tensor.buf);
+    }
+    for (const buffer of buffersToDestroy) {
+      try { buffer.destroy(); } catch { /* tolerate partial cleanup errors */ }
+    }
+    throw err;
+  }
 }
 
 /**
  * Build a bind group for a layer.
- * Binding layout matches WGSL declarations exactly:
- *   0=input, 1=weights (or inputB for skip), 2=biases, 3=output, 4=params
+ * Binding entries match each WGSL auto-layout exactly: conv layers use all
+ * bindings 0..4, skip-add omits binding 2, and element-wise layers use only
+ * bindings 0, 3, and 4.
  *
  * For conv2d/transposedConv2d this UPLOADS weight + bias buffers (appending them
  * to `allocatedBuffers` for dispose tracking). Returns the bind group + the
@@ -344,9 +335,9 @@ export function buildBindGroup(
         usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
         mappedAtCreation: true,
       });
+      allocatedBuffers.push(weightsBuf);
       new Float32Array(weightsBuf.getMappedRange()).set(lw.weights);
       weightsBuf.unmap();
-      allocatedBuffers.push(weightsBuf);
     }
   }
 
@@ -361,9 +352,9 @@ export function buildBindGroup(
         usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
         mappedAtCreation: true,
       });
+      allocatedBuffers.push(biasesBuf);
       new Float32Array(biasesBuf.getMappedRange()).set(lw.biases);
       biasesBuf.unmap();
-      allocatedBuffers.push(biasesBuf);
     }
   }
 
@@ -372,16 +363,26 @@ export function buildBindGroup(
   const outputTensor = tensors.get(outputName);
   const outputBuf = outputTensor?.buf ?? placeholderBuf;
 
+  const entries: GPUBindGroupEntry[] = [
+    { binding: 0, resource: { buffer: inputBuf } },
+  ];
+  if (layer.kind === 'conv2d' || layer.kind === 'transposedConv2d') {
+    entries.push(
+      { binding: 1, resource: { buffer: weightsBuf } },
+      { binding: 2, resource: { buffer: biasesBuf } },
+    );
+  } else if (layer.kind === 'skipAdd') {
+    entries.push({ binding: 1, resource: { buffer: weightsBuf } });
+  }
+  entries.push(
+    { binding: 3, resource: { buffer: outputBuf } },
+    { binding: 4, resource: { buffer: uniformBuf } },
+  );
+
   const bindGroup = device.createBindGroup({
     label: `neural-bg-${layer.name}`,
     layout: pipeline.getBindGroupLayout(0),
-    entries: [
-      { binding: 0, resource: { buffer: inputBuf  } },
-      { binding: 1, resource: { buffer: weightsBuf } },
-      { binding: 2, resource: { buffer: biasesBuf  } },
-      { binding: 3, resource: { buffer: outputBuf  } },
-      { binding: 4, resource: { buffer: uniformBuf } },
-    ],
+    entries,
   });
 
   // Only the dynamic buffers (input + output) need cache-keying — weights and

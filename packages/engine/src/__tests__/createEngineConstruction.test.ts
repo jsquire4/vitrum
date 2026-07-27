@@ -4,6 +4,10 @@ import type { SceneAABB } from '../sceneAABB.js';
 
 const hybridFactory = vi.hoisted(() => vi.fn());
 const ptFactory = vi.hoisted(() => vi.fn());
+const webglFactory = vi.hoisted(() => vi.fn());
+const hybridAdvancedValidator = vi.hoisted(() => vi.fn());
+const ptAdvancedValidator = vi.hoisted(() => vi.fn());
+const webglAdvancedValidator = vi.hoisted(() => vi.fn());
 const ptRequiredLimits = vi.hoisted(() => vi.fn(() => ({
   maxStorageBuffersPerShaderStage: 28,
   maxStorageTexturesPerShaderStage: 5,
@@ -19,6 +23,12 @@ vi.mock('@vitrum/walkaround-hybrid', () => ({
     maxStorageTexturesPerShaderStage: 6,
   },
   createWalkaroundEngine_Hybrid: hybridFactory,
+  resolveHybridNrcConfig: vi.fn(() => ({ useF16: false })),
+  nrcWebGpuRequiredLimitsForConfig: vi.fn(() => ({
+    maxStorageBuffersPerShaderStage: 16,
+    maxStorageTexturesPerShaderStage: 8,
+  })),
+  validateHybridEngineAdvancedOptions: hybridAdvancedValidator,
 }));
 
 vi.mock('@vitrum/pt-webgpu', () => ({
@@ -34,6 +44,12 @@ vi.mock('@vitrum/pt-webgpu', () => ({
       : 'lite',
   ptWebgpuRequiredLimitsForAdapter: ptRequiredLimits,
   createPTEngine_WebGPU: ptFactory,
+  validatePtWebgpuAdvancedOptions: ptAdvancedValidator,
+}));
+
+vi.mock('@vitrum/pt-webgl2', () => ({
+  createPTEngine_WebGL2: webglFactory,
+  validateWebgl2AdvancedOptions: webglAdvancedValidator,
 }));
 
 import {
@@ -42,7 +58,6 @@ import {
   constructWalkaround,
   resolveAdvancedForBackend,
   stripOwnershipCriticalKeys,
-  warnCrossBackendAdvanced,
   type CreateEngineOptions,
   type SharedDeviceCtx,
 } from '../createEngine.js';
@@ -59,10 +74,11 @@ const aabb: SceneAABB = {
 };
 
 function makeCanvas(): HTMLCanvasElement {
+  const webgpuContext = { configure: vi.fn() };
   return {
     width: 64,
     height: 64,
-    getContext: vi.fn(() => null),
+    getContext: vi.fn((kind: string) => kind === 'webgpu' ? webgpuContext : null),
   } as unknown as HTMLCanvasElement;
 }
 
@@ -114,6 +130,10 @@ describe('createEngine backend construction safety', () => {
     resetGpuDetectionCache();
     hybridFactory.mockReset();
     ptFactory.mockReset();
+    webglFactory.mockReset();
+    hybridAdvancedValidator.mockReset();
+    ptAdvancedValidator.mockReset();
+    webglAdvancedValidator.mockReset();
     ptRequiredLimits.mockClear();
   });
 
@@ -204,7 +224,44 @@ describe('createEngine backend construction safety', () => {
     expect(ptRequiredLimits).toHaveBeenCalledWith(adapter, { restirPtReuse: true });
   });
 
-  it('routes auto-selected walkaround-unsupported material fields to pt-webgpu with a structured warning', async () => {
+  it.each(['pt-webgpu', 'pt-webgpu-lite'] as const)(
+    'forwards %s profile and active-feature identity through createEngine',
+    async (profileId) => {
+      const device = makeDevice();
+      const adapter = makeAdapter(device);
+      Object.defineProperty(globalThis, 'navigator', {
+        value: {
+          gpu: {
+            requestAdapter: vi.fn(async () => adapter),
+            getPreferredCanvasFormat: vi.fn(() => 'bgra8unorm'),
+          },
+        },
+        configurable: true,
+      });
+      const activeFeatures = new Set([
+        profileId === 'pt-webgpu' ? 'pt-webgpu-spectral' : 'pt-webgpu-sobol-sampling',
+      ] as const);
+      const backendEngine = Object.assign(makeEngine(), {
+        capabilities: { activeFeatures },
+        backendProfileId: profileId,
+        profileId,
+      });
+      ptFactory.mockResolvedValue(backendEngine);
+
+      const result = await createEngine({
+        canvas: makeCanvas(),
+        scene,
+        prefer: 'quality-webgpu',
+      });
+
+      expect(result.backendId).toBe('pt-webgpu');
+      expect(result.backendProfileId).toBe(profileId);
+      expect(result.profileId).toBe(profileId);
+      expect(result.capabilities.activeFeatures).toBe(activeFeatures);
+    },
+  );
+
+  it('keeps auto-selected approximate material fields on walkaround without a routing warning', async () => {
     const device = makeDevice();
     const adapter = makeAdapter(device);
     Object.defineProperty(globalThis, 'navigator', {
@@ -219,20 +276,18 @@ describe('createEngine backend construction safety', () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const warnings: EngineWarning[] = [];
     const engine = makeEngine();
-    ptFactory.mockResolvedValue(engine);
+    hybridFactory.mockResolvedValue(engine);
     const materialRouteScene: Scene = {
       primitives: [{
         kind: 'mesh',
-        id: 'thin-film-triangle',
+        id: 'volume-triangle',
         positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
         normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
         material: {
           baseColor: [1, 1, 1],
           roughness: 0.2,
           metallic: 0,
-          thinFilmStack: {
-            layers: [{ ior: 1.45, thicknessNm: 180 }],
-          },
+          scatteringCoefficient: 0.12,
         },
       }],
       emitters: [],
@@ -246,23 +301,16 @@ describe('createEngine backend construction safety', () => {
       onWarning: (warning) => warnings.push(warning),
     });
 
-    expect(result.backendId).toBe('pt-webgpu');
-    expect(ptFactory).toHaveBeenCalledTimes(1);
-    expect(hybridFactory).not.toHaveBeenCalled();
+    expect(result.backendId).toBe('walkaround-hybrid');
+    expect(hybridFactory).toHaveBeenCalledTimes(1);
+    expect(ptFactory).not.toHaveBeenCalled();
     expect(engine.setScene).toHaveBeenCalledWith(materialRouteScene);
-    expect(warnings).toContainEqual(expect.objectContaining({
-      code: 'createEngine.material-feature-backend-recommended',
-      details: expect.objectContaining({
-        fields: ['thinFilmStack'],
-        defaultAutoBackend: 'walkaround-hybrid',
-        resolvedBackend: 'pt-webgpu',
-      }),
-    }));
-    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(warnings).toEqual([]);
+    expect(warnSpy).not.toHaveBeenCalled();
     warnSpy.mockRestore();
   });
 
-  it('keeps material-feature routing when a glTF asset hint has no recommended backend', async () => {
+  it('keeps approximate material fields on walkaround when a glTF hint has no recommended backend', async () => {
     const device = makeDevice();
     const adapter = makeAdapter(device);
     Object.defineProperty(globalThis, 'navigator', {
@@ -277,20 +325,18 @@ describe('createEngine backend construction safety', () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const warnings: EngineWarning[] = [];
     const engine = makeEngine();
-    ptFactory.mockResolvedValue(engine);
+    hybridFactory.mockResolvedValue(engine);
     const materialRouteScene: Scene = {
       primitives: [{
         kind: 'mesh',
-        id: 'gltf-hint-thin-film-triangle',
+        id: 'gltf-hint-volume-triangle',
         positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
         normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
         material: {
           baseColor: [1, 1, 1],
           roughness: 0.2,
           metallic: 0,
-          thinFilmStack: {
-            layers: [{ ior: 1.45, thicknessNm: 180 }],
-          },
+          scatteringCoefficient: 0.12,
         },
       }],
       emitters: [],
@@ -305,19 +351,12 @@ describe('createEngine backend construction safety', () => {
       onWarning: (warning) => warnings.push(warning),
     });
 
-    expect(result.backendId).toBe('pt-webgpu');
-    expect(ptFactory).toHaveBeenCalledTimes(1);
-    expect(hybridFactory).not.toHaveBeenCalled();
+    expect(result.backendId).toBe('walkaround-hybrid');
+    expect(hybridFactory).toHaveBeenCalledTimes(1);
+    expect(ptFactory).not.toHaveBeenCalled();
     expect(engine.setScene).toHaveBeenCalledWith(materialRouteScene);
-    expect(warnings).toContainEqual(expect.objectContaining({
-      code: 'createEngine.material-feature-backend-recommended',
-      details: expect.objectContaining({
-        fields: ['thinFilmStack'],
-        defaultAutoBackend: 'walkaround-hybrid',
-        resolvedBackend: 'pt-webgpu',
-      }),
-    }));
-    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(warnings).toEqual([]);
+    expect(warnSpy).not.toHaveBeenCalled();
     warnSpy.mockRestore();
   });
 
@@ -357,40 +396,133 @@ describe('createEngine backend construction safety', () => {
     expect(engine.dispose).toHaveBeenCalledTimes(1);
     expect(device.destroy).toHaveBeenCalledTimes(1);
   });
-});
+  it('does not reinterpret a backend implementation error as hardware unavailability', async () => {
+    const device = makeDevice();
+    const adapter = makeAdapter(device);
+    const requestAdapter = vi.fn(async () => adapter);
+    Object.defineProperty(globalThis, 'navigator', {
+      value: {
+        gpu: {
+          requestAdapter,
+          getPreferredCanvasFormat: vi.fn(() => 'bgra8unorm'),
+        },
+      },
+      configurable: true,
+    });
+    const implementationError = new Error('pipeline invariant failed');
+    ptFactory.mockRejectedValue(implementationError);
+    webglFactory.mockResolvedValue(makeEngine());
+    const canvas = makeCanvas();
 
-describe('Bug3 fix — advanced.device ownership guard (stripOwnershipCriticalKeys)', () => {
-  it('strips device from advanced bag and emits a console.warn', () => {
+    await expect(createEngine({
+      canvas,
+      scene,
+      prefer: 'quality-webgpu',
+    })).rejects.toBe(implementationError);
+
+    expect(requestAdapter).toHaveBeenCalledTimes(2);
+    expect(webglFactory).not.toHaveBeenCalled();
+    expect(canvas.getContext).not.toHaveBeenCalled();
+  });
+
+  it('falls back only when adapter acquisition raises typed backend unavailability', async () => {
+    const device = makeDevice();
+    const adapter = makeAdapter(device);
+    const requestAdapter = vi.fn()
+      .mockResolvedValueOnce(adapter)
+      .mockRejectedValueOnce(new Error('adapter disappeared'));
+    Object.defineProperty(globalThis, 'navigator', {
+      value: {
+        gpu: {
+          requestAdapter,
+          getPreferredCanvasFormat: vi.fn(() => 'bgra8unorm'),
+        },
+      },
+      configurable: true,
+    });
+    const gl = { createFramebuffer: vi.fn() } as unknown as WebGL2RenderingContext;
+    const canvas = {
+      width: 64,
+      height: 64,
+      getContext: vi.fn((kind: string) => kind === 'webgl2' ? gl : null),
+    } as unknown as HTMLCanvasElement;
+    webglFactory.mockResolvedValue(makeEngine());
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const structured: EngineWarning[] = [];
-    const fakeDevice = {} as GPUDevice;
-    const advanced = { device: fakeDevice, maxBounces: 4 };
-    const stripped = stripOwnershipCriticalKeys(
-      advanced as unknown as Record<string, unknown>,
-      'walkaround-hybrid',
-      (w) => structured.push(w),
-    );
-    expect((stripped as Record<string, unknown>).device).toBeUndefined();
-    // Non-ownership keys are preserved.
-    expect((stripped as Record<string, unknown>).maxBounces).toBe(4);
-    expect(warnSpy).toHaveBeenCalledTimes(1);
-    expect(warnSpy.mock.calls[0]?.[0]).toMatch(/device/);
-    expect(warnSpy.mock.calls[0]?.[0]).toMatch(/walkaround-hybrid/);
-    expect(structured.some((w) =>
-      w.code === 'createEngine.advanced-ownership-key-ignored' &&
-      w.details?.backend === 'walkaround-hybrid',
-    )).toBe(true);
+
+    const result = await createEngine({
+      canvas,
+      scene,
+      prefer: 'quality-webgpu',
+    });
+
+    expect(result.backendId).toBe('pt-webgl2');
+    expect(webglFactory).toHaveBeenCalledTimes(1);
+    expect(canvas.getContext).toHaveBeenCalledWith('webgl2', {
+      antialias: false,
+      preserveDrawingBuffer: false,
+    });
     warnSpy.mockRestore();
   });
 
-  it('strips canvas and context keys too', () => {
+  it('rejects ambiguous advanced options before GPU detection', async () => {
+    const requestAdapter = vi.fn();
+    Object.defineProperty(globalThis, 'navigator', {
+      value: { gpu: { requestAdapter } },
+      configurable: true,
+    });
+
+    await expect(createEngine({
+      canvas: makeCanvas(),
+      scene,
+      advanced: { maxBounces: 4 },
+    })).rejects.toThrow(/requires advancedBackend/i);
+
+    expect(requestAdapter).not.toHaveBeenCalled();
+  });
+
+  it('runs backend option validation before GPU detection', async () => {
+    const requestAdapter = vi.fn();
+    Object.defineProperty(globalThis, 'navigator', {
+      value: { gpu: { requestAdapter } },
+      configurable: true,
+    });
+    ptAdvancedValidator.mockImplementation(() => {
+      throw new RangeError('invalid pt-webgpu option');
+    });
+
+    await expect(createEngine({
+      canvas: makeCanvas(),
+      scene,
+      advancedByBackend: { 'pt-webgpu': { maxBounces: 999 } },
+    })).rejects.toThrow(/invalid pt-webgpu option/);
+
+    expect(ptAdvancedValidator).toHaveBeenCalledWith({ maxBounces: 999 });
+    expect(requestAdapter).not.toHaveBeenCalled();
+  });
+});
+
+describe('advanced ownership guard', () => {
+  it('rejects device in an advanced bag without warning or mutation', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const fakeDevice = {} as GPUDevice;
+    const advanced = { device: fakeDevice, maxBounces: 4 };
+    expect(() => stripOwnershipCriticalKeys(
+      advanced as unknown as Record<string, unknown>,
+      'walkaround-hybrid',
+    )).toThrow(/ownership-critical key.*device/i);
+    expect(advanced).toEqual({ device: fakeDevice, maxBounces: 4 });
+    expect(warnSpy).not.toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
+
+  it('rejects canvas and context keys too', () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const advanced = { canvas: {}, context: {}, traceTier: 'full' };
-    const stripped = stripOwnershipCriticalKeys(advanced as unknown as Record<string, unknown>, 'pt-webgpu');
-    expect((stripped as Record<string, unknown>).canvas).toBeUndefined();
-    expect((stripped as Record<string, unknown>).context).toBeUndefined();
-    expect((stripped as Record<string, unknown>).traceTier).toBe('full');
-    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(() => stripOwnershipCriticalKeys(
+      advanced as unknown as Record<string, unknown>,
+      'pt-webgpu',
+    )).toThrow(/canvas, context/);
+    expect(warnSpy).not.toHaveBeenCalled();
     warnSpy.mockRestore();
   });
 
@@ -411,107 +543,62 @@ describe('Bug3 fix — advanced.device ownership guard (stripOwnershipCriticalKe
     warnSpy.mockRestore();
   });
 
-  it('walkaround constructor strips device from advanced before passing to factory', async () => {
+  it('walkaround constructor rejects an injected device before adapter acquisition', async () => {
     hybridFactory.mockReset();
     const device = makeDevice();
     const adapter = makeAdapter(device);
+    const requestAdapter = vi.fn(async () => adapter);
     Object.defineProperty(globalThis, 'navigator', {
-      value: { gpu: { requestAdapter: vi.fn(async () => adapter) } },
+      value: { gpu: { requestAdapter } },
       configurable: true,
     });
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const impostor = makeDevice(); // a DIFFERENT device than the factory-minted one
     hybridFactory.mockResolvedValue(makeEngine());
 
-    await constructWalkaround(
+    await expect(constructWalkaround(
       makeOptions({ device: impostor }, 'walkaround-hybrid'),
       scene,
       aabb,
       false,
-    );
+    )).rejects.toThrow(/ownership-critical key.*device/i);
 
-    // calls[0] is safe — hybridFactory was reset at the start of this test.
-    const passedDevice = hybridFactory.mock.calls[0]?.[0]?.device;
-    expect(passedDevice).toBe(device);
-    expect(passedDevice).not.toBe(impostor);
-    // A warn must have been emitted.
-    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(requestAdapter).not.toHaveBeenCalled();
+    expect(hybridFactory).not.toHaveBeenCalled();
+    expect(warnSpy).not.toHaveBeenCalled();
     warnSpy.mockRestore();
   });
 
-  it('pt-webgpu constructor strips device from advanced before passing to factory', async () => {
+  it('pt-webgpu constructor rejects an injected device before adapter acquisition', async () => {
     ptFactory.mockReset();
     const device = makeDevice();
     const adapter = makeAdapter(device);
+    const requestAdapter = vi.fn(async () => adapter);
     Object.defineProperty(globalThis, 'navigator', {
-      value: { gpu: { requestAdapter: vi.fn(async () => adapter) } },
+      value: { gpu: { requestAdapter } },
       configurable: true,
     });
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const impostor = makeDevice();
     ptFactory.mockResolvedValue(makeEngine());
 
-    await constructPathTracerWebGPU(
+    await expect(constructPathTracerWebGPU(
       makeOptions({ device: impostor }, 'pt-webgpu'),
       scene,
-    );
+    )).rejects.toThrow(/ownership-critical key.*device/i);
 
-    // calls[0] is safe — ptFactory was reset at the start of this test.
-    const passedDevice = ptFactory.mock.calls[0]?.[0]?.device;
-    expect(passedDevice).toBe(device);
-    expect(passedDevice).not.toBe(impostor);
-    expect(warnSpy).toHaveBeenCalledTimes(1);
-    warnSpy.mockRestore();
-  });
-});
-
-describe('Bug4 fix — cross-backend advanced fallback warning (warnCrossBackendAdvanced)', () => {
-  it('emits a console.warn when advanced is non-empty and backends differ', () => {
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const structured: EngineWarning[] = [];
-    warnCrossBackendAdvanced(
-      { maxBounces: 4 },
-      'walkaround-hybrid',
-      'pt-webgpu',
-      (w) => structured.push(w),
-    );
-    expect(warnSpy).toHaveBeenCalledTimes(1);
-    const msg = warnSpy.mock.calls[0]?.[0] as string;
-    expect(msg).toMatch(/walkaround-hybrid/);
-    expect(msg).toMatch(/pt-webgpu/);
-    expect(msg).toMatch(/maxBounces/);
-    expect(structured.some((w) =>
-      w.code === 'createEngine.advanced-cross-backend' &&
-      w.details?.preferredBackend === 'walkaround-hybrid' &&
-      w.details?.resolvedBackend === 'pt-webgpu',
-    )).toBe(true);
-    warnSpy.mockRestore();
-  });
-
-  it('does NOT warn when advanced is null/undefined', () => {
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    warnCrossBackendAdvanced(undefined, 'walkaround-hybrid', 'pt-webgl2');
-    warnCrossBackendAdvanced(null as never, 'walkaround-hybrid', 'pt-webgl2');
-    expect(warnSpy).not.toHaveBeenCalled();
-    warnSpy.mockRestore();
-  });
-
-  it('does NOT warn when advanced is an empty object', () => {
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    warnCrossBackendAdvanced({}, 'pt-webgpu', 'pt-webgl2');
-    expect(warnSpy).not.toHaveBeenCalled();
-    warnSpy.mockRestore();
-  });
-
-  it('does NOT warn when advanced only has undefined-valued keys', () => {
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    warnCrossBackendAdvanced({ maxBounces: undefined } as unknown as CreateEngineOptions['advanced'], 'pt-webgpu', 'pt-webgl2');
+    expect(requestAdapter).not.toHaveBeenCalled();
+    expect(ptFactory).not.toHaveBeenCalled();
     expect(warnSpy).not.toHaveBeenCalled();
     warnSpy.mockRestore();
   });
 });
 
 describe('H31 fix — backend-scoped advanced resolution', () => {
+  beforeEach(() => {
+    ptAdvancedValidator.mockReset();
+  });
+
   it('selects the matching advancedByBackend bag for the resolved backend', () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const advanced = resolveAdvancedForBackend(
@@ -551,43 +638,32 @@ describe('H31 fix — backend-scoped advanced resolution', () => {
     warnSpy.mockRestore();
   });
 
-  it('warns when legacy advanced is applied under auto selection without a target', () => {
+  it('rejects legacy advanced under auto selection without a target', () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const structured: EngineWarning[] = [];
     const advanced = { maxBounces: 8 };
-    const resolved = resolveAdvancedForBackend(
+    expect(() => resolveAdvancedForBackend(
       {
         prefer: 'auto',
         advanced,
-        onWarning: (w) => structured.push(w),
       },
       'pt-webgl2',
-    );
-    expect(resolved).toBe(advanced);
-    expect(warnSpy).toHaveBeenCalledTimes(1);
-    expect(structured.some((w) =>
-      w.code === 'createEngine.advanced-auto-backend-ambiguous' &&
-      w.details?.selectedBackend === 'pt-webgl2',
-    )).toBe(true);
+    )).toThrow(/require advancedBackend/i);
+    expect(warnSpy).not.toHaveBeenCalled();
     warnSpy.mockRestore();
   });
 
-  it('lets advancedByBackend override legacy advanced with a warning', () => {
+  it('rejects advancedByBackend combined with legacy advanced', () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const structured: EngineWarning[] = [];
-    const resolved = resolveAdvancedForBackend(
+    expect(() => resolveAdvancedForBackend(
       {
         advanced: { maxBounces: 8 },
         advancedByBackend: {
           'walkaround-hybrid': { qualityTier: 'low' },
         },
-        onWarning: (w) => structured.push(w),
       },
       'walkaround-hybrid',
-    );
-    expect(resolved).toEqual({ qualityTier: 'low' });
-    expect(warnSpy).toHaveBeenCalledTimes(1);
-    expect(structured.some((w) => w.code === 'createEngine.advanced-legacy-ignored')).toBe(true);
+    )).toThrow(/cannot be combined/i);
+    expect(warnSpy).not.toHaveBeenCalled();
     warnSpy.mockRestore();
   });
 

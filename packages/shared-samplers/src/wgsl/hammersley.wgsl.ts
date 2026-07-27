@@ -16,7 +16,7 @@ fn radicalInverse_VdC(n: u32) -> f32 {
 }
 
 fn hammersleyUniform(i: u32, numSamples: u32) -> vec2f {
-  return vec2f(f32(i) / f32(numSamples), radicalInverse_VdC(i));
+  return vec2f(f32(i) / f32(max(numSamples, 1u)), radicalInverse_VdC(i));
 }
 
 // Uniform sphere sampling from 2D [0,1]^2 input.

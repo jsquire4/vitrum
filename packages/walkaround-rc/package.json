@@ -28,6 +28,7 @@
   },
   "scripts": {
     "test": "vitest run",
+    "test:gpu": "vitest run --config vitest.gpu.config.ts",
     "test:rc-behavior": "node ../../tools/benchmark-runner/run-rc-behavior-mechanical.mjs",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src --ext .ts,.tsx"

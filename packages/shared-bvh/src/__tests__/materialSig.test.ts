@@ -228,6 +228,8 @@ describe('mergeWorldSpaceFromCore material slots', () => {
           id: 'mat-a',
           positions: TRI_POS,
           normals: TRI_NORM,
+          uvs: new Float32Array([0, 0, 1, 0, 0, 1]),
+          uv1: new Float32Array([0, 0, 1, 0, 0, 1]),
           material: a,
         },
         {
@@ -235,6 +237,8 @@ describe('mergeWorldSpaceFromCore material slots', () => {
           id: 'mat-b',
           positions: TRI_POS,
           normals: TRI_NORM,
+          uvs: new Float32Array([0, 0, 1, 0, 0, 1]),
+          uv1: new Float32Array([0, 0, 1, 0, 0, 1]),
           material: b,
         },
       ],

@@ -19,6 +19,7 @@ import {
 } from '../fusedMlpTrainer.ts';
 import {
   fusedForwardWgsl, fusedBackwardWgsl, gradFinalizeWgsl, downcastF16Wgsl,
+  fusedMlpWorkgroupStorageBytes,
   type FusedMlpWgslOptions,
 } from '../wgsl/fusedMlp.wgsl.ts';
 
@@ -121,7 +122,7 @@ describe('fused NRC MLP — WGSL codegen', () => {
     // forward has exactly 5 storage buffers (weights, biases, inputs, acts, z).
     expect(countStorage(fusedForwardWgsl(MULLER))).toBe(5);
     // backward has 7 (weights, targets, acts, z, gradWfx, gradBfx, gradInputFx).
-    expect(countStorage(fusedBackwardWgsl(MULLER))).toBe(7);
+    expect(countStorage(fusedBackwardWgsl(MULLER))).toBe(8);
   });
 
   it('packs per-layer offsets as a fixed-size uniform vec4 array sized to WLAYERS', () => {
@@ -155,18 +156,17 @@ describe('fused NRC MLP — WGSL codegen', () => {
 });
 
 describe('fused NRC MLP — shared-memory budget', () => {
-  const sharedBytes = (tileB: number, W: number, scBytes: number) => 3 * tileB * W * scBytes;
+  const sharedBytes = (tileB: number, W: number, scBytes: number) => 2 * tileB * W * scBytes;
 
-  it('the f16 Müller tile (64×64, 3 tiles) fits the 32 KB workgroup-storage limit', () => {
-    // actA + actB (forward) / deltaA + deltaB (backward) + one staged weight tile
-    // budget = 3 × TILE_B × W × 2 = 24576 B for f16.
-    expect(sharedBytes(64, 64, 2)).toBe(24576);
+  it('the f16 Müller tile has the two workgroup arrays emitted by the shader', () => {
+    expect(sharedBytes(64, 64, 2)).toBe(16_384);
+    expect(fusedMlpWorkgroupStorageBytes(MULLER)).toBe(16_384);
     expect(sharedBytes(64, 64, 2)).toBeLessThanOrEqual(32768);
   });
 
-  it('the f32 path needs TILE_B<=32 at W=64 to stay within 32 KB', () => {
-    expect(sharedBytes(64, 64, 4)).toBeGreaterThan(32768); // f32 @64 overflows
-    expect(sharedBytes(32, 64, 4)).toBe(24576);            // f32 @32 fits
-    expect(sharedBytes(32, 64, 4)).toBeLessThanOrEqual(32768);
+  it('the default f32 TILE_B=32 path exactly fits the 16 KB guaranteed floor', () => {
+    expect(sharedBytes(64, 64, 4)).toBe(32_768);
+    expect(sharedBytes(32, 64, 4)).toBe(16_384);
+    expect(fusedMlpWorkgroupStorageBytes({ ...MULLER, useF16: false, TILE_B: 32 })).toBe(16_384);
   });
 });

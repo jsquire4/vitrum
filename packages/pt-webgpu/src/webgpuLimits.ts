@@ -8,11 +8,9 @@
  * one group is 11 (group 1: analytics + env + area lights + directionalLights).
  * N-directional expansion (2026-06-10) added binding 10 = directionalLights to
  * group 1, raising the per-group peak from 10 to 11. Group 2 carries 7
- * storage buffers (5 TLAS + the BDPT light-path scratch buffer + the BDPT
- * eye-stack scratch buffer); the light-path was an `rgba32float` read_write
- * storage TEXTURE but core WebGPU rejects that format for read_write storage
- * (gpuweb #4651), so it is a storage buffer — one fewer storage texture, one more
- * storage buffer. Group 3 carries four read-only storage buffers (the WS2
+ * storage buffers (the 5 TLAS buffers). BDPT path state is invocation-private,
+ * so it does not add persistent group-2 scratch bindings. Group 3 carries four
+ * read-only storage buffers (the WS2
  * many-light importance-sampling tree, mesh UVs, material texture descriptors,
  * and mesh tangents) + three read_write storage buffers (A4 SPPM:
  * sppmPhotonCells at binding 6, sppmCellCounters at binding 7, sppmPixelStats at
@@ -28,10 +26,10 @@ export const PT_WEBGPU_FULL_MAX_STORAGE_BUFFERS_PER_GROUP = 11;
  * N-directional (2026-06-10): +1 for group-1 directionalLights (binding 10).
  * D10/H53 (2026-06-14): group 3 is 8, not 5: lightTree, meshUvs,
  * materialTexDescriptors, sppmPhotonCells, sppmCellCounters, sppmPixelStats,
- * meshTangents, meshVertexColors. Total: g0(8) + g1(11) + g2(7) + g3(8) = 34.
+ * meshTangents, meshVertexColors. Total: g0(8) + g1(11) + g2(5) + g3(8) = 32.
  * @public — public device-limit constant; consumed by host device-acquisition code and tests.
  */
-export const PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE = 34;
+export const PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE = 32;
 
 /** Full tier plus the opt-in ReSTIR-PT reuse pre-pass group-0 reservoirs. */
 export const PT_WEBGPU_RESTIR_PT_REUSE_REQUIRED_STORAGE_BUFFERS_PER_STAGE =
@@ -90,9 +88,8 @@ export const PT_WEBGPU_SAMPLED_TEXTURES_BASELINE = 16;
 
 /**
  * Full tier uses 5 storage textures per stage, all in group 0 (output +
- * G-buffer aux). The former group-2 BDPT light-path storage texture is now a
- * storage buffer (see {@link PT_WEBGPU_FULL_MAX_STORAGE_BUFFERS_PER_GROUP}), so
- * the per-stage storage-texture total is exactly group 0's 5.
+ * G-buffer aux). BDPT path state is invocation-private, so the per-stage
+ * storage-texture total is exactly group 0's 5.
  */
 export const PT_WEBGPU_FULL_REQUIRED_STORAGE_TEXTURES_PER_STAGE = 5;
 

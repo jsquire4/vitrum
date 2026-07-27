@@ -4,7 +4,7 @@
  *
  * Shared walkaround-hybrid (and pt-webgpu) GPU-harness scaffolding for the
  * native (lavapipe/wgpu-native) tooling harnesses. These camera-matrix,
- * device-acquisition, shader-patch, and readback helpers were previously
+ * device-acquisition and readback helpers were previously
  * RE-DECLARED — behaviorally identical modulo whitespace — across
  * tools/behavioral-gate/gate.mjs and the tools/radiometric-ab/* harnesses.
  * Promoting them here keeps one source of truth (D17-5 / T8).
@@ -16,11 +16,7 @@
  * Those are intentionally NOT promoted here — unifying them would change render
  * output. Only the behavior-identical camera / device / readback helpers live in
  * this module.
- *
- * Depends on the WH naga fix from tools/shader-gate/nagaFix.mjs.
  */
-
-import { applyNagaFix } from "../shader-gate/nagaFix.mjs";
 
 // ── Camera ────────────────────────────────────────────────────────────────────
 
@@ -54,18 +50,7 @@ export function makeLookAtMatrix(eye, center, up) {
   ]);
 }
 
-// ── Device patch + acquisition ──────────────────────────────────────────────────
-
-export function patchDeviceForWh(device) {
-  const orig = device.createShaderModule.bind(device);
-  device.createShaderModule = (desc) => {
-    if (typeof desc.code === "string") {
-      try { return orig({ ...desc, code: applyNagaFix(desc.code) }); }
-      catch { return orig(desc); }
-    }
-    return orig(desc);
-  };
-}
+// Device acquisition
 
 export async function acquireWhDevice() {
   const adapter = await navigator.gpu.requestAdapter();

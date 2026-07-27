@@ -45,7 +45,6 @@ function makeMockEngine(options?: {
       maxSamplesPerPixel: Infinity,
       maxBounces: 8,
       causticStrategy: 'none',
-      experimentalFeatures: new Set(),
     },
     setScene: vi.fn(),
     getScene: vi.fn(() => null),
@@ -93,6 +92,34 @@ function asExportGIState(eng: Record<string, unknown>) {
 function asImportGIState(eng: Record<string, unknown>) {
   return eng.importGIState as (ReturnType<typeof vi.fn>) | undefined;
 }
+
+function makeFakeGIStateSnapshot(): GIStateSnapshot {
+  const dims = { x: 2, y: 2, z: 2 };
+  const probeCount = dims.x * dims.y * dims.z;
+  const state = new Float32Array(probeCount * 4);
+  for (let probe = 0; probe < probeCount; probe += 1) {
+    state[probe * 4 + 3] = 1;
+  }
+  const irrW = dims.x * 5; // DDGI L2-SH stride
+  const irrH = dims.y * dims.z * 5;
+  const visW = dims.x * 18; // DDGI visibility-octahedral stride
+  const visH = dims.y * dims.z * 18;
+  return {
+    dims,
+    origin: [0, 0, 0],
+    spacing: 1,
+    irrW,
+    irrH,
+    visW,
+    visH,
+    irrData: new Uint16Array(irrW * irrH * 4),
+    visData: new Uint16Array(visW * visH * 4),
+    probeStateW: dims.x,
+    probeStateH: dims.y * dims.z,
+    probeStateData: state,
+  };
+}
+
 function fireError(eng: Record<string, unknown>, e: EngineError) {
   (eng._fireError as (e: EngineError) => void)(e);
 }
@@ -252,6 +279,82 @@ describe('attachVitrum — autoRecreateOnDeviceLoss', () => {
 
   // ── Test: non-fatal errors do NOT trigger recreate ──────────────────────
 
+  it('waits for a genuinely lost WebGL context to restore before recreating', async () => {
+    const { attachVitrum } = await import('../src/lifecycle/vanilla.js');
+    const createEngineModule = await import('../src/createEngine.js');
+
+    const engine1 = makeMockEngine();
+    const engine2 = makeMockEngine();
+    vi.spyOn(createEngineModule, 'createEngine')
+      .mockResolvedValueOnce(engine1 as never)
+      .mockResolvedValueOnce(engine2 as never);
+    const canvas = makeCanvas();
+    canvas.getContext = vi.fn(() => ({
+      isContextLost: () => true,
+    })) as never;
+
+    const handle = await attachVitrum({
+      canvas,
+      scene,
+      camera: await makeCamera(),
+      autoRecreateOnDeviceLoss: true,
+    });
+
+    fireError(engine1, makeLossError('context-lost'));
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+    expect(createEngineModule.createEngine).toHaveBeenCalledTimes(1);
+    expect(asDispose(engine1)).not.toHaveBeenCalled();
+    expect(handle.engine).toBe(engine1);
+
+    canvas.dispatchEvent(
+      new happyWindow.Event('webglcontextrestored') as unknown as Event,
+    );
+    await new Promise<void>((resolve) => setTimeout(resolve, 20));
+
+    expect(createEngineModule.createEngine).toHaveBeenCalledTimes(2);
+    expect(asDispose(engine1)).toHaveBeenCalledTimes(1);
+    expect(handle.engine).toBe(engine2);
+
+    handle.dispose();
+  });
+
+  it('dispose cancels a pending WebGL context-restoration wait without recreating', async () => {
+    const { attachVitrum } = await import('../src/lifecycle/vanilla.js');
+    const createEngineModule = await import('../src/createEngine.js');
+
+    const engine1 = makeMockEngine();
+    const engine2 = makeMockEngine();
+    vi.spyOn(createEngineModule, 'createEngine')
+      .mockResolvedValueOnce(engine1 as never)
+      .mockResolvedValueOnce(engine2 as never);
+    const canvas = makeCanvas();
+    canvas.getContext = vi.fn(() => ({
+      isContextLost: () => true,
+    })) as never;
+
+    const handle = await attachVitrum({
+      canvas,
+      scene,
+      camera: await makeCamera(),
+      autoRecreateOnDeviceLoss: true,
+    });
+
+    fireError(engine1, makeLossError('context-lost'));
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(createEngineModule.createEngine).toHaveBeenCalledTimes(1);
+
+    handle.dispose();
+    canvas.dispatchEvent(
+      new happyWindow.Event('webglcontextrestored') as unknown as Event,
+    );
+    await new Promise<void>((resolve) => setTimeout(resolve, 20));
+
+    expect(createEngineModule.createEngine).toHaveBeenCalledTimes(1);
+    expect(asDispose(engine1)).toHaveBeenCalledTimes(1);
+    expect(asDispose(engine2)).not.toHaveBeenCalled();
+  });
+
   it('non-fatal errors do NOT trigger recreate', async () => {
     const { attachVitrum } = await import('../src/lifecycle/vanilla.js');
     const createEngineModule = await import('../src/createEngine.js');
@@ -357,15 +460,7 @@ describe('attachVitrum — autoRecreateOnDeviceLoss', () => {
     const { attachVitrum } = await import('../src/lifecycle/vanilla.js');
     const createEngineModule = await import('../src/createEngine.js');
 
-    const fakeSnapshot = {
-      dims: { x: 2, y: 2, z: 2 },
-      origin: [0, 0, 0] as [number, number, number],
-      spacing: 1,
-      irrW: 4, irrH: 4,
-      visW: 4, visH: 4,
-      irrData: new Uint16Array(4 * 4 * 4),
-      visData: new Uint16Array(4 * 4 * 4),
-    } as GIStateSnapshot;
+    const fakeSnapshot = makeFakeGIStateSnapshot();
 
     const engine1 = makeMockEngine({ withGIState: true, giSnapshot: fakeSnapshot });
     const engine2 = makeMockEngine({ withGIState: true, giSnapshot: null });
@@ -451,15 +546,7 @@ describe('attachVitrum — autoRecreateOnDeviceLoss', () => {
     const { attachVitrum } = await import('../src/lifecycle/vanilla.js');
     const createEngineModule = await import('../src/createEngine.js');
 
-    const fakeSnapshot = {
-      dims: { x: 2, y: 2, z: 2 },
-      origin: [0, 0, 0] as [number, number, number],
-      spacing: 1,
-      irrW: 4, irrH: 4,
-      visW: 4, visH: 4,
-      irrData: new Uint16Array(4 * 4 * 4),
-      visData: new Uint16Array(4 * 4 * 4),
-    } as GIStateSnapshot;
+    const fakeSnapshot = makeFakeGIStateSnapshot();
     const importError = new Error('import failed');
     const engine1 = makeMockEngine({ withGIState: true, giSnapshot: fakeSnapshot });
     const engine2 = makeMockEngine({ withGIState: true, giSnapshot: null });

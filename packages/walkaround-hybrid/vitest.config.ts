@@ -23,5 +23,6 @@ export default defineConfig({
   },
   test: {
     include: ['packages/walkaround-hybrid/**/*.test.ts'],
+    exclude: ['packages/walkaround-hybrid/**/*.gpu.test.ts'],
   },
 });

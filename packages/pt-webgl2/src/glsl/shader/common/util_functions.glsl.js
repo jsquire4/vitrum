@@ -1,8 +1,127 @@
-import { MATERIAL_PIXELS } from '../structs/materialStride.js';
+import {
+	MATERIAL_PIXELS,
+	MATERIAL_UV_SELECTOR_TEXEL_OFFSET,
+} from '../structs/materialStride.js';
 
 export const util_functions = /* glsl */`
 
 	// General path-tracing utility helpers shared by material, BSDF, and ray code.
+	// math_functions is composed later; declare the canonical fallback basis here
+	// because getBasisFromSelectedUv is parsed before its definition.
+	mat3 getBasisFromNormal( vec3 normal );
+
+	// Resolve the scene-local attributesArray layer for one mapped-rich material
+	// slot. Four integer-valued float selectors are packed per material texel.
+	// Authored TextureRef.texCoord ids may be sparse/arbitrarily large; only this
+	// dense layer id reaches the shader.
+	int readMaterialMapUvLayer(
+		sampler2D materialsTex, uint materialIndex, uint mapIndex
+	) {
+
+		const uint MATERIAL_PIXELS = ${MATERIAL_PIXELS}u;
+		const uint UV_SELECTOR_BASE = ${MATERIAL_UV_SELECTOR_TEXEL_OFFSET}u;
+		uint selectorTexel = UV_SELECTOR_BASE + mapIndex / 4u;
+		uint selectorComponent = mapIndex % 4u;
+		vec4 selectors = texelFetch1D(
+			materialsTex, materialIndex * MATERIAL_PIXELS + selectorTexel
+		);
+		return int( round( selectors[ int( selectorComponent ) ] ) );
+
+	}
+
+	// Build the tangent frame for the exact UV layer selected by a material map.
+	// Authored/CPU-derived ATTR_TANGENT is defined against UV0 and remains the
+	// preferred Mikk-style smooth basis for that lane. For UV1 and arbitrary
+	// scene-local layers, derive dP/du and dP/dv from this hit triangle so a map
+	// never inherits UV0's orientation. Degenerate UVs safely fall back to the
+	// authored tangent and finally to an arbitrary basis around the normal.
+	mat3 getBasisFromSelectedUv(
+		sampler2D positionAttr,
+		sampler2DArray attributesArray,
+		int uvLayer,
+		uvec3 faceIndices,
+		vec3 normal,
+		vec4 uv0TangentSample
+	) {
+
+		vec3 n = length( normal ) > 1e-6
+			? normalize( normal )
+			: vec3( 0.0, 0.0, 1.0 );
+		vec3 tangent = vec3( 0.0 );
+		vec3 bitangentReference = vec3( 0.0 );
+		float handedness = 1.0;
+		bool haveTangent = false;
+
+		// The core tangent contract is UV0-based. Preserve its smooth frame there;
+		// every other selected lane must be reconstructed from that lane's UVs.
+		if ( uvLayer == ATTR_UV && length( uv0TangentSample.xyz ) > 1e-6 ) {
+
+			tangent = uv0TangentSample.xyz;
+			handedness = uv0TangentSample.w < 0.0 ? -1.0 : 1.0;
+			haveTangent = true;
+
+		} else {
+
+			vec3 p0 = texelFetch1D( positionAttr, faceIndices.x ).xyz;
+			vec3 p1 = texelFetch1D( positionAttr, faceIndices.y ).xyz;
+			vec3 p2 = texelFetch1D( positionAttr, faceIndices.z ).xyz;
+			vec2 uv0 = texelFetch1D( attributesArray, uvLayer, faceIndices.x ).xy;
+			vec2 uv1 = texelFetch1D( attributesArray, uvLayer, faceIndices.y ).xy;
+			vec2 uv2 = texelFetch1D( attributesArray, uvLayer, faceIndices.z ).xy;
+			vec3 edge1 = p1 - p0;
+			vec3 edge2 = p2 - p0;
+			vec2 delta1 = uv1 - uv0;
+			vec2 delta2 = uv2 - uv0;
+			float determinant = delta1.x * delta2.y - delta1.y * delta2.x;
+
+			if ( abs( determinant ) > 1e-10 ) {
+
+				float inverseDeterminant = 1.0 / determinant;
+				tangent = ( edge1 * delta2.y - edge2 * delta1.y ) * inverseDeterminant;
+				bitangentReference = ( edge2 * delta1.x - edge1 * delta2.x ) * inverseDeterminant;
+				bool finiteFrame = all( lessThan( abs( tangent ), vec3( 1e30 ) ) ) &&
+					all( lessThan( abs( bitangentReference ), vec3( 1e30 ) ) );
+				haveTangent = finiteFrame && length( tangent ) > 1e-6 &&
+					length( bitangentReference ) > 1e-6;
+
+				if ( haveTangent ) {
+
+					handedness = dot( cross( n, tangent ), bitangentReference ) < 0.0
+						? -1.0
+						: 1.0;
+
+				}
+
+			}
+
+		}
+
+		if ( ! haveTangent && length( uv0TangentSample.xyz ) > 1e-6 ) {
+
+			tangent = uv0TangentSample.xyz;
+			handedness = uv0TangentSample.w < 0.0 ? -1.0 : 1.0;
+			haveTangent = true;
+
+		}
+
+		tangent -= n * dot( tangent, n );
+		if ( ! haveTangent || length( tangent ) <= 1e-6 ) {
+
+			return getBasisFromNormal( n );
+
+		}
+
+		tangent = normalize( tangent );
+		vec3 bitangent = cross( n, tangent ) * handedness;
+		if ( length( bitangent ) <= 1e-6 ) {
+
+			return getBasisFromNormal( n );
+
+		}
+
+		return mat3( tangent, normalize( bitangent ), n );
+
+	}
 
 	#ifndef RAY_OFFSET
 	#define RAY_OFFSET 1e-4

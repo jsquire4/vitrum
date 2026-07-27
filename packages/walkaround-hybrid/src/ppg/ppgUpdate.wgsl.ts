@@ -4,14 +4,19 @@
  * Reference: Müller et al. 2017 "Practical Path Guiding for Efficient
  * Light-Transport Simulation", §3.3 (training signal) and §5 (GPU update).
  *
- * Called once per frame after the GI reservoir passes. Reads accepted
+ * Called once per frame immediately after the initial GI RIS pass, before temporal or spatial reuse. Reads accepted
  * ReSTIR-GI reservoirs and atomically increments the appropriate dTree leaf
  * flux counter.
  *
- * === DEVIATION 3 FIX (training signal) ===
- * The training signal is the reservoir's stored incoming-radiance proxy `Lo`
- * at the reconnection vertex. The sample direction is reconstructed from the
- * accepted edge `xv -> xs`; no synthetic per-pixel training buffers are used.
+ * === TRAINING ESTIMATOR ===
+ * For M independent RIS candidates Xi~q with weights wi=pHat(Xi)/q(Xi),
+ * reservoir sampling chooses Y with probability wi/sum(w). For any directional
+ * bin B, `1[Y in B] * sum(w)/M` has expectation `integral_B pHat(w) dw`:
+ * conditioning on the candidates cancels the reservoir-selection denominator.
+ * The update pass therefore runs before reuse and deposits `w_sum/M` at the
+ * selected direction. This is an unbiased histogram estimator for arbitrary
+ * bins of the exact receiver contribution targeted by the RIS producer; raw Lo
+ * is not a valid substitute because it omits both q and reservoir selection.
  *
  * === DEVIATION 4 FIX (coordinate frame) ===
  * Both reservoir endpoints are in WORLD space. The cylindrical equal-area UV
@@ -27,7 +32,7 @@
  *   1. Walk the sTree to find the spatial cell for the sample.
  *   2. Walk that cell's dTree to find the leaf containing the (u, v) of the
  *      incoming direction.
- *   3. Atomically increment the leaf's flux counter (fixed-point f32 → u32).
+ *   3. Atomically increment the leaf's flux counter (atomic f32 CAS through u32 bits).
  *
  * The CPU reads back the atomic buffer at the end of each rebuild cycle and
  * calls `refineDTree` / `splitOverflowLeaves` (the topology changes are
@@ -52,6 +57,11 @@ import {
 } from './ppgConstants.js';
 import { RESERVOIR_GI_GRIS_STRIDE_U32 } from '../gi/giLayout.js';
 import type { WgslModule } from '../wgslTypes.js';
+import {
+  PPG_QUERY_ARENA_MAGIC,
+  PPG_QUERY_ARENA_SCHEMA,
+  PPG_QUERY_ARENA_VERSION,
+} from './ppgQueryArena.js';
 
 /**
  * Default spatial-cell count used by allocatePPGResources and the dTree stride
@@ -90,7 +100,7 @@ export function buildPpgUpdateWgsl(
   return /* wgsl */`
 // ── PPG update kernel ─────────────────────────────────────────────────────────
 // Muller et al. 2017 section 3.3 - training from accepted GI reservoir samples.
-// The training tuple is (xv, normalize(xs - xv), Lo) from reservoirGiCurrent.
+// The training tuple is (xv, normalize(xs - xv), w_sum/M) from the initial reservoir.
 // DEVIATION 4 FIX: all directions are in WORLD space.
 // W9: real flat-buffer leaf location (no more uniform-grid stub).
 
@@ -104,45 +114,86 @@ struct PPGUpdateUBO {
 @group(0) @binding(0) var<storage, read>           ppgReservoirGiCurrent : array<u32>;
 @group(0) @binding(1) var<storage, read_write>     ppgFluxAtomics        : array<atomic<u32>>;
 // W9 — serialised tree bindings.
-@group(0) @binding(2) var<storage, read>           ppgSTreeBuf           : array<f32>;
-@group(0) @binding(3) var<storage, read>           ppgDTreeBuf           : array<f32>;
-@group(0) @binding(4) var<storage, read>           ppgDTreeOffsets       : array<u32>;
+@group(0) @binding(2) var<storage, read>           ppgQueryArena         : array<u32>;
 // A2 — per-spatial-cell training-sample counter (one atomic u32 per cell,
 // indexed by dTreeIndex). Drives the CPU sTree split decision.
-@group(0) @binding(5) var<storage, read_write>     ppgCellSampleCounts   : array<atomic<u32>>;
+@group(0) @binding(3) var<storage, read_write>     ppgCellSampleCounts   : array<atomic<u32>>;
 @group(1) @binding(0) var<uniform>                 ppgUBO                : PPGUpdateUBO;
+
+const PPG_QUERY_MAGIC_UPDATE: u32 = ${PPG_QUERY_ARENA_MAGIC}u;
+const PPG_QUERY_VERSION_UPDATE: u32 = ${PPG_QUERY_ARENA_VERSION}u;
+const PPG_QUERY_SCHEMA_UPDATE: u32 = ${PPG_QUERY_ARENA_SCHEMA}u;
+fn ppgQueryArenaValidUpdate() -> bool {
+  return ppgQueryArena[0] == PPG_QUERY_MAGIC_UPDATE &&
+    ppgQueryArena[1] == PPG_QUERY_VERSION_UPDATE &&
+    ppgQueryArena[2] != 0u &&
+    ppgQueryArena[3] == PPG_QUERY_SCHEMA_UPDATE;
+}
+fn ppgArenaLoadSTreeF32Update(word: u32) -> f32 {
+  return bitcast<f32>(ppgQueryArena[ppgQueryArena[4] + word]);
+}
+fn ppgArenaLoadDTreeF32Update(word: u32) -> f32 {
+  return bitcast<f32>(ppgQueryArena[ppgQueryArena[7] + word]);
+}
+fn ppgArenaLoadDTreeOffsetUpdate(word: u32) -> u32 {
+  return ppgQueryArena[ppgQueryArena[10] + word];
+}
 
 // Layout constants provided by ppgTreeLayout (DTREE_HEADER_F32, DTREE_NODE_STRIDE,
 // STREE_HEADER_F32, STREE_NODE_STRIDE). ppgUpdate-specific constant below.
   // H29: MAX_DTREE_NODES_PER_CELL is now single-sourced — pipelineCompiler.ts
   // passes the live allocatePPGResources value to buildPpgUpdateWgsl().
   // H24: RESERVOIR_GI_STRIDE_LOCAL is also single-sourced from the live
-  // restirPtReuse structural gate (20u default, 30u for GRIS/ReSTIR-PT).
+  // grisReuse structural gate (20u default, 28u for GRIS DDGI-proxy).
   const MAX_DTREE_NODES_PER_CELL : u32 = ${maxDTreeNodesPerCell}u;
   const RESERVOIR_GI_STRIDE_LOCAL : u32 = ${reservoirGiStrideU32}u;
 
-// ── Fixed-point encode (1/65536 ULP resolution) ──────────────────────────────
-const FLUX_SCALE: f32 = 65536.0;
+// ── Atomic f32 accumulation through u32 compare/exchange ────────────────────
+// WebGPU has no atomic<f32>. Storing IEEE-754 bits in atomic<u32> avoids the
+// quantisation and per-sample 65536-radiance saturation of the old fixed-point
+// counter. A bounded retry loop makes the kernel wait-free under adversarial
+// contention or repeated weak-CAS failure; after 256 collisions this one
+// training deposit is dropped instead of risking a non-terminating dispatch.
+const MAX_FINITE_F32: f32 = 3.402823466e+38;
+const MAX_FLUX_CAS_ATTEMPTS: u32 = 256u;
 
-fn encodeFlux(f: f32) -> u32 {
-  return u32(clamp(f * FLUX_SCALE, 0.0, f32(0xFFFFFFFFu)));
+fn atomicAddFlux(slot: u32, value: f32) {
+  if (!(value > 0.0) || value > MAX_FINITE_F32) { return; }
+  var oldBits = atomicLoad(&ppgFluxAtomics[slot]);
+  for (var attempt = 0u; attempt < MAX_FLUX_CAS_ATTEMPTS; attempt = attempt + 1u) {
+    let oldValue = bitcast<f32>(oldBits);
+    // Repair an impossible negative/NaN/Inf accumulator defensively. Fresh
+    // training buffers are zeroed, so this branch only handles corruption.
+    var nextValue = value;
+    if (oldValue >= 0.0 && oldValue <= MAX_FINITE_F32) {
+      nextValue = oldValue + value;
+      if (!(nextValue >= oldValue) || nextValue > MAX_FINITE_F32) {
+        nextValue = MAX_FINITE_F32;
+      }
+    }
+    let exchanged = atomicCompareExchangeWeak(
+      &ppgFluxAtomics[slot], oldBits, bitcast<u32>(nextValue),
+    );
+    if (exchanged.exchanged) { return; }
+    oldBits = exchanged.old_value;
+  }
 }
 
-// ── sTree descent — same serialised layout as ppgPdf.gi-ris sampling ─────────
+// ── sTree descent
 // MUST-MATCH: this descent body is semantically identical to ppgSTreeFindLeafBase
 // in ppgPdf.wgsl.ts — only the buffer name differs (ppgSTreeBuf here vs
 // ppgSTreeBuf_gi there). If you edit the logic here, mirror the change there,
 // and vice versa. The ppgDescentDrift vitest gate enforces this automatically.
 fn sTreeFindLeafBase(pos: vec3<f32>) -> u32 {
-  let nodeCount = u32(ppgSTreeBuf[0]);
+  let nodeCount = u32(ppgArenaLoadSTreeF32Update(0));
   var idx: u32 = 0u;
   for (var step: u32 = 0u; step < 32u; step = step + 1u) {
     let base = STREE_HEADER_F32 + idx * STREE_NODE_STRIDE;
-    let splitAxisF = ppgSTreeBuf[base + 7u];
+    let splitAxisF = ppgArenaLoadSTreeF32Update(base + 7u);
     if (splitAxisF < 0.0) { return base; } // leaf
-    let splitVal = ppgSTreeBuf[base + 3u];
-    let leftChildF  = ppgSTreeBuf[base + 8u];
-    let rightChildF = ppgSTreeBuf[base + 9u];
+    let splitVal = ppgArenaLoadSTreeF32Update(base + 3u);
+    let leftChildF  = ppgArenaLoadSTreeF32Update(base + 8u);
+    let rightChildF = ppgArenaLoadSTreeF32Update(base + 9u);
     let axis = u32(splitAxisF);
     var queryAxis: f32 = 0.0;
     if (axis == 0u)      { queryAxis = pos.x; }
@@ -166,15 +217,15 @@ fn dTreeFindLeafBase(dTreeOffset: u32, uv: vec2<f32>) -> u32 {
   var idx: u32 = 0u;
   for (var step: u32 = 0u; step < 32u; step = step + 1u) {
     let base = dTreeOffset + DTREE_HEADER_F32 + idx * DTREE_NODE_STRIDE;
-    let isLeafFlag = ppgDTreeBuf[base + 7u];
+    let isLeafFlag = ppgArenaLoadDTreeF32Update(base + 7u);
     if (isLeafFlag > 0.5) { return base; }
-    let u0 = ppgDTreeBuf[base + 0u];
-    let v0 = ppgDTreeBuf[base + 1u];
-    let u1 = ppgDTreeBuf[base + 2u];
-    let v1 = ppgDTreeBuf[base + 3u];
+    let u0 = ppgArenaLoadDTreeF32Update(base + 0u);
+    let v0 = ppgArenaLoadDTreeF32Update(base + 1u);
+    let u1 = ppgArenaLoadDTreeF32Update(base + 2u);
+    let v1 = ppgArenaLoadDTreeF32Update(base + 3u);
     let uMid = (u0 + u1) * 0.5;
     let vMid = (v0 + v1) * 0.5;
-    let firstChildF = ppgDTreeBuf[base + 6u];
+    let firstChildF = ppgArenaLoadDTreeF32Update(base + 6u);
     if (firstChildF < 0.0) { return base; }
     let firstChild = u32(firstChildF);
     var off: u32 = 0u;
@@ -187,12 +238,13 @@ fn dTreeFindLeafBase(dTreeOffset: u32, uv: vec2<f32>) -> u32 {
 
 // ── Dispatch ──────────────────────────────────────────────────────────────────
 // One workgroup per 64 half-res GI reservoir entries. Each invocation:
-//   1. Reads an accepted reservoir's (xv, normalize(xs - xv), Lo) triple.
+//   1. Reads an accepted reservoir's (xv, normalize(xs - xv), w_sum, M) triple.
 //   2. Computes the incoming-direction octahedral UV (world frame).
 //   3. Walks the sTree to its cell, then the cell's dTree to a leaf.
 //   4. Atomically increments the leaf's flux accumulator.
 @compute @workgroup_size(64)
 fn ppgUpdateMain(@builtin(global_invocation_id) gid: vec3<u32>) {
+  if (!ppgQueryArenaValidUpdate()) { return; }
   let idx = gid.x;
   if (idx >= ppgUBO.sampleCount) { return; }
 
@@ -212,17 +264,14 @@ fn ppgUpdateMain(@builtin(global_invocation_id) gid: vec3<u32>) {
   );
   let dirRaw = samplePoint - pos;
   let dirLen2 = dot(dirRaw, dirRaw);
-  if (dirLen2 < 1e-12) { return; }
+  if (!(dirLen2 > 1e-12) || dirLen2 > MAX_FINITE_F32) { return; }
   let dir = dirRaw * inverseSqrt(dirLen2);
 
-  // Training radiance proxy from the chosen reconnection vertex.
-  let Li = vec3f(
-    bitcast<f32>(ppgReservoirGiCurrent[b + 16u]),
-    bitcast<f32>(ppgReservoirGiCurrent[b + 17u]),
-    bitcast<f32>(ppgReservoirGiCurrent[b + 18u])
-  );
-  let lum = luminance(Li);
-  if (lum <= 0.0) { return; }
+  // Unbiased RIS histogram mass for the selected initial-reservoir sample.
+  // For arbitrary bin B: E[1(Y in B) * w_sum/M] = integral_B pHat(w) dw.
+  let reservoirWSum = bitcast<f32>(ppgReservoirGiCurrent[b + 11u]);
+  let trainingMass = reservoirWSum / f32(reservoirM);
+  if (!(trainingMass > 0.0) || trainingMass > MAX_FINITE_F32) { return; }
 
   // Cylindrical EQUAL-AREA UV of the incoming WORLD direction (Müller 2017 §3.2).
   // MUST be byte-identical to ppgPdf.wgsl's ppgDirToUv (train↔pdf↔sample lock-step).
@@ -236,8 +285,8 @@ fn ppgUpdateMain(@builtin(global_invocation_id) gid: vec3<u32>) {
 
   // Walk the sTree to the spatial cell for this sample.
   let sBase = sTreeFindLeafBase(pos);
-  let dTreeIndex = u32(ppgSTreeBuf[sBase + 10u]);
-  let dOff = ppgDTreeOffsets[dTreeIndex];
+  let dTreeIndex = u32(ppgArenaLoadSTreeF32Update(sBase + 10u));
+  let dOff = ppgArenaLoadDTreeOffsetUpdate(dTreeIndex);
 
   // A2 — count ONE training record for this spatial cell (drives the CPU sTree
   // split decision in splitOverflowLeaves). Bounded by the per-cell counter
@@ -249,22 +298,12 @@ fn ppgUpdateMain(@builtin(global_invocation_id) gid: vec3<u32>) {
   // Walk the dTree to the leaf for this direction.
   let leafBase = dTreeFindLeafBase(dOff, uv);
 
-  // Global atomic slot: fixed grid of maxDTreeNodesPerCell slots per spatial cell.
+  // Global atomic slot: fixed per-cell node stride of maxDTreeNodesPerCell slots per spatial cell.
   let nodeIdx = (leafBase - dOff - DTREE_HEADER_F32) / DTREE_NODE_STRIDE;
   let slot = dTreeIndex * MAX_DTREE_NODES_PER_CELL + nodeIdx;
   if (slot >= ppgUBO.fluxBudget) { return; }
 
-  // Encode lum as fixed-point and accumulate atomically.
-  // Saturation: atomicAdd returns the OLD value. If old + increment would
-  // wrap past 2^32 (detectable as old > 0xFFFFFFFF - increment), the add
-  // already wrapped to a tiny value. Restore the slot to 0xFFFFFFFF via
-  // atomicMax so accumulated flux is monotonically clamped rather than
-  // silently wrapping to near-zero on a hot leaf over a 64-frame window.
-  let increment = encodeFlux(lum);
-  let oldVal = atomicAdd(&ppgFluxAtomics[slot], increment);
-  if (oldVal > (0xFFFFFFFFu - increment)) {
-    atomicMax(&ppgFluxAtomics[slot], 0xFFFFFFFFu);
-  }
+  atomicAddFlux(slot, trainingMass);
 }
 `;
 }
@@ -279,8 +318,8 @@ fn ppgUpdateMain(@builtin(global_invocation_id) gid: vec3<u32>) {
  */
 export const PPG_UPDATE_WGSL: string = buildPpgUpdateWgsl();
 
-/** W1-R6 — declarative include-graph entry. Requires the canonical
- *  Rec.709 luminance helper and ppgTreeLayout for the shared layout constants.
+/** W1-R6 — declarative include-graph entry. Requires ppgTreeLayout for the
+ *  shared layout constants.
  *  No octahedralCore require: the 2026-06-09 equal-area fix replaced the
  *  octEncode call with the inline cylindrical map (`ppgDirToUv`), so the
  *  shared octahedral helpers are no longer referenced by this kernel.
@@ -292,5 +331,5 @@ export const PPG_UPDATE_WGSL: string = buildPpgUpdateWgsl();
 export const PPG_UPDATE_MODULE: WgslModule = {
   name: 'ppgUpdate',
   source: PPG_UPDATE_WGSL,
-  requires: ['luminance', 'ppgTreeLayout'],
+  requires: ['ppgTreeLayout'],
 };

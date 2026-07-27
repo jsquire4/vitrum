@@ -54,5 +54,5 @@ export function giBilinearCornerSelectWgsl(): string {
     else              { hx = hx0 + 1u;     hy = hy0 + 1u;     bw = bw11; }
     if (hx >= halfDims.x) { hx = halfDims.x - 1u; }
     if (hy >= halfDims.y) { hy = halfDims.y - 1u; }
-    if (bw < 1e-5) { continue; }`;
+    if (bw <= 0.0) { continue; }`;
 }

@@ -41,7 +41,7 @@ export const RESTIR_PHAT_WGSL = /* wgsl */ `
 // ============================================================
 
 fn restir_di_eval_surface_brdf(surf: PrimarySurface, wi: vec3f) -> vec3f {
-  let brdf = surf.layerTransmission * evalGGXWithSpecularClearcoatSheenWithAnisotropyFrame(
+  var brdf = evalGGXWithSpecularClearcoatSheenWithAnisotropyFrame(
     surf.albedo,
     surf.rough,
     surf.metal,
@@ -62,7 +62,36 @@ fn restir_di_eval_surface_brdf(surf: PrimarySurface, wi: vec3f) -> vec3f {
     surf.wo,
     wi,
   );
-  return applyVolumeScatteringApproximation(brdf, surf.albedo, surf.volumeScattering, surf.normal, surf.wo);
+  // A transmissive dielectric still reflects its Fresnel/GGX lobe. Its base
+  // color is absorption/transmission tint, not an opaque Lambertian lobe, so
+  // direct-light target evaluation must retain only the specular family.
+  if (surf.isGlass) {
+    brdf = evalGGXSpecularOnlyWithSpecularClearcoatSheenWithAnisotropyFrame(
+      surf.albedo,
+      surf.rough,
+      surf.metal,
+      surf.specular.rgb,
+      surf.specular.a,
+      surf.anisotropy.x,
+      surf.anisotropy.y,
+      surf.iridescence,
+      surf.clearcoat.x,
+      surf.clearcoat.y,
+      surf.sheen.a,
+      surf.sheenRoughness,
+      surf.sheen.rgb,
+      surf.anisotropyTangent,
+      surf.anisotropyBitangent,
+      surf.normal,
+      surf.clearcoatNormal,
+      surf.wo,
+      wi,
+    );
+  }
+  brdf = surf.layerTransmission * brdf;
+  return applyHomogeneousVolumeSingleScatter(
+    brdf, surf.albedo, surf.volumeScattering, surf.bulkThickness, surf.normal, surf.wo,
+  );
 }
 
 // ENV branch: p̂ = luminance(envRadiance(dir) * full material BRDF(... dir)) — no geometry
@@ -76,12 +105,12 @@ fn restir_di_compute_phat_xi(lid: u32, xi: vec2f, surf: PrimarySurface) -> f32 {
     if (!envHasMap()) { return 0.0; }
     let wi = envDirFromXi(xi);
     let nDotL = max(0.0, dot(surf.normal, wi));
-    if (nDotL < 1e-6) { return 0.0; }
+    if (nDotL <= 0.0) { return 0.0; }
     let color = envRadiance(wi) * max(surf.envMapIntensity, 0.0);
     let brdf  = restir_di_eval_surface_brdf(surf, wi);
     return luminance(color * brdf);
   }
-  let e = emitters[lid];
+  let e = sceneLoadEmitter(lid);
   let ls = sampleEmitterPoint(e, xi);
   let toL = ls.pos - surf.pos;
   let dist2 = dot(toL, toL);
@@ -89,7 +118,7 @@ fn restir_di_compute_phat_xi(lid: u32, xi: vec2f, surf: PrimarySurface) -> f32 {
   let wi     = toL / sqrt(dist2);
   let nDotL  = max(0.0, dot(surf.normal, wi));
   let nlDotL = max(0.0, dot(-e.normal, wi));
-  if (nDotL < 1e-6 || nlDotL < 1e-6) { return 0.0; }
+  if (nDotL <= 0.0 || nlDotL <= 0.0) { return 0.0; }
   // evalGGX already multiplies by NdotL (receiver cosine); G is the emitter
   // geometry term only: cos(emitter) / dist² with the emitterDist2Floor
   // clamp applied consistently with shade.wgsl (sweep finding Bug 3).

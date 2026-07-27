@@ -8,6 +8,10 @@ import type {
 } from '@vitrum/core';
 import type { FrameBudgetControllerConfig, FrameBudgetDecision } from './FrameBudgetController.js';
 import type { GIStateSnapshot } from './giStateSnapshot.js';
+import type { NrcDiagnostics } from './neural/nrc/nrcDiagnostics.js';
+
+/** Runtime-switchable render layers implemented by walkaround-hybrid. */
+export type HybridRenderLayer = 'ddgi';
 
 /**
  * Stable public surface for the walkaround-hybrid backend beyond the generic
@@ -39,6 +43,8 @@ export interface HybridEngine extends Engine, HybridEngineGISurface {
     readonly perPass: Record<string, number>;
     readonly rawBigints: readonly string[];
   }>;
+  /** Runtime NRC counters, or `null` while disabled/not ready. */
+  getNrcDiagnostics(): NrcDiagnostics | null;
 
   setDdgiUpdateDivisor(divisor: number): void;
   enableFrameBudget(config?: Partial<FrameBudgetControllerConfig>): void;
@@ -56,7 +62,9 @@ export interface HybridEngine extends Engine, HybridEngineGISurface {
   ): void;
 
   getGpuSkinningBvhBuffer(): GPUBuffer | null;
+  getGpuSkinningBvhBinding(): GPUBufferBinding | null;
   getGpuSkinningNormalBuffer(): GPUBuffer | null;
+  getGpuSkinningNormalBinding(): GPUBufferBinding | null;
   getMeshVertexRanges(): readonly unknown[] | null;
   getBvhMode(): string | null;
   getPrimitiveTlasBindings(): readonly unknown[] | null;
@@ -67,6 +75,6 @@ export interface HybridEngine extends Engine, HybridEngineGISurface {
     readonly height: number;
   } | null;
 
-  setLayerEnabled(layer: string, enabled: boolean): void;
+  setLayerEnabled(layer: HybridRenderLayer, enabled: boolean): void;
   onFrame(cb: (stats: FrameStats) => void): () => void;
 }

@@ -115,6 +115,19 @@ function ptWebgpuTierFromLimits(buf: number, tex: number): PtWebgpuTierRec {
   }
 }
 
+function satisfiesRequiredLimits(
+  actual: Readonly<Record<string, number>>,
+  required: Readonly<Record<string, number>>,
+): boolean {
+  for (const [key, minimum] of Object.entries(required)) {
+    const value = actual[key];
+    if (typeof value !== 'number' || !Number.isFinite(value) || value < minimum) {
+      return false;
+    }
+  }
+  return true;
+}
+
 /**
  * Probe an adapter's graceful-degradation capabilities.
  *
@@ -156,12 +169,8 @@ export async function probeAdapterProfile(
   const tex = facts.limits['maxStorageTexturesPerShaderStage'] ?? 4;
 
   // Capability booleans — every threshold imported, never inlined.
-  const hybridCapable =
-    buf >= HYBRID_WEBGPU_REQUIRED_LIMITS['maxStorageBuffersPerShaderStage']! &&
-    tex >= HYBRID_WEBGPU_REQUIRED_LIMITS['maxStorageTexturesPerShaderStage']!;
-  const hybridLiteCapable =
-    buf >= HYBRID_LITE_LIMITS['maxStorageBuffersPerShaderStage']! &&
-    tex >= HYBRID_LITE_LIMITS['maxStorageTexturesPerShaderStage']!;
+  const hybridCapable = satisfiesRequiredLimits(facts.limits, HYBRID_WEBGPU_REQUIRED_LIMITS);
+  const hybridLiteCapable = satisfiesRequiredLimits(facts.limits, HYBRID_LITE_LIMITS);
   const ptWebgpuTier = ptWebgpuTierFromLimits(buf, tex);
 
   const isSoftwareAdapter = isSwiftShaderAdapter(facts.info);

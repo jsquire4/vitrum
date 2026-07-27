@@ -38,49 +38,55 @@ describe('createPTEngine_WebGL2 factory warning pins (T3-D)', () => {
     expect(w[0]!.message).toContain('no-host-model-assets');
   });
 
-  it('manifold-nee caustic strategy warns with the approximation message', async () => {
-    const w = await collectWarnings({ causticStrategy: 'manifold-nee' });
-    expect(w.map((x) => x.code)).toContain('pt-webgl2.caustic-strategy-approximation');
-    const cw = w.find((x) => x.code === 'pt-webgl2.caustic-strategy-approximation')!;
-    expect(cw.message).toContain('deterministic refraction-walk heuristic');
-    expect(cw.message).toContain('causticStrategy="manifold-nee"');
+  it('accepts named BDPT and rejects unsupported caustic strategies/options', async () => {
+    expect(await collectWarnings({ causticStrategy: 'bdpt' })).toEqual([]);
+
+    for (const legacy of [
+      { causticStrategy: 'none' },
+      { causticStrategy: 'manifold-nee' },
+      { causticStrategy: 'photon-map' },
+    ]) {
+      await expect(
+        createPTEngine_WebGL2(baseOpts(legacy as unknown as Partial<PTEngineWebGL2Options>)),
+      ).rejects.toThrow(/causticStrategy must be one of/);
+    }
+
+    await expect(
+      createPTEngine_WebGL2(baseOpts({ causticOptions: { mneeMaxIterations: 8 } } as never)),
+    ).rejects.toThrow(/causticOptions are not accepted/);
   });
 
-  it('photon-map caustic strategy warns with the cone-traced message', async () => {
-    const w = await collectWarnings({ causticStrategy: 'photon-map' });
-    const cw = w.find((x) => x.code === 'pt-webgl2.caustic-strategy-approximation')!;
-    expect(cw.message).toContain('deterministic cone-traced photon estimate');
+  it('treats absent and explicitly undefined legacy caustic fields identically', async () => {
+    const warnings = await collectWarnings({
+      causticStrategy: undefined,
+      causticOptions: undefined,
+    } as unknown as Partial<PTEngineWebGL2Options>);
+    expect(warnings).toEqual([]);
   });
 
-  it('bdptOptions.maxLightBounces > limit clamps with a warning', async () => {
-    const w = await collectWarnings({ bdptOptions: { maxLightBounces: 99 } });
-    const cw = w.find((x) => x.code === 'pt-webgl2.bdpt-max-light-bounces-clamped')!;
-    expect(cw).toBeDefined();
-    expect(cw.message).toContain('clamping to supported WebGL2 BDPT light-subpath limit 3');
+  it('rejects unsupported or non-integral BDPT light depths', async () => {
+    for (const maxLightBounces of [2.7, 9, 99, Number.POSITIVE_INFINITY]) {
+      await expect(
+        createPTEngine_WebGL2(
+          baseOpts({
+            bdptOptions: { maxLightBounces },
+          }),
+        ),
+      ).rejects.toThrow(/integer in the supported range 1\.\.8/);
+    }
   });
 
-  it('non-integer bdptOptions.maxLightBounces rounds with a warning', async () => {
-    const w = await collectWarnings({ bdptOptions: { maxLightBounces: 2.7 } });
-    const cw = w.find((x) => x.code === 'pt-webgl2.bdpt-max-light-bounces-rounded')!;
-    expect(cw).toBeDefined();
-    expect(cw.message).toContain('rounding down to integer 2');
+  it('unsupported denoiser rejects without degrading', async () => {
+    await expect(
+      createPTEngine_WebGL2(baseOpts({ denoiser: 'svgf' as never })),
+    ).rejects.toThrow(/denoiser must be one of/);
   });
 
-  it('unsupported denoiser warns and degrades', async () => {
-    const w = await collectWarnings({ denoiser: 'svgf' as never });
-    const cw = w.find((x) => x.code === 'pt-webgl2.unsupported-denoiser')!;
-    expect(cw).toBeDefined();
-    expect(cw.message).toContain('Degrading to no-denoise');
-  });
-
-  it('equirectangular + dof warns dof is ignored', async () => {
-    const w = await collectWarnings({
+  it('equirectangular + dof rejects instead of being ignored', async () => {
+    await expect(createPTEngine_WebGL2(baseOpts({
       cameraType: 'equirectangular',
       dof: { focusDistance: 1, bokehSize: 0.1 },
-    });
-    const cw = w.find((x) => x.code === 'pt-webgl2.equirectangular-dof-ignored')!;
-    expect(cw).toBeDefined();
-    expect(cw.message).toContain('dof is ignored when cameraType is "equirectangular"');
+    }))).rejects.toThrow(/dof is unsupported.*equirectangular/);
   });
 
   // ── Throwing validation paths ──────────────────────────────────────────────
@@ -90,51 +96,67 @@ describe('createPTEngine_WebGL2 factory warning pins (T3-D)', () => {
     );
   });
 
-  it('maxBounces < 1 throws RangeError', async () => {
+  it('rejects maxBounces outside the statically supported integer range', async () => {
     await expect(createPTEngine_WebGL2(baseOpts({ maxBounces: 0 }))).rejects.toThrow(
-      /maxBounces must be >= 1/,
+      /maxBounces must be an integer in the supported range 1\.\.32/,
+    );
+    await expect(createPTEngine_WebGL2(baseOpts({ maxBounces: 2.5 }))).rejects.toThrow(
+      /maxBounces must be an integer in the supported range 1\.\.32/,
+    );
+    await expect(createPTEngine_WebGL2(baseOpts({ maxBounces: 33 }))).rejects.toThrow(
+      /maxBounces must be an integer in the supported range 1\.\.32/,
     );
   });
 
-  it('maxSamplesPerPixel < 1 throws RangeError', async () => {
+  it('non-finite maxBounces and maxSamplesPerPixel throw RangeError', async () => {
+    await expect(createPTEngine_WebGL2(baseOpts({ maxBounces: Number.NaN }))).rejects.toThrow(
+      /maxBounces must be an integer in the supported range 1\.\.32/,
+    );
     await expect(
-      createPTEngine_WebGL2(baseOpts({ maxSamplesPerPixel: 0 })),
-    ).rejects.toThrow(/maxSamplesPerPixel must be >= 1/);
+      createPTEngine_WebGL2(baseOpts({ maxSamplesPerPixel: Number.POSITIVE_INFINITY })),
+    ).rejects.toThrow(/maxSamplesPerPixel must be a positive safe integer/);
+  });
+
+  it('maxSamplesPerPixel < 1 throws RangeError', async () => {
+    await expect(createPTEngine_WebGL2(baseOpts({ maxSamplesPerPixel: 0 }))).rejects.toThrow(
+      /maxSamplesPerPixel must be a positive safe integer/,
+    );
   });
 
   it('negative materialLodDepth throws RangeError', async () => {
-    await expect(
-      createPTEngine_WebGL2(baseOpts({ materialLodDepth: -1 })),
-    ).rejects.toThrow(/materialLodDepth must be a finite number >= 0/);
+    await expect(createPTEngine_WebGL2(baseOpts({ materialLodDepth: -1 }))).rejects.toThrow(
+      /materialLodDepth must be an integer in 0/,
+    );
   });
 
   it('bdptOptions.maxLightBounces < 1 throws RangeError', async () => {
     await expect(
       createPTEngine_WebGL2(baseOpts({ bdptOptions: { maxLightBounces: 0 } })),
-    ).rejects.toThrow(/bdptOptions.maxLightBounces must be a finite number >= 1/);
+    ).rejects.toThrow(/integer in the supported range 1\.\.8/);
   });
 
-  it('bdpt:true with multi-vertex depth but no opt-in throws', async () => {
+  it('rejects nonempty BDPT tuning when no BDPT selector is enabled', async () => {
     await expect(
-      createPTEngine_WebGL2(
-        baseOpts({ bdpt: true, bdptOptions: { maxLightBounces: 3 } }),
-      ),
-    ).rejects.toThrow(/multi-vertex BDPT research path/);
+      createPTEngine_WebGL2(baseOpts({ bdptOptions: { maxLightBounces: 4 } })),
+    ).rejects.toThrow(/bdptOptions requires bdpt:true or causticStrategy:"bdpt"/);
+
+    await expect(
+      createPTEngine_WebGL2(baseOpts({
+        causticStrategy: 'bdpt',
+        bdptOptions: { maxLightBounces: 4 },
+      })),
+    ).resolves.toBeDefined();
   });
 
-  it('bdpt:true + multiVertex opt-in warns (research mode)', async () => {
-    const w = await collectWarnings({
-      bdpt: true,
-      bdptOptions: { maxLightBounces: 3, experimentalMultiVertex: true },
-    });
-    const cw = w.find((x) => x.code === 'pt-webgl2.bdpt-multivertex-research-mode')!;
-    expect(cw).toBeDefined();
-    expect(cw.message).toContain('multi-vertex BDPT research path');
+  it('bdpt:true rejects a light subpath above the eight-vertex bound', async () => {
+    await expect(
+      createPTEngine_WebGL2(baseOpts({ bdpt: true, bdptOptions: { maxLightBounces: 9 } })),
+    ).rejects.toThrow(/integer in the supported range 1\.\.8/);
   });
 
   it('negative backgroundBlur throws RangeError', async () => {
-    await expect(
-      createPTEngine_WebGL2(baseOpts({ backgroundBlur: -1 })),
-    ).rejects.toThrow(/backgroundBlur must be a finite number >= 0/);
+    await expect(createPTEngine_WebGL2(baseOpts({ backgroundBlur: -1 }))).rejects.toThrow(
+      /backgroundBlur must be >= 0/,
+    );
   });
 });

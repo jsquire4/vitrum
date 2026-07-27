@@ -22,7 +22,14 @@ import type {
   SceneEmitter,
   ScenePrimitive,
 } from '@vitrum/core';
-import { BACKEND_PROMISE_LEDGER, asBackendTexture, narrowToBackendTexture } from '@vitrum/core';
+import {
+  BACKEND_PROMISE_LEDGER,
+  asBackendTexture,
+  canonicalizeFrameCamera,
+  narrowToBackendTexture,
+  resolveFrameCameraPosition,
+  validateScene as validateCoreScene,
+} from '@vitrum/core';
 import {
   PtWebgpuInverseSession,
   type InverseEngineHooks,
@@ -34,43 +41,51 @@ import {
   readRgba16fTextureToF32,
 } from './denoise/rgba16fReadback.js';
 import { summarizeScene, type SceneSummary } from './scene/flattenScene.js';
-import { emitLiteSceneWarnings } from './scene/liteSceneWarnings.js';
+import { assertLiteSceneSupported } from './scene/liteSceneWarnings.js';
 import { ptWebgpuCapabilities } from './capabilities.js';
 import {
   validatePtWebgpuOptions,
+  validatePtWebgpuFrameInput,
+  validatePtWebgpuPixelSize,
   resolveBdptMaxLightBounces,
-  EXPERIMENTAL_MAX_BOUNCES,
+  PT_WEBGPU_RESTIR_PT_EFFECTIVELY_UNCLAMPED_W,
 } from './ptWebgpuValidation.js';
+export { validatePtWebgpuAdvancedOptions } from './ptWebgpuValidation.js';
 import {
   buildPackedScene,
   scenePackResultFromPacked,
   uploadPackedScene,
+  uploadedSceneGpuResources,
   PT_WEBGPU_ANALYTIC_SHAPES,
   type UploadedSceneBuffers,
 } from './scene/uploadSceneBuffers.js';
+import {
+  assertSpectralSceneSupported,
+  assertThinFilmSceneSupported,
+  assertVolumeSceneSupported,
+} from './spectralSceneValidation.js';
+import { assertMneeInterfaceDomainSupported } from './scene/mneeFacetCandidates.js';
 import {
   packLiteLightTexture,
   packLiteEnvTexture,
   packLiteEnvCdfTexture,
 } from './scene/litePackedTextures.js';
 import { type ScenePackResult, pickPrimitiveCpu, type PickCamera } from '@vitrum/shared-bvh';
-import { FrameParamsSlot } from './scene/frameParamsLayout.js';
-import { packFrameParams } from './frameParamsPacker.js';
+import {
+  FRAME_PARAMS_BUFFER_ALLOC_BYTES,
+  packFrameParams,
+} from './frameParamsPacker.js';
 import { SceneMutationRouter } from './sceneMutationRouter.js';
 import { type PtWebgpuTraceTier } from './traceTier.js';
 import {
   PT_WEBGPU_LITE_MATERIALS,
   collectUnsupportedMaterialFieldsForTraceTier,
 } from './supportDetails.js';
-import { GpuResources, type PtWebgpuBvhTraversalMode } from './gpuResources.js';
+import { GpuResources, type LiteTextureReplacement, type PtWebgpuBvhTraversalMode } from './gpuResources.js';
 import {
   OIDNFinalDispatcher,
   type DenoisedFrame,
 } from './denoise/oidnFinalDispatcher.js';
-import {
-  BdptLightPathBufferWebGPU,
-  createBdptLightPathPlaceholder,
-} from './bdpt/bdptLightPathBufferWebGPU.js';
 import { AdjointPass } from './adjointPass.js';
 import {
   PT_WEBGPU_COMMON_WGSL,
@@ -82,11 +97,23 @@ import {
   TONEMAP_MODE_INDEX,
 } from '@vitrum/shared-samplers';
 import {
-  sppmInitialRadius,
+  SPPM_PHOTON_COUNT,
+  sppmSceneBoundsFromPackedPositions,
 } from './sppmParams.js';
 
 export { PT_WEBGPU_COMMON_WGSL, HAMMERSLEY_WGSL, OCTAHEDRAL_CORE_WGSL };
 export type { PtWebgpuBvhTraversalMode } from './gpuResources.js';
+export {
+  createPtWebgpuTextureSource,
+  isPtWebgpuTextureSource,
+  PT_WEBGPU_TEXTURE_SOURCE_KIND,
+  type PtWebgpuTextureColorSpace,
+  type PtWebgpuTextureCpuMirror,
+  type PtWebgpuTextureCpuMirrorDataType,
+  type PtWebgpuTextureCpuMirrorInput,
+  type PtWebgpuTextureSource,
+  type PtWebgpuTextureSourceOptions,
+} from './materialTextureSource.js';
 export {
   PT_WEBGPU_REQUIRED_LIMITS,
   PT_WEBGPU_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
@@ -116,10 +143,14 @@ export type { SceneSummary };
 // under the `buildSceneTlas` name (the prior tlasBridge.ts pass-through wrapper
 // was removed once its only other export, `refitSceneTlas`, was found dead).
 export { buildTlas as buildSceneTlas, type TlasInstance, type TlasData } from '@vitrum/shared-bvh';
-export {
-  BdptLightPathBufferWebGPU,
-  type BdptLightPathBufferWebGPUOptions,
-} from './bdpt/bdptLightPathBufferWebGPU.js';
+
+/** Runtime lighting vocabulary accepted by {@link Engine.updateLighting} on pt-webgpu. */
+export interface PTEngineWebGPULightingOptions {
+  /** Atomically replace the complete scene-emitter array. */
+  readonly emitters?: readonly SceneEmitter[];
+  /** Atomically replace the environment; `null` is normalized to `{kind:'none'}`. */
+  readonly environment?: Scene['environment'] | null;
+}
 
 interface UnsupportedMaterialFieldUse {
   readonly primitiveId: string;
@@ -159,6 +190,16 @@ function collectUnsupportedMaterialFieldUses(
 
 export interface PTEngineWebGPUOptions extends EngineOptions {
   /**
+   * Denoiser pipeline for this converged backend. `auto` resolves to
+   * `oidn-final` only when host OIDN assets are configured, otherwise to
+   * `none`. Realtime-only and backend-specific denoisers are rejected at
+   * construction instead of being silently replaced with another estimator.
+   */
+  readonly denoiser?: 'none' | 'auto' | 'oidn-final';
+  /** pt-webgpu implements MNEE and SPPM; the realtime hybrid-only
+   *  `refractive-trace` strategy is intentionally not accepted here. */
+  readonly causticStrategy?: 'none' | 'manifold-nee' | 'photon-map';
+  /**
    * The host-owned `GPUDevice`. The engine allocates GPU resources against it
    * but does NOT own its lifecycle (host-owns-lifecycle): the host creates the
    * device and disposes it. The cross-backend analogue is pt-webgl's
@@ -179,21 +220,15 @@ export interface PTEngineWebGPUOptions extends EngineOptions {
    */
   readonly spectral?: boolean;
   /**
-   * Enable the bidirectional path tracer (full Veach §10.3 connection MIS). Full
-   * tier only. Off by default. (Graduated from `extensions['vitrum.ptWebgpu.bdpt']`.)
-   *
-   * KNOWN-BIAS CAVEAT (D2, 2026-07-20): the default light-subpath bounce count is
-   * now `2` (was `1`, which performed zero light-path connections and made
-   * `bdpt:true` silently inert). At the default the BDPT contribution is an
-   * ADDITIVE light-connection sidecar — it is NOT yet eye-path re-weighted against
-   * the unidirectional estimator, so it introduces a small known bias vs. a fully
-   * MIS-balanced BDPT. Multi-vertex BDPT (`maxLightBounces > 2` via
-   * `experimentalMultiVertex:true`) remains a research harness (see CLAUDE.md).
-   * `bdpt:true` continues to route the existing experimental-feature warning.
+   * Enable bounded bidirectional path tracing with full Veach-style connection
+   * MIS over the allocated explicit strategies. Full tier only; off by default.
+   * Every finite, directional, and environment source can seed an invocation-local
+   * light path. Ordinary eye direct/escape owns the non-connectable infinite
+   * endpoint strategy; BDPT owns connections to its real scattering vertices.
    */
   readonly bdpt?: boolean;
   /**
-   * Enable the EXPERIMENTAL ReSTIR-PT reservoir/reuse pre-passes (GRIS hero-stack
+   * Enable the ReSTIR-PT reservoir/reuse pre-passes (GRIS hero-stack
    * temporal reconnection reuse — Lin 2022). Full tier only. **OFF by default.**
    *
    * When OFF the default megakernel render is byte-identical (no reuse buffers or
@@ -208,48 +243,37 @@ export interface PTEngineWebGPUOptions extends EngineOptions {
    * The spatial pass adds GRIS pairwise-MIS reuse over 5 disc neighbours (variance
    * reduction). The compile-time naga gate is
    * `wsl-gpu/scripts/restir-pt-compile-gate.ts`; the unbiasedness + equal-spp
-   * variance A/Bs are V28 queue entries (see road-to-100 A1).
+   * variance A/Bs are executable promotion proofs under
+   * `tools/radiometric-ab/ab-restir-pt.mjs`.
    */
   readonly restirPtReuse?: boolean;
   /** ReSTIR-PT reuse tuning — read only when {@link restirPtReuse} is `true`. */
   readonly restirPtReuseOptions?: {
-    /** Temporal M-clamp (history confidence cap). Default 20. */
+    /** Temporal M-clamp (history confidence cap, 1..4095). Default 20. */
     readonly mClamp?: number;
-    /** GRIS W-cap (temporal-feedback gain bound, the V19 grison guard). Default 10. */
-    readonly wCap?: number;
     /**
-     * Admit glossy/metallic visible vertices into the ReSTIR-PT temporal/spatial
-     * feedback loop. Default false keeps reuse in the diffuse-safe regime that
-     * current radiometric A/B can validate. Set true only for research captures.
+     * Explicitly enable a biased GRIS contribution-weight clamp. Omit for the
+     * professional, effectively-unclamped estimator default. Any supplied finite
+     * cap below the effectively-unclamped f32-max default is reported through the active feature
+     * `pt-webgpu-restir-pt-biased-weight-clamp`.
      */
-    readonly experimentalGlossyReuse?: boolean;
+    readonly wCap?: number;
   };
   /**
    * Mesh BVH traversal backend. Default `'binary'` uses the canonical binary BVH.
-   * `'cwbvh-closest-experimental'` opts the full-tier megakernel into the
+   * `'cwbvh-closest'` opts the full-tier megakernel into the
    * uploaded compressed-wide BVH forest for closest-hit and any-hit mesh
    * traversal while preserving `castShadow:false` shadow predicate parity.
    */
   readonly bvhTraversal?: PtWebgpuBvhTraversalMode;
-  /** BDPT tuning — read only when {@link bdpt} is `true`. */
+  /** BDPT tuning — read only when bdpt is true. */
   readonly bdptOptions?: {
     /**
-     * Max light-subpath bounces, clamped 1-8 with a construction warning. Default 2
-     * (D2, 2026-07-20 — raised from 1 so `bdpt:true` performs real light-path
-     * connections out of the box; at maxLv=2 the kernel connection loop
-     * `for lvi=1u; lvi<maxLv` runs once, lvi=1). This default carries the known
-     * additive-sidecar bias documented on {@link bdpt}. Values >2 require
-     * `experimentalMultiVertex:true` because the multi-vertex path is a research
-     * harness whose connection estimator is not yet composed against the regular
-     * eye-path strategy.
+     * Number of invocation-private light-subpath vertices. Integer 1..8; default 2.
+     * One stores only the sampled source endpoint, two adds one scattering
+     * vertex, and higher values extend the same bounded MIS strategy family.
      */
     readonly maxLightBounces?: number;
-    /**
-     * Required to activate `maxLightBounces > 1`. This deliberately keeps the
-     * known-biased multi-vertex BDPT research path out of normal construction
-     * while preserving it for radiometric debugging and promotion work.
-     */
-    readonly experimentalMultiVertex?: boolean;
   };
   /**
    * Power-weighted light-tree importance sampling for direct-light NEE (Conty
@@ -260,13 +284,14 @@ export interface PTEngineWebGPUOptions extends EngineOptions {
    */
   readonly lightTreeImportanceSampling?: boolean;
   /**
-   * Primary path-sampling sequence. Default `'pcg'` preserves the historical random
-   * stream. `'sobol'` compiles the opt-in pt-webgpu WGSL Sobol RNG module across
-   * the megakernel plus SPPM/ReSTIR-PT/BDPT auxiliary pipelines. This is
-   * hash-based Owen-scrambled Sobol over the first-four direction-table set
-   * with a tiled ranked rotation; the dimension-assignment audit is pinned by
-   * source-level tests. The WSL-lite RMSE A/B is bounded and committed, but
-   * full-tier equal-time evidence still gates default promotion.
+   * Primary path-sampling sequence. Default 'pcg' preserves the historical
+   * stream. 'sobol' is a stable binding-free sequence across the megakernel and
+   * SPPM, ReSTIR-PT, and BDPT auxiliary pipelines: dimensions 0 through 3 use
+   * per-pixel, per-frame-block Owen-scrambled Sobol samples with an 8x8 ranked
+   * rotation; dimension 4 onward uses a deterministic independent PCG
+   * continuation. The full 32-bit frame index is represented as a 16-bit sample
+   * index plus a bijective 16-bit block key, so accumulation does not repeat at
+   * the 65,536-sample boundary.
    */
   readonly sampling?: 'pcg' | 'sobol';
   /**
@@ -320,8 +345,6 @@ export type {
 
 const DEFAULT_MAX_SAMPLES_PER_PIXEL = 4096;
 const WORKGROUP_SIZE = 8;
-/** A4 — SPPM photons emitted per frame: 65536 (= 1024 workgroups × 64 lanes). */
-const SPPM_PHOTON_COUNT = 65536;
 const SPPM_WORKGROUP_COUNT = Math.ceil(SPPM_PHOTON_COUNT / 64);
 
 // D8.14 — Lite-tier capability sets (derived from PT_WEBGPU_SUPPORT diff).
@@ -332,6 +355,27 @@ const SPPM_WORKGROUP_COUNT = Math.ceil(SPPM_PHOTON_COUNT / 64);
 interface StateSlot {
   readonly get: () => EngineState;
   readonly set: (s: EngineState) => void;
+}
+
+interface PresentationSignature {
+  readonly tonemapMode: number;
+  readonly exposure: number;
+  readonly outputColorSpace: number;
+}
+
+function presentationSignatureFor(input: FrameInput): PresentationSignature {
+  const quality = input.quality ?? {};
+  return {
+    tonemapMode: TONEMAP_MODE_INDEX[quality.tonemap ?? 'aces'],
+    exposure: quality.exposure ?? 1,
+    outputColorSpace: quality.outputColorSpace === 'linear' ? 1 : 0,
+  };
+}
+
+function samePresentationSignature(a: PresentationSignature, b: PresentationSignature): boolean {
+  return a.tonemapMode === b.tonemapMode &&
+    a.exposure === b.exposure &&
+    a.outputColorSpace === b.outputColorSpace;
 }
 
 function makeStateSlot(initial: EngineState = 'initializing'): StateSlot {
@@ -350,6 +394,7 @@ function errorMessage(err: unknown): string {
 
 class PTEngineWebGPU implements Engine {
   readonly #slot: StateSlot;
+  readonly backendProfileId: 'pt-webgpu' | 'pt-webgpu-lite';
   readonly #device: GPUDevice;
   readonly #maxBouncesLimit: number;
   readonly #maxSamplesLimit: number;
@@ -407,30 +452,33 @@ class PTEngineWebGPU implements Engine {
   // we attach a .then handler that routes into #emitError.  The handler is
   // removed implicitly when the Promise settles (Promises don't hold listener refs).
   readonly #postDenoiser: OIDNFinalDispatcher | null;
+  readonly #denoiser: 'none' | 'oidn-final';
+  #pendingDenoised: DenoisedFrame | null = null;
+  #presentationSignature: PresentationSignature | null = null;
   readonly #spectralEnabled: boolean;
   readonly #lightTreeImportanceSampling: boolean;
   readonly #sampling: PtWebgpuSamplingMode;
   readonly #cameraVisibleEmitters: boolean;
   readonly #bdpt: boolean;
   readonly #bdptMaxLightBounces: number;
-  #bdptLightPath: BdptLightPathBufferWebGPU | null = null;
-  #bdptExternalBuffer: GPUBuffer | null = null;
-  #bdptPlaceholderBuffer: GPUBuffer | null = null;
-  /** EXPERIMENTAL ReSTIR-PT reuse — compile-time + full-tier; OFF by default. */
+  /** ReSTIR-PT reuse — compile-time + full-tier; OFF by default. */
   readonly #restirPtReuse: boolean;
   readonly #restirPtMClamp: number;
   readonly #restirPtWCap: number;
-  readonly #restirPtAllowGlossyReuse: boolean;
+  readonly #restirPtBiasedWeightClamp: boolean;
 
   // ── SPPM state (A4-progressive, photon-map strategy) ─────────────────────
   /** Cached initial radius r₀ = max(diagonal/100, 1e-3) from the scene AABB.
    *  Recomputed on every setScene.  Used as the INITIAL per-pixel R² seed
-   *  (r₀²) in sppmGatherProgressive; the per-pixel radius then shrinks
+   *  (r₀²) in sppmUpdateProgressiveKind; the per-measure radius then shrinks
    *  progressively via the Hachisuka update rule (A4-progressive). */
   #sppmR0 = 0.017; // 1.7 cm — a safe pre-setScene default (1 m Cornell box)
   /** Half-diagonal of the scene used for the directional-light disk emitter. */
   #sppmSceneExtent = 10.0; // world units; refreshed on setScene
 
+  /** Center of the scene AABB. Infinite-source launch disks are centered here,
+   *  so photon coverage is independent of camera position. */
+  #sppmSceneCenter: [number, number, number] = [0, 0, 0];
   /**
    * Scene-mutation fast-path dispatch (Task 4.3, Theme A). The engine stays the
    * thin owner of state; the router operates on that state through the
@@ -443,6 +491,11 @@ class PTEngineWebGPU implements Engine {
     PT_WEBGPU_ANALYTIC_SHAPES.slice(1),
   );
   static readonly #NO_ANALYTIC_SHAPES = new Set<string>();
+  // The forward full tier intersects curved analytics exactly, while the
+  // current focused adjoint owns only a triangle replay stream. Do not claim a
+  // complete-session gradient for a tessellated approximation (or a host
+  // fallback mesh). Exact analytic replay can widen this set shape-by-shape.
+  static readonly #PATH_REPLAY_ANALYTIC_SHAPES = new Set<string>();
 
   constructor(opts: PTEngineWebGPUOptions, slot: StateSlot, traceTier: PtWebgpuTraceTier) {
     this.#slot = slot;
@@ -455,59 +508,33 @@ class PTEngineWebGPU implements Engine {
     this.#sampling = opts.sampling === 'sobol' ? 'sobol' : 'pcg';
     this.#cameraVisibleEmitters = opts.cameraVisibleEmitters !== false;
     this.#traceTier = traceTier;
-    this.#bvhTraversal = opts.bvhTraversal === 'cwbvh-closest-experimental'
-      ? 'cwbvh-closest-experimental'
+    this.backendProfileId = traceTier === 'lite' ? 'pt-webgpu-lite' : 'pt-webgpu';
+    this.#bvhTraversal = opts.bvhTraversal === 'cwbvh-closest'
+      ? 'cwbvh-closest'
       : 'binary';
-    this.#maxBouncesLimit = Math.max(1, Math.min(opts.maxBounces ?? 3, EXPERIMENTAL_MAX_BOUNCES));
+    this.#maxBouncesLimit = opts.maxBounces ?? 3;
     this.#maxSamplesLimit = opts.maxSamplesPerPixel ?? DEFAULT_MAX_SAMPLES_PER_PIXEL;
     this.#causticStrategy = opts.causticStrategy ?? 'none';
     const causticOpts = opts.causticOptions ?? {};
-    const mneeIter =
-      typeof causticOpts.mneeMaxIterations === 'number' ? causticOpts.mneeMaxIterations : 8;
-    const mneeChain =
-      typeof causticOpts.mneeMaxChainLength === 'number' ? causticOpts.mneeMaxChainLength : 3;
-    this.#mneeMaxIterations = Math.max(1, mneeIter);
-    this.#mneeMaxChainLength = Math.max(1, mneeChain);
-    // Warn on unknown causticOptions keys — the contract requires backends to
-    // surface unrecognised keys rather than silently ignoring them.
-    if (opts.causticOptions != null) {
-      const knownCausticKeys = new Set(['mneeMaxIterations', 'mneeMaxChainLength']);
-      const unknownCausticKeys = Object.keys(opts.causticOptions).filter(
-        (k) => !knownCausticKeys.has(k),
-      );
-      if (unknownCausticKeys.length > 0) {
-        this.#warn({
-          code: 'pt-webgpu.unknown-caustic-options',
-          backend: 'pt-webgpu',
-          phase: 'construction',
-          method: 'createPTEngine_WebGPU',
-          message:
-            `[vitrum/pt-webgpu] Unknown causticOptions keys will be ignored: ${unknownCausticKeys.map((k) => JSON.stringify(k)).join(', ')}. ` +
-            'The recognised keys are: mneeMaxIterations, mneeMaxChainLength.',
-          details: { keys: unknownCausticKeys },
-        });
-      }
-    }
+    this.#mneeMaxIterations = causticOpts.mneeMaxIterations ?? 8;
+    this.#mneeMaxChainLength = causticOpts.mneeMaxChainLength ?? 3;
     this.#bdpt = opts.bdpt === true;
-    // A9 — light-subpath bounce cap raised 3 → 8 (matches the eye cap; the merged
-    // pdf array BDPT_MAX_MERGED=19 = c≤8 + e≤8 + 3 headroom). Default is endpoint-only
-    // until the multi-vertex connection estimator is weighted against the regular
-    // eye-path strategy; research captures must set experimentalMultiVertex:true.
+    // All integer depths 1..8 select the same exclusive finite-emitter
+    // strategy family; 1 is endpoint-only and 2 adds the first extension.
     this.#bdptMaxLightBounces = resolveBdptMaxLightBounces(opts.bdptOptions?.maxLightBounces);
-    // EXPERIMENTAL ReSTIR-PT reuse: compile-time opt-in, full-tier only. GpuResources
+    // ReSTIR-PT reuse: compile-time opt-in, full-tier only. GpuResources
     // gates the full-tier requirement internally; mirror the resolved value here so
     // the capability + renderFrame sequencing agree with what GpuResources will run.
     this.#restirPtReuse = opts.restirPtReuse === true && traceTier === 'full';
     const rptOpts = opts.restirPtReuseOptions ?? {};
     this.#restirPtMClamp =
-      typeof rptOpts.mClamp === 'number' && Number.isFinite(rptOpts.mClamp) && rptOpts.mClamp >= 1
-        ? Math.floor(rptOpts.mClamp)
-        : 20;
-    this.#restirPtWCap =
-      typeof rptOpts.wCap === 'number' && Number.isFinite(rptOpts.wCap) && rptOpts.wCap > 0
-        ? rptOpts.wCap
-        : 10;
-    this.#restirPtAllowGlossyReuse = rptOpts.experimentalGlossyReuse === true;
+      rptOpts.mClamp ?? 20;
+    this.#restirPtWCap = Math.fround(
+      rptOpts.wCap ?? PT_WEBGPU_RESTIR_PT_EFFECTIVELY_UNCLAMPED_W,
+    );
+    this.#restirPtBiasedWeightClamp =
+      rptOpts.wCap !== undefined &&
+      this.#restirPtWCap < Math.fround(PT_WEBGPU_RESTIR_PT_EFFECTIVELY_UNCLAMPED_W);
     this.#gpu = new GpuResources(
       opts.device,
       traceTier,
@@ -517,7 +544,8 @@ class PTEngineWebGPU implements Engine {
       this.#sampling,
       this.#bvhTraversal,
     );
-    if (opts.denoiser === 'oidn-final') {
+    this.#denoiser = opts.denoiser === 'oidn-final' ? 'oidn-final' : 'none';
+    if (this.#denoiser === 'oidn-final') {
       const modelUrl = opts.oidn?.modelUrl;
       const eps = opts.oidn?.executionProviders?.filter(
         (p) => p === 'webnn' || p === 'webgpu' || p === 'wasm',
@@ -550,6 +578,13 @@ class PTEngineWebGPU implements Engine {
               raw: err,
             });
           },
+          onComplete: (frame) => {
+            const state = this.#slot.get();
+            if (state === 'disposed' || state === 'error') return;
+            // Async inference completion queues CPU data only. Host-owned GPU
+            // state is mutated exclusively by the next explicit renderFrame.
+            this.#pendingDenoised = frame;
+          },
         },
       );
     } else {
@@ -562,6 +597,16 @@ class PTEngineWebGPU implements Engine {
       device: this.#device,
       assertLive: (method) => this.#assertLive(method),
       getScene: () => this.#scene,
+      validateScene: (scene) => {
+        validateCoreScene(scene);
+        if (this.#traceTier === 'lite') assertLiteSceneSupported(scene);
+        if (this.#spectralEnabled) assertSpectralSceneSupported(scene);
+        assertThinFilmSceneSupported(scene);
+        assertVolumeSceneSupported(scene);
+        if (this.#causticStrategy === 'manifold-nee') {
+          assertMneeInterfaceDomainSupported(scene);
+        }
+      },
       setSceneState: (scene) => {
         this.#scene = scene;
       },
@@ -573,10 +618,33 @@ class PTEngineWebGPU implements Engine {
       invalidateBindGroups: () => this.#gpu.invalidateBindGroups(),
       supportedAnalyticShapes: () => this.#supportedAnalyticShapes(),
       cameraVisibleEmitters: () => this.#cameraVisibleEmitters,
-      syncLiteTextures: (sceneBuffers) => this.#syncLiteTextures(sceneBuffers),
+      stageLiteTextures: (sceneBuffers) =>
+        this.#stageLiteTextures(
+          sceneBuffers,
+          uploadedSceneGpuResources(sceneBuffers),
+        ),
       isLiteTier: () => this.#traceTier === 'lite',
+      requiresMneeFacetTableRepack: () =>
+        this.#causticStrategy === 'manifold-nee' && this.#traceTier === 'full',
       warn: (warning, ...args) => this.#warn(warning, ...args),
       repackScene: (scene, opts) => this.#repackScene(scene, opts),
+      refreshSceneGeometryStats: () => {
+        const previous = {
+          r0: this.#sppmR0,
+          extent: this.#sppmSceneExtent,
+          center: this.#sppmSceneCenter,
+          buffersReady: this.#gpu.sppm.sppmBuffersReady,
+        };
+        if (this.#causticStrategy === 'photon-map' && this.#traceTier === 'full') {
+          this.#computeSppmSceneStats();
+        }
+        return () => {
+          this.#sppmR0 = previous.r0;
+          this.#sppmSceneExtent = previous.extent;
+          this.#sppmSceneCenter = previous.center;
+          this.#gpu.sppm.sppmBuffersReady = previous.buffersReady;
+        };
+      },
       setScene: (scene) => this.setScene(scene),
       reset: () => this.reset(),
     });
@@ -634,10 +702,12 @@ class PTEngineWebGPU implements Engine {
       maxBouncesLimit: this.#maxBouncesLimit,
       bdpt: this.#bdpt,
       restirPtReuse: this.#restirPtReuse,
+      restirPtBiasedWeightClamp: this.#restirPtBiasedWeightClamp,
       sampling: this.#sampling,
       bvhTraversal: this.#bvhTraversal,
       causticStrategy: this.#causticStrategy,
-      isOidnFinal: this.#postDenoiser instanceof OIDNFinalDispatcher,
+      spectral: this.#spectralEnabled,
+      denoiser: this.#denoiser,
     });
   }
 
@@ -665,7 +735,10 @@ class PTEngineWebGPU implements Engine {
       const cam: PickCamera = {
         viewMatrix: last.viewMatrix,
         projMatrix: last.projMatrix,
-        cameraPosition: last.cameraPosition,
+        cameraPosition: resolveFrameCameraPosition(
+          last,
+          'PTEngineWebGPU.debug.pickPrimitive',
+        ),
       };
       return pickPrimitiveCpu(scene, cam, x, y, w, h);
     },
@@ -690,7 +763,7 @@ class PTEngineWebGPU implements Engine {
       const accumBufBytes     = gpu.accumBufferByteSize;
       const varMomentBufBytes = gpu.varianceMomentsBuffer != null
         ? gpu.accumBufferByteSize : 0;
-      const paramsBufBytes    = gpu.paramsBuffer != null ? 512 : 0;
+      const paramsBufBytes    = gpu.paramsBuffer != null ? FRAME_PARAMS_BUFFER_ALLOC_BYTES : 0;
       // Scene buffers (BVH/materials/indices/TLAS/emitters/light-tree/UVs) + the
       // two material texture arrays, summed live off the current handles (was
       // previously omitted, so `total` under-reported by the whole scene).
@@ -925,7 +998,7 @@ class PTEngineWebGPU implements Engine {
   setScene(scene: Scene): void {
     this.#assertUsable('setScene');
     if (this.#traceTier === 'lite') {
-      emitLiteSceneWarnings(scene, (w) => this.#warn(w));
+      assertLiteSceneSupported(scene);
     }
     this.#repackScene(scene, { warnOnEmpty: true });
   }
@@ -943,24 +1016,11 @@ class PTEngineWebGPU implements Engine {
    * the full tier — the guard is preserved by the caller (behavior-preserving).
    */
   #computeSppmSceneStats(): void {
-    const pos = this.#geoPack?.positions;
-    if (pos != null && pos.length >= 4) {
-      let minX = Infinity, minY = Infinity, minZ = Infinity;
-      let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
-      for (let i = 0; i + 2 < pos.length; i += 4) {
-        const x = pos[i]!, y = pos[i + 1]!, z = pos[i + 2]!;
-        if (x < minX) minX = x; if (x > maxX) maxX = x;
-        if (y < minY) minY = y; if (y > maxY) maxY = y;
-        if (z < minZ) minZ = z; if (z > maxZ) maxZ = z;
-      }
-      if (Number.isFinite(minX)) {
-        this.#sppmR0 = sppmInitialRadius(
-          [minX, minY, minZ] as const,
-          [maxX, maxY, maxZ] as const,
-        );
-        const dx = maxX - minX, dy = maxY - minY, dz = maxZ - minZ;
-        this.#sppmSceneExtent = Math.sqrt(dx * dx + dy * dy + dz * dz) / 2;
-      }
+    const bounds = sppmSceneBoundsFromPackedPositions(this.#geoPack?.positions ?? []);
+    if (bounds != null) {
+      this.#sppmR0 = bounds.initialRadius;
+      this.#sppmSceneExtent = bounds.extent;
+      this.#sppmSceneCenter = [...bounds.center];
     }
     // A4-progressive: invalidate SPPM buffers so they rebuild with the new
     // scene-extent stats (r₀ recomputed above).  The per-pixel stats buffer
@@ -980,49 +1040,35 @@ class PTEngineWebGPU implements Engine {
    * per-array index remap; see class header on the add/remove design choice).
    */
   #repackScene(scene: Scene, opts: { readonly warnOnEmpty: boolean }): void {
-    // CAP-01 — warn on the remaining silently-dropped material fields (matrix-
+    validateCoreScene(scene);
+    // CAP-01 — reject material fields the selected tier cannot reproduce (matrix-
     // driven: every 'unsupported' row in the ledger's pt-webgpu material support
+    assertThinFilmSceneSupported(scene);
+    assertVolumeSceneSupported(scene);
+    if (this.#spectralEnabled) assertSpectralSceneSupported(scene);
+    if (this.#causticStrategy === 'manifold-nee') {
+      assertMneeInterfaceDomainSupported(scene);
+    }
     // matrix). Once per setScene/repack.
     const unsupportedMaterialUses = collectUnsupportedMaterialFieldUses(scene, this.#traceTier);
     const unsupportedMaterialFields = collectFieldUnion(unsupportedMaterialUses);
     if (unsupportedMaterialFields.length > 0) {
-      this.#warn({
-        code: 'pt-webgpu.unsupported-material-fields',
-        backend: 'pt-webgpu',
-        phase: 'setScene',
-        method: 'setScene',
-        message:
-          `[vitrum/pt-webgpu] setScene: material fields are supplied ` +
-          `but not rendered by this backend: ${unsupportedMaterialFields.join(', ')}.`,
-        details: {
-          fields: unsupportedMaterialFields,
-          primitiveIds: unsupportedMaterialUses.map((use) => use.primitiveId),
-          primitiveFields: unsupportedMaterialUses,
-        },
-      });
-    }
-    // SHADOW-01 — `receiveShadow` is @reserved on all shipping backends (a
-    // "receiver ignores occlusion" toggle is non-physical for a GI path
-    // tracer). Surface a structured signal when a scene sets it to false so
-    // hosts aren't left guessing why nothing changed.
-    const receiveShadowIds = scene.primitives
-      .filter((p) => (p as { receiveShadow?: boolean }).receiveShadow === false)
-      .map((p) => p.id);
-    if (receiveShadowIds.length > 0) {
-      this.#warn({
-        code: 'pt-webgpu.reserved-receive-shadow',
-        backend: 'pt-webgpu',
-        phase: 'setScene',
-        method: 'setScene',
-        message:
-          `[vitrum/pt-webgpu] setScene: receiveShadow:false is reserved and not ` +
-          `consumed by any backend (non-physical for GI); primitives: ${receiveShadowIds.join(', ')}.`,
-        details: { primitiveIds: receiveShadowIds },
-      });
+      throw new TypeError(
+        `[vitrum/pt-webgpu] setScene: material fields are supplied but not rendered ` +
+          `by the selected ${this.#traceTier} tier: ${unsupportedMaterialFields.join(', ')} ` +
+          `(primitive fields: ${unsupportedMaterialUses.map((use) =>
+            `${use.primitiveId}=[${use.fields.join(', ')}]`).join('; ')}).`,
+      );
     }
     const packed = buildPackedScene(scene, {
       cameraVisibleEmitters: this.#cameraVisibleEmitters,
       geometryMode: this.#traceTier === 'lite' ? 'merged' : 'tlas',
+      includeMneeFacetCandidates:
+        this.#causticStrategy === 'manifold-nee' && this.#traceTier === 'full',
+      mneeFacetCandidateStorageLimitBytes: Math.min(
+        Number(this.#device.limits.maxBufferSize),
+        Number(this.#device.limits.maxStorageBufferBindingSize),
+      ),
       onWarning: (warning) => this.#warn(warning),
       warningPhase: 'setScene',
       warningMethod: 'setScene',
@@ -1047,26 +1093,73 @@ class PTEngineWebGPU implements Engine {
     // buffers the failed upload had already created. uploadPackedScene now cleans up
     // its own partial allocations on throw (see uploadSceneBuffers.ts); this swap
     // keeps the previously-valid scene installed if the new upload fails.
-    const previousSceneBuffers = this.#sceneBuffers;
-    const uploadedScene = uploadPackedScene(this.#device, packed);
+    const previous = {
+      scene: this.#scene,
+      sceneBuffers: this.#sceneBuffers,
+      geoPack: this.#geoPack,
+      sppmSceneCenter: this.#sppmSceneCenter,
+      sppmR0: this.#sppmR0,
+      sppmSceneExtent: this.#sppmSceneExtent,
+      sppmBuffersReady: this.#gpu.sppm.sppmBuffersReady,
+    };
+    const transactionPreservedResources: object[] = [
+      ...(previous.sceneBuffers != null ? uploadedSceneGpuResources(previous.sceneBuffers) : []),
+      ...[
+        this.#gpu.liteEnvTexture,
+        this.#gpu.liteEnvCdfTexture,
+        this.#gpu.liteLightTexture,
+      ].filter((resource): resource is GPUTexture => resource != null),
+    ];
+
+    let uploadedScene: UploadedSceneBuffers | null = null;
+    let liteReplacement: LiteTextureReplacement | null = null;
+    try {
+      uploadedScene = uploadPackedScene(this.#device, packed, transactionPreservedResources);
+      const candidateOwnedResources = [
+        ...uploadedSceneGpuResources(uploadedScene),
+      ];
+      liteReplacement = this.#stageLiteTextures(uploadedScene, [
+        ...transactionPreservedResources,
+        ...candidateOwnedResources,
+      ]);
+    } catch (error) {
+      liteReplacement?.rollback();
+      try { uploadedScene?.destroy(); } catch { /* preserve allocation failure */ }
+      throw error;
+    }
+
+    // Publication is reversible until reset's GPU uploads/submission succeed.
+    // Old resources remain live throughout this block.
     this.#geoPack = scenePackResultFromPacked(packed);
     this.#sceneBuffers = uploadedScene;
-    previousSceneBuffers?.destroy();
-    this.#syncLiteTextures(uploadedScene);
-    this.#bdptLightPath?.dispose();
-    this.#bdptLightPath = null;
-    if (this.#bdpt && this.#traceTier === 'full') {
-      this.#bdptLightPath = new BdptLightPathBufferWebGPU(this.#device, {
-        maxLightBounces: this.#bdptMaxLightBounces,
-      });
-    }
-    this.#gpu.invalidateBindGroups();
     this.#scene = scene;
-    // A4 — recompute SPPM scale-aware initial radius from the scene AABB.
-    // Guard preserved: only runs when causticStrategy === 'photon-map' on full tier.
-    if (this.#causticStrategy === 'photon-map' && this.#traceTier === 'full') {
-      this.#computeSppmSceneStats();
+    liteReplacement?.commit();
+    this.#gpu.invalidateBindGroups();
+    try {
+      // A4 — recompute SPPM scale-aware initial radius from the scene AABB.
+      if (this.#causticStrategy === 'photon-map' && this.#traceTier === 'full') {
+        this.#computeSppmSceneStats();
+      }
+      this.reset();
+    } catch (error) {
+      this.#scene = previous.scene;
+      this.#sceneBuffers = previous.sceneBuffers;
+      this.#geoPack = previous.geoPack;
+      this.#sppmSceneCenter = previous.sppmSceneCenter;
+      this.#sppmR0 = previous.sppmR0;
+      this.#sppmSceneExtent = previous.sppmSceneExtent;
+      this.#gpu.sppm.sppmBuffersReady = previous.sppmBuffersReady;
+      liteReplacement?.rollback();
+      this.#gpu.invalidateBindGroups();
+      try { uploadedScene.destroy(); } catch { /* preserve reset failure */ }
+      throw error;
     }
+
+    // Irreversible retirement happens only after every candidate and reset
+    // upload has succeeded.  Destruction failures cannot invalidate the newly
+    // published resource set, so teardown is deliberately best-effort.
+    liteReplacement?.finalize();
+    try { previous.sceneBuffers?.destroy(); } catch { /* new scene is live */ }
     if (opts.warnOnEmpty) {
       const sceneSummary = summarizeScene(scene);
       if (sceneSummary.primitiveCount === 0) {
@@ -1099,11 +1192,14 @@ class PTEngineWebGPU implements Engine {
         details: displacementWarningDetails(warning),
       });
     }
-    this.reset();
   }
 
-  #syncLiteTextures(sceneBuffers: UploadedSceneBuffers | null): void {
-    if (this.#traceTier !== 'lite' || sceneBuffers == null) return;
+  /** Build a complete lite texture candidate without publishing it. */
+  #stageLiteTextures(
+    sceneBuffers: UploadedSceneBuffers | null,
+    additionalForbiddenResources: readonly object[] = [],
+  ): LiteTextureReplacement | null {
+    if (this.#traceTier !== 'lite' || sceneBuffers == null) return null;
     const lightTex = packLiteLightTexture(
       sceneBuffers.directionalLightsData,
       sceneBuffers.pointLightsData,
@@ -1122,7 +1218,12 @@ class PTEngineWebGPU implements Engine {
       sceneBuffers.environmentMapHeight,
       sceneBuffers.hasEnvironmentMap,
     );
-    this.#gpu.uploadLiteTextures(lightTex, envTex, cdfTex);
+    return this.#gpu.stageLiteTextureReplacement(
+      lightTex,
+      envTex,
+      cdfTex,
+      additionalForbiddenResources,
+    );
   }
 
   // ── Scene mutation (Task 4.3, Theme A) ───────────────────────────────────
@@ -1150,19 +1251,35 @@ class PTEngineWebGPU implements Engine {
     this.#mutationRouter.updateEnvironment(env);
   }
 
+  updateLighting(opts: Readonly<Record<string, unknown>>): void {
+    this.#mutationRouter.updateLighting(opts);
+  }
+
+  setSize(width: number, height: number): void {
+    this.#assertUsable('setSize');
+    validatePtWebgpuPixelSize('setSize', width, height);
+    if (!this.#gpu.ensureAccumResources(width, height)) return;
+    // ensureAccumResources publishes a completely zeroed replacement cohort.
+    // ReSTIR/SPPM size-dependent resources are rebuilt on the next frame, so no
+    // second GPU clear is necessary here. Reset only the engine-owned history.
+    this.#samplesAccumulated = 0;
+    this.#pendingDenoised = null;
+    this.#postDenoiser?.invalidate();
+    this.#presentationSignature = null;
+  }
+
   /**
    * D8.4 — Ensure all per-frame GPU resources are allocated and return the set
    * of readiness flags that the pass-encoding step consumes.
    *
    * Covers (in order, PRESERVING the documented invariant):
-   *   1. BDPT eye-stack sizing.
+   *   1. ALL SPPM buffer allocation (BEFORE buildBindGroups — Item-1 fix invariant).
    *   2. Params UBO packing + queue.writeBuffer.
-   *   3. ALL SPPM buffer allocation (BEFORE buildBindGroups — Item-1 fix invariant).
-   *   4. buildBindGroups (scene bind groups).
-   *   5. ReSTIR-PT reservoir ensure / pipeline build / writeReservoirParams /
+   *   3. buildBindGroups (scene bind groups).
+   *   4. ReSTIR-PT reservoir ensure / pipeline build / writeReservoirParams /
    *      buildReservoirBindGroups.
    *
-   * Returns `{ bindGroup, sppmReady, restirPtReady, bdptStackReady }`.
+   * Returns `{ bindGroup, sppmReady, restirPtReady }`.
    * Callers must have already verified `#gpu.isReadyToRender()` and that
    * `#sceneBuffers` is non-null (renderFrame's preconditions cover this).
    */
@@ -1174,82 +1291,35 @@ class PTEngineWebGPU implements Engine {
     bindGroup: GPUBindGroup;
     sppmReady: boolean;
     restirPtReady: boolean;
-    bdptStackReady: boolean;
   } {
     const gpu = this.#gpu;
 
     // Per-subsystem preparation, in the SAME order as the former monolithic body:
-    //   1. BDPT eye-subpath scratch stack,
-    //   2. FrameParams UBO pack + write (with SPPM-ceiling caustic fallback +
-    //      over-budget BDPT disable),
-    //   3. SPPM hash-grid / per-pixel-stats buffers,
-    //   4. build the group-0 bind group,
-    //   5. ReSTIR-PT reuse reservoirs/pipelines/params.
-    const bdptStackReady = this.#ensureBdptStackPerFrame(gpu, width, height);
-    this.#ensureParamsPerFrame(gpu, input, width, height, bdptStackReady);
+    //   1. SPPM hash-grid / per-pixel-stats buffers,
+    //   2. FrameParams UBO pack + write (after SPPM readiness is established),
+    //   3. build the scene bind groups,
+    //   4. ReSTIR-PT reuse reservoirs/pipelines/params.
     const sppmReady = this.#ensureSppmPerFrame(gpu, width, height);
-    const bindGroup = gpu.buildBindGroups(this.#sceneBuffers!, () => this.#bdptLightPathBuffer());
+    this.#ensureParamsPerFrame(gpu, input, width, height);
+    const bindGroup = gpu.buildBindGroups(this.#sceneBuffers!);
     const restirPtReady = this.#ensureRestirPtPerFrame(gpu, width, height);
-    return { bindGroup, sppmReady, restirPtReady, bdptStackReady };
+    return { bindGroup, sppmReady, restirPtReady };
   }
 
   /**
-   * Per-frame BDPT eye-subpath scratch stack (D2). Sized per-pixel × the active
-   * bounce depth; refuses to grow beyond the safety ceiling (returns false → BDPT
-   * connections skipped this frame, unidirectional path unaffected). A 32-byte
-   * placeholder is allocated when BDPT is off so the auto layout stays valid.
-   * Extracted from `#ensurePerFrameResources` (T3-B) — behaviour identical.
-   */
-  #ensureBdptStackPerFrame(gpu: GpuResources, width: number, height: number): boolean {
-    const bdptActive = this.#bdpt && this.#traceTier === 'full';
-    return gpu.ensureBdptEyeStack(
-      width,
-      height,
-      this.#activeBounces,
-      bdptActive,
-    );
-  }
-
-  /**
-   * Per-frame FrameParams UBO pack + write. Decides the SPPM-ceiling caustic
-   * fallback (`#causticModeOverride`) BEFORE packing, then packs via
-   * {@link packFrameParams}. When BDPT is active but its eye stack was
-   * over-budget this frame (`!bdptStackReady`), the packed `bdptEnabled` slot is
-   * cleared so the shader takes the unidirectional path (`packFrameParams` flag —
-   * the byte-patch is gated on this per-frame condition, not applied blindly).
-   * Extracted from `#ensurePerFrameResources` (T3-B) — behaviour identical.
+   * Per-frame FrameParams UBO pack + write. BDPT path state is invocation-local
+   * WGSL memory and therefore has no host resource readiness dependency.
    */
   #ensureParamsPerFrame(
     gpu: GpuResources,
     input: FrameInput,
     width: number,
     height: number,
-    bdptStackReady: boolean,
   ): void {
-    const bdptActive = this.#bdpt && this.#traceTier === 'full';
+    // Requested SPPM readiness is established before this pack or throws.
+    this.#causticModeOverride = null;
 
-    // V2-1: decide the SPPM ceiling fallback BEFORE packing params. When the
-    // configured strategy is photon-map on full tier but the photon-cells
-    // allocation would exceed the effective ceiling, force `causticMode` to
-    // manifold-nee for this pack so the kernel takes the manifold path instead
-    // of gathering against placeholder photon buffers (which rendered ~zero).
-    this.#causticModeOverride =
-      this.#causticStrategy === 'photon-map' &&
-      this.#traceTier === 'full' &&
-      gpu.sppmWouldExceedCeiling()
-        ? 'manifold-nee'
-        : null;
-
-    // `packFrameParams` flag: only patch the packed bdptEnabled byte when BDPT is
-    // active this frame AND its eye stack is over budget.
-    const disableBdptInParams = bdptActive && !bdptStackReady;
     const paramsArrayBuffer = this.#buildParamsBuffer(input, width, height);
-    if (disableBdptInParams) {
-      // Over-budget: disable BDPT in the UBO so the shader takes the
-      // unidirectional path (and never touches the placeholder eye stack).
-      const u32 = new Uint32Array(paramsArrayBuffer);
-      u32[FrameParamsSlot.bdptEnabled] = 0;
-    }
     this.#device.queue.writeBuffer(gpu.paramsBuffer!, 0, paramsArrayBuffer);
   }
 
@@ -1270,11 +1340,9 @@ class PTEngineWebGPU implements Engine {
     // frame (photon pass and megakernel both silently skipped group-3 → photons
     // were never written, gather read nothing, lum=0 gpuErrs=1 on full tier).
     //
-    // A4-progressive (2026-06-10): true Hachisuka SPPM — per-pixel (τ, R², N)
-    // buffer at @group(3) @binding(9), reset on accumulator reset.  The hash
-    // grid (bindings 6/7) still re-deposits fresh photons every frame (counters
-    // are NOT cleared per frame — photons accumulate in the ring buffer across
-    // frames for stable coverage), but the gather now applies the progressive
+    // Per-pixel (τ, R², N) persists across iterations and resets with temporal
+    // accumulation. The hash-grid bucket heads are cleared before every photon
+    // pass, then this iteration's unique photon records are published. Gather applies the progressive
     // update rule (N'=N+αM, R'²=R²·N'/(N+M), τ'=(τ+Φ_M)·ratio) instead of the
     // frozen-radius density estimate.
     const sppmActive =
@@ -1283,8 +1351,9 @@ class PTEngineWebGPU implements Engine {
     if (sppmActive) {
       const sppmBuffersOk = gpu.ensureSppmBuffers(true);
       if (!sppmBuffersOk) {
-        // Ceiling exceeded — fall back silently (manifold-nee semantics).
-        gpu.ensureSppmBuffers(false); // ensure placeholder satisfies the layout
+        throw new Error(
+          '@vitrum/pt-webgpu: causticStrategy="photon-map" requested, but the SPPM photon grid could not be allocated within the device storage-buffer limits.',
+        );
       }
       // A4-progressive: ensure per-pixel stats buffer at the current render dims.
       // ensureSppmPixelStatsBuffer is idempotent on a cache hit (same W×H); on
@@ -1293,28 +1362,31 @@ class PTEngineWebGPU implements Engine {
       // ensureSppmBuffers(false) above when SPPM is off, so the else branch below
       // doesn't need to call it separately.
       const sppmPixelStatsOk = gpu.ensureSppmPixelStatsBuffer(width, height);
-      // A4-progressive: `frameAccumulated` counts completed frames so WGSL can
-      // compute Ne = frameAccumulated × photonCount.  This frame's photons are
+      if (!sppmPixelStatsOk || gpu.sppm.sppmPixelStatsBuffer == null) {
+        throw new Error(
+          '@vitrum/pt-webgpu: causticStrategy="photon-map" requested, but the per-pixel SPPM state buffer is unavailable at the current viewport size.',
+        );
+      }
+      if (gpu.sppm.sppmPhotonPipeline == null) {
+        throw new Error('@vitrum/pt-webgpu: causticStrategy="photon-map" requested, but the SPPM photon pipeline is unavailable.');
+      }
+      // `frameAccumulated` counts iterations including the pending photon pass,
+      // so WGSL computes Ne = frameAccumulated × photonCount exactly once.
       // emitted NOW (pre-megakernel), so the completed count INCLUDING this frame
       // is #samplesAccumulated + 1 (incremented at the end of renderFrame).
       // `currentRadius` is still r₀ (the initial search radius); the per-pixel
       // radius stored in sppmPixelStats shrinks progressively — the UBO field is
       // kept for the photon-insertion pass which still needs the global grid cell
       // size (tied to r₀, not the shrinking per-pixel radius).
-      if (sppmBuffersOk && sppmPixelStatsOk) {
-        gpu.writeSppmStats(
+      gpu.writeSppmStats(
           this.#sppmR0,
           this.#sppmR0,
           this.#samplesAccumulated + 1,
           SPPM_PHOTON_COUNT,
           this.#sppmSceneExtent,
+          this.#sppmSceneCenter,
         );
-      }
-      sppmReady =
-        sppmBuffersOk &&
-        sppmPixelStatsOk &&
-        gpu.sppm.sppmPhotonPipeline != null &&
-        gpu.sppm.sppmPixelStatsBuffer != null;
+      sppmReady = true;
     } else if (this.#traceTier === 'full') {
       // Ensure placeholder SPPM buffers exist so group-3 bindings 6/7/8/9 are
       // satisfied (the gather is guarded by causticMode() == 2u, so the
@@ -1325,8 +1397,8 @@ class PTEngineWebGPU implements Engine {
   }
 
   /**
-   * Per-frame EXPERIMENTAL ReSTIR-PT reuse setup (OFF by default). When ON:
-   * (re)allocate the reservoir ping-pong + result + params, build the reuse
+   * Per-frame ReSTIR-PT reuse setup (OFF by default). When ON:
+   * (re)allocate the two reservoir buffers + result + params, build the reuse
    * pipelines + bind groups, and write RestirPtParams. All gated inside
    * GpuResources, so this is a no-op + allocates nothing when the flag is off
    * (default render untouched). Returns whether the reuse sequence is ready.
@@ -1336,37 +1408,56 @@ class PTEngineWebGPU implements Engine {
     let restirPtReady = false;
     if (this.#restirPtReuse) {
       const reservoirBuffersReady = gpu.ensureReservoirBuffers(width, height);
-      if (reservoirBuffersReady) {
-        gpu.ensureReservoirPipelines();
-        gpu.writeReservoirParams(
-          width,
-          height,
-          this.#restirPtMClamp,
-          this.#restirPtWCap,
-          this.#restirPtAllowGlossyReuse,
+      if (!reservoirBuffersReady) {
+        throw new Error(
+          '[vitrum/pt-webgpu] ReSTIR-PT was requested but its buffers were not made ready.',
         );
-        gpu.buildReservoirBindGroups(this.#sceneBuffers!);
-        restirPtReady =
-          gpu.reservoir.rptProducerPipeline != null &&
-          gpu.reservoir.rptTemporalPipeline != null &&
-          gpu.reservoir.rptSpatialPipeline != null &&
-          gpu.reservoir.rptResolvePipeline != null &&
-          gpu.reservoir.rptProducerGroup0 != null &&
-          gpu.pathTraceBindGroup1 != null &&
-          gpu.pathTraceBindGroup2 != null &&
-          gpu.pathTraceBindGroup3 != null;
+      }
+      gpu.ensureReservoirPipelines();
+      gpu.writeReservoirParams(
+        width,
+        height,
+        this.#restirPtMClamp,
+        this.#restirPtWCap,
+      );
+      if (this.#sceneBuffers == null) {
+        throw new Error(
+          '[vitrum/pt-webgpu] ReSTIR-PT was requested before scene buffers were ready.',
+        );
+      }
+      gpu.buildReservoirBindGroups(this.#sceneBuffers);
+      restirPtReady =
+        gpu.reservoir.rptReservoirCur != null &&
+        gpu.reservoir.rptReservoirPrev != null &&
+        gpu.reservoir.rptResultBuffer != null &&
+        gpu.reservoir.rptParamsBuffer != null &&
+        gpu.reservoir.rptProducerPipeline != null &&
+        gpu.reservoir.rptTemporalPipeline != null &&
+        gpu.reservoir.rptSpatialPipeline != null &&
+        gpu.reservoir.rptResolvePipeline != null &&
+        gpu.reservoir.rptCompositePipeline != null &&
+        gpu.reservoir.rptProducerGroup0 != null &&
+        gpu.reservoir.rptTemporalGroup0 != null &&
+        gpu.reservoir.rptSpatialGroup0 != null &&
+        gpu.reservoir.rptResolveGroup0 != null &&
+        gpu.pathTraceBindGroup1 != null &&
+        gpu.pathTraceBindGroup2 != null &&
+        gpu.pathTraceBindGroup3 != null;
+      if (!restirPtReady) {
+        throw new Error(
+          '[vitrum/pt-webgpu] ReSTIR-PT requested-mode setup ended in an incomplete state.',
+        );
       }
     }
     return restirPtReady;
   }
 
   /**
-   * D8.4 — Encode the four conditional compute passes onto `encoder`:
+   * D8.4 — Encode the conditional compute passes onto `encoder`:
    *   1. SPPM photon-emission pass (before the megakernel, when `sppmReady`).
    *   2. ReSTIR-PT reuse sequence: producer → temporal → spatial → resolve
    *      (when `restirPtReady`).
-   *   3. BDPT light-subpath pass (when wired and `bdptStackReady`).
-   *   4. Megakernel (composite when ReSTIR-PT active, otherwise standard).
+   *   3. Megakernel (composite when ReSTIR-PT active, otherwise standard).
    *
    * Call order is IDENTICAL to the prior inline body. `encoder` must be a fresh
    * command encoder; the present pass is dispatched separately by the caller.
@@ -1376,7 +1467,6 @@ class PTEngineWebGPU implements Engine {
     bindGroup: GPUBindGroup,
     sppmReady: boolean,
     restirPtReady: boolean,
-    bdptStackReady: boolean,
     width: number,
     height: number,
   ): void {
@@ -1385,14 +1475,13 @@ class PTEngineWebGPU implements Engine {
     // ── A4-progressive SPPM photon-emission pass (before the megakernel) ────────
     // The photon pass binds the SAME groups 0/1/2/3 as the megakernel.
     // Group 3 carries the SPPM hash-grid buffers at bindings 6/7/8 (+ per-pixel
-    // stats at binding 9, read/written by the megakernel's sppmGatherProgressive)
+    // stats at binding 9, read/written by the megakernel's SPPM helpers)
     // alongside the light-tree / material textures (0-5), no group-4 needed.
     //
-    // Counters are NOT cleared per frame — photons accumulate in the ring buffer
-    // (streaming window of last SPPM_CELL_CAPACITY photons per cell), giving
-    // stable coverage.  The progressive radius/τ shrink is handled per-pixel in
-    // the megakernel's sppmGatherProgressive, not in the emission pass.
-    if (sppmReady && gpu.sppm.sppmPhotonPipeline != null) {
+    // Bucket heads are per-frame state. Clear them before publishing any photon
+    // records so the gather can traverse only this iteration's bounded list.
+    if (sppmReady && gpu.sppm.sppmPhotonPipeline != null && gpu.sppm.sppmCellCountersBuffer != null) {
+      encoder.clearBuffer(gpu.sppm.sppmCellCountersBuffer);
       const photonPass = encoder.beginComputePass({ label: 'vitrum.pt-webgpu.sppm.photonPass' });
       photonPass.setPipeline(gpu.sppm.sppmPhotonPipeline);
       photonPass.setBindGroup(0, bindGroup);
@@ -1413,34 +1502,6 @@ class PTEngineWebGPU implements Engine {
     if (restirPtReady) {
       this.#encodeRestirPtReusePasses(encoder, gpu, width, height);
     }
-    if (
-      gpu.bdptSubpathPipeline != null &&
-      this.#bdpt &&
-      bdptStackReady &&
-      this.#bdptExternalBuffer == null &&
-      this.#bdptLightPath != null &&
-      this.#traceTier === 'full' &&
-      gpu.pathTraceBindGroup1 != null &&
-      gpu.pathTraceBindGroup2 != null
-    ) {
-      const bdptPass = encoder.beginComputePass({ label: 'vitrum.pt-webgpu.bdptLightSubpath.pass' });
-      bdptPass.setPipeline(gpu.bdptSubpathPipeline);
-      bdptPass.setBindGroup(0, bindGroup);
-      bdptPass.setBindGroup(1, gpu.pathTraceBindGroup1);
-      bdptPass.setBindGroup(2, gpu.pathTraceBindGroup2);
-      // Group 3 (WS2 light tree) is part of the SHARED pipeline layout, so it
-      // must be bound on the BDPT pipeline too even though the light-subpath pass
-      // does not sample the tree (an unbound group fails layout validation).
-      if (gpu.pathTraceBindGroup3 != null) {
-        bdptPass.setBindGroup(3, gpu.pathTraceBindGroup3);
-      }
-      // ONE workgroup: bdptExtendLightSubpath now builds the whole light subpath
-      // sequentially in a single invocation (was one workgroup per column with a
-      // cross-workgroup read of column-1 — a spec-undefined-ordering data race).
-      bdptPass.dispatchWorkgroups(1, 1, 1);
-      bdptPass.end();
-    }
-
     // A1 — when ReSTIR-PT reuse + its composite megakernel are ready, dispatch the
     // COMPOSITE megakernel (E0-direct-only + adds the resolve indirect from
     // rpt_result) bound to the reuse-extended group 0 (which carries rpt_result at
@@ -1478,8 +1539,109 @@ class PTEngineWebGPU implements Engine {
     pass.end();
   }
 
+  #handleDenoiserPresentationFailure(error: unknown): void {
+    this.#pendingDenoised = null;
+    this.#gpu.clearDenoisedResult();
+    // The core publishes an accepted result before invoking onComplete. Retire
+    // that CPU result too so a converged cadence can start a clean retry.
+    this.#postDenoiser?.invalidate();
+    this.#emitError({
+      kind: 'denoiser',
+      message: `[vitrum/pt-webgpu] Could not present OIDN result: ${errorMessage(error)}`,
+      fatal: false,
+      raw: error,
+    });
+  }
+
+  /** Consume accepted OIDN output only on the host's explicit render cadence. */
+  #preparePostDenoiserPresentation(
+    targetSpp: number,
+    presentation: PresentationSignature,
+    presentationChanged: boolean,
+  ): void {
+    const denoiser = this.#postDenoiser;
+    if (denoiser == null) return;
+
+    // A larger target resumes accumulation. Every result from the old terminal
+    // sample count is stale, including in-flight work and a retained GPU source.
+    if (
+      this.#samplesAccumulated > 0 &&
+      this.#samplesAccumulated < targetSpp &&
+      (
+        this.#pendingDenoised != null ||
+        denoiser.isInFlight() ||
+        denoiser.getLatestDenoised() != null ||
+        this.#gpu.hasDenoisedResult()
+      )
+    ) {
+      this.#pendingDenoised = null;
+      denoiser.invalidate();
+      this.#gpu.clearDenoisedResult();
+    }
+
+    const pending = this.#pendingDenoised;
+    if (pending != null) {
+      this.#pendingDenoised = null;
+      try {
+        this.#gpu.presentDenoisedResult(
+          pending,
+          presentation.tonemapMode,
+          presentation.exposure,
+          presentation.outputColorSpace,
+        );
+      } catch (error) {
+        this.#handleDenoiserPresentationFailure(error);
+      }
+      return;
+    }
+
+    if (presentationChanged && this.#gpu.hasDenoisedResult()) {
+      try {
+        this.#gpu.presentCurrentResult(
+          presentation.tonemapMode,
+          presentation.exposure,
+          presentation.outputColorSpace,
+        );
+      } catch (error) {
+        this.#handleDenoiserPresentationFailure(error);
+      }
+    }
+  }
+
+  #kickPostDenoiserIfReady(samples: number, width: number, height: number): void {
+    const denoiser = this.#postDenoiser;
+    const gpu = this.#gpu;
+    if (
+      denoiser == null ||
+      samples <= 0 ||
+      denoiser.isInFlight() ||
+      denoiser.getLatestDenoised() != null ||
+      gpu.accumTexture == null ||
+      gpu.albedoTexture == null ||
+      gpu.normalDepthTexture == null
+    ) return;
+    denoiser.kickIfReady(
+      this.#device,
+      { color: gpu.accumTexture, albedo: gpu.albedoTexture, normalDepth: gpu.normalDepthTexture },
+      width,
+      height,
+    );
+  }
+
   renderFrame(input: FrameInput): FrameOutput {
     this.#assertLive('renderFrame');
+    validatePtWebgpuFrameInput(input);
+    input = canonicalizeFrameCamera(input, 'PTEngineWebGPU.renderFrame');
+    const gpu = this.#gpu;
+    if (
+      this.#causticStrategy === 'photon-map' &&
+      this.#traceTier === 'full' &&
+      gpu.sppmWouldExceedCeiling()
+    ) {
+      throw new Error(
+        'vitrum/pt-webgpu: causticStrategy="photon-map" requested, but the SPPM photon grid could not be allocated within the device storage-buffer limits.',
+      );
+    }
     // Advance the error-throttle frame counter so per-frame GPU errors don't
     // spam the host on every call (see #onUncapturedError throttle logic).
     this.#errorFrameCount++;
@@ -1488,27 +1650,33 @@ class PTEngineWebGPU implements Engine {
     }
     const frameStartMs = globalThis.performance?.now?.() ?? Date.now();
 
-    const gpu = this.#gpu;
+    const q = input.quality ?? {};
+    const targetSpp = Math.min(q.samplesTarget ?? 16, this.#maxSamplesLimit);
+    const presentation = presentationSignatureFor(input);
+    const presentationChanged = this.#presentationSignature != null &&
+      !samePresentationSignature(this.#presentationSignature, presentation);
+    this.#presentationSignature = presentation;
 
     if (this.#slot.get() === 'paused' && !this.#inInverseRender) {
-      const pq = input.quality ?? {};
-      const targetSppPaused = Math.min(pq.samplesTarget ?? 16, this.#maxSamplesLimit);
       const accumTexture = gpu.accumTexture;
       if (accumTexture == null) {
         return { kind: 'skipped', samplesAccumulated: 0, isConverged: false };
       }
+      this.#preparePostDenoiserPresentation(targetSpp, presentation, presentationChanged);
+      const isConverged = this.#samplesAccumulated >= targetSpp;
+      if (isConverged) {
+        this.#kickPostDenoiserIfReady(this.#samplesAccumulated, gpu.accumWidth, gpu.accumHeight);
+      }
       const output = this.#frameOutput(
         accumTexture,
         this.#samplesAccumulated,
-        this.#samplesAccumulated >= targetSppPaused,
+        isConverged,
       );
-      this.#emitFrameTelemetry(frameStartMs, 0, this.#samplesAccumulated, targetSppPaused);
+      this.#emitFrameTelemetry(frameStartMs, 0, this.#samplesAccumulated, targetSpp);
       return output;
     }
 
-    const q = input.quality ?? {};
-    this.#activeBounces = Math.max(1, Math.min(q.bounces ?? this.#maxBouncesLimit, this.#maxBouncesLimit));
-    const targetSpp = Math.min(q.samplesTarget ?? 16, this.#maxSamplesLimit);
+    this.#activeBounces = Math.min(q.bounces ?? this.#maxBouncesLimit, this.#maxBouncesLimit);
     const resolution = q.resolutionFactor ?? 1;
     const width = Math.max(1, Math.floor(input.viewport.width * resolution));
     const height = Math.max(1, Math.floor(input.viewport.height * resolution));
@@ -1518,6 +1686,8 @@ class PTEngineWebGPU implements Engine {
     // engine state is reported back rather than mutated inside GpuResources).
     if (gpu.ensureAccumResources(width, height)) {
       this.#samplesAccumulated = 0;
+      this.#pendingDenoised = null;
+      this.#postDenoiser?.invalidate();
     }
     gpu.ensurePipeline();
     // D8.5 — The 12-way GPU-resource null-guard is codified in isReadyToRender()
@@ -1528,19 +1698,21 @@ class PTEngineWebGPU implements Engine {
       throw new Error('renderFrame: failed to initialize WebGPU pipeline resources');
     }
 
+    this.#preparePostDenoiserPresentation(targetSpp, presentation, presentationChanged);
     const accumTexture = gpu.accumTexture;
     if (accumTexture != null && this.#samplesAccumulated >= targetSpp) {
       const output = this.#frameOutput(accumTexture, this.#samplesAccumulated, true);
       this.#emitFrameTelemetry(frameStartMs, 0, this.#samplesAccumulated, targetSpp);
+      this.#kickPostDenoiserIfReady(this.#samplesAccumulated, width, height);
       return output;
     }
 
-    const { bindGroup, sppmReady, restirPtReady, bdptStackReady } =
+    const { bindGroup, sppmReady, restirPtReady } =
       this.#ensurePerFrameResources(input, width, height);
 
     const encoder = this.#device.createCommandEncoder({ label: 'vitrum.pt-webgpu.pathTrace.encoder' });
 
-    this.#encodePathTracePasses(encoder, bindGroup, sppmReady, restirPtReady, bdptStackReady, width, height);
+    this.#encodePathTracePasses(encoder, bindGroup, sppmReady, restirPtReady, width, height);
 
     // ── Present pass: tonemap / exposure / outputColorSpace ───────────────────
     // Reads the just-written accumTexture (running-mean linear HDR) and writes
@@ -1550,23 +1722,16 @@ class PTEngineWebGPU implements Engine {
     // that want raw linear output can set tonemap:'none' + outputColorSpace:'linear'.
     // Adjoint/OIDN readbacks always use accumTexture (not presentTexture).
     if (gpu.present.presentTexture != null) {
-      const q = input.quality ?? {};
-      const tonemapMode = TONEMAP_MODE_INDEX[q.tonemap ?? 'aces'];
-      const exposure = q.exposure ?? 1.0;
-      const outputColorSpace = q.outputColorSpace === 'linear' ? 1 : 0;
       gpu.ensurePresentPipeline();
-      gpu.writePresentParams(tonemapMode, exposure, outputColorSpace);
+      gpu.writePresentParams(
+        presentation.tonemapMode,
+        presentation.exposure,
+        presentation.outputColorSpace,
+      );
       gpu.dispatchPresentPass(encoder, width, height);
     }
 
     this.#device.queue.submit([encoder.finish()]);
-
-    // ReSTIR-PT ping-pong: this frame's resolved reservoir (`Cur`) becomes next
-    // frame's history (`Prev`). No-op when reuse is off. Done after submit so the
-    // temporal pass this frame read the prior `Prev` before it is overwritten.
-    if (restirPtReady) {
-      gpu.swapReservoirs();
-    }
 
     this.#samplesAccumulated = Math.min(this.#samplesAccumulated + 1, this.#maxSamplesLimit);
     const accumTexturePost = gpu.accumTexture;
@@ -1574,24 +1739,8 @@ class PTEngineWebGPU implements Engine {
       return { kind: 'skipped', samplesAccumulated: 0, isConverged: false };
     }
     const isConverged = this.#samplesAccumulated >= targetSpp;
-    if (
-      this.#postDenoiser != null &&
-      isConverged &&
-      this.#samplesAccumulated > 0 &&
-      gpu.accumTexture != null &&
-      gpu.albedoTexture != null &&
-      gpu.normalDepthTexture != null
-    ) {
-      this.#postDenoiser.kickIfReady(
-        this.#device,
-        {
-          color: gpu.accumTexture,
-          albedo: gpu.albedoTexture,
-          normalDepth: gpu.normalDepthTexture,
-        },
-        width,
-        height,
-      );
+    if (isConverged) {
+      this.#kickPostDenoiserIfReady(this.#samplesAccumulated, width, height);
     }
 
     const output = this.#frameOutput(accumTexturePost, this.#samplesAccumulated, isConverged);
@@ -1680,7 +1829,7 @@ class PTEngineWebGPU implements Engine {
   }
 
   /**
-   * EXPERIMENTAL — the ReSTIR-PT reconnection-indirect result buffer (one vec4f /
+   * ReSTIR-PT reconnection-indirect result buffer (one vec4f /
    * full-res pixel: .rgb = reconnection indirect HDR, .a = contributing flag), or
    * `null` when the engine was not built with `restirPtReuse: true` or no frame
    * has rendered yet. This is a SEPARATE debug output. When the composite pipeline
@@ -1690,7 +1839,7 @@ class PTEngineWebGPU implements Engine {
    * back via `copyBufferToBuffer` → a MAP_READ staging buffer (the buffer carries
    * `COPY_SRC`).
    *
-   * Available only when `capabilities.experimentalFeatures` has
+   * Available only when `capabilities.activeFeatures` has
    * `'pt-webgpu-restir-pt-reuse'`.
    */
   getRestirPtResultBuffer(): GPUBuffer | null {
@@ -1703,17 +1852,14 @@ class PTEngineWebGPU implements Engine {
     if (this.#slot.get() === 'error') {
       throw new Error('reset: engine is in a fatal error state');
     }
+    // Submit all GPU clears before publishing the host-side reset. A synchronous
+    // encoder/submit failure therefore leaves the observable reset state intact.
+    this.#gpu.clearTemporalBuffers();
+    this.#pendingDenoised = null;
+    this.#gpu.clearDenoisedResult();
     this.#postDenoiser?.invalidate();
+    this.#presentationSignature = null;
     this.#samplesAccumulated = 0;
-    this.#gpu.clearAccumBuffer();
-    // Item 2e — clear ReSTIR-PT reservoir history so stale temporal samples from
-    // the previous scene do not bleed into the new one. No-op if not allocated.
-    this.#gpu.clearReservoirBuffers();
-    // A4-progressive — reset per-pixel SPPM statistics (τ/R²/N → 0) so the
-    // progressive estimate restarts from scratch when the view resets. SPPM's
-    // convergence requires a static eye point; resetting on camera-move or
-    // setScene maintains that invariant. No-op if the buffer is not allocated.
-    this.#gpu.clearSppmPixelStats();
   }
 
   /**
@@ -1765,10 +1911,13 @@ class PTEngineWebGPU implements Engine {
       this.#gpu.clearAccumBuffer();
     }
     this.#samplesAccumulated = 0;
-    this.#postDenoiser?.invalidate();
     // Write the decaying prior. `weight` (virtual samples) is deliberately NOT
     // added to `#samplesAccumulated` — see the method doc.
     this.#gpu.seedAccumBuffer(seedTex, opts.weight, width, height);
+    this.#pendingDenoised = null;
+    this.#gpu.clearDenoisedResult();
+    this.#postDenoiser?.invalidate();
+    this.#presentationSignature = null;
   }
 
   /**
@@ -1829,7 +1978,7 @@ class PTEngineWebGPU implements Engine {
         implicitEmissiveMeshLights: true,
       }),
       getPathReplayGeometryCapabilities: () => ({
-        supportedAnalyticShapes: this.#supportedAnalyticShapes(),
+        supportedAnalyticShapes: PTEngineWebGPU.#PATH_REPLAY_ANALYTIC_SHAPES,
       }),
       getMaterialSupportDetails: () =>
         this.#traceTier === 'lite'
@@ -1838,6 +1987,20 @@ class PTEngineWebGPU implements Engine {
       getEmitterSupportDetails: () =>
         this.capabilities.supportDetails?.emitters ??
         BACKEND_PROMISE_LEDGER['pt-webgpu'].supportDetails.emitters,
+      // Public pt-webgpu sessions are exact: selecting path replay either
+      // produces a certified all-path-replay session or throws before applying
+      // an initial parameter override. The lite tier has no certified replay
+      // domain. The full tier certifies the direct-light local fields exercised
+      // by the full-forward replay-vs-render proof. Local derivative oracles do
+      // not promote a field; camera-direct emissive is currently the sole
+      // certified material field and no emitter field is certified yet.
+      getPathReplayProofManifest: () => ({
+        materialFields: this.#traceTier === 'full'
+          ? ['emissive']
+          : [],
+        emitterFields: [],
+      }),
+      pathReplayFailurePolicy: 'error',
       computeAdjointGradient: (req) => this.#computeAdjointGradient(req),
     };
     return new PtWebgpuInverseSession(hooks, opts);
@@ -1856,14 +2019,19 @@ class PTEngineWebGPU implements Engine {
    *    `∂loss/∂emissive_c = dLoss_dR_c · emissiveIntensity` (dContribution_dEmissive
    *    with throughput = 1). The packed material folds intensity into emissive.rgb,
    *    so the fixed emissiveIntensity rides in the descriptor's `.w` (bitcast f32).
-   * Returns the flat gradient. Replaces the session's N-render FD probe loop with
-   * one baseline render + this pass.
+   * Returns the flat gradient. The private hook has broader local derivative
+   * coverage for validation, but the public factory currently certifies only
+   * full-tier, single-bounce material `emissive`; every other requested replay
+   * domain throws before scene mutation. For a certified session it replaces
+   * the N-render FD probe loop with one baseline render + this pass.
    *
-   * The per-hit shading partials + the chain-rule accumulation are GPU-validated
-   * (adjoint-validate.ts / adjoint-fd-validate.ts); the assembled pass is A/B'd
-   * against the FD gradient the session also computes — baseColor/roughness via
-   * `v24-inverse-fit.mjs`, emissive via `v24-emissive-fit.mjs` (sign-match +
-   * convergence on lavapipe, V24).
+   * The local per-hit shading partials + chain-rule accumulation have mechanical
+   * GPU coverage. Public path replay is deliberately narrower: only `emissive` passes the
+   * full-render finite-difference comparison in
+   * `tools/gpu-env/inverse-fit-deno.ts` (all signs match, 1.9–2.7% relative
+   * error on lavapipe). `baseColor` and `roughness` remain implemented here
+   * for validation but are rejected by the public path-replay proof gate; hosts
+   * must request finite differences explicitly for those fields.
    */
   /**
    * WS5 Phase-1 path-replay adjoint pass — thin delegate to AdjointPass (D8.10).
@@ -1879,7 +2047,7 @@ class PTEngineWebGPU implements Engine {
       throw new Error('computeAdjointGradient: no scene/camera (render at least one frame first).');
     }
     if (this.#adjointPass == null) {
-      this.#adjointPass = new AdjointPass(this.#device);
+      this.#adjointPass = new AdjointPass(this.#device, this.#sampling);
     }
     return this.#adjointPass.computeGradient(
       req,
@@ -1950,35 +2118,6 @@ class PTEngineWebGPU implements Engine {
     return { rgb: result.color, channels: 3 };
   }
 
-  /** WG-7 — supply host-owned light-path buffer (or null to use internal CPU fill). */
-  bdptAdvanceFrame(lightPathBuffer: GPUBuffer | null): void {
-    this.#assertUsable('bdptAdvanceFrame');
-    if (!this.#bdpt) return;
-    this.#bdptExternalBuffer = lightPathBuffer;
-    // H9: instead of nulling group 2 (which broke rendering because
-    // buildBindGroups returns early when group 0 is still cached, leaving
-    // group 2 null for the rest of the frame), reconstruct ONLY group 2
-    // against the new light-path buffer while groups 0/1/3 remain valid.
-    // A pointer-equality fast-out inside rebuildGroup2Only skips the
-    // createBindGroup call when the same buffer is re-supplied unchanged.
-    // If scene buffers are not yet uploaded (pre-setScene), rebuildGroup2Only
-    // is a no-op (bindGroupLayout2 is null); the regular buildBindGroups
-    // path in the next renderFrame will build all groups correctly.
-    if (this.#sceneBuffers != null) {
-      const buf = lightPathBuffer ?? this.#bdptLightPathBuffer();
-      this.#gpu.rebuildGroup2Only(this.#sceneBuffers, buf);
-    }
-  }
-
-  #bdptLightPathBuffer(): GPUBuffer {
-    if (this.#bdptExternalBuffer) return this.#bdptExternalBuffer;
-    if (this.#bdptLightPath) return this.#bdptLightPath.buffer;
-    if (!this.#bdptPlaceholderBuffer && typeof this.#device.createBuffer === 'function') {
-      this.#bdptPlaceholderBuffer = createBdptLightPathPlaceholder(this.#device);
-    }
-    return this.#bdptPlaceholderBuffer as GPUBuffer;
-  }
-
   pause(): void {
     this.#assertUsable('pause');
     this.#slot.set('paused');
@@ -1994,11 +2133,9 @@ class PTEngineWebGPU implements Engine {
     // Remove GPU error listener before tearing down resources so the handler
     // never fires after dispose (the device is no longer ours to observe).
     this.#device.removeEventListener('uncapturederror', this.#onUncapturedError);
+    this.#pendingDenoised = null;
+    this.#presentationSignature = null;
     this.#postDenoiser?.dispose();
-    this.#bdptLightPath?.dispose();
-    this.#bdptLightPath = null;
-    this.#bdptPlaceholderBuffer?.destroy();
-    this.#bdptPlaceholderBuffer = null;
     // Tears down accum textures + buffers, the cached bind groups, and destroys
     // + nulls the params buffer / pipeline / layout (same order as the prior
     // inline dispose body). Scene buffers stay engine-owned, destroyed below.
@@ -2054,14 +2191,13 @@ class PTEngineWebGPU implements Engine {
  * (the erased facade) having to leak backend specifics into the universal
  * contract.
  *
- * Deliberately minimal: only the converged-denoise read-back is stable host
- * API. The off-default / experimental seams (`getRestirPtResultBuffer`,
- * `bdptAdvanceFrame`) are NOT promised here — ReSTIR-PT reuse + the BDPT
- * light-subpath wiring are inert-by-default research paths, and exposing their
- * raw `GPUBuffer` plumbing in a stable surface would over-promise. The
- * concrete engine class stays unexported, so those remain internal.
+ * Deliberately minimal: only the converged-denoise read-back and resolved profile
+ * are backend-specific public API. Debug GPU-buffer accessors remain on the
+ * universal engine contract for diagnostics; this surface adds no raw handles.
  */
 export interface PTEngineWebGPUSurface {
+  /** Resolved adapter profile; profile selection is independent of active features. */
+  readonly backendProfileId: 'pt-webgpu' | 'pt-webgpu-lite';
   /** The most recently completed OIDN-denoised RGB image for the current
    *  converged cohort, or null when the engine was not built with
    *  `denoiser: 'oidn-final'` / inference is still in flight. */

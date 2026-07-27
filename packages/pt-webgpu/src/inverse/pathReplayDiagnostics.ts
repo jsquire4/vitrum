@@ -30,7 +30,10 @@ import type {
 } from '@vitrum/core';
 import { analyticPrimitiveToMesh } from '@vitrum/core';
 import { luminance, readEnvironmentMapPixels } from '@vitrum/shared-samplers';
-import { meshAreaEmitterAdjointRangeForScene } from '../scene/emitterPacking.js';
+import {
+  MESH_AREA_LIGHT_TRI_CAP,
+  meshAreaEmitterAdjointRangeForScene,
+} from '../scene/emitterPacking.js';
 import { type ParamSlot, findPrimitive } from './paramResolution.js';
 
 export interface InversePathReplayRenderContext {
@@ -49,11 +52,14 @@ export interface InversePathReplayGeometryCapabilities {
 }
 
 /**
- * Material fields the path-replay adjoint differentiates (resolves the method to
- * 'path-replay' instead of FD).
+ * Material fields for which the local adjoint has an implementation route.
+ * This table is not a release-support claim: InverseSession intersects it with
+ * the end-to-end proof set, which currently contains only material `emissive`.
  *
  *  - `baseColor`, `roughness` — the original Phase-1 BSDF partials
- *    (`dBrdf_dBaseColor` / `dBrdf_dRoughness`), GPU-validated end-to-end (V24).
+ *    (`dBrdf_dBaseColor` / `dBrdf_dRoughness`). The native full-render gate
+ *    currently differs from finite differences by 13–22%, so public sessions
+ *    force both fields to finite differences.
  *    `baseColor` also covers baseColorMap / COLOR_0-aware
  *    `shadingModel:'unlit'` primary hits:
  *    forward contributes `throughput · baseColor` and terminates, so the
@@ -66,10 +72,9 @@ export interface InversePathReplayGeometryCapabilities {
  *    `∂rendered_c/∂emissiveIntensity = throughput · emissive_c`, scattered at
  *    the PRIMARY hit where the camera sees the emissive surface directly — NOT
  *    a NEE term, so they need no light). `emissive` is GPU-validated end-to-end
- *    on lavapipe
- *    (`wsl-gpu tests/v24-emissive-fit.mjs`): the path-replay engine adjoint
- *    gradient SIGN-MATCHES the full-render FD on the decisive channels and the fit
- *    converges (param error 3→~0.4). The earlier divergent trial scattered emissive
+ *    by `tools/gpu-env/inverse-fit-deno.ts`: all three channels sign-match the
+ *    full-render finite difference with 1.9–2.7% relative error on lavapipe.
+ *    The earlier divergent trial scattered emissive
  *    inside the NEE loop / without folding the live emissiveIntensity through the
  *    descriptor; the fix scatters it at the primary hit gated by the matId match
  *    and hands the fixed emissiveIntensity in the descriptor `.w` (bitcast f32).
@@ -125,13 +130,9 @@ export interface InversePathReplayGeometryCapabilities {
  * adjoint doesn't trace the transmissive Fresnel partition where ior IS
  * differentiable.
  *
- * NOTE: adding a field here makes `inverseSession` REQUEST path-replay; the
- * engine's `computeAdjointGradient` hook must actually accumulate that field's
- * gradient and the field needs proof appropriate to its risk. baseColor,
- * roughness, and emissive have GPU inverse-fit captures; specular, metallic,
- * scalar clearcoat, sheen controls, scalar iridescence,
- * scalar iridescenceIor, anisotropy controls, and lightMapIntensity are
- * CPU-FD-oracle + shader-gate covered and remain on the recapture tail.
+ * This is the implementation-capable set, not the release-proof manifest.
+ * `inverseSession` intersects it with the engine's end-to-end GPU-fit proof
+ * manifest before advertising or dispatching session-level path replay.
  */
 const ADJOINT_ELIGIBLE_FIELDS = new Set([
   'baseColor',
@@ -565,36 +566,36 @@ function pathReplayAnalyticPrimitiveIssue(
   if (supportedAnalyticShapes == null || !supportedAnalyticShapes.has(primitive.shape)) {
     return {
       message:
-        `analytic shape "${primitive.shape}" is not available for path-replay tessellation on this engine tier`,
+        `analytic shape "${primitive.shape}" has no exact path-replay geometry implementation on this engine tier`,
       details: {
         primitiveKind: primitive.kind,
         analyticShape: primitive.shape,
-        finiteDifferenceReason: 'analytic-shape-capability',
+        finiteDifferenceReason: 'analytic-shape-exact-replay-unavailable',
       },
     };
   }
 
   try {
-    const mesh = analyticPrimitiveToMesh(primitive);
+    const mesh = analyticPrimitiveToMesh(primitive, { preferFallbackMesh: false });
     const vertexCount = Math.floor(mesh.positions.length / 3);
     const triangleCount = Math.floor((mesh.indices?.length ?? vertexCount) / 3);
     if (triangleCount <= 0) {
       return {
-        message: `analytic shape "${primitive.shape}" tessellated to zero triangles`,
+        message: `analytic shape "${primitive.shape}" produced empty replay geometry`,
         details: {
           primitiveKind: primitive.kind,
           analyticShape: primitive.shape,
-          finiteDifferenceReason: 'analytic-tessellation-empty',
+          finiteDifferenceReason: 'analytic-replay-geometry-empty',
         },
       };
     }
   } catch {
     return {
-      message: `analytic shape "${primitive.shape}" could not be tessellated for path-replay`,
+      message: `analytic shape "${primitive.shape}" could not produce exact path-replay geometry`,
       details: {
         primitiveKind: primitive.kind,
         analyticShape: primitive.shape,
-        finiteDifferenceReason: 'analytic-tessellation-failed',
+        finiteDifferenceReason: 'analytic-replay-geometry-failed',
       },
     };
   }
@@ -621,6 +622,18 @@ function pathReplayEmitterTargetIssue(
         return {
           message: 'mesh-area emitter target produces no contiguous packed triangle range',
           details: { emitterKind: emitter.kind },
+        };
+      }
+      if (range.capped) {
+        return {
+          message:
+            'mesh-area emitter target exceeds the exact adjoint replay triangle capacity',
+          details: {
+            emitterKind: emitter.kind,
+            triangleCount: range.totalMeshAreaTriangles,
+            triangleLimit: MESH_AREA_LIGHT_TRI_CAP,
+            finiteDifferenceReason: 'mesh-area-replay-capacity',
+          },
         };
       }
       const mappedEmissionIssue = meshAreaEmitterMappedEmissionIssue(scene, emitter, field);
@@ -908,10 +921,10 @@ function materialIssueCommon(
       },
     };
   }
-  if (!options.allowIridescence && (material.iridescence ?? 0) > 1e-6) {
+  if (!options.allowIridescence && (material.iridescence ?? 0) > 0) {
     return { message: 'iridescence is coupled to the optimized BRDF field', details: { field: 'iridescence', value: material.iridescence ?? 0 } };
   }
-  if (!options.allowAnisotropy && (material.anisotropy ?? 0) > 1e-6) {
+  if (!options.allowAnisotropy && (material.anisotropy ?? 0) > 0) {
     return { message: 'anisotropy is coupled to the optimized BRDF field', details: { field: 'anisotropy', value: material.anisotropy ?? 0 } };
   }
   if (pathReplayLayeredMaterialAffectsBrdf(material)) {
@@ -1482,9 +1495,9 @@ function listPathReplayTransportOrGeometryMaps(m: MaterialSpec): readonly string
 }
 
 function pathReplayTransmissionMapAffectsTransport(m: MaterialSpec): boolean {
-  if (m.transmissionMap == null || (m.transmission ?? 0) <= 1e-6) return false;
+  if (m.transmissionMap == null || (m.transmission ?? 0) <= 0) return false;
   const transmission = textureChannelMaximum(m.transmissionMap, 0, 'transmissionMap');
-  return !transmission.known || transmission.max > 1e-6;
+  return !transmission.known || transmission.max > 0;
 }
 
 function pathReplayThicknessMapAffectsTransport(m: MaterialSpec): boolean {
@@ -1505,10 +1518,10 @@ function pathReplayScatteringAffectsTransport(m: MaterialSpec): boolean {
 
 function pathReplayEffectiveTransmissionMayTransport(m: MaterialSpec): boolean {
   const scalar = m.transmission ?? 0;
-  if (scalar <= 1e-6) return false;
+  if (scalar <= 0) return false;
   if (m.transmissionMap == null) return true;
   const transmission = textureChannelMaximum(m.transmissionMap, 0, 'transmissionMap');
-  return !transmission.known || scalar * transmission.max > 1e-6;
+  return !transmission.known || scalar * transmission.max > 0;
 }
 
 function pathReplayLayeredMaterialAffectsBrdf(m: MaterialSpec): boolean {

@@ -102,69 +102,10 @@ fn nrcOneBlobScalar(out: ptr<function, array<f32, NRC_MAX_BLOB>>, base: u32, u: 
 `;
 }
 
-/**
- * Forward hash-grid encode kernel body. Reads the per-level feature tables
- * (concatenated, row-major) and writes the L·F level features for one query.
- * Caller supplies the normalised query + per-level resolution/tableSize/offset.
- *
- * Layout of `tables` (storage, read): all levels' feature tables concatenated
- * by `levelTableOffset[l]` (in FEATURE-scalar units), row-major [row × F].
- */
-// MUST-MATCH (D7.7): the emitted `nrcHashLevelForward` below carries the
-// 8-corner trilinear loop (i0/frac/wx·wy·wz/hash-row), mirrored at
-//   • nrcQuery.wgsl.ts          nrcHashLevelForwardInline (inline gi-ris forward)
-//   • nrcEncodeBackward.wgsl.ts inlined scatter in nrcEncodeBackward (backward)
-//   • nrcEncoding.ts            trilinearCorners/hashGridForward (CPU oracle)
-// Change one → change ALL FOUR; the tests pin each against the CPU oracle.
-// (WGSL forbids a shared helper taking the tables/grad storage buffer by
-// pointer, so the loop cannot be deduplicated across these emitters.)
-export function nrcHashGridForwardWgsl(_o: NrcEncodeWgslOptions): string {
-  return /* wgsl */`
-struct NrcLevelDesc {
-  resolution:  u32,
-  tableSize:   u32,
-  tableOffset: u32,  // scalar offset of this level's table in nrcTables
-  _pad:        u32,
-}
-
-// Trilinear-interpolate the F features of the 8 hashed corners at one level and
-// write to out[outBase + f]. EXACT mirror of nrcEncoding.ts trilinearCorners +
-// hashGridForward.
-fn nrcHashLevelForward(
-  nrm: vec3f,            // query normalised to [0,1]^3
-  desc: NrcLevelDesc,
-  F: u32,
-  tables: ptr<storage, array<f32>, read>,
-  out: ptr<function, array<f32, NRC_MAX_LF>>,
-  outBase: u32,
-) {
-  let N = f32(desc.resolution);
-  let p = nrm * N;
-  let i0 = vec3u(u32(floor(p.x)), u32(floor(p.y)), u32(floor(p.z)));
-  let frac = p - floor(p);
-  for (var f: u32 = 0u; f < F; f = f + 1u) { (*out)[outBase + f] = 0.0; }
-  for (var c: u32 = 0u; c < 8u; c = c + 1u) {
-    let cx = (c & 1u);
-    let cy = (c >> 1u) & 1u;
-    let cz = (c >> 2u) & 1u;
-    let wx = select(1.0 - frac.x, frac.x, cx == 1u);
-    let wy = select(1.0 - frac.y, frac.y, cy == 1u);
-    let wz = select(1.0 - frac.z, frac.z, cz == 1u);
-    let weight = wx * wy * wz;
-    let row = nrcSpatialHash3D(i0.x + cx, i0.y + cy, i0.z + cz, desc.tableSize);
-    let rb = desc.tableOffset + row * F;
-    for (var f: u32 = 0u; f < F; f = f + 1u) {
-      (*out)[outBase + f] = (*out)[outBase + f] + weight * (*tables)[rb + f];
-    }
-  }
-}
-`;
-}
-
 // (Task 4.5 #5) The ptr-arg `nrcHashGridBackwardWgsl` emitter was DELETED here.
 // It was an UNDISPATCHABLE oracle: WGSL forbids passing a `var<storage>` resource
 // to a function-pointer parameter, so the `nrcHashLevelBackward(... gradTablesFx:
-// ptr<storage, ...>)` form could never run on a real adapter. It duplicated the
+// storage-buffer-pointer form could never run on a real adapter. It duplicated the
 // DISPATCHED scatter in `nrcEncodeBackward.wgsl.ts` (one invocation per training
 // sample, gradTablesFx bound at MODULE scope), which is the live path and is
 // pinned to the CPU reference by `nrcEncodeBackward.test.ts`. The canonical

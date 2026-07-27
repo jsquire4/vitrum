@@ -166,7 +166,7 @@ describe('one-shot WebGPU denoiser cleanup', () => {
       }),
     ).rejects.toThrow('mock readback failure');
 
-    expect(device.textures).toHaveLength(9);
+    expect(device.textures).toHaveLength(7);
     expect(device.buffers).toHaveLength(3);
     expectAllTransientsDestroyed(device);
   });
@@ -184,9 +184,9 @@ describe('one-shot WebGPU denoiser cleanup', () => {
       }),
     ).rejects.toThrow('mock readback failure');
 
-    // color/normal/worldpos/history/out + the UBO.
+    // color/normal/worldpos/history/out + block-fit storage + the UBO.
     expect(device.textures).toHaveLength(5);
-    expect(device.buffers).toHaveLength(1);
+    expect(device.buffers).toHaveLength(2);
     expectAllTransientsDestroyed(device);
   });
 

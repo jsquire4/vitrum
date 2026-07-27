@@ -246,8 +246,8 @@ function buildSentinelInputs(): {
   const survivorsPerCell = s();
   // regirGridFloatOffset: u32 → u32[102]
   const gridFloatOffset = s();
-  // restirPtReuse: u32 → u32[103]
-  const restirPtReuse = s();
+  // grisReuse: u32 → u32[103]
+  const grisReuse = s();
   // sunAngular.x: f32 → f32[104]
   const sunAngularRadius = s();
 
@@ -294,7 +294,7 @@ function buildSentinelInputs(): {
       restirGiSpatialRadiusPx,
       restirGiSpatialNormalDotMin,
       restirGiSpatialCoplanarTol,
-      restirPtReuse,
+      grisReuse,
     },
     gtao: {
       gtaoRadiusPx: 32, gtaoIntensity: 2, gtaoDepthThreshold: 2,
@@ -393,7 +393,7 @@ function buildSentinelInputs(): {
     'regirCandidatesPerCell@400': candidatesPerCell,
     'regirSurvivorsPerCell@404': survivorsPerCell,
     'regirGridFloatOffset@408': gridFloatOffset,
-    'restirPtReuse@412':        restirPtReuse,
+    'grisReuse@412':        grisReuse,
     'sunAngular.x@416':         sunAngularRadius,
   };
 
@@ -458,7 +458,7 @@ describe('packWalkaroundUBO — sentinel round-trip (packer index ↔ WGSL offse
     const candidatesPerCell = s();
     const survivorsPerCell = s();
     const gridFloatOffset = s();
-    const restirPtReuse = s();
+    const grisReuse = s();
 
     const inputs: PipelineFrameInputs = {
       camera: { viewMatrix, projMatrix, prevViewProjMatrix, cameraPos: [cpx, cpy, cpz] },
@@ -477,7 +477,7 @@ describe('packWalkaroundUBO — sentinel round-trip (packer index ↔ WGSL offse
       restirGI: {
         restirGiWCap, restirGiIrrClamp, restirGiMClamp,
         restirGiSpatialRadiusPx, restirGiSpatialNormalDotMin, restirGiSpatialCoplanarTol,
-        restirPtReuse,
+        grisReuse,
       },
       gtao: {
         gtaoRadiusPx: 32, gtaoIntensity: 2, gtaoDepthThreshold: 2,
@@ -630,8 +630,8 @@ describe('packWalkaroundUBO — sentinel round-trip (packer index ↔ WGSL offse
     expect(ru(404)).toBe(survivorsPerCell);
     // regirGridFloatOffset (u32): offset 408
     expect(ru(408)).toBe(gridFloatOffset);
-    // restirPtReuse (u32): offset 412
-    expect(ru(412)).toBe(restirPtReuse);
+    // grisReuse (u32): offset 412
+    expect(ru(412)).toBe(grisReuse);
   });
 
   it('ppg ON populates ppgEnabled=1 and ppgMixAlpha at offsets 348/352', () => {

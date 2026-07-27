@@ -1,260 +1,313 @@
-/**
- * grisReuseMis.test.ts — GRIS reconnection-shift + pairwise-MIS mirror tests.
- *
- * Two things are pinned, in the same rigor as bdptConnectionMisFull.test.ts:
- *
- *   1. ORACLE PARITY — the GPU-side arithmetic (`grisReuseMis.ts`, which the
- *      WGSL `grisReuse.wgsl.ts` ports verbatim) reproduces the first-principles
- *      `@vitrum/shared-samplers/reconnectionShift.ts` oracle on shared fixtures
- *      to machine ε: the geometry term, the Jacobian-from-cached-half-G, and the
- *      degenerate guards. This is the GPU-vs-oracle agreement the Phase-1 shift
- *      must satisfy.
- *
- *   2. PARTITION OF UNITY — the GRIS generalized-balance (pairwise) MIS weights
- *      `m_i` sum to exactly 1 over any set of domains whose samples have a
- *      non-degenerate target. This is the unbiasedness invariant of the GRIS
- *      MIS: Σ_i m_i = 1 (Lin 2022, generalized balance heuristic).
- *
- * No GPU; fully deterministic.
- *
- * References:
- *   - Lin et al. 2022 (GRIS), §5 (reconnection shift), Eq. 12 (Jacobian),
- *     §"pairwise MIS" (generalized balance heuristic).
- */
+/** CPU acceptance tests for the renderer's bounded diffuse DDGI-proxy GRIS. */
 
-import { describe, it, expect } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import {
   reconnectionGeometryTerm as oracleGeometryTerm,
-  reconnectionShift,
   reconnectionJacobian as oracleJacobian,
+  reconnectionShift,
   type ReconnectionPath,
 } from '@vitrum/shared-samplers';
 import {
+  MAX_GRIS_TECHNIQUES,
+  canonicalResamplingWeight,
+  domainToCanonicalJacobian,
+  evaluateTechniqueMatrix,
+  foldAttemptCount,
+  proxyPHatAt,
   reconnectionGeometryTerm,
-  shiftJacobian,
-  cachedBaseHalfG,
-  giTargetAt,
-  grisGeneralizedBalanceWeights,
-  pairwiseDenomNeighbor,
-  pairwiseDenomCanonical,
-  type Vec3,
+  transformedDensity,
   type GrisDomain,
   type GrisSample,
+  type Vec3,
 } from '../src/pipeline/grisReuseMis.js';
 
 function unit(v: Vec3): Vec3 {
-  const l = Math.hypot(v[0], v[1], v[2]);
-  return [v[0] / l, v[1] / l, v[2] / l];
+  const length = Math.hypot(v[0], v[1], v[2]);
+  return [v[0] / length, v[1] / length, v[2] / length];
 }
 
-// ── ORACLE PARITY ─────────────────────────────────────────────────────────────
+function sum(values: readonly number[]): number {
+  return values.reduce((total, value) => total + value, 0);
+}
 
-describe('GRIS mirror — geometry term matches the shared-samplers oracle', () => {
-  const fixtures: { x1: Vec3; x2: Vec3; n2: Vec3 }[] = [
+describe('GRIS reconnection geometry oracle', () => {
+  const fixtures: ReconnectionPath[] = [
     { x1: [0, 0, 0], x2: [2, 0, 0], n2: [-1, 0, 0] },
     { x1: [0.2, -0.5, 1.1], x2: [2.7, 1.3, -0.4], n2: unit([0.3, -0.9, 0.5]) },
     { x1: [1, 2, -1], x2: [-3, 0.5, 2.2], n2: unit([-0.3, 0.4, 0.85]) },
   ];
 
-  it('reproduces reconnectionGeometryTerm to ~1e-12 on every fixture', () => {
-    for (const { x1, x2, n2 } of fixtures) {
-      expect(reconnectionGeometryTerm(x1, x2, n2)).toBeCloseTo(
-        oracleGeometryTerm(x1, x2, n2),
+  it('matches the shared first-principles half-geometry term', () => {
+    for (const fixture of fixtures) {
+      expect(reconnectionGeometryTerm(fixture.x1, fixture.x2, fixture.n2)).toBeCloseTo(
+        oracleGeometryTerm(fixture.x1, fixture.x2, fixture.n2),
         12,
       );
     }
   });
 
-  it('degenerate / tangent edges → 0 (matches oracle guards)', () => {
-    // Coincident vertices.
+  it('matches the shared domain-to-canonical Jacobian', () => {
+    const base = fixtures[1]!;
+    const canonicalXv: Vec3 = [-0.6, 0.9, 0.3];
+    const sample: GrisSample = {
+      kind: 'surface',
+      xs: base.x2,
+      ns: base.n2,
+      Lo: [1, 1, 1],
+      nativeDomainIndex: 0,
+    };
+    const shifted = reconnectionShift(base, canonicalXv);
+    expect(domainToCanonicalJacobian(base.x1, canonicalXv, sample)).toBeCloseTo(
+      oracleJacobian(base, shifted),
+      12,
+    );
+  });
+
+  it('returns zero for degenerate surface mappings', () => {
+    const sample: GrisSample = {
+      kind: 'surface',
+      xs: [1, 2, 3],
+      ns: [0, 1, 0],
+      Lo: [1, 1, 1],
+      nativeDomainIndex: 0,
+    };
+    expect(domainToCanonicalJacobian([1, 2, 3], [0, 0, 0], sample)).toBe(0);
     expect(reconnectionGeometryTerm([1, 2, 3], [1, 2, 3], [0, 1, 0])).toBe(0);
-    expect(oracleGeometryTerm([1, 2, 3], [1, 2, 3], [0, 1, 0])).toBe(0);
-    // Tangent connection (edge ⊥ normal).
-    expect(reconnectionGeometryTerm([0, 0, 0], [1, 0, 0], [0, 0, 1])).toBeCloseTo(0, 12);
+    expect(reconnectionGeometryTerm(
+      [Number.NaN, 0, 0],
+      [1, 2, 3],
+      [0, 1, 0],
+    )).toBe(0);
+    expect(reconnectionGeometryTerm(
+      [0, 0, 0],
+      [Number.POSITIVE_INFINITY, 0, 0],
+      [0, 1, 0],
+    )).toBe(0);
   });
 });
 
-describe('GRIS mirror — shift Jacobian matches the oracle reconnectionJacobian', () => {
-  // Base path (the neighbour's reconnection sample): x1 = q.xv, x2 = q.xs.
-  const base: ReconnectionPath = {
-    x1: [0.0, 0.0, 0.0],
-    x2: [2.1, -0.4, 1.2],
-    n2: unit([0.1, 0.7, -0.8]),
-  };
-  // Offset primary vertex (the current pixel's visible vertex).
-  const offsets: Vec3[] = [
-    [-0.6, 0.9, 0.3],
-    [1.0, 0.0, 0.0],
-    [0.4, -0.9, 1.7],
-    [2.5, 2.5, -1.1],
-  ];
-
-  it('Jacobian-from-cached-half-G equals G(shifted)/G(base) to ~1e-12', () => {
-    // The GPU recovers the base half-G from the Phase-0 cache: the cache stores
-    // cosReconOut = |cosθ_out(x2)| and distRecon = ‖x1 − x2‖, so
-    // cachedBaseHalfG === reconnectionGeometryTerm(base.x1, base.x2, base.n2).
-    const dBase: Vec3 = [base.x2[0] - base.x1[0], base.x2[1] - base.x1[1], base.x2[2] - base.x1[2]];
-    const distRecon = Math.hypot(dBase[0], dBase[1], dBase[2]);
-    const cosReconOut = Math.abs(
-      (base.n2[0] * dBase[0] + base.n2[1] * dBase[1] + base.n2[2] * dBase[2]) / distRecon,
-    );
-    const gBase = cachedBaseHalfG(cosReconOut, distRecon);
-
-    // The cached half-G must equal the oracle geometry term at the base edge.
-    expect(gBase).toBeCloseTo(oracleGeometryTerm(base.x1, base.x2, base.n2), 12);
-
-    for (const offsetX1 of offsets) {
-      const gpuJ = shiftJacobian(gBase, offsetX1, base.x2, base.n2);
-      const shifted = reconnectionShift(base, offsetX1);
-      const oracleJ = oracleJacobian(base, shifted);
-      expect(gpuJ).toBeCloseTo(oracleJ, 12);
-    }
+describe('GRIS transformed technique densities', () => {
+  it('uses the inverse determinant pHat / J', () => {
+    // Hand arithmetic: [4/1, 8/2, 2/0.5] = [4, 4, 4].
+    expect([
+      transformedDensity(4, 1),
+      transformedDensity(8, 2),
+      transformedDensity(2, 0.5),
+    ]).toEqual([4, 4, 4]);
   });
 
-  it('self-shift (offset == base primary) has unit Jacobian', () => {
-    const dBase: Vec3 = [base.x2[0] - base.x1[0], base.x2[1] - base.x1[1], base.x2[2] - base.x1[2]];
-    const distRecon = Math.hypot(dBase[0], dBase[1], dBase[2]);
-    const cosReconOut = Math.abs(
-      (base.n2[0] * dBase[0] + base.n2[1] * dBase[1] + base.n2[2] * dBase[2]) / distRecon,
-    );
-    const gBase = cachedBaseHalfG(cosReconOut, distRecon);
-    expect(shiftJacobian(gBase, base.x1, base.x2, base.n2)).toBeCloseTo(1.0, 12);
+  it('zeros inverse-invalid, occluded, and singular techniques', () => {
+    expect(transformedDensity(8, 2, false)).toBe(0);
+    expect(transformedDensity(0, 2, true)).toBe(0);
+    expect(transformedDensity(8, 0, true)).toBe(0);
+    expect(transformedDensity(Number.POSITIVE_INFINITY, 1, true)).toBe(0);
+    expect(transformedDensity(3.402823466e38, Number.MIN_VALUE, true)).toBe(0);
   });
 
-  it('degenerate base half-G (gBase == 0) → Jacobian 0, not NaN/Infinity', () => {
-    const j = shiftJacobian(0, [1, 2, 3], base.x2, base.n2);
-    expect(j).toBe(0);
-    expect(Number.isFinite(j)).toBe(true);
+  it('forms a bounded all-technique matrix with inverse-J weights', () => {
+    // xs=(0,2,0), ns=(0,-1,0): G at y={0,1,-2} is {1/4,1,1/16}.
+    // Relative to canonical domain 0, J = {1,1/4,4}.
+    // The target is the same p=1/pi in all three domains. With attempts
+    // {2,3,5}, the numerators are p*{2,12,1.25}; denominator=15.25p.
+    const domains: GrisDomain[] = [
+      { xv: [0, 0, 0], nv: [0, 1, 0], attempts: 2 },
+      { xv: [0, 1, 0], nv: [0, 1, 0], attempts: 3 },
+      { xv: [0, -2, 0], nv: [0, 1, 0], attempts: 5 },
+    ];
+    const sample: GrisSample = {
+      kind: 'surface',
+      xs: [0, 2, 0],
+      ns: [0, -1, 0],
+      Lo: [1, 1, 1],
+      nativeDomainIndex: 1,
+      nativePHat: 1 / Math.PI,
+    };
+    const matrix = evaluateTechniqueMatrix(domains, sample, 0);
+
+    expect(matrix.jacobians[0]).toBeCloseTo(1, 12);
+    expect(matrix.jacobians[1]).toBeCloseTo(0.25, 12);
+    expect(matrix.jacobians[2]).toBeCloseTo(4, 12);
+    expect(matrix.weights[0]).toBeCloseTo(8 / 61, 12);
+    expect(matrix.weights[1]).toBeCloseTo(48 / 61, 12);
+    expect(matrix.weights[2]).toBeCloseTo(5 / 61, 12);
+    expect(sum(matrix.weights)).toBeCloseTo(1, 12);
+    // A no-J attempt ratio would be {0.2,0.3,0.5}; explicitly reject it.
+    expect(matrix.weights[1]).not.toBeCloseTo(0.3, 6);
   });
 
-  it('degenerate offset edge (offset == reconnection vertex) → Jacobian 0', () => {
-    const dBase: Vec3 = [base.x2[0] - base.x1[0], base.x2[1] - base.x1[1], base.x2[2] - base.x1[2]];
-    const distRecon = Math.hypot(dBase[0], dBase[1], dBase[2]);
-    const cosReconOut = Math.abs(
-      (base.n2[0] * dBase[0] + base.n2[1] * dBase[1] + base.n2[2] * dBase[2]) / distRecon,
-    );
-    const gBase = cachedBaseHalfG(cosReconOut, distRecon);
-    // Offset primary coincident with the reconnection vertex ⇒ G(shifted)=0.
-    const j = shiftJacobian(gBase, base.x2, base.x2, base.n2);
-    expect(j).toBe(0);
-    expect(Number.isFinite(j)).toBe(true);
+  it('gives occluded and inverse-invalid techniques exactly zero mass', () => {
+    const domains: GrisDomain[] = [
+      { xv: [0, 0, 0], nv: [0, 1, 0], attempts: 2 },
+      { xv: [0, 1, 0], nv: [0, 1, 0], attempts: 300, visibility: 0 },
+      { xv: [0, -2, 0], nv: [0, 1, 0], attempts: 500, inverseValid: false },
+    ];
+    const sample: GrisSample = {
+      kind: 'surface',
+      xs: [0, 2, 0],
+      ns: [0, -1, 0],
+      Lo: [1, 1, 1],
+      nativeDomainIndex: 1,
+      nativePHat: 99,
+    };
+    const matrix = evaluateTechniqueMatrix(domains, sample, 0);
+    expect(matrix.transformedDensities[1]).toBe(0);
+    expect(matrix.transformedDensities[2]).toBe(0);
+    expect(matrix.weights).toEqual([1, 0, 0]);
+  });
+
+  it('rejects non-finite visibility instead of clamping it to visible', () => {
+    const domain: GrisDomain = {
+      xv: [0, 0, 0],
+      nv: [0, 1, 0],
+      attempts: 1,
+      visibility: Number.POSITIVE_INFINITY,
+    };
+    const sample: GrisSample = {
+      kind: 'environment',
+      direction: [0, 1, 0],
+      Lo: [1, 1, 1],
+      nativeDomainIndex: 0,
+      nativePHat: 10,
+    };
+    expect(proxyPHatAt(domain, sample)).toBe(0);
+    expect(evaluateTechniqueMatrix([domain], sample, 0).weights).toEqual([0]);
+  });
+
+  it('runtime-rejects an unknown sample discriminant', () => {
+    const invalid = {
+      kind: 'volume',
+      Lo: [1, 1, 1],
+      nativeDomainIndex: 0,
+    } as unknown as GrisSample;
+    expect(() => evaluateTechniqueMatrix([
+      { xv: [0, 0, 0], nv: [0, 1, 0], attempts: 1 },
+    ], invalid, 0)).toThrow(/sample\.kind/);
+  });
+
+  it('returns an all-zero matrix when every inverse technique is invalid', () => {
+    const domains: GrisDomain[] = [
+      { xv: [0, 0, 0], nv: [0, 1, 0], attempts: 2, visibility: 0 },
+      { xv: [1, 0, 0], nv: [0, 1, 0], attempts: 3, inverseValid: false },
+    ];
+    const sample: GrisSample = {
+      kind: 'surface',
+      xs: [0, 2, 0],
+      ns: [0, -1, 0],
+      Lo: [1, 1, 1],
+      nativeDomainIndex: 0,
+      nativePHat: 10,
+    };
+    const matrix = evaluateTechniqueMatrix(domains, sample, 0);
+    expect(matrix.denominator).toBe(0);
+    expect(matrix.weights).toEqual([0, 0]);
+  });
+
+  it('uses an identity Jacobian for persistent environment directions', () => {
+    const domains: GrisDomain[] = [
+      { xv: [-20, 4, 9], nv: [0, 1, 0], attempts: 2 },
+      { xv: [1, -7, 3], nv: [0, 1, 0], attempts: 3 },
+      { xv: [99, 2, -40], nv: [0, 1, 0], attempts: 5 },
+    ];
+    const sample: GrisSample = {
+      kind: 'environment',
+      direction: [0, 4, 0],
+      Lo: [1, 1, 1],
+      nativeDomainIndex: 2,
+      nativePHat: 1 / Math.PI,
+    };
+    const matrix = evaluateTechniqueMatrix(domains, sample, 0);
+    expect(matrix.jacobians).toEqual([1, 1, 1]);
+    expect(matrix.weights[0]).toBeCloseTo(0.2, 12);
+    expect(matrix.weights[1]).toBeCloseTo(0.3, 12);
+    expect(matrix.weights[2]).toBeCloseTo(0.5, 12);
+  });
+
+  it('enforces the shader matrix bound', () => {
+    const domains = Array.from({ length: MAX_GRIS_TECHNIQUES + 1 }, (_, index) => ({
+      xv: [index, 0, 0] as const,
+      nv: [0, 1, 0] as const,
+      attempts: 1,
+    }));
+    const sample: GrisSample = {
+      kind: 'environment',
+      direction: [0, 1, 0],
+      Lo: [1, 1, 1],
+      nativeDomainIndex: 0,
+    };
+    expect(() => evaluateTechniqueMatrix(domains, sample, 0)).toThrow(/at most 6/);
+  });
+
+  it.each([0, -1, 1.5, Number.NaN, 0x1_0000_0000])(
+    'rejects non-positive or non-u32 represented attempt count %s',
+    (attempts) => {
+      const sample: GrisSample = {
+        kind: 'environment',
+        direction: [0, 1, 0],
+        Lo: [1, 1, 1],
+        nativeDomainIndex: 0,
+      };
+      expect(() => evaluateTechniqueMatrix([
+        { xv: [0, 0, 0], nv: [0, 1, 0], attempts },
+      ], sample, 0)).toThrow(/positive u32/);
+    },
+  );
+
+  it('keeps an extreme but representable density matrix finite and normalized', () => {
+    const domains: GrisDomain[] = [{
+      xv: [0, 0, 0],
+      nv: [0, 1, 0],
+      attempts: 0xffff_ffff,
+    }];
+    const sample: GrisSample = {
+      kind: 'environment',
+      direction: [0, 1, 0],
+      Lo: [1, 1, 1],
+      nativeDomainIndex: 0,
+      nativePHat: 3.402823466e38,
+    };
+    const matrix = evaluateTechniqueMatrix(domains, sample, 0);
+    expect(Number.isFinite(matrix.numerators[0])).toBe(true);
+    expect(Number.isFinite(matrix.denominator)).toBe(true);
+    expect(matrix.weights).toEqual([1]);
   });
 });
 
-// ── PARTITION OF UNITY (the GRIS MIS unbiasedness invariant) ──────────────────
+describe('GRIS reservoir accounting', () => {
+  it('includes zero-weight source attempts and never adds a selection attempt', () => {
+    // Two useful reservoirs and an occluded 17-attempt reservoir still represent
+    // exactly 4+17+9 attempts. Candidate selection does not turn that into 31.
+    expect(foldAttemptCount([4, 17, 9])).toBe(30);
+    expect(foldAttemptCount([0, 0, 11])).toBe(11);
+  });
 
-describe('GRIS generalized-balance MIS — weights for one fixed sample partition unity', () => {
-  function sum(a: readonly number[]): number {
-    return a.reduce((s, x) => s + x, 0);
-  }
-
-  // The generalized balance heuristic partitions unity for ONE FIXED sample y
-  // across the techniques (domains) that could have produced it: Σ_i m_i(y) = 1.
-  // (NOT a sum over the domains' DIFFERENT own samples — that does not partition
-  // unity; it is the per-output-sample technique weighting that must.)
-
-  it('Σ m_i(y) = 1 on a canonical + 2-neighbour fixture', () => {
-    const domains: GrisDomain[] = [
-      { xv: [0, 0, 0],    nv: [0, 1, 0], xs: [0.3, 1.0, 0.2], ns: [0, -1, 0], Lo: [2.0, 1.5, 1.0], c: 8 },
-      { xv: [0.5, 0, 0.1], nv: [0, 1, 0], xs: [0.9, 1.1, 0.0], ns: [0, -1, 0], Lo: [1.0, 2.0, 0.5], c: 20 },
-      { xv: [-0.4, 0, 0.3], nv: [0, 1, 0], xs: [-0.2, 0.9, 0.4], ns: [0, -1, 0], Lo: [0.5, 0.5, 3.0], c: 12 },
-    ];
-    // Evaluate the partition for EACH domain's reconnection sample as the fixed y.
-    for (const src of domains) {
-      const y: GrisSample = { xs: src.xs, ns: src.ns, Lo: src.Lo };
-      const m = grisGeneralizedBalanceWeights(domains, y);
-      expect(sum(m)).toBeCloseTo(1.0, 12);
-      for (const w of m) expect(w).toBeGreaterThanOrEqual(0);
+  it('saturates represented attempts at u32 and rejects lossy numeric inputs', () => {
+    expect(foldAttemptCount([0xffff_fffe, 9])).toBe(0xffff_ffff);
+    for (const count of [-1, 1.5, Number.NaN, 0x1_0000_0000]) {
+      expect(() => foldAttemptCount([count])).toThrow(/must be a u32/);
     }
   });
 
-  it('Σ m_i(y) = 1 across a sweep of multi-neighbour fixtures', () => {
-    const sweeps: GrisDomain[][] = [
-      [
-        { xv: [0, 0, 0], nv: unit([0, 1, 0.1]), xs: [0.2, 1.0, 0.0], ns: unit([0.1, -1, 0]), Lo: [3, 1, 1], c: 5 },
-        { xv: [1, 0, 0], nv: unit([0.1, 1, 0]), xs: [1.1, 1.2, 0.1], ns: unit([0, -1, 0.2]), Lo: [1, 3, 1], c: 30 },
-        { xv: [0, 0, 1], nv: unit([0, 1, -0.1]), xs: [0.0, 0.8, 1.2], ns: unit([0, -1, 0]), Lo: [1, 1, 3], c: 15 },
-        { xv: [-1, 0, -1], nv: unit([0.05, 1, 0.05]), xs: [-0.9, 1.1, -0.8], ns: unit([0, -1, 0]), Lo: [2, 2, 0.3], c: 9 },
-      ],
-      [
-        { xv: [0, 0, 0], nv: [0, 1, 0], xs: [0.5, 2.0, 0.5], ns: [0, -1, 0], Lo: [4, 0.5, 0.5], c: 1 },
-        { xv: [2, 0, 0], nv: [0, 1, 0], xs: [2.3, 1.5, -0.3], ns: [0, -1, 0], Lo: [0.5, 4, 0.5], c: 50 },
-        { xv: [0, 0, 2], nv: [0, 1, 0], xs: [-0.2, 1.8, 2.2], ns: [0, -1, 0], Lo: [0.5, 0.5, 4], c: 7 },
-        { xv: [-2, 0, 0], nv: [0, 1, 0], xs: [-2.1, 1.3, 0.4], ns: [0, -1, 0], Lo: [2, 2, 2], c: 22 },
-        { xv: [0, 0, -2], nv: [0, 1, 0], xs: [0.4, 1.6, -1.7], ns: [0, -1, 0], Lo: [3, 3, 0.2], c: 13 },
-      ],
-    ];
-    for (const domains of sweeps) {
-      for (const src of domains) {
-        const y: GrisSample = { xs: src.xs, ns: src.ns, Lo: src.Lo };
-        expect(sum(grisGeneralizedBalanceWeights(domains, y))).toBeCloseTo(1.0, 12);
-      }
-    }
+  it('applies the source-to-canonical Jacobian exactly once to resampling weight', () => {
+    // Hand arithmetic: m * pHatCanonical * Wsource * J = .25*2*3*4 = 6.
+    expect(canonicalResamplingWeight(0.25, 2, 3, 4)).toBe(6);
+    expect(canonicalResamplingWeight(0.25, 0, 3, 4)).toBe(0);
   });
 
-  it('single domain → m(y) = 1 (trivial partition)', () => {
-    const domains: GrisDomain[] = [
-      { xv: [0, 0, 0], nv: [0, 1, 0], xs: [0.2, 1.0, 0.0], ns: [0, -1, 0], Lo: [1, 1, 1], c: 8 },
-    ];
-    const y: GrisSample = { xs: domains[0]!.xs, ns: domains[0]!.ns, Lo: domains[0]!.Lo };
-    const m = grisGeneralizedBalanceWeights(domains, y);
-    expect(m).toHaveLength(1);
-    expect(m[0]).toBeCloseTo(1.0, 12);
-  });
-
-  it('a domain that shifts y to a zero target gets weight 0; the rest still sum to 1', () => {
-    // Domain 0's primary surface faces AWAY from y (cosθ ≤ 0 when y is shifted
-    // onto it) → its technique weight for y is 0. The other two share the unit.
-    const domains: GrisDomain[] = [
-      { xv: [0, 2, 0], nv: [0, 1, 0], xs: [0.2, 1.0, 0.0], ns: [0, -1, 0], Lo: [1, 1, 1], c: 8 },
-      { xv: [0.5, 0, 0], nv: [0, 1, 0], xs: [0.6, 1.0, 0.0], ns: [0, -1, 0], Lo: [2, 1, 1], c: 10 },
-      { xv: [-0.5, 0, 0], nv: [0, 1, 0], xs: [-0.4, 1.1, 0.0], ns: [0, -1, 0], Lo: [1, 2, 1], c: 12 },
-    ];
-    // Fixed sample y sits at y=1.0 in world; domain 0's primary vertex is ABOVE
-    // it (y=2.0) so the shifted direction xv0→y points downward, cos(nv0,·) ≤ 0.
-    const y: GrisSample = { xs: [0.0, 1.0, 0.0], ns: [0, -1, 0], Lo: [1, 1, 1] };
-    const m = grisGeneralizedBalanceWeights(domains, y);
-    expect(m[0]).toBe(0);
-    expect(sum(m)).toBeCloseTo(1.0, 12);
-  });
-});
-
-// ── Streaming pairwise denominators (the GPU reuse loop's per-neighbour form) ──
-
-describe('GRIS streaming pairwise — GPU denominators reproduce the 2-domain generalized balance', () => {
-  // The GPU reuse loop folds neighbour q into canonical r ONE pair at a time. For
-  // the NEIGHBOUR's sample y_q the GPU computes
-  //   m_q(y_q) = c_q·p̂_q(y_q) / (c_r·p̂_r(y_q) + c_q·p̂_q(y_q))
-  // via `pairwiseDenomNeighbor`. For the CANONICAL's sample y_r it computes the
-  // symmetric m_r(y_r) via `pairwiseDenomCanonical`. Each is the 2-domain
-  // generalized-balance weight for ITS OWN sample — which partitions unity
-  // across the pair for a FIXED sample (NOT across the two different samples).
-  const r: GrisDomain = { xv: [0, 0, 0], nv: [0, 1, 0], xs: [0.3, 1.0, 0.2], ns: [0, -1, 0], Lo: [2, 1.5, 1], c: 8 };
-  const q: GrisDomain = { xv: [0.5, 0, 0.1], nv: [0, 1, 0], xs: [0.9, 1.1, 0.0], ns: [0, -1, 0], Lo: [1, 2, 0.5], c: 20 };
-
-  it('m_q(y_q) from pairwiseDenomNeighbor matches the 2-domain balance for q\'s sample', () => {
-    const pHatQ_native = giTargetAt(q.xv, q.nv, q.xs, q.Lo);
-    const pHatR_atQsample = giTargetAt(r.xv, r.nv, q.xs, q.Lo);
-    const denomQ = pairwiseDenomNeighbor(r.c, pHatR_atQsample, q.c, pHatQ_native);
-    const m_q = (q.c * pHatQ_native) / denomQ;
-
-    // Independent 2-domain generalized balance for the FIXED sample y = q's.
-    const yq: GrisSample = { xs: q.xs, ns: q.ns, Lo: q.Lo };
-    const full = grisGeneralizedBalanceWeights([r, q], yq);
-    expect(m_q).toBeCloseTo(full[1]!, 12);
-    // Both techniques' weights for y_q partition unity.
-    expect(full[0]! + full[1]!).toBeCloseTo(1.0, 12);
-  });
-
-  it('m_r(y_r) from pairwiseDenomCanonical matches the 2-domain balance for r\'s sample', () => {
-    const pHatR_native = giTargetAt(r.xv, r.nv, r.xs, r.Lo);
-    const pHatQ_atRsample = giTargetAt(q.xv, q.nv, r.xs, r.Lo);
-    const denomR = pairwiseDenomCanonical(r.c, pHatR_native, q.c, pHatQ_atRsample);
-    const m_r = (r.c * pHatR_native) / denomR;
-
-    const yr: GrisSample = { xs: r.xs, ns: r.ns, Lo: r.Lo };
-    const full = grisGeneralizedBalanceWeights([r, q], yr);
-    expect(m_r).toBeCloseTo(full[0]!, 12);
-    expect(full[0]! + full[1]!).toBeCloseTo(1.0, 12);
+  it('does not resurrect an invisible sample through a stored native pHat', () => {
+    const domain: GrisDomain = {
+      xv: [0, 0, 0],
+      nv: [0, 1, 0],
+      attempts: 8,
+      visibility: 0,
+    };
+    const sample: GrisSample = {
+      kind: 'environment',
+      direction: [0, 1, 0],
+      Lo: [10, 10, 10],
+      nativeDomainIndex: 0,
+      nativePHat: 100,
+    };
+    expect(proxyPHatAt(domain, sample)).toBe(0);
+    expect(evaluateTechniqueMatrix([domain], sample, 0).weights).toEqual([0]);
   });
 });

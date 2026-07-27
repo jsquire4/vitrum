@@ -8,16 +8,13 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const helpersPath = join(repoRoot, 'tools', 'radiometric-ab', 'helpers.mjs');
 const walkaroundHarnessPath = join(repoRoot, 'tools', 'radiometric-ab', 'walkaround-ab.mjs');
 const walkaroundRunnerPath = join(repoRoot, 'tools', 'radiometric-ab', 'run-walkaround-ab.mjs');
+const walkaroundRunValidationPath = join(repoRoot, 'tools', 'radiometric-ab', 'walkaroundRunValidation.mjs');
 const ptRunnerPath = join(repoRoot, 'tools', 'radiometric-ab', 'run-pt-ab.mjs');
 const ptBdptHarnessPath = join(repoRoot, 'tools', 'radiometric-ab', 'ab-bdpt.mjs');
 const radiometricProofsPath = join(repoRoot, 'tools', 'radiometric-ab', 'proofs.mjs');
 const radiometricCheckerPath = join(repoRoot, 'tools', 'radiometric-ab', 'check-results.mjs');
-const radiometricProvenancePath = join(repoRoot, 'tools', 'radiometric-ab', 'resultProvenance.mjs');
-const validationQueueCheckerPath = join(repoRoot, 'tools', 'road-to-100', 'check-validation-queue.mjs');
-// Wave T3-B moved the multi-vertex BDPT research gate (with the promotionReady /
-// currentEstimator metadata) out of index.ts into ptWebgpuValidation.ts; Wave
-// R4/D2 also reparameterized the bounds threshold as the
-// BDPT_SAFE_DEFAULT_LIGHT_BOUNCES template literal.
+// Bounded multi-vertex BDPT validation lives in ptWebgpuValidation.ts; its
+// estimator loop is composed in the path-trace kernel.
 const ptWebgpuValidationPath = join(repoRoot, 'packages', 'pt-webgpu', 'src', 'ptWebgpuValidation.ts');
 const ptWebgpuKernelPath = join(repoRoot, 'packages', 'pt-webgpu', 'src', 'wgsl', 'pathTrace', 'kernel.wgsl.ts');
 
@@ -52,7 +49,7 @@ test('walkaround A/B wrapper preserves custom output/status paths', async () => 
   assert.match(runner, /resultFile/);
 });
 
-test('walkaround A/B wrapper exposes the glossy 64-SPP promotion lane', async () => {
+test('walkaround A/B wrapper exposes the glossy 64-SPP regression lane', async () => {
   const runner = await readFile(walkaroundRunnerPath, 'utf8');
   assert.match(runner, /--glossy-spp64/);
   assert.match(runner, /walkaround-ab-glossy-spp64-status\.json/);
@@ -62,7 +59,7 @@ test('walkaround A/B wrapper exposes the glossy 64-SPP promotion lane', async ()
   assert.match(runner, /VITRUM_WALKAROUND_AB_SPP: renderConfig\.spp/);
 });
 
-test('walkaround A/B wrapper exposes the all-cases 64-SPP proof lane', async () => {
+test('walkaround A/B wrapper exposes the all-cases 64-SPP regression lane', async () => {
   const runner = await readFile(walkaroundRunnerPath, 'utf8');
   assert.match(runner, /--all-spp64/);
   assert.match(runner, /walkaround-ab-all-spp64-status\.json/);
@@ -71,126 +68,66 @@ test('walkaround A/B wrapper exposes the all-cases 64-SPP proof lane', async () 
   assert.match(runner, /glossySpp64 && allSpp64/);
 });
 
-test('walkaround A/B wrapper refreshes promotion status after default proof recaptures', async () => {
-  const runner = await readFile(walkaroundRunnerPath, 'utf8');
-  assert.match(runner, /walkaround-ab-promotion-status\.json/);
-  assert.match(runner, /function buildPromotionStatus/);
-  assert.match(runner, /function maybeWritePromotionStatus/);
-  assert.match(runner, /usingDefaultProofPaths/);
-  assert.match(runner, /sourceStatuses: DEFAULT_SOURCE_STATUS_PATHS/);
-  assert.match(runner, /glassProfiles/);
-  assert.match(runner, /glossyProfiles/);
-  assert.match(runner, /HOST-BLOCKED' \|\| status\.verdict === 'FAIL'/);
-});
-
 test('walkaround A/B wrapper fails closed on missing or incomplete result artifacts', async () => {
   const runner = await readFile(walkaroundRunnerPath, 'utf8');
+  const validation = await readFile(walkaroundRunValidationPath, 'utf8');
+  const combined = `${runner}\n${validation}`;
   assert.match(runner, /function readWalkaroundResultsForStatus/);
   assert.match(runner, /function failClosedResultStatus/);
-  assert.match(runner, /walkaround-ab-missing-result/);
-  assert.match(runner, /walkaround-ab-invalid-result/);
-  assert.match(runner, /walkaround-ab-incomplete-result/);
-  assert.match(runner, /typeof row\.verdict !== 'string'/);
+  assert.match(combined, /walkaround-ab-missing-result/);
+  assert.match(combined, /walkaround-ab-invalid-result/);
+  assert.match(combined, /walkaround-ab-incomplete-result/);
+  assert.match(combined, /walkaround-ab-stale-result/);
+  assert.match(combined, /walkaround-ab-nonpass-result/);
+  assert.match(combined, /walkaround-ab-invalid-verdict/);
+  assert.match(validation, /typeof row\.verdict !== 'string'/);
   assert.match(runner, /verdict: 'FAIL'/);
 });
 
 
-test('Road checker pins radiometric promotion provenance blocks', async () => {
-  const validationQueueChecker = await readFile(validationQueueCheckerPath, 'utf8');
-
-  assert.match(validationQueueChecker, /REQUIRED_PT_RADIOMETRIC_PROMOTION_SOURCE_STATUS_PATHS/);
-  assert.match(validationQueueChecker, /vitrum\.pt-radiometric-ab\.promotion-provenance\.v1/);
-  assert.match(validationQueueChecker, /ptRadiometricPromotionProvenance/);
-  assert.match(validationQueueChecker, /REQUIRED_WALKAROUND_PROMOTION_SOURCE_STATUS_PATHS/);
-  assert.match(validationQueueChecker, /REQUIRED_WALKAROUND_PROMOTION_SOURCE_RESULT_PATHS/);
-  assert.match(validationQueueChecker, /vitrum\.walkaround-ab\.promotion-provenance\.v1/);
-  assert.match(validationQueueChecker, /walkaroundPromotionProvenance/);
-  assert.match(validationQueueChecker, /assertSha256DigestRows/);
-  assert.match(validationQueueChecker, /assertFileSha256/);
-  assert.match(validationQueueChecker, /VQ-RADIOMETRIC-PT promotion provenance wrapperSha256/);
-  assert.match(validationQueueChecker, /VQ-RADIOMETRIC-PT promotion provenance sourceStatusSha256/);
-  assert.match(validationQueueChecker, /function assertPtRadiometricHostStatusCapture/);
-  assert.match(validationQueueChecker, /VQ-RADIOMETRIC-PT host status must pin the native WebGPU PT A\/B command/);
-  assert.match(validationQueueChecker, /VQ-RADIOMETRIC-PT host status provenance resultSha256/);
-  assert.match(validationQueueChecker, /vitrum\.pt-radiometric-ab\.status-provenance\.v1/);
-  assert.match(validationQueueChecker, /VQ-WALKAROUND-RADIOMETRIC-AB promotion provenance wrapperSha256/);
-  assert.match(validationQueueChecker, /VQ-WALKAROUND-RADIOMETRIC-AB promotion provenance sourceStatusSha256/);
-  assert.match(validationQueueChecker, /VQ-WALKAROUND-RADIOMETRIC-AB promotion provenance sourceResultSha256/);
-  assert.match(validationQueueChecker, /function assertWalkaroundStatusCapture/);
-  assert.match(validationQueueChecker, /walkaround status capture/);
-  assert.match(validationQueueChecker, /walkaround-ab-glossy-spp64-status\.json/);
-  assert.match(validationQueueChecker, /selectedCases=\$\{expected\.selectedCases\}/);
-  assert.match(validationQueueChecker, /browser-real-adapter next steps/);
-});
-test('pt radiometric wrapper refreshes promotion status after complete recapture', async () => {
-  const runner = await readFile(ptRunnerPath, 'utf8');
-  assert.match(runner, /pt-promotion-status\.json/);
-  assert.match(runner, /function buildPromotionStatus/);
-  assert.match(runner, /function maybeWritePromotionStatus/);
-  assert.match(runner, /hostStatus\.verdict !== 'PASS'/);
-  assert.match(runner, /selectedAllCases/);
-  assert.match(runner, /safeDefaultProofs/);
-  assert.match(runner, /researchFindings/);
-  assert.match(runner, /sourceStatuses: SOURCE_STATUS_PATHS/);
-  assert.match(runner, /ptRadiometricStatusProvenance/);
-  assert.match(runner, /ptRadiometricPromotionProvenance/);
-  assert.match(runner, /status\.provenance = await ptRadiometricStatusProvenance/);
-  assert.match(runner, /provenance: await ptRadiometricPromotionProvenance/);
-});
-
 test('pt radiometric wrapper fails closed on missing or incomplete result artifacts', async () => {
   const runner = await readFile(ptRunnerPath, 'utf8');
-  assert.match(runner, /function passResultArtifactProblem/);
+  assert.match(runner, /function resultArtifactProblem/);
   assert.match(runner, /pt-radiometric-ab-missing-result/);
   assert.match(runner, /pt-radiometric-ab-invalid-result/);
-  assert.match(runner, /pt-radiometric-ab-incomplete-result/);
-  assert.match(runner, /typeof payload\.verdict !== 'string'/);
+  assert.match(runner, /pt-radiometric-ab-nonpass-result/);
+  assert.match(runner, /pt-radiometric-ab-stale-result/);
+  assert.match(runner, /expectedProvenance/);
+  assert.match(runner, /payload\.verdict === 'PASS'/);
   assert.match(runner, /artifactProblem \?\? hostBoundary/);
 });
 
-test('pt BDPT radiometric proof keeps multi-vertex mode research-only', async () => {
+test('pt BDPT regression harness covers the complete bounded multi-vertex mode', async () => {
   const harness = await readFile(ptBdptHarnessPath, 'utf8');
   const proofs = await readFile(radiometricProofsPath, 'utf8');
   const checker = await readFile(radiometricCheckerPath, 'utf8');
-  const provenance = await readFile(radiometricProvenancePath, 'utf8');
   const ptWebgpuValidation = await readFile(ptWebgpuValidationPath, 'utf8');
   const ptWebgpuKernel = await readFile(ptWebgpuKernelPath, 'utf8');
 
-  assert.match(harness, /CONTROL_MAX_LIGHT_BOUNCES = \[1, 2, 3\]/);
-  assert.match(harness, /experimentalMultiVertex: true/);
-  assert.match(harness, /currentEstimator: "additive-sidecar-not-weighted-against-eye-path"/);
-  assert.match(harness, /requiredEstimator: "multi-vertex-light-subpath-strategies-weighted-against-regular-eye-path-strategy"/);
-  assert.match(harness, /researchFindings:\s*\{\s*bdptMultiVertex: multiVertexResearchFinding/);
+  assert.match(harness, /CONTROL_MAX_LIGHT_BOUNCES = \[1, 2, 3, 8\]/);
+  assert.match(harness, /supportedDepths: CONTROL_MAX_LIGHT_BOUNCES/);
+  assert.doesNotMatch(harness, /experimentalMultiVertex/);
+  assert.doesNotMatch(harness, /researchFindings/);
 
-  assert.match(proofs, /export const BDPT_MULTIVERTEX_RESEARCH_PROOF/);
-  assert.match(proofs, /warningCode: "pt-webgpu\.bdpt-multivertex-research-mode"/);
-  assert.match(proofs, /shaderSourcePath: "packages\/pt-webgpu\/src\/wgsl\/pathTrace\/kernel\.wgsl\.ts"/);
-  assert.match(proofs, /"for \(var lvi = 1u; lvi < maxLv; lvi\+\+\)"/);
-  assert.match(proofs, /"radiance = radiance \+ evaluateBdptConnection\("/);
-  assert.match(proofs, /minFindingGlobalRelErr: 0\.10/);
+  assert.match(proofs, /export const PT_LOCAL_ACCEPTANCE_PROOFS/);
+  assert.match(proofs, /bdptConnectionMisFull\.test\.ts/);
+  assert.match(proofs, /bdptEstimatorOwnership\.test\.ts/);
+  assert.match(proofs, /bdptDeltaTransport\.test\.ts/);
+  assert.match(proofs, /BDPT_DEFAULT_LIGHT_BOUNCES = 2/);
+  assert.match(proofs, /BDPT_MAX_LIGHT_BOUNCES = 8/);
 
-  assert.match(checker, /function checkBdptMultiVertexResearch/);
-  assert.match(checker, /result must carry controls\.multiVertexPromotion metadata/);
-  assert.match(checker, /result must carry researchFindings\.bdptMultiVertex metadata/);
-  assert.match(checker, /firstFindingGlobalRelErr differs from control run/);
-  assert.match(checker, /source warning missing/);
-  assert.match(checker, /shader source missing/);
-  assert.match(checker, /promotionReady: false/);
-  assert.match(checker, /ptRadiometricStatusProvenance/);
-  assert.match(checker, /ptRadiometricPromotionProvenance/);
-  assert.match(checker, /pt-radiometric-ab: status provenance differs from current wrapper\/result identity/);
-  assert.match(checker, /pt-radiometric-promotion: provenance differs from current source artifact identity/);
+  assert.match(checker, /function checkPtSourcePins/);
+  assert.match(checker, /named test-source file \$\{path\} has no test declaration/);
+  assert.match(checker, /It does not execute those tests/);
+  assert.match(checker, /missing stable contract needle/);
+  assert.doesNotMatch(checker, /checkBdptMultiVertexResearch/);
 
-  assert.match(provenance, /PT_RADIOMETRIC_STATUS_PROVENANCE_SCHEMA/);
-  assert.match(provenance, /PT_RADIOMETRIC_PROMOTION_PROVENANCE_SCHEMA/);
-  assert.match(provenance, /ptRadiometricStatusProvenance/);
-  assert.match(provenance, /ptRadiometricPromotionProvenance/);
+  assert.match(ptWebgpuValidation, /BDPT_DEFAULT_LIGHT_BOUNCES = 2/);
+  assert.match(ptWebgpuValidation, /BDPT_MAX_LIGHT_BOUNCES = 8/);
+  assert.doesNotMatch(ptWebgpuValidation, /promotionReady: false/);
+  assert.doesNotMatch(ptWebgpuValidation, /research path/);
 
-  assert.match(ptWebgpuValidation, /bdptOptions\.maxLightBounces > \$\{BDPT_SAFE_DEFAULT_LIGHT_BOUNCES\} activates the multi-vertex BDPT research path/);
-  assert.match(ptWebgpuValidation, /promotionReady: false/);
-  assert.match(ptWebgpuValidation, /currentEstimator: 'additive-sidecar-not-weighted-against-eye-path'/);
-
-  assert.match(ptWebgpuKernel, /for \(var lvi = 1u; lvi < maxLv; lvi\+\+\) \{/);
+  assert.match(ptWebgpuKernel, /for \(var lvi = 0u; lvi < maxLv; lvi\+\+\) \{/);
   assert.match(ptWebgpuKernel, /radiance = radiance \+ evaluateBdptConnection\(/);
 });
 

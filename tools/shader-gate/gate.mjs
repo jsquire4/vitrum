@@ -26,8 +26,6 @@
  * those break when the repo is cloned to a different location.
  */
 
-import { applyNagaFix } from "./nagaFix.mjs";
-
 // ── Parse flags ──────────────────────────────────────────────────────────────
 const selfTest = Deno.args.includes("--self-test");
 const noPipelineGate = Deno.args.includes("--no-pipeline-gate");
@@ -84,6 +82,13 @@ const shaders = [];
 
   const { PT_WEBGPU_ADJOINT_PASS_WGSL } = await import(
     "../../packages/pt-webgpu/src/wgsl/pathTrace/adjointPass.wgsl.ts"
+  );
+
+  const {
+    MATERIAL_TEXTURE_GPU_SOURCE_BLIT_WGSL,
+    MATERIAL_TEXTURE_MIPMAP_WGSL,
+  } = await import(
+    "../../packages/pt-webgpu/src/scene/materialTextureArray.ts"
   );
 
   const {
@@ -180,6 +185,18 @@ const shaders = [];
   shaders.push({
     name: "pt-webgpu/adjoint-pass",
     wgsl: PT_WEBGPU_ADJOINT_PASS_WGSL,
+  });
+
+  // Runtime material-array render shaders have paired vertex/fragment entry
+  // points, so the generic compute-pipeline half of this gate does not apply.
+  // Module compilation still validates their complete shipped WGSL source.
+  shaders.push({
+    name: "pt-webgpu/material-texture-gpu-source-blit",
+    wgsl: MATERIAL_TEXTURE_GPU_SOURCE_BLIT_WGSL,
+  });
+  shaders.push({
+    name: "pt-webgpu/material-texture-mipmap",
+    wgsl: MATERIAL_TEXTURE_MIPMAP_WGSL,
   });
 
   // A4 — SPPM photon-emission pass (full-tier only; @group(3) bindings 6/7/8).
@@ -287,6 +304,7 @@ const shaders = [];
     SVGF_REPROJECTION_MODULE,
     SVGF_VARIANCE_FROM_MOMENTS_MODULE,
     SVGF_7X7_SPATIAL_FALLBACK_MODULE,
+    SVGF_REAL_ATROUS_MODULE,
     BMFR_MODULE,
     CB_PREFILL_MODULE,
   } = await import(
@@ -309,22 +327,21 @@ const shaders = [];
     "../../packages/walkaround-hybrid/src/shaders/risGiNrc.wgsl.ts"
   );
 
-  // Helper: add a composed walkaround-hybrid shader.
-  // The naga fix is applied to every composed walkaround-hybrid WGSL because
-  // shared-bvh traversal helpers use ptr<storage> function parameters which
-  // naga/lavapipe rejects.  The fix is purely mechanical (zero semantic change);
-  // see nagaFix.mjs for the full rationale.
+  const {
+    MATERIAL_ATLAS_GPU_SOURCE_CONVERT_WGSL,
+    MATERIAL_ATLAS_GENERATE_MIP_WGSL,
+  } = await import(
+    "../../packages/walkaround-hybrid/src/pipeline/materialTextureAtlas.ts"
+  );
+
+  // Add the exact composed shader shipped at runtime. Shared traversal now uses
+  // module-scope value-return loaders, so tool-only source rewriting is banned.
   const addWh = (name, rootModule) => {
     const raw = composeWgsl(rootModule, WGSL_MODULES);
     shaders.push({
       name: `walkaround-hybrid/${name}`,
-      wgsl: applyNagaFix(raw),
-      // Un-patched (verbatim) shipped source. The walkaround/RC shaders use
-      // ptr<storage> fn params (unrestricted_pointer_parameters) that naga/
-      // Firefox reject — the gating pass compiles the applyNagaFix-patched
-      // derivative, but the verbatim-compile tracked metric (D4) compiles THIS
-      // to report how many shipped shaders are Chromium-only.
-      verbatimWgsl: raw,
+      wgsl: raw,
+      portableSource: true,
     });
   };
 
@@ -371,7 +388,21 @@ const shaders = [];
   addWh("svgfReprojection", SVGF_REPROJECTION_MODULE);
   addWh("svgfVarianceFromMoments", SVGF_VARIANCE_FROM_MOMENTS_MODULE);
   addWh("svgf7x7SpatialFallback", SVGF_7X7_SPATIAL_FALLBACK_MODULE);
+  addWh("svgfRealAtrous", SVGF_REAL_ATROUS_MODULE);
   addWh("bmfr", BMFR_MODULE);
+
+  // Atlas upload shaders are runtime compute pipelines rather than registry
+  // modules, so gate their exported source strings directly.
+  shaders.push({
+    name: "walkaround-hybrid/materialAtlasGpuSourceConvert",
+    wgsl: MATERIAL_ATLAS_GPU_SOURCE_CONVERT_WGSL,
+    entryPoint: "main",
+  });
+  shaders.push({
+    name: "walkaround-hybrid/materialAtlasGenerateMip",
+    wgsl: MATERIAL_ATLAS_GENERATE_MIP_WGSL,
+    entryPoint: "main",
+  });
 
   // PPG update kernel — parametric builder (default maxDTreeNodesPerCell = 341).
   // buildPpgUpdateWgsl returns a raw WGSL string that references:
@@ -382,7 +413,7 @@ const shaders = [];
   // luminance via the common module chain, but the gate uses a direct prepend for clarity).
   shaders.push({
     name: "walkaround-hybrid/ppgUpdate",
-    wgsl: applyNagaFix(`${WH_LUMINANCE_WGSL}\n${PPG_TREE_LAYOUT_WGSL}\n${buildPpgUpdateWgsl(341)}`),
+    wgsl: `${WH_LUMINANCE_WGSL}\n${PPG_TREE_LAYOUT_WGSL}\n${buildPpgUpdateWgsl(341)}`,
     entryPoint: "ppgUpdateMain",
   });
 
@@ -409,7 +440,7 @@ const shaders = [];
     const nrcModule = buildRisGiNrcModule(nrcCfg);
     shaders.push({
       name: "walkaround-hybrid/risGiNrc",
-      wgsl: applyNagaFix(composeWgsl(nrcModule, WGSL_MODULES)),
+      wgsl: composeWgsl(nrcModule, WGSL_MODULES),
       entryPoint: "risGiMain",
     });
   } else {
@@ -439,6 +470,7 @@ const shaders = [];
     SVGF_REPROJECTION_WGSL,
     SVGF_VARIANCE_FROM_MOMENTS_WGSL,
     SVGF_7X7_SPATIAL_FALLBACK_WGSL,
+    SVGF_REAL_ATROUS_WGSL,
     BMFR_WGSL,
     HDR_LUMINANCE_BILATERAL_WGSL,
     WELFORD_VARIANCE_WGSL,
@@ -459,6 +491,7 @@ const shaders = [];
   shaders.push({ name: "shared-denoisers/svgfReprojection-standalone", wgsl: SVGF_REPROJECTION_WGSL, entryPoint: "svgfReprojMain" });
   shaders.push({ name: "shared-denoisers/svgfVarianceFromMoments-standalone", wgsl: SVGF_VARIANCE_FROM_MOMENTS_WGSL, entryPoint: "svgfVarianceFromMomentsMain" });
   shaders.push({ name: "shared-denoisers/svgf7x7SpatialFallback-standalone", wgsl: SVGF_7X7_SPATIAL_FALLBACK_WGSL, entryPoint: "svgf7x7FallbackMain" });
+  shaders.push({ name: "shared-denoisers/svgfRealAtrous-standalone", wgsl: SVGF_REAL_ATROUS_WGSL, entryPoint: "svgfRealAtrousMain" });
   shaders.push({ name: "shared-denoisers/bmfr-standalone", wgsl: BMFR_WGSL, entryPoint: "bmfrMain" });
   shaders.push({ name: "shared-denoisers/hdrLuminanceBilateral", wgsl: HDR_LUMINANCE_BILATERAL_WGSL, entryPoint: "hdrLuminanceBilateralMain" });
   shaders.push({ name: "shared-denoisers/welfordVariance-fragment", wgsl: WELFORD_VARIANCE_WGSL });
@@ -468,73 +501,26 @@ const shaders = [];
 // SECTION 4: shared-bvh standalone WGSL strings
 // ─────────────────────────────────────────────────────────────────────────────
 {
-  const { CWBVH_INTERSECT_WGSL } = await import(
-    "../../packages/shared-bvh/src/index.ts"
+  const { SHARED_BVH_PORTABLE_COMPOSITIONS } = await import(
+    "./sharedBvhPortableCompositions.mjs"
   );
-
-  const cwbvhGateWgsl = `${CWBVH_INTERSECT_WGSL}
-
-@group(0) @binding(0) var<storage, read> cwbvhNodeBounds: array<CwbvhNodeBounds>;
-@group(0) @binding(1) var<storage, read> cwbvhChildBoundsPacked: array<u32>;
-@group(0) @binding(2) var<storage, read> cwbvhChildMeta: array<CwbvhChildMeta>;
-@group(0) @binding(3) var<storage, read> cwbvhChildCount: array<u32>;
-@group(0) @binding(4) var<storage, read> bvh_index: array<vec4u>;
-@group(0) @binding(5) var<storage, read> bvh_position: array<vec4f>;
-@group(0) @binding(6) var<storage, read_write> cwbvhGateOut: array<u32>;
-
-@compute @workgroup_size(1)
-fn cwbvhGateMain() {
-  var ray: CwbvhRay;
-  ray.origin = vec3f(0.0, 0.0, 1.0);
-  ray.direction = vec3f(0.0, 0.0, -1.0);
-  let anyHit = cwbvhIntersectAny(
-    &cwbvhNodeBounds,
-    &cwbvhChildBoundsPacked,
-    &cwbvhChildMeta,
-    &cwbvhChildCount,
-    &bvh_index,
-    &bvh_position,
-    ray.origin,
-    ray.direction,
-    1.0e20,
-    1.0e-5,
-    0u,
-    false,
-  );
-  let closest = cwbvhIntersectFirstHit(
-    &cwbvhNodeBounds,
-    &cwbvhChildBoundsPacked,
-    &cwbvhChildMeta,
-    &cwbvhChildCount,
-    &bvh_index,
-    &bvh_position,
-    ray,
-    1.0e-5,
-    0u,
-    false,
-  );
-  cwbvhGateOut[0] = select(0u, 1u, anyHit || closest.didHit);
-}
-`;
-
-  shaders.push({
-    name: "shared-bvh/cwbvhIntersect",
-    wgsl: applyNagaFix(cwbvhGateWgsl),
-    entryPoint: "cwbvhGateMain",
-  });
+  // These strings are intentionally compiled verbatim with no textual
+  // substitutions. Naga and the Chromium Tint gate import this exact
+  // shared inventory, preventing validator-specific composition drift.
+  for (const composition of SHARED_BVH_PORTABLE_COMPOSITIONS) {
+    shaders.push({
+      name: composition.name,
+      wgsl: composition.code,
+      entryPoint: composition.entryPoint,
+    });
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // SECTION 5: walkaround-rc
 //
-// The RC probe-ray-cast shader uses ptr<storage> TLAS params from
-// TLAS_TRAVERSAL_WGSL and RC-prefixed binding names (rc_tlas_nodes etc.).
-// nagaFix.mjs must rename those to the canonical names before naga can compile.
-// This section was added 2026-06-10 after the rcEnabled GPU validation error
-// (shader parse: "no definition in scope for identifier: tlasNodes") was found
-// to be a nagaFix gap — the RC TLAS binding renames were missing from
-// RC_SCENE_GLOBAL_RENAMES.  Adding these two shaders to the gate ensures the
-// same regression cannot go undetected again.
+// RC composes the same portable value-return BVH/TLAS loader seam as hybrid.
+// Compile the exact exports so validator-specific dependencies cannot be hidden.
 // ─────────────────────────────────────────────────────────────────────────────
 {
   const { PROBE_RAY_CAST_WGSL, CASCADE_MERGE_WGSL } = await import(
@@ -543,16 +529,65 @@ fn cwbvhGateMain() {
 
   shaders.push({
     name: "walkaround-rc/probeRayCast",
-    wgsl: applyNagaFix(PROBE_RAY_CAST_WGSL),
+    wgsl: PROBE_RAY_CAST_WGSL,
     entryPoint: "probeRayCastKernel",
-    // Verbatim (un-patched) shipped source for the D4 Chromium-only tracked metric.
-    verbatimWgsl: PROBE_RAY_CAST_WGSL,
+    portableSource: true,
   });
 
   shaders.push({
     name: "walkaround-rc/cascadeMerge",
     wgsl: CASCADE_MERGE_WGSL,
     entryPoint: "cascadeMergeKernel",
+  });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SECTION 6: DDGI probe update, relocation/classification, and atlas blend.
+// These raw-device shaders are not part of the declarative walkaround pass
+// registry, so inventory them explicitly rather than leaving their first
+// compilation to a live renderer.
+// ─────────────────────────────────────────────────────────────────────────────
+{
+  const { makeProbeUpdateRaysWGSL } = await import(
+    "../../packages/walkaround-hybrid/src/ddgi/wgsl/probeUpdateRays.wgsl.ts"
+  );
+  const { PROBE_CLASSIFY_RELOCATE_WGSL } = await import(
+    "../../packages/walkaround-hybrid/src/ddgi/wgsl/probeClassifyRelocate.wgsl.ts"
+  );
+  const {
+    makeProbeUpdateBlendIrrWGSL,
+    makeProbeUpdateBlendVisWGSL,
+  } = await import(
+    "../../packages/walkaround-hybrid/src/ddgi/wgsl/probeUpdateBlend.wgsl.ts"
+  );
+  const { makeProbeUpdateBorderVisWGSL } = await import(
+    "../../packages/walkaround-hybrid/src/ddgi/wgsl/probeUpdateBorder.wgsl.ts"
+  );
+
+  shaders.push({
+    name: "walkaround-hybrid/ddgi-probe-rays",
+    wgsl: makeProbeUpdateRaysWGSL(256),
+    entryPoint: "probeUpdateRays",
+  });
+  shaders.push({
+    name: "walkaround-hybrid/ddgi-classify-relocate",
+    wgsl: PROBE_CLASSIFY_RELOCATE_WGSL,
+    entryPoint: "probeClassifyRelocate",
+  });
+  shaders.push({
+    name: "walkaround-hybrid/ddgi-blend-irradiance",
+    wgsl: makeProbeUpdateBlendIrrWGSL(),
+    entryPoint: "probeUpdateBlendIrradiance",
+  });
+  shaders.push({
+    name: "walkaround-hybrid/ddgi-blend-visibility",
+    wgsl: makeProbeUpdateBlendVisWGSL(),
+    entryPoint: "probeUpdateBlendVisibility",
+  });
+  shaders.push({
+    name: "walkaround-hybrid/ddgi-border-visibility",
+    wgsl: makeProbeUpdateBorderVisWGSL(),
+    entryPoint: "probeUpdateBorderVisibility",
   });
 }
 
@@ -579,6 +614,8 @@ fn main() {
 // ── Compile loop ──────────────────────────────────────────────────────────────
 let passed = 0;
 let failed = 0;
+let portablePassed = 0;
+let portableFailed = 0;
 const errors = [];
 const pipelineEntries = [];
 
@@ -593,6 +630,7 @@ for (const entry of shaders) {
   const errs = info.messages.filter((m) => m.type === "error");
   if (errs.length > 0) {
     failed++;
+    if (entry.portableSource === true) portableFailed++;
     const firstLines = errs
       .slice(0, 3)
       .map((m) => `    ${m.lineNum}:${m.linePos}: ${m.message}`)
@@ -602,6 +640,7 @@ for (const entry of shaders) {
     errors.push({ name, messages: errs });
   } else {
     passed++;
+    if (entry.portableSource === true) portablePassed++;
     console.log(`[shader-gate] OK    ${name}`);
   }
   const entryPoints = entry.entryPoints ?? (entry.entryPoint ? [entry.entryPoint] : []);
@@ -612,48 +651,25 @@ for (const entry of shaders) {
   }
 }
 
+const portableTotal = portablePassed + portableFailed;
+const expectedPortableTotal = 31;
+if (portableTotal !== expectedPortableTotal) {
+  failed++;
+  const message =
+    `portable shipped shader inventory changed: expected ${expectedPortableTotal}, ` +
+    `found ${portableTotal}`;
+  errors.push({ name: "portable-shipped-inventory", messages: [{ message }] });
+  console.error(`[shader-gate] FAIL  portable-shipped-inventory\n    ${message}`);
+}
+
 const total = passed + failed;
 console.log("");
 console.log(`[shader-gate] ${total} shader(s) compiled — ${passed} OK, ${failed} FAILED`);
+console.log(
+  `[shader-gate] portable shipped walkaround/RC: ${portablePassed}/${portableTotal} ` +
+    `compile verbatim (fatal gate${portableFailed === 0 ? " passed" : " FAILED"})`,
+);
 
-// ── D4 verbatim-compile tracked metric (walkaround/RC Chromium-only) ────────────
-// The gating pass above compiles the applyNagaFix-patched derivatives. The
-// walkaround-hybrid + walkaround-rc shipped source uses `ptr<storage>` fn params
-// requiring `unrestricted_pointer_parameters` — Tint/Chrome accept, but naga
-// (Deno's wgpu-native + Firefox) REJECT. This pass ALSO attempts the un-patched
-// (verbatim) source and REPORTS the naga-incompatibility count as a tracked
-// metric. It is NON-FATAL by design: the exit code is unchanged (D4 Option B —
-// keep ptr<storage> shipping, track it honestly). See packages/walkaround-hybrid/
-// README.md + plan/renderer-fidelity-matrix.md + plan/road-to-100.md.
-{
-  const verbatimEntries = shaders.filter(
-    (e) => typeof e.verbatimWgsl === "string" && e.verbatimWgsl.trim().length > 0,
-  );
-  if (verbatimEntries.length > 0) {
-    let verbatimReject = 0;
-    let verbatimOk = 0;
-    for (const entry of verbatimEntries) {
-      const module = device.createShaderModule({
-        label: `${entry.name} (verbatim)`,
-        code: entry.verbatimWgsl,
-      });
-      const info = await module.getCompilationInfo();
-      const errs = info.messages.filter((m) => m.type === "error");
-      if (errs.length > 0) {
-        verbatimReject++;
-      } else {
-        verbatimOk++;
-      }
-    }
-    console.log("");
-    console.log(
-      `[shader-gate] verbatim-compile metric (tracked, non-fatal): walkaround/RC = Chromium-only, ` +
-        `${verbatimReject}/${verbatimEntries.length} shipped shaders reject on naga verbatim ` +
-        `(${verbatimOk} compile un-patched). ptr<storage> fn params need unrestricted_pointer_parameters ` +
-        `(no WebGPU enable path); tracked in plan/road-to-100.md.`,
-    );
-  }
-}
 
 const brokenSelfTest = errors.find((e) => e.name === "__self-test/intentionally-broken");
 const realCompileFailures = errors.filter((e) => e.name !== "__self-test/intentionally-broken");
@@ -676,12 +692,115 @@ if (!selfTest && failed > 0) {
 
 if (!noPipelineGate) {
   await runPipelineCreationGates();
+  await runSobolParityGate();
 }
 
 if (selfTest) {
   console.log("[shader-gate] --self-test PASSED: injected error was correctly detected.");
 }
 Deno.exit(0);
+
+async function runSobolParityGate() {
+  const { PT_WEBGPU_SOBOL_RNG_WGSL, SOBOL_FRAME_KEY_WGSL } = await import(
+    "../../packages/pt-webgpu/src/wgsl/common.wgsl.ts"
+  );
+  const code = `${PT_WEBGPU_SOBOL_RNG_WGSL}
+${SOBOL_FRAME_KEY_WGSL}
+@group(0) @binding(0) var<storage, read_write> parityOut: array<u32>;
+
+@compute @workgroup_size(1)
+fn sobolParityMain() {
+  parityOut[0] = ptRngFrameKey(0x12345678u, 0u);
+  parityOut[1] = ptRngFrameKey(0x12345678u, 0x0000ffffu);
+  parityOut[2] = ptRngFrameKey(0x12345678u, 0x00010000u);
+  parityOut[3] = ptRngFrameKey(0x12345678u, 0x00010001u);
+  parityOut[4] = ptRngFrameKey(0x12345678u, 0xfffffffeu);
+  parityOut[5] = ptRngFrameKey(0x12345678u, 0xffffffffu);
+
+  var state = pcgInit(9u, 10u, ptRngFrameKey(123u, 0u));
+  parityOut[6] = state.sampleIndex;
+  parityOut[7] = state.dimension;
+  parityOut[8] = state.pixelX;
+  parityOut[9] = state.pixelY;
+  parityOut[10] = state.sequenceKey;
+  parityOut[11] = state.rotationTile;
+  parityOut[12] = state.fallbackState;
+  state.dimension = 2u;
+  for (var i = 0u; i < 5u; i = i + 1u) {
+    parityOut[13u + i] = pcgNext(&state);
+  }
+
+  var highState = pcgInit(9u, 10u, ptRngFrameKey(123u, 0u));
+  var digest = 0u;
+  for (var draw = 0u; draw < 324u; draw = draw + 1u) {
+    let value = pcgNext(&highState);
+    if (draw >= 2u && draw <= 6u) {
+      parityOut[20u + draw - 2u] = value;
+    }
+    digest = ptSobolHashCombine(digest, value);
+  }
+  parityOut[18] = highState.dimension;
+  parityOut[19] = digest;
+}
+`;
+  const expected = [
+    0xd1bc0000, 0xd1bcffff, 0x6ff30000, 0x6ff30001, 0x3385fffe, 0x3385ffff,
+    0, 0, 9, 10, 49164, 17, 1317513256,
+    0xb524e900, 0x23e98800, 0xb625c789, 0xe10c246d, 0x25744040,
+    324, 0xa481f52c,
+    0xb524e900, 0x23e98800, 0xb625c789, 0xe10c246d, 0x25744040,
+  ];
+  const byteLength = expected.length * Uint32Array.BYTES_PER_ELEMENT;
+  const output = device.createBuffer({
+    label: "pt-webgpu/sobol-parity-output",
+    size: byteLength,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC,
+  });
+  const readback = device.createBuffer({
+    label: "pt-webgpu/sobol-parity-readback",
+    size: byteLength,
+    usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+  });
+  try {
+    const module = device.createShaderModule({
+      label: "pt-webgpu/sobol-parity",
+      code,
+    });
+    const info = await module.getCompilationInfo();
+    const compileErrors = info.messages.filter((message) => message.type === "error");
+    if (compileErrors.length > 0) {
+      throw new Error(compileErrors.map((message) => message.message).join(" | "));
+    }
+    const pipeline = await device.createComputePipelineAsync({
+      label: "pt-webgpu/sobol-parity",
+      layout: "auto",
+      compute: { module, entryPoint: "sobolParityMain" },
+    });
+    const bindGroup = device.createBindGroup({
+      layout: pipeline.getBindGroupLayout(0),
+      entries: [{ binding: 0, resource: { buffer: output } }],
+    });
+    const encoder = device.createCommandEncoder();
+    const pass = encoder.beginComputePass();
+    pass.setPipeline(pipeline);
+    pass.setBindGroup(0, bindGroup);
+    pass.dispatchWorkgroups(1);
+    pass.end();
+    encoder.copyBufferToBuffer(output, 0, readback, 0, byteLength);
+    device.queue.submit([encoder.finish()]);
+    await readback.mapAsync(GPUMapMode.READ);
+    const actual = Array.from(new Uint32Array(readback.getMappedRange()));
+    readback.unmap();
+    const mismatch = actual.findIndex((value, index) => value !== expected[index]);
+    if (mismatch >= 0 || actual.length !== expected.length) {
+      throw new Error(`index ${mismatch}: expected ${expected[mismatch]}, received ${actual[mismatch]}`);
+    }
+    console.log("[shader-gate] EXEC  pt-webgpu/sobol-parity (25 u32 values)");
+  } finally {
+    output.destroy();
+    readback.destroy();
+  }
+}
 
 function hasComputeEntry(wgsl, entryPoint) {
   const escaped = entryPoint.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -757,7 +876,7 @@ async function runWalkaroundProductionPipelineGate() {
     console.log(`[shader-gate] PSKIP walkaround-hybrid/production-nrc (requires maxBindGroups>=5; adapter has ${adapterMaxBG})`);
   }
 
-  const pipelineDevice = makeNagaPatchedPipelineDevice(device);
+  const pipelineDevice = makePipelineGateDevice(device);
   let passed = 0;
   let failed = 0;
   const errors = [];
@@ -778,13 +897,10 @@ async function runWalkaroundProductionPipelineGate() {
   return { passed, failed, errors };
 }
 
-function makeNagaPatchedPipelineDevice(realDevice) {
+function makePipelineGateDevice(realDevice) {
   return {
     createShaderModule(desc) {
-      return realDevice.createShaderModule({
-        ...desc,
-        code: typeof desc?.code === "string" ? applyNagaFix(desc.code) : desc?.code,
-      });
+      return realDevice.createShaderModule(desc);
     },
     createBindGroupLayout(desc) {
       return realDevice.createBindGroupLayout(desc);

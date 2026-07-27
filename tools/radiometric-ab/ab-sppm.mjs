@@ -49,7 +49,10 @@ import {
   relativeError,
   W, H,
 } from "./helpers.mjs";
-import { radiometricResultProvenance } from "./resultProvenance.mjs";
+import {
+  PT_RADIOMETRIC_RUNTIME_SOURCE_ROOTS,
+  radiometricResultProvenance,
+} from "./resultProvenance.mjs";
 
 console.log("=== A/B #1: SPPM vs manifold-NEE caustic reference ===");
 console.log(`ICD: ${Deno.env.get("VK_ICD_FILENAMES") ?? "(not set)"}`);
@@ -109,7 +112,7 @@ const finalRelErr = relErrors[relErrors.length - 1];
 const converging = isMonotonicDecreasing;
 // At fewest 80 frames, SPPM should be in the same order of magnitude as ref
 // (relative error < 500% — very lenient because SPPM at low spp has high variance)
-const inBallpark = finalRelErr < 5.0;
+const inBallpark = finalRelErr < 0.50;
 
 // ── Results table ─────────────────────────────────────────────────────────────
 console.log("=== SPPM Convergence Table ===");
@@ -124,18 +127,27 @@ const verdict = (converging && inBallpark) ? "PASS" : "FINDING";
 console.log(`=== Verdict: ${verdict} ===`);
 if (verdict === "PASS") {
   console.log("SPPM ROI luminance converges toward the manifold-nee reference.");
-  console.log(`Final relative error: ${(finalRelErr * 100).toFixed(1)}% (threshold: <500%).`);
+  console.log(`Final relative error: ${(finalRelErr * 100).toFixed(1)}% (threshold: <50%).`);
   console.log("Convergence trend: " + (isMonotonicDecreasing ? "monotone-decreasing (with 50% noise slack)." : "non-monotone but within threshold."));
 } else {
   console.log("FINDING — SPPM does not converge as expected:");
-  if (!inBallpark) console.log(`  Final relative error ${(finalRelErr*100).toFixed(1)}% exceeds 500% threshold.`);
+  if (!inBallpark) console.log(`  Final relative error ${(finalRelErr*100).toFixed(1)}% exceeds 50% threshold.`);
   if (!isMonotonicDecreasing) console.log(`  Convergence trend is not decreasing: ${relErrors.map(e => (e*100).toFixed(1)+"%").join(" → ")}`);
 }
 console.log("");
 
 // ── Write results JSON ────────────────────────────────────────────────────────
 const results = {
-  provenance: await radiometricResultProvenance(import.meta.url, "tools/radiometric-ab/ab-sppm.mjs", "tools/radiometric-ab/results-sppm.json"),
+  schema: "vitrum.radiometric-ab.result.v1",
+  provenance: await radiometricResultProvenance(
+    import.meta.url,
+    "tools/radiometric-ab/ab-sppm.mjs",
+    "tools/radiometric-ab/results-sppm.json",
+    {
+      repoRootImportMetaUrl: new URL("../../", import.meta.url).href,
+      sourceRoots: PT_RADIOMETRIC_RUNTIME_SOURCE_ROOTS,
+    },
+  ),
   ab: "sppm-vs-manifold-nee",
   date: new Date().toISOString(),
   resolution: { W, H },

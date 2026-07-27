@@ -109,8 +109,9 @@ export function readEnvironmentMapPixels(handle: unknown): EnvironmentMapPixels 
   if (
     src == null ||
     typeof src.length !== 'number' ||
-    !Number.isFinite(width) ||
-    !Number.isFinite(height) ||
+    !Number.isSafeInteger(src.length) ||
+    !Number.isSafeInteger(width) ||
+    !Number.isSafeInteger(height) ||
     width <= 0 ||
     height <= 0
   ) {
@@ -118,6 +119,9 @@ export function readEnvironmentMapPixels(handle: unknown): EnvironmentMapPixels 
   }
   const pixelCount = width * height;
   if (src.length < pixelCount) return null;
+  if (!Number.isSafeInteger(pixelCount) || pixelCount * 4 > 0x7fffffff) {
+    return null;
+  }
   const hint = normalizedHint(h);
   const channels = inferChannels(src.length, pixelCount, hint);
   if (src.length < pixelCount * channels) return null;
@@ -128,15 +132,22 @@ export function readEnvironmentMapPixels(handle: unknown): EnvironmentMapPixels 
     let r = decodeScalar(src, base, hint);
     let g = channels > 1 ? decodeScalar(src, base + 1, hint) : r;
     let b = channels > 2 ? decodeScalar(src, base + 2, hint) : r;
+    const a = channels > 3 ? decodeScalar(src, base + 3, hint) : 1;
+    if (![r, g, b, a].every((value) => Number.isFinite(value) && Number.isFinite(Math.fround(value)))) {
+      return null;
+    }
     if (colorSpace === 'srgb') {
       r = srgbToLinear(r);
       g = srgbToLinear(g);
       b = srgbToLinear(b);
     }
+    if (![r, g, b].every((value) => Number.isFinite(value) && Number.isFinite(Math.fround(value)))) {
+      return null;
+    }
     out[p * 4] = r;
     out[p * 4 + 1] = g;
     out[p * 4 + 2] = b;
-    out[p * 4 + 3] = channels > 3 ? decodeScalar(src, base + 3, hint) : 1;
+    out[p * 4 + 3] = a;
   }
   return {
     width,

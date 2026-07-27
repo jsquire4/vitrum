@@ -60,8 +60,11 @@ function cloneAABB(a: AABB): AABB {
  *
  * @param sceneBounds  World-space AABB covering the entire scene.
  */
-export function buildSTree(sceneBounds: AABB): STree {
-  const rootDTree: DTree = buildEmptyDTree(PPG_DTREE_INITIAL_DEPTH);
+export function buildSTree(
+  sceneBounds: AABB,
+  initialDTreeDepth: number = PPG_DTREE_INITIAL_DEPTH,
+): STree {
+  const rootDTree: DTree = buildEmptyDTree(initialDTreeDepth);
   const rootNode: STreeNode = {
     aabb: cloneAABB(sceneBounds),
     splitAxis: -1,
@@ -115,8 +118,8 @@ export function findSTreeLeaf(
 
 /**
  * CPU oracle/test helper: record that a training sample at `position`
- * contributed `flux` to the directional direction encoded in `octUV`
- * (octahedral UV in [0,1]²).
+ * contributed non-negative `trainingMass` to the direction encoded in `uv`
+ * (cylindrical equal-area UV in [0,1]²).
  *
  * The production hybrid path trains on the GPU, reads back per-cell counts /
  * flux, and merges those results in `PPGCoordinator`; this helper remains for
@@ -124,12 +127,9 @@ export function findSTreeLeaf(
  *
  * Semantics:
  *   - `position` = sample position in WORLD space
- *   - `octUV`    = octahedral map of the INCOMING direction ωi (world frame)
- *   - `flux`     = L_i estimate (incoming radiance at the sample point)
- *
- * DEVIATION 3 FIX: the deposit signal is the incoming radiance L_i (path
- * throughput estimate before the BRDF multiply), NOT the shade-pass outgoing
- * radiance L_o.
+ *   - `octUV`    = cylindrical equal-area map of the selected direction (world frame)
+ *   - `flux`     = non-negative histogram mass. The GPU path uses the initial
+ *                  RIS estimator `w_sum / M`, not raw incoming/outgoing radiance.
  *
  * DEVIATION 4 FIX: octUV is computed from direction in WORLD space. No
  * per-surface ONB transform is applied here.
@@ -140,13 +140,30 @@ export function sTreeAccumulate(
   octUV: [number, number],
   flux: number,
 ): void {
+  if (position.some((component) => !Number.isFinite(component))) {
+    throw new RangeError(
+      `position must contain finite world coordinates; got ${position.join(',')}`,
+    );
+  }
   const leafIdx = findSTreeLeaf(sTree, position);
-  const node = sTree.nodes[leafIdx]!;
-  node.sampleCount += 1;
-
-  const dTree = sTree.dTrees[node.dTreeIndex]!;
+  const node = sTree.nodes[leafIdx];
+  if (!node || node.splitAxis !== -1) {
+    throw new RangeError(`sTree traversal did not resolve a valid leaf; got ${leafIdx}`);
+  }
+  if (!Number.isSafeInteger(node.sampleCount)
+      || node.sampleCount < 0
+      || node.sampleCount >= Number.MAX_SAFE_INTEGER) {
+    throw new RangeError(`sTree leaf ${leafIdx} has an invalid sample count ${node.sampleCount}`);
+  }
+  const dTree = sTree.dTrees[node.dTreeIndex];
+  if (!dTree) {
+    throw new RangeError(`sTree leaf ${leafIdx} references missing dTree ${node.dTreeIndex}`);
+  }
   // Descend dTree to the leaf covering octUV and accumulate flux (dTree.ts).
   dTreeAccumulateFlux(dTree, octUV, flux);
+  // Publish the count only after the directional deposit succeeds. Invalid
+  // flux/UV/topology must leave both halves of the training sample unchanged.
+  node.sampleCount += 1;
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -187,9 +204,34 @@ export function splitOverflowLeaves(
   maxCells: number = 16_384,
   cellSampleCounts?: ArrayLike<number>,
 ): void {
+  if (!Number.isFinite(threshold) || threshold < 0) {
+    throw new RangeError(`threshold must be finite and non-negative; got ${threshold}`);
+  }
+  if (!Number.isSafeInteger(maxCells) || maxCells < 1) {
+    throw new RangeError(`maxCells must be a positive safe integer; got ${maxCells}`);
+  }
   // Snapshot leaf count before we start (new leaves added during iteration
   // may themselves be over threshold — we defer them to the next rebuild cycle).
   const initialLen = sTree.nodes.length;
+  // Validate the complete source epoch before the first split. A malformed late
+  // counter must not leave earlier leaves already subdivided.
+  for (let i = 0; i < initialLen; i++) {
+    const node = sTree.nodes[i]!;
+    if (node.splitAxis !== -1) continue;
+    if (!Number.isSafeInteger(node.dTreeIndex)
+        || node.dTreeIndex < 0
+        || node.dTreeIndex >= sTree.dTrees.length) {
+      throw new RangeError(`sTree leaf ${i} references invalid dTree ${node.dTreeIndex}`);
+    }
+    const sampleCount = cellSampleCounts !== undefined
+      ? (cellSampleCounts[node.dTreeIndex] ?? 0)
+      : node.sampleCount;
+    if (!Number.isSafeInteger(sampleCount) || sampleCount < 0) {
+      throw new RangeError(
+        `sTree leaf ${i} has an invalid sample count ${sampleCount}`,
+      );
+    }
+  }
   let leafCount = countLeaves(sTree);
 
   for (let i = 0; i < initialLen; i++) {
@@ -316,8 +358,8 @@ export function resetAccumulators(sTree: STree): void {
  * RUNAWAY FIX — Müller §5 per-iteration flux DECAY (replaces the full reset on
  * the persistent CPU accumulator).
  *
- * The training loop deposits raw radiance summed over samples each window and
- * never divides by the source pdf (the GPU update kernel does `atomicAdd(lum)`).
+ * The training loop deposits initial-reservoir histogram mass `w_sum / M`
+ * summed over selected samples in each window.
  * If the trained flux were simply ACCUMULATED across windows with no reset and
  * no decay, the total grows without bound (linear in window count — verified in
  * the CPU harness: `last/win6 = 2.31x` and climbing). The full reset
@@ -341,7 +383,25 @@ export function resetAccumulators(sTree: STree): void {
  * here (they are zeroed so the next window's GPU readback is the sole source).
  */
 export function decayAccumulators(sTree: STree, decay: number): void {
-  const d = Math.max(0, Math.min(1, decay));
+  if (!Number.isFinite(decay) || decay < 0 || decay >= 1) {
+    throw new RangeError(`decay must be finite and inside [0,1); got ${decay}`);
+  }
+  for (const node of sTree.nodes) {
+    if (!Number.isSafeInteger(node.sampleCount) || node.sampleCount < 0) {
+      throw new RangeError(`sTree contains invalid sample count ${node.sampleCount}`);
+    }
+  }
+  for (const dTree of sTree.dTrees) {
+    if (!Number.isFinite(dTree.totalFlux) || dTree.totalFlux < 0) {
+      throw new RangeError(`sTree contains invalid dTree total flux ${dTree.totalFlux}`);
+    }
+    for (const node of dTree.nodes) {
+      if (!Number.isFinite(node.flux) || node.flux < 0) {
+        throw new RangeError(`sTree contains invalid dTree node flux ${node.flux}`);
+      }
+    }
+  }
+  const d = decay;
   for (const node of sTree.nodes) {
     if (node.splitAxis === -1) {
       node.sampleCount = 0;

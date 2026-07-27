@@ -2,8 +2,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   HYBRID_WEBGPU_REQUIRED_LIMITS,
   HYBRID_LITE_LIMITS,
+  NRC_WEBGPU_REQUIRED_LIMITS,
 } from '@vitrum/walkaround-hybrid';
 import {
+  PT_WEBGPU_CWBVH_CLOSEST_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
+  PT_WEBGPU_CWBVH_CLOSEST_RESTIR_PT_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
+  PT_WEBGPU_RESTIR_PT_REUSE_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
   PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
   PT_WEBGPU_FULL_REQUIRED_STORAGE_TEXTURES_PER_STAGE,
   PT_WEBGPU_LITE_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
@@ -18,15 +22,22 @@ function fakeAdapter(
   buf: number,
   tex: number,
   info?: { vendor?: string; architecture?: string },
+  options: {
+    limits?: Readonly<Record<string, number>>;
+    features?: readonly GPUFeatureName[];
+  } = {},
 ): { adapter: GPUAdapter; lastDescriptor: () => GPUDeviceDescriptor | undefined; device: GPUDevice } {
   let captured: GPUDeviceDescriptor | undefined;
   const device = { destroy: vi.fn() } as unknown as GPUDevice;
   const adapter = {
     limits: {
       maxStorageBuffersPerShaderStage: buf,
+      ...options.limits,
+      maxSampledTexturesPerShaderStage: 32,
       maxStorageTexturesPerShaderStage: tex,
     },
     ...(info ? { info } : {}),
+    features: new Set(options.features ?? ['timestamp-query']),
     requestDevice: vi.fn((descriptor?: GPUDeviceDescriptor) => {
       captured = descriptor;
       return Promise.resolve(device);
@@ -167,7 +178,9 @@ describe('negotiateWebGPUDevice — host-owned device negotiation', () => {
     await negotiateWebGPUDevice({ adapter: fa.adapter, target: 'progressive' });
     const limits = fa.lastDescriptor()?.requiredLimits;
     expect(limits?.maxStorageBuffersPerShaderStage).toBe(PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE);
-    expect(limits?.maxStorageTexturesPerShaderStage).toBe(8);
+    expect(limits?.maxStorageTexturesPerShaderStage).toBe(
+      HYBRID_WEBGPU_REQUIRED_LIMITS['maxStorageTexturesPerShaderStage'],
+    );
   });
 
   it("target 'progressive' throws a gap-naming error when the adapter can't meet the union", async () => {
@@ -186,17 +199,29 @@ describe('negotiateWebGPUDevice — host-owned device negotiation', () => {
     expect(fa.lastDescriptor()?.requiredLimits).toBeUndefined();
   });
 
-  it('explicit requiredLimits override the target and are clamped to the adapter', async () => {
+  it('rejects an explicit required-limit over-ask instead of silently weakening it', async () => {
     const fa = fakeAdapter(PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE, 8, { vendor: 'nvidia', architecture: 'ampere' });
     restore = installNavigatorGpu();
-    // Over-ask 999 buffers — must clamp down to the adapter's 16.
+    await expect(
+      negotiateWebGPUDevice({
+        adapter: fa.adapter,
+        target: 'pt-webgpu',
+        requiredLimits: { maxStorageBuffersPerShaderStage: 999 },
+      }),
+    ).rejects.toThrow(/requires maxStorageBuffersPerShaderStage >= 999/);
+    expect(fa.lastDescriptor()).toBeUndefined();
+  });
+
+  it('preserves a satisfiable explicit required-limit override exactly', async () => {
+    const fa = fakeAdapter(PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE, 8, { vendor: 'nvidia', architecture: 'ampere' });
+    restore = installNavigatorGpu();
     await negotiateWebGPUDevice({
       adapter: fa.adapter,
-      target: 'pt-webgpu',
-      requiredLimits: { maxStorageBuffersPerShaderStage: 999 },
+      target: 'none',
+      requiredLimits: { maxStorageBuffersPerShaderStage: 12 },
     });
     const limits = fa.lastDescriptor()?.requiredLimits;
-    expect(limits?.maxStorageBuffersPerShaderStage).toBe(PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE);
+    expect(limits?.maxStorageBuffersPerShaderStage).toBe(12);
   });
 
   it('forwards requiredFeatures and label verbatim to requestDevice', async () => {
@@ -227,7 +252,6 @@ describe('negotiateWebGPUDevice — host-owned device negotiation', () => {
   it("Bug7 fix — target 'progressive' with restirPtReuse:true requests the higher buffer floor", async () => {
     // The ReSTIR-PT reuse floor is higher than the regular full-tier floor.
     // This adapter must be capable of the ReSTIR-PT reuse tier.
-    const { PT_WEBGPU_RESTIR_PT_REUSE_REQUIRED_STORAGE_BUFFERS_PER_STAGE } = await import('@vitrum/pt-webgpu');
     const fa = fakeAdapter(PT_WEBGPU_RESTIR_PT_REUSE_REQUIRED_STORAGE_BUFFERS_PER_STAGE, 8, { vendor: 'nvidia', architecture: 'ampere' });
     restore = installNavigatorGpu();
     await negotiateWebGPUDevice({ adapter: fa.adapter, target: 'progressive', restirPtReuse: true });
@@ -244,5 +268,256 @@ describe('negotiateWebGPUDevice — host-owned device negotiation', () => {
     await negotiateWebGPUDevice({ adapter: fa.adapter, target: 'progressive' });
     const limits = fa.lastDescriptor()?.requiredLimits;
     expect(limits?.maxStorageBuffersPerShaderStage).toBe(PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE);
+  });
+
+  it('rejects an invalid runtime target before requesting an adapter', async () => {
+    const requestAdapter = vi.fn(() => Promise.resolve(null as GPUAdapter | null));
+    restore = installNavigatorGpu(requestAdapter);
+    await expect(
+      negotiateWebGPUDevice({ target: 'bogus' as never }),
+    ).rejects.toThrow(/target must be one of/);
+    expect(requestAdapter).not.toHaveBeenCalled();
+  });
+
+  it("target 'pt-webgpu' rejects adapters below the lite floor before allocation", async () => {
+    const fa = fakeAdapter(
+      PT_WEBGPU_LITE_REQUIRED_STORAGE_BUFFERS_PER_STAGE - 1,
+      PT_WEBGPU_LITE_REQUIRED_STORAGE_TEXTURES_PER_STAGE,
+    );
+    restore = installNavigatorGpu();
+    await expect(
+      negotiateWebGPUDevice({ adapter: fa.adapter, target: 'pt-webgpu' }),
+    ).rejects.toThrow(/below the lite-tier floor/);
+    expect(fa.lastDescriptor()).toBeUndefined();
+  });
+
+  it.each([NaN, Infinity, -1, 1.5, Number.MAX_SAFE_INTEGER + 1])(
+    'rejects invalid explicit required-limit value %s',
+    async (value) => {
+      const fa = fakeAdapter(PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE, 8);
+      restore = installNavigatorGpu();
+      await expect(
+        negotiateWebGPUDevice({
+          adapter: fa.adapter,
+          target: 'none',
+          requiredLimits: { maxStorageBuffersPerShaderStage: value },
+        }),
+      ).rejects.toThrow(/finite, non-negative safe integer/);
+      expect(fa.lastDescriptor()).toBeUndefined();
+    },
+  );
+
+  it('rejects an unknown explicit required-limit key before allocation', async () => {
+    const fa = fakeAdapter(PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE, 8);
+    restore = installNavigatorGpu();
+    await expect(
+      negotiateWebGPUDevice({
+        adapter: fa.adapter,
+        target: 'none',
+        requiredLimits: { imaginaryLimit: 1 },
+      }),
+    ).rejects.toThrow(/unknown or unreported adapter limit/);
+    expect(fa.lastDescriptor()).toBeUndefined();
+  });
+
+  it('uses the inverse comparison for minimum-alignment limits', async () => {
+    const capable = fakeAdapter(16, 8, undefined, {
+      limits: { minUniformBufferOffsetAlignment: 256 },
+    });
+    const incapable = fakeAdapter(16, 8, undefined, {
+      limits: { minUniformBufferOffsetAlignment: 256 },
+    });
+    restore = installNavigatorGpu();
+
+    await negotiateWebGPUDevice({
+      adapter: capable.adapter,
+      target: 'none',
+      requiredLimits: { minUniformBufferOffsetAlignment: 512 },
+    });
+    expect(capable.lastDescriptor()?.requiredLimits?.minUniformBufferOffsetAlignment).toBe(512);
+
+    await expect(
+      negotiateWebGPUDevice({
+        adapter: incapable.adapter,
+        target: 'none',
+        requiredLimits: { minUniformBufferOffsetAlignment: 128 },
+      }),
+    ).rejects.toThrow(/requires minUniformBufferOffsetAlignment <= 128/);
+    expect(incapable.lastDescriptor()).toBeUndefined();
+  });
+
+  it('rejects unsupported required features before device allocation', async () => {
+    const fa = fakeAdapter(16, 8, undefined, { features: [] });
+    restore = installNavigatorGpu();
+    await expect(
+      negotiateWebGPUDevice({
+        adapter: fa.adapter,
+        target: 'none',
+        requiredFeatures: ['timestamp-query'],
+      }),
+    ).rejects.toThrow(/required feature "timestamp-query" is not supported/);
+    expect(fa.lastDescriptor()).toBeUndefined();
+  });
+
+  it('resolves the preferred format before allocating the device', async () => {
+    const fa = fakeAdapter(16, 8);
+    restore = () => setNavigator(ORIG_NAVIGATOR);
+    setNavigator({ gpu: { getPreferredCanvasFormat: () => { throw new Error('format failed'); } } });
+    await expect(
+      negotiateWebGPUDevice({ adapter: fa.adapter, target: 'none' }),
+    ).rejects.toThrow(/format failed/);
+    expect(fa.lastDescriptor()).toBeUndefined();
+  });
+
+  it("target 'pt-webgpu' includes the ReSTIR-PT buffer floor when requested", async () => {
+    const fa = fakeAdapter(
+      PT_WEBGPU_RESTIR_PT_REUSE_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
+      PT_WEBGPU_FULL_REQUIRED_STORAGE_TEXTURES_PER_STAGE,
+    );
+    restore = installNavigatorGpu();
+    await negotiateWebGPUDevice({
+      adapter: fa.adapter,
+      target: 'pt-webgpu',
+      restirPtReuse: true,
+    });
+    expect(fa.lastDescriptor()?.requiredLimits?.maxStorageBuffersPerShaderStage).toBe(
+      PT_WEBGPU_RESTIR_PT_REUSE_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
+    );
+  });
+
+  it("target 'pt-webgpu' includes the combined CWBVH + ReSTIR-PT floor", async () => {
+    const fa = fakeAdapter(
+      PT_WEBGPU_CWBVH_CLOSEST_RESTIR_PT_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
+      PT_WEBGPU_FULL_REQUIRED_STORAGE_TEXTURES_PER_STAGE,
+    );
+    restore = installNavigatorGpu();
+    await negotiateWebGPUDevice({
+      adapter: fa.adapter,
+      target: 'pt-webgpu',
+      cwbvhClosest: true,
+      restirPtReuse: true,
+    });
+    expect(fa.lastDescriptor()?.requiredLimits?.maxStorageBuffersPerShaderStage).toBe(
+      PT_WEBGPU_CWBVH_CLOSEST_RESTIR_PT_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
+    );
+  });
+
+  it("target 'pt-webgpu' rejects an optional layout the adapter cannot satisfy", async () => {
+    const fa = fakeAdapter(
+      PT_WEBGPU_CWBVH_CLOSEST_REQUIRED_STORAGE_BUFFERS_PER_STAGE - 1,
+      PT_WEBGPU_FULL_REQUIRED_STORAGE_TEXTURES_PER_STAGE,
+    );
+    restore = installNavigatorGpu();
+    await expect(
+      negotiateWebGPUDevice({
+        adapter: fa.adapter,
+        target: 'pt-webgpu',
+        cwbvhClosest: true,
+      }),
+    ).rejects.toThrow(/cannot enable the requested CWBVH closest-hit layout/);
+    expect(fa.lastDescriptor()).toBeUndefined();
+  });
+
+  it("target 'progressive' includes the combined CWBVH + ReSTIR-PT floor", async () => {
+    const fa = fakeAdapter(
+      PT_WEBGPU_CWBVH_CLOSEST_RESTIR_PT_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
+      HYBRID_WEBGPU_REQUIRED_LIMITS['maxStorageTexturesPerShaderStage']!,
+    );
+    restore = installNavigatorGpu();
+    await negotiateWebGPUDevice({
+      adapter: fa.adapter,
+      target: 'progressive',
+      cwbvhClosest: true,
+      restirPtReuse: true,
+    });
+    expect(fa.lastDescriptor()?.requiredLimits?.maxStorageBuffersPerShaderStage).toBe(
+      PT_WEBGPU_CWBVH_CLOSEST_RESTIR_PT_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
+    );
+  });
+
+  it("target 'walkaround-hybrid' requests every NRC limit when enabled", async () => {
+    const fa = fakeAdapter(64, 8, undefined, {
+      limits: {
+        maxBindGroups: 8,
+        maxComputeWorkgroupStorageSize: 65_536,
+      },
+    });
+    restore = installNavigatorGpu();
+    await negotiateWebGPUDevice({
+      adapter: fa.adapter,
+      target: 'walkaround-hybrid',
+      nrcEnabled: true,
+    });
+    const requested = fa.lastDescriptor()?.requiredLimits as Record<string, number>;
+    for (const [key, required] of Object.entries(NRC_WEBGPU_REQUIRED_LIMITS)) {
+      expect(requested[key]).toBe(required);
+    }
+  });
+
+  it('derives NRC trainer storage and shader-f16 from nrcConfig', async () => {
+    const fa = fakeAdapter(64, 8, undefined, {
+      limits: {
+        maxBindGroups: 8,
+        maxComputeWorkgroupStorageSize: 65_536,
+      },
+      features: ['shader-f16'],
+    });
+    restore = installNavigatorGpu();
+    await negotiateWebGPUDevice({
+      adapter: fa.adapter,
+      target: 'walkaround-hybrid',
+      nrcEnabled: true,
+      nrcConfig: { width: 64, tileB: 64, useF16: true },
+    });
+    expect(fa.lastDescriptor()?.requiredLimits?.maxComputeWorkgroupStorageSize)
+      .toBe(16_384);
+    expect(fa.lastDescriptor()?.requiredFeatures).toEqual(['shader-f16']);
+  });
+
+  it('rejects NRC f16 before allocation when shader-f16 is unavailable', async () => {
+    const fa = fakeAdapter(64, 8, undefined, {
+      limits: {
+        maxBindGroups: 8,
+        maxComputeWorkgroupStorageSize: 65_536,
+      },
+    });
+    restore = installNavigatorGpu();
+    await expect(negotiateWebGPUDevice({
+      adapter: fa.adapter,
+      target: 'walkaround-hybrid',
+      nrcEnabled: true,
+      nrcConfig: { useF16: true },
+    })).rejects.toThrow(/required feature "shader-f16"/);
+    expect(fa.lastDescriptor()).toBeUndefined();
+  });
+
+  it("target 'progressive' includes every NRC limit in the shared union", async () => {
+    const fa = fakeAdapter(64, 8, undefined, {
+      limits: {
+        maxBindGroups: 8,
+        maxComputeWorkgroupStorageSize: 65_536,
+      },
+    });
+    restore = installNavigatorGpu();
+    await negotiateWebGPUDevice({
+      adapter: fa.adapter,
+      target: 'progressive',
+      nrcEnabled: true,
+    });
+    const requested = fa.lastDescriptor()?.requiredLimits as Record<string, number>;
+    for (const [key, required] of Object.entries(NRC_WEBGPU_REQUIRED_LIMITS)) {
+      expect(requested[key]).toBeGreaterThanOrEqual(required);
+    }
+  });
+
+  it('rejects NRC negotiation before allocation when an NRC-only limit is missing', async () => {
+    const fa = fakeAdapter(64, 8);
+    restore = installNavigatorGpu();
+    await expect(negotiateWebGPUDevice({
+      adapter: fa.adapter,
+      target: 'progressive',
+      nrcEnabled: true,
+    })).rejects.toThrow(/maxBindGroups/);
+    expect(fa.lastDescriptor()).toBeUndefined();
   });
 });
