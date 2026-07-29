@@ -116,16 +116,12 @@ describe('packTextureAtlas', () => {
   it('fails the whole atlas build when any authored handle is unreadable', () => {
     const readable = dataTexHandle(new Float32Array([1, 0, 0, 1]), 1, 1);
     const unreadable = { id: 'opaque-texture-without-cpu-mirror' };
-    const onWarning = vi.fn();
 
     expect(() =>
       packTextureAtlas([matWithBaseColorMap(readable), matWithBaseColorMap(unreadable)], {
-        onWarning,
-        warningPhase: 'setScene',
         warningMethod: 'setScene',
       }),
     ).toThrow(/authored material texture during setScene is not CPU-readable/);
-    expect(onWarning).not.toHaveBeenCalled();
   });
 
   it('admits three 2048² layers without decoded-source or spare-capacity CPU copies', () => {
@@ -699,7 +695,6 @@ describe('packTextureAtlas', () => {
 
   it('keeps authored sampler policy warning-free because filtering is shader-resolved', () => {
     const handle = dataTexHandle(new Float32Array([1, 1, 1, 1]), 1, 1);
-    const onWarning = vi.fn();
     const atlas = packTextureAtlas(
       [
         {
@@ -714,25 +709,25 @@ describe('packTextureAtlas', () => {
           },
         },
       ],
-      { onWarning, warningPhase: 'setScene', warningMethod: 'setScene' },
+      { warningMethod: 'setScene' },
     );
 
     expect(atlas).not.toBeNull();
-    expect(onWarning).not.toHaveBeenCalled();
   });
 });
 
 describe('textureAtlasLayerCapacity', () => {
-  it('keeps spare power-of-two capacity when the device limit allows it', () => {
+  it('allocates exactly the live layer count because atlas growth rebuilds the scene', () => {
     expect(textureAtlasLayerCapacity(0, 256)).toBe(0);
-    expect(textureAtlasLayerCapacity(1, 256)).toBe(2);
-    expect(textureAtlasLayerCapacity(2, 256)).toBe(4);
-    expect(textureAtlasLayerCapacity(3, 256)).toBe(4);
+    expect(textureAtlasLayerCapacity(1, 256)).toBe(1);
+    expect(textureAtlasLayerCapacity(2, 256)).toBe(2);
+    expect(textureAtlasLayerCapacity(3, 256)).toBe(3);
   });
 
-  it('clamps spare capacity to the device layer limit without rejecting exact fits', () => {
+  it('clamps the capacity seam to the device layer limit', () => {
     expect(textureAtlasLayerCapacity(3, 3)).toBe(3);
-    expect(textureAtlasLayerCapacity(4, 6)).toBe(6);
+    expect(textureAtlasLayerCapacity(4, 6)).toBe(4);
+    expect(textureAtlasLayerCapacity(7, 6)).toBe(6);
   });
 
   it('accounts for exact RGBA8/RGBA16F mip bytes at maximum ordinary extent', () => {
@@ -759,7 +754,7 @@ describe('textureAtlasLayerCapacity', () => {
     );
   });
 
-  it('keeps the pair under one 512 MiB ceiling while trimming only spare layers', () => {
+  it('keeps the exact live pair under one 512 MiB ceiling', () => {
     const capacities = materialTextureAtlasLayerCapacities(
       { dim: 8_192, layerCount: 1 },
       { dim: 4_096, layerCount: 1 },
@@ -779,7 +774,7 @@ describe('textureAtlasLayerCapacity', () => {
     ).toThrow(/combined material texture atlases require .* exceeding the 536870912-byte storage budget/);
   });
 
-  it('bulk-trims huge spare counts and rejects hostile layer limits without iteration blowups', () => {
+  it('keeps huge valid capacities exact and rejects hostile layer limits', () => {
     expect(
       materialTextureAtlasLayerCapacities(
         { dim: 1, layerCount: 33_554_433 },
@@ -787,9 +782,9 @@ describe('textureAtlasLayerCapacity', () => {
         134_217_728,
       ),
     ).toEqual({
-      ldr: 67_108_862,
+      ldr: 33_554_433,
       hdr: 33_554_433,
-      storageBytes: MATERIAL_TEXTURE_ATLAS_STORAGE_BUDGET_BYTES,
+      storageBytes: 402_653_196,
     });
     expect(() =>
       materialTextureAtlasLayerCapacities(
@@ -915,6 +910,13 @@ describe('TextureHandleHint: readHandlePixels uses explicit hints', () => {
     expect(atlas!.data[2]!).toBe(r);
     // Alpha = 1 (default for stride < 4)
     expect(atlas!.data[3]).toBe(255);
+  });
+
+  it('explicit channels:2 expands native RG to (R,G,0,255)', () => {
+    const handle = hintedHandle(new Uint8Array([64, 192]), 1, 1, { channels: 2 });
+    const atlas = packTextureAtlas([mat(handle)]);
+    expect(atlas).not.toBeNull();
+    expect(Array.from(atlas!.data)).toEqual([64, 192, 0, 255]);
   });
 
   it('explicit colorSpace:linear keeps Float32 baseColorMap values already in linear light', () => {

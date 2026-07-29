@@ -79,6 +79,8 @@ describe('ATROUS_VARIANCE_WGSL', () => {
 
   it('declares varianceOut storage binding', () => {
     expect(ATROUS_VARIANCE_WGSL).toContain('@group(0) @binding(2) var varOut_varianceOut');
+    expect(ATROUS_VARIANCE_WGSL).toContain('texture_storage_2d<r32float, write>');
+    expect(ATROUS_VARIANCE_WGSL).not.toContain('vec4f(variance, f32(frameCount)');
   });
 
   it('declares AtrousVarianceVarianceUBO struct', () => {

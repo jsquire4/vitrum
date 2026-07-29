@@ -65,6 +65,8 @@ export { serializeGIState, deserializeGIState, type GIStateSnapshot } from './gi
 export {
   HYBRID_WEBGPU_REQUIRED_LIMITS,
   HYBRID_LITE_LIMITS,
+} from './webgpuLimits.js';
+export {
   HYBRID_WEBGPU_REQUIRED_FEATURES,
   NRC_WEBGPU_REQUIRED_LIMITS,
   NRC_REQUIRED_MAX_BIND_GROUPS,

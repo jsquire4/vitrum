@@ -54,7 +54,7 @@ export function composeShadePrologueWgsl(
       mat.specularColor = vec3f(spectralRgbFactorAtHero(mat.specularColor, heroLambda));
     }
     var ior = mat.ior;
-    if (params.spectralEnabled != 0u && mat.dispersionAbbe >= 1.0) {
+    if (params.spectralEnabled != 0u && mat.dispersionAbbe > 0.0) {
       ior = cauchyIorAtLambda(heroLambda, mat.ior, mat.dispersionAbbe);
     }
     let scatteringCoeff = mat.scatteringCoeff;

@@ -383,27 +383,22 @@ describe('H46 — HybridEngine construction warnings', () => {
   // H46-A — maxBounces is now a REAL control surface (the DDGI indirect-feedback
   // gate), NOT a deferred warn-only echo. Semantics on this realtime stack:
   //   maxBounces == 1  ⇒ direct-only DDGI probes
-  //   maxBounces >= 2  ⇒ infinite-bounce diffuse equilibrium (default; all
-  //                      values >= 2 behave identically — the EMA converges
-  //                      regardless of the integer)
-  // So values >= 1 are honoured silently. Only < 1 (which cannot be honoured as
-  // authored) warns. The old "warns when maxBounces ≠ 4" behaviour is gone.
-  it('does not warn for the default maxBounces (4)', async () => {
+  //   maxBounces == 2  ⇒ infinite-bounce diffuse equilibrium (default)
+  // Values above 2 are rejected because they do not select another implemented
+  // regime and would make the numeric capability dishonest.
+  it('does not warn for the default maxBounces (2)', async () => {
     const { HybridEngine } = await import('../src/HybridEngine.js');
-    new HybridEngine(makeStubOpts({ maxBounces: 4 }) as never);
+    new HybridEngine(makeStubOpts({ maxBounces: 2 }) as never);
     const bounceWarns = warnSpy.mock.calls.filter(
       (c) => String(c[0]).includes('maxBounces'),
     );
     expect(bounceWarns).toHaveLength(0);
   });
 
-  it('does NOT warn for maxBounces=8 (>= 2 is a valid multi-bounce regime, H46-A)', async () => {
+  it('rejects maxBounces above the two implemented realtime regimes', async () => {
     const { HybridEngine } = await import('../src/HybridEngine.js');
-    new HybridEngine(makeStubOpts({ maxBounces: 8 }) as never);
-    const bounceWarns = warnSpy.mock.calls.filter(
-      (c) => String(c[0]).includes('maxBounces'),
-    );
-    expect(bounceWarns).toHaveLength(0);
+    expect(() => new HybridEngine(makeStubOpts({ maxBounces: 8 }) as never))
+      .toThrow(/must be 1 .* or 2/s);
   });
 
   it('does NOT warn for maxBounces=1 (direct-only probes — a valid honoured regime)', async () => {
@@ -418,7 +413,7 @@ describe('H46 — HybridEngine construction warnings', () => {
   it('rejects maxBounces < 1 instead of substituting a direct-only regime', async () => {
     const { HybridEngine } = await import('../src/HybridEngine.js');
     expect(() => new HybridEngine(makeStubOpts({ maxBounces: 0 }) as never))
-      .toThrow(/maxBounces.*positive safe integer/i);
+      .toThrow(/maxBounces.*must be 1 .* or 2/is);
   });
 
   it('accepts the implemented manifold-nee strategy', async () => {

@@ -632,8 +632,6 @@ export function tryFastPathMaterialMutation(
     // malformed input cannot touch resident textures.
     const maxAtlasLayers = gl.getParameter(gl.MAX_ARRAY_TEXTURE_LAYERS) as number;
     const candidateAtlases = preflightMaterialTextureAtlases(nextMaterials, {
-      onWarning: (warning) => structuredWarnings.push(warning),
-      warningPhase: 'mutation',
       warningMethod: 'updatePrimitive',
       maxArrayTextureLayers: maxAtlasLayers,
     });
@@ -888,8 +886,6 @@ export function tryFastPathPrimitiveListMutation(
 
   const maxAtlasLayers = gl.getParameter(gl.MAX_ARRAY_TEXTURE_LAYERS) as number;
   const materialAtlases = preflightMaterialTextureAtlases(built.merged.materials, {
-    onWarning: (warning) => structuredWarnings.push(warning),
-    warningPhase: 'mutation',
     warningMethod: opts.method,
     maxArrayTextureLayers: maxAtlasLayers,
   });

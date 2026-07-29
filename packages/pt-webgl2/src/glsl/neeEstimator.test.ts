@@ -187,7 +187,13 @@ describe('separate NEE estimator', () => {
     expect(lightWeight + bsdfWeight).toBeCloseTo(1, 15);
     const compactResolve = NEE_RESOLVE_MAIN.replace(/\s+/g, ' ');
     expect(compactResolve).toContain(
-      '#if FEATURE_BDPT float misWeight = bdptCrossFamilyMisWeight; #else float misWeight = deltaLight ? 1.0 : misHeuristic( lightPdf, bsdfPdf ); #endif',
+      '#if FEATURE_BDPT float misWeight = bdptCrossFamilyMisWeight; #else',
+    );
+    expect(compactResolve).toContain(
+      'bool continuationTechniqueAvailable = pathDepth + 1u < uint( bounces );',
+    );
+    expect(compactResolve).toContain(
+      'float misWeight = deltaLight || ! continuationTechniqueAvailable ? 1.0 : misHeuristic( lightPdf, bsdfPdf );',
     );
     expect(NEE_RESOLVE_MAIN.match(/wavelengthToRGB\(/g)).toHaveLength(1);
     expect(NEE_RESOLVE_MAIN).toContain('neeHeroWavelengthPdf( candidate1.w )');
@@ -219,6 +225,35 @@ describe('separate NEE estimator', () => {
       // The former forced-delta NEE weight produced this overweight sum.
       expect(1 + forwardWeight).toBeGreaterThan(1);
     }
+  });
+
+  it('gives terminal-bounce NEE full ownership when continuation is not sampled', () => {
+    const powerWeight = (sampledPdf: number, competingPdf: number): number =>
+      sampledPdf ** 2 / (sampledPdf ** 2 + competingPdf ** 2);
+    const neeWeight = (
+      lightPdf: number,
+      bsdfPdf: number,
+      pathDepth: number,
+      bounceBudget: number,
+    ): number =>
+      pathDepth + 1 >= bounceBudget
+        ? 1
+        : powerWeight(lightPdf, bsdfPdf);
+
+    expect(neeWeight(0.37, 0.81, 0, 1)).toBe(1);
+    expect(neeWeight(0.37, 0.81, 1, 2)).toBe(1);
+    expect(neeWeight(0.37, 0.81, 0, 2)).toBeCloseTo(
+      powerWeight(0.37, 0.81),
+      15,
+    );
+
+    const compactMain = RENDER_MAIN.replace(/\s+/g, ' ');
+    expect(compactMain).toContain(
+      'neeContinuationFamilyProbability = surfacePathDepth + 1 < bounces ? 1.0 : 0.0;',
+    );
+    expect(compactMain).toContain(
+      'fogPdf, 1.0, neeContinuationFamilyProbability',
+    );
   });
 
   it('accumulates the completed main-plus-NEE sample once without a hidden clamp', () => {

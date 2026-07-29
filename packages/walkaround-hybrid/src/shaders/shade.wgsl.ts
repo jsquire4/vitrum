@@ -360,7 +360,7 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
     isGlass, isMetal,
   );
   let Lo_skyAperture = lo_sg_aperture(pos, normal, albedo, isGlass, isMetal);
-  let Lo_indirect   = lo_indirect(pix, dims, pos, normal, isGlass, isMetal);
+  let Lo_indirect   = lo_indirect(pix, dims, pos, normal, isGlass, metal);
   // B1 tail (2026-06-10) — glass refracted GI: consumption of the post-glass
   // diffuse reservoir built by risGi's bounded dielectric-prefix walk. Returns vec3f(0)
   // for non-glass surfaces (isGlass gate). The producer has already folded its

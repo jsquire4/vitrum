@@ -2506,27 +2506,26 @@ fn sampleHenyeyGreenstein(rng: ptr<function, PtRngState>, wIn: vec3f, gRaw: f32)
   let u1 = rand_f32(rng);
   let u2 = rand_f32(rng);
   let g = clamp(gRaw, -0.999999, 0.999999);
-  let a = abs(g);
   let q = 1.0 - 2.0 * u1;
-  var alignedCosTheta: f32;
-  if (a < 0.125) {
+  var cosTheta: f32;
+  if (abs(g) < 0.125) {
     // Algebraically exact rational form of the HG inverse.  Unlike treating a
     // small non-zero g as isotropic, it preserves every authored anisotropy and
     // avoids the 0/0 cancellation in the usual closed form as g approaches 0.
-    let d = 1.0 + a * q;
+    // Keep signed g throughout: replacing it with abs(g) changes the random-
+    // variate mapping on the back-scattering side and breaks continuity at 0.
+    let d = 1.0 + g * q;
     let numerator =
-      2.0 * q + a * (q * q + 3.0) +
-      2.0 * a * a * q + a * a * a * (q * q - 1.0);
-    alignedCosTheta = numerator / (2.0 * d * d);
+      2.0 * q + g * (q * q + 3.0) +
+      2.0 * g * g * q + g * g * g * (q * q - 1.0);
+    cosTheta = numerator / (2.0 * d * d);
   } else {
     // Factor the two cancellation-prone expressions for the strongly
     // anisotropic case.  This remains the exact HG inverse, not an approximation.
-    let oneMinusA = 1.0 - a;
-    let ratio = (oneMinusA * (1.0 + a)) /
-      (oneMinusA + 2.0 * a * (1.0 - u1));
-    alignedCosTheta = (1.0 + a * a - ratio * ratio) / (2.0 * a);
+    let ratio = (1.0 - g * g) / (1.0 + g * q);
+    cosTheta = (1.0 + g * g - ratio * ratio) / (2.0 * g);
   }
-  let cosTheta = clamp(select(-alignedCosTheta, alignedCosTheta, g >= 0.0), -1.0, 1.0);
+  cosTheta = clamp(cosTheta, -1.0, 1.0);
   let sinTheta = sqrt(max(0.0, 1.0 - cosTheta * cosTheta));
   let phi = 2.0 * PI * u2;
   // Build an ONB around wIn and place the sampled (θ measured FROM wIn).

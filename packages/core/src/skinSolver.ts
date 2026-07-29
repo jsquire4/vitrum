@@ -160,9 +160,11 @@ export function combineSkinMatrices(
  * the normal perpendicular to the deformed surface.
  *
  * Inputs / output are row-major 3×3s laid out as
- * `[m00,m01,m02, m10,m11,m12, m20,m21,m22]`. On a singular `m` (|det| ≈ 0,
- * e.g. a bone scaled to zero on an axis) we fall back to the input matrix so
- * the caller still produces a finite (if approximate) normal rather than NaN.
+ * `[m00,m01,m02, m10,m11,m12, m20,m21,m22]`. For a rank-2 singular matrix,
+ * the cofactor matrix is the well-defined oriented-area normal transform and
+ * remains perpendicular to the surviving tangent plane. Rank < 2 has no
+ * surviving surface normal; this function returns a zero matrix rather than a
+ * plausible-but-wrong raw transform.
  *
  * @returns the 9-element inverse-transpose, written into `out` (allocated if
  *   omitted).
@@ -173,28 +175,61 @@ export function mat3InverseTranspose(m: ArrayLike<number>, out?: Float32Array): 
   const m10 = m[3]!, m11 = m[4]!, m12 = m[5]!;
   const m20 = m[6]!, m21 = m[7]!, m22 = m[8]!;
 
+  // Rank is invariant under uniform scaling, so classify it in a normalized
+  // domain. Absolute determinant/cofactor thresholds on the authored matrix
+  // incorrectly treated perfectly invertible small transforms as singular
+  // (and erased the normal direction of similarly small rank-2 transforms).
+  const matrixScale = Math.max(
+    Math.abs(m00), Math.abs(m01), Math.abs(m02),
+    Math.abs(m10), Math.abs(m11), Math.abs(m12),
+    Math.abs(m20), Math.abs(m21), Math.abs(m22),
+  );
+  if (!(matrixScale > 0) || !Number.isFinite(matrixScale)) {
+    r.fill(0);
+    return r;
+  }
+  const n00 = m00 / matrixScale;
+  const n01 = m01 / matrixScale;
+  const n02 = m02 / matrixScale;
+  const n10 = m10 / matrixScale;
+  const n11 = m11 / matrixScale;
+  const n12 = m12 / matrixScale;
+  const n20 = m20 / matrixScale;
+  const n21 = m21 / matrixScale;
+  const n22 = m22 / matrixScale;
+
   // Cofactors (these directly give the adjugate; det·M⁻¹ = adjugateᵀ, and the
   // matrix of cofactors IS (det · M⁻¹)ᵀᵀ = det · (M⁻¹)ᵀ). Dividing the cofactor
   // matrix by det yields (M⁻¹)ᵀ exactly — which is what we want.
-  const c00 = m11 * m22 - m12 * m21;
-  const c01 = m12 * m20 - m10 * m22;
-  const c02 = m10 * m21 - m11 * m20;
-  const c10 = m02 * m21 - m01 * m22;
-  const c11 = m00 * m22 - m02 * m20;
-  const c12 = m01 * m20 - m00 * m21;
-  const c20 = m01 * m12 - m02 * m11;
-  const c21 = m02 * m10 - m00 * m12;
-  const c22 = m00 * m11 - m01 * m10;
+  const c00 = n11 * n22 - n12 * n21;
+  const c01 = n12 * n20 - n10 * n22;
+  const c02 = n10 * n21 - n11 * n20;
+  const c10 = n02 * n21 - n01 * n22;
+  const c11 = n00 * n22 - n02 * n20;
+  const c12 = n01 * n20 - n00 * n21;
+  const c20 = n01 * n12 - n02 * n11;
+  const c21 = n02 * n10 - n00 * n12;
+  const c22 = n00 * n11 - n01 * n10;
 
-  const det = m00 * c00 + m01 * c01 + m02 * c02;
+  const det = n00 * c00 + n01 * c01 + n02 * c02;
   if (Math.abs(det) < 1e-20) {
-    // Singular linear part — fall back to the raw matrix (best-effort).
-    r[0] = m00; r[1] = m01; r[2] = m02;
-    r[3] = m10; r[4] = m11; r[5] = m12;
-    r[6] = m20; r[7] = m21; r[8] = m22;
+    const cofactorMagnitude = Math.hypot(
+      c00, c01, c02,
+      c10, c11, c12,
+      c20, c21, c22,
+    );
+    if (cofactorMagnitude < 1e-20) {
+      r.fill(0);
+      return r;
+    }
+    // Rank 2: scale is irrelevant because callers normalize the transformed
+    // normal. Preserve the cofactor orientation without dividing by zero.
+    r[0] = c00; r[1] = c01; r[2] = c02;
+    r[3] = c10; r[4] = c11; r[5] = c12;
+    r[6] = c20; r[7] = c21; r[8] = c22;
     return r;
   }
-  const inv = 1 / det;
+  const inv = 1 / (det * matrixScale);
   // (M⁻¹)ᵀ row i = cofactor row i / det.
   r[0] = c00 * inv; r[1] = c01 * inv; r[2] = c02 * inv;
   r[3] = c10 * inv; r[4] = c11 * inv; r[5] = c12 * inv;

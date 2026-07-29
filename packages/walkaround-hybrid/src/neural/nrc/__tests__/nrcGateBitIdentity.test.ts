@@ -1,13 +1,6 @@
-// nrcGateBitIdentity.test.ts — the LOAD-BEARING gate test for the NRC opt-in.
-//
-// Proves the honest OFF-bit-identity acceptance criterion at the UBO-byte level:
-// when nrcEnabled is 0/absent, EVERY byte of the WalkaroundUBO is unchanged from
-// the pre-NRC layout, and ONLY u32[91] (offset 364, the former _ppgPad2 slot)
-// flips to 1 when nrcEnabled is on, pinning the live compile-time NRC choice.
-//
-// The NRC gate lands in the previously-zero `_ppgPad2` pad slot, so an OFF gate
-// is byte-for-byte identical to a build with no NRC field at all — the default
-// GI path is provably unchanged.
+// NRC is a construction-time pipeline/resource choice. The former per-frame
+// UBO mirror was never read by WGSL; these tests pin the retired slot as an
+// explicit zero ABI pad and ensure later live controls remain aligned.
 
 import { describe, it, expect } from 'vitest';
 import {
@@ -16,6 +9,7 @@ import {
 } from '../../../pipeline/constants.ts';
 import { updateUBO } from '../../../pipeline/uboUpdater.ts';
 import type { PipelineFrameInputs } from '../../../pipeline/WalkaroundGPUPipeline.ts';
+import { WALKAROUND_UBO_WGSL } from '../../../shaders/walkaroundUbo.wgsl.ts';
 
 // A fake GPUDevice whose queue.writeBuffer captures the bytes updateUBO writes.
 function makeCapturingDevice(): { device: GPUDevice; captured: () => Uint8Array } {
@@ -39,7 +33,7 @@ function baseInputs(): PipelineFrameInputs {
     camera: { viewMatrix: m, projMatrix: m, prevViewProjMatrix: m, cameraPos: [1, 2, 3] },
     screen: { screenWidth: 1920, screenHeight: 1080, frameSeed: 42, swapChainView: {} as GPUTextureView, swapChainFormat: 'bgra8unorm' },
     lighting: {
-      totalEmissivePower: 12.5, emitterCount: 7,
+      emitterCount: 7,
       primaryLightDir: [0, -1, 0], primaryLightIntensity: 3,
       skyTint: [0.6, 0.7, 0.9], skyIrradiance: 1.5,
       emitterDist2Floor: 0.01, directFireflyClamp: 4,
@@ -60,59 +54,32 @@ function baseInputs(): PipelineFrameInputs {
       stainedGlassFlags: 0,
     },
     bvh: { bvhMode: 0, tlasNodeCount: 0 },
-    // nrcEnabled deliberately omitted in the OFF case → must default to 0.
-    nrc: {},
     composite: { tonemapMode: 0, exposure: 1.0, outputColorSpace: 0 },
   };
 }
 
-const NRC_GATE_U32_INDEX = 91; // offset 364 / 4
+const NRC_ABI_PAD_U32_INDEX = 91; // offset 364 / 4
 
-describe('NRC gate — OFF bit-identity (the honest acceptance criterion)', () => {
-  it('omitting nrcEnabled is byte-identical to nrcEnabled: 0', () => {
-    const a = makeCapturingDevice();
-    updateUBO(a.device, {} as GPUBuffer, baseInputs());
-    const off = a.captured();
-
-    const b = makeCapturingDevice();
-    updateUBO(b.device, {} as GPUBuffer, { ...baseInputs(), nrc: { nrcEnabled: 0 } });
-    const zero = b.captured();
-
-    expect(off.length).toBe(WALKAROUND_UBO_SIZE_BYTES);
-    expect(Array.from(off)).toEqual(Array.from(zero));
+describe('NRC construction-time gate — no dead UBO mirror', () => {
+  it('names retired fields as explicit ABI pads in WGSL', () => {
+    expect(WALKAROUND_UBO_WGSL).toContain('_abiPadEmitterPower:');
+    expect(WALKAROUND_UBO_WGSL).toContain('_abiPadNrcGate:');
+    expect(WALKAROUND_UBO_WGSL).toContain('_abiPadRetiredGrisToggle:');
+    expect(WALKAROUND_UBO_WGSL).not.toMatch(/\n\s+nrcEnabled\s*:/);
+    expect(WALKAROUND_UBO_WGSL).not.toMatch(/\n\s+grisReuse\s*:/);
+    expect(WALKAROUND_UBO_WGSL).not.toMatch(/\n\s+totalEmPower\s*:/);
   });
 
-  it('turning NRC on flips ONLY u32[91] (offset 364) — every other byte unchanged', () => {
-    const off = makeCapturingDevice();
-    updateUBO(off.device, {} as GPUBuffer, { ...baseInputs(), nrc: { nrcEnabled: 0 } });
-    const offU32 = new Uint32Array(off.captured().buffer.slice(0));
-
-    const on = makeCapturingDevice();
-    updateUBO(on.device, {} as GPUBuffer, { ...baseInputs(), nrc: { nrcEnabled: 1 } });
-    const onU32 = new Uint32Array(on.captured().buffer.slice(0));
-
-    expect(offU32.length).toBe(WALKAROUND_UBO_SIZE_BYTES / 4);
-    for (let i = 0; i < offU32.length; i++) {
-      if (i === NRC_GATE_U32_INDEX) {
-        expect(offU32[i]).toBe(0);
-        expect(onU32[i]).toBe(1);
-      } else {
-        expect(onU32[i]).toBe(offU32[i]);
-      }
-    }
-  });
-
-  it('the gate uses the former _ppgPad2 slot (offset 364) without disturbing later fields', () => {
-    const on = makeCapturingDevice();
-    updateUBO(on.device, {} as GPUBuffer, { ...baseInputs(), nrc: { nrcEnabled: 1 } });
-    const bytes = on.captured();
+  it('writes all retired slots as zero without disturbing the live tail', () => {
+    const capture = makeCapturingDevice();
+    updateUBO(capture.device, {} as GPUBuffer, baseInputs());
+    const bytes = capture.captured();
     expect(bytes.length).toBe(WALKAROUND_UBO_SIZE_BYTES);
     const u32 = new Uint32Array(bytes.buffer.slice(0));
     const f32 = new Float32Array(bytes.buffer.slice(0));
-    // The generalized-reuse compatibility word (offset 412 / u32[103])
-    // remains always-on; the later sun-angular tail is unaffected.
-    expect(u32[103]).toBe(1);
+    expect(f32[55]).toBe(0);
+    expect(u32[NRC_ABI_PAD_U32_INDEX]).toBe(0);
+    expect(u32[103]).toBe(0);
     expect(f32[104]).toBeCloseTo(WALKAROUND_DEFAULT_SUN_ANGULAR_RADIUS);
-    expect(u32[NRC_GATE_U32_INDEX]).toBe(1);
   });
 });

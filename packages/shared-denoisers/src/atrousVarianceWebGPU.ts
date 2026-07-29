@@ -35,9 +35,6 @@ import {
   assertOneShotDeviceLimits,
   assertOneShotDimensions,
 } from './webGpuOneShotValidation.js';
-// NOTE: albedo demodulation differs INTENTIONALLY between this à-trous+variance
-// denoiser and svgfRealWebGPU.ts — see the demodulation cross-reference comment
-// at the `rgbForAtrous` site below (`demodulateAlbedo`/`remodulateAlbedo`).
 import { demodulateAlbedo, remodulateAlbedo } from './albedoModulation.js';
 import {
   fillRg32f,
@@ -128,6 +125,15 @@ export function assertAtrousVarianceWebGPUBufferShapes(opts: AtrousVarianceWebGP
   if (opts.albedoRgb != null) {
     check('albedoRgb', opts.albedoRgb, px * 3);
   }
+  if (
+    opts.welfordMeanM2Domain !== undefined &&
+    opts.welfordMeanM2Domain !== 'radiance' &&
+    opts.welfordMeanM2Domain !== 'demodulated'
+  ) {
+    throw new TypeError(
+      `${label}: welfordMeanM2Domain must be "radiance" or "demodulated".`,
+    );
+  }
 
   assertFiniteNumber(label, 'frameCount', opts.frameCount ?? 0, {
     integer: true,
@@ -194,8 +200,13 @@ export interface AtrousVarianceWebGPUOptions {
   /**
    * Welford RG texel matching ATROUS_VARIANCE_WGSL / Sprint 9 Welford buffer: `.r = mean luminance`, `.g = M₂`.
    * Length `width * height * 2`. Supply when frameCount >= ATROUS_VARIANCE_TEMPORAL_MIN_FRAME_COUNT for temporal variance.
+   * When `albedoRgb` is also supplied, these moments must describe the same
+   * demodulated lighting signal (`rgb / albedo`) filtered by the à-trous chain;
+   * set `welfordMeanM2Domain: 'demodulated'` to declare that contract.
    */
   readonly welfordMeanM2?: Float32Array;
+  /** Signal domain of `welfordMeanM2`. Defaults to `'radiance'`. */
+  readonly welfordMeanM2Domain?: 'radiance' | 'demodulated';
 
   /**
    * Per-pixel diffuse albedo (row-major RGB, length `width * height * 3`).
@@ -221,7 +232,9 @@ export interface AtrousVarianceWebGPUOptions {
 
 /**
  * Runs à-trous variance estimation then ping-pong à-trous filtering.
- * Transient textures and buffers are freed per call; the GPU device is pooled by default.
+ * Transient textures and buffers are freed per call. Without an explicit
+ * device, the call acquires and destroys an ephemeral device by default;
+ * process-shared device reuse is opt-in via `reuseSharedWebGpuDevice: true`.
  */
 export async function runAtrousVarianceWebGPU(
   opts: AtrousVarianceWebGPUOptions,
@@ -244,6 +257,18 @@ export async function runAtrousVarianceWebGPU(
     opts.syntheticGbufferFallback?.linearDepth ??
     ATROUS_VARIANCE_SYNTHETIC_GBUFFER_DEFAULTS.linearDepth;
   assertAtrousVarianceWebGPUBufferShapes(opts);
+  if (
+    opts.albedoRgb != null &&
+    opts.welfordMeanM2 != null &&
+    frameCount >= ATROUS_VARIANCE_TEMPORAL_MIN_FRAME_COUNT &&
+    opts.welfordMeanM2Domain !== 'demodulated'
+  ) {
+    throw new TypeError(
+      'runAtrousVarianceWebGPU: albedoRgb demodulates the filtered signal, so temporal ' +
+      'welfordMeanM2 must be moments of that demodulated signal; pass ' +
+      'welfordMeanM2Domain: "demodulated" or omit albedoRgb.',
+    );
+  }
   if (opts.welfordMeanM2 == null) {
     warnMissingWelfordTemporal(frameCount);
   }
@@ -305,7 +330,7 @@ export async function runAtrousVarianceWebGPU(
       device.createTexture({
         label: 'atrous-variance-variance-out',
         size: [w, h],
-        format: 'rgba32float',
+        format: 'r32float',
         usage:
           GPUTextureUsage.STORAGE_BINDING |
           GPUTextureUsage.TEXTURE_BINDING |
@@ -336,7 +361,13 @@ export async function runAtrousVarianceWebGPU(
       }),
     );
 
-    uploadRgbAsRgba32f(device, inputColor, opts.rgb, w, h);
+    // Variance estimation and wavelet color differences must live in the same
+    // signal domain. With albedo demodulation enabled, feed the demodulated
+    // lighting signal to BOTH passes (not radiance to variance and lighting to
+    // à-trous, which shrinks the color edge-stop by roughly albedo²).
+    const rgbForFiltering =
+      opts.albedoRgb != null ? demodulateAlbedo(opts.rgb, opts.albedoRgb, w * h) : opts.rgb;
+    uploadRgbAsRgba32f(device, inputColor, rgbForFiltering, w, h);
     if (opts.gbufferNormalsRgb != null) {
       uploadUnitNormalsAsRgba32f(device, gbufferNormal, opts.gbufferNormalsRgb, w, h);
     } else {
@@ -378,26 +409,9 @@ export async function runAtrousVarianceWebGPU(
       ],
     });
 
-    // Item 24 — albedo demodulation (Schied 2017 §4.1).
-    // When albedoRgb is supplied, divide the input rgb by albedo before
-    // uploading to the GPU so the à-trous chain filters pure lighting.
-    // The demodulated buffer is used ONLY for colorPingA (the à-trous input);
-    // inputColor (the variance pass input) receives the original rgb so the
-    // variance estimate reflects the actual noisy signal energy.
-    //
-    // ── Demodulation cross-reference (D14-3) ─────────────────────────────────
-    // This is DELIBERATELY narrower than svgfRealWebGPU.ts's demodulation. Here
-    // ONLY the à-trous input (colorPingA) sees demodulated lighting; the
-    // variance pass reads the ORIGINAL noisy `rgb` so the variance estimate
-    // reflects true signal energy. In svgfRealWebGPU.ts BOTH current AND
-    // previous radiance are demodulated up front so reprojection blending,
-    // moment tracking, and variance all operate on lighting L = c/ρ (that path
-    // has real temporal moments; this à-trous+variance denoiser does not).
-    // The divergence is intentional — do NOT unify these two demodulation
-    // strategies; the algorithms differ (Schied SVGF vs à-trous lookup).
-    const rgbForAtrous =
-      opts.albedoRgb != null ? demodulateAlbedo(opts.rgb, opts.albedoRgb, w * h) : opts.rgb;
-    uploadRgbAsRgba16f(device, colorPingA, rgbForAtrous, w, h);
+    // Item 24 — albedo demodulation (Schied 2017 §4.1). The exact same
+    // `rgbForFiltering` payload backs the variance and à-trous passes.
+    uploadRgbAsRgba16f(device, colorPingA, rgbForFiltering, w, h);
 
     const wg = ATROUS_VARIANCE_COMPUTE_WORKGROUP_SIZE;
     // Batch every pass (variance + N × atrous) into a single encoder /

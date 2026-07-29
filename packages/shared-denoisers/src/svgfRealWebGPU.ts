@@ -429,7 +429,7 @@ export async function runSVGFRealWebGPU(
       device.createTexture({
         label: 'svgf-var-mom',
         size: [w, h],
-        format: 'rgba32float',
+        format: 'r32float',
         usage: texS | texB | texC,
       }),
     );
@@ -438,7 +438,7 @@ export async function runSVGFRealWebGPU(
       device.createTexture({
         label: 'svgf-var-final',
         size: [w, h],
-        format: 'rgba32float',
+        format: 'r32float',
         usage: texS | texB | texC,
       }),
     );

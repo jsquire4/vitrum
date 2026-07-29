@@ -15,7 +15,7 @@
 // Also pins KHR_materials_volume.thicknessTexture now that core carries it as
 // the reserved `thicknessMap` material field.
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { gltfToScene } from './gltfToScene.js';
 import { loadGltfAsset, type GltfTextureSourceExtension } from './index.js';
 import type { GltfJson, GltfTextureInfo } from './gltfTypes.js';
@@ -491,31 +491,23 @@ describe('KHR extension texture sweep (GLTF-06)', () => {
     });
   });
 
-  it('rejects a texture that has only an opt-in source-extension image with a complete cause chain', async () => {
+  it('loads a texture that has only a built-in WebP source-extension image', async () => {
     const { gltf, buffers } = makeTextureSourceExtensionGltf('EXT_texture_webp');
     delete gltf.textures![0]!.source;
     gltf.extensionsUsed = ['EXT_texture_webp'];
+    const decodeImage = vi.fn(async () => ({ kind: 'decoded-texture' }));
 
-    await expect(gltfToScene(gltf, {
+    const result = await gltfToScene(gltf, {
       buffers,
-      decodeImage: async () => ({ kind: 'decoded-texture' }),
-    })).rejects.toMatchObject({
-      name: 'GltfImportError',
-      diagnostics: expect.arrayContaining([
-        expect.objectContaining({
-          severity: 'warning',
-          code: 'disabled-texture-source-extension',
-          path: 'textures[0].extensions.EXT_texture_webp',
-          textureIndex: 0,
-          textureSourceExtensions: ['EXT_texture_webp'],
-        }),
-        expect.objectContaining({
-          severity: 'error',
-          code: 'material-texture-unresolved',
-          path: 'materials[0].pbrMetallicRoughness.baseColorTexture',
-        }),
-      ]),
+      decodeImage,
     });
+
+    expect(decodeImage).toHaveBeenCalledOnce();
+    expect((result.scene.primitives[0] as MeshPrimitive).material.baseColorMap?.handle)
+      .toEqual({ kind: 'decoded-texture' });
+    expect(result.diagnostics.some(
+      (diagnostic) => diagnostic.code === 'disabled-texture-source-extension',
+    )).toBe(false);
   });
 
   it('rejects selected source-extension missing images at the extension source path', async () => {

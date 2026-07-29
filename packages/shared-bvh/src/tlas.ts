@@ -109,10 +109,6 @@ export interface TlasValidationReport {
 
 export interface TlasBuildStatus {
   readonly status: 'valid';
-  readonly inputInstanceCount: number;
-  readonly includedInstanceCount: number;
-  readonly filteredInvalidInstanceIndices: readonly number[];
-  readonly invalidInstancePolicy: 'reject-invalid';
   readonly balancedFallbackCount: number;
   readonly balancedFallbackReasons: Readonly<Record<TlasBalancedFallbackReason, number>>;
   readonly validation: TlasValidationReport;
@@ -897,7 +893,6 @@ export function buildTlas(
   );
 
   const records: InstanceRecord[] = [];
-  const filteredInvalidInstanceIndices: number[] = [];
   for (let i = 0; i < instances.length; i += 1) {
     const inst = instances[i]!;
     if (inst == null || typeof inst !== 'object' || Array.isArray(inst)) {
@@ -986,10 +981,6 @@ export function buildTlas(
     ...buffers,
     buildStatus: {
       status: 'valid',
-      inputInstanceCount: instances.length,
-      includedInstanceCount: records.length,
-      filteredInvalidInstanceIndices,
-      invalidInstancePolicy: 'reject-invalid',
       balancedFallbackCount: stats.balancedFallbackCount,
       balancedFallbackReasons: { ...stats.balancedFallbackReasons },
       validation,

@@ -37,6 +37,7 @@ import {
 } from '@vitrum/gltf-adapter';
 import type {
   AttachVitrumHandle,
+  AttachVitrumBackendChangedEvent,
   AttachVitrumRecreateEngineFactory,
   AttachVitrumSceneControllerPlayback,
   CameraLike,
@@ -169,6 +170,8 @@ export interface VitrumCanvasProps {
    * preservation, and retry-cap behaviour.  Default: `false`.
    */
   autoRecreateOnDeviceLoss?: boolean;
+  /** Called when fatal-loss recovery installs a different backend or profile. */
+  onBackendChanged?: (event: AttachVitrumBackendChangedEvent) => void;
   /** Forwarded to the underlying canvas element. */
   style?: React.CSSProperties;
   /** Forwarded to the underlying canvas element. */
@@ -179,6 +182,10 @@ export const VitrumCanvas = React.forwardRef<HTMLCanvasElement, VitrumCanvasProp
   function VitrumCanvas(props, externalRef) {
     const canvasRef = React.useRef<HTMLCanvasElement | null>(null);
     const handleRef = React.useRef<AttachVitrumHandle | null>(null);
+    // Structural prop changes can arrive while async glTF decode / engine
+    // construction is still in flight. Serialize effect generations so one
+    // canvas is never concurrently owned by two attachVitrum calls.
+    const attachSerialRef = React.useRef<Promise<void>>(Promise.resolve());
     const qualityRef = React.useRef<VitrumCanvasProps['quality']>(props.quality);
     const onFrameRef = React.useRef<VitrumCanvasProps['onFrame']>(props.onFrame);
     const onProgressRef = React.useRef<VitrumCanvasProps['onProgress']>(props.onProgress);
@@ -188,6 +195,9 @@ export const VitrumCanvas = React.forwardRef<HTMLCanvasElement, VitrumCanvasProp
     );
     const onErrorRef = React.useRef<VitrumCanvasProps['onError']>(props.onError);
     const onEngineErrorRef = React.useRef<VitrumCanvasProps['onEngineError']>(props.onEngineError);
+    const onBackendChangedRef = React.useRef<VitrumCanvasProps['onBackendChanged']>(
+      props.onBackendChanged,
+    );
     const onGltfLoadedRef = React.useRef<VitrumCanvasProps['onGltfLoaded']>(props.onGltfLoaded);
     // H31 — ref-stabilize `onAttachError` so inline callbacks do not cause full
     // engine teardown+recreate on every parent render. `advanced` is a creation-time
@@ -218,6 +228,9 @@ export const VitrumCanvas = React.forwardRef<HTMLCanvasElement, VitrumCanvasProp
       onEngineErrorRef.current = props.onEngineError;
     }, [props.onEngineError]);
     React.useEffect(() => {
+      onBackendChangedRef.current = props.onBackendChanged;
+    }, [props.onBackendChanged]);
+    React.useEffect(() => {
       onGltfLoadedRef.current = props.onGltfLoaded;
     }, [props.onGltfLoaded]);
     React.useEffect(() => {
@@ -235,6 +248,7 @@ export const VitrumCanvas = React.forwardRef<HTMLCanvasElement, VitrumCanvasProp
       const abortController = typeof AbortController !== 'undefined' ? new AbortController() : null;
 
       const attach = async (): Promise<void> => {
+        if (cancelled) return;
         const gltfSignal = composeAbortSignal(props.gltfOptions?.signal, abortController?.signal);
         let gltfResult: VitrumCanvasGltfResult | undefined;
         if (props.gltf !== undefined) {
@@ -430,6 +444,13 @@ export const VitrumCanvas = React.forwardRef<HTMLCanvasElement, VitrumCanvasProp
               /* host callback must not propagate — ignore */
             }
           },
+          onBackendChanged: (event) => {
+            try {
+              onBackendChangedRef.current?.(event);
+            } catch {
+              /* host callback must not propagate — ignore */
+            }
+          },
         });
         if (cancelled) {
           h.dispose();
@@ -441,7 +462,12 @@ export const VitrumCanvas = React.forwardRef<HTMLCanvasElement, VitrumCanvasProp
         attached = h;
       };
 
-      void attach().catch((err) => {
+      const attachCycle = attachSerialRef.current
+        .catch(() => undefined)
+        .then(attach);
+      attachSerialRef.current = attachCycle.catch(() => undefined);
+
+      void attachCycle.catch((err) => {
         disposePendingGltfEngine(pendingGltfResult);
         pendingGltfResult = undefined;
         if (cancelled) return;

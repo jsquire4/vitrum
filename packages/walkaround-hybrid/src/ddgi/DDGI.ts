@@ -187,7 +187,22 @@ export class DDGI {
     this._onWarning = opts.onWarning;
     this._probeSpacing     = opts.probeSpacing;
     this._maxProbesPerAxis = opts.maxProbesPerAxis ?? 16;
-    this._bvh   = new SceneBvh();
+    this._bvh   = new SceneBvh({
+      onWarning: (warning) => this._warn({
+        code: warning.includes('displacementMap')
+          ? 'walkaround-hybrid.vertex-displacement-skipped'
+          : 'walkaround-hybrid.scene-pack-warning',
+        backend: 'walkaround-hybrid',
+        phase: 'setScene',
+        method: 'DDGI.setScene',
+        message: `[vitrum/walkaround-hybrid/DDGI] ${warning}`,
+        details: {
+          warning,
+          source: 'shared-bvh',
+          subsystem: 'ddgi',
+        },
+      }),
+    });
     this._grid  = new ProbeGrid();
     this._pass  = new ProbeUpdatePass(this._bvh, this._grid, {
       debug: this._debug,

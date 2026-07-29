@@ -320,7 +320,7 @@ describe('W9 gi-ris — UBO byte layout (ppg-OFF bit-identity + ppg-ON gate)', (
     camera: { viewMatrix: m, projMatrix: m, prevViewProjMatrix: m, cameraPos: [1, 2, 3] },
     screen: { screenWidth: 64, screenHeight: 48, frameSeed: 7, swapChainView: {} as GPUTextureView, swapChainFormat: 'bgra8unorm' },
     lighting: {
-      emitterCount: 2, totalEmissivePower: 5,
+      emitterCount: 2,
       primaryLightDir: [0, 1, 0], primaryLightIntensity: 3,
       skyTint: [0.1, 0.2, 0.3], skyIrradiance: 0.5,
       emitterDist2Floor: 0.01, directFireflyClamp: 4, causticBoost: 1, causticVisClamp: 1,
@@ -340,7 +340,6 @@ describe('W9 gi-ris — UBO byte layout (ppg-OFF bit-identity + ppg-ON gate)', (
       stainedGlassFlags: 0,
     },
     bvh: { bvhMode: 0, tlasNodeCount: 0 },
-    nrc: {},
     composite: { tonemapMode: 0, exposure: 1.0, outputColorSpace: 0 },
   };
 

@@ -73,7 +73,7 @@ describe('lite-tier binding budget — static WGSL analysis (H56-b)', () => {
 
   it('uses three scene arena slots regardless of merged-BVH or TLAS traversal mode', () => {
     const arenaDecls = composedShadeWgsl.match(
-      /@group\(1\)\s*@binding\([0-2]\)\s*var<storage,\s*read>\s*scene(?:Geometry|Tlas|Lighting)Arena/g,
+      /@group\(1\)\s*@binding\([0-2]\)\s*var<storage,\s*read>\s*(?:bvhSceneGeometry|sceneTlas|sceneLighting)Arena/g,
     ) ?? [];
     expect(arenaDecls).toHaveLength(3);
     expect(new Set(arenaDecls).size).toBe(3);

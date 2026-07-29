@@ -30,8 +30,7 @@
  *     compile-time WGSL const; promoting it to a UBO field for a marginal lever
  *     is deferred. We degrade via spatial PASS count + resolution instead.
  *   - RC / PPG / neural — presets never force these ON (they need extra GPU
- *     resources / weights). `enableRcPpgNeuralByDefault` is informational for
- *     host UI; the engine default stays OFF regardless of preset.
+ *     resources / weights); the engine default stays OFF regardless of preset.
  *   - Checkerboard — ENABLED on the degradation tiers (`medium` + `low`),
  *     OFF on the quality tiers (`ultra` + `high`). The promotion is backed by a
  *     measured whole-frame GPU-timestamp perf proof (dzn RTX-4090) PLUS a motion
@@ -221,16 +220,12 @@ export interface QualityPreset {
    *  (`0`/negative would skip forever); a host may override per-engine via
    *  `HybridEngineOptions.ppgDispatchInterval`. */
   readonly ppgDispatchInterval: number;
-  /** Documentary only — whether the host UI should default-offer RC/PPG/neural
-   *  for this tier. The engine NEVER forces these on from a preset. */
-  readonly enableRcPpgNeuralByDefault: boolean;
   /** Checkerboard half-res shading (HybridEngineOptions.checkerboardRendering).
    *  TRUE on the degradation tiers (medium + low), FALSE on the quality tiers
    *  (ultra + high) — backed by a measured whole-frame perf proof + motion A/B
    *  (see {@link CHECKERBOARD_MEASURED_PERF_PROOF}). A host always overrides
    *  either way via `opts.checkerboardRendering`. */
   readonly checkerboard: boolean;
-  readonly checkerboardPerfProof: CheckerboardPerfProof;
 }
 
 /**
@@ -249,9 +244,7 @@ export const QUALITY_PRESETS: Readonly<Record<QualityTier, QualityPreset>> = Obj
     giSpatialPasses: 2,
     ddgiUpdateDivisor: 2,                   // flagship: fastest GI cadence — stride 2 (4× the default-8 probe rate). H1 made the divisor load-bearing, so ultra is NO LONGER byte-identical to the old hardcoded stride-8 (intentional, per the 2→32 cadence decision).
     ppgDispatchInterval: 1,                  // every frame — no behaviour change when PPG is on.
-    enableRcPpgNeuralByDefault: false,
     checkerboard: false,                     // QUALITY tier — full-rate (perf proof exists but the fidelity tiers don't trade quality for it).
-    checkerboardPerfProof: CHECKERBOARD_MEASURED_PERF_PROOF,
   },
   high: {
     resolutionFactor: 0.85,
@@ -263,9 +256,7 @@ export const QUALITY_PRESETS: Readonly<Record<QualityTier, QualityPreset>> = Obj
     giSpatialPasses: 2,
     ddgiUpdateDivisor: 4,                   // 2× the default-8 probe rate (stride 4)
     ppgDispatchInterval: 1,                  // every frame (high keeps full PPG cadence)
-    enableRcPpgNeuralByDefault: false,
     checkerboard: false,                     // QUALITY tier — full-rate (perf proof exists but high doesn't trade quality for it).
-    checkerboardPerfProof: CHECKERBOARD_MEASURED_PERF_PROOF,
   },
   medium: {
     resolutionFactor: 0.67,
@@ -279,9 +270,7 @@ export const QUALITY_PRESETS: Readonly<Record<QualityTier, QualityPreset>> = Obj
     giSpatialPasses: 1,
     ddgiUpdateDivisor: 8,                   // = the default probe cadence (stride 8)
     ppgDispatchInterval: 2,                  // train every 2nd frame — ~½ the PPG train cost; tree persists between updates so quality drift is negligible.
-    enableRcPpgNeuralByDefault: false,
     checkerboard: true,                      // DEGRADATION tier — ON: ≈31% whole-frame GPU-time saved; motion fallback forces full-rate under fast motion (measured, see CHECKERBOARD_MEASURED_PERF_PROOF).
-    checkerboardPerfProof: CHECKERBOARD_MEASURED_PERF_PROOF,
   },
   low: {
     resolutionFactor: 0.5,
@@ -294,9 +283,7 @@ export const QUALITY_PRESETS: Readonly<Record<QualityTier, QualityPreset>> = Obj
     giSpatialPasses: 1,
     ddgiUpdateDivisor: 32,                  // budget: slowest GI cadence — stride 32 (1/4 the default-8 probe rate)
     ppgDispatchInterval: 4,                  // budget: train every 4th frame — ~¼ the PPG train cost.
-    enableRcPpgNeuralByDefault: false,
     checkerboard: true,                      // DEGRADATION tier — ON: ≈31% whole-frame GPU-time saved; motion fallback forces full-rate under fast motion (measured, see CHECKERBOARD_MEASURED_PERF_PROOF).
-    checkerboardPerfProof: CHECKERBOARD_MEASURED_PERF_PROOF,
   },
 });
 

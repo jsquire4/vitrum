@@ -35,6 +35,7 @@ describe('walkaround-hybrid promise ledger compliance', () => {
       primaryLightIntensity: 1,
       skyTint: [1, 1, 1],
       skyIrradiance: 1,
+      debug: true,
     });
     const engineView = engine as unknown as Engine;
     const caps = engine.capabilities;
@@ -86,5 +87,26 @@ describe('walkaround-hybrid promise ledger compliance', () => {
     expect(hasFunctionProperty(engineView, 'exportGIState') || hasFunctionProperty(engineView, 'importGIState')).toBe(
       expected.methodPromises.giStatePersistence,
     );
+  });
+
+  it('publishes the debug property and capability only for debug-enabled instances', () => {
+    const makeEngine = (debug: boolean): HybridEngine => new HybridEngine({
+      device: makeMockDevice(),
+      width: 64,
+      height: 64,
+      primaryLightDir: [0, -1, 0],
+      primaryLightIntensity: 1,
+      skyTint: [1, 1, 1],
+      skyIrradiance: 1,
+      debug,
+    });
+    const disabled = makeEngine(false) as unknown as Engine;
+    const enabled = makeEngine(true) as unknown as Engine;
+
+    expect(Object.prototype.hasOwnProperty.call(disabled, 'debug')).toBe(false);
+    expect(disabled.capabilities.debugSurface).toBe(false);
+    expect(Object.prototype.hasOwnProperty.call(enabled, 'debug')).toBe(true);
+    expect(typeof enabled.debug).toBe('object');
+    expect(enabled.capabilities.debugSurface).toBe(true);
   });
 });

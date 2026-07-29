@@ -16,14 +16,14 @@ export const light_sampling_functions = /* glsl */`
 
 	float getDistanceAttenuation( const in float lightDistance, const in float cutoffDistance, const in float decayExponent ) {
 
-		// based upon Frostbite 3 Moving to Physically-based Rendering
-		// page 32, equation 26: E[window1]
-		// https://seblagarde.files.wordpress.com/2015/07/course_notes_moving_frostbite_to_pbr_v32.pdf
+			// KHR_lights_punctual range window:
+			//   clamp(1 - (distance / range)^4, 0, 1)
+			// https://registry.khronos.org/glTF/extensions/2.0/Khronos/KHR_lights_punctual/
                 float distanceFalloff = 1.0 / pow( lightDistance, decayExponent );
 
 		if ( cutoffDistance > 0.0 ) {
 
-			distanceFalloff *= pow2( saturate( 1.0 - pow4( lightDistance / cutoffDistance ) ) );
+				distanceFalloff *= saturate( 1.0 - pow4( lightDistance / cutoffDistance ) );
 
 		}
 
@@ -338,12 +338,11 @@ export const light_sampling_functions = /* glsl */`
 			vec3 lightRay = light.u - rayOrigin;
 			float lightDist = length( lightRay );
 			float cutoffDistance = light.distance;
-                        float distanceFalloff = 1.0 / pow( lightDist, light.decay );
-			if ( cutoffDistance > 0.0 ) {
-
-				distanceFalloff *= pow2( saturate( 1.0 - pow4( lightDist / cutoffDistance ) ) );
-
-			}
+                        float distanceFalloff = getDistanceAttenuation(
+                                lightDist,
+                                cutoffDistance,
+                                light.decay
+                        );
 
 			LightRecord rec;
 			rec.point = light.u;

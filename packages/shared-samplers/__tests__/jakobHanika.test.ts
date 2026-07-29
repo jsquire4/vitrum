@@ -25,6 +25,7 @@ import { describe, it, expect } from 'vitest';
 import {
   rgbToSpectralCoefficients,
   evaluateSpectrum,
+  fitRgbToSpectralCoefficients,
   spectralCoefficientsToRGB,
   VISIBLE_LAMBDA_MIN,
   VISIBLE_LAMBDA_MAX,
@@ -232,6 +233,77 @@ describe('rgbToSpectralCoefficients — spectral shape sanity', () => {
 // ════════════════════════════════════════════════════════════════════════════
 
 describe('rgbToSpectralCoefficients — determinism', () => {
+  it('reports convergence explicitly across the sampled RGB cube', () => {
+    for (let ri = 0; ri < 6; ri += 1) {
+      for (let gi = 0; gi < 6; gi += 1) {
+        for (let bi = 0; bi < 6; bi += 1) {
+          const fit = fitRgbToSpectralCoefficients(
+            ri / 5,
+            gi / 5,
+            bi / 5,
+          );
+          expect(fit.converged).toBe(true);
+          expect(Number.isFinite(fit.residualDeltaE)).toBe(true);
+        }
+      }
+    }
+    expect(fitRgbToSpectralCoefficients(0, 0, 0).termination)
+      .toBe('boundary-black');
+    expect(fitRgbToSpectralCoefficients(1, 1, 1).termination)
+      .toBe('boundary-white');
+  });
+
+  it('measures finite black/white shortcut residuals in the normal D65/Lab metric', () => {
+    const black = fitRgbToSpectralCoefficients(0, 0, 0);
+    const white = fitRgbToSpectralCoefficients(1, 1, 1);
+
+    expect(black.coefficients).toEqual([-4096, 0, 0]);
+    expect(white.coefficients).toEqual([4096, 0, 0]);
+    for (const fit of [black, white]) {
+      expect(fit.converged).toBe(true);
+      expect(fit.residualDeltaE).toBeGreaterThan(0);
+      expect(fit.residualDeltaE).toBeLessThanOrEqual(1e-4);
+    }
+
+    const reproducedWhite = spectralCoefficientsToRGB(white.coefficients);
+    for (const channel of reproducedWhite) {
+      expect(Math.abs(channel - 1)).toBeLessThan(2e-8);
+    }
+  });
+
+  it('reports finite convergence for 2,048 deterministic pseudo-random RGB colours', () => {
+    let state = 0x9e3779b9;
+    const nextUnit = (): number => {
+      state ^= state << 13;
+      state ^= state >>> 17;
+      state ^= state << 5;
+      return (state >>> 0) / 0x1_0000_0000;
+    };
+    const failures: Array<{
+      readonly sample: number;
+      readonly rgb: readonly [number, number, number];
+      readonly termination: string;
+      readonly residualDeltaE: number;
+    }> = [];
+
+    for (let sample = 0; sample < 2_048; sample += 1) {
+      const rgb = [nextUnit(), nextUnit(), nextUnit()] as const;
+      const fit = fitRgbToSpectralCoefficients(...rgb);
+      const finite = Number.isFinite(fit.residualDeltaE)
+        && fit.coefficients.every(Number.isFinite);
+      if (!fit.converged || !finite) {
+        failures.push({
+          sample,
+          rgb,
+          termination: fit.termination,
+          residualDeltaE: fit.residualDeltaE,
+        });
+      }
+    }
+
+    expect(failures).toEqual([]);
+  });
+
   it('same RGB → identical coefficients on repeated calls', () => {
     const r = 0.3,
       g = 0.7,
@@ -256,12 +328,12 @@ describe('rgbToSpectralCoefficients — determinism', () => {
 // ════════════════════════════════════════════════════════════════════════════
 
 describe('Jakob–Hanika — absolute colorimetry (round-trip cannot catch these)', () => {
-  it('the discretised D65 white point matches the standard CIE D65 (Y-normalised)', () => {
-    // The module folds Δλ·D65(λ)·CMF(λ)/N into per-sample weights with the
-    // luminance normaliser N chosen so a unit reflector has Y = 1. Summing those
-    // weights (S ≡ 1) must reproduce the CIE D65 white point (0.95047, 1, 1.08883)
-    // up to 5 nm discretisation. A missing illuminant term or wrong normaliser
-    // would shift this materially.
+  it('the raw discretised D65 white point matches standard CIE D65 before calibration', () => {
+    // The module first folds Δλ·D65(λ)·CMF(λ)/N into sampled weights, then
+    // calibrates each channel's integral to the paired RGB matrix white point.
+    // This independent calculation pins the raw quadrature before that small
+    // calibration: a missing illuminant term or wrong normaliser would still
+    // shift it materially.
     let normY = 0;
     for (let i = 0; i < CIE_TABLE_LENGTH; i++) {
       normY += (CIE_D65_TABLE[i] ?? 0) * (CIE_Y_TABLE[i] ?? 0) * CIE_LAMBDA_STEP;

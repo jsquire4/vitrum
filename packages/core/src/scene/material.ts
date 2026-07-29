@@ -351,11 +351,15 @@ export interface MaterialSpec {
   readonly scatteringCoefficient?: number;
 
   /**
-   * Henyey-Greenstein phase function asymmetry parameter g ∈ (−1, 1).
+   * Henyey–Greenstein phase-function asymmetry `g`, authored strictly inside
+   * `(-1, 1)`.
    *   g = 0:   isotropic scatter.
    *   g > 0:   forward-biased scatter (biological tissue ~0.9).
    *   g < 0:   backward-biased scatter (retroreflective powders).
    * Default: 0 (isotropic) when scatteringCoefficient is set.
+   *
+   * Renderers preserve the authored value through `|g| = 0.999999` and clamp
+   * only the still-closer numerical tail to ±0.999999 for finite evaluation.
    *
    * Reference: Henyey & Greenstein, "Diffuse Radiation in the Galaxy," 1941.
    */

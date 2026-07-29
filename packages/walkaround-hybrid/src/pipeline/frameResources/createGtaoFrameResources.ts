@@ -40,7 +40,8 @@ export function createGtaoFrameResources(
     usage:
       GPUTextureUsage.STORAGE_BINDING |
       GPUTextureUsage.TEXTURE_BINDING |
-      GPUTextureUsage.COPY_DST,
+      GPUTextureUsage.COPY_DST |
+      GPUTextureUsage.COPY_SRC,
   });
 
   const bytesPerTexel = 8;

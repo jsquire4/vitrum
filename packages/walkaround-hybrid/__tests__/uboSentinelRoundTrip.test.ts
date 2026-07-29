@@ -175,8 +175,7 @@ function buildSentinelInputs(): {
   const screenWidth = s(), screenHeight = s();
   // emitterCount: u32 → u32[54]
   const emitterCount = s();
-  // totalEmissivePower: f32 → f32[55]
-  const totalEmissivePower = s();
+  // offset 220 is a retired zero ABI pad.
   // primaryLightDir: vec3f → f32[56..58]
   const pldx = s(), pldy = s(), pldz = s();
   // primaryLightIntensity: f32 → f32[59]
@@ -231,8 +230,7 @@ function buildSentinelInputs(): {
   const lightTreeEnabled = s();
   // lightTreeNodeCount: u32 → u32[90]
   const lightTreeNodeCount = s();
-  // nrcEnabled: u32 → u32[91]
-  const nrcEnabled = s();
+  // offset 364 is a retired zero ABI pad.
   // regirOrigin: vec3f → f32[92..94]
   const rorX = s(), rorY = s(), rorZ = s();
   // regirInvCellSize: f32 → f32[95]
@@ -246,8 +244,7 @@ function buildSentinelInputs(): {
   const survivorsPerCell = s();
   // regirGridFloatOffset: u32 → u32[102]
   const gridFloatOffset = s();
-  // grisReuse compatibility word: u32 → u32[103], always 1
-  const grisReuse = s();
+  // offset 412 is a retired zero ABI pad.
   // sunAngular.x: f32 → f32[104]
   const sunAngularRadius = s();
 
@@ -268,7 +265,6 @@ function buildSentinelInputs(): {
       swapChainFormat: 'bgra8unorm',
     },
     lighting: {
-      totalEmissivePower,
       emitterCount,
       primaryLightDir: [pldx, pldy, pldz],
       primaryLightIntensity,
@@ -294,7 +290,6 @@ function buildSentinelInputs(): {
       restirGiSpatialRadiusPx,
       restirGiSpatialNormalDotMin,
       restirGiSpatialCoplanarTol,
-      grisReuse,
     },
     gtao: {
       gtaoRadiusPx: 32, gtaoIntensity: 2, gtaoDepthThreshold: 2,
@@ -310,7 +305,6 @@ function buildSentinelInputs(): {
       stainedGlassFlags,
     },
     bvh: { bvhMode, tlasNodeCount },
-    nrc: { nrcEnabled },
     composite: { tonemapMode: 0, exposure: 1.0, outputColorSpace: 0 },
   } as unknown as PipelineFrameInputs;
 
@@ -345,7 +339,7 @@ function buildSentinelInputs(): {
     'screenWidth@208':          screenWidth,
     'screenHeight@212':         screenHeight,
     'emitterCount@216':         emitterCount,
-    'totalEmissivePower@220':   totalEmissivePower,
+    '_abiPadEmitterPower@220':  0,
     'primaryLightDir.x@224':    pldx,
     'primaryLightDir.y@228':    pldy,
     'primaryLightDir.z@232':    pldz,
@@ -381,7 +375,7 @@ function buildSentinelInputs(): {
     // offset 352 = ppgMixAlpha — 0 because ppg is passed as OFF default
     'lightTreeEnabled@356':     lightTreeEnabled,
     'lightTreeNodeCount@360':   lightTreeNodeCount,
-    'nrcEnabled@364':           nrcEnabled,
+    '_abiPadNrcGate@364':       0,
     'regirOrigin.x@368':        rorX,
     'regirOrigin.y@372':        rorY,
     'regirOrigin.z@376':        rorZ,
@@ -393,7 +387,7 @@ function buildSentinelInputs(): {
     'regirCandidatesPerCell@400': candidatesPerCell,
     'regirSurvivorsPerCell@404': survivorsPerCell,
     'regirGridFloatOffset@408': gridFloatOffset,
-    'grisReuse@412':        1,
+    '_abiPadRetiredGrisToggle@412': 0,
     'sunAngular.x@416':         sunAngularRadius,
   };
 
@@ -425,7 +419,7 @@ describe('packWalkaroundUBO — sentinel round-trip (packer index ↔ WGSL offse
     const frameSeed = s();
     const screenWidth = s(), screenHeight = s();
     const emitterCount = s();
-    const totalEmissivePower = s();
+    // offset 220 is a retired zero ABI pad.
     const pldx = s(), pldy = s(), pldz = s();
     const primaryLightIntensity = s();
     const stR = s(), stG = s(), stB = s();
@@ -451,14 +445,14 @@ describe('packWalkaroundUBO — sentinel round-trip (packer index ↔ WGSL offse
     const stainedGlassFlags = s();
     const lightTreeEnabled = s();
     const lightTreeNodeCount = s();
-    const nrcEnabled = s();
+    // offset 364 is a retired zero ABI pad.
     const rorX = s(), rorY = s(), rorZ = s();
     const regirInvCellSize = s();
     const rdX = s(), rdY = s(), rdZ = s();
     const candidatesPerCell = s();
     const survivorsPerCell = s();
     const gridFloatOffset = s();
-    const grisReuse = s();
+    // offset 412 is a retired zero ABI pad.
 
     const inputs: PipelineFrameInputs = {
       camera: { viewMatrix, projMatrix, prevViewProjMatrix, cameraPos: [cpx, cpy, cpz] },
@@ -467,7 +461,7 @@ describe('packWalkaroundUBO — sentinel round-trip (packer index ↔ WGSL offse
         swapChainView: {} as GPUTextureView, swapChainFormat: 'bgra8unorm',
       },
       lighting: {
-        totalEmissivePower, emitterCount,
+        emitterCount,
         primaryLightDir: [pldx, pldy, pldz], primaryLightIntensity,
         skyTint: [stR, stG, stB], skyIrradiance,
         emitterDist2Floor, directFireflyClamp, causticBoost, causticVisClamp,
@@ -477,7 +471,6 @@ describe('packWalkaroundUBO — sentinel round-trip (packer index ↔ WGSL offse
       restirGI: {
         restirGiWCap, restirGiIrrClamp, restirGiMClamp,
         restirGiSpatialRadiusPx, restirGiSpatialNormalDotMin, restirGiSpatialCoplanarTol,
-        grisReuse,
       },
       gtao: {
         gtaoRadiusPx: 32, gtaoIntensity: 2, gtaoDepthThreshold: 2,
@@ -491,7 +484,6 @@ describe('packWalkaroundUBO — sentinel round-trip (packer index ↔ WGSL offse
         stainedGlassFlags,
       },
       bvh: { bvhMode, tlasNodeCount },
-      nrc: { nrcEnabled },
       composite: { tonemapMode: 0, exposure: 1.0, outputColorSpace: 0 },
     } as unknown as PipelineFrameInputs;
 
@@ -544,8 +536,8 @@ describe('packWalkaroundUBO — sentinel round-trip (packer index ↔ WGSL offse
     expect(ru(212)).toBe(screenHeight);
     // emitterCount (u32): offset 216
     expect(ru(216)).toBe(emitterCount);
-    // totalEmPower (f32): offset 220
-    expect(rf(220)).toBe(totalEmissivePower);
+    // retired emitter-power mirror: explicit zero ABI pad at offset 220
+    expect(rf(220)).toBe(0);
     // sunDirection/primaryLightDir (vec3f): offset 224, 228, 232
     expect(rf(224)).toBe(pldx);
     expect(rf(228)).toBe(pldy);
@@ -610,8 +602,8 @@ describe('packWalkaroundUBO — sentinel round-trip (packer index ↔ WGSL offse
     expect(ru(356)).toBe(lightTreeEnabled);
     // lightTreeNodeCount (u32): offset 360
     expect(ru(360)).toBe(lightTreeNodeCount);
-    // nrcEnabled (u32): offset 364
-    expect(ru(364)).toBe(nrcEnabled);
+    // retired NRC mirror: explicit zero ABI pad at offset 364
+    expect(ru(364)).toBe(0);
     // regirOrigin (vec3f): offset 368, 372, 376
     expect(rf(368)).toBe(rorX);
     expect(rf(372)).toBe(rorY);
@@ -630,9 +622,8 @@ describe('packWalkaroundUBO — sentinel round-trip (packer index ↔ WGSL offse
     expect(ru(404)).toBe(survivorsPerCell);
     // regirGridFloatOffset (u32): offset 408
     expect(ru(408)).toBe(gridFloatOffset);
-    // grisReuse compatibility word (u32): offset 412, always enabled.
-    expect(ru(412)).toBe(1);
-    expect(ru(412)).not.toBe(grisReuse);
+    // retired GRIS toggle: explicit zero ABI pad at offset 412.
+    expect(ru(412)).toBe(0);
   });
 
   it('ppg ON populates ppgEnabled=1 and ppgMixAlpha at offsets 348/352', () => {
@@ -640,13 +631,12 @@ describe('packWalkaroundUBO — sentinel round-trip (packer index ↔ WGSL offse
     const base = {
       camera: { viewMatrix: m, projMatrix: m, prevViewProjMatrix: m, cameraPos: [0, 0, 0] },
       screen: { screenWidth: 64, screenHeight: 64, frameSeed: 1, swapChainView: {} as GPUTextureView, swapChainFormat: 'bgra8unorm' },
-      lighting: { totalEmissivePower: 1, emitterCount: 0, primaryLightDir: [0, 1, 0], primaryLightIntensity: 1, skyTint: [0, 0, 0], skyIrradiance: 0, emitterDist2Floor: 0.01, directFireflyClamp: 4, causticBoost: 1, causticVisClamp: 1 },
+      lighting: { emitterCount: 0, primaryLightDir: [0, 1, 0], primaryLightIntensity: 1, skyTint: [0, 0, 0], skyIrradiance: 0, emitterDist2Floor: 0.01, directFireflyClamp: 4, causticBoost: 1, causticVisClamp: 1 },
       restirDI: { temporalMClampDI: 20, spatialReuseRadiusPx: 30, spatialDepthTolFloor: 0.05 },
       restirGI: { restirGiWCap: 16, restirGiIrrClamp: 5, restirGiMClamp: 50, restirGiSpatialRadiusPx: 12, restirGiSpatialNormalDotMin: 0.9, restirGiSpatialCoplanarTol: 0.05 },
       gtao: { gtaoRadiusPx: 32, gtaoIntensity: 2, gtaoDepthThreshold: 2, gtaoBilateralDepthSigma: 0.25, adaptiveSamplingThresholdLow: 0.01, adaptiveSamplingThresholdHigh: 0.1 },
       filter: { triIntersectEpsilon: 1e-5, glassMixScale: 0.7, indirectFireflyClamp: [1, 1, 1], atrousDirectSigmas: [128, 5, 0.05], atrousIndirectSigmas: [32, 20, 0.5], stainedGlassFlags: 0 },
       bvh: { bvhMode: 0, tlasNodeCount: 0 },
-      nrc: {},
       composite: { tonemapMode: 0, exposure: 1.0, outputColorSpace: 0 },
     } as unknown as PipelineFrameInputs;
 
@@ -662,13 +652,12 @@ describe('packWalkaroundUBO — sentinel round-trip (packer index ↔ WGSL offse
     const base = {
       camera: { viewMatrix: m, projMatrix: m, prevViewProjMatrix: m, cameraPos: [0, 0, 0] },
       screen: { screenWidth: 64, screenHeight: 64, frameSeed: 1, swapChainView: {} as GPUTextureView, swapChainFormat: 'bgra8unorm' },
-      lighting: { totalEmissivePower: 1, emitterCount: 0, primaryLightDir: [0, 1, 0], primaryLightIntensity: 1, skyTint: [0, 0, 0], skyIrradiance: 0, emitterDist2Floor: 0.01, directFireflyClamp: 4, causticBoost: 1, causticVisClamp: 1 },
+      lighting: { emitterCount: 0, primaryLightDir: [0, 1, 0], primaryLightIntensity: 1, skyTint: [0, 0, 0], skyIrradiance: 0, emitterDist2Floor: 0.01, directFireflyClamp: 4, causticBoost: 1, causticVisClamp: 1 },
       restirDI: { temporalMClampDI: 20, spatialReuseRadiusPx: 30, spatialDepthTolFloor: 0.05 },
       restirGI: { restirGiWCap: 16, restirGiIrrClamp: 5, restirGiMClamp: 50, restirGiSpatialRadiusPx: 12, restirGiSpatialNormalDotMin: 0.9, restirGiSpatialCoplanarTol: 0.05 },
       gtao: { gtaoRadiusPx: 32, gtaoIntensity: 2, gtaoDepthThreshold: 2, gtaoBilateralDepthSigma: 0.25, adaptiveSamplingThresholdLow: 0.01, adaptiveSamplingThresholdHigh: 0.1 },
       filter: { triIntersectEpsilon: 1e-5, glassMixScale: 0.7, indirectFireflyClamp: [1, 1, 1], atrousDirectSigmas: [128, 5, 0.05], atrousIndirectSigmas: [32, 20, 0.5], stainedGlassFlags: 0 },
       bvh: { bvhMode: 0, tlasNodeCount: 0 },
-      nrc: {},
       composite: { tonemapMode: 0, exposure: 1.0, outputColorSpace: 0 },
     } as unknown as PipelineFrameInputs;
 
@@ -685,13 +674,12 @@ describe('packWalkaroundUBO — sentinel round-trip (packer index ↔ WGSL offse
     const base = {
       camera: { viewMatrix: m, projMatrix: m, prevViewProjMatrix: m, cameraPos: [1, 2, 3] },
       screen: { screenWidth: 100, screenHeight: 200, frameSeed: 42, swapChainView: {} as GPUTextureView, swapChainFormat: 'bgra8unorm' },
-      lighting: { totalEmissivePower: 5, emitterCount: 3, primaryLightDir: [0, 1, 0], primaryLightIntensity: 2, skyTint: [0.1, 0.2, 0.3], skyIrradiance: 1, emitterDist2Floor: 0.01, directFireflyClamp: 4, causticBoost: 1, causticVisClamp: 1 },
+      lighting: { emitterCount: 3, primaryLightDir: [0, 1, 0], primaryLightIntensity: 2, skyTint: [0.1, 0.2, 0.3], skyIrradiance: 1, emitterDist2Floor: 0.01, directFireflyClamp: 4, causticBoost: 1, causticVisClamp: 1 },
       restirDI: { temporalMClampDI: 20, spatialReuseRadiusPx: 30, spatialDepthTolFloor: 0.05 },
       restirGI: { restirGiWCap: 16, restirGiIrrClamp: 5, restirGiMClamp: 50, restirGiSpatialRadiusPx: 12, restirGiSpatialNormalDotMin: 0.9, restirGiSpatialCoplanarTol: 0.05 },
       gtao: { gtaoRadiusPx: 32, gtaoIntensity: 2, gtaoDepthThreshold: 2, gtaoBilateralDepthSigma: 0.25, adaptiveSamplingThresholdLow: 0.01, adaptiveSamplingThresholdHigh: 0.1 },
       filter: { triIntersectEpsilon: 1e-5, glassMixScale: 0.7, indirectFireflyClamp: [1, 1, 1], atrousDirectSigmas: [128, 5, 0.05], atrousIndirectSigmas: [32, 20, 0.5], stainedGlassFlags: 0 },
       bvh: { bvhMode: 0, tlasNodeCount: 0 },
-      nrc: {},
       composite: { tonemapMode: 0, exposure: 1.0, outputColorSpace: 0 },
     } as unknown as PipelineFrameInputs;
 

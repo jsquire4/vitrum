@@ -641,15 +641,19 @@ export function dist2ToAabb(
  * shading point, given the merged orientation cone `(axis, thetaO, thetaE)`.
  *
  * Let `θ` be the angle between the emission axis and the direction from the node
- * (AABB centre) TO the point. The emitters can reach the point only if it lies
- * within the total emission cone of half-angle `thetaO + thetaE`. We return
- * `max(0, cos(max(0, θ − thetaO)))` clamped to 0 beyond `thetaO + thetaE`:
- *   - inside the normal cone (θ ≤ thetaO): factor 1;
- *   - in the lobe skirt (thetaO < θ ≤ thetaO+thetaE): a smooth cosine falloff;
- *   - outside (θ > thetaO+thetaE): 0 — the node is culled from selection.
- * This is the Conty-Estévez 2018 orientation term, in cosine space using the
- * packed `cosThetaO`/`cosThetaOE` so no `acos` is needed. A full-sphere node
- * (cosThetaO = cosThetaOE = −1, axis length 0) returns 1 identically.
+ * (AABB centre) TO the point, and `θu` the angular radius of the node's AABB
+ * bounding sphere as seen from the point. Conty-Estévez uses
+ * `θ' = max(0, θ − θu)`: the subtended-angle term is essential because
+ * the centre direction can be behind an emitter plane while another point in
+ * the same node is still visible. The factor is:
+ *   - `1` when `θ' ≤ thetaO` (inside the normal cone);
+ *   - `max(0, cos(θ' − thetaO))` when
+ *     `thetaO < θ' ≤ thetaO + thetaE` (the emission-lobe skirt);
+ *   - `0` when `θ' > thetaO + thetaE` (outside the bounded lobe).
+ * This is the conservative Conty-Estévez 2018 orientation term, evaluated in
+ * cosine space so hot traversal performs no inverse trigonometric operations.
+ * A full-sphere node (cosThetaO = cosThetaOE = −1, axis length 0) returns 1
+ * identically.
  *
  * `cosThetaO` = cos(thetaO); `cosThetaOE` = cos(min(π, thetaO+thetaE)).
  */
@@ -659,22 +663,38 @@ function coneImportanceFactor(
   cosThetaOE: number,
   px: number, py: number, pz: number,
   cx: number, cy: number, cz: number,
+  radius: number,
 ): number {
   const al = axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2];
   if (al < 1e-12) return 1.0;             // full sphere / unoriented — no culling
   let dx = px - cx, dy = py - cy, dz = pz - cz;
   const dl = Math.sqrt(dx * dx + dy * dy + dz * dz);
-  if (dl < 1e-12) return 1.0;             // point at the centre — cannot orient
+  if (dl <= Math.max(radius, 1e-12)) return 1.0; // inside bounding sphere: do not cull
   const inv = 1.0 / dl;
   dx *= inv; dy *= inv; dz *= inv;
   const aInv = 1.0 / Math.sqrt(al);
-  const cosTheta = (axis[0] * aInv) * dx + (axis[1] * aInv) * dy + (axis[2] * aInv) * dz;
-  if (cosTheta < cosThetaOE) return 0.0;  // outside the total emission cone — cull
-  if (cosTheta >= cosThetaO) return 1.0;  // inside the normal cone — full factor
-  // Lobe skirt: cos(θ − thetaO) = cosθ·cosθO + sinθ·sinθO.
-  const sinTheta = Math.sqrt(Math.max(0, 1 - cosTheta * cosTheta));
+  const cosTheta = Math.max(-1, Math.min(
+    1,
+    (axis[0] * aInv) * dx + (axis[1] * aInv) * dy + (axis[2] * aInv) * dz,
+  ));
+  // The AABB is wholly contained by this sphere, so its angular radius cannot
+  // exceed asin(radius / distance). Compute cos(max(0, theta-thetaU))
+  // directly from the cosine-difference identity.
+  const sinThetaU = Math.max(0, Math.min(1, radius / dl));
+  const cosThetaU = Math.sqrt(Math.max(0, 1 - sinThetaU * sinThetaU));
+  let cosAdjusted = 1.0;
+  if (cosTheta < cosThetaU) {
+    const sinTheta = Math.sqrt(Math.max(0, 1 - cosTheta * cosTheta));
+    cosAdjusted = Math.max(
+      -1,
+      Math.min(1, cosTheta * cosThetaU + sinTheta * sinThetaU),
+    );
+  }
+  if (cosAdjusted < cosThetaOE) return 0.0;
+  if (cosAdjusted >= cosThetaO) return 1.0;
+  const sinAdjusted = Math.sqrt(Math.max(0, 1 - cosAdjusted * cosAdjusted));
   const sinThetaO = Math.sqrt(Math.max(0, 1 - cosThetaO * cosThetaO));
-  return Math.max(0, cosTheta * cosThetaO + sinTheta * sinThetaO);
+  return Math.max(0, cosAdjusted * cosThetaO + sinAdjusted * sinThetaO);
 }
 
 /**
@@ -697,10 +717,14 @@ export function nodeImportance(
   const cx = 0.5 * (node.aabbMin[0] + node.aabbMax[0]);
   const cy = 0.5 * (node.aabbMin[1] + node.aabbMax[1]);
   const cz = 0.5 * (node.aabbMin[2] + node.aabbMax[2]);
+  const hx = 0.5 * (node.aabbMax[0] - node.aabbMin[0]);
+  const hy = 0.5 * (node.aabbMax[1] - node.aabbMin[1]);
+  const hz = 0.5 * (node.aabbMax[2] - node.aabbMin[2]);
+  const radius = Math.sqrt(hx * hx + hy * hy + hz * hz);
   const cosThetaO = Math.cos(Math.min(Math.PI, node.cone.thetaO));
   const cosThetaOE = Math.cos(Math.min(Math.PI, node.cone.thetaO + node.cone.thetaE));
   const coneFactor = coneImportanceFactor(
-    node.cone.axis, cosThetaO, cosThetaOE, px, py, pz, cx, cy, cz,
+    node.cone.axis, cosThetaO, cosThetaOE, px, py, pz, cx, cy, cz, radius,
   );
   const importance = (node.totalPower / d2) * coneFactor;
   if (!Number.isFinite(importance)) return Number.MAX_VALUE;

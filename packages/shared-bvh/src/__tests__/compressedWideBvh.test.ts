@@ -7,6 +7,7 @@ import {
   CWBVH_CHILDREN,
   CWBVH_CHILD_BOUNDS_PACKED_U32,
   CWBVH_CHILD_EMPTY,
+  CWBVH_TRAVERSAL_STACK_DEPTH,
   buildCompressedWideBvh,
   cwbvhChildBounds,
   intersectCompressedWideBvhAnyHit,
@@ -14,6 +15,7 @@ import {
   packCwbvhBuildBoundsForWgsl,
   packCwbvhChildBoundsForWgsl,
   reorderCwbvhTrianglePayloads,
+  requiredCwbvhTraversalStackEntries,
   type CompressedWideBvhBuildResult,
   type CwbvhRay,
 } from '../index.js';
@@ -207,6 +209,52 @@ function concatCwbvhRoots(
 }
 
 describe('compressedWideBvh', () => {
+  it('proves fixed-stack capacity from the emitted wide-node topology', () => {
+    const depth = CWBVH_TRAVERSAL_STACK_DEPTH + 1;
+    const nodeCount = depth * 2;
+    const childCount = new Uint32Array(nodeCount);
+    const childMeta = new Uint32Array(
+      nodeCount * CWBVH_CHILDREN * CWBVH_CHILD_META_WORDS,
+    );
+
+    for (let level = 0; level < depth; level += 1) {
+      const deepNode = level * 2;
+      const siblingNode = deepNode + 1;
+      childCount[siblingNode] = 1;
+      let offset =
+        siblingNode * CWBVH_CHILDREN * CWBVH_CHILD_META_WORDS;
+      childMeta[offset] = CWBVH_CHILD_LEAF;
+
+      if (level + 1 < depth) {
+        childCount[deepNode] = 2;
+        offset = deepNode * CWBVH_CHILDREN * CWBVH_CHILD_META_WORDS;
+        childMeta[offset] = CWBVH_CHILD_NODE;
+        childMeta[offset + 1] = siblingNode;
+        offset += CWBVH_CHILD_META_WORDS;
+        childMeta[offset] = CWBVH_CHILD_NODE;
+        childMeta[offset + 1] = deepNode + 2;
+      } else {
+        childCount[deepNode] = 1;
+        offset = deepNode * CWBVH_CHILDREN * CWBVH_CHILD_META_WORDS;
+        childMeta[offset] = CWBVH_CHILD_LEAF;
+      }
+    }
+
+    expect(
+      requiredCwbvhTraversalStackEntries(childMeta, childCount),
+    ).toBeGreaterThan(CWBVH_TRAVERSAL_STACK_DEPTH);
+
+    const cyclicCounts = new Uint32Array([1]);
+    const cyclicMeta = new Uint32Array(
+      CWBVH_CHILDREN * CWBVH_CHILD_META_WORDS,
+    );
+    cyclicMeta[0] = CWBVH_CHILD_NODE;
+    cyclicMeta[1] = 0;
+    expect(
+      requiredCwbvhTraversalStackEntries(cyclicMeta, cyclicCounts),
+    ).toBe(Number.POSITIVE_INFINITY);
+  });
+
   it('returns an empty wide root for zero triangles', () => {
     const built = buildCompressedWideBvh(new Float32Array(0), new Uint32Array(0), new Uint32Array(0));
 
@@ -215,6 +263,7 @@ describe('compressedWideBvh', () => {
     expect(built.cwbvhNodeBounds.length).toBe(6);
     expect(built.cwbvhChildBounds.length).toBe(CWBVH_CHILDREN * CWBVH_CHILD_BOUNDS_U16);
     expect(built.cwbvhChildMeta.length).toBe(CWBVH_CHILDREN * CWBVH_CHILD_META_WORDS);
+    expect(built.cwbvhBuildStatus.traversal).toBe('empty');
 
     const hit = intersectCompressedWideBvhFirstHit(built, new Float32Array(0), {
       origin: [0, 0, 1],

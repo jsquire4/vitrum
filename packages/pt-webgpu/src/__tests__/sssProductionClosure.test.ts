@@ -180,7 +180,7 @@ describe('SSS production closure — emitter ownership and packing', () => {
       1;
     const input = buildLightTreeInputForScene(scene, {
       packed,
-      envSummary: { hasHdri: true, sunStrength: 0, lightTreePower: 1 },
+      envSummary: { hasHdri: true, lightTreePower: 1 },
     });
     expect(input.powers.length).toBe(expected);
     const order = [

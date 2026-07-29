@@ -122,6 +122,11 @@ function errorReason(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+/** Initial attempt plus two bounded automatic retries. Persistent failures
+ * require engine recreation instead of performing full GPU readback + ONNX
+ * inference on every render frame forever. */
+const OIDN_MAX_AUTOMATIC_ATTEMPTS = 3;
+
 export class OIDNFinalDenoiser implements Denoiser {
   readonly id = 'oidn-final' as const;
   readonly passLabels = DENOISER_PASS_LABELS['oidn-final'];
@@ -157,6 +162,7 @@ export class OIDNFinalDenoiser implements Denoiser {
   /** Last async preload/inference failure, surfaced via state() until retry. */
   private _lastFailureReason: string | null = null;
   private _lastFailureRetryable = true;
+  private _consecutiveFailureCount = 0;
   private readonly _onWarning: ((warning: EngineWarning) => void) | null;
   /** Disposed-flag — set in `dispose`. The background chain checks this
    *  after every await to bail out (and skip writes to destroyed textures). */
@@ -255,6 +261,8 @@ export class OIDNFinalDenoiser implements Denoiser {
       this._pendingReadback = null;
       this._haveDenoisedOutput = false;
       this._lastFailureReason = null;
+      this._lastFailureRetryable = true;
+      this._consecutiveFailureCount = 0;
       this._releaseSessionWhenIdle = false;
       candidateTexture = null;
       candidateLease = null;
@@ -327,18 +335,27 @@ export class OIDNFinalDenoiser implements Denoiser {
       this._contentGeneration++;
       this._pendingReadback = null;
       this._haveDenoisedOutput = false;
-      this._lastFailureReason = null;
     }
 
     // Stage the background readback + inference + upload chain when idle.
     // afterFrameSubmit() records the copies only after the frame encoder has
     // been submitted, then relies on same-queue ordering before mapAsync
     // observes the copied bytes.
-    if (!this._inFlight && this._pendingReadback == null && !this._disposed) {
+    if (
+      !this._inFlight &&
+      this._pendingReadback == null &&
+      !this._disposed &&
+      this._consecutiveFailureCount < OIDN_MAX_AUTOMATIC_ATTEMPTS
+    ) {
       publishFrameState(ctx.publication, () => {
         // Re-check lifecycle state at the accepted boundary; resize/dispose are
         // synchronous but this keeps the ownership rule explicit.
-        if (!this._inFlight && this._pendingReadback == null && !this._disposed) {
+        if (
+          !this._inFlight &&
+          this._pendingReadback == null &&
+          !this._disposed &&
+          this._consecutiveFailureCount < OIDN_MAX_AUTOMATIC_ATTEMPTS
+        ) {
           this._pendingReadback = ctx;
         }
       });
@@ -423,6 +440,8 @@ export class OIDNFinalDenoiser implements Denoiser {
       this._uploadResult(device, denoised, W, H);
       this._haveDenoisedOutput = true;
       this._lastFailureReason = null;
+      this._lastFailureRetryable = true;
+      this._consecutiveFailureCount = 0;
     } catch (err) {
       if (this._disposed || this._contentGeneration !== contentGeneration) return;
       // Swallow + report. Dispatch falls back to raw HDR until a later retry
@@ -430,7 +449,9 @@ export class OIDNFinalDenoiser implements Denoiser {
       // state transition (`failed`, retryable) through FrameStats.
       const reason = `OIDN inference cycle failed: ${errorReason(err)}`;
       this._lastFailureReason = reason;
-      this._lastFailureRetryable = true;
+      this._consecutiveFailureCount += 1;
+      this._lastFailureRetryable =
+        this._consecutiveFailureCount < OIDN_MAX_AUTOMATIC_ATTEMPTS;
       this._warnInferenceFailure(reason, err, W, H);
     } finally {
       // Release the readback buffers — they're transient per-cycle.
@@ -601,14 +622,18 @@ export class OIDNFinalDenoiser implements Denoiser {
       backend: 'walkaround-hybrid',
       phase: 'renderFrame',
       method: 'renderFrame',
-      message: `[OIDNFinalDenoiser] ${reason}; falling back to hdrColorTexture and retrying next dispatch.`,
+      message: this._lastFailureRetryable
+        ? `[OIDNFinalDenoiser] ${reason}; falling back to hdrColorTexture and retrying (bounded attempt ${this._consecutiveFailureCount + 1}/${OIDN_MAX_AUTOMATIC_ATTEMPTS}).`
+        : `[OIDNFinalDenoiser] ${reason}; falling back to hdrColorTexture. Automatic retry budget exhausted; recreate the engine after correcting the model/provider configuration.`,
       details: {
         reason,
         modelUrl: this._modelUrl,
         width,
         height,
         fallback: 'hdrColorTexture',
-        retryable: true,
+        retryable: this._lastFailureRetryable,
+        attempt: this._consecutiveFailureCount,
+        maxAttempts: OIDN_MAX_AUTOMATIC_ATTEMPTS,
       },
       raw: err,
     };

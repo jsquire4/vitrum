@@ -2,10 +2,9 @@
  * analyticLightFalloff.wgsl.ts — shared spot-cone-falloff + point/spot distance
  * attenuation WGSL math.
  *
- * D8-2 (complexity-sweep 2026-07-20, T4-3): the spot-cone falloff and the
- * point/spot distance-attenuation functions are byte-identical between
- * `shadingTerms.wgsl.ts` (the `analytic*`-named copies interpolated into
- * SHADE_WGSL) and `transparentOit.wgsl.ts` (the `oit*`-named copies). Both are
+ * The spot-cone falloff and point/spot distance attenuation are centralized
+ * here so opaque, transparent, NRC-teacher, manifold-caustic, and DDGI routes
+ * cannot drift on the KHR_lights_punctual range window. The functions are
  * BINDING-FREE PURE MATH (function-scope args only; no `ubo`/`scene`/texture
  * references), so per the composeWgsl ordering rule they COULD be a WgslModule.
  *
@@ -14,9 +13,8 @@
  * (`analytic*` vs `oit*`) at DIFFERENT interior positions of their bodies. A
  * WgslModule would emit a single canonical name once, in composer dep-order —
  * changing both the definition-site bytes and the name at every call site. The
- * raw-string builder keeps each consumer's function name and position exactly,
- * so the composed WGSL for `shade` and `transparent-oit` stays byte-for-byte
- * unchanged. The single parameterized slot is the name prefix.
+ * raw-string builder keeps each consumer's local naming convention. The single
+ * parameterized slot is the name prefix.
  */
 
 /**
@@ -47,7 +45,7 @@ fn ${prefix}PointSpotAttenuation(dist: f32, cutoffDistance: f32, decay: f32, dis
   }
   if (cutoffDistance > 0.0) {
     let x = clamp(1.0 - pow(dist / cutoffDistance, 4.0), 0.0, 1.0);
-    attenuation = attenuation * x * x;
+    attenuation = attenuation * x;
   }
   return attenuation;
 }`;

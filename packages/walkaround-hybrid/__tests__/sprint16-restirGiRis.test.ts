@@ -34,7 +34,7 @@ describe('Sprint 16 — RIS_GI WGSL', () => {
 
   it('binds the three versioned scene arenas at group(1)', () => {
     const composed = composeWgsl(RIS_GI_MODULE, WGSL_MODULES);
-    expect(composed).toContain('@group(1) @binding(0) var<storage, read> sceneGeometryArena:');
+    expect(composed).toContain('@group(1) @binding(0) var<storage, read> bvhSceneGeometryArena:');
     expect(composed).toContain('@group(1) @binding(1) var<storage, read> sceneTlasArena:');
     expect(composed).toContain('@group(1) @binding(2) var<storage, read> sceneLightingArena:');
     expect(composed).toContain('fn bvhLoadNode(');

@@ -453,15 +453,30 @@ function buildTextureCellIntervals(
   maxValue: number,
   texelCount: number,
   mode: TextureRef['wrapS'],
+  maxIntervals: number,
 ): TextureCellInterval[] | null {
-  if (texelCount <= 0 || !Number.isFinite(minValue) || !Number.isFinite(maxValue)) return null;
+  if (
+    texelCount <= 0 ||
+    !Number.isFinite(minValue) ||
+    !Number.isFinite(maxValue) ||
+    !Number.isSafeInteger(maxIntervals) ||
+    maxIntervals < 1
+  ) return null;
   if (texelCount === 1) {
     return [{ lo: minValue, hi: maxValue, texel: 0 }];
   }
 
   if (mode === 'clamp-to-edge') {
+    const first = Math.max(0, Math.min(texelCount - 1, Math.floor(minValue * texelCount)));
+    const last = Math.max(0, Math.min(texelCount - 1, Math.floor(maxValue * texelCount)));
+    const intervalUpperBound = last - first + 1;
+    if (
+      !Number.isSafeInteger(first) ||
+      !Number.isSafeInteger(last) ||
+      intervalUpperBound > maxIntervals
+    ) return null;
     const out: TextureCellInterval[] = [];
-    for (let texel = 0; texel < texelCount; texel += 1) {
+    for (let texel = first; texel <= last; texel += 1) {
       const lo = texel === 0 ? minValue : texel / texelCount;
       const hi = texel === texelCount - 1 ? maxValue : (texel + 1) / texelCount;
       const clippedLo = Math.max(lo, minValue);
@@ -473,6 +488,16 @@ function buildTextureCellIntervals(
 
   const first = Math.floor(minValue * texelCount);
   const last = Math.floor(maxValue * texelCount);
+  const intervalUpperBound = last - first + 1;
+  // Bound before materializing: authored repeat/mirror UV spans can cover
+  // billions of periods even when the final exact-emitter cap is only a few
+  // thousand cells.
+  if (
+    !Number.isSafeInteger(first) ||
+    !Number.isSafeInteger(last) ||
+    !Number.isSafeInteger(intervalUpperBound) ||
+    intervalUpperBound > maxIntervals
+  ) return null;
   const out: TextureCellInterval[] = [];
   for (let cell = first; cell <= last; cell += 1) {
     const period = texelCount * 2;
@@ -540,6 +565,11 @@ export function forEachEmissiveMapTexelSubTriangle(
   ],
   resolveTexelRadiance?: EmissiveMapTexelRadianceResolver,
 ): boolean {
+  if (!Number.isSafeInteger(maxCoveredCells) || maxCoveredCells < 1) return false;
+  // `skipEmitter` suppresses light-sampling classification, not the material's
+  // camera-visible emissive radiance. Report "handled" so callers do not fall
+  // back to a scalar implicit-emitter proposal.
+  if (materialSpecSkipEmitter(material)) return true;
   const scalar = materialSpecScalarEmissiveLe(material);
   const ref = material.emissiveMap;
   if (scalar == null || ref == null) return false;
@@ -623,10 +653,22 @@ export function forEachEmissiveMapTexelSubTriangle(
   const maxX = Math.max(texA[0], texB[0], texC[0]);
   const minY = Math.min(texA[1], texB[1], texC[1]);
   const maxY = Math.max(texA[1], texB[1], texC[1]);
-  const xIntervals = buildTextureCellIntervals(minX, maxX, dims.width, ref.wrapS);
-  const yIntervals = buildTextureCellIntervals(minY, maxY, dims.height, ref.wrapT);
-  if (xIntervals == null || yIntervals == null) return false;
-  if (xIntervals.length * yIntervals.length > maxCoveredCells) return false;
+  const xIntervals = buildTextureCellIntervals(
+    minX,
+    maxX,
+    dims.width,
+    ref.wrapS,
+    maxCoveredCells,
+  );
+  if (xIntervals == null || xIntervals.length === 0) return false;
+  const yIntervals = buildTextureCellIntervals(
+    minY,
+    maxY,
+    dims.height,
+    ref.wrapT,
+    Math.floor(maxCoveredCells / xIntervals.length),
+  );
+  if (yIntervals == null || yIntervals.length === 0) return false;
 
   const initial: TexelClipVertex[] = [
     { weights: [1, 0, 0], texUv: texA },
@@ -776,6 +818,21 @@ export function materialSpecTriColor(
 }
 
 /**
+ * Read the legacy stained-glass surface-texture id from the core extension lane.
+ *
+ * Active renderers no longer require this helper internally, but GPU validation
+ * harnesses and existing hosts use the shared package as the canonical decoder.
+ * Retaining it as a compatibility export keeps the established three-bit
+ * contract without reintroducing renderer coupling.
+ */
+export function materialSpecSurfaceTextureId(material: MaterialSpec): number {
+  const raw = material.extensions?.['surfaceTextureId'];
+  return Number.isSafeInteger(raw) && (raw as number) >= 0 && (raw as number) <= 7
+    ? raw as number
+    : 0;
+}
+
+/**
  * Read the `skipEmitter` override from a core `MaterialSpec`'s
  * `extensions['skipEmitter']`. Strict `=== true` (any other value, including
  * absent, means "do not skip").
@@ -806,6 +863,7 @@ export function materialSpecSkipEmitter(material: MaterialSpec): boolean {
 export function classifyTriangleEmitterCore(
   material: MaterialSpec,
 ): { color: [number, number, number]; intensity: number } | null {
+  if (materialSpecSkipEmitter(material)) return null;
   // 1. Emissive surface → direct emitter (shares the camera-glow Le source).
   const emissiveLe = materialSpecEmissiveLe(material);
   if (emissiveLe != null) {

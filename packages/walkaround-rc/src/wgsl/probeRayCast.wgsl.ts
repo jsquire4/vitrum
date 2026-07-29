@@ -287,7 +287,7 @@ ${RC_OCTAHEDRAL_STRATIFIED_SAMPLING_WGSL}
 fn dirToEquirectUV(d: vec3f) -> vec2f {
   let phi   = atan2(d.z, d.x);
   let theta = acos(clamp(d.y, -1.0, 1.0));
-  return vec2f(phi / (2.0 * 3.14159265) + 0.5, 1.0 - theta / 3.14159265);
+  return vec2f(phi / (2.0 * 3.14159265) + 0.5, theta / 3.14159265);
 }
 
 // H6 — RY(-rotY)·dir (world → unrotated-map lookup direction), identical

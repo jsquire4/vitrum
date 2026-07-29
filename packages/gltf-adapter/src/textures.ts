@@ -60,8 +60,8 @@ export const GLTF_TEXTURE_SOURCE_EXTENSIONS: readonly GltfTextureSourceExtension
  * Alternate image sources the adapter can consume without a host codec hook.
  * KHR_texture_basisu is normalized to RGBA8 by the built-in WASM transcoder.
  * MSFT_texture_dds is normalized by the built-in BC1-BC5/masked-pixel decoder.
- * WebP remains opt-in as a source preference because its browser and Node
- * decoders are platform-specific.
+ * WebP is added by {@link effectiveGltfTextureSourceExtensions} only when this
+ * host exposes the browser bitmap bridge or the packaged Node decoder.
  */
 export const BUILTIN_GLTF_TEXTURE_SOURCE_EXTENSIONS =
   Object.freeze([
@@ -69,12 +69,31 @@ export const BUILTIN_GLTF_TEXTURE_SOURCE_EXTENSIONS =
     'MSFT_texture_dds',
   ] as const satisfies readonly GltfTextureSourceExtension[]);
 
+/** Whether this runtime has an adapter-owned WebP decode path. */
+export function hasBuiltinWebpTextureSourceDecoder(): boolean {
+  try {
+    const host = globalThis as typeof globalThis & {
+      process?: { versions?: { node?: unknown } };
+    };
+    const browserBridge =
+      typeof host.createImageBitmap === 'function' &&
+      typeof host.Blob === 'function';
+    const packagedNodeDecoder = typeof host.process?.versions?.node === 'string';
+    return browserBridge || packagedNodeDecoder;
+  } catch {
+    return false;
+  }
+}
+
 export function effectiveGltfTextureSourceExtensions(
   requested: readonly GltfTextureSourceExtension[] | undefined,
 ): readonly GltfTextureSourceExtension[] {
   return Object.freeze([
     ...new Set<GltfTextureSourceExtension>([
       ...BUILTIN_GLTF_TEXTURE_SOURCE_EXTENSIONS,
+      ...(hasBuiltinWebpTextureSourceDecoder()
+        ? ['EXT_texture_webp' as const]
+        : []),
       ...(requested ?? []),
     ]),
   ]);

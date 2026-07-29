@@ -125,6 +125,31 @@ describe('BACKEND_PROMISE_LEDGER incremental patch semantics', () => {
   });
 });
 
+describe('BACKEND_PROMISE_LEDGER bounce semantics', () => {
+  it('distinguishes finite path depth from walkaround DDGI feedback', () => {
+    expect(
+      BACKEND_PROMISE_LEDGER['pt-webgl2'].supportDetails.bounceSemantics,
+    ).toEqual({
+      kind: 'path-depth',
+      perFrameControl: 'finite-path-depth',
+    });
+    expect(
+      BACKEND_PROMISE_LEDGER['pt-webgpu'].supportDetails.bounceSemantics,
+    ).toEqual({
+      kind: 'path-depth',
+      perFrameControl: 'finite-path-depth',
+    });
+    expect(
+      BACKEND_PROMISE_LEDGER['walkaround-hybrid'].supportDetails.bounceSemantics,
+    ).toEqual({
+      kind: 'ddgi-feedback',
+      directOnlyValue: 1,
+      multiBounceEquilibriumValue: 2,
+      inactiveWhenLayerDisabled: 'ddgi',
+    });
+  });
+});
+
 // ── Road-to-100 future-contract boundaries ───────────────────────────────────
 
 describe('BACKEND_PROMISE_LEDGER Road-to-100 future-contract boundaries', () => {
@@ -209,10 +234,22 @@ describe('BACKEND_PROMISE_LEDGER["pt-webgl2"] vs PT_WEBGL2_SUPPORT', () => {
     expect(mutations.lighting).toBe('fallback-rebuild');
   });
 
-  it('debugSurface matches the method promise row', () => {
-    const caps = buildPtWebgl2Capabilities('none', 8, Infinity, { bdpt: false });
-    expect(caps.debugSurface).toBe(true);
-    expect(ledger.methodPromises.debug).toBe(caps.debugSurface);
+  it('distinguishes backend debug support from an instance opt-in', () => {
+    const disabledCaps = buildPtWebgl2Capabilities(
+      'none',
+      8,
+      Infinity,
+      { bdpt: false, debug: false },
+    );
+    const enabledCaps = buildPtWebgl2Capabilities(
+      'none',
+      8,
+      Infinity,
+      { bdpt: false, debug: true },
+    );
+    expect(ledger.methodPromises.debug).toBe(true);
+    expect(disabledCaps.debugSurface).toBe(false);
+    expect(enabledCaps.debugSurface).toBe(true);
   });
 
   it('supportsAuxBuffers stays false because WebGL2 lacks variance and motion-vector outputs', () => {

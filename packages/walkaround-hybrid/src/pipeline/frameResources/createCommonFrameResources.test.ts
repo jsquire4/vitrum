@@ -85,6 +85,10 @@ function textureSize(texture: GPUTexture): readonly [number, number] {
   return [t.width, t.height];
 }
 
+function textureFormat(texture: GPUTexture): GPUTextureFormat {
+  return (texture as unknown as FakeTexture).format;
+}
+
 beforeEach(() => {
   previousGpuTextureUsage = (globalThis as { GPUTextureUsage?: unknown }).GPUTextureUsage;
   previousGpuBufferUsage = (globalThis as { GPUBufferUsage?: unknown }).GPUBufferUsage;
@@ -114,6 +118,7 @@ describe('createCommonFrameResources Welford allocation policy', () => {
     expect(textureSize(resources.varianceBuffer)).toEqual([64, 32]);
     expect(textureSize(resources.varianceBufferAux)).toEqual([64, 32]);
     expect(textureSize(resources.atrousVarianceEstimateTexture)).toEqual([64, 32]);
+    expect(textureFormat(resources.atrousVarianceEstimateTexture)).toBe('r32float');
   });
 
   it('collapses unused Welford aux resources to 1x1 when ping-pong is disabled', () => {

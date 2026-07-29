@@ -88,7 +88,7 @@ struct WalkaroundUBO {
   frameSeed:                  u32,     //  offset 204
   screenSize:                 vec2u,   //  offset 208
   emitterCount:               u32,     //  offset 216
-  totalEmPower:               f32,     //  offset 220
+  _abiPadEmitterPower:        f32,     //  offset 220 — retired unread emitter-power mirror
   sunDirection:               vec3f,   //  offset 224
   sunIntensity:               f32,     //  offset 236 — matches BVH build
   skyTint:                    vec3f,   //  offset 240 — diffuse sky dome RGB
@@ -158,16 +158,11 @@ struct WalkaroundUBO {
   // the GPU descent loop.
   lightTreeEnabled:           u32,     //  offset 356 — DI light-tree selection gate (was _ppgPad0)
   lightTreeNodeCount:         u32,     //  offset 360 — packed light-tree node count (was _ppgPad1)
-  // NRC (Müller et al. 2021) cache gate (repurposed _ppgPad2 — byte-size
-  // unchanged). 0 ⇒ the gi-ris suffix runs the verbatim DDGI-atlas estimate
-  // (NRC-OFF bit-identity); 1 ⇒ the suffix may TERMINATE into the learned
-  // neural radiance cache (spread heuristic + fused-MLP query) and gathered
-  // radiance records self-train it. NOTE: this UBO field is an informational
-  // mirror — no shader reads it; the load-bearing gate is compile-time (the
-  // risGiNrc variant is composed only when nrcEnabled). Host opt-in via
-  // HybridEngineOptions.nrcEnabled; FORBIDDEN on tier:'lite'. NRC is a BIASED
-  // cache — see HARDWARE-VALIDATION-NEEDS.md V20.
-  nrcEnabled:                 u32,     //  offset 364 — NRC cache gate (was _ppgPad2)
+  // Retired NRC runtime mirror. NRC is selected structurally by composing the
+  // risGiNrc pipeline and allocating its resources at engine construction;
+  // no shader ever read the former UBO flag. Keep only an explicit zero ABI
+  // pad so the following vec3 remains at its stable offset.
+  _abiPadNrcGate:             u32,     //  offset 364
   // ── ReGIR (Boksansky 2021 grid-based reservoirs) — DI light-SELECTION
   // grid that decouples per-pixel cost from light count. The grid is co-located
   // in the SAME @group(3) light-tree storage buffer (RIS stays at 16 storage
@@ -183,10 +178,9 @@ struct WalkaroundUBO {
   regirCandidatesPerCell:     u32,     //  offset 400 — M: WRS candidates per sub-reservoir
   regirSurvivorsPerCell:      u32,     //  offset 404 — K: survivors stored per cell
   regirGridFloatOffset:       u32,     //  offset 408 — float offset of the grid region in the combined buffer
-  // Reserved compatibility word for the retired GRIS toggle. Generalized
-  // reconnection-shift reuse is the sole live GI path and the host always
-  // writes one. The field remains solely to preserve all following offsets.
-  grisReuse:              u32,     //  offset 412 — deprecated mirror, always 1
+  // Reserved zero ABI word for the retired GRIS toggle. Generalized
+  // reconnection-shift reuse is the sole live path.
+  _abiPadRetiredGrisToggle:  u32,     //  offset 412 — retired structural toggle
   sunAngular:                 vec4f,   //  offset 416 — x = direct sun cone radius in radians; y bits = GRIS history epoch; z = generic refractive-caustic gate; w reserved
 };
 

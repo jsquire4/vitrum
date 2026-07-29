@@ -31,6 +31,7 @@ import {
   decodeRawPngPixelsDeterministically,
   decodeRawWebpPixelsWithNode,
   normalizeCapturedRawImageForDecode,
+  readImageBitmapPixelsWithPlatform,
 } from './textureCodecs.js';
 import { buildTextureDecodeReport } from './textureDecodeReport.js';
 import {
@@ -799,6 +800,34 @@ async function decodeTextureRef(
       outputColorSpace,
       context,
     );
+  } else if (handleKind === 'image-bitmap') {
+    operation = () => context.decodeContext.imageDecodeLimiter.run(() => {
+      try {
+        return outcomeFromDecodedPixels(
+          readImageBitmapPixelsWithPlatform(ref.handle, {
+            materialField: context.field,
+            path: context.path,
+            colorSpace,
+            primitiveId: context.primitiveId,
+            primitiveIndex: context.primitiveIndex,
+            ...textureSourceDiagnosticFields(context.source),
+            maxDecodedTexturePixels:
+              context.decodeContext.limits.maxDecodedTexturePixels,
+          }),
+          colorSpace,
+          outputColorSpace,
+          context,
+        );
+      } catch (err) {
+        if (err instanceof PlatformTextureDecodeError) {
+          return { kind: 'platform-error', error: err };
+        }
+        return {
+          kind: 'decode-error',
+          causeMessage: safeErrorMessage(err),
+        };
+      }
+    });
   } else {
     context.diagnostic({
       severity: 'warning',
@@ -810,7 +839,8 @@ async function decodeTextureRef(
       handleKind,
       ...textureSourceDiagnosticFields(context.source),
       message: `[vitrum/gltf-adapter] ${context.path} has ${handleKind} texture handle; ` +
-        `decodeSceneTextures(target:"${context.options.target}") can only normalize raw-image handles. ` +
+        `decodeSceneTextures(target:"${context.options.target}") can normalize raw-image, ImageBitmap, ` +
+        'and CPU-readable pixel handles. ' +
         'Texture left unchanged.',
     });
     return ref;
@@ -2357,13 +2387,21 @@ function decodeChannel(value: number, dataType: 'uint8' | 'uint16' | 'float32'):
 }
 
 function srgbToLinear(v: number): number {
-  const c = Math.max(0, Math.min(1, v));
-  return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+  const sign = v < 0 ? -1 : 1;
+  const c = Math.abs(v);
+  const converted = c <= 0.04045
+    ? c / 12.92
+    : ((c + 0.055) / 1.055) ** 2.4;
+  return sign * converted;
 }
 
 function linearToSrgb(v: number): number {
-  const c = Math.max(0, Math.min(1, v));
-  return c <= 0.0031308 ? c * 12.92 : 1.055 * (c ** (1 / 2.4)) - 0.055;
+  const sign = v < 0 ? -1 : 1;
+  const c = Math.abs(v);
+  const converted = c <= 0.0031308
+    ? c * 12.92
+    : 1.055 * (c ** (1 / 2.4)) - 0.055;
+  return sign * converted;
 }
 
 function convertColorChannel(

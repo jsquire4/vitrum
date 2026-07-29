@@ -67,7 +67,11 @@ function makeHost(over: Partial<HostState> = {}) {
     setSceneState: vi.fn<[Scene], void>((s) => {
       state.scene = s;
     }),
-    validateScene: vi.fn<[Scene], void>(),
+    validatePrimitiveCandidate: vi.fn<[Scene, string], void>(),
+    validateEmitterCandidate: vi.fn<[Scene, string], void>(),
+    validateEnvironmentCandidate: vi.fn<[Scene['environment']], void>(),
+    validateEmittersCandidate:
+      vi.fn<[readonly SceneEmitter[], readonly ScenePrimitive[]], void>(),
     setGeoPack: vi.fn<[ScenePackResult], void>((g) => {
       state.geoPack = g;
     }),
@@ -83,7 +87,10 @@ function makeHost(over: Partial<HostState> = {}) {
     setGeoPack: calls.setGeoPack,
     invalidateBindGroups: calls.invalidateBindGroups,
     supportedAnalyticShapes: calls.supportedAnalyticShapes,
-    validateScene: calls.validateScene,
+    validatePrimitiveCandidate: calls.validatePrimitiveCandidate,
+    validateEmitterCandidate: calls.validateEmitterCandidate,
+    validateEnvironmentCandidate: calls.validateEnvironmentCandidate,
+    validateEmittersCandidate: calls.validateEmittersCandidate,
     cameraVisibleEmitters: () => false,
     repackScene: calls.repackScene,
     setScene: calls.setScene,
@@ -152,6 +159,7 @@ describe('SceneMutationRouter — routing contract (pt-webgpu Task 4.3)', () => 
     expect(calls.assertLive).toHaveBeenCalledWith('updatePrimitive');
     // Every fast path guards on sceneBuffers != null, so all miss → setScene.
     expect(calls.setScene).toHaveBeenCalledTimes(1);
+    expect(calls.validatePrimitiveCandidate).toHaveBeenCalledTimes(1);
     expect(calls.reset).not.toHaveBeenCalled();
     expect(calls.invalidateBindGroups).not.toHaveBeenCalled();
   });
@@ -198,7 +206,7 @@ describe('SceneMutationRouter — routing contract (pt-webgpu Task 4.3)', () => 
 
   it('rejects invalid thin-film mutations transactionally and accepts the supported domain', () => {
     const { host, state, calls } = makeHost({ sceneBuffers: null, geoPack: null });
-    calls.validateScene.mockImplementation((candidate) => {
+    calls.validatePrimitiveCandidate.mockImplementation((candidate) => {
       assertSpectralSceneSupported(candidate);
       assertThinFilmSceneSupported(candidate);
     });
@@ -241,7 +249,7 @@ describe('SceneMutationRouter — routing contract (pt-webgpu Task 4.3)', () => 
 
   it('rejects invalid volume mutations before incremental publication', () => {
     const { host, state, calls } = makeHost({ sceneBuffers: null, geoPack: null });
-    calls.validateScene.mockImplementation(assertVolumeSceneSupported);
+    calls.validatePrimitiveCandidate.mockImplementation(assertVolumeSceneSupported);
     const router = new SceneMutationRouter(host);
     const previous = state.scene;
 
@@ -267,6 +275,7 @@ describe('SceneMutationRouter — routing contract (pt-webgpu Task 4.3)', () => 
     router.updateEmitter('e', patch);
     expect(calls.assertLive).toHaveBeenCalledWith('updateEmitter');
     expect(calls.setScene).toHaveBeenCalledTimes(1);
+    expect(calls.validateEmitterCandidate).toHaveBeenCalledTimes(1);
   });
 
   it('updateEnvironment: with no sceneBuffers falls through to setScene with normalized env', () => {
@@ -275,6 +284,7 @@ describe('SceneMutationRouter — routing contract (pt-webgpu Task 4.3)', () => 
     router.updateEnvironment(null);
     expect(calls.assertLive).toHaveBeenCalledWith('updateEnvironment');
     expect(calls.setScene).toHaveBeenCalledTimes(1);
+    expect(calls.validateEnvironmentCandidate).toHaveBeenCalledTimes(1);
     const [nextScene] = calls.setScene.mock.calls[0]!;
     // null env normalizes to { kind: 'none' } before the setScene fall-through.
     expect(nextScene.environment).toEqual({ kind: 'none' });

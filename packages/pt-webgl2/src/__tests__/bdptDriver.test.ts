@@ -161,6 +161,23 @@ describe('A5 BDPT host driver', () => {
     engine.dispose();
   });
 
+  it('does not build light columns beyond the total path-bounce budget', async () => {
+    const log: { op: string; v?: unknown }[] = [];
+    const engine = await createPTEngine_WebGL2({
+      device: orderedGl(log) as unknown as WebGL2RenderingContext,
+      bdpt: true,
+      bdptOptions: { maxLightBounces: 8 },
+    });
+    engine.setScene(sceneWithAnalyticLight());
+    engine.renderFrame({
+      ...frame(),
+      quality: { samplesTarget: 1, bounces: 1 },
+    });
+
+    expect(log.filter((e) => e.op === 'uBdptVertexCol').map((e) => e.v)).toEqual([0]);
+    engine.dispose();
+  });
+
   it('accepts the maximum eight-vertex subpath and rejects larger depths', async () => {
     const log: { op: string; v?: unknown }[] = [];
     const engine = await createPTEngine_WebGL2({

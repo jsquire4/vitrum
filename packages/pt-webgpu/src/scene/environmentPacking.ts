@@ -42,16 +42,14 @@ import { bakePreethamSkyEquirect, luminance, readEnvironmentMapPixels } from '@v
 //   the existing HDRI importanace-sampling path (same CDF build, same texel
 //   layout, same sun-extraction).  Resolution 256×128 was chosen so that:
 //   - The pixel solid angle dΩ ≈ (2π/256)·(π/128) ≈ 1.9×10^-3 sr fits
-//     ~4 sun-disk pixels (solar subtense ≈ 5.4×10^-5 sr), giving the
-//     existing sun-extraction a clear maximum.
+//     ~4 sun-disk pixels (solar subtense ≈ 5.4×10^-5 sr), retaining a
+//     resolvable sampling peak.
 //   - CDF cost = 32 768 floats ≈ 128 kB — same order as a 128×64 HDR thumbnail;
 //     rebuilding on every scene change is sub-millisecond on a modern CPU.
 // ---------------------------------------------------------------------------
 
 interface EnvironmentParams {
   readonly tint: readonly [number, number, number];
-  readonly sunDirection: readonly [number, number, number];
-  readonly sunStrength: number;
   /**
    * Solid-angle-integrated environment luminance used as the light-tree leaf
    * power. HDRI intensity is folded in exactly once; procedural-sky intensity
@@ -59,10 +57,9 @@ interface EnvironmentParams {
    */
   readonly lightTreePower: number;
   /**
-   * H14-E: HDRI radiance intensity multiplier, separate from `sunStrength`.
+   * H14-E: HDRI radiance intensity multiplier.
    * `scene.environment.intensity ?? 1` when a valid HDRI is present; 0 otherwise.
-   * Uploaded to `params.environmentHdriIntensity` so the equirect lookup is NOT
-   * gated by the procedural-sky sun strength.
+   * Uploaded to `params.environmentHdriIntensity`.
    */
   readonly hdriIntensity: number;
   /**
@@ -235,8 +232,6 @@ function environmentLightTreePower(
 function emptyEnvironmentParams(): EnvironmentParams {
   return {
     tint: [1, 1, 1],
-    sunDirection: [0, 1, 0],
-    sunStrength: 0,
     lightTreePower: 0,
     hdriIntensity: 0,
     hdriRotationY: 0,
@@ -293,10 +288,6 @@ function buildProceduralSkyEnvironmentParams(
   return {
     // Tint is white: the radiance is already baked into the equirect texels.
     tint: [1, 1, 1],
-    // The legacy sun lane remains zero: the procedural sky, including its sun
-    // disk, is represented entirely by this baked HDRI and its sampling CDF.
-    sunDirection: sunDir,
-    sunStrength: 0,
     lightTreePower: environmentLightTreePower(luminanceIntegral, 1),
     // H14-E: hdriIntensity is always 1 here — intensity was already folded into
     // the baked radiance values by bakePreethamSkyEquirect.  Multiplying again would
@@ -447,10 +438,6 @@ export function environmentParams(scene: Scene): EnvironmentParams {
       cdf[pixelCount] = 1;
       return {
         tint: [1, 1, 1],
-        sunDirection: [0, 1, 0],
-        // The legacy sun lane remains zero. HDRI radiance uses the map plus its
-        // own hdriIntensity lane (→ params.environmentHdriIntensity).
-        sunStrength: 0,
         lightTreePower: environmentLightTreePower(
           scaledTotalWeight * dOmegaBase,
           1,
@@ -470,8 +457,6 @@ export function environmentParams(scene: Scene): EnvironmentParams {
     // arbitrary epsilon gate.
     return {
       tint: [1, 1, 1],
-      sunDirection: [0, 1, 0],
-      sunStrength: 0,
       lightTreePower: 0,
       hdriIntensity: 0,
       hdriRotationY: 0,

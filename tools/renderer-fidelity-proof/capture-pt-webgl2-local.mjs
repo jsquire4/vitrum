@@ -24,6 +24,9 @@ const width = Number(process.env.VITRUM_WIDTH ?? '64');
 const height = Number(process.env.VITRUM_HEIGHT ?? '64');
 const spp = Number(process.env.VITRUM_SPP ?? '32');
 const bounces = Number(process.env.VITRUM_BOUNCES ?? '6');
+const bdptMaxLightBounces = process.env.VITRUM_BDPT_MAX_LIGHT_BOUNCES == null
+  ? null
+  : Number(process.env.VITRUM_BDPT_MAX_LIGHT_BOUNCES);
 const timeoutMs = Number(process.env.VITRUM_CAPTURE_TIMEOUT_MS ?? '120000');
 const browserGlBackend = process.env.VITRUM_PLAYWRIGHT_GL ?? 'swiftshader';
 const traceProbeStage = Number(process.env.VITRUM_PT_WEBGL2_PROBE_STAGE ?? '0');
@@ -34,6 +37,9 @@ const bsdfOracleSeedOffsets = (
   .map((value) => Number(value.trim()));
 const bsdfOracleRepeats = Number(
   process.env.VITRUM_PT_WEBGL2_ORACLE_REPEATS ?? '2',
+);
+const captureFrameSeedOffset = Number(
+  process.env.VITRUM_FRAME_SEED_OFFSET ?? '0',
 );
 
 const ALL_CASES = [
@@ -220,7 +226,12 @@ try {
       );
       continue;
     }
-    const result = await captureCaseInBrowser(browser, captureCase);
+    const result = await captureCaseInBrowser(
+      browser,
+      captureCase,
+      traceProbeStage,
+      captureFrameSeedOffset,
+    );
     captures.push(result.summary);
     linearById.set(captureCase.id, result.rgba);
     console.log(
@@ -333,6 +344,12 @@ async function captureCaseInBrowser(
     url.searchParams.set('vitrumScenario', captureCase.scenario);
     url.searchParams.set('vitrumSpectral', captureCase.spectral ? '1' : '0');
     url.searchParams.set('vitrumBdpt', captureCase.bdpt ? '1' : '0');
+    if (captureCase.bdpt && bdptMaxLightBounces != null) {
+      url.searchParams.set(
+        'vitrumBdptMaxLightBounces',
+        String(bdptMaxLightBounces),
+      );
+    }
     url.searchParams.set('vitrumSampling', captureCase.sampling);
     url.searchParams.set('vitrumCaptureMode', '1');
     url.searchParams.set('vitrumProbeStage', String(probeStage));
@@ -771,6 +788,21 @@ function validateConfiguration() {
     }
   }
   if (traceProbeStage > 33) throw new Error('traceProbeStage must be an integer from 0 through 33');
+  if (
+    !Number.isInteger(captureFrameSeedOffset) ||
+    captureFrameSeedOffset < 0 ||
+    captureFrameSeedOffset > 0xffffffff
+  ) {
+    throw new Error('VITRUM_FRAME_SEED_OFFSET must be a uint32 integer');
+  }
+  if (
+    bdptMaxLightBounces != null &&
+    (!Number.isInteger(bdptMaxLightBounces) ||
+      bdptMaxLightBounces < 1 ||
+      bdptMaxLightBounces > 8)
+  ) {
+    throw new Error('VITRUM_BDPT_MAX_LIGHT_BOUNCES must be an integer from 1 through 8');
+  }
   if (traceProbeStage === 32) {
     if (width * height % 2 !== 0) {
       throw new Error('BSDF oracle resolution must contain an even number of pixels');

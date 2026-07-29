@@ -307,7 +307,9 @@ describe('NRC spread WGSL codegen — shape pins (oracle equivalence)', () => {
 
   it('accumulates the running sum and returns its square as a(x)', () => {
     const wgsl = nrcSpreadTerminationWgsl();
+    expect(wgsl).toContain('const NRC_SPREAD_MAX_FINITE_F32: f32 = 3.402823466e38;');
     expect(wgsl).toContain('(*runningSum_io) * (*runningSum_io)');
+    expect(wgsl).toContain('NRC_SPREAD_MAX_FINITE_F32,');
   });
 
   it('the termination test is a(x) > c·a0', () => {

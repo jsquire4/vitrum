@@ -49,31 +49,43 @@ const FEATURE_SETS: Record<string, TraceFeatures> = {
 // The affine-containment closure replaces orthogonal-only independent axis
 // projection with the full Gram solve for sheared analytic-light bases. Its
 // compacted shared source delta is exactly +1337 bytes in every variant.
+// The 2026-07-29 audit closure adds RGB thin-film evaluation in the default
+// renderer, exact signed HG inversion shared by both volume samplers, the phase
+// factor missing from SSS throughput, and a cancellation-safe aligned HG density
+// at the shared ±0.999999 numerical cap.
+// The dispersion closure evaluates each material's packed two-term Cauchy B
+// coefficient directly in nm², anchors authored IOR at the Fraunhofer d line,
+// and removes the obsolete scene-global three-term Cauchy uniforms. That
+// semantic replacement is exactly -337 bytes in every representative variant.
+// The bounded-BDPT agreement closure gives terminal NEE full ownership when no
+// continuation can run, enforces one eye-plus-light path-depth budget, and
+// preserves a light vertex's RGB throughput when a delayed reverse-density
+// patch updates its row-2 w lane.
 // length + sha256(utf8) of composeTraceGlsl(features) for each set.
 const GOLDENS: Record<string, { length: number; sha256: string }> = {
   default: {
-    length: 139197,
-    sha256: '4b3b94191a708de8d23f174dd4d89d7c050691a0cd7ebc6fde2304780516f0b6',
+    length: 139235,
+    sha256: '06c9902d5d7ec324ab885f09ac4794d7a5046b14fa3f383d09b4dd7bd834ad1f',
   },
   bdptOn: {
-    length: 184015,
-    sha256: 'a241092f4703e44ee9aef29d16795d90c99680552fc47515bccbe593bd1c1e02',
+    length: 184194,
+    sha256: 'e82db65f4d826df58407415195b84a5d2733bb969df03ffa8b924171e0a9e7de',
   },
   bdptOff: {
-    length: 139197,
-    sha256: '4b3b94191a708de8d23f174dd4d89d7c050691a0cd7ebc6fde2304780516f0b6',
+    length: 139235,
+    sha256: '06c9902d5d7ec324ab885f09ac4794d7a5046b14fa3f383d09b4dd7bd834ad1f',
   },
   sobol: {
-    length: 145069,
-    sha256: '19b62e98126c24f9a72df3048b1c1991a7583ab56916cfae16a3ffba9331ebc6',
+    length: 145107,
+    sha256: 'acec1c2160d3b8f4735de9d24c7e60579b70dfe3d29e41f2e499b0003b4f7557',
   },
   orthographic: {
-    length: 139197,
-    sha256: '4b3b94191a708de8d23f174dd4d89d7c050691a0cd7ebc6fde2304780516f0b6',
+    length: 139235,
+    sha256: '06c9902d5d7ec324ab885f09ac4794d7a5046b14fa3f383d09b4dd7bd834ad1f',
   },
   dof: {
-    length: 139197,
-    sha256: '4b3b94191a708de8d23f174dd4d89d7c050691a0cd7ebc6fde2304780516f0b6',
+    length: 139235,
+    sha256: '06c9902d5d7ec324ab885f09ac4794d7a5046b14fa3f383d09b4dd7bd834ad1f',
   },
 };
 

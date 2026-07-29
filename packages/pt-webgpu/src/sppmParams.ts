@@ -79,22 +79,6 @@ export const SPPM_PHOTON_CELLS_MAX_BYTES = SPPM_PHOTON_CELLS_BYTES;
 export const SPPM_ALPHA = 2.0 / 3.0; // Hachisuka & Jensen 2009 α
 
 /**
- * Compute the SPPM radius for frame index `n` (0-based) given initial radius `r0`.
- * Used on the CPU host side (TypeScript) to write the UBO each frame.
- */
-export function sppmRadiusAtFrame(r0: number, n: number): number {
-  const steps = Math.max(0, Math.floor(n)) + 1;
-  let radius2 = r0 * r0;
-  let accumulated = 0;
-  for (let step = 0; step < steps; step++) {
-    const nextAccumulated = accumulated + SPPM_ALPHA;
-    radius2 *= nextAccumulated / (accumulated + 1);
-    accumulated = nextAccumulated;
-  }
-  return Math.sqrt(radius2);
-}
-
-/**
  * Compute the scale-aware initial radius `r₀` from the scene AABB diagonal.
  *
  * r₀ = max(diagonal / 100, 1e-3)

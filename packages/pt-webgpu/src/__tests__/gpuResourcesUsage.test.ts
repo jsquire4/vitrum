@@ -24,9 +24,11 @@ describe('GpuResources texture usage', () => {
     gpu.ensureAccumResources(4, 4);
 
     const usageByLabel = new Map(textureDescs.map((desc) => [desc.label, desc.usage]));
+    const formatByLabel = new Map(textureDescs.map((desc) => [desc.label, desc.format]));
     const copySrc = GPUTextureUsage.COPY_SRC;
     expect((usageByLabel.get('vitrum.pt-webgpu.normalDepth')! & copySrc) !== 0).toBe(true);
     expect((usageByLabel.get('vitrum.pt-webgpu.albedo')! & copySrc) !== 0).toBe(true);
+    expect(formatByLabel.get('vitrum.pt-webgpu.variance')).toBe('r32float');
   });
 
   it('allocates, clears, reuses, and disposes the BDPT camera-splat buffer', () => {

@@ -43,6 +43,7 @@ function makeCoreOpts(
     loader: async () => bridge,
     readback: async (input) => input,
     preloadOnBridgeInit: false,
+    retryPolicy: { initialDelayMs: 0, maxDelayMs: 0, maxAttempts: 3 },
     ...overrides,
   };
 }
@@ -84,6 +85,87 @@ describe('OIDNDispatcherCore constructor', () => {
     ).not.toThrow(); // validation is the wrapper's job; core stores as-is
     // The core does NOT validate modelUrl — that is done by the per-backend
     // wrapper class (OIDNFinalDispatcher). Core is a dumb state machine.
+  });
+
+  it.each([
+    ['zero', 0],
+    ['negative', -1],
+    ['fractional', 1.5],
+    ['NaN', Number.NaN],
+    ['positive infinity', Number.POSITIVE_INFINITY],
+    ['negative infinity', Number.NEGATIVE_INFINITY],
+    ['larger than the safe-integer range', Number.MAX_SAFE_INTEGER + 1],
+  ])('rejects a %s retry maxAttempts', (_label, maxAttempts) => {
+    const bridge = makeDefaultBridge();
+    expect(
+      () =>
+        new OIDNDispatcherCore<DirectInput>(makeCoreOpts(bridge, {
+          retryPolicy: { maxAttempts, initialDelayMs: 0, maxDelayMs: 0 },
+        })),
+    ).toThrow('retryPolicy.maxAttempts must be a positive safe integer');
+  });
+
+  it.each([
+    ['initialDelayMs', -1],
+    ['initialDelayMs', Number.NaN],
+    ['initialDelayMs', Number.POSITIVE_INFINITY],
+    ['initialDelayMs', Number.NEGATIVE_INFINITY],
+    ['maxDelayMs', -1],
+    ['maxDelayMs', Number.NaN],
+    ['maxDelayMs', Number.POSITIVE_INFINITY],
+    ['maxDelayMs', Number.NEGATIVE_INFINITY],
+  ] as const)('rejects a non-finite or negative retry %s (%s)', (field, value) => {
+    const bridge = makeDefaultBridge();
+    expect(
+      () =>
+        new OIDNDispatcherCore<DirectInput>(makeCoreOpts(bridge, {
+          retryPolicy: {
+            maxAttempts: 3,
+            initialDelayMs: 0,
+            maxDelayMs: 0,
+            [field]: value,
+          },
+        })),
+    ).toThrow(`retryPolicy.${field} must be a finite non-negative number`);
+  });
+
+  it('rejects a maximum retry delay below the initial delay', () => {
+    const bridge = makeDefaultBridge();
+    expect(
+      () =>
+        new OIDNDispatcherCore<DirectInput>(makeCoreOpts(bridge, {
+          retryPolicy: {
+            maxAttempts: 3,
+            initialDelayMs: 10,
+            maxDelayMs: 9,
+          },
+        })),
+    ).toThrow('retryPolicy.maxDelayMs must be greater than or equal to');
+  });
+
+  it('accepts a large initial delay when maxDelayMs is omitted', () => {
+    const bridge = makeDefaultBridge();
+    expect(
+      () =>
+        new OIDNDispatcherCore<DirectInput>(makeCoreOpts(bridge, {
+          retryPolicy: { maxAttempts: 1, initialDelayMs: 40_000 },
+        })),
+    ).not.toThrow();
+  });
+
+  it('rejects a non-function retry clock supplied from untyped JavaScript', () => {
+    const bridge = makeDefaultBridge();
+    expect(
+      () =>
+        new OIDNDispatcherCore<DirectInput>(makeCoreOpts(bridge, {
+          retryPolicy: {
+            maxAttempts: 3,
+            initialDelayMs: 0,
+            maxDelayMs: 0,
+            now: 17 as unknown as () => number,
+          },
+        })),
+    ).toThrow('retryPolicy.now must be a function');
   });
 });
 
@@ -556,6 +638,72 @@ describe('OIDNDispatcherCore — null readback', () => {
 });
 
 describe('OIDNDispatcherCore — error resilience', () => {
+  it.each([
+    ['NaN', Number.NaN],
+    ['positive infinity', Number.POSITIVE_INFINITY],
+    ['negative infinity', Number.NEGATIVE_INFINITY],
+    ['negative', -1],
+  ])('rejects a %s retry-clock result before starting readback', (_label, clockValue) => {
+    const readback = vi.fn(async (input: DirectInput) => input);
+    const core = new OIDNDispatcherCore<DirectInput>(makeCoreOpts(makeDefaultBridge(), {
+      readback,
+      retryPolicy: {
+        maxAttempts: 3,
+        initialDelayMs: 0,
+        maxDelayMs: 0,
+        now: () => clockValue,
+      },
+    }));
+
+    expect(() => core.kickIfReady(makeInput(), 2, 2)).toThrow(
+      'retryPolicy.now() must return a finite non-negative number',
+    );
+    expect(readback).not.toHaveBeenCalled();
+    expect(core.isInFlight()).toBe(false);
+  });
+
+  it('latches instead of leaking a rejection when the retry clock becomes invalid', async () => {
+    let clockCalls = 0;
+    const readback = vi.fn(async (input: DirectInput) => input);
+    const bridge: OIDNBridgeLike = {
+      denoiseFinal: vi.fn(async () => { throw new Error('model failed'); }),
+    };
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const core = new OIDNDispatcherCore<DirectInput>(makeCoreOpts(bridge, {
+        readback,
+        retryPolicy: {
+          maxAttempts: 3,
+          initialDelayMs: 1,
+          maxDelayMs: 1,
+          now: () => {
+            clockCalls += 1;
+            return clockCalls === 1 ? 100 : Number.NaN;
+          },
+        },
+      }));
+
+      core.kickIfReady(makeInput(), 2, 2);
+      await flushMicrotasks();
+
+      expect(core.isInFlight()).toBe(false);
+      expect(core.getLastError()).toContain(
+        'retryPolicy.now() must return a finite non-negative number',
+      );
+      expect(core.deriveState()).toMatchObject({
+        status: 'failed',
+        retryable: false,
+      });
+
+      core.kickIfReady(makeInput(), 2, 2);
+      await flushMicrotasks();
+      expect(readback).toHaveBeenCalledTimes(1);
+      expect(clockCalls).toBe(2);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it('swallows denoiseFinal errors; clears inFlight so the next kick retries', async () => {
     let callCount = 0;
     const denoiseFinal = vi.fn(async () => {
@@ -580,6 +728,57 @@ describe('OIDNDispatcherCore — error resilience', () => {
       core.kickIfReady(makeInput(), 2, 2);
       await flushMicrotasks();
       expect(core.getLatestDenoised()).not.toBeNull();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('backs off and latches persistent failures before another expensive readback', async () => {
+    let now = 100;
+    const readback = vi.fn(async (input: DirectInput) => input);
+    const bridge: OIDNBridgeLike = {
+      denoiseFinal: vi.fn(async () => { throw new Error('bad model URL'); }),
+    };
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const core = new OIDNDispatcherCore<DirectInput>(makeCoreOpts(bridge, {
+        readback,
+        retryPolicy: {
+          maxAttempts: 3,
+          initialDelayMs: 1_000,
+          maxDelayMs: 4_000,
+          now: () => now,
+        },
+      }));
+
+      core.kickIfReady(makeInput(), 2, 2);
+      await flushMicrotasks();
+      expect(readback).toHaveBeenCalledTimes(1);
+
+      // Per-frame kicks during the backoff do not repeat GPU/GL readback.
+      core.kickIfReady(makeInput(), 2, 2);
+      core.kickIfReady(makeInput(), 2, 2);
+      await flushMicrotasks();
+      expect(readback).toHaveBeenCalledTimes(1);
+
+      now = 1_100;
+      core.kickIfReady(makeInput(), 2, 2);
+      await flushMicrotasks();
+      expect(readback).toHaveBeenCalledTimes(2);
+
+      now = 3_100;
+      core.kickIfReady(makeInput(), 2, 2);
+      await flushMicrotasks();
+      expect(readback).toHaveBeenCalledTimes(3);
+      expect(core.deriveState()).toMatchObject({
+        status: 'failed',
+        retryable: false,
+      });
+
+      now = 100_000;
+      core.kickIfReady(makeInput(), 2, 2);
+      await flushMicrotasks();
+      expect(readback).toHaveBeenCalledTimes(3);
     } finally {
       warn.mockRestore();
     }

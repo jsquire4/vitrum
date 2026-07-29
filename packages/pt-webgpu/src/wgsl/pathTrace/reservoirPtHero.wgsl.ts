@@ -115,10 +115,10 @@ import { RESTIR_PT_SHIFT_WGSL } from './restirPtShift.wgsl.js';
  */
 export const RESTIR_PT_PARAMS_WGSL = /* wgsl */ `
 struct RestirPtParams {
-  width:    u32,   // full-res width  (mirrors params.width; lets a reuse pass
-  height:   u32,   // full-res height  run without re-reading FrameParams dims)
   mClamp:   u32,   // temporal M-clamp (GI restirGiMClamp analogue)
   _padA:    u32,
+  _padB:    u32,
+  _padC:    u32,
 };
 `;
 
@@ -132,10 +132,10 @@ struct RestirPtParams {
  *   (b) the total byte size equals RESTIR_PT_PARAMS_BYTES (= 16).
  */
 export const RESTIR_PT_PARAMS_FIELDS = [
-  { name: 'width',  byteOffset:  0, type: 'u32' },
-  { name: 'height', byteOffset:  4, type: 'u32' },
-  { name: 'mClamp', byteOffset:  8, type: 'u32' },
-  { name: '_padA', byteOffset: 12, type: 'u32' },
+  { name: 'mClamp', byteOffset: 0, type: 'u32' },
+  { name: '_padA', byteOffset: 4, type: 'u32' },
+  { name: '_padB', byteOffset: 8, type: 'u32' },
+  { name: '_padC', byteOffset: 12, type: 'u32' },
 ] as const;
 
 /** Byte size of the RestirPtParams UBO (4 × 4-byte fields). */
@@ -306,7 +306,7 @@ fn rptVisibleMaterialAtSurface(
     0.0, 1.0,
   );
   out.ior = mat.ior;
-  if (params.spectralEnabled != 0u && mat.dispersionAbbe >= 1.0) {
+  if (params.spectralEnabled != 0u && mat.dispersionAbbe > 0.0) {
     out.ior = cauchyIorAtLambda(heroLambda, mat.ior, mat.dispersionAbbe);
   }
   out.clearcoat = clamp(

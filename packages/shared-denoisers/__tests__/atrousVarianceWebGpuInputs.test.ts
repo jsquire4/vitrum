@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { assertAtrousVarianceWebGPUBufferShapes } from '../src/atrousVarianceWebGPU.js';
+import {
+  assertAtrousVarianceWebGPUBufferShapes,
+  runAtrousVarianceWebGPU,
+} from '../src/atrousVarianceWebGPU.js';
+import { ATROUS_VARIANCE_TEMPORAL_MIN_FRAME_COUNT } from '../src/atrousVarianceConstants.js';
 import { ATROUS_VARIANCE_WGSL } from '../src/wgsl/atrousVariance.wgsl.js';
 
 // ── CPU-mirror of the albedo demodulate/remodulate helpers ────────────────────
@@ -122,6 +126,30 @@ describe('assertAtrousVarianceWebGPUBufferShapes', () => {
         albedoRgb: new Float32Array(px * 3),
       }),
     ).not.toThrow();
+  });
+
+  it('rejects an unknown Welford signal domain', () => {
+    expect(() =>
+      assertAtrousVarianceWebGPUBufferShapes({
+        ...minimal,
+        welfordMeanM2Domain: 'display' as 'radiance',
+      }),
+    ).toThrow(/welfordMeanM2Domain/);
+  });
+
+  it('rejects radiance-domain temporal moments when the filtered signal is albedo-demodulated', async () => {
+    const px = 4;
+    await expect(runAtrousVarianceWebGPU({
+      rgb: new Float32Array(px * 3).fill(0.5),
+      width: 2,
+      height: 2,
+      frameCount: ATROUS_VARIANCE_TEMPORAL_MIN_FRAME_COUNT,
+      albedoRgb: new Float32Array(px * 3).fill(0.25),
+      welfordMeanM2: new Float32Array(px * 2),
+      // Omitted means the historical/default radiance domain. The rejection
+      // happens before device acquisition, so this is a CPU-only production
+      // entry-point regression rather than a source-string pin.
+    })).rejects.toThrow(/must be moments of that demodulated signal/);
   });
 });
 

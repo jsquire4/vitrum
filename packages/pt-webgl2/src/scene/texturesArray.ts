@@ -16,7 +16,7 @@
 // native extent plus the packed tile offset, so mixed resolutions do not change
 // filtering footprints or bleed between neighboring sources.
 
-import type { EngineWarning, MaterialSpec } from '@vitrum/core';
+import type { MaterialSpec } from '@vitrum/core';
 import {
   finiteFloat16Bits,
   float16BitsToFloat32,
@@ -150,9 +150,10 @@ export function textureAtlasLayerCapacity(layerCount: number, maxLayers: number)
   const count = Math.max(0, Math.floor(layerCount));
   const limit = Math.max(0, Math.floor(maxLayers));
   if (count === 0 || limit === 0) return 0;
-  let capacity = 1;
-  while (capacity < count + 1) capacity *= 2;
-  return Math.min(limit, Math.max(count, capacity));
+  // Atlas-membership changes are rebuilt transactionally by setScene; there is
+  // no resident texSubImage3D layer-growth path. Reserve exactly the live layers
+  // instead of doubling immutable storage for headroom that cannot be consumed.
+  return Math.min(limit, count);
 }
 
 /** Four normalized bytes preserve ordinary map storage at the device's full extent. */
@@ -219,9 +220,8 @@ export function textureAtlasStorageByteLength(
 }
 
 /**
- * Mutation headroom is bounded by both the device layer limit and actual
- * format-native mip-chain bytes. This prevents the next-power-of-two reserve from
- * silently allocating more storage than the live atlas was preflighted for.
+ * Validate live atlas storage against the device and byte ceilings. Atlas
+ * membership changes rebuild the array, so capacity is exactly `layerCount`.
  */
 export function textureAtlasLayerCapacityForStorage(
   dim: number,
@@ -248,6 +248,12 @@ export function textureAtlasLayerCapacityForStorage(
         `${MATERIAL_TEXTURE_ATLAS_STORAGE_BUDGET_BYTES}-byte storage budget.`,
     );
   }
+  if (layerCount > maxLayers) {
+    throw new Error(
+      `[pt-webgl2] material texture atlas needs ${layerCount} layers but the device ` +
+        `supports ${maxLayers}.`,
+    );
+  }
   return textureAtlasLayerCapacity(layerCount, Math.min(maxLayers, budgetLayers));
 }
 
@@ -258,11 +264,9 @@ export interface MaterialTextureAtlasLayerCapacities {
 }
 
 /**
- * Reserve mutation headroom without letting the two-array architecture double
- * the historical 512 MiB material-atlas ceiling. Complete mip-chain bytes are
- * exact for both live layers and immutable spare layers. If initial power-of-two
- * reserves do not fit, the most expensive spare layer is removed first; live
- * storage is never trimmed.
+ * Validate the paired live arrays under one 512 MiB ceiling. Atlas membership
+ * mutations rebuild the full scene transaction, so neither array reserves
+ * immutable spare layers.
  */
 export function materialTextureAtlasLayerCapacities(
   ldr: Pick<TextureAtlas, 'dim' | 'layerCount'> | null,
@@ -275,7 +279,7 @@ export function materialTextureAtlasLayerCapacities(
         `(received ${String(maxLayers)})`,
     );
   }
-  let ldrCapacity =
+  const ldrCapacity =
     ldr == null
       ? 0
       : textureAtlasLayerCapacityForStorage(
@@ -284,7 +288,7 @@ export function materialTextureAtlasLayerCapacities(
           maxLayers,
           'ldr',
         );
-  let hdrCapacity =
+  const hdrCapacity =
     hdr == null
       ? 0
       : textureAtlasLayerCapacityForStorage(
@@ -297,9 +301,6 @@ export function materialTextureAtlasLayerCapacities(
     ldr == null ? 0 : textureAtlasStorageByteLength(ldr.dim, 1, 'ldr');
   const hdrBytesPerLayer =
     hdr == null ? 0 : textureAtlasStorageByteLength(hdr.dim, 1, 'hdr');
-  const totalBytes = (): number =>
-    ldrCapacity * ldrBytesPerLayer + hdrCapacity * hdrBytesPerLayer;
-
   const liveBytes =
     (ldr?.layerCount ?? 0) * ldrBytesPerLayer +
     (hdr?.layerCount ?? 0) * hdrBytesPerLayer;
@@ -311,51 +312,14 @@ export function materialTextureAtlasLayerCapacities(
     );
   }
 
-  // Remove expensive spare layers first, in bulk. A decrementing loop is
-  // pathological for hostile-but-safe layer limits in the tens of millions.
-  let excessBytes = totalBytes() - MATERIAL_TEXTURE_ATLAS_STORAGE_BUDGET_BYTES;
-  const trimSpareLayers = (storageClass: TextureAtlasStorageClass): void => {
-    if (excessBytes <= 0) return;
-    const atlas = storageClass === 'ldr' ? ldr : hdr;
-    if (atlas == null) return;
-    const bytesPerLayer =
-      storageClass === 'ldr' ? ldrBytesPerLayer : hdrBytesPerLayer;
-    const capacity = storageClass === 'ldr' ? ldrCapacity : hdrCapacity;
-    const spareLayers = capacity - atlas.layerCount;
-    const trimCount = Math.min(
-      spareLayers,
-      Math.ceil(excessBytes / bytesPerLayer),
-    );
-    if (storageClass === 'ldr') {
-      ldrCapacity -= trimCount;
-    } else {
-      hdrCapacity -= trimCount;
-    }
-    excessBytes -= trimCount * bytesPerLayer;
-  };
-  if (ldrBytesPerLayer >= hdrBytesPerLayer) {
-    trimSpareLayers('ldr');
-    trimSpareLayers('hdr');
-  } else {
-    trimSpareLayers('hdr');
-    trimSpareLayers('ldr');
-  }
-  if (excessBytes > 0) {
-    throw new Error(
-      '[pt-webgl2] internal material texture atlas capacity budget mismatch',
-    );
-  }
-
   return {
     ldr: ldrCapacity,
     hdr: hdrCapacity,
-    storageBytes: totalBytes(),
+    storageBytes: liveBytes,
   };
 }
 
-export interface TextureAtlasBuildOptions {
-  readonly onWarning?: (warning: EngineWarning) => void;
-  readonly warningPhase?: string;
+interface TextureAtlasBuildOptions {
   readonly warningMethod?: string;
   /** Device array-layer limit used to reject an impossible atlas before source validation. */
   readonly maxArrayTextureLayers?: number;
@@ -807,7 +771,15 @@ function blitInspectedLayer(
         ((placement.y + y) * dim + placement.x + x) * 4;
       const r = decodedChannel(inspected, s, handle, options);
       const g = inspected.stride > 1 ? decodedChannel(inspected, s + 1, handle, options) : r;
-      const b = inspected.stride > 2 ? decodedChannel(inspected, s + 2, handle, options) : r;
+      // Match native RG texture expansion: R stays R, G stays G, absent B is 0,
+      // and absent A is 1. A one-channel source remains luminance and expands to
+      // RGB; a two-channel source is data-bearing RG rather than luminance-alpha.
+      const b =
+        inspected.stride > 2
+          ? decodedChannel(inspected, s + 2, handle, options)
+          : inspected.stride === 1
+            ? r
+            : 0;
       const a = inspected.stride >= 4 ? decodedChannel(inspected, s + 3, handle, options) : 1;
       writeChannel(d, r, true);
       writeChannel(d + 1, g, true);
@@ -1506,9 +1478,8 @@ function uploadTextureAtlasStorage(
 ): void {
   const internalFormat = atlas.format === 'rgba16f' ? gl.RGBA16F : gl.RGBA8;
   const uploadType = atlas.format === 'rgba16f' ? gl.HALF_FLOAT : gl.UNSIGNED_BYTE;
-  // Reserve spare GPU layers without manufacturing capacity-sized CPU arrays.
-  // texStorage3D is core WebGL2 and makes every mip available for later
-  // texSubImage3D growth updates.
+  // Allocate the exact live layer count. Membership mutations are handled by a
+  // candidate-first full scene transaction, never by in-place array growth.
   gl.texStorage3D(
     gl.TEXTURE_2D_ARRAY,
     atlas.mipLevels.length,

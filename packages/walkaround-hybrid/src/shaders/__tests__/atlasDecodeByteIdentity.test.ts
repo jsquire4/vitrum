@@ -65,6 +65,15 @@ import { makeProbeUpdateRaysWGSL } from '../../ddgi/wgsl/probeUpdateRays.wgsl.js
  * Canonical-GI prose reconciliation (2026-07-28): a documentation-only update
  * in the shared reservoirGi fragment adds 43 bytes to both composed roots
  * below. Material-atlas and surface-texture fragment bytes are unchanged.
+ *
+ * Final renderer audit closure (2026-07-29): fractional-metal GI, explicit
+ * retired-control ABI pads, validation-visible BVH arena ownership, and inert
+ * resource removal intentionally changed composed roots without changing the
+ * material-atlas or surface-texture fragments pinned above.
+ *
+ * KHR punctual-range closure (2026-07-29): every walkaround punctual-light
+ * route now shares the unsquared KHR range window. Shade and DDGI probe-update
+ * bytes intentionally changed; RIS-GI already consumed the canonical helper.
  */
 function sha(s: string): string {
   return createHash('sha256').update(s, 'utf8').digest('hex');
@@ -90,21 +99,21 @@ describe('material-atlas decode ABI composed byte identity', () => {
     const risGi = composeWgsl(RIS_GI_MODULE, WGSL_MODULES);
     const shadeDigest = { length: shade.length, sha256: sha(shade) };
     expect(shadeDigest, `shade current=${JSON.stringify(shadeDigest)}`).toEqual({
-      length: 382477,
-      sha256: '384f0530b75f8efb7185981ded062bd1eeae491a7b43929ef1ac82ee90223e91',
+      length: 382511,
+      sha256: 'eff07b5eca0ca635975a42b0e194f90201c825e478063cdd63bc72ff473f6f1d',
     });
     const risGiDigest = { length: risGi.length, sha256: sha(risGi) };
     expect(risGiDigest, `risGi current=${JSON.stringify(risGiDigest)}`).toEqual({
-      length: 259742,
-      sha256: '0a0596c8a6ecbb9fe0d0a952124409d521fb98c0276034160d77abba50fe042e',
+      length: 259801,
+      sha256: 'f5d0e7459eb04e1336c28fcb0336bb5a28d908df45829a42102ad800af4316f5',
     });
   });
 
   it('pins probeUpdateRays for representative maxMaterials (DDGI offset ABI)', () => {
     const cases: Array<[number, number, string]> = [
-      [1, 154559, '810074423d04c33eb06b477844e315e1c8e535186f7f584591aff97c41071def'],
-      [8, 154559, 'e6f51266b25a6a0860d797b936ea50a47688cbf44505cc8aa0e2bcce51589098'],
-      [64, 154560, 'e3bad56cfcce53d41a382cea24a4595a9d8073a3e88507deeec7f65a7d1164a4'],
+      [1, 154955, '0a26fcae2069ef1bc6fbada88440bed0c7a9aba0d3c48e329d60f42c2562f476'],
+      [8, 154955, '9adf3538ab3819b9185657bb12312f9a0eff8d8793eb02f5e211ba02d685d058'],
+      [64, 154956, '128a2fecef8ed29bae8f91395e090fb2bd21292575281372417732a9195439fa'],
     ];
     const current = cases.map(([m]) => {
       const wgsl = makeProbeUpdateRaysWGSL(m);

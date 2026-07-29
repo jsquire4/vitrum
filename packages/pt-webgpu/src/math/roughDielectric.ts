@@ -79,24 +79,6 @@ export function roughDielectricSmithG1RoughnessDerivative(
   return -2 * dRootDRoughness / ((1 + root) * (1 + root));
 }
 
-/** Emits the analytic roughness derivative of `roughDielectricSmithG1Wgsl`. */
-export function roughDielectricSmithG1DerivativeWgsl(functionName: string): string {
-  return /* wgsl */ `fn ${functionName}(nDotV: f32, roughness: f32) -> f32 {
-  let cosTheta = max(nDotV, 0.0);
-  if (cosTheta <= 1e-6) { return 0.0; }
-  let alphaUnclamped = roughness * roughness;
-  if (alphaUnclamped < ${PT_WEBGPU_MICROFACET_ALPHA_FLOOR}) { return 0.0; }
-  let alpha = max(alphaUnclamped, ${PT_WEBGPU_MICROFACET_ALPHA_FLOOR});
-  let tanTheta2 = max(0.0, 1.0 - cosTheta * cosTheta) /
-    max(cosTheta * cosTheta, 1e-10);
-  let root = sqrt(1.0 + alpha * alpha * tanTheta2);
-  let dRootDRoughness =
-    alpha * (2.0 * roughness) * tanTheta2 / root;
-  return -2.0 * dRootDRoughness /
-    ((1.0 + root) * (1.0 + root));
-}`;
-}
-
 /** Exactly zero roughness is a Dirac interface; every positive value is finite. */
 export const ROUGH_DIELECTRIC_SMOOTH_THRESHOLD = 0;
 

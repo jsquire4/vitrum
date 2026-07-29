@@ -45,9 +45,9 @@ export const thin_film_tmm = /* glsl */`
 	}
 
 	// Returns vec2(R, T) for the hero wavelength.
-	vec2 thinFilmTMM(
-		uint materialIndex,
-		int thinFilmLayerCount,
+		vec2 thinFilmTMM(
+			uint materialIndex,
+			int thinFilmLayerCount,
 		float lambdaNm,
 		float substrateIor,
 		float incidentIor,
@@ -105,8 +105,63 @@ export const thin_film_tmm = /* glsl */`
 		vec2 t = cDiv( vec2( 2.0 * eta0, 0.0 ), den );
 
 		float R = dot( r, r );
-		float T = ( etaS / eta0 ) * dot( t, t );
-		return vec2( clamp( R, 0.0, 1.0 ), clamp( T, 0.0, 1.0 ) );
-	}
+			float T = ( etaS / eta0 ) * dot( t, t );
+			return vec2( clamp( R, 0.0, 1.0 ), clamp( T, 0.0, 1.0 ) );
+		}
 
-`;
+		struct ThinFilmRgb {
+			vec3 reflectance;
+			vec3 transmittance;
+		};
+
+		// The spectral renderer carries one hero wavelength, so its transfer stays
+		// scalar until wavelengthToRGB reconstructs the path. The default RGB
+		// renderer instead evaluates the same transfer matrix at representative
+		// red/green/blue wavelengths. Reusing an arbitrary hero wavelength for all
+		// three RGB lanes makes interference achromatic (and previously read an
+		// uninitialised CMF table); three channel-local evaluations preserve the
+		// wavelength-dependent thin-film colour without requiring spectral mode.
+		ThinFilmRgb thinFilmTMMRgb(
+			uint materialIndex,
+			int thinFilmLayerCount,
+			float heroWavelengthNm,
+			float substrateIor,
+			float incidentIor,
+			float viewCosTheta
+		) {
+			ThinFilmRgb result;
+			if ( uSpectralRendering != 0 ) {
+				vec2 rt = thinFilmTMM(
+					materialIndex,
+					thinFilmLayerCount,
+					heroWavelengthNm,
+					substrateIor,
+					incidentIor,
+					viewCosTheta
+				);
+				result.reflectance = vec3( rt.x );
+				result.transmittance = vec3( rt.y );
+				return result;
+			}
+
+			// Representative wavelengths used for the RGB approximation. These
+			// stay inside the visible support and keep the three channels ordered
+			// red → green → blue.
+			vec2 red = thinFilmTMM(
+				materialIndex, thinFilmLayerCount, 650.0,
+				substrateIor, incidentIor, viewCosTheta
+			);
+			vec2 green = thinFilmTMM(
+				materialIndex, thinFilmLayerCount, 510.0,
+				substrateIor, incidentIor, viewCosTheta
+			);
+			vec2 blue = thinFilmTMM(
+				materialIndex, thinFilmLayerCount, 475.0,
+				substrateIor, incidentIor, viewCosTheta
+			);
+			result.reflectance = vec3( red.x, green.x, blue.x );
+			result.transmittance = vec3( red.y, green.y, blue.y );
+			return result;
+		}
+
+	`;

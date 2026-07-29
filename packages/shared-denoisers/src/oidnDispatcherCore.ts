@@ -178,6 +178,8 @@ export interface OIDNDerivedStateInputs {
   readonly inFlight: boolean;
   /** True once at least one inference has completed for the current cohort. */
   readonly haveCompleted: boolean;
+  /** Whether another automatic attempt remains after a failure. */
+  readonly retryable?: boolean;
 }
 
 /**
@@ -185,7 +187,8 @@ export interface OIDNDerivedStateInputs {
  * truth for the previously byte-identical `getState()` ladders (pt-webgl2,
  * pt-webgpu) AND the tail of walkaround-hybrid's richer `state()`:
  *
- *  - `'failed'`    — `lastError` set; retryable; `reason` = the message.
+ *  - `'failed'`    — `lastError` set; `retryable` reports whether the bounded
+ *                    automatic-attempt budget still has capacity.
  *  - `'in-flight'` — an inference cycle is running.
  *  - `'ready'`     — the last cycle succeeded and a result is available.
  *  - `'fallback'`  — no inference has completed yet (first frame / post-invalidate).
@@ -196,7 +199,11 @@ export interface OIDNDerivedStateInputs {
  */
 export function deriveOidnState(inputs: OIDNDerivedStateInputs): OIDNDerivedState {
   if (inputs.lastError !== null) {
-    return { status: 'failed', reason: inputs.lastError, retryable: true };
+    return {
+      status: 'failed',
+      reason: inputs.lastError,
+      retryable: inputs.retryable ?? true,
+    };
   }
   if (inputs.inFlight) {
     return { status: 'in-flight', reason: null };
@@ -266,6 +273,20 @@ function validateReadback(
   }
 }
 
+function validatePositiveSafeInteger(label: string, value: number): number {
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new RangeError(`${label} must be a positive safe integer`);
+  }
+  return value;
+}
+
+function validateFiniteNonNegative(label: string, value: number): number {
+  if (!Number.isFinite(value) || value < 0) {
+    throw new RangeError(`${label} must be a finite non-negative number`);
+  }
+  return value;
+}
+
 /**
  * Options for constructing an {@link OIDNDispatcherCore}.
  */
@@ -302,6 +323,20 @@ export interface OIDNDispatcherCoreOptions<TInput> {
   readonly onError?: (err: unknown) => void;
   /** Called only after an accepted result is published; observer failures are isolated. */
   readonly onComplete?: (frame: DenoisedFrame) => void;
+  /**
+   * Automatic retry policy for failed readback/session/inference cycles.
+   * Defaults to three total attempts with 1s/2s exponential delays. This
+   * prevents a persistent model URL or provider failure from performing a
+   * full readback and session construction on every render frame forever.
+   *
+   * The clock hook and zero delays are intended for deterministic tests.
+   */
+  readonly retryPolicy?: {
+    readonly maxAttempts?: number;
+    readonly initialDelayMs?: number;
+    readonly maxDelayMs?: number;
+    readonly now?: () => number;
+  };
 }
 
 /**
@@ -331,6 +366,10 @@ export class OIDNDispatcherCore<TInput> {
   readonly #preloadOnBridgeInit: boolean;
   readonly #onError: ((err: unknown) => void) | undefined;
   readonly #onComplete: ((frame: DenoisedFrame) => void) | undefined;
+  readonly #maxAttempts: number;
+  readonly #initialRetryDelayMs: number;
+  readonly #maxRetryDelayMs: number;
+  readonly #now: () => number;
 
   /** True while an OIDN inference promise is unresolved. Re-kick attempts
    *  during this window are no-ops. */
@@ -366,6 +405,12 @@ export class OIDNDispatcherCore<TInput> {
    * `FrameStats.denoiserState.reason` without polling private state.
    */
   #lastErrorMessage: string | null = null;
+  /** Consecutive failed cycles. A successful result resets this to zero. */
+  #failureCount = 0;
+  /** Earliest clock time at which another automatic attempt may begin. */
+  #retryNotBeforeMs = 0;
+  /** True after the bounded automatic-attempt budget is exhausted. */
+  #retryLatched = false;
 
   constructor(opts: OIDNDispatcherCoreOptions<TInput>) {
     this.#modelUrl = opts.dispatcherOptions.modelUrl;
@@ -375,6 +420,29 @@ export class OIDNDispatcherCore<TInput> {
     this.#preloadOnBridgeInit = opts.preloadOnBridgeInit;
     this.#onError = opts.onError;
     this.#onComplete = opts.onComplete;
+    const retry = opts.retryPolicy;
+    this.#maxAttempts = validatePositiveSafeInteger(
+      'OIDNDispatcherCore retryPolicy.maxAttempts',
+      retry?.maxAttempts ?? 3,
+    );
+    this.#initialRetryDelayMs = validateFiniteNonNegative(
+      'OIDNDispatcherCore retryPolicy.initialDelayMs',
+      retry?.initialDelayMs ?? 1_000,
+    );
+    this.#maxRetryDelayMs = validateFiniteNonNegative(
+      'OIDNDispatcherCore retryPolicy.maxDelayMs',
+      retry?.maxDelayMs ?? Math.max(30_000, this.#initialRetryDelayMs),
+    );
+    if (this.#maxRetryDelayMs < this.#initialRetryDelayMs) {
+      throw new RangeError(
+        'OIDNDispatcherCore retryPolicy.maxDelayMs must be greater than or equal to ' +
+          'retryPolicy.initialDelayMs',
+      );
+    }
+    if (retry?.now !== undefined && typeof retry.now !== 'function') {
+      throw new TypeError('OIDNDispatcherCore retryPolicy.now must be a function');
+    }
+    this.#now = retry?.now ?? (() => globalThis.performance?.now() ?? Date.now());
   }
 
   /**
@@ -409,7 +477,8 @@ export class OIDNDispatcherCore<TInput> {
    * machine. Single source of truth for the previously byte-identical
    * `getState()` ladders in the pt-webgl2 and pt-webgpu wrappers:
    *
-   *  - `'failed'`    — the last cycle threw; `reason` = error message; retryable.
+   *  - `'failed'`    — the last cycle threw; `reason` = error message;
+   *                    `retryable` is false once the attempt budget is exhausted.
    *  - `'in-flight'` — an async inference cycle is currently running.
    *  - `'ready'`     — the last cycle succeeded and a result is available.
    *  - `'fallback'`  — no inference has completed yet (first frame / post-invalidate).
@@ -422,14 +491,20 @@ export class OIDNDispatcherCore<TInput> {
       lastError: this.#lastErrorMessage,
       inFlight: this.#inFlight,
       haveCompleted: this.#latest !== null,
+      retryable: !this.#retryLatched,
     });
   }
 
   /**
-   * Clear the latest result and arm the dispatcher to re-kick on the next
-   * {@link kickIfReady} call. The engine calls this on reset / setScene /
-   * updateEnvironment — any state change that invalidates the accumulator
-   * also invalidates the denoised cache.
+   * Clear the latest result for a new accumulator cohort. If the automatic
+   * retry budget still has capacity, the dispatcher may re-kick on a later
+   * {@link kickIfReady} call. Invalidation deliberately preserves failure
+   * count, backoff, and an exhausted retry latch: ordinary per-frame resets
+   * cannot bypass the bounded-attempt policy. Recovery after exhaustion
+   * requires disposing and recreating the dispatcher.
+   *
+   * The engine calls this on reset / setScene / updateEnvironment — any state
+   * change that invalidates the accumulator also invalidates the denoised cache.
    *
    * An in-flight inference is allowed to complete, but the result is
    * dropped on resolve (the bumped {@link #cohortId} catches the race).
@@ -466,7 +541,10 @@ export class OIDNDispatcherCore<TInput> {
     if (this.#disposed) return;
     if (this.#inFlight) return;
     if (this.#haveCompleted) return;
+    if (this.#retryLatched) return;
     if (width <= 0 || height <= 0) return;
+    const now = this.#readNow();
+    if (this.#lastErrorMessage !== null && now < this.#retryNotBeforeMs) return;
 
     const cohortAtKick = this.#cohortId;
     this.#inFlight = true;
@@ -556,6 +634,9 @@ export class OIDNDispatcherCore<TInput> {
       // Clear the error state after a successful inference so that
       // `getLastError()` reflects the current health of the dispatcher.
       this.#lastErrorMessage = null;
+      this.#failureCount = 0;
+      this.#retryNotBeforeMs = 0;
+      this.#retryLatched = false;
       if (this.#onComplete !== undefined) {
         try {
           this.#onComplete(completed);
@@ -568,17 +649,54 @@ export class OIDNDispatcherCore<TInput> {
       // failure into the replacement lifecycle or notify a host that no longer
       // owns this work.
       if (this.#disposed || this.#cohortId !== cohortAtKick) return;
-      const msg = err instanceof Error ? err.message : String(err);
-      // Suppress repeated `console.warn` for the identical error message —
-      // only warn when the message changes from the previously recorded one.
-      if (msg !== this.#lastErrorMessage) {
-        console.warn('[OIDNDispatcherCore] readback or denoiseFinal failed', err);
-        if (this.#onError !== undefined) {
-          try { this.#onError(err); } catch { /* onError must not propagate */ }
+      this.#recordError(err, 'readback or denoiseFinal failed');
+      this.#failureCount += 1;
+      this.#retryLatched = this.#failureCount >= this.#maxAttempts;
+      if (!this.#retryLatched) {
+        const exponent = Math.max(0, this.#failureCount - 1);
+        const delay = Math.min(
+          this.#maxRetryDelayMs,
+          this.#initialRetryDelayMs * (2 ** exponent),
+        );
+        try {
+          const retryNotBeforeMs = this.#readNow() + delay;
+          if (!Number.isFinite(retryNotBeforeMs)) {
+            throw new RangeError(
+              'OIDNDispatcherCore retry policy produced a non-finite retry deadline',
+            );
+          }
+          this.#retryNotBeforeMs = retryNotBeforeMs;
+        } catch (clockError) {
+          // A broken host clock must not turn a failed OIDN setup into either
+          // an unhandled rejection or an expensive per-frame retry loop.
+          this.#recordError(clockError, 'retry clock failed');
+          this.#retryLatched = true;
+          this.#retryNotBeforeMs = 0;
         }
       }
-      this.#lastErrorMessage = msg;
     }
+  }
+
+  #readNow(): number {
+    const now = this.#now();
+    if (!Number.isFinite(now) || now < 0) {
+      throw new RangeError(
+        'OIDNDispatcherCore retryPolicy.now() must return a finite non-negative number',
+      );
+    }
+    return now;
+  }
+
+  #recordError(err: unknown, context: string): void {
+    const msg = err instanceof Error ? err.message : String(err);
+    // Suppress repeated notifications for an identical error message.
+    if (msg !== this.#lastErrorMessage) {
+      console.warn(`[OIDNDispatcherCore] ${context}`, err);
+      if (this.#onError !== undefined) {
+        try { this.#onError(err); } catch { /* onError must not propagate */ }
+      }
+    }
+    this.#lastErrorMessage = msg;
   }
 
   /**

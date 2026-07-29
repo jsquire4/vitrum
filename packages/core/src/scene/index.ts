@@ -18,7 +18,12 @@ export * from './primitives.js';
 export * from './emitters.js';
 export * from './environment.js';
 export * from './animation.js';
-export * from './validation.js';
+export {
+  validateMaterialSpec,
+  validateScene,
+  validateSceneEmitters,
+  validateSceneEnvironment,
+} from './validation.js';
 export * from './tlasAudit.js';
 
 import type { ScenePrimitive } from './primitives.js';

@@ -788,7 +788,7 @@ fn bdptResolveCameraSample(gid: vec3u, radiance: vec3f) {
   let mean = moments.x / count;
   let varL = max(0.0, moments.y / count - mean * mean);
   textureStore(outputTexture, vec2i(gid.xy), vec4f(display, 1.0));
-  textureStore(varianceTexture, vec2i(gid.xy), vec4f(varL, varL, varL, 1.0));
+  textureStore(varianceTexture, vec2i(gid.xy), vec4f(varL, 0.0, 0.0, 0.0));
 }`
     : '';
   const frameAccumulationCall = cameraSplat
@@ -883,7 +883,7 @@ fn accumulateFrame(
     textureStore(albedoTexture, vec2i(gid.xy), vec4f(0.0, 0.0, 0.0, 0.0));
     textureStore(motionVectorsTexture, vec2i(gid.xy), vec4f(0.0, 0.0, 0.0, 1.0));
   }
-  textureStore(varianceTexture, vec2i(gid.xy), vec4f(varL, varL, varL, 1.0));
+  textureStore(varianceTexture, vec2i(gid.xy), vec4f(varL, 0.0, 0.0, 0.0));
 }
 ${cameraSplatFrameHelpers}
 @compute @workgroup_size(8, 8, 1)

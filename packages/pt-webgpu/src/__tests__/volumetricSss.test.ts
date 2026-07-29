@@ -118,27 +118,22 @@ function directionalMediumNeeScene(): Scene {
  */
 function hgSampleCosTheta(g: number, u1: number): number {
   const safeG = Math.max(-0.999999, Math.min(0.999999, g));
-  const a = Math.abs(safeG);
   const q = 1 - 2 * u1;
-  let alignedCos: number;
-  if (a < 0.125) {
-    const d = 1 + a * q;
+  let cosTheta: number;
+  if (Math.abs(safeG) < 0.125) {
+    const d = 1 + safeG * q;
     const numerator =
       2 * q +
-      a * (q * q + 3) +
-      2 * a * a * q +
-      a * a * a * (q * q - 1);
-    alignedCos = numerator / (2 * d * d);
+      safeG * (q * q + 3) +
+      2 * safeG * safeG * q +
+      safeG * safeG * safeG * (q * q - 1);
+    cosTheta = numerator / (2 * d * d);
   } else {
-    const oneMinusA = 1 - a;
-    const ratio =
-      (oneMinusA * (1 + a)) / (oneMinusA + 2 * a * (1 - u1));
-    alignedCos = (1 + a * a - ratio * ratio) / (2 * a);
+    const ratio = (1 - safeG * safeG) / (1 + safeG * q);
+    cosTheta =
+      (1 + safeG * safeG - ratio * ratio) / (2 * safeG);
   }
-  return Math.max(
-    -1,
-    Math.min(1, safeG >= 0 ? alignedCos : -alignedCos),
-  );
+  return Math.max(-1, Math.min(1, cosTheta));
 }
 
 /** Free-flight distance: t = -ln(1-ξ)/σ_t (exponential transmittance CDF inversion). */
@@ -524,7 +519,7 @@ describe('Structural symmetric-medium composition with BDPT', () => {
     // 384 bytes after removing unread CMF/light mirrors and using a semantic
     // cameraPos vec3f. The important WS4 invariant is that SSS absorption data
     // stays in the material buffer, not a distinct FrameParams tail.
-    expect(FRAME_PARAMS_BYTE_SIZE).toBe(384);
+    expect(FRAME_PARAMS_BYTE_SIZE).toBe(368);
   });
 
   it('no-collision branch divides out the hero-channel survival probability (V23 double-count fix)', () => {

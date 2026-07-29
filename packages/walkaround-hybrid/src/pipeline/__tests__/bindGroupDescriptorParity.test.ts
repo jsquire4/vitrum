@@ -128,7 +128,7 @@ const BUILDER_DRIVERS: Record<BindGroupTableId, (d: GPUDevice, c: BGLCache) => G
       analyticLightsTextureView: view,
     // B3 — directional IBL env resources (bindings 15-19).
     envMapTextureView: view, envMarginalTextureView: view, envConditionalTextureView: view,
-    envSampler: sampler, envParamsBuffer: buf,
+    envParamsBuffer: buf,
   }),
   ubo: (d, c) => buildUboBindGroup(d, c, buf, view, view),
   composite: (d, c) => buildCompositeBindGroup(d, c, view, buf),

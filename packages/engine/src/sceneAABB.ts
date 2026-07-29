@@ -74,12 +74,15 @@ export function computeSceneAABB(scene: Scene): SceneAABB {
   const ex = maxX - minX;
   const ey = maxY - minY;
   const ez = maxZ - minZ;
+  const measuredDiagonal = Math.sqrt(ex * ex + ey * ey + ez * ez);
   return {
     min: [minX, minY, minZ],
     max: [maxX, maxY, maxZ],
     center: [(minX + maxX) * 0.5, (minY + maxY) * 0.5, (minZ + maxZ) * 0.5],
     extent: [ex, ey, ez],
-    diagonal: Math.max(FALLBACK_DIAGONAL, Math.sqrt(ex * ex + ey * ey + ez * ez)),
+    diagonal: Number.isFinite(measuredDiagonal) && measuredDiagonal > 0
+      ? measuredDiagonal
+      : FALLBACK_DIAGONAL,
     triangleCount,
   };
 }

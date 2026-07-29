@@ -145,6 +145,7 @@ describe('pt-webgpu explicit pipeline layout', () => {
     expect(g0m.get(2)!.buffer?.type).toBe('storage'); // accumBuffer (read_write)
     expect(g0m.get(3)!.buffer?.type).toBe('read-only-storage'); // positions
     expect(g0m.get(9)!.storageTexture?.format).toBe('rgba16float'); // normalDepth
+    expect(g0m.get(11)!.storageTexture?.format).toBe('r32float'); // scalar variance
     expect(g0m.get(12)!.storageTexture).toBeDefined(); // motionVectors
     expect(g0m.get(13)!.buffer?.type).toBe('storage'); // varianceMoments (read_write)
     expect(g0m.get(14)!.buffer?.type).toBe('storage'); // BDPT atomic RGB splats

@@ -2,6 +2,11 @@ import { describe, expect, it, vi } from 'vitest';
 import type { EngineWarning, Scene } from '@vitrum/core';
 import { asMat4 } from '@vitrum/core';
 import { createPTEngine_WebGPU } from '../index.js';
+import {
+  buildPackedScene,
+  prepareSceneBufferMutation,
+  uploadPackedScene,
+} from '../scene/uploadSceneBuffers.js';
 import { installGpuConstStubs, textureStubMethods } from './gpuStub.js';
 
 function installWebGpuConstStubs(): void {
@@ -110,6 +115,8 @@ function makeStubDevice() {
       maxStorageBuffersPerShaderStage: 64,
       maxTextureDimension2D: 8192,
       maxTextureArrayLayers: 256,
+      maxBufferSize: 1_073_741_824,
+      maxStorageBufferBindingSize: 1_073_741_824,
     },
     addEventListener: vi.fn(),
     removeEventListener: vi.fn(),
@@ -404,6 +411,63 @@ describe('pt-webgpu incremental primitive updates', () => {
         ],
       },
     );
+  });
+
+  it('retains prior pack warnings without replaying them on a clean geometry mutation', async () => {
+    installWebGpuConstStubs();
+    const { device } = makeStubDevice();
+    const warnings: EngineWarning[] = [];
+    const engine = await createPTEngine_WebGPU({
+      device,
+      onWarning: (warning) => warnings.push(warning),
+    });
+    const scene = makeScene();
+    const sceneWithAnalyticHistory: Scene = {
+      ...scene,
+      primitives: [
+        ...scene.primitives,
+        {
+          kind: 'mesh',
+          id: 'skipped-history-only',
+          positions: new Float32Array([
+            0, 0, 0,
+            1, 0, 0,
+            0, 1, 0,
+          ]),
+          normals: new Float32Array([
+            0, 0, 1,
+            0, 0, 1,
+            0, 0, 1,
+          ]),
+          indices: new Uint32Array(0),
+          material: {
+            baseColor: [1, 1, 1],
+            roughness: 0.5,
+            metallic: 0,
+          },
+        },
+      ],
+    };
+    engine.setScene(sceneWithAnalyticHistory);
+    expect(warnings.some((warning) =>
+      warning.message.includes('skipped-history-only')
+    )).toBe(true);
+    warnings.length = 0;
+
+    engine.updatePrimitive?.('mesh-a', {
+      positions: new Float32Array([
+        0, 0, 0,
+        1.25, 0, 0,
+        0, 1, 0,
+      ]),
+    });
+
+    expect(warnings.some(
+      (warning) => warning.code === 'pt-webgpu.primitive-mutation-warning',
+    )).toBe(false);
+    expect(warnings.some((warning) =>
+      warning.message.includes('skipped-history-only')
+    )).toBe(false);
   });
 
   it('copies only dirty material words into the unchanged live buffer', async () => {
@@ -1179,6 +1243,63 @@ describe('pt-webgpu incremental primitive updates', () => {
       );
     },
   );
+
+  it('chunks combined dirty data at maxBufferSize without splitting the transaction submit', () => {
+    installWebGpuConstStubs();
+    const stub = makeStubDevice();
+    const uploaded = uploadPackedScene(stub.device, buildPackedScene(makeScene()));
+    const nextPositions = Float32Array.from(
+      uploaded.positions,
+      (value) => value + 1,
+    );
+    const nextNormals = Float32Array.from(
+      uploaded.normals,
+      (value) => value + 2,
+    );
+    const maxDestinationByteLength = Math.max(
+      nextPositions.byteLength,
+      nextNormals.byteLength,
+    );
+    (stub.device.limits as unknown as { maxBufferSize: number }).maxBufferSize =
+      maxDestinationByteLength;
+
+    const buffersBefore = stub.createBuffer.mock.calls.length;
+    const writesBefore = stub.writeBuffer.mock.calls.length;
+    const copiesBefore = stub.copyBufferToBuffer.mock.calls.length;
+    const submitsBefore = stub.submit.mock.calls.length;
+    // Exercise the production scene-buffer seam directly so two individually
+    // legal near-limit destinations can be dirtied in one transaction.
+    const transaction = prepareSceneBufferMutation(stub.device, uploaded, {
+      positions: nextPositions,
+      normals: nextNormals,
+    });
+
+    const stagingBuffers = stub.createBuffer.mock.results
+      .slice(buffersBefore)
+      .map((result) => result.value as StubBuffer);
+    expect(stagingBuffers).toHaveLength(2);
+    expect(stagingBuffers.map((buffer) => buffer.size)).toEqual([
+      nextPositions.byteLength,
+      nextNormals.byteLength,
+    ]);
+    expect(stagingBuffers.every(
+      (buffer) => buffer.size <= maxDestinationByteLength,
+    )).toBe(true);
+    expect(stub.writeBuffer.mock.calls.length - writesBefore).toBe(2);
+    expect(stub.copyBufferToBuffer.mock.calls.length - copiesBefore).toBe(2);
+    expect(stub.submit.mock.calls.length).toBe(submitsBefore);
+
+    transaction.commit();
+
+    expect(stub.submit.mock.calls.length - submitsBefore).toBe(1);
+    expect(Array.from(uploaded.positions)).toEqual(Array.from(nextPositions));
+    expect(Array.from(uploaded.normals)).toEqual(Array.from(nextNormals));
+    for (const staging of stagingBuffers) {
+      expect(staging.destroy).toHaveBeenCalledOnce();
+    }
+    transaction.finalize();
+    uploaded.destroy();
+  });
 
   it('does not allocate, encode, write, copy, or submit byte-identical data', async () => {
     installWebGpuConstStubs();

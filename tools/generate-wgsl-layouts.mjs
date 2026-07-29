@@ -36,10 +36,9 @@ const FRAME_FIELDS = [
   ['lightTreeNodeCount', 'u32'],
   // Only xyz is semantic; the following scalar fills vec3f's aligned fourth lane.
   ['cameraPos', 'vec3f'],
-  // H14-E: HDRI intensity remains in slot 31, separate from environmentSun.w.
+  // H14-E: HDRI intensity occupies cameraPos's aligned fourth lane.
   ['environmentHdriIntensity', 'f32'],
   ['environmentTint', 'vec4f'],
-  ['environmentSun', 'vec4f'],
   ['invViewProj', 'mat4x4f'],
   ['viewProj', 'mat4x4f'],
   ['prevViewProj', 'mat4x4f'],

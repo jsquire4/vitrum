@@ -158,7 +158,7 @@ export interface CommonFrameResources {
   varianceBuffer: GPUTexture;
   /** Second Welford ping-pong half (all production denoiser modes). */
   varianceBufferAux: GPUTexture;
-  /** Atrous-variance estimation output (.r = scalar variance, .g = frame tag). */
+  /** Atrous-variance estimation output (`r32float`; `.r` is scalar variance). */
   atrousVarianceEstimateTexture: GPUTexture;
 }
 
@@ -279,13 +279,13 @@ export interface SVGFFrameResources {
   /** T2.H1 — Previous-frame EMA radiance B (ping-pong pair). */
   svgfPrevRadianceTextureB: GPUTexture;
   /**
-   * T2.H1 — SVGF variance output texture (rgba32float, full-res). Written by
+   * T2.H1 — SVGF variance output texture (r32float, full-res). Written by
    * the 7×7 fallback pass; read by the à-trous chain.
-   * Memory at 1080p: 1920×1080×8 ≈ 16 MB.
+   * Memory at 1080p: 1920×1080×4 ≈ 8 MB.
    */
   svgfVarianceTexture: GPUTexture;
   /**
-   * T2.H1 — Intermediate variance from moments (rgba32float, full-res). Written
+   * T2.H1 — Intermediate variance from moments (r32float, full-res). Written
    * by svgfVarianceFromMomentsMain; read by svgf7x7FallbackMain.
    */
   svgfVarianceMomentsIntermedTexture: GPUTexture;

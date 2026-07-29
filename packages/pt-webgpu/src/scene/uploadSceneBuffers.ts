@@ -213,6 +213,8 @@ interface PackedSceneData {
   /** Sparse CPU mirror: binary-BLAS root index -> CWBVH wide-node root index. */
   readonly cwbvhBinaryRootToWideRoot: Uint32Array;
   readonly cwbvhNodeCount: number;
+  /** Host-visible reasons that one or more BLAS roots use binary fallback. */
+  readonly cwbvhWarnings?: readonly string[];
   readonly tlasNodes: Uint32Array; // 8 u32 words (32 bytes) per node
   readonly tlasInstanceIndices: Uint32Array;
   readonly tlasBlasRoots: Uint32Array;
@@ -247,18 +249,13 @@ interface PackedSceneData {
   readonly rectAreaLightsData: Float32Array;
   readonly meshAreaLightsData: Float32Array;
   readonly environmentTint: readonly [number, number, number];
-  readonly environmentSunDirection: readonly [number, number, number];
-  readonly environmentSunStrength: number;
   /** CPU-only power proxy retained so emitter-only mutations rebuild the light
    * tree from the same environment integral without rebaking the map. */
   readonly environmentLightTreePower: number;
   /**
-   * H14-E: map-backed environment-radiance intensity multiplier. The legacy
-   * `environmentSunStrength` field is retained for stable packed-scene state,
-   * but shader environment evaluation no longer consumes it.
+   * H14-E: map-backed environment-radiance intensity multiplier.
    * Value = `scene.environment.intensity ?? 1` when a valid HDRI is present; 0 otherwise.
-   * Uploaded to `params.environmentHdriIntensity` so the equirect lookup is NOT gated
-   * by the procedural-sky sun-strength lane.
+   * Uploaded to `params.environmentHdriIntensity`.
    */
   readonly environmentHdriIntensity: number;
   /**
@@ -346,8 +343,8 @@ export interface UploadedSceneBuffers extends PackedSceneData {
   readonly materialEmissiveTextureView: GPUTextureView;
   /** Live GPU footprint of the scene resources, split so the debug surface can
    *  honour `GpuMemoryBreakdown`'s invariants: `bufferBytes` (all 32 scene
-   *  STORAGE buffers) + `textureBytesByFormat` (the two material arrays, keyed by
-   *  their actual `GPUTextureFormat`). Read off the CURRENT handles (not a
+   *  STORAGE buffers) + `textureBytesByFormat` (the three material arrays, keyed
+   *  by their actual `GPUTextureFormat`). Read off the CURRENT handles (not a
    *  creation-time constant) so it stays correct after a realloc fast-path swaps
    *  BLAS/TLAS/uvs/light-tree buffers onto this struct. */
   readonly gpuMemoryBytes: () => {
@@ -430,65 +427,6 @@ export const SCENE_BUFFER_REGISTRY = [
 ] as const;
 
 
-/**
- * Write `data` into `buffer` when non-empty (shared by all four upload-variant
- * functions — hoisted from the identical local closures that previously lived in
- * each one separately).
- */
-function writeBufferIfNonEmpty(buffer: GPUBuffer, data: ArrayBufferView, device: GPUDevice): void {
-  if (data.byteLength > 0) {
-    device.queue.writeBuffer(buffer, 0, data.buffer, data.byteOffset, data.byteLength);
-  }
-}
-
-
-interface BufferRewrite {
-  readonly buffer: GPUBuffer;
-  readonly next: ArrayBufferView;
-  readonly previous: ArrayBufferView;
-}
-
-/**
- * Apply a same-size buffer set and return a rollback closure.  Synchronous
- * injected queue failures are undone immediately; the returned closure lets a
- * later dependent allocation/upload failure restore this set as well.
- */
-function writeBufferSetWithRollback(
-  device: GPUDevice,
-  rewrites: readonly BufferRewrite[],
-): () => void {
-  const uniqueBuffers = new Set<GPUBuffer>();
-  for (const rewrite of rewrites) {
-    if (uniqueBuffers.has(rewrite.buffer)) {
-      throw new Error(
-        '[pt-webgpu] transactional write set aliases one GPUBuffer across multiple fields',
-      );
-    }
-    uniqueBuffers.add(rewrite.buffer);
-  }
-  const written: BufferRewrite[] = [];
-  const restore = (entries: readonly BufferRewrite[]): void => {
-    for (let i = entries.length - 1; i >= 0; i -= 1) {
-      const entry = entries[i]!;
-      try { writeBufferIfNonEmpty(entry.buffer, entry.previous, device); } catch { /* best effort */ }
-    }
-  };
-  try {
-    for (const rewrite of rewrites) {
-      writeBufferIfNonEmpty(rewrite.buffer, rewrite.next, device);
-      written.push(rewrite);
-    }
-  } catch (error) {
-    restore(written);
-    throw error;
-  }
-  let rolledBack = false;
-  return () => {
-    if (rolledBack) return;
-    rolledBack = true;
-    restore(rewrites);
-  };
-}
 const BVH_NODE_BUFFER_BYTES = BVH_NODE_FLOATS * Float32Array.BYTES_PER_ELEMENT;
 
 const MIN_STORAGE_BUFFER_BYTES_BY_LABEL: Readonly<Record<string, number>> = {
@@ -647,8 +585,6 @@ export interface BuildPackedSceneOptions {
   /** Device-derived byte ceiling for the shared analytic-params allocation. */
   readonly mneeFacetCandidateStorageLimitBytes?: number;
 
-  /** Structured warning sink used by engine-owned scene ingestion. */
-  readonly onWarning?: (warning: EngineWarning) => void;
   readonly warningPhase?: EngineWarning['phase'];
   readonly warningMethod?: string;
 }
@@ -932,6 +868,7 @@ interface PackedCwbvhSceneData {
   readonly cwbvhTlasBlasRoots: Uint32Array;
   readonly cwbvhBinaryRootToWideRoot: Uint32Array;
   readonly cwbvhNodeCount: number;
+  readonly warnings: readonly string[];
 }
 
 function identityTriangleMap(triangleCount: number): Uint32Array {
@@ -1037,6 +974,7 @@ function buildPackedCwbvhSceneData(pack: Pick<
   const childBoundsPacked: number[] = [];
   const childMeta: number[] = [];
   const childCount: number[] = [];
+  const warnings: string[] = [];
   const totalBinaryNodes = Math.floor(pack.bvhNodes.length / BVH_NODE_FLOATS);
   const binaryRootToWideRoot = new Uint32Array(totalBinaryNodes);
   const sourceTriangles = identityTriangleMap(pack.triangleCount);
@@ -1056,6 +994,14 @@ function buildPackedCwbvhSceneData(pack: Pick<
       reorderedTriMaterialIds: pack.triMaterialIds,
       reorderedToSourceTriangle: sourceTriangles,
     });
+    if (cwbvh.cwbvhBuildStatus.traversal === 'binary-fallback') {
+      warnings.push(
+        `CWBVH BLAS root ${span.binaryRoot} requires binary traversal fallback: ` +
+          `${cwbvh.cwbvhBuildStatus.reason ?? 'unknown'} ` +
+          `(required stack ${cwbvh.cwbvhBuildStatus.maxTraversalStackEntries}, ` +
+          `capacity ${cwbvh.cwbvhBuildStatus.traversalStackCapacity}).`,
+      );
+    }
     for (const word of cwbvh.cwbvhNodeBounds) nodeBounds.push(word);
     for (const word of packCwbvhBuildBoundsForWgsl(cwbvh)) childBoundsPacked.push(word);
     for (let i = 0; i < cwbvh.cwbvhChildMeta.length; i += CWBVH_CHILD_META_WORDS) {
@@ -1078,6 +1024,7 @@ function buildPackedCwbvhSceneData(pack: Pick<
     cwbvhTlasBlasRoots: remapCwbvhTlasBlasRoots(pack.tlasBlasRoots, rootMap),
     cwbvhBinaryRootToWideRoot: rootMap,
     cwbvhNodeCount: childCount.length,
+    warnings,
   };
 }
 
@@ -1376,7 +1323,6 @@ export function buildPackedScene(
   // buildLightTreeInputForScene does NOT re-run either expensive call a second time.
   const envSummaryForTree: EnvSummaryForTree = {
     hasHdri: environment.hasHdri,
-    sunStrength: environment.sunStrength,
     lightTreePower: environment.lightTreePower,
   };
   const lightTreeInput = buildLightTreeInputForScene(scene, {
@@ -1393,6 +1339,7 @@ export function buildPackedScene(
     lightTreeEnabled = true;
   }
   const cwbvh = buildPackedCwbvhSceneData(geo);
+  warnings.push(...cwbvh.warnings);
 
   return {
     positions: geo.positions,
@@ -1411,6 +1358,7 @@ export function buildPackedScene(
     cwbvhTlasBlasRoots: cwbvh.cwbvhTlasBlasRoots,
     cwbvhBinaryRootToWideRoot: cwbvh.cwbvhBinaryRootToWideRoot,
     cwbvhNodeCount: cwbvh.cwbvhNodeCount,
+    cwbvhWarnings: cwbvh.warnings,
     materialTexDescriptors: texCollection.descriptors,
     materialTextureSources: texCollection.sources,
     materialTextureSourceInfos: texCollection.sourceInfos,
@@ -1446,8 +1394,6 @@ export function buildPackedScene(
     rectAreaLightsData: emitArrays.rectAreaLightsData,
     meshAreaLightsData: emitArrays.meshAreaLightsData,
     environmentTint: environment.tint,
-    environmentSunDirection: environment.sunDirection,
-    environmentSunStrength: environment.sunStrength,
     environmentLightTreePower: environment.lightTreePower,
     environmentHdriIntensity: environment.hdriIntensity,
     environmentHdriRotationY: environment.hdriRotationY,
@@ -1486,372 +1432,6 @@ export function scenePackResultFromPacked(packed: PackedSceneData): ScenePackRes
   };
 }
 
-/** In-place GPU + CPU mirror update after BLAS splice / refit (WG-6). */
-export function uploadScenePackGeometry(
-  device: GPUDevice,
-  sb: UploadedSceneBuffers,
-  pack: ScenePackResult,
-): void {
-  const rewrites: BufferRewrite[] = [
-    { buffer: sb.positionsBuffer, next: pack.positions, previous: sb.positions },
-    { buffer: sb.normalsBuffer, next: pack.normals, previous: sb.normals },
-    { buffer: sb.uvsBuffer, next: pack.uvs, previous: sb.uvs },
-    { buffer: sb.tangentsBuffer, next: pack.tangents, previous: sb.tangents },
-    { buffer: sb.colorsBuffer, next: pack.colors, previous: sb.colors },
-    { buffer: sb.indicesBuffer, next: pack.indices, previous: sb.indices },
-    { buffer: sb.triMaterialIdsBuffer, next: pack.triMaterialIds, previous: sb.triMaterialIds },
-    { buffer: sb.bvhNodesBuffer, next: pack.bvhNodes, previous: sb.bvhNodes },
-    { buffer: sb.tlasNodesBuffer, next: pack.tlasNodes, previous: sb.tlasNodes },
-    { buffer: sb.tlasInstanceIndicesBuffer, next: pack.tlasInstanceIndices, previous: sb.tlasInstanceIndices },
-    { buffer: sb.tlasBlasRootsBuffer, next: pack.tlasBlasRoots, previous: sb.tlasBlasRoots },
-    { buffer: sb.tlasInstanceWorldToLocalBuffer, next: pack.tlasInstanceWorldToLocal, previous: sb.tlasInstanceWorldToLocal },
-    { buffer: sb.tlasInstanceLocalToWorldBuffer, next: pack.tlasInstanceLocalToWorld, previous: sb.tlasInstanceLocalToWorld },
-  ];
-  const cwbvh = buildPackedCwbvhSceneData(pack);
-  const rollbackBase: { current?: () => void } = {};
-  try {
-    replaceCwbvhBuffers(device, sb, cwbvh, () => {
-      rollbackBase.current = writeBufferSetWithRollback(device, rewrites);
-    }, rewrites.map((rewrite) => rewrite.buffer));
-  } catch (error) {
-    rollbackBase.current?.();
-    throw error;
-  }
-  sb.positions.set(pack.positions);
-  sb.normals.set(pack.normals);
-  sb.uvs.set(pack.uvs);
-  sb.tangents.set(pack.tangents);
-  sb.colors.set(pack.colors);
-  sb.indices.set(pack.indices);
-  sb.triMaterialIds.set(pack.triMaterialIds);
-  sb.bvhNodes.set(pack.bvhNodes);
-  sb.tlasNodes.set(pack.tlasNodes);
-  sb.tlasInstanceIndices.set(pack.tlasInstanceIndices);
-  sb.tlasBlasRoots.set(pack.tlasBlasRoots);
-  sb.tlasInstanceWorldToLocal.set(pack.tlasInstanceWorldToLocal);
-  sb.tlasInstanceLocalToWorld.set(pack.tlasInstanceLocalToWorld);
-  applyScenePackCounts(sb, pack);
-}
-
-/** C2 — upload BLAS concat buffers only (TLAS instance data unchanged). */
-export function uploadScenePackBlasOnly(
-  device: GPUDevice,
-  sb: UploadedSceneBuffers,
-  pack: Pick<
-    ScenePackResult,
-    | 'positions'
-    | 'normals'
-    | 'uvs'
-    | 'tangents'
-    | 'colors'
-    | 'indices'
-    | 'triMaterialIds'
-    | 'bvhNodes'
-    | 'triangleCount'
-    | 'primitiveTlasBindings'
-  >,
-): void {
-  const rewrites: BufferRewrite[] = [
-    { buffer: sb.positionsBuffer, next: pack.positions, previous: sb.positions },
-    { buffer: sb.normalsBuffer, next: pack.normals, previous: sb.normals },
-    { buffer: sb.uvsBuffer, next: pack.uvs, previous: sb.uvs },
-    { buffer: sb.tangentsBuffer, next: pack.tangents, previous: sb.tangents },
-    { buffer: sb.colorsBuffer, next: pack.colors, previous: sb.colors },
-    { buffer: sb.indicesBuffer, next: pack.indices, previous: sb.indices },
-    { buffer: sb.triMaterialIdsBuffer, next: pack.triMaterialIds, previous: sb.triMaterialIds },
-    { buffer: sb.bvhNodesBuffer, next: pack.bvhNodes, previous: sb.bvhNodes },
-  ];
-  const cwbvh = buildPackedCwbvhSceneData({
-    positions: pack.positions,
-    indices: pack.indices,
-    triMaterialIds: pack.triMaterialIds,
-    bvhNodes: pack.bvhNodes,
-    triangleCount: pack.triangleCount,
-    tlasBlasRoots: sb.tlasBlasRoots,
-    primitiveTlasBindings: pack.primitiveTlasBindings,
-  });
-  const rollbackBase: { current?: () => void } = {};
-  try {
-    replaceCwbvhBuffers(device, sb, cwbvh, () => {
-      rollbackBase.current = writeBufferSetWithRollback(device, rewrites);
-    }, rewrites.map((rewrite) => rewrite.buffer));
-  } catch (error) {
-    rollbackBase.current?.();
-    throw error;
-  }
-  sb.positions.set(pack.positions);
-  sb.normals.set(pack.normals);
-  sb.uvs.set(pack.uvs);
-  sb.tangents.set(pack.tangents);
-  sb.colors.set(pack.colors);
-  sb.indices.set(pack.indices);
-  sb.triMaterialIds.set(pack.triMaterialIds);
-  sb.bvhNodes.set(pack.bvhNodes);
-  applyScenePackCounts(sb, pack);
-}
-
-/**
- * Slice-1 — reallocate ONLY the (5) TLAS GPU buffers after an instanced-mesh
- * instance-COUNT change, leaving every BLAS buffer untouched.
- *
- * The transform-only fast path ({@link uploadScenePackTlasOnly}) requires the
- * new TLAS arrays to be byte-length-identical to the live buffers (in-place
- * `writeBuffer`). An instance-count change grows/shrinks those arrays, so the
- * five TLAS buffers must be destroyed and recreated at the new size. The BLAS
- * buffers (positions/normals/indices/triMaterialIds/bvhNodes) are byte-identical
- * across an instance-count change (shared geometry) and are NOT touched here.
- *
- * After swapping the new buffer handles onto {@link UploadedSceneBuffers}, the
- * caller MUST invalidate any cached bind groups so the next frame rebinds the
- * fresh TLAS buffers (`gpuResources.ts` reads `sb.tlas*Buffer` at bind-group
- * build time).
- */
-export function uploadScenePackTlasRealloc(
-  device: GPUDevice,
-  sb: UploadedSceneBuffers,
-  pack: Pick<
-    ScenePackResult,
-    | 'tlasNodes'
-    | 'tlasInstanceIndices'
-    | 'tlasBlasRoots'
-    | 'tlasInstanceWorldToLocal'
-    | 'tlasInstanceLocalToWorld'
-    | 'tlasNodeCount'
-    | 'primitiveTlasBindings'
-  >,
-): void {
-  // Build every CPU mirror and every replacement GPU handle before touching the
-  // live set.  The CWBVH TLAS-root mirror is part of this transaction: swapping
-  // the binary TLAS while leaving a stale/destroyed wide-root table is not a
-  // renderable state.
-  const nextTlasNodes = new Uint32Array(pack.tlasNodes);
-  const nextTlasInstanceIndices = new Uint32Array(pack.tlasInstanceIndices);
-  const nextTlasBlasRoots = new Uint32Array(pack.tlasBlasRoots);
-  const nextTlasInstanceWorldToLocal = new Float32Array(pack.tlasInstanceWorldToLocal);
-  const nextTlasInstanceLocalToWorld = new Float32Array(pack.tlasInstanceLocalToWorld);
-  const nextCwbvhTlasBlasRoots = remapCwbvhTlasBlasRoots(
-    nextTlasBlasRoots,
-    sb.cwbvhBinaryRootToWideRoot,
-  );
-  const cwbvhRootBuffer = sb.cwbvhTlasBlasRootsBuffer as GPUBuffer | undefined;
-  const hasCwbvhRoot = cwbvhRootBuffer != null;
-  const candidateSpecs: StorageBufferCandidateSpec[] = [
-    { key: 'tlasNodes', label: 'vitrum.pt-webgpu.scene.tlasNodes', data: nextTlasNodes },
-    { key: 'tlasInstanceIndices', label: 'vitrum.pt-webgpu.scene.tlasInstanceIndices', data: nextTlasInstanceIndices },
-    { key: 'tlasBlasRoots', label: 'vitrum.pt-webgpu.scene.tlasBlasRoots', data: nextTlasBlasRoots },
-    { key: 'tlasInstanceWorldToLocal', label: 'vitrum.pt-webgpu.scene.tlasInstanceWorldToLocal', data: nextTlasInstanceWorldToLocal },
-    { key: 'tlasInstanceLocalToWorld', label: 'vitrum.pt-webgpu.scene.tlasInstanceLocalToWorld', data: nextTlasInstanceLocalToWorld },
-  ];
-  const rootLabel = 'vitrum.pt-webgpu.scene.cwbvhTlasBlasRoots';
-  const expectedRootSize = Math.ceil(Math.max(
-    nextCwbvhTlasBlasRoots.byteLength,
-    MIN_STORAGE_BUFFER_BYTES_BY_LABEL[rootLabel] ?? 16,
-  ) / 4) * 4;
-  const currentRootSize = cwbvhRootBuffer?.size ?? Math.ceil(Math.max(
-    sb.cwbvhTlasBlasRoots.byteLength,
-    MIN_STORAGE_BUFFER_BYTES_BY_LABEL[rootLabel] ?? 16,
-  ) / 4) * 4;
-  const replaceRoot = hasCwbvhRoot && currentRootSize !== expectedRootSize;
-  if (replaceRoot) {
-    candidateSpecs.push({
-      key: 'cwbvhTlasBlasRoots',
-      label: rootLabel,
-      data: nextCwbvhTlasBlasRoots,
-    });
-  }
-  const previous = [
-    sb.tlasNodesBuffer,
-    sb.tlasInstanceIndicesBuffer,
-    sb.tlasBlasRootsBuffer,
-    sb.tlasInstanceWorldToLocalBuffer,
-    sb.tlasInstanceLocalToWorldBuffer,
-  ];
-  assertCwbvhTlasRootIsDistinct(sb, previous);
-  const liveResources = sceneBufferResourceHandles(sb);
-  const candidates = createStorageBufferCandidates(device, candidateSpecs, liveResources);
-
-  if (hasCwbvhRoot && !replaceRoot) {
-    try {
-      writeBufferIfNonEmpty(
-        cwbvhRootBuffer,
-        nextCwbvhTlasBlasRoots,
-        device,
-      );
-    } catch (error) {
-      try {
-        writeBufferIfNonEmpty(
-          cwbvhRootBuffer,
-          sb.cwbvhTlasBlasRoots,
-          device,
-        );
-      } catch { /* best effort */ }
-      destroyResourcesBestEffort(Object.values(candidates), liveResources);
-      throw error;
-    }
-  }
-
-  if (replaceRoot) previous.push(cwbvhRootBuffer);
-  const buffers = asMutableSceneBuffers(sb);
-  buffers.tlasNodesBuffer = candidates.tlasNodes!;
-  buffers.tlasInstanceIndicesBuffer = candidates.tlasInstanceIndices!;
-  buffers.tlasBlasRootsBuffer = candidates.tlasBlasRoots!;
-  buffers.tlasInstanceWorldToLocalBuffer = candidates.tlasInstanceWorldToLocal!;
-  buffers.tlasInstanceLocalToWorldBuffer = candidates.tlasInstanceLocalToWorld!;
-  if (replaceRoot) {
-    buffers.cwbvhTlasBlasRootsBuffer = candidates.cwbvhTlasBlasRoots!;
-  }
-  buffers.tlasNodes = nextTlasNodes;
-  buffers.tlasInstanceIndices = nextTlasInstanceIndices;
-  buffers.tlasBlasRoots = nextTlasBlasRoots;
-  buffers.tlasInstanceWorldToLocal = nextTlasInstanceWorldToLocal;
-  buffers.tlasInstanceLocalToWorld = nextTlasInstanceLocalToWorld;
-  buffers.cwbvhTlasBlasRoots = nextCwbvhTlasBlasRoots;
-  applyScenePackCounts(sb, pack);
-  destroyResourcesBestEffort(previous, sceneBufferResourceHandles(sb));
-}
-
-/**
- * Slice-2 — reallocate the BLAS concat buffers AND the TLAS buffers after a mesh
- * vertex/index-COUNT change spliced one primitive's BLAS to a new size (growing
- * or shrinking the concat arrays + rebasing downstream offsets, see
- * `rebuildPrimitiveBlas` → `spliceResizedPrimitiveBlasIntoPack`). Unlike
- * {@link uploadScenePackGeometry} (in-place `writeBuffer`, same byte lengths),
- * the resized concat arrays no longer fit the live buffers, so the five BLAS
- * buffers + the five TLAS buffers are destroyed and recreated at the new size.
- *
- * As with {@link uploadScenePackTlasRealloc}, the swapped handles are resolved
- * off the struct at teardown-time by the `destroy` closure built in
- * {@link uploadPackedScene}, so no closure rewire is needed. The caller MUST
- * invalidate any cached bind groups so the next frame rebinds the fresh buffers.
- */
-export function uploadScenePackGeometryRealloc(
-  device: GPUDevice,
-  sb: UploadedSceneBuffers,
-  pack: ScenePackResult,
-): void {
-  const next = {
-    positions: new Float32Array(pack.positions),
-    normals: new Float32Array(pack.normals),
-    uvs: new Float32Array(pack.uvs),
-    tangents: new Float32Array(pack.tangents),
-    colors: new Float32Array(pack.colors),
-    indices: new Uint32Array(pack.indices),
-    triMaterialIds: new Uint32Array(pack.triMaterialIds),
-    bvhNodes: new Float32Array(pack.bvhNodes),
-    tlasNodes: new Uint32Array(pack.tlasNodes),
-    tlasInstanceIndices: new Uint32Array(pack.tlasInstanceIndices),
-    tlasBlasRoots: new Uint32Array(pack.tlasBlasRoots),
-    tlasInstanceWorldToLocal: new Float32Array(pack.tlasInstanceWorldToLocal),
-    tlasInstanceLocalToWorld: new Float32Array(pack.tlasInstanceLocalToWorld),
-  };
-  const cwbvh = buildPackedCwbvhSceneData(pack);
-  const liveResources = sceneBufferResourceHandles(sb);
-  const candidates = createStorageBufferCandidates(device, [
-    { key: 'positions', label: 'vitrum.pt-webgpu.scene.positions', data: next.positions },
-    { key: 'normals', label: 'vitrum.pt-webgpu.scene.normals', data: next.normals },
-    { key: 'uvs', label: 'vitrum.pt-webgpu.scene.uvs', data: next.uvs },
-    { key: 'tangents', label: 'vitrum.pt-webgpu.scene.tangents', data: next.tangents },
-    { key: 'colors', label: 'vitrum.pt-webgpu.scene.colors', data: next.colors },
-    { key: 'indices', label: 'vitrum.pt-webgpu.scene.indices', data: next.indices },
-    { key: 'triMaterialIds', label: 'vitrum.pt-webgpu.scene.triMaterialIds', data: next.triMaterialIds },
-    { key: 'bvhNodes', label: 'vitrum.pt-webgpu.scene.bvhNodes', data: next.bvhNodes },
-    { key: 'tlasNodes', label: 'vitrum.pt-webgpu.scene.tlasNodes', data: next.tlasNodes },
-    { key: 'tlasInstanceIndices', label: 'vitrum.pt-webgpu.scene.tlasInstanceIndices', data: next.tlasInstanceIndices },
-    { key: 'tlasBlasRoots', label: 'vitrum.pt-webgpu.scene.tlasBlasRoots', data: next.tlasBlasRoots },
-    { key: 'tlasInstanceWorldToLocal', label: 'vitrum.pt-webgpu.scene.tlasInstanceWorldToLocal', data: next.tlasInstanceWorldToLocal },
-    { key: 'tlasInstanceLocalToWorld', label: 'vitrum.pt-webgpu.scene.tlasInstanceLocalToWorld', data: next.tlasInstanceLocalToWorld },
-  ], liveResources);
-  const previous = [
-    sb.positionsBuffer, sb.normalsBuffer, sb.uvsBuffer, sb.tangentsBuffer,
-    sb.colorsBuffer, sb.indicesBuffer, sb.triMaterialIdsBuffer, sb.bvhNodesBuffer,
-    sb.tlasNodesBuffer, sb.tlasInstanceIndicesBuffer, sb.tlasBlasRootsBuffer,
-    sb.tlasInstanceWorldToLocalBuffer, sb.tlasInstanceLocalToWorldBuffer,
-  ];
-  const handles = asMutableSceneBuffers(sb);
-  let binaryPublished = false;
-  try {
-    // replaceCwbvhBuffers first allocates every size-changing wide-BVH
-    // candidate. Only then does this callback publish the complete binary
-    // replacement set, immediately before the rollbackable in-place writes.
-    replaceCwbvhBuffers(device, sb, cwbvh, () => {
-      handles.positionsBuffer = candidates.positions!;
-      handles.normalsBuffer = candidates.normals!;
-      handles.uvsBuffer = candidates.uvs!;
-      handles.tangentsBuffer = candidates.tangents!;
-      handles.colorsBuffer = candidates.colors!;
-      handles.indicesBuffer = candidates.indices!;
-      handles.triMaterialIdsBuffer = candidates.triMaterialIds!;
-      handles.bvhNodesBuffer = candidates.bvhNodes!;
-      handles.tlasNodesBuffer = candidates.tlasNodes!;
-      handles.tlasInstanceIndicesBuffer = candidates.tlasInstanceIndices!;
-      handles.tlasBlasRootsBuffer = candidates.tlasBlasRoots!;
-      handles.tlasInstanceWorldToLocalBuffer = candidates.tlasInstanceWorldToLocal!;
-      handles.tlasInstanceLocalToWorldBuffer = candidates.tlasInstanceLocalToWorld!;
-      binaryPublished = true;
-    });
-  } catch (error) {
-    if (binaryPublished) {
-      handles.positionsBuffer = previous[0]!;
-      handles.normalsBuffer = previous[1]!;
-      handles.uvsBuffer = previous[2]!;
-      handles.tangentsBuffer = previous[3]!;
-      handles.colorsBuffer = previous[4]!;
-      handles.indicesBuffer = previous[5]!;
-      handles.triMaterialIdsBuffer = previous[6]!;
-      handles.bvhNodesBuffer = previous[7]!;
-      handles.tlasNodesBuffer = previous[8]!;
-      handles.tlasInstanceIndicesBuffer = previous[9]!;
-      handles.tlasBlasRootsBuffer = previous[10]!;
-      handles.tlasInstanceWorldToLocalBuffer = previous[11]!;
-      handles.tlasInstanceLocalToWorldBuffer = previous[12]!;
-    }
-    destroyResourcesBestEffort(Object.values(candidates), liveResources);
-    throw error;
-  }
-  Object.assign(handles, next);
-  applyScenePackCounts(sb, pack);
-  destroyResourcesBestEffort(previous, sceneBufferResourceHandles(sb));
-}
-
-/** C2 — upload TLAS SSBOs only (transform-only refit; BLAS buffers unchanged). */
-export function uploadScenePackTlasOnly(
-  device: GPUDevice,
-  sb: UploadedSceneBuffers,
-  pack: Pick<
-    ScenePackResult,
-    | 'tlasNodes'
-    | 'tlasInstanceIndices'
-    | 'tlasBlasRoots'
-    | 'tlasInstanceWorldToLocal'
-    | 'tlasInstanceLocalToWorld'
-    | 'tlasNodeCount'
-    | 'primitiveTlasBindings'
-  >,
-): void {
-  const rewrites: BufferRewrite[] = [
-    { buffer: sb.tlasNodesBuffer, next: pack.tlasNodes, previous: sb.tlasNodes },
-    { buffer: sb.tlasInstanceIndicesBuffer, next: pack.tlasInstanceIndices, previous: sb.tlasInstanceIndices },
-    { buffer: sb.tlasBlasRootsBuffer, next: pack.tlasBlasRoots, previous: sb.tlasBlasRoots },
-    { buffer: sb.tlasInstanceWorldToLocalBuffer, next: pack.tlasInstanceWorldToLocal, previous: sb.tlasInstanceWorldToLocal },
-    { buffer: sb.tlasInstanceLocalToWorldBuffer, next: pack.tlasInstanceLocalToWorld, previous: sb.tlasInstanceLocalToWorld },
-  ];
-  assertCwbvhTlasRootIsDistinct(sb, rewrites.map((rewrite) => rewrite.buffer));
-  const rollback = writeBufferSetWithRollback(device, rewrites);
-  try {
-    updateCwbvhTlasRootMirror(device, sb, pack.tlasBlasRoots);
-  } catch (error) {
-    rollback();
-    try { writeBufferIfNonEmpty(sb.cwbvhTlasBlasRootsBuffer, sb.cwbvhTlasBlasRoots, device); } catch { /* best effort */ }
-    throw error;
-  }
-  sb.tlasNodes.set(pack.tlasNodes);
-  sb.tlasInstanceIndices.set(pack.tlasInstanceIndices);
-  sb.tlasBlasRoots.set(pack.tlasBlasRoots);
-  sb.tlasInstanceWorldToLocal.set(pack.tlasInstanceWorldToLocal);
-  sb.tlasInstanceLocalToWorld.set(pack.tlasInstanceLocalToWorld);
-  applyScenePackCounts(sb, pack);
-}
-
 /**
  * `MutableSceneBuffers` — the SINGLE mutable view onto an otherwise-readonly
  * {@link UploadedSceneBuffers}. It unions all four field sets that the incremental
@@ -1875,6 +1455,7 @@ interface MutableSceneBuffers {
   // ── Geometry-pack derived counts ─────────────────────────────────────────
   bvhNodeCount: number;
   cwbvhNodeCount: number;
+  cwbvhWarnings?: readonly string[];
   tlasNodeCount: number;
   triangleCount: number;
   primitiveTlasBindings: readonly PrimitiveTlasBinding[];
@@ -1963,8 +1544,6 @@ interface MutableSceneBuffers {
 
   // ── Environment fields (incremental environment patches) ─────────────────
   environmentTint: readonly [number, number, number];
-  environmentSunDirection: readonly [number, number, number];
-  environmentSunStrength: number;
   environmentLightTreePower: number;
   environmentHdriIntensity: number;
   environmentHdriRotationY: number;
@@ -2094,91 +1673,148 @@ interface PreparedInPlaceCopyBatch {
 }
 
 /**
- * Stage every dirty range in one allocation, encode every copy, and submit the
- * whole mutation as one batch. No GPU work is created for a byte-identical set.
+ * Stage every dirty range in allocations bounded by `maxBufferSize`, encode
+ * every copy into one command buffer, and submit the whole mutation as one
+ * ordered batch. No GPU work is created for a byte-identical set.
  */
 function prepareInPlaceCopyBatch(
   device: GPUDevice,
   specs: readonly InPlaceCopySpec[],
   protectedResources: readonly object[],
 ): PreparedInPlaceCopyBatch {
-  const forbiddenResources = new Set<object>(protectedResources);
-  const copies: Array<{
+  interface StagedCopy {
     readonly destination: GPUBuffer;
     readonly destinationByteOffset: number;
     readonly stagingByteOffset: number;
     readonly byteLength: number;
     readonly data: ArrayBufferView;
-  }> = [];
-  let stagingByteLength = 0;
+  }
+  interface StagingChunk {
+    byteLength: number;
+    readonly copies: StagedCopy[];
+  }
+
+  const rawMaxBufferSize = Number(device.limits?.maxBufferSize);
+  const maxStagingByteLength =
+    Number.isFinite(rawMaxBufferSize) && rawMaxBufferSize > 0
+      ? Math.floor(rawMaxBufferSize / 4) * 4
+      : Math.floor(Number.MAX_SAFE_INTEGER / 4) * 4;
+  if (maxStagingByteLength < 4) {
+    throw new Error(
+      `[pt-webgpu] device maxBufferSize (${String(rawMaxBufferSize)}) ` +
+        'cannot hold one aligned incremental-copy word',
+    );
+  }
+
+  const chunks: StagingChunk[] = [];
+  let chunk: StagingChunk | undefined;
+  const appendCopy = (
+    spec: InPlaceCopySpec,
+    destinationByteOffset: number,
+    dataByteOffset: number,
+    byteLength: number,
+  ): void => {
+    let remaining = byteLength;
+    let destinationOffset = destinationByteOffset;
+    let sourceOffset = dataByteOffset;
+    while (remaining > 0) {
+      if (chunk == null || chunk.byteLength === maxStagingByteLength) {
+        chunk = { byteLength: 0, copies: [] };
+        chunks.push(chunk);
+      }
+      const available = maxStagingByteLength - chunk.byteLength;
+      const copyByteLength = Math.min(remaining, available);
+      chunk.copies.push({
+        destination: spec.destination,
+        destinationByteOffset: destinationOffset,
+        stagingByteOffset: chunk.byteLength,
+        byteLength: copyByteLength,
+        data: new Uint8Array(
+          spec.data.buffer,
+          spec.data.byteOffset + sourceOffset,
+          copyByteLength,
+        ),
+      });
+      chunk.byteLength += copyByteLength;
+      destinationOffset += copyByteLength;
+      sourceOffset += copyByteLength;
+      remaining -= copyByteLength;
+    }
+  };
+
   for (const spec of specs) {
     for (const range of spec.ranges) {
       if (
+        !Number.isSafeInteger(range.byteOffset) ||
+        !Number.isSafeInteger(range.byteLength) ||
         range.byteOffset % 4 !== 0 ||
         range.byteLength <= 0 ||
-        range.byteLength % 4 !== 0
+        range.byteLength % 4 !== 0 ||
+        range.byteOffset + range.byteLength > spec.data.byteLength
       ) {
-        throw new Error('[pt-webgpu] incremental copy range is not WebGPU-aligned');
+        throw new Error(
+          `[pt-webgpu] incremental copy range for ${spec.label} is outside its ` +
+            'payload or is not WebGPU-aligned',
+        );
       }
-      copies.push({
-        destination: spec.destination,
-        destinationByteOffset: range.byteOffset,
-        stagingByteOffset: stagingByteLength,
-        byteLength: range.byteLength,
-        data: new Uint8Array(
-          spec.data.buffer,
-          spec.data.byteOffset + range.byteOffset,
-          range.byteLength,
-        ),
-      });
-      stagingByteLength += range.byteLength;
+      appendCopy(spec, range.byteOffset, range.byteOffset, range.byteLength);
     }
   }
 
-  if (copies.length === 0) {
+  if (chunks.length === 0) {
     return {
       submit: () => {},
       destroy: () => {},
     };
   }
 
-  let staging: GPUBuffer | null = null;
+  const protectedSet = new Set<object>(protectedResources);
+  const stagingBuffers: GPUBuffer[] = [];
   try {
-    staging = device.createBuffer({
-      label: 'vitrum.pt-webgpu.scene.incremental-staging',
-      size: stagingByteLength,
-      usage: GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
-    });
-    if (forbiddenResources.has(staging)) {
-      throw new Error(
-        '[pt-webgpu] incremental staging allocation aliased a live GPU resource',
+    for (const stagingChunk of chunks) {
+      const staging = device.createBuffer({
+        label: 'vitrum.pt-webgpu.scene.incremental-staging',
+        size: stagingChunk.byteLength,
+        usage: GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
+      });
+      if (protectedSet.has(staging)) {
+        throw new Error(
+          '[pt-webgpu] incremental staging allocation aliased a live GPU resource',
+        );
+      }
+      protectedSet.add(staging);
+      stagingBuffers.push(staging);
+
+      const stagingBytes = new Uint8Array(stagingChunk.byteLength);
+      for (const copy of stagingChunk.copies) {
+        stagingBytes.set(
+          copy.data as Uint8Array,
+          copy.stagingByteOffset,
+        );
+      }
+      device.queue.writeBuffer(
+        staging,
+        0,
+        stagingBytes.buffer,
+        stagingBytes.byteOffset,
+        stagingBytes.byteLength,
       );
     }
-    const stagingBytes = new Uint8Array(stagingByteLength);
-    for (const copy of copies) {
-      stagingBytes.set(
-        copy.data as Uint8Array,
-        copy.stagingByteOffset,
-      );
-    }
-    device.queue.writeBuffer(
-      staging,
-      0,
-      stagingBytes.buffer,
-      stagingBytes.byteOffset,
-      stagingBytes.byteLength,
-    );
+
     const encoder = device.createCommandEncoder({
       label: 'vitrum.pt-webgpu.scene.incremental-copy',
     });
-    for (const copy of copies) {
-      encoder.copyBufferToBuffer(
-        staging,
-        copy.stagingByteOffset,
-        copy.destination,
-        copy.destinationByteOffset,
-        copy.byteLength,
-      );
+    for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex += 1) {
+      const staging = stagingBuffers[chunkIndex]!;
+      for (const copy of chunks[chunkIndex]!.copies) {
+        encoder.copyBufferToBuffer(
+          staging,
+          copy.stagingByteOffset,
+          copy.destination,
+          copy.destinationByteOffset,
+          copy.byteLength,
+        );
+      }
     }
     const commandBuffer = encoder.finish();
     let destroyed = false;
@@ -2187,13 +1823,11 @@ function prepareInPlaceCopyBatch(
       destroy: () => {
         if (destroyed) return;
         destroyed = true;
-        destroyResourcesBestEffort([staging!], protectedResources);
+        destroyResourcesBestEffort(stagingBuffers, protectedResources);
       },
     };
   } catch (error) {
-    if (staging != null) {
-      destroyResourcesBestEffort([staging], protectedResources);
-    }
+    destroyResourcesBestEffort(stagingBuffers, protectedResources);
     throw error;
   }
 }
@@ -2445,6 +2079,7 @@ export function scenePackGeometryMutationPatch(
     cwbvhTlasBlasRoots: cwbvh.cwbvhTlasBlasRoots,
     cwbvhBinaryRootToWideRoot: cwbvh.cwbvhBinaryRootToWideRoot,
     cwbvhNodeCount: cwbvh.cwbvhNodeCount,
+    cwbvhWarnings: cwbvh.warnings,
     bvhNodeCount: Math.floor(pack.bvhNodes.length / BVH_NODE_FLOATS),
     triangleCount: pack.triangleCount,
     primitiveTlasBindings: pack.primitiveTlasBindings,
@@ -2555,203 +2190,6 @@ export function uploadedSceneGpuResources(
   ].filter((resource): resource is GPUBuffer | GPUTexture => resource != null);
 }
 
-function assertCwbvhTlasRootIsDistinct(
-  sb: UploadedSceneBuffers,
-  protectedBuffers: readonly GPUBuffer[],
-): void {
-  const root = sb.cwbvhTlasBlasRootsBuffer as GPUBuffer | undefined;
-  if (root != null && protectedBuffers.includes(root)) {
-    throw new Error(
-      '[pt-webgpu] live CWBVH TLAS-root buffer aliases a binary TLAS resource',
-    );
-  }
-}
-
-function replaceCwbvhBuffers(
-  device: GPUDevice,
-  sb: UploadedSceneBuffers,
-  cwbvh: PackedCwbvhSceneData,
-  beforeCommit: () => void = () => {},
-  protectedBuffers: readonly GPUBuffer[] = [],
-): void {
-  if (
-    sb.cwbvhNodeBoundsBuffer == null ||
-    sb.cwbvhChildBoundsPackedBuffer == null ||
-    sb.cwbvhChildMetaBuffer == null ||
-    sb.cwbvhChildCountBuffer == null ||
-    sb.cwbvhTlasBlasRootsBuffer == null
-  ) {
-    beforeCommit();
-    return;
-  }
-  const mutable = asMutableSceneBuffers(sb);
-  const entries = [
-    { key: 'nodeBounds', current: sb.cwbvhNodeBoundsBuffer, label: 'vitrum.pt-webgpu.scene.cwbvhNodeBounds', data: cwbvh.cwbvhNodeBounds, previousData: sb.cwbvhNodeBounds, assign: (buffer: GPUBuffer) => { mutable.cwbvhNodeBoundsBuffer = buffer; } },
-    { key: 'childBoundsPacked', current: sb.cwbvhChildBoundsPackedBuffer, label: 'vitrum.pt-webgpu.scene.cwbvhChildBoundsPacked', data: cwbvh.cwbvhChildBoundsPacked, previousData: sb.cwbvhChildBoundsPacked, assign: (buffer: GPUBuffer) => { mutable.cwbvhChildBoundsPackedBuffer = buffer; } },
-    { key: 'childMeta', current: sb.cwbvhChildMetaBuffer, label: 'vitrum.pt-webgpu.scene.cwbvhChildMeta', data: cwbvh.cwbvhChildMeta, previousData: sb.cwbvhChildMeta, assign: (buffer: GPUBuffer) => { mutable.cwbvhChildMetaBuffer = buffer; } },
-    { key: 'childCount', current: sb.cwbvhChildCountBuffer, label: 'vitrum.pt-webgpu.scene.cwbvhChildCount', data: cwbvh.cwbvhChildCount, previousData: sb.cwbvhChildCount, assign: (buffer: GPUBuffer) => { mutable.cwbvhChildCountBuffer = buffer; } },
-    { key: 'tlasBlasRoots', current: sb.cwbvhTlasBlasRootsBuffer, label: 'vitrum.pt-webgpu.scene.cwbvhTlasBlasRoots', data: cwbvh.cwbvhTlasBlasRoots, previousData: sb.cwbvhTlasBlasRoots, assign: (buffer: GPUBuffer) => { mutable.cwbvhTlasBlasRootsBuffer = buffer; } },
-  ] as const;
-  const uniqueCurrentBuffers = new Set<GPUBuffer>();
-  for (const entry of entries) {
-    if (uniqueCurrentBuffers.has(entry.current)) {
-      throw new Error(
-        '[pt-webgpu] live CWBVH resource set aliases one GPUBuffer across multiple fields',
-      );
-    }
-    uniqueCurrentBuffers.add(entry.current);
-  }
-  const protectedBufferSet = new Set(protectedBuffers);
-  for (const entry of entries) {
-    if (protectedBufferSet.has(entry.current)) {
-      throw new Error(
-        '[pt-webgpu] live CWBVH resource aliases a protected transactional GPUBuffer',
-      );
-    }
-  }
-  const needsReplacement = entries.filter((entry) => {
-    const targetSize = Math.ceil(Math.max(
-      entry.data.byteLength,
-      MIN_STORAGE_BUFFER_BYTES_BY_LABEL[entry.label] ?? 16,
-    ) / 4) * 4;
-    // A few test/host GPUBuffer facades predate the WebGPU `size` property.
-    // The authoritative CPU mirror has the exact live allocation payload in
-    // that case, so use it rather than spuriously reallocating every CWBVH
-    // buffer on otherwise in-place updates.
-    const currentSize = entry.current.size ?? Math.ceil(Math.max(
-      entry.previousData.byteLength,
-      MIN_STORAGE_BUFFER_BYTES_BY_LABEL[entry.label] ?? 16,
-    ) / 4) * 4;
-    return currentSize !== targetSize;
-  });
-  const candidates = createStorageBufferCandidates(
-    device,
-    needsReplacement.map((entry) => ({
-      key: entry.key,
-      label: entry.label,
-      data: entry.data,
-    })),
-    sceneBufferResourceHandles(sb),
-  );
-  const writtenInPlace: Array<(typeof entries)[number]> = [];
-  try {
-    beforeCommit();
-    for (const entry of entries) {
-      if (candidates[entry.key] != null) continue;
-      writeBufferIfNonEmpty(entry.current, entry.data, device);
-      writtenInPlace.push(entry);
-    }
-  } catch (error) {
-    // queue.writeBuffer normally reports validation asynchronously, but injected
-    // synchronous failures are rollbackable from the authoritative CPU mirrors.
-    for (let i = writtenInPlace.length - 1; i >= 0; i -= 1) {
-      const entry = writtenInPlace[i]!;
-      try { writeBufferIfNonEmpty(entry.current, entry.previousData, device); } catch { /* best effort */ }
-    }
-    destroyResourcesBestEffort(
-      Object.values(candidates),
-      sceneBufferResourceHandles(sb),
-    );
-    throw error;
-  }
-  for (const entry of needsReplacement) {
-    const candidate = candidates[entry.key]!;
-    entry.assign(candidate);
-  }
-  destroyResourcesBestEffort(
-    needsReplacement.map((entry) => entry.current),
-    sceneBufferResourceHandles(sb),
-  );
-  mutable.cwbvhNodeBounds = cwbvh.cwbvhNodeBounds;
-  mutable.cwbvhChildBoundsPacked = cwbvh.cwbvhChildBoundsPacked;
-  mutable.cwbvhChildMeta = cwbvh.cwbvhChildMeta;
-  mutable.cwbvhChildCount = cwbvh.cwbvhChildCount;
-  mutable.cwbvhTlasBlasRoots = cwbvh.cwbvhTlasBlasRoots;
-  mutable.cwbvhBinaryRootToWideRoot = cwbvh.cwbvhBinaryRootToWideRoot;
-  mutable.cwbvhNodeCount = cwbvh.cwbvhNodeCount;
-}
-
-function updateCwbvhTlasRootMirror(
-  device: GPUDevice,
-  sb: UploadedSceneBuffers,
-  tlasBlasRoots: Uint32Array,
-): void {
-  if (sb.cwbvhBinaryRootToWideRoot == null || sb.cwbvhTlasBlasRootsBuffer == null) {
-    return;
-  }
-  const roots = remapCwbvhTlasBlasRoots(tlasBlasRoots, sb.cwbvhBinaryRootToWideRoot);
-  const mutable = asMutableSceneBuffers(sb);
-  const label = 'vitrum.pt-webgpu.scene.cwbvhTlasBlasRoots';
-  const expectedSize = Math.max(roots.byteLength, MIN_STORAGE_BUFFER_BYTES_BY_LABEL[label] ?? 16);
-  const currentSize = sb.cwbvhTlasBlasRootsBuffer.size ?? Math.ceil(Math.max(
-    sb.cwbvhTlasBlasRoots.byteLength,
-    MIN_STORAGE_BUFFER_BYTES_BY_LABEL[label] ?? 16,
-  ) / 4) * 4;
-  if (currentSize !== expectedSize) {
-    const previous = sb.cwbvhTlasBlasRootsBuffer;
-    const candidate = createStorageBuffer(
-      device,
-      label,
-      roots,
-      new Set(sceneBufferResourceHandles(sb)),
-    );
-    mutable.cwbvhTlasBlasRootsBuffer = candidate;
-    destroyResourcesBestEffort([previous], sceneBufferResourceHandles(sb));
-  } else {
-    writeBufferIfNonEmpty(sb.cwbvhTlasBlasRootsBuffer, roots, device);
-  }
-  mutable.cwbvhTlasBlasRoots = roots;
-}
-
-/**
- * Apply geometry-pack derived count fields onto `sb` from `pack`. Extracted from
- * the repeated tail blocks in all four upload-variant functions; each variant
- * only supplies the fields it recomputes.
- *
- * - `bvhNodes` present → updates `bvhNodeCount` (BLAS uploads).
- * - `triangleCount` present → updates `triangleCount` (BLAS uploads).
- * - `tlasNodeCount` present → updates `tlasNodeCount` (TLAS uploads).
- * - `primitiveTlasBindings` always required (every upload variant refreshes it).
- * - root TLAS/BLAS bounds refresh `sceneCenter` + `sceneRadius` when present.
- */
-function applyScenePackCounts(
-  sb: UploadedSceneBuffers,
-  pack: {
-    readonly primitiveTlasBindings: readonly PrimitiveTlasBinding[];
-    readonly bvhNodes?: Float32Array;
-    readonly tlasNodes?: Uint32Array;
-    readonly triangleCount?: number;
-    readonly tlasNodeCount?: number;
-  },
-): void {
-  const mutable = asMutableSceneBuffers(sb);
-  if (pack.bvhNodes !== undefined) {
-    mutable.bvhNodeCount = Math.floor(pack.bvhNodes.length / BVH_NODE_FLOATS);
-  }
-  if (pack.triangleCount !== undefined) {
-    mutable.triangleCount = pack.triangleCount;
-  }
-  if (pack.tlasNodeCount !== undefined) {
-    mutable.tlasNodeCount = pack.tlasNodeCount;
-  }
-  if (pack.bvhNodes !== undefined) {
-    const bounds = sceneCenterRadiusFromPack({
-      bvhNodes: pack.bvhNodes,
-      ...(pack.tlasNodes !== undefined ? { tlasNodes: pack.tlasNodes } : {}),
-    });
-    mutable.sceneCenter = bounds.center;
-    mutable.sceneRadius = bounds.radius;
-  } else if (pack.tlasNodes !== undefined) {
-    const bounds = sceneCenterRadiusFromPack({
-      bvhNodes: sb.bvhNodes,
-      tlasNodes: pack.tlasNodes,
-    });
-    mutable.sceneCenter = bounds.center;
-    mutable.sceneRadius = bounds.radius;
-  }
-  mutable.primitiveTlasBindings = pack.primitiveTlasBindings;
-}
-
 export interface PackedLightTreeMutation {
   readonly lightTreeNodes: Float32Array;
   readonly lightTreeNodeCount: number;
@@ -2777,33 +2215,6 @@ export function packLightTreeForScene(
     lightTreeNodeCount: built.nodes.length,
     lightTreeEnabled: true,
   };
-}
-
-/** Rewrite environment fields after an in-place HDRI/sky upload. */
-export function applyEnvironmentMutation(
-  sb: UploadedSceneBuffers,
-  next: {
-    readonly environmentTint: readonly [number, number, number];
-    readonly environmentSunDirection: readonly [number, number, number];
-    readonly environmentSunStrength: number;
-    readonly environmentLightTreePower: number;
-    readonly environmentHdriIntensity: number;
-    readonly environmentHdriRotationY: number;
-    readonly environmentMapWidth: number;
-    readonly environmentMapHeight: number;
-    readonly hasEnvironmentMap: boolean;
-  },
-): void {
-  const mutable = asMutableSceneBuffers(sb);
-  mutable.environmentTint = next.environmentTint;
-  mutable.environmentSunDirection = next.environmentSunDirection;
-  mutable.environmentSunStrength = next.environmentSunStrength;
-  mutable.environmentLightTreePower = next.environmentLightTreePower;
-  mutable.environmentHdriIntensity = next.environmentHdriIntensity;
-  mutable.environmentHdriRotationY = next.environmentHdriRotationY;
-  mutable.environmentMapWidth = next.environmentMapWidth;
-  mutable.environmentMapHeight = next.environmentMapHeight;
-  mutable.hasEnvironmentMap = next.hasEnvironmentMap;
 }
 
 export function rebuildTlasForSceneTransforms(
@@ -2893,7 +2304,7 @@ export function uploadPackedScene(
   // in the body, destroy them all and rethrow so the caller (setScene) sees the
   // error with no leaked GPU memory. `createStorageBuffer` is shadowed by a local
   // tracking wrapper so all 27 storage-buffer creates below register automatically;
-  // the two material texture arrays register their textures explicitly.
+  // the three material texture arrays register their textures explicitly.
   const createdResources: Array<{ destroy: () => void }> = [];
   const createdResourceSet = new Set<object>(forbiddenResources);
   const trackedCreateStorageBuffer = (
@@ -3055,14 +2466,12 @@ function uploadPackedSceneInner(
     materialEmissiveTextureView: materialEmissiveArray.view,
     // T2-A — every scene storage buffer is destroyed via a single registry-driven
     // loop reading `uploaded[bufferField]`. Resolving each handle LATE off
-    // `uploaded` (not a captured local) is required for the realloc fast paths
-    // that swap fresh handles onto the struct — {@link uploadScenePackTlasRealloc}
-    // (instance-count change), {@link uploadScenePackGeometryRealloc} (mesh
-    // vertex/index-count change), and prepared light-tree mutations (node-count
-    // change) — so `destroy` never touches a stale (leaked/double-freed) handle.
+    // `uploaded` (not a captured local) is required for prepared scene-buffer
+    // mutations that swap fresh handles onto the struct after size changes, so
+    // `destroy` never touches a stale (leaked/double-freed) handle.
     // Non-resized buffers (materials / analytic / environment / descriptors) are
     // never reassigned, so reading them off `uploaded` is identical to the
-    // previously-captured locals. The two material texture arrays are destroyed
+    // previously-captured locals. The three material texture arrays are destroyed
     // explicitly (textures are not in the buffer registry).
     destroy: () => {
       if (uploadedDestroyed) return;
@@ -3075,9 +2484,9 @@ function uploadPackedSceneInner(
       ]);
     },
     // T2-A — sum the CURRENT GPUBuffer sizes via the same registry (realloc-swapped
-    // handles included) + the two material texture arrays (GPUTexture has no
-    // `.size`, so derive w·h·layers·4 at rgba8 = 4 B/texel, keyed by the actual
-    // format).
+    // handles included) + every retained mip of the three material texture
+    // arrays. GPUTexture has no byte-size field, so derive the full mip-chain
+    // footprint from its live dimensions, layer count, format, and mip count.
     gpuMemoryBytes: () => {
       let bufferBytes = 0;
       for (const entry of SCENE_BUFFER_REGISTRY) {
@@ -3087,7 +2496,14 @@ function uploadPackedSceneInner(
       const addTex = (t: GPUTexture): void => {
         // Bytes-per-texel by format: rgba8* = 4, rgba16float = 8 (T1-6 emissive).
         const bytesPerTexel = t.format === 'rgba16float' ? 8 : 4;
-        const bytes = t.width * t.height * t.depthOrArrayLayers * bytesPerTexel;
+        let texelCount = 0;
+        for (let level = 0; level < t.mipLevelCount; level += 1) {
+          texelCount +=
+            Math.max(1, Math.floor(t.width / 2 ** level)) *
+            Math.max(1, Math.floor(t.height / 2 ** level)) *
+            t.depthOrArrayLayers;
+        }
+        const bytes = texelCount * bytesPerTexel;
         textureBytesByFormat[t.format] = (textureBytesByFormat[t.format] ?? 0) + bytes;
       };
       addTex(uploaded.materialTexture);

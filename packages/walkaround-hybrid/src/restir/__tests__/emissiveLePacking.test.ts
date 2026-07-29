@@ -102,6 +102,6 @@ describe('packBVHEmissiveLeFromCore — camera-visible core emissive Le', () => 
 
     const out = packBVHEmissiveLeFromCore(new Uint32Array([0]), [material], 1);
 
-    expect(Array.from(out)).toEqual([2, 2, 2, 0]);
+    expect(Array.from(out)).toEqual([6, 6, 6, 0]);
   });
 });

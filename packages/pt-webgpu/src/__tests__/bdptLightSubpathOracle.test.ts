@@ -26,8 +26,6 @@ function stubScene(partial: Partial<UploadedSceneBuffers>): UploadedSceneBuffers
     rectAreaLightsData: new Float32Array(0),
     meshAreaLightsData: new Float32Array(0),
     environmentTint: [1, 1, 1],
-    environmentSunDirection: [0, 1, 0],
-    environmentSunStrength: 0,
     environmentMapWidth: 0,
     environmentMapHeight: 0,
     hasEnvironmentMap: false,

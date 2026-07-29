@@ -166,7 +166,7 @@ fn bdptSampleMaterialAtPayload(matId: u32, payload: vec4f, shadingNormal: vec3f,
   out.metallic = clamp(mat.metallic * orm.b, 0.0, 1.0);
   out.transmission = clamp(mat.transmission * sampleTransmissionTexture(matId, triIndex, baryVW, instanceIndex), 0.0, 1.0);
   out.ior = mat.ior;
-  if (params.spectralEnabled != 0u && mat.dispersionAbbe >= 1.0) {
+  if (params.spectralEnabled != 0u && mat.dispersionAbbe > 0.0) {
     out.ior = cauchyIorAtLambda(heroLambda, mat.ior, mat.dispersionAbbe);
   }
   out.clearcoat = clamp(mat.clearcoat * sampleClearcoatTexture(matId, triIndex, baryVW, instanceIndex), 0.0, 1.0);

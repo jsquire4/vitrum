@@ -196,9 +196,8 @@ export const BIND_GROUP_TABLE: readonly BindGroupTableEntry[] = [
       // non-HDRI scenes (the WGSL falls back to the scalar sky → byte-identical).
       // Only ris/risGi/shade reference these; the other passes declare a subset.
       { binding: 15, kind: 'tex', note: 'env_map (directional IBL radiance .rgb + per-texel solid-angle pdf .a, rgba16float)' },
-      { binding: 16, kind: 'tex', note: 'env_marginal (1×H inverse-CDF, r32float; random→row v)' },
-      { binding: 17, kind: 'tex', note: 'env_conditional (W×H inverse-CDF, r32float; random→col u)' },
-      { binding: 18, kind: 'sampler:nf', note: 'env_sampler (declared for completeness; lookups use textureLoad)' },
+      { binding: 16, kind: 'tex', note: 'env_marginal (H×1 forward CDF, r32float; binary search selects row)' },
+      { binding: 17, kind: 'tex', note: 'env_conditional (W×H forward CDF, r32float; binary search selects column)' },
       { binding: 19, kind: 'uniform', minSizeBytes: ENV_PARAMS_BYTES, note: 'EnvParams { hasEnv, width, height, rotationY, intensity } — own uniform (WalkaroundUBO is frozen at 432B)' },
       // Phase-3D material-map atlas and per-triangle metadata.
       // Both are textures (not storage buffers) so the scene group stays inside

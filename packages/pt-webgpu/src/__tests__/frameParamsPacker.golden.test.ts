@@ -99,10 +99,6 @@ function reconstructExpected(
   f[FrameParamsSlot.environmentTint + 2] = sb.environmentTint[2];
   // H6: environmentTint.w now carries environmentHdriRotationY (was hardcoded 0).
   f[FrameParamsSlot.environmentTint + 3] = sb.environmentHdriRotationY;
-  f[FrameParamsSlot.environmentSun] = sb.environmentSunDirection[0];
-  f[FrameParamsSlot.environmentSun + 1] = sb.environmentSunDirection[1];
-  f[FrameParamsSlot.environmentSun + 2] = sb.environmentSunDirection[2];
-  f[FrameParamsSlot.environmentSun + 3] = sb.environmentSunStrength;
   f.set(invVp, FrameParamsSlot.invViewProj);
   f.set(vp, FrameParamsSlot.viewProj);
   const prevVp = multiplyMat4(
@@ -132,8 +128,6 @@ function makeSceneInputs(over: Partial<FrameParamsSceneInputs> = {}): FrameParam
     sceneCenter: [4, 5, 6],
     sceneRadius: 7,
     environmentTint: [0.95, 0.97, 1.0],
-    environmentSunDirection: [0.0, 1.0, 0.0],
-    environmentSunStrength: 3.5,
     environmentHdriIntensity: 1.0,
     environmentHdriRotationY: 0,
     ...over,
@@ -363,7 +357,7 @@ describe('FrameParamsPacker — byte-identity golden (pt-webgpu Task 4.3)', () =
       400,
       300,
     ));
-    expect(FrameParamsSlot.directLightingMode).toBe(93);
+    expect(FrameParamsSlot.directLightingMode).toBe(89);
     expect(sampled[FrameParamsSlot.directLightingMode]).toBe(0);
     expect(summed[FrameParamsSlot.directLightingMode]).toBe(1);
   });
@@ -426,6 +420,5 @@ describe('FrameParamsPacker — byte-identity golden (pt-webgpu Task 4.3)', () =
     expect(f[FrameParamsSlot.cameraPos + 1]).toBe(3);
     expect(f[FrameParamsSlot.cameraPos + 2]).toBe(8);
     expect(f[FrameParamsSlot.environmentHdriIntensity]).toBe(1);
-    expect(f[FrameParamsSlot.environmentSun + 3]).toBe(3.5);
   });
 });

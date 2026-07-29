@@ -228,14 +228,12 @@ describe('pt-webgl2 upload-gap guard — load-bearing uniforms ARE uploaded', ()
   });
 
 
-  it('B4: mesh-area NEE uniforms are uploaded (count + Σ area + Σ power) for an emissive mesh', async () => {
+  it('B4: mesh-area NEE uniforms upload count + Σ power for an emissive mesh', async () => {
     const rec = await renderAndRecord(sceneWithMeshAreaLight());
     expect(rec.has('uMeshLightCount')).toBe(true);
     // The emissive panel is 2 triangles → 2 triangle lights.
     expect(rec.get('uMeshLightCount')).toBe(2);
-    expect(rec.has('uTotalEmissiveArea')).toBe(true);
-    // Panel spans [-1,1]×[-1,1] (area 4) → two tris of total area 4.
-    expect(rec.get('uTotalEmissiveArea')).toBeCloseTo(4, 5);
+    expect(rec.has('uTotalEmissiveArea')).toBe(false);
     expect(rec.has('uTotalEmissivePower')).toBe(true);
     // Mesh-area radiance is [5,5,5], luminance 5 over area 4.
     expect(rec.get('uTotalEmissivePower')).toBeCloseTo(20, 5);
@@ -245,7 +243,7 @@ describe('pt-webgl2 upload-gap guard — load-bearing uniforms ARE uploaded', ()
     const rec = await renderAndRecord(sceneNoEmitters());
     expect(rec.has('uMeshLightCount')).toBe(true);
     expect(rec.get('uMeshLightCount')).toBe(0);
-    expect(rec.get('uTotalEmissiveArea')).toBe(0);
+    expect(rec.has('uTotalEmissiveArea')).toBe(false);
     expect(rec.get('uTotalEmissivePower')).toBe(0);
   });
 
@@ -327,14 +325,13 @@ describe('pt-webgl2 upload-gap guard — load-bearing uniforms ARE uploaded', ()
     expect(rec.has('uBdptMaxLightBounces')).toBe(false);
   });
 
-  it('H2 follow-on: Cauchy IOR coefficients are uploaded (non-zero) when spectral:true', async () => {
-    const rec = await renderAndRecord(sceneNoEmitters(), { spectral: true });
-    expect(rec.has('iorCauchyA')).toBe(true);
-    expect(rec.get('iorCauchyA')).toBeGreaterThan(1); // Crown Glass A ≈ 1.5046
-    expect(rec.get('iorCauchyB')).toBeGreaterThan(0);
-    // Non-spectral: no dispersion (the GLSL cauchyEnabled fast-path → byte-identical).
+  it('uses material-local dispersion without obsolete global Cauchy uniforms', async () => {
+    const on = await renderAndRecord(sceneNoEmitters(), { spectral: true });
     const off = await renderAndRecord(sceneNoEmitters(), { spectral: false });
-    expect(off.get('iorCauchyB')).toBe(0);
+    for (const name of ['iorCauchyA', 'iorCauchyB', 'iorCauchyC']) {
+      expect(on.has(name)).toBe(false);
+      expect(off.has(name)).toBe(false);
+    }
   });
 
   it('flag-plumbing: dof uniforms are uploaded when dof is set, absent otherwise', async () => {

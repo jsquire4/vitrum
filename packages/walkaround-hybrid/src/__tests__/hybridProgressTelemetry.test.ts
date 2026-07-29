@@ -243,7 +243,6 @@ function makeFrameDeps(opts: {
       atrousDirectSigmas: [128, 5, 0.05],
       atrousIndirectSigmas: [32, 20, 0.5],
       stainedGlassFlags: 0,
-      nrcEnabled: 0,
     },
     telemetry: {
       frameSubs: [],
@@ -266,10 +265,9 @@ function makeFrameDeps(opts: {
     flags: {
       state: 'ready',
       debug: false,
-      ddgiOn: true,
       isLayerEnabled: () => true,
       device: makeStubDevice(),
-      maxBounces: 4,
+      maxBounces: 2,
       tunables: { glassMixScale: 1, triIntersectEpsilon: 1e-5 } as unknown as HybridEngineFrameDeps['flags']['tunables'],
       rcWeight: 0,
     },

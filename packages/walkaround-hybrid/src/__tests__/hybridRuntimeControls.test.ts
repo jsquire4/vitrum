@@ -191,8 +191,30 @@ describe('HybridEngine runtime controls', () => {
   it('accepts only the implemented ddgi layer and validates JS callers', () => {
     const engine = new HybridEngine(makeEngineOpts());
     try {
+      expect(engine.capabilities.supportDetails?.bounceSemantics).toEqual({
+        kind: 'ddgi-feedback',
+        directOnlyValue: 1,
+        multiBounceEquilibriumValue: 2,
+        inactiveWhenLayerDisabled: 'ddgi',
+      });
+      expect(engine.getBounceSemantics()).toEqual({
+        kind: 'ddgi-feedback',
+        configuredMaxBounces: 2,
+        active: 'multi-bounce-equilibrium',
+      });
+
       engine.setLayerEnabled('ddgi', false);
-      expect(engine['_buildFrameDeps']().flags.isLayerEnabled('ddgi')).toBe(false);
+      const disabledFlags = engine['_buildFrameDeps']().flags;
+      expect(disabledFlags.isLayerEnabled('ddgi')).toBe(false);
+      expect(disabledFlags).not.toHaveProperty('ddgiOn');
+      expect(engine.getBounceSemantics()).toEqual({
+        kind: 'ddgi-feedback',
+        configuredMaxBounces: 2,
+        active: 'disabled',
+      });
+
+      engine.setLayerEnabled('ddgi', true);
+      expect(engine.getBounceSemantics().active).toBe('multi-bounce-equilibrium');
 
       const callFromJs = engine.setLayerEnabled.bind(engine) as unknown as (
         layer: string,
@@ -200,7 +222,20 @@ describe('HybridEngine runtime controls', () => {
       ) => void;
       expect(() => callFromJs('nrc', true)).toThrow(/unsupported layer "nrc"/i);
       expect(() => callFromJs('ddgi', 1)).toThrow(/enabled must be a boolean/i);
-      expect(engine['_buildFrameDeps']().flags.isLayerEnabled('ddgi')).toBe(false);
+      expect(engine['_buildFrameDeps']().flags.isLayerEnabled('ddgi')).toBe(true);
+    } finally {
+      engine.dispose();
+    }
+  });
+
+  it('reports the direct-only DDGI bounce regime without calling it path depth', () => {
+    const engine = new HybridEngine(makeEngineOpts({ maxBounces: 1 }));
+    try {
+      expect(engine.getBounceSemantics()).toEqual({
+        kind: 'ddgi-feedback',
+        configuredMaxBounces: 1,
+        active: 'direct-only',
+      });
     } finally {
       engine.dispose();
     }

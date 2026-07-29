@@ -211,7 +211,10 @@ function analyzeExtensions(
   const unsupportedRequired: string[] = [];
 
   for (const ext of sorted(all)) {
-    if (REQUIRED_EXTENSION_SUPPORT.has(ext)) {
+    const selectedTextureSource =
+      !TEXTURE_SOURCE_EXTENSIONS.has(ext) ||
+      selectedTextureSourceExtensions.has(ext);
+    if (REQUIRED_EXTENSION_SUPPORT.has(ext) && selectedTextureSource) {
       supported.push(ext);
       continue;
     }
@@ -1511,6 +1514,13 @@ function analyzeMaterials(
     if (uvSet > 1) addSourcePath(issuePaths, `uvSet:${uvSet}`, textureInfoUvSetPath(info, path));
     if (info.extensions?.KHR_texture_transform) textureTransformCount += 1;
   };
+  const addProfile = (
+    profile: NonNullable<GltfMaterialFeatureReport['materialProfiles']>[number],
+    path: string,
+  ): void => {
+    materialProfiles.add(profile);
+    addSourcePath(issuePaths, `profile:${profile}`, path);
+  };
 
   for (const [materialIndex, mat] of materialEntries) {
     currentMaterialIndex = materialIndex;
@@ -1571,13 +1581,37 @@ function analyzeMaterials(
             ? Math.min(1, Math.max(0, glossinessFactor))
             : 1
         );
-      if (transmissionFactor > 0 && roughnessFactor > 0) {
-        materialProfiles.add('roughTransmission');
-        addSourcePath(
-          issuePaths,
-          'profile:roughTransmission',
-          `${matPath}.extensions.KHR_materials_transmission`,
+      if (transmissionFactor > 0) {
+        const transmissionPath = `${matPath}.extensions.KHR_materials_transmission`;
+        addProfile(
+          roughnessFactor > 0 ? 'roughTransmission' : 'deltaTransmission',
+          transmissionPath,
         );
+        const clearcoatActive =
+          (ext.KHR_materials_clearcoat?.clearcoatFactor ?? 0) > 0;
+        const sheenActive =
+          ext.KHR_materials_sheen?.sheenColorFactor?.some(
+            (component) => Number.isFinite(component) && component > 0,
+          ) === true;
+        const iridescenceActive =
+          (ext.KHR_materials_iridescence?.iridescenceFactor ?? 0) > 0;
+        if (clearcoatActive || sheenActive || iridescenceActive) {
+          addProfile('layeredTransmission', transmissionPath);
+        }
+        if (
+          mat.normalTexture !== undefined ||
+          (clearcoatActive &&
+            ext.KHR_materials_clearcoat?.clearcoatNormalTexture !== undefined)
+        ) {
+          addProfile('normalMappedTransmission', transmissionPath);
+        }
+        const volume = ext.KHR_materials_volume;
+        if (
+          (volume?.thicknessFactor ?? 0) > 0 ||
+          volume?.thicknessTexture !== undefined
+        ) {
+          addProfile('participatingMedia', transmissionPath);
+        }
       }
     }
     const ior = ext.KHR_materials_ior;
@@ -1747,7 +1781,7 @@ function materialVariantMappingIssues(
       const mappings = primitive.extensions?.KHR_materials_variants?.mappings ?? [];
       for (const [mappingIndex, mapping] of mappings.entries()) {
         const mappingPath = `meshes[${meshIndex}].primitives[${primitiveIndex}].extensions.KHR_materials_variants.mappings[${mappingIndex}]`;
-        if (!Number.isInteger(mapping.material) || mapping.material < 0 || mapping.material >= materialCount) {
+        if (!Number.isSafeInteger(mapping.material) || mapping.material < 0 || mapping.material >= materialCount) {
           issues.push({
             kind: 'missing-material',
             path: `${mappingPath}.material`,
@@ -1769,7 +1803,7 @@ function materialVariantMappingIssues(
         }
         if (rootVariantListMalformed) continue;
         for (const [variantSlot, variantIndex] of mapping.variants.entries()) {
-          if (!Number.isInteger(variantIndex) || variantIndex < 0 || variantIndex >= variantCount) {
+          if (!Number.isSafeInteger(variantIndex) || variantIndex < 0 || variantIndex >= variantCount) {
             issues.push({
               kind: 'missing-variant',
               path: `${mappingPath}.variants[${variantSlot}]`,

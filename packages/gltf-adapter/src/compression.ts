@@ -263,7 +263,11 @@ export async function resolveCompression(
     }
   }
   if (hasDraco) {
-    preflightDracoCompressionDeclarations(gltf, scope.sceneReachability);
+    preflightDracoCompressionDeclarations(
+      gltf,
+      scope.sceneReachability,
+      (gltf.extensionsRequired ?? []).includes(DRACO_EXT),
+    );
   }
 
   // Copy-on-write across BOTH externally visible products. Synthetic buffers

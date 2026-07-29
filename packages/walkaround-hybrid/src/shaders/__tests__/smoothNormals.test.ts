@@ -152,7 +152,7 @@ describe('WS1 codegen — smooth-normal helper + consumption', () => {
   ];
 
   it.each(composedNormalBindingPasses)('composed %s declares the geometry arena and normal loader once', (_name, src) => {
-    expect(src.match(/@group\(1\)\s*@binding\(0\)\s*var<storage,\s*read>\s*sceneGeometryArena/g)).toHaveLength(1);
+    expect(src.match(/@group\(1\)\s*@binding\(0\)\s*var<storage,\s*read>\s*bvhSceneGeometryArena/g)).toHaveLength(1);
     expect(src.match(/fn\s+sceneLoadBvhNormal\s*\(/g)).toHaveLength(1);
   });
 

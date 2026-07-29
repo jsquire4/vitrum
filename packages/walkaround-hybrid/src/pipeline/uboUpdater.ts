@@ -10,7 +10,7 @@
  *   offset 204: frameSeed                   (u32 = 4 bytes)
  *   offset 208: screenSize                  (vec2u = 8 bytes)
  *   offset 216: emitterCount                (u32 = 4 bytes)
- *   offset 220: totalEmPower                (f32 = 4 bytes)
+ *   offset 220: _abiPadEmitterPower         (f32 = 4 bytes; zero)
  *   offset 224: primaryLightDir             (vec3f = 12 bytes)
  *   offset 236: primaryLightIntensity       (f32 = 4 bytes)
  *   offset 240: skyTint                     (vec3f = 12 bytes)
@@ -40,7 +40,7 @@
  *   offset 352: ppgMixAlpha                 (f32 = 4 bytes) — PPG MIS mixing weight α
  *   offset 356: lightTreeEnabled            (u32 = 4 bytes) — DI light-tree selection gate (was _ppgPad0)
  *   offset 360: lightTreeNodeCount          (u32 = 4 bytes) — packed light-tree node count (was _ppgPad1)
- *   offset 364: nrcEnabled                  (u32 = 4 bytes) — NRC cache gate (was _ppgPad2)
+ *   offset 364: _abiPadNrcGate              (u32 = 4 bytes; zero)
  *   offset 368: regirOrigin                 (vec3f = 12 bytes) — ReGIR grid AABB min
  *   offset 380: regirInvCellSize            (f32 = 4 bytes) — 1 / cellSize
  *   offset 384: regirDims                   (vec3u = 12 bytes) — grid cell counts
@@ -48,7 +48,7 @@
  *   offset 400: regirCandidatesPerCell      (u32 = 4 bytes) — M per sub-reservoir
  *   offset 404: regirSurvivorsPerCell       (u32 = 4 bytes) — K survivors per cell
  *   offset 408: regirGridFloatOffset        (u32 = 4 bytes) — grid-region float offset in combined buffer
- *   offset 412: grisReuse               (u32 = 4 bytes) — reserved compatibility word; always 1
+ *   offset 412: _abiPadRetiredGrisToggle    (u32 = 4 bytes; zero)
  *   offset 416: sunAngular.x                (f32 = 4 bytes) — direct sun cone radius in radians
  *   offset 420: sunAngular.y                (u32 bits) — GRIS history epoch
  *   offset 424: sunAngular.z                (f32) — generic refractive-caustic strategy
@@ -198,7 +198,7 @@ export function packWalkaroundUBO(
   u32[52] = inputs.screen.screenWidth;
   u32[53] = inputs.screen.screenHeight;
   u32[54] = inputs.lighting.emitterCount;
-  f32[55] = inputs.lighting.totalEmissivePower;
+  f32[55] = 0; // retired emitter-power mirror; explicit ABI pad
   f32[56] = inputs.lighting.primaryLightDir[0];
   f32[57] = inputs.lighting.primaryLightDir[1];
   f32[58] = inputs.lighting.primaryLightDir[2];
@@ -252,13 +252,9 @@ export function packWalkaroundUBO(
   // When disabled both stay 0 → RIS uses the flat power-CDF path exactly.
   u32[89] = (inputs.lighting.lightTreeEnabled ?? 0) >>> 0; // offset 356 — lightTreeEnabled
   u32[90] = (inputs.lighting.lightTreeNodeCount ?? 0) >>> 0; // offset 360 — lightTreeNodeCount
-  // NRC cache flag (offset 364 — the former _ppgPad2 slot). 0 keeps the gi-ris
-  // suffix on the verbatim DDGI-atlas estimate (NRC-OFF bit-identity); 1 marks
-  // the neural radiance cache on. Absent ⇒ 0 (OFF), so callers and existing
-  // tests that never set it are byte-identical to before. NOTE: this UBO field
-  // is an informational mirror — no shader reads u32[91]. The load-bearing gate
-  // is compile-time (the risGiNrc variant is composed only when nrcEnabled). See V20.
-  u32[91] = (inputs.nrc.nrcEnabled ?? 0) >>> 0; // offset 364 — nrcEnabled (was _ppgPad2)
+  // NRC selection is construction-time pipeline composition. The former
+  // runtime mirror had no shader reads; keep its aligned slot explicitly zero.
+  u32[91] = 0; // offset 364 — _abiPadNrcGate
   // ReGIR grid state (offsets 368..412). When ReGIR is off every field is 0,
   // so the kernel's `regirEnabled == 0` gate keeps RIS on the light-tree path
   // bit-for-bit (and the grid-build pass early-returns).
@@ -274,11 +270,9 @@ export function packWalkaroundUBO(
   u32[100] = r.candidatesPerCell >>> 0; // offset 400 — regirCandidatesPerCell (M)
   u32[101] = r.survivorsPerCell >>> 0;  // offset 404 — regirSurvivorsPerCell (K)
   u32[102] = r.gridFloatOffset >>> 0;   // offset 408 — regirGridFloatOffset
-  // Reserved ABI word for the retired GRIS structural toggle. Generalized
-  // reconnection reuse is the sole live path, so the mirror is always one.
-  // Keeping the word avoids shifting the epoch and caustic controls in the
-  // stable 432-byte UBO contract.
-  u32[103] = 1; // offset 412 — deprecated grisReuse mirror, always enabled
+  // Reserved zero ABI word for the retired GRIS structural toggle. Keeping
+  // the slot avoids shifting the epoch and caustic controls.
+  u32[103] = 0; // offset 412 — _abiPadRetiredGrisToggle
   const sunAngularRadius = inputs.lighting.sunAngularRadius;
   f32[104] = typeof sunAngularRadius === 'number' && Number.isFinite(sunAngularRadius)
     ? Math.max(0, sunAngularRadius)

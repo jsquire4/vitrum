@@ -320,6 +320,12 @@ export const bdpt_connection = /* glsl */`
 		int lightVtxIdx
 	) {
 
+                // c light-side scattering vertices plus e+1 eye vertices must
+                // fit the renderer's total accepted-scattering-vertex budget.
+                // Keep this defensive check local as well as in the caller's
+                // loop so future call sites cannot evaluate a longer path.
+                if ( lightVtxIdx + eyeDepth >= bounces ) return vec3( 0.0 );
+
 		vec4 lv0 = texelFetch( uBdptLightPathTex, ivec2( lightVtxIdx, 0 ), 0 );
 		vec4 lv1 = texelFetch( uBdptLightPathTex, ivec2( lightVtxIdx, 1 ), 0 );
 		vec4 lv2 = texelFetch( uBdptLightPathTex, ivec2( lightVtxIdx, 2 ), 0 );

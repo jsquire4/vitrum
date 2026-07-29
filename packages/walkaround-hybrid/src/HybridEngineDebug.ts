@@ -49,7 +49,7 @@ export function createHybridEngineDebugSurface(deps: HybridEngineDebugDeps): Eng
         direct:   textures.hdrColorTexture,
         indirect: textures.hdrIndirectTexture,
         ao:       textures.aoFullTexture,
-        total:    null,
+        total:    textures.hdrTotalTexture,
       };
     },
     isDenoiserEnabled: deps.denoiserPassEnabled,

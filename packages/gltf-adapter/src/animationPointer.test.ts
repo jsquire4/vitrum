@@ -234,7 +234,7 @@ describe('ratified KHR_animation_pointer object-model support', () => {
     })).toContain('normalized');
   });
 
-  it('uses exact schema domains and fails closed for unconstrained cubic overshoot', () => {
+  it('uses exact schema domains and permits cubic interpolation with runtime sample validation', () => {
     expect(gltfAnimationPointerSampleValueError(
       ASSET,
       target('/materials/0/emissiveFactor'),
@@ -253,7 +253,7 @@ describe('ratified KHR_animation_pointer object-model support', () => {
     expect(gltfAnimationPointerInterpolationError(
       target('/extensions/KHR_lights_punctual/lights/0/intensity'),
       'CUBICSPLINE',
-    )).toContain('bounded');
+    )).toBeUndefined();
     expect(gltfAnimationPointerInterpolationError(
       target('/materials/0/normalTexture/scale'),
       'CUBICSPLINE',

@@ -4,7 +4,10 @@ import { PT_WEBGPU_PATH_TRACE_KERNEL_WGSL } from '../wgsl/pathTrace/kernel.wgsl.
 import { PT_WEBGPU_PATH_TRACE_KERNEL_LITE_WGSL } from '../wgsl/pathTrace/kernelLite.wgsl.js';
 import { RESTIR_PT_PRODUCER_WGSL } from '../wgsl/pathTrace/restirPtProducer.wgsl.js';
 import { PT_WEBGPU_PATH_TRACE_CAUSTIC_WGSL } from '../wgsl/pathTrace/caustic.wgsl.js';
+import { PT_WEBGPU_MEDIUM_NEE_WGSL } from '../wgsl/pathTrace/mediumNee.wgsl.js';
 import { SPPM_PHOTON_PASS_WGSL } from '../wgsl/pathTrace/sppmBindings.wgsl.js';
+import { PT_WEBGPU_BDPT_CONNECTION_WGSL } from '../wgsl/bdpt/bdptConnection.wgsl.js';
+import { PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL } from '../wgsl/bdpt/bdptLightSubpath.wgsl.js';
 
 function pointSpotDistanceAttenuation(
   distance: number,
@@ -18,7 +21,7 @@ function pointSpotDistanceAttenuation(
   }
   if (cutoffDistance > 0) {
     const window = Math.min(Math.max(1 - (safeDistance / cutoffDistance) ** 4, 0), 1);
-    attenuation *= window * window;
+    attenuation *= window;
   }
   return attenuation;
 }
@@ -52,13 +55,13 @@ describe('point and spot distance attenuation', () => {
 
 
 
-  it('uses the Frostbite smooth cutoff window and reaches zero at the range', () => {
+  it('uses the unsquared KHR quartic window and reaches zero at the range', () => {
     const distance = 5;
     const cutoff = 10;
     const inverseSquare = 1 / (distance * distance);
     const window = 1 - (distance / cutoff) ** 4;
     expect(pointSpotDistanceAttenuation(distance, cutoff, 2)).toBeCloseTo(
-      inverseSquare * window * window,
+      inverseSquare * window,
       13,
     );
     expect(pointSpotDistanceAttenuation(cutoff, cutoff, 2)).toBe(0);
@@ -73,8 +76,27 @@ describe('point and spot distance attenuation', () => {
       'fn pointSpotPathMeasureScale(',
     );
     expect(PT_WEBGPU_PATH_TRACE_MATERIAL_FUNCS_WGSL).toContain(
+      'attenuation = attenuation * window;',
+    );
+    expect(PT_WEBGPU_PATH_TRACE_MATERIAL_FUNCS_WGSL).not.toContain(
       'attenuation = attenuation * window * window;',
     );
+  });
+
+  it('routes volume and BDPT point/spot connections through the same helper', () => {
+    expect(
+      (PT_WEBGPU_MEDIUM_NEE_WGSL.match(/pointSpotDistanceAttenuation\(/g) ?? []).length,
+    ).toBe(2);
+    expect(
+      (PT_WEBGPU_BDPT_CONNECTION_WGSL.match(
+        /pointSpotDistanceAttenuation\(/g,
+      ) ?? []).length,
+    ).toBe(2);
+    expect(
+      (PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL.match(
+        /pointSpotPathMeasureScale\(/g,
+      ) ?? []).length,
+    ).toBe(1);
   });
 
   it('routes full, lite, and ReSTIR-PT point/spot lighting through the helper', () => {

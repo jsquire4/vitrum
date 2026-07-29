@@ -48,7 +48,7 @@ struct Material {
   vec3 spectralReflectanceCoeffs; bool hasSpectralReflectance;
   int aoMap; int lightMap; int bumpMap;
   float aoMapIntensity; float lightMapIntensity; float bumpScale;
-  float envMapIntensity; uint uvTexCoordMask;
+  float envMapIntensity;
 };
 
 int wrapMaterialTextureIndex( int coord, int size, float mode ) {
@@ -343,7 +343,7 @@ void readMaterialInfo( sampler2D tex, uint index, out Material m ) {
   m.bumpMap = int( round( s.b ) ); m.envMapIntensity = s.a;
   s = texelFetch1D( tex, i + 86u );
   m.aoMapIntensity = s.r; m.lightMapIntensity = s.g;
-  m.bumpScale = s.b; m.uvTexCoordMask = uint( round( s.a ) );
+  m.bumpScale = s.b;
   s = texelFetch1D( tex, i + 97u );
   m.thickness = max( s.r, 0.0 ); m.thicknessMap = int( round( s.g ) );
   s = texelFetch1D(

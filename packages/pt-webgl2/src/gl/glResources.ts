@@ -65,8 +65,8 @@ import { prepareProgramSequence } from './programPreparation.js';
 // walk is skipped and mock sampler binds no-op). Do not rely on a mock-GL test to
 // catch a reorder here; a reorder is caught by the T1 smoke, not vitest.
 //
-// Non-texture uniforms (lights.count, uMeshLightCount, uTotalEmissiveArea,
-// uTotalEmissivePower, envMapInfo.totalSum) are uploaded separately after the
+// Non-texture uniforms (lights.count, uMeshLightCount, uTotalEmissivePower,
+// envMapInfo.totalSum) are uploaded separately after the
 // loop — they are scalar setters, not texture binds.
 //
 // A5 override: uBdptLightPathTex is included in the table (bound with a dummy
@@ -167,8 +167,6 @@ export interface FrameUniforms {
   /** Shared hero wavelength/PDF for the global light path when BDPT + spectral are both active. */
   readonly bdptSharedWavelengthNm: number;
   readonly bdptSharedWavelengthPdf: number;
-  /** Spectral global Cauchy IOR dispersion coefficients (H2 follow-on); 0/0/0 = no dispersion. */
-  readonly iorCauchy: readonly [number, number, number];
   /** Thin-lens DoF PhysicalCamera uniforms (flag-plumbing audit); null = pinhole (FEATURE_DOF off). */
   readonly dof: {
     readonly focusDistance: number;
@@ -922,7 +920,6 @@ export class GlResources {
     prog.setUint('lights.count', scene.lightCount);
     // B4: mesh-area NEE scalars (count==0 → inert branch, byte-identical to no-mesh-light).
     prog.setUint('uMeshLightCount', scene.meshLightCount);
-    prog.setFloat('uTotalEmissiveArea', scene.totalEmissiveArea);
     prog.setFloat('uTotalEmissivePower', scene.totalEmissivePower);
     // Env-map importance-sampling total sum (0 → correct no-env early-out in GLSL).
     prog.setFloat('envMapInfo.totalSum', scene.envTotalSum);

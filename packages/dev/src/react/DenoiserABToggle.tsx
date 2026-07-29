@@ -6,7 +6,7 @@
 // surface is absent. They never install a keyboard shortcut or imply that a
 // local-only state change affected the renderer.
 
-import React, { type FC, useCallback, useState } from 'react';
+import React, { type FC, useCallback, useEffect, useState } from 'react';
 import type { DebuggableEngine } from '../types.js';
 import { useKeyToggle } from './hooks.js';
 
@@ -45,7 +45,9 @@ export const DenoiserABToggle: FC<DenoiserABToggleProps> = ({
   toggleKey = 'd',
   className,
 }) => {
-  // Track local enabled state; seed from engine.debug.isDenoiserEnabled() if available.
+  // Local state drives React rendering, but the engine remains authoritative:
+  // another debug control or a recreated engine may change this value without
+  // remounting the component.
   const [enabled, setEnabled] = useState<boolean>(() => {
     return engine.debug?.isDenoiserEnabled?.() ?? true;
   });
@@ -53,11 +55,33 @@ export const DenoiserABToggle: FC<DenoiserABToggleProps> = ({
   const hasDebug =
     typeof engine.debug?.setDenoiserEnabled === 'function';
 
+  useEffect(() => {
+    if (!hasDebug) return;
+    const syncFromEngine = (): void => {
+      try {
+        const current = engine.debug?.isDenoiserEnabled?.();
+        if (typeof current === 'boolean') {
+          setEnabled((previous) => previous === current ? previous : current);
+        }
+      } catch {
+        // A transient debug-surface failure must not break the host React tree.
+      }
+    };
+    syncFromEngine();
+    const interval = setInterval(syncFromEngine, 250);
+    return () => clearInterval(interval);
+  }, [engine, hasDebug]);
+
   const doToggle = useCallback((): void => {
     if (!hasDebug) return;
-    const next = !enabled;
-    engine.debug!.setDenoiserEnabled!(next);
-    setEnabled(next);
+    try {
+      const authoritative = engine.debug?.isDenoiserEnabled?.();
+      const next = !(typeof authoritative === 'boolean' ? authoritative : enabled);
+      engine.debug!.setDenoiserEnabled!(next);
+      setEnabled(next);
+    } catch {
+      // Keep the displayed state unchanged when the engine rejects the toggle.
+    }
   }, [enabled, engine, hasDebug]);
 
   // Keyboard handler — useKeyToggle re-registers when doToggle identity changes,

@@ -43,10 +43,6 @@ interface PipelineFrameScreen {
 
 /** Lighting scalars, emitter budget, and light-tree configuration. */
 interface PipelineFrameLighting {
-  /** Sum of (Le * area) over all emitter triangles, computed at BVH build
-   *  time. Used by RIS importance-sampling weight normalization. Must match
-   *  the value baked into the emitter CDF in SceneBVHBuffers. */
-  totalEmissivePower: number;
   /** Number of entries in the emitter list (length of EmitterTri[] array
    *  in SceneBVHBuffers.emitters). Used by RIS to bound candidate selection. */
   emitterCount: number;
@@ -198,23 +194,6 @@ interface PipelineFrameBvh {
   tlasNodeCount: number;
 }
 
-/** Optional per-frame NRC gate. */
-interface PipelineFrameNrc {
-  /** NRC (Müller et al. 2021) cache gate (UBO offset 364 — the former
-   *  `_ppgPad2` slot). `1` ⇒ the GI suffix may TERMINATE into the learned
-   *  neural radiance cache (spread heuristic + MLP query) and radiance records
-   *  self-train it. `0`/omitted ⇒ the gi-ris suffix runs the verbatim
-   *  DDGI-atlas estimate and the UBO bytes are unchanged — **OFF is
-   *  bit-identical**. Host opt-in via HybridEngineOptions.nrcEnabled; FORBIDDEN
-   *  on tier:'lite'. NRC is a BIASED cache (not a converged-mean-preserving
-   *  reuse) — see HARDWARE-VALIDATION-NEEDS.md V20. WIRED (2026-05-29): the gi-ris
-   *  NRC variant runs the MLP query + writes self-training records;
-   *  `NrcSubsystem.trainFromRecords` runs an MLP `trainStep` AND the hash-grid
-   *  encode-backward + table Adam each frame — so with the gate at 1 the suffix
-   *  uses the (biased) learned MLP prediction when the spread heuristic fires. */
-  nrcEnabled?: number;
-}
-
 /** Per-frame tonemap / exposure / output-colorspace dials (2026-06-10). */
 interface PipelineFrameComposite {
   /** Tonemap operator mode index — matches TONEMAP_MODE_INDEX from
@@ -251,8 +230,6 @@ export interface PipelineFrameInputs {
   filter: PipelineFrameFilter;
   /** BVH traversal mode and TLAS configuration. */
   bvh: PipelineFrameBvh;
-  /** NRC cache gate (optional; absent ⇒ OFF, bit-identical). */
-  nrc: PipelineFrameNrc;
   /** Per-frame tonemap / exposure / output-colorspace dials (2026-06-10). */
   composite: PipelineFrameComposite;
 }

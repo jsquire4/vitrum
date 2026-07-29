@@ -687,6 +687,46 @@ describe('VitrumCanvas — mount / attach / dispose', () => {
       .toBeLessThan(close.mock.invocationCallOrder[0]!);
   });
 
+  it('serializes structural reattach generations so one canvas never has concurrent owners', async () => {
+    const { createRoot } = await import('react-dom/client');
+    const React = await import('react');
+    const { VitrumCanvas } = await import('../src/react/VitrumCanvas.js');
+    const vanillaModule = await import('../src/lifecycle/vanilla.js');
+    const firstPending = deferred<AttachVitrumHandle>();
+    const firstDispose = vi.fn();
+    const secondDispose = vi.fn();
+    const attachSpy = vi.spyOn(vanillaModule, 'attachVitrum')
+      .mockReturnValueOnce(firstPending.promise)
+      .mockResolvedValueOnce(makeMockHandle(secondDispose));
+    const nextScene: Scene = {
+      primitives: [],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+
+    const container = happyWindow.document.createElement('div') as unknown as Element;
+    happyWindow.document.body.appendChild(
+      container as unknown as Parameters<typeof happyWindow.document.body.appendChild>[0],
+    );
+    const root = createRoot(container);
+    root.render(React.createElement(VitrumCanvas, { scene: SCENE, camera: CAMERA }));
+    await vi.waitFor(() => expect(attachSpy).toHaveBeenCalledOnce());
+
+    root.render(React.createElement(VitrumCanvas, { scene: nextScene, camera: CAMERA }));
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(attachSpy).toHaveBeenCalledOnce();
+
+    firstPending.resolve(makeMockHandle(firstDispose));
+    await vi.waitFor(() => expect(attachSpy).toHaveBeenCalledTimes(2));
+    expect(firstDispose).toHaveBeenCalledOnce();
+    expect(firstDispose.mock.invocationCallOrder[0])
+      .toBeLessThan(attachSpy.mock.invocationCallOrder[1]!);
+    expect(attachSpy.mock.calls[1]![0].scene).toBe(nextScene);
+
+    root.unmount();
+    await vi.waitFor(() => expect(secondDispose).toHaveBeenCalledOnce());
+  });
+
   it('disposes the pending glTF engine before releasing image handles when attach rejects', async () => {
     const { createRoot } = await import('react-dom/client');
     const React = await import('react');

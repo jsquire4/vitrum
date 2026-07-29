@@ -201,6 +201,22 @@ export type AttachVitrumRecreateEngineFactory = (
   context: AttachVitrumRecreateEngineContext,
 ) => Promise<EngineWithBackendId>;
 
+/**
+ * Emitted when fatal-loss recovery succeeds on a different backend or backend
+ * profile. Auto selection is intentionally allowed to fall back as host/device
+ * availability changes, but that semantic change is never silent.
+ */
+export interface AttachVitrumBackendChangedEvent {
+  readonly previousBackendId: EngineWithBackendId['backendId'];
+  readonly backendId: EngineWithBackendId['backendId'];
+  readonly previousBackendProfileId: EngineWithBackendId['backendProfileId'];
+  readonly backendProfileId: EngineWithBackendId['backendProfileId'];
+  readonly previousProfileId: EngineWithBackendId['profileId'];
+  readonly profileId: EngineWithBackendId['profileId'];
+  readonly reason: AttachVitrumAutoRecreateReason;
+  readonly attempt: number;
+}
+
 export interface AttachVitrumSceneControllerPlaybackOptions {
   /** Forwarded to `sceneController.advance(..., { loop })`. Default true. */
   readonly loop?: boolean;
@@ -290,6 +306,12 @@ export interface AttachVitrumOptions extends Omit<CreateEngineOptions, 'scene'> 
    * `createEngine()` recreation path.
    */
   readonly recreateEngine?: AttachVitrumRecreateEngineFactory;
+  /**
+   * Called after fatal-loss recovery installs an engine whose backend or
+   * resolved profile differs from the engine that was lost. A matching
+   * structured warning is also emitted through `onWarning`.
+   */
+  readonly onBackendChanged?: (event: AttachVitrumBackendChangedEvent) => void;
   /** Scene description in the host-agnostic @vitrum/core contract. */
   readonly scene: CreateEngineOptions['scene'];
   /** Camera the engine reads viewMatrix / projMatrix / position from every
@@ -490,8 +512,64 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
     }
   };
   let engine = opts.engine ?? await buildEngineFromOpts(opts, currentScene);
-  trackEngineScene(engine);
-  attachSceneController(engine);
+  let resizeObserver: ResizeObserver | undefined;
+  let visibilityHandler: (() => void) | undefined;
+  let unsubFrame: (() => void) | undefined;
+  let unsubProgress: (() => void) | undefined;
+  let unsubEngineError: (() => void) | undefined;
+  let subscribingToEngine = false;
+  let fatalErrorDeferredDuringSubscribe: EngineError | undefined;
+  let presenter: OffscreenPresenter | undefined;
+  let presenterDevice: GPUDevice | undefined;
+  let presenterContext: GPUCanvasContext | undefined;
+  let rafHandle: number | null = null;
+  let stopped = false;
+  let disposed = false;
+  let autoRecreateController:
+    | {
+        handleFatalEngineError: (err: EngineError) => void;
+        cancelPendingWait: () => void;
+      }
+    | undefined;
+
+  /**
+   * One idempotent teardown path serves normal disposal and initialization
+   * rollback. In particular, every failure after engine construction releases
+   * partial DOM observers/listeners, partial telemetry subscriptions, RAF
+   * ownership, presentation resources, and the engine before attach rejects.
+   */
+  const disposeLifecycle = (): void => {
+    if (disposed) return;
+    disposed = true;
+    stopped = true;
+    if (rafHandle != null) {
+      try { cancelAnimationFrame(rafHandle); } catch { /* best-effort cleanup — ignore */ }
+      rafHandle = null;
+    }
+    if (visibilityHandler && typeof document !== 'undefined') {
+      try {
+        document.removeEventListener('visibilitychange', visibilityHandler);
+      } catch {
+        // Best-effort cleanup for partially initialized hosts.
+      }
+    }
+    try { resizeObserver?.disconnect(); } catch { /* best-effort cleanup — ignore */ }
+    try { unsubFrame?.(); } catch { /* best-effort cleanup — ignore */ }
+    try { unsubProgress?.(); } catch { /* best-effort cleanup — ignore */ }
+    try { unsubEngineError?.(); } catch { /* best-effort cleanup — ignore */ }
+    unsubFrame = undefined;
+    unsubProgress = undefined;
+    unsubEngineError = undefined;
+    try { presenter?.dispose(); } catch { /* best-effort cleanup — ignore */ }
+    presenter = undefined;
+    presenterDevice = undefined;
+    autoRecreateController?.cancelPendingWait();
+    try { engine.dispose(); } catch { /* best-effort cleanup — ignore */ }
+  };
+
+  try {
+    trackEngineScene(engine);
+    attachSceneController(engine);
 
   const sceneControllerPlayback = opts.sceneControllerPlayback;
   let lastSceneControllerFrameMs: number | null = null;
@@ -516,7 +594,6 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
   };
 
   // ── ResizeObserver ───────────────────────────────────────────────────────
-  let resizeObserver: ResizeObserver | undefined;
   if (typeof ResizeObserver !== 'undefined') {
     resizeObserver = new ResizeObserver((entries) => {
       viewportDpr = (typeof window !== 'undefined' ? window.devicePixelRatio : null) ?? 1;
@@ -556,7 +633,6 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
 
   // ── Pause-on-hidden ──────────────────────────────────────────────────────
   const pauseOnHidden = opts.pauseOnHidden ?? true;
-  let visibilityHandler: (() => void) | undefined;
   if (pauseOnHidden && typeof document !== 'undefined') {
     visibilityHandler = () => {
       if (document.visibilityState === 'hidden') {
@@ -575,27 +651,56 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
   // after auto-recreate.  The host-facing callbacks are stable closures that
   // read opts.onFrame / opts.onProgress / opts.onEngineError by value at
   // call time (not captured once).
-  let unsubFrame: (() => void) | undefined;
-  let unsubProgress: (() => void) | undefined;
-  let unsubEngineError: (() => void) | undefined;
-
   const subscribeToEngine = (): void => {
     unsubFrame?.();
     unsubProgress?.();
     unsubEngineError?.();
-    unsubFrame = opts.onFrame && engine.onFrame
-      ? engine.onFrame(opts.onFrame)
-      : undefined;
-    unsubProgress = opts.onProgress && engine.onProgress
-      ? engine.onProgress(opts.onProgress)
-      : undefined;
-    unsubEngineError = engine.onError
-      ? engine.onError((err) => {
-          // Always deliver to the host first, before any internal handling.
-          try { opts.onEngineError?.(err); } catch { /* host error callback must not propagate — ignore */ }
-          if (err.fatal) autoRecreateController.handleFatalEngineError(err);
-        })
-      : undefined;
+    unsubFrame = undefined;
+    unsubProgress = undefined;
+    unsubEngineError = undefined;
+    let completed = false;
+    subscribingToEngine = true;
+    try {
+      unsubFrame = opts.onFrame && engine.onFrame
+        ? engine.onFrame(opts.onFrame)
+        : undefined;
+      if (disposed) return;
+      unsubProgress = opts.onProgress && engine.onProgress
+        ? engine.onProgress(opts.onProgress)
+        : undefined;
+      if (disposed) return;
+      unsubEngineError = engine.onError
+        ? engine.onError((err) => {
+            // Always deliver to the host first, before any internal handling.
+            try { opts.onEngineError?.(err); } catch { /* host error callback must not propagate — ignore */ }
+            if (!err.fatal) return;
+            // Custom engines are allowed to invoke a subscription callback
+            // synchronously. Defer recovery until the unsubscriber has been
+            // published, otherwise recovery can dispose the engine before this
+            // subscription exists and strand the late callback.
+            if (subscribingToEngine) {
+              fatalErrorDeferredDuringSubscribe ??= err;
+            } else {
+              autoRecreateController?.handleFatalEngineError(err);
+            }
+          })
+        : undefined;
+      completed = true;
+    } finally {
+      subscribingToEngine = false;
+      const deferredFatal = fatalErrorDeferredDuringSubscribe;
+      fatalErrorDeferredDuringSubscribe = undefined;
+      if (!completed || disposed) {
+        try { unsubFrame?.(); } catch { /* best-effort cleanup — ignore */ }
+        try { unsubProgress?.(); } catch { /* best-effort cleanup — ignore */ }
+        try { unsubEngineError?.(); } catch { /* best-effort cleanup — ignore */ }
+        unsubFrame = undefined;
+        unsubProgress = undefined;
+        unsubEngineError = undefined;
+      } else if (deferredFatal != null) {
+        autoRecreateController?.handleFatalEngineError(deferredFatal);
+      }
+    }
   };
 
   // ── Auto-recreate controller ─────────────────────────────────────────────
@@ -617,12 +722,20 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
     times: [] as number[],
     recreating: false,
     cancelContextRestorationWait: null as (() => void) | null,
+    pendingFatalError: null as EngineError | null,
   };
 
   const handleFatalEngineError = (err: EngineError): void => {
     if (!opts.autoRecreateOnDeviceLoss) return;
     if (!isLossKind(err.kind)) return;
-    if (disposed || autoRecreateMachine.recreating) return;
+    if (disposed) return;
+    if (autoRecreateMachine.recreating) {
+      // A newly created custom engine may synchronously report loss while its
+      // telemetry subscriptions are installed. Preserve that signal and run a
+      // fresh bounded recovery after the current attempt unwinds.
+      autoRecreateMachine.pendingFatalError ??= err;
+      return;
+    }
 
     const now = Date.now();
     // Prune attempts outside the window.
@@ -673,6 +786,8 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
       rafHandle = null;
     }
     const previousBackendId = engine.backendId;
+    const previousBackendProfileId = engine.backendProfileId;
+    const previousProfileId = engine.profileId;
     const recreateAttempt = autoRecreateMachine.times.length;
     const recreateReason: AttachVitrumAutoRecreateReason = lossError.kind === 'context-lost'
       ? 'context-lost'
@@ -693,6 +808,10 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
         recoverable: true,
       });
       // Best-effort; proceed without GI state.
+    }
+    if (disposed) {
+      autoRecreateMachine.recreating = false;
+      return;
     }
 
     // A WebGL context is unusable until the platform restores it. Rebuilding
@@ -755,6 +874,13 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
         recoverable: true,
       });
     }
+    // Snapshot warnings/errors are host callbacks and may synchronously dispose
+    // the stable handle. Disposal is terminal: do not invoke a recreate factory
+    // after the host has explicitly ended this lifecycle.
+    if (disposed) {
+      autoRecreateMachine.recreating = false;
+      return;
+    }
 
     // 3. Dispose the broken engine.
     unsubFrame?.();
@@ -766,6 +892,7 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
     try { engine.dispose(); } catch { /* best-effort cleanup before recreate — ignore */ }
 
     // 4. Recreate.
+    let recreatedCandidate: EngineWithBackendId | undefined;
     try {
       const recreated = opts.recreateEngine != null
         ? await opts.recreateEngine({
@@ -775,6 +902,7 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
             attempt: recreateAttempt,
           })
         : await buildEngineFromOpts(opts, currentScene);
+      recreatedCandidate = recreated;
       // V1-2 — a dispose() that arrived while we were awaiting the (async)
       // recreate would otherwise be lost: `disposed` was only re-checked at
       // step 7 (post-install), so the freshly-minted engine got installed +
@@ -786,12 +914,64 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
         autoRecreateMachine.recreating = false;
         return;
       }
+      trackEngineScene(recreated);
+      attachSceneController(recreated);
+      if (disposed) {
+        try { recreated.dispose(); } catch { /* best-effort cleanup of late engine — ignore */ }
+        recreatedCandidate = undefined;
+        autoRecreateMachine.recreating = false;
+        return;
+      }
       engine = recreated;
-      trackEngineScene(engine);
-      attachSceneController(engine);
+      recreatedCandidate = undefined;
       lastSceneControllerFrameMs = null;
       webgpuSwapChain = detectWebGPUSwapChain(opts.canvas);
+
+      if (
+        engine.backendId !== previousBackendId ||
+        engine.backendProfileId !== previousBackendProfileId ||
+        engine.profileId !== previousProfileId
+      ) {
+        const event: AttachVitrumBackendChangedEvent = {
+          previousBackendId,
+          backendId: engine.backendId,
+          previousBackendProfileId,
+          backendProfileId: engine.backendProfileId,
+          previousProfileId,
+          profileId: engine.profileId,
+          reason: recreateReason,
+          attempt: recreateAttempt,
+        };
+        reportWarning({
+          code: 'attachVitrum.auto-recreate-backend-changed',
+          backend: engine.backendId,
+          phase: 'lifecycle',
+          method: 'attachVitrum',
+          message:
+            `[attachVitrum] auto-recreate changed backend/profile from ` +
+            `${previousBackendId}/${String(previousBackendProfileId)} to ` +
+            `${engine.backendId}/${String(engine.backendProfileId)}.`,
+          details: { ...event },
+        });
+        // Warning delivery is a host callback boundary. If the host disposes
+        // the stable handle there, disposal is terminal and no later lifecycle
+        // callback may run against the now-disposed replacement engine.
+        if (disposed) {
+          autoRecreateMachine.recreating = false;
+          return;
+        }
+        try {
+          opts.onBackendChanged?.(event);
+        } catch {
+          // Host lifecycle callbacks must not break a successful recovery.
+        }
+      }
+      if (disposed) {
+        autoRecreateMachine.recreating = false;
+        return;
+      }
     } catch (createErr) {
+      try { recreatedCandidate?.dispose(); } catch { /* best-effort cleanup — ignore */ }
       reportError(createErr, {
         phase: 'attach:auto-recreate',
         recoverable: false,
@@ -802,7 +982,31 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
     }
 
     // 5. Re-subscribe telemetry on the new engine.
-    subscribeToEngine();
+    try {
+      subscribeToEngine();
+    } catch (subscriptionError) {
+      reportError(subscriptionError, {
+        phase: 'attach:auto-recreate',
+        backend: engine.backendId,
+        recoverable: false,
+      });
+      console.error(
+        '[attachVitrum] auto-recreate: telemetry subscription failed:',
+        subscriptionError,
+      );
+      autoRecreateMachine.pendingFatalError = null;
+      autoRecreateMachine.recreating = false;
+      // subscribeToEngine rolls back partial subscription handles in its
+      // finally block. End the stable lifecycle as well so the installed
+      // replacement engine, DOM hooks, presenter, and RAF ownership cannot be
+      // stranded in a stopped-but-live state.
+      disposeLifecycle();
+      return;
+    }
+    if (disposed) {
+      autoRecreateMachine.recreating = false;
+      return;
+    }
 
     // 6. Restore GI state if available.
     if (savedGI != null) {
@@ -823,6 +1027,12 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
 
     // 7. Resume the RAF loop (unless the handle was disposed while we were recreating).
     autoRecreateMachine.recreating = false;
+    const pendingFatalError = autoRecreateMachine.pendingFatalError;
+    autoRecreateMachine.pendingFatalError = null;
+    if (!disposed && pendingFatalError != null) {
+      handleFatalEngineError(pendingFatalError);
+      return;
+    }
     if (!disposed) {
       stopped = false;
       rafHandle = requestAnimationFrame(tick);
@@ -834,12 +1044,11 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
       cancelPendingWait: () => {
         autoRecreateMachine.cancelContextRestorationWait?.();
         autoRecreateMachine.cancelContextRestorationWait = null;
+        autoRecreateMachine.pendingFatalError = null;
       },
     };
   };
-  const autoRecreateController = createAutoRecreateController();
-
-  subscribeToEngine();
+  autoRecreateController = createAutoRecreateController();
 
   // ── Offscreen-backend presentation ───────────────────────────────────────
   // V1-1 / R2 — offscreen-texture backends (pt-webgpu, and the progressive
@@ -855,9 +1064,6 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
   // source's device: an auto-recreate that mints a new device rebuilds it. Its
   // context is the canvas's `webgpu` context (the same instance the shared-device
   // progressive facade configured), reused across frames.
-  let presenter: OffscreenPresenter | undefined;
-  let presenterDevice: GPUDevice | undefined;
-  let presenterContext: GPUCanvasContext | undefined;
   const presentOffscreenFrame = (output: FrameOutput): void => {
     if (typeof engine.getPresentationSource !== 'function') return;
     if (output.kind !== 'rendered') return;
@@ -893,8 +1099,6 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
   let frameIndex = 0;
   let prevView: Mat4 | undefined;
   let prevProj: Mat4 | undefined;
-  let rafHandle: number | null = null;
-  let stopped = false;
   // H31-d — consecutive-throw counter. After RAF_SELF_STOP_THRESHOLD consecutive
   // renderFrame throws the loop stops itself and reports a non-recoverable error.
   // The counter resets on any successful renderFrame call.
@@ -971,32 +1175,27 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
     frameIndex++;
   };
 
-  rafHandle = requestAnimationFrame(tick);
+  // Subscribe only after every callback target (including the RAF tick and
+  // recreate controller) is initialized. A synchronous custom-engine
+  // subscription callback can therefore never observe a temporal-dead-zone.
+  subscribeToEngine();
+  // A synchronous fatal callback may have started recovery while subscribing.
+  // In that case recovery owns the next RAF; scheduling here as well would let
+  // two independent RAF chains run once recovery clears `stopped`.
+  if (!stopped && !disposed) {
+    rafHandle = requestAnimationFrame(tick);
+  }
+  } catch (error) {
+    disposeLifecycle();
+    throw error;
+  }
 
-  let disposed = false;
   return {
     get engine() { return engine; },
     get backendId() { return engine.backendId; },
     get backendProfileId() { return engine.backendProfileId; },
     get profileId() { return engine.profileId; },
-    dispose: () => {
-      if (disposed) return;
-      disposed = true;
-      stopped = true;
-      if (rafHandle != null) cancelAnimationFrame(rafHandle);
-      if (visibilityHandler && typeof document !== 'undefined') {
-        document.removeEventListener('visibilitychange', visibilityHandler);
-      }
-      try { resizeObserver?.disconnect(); } catch { /* best-effort cleanup — ignore */ }
-      try { unsubFrame?.(); } catch { /* best-effort cleanup — ignore */ }
-      try { unsubProgress?.(); } catch { /* best-effort cleanup — ignore */ }
-      try { unsubEngineError?.(); } catch { /* best-effort cleanup — ignore */ }
-      try { presenter?.dispose(); } catch { /* best-effort cleanup — ignore */ }
-      presenter = undefined;
-      presenterDevice = undefined;
-      autoRecreateController.cancelPendingWait();
-      try { engine.dispose(); } catch { /* best-effort cleanup — ignore */ }
-    },
+    dispose: disposeLifecycle,
     captureFrame: (captureOpts?: CaptureFrameOptions) => {
       if (typeof engine.captureFrame !== 'function') return Promise.resolve(null);
       return engine.captureFrame(captureOpts);

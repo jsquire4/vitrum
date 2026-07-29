@@ -35,40 +35,53 @@ export const bsdf_functions = /* glsl */`
 		return min( - log( u ) / sigmaT, maxDistance );
 	}
 
-	float hg_phase( float cosTheta, float g ) {
-		float gg = clamp( g, -0.9999, 0.9999 );
-		float g2 = gg * gg;
-		float denom = 1.0 + g2 - 2.0 * gg * clamp( cosTheta, -1.0, 1.0 );
-		return ( 1.0 - g2 ) / ( 4.0 * PI * denom * sqrt( denom ) );
-	}
-
-        vec3 sampleHG_glsl( float u1, float u2, float g, vec3 forward ) {
-                float gg = clamp( g, -0.9999, 0.9999 );
-                float cosTheta;
-                float a = 1.0 - 2.0 * u2;
-                if ( gg == 0.0 ) {
-                        cosTheta = a;
-                } else if ( abs( gg ) < 1e-3 ) {
-                        // Stable expansion of the exact inversion through g².
-                        // Unlike the old isotropic cutoff, every nonzero
-                        // authored asymmetry still changes the sample.
-                        float a2 = a * a;
-                        cosTheta = a + 1.5 * gg * ( 1.0 - a2 )
-                                + 2.0 * gg * gg * ( a * a2 - a );
-                } else {
-                        // Using 1-u preserves the exact-zero branch's sample
-                        // orientation while leaving the HG distribution
-                        // unchanged because the variate remains uniform.
-                        float xi = 1.0 - u2;
-                        float sqrtTerm = ( 1.0 - gg * gg ) / ( 1.0 - gg + 2.0 * gg * xi );
-                        cosTheta = ( 1.0 + gg * gg - sqrtTerm * sqrtTerm ) / ( 2.0 * gg );
+		float hg_phase( float cosTheta, float g ) {
+			float gg = clamp( g, -0.999999, 0.999999 );
+			float a = abs( gg );
+			float clampedCos = clamp( cosTheta, -1.0, 1.0 );
+			float alignedCos = gg >= 0.0 ? clampedCos : - clampedCos;
+			float oneMinusA = 1.0 - a;
+			float denom =
+				oneMinusA * oneMinusA +
+				2.0 * a * ( 1.0 - alignedCos );
+			return
+				( oneMinusA * ( 1.0 + a ) ) /
+				( 4.0 * PI * denom * sqrt( denom ) );
 		}
-		cosTheta = clamp( cosTheta, -1.0, 1.0 );
-		float sinTheta = sqrt( max( 0.0, 1.0 - cosTheta * cosTheta ) );
-		float phi = 2.0 * PI * u1;
-		vec3 localDir = vec3( sinTheta * cos( phi ), sinTheta * sin( phi ), cosTheta );
-		return normalize( getBasisFromNormal( normalize( forward ) ) * localDir );
-	}
+
+		// Algebraically exact HG inverse shared by surface SSS and volume-particle
+		// sampling. Mirrors @vitrum/shared-samplers::sampleHG, including the
+		// cancellation-safe rational form around isotropy.
+		float sampleHgCosTheta( float u, float g ) {
+			float gg = clamp( g, -0.999999, 0.999999 );
+			float q = 1.0 - 2.0 * u;
+			float cosTheta;
+			if ( abs( gg ) < 0.125 ) {
+				float d = 1.0 + gg * q;
+				float numerator =
+					2.0 * q +
+					gg * ( q * q + 3.0 ) +
+					2.0 * gg * gg * q +
+					gg * gg * gg * ( q * q - 1.0 );
+				cosTheta = numerator / ( 2.0 * d * d );
+			} else {
+				float ratio =
+					( 1.0 - gg * gg ) /
+					( 1.0 + gg * q );
+				cosTheta =
+					( 1.0 + gg * gg - ratio * ratio ) /
+					( 2.0 * gg );
+			}
+			return clamp( cosTheta, -1.0, 1.0 );
+		}
+
+		vec3 sampleHG_glsl( float u1, float u2, float g, vec3 forward ) {
+			float cosTheta = sampleHgCosTheta( u2, g );
+			float sinTheta = sqrt( max( 0.0, 1.0 - cosTheta * cosTheta ) );
+			float phi = 2.0 * PI * u1;
+			vec3 localDir = vec3( sinTheta * cos( phi ), sinTheta * sin( phi ), cosTheta );
+			return normalize( getBasisFromNormal( normalize( forward ) ) * localDir );
+		}
 
 	// diffuse
 	float diffuseEval( vec3 wo, vec3 wi, vec3 wh, const in SurfaceRecord surf, inout vec3 color ) {
@@ -218,33 +231,23 @@ export const bsdf_functions = /* glsl */`
 
 	}
 
-	// ── Sprint 12: Cauchy IOR at arbitrary wavelength ────────────────────────────
-	//
-	// cauchyIORatLambda: evaluate IOR at a given wavelength using the three-term Cauchy formula.
-	// GLSL mirror of @vitrum/shared-samplers/src/cauchyIor.ts::cauchyIOR.
-	//
-	// Parameters: lambdaNm in nm; A, B, C in µm units (Sprint 12 coefficient form).
-	//   n(λ) = A + B/λ² + C/λ⁴    (λ in µm)
-	//
-	// This function is the Sprint 12 replacement for Sprint 8's per-channel Cauchy approach.
-	// It is called at the hero wavelength sampled from sampleHeroWavelengthMIS in the main loop.
-	//
-	// New uniforms: iorCauchyA, iorCauchyB, iorCauchyC (see PhysicalPathTracingMaterial.js).
-	// Legacy Sprint 8 scalar dispersion uniforms were removed; per-material
-	// dispersion now flows through surf.dispersionStrength.
-	//
-	float cauchyIORatLambda( float lambdaNm, float A, float B, float C ) {
-		float lambdaUm = lambdaNm * 0.001;  // nm → µm
-		float lam2 = lambdaUm * lambdaUm;
-		float lam4 = lam2 * lam2;
-		// Exact-zero fast path: positive finite Cauchy support must not disappear.
-		if ( C == 0.0 ) return A + B / lam2;
-		return A + B / lam2 + C / lam4;
+	// The core contract defines material.ior at the Fraunhofer d line and
+	// dispersionAbbeNumber through the two-term Cauchy approximation. The
+	// material payload stores the derived B coefficient in nm^2, so evaluate it
+	// directly in nm. This keeps n(d) exactly equal to the authored base IOR.
+	const float FRAUNHOFER_D_NM = 589.3;
+
+	float cauchyIORFromDLine( float lambdaNm, float iorAtD, float bNm2 ) {
+		float lambda2 = lambdaNm * lambdaNm;
+		if ( ! ( lambda2 > 0.0 ) || isnan( lambda2 ) || isinf( lambda2 ) ) return iorAtD;
+		float dLine2 = FRAUNHOFER_D_NM * FRAUNHOFER_D_NM;
+		float result = iorAtD + bNm2 * ( 1.0 / lambda2 - 1.0 / dLine2 );
+		return isnan( result ) || isinf( result ) ? iorAtD : max( 1.0, result );
 	}
 
 	bool cauchyDispersionEnabled( const in SurfaceRecord surf ) {
 
-		return surf.dispersionStrength > 0.0 && ( abs( iorCauchyB ) > 0.0 || abs( iorCauchyC ) > 0.0 );
+		return uSpectralRendering != 0 && surf.dispersionStrength > 0.0;
 
 	}
 
@@ -256,13 +259,7 @@ export const bsdf_functions = /* glsl */`
 
 		}
 
-		float iorAtHero = cauchyIORatLambda( heroWavelength, iorCauchyA, iorCauchyB, iorCauchyC );
-		float iorDelta = iorAtHero - iorCauchyA;
-		float dispersionBasis = max( abs( iorCauchyB ), abs( iorCauchyC ) );
-		if ( ! ( dispersionBasis > 0.0 ) || isnan( dispersionBasis ) || isinf( dispersionBasis ) ) return surf.ior;
-		float dispersionScale = surf.dispersionStrength / dispersionBasis;
-		dispersionScale = clamp( dispersionScale, 0.0, 4.0 );
-		return max( 1.0, surf.ior + iorDelta * dispersionScale );
+		return cauchyIORFromDLine( heroWavelength, surf.ior, surf.dispersionStrength );
 
 	}
 
@@ -294,15 +291,19 @@ export const bsdf_functions = /* glsl */`
 		}
 		if ( surf.thinFilmEnabled > 0.5 && surf.thinFilmLayerCount > 0.5 ) {
 			float viewCos = surf.thinFilmAngleDependent ? abs( wo.z ) : 1.0;
-			vec2 thinFilmRt = thinFilmTMM(
-				surf.materialIndex,
-				int( surf.thinFilmLayerCount + 0.5 ),
-				heroWavelength,
+				ThinFilmRgb thinFilmRt = thinFilmTMMRgb(
+					surf.materialIndex,
+					int( surf.thinFilmLayerCount + 0.5 ),
+					heroWavelength,
 				max( surf.ior, 1.0 ),
-				surf.thinFilmIncidentIor,
-				viewCos
-			);
-			F = clamp( F + ( vec3( 1.0 ) - F ) * thinFilmRt.x, vec3( 0.0 ), vec3( 1.0 ) );
+					surf.thinFilmIncidentIor,
+					viewCos
+				);
+				F = clamp(
+					F + ( vec3( 1.0 ) - F ) * thinFilmRt.reflectance,
+					vec3( 0.0 ),
+					vec3( 1.0 )
+				);
 		}
 
 		// PDF
@@ -377,15 +378,15 @@ export const bsdf_functions = /* glsl */`
 		color = surf.transmission * surf.color * btdfCos;
 		if ( surf.thinFilmEnabled > 0.5 && surf.thinFilmLayerCount > 0.5 ) {
 			float viewCos = surf.thinFilmAngleDependent ? abs( wo.z ) : 1.0;
-			vec2 thinFilmRt = thinFilmTMM(
-				surf.materialIndex,
-				int( surf.thinFilmLayerCount + 0.5 ),
-				heroWavelength,
+				ThinFilmRgb thinFilmRt = thinFilmTMMRgb(
+					surf.materialIndex,
+					int( surf.thinFilmLayerCount + 0.5 ),
+					heroWavelength,
 				max( surf.ior, 1.0 ),
-				surf.thinFilmIncidentIor,
-				viewCos
-			);
-			color *= thinFilmRt.y;
+					surf.thinFilmIncidentIor,
+					viewCos
+				);
+				color *= thinFilmRt.transmittance;
 		}
 
 		return pdfWi;
@@ -533,31 +534,11 @@ export const bsdf_functions = /* glsl */`
                         -1.0,
                         1.0
                 );
-                float g2 = g * g;
-                float denominator = pow( 1.0 + g2 - 2.0 * g * cosTheta, 1.5 );
-                return ( 1.0 - g2 ) / ( 4.0 * PI * denominator );
+                return hg_phase( cosTheta, g );
         }
 
         vec3 sampleMediumPhase( vec3 worldWo, float g, vec2 uv ) {
-                float cosTheta;
-                float a = 1.0 - 2.0 * uv.x;
-                if ( g == 0.0 ) {
-                        cosTheta = a;
-                } else if ( abs( g ) < 1e-3 ) {
-                        // Stable expansion of the exact inversion through g².
-                        // Every nonzero authored asymmetry remains observable;
-                        // there is no isotropic epsilon cutoff.
-                        float a2 = a * a;
-                        cosTheta = a + 1.5 * g * ( 1.0 - a2 )
-                                + 2.0 * g * g * ( a * a2 - a );
-                } else {
-                        // Complementing the uniform variate keeps the finite-g
-                        // inversion continuous with the exact-zero orientation.
-                        float xi = 1.0 - uv.x;
-                        float ratio = ( 1.0 - g * g ) / ( 1.0 - g + 2.0 * g * xi );
-                        cosTheta = ( 1.0 + g * g - ratio * ratio ) / ( 2.0 * g );
-                }
-                cosTheta = clamp( cosTheta, -1.0, 1.0 );
+                float cosTheta = sampleHgCosTheta( uv.x, g );
                 float sinTheta = sqrt( max( 1.0 - cosTheta * cosTheta, 0.0 ) );
                 float phi = 2.0 * PI * uv.y;
                 vec3 localDirection = vec3(
@@ -570,9 +551,7 @@ export const bsdf_functions = /* glsl */`
                 );
         }
 
-	// Sprint 12: dielectric transmission with hero-wavelength Cauchy IOR.
-	// Uses global Cauchy coefficients (iorCauchyA/B/C) with per-material base IOR
-	// preserved by applying only the spectral delta from iorCauchyA.
+	// Sprint 12: dielectric transmission with per-material, hero-wavelength Cauchy IOR.
         vec3 dispersionTransmissionDirection( vec3 wo, const in SurfaceRecord surf, float heroWavelength ) {
 
 		float eta = transmissionEtaAtHero( surf, heroWavelength );
@@ -1040,7 +1019,7 @@ export const bsdf_functions = /* glsl */`
                                                 surf.thinFilmAngleDependent
                                                         ? abs( wo.z )
                                                         : 1.0;
-                                        vec2 thinFilmRt = thinFilmTMM(
+                                        ThinFilmRgb thinFilmRt = thinFilmTMMRgb(
                                                 surf.materialIndex,
                                                 int( surf.thinFilmLayerCount + 0.5 ),
                                                 heroWavelength,
@@ -1049,7 +1028,7 @@ export const bsdf_functions = /* glsl */`
                                                 viewCos
                                         );
                                         F = clamp(
-                                                F + ( vec3( 1.0 ) - F ) * thinFilmRt.x,
+                                                F + ( vec3( 1.0 ) - F ) * thinFilmRt.reflectance,
                                                 vec3( 0.0 ),
                                                 vec3( 1.0 )
                                         );
@@ -1084,7 +1063,7 @@ export const bsdf_functions = /* glsl */`
                                                 surf.thinFilmAngleDependent
                                                         ? abs( wo.z )
                                                         : 1.0;
-                                        vec2 thinFilmRt = thinFilmTMM(
+                                        ThinFilmRgb thinFilmRt = thinFilmTMMRgb(
                                                 surf.materialIndex,
                                                 int( surf.thinFilmLayerCount + 0.5 ),
                                                 heroWavelength,
@@ -1092,7 +1071,7 @@ export const bsdf_functions = /* glsl */`
                                                 surf.thinFilmIncidentIor,
                                                 viewCos
                                         );
-                                        transmissionColor *= thinFilmRt.y;
+                                        transmissionColor *= thinFilmRt.transmittance;
 
                                 }
                                 baseDelta += transmissionColor;
@@ -1325,7 +1304,12 @@ export const bsdf_functions = /* glsl */`
 		// Medium single-scatter albedo is projected from this material's authored
 		// RGB σ_s/σ_t to the hero wavelength. Beer-Lambert attenuation remains an
 		// explicit scalar so units (reflectance × transmittance) are preserved.
-		sssRec.throughput = mediumAlbedoThroughput( mediumAlbedo, heroWavelength ) * beerLambert;
+			// The direction is sampled from HG, so the physical phase value belongs
+			// in f before the render loop divides by the matching directional pdf.
+			// Omitting it multiplies isotropic single scattering by 4π.
+			sssRec.throughput =
+				mediumAlbedoThroughput( mediumAlbedo, heroWavelength ) *
+				( beerLambert * sssRec.pdf );
 		return sssRec;
 
 	}

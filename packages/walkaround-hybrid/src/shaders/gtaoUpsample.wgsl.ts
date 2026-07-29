@@ -49,10 +49,12 @@ fn similarityWeight(
 ) -> f32 {
   // Reject samples too far in depth or too different in normal — they
   // belong to a different surface and would bleed AO across geometric edges.
-  // depthW = exp(-Δdepth / (2 σ²)), with σ = up_gtao.bilateralDepthSigma.
+  // Gaussian depth edge stop: depthW = exp(-Δdepth² / (2 σ²)), with
+  // σ = up_gtao.bilateralDepthSigma. Squaring both quantities makes the
+  // exponent dimensionless and keeps the filter stable under scene rescaling.
   let depthDelta = abs(centerDepth - sampleDepth);
   let sigma = max(1e-6, up_gtao.bilateralDepthSigma);
-  let depthW = exp(-depthDelta / (2.0 * sigma * sigma));
+  let depthW = exp(-(depthDelta * depthDelta) / (2.0 * sigma * sigma));
   let nDot = max(0.0, dot(centerNormal, sampleNormal));
   let normW = pow(nDot, 16.0);
   return depthW * normW;

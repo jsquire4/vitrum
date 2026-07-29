@@ -53,6 +53,7 @@ import {
   forEachEmissiveMapTexelSubTriangle,
   isTextureRefCpuReadable,
   materialSpecEmissiveLe,
+  materialSpecSkipEmitter,
   type EmissiveMapTexelRadianceResolver,
   type BarycentricWeights,
   type WorldSpaceMergeResult,
@@ -274,6 +275,7 @@ export function assertSceneEmissiveMapsCpuReadable(scene: Scene): void {
   }
   for (const primitive of scene.primitives) {
     if (!isMeshLikePrimitive(primitive) || explicitMeshIds.has(String(primitive.id))) continue;
+    if (materialSpecSkipEmitter(primitive.material)) continue;
     if (
       storedMaterialEmissiveScalar(
         primitive.material.emissive,
@@ -327,6 +329,7 @@ function collectMeshAreaSources(
   for (const primitive of scene.primitives) {
     if (!isMeshLikePrimitive(primitive)) continue;
     if (emitterByMesh.has(primitive.id)) continue;
+    if (materialSpecSkipEmitter(primitive.material)) continue;
     const radiance = emissiveRadianceForMaterial(primitive.material, String(primitive.id));
     if (!(luminanceRgb(radiance) > 0)) continue;
     assertRadianceSurvivesF32(radiance, `implicit emitter primitive ${String(primitive.id)}`);
@@ -354,6 +357,7 @@ export function hasMeshAreaLightForPrimitive(scene: Scene, primitiveId: string):
   }
   const primitive = scene.primitives.find((p) => String(p.id) === primitiveId);
   if (primitive == null || !isMeshLikePrimitive(primitive)) return false;
+  if (materialSpecSkipEmitter(primitive.material)) return false;
   if (
     storedMaterialEmissiveScalar(
       primitive.material.emissive,

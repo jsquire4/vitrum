@@ -27,7 +27,7 @@ import { THREE_COMMON_SHIM } from './common/threeCommonShim.js';
 // D11-3 (T3-D): the uniform manifest + declaration builder + exhaustiveness gate
 // live in uniformManifest.ts; the RENDER_MAIN_* section constants live in
 // renderMain.glsl.ts. This module is the assembly root that composes them.
-import { buildUniformDecls, spectralBdptUniformDecls } from './uniformManifest.js';
+import { bdptUniformDecls, buildUniformDecls } from './uniformManifest.js';
 import { RENDER_MAIN } from './renderMain.glsl.js';
 import { NEE_RESOLVE_MAIN } from './neeResolveMain.glsl.js';
 import { BDPT_INFINITE_MIS_GLSL } from './render/bdpt_infinite_mis.glsl.js';
@@ -422,7 +422,7 @@ function composePathGlsl(features: TraceFeatures, candidatePass: boolean): strin
 					${SAMPLING.equirect_functions}
 					${SAMPLING.light_sampling_functions}
 
-					${spectralBdptUniformDecls()}
+					${bdptUniformDecls()}
 
 					${usesFogTransport(features) ? PTBVH.inside_fog_volume_function : ''}
 					${BSDF.ggx_functions}
@@ -513,7 +513,7 @@ export function composeNeeResolveGlsl(
 					${SAMPLING.shape_sampling_functions}
 					${SAMPLING.equirect_functions}
 					${SAMPLING.light_sampling_functions}
-					${spectralBdptUniformDecls()}
+					${bdptUniformDecls()}
 
 					${usesFogTransport(features) ? PTBVH.inside_fog_volume_function : ''}
 					${BSDF.ggx_functions}

@@ -283,8 +283,8 @@ export async function compilePipelines(
   });
   // risLayout: computeLayout + a RIS-ONLY 4th group (light-tree storage buffer)
   // for spatially-aware DI light selection. Kept separate from computeLayout so
-  // the extra storage buffer lands on the RIS pipeline only (16 storage buffers,
-  // at the full-tier floor) — temporal/spatial/shade are unaffected. RIS uses 4
+  // the extra storage buffer lands on the RIS pipeline only (at the derived
+  // full-tier floor) — temporal/spatial/shade are unaffected. RIS uses 4
   // bind groups (frame/scene/ubo/lightTree), within the Lovelace maxBindGroups
   // cap of 4.
   const risLayout = device.createPipelineLayout({

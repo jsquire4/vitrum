@@ -1294,7 +1294,7 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
         onWarning: (w) => structured.push(w),
       });
       e.setScene(scene);
-      expect(texStorage3D.mock.calls.some((call) => call[3] === 1 && call[5] === 2)).toBe(true);
+      expect(texStorage3D.mock.calls.some((call) => call[3] === 1 && call[5] === 1)).toBe(true);
       const initialTextureUploads = createTexture.mock.calls.length;
       const initialSubImage2D = texSubImage2D.mock.calls.length;
       const initialSubImage3D = texSubImage3D.mock.calls.length;
@@ -1458,7 +1458,7 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
         onWarning: (w) => structured.push(w),
       });
       e.setScene(scene);
-      expect(texStorage3D.mock.calls.some((call) => call[3] === 1 && call[5] === 2)).toBe(true);
+      expect(texStorage3D.mock.calls.some((call) => call[3] === 1 && call[5] === 1)).toBe(true);
       const initialTextureUploads = createTexture.mock.calls.length;
       const initialImage3D = texImage3D.mock.calls.length;
       const initialStorage3D = texStorage3D.mock.calls.length;
@@ -1494,7 +1494,7 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
     }
   });
 
-  it('transactionally rebuilds when material atlas capacity is exhausted', async () => {
+  it('transactionally rebuilds when material atlas membership expands', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const structured: EngineWarning[] = [];
     const gl = createMockGl({ maxArrayLayers: 5 });
@@ -1537,7 +1537,7 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
         onWarning: (w) => structured.push(w),
       });
       e.setScene(scene);
-      expect(texStorage3D.mock.calls.some((call) => call[3] === 1 && call[5] === 2)).toBe(true);
+      expect(texStorage3D.mock.calls.some((call) => call[3] === 1 && call[5] === 1)).toBe(true);
       const initialTextureUploads = createTexture.mock.calls.length;
       const initialImage3D = texImage3D.mock.calls.length;
       const initialStorage3D = texStorage3D.mock.calls.length;
@@ -1619,7 +1619,7 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
         onWarning: (w) => structured.push(w),
       });
       e.setScene(scene);
-      expect(texStorage3D.mock.calls.some((call) => call[3] === 1 && call[5] === 4)).toBe(true);
+      expect(texStorage3D.mock.calls.some((call) => call[3] === 1 && call[5] === 3)).toBe(true);
       const initialTextureUploads = createTexture.mock.calls.length;
       const initialImage3D = texImage3D.mock.calls.length;
       const initialStorage3D = texStorage3D.mock.calls.length;
@@ -2643,6 +2643,48 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
     }
   });
 
+  it('updatePrimitive validates only the patched material and never reads an accepted sibling', async () => {
+    const e = await createPTEngine_WebGL2(opts());
+    e.setScene({
+      primitives: [
+        {
+          ...tri('target', 0),
+          material: {
+            ...GREY,
+            baseColor: [0.4, 0.5, 0.6],
+          },
+        },
+        tri('untouched', 2),
+      ],
+      emitters: [],
+      environment: { kind: 'none' },
+    });
+    const untouched = e.getScene?.()?.primitives[1];
+    expect(untouched?.id).toBe('untouched');
+    const acceptedMaterial = untouched!.material;
+    Object.defineProperty(untouched!, 'material', {
+      configurable: true,
+      get: () => {
+        throw new Error('untouched sibling material was traversed');
+      },
+    });
+
+    try {
+      expect(() =>
+        e.updatePrimitive?.('target', {
+          material: { roughness: 0.2 },
+        } as never),
+      ).not.toThrow();
+      expect(e._debugGeoPack?.materials[0]?.roughness).toBe(0.2);
+    } finally {
+      Object.defineProperty(untouched!, 'material', {
+        configurable: true,
+        value: acceptedMaterial,
+      });
+      e.dispose();
+    }
+  });
+
   it('updatePrimitive material fast path repacks implicit emissive mesh lights', async () => {
     const e = await createPTEngine_WebGL2(opts());
     e.setScene({ ...triScene(), primitives: [tri('panel', 0)] });
@@ -2680,6 +2722,29 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
     expect(e._debugGeoPack?.positions).toBe(afterActivationPositions);
     expect(e._debugSceneTex?.meshLightCount).toBe(0);
     expect(e._debugSceneTex?.totalEmissiveArea).toBe(0);
+  });
+
+  it('accepts skipEmitter through setScene and keeps emission camera-visible without implicit NEE', async () => {
+    const e = await createPTEngine_WebGL2(opts());
+    e.setScene({
+      primitives: [{
+        ...tri('panel', 0),
+        material: {
+          ...GREY,
+          emissive: [1, 0.5, 0.25],
+          emissiveIntensity: 3,
+          extensions: { skipEmitter: true },
+        },
+      }],
+      emitters: [],
+      environment: { kind: 'none' },
+    });
+
+    expect(e._debugSceneTex?.meshLightCount).toBe(0);
+    expect(e._debugSceneTex?.totalEmissivePower).toBe(0);
+    expect(e._debugGeoPack?.materials[0]?.emissive).toEqual([1, 0.5, 0.25]);
+    expect(e._debugGeoPack?.materials[0]?.emissiveIntensity).toBe(3);
+    e.dispose();
   });
 
   // Contract honesty: unsupported denoisers fail construction instead of

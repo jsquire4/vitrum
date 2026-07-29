@@ -359,7 +359,6 @@ describe('environmentPacking — no environment', () => {
     expect(p.hdriWidth).toBe(0);
     expect(p.hdriHeight).toBe(0);
     expect(p.hdriIntensity).toBe(0);
-    expect(p.sunStrength).toBe(0);
     expect(p.lightTreePower).toBe(0);
     expect(p.hdriTexels.length).toBe(0);
     expect(p.hdriCdf.length).toBe(0);
@@ -523,10 +522,12 @@ describe('environmentPacking — Preetham procedural sky bake', () => {
     expect(p.hdriIntensity).toBeGreaterThan(0);
   });
 
-  // ----- 7. sunStrength = 0 (sky-NEE branch does NOT double-fire) -----
-  it('sunStrength is 0 so the procedural-sky NEE gate does not double-fire', () => {
+  // ----- 7. Baked-map-only environment representation -----
+  it('does not retain an obsolete procedural-sun side channel', () => {
     const p = environmentParams(makeProceduralSkyScene({ intensity: 3 }));
-    expect(p.sunStrength).toBe(0);
+    expect(p).not.toHaveProperty('sunDirection');
+    expect(p).not.toHaveProperty('sunStrength');
+    expect(p.hasHdri).toBe(true);
   });
 
   it('carries the baked sky integral and scales it exactly once with intensity', () => {

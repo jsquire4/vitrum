@@ -57,21 +57,6 @@ export interface SceneTexturesBuild {
   readonly supported: Scene;
 }
 
-export interface SceneGeometryTexturesBuild {
-  readonly bvh: ReturnType<typeof uploadBvhTextures>;
-  readonly attributesArray: WebGLTexture;
-  readonly meshLights: WebGLTexture | null;
-  readonly meshLightCount: number;
-  readonly totalEmissiveArea: number;
-  readonly totalEmissivePower: number;
-  readonly triangleCount: number;
-  readonly merged: WorldSpaceMergeResult;
-  readonly vertexColorMaterialIds: ReadonlySet<number>;
-  readonly uvLayerByTexCoord: ReadonlyMap<number, number>;
-  readonly warnings: readonly string[];
-  readonly structuredWarnings: readonly EngineWarning[];
-}
-
 export interface SceneGeometryTextureDataBuild {
   readonly bvhData: BvhTextureData;
   readonly attrData: ReturnType<typeof packAttributesArray>;
@@ -162,52 +147,6 @@ function assertAttributeLayerBudget(
       `but this device exposes MAX_ARRAY_TEXTURE_LAYERS=${limit}`,
     );
   }
-}
-
-export function buildSceneGeometryTextures(
-  gl: WebGL2RenderingContext,
-  scene: Scene,
-  opts?: {
-    readonly warningPhase?: string;
-    readonly warningMethod?: string;
-  },
-): SceneGeometryTexturesBuild {
-  const data = buildSceneGeometryTextureData(scene, opts);
-  assertAttributeLayerBudget(gl, data.attrData.layers);
-  const bvh = uploadBvhTextures(gl, data.bvhData);
-  let meshLights: WebGLTexture | null = null;
-  let attributesArray: WebGLTexture;
-  try {
-    meshLights =
-      data.meshLightsData.data != null
-        ? uploadRgba32f(gl, data.meshLightsData.data, data.meshLightsData.dim, 'mesh-area lights')
-        : null;
-    attributesArray = uploadRgba32fArray(
-      gl,
-      data.attrData.data,
-      data.attrData.dim,
-      data.attrData.layers,
-      'vertex attributes',
-    );
-  } catch (error) {
-    bvh.destroy();
-    if (meshLights != null) gl.deleteTexture(meshLights);
-    throw error;
-  }
-  return {
-    bvh,
-    attributesArray,
-    meshLights,
-    meshLightCount: data.meshLightsData.triLightCount,
-    totalEmissiveArea: data.meshLightsData.totalEmissiveArea,
-    totalEmissivePower: data.meshLightsData.totalEmissivePower,
-    triangleCount: data.triangleCount,
-    merged: data.merged,
-    vertexColorMaterialIds: data.vertexColorMaterialIds,
-    uvLayerByTexCoord: data.uvLayerByTexCoord,
-    warnings: data.warnings,
-    structuredWarnings: data.structuredWarnings,
-  };
 }
 
 export function buildSceneGeometryTextureData(
@@ -398,7 +337,7 @@ export function buildSceneTextures(
   //      and a handle→layer map (null when the scene has no usable textures).
   const maxAtlasLayers = gl.getParameter(gl.MAX_ARRAY_TEXTURE_LAYERS) as number;
   const materialAtlases = packMaterialTextureAtlases(merged.materials, {
-    ...warningOptions,
+    warningMethod: warningOptions.warningMethod,
     maxArrayTextureLayers: maxAtlasLayers,
   });
   const atlas = materialAtlases.ldr;

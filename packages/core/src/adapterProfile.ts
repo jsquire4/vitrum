@@ -34,7 +34,7 @@ export type PtWebgpuTierRec = 'full' | 'lite' | 'none';
 export interface AdapterProfile {
   /** True when `navigator.gpu` exposed an adapter. */
   readonly hasWebGPU: boolean;
-  /** Meets `HYBRID_WEBGPU_REQUIRED_LIMITS` (16 buf / 8 tex) — full hybrid path. */
+  /** Meets the current `HYBRID_WEBGPU_REQUIRED_LIMITS` — full hybrid path. */
   readonly hybridCapable: boolean;
   /** Meets the reduced `HYBRID_LITE_LIMITS` (Deliverable 3) but not full.
    *  When this is false the hybrid realtime engine is unavailable on the

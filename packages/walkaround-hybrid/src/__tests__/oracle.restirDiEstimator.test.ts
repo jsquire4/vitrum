@@ -288,7 +288,7 @@ function runRis(cfg: SceneCfg, rng: () => number, variant: Variant = 'shader'): 
   const totalPower = Math.max(
     cfg.emitters.reduce((s, e) => s + luminance(e.Le) * e.area, 0),
     1e-8,
-  ); // L188 (host totalEmPower = Σ lum·area)
+  ); // L188 (emitter CDF total = Σ lum·area)
   // M_LIGHT loop [L208-263], flat power CDF branch [L228-233]
   for (let i = 0; i < M_LIGHT; i++) {
     areaSupportM += 1;

@@ -178,7 +178,7 @@ describe('walkaround explicit pipeline device-limit derivation', () => {
       storageBuffers: 8,
       storageTextures: 7,
       sampledTextures: 16,
-      samplers: 3,
+      samplers: 2,
       uniformBuffers: 4,
       bindGroups: 4,
     });
@@ -186,7 +186,7 @@ describe('walkaround explicit pipeline device-limit derivation', () => {
       'ppg-update',
       'regir-build',
     ]));
-    expect(maxBindingsPerBindGroup).toBe(16);
+    expect(maxBindingsPerBindGroup).toBe(15);
     expect(HYBRID_WEBGPU_REQUIRED_LIMITS).toEqual({
       maxStorageBuffersPerShaderStage: peaks.storageBuffers,
       maxStorageTexturesPerShaderStage: peaks.storageTextures,

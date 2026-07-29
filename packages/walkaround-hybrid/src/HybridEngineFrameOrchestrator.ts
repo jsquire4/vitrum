@@ -12,7 +12,11 @@ import type {
   Scene,
 } from '@vitrum/core';
 import { asBackendTexture, resolveFrameCameraPosition } from '@vitrum/core';
-import { TONEMAP_MODE_INDEX } from '@vitrum/shared-samplers';
+import {
+  TONEMAP_MODE_INDEX,
+  applyTonemap,
+  linearToSrgb,
+} from '@vitrum/shared-samplers';
 import type { DDGI } from './ddgi/DDGI.js';
 import type { DDGILight } from './ddgi/types.js';
 import { packDDGIGridParams } from './ddgi/ddgiGridUbo.js';
@@ -85,22 +89,29 @@ export function refractiveTraceCausticGate(
  * empty-scene background. Returns a genuine `kind:'rendered'` FrameOutput so a
  * host observing renderFrame sees a presented frame, not a skip.
  *
- * `clearValue` is the linear-sRGB sky radiance the swap chain expects; the
- * composite path elsewhere writes linear values into the same (typically
- * `*-unorm`/`*-srgb`) swap format, so we match that convention by writing the
- * linear tint directly. The alpha is 1 to fully cover the target.
+ * The CPU applies the same exposure, tonemap, and optional sRGB OETF as the
+ * regular composite shader before issuing the clear. The alpha is one.
  */
 function presentSkyOnly(
   device: GPUDevice,
   swapView: GPUTextureView,
   skyTint: readonly [number, number, number],
   skyIrradiance: number,
+  quality: FrameInput['quality'],
 ): FrameOutput {
-  // Flat sky radiance = tint × irradiance, clamped non-negative. Values may
-  // exceed 1 (HDR sky); the swap-chain attachment clamps on write as usual.
-  const r = Math.max(0, skyTint[0] * skyIrradiance);
-  const g = Math.max(0, skyTint[1] * skyIrradiance);
-  const b = Math.max(0, skyTint[2] * skyIrradiance);
+  const hdr: [number, number, number] = [
+    Math.max(0, skyTint[0] * skyIrradiance),
+    Math.max(0, skyTint[1] * skyIrradiance),
+    Math.max(0, skyTint[2] * skyIrradiance),
+  ];
+  const tonemapped = applyTonemap(
+    hdr,
+    quality?.tonemap ?? 'aces',
+    quality?.exposure ?? 1,
+  );
+  const presented = quality?.outputColorSpace === 'linear'
+    ? tonemapped
+    : tonemapped.map(linearToSrgb) as [number, number, number];
   const encoder = device.createCommandEncoder({ label: 'hybrid-sky-only-present' });
   const pass = encoder.beginRenderPass({
     label: 'hybrid-sky-only-present',
@@ -108,7 +119,7 @@ function presentSkyOnly(
       view: swapView,
       loadOp: 'clear',
       storeOp: 'store',
-      clearValue: { r, g, b, a: 1 },
+      clearValue: { r: presented[0], g: presented[1], b: presented[2], a: 1 },
     }],
   });
   pass.end();
@@ -178,11 +189,6 @@ export interface HybridDenoiserFilterDeps {
    *  {@link Tunables} table) because it is a derived bitfield, not a
    *  host-overridable scalar tunable. */
   stainedGlassFlags: number;
-  /** NRC (Müller et al. 2021) cache flag (0 = off / verbatim DDGI suffix, 1 =
-   *  on). Splatted into pipeline.renderFrame as `nrcEnabled`. Same derived-gate
-   *  cluster rationale as `stainedGlassFlags`. The load-bearing gate is compile-time
-   *  (the risGiNrc variant); when ON the suffix cache-query + training are live. */
-  nrcEnabled: number;
 }
 
 /** Subsystem handles (pipeline, BVH, GI, skinning). */
@@ -249,7 +255,6 @@ export interface HybridEngineFrameTelemetry {
 interface HybridEngineFrameFlags {
   state: EngineState;
   debug: boolean;
-  ddgiOn: boolean;
   /** Construction-time structural cap for the per-frame quality.bounces
    *  override. Walkaround maps the resolved value onto DDGI's only meaningful
    *  bounce regimes: 1 = direct-only probes, >=2 = indirect feedback. */
@@ -538,7 +543,7 @@ function dispatchRcAndSetInputs(
 }
 
 function runDdgiAndRc(deps: HybridEngineFrameDeps, input: FrameInput): void {
-  const ddgiLayerOn = deps.flags.ddgiOn && deps.flags.isLayerEnabled('ddgi');
+  const ddgiLayerOn = deps.flags.isLayerEnabled('ddgi');
   const coreScene = deps.subsystems.lastScene;
 
   // Per-frame BVH ⇒ GI-subsystem cascade — same owner the post-update /
@@ -558,7 +563,7 @@ function runDdgiAndRc(deps: HybridEngineFrameDeps, input: FrameInput): void {
     const requestedBounces = input.quality?.bounces ?? deps.flags.maxBounces;
     const activeBounces = Math.min(
       deps.flags.maxBounces,
-      Math.max(1, requestedBounces),
+      Math.max(1, Math.min(2, requestedBounces)),
     );
     deps.subsystems.ddgi.setIndirectFeedback(activeBounces >= 2);
     deps.subsystems.ddgi.setSkyParams?.(deps.lighting.skyTint, deps.lighting.skyIrradiance);
@@ -611,7 +616,7 @@ function emitProgressTelemetry(
   const events: ProgressStats[] = [];
 
   // DDGI warm-up — only meaningful while the ddgi layer is active.
-  if (deps.flags.ddgiOn && deps.flags.isLayerEnabled('ddgi')) {
+  if (deps.flags.isLayerEnabled('ddgi')) {
     const warm = computeDdgiWarmupProgress({
       frame: deps.subsystems.ddgi.warmupFrame,
       stride: deps.subsystems.ddgi.warmupStride,
@@ -647,12 +652,13 @@ function emitFrameTelemetry(
   if (deps.telemetry.frameSubs.length > 0) {
     const gpu = pipeline.lastGpuTimings;
     const gpuTotal = gpu?.['total'];
+    const hasGpuTimings = gpu != null && Object.keys(gpu).length > 0;
     const memBreakdown = deps.telemetry.debugSurface.estimatedGpuMemoryBytes?.() ?? undefined;
     const denoiserState = deps.telemetry.getDenoiserState();
     const stats: FrameStats = {
       frameTimeMs: dt,
       ...(gpuTotal !== undefined ? { gpuTimeMs: gpuTotal } : {}),
-      ...(gpu ? { passTimings: gpu } : {}),
+      ...(hasGpuTimings ? { passTimings: gpu } : {}),
       spp: 1,
       ...(memBreakdown
         ? { gpuMemoryBytes: memBreakdown, estimatedGpuMemoryBytes: memBreakdown.total }
@@ -737,6 +743,7 @@ export function runHybridEngineFrame(
       skyView,
       deps.lighting.skyTint,
       deps.lighting.skyIrradiance,
+      input.quality,
     );
   }
   if (!pipeline) {
@@ -839,7 +846,6 @@ export function runHybridEngineFrame(
       swapChainFormat: swapFmt,
     },
     lighting: {
-      totalEmissivePower:  bvh.totalEmissivePower ?? 1.0,
       emitterCount:        bvh.emitters?.count ?? 0,
       primaryLightDir:     deps.lighting.primaryLightDir,
       primaryLightIntensity: deps.lighting.primaryLightIntensity,
@@ -899,9 +905,6 @@ export function runHybridEngineFrame(
     bvh: {
       bvhMode:      bvh.bvhMode === 'tlas' ? 1 : 0,
       tlasNodeCount: bvh.tlas?.nodeCount ?? 0,
-    },
-    nrc: {
-      nrcEnabled: deps.filter.nrcEnabled,
     },
     // 2026-06-10 — FrameQualitySettings.tonemap / .exposure / .outputColorSpace.
     // Defaults: 'aces' (mode 0), exposure 1.0, 'srgb' (colorSpace 0) — preserving

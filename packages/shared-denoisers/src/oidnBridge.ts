@@ -216,11 +216,11 @@ export async function denoiseFinal(
     };
 
     const acceptsNormal = declaredInputs === null || declaredInputs.has(normalKey);
-    if (normal !== undefined && !acceptsNormal) {
+    if (normal !== undefined && !acceptsNormal && tn.normal !== undefined) {
       throw new Error(
-        `[oidnBridge] normal guidance was supplied, but input '${normalKey}' is not ` +
-        `declared by the ONNX model. Configure tensorNames.normal for models using ` +
-        `a different name. Declared inputs: ${[...declaredInputs].join(', ')}`,
+        `[oidnBridge] normal guidance was supplied, but explicitly configured input ` +
+        `'${normalKey}' is not declared by the ONNX model. Declared inputs: ` +
+        `${[...declaredInputs].join(', ')}`,
       );
     }
     if (normal !== undefined && acceptsNormal) {
@@ -232,11 +232,11 @@ export async function denoiseFinal(
       ]);
     }
     const acceptsAlbedo = declaredInputs === null || declaredInputs.has(albedoKey);
-    if (albedo !== undefined && !acceptsAlbedo) {
+    if (albedo !== undefined && !acceptsAlbedo && tn.albedo !== undefined) {
       throw new Error(
-        `[oidnBridge] albedo guidance was supplied, but input '${albedoKey}' is not ` +
-        `declared by the ONNX model. Configure tensorNames.albedo for models using ` +
-        `a different name. Declared inputs: ${[...declaredInputs].join(', ')}`,
+        `[oidnBridge] albedo guidance was supplied, but explicitly configured input ` +
+        `'${albedoKey}' is not declared by the ONNX model. Declared inputs: ` +
+        `${[...declaredInputs].join(', ')}`,
       );
     }
     if (albedo !== undefined && acceptsAlbedo) {

@@ -88,6 +88,7 @@ export async function constructPathTracerWebGPU(
     const merged: PTEngineWebGPUOptions = {
       device,
       ...advancedWebGPU,
+      ...(opts.debug != null ? { debug: opts.debug } : {}),
       ...(opts.onWarning != null ? { onWarning: opts.onWarning } : {}),
       // A shared device is built with the limit UNION (≥ the full pt-webgpu
       // per-stage buffer/texture floor), so force the full trace tier here —

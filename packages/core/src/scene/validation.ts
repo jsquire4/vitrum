@@ -1297,6 +1297,79 @@ function validatePrimitive(primitive: ScenePrimitive, path: string): void {
   }
 }
 
+/**
+ * Validate one primitive produced by the incremental scene-patch path.
+ *
+ * @internal This is deliberately not re-exported from the package entrypoint.
+ * A complete externally-authored snapshot must still go through
+ * {@link validateScene}; patchScene uses this only after preserving the
+ * snapshot's already-validated identity and reference topology.
+ */
+export function validatePrimitiveForScenePatch(
+  primitive: ScenePrimitive,
+  path = 'scene.primitives[patched]',
+): void {
+  validatePrimitive(primitive, path);
+}
+
+type PrimitiveFastPatchField = 'material' | 'transform' | 'castShadow';
+
+/**
+ * Validate the bounded primitive fields that can be changed independently of
+ * geometry. The base primitive is a member of an already-validated immutable
+ * Scene snapshot, so this path deliberately does not re-read vertex, index,
+ * skin, morph, instance, or analytic-param payloads.
+ *
+ * Material texture-coordinate references remain a cross-field invariant. When
+ * a patched material contains textures, only the presence of the corresponding
+ * UV stream is consulted; the stream contents are not traversed again.
+ *
+ * @internal Used only by patchScene's field-aware incremental fast path.
+ */
+export function validatePrimitiveFastFieldsForScenePatch(
+  primitive: ScenePrimitive,
+  fields: readonly PrimitiveFastPatchField[],
+  path = 'scene.primitives[patched]',
+): void {
+  if (fields.includes('material')) {
+    validateMaterialSpec(primitive.material, `${path}.material`);
+    if (primitive.kind === 'analytic') {
+      const fallbackMesh = primitive.fallbackMesh;
+      validateMaterialTexCoords(
+        primitive.material,
+        fallbackMesh,
+        `${path}.material`,
+        fallbackMesh !== undefined
+          ? `${path}.fallbackMesh`
+          : `${path}'s generated analytic mesh`,
+        fallbackMesh === undefined
+          ? GENERATED_ANALYTIC_TEXCOORDS
+          : undefined,
+      );
+    } else {
+      validateMaterialTexCoords(
+        primitive.material,
+        primitive,
+        `${path}.material`,
+        path,
+      );
+    }
+  }
+
+  if (fields.includes('transform')) {
+    if (primitive.kind === 'instanced-mesh') {
+      failRange(`${path}.transform`, 'is not a known contract field');
+    }
+    if (primitive.transform !== undefined) {
+      assertMat4(primitive.transform, `${path}.transform`);
+    }
+  }
+
+  if (fields.includes('castShadow') && primitive.castShadow !== undefined) {
+    assertBoolean(primitive.castShadow, `${path}.castShadow`);
+  }
+}
+
 function validateEmitter(emitter: SceneEmitter, path: string): void {
   assertRecord(emitter, path);
   assertNodeId(emitter.id, `${path}.id`);
@@ -1359,6 +1432,18 @@ function validateEmitter(emitter: SceneEmitter, path: string): void {
   }
 }
 
+/**
+ * Validate one emitter produced by the incremental scene-patch path.
+ *
+ * @internal See {@link validatePrimitiveForScenePatch}.
+ */
+export function validateEmitterForScenePatch(
+  emitter: SceneEmitter,
+  path = 'scene.emitters[patched]',
+): void {
+  validateEmitter(emitter, path);
+}
+
 function validateEnvironment(environment: SceneEnvironment, path: string): void {
   assertRecord(environment, path);
   switch ((environment as { readonly kind?: unknown }).kind) {
@@ -1389,6 +1474,89 @@ function validateEnvironment(environment: SceneEnvironment, path: string): void 
 }
 
 /**
+ * Validate one environment value without traversing scene geometry.
+ *
+ * This is the targeted boundary for `updateEnvironment` implementations. A
+ * complete externally-authored snapshot must still use {@link validateScene}.
+ */
+export function validateSceneEnvironment(
+  environment: SceneEnvironment,
+  path = 'scene.environment',
+): void {
+  validateEnvironment(environment, path);
+}
+
+function validateEmitterListAgainstPrimitives(
+  emitters: readonly SceneEmitter[],
+  primitiveById: ReadonlyMap<string, ScenePrimitive>,
+  allIds: Set<string>,
+  basePath: string,
+): void {
+  const meshAreaOwnerPathByMeshId = new Map<string, string>();
+  for (let index = 0; index < emitters.length; index += 1) {
+    const emitter = emitters[index]!;
+    const path = `${basePath}[${index}]`;
+    validateEmitter(emitter, path);
+    if (allIds.has(emitter.id)) {
+      failRange(`${path}.id`, `duplicates scene node id "${emitter.id}"`);
+    }
+    allIds.add(emitter.id);
+    if (emitter.kind !== 'mesh-area') continue;
+    const target = primitiveById.get(emitter.meshId);
+    if (target === undefined) {
+      failRange(`${path}.meshId`, `references missing primitive "${emitter.meshId}"`);
+    }
+    if (target.kind === 'analytic') {
+      failRange(
+        `${path}.meshId`,
+        `must reference a mesh-like primitive (got analytic "${emitter.meshId}")`,
+      );
+    }
+    const existingOwnerPath = meshAreaOwnerPathByMeshId.get(emitter.meshId);
+    if (existingOwnerPath !== undefined) {
+      failRange(
+        `${path}.meshId`,
+        `duplicates mesh-area ownership of primitive "${emitter.meshId}" already claimed by ${existingOwnerPath}.meshId`,
+      );
+    }
+    meshAreaOwnerPathByMeshId.set(emitter.meshId, path);
+  }
+}
+
+/**
+ * Validate a replacement emitter list against an already-validated immutable
+ * primitive inventory without rewalking vertex payloads.
+ */
+export function validateSceneEmitters(
+  emitters: readonly SceneEmitter[],
+  primitives: readonly ScenePrimitive[],
+): void {
+  assertArrayContainer(emitters, 'scene.emitters');
+  assertArrayContainer(primitives, 'scene.primitives');
+  const primitiveById = new Map<string, ScenePrimitive>();
+  const allIds = new Set<string>();
+  for (let index = 0; index < primitives.length; index += 1) {
+    const primitive = primitives[index]!;
+    assertRecord(primitive, `scene.primitives[${index}]`);
+    assertNodeId(primitive.id, `scene.primitives[${index}].id`);
+    if (allIds.has(primitive.id)) {
+      failRange(
+        `scene.primitives[${index}].id`,
+        `duplicates scene node id "${primitive.id}"`,
+      );
+    }
+    allIds.add(primitive.id);
+    primitiveById.set(primitive.id, primitive);
+  }
+  validateEmitterListAgainstPrimitives(
+    emitters,
+    primitiveById,
+    allIds,
+    'scene.emitters',
+  );
+}
+
+/**
  * Validate an authored Scene snapshot before any backend allocates or mutates
  * GPU resources. The validator is deliberately backend-independent: every
  * shipping backend receives the same finite-number, stream-shape, identity,
@@ -1407,7 +1575,6 @@ export function validateScene(scene: Scene): void {
 
   const primitiveById = new Map<string, ScenePrimitive>();
   const allIds = new Set<string>();
-  const meshAreaOwnerPathByMeshId = new Map<string, string>();
   for (let index = 0; index < scene.primitives.length; index += 1) {
     const primitive = scene.primitives[index]!;
     const path = `scene.primitives[${index}]`;
@@ -1416,29 +1583,11 @@ export function validateScene(scene: Scene): void {
     allIds.add(primitive.id);
     primitiveById.set(primitive.id, primitive);
   }
-  for (let index = 0; index < scene.emitters.length; index += 1) {
-    const emitter = scene.emitters[index]!;
-    const path = `scene.emitters[${index}]`;
-    validateEmitter(emitter, path);
-    if (allIds.has(emitter.id)) failRange(`${path}.id`, `duplicates scene node id "${emitter.id}"`);
-    allIds.add(emitter.id);
-    if (emitter.kind === 'mesh-area') {
-      const target = primitiveById.get(emitter.meshId);
-      if (target === undefined) {
-        failRange(`${path}.meshId`, `references missing primitive "${emitter.meshId}"`);
-      }
-      if (target.kind === 'analytic') {
-        failRange(`${path}.meshId`, `must reference a mesh-like primitive (got analytic "${emitter.meshId}")`);
-      }
-      const existingOwnerPath = meshAreaOwnerPathByMeshId.get(emitter.meshId);
-      if (existingOwnerPath !== undefined) {
-        failRange(
-          `${path}.meshId`,
-          `duplicates mesh-area ownership of primitive "${emitter.meshId}" already claimed by ${existingOwnerPath}.meshId`,
-        );
-      }
-      meshAreaOwnerPathByMeshId.set(emitter.meshId, path);
-    }
-  }
+  validateEmitterListAgainstPrimitives(
+    scene.emitters,
+    primitiveById,
+    allIds,
+    'scene.emitters',
+  );
   validateEnvironment(scene.environment, 'scene.environment');
 }

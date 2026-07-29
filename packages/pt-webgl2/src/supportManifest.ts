@@ -80,7 +80,9 @@ export const PT_WEBGL2_MATERIAL_SUPPORT: BackendSupportManifest['materials'] =
     thinFilmStack: 'native',
     anisotropy: 'native',
     anisotropyRotation: 'native',
-    extensions: 'unsupported',
+    // The shared `skipEmitter === true` lane suppresses implicit mesh-light
+    // classification while preserving camera-visible surface emission.
+    extensions: 'native',
   });
 
 const ALL_EMITTERS_NATIVE = Object.freeze({
@@ -105,6 +107,10 @@ const ANALYTIC_FALLBACKS = Object.freeze({
  * acceptance. The core promise ledger is intentionally not read here.
  */
 export const PT_WEBGL2_SUPPORT_MANIFEST = defineBackendSupportManifest({
+  bounceSemantics: {
+    kind: 'path-depth',
+    perFrameControl: 'finite-path-depth',
+  },
   primitives: {
     mesh: 'native',
     'skinned-mesh': 'native',

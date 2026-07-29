@@ -37,6 +37,25 @@ describe('walkaround bounded manifold caustics WGSL', () => {
     expect(MANIFOLD_SMS_SOLVER_WGSL).toContain('sceneLoadMneeFacetDomainAlias(domainIndex)');
   });
 
+  it('decodes analytic alias indices from their packed u32 bit pattern', () => {
+    expect(MANIFOLD_CAUSTICS_WGSL).toContain(
+      'let aliasIndex = bitcast<u32>(entry.y);',
+    );
+    expect(MANIFOLD_CAUSTICS_WGSL).toContain(
+      'if (aliasIndex >= analyticLayout.count) { return out; }',
+    );
+    expect(MANIFOLD_CAUSTICS_WGSL).not.toContain('entry.y != floor(entry.y)');
+    expect(MANIFOLD_CAUSTICS_WGSL).not.toContain('!(entry.y >= 0.0)');
+
+    const storage = new ArrayBuffer(4);
+    new Uint32Array(storage)[0] = 7;
+    const packedAsFloat = new Float32Array(storage)[0]!;
+    expect(packedAsFloat).toBeGreaterThan(0);
+    expect(packedAsFloat).toBeLessThan(1);
+    expect(Number.isInteger(packedAsFloat)).toBe(false);
+    expect(new Uint32Array(new Float32Array([packedAsFloat]).buffer)[0]).toBe(7);
+  });
+
   it('freezes reflection/transmission events and rejects transmission TIR', () => {
     expect(MANIFOLD_SMS_SOLVER_WGSL).toContain('SMS_EVENT_REFLECTION');
     expect(MANIFOLD_SMS_SOLVER_WGSL).toContain('SMS_EVENT_TRANSMISSION');
@@ -80,8 +99,10 @@ describe('walkaround bounded manifold caustics WGSL', () => {
   });
 
   it('pins bounded multiplicity semantics and the structural-only exact bypass', () => {
-    expect(MANIFOLD_CAUSTICS_WGSL).toContain('out.weight = f32(cap);');
-    expect(MANIFOLD_CAUSTICS_WGSL).toContain('out.truncated = 1u;');
+    expect(MANIFOLD_CAUSTICS_WGSL).toContain('return f32(cap);');
+    expect(MANIFOLD_CAUSTICS_WGSL).not.toContain('SmsMultiplicityEstimate');
+    expect(MANIFOLD_CAUSTICS_WGSL).not.toContain('truncated: u32');
+    expect(MANIFOLD_CAUSTICS_WGSL).not.toContain('exactUnique: u32');
     expect(MANIFOLD_CAUSTICS_WGSL).toContain('oneBasedTrial * 0x27d4eb2du');
     expect(MANIFOLD_CAUSTICS_WGSL).toContain('smsProvesUniquePlanarDeltaTransmission');
     expect(MANIFOLD_CAUSTICS_WGSL).toContain('geometry.count != 1u');

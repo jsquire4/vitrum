@@ -20,9 +20,21 @@ function hasFunctionProperty(target: object, key: PropertyKey): boolean {
 }
 
 describe('pt-webgpu promise ledger compliance', () => {
+  it('does not expose or report the debug surface without explicit opt-in', async () => {
+    const engine = await createPTEngine_WebGPU({
+      device: makeStubDevice(),
+    });
+
+    expect(Object.hasOwn(engine, 'debug')).toBe(false);
+    expect(engine.capabilities.debugSurface).toBe(false);
+  });
+
   it('matches declared capability and optional-method promises', async () => {
     const expected = BACKEND_PROMISE_LEDGER['pt-webgpu'];
-    const engine = await createPTEngine_WebGPU({ device: makeStubDevice() });
+    const engine = await createPTEngine_WebGPU({
+      device: makeStubDevice(),
+      debug: true,
+    });
     const caps = engine.capabilities;
 
     expect(caps.supportsIncrementalScene).toBe(expected.supportsIncrementalScene);
@@ -61,6 +73,7 @@ describe('pt-webgpu promise ledger compliance', () => {
     expect(typeof engine.onFrame === 'function').toBe(expected.methodPromises.onFrame);
     expect(typeof engine.onProgress === 'function').toBe(expected.methodPromises.onProgress);
     expect(typeof engine.debug === 'object').toBe(expected.methodPromises.debug);
+    expect(caps.debugSurface).toBe(true);
     expect(typeof engine.getScene === 'function').toBe(expected.methodPromises.getScene);
     expect(typeof engine.onError === 'function').toBe(expected.methodPromises.onError);
     expect(typeof engine.onWarning === 'function').toBe(expected.methodPromises.onWarning);

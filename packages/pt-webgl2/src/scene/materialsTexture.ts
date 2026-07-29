@@ -47,7 +47,6 @@ import {
   MATERIAL_PIXELS,
   MATERIAL_SPECTRAL_REFLECTANCE_TEXEL_OFFSET,
   MATERIAL_WRAP_TEXEL_OFFSET,
-  UV_SET_BIT,
   MATERIAL_TRANSFORM_TEXEL,
   MATERIAL_D3_AUX_TEXEL,
   MATERIAL_AO_TRANSFORM_TEXEL,
@@ -756,15 +755,8 @@ function packTextureTransforms(
 
   // D3 — texels 85/86: ao/light/bump map ids + scalars + envMapIntensity
   // (mirrors readMaterialInfo s20/s21 in material_mapped_rich.glsl.ts).
-  // texel 86.a: retained UV1 compatibility mirror. Shaders use the arbitrary
-  // layer-selector table below; this lane remains stable for record consumers.
-  // instead of uv0 (ATTR_UV). Bit assignments are single-sourced in materialStride.js.
-  let uvSetMask = 0;
-  for (const [key, bit] of Object.entries(UV_SET_BIT)) {
-    const ref = m[key as keyof MaterialSpec] as { texCoord?: number } | undefined;
-    if ((ref?.texCoord ?? 0) === 1) uvSetMask |= bit;
-  }
-
+  // Texel 86.a remains reserved; the arbitrary UV-layer selector table below is
+  // the single runtime representation of per-map texCoord selection.
   let d3 = base + MATERIAL_D3_AUX_TEXEL * 4;
   data[d3++] = ids.ao;
   data[d3++] = ids.lightMap;
@@ -773,7 +765,7 @@ function packTextureTransforms(
   data[d3++] = m.aoMapIntensity ?? 1.0;
   data[d3++] = m.lightMapIntensity ?? 1.0;
   data[d3++] = m.bumpScale ?? 1.0;
-  data[d3++] = uvSetMask; // uv-set bitmask (was pad)
+  data[d3++] = 0.0;
   // D3 — ao/light/bump transforms at texels 87/89/91 (2 texels per mat3).
   if (ids.ao >= 0) writeTransform(data, base, MATERIAL_AO_TRANSFORM_TEXEL, m.aoMap);
   if (ids.lightMap >= 0) writeTransform(data, base, MATERIAL_LIGHTMAP_TRANSFORM_TEXEL, m.lightMap);

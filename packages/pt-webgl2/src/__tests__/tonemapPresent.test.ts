@@ -75,9 +75,11 @@ describe('tonemap_functions.glsl.js — GLSL source guards', () => {
     expect(src).toMatch(/mode\s*==\s*1.*vt_agx/s);
   });
 
-  it('vitrumTonemap dispatches mode==2 to Reinhard (x / (1.0 + ...))', () => {
+  it('vitrumTonemap dispatches mode==2 to non-negative Reinhard', () => {
     expect(src).toMatch(/mode\s*==\s*2/);
-    expect(src).toContain('1.0 + max(x,');
+    expect(src).toContain('vec3 v = max(x, vec3(0.0));');
+    expect(src).toContain('return v / (1.0 + v);');
+    expect(Math.max(-0.5, 0) / (1 + Math.max(-0.5, 0))).toBe(0);
   });
 
   it('vitrumTonemap dispatches mode==3 to linear (clamp)', () => {

@@ -10,11 +10,8 @@
  * Bindings (scene group(1), appended after the B1 bvh_material at binding 14):
  *   @binding(15) env_map         rgba16float  : unit-intensity radiance (.rgb) +
  *                                               per-texel solid-angle pdf (.a)
- *   @binding(16) env_marginal    r32float     : H×1 inverse-CDF (random→row v;
- *                                               width=H height=1; textureLoad x=row y=0)
- *   @binding(17) env_conditional r32float     : W×H inverse-CDF (random→col u)
- *   @binding(18) env_sampler     sampler      : (declared for completeness; the
- *                                               lookups use textureLoad, not sample)
+ *   @binding(16) env_marginal    r32float     : H×1 forward row CDF
+ *   @binding(17) env_conditional r32float     : W×H forward column CDF
  *   @binding(19) envParams       uniform      : { hasEnv, width, height, rotationY,
  *                                               intensity } (own small uniform —
  *                                               the 416B WalkaroundUBO is frozen)
@@ -36,7 +33,6 @@ export const ENVIRONMENT_SAMPLE_WGSL = /* wgsl */ `
 @group(1) @binding(15) var env_map: texture_2d<f32>;
 @group(1) @binding(16) var env_marginal: texture_2d<f32>;
 @group(1) @binding(17) var env_conditional: texture_2d<f32>;
-@group(1) @binding(18) var env_sampler: sampler;
 struct EnvParams {
   hasEnv:    u32,
   width:     u32,
@@ -69,6 +65,44 @@ struct EnvSample {
   pdf:   f32,     // solid-angle pdf of selecting .dir (0 ⇒ no map)
 };
 
+fn envCdfXi(xi: f32) -> f32 {
+  // rand_f32 is [0,1), but make the search total for synthetic/debug callers
+  // that provide 1 exactly. 0x3f7fffff is the greatest f32 below one.
+  return clamp(xi, 0.0, bitcast<f32>(0x3f7fffffu));
+}
+
+fn envMarginalRowFromCdf(xiRaw: f32, h: i32) -> i32 {
+  let xi = envCdfXi(xiRaw);
+  var lo = 0;
+  var hi = h - 1;
+  while (lo < hi) {
+    let mid = (lo + hi) / 2;
+    let cdf = textureLoad(env_marginal, vec2i(mid, 0), 0).r;
+    if (cdf <= xi) {
+      lo = mid + 1;
+    } else {
+      hi = mid;
+    }
+  }
+  return lo;
+}
+
+fn envConditionalColumnFromCdf(xiRaw: f32, row: i32, w: i32) -> i32 {
+  let xi = envCdfXi(xiRaw);
+  var lo = 0;
+  var hi = w - 1;
+  while (lo < hi) {
+    let mid = (lo + hi) / 2;
+    let cdf = textureLoad(env_conditional, vec2i(mid, row), 0).r;
+    if (cdf <= xi) {
+      lo = mid + 1;
+    } else {
+      hi = mid;
+    }
+  }
+  return lo;
+}
+
 // Directional radiance along a WORLD direction. Falls back to the scalar sky
 // (skyTint·skyIrradiance) when no map is bound — preserving the no-HDRI contract.
 fn envRadiance(dir: vec3f) -> vec3f {
@@ -100,18 +134,11 @@ fn envImportanceSample(rng: ptr<function, u32>) -> EnvSample {
   let w = i32(envParams.width);
   let h = i32(envParams.height);
 
-  // Marginal: random → row centre v (stored in .r of the H×1 marginal texture;
-  // width=H height=1, so textureLoad x=row y=0).
-  let xiV = rand_f32(rng);
-  let row = clamp(i32(floor(xiV * f32(h))), 0, h - 1);
-  let vCenter = textureLoad(env_marginal, vec2i(row, 0), 0).r;
-  let yTexel = clamp(i32(floor(vCenter * f32(h))), 0, h - 1);
-
-  // Conditional: random → column centre u for the chosen row.
-  let xiU = rand_f32(rng);
-  let col = clamp(i32(floor(xiU * f32(w))), 0, w - 1);
-  let uCenter = textureLoad(env_conditional, vec2i(col, yTexel), 0).r;
-  let xTexel = clamp(i32(floor(uCenter * f32(w))), 0, w - 1);
+  // Exact discrete inversion: select the first forward-CDF entry > ξ. The
+  // realized selection interval is therefore the source texel's exact PMF,
+  // matching the solid-angle density stored in env_map.a.
+  let yTexel = envMarginalRowFromCdf(rand_f32(rng), h);
+  let xTexel = envConditionalColumnFromCdf(rand_f32(rng), yTexel, w);
 
   // Texel centre → direction (unrotated-map space), then rotate to world.
   let uc = (f32(xTexel) + 0.5) / f32(w);

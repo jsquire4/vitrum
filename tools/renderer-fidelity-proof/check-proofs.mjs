@@ -105,7 +105,9 @@ const SOURCE_PROOFS = [
     label: 'pt-webgl2 material transport',
     path: 'packages/pt-webgl2/src/glsl/shader/bsdf/bsdf_functions.glsl.js',
     needles: [
-      'thinFilmTMM(',
+      'ThinFilmRgb thinFilmRt = thinFilmTMMRgb(',
+      'thinFilmRt.reflectance',
+      'thinFilmRt.transmittance',
       'spectralAttenuationMuHero(',
       'transmissionEtaAtHero(',
       'float sigmaTMajorant',

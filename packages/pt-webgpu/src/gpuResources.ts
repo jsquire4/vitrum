@@ -111,6 +111,18 @@ function _buf(binding: number, layout: GPUBufferBindingLayout): GPUBindGroupLayo
 function _tex(binding: number): GPUBindGroupLayoutEntry {
   return { binding, visibility: _vis(), storageTexture: _storageTex };
 }
+/** WGSL scalar variance `texture_storage_2d<r32float, write>`. */
+function _varianceTex(binding: number): GPUBindGroupLayoutEntry {
+  return {
+    binding,
+    visibility: _vis(),
+    storageTexture: {
+      access: 'write-only',
+      format: 'r32float',
+      viewDimension: '2d',
+    },
+  };
+}
 /**
  * Sampled texture (unfilterable-float 2d) binding entry — used by B12 lite-tier
  * textures.  Trust-audit F2 (2026-06-10): rgba32float is UNFILTERABLE; declaring
@@ -149,7 +161,7 @@ class ReservoirResources {
   /** `rpt_result`: one vec4f / px (16 B) — the resolve pass's reconnection
    *  indirect (.rgb) + contributing flag (.a). STORAGE | COPY_SRC. */
   rptResultBuffer: GPUBuffer | null = null;
-  /** RestirPtParams UBO (16 B: width/height/mClamp/_padA u32). */
+  /** RestirPtParams UBO (16 B: mClamp plus three alignment pads). */
   rptParamsBuffer: GPUBuffer | null = null;
   rptReservoirByteSize = 0;
   rptResultByteSize = 0;
@@ -672,7 +684,7 @@ export class GpuResources {
       albedoView = albedoTexture.createView();
       varianceTexture = createTexture({
         label: 'vitrum.pt-webgpu.variance', size: { width, height, depthOrArrayLayers: 1 },
-        format: 'rgba16float', usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
+        format: 'r32float', usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
       });
       varianceView = varianceTexture.createView();
       if (this.#traceTier === 'full') {
@@ -780,7 +792,7 @@ export class GpuResources {
       _buf(8, _ro),   // normals
       _tex(9),        // normalDepthTexture
       _tex(10),       // albedoTexture
-      _tex(11),       // varianceTexture
+      _varianceTex(11), // varianceTexture (scalar r32float)
       _tex(12),       // motionVectorsTexture (full tier)
       _buf(13, _rw),  // varianceMomentsBuffer (read_write, full tier)
       ...(this.#bdpt
@@ -875,7 +887,7 @@ export class GpuResources {
         _buf(8, _ro),         // normals
         _tex(9),              // normalDepthTexture
         _tex(10),             // albedoTexture
-        _tex(11),             // varianceTexture
+        _varianceTex(11),     // varianceTexture (scalar r32float)
         _sampledTex(12),      // liteEnvTex    — RGBA32F env radiance+pdf
         _sampledTex(13),      // liteEnvCdfTex — RGBA32F (.r = CDF entry)
         _sampledTex(14),      // liteLightTex  — RGBA32F packed light data
@@ -1182,28 +1194,16 @@ export class GpuResources {
   }
 
   /**
-   * Write the RestirPtParams UBO (width/height/mClamp).
+   * Write the RestirPtParams UBO (mClamp).
    * No-op only when reuse is OFF. Once requested, an absent params buffer or an
    * unrepresentable value is an invariant failure rather than a silent skip.
    * Called per-frame by the engine before dispatch.
    */
-  writeReservoirParams(
-    width: number,
-    height: number,
-    mClamp: number,
-  ): void {
+  writeReservoirParams(mClamp: number): void {
     if (!this.#restirPtReuse) return;
     if (this.#rsvr.rptParamsBuffer == null) {
       throw new Error(
         '[vitrum/pt-webgpu] ReSTIR-PT params buffer is absent after reuse was enabled.',
-      );
-    }
-    if (
-      !Number.isSafeInteger(width) || width < 1 || width > 0xffffffff ||
-      !Number.isSafeInteger(height) || height < 1 || height > 0xffffffff
-    ) {
-      throw new RangeError(
-        `[vitrum/pt-webgpu] ReSTIR-PT parameter dimensions must be positive u32 integers (got ${width}×${height}).`,
       );
     }
     if (!Number.isInteger(mClamp) || mClamp < 1 || mClamp > 4095) {
@@ -1213,10 +1213,7 @@ export class GpuResources {
     }
     const ubo = new ArrayBuffer(GpuResources.RESTIR_PT_PARAMS_BYTES);
     const u = new Uint32Array(ubo);
-    u[0] = width;
-    u[1] = height;
-    u[2] = mClamp;
-    u[3] = 0; // _padA
+    u[0] = mClamp;
     this.#device.queue.writeBuffer(this.#rsvr.rptParamsBuffer, 0, ubo);
   }
 

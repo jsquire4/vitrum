@@ -24,7 +24,11 @@
 
 import { describe, it, expect } from 'vitest';
 import type { MaterialSpec } from '@vitrum/core';
-import { packMaterialsTexture, MATERIAL_PIXELS } from './materialsTexture.js';
+import {
+  MATERIAL_PIXELS,
+  MATERIAL_UV_SELECTOR_TEXEL_OFFSET,
+  packMaterialsTexture,
+} from './materialsTexture.js';
 
 // .glsl.js modules are typed by the wildcard `declare module '*.glsl.js' { default string }`
 // in glsl-modules.d.ts (which cannot declare named exports). We pull named string
@@ -280,10 +284,10 @@ describe('pt-webgl2 filteredGlossyFactor upload — UNTESTED promise (item 25)',
 describe('pt-webgl2 texCoord — scalable UV-layer selection', () => {
   // TextureRef.texCoord is consumed through one dense attribute-layer selector
   // per map slot at texels 130..135. MAP_UV interpolates that layer directly.
-  // Texel 86.a remains only as a backwards-compatible texCoord-1 mirror.
+  // Texel 86.a is reserved; there is no second UV-selection representation.
 
   it('pt-webgl2 MATERIAL_PIXELS stride includes alphaMapTransform, sampler policy, spectral, and layer-normal texels', () => {
-    // The bitmask lives at texel 86.a; texels 93/94 carry alphaMapTransform;
+    // Texel 86.a is reserved; texels 93/94 carry alphaMapTransform;
     // texels 95/96 carry anisotropyMapTransform; texel 97 carries thickness;
     // texels 98/99 carry thicknessMapTransform; texels 100..120 carry per-map sampler policy;
     // texel 121 carries per-material spectral reflectance coefficients;
@@ -292,20 +296,19 @@ describe('pt-webgl2 texCoord — scalable UV-layer selection', () => {
     expect(MATERIAL_PIXELS).toBe(136);
   });
 
-  it('packer retains the legacy UV1 mirror when a map has texCoord:1', () => {
+  it('packer uses the scalable selector and leaves the former UV1 mirror reserved', () => {
     const handle = {};
     const layerOf = new Map<unknown, number>([[handle, 0]]);
-    // baseColorMap at texCoord:1 → bit 0 set = 1.
     const m: MaterialSpec = {
       baseColor: [1, 1, 1], roughness: 0.5, metallic: 0,
       baseColorMap: { handle, texCoord: 1 },
     };
     const d = packMaterialsTexture([m], layerOf).data as Float32Array;
-    // texel 86.a = float offset 86*4+3 = 347
-    expect(d[86 * 4 + 3]).toBe(1); // bit 0 only
+    expect(d[86 * 4 + 3]).toBe(0);
+    expect(d[MATERIAL_UV_SELECTOR_TEXEL_OFFSET * 4]).toBe(4);
   });
 
-  it('packer writes 0 bitmask when all maps have texCoord:0 or absent', () => {
+  it('packer keeps the reserved lane zero for texCoord:0 or absent maps', () => {
     const handle = {};
     const layerOf = new Map<unknown, number>([[handle, 0]]);
     const m: MaterialSpec = {
@@ -313,23 +316,21 @@ describe('pt-webgl2 texCoord — scalable UV-layer selection', () => {
       baseColorMap: { handle, texCoord: 0 }, // explicit uv0
     };
     const d = packMaterialsTexture([m], layerOf).data as Float32Array;
-    expect(d[86 * 4 + 3]).toBe(0); // no bit set
+    expect(d[86 * 4 + 3]).toBe(0);
   });
 
-  it('legacy UV1 mirror correctly encodes multiple texCoord-1 maps', () => {
+  it('selector table independently encodes multiple texCoord-1 maps', () => {
     const handle1 = {}; const handle2 = {};
     const layerOf = new Map<unknown, number>([[handle1, 0], [handle2, 1]]);
-    // roughnessMap (bit 2) + emissiveMap (bit 4) both at texCoord:1
     const m: MaterialSpec = {
       baseColor: [1, 1, 1], roughness: 0.5, metallic: 0,
       roughnessMap: { handle: handle1, texCoord: 1 },
       emissiveMap: { handle: handle2, texCoord: 1 },
     };
     const d = packMaterialsTexture([m], layerOf).data as Float32Array;
-    const mask = d[86 * 4 + 3]!;
-    expect(mask & (1 << 2)).not.toBe(0); // roughnessMap bit
-    expect(mask & (1 << 4)).not.toBe(0); // emissiveMap bit
-    expect(mask & (1 << 0)).toBe(0);     // baseColorMap not set
+    expect(d[86 * 4 + 3]).toBe(0);
+    expect(d[MATERIAL_UV_SELECTOR_TEXEL_OFFSET * 4 + 2]).toBe(4);
+    expect(d[(MATERIAL_UV_SELECTOR_TEXEL_OFFSET + 1) * 4]).toBe(4);
   });
 
   it('GLSL get_surface_record dynamically interpolates the packed per-map layer', () => {
@@ -404,10 +405,10 @@ describe('pt-webgl2 texCoord — scalable UV-layer selection', () => {
     );
   });
 
-  it('material_struct carries uvTexCoordMask decoded from texel 86.a', () => {
+  it('material_struct omits the superseded uvTexCoordMask mirror', () => {
     const ms = material_struct;
-    expect(ms).toContain('uvTexCoordMask');
-    expect(decoderTexel(86)).toContain('m.uvTexCoordMask = uint( round( s.a ) )');
+    expect(ms).not.toContain('uvTexCoordMask');
+    expect(decoderTexel(86)).not.toContain('uvTexCoordMask');
   });
 
   it('material_struct lazily decodes per-map policies and exposes the wrap-aware sample helper', () => {

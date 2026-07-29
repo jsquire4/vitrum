@@ -222,6 +222,17 @@ describe('deriveSceneTraceFeatures', () => {
     );
   });
 
+  it('accepts the consumed extensions.skipEmitter lane and rejects other keys', () => {
+    const skipped: MaterialSpec = {
+      ...BASIC_MATERIAL,
+      emissive: [1, 1, 1],
+      extensions: { skipEmitter: true },
+    };
+    expect(materialUsesScalarRichWebGl2Shader(skipped)).toBe(false);
+    expect(materialUsesMappedRichWebGl2Shader(skipped)).toBe(true);
+    expect(() => validateWebGl2SceneMaterials(sceneWith(skipped))).not.toThrow();
+  });
+
   it.each([
     ['extensions', { extensions: { vendor: true } }],
     ['unknown runtime key', { futureMaterialField: true }],

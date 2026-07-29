@@ -103,7 +103,6 @@ export interface SceneBindGroupResources {
   envMapTextureView: GPUTextureView;
   envMarginalTextureView: GPUTextureView;
   envConditionalTextureView: GPUTextureView;
-  envSampler: GPUSampler;
   envParamsBuffer: GPUBuffer;
 }
 
@@ -166,7 +165,7 @@ export class BvhBufferHost {
   /**
    * Extra bytes appended to the light-tree storage buffer to hold the ReGIR
    * grid region (the grid-build pass writes it; RIS reads it from the SAME
-   * @group(3) buffer so RIS stays at 16 storage buffers). `0` ⇒ ReGIR off, the
+   * @group(3) buffer so RIS stays at the derived storage-buffer floor). `0` ⇒ ReGIR off, the
    * light-tree buffer is sized exactly as before (byte-identical). Stable for
    * the buffer's lifetime — set once by the pipeline before `uploadInitial`.
    */
@@ -625,7 +624,6 @@ export class BvhBufferHost {
       envMapTextureView: this._resourceCache.textureView(this._env!.map),
       envMarginalTextureView: this._resourceCache.textureView(this._env!.marginal),
       envConditionalTextureView: this._resourceCache.textureView(this._env!.conditional),
-      envSampler: this._env!.sampler,
       envParamsBuffer: this._env!.paramsBuffer,
     };
   }

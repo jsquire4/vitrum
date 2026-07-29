@@ -2865,7 +2865,11 @@ function _resolvePrimitiveMaterialIndex(
   }
   if (!matchedMapping) return baseMaterialIndex;
   const { mapping, index: mappingIndex } = matchedMapping;
-  if (mapping.material < 0 || mapping.material >= (gltf.materials?.length ?? 0)) {
+  if (
+    !Number.isSafeInteger(mapping.material) ||
+    mapping.material < 0 ||
+    mapping.material >= (gltf.materials?.length ?? 0)
+  ) {
     emitImportDiagnostic(warnings, diagnostics, {
       severity: 'warning',
       code: 'material-variant-material-missing',
@@ -3238,6 +3242,18 @@ function _extractMeshGpuInstancing(
 
   for (const key of Object.keys(attrs)) {
     if (key in GPU_INSTANCE_ATTRIBUTE_SPECS) continue;
+    if (key.startsWith('_')) {
+      emitImportDiagnostic(warnings, diagnostics, {
+        severity: 'warning',
+        code: 'ignored-gpu-instancing-attribute',
+        path: `${pathBase}.attributes.${key}`,
+        message:
+          `[vitrum/gltf-adapter] Node "${node.name ?? nodeIdx}" EXT_mesh_gpu_instancing ` +
+          `application attribute "${key}" has no core instance-metadata representation and was ignored; ` +
+          'instance transforms remain valid.',
+      });
+      continue;
+    }
     throwImportBoundaryError(
       'ignored-gpu-instancing-attribute',
       `${pathBase}.attributes.${key}`,

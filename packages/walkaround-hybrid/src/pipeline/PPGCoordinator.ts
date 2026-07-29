@@ -49,6 +49,13 @@ import {
 } from '../ppg/ppgQueryArena.js';
 import { f32SnapshotMetadataMatches } from '../giStateSnapshot.js';
 
+export type PPGTrainingEpochStatus =
+  | 'collecting'
+  | 'readback'
+  | 'retry-pending'
+  | 'failed'
+  | 'disposed';
+
 /**
  * W9 — derive a world-space AABB for the PPG sTree from the uploaded BVH data.
  *
@@ -234,7 +241,7 @@ export class PPGCoordinator implements PipelineSubsystem {
   /** A2 — staging buffer for the per-cell sample counts read back alongside flux. */
   private _cellCountReadbackBuffer: GPUBuffer | null = null;
   private _fluxReadbackInFlight = false;
-  private _trainingEpochState: 'collecting' | 'readback' | 'retry-pending' | 'failed' | 'disposed' = 'collecting';
+  private _trainingEpochState: PPGTrainingEpochStatus = 'collecting';
   private _trainingReadbackFailures = 0;
   /** Number of update-pass dispatches accumulated in the current topology epoch. */
   private _trainingDispatchesSinceRefine = 0;
@@ -270,7 +277,7 @@ export class PPGCoordinator implements PipelineSubsystem {
   /** MIS mixing weight alpha (Muller section 3.4) the gi-ris RIS source pdf uses
    *  for the guided/cosine mixture `p_src = alpha*p_guide + (1-alpha)*p_cos`. */
   /** Durable lifecycle state for diagnostics and explicit recovery. */
-  get trainingStatus(): 'collecting' | 'readback' | 'retry-pending' | 'failed' | 'disposed' {
+  get trainingStatus(): PPGTrainingEpochStatus {
     return this._trainingEpochState;
   }
 

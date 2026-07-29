@@ -86,8 +86,9 @@ const PT_WEBGPU_FULL_MATERIALS: BackendSupportManifest['materials'] =
     thinFilmStack: 'native',
     anisotropy: 'approximate',
     anisotropyRotation: 'approximate',
-    // Contract-sanctioned host escape hatch; deliberately not interpreted.
-    extensions: 'unsupported',
+    // The shared `skipEmitter === true` lane suppresses implicit mesh-light
+    // synthesis while preserving camera-visible surface emission.
+    extensions: 'native',
   });
 
 /**
@@ -206,6 +207,10 @@ export const PT_WEBGPU_BDPT_SUPPORT = Object.freeze({
 
 /** Full-tier executable support and fidelity evidence. */
 export const PT_WEBGPU_FULL_SUPPORT_MANIFEST = defineBackendSupportManifest({
+  bounceSemantics: {
+    kind: 'path-depth',
+    perFrameControl: 'finite-path-depth',
+  },
   primitives: {
     mesh: 'native',
     'skinned-mesh': 'native',
@@ -284,6 +289,10 @@ export const PT_WEBGPU_FULL_SUPPORT_MANIFEST = defineBackendSupportManifest({
 
 /** Lite-tier executable support and fidelity evidence. */
 export const PT_WEBGPU_LITE_SUPPORT_MANIFEST = defineBackendSupportManifest({
+  bounceSemantics: {
+    kind: 'path-depth',
+    perFrameControl: 'finite-path-depth',
+  },
   primitives: {
     mesh: 'native',
     'skinned-mesh': 'native',

@@ -773,13 +773,65 @@ describe('solveSkin', () => {
     expect(itS[3]).toBeCloseTo(0, 6);
   });
 
-  it('mat3InverseTranspose: falls back to the input on a singular matrix (no NaN)', () => {
+  it('mat3InverseTranspose: uses the oriented-area transform for rank-2 matrices', () => {
     // A rank-2 matrix (third row = first row) → det 0.
     const singular = [1, 2, 3, 0, 1, 0, 1, 2, 3];
     const it = mat3InverseTranspose(singular);
-    for (let i = 0; i < 9; i++) {
-      expect(Number.isFinite(it[i]!)).toBe(true);
-      expect(it[i]).toBe(singular[i]);
+    expect(it[0]).toBeCloseTo(1 / 3);
+    expect(it[2]).toBeCloseTo(-1 / 9);
+    expect(it[6]).toBeCloseTo(-1 / 3);
+    expect(it[8]).toBeCloseTo(1 / 9);
+    for (const index of [1, 3, 4, 5, 7]) {
+      expect(it[index]).toBe(0);
+    }
+    // Two surviving transformed tangents lie in the rank-2 image plane. The
+    // cofactor-transformed source normal remains perpendicular to both.
+    const transformedNormal = [
+      it[0]! * 0 + it[1]! * 0 + it[2]! * 1,
+      it[3]! * 0 + it[4]! * 0 + it[5]! * 1,
+      it[6]! * 0 + it[7]! * 0 + it[8]! * 1,
+    ];
+    const tangent0 = [1, 0, 1];
+    const tangent1 = [2, 1, 2];
+    expect(transformedNormal[0]! * tangent0[0]! + transformedNormal[2]! * tangent0[2]!)
+      .toBeCloseTo(0);
+    expect(
+      transformedNormal[0]! * tangent1[0]! +
+      transformedNormal[1]! * tangent1[1]! +
+      transformedNormal[2]! * tangent1[2]!,
+    ).toBeCloseTo(0);
+  });
+
+  it('mat3InverseTranspose: returns an explicit zero transform below rank 2', () => {
+    expect(Array.from(mat3InverseTranspose([
+      1, 2, 3,
+      2, 4, 6,
+      3, 6, 9,
+    ]))).toEqual(new Array(9).fill(0));
+  });
+
+  it('mat3InverseTranspose: rank classification is invariant under tiny uniform scale', () => {
+    const scale = 1e-11;
+    const fullRank = mat3InverseTranspose([
+      scale, 0, 0,
+      0, scale, 0,
+      0, 0, scale,
+    ]);
+    for (const index of [0, 4, 8]) {
+      expect(fullRank[index]).toBeCloseTo(1 / scale, -5);
+    }
+    for (const index of [1, 2, 3, 5, 6, 7]) {
+      expect(fullRank[index]).toBe(0);
+    }
+
+    const rankTwo = mat3InverseTranspose([
+      scale, 0, 0,
+      0, scale, 0,
+      0, 0, 0,
+    ]);
+    expect(rankTwo[8]).toBeCloseTo(1);
+    for (let index = 0; index < 8; index += 1) {
+      expect(rankTwo[index]).toBe(0);
     }
   });
 

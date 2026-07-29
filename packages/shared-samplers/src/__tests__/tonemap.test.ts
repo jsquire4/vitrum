@@ -22,6 +22,7 @@ describe('tonemap operators (P4)', () => {
     expect(reinhard(0)).toBe(0);
     expect(reinhard(1)).toBeCloseTo(0.5);
     expect(reinhard(3)).toBeCloseTo(0.75);
+    expect(reinhard(-0.5)).toBe(0);
   });
 
   it('agx: bounded [0,1], increasing across the mid-range', () => {
@@ -42,6 +43,9 @@ describe('tonemap operators (P4)', () => {
     expect(w).toMatch(/mode == 1u/);
     expect(w).toMatch(/mode == 4u/);
     expect(w).toContain('vt_linearToSrgb');
+    expect(w).toContain('let v = max(x, vec3f(0.0));');
+    expect(w).toContain('return v / (1.0 + v);');
+    expect(w).not.toContain('return x / (1.0 + max(x');
   });
 
   it('sRGB OETF: 0→0, 1→1, ~0.735 at 0.5; round-trips with srgbToLinear', () => {

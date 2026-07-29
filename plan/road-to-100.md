@@ -1,12 +1,12 @@
 # Road to 100 — code completion
 
-**Source audit date:** 2026-07-28
+**Source audit date:** 2026-07-29
 
-**Audit freeze:** base HEAD `a666411be90f432caa8ef5f0a8d1e3a40f16b3a1`
-plus the current uncommitted remediation working tree; SHA-256
-`55a0faed72130bdf54b59745700db31a2b0275547677fa98287d09005bd2c0e3`
+**Audit freeze:** remediation base HEAD
+`edccc87a6d2f1db0d286224aace21ae54ca6a81d`; SHA-256
+`f8111e1459bcd7cb8c9fce08b3c382a0097fef7f9b5d7d3b823e580dd4c4232e`
 for the bytewise path-sorted `packages/*/src` path-and-content manifest
-(repository-relative POSIX path, NUL, raw content, NUL; 1,247 files)
+(repository-relative POSIX path, NUL, raw content, NUL; 1,258 files)
 
 **Authority:** current production source under `packages/*/src`
 
@@ -19,13 +19,15 @@ ideas are not implementation authority.
 ## Bottom line
 
 At the current production source, every executable semantic defect found by the
-2026-07-27 deep audit, the 2026-07-28 external completeness audit, and their
-independent post-fix sweeps has an implementation and focused regression in the
-current working tree. No additional production code is presently known to be
-required for the declared profiles. The same-tree convergence run and
-source-manifest refresh are complete. This freeze describes uncommitted working
-tree bytes, not a landed commit. A future failing gate reopens this plan only
-when it exposes a current production-code defect under the rule below.
+2026-07-27 deep audit, the 2026-07-28 external completeness audit, the
+2026-07-29 complete code-gap audit, and the independent post-fix adversarial
+sweeps has an implementation and focused regression in the frozen source tree.
+No additional production code is presently known to be required for the
+declared profiles. The frozen-tree convergence run and source-manifest refresh
+recorded below are complete. This record describes the source tree committed
+alongside it, not an earlier uncommitted remediation snapshot. A future failing
+gate reopens this plan only when it exposes a current production-code defect
+under the rule below.
 
 Production code has no provisional feature-maturity channel. Optional algorithms
 use stable typed options and capability fields. A mode is implemented under its
@@ -61,12 +63,85 @@ implemented and reported end to end.
 
 There are no open implementation rows.
 
-If the final convergence run finds a source defect, add one bounded row with its
+If a future convergence run finds a source defect, add one bounded row with its
 reachable failure mode and focused regression. Do not create proof-only, host-only,
 distribution, governance, cross-host-evidence, or future-feature rows in this
 queue.
 
 ## Closed implementation programs
+
+### 2026-07-29 complete code-gap audit remediation
+
+- Shared light-tree selection now accounts conservatively for node angular
+  extent on CPU and WGSL, while the three renderer families agree on
+  equirectangular orientation, packed alias indices, KHR punctual range
+  attenuation, stable Henyey–Greenstein sampling/evaluation, negative-input
+  Reinhard behavior, and scale-normalized skin-normal rank classification:
+  tiny full-rank transforms remain invertible, rank-two transforms use their
+  cofactor normal, and rank-below-two transforms return zero. Walkaround preserves
+  fractional-metal diffuse GI and authored emissive intensity; WebGL2 corrects
+  single-scatter phase throughput, default RGB thin film, and RG texture
+  expansion; WebGPU lighting mutations rebuild emitters from the complete posed
+  skin snapshot.
+- Preetham baking integrates the physical solar cap over every intersected
+  texel and conserves its analytic solid angle at polar and high-resolution
+  placements. The spectral RGB fit exposes convergence, fails closed on a bad
+  solve, and uses calibrated paired color transforms so its finite white
+  endpoint and reported requested-target residual agree. The standalone
+  à-trous variance pass estimates and consumes variance in the same radiance or
+  demodulated domain and rejects mismatched temporal Welford moments. The reported
+  binary16 subnormal-carry defect was disproved against the live implementation
+  and is retained as a focused regression rather than a source rewrite.
+- Core incremental mutation performs field-scoped validation without rereading
+  unchanged vertex/index payloads, animation clips compile to owned validated
+  samplers with binary interval lookup, inverse parameter domains match the
+  material contract, and ordered iridescence bounds remain ordered. Backend
+  mutation routes no longer layer redundant whole-scene validation on top.
+- glTF import now handles malformed variants, default WebP source selection,
+  material-profile inventory, application instance attributes, numeric
+  CUBICSPLINE pointer channels, morphless weight targets, optional Draco
+  fallback, browser ImageBitmap CPU readback, extended-range float sRGB,
+  matrix-authored TRS animation, singular unrelated node matrices, and GLB
+  transport suffixes through explicit validation or structured degradation.
+- Attach/recreate and React canvas lifecycles serialize asynchronous ownership
+  and roll back late failures; backend/profile switches are observable.
+  Initial and replacement telemetry subscriptions publish transactionally:
+  synchronous fatal delivery waits for the unsubscriber, partial registration
+  failures unwind and terminally dispose the replacement lifecycle, and
+  recovery owns exactly one RAF chain. Debug
+  instrumentation is explicit and capability-reported across built-in engines,
+  timestamp queries are no longer Vite-only, tiny scene bounds retain physical
+  scale, WebGL2 can allocate on pre-frame `setSize()`, and sky-only presentation
+  consumes the same exposure/tonemap/output-space contract as normal frames.
+- Resource and diagnostic state is bounded: emissive coverage caps before
+  interval materialization, inference candidates and failed attaches release
+  ownership, WebGL2 atlases reserve only live layers, and OIDN validates safe
+  attempt counts, finite ordered delays, clock values, and retry deadlines
+  before persistent failures back off and latch. Scene-pack warning history is
+  capped by last occurrence, while hosts receive only the current-operation
+  warning delta. In-place WebGPU staging respects `maxBufferSize`; size-changing
+  candidates reject live/candidate aliases and preserve the prior generation
+  through allocation, upload, commit/rollback, and finalize failures. Error
+  histories retain bounded current evidence, CWBVH build status
+  proves or reports its traversal fallback, merge diagnostics reach all hosts,
+  duplicate displacement work is eliminated, seeds clear every history, and
+  WebGPU memory telemetry includes material mip chains, reservoirs, SPPM,
+  presentation, and denoised-linear allocations.
+- Every reported Class-F item was classified from live code: missing consumers
+  or observability were added, genuinely dead ABI/code removed, and already-live
+  or valid standalone host APIs retained with explicit coverage. Every optional
+  mode is held to the same validation, diagnostics, lifecycle, and test
+  requirements as default modes; no maturity label is an implementation or
+  verification exemption.
+- The corrected end-to-end WebGL2 proof exposed three estimator defects beyond
+  the audit rows: terminal NEE competed with an unavailable continuation,
+  bounded BDPT treated eye and light depth as independent budgets, and the
+  delayed `k-2` reverse-density write copied `k-1` RGB throughput into its
+  target. Terminal ownership now follows the reachable technique set, every
+  connection obeys one total scattering-depth bound, and the delayed patch
+  preserves the target vertex's throughput while replacing only its density.
+  The inward-wound Cornell scene passes the unchanged PCG/BDPT agreement band
+  at one, two, three, and six bounces, including a 128-SPP confirmation.
 
 ### 2026-07-28 external completeness-audit remediation
 
@@ -370,7 +445,7 @@ implementation rows.
 | `npm run proof-check` | PASS — source/Road, radiometric, ReSTIR-PT specialty, and renderer-fidelity proofs |
 | `npm run typecheck` | PASS — all configured workspaces |
 | `npm run build` | PASS — all seven configured example production builds |
-| `npm test` | PASS — 84/84 root script tests and 8,103/8,103 workspace tests across 693 files (8,187 tests across 704 files combined; 3,057 walkaround-hybrid) |
+| `npm test` | PASS — 84/84 root script tests across 11 files and 8,284/8,284 workspace tests across 704 Vitest files (8,368 tests across 715 files combined; 3,099 walkaround-hybrid tests across 280 files) |
 | `npm run lint` | PASS — 0 errors and 0 warnings |
 | WGSL compile gate (`--no-pipeline-gate`) | PASS — 78/78 modules and 29/29 portable shipped walkaround/RC roots; no native pipeline-graph claim |
 | `npm run shader-gate -- --bdpt-mask-parity-only` | PASS — 32,400/32,400 bounded CPU/WGSL strategy-mask cases agree |

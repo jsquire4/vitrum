@@ -337,7 +337,7 @@ describe('H18 — material-emissive direct probe hits', () => {
     expect(writeOut).toBeGreaterThan(emissionAdd);
   });
 
-  it('core-material DDGI packing preserves emissive as final radiance, not emissive × intensity', () => {
+  it('core-material DDGI packing folds emissiveIntensity into final radiance exactly once', () => {
     const buf = packDDGIMaterialsFromCoreN([
       {
         baseColor: [1, 1, 1],
@@ -349,8 +349,8 @@ describe('H18 — material-emissive direct probe hits', () => {
     ], 1);
     const f32 = new Float32Array(buf);
 
-    expect(f32[4]).toBeCloseTo(2, 5);
-    expect(f32[5]).toBeCloseTo(0.5, 5);
-    expect(f32[6]).toBeCloseTo(0.25, 5);
+    expect(f32[4]).toBeCloseTo(8, 5);
+    expect(f32[5]).toBeCloseTo(2, 5);
+    expect(f32[6]).toBeCloseTo(1, 5);
   });
 });

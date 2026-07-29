@@ -21,6 +21,7 @@ import type { ScenePackResult } from '@vitrum/shared-bvh';
 import {
   BVH_NODE_FLOATS,
   fingerprintTlasBuffers,
+  materialSpecSkipEmitter,
   rebuildPrimitiveBlas,
   rebuildTlasReuseBlas,
 } from '@vitrum/shared-bvh';
@@ -28,6 +29,7 @@ import { invertMat4 } from './math/mat4.js';
 import {
   packFoldedMaterialEntry,
   packLightTreeForScene,
+  applySolveSkinToScene,
   prepareSceneBufferMutation,
   rebuildTlasForSceneTransforms,
   sceneHasMappedAnalytic,
@@ -92,6 +94,18 @@ interface PreparedMutationSideEffect {
   finalize(): void;
 }
 
+const VALIDATED_SCENE_CANDIDATE: unique symbol = Symbol('validatedSceneCandidate');
+
+/**
+ * Internal proof that the complete candidate passed the backend's validation
+ * policy before any derived packing/allocation began. The symbol is private to
+ * this module, so callers cannot manufacture an unchecked commit token.
+ */
+interface ValidatedSceneCandidate {
+  readonly [VALIDATED_SCENE_CANDIDATE]: true;
+  readonly scene: Scene;
+}
+
 /**
  * The engine-state + engine-operation seam the router needs. The engine
  * implements this against its own private fields; the router holds NO state of
@@ -106,8 +120,17 @@ export interface MutationHost {
   getScene(): Scene | null;
   setSceneState(scene: Scene): void;
   getSceneBuffers(): UploadedSceneBuffers | null;
-  /** Validate a candidate immutable scene before staging any GPU resources. */
-  validateScene?(scene: Scene): void;
+  /** Validate only backend policies affected by one already-core-validated primitive patch. */
+  validatePrimitiveCandidate(scene: Scene, primitiveId: string): void;
+  /** Validate only backend policies affected by one already-core-validated emitter patch. */
+  validateEmitterCandidate(scene: Scene, emitterId: string): void;
+  /** Validate an environment replacement without traversing scene geometry. */
+  validateEnvironmentCandidate(environment: Scene['environment']): void;
+  /** Validate a replacement emitter list against the validated primitive inventory. */
+  validateEmittersCandidate(
+    emitters: readonly SceneEmitter[],
+    primitives: readonly ScenePrimitive[],
+  ): void;
   getGeoPack(): ScenePackResult | null;
   setGeoPack(pack: ScenePackResult): void;
   /** Refresh derived scene bounds after a geometry-pack publication. Returns a
@@ -156,14 +179,11 @@ interface FastPathCommit {
    */
   readonly reshapedWorldPositions?: boolean;
   /**
-   * Item 2c — when `true` the material fast path wrote an emissive-field change
-   * (emissive / emissiveIntensity). The common-commit code will re-run
-   * `packEmitterArrays` + `rebuildLightTreeForScene` so the implicit `__implicit__`
-   * NEE emitter (H14-A) picks up the new radiance. Without this the NEE sampling
-   * distribution diverges from the camera-hit emissive value until the next full
-   * repack.
+   * When `true`, a material fast path changed implicit-emitter classification
+   * or radiance (`emissive`, `emissiveIntensity`, or `extensions.skipEmitter`).
+   * The common commit rebuilds emitter arrays + the light tree.
    */
-  readonly changedEmissiveField?: boolean;
+  readonly changedEmitterClassification?: boolean;
 }
 
 /** Whether a committed buffer patch can change the world-space scene bounds. */
@@ -291,7 +311,6 @@ function environmentSummaryFromSceneBuffers(
 ): EnvSummaryForTree {
   return {
     hasHdri: sceneBuffers.hasEnvironmentMap,
-    sunStrength: sceneBuffers.environmentSunStrength,
     lightTreePower: sceneBuffers.environmentLightTreePower,
   };
 }
@@ -353,22 +372,44 @@ export class SceneMutationRouter {
     this.#host = host;
   }
 
+  #validatedCandidate(scene: Scene): ValidatedSceneCandidate {
+    return {
+      [VALIDATED_SCENE_CANDIDATE]: true,
+      scene,
+    };
+  }
+
   #commitPreparedMutation(
-    nextScene: Scene,
+    candidate: ValidatedSceneCandidate,
     sceneBuffers: UploadedSceneBuffers,
     bufferPatch: SceneBufferMutationPatch,
     nextGeoPack: ScenePackResult | undefined,
     deferredWarnings: readonly DeferredWarning[],
   ): void {
     const host = this.#host;
+    const nextScene = candidate.scene;
     const previousScene = host.getScene()!;
     const previousGeoPack = host.getGeoPack();
-    host.validateScene?.(nextScene);
     let bufferMutation: PreparedSceneBufferMutation | null = null;
     let liteMutation: PreparedMutationSideEffect | null = null;
     let rollbackSceneGeometryStats: (() => void) | null = null;
+    const commitWarnings = [...deferredWarnings];
     try {
       bufferMutation = prepareSceneBufferMutation(host.device, sceneBuffers, bufferPatch);
+      const previousCwbvhWarnings = new Set(sceneBuffers.cwbvhWarnings ?? []);
+      for (const warning of bufferMutation.preview.cwbvhWarnings ?? []) {
+        if (previousCwbvhWarnings.has(warning)) continue;
+        commitWarnings.push({
+          warning: {
+            code: 'pt-webgpu.cwbvh-binary-fallback',
+            backend: 'pt-webgpu',
+            phase: 'mutation',
+            method: 'updatePrimitive',
+            message: `[vitrum/pt-webgpu] ${warning}`,
+            details: { warning },
+          },
+        });
+      }
       liteMutation = host.stageLiteTextures?.(bufferMutation.preview) ?? null;
     } catch (error) {
       liteMutation?.rollback();
@@ -407,7 +448,7 @@ export class SceneMutationRouter {
     // the scene, resource mirrors, bind groups, and temporal reset all succeeded.
     try { liteMutation?.finalize(); } catch { /* the candidate remains live */ }
     bufferMutation.finalize();
-    for (const deferred of deferredWarnings) {
+    for (const deferred of commitWarnings) {
       warnHost(host, deferred.warning, ...(deferred.consoleArgs ?? []));
     }
   }
@@ -483,7 +524,8 @@ export class SceneMutationRouter {
     // geometry used for BLAS/emitter packing. Storing solved vertices in #scene
     // makes the next bone update skin the previous pose and compounds motion.
     const authoredNextScene = patchPrimitiveInScene(currentScene, id, patch);
-    host.validateScene?.(authoredNextScene);
+    host.validatePrimitiveCandidate(authoredNextScene, id);
+    const validatedAuthoredNextScene = this.#validatedCandidate(authoredNextScene);
     const patchedMaterial = (
       patch as unknown as { material?: Record<string, unknown> }
     ).material;
@@ -553,9 +595,18 @@ export class SceneMutationRouter {
       );
     const materialChangesEmissive = patchedMaterial != null &&
       ('emissive' in patchedMaterial || 'emissiveIntensity' in patchedMaterial);
+    const emitterSuppressionChanged =
+      authoredNextPrimitive != null &&
+      materialSpecSkipEmitter(currentPrimitive.material) !==
+        materialSpecSkipEmitter(authoredNextPrimitive.material);
+    const materialChangesEmitterClassification =
+      materialChangesEmissive || emitterSuppressionChanged;
     const meshAreaEmitterNeedsSolvedGeometry =
-      ('transform' in patch || materialChangesEmissive) &&
-      hasMeshAreaEmitterForPrimitive(currentScene, id);
+      ('transform' in patch || materialChangesEmitterClassification) &&
+      (
+        hasMeshAreaEmitterForPrimitive(currentScene, id) ||
+        hasMeshAreaEmitterForPrimitive(authoredNextScene, id)
+      );
     const requiresSolvedSkinGeometry =
       currentPrimitive.kind === 'skinned-mesh' &&
       (skinGeometryMutationPatch || meshAreaEmitterNeedsSolvedGeometry);
@@ -568,7 +619,19 @@ export class SceneMutationRouter {
     ) {
       try {
         const solvedPatch = solvedSkinGeometryPatch(authoredNextPrimitive);
-        renderNextScene = patchPrimitiveInScene(authoredNextScene, id, solvedPatch);
+        // `authoredNextScene` has already crossed the complete backend
+        // validation boundary above. `solvedPatch` is produced internally by
+        // the skin solver and contains geometry arrays only, so applying it to
+        // the transient render snapshot must not call the public incremental
+        // patch validator a second time.
+        renderNextScene = {
+          ...authoredNextScene,
+          primitives: authoredNextScene.primitives.map((primitive) =>
+            primitive.id === id
+              ? { ...primitive, ...solvedPatch }
+              : primitive,
+          ),
+        };
         if (skinGeometryMutationPatch) {
           const {
             bones: _bones,
@@ -746,7 +809,7 @@ export class SceneMutationRouter {
             nextGpuUvs,
           ),
           geoPack: rebuilt.pack,
-          warnings: rebuilt.pack.warnings,
+          warnings: rebuilt.currentWarnings,
           reshapedWorldPositions: true,
         };
       },
@@ -787,7 +850,7 @@ export class SceneMutationRouter {
             nextGpuUvs,
           ),
           geoPack: rebuilt.pack,
-          warnings: rebuilt.pack.warnings,
+          warnings: rebuilt.currentWarnings,
           reshapedWorldPositions: true,
         };
       },
@@ -861,7 +924,7 @@ export class SceneMutationRouter {
         return {
           bufferPatch: scenePackTlasMutationPatch(sceneBuffers, rebuilt.pack),
           geoPack: rebuilt.pack,
-          warnings: rebuilt.pack.warnings,
+          warnings: rebuilt.currentWarnings,
           reshapedWorldPositions: true,
         };
       },
@@ -957,8 +1020,10 @@ export class SceneMutationRouter {
         return {
           bufferPatch,
           warnings: [],
-          changedEmissiveField:
-            'emissive' in material || 'emissiveIntensity' in material,
+          changedEmitterClassification:
+            'emissive' in material ||
+            'emissiveIntensity' in material ||
+            emitterSuppressionChanged,
         };
       },
     ];
@@ -970,17 +1035,24 @@ export class SceneMutationRouter {
       if (sceneBuffers == null) break;
       const combinedPatch: SceneBufferMutationPatch = { ...commit.bufferPatch };
       if (
-        (commit.reshapedWorldPositions || commit.changedEmissiveField) &&
+        (
+          commit.reshapedWorldPositions ||
+          commit.changedEmitterClassification
+        ) &&
         (
           hasMeshAreaEmitterForPrimitive(currentScene, id) ||
           hasMeshAreaEmitterForPrimitive(renderNextScene, id)
         )
       ) {
-        const emitterPacked = packEmitterArrays(renderNextScene);
+        // Emitter arrays and their light tree are global derived state. Solving
+        // only the patched skin would silently move every other posed skinned
+        // emitter back to authored/rest geometry during this rebuild.
+        const emitterRenderScene = applySolveSkinToScene(authoredNextScene);
+        const emitterPacked = packEmitterArrays(emitterRenderScene);
         Object.assign(
           combinedPatch,
           emitterAndLightTreeMutationPatch(
-            renderNextScene,
+            emitterRenderScene,
             emitterPacked,
             environmentSummaryFromSceneBuffers(sceneBuffers),
           ),
@@ -1011,7 +1083,7 @@ export class SceneMutationRouter {
         });
       }
       this.#commitPreparedMutation(
-        authoredNextScene,
+        validatedAuthoredNextScene,
         sceneBuffers,
         combinedPatch,
         commit.geoPack,
@@ -1078,15 +1150,18 @@ export class SceneMutationRouter {
     }
 
     const nextScene = patchEmitterInScene(currentScene, id, patch);
+    host.validateEmitterCandidate(nextScene, id);
+    const validatedNextScene = this.#validatedCandidate(nextScene);
+    const renderNextScene = applySolveSkinToScene(nextScene);
     const sceneBuffers = host.getSceneBuffers();
     if (sceneBuffers == null) {
       host.setScene(nextScene);
       return;
     }
 
-    const packed = packEmitterArrays(nextScene);
+    const packed = packEmitterArrays(renderNextScene);
     const bufferPatch = emitterAndLightTreeMutationPatch(
-      nextScene,
+      renderNextScene,
       packed,
       environmentSummaryFromSceneBuffers(sceneBuffers),
     );
@@ -1133,7 +1208,7 @@ export class SceneMutationRouter {
       },
     }));
     this.#commitPreparedMutation(
-      nextScene,
+      validatedNextScene,
       sceneBuffers,
       bufferPatch,
       undefined,
@@ -1149,10 +1224,12 @@ export class SceneMutationRouter {
       ...currentScene,
       environment: env ?? { kind: 'none' },
     };
+    const renderNextScene = applySolveSkinToScene(nextScene);
     // Reject malformed environment payloads before any derived packing or GPU
-    // candidate allocation. #commitPreparedMutation repeats this at the
-    // transactional boundary to keep every caller on the same safety rail.
-    host.validateScene?.(nextScene);
+    // candidate allocation. The returned private token is the commit proof, so
+    // the same complete snapshot is not traversed a second time at publication.
+    host.validateEnvironmentCandidate(nextScene.environment);
+    const validatedNextScene = this.#validatedCandidate(nextScene);
     const sceneBuffers = host.getSceneBuffers();
     if (sceneBuffers == null) {
       host.setScene(nextScene);
@@ -1162,10 +1239,9 @@ export class SceneMutationRouter {
     const packed = environmentParams(nextScene);
     const envSummaryForTree: EnvSummaryForTree = {
       hasHdri: packed.hasHdri,
-      sunStrength: packed.sunStrength,
       lightTreePower: packed.lightTreePower,
     };
-    const tree = packLightTreeForScene(nextScene, {
+    const tree = packLightTreeForScene(renderNextScene, {
       envSummary: envSummaryForTree,
     });
     const bufferPatch: SceneBufferMutationPatch = {
@@ -1173,8 +1249,6 @@ export class SceneMutationRouter {
       environmentMapCdf: packed.hdriCdf,
       lightTreeNodes: tree.lightTreeNodes,
       environmentTint: packed.tint,
-      environmentSunDirection: packed.sunDirection,
-      environmentSunStrength: packed.sunStrength,
       environmentLightTreePower: packed.lightTreePower,
       environmentHdriIntensity: packed.hdriIntensity,
       environmentHdriRotationY: packed.hdriRotationY,
@@ -1195,7 +1269,7 @@ export class SceneMutationRouter {
       },
     }));
     this.#commitPreparedMutation(
-      nextScene,
+      validatedNextScene,
       sceneBuffers,
       bufferPatch,
       undefined,
@@ -1250,27 +1324,33 @@ export class SceneMutationRouter {
           }
         : {}),
     };
+    const renderNextScene = applySolveSkinToScene(nextScene);
     // Validate the complete candidate before deriving emitter/environment
     // buffers. Shape-only checks above provide actionable method errors; core
     // scene validation enforces every emitter/environment numeric invariant.
-    host.validateScene?.(nextScene);
+    if (hasEmitters) {
+      host.validateEmittersCandidate(nextScene.emitters, nextScene.primitives);
+    }
+    if (hasEnvironment) {
+      host.validateEnvironmentCandidate(nextScene.environment);
+    }
+    const validatedNextScene = this.#validatedCandidate(nextScene);
     const sceneBuffers = host.getSceneBuffers();
     if (sceneBuffers == null) {
       host.setScene(nextScene);
       return;
     }
 
-    const packedEmitters = packEmitterArrays(nextScene);
-    const packedEnvironment = hasEnvironment ? environmentParams(nextScene) : null;
+    const packedEmitters = packEmitterArrays(renderNextScene);
+    const packedEnvironment = hasEnvironment ? environmentParams(renderNextScene) : null;
     const envSummary: EnvSummaryForTree = packedEnvironment == null
       ? environmentSummaryFromSceneBuffers(sceneBuffers)
       : {
           hasHdri: packedEnvironment.hasHdri,
-          sunStrength: packedEnvironment.sunStrength,
           lightTreePower: packedEnvironment.lightTreePower,
         };
     const bufferPatch = emitterAndLightTreeMutationPatch(
-      nextScene,
+      renderNextScene,
       packedEmitters,
       envSummary,
     );
@@ -1279,8 +1359,6 @@ export class SceneMutationRouter {
         environmentMapTexels: packedEnvironment.hdriTexels,
         environmentMapCdf: packedEnvironment.hdriCdf,
         environmentTint: packedEnvironment.tint,
-        environmentSunDirection: packedEnvironment.sunDirection,
-        environmentSunStrength: packedEnvironment.sunStrength,
         environmentLightTreePower: packedEnvironment.lightTreePower,
         environmentHdriIntensity: packedEnvironment.hdriIntensity,
         environmentHdriRotationY: packedEnvironment.hdriRotationY,
@@ -1322,7 +1400,7 @@ export class SceneMutationRouter {
       });
     }
     this.#commitPreparedMutation(
-      nextScene,
+      validatedNextScene,
       sceneBuffers,
       bufferPatch,
       undefined,

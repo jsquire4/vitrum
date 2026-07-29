@@ -1448,6 +1448,43 @@ describe('strict Draco stream resolution', () => {
     ]);
   });
 
+  it('uses an independently valid whole fallback when an optional Draco declaration is malformed', async () => {
+    const { gltf, buffers } = makeDracoAsset(true);
+    const diagnostics: GltfCompressionDiagnostic[] = [];
+    gltf.meshes![0]!.primitives[0]!.extensions!.KHR_draco_mesh_compression = {
+      bufferView: Number.NaN,
+      attributes: { POSITION: 10, NORMAL: 11 },
+    };
+
+    const out = await resolveCompression(
+      gltf,
+      buffers,
+      {},
+      [],
+      (diagnostic) => diagnostics.push(diagnostic),
+    );
+
+    const primitive = out.meshes![0]!.primitives[0]!;
+    expect(primitive.attributes).toEqual({ POSITION: 0, NORMAL: 1 });
+    expect(primitive.indices).toBe(2);
+    expect(primitive.extensions?.KHR_draco_mesh_compression).toBeUndefined();
+    expect(diagnostics).toContainEqual(expect.objectContaining({
+      code: 'draco-fallback-accessors-used',
+    }));
+  });
+
+  it('rejects the same malformed Draco declaration when the extension is required', async () => {
+    const { gltf, buffers } = makeDracoAsset(true);
+    gltf.extensionsRequired = ['KHR_draco_mesh_compression'];
+    gltf.meshes![0]!.primitives[0]!.extensions!.KHR_draco_mesh_compression = {
+      bufferView: Number.NaN,
+      attributes: { POSITION: 10, NORMAL: 11 },
+    };
+
+    await expect(resolveCompression(gltf, buffers, {}, []))
+      .rejects.toThrow(/bufferView must be a safe integer >= 0/);
+  });
+
   it('falls back the whole primitive atomically when decoded indices are invalid', async () => {
     const { gltf, buffers } = makeDracoAsset(true);
     const diagnostics: GltfCompressionDiagnostic[] = [];

@@ -21,7 +21,6 @@ import {
   Y_CMF_INTEGRAL,
   Z_CMF_INTEGRAL,
 } from '@vitrum/shared-samplers';
-import { composePtWebgpuReuseWgsl } from '../wgsl/pathTrace/restirPtCompose.wgsl.js';
 import { composePathTraceKernelWgsl } from '../wgsl/pathTrace/kernel.wgsl.js';
 import { RESTIR_PT_TEMPORAL_WGSL } from '../wgsl/pathTrace/restirPtTemporal.wgsl.js';
 import { RESTIR_PT_SPATIAL_WGSL } from '../wgsl/pathTrace/restirPtSpatial.wgsl.js';
@@ -29,7 +28,6 @@ import { RESTIR_PT_PRODUCER_WGSL } from '../wgsl/pathTrace/restirPtProducer.wgsl
 import { RESTIR_PT_RESOLVE_WGSL } from '../wgsl/pathTrace/restirPtResolve.wgsl.js';
 import { RESERVOIR_PT_HERO_WGSL } from '../wgsl/pathTrace/reservoirPtHero.wgsl.js';
 
-const composed = composePtWebgpuReuseWgsl();
 const compositeKernel = composePathTraceKernelWgsl({
   volumetricSss: true,
   restirPtComposite: true,
@@ -103,67 +101,6 @@ function finaliseReservoirPTWGrisReference(opts: {
       !Number.isFinite(opts.pHat) || opts.pHat <= 1e-9) return Number.NEGATIVE_INFINITY;
   return Math.log(opts.wSum) - Math.log(opts.pHat);
 }
-
-describe('ReSTIR-PT reuse — composes as a single WGSL unit', () => {
-  it('declares all four @compute entry points exactly once each', () => {
-    expect((composed.match(/@compute @workgroup_size\(8, 8, 1\)\s*\nfn restirPtProduce\(/g) ?? []).length).toBe(1);
-    expect((composed.match(/@compute @workgroup_size\(8, 8, 1\)\s*\nfn restirPtTemporal\(/g) ?? []).length).toBe(1);
-    expect((composed.match(/@compute @workgroup_size\(8, 8, 1\)\s*\nfn restirPtSpatial\(/g) ?? []).length).toBe(1);
-    expect((composed.match(/@compute @workgroup_size\(8, 8, 1\)\s*\nfn restirPtResolve\(/g) ?? []).length).toBe(1);
-  });
-
-  it('includes only the prefix-1 geometry shift + reservoir ADT exactly once', () => {
-    // restirPtShiftJacobian (FD-validated) must be DEFINED once (not double-
-    // included by both the shared modules and the reservoir composite).
-    const code = codeOnly(composed);
-    expect((code.match(/fn restirPtShiftJacobian\(/g) ?? []).length).toBe(1);
-    expect((code.match(/fn restirPtReconnectionGeometryTerm\(/g) ?? []).length).toBe(1);
-    expect((code.match(/fn restirPtReconnectionJacobianForPair\(/g) ?? []).length).toBe(1);
-    expect(code).not.toContain('fn rptHybridShiftJacobian(');
-    expect(code).not.toContain('pSource / pTarget');
-    expect((code.match(/struct ReservoirPTHero \{/g) ?? []).length).toBe(1);
-    expect((code.match(/struct RestirPtParams \{/g) ?? []).length).toBe(1);
-  });
-
-  it('defines every shared symbol the passes reference (no dangling identifier)', () => {
-    // Spot-check the load-bearing shared symbols the reuse passes call — each
-    // must be DEFINED somewhere in the composed unit.
-    for (const def of [
-      'fn traceClosest(',
-      'fn traceAny(',
-      'fn evaluateBrdfFullWithClearcoatNormal(',
-      'fn evaluateFiniteBsdfFullWithClearcoatNormal(',
-      'fn brdfDirectionalPdfFullWithClearcoatNormal(',
-      'fn brdfDirectionalPdfFullSampled(',
-      'fn brdfDirectionalPdfFullSampledWithClearcoatNormal(',
-      'fn cosineHemisphereSample(',
-      'fn glossyReflectionSample(',
-      'fn glossyReflectionSampleAnisotropic(',
-      'fn decodeMaterial(',
-      'fn hitMaterialId(',
-      'fn sampleEnvironmentColor(',
-      'fn sampleEnvironmentImportance(',
-      'fn powerHeuristic(',
-      'fn pcgInit(',
-      'fn rand_f32(',
-      'fn luminance(',
-      'fn buildOnb(',
-      'fn fresnelSchlick(',
-      'fn materialAnisotropy(',
-      'fn materialAnisotropyRotation(',
-      'struct FrameParams {',
-    ]) {
-      expect(composed.includes(def), `composed unit defines ${def}`).toBe(true);
-    }
-  });
-
-  it('declares the ReSTIR-PT resources in @group(4) (separate from inherited 0..3)', () => {
-    expect(composed).toContain('@group(4) @binding(0) var<storage, read_write> rpt_reservoirOut: array<u32>;');
-    expect(composed).toContain('@group(4) @binding(1) var<storage, read_write> rpt_resCurrent: array<u32>;');
-    expect(composed).toContain('@group(4) @binding(2) var<storage, read>       rpt_resPrev:    array<u32>;');
-    expect(composed).toContain('@group(4) @binding(3) var<storage, read_write> rpt_result:      array<vec4f>;');
-  });
-});
 
 describe('ReSTIR-PT temporal — calls the reconnection shift + the GRIS finalize', () => {
   it('calls the prefix-1 geometry shift with source/target reservoirs', () => {

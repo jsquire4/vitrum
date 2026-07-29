@@ -56,6 +56,7 @@ export interface PtWebgpuCapabilitiesFlags {
   readonly causticStrategy: EngineCapabilities['causticStrategy'];
   readonly spectral: boolean;
   readonly denoiser: 'none' | 'oidn-final';
+  readonly debug?: boolean;
 }
 
 const PT_WEBGPU_FULL_INVERSE_RENDERING: NonNullable<
@@ -207,7 +208,7 @@ export function ptWebgpuCapabilities(flags: PtWebgpuCapabilitiesFlags): EngineCa
         : PT_WEBGPU_LITE_INVERSE_RENDERING,
     activeFeatures,
     causticStrategy: flags.traceTier === 'lite' ? 'none' : flags.causticStrategy,
-    // W3-D8 — this engine exposes `debug.estimatedGpuMemoryBytes()`.
-    debugSurface: true,
+    // W3-D8 — the surface exists only for an explicitly debug-enabled engine.
+    debugSurface: flags.debug === true,
   };
 }

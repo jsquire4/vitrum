@@ -26,6 +26,26 @@ const IDENTITY_MAT4 = asMat4([
   0, 0, 0, 1,
 ]);
 
+const SCENE_PACK_WARNING_HISTORY_LIMIT = 256;
+
+function mergePackWarnings(
+  previous: readonly string[],
+  current: readonly string[],
+): string[] {
+  // A warning that recurs in the current operation is current evidence, not an
+  // old first occurrence. Delete before re-adding so Map insertion order tracks
+  // each warning's last occurrence and cap pressure retains the active warning.
+  const byLastOccurrence = new Map<string, true>();
+  for (const warning of [...previous, ...current]) {
+    byLastOccurrence.delete(warning);
+    byLastOccurrence.set(warning, true);
+  }
+  const unique = [...byLastOccurrence.keys()];
+  return unique.length <= SCENE_PACK_WARNING_HISTORY_LIMIT
+    ? unique
+    : unique.slice(unique.length - SCENE_PACK_WARNING_HISTORY_LIMIT);
+}
+
 /** Per-primitive bookkeeping for transform-only TLAS refit (stable across frames). */
 export interface PrimitiveTlasBinding {
   readonly primitiveId: string;
@@ -423,7 +443,7 @@ function packOneMeshLikePrimitive(
       localAabbMax: localAabb.max,
       warnings,
     },
-    warnings,
+    warnings: mergePackWarnings([], warnings),
   };
 }
 
@@ -569,9 +589,14 @@ function membershipChangedReason(
 function collectTlasInstancesFromBindings(
   scene: Scene,
   bindings: readonly PrimitiveTlasBinding[],
-): { readonly ok: true; readonly instances: readonly PendingTlasInstance[] } | { readonly ok: false; readonly reason: string } {
+): {
+  readonly ok: true;
+  readonly instances: readonly PendingTlasInstance[];
+  readonly warnings: readonly string[];
+} | { readonly ok: false; readonly reason: string } {
   const primitiveById = mapPrimitivesById(scene);
   const instances: PendingTlasInstance[] = [];
+  const warnings: string[] = [];
   for (const binding of bindings) {
     const primitive = primitiveById.get(binding.primitiveId);
     if (primitive == null) {
@@ -598,11 +623,19 @@ function collectTlasInstancesFromBindings(
         reason: membershipChangedReason(binding, membership.sourceIndices),
       };
     }
+    for (const { nonInvertible } of resolved) {
+      if (nonInvertible) {
+        warnings.push(
+          `Primitive "${binding.primitiveId}" has non-invertible instance transform; ` +
+          `skipping this TLAS instance (geometry would be placed at the origin otherwise).`,
+        );
+      }
+    }
     for (const instance of membership.instances) {
       instances.push(instance);
     }
   }
-  return { ok: true, instances };
+  return { ok: true, instances, warnings };
 }
 
 /**
@@ -682,9 +715,19 @@ function finalizeSplicedPack(
 ): RebuildPrimitiveBlasResult {
   const collected = collectTlasInstancesFromBindings(scene, primitiveTlasBindings);
   if (!collected.ok) {
-    return { ok: true, pack: packSceneFromCore(scene, opts), strategy: 'full' };
+    const pack = packSceneFromCore(scene, opts);
+    return {
+      ok: true,
+      pack,
+      strategy: 'full',
+      currentWarnings: pack.warnings,
+    };
   }
   const tlasBuild = buildTlasFromInstances(collected.instances);
+  const currentWarnings = mergePackWarnings(
+    [],
+    [...sliceWarnings, ...collected.warnings],
+  );
   const pack: ScenePackResult = {
     positions: buffers.positions,
     normals: buffers.normals,
@@ -702,13 +745,14 @@ function finalizeSplicedPack(
     tlasInstanceLocalToWorld: tlasBuild.tlasInstanceLocalToWorld,
     tlasNodeCount: tlasBuild.tlasNodeCount,
     primitiveTlasBindings,
-    warnings: [...prev.warnings, ...sliceWarnings],
+    warnings: mergePackWarnings(prev.warnings, currentWarnings),
   };
   validatePackedBlasForest(pack);
   return {
     ok: true,
     strategy: 'splice',
     pack,
+    currentWarnings,
   };
 }
 
@@ -1121,7 +1165,7 @@ export function packSceneFromCore(scene: Scene, opts: ScenePackOptions): ScenePa
     tlasInstanceLocalToWorld: tlasBuild.tlasInstanceLocalToWorld,
     tlasNodeCount: tlasBuild.tlasNodeCount,
     primitiveTlasBindings,
-    warnings,
+    warnings: mergePackWarnings([], warnings),
   };
   validatePackedBlasForest(pack);
   return pack;
@@ -1431,7 +1475,12 @@ function collectLiveTlasInstancesFromBindings(
 }
 
 export type RebuildTlasReuseBlasResult =
-  | { readonly ok: true; readonly pack: ScenePackResult }
+  | {
+      readonly ok: true;
+      readonly pack: ScenePackResult;
+      /** Warnings produced by this rebuild, excluding retained pack history. */
+      readonly currentWarnings: readonly string[];
+    }
   | { readonly ok: false; readonly reason: string };
 
 /**
@@ -1498,6 +1547,7 @@ export function rebuildTlasReuseBlas(
 
   return {
     ok: true,
+    currentWarnings: collected.warnings,
     pack: {
       // BLAS buffers reused verbatim — no per-triangle rebuild.
       positions: prev.positions,
@@ -1517,13 +1567,19 @@ export function rebuildTlasReuseBlas(
       tlasInstanceLocalToWorld: tlasBuild.tlasInstanceLocalToWorld,
       tlasNodeCount: tlasBuild.tlasNodeCount,
       primitiveTlasBindings,
-      warnings: [...prev.warnings, ...collected.warnings],
+      warnings: mergePackWarnings(prev.warnings, collected.warnings),
     },
   };
 }
 
 export type RebuildPrimitiveBlasResult =
-  | { readonly ok: true; readonly pack: ScenePackResult; readonly strategy: 'splice' | 'full' }
+  | {
+      readonly ok: true;
+      readonly pack: ScenePackResult;
+      readonly strategy: 'splice' | 'full';
+      /** Warnings produced by this rebuild, excluding retained pack history. */
+      readonly currentWarnings: readonly string[];
+    }
   | { readonly ok: false; readonly reason: string };
 
 /**
@@ -1555,7 +1611,13 @@ export function rebuildPrimitiveBlas(
 
   const { slice } = packOneMeshLikePrimitive(primitive, opts.resolveMaterialId(primitiveId));
   if (slice == null) {
-    return { ok: true, pack: packSceneFromCore(scene, opts), strategy: 'full' };
+    const pack = packSceneFromCore(scene, opts);
+    return {
+      ok: true,
+      pack,
+      strategy: 'full',
+      currentWarnings: pack.warnings,
+    };
   }
 
   return splicePrimitiveBlasIntoPack(prev, bindingIndex, slice, scene, opts);

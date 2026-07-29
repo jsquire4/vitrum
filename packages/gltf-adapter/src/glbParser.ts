@@ -89,17 +89,17 @@ export function parseGlb(
   }
 
   const totalLength = view.getUint32(8, true);
+  if (totalLength < 12) {
+    throw glbError(
+      'glb-header-too-small',
+      `[vitrum/gltf-adapter] GLB: declared length ${totalLength} is smaller than the 12-byte header`,
+      { byteOffset: 8, declaredLength: totalLength, actualLength },
+    );
+  }
   if (totalLength > actualLength) {
     throw glbError(
       'glb-declared-length-exceeds-buffer',
       `[vitrum/gltf-adapter] GLB: declared length ${totalLength} exceeds buffer length ${actualLength}`,
-      { byteOffset: 8, declaredLength: totalLength, actualLength },
-    );
-  }
-  if (totalLength !== actualLength) {
-    throw glbError(
-      'glb-declared-length-mismatch',
-      `[vitrum/gltf-adapter] GLB: declared length ${totalLength} does not equal buffer length ${actualLength}`,
       { byteOffset: 8, declaredLength: totalLength, actualLength },
     );
   }

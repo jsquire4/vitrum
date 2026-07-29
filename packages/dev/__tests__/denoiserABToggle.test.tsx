@@ -17,6 +17,7 @@ afterEach(() => {
   root = null;
   container = null;
   vi.restoreAllMocks();
+  vi.useRealTimers();
 });
 
 function mount(engine: DebuggableEngine): HTMLElement {
@@ -71,5 +72,20 @@ describe('DenoiserABToggle', () => {
     act(() => badge.dispatchEvent(new MouseEvent('click', { bubbles: true })));
     expect(setDenoiserEnabled).toHaveBeenLastCalledWith(true);
     expect(badge.textContent).toContain('on');
+  });
+
+  it('reconciles the badge with an externally changed engine debug state', () => {
+    vi.useFakeTimers();
+    let enabled = true;
+    const badge = mount(engineWithDebug({
+      isDenoiserEnabled: () => enabled,
+      setDenoiserEnabled: vi.fn(),
+    }));
+
+    enabled = false;
+    act(() => vi.advanceTimersByTime(250));
+
+    expect(badge.getAttribute('aria-pressed')).toBe('false');
+    expect(badge.textContent).toContain('off');
   });
 });

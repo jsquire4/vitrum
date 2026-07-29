@@ -240,13 +240,139 @@ function findInterval(times: Float32Array, time: number): { i0: number; i1: numb
   if (n === 0) return { i0: 0, i1: 0, t: 0 };
   if (time <= (times[0] ?? 0)) return { i0: 0, i1: 0, t: 0 };
   if (time >= (times[n - 1] ?? 0)) return { i0: n - 1, i1: n - 1, t: 0 };
-  let i0 = 0;
-  while (i0 < n - 1 && (times[i0 + 1] ?? 0) <= time) i0 += 1;
-  const i1 = Math.min(i0 + 1, n - 1);
+  // Upper-bound search: find the first key strictly greater than `time`.
+  // Animation clips are validated as strictly increasing before a sampler is
+  // constructed, so this is O(log keyframes) and needs no defensive rescan.
+  let lo = 1;
+  let hi = n - 1;
+  while (lo < hi) {
+    const mid = lo + ((hi - lo) >>> 1);
+    if (times[mid]! <= time) lo = mid + 1;
+    else hi = mid;
+  }
+  const i1 = lo;
+  const i0 = i1 - 1;
   const dt = (times[i1] ?? 0) - (times[i0] ?? 0);
   const t = dt > 0 ? (time - (times[i0] ?? 0)) / dt : 0;
   return { i0, i1, t };
 }
+
+interface CompiledAnimationChannel {
+  readonly node: SceneNodeId;
+  readonly path: AnimationTargetPath;
+  readonly pointer?: string;
+  readonly times: Float32Array;
+  readonly values: Float32Array;
+  readonly interpolation: AnimationInterpolation;
+  readonly components: number;
+  readonly stride: number;
+}
+
+/**
+ * A validated, immutable-by-snapshot animation sampler.
+ *
+ * Construction validates the complete public clip once and copies its typed
+ * arrays. Repeated playback therefore does no schema walk and cannot be
+ * invalidated by a caller mutating the source buffers behind their readonly
+ * TypeScript type.
+ */
+export interface AnimationClipSampler {
+  readonly duration: number;
+  sample(time: number): SampledChannel[];
+}
+
+function sampleCompiledChannel(
+  channel: CompiledAnimationChannel,
+  time: number,
+): SampledChannel {
+  const {
+    node, path, pointer, times, values, interpolation, components: n, stride,
+  } = channel;
+  const cubic = interpolation === 'CUBICSPLINE';
+  const { i0, i1, t } = findInterval(times, time);
+  const value = new Float32Array(n);
+  if (interpolation === 'STEP' || i0 === i1) {
+    const off = cubic ? i0 * stride + n : i0 * stride;
+    for (let k = 0; k < n; k += 1) value[k] = values[off + k] ?? 0;
+  } else if (cubic) {
+    const dt = (times[i1] ?? 0) - (times[i0] ?? 0);
+    const t2 = t * t;
+    const t3 = t2 * t;
+    const h00 = 2 * t3 - 3 * t2 + 1;
+    const h10 = t3 - 2 * t2 + t;
+    const h01 = -2 * t3 + 3 * t2;
+    const h11 = t3 - t2;
+    const b0 = i0 * stride;
+    const b1 = i1 * stride;
+    for (let k = 0; k < n; k += 1) {
+      const v0 = values[b0 + n + k] ?? 0;
+      const out0 = values[b0 + 2 * n + k] ?? 0;
+      const v1 = values[b1 + n + k] ?? 0;
+      const in1 = values[b1 + k] ?? 0;
+      value[k] = h00 * v0 + h10 * dt * out0 + h01 * v1 + h11 * dt * in1;
+    }
+  } else if (path === 'rotation') {
+    slerpQuat(value, values, i0 * stride, i1 * stride, t);
+  } else {
+    const o0 = i0 * stride;
+    const o1 = i1 * stride;
+    for (let k = 0; k < n; k += 1) {
+      const a = values[o0 + k] ?? 0;
+      const b = values[o1 + k] ?? 0;
+      value[k] = a + (b - a) * t;
+    }
+  }
+  if (path === 'rotation') normalizeSampledQuat(value);
+  return {
+    node,
+    path,
+    ...(pointer !== undefined ? { pointer } : {}),
+    value,
+  };
+}
+
+/** Validate and compile a clip for repeated real-time playback. */
+export function createAnimationClipSampler(clip: AnimationClip): AnimationClipSampler {
+  validateAnimationClip(clip);
+  const channels: CompiledAnimationChannel[] = clip.channels.map((channel) => {
+    const interpolation = channel.sampler.interpolation ?? 'LINEAR';
+    const cubic = interpolation === 'CUBICSPLINE';
+    const times = channel.sampler.times.slice();
+    const values = channel.sampler.values.slice();
+    const components = pathComponents(
+      channel.target.path,
+      values.length,
+      times.length,
+      cubic,
+    );
+    return {
+      node: channel.target.node,
+      path: channel.target.path,
+      ...(channel.target.pointer !== undefined
+        ? { pointer: channel.target.pointer }
+        : {}),
+      times,
+      values,
+      interpolation,
+      components,
+      stride: cubic ? components * 3 : components,
+    };
+  });
+  const duration = clip.duration;
+  return {
+    duration,
+    sample(time: number): SampledChannel[] {
+      if (!Number.isFinite(time)) {
+        throw new RangeError(
+          `sampleAnimationClip: time must be finite (got ${String(time)})`,
+        );
+      }
+      return channels.map((channel) => sampleCompiledChannel(channel, time));
+    },
+  };
+}
+
+const compiledSamplerByClip = new WeakMap<AnimationClip, AnimationClipSampler>();
 
 function slerpQuat(out: Float32Array, v: Float32Array, o0: number, o1: number, t: number): void {
   const aInv = 1 / Math.hypot(v[o0]!, v[o0 + 1]!, v[o0 + 2]!, v[o0 + 3]!);
@@ -291,52 +417,10 @@ function normalizeSampledQuat(value: Float32Array): void {
  * use quaternion slerp; CUBICSPLINE uses the glTF Hermite basis.
  */
 export function sampleAnimationClip(clip: AnimationClip, time: number): SampledChannel[] {
-  validateAnimationClip(clip);
-  if (!Number.isFinite(time)) {
-    throw new RangeError(`sampleAnimationClip: time must be finite (got ${String(time)})`);
+  let sampler = compiledSamplerByClip.get(clip);
+  if (sampler == null) {
+    sampler = createAnimationClipSampler(clip);
+    compiledSamplerByClip.set(clip, sampler);
   }
-  const out: SampledChannel[] = [];
-  for (const ch of clip.channels) {
-    const times = ch.sampler.times;
-    const values = ch.sampler.values;
-    const interpolation = ch.sampler.interpolation ?? 'LINEAR';
-    const cubic = interpolation === 'CUBICSPLINE';
-    const n = pathComponents(ch.target.path, values.length, times.length, cubic);
-    const stride = cubic ? n * 3 : n;
-    const { i0, i1, t } = findInterval(times, time);
-    const value = new Float32Array(n);
-    if (interpolation === 'STEP' || i0 === i1) {
-      const off = cubic ? i0 * stride + n : i0 * stride; // cubic: middle (value) third
-      for (let k = 0; k < n; k += 1) value[k] = values[off + k] ?? 0;
-    } else if (cubic) {
-      const dt = (times[i1] ?? 0) - (times[i0] ?? 0);
-      const t2 = t * t, t3 = t2 * t;
-      const h00 = 2 * t3 - 3 * t2 + 1, h10 = t3 - 2 * t2 + t, h01 = -2 * t3 + 3 * t2, h11 = t3 - t2;
-      const b0 = i0 * stride, b1 = i1 * stride;
-      for (let k = 0; k < n; k += 1) {
-        const v0 = values[b0 + n + k] ?? 0;       // value of kf0
-        const out0 = values[b0 + 2 * n + k] ?? 0; // out-tangent of kf0
-        const v1 = values[b1 + n + k] ?? 0;       // value of kf1
-        const in1 = values[b1 + k] ?? 0;          // in-tangent of kf1
-        value[k] = h00 * v0 + h10 * dt * out0 + h01 * v1 + h11 * dt * in1;
-      }
-    } else if (ch.target.path === 'rotation') {
-      slerpQuat(value, values, i0 * stride, i1 * stride, t);
-    } else {
-      const o0 = i0 * stride, o1 = i1 * stride;
-      for (let k = 0; k < n; k += 1) {
-        const a = values[o0 + k] ?? 0;
-        const b = values[o1 + k] ?? 0;
-        value[k] = a + (b - a) * t;
-      }
-    }
-    if (ch.target.path === 'rotation') normalizeSampledQuat(value);
-    out.push({
-      node: ch.target.node,
-      path: ch.target.path,
-      ...(ch.target.pointer !== undefined ? { pointer: ch.target.pointer } : {}),
-      value,
-    });
-  }
-  return out;
+  return sampler.sample(time);
 }

@@ -35,6 +35,7 @@ import {
 const DRACO_EXT = 'KHR_draco_mesh_compression' as const;
 const GLTF_MODE_TRIANGLES = 4;
 const GLTF_MODE_TRIANGLE_STRIP = 5;
+const FALLBACK_PRIMITIVE_MODES = new Set([0, 1, 2, 3, 4, 5, 6]);
 
 interface ValidDracoExtension {
   readonly bufferView: number;
@@ -865,6 +866,10 @@ function validateWholeFallback(
   resourceLedger: ImportResourceLedger | undefined,
 ): void {
   let positionCount: number | undefined;
+  const attributeCounts: Array<{
+    readonly semantic: string;
+    readonly count: number;
+  }> = [];
   for (const [semantic, rawAccessorIndex] of Object.entries(primitive.attributes)) {
     const accessorIndex = safeInteger(rawAccessorIndex, `primitive.attributes.${semantic}`);
     const accessor = gltf.accessors?.[accessorIndex];
@@ -880,13 +885,27 @@ function validateWholeFallback(
       resourceLedger,
     );
     if (semantic === 'POSITION') positionCount = accessor.count;
+    attributeCounts.push({ semantic, count: accessor.count });
+  }
+  if (positionCount === undefined) {
+    throw new Error(`${primitivePath} fallback has no POSITION accessor`);
+  }
+  for (const attribute of attributeCounts) {
+    if (attribute.count !== positionCount) {
+      throw new RangeError(
+        `${primitivePath} fallback ${attribute.semantic} count ${attribute.count} ` +
+          `does not match POSITION count ${positionCount}`,
+      );
+    }
   }
   const ownsIndices = hasOwn(primitive, 'indices');
   const rawIndices = ownsIndices ? primitive.indices : undefined;
+  let elementCount = positionCount;
   if (ownsIndices) {
     const accessorIndex = safeInteger(rawIndices, 'primitive.indices');
     const accessor = gltf.accessors?.[accessorIndex];
     if (accessor == null) throw new Error(`index accessor ${accessorIndex} is missing`);
+    elementCount = accessor.count;
     validateExactIndexFallback(
       gltf,
       buffers,
@@ -896,6 +915,23 @@ function validateWholeFallback(
       allocationLedger,
       `${primitivePath} fallback indices`,
       resourceLedger,
+    );
+  }
+  const mode = hasOwn(primitive, 'mode') ? primitive.mode : GLTF_MODE_TRIANGLES;
+  if (!Number.isSafeInteger(mode) || !FALLBACK_PRIMITIVE_MODES.has(mode as number)) {
+    throw new RangeError(
+      `${primitivePath}.mode ${String(mode)} is not a supported uncompressed primitive mode`,
+    );
+  }
+  const validTopology =
+    mode === 0 ? elementCount >= 1
+      : mode === 1 ? elementCount >= 2 && elementCount % 2 === 0
+        : mode === 2 || mode === 3 ? elementCount >= 2
+          : mode === 4 ? elementCount >= 3 && elementCount % 3 === 0
+            : elementCount >= 3;
+  if (!validTopology) {
+    throw new RangeError(
+      `${primitivePath} fallback element count ${elementCount} is invalid for mode ${String(mode)}`,
     );
   }
 }
@@ -974,6 +1010,7 @@ function declaredDracoGeometryMinimum(
 export function preflightDracoCompressionDeclarations(
   gltf: GltfJson,
   sceneReachability: GltfSceneReachability | undefined,
+  required: boolean,
 ): void {
   for (const [meshIndex, mesh] of (gltf.meshes ?? []).entries()) {
     for (const [primitiveIndex, primitive] of mesh.primitives.entries()) {
@@ -985,9 +1022,39 @@ export function preflightDracoCompressionDeclarations(
       const rawExtension = getOwnDracoExtension(primitive);
       if (rawExtension === undefined) continue;
       const primitivePath = `meshes[${meshIndex}].primitives[${primitiveIndex}]`;
-      const extension = validateExtension(rawExtension, `${primitivePath}.extensions.${DRACO_EXT}`);
-      validateCompressedDeclaration(gltf, extension, primitivePath);
-      const primitiveMode = validatePrimitiveMode(primitive, primitivePath);
+      let extension: ValidDracoExtension;
+      try {
+        extension = validateExtension(
+          rawExtension,
+          `${primitivePath}.extensions.${DRACO_EXT}`,
+        );
+        validateCompressedDeclaration(gltf, extension, primitivePath);
+      } catch (error) {
+        // Optional Draco is allowed to fail over to a fully independent
+        // accessor representation. resolveDracoStrict owns that byte-aware
+        // validation. Required Draco must remain fail-closed here.
+        if (required) throw error;
+        continue;
+      }
+      const declaredMode = hasOwn(primitive, 'mode')
+        ? primitive.mode
+        : GLTF_MODE_TRIANGLES;
+      if (
+        declaredMode !== GLTF_MODE_TRIANGLES &&
+        declaredMode !== GLTF_MODE_TRIANGLE_STRIP
+      ) {
+        if (
+          !Number.isSafeInteger(declaredMode) ||
+          !FALLBACK_PRIMITIVE_MODES.has(declaredMode as number)
+        ) {
+          validatePrimitiveMode(primitive, primitivePath);
+        }
+        // A valid uncompressed POINTS/LINES/LINE_LOOP/LINE_STRIP/TRIANGLE_FAN
+        // fallback is checked against actual buffer bytes in resolveDracoStrict.
+        // Preflight cannot inspect those caller-supplied buffers.
+        continue;
+      }
+      const primitiveMode = declaredMode;
       const mappings = collectMappings(gltf, primitive, extension, primitivePath);
       validateDracoPointCount(gltf, primitive, mappings, primitivePath);
       const ownsIndices = hasOwn(primitive, 'indices');
@@ -1036,10 +1103,6 @@ export async function resolveDracoStrict(
       if (rawExtension === undefined) continue;
       const primitivePath = `meshes[${meshIndex}].primitives[${primitiveIndex}]`;
       const extensionPath = `${primitivePath}.extensions.${DRACO_EXT}`;
-      const extension = validateExtension(rawExtension, extensionPath);
-      const primitiveMode = validatePrimitiveMode(primitive, primitivePath);
-      const mappings = collectMappings(gltf, primitive, extension, primitivePath);
-      const dracoPointCount = validateDracoPointCount(gltf, primitive, mappings, primitivePath);
       const label = mesh.name ?? meshIndex;
 
       const useWholeFallback = (reason: string): void => {
@@ -1077,6 +1140,26 @@ export async function resolveDracoStrict(
         });
         stripDracoExtension(primitive);
       };
+
+      let extension: ValidDracoExtension;
+      let primitiveMode: number;
+      let mappings: DracoAttributeMapping[];
+      let dracoPointCount: number;
+      try {
+        extension = validateExtension(rawExtension, extensionPath);
+        primitiveMode = validatePrimitiveMode(primitive, primitivePath);
+        mappings = collectMappings(gltf, primitive, extension, primitivePath);
+        dracoPointCount = validateDracoPointCount(
+          gltf,
+          primitive,
+          mappings,
+          primitivePath,
+        );
+      } catch (error) {
+        if (error instanceof GltfResourceLimitError) throw error;
+        useWholeFallback(formatUnknownError(error));
+        continue;
+      }
 
       if (decode === undefined || decodeState.attemptsDisabled) {
         useWholeFallback(

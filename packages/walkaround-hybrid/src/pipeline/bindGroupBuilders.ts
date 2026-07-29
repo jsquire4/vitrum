@@ -149,7 +149,6 @@ interface SceneBindGroupResources {
   envMapTextureView: GPUTextureView;
   envMarginalTextureView: GPUTextureView;
   envConditionalTextureView: GPUTextureView;
-  envSampler: GPUSampler;
   envParamsBuffer: GPUBuffer;
 }
 
@@ -169,7 +168,6 @@ export function buildSceneBindGroup(
     r.envMapTextureView,                            // 15 B3 directional IBL radiance + per-texel pdf
     r.envMarginalTextureView,                       // 16 B3 marginal inverse-CDF
     r.envConditionalTextureView,                    // 17 B3 conditional inverse-CDF
-    r.envSampler,                                   // 18 B3 env sampler (textureLoad path; declared for layout)
     { buffer: r.envParamsBuffer },                  // 19 B3 EnvParams uniform
     r.materialTextureAtlasView,                     // 20 Phase-3D material-map texture_2d_array
     r.baseColorMapMetaTextureView,                  // 21 Phase-3D per-triangle map metadata
@@ -764,7 +762,7 @@ export function buildTransparentOitBindGroup(
 //   1 = color output (rgba16float, storage write)
 //   2 = gNormalDepth (rgba32float or rgba16float, texture_2d) — normal
 //   3 = gNormalDepth (same view) — depth
-//   4 = variance estimate (rgba32float, texture_2d)
+//   4 = variance estimate (r32float, texture_2d)
 //   5 = AtrousVarianceAtrousUBO (uniform)
 
 /**

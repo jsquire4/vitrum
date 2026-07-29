@@ -52,11 +52,7 @@ export interface FrameParamsSceneInputs {
   /** Half diagonal of current scene bounds, used to scale BDPT pseudo-distant emitters. */
   readonly sceneRadius: number;
   readonly environmentTint: readonly [number, number, number];
-  readonly environmentSunDirection: readonly [number, number, number];
-  readonly environmentSunStrength: number;
-  /** H14-E: map-backed environment-radiance intensity lane. The legacy
-   *  environmentSunStrength field remains in the stable layout but is not a
-   *  shader environment-radiance gate. */
+  /** H14-E: map-backed environment-radiance intensity lane. */
   readonly environmentHdriIntensity: number;
   /**
    * H6: HDRI dome CCW Y-rotation in radians (default 0).
@@ -175,9 +171,7 @@ export function packFrameParams(
   paramsF32[FrameParamsSlot.sceneRadius] = Math.max(1e-3, sb.sceneRadius);
   paramsU32[FrameParamsSlot.directLightingMode] =
     config.directLightingMode === 'summed-expectation' ? 1 : 0;
-  // H14-E: HDRI intensity lives in its own f32 slot (slot 31 =
-  // environmentHdriIntensity). The legacy environmentSun lane remains in the
-  // stable frame layout, but all environment radiance is map-backed.
+  // H14-E: HDRI intensity lives in its own f32 slot (slot 31).
   paramsF32[FrameParamsSlot.environmentHdriIntensity] = sb.environmentHdriIntensity;
   paramsF32[FrameParamsSlot.cameraPos] = cameraPosition[0];
   paramsF32[FrameParamsSlot.cameraPos + 1] = cameraPosition[1];
@@ -189,10 +183,6 @@ export function packFrameParams(
   // so the WGSL equirect helpers can apply the CCW Y-rotation without a new UBO field.
   // rotationY = 0 → writes 0.0 → WGSL cos(0)=1, sin(0)=0 → identity → zero-rotation invariant.
   paramsF32[FrameParamsSlot.environmentTint + 3] = sb.environmentHdriRotationY;
-  paramsF32[FrameParamsSlot.environmentSun] = sb.environmentSunDirection[0];
-  paramsF32[FrameParamsSlot.environmentSun + 1] = sb.environmentSunDirection[1];
-  paramsF32[FrameParamsSlot.environmentSun + 2] = sb.environmentSunDirection[2];
-  paramsF32[FrameParamsSlot.environmentSun + 3] = sb.environmentSunStrength;
   paramsF32.set(invVp, FrameParamsSlot.invViewProj);
   paramsF32.set(vp, FrameParamsSlot.viewProj);
   const prevVp = multiplyMat4(

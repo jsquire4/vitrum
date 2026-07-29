@@ -13,7 +13,7 @@
  */
 
 import { describe, expect, it, vi } from 'vitest';
-import type { EngineWarning, Scene, SkinnedMeshPrimitive } from '@vitrum/core';
+import type { Scene, SkinnedMeshPrimitive } from '@vitrum/core';
 import { solveSkin } from '@vitrum/core';
 import * as core from '@vitrum/core';
 import { buildPackedScene, scenePackResultFromPacked } from '../scene/uploadSceneBuffers.js';
@@ -204,15 +204,11 @@ describe('buildPackedScene — Item 1: skinned-mesh LBS at ingestion', () => {
         }),
         boneInverses: new Float32Array(0),
       };
-      const warnings: EngineWarning[] = [];
-
       expect(() => buildPackedScene(makeScene(prim), {
-        onWarning: (warning) => warnings.push(warning),
         warningPhase: 'setScene',
         warningMethod: 'setScene',
       })).toThrow(/solveSkin failed for primitive "bad-bone-inverses".*scene upload was rejected.*boneInverses length/);
       expect(warn).not.toHaveBeenCalled();
-      expect(warnings).toHaveLength(0);
     } finally {
       warn.mockRestore();
     }
@@ -290,6 +286,7 @@ describe('SceneMutationRouter — Item 1: bones patch re-solves skin', () => {
   function makeHostWithSkinnedScene(scene: Scene): {
     host: MutationHost;
     sceneRef: { current: Scene };
+    sceneBuffers: UploadedSceneBuffers;
     positionsWriteCalls: Float32Array[];
     tangentsWriteCalls: Float32Array[];
     normalsWriteCalls: Float32Array[];
@@ -433,6 +430,10 @@ describe('SceneMutationRouter — Item 1: bones patch re-solves skin', () => {
         queue: { writeBuffer, submit: vi.fn() },
       } as unknown as GPUDevice,
       assertLive: vi.fn(),
+      validatePrimitiveCandidate: vi.fn(),
+      validateEmitterCandidate: vi.fn(),
+      validateEnvironmentCandidate: vi.fn(),
+      validateEmittersCandidate: vi.fn(),
       getScene: () => sceneRef.current,
       setSceneState: vi.fn((s: Scene) => { sceneRef.current = s; }),
       getSceneBuffers: () => sceneBuffers,
@@ -446,7 +447,15 @@ describe('SceneMutationRouter — Item 1: bones patch re-solves skin', () => {
       reset: vi.fn(),
     };
 
-    return { host, sceneRef, positionsWriteCalls, normalsWriteCalls, tangentsWriteCalls, uvsWriteCalls };
+    return {
+      host,
+      sceneRef,
+      sceneBuffers,
+      positionsWriteCalls,
+      normalsWriteCalls,
+      tangentsWriteCalls,
+      uvsWriteCalls,
+    };
   }
 
   it('does not solve skin for a non-emissive material-only patch', () => {
@@ -473,6 +482,155 @@ describe('SceneMutationRouter — Item 1: bones patch re-solves skin', () => {
     } finally {
       solve.mockRestore();
     }
+  });
+
+  it('uses posed geometry when a material patch creates an implicit mesh emitter', () => {
+    const restPositions = new Float32Array([
+      0, 0, 0,
+      1, 0, 0,
+      0, 1, 0,
+    ]);
+    const prim = makeSkinnedPrim({
+      positions: restPositions,
+      normals: new Float32Array([
+        0, 0, 1,
+        0, 0, 1,
+        0, 0, 1,
+      ]),
+      bonesMatrix: translate4(5, 0, 0),
+    });
+    const { host, sceneRef, sceneBuffers } =
+      makeHostWithSkinnedScene(makeScene(prim));
+
+    new SceneMutationRouter(host).updatePrimitive('skinned', {
+      material: {
+        ...prim.material,
+        emissive: [1, 0.5, 0.25],
+        emissiveIntensity: 2,
+      },
+    });
+
+    expect(sceneBuffers.meshAreaLightCount).toBe(1);
+    expect(sceneBuffers.meshAreaLightsData).toHaveLength(28);
+    // Mesh-area record vertices live at vec4 offsets 0, 4, and 8. The posed
+    // triangle is translated +5 in X; rest-pose packing would be [0, 1, 0].
+    expect(sceneBuffers.meshAreaLightsData[0]).toBeCloseTo(5, 5);
+    expect(sceneBuffers.meshAreaLightsData[4]).toBeCloseTo(6, 5);
+    expect(sceneBuffers.meshAreaLightsData[8]).toBeCloseTo(5, 5);
+
+    // The host snapshot remains authored/rest-pose data for future skin solves.
+    const stored = sceneRef.current.primitives[0];
+    expect(stored?.kind).toBe('skinned-mesh');
+    if (stored?.kind === 'skinned-mesh') {
+      expect(stored.positions).toBe(restPositions);
+      expect(stored.positions[0]).toBe(0);
+    }
+  });
+
+  it('keeps every other posed skinned emitter solved during a global emitter rebuild', () => {
+    const positions = new Float32Array([
+      0, 0, 0,
+      1, 0, 0,
+      0, 1, 0,
+    ]);
+    const normals = new Float32Array([
+      0, 0, 1,
+      0, 0, 1,
+      0, 0, 1,
+    ]);
+    const patched = makeSkinnedPrim({
+      id: 'patched',
+      positions,
+      normals,
+      bonesMatrix: translate4(5, 0, 0),
+    });
+    const other = {
+      ...makeSkinnedPrim({
+        id: 'other',
+        positions,
+        normals,
+        bonesMatrix: translate4(20, 0, 0),
+      }),
+      material: {
+        baseColor: [0.5, 0.5, 0.5] as const,
+        roughness: 0.5,
+        metallic: 0,
+        emissive: [0.25, 0.5, 1] as const,
+        emissiveIntensity: 2,
+      },
+    };
+    const scene: Scene = {
+      primitives: [patched, other],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+    const { host, sceneBuffers } = makeHostWithSkinnedScene(scene);
+
+    new SceneMutationRouter(host).updatePrimitive('patched', {
+      material: {
+        ...patched.material,
+        emissive: [1, 0, 0],
+        emissiveIntensity: 1,
+      },
+    });
+
+    expect(sceneBuffers.meshAreaLightCount).toBe(2);
+    expect(sceneBuffers.meshAreaLightsData).toHaveLength(56);
+    expect(sceneBuffers.meshAreaLightsData[0]).toBeCloseTo(5, 5);
+    // Second triangle begins at float 28 and must retain its +20 posed position.
+    expect(sceneBuffers.meshAreaLightsData[28]).toBeCloseTo(20, 5);
+    expect(sceneBuffers.meshAreaLightsData[32]).toBeCloseTo(21, 5);
+    expect(sceneBuffers.meshAreaLightsData[36]).toBeCloseTo(20, 5);
+  });
+
+  it('rebuilds implicit emitter state when extensions.skipEmitter toggles', () => {
+    const prim = {
+      ...makeSkinnedPrim({
+        positions: new Float32Array([
+          0, 0, 0,
+          1, 0, 0,
+          0, 1, 0,
+        ]),
+        normals: new Float32Array([
+          0, 0, 1,
+          0, 0, 1,
+          0, 0, 1,
+        ]),
+        bonesMatrix: translate4(7, 0, 0),
+      }),
+      material: {
+        baseColor: [0.5, 0.5, 0.5] as const,
+        roughness: 0.5,
+        metallic: 0,
+        emissive: [1, 1, 1] as const,
+        emissiveIntensity: 1,
+      },
+    };
+    const { host, sceneBuffers } =
+      makeHostWithSkinnedScene(makeScene(prim));
+    const router = new SceneMutationRouter(host);
+    expect(sceneBuffers.meshAreaLightCount).toBe(1);
+
+    router.updatePrimitive('skinned', {
+      material: {
+        ...prim.material,
+        extensions: { skipEmitter: true },
+      },
+    });
+    expect(sceneBuffers.meshAreaLightCount).toBe(0);
+    expect(sceneBuffers.meshAreaLightsData).toHaveLength(0);
+
+    router.updatePrimitive('skinned', {
+      material: {
+        ...prim.material,
+        extensions: { skipEmitter: false },
+      },
+    });
+    expect(sceneBuffers.meshAreaLightCount).toBe(1);
+    expect(sceneBuffers.meshAreaLightsData).toHaveLength(28);
+    expect(sceneBuffers.meshAreaLightsData[0]).toBeCloseTo(7, 5);
+    expect(sceneBuffers.meshAreaLightsData[4]).toBeCloseTo(8, 5);
+    expect(sceneBuffers.meshAreaLightsData[8]).toBeCloseTo(7, 5);
   });
 
   it('re-solves when skin weights or bind matrices change', () => {

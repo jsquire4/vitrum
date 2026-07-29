@@ -76,6 +76,11 @@ function unpackCwbvh(packed: Packed): CompressedWideBvhBuildResult {
     cwbvhChildMeta: packed.cwbvhChildMeta,
     cwbvhChildCount: packed.cwbvhChildCount,
     cwbvhNodeCount: packed.cwbvhNodeCount,
+    cwbvhBuildStatus: {
+      traversal: 'wide',
+      maxTraversalStackEntries: 1,
+      traversalStackCapacity: 64,
+    },
   };
 }
 

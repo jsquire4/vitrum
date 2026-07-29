@@ -40,6 +40,7 @@ const TOP_LEVEL_KEY_RECORD = {
   oidn: true,
   oidnBridgeLoader: true,
   oidnReadbackFn: true,
+  debug: true,
 } as const satisfies Readonly<Record<keyof PTEngineWebGL2Options, true>>;
 const TOP_LEVEL_KEYS = new Set(Object.keys(TOP_LEVEL_KEY_RECORD));
 const BDPT_OPTION_KEYS = new Set(['maxLightBounces']);
@@ -280,6 +281,7 @@ export function validateAndResolveWebgl2Options(
   assertExtensionBag(opts.extensions);
   assertOptionalBoolean('createPTEngine_WebGL2: spectral', opts.spectral);
   assertOptionalBoolean('createPTEngine_WebGL2: bdpt', opts.bdpt);
+  assertOptionalBoolean('createPTEngine_WebGL2: debug', opts.debug);
   assertOptionalEnum('createPTEngine_WebGL2: traceTier', opts.traceTier, TRACE_TIERS);
   assertOptionalEnum('createPTEngine_WebGL2: sampling', opts.sampling, SAMPLING_MODES);
   assertOptionalEnum('createPTEngine_WebGL2: cameraType', opts.cameraType, CAMERA_TYPES);

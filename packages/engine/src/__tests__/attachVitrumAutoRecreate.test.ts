@@ -202,6 +202,39 @@ describe('attachVitrum auto-recreate scene tracking', () => {
     warn.mockRestore();
   });
 
+  it('does not recreate after a scene-snapshot warning synchronously disposes the handle', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const first = makeEngine('pt-webgl2', null);
+    const recreateEngine = vi.fn();
+    const handleRef: { current: Awaited<ReturnType<typeof attachVitrum>> | null } = {
+      current: null,
+    };
+    const handle = await attachVitrum({
+      canvas: makeCanvas(),
+      engine: first.engine as never,
+      scene: sceneA,
+      camera: makeCamera(),
+      autoRecreateOnDeviceLoss: true,
+      recreateEngine,
+      onWarning: (warning) => {
+        if (warning.code === 'attachVitrum.auto-recreate-scene-snapshot-unavailable') {
+          handleRef.current?.dispose();
+        }
+      },
+    });
+    handleRef.current = handle;
+
+    first.errorCallbacks[0]!({
+      kind: 'device-lost',
+      fatal: true,
+      message: 'lost',
+    });
+
+    expect(recreateEngine).not.toHaveBeenCalled();
+    expect(first.engine.dispose).toHaveBeenCalledOnce();
+    warn.mockRestore();
+  });
+
   it('warns and falls back to the tracked scene when backend scene snapshot throws', async () => {
     const first = makeEngine('pt-webgl2');
     const second = makeEngine();
@@ -320,8 +353,19 @@ describe('attachVitrum auto-recreate scene tracking', () => {
   });
 
   it('exposes the selected backend id through the stable attach handle', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const first = makeEngine('pt-webgl2');
     const second = makeEngine('walkaround-hybrid');
+    Object.assign(first.engine, {
+      backendProfileId: 'pt-webgl2',
+      profileId: 'pt-webgl2',
+    });
+    Object.assign(second.engine, {
+      backendProfileId: 'walkaround-hybrid',
+      profileId: 'walkaround-hybrid',
+    });
+    const onBackendChanged = vi.fn();
+    const warnings: unknown[] = [];
     createEngineMock
       .mockResolvedValueOnce(first.engine)
       .mockResolvedValueOnce(second.engine);
@@ -331,6 +375,8 @@ describe('attachVitrum auto-recreate scene tracking', () => {
       scene: sceneA,
       camera: makeCamera(),
       autoRecreateOnDeviceLoss: true,
+      onBackendChanged,
+      onWarning: (warning) => warnings.push(warning),
     });
 
     expect(handle.backendId).toBe('pt-webgl2');
@@ -342,11 +388,30 @@ describe('attachVitrum auto-recreate scene tracking', () => {
     });
 
     await vi.waitFor(() => expect(handle.backendId).toBe('walkaround-hybrid'));
+    expect(onBackendChanged).toHaveBeenCalledOnce();
+    expect(onBackendChanged).toHaveBeenCalledWith({
+      previousBackendId: 'pt-webgl2',
+      backendId: 'walkaround-hybrid',
+      previousBackendProfileId: 'pt-webgl2',
+      backendProfileId: 'walkaround-hybrid',
+      previousProfileId: 'pt-webgl2',
+      profileId: 'walkaround-hybrid',
+      reason: 'device-lost',
+      attempt: 1,
+    });
+    expect(warnings).toContainEqual(expect.objectContaining({
+      code: 'attachVitrum.auto-recreate-backend-changed',
+      backend: 'walkaround-hybrid',
+      phase: 'lifecycle',
+      method: 'attachVitrum',
+    }));
 
     handle.dispose();
+    warn.mockRestore();
   });
 
   it('updates profile and active-feature identity through auto-recreate', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const firstActive = new Set(['pt-webgpu-sobol-sampling'] as const);
     const secondActive = new Set(['pt-webgpu-spectral'] as const);
     const first = makeEngine('pt-webgpu');
@@ -386,9 +451,11 @@ describe('attachVitrum auto-recreate scene tracking', () => {
     expect(handle.profileId).toBe('pt-webgpu');
     expect(handle.engine.capabilities.activeFeatures).toBe(secondActive);
     handle.dispose();
+    warn.mockRestore();
   });
 
   it('refreshes WebGPU swapchain plumbing after auto-recreate changes backend class', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     let rafCallback: FrameRequestCallback | undefined;
     Object.defineProperty(globalThis, 'requestAnimationFrame', {
       value: vi.fn((cb: FrameRequestCallback) => {
@@ -442,5 +509,223 @@ describe('attachVitrum auto-recreate scene tracking', () => {
     }));
 
     handle.dispose();
+    warn.mockRestore();
+  });
+
+  it('lets synchronous fatal subscription delivery create exactly one recovery RAF chain', async () => {
+    const first = makeEngine('pt-webgl2', sceneA);
+    const second = makeEngine('walkaround-hybrid');
+    const firstUnsubscribe = vi.fn();
+    const fatalError: EngineError = {
+      kind: 'device-lost',
+      fatal: true,
+      message: 'lost during subscription',
+    };
+    Object.assign(first.engine, {
+      onError: vi.fn((callback: (error: EngineError) => void) => {
+        first.errorCallbacks.push(callback);
+        callback(fatalError);
+        return firstUnsubscribe;
+      }),
+    });
+
+    let resolveRecreate!: (engine: EngineWithBackendId) => void;
+    const recreatePromise = new Promise<EngineWithBackendId>((resolve) => {
+      resolveRecreate = resolve;
+    });
+    const recreateEngine = vi.fn(() => recreatePromise);
+
+    const handle = await attachVitrum({
+      canvas: makeCanvas(),
+      engine: first.engine as never,
+      scene: sceneA,
+      camera: makeCamera(),
+      autoRecreateOnDeviceLoss: true,
+      recreateEngine,
+    });
+
+    // Recovery has stopped the loop and owns its eventual restart. The initial
+    // attach path must not enqueue an independent callback after subscription.
+    expect(requestAnimationFrame).not.toHaveBeenCalled();
+    expect(firstUnsubscribe).toHaveBeenCalledOnce();
+
+    resolveRecreate(second.engine as unknown as EngineWithBackendId);
+    await vi.waitFor(() => expect(handle.backendId).toBe('walkaround-hybrid'));
+    expect(requestAnimationFrame).toHaveBeenCalledOnce();
+
+    handle.dispose();
+  });
+
+  it('does not subscribe or restore state after backend-change notification disposes the handle', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const first = makeEngine('pt-webgl2', sceneA);
+    const second = makeEngine('walkaround-hybrid');
+    Object.assign(first.engine, {
+      backendProfileId: 'pt-webgl2',
+      profileId: 'pt-webgl2',
+      exportGIState: vi.fn(() => ({ version: 1 })),
+    });
+    const importGIState = vi.fn();
+    Object.assign(second.engine, {
+      backendProfileId: 'walkaround-hybrid',
+      profileId: 'walkaround-hybrid',
+      importGIState,
+    });
+    createEngineMock.mockResolvedValueOnce(second.engine);
+
+    const handleRef: { current: Awaited<ReturnType<typeof attachVitrum>> | null } = {
+      current: null,
+    };
+    const handle = await attachVitrum({
+      canvas: makeCanvas(),
+      engine: first.engine as never,
+      scene: sceneA,
+      camera: makeCamera(),
+      autoRecreateOnDeviceLoss: true,
+      onBackendChanged: () => handleRef.current?.dispose(),
+    });
+    handleRef.current = handle;
+
+    first.errorCallbacks[0]!({
+      kind: 'device-lost',
+      fatal: true,
+      message: 'lost',
+    });
+
+    await vi.waitFor(() => expect(second.engine.dispose).toHaveBeenCalledOnce());
+    expect(second.engine.onError).not.toHaveBeenCalled();
+    expect(importGIState).not.toHaveBeenCalled();
+
+    handle.dispose();
+    warn.mockRestore();
+  });
+
+  it('does not deliver backend-change callback after its warning synchronously disposes the handle', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const first = makeEngine('pt-webgl2', sceneA);
+    const second = makeEngine('walkaround-hybrid');
+    Object.assign(first.engine, {
+      backendProfileId: 'pt-webgl2',
+      profileId: 'pt-webgl2',
+    });
+    Object.assign(second.engine, {
+      backendProfileId: 'walkaround-hybrid',
+      profileId: 'walkaround-hybrid',
+    });
+    createEngineMock.mockResolvedValueOnce(second.engine);
+    const onBackendChanged = vi.fn();
+    const handleRef: { current: Awaited<ReturnType<typeof attachVitrum>> | null } = {
+      current: null,
+    };
+    const handle = await attachVitrum({
+      canvas: makeCanvas(),
+      engine: first.engine as never,
+      scene: sceneA,
+      camera: makeCamera(),
+      autoRecreateOnDeviceLoss: true,
+      onWarning: (warning) => {
+        if (warning.code === 'attachVitrum.auto-recreate-backend-changed') {
+          handleRef.current?.dispose();
+        }
+      },
+      onBackendChanged,
+    });
+    handleRef.current = handle;
+
+    first.errorCallbacks[0]!({
+      kind: 'device-lost',
+      fatal: true,
+      message: 'lost',
+    });
+
+    await vi.waitFor(() => expect(second.engine.dispose).toHaveBeenCalledOnce());
+    expect(onBackendChanged).not.toHaveBeenCalled();
+    expect(second.engine.onError).not.toHaveBeenCalled();
+    handle.dispose();
+    warn.mockRestore();
+  });
+
+  it.each(['onFrame', 'onProgress', 'onError'] as const)(
+    'transactionally closes recovery when replacement %s subscription throws',
+    async (stage) => {
+      const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const first = makeEngine('pt-webgl2', sceneA);
+      const second = makeEngine('walkaround-hybrid');
+      const subscriptionError = new Error(`${stage} subscription failed`);
+      Object.assign(second.engine, {
+        onFrame: vi.fn(() => vi.fn()),
+        onProgress: vi.fn(() => vi.fn()),
+      });
+      Object.assign(second.engine, {
+        [stage]: vi.fn(() => {
+          throw subscriptionError;
+        }),
+      });
+      createEngineMock.mockResolvedValueOnce(second.engine);
+      const onError = vi.fn();
+
+      const handle = await attachVitrum({
+        canvas: makeCanvas(),
+        engine: first.engine as never,
+        scene: sceneA,
+        camera: makeCamera(),
+        autoRecreateOnDeviceLoss: true,
+        onFrame: vi.fn(),
+        onProgress: vi.fn(),
+        onError,
+      });
+
+      first.errorCallbacks[0]!({
+        kind: 'device-lost',
+        fatal: true,
+        message: 'lost',
+      });
+
+      await vi.waitFor(() => expect(second.engine.dispose).toHaveBeenCalledOnce());
+      expect(onError).toHaveBeenCalledWith(subscriptionError, {
+        phase: 'attach:auto-recreate',
+        backend: 'walkaround-hybrid',
+        recoverable: false,
+      });
+      expect(requestAnimationFrame).toHaveBeenCalledOnce();
+      expect(cancelAnimationFrame).toHaveBeenCalledOnce();
+      handle.dispose();
+      expect(second.engine.dispose).toHaveBeenCalledOnce();
+      consoleError.mockRestore();
+    },
+  );
+
+  it('does not recreate when the handle is disposed while GI export is pending', async () => {
+    const first = makeEngine('walkaround-hybrid', sceneA);
+    let resolveExport!: (snapshot: null) => void;
+    const exportPromise = new Promise<null>((resolve) => {
+      resolveExport = resolve;
+    });
+    Object.assign(first.engine, {
+      exportGIState: vi.fn(() => exportPromise),
+    });
+    const recreateEngine = vi.fn();
+
+    const handle = await attachVitrum({
+      canvas: makeCanvas(),
+      engine: first.engine as never,
+      scene: sceneA,
+      camera: makeCamera(),
+      autoRecreateOnDeviceLoss: true,
+      recreateEngine,
+    });
+
+    first.errorCallbacks[0]!({
+      kind: 'device-lost',
+      fatal: true,
+      message: 'lost',
+    });
+    handle.dispose();
+    resolveExport(null);
+    await exportPromise;
+    await Promise.resolve();
+
+    expect(recreateEngine).not.toHaveBeenCalled();
+    expect(first.engine.dispose).toHaveBeenCalledOnce();
   });
 });

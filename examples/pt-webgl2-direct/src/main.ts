@@ -9,7 +9,7 @@
  *   createPTEngine_WebGL2(opts: PTEngineWebGL2Options): Promise<Engine & PTEngineWebGL2Surface>
  *
  * Required opts: device (WebGL2RenderingContext).
- * Optional: maxBounces, maxSamplesPerPixel, spectral, bdpt.
+ * Optional: maxBounces, maxSamplesPerPixel, spectral, bdpt, bdptOptions.
  *
  * Capture protocol: sets VITRUM_CAPTURE_READY after targetSpp samples.
  *
@@ -41,6 +41,20 @@ const targetSpp  = Number(params.get('vitrumSpp'))    || 128;
 const maxBounces = Number(params.get('vitrumBounces')) || 8;
 const spectral = params.get('vitrumSpectral') === '1';
 const bdpt = params.get('vitrumBdpt') === '1';
+const bdptMaxLightBouncesParam = params.get('vitrumBdptMaxLightBounces');
+const bdptMaxLightBounces =
+  bdptMaxLightBouncesParam == null ? undefined : Number(bdptMaxLightBouncesParam);
+if (
+  bdptMaxLightBounces !== undefined &&
+  (!Number.isInteger(bdptMaxLightBounces) ||
+    bdptMaxLightBounces < 1 ||
+    bdptMaxLightBounces > 8)
+) {
+  throw new RangeError('vitrumBdptMaxLightBounces must be an integer from 1 through 8');
+}
+if (!bdpt && bdptMaxLightBounces !== undefined) {
+  throw new RangeError('vitrumBdptMaxLightBounces requires vitrumBdpt=1');
+}
 const sampling = params.get('vitrumSampling') === 'sobol' ? 'sobol' : 'pcg';
 const fidelityScenario = params.get('vitrumScenario') ?? 'cornell';
 const captureMode = params.get('vitrumCaptureMode') === '1';
@@ -125,6 +139,9 @@ async function main(): Promise<void> {
     maxSamplesPerPixel: targetSpp,
     spectral,
     bdpt,
+    ...(bdpt && bdptMaxLightBounces !== undefined
+      ? { bdptOptions: { maxLightBounces: bdptMaxLightBounces } }
+      : {}),
     sampling,
     extensions: {
       'pt-webgl2.validationTraceProbeStage': traceProbeStage,
@@ -154,9 +171,11 @@ async function main(): Promise<void> {
     scenario: fidelityScenario,
     spectral,
     bdpt,
+    bdptMaxLightBounces: bdpt ? (bdptMaxLightBounces ?? null) : null,
     sampling,
     targetSpp,
     maxBounces,
+    frameSeedOffset,
   };
 
   let frameIndex       = 0;
@@ -209,6 +228,7 @@ async function main(): Promise<void> {
       projMatrix,
       cameraPosition: [0, 1, 4],
       viewport:  { width, height, devicePixelRatio: 1 },
+      quality: { samplesTarget: targetSpp, bounces: maxBounces },
       frameIndex,
       frameSeed:
         (frameIndex * 1664525 + 1013904223 + frameSeedOffset) >>> 0,
@@ -415,7 +435,7 @@ function createFidelityScene(id: string): Scene {
       emitters: [],
       environment: {
         kind: 'procedural-sky',
-        sunDirection: [0.2, 0.8, 0.3],
+        sunDirection: [0.22792115, 0.91168461, 0.34188173],
         turbidity: 2,
         rayleigh: 1,
         mieCoefficient: 0.005,
@@ -449,7 +469,7 @@ function createFidelityScene(id: string): Scene {
       }],
       environment: {
         kind: 'procedural-sky',
-        sunDirection: [0.2, 0.8, 0.3],
+        sunDirection: [0.22792115, 0.91168461, 0.34188173],
         turbidity: 2,
         rayleigh: 1,
         mieCoefficient: 0.005,
@@ -521,7 +541,7 @@ function fidelityPanelMaterial(id: string): MaterialSpec | null {
     ior: 1.52,
     attenuationColor: [0.72, 0.9, 0.58],
     attenuationDistance: 1,
-    thickness: 0.22,
+    thickness: 0.35,
   };
   switch (id) {
     case 'mapped-pbr':
@@ -658,33 +678,93 @@ function fidelityPanelMaterial(id: string): MaterialSpec | null {
 }
 
 function fidelityPanel(material: MaterialSpec): MeshPrimitive {
+  type Point3 = readonly [number, number, number];
+  const positions: number[] = [];
+  const normals: number[] = [];
+  const uvs: number[] = [];
+  const faceUv = [
+    [0, 0],
+    [1, 0],
+    [1, 1],
+    [0, 0],
+    [1, 1],
+    [0, 1],
+  ] as const;
+  const triangleOrder = [0, 1, 2, 0, 2, 3] as const;
+  const addFace = (
+    corners: readonly [Point3, Point3, Point3, Point3],
+    normal: Point3,
+  ): void => {
+    const ab: Point3 = [
+      corners[1][0] - corners[0][0],
+      corners[1][1] - corners[0][1],
+      corners[1][2] - corners[0][2],
+    ];
+    const ac: Point3 = [
+      corners[2][0] - corners[0][0],
+      corners[2][1] - corners[0][1],
+      corners[2][2] - corners[0][2],
+    ];
+    const windingDotNormal =
+      (ab[1] * ac[2] - ab[2] * ac[1]) * normal[0] +
+      (ab[2] * ac[0] - ab[0] * ac[2]) * normal[1] +
+      (ab[0] * ac[1] - ab[1] * ac[0]) * normal[2];
+    if (!(windingDotNormal > 0)) {
+      throw new Error('pt-webgl2 fidelity slab face winding must match its outward normal');
+    }
+    for (const [vertex, cornerIndex] of triangleOrder.entries()) {
+      const point = corners[cornerIndex];
+      positions.push(point[0], point[1], point[2]);
+      normals.push(normal[0], normal[1], normal[2]);
+      const uv = faceUv[vertex]!;
+      uvs.push(uv[0], uv[1]);
+    }
+  };
+
+  const x0 = -0.58;
+  const x1 = 0.58;
+  const y0 = 0.28;
+  const y1 = 1.48;
+  // Match the authored transport distance. The camera sees the +Z face;
+  // transmitted paths leave through the -Z face, which exercises exit-boundary
+  // Beer–Lambert attenuation as well as thin-film and dispersion.
+  const slabThickness = material.thickness ?? 0.22;
+  if (!(Number.isFinite(slabThickness) && slabThickness > 0)) {
+    throw new Error('pt-webgl2 fidelity slab requires a positive finite thickness');
+  }
+  const zFront = slabThickness * 0.5;
+  const zBack = -zFront;
+  addFace(
+    [[x0, y0, zFront], [x1, y0, zFront], [x1, y1, zFront], [x0, y1, zFront]],
+    [0, 0, 1],
+  );
+  addFace(
+    [[x0, y0, zBack], [x0, y1, zBack], [x1, y1, zBack], [x1, y0, zBack]],
+    [0, 0, -1],
+  );
+  addFace(
+    [[x0, y0, zBack], [x0, y0, zFront], [x0, y1, zFront], [x0, y1, zBack]],
+    [-1, 0, 0],
+  );
+  addFace(
+    [[x1, y0, zBack], [x1, y1, zBack], [x1, y1, zFront], [x1, y0, zFront]],
+    [1, 0, 0],
+  );
+  addFace(
+    [[x0, y0, zBack], [x1, y0, zBack], [x1, y0, zFront], [x0, y0, zFront]],
+    [0, -1, 0],
+  );
+  addFace(
+    [[x0, y1, zBack], [x0, y1, zFront], [x1, y1, zFront], [x1, y1, zBack]],
+    [0, 1, 0],
+  );
+
   return {
     kind: 'mesh',
     id: 'fidelity-panel',
-    positions: new Float32Array([
-      -0.58, 0.28, 0,
-       0.58, 0.28, 0,
-       0.58, 1.48, 0,
-      -0.58, 0.28, 0,
-       0.58, 1.48, 0,
-      -0.58, 1.48, 0,
-    ]),
-    normals: new Float32Array([
-      0, 0, -1,
-      0, 0, -1,
-      0, 0, -1,
-      0, 0, -1,
-      0, 0, -1,
-      0, 0, -1,
-    ]),
-    uvs: new Float32Array([
-      0, 0,
-      1, 0,
-      1, 1,
-      0, 0,
-      1, 1,
-      0, 1,
-    ]),
+    positions: new Float32Array(positions),
+    normals: new Float32Array(normals),
+    uvs: new Float32Array(uvs),
     material,
     transform: asMat4(new Float32Array([
       1, 0, 0, 0,

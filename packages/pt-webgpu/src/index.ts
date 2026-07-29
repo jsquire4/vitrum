@@ -27,6 +27,8 @@ import {
   canonicalizeFrameCamera,
   narrowToBackendTexture,
   resolveFrameCameraPosition,
+  validateSceneEmitters,
+  validateSceneEnvironment,
   validateScene as validateCoreScene,
 } from '@vitrum/core';
 import {
@@ -103,6 +105,10 @@ import {
 } from '@vitrum/shared-samplers';
 import {
   SPPM_PHOTON_COUNT,
+  SPPM_PHOTON_CELLS_BYTES,
+  SPPM_CELL_COUNTERS_BYTES,
+  SPPM_STATS_BYTES,
+  SPPM_PIXEL_STATS_BYTES_PER_PIXEL,
   sppmSceneBoundsFromCenterRadius,
   sppmSceneBoundsFromPackedPositions,
 } from './sppmParams.js';
@@ -450,6 +456,7 @@ class PTEngineWebGPU implements Engine {
   #errorThrottleMap = new Map<string, number>(); // message → last-reported frameCount
   #errorFrameCount = 0;
   static readonly #ERROR_THROTTLE_FRAMES = 32;
+  static readonly #ERROR_THROTTLE_MAX_MESSAGES = 256;
   readonly #onUncapturedError: (event: Event) => void;
   // device.lost is a Promise<GPUDeviceLostInfo> — we store no reference to it but
   // we attach a .then handler that routes into #emitError.  The handler is
@@ -467,6 +474,7 @@ class PTEngineWebGPU implements Engine {
   /** ReSTIR-PT reuse — compile-time + full-tier; OFF by default. */
   readonly #restirPtReuse: boolean;
   readonly #restirPtMClamp: number;
+  readonly #debugEnabled: boolean;
 
   // ── SPPM state (A4-progressive, photon-map strategy) ─────────────────────
   /** Cached initial radius r₀ = max(diagonal/100, 1e-3) from the scene AABB.
@@ -496,6 +504,15 @@ class PTEngineWebGPU implements Engine {
   constructor(opts: PTEngineWebGPUOptions, slot: StateSlot, traceTier: PtWebgpuTraceTier) {
     this.#slot = slot;
     this.#device = opts.device;
+    this.#debugEnabled = opts.debug === true;
+    if (this.#debugEnabled) {
+      Object.defineProperty(this, 'debug', {
+        value: this.#debugSurface,
+        enumerable: true,
+        configurable: false,
+        writable: false,
+      });
+    }
     if (opts.onWarning != null) {
       this.#onWarningSubs.add(opts.onWarning);
     }
@@ -590,17 +607,55 @@ class PTEngineWebGPU implements Engine {
       device: this.#device,
       assertLive: (method) => this.#assertLive(method),
       getScene: () => this.#scene,
-      validateScene: (scene) => {
-        validateCoreScene(scene);
-        if (this.#restirPtReuse) {
-          assertOneEdgeReconnectionSceneSupported(scene);
+      validatePrimitiveCandidate: (scene, primitiveId) => {
+        const primitive = scene.primitives.find(
+          (candidate) => candidate.id === primitiveId,
+        );
+        if (primitive == null) {
+          throw new Error(
+            `pt-webgpu primitive validation: "${primitiveId}" is absent from the candidate scene.`,
+          );
         }
-        if (this.#traceTier === 'lite') assertLiteSceneSupported(scene);
-        if (this.#spectralEnabled) assertSpectralSceneSupported(scene);
-        assertThinFilmSceneSupported(scene);
-        assertVolumeSceneSupported(scene);
+        const scopedScene: Scene = {
+          primitives: [primitive],
+          emitters: [],
+          environment: { kind: 'none' },
+        };
+        if (this.#restirPtReuse) {
+          assertOneEdgeReconnectionSceneSupported(scopedScene);
+        }
+        if (this.#traceTier === 'lite') assertLiteSceneSupported(scopedScene);
+        if (this.#spectralEnabled) assertSpectralSceneSupported(scopedScene);
+        assertThinFilmSceneSupported(scopedScene);
+        assertVolumeSceneSupported(scopedScene);
         if (this.#causticStrategy === 'manifold-nee') {
-          assertMneeInterfaceDomainSupported(scene);
+          assertMneeInterfaceDomainSupported(scopedScene);
+        }
+      },
+      validateEmitterCandidate: (scene, emitterId) => {
+        if (this.#traceTier !== 'lite') return;
+        const emitter = scene.emitters.find(
+          (candidate) => candidate.id === emitterId,
+        );
+        if (emitter != null) {
+          assertLiteSceneSupported({
+            primitives: [],
+            emitters: [emitter],
+            environment: { kind: 'none' },
+          });
+        }
+      },
+      validateEnvironmentCandidate: (environment) => {
+        validateSceneEnvironment(environment);
+      },
+      validateEmittersCandidate: (emitters, primitives) => {
+        validateSceneEmitters(emitters, primitives);
+        if (this.#traceTier === 'lite') {
+          assertLiteSceneSupported({
+            primitives: [],
+            emitters,
+            environment: { kind: 'none' },
+          });
         }
       },
       setSceneState: (scene) => {
@@ -665,6 +720,13 @@ class PTEngineWebGPU implements Engine {
       // Throttle: only report the first occurrence per message per N frames.
       const lastFrame = this.#errorThrottleMap.get(message) ?? -Infinity;
       if (this.#errorFrameCount - lastFrame >= PTEngineWebGPU.#ERROR_THROTTLE_FRAMES) {
+        if (
+          !this.#errorThrottleMap.has(message) &&
+          this.#errorThrottleMap.size >= PTEngineWebGPU.#ERROR_THROTTLE_MAX_MESSAGES
+        ) {
+          const oldest = this.#errorThrottleMap.keys().next();
+          if (!oldest.done) this.#errorThrottleMap.delete(oldest.value);
+        }
         this.#errorThrottleMap.set(message, this.#errorFrameCount);
         this.#emitError({ kind, message, fatal: false, raw: rawError });
       }
@@ -703,6 +765,7 @@ class PTEngineWebGPU implements Engine {
       causticStrategy: this.#causticStrategy,
       spectral: this.#spectralEnabled,
       denoiser: this.#denoiser,
+      debug: this.#debugEnabled,
     });
   }
 
@@ -718,7 +781,7 @@ class PTEngineWebGPU implements Engine {
   // Atlas / BVH / denoiser-toggle hooks are walkaround-hybrid concepts that
   // don't apply to a brute-force compute path tracer. GPU-memory estimate
   // and CPU click-to-pick (pickPrimitive) are both wired.
-  readonly debug: EngineDebugSurface = {
+  readonly #debugSurface: EngineDebugSurface = {
     // T3.G #30 — CPU ray-cast pick using the retained scene + last-frame camera.
     // Returns null before the first renderFrame (no camera) or on a miss.
     pickPrimitive: (x: number, y: number): string | null => {
@@ -745,23 +808,58 @@ class PTEngineWebGPU implements Engine {
       // Pre-init / pre-renderFrame: no accum textures yet.
       if (W <= 0 || H <= 0 || gpu.accumTexture == null) return null;
 
-      // Per-texel bytes inferred from the actual format at allocation time
-      // (see GpuResources.ensureAccumResources: accum / normalDepth / albedo /
-      // variance / motionVectors are all rgba16float = 8 bytes/texel).
+      // Per-texel bytes inferred from the actual formats at allocation time.
+      // Color/G-buffer targets are rgba16float; scalar variance is r32float.
       const RGBA16F = 8;
+      const R32F = 4;
       const texPixels = W * H;
       const accumBytes        = texPixels * RGBA16F;
       const normalDepthBytes  = texPixels * RGBA16F;
       const albedoBytes       = texPixels * RGBA16F;
-      const varianceBytes     = texPixels * RGBA16F;
+      const varianceBytes     = texPixels * R32F;
       const motionBytes       = gpu.motionVectorsTexture != null
         ? texPixels * RGBA16F : 0;
+      const presentTextureBytes = gpu.present.presentTexture != null
+        ? texPixels * RGBA16F : 0;
+      const denoisedLinearTextureBytes = gpu.present.denoisedLinearTexture != null
+        ? texPixels * 16 : 0; // rgba32float
       const accumBufBytes     = gpu.accumBufferByteSize;
       const varMomentBufBytes = gpu.varianceMomentsBuffer != null
         ? gpu.accumBufferByteSize : 0;
       const bdptCameraSplatBufBytes = gpu.bdptCameraSplatBuffer != null
         ? gpu.accumBufferByteSize : 0;
       const paramsBufBytes    = gpu.paramsBuffer != null ? FRAME_PARAMS_BUFFER_ALLOC_BYTES : 0;
+      const reservoirStorageBytes =
+        (gpu.reservoir.rptReservoirCur != null ? gpu.reservoir.rptReservoirByteSize : 0) +
+        (gpu.reservoir.rptReservoirPrev != null ? gpu.reservoir.rptReservoirByteSize : 0) +
+        (gpu.reservoir.rptResultBuffer != null ? gpu.reservoir.rptResultByteSize : 0);
+      const reservoirUniformBytes = gpu.reservoir.rptParamsBuffer != null
+        ? GpuResources.RESTIR_PT_PARAMS_BYTES : 0;
+      const sppmStorageBytes =
+        (gpu.sppm.sppmPhotonCellsBuffer != null
+          ? (gpu.sppm.sppmBuffersReady ? SPPM_PHOTON_CELLS_BYTES : 64)
+          : 0) +
+        (gpu.sppm.sppmCellCountersBuffer != null
+          ? (gpu.sppm.sppmBuffersReady ? SPPM_CELL_COUNTERS_BYTES : 64)
+          : 0) +
+        (gpu.sppm.sppmPixelStatsBuffer != null
+          ? (gpu.sppm.sppmPixelStatsWidth > 0 && gpu.sppm.sppmPixelStatsHeight > 0
+              ? Math.max(
+                  64,
+                  gpu.sppm.sppmPixelStatsWidth *
+                    gpu.sppm.sppmPixelStatsHeight *
+                    SPPM_PIXEL_STATS_BYTES_PER_PIXEL,
+                )
+              : 64)
+          : 0);
+      const sppmUniformBytes = gpu.sppm.sppmStatsBuffer != null
+        ? (gpu.sppm.sppmBuffersReady ? SPPM_STATS_BYTES : 64)
+        : 0;
+      const presentationStorageBytes = gpu.present.seedBlitVarPlaceholder != null
+        ? gpu.present.seedBlitVarPlaceholderByteSize : 0;
+      const presentationUniformBytes =
+        (gpu.present.presentParamsBuffer != null ? GpuResources.PRESENT_PARAMS_BYTES : 0) +
+        (gpu.present.seedBlitParamsBuffer != null ? 32 : 0);
       // Scene buffers (BVH/materials/indices/TLAS/emitters/light-tree/UVs) + the
       // material texture arrays, summed live off the current handles (was
       // previously omitted, so `total` under-reported by the whole scene).
@@ -773,14 +871,27 @@ class PTEngineWebGPU implements Engine {
 
       const commonTexBytes = accumBytes + normalDepthBytes + albedoBytes
         + varianceBytes + motionBytes;
+      const presentationTexBytes = presentTextureBytes + denoisedLinearTextureBytes;
       const commonBufBytes = accumBufBytes + varMomentBufBytes
         + bdptCameraSplatBufBytes + paramsBufBytes;
-      const total = commonTexBytes + commonBufBytes + sceneBytes;
+      const reservoirBytes = reservoirStorageBytes + reservoirUniformBytes;
+      const sppmBytes = sppmStorageBytes + sppmUniformBytes;
+      const presentationBytes =
+        presentationTexBytes + presentationStorageBytes + presentationUniformBytes;
+      const total =
+        commonTexBytes + commonBufBytes + sceneBytes +
+        reservoirBytes + sppmBytes + presentationBytes;
 
-      // byTextureFormat: common render targets (rgba16float) + the scene's
-      // material arrays by their actual format. Keeps the secondary tables
-      // summing to `total` (the documented invariant).
-      const textureFormats: Record<string, number> = { rgba16float: commonTexBytes };
+      // byTextureFormat: common render targets plus the scene's material arrays
+      // by their actual format. Keeps the secondary tables summing to `total`
+      // (the documented invariant).
+      const textureFormats: Record<string, number> = {
+        rgba16float: commonTexBytes - varianceBytes + presentTextureBytes,
+        r32float: varianceBytes,
+      };
+      if (denoisedLinearTextureBytes > 0) {
+        textureFormats['rgba32float'] = denoisedLinearTextureBytes;
+      }
       for (const [fmt, bytes] of Object.entries(scene.textureBytesByFormat)) {
         textureFormats[fmt] = (textureFormats[fmt] ?? 0) + bytes;
       }
@@ -790,13 +901,19 @@ class PTEngineWebGPU implements Engine {
         byCategory: Object.freeze({
           common: commonTexBytes + commonBufBytes,
           scene: sceneBytes,
+          reservoir: reservoirBytes,
+          sppm: sppmBytes,
+          presentation: presentationBytes,
         }),
         byTextureFormat: Object.freeze(textureFormats),
         byBufferUsage: Object.freeze({
           storage:
             accumBufBytes + varMomentBufBytes +
-            bdptCameraSplatBufBytes + scene.bufferBytes,
-          uniform: paramsBufBytes,
+            bdptCameraSplatBufBytes + scene.bufferBytes +
+            reservoirStorageBytes + sppmStorageBytes + presentationStorageBytes,
+          uniform:
+            paramsBufBytes + reservoirUniformBytes +
+            sppmUniformBytes + presentationUniformBytes,
         }),
       });
     },
@@ -947,7 +1064,9 @@ class PTEngineWebGPU implements Engine {
 
     if (hasFrameSubs) {
       const frameEndMs = globalThis.performance?.now?.() ?? Date.now();
-      const mem = this.debug.estimatedGpuMemoryBytes?.() ?? null;
+      const mem = this.#debugEnabled
+        ? this.#debugSurface.estimatedGpuMemoryBytes?.() ?? null
+        : null;
       const denoiserState = this.#postDenoiser != null
         ? this.#postDenoiser.getState()
         : { status: 'disabled' as const, reason: null };
@@ -1079,7 +1198,6 @@ class PTEngineWebGPU implements Engine {
         Number(this.#device.limits.maxBufferSize),
         Number(this.#device.limits.maxStorageBufferBindingSize),
       ),
-      onWarning: (warning) => this.#warn(warning),
       warningPhase: 'setScene',
       warningMethod: 'setScene',
     });
@@ -1422,11 +1540,7 @@ class PTEngineWebGPU implements Engine {
         );
       }
       gpu.ensureReservoirPipelines();
-      gpu.writeReservoirParams(
-        width,
-        height,
-        this.#restirPtMClamp,
-      );
+      gpu.writeReservoirParams(this.#restirPtMClamp);
       if (this.#sceneBuffers == null) {
         throw new Error(
           '[vitrum/pt-webgpu] ReSTIR-PT was requested before scene buffers were ready.',
@@ -1964,9 +2078,11 @@ class PTEngineWebGPU implements Engine {
     // case — the seed must land on a zeroed accumulator to be the sole prior.
     // Either way `#samplesAccumulated` is reset to 0: the prior is the new
     // starting point, with NO real samples yet (the prior weight W is virtual).
-    if (!this.#gpu.ensureAccumResources(width, height)) {
-      this.#gpu.clearAccumBuffer();
-    }
+    this.#gpu.ensureAccumResources(width, height);
+    // A seed starts a new temporal cohort even when its dimensions forced fresh
+    // accumulation buffers. Clear every other retained history (ReSTIR-PT and
+    // SPPM included) before publishing the prior.
+    this.#gpu.clearTemporalBuffers();
     this.#samplesAccumulated = 0;
     // Write the decaying prior. `weight` (virtual samples) is deliberately NOT
     // added to `#samplesAccumulated` — see the method doc.
@@ -2026,9 +2142,7 @@ class PTEngineWebGPU implements Engine {
         bdpt: this.#bdpt && this.#traceTier === 'full',
         restirPtReuse: this.#restirPtReuse,
         causticStrategy: this.#traceTier === 'lite' ? 'none' : this.#causticStrategy,
-        directLighting: 'summed-expectation',
         cameraVisibleEmitters: this.#cameraVisibleEmitters,
-        implicitEmissiveMeshLights: true,
       }),
       getMaterialSupportDetails: () =>
         ptWebgpuSupportManifest(this.#traceTier).materials,

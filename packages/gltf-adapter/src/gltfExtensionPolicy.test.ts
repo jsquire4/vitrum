@@ -8,6 +8,10 @@ import {
   type GltfTextureSourceExtension,
 } from './index.js';
 import type { MeshPrimitive, TextureRef } from '@vitrum/core';
+import {
+  effectiveGltfTextureSourceExtensions,
+  hasBuiltinWebpTextureSourceDecoder,
+} from './textures.js';
 
 function f32Buffer(values: number[]): ArrayBuffer {
   const buf = new ArrayBuffer(values.length * 4);
@@ -518,6 +522,44 @@ describe('glTF common extension policy', () => {
     ]));
   });
 
+  it.each([
+    ['missing', undefined],
+    ['NaN', Number.NaN],
+  ])('fails a selected variant mapping with a %s material index back to the base material', async (
+    _label,
+    invalidMaterial,
+  ) => {
+    const { gltf, buffers } = minimalMaterialGltf({
+      name: 'base red',
+      pbrMetallicRoughness: { baseColorFactor: [1, 0, 0, 1] },
+    });
+    gltf.extensionsUsed = ['KHR_materials_variants'];
+    gltf.extensions = {
+      KHR_materials_variants: { variants: [{ name: 'bad' }] },
+    };
+    gltf.meshes![0]!.primitives[0]!.extensions = {
+      KHR_materials_variants: {
+        mappings: [{
+          material: invalidMaterial,
+          variants: [0],
+        } as unknown as { material: number; variants: number[] }],
+      },
+    };
+
+    const selected = await gltfToScene(gltf, {
+      buffers,
+      materialVariant: 'bad',
+    });
+
+    expect((selected.scene.primitives[0] as MeshPrimitive).material.baseColor)
+      .toEqual([1, 0, 0]);
+    expect(selected.diagnostics).toContainEqual(expect.objectContaining({
+      code: 'material-variant-material-missing',
+      path:
+        'meshes[0].primitives[0].extensions.KHR_materials_variants.mappings[0].material',
+    }));
+  });
+
   it('reports malformed root KHR_materials_variants lists without throwing', async () => {
     const { gltf, buffers } = minimalMaterialGltf({
       name: 'base red',
@@ -612,8 +654,8 @@ describe('glTF common extension policy', () => {
     expect((material.baseColorMap as TextureRef).handle).toEqual({ decoded: 'image/ktx2' });
   });
 
-  it('uses base texture.source until an optional texture-source extension is enabled', async () => {
-    const { gltf, buffers, fallbackBytes, extensionBytes } = textureSourceGltf('EXT_texture_webp');
+  it('selects optional WebP sources automatically when this host has an adapter-owned decoder', async () => {
+    const { gltf, buffers, extensionBytes } = textureSourceGltf('EXT_texture_webp');
     gltf.extensionsUsed = ['EXT_texture_webp'];
     const seen: number[][] = [];
     const decodeImage = vi.fn(async (bytes: Uint8Array, mimeType: string) => {
@@ -628,7 +670,9 @@ describe('glTF common extension policy', () => {
       textureSourceExtensions: ['EXT_texture_webp'],
     });
 
-    expect(seen).toEqual([fallbackBytes, extensionBytes]);
+    expect(hasBuiltinWebpTextureSourceDecoder()).toBe(true);
+    expect(effectiveGltfTextureSourceExtensions(undefined)).toContain('EXT_texture_webp');
+    expect(seen).toEqual([extensionBytes, extensionBytes]);
     const report = analyzeGltfAsset(gltf);
     expect(report.extensions.supported).toContain('EXT_texture_webp');
     expect(report.extensions.requiresHook).not.toContain('EXT_texture_webp');
@@ -639,7 +683,7 @@ describe('glTF common extension policy', () => {
         textureIndex: 0,
         sourceImageIndex: 1,
         path: 'textures[0].extensions.EXT_texture_webp',
-        selected: false,
+        selected: true,
         required: false,
         hasBaseSource: true,
         requiresHook: false,

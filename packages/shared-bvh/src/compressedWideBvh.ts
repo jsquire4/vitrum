@@ -9,6 +9,7 @@ import {
   CWBVH_CHILD_BOUNDS_PACKED_U32,
   CWBVH_CHILD_BOUNDS_U16,
   CWBVH_CHILD_META_WORDS,
+  CWBVH_TRAVERSAL_STACK_DEPTH,
 } from './strides.js';
 import { packedMaterialHasTransmission } from './wgsl/materialTransmission.wgsl.js';
 
@@ -41,6 +42,53 @@ export interface CompressedWideBvhBuildResult extends CpuBvhBuildResult {
   /** Number of non-empty child slots per wide node. */
   readonly cwbvhChildCount: Uint32Array;
   readonly cwbvhNodeCount: number;
+  readonly cwbvhBuildStatus: {
+    readonly traversal: 'wide' | 'empty' | 'binary-fallback';
+    readonly maxTraversalStackEntries: number;
+    readonly traversalStackCapacity: number;
+    readonly reason?: 'invalid-layout' | 'stack-capacity';
+  };
+}
+
+/**
+ * Compute the exact maximum number of pending wide nodes for the traversal's
+ * depth-first LIFO schedule when every child bound intersects. This is the
+ * conservative build-time proof used against the shader's fixed stack.
+ *
+ * @internal
+ */
+export function requiredCwbvhTraversalStackEntries(
+  childMeta: Uint32Array,
+  childCount: Uint32Array,
+  root = 0,
+): number {
+  if (childCount.length === 0) return 0;
+  if (!Number.isSafeInteger(root) || root < 0 || root >= childCount.length) {
+    return Number.POSITIVE_INFINITY;
+  }
+  const stack = [root];
+  const visited = new Set<number>();
+  let maximum = 1;
+  while (stack.length > 0) {
+    const node = stack.pop()!;
+    // A valid CWBVH is a tree. Re-visiting a node proves a cycle or a
+    // multiply-parented malicious layout; fail the capacity proof closed.
+    if (visited.has(node)) return Number.POSITIVE_INFINITY;
+    visited.add(node);
+    const count = childCount[node] ?? CWBVH_CHILD_COUNT_INVALID;
+    if (count > CWBVH_CHILDREN) return Number.POSITIVE_INFINITY;
+    for (let slot = 0; slot < count; slot += 1) {
+      const offset =
+        node * CWBVH_CHILDREN * CWBVH_CHILD_META_WORDS +
+        slot * CWBVH_CHILD_META_WORDS;
+      if ((childMeta[offset] ?? CWBVH_CHILD_EMPTY) !== CWBVH_CHILD_NODE) continue;
+      const child = childMeta[offset + 1] ?? childCount.length;
+      if (child >= childCount.length) return Number.POSITIVE_INFINITY;
+      stack.push(child);
+    }
+    maximum = Math.max(maximum, stack.length);
+  }
+  return maximum;
 }
 
 export interface CwbvhIntersection {
@@ -203,6 +251,12 @@ export function buildCompressedWideBvhFromArrayBvh(
     cwbvhChildMeta: new Uint32Array(CWBVH_CHILDREN * CWBVH_CHILD_META_WORDS),
     cwbvhChildCount: new Uint32Array([invalid ? CWBVH_CHILD_COUNT_INVALID : 0]),
     cwbvhNodeCount: 1,
+    cwbvhBuildStatus: {
+      traversal: invalid ? 'binary-fallback' : 'empty',
+      maxTraversalStackEntries: invalid ? Number.POSITIVE_INFINITY : 0,
+      traversalStackCapacity: CWBVH_TRAVERSAL_STACK_DEPTH,
+      ...(invalid ? { reason: 'invalid-layout' as const } : {}),
+    },
   });
   if (binaryNodeCount === 0) {
     return {
@@ -212,6 +266,11 @@ export function buildCompressedWideBvhFromArrayBvh(
       cwbvhChildMeta: new Uint32Array(0),
       cwbvhChildCount: new Uint32Array(0),
       cwbvhNodeCount: 0,
+      cwbvhBuildStatus: {
+        traversal: 'empty',
+        maxTraversalStackEntries: 0,
+        traversalStackCapacity: CWBVH_TRAVERSAL_STACK_DEPTH,
+      },
     };
   }
   if (binary.reorderedIndices.length === 0) {
@@ -322,15 +381,34 @@ export function buildCompressedWideBvhFromArrayBvh(
   // concatenated forest). Mark every root candidate invalid when conversion
   // discovered a global parent/child layout violation; a node-0-only sentinel
   // let an explicitly selected nonzero root bypass the corruption gate.
-  if (!traversalValid) childCount.fill(CWBVH_CHILD_COUNT_INVALID);
+  const packedChildMeta = new Uint32Array(childMeta);
+  const packedChildCount = new Uint32Array(childCount);
+  const maxTraversalStackEntries = traversalValid
+    ? requiredCwbvhTraversalStackEntries(packedChildMeta, packedChildCount)
+    : Number.POSITIVE_INFINITY;
+  const stackSafe =
+    maxTraversalStackEntries <= CWBVH_TRAVERSAL_STACK_DEPTH;
+  if (!traversalValid || !stackSafe) {
+    packedChildCount.fill(CWBVH_CHILD_COUNT_INVALID);
+  }
 
   return {
     ...binary,
     cwbvhNodeBounds: new Float32Array(nodeBounds),
     cwbvhChildBounds: new Uint16Array(childBounds),
-    cwbvhChildMeta: new Uint32Array(childMeta),
-    cwbvhChildCount: new Uint32Array(childCount),
+    cwbvhChildMeta: packedChildMeta,
+    cwbvhChildCount: packedChildCount,
     cwbvhNodeCount: childCount.length,
+    cwbvhBuildStatus: {
+      traversal: traversalValid && stackSafe ? 'wide' : 'binary-fallback',
+      maxTraversalStackEntries,
+      traversalStackCapacity: CWBVH_TRAVERSAL_STACK_DEPTH,
+      ...(!traversalValid
+        ? { reason: 'invalid-layout' as const }
+        : !stackSafe
+          ? { reason: 'stack-capacity' as const }
+          : {}),
+    },
   };
 }
 

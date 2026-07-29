@@ -59,7 +59,6 @@ import {
   PT_WEBGPU_FULL_REQUIRED_STORAGE_TEXTURES_PER_STAGE,
 } from "@vitrum/pt-webgpu";
 import { createWalkaroundEngine_Hybrid } from "@vitrum/walkaround-hybrid";
-import { HYBRID_WEBGPU_REQUIRED_LIMITS } from "@vitrum/walkaround-hybrid";
 import { asMat4 } from "@vitrum/core";
 import { loadGltfForEngine } from "@vitrum/gltf-adapter";
 import { Buffer } from "node:buffer";
@@ -1907,18 +1906,9 @@ async function acquirePtDevice(wantsFullTier) {
   return adapter.requestDevice(Object.keys(limits).length ? { requiredLimits: limits } : {});
 }
 
-// acquireWhDevice now lives in tools/lib/whHarness.mjs (imported above); its
-// 16/8 floor is HYBRID_WEBGPU_REQUIRED_LIMITS (D17-11 authority), asserted below.
-// Fail loudly if the shared harness ever drifts from the walkaround-hybrid authority.
-if (
-  HYBRID_WEBGPU_REQUIRED_LIMITS.maxStorageBuffersPerShaderStage !== 16 ||
-  HYBRID_WEBGPU_REQUIRED_LIMITS.maxStorageTexturesPerShaderStage !== 8
-) {
-  throw new Error(
-    "[behavioral-gate] HYBRID_WEBGPU_REQUIRED_LIMITS drifted from the 16/8 floor " +
-      "baked into tools/lib/whHarness.mjs acquireWhDevice — reconcile the harness.",
-  );
-}
+// acquireWhDevice now lives in tools/lib/whHarness.mjs (imported above) and
+// imports the dependency-free walkaround limit authority directly. The harness
+// therefore requests the same floor as production without a duplicated number.
 
 // ── Readback helpers ──────────────────────────────────────────────────────────
 // readbackAsRgba8 / meanLuminance / hasNaN now live in tools/lib/readback.mjs

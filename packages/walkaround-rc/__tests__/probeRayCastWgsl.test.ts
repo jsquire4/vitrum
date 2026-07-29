@@ -66,6 +66,13 @@ describe('PROBE_RAY_CAST_WGSL material UV decode', () => {
 });
 
 describe('PROBE_RAY_CAST_WGSL environment transform', () => {
+  it('uses the repository-wide top-to-bottom equirectangular V convention', () => {
+    expect(PROBE_RAY_CAST_WGSL).toContain(
+      'return vec2f(phi / (2.0 * 3.14159265) + 0.5, theta / 3.14159265);',
+    );
+    expect(PROBE_RAY_CAST_WGSL).not.toContain('1.0 - theta / 3.14159265');
+  });
+
   it('uses one H6 RY(-rotationY) directional lookup helper at both RC environment reads', () => {
     expect(PROBE_RAY_CAST_WGSL).toContain(
       'return vec3f(c * dir.x - s * dir.z, dir.y, s * dir.x + c * dir.z);',

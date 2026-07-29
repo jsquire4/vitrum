@@ -3,7 +3,10 @@ import type {
   HdriEnvironment,
   SceneEnvironment,
 } from '@vitrum/core';
-import { bakePreethamSkyEquirect } from '@vitrum/shared-samplers';
+import {
+  bakePreethamSkyEquirect,
+  HG_G_STABILITY_LIMIT,
+} from '@vitrum/shared-samplers';
 import { buildDirectionalEnv, type DirectionalEnvData } from './equirectDirectional.js';
 
 type HybridSkyVec3 = [number, number, number];
@@ -18,8 +21,6 @@ export interface HybridResolvedEnvironment {
   readonly mode: HybridEnvironmentResolveMode;
   readonly skyTint?: HybridSkyVec3;
   readonly skyIrradiance?: number;
-  readonly proceduralSunDirection?: HybridSkyVec3;
-  readonly proceduralSunIntensity?: number;
   readonly warnings: readonly string[];
   /**
    * B3 (road-to-100) — directional IBL payload. Present ONLY when a raw
@@ -177,7 +178,14 @@ function resolveProceduralSkyEnvironment(
     turbidity: finiteScalarInRange(env.turbidity, 2, 1.5, 30, warnings, 'procedural-sky turbidity'),
     rayleigh: finiteScalarInRange(env.rayleigh, 1, 0, Number.POSITIVE_INFINITY, warnings, 'procedural-sky rayleigh'),
     mieCoefficient: finiteScalarInRange(env.mieCoefficient, 0.005, 0, Number.POSITIVE_INFINITY, warnings, 'procedural-sky mieCoefficient'),
-    mieDirectionalG: finiteScalarInRange(env.mieDirectionalG, 0.8, -0.9999, 0.9999, warnings, 'procedural-sky mieDirectionalG'),
+    mieDirectionalG: finiteScalarInRange(
+      env.mieDirectionalG,
+      0.8,
+      -HG_G_STABILITY_LIMIT,
+      HG_G_STABILITY_LIMIT,
+      warnings,
+      'procedural-sky mieDirectionalG',
+    ),
     intensity: skyIrradiance,
   });
   const payload: RawNumericHdriPayload = {
@@ -194,10 +202,6 @@ function resolveProceduralSkyEnvironment(
     // strict all-black raw HDRIs use [0,0,0] instead so authored black is exact.
     skyTint: average.skyIrradiance === 0 ? whiteSkyTint() : average.skyTint,
     skyIrradiance: average.skyIrradiance,
-    proceduralSunDirection: baked.sunDirection as HybridSkyVec3,
-    // The baked equirect already contains the sun disk/corona and is sampled
-    // through the env CDF, so do not request a second scalar procedural sun.
-    proceduralSunIntensity: 0,
     warnings,
     ...(directional !== undefined
       ? { directional, rotationY: 0, directionalIntensity: 1 }

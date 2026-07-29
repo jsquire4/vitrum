@@ -92,9 +92,9 @@ fn atrousMain(@builtin(global_invocation_id) gid: vec3u) {
       // normalizing both colors to unit luminance first, we measure
       // hue/saturation difference instead of brightness difference,
       // making σc behave consistently across all cell luminances.
-      // luminance() is the canonical Rec.709 helper from COMMON_WGSL
-      // (atrous module declares requires: 'common'; the W1-R6 composer
-      // prepends COMMON_WGSL so fn luminance is in scope here).
+      // luminance() is the canonical Rec.709 helper. The walkaround composer
+      // declares the focused luminance dependency for this image-space pass;
+      // no scene-traversal code is pulled into the denoiser shader.
       let lumP = max(1e-3, luminance(cP));
       let lumC = max(1e-3, luminance(cCenter));
       let dc = length(cP / lumP - cCenter / lumC);

@@ -56,30 +56,27 @@ describe('material stride parity (packer ↔ composed GLSL)', () => {
     expect(packed.data[base1 + 86 * 4 + 0]).toBe(0.25);
   });
 
-  it('packer writes the uv-set bitmask at texel 86.a (former pad lane)', () => {
-    // Zero maps have texCoord:1 → bitmask = 0.
+  it('packer keeps the former UV1 mirror lane reserved at texel 86.a', () => {
     const noUv1Mat: MaterialSpec[] = [
       { baseColor: [1, 1, 1], roughness: 0.5, metallic: 0 },
     ];
     const noUv1 = packMaterialsTexture(noUv1Mat);
-    expect(noUv1.data[86 * 4 + 3]).toBe(0); // was pad=0, now bitmask=0 (same value, now meaningful)
+    expect(noUv1.data[86 * 4 + 3]).toBe(0);
 
-    // baseColorMap at texCoord:1 → bit 0 set = 1.
+    // Per-map UV selection lives only in the scalable selector table.
     const handle = {};
     const layerOf = new Map<unknown, number>([[handle, 0]]);
     const uv1Mat: MaterialSpec[] = [
       { baseColor: [1, 1, 1], roughness: 0.5, metallic: 0, baseColorMap: { handle, texCoord: 1 } },
     ];
     const withUv1 = packMaterialsTexture(uv1Mat, layerOf);
-    expect(withUv1.data[86 * 4 + 3]).toBe(1); // bit 0
+    expect(withUv1.data[86 * 4 + 3]).toBe(0);
   });
 
-  it('GLSL material_struct decodes uv-set bitmask at texel 86.a into uvTexCoordMask', () => {
-    // Verify the decoder reads the bitmask from the former pad lane.
+  it('GLSL omits the superseded uvTexCoordMask field', () => {
     const shader = composedShader();
     expect(shader).toContain('s = texelFetch1D( tex, i + 86u );');
-    expect(shader).toContain('m.uvTexCoordMask = uint( round( s.a ) )');
-    expect(shader).toContain('uvTexCoordMask');
+    expect(shader).not.toContain('uvTexCoordMask');
   });
 
   it('GLSL decodes scalar anisotropy and routes GGX through anisotropic helpers', () => {

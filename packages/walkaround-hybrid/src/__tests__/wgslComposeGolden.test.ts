@@ -153,15 +153,24 @@ function digest(code: string): { sha256: string; length: number } {
 // shadow wrappers, the bare GI reservoir update, and the shader-side arena
 // validation chain were removed. Live textured/transmittance/metadata paths
 // remain pinned by focused semantic tests and the shader compiler gate.
+// Final renderer audit closure (2026-07-29): fractional metallic surfaces keep
+// their dielectric diffuse GI share, retired UBO controls are explicit zero ABI
+// pads, the scene arena name exposes BVH ownership to validation adapters, NRC
+// termination remains finite in f32, and unread environment/ReGIR resources
+// were removed. Focused estimator, UBO-layout, binding-limit, and composition
+// tests pin each intentional semantic/ABI change represented by these bytes.
+// KHR punctual-range + SMS hygiene (2026-07-29): every walkaround punctual
+// route uses the unsquared KHR range window, and the SMS multiplicity helper
+// returns only its consumed weight rather than carrying three unread fields.
 const GOLDENS: Record<string, { sha256: string; length: number }> = {
-  risGi: { sha256: '0a0596c8a6ecbb9fe0d0a952124409d521fb98c0276034160d77abba50fe042e', length: 259742 },
-  risGiNrc: { sha256: 'fa55e41a991bec6da80ac7dd898f4380c63b35a66b95c8b266c391ac8c372290', length: 311105 },
-  temporalGi: { sha256: '139950e1a84d9bf13d213a1135470754d28e9f7a5641b5d85d30f21b73fd5795', length: 226732 },
-  spatialGi: { sha256: 'a6df0c06bd202a16d78926b2e32ee052cdd96840fdcd27219810e568a6cc9c65', length: 227239 },
-  shade: { sha256: '384f0530b75f8efb7185981ded062bd1eeae491a7b43929ef1ac82ee90223e91', length: 382477 },
-  transparentOit: { sha256: '8ecfff254aee40ef14d038f23b36ad2b185e70c3881ba0a390258d8c2d447dfc', length: 254546 },
-  regir: { sha256: '1bd529c69fed94090b26b062df86d18e8e2d6e05fa532a2bd522a809e2e49e8f', length: 135258 },
-  regirBuild: { sha256: '2f8b8a27dc7e152cc972f80816cdcfa036b497f153a3488f0e5fd14d7827d46b', length: 134455 },
+  risGi: { sha256: 'f5d0e7459eb04e1336c28fcb0336bb5a28d908df45829a42102ad800af4316f5', length: 259801 },
+  risGiNrc: { sha256: 'f78a9679af5f733f3359edb2d3b874e8456dcceaec3dc77aaedf7943d6361d4d', length: 311447 },
+  temporalGi: { sha256: '2c5d702e7f76117c75093c1dc4bc829321b8b93a9ea718d70b16d0e5cb5ad053', length: 226791 },
+  spatialGi: { sha256: '4169a1e606df663d9d425d29034f2fe78ef01d98cfc2c430ec26231ae3574efb', length: 227298 },
+  shade: { sha256: 'eff07b5eca0ca635975a42b0e194f90201c825e478063cdd63bc72ff473f6f1d', length: 382511 },
+  transparentOit: { sha256: '8742f758d2e6b3c8ae5b7fbef98ea2cd23fb752a7e41f1d6b2f0dd28bbcd2701', length: 254601 },
+  regir: { sha256: '62f583e58df25a1bdada3d3c9211174401301af079677a55de34c49a4fbd4e38', length: 135114 },
+  regirBuild: { sha256: '63e0b9bd14434dcfec6dd222559af94f68e11f05dc4c56ddd556d462322fa824', length: 133948 },
 };
 
 interface Case { name: string; code: () => string; }

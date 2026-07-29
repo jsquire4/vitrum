@@ -20,7 +20,9 @@ import { PROBE_RAY_CAST_WGSL } from '../src/wgsl/probeRayCast.wgsl.js';
  * attenuation below so this golden cannot silently bless those semantics. U10
  * additionally completes a transmissive suffix under the scene-diagonal and
  * interface-budget bound; `glassTransportClosure.test.ts` pins that behavior
- * before this composed-shader identity is updated.
+ * before this composed-shader identity is updated. The 2026-07-29 audit aligns
+ * RC's equirectangular V coordinate with the main renderer's top-to-bottom map
+ * convention.
  */
 describe('PROBE_RAY_CAST_WGSL byte identity', () => {
   it('retains the C71 specular, IOR, and layered-volume transport semantics', () => {
@@ -52,8 +54,8 @@ describe('PROBE_RAY_CAST_WGSL byte identity', () => {
     const length = PROBE_RAY_CAST_WGSL.length;
     const sha256 = createHash('sha256').update(PROBE_RAY_CAST_WGSL, 'utf8').digest('hex');
     expect({ length, sha256 }).toEqual({
-      length: 141106,
-      sha256: 'f1b7ddf08d63504d5ff2191f51f4f73d088891a722d3206ebd8a1de70cfbb848',
+      length: 141100,
+      sha256: '2a59e369ee48e6a4c5e1c65e300a89524a16ac0419a7344fcc95c13e7dcb289f',
     });
   });
 });

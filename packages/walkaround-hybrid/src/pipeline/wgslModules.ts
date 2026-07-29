@@ -11,7 +11,8 @@
  * concerns live entirely in walkaround-hybrid. The `requires` arrays here
  * reflect the historical concat patterns from pipelineCompiler.ts /
  * atrousVariance.ts / svgfReal.ts pre-R6:
- *   - ATROUS_WGSL was prepended with COMMON_WGSL  → requires: ['common']
+ *   - ATROUS_WGSL needs only the canonical Rec.709 luminance helper
+ *     → requires: ['luminance'].
  *   - TEMPORAL_ACCUM_WGSL was NOT concatenated   → requires: []
  *   - ATROUS_VARIANCE_WGSL was self-contained (carries its own PI/INV_PI/
  *     LUM_W/WelfordVariance) — the anti-duplication-by-comment at
@@ -167,11 +168,11 @@ const OCTAHEDRAL_CORE_MODULE: WgslModule = {
   requires: [],
 };
 
-/** Pre-R6 concat: `COMMON_WGSL + ATROUS_WGSL` (pipelineCompiler.ts:112). */
+/** À-trous is an image-space pass; it needs luminance, not scene traversal. */
 export const ATROUS_MODULE: WgslModule = {
   name: 'atrous',
   source: ATROUS_WGSL,
-  requires: ['common'],
+  requires: ['luminance'],
 };
 
 /** Pre-R6 concat: `TEMPORAL_ACCUM_WGSL` standalone (pipelineCompiler.ts:295). */

@@ -584,10 +584,11 @@ export function gltfAnimationPointerSampleValueError(
 }
 
 /**
- * Returns a reason when interpolation itself cannot preserve the target
- * property's domain. Integer/bool STEP is normative. For bounded scalar/vector
- * properties, arbitrary CUBICSPLINE tangents can overshoot between valid keys;
- * the adapter fails closed rather than clamp sampled values.
+ * Returns a reason when interpolation itself is forbidden for the target
+ * property's value type. Boolean values require STEP. Numeric CUBICSPLINE
+ * channels are accepted after authored-key validation; the controller validates
+ * every interpolated value and skips only frames whose curve actually leaves
+ * the target's normative domain.
  */
 export function gltfAnimationPointerInterpolationError(
   target: GltfAnimationPointerTarget,
@@ -595,9 +596,6 @@ export function gltfAnimationPointerInterpolationError(
 ): string | undefined {
   if (target.valueType === 'boolean' && interpolation !== 'STEP') {
     return `${target.valueType} properties require STEP interpolation`;
-  }
-  if (interpolation === 'CUBICSPLINE' && pointerHasBoundedDomain(target)) {
-    return 'CUBICSPLINE cannot guarantee this bounded property remains inside its normative domain between keys';
   }
   return undefined;
 }
@@ -661,16 +659,6 @@ function pointerValueConstraintError(
   if (field === 'attenuationDistance' && scalar <= 0) return 'must be > 0';
   if ((field === 'ior' || field === 'iridescenceIor') && scalar < 1) return 'must be >= 1';
   return undefined;
-}
-
-function pointerHasBoundedDomain(target: GltfAnimationPointerTarget): boolean {
-  if (target.kind === 'camera' || target.kind === 'punctual-light' || target.kind === 'node-visibility') {
-    return true;
-  }
-  if (target.kind !== 'material-property') return false;
-  return target.target.field !== 'normalScale' &&
-    target.target.field !== 'clearcoatNormalScale' &&
-    target.target.field !== 'anisotropyRotation';
 }
 
 function nodeMorphTargetCount(gltf: GltfJson, nodeIndex: number): number | undefined {

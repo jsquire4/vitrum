@@ -3,6 +3,7 @@ import { BIND_GROUP_TABLE } from '../../pipeline/bindGroupDescriptors.js';
 import { GTAO_UBO } from '../../pipeline/passes/uboLayouts.js';
 import { GTAO_WGSL } from '../gtao.wgsl.js';
 import { GTAO_COMMON_WGSL } from '../gtaoCommon.wgsl.js';
+import { GTAO_UPSAMPLE_WGSL } from '../gtaoUpsample.wgsl.js';
 
 type Vec3 = readonly [number, number, number];
 
@@ -111,5 +112,14 @@ describe('GTAO projected-normal slice geometry', () => {
       const uniform = family?.entries.find((entry) => entry.kind === 'uniform');
       expect(uniform?.minSizeBytes).toBe(96);
     }
+  });
+
+  it('uses a dimensionless Gaussian depth edge-stop in the bilateral upsample', () => {
+    expect(GTAO_UPSAMPLE_WGSL).toContain(
+      'exp(-(depthDelta * depthDelta) / (2.0 * sigma * sigma))',
+    );
+    expect(GTAO_UPSAMPLE_WGSL).not.toContain(
+      'exp(-depthDelta / (2.0 * sigma * sigma))',
+    );
   });
 });

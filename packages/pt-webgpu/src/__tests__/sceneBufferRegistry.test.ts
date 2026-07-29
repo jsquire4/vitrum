@@ -188,4 +188,37 @@ describe('T2-A registry-driven upload single-source', () => {
     expect(bufferBytes).toBe(expected);
     sb.destroy();
   });
+
+  it('gpuMemoryBytes includes every retained material-array mip level', () => {
+    const { device } = makeUploadDevice();
+    const sb = uploadPackedScene(device, buildPackedScene(meshScene()));
+    const fakeTexture = (
+      width: number,
+      height: number,
+      depthOrArrayLayers: number,
+      mipLevelCount: number,
+      format: GPUTextureFormat,
+    ): GPUTexture => ({
+      width,
+      height,
+      depthOrArrayLayers,
+      mipLevelCount,
+      format,
+    }) as GPUTexture;
+    Object.assign(sb, {
+      materialTexture: fakeTexture(8, 4, 2, 4, 'rgba8unorm-srgb'),
+      materialLinearTexture: fakeTexture(4, 4, 1, 3, 'rgba8unorm'),
+      materialEmissiveTexture: fakeTexture(2, 1, 3, 2, 'rgba16float'),
+    });
+
+    const { textureBytesByFormat } = sb.gpuMemoryBytes();
+    // sRGB: ((8×4) + (4×2) + (2×1) + (1×1)) × 2 layers × 4 B.
+    expect(textureBytesByFormat['rgba8unorm-srgb']).toBe(344);
+    // Linear: ((4×4) + (2×2) + (1×1)) × 1 layer × 4 B.
+    expect(textureBytesByFormat['rgba8unorm']).toBe(84);
+    // Emissive: ((2×1) + (1×1)) × 3 layers × 8 B.
+    expect(textureBytesByFormat['rgba16float']).toBe(72);
+
+    sb.destroy();
+  });
 });

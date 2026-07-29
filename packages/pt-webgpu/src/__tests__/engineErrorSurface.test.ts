@@ -149,6 +149,25 @@ describe('pt-webgpu EngineError surface — uncapturederror events', () => {
 
     engine.dispose();
   });
+
+  it('bounds distinct-message throttle state with oldest-entry eviction', async () => {
+    const ctrl = makeControlledDevice();
+    const engine = await createPTEngine_WebGPU({ device: ctrl.device });
+    const received: EngineError[] = [];
+    engine.onError!((err) => received.push(err));
+    const listener = getUncapturedErrorListener(ctrl.addCalls);
+
+    for (let i = 0; i < 257; i += 1) {
+      listener(fakeErrorEvent(`unique validation error ${i}`, 'GPUValidationError'));
+    }
+    expect(received).toHaveLength(257);
+
+    // Capacity is 256, so the oldest key has been evicted and is reportable
+    // again even though the frame counter has not advanced.
+    listener(fakeErrorEvent('unique validation error 0', 'GPUValidationError'));
+    expect(received).toHaveLength(258);
+    engine.dispose();
+  });
 });
 
 describe('pt-webgpu EngineError surface — dispose removes listener', () => {

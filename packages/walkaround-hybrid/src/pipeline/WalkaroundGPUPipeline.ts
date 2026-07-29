@@ -78,6 +78,7 @@ import { PipelineResourceCache } from './PipelineResourceCache.js';
 import {
   PPGCoordinator,
   type PPGSTreeSnapshot,
+  type PPGTrainingEpochStatus,
   type PreparedSTreeImport,
 } from './PPGCoordinator.js';
 import {
@@ -97,6 +98,11 @@ import { DenoiserRegistry, type Denoiser, type DenoiserId } from './denoisers/in
 import { registerBuiltinDenoisers } from './denoisers/registerBuiltinDenoisers.js';
 import { PassRegistry } from './PassRegistry.js';
 import type { Pass, PassDispatchContext, PassFrameState, PassGateOptions } from './Pass.js';
+import { HYBRID_WEBGPU_REQUIRED_LIMITS } from '../webgpuLimits.js';
+export {
+  HYBRID_LITE_LIMITS,
+  HYBRID_WEBGPU_REQUIRED_LIMITS,
+} from '../webgpuLimits.js';
 import {
   AtrousIndirectPass,
   CheckerboardPrefillPass,
@@ -396,35 +402,6 @@ function registerPasses(
   }
   return { registry, compositePass };
 }
-
-/**
- * Device limits required by the actual explicit pipeline layouts created in
- * pipelineCompiler.ts. These are hard minima, not headroom:
- *
- * - 8 storage buffers: RIS/shade/GI-RIS (packed scene/PPG/NRC arenas)
- * - 7 storage textures: transparent-OIT (frame's six + OIT output)
- * - 16 sampled textures: NRC GI-RIS (frame + scene + UBO + hybrid layers)
- *
- * The companion layout-derivation test records the real bind-group descriptors
- * and recomputes all three peaks. If a layout changes, the test fails until this
- * public request-device contract changes with it.
- */
-export const HYBRID_WEBGPU_REQUIRED_LIMITS: Readonly<Record<string, number>> = Object.freeze({
-  maxStorageBuffersPerShaderStage: 8,
-  maxStorageTexturesPerShaderStage: 7,
-  maxSampledTexturesPerShaderStage: 16,
-});
-
-/**
- * Lite currently compiles the same explicit bind-group layouts as full. Runtime
- * gates and merged BVH reduce memory/work, but WebGPU validates every entry in a
- * pipeline layout, including bindings unused by a selected shader path. Lite
- * therefore has the same structural device floor until it gains a real layout
- * fork. Advertising 10/6 made compliant hosts request a device that could not
- * create scene-bgl (11 storage buffers) or transparentOitLayout (7 storage
- * textures).
- */
-export const HYBRID_LITE_LIMITS: Readonly<Record<string, number>> = HYBRID_WEBGPU_REQUIRED_LIMITS;
 
 const WEBGPU_DEFAULT_LIMITS = {
   maxStorageBuffersPerShaderStage: 8,
@@ -769,7 +746,6 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
   /** Runtime bypass for dev A/B toggles (`engine.debug.setDenoiserEnabled`). */
   private _denoiserPassEnabled = true;
   /** Registry of non-denoiser passes; populated once at boot. */
-  private _passRegistry: PassRegistry | null = null;
   /** Sorted pass list cached at boot; reused across frames. */
   private _sortedPasses: readonly Pass[] = [];
   /** Active neural graph handle; pipeline disposal releases its GPU resources. */
@@ -1552,6 +1528,7 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
     return {
       hdrColorTexture: this._res.common.hdrColorTexture ?? null,
       hdrIndirectTexture: this._res.common.hdrIndirectTexture ?? null,
+      hdrTotalTexture: this._res.common.hdrTotalTexture ?? null,
       aoFullTexture: this._res.gtao.aoFullTexture ?? null,
     };
   }
@@ -1726,6 +1703,10 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
     swapChainFormat: GPUTextureFormat = 'bgra8unorm',
     options?: {
       verbose?: boolean;
+      /** Enable diagnostic-only GPU timestamp queries when the device exposes
+       *  `timestamp-query`. Kept separate from `verbose` so logging does not
+       *  silently add per-frame query/resolve/readback overhead. */
+      debug?: boolean;
       denoiser?: DenoiserId;
       /** Audit B8 — host-overridable camera-move temporal-reset threshold. */
       cameraMoveResetThresholdSq?: number;
@@ -1808,6 +1789,12 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
       regirConfig?: Partial<ReGIRConfig>;
     },
   ): Promise<void> {
+    // Adopt the graph before the first allocation/compilation step. If any
+    // later initialization phase rejects, dispose() still owns and releases
+    // every graph buffer rather than leaving the lifecycle-local graph orphaned.
+    if (options?.inferenceGraph !== undefined) {
+      this._inferenceGraph = options.inferenceGraph;
+    }
     assertHybridDeviceCapableIfReported(this._device.limits);
     let effectiveOptions = options;
     if (options?.nrcEnabled === true) {
@@ -2029,14 +2016,8 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
       frameResources: this._res,
     });
 
-    // Retain the configured graph so the pipeline owns and releases it. Registry
-    // lookup above has already rejected explicit neural mode when it is absent.
-    if (options?.inferenceGraph) {
-      this._inferenceGraph = options.inferenceGraph;
-    }
-
-    // ── Timestamp queries (DEV-only, feature-gated) ──────────────────────
-    initTimestampQueries(d, this._tsState);
+    // ── Timestamp queries (explicit debug-only, feature-gated) ────────────
+    initTimestampQueries(d, this._tsState, { DEV: options?.debug === true });
 
     // ── Eager UBO allocation ─────────────────────────────────────────────
     // Allocate the pipeline-owned per-frame UBOs upfront so renderFrame()
@@ -2092,7 +2073,6 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
     this._compositePass = compositePass;
 
     // ── Initialize all passes in parallel ────────────────────────────────
-    this._passRegistry = registry;
     this._sortedPasses = registry.sortedPasses();
     await Promise.all(
       this._sortedPasses.map((p) =>
@@ -2742,6 +2722,12 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
     return this._initialized && this._ppg.requestTrainingRecovery();
   }
 
+  /** Pollable companion to {@link requestPpgTrainingRecovery}. */
+  getPpgTrainingStatus(): PPGTrainingEpochStatus | 'disabled' {
+    if (!this._initialized || !this._ppg.enabled) return 'disabled';
+    return this._ppg.trainingStatus;
+  }
+
   /**
    * Blit the most recent resolvedTexture to the host's swap chain WITHOUT
    * running the compute pipeline. Used when HybridEngine's 60-FPS throttle
@@ -3190,9 +3176,8 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
     // target, so when the adapter gates off (NoneDenoiser) downstream
     // passes see the legacy fallback handle.
     //
-    // Manual `Pass.gates` filtering inline rather than calling
-    // `_passRegistry.activePasses(...)` so we iterate the cached
-    // `_sortedPasses` array and avoid re-sorting per frame.
+    // Filter gates inline while iterating the initialization-time cached,
+    // dependency-sorted pass array; no per-frame sorting is required.
     for (const pass of this._sortedPasses) {
       if (!pass.gates(gateOpts)) continue;
       pass.dispatch(passCtx);
@@ -3397,7 +3382,6 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
     // Each Pass releases any pass-private GPU resources it owns.
     for (const pass of this._sortedPasses) pass.dispose();
     this._sortedPasses = [];
-    this._passRegistry = null;
     // Release the configured neural graph after the wrapper has stopped dispatching.
     this._inferenceGraph?.dispose();
     this._inferenceGraph = null;

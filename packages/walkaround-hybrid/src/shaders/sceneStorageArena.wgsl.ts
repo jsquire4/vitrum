@@ -29,12 +29,12 @@ struct EmitterTri {
   castShadowDisabled: f32,
 };
 
-@group(1) @binding(0) var<storage, read> sceneGeometryArena: array<u32>;
+@group(1) @binding(0) var<storage, read> bvhSceneGeometryArena: array<u32>;
 @group(1) @binding(1) var<storage, read> sceneTlasArena: array<u32>;
 @group(1) @binding(2) var<storage, read> sceneLightingArena: array<u32>;
 
 fn sceneGeometryU32(word: u32) -> u32 {
-  return sceneGeometryArena[word];
+  return bvhSceneGeometryArena[word];
 }
 
 fn sceneTlasU32(word: u32) -> u32 {
@@ -85,7 +85,7 @@ fn sceneLightingVec4f(word: u32) -> vec4f {
 }
 
 fn bvhLoadNode(index: u32) -> BVHNode {
-  let word = sceneGeometryArena[${offsetWord('bvhNodes')}u] + index * 8u;
+  let word = bvhSceneGeometryArena[${offsetWord('bvhNodes')}u] + index * 8u;
   var node: BVHNode;
   node.boundsMin[0] = bitcast<f32>(sceneGeometryU32(word));
   node.boundsMin[1] = bitcast<f32>(sceneGeometryU32(word + 1u));
@@ -99,34 +99,34 @@ fn bvhLoadNode(index: u32) -> BVHNode {
 }
 
 fn bvhNodeCapacity() -> u32 {
-  return sceneGeometryArena[${countWord('bvhNodes')}u];
+  return bvhSceneGeometryArena[${countWord('bvhNodes')}u];
 }
 
 fn bvhLoadIndex(index: u32) -> vec4u {
-  let word = sceneGeometryArena[${offsetWord('bvhIndex')}u] + index * 4u;
+  let word = bvhSceneGeometryArena[${offsetWord('bvhIndex')}u] + index * 4u;
   return sceneGeometryVec4u(word);
 }
 
 fn bvhIndexCount() -> u32 {
-  return sceneGeometryArena[${countWord('bvhIndex')}u];
+  return bvhSceneGeometryArena[${countWord('bvhIndex')}u];
 }
 
 fn bvhLoadPosition(index: u32) -> vec4f {
-  let word = sceneGeometryArena[${offsetWord('bvhPositions')}u] + index * 4u;
+  let word = bvhSceneGeometryArena[${offsetWord('bvhPositions')}u] + index * 4u;
   return sceneGeometryVec4f(word);
 }
 
 fn bvhPositionCount() -> u32 {
-  return sceneGeometryArena[${countWord('bvhPositions')}u];
+  return bvhSceneGeometryArena[${countWord('bvhPositions')}u];
 }
 
 fn sceneLoadBvhNormal(index: u32) -> vec4f {
-  let word = sceneGeometryArena[${offsetWord('bvhNormals')}u] + index * 4u;
+  let word = bvhSceneGeometryArena[${offsetWord('bvhNormals')}u] + index * 4u;
   return sceneGeometryVec4f(word);
 }
 
 fn sceneBvhNormalCount() -> u32 {
-  return sceneGeometryArena[${countWord('bvhNormals')}u];
+  return bvhSceneGeometryArena[${countWord('bvhNormals')}u];
 }
 
 fn tlasLoadNode(index: u32) -> BVHNode {
@@ -229,10 +229,6 @@ fn sceneLoadEmitterCdf(index: u32) -> f32 {
   );
 }
 
-
-fn sceneEmitterCdfCount() -> u32 {
-  return sceneLightingArena[${countWord('emitterCdf')}u];
-}
 
 fn sceneEmitterAliasCount() -> u32 {
   return sceneLightingArena[${countWord('emitterAlias')}u];

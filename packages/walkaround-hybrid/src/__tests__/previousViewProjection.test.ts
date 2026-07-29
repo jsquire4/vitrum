@@ -82,7 +82,6 @@ function makeFrameDeps(capture: { inputs: PipelineFrameInputs | null }): HybridE
       atrousDirectSigmas: [128, 5, 0.05],
       atrousIndirectSigmas: [32, 20, 0.5],
       stainedGlassFlags: 0,
-      nrcEnabled: 0,
     },
     telemetry: {
       frameSubs: [],
@@ -105,10 +104,9 @@ function makeFrameDeps(capture: { inputs: PipelineFrameInputs | null }): HybridE
     flags: {
       state: 'ready',
       debug: false,
-      ddgiOn: false,
       isLayerEnabled: () => false,
       device: {} as GPUDevice,
-      maxBounces: 4,
+      maxBounces: 2,
       tunables: {
         emitterDist2Floor: 0.01,
         directFireflyClamp: 4,
@@ -146,7 +144,6 @@ function makePipelineInputs(
     camera: { viewMatrix: m, projMatrix: m, prevViewProjMatrix, cameraPos: [0, 0, 0] },
     screen: { screenWidth: 64, screenHeight: 64, frameSeed: 7, swapChainView: {} as GPUTextureView, swapChainFormat: 'bgra8unorm' },
     lighting: {
-      totalEmissivePower: 1,
       emitterCount: 4,
       primaryLightDir: [0, 1, 0],
       primaryLightIntensity: 1,
@@ -186,7 +183,6 @@ function makePipelineInputs(
       stainedGlassFlags: 0,
     },
     bvh: { bvhMode: 0, tlasNodeCount: 0 },
-    nrc: {},
     composite: { tonemapMode: 0, exposure: 1.0, outputColorSpace: 0 },
   };
 }

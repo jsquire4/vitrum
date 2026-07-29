@@ -32,7 +32,10 @@ fn vt_linearToSrgb(c: vec3f) -> vec3f {
 fn vitrumTonemap(color: vec3f, mode: u32, exposure: f32) -> vec3f {
   let x = color * exposure;
   if (mode == 1u) { return vt_agx(x); }
-  if (mode == 2u) { return x / (1.0 + max(x, vec3f(0.0))); }
+  if (mode == 2u) {
+    let v = max(x, vec3f(0.0));
+    return v / (1.0 + v);
+  }
   if (mode == 3u) { return clamp(x, vec3f(0.0), vec3f(1.0)); }
   if (mode == 4u) { return x; }
   return vt_aces(x);

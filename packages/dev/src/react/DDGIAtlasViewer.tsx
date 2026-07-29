@@ -94,17 +94,35 @@ export const DDGIAtlasViewer: FC<DDGIAtlasViewerProps> = ({
     );
   }
 
+  if (!hasDevice || debugDevice == null || irradianceAtlas == null) {
+    const reason = !hasDevice
+      ? 'GPU debug-device access is unavailable on this backend.'
+      : debugDevice == null
+        ? 'The GPU debug device is not currently available.'
+        : 'The DDGI irradiance atlas is disabled or has not been initialized.';
+    return (
+      <div className={className} style={PANEL_STYLE} role="region" aria-label="DDGI Atlas Viewer">
+        <div style={{ fontWeight: 'bold', marginBottom: 4 }}>DDGI Atlas Viewer</div>
+        <div style={WARN_STYLE}>{reason}</div>
+      </div>
+    );
+  }
+
   return (
     <div className={className} style={PANEL_STYLE} role="region" aria-label="DDGI Atlas Viewer">
       <div style={{ fontWeight: 'bold', marginBottom: 4 }}>DDGI Atlas Viewer</div>
       <div style={{ fontSize: 10, color: '#aaa', marginBottom: 2 }}>Irradiance</div>
       <canvas ref={irrCanvasRef} style={{ display: 'block', maxWidth: 200, imageRendering: 'pixelated' }} />
-      {hasVisibilityAtlas ? (
+      {hasVisibilityAtlas && visibilityAtlas != null ? (
         <>
           <div style={{ fontSize: 10, color: '#aaa', marginTop: 6, marginBottom: 2 }}>Visibility</div>
           <canvas ref={visCanvasRef} style={{ display: 'block', maxWidth: 200, imageRendering: 'pixelated' }} />
         </>
-      ) : null}
+      ) : (
+        <div style={{ ...WARN_STYLE, marginTop: 6 }}>
+          Visibility atlas unavailable or not initialized.
+        </div>
+      )}
       <div style={{ marginTop: 6, color: '#666', fontSize: 10 }}>
         Live readback @ ~10 Hz. Reinhard-tonemapped.
       </div>

@@ -77,7 +77,18 @@ export class BdptSubpathBuilder {
     const copyFbo = this.#copyFbo;
     if (copyFbo == null) return null;
 
-    const cols = Math.max(1, Math.min(frame.bdptMaxLightBounces, BDPT_LIGHT_PATH_COLS));
+    // `bounces` is the total accepted-scattering-vertex budget, shared by the
+    // eye and light halves of every connected path. A light column c contains
+    // c scattering vertices after the endpoint, so columns beyond bounces-1
+    // can never participate in an in-budget connection.
+    const cols = Math.max(
+      1,
+      Math.min(
+        frame.bdptMaxLightBounces,
+        frame.bounces,
+        BDPT_LIGHT_PATH_COLS,
+      ),
+    );
 
     // Clear both slots so unbuilt columns read as (0,0,0,0); column 0 row 0 .w==0 is
     // BDPT_KIND_LIGHT, so an all-zero column is NOT auto-invalid — but the kernel only
@@ -121,12 +132,6 @@ export class BdptSubpathBuilder {
     let readIdx = 0;
     prog.setFloat('uBdptSharedWavelength', frame.bdptSharedWavelengthNm);
     prog.setFloat('uBdptSharedWavelengthPdf', frame.bdptSharedWavelengthPdf);
-    // The light path must see the same wavelength-dependent dispersion state
-    // as the eye pass, including the first accumulated sample. Reflectance is
-    // material-local in the bound materials texture.
-    prog.setFloat('iorCauchyA', frame.iorCauchy[0]);
-    prog.setFloat('iorCauchyB', frame.iorCauchy[1]);
-    prog.setFloat('iorCauchyC', frame.iorCauchy[2]);
     for (let col = 0; col < cols; col += 1) {
       const read = pair[readIdx]!;
       const write = pair[1 - readIdx]!;

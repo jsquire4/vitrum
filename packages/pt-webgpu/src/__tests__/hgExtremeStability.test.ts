@@ -23,25 +23,21 @@ function stableHgPhase(cosThetaRaw: number, gRaw: number): number {
 
 function stableHgSampleCos(gRaw: number, u: number): number {
   const g = clampHg(gRaw);
-  const a = Math.abs(g);
   const q = 1 - 2 * u;
-  let alignedCos: number;
-  if (a < 0.125) {
-    const d = 1 + a * q;
+  let cosTheta: number;
+  if (Math.abs(g) < 0.125) {
+    const d = 1 + g * q;
     const numerator =
       2 * q +
-      a * (q * q + 3) +
-      2 * a * a * q +
-      a * a * a * (q * q - 1);
-    alignedCos = numerator / (2 * d * d);
+      g * (q * q + 3) +
+      2 * g * g * q +
+      g * g * g * (q * q - 1);
+    cosTheta = numerator / (2 * d * d);
   } else {
-    const oneMinusA = 1 - a;
-    const ratio =
-      (oneMinusA * (1 + a)) / (oneMinusA + 2 * a * (1 - u));
-    alignedCos = (1 + a * a - ratio * ratio) / (2 * a);
+    const ratio = (1 - g * g) / (1 + g * q);
+    cosTheta = (1 + g * g - ratio * ratio) / (2 * g);
   }
-  const signed = g >= 0 ? alignedCos : -alignedCos;
-  return Math.max(-1, Math.min(1, signed));
+  return Math.max(-1, Math.min(1, cosTheta));
 }
 
 function stableHgNormalization(gRaw: number): number {
@@ -114,10 +110,13 @@ describe('Henyey-Greenstein extreme-anisotropy stability', () => {
       'oneMinusA * oneMinusA + 2.0 * a * (1.0 - alignedCos)',
     );
     expect(PT_WEBGPU_PATH_TRACE_HG_PHASE_WGSL).toContain(
-      'oneMinusA + 2.0 * a * (1.0 - u1)',
+      'let ratio = (1.0 - g * g) / (1.0 + g * q)',
     );
     expect(PT_WEBGPU_PATH_TRACE_HG_PHASE_WGSL).toContain(
-      'a * a * a * (q * q - 1.0)',
+      'g * g * g * (q * q - 1.0)',
+    );
+    expect(PT_WEBGPU_PATH_TRACE_HG_PHASE_WGSL).not.toContain(
+      'select(-alignedCosTheta, alignedCosTheta',
     );
     expect(PT_WEBGPU_PATH_TRACE_HG_PHASE_WGSL).not.toContain(
       'max(pow(denom, 1.5), 1e-9)',

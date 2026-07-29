@@ -337,7 +337,7 @@ describe('OIDN shared session leases', () => {
 });
 
 describe('OIDN model input negotiation', () => {
-  it('rejects supplied auxiliary guidance that a color-only model cannot consume', async () => {
+  it('omits optional guidance that a color-only model does not declare', async () => {
     vi.resetModules();
     const run = vi.fn(async (_feeds: Record<string, unknown>) => ({
       output: {
@@ -368,8 +368,9 @@ describe('OIDN model input negotiation', () => {
         height: 1,
       },
       { modelUrl: '/color-only.onnx', executionProviders: ['wasm'] },
-    )).rejects.toThrow(/normal guidance was supplied.*not declared/i);
-    expect(run).not.toHaveBeenCalled();
+    )).resolves.toEqual(new Float32Array([0.25, 0.5, 0.75]));
+    expect(run).toHaveBeenCalledOnce();
+    expect(Object.keys(run.mock.calls[0]![0])).toEqual(['color']);
   });
 
   it('rejects an explicitly configured auxiliary name absent from the model', async () => {
@@ -405,9 +406,14 @@ describe('OIDN model input negotiation', () => {
     expect(run).not.toHaveBeenCalled();
   });
 
-  it('rejects supplied albedo guidance when the default input is absent', async () => {
+  it('omits default albedo guidance when a color-only model does not declare it', async () => {
     vi.resetModules();
-    const run = vi.fn();
+    const run = vi.fn(async (_feeds: Record<string, unknown>) => ({
+      output: {
+        data: new Float32Array([0.1, 0.2, 0.3]),
+        dims: [1, 3, 1, 1],
+      },
+    }));
     vi.doMock('onnxruntime-web', () => ({
       Tensor: class {
         constructor(..._args: unknown[]) {}
@@ -430,8 +436,9 @@ describe('OIDN model input negotiation', () => {
         height: 1,
       },
       { modelUrl: '/color-only-albedo.onnx', executionProviders: ['wasm'] },
-    )).rejects.toThrow(/albedo guidance was supplied.*not declared/i);
-    expect(run).not.toHaveBeenCalled();
+    )).resolves.toEqual(new Float32Array([0.1, 0.2, 0.3]));
+    expect(run).toHaveBeenCalledOnce();
+    expect(Object.keys(run.mock.calls[0]![0])).toEqual(['color']);
   });
 });
 

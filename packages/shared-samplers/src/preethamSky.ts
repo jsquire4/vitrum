@@ -1,11 +1,17 @@
 import { luminance } from './luminance.js';
 import { requireFinite, requireFiniteVec3, requireInteger } from './numericGuards.js';
+import { solarDiscTexelCoverage } from './solarDiscCoverage.js';
+import { evaluateHG, HG_G_STABILITY_LIMIT } from './hgPhase.js';
 
 export interface PreethamSkyBakeOptions {
   readonly sunDirection?: readonly [number, number, number];
   readonly turbidity?: number;
   readonly rayleigh?: number;
   readonly mieCoefficient?: number;
+  /**
+   * Henyey–Greenstein asymmetry `g`. Values are evaluated with the shared
+   * ±0.999999 numerical stability cap.
+   */
   readonly mieDirectionalG?: number;
   readonly intensity?: number;
   readonly width?: number;
@@ -31,7 +37,6 @@ export interface PreethamSkyBake {
 
 const DEFAULT_SKY_WIDTH = 256;
 const DEFAULT_SKY_HEIGHT = 128;
-const SOLAR_ANGULAR_RADIUS = 0.00436;
 
 function requireF32(value: number, label: string): number {
   requireFinite(value, label);
@@ -124,13 +129,6 @@ function xyYtoLinearRGB(x: number, y: number, Y: number): [number, number, numbe
   ];
 }
 
-function henyeyGreenstein(cosGamma: number, g: number): number {
-  const g2 = g * g;
-  const denom = Math.pow(1 + g2 - 2 * g * cosGamma, 1.5);
-  if (denom < 1e-12) return 0;
-  return (1 - g2) / (4 * Math.PI * denom);
-}
-
 function normalizeSunDirection(
   input: readonly [number, number, number] | undefined,
 ): readonly [number, number, number] {
@@ -162,7 +160,16 @@ export function bakePreethamSkyEquirect(opts: PreethamSkyBakeOptions = {}): Pree
   const mieCoefficient = Math.max(0,
     requireFinite(opts.mieCoefficient ?? 0.005, 'bakePreethamSkyEquirect.mieCoefficient'));
   const mieScale = requireFinite(mieCoefficient * 200, 'bakePreethamSkyEquirect.mieScale');
-  const mieG = Math.max(-0.9999, Math.min(0.9999, requireFinite(opts.mieDirectionalG ?? 0.8, 'bakePreethamSkyEquirect.mieDirectionalG')));
+  const mieG = Math.max(
+    -HG_G_STABILITY_LIMIT,
+    Math.min(
+      HG_G_STABILITY_LIMIT,
+      requireFinite(
+        opts.mieDirectionalG ?? 0.8,
+        'bakePreethamSkyEquirect.mieDirectionalG',
+      ),
+    ),
+  );
   const intensity = Math.max(0, requireFinite(opts.intensity ?? 1, 'bakePreethamSkyEquirect.intensity'));
 
   const thetaSun = Math.acos(Math.max(-1, Math.min(1, sunDir[1])));
@@ -176,6 +183,7 @@ export function bakePreethamSkyEquirect(opts: PreethamSkyBakeOptions = {}): Pree
   const normY = perez(1, thetaSun, AY, BY, CY, DY, EY);
   const normX = perez(1, thetaSun, Ax, Bx, Cx, Dx, Ex);
   const normy = perez(1, thetaSun, Ay, By, Cy, Dy, Ey);
+  const solarCoverage = solarDiscTexelCoverage(width, height, sunDir);
   const texels = new Float32Array(pixelCount * 4);
   const cumulativeWeights = new Float64Array(pixelCount + 1);
   let totalWeight = 0;
@@ -208,8 +216,8 @@ export function bakePreethamSkyEquirect(opts: PreethamSkyBakeOptions = {}): Pree
         const horizonFade = Math.min(1, (cosTheta + 0.05) / 0.05);
         const skyLum = Math.max(0, skyY) * horizonFade;
         const mieContrib =
-          mieScale * henyeyGreenstein(cosGamma, mieG) * 4 * Math.PI * zenithY * horizonFade;
-        const sunRadiance = (gamma <= SOLAR_ANGULAR_RADIUS ? 1 : 0) * 500 * zenithY;
+          mieScale * evaluateHG(cosGamma, mieG) * 4 * Math.PI * zenithY * horizonFade;
+        const sunRadiance = solarCoverage[py * width + px]! * 500 * zenithY;
         const totalY = skyLum + mieContrib + sunRadiance;
         const blendX = skyLum > 1e-12 || totalY < 1e-12 ? skyx : xz;
         const blendY = skyLum > 1e-12 || totalY < 1e-12 ? skyy : yz;

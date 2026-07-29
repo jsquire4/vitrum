@@ -92,11 +92,9 @@ struct FrameParams {
   // Only the camera position's xyz components are part of the contract.
   cameraPos: vec3f,
   // H14-E: map-backed environment-radiance intensity. This scalar occupies
-  // cameraPos's aligned fourth lane, keeping its established slot 31. The
-  // following environmentSun lane is retained solely for layout compatibility.
+  // cameraPos's aligned fourth lane, keeping its established slot 31.
   environmentHdriIntensity: f32,
   environmentTint: vec4f,
-  environmentSun: vec4f,
   invViewProj: mat4x4f,
   viewProj: mat4x4f,
   prevViewProj: mat4x4f,
@@ -129,7 +127,9 @@ struct FrameParams {
 @group(0) @binding(8) var<storage, read> normals: array<vec4f>;
 @group(0) @binding(9) var normalDepthTexture: texture_storage_2d<rgba16float, write>;
 @group(0) @binding(10) var albedoTexture: texture_storage_2d<rgba16float, write>;
-@group(0) @binding(11) var varianceTexture: texture_storage_2d<rgba16float, write>;${extraBindings}
+// Scalar luminance variance. r32float is a baseline storage format and avoids
+// allocating/writing three semantically dead half-float lanes per pixel.
+@group(0) @binding(11) var varianceTexture: texture_storage_2d<r32float, write>;${extraBindings}
 
 const INVALID_TLAS_INSTANCE_INDEX = 0xffffffffu;
 `;
@@ -1384,7 +1384,7 @@ const PT_WEBGPU_PATH_TRACE_MATERIAL_FULL_BINDINGS_WGSL =
 export const PT_WEBGPU_POINT_SPOT_ATTENUATION_WGSL = /* wgsl */ `
 // Canonical point/spot attenuation shared by every pt-webgpu transport path.
 // decay == 0 is constant intensity; decay == 2 is physical inverse square.
-// A finite cutoff uses the Frostbite smooth window rather than a hard edge,
+// A finite cutoff uses KHR_lights_punctual's unsquared quartic range window,
 // matching the converged WebGL2 backend's emitter contract.
 fn pointSpotDistanceAttenuation(
   distance: f32,
@@ -1398,7 +1398,7 @@ fn pointSpotDistanceAttenuation(
   }
   if (cutoffDistance > 0.0) {
     let window = clamp(1.0 - pow(safeDistance / cutoffDistance, 4.0), 0.0, 1.0);
-    attenuation = attenuation * window * window;
+    attenuation = attenuation * window;
   }
   return attenuation;
 }
@@ -2028,18 +2028,23 @@ fn ggxMultiscatterBoostRoughness(fresnel: vec3f, roughnessV: f32, nDotV: f32) ->
   return vec3f(1.0) + fAvg * (missing / max(eo, 1e-3));
 }
 
-// Cauchy dispersion (mirrors @vitrum/shared-samplers/cauchyIor.ts).
+// Two-term Cauchy dispersion reconstructed from MaterialSpec's authored
+// Fraunhofer d-line IOR and Abbe number:
+//   V_d = (n_d - 1) / (n_F - n_C)
+//   n(lambda) = n_d + B * (1/lambda^2 - 1/lambda_d^2)
+// Wavelengths stay in nanometres, matching shared-samplers' Abbe reduction and
+// making lambda == lambda_d an exact zero-delta operation in shader arithmetic.
 fn cauchyIorAtLambda(lambdaNm: f32, baseIor: f32, abbeV: f32) -> f32 {
-  if (abbeV < 1.0) {
+  if (abbeV <= 0.0) {
     return baseIor;
   }
-  let lambdaUm = lambdaNm * 0.001;
-  let lam2 = lambdaUm * lambdaUm;
-  let lamF = 0.4861;
-  let lamC = 0.6563;
+  let lam2 = lambdaNm * lambdaNm;
+  let lamD = 589.3;
+  let lamF = 486.1;
+  let lamC = 656.3;
   let denom = 1.0 / (lamF * lamF) - 1.0 / (lamC * lamC);
-  let B = (baseIor - 1.0) / max(abbeV, 1.0) / max(denom, 1e-6);
-  return baseIor + B / lam2;
+  let B = (baseIor - 1.0) / abbeV / max(denom, 1e-6);
+  return max(1.0, baseIor + B * (1.0 / lam2 - 1.0 / (lamD * lamD)));
 }
 
 struct DecodedMaterial {

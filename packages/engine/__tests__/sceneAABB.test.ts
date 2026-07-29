@@ -66,6 +66,25 @@ describe('computeSceneAABB', () => {
     expect(aabb.triangleCount).toBe(12);
   });
 
+  it('preserves the physical diagonal of a sub-meter scene', () => {
+    const tiny = unitCube('tiny');
+    const scale = 0.02;
+    for (let index = 0; index < tiny.positions.length; index += 1) {
+      tiny.positions[index] = tiny.positions[index]! * scale;
+    }
+    const aabb = computeSceneAABB(emptyScene([tiny]));
+    expect(aabb.diagonal).toBeCloseTo(Math.sqrt(3) * scale, 7);
+    expect(aabb.diagonal).toBeLessThan(1);
+  });
+
+  it('uses the scale fallback for nonempty degenerate point geometry', () => {
+    const point = unitCube('point');
+    point.positions.fill(0);
+    const aabb = computeSceneAABB(emptyScene([point]));
+    expect(aabb.diagonal).toBe(1);
+    expect(aabb.extent).toEqual([0, 0, 0]);
+  });
+
   it('honours an affine transform on a mesh primitive', () => {
     // translate +10 on X via column-major identity * translate(10, 0, 0)
     // prettier-ignore

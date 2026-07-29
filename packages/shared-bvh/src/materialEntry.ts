@@ -215,9 +215,9 @@ export function coreMaterialToMaterialEntry(material: MaterialSpec): MaterialEnt
 }
 
 /**
- * Apply the production emissive convention to a core material: treat `emissive`
- * as the FINAL radiance-space colour and force `emissiveIntensity = 1`, so any
- * downstream `emissive * emissiveIntensity` read yields `Le = emissive * 1`.
+ * Apply the production emissive convention to a core material: fold
+ * `emissiveIntensity` into `emissive` and force the scalar to one, so every
+ * downstream path sees the same final radiance exactly once.
  *
  * This is the ei-collapse guard the ReSTIR-DI emitter decouple
  * (`restir/bvhCore.ts`, commit `46a0078`), the DDGI material decouple
@@ -236,8 +236,17 @@ export function coreMaterialToMaterialEntry(material: MaterialSpec): MaterialEnt
  */
 export function toProductionEmissiveRadiance(m: MaterialSpec): MaterialSpec {
   if (m.emissive === undefined) return m;
-  if (m.emissiveIntensity === 1) return m;
-  return { ...m, emissiveIntensity: 1 };
+  const intensity = m.emissiveIntensity ?? 1;
+  if (intensity === 1) return m;
+  return {
+    ...m,
+    emissive: [
+      m.emissive[0] * intensity,
+      m.emissive[1] * intensity,
+      m.emissive[2] * intensity,
+    ],
+    emissiveIntensity: 1,
+  };
 }
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -251,6 +260,7 @@ export {
   materialSpecEmissiveLe,
   applyBeerLambertColor,
   materialSpecTriColor,
+  materialSpecSurfaceTextureId,
   materialSpecSkipEmitter,
   classifyTriangleEmitterCore,
 } from './emitterClassify.js';

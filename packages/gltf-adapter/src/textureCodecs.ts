@@ -73,38 +73,59 @@ export const decodeRawImagePixelsWithPlatform: DecodeGltfTexturePixelsFn = async
   preflightRawImagePixelBudget(normalized, context.path, context.maxDecodedTexturePixels);
   const bitmap = await createBitmapFromRawImage(normalized, context.path);
   try {
-    const width = Math.max(0, Math.floor(numberProp(bitmap, 'width') ?? 0));
-    const height = Math.max(0, Math.floor(numberProp(bitmap, 'height') ?? 0));
-    if (width <= 0 || height <= 0) {
-      throw new PlatformTextureDecodeError(
-        'platform-image-decode-failed',
-        `[vitrum/gltf-adapter] ${context.path} decoded to invalid image dimensions ${width}x${height}. Texture left unchanged.`,
-      );
-    }
-    assertDecodedPixelBudget(width, height, context.path, context.maxDecodedTexturePixels);
-    const ctx = createReadback2dContext(width, height, context.path);
-    try {
-      ctx.drawImage(bitmap, 0, 0, width, height);
-      const imageData = ctx.getImageData(0, 0, width, height);
-      return {
-        width,
-        height,
-        data: imageData.data,
-        channels: 4,
-        dataType: 'uint8',
-        colorSpace: context.colorSpace,
-      };
-    } catch (err) {
-      throw new PlatformTextureDecodeError(
-        'platform-image-readback-failed',
-        `[vitrum/gltf-adapter] ${context.path} decoded through browser image APIs, but canvas pixel readback failed: ` +
-          `${err instanceof Error ? err.message : String(err)}. Texture left unchanged.`,
-      );
-    }
+    return readImageBitmapPixelsWithPlatform(bitmap, context);
   } finally {
     closeBitmap(bitmap);
   }
 };
+
+/**
+ * Read an existing ImageBitmap-like source through a temporary 2D canvas.
+ * The source remains caller-owned and is never closed. The temporary canvas
+ * backing store is explicitly released after readback.
+ */
+export function readImageBitmapPixelsWithPlatform(
+  bitmap: unknown,
+  context: Parameters<DecodeGltfTexturePixelsFn>[1],
+): {
+  readonly width: number;
+  readonly height: number;
+  readonly data: Uint8ClampedArray;
+  readonly channels: 4;
+  readonly dataType: 'uint8';
+  readonly colorSpace: typeof context.colorSpace;
+} {
+  const width = Math.max(0, Math.floor(numberProp(bitmap, 'width') ?? 0));
+  const height = Math.max(0, Math.floor(numberProp(bitmap, 'height') ?? 0));
+  if (width <= 0 || height <= 0) {
+    throw new PlatformTextureDecodeError(
+      'platform-image-decode-failed',
+      `[vitrum/gltf-adapter] ${context.path} decoded to invalid image dimensions ${width}x${height}. Texture left unchanged.`,
+    );
+  }
+  assertDecodedPixelBudget(width, height, context.path, context.maxDecodedTexturePixels);
+  const surface = createReadback2dSurface(width, height, context.path);
+  try {
+    surface.context.drawImage(bitmap, 0, 0, width, height);
+    const imageData = surface.context.getImageData(0, 0, width, height);
+    return {
+      width,
+      height,
+      data: imageData.data,
+      channels: 4,
+      dataType: 'uint8',
+      colorSpace: context.colorSpace,
+    };
+  } catch (err) {
+    throw new PlatformTextureDecodeError(
+      'platform-image-readback-failed',
+      `[vitrum/gltf-adapter] ${context.path} decoded through browser image APIs, but canvas pixel readback failed: ` +
+        `${err instanceof Error ? err.message : String(err)}. Texture left unchanged.`,
+    );
+  } finally {
+    surface.release();
+  }
+}
 
 export function canDecodeRawImagePixelsWithPlatform(): boolean {
   try {
@@ -656,13 +677,22 @@ interface Canvas2dReadbackContext {
   getImageData(sx: number, sy: number, sw: number, sh: number): { readonly data: Uint8ClampedArray };
 }
 
-export function createReadback2dContext(
+interface Canvas2dReadbackSurface {
+  readonly context: Canvas2dReadbackContext;
+  release(): void;
+}
+
+function createReadback2dSurface(
   width: number,
   height: number,
   path: string,
-): Canvas2dReadbackContext {
+): Canvas2dReadbackSurface {
   const host = globalThis as typeof globalThis & {
-    OffscreenCanvas?: new (width: number, height: number) => { getContext(type: '2d'): unknown };
+    OffscreenCanvas?: new (width: number, height: number) => {
+      width: number;
+      height: number;
+      getContext(type: '2d'): unknown;
+    };
     document?: { createElement(tag: 'canvas'): { width: number; height: number; getContext(type: '2d'): unknown } };
   };
   const canvas = typeof host.OffscreenCanvas === 'function'
@@ -675,17 +705,39 @@ export function createReadback2dContext(
         'is available for pixel readback. Texture left unchanged.',
     );
   }
-  canvas.width = width;
-  canvas.height = height;
-  const ctx = canvas.getContext('2d');
+  const release = (): void => {
+    try {
+      canvas.width = 0;
+      canvas.height = 0;
+    } catch {
+      // Releasing a temporary readback surface is best-effort.
+    }
+  };
+  let ctx: unknown;
+  try {
+    canvas.width = width;
+    canvas.height = height;
+    ctx = canvas.getContext('2d');
+  } catch (err) {
+    release();
+    throw new PlatformTextureDecodeError(
+      'platform-image-readback-unavailable',
+      `[vitrum/gltf-adapter] ${path} decoded through browser image APIs, but a 2D canvas readback context ` +
+        `could not be created: ${err instanceof Error ? err.message : String(err)}. Texture left unchanged.`,
+    );
+  }
   if (!isCanvas2dReadbackContext(ctx)) {
+    release();
     throw new PlatformTextureDecodeError(
       'platform-image-readback-unavailable',
       `[vitrum/gltf-adapter] ${path} decoded through browser image APIs, but a 2D canvas readback context ` +
         'could not be created. Texture left unchanged.',
     );
   }
-  return ctx;
+  return {
+    context: ctx,
+    release,
+  };
 }
 
 function isCanvas2dReadbackContext(value: unknown): value is Canvas2dReadbackContext {

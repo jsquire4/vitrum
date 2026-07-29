@@ -6,10 +6,8 @@
 // Tier thresholds are sourced from the pt-webgpu authority (D17-11) instead of
 // re-encoding them here — webgpuLimits.ts is a dependency-free constants module
 // so this standalone Deno script can import it directly by relative .ts path.
-// (The hybrid 16/8 floor stays inline: importing HYBRID_WEBGPU_REQUIRED_LIMITS
-// would pull the walkaround-hybrid pipeline graph, which this map-less Deno
-// script cannot resolve — it is asserted against the authority in the behavioral
-// gate instead.)
+// Walkaround exposes the same kind of dependency-free authority, so this
+// map-less probe does not duplicate either backend's numeric floor.
 // Run: deno run --unstable-webgpu -A tools/gpu-env/probe-deno.ts
 
 import {
@@ -18,6 +16,9 @@ import {
   PT_WEBGPU_LITE_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
   PT_WEBGPU_LITE_REQUIRED_STORAGE_TEXTURES_PER_STAGE,
 } from "../../packages/pt-webgpu/src/webgpuLimits.ts";
+import {
+  HYBRID_WEBGPU_REQUIRED_LIMITS,
+} from "../../packages/walkaround-hybrid/src/webgpuLimits.ts";
 
 const out: Record<string, unknown> = { runtime: "deno-native-webgpu" };
 
@@ -41,15 +42,13 @@ try {
 const limits = adapter.limits;
 const msb = limits.maxStorageBuffersPerShaderStage;
 const mst = limits.maxStorageTexturesPerShaderStage;
+const msamp = limits.maxSampledTexturesPerShaderStage;
 
 let deviceAtHybridLimits = false;
 let deviceErr = "";
 try {
   const dev = await adapter.requestDevice({
-    requiredLimits: {
-      maxStorageBuffersPerShaderStage: 16,
-      maxStorageTexturesPerShaderStage: 8,
-    },
+    requiredLimits: { ...HYBRID_WEBGPU_REQUIRED_LIMITS },
   });
   deviceAtHybridLimits = !!dev;
   dev?.destroy?.();
@@ -66,13 +65,17 @@ const report = {
   device: (info as Record<string, string>).device ?? "",
   maxStorageBuffersPerShaderStage: msb,
   maxStorageTexturesPerShaderStage: mst,
+  maxSampledTexturesPerShaderStage: msamp,
   ptWebgpuFullTier:
     msb >= PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE &&
     mst >= PT_WEBGPU_FULL_REQUIRED_STORAGE_TEXTURES_PER_STAGE,
   ptWebgpuLiteTier:
     msb >= PT_WEBGPU_LITE_REQUIRED_STORAGE_BUFFERS_PER_STAGE &&
     mst >= PT_WEBGPU_LITE_REQUIRED_STORAGE_TEXTURES_PER_STAGE,
-  hybridCanRun: msb >= 16 && mst >= 8,
+  hybridCanRun: Object.entries(HYBRID_WEBGPU_REQUIRED_LIMITS).every(
+    ([key, required]) =>
+      Number((limits as unknown as Record<string, number | undefined>)[key]) >= required,
+  ),
   deviceAtHybridLimits,
   deviceErr,
 };

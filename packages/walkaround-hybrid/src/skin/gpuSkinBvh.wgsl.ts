@@ -59,21 +59,49 @@ fn mat4MulVec4N(m: array<vec4f, 4>, v: vec4f) -> vec4f {
 }
 
 // Inverse-transpose of a column-major 3×3 (PBR4e §3.10). Columns c0,c1,c2.
-// Falls back to the input on a (near-)singular matrix so the result stays
-// finite. Returns the inverse-transpose as a mat3x3f (columns).
+// Mirrors @vitrum/core skinSolver.mat3InverseTranspose: a rank-2 transform
+// keeps the finite cofactor orientation (its scale is removed when the normal
+// is normalized), while rank < 2 has no defined normal direction and returns
+// zero. Never substitute the raw matrix: that is finite but geometrically
+// incorrect for a collapsed bone transform.
 fn mat3InverseTranspose(c0: vec3f, c1: vec3f, c2: vec3f) -> mat3x3f {
-  // det via scalar triple product of the columns.
-  let det = dot(c0, cross(c1, c2));
-  if (abs(det) < 1e-20) {
-    return mat3x3f(c0, c1, c2);
+  // Rank tests must be scale-invariant. Without this normalization, a valid
+  // full-rank transform such as uniform scale 1e-11 has det 1e-33 and
+  // cofactors around 1e-22, so absolute thresholds incorrectly classify it
+  // below rank 2 and erase the normal.
+  let componentScale = max(max(abs(c0), abs(c1)), abs(c2));
+  let matrixScale = max(componentScale.x, max(componentScale.y, componentScale.z));
+  if (matrixScale <= 0.0) {
+    return mat3x3f(vec3f(0.0), vec3f(0.0), vec3f(0.0));
   }
-  let invDet = 1.0 / det;
+  let n0 = c0 / matrixScale;
+  let n1 = c1 / matrixScale;
+  let n2 = c2 / matrixScale;
+  let cofactor0 = cross(n1, n2);
+  let cofactor1 = cross(n2, n0);
+  let cofactor2 = cross(n0, n1);
+  // det via scalar triple product of the columns.
+  let det = dot(n0, cofactor0);
+  if (abs(det) < 1e-20) {
+    let cofactorMagnitude = sqrt(
+      dot(cofactor0, cofactor0) +
+      dot(cofactor1, cofactor1) +
+      dot(cofactor2, cofactor2)
+    );
+    if (cofactorMagnitude < 1e-20) {
+      return mat3x3f(vec3f(0.0), vec3f(0.0), vec3f(0.0));
+    }
+    return mat3x3f(cofactor0, cofactor1, cofactor2);
+  }
+  let invDetAndScale = (1.0 / det) / matrixScale;
   // For M = [c0 c1 c2], (M^-1)^T columns are the cofactor columns / det:
   //   col0 = (c1 × c2)/det, col1 = (c2 × c0)/det, col2 = (c0 × c1)/det.
+  // Dividing once more by matrixScale restores the inverse of the authored
+  // matrix after the scale-invariant rank classification above.
   return mat3x3f(
-    cross(c1, c2) * invDet,
-    cross(c2, c0) * invDet,
-    cross(c0, c1) * invDet,
+    cofactor0 * invDetAndScale,
+    cofactor1 * invDetAndScale,
+    cofactor2 * invDetAndScale,
   );
 }
 
@@ -141,7 +169,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   }
 
   let nlen = length(outN);
-  let safeN = select(vec3f(0.0, 1.0, 0.0), outN / nlen, nlen > 1e-12);
+  let safeN = select(vec3f(0.0), outN / nlen, nlen > 1e-12);
 
   bvhPositions[outIdx] = vec4f(outPos, uvPack);
   // WS1 (2026-05-29) — write the skinned normal into the SHARED merged

@@ -307,9 +307,6 @@ export type UnconsumedMaterialFieldCategory =
   | 'layered'
   | 'unknown';
 
-const UNCONSUMED_MATERIAL_FIELD_CATEGORIES: Readonly<Record<string, UnconsumedMaterialFieldCategory>> = {
-};
-
 /** Group unconsumed material keys into stable semantic buckets for diagnostics. */
 export function categorizeUnconsumedMaterialFields(
   fields: readonly string[],
@@ -322,8 +319,11 @@ export function categorizeUnconsumedMaterialFields(
     unknown: [],
   };
   for (const field of fields) {
-    const category = UNCONSUMED_MATERIAL_FIELD_CATEGORIES[field] ?? 'unknown';
-    grouped[category].push(field);
+    // Every currently standardized MaterialSpec field is consumed by this
+    // backend. Any residual key is therefore an extension/future field whose
+    // semantics are not known here; report it honestly as unknown rather than
+    // maintaining an empty uploaded-but-unread classification table.
+    grouped.unknown.push(field);
   }
 
   const out: Partial<Record<UnconsumedMaterialFieldCategory, readonly string[]>> = {};

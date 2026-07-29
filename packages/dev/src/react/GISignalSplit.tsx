@@ -103,17 +103,27 @@ export const GISignalSplit: FC<GISignalSplitProps> = ({
   const hasDevice = typeof engine.debug?.device === 'function';
   const debugDevice = useDebugDevice(engine);
   const channelTextures = hasDebug ? engine.debug?.giSignalTextures?.() ?? null : null;
+  const directTexture = channelTextures?.direct ?? null;
+  const indirectTexture = channelTextures?.indirect ?? null;
+  const aoTexture = channelTextures?.ao ?? null;
+  const totalTexture = channelTextures?.total ?? null;
 
   // A3 (2026-05-19) — start one readback loop per channel when active.
   // Each useEffect's cleanup tears down its own readback; the 4 readbacks
   // share the engine queue but each has its own staging buffer.
   useEffect(() => {
     if (!active || !hasDebug || !hasDevice) return;
-    if (debugDevice == null || channelTextures == null) return;
+    if (debugDevice == null) return;
 
     const teardowns: Array<() => void> = [];
+    const textures: Readonly<Record<ChannelKey, GPUTexture | null>> = {
+      direct: directTexture,
+      indirect: indirectTexture,
+      ao: aoTexture,
+      total: totalTexture,
+    };
     for (const key of CHANNEL_KEYS) {
-      const tex = channelTextures[key];
+      const tex = textures[key];
       const canvas = refs[key].current;
       if (tex == null || canvas == null) continue;
       teardowns.push(startGpuTextureBlit(canvas, debugDevice, tex, {
@@ -124,10 +134,19 @@ export const GISignalSplit: FC<GISignalSplitProps> = ({
     return () => {
       for (const t of teardowns) t();
     };
-    // The refs object is stable; channel textures are included so readback
-    // loops restart if the engine swaps debug texture handles.
+    // Depend on handle identities rather than the wrapper object returned by
+    // giSignalTextures(), which implementations may allocate on every call.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active, hasDebug, hasDevice, debugDevice, channelTextures]);
+  }, [
+    active,
+    hasDebug,
+    hasDevice,
+    debugDevice,
+    directTexture,
+    indirectTexture,
+    aoTexture,
+    totalTexture,
+  ]);
 
   const toggle = (): void => {
     const next = !active;

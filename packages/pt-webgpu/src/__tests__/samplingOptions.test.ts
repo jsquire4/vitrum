@@ -24,7 +24,6 @@ import {
   composeRestirPtSpatialWgsl,
   composeRestirPtProducerWgsl,
   composeRestirPtTemporalWgsl,
-  composePtWebgpuReuseWgsl,
 } from '../wgsl/pathTrace/restirPtCompose.wgsl.js';
 import { PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE } from '../webgpuLimits.js';
 import { PT_WEBGPU_SOBOL_RNG_WGSL } from '../wgsl/common.wgsl.js';
@@ -107,7 +106,9 @@ describe('pt-webgpu sampling options', () => {
     const compositeBdpt = composePtWebgpuCompositeTraceWgsl(true, { sampling: 'sobol' });
     const sppmPhoton = composeSppmPhotonPassWgsl({ sampling: 'sobol' });
     const restirProducer = composeRestirPtProducerWgsl({ sampling: 'sobol' });
-    const restirCombined = composePtWebgpuReuseWgsl({ sampling: 'sobol' });
+    const restirTemporal = composeRestirPtTemporalWgsl({ sampling: 'sobol' });
+    const restirSpatial = composeRestirPtSpatialWgsl({ sampling: 'sobol' });
+    const restirResolve = composeRestirPtResolveWgsl({ sampling: 'sobol' });
     const adjoint = composePtWebgpuAdjointPassWgsl('sobol');
 
     for (const wgsl of [
@@ -117,7 +118,9 @@ describe('pt-webgpu sampling options', () => {
       compositeBdpt,
       sppmPhoton,
       restirProducer,
-      restirCombined,
+      restirTemporal,
+      restirSpatial,
+      restirResolve,
       adjoint,
     ]) {
       expect(wgsl).toContain('fn ptSobolNextU32(state: ptr<function, PtRngState>) -> u32');
@@ -145,7 +148,6 @@ describe('pt-webgpu sampling options', () => {
       ['restir.temporal', composeRestirPtTemporalWgsl({ sampling: 'sobol' })],
       ['restir.spatial', composeRestirPtSpatialWgsl({ sampling: 'sobol' })],
       ['restir.resolve', composeRestirPtResolveWgsl({ sampling: 'sobol' })],
-      ['restir.combined', composePtWebgpuReuseWgsl({ sampling: 'sobol' })],
     ];
     const digest = createHash('sha256');
     const assignmentNeedles = [
@@ -181,7 +183,7 @@ describe('pt-webgpu sampling options', () => {
     // C35 composes its native t=1 strategy helper only for BDPT-on modules, so
     // Sobol's default and composite-off assignment surface stays legacy-exact.
     expect(digest.digest('hex')).toBe(
-      'c4b85312699479411fc39c253b3c5e26247dc6f7018418c5989c4f9b7ec2d8d1',
+      '8bf839f5011d981e70cb99dff48b429ca92e34f457968c3995e703c578920084',
     );
   });
   it('builds full and lite path-trace modules from the selected Sobol RNG', () => {

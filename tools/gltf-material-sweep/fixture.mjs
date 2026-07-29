@@ -127,9 +127,11 @@ export function samplerPolicyIsNativeForBackend(backend, policy, _field = undefi
 
 export function makeSweepGltf() {
   const positions = f32Buffer([0, 0, 0, 1, 0, 0, 0, 1, 0]);
+  const uv1 = f32Buffer([0, 0, 1, 0, 0, 1]);
   const imageBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47]);
-  const buffer = concat([positions, imageBytes.buffer]);
-  const imageOffset = positions.byteLength;
+  const buffer = concat([positions, uv1, imageBytes.buffer]);
+  const uv1Offset = positions.byteLength;
+  const imageOffset = uv1Offset + uv1.byteLength;
   const textureCount = 17;
 
   return {
@@ -139,7 +141,7 @@ export function makeSweepGltf() {
       scene: 0,
       scenes: [{ nodes: [0] }],
       nodes: [{ mesh: 0 }],
-      meshes: [{ primitives: [{ attributes: { POSITION: 0 }, material: 0 }] }],
+      meshes: [{ primitives: [{ attributes: { POSITION: 0, TEXCOORD_1: 1 }, material: 0 }] }],
       materials: [{
         pbrMetallicRoughness: {
           baseColorTexture: texInfo(0),
@@ -200,10 +202,14 @@ export function makeSweepGltf() {
         magFilter: i % 2 === 0 ? 9728 : 9729,
         minFilter: [9728, 9729, 9984, 9985, 9986, 9987][i % 6],
       })),
-      images: [{ bufferView: 1, mimeType: "image/png" }],
-      accessors: [{ bufferView: 0, componentType: 5126, count: 3, type: "VEC3" }],
+      images: [{ bufferView: 2, mimeType: "image/png" }],
+      accessors: [
+        { bufferView: 0, componentType: 5126, count: 3, type: "VEC3" },
+        { bufferView: 1, componentType: 5126, count: 3, type: "VEC2" },
+      ],
       bufferViews: [
         { buffer: 0, byteOffset: 0, byteLength: positions.byteLength },
+        { buffer: 0, byteOffset: uv1Offset, byteLength: uv1.byteLength },
         { buffer: 0, byteOffset: imageOffset, byteLength: imageBytes.byteLength },
       ],
       buffers: [{ byteLength: buffer.byteLength }],

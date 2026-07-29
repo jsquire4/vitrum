@@ -58,9 +58,7 @@ describe('B1 — real per-tri roughness/metalness decode', () => {
 });
 
 /** Slice a single `fn name(...) { ... }` body out of a WGSL source so a
- *  negative-match stays scoped to that function (lo_indirect — the diffuse
- *  channel — legitimately KEEPS `isGlass || isMetal`, so a file-wide negative
- *  match would false-positive). Returns the text from `fn name` to the next
+ *  negative-match stays scoped to that function. Returns the text from `fn name` to the next
  *  top-level `fn ` declaration. */
 function fnBody(src: string, name: string): string {
   const start = src.indexOf(`fn ${name}(`);
@@ -139,6 +137,19 @@ describe('B1 — glossy/metal GI reservoir (no empty-reservoir punt for metal)',
 });
 
 describe('B1 — glossy/metal specular indirect term', () => {
+  it('preserves the (1-metallic) diffuse GI share for fractional metals', () => {
+    const body = fnBody(SHADE_WGSL, 'lo_indirect');
+    expect(body).toContain('metal:   f32');
+    expect(body).toContain('let diffuseWeight = 1.0 - clamp(metal, 0.0, 1.0);');
+    expect(body).toContain(
+      'return diffuseWeight * (wRestirGi * Lo_indirect + wRc * Lo_rc);',
+    );
+    expect(body).not.toContain('if (isGlass || isMetal)');
+    expect(SHADE_WGSL).toContain(
+      'lo_indirect(pix, dims, pos, normal, isGlass, metal)',
+    );
+  });
+
   it('ggxBrdf exposes only the rich evaluators consumed by production passes', () => {
     expect(GGX_BRDF_WGSL).toContain('fn evalGGXSpecularOnlyWithSpecular(');
     expect(GGX_BRDF_WGSL).toContain('fn evalGGXSpecularOnlyWithSpecularClearcoatSheenWithAnisotropyFrame(');

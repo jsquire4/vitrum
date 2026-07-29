@@ -26,6 +26,7 @@ import { PT_WEBGPU_TRACE_WGSL } from '../wgsl/pathTraceBruteforce.wgsl.js';
 import {
   composeRestirPtProducerWgsl,
   composeRestirPtTemporalWgsl,
+  composeRestirPtSpatialWgsl,
   composeRestirPtResolveWgsl,
   RPT_GROUP0_BINDING_BASE,
 } from '../wgsl/pathTrace/restirPtCompose.wgsl.js';
@@ -398,7 +399,7 @@ describe('ReSTIR-PT reuse wiring — ON (full tier)', () => {
     engine.dispose();
   });
 
-  it('ON: params contain only dimensions and the temporal confidence clamp', async () => {
+  it('ON: params contain only the temporal confidence clamp and alignment padding', async () => {
     const rec = emptyRecorder();
     const engine = await createPTEngine_WebGPU({
       device: makeFullTierDevice(rec),
@@ -408,10 +409,10 @@ describe('ReSTIR-PT reuse wiring — ON (full tier)', () => {
     engine.renderFrame(frameInput(16));
 
     const u = new Uint32Array(latestRestirPtParamsWrite(rec));
-    expect(u[0]).toBe(16);
-    expect(u[1]).toBe(16);
-    expect(u[2]).toBe(20);
-    expect(u[3]).toBe(0); // reserved padding; no maturity-mode switch
+    expect(u[0]).toBe(20);
+    expect(u[1]).toBe(0);
+    expect(u[2]).toBe(0);
+    expect(u[3]).toBe(0);
     expect(u).toHaveLength(4);
 
     engine.dispose();
@@ -557,15 +558,23 @@ describe('ReSTIR-PT reuse compose — per-pass relocation to @group(0)', () => {
     for (const compose of [
       composeRestirPtProducerWgsl,
       composeRestirPtTemporalWgsl,
+      composeRestirPtSpatialWgsl,
       composeRestirPtResolveWgsl,
     ]) {
       const wgsl = compose();
       // No @group(4) binding DECLARATION survives (the relocation rewrote them).
       expect(wgsl).not.toMatch(/@group\(4\)\s+@binding\(\d+\)/);
-      // The relocated bindings live in @group(0) at >= base. At least the params
-      // binding (b4 → base+4) is present in every pass.
-      expect(wgsl).toContain(`@group(0) @binding(${base + 4})`);
+      const relocatedBindings = Array.from({ length: 6 }, (_, i) => base + i).join('|');
+      expect(wgsl).toMatch(
+        new RegExp(`@group\\(0\\) @binding\\((?:${relocatedBindings})\\)`),
+      );
     }
+    // Only temporal consumes the confidence clamp. Producer dimensions come
+    // from FrameParams; spatial and resolve need no pass-local uniforms.
+    expect(composeRestirPtTemporalWgsl()).toContain(`@group(0) @binding(${base + 4})`);
+    expect(composeRestirPtProducerWgsl()).not.toContain(`@group(0) @binding(${base + 4})`);
+    expect(composeRestirPtSpatialWgsl()).not.toContain(`@group(0) @binding(${base + 4})`);
+    expect(composeRestirPtResolveWgsl()).not.toContain(`@group(0) @binding(${base + 4})`);
   });
 
   it('each per-pass module contains exactly ONE @compute entry point', () => {

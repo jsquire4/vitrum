@@ -210,6 +210,24 @@ const PT_WEBGL2_DOUBLE_SIDED = evidence('packer+shader', [
   },
 ]);
 
+const PT_WEBGL2_EXTENSIONS = evidence('shared-classifier', [
+  'packages/shared-bvh/src/__tests__/emitterClassify.test.ts',
+  'packages/pt-webgl2/src/scene/meshAreaLights.test.ts',
+  'packages/pt-webgl2/src/scene/sceneTraceFeatures.test.ts',
+], [
+  'packages/shared-bvh/src/emitterClassify.ts',
+  'packages/pt-webgl2/src/scene/meshAreaLights.ts',
+  'packages/pt-webgl2/src/scene/sceneTraceFeatures.ts',
+], [
+  {
+    path: 'packages/pt-webgl2/src/scene/meshAreaLights.test.ts',
+    includes: [
+      'honors skipEmitter before implicit emissive-map CPU-readability checks',
+      'keeps an explicit mesh-area emitter authoritative over material skipEmitter',
+    ],
+  },
+]);
+
 const PT_WEBGPU_SCALARS = evidence('packer+shader', [
   'packages/pt-webgpu/src/__tests__/scenePack.materials.test.ts',
   'packages/pt-webgpu/src/__tests__/implicitMeshEmitter.test.ts',
@@ -300,6 +318,25 @@ const PT_WEBGPU_DOUBLE_SIDED = evidence('packer+shader', [
   },
 ]);
 
+const PT_WEBGPU_EXTENSIONS = evidence('shared-classifier', [
+  'packages/shared-bvh/src/__tests__/emitterClassify.test.ts',
+  'packages/pt-webgpu/src/__tests__/scenePack.emitters.test.ts',
+  'packages/pt-webgpu/src/__tests__/skinnedMeshIngestion.test.ts',
+], [
+  'packages/shared-bvh/src/emitterClassify.ts',
+  'packages/pt-webgpu/src/scene/emitterPacking.ts',
+  'packages/pt-webgpu/src/sceneMutationRouter.ts',
+], [
+  {
+    path: 'packages/pt-webgpu/src/__tests__/scenePack.emitters.test.ts',
+    includes: ['honors extensions.skipEmitter for implicit emissive-mesh proposals'],
+  },
+  {
+    path: 'packages/pt-webgpu/src/__tests__/skinnedMeshIngestion.test.ts',
+    includes: ['rebuilds implicit emitter state when extensions.skipEmitter toggles'],
+  },
+]);
+
 const MATERIAL_NATIVE_EVIDENCE: Record<BackendWithMaterialEvidence, Record<string, MaterialNativeEvidence>> = {
   'walkaround-hybrid': {
     ...group(['emissive', 'emissiveIntensity'], WALKAROUND_EMISSIVE),
@@ -340,6 +377,7 @@ const MATERIAL_NATIVE_EVIDENCE: Record<BackendWithMaterialEvidence, Record<strin
       'lightMap', 'frontLayer', 'backLayer',
     ], PT_WEBGL2_TEXTURES),
     doubleSided: PT_WEBGL2_DOUBLE_SIDED,
+    extensions: PT_WEBGL2_EXTENSIONS,
   },
   'pt-webgpu': {
     ...group([
@@ -365,6 +403,7 @@ const MATERIAL_NATIVE_EVIDENCE: Record<BackendWithMaterialEvidence, Record<strin
       'specularIntensity', 'specularColor',
     ], PT_WEBGPU_RICH_LOBES),
     doubleSided: PT_WEBGPU_DOUBLE_SIDED,
+    extensions: PT_WEBGPU_EXTENSIONS,
   },
 };
 

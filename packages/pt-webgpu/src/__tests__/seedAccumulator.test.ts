@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { BackendTexture, ProgressStats, Scene } from '@vitrum/core';
 import { asBackendTexture, asMat4 } from '@vitrum/core';
 import { createPTEngine_WebGPU } from '../index.js';
+import { GpuResources } from '../gpuResources.js';
 import { PT_WEBGPU_SEED_BLIT_WGSL } from '../wgsl/seedBlit.wgsl.js';
 import { composePtWebgpuTraceWgsl } from '../wgsl/pathTraceBruteforce.wgsl.js';
 import { installGpuConstStubs, textureStubMethods } from './gpuStub.js';
@@ -190,5 +191,18 @@ describe('pt-webgpu seedAccumulator does NOT advance the SPP counter', () => {
     expect(device.createSampler).toHaveBeenCalled();
     expect(device.queue.writeBuffer).toHaveBeenCalled();
     engine.dispose();
+  });
+
+  it('starts a new cohort by clearing every temporal-history family', async () => {
+    const clearTemporal = vi.spyOn(GpuResources.prototype, 'clearTemporalBuffers');
+    const engine = await createPTEngine_WebGPU({ device: makeSeedCapableDevice() });
+    engine.setScene(makeScene());
+    clearTemporal.mockClear();
+
+    engine.seedAccumulator?.(fakeSeed(), { weight: 8, width: 16, height: 16 });
+
+    expect(clearTemporal).toHaveBeenCalledOnce();
+    engine.dispose();
+    clearTemporal.mockRestore();
   });
 });

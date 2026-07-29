@@ -63,9 +63,7 @@ function exactContext(
     bdpt: false,
     restirPtReuse: false,
     causticStrategy: 'none',
-    directLighting: 'summed-expectation',
     cameraVisibleEmitters: true,
-    implicitEmissiveMeshLights: true,
     ...patch,
   };
 }

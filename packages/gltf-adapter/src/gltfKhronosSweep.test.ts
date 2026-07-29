@@ -691,7 +691,7 @@ describe('GATE-GLTF analyze-only Khronos-style sweep', () => {
     expect(webgl2.issues.some((issue) => issue.name === 'COLOR_1')).toBe(false);
   });
 
-  it('keeps unselected no-base WebP visible without misclassifying its built-in codec', () => {
+  it('selects no-base WebP through the runtime built-in codec without a host-hook issue', () => {
     const report = reportFor(compressedAndAlternateSources());
     const webgl2 = evaluateGltfBackendCompatibility(report, 'pt-webgl2');
 
@@ -706,31 +706,19 @@ describe('GATE-GLTF analyze-only Khronos-style sweep', () => {
         textureIndex: 0,
         sourceImageIndex: 0,
         path: 'textures[0].extensions.EXT_texture_webp',
+        selected: true,
         required: false,
         hasBaseSource: false,
         requiresHook: false,
         mimeType: 'image/webp',
       }),
     ]);
-    expect(report.materials.textureReferenceIssues).toEqual([
-      expect.objectContaining({
-        kind: 'disabled-texture-source-extension',
-        materialField: 'baseColorMap',
-        textureIndex: 0,
-        path: 'textures[0].extensions.EXT_texture_webp',
-        textureSourceExtensions: ['EXT_texture_webp'],
-      }),
-    ]);
-    expect(webgl2.requiresHookCount).toBe(1);
+    expect(report.materials.textureReferenceIssues).toEqual([]);
+    expect(webgl2.requiresHookCount).toBe(0);
     expect(webgl2.unsupportedCount).toBe(0);
-    expect(webgl2.issues).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        category: 'material',
-        name: 'baseColorMap.textureRef.disabled-texture-source-extension',
-        support: 'requires-hook',
-        path: 'textures[0].extensions.EXT_texture_webp',
-      }),
-    ]));
+    expect(webgl2.issues.some(
+      (issue) => issue.name === 'baseColorMap.textureRef.disabled-texture-source-extension',
+    )).toBe(false);
   });
 
   it('treats optional meshopt assets with real fallback buffers as hook-free compatible', () => {

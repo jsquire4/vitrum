@@ -150,7 +150,14 @@ export const NEE_RESOLVE_MAIN = /* glsl */ `
                 #if FEATURE_BDPT
                 float misWeight = bdptCrossFamilyMisWeight;
                 #else
-                float misWeight = deltaLight
+                // The continuation technique exists only when the path budget
+                // permits another accepted bounce. At the terminal vertex the
+                // ordinary trace loop exits before tracing scatterRec, so
+                // weighting NEE against bsdfPdf would reserve probability for
+                // an estimator that is never sampled and bias the result dark.
+                bool continuationTechniqueAvailable =
+                        pathDepth + 1u < uint( bounces );
+                float misWeight = deltaLight || ! continuationTechniqueAvailable
                         ? 1.0
                         : misHeuristic( lightPdf, bsdfPdf );
                 #endif

@@ -177,6 +177,24 @@ export interface BidirectionalPathTracingSupportDetails {
 }
 
 /**
+ * Meaning of the generic `maxBounces` capability for a concrete renderer
+ * family. Progressive path tracers use an ordinary finite path-depth cap.
+ * Walkaround's numeric surface instead selects one of two DDGI feedback
+ * regimes and becomes inactive when its DDGI layer is disabled.
+ */
+export type BounceSemanticsSupportDetails =
+  | {
+      readonly kind: 'path-depth';
+      readonly perFrameControl: 'finite-path-depth';
+    }
+  | {
+      readonly kind: 'ddgi-feedback';
+      readonly directOnlyValue: 1;
+      readonly multiBounceEquilibriumValue: 2;
+      readonly inactiveWhenLayerDisabled: 'ddgi';
+    };
+
+/**
  * Exact public contract for a backend's inverse-rendering implementation.
  *
  * `createInverseSession` is an optional method and remains the coarse feature
@@ -270,6 +288,12 @@ export interface BackendSupportDetails {
       | 'motion-compensated';
   };
   readonly mutations: BackendMutationSupportDetails;
+  /**
+   * Renderer-family interpretation of `EngineCapabilities.maxBounces`.
+   * Optional for source compatibility with third-party backends; Vitrum's
+   * built-in backends publish it on every live support manifest.
+   */
+  readonly bounceSemantics?: BounceSemanticsSupportDetails;
   /** Sampling-sequence support and, when applicable, Sobol overflow semantics. */
   readonly samplingSequences?: SamplingSequenceSupportDetails;
   /** Optional estimator-scope and composition constraints for caustic modes. */
@@ -351,10 +375,12 @@ export interface EngineCapabilities {
    *  to this value. */
   readonly maxSamplesPerPixel: number;
 
-  /** Structural cap: the maximum bounces per path this engine instance was
-   *  allocated for. Determined at engine creation by `EngineOptions.maxBounces`
-   *  (or the backend's default if omitted). Per-frame
-   *  `FrameInput.quality.bounces` is clamped to this value. */
+  /** Structural cap for the renderer-family depth control. For path tracers
+   *  this is the maximum bounces per path; other renderer families may map the
+   *  bounded numeric surface to a quality regime. The exact interpretation is
+   *  published by `supportDetails.bounceSemantics`. Determined at engine
+   *  creation by `EngineOptions.maxBounces` (or the backend default).
+   *  Per-frame `FrameInput.quality.bounces` is clamped to this value. */
   readonly maxBounces: number;
 
   /** Set of analytic-primitive `shape` values this engine supports. Each

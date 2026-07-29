@@ -17,6 +17,7 @@ import {
   buildLightTree,
   sampleLightTreeCPU,
   lightTreePdfCPU,
+  nodeImportance,
   type LightTreeBuildInput,
 } from '../src/lightTree.js';
 import { lightTreeWgsl } from '../src/wgsl/lightTree.wgsl.js';
@@ -254,6 +255,70 @@ describe('B8 orientation cones — oriented emitters culled from behind', () => 
     expect(pFront + pBack).toBeCloseTo(1.0, 6);
   });
 
+  it('never culls a lit point in the cited non-axis-aligned triangle slab', () => {
+    // Triangle a=(0,0,0), b=(1,1,0), c=(0,1,1) has unit normal
+    // (1,-1,1)/sqrt(3). Its AABB centre lies +0.5/sqrt(3) in front of the
+    // emitter plane. A point only 0.05 along the normal is still on the lit
+    // side, but the old centre-only cone test saw the centre-to-point vector as
+    // back-facing and assigned this emitter exactly zero selection mass.
+    const invSqrt3 = 1 / Math.sqrt(3);
+    const normal = [invSqrt3, -invSqrt3, invSqrt3] as const;
+    const { nodes } = buildLightTree({
+      powers: [1, 1],
+      centroids: [[0.5, 0.5, 0.5], [10, 0, 0]],
+      aabbs: [
+        { min: [0, 0, 0], max: [1, 1, 1] },
+        pointAabb(10, 0, 0),
+      ],
+      cones: [
+        { axis: normal, thetaO: 0, thetaE: Math.PI / 2 },
+        { axis: [0, 0, 0] },
+      ],
+    });
+    const litPoint: [number, number, number] = [
+      normal[0] * 0.05,
+      normal[1] * 0.05,
+      normal[2] * 0.05,
+    ];
+    const trianglePdf = lightTreePdfCPU(nodes, litPoint, FLOOR, 0);
+    expect(trianglePdf).toBeGreaterThan(0);
+    expect(trianglePdf + lightTreePdfCPU(nodes, litPoint, FLOOR, 1)).toBeCloseTo(1, 6);
+  });
+
+  it('keeps the CPU/WGSL centre guard in the same distance units for a tiny point node', () => {
+    const distance = 1e-8;
+    expect(distance).toBeGreaterThan(1e-12);
+    expect(distance).toBeLessThan(1e-6);
+    const { nodes } = buildLightTree({
+      powers: [1, 1],
+      centroids: [[0, 0, 0], [1, 0, 0]],
+      aabbs: [
+        { min: [0, 0, 0], max: [0, 0, 0] },
+        { min: [1, 0, 0], max: [1, 0, 0] },
+      ],
+      cones: [
+        { axis: [1, 0, 0], thetaO: 0, thetaE: Math.PI / 18 },
+        { axis: [0, 0, 0] },
+      ],
+    });
+    const pointLeaf = nodes.find((node) => node.emitterIndex === 0);
+    expect(pointLeaf).toBeDefined();
+
+    // The point is outside the CPU's 1e-12 distance guard and behind the
+    // zero-radius emitter, so its cone importance is genuinely zero.
+    expect(nodeImportance(pointLeaf!, -distance, 0, 0, FLOOR)).toBe(0);
+
+    // WGSL receives squared distance. 1e-24 is the squared CPU floor; the old
+    // 1e-12 literal accidentally widened this guard to 1e-6 world units.
+    const wgsl = lightTreeWgsl({ group: 0, binding: 1 });
+    expect(wgsl).toContain(
+      'dl2 <= max(radius * radius, 1e-24)',
+    );
+    expect(wgsl).not.toContain(
+      'dl2 <= max(radius * radius, 1e-12)',
+    );
+  });
+
   it('full-sphere cones (no orientation) reproduce the spatial-only partition exactly', () => {
     // Same geometry/powers but NO cones → both emitters are full-sphere. The
     // partition must match a build with cones omitted entirely (byte-identical
@@ -302,9 +367,13 @@ describe('B8 orientation cones — oriented emitters culled from behind', () => 
 
 describe('lightTreeWgsl RNG-state specialization', () => {
   it('keeps u32 as the shared default and accepts the pt-webgpu state type', () => {
-    expect(lightTreeWgsl({ group: 0, binding: 1 })).toContain(
+    const defaultWgsl = lightTreeWgsl({ group: 0, binding: 1 });
+    expect(defaultWgsl).toContain(
       'rng: ptr<function, u32>',
     );
+    expect(defaultWgsl).toContain('let sinThetaU = clamp(radius / dl, 0.0, 1.0);');
+    expect(defaultWgsl).not.toContain('acos(');
+    expect(defaultWgsl).not.toContain('asin(');
     const specialized = lightTreeWgsl({
       group: 3,
       binding: 0,

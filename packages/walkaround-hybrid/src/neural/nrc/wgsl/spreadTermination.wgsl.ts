@@ -21,6 +21,7 @@ export function nrcSpreadTerminationWgsl(): string {
 // at this format boundary, and every such event increments diagnostics.
 const NRC_SPREAD_MAX_ROOT_F32: f32 = 1.844674297e19;
 const NRC_SPREAD_MAX_ROOT_LOG2: f32 = 64.0;
+const NRC_SPREAD_MAX_FINITE_F32: f32 = 3.402823466e38;
 
 fn nrcSpreadFinite(value: f32) -> bool {
   return value == value && abs(value) <= 3.402823466e38;
@@ -75,7 +76,13 @@ fn nrcAccumulateSpread(runningSum_io: ptr<function, f32>, dist: f32, pdf: f32, c
   } else {
     *runningSum_io = max(next, 0.0);
   }
-  return (*runningSum_io) * (*runningSum_io);
+  // Squaring the rounded max-root can round to +Inf at the f32 boundary.
+  // Clamp the footprint exactly like the CPU oracle rather than returning an
+  // infinity from the GPU mirror.
+  return min(
+    (*runningSum_io) * (*runningSum_io),
+    NRC_SPREAD_MAX_FINITE_F32,
+  );
 }
 
 // The cache-termination test at a vertex with accumulated spread a(x), given the

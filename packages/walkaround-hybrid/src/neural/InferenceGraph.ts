@@ -471,7 +471,7 @@ export class InferenceGraph {
     const pass = enc.beginComputePass({ label: 'neural-inputPack' });
     pass.setPipeline(this._inputPackPipeline);
     pass.setBindGroup(0, bindGroup);
-    // Workgroup size in INPUT_PACKER_WGSL is 256×1×1.
+    // Workgroup size in the generated input-packer shader is 256×1×1.
     pass.dispatchWorkgroups(Math.ceil(pixelCount / 256), 1, 1);
     pass.end();
   }

@@ -45,7 +45,10 @@ vec3 vt_linearToSrgb(vec3 c) {
 vec3 vitrumTonemap(vec3 color, int mode, float exposure) {
   vec3 x = color * exposure;
   if (mode == 1) { return vt_agx(x); }
-  if (mode == 2) { return x / (1.0 + max(x, vec3(0.0))); }
+  if (mode == 2) {
+    vec3 v = max(x, vec3(0.0));
+    return v / (1.0 + v);
+  }
   if (mode == 3) { return clamp(x, vec3(0.0), vec3(1.0)); }
   if (mode == 4) { return x; }
   return vt_aces(x); // default: mode==0 (aces)

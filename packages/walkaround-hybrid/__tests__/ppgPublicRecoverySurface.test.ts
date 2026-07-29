@@ -12,5 +12,17 @@ describe('PPG durable-failure recovery public surface', () => {
     expectTypeOf<Awaited<ReturnType<typeof createWalkaroundEngine_Hybrid>>>()
       .toHaveProperty('requestPpgTrainingRecovery');
     expect(typeof ConcreteHybridEngine.prototype.requestPpgTrainingRecovery).toBe('function');
+    expectTypeOf<PublicHybridEngine['getPpgTrainingStatus']>()
+      .toEqualTypeOf<
+        () =>
+          | 'unavailable'
+          | 'disabled'
+          | 'collecting'
+          | 'readback'
+          | 'retry-pending'
+          | 'failed'
+          | 'disposed'
+      >();
+    expect(typeof ConcreteHybridEngine.prototype.getPpgTrainingStatus).toBe('function');
   });
 });

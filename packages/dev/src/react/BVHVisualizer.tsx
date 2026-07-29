@@ -28,6 +28,8 @@ export interface BVHVisualizerProps {
   className?: string;
 }
 
+type BvhReadStatus = 'waiting' | 'ready' | 'unavailable' | 'malformed';
+
 const BADGE_STYLE: React.CSSProperties = {
   position: 'absolute',
   bottom: 8,
@@ -102,6 +104,7 @@ export const BVHVisualizer: FC<BVHVisualizerProps> = ({
 }) => {
   const [visible, setVisible] = useState(initiallyVisible);
   const [stats, setStats] = useState<BvhStats | null>(null);
+  const [readStatus, setReadStatus] = useState<BvhReadStatus>('waiting');
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
   // Keyboard toggle
@@ -115,18 +118,25 @@ export const BVHVisualizer: FC<BVHVisualizerProps> = ({
   // so no GPU readback needed — the cost is one pass over ~N nodes.
   useEffect(() => {
     if (!visible || !hasDebug) return;
+    setReadStatus('waiting');
     const tick = (): void => {
       try {
         const nodes = engine.debug?.bvhNodes?.();
-        if (nodes == null) return;
+        if (nodes == null) {
+          setStats(null);
+          setReadStatus('unavailable');
+          return;
+        }
         const s = computeBvhStats(nodes);
         setStats(s);
+        setReadStatus('ready');
         const canvas = canvasRef.current;
         if (canvas != null) renderHistogram(canvas, s);
       } catch {
         // A malformed producer table fails closed without leaving an uncaught
         // interval error in the host React tree.
         setStats(null);
+        setReadStatus('malformed');
       }
     };
     tick();
@@ -148,7 +158,7 @@ export const BVHVisualizer: FC<BVHVisualizerProps> = ({
       {visible && hasDebug && (
         <div style={PANEL_STYLE} role="region" aria-label="BVH Visualizer">
           <div style={{ fontWeight: 'bold', marginBottom: 4 }}>BVH structure</div>
-          {stats != null ? (
+          {readStatus === 'ready' && stats != null ? (
             <>
               <div>nodes: {stats.nodeCount}</div>
               <div>max depth: {stats.maxDepth}</div>
@@ -158,6 +168,14 @@ export const BVHVisualizer: FC<BVHVisualizerProps> = ({
               </div>
               <canvas ref={canvasRef} width={220} height={48} style={{ display: 'block' }} />
             </>
+          ) : readStatus === 'malformed' ? (
+            <div style={{ color: '#fa7d7d' }}>
+              Malformed BVH debug data; visualization stopped for this sample.
+            </div>
+          ) : readStatus === 'unavailable' ? (
+            <div style={{ color: '#ffb347' }}>
+              BVH data unavailable — the scene BVH is disabled or not built yet.
+            </div>
           ) : (
             <div style={{ color: '#aaa' }}>Waiting for BVH build…</div>
           )}

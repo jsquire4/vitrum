@@ -1053,6 +1053,40 @@ describe('minimal triangle', () => {
     expect(warnings.some((warning) => warning.includes('EXT_mesh_gpu_instancing'))).toBe(false);
   });
 
+  it('ignores application-specific underscore instancing attributes without aborting standard transforms', async () => {
+    const fixture = makeMinimalTriangleGltf();
+    const { gltf, buffers } = fixture;
+    const translationAccessor = appendF32Accessor(
+      fixture,
+      [2, 0, 0],
+      'VEC3',
+      1,
+    );
+    gltf.extensionsUsed = ['EXT_mesh_gpu_instancing'];
+    gltf.nodes![0] = {
+      ...gltf.nodes![0]!,
+      extensions: {
+        EXT_mesh_gpu_instancing: {
+          attributes: {
+            TRANSLATION: translationAccessor,
+            _APPLICATION_ID: Number.NaN,
+          },
+        },
+      },
+    };
+
+    const result = await gltfToScene(gltf, { buffers });
+    const primitive = result.scene.primitives[0] as InstancedMeshPrimitive;
+
+    expect(primitive.instances).toHaveLength(1);
+    expect(primitive.instances[0]![12]).toBeCloseTo(2);
+    expect(result.diagnostics).toContainEqual(expect.objectContaining({
+      severity: 'warning',
+      code: 'ignored-gpu-instancing-attribute',
+      path: 'nodes[0].extensions.EXT_mesh_gpu_instancing.attributes._APPLICATION_ID',
+    }));
+  });
+
   it('imports spec-legal normalized BYTE instancing rotations', async () => {
     const fixture = makeMinimalTriangleGltf();
     const { gltf, buffers } = fixture;

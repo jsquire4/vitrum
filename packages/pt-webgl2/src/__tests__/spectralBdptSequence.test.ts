@@ -100,11 +100,7 @@ async function captureSequence(sampling: 'pcg' | 'sobol'): Promise<readonly numb
   expect(new Set(sequence.map(f32Bits)).size).toBe(3);
 
   for (const name of ['iorCauchyA', 'iorCauchyB', 'iorCauchyC']) {
-    const values = scalarWrites.get(name) ?? [];
-    expect(values.length).toBeGreaterThanOrEqual(12);
-    for (let pass = 1; pass < uploadsPerFrame; pass++) {
-      expect(f32Bits(values[0]!)).toBe(f32Bits(values[pass]!));
-    }
+    expect(scalarWrites.has(name)).toBe(false);
   }
   engine.reset();
   engine.renderFrame(input());

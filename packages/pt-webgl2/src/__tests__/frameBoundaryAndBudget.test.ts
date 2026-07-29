@@ -166,6 +166,22 @@ describe('pt-webgl2 strict frame and size boundary', () => {
     engine.dispose();
   });
 
+  it('setSize allocates the requested render targets before the first frame', async () => {
+    const gl = createMockGl();
+    const { createTexture } = installAllocationSpies(gl);
+    const engine = await createPTEngine_WebGL2({ device: gl });
+    const texturesBeforeSize = createTexture.mock.calls.length;
+
+    engine.setSize?.(48, 40);
+
+    expect(createTexture.mock.calls.length).toBeGreaterThan(texturesBeforeSize);
+    expect(await engine.captureFrame?.()).toMatchObject({
+      width: 48,
+      height: 40,
+    });
+    engine.dispose();
+  });
+
   it('honors every frame viewport after an eager setSize call', async () => {
     const engine = await createPTEngine_WebGL2({ device: createMockGl() });
     engine.setScene(scene());
@@ -211,6 +227,7 @@ describe('pt-webgl2 strict frame and size boundary', () => {
       [{ extensions: [] }, /extensions must be a non-array object/],
       [{ spectral: 1 }, /spectral must be a boolean/],
       [{ bdpt: 'yes' }, /bdpt must be a boolean/],
+      [{ debug: 'yes' }, /debug must be a boolean/],
       [{ traceTier: 'maximum' }, /traceTier must be one of/],
       [{ sampling: 'stratified' }, /sampling must be one of/],
       [{ cameraType: 'fisheye' }, /cameraType must be one of/],

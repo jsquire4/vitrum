@@ -197,8 +197,13 @@ describe('shade lo_indirect — WGSL structural pins', () => {
     expect(SHADING_TERMS_WGSL).toContain('let wRestirGi = 1.0 - wRc;');
   });
 
-  it('still composes a convex blend (weights sum to 1 by construction)', () => {
-    expect(SHADING_TERMS_WGSL).toContain('return wRestirGi * Lo_indirect + wRc * Lo_rc;');
+  it('composes a convex estimator blend and preserves the dielectric diffuse share', () => {
+    expect(SHADING_TERMS_WGSL).toContain(
+      'let diffuseWeight = 1.0 - clamp(metal, 0.0, 1.0);',
+    );
+    expect(SHADING_TERMS_WGSL).toContain(
+      'return diffuseWeight * (wRestirGi * Lo_indirect + wRc * Lo_rc);',
+    );
   });
 
   it('no longer uses the old fixed host-scalar lerp', () => {

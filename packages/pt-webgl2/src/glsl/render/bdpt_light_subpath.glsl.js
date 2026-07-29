@@ -491,11 +491,20 @@ export const bdpt_light_subpath = /* glsl */`
 		vec4 p2 = texelFetch( lightPathTex, ivec2( prevCol, 2 ), 0 );
 		vec4 p3 = texelFetch( lightPathTex, ivec2( prevCol, 3 ), 0 );
                 vec4 p4 = texelFetch( lightPathTex, ivec2( prevCol, 4 ), 0 );
-                vec4 p5 = texelFetch( lightPathTex, ivec2( prevCol, 5 ), 0 );
-                vec4 p6 = texelFetch( lightPathTex, ivec2( prevCol, 6 ), 0 );
-                vec4 p7 = texelFetch( lightPathTex, ivec2( prevCol, 7 ), 0 );
+		vec4 p5 = texelFetch( lightPathTex, ivec2( prevCol, 5 ), 0 );
+		vec4 p6 = texelFetch( lightPathTex, ivec2( prevCol, 6 ), 0 );
+		vec4 p7 = texelFetch( lightPathTex, ivec2( prevCol, 7 ), 0 );
 		predecessor0 = p0;
-		predecessor2 = p2;
+		// The reverse-density patch belongs to vertexCol-2, not prevCol.
+		// Preserve that target vertex's throughput xyz while replacing only its
+		// newly-known reverse density in w. Copying p2 here corrupts the endpoint
+		// throughput as soon as column 2 is built (and each earlier light vertex
+		// on subsequent extensions).
+		if ( vertexCol >= 2 ) {
+			predecessor2 = texelFetch(
+				lightPathTex, ivec2( vertexCol - 2, 2 ), 0
+			);
+		}
 		if ( p0.w == BDPT_KIND_INVALID ) {
 			writeBdptInvalidVertex( v0, v1, v2, v3, v4, v5, v6, v7 ); return;
                 }

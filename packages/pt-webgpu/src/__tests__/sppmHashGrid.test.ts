@@ -5,7 +5,7 @@
  * Tests:
  *  1. Hash-grid cell math (TS): sppmCellIndex insert/query round-trip and
  *     3×3×3 neighbourhood coverage.
- *  2. Progressive radius schedule (TS): sppmRadiusAtFrame against closed form,
+ *  2. Progressive radius schedule through the live SPPM parameter update,
  *     α = 2/3, frames 0/1/10/100.
  *  3. Scale-aware initial radius (TS): sppmInitialRadius — Cornell, large scene,
  *     floor clamp at 1e-3.
@@ -32,7 +32,6 @@ import {
   SPPM_STATS_BYTES,
   SPPM_ALPHA,
   SPPM_PIXEL_STATS_BYTES_PER_PIXEL,
-  sppmRadiusAtFrame,
   sppmInitialRadius,
   SPPM_GROUP3_BINDINGS_WGSL,
   SPPM_PHOTON_PASS_WGSL,
@@ -262,62 +261,6 @@ describe('SPPM hash-grid cell math (TS mirror of sppmCellIndex WGSL)', () => {
     expect(unique.length).toBeLessThanOrEqual(27);
     expect(unique.length).toBeGreaterThan(0);
     expect(unique.reduce((count) => count + 1, 0)).toBe(unique.length);
-  });
-});
-
-// ── 2. Progressive radius schedule ────────────────────────────────────────────
-//
-// Exact unit-M recurrence: N'=N+α, R'²=R²*N'/(N+1), frame n has n+1 steps.
-// α = 2/3 (Hachisuka & Jensen 2009, Eq. 4)
-
-describe('SPPM progressive radius schedule (sppmRadiusAtFrame)', () => {
-  it('SPPM_ALPHA is exactly 2/3', () => {
-    expect(SPPM_ALPHA).toBeCloseTo(2 / 3, 10);
-  });
-
-  it('frame 0: r(0) = r₀ × sqrt(α)', () => {
-    const r0 = 0.1;
-    const expected = r0 * Math.sqrt(SPPM_ALPHA);
-    expect(sppmRadiusAtFrame(r0, 0)).toBeCloseTo(expected, 10);
-  });
-
-  it('frame 1 applies the second Hachisuka radius update', () => {
-    const r0 = 0.1;
-    const firstRatio = SPPM_ALPHA;
-    const secondRatio = (2 * SPPM_ALPHA) / (SPPM_ALPHA + 1);
-    const expected = r0 * Math.sqrt(firstRatio * secondRatio);
-    expect(sppmRadiusAtFrame(r0, 1)).toBeCloseTo(expected, 10);
-    expect(sppmRadiusAtFrame(r0, 1)).toBeLessThan(sppmRadiusAtFrame(r0, 0));
-  });
-
-  it('frame 10 matches an independent recurrence', () => {
-    const r0 = 0.05;
-    let expectedRadius2 = r0 * r0;
-    let N = 0;
-    for (let step = 0; step <= 10; step++) {
-      const nextN = N + SPPM_ALPHA;
-      expectedRadius2 *= nextN / (N + 1);
-      N = nextN;
-    }
-    expect(sppmRadiusAtFrame(r0, 10)).toBeCloseTo(Math.sqrt(expectedRadius2), 10);
-  });
-
-  it('frame 100: radius shrinks relative to r₀ but stays positive', () => {
-    const r0 = 0.1;
-    const r100 = sppmRadiusAtFrame(r0, 100);
-    expect(r100).toBeGreaterThan(0);
-    expect(r100).toBeLessThan(r0);
-  });
-
-  it('radius is monotonically non-increasing over many frames', () => {
-    const r0 = 0.1;
-    let prev = r0;
-    for (let n = 0; n <= 200; n++) {
-      const curr = sppmRadiusAtFrame(r0, n);
-      // Allow a tiny floating-point tolerance.
-      expect(curr).toBeLessThanOrEqual(prev + 1e-12);
-      prev = curr;
-    }
   });
 });
 

@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
 import {
-  CHECKERBOARD_MEASURED_PERF_PROOF,
   CHECKERBOARD_SUPPORT_DETAILS,
   QUALITY_PRESETS,
   resolveQualityPreset,
@@ -87,37 +86,11 @@ describe('resolveQualityPreset — preset → knob table', () => {
     }
   });
 
-  it('presets never force RC/PPG/neural on (documentary flag only)', () => {
-    for (const t of TIERS) {
-      expect(resolveQualityPreset(t).enableRcPpgNeuralByDefault).toBe(false);
-    }
-  });
-
   it('degradation tiers (medium/low) enable checkerboard; quality tiers (ultra/high) keep it off', () => {
     expect(resolveQualityPreset('ultra').checkerboard).toBe(false);
     expect(resolveQualityPreset('high').checkerboard).toBe(false);
     expect(resolveQualityPreset('medium').checkerboard).toBe(true);
     expect(resolveQualityPreset('low').checkerboard).toBe(true);
-  });
-
-  it('every preset carries the MEASURED whole-frame perf proof (the evidence exists for all tiers)', () => {
-    for (const t of TIERS) {
-      const proof = resolveQualityPreset(t).checkerboardPerfProof;
-      expect(proof).toBe(CHECKERBOARD_MEASURED_PERF_PROOF);
-      expect(proof.status).toBe('measured');
-      if (proof.status !== 'measured') {
-        throw new Error('checkerboard preset unexpectedly has pending perf proof');
-      }
-      expect(proof.requiredMetric).toBe('whole-frame-gpu-timestamp-ab');
-      // Whole-frame win recorded honestly (the verified median, ≈31% saved).
-      expect(proof.wholeFrameSpeedupRatio).toBeCloseTo(1.46, 5);
-      // The ris re-cast pass is the biggest per-pass win.
-      expect(proof.perPassSpeedups.ris).toBeGreaterThan(proof.perPassSpeedups.shade);
-      // Quality summary above the 35 dB bar at the motion-onset worst frame.
-      expect(proof.quality.motionWorstDb).toBeGreaterThan(35);
-      expect(proof.quality.staticDb).toBeGreaterThan(60);
-      expect(proof.adapter).toBe('dzn-rtx-4090');
-    }
   });
 
   it('checkerboard support details describe the measured proof + per-tier preset enablement', () => {

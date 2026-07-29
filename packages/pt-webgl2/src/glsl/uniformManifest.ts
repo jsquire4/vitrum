@@ -19,9 +19,9 @@ import type { FrameUniforms } from '../gl/glResources.js';
 //      keyof FrameUniforms to a manifest entry or an explicitly-justified
 //      _HandledSeparately reason (see _HANDLED_SEPARATELY_KEYS).
 //
-// Gated uniforms (physicalCamera under #if FEATURE_DOF; BDPT uniforms under
-// #if FEATURE_BDPT) are inlined verbatim in buildUniformDecls() because the
-// #if block structure cannot be expressed as a flat manifest row.
+// Gated physicalCamera uniforms are inlined in buildUniformDecls(); the
+// FEATURE_BDPT block is emitted by bdptUniformDecls(). Their preprocessor block
+// structure cannot be expressed as flat manifest rows.
 //
 // 'samplerOrStruct' covers sampler2D / usampler2D / sampler2DArray / struct
 // uniforms (LightsInfo, EquirectHdrInfo, BVH) that are bound via GlProgram
@@ -63,7 +63,6 @@ export const UNIFORM_MANIFEST = [
   { glslName: 'lights',                glslType: 'LightsInfo',       frameKey: 'samplerOrStruct' },
   { glslName: 'uMeshLights',          glslType: 'sampler2D',        frameKey: 'samplerOrStruct' },
   { glslName: 'uMeshLightCount',      glslType: 'uint',             frameKey: 'samplerOrStruct' },
-  { glslName: 'uTotalEmissiveArea',   glslType: 'float',            frameKey: 'samplerOrStruct' },
   { glslName: 'uTotalEmissivePower',  glslType: 'float',            frameKey: 'samplerOrStruct' },
   // ── background ───────────────────────────────────────────────────────────
   { glslName: 'backgroundBlur',        glslType: 'float',            frameKey: 'backgroundBlur' },
@@ -98,17 +97,16 @@ export const UNIFORM_MANIFEST = [
 //                          (frameKey='internal' in manifest)
 //   opacity              — computed as 1/(samples+1) from GlResources state, not from FrameUniforms
 //                          (frameKey='internal' in manifest)
-//   spectralEnabled      — drives CMF upload gate (uSpectralRendering int uniform); the manifest
-//                          covers the CMF uniforms via spectralBdptUniformDecls()
+//   spectralEnabled      — drives the spectral-accumulator CMF upload gate
+//                          (uSpectralRendering int uniform)
 //   bdpt                 — drives pass-selection (uBdptLightSubpathPass); not a simple scalar
-//   bdptMaxLightBounces  — declared as uBdptMaxLightBounces in spectralBdptUniformDecls()
+//   bdptMaxLightBounces  — declared as uBdptMaxLightBounces in bdptUniformDecls()
 //   bdptSceneCenter / bdptSceneRadius
 //                        — bounded infinite-source launch disk uniforms
 //   bdptSharedWavelengthNm / bdptSharedWavelengthPdf
-//                        — shared spectral+BDPT uniform pair in spectralBdptUniformDecls()
+//                        — shared spectral+BDPT uniform pair in bdptUniformDecls()
 //   materialLodDepth     — declared in get_surface_record_function.glsl.js; uploaded from FrameUniforms
 //                          but not part of this module's UNIFORM_DECLS block.
-//   iorCauchy            — split into iorCauchyA/B/C in spectralBdptUniformDecls()
 //   dof                  — drives gated PhysicalCamera struct (FEATURE_DOF)
 //   backgroundAlpha      — in manifest (frameKey='backgroundAlpha') — not in _HandledSeparately
 //   tonemapMode          — drives PresentPass only; no PT shader uniform counterpart
@@ -125,7 +123,6 @@ type _HandledSeparately =
   | 'bdptSharedWavelengthNm'
   | 'bdptSharedWavelengthPdf'
   | 'materialLodDepth'
-  | 'iorCauchy'
   | 'dof'
   | 'tonemapMode'
   | 'exposure'
@@ -169,17 +166,16 @@ const UNIFORM_DECLS = /* glsl */ `
 					// the packer always writes -1 to the reserved s5.g slot.
 					uniform LightsInfo lights;
 
-					// B4 — mesh-area triangle lights (NEE). uMeshLights packs 6 texels per
-					// emissive triangle (meshAreaLights.ts layout); uMeshLightCount triangles;
-					// uTotalEmissiveArea is retained for debug/legacy accounting; the sampler
-					// uses uTotalEmissivePower = Σ luminance(radiance)·area so mapped texel-cell
-					// lights are selected by emitted power, and forward-hit MIS can recover the
-					// same area density from surf.emission. All default to 0 / empty → the
-					// mesh-NEE branch and forward-emission MIS are inert.
-					uniform sampler2D uMeshLights;
-					uniform uint uMeshLightCount;
-					uniform float uTotalEmissiveArea;
-					uniform float uTotalEmissivePower;
+						// B4 — mesh-area triangle lights (NEE). uMeshLights packs 6 texels per
+						// emissive triangle (meshAreaLights.ts layout); uMeshLightCount triangles;
+						// the sampler uses uTotalEmissivePower =
+						// Σ luminance(radiance)·area so mapped texel-cell
+						// lights are selected by emitted power, and forward-hit MIS can recover the
+						// same area density from surf.emission. All default to 0 / empty → the
+						// mesh-NEE branch and forward-emission MIS are inert.
+						uniform sampler2D uMeshLights;
+						uniform uint uMeshLightCount;
+						uniform float uTotalEmissivePower;
 
 					// background
 					uniform float backgroundBlur;
@@ -221,17 +217,12 @@ const UNIFORM_DECLS = /* glsl */ `
 `;
 
 /**
- * The spectral / Cauchy uniform decls and (gated) BDPT uniform decls
- * (PhysicalPathTracingMaterial.js:358-384). Inline in the fork (not a chunk). The
- * FEATURE_BDPT gate resolves from the preamble define; we emit it unconditionally and let
- * the preprocessor strip it when FEATURE_BDPT == 0.
+ * Gated BDPT uniform declarations. The FEATURE_BDPT gate resolves from the
+ * preamble define; emit it unconditionally and let the preprocessor strip it
+ * when FEATURE_BDPT == 0.
  */
-export function spectralBdptUniformDecls(): string {
+export function bdptUniformDecls(): string {
   return /* glsl */ `
-					uniform float iorCauchyA;
-					uniform float iorCauchyB;
-					uniform float iorCauchyC;
-
 					// Sprint 10c — BDPT uniforms.
 					// uBdptLightPathTex: RGBA32F ping-pong texture (width=8, height=6).
 					//   Rows: 0=position+kind, 1=normal+pdfFwd, 2=throughput+pdfRev,

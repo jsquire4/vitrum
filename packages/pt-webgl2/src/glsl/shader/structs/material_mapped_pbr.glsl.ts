@@ -19,7 +19,7 @@ struct Material {
   bool meshEmitterCastShadowDisabled; bool fogVolume; uint flags;
   int aoMap; int lightMap; int bumpMap;
   float aoMapIntensity; float lightMapIntensity; float bumpScale;
-  float envMapIntensity; uint uvTexCoordMask;
+  float envMapIntensity;
   mat3 mapTransform; mat3 metalnessMapTransform; mat3 roughnessMapTransform;
   mat3 emissiveMapTransform; mat3 normalMapTransform; mat3 alphaMapTransform;
   mat3 aoMapTransform; mat3 lightMapTransform; mat3 bumpMapTransform;
@@ -230,7 +230,6 @@ void readMaterialInfo( sampler2D tex, uint index, out Material m ) {
   m.aoMapIntensity = s21.r;
   m.lightMapIntensity = s21.g;
   m.bumpScale = s21.b;
-  m.uvTexCoordMask = uint( round( s21.a ) );
   m.spectralReflectanceCoeffs = spectral.xyz;
   m.hasSpectralReflectance = spectral.w > 0.5;
 

@@ -32,6 +32,7 @@ import {
 import { DDGI_PROBE_MAX_OFFSET_NORMALIZED } from '../probeState.js';
 import { DDGI_SH_WGSL } from './ddgiSH.wgsl.js';
 import { DDGI_SAMPLE_WGSL } from '../ddgiSampleWgsl.js';
+import { analyticLightFalloffWgsl } from '../../shaders/analyticLightFalloff.wgsl.js';
 
 const WG_SIZE = 32;
 const RAYS_PER_THREAD = Math.ceil(RAYS_PER_PROBE / WG_SIZE);
@@ -1953,6 +1954,8 @@ fn traceSunVisibility(origin: vec3f, sunDir: vec3f) -> vec3f {
  * in makeProbeUpdateRaysWGSL.
  */
 function makeDirectLightingWGSL(): string { return /* wgsl */`
+${analyticLightFalloffWgsl('ddgi')}
+
 fn ddgiSoftSunHashToF32(seedIn: u32) -> f32 {
   var seed = seedIn;
   seed = seed ^ (seed >> 17u);
@@ -2023,13 +2026,9 @@ fn evalPointLight(light: DDGILight, hitPos: vec3f, hitNormal: vec3f) -> vec3f {
   var coneFalloff = 1.0;
   if (ddgiLightKind(light) == LIGHT_SPOT) {
     if (!(axisLen2 > 0.0)) { return vec3f(0.0); }
-    let cosToP = dot(-light.direction * inverseSqrt(axisLen2), lightDir);
-    if (cosToP < light.outerCone) { return vec3f(0.0); }
-    if (light.innerCone == light.outerCone) {
-      coneFalloff = 1.0;
-    } else {
-      coneFalloff = smoothstep(light.outerCone, light.innerCone, cosToP);
-    }
+    coneFalloff = ddgiSpotConeFalloff(
+      light.direction, lightDir, light.innerCone, light.outerCone,
+    );
     if (coneFalloff <= 0.0) { return vec3f(0.0); }
   }
 
@@ -2043,17 +2042,9 @@ fn evalPointLight(light: DDGILight, hitPos: vec3f, hitNormal: vec3f) -> vec3f {
       return vec3f(0.0);
     }
   }
-  var distanceAttenuation = 1.0;
-  if (light.decay > 0.0) {
-    let dist2Floor = normalBias_p * normalBias_p;
-    let regularizedDist2 = max(dist * dist, dist2Floor);
-    if (!(regularizedDist2 > 0.0)) { return vec3f(0.0); }
-    distanceAttenuation = 1.0 / pow(sqrt(regularizedDist2), light.decay);
-  }
-  if (light.distance > 0.0) {
-    let x = clamp(1.0 - pow(dist / light.distance, 4.0), 0.0, 1.0);
-    distanceAttenuation = distanceAttenuation * x * x;
-  }
+  let distanceAttenuation = ddgiPointSpotAttenuation(
+    dist, light.distance, light.decay, normalBias_p * normalBias_p,
+  );
   let atten = light.intensity * distanceAttenuation;
   return light.color * atten * nDotL * coneFalloff * shadowVisibility;
 }

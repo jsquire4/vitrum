@@ -46,14 +46,12 @@
  *                                                  never writes the slot it samples)
  *   @binding(5) rpt_resSpatialOut (read_write)  — this pass's fresh-GRIS output
  *                                                  (resolve reads this slot)
- *   @binding(4) rptParams         (uniform)
  * The reconnection-visibility ray traverses the inherited @group(0..2) scene.
  */
 
 export const RESTIR_PT_SPATIAL_WGSL = /* wgsl */ `
 @group(4) @binding(1) var<storage, read>       rpt_resSpatialIn:  array<u32>;
 @group(4) @binding(5) var<storage, read_write> rpt_resSpatialOut: array<u32>;
-@group(4) @binding(4) var<uniform>             rptParams:         RestirPtParams;
 
 const K_RPT_SPATIAL: u32 = 5u;            // neighbours sampled per pixel
 const RPT_SPATIAL_RADIUS: f32 = 16.0;     // disc radius (px) — full-res

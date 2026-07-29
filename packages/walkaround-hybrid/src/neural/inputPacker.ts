@@ -75,5 +75,4 @@ fn inputPackMain(@builtin(global_invocation_id) gid: vec3<u32>) {
 `;
 }
 
-export const INPUT_PACKER_WGSL = buildInputPackerWgsl();
 export const INPUT_PACKER_ENTRY = 'inputPackMain';

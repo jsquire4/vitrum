@@ -695,7 +695,7 @@ describe('composeTraceGlsl', () => {
     // the directLightContribution branch must all be present in the default program.
     expect(src).toContain('uniform sampler2D uMeshLights;');
     expect(src).toContain('uniform uint uMeshLightCount;');
-    expect(src).toContain('uniform float uTotalEmissiveArea;');
+    expect(src).not.toContain('uniform float uTotalEmissiveArea;');
     expect(src).toContain('uniform float uTotalEmissivePower;');
     expect(src).toContain('#define TRI_AREA_LIGHT_TYPE 5');
     expect(src).toContain('LightRecord sampleMeshAreaLight(');
@@ -925,7 +925,7 @@ describe('composeTraceGlsl', () => {
   // D10.4: RENDER_MAIN_SECTIONS length pin (prevents silent render-main drift).
   it('D10.4: RENDER_MAIN_SECTIONS join length pin', () => {
     const assembled = RENDER_MAIN_SECTIONS.join('');
-    expect(assembled).toHaveLength(60572);
+    expect(assembled).toHaveLength(61985);
     // All sections must be non-empty and together contain the key anchor points.
     expect(RENDER_MAIN_SECTIONS).toHaveLength(6);
     expect(assembled).toContain('void main() {');

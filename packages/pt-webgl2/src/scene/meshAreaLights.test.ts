@@ -198,6 +198,43 @@ describe('packMeshAreaLights (B4)', () => {
     )).toBe(true);
   });
 
+  it('honors skipEmitter before implicit emissive-map CPU-readability checks', () => {
+    const skipped = sceneWithPrimitive(panelPrimitive(material({
+      emissive: [1, 1, 1],
+      emissiveMap: { handle: {} },
+      extensions: { skipEmitter: true },
+    })));
+
+    expect(() => packMeshAreaLights(skipped, fakeMerged())).not.toThrow();
+    const out = packMeshAreaLights(skipped, fakeMerged());
+    expect(out.triLightCount).toBe(0);
+    expect(out.data).toBeNull();
+    expect(hasMeshAreaLightForPrimitive(skipped, 'panel')).toBe(false);
+  });
+
+  it('keeps an explicit mesh-area emitter authoritative over material skipEmitter', () => {
+    const explicit = sceneWithPrimitive(
+      panelPrimitive(material({
+        emissive: [1, 1, 1],
+        extensions: { skipEmitter: true },
+      })),
+      [{
+        kind: 'mesh-area',
+        id: 'explicit-panel',
+        meshId: 'panel',
+        color: [0.25, 0.5, 1],
+        intensity: 4,
+      }],
+    );
+
+    const out = packMeshAreaLights(explicit, fakeMerged());
+    expect(out.triLightCount).toBe(2);
+    expect(out.data?.[4]).toBeCloseTo(1, 6);
+    expect(out.data?.[5]).toBeCloseTo(2, 6);
+    expect(out.data?.[6]).toBeCloseTo(4, 6);
+    expect(hasMeshAreaLightForPrimitive(explicit, 'panel')).toBe(true);
+  });
+
   it('retains positive emitters below the former luminance cutoff', () => {
     const out = packMeshAreaLights(
       sceneWithPrimitive(panelPrimitive(material({ emissive: [5e-7, 5e-7, 5e-7] }))),

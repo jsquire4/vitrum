@@ -83,8 +83,8 @@ export function buildPerFrameBindGroups(
   // `updateAnalyticLights` / `updateEmitters` / `updateEnvironment`
   // (BvhBufferHost) — destroy() + fresh upload changes identity, so listing
   // them here makes those refresh paths auto-invalidate the scene group on the
-  // next frame without an explicit cache.clear(). `envSampler`/`envParamsBuffer`
-  // are reused across env swaps (stable identity) but are listed for
+  // next frame without an explicit cache.clear(). `envParamsBuffer`
+  // is reused across env swaps (stable identity) but is listed for
   // completeness so a future lifecycle change can't silently desync.
   const sceneKey = [
     ...scene.sceneStorageArenaBuffers,
@@ -95,7 +95,6 @@ export function buildPerFrameBindGroups(
     scene.envMapTextureView,         // 15 — B3, recreated by updateEnvironment
     scene.envMarginalTextureView,    // 16
     scene.envConditionalTextureView, // 17
-    scene.envSampler,                // 18
     scene.envParamsBuffer,           // 19
     scene.materialTextureAtlasView,  // 20 — Phase-3D baseColorMap atlas
     scene.baseColorMapMetaTextureView, // 21

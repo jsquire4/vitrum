@@ -73,13 +73,25 @@ describe('parseGlb host-owned ArrayBuffer handling', () => {
     }));
   });
 
-  it('rejects a declared total length smaller than the actual container', () => {
+  it('rejects a declared boundary that truncates a declared chunk', () => {
     const input = buildGlbWithBin();
     new DataView(input).setUint32(8, input.byteLength - 4, true);
 
     expect(() => parseGlb(input)).toThrow(expect.objectContaining({
-      reason: 'glb-declared-length-mismatch',
+      reason: 'glb-chunk-out-of-bounds',
     }));
+  });
+
+  it('parses a valid declared container while ignoring host transport bytes after it', () => {
+    const input = buildGlbWithBin();
+    const transportBuffer = new Uint8Array(input.byteLength + 7);
+    transportBuffer.set(new Uint8Array(input));
+    transportBuffer.set([9, 8, 7, 6, 5, 4, 3], input.byteLength);
+
+    const parsed = parseGlb(transportBuffer.buffer);
+
+    expect(parsed.json.asset.version).toBe('2.0');
+    expect(Array.from(new Uint8Array(parsed.binChunk!))).toEqual([1, 2, 3, 4]);
   });
 
   it('rejects BIN before JSON', () => {

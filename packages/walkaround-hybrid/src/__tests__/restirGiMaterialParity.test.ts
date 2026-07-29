@@ -123,7 +123,7 @@ describe('ReSTIR-GI material parity', () => {
       [SPATIAL_GI_MODULE, SPATIAL_GI_WGSL],
     ] as const) {
       const composed = composeWgsl(module, WGSL_MODULES);
-      expect(composed).toContain('@group(1) @binding(0) var<storage, read> sceneGeometryArena');
+      expect(composed).toContain('@group(1) @binding(0) var<storage, read> bvhSceneGeometryArena');
       expect(composed).toContain('fn bvhLoadNode(');
       expect(shader).toContain('grisMaterialPHatAt(');
       expect(shader).toContain('grisMaterialTargetAt(');

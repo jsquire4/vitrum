@@ -29,8 +29,6 @@ function stubScene(partial: Partial<UploadedSceneBuffers>): UploadedSceneBuffers
     rectAreaLightsData: new Float32Array(0),
     meshAreaLightsData: new Float32Array(0),
     environmentTint: [1, 1, 1],
-    environmentSunDirection: [0, 1, 0],
-    environmentSunStrength: 0,
     environmentHdriIntensity: 1,
     environmentHdriRotationY: 0,
     environmentMapWidth: 0,
@@ -70,8 +68,8 @@ function mixedScene(): UploadedSceneBuffers {
 }
 
 describe('invocation-local BDPT source selection', () => {
-  it('ignores the legacy procedural-sun lane without a baked environment map', () => {
-    const scene = stubScene({ environmentSunStrength: 1e-12, sceneRadius: 2 });
+  it('requires a baked environment map before exposing an environment source', () => {
+    const scene = stubScene({ sceneRadius: 2 });
     expect(bdptEmitterCount(scene)).toBe(0);
     expect(distantDirectEmitterCount(scene)).toBe(0);
     expect(distantDirectEmitterPower(scene, 0)).toBe(0);

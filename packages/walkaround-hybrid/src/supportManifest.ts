@@ -243,6 +243,12 @@ function createWalkaroundSupportManifest(
     },
     causticStrategies: WALKAROUND_CAUSTIC_STRATEGIES,
     mutations: WALKAROUND_MUTATIONS,
+    bounceSemantics: {
+      kind: 'ddgi-feedback',
+      directOnlyValue: 1,
+      multiBounceEquilibriumValue: 2,
+      inactiveWhenLayerDisabled: 'ddgi',
+    },
   });
 }
 

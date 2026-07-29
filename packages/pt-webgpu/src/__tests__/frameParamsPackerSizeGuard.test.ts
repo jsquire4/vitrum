@@ -16,11 +16,11 @@ import { FRAME_PARAMS_F32_SLOTS } from '../scene/frameParamsLayout.generated.js'
 describe('FrameParamsPacker allocation guard (D8.11)', () => {
   it('allocates exactly the generated FrameParams size', () => {
     expect(FRAME_PARAMS_BUFFER_ALLOC_BYTES).toBe(FRAME_PARAMS_BYTE_SIZE);
-    expect(FRAME_PARAMS_BUFFER_ALLOC_BYTES).toBe(384);
+    expect(FRAME_PARAMS_BUFFER_ALLOC_BYTES).toBe(368);
   });
 
   it('derives the highest slot from the exact allocation', () => {
-    expect(FRAME_PARAMS_MAX_SLOT).toBe(95);
+    expect(FRAME_PARAMS_MAX_SLOT).toBe(91);
   });
 
   it('does not retain trailing allocation beyond the WGSL struct', () => {

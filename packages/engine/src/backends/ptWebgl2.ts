@@ -87,6 +87,7 @@ export async function constructPathTracer(
     const merged: PTEngineWebGL2Options = {
       device: gl,
       ...advancedWebGL2,
+      ...(opts.debug != null ? { debug: opts.debug } : {}),
       ...(opts.onWarning != null ? { onWarning: opts.onWarning } : {}),
     };
 

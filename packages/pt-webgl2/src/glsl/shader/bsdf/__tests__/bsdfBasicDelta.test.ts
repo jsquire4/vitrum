@@ -19,4 +19,27 @@ describe('pt-webgl2 basic-tier exact roughness support', () => {
     const tinyPositive = 1e-9;
     expect(Math.max(0, Math.min(1, tinyPositive))).toBe(tinyPositive);
   });
+
+  it('uses the shared stable HG clamp and inverse for both sampling and pdf', () => {
+    expect(BSDF_BASIC_GLSL).toContain(
+      'float gg = clamp( g, -0.999999, 0.999999 );',
+    );
+    expect(BSDF_BASIC_GLSL).toContain(
+      'float cosTheta = sampleHgCosTheta( uv.x, g );',
+    );
+    expect(BSDF_BASIC_GLSL).toContain(
+      'return hg_phase( cosTheta, g );',
+    );
+    expect(BSDF_BASIC_GLSL).toContain(
+      'oneMinusA * oneMinusA +',
+    );
+    expect(BSDF_BASIC_GLSL).toContain(
+      '2.0 * a * ( 1.0 - alignedCos )',
+    );
+    expect(BSDF_BASIC_GLSL).not.toContain('float g2 = g * g;');
+    expect(BSDF_BASIC_GLSL).not.toContain(
+      '1.0 + g2 - 2.0 * gg',
+    );
+    expect(BSDF_BASIC_GLSL).not.toContain('abs( g ) < 1e-3');
+  });
 });

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { Scene } from '../scene/index.js';
+import { validateScene, type Scene } from '../scene/index.js';
 import { patchEmitterInScene, patchPrimitiveInScene } from '../scene/patchScene.js';
 
 function makeScene(): Scene {
@@ -316,5 +316,117 @@ describe('patchScene helpers', () => {
       position: [0, 0, 0],
     } as never)).toThrow(/position.*known contract field/);
     expect(scene.emitters[0]).toBe(retainedEmitter);
+  });
+
+  it('validates only the patched primitive after an accepted snapshot', () => {
+    const accepted = makeScene();
+    // Model a host violating the readonly snapshot after engine acceptance:
+    // the untouched node is now malformed. The hot patch path must neither
+    // traverse nor accidentally bless it; a later full setScene still rejects
+    // that snapshot through validateScene.
+    const malformedUntouched = {
+      ...accepted.primitives[1]!,
+      params: new Float32Array([0]),
+    } as Scene['primitives'][number];
+    const scene: Scene = {
+      ...accepted,
+      primitives: [accepted.primitives[0]!, malformedUntouched],
+    };
+    const next = patchPrimitiveInScene(scene, 'mesh-a', {
+      material: { roughness: 0.25 } as never,
+    });
+    expect(next.primitives[0]!.material.roughness).toBe(0.25);
+    expect(next.primitives[1]).toBe(malformedUntouched);
+    expect(() => patchPrimitiveInScene(scene, 'mesh-a', {
+      material: { roughness: Number.NaN } as never,
+    })).toThrow(/roughness.*finite/);
+  });
+
+  it('does not access unchanged geometry on a material-only patch', () => {
+    const base = makeScene();
+    validateScene(base);
+    const source = base.primitives[0]!;
+    const guarded = {
+      ...source,
+      indices: new Uint16Array([0, 1, 2]),
+    } as Scene['primitives'][number];
+    const geometry = {
+      positions: source.kind === 'mesh' ? source.positions : undefined,
+      normals: source.kind === 'mesh' ? source.normals : undefined,
+      uvs: source.kind === 'mesh' ? source.uvs : undefined,
+      indices: new Uint16Array([0, 1, 2]),
+    };
+    const reads: string[] = [];
+    for (const key of ['positions', 'normals', 'uvs', 'indices'] as const) {
+      Object.defineProperty(guarded, key, {
+        configurable: true,
+        enumerable: true,
+        get() {
+          reads.push(key);
+          return geometry[key];
+        },
+      });
+    }
+    const scene: Scene = {
+      ...base,
+      primitives: [guarded, ...base.primitives.slice(1)],
+    };
+
+    const next = patchPrimitiveInScene(scene, 'mesh-a', {
+      material: { roughness: 0.125 } as never,
+    });
+
+    expect(next.primitives[0]!.material.roughness).toBe(0.125);
+    expect(reads).toEqual([]);
+    expect(() => patchPrimitiveInScene(scene, 'mesh-a', {
+      material: { roughness: Number.NaN } as never,
+    })).toThrow(/roughness.*finite/);
+    expect(reads).toEqual([]);
+  });
+
+  it('keeps material-to-UV cross-field validation on the fast path', () => {
+    const scene = makeScene();
+    expect(() => patchPrimitiveInScene(scene, 'mesh-a', {
+      material: {
+        baseColorMap: {
+          handle: { id: 'base-color' },
+          texCoord: 7,
+        },
+      } as never,
+    })).toThrow(/baseColorMap\.texCoord.*does not provide that UV stream/);
+  });
+
+  it('validates changed mesh-area references and unique ownership', () => {
+    const base = makeScene();
+    const secondMesh = {
+      ...base.primitives[0]!,
+      id: 'mesh-b',
+    } as Scene['primitives'][number];
+    const scene: Scene = {
+      ...base,
+      primitives: [...base.primitives, secondMesh],
+      emitters: [
+        {
+          kind: 'mesh-area',
+          id: 'area-a',
+          meshId: 'mesh-a',
+          color: [1, 1, 1],
+          intensity: 1,
+        },
+        {
+          kind: 'mesh-area',
+          id: 'area-b',
+          meshId: 'mesh-b',
+          color: [1, 1, 1],
+          intensity: 1,
+        },
+      ],
+    };
+    expect(() => patchEmitterInScene(scene, 'area-b', { meshId: 'missing' }))
+      .toThrow(/references missing primitive/);
+    expect(() => patchEmitterInScene(scene, 'area-b', { meshId: 'sphere-a' }))
+      .toThrow(/mesh-like primitive/);
+    expect(() => patchEmitterInScene(scene, 'area-b', { meshId: 'mesh-a' }))
+      .toThrow(/duplicates mesh-area ownership/);
   });
 });

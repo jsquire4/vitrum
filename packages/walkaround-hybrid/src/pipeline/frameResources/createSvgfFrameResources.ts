@@ -151,13 +151,13 @@ export function createSvgfFrameResources(
   const svgfVarianceTexture = device.createTexture({
     label: 'svgf-real-variance',
     size: [w, h],
-    format: 'rgba32float',
+    format: 'r32float',
     usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
   });
   const svgfVarianceMomentsIntermedTexture = device.createTexture({
     label: 'svgf-real-variance-moments-intermed',
     size: [w, h],
-    format: 'rgba32float',
+    format: 'r32float',
     usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
   });
 

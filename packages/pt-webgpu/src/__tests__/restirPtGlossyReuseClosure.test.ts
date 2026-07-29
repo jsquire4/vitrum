@@ -549,7 +549,7 @@ describe('ReSTIR-PT glossy reuse closure — validation, exclusion, and fallback
       expect(production).not.toContain(obsolete);
     }
     expect(RESTIR_PT_PARAMS_FIELDS.map((field) => field.name)).toEqual([
-      'width', 'height', 'mClamp', '_padA',
+      'mClamp', '_padA', '_padB', '_padC',
     ]);
     expect(RESERVOIR_PT_HERO_WGSL).toContain('const RESERVOIR_PT_HERO_STRIDE: u32 = 16u;');
   });

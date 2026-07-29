@@ -251,7 +251,7 @@ describe('deriveHybridEngineConfig — defaulting record (parse split)', () => {
   it('default config (ultra) enables the canonical generalized-reuse path', () => {
     const cfg = derive(baseOpts());
     expect(cfg.denoiser).toBe('atrous-variance');
-    expect(cfg.maxBounces).toBe(4);
+    expect(cfg.maxBounces).toBe(2);
     expect(cfg.indirectFireflyClamp).toEqual([1.0, 1.0, 1.0]);
     expect(cfg.nrcEnabled).toBe(0);
     // Resolved tunables all at default.
@@ -264,7 +264,7 @@ describe('deriveHybridEngineConfig — defaulting record (parse split)', () => {
     'rejects invalid maxBounces %s instead of normalizing it',
     (maxBounces) => {
       expect(() => validateHybridEngineOptions(baseOpts({ maxBounces })))
-        .toThrow(/maxBounces.*positive safe integer/i);
+        .toThrow(/maxBounces.*1.*or 2/i);
     },
   );
 
@@ -288,7 +288,7 @@ describe('deriveHybridEngineConfig — defaulting record (parse split)', () => {
     const matrix: Partial<HybridEngineOptions>[] = [
       {},
       { denoiser: 'atrous' },
-      { denoiser: 'bmfr', maxBounces: 8 },
+      { denoiser: 'bmfr', maxBounces: 2 },
       { qualityTier: 'low' },
       { tier: 'lite' },
       { rcEnabled: true, rcWeight: 0.25 },

@@ -70,6 +70,10 @@ describe('production general BDPT estimator', () => {
     expect(source).toContain(
       'predecessor2.w = max( reverseScatterPdf, 0.0 ) * p2.w;',
     );
+    expect(source.replace(/\s+/g, ' ')).toContain(
+      'predecessor2 = texelFetch( lightPathTex, ivec2( vertexCol - 2, 2 ), 0 );',
+    );
+    expect(source).not.toContain('predecessor2 = p2;');
     expect(source).toContain(
       'v2 = vec4( newThroughput, segmentReverseDensity );',
     );
@@ -90,6 +94,24 @@ describe('production general BDPT estimator', () => {
     expect(patchTarget(2)).toBe(0);
     expect(patchTarget(3)).toBe(1);
     expect(patchTarget(7)).toBe(5);
+
+    // Extending L0→L1→L2 discovers L0's reverse density, but must not replace
+    // the emitter throughput with L1's throughput. That was a real c=2 bias:
+    // the row-2 patch was routed to L0 while carrying all four channels of L1.
+    const patchReverseDensity = (
+      target: readonly [number, number, number, number],
+      reverseDensity: number,
+    ): readonly [number, number, number, number] => [
+      target[0], target[1], target[2], reverseDensity,
+    ];
+    const emitterRow2 = [2.5, 2.5, 2.5, 0] as const;
+    const firstScatterRow2 = [0.42, 0.31, 0.18, 1] as const;
+    expect(patchReverseDensity(emitterRow2, 0.17)).toEqual([
+      2.5, 2.5, 2.5, 0.17,
+    ]);
+    expect(patchReverseDensity(emitterRow2, 0.17)).not.toEqual([
+      ...firstScatterRow2.slice(0, 3), 0.17,
+    ]);
   });
 
   it('connects finite c=0 plus every stored c>=1 vertex and evaluates Veach MIS in log space', () => {
@@ -107,8 +129,24 @@ describe('production general BDPT estimator', () => {
       expect(source).toContain('#if FEATURE_RUSSIAN_ROULETTE && ! FEATURE_BDPT');
       expect(source).toContain('bool twoSidedEndpoint = lv4.y > 0.5;');
       expect(source).toContain('twoSidedEndpoint ? 2.0 * PI : PI');
-      expect(source).toContain('vec3 eeToPrev = normalize( eyeWo );');
-      expect(source).not.toContain('vec3 eeMinusPos = camPos;');
+    expect(source).toContain('vec3 eeToPrev = normalize( eyeWo );');
+    expect(source).not.toContain('vec3 eeMinusPos = camPos;');
+    expect(source).toContain(
+      'if ( bdptLvi + bdptEyeDepth >= bounces ) break;',
+    );
+    expect(source).toContain(
+      'if ( lightVtxIdx + eyeDepth >= bounces ) return vec3( 0.0 );',
+    );
+
+    // c is the number of light-side scattering vertices and e+1 is the
+    // number of eye-side scattering vertices. Their sum is strategy-invariant
+    // for a fixed full path and must fit the ordinary accepted-bounce budget.
+    const connectionFitsBudget = (c: number, e: number, bounces: number) =>
+      c + e < bounces;
+    expect(connectionFitsBudget(0, 0, 1)).toBe(true);
+    expect(connectionFitsBudget(1, 0, 1)).toBe(false);
+    expect(connectionFitsBudget(1, 1, 3)).toBe(true);
+    expect(connectionFitsBudget(2, 1, 3)).toBe(false);
   });
 
   it('uses one power-heuristic denominator for distant s=0, s=1, and bounded s>=2', () => {

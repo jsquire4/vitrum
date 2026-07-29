@@ -881,7 +881,7 @@ export function resolveHybridNrcConfig(
 }
 
 function resolveMaxBounces(value: number | undefined): number {
-  if (value === undefined) return 4;
+  if (value === undefined) return 2;
   return value;
 }
 
@@ -1160,10 +1160,11 @@ export function validateHybridEngineOptions(opts: HybridEngineOptions): void {
   }
   if (
     opts.maxBounces !== undefined &&
-    (!Number.isSafeInteger(opts.maxBounces) || opts.maxBounces < 1)
+    (!Number.isSafeInteger(opts.maxBounces) || opts.maxBounces < 1 || opts.maxBounces > 2)
   ) {
     throw new RangeError(
-      `[HybridEngine] maxBounces must be a positive safe integer (got ${String(opts.maxBounces)}).`,
+      `[HybridEngine] maxBounces must be 1 (direct-only DDGI) or 2 ` +
+      `(multi-bounce DDGI equilibrium); got ${String(opts.maxBounces)}.`,
     );
   }
   if (

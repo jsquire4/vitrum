@@ -82,6 +82,17 @@ describe('Wave 4 — env DI NEE candidate call sites', () => {
     expect(src).toContain('restir_di_compute_phat_xi(');
   });
 
+  it('inverts forward environment CDFs by binary search, including xi near one', () => {
+    const src = composeWgsl(RIS_MODULE, WGSL_MODULES);
+    expect(src).toContain('fn envCdfXi(');
+    expect(src).toContain('bitcast<f32>(0x3f7fffffu)');
+    expect(src).toContain('fn envMarginalRowFromCdf(');
+    expect(src).toContain('fn envConditionalColumnFromCdf(');
+    expect(src).toContain('if (cdf <= xi)');
+    expect(src).not.toContain('floor(xiV * f32(h))');
+    expect(src).not.toContain('floor(xiU * f32(w))');
+  });
+
   it('ris finalizes DI reservoirs with selected xi and support-family M', () => {
     const src = composeWgsl(RIS_MODULE, WGSL_MODULES);
     expect(src).toContain('var mAreaSupport = 0u;');

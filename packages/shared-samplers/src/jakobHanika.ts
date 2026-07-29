@@ -72,6 +72,19 @@ import { requireFinite } from './numericGuards.js';
 const LAMBDA_MIN = CIE_LAMBDA_MIN;
 const LAMBDA_MAX = CIE_LAMBDA_MAX;
 
+/**
+ * Canonical D65 white produced by the linear-sRGB → XYZ matrix below.
+ *
+ * The 5 nm D65/CMF quadrature is close to this value, but not identical. Its
+ * three integration channels are calibrated to these row sums so a unit
+ * reflector is exactly the same white used by the paired RGB transforms.
+ */
+const CANONICAL_D65_WHITE = [
+  0.95047,
+  1.0000001,
+  1.08883,
+] as const;
+
 // ────────────────────────────────────────────────────────────────────────────
 // Smooth sigmoid (Jakob & Hanika §3, eq. 1)
 // ────────────────────────────────────────────────────────────────────────────
@@ -108,11 +121,11 @@ function sigmoidPrime(x: number): number {
 //   X = (1/N) Σ_i  S(λ_i)·D65(λ_i)·x̄(λ_i)·Δλ        (and Y, Z analogously)
 //   N =          Σ_i        D65(λ_i)·ȳ(λ_i)·Δλ        (luminance normaliser)
 //
-// so that a perfect white reflector (S ≡ 1) maps to Y = 1. We fold Δλ and the
-// D65 SPD into per-sample weights once at module load. `WHITE_XYZ` is the
-// tristimulus of the D65 white point under this exact discretisation — the
-// reference Lab transform whitepoint, so a flat S ≡ 1 round-trips to Lab
-// (100, 0, 0) and back to linear-sRGB (1, 1, 1) by construction.
+// so that a perfect white reflector (S ≡ 1) initially maps to Y = 1. We fold
+// Δλ and the D65 SPD into per-sample weights once at module load, then apply a
+// tiny per-channel calibration so their sums equal the canonical D65 white
+// produced by the paired linear-sRGB transform. This removes the otherwise
+// observable mismatch between 5 nm quadrature and the matrix white point.
 
 interface ColorTables {
   /** Per-sample weight D65(λ)·x̄(λ)·Δλ / N. */
@@ -123,7 +136,7 @@ interface ColorTables {
   readonly wz: Float64Array;
   /** Affinely-remapped wavelength sample, t_i = (λ_i − λ_min)/(λ_max − λ_min). */
   readonly t: Float64Array;
-  /** D65 white-point tristimulus under this discretisation (Y == 1). */
+  /** Canonical D65 white-point tristimulus used by the paired RGB transforms. */
   readonly white: readonly [number, number, number];
 }
 
@@ -161,7 +174,19 @@ function buildColorTables(): ColorTables {
     wZ += ez;
   }
 
-  return { wx, wy, wz, t, white: [wX, wY, wZ] };
+  // Preserve the sampled D65/CMF shape while calibrating each quadrature
+  // channel's integral to the exact white point of the RGB transform. Without
+  // this correction S≡1 maps to roughly [0.999884, 1.000038, 0.999967].
+  const scaleX = wX > 0 ? CANONICAL_D65_WHITE[0] / wX : 0;
+  const scaleY = wY > 0 ? CANONICAL_D65_WHITE[1] / wY : 0;
+  const scaleZ = wZ > 0 ? CANONICAL_D65_WHITE[2] / wZ : 0;
+  for (let i = 0; i < n; i++) {
+    wx[i]! *= scaleX;
+    wy[i]! *= scaleY;
+    wz[i]! *= scaleZ;
+  }
+
+  return { wx, wy, wz, t, white: CANONICAL_D65_WHITE };
 }
 
 const TABLES = buildColorTables();
@@ -180,6 +205,19 @@ function linearSRGBToXYZ(r: number, g: number, b: number): [number, number, numb
     0.4124564 * r + 0.3575761 * g + 0.1804375 * b,
     0.2126729 * r + 0.7151522 * g + 0.0721750 * b,
     0.0193339 * r + 0.1191920 * g + 0.9503041 * b,
+  ];
+}
+
+/**
+ * CIE XYZ → linear sRGB. These constants are the full-precision inverse of
+ * `linearSRGBToXYZ`'s rounded IEC forward matrix, rather than a separately
+ * rounded inverse, so the two transforms remain an actual numerical pair.
+ */
+function xyzToLinearSRGB(x: number, y: number, z: number): [number, number, number] {
+  return [
+    3.2404548360214092 * x - 1.5371388501025753 * y - 0.498531546868481 * z,
+    -0.9692663898756538 * x + 1.8760109288424913 * y + 0.041556082346673524 * z,
+    0.05564341960421366 * x - 0.20402585426769815 * y + 1.0572251624579287 * z,
   ];
 }
 
@@ -300,6 +338,10 @@ function coeffsToLabJacobian(a: number, b: number, c: number): LabAndJacobian {
 
 const MAX_ITER = 40;
 const CONVERGE_RESIDUAL = 1e-4; // ‖r‖ (Lab ΔE units) at which we declare success
+// The sigmoid reaches exact 0/1 only at infinity. This finite boundary value
+// keeps coefficients shader-safe while pushing the real D65/Lab residual below
+// the same convergence threshold used by the iterative solve.
+const BOUNDARY_SIGMOID_COEFFICIENT = 4096;
 
 /** Solve the 3×3 linear system A·x = b by Gaussian elimination with pivoting. */
 function solve3x3(A: number[][], rhs: [number, number, number]): [number, number, number] | null {
@@ -355,7 +397,13 @@ function norm2(v: [number, number, number]): number {
 function gaussNewtonFit(
   targetLab: [number, number, number],
   initial: [number, number, number],
-): [number, number, number] {
+): {
+  readonly coefficients: [number, number, number];
+  readonly converged: boolean;
+  readonly residualDeltaE: number;
+  readonly iterations: number;
+  readonly termination: 'converged' | 'singular-jacobian' | 'no-descent' | 'max-iterations';
+} {
   let coeff = initial.slice() as [number, number, number];
   const init = coeffsToLabJacobian(coeff[0], coeff[1], coeff[2]);
   let jacobian = init.jacobian;
@@ -366,9 +414,15 @@ function gaussNewtonFit(
   ];
   let err = norm2(residual);
 
+  let iterations = 0;
+  let termination: 'converged' | 'singular-jacobian' | 'no-descent' | 'max-iterations' =
+    err <= CONVERGE_RESIDUAL * CONVERGE_RESIDUAL ? 'converged' : 'max-iterations';
   for (let iter = 0; iter < MAX_ITER && err > CONVERGE_RESIDUAL * CONVERGE_RESIDUAL; iter++) {
     const step = solve3x3(jacobian, [-residual[0], -residual[1], -residual[2]]);
-    if (step == null) break; // singular Jacobian — keep best so far
+    if (step == null) {
+      termination = 'singular-jacobian';
+      break;
+    }
 
     // Back-tracking line search to guarantee monotone descent.
     let alpha = 1;
@@ -392,14 +446,28 @@ function gaussNewtonFit(
         err = e;
         jacobian = eval_.jacobian;
         accepted = true;
+        iterations = iter + 1;
         break;
       }
       alpha *= 0.5;
     }
-    if (!accepted) break; // no descent direction improved — converged to local min
+    if (!accepted) {
+      termination = 'no-descent';
+      break;
+    }
+    if (err <= CONVERGE_RESIDUAL * CONVERGE_RESIDUAL) {
+      termination = 'converged';
+    }
   }
 
-  return coeff;
+  const converged = err <= CONVERGE_RESIDUAL * CONVERGE_RESIDUAL;
+  return {
+    coefficients: coeff,
+    converged,
+    residualDeltaE: Math.sqrt(err),
+    iterations,
+    termination: converged ? 'converged' : termination,
+  };
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -449,11 +517,29 @@ function expandToRawNm(a: number, b: number, c: number): [number, number, number
  * @param b - Blue channel, linear sRGB.
  * @returns (c₀, c₁, c₂) raw-nm sigmoid-polynomial coefficients.
  */
-function rgbToJakobHanikaCoefficients(
+export interface SpectralCoefficientFit {
+  readonly coefficients: readonly [number, number, number];
+  readonly converged: boolean;
+  /**
+   * CIE Lab ΔE between the reproduced spectrum and the requested, clamped
+   * linear-sRGB target under this module's calibrated D65 integration.
+   */
+  readonly residualDeltaE: number;
+  readonly iterations: number;
+  readonly termination:
+    | 'converged'
+    | 'boundary-black'
+    | 'boundary-white'
+    | 'singular-jacobian'
+    | 'no-descent'
+    | 'max-iterations';
+}
+
+export function fitRgbToSpectralCoefficients(
   r: number,
   g: number,
   b: number,
-): readonly [number, number, number] {
+): SpectralCoefficientFit {
   requireFinite(r, 'rgbToSpectralCoefficients.r');
   requireFinite(g, 'rgbToSpectralCoefficients.g');
   requireFinite(b, 'rgbToSpectralCoefficients.b');
@@ -464,15 +550,45 @@ function rgbToJakobHanikaCoefficients(
   g = Math.max(0, Math.min(1, g));
   b = Math.max(0, Math.min(1, b));
 
-  // Pure-black shortcut: S ≡ 0 ⇒ sigmoid(−∞). A large negative constant gives
-  // S ≈ 0 across the band with c₁ = c₂ = 0.
-  if (r <= 0 && g <= 0 && b <= 0) {
-    return [-50, 0, 0] as const;
-  }
-
-  // Target colour in the perceptual residual space.
+  // Target colour in the same perceptual residual space used by Gauss–Newton.
+  // Boundary shortcuts also pass through this metric: they must not claim a
+  // synthetic zero residual for a finite approximation to ±infinity.
   const [tx, ty, tz] = linearSRGBToXYZ(r, g, b);
   const targetLab = xyzToLab(tx, ty, tz);
+  const boundaryFit = (
+    coefficient: number,
+    termination: 'boundary-black' | 'boundary-white',
+  ): SpectralCoefficientFit => {
+    const reproducedLab =
+      coeffsToLabJacobian(0, 0, coefficient).lab;
+    const residualDeltaE = Math.sqrt(norm2([
+      reproducedLab[0] - targetLab[0],
+      reproducedLab[1] - targetLab[1],
+      reproducedLab[2] - targetLab[2],
+    ]));
+    return {
+      coefficients: [coefficient, 0, 0],
+      converged: residualDeltaE <= CONVERGE_RESIDUAL,
+      residualDeltaE,
+      iterations: 0,
+      termination,
+    };
+  };
+
+  // Pure black/white require sigmoid(±∞). Use a finite, shader-safe constant
+  // whose measured residual satisfies the normal convergence contract.
+  if (r <= 0 && g <= 0 && b <= 0) {
+    return boundaryFit(
+      -BOUNDARY_SIGMOID_COEFFICIENT,
+      'boundary-black',
+    );
+  }
+  if (r >= 1 && g >= 1 && b >= 1) {
+    return boundaryFit(
+      BOUNDARY_SIGMOID_COEFFICIENT,
+      'boundary-white',
+    );
+  }
 
   // Initial guess in t-space: the maximally-conditioned flat S ≡ ½ (all coeffs
   // zero). At S = ½ the sigmoid derivative S'(0) = ½ is at its maximum, so the
@@ -483,8 +599,28 @@ function rgbToJakobHanikaCoefficients(
   // from the achromatic centre rather than seeding each cell at its own value.
   const initial: [number, number, number] = [0, 0, 0];
 
-  const [a, bb, c] = gaussNewtonFit(targetLab, initial);
-  return expandToRawNm(a, bb, c);
+  const fit = gaussNewtonFit(targetLab, initial);
+  const [a, bb, c] = fit.coefficients;
+  return {
+    ...fit,
+    coefficients: expandToRawNm(a, bb, c),
+  };
+}
+
+function rgbToJakobHanikaCoefficients(
+  r: number,
+  g: number,
+  b: number,
+): readonly [number, number, number] {
+  const fit = fitRgbToSpectralCoefficients(r, g, b);
+  if (!fit.converged) {
+    throw new RangeError(
+      'rgbToSpectralCoefficients did not converge: ' +
+        `termination=${fit.termination}, residualDeltaE=${fit.residualDeltaE}, ` +
+        `iterations=${fit.iterations}, rgb=[${r}, ${g}, ${b}]`,
+    );
+  }
+  return fit.coefficients;
 }
 
 /**
@@ -544,11 +680,7 @@ export function spectralCoefficientsToRGB(
     Y += s * wy[i]!;
     Z += s * wz[i]!;
   }
-  const rgb = [
-    3.2404542 * X - 1.5371385 * Y - 0.4985314 * Z,
-    -0.9692660 * X + 1.8760108 * Y + 0.0415560 * Z,
-    0.0556434 * X - 0.2040259 * Y + 1.0572252 * Z,
-  ] as const;
+  const rgb = xyzToLinearSRGB(X, Y, Z);
   requireFinite(rgb[0], 'spectralCoefficientsToRGB.result[0]');
   requireFinite(rgb[1], 'spectralCoefficientsToRGB.result[1]');
   requireFinite(rgb[2], 'spectralCoefficientsToRGB.result[2]');

@@ -33,7 +33,11 @@ export interface FrameQualitySettings {
    *  engines ignore (they resample every frame). Default: engine-specific. */
   readonly samplesTarget?: number;
 
-  /** Per-frame bounce count. Must be <= EngineCapabilities.maxBounces.
+  /** Per-frame renderer-depth control. Progressive path tracers interpret this
+   *  as a finite path-bounce count; other renderer families may expose a
+   *  bounded quality regime instead. See
+   *  `EngineCapabilities.supportDetails.bounceSemantics` for the live
+   *  interpretation. Must be <= EngineCapabilities.maxBounces.
    *  Default: engine-specific (typically the cap). */
   readonly bounces?: number;
 
@@ -382,8 +386,9 @@ export interface FrameRendered extends FrameOutputBase {
   readonly albedo?: BackendTexture;
 
   // ── Optional metadata ──────────────────────────────────────────────────
-  /** Per-pixel variance estimate (Welford running variance). Used by adaptive
-   *  sampling and by some denoisers. RGBA32F format. */
+  /** Per-pixel scalar variance estimate (Welford running variance). Used by
+   *  adaptive sampling and by some denoisers. The value is stored in `.r`;
+   *  texture precision/format is backend-defined. */
   readonly variance?: BackendTexture;
 
   /** Motion vectors for temporal reprojection (svgf-real denoiser) and

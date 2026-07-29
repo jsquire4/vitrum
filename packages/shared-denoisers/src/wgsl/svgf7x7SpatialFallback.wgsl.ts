@@ -11,7 +11,7 @@
  *   binding 0 — texture_2d<f32>                        currColor
  *   binding 1 — texture_2d<u32>                        historyIn
  *   binding 2 — texture_2d<f32>                        varianceIn
- *   binding 3 — texture_storage_2d<rgba32float, write> varianceOut
+ *   binding 3 — texture_storage_2d<r32float, write> varianceOut
  *   binding 4 — texture_2d<f32>                        currNormal
  *   binding 5 — texture_2d<f32>                        currDepth
  *
@@ -46,7 +46,7 @@ const SVGF_FALLBACK_RELATIVE_DEPTH_SIGMA: f32 = 0.1;
 @group(0) @binding(0) var sfb_currColor:    texture_2d<f32>;
 @group(0) @binding(1) var sfb_historyIn:    texture_2d<u32>;
 @group(0) @binding(2) var sfb_varianceIn:   texture_2d<f32>;
-@group(0) @binding(3) var sfb_varianceOut:  texture_storage_2d<rgba32float, write>;
+@group(0) @binding(3) var sfb_varianceOut:  texture_storage_2d<r32float, write>;
 @group(0) @binding(4) var sfb_currNormal:   texture_2d<f32>;
 @group(0) @binding(5) var sfb_currDepth:    texture_2d<f32>;
 
@@ -106,11 +106,10 @@ fn svgf7x7FallbackMain(@builtin(global_invocation_id) gid: vec3u) {
     );
   }
 
-  let historyAsFloat = textureLoad(sfb_varianceIn, gid.xy, 0).g;
   textureStore(
     sfb_varianceOut,
     gid.xy,
-    vec4f(spatialVariance, historyAsFloat, 0.0, 0.0),
+    vec4f(spatialVariance, 0.0, 0.0, 0.0),
   );
 }
 `;

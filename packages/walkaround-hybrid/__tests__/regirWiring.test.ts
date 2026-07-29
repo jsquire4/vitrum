@@ -44,7 +44,7 @@ function fakeInputs(): PipelineFrameInputs {
     camera: { viewMatrix: m, projMatrix: m, prevViewProjMatrix: m, cameraPos: [0, 0, 0] },
     screen: { screenWidth: 64, screenHeight: 64, frameSeed: 7, swapChainView: {} as GPUTextureView, swapChainFormat: 'bgra8unorm' },
     lighting: {
-      totalEmissivePower: 1, emitterCount: 4,
+      emitterCount: 4,
       primaryLightDir: [0, 1, 0], primaryLightIntensity: 1,
       skyTint: [0, 0, 0], skyIrradiance: 0,
       emitterDist2Floor: 0.01, directFireflyClamp: 4, causticBoost: 1, causticVisClamp: 1,
@@ -63,7 +63,6 @@ function fakeInputs(): PipelineFrameInputs {
       stainedGlassFlags: 0,
     },
     bvh: { bvhMode: 0, tlasNodeCount: 0 },
-    nrc: {},
     composite: { tonemapMode: 0, exposure: 1.0, outputColorSpace: 0 },
   } as PipelineFrameInputs;
 }

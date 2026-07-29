@@ -56,6 +56,7 @@ const PT_WEBGPU_OPTION_KEY_RECORD = {
   oidn: true,
   oidnBridgeLoader: true,
   oidnReadbackFn: true,
+  debug: true,
 } as const satisfies Readonly<Record<keyof PTEngineWebGPUOptions, true>>;
 const PT_WEBGPU_OPTION_KEYS = new Set(Object.keys(PT_WEBGPU_OPTION_KEY_RECORD));
 
@@ -469,6 +470,7 @@ export function validatePtWebgpuOptions(
     'restirPtReuse',
     'lightTreeImportanceSampling',
     'cameraVisibleEmitters',
+    'debug',
   ] as const) {
     assertOptionalBoolean(rawOpts[key], key);
   }

@@ -66,21 +66,14 @@ function emptyScene(): Scene {
 // 1. Per-emitter-type power formula
 // ===========================================================================
 describe('WS2 — per-emitter-type power formula', () => {
-  it('keeps a tiny positive procedural sky in light-tree selector parity', () => {
+  it('does not fabricate an environment leaf without a baked map', () => {
     const input = buildLightTreeInputForScene(emptyScene(), {
       envSummary: {
         hasHdri: false,
-        sunStrength: 1e-12,
         lightTreePower: 1e-12,
       },
     });
-    expect(input.powers).toHaveLength(1);
-    expect(input.powers[0]).toBeGreaterThan(0);
-    const source = buildLightTreeInputForScene.toString();
-    expect(source).toContain('envSummary.sunStrength > 0');
-    expect(source).not.toContain('envSummary.sunStrength > 1e-6');
-    expect(source).toContain('powers.push(envSummary.lightTreePower)');
-    expect(source).not.toContain('Math.max(envSummary.sunStrength, 1)');
+    expect(input.powers).toHaveLength(0);
   });
 
   it('delta light (point/spot/directional) power == luminance(radiance)', () => {

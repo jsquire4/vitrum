@@ -26,7 +26,8 @@ describe('pt-webgl2 executable support manifest', () => {
       Object.entries(PT_WEBGL2_MATERIAL_SUPPORT)
         .filter(([, mode]) => mode === 'unsupported')
         .map(([field]) => field),
-    ).toEqual(['extensions']);
+    ).toEqual([]);
+    expect(PT_WEBGL2_MATERIAL_SUPPORT.extensions).toBe('native');
   });
 
   it('derives every coarse scene-acceptance set from detailed rows', () => {

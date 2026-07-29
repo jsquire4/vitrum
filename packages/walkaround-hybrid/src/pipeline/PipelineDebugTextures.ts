@@ -7,9 +7,7 @@
  * overlays) are decoupled from the 8-sub-struct FrameResources shape.
  *
  * Fields chosen by reading `HybridEngineDebug.giSignalTextures`: it accesses
- * exactly `res.common.hdrColorTexture`, `res.common.hdrIndirectTexture`, and
- * `res.gtao.aoFullTexture`. No other texture handle is consumed by any debug
- * surface in the walkaround-hybrid or dev packages.
+ * exactly the direct, indirect, total, and AO split targets.
  *
  * Returned handles are owned by the pipeline (caller MUST NOT destroy them);
  * they are invalidated on the next `setScene()` / `dispose()` / `resize()`.
@@ -29,6 +27,9 @@ export interface PipelineDebugTextures {
    * Corresponds to `FrameResources.common.hdrIndirectTexture`.
    */
   hdrIndirectTexture: GPUTexture | null;
+
+  /** Combined direct + indirect HDR signal before final denoised composition. */
+  hdrTotalTexture: GPUTexture | null;
 
   /**
    * Full-resolution GTAO ambient-occlusion factor (`rgba16float`).

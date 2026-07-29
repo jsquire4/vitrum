@@ -141,14 +141,28 @@ describe('resolveHybridEnvironment', () => {
     expect(resolved.skyTint).toBeDefined();
     expect(resolved.skyTint!.every((c) => c >= 0 && c <= 1)).toBe(true);
     expect(resolved.skyIrradiance).toBeGreaterThan(0);
-    expect(resolved.proceduralSunDirection).toEqual([0, 1, 0]);
-    expect(resolved.proceduralSunIntensity).toBe(0);
     expect(resolved.directional).toBeDefined();
     expect(resolved.directional!.width).toBe(256);
     expect(resolved.directional!.height).toBe(128);
     expect(resolved.directional!.totalWeight).toBeGreaterThan(0);
     expect(resolved.directionalIntensity).toBe(1);
     expect(resolved.rotationY).toBe(0);
+    expect(resolved.warnings).toEqual([]);
+  });
+
+  it('uses the shared HG stability cap without narrowing valid near-forward anisotropy', () => {
+    const resolved = resolveHybridEnvironment({
+      kind: 'procedural-sky',
+      sunDirection: [0, 1, 0],
+      turbidity: 2,
+      rayleigh: 1,
+      mieCoefficient: 0.005,
+      mieDirectionalG: 0.99995,
+      intensity: 1,
+    });
+
+    expect(resolved.mode).toBe('procedural-sky-baked');
+    expect(resolved.directional).toBeDefined();
     expect(resolved.warnings).toEqual([]);
   });
 

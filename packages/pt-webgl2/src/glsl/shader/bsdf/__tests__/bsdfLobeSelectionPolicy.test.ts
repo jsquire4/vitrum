@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { evaluateHG, sampleHG } from '@vitrum/shared-samplers';
 import * as BsdfFns from '../bsdf_functions.glsl.js';
 
 const bsdf_functions = (BsdfFns as unknown as Record<string, string>)['bsdf_functions']!;
@@ -95,16 +96,22 @@ describe('pt-webgl2 BSDF lobe-selection PDF policy', () => {
 
   it('preserves every positive finite dispersion and medium-scattering coefficient', () => {
     const dispersion = sourceBetween(
-      'float cauchyIORatLambda',
+      'float cauchyIORFromDLine',
       'float transmissionEtaAtHero',
     ).replace(/\s+/g, ' ');
     const sss = sourceBetween('ScatterRecord sssSample', 'ScatterRecord bsdfSample');
 
-    expect(dispersion).toContain('if ( C == 0.0 )');
+    expect(dispersion).toContain(
+      'bNm2 * ( 1.0 / lambda2 - 1.0 / dLine2 )',
+    );
+    expect(dispersion).toContain('uSpectralRendering != 0');
     expect(dispersion).toContain('surf.dispersionStrength > 0.0');
-    expect(dispersion).toContain('abs( iorCauchyB ) > 0.0');
-    expect(dispersion).toContain('abs( iorCauchyC ) > 0.0');
-    expect(dispersion).toContain('surf.dispersionStrength / dispersionBasis');
+    expect(dispersion).toContain(
+      'cauchyIORFromDLine( heroWavelength, surf.ior, surf.dispersionStrength )',
+    );
+    expect(dispersion).not.toContain('iorCauchy');
+    expect(dispersion).not.toContain('dispersionBasis');
+    expect(dispersion).not.toContain('dispersionScale');
     expect(dispersion).not.toContain('dispersionStrength > 1e-5');
     expect(sss).toContain('sigmaT.x > 0.0 ? sigmaS.x / sigmaT.x : 0.0');
     expect(sss).not.toContain('sigmaT.x > 1e-6');
@@ -112,6 +119,20 @@ describe('pt-webgl2 BSDF lobe-selection PDF policy', () => {
     const sigmaT = 1e-12;
     const sigmaS = 0.5e-12;
     expect(sigmaS / sigmaT).toBe(0.5);
+  });
+
+  it('includes the sampled HG phase value in the SSS estimator numerator', () => {
+    const sss = sourceBetween(
+      'ScatterRecord sssSample',
+      'ScatterRecord bsdfSample',
+    ).replace(/\s+/g, ' ');
+    expect(sss).toContain(
+      'mediumAlbedoThroughput( mediumAlbedo, heroWavelength ) * ( beerLambert * sssRec.pdf )',
+    );
+
+    // Isotropic HG has f = pdf = 1/(4π), so f/pdf is exactly one.
+    const isotropicHg = 1 / (4 * Math.PI);
+    expect(isotropicHg / isotropicHg).toBe(1);
   });
 
   it('represents exact-zero roughness as a discrete event without a PDF threshold', () => {
@@ -135,36 +156,99 @@ describe('pt-webgl2 BSDF lobe-selection PDF policy', () => {
     expect(sample).not.toContain('sampledDelta = result.pdf >');
   });
 
-  it('preserves sub-milliscale authored anisotropic roughness and tiny HG asymmetry', () => {
+  it('preserves sub-milliscale anisotropy and mirrors the exact shared HG inverse', () => {
     const anisotropic = sourceBetween(
       'vec2 anisotropicRoughnessAxes',
       'float ggxDistributionAnisotropic',
     );
+    const hgInverse = sourceBetween(
+      'float sampleHgCosTheta',
+      'vec3 sampleHG_glsl',
+    );
     const hg = sourceBetween('vec3 sampleHG_glsl', '// diffuse');
     const volumeHg = sourceBetween('vec3 sampleMediumPhase', '// Sprint 12');
+    const volumePdf = sourceBetween(
+      'float mediumPhasePdf',
+      'vec3 sampleMediumPhase',
+    );
     const volumeSample = sourceFrom('ScatterRecord bsdfSample');
 
     expect(anisotropic).toContain('clamp( surf.filteredRoughness, 0.0, 1.0 )');
     expect(anisotropic).toContain('if ( roughness == 0.0 ) roughness = 0.001;');
     expect(anisotropic).not.toContain('clamp( surf.filteredRoughness, 0.001');
     expect(anisotropic).not.toContain('vec2( 0.001 ), vec2( 1.0 )');
-    expect(hg).toContain('if ( gg == 0.0 )');
-    expect(hg).toContain('1.5 * gg * ( 1.0 - a2 )');
-    expect(hg).not.toContain('if ( abs( gg ) < 1e-4 )');
-    expect(volumeHg).toContain('else if ( abs( g ) < 1e-3 )');
-    expect(volumeHg).toContain('1.5 * g * ( 1.0 - a2 )');
-    expect(volumeHg).toContain('float xi = 1.0 - uv.x;');
+    expect(hgInverse).toContain('if ( abs( gg ) < 0.125 )');
+    expect(hgInverse).toContain('clamp( g, -0.999999, 0.999999 )');
+    expect(hgInverse).toContain('gg * gg * gg * ( q * q - 1.0 )');
+    expect(hgInverse).toContain('( 1.0 - gg * gg ) /');
+    expect(hgInverse).toContain('( 1.0 + gg * q )');
+    expect(hg).toContain('float cosTheta = sampleHgCosTheta( u2, g );');
+    expect(bsdf_functions).toContain(
+      'oneMinusA * oneMinusA +',
+    );
+    expect(bsdf_functions).toContain(
+      '2.0 * a * ( 1.0 - alignedCos )',
+    );
+    expect(volumeHg).toContain('float cosTheta = sampleHgCosTheta( uv.x, g );');
+    expect(volumePdf).toContain('return hg_phase( cosTheta, g );');
+    expect(volumePdf).not.toContain('float g2 = g * g;');
     expect(volumeSample).toMatch(
       /surf\.volumeParticle[\s\S]*?sampleMediumPhase\(\s*worldWo, surf\.sssAnisotropyG/,
     );
 
     const authoredRoughness = 1e-7;
     expect(Math.max(0, Math.min(1, authoredRoughness))).toBe(authoredRoughness);
-    const a = 0.25;
-    const tinyG = 1e-8;
-    const sampledCos = a + 1.5 * tinyG * (1 - a * a)
-      + 2 * tinyG * tinyG * (a * a * a - a);
-    expect(sampledCos).not.toBe(a);
+
+    const glslMirrorCos = (u: number, g: number): number => {
+      const gg = Math.max(-0.999999, Math.min(0.999999, g));
+      const q = 1 - 2 * u;
+      let cosTheta: number;
+      if (Math.abs(gg) < 0.125) {
+        const d = 1 + gg * q;
+        const numerator =
+          2 * q +
+          gg * (q * q + 3) +
+          2 * gg * gg * q +
+          gg * gg * gg * (q * q - 1);
+        cosTheta = numerator / (2 * d * d);
+      } else {
+        const ratio = (1 - gg * gg) / (1 + gg * q);
+        cosTheta = (1 + gg * gg - ratio * ratio) / (2 * gg);
+      }
+      return Math.max(-1, Math.min(1, cosTheta));
+    };
+
+    for (const g of [-1.2, -0.99995, -0.9, -0.125, -0.124999, -1e-8, 0, 1e-8, 0.124999, 0.125, 0.9, 0.99995, 1.2]) {
+      for (const u of [0, 0.1, 0.5, 0.9, 0.999999]) {
+        expect(glslMirrorCos(u, g)).toBeCloseTo(sampleHG(0, u, g)[2], 13);
+      }
+    }
+    expect(evaluateHG(0.37, 1.2)).toBe(evaluateHG(0.37, 0.999999));
+    expect(evaluateHG(-0.37, -1.2)).toBe(evaluateHG(-0.37, -0.999999));
+    for (const [g, cosTheta] of [
+      [0.999999, 1],
+      [-0.999999, -1],
+    ] as const) {
+      const a = Math.fround(Math.abs(Math.fround(g)));
+      const alignedCos = g >= 0 ? cosTheta : -cosTheta;
+      const oneMinusA = Math.fround(1 - a);
+      const denominator = Math.fround(
+        Math.fround(oneMinusA * oneMinusA) +
+          Math.fround(2 * a * Math.fround(1 - alignedCos)),
+      );
+      const f32Pdf = Math.fround(
+        Math.fround(oneMinusA * Math.fround(1 + a)) /
+          Math.fround(
+            Math.fround(4 * Math.fround(Math.PI)) *
+              Math.fround(denominator * Math.sqrt(denominator)),
+          ),
+      );
+      expect(Number.isFinite(f32Pdf)).toBe(true);
+      expect(f32Pdf).toBeGreaterThan(0);
+      const cpuPdf = evaluateHG(cosTheta, g);
+      expect(Math.abs(f32Pdf - cpuPdf) / cpuPdf).toBeLessThan(0.04);
+    }
+    expect(glslMirrorCos(0.375, 1e-8)).not.toBe(0.25);
   });
 
   it('rejects entry and thin-exit TIR with finite zero-weight scatter records', () => {

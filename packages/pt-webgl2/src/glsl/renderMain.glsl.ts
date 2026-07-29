@@ -768,21 +768,32 @@ const RENDER_MAIN_SURFACE_BDPT_EYE = /* glsl */ `
 
                                                                                 // Fog has a closed-form HG phase function. Resolve it here without
                                                                                 // invoking the layered evaluator; the no-loop pass only applies K.
-                                                                                float fogPdf = mediumPhasePdf(
-                                                                                        - ray.direction,
-                                                                                        neeLightSample.direction,
-                                                                                        surf.sssAnisotropyG
-                                                                                );
-                                                                                vec3 fogColor = surf.color * fogPdf;
-                                                                                vec3 fogContribution =
-                                                                                        evaluatePreparedDirectLightSample(
-                                                                                                state,
-                                                                                                neeLightSample,
-                                                                                                fogColor,
-												fogPdf,
-                                                                                                1.0,
-                                                                                                1.0
-                                                                                        );
+                                                                float fogPdf = mediumPhasePdf(
+                                                                        - ray.direction,
+                                                                        neeLightSample.direction,
+                                                                        surf.sssAnisotropyG
+                                                                );
+                                                                vec3 fogColor = surf.color * fogPdf;
+                                                                float neeContinuationFamilyProbability = 1.0;
+                                                                #if ! FEATURE_BDPT
+                                                                // A terminal-bounce fog proposal has no
+                                                                // continuation estimator to compete with.
+                                                                // The surface resolver applies the same
+                                                                // ownership rule after replay.
+                                                                neeContinuationFamilyProbability =
+                                                                        surfacePathDepth + 1 < bounces
+                                                                                ? 1.0
+                                                                                : 0.0;
+                                                                #endif
+                                                                vec3 fogContribution =
+                                                                        evaluatePreparedDirectLightSample(
+                                                                                state,
+                                                                                neeLightSample,
+										fogColor,
+										fogPdf,
+                                                                                1.0,
+                                                                                neeContinuationFamilyProbability
+                                                                        );
                                                                                 #if FEATURE_BDPT
                                                                                 float legacyFogMisWeight =
                                                                                         neeLightSample.delta > 0.5
@@ -842,6 +853,11 @@ const RENDER_MAIN_SURFACE_BDPT_EYE = /* glsl */ `
                                                                         // endpoint strategy, then extend through c>=1 scattering vertices.
                                                                         for ( int bdptLvi = 0; bdptLvi < 8; bdptLvi ++ ) {
 										if ( bdptLvi >= uBdptMaxLightBounces ) break;
+                                                                                // A (c,e) connection contains c light-side
+                                                                                // scattering vertices plus e+1 eye vertices.
+                                                                                // Keep that total within the same accepted-
+                                                                                // vertex budget as the unidirectional path.
+                                                                                if ( bdptLvi + bdptEyeDepth >= bounces ) break;
 										pc_fragColor.rgb += evaluateBdptConnection(
 											hitPoint,
 											surf.normal,

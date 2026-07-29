@@ -435,6 +435,7 @@ export class PipelineInitCoordinator {
     // to shared state.
     let bvh: SceneBVHBuffers | null = null;
     let pipeline: WalkaroundGPUPipeline | null = null;
+    let inferenceGraph: InferenceGraph | undefined;
     let bvhPublished: SceneBVHBuffers | null = null;
     let pipelineMs = 0;
     let initSucceeded = false;
@@ -502,7 +503,6 @@ export class PipelineInitCoordinator {
 
       // T2.H2 — Neural denoiser: create + initialize InferenceGraph before
       // pipeline init.
-      let inferenceGraph: InferenceGraph | undefined;
       if (host.denoiser === 'neural' && host.neuralWeights) {
         const { buildUNetSpec } = await import('./neural/unetArchitecture.js');
         inferenceGraph = new InferenceGraph(buildUNetSpec());
@@ -515,11 +515,12 @@ export class PipelineInitCoordinator {
         );
       }
 
-      await pipeline.initialize(
+      const pipelineInitialization = pipeline.initialize(
         bvhPublished,
         host.preferredSwapChainFormat,
         {
           verbose: host.verbose || host.debug,
+          debug: host.debug,
           denoiser: host.denoiser,
           cameraMoveResetThresholdSq: host.cameraMoveResetThresholdSq,
           temporalAccumAlpha: host.temporalAccumAlpha,
@@ -580,9 +581,14 @@ export class PipelineInitCoordinator {
                     : {}),
                 },
               }
-            : {}),
+          : {}),
         },
       );
+      // initialize() adopts the graph synchronously before its first awaited
+      // phase. From this point the pipeline is its sole owner, including when
+      // the returned promise rejects and the lifecycle finally disposes it.
+      inferenceGraph = undefined;
+      await pipelineInitialization;
       pipelineMs = performance.now() - pipelineStart;
 
       // ── Phase: publishPipeline (final shared-state checkpoint) ───────
@@ -672,6 +678,9 @@ export class PipelineInitCoordinator {
       // here so we don't leak ~1 GB of GPU resources per loser.
       if (pipeline) {
         try { pipeline.dispose(); } catch { /* best-effort cleanup of losing init branch — ignore */ }
+      }
+      if (inferenceGraph) {
+        try { inferenceGraph.dispose(); } catch { /* best-effort cleanup before ownership transfer */ }
       }
       if (
         !initSucceeded &&

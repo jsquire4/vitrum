@@ -568,7 +568,7 @@ describe('packMaterialsTexture — RGBA32F byte layout', () => {
     };
     const d = packMaterialsTexture([m], layerOf).data;
 
-    // Map order is shared with UV_SET_BIT:
+    // Shared map order:
     //   0 baseColorMap -> first sampler texel, 1 metallicMap -> second sampler texel,
     //   18 bumpMap -> sampler texel 18. Encodings: wrap 0 repeat/1 clamp/2 mirror,
     //   mip 0 none/1 nearest/2 linear, filter packed = mag + min*2.
@@ -584,7 +584,7 @@ describe('packMaterialsTexture — RGBA32F byte layout', () => {
     expect(d[texel(0, MATERIAL_WRAP_TEXEL_OFFSET + 18, 1)]).toBe(0);
   });
 
-  it('packs anisotropyMap layer, UV1 bit, transform, and wrap mode', () => {
+  it('packs anisotropyMap layer, UV selector, transform, and wrap mode', () => {
     const anisoHandle = {};
     const layerOf = new Map<unknown, number>([[anisoHandle, 5]]);
     const m: MaterialSpec = {
@@ -608,8 +608,15 @@ describe('packMaterialsTexture — RGBA32F byte layout', () => {
     expect(d[texel(0, 11, 3)]).toBeCloseTo(0.7, 6);
     expect(d[texel(0, 17, 2)]).toBeCloseTo(0.25, 6);
 
-    // Bit 19 in texel 86.a selects ATTR_UV1 for anisotropyMap.
-    expect(d[texel(0, 86, 3)]).toBe(1 << 19);
+    // The former UV1 bitmask lane stays reserved; selector 19 resolves UV1.
+    expect(d[texel(0, 86, 3)]).toBe(0);
+    expect(
+      d[texel(
+        0,
+        MATERIAL_UV_SELECTOR_TEXEL_OFFSET + Math.floor(19 / 4),
+        19 % 4,
+      )],
+    ).toBe(4);
 
     // Texels 95/96 encode the anisotropyMap UV transform.
     expect(d[texel(0, 95, 0)]).toBeCloseTo(2, 6);
@@ -619,7 +626,7 @@ describe('packMaterialsTexture — RGBA32F byte layout', () => {
     expect(d[texel(0, 96, 1)]).toBeCloseTo(3, 6);
     expect(d[texel(0, 96, 2)]).toBeCloseTo(0.25, 6);
 
-    // Bit 19 maps to sampler-policy texel 19.
+    // Map index 19 maps to sampler-policy texel 19.
     expect(d[texel(0, MATERIAL_WRAP_TEXEL_OFFSET + 19, 0)]).toBe(2);
     expect(d[texel(0, MATERIAL_WRAP_TEXEL_OFFSET + 19, 1)]).toBe(1);
   });
@@ -649,8 +656,15 @@ describe('packMaterialsTexture — RGBA32F byte layout', () => {
     expect(d[texel(0, 97, 0)]).toBeCloseTo(0.35, 6);
     expect(d[texel(0, 97, 1)]).toBe(6);
 
-    // Bit 20 in texel 86.a selects ATTR_UV1 for thicknessMap.
-    expect(d[texel(0, 86, 3)]).toBe(1 << 20);
+    // The former UV1 bitmask lane stays reserved; selector 20 resolves UV1.
+    expect(d[texel(0, 86, 3)]).toBe(0);
+    expect(
+      d[texel(
+        0,
+        MATERIAL_UV_SELECTOR_TEXEL_OFFSET + Math.floor(20 / 4),
+        20 % 4,
+      )],
+    ).toBe(4);
 
     // Texels 98/99 encode the thicknessMap UV transform.
     expect(d[texel(0, 98, 0)]).toBeCloseTo(4, 6);
@@ -660,7 +674,7 @@ describe('packMaterialsTexture — RGBA32F byte layout', () => {
     expect(d[texel(0, 99, 1)]).toBeCloseTo(5, 6);
     expect(d[texel(0, 99, 2)]).toBeCloseTo(0.625, 6);
 
-    // Bit 20 maps to sampler-policy texel 20.
+    // Map index 20 maps to sampler-policy texel 20.
     expect(d[texel(0, MATERIAL_WRAP_TEXEL_OFFSET + 20, 0)]).toBe(1);
     expect(d[texel(0, MATERIAL_WRAP_TEXEL_OFFSET + 20, 1)]).toBe(2);
   });

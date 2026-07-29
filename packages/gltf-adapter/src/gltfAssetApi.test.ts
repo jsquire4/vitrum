@@ -2385,6 +2385,110 @@ describe('decodeSceneTextures', () => {
     ]);
   });
 
+  it('reads ImageBitmap-like handles through a released temporary canvas without closing caller ownership', async () => {
+    const close = vi.fn();
+    const bitmap = { width: 1, height: 1, close };
+    const drawImage = vi.fn();
+    const surfaces: Array<{ width: number; height: number }> = [];
+    const host = globalThis as typeof globalThis & { OffscreenCanvas?: unknown };
+    const previousDescriptor = Object.getOwnPropertyDescriptor(host, 'OffscreenCanvas');
+    class TestOffscreenCanvas {
+      width: number;
+      height: number;
+      constructor(width: number, height: number) {
+        this.width = width;
+        this.height = height;
+        surfaces.push(this);
+      }
+      getContext(): {
+        drawImage: typeof drawImage;
+        getImageData: () => { data: Uint8ClampedArray };
+      } {
+        return {
+          drawImage,
+          getImageData: () => ({
+            data: new Uint8ClampedArray([128, 64, 255, 255]),
+          }),
+        };
+      }
+    }
+    Object.defineProperty(host, 'OffscreenCanvas', {
+      configurable: true,
+      writable: true,
+      value: TestOffscreenCanvas,
+    });
+    const scene: Scene = {
+      primitives: [{
+        kind: 'mesh',
+        id: 'image-bitmap-readback',
+        positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+        normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+        material: {
+          baseColor: [1, 1, 1],
+          roughness: 1,
+          metallic: 0,
+          baseColorMap: { handle: bitmap },
+        },
+      }],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+
+    try {
+      const result = await decodeSceneTextures(scene, { target: 'cpu-linear' });
+      expect(result.decodedCount).toBe(1);
+      expect(result.diagnostics).toEqual([]);
+      expect(drawImage).toHaveBeenCalledWith(bitmap, 0, 0, 1, 1);
+      expect(close).not.toHaveBeenCalled();
+      expect(surfaces).toHaveLength(1);
+      expect(surfaces[0]).toMatchObject({ width: 0, height: 0 });
+    } finally {
+      if (previousDescriptor === undefined) {
+        delete host.OffscreenCanvas;
+      } else {
+        Object.defineProperty(host, 'OffscreenCanvas', previousDescriptor);
+      }
+    }
+  });
+
+  it('preserves extended-range and negative float sRGB values during CPU-linear conversion', async () => {
+    const pixelHandle = {
+      width: 1,
+      height: 1,
+      data: new Float32Array([-0.5, 2, 0.02, 1]),
+      channels: 4 as const,
+      dataType: 'float32' as const,
+      colorSpace: 'srgb' as const,
+    };
+    const scene: Scene = {
+      primitives: [{
+        kind: 'mesh',
+        id: 'extended-srgb',
+        positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+        normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+        material: {
+          baseColor: [1, 1, 1],
+          roughness: 1,
+          metallic: 0,
+          baseColorMap: { handle: pixelHandle },
+        },
+      }],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+
+    const result = await decodeSceneTextures(scene, { target: 'cpu-linear' });
+    const handle = (
+      (result.scene.primitives[0] as MeshPrimitive).material.baseColorMap as TextureRef
+    ).handle as { data: Float32Array };
+
+    expect(handle.data[0]).toBeCloseTo(-(((0.5 + 0.055) / 1.055) ** 2.4));
+    expect(handle.data[1]).toBeCloseTo(((2 + 0.055) / 1.055) ** 2.4);
+    expect(handle.data[1]).toBeGreaterThan(1);
+    expect(handle.data[2]).toBeCloseTo(0.02 / 12.92);
+    expect(handle.data[3]).toBe(1);
+  });
+
   it('decodes two-channel pixels as luminance-alpha rather than red-green', async () => {
     const pixelHandle = {
       width: 1,
@@ -4301,7 +4405,7 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
     ]));
   });
 
-  it('reports extension-only material texture sources as host-hook requirements', () => {
+  it('reports extension-only WebP material sources as built-in on a decoder-capable host', () => {
     const gltf = makeExternalTexturedGltf();
     gltf.extensionsUsed = ['EXT_texture_webp'];
     gltf.textures = [{
@@ -4309,23 +4413,12 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
     }];
 
     const report = analyzeGltfAsset(gltf);
-    expect(report.materials.textureReferenceIssues).toEqual([expect.objectContaining({
-      kind: 'disabled-texture-source-extension',
-      materialField: 'baseColorMap',
-      textureIndex: 0,
-      path: 'textures[0].extensions.EXT_texture_webp',
-      textureSourceExtensions: ['EXT_texture_webp'],
-    })]);
+    expect(report.materials.textureReferenceIssues).toEqual([]);
 
     const compatibility = evaluateGltfBackendCompatibility(report, 'pt-webgl2');
-    expect(compatibility.issues).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        category: 'material',
-        name: 'baseColorMap.textureRef.disabled-texture-source-extension',
-        support: 'requires-hook',
-        path: 'textures[0].extensions.EXT_texture_webp',
-      }),
-    ]));
+    expect(compatibility.issues.some(
+      (issue) => issue.name === 'baseColorMap.textureRef.disabled-texture-source-extension',
+    )).toBe(false);
 
     const selectedReport = analyzeGltfAsset(gltf, { textureSourceExtensions: ['EXT_texture_webp'] });
     expect(selectedReport.materials.textureReferenceIssues).toEqual([]);
@@ -6049,7 +6142,7 @@ describe('loadGltfForEngine', () => {
     )).toBe(false);
   });
 
-  it('fetches selected-scene variant material textures without disabled texture-source sidecars', async () => {
+  it('fetches selected-scene variant textures and the automatically selected WebP source', async () => {
     const { gltf, buffers } = makeInlineTriangleGltf();
     gltf.extensionsUsed = ['KHR_materials_variants', 'EXT_texture_webp'];
     gltf.extensions = {
@@ -6080,10 +6173,10 @@ describe('loadGltfForEngine', () => {
     const fetched: string[] = [];
     const fetch = vi.fn(async (url: string) => {
       fetched.push(url);
-      if (url.includes('disabled-sidecar.webp')) {
-        throw new Error(`disabled sidecar should not be fetched: ${url}`);
-      }
-      return response(bytes([1, 2, 3, 4]), url.endsWith('.png') ? 'image/png' : 'application/octet-stream');
+      return response(
+        bytes([1, 2, 3, 4]),
+        url.endsWith('.png') ? 'image/png' : 'image/webp',
+      );
     });
 
     const result = await loadGltfAsset(gltf, {
@@ -6093,10 +6186,10 @@ describe('loadGltfForEngine', () => {
       fetch,
     });
 
-    expect(fetched).toEqual([
-      'https://assets.example/base.png',
+    expect(fetched.sort()).toEqual([
+      'https://assets.example/disabled-sidecar.webp',
       'https://assets.example/variant.png',
-    ]);
+    ].sort());
     expect(result.textureDecodeReport.entries.map((entry) => entry.textureIndex).sort()).toEqual([0, 1]);
   });
 

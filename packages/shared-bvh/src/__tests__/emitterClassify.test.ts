@@ -7,6 +7,7 @@ import {
   forEachEmissiveMapTexelSubTriangle,
   materialSpecEmissiveLe,
   materialSpecEmissiveLeAtUv,
+  materialSpecSurfaceTextureId,
 } from '../emitterClassify.js';
 
 function material(partial: Partial<MaterialSpec>): MaterialSpec {
@@ -24,6 +25,19 @@ function srgbToLinear(v: number): number {
 }
 
 describe('materialSpecEmissiveLe', () => {
+  it('retains the three-bit surfaceTextureId compatibility decoder', () => {
+    expect(materialSpecSurfaceTextureId(material({
+      extensions: { surfaceTextureId: 7 },
+    }))).toBe(7);
+    expect(materialSpecSurfaceTextureId(material({
+      extensions: { surfaceTextureId: 8 },
+    }))).toBe(0);
+    expect(materialSpecSurfaceTextureId(material({
+      extensions: { surfaceTextureId: 2.5 },
+    }))).toBe(0);
+    expect(materialSpecSurfaceTextureId(material({}))).toBe(0);
+  });
+
   it('defaults missing emissiveIntensity to one', () => {
     expect(materialSpecEmissiveLe(material({
       emissive: [0.5, 0.25, 0.1],
@@ -329,6 +343,36 @@ describe('materialSpecEmissiveLe', () => {
     expect(handled).toBe(false);
     expect(visits).toBe(0);
   });
+
+  it('rejects enormous repeating UV spans before materializing cell intervals', () => {
+    const handle = {
+      width: 2,
+      height: 2,
+      data: new Float32Array(2 * 2 * 4).fill(1),
+      __vitrum_hint__: { channels: 4, dataType: 'float32', colorSpace: 'linear' },
+    };
+    let visits = 0;
+
+    const handled = forEachEmissiveMapTexelSubTriangle(
+      material({
+        emissive: [1, 1, 1],
+        emissiveMap: { handle, wrapS: 'repeat', wrapT: 'repeat' },
+      }),
+      [0, 0],
+      [1_000_000_000, 0],
+      [0, 1_000_000_000],
+      undefined,
+      undefined,
+      undefined,
+      () => {
+        visits += 1;
+      },
+      16,
+    );
+
+    expect(handled).toBe(false);
+    expect(visits).toBe(0);
+  });
 });
 
 describe('classifyTriangleEmitterCore', () => {
@@ -341,5 +385,42 @@ describe('classifyTriangleEmitterCore', () => {
       color: [0.25, 0.5, 1],
       intensity: 1,
     });
+  });
+
+  it('honors extensions.skipEmitter without suppressing camera-visible Le', () => {
+    const skipped = material({
+      emissive: [0.25, 0.5, 1],
+      extensions: { skipEmitter: true },
+    });
+    expect(materialSpecEmissiveLe(skipped)).toEqual([0.25, 0.5, 1]);
+    expect(classifyTriangleEmitterCore(skipped)).toBeNull();
+  });
+
+  it('treats skipped mapped emission as handled with no light-sampling patches', () => {
+    const handle = {
+      width: 1,
+      height: 1,
+      data: new Float32Array([1, 1, 1, 1]),
+      __vitrum_hint__: { channels: 4, dataType: 'float32', colorSpace: 'linear' },
+    };
+    let visits = 0;
+    const handled = forEachEmissiveMapTexelSubTriangle(
+      material({
+        emissive: [1, 1, 1],
+        emissiveMap: { handle },
+        extensions: { skipEmitter: true },
+      }),
+      [0, 0],
+      [1, 0],
+      [0, 1],
+      undefined,
+      undefined,
+      undefined,
+      () => {
+        visits += 1;
+      },
+    );
+    expect(handled).toBe(true);
+    expect(visits).toBe(0);
   });
 });

@@ -16,7 +16,12 @@ export function buildCapabilities(
   denoiser: 'none' | 'oidn-final',
   maxBounces: number,
   maxSamplesPerPixel: number,
-  selected?: { bdpt?: boolean; spectral?: boolean; sampling?: 'pcg' | 'sobol' },
+  selected?: {
+    bdpt?: boolean;
+    spectral?: boolean;
+    sampling?: 'pcg' | 'sobol';
+    debug?: boolean;
+  },
 ): EngineCapabilities {
   const mutationDetails = PT_WEBGL2_SUPPORT_MANIFEST.mutations;
   const mutationAccepted = (
@@ -57,8 +62,8 @@ export function buildCapabilities(
     supportedEnvironmentKinds: new Set(PT_WEBGL2_SUPPORT.supportedEnvironmentKinds),
     presentationMode: 'offscreen-texture',
     causticStrategy: selected?.bdpt === true ? 'bdpt' : 'none',
-    // T3.G #30 — this backend exposes debug.pickPrimitive (CPU ray-cast click-to-pick).
-    debugSurface: true,
+    // T3.G #30 — exposed only for an explicitly debug-enabled engine.
+    debugSurface: selected?.debug === true,
     activeFeatures,
     supportDetails: PT_WEBGL2_SUPPORT_MANIFEST,
   };

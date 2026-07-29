@@ -50,8 +50,11 @@ export interface EngineOptions {
   readonly device: unknown;
 
   // ── Structural caps (buffer allocation upper bounds) ─────────────────────
-  /** Structural cap on per-path bounce count. Backends may use this to size
-   *  path-state buffers or accumulator array dimensions. Per-frame
+  /** Structural cap on the renderer-family depth control. Path tracers use a
+   *  per-path bounce count; other renderer families may expose a bounded
+   *  quality regime and publish that interpretation through
+   *  `EngineCapabilities.supportDetails.bounceSemantics`. Backends may use the
+   *  cap to size path-state buffers or accumulator array dimensions. Per-frame
    *  `FrameInput.quality.bounces` is clamped to this value.
    *  Default: backend-specific (e.g., pt-webgl2 defaults to 32). */
   readonly maxBounces?: number;
@@ -84,6 +87,16 @@ export interface EngineOptions {
    *  `@vitrum/walkaround-hybrid`). Opt-in; default remains `'atrous-variance'`.
    */
   readonly denoiser?: EngineDenoiserMode;
+
+  /**
+   * Opt in to backend diagnostic instrumentation and readback work intended for
+   * development tooling. Built-in engines expose {@link Engine.debug} only when
+   * this is exactly `true`; otherwise the property is absent and optional debug
+   * instrumentation is not allocated or executed.
+   * {@link EngineCapabilities.debugSurface} reports whether this engine
+   * instance actually exposes that surface.
+   */
+  readonly debug?: boolean;
 
   /**
    * Optional construction-time warning sink. Backends call this for warnings

@@ -169,6 +169,7 @@ import { GpuSkinningSubsystem, type SkinningBatchUpdate } from './skin/GpuSkinni
 import type { GIStateSnapshot } from './giStateSnapshot.js';
 import { makeGIStateCompatibility } from './giStateCompatibility.js';
 import type {
+  HybridBounceSemanticsStatus,
   HybridRenderLayer,
 } from './HybridEnginePublic.js';
 import {
@@ -271,7 +272,7 @@ function sceneWithAnalyticMeshFallback(scene: Scene): Scene {
 function sceneAcceptedByManifest(
   scene: Scene,
   manifest: BackendSupportManifest,
-  method: 'setScene' | 'updateEmitter',
+  method: 'setScene' | 'updatePrimitive' | 'updateEmitter',
 ): Scene {
   const partitioned = partitionSceneBySupport(
     scene,
@@ -1019,7 +1020,6 @@ export class HybridEngine implements Engine {
    *  sync for this engine instance. */
   private readonly _hostSunWarningState: HostSunWarningState =
     createHostSunWarningState();
-  private _ddgiOn: boolean = true;
 
   // ── Adaptive frame-budget controller (opt-in; Phase IV.1 / review gap D1) ─
   /** Lazily-created on the first {@link enableFrameBudget}/{@link tickFrameBudget}
@@ -1069,7 +1069,9 @@ export class HybridEngine implements Engine {
 
   private readonly _skinning: GpuSkinningSubsystem | null;
 
-  readonly debug: EngineDebugSurface;
+  /** Internal telemetry/picking implementation. Published as `debug` only
+   * when the host explicitly opts in with `debug:true`. */
+  private readonly _debugSurface: EngineDebugSurface;
 
   constructor(opts: HybridEngineOptions) {
     // Pure option parsing + validation (defaults, denoiser/neural/OIDN
@@ -1142,11 +1144,10 @@ export class HybridEngine implements Engine {
     // path-trace, so maxBounces is NOT a per-ray bounce cap here — it has exactly
     // two regimes: 1 ⇒ DIRECT-ONLY probes (the DDGI atlas folds in one bounce of
     // direct light per probe and the infinite-bounce diffuse EMA is disabled);
-    // >= 2 ⇒ the full multi-bounce diffuse equilibrium (the default; the atlas
-    // EMA converges to infinite diffuse bounces). Intermediate/large values
-    // (2, 3, 4, …) are all identical to the default >= 2 regime because the EMA
-    // converges to the bounce limit regardless of the integer value — only the
-    // 1-vs-many distinction is meaningful. Invalid values are rejected by
+    // 2 ⇒ the full multi-bounce diffuse equilibrium (the default; the atlas
+    // EMA converges to infinite diffuse bounces). Values above 2 used to be
+    // accepted despite being identical to 2; they are now rejected so the
+    // public numeric surface does not claim nonexistent bounce counts.
     // parseHybridEngineOptions before any engine/GPU state is created.
     const requestedCausticStrategy = opts.causticStrategy ?? 'none';
     this._causticStrategy = requestedCausticStrategy === 'refractive-trace' ||
@@ -1229,7 +1230,7 @@ export class HybridEngine implements Engine {
     // Phase-0 — apply the quality-preset DDGI probe-update divisor (default 4).
     this._ddgi.setProbeUpdateDivisor(this._cfg.ddgiUpdateDivisor);
     // H46-A — gate the DDGI indirect-feedback (multi-bounce diffuse EMA) on the
-    // engine's maxBounces. maxBounces == 1 ⇒ direct-only probes; >= 2 ⇒ the
+    // engine's maxBounces. maxBounces == 1 ⇒ direct-only probes; 2 ⇒ the
     // infinite-bounce equilibrium (default). Construction-immutable, and the
     // ProbeUpdatePass is created once (never recreated), so one call persists.
     this._ddgi.setIndirectFeedback(this._cfg.maxBounces >= 2);
@@ -1312,9 +1313,8 @@ export class HybridEngine implements Engine {
       maxSamplesPerPixel: Infinity,
       // H46-A — echoes the authored value. SEMANTICS for this realtime stack:
       // this is NOT a path-tracer per-ray bounce cap. 1 ⇒ direct-only DDGI
-      // probes; >= 2 ⇒ infinite-bounce diffuse equilibrium (the atlas EMA). All
-      // values >= 2 behave identically (the EMA converges regardless of the
-      // integer). See the construction-site gate `setIndirectFeedback`.
+      // probes; 2 ⇒ infinite-bounce diffuse equilibrium (the atlas EMA).
+      // Values outside these two implemented regimes are rejected at construction.
       maxBounces: this._cfg.maxBounces,
       supportedAnalyticShapes: supportSets.supportedAnalyticShapes,
       // BVH + DDGI ingest via a render-scene view. Mesh/skinned/instanced-mesh
@@ -1356,11 +1356,8 @@ export class HybridEngine implements Engine {
       // Exact selected estimator identity. `refractive-trace` is the bounded
       // realtime path sampler in refractiveCaustics.wgsl.ts, not MNEE.
       causticStrategy: this._causticStrategy,
-      // W3-D8 — this engine ships a `debug` surface (DDGI atlases, BVH nodes,
-      // GI signal textures, and now estimatedGpuMemoryBytes). Hosts can
-      // structurally opt-in to the dev-overlay panel without typeof-checking
-      // every method.
-      debugSurface: true,
+      // Debug introspection is an explicit opt-in across every built-in engine.
+      debugSurface: this._cfg.debug,
     };
 
     // Pipeline-init coordinator: own the async init race state machine and
@@ -1369,7 +1366,7 @@ export class HybridEngine implements Engine {
     // engine fields directly.
     this._initCoordinator = new PipelineInitCoordinator(this._buildInitHost());
 
-    this.debug = createHybridEngineDebugSurface({
+    this._debugSurface = createHybridEngineDebugSurface({
       device: () => this._device,
       readAtlas: () => this._ddgi?.getReadAtlasGPUTextures() ?? null,
       bvhNodesCpu: () => this._bvhBuffers?.bvhNodes?.cpuData,
@@ -1390,6 +1387,14 @@ export class HybridEngine implements Engine {
         this._pipeline?.setDenoiserPassEnabled(enabled);
       },
     });
+    if (this._cfg.debug) {
+      Object.defineProperty(this, 'debug', {
+        value: this._debugSurface,
+        enumerable: true,
+        configurable: false,
+        writable: false,
+      });
+    }
 
     // ── GPU error wiring (item 28) ─────────────────────────────────────────
     // Attach an `uncapturederror` listener on the WebGPU device to route
@@ -1644,8 +1649,7 @@ export class HybridEngine implements Engine {
     }
     assertKnownPrimitivePatchKeys(this._lastScene.primitives[primIndex]!, patch, id);
     const preflightScene = applyPrimitivePatchToScene(this._lastScene, id, patch);
-    validateCoreScene(preflightScene);
-    sceneAcceptedByManifest(preflightScene, this._supportManifest, 'setScene');
+    sceneAcceptedByManifest(preflightScene, this._supportManifest, 'updatePrimitive');
     assertNoUnconsumedMaterialFields(
       preflightScene.primitives as unknown as ReadonlyArray<{
         readonly id?: string;
@@ -2273,7 +2277,6 @@ export class HybridEngine implements Engine {
     const previousRenderScene = this._renderScene;
     const previousBvh = this._bvhBuffers;
     const authoredNextScene = applyEmitterPatchToScene(previousScene, id, patch);
-    validateCoreScene(authoredNextScene);
     const nextScene = sceneAcceptedByManifest(
       authoredNextScene,
       this._supportManifest,
@@ -2602,6 +2605,19 @@ export class HybridEngine implements Engine {
   requestPpgTrainingRecovery(): boolean {
     if (this._state === 'disposed') return false;
     return this._pipeline?.requestPpgTrainingRecovery() ?? false;
+  }
+
+  /** Current PPG training state so hosts can know when recovery is actionable. */
+  getPpgTrainingStatus():
+    | 'unavailable'
+    | 'disabled'
+    | 'collecting'
+    | 'readback'
+    | 'retry-pending'
+    | 'failed'
+    | 'disposed' {
+    if (this._state === 'disposed') return 'disposed';
+    return this._pipeline?.getPpgTrainingStatus() ?? 'unavailable';
   }
 
   /**
@@ -3104,7 +3120,6 @@ export class HybridEngine implements Engine {
       stainedGlassFlags: directionalSunShadowDisabled
         ? (this._cfg.stainedGlassFlags | SHADE_FLAG_DIRECT_SUN_SHADOW_DISABLED) >>> 0
         : this._cfg.stainedGlassFlags,
-      nrcEnabled: this._cfg.nrcEnabled,
     };
   }
 
@@ -3127,7 +3142,7 @@ export class HybridEngine implements Engine {
         progressSubs: self._progressSubs,
         verbose: self._cfg.verbose,
         debugTimings: self._debugTimings,
-        debugSurface: self.debug,
+        debugSurface: self._debugSurface,
         dbg: self._cfg.debug ? self._dbg : null,
         getDenoiserState: () => self._pipeline?.getActiveDenoiserState() ?? null,
       },
@@ -3158,7 +3173,6 @@ export class HybridEngine implements Engine {
           return self._state;
         },
         debug: self._cfg.debug,
-        ddgiOn: self._ddgiOn,
         maxBounces: self._cfg.maxBounces,
         isLayerEnabled: (layer) => self._layerEnabled.get(layer) ?? true,
         device: self._device,
@@ -3230,6 +3244,21 @@ export class HybridEngine implements Engine {
   }
 
   // ── Layer toggles (host-accessible debug interface) ────────────────────
+
+  /** Host-readable live interpretation of the generic bounce control. */
+  getBounceSemantics(): HybridBounceSemanticsStatus {
+    const configuredMaxBounces = this._cfg.maxBounces === 1 ? 1 : 2;
+    const ddgiEnabled = this._layerEnabled.get('ddgi') !== false;
+    return {
+      kind: 'ddgi-feedback',
+      configuredMaxBounces,
+      active: !ddgiEnabled
+        ? 'disabled'
+        : configuredMaxBounces === 1
+          ? 'direct-only'
+          : 'multi-bounce-equilibrium',
+    };
+  }
 
   /**
    * Enable or disable a named render layer. Currently recognised layers:

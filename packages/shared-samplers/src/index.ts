@@ -113,7 +113,7 @@ export {
 } from './regir.js';
 export type { ReGIRSurvivor } from './regir.js';
 export { balanceHeuristic, powerHeuristic, mixturePdf } from './mixturePdf.js';
-export { evaluateHG, sampleHG, pdfHG } from './hgPhase.js';
+export { evaluateHG, sampleHG, pdfHG, HG_G_STABILITY_LIMIT } from './hgPhase.js';
 export {
   // `rgbToSpectralCoefficients` is the stable public alias; the underlying
   // `rgbToJakobHanikaCoefficients` runs the genuine Jakob & Hanika 2019
@@ -122,9 +122,11 @@ export {
   // exact inverse (integrate S(λ) under D65 + CMFs → linear sRGB), exported
   // for round-trip verification.
   rgbToSpectralCoefficients,
+  fitRgbToSpectralCoefficients,
   evaluateSpectrum,
   spectralCoefficientsToRGB,
 } from './jakobHanika.js';
+export type { SpectralCoefficientFit } from './jakobHanika.js';
 // ── BDPT MIS ─────────────────────────────────────────────────────────────────
 // Full Veach §10.3 BDPT MIS strategy enumeration. Vertex-storage ABIs are
 // backend-owned: WebGL2 and WebGPU carry different transport state and layouts.

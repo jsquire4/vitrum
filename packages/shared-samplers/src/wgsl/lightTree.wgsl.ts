@@ -59,24 +59,43 @@ fn lt_dist2ToAabb(p: vec3f, bmin: vec3f, bmax: vec3f) -> f32 {
   return dot(d, d);
 }
 
-// B8 — orientation-cone factor: how much a node's emitters can reach point p,
-// given its merged cone (axis, cosThetaO, cosThetaOE). Mirrors the CPU
-// coneImportanceFactor branch-for-branch. Full-sphere node (axis length 0) is 1.
-fn lt_coneFactor(axis: vec3f, cosThetaO: f32, cosThetaOE: f32, p: vec3f, c: vec3f) -> f32 {
+// Orientation-cone factor including the node AABB's conservative angular
+// radius. Mirrors the CPU coneImportanceFactor branch-for-branch.
+fn lt_coneFactor(
+  axis: vec3f,
+  cosThetaO: f32,
+  cosThetaOE: f32,
+  p: vec3f,
+  c: vec3f,
+  radius: f32,
+) -> f32 {
   let al = dot(axis, axis);
   if (al < 1e-12) { return 1.0; }            // unoriented / full sphere — no culling
   let dv = p - c;
   let dl2 = dot(dv, dv);
-  if (dl2 < 1e-12) { return 1.0; }           // point at centre — cannot orient
+  // CPU compares distance <= max(radius, 1e-12), so the squared-distance
+  // mirror must square that absolute floor as well.
+  if (dl2 <= max(radius * radius, 1e-24)) { return 1.0; } // inside bounding sphere
+  let dl = sqrt(dl2);
   let d = dv * inverseSqrt(dl2);
   let a = axis * inverseSqrt(al);
-  let cosTheta = dot(a, d);
-  if (cosTheta < cosThetaOE) { return 0.0; } // outside total emission cone — cull
-  if (cosTheta >= cosThetaO) { return 1.0; } // inside normal cone — full factor
-  // Lobe skirt: cos(theta - thetaO) = cosTheta*cosThetaO + sinTheta*sinThetaO.
-  let sinTheta  = sqrt(max(0.0, 1.0 - cosTheta * cosTheta));
+  let cosTheta = clamp(dot(a, d), -1.0, 1.0);
+  let sinThetaU = clamp(radius / dl, 0.0, 1.0);
+  let cosThetaU = sqrt(max(0.0, 1.0 - sinThetaU * sinThetaU));
+  var cosAdjusted = 1.0;
+  if (cosTheta < cosThetaU) {
+    let sinTheta = sqrt(max(0.0, 1.0 - cosTheta * cosTheta));
+    cosAdjusted = clamp(
+      cosTheta * cosThetaU + sinTheta * sinThetaU,
+      -1.0,
+      1.0,
+    );
+  }
+  if (cosAdjusted < cosThetaOE) { return 0.0; }
+  if (cosAdjusted >= cosThetaO) { return 1.0; }
+  let sinAdjusted = sqrt(max(0.0, 1.0 - cosAdjusted * cosAdjusted));
   let sinThetaO = sqrt(max(0.0, 1.0 - cosThetaO * cosThetaO));
-  return max(0.0, cosTheta * cosThetaO + sinTheta * sinThetaO);
+  return max(0.0, cosAdjusted * cosThetaO + sinAdjusted * sinThetaO);
 }
 
 // Node importance for shading point p: (power / max(dist², floor)) * coneFactor.
@@ -92,7 +111,8 @@ fn lt_importance(base: u32, p: vec3f, dist2Floor: f32) -> f32 {
   let cosThetaO  = lightTree[base + 13u];
   let cosThetaOE = lightTree[base + 14u];
   let center = 0.5 * (bmin + bmax);
-  let coneFactor = lt_coneFactor(axis, cosThetaO, cosThetaOE, p, center);
+  let radius = length(0.5 * (bmax - bmin));
+  let coneFactor = lt_coneFactor(axis, cosThetaO, cosThetaOE, p, center, radius);
   let importance = (power / d2) * coneFactor;
   return min(importance, 3.402823466e38);
 }

@@ -1,4 +1,4 @@
-import type { MaterialSpec, Scene } from '@vitrum/core';
+import type { MaterialSpec, Scene, ScenePrimitive } from '@vitrum/core';
 import { assertThinFilmLayerLimit } from './materialsTexture.js';
 
 export interface SceneTraceFeatures {
@@ -126,8 +126,8 @@ const MAPPED_RICH_MATERIAL_KEYS = new Set<keyof MaterialSpec>([
   'bumpMap',
   'displacementMap',
   'lightMap',
-  // pt-webgl2 has no backend-specific Material.extensions contract. An empty
-  // bag is inert and accepted; any key is rejected before scene allocation.
+  // `skipEmitter` is consumed by implicit mesh-light classification. Unknown
+  // extension keys are rejected before scene allocation.
   'extensions',
 ]);
 
@@ -135,7 +135,7 @@ const SPECTRAL_CURVE_KEYS = new Set(['wavelengthStart', 'wavelengthEnd', 'values
 const SURFACE_LAYER_KEYS = new Set(['transmission', 'roughness', 'normalMap', 'normalScale']);
 const THIN_FILM_STACK_KEYS = new Set(['layers', 'incidentIor', 'angleDependent']);
 const THIN_FILM_LAYER_KEYS = new Set(['ior', 'extinctionCoefficient', 'thicknessNm']);
-const EMPTY_KEYS = new Set<string>();
+const WEBGL2_EXTENSION_KEYS = new Set(['skipEmitter']);
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   if (value == null || typeof value !== 'object' || Array.isArray(value)) return false;
@@ -203,6 +203,12 @@ export function materialUsesScalarRichWebGl2Shader(material: MaterialSpec): bool
   if (!hasOnlyOwnKeys(material, SCALAR_RICH_MATERIAL_KEYS)) {
     return false;
   }
+  if (
+    material.extensions !== undefined &&
+    !hasOnlyOwnKeys(material.extensions, WEBGL2_EXTENSION_KEYS)
+  ) {
+    return false;
+  }
 
   if (
     material.spectralAttenuation !== undefined &&
@@ -233,14 +239,17 @@ export function materialUsesMappedPbrWebGl2Shader(material: MaterialSpec): boole
 /**
  * Complete supported public material graph. This is the production superset:
  * mixed maps + physical transmission/volume + Disney lobes + spectral/layers
- * all remain authored behavior. Unknown keys and non-empty extension bags are
- * rejected rather than routed to the retired legacy monolith.
+ * all remain authored behavior. Unknown keys and unsupported extension keys
+ * are rejected rather than routed to the retired legacy monolith.
  */
 export function materialUsesMappedRichWebGl2Shader(material: MaterialSpec): boolean {
   if (!hasOnlyOwnKeys(material, MAPPED_RICH_MATERIAL_KEYS)) {
     return false;
   }
-  if (material.extensions !== undefined && !hasOnlyOwnKeys(material.extensions, EMPTY_KEYS)) {
+  if (
+    material.extensions !== undefined &&
+    !hasOnlyOwnKeys(material.extensions, WEBGL2_EXTENSION_KEYS)
+  ) {
     return false;
   }
   if (
@@ -261,64 +270,75 @@ export function materialUsesMappedRichWebGl2Shader(material: MaterialSpec): bool
   return true;
 }
 
+/** Validate one changed primitive without traversing accepted sibling materials. */
+export function validateWebGl2PrimitiveMaterial(
+  primitive: ScenePrimitive,
+  method = 'updatePrimitive',
+): void {
+  const material = primitive.material;
+  assertThinFilmLayerLimit(
+    material,
+    `${method}: primitive ${JSON.stringify(String(primitive.id))} material`,
+  );
+  if (materialUsesMappedRichWebGl2Shader(material)) return;
+  const prefix = `[vitrum/pt-webgl2] ${method}: primitive "${String(primitive.id)}" material`;
+  if (!isPlainRecord(material)) {
+    throw new TypeError(`${prefix} must be a plain record with own public fields`);
+  }
+  const symbols = Object.getOwnPropertySymbols(material);
+  if (symbols.length > 0) {
+    throw new TypeError(
+      `${prefix} has unsupported symbol key(s): ${symbols.map(String).join(', ')}`,
+    );
+  }
+  const unknown = Object.getOwnPropertyNames(material)
+    .filter((key) => !MAPPED_RICH_MATERIAL_KEYS.has(key as keyof MaterialSpec))
+    .sort();
+  if (unknown.length > 0) {
+    throw new TypeError(`${prefix} has unsupported field(s): ${unknown.join(', ')}`);
+  }
+  if (
+    material.extensions !== undefined &&
+    !hasOnlyOwnKeys(material.extensions, WEBGL2_EXTENSION_KEYS)
+  ) {
+    const extensionKeys =
+      material.extensions != null && typeof material.extensions === 'object'
+        ? [
+            ...Object.getOwnPropertyNames(material.extensions),
+            ...Object.getOwnPropertySymbols(material.extensions).map(String),
+          ].sort()
+        : [`<${typeof material.extensions}>`];
+    throw new TypeError(
+      `${prefix}.extensions has unsupported key(s): ${extensionKeys.join(', ')}`,
+    );
+  }
+  const malformed: string[] = [];
+  if (
+    material.spectralAttenuation !== undefined &&
+    !hasOnlyOwnKeys(material.spectralAttenuation, SPECTRAL_CURVE_KEYS)
+  )
+    malformed.push('spectralAttenuation');
+  if (material.frontLayer !== undefined && !isMappedSurfaceLayer(material.frontLayer)) {
+    malformed.push('frontLayer');
+  }
+  if (material.backLayer !== undefined && !isMappedSurfaceLayer(material.backLayer)) {
+    malformed.push('backLayer');
+  }
+  if (material.thinFilmStack !== undefined && !isScalarThinFilmStack(material.thinFilmStack))
+    malformed.push('thinFilmStack');
+  throw new TypeError(
+    `${prefix} has malformed supported field(s): ${malformed.join(', ') || '<unknown>'}`,
+  );
+}
+
 /**
  * Fail before any upload/allocation when a scene asks pt-webgl2 to interpret
  * material data outside its public contract. This makes the legacy full shader
- * unreachable through every accepted scene/mutation entry point.
+ * unreachable through every accepted full-scene entry point.
  */
 export function validateWebGl2SceneMaterials(scene: Scene, method = 'setScene'): void {
   for (const primitive of scene.primitives) {
-    const material = primitive.material;
-    assertThinFilmLayerLimit(
-      material,
-      `${method}: primitive ${JSON.stringify(String(primitive.id))} material`,
-    );
-    if (materialUsesMappedRichWebGl2Shader(material)) continue;
-    const prefix = `[vitrum/pt-webgl2] ${method}: primitive "${String(primitive.id)}" material`;
-    if (!isPlainRecord(material)) {
-      throw new TypeError(`${prefix} must be a plain record with own public fields`);
-    }
-    const symbols = Object.getOwnPropertySymbols(material);
-    if (symbols.length > 0) {
-      throw new TypeError(
-        `${prefix} has unsupported symbol key(s): ${symbols.map(String).join(', ')}`,
-      );
-    }
-    const unknown = Object.getOwnPropertyNames(material)
-      .filter((key) => !MAPPED_RICH_MATERIAL_KEYS.has(key as keyof MaterialSpec))
-      .sort();
-    if (unknown.length > 0) {
-      throw new TypeError(`${prefix} has unsupported field(s): ${unknown.join(', ')}`);
-    }
-    if (material.extensions !== undefined && !hasOnlyOwnKeys(material.extensions, EMPTY_KEYS)) {
-      const extensionKeys =
-        material.extensions != null && typeof material.extensions === 'object'
-          ? [
-              ...Object.getOwnPropertyNames(material.extensions),
-              ...Object.getOwnPropertySymbols(material.extensions).map(String),
-            ].sort()
-          : [`<${typeof material.extensions}>`];
-      throw new TypeError(
-        `${prefix}.extensions has unsupported key(s): ${extensionKeys.join(', ')}`,
-      );
-    }
-    const malformed: string[] = [];
-    if (
-      material.spectralAttenuation !== undefined &&
-      !hasOnlyOwnKeys(material.spectralAttenuation, SPECTRAL_CURVE_KEYS)
-    )
-      malformed.push('spectralAttenuation');
-    if (material.frontLayer !== undefined && !isMappedSurfaceLayer(material.frontLayer)) {
-      malformed.push('frontLayer');
-    }
-    if (material.backLayer !== undefined && !isMappedSurfaceLayer(material.backLayer)) {
-      malformed.push('backLayer');
-    }
-    if (material.thinFilmStack !== undefined && !isScalarThinFilmStack(material.thinFilmStack))
-      malformed.push('thinFilmStack');
-    throw new TypeError(
-      `${prefix} has malformed supported field(s): ${malformed.join(', ') || '<unknown>'}`,
-    );
+    validateWebGl2PrimitiveMaterial(primitive, method);
   }
 }
 

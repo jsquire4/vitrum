@@ -6,7 +6,7 @@ import { SPPM_PHOTON_PASS_WGSL } from '../wgsl/pathTrace/sppmBindings.wgsl.js';
 /**
  * FrameParams layout contract test.
  *
- * FrameParams is a generated 384-byte semantic payload and exact-size engine
+ * FrameParams is a generated 368-byte semantic payload and exact-size engine
  * allocation. `cameraPos: vec3f` is immediately followed by
  * `environmentHdriIntensity: f32`, so the aligned fourth lane is live without
  * pretending the camera has a fourth component. Directional data lives only in
@@ -78,7 +78,6 @@ describe('FrameParams UBO layout (pt-webgpu)', () => {
       'cameraPos: vec3f',
       'environmentHdriIntensity: f32',
       'environmentTint: vec4f',
-      'environmentSun: vec4f',
       'invViewProj: mat4x4f',
       'viewProj: mat4x4f',
       'prevViewProj: mat4x4f',
@@ -117,6 +116,7 @@ describe('FrameParams UBO layout (pt-webgpu)', () => {
       'cmfIntegralX',
       'cmfIntegralY',
       'cmfIntegralZ',
+      'environmentSun',
     ];
     for (const dropped of droppedFields) {
       // The struct-field test above is positive; this one is defensive:
@@ -193,6 +193,6 @@ describe('FrameParams UBO layout (pt-webgpu)', () => {
     // when the struct ends with a scalar (trailing u32 adds 4B raw but 16B padded).
     expect(rawBytes).toBeLessThanOrEqual(FRAME_PARAMS_BYTE_SIZE);
     expect(rawBytes).toBeGreaterThan(FRAME_PARAMS_BYTE_SIZE - 16); // at most 16B of end-padding
-    expect(FRAME_PARAMS_BYTE_SIZE).toBe(384);
+    expect(FRAME_PARAMS_BYTE_SIZE).toBe(368);
   });
 });

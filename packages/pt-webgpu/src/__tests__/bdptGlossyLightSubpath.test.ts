@@ -12,7 +12,12 @@ import { describe, expect, it } from 'vitest';
 
 import { PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL } from '../wgsl/bdpt/bdptLightSubpath.wgsl.js';
 import { PT_WEBGPU_BDPT_CONNECTION_WGSL } from '../wgsl/bdpt/bdptConnection.wgsl.js';
+import { PT_WEBGPU_PATH_TRACE_CAUSTIC_WGSL } from '../wgsl/pathTrace/caustic.wgsl.js';
 import { PT_WEBGPU_PATH_TRACE_MATERIAL_WGSL } from '../wgsl/pathTrace/material.wgsl.js';
+import { RESERVOIR_PT_HERO_WGSL } from '../wgsl/pathTrace/reservoirPtHero.wgsl.js';
+import { RESTIR_PT_PRODUCER_WGSL } from '../wgsl/pathTrace/restirPtProducer.wgsl.js';
+import { composeShadePrologueWgsl } from '../wgsl/pathTrace/shadePrologue.wgsl.js';
+import { SPPM_PHOTON_PASS_WGSL } from '../wgsl/pathTrace/sppmBindings.wgsl.js';
 import {
   bdptEmitterThroughputOracle,
   spectralCombinedReflectanceAtHeroOracle,
@@ -70,16 +75,16 @@ function unpackBdptPayloadTriWord(word: number): { triIndex: number; isFrontFace
 }
 
 function cauchyIorAtLambdaOracle(lambdaNm: number, baseIor: number, abbeV: number): number {
-  if (abbeV < 1) {
+  if (abbeV <= 0) {
     return baseIor;
   }
-  const lambdaUm = lambdaNm * 0.001;
-  const lam2 = lambdaUm * lambdaUm;
-  const lamF = 0.4861;
-  const lamC = 0.6563;
+  const lam2 = lambdaNm * lambdaNm;
+  const lamD = 589.3;
+  const lamF = 486.1;
+  const lamC = 656.3;
   const denom = 1 / (lamF * lamF) - 1 / (lamC * lamC);
-  const B = (baseIor - 1) / Math.max(abbeV, 1) / Math.max(denom, 1e-6);
-  return baseIor + B / lam2;
+  const B = (baseIor - 1) / abbeV / Math.max(denom, 1e-6);
+  return Math.max(1, baseIor + B * (1 / lam2 - 1 / (lamD * lamD)));
 }
 
 function jakobHanikaReflectanceOracle(coeffs: Vec3, lambdaNm: number): number {
@@ -139,7 +144,7 @@ function sampleBdptPayloadMaterialOracle(
   const metallic = clamp(mat.metallic * mat.orm[2], 0, 1);
   const transmission = clamp(mat.transmission * mat.transmissionTex, 0, 1);
   const ior =
-    opts.spectralEnabled && mat.dispersionAbbe >= 1
+    opts.spectralEnabled && mat.dispersionAbbe > 0
       ? cauchyIorAtLambdaOracle(opts.heroLambdaNm, mat.ior, mat.dispersionAbbe)
       : mat.ior;
   const clearcoat = clamp(mat.clearcoat * mat.clearcoatTex, 0, 1);
@@ -509,10 +514,45 @@ describe('A9 — glossy/specular BDPT light subpath', () => {
     });
 
 
-    expect(sampled.ior).toBeCloseTo(1.52012509542473, 10);
+    expect(sampled.ior).toBeCloseTo(1.5050518969298672, 10);
     expectVecClose(authoredOnly.baseColor, [0.8122284453397484, 0.8122284453397484, 0.8122284453397484], 10);
     expectVecClose(sampled.baseColor, [0.03699294454299884, 0.03699294454299884, 0.03699294454299884], 10);
     expect(sampled.baseColor[0]).toBeLessThan(authoredOnly.baseColor[0]);
+  });
+
+  it('anchors Abbe-derived Cauchy IOR at the authored d-line over the full positive domain', () => {
+    const baseIor = 1.5;
+    const abbeV = 50;
+    const nD = cauchyIorAtLambdaOracle(589.3, baseIor, abbeV);
+    const nF = cauchyIorAtLambdaOracle(486.1, baseIor, abbeV);
+    const nC = cauchyIorAtLambdaOracle(656.3, baseIor, abbeV);
+
+    expect(nD).toBe(baseIor);
+    expect((nD - 1) / (nF - nC)).toBeCloseTo(abbeV, 12);
+    expect(nF).toBeGreaterThan(nD);
+    expect(nD).toBeGreaterThan(nC);
+
+    const subUnitAbbeBlue = cauchyIorAtLambdaOracle(486.1, baseIor, 0.5);
+    expect(subUnitAbbeBlue).toBeGreaterThan(baseIor);
+    expect(cauchyIorAtLambdaOracle(589.3, baseIor, 0.5)).toBe(baseIor);
+    expect(cauchyIorAtLambdaOracle(656.3, baseIor, 0.1)).toBe(1);
+
+    expect(PT_WEBGPU_PATH_TRACE_MATERIAL_WGSL).toContain('let lamD = 589.3;');
+    expect(PT_WEBGPU_PATH_TRACE_MATERIAL_WGSL).toContain(
+      'max(1.0, baseIor + B * (1.0 / lam2 - 1.0 / (lamD * lamD)))',
+    );
+    expect(PT_WEBGPU_PATH_TRACE_MATERIAL_WGSL).not.toContain('max(abbeV, 1.0)');
+
+    const transportCallSites = [
+      composeShadePrologueWgsl(''),
+      PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL,
+      RESERVOIR_PT_HERO_WGSL,
+      SPPM_PHOTON_PASS_WGSL,
+      PT_WEBGPU_PATH_TRACE_CAUSTIC_WGSL,
+      RESTIR_PT_PRODUCER_WGSL,
+    ].join('\n');
+    expect(transportCallSites.match(/dispersionAbbe > 0\.0/g)).toHaveLength(7);
+    expect(transportCallSites).not.toContain('dispersionAbbe >= 1.0');
   });
 
   it('the §10.3 connection evaluates the REAL light-vertex BSDF + pdfs for a surface vertex', () => {

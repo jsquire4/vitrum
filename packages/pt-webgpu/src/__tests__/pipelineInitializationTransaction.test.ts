@@ -255,20 +255,15 @@ describe('pt-webgpu pipeline initialization transactions', () => {
   it('rejects absent or unrepresentable ReSTIR parameter state before queue writes', () => {
     const stub = makeDevice();
     const gpu = new GpuResources(stub.device, 'full', false, true);
-    expect(() => gpu.writeReservoirParams(1, 1, 1)).toThrow(/params buffer is absent/);
+    expect(() => gpu.writeReservoirParams(1)).toThrow(/params buffer is absent/);
     expect(stub.writeBuffer).not.toHaveBeenCalled();
 
     gpu.ensureReservoirBuffers(1, 1);
-    for (const [width, height, mClamp] of [
-      [0, 1, 1],
-      [1.5, 1, 1],
-      [1, 1, 0],
-      [1, 1, 4096],
-    ] as const) {
-      expect(() => gpu.writeReservoirParams(width, height, mClamp)).toThrow();
+    for (const mClamp of [0, 1.5, 4096]) {
+      expect(() => gpu.writeReservoirParams(mClamp)).toThrow();
     }
     expect(stub.writeBuffer).not.toHaveBeenCalled();
-    gpu.writeReservoirParams(1, 1, 4095);
+    gpu.writeReservoirParams(4095);
     expect(stub.writeBuffer).toHaveBeenCalledTimes(1);
   });
 

@@ -302,7 +302,7 @@ fn mneeFacetOpticsAt(
     ));
   }
   var ior = mat.ior;
-  if (params.spectralEnabled != 0u && mat.dispersionAbbe >= 1.0) {
+  if (params.spectralEnabled != 0u && mat.dispersionAbbe > 0.0) {
     ior = cauchyIorAtLambda(heroLambda, mat.ior, mat.dispersionAbbe);
   }
   var volumeThickness = mat.volumeThickness;

@@ -154,8 +154,14 @@ describe('pt-webgpu lite WGSL byte-identity (Theme-C dedup pin)', () => {
     // environments, unavailable lite variance, and the 512-D Sobol table.
     // Re-pinned 2026-07-29: U11 removes continuous-specular proposal-local
     // throughput/PDF calculations overwritten by the finite finalizer.
-    expect(digest).toBe('6acef3624677077dac89f0eab5d82bc551498218f167e201529aa499e66393a6');
-    expect(PT_WEBGPU_TRACE_LITE_WGSL.length).toBe(213935);
+    // Re-pinned 2026-07-29: the exported variance auxiliary is now a scalar
+    // r32float storage target rather than allocating dead RGB lanes.
+    // KHR_lights_punctual range attenuation now uses its unsquared quartic
+    // window in the canonical point/spot helper.
+    // Abbe-derived Cauchy IOR is anchored at the authored Fraunhofer d-line,
+    // physically floored at one, and accepts every finite-positive Abbe value.
+    expect(digest).toBe('67c51df484fdb78e8944322b8d08538ea8c9cb0608ccab1f7c5ccf65eb975de8');
+    expect(PT_WEBGPU_TRACE_LITE_WGSL.length).toBe(214278);
   });
 });
 

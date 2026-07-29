@@ -105,30 +105,6 @@ export function distantDirectEmitterGlobalIndex(
     sb.rectAreaLightCount + sb.meshAreaLightCount;
 }
 
-export function pickDistantDirectEmitter(
-  sb: UploadedSceneBuffers,
-  u: number,
-): { readonly globalIndex: number; readonly invPdf: number } | null {
-  const count = distantDirectEmitterCount(sb);
-  if (count === 0) return null;
-  let totalPower = 0;
-  for (let i = 0; i < count; i += 1) totalPower += distantDirectEmitterPower(sb, i);
-  if (!(totalPower > 0) || !Number.isFinite(totalPower)) return null;
-  const target = Math.min(Math.max(u, 0), 1 - Number.EPSILON) * totalPower;
-  let cumulative = 0;
-  for (let i = 0; i < count; i += 1) {
-    const power = distantDirectEmitterPower(sb, i);
-    cumulative += power;
-    if (power > 0 && target < cumulative) {
-      return {
-        globalIndex: distantDirectEmitterGlobalIndex(sb, i),
-        invPdf: totalPower / power,
-      };
-    }
-  }
-  return null;
-}
-
 export function bdptEmitterCount(sb: UploadedSceneBuffers): number {
   return sb.directionalLightCount + sb.pointLightCount + sb.spotLightCount +
     sb.rectAreaLightCount + sb.meshAreaLightCount +

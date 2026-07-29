@@ -1418,6 +1418,194 @@ describe('rebuildTlasReuseBlas (slice-1 instanced-mesh count change)', () => {
 
 // ─── warning-emission characterization ───────────────────────────────────────
 describe('packSceneFromCore — warning characterization', () => {
+  it('caps initial and incremental warning history to the newest 256 entries', () => {
+    const singular = asMat4(new Float32Array([
+      0, 0, 0, 0,
+      0, 1, 0, 0,
+      0, 0, 1, 0,
+      0, 0, 0, 1,
+    ]));
+    const analytics: Scene['primitives'] = Array.from(
+      { length: 300 },
+      (_, index) => ({
+        kind: 'analytic' as const,
+        id: `audit-${index}`,
+        shape: 'sphere' as const,
+        params: new Float32Array([1]),
+        material: { baseColor: [1, 1, 1], roughness: 1, metallic: 0 },
+      }),
+    );
+    const initialScene: Scene = {
+      primitives: [
+        instancedMesh('live', [translate(0), singular]),
+        ...analytics,
+      ],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+    const packed = packSceneFromCore(initialScene, {
+      tlas: true,
+      resolveMaterialId: () => 0,
+    });
+
+    expect(packed.warnings).toHaveLength(256);
+    expect(packed.warnings[0]).toContain('"audit-44"');
+    expect(packed.warnings.at(-1)).toContain('"audit-299"');
+    expect(packed.warnings.some((warning) => warning.includes('"audit-43"'))).toBe(false);
+
+    const rebuilt = rebuildTlasReuseBlas(
+      {
+        ...initialScene,
+        primitives: [
+          instancedMesh('live', [translate(0), translate(2), singular]),
+          ...analytics,
+        ],
+      },
+      packed,
+    );
+    expect(rebuilt.ok).toBe(true);
+    if (!rebuilt.ok) return;
+
+    expect(rebuilt.pack.warnings).toHaveLength(256);
+    expect(rebuilt.pack.warnings[0]).toContain('"audit-45"');
+    expect(rebuilt.pack.warnings.at(-2)).toContain('"audit-299"');
+    expect(rebuilt.pack.warnings.at(-1)).toContain('"live"');
+    expect(rebuilt.pack.warnings.at(-1)).toContain('non-invertible instance transform');
+    expect(rebuilt.pack.warnings.some((warning) => warning.includes('"audit-44"'))).toBe(false);
+    expect(rebuilt.currentWarnings).toHaveLength(1);
+    expect(rebuilt.currentWarnings[0]).toContain('"live"');
+  });
+
+  it('refreshes a recurring current warning before applying the incremental cap', () => {
+    const singular = asMat4(new Float32Array([
+      0, 0, 0, 0,
+      0, 1, 0, 0,
+      0, 0, 1, 0,
+      0, 0, 0, 1,
+    ]));
+    const primitives = Array.from(
+      { length: 256 },
+      (_, index) => instancedMesh(`warning-${index}`, [translate(index * 2)]),
+    );
+    const scene: Scene = {
+      primitives,
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+    const packed = packSceneFromCore(scene, {
+      tlas: true,
+      resolveMaterialId: () => 0,
+    });
+    const recurring =
+      'Primitive "warning-0" has non-invertible instance transform; ' +
+      'skipping this TLAS instance (geometry would be placed at the origin otherwise).';
+    const priorWithFullHistory = {
+      ...packed,
+      warnings: [
+        recurring,
+        ...Array.from({ length: 255 }, (_, index) => `stale warning ${index}`),
+      ],
+    };
+    const next: Scene = {
+      ...scene,
+      primitives: primitives.map((primitive, index) => {
+        if (primitive.kind !== 'instanced-mesh') throw new Error('test setup');
+        return {
+          ...primitive,
+          instances: index === 0
+            ? [translate(0), singular, translate(1)]
+            : [translate(index * 2), singular],
+        };
+      }),
+    };
+
+    const rebuilt = rebuildTlasReuseBlas(next, priorWithFullHistory);
+    expect(rebuilt.ok).toBe(true);
+    if (!rebuilt.ok) return;
+    expect(rebuilt.pack.warnings).toHaveLength(256);
+    expect(rebuilt.pack.warnings[0]).toBe(recurring);
+    expect(rebuilt.pack.warnings).toContain(recurring);
+    expect(rebuilt.pack.warnings.some((warning) =>
+      warning.startsWith('stale warning')
+    )).toBe(false);
+    for (let index = 0; index < 256; index += 1) {
+      expect(rebuilt.pack.warnings).toContain(
+        `Primitive "warning-${index}" has non-invertible instance transform; ` +
+        'skipping this TLAS instance (geometry would be placed at the origin otherwise).',
+      );
+    }
+    expect(rebuilt.currentWarnings).toHaveLength(256);
+  });
+
+  it('retains prior warning history without replaying it as a clean rebuild delta', () => {
+    const scene: Scene = {
+      primitives: [instancedMesh('live', [translate(0)])],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+    const packed = packSceneFromCore(scene, {
+      tlas: true,
+      resolveMaterialId: () => 0,
+    });
+    const staleWarning = 'warning retained only for bounded diagnostic history';
+    const rebuilt = rebuildTlasReuseBlas(
+      {
+        ...scene,
+        primitives: [instancedMesh('live', [translate(0), translate(2)])],
+      },
+      { ...packed, warnings: [staleWarning] },
+    );
+    expect(rebuilt.ok).toBe(true);
+    if (!rebuilt.ok) return;
+
+    expect(rebuilt.pack.warnings).toContain(staleWarning);
+    expect(rebuilt.currentWarnings).toEqual([]);
+  });
+
+  it('includes current TLAS-instance warnings in a BLAS splice delta and history', () => {
+    const singular = asMat4(new Float32Array([
+      0, 0, 0, 0,
+      0, 1, 0, 0,
+      0, 0, 1, 0,
+      0, 0, 0, 1,
+    ]));
+    const initialPrimitive = instancedMesh('live', [translate(0), singular]);
+    const scene: Scene = {
+      primitives: [initialPrimitive],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+    const opts = {
+      tlas: true,
+      resolveMaterialId: () => 0,
+    };
+    const packed = packSceneFromCore(scene, opts);
+    const nextPrimitive = {
+      ...initialPrimitive,
+      positions: new Float32Array([
+        0, 0, 0,
+        2, 0, 0,
+        0, 1, 0,
+      ]),
+    } as Scene['primitives'][number];
+    const rebuilt = rebuildPrimitiveBlas(
+      { ...scene, primitives: [nextPrimitive] },
+      'live',
+      packed,
+      opts,
+    );
+    expect(rebuilt.ok).toBe(true);
+    if (!rebuilt.ok) return;
+
+    expect(rebuilt.strategy).toBe('splice');
+    expect(rebuilt.currentWarnings).toEqual([
+      expect.stringContaining('Primitive "live" has non-invertible instance transform'),
+    ]);
+    expect(rebuilt.pack.warnings).toEqual([
+      expect.stringContaining('Primitive "live" has non-invertible instance transform'),
+    ]);
+  });
+
   it('emits skip warning for <3-vertex primitive (exact message)', () => {
     const scene: Scene = {
       primitives: [{
@@ -1577,6 +1765,30 @@ describe('packSceneFromCore per-vertex UV flattening (P2)', () => {
     expect(pack.uvs.every((v) => v === 0)).toBe(true);
   });
 
+  it('marks UV-less produced ranges as resolved and never re-reads their geometry', () => {
+    const primitive = unitTriMesh('no-uv-cache');
+    const scene: Scene = {
+      primitives: [primitive],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+    const merged = mergeWorldSpaceFromCore(scene);
+    expect(merged.meshVertexRanges[0]?.sourceUvSets).toEqual([]);
+
+    Object.defineProperty(primitive, 'positions', {
+      configurable: true,
+      get: () => {
+        throw new Error('UV-less primitive geometry was resolved a second time');
+      },
+    });
+    expect(() =>
+      mergeUv1FromCore(scene, merged.meshVertexRanges, merged.vertexCount),
+    ).not.toThrow();
+    expect(
+      mergeUv1FromCore(scene, merged.meshVertexRanges, merged.vertexCount),
+    ).toBeUndefined();
+  });
+
   it('D12: world-space uv1 merge skips zero-triangle primitives in range order', () => {
     const scene: Scene = {
       primitives: [
@@ -1608,6 +1820,26 @@ describe('packSceneFromCore per-vertex UV flattening (P2)', () => {
     const uv1 = mergeUv1FromCore(scene, merged.meshVertexRanges, merged.vertexCount);
     expect(uv1).toBeDefined();
     expect(Array.from(uv1!)).toEqual([0.1, 0.2, 0.3, 0.4, 0.5, 0.6].map((v) => expect.closeTo(v)));
+
+    const changedSourceScene: Scene = {
+      ...scene,
+      primitives: scene.primitives.map((primitive) =>
+        primitive.id === 'valid-uv1'
+          ? { ...primitive, uv1: new Float32Array([8, 8, 8, 8, 8, 8]) }
+          : primitive,
+      ),
+    };
+    const cachedUv1 = mergeUv1FromCore(
+      changedSourceScene,
+      merged.meshVertexRanges,
+      merged.vertexCount,
+    );
+    // The ranges own the displacement-resolved source from the merge that
+    // produced their vertex offsets; a later UV merge must not resolve again
+    // from a potentially changed or filtered scene snapshot.
+    expect(Array.from(cachedUv1!)).toEqual(
+      [0.1, 0.2, 0.3, 0.4, 0.5, 0.6].map((v) => expect.closeTo(v)),
+    );
   });
 });
 

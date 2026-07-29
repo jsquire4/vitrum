@@ -605,6 +605,85 @@ describe('attachVitrum with happy-dom + mock engine', () => {
     handle.dispose();
     vi.restoreAllMocks();
   });
+
+  it('rolls back the constructed engine and partial observer when initial observation fails', async () => {
+    const { attachVitrum } = await import('../src/lifecycle/vanilla.js');
+    const failure = new Error('observe failed');
+    const disconnect = vi.fn();
+    (globalThis as Record<string, unknown>).ResizeObserver = class FailingRO {
+      observe(): void { throw failure; }
+      disconnect(): void { disconnect(); }
+      unobserve(): void {}
+    };
+    const engine = Object.assign(makeMockEngine(), {
+      backendId: 'pt-webgl2' as const,
+      backendProfileId: 'pt-webgl2' as const,
+      profileId: 'pt-webgl2' as const,
+    }) as unknown as EngineWithBackendId;
+    const canvas = happyWindow.document.createElement('canvas') as unknown as HTMLCanvasElement;
+    const identity = new Float32Array([1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]);
+
+    await expect(attachVitrum({
+      canvas,
+      engine,
+      scene: { primitives: [], emitters: [], environment: { kind: 'none' } },
+      camera: {
+        updateMatrixWorld: vi.fn(),
+        matrixWorldInverse: { elements: identity },
+        projectionMatrix: { elements: identity },
+        position: { x: 0, y: 0, z: 0 },
+      },
+    })).rejects.toBe(failure);
+
+    expect(disconnect).toHaveBeenCalledOnce();
+    expect(engine.dispose).toHaveBeenCalledOnce();
+  });
+
+  it('rolls back earlier subscriptions, DOM hooks, and engine when a later subscription fails', async () => {
+    const { attachVitrum } = await import('../src/lifecycle/vanilla.js');
+    const failure = new Error('progress subscription failed');
+    const disconnect = vi.fn();
+    const unsubFrame = vi.fn();
+    (globalThis as Record<string, unknown>).ResizeObserver = class TrackingRO {
+      observe(): void {}
+      disconnect(): void { disconnect(); }
+      unobserve(): void {}
+    };
+    const engine = Object.assign(makeMockEngine(), {
+      backendId: 'pt-webgl2' as const,
+      backendProfileId: 'pt-webgl2' as const,
+      profileId: 'pt-webgl2' as const,
+      onFrame: vi.fn(() => unsubFrame),
+      onProgress: vi.fn(() => { throw failure; }),
+    }) as unknown as EngineWithBackendId;
+    const removeEventListener = vi.spyOn(document, 'removeEventListener');
+    const requestFrame = vi.spyOn(globalThis, 'requestAnimationFrame');
+    const canvas = happyWindow.document.createElement('canvas') as unknown as HTMLCanvasElement;
+    const identity = new Float32Array([1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]);
+
+    await expect(attachVitrum({
+      canvas,
+      engine,
+      scene: { primitives: [], emitters: [], environment: { kind: 'none' } },
+      camera: {
+        updateMatrixWorld: vi.fn(),
+        matrixWorldInverse: { elements: identity },
+        projectionMatrix: { elements: identity },
+        position: { x: 0, y: 0, z: 0 },
+      },
+      onFrame: vi.fn(),
+      onProgress: vi.fn(),
+    })).rejects.toBe(failure);
+
+    expect(unsubFrame).toHaveBeenCalledOnce();
+    expect(disconnect).toHaveBeenCalledOnce();
+    expect(removeEventListener).toHaveBeenCalledWith(
+      'visibilitychange',
+      expect.any(Function),
+    );
+    expect(requestFrame).not.toHaveBeenCalled();
+    expect(engine.dispose).toHaveBeenCalledOnce();
+  });
 });
 
 // ────────────────────────────────────────────────────────────────────────────

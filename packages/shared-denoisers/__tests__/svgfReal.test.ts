@@ -641,6 +641,10 @@ describe('SVGF WGSL exports', () => {
     expect(typeof SVGF_VARIANCE_FROM_MOMENTS_WGSL).toBe('string');
     expect(SVGF_VARIANCE_FROM_MOMENTS_WGSL).toContain('svgfVarianceFromMomentsMain');
     expect(SVGF_VARIANCE_FROM_MOMENTS_WGSL).toContain('@compute');
+    expect(SVGF_VARIANCE_FROM_MOMENTS_WGSL).toContain(
+      'texture_storage_2d<r32float, write>',
+    );
+    expect(SVGF_VARIANCE_FROM_MOMENTS_WGSL).not.toContain('vec4f(variance, f32(h)');
   });
 
   it('svgf7x7SpatialFallback WGSL should be non-empty and contain entry point', async () => {
@@ -652,6 +656,10 @@ describe('SVGF WGSL exports', () => {
     expect(SVGF_7X7_SPATIAL_FALLBACK_WGSL).toContain('sfb_currDepth');
     expect(SVGF_7X7_SPATIAL_FALLBACK_WGSL).toContain('normalWeight');
     expect(SVGF_7X7_SPATIAL_FALLBACK_WGSL).toContain('depthWeight');
+    expect(SVGF_7X7_SPATIAL_FALLBACK_WGSL).toContain(
+      'texture_storage_2d<r32float, write>',
+    );
+    expect(SVGF_7X7_SPATIAL_FALLBACK_WGSL).not.toContain('historyAsFloat');
   });
 });
 

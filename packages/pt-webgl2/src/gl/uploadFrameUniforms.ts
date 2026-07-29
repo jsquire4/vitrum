@@ -75,11 +75,6 @@ export function uploadFrameUniforms(
     prog.setFloat('uYCmfIntegral', Y_CMF_INTEGRAL);
     prog.setFloat('uZCmfIntegral', Z_CMF_INTEGRAL);
   }
-  // Scene-global Cauchy dispersion coefficients. Reflectance coefficients are
-  // material-local and arrive through the packed materials texture.
-  prog.setFloat('iorCauchyA', frame.iorCauchy[0]);
-  prog.setFloat('iorCauchyB', frame.iorCauchy[1]);
-  prog.setFloat('iorCauchyC', frame.iorCauchy[2]);
   // Flag-plumbing audit (2026-06-10): upload the PhysicalCamera DoF uniforms when
   // dof is enabled. The FEATURE_DOF GLSL gate is compiled in only when opts.dof was
   // set (see #traceFeatures), so these setters are inactive no-ops otherwise — but

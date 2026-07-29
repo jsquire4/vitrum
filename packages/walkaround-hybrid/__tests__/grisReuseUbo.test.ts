@@ -34,7 +34,6 @@ function fakeInputs(): PipelineFrameInputs {
       swapChainFormat: 'bgra8unorm',
     },
     lighting: {
-      totalEmissivePower: 1,
       emitterCount: 4,
       primaryLightDir: [0, 1, 0],
       primaryLightIntensity: 1,
@@ -77,7 +76,6 @@ function fakeInputs(): PipelineFrameInputs {
       stainedGlassFlags: 0,
     },
     bvh: { bvhMode: 0, tlasNodeCount: 0 },
-    nrc: {},
     composite: { tonemapMode: 0, exposure: 1, outputColorSpace: 0 },
   } as PipelineFrameInputs;
 }
@@ -92,23 +90,23 @@ function capturingDevice(backing: Uint8Array): GPUDevice {
   } as unknown as GPUDevice;
 }
 
-describe('WalkaroundUBO generalized-reuse compatibility fields', () => {
-  it('keeps the reserved always-on mirror at u32[103] and epoch bits at u32[105]', () => {
+describe('WalkaroundUBO generalized-reuse ABI tail', () => {
+  it('keeps the retired toggle slot zero at u32[103] and epoch bits at u32[105]', () => {
     expect(WALKAROUND_UBO_SIZE_BYTES).toBe(432);
-    expect(WALKAROUND_UBO_WGSL).toContain('grisReuse:              u32,');
-    expect(WALKAROUND_UBO_WGSL).toContain('offset 412 — deprecated mirror, always 1');
+    expect(WALKAROUND_UBO_WGSL).toMatch(/_abiPadRetiredGrisToggle:\s+u32,/);
+    expect(WALKAROUND_UBO_WGSL).toContain('offset 412 — retired structural toggle');
     expect(WALKAROUND_UBO_WGSL).toContain('y bits = GRIS history epoch');
 
     const bytes = new Uint8Array(WALKAROUND_UBO_SIZE_BYTES);
     updateUBO(capturingDevice(bytes), {} as GPUBuffer, fakeInputs(), undefined, undefined, undefined, 0x89abcdef);
     const words = new Uint32Array(bytes.buffer);
-    expect(words[103]).toBe(1);
+    expect(words[103]).toBe(0);
     expect(words[105]).toBe(0x89abcdef);
   });
 
-  it('defaults the compatibility mirror to one and the epoch to zero', () => {
+  it('defaults the retired toggle slot and epoch to zero', () => {
     const words = new Uint32Array(packWalkaroundUBO(fakeInputs()));
-    expect(words[103]).toBe(1);
+    expect(words[103]).toBe(0);
     expect(words[105]).toBe(0);
   });
 

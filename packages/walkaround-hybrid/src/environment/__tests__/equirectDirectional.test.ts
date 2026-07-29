@@ -51,7 +51,7 @@ describe('buildDirectionalEnv', () => {
     expect(integral).toBeCloseTo(1, 2);
   });
 
-  it('marginal + conditional are valid inverse-CDF tables (centred coords in [0,1))', () => {
+  it('stores exact monotone forward CDFs ending at one', () => {
     const W = 8, H = 4;
     const env = buildDirectionalEnv(makeRaw(W, H, (x) => {
       const v = x === 6 ? 10 : 0.1; // bright column
@@ -59,17 +59,40 @@ describe('buildDirectionalEnv', () => {
     }))!;
     expect(env.marginal).toHaveLength(H * 4);
     expect(env.conditional).toHaveLength(W * H * 4);
+    let priorMarginal = 0;
     for (let i = 0; i < H; i += 1) {
-      const v = env.marginal[i * 4]!;
-      expect(v).toBeGreaterThanOrEqual(0);
-      expect(v).toBeLessThan(1);
+      const cdf = env.marginal[i * 4]!;
+      expect(cdf).toBeGreaterThanOrEqual(priorMarginal);
+      expect(cdf).toBeLessThanOrEqual(1);
+      priorMarginal = cdf;
     }
-    // The bright column (x=6) should be where the conditional concentrates: the
-    // sampled column for a mid-random in each row maps near (6+0.5)/8.
+    expect(priorMarginal).toBeCloseTo(1, 6);
     for (let y = 0; y < H; y += 1) {
-      const u = env.conditional[(y * W + Math.floor(W / 2)) * 4]!;
-      expect(u).toBeCloseTo((6 + 0.5) / W, 5);
+      let prior = 0;
+      for (let x = 0; x < W; x += 1) {
+        const cdf = env.conditional[(y * W + x) * 4]!;
+        expect(cdf).toBeGreaterThanOrEqual(prior);
+        expect(cdf).toBeLessThanOrEqual(1);
+        prior = cdf;
+      }
+      expect(prior).toBeCloseTo(1, 6);
+      // The bright x=6 texel owns most of the exact CDF interval.
+      const before = env.conditional[(y * W + 5) * 4]!;
+      const after = env.conditional[(y * W + 6) * 4]!;
+      expect(after - before).toBeGreaterThan(0.9);
     }
+  });
+
+  it('gives zero-weight rows a total uniform conditional CDF', () => {
+    const W = 4;
+    const env = buildDirectionalEnv(makeRaw(W, 3, (_x, y) => (
+      y === 1 ? [0, 0, 0] : [1, 1, 1]
+    )))!;
+    expect(Array.from({ length: W }, (_, x) => env.conditional[(W + x) * 4]))
+      .toEqual([0.25, 0.5, 0.75, 1]);
+    // The zero row has no marginal interval, including for ξ=0.
+    expect(env.marginal[4]).toBe(env.marginal[0]);
+    expect(env.marginal[(3 - 1) * 4]).toBeCloseTo(1, 6);
   });
 
   it('stores unit-intensity radiance in .rgb (host applies intensity at sample time)', () => {

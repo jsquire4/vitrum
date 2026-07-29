@@ -434,17 +434,21 @@ describe('packDDGIProbeLights — spot fixture', () => {
   it('WGSL evaluates packed spotAxis as a forward beam axis and guards hard-edge cones', () => {
     const shader = makeProbeUpdateRaysWGSL(4);
     const body = functionBody(shader, 'evalPointLight');
+    const coneHelper = functionBody(shader, 'ddgiSpotConeFalloff');
+    const attenuationHelper = functionBody(shader, 'ddgiPointSpotAttenuation');
 
     expect(shader).toContain('const LIGHT_SPOT:  u32 = 2u;');
     expect(body).toContain('ddgiLightKind(light) == LIGHT_SPOT');
-    expect(body).toContain('let cosToP = dot(-light.direction * inverseSqrt(axisLen2), lightDir);');
-    expect(body).toContain('light.innerCone == light.outerCone');
-    expect(body).toContain('if (light.decay > 0.0)');
-    expect(body).toContain('let regularizedDist2 = max(dist * dist, dist2Floor);');
-    expect(body).toContain('if (light.distance > 0.0)');
+    expect(body).toContain('coneFalloff = ddgiSpotConeFalloff(');
+    expect(body).toContain('let distanceAttenuation = ddgiPointSpotAttenuation(');
+    expect(coneHelper).toContain('let cosTheta = dot(-axis, wi);');
+    expect(coneHelper).toContain('cosInner == cosOuter');
+    expect(attenuationHelper).toContain('if (decay > 0.0)');
+    expect(attenuationHelper).toContain('let regularizedDist2 = max(dist * dist, dist2Floor);');
+    expect(attenuationHelper).toContain('if (cutoffDistance > 0.0)');
+    expect(attenuationHelper).toContain('attenuation = attenuation * x;');
+    expect(attenuationHelper).not.toContain('attenuation = attenuation * x * x;');
     expect(body).toContain('let atten = light.intensity * distanceAttenuation;');
-    expect(body).not.toContain('dot(lightDir, light.direction * inverseSqrt(axisLen2))');
-    expect(body).not.toContain('coneFalloff = smoothstep(light.outerCone, light.innerCone, cosToP);\n    if');
   });
 
   it('teaLight packs identically to fixture (same branch in packer)', () => {

@@ -363,8 +363,14 @@ describe('pt-webgpu WGSL byte-identity (Theme-C dedup pin)', () => {
     // throughput/PDF calculation overwritten by the finite finalizer.
     // The same final hygiene pass removes legacy MNEE solvers that were
     // composed but unreachable from every full-tier entry point.
-    expect(digest).toBe('83c30898ae14f65773b25139456a2a2235203452e97bb18ec8e0313d7d4c1451');
-    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(557847);
+    // Re-pinned 2026-07-29: the exported variance auxiliary is now a scalar
+    // r32float storage target rather than duplicating luminance into RGB.
+    // KHR_lights_punctual range attenuation now uses its unsquared quartic
+    // window in the canonical point/spot helper shared by every estimator.
+    // Re-pinned 2026-07-29: Abbe-derived Cauchy IOR is anchored at the authored
+    // Fraunhofer d-line and accepts the complete finite-positive Abbe domain.
+    expect(digest).toBe('5338042a063c4b059fc89233c22fc1b052ad6fd9f730fc5f51479401f3bf7433');
+    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(558559);
   });
 });
 
@@ -716,10 +722,10 @@ describe('pt-webgpu WGSL material contract', () => {
     expect(PT_WEBGPU_TRACE_WGSL).not.toContain('environmentSun.w');
   });
 
-  it('FrameParams uses the exact generated 384-byte host/GPU payload', () => {
+  it('FrameParams uses the exact generated 368-byte host/GPU payload', () => {
     const stride = (PT_WEBGPU_TRACE_WGSL.match(/struct FrameParams/g) ?? []).length;
     expect(stride).toBeGreaterThanOrEqual(1);
-    expect(FRAME_PARAMS_BYTE_SIZE).toBe(384);
+    expect(FRAME_PARAMS_BYTE_SIZE).toBe(368);
     // Verify FrameParams contains the matrix fields. Exact byte offsets
     // are pinned numerically against the generated slot table in the next test.
     expect(PT_WEBGPU_TRACE_WGSL).toMatch(/invViewProj\s*:\s*mat4x4f/);

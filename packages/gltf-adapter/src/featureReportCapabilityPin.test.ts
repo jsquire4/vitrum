@@ -167,7 +167,7 @@ describe('featureReport capability tables — drift pin against core BackendSupp
     )).toBe(false);
   });
 
-  it('does not classify delta or disabled transmission as rough transmission', () => {
+  it('classifies delta transmission separately and ignores disabled transmission', () => {
     const report = analyzeGltfAsset({
       asset: { version: '2.0' },
       materials: [
@@ -186,6 +186,39 @@ describe('featureReport capability tables — drift pin against core BackendSupp
       ],
     });
 
-    expect(report.materials.materialProfiles).toEqual([]);
+    expect(report.materials.materialProfiles).toEqual(['deltaTransmission']);
+  });
+
+  it('reports every material profile representable by glTF material extensions', () => {
+    const report = analyzeGltfAsset({
+      asset: { version: '2.0' },
+      materials: [
+        {
+          pbrMetallicRoughness: { roughnessFactor: 0 },
+          normalTexture: { index: 0 },
+          extensions: {
+            KHR_materials_transmission: { transmissionFactor: 1 },
+            KHR_materials_clearcoat: { clearcoatFactor: 1 },
+            KHR_materials_volume: { thicknessFactor: 0.25 },
+          },
+        },
+        {
+          pbrMetallicRoughness: { roughnessFactor: 0.4 },
+          extensions: {
+            KHR_materials_transmission: { transmissionFactor: 0.5 },
+          },
+        },
+      ],
+      textures: [{ source: 0 }],
+      images: [{ uri: 'normal.png' }],
+    });
+
+    expect(report.materials.materialProfiles).toEqual([
+      'deltaTransmission',
+      'layeredTransmission',
+      'normalMappedTransmission',
+      'participatingMedia',
+      'roughTransmission',
+    ]);
   });
 });

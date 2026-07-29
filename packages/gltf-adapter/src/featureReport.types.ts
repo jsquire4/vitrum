@@ -5,7 +5,6 @@
 
 import type {
   BackendId,
-  BackendSupportDetails,
   BackendSupportMode,
   MaterialSpec,
 } from '@vitrum/core';
@@ -180,6 +179,13 @@ export interface GltfPrimitiveInstancingIssue {
   readonly value?: unknown;
 }
 
+export type GltfMaterialProfile =
+  | 'deltaTransmission'
+  | 'roughTransmission'
+  | 'layeredTransmission'
+  | 'normalMappedTransmission'
+  | 'participatingMedia';
+
 export interface GltfMaterialFeatureReport {
   readonly count: number;
   readonly materialFields: readonly (keyof MaterialSpec)[];
@@ -188,9 +194,7 @@ export interface GltfMaterialFeatureReport {
    * These names index `BackendSupportDetails.materialProfiles` during backend
    * compatibility evaluation.
    */
-  readonly materialProfiles?: readonly (
-    keyof NonNullable<BackendSupportDetails['materialProfiles']>
-  )[];
+  readonly materialProfiles?: readonly GltfMaterialProfile[];
   readonly textureFields: readonly (keyof MaterialSpec)[];
   readonly samplerPolicies: readonly GltfTextureSamplerPolicyUse[];
   readonly malformedSamplerPolicies: readonly GltfMalformedTextureSamplerPolicyUse[];

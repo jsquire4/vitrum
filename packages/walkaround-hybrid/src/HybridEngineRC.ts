@@ -337,10 +337,30 @@ export class RCSubsystem implements PipelineSubsystem {
     if (this._warningKeys.has(key)) return;
     this._warningKeys.add(key);
     try {
-      this._onWarning?.(warning);
+      if (this._onWarning) this._onWarning(warning);
+      else console.warn(warning.message);
     } catch {
       // Diagnostic callbacks never interrupt rendering or resource cleanup.
     }
+  }
+
+  private _buildSceneBvh(scene: Scene): SceneBVH {
+    return buildRCSceneBVHFromCore(scene, {
+      onWarning: (warning) => this._warnOnce(`scene-pack:${warning}`, {
+        code: warning.includes('displacementMap')
+          ? 'walkaround-hybrid.vertex-displacement-skipped'
+          : 'walkaround-hybrid.scene-pack-warning',
+        backend: 'walkaround-hybrid',
+        phase: 'setScene',
+        method: 'RCSubsystem.setSceneFromCore',
+        message: `[vitrum/walkaround-hybrid/RC] ${warning}`,
+        details: {
+          warning,
+          source: 'shared-bvh',
+          subsystem: 'radiance-cascades',
+        },
+      }),
+    });
   }
 
   buildRCInputs(rcWeight: number): { cascade0Buffer: GPUBuffer; paramsBytes: ArrayBuffer } | null {
@@ -583,7 +603,7 @@ export class RCSubsystem implements PipelineSubsystem {
           nextNodesCpu = nodes;
           replacementKind = 'merged-refit';
         } else if (scene != null) {
-          const built = buildRCSceneBVHFromCore(scene);
+          const built = this._buildSceneBvh(scene);
           nextBvh = this._uploadBVH(built);
           nextNodesCpu = new Float32Array(built.bvhNodes.array);
           nextIndicesCpu = new Uint32Array(built.indices.array);
@@ -833,7 +853,7 @@ export class RCSubsystem implements PipelineSubsystem {
    * identical to the former merged path's upload and dispatch tail.
    */
   setSceneFromCore(scene: Scene): void {
-    this._setSceneFromBVH(buildRCSceneBVHFromCore(scene));
+    this._setSceneFromBVH(this._buildSceneBvh(scene));
   }
 
   /**

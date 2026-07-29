@@ -181,6 +181,25 @@ describe('buildPackedScene emitter + environment packing', () => {
     expect(packed.warnings).toEqual([]);
   });
 
+  it('honors extensions.skipEmitter for implicit emissive-mesh proposals', () => {
+    const source = baseScene();
+    const scene: Scene = {
+      ...source,
+      primitives: [{
+        ...source.primitives[0]!,
+        material: {
+          ...source.primitives[0]!.material,
+          emissive: [4, 2, 1],
+          extensions: { skipEmitter: true },
+        },
+      }],
+    };
+
+    const packed = buildPackedScene(scene);
+    expect(packed.meshAreaLightCount).toBe(0);
+    expect(buildLightTreeInputForScene(scene).powers).toHaveLength(0);
+  });
+
   it('expands instanced mesh-area emitters across every instance and triangle', () => {
     const packed = buildPackedScene(quadScene('instanced-mesh'));
     expect(packed.meshAreaLightCount).toBe(4);

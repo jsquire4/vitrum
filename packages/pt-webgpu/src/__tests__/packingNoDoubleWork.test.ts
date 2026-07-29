@@ -127,7 +127,6 @@ describe('packingNoDoubleWork — byte-identical with/without precomputed args',
     const env = environmentParams(scene);
     const envSummary: EnvSummaryForTree = {
       hasHdri: env.hasHdri,
-      sunStrength: env.sunStrength,
       lightTreePower: env.lightTreePower,
     };
     const withPrecomputed = buildLightTreeInputForScene(scene, { packed, envSummary });
@@ -157,7 +156,6 @@ describe('packingNoDoubleWork — byte-identical with/without precomputed args',
     const env = environmentParams(scene);
     const envSummary: EnvSummaryForTree = {
       hasHdri: env.hasHdri,
-      sunStrength: env.sunStrength,
       lightTreePower: env.lightTreePower,
     };
     const withPrecomputed = buildLightTreeInputForScene(scene, { packed, envSummary });
@@ -174,7 +172,6 @@ describe('packingNoDoubleWork — byte-identical with/without precomputed args',
     const env = environmentParams(scene);
     const envSummary: EnvSummaryForTree = {
       hasHdri: env.hasHdri,
-      sunStrength: env.sunStrength,
       lightTreePower: env.lightTreePower,
     };
     const onlyPacked = buildLightTreeInputForScene(scene, { packed });
@@ -202,11 +199,10 @@ describe('packingNoDoubleWork — environmentParams call count', () => {
     const packed = packEmitterArrays(scene);
     const realEnv = environmentParams(scene);
 
-    // Probe: supply zero power and sunStrength=0 + hasHdri=false as the
-    // envSummary. This should suppress the env leaf entirely.
+    // Probe: supply zero power and hasHdri=false as the envSummary. This
+    // should suppress the env leaf entirely.
     const suppressedEnvSummary: EnvSummaryForTree = {
       hasHdri: false,
-      sunStrength: 0,
       lightTreePower: 0,
     };
     const withSuppressed = buildLightTreeInputForScene(scene, { packed, envSummary: suppressedEnvSummary });
@@ -214,7 +210,6 @@ describe('packingNoDoubleWork — environmentParams call count', () => {
     // The real env (HDRI present) would add an env leaf. With suppressed, it should not.
     const withRealEnv = buildLightTreeInputForScene(scene, { packed, envSummary: {
       hasHdri: realEnv.hasHdri,
-      sunStrength: realEnv.sunStrength,
       lightTreePower: realEnv.lightTreePower,
     }});
 
@@ -232,7 +227,6 @@ describe('packingNoDoubleWork — environmentParams call count', () => {
     const env = environmentParams(scene);
     const envSummary: EnvSummaryForTree = {
       hasHdri: env.hasHdri,
-      sunStrength: env.sunStrength,
       lightTreePower: env.lightTreePower,
     };
 

@@ -142,9 +142,9 @@ fn smsAnalyticAliasDraw(
     analytic_lights,
     vec2i(i32(coord % analyticLayout.dims.x), i32(coord / analyticLayout.dims.x)), 0,
   );
-  if (!(entry.x >= 0.0 && entry.x <= 1.0) ||
-      !(entry.y >= 0.0) || entry.y != floor(entry.y)) { return out; }
-  let aliasIndex = u32(entry.y);
+  if (!(entry.x >= 0.0 && entry.x <= 1.0)) { return out; }
+  let aliasIndex = bitcast<u32>(entry.y);
+  if (aliasIndex >= analyticLayout.count) { return out; }
   let index = select(aliasIndex, column, rand_f32(rng) < entry.x);
   if (index >= analyticLayout.count) { return out; }
   let selectedCoord = analyticLayout.aliasOffset + index;
@@ -505,13 +505,6 @@ fn smsProvesUniquePlanarDeltaTransmission(
   return eta * eta * (1.0 - cosIncident * cosIncident) < 1.0;
 }
 
-struct SmsMultiplicityEstimate {
-  weight: f32,
-  trials: u32,
-  truncated: u32,
-  exactUnique: u32,
-};
-
 fn smsBoundedMultiplicityEstimate(
   geometry: SmsChainGeometry,
   media: SmsChainMedia,
@@ -520,15 +513,9 @@ fn smsBoundedMultiplicityEstimate(
   primary: SmsChainResult,
   pixelIndex: u32,
   channel: u32,
-) -> SmsMultiplicityEstimate {
-  var out: SmsMultiplicityEstimate;
-  out.weight = 1.0;
-  out.trials = 0u;
-  out.truncated = 0u;
-  out.exactUnique = 0u;
+) -> f32 {
   if (smsProvesUniquePlanarDeltaTransmission(geometry, media, endpoint, receiver, primary)) {
-    out.exactUnique = 1u;
-    return out;
+    return 1.0;
   }
   let cap = smsConfiguredMultiplicityTrials();
   for (var trial = 1u; trial <= 32u; trial = trial + 1u) {
@@ -545,15 +532,10 @@ fn smsBoundedMultiplicityEstimate(
       geometry, media, endpoint.position, receiver, seeds,
     );
     if (smsSameSolution(primary, recurrence, geometry, endpoint.position, receiver)) {
-      out.weight = f32(trial);
-      out.trials = trial;
-      return out;
+      return f32(trial);
     }
   }
-  out.weight = f32(cap);
-  out.trials = cap;
-  out.truncated = 1u;
-  return out;
+  return f32(cap);
 }
 
 struct SmsSegmentVisibility {
@@ -979,7 +961,7 @@ fn lo_manifold_caustic(
       );
     }
     if (!(focusing > 0.0) || !(focusing < INFINITY)) { continue; }
-    let multiplicity = smsBoundedMultiplicityEstimate(
+    let multiplicityWeight = smsBoundedMultiplicityEstimate(
       geometry, built.media, endpoint, receiver, solved, pixelIndex, channel,
     );
     // The canonical layered receiver evaluation includes N·L. Point and
@@ -1000,7 +982,7 @@ fn lo_manifold_caustic(
       endpoint.family == SMS_SOURCE_AREA,
     );
     let contribution = smsChannel(receiverResponse, channel) *
-      light * path.factor * chainVisibility * focusing * multiplicity.weight /
+      light * path.factor * chainVisibility * focusing * multiplicityWeight /
       proposalDensity;
     if (!(contribution > 0.0) || !(contribution < INFINITY)) { continue; }
     if (channel == 0u) { result.r = result.r + contribution; }

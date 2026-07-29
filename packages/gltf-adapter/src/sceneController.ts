@@ -7,10 +7,12 @@
 
 import {
   asMat4,
+  createAnimationClipSampler,
   patchPrimitiveInScene,
-  sampleAnimationClip,
   solveSkin,
+  validateScene,
   type AnimationClip,
+  type AnimationClipSampler,
   type InstancedMeshPrimitive,
   type MaterialSpec,
   type Mat4,
@@ -113,6 +115,7 @@ export interface GltfEmitterPatchRecord {
 
 export type GltfSceneControllerDiagnosticCode =
   | 'animation-matrix-overridden'
+  | 'animation-matrix-trs-unavailable'
   | 'animation-morph-target-missing'
   | 'animation-skin-joint-unreachable'
   | 'animation-skin-mesh-transform-noninvertible'
@@ -194,6 +197,9 @@ interface NodeLocalState {
   rotation: [number, number, number, number];
   scale: [number, number, number];
   matrix?: Float32Array;
+  matrixResidual?: Float32Array;
+  /** The raw matrix is valid, but no invertible TRS base exists for channel replacement. */
+  matrixTrsUnavailable?: boolean;
   matrixOverridden: boolean;
 }
 
@@ -326,9 +332,28 @@ export class GltfSceneController {
   readonly #warnings: string[] = [];
   readonly #diagnostics: GltfSceneControllerDiagnostic[] = [];
   readonly #warnedMatrixOverrideNodes = new Set<number>();
+  readonly #warnedMatrixTrsUnavailableNodes = new Set<number>();
+  readonly #samplersByClip = new WeakMap<AnimationClip, AnimationClipSampler>();
   readonly #diagnosticHistoryLimit: number;
 
   constructor(input: GltfSceneControllerInput, options: GltfSceneControllerOptions = {}) {
+    // patchPrimitiveInScene intentionally validates only the changed primitive
+    // on its hot path. Establish its documented precondition once at this
+    // public boundary, including hidden node-visibility members that can enter
+    // a later frame's snapshot.
+    validateScene(input.scene);
+    const allPrimitives = input.nodeVisibilityPrimitives ?? input.scene.primitives;
+    const allEmitters = input.nodeVisibilityEmitters ?? input.scene.emitters;
+    if (
+      allPrimitives !== input.scene.primitives ||
+      allEmitters !== input.scene.emitters
+    ) {
+      validateScene({
+        ...input.scene,
+        primitives: allPrimitives,
+        emitters: allEmitters,
+      });
+    }
     this.#diagnosticHistoryLimit = diagnosticHistoryLimit(options.diagnosticHistoryLimit);
     this.gltf = input.gltf;
     this.animations = input.animations;
@@ -344,7 +369,6 @@ export class GltfSceneController {
     this.#cameras = this.#baseCameras;
     this.#nodeToPrimitiveIds = parseAnimationTargets(input.animationTargets);
     this.#primitiveNodeById = invertNodePrimitiveBindings(this.#nodeToPrimitiveIds);
-    const allPrimitives = input.nodeVisibilityPrimitives ?? input.scene.primitives;
     this.#allPrimitiveIds = allPrimitives.map((primitive) => String(primitive.id));
     this.#basePrimitiveById = new Map(allPrimitives.map((p) => [String(p.id), p]));
     this.#convertedMaterials = input.convertedMaterials ?? [];
@@ -359,7 +383,6 @@ export class GltfSceneController {
     this.#emitterNodeById = new Map(
       this.#punctualEmitterBindings.map((binding) => [binding.emitterId, binding.nodeIndex]),
     );
-    const allEmitters = input.nodeVisibilityEmitters ?? input.scene.emitters;
     this.#allEmitterIds = allEmitters.map((emitter) => String(emitter.id));
     this.#baseEmitterById = new Map(
       allEmitters.map((emitter) => [String(emitter.id), emitter]),
@@ -480,7 +503,7 @@ export class GltfSceneController {
   ): GltfAnimationApplyResult {
     const clip = this.#resolveClip(selector);
     const localTime = normalizeClipTime(clip, time, options.loop ?? false);
-    const samples = sampleAnimationClip(clip, localTime);
+    const samples = this.#samplerForClip(clip).sample(localTime);
     const frameWarnings: string[] = [];
     const frameDiagnostics: GltfSceneControllerDiagnostic[] = [];
     const applied = this.#applySampledChannels(samples, options, {
@@ -531,7 +554,9 @@ export class GltfSceneController {
     const localTimes = clips.map((clip, index) =>
       normalizeClipTime(clip, requestedTimes[index] ?? 0, options.loop ?? false),
     );
-    const perClipSamples = clips.map((clip, index) => sampleAnimationClip(clip, localTimes[index] ?? 0));
+    const perClipSamples = clips.map(
+      (clip, index) => this.#samplerForClip(clip).sample(localTimes[index] ?? 0),
+    );
     const samples = blendSampledChannels(perClipSamples, positiveWeights);
     const frameWarnings: string[] = [];
     const frameDiagnostics: GltfSceneControllerDiagnostic[] = [];
@@ -555,6 +580,15 @@ export class GltfSceneController {
       diagnostics: frameDiagnostics,
       usedSetScene: applied.usedSetScene,
     };
+  }
+
+  #samplerForClip(clip: AnimationClip): AnimationClipSampler {
+    let sampler = this.#samplersByClip.get(clip);
+    if (sampler == null) {
+      sampler = createAnimationClipSampler(clip);
+      this.#samplersByClip.set(clip, sampler);
+    }
+    return sampler;
   }
 
   setVariant(
@@ -901,6 +935,21 @@ export class GltfSceneController {
     }
 
     const state = locals[nodeIndex];
+    if (state.matrix && state.matrixTrsUnavailable) {
+      if (!this.#warnedMatrixTrsUnavailableNodes.has(nodeIndex)) {
+        this.#warnedMatrixTrsUnavailableNodes.add(nodeIndex);
+        emitControllerDiagnostic(frame, {
+          code: 'animation-matrix-trs-unavailable',
+          path: `nodes[${nodeIndex}].matrix`,
+          message:
+            `[vitrum/gltf-adapter] Animation targets node ${nodeIndex}, whose imported matrix ` +
+            'has a singular basis and cannot be decomposed into an invertible TRS base. ' +
+            'The TRS channel was skipped and the authored matrix remains active.',
+          nodeIndex,
+        });
+      }
+      return;
+    }
     if (state.matrix && !this.#warnedMatrixOverrideNodes.has(nodeIndex)) {
       this.#warnedMatrixOverrideNodes.add(nodeIndex);
       emitControllerDiagnostic(frame, {
@@ -908,7 +957,8 @@ export class GltfSceneController {
         path: `nodes[${nodeIndex}].matrix`,
         message:
           `[vitrum/gltf-adapter] Animation targets node ${nodeIndex}, which imported from a matrix. ` +
-          'The controller evaluates animated TRS channels over the matrix for this frame.',
+          'The controller decomposes its base TRS, replaces only the animated channel, and preserves ' +
+          'the remaining affine residual for this frame.',
         nodeIndex,
       });
     }
@@ -1052,9 +1102,17 @@ export class GltfSceneController {
       for (const id of primitiveIds) {
         const source = this.#deformationSource(id);
         if (!source?.morphTargets || source.morphTargets.length === 0) {
-          throw new Error(
-            `[vitrum/gltf-adapter] Animation weights target resolved to primitive "${id}", but that primitive has no morph targets.`,
-          );
+          emitControllerDiagnostic(frame, {
+            code: 'animation-morph-target-missing',
+            path: `scene.primitives["${id}"].morphTargets`,
+            message:
+              `[vitrum/gltf-adapter] GltfSceneController.${frame.caller}: animation weights ` +
+              `target resolved to primitive "${id}", but that primitive has no morph targets; ` +
+              'this primitive was skipped while morph-capable siblings continue.',
+            primitiveId: id,
+            nodeIndex,
+          });
+          continue;
         }
         sampledMorphWeightsByPrimitiveId.set(
           id,
@@ -1382,14 +1440,52 @@ export class GltfSceneController {
 }
 
 function baseLocalState(node: GltfNode): NodeLocalState {
-  const state: NodeLocalState = {
+  if (node.matrix) {
+    const matrix = new Float32Array(node.matrix);
+    try {
+      const decomposed = decomposeAffineMatrix(matrix);
+      const composedBase = composeTrsMat4(
+        decomposed.translation,
+        decomposed.rotation,
+        decomposed.scale,
+      );
+      const inverseBase = mat4Invert(composedBase);
+      if (inverseBase === null) {
+        throw new Error(
+          '[vitrum/gltf-adapter] Matrix-authored node could not be decomposed into an invertible TRS base.',
+        );
+      }
+      return {
+        ...decomposed,
+        matrix,
+        matrixResidual: mat4Mul(inverseBase, matrix),
+        matrixOverridden: false,
+      };
+    } catch {
+      // A zero-scale/singular matrix is still a valid authored local transform.
+      // Preserve it verbatim so unrelated nodes and non-TRS animation continue
+      // to work; #applySampleToLocals diagnoses and skips only a TRS channel
+      // that actually targets this node.
+      return {
+        translation: [
+          matrix[12] ?? 0,
+          matrix[13] ?? 0,
+          matrix[14] ?? 0,
+        ],
+        rotation: [0, 0, 0, 1],
+        scale: [1, 1, 1],
+        matrix,
+        matrixTrsUnavailable: true,
+        matrixOverridden: false,
+      };
+    }
+  }
+  return {
     translation: node.translation ? [...node.translation] : [0, 0, 0],
     rotation: node.rotation ? [...node.rotation] : [0, 0, 0, 1],
     scale: node.scale ? [...node.scale] : [1, 1, 1],
     matrixOverridden: false,
   };
-  if (node.matrix) state.matrix = new Float32Array(node.matrix);
-  return state;
 }
 
 function cloneLocalStates(states: readonly NodeLocalState[]): NodeLocalState[] {
@@ -1398,6 +1494,10 @@ function cloneLocalStates(states: readonly NodeLocalState[]): NodeLocalState[] {
     rotation: [...state.rotation],
     scale: [...state.scale],
     ...(state.matrix ? { matrix: new Float32Array(state.matrix) } : {}),
+    ...(state.matrixResidual
+      ? { matrixResidual: new Float32Array(state.matrixResidual) }
+      : {}),
+    ...(state.matrixTrsUnavailable ? { matrixTrsUnavailable: true } : {}),
     matrixOverridden: false,
   }));
 }
@@ -1405,7 +1505,121 @@ function cloneLocalStates(states: readonly NodeLocalState[]): NodeLocalState[] {
 function localMatrixForState(state: NodeLocalState | undefined, node: GltfNode | undefined): Float32Array {
   if (!state) return node ? nodeLocalMatrix(node) : new Float32Array(IDENTITY_MAT4);
   if (state.matrix && !state.matrixOverridden) return new Float32Array(state.matrix);
-  return composeTrsMat4(state.translation, state.rotation, state.scale);
+  const composed = composeTrsMat4(state.translation, state.rotation, state.scale);
+  return state.matrixResidual
+    ? mat4Mul(composed, state.matrixResidual)
+    : composed;
+}
+
+function decomposeAffineMatrix(matrix: ArrayLike<number>): Pick<
+  NodeLocalState,
+  'translation' | 'rotation' | 'scale'
+> {
+  const translation: [number, number, number] = [
+    matrix[12] ?? 0,
+    matrix[13] ?? 0,
+    matrix[14] ?? 0,
+  ];
+  const c0: [number, number, number] = [
+    matrix[0] ?? 0, matrix[1] ?? 0, matrix[2] ?? 0,
+  ];
+  const c1: [number, number, number] = [
+    matrix[4] ?? 0, matrix[5] ?? 0, matrix[6] ?? 0,
+  ];
+  const c2: [number, number, number] = [
+    matrix[8] ?? 0, matrix[9] ?? 0, matrix[10] ?? 0,
+  ];
+  const basisScale = Math.max(
+    Math.abs(c0[0]), Math.abs(c0[1]), Math.abs(c0[2]),
+    Math.abs(c1[0]), Math.abs(c1[1]), Math.abs(c1[2]),
+    Math.abs(c2[0]), Math.abs(c2[1]), Math.abs(c2[2]),
+  );
+  if (!(basisScale > 0) || !Number.isFinite(basisScale)) {
+    throw new Error(
+      '[vitrum/gltf-adapter] Matrix-authored node has a degenerate basis and cannot preserve TRS animation.',
+    );
+  }
+  const n0: [number, number, number] = [
+    c0[0] / basisScale, c0[1] / basisScale, c0[2] / basisScale,
+  ];
+  const n1: [number, number, number] = [
+    c1[0] / basisScale, c1[1] / basisScale, c1[2] / basisScale,
+  ];
+  const n2: [number, number, number] = [
+    c2[0] / basisScale, c2[1] / basisScale, c2[2] / basisScale,
+  ];
+  const sxNormalized = Math.hypot(...n0);
+  if (!(sxNormalized > 1e-12) || !Number.isFinite(sxNormalized)) {
+    throw new Error(
+      '[vitrum/gltf-adapter] Matrix-authored node has a degenerate X basis and cannot preserve TRS animation.',
+    );
+  }
+  const x: [number, number, number] = [
+    n0[0] / sxNormalized, n0[1] / sxNormalized, n0[2] / sxNormalized,
+  ];
+  const xy = x[0] * n1[0] + x[1] * n1[1] + x[2] * n1[2];
+  const yCandidate: [number, number, number] = [
+    n1[0] - x[0] * xy,
+    n1[1] - x[1] * xy,
+    n1[2] - x[2] * xy,
+  ];
+  const syNormalized = Math.hypot(...yCandidate);
+  if (!(syNormalized > 1e-12) || !Number.isFinite(syNormalized)) {
+    throw new Error(
+      '[vitrum/gltf-adapter] Matrix-authored node has a degenerate Y basis and cannot preserve TRS animation.',
+    );
+  }
+  const y: [number, number, number] = [
+    yCandidate[0] / syNormalized,
+    yCandidate[1] / syNormalized,
+    yCandidate[2] / syNormalized,
+  ];
+  const z: [number, number, number] = [
+    x[1] * y[2] - x[2] * y[1],
+    x[2] * y[0] - x[0] * y[2],
+    x[0] * y[1] - x[1] * y[0],
+  ];
+  const szNormalized = z[0] * n2[0] + z[1] * n2[1] + z[2] * n2[2];
+  if (!(Math.abs(szNormalized) > 1e-12) || !Number.isFinite(szNormalized)) {
+    throw new Error(
+      '[vitrum/gltf-adapter] Matrix-authored node has a degenerate Z basis and cannot preserve TRS animation.',
+    );
+  }
+  return {
+    translation,
+    rotation: quaternionFromRotationColumns(x, y, z),
+    scale: [
+      sxNormalized * basisScale,
+      syNormalized * basisScale,
+      szNormalized * basisScale,
+    ],
+  };
+}
+
+function quaternionFromRotationColumns(
+  x: readonly [number, number, number],
+  y: readonly [number, number, number],
+  z: readonly [number, number, number],
+): [number, number, number, number] {
+  const m00 = x[0], m01 = y[0], m02 = z[0];
+  const m10 = x[1], m11 = y[1], m12 = z[1];
+  const m20 = x[2], m21 = y[2], m22 = z[2];
+  const trace = m00 + m11 + m22;
+  let q: [number, number, number, number];
+  if (trace > 0) {
+    const s = Math.sqrt(trace + 1) * 2;
+    q = [(m21 - m12) / s, (m02 - m20) / s, (m10 - m01) / s, s / 4];
+  } else if (m00 > m11 && m00 > m22) {
+    const s = Math.sqrt(1 + m00 - m11 - m22) * 2;
+    q = [s / 4, (m01 + m10) / s, (m02 + m20) / s, (m21 - m12) / s];
+  } else if (m11 > m22) {
+    const s = Math.sqrt(1 + m11 - m00 - m22) * 2;
+    q = [(m01 + m10) / s, s / 4, (m12 + m21) / s, (m02 - m20) / s];
+  } else {
+    const s = Math.sqrt(1 + m22 - m00 - m11) * 2;
+    q = [(m02 + m20) / s, (m12 + m21) / s, s / 4, (m10 - m01) / s];
+  }
+  return normalizeQuat(q);
 }
 
 function buildWorldTransformsForLocals(
@@ -1617,7 +1831,11 @@ function resolvePrimitiveMaterialIndex(
   }
   if (!matchedMapping) return baseMaterialIndex;
   const { mapping, index: mappingIndex } = matchedMapping;
-  if (mapping.material < 0 || mapping.material >= (gltf.materials?.length ?? 0)) {
+  if (
+    !Number.isSafeInteger(mapping.material) ||
+    mapping.material < 0 ||
+    mapping.material >= (gltf.materials?.length ?? 0)
+  ) {
     emitControllerDiagnostic(frame, {
       code: 'variant-mapping-material-missing',
       path: `meshes[${meshIndex}].primitives[${primitiveIndex}].extensions.KHR_materials_variants.mappings[${mappingIndex}].material`,

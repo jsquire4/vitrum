@@ -26,6 +26,8 @@ import {
   patchEmitterInScene,
   patchPrimitiveInScene,
   validateScene as validateCoreScene,
+  validateSceneEmitters,
+  validateSceneEnvironment,
 } from '@vitrum/core';
 import type { WorldSpaceMergeResult } from '@vitrum/shared-bvh';
 import { pickPrimitiveCpu, type PickCamera } from '@vitrum/shared-bvh';
@@ -63,6 +65,7 @@ import { WEBGL2_DEFAULT_BOUNCES } from './limits.js';
 import { DEFAULT_RENDER_TARGET_BUDGET_BYTES } from './gl/renderTargetBudget.js';
 import {
   deriveSceneTraceFeatures,
+  validateWebGl2PrimitiveMaterial,
   validateWebGl2SceneMaterials,
 } from './scene/sceneTraceFeatures.js';
 
@@ -202,6 +205,7 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
   readonly #backgroundAlpha: number;
   readonly #backgroundBlur: number;
   readonly #supportsAuxBuffers: boolean;
+  readonly #debugEnabled: boolean;
   readonly #postDenoiser: OIDNFinalDispatcher | null;
   #pendingDenoised: DenoisedFrame | null = null;
 
@@ -242,6 +246,15 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
   constructor(opts: PTEngineWebGL2Options, slot: StateSlot, traceTier: WebGl2TraceTier) {
     this.#slot = slot;
     this.#gl = opts.device;
+    this.#debugEnabled = opts.debug === true;
+    if (this.#debugEnabled) {
+      Object.defineProperty(this, 'debug', {
+        value: this.#debugSurface,
+        enumerable: true,
+        configurable: false,
+        writable: false,
+      });
+    }
     if (opts.onWarning != null) {
       this.#onWarningSubs.add(opts.onWarning);
     }
@@ -360,6 +373,7 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
         bdpt: this.#bdpt,
         spectral: this.#spectralEnabled,
         sampling: this.#randomType === 1 ? 'sobol' : 'pcg',
+        debug: this.#debugEnabled,
       },
     );
   }
@@ -397,6 +411,25 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
     this.#guardLive('setScene');
     validateCoreScene(scene);
     validateWebGl2SceneMaterials(scene, 'setScene');
+    this.#replaceScene(scene, 'setScene');
+  }
+
+  /**
+   * Build and atomically publish a complete scene-texture replacement after
+   * the caller has validated the domain it changed. `setScene` performs the
+   * full core/material validation; mutation methods validate only their
+   * changed primitive, emitter, or environment domain because the retained
+   * remainder was already accepted.
+   */
+  #replaceScene(
+    scene: Scene,
+    method:
+      | 'setScene'
+      | 'updatePrimitive'
+      | 'updateEmitter'
+      | 'updateEnvironment'
+      | 'updateLighting',
+  ): void {
     // H7 FIX (2026-06-09): partition ONCE. setScene used to call
     // partitionSceneBySupport here AND buildSceneTextures re-partitioned the
     // already-filtered scene internally (uploadSceneTextures.ts) — redundant work.
@@ -406,8 +439,8 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
       this.#warn({
         code: 'pt-webgl2.scene-upload-warning',
         backend: 'pt-webgl2',
-        phase: 'setScene',
-        method: 'setScene',
+        phase: method === 'setScene' ? 'setScene' : 'incremental-mutation',
+        method,
         message: `[vitrum/pt-webgl2] ${w}`,
         details: { warning: w },
       });
@@ -429,7 +462,7 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
           code: 'pt-webgl2.texture-retirement-failed',
           backend: 'pt-webgl2',
           phase: 'lifecycle',
-          method: 'setScene',
+          method,
           message:
             '[vitrum/pt-webgl2] Replacement scene was published, but one or more old textures failed to retire.',
           details: { error: errorMessage(error) },
@@ -473,7 +506,7 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
   // ── Debug introspection (T3.G #30) ────────────────────────────────────────
   // CPU click-to-pick using the retained scene + last-frame camera matrices.
   // Returns null before the first renderFrame (no camera) or on a miss.
-  readonly debug: EngineDebugSurface = {
+  readonly #debugSurface: EngineDebugSurface = {
     pickPrimitive: (x: number, y: number): string | null => {
       const scene = this.#scene;
       const last = this.#lastFrameInput;
@@ -587,7 +620,13 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
       throw new Error('updatePrimitive: call setScene() before updatePrimitive()');
     }
     const nextScene = patchPrimitiveInScene(this.#scene, id, patch);
-    validateWebGl2SceneMaterials(nextScene, 'updatePrimitive');
+    const nextPrimitive = nextScene.primitives.find(
+      (primitive) => String(primitive.id) === id,
+    );
+    if (nextPrimitive == null) {
+      throw new Error(`updatePrimitive: primitive "${id}" not found in patched scene`);
+    }
+    validateWebGl2PrimitiveMaterial(nextPrimitive, 'updatePrimitive');
     const fast = tryFastPathMaterialMutation(
       this.#gl,
       this.#sceneTextures,
@@ -615,7 +654,7 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
       return;
     }
     this.#warnPrimitiveMutationFallback(id, patch);
-    this.setScene(nextScene);
+    this.#replaceScene(nextScene, 'updatePrimitive');
   }
 
   updateEmitter(id: string, patch: Partial<SceneEmitter>): void {
@@ -635,7 +674,7 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
       this.#commitMutationSwap(nextScene, fast);
       return;
     }
-    this.setScene(nextScene);
+    this.#replaceScene(nextScene, 'updateEmitter');
   }
 
   updateEnvironment(env: SceneEnvironment | null): void {
@@ -647,13 +686,13 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
       ...this.#scene,
       environment: env ?? { kind: 'none' },
     };
-    validateCoreScene(nextScene);
+    validateSceneEnvironment(nextScene.environment);
     const fast = fastPathEnvironmentMutation(this.#gl, this.#sceneTextures, nextScene);
     if (fast != null) {
       this.#commitMutationSwap(nextScene, fast);
       return;
     }
-    this.setScene(nextScene);
+    this.#replaceScene(nextScene, 'updateEnvironment');
   }
 
   /**
@@ -661,9 +700,9 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
    *
    * Unlike a host-side sequence of `updateEmitter()` / `updateEnvironment()`,
    * this validates and uploads one complete candidate scene before publishing
-   * any part of it. `setScene()` builds replacement resources before swapping
-   * the retained scene, so a validation or upload failure preserves the prior
-   * lighting and GL resources.
+   * any part of it. Replacement resources are built before the retained scene
+   * is swapped, so a validation or upload failure preserves the prior lighting
+   * and GL resources.
    */
   updateLighting(opts: Readonly<Record<string, unknown>>): void {
     this.#guardLive('updateLighting');
@@ -720,8 +759,13 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
         : {}),
     };
 
-    validateCoreScene(nextScene);
-    this.setScene(nextScene);
+    if (hasEmitters) {
+      validateSceneEmitters(nextScene.emitters, nextScene.primitives);
+    }
+    if (hasEnvironment) {
+      validateSceneEnvironment(nextScene.environment);
+    }
+    this.#replaceScene(nextScene, 'updateLighting');
   }
 
   setSize(width: number, height: number): void {
@@ -733,9 +777,7 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
       this.#gpu.accumDims.width === targetWidth &&
       this.#gpu.accumDims.height === targetHeight
     ) return;
-    if (this.#gpu.accumDims.width > 0 && this.#gpu.accumDims.height > 0) {
-      this.#gpu.ensureAccumResources(targetWidth, targetHeight);
-    }
+    this.#gpu.ensureAccumResources(targetWidth, targetHeight);
     this.reset();
   }
 

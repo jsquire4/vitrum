@@ -561,6 +561,32 @@ describe('OIDNFinalDenoiser.dispatch', () => {
       errorSpy.mockRestore();
     }
   });
+
+  it('latches after three persistent failures instead of readback/inference every frame forever', async () => {
+    const d = new OIDNFinalDenoiser({ modelUrl: '/bad.onnx' });
+    const device = fakeDevice();
+    await d.initialize(fakeInitCtx(device));
+    denoiseFinal.mockRejectedValue(new Error('persistent model failure'));
+    const hdr = fakeTexture();
+    const ctx = fakeDispatchCtx(device, fakeEncoder(), hdr, fakeTexture(), fakeTexture());
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      for (let attempt = 0; attempt < 4; attempt += 1) {
+        expect(d.dispatch(ctx)).toBe(hdr);
+        d.afterFrameSubmit();
+        await new Promise((r) => setTimeout(r, 0));
+        await new Promise((r) => setTimeout(r, 0));
+      }
+      expect(denoiseFinal).toHaveBeenCalledTimes(3);
+      expect(d.state()).toEqual({
+        status: 'failed',
+        reason: 'OIDN inference cycle failed: persistent model failure',
+        retryable: false,
+      });
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
 });
 
 describe('OIDNFinalDenoiser.dispose', () => {

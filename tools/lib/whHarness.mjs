@@ -18,6 +18,10 @@
  * this module.
  */
 
+import {
+  HYBRID_WEBGPU_REQUIRED_LIMITS,
+} from "../../packages/walkaround-hybrid/src/webgpuLimits.ts";
+
 // ── Camera ────────────────────────────────────────────────────────────────────
 
 export function makePerspectiveMatrix(fovDeg, aspect, near, far) {
@@ -55,14 +59,20 @@ export function makeLookAtMatrix(eye, center, up) {
 export async function acquireWhDevice() {
   const adapter = await navigator.gpu.requestAdapter();
   if (!adapter) throw new Error("No WebGPU adapter");
-  const limits = {};
-  const sb = adapter.limits.maxStorageBuffersPerShaderStage ?? 8;
-  const st = adapter.limits.maxStorageTexturesPerShaderStage ?? 4;
-  if (sb >= 16) limits.maxStorageBuffersPerShaderStage = sb;
-  if (st >= 8)  limits.maxStorageTexturesPerShaderStage = st;
+  const supported = adapter.limits;
+  const limits = { ...HYBRID_WEBGPU_REQUIRED_LIMITS };
+  for (const [key, required] of Object.entries(HYBRID_WEBGPU_REQUIRED_LIMITS)) {
+    const actual = Number(supported[key]);
+    if (!Number.isFinite(actual) || actual < required) {
+      throw new Error(
+        `WebGPU adapter ${key}=${String(supported[key])} is below the ` +
+        `walkaround requirement ${required}`,
+      );
+    }
+  }
   const bg = adapter.limits.maxBindGroups ?? 4;
   if (bg > 4) limits.maxBindGroups = bg;
-  return adapter.requestDevice(Object.keys(limits).length ? { requiredLimits: limits } : {});
+  return adapter.requestDevice({ requiredLimits: limits });
 }
 
 // ── Readback ──────────────────────────────────────────────────────────────────

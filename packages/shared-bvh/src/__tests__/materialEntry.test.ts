@@ -22,6 +22,7 @@ import {
   MATERIAL_FLAG_IS_GLASS,
   coreMaterialToMaterialEntry,
   packMaterials,
+  toProductionEmissiveRadiance,
   type MaterialEntryInput,
 } from '../materialEntry.js';
 
@@ -174,6 +175,15 @@ describe('canonical MaterialEntry packing (W2-C5)', () => {
 });
 
 describe('coreMaterialToMaterialEntry — THREE-free MaterialSpec adapter', () => {
+  it('folds emissiveIntensity into production radiance exactly once', () => {
+    const folded = toProductionEmissiveRadiance(
+      spec({ emissive: [0.5, 0.25, 0.1], emissiveIntensity: 4 }),
+    );
+    expect(folded.emissive).toEqual([2, 1, 0.4]);
+    expect(folded.emissiveIntensity).toBe(1);
+    expect(coreMaterialToMaterialEntry(folded).emissive).toEqual([2, 1, 0.4]);
+  });
+
   it('passes through baseColor / roughness / metallic (→ metalness)', () => {
     const e = coreMaterialToMaterialEntry(
       spec({ baseColor: [0.2, 0.4, 0.6], roughness: 0.3, metallic: 0.8 }),

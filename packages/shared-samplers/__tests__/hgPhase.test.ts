@@ -12,7 +12,12 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { evaluateHG, sampleHG, pdfHG } from '../src/hgPhase.js';
+import {
+  evaluateHG,
+  HG_G_STABILITY_LIMIT,
+  sampleHG,
+  pdfHG,
+} from '../src/hgPhase.js';
 
 const INV_4PI = 1 / (4 * Math.PI);
 
@@ -49,6 +54,24 @@ describe('evaluateHG', () => {
         expect(isFinite(val)).toBe(true);
       }
     }
+  });
+
+  it('preserves authored ±0.99995 instead of flattening to the old ±0.9999 cap', () => {
+    const g = 0.99995;
+    const expectedPeak = INV_4PI * (1 + g) / ((1 - g) ** 2);
+    expect(HG_G_STABILITY_LIMIT).toBe(0.999999);
+    expect(evaluateHG(1, g)).toBeCloseTo(expectedPeak, 8);
+    expect(evaluateHG(-1, -g)).toBeCloseTo(expectedPeak, 8);
+    expect(evaluateHG(1, g)).toBeGreaterThan(evaluateHG(1, 0.9999) * 3.9);
+  });
+
+  it('keeps the aligned density finite and positive at the stability cap', () => {
+    const forward = evaluateHG(1, HG_G_STABILITY_LIMIT);
+    const backward = evaluateHG(-1, -HG_G_STABILITY_LIMIT);
+    expect(Number.isFinite(forward)).toBe(true);
+    expect(Number.isFinite(backward)).toBe(true);
+    expect(forward).toBeGreaterThan(0);
+    expect(backward).toBe(forward);
   });
 });
 
@@ -96,6 +119,24 @@ describe('sampleHG', () => {
       const [, , z] = sampleHG(u1, u2, 0);
       const expected = 1 - 2 * u2;
       expect(z).toBeCloseTo(expected, 5);
+    }
+  });
+
+  it('keeps the same random-variate mapping continuously through g=0', () => {
+    for (const u2 of [0.01, 0.2, 0.5, 0.8, 0.99]) {
+      const z0 = sampleHG(0.37, u2, 0)[2];
+      const zPositive = sampleHG(0.37, u2, 1e-8)[2];
+      const zNegative = sampleHG(0.37, u2, -1e-8)[2];
+      expect(zPositive).toBeCloseTo(z0, 7);
+      expect(zNegative).toBeCloseTo(z0, 7);
+    }
+  });
+
+  it('has no branch discontinuity at the stable-inverse threshold', () => {
+    for (const u2 of [0.01, 0.2, 0.5, 0.8, 0.99]) {
+      const below = sampleHG(0.37, u2, 0.125 - 1e-8)[2];
+      const above = sampleHG(0.37, u2, 0.125 + 1e-8)[2];
+      expect(above).toBeCloseTo(below, 6);
     }
   });
 

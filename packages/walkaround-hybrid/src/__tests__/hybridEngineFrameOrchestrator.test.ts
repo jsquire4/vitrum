@@ -335,7 +335,6 @@ function makeRcFrameDeps(args: {
       atrousDirectSigmas: [128, 5, 0.05],
       atrousIndirectSigmas: [32, 20, 0.5],
       stainedGlassFlags: 0,
-      nrcEnabled: 0,
     },
     telemetry: {
       frameSubs: [],
@@ -358,10 +357,9 @@ function makeRcFrameDeps(args: {
     flags: {
       state: 'ready',
       debug: false,
-      ddgiOn: false,
       isLayerEnabled: () => false,
       device: {} as GPUDevice,
-      maxBounces: 4,
+      maxBounces: 2,
       tunables: {
         emitterDist2Floor: 0.01,
         directFireflyClamp: 4,

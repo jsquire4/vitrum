@@ -26,9 +26,7 @@ export interface InversePathReplayRenderContext {
   readonly bdpt?: boolean;
   readonly restirPtReuse?: boolean;
   readonly causticStrategy?: 'none' | 'manifold-nee' | 'photon-map';
-  readonly directLighting?: 'sampled-selection' | 'summed-expectation';
   readonly cameraVisibleEmitters?: boolean;
-  readonly implicitEmissiveMeshLights?: boolean;
 }
 
 export function collectPathReplayDiagnostics(

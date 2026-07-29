@@ -36,10 +36,10 @@
 
 import {
   getPrimitiveActiveColorSet,
-  getPrimitiveUvSet,
   validateScene,
   type Mat4,
   type MaterialSpec,
+  type PrimitiveUvSets,
   type Scene,
   type ScenePrimitive,
 } from '@vitrum/core';
@@ -56,6 +56,8 @@ import {
   determinant4,
 } from './worldTransforms.js';
 import { materialSig } from './materialSignature.js';
+
+const EMPTY_PRIMITIVE_UV_SETS: PrimitiveUvSets = Object.freeze([]);
 
 // D12-9: the transform kernels + the material-dedup signature were extracted to
 // `worldTransforms.ts` / `materialSignature.ts` (pure move). Re-export so the
@@ -105,6 +107,12 @@ export interface MergedMeshVertexRange {
    * skipping any all-filtered instances. Additive/optional.
    */
   readonly sourceInstanceIndex?: number;
+  /**
+   * Displacement-resolved UV sources captured by the producer. Keeping these
+   * with the emitted range prevents downstream UV merges from resolving
+   * microdisplacement a second time (and from touching filtered primitives).
+   */
+  readonly sourceUvSets?: PrimitiveUvSets;
 }
 
 export interface WorldSpaceMergeResult {
@@ -434,6 +442,7 @@ export function mergeWorldSpaceFromCore(
       baseTangents,
       baseColors,
       baseUvs, // optional; (0,0) per vertex when absent
+      baseUvSets,
       baseIndicesSource,
       sourcePositions,
     } = resolveDisplacedGeometry(primitive, warn);
@@ -562,6 +571,12 @@ export function mergeWorldSpaceFromCore(
         // skip logic above (all-filtered instances push no range).
         sourcePrimitiveId: primitive.id,
         sourceInstanceIndex: instanceIndex,
+        // Always attach a cache marker. An empty array is semantically distinct
+        // from `undefined`: it proves the producer already resolved this
+        // UV-less primitive, so downstream UV merges must not run displacement
+        // resolution again. `undefined` remains reserved for legacy/external
+        // ranges that genuinely need the fallback lookup.
+        sourceUvSets: baseUvSets ?? EMPTY_PRIMITIVE_UV_SETS,
       });
     }
   }
@@ -672,28 +687,36 @@ export function mergeUvSetFromCore(
       `mergeUvSetFromCore: texCoord must be a non-negative safe integer (got ${String(texCoord)}).`,
     );
   }
-  const meshLike = scene.primitives.filter(
-    (p): p is Extract<ScenePrimitive, { kind: 'mesh' | 'instanced-mesh' | 'skinned-mesh' }> =>
-      p.kind === 'mesh' || p.kind === 'instanced-mesh' || p.kind === 'skinned-mesh',
-  );
-
-  const anyUvSet = meshLike.some(
-    (primitive) => (getPrimitiveUvSet(primitive, texCoord)?.length ?? 0) > 0,
-  );
-  if (!anyUvSet) return undefined;
-
-  // V2-4: build a per-primitive UV1 source lookup ONCE (UV1 is instance- and
-  // transform-invariant), then drive the output off the merged ranges directly
-  // — keyed by each range's recorded source-primitive id. This eliminates the
-  // replicated per-instance skip logic that used to desync `rangeIdx` when the
-  // producer dropped an all-filtered instance (validTriangles.length === 0 →
-  // no range pushed).
+  // Ranges produced by mergeWorldSpaceFromCore carry the already resolved UV
+  // sources. Only legacy/external ranges without that cache need a lookup.
   const sourceByPrimitiveId = new Map<string, Float32Array>();
-  for (const prim of meshLike) {
+  const missingPrimitiveIds = new Set(
+    ranges
+      .filter((range) => range.sourceUvSets == null)
+      .map((range) => range.sourcePrimitiveId ?? range.name),
+  );
+  for (const prim of scene.primitives) {
+    if (
+      !missingPrimitiveIds.has(prim.id) ||
+      (prim.kind !== 'mesh' &&
+        prim.kind !== 'instanced-mesh' &&
+        prim.kind !== 'skinned-mesh')
+    ) {
+      continue;
+    }
     const resolved = resolveDisplacedGeometry(prim, () => {});
     const source = resolved.baseUvSets?.[texCoord];
     if (source != null) sourceByPrimitiveId.set(prim.id, source);
   }
+
+  const anyUvSet = ranges.some((range) => {
+    const primitiveId = range.sourcePrimitiveId ?? range.name;
+    return (
+      (range.sourceUvSets?.[texCoord]?.length ?? 0) > 0 ||
+      (sourceByPrimitiveId.get(primitiveId)?.length ?? 0) > 0
+    );
+  });
+  if (!anyUvSet) return undefined;
 
   const out = new Float32Array(totalVertexCount * 2);
 
@@ -701,7 +724,9 @@ export function mergeUvSetFromCore(
     // Prefer the explicit provenance field; fall back to `name` (historically
     // equal to the primitive id) for ranges produced before the field existed.
     const primitiveId = range.sourcePrimitiveId ?? range.name;
-    const source = sourceByPrimitiveId.get(primitiveId);
+    const source =
+      range.sourceUvSets?.[texCoord] ??
+      sourceByPrimitiveId.get(primitiveId);
     if (source == null) continue;
 
     const { vertexStart, vertexCount } = range;

@@ -3,6 +3,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import {
+  createAnimationClipSampler,
   sampleAnimationClip,
   validateAnimationClip,
   type AnimationClip,
@@ -180,5 +181,48 @@ describe('sampleAnimationClip (P3)', () => {
     };
     expect(() => validateAnimationClip(clip([channel, channel])))
       .toThrow(/duplicates an earlier channel target/);
+  });
+
+  it('validates once and snapshots clip buffers for repeated playback', () => {
+    const times = new Float32Array([0, 1]);
+    const values = new Float32Array([0, 0, 0, 10, 20, 30]);
+    const c = clip([{
+      target: { node: 'n', path: 'translation' },
+      sampler: { times, values },
+    }]);
+    const sampler = createAnimationClipSampler(c);
+    times[1] = -1;
+    values[3] = 999;
+    expect(Array.from(sampler.sample(0.5)[0]!.value)).toEqual([5, 10, 15]);
+  });
+
+  it('uses the compiled snapshot on subsequent public samples', () => {
+    const values = new Float32Array([0, 0, 0, 10, 0, 0]);
+    const c = clip([{
+      target: { node: 'n', path: 'translation' },
+      sampler: { times: new Float32Array([0, 1]), values },
+    }]);
+    expect(sampleAnimationClip(c, 0.5)[0]!.value[0]).toBe(5);
+    values[3] = Number.NaN;
+    expect(sampleAnimationClip(c, 0.5)[0]!.value[0]).toBe(5);
+  });
+
+  it('finds the correct interval in a large key sequence', () => {
+    const count = 16_384;
+    const times = new Float32Array(count);
+    const values = new Float32Array(count * 3);
+    for (let index = 0; index < count; index += 1) {
+      times[index] = index;
+      values[index * 3] = index;
+    }
+    const c: AnimationClip = {
+      duration: count - 1,
+      channels: [{
+        target: { node: 'n', path: 'translation' },
+        sampler: { times, values },
+      }],
+    };
+    expect(createAnimationClipSampler(c).sample(12_345.5)[0]!.value[0])
+      .toBeCloseTo(12_345.5);
   });
 });

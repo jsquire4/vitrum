@@ -52,6 +52,16 @@ function quad(
   const nz = abx*acy - aby*acx;
   const len = Math.sqrt(nx*nx + ny*ny + nz*nz) || 1;
   const nxn = nx/len, nyn = ny/len, nzn = nz/len;
+  const centerX = (a[0] + b[0] + c[0] + d[0]) * 0.25;
+  const centerY = (a[1] + b[1] + c[1] + d[1]) * 0.25;
+  const centerZ = (a[2] + b[2] + c[2] + d[2]) * 0.25;
+  const facesInterior =
+    nxn * (0 - centerX) +
+    nyn * (1 - centerY) +
+    nzn * (0 - centerZ);
+  if (!(facesInterior > 0)) {
+    throw new Error(`Cornell panel "${id}" must be wound toward the box interior`);
+  }
 
   const normals = new Float32Array([
     nxn, nyn, nzn,
@@ -87,13 +97,15 @@ const green: MaterialSpec  = { baseColor: [0.12, 0.45, 0.12], roughness: 1.0, me
 
 // ── Geometry ──────────────────────────────────────────────────────────────────
 
-// Cornell box spans [-1, 1] in X and Z, [0, 2] in Y.
-
-const floor    = quad('floor',  [[-1,0,-1],[ 1,0,-1],[ 1,0, 1],[-1,0, 1]] as const, white);
-const ceiling  = quad('ceil',   [[-1,2,-1],[-1,2, 1],[ 1,2, 1],[ 1,2,-1]] as const, white);
-const backWall = quad('back',   [[-1,0,-1],[-1,2,-1],[ 1,2,-1],[ 1,0,-1]] as const, white);
-const leftWall = quad('left',   [[-1,0,-1],[-1,0, 1],[-1,2, 1],[-1,2,-1]] as const, red);
-const rightWall= quad('right',  [[ 1,0,-1],[ 1,2,-1],[ 1,2, 1],[ 1,0, 1]] as const, green);
+// Cornell box spans [-1, 1] in X and Z, [0, 2] in Y. Every quad is wound
+// toward the open interior: +Y floor, -Y ceiling, +Z back, +X left, -X right.
+// The materials are intentionally one-sided, so outward winding would make
+// every wall invisible to the camera and to paths inside the box.
+const floor    = quad('floor',  [[-1,0, 1],[ 1,0, 1],[ 1,0,-1],[-1,0,-1]] as const, white);
+const ceiling  = quad('ceil',   [[-1,2,-1],[ 1,2,-1],[ 1,2, 1],[-1,2, 1]] as const, white);
+const backWall = quad('back',   [[-1,0,-1],[ 1,0,-1],[ 1,2,-1],[-1,2,-1]] as const, white);
+const leftWall = quad('left',   [[-1,0,-1],[-1,2,-1],[-1,2, 1],[-1,0, 1]] as const, red);
+const rightWall= quad('right',  [[ 1,0,-1],[ 1,0, 1],[ 1,2, 1],[ 1,2,-1]] as const, green);
 
 // ── Emitter ───────────────────────────────────────────────────────────────────
 

@@ -619,9 +619,9 @@ fn lo_indirect(
   pos:     vec3f,
   normal:  vec3f,
   isGlass: bool,
-  isMetal: bool,
+  metal:   f32,
 ) -> vec3f {
-  if (isGlass || isMetal) { return vec3f(0.0); }
+  if (isGlass) { return vec3f(0.0); }
   var Lo_indirect = vec3f(0.0);
 ${giBilinearWeightsWgsl()}
   var totalW: f32 = 0.0;
@@ -717,7 +717,12 @@ ${giBilinearCornerSelectWgsl()}
   var wRc = 0.0;
   if (cSum > 0.0) { wRc = cRc / cSum; }
   let wRestirGi = 1.0 - wRc;
-  return wRestirGi * Lo_indirect + wRc * Lo_rc;
+  // Metallic is a continuous PBR blend, not a surface-classification bit.
+  // Preserve the dielectric diffuse share for fractional metals and suppress
+  // it only at the pure-conductor endpoint. The separate specular-indirect
+  // estimator consumes the complementary GGX/conductor response.
+  let diffuseWeight = 1.0 - clamp(metal, 0.0, 1.0);
+  return diffuseWeight * (wRestirGi * Lo_indirect + wRc * Lo_rc);
 }
 
 // --- Glass TRANSMITTED GI — bounded dielectric-prefix reservoir consumption --

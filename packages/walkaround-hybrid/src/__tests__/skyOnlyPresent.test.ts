@@ -13,6 +13,7 @@
  */
 import { describe, expect, it, vi } from 'vitest';
 import type { FrameInput, Scene } from '@vitrum/core';
+import { applyTonemap, linearToSrgb } from '@vitrum/shared-samplers';
 import {
   runHybridEngineFrame,
   type HybridEngineFrameDeps,
@@ -148,8 +149,29 @@ describe('H20-A sky-only present', () => {
     expect(out.isConverged).toBe(false);
     expect(record.submits).toBe(1);
     expect(record.clears).toHaveLength(1);
-    // skyTint × skyIrradiance, clamped non-negative.
-    expect(record.clears[0]).toEqual({ r: 0.8, g: 1.2, b: 2.0, a: 1 });
+    const mapped = applyTonemap([0.8, 1.2, 2], 'aces', 1).map(linearToSrgb);
+    expect(record.clears[0]?.r).toBeCloseTo(mapped[0]!, 7);
+    expect(record.clears[0]?.g).toBeCloseTo(mapped[1]!, 7);
+    expect(record.clears[0]?.b).toBeCloseTo(mapped[2]!, 7);
+    expect(record.clears[0]?.a).toBe(1);
+  });
+
+  it('honors per-frame exposure, tonemap, and linear output on the empty scene', () => {
+    const record = { clears: [] as RecordedClear[], submits: 0 };
+    const deps = makeDeps(makeDeviceStub(record), emptyScene(), [0.4, 0.6, 1], 2);
+    const input = frameInput(true);
+    (input as { quality?: FrameInput['quality'] }).quality = {
+      tonemap: 'reinhard',
+      exposure: 0.5,
+      outputColorSpace: 'linear',
+    };
+
+    runHybridEngineFrame(deps, input);
+
+    const expected = applyTonemap([0.8, 1.2, 2], 'reinhard', 0.5);
+    expect(record.clears[0]?.r).toBeCloseTo(expected[0], 7);
+    expect(record.clears[0]?.g).toBeCloseTo(expected[1], 7);
+    expect(record.clears[0]?.b).toBeCloseTo(expected[2], 7);
   });
 
   it('empty-scene-ready WITHOUT a swap-chain view skips (no present possible)', () => {

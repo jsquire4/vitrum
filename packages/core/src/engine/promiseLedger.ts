@@ -23,6 +23,9 @@ export interface BackendMethodPromises {
   readonly updateLighting: boolean;
   readonly onFrame: boolean;
   readonly onProgress: boolean;
+  /** Whether this backend can expose `Engine.debug` on a debug-enabled engine.
+   * Instance capability snapshots still report `debugSurface:false` and omit
+   * the property unless `EngineOptions.debug === true`. */
   readonly debug: boolean;
   /** Whether the backend implements the optional `Engine.getScene()` scene
    *  read-back (returns the retained canonical core {@link Scene}). All three
@@ -168,11 +171,11 @@ type _LedgerCoversCapabilities = _AssertExtends<_LedgerCapabilitySlice, BackendP
  *     instance-COUNT changes route through the retained core scene and rebuild
  *     the backend's scene textures/BVH pack. Co-present `material` routes through
  *     the same setScene repack, so material/light indices cannot drift.
- *   • pt-webgpu — instanced-mesh instance-COUNT change → TLAS-only rebuild, BLAS
- *     reused (rebuildTlasReuseBlas + uploadScenePackTlasRealloc); mesh/skinned
- *     vertex/index-COUNT change → rebuild only the changed primitive's BLAS,
- *     splice into concat buffers, rebase offsets + TLAS roots
- *     (rebuildPrimitiveBlas + uploadScenePackGeometryRealloc).
+ *   • pt-webgpu — instanced-mesh instance-COUNT changes rebuild only the TLAS
+ *     while reusing BLAS data; mesh/skinned vertex/index-COUNT changes rebuild
+ *     and splice only the changed primitive's BLAS, rebase downstream offsets
+ *     and TLAS roots, then publish through the registry-driven prepared
+ *     scene-buffer mutation transaction.
  *
  * In all three, `id`/`kind` morphs throw in patchPrimitiveInScene, and
  * whole-primitive ADD/REMOVE is setScene (see supportsAddRemovePrimitive), not a
@@ -656,9 +659,9 @@ const PT_WEBGL2_MATERIALS: MaterialSupportMatrix = Object.freeze({
   // pt-webgl2 BSDF, including the extension's RG strength/rotation convention.
   anisotropy: 'native',
   anisotropyRotation: 'native',
-  // Contract-sanctioned escape hatch this backend deliberately does not read
-  // (no warning — `extensions` is host-discretionary by design).
-  extensions: 'unsupported',
+  // extensions.skipEmitter suppresses implicit mesh-light NEE classification
+  // while preserving camera-visible material emission.
+  extensions: 'native',
 });
 
 /**
@@ -779,9 +782,9 @@ const PT_WEBGPU_MATERIALS: MaterialSupportMatrix = Object.freeze({
   // energy-compensation model is the final reason for the approximate grade.
   anisotropy: 'approximate',
   anisotropyRotation: 'approximate',
-  // Contract-sanctioned escape hatch this backend deliberately does not read
-  // (no warning — `extensions` is host-discretionary by design).
-  extensions: 'unsupported',
+  // extensions.skipEmitter suppresses implicit mesh-light synthesis while
+  // preserving camera-visible material emission.
+  extensions: 'native',
 });
 
 // ── SHADOW-01 — per-backend shadow-flag support rows (2026-06-11) ─────────────
@@ -1042,6 +1045,12 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
     supportedAnalyticShapes: ['sphere', 'box', 'capsule', 'cylinder', 'h-channel-came'],
     presentationMode: 'swapchain-required',
     supportDetails: {
+      bounceSemantics: {
+        kind: 'ddgi-feedback',
+        directOnlyValue: 1,
+        multiBounceEquilibriumValue: 2,
+        inactiveWhenLayerDisabled: 'ddgi',
+      },
       primitives: {
         mesh: 'native',
         'skinned-mesh': 'native',
@@ -1207,6 +1216,10 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
     supportedAnalyticShapes: ['sphere', 'box', 'capsule', 'cylinder', 'h-channel-came'],
     presentationMode: 'offscreen-texture',
     supportDetails: {
+      bounceSemantics: {
+        kind: 'path-depth',
+        perFrameControl: 'finite-path-depth',
+      },
       primitives: {
         mesh: 'native',
         // 2026-06-10 (Wave 2): pt-webgl2 solves the pose at ingestion via core
@@ -1269,8 +1282,9 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
       // texture replacement. A failed validation/upload preserves the prior
       // retained scene and GL resources.
       updateLighting: true,
-      // T3.G #30 — pt-webgl2 exposes debug.pickPrimitive and advertises
-      // capabilities.debugSurface=true.
+      // T3.G #30 — pt-webgl2 can expose debug.pickPrimitive when the engine is
+      // created with debug:true. This static method row is implementation
+      // availability, not the live instance's debugSurface value.
       debug: true,
       // pt-webgl2 implements the inverse-rendering API surface with the safe
       // backend-agnostic finite-difference method. It intentionally does not
@@ -1300,6 +1314,10 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
     supportedAnalyticShapes: ['sphere', 'box', 'capsule', 'cylinder', 'h-channel-came'],
     presentationMode: 'offscreen-texture',
     supportDetails: {
+      bounceSemantics: {
+        kind: 'path-depth',
+        perFrameControl: 'finite-path-depth',
+      },
       primitives: {
         mesh: 'native',
         // 2026-06-10 (Wave 2): pt-webgpu solves the pose at ingestion via core

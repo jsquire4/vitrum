@@ -1,6 +1,8 @@
 {
   "imports": {
     "@vitrum/core": "../../packages/core/src/index.ts",
+    "@vitrum/pt-webgpu/support-profile": "../../packages/pt-webgpu/src/supportProfile.ts",
+    "@vitrum/shared-samplers": "../../packages/shared-samplers/src/index.ts",
     "@vitrum/gltf-adapter": "../../packages/gltf-adapter/src/index.ts"
   }
 }

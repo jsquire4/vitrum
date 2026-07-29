@@ -235,11 +235,11 @@ describe('core ReSTIR direct-light emitter fidelity', () => {
     expect(centroidsX[1]).toBeCloseTo(2 + 1 / 3, 5);
     for (const e of emitters) {
       expect(e.area).toBeCloseTo(0.5, 5);
-      expect(e.color).toEqual([0.25, 0.5, 1]);
+      expect(e.color).toEqual([1.75, 3.5, 7]);
       expect(e.castShadowDisabled).toBe(0);
       expect(e.sourceTriIndex).toBe(0);
     }
-    expect(buffers.totalEmissivePower).toBeCloseTo(luminance(0.25, 0.5, 1) * 1.0, 5);
+    expect(buffers.totalEmissivePower).toBeCloseTo(luminance(1.75, 3.5, 7) * 1.0, 5);
   });
 
   it('preserves castShadow:false on mesh-material ReSTIR emitters', () => {
@@ -258,7 +258,7 @@ describe('core ReSTIR direct-light emitter fidelity', () => {
       const buffers = buildReSTIRSceneBVHForCoreScene(scene, { bvhMode });
       const emitters = stripPlaceholder(decodeEmitters(buffers.emitters.cpuData));
       expect(emitters).toHaveLength(1);
-      expect(emitters[0]!.color).toEqual([1.5, 0.75, 0.25]);
+      expect(emitters[0]!.color).toEqual([3, 1.5, 0.5]);
       expect(emitters[0]!.castShadowDisabled).toBe(1);
     }
   });
@@ -314,7 +314,7 @@ describe('core ReSTIR direct-light emitter fidelity', () => {
     expect(emitters[0]!.sourceTriIndex).toBe(0);
     expect(emitters[0]!.sourceSubdivLevel).toBe(1);
     expect(emitters[0]!.sourceSubdivOrdinal).toBe(0);
-    expect(emitters[0]!.color).toEqual([2, 2, 2]);
+    expect(emitters[0]!.color).toEqual([6, 6, 6]);
     expect(buffers.lightTreeEnabled).toBe(false);
     const leafPowers = decodeLightTreeLeafPowers(buffers.lightTree.cpuData, buffers.lightTreeNodeCount);
     expect(leafPowers).toHaveLength(0);
@@ -355,7 +355,7 @@ describe('core ReSTIR direct-light emitter fidelity', () => {
     expect(emitters[0]!.sourceTriIndex).toBeGreaterThanOrEqual(0);
     expect(emitters[0]!.sourceSubdivLevel).toBe(1);
     expect(emitters[0]!.sourceSubdivOrdinal).toBe(0);
-    expect(emitters[0]!.color).toEqual([2, 2, 2]);
+    expect(emitters[0]!.color).toEqual([6, 6, 6]);
     expect(buffers.totalEmissivePower).toBeGreaterThan(0);
   });
 
@@ -442,7 +442,7 @@ describe('core ReSTIR direct-light emitter fidelity', () => {
       expect(e.castShadowDisabled).toBe(1);
     }
     expect(emitters.reduce((sum, e) => sum + e.area, 0)).toBeCloseTo(1.0, 6);
-    expect(emitters.every((e) => hasColor([e], [4, 4, 4]))).toBe(true);
+    expect(emitters.every((e) => hasColor([e], [2, 2, 2]))).toBe(true);
     expect(buffers.totalEmissivePower).toBeGreaterThan(0);
   });
 

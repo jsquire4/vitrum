@@ -13,7 +13,6 @@ import { describe, expect, it } from 'vitest';
 import {
   composeRestirPtSpatialWgsl,
   composeRestirPtResolveWgsl,
-  composePtWebgpuReuseWgsl,
 } from '../wgsl/pathTrace/restirPtCompose.wgsl.js';
 import { RESTIR_PT_SPATIAL_WGSL } from '../wgsl/pathTrace/restirPtSpatial.wgsl.js';
 import {
@@ -97,13 +96,6 @@ describe('A1 — ReSTIR-PT spatial pass (GRIS full GBH)', () => {
     expect(composed).toContain('@group(0) @binding(25)');
     // Resolve reads the SAME relocated slot (25) the spatial pass wrote.
     expect(composeRestirPtResolveWgsl()).toContain('@group(0) @binding(25)');
-  });
-
-  it('the combined reuse unit declares all four entry points exactly once each', () => {
-    const composed = composePtWebgpuReuseWgsl();
-    for (const fn of ['restirPtProduce', 'restirPtTemporal', 'restirPtSpatial', 'restirPtResolve']) {
-      expect((composed.match(new RegExp(`fn ${fn}\\(`, 'g')) ?? []).length).toBe(1);
-    }
   });
 });
 

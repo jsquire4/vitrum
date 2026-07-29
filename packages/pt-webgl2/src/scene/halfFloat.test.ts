@@ -30,6 +30,14 @@ describe('checked finite binary16 storage', () => {
     expect(finiteFloat16Bits(-aboveTie)).toBe(0x8001);
   });
 
+  it('carries a rounded subnormal mantissa into the minimum normal encoding', () => {
+    // Tie between max-subnormal 0x03ff and min-normal 0x0400. Ties-to-even
+    // selects 0x0400; masking the carried mantissa would incorrectly produce 0.
+    const minNormalCarryTie = 1023.5 * 2 ** -24;
+    expect(finiteFloat16Bits(minNormalCarryTie)).toBe(0x0400);
+    expect(finiteFloat16Bits(-minNormalCarryTie)).toBe(0x8400);
+  });
+
   it.each([
     ['positive half-minimum tie', FLOAT16_HALF_MIN_SUBNORMAL, /\+0/],
     ['negative half-minimum tie', -FLOAT16_HALF_MIN_SUBNORMAL, /-0/],

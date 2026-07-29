@@ -62,30 +62,48 @@ export const BSDF_BASIC_GLSL = /* glsl */ `
     return exp( ( vec3( fog.opacity ) - sigmaT ) * dist );
   }
 
+  float hg_phase( float cosTheta, float g ) {
+    float gg = clamp( g, -0.999999, 0.999999 );
+    float a = abs( gg );
+    float clampedCos = clamp( cosTheta, -1.0, 1.0 );
+    float alignedCos = gg >= 0.0 ? clampedCos : - clampedCos;
+    float oneMinusA = 1.0 - a;
+    float denominator =
+      oneMinusA * oneMinusA +
+      2.0 * a * ( 1.0 - alignedCos );
+    return
+      ( oneMinusA * ( 1.0 + a ) ) /
+      ( 4.0 * PI * denominator * sqrt( denominator ) );
+  }
+
+  float sampleHgCosTheta( float u, float g ) {
+    float gg = clamp( g, -0.999999, 0.999999 );
+    float q = 1.0 - 2.0 * u;
+    float cosTheta;
+    if ( abs( gg ) < 0.125 ) {
+      float d = 1.0 + gg * q;
+      float numerator =
+        2.0 * q +
+        gg * ( q * q + 3.0 ) +
+        2.0 * gg * gg * q +
+        gg * gg * gg * ( q * q - 1.0 );
+      cosTheta = numerator / ( 2.0 * d * d );
+    } else {
+      float ratio = ( 1.0 - gg * gg ) / ( 1.0 + gg * q );
+      cosTheta = ( 1.0 + gg * gg - ratio * ratio ) / ( 2.0 * gg );
+    }
+    return clamp( cosTheta, -1.0, 1.0 );
+  }
+
   float mediumPhasePdf( vec3 worldWo, vec3 worldWi, float g ) {
     float cosTheta = clamp(
       dot( - normalize( worldWo ), normalize( worldWi ) ), -1.0, 1.0
     );
-    float g2 = g * g;
-    float denominator = pow( 1.0 + g2 - 2.0 * g * cosTheta, 1.5 );
-    return ( 1.0 - g2 ) / ( 4.0 * PI * denominator );
+    return hg_phase( cosTheta, g );
   }
 
   vec3 sampleMediumPhase( vec3 worldWo, float g, vec2 uv ) {
-    float cosTheta;
-    float a = 1.0 - 2.0 * uv.x;
-    if ( g == 0.0 ) {
-      cosTheta = a;
-    } else if ( abs( g ) < 1e-3 ) {
-      float a2 = a * a;
-      cosTheta = a + 1.5 * g * ( 1.0 - a2 )
-        + 2.0 * g * g * ( a * a2 - a );
-    } else {
-      float xi = 1.0 - uv.x;
-      float ratio = ( 1.0 - g * g ) / ( 1.0 - g + 2.0 * g * xi );
-      cosTheta = ( 1.0 + g * g - ratio * ratio ) / ( 2.0 * g );
-    }
-    cosTheta = clamp( cosTheta, -1.0, 1.0 );
+    float cosTheta = sampleHgCosTheta( uv.x, g );
     float sinTheta = sqrt( max( 1.0 - cosTheta * cosTheta, 0.0 ) );
     float phi = 2.0 * PI * uv.y;
     vec3 localDirection = vec3(

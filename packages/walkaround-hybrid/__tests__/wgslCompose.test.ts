@@ -288,8 +288,10 @@ describe('composeWgsl — bit-identical to pre-R6 concat patterns', () => {
     );
   });
 
-  it('atrous: COMMON_WGSL + ATROUS_WGSL', () => {
-    expect(composeWgsl(ATROUS_MODULE, WGSL_MODULES)).toBe(COMMON_WGSL + ATROUS_WGSL);
+  it('atrous: LUMINANCE_WGSL + ATROUS_WGSL', () => {
+    const composed = composeWgsl(ATROUS_MODULE, WGSL_MODULES);
+    expect(composed).toBe(LUMINANCE_WGSL + ATROUS_WGSL);
+    expect(composed).not.toContain('fn traceSceneFirstHit');
   });
 
   it('compositeVert: standalone (no prepend)', () => {
@@ -649,7 +651,7 @@ describe('Theme-D — scene @group(1) binding block stays inlined (not hoistable
     for (const mod of [RIS_MODULE, SHADE_MODULE, RIS_GI_MODULE, TEMPORAL_MODULE, SPATIAL_MODULE]) {
       const composed = composeWgsl(mod, WGSL_MODULES);
       expect(composed.match(/fn sceneLoadBvhNormal\s*\(/g)).toHaveLength(1);
-      expect(composed).toContain('@group(1) @binding(0) var<storage, read> sceneGeometryArena: array<u32>;');
+      expect(composed).toContain('@group(1) @binding(0) var<storage, read> bvhSceneGeometryArena: array<u32>;');
     }
   });
 

@@ -1031,7 +1031,7 @@ describe('GltfSceneController', () => {
       ...gltf.nodes![0]!,
       matrix: [
         1, 0, 0, 0,
-        0, 1, 0, 0,
+        0.25, 2, 0, 0,
         0, 0, 1, 0,
         3, 0, 0, 1,
       ],
@@ -1053,6 +1053,114 @@ describe('GltfSceneController', () => {
     expect(second.diagnostics.some((diagnostic) => diagnostic.code === 'animation-matrix-overridden')).toBe(false);
     expect(controller.diagnostics.filter((diagnostic) => diagnostic.code === 'animation-matrix-overridden'))
       .toHaveLength(1);
+    const transformed = (first.scene.primitives[0] as MeshPrimitive).transform!;
+    expect(transformed[4]).toBeCloseTo(0.25);
+    expect(transformed[5]).toBeCloseTo(2);
+  });
+
+  it('animates an invertible matrix-authored node at tiny uniform scale', async () => {
+    const { gltf, buffers } = animatedHierarchyGltf();
+    const tinyScale = 1e-13;
+    gltf.nodes![0] = {
+      ...gltf.nodes![0]!,
+      matrix: [
+        tinyScale, 0, 0, 0,
+        0, tinyScale, 0, 0,
+        0, 0, tinyScale, 0,
+        3, 0, 0, 1,
+      ],
+    };
+    const result = await gltfToScene(gltf, { buffers });
+    const controller = createGltfSceneController({ gltf, ...result });
+
+    const frame = controller.applyAnimation('parent-slide', 0.5);
+
+    expect(frame.diagnostics).toEqual([
+      expect.objectContaining({
+        code: 'animation-matrix-overridden',
+        nodeIndex: 0,
+      }),
+    ]);
+    expect(frame.diagnostics.some(
+      (diagnostic) => diagnostic.code === 'animation-matrix-trs-unavailable',
+    )).toBe(false);
+    const transformed = (frame.scene.primitives[0] as MeshPrimitive).transform!;
+    expect(transformed[0]).toBeCloseTo(tinyScale, 18);
+    expect(transformed[5]).toBeCloseTo(tinyScale, 18);
+    expect(transformed[10]).toBeCloseTo(tinyScale, 18);
+    expect(transformed[12]).toBeCloseTo(1);
+  });
+
+  it('preserves an unrelated singular matrix while other controller animation remains functional', async () => {
+    const { gltf, buffers } = animatedHierarchyGltf();
+    gltf.nodes!.push({
+      name: 'ZeroScaleDecoration',
+      matrix: [
+        0, 0, 0, 0,
+        0, 1, 0, 0,
+        0, 0, 1, 0,
+        4, 0, 0, 1,
+      ],
+    });
+    const result = await gltfToScene(gltf, { buffers });
+
+    expect(() => createGltfSceneController({ gltf, ...result })).not.toThrow();
+    const controller = createGltfSceneController({ gltf, ...result });
+    const frame = controller.applyAnimation('parent-slide', 0.5);
+
+    expect(frame.diagnostics).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: 'animation-matrix-trs-unavailable' }),
+      ]),
+    );
+    expect((frame.scene.primitives[0] as MeshPrimitive).transform![12]).toBeCloseTo(1);
+  });
+
+  it('diagnoses and skips a TRS channel that targets a singular matrix node', async () => {
+    const { gltf, buffers } = animatedHierarchyGltf();
+    const result = await gltfToScene(gltf, { buffers });
+    gltf.nodes!.push({
+      name: 'ZeroScaleAnimatedNode',
+      matrix: [
+        1e-13, 0, 0, 0,
+        0, 1e-13, 0, 0,
+        0, 0, 0, 0,
+        4, 0, 0, 1,
+      ],
+    });
+    const singularTargetClip: AnimationClip = {
+      name: 'singular-target',
+      duration: 1,
+      channels: [{
+        target: { node: 'gltf-node-2', path: 'translation' },
+        sampler: {
+          times: new Float32Array([0, 1]),
+          values: new Float32Array([0, 0, 0, 2, 0, 0]),
+          interpolation: 'LINEAR',
+        },
+      }],
+    };
+    const controller = createGltfSceneController({
+      gltf,
+      ...result,
+      animations: [singularTargetClip],
+    });
+
+    const first = controller.applyAnimation('singular-target', 0.5);
+    const second = controller.applyAnimation('singular-target', 1);
+
+    expect(first.diagnostics).toEqual([
+      expect.objectContaining({
+        code: 'animation-matrix-trs-unavailable',
+        caller: 'applyAnimation',
+        nodeIndex: 2,
+        path: 'nodes[2].matrix',
+      }),
+    ]);
+    expect(first.diagnostics.some((diagnostic) => diagnostic.code === 'animation-matrix-overridden'))
+      .toBe(false);
+    expect(second.diagnostics).toEqual([]);
+    expect(controller.diagnostics).toHaveLength(1);
   });
 
   it('patches EXT_mesh_gpu_instancing instances when the node animates', async () => {
@@ -1505,6 +1613,31 @@ describe('GltfSceneController', () => {
     expect((controller.scene.primitives[0] as SkinnedMeshPrimitive).morphWeights![0]).toBeCloseTo(1);
   });
 
+  it('skips a morphless sibling while continuing weight animation on morph-capable primitives', async () => {
+    const { gltf, buffers } = morphGltf();
+    const source = gltf.meshes![0]!.primitives[0]!;
+    gltf.meshes![0]!.primitives.push({
+      attributes: { ...source.attributes },
+      ...(source.material !== undefined ? { material: source.material } : {}),
+    });
+    const result = await gltfToScene(gltf, { buffers });
+    const controller = createGltfSceneController({ gltf, ...result });
+
+    const frame = controller.applyAnimation('morph-on', 1);
+
+    expect(frame.primitivePatches).toContainEqual(expect.objectContaining({
+      id: 'gltf-prim-0',
+      patch: expect.objectContaining({
+        morphWeights: expect.any(Float32Array),
+      }),
+    }));
+    expect(frame.diagnostics).toContainEqual(expect.objectContaining({
+      code: 'animation-morph-target-missing',
+      primitiveId: 'gltf-prim-1',
+      path: 'scene.primitives["gltf-prim-1"].morphTargets',
+    }));
+  });
+
   it('diagnoses and truncates a runtime morph-weight stride mismatch', async () => {
     const { gltf, buffers } = morphGltf();
     const result = await gltfToScene(gltf, { buffers });
@@ -1864,6 +1997,32 @@ describe('GltfSceneController', () => {
           500,
         )],
       },
+      {
+        name: 'invalid-cubic-light-color',
+        duration: 1,
+        channels: [{
+          target: {
+            node:
+              'gltf-pointer:/extensions/KHR_lights_punctual/lights/0/color',
+            path: 'pointer',
+            pointer: '/extensions/KHR_lights_punctual/lights/0/color',
+          },
+          sampler: {
+            times: new Float32Array([0, 1]),
+            // in/value/out triplets per key. Endpoints are valid, while the
+            // opposing tangents overshoot the [0,1] color domain at t=0.5.
+            values: new Float32Array([
+              0, 0, 0,
+              0.5, 0.5, 0.5,
+              10, 10, 10,
+              -10, -10, -10,
+              0.5, 0.5, 0.5,
+              0, 0, 0,
+            ]),
+            interpolation: 'CUBICSPLINE',
+          },
+        }],
+      },
     ];
     const controller = createGltfSceneController({ gltf, ...imported, animations });
 
@@ -1893,5 +2052,12 @@ describe('GltfSceneController', () => {
     expect(rangeInvalid.diagnostics).toEqual(expect.arrayContaining([
       expect.objectContaining({ code: 'animation-pointer-value-invalid' }),
     ]));
+
+    const cubicInvalid = controller.applyAnimation('invalid-cubic-light-color', 0.5);
+    expect(cubicInvalid.scene.emitters[0]).toMatchObject({ color: [1, 1, 1] });
+    expect(cubicInvalid.diagnostics).toContainEqual(expect.objectContaining({
+      code: 'animation-pointer-value-invalid',
+      path: '/extensions/KHR_lights_punctual/lights/0/color',
+    }));
   });
 });

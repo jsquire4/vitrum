@@ -37,6 +37,12 @@ export interface SceneBvhOptions {
    * console.warn is emitted.
    */
   readonly onSlowRebuild?: (elapsedMs: number) => void;
+  /**
+   * Receives geometry/material warnings produced while merging the core scene.
+   * When omitted, warnings are written to `console.warn` instead of being
+   * silently discarded by this wrapper.
+   */
+  readonly onWarning?: (warning: string) => void;
 }
 
 export interface UpdateFromCoreOptions {
@@ -106,6 +112,17 @@ export class SceneBvh {
       positionStride: 4,
       filter: DDGI_CORE_MESH_FILTER,
       splitMaterialsByCastShadow: true,
+      onWarning: (warning) => {
+        if (this.opts.onWarning) {
+          try {
+            this.opts.onWarning(warning);
+          } catch {
+            // Diagnostics must not interrupt BVH construction.
+          }
+        } else {
+          console.warn(`[SceneBvh] ${warning}`);
+        }
+      },
     });
 
     if (merged.triangleCount === 0) {

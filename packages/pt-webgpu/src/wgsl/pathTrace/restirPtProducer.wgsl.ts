@@ -83,7 +83,6 @@
 export const RESTIR_PT_PRODUCER_WGSL = /* wgsl */ `
 // ReSTIR-PT producer output — the per-pixel reconnection reservoir (strided u32).
 @group(4) @binding(0) var<storage, read_write> rpt_reservoirOut: array<u32>;
-@group(4) @binding(4) var<uniform> rptParams: RestirPtParams;
 
 // Production scope: finite opaque reflection only. Scene admission rejects the
 // complete transmissive material domain; this shader-level check is a defensive
@@ -216,7 +215,7 @@ fn rptSuffixMaterialAtHit(hit: SceneHit, incomingDir: vec3f, wo: vec3f, heroLamb
   out.emissive = mat.emissive * sampleEmissiveTexture(matId, hit.triIndex, hit.baryVW, hit.instanceIndex).rgb;
   out.transmission = clamp(mat.transmission * sampleTransmissionTexture(matId, hit.triIndex, hit.baryVW, hit.instanceIndex), 0.0, 1.0);
   out.ior = mat.ior;
-  if (params.spectralEnabled != 0u && mat.dispersionAbbe >= 1.0) {
+  if (params.spectralEnabled != 0u && mat.dispersionAbbe > 0.0) {
     out.ior = cauchyIorAtLambda(heroLambda, mat.ior, mat.dispersionAbbe);
   }
   out.thinFilm = ThinFilmInterface(
@@ -873,7 +872,7 @@ fn restirPtProduce(@builtin(global_invocation_id) gid: vec3u) {
   let anisotropyV = materialAnisotropy(vMatId, vHit.triIndex, vHit.baryVW, vHit.instanceIndex);
   let anisotropyRotationV = materialAnisotropyRotation(vMatId, vHit.triIndex, vHit.baryVW, nv, vHit.instanceIndex);
   var iorV = vMat.ior;
-  if (params.spectralEnabled != 0u && vMat.dispersionAbbe >= 1.0) {
+  if (params.spectralEnabled != 0u && vMat.dispersionAbbe > 0.0) {
     iorV = cauchyIorAtLambda(heroLambda, vMat.ior, vMat.dispersionAbbe);
   }
   let thinFilmV = ThinFilmInterface(

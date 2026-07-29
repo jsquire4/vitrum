@@ -51,7 +51,6 @@ function makeSceneResources() {
     envMapTextureView: {} as GPUTextureView,
     envMarginalTextureView: {} as GPUTextureView,
     envConditionalTextureView: {} as GPUTextureView,
-    envSampler: {} as GPUSampler,
     envParamsBuffer: {} as GPUBuffer,
   };
 }

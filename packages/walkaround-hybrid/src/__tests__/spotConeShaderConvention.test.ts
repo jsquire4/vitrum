@@ -2,6 +2,9 @@ import { describe, expect, it } from 'vitest';
 
 import { SHADING_TERMS_WGSL } from '../shaders/shadingTerms.wgsl.js';
 import { TRANSPARENT_OIT_WGSL } from '../shaders/transparentOit.wgsl.js';
+import { NRC_INDEPENDENT_SUFFIX_WGSL } from '../shaders/nrcIndependentSuffix.wgsl.js';
+import { MANIFOLD_CAUSTICS_WGSL } from '../shaders/manifoldCaustics.wgsl.js';
+import { makeProbeUpdateRaysWGSL } from '../ddgi/wgsl/probeUpdateRays.wgsl.js';
 
 function functionBody(source: string, name: string): string {
   const marker = `fn ${name}(`;
@@ -60,5 +63,21 @@ describe('walkaround spot cone shader convention', () => {
     expect(transparent).toContain('let brdf = evalGGXWithSpecularClearcoatSheenWithAnisotropyFrame(');
     expect(transparent).toContain('Lo += lightLe * shadowT * brdf * cone * attenuation * estimatorWeight;');
     expect(transparent).not.toContain('Lo += lightLe * brdf * nDotL');
+  });
+
+  it('uses the unsquared KHR range window in every punctual-light route', () => {
+    const routes = [
+      [SHADING_TERMS_WGSL, 'analyticPointSpotAttenuation'],
+      [TRANSPARENT_OIT_WGSL, 'oitPointSpotAttenuation'],
+      [NRC_INDEPENDENT_SUFFIX_WGSL, 'nrc_teacherPointSpotAttenuation'],
+      [MANIFOLD_CAUSTICS_WGSL, 'smsAnalyticPointSpotAttenuation'],
+      [makeProbeUpdateRaysWGSL(1), 'ddgiPointSpotAttenuation'],
+    ] as const;
+
+    for (const [source, helperName] of routes) {
+      const helper = functionBody(source, helperName);
+      expect(helper).toContain('attenuation = attenuation * x;');
+      expect(helper).not.toContain('attenuation = attenuation * x * x;');
+    }
   });
 });

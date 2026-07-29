@@ -73,20 +73,4 @@ bool bvhBuildMediumStack(
 
 }
 
-// Compatibility wrapper for callers that only need the top medium.
-bool bvhIntersectFogVolumeHit(
-        vec3 rayOrigin, vec3 rayDirection,
-        usampler2D materialIndexAttribute, sampler2D materials,
-        inout FogMaterial material
-) {
-        MediumStack stack;
-        bool valid = bvhBuildMediumStack(
-                rayOrigin, rayDirection,
-                materialIndexAttribute, materials,
-                stack, material
-        );
-        return valid && material.fogVolume;
-
-}
-
-`;
+	`;

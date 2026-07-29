@@ -61,7 +61,7 @@ function richOpts(overrides: Partial<HybridEngineOptions> = {}): HybridEngineOpt
     primaryLightIntensity: 2.5,
     skyTint: [0.5, 0.7, 1.0],
     skyIrradiance: 0.3,
-    maxBounces: 7,
+    maxBounces: 1,
     verbose: true,
     debug: true,
     denoiser: 'bmfr',
@@ -177,7 +177,7 @@ describe('HybridEngine._denoiserFilterDeps — tuple cluster unchanged', () => {
     expect(deps['stainedGlassFlags']).toBe(golden.stainedGlassFlags);
     // Generalized reuse is the sole pipeline; no per-frame selector survives.
     expect('grisReuse' in deps).toBe(false);
-    expect(deps['nrcEnabled']).toBe(golden.nrcEnabled);
+    expect('nrcEnabled' in deps).toBe(false);
   });
 });
 
@@ -209,7 +209,7 @@ describe('HybridEngine._buildFrameDeps — per-frame config values unchanged', (
     expect(filter['atrousIndirectSigmas']).toEqual(golden.atrousIndirectSigmas);
     expect(filter['stainedGlassFlags']).toBe(golden.stainedGlassFlags);
     expect('grisReuse' in filter).toBe(false);
-    expect(filter['nrcEnabled']).toBe(golden.nrcEnabled);
+    expect('nrcEnabled' in filter).toBe(false);
   });
 
   it('rebuild-key fingerprint is stable post-construction (static key)', () => {
@@ -233,11 +233,11 @@ describe('HybridEngine._buildFrameDeps — per-frame config values unchanged', (
 
 describe('HybridEngine.capabilities — maxBounces from migrated config', () => {
   it('capabilities.maxBounces equals the derived maxBounces', () => {
-    const opts = richOpts({ maxBounces: 9 });
+    const opts = richOpts({ maxBounces: 1 });
     const engine = new HybridEngine(opts);
     const golden = deriveFor(opts);
     expect(engine.capabilities.maxBounces).toBe(golden.maxBounces);
-    expect(engine.capabilities.maxBounces).toBe(9);
+    expect(engine.capabilities.maxBounces).toBe(1);
   });
 });
 
@@ -261,7 +261,7 @@ describe('HybridEngine._cfg — default options identity', () => {
     const cfg = (engine as unknown as AnyRec)['_cfg'] as Record<string, unknown>;
 
     expect(cfg['denoiser']).toBe('atrous-variance');
-    expect(cfg['maxBounces']).toBe(4);
+    expect(cfg['maxBounces']).toBe(2);
     expect(cfg['indirectFireflyClamp']).toEqual([1.0, 1.0, 1.0]);
     expect('grisReuse' in cfg).toBe(false);
     expect(cfg['nrcEnabled']).toBe(0);

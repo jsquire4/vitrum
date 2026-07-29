@@ -4,14 +4,10 @@ import { GpuResources } from '../gpuResources.js';
 import { SceneMutationRouter, type MutationHost } from '../sceneMutationRouter.js';
 import {
   buildPackedScene,
-  CWBVH_ROOT_PAIR_WORDS,
-  isValidCwbvhRootPair,
+  prepareSceneBufferMutation,
   scenePackResultFromPacked,
   SCENE_BUFFER_REGISTRY,
   uploadPackedScene,
-  uploadScenePackGeometry,
-  uploadScenePackGeometryRealloc,
-  uploadScenePackTlasRealloc,
   type UploadedSceneBuffers,
 } from '../scene/uploadSceneBuffers.js';
 import { installGpuConstStubs } from './gpuStub.js';
@@ -170,40 +166,67 @@ function scene(): Scene {
   };
 }
 
-function geometryHandles(sb: UploadedSceneBuffers): readonly GPUBuffer[] {
-  return [
-    sb.positionsBuffer, sb.normalsBuffer, sb.uvsBuffer, sb.tangentsBuffer,
-    sb.colorsBuffer, sb.indicesBuffer, sb.triMaterialIdsBuffer, sb.bvhNodesBuffer,
-    sb.tlasNodesBuffer, sb.tlasInstanceIndicesBuffer, sb.tlasBlasRootsBuffer,
-    sb.tlasInstanceWorldToLocalBuffer, sb.tlasInstanceLocalToWorldBuffer,
-    sb.cwbvhNodeBoundsBuffer, sb.cwbvhChildBoundsPackedBuffer,
-    sb.cwbvhChildMetaBuffer, sb.cwbvhChildCountBuffer, sb.cwbvhTlasBlasRootsBuffer,
-  ];
-}
-
-function tlasHandles(sb: UploadedSceneBuffers): readonly GPUBuffer[] {
-  return [
-    sb.tlasNodesBuffer, sb.tlasInstanceIndicesBuffer, sb.tlasBlasRootsBuffer,
-    sb.tlasInstanceWorldToLocalBuffer, sb.tlasInstanceLocalToWorldBuffer,
-    sb.cwbvhTlasBlasRootsBuffer,
-  ];
-}
-
-function expectRootPairsMatchTables(sb: UploadedSceneBuffers): void {
-  expect(sb.cwbvhTlasBlasRoots).toHaveLength(sb.tlasBlasRoots.length * CWBVH_ROOT_PAIR_WORDS);
-  for (let i = 0; i < sb.tlasBlasRoots.length; i += 1) {
-    const offset = i * CWBVH_ROOT_PAIR_WORDS;
-    expect(isValidCwbvhRootPair(sb.cwbvhTlasBlasRoots, offset)).toBe(true);
-    expect(sb.cwbvhTlasBlasRoots[offset + 1]).toBe(sb.tlasBlasRoots[i]);
-    expect(sb.cwbvhTlasBlasRoots[offset + 2]).toBeLessThan(sb.cwbvhNodeCount);
-  }
-}
-
 function expectCreatedDestroyed(stub: FailureDevice, start: number): void {
   const candidates = stub.resources.slice(start);
   for (const candidate of candidates) {
     expect(candidate.destroy, candidate.label).toHaveBeenCalledOnce();
   }
+}
+
+interface SizeChangingFixture {
+  readonly stub: FailureDevice;
+  readonly sceneBuffers: UploadedSceneBuffers;
+  readonly patch: {
+    readonly positions: Float32Array;
+    readonly normals: Float32Array;
+    readonly triangleCount: number;
+  };
+  readonly previous: {
+    readonly positions: Float32Array;
+    readonly normals: Float32Array;
+    readonly positionsBuffer: GPUBuffer;
+    readonly normalsBuffer: GPUBuffer;
+    readonly triangleCount: number;
+  };
+}
+
+function sizeChangingFixture(): SizeChangingFixture {
+  installGpuConstStubs();
+  const stub = new FailureDevice();
+  const sceneBuffers = uploadPackedScene(stub.device, buildPackedScene(scene()));
+  const positions = new Float32Array(sceneBuffers.positions.length + 4);
+  positions.set(sceneBuffers.positions);
+  positions[positions.length - 4] = 2;
+  const normals = new Float32Array(sceneBuffers.normals.length + 4);
+  normals.set(sceneBuffers.normals);
+  normals[normals.length - 2] = 1;
+  return {
+    stub,
+    sceneBuffers,
+    patch: {
+      positions,
+      normals,
+      triangleCount: sceneBuffers.triangleCount + 1,
+    },
+    previous: {
+      positions: sceneBuffers.positions,
+      normals: sceneBuffers.normals,
+      positionsBuffer: sceneBuffers.positionsBuffer,
+      normalsBuffer: sceneBuffers.normalsBuffer,
+      triangleCount: sceneBuffers.triangleCount,
+    },
+  };
+}
+
+function expectPreviousSceneGeneration(fixture: SizeChangingFixture): void {
+  const { sceneBuffers, previous } = fixture;
+  expect(sceneBuffers.positions).toBe(previous.positions);
+  expect(sceneBuffers.normals).toBe(previous.normals);
+  expect(sceneBuffers.positionsBuffer).toBe(previous.positionsBuffer);
+  expect(sceneBuffers.normalsBuffer).toBe(previous.normalsBuffer);
+  expect(sceneBuffers.triangleCount).toBe(previous.triangleCount);
+  expect((previous.positionsBuffer as unknown as TrackedResource).destroy).not.toHaveBeenCalled();
+  expect((previous.normalsBuffer as unknown as TrackedResource).destroy).not.toHaveBeenCalled();
 }
 
 describe('R2.1 transactional pt-webgpu resource replacement', () => {
@@ -277,94 +300,6 @@ describe('R2.1 transactional pt-webgpu resource replacement', () => {
     }
   });
 
-  it('preserves all live TLAS and CWBVH-root handles at each replacement stage', () => {
-    installGpuConstStubs();
-    const stub = new FailureDevice();
-    const packed = buildPackedScene(scene());
-    const sb = uploadPackedScene(stub.device, packed);
-    const pack = scenePackResultFromPacked(packed);
-    const previous = tlasHandles(sb);
-    const previousRoots = new Uint32Array(sb.cwbvhTlasBlasRoots);
-    expectRootPairsMatchTables(sb);
-    // Force the sixth, CWBVH-root allocation stage as well as the five binary
-    // TLAS stages; normal same-sized root updates remain in-place.
-    (sb.cwbvhTlasBlasRootsBuffer as unknown as { size: number }).size = -1;
-
-    for (let stage = 1; stage <= 6; stage += 1) {
-      const start = stub.arm('allocation', stage);
-      expect(() => uploadScenePackTlasRealloc(stub.device, sb, pack)).toThrow(
-        'injected allocation failure',
-      );
-      expect(tlasHandles(sb)).toEqual(previous);
-      expect(sb.cwbvhTlasBlasRoots).toEqual(previousRoots);
-      expectRootPairsMatchTables(sb);
-      for (const handle of previous as unknown as readonly TrackedResource[]) {
-        expect(handle.destroy, handle.label).not.toHaveBeenCalled();
-      }
-      expectCreatedDestroyed(stub, start);
-    }
-    for (let stage = 1; stage <= 6; stage += 1) {
-      const start = stub.arm('write', stage);
-      expect(() => uploadScenePackTlasRealloc(stub.device, sb, pack)).toThrow(
-        'injected upload failure',
-      );
-      expect(tlasHandles(sb)).toEqual(previous);
-      expect(sb.cwbvhTlasBlasRoots).toEqual(previousRoots);
-      expectRootPairsMatchTables(sb);
-      for (const handle of previous as unknown as readonly TrackedResource[]) {
-        expect(handle.destroy, handle.label).not.toHaveBeenCalled();
-      }
-      expectCreatedDestroyed(stub, start);
-    }
-  });
-
-  it('preserves the complete BLAS/TLAS/CWBVH set at all 18 allocation stages', () => {
-    installGpuConstStubs();
-    const stub = new FailureDevice();
-    const packed = buildPackedScene(scene());
-    const sb = uploadPackedScene(stub.device, packed);
-    const pack = scenePackResultFromPacked(packed);
-    const previous = geometryHandles(sb);
-    const previousRoots = new Uint32Array(sb.cwbvhTlasBlasRoots);
-    expectRootPairsMatchTables(sb);
-    // Force all five CWBVH buffers through their size-changing candidate path,
-    // following the thirteen binary BLAS/TLAS allocation stages.
-    for (const buffer of [
-      sb.cwbvhNodeBoundsBuffer, sb.cwbvhChildBoundsPackedBuffer,
-      sb.cwbvhChildMetaBuffer, sb.cwbvhChildCountBuffer,
-      sb.cwbvhTlasBlasRootsBuffer,
-    ]) {
-      (buffer as unknown as { size: number }).size = -1;
-    }
-
-    for (let stage = 1; stage <= 18; stage += 1) {
-      const start = stub.arm('allocation', stage);
-      expect(() => uploadScenePackGeometryRealloc(stub.device, sb, pack)).toThrow(
-        'injected allocation failure',
-      );
-      expect(geometryHandles(sb)).toEqual(previous);
-      expect(sb.cwbvhTlasBlasRoots).toEqual(previousRoots);
-      expectRootPairsMatchTables(sb);
-      for (const handle of previous as unknown as readonly TrackedResource[]) {
-        expect(handle.destroy, handle.label).not.toHaveBeenCalled();
-      }
-      expectCreatedDestroyed(stub, start);
-    }
-    for (let stage = 1; stage <= 18; stage += 1) {
-      const start = stub.arm('write', stage);
-      expect(() => uploadScenePackGeometryRealloc(stub.device, sb, pack)).toThrow(
-        'injected upload failure',
-      );
-      expect(geometryHandles(sb)).toEqual(previous);
-      expect(sb.cwbvhTlasBlasRoots).toEqual(previousRoots);
-      expectRootPairsMatchTables(sb);
-      for (const handle of previous as unknown as readonly TrackedResource[]) {
-        expect(handle.destroy, handle.label).not.toHaveBeenCalled();
-      }
-      expectCreatedDestroyed(stub, start);
-    }
-  });
-
   it('rejects aliased full-upload texture/buffer candidates and destroys each unique resource once', () => {
     installGpuConstStubs();
     for (const kind of ['textures', 'buffers'] as const) {
@@ -392,102 +327,6 @@ describe('R2.1 transactional pt-webgpu resource replacement', () => {
     );
     expect(preserved.destroy).not.toHaveBeenCalled();
     expectCreatedDestroyed(stub, start);
-  });
-
-  it('rejects a TLAS candidate that aliases a live handle without writes or retirement', () => {
-    installGpuConstStubs();
-    const stub = new FailureDevice();
-    const packed = buildPackedScene(scene());
-    const sb = uploadPackedScene(stub.device, packed);
-    const pack = scenePackResultFromPacked(packed);
-    const previous = tlasHandles(sb);
-    const live = sb.tlasNodesBuffer as unknown as TrackedResource;
-    const writesBefore = stub.queue.writeBuffer.mock.calls.length;
-    stub.aliasBufferTo = live;
-
-    expect(() => uploadScenePackTlasRealloc(stub.device, sb, pack)).toThrow(
-      'aliased an existing GPU resource',
-    );
-    expect(tlasHandles(sb)).toEqual(previous);
-    expect(stub.queue.writeBuffer).toHaveBeenCalledTimes(writesBefore);
-    expect(live.destroy).not.toHaveBeenCalled();
-  });
-
-  it('deduplicates aliased old TLAS handles during successful retirement', () => {
-    installGpuConstStubs();
-    const stub = new FailureDevice();
-    const packed = buildPackedScene(scene());
-    const sb = uploadPackedScene(stub.device, packed);
-    const pack = scenePackResultFromPacked(packed);
-    const shared = sb.tlasNodesBuffer as unknown as TrackedResource;
-    const displaced = sb.tlasInstanceIndicesBuffer as unknown as TrackedResource;
-    (sb as unknown as { tlasInstanceIndicesBuffer: GPUBuffer }).tlasInstanceIndicesBuffer =
-      sb.tlasNodesBuffer;
-
-    uploadScenePackTlasRealloc(stub.device, sb, pack);
-
-    expect(shared.destroy).toHaveBeenCalledOnce();
-    expect(sb.tlasNodesBuffer).not.toBe(shared);
-    displaced.destroy();
-    sb.destroy();
-    expect(shared.destroy).toHaveBeenCalledOnce();
-  });
-
-  it('rejects aliased same-size geometry handles before issuing any write', () => {
-    installGpuConstStubs();
-    const stub = new FailureDevice();
-    const sb = uploadPackedScene(stub.device, buildPackedScene(scene()));
-    const nextPack = scenePackResultFromPacked(buildPackedScene(scene()));
-    nextPack.positions[0] = 42;
-    const shared = sb.positionsBuffer as unknown as TrackedResource;
-    (sb as unknown as { normalsBuffer: GPUBuffer }).normalsBuffer = sb.positionsBuffer;
-    const writesBefore = stub.queue.writeBuffer.mock.calls.length;
-
-    expect(() => uploadScenePackGeometry(stub.device, sb, nextPack)).toThrow(
-      'transactional write set aliases one GPUBuffer',
-    );
-    expect(stub.queue.writeBuffer).toHaveBeenCalledTimes(writesBefore);
-    expect(sb.positions[0]).toBe(0);
-    expect(shared.destroy).not.toHaveBeenCalled();
-  });
-
-  it('rejects a CWBVH handle aliasing base geometry before touching either set', () => {
-    installGpuConstStubs();
-    const stub = new FailureDevice();
-    const sb = uploadPackedScene(stub.device, buildPackedScene(scene()));
-    const nextPack = scenePackResultFromPacked(buildPackedScene(scene()));
-    nextPack.positions[0] = 42;
-    const shared = sb.positionsBuffer as unknown as TrackedResource;
-    (sb as unknown as { cwbvhChildMetaBuffer: GPUBuffer }).cwbvhChildMetaBuffer =
-      sb.positionsBuffer;
-    const writesBefore = stub.queue.writeBuffer.mock.calls.length;
-
-    expect(() => uploadScenePackGeometry(stub.device, sb, nextPack)).toThrow(
-      'live CWBVH resource aliases a protected transactional GPUBuffer',
-    );
-    expect(stub.queue.writeBuffer).toHaveBeenCalledTimes(writesBefore);
-    expect(sb.positions[0]).toBe(0);
-    expect(shared.destroy).not.toHaveBeenCalled();
-  });
-
-  it('rejects a CWBVH root aliasing binary TLAS before allocation or upload', () => {
-    installGpuConstStubs();
-    const stub = new FailureDevice();
-    const packed = buildPackedScene(scene());
-    const sb = uploadPackedScene(stub.device, packed);
-    const pack = scenePackResultFromPacked(packed);
-    const live = sb.tlasNodesBuffer as unknown as TrackedResource;
-    (sb as unknown as { cwbvhTlasBlasRootsBuffer: GPUBuffer }).cwbvhTlasBlasRootsBuffer =
-      sb.tlasNodesBuffer;
-    const allocationsBefore = stub.allocationCount;
-    const writesBefore = stub.queue.writeBuffer.mock.calls.length;
-
-    expect(() => uploadScenePackTlasRealloc(stub.device, sb, pack)).toThrow(
-      'live CWBVH TLAS-root buffer aliases a binary TLAS resource',
-    );
-    expect(stub.allocationCount).toBe(allocationsBefore);
-    expect(stub.queue.writeBuffer).toHaveBeenCalledTimes(writesBefore);
-    expect(live.destroy).not.toHaveBeenCalled();
   });
 
   it('rejects accumulation candidate aliases against both staged and live sets', () => {
@@ -628,6 +467,176 @@ describe('R2.1 transactional pt-webgpu resource replacement', () => {
     }
   });
 });
+
+describe('generic size-changing scene-buffer transactions', () => {
+  it('preserves the live generation through every candidate allocation and upload failure', () => {
+    const allocationProbe = sizeChangingFixture();
+    const allocationProbeStart = allocationProbe.stub.arm('allocation', Number.MAX_SAFE_INTEGER);
+    const allocationTransaction = prepareSceneBufferMutation(
+      allocationProbe.stub.device,
+      allocationProbe.sceneBuffers,
+      allocationProbe.patch,
+    );
+    const allocationStages = allocationProbe.stub.allocationCount;
+    expect(allocationStages).toBe(2);
+    allocationTransaction.rollback();
+    expectCreatedDestroyed(allocationProbe.stub, allocationProbeStart);
+    expectPreviousSceneGeneration(allocationProbe);
+
+    for (let stage = 1; stage <= allocationStages; stage += 1) {
+      const fixture = sizeChangingFixture();
+      const candidateStart = fixture.stub.arm('allocation', stage);
+      expect(() => prepareSceneBufferMutation(
+        fixture.stub.device,
+        fixture.sceneBuffers,
+        fixture.patch,
+      )).toThrow('injected allocation failure');
+      expectPreviousSceneGeneration(fixture);
+      expectCreatedDestroyed(fixture.stub, candidateStart);
+    }
+
+    const writeProbe = sizeChangingFixture();
+    const writeProbeStart = writeProbe.stub.arm('write', Number.MAX_SAFE_INTEGER);
+    const writeTransaction = prepareSceneBufferMutation(
+      writeProbe.stub.device,
+      writeProbe.sceneBuffers,
+      writeProbe.patch,
+    );
+    const writeStages = writeProbe.stub.writeCount;
+    expect(writeStages).toBe(2);
+    writeTransaction.rollback();
+    expectCreatedDestroyed(writeProbe.stub, writeProbeStart);
+    expectPreviousSceneGeneration(writeProbe);
+
+    for (let stage = 1; stage <= writeStages; stage += 1) {
+      const fixture = sizeChangingFixture();
+      const candidateStart = fixture.stub.arm('write', stage);
+      expect(() => prepareSceneBufferMutation(
+        fixture.stub.device,
+        fixture.sceneBuffers,
+        fixture.patch,
+      )).toThrow('injected upload failure');
+      expectPreviousSceneGeneration(fixture);
+      expectCreatedDestroyed(fixture.stub, candidateStart);
+    }
+  });
+
+  it('rejects live and candidate-to-candidate aliases without destroying live resources', () => {
+    const liveAlias = sizeChangingFixture();
+    const liveCandidateStart = liveAlias.stub.arm('allocation', Number.MAX_SAFE_INTEGER);
+    liveAlias.stub.aliasBufferTo =
+      liveAlias.previous.positionsBuffer as unknown as TrackedResource;
+    expect(() => prepareSceneBufferMutation(
+      liveAlias.stub.device,
+      liveAlias.sceneBuffers,
+      liveAlias.patch,
+    )).toThrow('candidate allocation for vitrum.pt-webgpu.scene.positions aliased an existing GPU resource');
+    expectPreviousSceneGeneration(liveAlias);
+    expectCreatedDestroyed(liveAlias.stub, liveCandidateStart);
+
+    const stagedAlias = sizeChangingFixture();
+    const stagedCandidateStart = stagedAlias.stub.arm('allocation', Number.MAX_SAFE_INTEGER);
+    stagedAlias.stub.aliasBuffers = true;
+    expect(() => prepareSceneBufferMutation(
+      stagedAlias.stub.device,
+      stagedAlias.sceneBuffers,
+      stagedAlias.patch,
+    )).toThrow('candidate allocation for vitrum.pt-webgpu.scene.normals aliased an existing GPU resource');
+    expectPreviousSceneGeneration(stagedAlias);
+    expect(stagedAlias.stub.resources.slice(stagedCandidateStart)).toHaveLength(1);
+    expectCreatedDestroyed(stagedAlias.stub, stagedCandidateStart);
+  });
+
+  it('restores committed mirrors and handles on rollback and destroys candidates once', () => {
+    const fixture = sizeChangingFixture();
+    const candidateStart = fixture.stub.arm('allocation', Number.MAX_SAFE_INTEGER);
+    const transaction = prepareSceneBufferMutation(
+      fixture.stub.device,
+      fixture.sceneBuffers,
+      fixture.patch,
+    );
+    const candidatePositionsBuffer = transaction.preview.positionsBuffer;
+    const candidateNormalsBuffer = transaction.preview.normalsBuffer;
+
+    expectPreviousSceneGeneration(fixture);
+    expect(transaction.replacesBufferHandles).toBe(true);
+    expect(transaction.preview.positions).toEqual(fixture.patch.positions);
+    expect(transaction.preview.positions).not.toBe(fixture.patch.positions);
+    transaction.commit();
+    expect(fixture.sceneBuffers.positions).toBe(transaction.preview.positions);
+    expect(fixture.sceneBuffers.normals).toBe(transaction.preview.normals);
+    expect(fixture.sceneBuffers.positionsBuffer).toBe(candidatePositionsBuffer);
+    expect(fixture.sceneBuffers.normalsBuffer).toBe(candidateNormalsBuffer);
+    expect(fixture.sceneBuffers.triangleCount).toBe(fixture.patch.triangleCount);
+
+    transaction.rollback();
+    transaction.rollback();
+    expectPreviousSceneGeneration(fixture);
+    expectCreatedDestroyed(fixture.stub, candidateStart);
+  });
+
+  it('finalizes a committed generation and retires duplicate old handles exactly once', () => {
+    const fixture = sizeChangingFixture();
+    const sharedPreviousBuffer = fixture.previous.positionsBuffer as unknown as TrackedResource;
+    const displacedNormalsBuffer =
+      fixture.previous.normalsBuffer as unknown as TrackedResource;
+    (fixture.sceneBuffers as unknown as { normalsBuffer: GPUBuffer }).normalsBuffer =
+      fixture.previous.positionsBuffer;
+    const candidateStart = fixture.stub.arm('allocation', Number.MAX_SAFE_INTEGER);
+    const transaction = prepareSceneBufferMutation(
+      fixture.stub.device,
+      fixture.sceneBuffers,
+      fixture.patch,
+    );
+    const candidateBuffers = [
+      transaction.preview.positionsBuffer,
+      transaction.preview.normalsBuffer,
+    ] as const;
+
+    transaction.commit();
+    transaction.finalize();
+    transaction.finalize();
+
+    expect(fixture.sceneBuffers.positions).toBe(transaction.preview.positions);
+    expect(fixture.sceneBuffers.normals).toBe(transaction.preview.normals);
+    expect(fixture.sceneBuffers.triangleCount).toBe(fixture.patch.triangleCount);
+    expect(sharedPreviousBuffer.destroy).toHaveBeenCalledOnce();
+    expect(displacedNormalsBuffer.destroy).not.toHaveBeenCalled();
+    for (const candidate of candidateBuffers) {
+      expect((candidate as unknown as TrackedResource).destroy).not.toHaveBeenCalled();
+    }
+
+    fixture.sceneBuffers.destroy();
+    for (const candidate of fixture.stub.resources.slice(candidateStart)) {
+      expect(candidate.destroy, candidate.label).toHaveBeenCalledOnce();
+    }
+    displacedNormalsBuffer.destroy();
+    expect(displacedNormalsBuffer.destroy).toHaveBeenCalledOnce();
+  });
+
+  it('allocates 32-byte BVH and TLAS placeholder bindings for a primitive-less scene', () => {
+    installGpuConstStubs();
+    const stub = new FailureDevice();
+    const packed = buildPackedScene({
+      primitives: [],
+      emitters: [],
+      environment: { kind: 'none' },
+    });
+    expect(packed.bvhNodes.byteLength).toBe(0);
+    expect(packed.tlasNodes.byteLength).toBe(0);
+
+    const sceneBuffers = uploadPackedScene(stub.device, packed);
+    const resource = (label: string): TrackedResource => {
+      const found = stub.resources.find((candidate) => candidate.label === label);
+      expect(found, label).toBeDefined();
+      return found!;
+    };
+    expect(resource('vitrum.pt-webgpu.scene.bvhNodes').size).toBe(32);
+    expect(resource('vitrum.pt-webgpu.scene.tlasNodes').size).toBe(32);
+    sceneBuffers.destroy();
+  });
+});
+
   it.each(['primitive', 'emitter', 'environment'] as const)(
     'rolls back every published scene field when %s reset fails',
     (kind) => {
@@ -674,6 +683,10 @@ describe('R2.1 transactional pt-webgpu resource replacement', () => {
       const host: MutationHost = {
         device: stub.device,
         assertLive: vi.fn(),
+        validatePrimitiveCandidate: vi.fn(),
+        validateEmitterCandidate: vi.fn(),
+        validateEnvironmentCandidate: vi.fn(),
+        validateEmittersCandidate: vi.fn(),
         getScene: () => sceneState,
         setSceneState: vi.fn((next) => {
           sceneState = next;
@@ -707,7 +720,6 @@ describe('R2.1 transactional pt-webgpu resource replacement', () => {
         pointLightCount: sceneBuffers.pointLightCount,
         lightTreeNodeCount: sceneBuffers.lightTreeNodeCount,
         environmentTint: sceneBuffers.environmentTint,
-        environmentSunStrength: sceneBuffers.environmentSunStrength,
         environmentHdriIntensity: sceneBuffers.environmentHdriIntensity,
       };
       const candidateStart = stub.resources.length;

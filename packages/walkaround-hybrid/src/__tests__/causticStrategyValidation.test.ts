@@ -66,11 +66,11 @@ describe('walkaround caustic strategy validation', () => {
     }))).toThrowError(/safe integer/);
   });
 
-  it.each([0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY])(
+  it.each([0, -1, 1.5, 3, 4, Number.NaN, Number.POSITIVE_INFINITY])(
     'rejects malformed maxBounces=%s instead of clamping it',
     (maxBounces) => {
       expect(() => validateHybridEngineOptions(opts({ maxBounces })))
-        .toThrowError(/positive safe integer/);
+        .toThrowError(/must be 1 .* or 2/s);
     },
   );
 });

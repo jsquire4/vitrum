@@ -51,7 +51,10 @@ export function createCommonFrameResources(
     label: 'hdrTotal',
     size: [width, height],
     format: 'rgba16float',
-    usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
+    usage:
+      GPUTextureUsage.STORAGE_BINDING |
+      GPUTextureUsage.TEXTURE_BINDING |
+      GPUTextureUsage.COPY_SRC,
   });
   const indirectDenoisedPingTexture = device.createTexture({
     label: 'indirectDenoisedPing',
@@ -132,7 +135,7 @@ export function createCommonFrameResources(
       fullAtrousVarianceEstimate ? width : 1,
       fullAtrousVarianceEstimate ? height : 1,
     ],
-    format: 'rgba32float',
+    format: 'r32float',
     usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
   });
   const motionVectorTexture = device.createTexture({

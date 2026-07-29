@@ -25,7 +25,6 @@ function frameWithBdpt(bdpt: boolean): FrameUniforms {
     bdptSceneRadius: 11,
     bdptSharedWavelengthNm: 550,
     bdptSharedWavelengthPdf: 0.25,
-    iorCauchy: [0, 0, 0],
     dof: null,
     tonemapMode: 0,
     exposure: 1,

@@ -62,12 +62,16 @@ export function packCascadeMaterialsFromCore(materials: readonly MaterialSpec[])
 
 export function buildRCSceneBVHFromCore(
   scene: Scene,
-  opts: { filter?: (p: ScenePrimitive) => boolean } = {},
+  opts: {
+    filter?: (p: ScenePrimitive) => boolean;
+    onWarning?: (warning: string) => void;
+  } = {},
 ): SceneBVH {
   const merged = mergeWorldSpaceFromCore(scene, {
     positionStride: 4,
     filter: opts.filter ?? RC_CORE_MESH_FILTER,
     splitMaterialsByCastShadow: true,
+    ...(opts.onWarning !== undefined ? { onWarning: opts.onWarning } : {}),
   });
   const materialFloats = packCascadeMaterialsFromCore(merged.materials);
   const vertCount = merged.vertexCount;

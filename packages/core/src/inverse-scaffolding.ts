@@ -735,9 +735,16 @@ function scalar(value: readonly number[]): number {
   return exactPatchComponents(value, 1, 'scalar')[0]!;
 }
 
-function vec2(value: readonly number[]): Vec2 {
+function orderedVec2(value: readonly number[]): Vec2 {
   const exact = exactPatchComponents(value, 2, 'vec2');
-  return [exact[0]!, exact[1]!] as unknown as Vec2;
+  const a = exact[0]!;
+  const b = exact[1]!;
+  if (a <= b) return [a, b] as unknown as Vec2;
+  // Euclidean projection onto the closed half-space x <= y. Using the
+  // midpoint (rather than swapping) is continuous at the boundary, which is
+  // important for finite-difference probes.
+  const midpoint = a * 0.5 + b * 0.5;
+  return [midpoint, midpoint] as unknown as Vec2;
 }
 
 function vec3(value: readonly number[]): Vec3 {
@@ -782,7 +789,7 @@ export const MATERIAL_PARAM_DESCRIPTORS: Readonly<Record<string, MaterialParamDe
     patch: (v) => ({ alphaCutoff: scalar(v) }),
   },
   ior: {
-    kind: 'scalar', clamp: [1, 2.5],
+    kind: 'scalar', clamp: [1, INF],
     read: (m) => [m.ior ?? 1.5],
     patch: (v) => ({ ior: scalar(v) }),
   },
@@ -827,7 +834,7 @@ export const MATERIAL_PARAM_DESCRIPTORS: Readonly<Record<string, MaterialParamDe
     patch: (v) => ({ scatteringCoefficientRGB: vec3(v) }),
   },
   specularColor: {
-    kind: 'rgb', clamp: [0, 1],
+    kind: 'rgb', clamp: [0, INF],
     read: (m) => [...(m.specularColor ?? [1, 1, 1])],
     patch: (v) => ({ specularColor: vec3(v) }),
   },
@@ -874,7 +881,7 @@ export const MATERIAL_PARAM_DESCRIPTORS: Readonly<Record<string, MaterialParamDe
   iridescenceThicknessRange: {
     kind: 'vec2', clamp: [0, INF],
     read: (m) => [...(m.iridescenceThicknessRange ?? [100, 400])],
-    patch: (v) => ({ iridescenceThicknessRange: vec2(v) }),
+    patch: (v) => ({ iridescenceThicknessRange: orderedVec2(v) }),
   },
   anisotropy: {
     kind: 'scalar', clamp: [0, 1],
@@ -1001,6 +1008,16 @@ export function clampParams(
     for (let c = 0; c < length; c++) {
       flat[offset + c] = Math.min(Math.max(flat[offset + c]!, lo), hi);
     }
+    const target = length === 2 ? parseParamPath(p.path) : undefined;
+    if (
+      target?.domain === 'materials' &&
+      target.field === 'iridescenceThicknessRange' &&
+      flat[offset]! > flat[offset + 1]!
+    ) {
+      const midpoint = flat[offset]! * 0.5 + flat[offset + 1]! * 0.5;
+      flat[offset] = midpoint;
+      flat[offset + 1] = midpoint;
+    }
   }
 }
 
@@ -1106,6 +1123,17 @@ export function validateInitialSceneValue(
   fromExplicitInitial: boolean,
   backend: string,
 ): void {
+  if (slot.target.domain === 'materials' && slot.target.field === 'ior') {
+    const ior = value[0];
+    if (Number.isFinite(ior) && ior! >= 1) return;
+    const source = fromExplicitInitial ? 'initial' : 'scene';
+    throw new Error(
+      `createInverseSession: parameter "${slot.param.path}" requires a finite ${source} IOR >= 1. ` +
+        'The authored value 0 is the renderer compatibility sentinel for an infinite IOR and is ' +
+        `not a continuous optimization seed for ${backend}. Set parameter.initial to a finite ` +
+        'value >= 1 before fitting IOR.',
+    );
+  }
   if (slot.target.domain === 'materials' && slot.target.field === 'attenuationDistance') {
     const distance = value[0];
     if (Number.isFinite(distance) && distance! > 0) return;

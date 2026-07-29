@@ -6,22 +6,11 @@
 import type { FrameInput, Scene } from '@vitrum/core';
 import type { FrameUniforms } from './glResources.js';
 import type { PTEngineWebGL2Options } from '../options.js';
-import { CAUCHY_CROWN_GLASS, TONEMAP_MODE_INDEX } from '@vitrum/shared-samplers';
+import { TONEMAP_MODE_INDEX } from '@vitrum/shared-samplers';
 import { invertMat4, makeRotationYMat4 } from '../mat4.js';
 
 import { sharedBdptWavelengthForSeed } from './sharedBdptWavelength.js';
 const IDENTITY_MAT4 = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
-
-// Crown Glass three-term Cauchy IOR n(λ). Uploaded only when spectral is on so
-// material-local dispersionStrength actually disperses. All-zero selects the
-// shader's no-dispersion fast path. Spectral reflectance is not global: genuine
-// Jakob-Hanika coefficients are solved and packed per material at scene build.
-const SPECTRAL_IOR_CAUCHY: readonly [number, number, number] = [
-  CAUCHY_CROWN_GLASS.A,
-  CAUCHY_CROWN_GLASS.B,
-  CAUCHY_CROWN_GLASS.C,
-];
-const NO_IOR_CAUCHY: readonly [number, number, number] = [0, 0, 0];
 
 /** Engine-config + scene-state slice consumed by `packFrameUniforms`. */
 export interface FrameUniformsConfig {
@@ -93,8 +82,6 @@ export function packFrameUniforms(
     bdptSceneRadius: cfg.bdptSceneRadius,
     bdptSharedWavelengthNm: sharedBdptWavelength.wavelengthNm,
     bdptSharedWavelengthPdf: sharedBdptWavelength.pdf,
-    // Cauchy IOR only when spectral is on; otherwise the no-dispersion fast path.
-    iorCauchy: cfg.spectralEnabled ? SPECTRAL_IOR_CAUCHY : NO_IOR_CAUCHY,
     dof:
       cfg.dof != null
         ? {

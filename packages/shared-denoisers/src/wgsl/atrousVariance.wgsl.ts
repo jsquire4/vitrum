@@ -31,7 +31,7 @@
  *   group 0 — variance estimation pass (svgfVarianceMain):
  *     binding 0 — texture_2d<f32>                        inputColor   (noisy RGBA16F)
  *     binding 1 — texture_2d<f32>                        varianceIn   (RG32F — WelfordVariance mean+m2)
- *     binding 2 — texture_storage_2d<rgba32float, write> varianceOut  (estimated scalar variance per pixel)
+ *     binding 2 — texture_storage_2d<r32float, write>    varianceOut  (estimated scalar variance per pixel)
  *     binding 3 — var<uniform> AtrousVarianceVarianceUBO
  *
  *   group 0 — à-trous pass (svgfAtrousMain):
@@ -139,15 +139,14 @@ struct AtrousVarianceAtrousUBO {
 //   - frameCount >= SVGF_TEMPORAL_VARIANCE_MIN_FRAMES: Welford variance from the running buffer. This
 //     is a temporally stable estimate that converges over time.
 //
-// Output (varianceOut): RG32Float texture.
-//   .r = scalar luminance variance estimate (used by the à-trous pass).
-//   .g = frameCount cast to f32 (informational — lets downstream passes
-//        read the convergence state without an extra uniform).
+// Output (varianceOut): R32Float texture containing the scalar luminance
+// variance estimate used by the à-trous pass. Frame count is consumed here
+// from the UBO and is not duplicated into an unread texture lane.
 // ============================================================
 
 @group(0) @binding(0) var varIn_inputColor:   texture_2d<f32>;
 @group(0) @binding(1) var varIn_varianceIn:    texture_2d<f32>;
-@group(0) @binding(2) var varOut_varianceOut:  texture_storage_2d<rgba32float, write>;
+@group(0) @binding(2) var varOut_varianceOut:  texture_storage_2d<r32float, write>;
 @group(0) @binding(3) var<uniform>  varUBO:   AtrousVarianceVarianceUBO;
 
 // fn luminance(c: vec3f) — canonical from LUMINANCE_WGSL above; uses LUM_W709.
@@ -195,7 +194,7 @@ fn svgfVarianceMain(@builtin(global_invocation_id) gid: vec3u) {
     variance = welfordVariance(state, frameCount);
   }
 
-  textureStore(varOut_varianceOut, gid.xy, vec4f(variance, f32(frameCount), 0.0, 0.0));
+  textureStore(varOut_varianceOut, gid.xy, vec4f(variance, 0.0, 0.0, 0.0));
 }
 
 // ============================================================

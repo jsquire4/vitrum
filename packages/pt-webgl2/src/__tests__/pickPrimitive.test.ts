@@ -67,19 +67,19 @@ function makeScene(...prims: MeshPrimitive[]): Scene {
 
 describe('PTEngineWebGL2.debug.pickPrimitive (T3.G #30)', () => {
   it('capabilities.debugSurface is true', async () => {
-    const engine = await createPTEngine_WebGL2({ device: createMockGl() });
+    const engine = await createPTEngine_WebGL2({ device: createMockGl(), debug: true });
     expect(engine.capabilities.debugSurface).toBe(true);
     engine.dispose();
   });
 
   it('debug.pickPrimitive is a function', async () => {
-    const engine = await createPTEngine_WebGL2({ device: createMockGl() });
+    const engine = await createPTEngine_WebGL2({ device: createMockGl(), debug: true });
     expect(typeof engine.debug?.pickPrimitive).toBe('function');
     engine.dispose();
   });
 
   it('returns null before the first renderFrame (no camera yet)', async () => {
-    const engine = await createPTEngine_WebGL2({ device: createMockGl() });
+    const engine = await createPTEngine_WebGL2({ device: createMockGl(), debug: true });
     engine.setScene(makeScene(quad('Q', 0, 0, 0)));
     // No renderFrame yet → no camera → null.
     expect(engine.debug?.pickPrimitive?.(W / 2, H / 2)).toBeNull();
@@ -87,7 +87,7 @@ describe('PTEngineWebGL2.debug.pickPrimitive (T3.G #30)', () => {
   });
 
   it('picks the centred quad after renderFrame deposits the camera', async () => {
-    const engine = await createPTEngine_WebGL2({ device: createMockGl() });
+    const engine = await createPTEngine_WebGL2({ device: createMockGl(), debug: true });
     engine.setScene(makeScene(quad('CentreQuad', 0, 0, 0)));
     engine.renderFrame(makeFrame());
     expect(engine.debug?.pickPrimitive?.(W / 2, H / 2)).toBe('CentreQuad');
@@ -95,7 +95,7 @@ describe('PTEngineWebGL2.debug.pickPrimitive (T3.G #30)', () => {
   });
 
   it('returns null when the centre ray misses all geometry', async () => {
-    const engine = await createPTEngine_WebGL2({ device: createMockGl() });
+    const engine = await createPTEngine_WebGL2({ device: createMockGl(), debug: true });
     // A quad offset far to the right — the centre ray doesn't hit it.
     engine.setScene(makeScene(quad('OffCenter', 50, 0, 0)));
     engine.renderFrame(makeFrame());
@@ -104,7 +104,7 @@ describe('PTEngineWebGL2.debug.pickPrimitive (T3.G #30)', () => {
   });
 
   it('picks the NEARER of two overlapping quads', async () => {
-    const engine = await createPTEngine_WebGL2({ device: createMockGl() });
+    const engine = await createPTEngine_WebGL2({ device: createMockGl(), debug: true });
     engine.setScene(makeScene(quad('Far', 0, 0, 0), quad('Near', 0, 0, 2)));
     engine.renderFrame(makeFrame());
     // 'Near' is at z=2, closer to camera at z=5 than 'Far' at z=0.

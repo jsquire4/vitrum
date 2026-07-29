@@ -13,6 +13,16 @@ import type { NrcDiagnostics } from './neural/nrc/nrcDiagnostics.js';
 /** Runtime-switchable render layers implemented by walkaround-hybrid. */
 export type HybridRenderLayer = 'ddgi';
 
+/** Live interpretation of the walkaround renderer's bounce control. */
+export interface HybridBounceSemanticsStatus {
+  readonly kind: 'ddgi-feedback';
+  readonly configuredMaxBounces: 1 | 2;
+  readonly active:
+    | 'disabled'
+    | 'direct-only'
+    | 'multi-bounce-equilibrium';
+}
+
 /**
  * Stable public surface for the walkaround-hybrid backend beyond the generic
  * {@link Engine} contract.
@@ -34,7 +44,7 @@ export interface HybridEngineGISurface {
  * interface lets facade packages type against it without importing internals.
  */
 export interface HybridEngine extends Engine, HybridEngineGISurface {
-  readonly debug: EngineDebugSurface;
+  readonly debug?: EngineDebugSurface;
   readonly debugTimings: ReadonlyArray<{ readonly t: number; readonly ms: number }>;
   readonly lastGpuTimings: Record<string, number>;
   readonly lastGpuTimingsFrame: number;
@@ -61,6 +71,21 @@ export interface HybridEngine extends Engine, HybridEngineGISurface {
    * the pipeline has not been published yet, or the engine was disposed.
    */
   requestPpgTrainingRecovery(): boolean;
+  /** Poll the PPG epoch state; `'failed'` means recovery can be requested. */
+  getPpgTrainingStatus():
+    | 'unavailable'
+    | 'disabled'
+    | 'collecting'
+    | 'readback'
+    | 'retry-pending'
+    | 'failed'
+    | 'disposed';
+
+  /**
+   * Report the live DDGI feedback regime. Unlike the construction-time
+   * capability detail, this reflects `setLayerEnabled('ddgi', false)`.
+   */
+  getBounceSemantics(): HybridBounceSemanticsStatus;
 
   updatePrimitive(id: string, patch: Partial<ScenePrimitive>): void;
   updateEmitter(id: string, patch: Partial<SceneEmitter>): void;

@@ -10,6 +10,7 @@ import {
   isTextureRefCpuReadable,
   materialSpecEmissiveLe,
   materialSpecScalarEmissiveLe,
+  materialSpecSkipEmitter,
   resolveDisplacedGeometry,
 } from '@vitrum/shared-bvh';
 import { luminance, type LightTreeBuildInput } from '@vitrum/shared-samplers';
@@ -619,6 +620,7 @@ function synthesizeImplicitEmitters(
     if (onlyPrimitiveId !== undefined && primitive.id !== onlyPrimitiveId) continue;
     if (primitive.kind === 'analytic') continue;
     if (explicitMeshAreaIds.has(primitive.id)) continue;
+    if (materialSpecSkipEmitter(primitive.material)) continue;
     const [emR, emG, emB] = emissiveRadianceForMaterial(primitive.material, primitive.id);
     if (!hasPositiveRadiance([emR, emG, emB])) continue;
     result.push({
@@ -960,8 +962,6 @@ function pointAabb(p: Vec3): { min: Vec3; max: Vec3 } {
 export interface EnvSummaryForTree {
   /** Whether the scene has a valid HDRI map (routes through HDRI CDF sampling). */
   readonly hasHdri: boolean;
-  /** Procedural-sky / HDRI sun-strength scalar (drives the env NEE gate). */
-  readonly sunStrength: number;
   /**
    * Solid-angle-integrated environment luminance, with map intensity applied
    * exactly once. Derived by `environmentParams`; zero means the selectable
@@ -1052,19 +1052,18 @@ export function buildLightTreeInputForScene(
   // The packed array is the single authoritative directional-light gate.
   const hasDirectional = directionalLeaves.length > 0;
 
-  // Mirror the kernel's env NEE gate EXACTLY: `hasEnvironmentMap || sunStrength
-  // > 0`, both derived from the SAME `environmentParams` the GPU uploads.
+  // Mirror the kernel's environment NEE gate exactly: the environment leaf is
+  // present only when a valid baked HDRI/procedural-sky map is available.
   // When the caller already has an EnvSummaryForTree (from a prior environmentParams
   // call for the same scene), use it directly to avoid re-running the HDRI/sky bake.
   const envSummary: EnvSummaryForTree = precomputed?.envSummary ?? (() => {
     const p = environmentParams(scene);
     return {
       hasHdri: p.hasHdri,
-      sunStrength: p.sunStrength,
       lightTreePower: p.lightTreePower,
     };
   })();
-  const hasEnv = envSummary.hasHdri || envSummary.sunStrength > 0;
+  const hasEnv = envSummary.hasHdri;
 
   const powers: number[] = [];
   const centroids: Vec3[] = [];

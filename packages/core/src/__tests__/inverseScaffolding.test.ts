@@ -348,12 +348,13 @@ describe('shared inverse scaffolding — descriptor table drives all four ops', 
 
   it('defaultClampRange resolves off the descriptor table', () => {
     expect(defaultClampRange('roughness')).toEqual([0, 1]);
-    expect(defaultClampRange('ior')).toEqual([1, 2.5]);
+    expect(defaultClampRange('ior')).toEqual([1, Infinity]);
     expect(defaultClampRange('attenuationColor')).toEqual([1e-4, 1]);
     expect(defaultClampRange('dispersionAbbeNumber')).toEqual([1e-6, Infinity]);
     expect(defaultClampRange('sheenColor')).toEqual([0, 1]);
     expect(defaultClampRange('scatteringAnisotropy')).toEqual([-0.95, 0.95]);
     expect(defaultClampRange('emissive')).toEqual([0, Infinity]);
+    expect(defaultClampRange('specularColor')).toEqual([0, Infinity]);
     expect(defaultClampRange('intensity')).toEqual([0, Infinity]);
     // unknown field falls back
     expect(defaultClampRange('nonexistent')).toEqual([0, Infinity]);
@@ -365,6 +366,16 @@ describe('shared inverse scaffolding — descriptor table drives all four ops', 
     expect(materialPatch('iridescenceThicknessRange', [50, 200])).toEqual({
       iridescenceThicknessRange: [50, 200],
     });
+    expect(materialPatch('iridescenceThicknessRange', [300, 100])).toEqual({
+      iridescenceThicknessRange: [200, 200],
+    });
+    const huge = materialPatch('iridescenceThicknessRange', [
+      Number.MAX_VALUE,
+      Number.MAX_VALUE / 2,
+    ]).iridescenceThicknessRange!;
+    expect(huge[0]).toBe(Number.MAX_VALUE * 0.75);
+    expect(huge[1]).toBe(Number.MAX_VALUE * 0.75);
+    expect(Number.isFinite(huge[0])).toBe(true);
     expect(emitterPatch('intensity', [2])).toEqual({ intensity: 2 });
     expect(emitterPatch('color', [1, 0, 0])).toEqual({ color: [1, 0, 0] });
     expect(() => materialPatch('bogus', [0])).toThrow(/unsupported material field/);
@@ -413,6 +424,21 @@ describe('shared inverse scaffolding — descriptor table drives all four ops', 
     expect(() => validateInitialSceneValue(slot, [20], true, 'test-backend'))
       .not.toThrow();
   });
+
+  it('requires a finite >= 1 seed before fitting the IOR sentinel', () => {
+    const slot = {
+      param: { path: 'materials.p.ior', kind: 'scalar' },
+      target: { domain: 'materials', id: 'p', field: 'ior' },
+      offset: 0,
+      length: 1,
+    } as const;
+    expect(() => validateInitialSceneValue(slot, [0], false, 'test-backend'))
+      .toThrow(/compatibility sentinel/);
+    expect(() => validateInitialSceneValue(slot, [0.9], true, 'test-backend'))
+      .toThrow(/IOR >= 1/);
+    expect(() => validateInitialSceneValue(slot, [3.2], true, 'test-backend'))
+      .not.toThrow();
+  });
 });
 
 // ── clampParams ────────────────────────────────────────────────────────────────
@@ -433,6 +459,17 @@ describe('shared inverse scaffolding — clampParams', () => {
     expect(flat[1]).toBe(-0.5); // min override -1, stays
     expect(flat[2]).toBe(1); // 5 → clamped to 1
   });
+
+  it('projects an inverted iridescence range onto the valid ordered domain', () => {
+    const flat = new Float32Array([500, 100]);
+    clampParams(
+      flat,
+      [{ path: 'materials.p.iridescenceThicknessRange', kind: 'vec2' }],
+      [{ offset: 0, length: 2, defaultMin: 0, defaultMax: Infinity }],
+    );
+    expect(Array.from(flat)).toEqual([300, 300]);
+  });
+
 });
 
 // ── validateParam per-backend availability gate ───────────────────────────────

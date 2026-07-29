@@ -37,7 +37,6 @@ export {
   SPPM_PIXEL_STATS_BYTES_PER_PIXEL,
   SPPM_PHOTON_CELLS_MAX_BYTES,
   SPPM_ALPHA,
-  sppmRadiusAtFrame,
   sppmInitialRadius,
 } from '../../sppmParams.js';
 
@@ -1167,7 +1166,7 @@ fn sppmEmitPhotons(@builtin(global_invocation_id) gid: vec3u) {
       mat.specularColor = vec3f(spectralRgbFactorAtHero(
         mat.specularColor, photonHeroLambda,
       ));
-      if (mat.dispersionAbbe >= 1.0) {
+      if (mat.dispersionAbbe > 0.0) {
         materialIor = cauchyIorAtLambda(
           photonHeroLambda, mat.ior, mat.dispersionAbbe,
         );

@@ -58,7 +58,7 @@ export const MATERIAL_TRANSFORM_TEXEL = /** @type {Record<string, number>} */ ({
 });
 
 // D3 auxiliary block.
-/** ao/light/bump map ids + scalars + envMapIntensity + uv-set mask (texels 85/86). */
+/** ao/light/bump map ids + scalars + envMapIntensity (texels 85/86). */
 export const MATERIAL_D3_AUX_TEXEL = 85;
 /** ao/light/bump transforms (texels 87/89/91, 2 texels each). */
 export const MATERIAL_AO_TRANSFORM_TEXEL = 87;
@@ -73,8 +73,7 @@ export const MATERIAL_VOLUME_THICKNESS_TEXEL = 97;
 /** thicknessMap transform (texels 98/99). */
 export const MATERIAL_THICKNESS_TRANSFORM_TEXEL = 98;
 
-// Map order shared by the UV-set bitmask and the sampler-policy payload. Bit k in
-// UV_SET_BIT and texel k in the sampler texels describe the same MaterialSpec map.
+// Map order shared by sampler-policy and arbitrary UV-layer selector payloads.
 export const MATERIAL_MAP_FIELD_ORDER = /** @type {readonly string[]} */ ([
   'baseColorMap',
   'metallicMap',
@@ -106,24 +105,3 @@ export const MATERIAL_LAYER_NORMAL_TEXELS = 8;
 export const MATERIAL_UV_SELECTOR_TEXEL_OFFSET = MATERIAL_LAYER_NORMAL_TEXEL_OFFSET + MATERIAL_LAYER_NORMAL_TEXELS;
 export const MATERIAL_UV_SELECTOR_TEXELS = Math.ceil(MATERIAL_MAP_FIELD_ORDER.length / 4);
 export const MATERIAL_PIXELS = MATERIAL_UV_SELECTOR_TEXEL_OFFSET + MATERIAL_UV_SELECTOR_TEXELS;
-
-// Legacy UV1 compatibility mirror packed at texel 86.a (the former pad lane).
-// Shading uses the arbitrary-layer selector table at MATERIAL_UV_SELECTOR_TEXEL_OFFSET;
-// this bitmask remains stable for older material-record diagnostics/consumers.
-// Bit k set = the k-th map was authored with texCoord 1.
-// Map→bit assignments (must match the packer in materialsTexture.ts AND the
-// GLSL decoder in material_mapped_rich.glsl.ts — single source here):
-//   bit 0  = baseColorMap          bit 10 = sheenColorMap
-//   bit 1  = metallicMap           bit 11 = sheenRoughnessMap
-//   bit 2  = roughnessMap          bit 12 = iridescenceMap
-//   bit 3  = transmissionMap       bit 13 = iridescenceThicknessMap
-//   bit 4  = emissiveMap           bit 14 = specularColorMap
-//   bit 5  = normalMap             bit 15 = specularIntensityMap
-//   bit 6  = alphaMap              bit 16 = aoMap
-//   bit 7  = clearcoatMap          bit 17 = lightMap
-//   bit 8  = clearcoatRoughnessMap bit 18 = bumpMap
-//   bit 9  = clearcoatNormalMap    bit 19 = anisotropyMap
-//                                     bit 20 = thicknessMap
-export const UV_SET_BIT = /** @type {Record<string, number>} */ (
-  Object.fromEntries(MATERIAL_MAP_FIELD_ORDER.map((field, i) => [field, 1 << i]))
-);

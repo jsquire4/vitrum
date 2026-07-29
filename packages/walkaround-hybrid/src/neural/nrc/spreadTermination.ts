@@ -173,7 +173,7 @@ export function evaluateSpreadTermination(
   c: number,
 ): SpreadTerminationResult {
   const a0 = primarySpread(segments);
-    const acc = accumulatedBounceSpread(segments);
+  const acc = accumulatedBounceSpread(segments);
   // Start at segment index 1: never terminate at the primary vertex (k=0).
   for (let k = 1; k < segments.length; k++) {
     if (acc[k]! > c * a0) {

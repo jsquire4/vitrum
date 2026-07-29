@@ -19,7 +19,11 @@
 // backends — only the snapshot-patch + invariant enforcement is canonical.
 
 import { validateAnalyticParams } from './analyticParams.js';
-import { validateScene } from './validation.js';
+import {
+  validateEmitterForScenePatch,
+  validatePrimitiveFastFieldsForScenePatch,
+  validatePrimitiveForScenePatch,
+} from './validation.js';
 import type { ScenePrimitive } from './primitives.js';
 import type { SceneEmitter } from './emitters.js';
 import type { Scene } from './index.js';
@@ -32,6 +36,13 @@ const MESH_LIKE_KINDS: ReadonlySet<ScenePrimitive['kind']> = new Set([
 ]);
 
 const LAYERED_MATERIAL_KEYS = ['frontLayer', 'backLayer'] as const;
+const FAST_PRIMITIVE_PATCH_FIELDS = new Set([
+  'material',
+  'transform',
+  'castShadow',
+] as const);
+type FastPrimitivePatchField =
+  typeof FAST_PRIMITIVE_PATCH_FIELDS extends ReadonlySet<infer T> ? T : never;
 
 function isMergeableRecord(value: unknown): value is Record<string, unknown> {
   return value != null && typeof value === 'object' && !Array.isArray(value) && !ArrayBuffer.isView(value);
@@ -55,6 +66,66 @@ function mergeMaterialPatch(
       : patchLayer;
   }
   return merged;
+}
+
+function classifyFastPrimitivePatch(
+  primitive: ScenePrimitive,
+  patch: Partial<ScenePrimitive>,
+): readonly FastPrimitivePatchField[] | undefined {
+  const fields: FastPrimitivePatchField[] = [];
+  for (const key of Reflect.ownKeys(patch)) {
+    const descriptor = Object.getOwnPropertyDescriptor(patch, key);
+    if (
+      typeof key !== 'string' ||
+      descriptor?.enumerable !== true ||
+      !FAST_PRIMITIVE_PATCH_FIELDS.has(key as FastPrimitivePatchField) ||
+      (key === 'transform' && primitive.kind === 'instanced-mesh')
+    ) {
+      return undefined;
+    }
+    fields.push(key as FastPrimitivePatchField);
+  }
+  return fields;
+}
+
+/**
+ * Descriptor-preserving shallow merge that does not invoke getters for
+ * unchanged primitive fields. This matters for hot material edits: cloning via
+ * object spread would read every geometry property before validation had a
+ * chance to take the field-aware path.
+ */
+function mergePrimitivePatch(
+  primitive: ScenePrimitive,
+  patch: Partial<ScenePrimitive>,
+  materialOverride: Record<string, unknown> | undefined,
+): ScenePrimitive {
+  const descriptors = new Map<PropertyKey, PropertyDescriptor>();
+  for (const source of [primitive, patch] as const) {
+    for (const key of Reflect.ownKeys(source)) {
+      const descriptor = Object.getOwnPropertyDescriptor(source, key);
+      if (descriptor !== undefined) descriptors.set(key, descriptor);
+    }
+  }
+  descriptors.set('id', {
+    configurable: true,
+    enumerable: true,
+    value: primitive.id,
+    writable: true,
+  });
+  if (materialOverride !== undefined) {
+    descriptors.set('material', {
+      configurable: true,
+      enumerable: true,
+      value: materialOverride,
+      writable: true,
+    });
+  }
+
+  const merged = {};
+  for (const [key, descriptor] of descriptors) {
+    Object.defineProperty(merged, key, descriptor);
+  }
+  return merged as ScenePrimitive;
 }
 
 /**
@@ -115,73 +186,108 @@ function assertPrimitivePatch(
  * Apply a primitive patch to a Scene snapshot, returning a NEW Scene (the input
  * is never mutated). Throws if `id` is not present, or if the patch violates an
  * id/kind immutability or analytic-param invariant.
+ *
+ * Precondition: `scene` is the immutable snapshot previously accepted through
+ * `validateScene`. This incremental helper validates the newly merged primitive
+ * only; it intentionally does not re-traverse unchanged geometry every frame.
  */
 export function patchPrimitiveInScene(
   scene: Scene,
   id: string,
   patch: Partial<ScenePrimitive>,
 ): Scene {
-  let matched = false;
-  const primitives = scene.primitives.map((primitive) => {
-    if (String(primitive.id) !== id) return primitive;
-    matched = true;
-    assertPrimitivePatch(primitive, patch);
-    const merged = { ...primitive, ...patch, id: primitive.id } as ScenePrimitive;
-    // Deep-merge the `material` sub-object so a PARTIAL material patch (e.g.
-    // `{ material: { emissive } }`) PRESERVES the primitive's other material
-    // fields instead of replacing the whole material. Layered material objects
-    // are merged one level deeper so `{ material: { frontLayer: { roughness } } }`
-    // does not drop an existing `frontLayer.normalMap`/`normalScale`.
-    // Non-material patch fields keep replace semantics.
-    const primMat = (primitive as unknown as { material?: Record<string, unknown> }).material;
-    const patchMat = (patch as unknown as { material?: Record<string, unknown> }).material;
-    if (patchMat != null && primMat != null) {
-      (merged as unknown as { material: Record<string, unknown> }).material = mergeMaterialPatch(primMat, patchMat);
-    }
-    return merged;
-  });
-  if (!matched) {
+  const primitiveIndex = scene.primitives.findIndex(
+    (primitive) => String(primitive.id) === id,
+  );
+  if (primitiveIndex < 0) {
     throw new Error(`updatePrimitive: primitive "${id}" not found in current scene`);
   }
-  const nextScene: Scene = {
-    ...scene,
-    primitives,
-  };
-  validateScene(nextScene);
-  return nextScene;
+  const primitive = scene.primitives[primitiveIndex]!;
+  assertPrimitivePatch(primitive, patch);
+  // Deep-merge the `material` sub-object so a PARTIAL material patch (e.g.
+  // `{ material: { emissive } }`) PRESERVES the primitive's other material
+  // fields instead of replacing the whole material. Layered material objects
+  // are merged one level deeper so `{ material: { frontLayer: { roughness } } }`
+  // does not drop an existing `frontLayer.normalMap`/`normalScale`.
+  // Non-material patch fields keep replace semantics.
+  const primMat = (primitive as unknown as { material?: Record<string, unknown> }).material;
+  const patchMat = (patch as unknown as { material?: Record<string, unknown> }).material;
+  let materialOverride: Record<string, unknown> | undefined;
+  if (patchMat != null && primMat != null) {
+    materialOverride = mergeMaterialPatch(primMat, patchMat);
+  }
+  const merged = mergePrimitivePatch(primitive, patch, materialOverride);
+  const fastFields = classifyFastPrimitivePatch(primitive, patch);
+  if (fastFields === undefined) {
+    validatePrimitiveForScenePatch(merged, `scene.primitives[${primitiveIndex}]`);
+  } else {
+    validatePrimitiveFastFieldsForScenePatch(
+      merged,
+      fastFields,
+      `scene.primitives[${primitiveIndex}]`,
+    );
+  }
+  const primitives = scene.primitives.slice();
+  primitives[primitiveIndex] = merged;
+  return { ...scene, primitives };
 }
 
 /**
  * Apply an emitter patch to a Scene snapshot, returning a NEW Scene (the input
  * is never mutated). Throws if `id` is not present, or if the patch attempts to
  * change the emitter's `id` or `kind`.
+ *
+ * Precondition: `scene` is the immutable snapshot previously accepted through
+ * `validateScene`. The merged emitter and any mesh-area reference/ownership
+ * change are validated; unchanged primitive payloads are not re-traversed.
  */
 export function patchEmitterInScene(
   scene: Scene,
   id: string,
   patch: Partial<SceneEmitter>,
 ): Scene {
-  let matched = false;
-  const emitters = scene.emitters.map((emitter) => {
-    if (String(emitter.id) !== id) return emitter;
-    matched = true;
-    if ('kind' in patch && patch.kind != null && patch.kind !== emitter.kind) {
-      throw new Error(
-        `updateEmitter: emitter "${id}" kind cannot change from "${emitter.kind}" to "${patch.kind}"`,
-      );
-    }
-    if ('id' in patch && patch.id != null && patch.id !== emitter.id) {
-      throw new Error(`updateEmitter: emitter "${id}" id cannot be changed`);
-    }
-    return { ...emitter, ...patch, id: emitter.id } as SceneEmitter;
-  });
-  if (!matched) {
+  const emitterIndex = scene.emitters.findIndex(
+    (emitter) => String(emitter.id) === id,
+  );
+  if (emitterIndex < 0) {
     throw new Error(`updateEmitter: emitter "${id}" not found in current scene`);
   }
-  const nextScene: Scene = {
-    ...scene,
-    emitters,
-  };
-  validateScene(nextScene);
-  return nextScene;
+  const emitter = scene.emitters[emitterIndex]!;
+  if ('kind' in patch && patch.kind != null && patch.kind !== emitter.kind) {
+    throw new Error(
+      `updateEmitter: emitter "${id}" kind cannot change from "${emitter.kind}" to "${patch.kind}"`,
+    );
+  }
+  if ('id' in patch && patch.id != null && patch.id !== emitter.id) {
+    throw new Error(`updateEmitter: emitter "${id}" id cannot be changed`);
+  }
+  const merged = { ...emitter, ...patch, id: emitter.id } as SceneEmitter;
+  validateEmitterForScenePatch(merged, `scene.emitters[${emitterIndex}]`);
+  if (merged.kind === 'mesh-area') {
+    const target = scene.primitives.find((primitive) => primitive.id === merged.meshId);
+    if (target == null) {
+      throw new RangeError(
+        `validateScene: scene.emitters[${emitterIndex}].meshId references missing primitive "${merged.meshId}"`,
+      );
+    }
+    if (target.kind === 'analytic') {
+      throw new RangeError(
+        `validateScene: scene.emitters[${emitterIndex}].meshId must reference a mesh-like primitive (got analytic "${merged.meshId}")`,
+      );
+    }
+    const duplicateIndex = scene.emitters.findIndex(
+      (candidate, index) =>
+        index !== emitterIndex &&
+        candidate.kind === 'mesh-area' &&
+        candidate.meshId === merged.meshId,
+    );
+    if (duplicateIndex >= 0) {
+      throw new RangeError(
+        `validateScene: scene.emitters[${emitterIndex}].meshId duplicates mesh-area ownership of primitive "${merged.meshId}" already claimed by scene.emitters[${duplicateIndex}].meshId`,
+      );
+    }
+  }
+  const emitters = scene.emitters.slice();
+  emitters[emitterIndex] = merged;
+  return { ...scene, emitters };
 }

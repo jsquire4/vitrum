@@ -62,6 +62,10 @@ export interface ProceduralSkyEnvironment {
   readonly turbidity: number;
   readonly rayleigh: number;
   readonly mieCoefficient: number;
+  /**
+   * Henyey–Greenstein asymmetry `g`, authored strictly inside `(-1, 1)`.
+   * Sky evaluation uses the shared ±0.999999 numerical stability cap.
+   */
   readonly mieDirectionalG: number;
   readonly intensity?: number;
 }
