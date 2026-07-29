@@ -267,6 +267,17 @@ function readScalar(
  *
  * Returns a Float32Array of length `accessor.count * componentsPerElement`.
  */
+export interface UnpackAccessorFloatPolicy {
+  /**
+   * Fail before widening a non-normalized UNSIGNED_INT component above this
+   * inclusive bound. Use this when the consumer's Float32Array contract must
+   * retain exact integer values rather than accept float32 rounding.
+   */
+  readonly maxExactUnsignedInt?: number;
+  /** Consumer name included in the precision-loss diagnostic. */
+  readonly semantic?: string;
+}
+
 export function unpackAccessorFloat(
   gltf: GltfJson,
   buffers: Map<number, ArrayBuffer>,
@@ -274,6 +285,7 @@ export function unpackAccessorFloat(
   warnings: string[],
   onDiagnostic?: GltfAccessorDiagnosticSink,
   resourceLedger?: ImportResourceLedger,
+  policy?: UnpackAccessorFloatPolicy,
 ): Float32Array {
   const accessor = gltf.accessors?.[accessorIndex];
   if (!accessor) {
@@ -302,12 +314,30 @@ export function unpackAccessorFloat(
   const result = new Float32Array(total);
 
   if (accessor.bufferView !== undefined) {
-    _readBufferViewIntoResult(gltf, buffers, accessor, componentCount, result);
+    _readBufferViewIntoResult(
+      gltf,
+      buffers,
+      accessorIndex,
+      accessor,
+      componentCount,
+      result,
+      policy,
+    );
   }
   // If bufferView is absent, result stays zero-initialized (valid per spec for sparse).
 
   if (accessor.sparse) {
-    _applySparsePatch(gltf, buffers, accessorIndex, accessor, componentCount, result, warnings, onDiagnostic);
+    _applySparsePatch(
+      gltf,
+      buffers,
+      accessorIndex,
+      accessor,
+      componentCount,
+      result,
+      warnings,
+      onDiagnostic,
+      policy,
+    );
   }
 
   return result;
@@ -316,15 +346,17 @@ export function unpackAccessorFloat(
 function _readBufferViewIntoResult(
   gltf: GltfJson,
   buffers: Map<number, ArrayBuffer>,
+  accessorIndex: number,
   accessor: GltfAccessor,
   componentCount: number,
   result: Float32Array,
+  policy: UnpackAccessorFloatPolicy | undefined,
 ): void {
   const bvIdx = accessor.bufferView!;
   const bv = gltf.bufferViews?.[bvIdx];
   if (!bv) throw new Error(`[vitrum/gltf-adapter] BufferView ${bvIdx} not found`);
 
-  const buf = _getBuffer(buffers, bv.buffer, gltf);
+  const buf = _getBuffer(buffers, bv.buffer);
   const ct = accessor.componentType;
   const compSize = componentByteSize(ct);
   const normalized = accessor.normalized ?? false;
@@ -353,14 +385,50 @@ function _readBufferViewIntoResult(
       const compByteOffset = padding !== null
         ? Math.floor(c / padding.colLen) * padding.colStride + (c % padding.colLen) * compSize
         : c * compSize;
-      result[i * componentCount + c] = readScalar(
+      const value = readScalar(
         dataView,
         elemOffset + compByteOffset,
         ct,
         normalized,
       );
+      assertUnsignedIntFloatWideningBound(
+        value,
+        ct,
+        normalized,
+        accessorIndex,
+        i,
+        c,
+        policy,
+      );
+      result[i * componentCount + c] = value;
     }
   }
+}
+
+function assertUnsignedIntFloatWideningBound(
+  value: number,
+  componentType: GltfComponentType,
+  normalized: boolean,
+  accessorIndex: number,
+  elementIndex: number,
+  componentIndex: number,
+  policy: UnpackAccessorFloatPolicy | undefined,
+): void {
+  const bound = policy?.maxExactUnsignedInt;
+  if (
+    bound === undefined ||
+    componentType !== GltfComponentType.UNSIGNED_INT ||
+    normalized ||
+    value <= bound
+  ) {
+    return;
+  }
+  const semantic = policy?.semantic ?? 'Float32Array consumer';
+  throw new RangeError(
+    `[vitrum/gltf-adapter] Accessor ${accessorIndex} UNSIGNED_INT value ${value} at ` +
+      `element ${elementIndex}, component ${componentIndex} exceeds the exact ${semantic} ` +
+      `bound ${bound}; widening it to Float32Array would lose integer precision.`,
+  );
 }
 
 interface SparseViews {
@@ -604,6 +672,7 @@ function _applySparsePatch(
   result: Float32Array,
   warnings: string[],
   onDiagnostic: GltfAccessorDiagnosticSink | undefined,
+  policy: UnpackAccessorFloatPolicy | undefined,
 ): void {
   emitAccessorDiagnostic(warnings, onDiagnostic, {
     severity: 'warning',
@@ -645,12 +714,22 @@ function _applySparsePatch(
         ? Math.floor(c / sv.valPadding.colLen) * sv.valPadding.colStride +
           (c % sv.valPadding.colLen) * sv.valCompSize
         : c * sv.valCompSize;
-      result[idx * componentCount + c] = readScalar(
+      const value = readScalar(
         sv.valView,
         sv.valByteOffset + s * sv.valElementByteLength + componentByteOffset,
         sv.valCt,
         normalized,
       );
+      assertUnsignedIntFloatWideningBound(
+        value,
+        sv.valCt,
+        normalized,
+        accessorIndex,
+        idx,
+        c,
+        policy,
+      );
+      result[idx * componentCount + c] = value;
     }
   }
 }
@@ -716,7 +795,7 @@ export function unpackAccessorUint32(
     const bv = gltf.bufferViews?.[bvIdx];
     if (!bv) throw new Error(`[vitrum/gltf-adapter] BufferView ${bvIdx} not found`);
 
-    const buf = _getBuffer(buffers, bv.buffer, gltf);
+    const buf = _getBuffer(buffers, bv.buffer);
     const bvOffset = bv.byteOffset ?? 0;
     const range = accessorBufferViewRange(accessor, bv, 1);
     validateBufferViewAccess(buf, bvIdx, bv, range.requiredByteLength, 'index accessor');
@@ -859,7 +938,6 @@ export function validateBufferViewAccess(
 function _getBuffer(
   buffers: Map<number, ArrayBuffer>,
   bufferIndex: number,
-  _gltf: GltfJson,
 ): ArrayBuffer {
   const buf = buffers.get(bufferIndex);
   if (buf === undefined) {

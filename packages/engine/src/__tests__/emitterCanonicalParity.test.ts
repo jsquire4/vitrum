@@ -1,10 +1,12 @@
 // Cross-backend emitter packing parity.
 //
-// Both path-tracing backends pack `scene.emitters` into their own byte layouts
+// The two path-tracing backends and walkaround renderer pack `scene.emitters`
+// into their own byte layouts
 // (`@vitrum/pt-webgl2` `packLightsTexture` — a flat 6-texel RGBA32F grid;
-// `@vitrum/pt-webgpu` `packEmitterArrays` — per-kind storage streams). The byte
-// layouts differ and stay per-backend. This test pins that the two agree on the
-// core contract's semantic interpretation of a fixture scene:
+// `@vitrum/pt-webgpu` `packEmitterArrays` — per-kind storage streams;
+// `@vitrum/walkaround-hybrid` area emitters — packed EmitterTri streams).
+// The byte layouts differ and stay per-backend. This test pins their shared
+// core-contract semantics for a canonical fixture scene:
 //   - analytic light count,
 //   - per-light power (luminance·intensity·area),
 //   - spot cone cosines (outer from `angle`, inner from `angle·(1−penumbra)`).
@@ -19,6 +21,10 @@ import type { Scene, SceneEmitter } from '@vitrum/core';
 // public entry). Relative imports keep this explicitly monorepo-test-only.
 import { packLightsTexture, LIGHT_PIXELS } from '../../../pt-webgl2/src/scene/lightsTexture.js';
 import { packEmitterArrays } from '../../../pt-webgpu/src/scene/emitterPacking.js';
+import {
+  collectRectAreaEmitterTrisFromCore,
+  packEmitterTrisForDDGI,
+} from '../../../walkaround-hybrid/src/restir/emitterHelpers.js';
 
 const REC709 = (rgb: readonly [number, number, number]): number =>
   0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2];
@@ -145,12 +151,17 @@ describe('cross-backend emitter packing parity', () => {
     expect(webgpu.spotLightsData).toHaveLength(16);
   });
 
-  it('agrees on per-light rect-area + disc-area power (luminance·intensity·area)', () => {
+  it('A/B/C agrees on the core rect surface, area, Le/power, and emitting side', () => {
     // pt-webgl2 stores the rect/disc "power" in s2.a; disc power carries the
     // π/4 rectangle→disc correction on a (2r)² axis span, i.e. luminance·I·π·r².
     const webgl2 = packLightsTexture(emitters);
+    const webgpu = packEmitterArrays(scene);
+    const walkaround = packEmitterTrisForDDGI(
+      collectRectAreaEmitterTrisFromCore(scene),
+    );
     const rectIdx = emitters.findIndex((e) => e.kind === 'rect-area');
     const discIdx = emitters.findIndex((e) => e.kind === 'disc-area');
+    const rectBase = rectIdx * LIGHT_PIXELS * 4;
     const rectPower = webgl2.data[rectIdx * LIGHT_PIXELS * 4 + 2 * 4 + 3]!;
     const discPower = webgl2.data[discIdx * LIGHT_PIXELS * 4 + 2 * 4 + 3]!;
 
@@ -162,13 +173,106 @@ describe('cross-backend emitter packing parity', () => {
       (emitter): emitter is Extract<SceneEmitter, { kind: 'disc-area' }> =>
         emitter.kind === 'disc-area',
     )!;
-    const rectArea = Math.hypot(
+    const coreHalfExtentCross = Math.hypot(
       rect.uAxis[1] * rect.vAxis[2] - rect.uAxis[2] * rect.vAxis[1],
       rect.uAxis[2] * rect.vAxis[0] - rect.uAxis[0] * rect.vAxis[2],
       rect.uAxis[0] * rect.vAxis[1] - rect.uAxis[1] * rect.vAxis[0],
     );
+    const rectArea = 4 * coreHalfExtentCross;
+    const glFullU = Array.from(webgl2.data.slice(rectBase + 8, rectBase + 11));
+    const glFullV = Array.from(webgl2.data.slice(rectBase + 12, rectBase + 15));
+    const gpuHalfU = Array.from(webgpu.rectAreaLightsData.slice(4, 7));
+    const gpuHalfV = Array.from(webgpu.rectAreaLightsData.slice(8, 11));
+    const webglArea = webgl2.data[rectBase + 15]!;
+    const webgpuArea = 4 * Math.hypot(
+      gpuHalfU[1]! * gpuHalfV[2]! - gpuHalfU[2]! * gpuHalfV[1]!,
+      gpuHalfU[2]! * gpuHalfV[0]! - gpuHalfU[0]! * gpuHalfV[2]!,
+      gpuHalfU[0]! * gpuHalfV[1]! - gpuHalfU[1]! * gpuHalfV[0]!,
+    );
+    const webgpuRadiance = Array.from(webgpu.rectAreaLightsData.slice(12, 15)) as [
+      number,
+      number,
+      number,
+    ];
+    const webgpuPower = REC709(webgpuRadiance) * webgpuArea;
+    const walkaroundArea = walkaround.data[15]! + walkaround.data[20 + 15]!;
+    const walkaroundRadiance = Array.from(walkaround.data.slice(16, 19)) as [
+      number,
+      number,
+      number,
+    ];
+    const walkaroundPower = REC709(walkaroundRadiance) * walkaroundArea;
+
+    expect(glFullU).toEqual(gpuHalfU.map((component) => 2 * component));
+    expect(glFullV).toEqual(gpuHalfV.map((component) => 2 * component));
+    // The canonical fixture packs two rect triangles followed by the disc's
+    // equal-area 32-triangle fan. This comparison intentionally consumes only
+    // the exact rect representation; the fan is area-equivalent but its
+    // adjusted-radius polygon is not pointwise identical to an analytic disc.
+    expect(walkaround.count).toBe(34);
+    expect(webglArea).toBeCloseTo(rectArea, 6);
+    expect(webgpuArea).toBeCloseTo(rectArea, 6);
+    expect(walkaroundArea).toBeCloseTo(rectArea, 6);
     expect(rectPower).toBeCloseTo(emittedPower(rect, rectArea), 6);
+    expect(rectPower).toBeCloseTo(webgpuPower, 6);
+    expect(walkaroundRadiance).toEqual(webgpuRadiance);
+    expect(rectPower).toBeCloseTo(walkaroundPower, 6);
     expect(discPower).toBeCloseTo(emittedPower(disc, Math.PI * disc.radius * disc.radius), 6);
+
+    // The analytic wire formats use different axis conventions, but every
+    // random pair lands on the same authored core rectangle.
+    for (const [xi, yi] of [[0, 0], [0.17, 0.73], [0.5, 0.5], [1, 1]] as const) {
+      const glPoint = rect.position.map(
+        (center, axis) =>
+          center + glFullU[axis]! * (xi - 0.5) + glFullV[axis]! * (yi - 0.5),
+      );
+      const gpuPoint = rect.position.map(
+        (center, axis) =>
+          center + gpuHalfU[axis]! * (2 * xi - 1) + gpuHalfV[axis]! * (2 * yi - 1),
+      );
+      glPoint.forEach((component, axis) => {
+        expect(component).toBeCloseTo(gpuPoint[axis]!, 7);
+      });
+    }
+
+    // Walkaround tessellates the same rect into two production EmitterTri
+    // records. Its packed vertex set must be exactly the four analytic corners.
+    const cornerKey = (v: ArrayLike<number>): string =>
+      Array.from(v, (component) => component.toFixed(7)).join(',');
+    const analyticCorners = new Set(
+      [[0, 0], [1, 0], [1, 1], [0, 1]].map(([xi, yi]) =>
+        cornerKey(rect.position.map(
+          (center, axis) =>
+            center + gpuHalfU[axis]! * (2 * xi! - 1) + gpuHalfV[axis]! * (2 * yi! - 1),
+        )),
+      ),
+    );
+    const walkaroundVertices = new Set<string>();
+    for (let tri = 0; tri < 2; tri += 1) {
+      const base = tri * 20;
+      walkaroundVertices.add(cornerKey(walkaround.data.slice(base, base + 3)));
+      walkaroundVertices.add(cornerKey(walkaround.data.slice(base + 4, base + 7)));
+      walkaroundVertices.add(cornerKey(walkaround.data.slice(base + 8, base + 11)));
+    }
+    expect(walkaroundVertices).toEqual(analyticCorners);
+
+    const normalizeCross = (u: readonly number[], v: readonly number[]): number[] => {
+      const cross = [
+        u[1]! * v[2]! - u[2]! * v[1]!,
+        u[2]! * v[0]! - u[0]! * v[2]!,
+        u[0]! * v[1]! - u[1]! * v[0]!,
+      ];
+      const length = Math.hypot(...cross);
+      return cross.map((component) => component / length);
+    };
+    const webglFront = normalizeCross(glFullU, glFullV);
+    const webgpuFront = normalizeCross(gpuHalfU, gpuHalfV);
+    const walkaroundFront = Array.from(walkaround.data.slice(12, 15));
+    webglFront.forEach((component, axis) => {
+      expect(component).toBeCloseTo(webgpuFront[axis]!, 7);
+      expect(component).toBeCloseTo(walkaroundFront[axis]!, 7);
+      expect(walkaround.data[20 + 12 + axis]).toBeCloseTo(component, 7);
+    });
   });
 
   it('resolves the directional toward-light vector identically in both backends', () => {

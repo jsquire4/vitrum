@@ -422,7 +422,7 @@ fn oitLayerAreaEmitterNEE(
         if (max(max(shadowT.x, shadowT.y), shadowT.z) <= 0.0) { continue; }
       }
 
-      let G = nlDotL / dist2;
+      let G = emitterGeometry(nlDotL, dist2, ubo.emitterDist2Floor);
       let brdf = evalGGXWithSpecularClearcoatSheenWithAnisotropyFrame(
         payload.albedo,
         payload.rough,

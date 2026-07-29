@@ -16,11 +16,10 @@
 //     converted into the skinned mesh node's local space). Secondary influence
 //     sets are collapsed into the core contract's strongest four unique joints
 //     per vertex with an explicit import diagnostic.
-//   - Morph targets → SkinnedMeshPrimitive.morphTargets / morphTargetNormals /
-//     morphTargetTangents / morphTargetUvs / morphTargetUv1s / morphWeights
-//     (POSITION + NORMAL + TANGENT + TEXCOORD_0 plus the glTF UV semantic mapped
-//     to core uv1 deltas; node/mesh weights; unskinned morphed meshes are promoted
-//     with a synthesized identity skeleton).
+//   - Morph targets → SkinnedMeshPrimitive scalable position, normal, tangent,
+//     UV, and color delta streams plus morphWeights (POSITION + NORMAL +
+//     TANGENT + TEXCOORD_n + COLOR_n; node/mesh weights; unskinned morphed
+//     meshes are promoted with a synthesized identity skeleton).
 //   - Animations → core AnimationClip[] on the result (LINEAR / STEP /
 //     CUBICSPLINE; translation / rotation / scale / weights channels; channel
 //     node ids are `gltf-node-<i>`, resolved to primitives via
@@ -95,7 +94,14 @@ import {
   type GltfAccessorDiagnostic,
   type GltfAccessorDiagnosticCode,
 } from './accessors.js';
-import { buildWorldTransforms, composeTrsMat4, mat4Invert, mat4Mul } from './transforms.js';
+import {
+  assertGltfNodeTree,
+  buildWorldTransforms,
+  composeTrsMat4,
+  GltfNodeHierarchyError,
+  mat4Invert,
+  mat4Mul,
+} from './transforms.js';
 import {
   convertMaterial,
   GltfMaterialImportError,
@@ -537,9 +543,11 @@ export type GltfImportDiagnosticCode =
   | 'material-variant-material-missing'
   | 'material-variant-mapping-malformed'
   | 'ignored-morph-target-texcoord'
+  | 'invalid-morph-target-color'
   | 'ignored-morph-target-attribute'
   | 'invalid-morph-target-delta-length'
   | 'morph-weight-count-mismatch'
+  | 'invalid-node-hierarchy'
   | 'non-invertible-node-transform'
   | 'undeclared-punctual-light-extension'
   | 'missing-punctual-light'
@@ -1270,7 +1278,6 @@ function buildPrimitiveFromMeshPrimitive(
           `NORMAL for mesh "${mesh.name ?? node.mesh}"`,
           warnings,
           onAccessorDiagnostic,
-          diagnostics,
           'unreadable-normal',
           `${primitivePath}.attributes.NORMAL`,
           resourceLedger,
@@ -1305,8 +1312,6 @@ function buildPrimitiveFromMeshPrimitive(
     'TEXCOORD_0',
     `${mesh.name ?? node.mesh}`,
     `${primitivePath}.attributes.TEXCOORD_0`,
-    warnings,
-    diagnostics,
   )
     ? _tryUnpackFloat(
         gltf,
@@ -1315,7 +1320,6 @@ function buildPrimitiveFromMeshPrimitive(
         `TEXCOORD_0 for "${mesh.name ?? node.mesh}"`,
         warnings,
         onAccessorDiagnostic,
-        diagnostics,
         'unreadable-optional-attribute',
         `${primitivePath}.attributes.TEXCOORD_0`,
         resourceLedger,
@@ -1330,8 +1334,6 @@ function buildPrimitiveFromMeshPrimitive(
     'TEXCOORD_1',
     `${mesh.name ?? node.mesh}`,
     `${primitivePath}.attributes.TEXCOORD_1`,
-    warnings,
-    diagnostics,
   )
     ? _tryUnpackFloat(
         gltf,
@@ -1340,7 +1342,6 @@ function buildPrimitiveFromMeshPrimitive(
         `TEXCOORD_1 for "${mesh.name ?? node.mesh}"`,
         warnings,
         onAccessorDiagnostic,
-        diagnostics,
         'unreadable-optional-attribute',
         `${primitivePath}.attributes.TEXCOORD_1`,
         resourceLedger,
@@ -1369,8 +1370,6 @@ function buildPrimitiveFromMeshPrimitive(
       attrName,
       `${mesh.name ?? node.mesh}`,
       `${primitivePath}.attributes.${attrName}`,
-      warnings,
-      diagnostics,
     )
       ? _tryUnpackFloat(
           gltf,
@@ -1379,7 +1378,6 @@ function buildPrimitiveFromMeshPrimitive(
           `${attrName} for "${mesh.name ?? node.mesh}"`,
           warnings,
           onAccessorDiagnostic,
-          diagnostics,
           'unreadable-optional-attribute',
           `${primitivePath}.attributes.${attrName}`,
           resourceLedger,
@@ -1398,8 +1396,6 @@ function buildPrimitiveFromMeshPrimitive(
     'TANGENT',
     `${mesh.name ?? node.mesh}`,
     `${primitivePath}.attributes.TANGENT`,
-    warnings,
-    diagnostics,
   )
     ? _tryUnpackFloat(
         gltf,
@@ -1408,7 +1404,6 @@ function buildPrimitiveFromMeshPrimitive(
         `TANGENT for "${mesh.name ?? node.mesh}"`,
         warnings,
         onAccessorDiagnostic,
-        diagnostics,
         'unreadable-optional-attribute',
         `${primitivePath}.attributes.TANGENT`,
         resourceLedger,
@@ -1426,8 +1421,6 @@ function buildPrimitiveFromMeshPrimitive(
     'COLOR_0',
     `${mesh.name ?? node.mesh}`,
     `${primitivePath}.attributes.COLOR_0`,
-    warnings,
-    diagnostics,
   )
     ? _tryUnpackFloat(
         gltf,
@@ -1436,7 +1429,6 @@ function buildPrimitiveFromMeshPrimitive(
         `COLOR_0 for "${mesh.name ?? node.mesh}"`,
         warnings,
         onAccessorDiagnostic,
-        diagnostics,
         'unreadable-optional-attribute',
         `${primitivePath}.attributes.COLOR_0`,
         resourceLedger,
@@ -1462,8 +1454,6 @@ function buildPrimitiveFromMeshPrimitive(
       attrName,
       `${mesh.name ?? node.mesh}`,
       `${primitivePath}.attributes.${attrName}`,
-      warnings,
-      diagnostics,
     )
       ? _tryUnpackFloat(
           gltf,
@@ -1472,7 +1462,6 @@ function buildPrimitiveFromMeshPrimitive(
           `${attrName} for "${mesh.name ?? node.mesh}"`,
           warnings,
           onAccessorDiagnostic,
-          diagnostics,
           'unreadable-optional-attribute',
           `${primitivePath}.attributes.${attrName}`,
           resourceLedger,
@@ -1724,8 +1713,8 @@ function buildPrimitiveFromMeshPrimitive(
   uv1 = uvResolvedMaterial.uv1;
   uvSets = cloneSparseArray(uvResolvedMaterial.uvSets ?? []);
 
-  // Morph targets (GLTF-04) — POSITION/NORMAL/TANGENT plus the
-  // glTF UV semantics currently carried in core uvs/uv1 + node/mesh weights.
+  // Morph targets (GLTF-04) — POSITION/NORMAL/TANGENT plus every represented
+  // glTF TEXCOORD_n and COLOR_n semantic + node/mesh weights.
   let morph = _extractMorphTargets(
     gltf,
     buffers,
@@ -1733,6 +1722,7 @@ function buildPrimitiveFromMeshPrimitive(
     node.weights ?? mesh.weights,
     positions.length / 3,
     uvSets,
+    colorSets,
     `${mesh.name ?? node.mesh}`,
     primitivePath,
     warnings,
@@ -1985,6 +1975,8 @@ function buildPrimitiveFromMeshPrimitive(
     let renderedUv1 = uv1;
     let renderedUvSets: ReadonlyArray<Float32Array | undefined> = uvSets;
     let renderedTangents = finalTangents;
+    let renderedColors = colors;
+    let renderedColorSets: ReadonlyArray<Float32Array | undefined> = colorSets;
     if (skinArg) {
       const source = _buildPrimitive(
         id,
@@ -2015,6 +2007,8 @@ function buildPrimitiveFromMeshPrimitive(
       renderedUv1 = solved.uv1;
       renderedUvSets = solved.uvSets ?? uvSets;
       renderedTangents = solved.tangents;
+      renderedColors = solved.colors ?? colors;
+      renderedColorSets = solved.colorSets ?? colorSets;
     }
     instancingBindings.push({
       primitiveId: id,
@@ -2033,8 +2027,8 @@ function buildPrimitiveFromMeshPrimitive(
         renderedUv1,
         renderedUvSets,
         renderedTangents,
-        colors,
-        colorSets,
+        renderedColors,
+        renderedColorSets,
         uvResolvedMaterial.material,
         undefined,
         undefined,
@@ -2293,6 +2287,24 @@ export async function gltfToSceneWithResourceContext(
 
   assertSupportedGltfVersion(gltf);
   const sceneIndex = resolveValidatedSceneIndex(gltf, opts.sceneIndex);
+  const gltfSceneValue: unknown = gltf.scenes?.[sceneIndex];
+  if (gltfSceneValue !== undefined && !isObject(gltfSceneValue)) {
+    throwImportBoundaryError(
+      'invalid-node-hierarchy',
+      `scenes[${sceneIndex}]`,
+      `[vitrum/gltf-adapter] scenes[${sceneIndex}] must be a non-array object.`,
+    );
+  }
+  const gltfScene = gltfSceneValue as NonNullable<GltfJson['scenes']>[number] | undefined;
+  const rootNodes = gltfScene?.nodes ?? [];
+  try {
+    assertGltfNodeTree(gltf, rootNodes, `scenes[${sceneIndex}].nodes`);
+  } catch (error) {
+    if (error instanceof GltfNodeHierarchyError) {
+      throwImportBoundaryError('invalid-node-hierarchy', error.path, error.message);
+    }
+    throw error;
+  }
   const textureSourceExtensions =
     effectiveGltfTextureSourceExtensions(opts.textureSourceExtensions);
 
@@ -2312,8 +2324,6 @@ export async function gltfToSceneWithResourceContext(
     textureSourceExtensions,
   );
   validateReachableNodeTransforms(gltf, sceneReachability.nodeIndices);
-  const gltfScene = gltf.scenes?.[sceneIndex];
-  const rootNodes = gltfScene?.nodes ?? [];
   const preflightWorldTransforms = buildWorldTransforms(gltf, rootNodes);
   validateComposedWorldTransforms(preflightWorldTransforms);
   validateReachablePrimitiveSemantics(gltf, sceneReachability);
@@ -2541,7 +2551,6 @@ export async function gltfToSceneWithResourceContext(
       worldMat,
       worldTransforms,
       warnings,
-      diagnostics,
       onAccessorDiagnostic,
       resourceLedger,
     );
@@ -3298,7 +3307,6 @@ function _tryUnpackFloat(
   label: string,
   warnings: string[],
   onAccessorDiagnostic: (diagnostic: GltfAccessorDiagnostic) => void,
-  diagnostics?: GltfImportDiagnostic[],
   diagnosticCode: GltfImportDiagnosticCode = 'unreadable-optional-attribute',
   diagnosticPath?: string,
   resourceLedger?: ImportResourceLedger,
@@ -3320,7 +3328,6 @@ function _tryUnpackFloat(
   } catch (e) {
     rethrowResourceLimitError(e);
     const message = `[vitrum/gltf-adapter] Failed to read ${label}: ${String(e)}`;
-    void diagnostics;
     throwImportBoundaryError(
       diagnosticCode,
       diagnosticPath ?? `accessors[${accessorIndex}]`,
@@ -3373,8 +3380,6 @@ function _validatePrimitiveAttributeAccessor(
   attributeName: string,
   meshLabel: string,
   path: string,
-  warnings: string[],
-  diagnostics: GltfImportDiagnostic[],
 ): boolean {
   if (accessorIndex === undefined) return true;
   const accessor = gltf.accessors?.[accessorIndex];
@@ -3386,8 +3391,6 @@ function _validatePrimitiveAttributeAccessor(
     );
   }
   if (allowedTypes.includes(accessor.type) && accessor.count === expectedCount) return true;
-  void warnings;
-  void diagnostics;
   throwImportBoundaryError(
     'invalid-primitive-attribute',
     path,
@@ -3438,7 +3441,6 @@ function _extractSkinData(
   meshWorld: Float32Array,
   worldTransforms: Map<number, Float32Array>,
   warnings: string[],
-  diagnostics: GltfImportDiagnostic[],
   onAccessorDiagnostic: (diagnostic: GltfAccessorDiagnostic) => void,
   resourceLedger: ImportResourceLedger,
 ): SkinData | undefined {
@@ -3571,7 +3573,6 @@ function _extractSkinData(
     }
   }
 
-  void diagnostics;
   return { bones, boneInverses };
 }
 
@@ -3799,6 +3800,7 @@ function remapMorphData(
   allocationPath: string,
 ): MorphData | undefined {
   if (morph == null) return undefined;
+  const sourceVertexCount = (morph.morphTargets[0]?.length ?? 0) / 3;
   resourceLedger.chargeDecodedGeometryBytes(
     morph.morphWeights.byteLength,
     `${allocationPath}.morphWeights`,
@@ -3878,6 +3880,37 @@ function remapMorphData(
           ),
         }
       : {}),
+    ...(morph.morphTargetColors != null
+      ? {
+          morphTargetColors: morph.morphTargetColors.map(
+            (target, index) =>
+              remapVertexColors(
+                target,
+                sourceVertexCount,
+                sourceVertices,
+                resourceLedger,
+                `${allocationPath}.morphTargetColors[${index}]`,
+              )!,
+          ),
+        }
+      : {}),
+    ...(morph.morphTargetColorSets != null
+      ? {
+          morphTargetColorSets: mapSparseArray(
+            morph.morphTargetColorSets,
+            (targets, colorSet) => targets?.map(
+              (target, index) =>
+                remapVertexColors(
+                  target,
+                  sourceVertexCount,
+                  sourceVertices,
+                  resourceLedger,
+                  `${allocationPath}.morphTargetColorSets[${colorSet}][${index}]`,
+                )!,
+            ),
+          ),
+        }
+      : {}),
     morphWeights: new Float32Array(morph.morphWeights),
   };
 }
@@ -3952,6 +3985,19 @@ function chargeSolveSkinAllocations(
           `${allocationPath} morphed tangents`,
         ).byteLength,
       );
+    }
+    let copiedColor0 = false;
+    if (primitive.morphTargetColorSets != null) {
+      for (const colorSet of sparseArrayOwnIndices(primitive.morphTargetColorSets)) {
+        if (primitive.morphTargetColorSets[colorSet] == null) continue;
+        const base = primitive.colorSets?.[colorSet] ??
+          (colorSet === 0 ? primitive.colors : undefined);
+        if (base != null) byteLengths.push(base.byteLength);
+        if (colorSet === 0) copiedColor0 = true;
+      }
+    }
+    if (!copiedColor0 && primitive.morphTargetColors != null && primitive.colors != null) {
+      byteLengths.push(primitive.colors.byteLength);
     }
 
     let copiedUv0 = false;
@@ -4042,6 +4088,12 @@ function _buildPrimitive(
             ...(morph.morphTargetUvs ? { morphTargetUvs: morph.morphTargetUvs } : {}),
             ...(morph.morphTargetUv1s ? { morphTargetUv1s: morph.morphTargetUv1s } : {}),
             ...(morph.morphTargetUvSets ? { morphTargetUvSets: morph.morphTargetUvSets } : {}),
+            ...(morph.morphTargetColors
+              ? { morphTargetColors: morph.morphTargetColors }
+              : {}),
+            ...(morph.morphTargetColorSets
+              ? { morphTargetColorSets: morph.morphTargetColorSets }
+              : {}),
             morphWeights: morph.morphWeights,
           }
         : {}),
@@ -4077,6 +4129,10 @@ interface MorphData {
   morphTargetUv1s?: Float32Array[];
   /** Per-UV-set, per-target TEXCOORD_N deltas. */
   morphTargetUvSets?: Array<Float32Array[] | undefined>;
+  /** Per-target COLOR_0 compatibility alias. */
+  morphTargetColors?: Float32Array[];
+  /** Per-color-set, per-target additive COLOR_N deltas. */
+  morphTargetColorSets?: Array<Float32Array[] | undefined>;
   /** Initial per-target weights from `node.weights ?? mesh.weights` (zeros
    *  when neither is authored). */
   morphWeights: Float32Array;
@@ -4088,8 +4144,8 @@ interface MorphData {
  * glTF §3.7.2.2: each target maps attribute names to accessors carrying
  * DELTAS from the base attribute (sparse accessors are common here and are
  * handled by `unpackAccessorFloat`). POSITION, NORMAL, TANGENT, and every
- * TEXCOORD_N with a matching base stream map onto the corresponding scalable
- * `SkinnedMeshPrimitive` morph arrays.
+ * TEXCOORD_N and COLOR_N with matching base streams map onto the corresponding
+ * scalable `SkinnedMeshPrimitive` morph arrays.
  *
  * Returns `undefined` when the primitive has no targets.
  */
@@ -4100,6 +4156,7 @@ function _extractMorphTargets(
   authoredWeights: number[] | undefined,
   vertexCount: number,
   baseUvSets: ReadonlyArray<Float32Array | undefined>,
+  baseColorSets: ReadonlyArray<Float32Array | undefined>,
   meshLabel: string,
   primitivePath: string,
   warnings: string[],
@@ -4114,6 +4171,7 @@ function _extractMorphTargets(
   const normalDeltas: (Float32Array | null)[] = [];
   const tangentDeltas: (Float32Array | null)[] = [];
   const morphUvSetIndexSet = new Set<number>();
+  const morphColorSetIndexSet = new Set<number>();
   for (let targetIndex = 0; targetIndex < targets.length; targetIndex += 1) {
     for (const semantic of Object.keys(targets[targetIndex]!)) {
       const texCoord = parseCanonicalSetSemantic(
@@ -4125,11 +4183,25 @@ function _extractMorphTargets(
       if (texCoord === undefined) continue;
       morphUvSetIndexSet.add(texCoord);
     }
+    for (const semantic of Object.keys(targets[targetIndex]!)) {
+      const colorSet = parseCanonicalSetSemantic(
+        semantic,
+        'COLOR',
+        `${primitivePath}.targets[${targetIndex}].${semantic}`,
+        'ignored-morph-target-attribute',
+      );
+      if (colorSet === undefined) continue;
+      morphColorSetIndexSet.add(colorSet);
+    }
   }
   const morphUvSetIndices = [...morphUvSetIndexSet].sort((a, b) => a - b);
   const uvSetDeltas: Array<Array<Float32Array | null> | undefined> = [];
   for (const texCoord of morphUvSetIndices) uvSetDeltas[texCoord] = [];
   const populatedUvSets = new Set<number>();
+  const morphColorSetIndices = [...morphColorSetIndexSet].sort((a, b) => a - b);
+  const colorSetDeltas: Array<Array<Float32Array | null> | undefined> = [];
+  for (const colorSet of morphColorSetIndices) colorSetDeltas[colorSet] = [];
+  const populatedColorSets = new Set<number>();
   let anyNormals = false;
   let anyTangents = false;
 
@@ -4145,8 +4217,6 @@ function _extractMorphTargets(
       'POSITION morph delta',
       meshLabel,
       `${primitivePath}.targets[${t}].POSITION`,
-      warnings,
-      diagnostics,
     );
     const posDelta = _tryUnpackFloat(
       gltf,
@@ -4155,7 +4225,6 @@ function _extractMorphTargets(
       `morph target ${t} POSITION for "${meshLabel}"`,
       warnings,
       onAccessorDiagnostic,
-      diagnostics,
       'unreadable-optional-attribute',
       `${primitivePath}.targets[${t}].POSITION`,
       resourceLedger,
@@ -4185,8 +4254,6 @@ function _extractMorphTargets(
       'NORMAL morph delta',
       meshLabel,
       `${primitivePath}.targets[${t}].NORMAL`,
-      warnings,
-      diagnostics,
     );
     const nrmDelta = _tryUnpackFloat(
       gltf,
@@ -4195,7 +4262,6 @@ function _extractMorphTargets(
       `morph target ${t} NORMAL for "${meshLabel}"`,
       warnings,
       onAccessorDiagnostic,
-      diagnostics,
       'unreadable-optional-attribute',
       `${primitivePath}.targets[${t}].NORMAL`,
       resourceLedger,
@@ -4220,8 +4286,6 @@ function _extractMorphTargets(
       'TANGENT morph delta',
       meshLabel,
       `${primitivePath}.targets[${t}].TANGENT`,
-      warnings,
-      diagnostics,
     );
     const tanDelta = _tryUnpackFloat(
       gltf,
@@ -4230,7 +4294,6 @@ function _extractMorphTargets(
       `morph target ${t} TANGENT for "${meshLabel}"`,
       warnings,
       onAccessorDiagnostic,
-      diagnostics,
       'unreadable-optional-attribute',
       `${primitivePath}.targets[${t}].TANGENT`,
       resourceLedger,
@@ -4255,8 +4318,6 @@ function _extractMorphTargets(
         `${semantic} morph delta`,
         meshLabel,
         `${primitivePath}.targets[${t}].${semantic}`,
-        warnings,
-        diagnostics,
       );
       const delta = _tryUnpackFloat(
         gltf,
@@ -4265,7 +4326,6 @@ function _extractMorphTargets(
         `morph target ${t} ${semantic} for "${meshLabel}"`,
         warnings,
         onAccessorDiagnostic,
-        diagnostics,
         'unreadable-optional-attribute',
         `${primitivePath}.targets[${t}].${semantic}`,
         resourceLedger,
@@ -4288,6 +4348,53 @@ function _extractMorphTargets(
       uvSetDeltas[texCoord]!.push(delta ?? null);
     }
 
+    for (const colorSet of morphColorSetIndices) {
+      const semantic = `COLOR_${colorSet}`;
+      const base = baseColorSets[colorSet];
+      const allowedTypes: readonly GltfAccessor['type'][] =
+        base == null
+          ? ['VEC3', 'VEC4']
+          : base.length === vertexCount * 4
+            ? ['VEC4']
+            : ['VEC3'];
+      _validatePrimitiveAttributeAccessor(
+        gltf,
+        target[semantic],
+        allowedTypes,
+        vertexCount,
+        `${semantic} morph delta`,
+        meshLabel,
+        `${primitivePath}.targets[${t}].${semantic}`,
+      );
+      const delta = _tryUnpackFloat(
+        gltf,
+        buffers,
+        target[semantic],
+        `morph target ${t} ${semantic} for "${meshLabel}"`,
+        warnings,
+        onAccessorDiagnostic,
+        'unreadable-optional-attribute',
+        `${primitivePath}.targets[${t}].${semantic}`,
+        resourceLedger,
+      );
+      if (delta && base == null) {
+        throwImportBoundaryError(
+          'invalid-morph-target-color',
+          `${primitivePath}.targets[${t}].${semantic}`,
+          `[vitrum/gltf-adapter] Morph target ${t} ${semantic} delta in mesh "${meshLabel}" has no matching base ${semantic} stream.`,
+        );
+      }
+      if (delta && delta.length !== base!.length) {
+        throwImportBoundaryError(
+          'invalid-morph-target-delta-length',
+          `${primitivePath}.targets[${t}].${semantic}`,
+          `[vitrum/gltf-adapter] Morph target ${t} ${semantic} delta length ${delta.length} != ${base!.length} for "${meshLabel}".`,
+        );
+      }
+      if (delta) populatedColorSets.add(colorSet);
+      colorSetDeltas[colorSet]!.push(delta ?? null);
+    }
+
     for (const attr of Object.keys(target)) {
       const colorSet = parseCanonicalSetSemantic(
         attr,
@@ -4299,9 +4406,10 @@ function _extractMorphTargets(
         attr !== 'POSITION' &&
         attr !== 'NORMAL' &&
         attr !== 'TANGENT' &&
-        !/^TEXCOORD_\d+$/.test(attr)
+        !/^TEXCOORD_\d+$/.test(attr) &&
+        colorSet === undefined
       ) {
-        if (colorSet !== undefined || attr.startsWith('_')) {
+        if (attr.startsWith('_')) {
           emitImportDiagnostic(warnings, diagnostics, {
             severity: 'warning',
             code: 'ignored-morph-target-attribute',
@@ -4366,6 +4474,22 @@ function _extractMorphTargets(
         : undefined,
   );
   const anyMorphUvSets = sparseArrayHasDefinedEntry(morphTargetUvSets);
+  const morphTargetColorSets: Array<Float32Array[] | undefined> = mapSparseArray(
+    colorSetDeltas,
+    (deltas, colorSet) =>
+      populatedColorSets.has(colorSet)
+        ? deltas!.map(
+            (delta, targetIndex) =>
+              delta ??
+              allocateGeometryFloat32(
+                resourceLedger,
+                [baseColorSets[colorSet]!.length],
+                `${primitivePath}.targets[${targetIndex}].COLOR_${colorSet} default delta`,
+              ),
+          )
+        : undefined,
+  );
+  const anyMorphColorSets = sparseArrayHasDefinedEntry(morphTargetColorSets);
 
   return {
     morphTargets,
@@ -4398,6 +4522,8 @@ function _extractMorphTargets(
     ...(morphTargetUvSets[0] ? { morphTargetUvs: morphTargetUvSets[0] } : {}),
     ...(morphTargetUvSets[1] ? { morphTargetUv1s: morphTargetUvSets[1] } : {}),
     ...(anyMorphUvSets ? { morphTargetUvSets } : {}),
+    ...(morphTargetColorSets[0] ? { morphTargetColors: morphTargetColorSets[0] } : {}),
+    ...(anyMorphColorSets ? { morphTargetColorSets } : {}),
     morphWeights,
   };
 }

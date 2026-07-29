@@ -28,8 +28,6 @@
 import type { SceneEmitter, Vec3 } from '@vitrum/core';
 import {
   luminance,
-  vecCross as cross,
-  vecLength as lengthOf,
   vecNormalize as normalize,
   tangentBasis,
 } from '@vitrum/shared-samplers';
@@ -73,12 +71,124 @@ const SPOT_LIGHT = 2;
 const DIR_LIGHT = 3;
 const POINT_LIGHT = 4;
 
-// Rec.709 luminance + the cross/normalize/tangentBasis/length Vec3 helpers are
-// single-sourced in `@vitrum/shared-samplers` (imported above under the local
-// aliases `luminance`/`cross`/`lengthOf`/`normalize`/`tangentBasis`). The
-// shared `vecNormalize` preserves this packer's historical `<1e-12 → [0,0,0]`
-// degeneracy contract, and the shared `luminance` uses the same Rec.709
-// coefficients, so the packed `power` field stays byte-for-byte identical.
+// Rec.709 luminance + normalize/tangentBasis are single-sourced in
+// `@vitrum/shared-samplers`. The shared `vecNormalize` preserves this packer's
+// historical `<1e-12 → [0,0,0]` degeneracy contract, and the shared `luminance`
+// uses the same Rec.709 coefficients.
+
+interface PackedAreaGeometry {
+  readonly u: Vec3;
+  readonly v: Vec3;
+  readonly area: number;
+}
+
+function f32Cross(a: Vec3, b: Vec3): Vec3 {
+  return [
+    Math.fround(Math.fround(a[1] * b[2]) - Math.fround(a[2] * b[1])),
+    Math.fround(Math.fround(a[2] * b[0]) - Math.fround(a[0] * b[2])),
+    Math.fround(Math.fround(a[0] * b[1]) - Math.fround(a[1] * b[0])),
+  ];
+}
+
+function f32DotSelf(v: Vec3): number {
+  const xx = Math.fround(v[0] * v[0]);
+  const yy = Math.fround(v[1] * v[1]);
+  const zz = Math.fround(v[2] * v[2]);
+  return Math.fround(Math.fround(xx + yy) + zz);
+}
+
+/**
+ * Quantize the exact full-span axes consumed by GLSL before deriving any
+ * geometry-dependent fields. Core validation operates on authored JS numbers,
+ * while the light texture is RGBA32F; an otherwise-valid pair can therefore
+ * overflow or become collinear only at this backend boundary.
+ */
+function packAreaGeometry(
+  kind: 'rect-area' | 'disc-area',
+  id: string,
+  sourceU: Vec3,
+  sourceV: Vec3,
+  areaScale: number,
+): PackedAreaGeometry {
+  const u: Vec3 = [
+    Math.fround(sourceU[0]),
+    Math.fround(sourceU[1]),
+    Math.fround(sourceU[2]),
+  ];
+  const v: Vec3 = [
+    Math.fround(sourceV[0]),
+    Math.fround(sourceV[1]),
+    Math.fround(sourceV[2]),
+  ];
+  if (![...u, ...v].every(Number.isFinite)) {
+    throw new RangeError(
+      `@vitrum/pt-webgl2: ${kind} emitter "${id}" full-span axes are not ` +
+      'representable as finite float32 values.',
+    );
+  }
+
+  const uLengthSquared = f32DotSelf(u);
+  const vLengthSquared = f32DotSelf(v);
+  if (
+    !Number.isFinite(uLengthSquared) ||
+    !(uLengthSquared > 0) ||
+    !Number.isFinite(vLengthSquared) ||
+    !(vLengthSquared > 0)
+  ) {
+    throw new RangeError(
+      `@vitrum/pt-webgl2: ${kind} emitter "${id}" full-span axis squared lengths ` +
+      'must remain finite and strictly positive in float32 shader arithmetic.',
+    );
+  }
+
+  const axisDot = Math.fround(
+    Math.fround(Math.fround(u[0] * v[0]) + Math.fround(u[1] * v[1])) +
+    Math.fround(u[2] * v[2]),
+  );
+  if (!Number.isFinite(axisDot)) {
+    throw new RangeError(
+      `@vitrum/pt-webgl2: ${kind} emitter "${id}" full-span mutual-axis dot ` +
+      'product must remain finite in float32 shader arithmetic.',
+    );
+  }
+
+  const axisCross = f32Cross(u, v);
+  if (!axisCross.every(Number.isFinite)) {
+    throw new RangeError(
+      `@vitrum/pt-webgl2: ${kind} emitter "${id}" full-span cross product is not ` +
+      'representable as finite float32 geometry.',
+    );
+  }
+
+  const crossLengthSquared = f32DotSelf(axisCross);
+  if (!Number.isFinite(crossLengthSquared)) {
+    throw new RangeError(
+      `@vitrum/pt-webgl2: ${kind} emitter "${id}" full-span cross-product squared ` +
+      'length is not representable as finite float32 geometry.',
+    );
+  }
+  if (!(crossLengthSquared > 0)) {
+    throw new RangeError(
+      `@vitrum/pt-webgl2: ${kind} emitter "${id}" full-span axes collapse to ` +
+      'zero area in float32 shader arithmetic.',
+    );
+  }
+
+  const area = Math.fround(Math.sqrt(crossLengthSquared) * areaScale);
+  if (!Number.isFinite(area)) {
+    throw new RangeError(
+      `@vitrum/pt-webgl2: ${kind} emitter "${id}" full-span area is not ` +
+      'representable as finite float32 geometry.',
+    );
+  }
+  if (!(area > 0)) {
+    throw new RangeError(
+      `@vitrum/pt-webgl2: ${kind} emitter "${id}" full-span axes collapse to ` +
+      'zero area in float32 shader arithmetic.',
+    );
+  }
+  return { u, v, area };
+}
 
 // ── D11-12: shared s0/s1 header helpers ───────────────────────────────────────
 // Every light kind writes the same two leading texels:
@@ -162,22 +272,28 @@ export function packLightsTexture(
         // s0: position / type   s1: color / intensity
         writePositionType(data, base, cursor, l.position, RECT_AREA_LIGHT);
         writeColorIntensity(data, base, cursor, color, l.intensity);
-        // u-vector + power. Core uAxis/vAxis are the in-plane span vectors; the
-        // fork's width/height are their lengths.
-        const u = l.uAxis;
-        const v = l.vAxis;
-        const width = lengthOf(u);
-        const height = lengthOf(v);
+        // Core uAxis/vAxis are HALF-extents, while the retained WebGL2 light
+        // sampler/intersector uses the fork's FULL-span convention with
+        // coordinates in [-0.5, 0.5]. Double both axes at this backend boundary
+        // so the sampled surface is p ± uAxis ± vAxis and its area is
+        // 4·|uAxis×vAxis|, matching the core contract and pt-webgpu.
+        const { u, v, area } = packAreaGeometry(
+          'rect-area',
+          l.id,
+          [2 * l.uAxis[0], 2 * l.uAxis[1], 2 * l.uAxis[2]],
+          [2 * l.vAxis[0], 2 * l.vAxis[1], 2 * l.vAxis[2]],
+          1,
+        );
         // s2: u / power
         data[base + cursor.k++] = u[0];
         data[base + cursor.k++] = u[1];
         data[base + cursor.k++] = u[2];
-        data[base + cursor.k++] = lum * l.intensity * (width * height);
-        // s3: v / area  (area = |u × v|)
+        data[base + cursor.k++] = lum * l.intensity * area;
+        // s3: v / area  (full-span area = |u × v|)
         data[base + cursor.k++] = v[0];
         data[base + cursor.k++] = v[1];
         data[base + cursor.k++] = v[2];
-        data[base + cursor.k++] = lengthOf(cross(u, v));
+        data[base + cursor.k++] = area;
         // rect-area packs s0..s3 (16 channels); s4..s5 stay zero (no cone/radius).
         assertSlotCursor(cursor.k, 16, 'rect-area');
         break;
@@ -191,19 +307,24 @@ export function packLightsTexture(
         // width/height convention, then π/4 corrects rectangle→disc.
         const { t, b } = tangentBasis(l.normal);
         const d = 2 * l.radius;
-        const u: Vec3 = [t[0] * d, t[1] * d, t[2] * d];
-        const v: Vec3 = [b[0] * d, b[1] * d, b[2] * d];
         const areaScale = Math.PI / 4.0;
+        const { u, v, area } = packAreaGeometry(
+          'disc-area',
+          l.id,
+          [t[0] * d, t[1] * d, t[2] * d],
+          [b[0] * d, b[1] * d, b[2] * d],
+          areaScale,
+        );
         // s2: u / power
         data[base + cursor.k++] = u[0];
         data[base + cursor.k++] = u[1];
         data[base + cursor.k++] = u[2];
-        data[base + cursor.k++] = lum * l.intensity * (d * d) * areaScale;
+        data[base + cursor.k++] = lum * l.intensity * area;
         // s3: v / area
         data[base + cursor.k++] = v[0];
         data[base + cursor.k++] = v[1];
         data[base + cursor.k++] = v[2];
-        data[base + cursor.k++] = lengthOf(cross(u, v)) * areaScale;
+        data[base + cursor.k++] = area;
         // disc-area packs s0..s3 (16 channels); s4..s5 stay zero (no cone/radius).
         assertSlotCursor(cursor.k, 16, 'disc-area');
         break;

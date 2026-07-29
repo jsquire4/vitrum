@@ -35,13 +35,13 @@ describe('D8.7 SceneBufferRegistry', () => {
    *      (sanity check on the registry itself).
    *   2. Confirm every registry bufferField would be a distinct field name
    *      (no duplicate bufferField entries — that would silently shadow one).
-   *   3. Confirm the count of registry entries equals 33 (the canonical buffer
-   *      count after CWBVH prototype buffers were added). If a buffer is
+   *   3. Confirm the count of registry entries equals 32 (the canonical buffer
+   *      count after removing the unbound mesh-area source-factor buffer). If a buffer is
    *      added to UploadedSceneBuffers without a registry entry this assertion
    *      will fail with a clear message.
    */
-  it('has 33 entries, each with a unique bufferField ending in "Buffer"', () => {
-    expect(SCENE_BUFFER_REGISTRY.length).toBe(33);
+  it('has 32 entries, each with a unique bufferField ending in "Buffer"', () => {
+    expect(SCENE_BUFFER_REGISTRY.length).toBe(32);
 
     const seen = new Set<string>();
     for (const entry of SCENE_BUFFER_REGISTRY) {
@@ -87,10 +87,10 @@ describe('D8.7 SceneBufferRegistry', () => {
 
   it('TLAS_START_INDEX resolves correctly at runtime', () => {
     const idx = SCENE_BUFFER_REGISTRY.findIndex((e) => e.bufferField === 'tlasNodesBuffer');
-    // There are 28 non-TLAS entries (BLAS + CWBVH prototype buffers + analytic
-    // + env + emitters + adjoint mesh-area source factors + light-tree + P2
+    // There are 27 non-TLAS entries (BLAS + CWBVH prototype buffers + analytic
+    // + env + emitters + light-tree + P2
     // UVs/tangents/colors/descriptors).
-    expect(idx).toBe(28);
+    expect(idx).toBe(27);
     // Remaining 5 entries are the TLAS buffers.
     expect(SCENE_BUFFER_REGISTRY.length - idx).toBe(5);
   });
@@ -101,8 +101,7 @@ describe('D8.7 SceneBufferRegistry', () => {
  * create loop, destroy closure, and gpuMemoryBytes off SCENE_BUFFER_REGISTRY;
  * these tests pin that every `*Buffer` field on a REAL uploaded scene is covered
  * by the registry (completeness), that destroy tears down every registry buffer,
- * and that gpuMemoryBytes preserves the historical meshAreaLightSourceFactors
- * omission via the `excludeFromMemorySum` flag.
+ * and that gpuMemoryBytes counts every live registry buffer.
  */
 function meshScene(): Scene {
   return {
@@ -180,19 +179,13 @@ describe('T2-A registry-driven upload single-source', () => {
     void buffers;
   });
 
-  it('gpuMemoryBytes counts every registry buffer EXCEPT excludeFromMemorySum entries', () => {
+  it('gpuMemoryBytes counts every registry buffer', () => {
     const { device } = makeUploadDevice();
     const sb = uploadPackedScene(device, buildPackedScene(meshScene()));
     const expected = SCENE_BUFFER_REGISTRY
-      .filter((e) => !('excludeFromMemorySum' in e && e.excludeFromMemorySum))
       .reduce((sum, e) => sum + (sb[e.bufferField] as unknown as StubBuffer).size, 0);
     const { bufferBytes } = sb.gpuMemoryBytes();
     expect(bufferBytes).toBe(expected);
-    // The historically-omitted buffer is flagged and its bytes are NOT included.
-    const excluded = SCENE_BUFFER_REGISTRY.filter(
-      (e) => 'excludeFromMemorySum' in e && e.excludeFromMemorySum,
-    );
-    expect(excluded.map((e) => e.bufferField)).toStrictEqual(['meshAreaLightSourceFactorsBuffer']);
     sb.destroy();
   });
 });

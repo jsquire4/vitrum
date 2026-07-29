@@ -142,37 +142,57 @@ interface CompiledPipelines {
   regirBuildPipeline?: GPUComputePipeline;
 }
 
+async function checkPipelineShaderModules(
+  modules: readonly (readonly [label: string, module: GPUShaderModule])[],
+  onWarning?: (warning: EngineWarning) => void,
+): Promise<void> {
+  await Promise.all(modules.map(async ([label, module]) => {
+    await checkShaderCompile(module, label, {
+      prefix: '[ReSTIR]',
+      onWarnings: (warnings) => emitShaderCompilationWarnings(label, warnings, {
+        ...(onWarning !== undefined ? { onWarning } : {}),
+      }),
+    });
+  }));
+}
+
+interface CompositeShaderModules {
+  readonly vertex: GPUShaderModule;
+  readonly fragment: GPUShaderModule;
+}
+
+const compositeShaderModulesByDevice =
+  new WeakMap<GPUDevice, CompositeShaderModules>();
+
 /**
  * Compile the format-specialized composite pipeline synchronously.
  *
  * WebGPU render-pipeline color targets bake their format, while the host may
- * legally replace its canvas configuration between frames. The main compiler
- * uses its async counterpart at initialization; this helper is the bounded
- * per-format rebuild path used at the render-frame boundary.
+ * legally replace its canvas configuration between frames. Shader modules do
+ * not bake that target format, so this bounded render-frame rebuild reuses the
+ * modules whose compilation info was checked by a successful `compilePipelines`
+ * call instead of creating unchecked modules on the synchronous frame path.
  */
 export function createCompositePipeline(
   device: GPUDevice,
   bglCache: BGLCache,
   swapChainFormat: GPUTextureFormat,
 ): GPURenderPipeline {
-  const modules = new Map(WGSL_MODULES);
-  const vertexModule = device.createShaderModule({
-    label: 'comp-vert',
-    code: composeWgsl(COMPOSITE_VERT_MODULE, modules),
-  });
-  const fragmentModule = device.createShaderModule({
-    label: 'comp-frag',
-    code: composeWgsl(COMPOSITE_FRAG_MODULE, modules),
-  });
+  const modules = compositeShaderModulesByDevice.get(device);
+  if (modules == null) {
+    throw new Error(
+      'createCompositePipeline requires a successful compilePipelines call for this device.',
+    );
+  }
   const layout = device.createPipelineLayout({
     bindGroupLayouts: [getCompositeBindGroupLayout(device, bglCache)],
   });
   return device.createRenderPipeline({
     label: 'composite',
     layout,
-    vertex: { module: vertexModule, entryPoint: 'vertMain' },
+    vertex: { module: modules.vertex, entryPoint: 'vertMain' },
     fragment: {
-      module: fragmentModule,
+      module: modules.fragment,
       entryPoint: 'fragMain',
       targets: [{ format: swapChainFormat }],
     },
@@ -241,21 +261,14 @@ export async function compilePipelines(
   const transparentOitSM = device.createShaderModule({ label: 'transparent-oit', code: composeWgsl(TRANSPARENT_OIT_MODULE, wgslModules) });
 
   // Check for compile errors on every shader module before proceeding.
-  const modules: [string, GPUShaderModule][] = [
+  const modules: readonly (readonly [string, GPUShaderModule])[] = [
     ['ris', risSM], ['temporal', temporalSM], ['spatial', spatialSM],
     ['shade', shadeSM], ['atrous', atrousSM],
     ['comp-vert', compVertSM], ['comp-frag', compFragSM],
     ['sample-budget', sampleBudgetSM], ['resolve', resolveSM], ['cb-prefill', cbPrefillSM], ['motion-vectors', motionVectorsSM],
     ['transparent-oit', transparentOitSM],
   ];
-  for (const [label, sm] of modules) {
-    await checkShaderCompile(sm, label, {
-      prefix: '[ReSTIR]',
-      onWarnings: (warns) => emitShaderCompilationWarnings(label, warns, {
-        ...(opts?.onWarning !== undefined ? { onWarning: opts.onWarning } : {}),
-      }),
-    });
-  }
+  await checkPipelineShaderModules(modules, opts?.onWarning);
 
   // Pipeline layouts.
   // - computeLayout: shared by RIS, temporal, spatial. 3 bind groups.
@@ -366,6 +379,13 @@ export async function compilePipelines(
     code: composeWgsl(INDIRECT_TEMPORAL_ACCUM_MODULE, wgslModules),
   });
   const accumSM = device.createShaderModule({ label: 'accum', code: composeWgsl(TEMPORAL_ACCUM_MODULE, wgslModules) });
+  await checkPipelineShaderModules([
+    ['gtao', gtaoSM],
+    ['gtao-upsample', gtaoUpsampleSM],
+    ['indirectCombine', indirectCombineSM],
+    ['indirectTemporalAccum', indirectTemporalAccumSM],
+    ['accum', accumSM],
+  ], opts?.onWarning);
 
   /**
    * Always-on compute pipelines (D3.15 extensibility table). Adding an
@@ -430,6 +450,7 @@ export async function compilePipelines(
       ? composeWgsl(buildRisGiNrcModule(opts.nrcConfig!), wgslModules)
       : composeWgsl(RIS_GI_MODULE, wgslModules),
   });
+  await checkPipelineShaderModules([['risGi', risGiSM]], opts?.onWarning);
   const risGiLayout = device.createPipelineLayout({
     bindGroupLayouts: [
       getRisGiFrameBindGroupLayout(device, bglCache),
@@ -455,6 +476,10 @@ export async function compilePipelines(
     label: 'spatialGi',
     code: composeWgsl(SPATIAL_GI_MODULE, wgslModules),
   });
+  await checkPipelineShaderModules([
+    ['temporalGi', temporalGiSM],
+    ['spatialGi', spatialGiSM],
+  ], opts?.onWarning);
   [pipelineDraft['temporalGiPipeline'], pipelineDraft['spatialGiPipeline']] = await Promise.all([
     device.createComputePipelineAsync({
       label: 'temporalGi', layout: temporalGiLayout,
@@ -493,12 +518,7 @@ export async function compilePipelines(
       requires: ['ppgTreeLayout'] as const,
     };
     const ppgUpdateSM = device.createShaderModule({ label: 'ppg-update', code: composeWgsl(ppgUpdateModule, wgslModules) });
-    await checkShaderCompile(ppgUpdateSM, 'ppg-update', {
-      prefix: '[ReSTIR]',
-      onWarnings: (warns) => emitShaderCompilationWarnings('ppg-update', warns, {
-        ...(opts?.onWarning !== undefined ? { onWarning: opts.onWarning } : {}),
-      }),
-    });
+    await checkPipelineShaderModules([['ppg-update', ppgUpdateSM]], opts?.onWarning);
     pipelineDraft['ppgUpdatePipeline'] = await device.createComputePipelineAsync({
       label: 'ppg-update', layout: 'auto',
       compute: { module: ppgUpdateSM, entryPoint: 'ppgUpdateMain' },
@@ -517,12 +537,7 @@ export async function compilePipelines(
       label: 'regir-build',
       code: composeWgsl(REGIR_BUILD_MODULE, wgslModules),
     });
-    await checkShaderCompile(regirBuildSM, 'regir-build', {
-      prefix: '[ReSTIR]',
-      onWarnings: (warns) => emitShaderCompilationWarnings('regir-build', warns, {
-        ...(opts?.onWarning !== undefined ? { onWarning: opts.onWarning } : {}),
-      }),
-    });
+    await checkPipelineShaderModules([['regir-build', regirBuildSM]], opts?.onWarning);
     const regirBuildLayout = device.createPipelineLayout({
       bindGroupLayouts: [getRegirBuildBindGroupLayout(device, bglCache)],
     });
@@ -538,6 +553,11 @@ export async function compilePipelines(
   if (opts?.verbose) {
     console.log('[ReSTIR] All pipelines compiled successfully');
   }
+
+  compositeShaderModulesByDevice.set(device, {
+    vertex: compVertSM,
+    fragment: compFragSM,
+  });
 
   // All pipelines accumulated into pipelineDraft — assert completeness.
   return pipelineDraft as CompiledPipelines;

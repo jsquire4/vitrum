@@ -85,16 +85,16 @@ describe('NRC resource preflight', () => {
       peakBytes: small.peakResidentBufferBytes,
       readbackBytes: small.readbackBytes,
     }).toEqual({
-      persistentCount: 49,
-      persistentBytes: 8_112,
-      peakCount: 50,
-      peakBytes: 8_388,
+      persistentCount: 51,
+      persistentBytes: 8_152,
+      peakCount: 52,
+      peakBytes: 8_428,
       readbackBytes: 276,
     });
     expect(Object.values(small.persistentAllocations)
-      .reduce((sum, entry) => sum + entry.count, 0)).toBe(49);
+      .reduce((sum, entry) => sum + entry.count, 0)).toBe(51);
     expect(Object.values(small.persistentAllocations)
-      .reduce((sum, entry) => sum + entry.totalBytes, 0)).toBe(8_112);
+      .reduce((sum, entry) => sum + entry.totalBytes, 0)).toBe(8_152);
 
     const production = computeNrcResourceFootprint(DEFAULT_NRC_CONFIG);
     expect({
@@ -104,10 +104,10 @@ describe('NRC resource preflight', () => {
       peakBytes: production.peakResidentBufferBytes,
       readbackBytes: production.readbackBytes,
     }).toEqual({
-      persistentCount: 49,
-      persistentBytes: 23_377_560,
-      peakCount: 50,
-      peakBytes: 24_114_860,
+      persistentCount: 51,
+      persistentBytes: 23_377_600,
+      peakCount: 52,
+      peakBytes: 24_114_900,
       readbackBytes: 737_300,
     });
 
@@ -122,10 +122,10 @@ describe('NRC resource preflight', () => {
       peakBytes: productionF16.peakResidentBufferBytes,
       readbackBytes: productionF16.readbackBytes,
     }).toEqual({
-      persistentCount: 51,
-      persistentBytes: 14_568_880,
-      peakCount: 52,
-      peakBytes: 15_306_180,
+      persistentCount: 53,
+      persistentBytes: 14_568_920,
+      peakCount: 54,
+      peakBytes: 15_306_220,
       readbackBytes: 737_300,
     });
   });
@@ -138,7 +138,7 @@ describe('NRC resource preflight', () => {
       peakCount: records8.peakResidentBufferCount,
       peakBytes: records8.peakResidentBufferBytes,
       readbackBytes: records8.readbackBytes,
-    }).toEqual({ count: 49, bytes: 9_968, peakCount: 50, peakBytes: 10_500, readbackBytes: 532 });
+    }).toEqual({ count: 51, bytes: 10_008, peakCount: 52, peakBytes: 10_540, readbackBytes: 532 });
 
     const table32 = computeNrcResourceFootprint({ ...CONFIG, tableSize: 32 });
     expect({
@@ -147,7 +147,7 @@ describe('NRC resource preflight', () => {
       peakCount: table32.peakResidentBufferCount,
       peakBytes: table32.peakResidentBufferBytes,
       readbackBytes: table32.readbackBytes,
-    }).toEqual({ count: 49, bytes: 8_624, peakCount: 50, peakBytes: 8_900, readbackBytes: 276 });
+    }).toEqual({ count: 51, bytes: 8_664, peakCount: 52, peakBytes: 8_940, readbackBytes: 276 });
   });
 
   it('enforces the host aggregate resident budget at the exact byte boundary', () => {

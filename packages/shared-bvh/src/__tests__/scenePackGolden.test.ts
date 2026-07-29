@@ -157,6 +157,16 @@ function expectSerializedPackInvariants(pack: SerializedScenePack): void {
 
   let instanceOffset = 0;
   for (const binding of pack.primitiveTlasBindings) {
+    expect(binding.instanceSourceIndices).toHaveLength(binding.instanceCount);
+    for (let i = 0; i < binding.instanceSourceIndices.length; i += 1) {
+      expect(Number.isInteger(binding.instanceSourceIndices[i])).toBe(true);
+      expect(binding.instanceSourceIndices[i]).toBeGreaterThanOrEqual(0);
+      if (i > 0) {
+        expect(binding.instanceSourceIndices[i]).toBeGreaterThan(
+          binding.instanceSourceIndices[i - 1]!,
+        );
+      }
+    }
     const aabb = localAabbFromVertices(pack, binding);
     expectCloseVec3(binding.localAabbMin, aabb.min, `${binding.primitiveId}.localAabbMin`);
     expectCloseVec3(binding.localAabbMax, aabb.max, `${binding.primitiveId}.localAabbMax`);

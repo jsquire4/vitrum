@@ -6,15 +6,16 @@
  * Internal layout (32 bytes / node, 8 × u32):
  *   f32[0..2] bounds.min xyz
  *   f32[3..5] bounds.max xyz
- *   u32[6]    rightChildOrTriOffset
+ *   u32[6]    rightChildOffsetOrTriOffset
  *   u32[7]    splitAxisOrTriCount  (leaf when high 16 == 0xFFFF)
  *
  * Public-debug layout (8 × f32):
  *   [minX, minY, minZ, maxX, maxY, maxZ, depth, 0]
  *
- * `depth` is computed via iterative DFS from the root. Left child is
- * always idx+1 (depth-first encoding); right child is u32[6]. Leaves
- * are detected by `(split >>> 16) === 0xFFFF` — the `& 0xFFFF0000`
+ * `depth` is computed via iterative DFS over every tree in the concatenated
+ * BLAS forest. Left child is always idx+1 (depth-first encoding); the right
+ * child is `idx + u32[6]` because slot 6 stores a relative node offset.
+ * Leaves are detected by `(split >>> 16) === 0xFFFF` — the `& 0xFFFF0000`
  * variant of this check looks correct but actually returns -65536
  * (signed int32) and fails the `=== 0xFFFF0000` (number literal stored
  * as double) comparison; the unsigned-upper-16 form is the safe one.
@@ -29,38 +30,83 @@ const NODE_STRIDE_U32 = 8;
 const NODE_STRIDE_BYTES = 32;
 
 export function packBvhNodesForDebug(buf: ArrayBuffer): Float32Array {
+  if (buf.byteLength % NODE_STRIDE_BYTES !== 0) {
+    throw new RangeError(
+      '[walkaround-hybrid] debug BVH node buffer is not 32-byte aligned.',
+    );
+  }
   const src    = new Float32Array(buf);
   const srcU32 = new Uint32Array(buf);
   const nodeCount = buf.byteLength / NODE_STRIDE_BYTES;
   const depths = new Uint32Array(nodeCount);
 
   if (nodeCount > 0) {
-    // Worst-case linear chain → stack sized at nodeCount.
-    const stack  = new Int32Array(nodeCount);
-    const stackD = new Uint32Array(nodeCount);
-    let sp = 0;
-    stack[sp]  = 0;
-    stackD[sp] = 0;
-    sp++;
+    // bvhNodes is a concatenated BLAS forest in TLAS mode. Every individual
+    // depth-first tree occupies one contiguous interval, so the first node
+    // after a completed interval is the next root.
+    const state = new Uint8Array(nodeCount); // 0=unseen, 1=scheduled, 2=visited
+    let root = 0;
+    while (root < nodeCount) {
+      const stack: Array<readonly [node: number, depth: number]> = [[root, 0]];
+      state[root] = 1;
+      let treeNodeCount = 0;
+      let maxTreeNode = root;
 
-    while (sp > 0) {
-      sp--;
-      const idx = stack[sp]!;
-      const d   = stackD[sp]!;
-      if (idx < 0 || idx >= nodeCount) continue;
-      depths[idx] = d;
-      const splitWord = srcU32[idx * NODE_STRIDE_U32 + 7]!;
-      const isLeaf = (splitWord >>> 16) === 0xffff;
-      if (isLeaf) continue;
-      const rightChild = srcU32[idx * NODE_STRIDE_U32 + 6]!;
-      // Push right first so left (idx+1) pops first — preserves a
-      // left-then-right walk for deterministic dev-overlay colors.
-      stack[sp]  = rightChild;
-      stackD[sp] = d + 1;
-      sp++;
-      stack[sp]  = idx + 1;
-      stackD[sp] = d + 1;
-      sp++;
+      const schedule = (node: number, depth: number): void => {
+        if (node < 0 || node >= nodeCount) {
+          throw new Error(
+            `[walkaround-hybrid] debug BVH child ${node} is outside ` +
+              `[0, ${nodeCount - 1}].`,
+          );
+        }
+        if (state[node] !== 0) {
+          throw new Error(
+            `[walkaround-hybrid] debug BVH node ${node} is reachable more ` +
+              'than once (cycle, shared child, or overlapping BLAS roots).',
+          );
+        }
+        state[node] = 1;
+        maxTreeNode = Math.max(maxTreeNode, node);
+        stack.push([node, depth]);
+      };
+
+      while (stack.length > 0) {
+        const [idx, depth] = stack.pop()!;
+        state[idx] = 2;
+        treeNodeCount += 1;
+        depths[idx] = depth;
+        const base = idx * NODE_STRIDE_U32;
+        const splitWord = srcU32[base + 7]!;
+        const isLeaf = (splitWord >>> 16) === 0xffff;
+        if (isLeaf) continue;
+        if (splitWord > 2) {
+          throw new Error(
+            `[walkaround-hybrid] debug BVH interior node ${idx} has invalid ` +
+              `split axis ${splitWord}.`,
+          );
+        }
+        const rightOffset = srcU32[base + 6]!;
+        const leftChild = idx + 1;
+        const rightChild = idx + rightOffset;
+        if (rightOffset <= 1) {
+          throw new Error(
+            `[walkaround-hybrid] debug BVH interior node ${idx} has invalid ` +
+              `relative right-child offset ${rightOffset}.`,
+          );
+        }
+        // Push right first so left (idx+1) pops first — preserves a
+        // left-then-right walk for deterministic dev-overlay colors.
+        schedule(rightChild, depth + 1);
+        schedule(leftChild, depth + 1);
+      }
+
+      if (treeNodeCount !== maxTreeNode - root + 1) {
+        throw new Error(
+          `[walkaround-hybrid] debug BVH rooted at ${root} is not a ` +
+            'contiguous depth-first tree.',
+        );
+      }
+      root = maxTreeNode + 1;
     }
   }
 

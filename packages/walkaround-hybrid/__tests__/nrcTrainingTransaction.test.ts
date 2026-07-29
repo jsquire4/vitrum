@@ -59,6 +59,7 @@ function modelChecksum(state: NumericModelState): number {
 
 interface TransactionHarnessOptions {
   readonly mapWait?: Promise<void>;
+  readonly trainerDiagnosticsMapWait?: Promise<void>;
   readonly completion?: Promise<void>;
   readonly gateError?: Error;
   readonly retirementError?: Error;
@@ -80,6 +81,17 @@ function makeTransactionHarness(options: TransactionHarnessOptions = {}) {
   const oldInference = trackedBuffer('old-inference');
   const candidateInference = trackedBuffer('candidate-inference');
   const runtimeArena = trackedBuffer('runtime-arena');
+  const trainerDiagnostics = trackedBuffer('trainer-diagnostics');
+  const trainerDiagnosticsMapped = new ArrayBuffer(20);
+  new Uint32Array(trainerDiagnosticsMapped).set([1, 2, 3, 4, 5]);
+  const trainerDiagnosticsReadback = trackedBuffer(
+    'trainer-diagnostics-readback',
+    trainerDiagnosticsMapped,
+  );
+  trainerDiagnosticsReadback.mapAsync = vi.fn(async () => {
+    await (options.trainerDiagnosticsMapWait ?? Promise.resolve());
+    trainerDiagnosticsReadback.mapState = 'mapped';
+  });
   const candidateWeight = trackedBuffer('candidate-weight');
   const candidateBias = trackedBuffer('candidate-bias');
   const candidateTable = trackedBuffer('candidate-table');
@@ -160,6 +172,7 @@ function makeTransactionHarness(options: TransactionHarnessOptions = {}) {
   };
 
   const encoder = {
+    clearBuffer: vi.fn(),
     copyBufferToBuffer: vi.fn(),
     finish: vi.fn(() => ({ label: 'combined-command-buffer' })),
   };
@@ -239,6 +252,8 @@ function makeTransactionHarness(options: TransactionHarnessOptions = {}) {
     _activeInferenceArena: oldInference,
     _spareInferenceArena: candidateInference,
     _runtimeArena: runtimeArena,
+    _trainerDiagnosticsBuffer: trainerDiagnostics,
+    _trainerDiagnosticsReadback: trainerDiagnosticsReadback,
     _inferenceLayout: inferenceLayout,
     _inferenceEpoch: 1,
   });
@@ -251,6 +266,8 @@ function makeTransactionHarness(options: TransactionHarnessOptions = {}) {
     oldInference,
     candidateInference,
     runtimeArena,
+    trainerDiagnostics,
+    trainerDiagnosticsReadback,
     candidateWeight,
     candidateBias,
     candidateTable,
@@ -313,6 +330,7 @@ describe('NrcSubsystem training transaction', () => {
     expect(internal(harness.subsystem)._readbackState).toEqual({ kind: 'idle' });
     expect(Array.from(internal(harness.subsystem)._lastGpuDiagnostics as Uint32Array))
       .toEqual([9, 8, 7, 6, 5]);
+    expect(harness.trainerDiagnosticsReadback.mapAsync).not.toHaveBeenCalled();
   });
 
   it('discards a completed submission when mutation changes its generation', async () => {
@@ -333,6 +351,40 @@ describe('NrcSubsystem training transaction', () => {
     expect(internal(harness.subsystem)._activeInferenceArena).toBe(harness.oldInference);
     expect(harness.subsystem.diagnostics().staleReadbacks).toBe(1);
     expect(harness.writeBuffer).not.toHaveBeenCalled();
+  });
+
+  it('discards a completed submission when mutation commits during diagnostics mapping', async () => {
+    const diagnosticsMap = deferred();
+    const harness = makeTransactionHarness({
+      trainerDiagnosticsMapWait: diagnosticsMap.promise,
+    });
+    const training = harness.subsystem.trainFromRecords();
+    for (
+      let turn = 0;
+      turn < 8 && harness.trainerDiagnosticsReadback.mapAsync.mock.calls.length === 0;
+      turn++
+    ) {
+      await Promise.resolve();
+    }
+    expect(harness.trainerDiagnosticsReadback.mapAsync).toHaveBeenCalledOnce();
+
+    Object.assign(harness.subsystem, { _generation: 5 });
+    diagnosticsMap.resolve();
+    await training;
+
+    expect(harness.mlpTransaction.commitCpu).not.toHaveBeenCalled();
+    expect(harness.tableTransaction.commitCpu).not.toHaveBeenCalled();
+    expect(harness.mlpTransaction.rollback).toHaveBeenCalledOnce();
+    expect(harness.tableTransaction.rollback).toHaveBeenCalledOnce();
+    expect(internal(harness.subsystem)._tablesBuf).toBe(harness.oldTables);
+    expect(internal(harness.subsystem)._activeInferenceArena).toBe(harness.oldInference);
+    expect(harness.subsystem.diagnostics().trainedSteps).toBe(0);
+    expect(harness.subsystem.diagnostics().staleReadbacks).toBe(1);
+    expect(Array.from(
+      internal(harness.subsystem)._lastTrainerDiagnostics as Uint32Array,
+    )).toEqual([0, 0, 0, 0, 0]);
+    expect(harness.writeBuffer).not.toHaveBeenCalled();
+    expect(harness.trainerDiagnosticsReadback.unmap).toHaveBeenCalledOnce();
   });
 
   it('cancels a pending map on dispose and destroys its ticket exactly once', async () => {
@@ -393,6 +445,48 @@ describe('NrcSubsystem training transaction', () => {
     expect(harness.subsystem.diagnostics().trainedSteps).toBe(0);
   });
 
+  it('surfaces trainer diagnostics without sharing the per-frame query counter buffer', async () => {
+    const harness = makeTransactionHarness();
+
+    await harness.subsystem.trainFromRecords();
+
+    expect(Array.from(internal(harness.subsystem)._lastGpuDiagnostics as Uint32Array))
+      .toEqual([9, 8, 7, 6, 5]);
+    expect(Array.from(internal(harness.subsystem)._lastTrainerDiagnostics as Uint32Array))
+      .toEqual([1, 2, 3, 4, 5]);
+    expect(harness.subsystem.diagnostics()).toMatchObject({
+      droppedRecords: 10,
+      saturatedValues: 10,
+      nonFiniteValues: 10,
+      invalidPdfs: 10,
+      droppedUpdates: 10,
+    });
+    // A later query epoch replaces only query counters; the most-recent
+    // trainer epoch remains observable until another training step completes.
+    (internal(harness.subsystem)._lastGpuDiagnostics as Uint32Array).fill(0);
+    expect(harness.subsystem.diagnostics()).toMatchObject({
+      droppedRecords: 1,
+      saturatedValues: 2,
+      nonFiniteValues: 3,
+      invalidPdfs: 4,
+      droppedUpdates: 5,
+    });
+    expect(harness.encoder.clearBuffer).toHaveBeenCalledWith(
+      harness.trainerDiagnostics,
+      0,
+      20,
+    );
+    expect(harness.encoder.copyBufferToBuffer).toHaveBeenCalledWith(
+      harness.trainerDiagnostics,
+      0,
+      harness.trainerDiagnosticsReadback,
+      0,
+      20,
+    );
+    expect(harness.trainerDiagnosticsReadback.mapAsync).toHaveBeenCalledOnce();
+    expect(harness.trainerDiagnosticsReadback.unmap).toHaveBeenCalledOnce();
+  });
+
   it('publishes once, reports retirement cleanup failures, and never rolls back live state', async () => {
     const harness = makeTransactionHarness({
       retirementError: new Error('old-buffer retirement failed'),
@@ -432,6 +526,8 @@ describe('NrcSubsystem training transaction', () => {
     expect(internal(harness.subsystem)._readbackState).toEqual({ kind: 'idle' });
     expect(Array.from(internal(harness.subsystem)._lastGpuDiagnostics as Uint32Array))
       .toEqual([9, 8, 7, 6, 5]);
+    expect(Array.from(internal(harness.subsystem)._lastTrainerDiagnostics as Uint32Array))
+      .toEqual([1, 2, 3, 4, 5]);
   });
 });
 

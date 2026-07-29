@@ -193,7 +193,7 @@ describe('core ReSTIR direct-light emitter fidelity', () => {
       expect(e.area).toBeCloseTo(expectedArea / 32, 6);
       expect(e.normal[0]).toBeCloseTo(0, 6);
       expect(e.normal[1]).toBeCloseTo(0, 6);
-      expect(e.normal[2]).toBeCloseTo(-1, 6);
+      expect(e.normal[2]).toBeCloseTo(1, 6);
       expect(e.Le).toEqual(expectedLe);
     }
 
@@ -672,6 +672,7 @@ describe('core ReSTIR direct-light emitter fidelity', () => {
         primitiveId: 'panel',
         primitiveKind: 'mesh',
         blasRoot: 0,
+        instanceSourceIndices: [0],
         instanceCount: 1,
         vertexStart: 0,
         vertexCount: 3,
@@ -726,6 +727,7 @@ describe('core ReSTIR direct-light emitter fidelity', () => {
         primitiveId: 'panel',
         primitiveKind: 'mesh',
         blasRoot: 0,
+        instanceSourceIndices: [0],
         instanceCount: 1,
         vertexStart: 0,
         vertexCount: 3,

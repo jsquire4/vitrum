@@ -146,6 +146,7 @@ export function computeNrcResourceFootprint(cfg: NrcConfig): NrcResourceFootprin
     records: recordBytes,
     slotClaims: bytes('slot claims', cfg.recordCap, 4),
     diagnostics: NRC_DIAGNOSTIC_BYTES,
+    trainerDiagnostics: NRC_DIAGNOSTIC_BYTES,
     tableGradients: bytes('table gradients', tableScalars, F32_BYTES),
     positions: bytes('query positions', mul('position scalars', cfg.recordCap, 3), F32_BYTES),
     candidateWeights: bytes('candidate forward weights', totalWeights, scalarBytes),
@@ -205,7 +206,7 @@ export function computeNrcResourceFootprint(cfg: NrcConfig): NrcResourceFootprin
 
   // Multiplicities mirror every persistent GPUBuffer allocation in
   // NrcSubsystem + FusedMlpTrainer + HashGridTableTrainer. The default f32
-  // configuration totals 49 resident buffers; f16 adds two downcast UBOs.
+  // configuration totals 51 resident buffers; f16 adds two downcast UBOs.
   const persistentAllocations: Record<string, NrcBufferAllocation> = {
     mlpForwardWeights: allocation('MLP forward weights', 2, storageBindings.weights!),
     mlpForwardBiases: allocation('MLP forward biases', 2, storageBindings.biases!),
@@ -227,6 +228,16 @@ export function computeNrcResourceFootprint(cfg: NrcConfig): NrcResourceFootprin
     levels: allocation('level descriptor', 1, storageBindings.levels!),
     inferenceArenas: allocation('inference arena', 2, storageBindings.inferenceArena),
     runtimeArena: allocation('runtime arena', 1, storageBindings.runtimeArena),
+    trainerDiagnostics: allocation(
+      'trainer diagnostics',
+      1,
+      storageBindings.trainerDiagnostics!,
+    ),
+    trainerDiagnosticsReadback: allocation(
+      'trainer diagnostics readback',
+      1,
+      NRC_DIAGNOSTIC_BYTES,
+    ),
     queryConfigUniform: allocation('query-config uniform', 1, uniformBindings.queryConfig!),
     layerPlanUniform: allocation('layer-plan uniform', 1, uniformBindings.layerPlan!),
     adamUniforms: allocation('Adam uniforms', 3, uniformBindings.adam!),

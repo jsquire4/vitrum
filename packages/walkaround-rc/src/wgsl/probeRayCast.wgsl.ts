@@ -783,6 +783,17 @@ fn rcShadeOpaqueTransmissionReceiver(
   return radiance;
 }
 
+// Once an interval first hits a transmissive surface, that invocation owns the
+// complete dielectric suffix. Every later scene-to-scene segment is bounded by
+// the scene AABB diagonal. The runtime interface budget bounds those segments,
+// and one additional segment reaches the final opaque receiver. The initial
+// interval-local hit distance is accounted for separately.
+fn rcCompleteDielectricSuffixMaxDistance(initialHitDistance: f32) -> f32 {
+  let u = rc_u;
+  let boundedSegments = u.transmittedInterfaceBudget + 1u;
+  return initialHitDistance + length(u.roomSize) * f32(boundedSegments);
+}
+
 // Trace one spectral channel through a runtime-selected 1..8 dielectric
 // interface budget. Each
 // channel owns its refracted direction, so dispersion changes the geometry it
@@ -994,7 +1005,7 @@ fn rcTraceTransmittedChannel(
     ray.origin = hitPos + nextDirection * max(slabStep, triEps * 4.0);
     hit = rcTraceFirstHitAlphaTextured(ray, triEps);
     if (!hit.didHit) {
-      if (mediumDepth != 0u || u.cascadeIndex != u.lastCascade) { return 0.0; }
+      if (mediumDepth != 0u) { return 0.0; }
       let env = rcEnvironmentRadiance(ray.direction);
       return throughput * rcRgbChannel(env, channel);
     }
@@ -1105,15 +1116,20 @@ fn probeRayCastKernel(@builtin(global_invocation_id) globalId: vec3u) {
     // segment Beer/spectral attenuation are paid inside the channel walk.
     var transContrib = vec3f(0.0);
     if (probeMat.transmission > 0.0) {
+      let dielectricMaxDistance =
+        rcCompleteDielectricSuffixMaxDistance(hit.dist);
       transContrib = vec3f(
         rcTraceTransmittedChannel(
-          ray, hit, maxT, 0u, raySeed, triEps, normalBias, slabStep,
+          ray, hit, dielectricMaxDistance, 0u,
+          raySeed, triEps, normalBias, slabStep,
         ),
         rcTraceTransmittedChannel(
-          ray, hit, maxT, 1u, raySeed, triEps, normalBias, slabStep,
+          ray, hit, dielectricMaxDistance, 1u,
+          raySeed, triEps, normalBias, slabStep,
         ),
         rcTraceTransmittedChannel(
-          ray, hit, maxT, 2u, raySeed, triEps, normalBias, slabStep,
+          ray, hit, dielectricMaxDistance, 2u,
+          raySeed, triEps, normalBias, slabStep,
         ),
       );
     }

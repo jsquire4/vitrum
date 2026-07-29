@@ -67,11 +67,12 @@ export const WARM_GRAY_DEFAULT_B = 140;
 // addressing):
 //   bits[31:24] = roughness × 255
 //   bits[23:16] = metalness × 255
-//   bits[15:8]  = IOR quantized: (ior − 1) / 2 * 255, range [1.0, 3.0]
+//   bits[15:8]  = IOR quantized into finite codes [1,255], with byte 0 reserved
+//                 for the infinite-IOR sentinel. Finite values use 254 intervals
+//                 over [1.0, 3.0].
 //                 covering water (1.33) → glass (1.5) → diamond (2.42) → TiO₂ (≈2.9).
-//                 Decode: ior = 1 + (byte / 255) * 2.  Quantization step = 2/255 ≈ 0.0078.
-//                 IOR_GLASS = 1.5 encodes to byte 63.75 → rounds to 64 → decodes to
-//                 1 + 64/255 * 2 ≈ 1.502 (error < 0.003 — within glass dispersion spread).
+//                 Decode: ior = 1 + ((byte − 1) / 254) * 2.
+//                 IOR_GLASS = 1.5 encodes to byte 65 and decodes exactly to 1.5.
 //   bits[7:0]   = material flags + low-precision scalar sidecar:
 //                 bit 0 = castShadowDisabled
 //                 bit 1 = unlit shading model
@@ -85,16 +86,15 @@ export const WARM_GRAY_DEFAULT_B = 140;
 // hardcode. Metalness 0 default.
 //
 // IOR DEFAULT INVARIANT (B1-ior-per-tri): glass materials with no authored ior
-// default to IOR_DEFAULT_GLASS = 1.5, which encodes to byte 64 and decodes
-// back to 1.502 — preserving the previous hard-wired IOR_GLASS=1.5 behaviour
-// to within 0.003. Opaque/non-glass materials pack IOR_DEFAULT_OPAQUE = 1.0
-// (byte 0) — decodes to exactly 1.0 (air/vacuum); the WGSL consumers skip the
+// default to IOR_DEFAULT_GLASS = 1.5, which encodes to byte 65 and decodes
+// exactly to 1.5. Opaque/non-glass materials pack IOR_DEFAULT_OPAQUE = 1.0
+// (byte 1) — decodes to exactly 1.0 (air/vacuum); the WGSL consumers skip the
 // IOR lane for non-glass surfaces so this value has no visual impact.
 /** @internal Default roughness for a non-glass material with no authored value.
  *  Shared by the production `*FromCore` packers and the legacy test-oracle packers. */
 export const ROUGH_DEFAULT = 0.85;
 const ROUGH_GLASS = 0.05;
-/** Default IOR for glass (crown glass). Packs to byte 64, decodes to 1.502. */
+/** Default IOR for glass (crown glass). Packs to byte 65 and decodes exactly. */
 export const IOR_DEFAULT_GLASS = 1.5;
 /** Finite IOR range minimum (air/vacuum). Byte 1; byte 0 is the IOR=0 sentinel. */
 export const IOR_RANGE_MIN = 1.0;

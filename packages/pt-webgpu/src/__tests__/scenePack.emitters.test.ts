@@ -4,8 +4,6 @@ import { luminance } from '@vitrum/shared-samplers';
 import {
   buildLightTreeInputForScene,
   MESH_AREA_LIGHT_FLOAT_STRIDE,
-  meshAreaEmitterAdjointRangeForScene,
-  packMeshAreaAdjointReplayArrays,
 } from '../scene/emitterPacking.js';
 import { buildPackedScene } from '../scene/uploadSceneBuffers.js';
 
@@ -130,62 +128,6 @@ describe('buildPackedScene emitter + environment packing', () => {
     expectVec3Close(tree.centroids[1]!, [1 / 3, 2 / 3, 0]);
     expect(tree.powers[0]).toBeCloseTo(luminance(1, 2, 4) * 0.5, 6);
     expect(tree.powers[1]).toBeCloseTo(luminance(1, 2, 4) * 0.5, 6);
-  });
-
-  it('reports a stable adjoint range for uncapped explicit mesh-area emitters', () => {
-    const scene = quadScene('mesh');
-    const range = meshAreaEmitterAdjointRangeForScene(scene, 'm');
-    expect(range).toEqual({
-      start: 0,
-      count: 2,
-      totalMeshAreaTriangles: 2,
-      capped: false,
-      adjointEmitterSlot: 0,
-    });
-  });
-
-  it('tags adjoint replay mesh-area triangles with stable explicit emitter owners', () => {
-    const scene: Scene = {
-      primitives: [
-        {
-          kind: 'mesh',
-          id: 'quad-a',
-          positions: new Float32Array([
-            0, 0, 0,
-            1, 0, 0,
-            1, 1, 0,
-            0, 1, 0,
-          ]),
-          normals: new Float32Array([
-            0, 0, 1,
-            0, 0, 1,
-            0, 0, 1,
-            0, 0, 1,
-          ]),
-          indices: new Uint32Array([0, 1, 2, 0, 2, 3]),
-          material: { baseColor: [1, 1, 1], roughness: 0.4, metallic: 0 },
-        },
-        {
-          kind: 'mesh',
-          id: 'tri-b',
-          positions: new Float32Array([2, 0, 0, 3, 0, 0, 2, 1, 0]),
-          normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
-          material: { baseColor: [1, 1, 1], roughness: 0.4, metallic: 0 },
-        },
-      ],
-      emitters: [
-        { kind: 'mesh-area', id: 'a', meshId: 'quad-a', color: [1, 1, 1], intensity: 1 },
-        { kind: 'mesh-area', id: 'b', meshId: 'tri-b', color: [1, 1, 1], intensity: 1 },
-      ],
-      environment: { kind: 'none' },
-    };
-
-    const replay = packMeshAreaAdjointReplayArrays(scene);
-
-    expect(replay.meshAreaLightCount).toBe(3);
-    expect(replay.meshAreaLightSourceFactorsData[3]).toBe(1);
-    expect(replay.meshAreaLightSourceFactorsData[7]).toBe(1);
-    expect(replay.meshAreaLightSourceFactorsData[11]).toBe(2);
   });
 
   it('packs exact-sampled implicit emissive-map mesh lights through the packed-scene path', () => {

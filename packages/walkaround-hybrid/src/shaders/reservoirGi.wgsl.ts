@@ -189,22 +189,6 @@ fn packReservoirGI(r: ReservoirPT) -> array<u32, ${strideU32}> {
   return words;
 }
 
-fn updateReservoirGI(
-  r: ptr<function, ReservoirPT>,
-  xs: vec3f, ns: vec3f, Lo: vec3f,
-  w: f32,
-  rng: ptr<function, u32>,
-) {
-  (*r).M = reservoirGiSaturatingAddU32((*r).M, 1u);
-  (*r).w_sum = (*r).w_sum + w;
-  if (rand_f32(rng) * (*r).w_sum < w) {
-    (*r).xs = xs;
-    (*r).ns = ns;
-    (*r).Lo = Lo;
-  }
-}
-
-
 fn foldInvalidReservoirGICandidates(
   r: ptr<function, ReservoirPT>,
   attemptCount: u32,

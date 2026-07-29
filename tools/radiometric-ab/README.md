@@ -40,6 +40,12 @@ npm run radiometric-ab:proof-check
 npm run radiometric-ab:restir-pt-specialty
 ```
 
+The source-check also pins a default-test, CPU-only cross-backend rect-area
+radiometric A/B. It compares all three renderer wire formats against the core
+half-extent contract, including sampled positions, physical area, emitted
+power, and emitting-side orientation. This catches convention drift without
+requiring a GPU.
+
 `proofs.mjs` and `resultValidation.mjs` define numerical contracts. The checker
 accepts three explicitly historical, pre-manifest baselines (SPPM, BDPT, and
 Sobol) unless `--source-only` is selected, then checks the ReSTIR-PT specialty

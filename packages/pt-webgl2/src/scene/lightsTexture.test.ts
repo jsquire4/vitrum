@@ -39,7 +39,7 @@ describe('packLightsTexture', () => {
     decay: 2,
     distance: 10,
   };
-  // Unit-area rect: uAxis=(2,0,0), vAxis=(0,3,0) → width 2, height 3, area 6.
+  // Core axes are half-extents: the full rect is 4×6 and has area 24.
   const rect: RectAreaEmitter = {
     id: 'rect',
     kind: 'rect-area',
@@ -93,15 +93,17 @@ describe('packLightsTexture', () => {
     expect(texel(data.data, 2, 0, 3)).toBe(0);
     // s1.a = intensity
     expect(texel(data.data, 2, 1, 3)).toBe(5);
-    // s2.xyz = u-vector
-    expect(texel(data.data, 2, 2, 0)).toBe(2);
+    // s2.xyz = full-span u-vector (2 × core half-extent)
+    expect(texel(data.data, 2, 2, 0)).toBe(4);
     expect(texel(data.data, 2, 2, 1)).toBe(0);
     expect(texel(data.data, 2, 2, 2)).toBe(0);
-    // s2.a = power = luminance * intensity * (width * height) = lum*5*(2*3)
-    expect(texel(data.data, 2, 2, 3)).toBeCloseTo(luminance(0.2, 0.4, 0.6) * 5 * 6, 6);
-    // s3.xyz = v-vector, s3.a = area = |u × v| = 6
-    expect(texel(data.data, 2, 3, 1)).toBe(3);
-    expect(texel(data.data, 2, 3, 3)).toBeCloseTo(6, 6);
+    // s2.a = power = luminance * intensity * area = lum*5*24
+    expect(texel(data.data, 2, 2, 3)).toBe(
+      Math.fround(luminance(0.2, 0.4, 0.6) * 5 * 24),
+    );
+    // s3.xyz = full-span v-vector; s3.a = 4·|core u × core v| = 24
+    expect(texel(data.data, 2, 3, 1)).toBe(6);
+    expect(texel(data.data, 2, 3, 3)).toBeCloseTo(24, 6);
   });
 
   it('handles an empty emitter list (1×1 grid, no crash)', () => {
@@ -127,6 +129,73 @@ describe('packLightsTexture', () => {
     expect(texel(packed.data, 0, 2, 3)).toBe(0);
     expect(texel(packed.data, 1, 2, 3)).toBeGreaterThan(0);
     expect(texel(packed.data, 1, 2, 3)).toBeCloseTo(1e-25, 30);
+  });
+});
+
+describe('packLightsTexture — float32 area-geometry boundary', () => {
+  const rectBase: Omit<RectAreaEmitter, 'id' | 'uAxis' | 'vAxis'> = {
+    kind: 'rect-area',
+    color: [1, 1, 1],
+    intensity: 1,
+    position: [0, 0, 0],
+  };
+
+  it('rejects rect axes that become collinear only after RGBA32F quantization', () => {
+    const rect: RectAreaEmitter = {
+      ...rectBase,
+      id: 'f32-collinear',
+      uAxis: [1, 1, 0],
+      vAxis: [1, 1 + 1e-8, 0],
+    };
+    expect(() => packLightsTexture([rect])).toThrow(
+      /@vitrum\/pt-webgl2: rect-area emitter "f32-collinear".*collapse to zero area/,
+    );
+  });
+
+  it('rejects rect axes that overflow storage or GLSL squared-length denominators', () => {
+    const storageOverflow: RectAreaEmitter = {
+      ...rectBase,
+      id: 'axis-storage-overflow',
+      uAxis: [2e38, 0, 0],
+      vAxis: [0, 1, 0],
+    };
+    expect(() => packLightsTexture([storageOverflow])).toThrow(
+      /rect-area emitter "axis-storage-overflow".*not representable as finite float32 values/,
+    );
+
+    const denominatorOverflow: RectAreaEmitter = {
+      ...rectBase,
+      id: 'axis-denominator-overflow',
+      uAxis: [1e20, 0, 0],
+      vAxis: [0, 1, 0],
+    };
+    expect(() => packLightsTexture([denominatorOverflow])).toThrow(
+      /rect-area emitter "axis-denominator-overflow".*squared lengths.*finite and strictly positive/,
+    );
+  });
+
+  it('rejects disc diameters that overflow storage or GLSL squared-length denominators', () => {
+    const discBase: Omit<DiscAreaEmitter, 'id' | 'radius'> = {
+      kind: 'disc-area',
+      color: [1, 1, 1],
+      intensity: 1,
+      position: [0, 0, 0],
+      normal: [0, 1, 0],
+    };
+    expect(() => packLightsTexture([{
+      ...discBase,
+      id: 'disc-storage-overflow',
+      radius: 2e38,
+    }])).toThrow(
+      /disc-area emitter "disc-storage-overflow".*not representable as finite float32 values/,
+    );
+    expect(() => packLightsTexture([{
+      ...discBase,
+      id: 'disc-denominator-overflow',
+      radius: 1e20,
+    }])).toThrow(
+      /disc-area emitter "disc-denominator-overflow".*squared lengths.*finite and strictly positive/,
+    );
   });
 });
 

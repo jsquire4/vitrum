@@ -260,9 +260,6 @@ describe('PtWebgpuTextureSource', () => {
 
     const packed = buildPackedScene(scene, { cameraVisibleEmitters: true });
     const cameraHitBase = Array.from(packed.materials.slice(4, 7));
-    const sourceFactor = Array.from(
-      packed.meshAreaLightSourceFactorsData.slice(0, 3),
-    );
     const neeRadiance = Array.from(
       packed.meshAreaLightsData.slice(12, 15),
     );
@@ -270,7 +267,6 @@ describe('PtWebgpuTextureSource', () => {
     expect(cameraHitBase).toEqual([6, 4, 2]);
     // Positive-support proposal proxy only. Exact map filtering happens in
     // sampleMeshAreaLightRadiance at the sampled point.
-    expect(sourceFactor).toEqual([1, 1, 1]);
     expect(neeRadiance).toEqual(cameraHitBase);
   });
 

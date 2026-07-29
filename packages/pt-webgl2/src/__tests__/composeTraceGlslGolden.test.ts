@@ -44,31 +44,36 @@ const FEATURE_SETS: Record<string, TraceFeatures> = {
 // C41 adds source-rectangle offsets to mapped-material atlas sampling so small
 // maps can share split RGBA8 LDR and RGBA16F radiance-atlas layers without
 // changing authored filter/wrap behavior.
+// The 2026-07-29 radiometric closure aligns analytic area lights with the core
+// one-sided half-extent contract in NEE, forward-hit MIS, and BDPT.
+// The affine-containment closure replaces orthogonal-only independent axis
+// projection with the full Gram solve for sheared analytic-light bases. Its
+// compacted shared source delta is exactly +1337 bytes in every variant.
 // length + sha256(utf8) of composeTraceGlsl(features) for each set.
 const GOLDENS: Record<string, { length: number; sha256: string }> = {
   default: {
-    length: 137825,
-    sha256: '9791ebe2d25de6ffa7801783b9db29d46f1ee44acaf1d707789f77ef01e838f6',
+    length: 139197,
+    sha256: '4b3b94191a708de8d23f174dd4d89d7c050691a0cd7ebc6fde2304780516f0b6',
   },
   bdptOn: {
-    length: 182643,
-    sha256: 'c856be1fc08ff1baf1d3ab75a8245e90a2dff28213feffd75ce82b8379bd56dc',
+    length: 184015,
+    sha256: 'a241092f4703e44ee9aef29d16795d90c99680552fc47515bccbe593bd1c1e02',
   },
   bdptOff: {
-    length: 137825,
-    sha256: '9791ebe2d25de6ffa7801783b9db29d46f1ee44acaf1d707789f77ef01e838f6',
+    length: 139197,
+    sha256: '4b3b94191a708de8d23f174dd4d89d7c050691a0cd7ebc6fde2304780516f0b6',
   },
   sobol: {
-    length: 143697,
-    sha256: '7ac6b4378ee4a6e2653f4c4e42d38a3285c136e17493ef2cfb9effbadd0cc634',
+    length: 145069,
+    sha256: '19b62e98126c24f9a72df3048b1c1991a7583ab56916cfae16a3ffba9331ebc6',
   },
   orthographic: {
-    length: 137825,
-    sha256: '9791ebe2d25de6ffa7801783b9db29d46f1ee44acaf1d707789f77ef01e838f6',
+    length: 139197,
+    sha256: '4b3b94191a708de8d23f174dd4d89d7c050691a0cd7ebc6fde2304780516f0b6',
   },
   dof: {
-    length: 137825,
-    sha256: '9791ebe2d25de6ffa7801783b9db29d46f1ee44acaf1d707789f77ef01e838f6',
+    length: 139197,
+    sha256: '4b3b94191a708de8d23f174dd4d89d7c050691a0cd7ebc6fde2304780516f0b6',
   },
 };
 

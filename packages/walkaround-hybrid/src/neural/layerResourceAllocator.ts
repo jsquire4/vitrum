@@ -47,10 +47,10 @@ export interface LayerGPUState {
   readonly layerName: string;
   readonly pipeline:  GPUComputePipeline;
   readonly uniformBuf: GPUBuffer;
-  /** Cached bind group — invalidated (set to null) if any buffer identity changes. */
+  /** Cached bind group — cleared before owned buffers are destroyed. */
   cachedBindGroup: GPUBindGroup | null;
-  /** Buffer identity keys used to check cache validity. */
-  cachedBufKeys: readonly string[];
+  /** Actual tensor handles captured by the bind group. */
+  readonly cachedBufKeys: readonly GPUBuffer[];
 }
 
 // ── WGSL entry points per layer kind ─────────────────────────────────────────
@@ -60,10 +60,10 @@ const WGSL_ENTRY: Record<LayerKind, string> = {
   transposedConv2d:'transposedConv2dMain',
   relu:            'reluMain',
   skipAdd:         'skipConnectionMain',
-  inputPack:       '',  // handled CPU-side by packing pass
+  inputPack:       '',  // handled by InferenceGraph's dedicated GPU packing pass
 };
 
-const WGSL_SOURCE: Partial<Record<LayerKind, string>> = {
+const WGSL_SOURCE: Record<Exclude<LayerKind, 'inputPack'>, string> = {
   conv2d:          CONV2D_WGSL,
   transposedConv2d:TRANSPOSED_CONV2D_WGSL,
   relu:            RELU_WGSL,
@@ -88,8 +88,6 @@ export interface AllocatedGraph {
   /** All non-tensor buffers (weights/biases/uniforms/placeholder/input-pack
    *  uniform) tracked so dispose() can destroy them. */
   allocatedBuffers: GPUBuffer[];
-  /** Weight lookup retained for bind-group rebuild on resize. */
-  weightsByName: Map<string, LayerWeights>;
   /** Uniform-write count incurred during allocation (init-time writes). */
   uniformWriteCount: number;
   memoryTelemetry: NeuralMemoryTelemetry;
@@ -210,11 +208,6 @@ export async function allocateGraph(
     }
 
     const wgsl = WGSL_SOURCE[layer.kind];
-    if (!wgsl) {
-      layerStates[i] = null;
-      continue;
-    }
-
     const sm = device.createShaderModule({
       label: `neural-${layer.name}`,
       code: neuralLayerWgslForStorage(layer.kind, wgsl, storage),
@@ -269,7 +262,6 @@ export async function allocateGraph(
     outputCropPipeline,
     outputCropUniformBuf,
     allocatedBuffers,
-    weightsByName,
     uniformWriteCount,
     memoryTelemetry: estimateNeuralMemory(spec, weights, tensorDimsMap, storage),
   };
@@ -307,7 +299,7 @@ export function buildBindGroup(
   tensors: Map<string, TensorBuffer>,
   placeholderBuf: GPUBuffer,
   allocatedBuffers: GPUBuffer[],
-): { bindGroup: GPUBindGroup; bufKeys: readonly string[] } {
+): { bindGroup: GPUBindGroup; bufKeys: readonly GPUBuffer[] } {
   // Input buffer — always binding 0.
   const inputName = layer.inputs[0] ?? 'enc_input';
   const inputTensor = tensors.get(inputName);
@@ -377,12 +369,11 @@ export function buildBindGroup(
     entries,
   });
 
-  // Only the dynamic buffers (input + output) need cache-keying — weights and
-  // biases are static after allocation.
-  const bufKeys = [
-    inputBuf.label ?? '',
-    outputBuf.label ?? '',
-  ] as const;
+  // Capture actual tensor handles rather than their non-unique debug labels.
+  // A skip-add layer has two dynamic inputs; both must participate.
+  const bufKeys = layer.kind === 'skipAdd'
+    ? [inputBuf, weightsBuf, outputBuf]
+    : [inputBuf, outputBuf];
 
   return { bindGroup, bufKeys };
 }
@@ -392,10 +383,15 @@ export function currentBufKeys(
   layer: LayerSpec,
   tensors: Map<string, TensorBuffer>,
   placeholderBuf: GPUBuffer,
-): readonly string[] {
+): readonly GPUBuffer[] {
   const inputName  = layer.inputs[0] ?? 'enc_input';
   const outputName = layer.output;
   const inputBuf   = tensors.get(inputName)?.buf ?? placeholderBuf;
   const outputBuf  = tensors.get(outputName)?.buf ?? placeholderBuf;
-  return [inputBuf.label ?? '', outputBuf.label ?? ''];
+  if (layer.kind === 'skipAdd') {
+    const skipName = layer.inputs[1] ?? 'enc_input';
+    const skipBuf = tensors.get(skipName)?.buf ?? placeholderBuf;
+    return [inputBuf, skipBuf, outputBuf];
+  }
+  return [inputBuf, outputBuf];
 }

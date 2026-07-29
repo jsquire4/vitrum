@@ -8,7 +8,7 @@
 //   handle so this does not duplicate texture storage.
 //
 // doubleSided → alphaMode 'blend' is incorrect; doubleSided controls backface culling,
-// not blending.  It has no MaterialSpec field, so we attach it to extensions.
+// not blending. It maps directly to MaterialSpec.doubleSided.
 //
 // KHR_materials_emissive_strength: scales emissiveIntensity (default 1).
 //

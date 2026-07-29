@@ -15,8 +15,8 @@
  * The GPU traversal descends probabilistically, choosing a child proportional
  * to its power, then applies a proximity correction once a leaf is reached.
  *
- * GPU texture layout: 10 floats per node, uploaded as RGBA32F texture
- * (4 components per texel × 3 texels, padded to 12 floats for alignment).
+ * GPU flat-buffer layout: 16 floats per node. The final six lanes carry the
+ * Conty–Estévez orientation cone and one padding word.
  * See `packLightTreeForGPU` for the exact layout.
  *
  * NOTE: The split policy is Shirley 1996 median-split with power-as-cost.

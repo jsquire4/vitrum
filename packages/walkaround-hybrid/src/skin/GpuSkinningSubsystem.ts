@@ -7,6 +7,11 @@ import type { Scene, ScenePrimitive, SkinnedMeshPrimitive } from '@vitrum/core';
 import { combineSkinMatrices, solveSkin } from '@vitrum/core';
 import { GPU_SKIN_BVH_WITH_NORMALS_WGSL } from './gpuSkinBvh.wgsl.js';
 import type { ReSTIRBvhMode, SceneBVHBuffers } from '../restir/bvhTypes.js';
+import {
+  hasActiveSkinMorph,
+  hasMorphControlledRenderStreams,
+  solvedSkinRenderPatch,
+} from './solvedSkinPatch.js';
 
 /**
  * Narrow back-reference the skinning subsystem needs from its host engine.
@@ -173,6 +178,9 @@ export class GpuSkinningSubsystem {
   readonly #device: GPUDevice;
   readonly #preferGpu: boolean;
   readonly #meshes = new Map<string, MeshGpuState>();
+  /** Primitives whose last accepted frame published non-zero UV/color morphs.
+   *  The first zero-weight frame must restore their authored base streams. */
+  readonly #activeRenderStreamMorphs = new Set<string>();
   #bvhPipeline: GPUComputePipeline | null = null;
 
   constructor(device: GPUDevice, preferGpu: boolean) {
@@ -185,6 +193,7 @@ export class GpuSkinningSubsystem {
       destroyMeshState(state);
     }
     this.#meshes.clear();
+    this.#activeRenderStreamMorphs.clear();
     this.#bvhPipeline = null;
   }
 
@@ -203,19 +212,41 @@ export class GpuSkinningSubsystem {
     const skinned = scene.primitives.filter(
       (primitive): primitive is SkinnedMeshPrimitive => primitive.kind === 'skinned-mesh',
     );
-    if (skinned.length === 0) return;
+    if (skinned.length === 0) {
+      this.#activeRenderStreamMorphs.clear();
+      return;
+    }
+    const liveIds = new Set(skinned.map((primitive) => String(primitive.id)));
+    for (const id of this.#activeRenderStreamMorphs) {
+      if (!liveIds.has(id)) this.#activeRenderStreamMorphs.delete(id);
+    }
 
-    const solvedPatch = (primitive: SkinnedMeshPrimitive): Partial<SkinnedMeshPrimitive> => {
-      const solved = solveSkin(primitive);
-      return {
-        positions: solved.positions,
-        normals: solved.normals,
-        ...(solved.tangents ? { tangents: solved.tangents } : {}),
-        ...(solved.uvs ? { uvs: solved.uvs } : {}),
-        ...(solved.uv1 ? { uv1: solved.uv1 } : {}),
-        ...(solved.uvSets ? { uvSets: solved.uvSets } : {}),
-      };
+    const activeRenderStreamMorphs = new Map<string, boolean>();
+    const restoreAuthoredRenderStreams = new Map<string, boolean>();
+    for (const primitive of skinned) {
+      const id = String(primitive.id);
+      const active =
+        hasActiveSkinMorph(primitive) &&
+        hasMorphControlledRenderStreams(primitive);
+      activeRenderStreamMorphs.set(id, active);
+      restoreAuthoredRenderStreams.set(
+        id,
+        !active && this.#activeRenderStreamMorphs.has(id),
+      );
+    }
+    const acceptRenderStreamMorphState = (): void => {
+      for (const [id, active] of activeRenderStreamMorphs) {
+        if (active) this.#activeRenderStreamMorphs.add(id);
+        else this.#activeRenderStreamMorphs.delete(id);
+      }
     };
+    const solvedPatch = (
+      primitive: SkinnedMeshPrimitive,
+    ): Partial<SkinnedMeshPrimitive> => solvedSkinRenderPatch(
+      primitive,
+      solveSkin(primitive),
+      restoreAuthoredRenderStreams.get(String(primitive.id)) === true,
+    );
     const fallback = new Map<string, Partial<SkinnedMeshPrimitive>>();
     const gpuJobs: Array<{
       readonly primitive: SkinnedMeshPrimitive;
@@ -226,10 +257,9 @@ export class GpuSkinningSubsystem {
 
     for (const primitive of skinned) {
       const id = String(primitive.id);
-      const hasMorph =
-        (primitive.morphTargets?.length ?? 0) > 0 &&
-        primitive.morphWeights != null &&
-        primitive.morphWeights.some((weight) => weight !== 0);
+      const hasMorph = hasActiveSkinMorph(primitive);
+      const restoresRenderStreams =
+        restoreAuthoredRenderStreams.get(id) === true;
       const range = meshVertexRanges?.find((candidate) => candidate.name === id);
       let baseVertex = range?.vertexStart ?? 0;
       const tlasBinding =
@@ -243,6 +273,7 @@ export class GpuSkinningSubsystem {
         meshVertexRanges != null &&
         this.#preferGpu &&
         !hasMorph &&
+        !restoresRenderStreams &&
         primitive.tangents == null &&
         (primitive.skinInfluencesPerVertex ?? 4) === 4 &&
         !hasNonIdentityBind(primitive) &&
@@ -259,7 +290,12 @@ export class GpuSkinningSubsystem {
 
     const fallbackNeedsTopology = [...fallback.values()].some(
       (patch) =>
-        patch.tangents != null || patch.uvs != null || patch.uv1 != null || patch.uvSets != null,
+        patch.tangents != null ||
+        patch.uvs != null ||
+        patch.uv1 != null ||
+        patch.uvSets != null ||
+        patch.colors != null ||
+        patch.colorSets != null,
     );
     if (fallbackNeedsTopology) {
       // A topology candidate replaces the live BVH buffers, so commands encoded
@@ -273,6 +309,7 @@ export class GpuSkinningSubsystem {
         })),
         null,
       );
+      acceptRenderStreamMorphState();
       return;
     }
 
@@ -323,6 +360,7 @@ export class GpuSkinningSubsystem {
       };
     });
     host.applySkinningBatch(updates, skinCommands);
+    acceptRenderStreamMorphState();
   }
 
   #ensureMesh(

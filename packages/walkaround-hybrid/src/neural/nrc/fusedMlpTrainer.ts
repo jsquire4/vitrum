@@ -1128,11 +1128,11 @@ export class FusedMlpTrainer {
       this.recordGradFinalize(enc, this.gradInputFx!, this.gradInputF!, win.samples * this.spec.inW, this._gradFinUboX!);
       const bc1 = 1 - Math.pow(0.9, nextAdamT);
       const bc2 = 1 - Math.pow(0.999, nextAdamT);
-      this.recordAdam(enc, candidate.wMasterGpu, this.gradWf!, candidate.mW, candidate.vW, this.plan.totalW, lr, bc1, bc2, this._adamUboW!);
-      this.recordAdam(enc, candidate.bMasterGpu, this.gradBf!, candidate.mB, candidate.vB, this.plan.totalB, lr, bc1, bc2, this._adamUboB!);
+      this.recordAdam(enc, candidate.wMasterGpu, this.plan.totalW, lr, bc1, bc2, this._adamUboW!);
+      this.recordAdam(enc, candidate.bMasterGpu, this.plan.totalB, lr, bc1, bc2, this._adamUboB!);
       if (this.cfg.useF16) {
-        this.recordDowncast(enc, candidate.wMasterGpu, candidate.weights, this.plan.totalW, this._downcastUboW!);
-        this.recordDowncast(enc, candidate.bMasterGpu, candidate.biases, this.plan.totalB, this._downcastUboB!);
+        this.recordDowncast(enc, candidate.wMasterGpu, this.plan.totalW);
+        this.recordDowncast(enc, candidate.bMasterGpu, this.plan.totalB);
       } else {
         enc.copyBufferToBuffer(candidate.wMasterGpu, 0, candidate.weights, 0, this.plan.totalW * 4);
         enc.copyBufferToBuffer(candidate.bMasterGpu, 0, candidate.biases, 0, this.plan.totalB * 4);
@@ -1194,9 +1194,7 @@ export class FusedMlpTrainer {
   private recordDowncast(
     enc: GPUCommandEncoder,
     src: GPUBuffer,
-    _dst: GPUBuffer,
     count: number,
-    _ubo: GPUBuffer,
   ) {
     const bg = this._downcastBindGroups.get(src);
     if (!bg) throw new Error('NRC MLP downcast binding generation is unavailable');
@@ -1211,9 +1209,6 @@ export class FusedMlpTrainer {
   private recordAdam(
     enc: GPUCommandEncoder,
     params: GPUBuffer,
-    _grads: GPUBuffer,
-    _m: GPUBuffer,
-    _v: GPUBuffer,
     count: number,
     lr: number,
     bc1: number,

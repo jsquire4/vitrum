@@ -3,7 +3,11 @@
 import type { DebuggableEngine } from '../types.js';
 import { makePanel, makeTitle, makeRow, makeDiv } from './domUtils.js';
 import { safeDebugCall } from './debugUtils.js';
-import { computeBvhStats, renderBvhBars } from './bvhStats.js';
+import {
+  computeBvhStats,
+  renderBvhBars,
+  type BvhStats,
+} from './bvhStats.js';
 
 export function addBvhDiagnostics(
   engine: DebuggableEngine,
@@ -34,9 +38,12 @@ export function addBvhDiagnostics(
   add(panel);
 
   const render = (): void => {
-    const result = safeDebugCall(
+    const result = safeDebugCall<BvhStats>(
       typeof engine.debug?.bvhNodes === 'function'
-        ? () => engine.debug?.bvhNodes?.() ?? null
+        ? () => {
+            const nodes = engine.debug?.bvhNodes?.();
+            return nodes == null ? null : computeBvhStats(nodes);
+          }
         : undefined,
     );
     apiRow.setValue(result.status === 'unsupported' ? 'unavailable' : result.status);
@@ -48,7 +55,7 @@ export function addBvhDiagnostics(
       return;
     }
 
-    const stats = computeBvhStats(result.value);
+    const stats = result.value;
     nodesRow.setValue(String(stats.nodeCount));
     depthRow.setValue(String(stats.maxDepth));
     avgRow.setValue(stats.avgDepth.toFixed(2));

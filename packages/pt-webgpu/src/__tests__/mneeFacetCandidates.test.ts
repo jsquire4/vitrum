@@ -12,7 +12,7 @@ import {
   mneeScaleAwareEpsilon,
   mneeSolverToleranceOracle,
 } from '../scene/mneeFacetCandidates.js';
-import { MNEE_NEWTON_WGSL } from '../wgsl/pathTrace/mneeNewton.wgsl.js';
+import { MNEE_BOUNDED_CHAIN_CORE_WGSL } from '../wgsl/pathTrace/mneeNewton.wgsl.js';
 import { buildPackedScene } from '../scene/uploadSceneBuffers.js';
 
 const IDENTITY = asMat4([
@@ -60,6 +60,7 @@ function binding(
     primitiveId,
     primitiveKind: 'mesh',
     blasRoot: 0,
+    instanceSourceIndices: Array.from({ length: instanceCount }, (_, index) => index),
     instanceCount,
     vertexStart: 0,
     vertexCount: triCount * 3,
@@ -274,11 +275,11 @@ describe('MNEE facet proposal closure', () => {
     ]);
     expect(absoluteEpsilonDominatesFeature.representable).toBe(false);
 
-    expect(MNEE_NEWTON_WGSL).toContain('fn mneeFdStepFromScales(');
-    expect(MNEE_NEWTON_WGSL).toContain('fn mneeResidualToleranceFromScales(');
-    expect(MNEE_NEWTON_WGSL).toContain('fn mneeScalesRepresentable(');
-    expect(MNEE_NEWTON_WGSL).not.toContain('let eps = 1e-3');
-    expect(MNEE_NEWTON_WGSL).not.toContain('out.residual <= 1e-4');
+    expect(MNEE_BOUNDED_CHAIN_CORE_WGSL).toContain('fn mneeFdStepFromScales(');
+    expect(MNEE_BOUNDED_CHAIN_CORE_WGSL).toContain('fn mneeResidualToleranceFromScales(');
+    expect(MNEE_BOUNDED_CHAIN_CORE_WGSL).toContain('fn mneeScalesRepresentable(');
+    expect(MNEE_BOUNDED_CHAIN_CORE_WGSL).not.toContain('let eps = 1e-3');
+    expect(MNEE_BOUNDED_CHAIN_CORE_WGSL).not.toContain('out.residual <= 1e-4');
   });
 
   it('fails closed for shading-normal fields outside the planar solver domain', () => {

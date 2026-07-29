@@ -349,7 +349,6 @@ describe('SceneMutationRouter — Item 1: bones patch re-solves skin', () => {
       spotLightsBuffer: { size: 16, destroy: vi.fn() } as unknown as GPUBuffer,
       rectAreaLightsBuffer: { size: 16, destroy: vi.fn() } as unknown as GPUBuffer,
       meshAreaLightsBuffer: { size: 16, destroy: vi.fn() } as unknown as GPUBuffer,
-      meshAreaLightSourceFactorsBuffer: testBuffer('meshAreaLightSourceFactors', packed.meshAreaLightSourceFactorsData.byteLength),
       tlasNodesBuffer: { size: Math.max(16, packed.tlasNodes.byteLength), destroy: vi.fn() } as unknown as GPUBuffer,
       tlasInstanceIndicesBuffer: { size: Math.max(16, packed.tlasInstanceIndices.byteLength), destroy: vi.fn() } as unknown as GPUBuffer,
       tlasBlasRootsBuffer: { size: Math.max(16, packed.tlasBlasRoots.byteLength), destroy: vi.fn() } as unknown as GPUBuffer,

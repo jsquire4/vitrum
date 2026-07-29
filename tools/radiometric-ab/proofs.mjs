@@ -170,6 +170,22 @@ export const RESTIR_PT_SPECIALTY_PROOF = {
 
 /** Test-source and production-source pins; `npm test` executes the named tests. */
 export const PT_LOCAL_ACCEPTANCE_PROOFS = {
+  rectAreaCrossBackend: {
+    paths: [
+      "packages/engine/src/__tests__/emitterCanonicalParity.test.ts",
+    ],
+    sourcePath: "packages/pt-webgl2/src/scene/lightsTexture.ts",
+    needles: [
+      "const { u, v, area } = packAreaGeometry(\n          'rect-area',",
+      "[2 * l.uAxis[0], 2 * l.uAxis[1], 2 * l.uAxis[2]],",
+      "[2 * l.vAxis[0], 2 * l.vAxis[1], 2 * l.vAxis[2]],",
+      "const axisCross = f32Cross(u, v);",
+      "const crossLengthSquared = f32DotSelf(axisCross);",
+      "const area = Math.fround(Math.sqrt(crossLengthSquared) * areaScale);",
+      "data[base + cursor.k++] = lum * l.intensity * area;",
+      "data[base + cursor.k++] = area;",
+    ],
+  },
   bdpt: {
     paths: [
       "packages/pt-webgpu/src/__tests__/bdptConnectionMisFull.test.ts",

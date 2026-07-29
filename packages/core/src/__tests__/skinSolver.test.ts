@@ -327,13 +327,14 @@ describe('solveSkin', () => {
 
   it('applies arbitrary sparse morphTargetUvSets and reuses caller output storage', () => {
     const uv2 = new Float32Array([0.2, 0.4, 0.6, 0.8]);
+    const unchangedUv3 = new Float32Array([0.1, 0.3, 0.5, 0.7]);
     const prim: SkinnedMeshPrimitive = {
       ...singleBonePrim({
         positions: new Float32Array([0, 0, 0, 1, 0, 0]),
         normals: new Float32Array([0, 0, 1, 0, 0, 1]),
         bonesMatrix: IDENT4(),
       }),
-      uvSets: [undefined, undefined, uv2],
+      uvSets: [undefined, undefined, uv2, unchangedUv3],
       morphTargets: [new Float32Array(6)],
       morphTargetUvSets: [
         undefined,
@@ -355,9 +356,120 @@ describe('solveSkin', () => {
     );
 
     expect(solved.uvSets?.[2]).toBe(outUv2);
+    expect(solved.uvSets?.[3]).toBe(unchangedUv3);
     expect(Array.from(outUv2)).toEqual(Array.from(new Float32Array([0.4, 0.3, 0.5, 1])));
     expect(solved.uvs).toBeUndefined();
     expect(solved.uv1).toBeUndefined();
+  });
+
+  it('keeps scalable TEXCOORD_0/1 aliases coherent for legacy morph streams', () => {
+    const uvs = new Float32Array([0, 0, 0.5, 0.5]);
+    const uv1 = new Float32Array([0.25, 0.25, 0.75, 0.75]);
+    const unchangedUv3 = new Float32Array([0.1, 0.3, 0.5, 0.7]);
+    const prim: SkinnedMeshPrimitive = {
+      ...singleBonePrim({
+        positions: new Float32Array([0, 0, 0, 1, 0, 0]),
+        normals: new Float32Array([0, 0, 1, 0, 0, 1]),
+        bonesMatrix: IDENT4(),
+      }),
+      uvs,
+      uv1,
+      uvSets: [uvs, uv1, undefined, unchangedUv3],
+      morphTargets: [new Float32Array(6)],
+      morphTargetUvs: [new Float32Array([0.2, 0, 0, -0.2])],
+      morphTargetUv1s: [new Float32Array([0, 0.2, -0.2, 0])],
+      morphWeights: new Float32Array([0.5]),
+    };
+
+    const solved = solveSkin(prim);
+
+    expect(solved.uvSets?.[0]).toBe(solved.uvs);
+    expect(solved.uvSets?.[1]).toBe(solved.uv1);
+    expect(solved.uvSets?.[3]).toBe(unchangedUv3);
+  });
+
+  it('applies additive RGB/RGBA COLOR_n morph deltas and reuses caller output storage', () => {
+    const colors0 = new Float32Array([0.2, 0.4, 0.6, 1, 0.8, 0.6, 0.4, 0.5]);
+    const colors2 = new Float32Array([0.1, 0.2, 0.3, 0.4, 0.5, 0.6]);
+    const delta0 = new Float32Array([0.2, -0.2, 0.4, 0, -0.4, 0.2, 0.2, 0.4]);
+    const delta2 = new Float32Array([0.4, 0.2, -0.2, -0.2, 0.4, 0.2]);
+    const prim: SkinnedMeshPrimitive = {
+      ...singleBonePrim({
+        positions: new Float32Array([0, 0, 0, 1, 0, 0]),
+        normals: new Float32Array([0, 0, 1, 0, 0, 1]),
+        bonesMatrix: IDENT4(),
+      }),
+      colors: colors0,
+      colorSets: [colors0, undefined, colors2],
+      morphTargets: [new Float32Array(6)],
+      morphTargetColors: [delta0],
+      morphTargetColorSets: [[delta0], undefined, [delta2]],
+      morphWeights: new Float32Array([0.5]),
+    };
+    const out0 = new Float32Array(8);
+    const out2 = new Float32Array(6);
+
+    const solved = solveSkin(
+      prim,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      out0,
+      [out0, undefined, out2],
+    );
+
+    expect(solved.colors).toBe(out0);
+    expect(solved.colorSets?.[0]).toBe(out0);
+    expect(solved.colorSets?.[2]).toBe(out2);
+    [0.3, 0.3, 0.8, 1, 0.6, 0.7, 0.5, 0.7].forEach((value, index) => {
+      expect(out0[index]).toBeCloseTo(value);
+    });
+    [0.3, 0.3, 0.2, 0.3, 0.7, 0.7].forEach((value, index) => {
+      expect(out2[index]).toBeCloseTo(value);
+    });
+  });
+
+  it('preserves unchanged scalable color lanes and keeps the COLOR_0 alias coherent', () => {
+    const colors0 = new Float32Array([0.2, 0.4, 0.6, 0.8, 0.6, 0.4]);
+    const colors2 = new Float32Array([0.1, 0.2, 0.3, 0.4, 0.5, 0.6]);
+    const activeColors3 = new Float32Array([0.9, 0.8, 0.7, 0.6, 0.5, 0.4]);
+    const delta0 = new Float32Array([0.2, 0, -0.2, -0.2, 0, 0.2]);
+    const delta2 = new Float32Array([0.4, 0.2, 0, 0, -0.2, -0.4]);
+    const base = {
+      ...singleBonePrim({
+        positions: new Float32Array([0, 0, 0, 1, 0, 0]),
+        normals: new Float32Array([0, 0, 1, 0, 0, 1]),
+        bonesMatrix: IDENT4(),
+      }),
+      colors: colors0,
+      colorSets: [colors0, undefined, colors2, activeColors3],
+      vertexColorSet: 3,
+      morphTargets: [new Float32Array(6)],
+      morphWeights: new Float32Array([0.5]),
+    } satisfies SkinnedMeshPrimitive;
+
+    const scalable = solveSkin({
+      ...base,
+      morphTargetColorSets: [undefined, undefined, [delta2]],
+    });
+    expect(scalable.colorSets?.[3]).toBe(activeColors3);
+    expect(scalable.colorSets?.[0]).toBe(colors0);
+    [0.3, 0.3, 0.3, 0.4, 0.4, 0.4].forEach((value, index) => {
+      expect(scalable.colorSets?.[2]?.[index]).toBeCloseTo(value);
+    });
+
+    const legacy = solveSkin({
+      ...base,
+      morphTargetColors: [delta0],
+    });
+    expect(legacy.colorSets?.[3]).toBe(activeColors3);
+    expect(legacy.colorSets?.[0]).toBe(legacy.colors);
+    [0.3, 0.4, 0.5, 0.7, 0.6, 0.5].forEach((value, index) => {
+      expect(legacy.colors?.[index]).toBeCloseTo(value);
+    });
   });
 
   it('solves morph UV lanes at the native index ceiling and above 2^32-1', () => {

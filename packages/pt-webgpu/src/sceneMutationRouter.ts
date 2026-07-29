@@ -10,6 +10,7 @@
 // updateEnvironment + the 6 first-eligible-wins fast paths).
 import type {
   EngineWarning,
+  PrimitiveColorSets,
   PrimitiveUvSets,
   Scene,
   SceneEmitter,
@@ -274,7 +275,6 @@ function emitterAndLightTreeMutationPatch(
     spotLightsData: packed.spotLightsData,
     rectAreaLightsData: packed.rectAreaLightsData,
     meshAreaLightsData: packed.meshAreaLightsData,
-    meshAreaLightSourceFactorsData: packed.meshAreaLightSourceFactorsData,
     lightTreeNodes: tree.lightTreeNodes,
     directionalLightCount: packed.directionalLightCount,
     pointLightCount: packed.pointLightCount,
@@ -330,6 +330,8 @@ function solvedSkinGeometryPatch(
   readonly uvs?: Float32Array;
   readonly uv1?: Float32Array;
   readonly uvSets?: PrimitiveUvSets;
+  readonly colors?: Float32Array;
+  readonly colorSets?: PrimitiveColorSets;
 } {
   const solved = solveSkinnedPrimitive(primitive);
   return {
@@ -339,6 +341,8 @@ function solvedSkinGeometryPatch(
     ...(solved.uvs != null ? { uvs: solved.uvs } : {}),
     ...(solved.uv1 != null ? { uv1: solved.uv1 } : {}),
     ...(solved.uvSets != null ? { uvSets: solved.uvSets } : {}),
+    ...(solved.colors != null ? { colors: solved.colors } : {}),
+    ...(solved.colorSets != null ? { colorSets: solved.colorSets } : {}),
   };
 }
 
@@ -532,6 +536,8 @@ export class SceneMutationRouter {
         'morphTargetUvs' in patch ||
         'morphTargetUv1s' in patch ||
         'morphTargetUvSets' in patch ||
+        'morphTargetColors' in patch ||
+        'morphTargetColorSets' in patch ||
         'uvs' in patch ||
         'uv1' in patch ||
         'uvSets' in patch ||
@@ -580,6 +586,8 @@ export class SceneMutationRouter {
             morphTargetUvs: _morphTargetUvs,
             morphTargetUv1s: _morphTargetUv1s,
             morphTargetUvSets: _morphTargetUvSets,
+            morphTargetColors: _morphTargetColors,
+            morphTargetColorSets: _morphTargetColorSets,
             uvs: _legacyUvs,
             uv1: _uv1,
             uvSets: _uvSets,
@@ -602,6 +610,12 @@ export class SceneMutationRouter {
               : {}),
             ...(solvedPatch.uvSets != null
               ? { uvSets: solvedPatch.uvSets }
+              : {}),
+            ...(solvedPatch.colors != null
+              ? { colors: solvedPatch.colors }
+              : {}),
+            ...(solvedPatch.colorSets != null
+              ? { colorSets: solvedPatch.colorSets }
               : {}),
           };
         }

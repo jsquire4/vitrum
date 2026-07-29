@@ -152,8 +152,10 @@ describe('pt-webgpu lite WGSL byte-identity (Theme-C dedup pin)', () => {
     // full-only because the lite contract rejects alpha materials before upload.
     // Re-pinned 2026-07-28: shared KHR specular/IOR semantics, map-only
     // environments, unavailable lite variance, and the 512-D Sobol table.
-    expect(digest).toBe('32c552f1075014ae10cfae2a1e2b7036f54a54a046665c2b0caf71c1d732c6f0');
-    expect(PT_WEBGPU_TRACE_LITE_WGSL.length).toBe(219950);
+    // Re-pinned 2026-07-29: U11 removes continuous-specular proposal-local
+    // throughput/PDF calculations overwritten by the finite finalizer.
+    expect(digest).toBe('6acef3624677077dac89f0eab5d82bc551498218f167e201529aa499e66393a6');
+    expect(PT_WEBGPU_TRACE_LITE_WGSL.length).toBe(213935);
   });
 });
 

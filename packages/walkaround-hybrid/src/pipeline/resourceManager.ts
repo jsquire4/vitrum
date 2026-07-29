@@ -370,8 +370,8 @@ export function uploadBuffer(device: GPUDevice, data: ArrayBuffer, usage: number
  * Used for the COMBINED light-tree + ReGIR-grid storage buffer: the light-tree
  * nodes occupy the front (uploaded once), the trailing region is the ReGIR grid
  * the grid-build pass writes each frame. Co-locating them in ONE buffer keeps
- * the RIS pipeline at the 16 storage-buffer floor (a second @group(3) buffer
- * would push it to 17 and fail pipeline creation). `extraBytes == 0` is exactly
+ * the RIS pipeline at the eight-storage-buffer floor (a second @group(3) buffer
+ * would push it to nine). `extraBytes == 0` is exactly
  * `uploadBuffer`.
  */
 export function uploadBufferPadded(

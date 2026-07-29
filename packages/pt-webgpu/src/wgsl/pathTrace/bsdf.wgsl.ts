@@ -2091,7 +2091,6 @@ fn sampleNextBounceDirectionWithClearcoatNormal(
   if (transmission > 0.0 && metallic == 0.0) {
     let lobeWeightSum = brdfExtensionLobeWeightSum(clearcoat, sheen);
     let clearcoatWeight = max(clearcoat, 0.0);
-    let sheenWeight = max(sheen, 0.0);
     // Transmissive dielectrics use the same normalized source-lobe mixture as
     // opaque materials: the base lobe is the Fresnel reflect/refract partition,
     // while clearcoat and sheen provide same-side proposals. The shared finite
@@ -2201,51 +2200,11 @@ fn sampleNextBounceDirectionWithClearcoatNormal(
             clearcoatAttenuation * lobeWeightSum /
             max(reflectionProbability, 1e-10);
         } else {
-        result.sampledDir = bs.wi;
-        result.newRayDir = bs.wi;
-        result.sampledEventPdf = (reflectionProbability / lobeWeightSum) * bs.pdf;
-        result.sampleAllowsAreaMis = true;
-        result.sampledLobe = BSDF_LOBE_SPECULAR_REFLECTION;
-        // MC estimator for VNDF sampling of the GGX BRDF (Heitz 2018):
-        //   f·cosθ / p_VNDF = [D·G·F / (4·NdotV·NdotL)] · NdotL
-        //                    / [D·G1(wo) / (4·NdotV)]
-        //                    = F · G1(wi)
-        // MC estimator: F · G1(wi) / R (same derivation for iso and aniso paths;
-        // only the G1 function differs). nDotL = dot(n, wi).
-        let nDotL = max(dot(normal, result.sampledDir), 0.0);
-        var g1Wi: f32;
-        if (anisotropy > 0.0) {
-          let axes = computeAnisotropicAxes(max(roughness * roughness, ${PT_WEBGPU_MICROFACET_ALPHA_FLOOR}), anisotropy);
-          let wiT = dot(result.sampledDir, tanT);
-          let wiB = dot(result.sampledDir, tanB);
-          g1Wi = smithG1Anis(wiT, wiB, max(nDotL, 1e-6), axes.x, axes.y);
-        } else {
-          g1Wi = smithG1(nDotL, roughness);
-        }
-        // B9 — multiscatter energy boost on the sampled specular reflection. The
-        // VNDF sampler covers single-scatter only; scale by the Kulla-Conty factor
-        // 1 + F_avg·(1−E_ss)/E_ss so the sampled estimator recovers the lost
-        // multi-bounce energy (1 at low roughness → unchanged smooth surfaces).
-        let nDotVcc = max(dot(normal, wo), 0.0);
-        let projectedRoughnessV = anisotropicProjectedRoughness(wo, tanT, tanB, roughness, anisotropy);
-        let msBoostRaw = select(
-          ggxMultiscatterBoost(
-            microfacetInterface.reflectance, roughness, nDotVcc,
-          ),
-          ggxMultiscatterBoostRoughness(
-            microfacetInterface.reflectance,
-            projectedRoughnessV,
-            nDotVcc,
-          ),
-          anisotropy > 0.0,
-        );
-        let msBoost = select(
-          msBoostRaw,
-          vec3f(1.0) + (msBoostRaw - vec3f(1.0)) * anisotropicMultiscatterScale(anisotropy, projectedRoughnessV),
-          anisotropy > 0.0,
-        );
-        result.throughputMul = microfacetInterface.reflectance * g1Wi *
-          msBoost * lobeWeightSum / max(reflectionProbability, 1e-10);
+          result.sampledDir = bs.wi;
+          result.newRayDir = bs.wi;
+          result.sampledLobe = BSDF_LOBE_SPECULAR_REFLECTION;
+          // The shared finite finalizer below owns the marginal density and the
+          // complete layered-BSDF estimator for every continuous event.
         }
       } else if (xiBase < reflectionProbability + transmissionProbability) {
         // Fresnel-weighted refraction branch — the only branch that crosses the
@@ -2265,14 +2224,13 @@ fn sampleNextBounceDirectionWithClearcoatNormal(
           result.sampledIsDelta = true;
           result.sampledLobe = BSDF_LOBE_DELTA_TRANSMISSION;
         } else {
-          result.sampledEventPdf =
+          let roughTransmissionProposalPdf =
             (transmissionProbability / lobeWeightSum) *
             bsdfRoughTransmissionPdf(
               roughness, etaTOverI, normal, wo, outDir,
               anisotropy, anisotropyRotation,
             );
-          result.sampleAllowsAreaMis = result.sampledEventPdf > 0.0;
-          if (dot(normal, outDir) >= -1e-5 || result.sampledEventPdf <= 0.0) {
+          if (dot(normal, outDir) >= -1e-5 || roughTransmissionProposalPdf <= 0.0) {
             return result;
           }
           result.sampledLobe = BSDF_LOBE_ROUGH_TRANSMISSION;
@@ -2312,17 +2270,8 @@ fn sampleNextBounceDirectionWithClearcoatNormal(
             sheenAttenuation * clearcoatAttenuation *
             lobeWeightSum * etaScale / max(transmissionProbability, 1e-10);
         } else {
-          let ft = evaluateRoughDielectricTransmission(
-            roughness, etaTOverI, normal, wo, outDir,
-            anisotropy, anisotropyRotation, transportModeImportance,
-            iridescence, iridescenceIor,
-            iridescenceThicknessMin, iridescenceThicknessMax,
-            specularColor, specularIntensity, thinFilm,
-          );
-          result.throughputMul =
-            baseColor * transmissionWeight * ft *
-            abs(dot(normal, outDir)) /
-            max(result.sampledEventPdf, 1e-10);
+          // The shared finite finalizer below owns the marginal density and the
+          // complete layered-BSDF estimator for every continuous event.
         }
         result.enteredMedium = isTranslucent && frontFace;
         result.exitedMedium = isTranslucent && !frontFace;
@@ -2331,14 +2280,7 @@ fn sampleNextBounceDirectionWithClearcoatNormal(
         let bsDiffuse = cosineHemisphereSample(rng, normal);
         result.sampledDir = bsDiffuse.wi;
         result.newRayDir = bsDiffuse.wi;
-        result.sampledEventPdf =
-          (diffuseProbability / lobeWeightSum) * bsDiffuse.pdf;
         result.sampledLobe = BSDF_LOBE_DIFFUSE_REFLECTION;
-        result.sampleAllowsAreaMis = true;
-        let kd = macroInterface.baseTransmittance *
-          (1.0 - transmissionWeight);
-        result.throughputMul =
-          kd * baseColor * lobeWeightSum / max(diffuseProbability, 1e-10);
       }
     } else if (xiLobe < 1.0 + clearcoatWeight) {
       let wo = -incomingDir;
@@ -2349,26 +2291,12 @@ fn sampleNextBounceDirectionWithClearcoatNormal(
       let bsCc = glossyReflectionSample(rng, wo, clearcoatNormal, ccTanT, ccTanB, clearcoatRoughness);
       result.sampledDir = bsCc.wi;
       result.newRayDir = bsCc.wi;
-      result.sampleAllowsAreaMis = true;
-      let nDotCc = max(dot(clearcoatNormal, result.sampledDir), 0.0);
-      let ccPdf = clearcoatPdf(clearcoat, clearcoatRoughness, clearcoatNormal, wo, result.sampledDir);
-      let ccDensity = (clearcoatWeight / lobeWeightSum) * ccPdf;
-      result.sampledEventPdf = ccDensity;
-      let ccBrdf = evalClearcoatLobe(clearcoat, clearcoatRoughness, clearcoatNormal, wo, result.sampledDir);
-      result.throughputMul = ccBrdf * nDotCc / max(ccDensity, 1e-8);
       result.sampledLobe = BSDF_LOBE_CLEARCOAT;
     } else {
       result.newRayOrigin = hitPos + normal * 1e-3;
       let bs = charlieSheenSample(rng, -incomingDir, normal, tanT, tanB, sheenRoughness);
       result.sampledDir = bs.wi;
       result.newRayDir = bs.wi;
-      result.sampleAllowsAreaMis = true;
-      let nDotSh = max(dot(normal, result.sampledDir), 0.0);
-      let shPdf = bs.pdf;
-      let shDensity = (sheenWeight / lobeWeightSum) * shPdf;
-      result.sampledEventPdf = shDensity;
-      let shBrdf = evalSheenLobe(sheen, sheenRoughness, sheenColor, normal, -incomingDir, result.sampledDir);
-      result.throughputMul = shBrdf * nDotSh / max(shDensity, 1e-8);
       result.sampledLobe = BSDF_LOBE_SHEEN;
     }
     finalizeFiniteBounceSampleWithClearcoatNormal(
@@ -2412,7 +2340,6 @@ fn sampleNextBounceDirectionWithClearcoatNormal(
   let diffProb = baseDiffProb / sumProb;
   let lobeWeightSum = brdfExtensionLobeWeightSum(clearcoat, sheen);
   let clearcoatWeight = max(clearcoat, 0.0);
-  let sheenWeight = max(sheen, 0.0);
   // Draw once from the normalized source-lobe mixture:
   //   p = (p_base + clearcoat*p_clearcoat + sheen*p_sheen)/(1+clearcoat+sheen).
   // When both extension weights are zero this is exactly the historical xi2.
@@ -2420,62 +2347,28 @@ fn sampleNextBounceDirectionWithClearcoatNormal(
   if (xiLobe < 1.0) {
     let xiBase = xiLobe;
     if (xiBase < specProb) {
-    // Glossy specular reflection — Heitz 2018 VNDF.
-    // Item 7 — use anisotropic sampler when anisotropy > 0; isotropic otherwise.
-    // The tangent frame (tanT, tanB) is already rotated by anisotropyRotation above.
-    let wo = -incomingDir;
-    result.newRayOrigin = hitPos + normal * 1e-3;
-    var bs2: BsdfSample;
-    if (anisotropy > 0.0) {
-      bs2 = glossyReflectionSampleAnisotropic(rng, wo, normal, tanT, tanB, roughness, anisotropy);
-    } else {
-      bs2 = glossyReflectionSample(rng, wo, normal, tanT, tanB, roughness);
-    }
-    result.sampledDir = bs2.wi;
-    result.newRayDir = bs2.wi;
-    result.sampledEventPdf = (specProb / lobeWeightSum) * bs2.pdf;
-    result.sampledLobe = BSDF_LOBE_SPECULAR_REFLECTION;
-    result.sampleAllowsAreaMis = true;
-    let nDotL2 = max(dot(normal, result.sampledDir), 0.0);
-    var g1Wi2: f32;
-    if (anisotropy > 0.0) {
-      let axes2 = computeAnisotropicAxes(max(roughness * roughness, ${PT_WEBGPU_MICROFACET_ALPHA_FLOOR}), anisotropy);
-      g1Wi2 = smithG1Anis(dot(result.sampledDir, tanT), dot(result.sampledDir, tanB), max(nDotL2, 1e-6), axes2.x, axes2.y);
-    } else {
-      g1Wi2 = smithG1(nDotL2, roughness);
-    }
-    // B9 — multiscatter energy boost on the sampled specular reflection (see the
-    // dielectric-reflection branch above).
-    let nDotVcc = max(dot(normal, wo), 0.0);
-    let projectedRoughnessV = anisotropicProjectedRoughness(wo, tanT, tanB, roughness, anisotropy);
-    let msBoostRaw = select(
-      ggxMultiscatterBoost(
-        opaqueInterface.reflectance, roughness, nDotVcc,
-      ),
-      ggxMultiscatterBoostRoughness(
-        opaqueInterface.reflectance,
-        projectedRoughnessV,
-        nDotVcc,
-      ),
-      anisotropy > 0.0,
-    );
-    let msBoost = select(
-      msBoostRaw,
-      vec3f(1.0) + (msBoostRaw - vec3f(1.0)) * anisotropicMultiscatterScale(anisotropy, projectedRoughnessV),
-      anisotropy > 0.0,
-    );
-    result.throughputMul = opaqueInterface.reflectance * g1Wi2 *
-      msBoost * lobeWeightSum / max(specProb, 1e-4);
+      // Glossy specular reflection — Heitz 2018 VNDF.
+      // Item 7 — use anisotropic sampler when anisotropy > 0; isotropic otherwise.
+      // The tangent frame (tanT, tanB) is already rotated by anisotropyRotation above.
+      let wo = -incomingDir;
+      result.newRayOrigin = hitPos + normal * 1e-3;
+      var bs2: BsdfSample;
+      if (anisotropy > 0.0) {
+        bs2 = glossyReflectionSampleAnisotropic(rng, wo, normal, tanT, tanB, roughness, anisotropy);
+      } else {
+        bs2 = glossyReflectionSample(rng, wo, normal, tanT, tanB, roughness);
+      }
+      result.sampledDir = bs2.wi;
+      result.newRayDir = bs2.wi;
+      result.sampledLobe = BSDF_LOBE_SPECULAR_REFLECTION;
+      // The shared finite finalizer below owns the marginal density and the
+      // complete layered-BSDF estimator for every continuous event.
     } else {
       result.newRayOrigin = hitPos + normal * 1e-3;
       let bs = cosineHemisphereSample(rng, normal);
       result.sampledDir = bs.wi;
       result.newRayDir = bs.wi;
-      result.sampledEventPdf = (diffProb / lobeWeightSum) * bs.pdf;
       result.sampledLobe = BSDF_LOBE_DIFFUSE_REFLECTION;
-      result.sampleAllowsAreaMis = true;
-      let kd = opaqueInterface.baseTransmittance * (1.0 - metallic);
-      result.throughputMul = (kd * baseColor) * lobeWeightSum / max(diffProb, 1e-4);
     }
   } else if (xiLobe < 1.0 + clearcoatWeight) {
     let wo = -incomingDir;
@@ -2486,27 +2379,13 @@ fn sampleNextBounceDirectionWithClearcoatNormal(
     let bsCc = glossyReflectionSample(rng, wo, clearcoatNormal, ccTanT, ccTanB, clearcoatRoughness);
     result.sampledDir = bsCc.wi;
     result.newRayDir = bsCc.wi;
-    result.sampleAllowsAreaMis = true;
-    let nDotCc = max(dot(clearcoatNormal, result.sampledDir), 0.0);
-    let ccPdf = clearcoatPdf(clearcoat, clearcoatRoughness, clearcoatNormal, wo, result.sampledDir);
-    let ccDensity = (clearcoatWeight / lobeWeightSum) * ccPdf;
-    result.sampledEventPdf = ccDensity;
     result.sampledLobe = BSDF_LOBE_CLEARCOAT;
-    let ccBrdf = evalClearcoatLobe(clearcoat, clearcoatRoughness, clearcoatNormal, wo, result.sampledDir);
-    result.throughputMul = ccBrdf * nDotCc / max(ccDensity, 1e-8);
   } else {
     result.newRayOrigin = hitPos + normal * 1e-3;
     let bs = charlieSheenSample(rng, -incomingDir, normal, tanT, tanB, sheenRoughness);
     result.sampledDir = bs.wi;
     result.newRayDir = bs.wi;
-    result.sampleAllowsAreaMis = true;
-    let nDotSh = max(dot(normal, result.sampledDir), 0.0);
-    let shPdf = bs.pdf;
-    let shDensity = (sheenWeight / lobeWeightSum) * shPdf;
-    result.sampledEventPdf = shDensity;
     result.sampledLobe = BSDF_LOBE_SHEEN;
-    let shBrdf = evalSheenLobe(sheen, sheenRoughness, sheenColor, normal, -incomingDir, result.sampledDir);
-    result.throughputMul = shBrdf * nDotSh / max(shDensity, 1e-8);
   }
   finalizeFiniteBounceSampleWithClearcoatNormal(
     &result,

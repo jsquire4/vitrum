@@ -17,9 +17,8 @@ import {
 import { PT_WEBGPU_PATH_TRACE_BSDF_WGSL } from './pathTrace/bsdf.wgsl.js';
 import { PT_WEBGPU_PATH_TRACE_CONNECT_WGSL } from './pathTrace/connect.wgsl.js';
 import {
-  MNEE_NEWTON_WGSL,
-  MNEE_CHAIN_WGSL,
-  MNEE_CONNECTION_WGSL,
+  MNEE_BOUNDED_CHAIN_CORE_WGSL,
+  MNEE_BOUNDED_CHAIN_WGSL,
 } from './pathTrace/mneeNewton.wgsl.js';
 import {
   SPPM_GROUP3_BINDINGS_WGSL,
@@ -62,13 +61,9 @@ import { PT_WEBGPU_MEDIUM_NEE_WGSL } from './pathTrace/mediumNee.wgsl.js';
  *   6. `connect`      — environment-map helpers (sky / equirect / importance)
  *                       + area-light directional intersectors +
  *                       BSDF→light/env MIS connection contributions.
- *   6b. `mneeNewton`  — the real MNEE half-vector Newton solve +
- *                       `mneeReflectionIrradiance` connection core. Placed BEFORE
- *                       `caustic` so the reflection-caustic strategy can call it.
- *   6c. `mneeChain`   — the 2-vertex specular chain (glass-slab enter+exit)
- *                       block-tridiagonal Newton + chain connection-PDF. Placed
- *                       AFTER `mneeNewton` (it reuses `mnee_safe_normalize`) and
- *                       BEFORE `caustic` so the glass-slab caustic can call it.
+ *   6b. `mneeNewton`  — scale-aware numeric core + the coupled, bounded 1–8
+ *                       vertex block-tridiagonal Newton solver and endpoint
+ *                       Jacobians. Placed BEFORE `caustic`, its sole consumer.
  *   6d. `sppm`        — A4 SPPM group-3 hash-grid bindings (SppmStats UBO +
  *                       sppmPhotonCells + sppmCellCounters) + sppmInsertPhoton +
  *                       progressive update/readback helpers. Composed BEFORE
@@ -124,9 +119,8 @@ ${PT_WEBGPU_PATH_TRACE_MATERIAL_WGSL}
 ${intersection}
 ${PT_WEBGPU_PATH_TRACE_BSDF_WGSL}
 ${PT_WEBGPU_PATH_TRACE_CONNECT_WGSL}
-${MNEE_NEWTON_WGSL}
-${MNEE_CHAIN_WGSL}
-${MNEE_CONNECTION_WGSL}
+${MNEE_BOUNDED_CHAIN_CORE_WGSL}
+${MNEE_BOUNDED_CHAIN_WGSL}
 ${SPPM_GROUP3_BINDINGS_WGSL}
 ${PT_WEBGPU_PATH_TRACE_CAUSTIC_WGSL}
 ${bdptConnection}
@@ -179,9 +173,8 @@ ${PT_WEBGPU_PATH_TRACE_MATERIAL_WGSL}
 ${intersection}
 ${PT_WEBGPU_PATH_TRACE_BSDF_WGSL}
 ${PT_WEBGPU_PATH_TRACE_CONNECT_WGSL}
-${MNEE_NEWTON_WGSL}
-${MNEE_CHAIN_WGSL}
-${MNEE_CONNECTION_WGSL}
+${MNEE_BOUNDED_CHAIN_CORE_WGSL}
+${MNEE_BOUNDED_CHAIN_WGSL}
 ${SPPM_GROUP3_BINDINGS_WGSL}
 ${PT_WEBGPU_PATH_TRACE_CAUSTIC_WGSL}
 ${bdptConnection}
@@ -258,9 +251,8 @@ ${PT_WEBGPU_PATH_TRACE_MATERIAL_WGSL}
 ${PT_WEBGPU_PATH_TRACE_INTERSECTION_WGSL}
 ${PT_WEBGPU_PATH_TRACE_BSDF_WGSL}
 ${PT_WEBGPU_PATH_TRACE_CONNECT_WGSL}
-${MNEE_NEWTON_WGSL}
-${MNEE_CHAIN_WGSL}
-${MNEE_CONNECTION_WGSL}
+${MNEE_BOUNDED_CHAIN_CORE_WGSL}
+${MNEE_BOUNDED_CHAIN_WGSL}
 ${SPPM_GROUP3_BINDINGS_WGSL}
 ${PT_WEBGPU_PATH_TRACE_CAUSTIC_WGSL}
 ${PT_WEBGPU_BDPT_CONNECTION_WGSL}

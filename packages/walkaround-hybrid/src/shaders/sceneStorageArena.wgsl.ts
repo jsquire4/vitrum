@@ -1,9 +1,4 @@
 import {
-  SCENE_STORAGE_ARENA_HEADER_WORDS,
-  SCENE_STORAGE_ARENA_MAGIC,
-  SCENE_STORAGE_ARENA_SCHEMA,
-  SCENE_STORAGE_ARENA_SCHEMA_WORD,
-  SCENE_STORAGE_ARENA_VERSION,
   SCENE_STORAGE_SEGMENTS,
 } from '../pipeline/sceneStorageArena.js';
 
@@ -18,11 +13,6 @@ const countWord = (name: typeof SCENE_STORAGE_SEGMENTS[number]): number =>
  * Three read-only raw arenas replace eleven independently-counted storage
  * bindings while retaining exact byte layouts and logical element counts. */
 export const SCENE_STORAGE_ARENA_WGSL = /* wgsl */ `
-const SCENE_ARENA_MAGIC: u32 = ${SCENE_STORAGE_ARENA_MAGIC}u;
-const SCENE_ARENA_VERSION: u32 = ${SCENE_STORAGE_ARENA_VERSION}u;
-const SCENE_ARENA_HEADER_WORDS: u32 = ${SCENE_STORAGE_ARENA_HEADER_WORDS}u;
-const SCENE_ARENA_SCHEMA: u32 = ${SCENE_STORAGE_ARENA_SCHEMA}u;
-
 // Arena lighting ABI. This type must precede sceneLoadEmitter: Naga resolves
 // function names across declaration order, but requires struct types to exist
 // before a function signature references them.
@@ -42,39 +32,6 @@ struct EmitterTri {
 @group(1) @binding(0) var<storage, read> sceneGeometryArena: array<u32>;
 @group(1) @binding(1) var<storage, read> sceneTlasArena: array<u32>;
 @group(1) @binding(2) var<storage, read> sceneLightingArena: array<u32>;
-
-fn sceneGeometryArenaValid() -> bool {
-  return sceneGeometryArena[0] == SCENE_ARENA_MAGIC &&
-    sceneGeometryArena[1] == SCENE_ARENA_VERSION &&
-    sceneGeometryArena[2] == 0u &&
-    sceneGeometryArena[3] == 3u &&
-    sceneGeometryArena[6] == SCENE_ARENA_HEADER_WORDS &&
-    sceneGeometryArena[${SCENE_STORAGE_ARENA_SCHEMA_WORD}u] == SCENE_ARENA_SCHEMA;
-}
-
-fn sceneTlasArenaValid() -> bool {
-  return sceneTlasArena[0] == SCENE_ARENA_MAGIC &&
-    sceneTlasArena[1] == SCENE_ARENA_VERSION &&
-    sceneTlasArena[2] == 1u &&
-    sceneTlasArena[3] == 3u &&
-    sceneTlasArena[6] == SCENE_ARENA_HEADER_WORDS &&
-    sceneTlasArena[${SCENE_STORAGE_ARENA_SCHEMA_WORD}u] == SCENE_ARENA_SCHEMA &&
-    sceneTlasArena[7] == sceneGeometryArena[7];
-}
-
-fn sceneLightingArenaValid() -> bool {
-  return sceneLightingArena[0] == SCENE_ARENA_MAGIC &&
-    sceneLightingArena[1] == SCENE_ARENA_VERSION &&
-    sceneLightingArena[2] == 2u &&
-    sceneLightingArena[3] == 3u &&
-    sceneLightingArena[6] == SCENE_ARENA_HEADER_WORDS &&
-    sceneLightingArena[${SCENE_STORAGE_ARENA_SCHEMA_WORD}u] == SCENE_ARENA_SCHEMA &&
-    sceneLightingArena[7] == sceneGeometryArena[7];
-}
-
-fn sceneStorageArenasValid() -> bool {
-  return sceneGeometryArenaValid() && sceneTlasArenaValid() && sceneLightingArenaValid();
-}
 
 fn sceneGeometryU32(word: u32) -> u32 {
   return sceneGeometryArena[word];

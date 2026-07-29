@@ -64,12 +64,13 @@ export function getSceneBindGroupLayout(device: GPUDevice, cache: BGLCache): GPU
 /**
  * Light-tree DI light-SELECTION bind group layout — a RIS-ONLY 4th bind group
  * (group 3). Deliberately NOT folded into the shared `scene` group: the shade
- * pass already references 16 storage buffers (4 frame + 11 scene + 1 RC
- * cascade0), exactly at the `maxStorageBuffersPerShaderStage = 16` full-tier
- * floor, so adding a 12th scene-group storage buffer would push shade to 17 and
- * fail pipeline creation. As a separate RIS-only group, the tree adds its 1
- * storage buffer only to the RIS pipeline layout (frame 4 + scene 11 + tree 1 =
- * 16, at the floor), leaving temporal/spatial/shade untouched. RIS uses
+ * pass already references 8 storage buffers (4 frame + 3 versioned scene
+ * arenas + 1 RC cascade0), exactly at the WebGPU guaranteed
+ * `maxStorageBuffersPerShaderStage = 8` floor. Folding the tree into the shared
+ * scene group would expose a ninth storage binding to shade. As a separate
+ * RIS-only group, the tree adds its one storage buffer only to RIS
+ * (4 frame + 3 scene + 1 tree = 8), leaving temporal/spatial/shade untouched.
+ * RIS uses
  * `maxBindGroups = 4` (frame/scene/ubo/lightTree), within the Lovelace cap.
  *
  *   0 — light-tree node buffer (read-only-storage, flat array<f32>)
@@ -93,7 +94,7 @@ export function getLightTreeBindGroupLayout(device: GPUDevice, cache: BGLCache):
  *   0 — combined light-tree + ReGIR-grid buffer (READ_WRITE storage). The SAME
  *       GPUBuffer RIS binds read-only at its group(3) binding 0; binding it
  *       read_write here (different bind group, different access) keeps RIS at
- *       16 storage buffers while letting the build pass write the grid region.
+ *       eight-storage full-tier floor while letting the build pass write the grid region.
  *   1 — WalkaroundUBO (uniform) — grid geometry + M/K + frameSeed + gate.
  *
  * The grid-build pipeline uses a SINGLE bind group (group 0), so it consumes
@@ -200,11 +201,10 @@ export function getAccumBindGroupLayout(device: GPUDevice, cache: BGLCache): GPU
  * the unified BGL works for both. Bind groups must still provide resources
  * for all 7 entries (placeholders for unused).
  *
- * Storage-buffer budget: in TLAS mode gi-ris references 9 storage buffers
- * (1 frame reservoir + 8 scene BVH/TLAS) + the PPG arena = 10, under
- * the `HYBRID_WEBGPU_REQUIRED_LIMITS.maxStorageBuffersPerShaderStage = 16`
- * full-tier floor. PPG is forbidden on the lite tier, so its lower (10)
- * floor is never asked to host the PPG buffers.
+ * Storage-buffer budget: gi-ris references one frame reservoir, three
+ * versioned scene arenas, and the PPG arena = five, under the
+ * `HYBRID_WEBGPU_REQUIRED_LIMITS.maxStorageBuffersPerShaderStage = 8`
+ * full-tier floor. PPG remains forbidden on the lite tier.
  */
 export function getHybridLayersBindGroupLayout(device: GPUDevice, cache: BGLCache): GPUBindGroupLayout {
   if (cache.hybridLayers) return cache.hybridLayers;

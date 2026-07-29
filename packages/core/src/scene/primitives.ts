@@ -33,6 +33,15 @@ export type PrimitiveMorphUvSets = ReadonlyArray<
 >;
 
 /**
+ * Morph color deltas grouped by COLOR_n semantic index. Each present lane
+ * contains one RGB or RGBA delta stream per morph target, parallel to
+ * `SkinnedMeshPrimitive.morphTargets` and matching its base COLOR_n width.
+ */
+export type PrimitiveMorphColorSets = ReadonlyArray<
+  ReadonlyArray<Float32Array> | undefined
+>;
+
+/**
  * Return the canonical numeric own keys carried by a sparse array without
  * consulting its potentially enormous native `length`.
  *
@@ -341,8 +350,10 @@ export interface SkinnedMeshPrimitive {
    * matching normal deltas; optional `morphTargetTangents` carries glTF
    * TANGENT direction deltas (xyz only; tangent handedness stays on the base
    * `tangents` stream); optional `morphTargetUvSets` carries arbitrary glTF
-   * TEXCOORD_N deltas. `morphTargetUvs` / `morphTargetUv1s` remain compatibility
-   * aliases for sets 0 / 1 and must match those lanes when both are present.
+   * TEXCOORD_N deltas; optional `morphTargetColorSets` carries additive
+   * COLOR_N deltas. `morphTargetUvs` / `morphTargetUv1s` remain compatibility
+   * aliases for UV sets 0 / 1, while `morphTargetColors` aliases COLOR_0; each
+   * alias must match its scalable lane when both are present.
    * `solveSkin()` applies these deltas when the corresponding rest stream
    * exists. Omit for position-only morphs.
    */
@@ -352,6 +363,8 @@ export interface SkinnedMeshPrimitive {
   readonly morphTargetUvs?: ReadonlyArray<Float32Array>;
   readonly morphTargetUv1s?: ReadonlyArray<Float32Array>;
   readonly morphTargetUvSets?: PrimitiveMorphUvSets;
+  readonly morphTargetColors?: ReadonlyArray<Float32Array>;
+  readonly morphTargetColorSets?: PrimitiveMorphColorSets;
   /** Per-target influence weights, length = morphTargets.length. Omission means all-zero weights. */
   readonly morphWeights?: Float32Array;
   readonly material: MaterialSpec;

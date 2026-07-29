@@ -663,7 +663,7 @@ fn configuredMneeIterations(maxSupported: u32) -> u32 {
 }
 
 
-// ── General bounded MNEE chain (3..8 vertices) ──────────────────────────────
+// ── General bounded MNEE chain (1..8 vertices) ──────────────────────────────
 // Length, every facet, and every reflection/transmission event are proposed from
 // explicit distributions. Invalid topology/material/visibility combinations are
 // zero-valued samples; successful paths divide by the complete proposal PMF.

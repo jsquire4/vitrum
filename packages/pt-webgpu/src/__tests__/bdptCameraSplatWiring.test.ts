@@ -19,7 +19,9 @@ import {
 import { PT_WEBGPU_FULL_SUPPORT_MANIFEST } from '../supportManifest.js';
 
 const BDPT_OFF_SOURCE_SHA256 =
-  'bcc9c22adddddb4dd840c0141db51c6f6cf2b4a806f4eb5402e8549e4c4d0c8e';
+  // Re-pinned 2026-07-29: U11 removes every overwritten continuous-event
+  // proposal-local throughput/PDF calculation from the shared sampler.
+  '83c30898ae14f65773b25139456a2a2235203452e97bb18ec8e0313d7d4c1451';
 
 function source(relative: string): string {
   return readFileSync(new URL(relative, import.meta.url), 'utf8');

@@ -164,13 +164,13 @@ const SOURCE_PROOFS = [
     ],
   },
   {
-    label: 'pt-webgpu MNEE Newton core',
+    label: 'pt-webgpu bounded MNEE Newton core',
     path: 'packages/pt-webgpu/src/wgsl/pathTrace/mneeNewton.wgsl.ts',
     needles: [
-      'mneeHalfVectorResidual2d',
-      'mneeResidualJacobian',
-      'mneeManifoldJacobian',
-      'mneePdfJacobianDet',
+      'mneeBoundedChainResidualAt',
+      'mneeNewtonSolveChainBounded',
+      'mneeBoundedChainFocusingDet',
+      'mneeBoundedChainAreaPdfDet',
     ],
   },
   {

@@ -294,7 +294,7 @@ export interface KhrLightsPunctualLight {
    * - directional: lux (lx = lm/m²)
    */
   intensity?: number;
-  /** Maximum range of the light (point / spot only). 0 = infinite. */
+  /** Maximum range of the light (point / spot only); when present it must be > 0. */
   range?: number;
   spot?: {
     innerConeAngle?: number; // radians; default 0

@@ -12,14 +12,15 @@
  * light count.
  *
  * ─── Buffer co-location (storage-budget constraint) ──────────────────────────
- * The RIS pipeline is already at the `maxStorageBuffersPerShaderStage = 16`
- * full-tier floor (4 frame + 11 scene + 1 light-tree group(3) buffers). Adding
- * a SECOND group(3) storage buffer for the grid would push RIS to 17 and fail
- * pipeline creation. So the grid is co-located in the SAME `array<f32>` buffer
+ * The RIS pipeline is already at the guaranteed
+ * `maxStorageBuffersPerShaderStage = 8` floor (4 frame + 3 versioned scene
+ * arenas + 1 light-tree group(3) buffer). Adding a second group(3) storage
+ * buffer for the grid would push RIS to 9. So the grid is co-located in the
+ * same `array<f32>` buffer
  * as the light tree (`@group(3) @binding(0)`): the tree nodes occupy floats
- * `[0 .. lightTreeNodeCount*12)`, the grid cells occupy floats
+ * `[0 .. lightTreeNodeCount*16)`, the grid cells occupy floats
  * `[regirGridFloatOffset ..)`. RIS reads the combined buffer read-only (still 1
- * group(3) buffer ⇒ still 16). The grid-build pass binds the SAME buffer as
+ * group(3) buffer ⇒ still 8). The grid-build pass binds the SAME buffer as
  * read_write in its own dedicated bind group and writes only the grid region;
  * the tree region is uploaded once and never written on the GPU.
  *

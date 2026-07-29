@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { PROBE_RAY_CAST_WGSL } from '../src/wgsl/probeRayCast.wgsl.js';
+import { CASCADE_MERGE_WGSL } from '../src/wgsl/cascadeMerge.wgsl.js';
 
 type Vec3 = readonly [number, number, number];
+type Rgb = readonly [number, number, number];
 
 function dot(a: Vec3, b: Vec3): number {
   return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
@@ -71,15 +73,147 @@ function nestedExitMatchesTop(
   return topMaterial === hitMaterial && (bvhMode !== 1 || topInstance === hitInstance);
 }
 
+function completeSuffixDistanceCap(
+  initialHitDistance: number,
+  roomSize: Vec3,
+  interfaceBudget: number,
+): number {
+  return initialHitDistance +
+    Math.hypot(roomSize[0], roomSize[1], roomSize[2]) * (interfaceBudget + 1);
+}
+
+function scaleRgb(a: Rgb, b: Rgb | number): Rgb {
+  return typeof b === 'number'
+    ? [a[0] * b, a[1] * b, a[2] * b]
+    : [a[0] * b[0], a[1] * b[1], a[2] * b[2]];
+}
+
+function addRgb(a: Rgb, b: Rgb): Rgb {
+  return [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
+}
+
+function beerRgb(
+  attenuationColor: Rgb,
+  segmentDistance: number,
+  attenuationDistance: number,
+): Rgb {
+  return attenuationColor.map(
+    channel => channel ** (segmentDistance / attenuationDistance),
+  ) as [number, number, number];
+}
+
+function mergeResolvedCascade(
+  local: readonly [number, number, number, number],
+  upper: Rgb,
+): Rgb {
+  return local[3] > 0.5
+    ? [local[0], local[1], local[2]]
+    : addRgb([local[0], local[1], local[2]], upper);
+}
+
 describe('RC bounded dielectric transport closure', () => {
   it('uses channel-separated exact transport and no legacy one-hit continuation', () => {
     expect(PROBE_RAY_CAST_WGSL).toContain('fn rcTraceTransmittedChannel(');
     expect(PROBE_RAY_CAST_WGSL).toContain('fn rcDielectricInterfaceTransmissionRgb(');
     expect(PROBE_RAY_CAST_WGSL).toContain('materialSpectralAttenuation(');
-    expect(PROBE_RAY_CAST_WGSL).toMatch(/rcTraceTransmittedChannel\(\s+ray, hit, maxT, 0u/);
-    expect(PROBE_RAY_CAST_WGSL).toMatch(/rcTraceTransmittedChannel\(\s+ray, hit, maxT, 1u/);
-    expect(PROBE_RAY_CAST_WGSL).toMatch(/rcTraceTransmittedChannel\(\s+ray, hit, maxT, 2u/);
+    expect(PROBE_RAY_CAST_WGSL).toContain(
+      'fn rcCompleteDielectricSuffixMaxDistance(initialHitDistance: f32) -> f32',
+    );
+    expect(PROBE_RAY_CAST_WGSL).toContain(
+      'let boundedSegments = u.transmittedInterfaceBudget + 1u;',
+    );
+    expect(PROBE_RAY_CAST_WGSL).toContain(
+      'initialHitDistance + length(u.roomSize) * f32(boundedSegments)',
+    );
+    expect(PROBE_RAY_CAST_WGSL).toMatch(
+      /rcTraceTransmittedChannel\(\s+ray, hit, dielectricMaxDistance, 0u/,
+    );
+    expect(PROBE_RAY_CAST_WGSL).toMatch(
+      /rcTraceTransmittedChannel\(\s+ray, hit, dielectricMaxDistance, 1u/,
+    );
+    expect(PROBE_RAY_CAST_WGSL).toMatch(
+      /rcTraceTransmittedChannel\(\s+ray, hit, dielectricMaxDistance, 2u/,
+    );
+    expect(PROBE_RAY_CAST_WGSL).not.toMatch(
+      /rcTraceTransmittedChannel\(\s+ray, hit, maxT,/,
+    );
     expect(PROBE_RAY_CAST_WGSL).not.toContain('let secondHit');
+  });
+
+  it('completes a refracted RGB bulk suffix beyond a non-last cascade interval', () => {
+    const lowerIntervalFar = 1;
+    const entryDistance = 0.75;
+    const bulkDistance = 0.5;
+    const receiverDistanceAfterExit = 0.75;
+    const completeDistance =
+      entryDistance + bulkDistance + receiverDistanceAfterExit;
+    expect(completeDistance).toBeGreaterThan(lowerIntervalFar);
+
+    const cap = completeSuffixDistanceCap(entryDistance, [3, 3, 3], 2);
+    expect(cap).toBeGreaterThan(completeDistance);
+
+    const incident = normalize([0.45, 0, -0.893]);
+    const inside = refract(incident, [0, 0, 1], 1 / 1.5);
+    expect(inside).not.toBeNull();
+    const exit = refract(inside!, [0, 0, 1], 1.5);
+    expect(exit).not.toBeNull();
+
+    const straightReceiverX =
+      incident[0] / -incident[2] * (bulkDistance + receiverDistanceAfterExit);
+    const refractedReceiverX =
+      inside![0] / -inside![2] * bulkDistance +
+      exit![0] / -exit![2] * receiverDistanceAfterExit;
+    expect(Math.abs(refractedReceiverX - straightReceiverX)).toBeGreaterThan(0.05);
+    const targetSplit = (refractedReceiverX + straightReceiverX) * 0.5;
+    expect(refractedReceiverX < targetSplit).not.toBe(straightReceiverX < targetSplit);
+
+    const entryT = 1 - dielectricFresnel(-dot(incident, [0, 0, 1]), 1, 1.5);
+    const exitT = 1 - dielectricFresnel(-dot(inside!, [0, 0, 1]), 1.5, 1);
+    const beer = beerRgb([0.81, 0.49, 0.25], bulkDistance, 1);
+    const receiver: Rgb = [6, 3, 1.5];
+    const completed = scaleRgb(scaleRgb(receiver, beer), entryT * exitT);
+
+    expect(completed[0]).toBeGreaterThan(0);
+    expect(completed[1]).toBeGreaterThan(0);
+    expect(completed[2]).toBeGreaterThan(0);
+    expect(completed[0]).toBeGreaterThan(completed[1]);
+    expect(completed[1]).toBeGreaterThan(completed[2]);
+  });
+
+  it('allows completed environment suffixes from last and non-last cascades only outside bulk', () => {
+    const suffix = PROBE_RAY_CAST_WGSL.slice(
+      PROBE_RAY_CAST_WGSL.indexOf('fn rcTraceTransmittedChannel('),
+      PROBE_RAY_CAST_WGSL.indexOf('// ─── Entry point'),
+    );
+    expect(suffix).toContain('if (mediumDepth != 0u) { return 0.0; }');
+    expect(suffix).not.toContain('u.cascadeIndex != u.lastCascade');
+    expect(suffix).toContain('return throughput * rcRgbChannel(env, channel);');
+
+    const environment: Rgb = [2, 1, 0.5];
+    const thinT = thinSheetTransmittance(0.72, 1, 1.5);
+    const nonLast = scaleRgb(environment, thinT);
+    const last = scaleRgb(environment, thinT);
+    expect(nonLast).toEqual(last);
+    expect(nonLast.every(channel => channel > 0)).toBe(true);
+  });
+
+  it('keeps completed glass and opaque hits terminal while empty intervals merge upper once', () => {
+    expect(CASCADE_MERGE_WGSL).toContain('if (local.a > 0.5) { return; }');
+    expect(CASCADE_MERGE_WGSL).toContain(
+      'rc_lowerCascade[lowerOutIdx] = vec4f(local.rgb + merged, 1.0);',
+    );
+    const completedGlass: readonly [number, number, number, number] =
+      [0.9, 0.5, 0.2, 1];
+    const opaque: readonly [number, number, number, number] =
+      [0.3, 0.4, 0.5, 1];
+    const empty: readonly [number, number, number, number] =
+      [0, 0, 0, 0];
+    const upper: Rgb = [3, 2, 1];
+    expect(mergeResolvedCascade(completedGlass, upper)).toEqual(
+      completedGlass.slice(0, 3),
+    );
+    expect(mergeResolvedCascade(opaque, upper)).toEqual(opaque.slice(0, 3));
+    expect(mergeResolvedCascade(empty, upper)).toEqual(upper);
   });
 
   it('samples rough mapped dielectric interfaces and fails invalid orientation closed', () => {

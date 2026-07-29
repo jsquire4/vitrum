@@ -11,13 +11,13 @@
  *   1. AtrousVarianceVarianceUBO — variance estimation pass (svgfVarianceMain)
  *   2. AtrousVarianceAtrousUBO   — à-trous wavelet pass     (svgfAtrousMain)
  *
- * std140 packing notes (WebGPU uniform buffer layout rules):
+ * WGSL packing notes:
  *   - Each f32/u32 scalar is 4 bytes, aligned to 4 bytes.
  *   - A struct containing only scalars requires no inter-field padding
  *     when all fields are the same primitive size.
- *   - The buffer itself must be a multiple of 16 bytes (WebGPU min binding
- *     size for uniform buffers). Explicit _pad fields keep structs 16-byte
- *     aligned for driver compatibility.
+ *   - These structs retain explicit trailing pads so their host ABI has a
+ *     16-byte stride. WGSL does not impose a 16-byte minimum on a top-level
+ *     uniform binding's size.
  *
  * References:
  *   Dammertz et al. "Edge-Avoiding À-Trous Wavelet Transform" HPG 2010.

@@ -1331,10 +1331,7 @@ function validateDecodedTexturePixels(value: unknown): DecodedPixelsValidation {
     };
   }
 
-  const pixelCount = checkedSafeProduct(
-    [widthValue, heightValue],
-    'decoded texture pixel count',
-  );
+  const pixelCount = checkedSafeProduct([widthValue, heightValue]);
   if (pixelCount === null) {
     return {
       valid: false,
@@ -1344,10 +1341,7 @@ function validateDecodedTexturePixels(value: unknown): DecodedPixelsValidation {
   }
   const channels = channelsValue ??
     inferDecodedChannelsFromLength(dataInfo.length, pixelCount);
-  const requiredLength = checkedSafeProduct(
-    [pixelCount, channels],
-    'decoded texture component count',
-  );
+  const requiredLength = checkedSafeProduct([pixelCount, channels]);
   if (requiredLength === null) {
     return {
       valid: false,
@@ -2194,7 +2188,6 @@ function inspectPixelData(data: unknown): PixelDataInspection {
 
 function checkedSafeProduct(
   factors: readonly number[],
-  _label: string,
 ): number | null {
   let product = 1;
   for (const factor of factors) {
@@ -2231,7 +2224,7 @@ function safeErrorMessage(error: unknown): string {
 }
 
 function checkedPixelCount(width: number, height: number, path: string): number {
-  const pixelCount = checkedSafeProduct([width, height], `${path} pixel count`);
+  const pixelCount = checkedSafeProduct([width, height]);
   if (pixelCount === null || pixelCount <= 0) {
     throw new RangeError(
       `[vitrum/gltf-adapter] ${path} has unsafe texture dimensions ${width}x${height}.`,
@@ -2246,10 +2239,7 @@ function allocateFloat32Rgba(
   path: string,
   commitLedgerCharge = true,
 ): Float32Array {
-  const componentCount = checkedSafeProduct(
-    [pixelCount, 4],
-    `${path} Float32 RGBA component count`,
-  );
+  const componentCount = checkedSafeProduct([pixelCount, 4]);
   if (componentCount === null) {
     throw new RangeError(
       `[vitrum/gltf-adapter] ${path} Float32 RGBA component count exceeds the safe integer range.`,
@@ -2279,7 +2269,7 @@ export function inferDecodedChannels(data: ArrayLike<number>, width: number, hei
   if (!dataInfo.valid) {
     throw new TypeError(`[vitrum/gltf-adapter] ${dataInfo.reason}.`);
   }
-  const pixelCount = checkedSafeProduct([width, height], 'decoded texture pixel count');
+  const pixelCount = checkedSafeProduct([width, height]);
   if (pixelCount === null || pixelCount <= 0) {
     throw new RangeError(
       `[vitrum/gltf-adapter] Invalid decoded texture dimensions ${width}x${height}.`,

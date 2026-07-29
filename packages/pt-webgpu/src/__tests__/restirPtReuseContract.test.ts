@@ -403,6 +403,24 @@ describe('ReSTIR-PT producer — unbiased candidate weight + specular gate', () 
     expect(RESTIR_PT_PRODUCER_WGSL).toContain('let fOnward = evaluateFiniteSameSideBrdfFullWithClearcoatNormal(');
   });
 
+  it('keeps rptDirectAtVertex transmission and clearcoat parameters aligned with its caller', () => {
+    const signatureStart = RESTIR_PT_PRODUCER_WGSL.indexOf('fn rptDirectAtVertex(');
+    const signatureEnd = RESTIR_PT_PRODUCER_WGSL.indexOf(') -> vec3f {', signatureStart);
+    const signature = RESTIR_PT_PRODUCER_WGSL.slice(signatureStart, signatureEnd);
+    expect(signature).toContain(
+      'metallic: f32,\n  transmission: f32,\n  clearcoat: f32,',
+    );
+
+    const callStart = RESTIR_PT_PRODUCER_WGSL.indexOf(
+      'Lo = Lo + rptDirectAtVertex(',
+    );
+    const callEnd = RESTIR_PT_PRODUCER_WGSL.indexOf(');', callStart);
+    const call = RESTIR_PT_PRODUCER_WGSL.slice(callStart, callEnd);
+    expect(call).toContain(
+      'roughness, metallic, sm.transmission,\n      sm.clearcoat,',
+    );
+  });
+
   it('covers spot and mesh-area emitters in the suffix direct-lighting producer', () => {
     expect(RESTIR_PT_PRODUCER_WGSL).toContain('for (var si = 0u; si < params.spotLightCount; si = si + 1u) {');
     expect(RESTIR_PT_PRODUCER_WGSL).toContain('for (var mi = 0u; mi < params.meshAreaLightCount; mi = mi + 1u) {');

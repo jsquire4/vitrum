@@ -22,6 +22,11 @@ describe('pt-webgl2 executable support manifest', () => {
     expect(Object.keys(PT_WEBGL2_MATERIAL_SUPPORT).sort()).toEqual(
       [...MATERIAL_SPEC_FIELDS].sort(),
     );
+    expect(
+      Object.entries(PT_WEBGL2_MATERIAL_SUPPORT)
+        .filter(([, mode]) => mode === 'unsupported')
+        .map(([field]) => field),
+    ).toEqual(['extensions']);
   });
 
   it('derives every coarse scene-acceptance set from detailed rows', () => {

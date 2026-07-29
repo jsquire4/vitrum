@@ -219,6 +219,13 @@ export function convertAnimations(
           warnings,
           onAccessorDiagnostic,
           options.resourceLedger,
+          {
+            // Core AnimationChannel.values is a Float32Array. Every integer
+            // through 2^24 is exactly representable; above that boundary an
+            // authored UNSIGNED_INT value could silently change.
+            maxExactUnsignedInt: 2 ** 24,
+            semantic: 'animation-output integer',
+          },
         );
         const inputAccessor = gltf.accessors?.[sampler.input];
         if (
@@ -234,6 +241,9 @@ export function convertAnimations(
           if (time < 0 || (keyframe > 0 && time <= times[keyframe - 1]!)) {
             throw new Error('animation input times must be non-negative and strictly increasing');
           }
+        }
+        if (interpolation === 'CUBICSPLINE' && times.length < 2) {
+          throw new Error('CUBICSPLINE animation samplers require at least two keyframes');
         }
         result = { times, values, interpolation };
       } catch (e) {

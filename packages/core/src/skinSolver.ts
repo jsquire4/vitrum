@@ -2,8 +2,9 @@
  * skinSolver.ts — CPU baseline per-frame linear-blend skinning solver.
  *
  * Reads a SkinnedMeshPrimitive (rest pose + current bones / boneInverses)
- * and produces deformed `positions` + `normals` (+ optional `tangents`)
- * Float32Arrays for previews and internal render/instancing paths. Native
+ * and produces deformed `positions` + `normals` (+ optional `tangents`,
+ * morphed UV sets, and morphed color sets) Float32Arrays for previews and
+ * internal render/instancing paths. Native
  * engine hosts patch authored rest/pose fields; each backend solves once.
  *
  * Algorithm: linear blend skinning (LBS) per glTF 2.0 / three.js convention,
@@ -14,6 +15,7 @@
  *   morphedNormal[v] = restNormal[v] + Σ_t morphWeights[t] · morphTargetNormals[t][v]
  *   morphedTangent[v]= restTangent[v]+ Σ_t morphWeights[t] · morphTargetTangents[t][v]
  *   morphedUv[v]     = restUv[v]     + Σ_t morphWeights[t] · morphTargetUvs[t][v]
+ *   morphedColor[v]  = restColor[v]  + Σ_t morphWeights[t] · morphTargetColors[t][v]
  *   skinVertex[v]   = bindMatrix       · morphedPos[v]            (skip if bindMatrix omitted)
  *   skinMatrix[v]   = Σ_k weights[v,k] · ( bones[idx[v,k]] · boneInverses[idx[v,k]] )
  *   skinnedWorld[v] = skinMatrix[v]    · skinVertex[v]            (w=1 transform)
@@ -43,9 +45,12 @@
  */
 
 import {
+  cloneSparseArray,
+  getPrimitiveColorSet,
   getPrimitiveUvSet,
   sparseArrayHasDefinedEntry,
   sparseArrayOwnIndices,
+  type PrimitiveColorSets,
   type PrimitiveUvSets,
   type SkinnedMeshPrimitive,
 } from './scene/primitives.js';
@@ -201,10 +206,11 @@ export function mat3InverseTranspose(m: ArrayLike<number>, out?: Float32Array): 
  * Accumulate a weighted morph-target stream into `base` in place:
  * `base[i] += Σ_t weights[t] · deltas[t][i]` (skipping zero-weight targets).
  *
- * Every one of solveSkin's five morph blends (positions, normals, tangents,
- * uvs, uv1) is this same loop; the only variation was the diagnostic strings
- * and the tangent xyzw→xyz pre-step (which the caller performs when building
- * `base`). `deltaName`/`baseName` reproduce the exact per-stream error text so
+ * Every solveSkin morph blend (positions, normals, tangents, arbitrary UV
+ * sets, and arbitrary color sets) is this same loop; the only variation is the
+ * diagnostic strings and the tangent xyzw→xyz pre-step (which the caller
+ * performs when building `base`). `deltaName`/`baseName` reproduce the exact
+ * per-stream error text so
  * the pinned messages (`morphSolver.test.ts`) are byte-preserved. When
  * `checkCount` is true the count mismatch (`deltas.length !== tCount`) is
  * reported as `${deltaName} length N != morphTargets tCount` — the positions
@@ -250,6 +256,8 @@ export function solveSkin(
   outUvs?: Float32Array,
   outUv1?: Float32Array,
   outUvSets?: PrimitiveUvSets,
+  outColors?: Float32Array,
+  outColorSets?: PrimitiveColorSets,
 ): {
   positions: Float32Array;
   normals: Float32Array;
@@ -257,6 +265,8 @@ export function solveSkin(
   uvs?: Float32Array;
   uv1?: Float32Array;
   uvSets?: PrimitiveUvSets;
+  colors?: Float32Array;
+  colorSets?: PrimitiveColorSets;
 } {
   assertFiniteFloat32Array(prim.positions, 'positions');
   assertFiniteFloat32Array(prim.normals, 'normals');
@@ -348,13 +358,38 @@ export function solveSkin(
     }
   }
   if (prim.tangents != null) assertFiniteFloat32Array(prim.tangents, 'tangents');
+  if (prim.colors != null) {
+    assertFiniteFloat32Array(prim.colors, 'colors');
+    if (prim.colors.length !== vertCount * 3 && prim.colors.length !== vertCount * 4) {
+      throw new Error(
+        `solveSkin: colors length ${prim.colors.length} expected ${vertCount * 3} (RGB) or ${vertCount * 4} (RGBA).`,
+      );
+    }
+  }
+  if (prim.colorSets != null) {
+    if (!isRuntimeArray(prim.colorSets)) {
+      throw new TypeError('solveSkin: colorSets must be an array.');
+    }
+    for (const colorSet of sparseArrayOwnIndices(prim.colorSets)) {
+      const stream = prim.colorSets[colorSet];
+      if (stream == null) continue;
+      assertFiniteFloat32Array(stream, `colorSets[${colorSet}]`);
+      if (stream.length !== vertCount * 3 && stream.length !== vertCount * 4) {
+        throw new Error(
+          `solveSkin: colorSets[${colorSet}] length ${stream.length} expected ` +
+            `${vertCount * 3} (RGB) or ${vertCount * 4} (RGBA).`,
+        );
+      }
+    }
+  }
 
   const morphTargets = prim.morphTargets;
   const morphRelatedWithoutPositions =
     morphTargets == null && (
       prim.morphWeights != null || prim.morphTargetNormals != null ||
       prim.morphTargetTangents != null || prim.morphTargetUvs != null ||
-      prim.morphTargetUv1s != null || prim.morphTargetUvSets != null
+      prim.morphTargetUv1s != null || prim.morphTargetUvSets != null ||
+      prim.morphTargetColors != null || prim.morphTargetColorSets != null
     );
   if (morphRelatedWithoutPositions) {
     throw new Error('solveSkin: morphTargets are required when morph weights or delta streams are supplied.');
@@ -439,6 +474,38 @@ export function solveSkin(
         );
       }
     }
+    if (prim.morphTargetColors != null && prim.colors == null) {
+      throw new Error('solveSkin: morphTargetColors supplied but primitive has no colors stream.');
+    }
+    assertMorphStream(
+      prim.morphTargetColors,
+      targetCount,
+      prim.colors?.length ?? 0,
+      'morphTargetColors',
+      'colors',
+    );
+    if (prim.morphTargetColorSets != null) {
+      if (!isRuntimeArray(prim.morphTargetColorSets)) {
+        throw new TypeError('solveSkin: morphTargetColorSets must be an array.');
+      }
+      for (const colorSet of sparseArrayOwnIndices(prim.morphTargetColorSets)) {
+        const targets = prim.morphTargetColorSets[colorSet];
+        if (targets == null) continue;
+        const base = getPrimitiveColorSet(prim, colorSet);
+        if (base == null) {
+          throw new Error(
+            `solveSkin: morphTargetColorSets[${colorSet}] supplied but primitive has no colorSets[${colorSet}] stream.`,
+          );
+        }
+        assertMorphStream(
+          targets,
+          targetCount,
+          base.length,
+          `morphTargetColorSets[${colorSet}]`,
+          `colorSets[${colorSet}]`,
+        );
+      }
+    }
   }
 
   const bm = prim.bindMatrix;
@@ -505,6 +572,38 @@ export function solveSkin(
       }
     }
   }
+  if (outColors != null) {
+    if (prim.colors == null) {
+      throw new Error('solveSkin: outColors supplied but primitive has no colors stream.');
+    }
+    assertFiniteFloat32Array(outColors, 'outColors');
+    if (outColors.length !== prim.colors.length) {
+      throw new Error(
+        `solveSkin: outColors length ${outColors.length} expected ${prim.colors.length}.`,
+      );
+    }
+  }
+  if (outColorSets != null) {
+    if (!isRuntimeArray(outColorSets)) {
+      throw new TypeError('solveSkin: outColorSets must be an array.');
+    }
+    for (const colorSet of sparseArrayOwnIndices(outColorSets)) {
+      const stream = outColorSets[colorSet];
+      if (stream == null) continue;
+      const base = getPrimitiveColorSet(prim, colorSet);
+      if (base == null) {
+        throw new Error(
+          `solveSkin: outColorSets[${colorSet}] supplied but primitive has no colorSets[${colorSet}] stream.`,
+        );
+      }
+      assertFiniteFloat32Array(stream, `outColorSets[${colorSet}]`);
+      if (stream.length !== base.length) {
+        throw new Error(
+          `solveSkin: outColorSets[${colorSet}] length ${stream.length} expected ${base.length}.`,
+        );
+      }
+    }
+  }
 
   const combined = combineSkinMatrices(prim.bones, prim.boneInverses, boneCount);
 
@@ -518,6 +617,8 @@ export function solveSkin(
   let morphedUvs: Float32Array | null = null;
   let morphedUv1: Float32Array | null = null;
   let morphedUvSets: Array<Float32Array | undefined> | null = null;
+  let morphedColors: Float32Array | null = null;
+  let morphedColorSets: Array<Float32Array | undefined> | null = null;
   if (prim.morphTargets != null && prim.morphWeights != null && prim.morphTargets.length > 0) {
     let anyActive = false;
     for (let t = 0; t < prim.morphWeights.length; t++) {
@@ -592,6 +693,48 @@ export function solveSkin(
         const mu1 = new Float32Array(prim.uv1);
         morphedUv1 = mu1;
         blendMorphStream(mu1, prim.morphTargetUv1s, prim.morphWeights, tCount, 'morphTargetUv1s', 'uv1', true);
+      }
+      if (prim.morphTargetColorSets != null) {
+        const sets: Array<Float32Array | undefined> = [];
+        for (const colorSet of sparseArrayOwnIndices(prim.morphTargetColorSets)) {
+          const targets = prim.morphTargetColorSets[colorSet];
+          if (targets == null) continue;
+          const base = getPrimitiveColorSet(prim, colorSet);
+          if (base == null) {
+            throw new Error(
+              `solveSkin: morphTargetColorSets[${colorSet}] supplied but primitive has no colorSets[${colorSet}] stream.`,
+            );
+          }
+          const morphed = new Float32Array(base);
+          blendMorphStream(
+            morphed,
+            targets,
+            prim.morphWeights,
+            tCount,
+            `morphTargetColorSets[${colorSet}]`,
+            `colorSets[${colorSet}]`,
+            true,
+          );
+          sets[colorSet] = morphed;
+          if (colorSet === 0) morphedColors = morphed;
+        }
+        if (sparseArrayHasDefinedEntry(sets)) morphedColorSets = sets;
+      }
+      if (morphedColors == null && prim.morphTargetColors != null) {
+        if (prim.colors == null) {
+          throw new Error('solveSkin: morphTargetColors supplied but primitive has no colors stream.');
+        }
+        const mc = new Float32Array(prim.colors);
+        morphedColors = mc;
+        blendMorphStream(
+          mc,
+          prim.morphTargetColors,
+          prim.morphWeights,
+          tCount,
+          'morphTargetColors',
+          'colors',
+          true,
+        );
       }
     }
   }
@@ -749,9 +892,14 @@ export function solveSkin(
     uvs?: Float32Array;
     uv1?: Float32Array;
     uvSets?: PrimitiveUvSets;
+    colors?: Float32Array;
+    colorSets?: PrimitiveColorSets;
   } = tangents != null ? { positions, normals, tangents } : { positions, normals };
-  const solvedUvSets: Array<Float32Array | undefined> = [];
+  let solvedUvSets: Array<Float32Array | undefined> | null = null;
   if (morphedUvSets != null) {
+    // `uvSets` is replaced as a whole at renderer/controller boundaries.
+    // Preserve untouched authored lanes when only one scalable set morphs.
+    solvedUvSets = prim.uvSets == null ? [] : cloneSparseArray(prim.uvSets);
     for (const texCoord of sparseArrayOwnIndices(morphedUvSets)) {
       const morphed = morphedUvSets[texCoord];
       if (morphed == null) continue;
@@ -763,17 +911,57 @@ export function solveSkin(
       if (texCoord === 0) result.uvs = output;
       if (texCoord === 1) result.uv1 = output;
     }
-    result.uvSets = solvedUvSets;
   }
   if (morphedUvs != null && result.uvs == null) {
     const output = outUvs ?? morphedUvs;
     if (output !== morphedUvs) output.set(morphedUvs);
     result.uvs = output;
+    if (prim.uvSets != null) {
+      solvedUvSets ??= cloneSparseArray(prim.uvSets);
+      solvedUvSets[0] = output;
+    }
   }
   if (morphedUv1 != null && result.uv1 == null) {
     const output = outUv1 ?? morphedUv1;
     if (output !== morphedUv1) output.set(morphedUv1);
     result.uv1 = output;
+    if (prim.uvSets != null) {
+      solvedUvSets ??= cloneSparseArray(prim.uvSets);
+      solvedUvSets[1] = output;
+    }
   }
+  if (solvedUvSets != null) result.uvSets = solvedUvSets;
+  let solvedColorSets: Array<Float32Array | undefined> | null = null;
+  if (morphedColorSets != null) {
+    // A solved semantic-set container replaces `primitive.colorSets` at every
+    // backend boundary. Start from the complete authored set table so morphing
+    // COLOR_2 cannot accidentally erase an unchanged active COLOR_3 lane.
+    solvedColorSets = prim.colorSets == null
+      ? []
+      : cloneSparseArray(prim.colorSets);
+    for (const colorSet of sparseArrayOwnIndices(morphedColorSets)) {
+      const morphed = morphedColorSets[colorSet];
+      if (morphed == null) continue;
+      const output = outColorSets?.[colorSet] ??
+        (colorSet === 0 ? outColors : undefined) ??
+        morphed;
+      if (output !== morphed) output.set(morphed);
+      solvedColorSets[colorSet] = output;
+      if (colorSet === 0) result.colors = output;
+    }
+  }
+  if (morphedColors != null && result.colors == null) {
+    const output = outColors ?? morphedColors;
+    if (output !== morphedColors) output.set(morphedColors);
+    result.colors = output;
+    // Keep the legacy COLOR_0 alias coherent when the source also carries the
+    // scalable table. Otherwise downstream `getPrimitiveColorSet(..., 0)`
+    // prefers the stale colorSets[0] stream and silently drops this morph.
+    if (prim.colorSets != null) {
+      solvedColorSets ??= cloneSparseArray(prim.colorSets);
+      solvedColorSets[0] = output;
+    }
+  }
+  if (solvedColorSets != null) result.colorSets = solvedColorSets;
   return result;
 }

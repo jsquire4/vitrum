@@ -111,6 +111,8 @@ describe('primitive patch routing closure', () => {
       'morphTargetUvs',
       'morphTargetUv1s',
       'morphTargetUvSets',
+      'morphTargetColors',
+      'morphTargetColorSets',
       'morphWeights',
     ]));
     expect(SKIN_REST_STREAM_PATCH_FIELDS).toEqual([
@@ -120,6 +122,8 @@ describe('primitive patch routing closure', () => {
       'uvs',
       'uv1',
       'uvSets',
+      'colors',
+      'colorSets',
     ]);
   });
 });

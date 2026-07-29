@@ -69,7 +69,7 @@ ${reservoirGiAccessorsWgsl({ storeReadWriteBinding: 'reservoirGiCurrent' })}
 // B1-ior-per-tri (2026-06-10) — per-triangle roughness+metalness+IOR texture.
 // Declared here so the glass-walk Snell solve can decode per-tri IOR via decodeIor().
 // Layout: bits[31:24]=rough×255, bits[23:16]=metal×255, bits[15:8]=ior_quantized.
-// IOR decode: 1.0 + (byte / 255) * 2.0; range [1.0, 3.0]; default glass → 1.502.
+// IOR decode: 1.0 + ((byte - 1) / 254) * 2.0; byte 0 is the infinite-IOR sentinel.
 @group(1) @binding(14) var bvh_material: texture_2d<u32>;
 
 @group(2) @binding(0) var<uniform> ubo: WalkaroundUBO;
@@ -401,7 +401,7 @@ ${RIS_GI_GLASS_VISIBILITY_TAIL_WGSL}
  *  half-res GI-RIS pass actually references:
  *    - `WalkaroundUBO` / `INV_PI`            → walkaroundUbo
  *    - primary cast (`traceScene*` / `BVHNode` / `Ray`) → sceneTraversal
- *    - `ReservoirGI` / `emptyReservoirGI` / `updateReservoirGI` /
+ *    - `ReservoirGI` / `emptyReservoirGI` / `updateReservoirGIWithMetadata` /
  *      `storeReservoirGI_rw`                 → reservoirGi
  *    - `pcgInit` / `luminance` / `sampleCosineHemisphere` → sharedPrimitives
  *    - `decodeMaterialColor` / `decodeIsMetal` / `decodeRoughMetal` / `decodeIor`

@@ -71,20 +71,25 @@ function gpuHarness() {
     failNextBindGroup(beforeThrow: () => void) { bindFailure = beforeThrow; },
   };
 }
-function hostHarness(id: string) {
+function hostHarness(id: string | readonly string[]) {
+  const ids = typeof id === 'string' ? [id] : id;
   const sharedPositionDestroy = vi.fn();
   const sharedNormalDestroy = vi.fn();
   const positionBuffer = { destroy: sharedPositionDestroy } as unknown as GPUBuffer;
   const normalBuffer = { destroy: sharedNormalDestroy } as unknown as GPUBuffer;
   const applySkinningBatch = vi.fn();
-  const range = {
-    name: id, vertexStart: 0, vertexCount: 3, triStart: 0, triCount: 1,
+  const ranges = ids.map((primitiveId, index) => ({
+    name: primitiveId,
+    vertexStart: index * 3,
+    vertexCount: 3,
+    triStart: index,
+    triCount: 1,
     matrixWorldAtBuild: new Float32Array(IDENTITY),
-  };
+  }));
   const host: GpuSkinningHost = {
     getGpuSkinningBvhBuffer: () => positionBuffer,
     getGpuSkinningNormalBuffer: () => normalBuffer,
-    getMeshVertexRanges: () => [range], getBvhMode: () => 'merged',
+    getMeshVertexRanges: () => ranges, getBvhMode: () => 'merged',
     getPrimitiveTlasBindings: () => null, updatePrimitive: vi.fn(),
     applyGpuSkinnedRefit: vi.fn(), applySkinningBatch,
   };
@@ -163,6 +168,169 @@ describe('GpuSkinningSubsystem cached mesh state', () => {
     expect(Array.from(updates[0].patch.uvSets[2])).toEqual(
       Array.from(new Float32Array([0.1, 0.2, 0.9, 0.2, 0.1, 0.8])),
     );
+  });
+
+  it('restores a morph lane above the native array-index ceiling', () => {
+    const gpu = gpuHarness();
+    const host = hostHarness('skin');
+    const subsystem = new GpuSkinningSubsystem(gpu.device, true);
+    const semanticIndex = 4_294_967_295;
+    const baseLane = new Float32Array([
+      1, 0, 0,
+      0, 1, 0,
+      0, 0, 1,
+    ]);
+    const colorSets: Array<Float32Array | undefined> = [];
+    const morphTargetColorSets: Array<
+      ReadonlyArray<Float32Array> | undefined
+    > = [];
+    Object.defineProperty(colorSets, String(semanticIndex), {
+      value: baseLane,
+      enumerable: true,
+    });
+    Object.defineProperty(morphTargetColorSets, String(semanticIndex), {
+      value: [new Float32Array([
+        -0.5, 0.5, 0,
+        0.5, -0.5, 0,
+        0, 0.5, -0.5,
+      ])],
+      enumerable: true,
+    });
+    const base: SkinnedMeshPrimitive = {
+      ...mesh('skin'),
+      colorSets,
+      morphTargets: [new Float32Array(9)],
+      morphTargetColorSets,
+      morphWeights: new Float32Array([1]),
+    };
+
+    subsystem.run(host.host, sceneOf(base));
+    subsystem.run(host.host, sceneOf({
+      ...base,
+      morphWeights: new Float32Array([0]),
+    }));
+
+    expect(gpu.createBuffer).not.toHaveBeenCalled();
+    const [activeUpdates] = host.applySkinningBatch.mock.calls[0]!;
+    expect(activeUpdates[0].patch.colorSets[semanticIndex]).not.toBe(baseLane);
+    const [restoreUpdates, restoreCommands] =
+      host.applySkinningBatch.mock.calls[1]!;
+    expect(restoreCommands).toBeNull();
+    expect(restoreUpdates[0].patch.colorSets).toBe(colorSets);
+    expect(restoreUpdates[0].patch.colorSets[semanticIndex]).toBe(baseLane);
+  });
+
+  it('keeps a mixed color-morph and GPU-eligible batch on one CPU topology candidate', () => {
+    const gpu = gpuHarness();
+    const host = hostHarness(['color-morph', 'gpu-skin']);
+    const subsystem = new GpuSkinningSubsystem(gpu.device, true);
+    const colorMorph: SkinnedMeshPrimitive = {
+      ...mesh('color-morph'),
+      colors: new Float32Array([
+        1, 0, 0,
+        0, 1, 0,
+        0, 0, 1,
+      ]),
+      morphTargets: [new Float32Array(9)],
+      morphTargetColors: [new Float32Array([
+        -0.5, 0.5, 0,
+        0.5, -0.5, 0,
+        0, 0.5, -0.5,
+      ])],
+      morphWeights: new Float32Array([0.5]),
+    };
+    const gpuEligible = mesh('gpu-skin');
+    const scene: Scene = {
+      primitives: [colorMorph, gpuEligible],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+
+    subsystem.run(host.host, scene);
+
+    // A color stream is a topology payload in HybridEngine. Encoding the
+    // second mesh against the current buffers before that replacement would
+    // make applySkinningBatch reject the mixed transaction.
+    expect(gpu.createBuffer).not.toHaveBeenCalled();
+    expect(host.applySkinningBatch).toHaveBeenCalledOnce();
+    const [updates, commands] = host.applySkinningBatch.mock.calls[0]!;
+    expect(commands).toBeNull();
+    expect(updates.map((update: { gpuWritten: boolean }) => update.gpuWritten))
+      .toEqual([false, false]);
+    expect(Array.from(updates[0].patch.colors)).toEqual(
+      Array.from(new Float32Array([
+        0.75, 0.25, 0,
+        0.25, 0.75, 0,
+        0, 0.25, 0.75,
+      ])),
+    );
+  });
+
+  it('restores dormant COLOR_0/TEXCOORD_0 once, then returns to the GPU fast path', () => {
+    const gpu = gpuHarness();
+    const host = hostHarness('skin');
+    const subsystem = new GpuSkinningSubsystem(gpu.device, true);
+    const baseUvs = new Float32Array([0, 0, 1, 0, 0, 1]);
+    const baseColors = new Float32Array([
+      1, 0, 0,
+      0, 1, 0,
+      0, 0, 1,
+    ]);
+    const base: SkinnedMeshPrimitive = {
+      ...mesh('skin'),
+      uvs: baseUvs,
+      colors: baseColors,
+      morphTargets: [new Float32Array(9)],
+      morphTargetUvs: [
+        new Float32Array([0.2, 0.4, -0.2, 0.4, 0.2, -0.4]),
+      ],
+      morphTargetColors: [
+        new Float32Array([
+          -0.5, 0.5, 0,
+          0.5, -0.5, 0,
+          0, 0.5, -0.5,
+        ]),
+      ],
+      morphWeights: new Float32Array([1]),
+    };
+
+    subsystem.run(host.host, sceneOf(base));
+    subsystem.run(host.host, sceneOf({
+      ...base,
+      morphWeights: new Float32Array([0]),
+    }));
+    subsystem.run(host.host, sceneOf({
+      ...base,
+      morphWeights: new Float32Array([0]),
+    }));
+
+    expect(host.applySkinningBatch).toHaveBeenCalledTimes(3);
+    const [activeUpdates, activeCommands] =
+      host.applySkinningBatch.mock.calls[0]!;
+    expect(activeCommands).toBeNull();
+    expect([...activeUpdates[0].patch.uvs]).toEqual([
+      ...new Float32Array([0.2, 0.4, 0.8, 0.4, 0.2, 0.6]),
+    ]);
+    expect([...activeUpdates[0].patch.colors]).toEqual([
+      ...new Float32Array([
+        0.5, 0.5, 0,
+        0.5, 0.5, 0,
+        0, 0.5, 0.5,
+      ]),
+    ]);
+
+    const [restoreUpdates, restoreCommands] =
+      host.applySkinningBatch.mock.calls[1]!;
+    expect(restoreCommands).toBeNull();
+    expect(restoreUpdates[0].patch.uvs).toBe(baseUvs);
+    expect(restoreUpdates[0].patch.colors).toBe(baseColors);
+
+    const [steadyUpdates, steadyCommands] =
+      host.applySkinningBatch.mock.calls[2]!;
+    expect(steadyCommands).not.toBeNull();
+    expect(steadyUpdates[0].gpuWritten).toBe(true);
+    expect(steadyUpdates[0].patch.uvs).toBeUndefined();
+    expect(steadyUpdates[0].patch.colors).toBeUndefined();
   });
 
   it('preserves the old state across hostile aliases/failure, cleans candidates, and retries', () => {

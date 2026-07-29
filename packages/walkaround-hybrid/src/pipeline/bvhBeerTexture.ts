@@ -2,13 +2,11 @@
  * WS1 (feature-completeness wave, 2026-05-29) — per-triangle Beer-Lambert
  * visible-color storage as an `r32uint` texture instead of a storage buffer.
  *
- * Motivation: the walkaround scene bind group sits exactly at the full-tier
- * `maxStorageBuffersPerShaderStage = 16` floor on the shade pass (4 frame + 11
- * scene + 1 RC cascade-0). Adding a per-vertex `bvh_normal` storage buffer for
- * smooth shading normals would push shade to 17 and fail pipeline creation.
- * Textures do NOT count against the storage-buffer limit, so moving the
- * read-only per-triangle `bvh_beer` u32 into a texture frees the slot the
- * normal buffer needs — net storage count is unchanged.
+ * Motivation: the shade pass sits at the WebGPU-guaranteed
+ * `maxStorageBuffersPerShaderStage = 8` floor (4 frame + 3 versioned scene
+ * arenas + 1 RC cascade-0). Textures do not count against that limit, so
+ * keeping the read-only per-triangle `bvh_beer` lane in a texture avoids a
+ * ninth storage binding.
  *
  * Layout: the beer data is one packed RGBA8 `u32` per triangle (alpha = 0).
  * We store it as a 2D `r32uint` texture of fixed width {@link BVH_BEER_TEX_WIDTH}

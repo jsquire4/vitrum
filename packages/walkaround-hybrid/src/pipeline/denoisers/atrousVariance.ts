@@ -304,7 +304,7 @@ export class AtrousVarianceDenoiser implements Denoiser {
     const resetHistory = shouldResetDenoiserHistory(frameIndex, isMoving);
     // W2-C13 follow-up: byte-identical to the prior Uint32Array([frameIndex+1,
     // forceReset, 0, 0]) write — defineUbo packs two u32 fields at offsets 0/4
-    // and zero-fills the trailing pad to the 16-byte minimum-binding floor.
+    // and zero-fills the explicit trailing pad to the stable 16-byte ABI.
     const wUboBytes = new ArrayBuffer(WELFORD_TEMPORAL_UBO.sizeBytes);
     WELFORD_TEMPORAL_UBO.pack(new DataView(wUboBytes), 0, {
       sampleN:    frameIndex + 1,

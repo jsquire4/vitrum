@@ -276,7 +276,6 @@ function uploaded(stub: FailureDevice): UploadedSceneBuffers {
     colorsBuffer: buffer(),
     environmentMapTexelsBuffer: buffer(),
     environmentMapCdfBuffer: buffer(),
-    meshAreaLightSourceFactorsBuffer: buffer(),
     tangentsBuffer: buffer(),
     materialEmissiveTextureView: {},
   } as unknown as UploadedSceneBuffers;

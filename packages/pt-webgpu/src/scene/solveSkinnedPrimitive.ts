@@ -1,5 +1,6 @@
 import {
   solveSkin,
+  type PrimitiveColorSets,
   type PrimitiveUvSets,
   type SkinnedMeshPrimitive,
 } from '@vitrum/core';
@@ -11,6 +12,8 @@ export interface SolvedSkinnedPrimitiveAttributes {
   readonly uvs?: Float32Array;
   readonly uv1?: Float32Array;
   readonly uvSets?: PrimitiveUvSets;
+  readonly colors?: Float32Array;
+  readonly colorSets?: PrimitiveColorSets;
 }
 
 const IDENTITY_MATRIX = new Float32Array([
@@ -53,6 +56,8 @@ export function solveSkinnedPrimitive(
       ...(primitive.uvs != null ? { uvs: primitive.uvs } : {}),
       ...(primitive.uv1 != null ? { uv1: primitive.uv1 } : {}),
       ...(primitive.uvSets != null ? { uvSets: primitive.uvSets } : {}),
+      ...(primitive.colors != null ? { colors: primitive.colors } : {}),
+      ...(primitive.colorSets != null ? { colorSets: primitive.colorSets } : {}),
     };
   }
   if (primitive.boneInverses.length !== 0) {

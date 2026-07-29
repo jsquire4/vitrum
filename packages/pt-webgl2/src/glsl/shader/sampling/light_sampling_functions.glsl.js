@@ -59,12 +59,10 @@ export const light_sampling_functions = /* glsl */`
 		vec3 u = light.u;
 		vec3 v = light.v;
 
-		// check for backface
+		// Core analytic area emitters are one-sided along cross(u,v). A forward
+		// ray sees the emitting face only when it approaches against the normal.
 		vec3 normal = normalize( cross( u, v ) );
-		if ( dot( normal, rayDirection ) > 0.0 ) {
-
-			u *= 1.0 / dot( u, u );
-			v *= 1.0 / dot( v, v );
+		if ( dot( normal, rayDirection ) < 0.0 ) {
 
 			float dist;
 
@@ -74,12 +72,12 @@ export const light_sampling_functions = /* glsl */`
 				( light.type == CIRC_AREA_LIGHT_TYPE && intersectsCircle( light.position, normal, u, v, rayOrigin, rayDirection, dist ) )
 			) {
 
-				float cosTheta = dot( rayDirection, normal );
+				float cosTheta = dot( - rayDirection, normal );
 				didHit = true;
 				lightRec.dist = dist;
 				lightRec.point = rayOrigin + rayDirection * dist;
 				lightRec.normal = normal;
-                                float denom = abs( light.area * cosTheta );
+                                float denom = light.area * cosTheta;
                                 lightRec.pdf = denom > 0.0
                                         ? ( dist * dist ) / denom
                                         : 0.0;
@@ -132,8 +130,9 @@ export const light_sampling_functions = /* glsl */`
 		lightRec.normal = lightNormal;
 		lightRec.direction = direction;
 
-                float denom = abs( light.area * dot( direction, lightNormal ) );
-                lightRec.pdf = dist > 0.0 && denom > 0.0
+                float cosLight = dot( lightNormal, - direction );
+                float denom = light.area * cosLight;
+                lightRec.pdf = dist > 0.0 && cosLight > 0.0 && denom > 0.0
                         ? lightDistSq / denom
                         : 0.0;
 		lightRec.discretePdf = 1.0;

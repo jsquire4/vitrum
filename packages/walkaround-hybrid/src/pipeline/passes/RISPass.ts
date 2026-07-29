@@ -7,7 +7,8 @@
  * light-tree storage buffer for spatially-aware DI light SELECTION. The
  * light-tree group is bound only here (not on temporal/spatial/shade) so the
  * extra storage buffer lands on the RIS pipeline layout alone — keeping the
- * heavier shade pass at the `maxStorageBuffersPerShaderStage = 16` floor.
+ * heavier shade pass at the guaranteed
+ * `maxStorageBuffersPerShaderStage = 8` floor.
  *
  * The kernel reads `ubo.lightTreeEnabled` at runtime: when `0` it ignores the
  * group(3) buffer entirely (flat power-CDF path), so the group is always bound

@@ -73,8 +73,8 @@ function sha(s: string): string {
 describe('material-atlas decode ABI composed byte identity', () => {
   it('pins the MATERIAL_ATLAS_WGSL fragment (offset ABI + alpha-mask walkers)', () => {
     expect({ length: MATERIAL_ATLAS_WGSL.length, sha256: sha(MATERIAL_ATLAS_WGSL) }).toEqual({
-      length: 54689,
-      sha256: '896bfab276dfbae985b032f4e375e346aa3566f0df8f82152ae4b76809957fb3',
+      length: 54493,
+      sha256: '427a90f73f786fee62b0cabc01b65e3622226d7c1a17e7838c44ca94d338f02d',
     });
   });
 
@@ -90,21 +90,21 @@ describe('material-atlas decode ABI composed byte identity', () => {
     const risGi = composeWgsl(RIS_GI_MODULE, WGSL_MODULES);
     const shadeDigest = { length: shade.length, sha256: sha(shade) };
     expect(shadeDigest, `shade current=${JSON.stringify(shadeDigest)}`).toEqual({
-      length: 386203,
-      sha256: 'f4743596b9f834497be54e250dc7f7eca5f95fbea5a047222b2fecfc7cae4581',
+      length: 382477,
+      sha256: '384f0530b75f8efb7185981ded062bd1eeae491a7b43929ef1ac82ee90223e91',
     });
     const risGiDigest = { length: risGi.length, sha256: sha(risGi) };
     expect(risGiDigest, `risGi current=${JSON.stringify(risGiDigest)}`).toEqual({
-      length: 263466,
-      sha256: 'cbc0a9dadd9349d8d068da25c34e9100a47a26641a2708e0fec7d97c0ea45b83',
+      length: 259742,
+      sha256: '0a0596c8a6ecbb9fe0d0a952124409d521fb98c0276034160d77abba50fe042e',
     });
   });
 
   it('pins probeUpdateRays for representative maxMaterials (DDGI offset ABI)', () => {
     const cases: Array<[number, number, string]> = [
-      [1, 155910, 'f149458df178171ed3b671bba0c46543e1cc387c8d7f21d4d07f419cded75159'],
-      [8, 155910, '63cef27ecabdf4e10b59f52d89758336316c36fe0d6196ae2508f27929679d10'],
-      [64, 155911, '6e37348df8f183179eb0aa81ee2e96e4e0571a34bac1d0e7980710559d02bb69'],
+      [1, 154559, '810074423d04c33eb06b477844e315e1c8e535186f7f584591aff97c41071def'],
+      [8, 154559, 'e6f51266b25a6a0860d797b936ea50a47688cbf44505cc8aa0e2bcce51589098'],
+      [64, 154560, 'e3bad56cfcce53d41a382cea24a4595a9d8073a3e88507deeec7f65a7d1164a4'],
     ];
     const current = cases.map(([m]) => {
       const wgsl = makeProbeUpdateRaysWGSL(m);

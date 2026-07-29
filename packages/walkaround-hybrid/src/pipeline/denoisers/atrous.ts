@@ -107,7 +107,7 @@ export class AtrousDenoiser implements Denoiser {
           byteOffset,
         );
         return cachedBindGroup(resourceCache, `denoiser:atrous:${iter}`, [
-          this._uboRef,
+          this._uboRef.buf,
           inputTex,
           outputTex,
           resources.common.gNormalDepthTexture,

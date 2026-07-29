@@ -200,6 +200,25 @@ describe('pass bind-group cache', () => {
       .toHaveBeenCalledTimes(2);
   });
 
+  it('rebuilds the temporal bind group when the live UBO handle is replaced', () => {
+    const accumUbo = { buf: buffer('accum-ubo-a') };
+    const { ctx } = baseCtx({
+      frameState: {
+        combinedDenoised: texture('combined'),
+        readAccum: texture('accum-read'),
+        writeAccum: texture('accum-write'),
+        alpha: 0.25,
+      },
+    });
+    const pass = new TemporalAccumPass({} as GPUComputePipeline, accumUbo);
+
+    pass.dispatch(ctx);
+    accumUbo.buf = buffer('accum-ubo-b');
+    pass.dispatch(ctx);
+
+    expect(buildPreparedAccumBindGroup).toHaveBeenCalledTimes(2);
+  });
+
   it('caches both indirect temporal ping-pong bind-group variants', () => {
     const pingPong = { value: 0 as 0 | 1 };
     const { ctx } = baseCtx();

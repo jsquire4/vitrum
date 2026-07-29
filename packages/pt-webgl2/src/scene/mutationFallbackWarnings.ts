@@ -42,6 +42,8 @@ export const GEOMETRY_REBUILD_PATCH_FIELDS = new Set([
   'morphTargetUvs',
   'morphTargetUv1s',
   'morphTargetUvSets',
+  'morphTargetColors',
+  'morphTargetColorSets',
   'morphWeights',
 ]);
 
@@ -68,6 +70,8 @@ export const ANIMATION_REBUILD_PATCH_FIELDS = new Set([
   'morphTargetUvs',
   'morphTargetUv1s',
   'morphTargetUvSets',
+  'morphTargetColors',
+  'morphTargetColorSets',
   'morphWeights',
 ]);
 

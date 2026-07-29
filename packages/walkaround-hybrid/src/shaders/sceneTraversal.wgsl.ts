@@ -6,8 +6,8 @@
  * `BVH_INTERSECT_WGSL` + `TLAS_TRAVERSAL_WGSL` from `@vitrum/shared-bvh`
  * (single source of truth for BVHNode, Ray, IntersectionResult,
  * intersectTriangle, bvhIntersectFirstHit/Any, traceTlas*), then defines
- * `traceSceneFirstHit` / `traceSceneAny` which pick the path from
- * `ubo.bvhMode` / `ubo.tlasNodeCount`.
+ * `traceSceneFirstHit` plus the cast-mask-aware shadow wrapper which pick the
+ * path from `ubo.bvhMode` / `ubo.tlasNodeCount`.
  */
 
 import type { WgslModule } from '../pipeline/wgslComposer.js';
@@ -32,10 +32,9 @@ export const SCENE_TRAVERSAL_WGSL = /* wgsl */ `// =============================
 //   - intersectTriangle now returns IntersectionResult (not f32). The
 //     one remaining inline caller (bvhTraceTintedVisibility in
 //     surfaceTextures.wgsl) unwraps .dist / .didHit at the call site.
-//   - bvhIntersectAny gains a skipGlass: bool parameter. All ReSTIR
-//     call sites pass true (matches the pre-canonical glass-transmissive
-//     shadow behaviour — light passes through, tint is applied by the
-//     per-channel bvhTraceTintedVisibility helper in shade).
+//   - Cast-mask-aware any-hit traversal carries both skipGlass and packed
+//     cast-shadow/alpha flags. Tinted transmission uses the dedicated
+//     per-channel visibility walk in surfaceTextures.wgsl.
 // ============================================================
 ${BVH_INTERSECT_CORE_WGSL}
 ${SCENE_STORAGE_ARENA_WGSL}
@@ -54,90 +53,12 @@ fn traceSceneFirstHit(
   return bvhIntersectFirstHit(ray, triEps);
 }
 
-fn materialScalarAlphaDiscardedForTri(
-  triIdx: u32,
-  materialMask: texture_2d<u32>,
-  materialMaskWidth: u32,
-) -> bool {
-  let word = textureLoad(
-    materialMask,
-    vec2i(i32(triIdx % materialMaskWidth), i32(triIdx / materialMaskWidth)),
-    0,
-  ).r;
-  return (word & 4u) != 0u;
-}
-
-fn traceSceneFirstHitAlphaMask(
-  bvhMode: u32,
-  tlasNodeCount: u32,
-  ray: Ray,
-  triEps: f32,
-  materialMask: texture_2d<u32>,
-  materialMaskWidth: u32,
-) -> IntersectionResult {
-  var walkRay = ray;
-  var traveled = 0.0;
-  let step = max(1e-4, triEps * 4.0);
-  for (var i = 0u; i < 32u; i = i + 1u) {
-    var hit = traceSceneFirstHit(
-      bvhMode, tlasNodeCount,
-      walkRay, triEps,
-    );
-    if (!hit.didHit) {
-      return hit;
-    }
-    if (!materialScalarAlphaDiscardedForTri(hit.indices.w, materialMask, materialMaskWidth)) {
-      hit.dist = hit.dist + traveled;
-      return hit;
-    }
-    traveled = traveled + hit.dist + step;
-    walkRay.origin = ray.origin + ray.direction * traveled;
-  }
-  var exhausted = traceSceneFirstHit(
-    bvhMode, tlasNodeCount,
-    walkRay, triEps,
-  );
-  if (
-    exhausted.didHit &&
-    materialScalarAlphaDiscardedForTri(exhausted.indices.w, materialMask, materialMaskWidth)
-  ) {
-    exhausted.didHit = false;
-  }
-  if (exhausted.didHit) {
-    exhausted.dist = exhausted.dist + traveled;
-  }
-  return exhausted;
-}
-
-fn traceSceneAny(
-  bvhMode: u32,
-  tlasNodeCount: u32,
-  origin: vec3f,
-  dir: vec3f,
-  tMax: f32,
-  triEps: f32,
-  skipGlass: bool,
-) -> bool {
-  if (bvhMode == 1u && tlasNodeCount > 0u) {
-    return traceTlasAny(
-      tlasNodeCount,
-      origin,
-      dir,
-      tMax,
-      triEps,
-      skipGlass,
-    );
-  }
-  return bvhIntersectAny(origin, dir, tMax, triEps, skipGlass);
-}
-
 ${BVH_CAST_SHADOW_MASK_WGSL}
 
 // SHADOW-01 — castShadow-aware occlusion wrapper for the ReSTIR **DI** shadow
 // predicates (ris.wgsl candidate visibility, ReSTIR-GI visibility, GRIS
 // reconnection visibility, and shadingTerms.wgsl shading / analytic / sun
-// visibility). Identical dispatch to traceSceneAny, but the
-// leaf loops skip triangles whose bvh_material word has bit 0 set
+// visibility). The leaf loops skip triangles whose bvh_material word has bit 0 set
 // (castShadow:false — packBVHRoughMetalFromCore) or bit 2 set
 // (scalar alpha discarded). Callers pass the
 // module-scope bvh_material texture + BVH_MATERIAL_TEX_WIDTH so this module

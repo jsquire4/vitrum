@@ -40,6 +40,7 @@ interface ColorLike {
 
 export interface PbrMaterialLike {
   readonly color?: ColorLike;
+  readonly doubleSided?: boolean;
   readonly emissive?: ColorLike;
   readonly emissiveIntensity?: number;
   readonly roughness?: number;
@@ -132,7 +133,7 @@ function packBVHIndexWTri(
         `materials[${matId}].userData.surfaceTextureId`,
       );
     const metalness = (mat.metalness ?? 0);
-    isMetal = metalness > 1e-4 ? 1 : 0;
+    isMetal = metalness > 0 ? 1 : 0;
   }
   const trans4 = quantizePackedMaterialTransmission(transmission);
   const lowByte = (trans4 << 4) | (isMetal << 3) | texTypeId;
@@ -176,7 +177,8 @@ function packBVHBeerColorTri(
     g = Math.round(Math.min(1, color.g) * 255) & 0xFF;
     b = Math.round(Math.min(1, color.b) * 255) & 0xFF;
   }
-  beerBuf[tri] = (r << 24) | (g << 16) | (b << 8);
+  const sideFlags = mat?.doubleSided === true ? 1 : 0;
+  beerBuf[tri] = ((r << 24) | (g << 16) | (b << 8) | sideFlags) >>> 0;
 }
 
 /**

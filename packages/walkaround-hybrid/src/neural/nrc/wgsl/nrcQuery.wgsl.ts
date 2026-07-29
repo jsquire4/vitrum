@@ -21,10 +21,10 @@
 // ════════════════════════════════════════════════════════════════════════════
 // COMPILE-TIME STRUCTURAL GATE
 // ════════════════════════════════════════════════════════════════════════════
-// This module + its @group(4) bindings are composed into gi-ris ONLY when the
+// This module + its @group(3) bindings are composed into gi-ris ONLY when the
 // host opts into `nrcEnabled` (a compile-time engine-creation flag). When OFF
 // (the default), the gi-ris pipeline is byte-for-byte the pre-NRC pass — NO
-// @group(4), NO NRC symbols, NO layout delta. A runtime-only UBO flag that
+// @group(3), NO NRC symbols, NO layout delta. A runtime-only UBO flag that
 // bound an extra group on the default path is exactly what regressed an
 // earlier walkaround render to a black frame (f8df9a4). The structure is
 // gated at compile time so the default pipeline is provably untouched.
@@ -90,9 +90,9 @@ export function nrcQueryLayerPlan(o: NrcQueryWgslOptions): QueryLayerPlan {
 }
 
 /**
- * Emit the inline NRC query helpers + the @group(4) NRC bindings.
+ * Emit the inline NRC query helpers + the @group(3) NRC bindings.
  *
- * Bindings (group 4 — NRC-only, present ONLY when nrcEnabled is compile-time on):
+ * Bindings (group 3 — NRC-only, present ONLY when nrcEnabled is compile-time on):
  *   0 — nrcWeights      (read-only storage, f32) — concatenated weight matrices
  *   1 — nrcBiases       (read-only storage, f32) — concatenated biases
  *   2 — nrcTables       (read-only storage, f32) — hash-grid feature tables

@@ -2875,7 +2875,7 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
       );
       const ppgTrainingDispatched =
         gateOpts.ppgEnabled && (gateOpts.ppgTrainThisFrame ?? true);
-      this._tickSubsystemTraining(passLayout, ppgTrainingDispatched);
+      this._tickSubsystemTraining(ppgTrainingDispatched);
 
       return true;
     } catch (error) {
@@ -3347,10 +3347,7 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
     }
   }
 
-  private _tickSubsystemTraining(
-    _passLayout: ReturnType<typeof buildPassLayout>,
-    ppgTrainingDispatched: boolean,
-  ): void {
+  private _tickSubsystemTraining(ppgTrainingDispatched: boolean): void {
     // W9 follow-up — periodic training/refine cycle:
     // fluxAtomics GPU readback -> CPU dTree/sTree refinement -> re-upload.
     try {

@@ -259,6 +259,8 @@ type NrcReadbackState =
 interface NrcInitializationCandidate {
   trainer?: FusedMlpTrainer;
   tableTrainer?: HashGridTableTrainer;
+  trainerDiagnosticsBuffer?: GPUBuffer;
+  trainerDiagnosticsReadback?: GPUBuffer;
   tablesBuf?: GPUBuffer;
   levelsBuf?: GPUBuffer;
   inferenceArenaA?: GPUBuffer;
@@ -285,13 +287,15 @@ function destroyCandidateBuffer(buffer: GPUBuffer | undefined): void {
 
 function rollbackNrcInitialization(candidate: NrcInitializationCandidate): void {
   try { candidate.tableTrainer?.dispose(); } catch { /* continue rollback */ }
+  try { candidate.trainer?.dispose(); } catch { /* continue rollback */ }
+  destroyCandidateBuffer(candidate.trainerDiagnosticsReadback);
+  destroyCandidateBuffer(candidate.trainerDiagnosticsBuffer);
   destroyCandidateBuffer(candidate.cfgUbo);
   destroyCandidateBuffer(candidate.runtimeArena);
   destroyCandidateBuffer(candidate.inferenceArenaB);
   destroyCandidateBuffer(candidate.inferenceArenaA);
   destroyCandidateBuffer(candidate.levelsBuf);
   destroyCandidateBuffer(candidate.tablesBuf);
-  try { candidate.trainer?.dispose(); } catch { /* continue rollback */ }
 }
 export class NrcSubsystem implements PipelineSubsystem {
   readonly cfg: NrcConfig;
@@ -311,6 +315,11 @@ export class NrcSubsystem implements PipelineSubsystem {
   private _activeInferenceArena: GPUBuffer | undefined;
   private _spareInferenceArena: GPUBuffer | undefined;
   private _runtimeArena: GPUBuffer | undefined;
+  /** Trainer-only counters are separate from per-frame query counters so the
+   *  next frame's slot reset cannot erase optimizer health telemetry before
+   *  it is copied and mapped. */
+  private _trainerDiagnosticsBuffer: GPUBuffer | undefined;
+  private _trainerDiagnosticsReadback: GPUBuffer | undefined;
   private _inferenceLayout: NrcInferenceArenaLayout | undefined;
   private _runtimeLayout: NrcRuntimeArenaLayout | undefined;
   private _inferenceEpoch = 0;
@@ -334,6 +343,9 @@ export class NrcSubsystem implements PipelineSubsystem {
   private _readbackState: NrcReadbackState = { kind: 'idle' };
   private _readbackSequence = 0;
   private _lastGpuDiagnostics = new Uint32Array(NRC_DIAGNOSTIC_COUNT);
+  /** Last completed optimizer/table-training diagnostic epoch. Kept separate
+   *  from query diagnostics because the next query readback replaces the latter. */
+  private _lastTrainerDiagnostics = new Uint32Array(NRC_DIAGNOSTIC_COUNT);
   private _hostDroppedNonFiniteRecords = 0;
   private _hostClampedTargets = 0;
   private _readbackOverlapSkips = 0;
@@ -379,12 +391,17 @@ export class NrcSubsystem implements PipelineSubsystem {
   /** Last completed GPU epoch plus cumulative host-side rejection telemetry. */
   diagnostics(): NrcDiagnostics {
     const footprint = computeNrcResourceFootprint(this.cfg);
+    const gpuDiagnostic = (index: number): number => Math.min(
+      U32_MAX,
+      (this._lastGpuDiagnostics[index] ?? 0) +
+        (this._lastTrainerDiagnostics[index] ?? 0),
+    );
     return {
-      droppedRecords: this._lastGpuDiagnostics[NRC_DIAGNOSTIC_INDEX.droppedRecords] ?? 0,
-      saturatedValues: this._lastGpuDiagnostics[NRC_DIAGNOSTIC_INDEX.saturatedValues] ?? 0,
-      nonFiniteValues: this._lastGpuDiagnostics[NRC_DIAGNOSTIC_INDEX.nonFiniteValues] ?? 0,
-      invalidPdfs: this._lastGpuDiagnostics[NRC_DIAGNOSTIC_INDEX.invalidPdfs] ?? 0,
-      droppedUpdates: this._lastGpuDiagnostics[NRC_DIAGNOSTIC_INDEX.droppedUpdates] ?? 0,
+      droppedRecords: gpuDiagnostic(NRC_DIAGNOSTIC_INDEX.droppedRecords),
+      saturatedValues: gpuDiagnostic(NRC_DIAGNOSTIC_INDEX.saturatedValues),
+      nonFiniteValues: gpuDiagnostic(NRC_DIAGNOSTIC_INDEX.nonFiniteValues),
+      invalidPdfs: gpuDiagnostic(NRC_DIAGNOSTIC_INDEX.invalidPdfs),
+      droppedUpdates: gpuDiagnostic(NRC_DIAGNOSTIC_INDEX.droppedUpdates),
       hostDroppedNonFiniteRecords: this._hostDroppedNonFiniteRecords,
       hostClampedTargets: this._hostClampedTargets,
       readbackOverlapSkips: this._readbackOverlapSkips,
@@ -472,12 +489,36 @@ export class NrcSubsystem implements PipelineSubsystem {
         ) as unknown as BufferSource,
       );
 
+      const trainerDiagnosticsBuffer = d.createBuffer({
+        label: 'nrc-trainer-diagnostics',
+        size: NRC_DIAGNOSTIC_BYTES,
+        usage:
+          GPUBufferUsage.STORAGE |
+          GPUBufferUsage.COPY_SRC |
+          GPUBufferUsage.COPY_DST,
+      });
+      candidate.trainerDiagnosticsBuffer = trainerDiagnosticsBuffer;
+      d.queue.writeBuffer(
+        trainerDiagnosticsBuffer,
+        0,
+        new Uint32Array(NRC_DIAGNOSTIC_COUNT),
+      );
+      const trainerDiagnosticsReadback = d.createBuffer({
+        label: 'nrc-trainer-diagnostics-readback',
+        size: NRC_DIAGNOSTIC_BYTES,
+        usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+      });
+      candidate.trainerDiagnosticsReadback = trainerDiagnosticsReadback;
+
     // ── Trainer (the cache MLP) ──
       const spec: FusedNetSpec = { inW, W: cfg.width, outW: OUT_W, hidden: cfg.hidden };
       const tcfg: FusedTrainerConfig = { useF16: cfg.useF16, tileB: cfg.tileB };
-      // Diagnostics occupy words 0..N of the runtime arena, preserving the
-      // trainer kernels' existing zero-based array<atomic<u32>> contract.
-      const trainer = new FusedMlpTrainer(d, spec, tcfg, runtimeArena);
+      const trainer = new FusedMlpTrainer(
+        d,
+        spec,
+        tcfg,
+        trainerDiagnosticsBuffer,
+      );
       candidate.trainer = trainer;
       await trainer.build(cfg.recordCap);
       this._assertInitializationActive();
@@ -532,7 +573,7 @@ export class NrcSubsystem implements PipelineSubsystem {
         tableScalars,
         recordCap: cfg.recordCap,
         tableLearningRate: cfg.tableLearningRate,
-        }, runtimeArena);
+        }, trainerDiagnosticsBuffer);
       candidate.tableTrainer = tableTrainer;
       await tableTrainer.build(
         { gradInputF: trainer.gradInputF!, tablesBuf, levelsBuf },
@@ -599,6 +640,8 @@ export class NrcSubsystem implements PipelineSubsystem {
       this._activeInferenceArena = inferenceArenaA;
       this._spareInferenceArena = inferenceArenaB;
       this._runtimeArena = runtimeArena;
+      this._trainerDiagnosticsBuffer = trainerDiagnosticsBuffer;
+      this._trainerDiagnosticsReadback = trainerDiagnosticsReadback;
       this._inferenceLayout = inferenceLayout;
       this._runtimeLayout = runtimeLayout;
       this._inferenceEpoch = inferenceEpoch;
@@ -703,6 +746,11 @@ export class NrcSubsystem implements PipelineSubsystem {
       encoder.clearBuffer(runtimeArena, runtimeLayout.recordsByteOffset, runtimeLayout.recordsBytes);
       encoder.clearBuffer(runtimeArena, runtimeLayout.diagnosticsByteOffset, runtimeLayout.diagnosticsBytes);
       encoder.clearBuffer(runtimeArena, runtimeLayout.claimsByteOffset, runtimeLayout.claimsBytes);
+      encoder.clearBuffer(
+        this._trainerDiagnosticsBuffer!,
+        0,
+        NRC_DIAGNOSTIC_BYTES,
+      );
       const inferenceHeader = buildNrcInferenceArenaHeader(inferenceLayout, {
         weightsBytes: trainer.wMaster.length * 4,
         biasesBytes: trainer.bMaster.length * 4,
@@ -756,6 +804,7 @@ export class NrcSubsystem implements PipelineSubsystem {
     ];
     let committed = false;
     const oldGpuDiagnostics = this._lastGpuDiagnostics.slice();
+    const oldTrainerDiagnostics = this._lastTrainerDiagnostics.slice();
     let closed = false;
     const destroyStaging = (): void => {
       runSceneMutationCleanups(
@@ -780,6 +829,7 @@ export class NrcSubsystem implements PipelineSubsystem {
         this._sceneBoundsMin = nextSceneBoundsMin;
         this._sceneBoundsMax = nextSceneBoundsMax;
         this._lastGpuDiagnostics.fill(0);
+        this._lastTrainerDiagnostics.fill(0);
         this._trainedSteps = 0;
         committed = true;
       },
@@ -801,6 +851,7 @@ export class NrcSubsystem implements PipelineSubsystem {
               this._sceneBoundsMax = oldSceneBoundsMax;
               this._trainedSteps = oldTrainedSteps;
               this._lastGpuDiagnostics.set(oldGpuDiagnostics);
+              this._lastTrainerDiagnostics.set(oldTrainerDiagnostics);
             },
             ...staging.map((buffer) => () => buffer.destroy()),
           ],
@@ -1179,6 +1230,11 @@ export class NrcSubsystem implements PipelineSubsystem {
         runtimeLayout.diagnosticsBytes,
       );
       encoder.clearBuffer(
+        this._trainerDiagnosticsBuffer!,
+        0,
+        NRC_DIAGNOSTIC_BYTES,
+      );
+      encoder.clearBuffer(
         this._runtimeArena!,
         runtimeLayout.claimsByteOffset,
         runtimeLayout.claimsBytes,
@@ -1198,6 +1254,7 @@ export class NrcSubsystem implements PipelineSubsystem {
     const oldRuntimeEpoch = this._runtimeEpoch;
     const oldTrainedSteps = this._trainedSteps;
     const oldDiagnostics = this._lastGpuDiagnostics.slice();
+    const oldTrainerDiagnostics = this._lastTrainerDiagnostics.slice();
     let committed = false;
     let closed = false;
     const destroyStaging = (): void => {
@@ -1218,6 +1275,7 @@ export class NrcSubsystem implements PipelineSubsystem {
         this._runtimeEpoch = nextEpoch;
         this._trainedSteps = snapshot.trainedSteps;
         this._lastGpuDiagnostics.fill(0);
+        this._lastTrainerDiagnostics.fill(0);
         committed = true;
       },
       rollback: () => {
@@ -1234,6 +1292,7 @@ export class NrcSubsystem implements PipelineSubsystem {
           this._runtimeEpoch = oldRuntimeEpoch;
           this._trainedSteps = oldTrainedSteps;
           this._lastGpuDiagnostics.set(oldDiagnostics);
+          this._lastTrainerDiagnostics.set(oldTrainerDiagnostics);
         }
         closed = true;
         destroyStaging();
@@ -1492,6 +1551,11 @@ export class NrcSubsystem implements PipelineSubsystem {
 
       trainer.setBatch(this._batchX!, this._batchY!);
       const encoder = this._device.createCommandEncoder({ label: `nrc-train-${ticket.sequence}` });
+      encoder.clearBuffer(
+        this._trainerDiagnosticsBuffer!,
+        0,
+        NRC_DIAGNOSTIC_BYTES,
+      );
       mlpTransaction = trainer.recordTrainStep(encoder, this.cfg.learningRate, unpacked.filled);
       if (!mlpTransaction) return;
       tableTransaction = tableTrainer.recordStep(encoder, this._batchPos!, unpacked.filled);
@@ -1540,6 +1604,13 @@ export class NrcSubsystem implements PipelineSubsystem {
       encoder.copyBufferToBuffer(
         publicationHeaderStaging, 0, inferenceCandidate, 0, publicationHeader.byteLength,
       );
+      encoder.copyBufferToBuffer(
+        this._trainerDiagnosticsBuffer!,
+        0,
+        this._trainerDiagnosticsReadback!,
+        0,
+        NRC_DIAGNOSTIC_BYTES,
+      );
       const commandBuffer = encoder.finish();
       if (ticket.generation !== this._generation || this._lifecycleState !== 'ready') {
         this._staleReadbacks++;
@@ -1555,6 +1626,30 @@ export class NrcSubsystem implements PipelineSubsystem {
         tableTransaction.rollback();
         return;
       }
+      const trainerDiagnosticsReadback = this._trainerDiagnosticsReadback!;
+      await trainerDiagnosticsReadback.mapAsync(
+        GPUMapMode.READ,
+        0,
+        NRC_DIAGNOSTIC_BYTES,
+      );
+      let trainerDiagnostics: Uint32Array;
+      try {
+        trainerDiagnostics = new Uint32Array(
+          trainerDiagnosticsReadback.getMappedRange(0, NRC_DIAGNOSTIC_BYTES),
+        ).slice();
+      } finally {
+        trainerDiagnosticsReadback.unmap();
+      }
+      // Scene reset can commit while the persistent diagnostics buffer is
+      // mapping. Revalidate after that asynchronous boundary before publishing
+      // either diagnostics or the trained candidate from the old generation.
+      if (ticket.generation !== this._generation || this._lifecycleState !== 'ready') {
+        this._staleReadbacks++;
+        mlpTransaction.rollback();
+        tableTransaction.rollback();
+        return;
+      }
+      this._lastTrainerDiagnostics.set(trainerDiagnostics);
       // The gate write is the final fallible operation. Once the live handles
       // below are swapped, publication is irreversible and retirement cleanup
       // must never try to resurrect buffers that may already have been freed.
@@ -1618,15 +1713,20 @@ export class NrcSubsystem implements PipelineSubsystem {
     this._generation = (this._generation + 1) >>> 0;
     if (pendingTicket) this._destroyReadbackTicket(pendingTicket);
     try { this._tableTrainer?.dispose(); } catch { /* continue disposing */ }
+    try { this._trainer?.dispose(); } catch { /* continue disposing */ }
+    destroyCandidateBuffer(this._trainerDiagnosticsReadback);
+    destroyCandidateBuffer(this._trainerDiagnosticsBuffer);
     destroyCandidateBuffer(this._cfgUbo);
     destroyCandidateBuffer(this._runtimeArena);
     destroyCandidateBuffer(this._spareInferenceArena);
     destroyCandidateBuffer(this._activeInferenceArena);
     destroyCandidateBuffer(this._levelsBuf);
     destroyCandidateBuffer(this._tablesBuf);
-    try { this._trainer?.dispose(); } catch { /* continue disposing */ }
     this._trainer = undefined;
     this._tableTrainer = undefined;
+    this._trainerDiagnosticsReadback = undefined;
+    this._trainerDiagnosticsBuffer = undefined;
+    this._lastTrainerDiagnostics.fill(0);
     this._tablesBuf = undefined;
     this._levelsBuf = undefined;
     this._cfgUbo = undefined;

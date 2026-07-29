@@ -106,7 +106,7 @@ export class AtrousIndirectPass implements Pass {
           byteOffset,
         );
         return cachedBindGroup(resourceCache, `pass:atrous-indirect:${iter}`, [
-          this._uboRef,
+          this._uboRef.buf,
           inputTex,
           outputTex,
           resources.common.gNormalDepthTexture,

@@ -357,6 +357,41 @@ describe('validateScene', () => {
     expect(() => validateScene(sceneWith([missingBase]))).toThrow(/morphTargetUvSets\[2\].*matching/);
   });
 
+  it('validates scalable morph COLOR_n lanes, widths, bases, and COLOR_0 alias parity', () => {
+    const identity = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
+    const color0 = new Float32Array(9);
+    const color2 = new Float32Array(12);
+    const delta0 = new Float32Array(9);
+    const delta2 = new Float32Array(12);
+    const skinned = {
+      ...triangle('morph-color-sets'),
+      kind: 'skinned-mesh' as const,
+      colors: color0,
+      colorSets: [color0, undefined, color2],
+      skinIndices: new Uint32Array(12),
+      skinWeights: new Float32Array([1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0]),
+      bones: identity,
+      boneInverses: identity.slice(),
+      morphTargets: [new Float32Array(9)],
+      morphTargetColors: [delta0],
+      morphTargetColorSets: [[delta0], undefined, [delta2]],
+      morphWeights: new Float32Array([1]),
+    };
+    expect(() => validateScene(sceneWith([skinned]))).not.toThrow();
+    expect(() => validateScene(sceneWith([{
+      ...skinned,
+      colorSets: [color0],
+    }]))).toThrow(/morphTargetColorSets\[2\].*matching/);
+    expect(() => validateScene(sceneWith([{
+      ...skinned,
+      morphTargetColorSets: [[new Float32Array(12)], undefined, [delta2]],
+    }]))).toThrow(/morphTargetColorSets\[0\].*colorSets\[0\].*9/);
+    expect(() => validateScene(sceneWith([{
+      ...skinned,
+      morphTargetColorSets: [[new Float32Array(9).fill(1)], undefined, [delta2]],
+    }]))).toThrow(/legacy morphTargetColors alias/);
+  });
+
   it('routes analytic shape-domain checks through the canonical validator', () => {
     const invalid: ScenePrimitive = {
       kind: 'analytic',

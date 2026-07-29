@@ -101,19 +101,6 @@ type PackedMeshAreaTriangle = {
   ];
   readonly mappedMaterialId: number | null;
   readonly sourceWorldArea: number;
-  /**
-   * Per-channel source multiplier before authored mesh-area emitter color and
-   * intensity are applied. `1` for scalar emitters; readable emissive-map
-   * texel/quadrature factors for mapped emitters.
-   */
-  readonly sourceFactor: Vec3;
-  /**
-   * Explicit mesh-area emitter ordinal for inverse adjoint replay, or -1 for
-   * synthesized implicit emitters. Stored in the source-factor vec4 `.w` lane so
-   * capped/reordered triangle streams can still scatter gradients to the owning
-   * emitter without assuming contiguity.
-   */
-  readonly adjointEmitterSlot: number;
   /** Emitted-power proxy used by the NEE cap and light tree: luminance(Le) · area. */
   readonly power: number;
   /** SHADOW-01 — true ⟺ source mesh-area emitter set castShadow:false.
@@ -122,8 +109,6 @@ type PackedMeshAreaTriangle = {
 };
 
 type MeshAreaTrianglePackOptions = {
-  readonly includeZeroRadianceTriangles?: boolean;
-  readonly adjointEmitterSlot?: number;
   readonly materialIdByPrimitive?: ReadonlyMap<string, number>;
 };
 
@@ -133,7 +118,7 @@ type MeshAreaTrianglePackOptions = {
  * light-tree build (O(N log N)).
  *
  * Limit = 65 536 triangles ≈ 7 MiB for the primary records, plus the
- * source-factor and light-tree storage.
+ * light-tree storage.
  *
  * Rationale:
  *   - A 1M-triangle emissive mesh would require at least 112 MB for primary
@@ -141,9 +126,6 @@ type MeshAreaTrianglePackOptions = {
  *   - Production fails synchronously above the limit. Silently dropping even a
  *     dim triangle would leave forward-hit emission with zero NEE proposal
  *     support and bias MIS.
- *   - Inverse-adjoint replay uses the same hard ceiling, but fails closed when
- *     exact coverage would exceed it. A truncated replay stream would compute
- *     a biased derivative for the omitted emitting triangles.
  */
 export const MESH_AREA_LIGHT_TRI_CAP = 65536;
 
@@ -159,28 +141,6 @@ export interface PackedEmitterArrays {
   readonly spotLightsData: Float32Array;
   readonly rectAreaLightsData: Float32Array;
   readonly meshAreaLightsData: Float32Array;
-  readonly meshAreaLightSourceFactorsData: Float32Array;
-}
-
-export interface MeshAreaEmitterAdjointRange {
-  /** First packed mesh-area triangle slot for this explicit emitter. */
-  readonly start: number;
-  /** Number of packed non-degenerate triangles this explicit emitter contributes. */
-  readonly count: number;
-  /** Total mesh-area triangle count before the exact-replay capacity check. */
-  readonly totalMeshAreaTriangles: number;
-  /**
-   * True when an exact adjoint replay stream would exceed the supported GPU
-   * capacity. Such a target is ineligible for path replay and must use the
-   * finite-difference fallback; replay packing throws instead of truncating.
-   */
-  readonly capped: boolean;
-  /**
-   * Stable explicit mesh-area emitter ordinal used by adjoint replay owner tags.
-   * Unlike `start`, this remains valid after the global NEE stream is capped and
-   * power-sorted.
-   */
-  readonly adjointEmitterSlot: number;
 }
 
 function pushVec4(
@@ -448,13 +408,6 @@ function packMeshAreaTriangles(
           emissiveIntensity: 1,
         }
       : undefined);
-  const mappedSourceFactorMaterial: MaterialSpec | undefined = mappedRadianceMaterial == null
-    ? undefined
-    : {
-        ...mappedRadianceMaterial,
-        emissive: [1, 1, 1],
-        emissiveIntensity: 1,
-      };
   const mappedBaseRadiance: Vec3 = implicitMaterial == null
     ? radiance
     : [
@@ -462,7 +415,7 @@ function packMeshAreaTriangles(
         (implicitMaterial.emissive?.[1] ?? 0) * (implicitMaterial.emissiveIntensity ?? 1),
         (implicitMaterial.emissive?.[2] ?? 0) * (implicitMaterial.emissiveIntensity ?? 1),
       ];
-  const mappedMaterialId = mappedSourceFactorMaterial == null
+  const mappedMaterialId = mappedRadianceMaterial == null
     ? null
     : options.materialIdByPrimitive?.get(primitive.id) ?? (() => {
         let materialId = 0;
@@ -474,7 +427,7 @@ function packMeshAreaTriangles(
         }
         return -1;
       })();
-  if (mappedSourceFactorMaterial != null && (mappedMaterialId == null || mappedMaterialId < 0)) {
+  if (mappedRadianceMaterial != null && (mappedMaterialId == null || mappedMaterialId < 0)) {
     throw new Error(
       `@vitrum/pt-webgpu: cannot resolve material slot for mapped mesh emitter "${emitter.id}".`,
     );
@@ -533,7 +486,7 @@ function packMeshAreaTriangles(
       const uv1A = uvAt(uv1, i0);
       const uv1B = uvAt(uv1, i1);
       const uv1C = uvAt(uv1, i2);
-      const mappedTexCoord = mappedSourceFactorMaterial?.emissiveMap?.texCoord ?? 0;
+      const mappedTexCoord = mappedRadianceMaterial?.emissiveMap?.texCoord ?? 0;
       const highUvStream = mappedTexCoord > 1
         ? uvSets?.[mappedTexCoord]
         : undefined;
@@ -570,14 +523,13 @@ function packMeshAreaTriangles(
         // authored base Le can emit. The GPU evaluates the exact mapped Le at
         // the sampled point; using the base Le here guarantees non-zero PMF
         // support even for a single bright texel, bilinear seam, or mip bleed.
-        const sourceFactor: Vec3 = [1, 1, 1];
         const triangleRadiance: Vec3 = [
           mappedBaseRadiance[0],
           mappedBaseRadiance[1],
           mappedBaseRadiance[2],
         ];
         const emittedLuminance = luminance(triangleRadiance[0], triangleRadiance[1], triangleRadiance[2]);
-        if (!options.includeZeroRadianceTriangles && !hasPositiveRadiance(triangleRadiance)) {
+        if (!hasPositiveRadiance(triangleRadiance)) {
           return;
         }
         packed.push({
@@ -585,7 +537,7 @@ function packMeshAreaTriangles(
           triB,
           triC,
           radiance: [triangleRadiance[0], triangleRadiance[1], triangleRadiance[2]],
-          baseRadiance: mappedSourceFactorMaterial == null
+          baseRadiance: mappedRadianceMaterial == null
             ? [triangleRadiance[0], triangleRadiance[1], triangleRadiance[2]]
             : [mappedBaseRadiance[0], mappedBaseRadiance[1], mappedBaseRadiance[2]],
           emissiveRawUvs: [
@@ -595,8 +547,6 @@ function packMeshAreaTriangles(
           ],
           mappedMaterialId,
           sourceWorldArea: area,
-          sourceFactor,
-          adjointEmitterSlot: options.adjointEmitterSlot ?? -1,
           power: emittedLuminance * area,
           castShadowDisabled,
         });
@@ -680,120 +630,6 @@ function synthesizeImplicitEmitters(
     });
   }
   return result;
-}
-
-export function meshAreaEmitterAdjointRangeForScene(
-  scene: Scene,
-  emitterId: string,
-): MeshAreaEmitterAdjointRange | null {
-  const warnings: string[] = [];
-  let cursor = 0;
-  let targetStart = -1;
-  let targetCount = 0;
-  let targetAdjointEmitterSlot = -1;
-  let found = false;
-  let explicitMeshAreaSlot = 0;
-
-  for (const emitter of scene.emitters) {
-    if (emitter.kind !== 'mesh-area') continue;
-    const count = packMeshAreaTriangles(
-      emitter,
-      scene,
-      warnings,
-      { includeZeroRadianceTriangles: true, adjointEmitterSlot: explicitMeshAreaSlot },
-    ).length;
-    if (emitter.id === emitterId) {
-      found = true;
-      targetStart = cursor;
-      targetCount = count;
-      targetAdjointEmitterSlot = explicitMeshAreaSlot;
-    }
-    cursor += count;
-    explicitMeshAreaSlot += 1;
-  }
-
-  for (const synthetic of synthesizeImplicitEmitters(scene, undefined, warnings)) {
-    cursor += packMeshAreaTriangles(synthetic, scene, warnings).length;
-  }
-
-  if (!found || targetCount <= 0) return null;
-  return {
-    start: targetStart,
-    count: targetCount,
-    totalMeshAreaTriangles: cursor,
-    capped: cursor > MESH_AREA_LIGHT_TRI_CAP,
-    adjointEmitterSlot: targetAdjointEmitterSlot,
-  };
-}
-
-export interface PackedMeshAreaAdjointReplayArrays {
-  readonly warnings: readonly string[];
-  readonly meshAreaLightCount: number;
-  readonly meshAreaLightsData: Float32Array;
-  readonly meshAreaLightSourceFactorsData: Float32Array;
-}
-
-export function packMeshAreaAdjointReplayArrays(scene: Scene): PackedMeshAreaAdjointReplayArrays {
-  const warnings: string[] = [];
-  const meshAreaTriangles: PackedMeshAreaTriangle[] = [];
-  let explicitMeshAreaSlot = 0;
-  for (const emitter of scene.emitters) {
-    if (emitter.kind !== 'mesh-area') continue;
-    meshAreaTriangles.push(...packMeshAreaTriangles(
-      emitter,
-      scene,
-      warnings,
-      { includeZeroRadianceTriangles: true, adjointEmitterSlot: explicitMeshAreaSlot },
-    ));
-    explicitMeshAreaSlot += 1;
-  }
-
-  for (const synthetic of synthesizeImplicitEmitters(scene, undefined, warnings)) {
-    meshAreaTriangles.push(...packMeshAreaTriangles(synthetic, scene, warnings));
-  }
-
-  if (meshAreaTriangles.length > MESH_AREA_LIGHT_TRI_CAP) {
-    throw new RangeError(
-      `@vitrum/pt-webgpu: exact adjoint mesh-area replay requires ${meshAreaTriangles.length} ` +
-        `triangles, exceeding the supported limit of ${MESH_AREA_LIGHT_TRI_CAP}. ` +
-        'Path replay cannot truncate emitting geometry; use finite-difference for this target.',
-    );
-  }
-
-  const meshAreaLights: number[] = [];
-  const meshAreaLightSourceFactors: number[] = [];
-  for (const tri of meshAreaTriangles) {
-    pushVec4(meshAreaLights, tri.triA);
-    pushVec4(meshAreaLights, tri.triB);
-    pushVec4(meshAreaLights, tri.triC);
-    pushVec4(meshAreaLights, tri.radiance, tri.castShadowDisabled ? 1 : 0);
-    meshAreaLights.push(
-      tri.emissiveRawUvs[0][0], tri.emissiveRawUvs[0][1],
-      tri.emissiveRawUvs[1][0], tri.emissiveRawUvs[1][1],
-      tri.emissiveRawUvs[2][0], tri.emissiveRawUvs[2][1],
-      tri.mappedMaterialId == null ? 0 : tri.mappedMaterialId + 1,
-      tri.sourceWorldArea,
-    );
-    pushVec4(meshAreaLights, tri.baseRadiance);
-    pushVec4(meshAreaLightSourceFactors, tri.sourceFactor, tri.adjointEmitterSlot + 1);
-  }
-  const meshAreaLightCount = meshAreaTriangles.length;
-  return {
-    warnings,
-    meshAreaLightCount,
-    meshAreaLightsData: packedFloatData(
-      meshAreaLights,
-      meshAreaLightCount,
-      MESH_AREA_LIGHT_FLOAT_STRIDE,
-      'adjoint-mesh-area-light',
-    ),
-    meshAreaLightSourceFactorsData: packedFloatData(
-      meshAreaLightSourceFactors,
-      meshAreaLightCount,
-      4,
-      'adjoint-mesh-area-light-source-factor',
-    ),
-  };
 }
 
 export function packEmitterArrays(
@@ -990,7 +826,6 @@ export function packEmitterArrays(
   const cappedTriangles = meshAreaTriangles;
 
   const meshAreaLights: number[] = [];
-  const meshAreaLightSourceFactors: number[] = [];
   for (const tri of cappedTriangles) {
     pushVec4(meshAreaLights, tri.triA);
     pushVec4(meshAreaLights, tri.triB);
@@ -1005,7 +840,6 @@ export function packEmitterArrays(
       tri.sourceWorldArea,
     );
     pushVec4(meshAreaLights, tri.baseRadiance);
-    pushVec4(meshAreaLightSourceFactors, tri.sourceFactor);
   }
   const meshAreaLightCount = cappedTriangles.length;
   const meshAreaLightsData = packedFloatData(
@@ -1014,13 +848,6 @@ export function packEmitterArrays(
     MESH_AREA_LIGHT_FLOAT_STRIDE,
     'mesh-area-light',
   );
-  const meshAreaLightSourceFactorsData = packedFloatData(
-    meshAreaLightSourceFactors,
-    meshAreaLightCount,
-    4,
-    'mesh-area-light-source-factor',
-  );
-
   return {
     warnings,
     directionalLightCount,
@@ -1033,7 +860,6 @@ export function packEmitterArrays(
     spotLightsData,
     rectAreaLightsData,
     meshAreaLightsData,
-    meshAreaLightSourceFactorsData,
   };
 }
 

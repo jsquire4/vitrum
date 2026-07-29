@@ -1,8 +1,8 @@
 /**
  * B3 (road-to-100) — directional IBL GPU resources for the scene bind group
  * (bindings 15-19): the equirect radiance map + the PBRT 2D-distribution
- * importance CDFs as TEXTURES (so the scene group stays at the 16-storage
- * shade-pass floor), plus the small EnvParams uniform.
+ * importance CDFs as textures (so the scene group stays at three versioned
+ * storage arenas), plus the small EnvParams uniform.
  *
  * A 1×1 placeholder set + envParams.hasEnv=0 backs non-HDRI scenes so the bind
  * group is always valid; the WGSL `environmentSample` helpers fall back to the

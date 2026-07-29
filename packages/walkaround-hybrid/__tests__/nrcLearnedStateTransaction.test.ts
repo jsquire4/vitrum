@@ -239,6 +239,10 @@ function installReadyState(
     _activeInferenceArena: asGpu(oldInference),
     _spareInferenceArena: asGpu(spareInference),
     _runtimeArena: asGpu(memoryBuffer('runtime', runtimeLayout.byteSize)),
+    _trainerDiagnosticsBuffer: asGpu(memoryBuffer(
+      'trainer-diagnostics',
+      NRC_DIAGNOSTIC_BYTES,
+    )),
     _inferenceLayout: inferenceLayout,
     _runtimeLayout: runtimeLayout,
     _inferenceEpoch: 2,

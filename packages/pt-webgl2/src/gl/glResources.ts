@@ -34,7 +34,7 @@ import {
 import { probeGlCaps, type GlCaps } from './glCaps.js';
 import { SOBOL_TEXTURE_SIZE, generateSobolTextureData } from '@vitrum/shared-samplers';
 import { BdptSubpathBuilder } from './BdptSubpathBuilder.js';
-import { PresentPass } from './PresentPass.js';
+import { PresentPass, selectPresentSources } from './PresentPass.js';
 import { uploadFrameUniforms } from './uploadFrameUniforms.js';
 import { BLEND_FRAG } from './blendFrag.js';
 import {
@@ -602,10 +602,14 @@ export class GlResources {
 
   /** Re-run only tonemap/exposure/output-space over the current linear accumulator. */
   presentAccumulation(tonemapMode: number, exposure: number, outputColorSpace: number): void {
-    const srcTex = this.#denoisedLinearTex ?? this.#linearResultTexture();
-    if (srcTex == null) return;
+    const sources = selectPresentSources(
+      this.#linearResultTexture(),
+      this.#denoisedLinearTex,
+    );
+    if (sources == null) return;
     this.#presentPass.run(
-      srcTex,
+      sources.radiance,
+      sources.coverage,
       this.#accumWidth,
       this.#accumHeight,
       tonemapMode,

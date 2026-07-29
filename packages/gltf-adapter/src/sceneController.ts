@@ -1214,6 +1214,8 @@ export class GltfSceneController {
       ...(solved.uvs ? { uvs: solved.uvs } : {}),
       ...(solved.uv1 ? { uv1: solved.uv1 } : {}),
       ...(solved.uvSets ? { uvSets: solved.uvSets } : {}),
+      ...(solved.colors ? { colors: solved.colors } : {}),
+      ...(solved.colorSets ? { colorSets: solved.colorSets } : {}),
     };
   }
 
@@ -1297,6 +1299,8 @@ export class GltfSceneController {
       ...(solved.uvs ? { uvs: solved.uvs } : {}),
       ...(solved.uv1 ? { uv1: solved.uv1 } : {}),
       ...(solved.uvSets ? { uvSets: solved.uvSets } : {}),
+      ...(solved.colors ? { colors: solved.colors } : {}),
+      ...(solved.colorSets ? { colorSets: solved.colorSets } : {}),
     };
   }
 

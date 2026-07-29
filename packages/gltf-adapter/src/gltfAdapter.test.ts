@@ -898,7 +898,7 @@ describe('minimal triangle', () => {
     },
   );
 
-  it('preserves the base stream and diagnoses optional COLOR_n morph deltas it cannot represent', async () => {
+  it('preserves and solves additive RGB/RGBA COLOR_n morph deltas end to end', async () => {
     const fixture = makeMinimalTriangleGltf();
     const baseColorAccessor = appendF32Accessor(
       fixture,
@@ -912,26 +912,66 @@ describe('minimal triangle', () => {
       'VEC3',
       3,
     );
+    const baseColor2Accessor = appendF32Accessor(
+      fixture,
+      [0.1, 0.2, 0.3, 1, 0.4, 0.5, 0.6, 0.8, 0.7, 0.8, 0.9, 0.6],
+      'VEC4',
+      3,
+    );
+    const color2DeltaAccessor = appendF32Accessor(
+      fixture,
+      [0.2, 0, -0.2, 0, -0.2, 0.2, 0, 0.2, 0, -0.2, 0.2, -0.2],
+      'VEC4',
+      3,
+    );
     const primitive = fixture.gltf.meshes![0]!.primitives[0]!;
     primitive.attributes.COLOR_0 = baseColorAccessor;
-    primitive.targets = [{ COLOR_0: colorDeltaAccessor }];
-    fixture.gltf.meshes![0]!.weights = [1];
+    primitive.attributes.COLOR_2 = baseColor2Accessor;
+    primitive.targets = [{
+      COLOR_0: colorDeltaAccessor,
+      COLOR_2: color2DeltaAccessor,
+    }];
+    fixture.gltf.meshes![0]!.weights = [0.5];
 
     const { diagnostics, scene } = await gltfToScene(fixture.gltf, {
       buffers: fixture.buffers,
     });
-    const imported = scene.primitives[0] as MeshPrimitive;
+    const imported = scene.primitives[0] as SkinnedMeshPrimitive;
 
     expect(Array.from(imported.colors ?? [])).toEqual([
       1, 0, 0,
       0, 1, 0,
       0, 0, 1,
     ]);
-    expect(diagnostics).toContainEqual(expect.objectContaining({
-      severity: 'warning',
-      code: 'ignored-morph-target-attribute',
-      path: 'meshes[0].primitives[0].targets[0].COLOR_0',
-    }));
+    expect(imported.morphTargetColors).toHaveLength(1);
+    expect(imported.morphTargetColorSets?.[0]?.[0]).toBe(imported.morphTargetColors?.[0]);
+    expect(Array.from(imported.morphTargetColorSets?.[2]?.[0] ?? [])).toEqual(
+      Array.from(new Float32Array([
+        0.2, 0, -0.2, 0,
+        -0.2, 0.2, 0, 0.2,
+        0, -0.2, 0.2, -0.2,
+      ])),
+    );
+    expect(diagnostics.some((diagnostic) =>
+      diagnostic.path.includes('COLOR_') && diagnostic.code === 'ignored-morph-target-attribute'
+    )).toBe(false);
+
+    const solved = solveSkin(imported);
+    expect(Array.from(solved.colors ?? [])).toEqual(
+      Array.from(new Float32Array([
+        0.875, 0.125, 0,
+        0.125, 0.875, 0,
+        0, 0.125, 0.875,
+      ])),
+    );
+    const solvedColor2 = solved.colorSets?.[2] ?? [];
+    [
+      0.2, 0.2, 0.2, 1,
+      0.3, 0.6, 0.6, 0.9,
+      0.7, 0.7, 1, 0.5,
+    ].forEach((value, index) => {
+      expect(solvedColor2[index]).toBeCloseTo(value);
+    });
   });
 
   it('still rejects unknown non-application morph-target semantics', async () => {

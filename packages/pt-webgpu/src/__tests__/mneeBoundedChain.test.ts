@@ -1,9 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import {
+  MNEE_BOUNDED_CHAIN_CORE_WGSL,
+  MNEE_BOUNDED_CHAIN_WGSL,
   MNEE_CHAIN_MAX_VERTICES,
-  MNEE_CHAIN_WGSL,
 } from '../wgsl/pathTrace/mneeNewton.wgsl.js';
 import { PT_WEBGPU_PATH_TRACE_CAUSTIC_WGSL } from '../wgsl/pathTrace/caustic.wgsl.js';
+import {
+  composePtWebgpuCompositeTraceWgsl,
+  composePtWebgpuTraceWgsl,
+  PT_WEBGPU_TRACE_WGSL,
+} from '../wgsl/pathTraceBruteforce.wgsl.js';
 
 type Vec2 = readonly [number, number];
 type Mat2 = readonly [Vec2, Vec2];
@@ -75,12 +81,35 @@ function solveBlockTridiagonal(
 describe('bounded 3–8 vertex MNEE chain', () => {
   it('uses the public eight-vertex capacity and an O(N) coupled Newton solve', () => {
     expect(MNEE_CHAIN_MAX_VERTICES).toBe(8);
-    expect(MNEE_CHAIN_WGSL).toContain('struct MneeBoundedChainGeometry');
-    expect(MNEE_CHAIN_WGSL).toContain('fn mneeBoundedChainResidualAt(');
-    expect(MNEE_CHAIN_WGSL).toContain('fn mneeNewtonSolveChainBounded(');
-    expect(MNEE_CHAIN_WGSL).toContain('denom = denom - lower[fi] * cPrime[fi - 1u];');
-    expect(MNEE_CHAIN_WGSL).toContain('delta[reverseIndex] = delta[reverseIndex] -');
-    expect(MNEE_CHAIN_WGSL).toContain('fn mneeBoundedChainFocusingDet(');
+    expect(MNEE_BOUNDED_CHAIN_WGSL).toContain('struct MneeBoundedChainGeometry');
+    expect(MNEE_BOUNDED_CHAIN_WGSL).toContain('fn mneeBoundedChainResidualAt(');
+    expect(MNEE_BOUNDED_CHAIN_WGSL).toContain('fn mneeNewtonSolveChainBounded(');
+    expect(MNEE_BOUNDED_CHAIN_WGSL).toContain(
+      'denom = denom - lower[fi] * cPrime[fi - 1u];',
+    );
+    expect(MNEE_BOUNDED_CHAIN_WGSL).toContain(
+      'delta[reverseIndex] = delta[reverseIndex] -',
+    );
+    expect(MNEE_BOUNDED_CHAIN_WGSL).toContain('fn mneeBoundedChainFocusingDet(');
+  });
+
+  it('ships the bounded solver, and no superseded solver, in every full-tier composer', () => {
+    const fullTierCompositions = [
+      ['default', PT_WEBGPU_TRACE_WGSL],
+      ['path tracing', composePtWebgpuTraceWgsl(false)],
+      ['BDPT', composePtWebgpuTraceWgsl(true)],
+      ['ReSTIR-PT composite', composePtWebgpuCompositeTraceWgsl(false)],
+      ['ReSTIR-PT + BDPT composite', composePtWebgpuCompositeTraceWgsl(true)],
+    ] as const;
+    for (const [name, source] of fullTierCompositions) {
+      expect(source, name).toContain('fn mneeNewtonSolveChainBounded(');
+      expect(source, name).toContain('fn mneeBoundedChainAreaPdfDet(');
+      expect(source, name).not.toContain('fn mneeNewtonSolve(');
+      expect(source, name).not.toContain('fn mneeNewtonSolveChain2(');
+      expect(source, name).not.toContain('fn mneeChainPdfJacobianDet(');
+      expect(source, name).not.toContain('fn mneeReflectionIrradiance(');
+    }
+    expect(MNEE_BOUNDED_CHAIN_CORE_WGSL).not.toContain('fn mneeNewtonSolve(');
   });
 
   it('block-Thomas recurrence recovers known coupled systems for every supported long length', () => {

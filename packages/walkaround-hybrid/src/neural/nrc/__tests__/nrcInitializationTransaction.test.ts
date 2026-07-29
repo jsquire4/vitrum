@@ -130,7 +130,9 @@ function makeHarness(options: {
       buffers.push(buffer);
       return buffer;
     },
-    createCommandEncoder: () => ({}),
+    createCommandEncoder: () => ({
+      clearBuffer: vi.fn(),
+    }),
     createShaderModule: () => ({
       getCompilationInfo: async () => ({ messages: [] }),
     }),
@@ -204,7 +206,7 @@ async function expectRolledBack(failure: Failure): Promise<void> {
 }
 
 describe('NrcSubsystem initialization transaction', () => {
-  it('publishes 49 persistent buffers and peaks at 50 with one readback', async () => {
+  it('publishes 51 persistent buffers and peaks at 52 with one frame readback', async () => {
     const harness = makeHarness();
     const subsystem = makeSubsystem(harness);
 
@@ -216,7 +218,7 @@ describe('NrcSubsystem initialization transaction', () => {
       runtimeArenaBuffer: { label: 'nrc-runtime-arena' },
       configBuffer: { label: 'nrc-cfg' },
     });
-    expect(harness.createBufferCount).toBe(49);
+    expect(harness.createBufferCount).toBe(51);
     const resolvedConfig: NrcConfig = { ...DEFAULT_NRC_CONFIG, ...TEST_CONFIG };
     const footprint = computeNrcResourceFootprint(resolvedConfig);
     const expectedSizes = Object.values(footprint.persistentAllocations)
@@ -232,7 +234,7 @@ describe('NrcSubsystem initialization transaction', () => {
       peakResidentBufferCount: footprint.peakResidentBufferCount,
       peakResidentBufferBytes: footprint.peakResidentBufferBytes,
     });
-    expect(harness.writeBufferCount).toBe(14);
+    expect(harness.writeBufferCount).toBe(15);
     expect(harness.pipelineCount).toBe(7);
     for (const buffer of harness.buffers) {
       expect(buffer.destroy, buffer.label).not.toHaveBeenCalled();
@@ -241,7 +243,7 @@ describe('NrcSubsystem initialization transaction', () => {
     subsystem.recordCopyForReadback({
       copyBufferToBuffer: vi.fn(),
     } as unknown as GPUCommandEncoder);
-    expect(harness.createBufferCount).toBe(50);
+    expect(harness.createBufferCount).toBe(52);
     expect(harness.buffers.at(-1)?.size).toBe(footprint.readbackBytes);
     expect(harness.buffers.reduce((sum, buffer) => sum + buffer.size, 0))
       .toBe(footprint.peakResidentBufferBytes);
@@ -250,7 +252,7 @@ describe('NrcSubsystem initialization transaction', () => {
     expectAllDestroyedOnce(harness.buffers);
   });
 
-  it('pins the f16 51-persistent to 52-readback transition and exact bytes', async () => {
+  it('pins the f16 53-persistent to 54-readback transition and exact bytes', async () => {
     const harness = makeHarness();
     const cfg: NrcConfig = {
       ...DEFAULT_NRC_CONFIG,
@@ -261,14 +263,14 @@ describe('NrcSubsystem initialization transaction', () => {
     const subsystem = new NrcSubsystem(harness.device, harness.cache, cfg);
 
     await subsystem.initialize(AABB_MIN, AABB_MAX);
-    expect(harness.createBufferCount).toBe(51);
+    expect(harness.createBufferCount).toBe(53);
     expect(harness.buffers.reduce((sum, buffer) => sum + buffer.size, 0))
       .toBe(footprint.persistentBufferBytes);
 
     subsystem.recordCopyForReadback({
       copyBufferToBuffer: vi.fn(),
     } as unknown as GPUCommandEncoder);
-    expect(harness.createBufferCount).toBe(52);
+    expect(harness.createBufferCount).toBe(54);
     expect(harness.buffers.at(-1)?.size).toBe(footprint.readbackBytes);
     expect(harness.buffers.reduce((sum, buffer) => sum + buffer.size, 0))
       .toBe(footprint.peakResidentBufferBytes);
@@ -339,7 +341,7 @@ describe('NrcSubsystem initialization transaction', () => {
       table.finalizeSuccess();
     }
 
-    expect(harness.createBufferCount).toBe(49);
+    expect(harness.createBufferCount).toBe(51);
     subsystem.dispose();
     expectAllDestroyedOnce(harness.buffers);
   });
@@ -402,18 +404,18 @@ describe('NrcSubsystem initialization transaction', () => {
     subsystem.recordCopyForReadback({
       copyBufferToBuffer: vi.fn(),
     } as unknown as GPUCommandEncoder);
-    expect(harness.createBufferCount).toBe(51);
+    expect(harness.createBufferCount).toBe(53);
     subsystem.dispose();
   });
 
   it('rolls back after every trainer, table-trainer, and subsystem buffer allocation', async () => {
-    for (let ordinal = 1; ordinal <= 49; ordinal++) {
+    for (let ordinal = 1; ordinal <= 51; ordinal++) {
       await expectRolledBack({ kind: 'create-buffer', ordinal });
     }
   });
 
   it('rolls back after every initialization queue upload', async () => {
-    for (let ordinal = 1; ordinal <= 14; ordinal++) {
+    for (let ordinal = 1; ordinal <= 15; ordinal++) {
       await expectRolledBack({ kind: 'write-buffer', ordinal });
     }
   });
@@ -429,7 +431,7 @@ describe('NrcSubsystem initialization transaction', () => {
   });
 
   it('continues cleanup when a trainer, external, or table buffer destroy throws', async () => {
-    for (const throwOnDestroyOrdinal of [1, 33, 34, 46, 49]) {
+    for (const throwOnDestroyOrdinal of [1, 35, 36, 48, 51]) {
       const harness = makeHarness({
         failure: { kind: 'bind-group' },
         throwOnDestroyOrdinal,
@@ -457,7 +459,7 @@ describe('NrcSubsystem initialization transaction', () => {
 
     expect(subsystem.lifecycleState).toBe('ready');
     const liveBuffers = harness.buffers.slice(failedBuffers.length);
-    expect(liveBuffers).toHaveLength(49);
+    expect(liveBuffers).toHaveLength(51);
     for (const buffer of liveBuffers) {
       expect(buffer.destroy, buffer.label).not.toHaveBeenCalled();
     }

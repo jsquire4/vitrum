@@ -17,7 +17,10 @@ import { PROBE_RAY_CAST_WGSL } from '../src/wgsl/probeRayCast.wgsl.js';
  * shadow-predicate forms so malformed trees cannot leak light. The C71 material
  * remediation additionally pins scalar/mapped specular F0, thin-film
  * reflectance, the authored-IOR sentinel, and opaque-receiver layered/volume
- * attenuation below so this golden cannot silently bless those semantics.
+ * attenuation below so this golden cannot silently bless those semantics. U10
+ * additionally completes a transmissive suffix under the scene-diagonal and
+ * interface-budget bound; `glassTransportClosure.test.ts` pins that behavior
+ * before this composed-shader identity is updated.
  */
 describe('PROBE_RAY_CAST_WGSL byte identity', () => {
   it('retains the C71 specular, IOR, and layered-volume transport semantics', () => {
@@ -49,8 +52,8 @@ describe('PROBE_RAY_CAST_WGSL byte identity', () => {
     const length = PROBE_RAY_CAST_WGSL.length;
     const sha256 = createHash('sha256').update(PROBE_RAY_CAST_WGSL, 'utf8').digest('hex');
     expect({ length, sha256 }).toEqual({
-      length: 140367,
-      sha256: '305bd46ca01d83cc6f148ec34467fd149fbeed91ac189d7ca214749daafaef13',
+      length: 141106,
+      sha256: 'f1b7ddf08d63504d5ff2191f51f4f73d088891a722d3206ebd8a1de70cfbb848',
     });
   });
 });

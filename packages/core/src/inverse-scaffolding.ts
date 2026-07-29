@@ -1022,10 +1022,9 @@ function assertKind(param: InverseParam, expected: ParamFieldKind, backend: stri
   if (param.kind !== expected) {
     throw new Error(
       `createInverseSession: parameter "${param.path}" is declared kind '${param.kind}' ` +
-        `but the resolved field is '${expected}'.`,
+        `but ${backend} resolved the field as '${expected}'.`,
     );
   }
-  void backend;
 }
 
 /**

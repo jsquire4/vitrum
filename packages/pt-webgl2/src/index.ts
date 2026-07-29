@@ -14,7 +14,6 @@ import type {
   FrameStats,
   InverseSession,
   InverseSessionOptions,
-  MaterialSpec,
   ProgressStats,
   Scene,
   SceneEmitter,
@@ -23,7 +22,6 @@ import type {
 } from '@vitrum/core';
 import {
   asBackendTexture,
-  MATERIAL_SPEC_FIELDS,
   deriveCameraPositionFromViewMatrix,
   patchEmitterInScene,
   patchPrimitiveInScene,
@@ -32,7 +30,6 @@ import {
 import type { WorldSpaceMergeResult } from '@vitrum/shared-bvh';
 import { pickPrimitiveCpu, type PickCamera } from '@vitrum/shared-bvh';
 import { buildCapabilities } from './capabilities.js';
-import { PT_WEBGL2_MATERIAL_SUPPORT } from './supportManifest.js';
 import { makeStateSlot, type StateSlot } from './state.js';
 import type { PTEngineWebGL2Options } from './options.js';
 import { resolveWebGl2TraceTier, type WebGl2TraceTier } from './traceTier.js';
@@ -68,47 +65,6 @@ import {
   deriveSceneTraceFeatures,
   validateWebGl2SceneMaterials,
 } from './scene/sceneTraceFeatures.js';
-
-interface UnsupportedMaterialFieldUse {
-  readonly primitiveId: string;
-  readonly fields: readonly string[];
-}
-
-function collectUnsupportedMaterialFieldUses(scene: Scene): UnsupportedMaterialFieldUse[] {
-  const uses: UnsupportedMaterialFieldUse[] = [];
-  for (const primitive of scene.primitives) {
-    const material = (primitive as { readonly material?: Partial<MaterialSpec> }).material;
-    if (material == null) continue;
-    const fields = new Set<string>();
-    for (const field of UNSUPPORTED_MATERIAL_FIELDS) {
-      if (material[field] != null) fields.add(field);
-    }
-    if (fields.size > 0) {
-      uses.push({ primitiveId: primitive.id, fields: Array.from(fields).sort() });
-    }
-  }
-  return uses;
-}
-
-function assertNoUnsupportedMaterialFields(scene: Scene, method: string): void {
-  const uses = collectUnsupportedMaterialFieldUses(scene);
-  if (uses.length === 0) return;
-  const detail = uses
-    .map((use) => `primitive ${JSON.stringify(use.primitiveId)}: ${use.fields.join(', ')}`)
-    .join('; ');
-  throw new RangeError(
-    `[vitrum/pt-webgl2] ${method}: material field(s) unsupported by this backend (${detail}).`,
-  );
-}
-
-// The renderer's rejection gate and live capability record consume the same
-// backend-local executable material manifest. `extensions` is the
-// contract-sanctioned host-discretionary escape hatch (no warning).
-const UNSUPPORTED_MATERIAL_FIELDS: readonly (keyof MaterialSpec)[] = MATERIAL_SPEC_FIELDS.filter(
-  (field) =>
-    PT_WEBGL2_MATERIAL_SUPPORT[field] === 'unsupported' &&
-    field !== 'extensions',
-);
 
 const DEFAULT_MAX_SPP = 4096;
 const DEFAULT_SPP_TARGET = 16;
@@ -441,7 +397,6 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
     this.#guardLive('setScene');
     validateCoreScene(scene);
     validateWebGl2SceneMaterials(scene, 'setScene');
-    assertNoUnsupportedMaterialFields(scene, 'setScene');
     // H7 FIX (2026-06-09): partition ONCE. setScene used to call
     // partitionSceneBySupport here AND buildSceneTextures re-partitioned the
     // already-filtered scene internally (uploadSceneTextures.ts) — redundant work.
@@ -551,7 +506,6 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
     };
     validateCoreScene(nextScene);
     validateWebGl2SceneMaterials(nextScene, 'addPrimitive');
-    assertNoUnsupportedMaterialFields(nextScene, 'addPrimitive');
     const fast = tryFastPathPrimitiveListMutation(
       this.#gl,
       this.#sceneTextures,
@@ -634,7 +588,6 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
     }
     const nextScene = patchPrimitiveInScene(this.#scene, id, patch);
     validateWebGl2SceneMaterials(nextScene, 'updatePrimitive');
-    assertNoUnsupportedMaterialFields(nextScene, 'updatePrimitive');
     const fast = tryFastPathMaterialMutation(
       this.#gl,
       this.#sceneTextures,

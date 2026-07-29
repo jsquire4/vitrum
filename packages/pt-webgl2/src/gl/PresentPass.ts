@@ -13,10 +13,11 @@
 // Usage pattern:
 //   1. allocate(gl, w, h)      — call when ensureAccumResources reallocates
 //   2. destroy()               — call on resize or engine dispose
-//   3. run(srcTex, mode, exp, cs) — call once per frame after the accum step
+//   3. run(srcTex, alphaTex, mode, exp, cs) — call once per frame after the accum step
 //   4. tex                     — the result texture (null before first allocate)
 //
-// Provenance: extracted from glResources.ts, behavior-preserving (no logic changed).
+// Provenance: extracted from glResources.ts. The 2026-07-29 output-alpha
+// correction keeps accumulated background coverage through this pass.
 
 import { GlProgram } from './glProgram.js';
 import { FullscreenQuad, FULLSCREEN_VERT } from './fullscreenQuad.js';
@@ -29,17 +30,19 @@ import * as TonemapFunctions from '../glsl/shader/common/tonemap_functions.glsl.
  * operator, and optionally applies the sRGB OETF before writing to the present target.
  *
  * Uniforms:
- *   uAccumTex       — RGBA32F accumulation texture (sampler2D)
+ *   uAccumTex       — RGBA32F radiance source (live accumulation or denoised RGB)
+ *   uAlphaTex       — live RGBA32F accumulation whose alpha carries coverage
  *   uTonemapMode    — operator index (0=aces, 1=agx, 2=reinhard, 3=linear, 4=none)
  *   uExposure       — linear-exposure multiplier (default 1.0)
  *   uOutputColorSpace — 0=srgb (apply OETF, default), 1=linear (skip OETF)
  *
  * Wired 2026-06-10: FrameQualitySettings.tonemap / .exposure / .outputColorSpace.
  */
-function buildPresentFragBody(tonemapGlsl: string): string {
+export function buildPresentFragBody(tonemapGlsl: string): string {
   return /* glsl */ `
 in vec2 vUv;
 uniform sampler2D uAccumTex;
+uniform sampler2D uAlphaTex;
 uniform int uTonemapMode;
 uniform float uExposure;
 uniform int uOutputColorSpace;
@@ -48,18 +51,41 @@ ${tonemapGlsl}
 
 void main() {
   vec3 hdr = texture(uAccumTex, vUv).rgb;
+  float coverageAlpha = texture(uAlphaTex, vUv).a;
   // Guard against negative values that can appear from alpha-compositing precision.
   vec3 tonemapped = vitrumTonemap(max(hdr, vec3(0.0)), uTonemapMode, uExposure);
   // outputColorSpace 0 = srgb (default) — apply the IEC 61966-2-1 OETF before
   // writing the display-referred output (the framebuffer is RGBA32F, not auto-sRGB).
   // outputColorSpace 1 = linear — skip the OETF (useful for HDR/linear pipeline).
   if (uOutputColorSpace == 0) {
-    pc_fragColor = vec4(vt_linearToSrgb(tonemapped), 1.0);
+    pc_fragColor = vec4(vt_linearToSrgb(tonemapped), coverageAlpha);
   } else {
-    pc_fragColor = vec4(tonemapped, 1.0);
+    pc_fragColor = vec4(tonemapped, coverageAlpha);
   }
 }
 `;
+}
+
+export interface PresentSources {
+  /** RGB radiance source; may be the RGB-only OIDN result. */
+  readonly radiance: WebGLTexture;
+  /** Live path-trace accumulation whose alpha carries background coverage. */
+  readonly coverage: WebGLTexture;
+}
+
+/**
+ * Keep output coverage attached to the live accumulator even when a denoised
+ * RGB result replaces the radiance source.
+ */
+export function selectPresentSources(
+  linearAccumulator: WebGLTexture | null,
+  denoisedLinear: WebGLTexture | null,
+): PresentSources | null {
+  if (linearAccumulator == null) return null;
+  return {
+    radiance: denoisedLinear ?? linearAccumulator,
+    coverage: linearAccumulator,
+  };
 }
 
 /**
@@ -114,6 +140,7 @@ export class PresentPass {
    */
   run(
     srcTex: WebGLTexture,
+    alphaTex: WebGLTexture,
     width: number,
     height: number,
     tonemapMode: number,
@@ -134,6 +161,10 @@ export class PresentPass {
       throw new Error('pt-webgl2: present pass reached draw before its program was ready');
     }
     prog.bindTexture('uAccumTex', srcTex);
+    // Coverage remains owned by the live path-trace accumulator even when
+    // srcTex contains an OIDN RGB result. This preserves backgroundAlpha at
+    // the public output without asking an RGB-only denoiser to reconstruct it.
+    prog.bindTexture('uAlphaTex', alphaTex);
     prog.setInt('uTonemapMode', tonemapMode);
     prog.setFloat('uExposure', exposure);
     prog.setInt('uOutputColorSpace', outputColorSpace);

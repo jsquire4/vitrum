@@ -36,6 +36,19 @@ function translation(x: number): Float32Array {
   ]);
 }
 
+function replaySlices(
+  baseline: ArrayBuffer,
+  slices: ReadonlyArray<{ readonly byteOffset: number; readonly data: ArrayBuffer }>,
+): ArrayBuffer {
+  const replayed = baseline.slice(0);
+  for (const slice of slices) {
+    new Uint8Array(replayed, slice.byteOffset, slice.data.byteLength).set(
+      new Uint8Array(slice.data),
+    );
+  }
+  return replayed;
+}
+
 function skin(
   id: string,
   options: { tangents?: boolean; transform?: Float32Array } = {},
@@ -308,6 +321,24 @@ describe('primitive mutation journal and collector', () => {
     expect(mutation.worldToLocal[0]?.data.byteLength).toBe(64);
     expect(mutation.localToWorld[0]?.byteOffset).toBe(targetInstance * 64);
     expect(mutation.localToWorld[0]?.data.byteLength).toBe(64);
+    expect(
+      new Float32Array(tlas.worldToLocal.cpuData)[targetInstance * 16 + 12],
+    ).toBeCloseTo(-55);
+    expect(
+      new Float32Array(tlas.localToWorld.cpuData)[targetInstance * 16 + 12],
+    ).toBeCloseTo(55);
+    expect(new Uint8Array(tlas.nodes.cpuData)).not.toEqual(
+      new Uint8Array(nodesBefore),
+    );
+    expect(new Uint8Array(replaySlices(nodesBefore, mutation.nodes))).toEqual(
+      new Uint8Array(tlas.nodes.cpuData),
+    );
+    expect(
+      new Uint8Array(replaySlices(worldToLocalBefore, mutation.worldToLocal)),
+    ).toEqual(new Uint8Array(tlas.worldToLocal.cpuData));
+    expect(
+      new Uint8Array(replaySlices(localToWorldBefore, mutation.localToWorld)),
+    ).toEqual(new Uint8Array(tlas.localToWorld.cpuData));
     const affectedSet = new Set(affectedNodes);
     for (let node = 0; node < tlas.nodeCount; node += 1) {
       if (affectedSet.has(node)) continue;
@@ -486,6 +517,255 @@ describe('skinned render-state ownership', () => {
 
     expect([...authoredAfter.positions]).toEqual([...originalPositions]);
     expect([...renderedAfter.positions]).toEqual([2, 0, 0, 3, 0, 0, 2, 1, 0]);
+  });
+
+  it('restores authored COLOR_0 and TEXCOORD_0 when morph weights return to zero', () => {
+    const baseUvs = new Float32Array([0, 0, 1, 0, 0, 1]);
+    const baseColors = new Float32Array([
+      1, 0, 0,
+      0, 1, 0,
+      0, 0, 1,
+    ]);
+    const authored: SkinnedMeshPrimitive = {
+      ...skin('skin'),
+      uvs: baseUvs,
+      colors: baseColors,
+      morphTargets: [new Float32Array(9)],
+      morphTargetUvs: [
+        new Float32Array([0.2, 0.4, -0.2, 0.4, 0.2, -0.4]),
+      ],
+      morphTargetColors: [
+        new Float32Array([
+          -0.5, 0.5, 0,
+          0.5, -0.5, 0,
+          0, 0.5, -0.5,
+        ]),
+      ],
+      morphWeights: new Float32Array([0]),
+    };
+    const scene = sceneOf(authored);
+    const ctx = context(scene, scene, new CollectingBvhUpdateSink(), 'merged');
+
+    const active = skinnedPosePatch(
+      'skin',
+      { morphWeights: new Float32Array([1]) },
+      ctx,
+    );
+    const activeRender =
+      active.updatedRenderScene!.primitives[0] as SkinnedMeshPrimitive;
+    expect([...activeRender.uvs!]).toEqual([
+      ...new Float32Array([0.2, 0.4, 0.8, 0.4, 0.2, 0.6]),
+    ]);
+    expect([...activeRender.colors!]).toEqual([
+      ...new Float32Array([
+        0.5, 0.5, 0,
+        0.5, 0.5, 0,
+        0, 0.5, 0.5,
+      ]),
+    ]);
+
+    const inactive = skinnedPosePatch(
+      'skin',
+      { morphWeights: new Float32Array([0]) },
+      {
+        ...ctx,
+        bvhBuffers: active.bvhBuffers,
+        lastScene: active.updatedScene,
+        renderScene: active.updatedRenderScene!,
+      },
+    );
+    const inactiveRender =
+      inactive.updatedRenderScene!.primitives[0] as SkinnedMeshPrimitive;
+    expect(inactiveRender.uvs).toBe(baseUvs);
+    expect(inactiveRender.colors).toBe(baseColors);
+    expect([...inactiveRender.uvs!]).toEqual([...baseUvs]);
+    expect([...inactiveRender.colors!]).toEqual([...baseColors]);
+
+    const steady = skinnedPosePatch(
+      'skin',
+      { morphWeights: new Float32Array([0]) },
+      {
+        ...ctx,
+        bvhBuffers: inactive.bvhBuffers,
+        lastScene: inactive.updatedScene,
+        renderScene: inactive.updatedRenderScene!,
+      },
+    );
+    const steadyRender =
+      steady.updatedRenderScene!.primitives[0] as SkinnedMeshPrimitive;
+    expect(steady.bvhBuffers).toBe(inactive.bvhBuffers);
+    expect(steadyRender.uvs).toBe(baseUvs);
+    expect(steadyRender.colors).toBe(baseColors);
+  });
+
+  it('restores authored streams when an active morph definition is cleared', () => {
+    const baseUvs = new Float32Array([0, 0, 1, 0, 0, 1]);
+    const baseColors = new Float32Array([
+      1, 0, 0,
+      0, 1, 0,
+      0, 0, 1,
+    ]);
+    const authored: SkinnedMeshPrimitive = {
+      ...skin('skin'),
+      uvs: baseUvs,
+      colors: baseColors,
+      morphTargets: [new Float32Array(9)],
+      morphTargetUvs: [
+        new Float32Array([0.2, 0.4, -0.2, 0.4, 0.2, -0.4]),
+      ],
+      morphTargetColors: [
+        new Float32Array([
+          -0.5, 0.5, 0,
+          0.5, -0.5, 0,
+          0, 0.5, -0.5,
+        ]),
+      ],
+      morphWeights: new Float32Array([0]),
+    };
+    const scene = sceneOf(authored);
+    const ctx = context(scene, scene, new CollectingBvhUpdateSink(), 'merged');
+    const active = skinnedPosePatch(
+      'skin',
+      { morphWeights: new Float32Array([1]) },
+      ctx,
+    );
+    const activeRender =
+      active.updatedRenderScene!.primitives[0] as SkinnedMeshPrimitive;
+    expect(activeRender.uvs).not.toBe(baseUvs);
+    expect(activeRender.colors).not.toBe(baseColors);
+
+    // `morphTargets: []` is rejected by the core contract. At the JavaScript
+    // boundary, explicit undefined values clear the optional definition fields,
+    // while the defined bones co-patch makes this reachable through routing.
+    const clearDefinitionPatch = {
+      bones: new Float32Array(IDENTITY),
+      morphTargets: undefined,
+      morphWeights: undefined,
+      morphTargetUvs: undefined,
+      morphTargetColors: undefined,
+    } as unknown as Partial<ScenePrimitive>;
+    const cleared = skinnedPosePatch(
+      'skin',
+      clearDefinitionPatch,
+      {
+        ...ctx,
+        bvhBuffers: active.bvhBuffers,
+        lastScene: active.updatedScene,
+        renderScene: active.updatedRenderScene!,
+      },
+    );
+    const clearedAuthored =
+      cleared.updatedScene.primitives[0] as SkinnedMeshPrimitive;
+    const clearedRender =
+      cleared.updatedRenderScene!.primitives[0] as SkinnedMeshPrimitive;
+    expect(clearedAuthored.morphTargets).toBeUndefined();
+    expect(clearedAuthored.morphWeights).toBeUndefined();
+    expect(clearedRender.uvs).toBe(baseUvs);
+    expect(clearedRender.colors).toBe(baseColors);
+
+    const steady = skinnedPosePatch(
+      'skin',
+      { bones: new Float32Array(IDENTITY) },
+      {
+        ...ctx,
+        bvhBuffers: cleared.bvhBuffers,
+        lastScene: cleared.updatedScene,
+        renderScene: cleared.updatedRenderScene!,
+      },
+    );
+    expect(steady.bvhBuffers).toBe(cleared.bvhBuffers);
+    const steadyRender =
+      steady.updatedRenderScene!.primitives[0] as SkinnedMeshPrimitive;
+    expect(steadyRender.uvs).toBe(baseUvs);
+    expect(steadyRender.colors).toBe(baseColors);
+  });
+
+  it('rebuilds away stale attributes when active morph definitions and bases are cleared', () => {
+    const authored: SkinnedMeshPrimitive = {
+      ...skin('skin'),
+      uvs: new Float32Array([0, 0, 1, 0, 0, 1]),
+      colors: new Float32Array([
+        1, 0, 0,
+        0, 1, 0,
+        0, 0, 1,
+      ]),
+      morphTargets: [new Float32Array(9)],
+      morphTargetUvs: [
+        new Float32Array([0.2, 0.4, -0.2, 0.4, 0.2, -0.4]),
+      ],
+      morphTargetColors: [
+        new Float32Array([
+          -0.5, 0.5, 0,
+          0.5, -0.5, 0,
+          0, 0.5, -0.5,
+        ]),
+      ],
+      morphWeights: new Float32Array([0]),
+    };
+    const scene = sceneOf(authored);
+    const ctx = context(scene, scene, new CollectingBvhUpdateSink(), 'merged');
+    const active = skinnedPosePatch(
+      'skin',
+      { morphWeights: new Float32Array([1]) },
+      ctx,
+    );
+    const activePackedPositions =
+      new Float32Array(active.bvhBuffers.bvhPositions.cpuData);
+    const activePackedColors =
+      new Float32Array(active.bvhBuffers.bvhColors.cpuData);
+    expect(activePackedPositions[3]).not.toBe(0);
+    expect([...activePackedColors.slice(0, 4)]).toEqual([0.5, 0.5, 0, 1]);
+
+    const clearDefinitionAndBasePatch = {
+      bones: new Float32Array(IDENTITY),
+      uvs: undefined,
+      colors: undefined,
+      morphTargets: undefined,
+      morphWeights: undefined,
+      morphTargetUvs: undefined,
+      morphTargetColors: undefined,
+    } as unknown as Partial<ScenePrimitive>;
+    const cleared = skinnedPosePatch(
+      'skin',
+      clearDefinitionAndBasePatch,
+      {
+        ...ctx,
+        bvhBuffers: active.bvhBuffers,
+        lastScene: active.updatedScene,
+        renderScene: active.updatedRenderScene!,
+      },
+    );
+    const clearedAuthored =
+      cleared.updatedScene.primitives[0] as SkinnedMeshPrimitive;
+    const clearedRender =
+      cleared.updatedRenderScene!.primitives[0] as SkinnedMeshPrimitive;
+    expect(cleared.bvhBuffers).not.toBe(active.bvhBuffers);
+    expect(clearedAuthored.uvs).toBeUndefined();
+    expect(clearedAuthored.colors).toBeUndefined();
+    expect(clearedRender.uvs).toBeUndefined();
+    expect(clearedRender.colors).toBeUndefined();
+    const clearedPackedPositions =
+      new Float32Array(cleared.bvhBuffers.bvhPositions.cpuData);
+    const clearedPackedColors =
+      new Float32Array(cleared.bvhBuffers.bvhColors.cpuData);
+    expect([
+      clearedPackedPositions[3],
+      clearedPackedPositions[7],
+      clearedPackedPositions[11],
+    ]).toEqual([0, 0, 0]);
+    expect([...clearedPackedColors.slice(0, 4)]).toEqual([1, 1, 1, 1]);
+
+    const steady = skinnedPosePatch(
+      'skin',
+      { bones: new Float32Array(IDENTITY) },
+      {
+        ...ctx,
+        bvhBuffers: cleared.bvhBuffers,
+        lastScene: cleared.updatedScene,
+        renderScene: cleared.updatedRenderScene!,
+      },
+    );
+    expect(steady.bvhBuffers).toBe(cleared.bvhBuffers);
   });
 
   it('preserves rest arrays across a GPU-refit to CPU topology-rebuild transition', () => {

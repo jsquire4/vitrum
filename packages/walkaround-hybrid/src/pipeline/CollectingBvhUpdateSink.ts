@@ -99,18 +99,27 @@ export class CollectingBvhUpdateSink implements BvhUpdateSink {
 
   refreshTlasRefit(mutation: TlasRefitMutation): void {
     this._tlas = {
-      nodes: mutation.nodes.map((slice) => ({
+      // A skinning batch may refit several primitives before its one GPU
+      // publication. Preserve call order: later overlapping ancestor slices
+      // contain the final union bounds and must be submitted last.
+      nodes: [...(this._tlas?.nodes ?? []), ...mutation.nodes.map((slice) => ({
         byteOffset: slice.byteOffset,
         data: bytes(slice.data),
-      })),
-      worldToLocal: mutation.worldToLocal.map((slice) => ({
-        byteOffset: slice.byteOffset,
-        data: bytes(slice.data),
-      })),
-      localToWorld: mutation.localToWorld.map((slice) => ({
-        byteOffset: slice.byteOffset,
-        data: bytes(slice.data),
-      })),
+      }))],
+      worldToLocal: [
+        ...(this._tlas?.worldToLocal ?? []),
+        ...mutation.worldToLocal.map((slice) => ({
+          byteOffset: slice.byteOffset,
+          data: bytes(slice.data),
+        })),
+      ],
+      localToWorld: [
+        ...(this._tlas?.localToWorld ?? []),
+        ...mutation.localToWorld.map((slice) => ({
+          byteOffset: slice.byteOffset,
+          data: bytes(slice.data),
+        })),
+      ],
     };
   }
 

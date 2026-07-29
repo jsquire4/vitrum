@@ -29,8 +29,8 @@
  * old ddgiSample return; the material then applies albedo/PI exactly once).
  */
 
-/** SH band convolution + basis + per-probe eval. Inject into producer (blend,
- *  ray feedback) and every receiver (ddgiSample / shade / risGi). */
+/** SH band convolution + basis for the probe producer. Receivers inline the
+ *  same nine-term evaluation in the single-function `ddgiSample` parser ABI. */
 export const DDGI_SH_WGSL = /* wgsl */`
 // Real L2 SH basis (9 functions), matching the validated CPU reference.
 fn ddgiShBasis(d: vec3f) -> array<f32, 9> {
@@ -51,31 +51,5 @@ fn ddgiShCosineA(k: u32) -> f32 {
   if (k == 0u) { return 3.14159265359; }
   if (k < 4u)  { return 2.09439510239; }   // 2*PI/3
   return 0.78539816340;                     // PI/4
-}
-
-// Atlas texel (absolute coords) holding SH coeff k for the probe whose cell
-// interior starts at (interiorX, interiorY). Coeff k lives at interior (k%3,k/3).
-fn ddgiShCoeffTexel(interiorX: u32, interiorY: u32, k: u32) -> vec2u {
-  return vec2u(interiorX + (k % 3u), interiorY + (k / 3u));
-}
-
-// Evaluate irradiance E(n) for one probe by reading its 9 stored E_lm coeffs
-// (cosine-convolved) and dotting with the SH basis at n. interiorX/Y is the
-// atlas coord of the probe cell's first INTERIOR texel (border already added).
-// Reads via textureSampleLevel at the EXACT texel centre (bilinear weights
-// collapse to 1 there -> exact coeff, no filtering) rather than textureLoad, so
-// the sampler binding stays USED and a layout:"auto" pipeline does not prune it
-// (a pruned sampler would desync the host bind group). atlasW/H are the atlas
-// dimensions for the texel-centre UV.
-fn ddgiSampleSHProbe(atlas: texture_2d<f32>, samp: sampler, atlasW: f32, atlasH: f32, interiorX: u32, interiorY: u32, n: vec3f) -> vec3f {
-  let Y = ddgiShBasis(n);
-  var e = vec3f(0.0);
-  for (var k = 0u; k < 9u; k = k + 1u) {
-    let tc = ddgiShCoeffTexel(interiorX, interiorY, k);
-    let uv = (vec2f(f32(tc.x), f32(tc.y)) + vec2f(0.5)) / vec2f(atlasW, atlasH);
-    let c  = textureSampleLevel(atlas, samp, uv, 0.0).rgb;
-    e = e + c * Y[k];
-  }
-  return e;
 }
 `;

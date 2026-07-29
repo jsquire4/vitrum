@@ -116,12 +116,18 @@ export const BVHVisualizer: FC<BVHVisualizerProps> = ({
   useEffect(() => {
     if (!visible || !hasDebug) return;
     const tick = (): void => {
-      const nodes = engine.debug?.bvhNodes?.();
-      if (nodes == null) return;
-      const s = computeBvhStats(nodes);
-      setStats(s);
-      const canvas = canvasRef.current;
-      if (canvas != null) renderHistogram(canvas, s);
+      try {
+        const nodes = engine.debug?.bvhNodes?.();
+        if (nodes == null) return;
+        const s = computeBvhStats(nodes);
+        setStats(s);
+        const canvas = canvasRef.current;
+        if (canvas != null) renderHistogram(canvas, s);
+      } catch {
+        // A malformed producer table fails closed without leaving an uncaught
+        // interval error in the host React tree.
+        setStats(null);
+      }
     };
     tick();
     const interval = setInterval(tick, 500);

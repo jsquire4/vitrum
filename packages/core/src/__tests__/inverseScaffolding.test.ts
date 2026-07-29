@@ -475,4 +475,14 @@ describe('shared inverse scaffolding — validateParam per-backend gate', () => 
     ).toThrow(/pt-webgpu runtime profile/);
   });
 
+  it('attributes a resolved-kind mismatch to the active backend', () => {
+    expect(() =>
+      validateParam(scene, { path: 'materials.p.baseColor', kind: 'scalar' }, {
+        domain: 'materials',
+        id: 'p',
+        field: 'baseColor',
+      }, { backend: 'pt-webgl2' }),
+    ).toThrow(/pt-webgl2 resolved the field as 'rgb'/);
+  });
+
 });

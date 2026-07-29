@@ -4,7 +4,7 @@
  * BMFR = Koskela et al. 2019, "Blockwise Multi-Order Feature Regression for
  * Real-Time Path-Tracing Reconstruction" (ACM TOG 38(5)).
  *
- * Generated via `defineUbo` (single source of truth for size + std140 layout
+ * Generated via `defineUbo` (single source of truth for size + WGSL layout
  * + pack), matching the convention established by `svgfRealBindings.ts`.
  */
 
@@ -60,7 +60,11 @@ const BMFR_UBO = defineUbo([
   { name: 'positionMode',   type: 'u32' },
 ] as const);
 
-/** BMFR UBO byte size (std140-padded to the 16-byte WebGPU minimum-binding floor). */
+/**
+ * BMFR UBO byte size: seven four-byte scalars make `SizeOf(BmfrUBO) == 28`.
+ * Uniform binding offsets obey the device alignment limit; the top-level
+ * structure's binding size is not rounded to a 16-byte multiple.
+ */
 export const BMFR_UNIFORMS_SIZE_BYTES = BMFR_UBO.sizeBytes;
 
 export const BMFR_DEFAULT_UNIFORMS: BmfrUniforms = {

@@ -103,6 +103,10 @@ import {
 import type { MaterialTextureAtlasDiagnostic } from './pipeline/materialTextureAtlas.js';
 import { applyEmitterPatchToScene, applyPrimitivePatchToScene } from './scenePatch.js';
 import { solveSkin } from '@vitrum/core';
+import {
+  needsAuthoredMorphStreamRestore,
+  solvedSkinRenderPatch,
+} from './skin/solvedSkinPatch.js';
 import { readRgba16fWalkaround } from './util/gpuReadback.js';
 import { SHADE_FLAG_DIRECT_SUN_SHADOW_DISABLED } from './pipeline/uboUpdater.js';
 import {
@@ -303,7 +307,8 @@ const SKINNED_MESH_PATCH_KEYS = new Set([
   'skinInfluencesPerVertex', 'bones', 'boneInverses', 'bindMatrix',
   'bindMatrixInverse', 'morphTargets', 'morphTargetNormals',
   'morphTargetTangents', 'morphTargetUvs', 'morphTargetUv1s',
-  'morphTargetUvSets', 'morphWeights', 'material', 'transform', 'castShadow',
+  'morphTargetUvSets', 'morphTargetColors', 'morphTargetColorSets',
+  'morphWeights', 'material', 'transform', 'castShadow',
 ]);
 
 const MATERIAL_PATCH_KEY_RECORD = {
@@ -1804,16 +1809,23 @@ export class HybridEngine implements Engine {
     if (prim?.kind !== 'skinned-mesh') {
       throw new Error(`applyGpuSkinnedRefit("${id}"): skinned-mesh primitive not found.`);
     }
+    const renderedPrim = this._renderScene?.primitives.find(
+      (candidate) => String(candidate.id) === id && candidate.kind === 'skinned-mesh',
+    );
     const solved = localPositions == null ? solveSkin(prim) : null;
-    const patch: Partial<SkinnedMeshPrimitive> = {
-      positions: localPositions ?? solved!.positions,
-      ...((localNormals ?? solved?.normals) != null
-        ? { normals: localNormals ?? solved!.normals }
-        : {}),
-      ...(solved?.tangents ? { tangents: solved.tangents } : {}),
-      ...(solved?.uvs ? { uvs: solved.uvs } : {}),
-      ...(solved?.uv1 ? { uv1: solved.uv1 } : {}),
-    };
+    const patch: Partial<SkinnedMeshPrimitive> = solved == null
+      ? {
+          positions: localPositions!,
+          ...(localNormals != null ? { normals: localNormals } : {}),
+        }
+      : solvedSkinRenderPatch(
+          prim,
+          solved,
+          needsAuthoredMorphStreamRestore(
+            prim,
+            renderedPrim?.kind === 'skinned-mesh' ? renderedPrim : null,
+          ),
+        );
     this.applySkinningBatch([{ id, patch, gpuWritten: false }], null);
   }
 
@@ -1855,10 +1867,18 @@ export class HybridEngine implements Engine {
     }
 
     const collector = new CollectingBvhUpdateSink();
+    const undoPatch: Record<string, unknown> = {};
+    for (const update of updates) {
+      for (const [field, value] of Object.entries(
+        update.patch as unknown as Record<string, unknown>,
+      )) {
+        if (value !== undefined) undoPatch[field] = value;
+      }
+    }
     const undo = capturePrimitiveMutationUndo(
       this._bvhBuffers,
       updates[0]!.id,
-      updates[0]!.patch,
+      undoPatch,
       ids.slice(1),
     );
     let result: PrimitiveUpdateResult;

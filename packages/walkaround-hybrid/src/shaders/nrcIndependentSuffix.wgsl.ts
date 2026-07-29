@@ -162,7 +162,7 @@ fn nrcTeacherAreaNee(
   }
 
   let pdfArea = selectionPmf * ls.pdfArea;
-  let geometry = cosLight / dist2;
+  let geometry = emitterGeometry(cosLight, dist2, ubo.emitterDist2Floor);
   let response = nrcTeacherMaterialResponse(payload, normal, wo, wi);
   let Le = sampleEmitterLeAtXi(emitter, xi);
   if (!(pdfArea > 0.0)) { return vec3f(0.0); }

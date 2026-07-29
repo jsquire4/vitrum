@@ -34,7 +34,8 @@
  *                                            material color (ReSTIR), or
  *                                            zero (DDGI/RC zero-fill).
  *       bvh_position is `array<vec4f>`: .xyz = world-space position,
- *                                       .w = 16:16 unorm UV (ReSTIR), or zero.
+ *                                       .w = two packed f16 UV values
+ *                                            (ReSTIR), or zero.
  *   `bvh` is `array<BVHNode>` in both cases — 32-byte flat layout
  *   (boundsMin 3×f32, boundsMax 3×f32, rightChildOrTriOffset u32,
  *   splitAxisOrTriCount u32) matching three-mesh-bvh's `BYTES_PER_NODE`.
@@ -250,7 +251,7 @@ struct Ray {
 //   side          : sign(det) — +1 for front-face, -1 for back-face hit
 //   dist          : ray-parameter t at the hit
 //   matColorPacked: copy of bvh_index[triIdx].w (ReSTIR only; zero for DDGI/RC)
-//   uv            : interpolated 16:16 unorm UV (ReSTIR only; vec2f(0) elsewhere)
+//   uv            : interpolated packed-f16 UV (ReSTIR only; vec2f(0) elsewhere)
 //   instanceIndex : TLAS instance hit (→ its world-to-local cols for the smooth
 //                   shading-normal transform). 0 (default) in the merged-world
 //                   path, where it is unused — the caller gates on bvhMode.

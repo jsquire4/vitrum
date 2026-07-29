@@ -22,6 +22,114 @@ export const IDENTITY_MAT4 = new Float32Array([
   0, 0, 0, 1,
 ]);
 
+/** Precise import-boundary failure for a selected scene that is not a tree. */
+export class GltfNodeHierarchyError extends Error {
+  readonly path: string;
+
+  constructor(path: string, message: string) {
+    super(message);
+    this.name = 'GltfNodeHierarchyError';
+    this.path = path;
+  }
+}
+
+/**
+ * Validate the selected glTF scene hierarchy before any transform depends on
+ * traversal order. glTF nodes may be referenced only once in a scene tree:
+ * duplicate roots, duplicate child references, cycles, and multiple parents
+ * are all rejected instead of letting the first DFS visit silently win.
+ */
+export function assertGltfNodeTree(
+  gltf: GltfJson,
+  rootNodeIndices: readonly number[],
+  rootPath = 'scene.nodes',
+): void {
+  const rootNodeIndicesValue: unknown = rootNodeIndices;
+  if (!Array.isArray(rootNodeIndicesValue)) {
+    throw new GltfNodeHierarchyError(
+      rootPath,
+      `[vitrum/gltf-adapter] ${rootPath} must be an array.`,
+    );
+  }
+  const roots = rootNodeIndicesValue as readonly unknown[];
+  const nodesValue: unknown = gltf.nodes;
+  if (nodesValue !== undefined && !Array.isArray(nodesValue)) {
+    throw new GltfNodeHierarchyError(
+      'nodes',
+      '[vitrum/gltf-adapter] nodes must be an array when supplied.',
+    );
+  }
+  const nodes = (nodesValue ?? []) as readonly (GltfNode | undefined)[];
+  const ownerPath = new Map<number, string>();
+  const queue: number[] = [];
+
+  function assertNodeIndex(nodeIndex: unknown, path: string): asserts nodeIndex is number {
+    if (
+      typeof nodeIndex !== 'number' ||
+      !Number.isSafeInteger(nodeIndex) ||
+      nodeIndex < 0 ||
+      nodeIndex >= nodes.length ||
+      nodes[nodeIndex] === undefined
+    ) {
+      throw new GltfNodeHierarchyError(
+        path,
+        `[vitrum/gltf-adapter] ${path} references missing node ${String(nodeIndex)}.`,
+      );
+    }
+    const node: unknown = nodes[nodeIndex];
+    if (node === null || typeof node !== 'object' || Array.isArray(node)) {
+      throw new GltfNodeHierarchyError(
+        `nodes[${nodeIndex}]`,
+        `[vitrum/gltf-adapter] nodes[${nodeIndex}] must be a non-array object.`,
+      );
+    }
+  }
+
+  for (let rootOffset = 0; rootOffset < roots.length; rootOffset += 1) {
+    const root = roots[rootOffset];
+    const path = `${rootPath}[${rootOffset}]`;
+    assertNodeIndex(root, path);
+    const previousPath = ownerPath.get(root);
+    if (previousPath !== undefined) {
+      throw new GltfNodeHierarchyError(
+        path,
+        `[vitrum/gltf-adapter] Node ${root} is referenced more than once in the selected ` +
+          `scene hierarchy (${previousPath} and ${path}); glTF scene nodes must form a tree.`,
+      );
+    }
+    ownerPath.set(root, path);
+    queue.push(root);
+  }
+
+  for (let queueOffset = 0; queueOffset < queue.length; queueOffset += 1) {
+    const parent = queue[queueOffset]!;
+    const childrenValue: unknown = nodes[parent]!.children;
+    if (childrenValue !== undefined && !Array.isArray(childrenValue)) {
+      throw new GltfNodeHierarchyError(
+        `nodes[${parent}].children`,
+        `[vitrum/gltf-adapter] nodes[${parent}].children must be an array when supplied.`,
+      );
+    }
+    const children = (childrenValue ?? []) as readonly unknown[];
+    for (let childOffset = 0; childOffset < children.length; childOffset += 1) {
+      const child = children[childOffset];
+      const path = `nodes[${parent}].children[${childOffset}]`;
+      assertNodeIndex(child, path);
+
+      const previousPath = ownerPath.get(child);
+      if (previousPath !== undefined) {
+        throw new GltfNodeHierarchyError(
+          path,
+          `[vitrum/gltf-adapter] Node ${child} is reused or participates in a cycle through ` +
+            `hierarchy references ${previousPath} and ${path}; glTF scene nodes must form a tree.`,
+        );
+      }
+      ownerPath.set(child, path);
+      queue.push(child);
+    }
+  }
+}
+
 function chargeMatrixAllocation(
   resourceLedger: ImportResourceLedger | undefined,
   allocationPath: string,
@@ -216,6 +324,7 @@ export function buildWorldTransforms(
 ): Map<number, Mat4> {
   const result = new Map<number, Mat4>();
   const nodes = gltf.nodes ?? [];
+  assertGltfNodeTree(gltf, rootNodeIndices);
 
   // Iterative DFS to avoid stack overflow on deep hierarchies.
   const stack: Array<{ nodeIdx: number; parentWorld: Float32Array }> = rootNodeIndices.map(
@@ -224,9 +333,7 @@ export function buildWorldTransforms(
 
   while (stack.length > 0) {
     const entry = stack.pop()!;
-    const node = nodes[entry.nodeIdx];
-    if (!node) continue;
-    if (result.has(entry.nodeIdx)) continue; // cycle guard
+    const node = nodes[entry.nodeIdx]!;
 
     const nodePath = `${allocationPath}.nodes[${entry.nodeIdx}]`;
     const local = nodeLocalMatrix(

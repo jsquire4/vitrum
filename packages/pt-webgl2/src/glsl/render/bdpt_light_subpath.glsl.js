@@ -360,9 +360,9 @@ export const bdpt_light_subpath = /* glsl */`
 				bdptWriteEndpoint(
 					pos, normal, normal, areaRadiance, discretePdf * pdfArea,
 					BDPT_LV_AREA_EMITTER_MATID, BDPT_KIND_LIGHT,
-					// Analytic area NEE uses an absolute light cosine, so preserve
-					// the same two-sided emission profile in the BDPT family.
-					vec4( light.castShadowDisabled, 1.0, 0.0, 0.0 ),
+					// Core analytic rect/disc emitters are one-sided along
+					// cross(u,v), matching ordinary NEE and forward-hit MIS.
+					vec4( light.castShadowDisabled, 0.0, 0.0, 0.0 ),
 					v0, v1, v2, v3, v4, v5, v6, v7
 				);
 			} else if ( light.type == POINT_LIGHT_TYPE ) {

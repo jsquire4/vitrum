@@ -164,15 +164,15 @@ export const BIND_GROUP_TABLE: readonly BindGroupTableEntry[] = [
       // WS1 (2026-05-29) — bvh_beer (per-tri Beer-Lambert visible color, RGBA8
       // packed u32) moved from a storage buffer to a `texture_2d<u32>` (r32uint).
       // Textures do NOT count against maxStorageBuffersPerShaderStage, so this
-      // swap frees a storage slot for `bvh_normal` (binding 11) while the scene
-      // group's storage count stays at the 16-storage shade-pass floor. Only the
+      // swap frees a storage slot while the versioned scene group stays at
+      // three storage arenas. Only the
       // shade pass references binding 5 (lo_emit); the other primary passes
       // declare a subset of the layout, so the texture is shade-only.
       { binding: 5, kind: 'tex:uint', note: 'bvh_beer (Beer-Lambert visible color, r32uint texture; shade-only)' },
       // Camera-visible + GI-suffix emitters (2026-05-30; GI suffix 2026-06-20) —
       // per-triangle HDR emissive radiance
       // Le, rgba16float texture (texture, not storage — keeps the scene group at
-      // the 16-storage floor, same rationale as bvh_beer). Shade/transparent OIT
+      // three storage arenas, same rationale as bvh_beer). Shade/transparent OIT
       // read it for camera-visible glow; ReSTIR-GI suffix shading reads it before
       // applying readable emissive maps at hit UV.
       { binding: 12, kind: 'tex', note: 'bvh_emissive (per-tri HDR emissive Le, rgba16float texture; shade + OIT + ReSTIR-GI suffix)' },
@@ -186,12 +186,12 @@ export const BIND_GROUP_TABLE: readonly BindGroupTableEntry[] = [
       // texture, one u32 per triangle: bits[31:24]=rough×255, [23:16]=metal×255).
       // Read by ris/risGi/risGiNrc/restirCastPrimary/shade via
       // decodeRoughMetal(triIndex) to drive the GGX BRDF + glossy/metal GI target.
-      // A texture (not a storage buffer) so it does NOT count against the
-      // maxStorageBuffersPerShaderStage=16 shade-pass floor.
+      // A texture (not a storage buffer) so it does not consume one of the
+      // eight guaranteed storage-buffer bindings.
       { binding: 14, kind: 'tex:uint', note: 'bvh_material (per-tri roughness+metalness, r32uint texture)' },
       // B3 (road-to-100) — directional IBL. The equirect radiance map + the PBRT
       // 2D-distribution importance CDFs are TEXTURES (not storage buffers) so the
-      // scene group stays at the 16-storage shade-pass floor (same rationale as
+      // scene group stays at three versioned storage arenas (same rationale as
       // bvh_beer/bvh_material). A 1×1 placeholder + envParams.hasEnv=0 is bound for
       // non-HDRI scenes (the WGSL falls back to the scalar sky → byte-identical).
       // Only ris/risGi/shade reference these; the other passes declare a subset.

@@ -20,8 +20,9 @@
  *   - Uniform buffers are written with actual shape params in initialize() AND
  *     re-written per layer in run() to handle resize. (run() now re-uses the
  *     stored dim map; resize is handled by re-initialize(), which recomputes it.)
- *   - Bind-group cache is keyed by buffer identity (label) and invalidated on any
- *     buffer swap (device resize).
+ *   - Bind groups capture actual buffer identities. Tensor replacement is
+ *     candidate-first through initialize(); an in-place identity change fails
+ *     closed instead of silently re-uploading weights or leaking buffers.
  *   - dispose() clears cached bind groups slot-by-slot before destroying buffers,
  *     and 'neural' mode is wired into HybridEngine (see HybridEngine.ts).
  *
@@ -38,7 +39,7 @@
  */
 
 import type { UNetSpec } from './unetArchitecture.js';
-import { validateWeightsForSpec, type ModelWeights, type LayerWeights } from './weights.js';
+import { validateWeightsForSpec, type ModelWeights } from './weights.js';
 import {
   type TensorDims,
   preflightTensorDims,
@@ -50,7 +51,6 @@ import {
   type LayerGPUState,
   allocateGraph,
   type AllocatedGraph,
-  buildBindGroup,
   currentBufKeys,
 } from './layerResourceAllocator.js';
 import {
@@ -128,9 +128,6 @@ export class InferenceGraph {
   private _memoryTelemetry: NeuralMemoryTelemetry | null = null;
   private _tensorStorage: NeuralTensorStorageContract = NEURAL_F32_TENSOR_STORAGE;
   private _tensorStoragePreference: NeuralTensorStoragePreference = 'auto';
-  /** Uploaded layer weights — retained for bind-group rebuild on buffer resize. */
-  private _weightsByName: Map<string, LayerWeights> = new Map();
-
   /** Uniform-write call count — exposed for test instrumentation. */
   _uniformWriteCount = 0;
 
@@ -243,7 +240,6 @@ export class InferenceGraph {
       this._outputCropPipeline   = alloc.outputCropPipeline;
       this._outputCropUniformBuf = alloc.outputCropUniformBuf;
       this._allocatedBuffers     = alloc.allocatedBuffers;
-      this._weightsByName        = alloc.weightsByName;
       this._uniformWriteCount    = alloc.uniformWriteCount;
       this._memoryTelemetry      = alloc.memoryTelemetry;
       this._ready                = true;
@@ -278,8 +274,8 @@ export class InferenceGraph {
    * The three input buffers are packed into enc_input on GPU via the
    * inputPacker dispatch. Then the graph is dispatched layer by layer.
    *
-   * If buffer identities have changed (e.g. after a resize via re-initialize),
-   * bind groups are rebuilt before dispatch.
+   * Resize publishes a complete candidate graph through initialize(). A tensor
+   * identity change inside one published graph is an invariant violation.
    */
   run(
     noisyColorBuf: GPUBuffer,
@@ -320,18 +316,15 @@ export class InferenceGraph {
       const layer = this._spec.layers[i]!;
       const state = this._layerStates[i];
 
-      if (!state) continue; // inputPack or unsupported kind
+      if (!state) continue; // inputPack is dispatched separately
 
       // Re-validate bind group buffer identity.
       const curKeys = currentBufKeys(layer, this._tensors, this._placeholderBuf);
       if (!keysEqual(state.cachedBufKeys, curKeys)) {
-        // Rebuild bind group with fresh buffer references (keep trained weights).
-        const { bindGroup, bufKeys } = buildBindGroup(
-          device, state.pipeline, layer, this._weightsByName, state.uniformBuf,
-          this._tensors, this._placeholderBuf, this._allocatedBuffers,
+        throw new Error(
+          `[InferenceGraph] layer '${layer.name}' tensor identity changed ` +
+            'outside candidate-first initialize(); reinitialize the graph.',
         );
-        state.cachedBindGroup = bindGroup;
-        state.cachedBufKeys = bufKeys;
       }
 
       // Re-write uniform with current (stored) dims (handles resize).
@@ -417,7 +410,6 @@ export class InferenceGraph {
     this._inferenceH = 0;
     this._device = null;
     this._ready = false;
-    this._weightsByName.clear();
     this._memoryTelemetry = null;
     this._tensorStorage = NEURAL_F32_TENSOR_STORAGE;
     this._tensorStoragePreference = 'auto';
@@ -513,7 +505,7 @@ export class InferenceGraph {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function keysEqual(a: readonly string[], b: readonly string[]): boolean {
+function keysEqual(a: readonly GPUBuffer[], b: readonly GPUBuffer[]): boolean {
   if (a.length !== b.length) return false;
   for (let i = 0; i < a.length; i++) {
     if (a[i] !== b[i]) return false;

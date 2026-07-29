@@ -662,6 +662,16 @@ describe('packSceneFromCore (SP-*)', () => {
 
     expect(rebuilt.ok).toBe(true);
     if (!rebuilt.ok) return;
+    expect(rebuilt.tlasNodes).not.toBe(packed.tlasNodes);
+    expect(rebuilt.tlasInstanceWorldToLocal).not.toBe(
+      packed.tlasInstanceWorldToLocal,
+    );
+    expect(rebuilt.tlasInstanceLocalToWorld).not.toBe(
+      packed.tlasInstanceLocalToWorld,
+    );
+    expect(packed.tlasNodes).toEqual(nodesBefore);
+    expect(packed.tlasInstanceWorldToLocal).toEqual(worldToLocalBefore);
+    expect(packed.tlasInstanceLocalToWorld).toEqual(localToWorldBefore);
     expect(Array.from(rebuilt.dirtyTlasTransformInstanceIndices ?? [])).toEqual([
       1,
     ]);
@@ -691,6 +701,138 @@ describe('packSceneFromCore (SP-*)', () => {
     expect(rebuilt.tlasInstanceLocalToWorld[28]).toBeCloseTo(3);
   });
 
+  it('treats an unchanged partial transform refit as a copy-on-write no-op', () => {
+    const scene: Scene = {
+      primitives: [
+        instancedMesh('inst', [translate(0), translate(2)]),
+        unitTriMesh('other', translate(10)),
+      ],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+    const packed = packSceneFromCore(scene, {
+      tlas: true,
+      resolveMaterialId: () => 0,
+    });
+
+    const refit = refitTlasTransforms(
+      scene,
+      packed.primitiveTlasBindings,
+      {
+        tlasNodes: packed.tlasNodes,
+        tlasInstanceIndices: packed.tlasInstanceIndices,
+        tlasBlasRoots: packed.tlasBlasRoots,
+        tlasInstanceWorldToLocal: packed.tlasInstanceWorldToLocal,
+        tlasInstanceLocalToWorld: packed.tlasInstanceLocalToWorld,
+      },
+      { primitiveId: 'inst' },
+    );
+
+    expect(refit.ok).toBe(true);
+    if (!refit.ok) return;
+    expect(Array.from(refit.dirtyTlasNodeIndices ?? [])).toEqual([]);
+    expect(Array.from(refit.dirtyTlasTransformInstanceIndices ?? [])).toEqual([]);
+    expect(refit.tlasNodes).not.toBe(packed.tlasNodes);
+    expect(refit.tlasNodes).toEqual(packed.tlasNodes);
+    expect(refit.tlasInstanceWorldToLocal).toEqual(
+      packed.tlasInstanceWorldToLocal,
+    );
+    expect(refit.tlasInstanceLocalToWorld).toEqual(
+      packed.tlasInstanceLocalToWorld,
+    );
+  });
+
+  it('chains partial refits for two primitives without mutating either rollback baseline', () => {
+    const scene: Scene = {
+      primitives: [
+        unitTriMesh('first', translate(0)),
+        unitTriMesh('second', translate(10)),
+      ],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+    const packed = packSceneFromCore(scene, {
+      tlas: true,
+      resolveMaterialId: () => 0,
+    });
+    const packedNodesBefore = new Uint32Array(packed.tlasNodes);
+    const packedWorldToLocalBefore = new Float32Array(
+      packed.tlasInstanceWorldToLocal,
+    );
+    const packedLocalToWorldBefore = new Float32Array(
+      packed.tlasInstanceLocalToWorld,
+    );
+    const firstMoved: Scene = {
+      ...scene,
+      primitives: [
+        unitTriMesh('first', translate(4)),
+        scene.primitives[1]!,
+      ],
+    };
+    const firstRefit = refitTlasTransforms(
+      firstMoved,
+      packed.primitiveTlasBindings,
+      {
+        tlasNodes: packed.tlasNodes,
+        tlasInstanceIndices: packed.tlasInstanceIndices,
+        tlasBlasRoots: packed.tlasBlasRoots,
+        tlasInstanceWorldToLocal: packed.tlasInstanceWorldToLocal,
+        tlasInstanceLocalToWorld: packed.tlasInstanceLocalToWorld,
+      },
+      { primitiveId: 'first' },
+    );
+    expect(firstRefit.ok).toBe(true);
+    if (!firstRefit.ok) return;
+    const firstNodesBeforeSecond = new Uint32Array(firstRefit.tlasNodes);
+    const firstWorldToLocalBeforeSecond = new Float32Array(
+      firstRefit.tlasInstanceWorldToLocal,
+    );
+    const firstLocalToWorldBeforeSecond = new Float32Array(
+      firstRefit.tlasInstanceLocalToWorld,
+    );
+
+    const bothMoved: Scene = {
+      ...scene,
+      primitives: [
+        unitTriMesh('first', translate(4)),
+        unitTriMesh('second', translate(14)),
+      ],
+    };
+    const secondRefit = refitTlasTransforms(
+      bothMoved,
+      packed.primitiveTlasBindings,
+      {
+        tlasNodes: firstRefit.tlasNodes,
+        tlasInstanceIndices: firstRefit.tlasInstanceIndices,
+        tlasBlasRoots: firstRefit.tlasBlasRoots,
+        tlasInstanceWorldToLocal: firstRefit.tlasInstanceWorldToLocal,
+        tlasInstanceLocalToWorld: firstRefit.tlasInstanceLocalToWorld,
+      },
+      { primitiveId: 'second' },
+    );
+    expect(secondRefit.ok).toBe(true);
+    if (!secondRefit.ok) return;
+
+    expect(secondRefit.tlasInstanceLocalToWorld[12]).toBeCloseTo(4);
+    expect(secondRefit.tlasInstanceLocalToWorld[16 + 12]).toBeCloseTo(14);
+    expect(secondRefit.tlasInstanceWorldToLocal[12]).toBeCloseTo(-4);
+    expect(secondRefit.tlasInstanceWorldToLocal[16 + 12]).toBeCloseTo(-14);
+    expect(firstRefit.tlasNodes).toEqual(firstNodesBeforeSecond);
+    expect(firstRefit.tlasInstanceWorldToLocal).toEqual(
+      firstWorldToLocalBeforeSecond,
+    );
+    expect(firstRefit.tlasInstanceLocalToWorld).toEqual(
+      firstLocalToWorldBeforeSecond,
+    );
+    expect(packed.tlasNodes).toEqual(packedNodesBefore);
+    expect(packed.tlasInstanceWorldToLocal).toEqual(
+      packedWorldToLocalBefore,
+    );
+    expect(packed.tlasInstanceLocalToWorld).toEqual(
+      packedLocalToWorldBefore,
+    );
+  });
+
   it('H34-e: transform-only refit rejects a newly non-invertible transform', () => {
     const base = unitTriMesh('tri');
     const packed = packSceneFromCore(
@@ -703,6 +845,13 @@ describe('packSceneFromCore (SP-*)', () => {
       0, 0, 1, 0,
       0, 0, 0, 1,
     ]));
+    const nodesBefore = new Uint32Array(packed.tlasNodes);
+    const worldToLocalBefore = new Float32Array(
+      packed.tlasInstanceWorldToLocal,
+    );
+    const localToWorldBefore = new Float32Array(
+      packed.tlasInstanceLocalToWorld,
+    );
     const rebuilt = refitTlasTransforms(
       { primitives: [unitTriMesh('tri', singular)], emitters: [], environment: { kind: 'none' } },
       packed.primitiveTlasBindings,
@@ -711,13 +860,17 @@ describe('packSceneFromCore (SP-*)', () => {
         tlasInstanceIndices: packed.tlasInstanceIndices,
         tlasBlasRoots: packed.tlasBlasRoots,
         tlasInstanceWorldToLocal: packed.tlasInstanceWorldToLocal,
+        tlasInstanceLocalToWorld: packed.tlasInstanceLocalToWorld,
       },
+      { primitiveId: 'tri' },
     );
 
     expect(rebuilt.ok).toBe(false);
     if (rebuilt.ok) return;
-    expect(rebuilt.reason).toMatch(/non-invertible instance transform/);
-    expect(rebuilt.reason).toMatch(/identity-at-origin/);
+    expect(rebuilt.reason).toContain('TLAS membership changed from [0] to []');
+    expect(packed.tlasNodes).toEqual(nodesBefore);
+    expect(packed.tlasInstanceWorldToLocal).toEqual(worldToLocalBefore);
+    expect(packed.tlasInstanceLocalToWorld).toEqual(localToWorldBefore);
   });
 
   it('SP-3: instanced mesh produces four TLAS instances', () => {
@@ -1229,14 +1382,14 @@ describe('rebuildTlasReuseBlas (slice-1 instanced-mesh count change)', () => {
     expect(rebuilt.pack.tlasBlasRoots.length).toBe(1);
   });
 
-  it('rejects when no instance count changed (caller should use refit path)', () => {
+  it('rejects when no TLAS membership changed (caller should use refit path)', () => {
     const scene: Scene = {
       primitives: [instancedMesh('inst', [translate(0), translate(2)])],
       emitters: [],
       environment: { kind: 'none' },
     };
     const packed = packSceneFromCore(scene, { tlas: true, resolveMaterialId: () => 0 });
-    // Same count, just moved instances → not a count change.
+    // Same raw members, just moved instances → not a membership change.
     const next: Scene = {
       primitives: [instancedMesh('inst', [translate(1), translate(3)])],
       emitters: [],
@@ -1245,7 +1398,7 @@ describe('rebuildTlasReuseBlas (slice-1 instanced-mesh count change)', () => {
     const rebuilt = rebuildTlasReuseBlas(next, packed);
     expect(rebuilt.ok).toBe(false);
     if (rebuilt.ok) return;
-    expect(rebuilt.reason).toMatch(/no instance count changed/i);
+    expect(rebuilt.reason).toMatch(/no TLAS membership changed/i);
   });
 
   it('rejects when a non-instanced primitive disappeared', () => {

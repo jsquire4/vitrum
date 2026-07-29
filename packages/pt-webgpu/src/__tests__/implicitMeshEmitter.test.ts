@@ -17,7 +17,6 @@ import type { MaterialSpec, MeshPrimitive, Scene, TextureRef } from '@vitrum/cor
 import {
   MESH_AREA_LIGHT_FLOAT_STRIDE,
   packEmitterArrays,
-  packMeshAreaAdjointReplayArrays,
 } from '../scene/emitterPacking.js';
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
@@ -231,7 +230,7 @@ describe('packEmitterArrays — H14-A implicit mesh-area synthesis', () => {
     expect(packed.meshAreaLightsData.length).toBe(MESH_AREA_LIGHT_FLOAT_STRIDE);
   });
 
-  it('packs source factors for mapped explicit mesh-area emitters with zero authored color channels', () => {
+  it('does not publish an unconsumed source-factor stream for mapped emitters', () => {
     const primitive = {
       ...triMesh('mapped-zero-red-panel', [0, 0, 0], 0, {
         emissiveMap: emissiveMap(new Float32Array([1, 0, 1, 1]), 1, 1),
@@ -256,13 +255,10 @@ describe('packEmitterArrays — H14-A implicit mesh-area synthesis', () => {
     expect(packed.meshAreaLightsData[12]).toBeCloseTo(0, 5);
     expect(packed.meshAreaLightsData[13]).toBeCloseTo(2, 5);
     expect(packed.meshAreaLightsData[14]).toBeCloseTo(4, 5);
-    expect(packed.meshAreaLightSourceFactorsData.length).toBe(4);
-    expect(packed.meshAreaLightSourceFactorsData[0]).toBeCloseTo(1, 5);
-    expect(packed.meshAreaLightSourceFactorsData[1]).toBeCloseTo(1, 5);
-    expect(packed.meshAreaLightSourceFactorsData[2]).toBeCloseTo(1, 5);
+    expect('meshAreaLightSourceFactorsData' in packed).toBe(false);
   });
 
-  it('keeps zero-intensity explicit mapped mesh-area emitters only in the adjoint replay stream', () => {
+  it('omits zero-intensity explicit mapped mesh-area emitters from production packing', () => {
     const primitive = {
       ...triMesh('mapped-zero-intensity-panel', [0, 0, 0], 0, {
         emissiveMap: emissiveMap(new Float32Array([1, 0, 1, 1]), 1, 1),
@@ -282,16 +278,9 @@ describe('packEmitterArrays — H14-A implicit mesh-area synthesis', () => {
     };
 
     const production = packEmitterArrays(scene);
-    const replay = packMeshAreaAdjointReplayArrays(scene);
 
     expect(production.meshAreaLightCount).toBe(0);
-    expect(replay.meshAreaLightCount).toBe(1);
-    expect(replay.meshAreaLightsData[12]).toBeCloseTo(0, 5);
-    expect(replay.meshAreaLightsData[13]).toBeCloseTo(0, 5);
-    expect(replay.meshAreaLightsData[14]).toBeCloseTo(0, 5);
-    expect(replay.meshAreaLightSourceFactorsData[0]).toBeCloseTo(1, 5);
-    expect(replay.meshAreaLightSourceFactorsData[1]).toBeCloseTo(1, 5);
-    expect(replay.meshAreaLightSourceFactorsData[2]).toBeCloseTo(1, 5);
+    expect(production.meshAreaLightsData).toHaveLength(0);
   });
 
   it('does not synthesize an implicit emitter when a readable emissiveMap averages black', () => {

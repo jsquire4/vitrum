@@ -3,7 +3,7 @@ import type { EngineError } from '@vitrum/core';
 import { WalkaroundGPUPipeline } from '../WalkaroundGPUPipeline.js';
 
 type TrainingHarness = Record<string, unknown> & {
-  _tickSubsystemTraining(passLayout: unknown): void;
+  _tickSubsystemTraining(ppgTrainingDispatched: boolean): void;
 };
 
 async function flushTrainingCatch(): Promise<void> {
@@ -34,7 +34,7 @@ describe('WalkaroundGPUPipeline NRC training diagnostics', () => {
     const onError = vi.fn();
     const pipeline = makeHarness(trainFromRecords, onError);
 
-    pipeline._tickSubsystemTraining({});
+    pipeline._tickSubsystemTraining(false);
     await flushTrainingCatch();
 
     expect(onError).toHaveBeenCalledTimes(1);
@@ -52,7 +52,7 @@ describe('WalkaroundGPUPipeline NRC training diagnostics', () => {
     const onError = vi.fn();
     const pipeline = makeHarness(trainFromRecords, onError);
 
-    expect(() => pipeline._tickSubsystemTraining({})).not.toThrow();
+    expect(() => pipeline._tickSubsystemTraining(false)).not.toThrow();
     expect(onError).toHaveBeenCalledOnce();
     expect(onError).toHaveBeenCalledWith({
       kind: 'render',
@@ -71,7 +71,7 @@ describe('WalkaroundGPUPipeline NRC training diagnostics', () => {
       maybeRunTrainingRefine: vi.fn(() => { throw raw; }),
     };
 
-    expect(() => pipeline._tickSubsystemTraining({})).not.toThrow();
+    expect(() => pipeline._tickSubsystemTraining(true)).not.toThrow();
     await flushTrainingCatch();
     expect(trainFromRecords).toHaveBeenCalledOnce();
     expect(onError).toHaveBeenCalledWith({
@@ -92,15 +92,15 @@ describe('WalkaroundGPUPipeline NRC training diagnostics', () => {
     const onError = vi.fn();
     const pipeline = makeHarness(trainFromRecords, onError);
 
-    pipeline._tickSubsystemTraining({});
+    pipeline._tickSubsystemTraining(false);
     await flushTrainingCatch();
-    pipeline._tickSubsystemTraining({});
+    pipeline._tickSubsystemTraining(false);
     await flushTrainingCatch();
     expect(onError).toHaveBeenCalledTimes(1);
 
-    pipeline._tickSubsystemTraining({});
+    pipeline._tickSubsystemTraining(false);
     await flushTrainingCatch();
-    pipeline._tickSubsystemTraining({});
+    pipeline._tickSubsystemTraining(false);
     await flushTrainingCatch();
     expect(onError).toHaveBeenCalledTimes(2);
   });
@@ -111,9 +111,26 @@ describe('WalkaroundGPUPipeline NRC training diagnostics', () => {
     const pipeline = makeHarness(trainFromRecords, onError);
     pipeline._initialized = false;
 
-    pipeline._tickSubsystemTraining({});
+    pipeline._tickSubsystemTraining(false);
     await flushTrainingCatch();
 
     expect(onError).not.toHaveBeenCalled();
   });
+
+  it.each([false, true])(
+    'forwards ppgTrainingDispatched=%s to the PPG refine tick',
+    (ppgTrainingDispatched) => {
+      const pipeline = makeHarness(vi.fn(() => Promise.resolve()), vi.fn());
+
+      pipeline._tickSubsystemTraining(ppgTrainingDispatched);
+
+      expect(pipeline._ppg).toEqual({
+        maybeRunTrainingRefine: expect.any(Function),
+      });
+      expect(
+        (pipeline._ppg as { maybeRunTrainingRefine: ReturnType<typeof vi.fn> })
+          .maybeRunTrainingRefine,
+      ).toHaveBeenCalledWith(pipeline._res, ppgTrainingDispatched);
+    },
+  );
 });

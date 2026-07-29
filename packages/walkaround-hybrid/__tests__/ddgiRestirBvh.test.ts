@@ -248,6 +248,7 @@ describe('makeRestirBvhSnapshot (PR-5.1)', () => {
         primitiveId: 'box',
         primitiveKind: 'mesh',
         blasRoot: 0,
+        instanceSourceIndices: [0],
         instanceCount: 1,
         vertexStart: 0,
         vertexCount: 3,

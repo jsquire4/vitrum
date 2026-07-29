@@ -86,7 +86,8 @@ const SKINNED_MESH_KEYS = exhaustiveKnownKeys<SkinnedMeshPrimitive>()([
   'skinInfluencesPerVertex', 'bones', 'boneInverses', 'bindMatrix',
   'bindMatrixInverse', 'morphTargets', 'morphTargetNormals',
   'morphTargetTangents', 'morphTargetUvs', 'morphTargetUv1s',
-  'morphTargetUvSets', 'morphWeights', 'material', 'transform', 'castShadow',
+  'morphTargetUvSets', 'morphTargetColors', 'morphTargetColorSets',
+  'morphWeights', 'material', 'transform', 'castShadow',
 ]);
 const ANALYTIC_KEYS = exhaustiveKnownKeys<AnalyticPrimitive>()([
   'kind', 'id', 'shape', 'params', 'material', 'transform', 'castShadow',
@@ -988,6 +989,7 @@ function validateMorphTargets(
     ['morphTargetTangents', primitive.tangents, 'tangents'],
     ['morphTargetUvs', primitive.uvs, 'uvs'],
     ['morphTargetUv1s', primitive.uv1, 'uv1'],
+    ['morphTargetColors', primitive.colors, 'colors'],
   ] as const) {
     if (primitive[field] !== undefined && base === undefined) {
       failRange(`${path}.${field}`, `requires the base ${baseField} stream`);
@@ -998,7 +1000,9 @@ function validateMorphTargets(
     if (
       primitive.morphWeights !== undefined ||
       primitive.morphTargetUvSets !== undefined ||
-      related.some(([, value]) => value !== undefined)
+      primitive.morphTargetColorSets !== undefined ||
+      related.some(([, value]) => value !== undefined) ||
+      primitive.morphTargetColors !== undefined
     ) {
       failRange(path, 'morphTargets is required when morph weights or auxiliary morph streams are present');
     }
@@ -1071,6 +1075,69 @@ function validateMorphTargets(
           failRange(
             `${path}.morphTargetUvSets[${texCoord}][${targetIndex}]`,
             `must match the legacy ${texCoord === 0 ? 'morphTargetUvs' : 'morphTargetUv1s'} alias when both are present`,
+          );
+        }
+      }
+    }
+  }
+  const morphColorSets = primitive.morphTargetColorSets;
+  if (primitive.morphTargetColors !== undefined) {
+    assertArrayContainer(primitive.morphTargetColors, `${path}.morphTargetColors`, {
+      exactLength: positions.length,
+    });
+    const base = primitive.colors!;
+    for (let targetIndex = 0; targetIndex < primitive.morphTargetColors.length; targetIndex += 1) {
+      const target = primitive.morphTargetColors[targetIndex];
+      assertFloat32Array(target, `${path}.morphTargetColors[${targetIndex}]`, true);
+      const targetLength = typedArrayLength(target)!;
+      if (targetLength !== typedArrayLength(base)) {
+        failRange(
+          `${path}.morphTargetColors[${targetIndex}]`,
+          `length must match colors.length (${typedArrayLength(base)}; got ${targetLength})`,
+        );
+      }
+    }
+  }
+  if (morphColorSets !== undefined) {
+    assertArrayContainer(morphColorSets, `${path}.morphTargetColorSets`, { allowHoles: true });
+    for (const colorSet of sparseArrayOwnIndices(morphColorSets)) {
+      const targets = ownArrayElement(morphColorSets, colorSet);
+      if (targets === undefined) continue;
+      const base = (primitive.colorSets === undefined
+        ? undefined
+        : ownArrayElement(primitive.colorSets, colorSet)) ??
+        (colorSet === 0 ? primitive.colors : undefined);
+      if (base === undefined) {
+        failRange(
+          `${path}.morphTargetColorSets[${colorSet}]`,
+          `requires a matching colorSets[${colorSet}] base stream`,
+        );
+      }
+      assertArrayContainer(targets, `${path}.morphTargetColorSets[${colorSet}]`, {
+        exactLength: positions.length,
+      });
+      const expectedLength = typedArrayLength(base)!;
+      for (let targetIndex = 0; targetIndex < targets.length; targetIndex += 1) {
+        const target = targets[targetIndex];
+        assertFloat32Array(
+          target,
+          `${path}.morphTargetColorSets[${colorSet}][${targetIndex}]`,
+          true,
+        );
+        const targetLength = typedArrayLength(target)!;
+        if (targetLength !== expectedLength) {
+          failRange(
+            `${path}.morphTargetColorSets[${colorSet}][${targetIndex}]`,
+            `length must match colorSets[${colorSet}].length (${expectedLength}; got ${targetLength})`,
+          );
+        }
+        const legacyTarget = colorSet === 0
+          ? primitive.morphTargetColors?.[targetIndex]
+          : undefined;
+        if (legacyTarget !== undefined && !floatStreamsEqual(target, legacyTarget)) {
+          failRange(
+            `${path}.morphTargetColorSets[0][${targetIndex}]`,
+            'must match the legacy morphTargetColors alias when both are present',
           );
         }
       }

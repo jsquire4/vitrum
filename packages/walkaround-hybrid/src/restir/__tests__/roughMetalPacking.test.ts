@@ -167,7 +167,7 @@ describe('packBVHRoughMetalFromCore — parity with the structural packer', () =
     ] as unknown as MaterialSpec[];
     const buf = packBVHRoughMetalFromCore(new Uint32Array([0]), coreMats, 1);
     const decoded = decodeIor(buf[0]!);
-    // IOR 1.5 encodes to byte 64, decodes to 1 + 64/255*2 ≈ 1.502 — within 0.003 of 1.5.
+    // IOR 1.5 encodes to byte 65 and decodes exactly over the 254 finite intervals.
     expect(decoded).toBeCloseTo(IOR_DEFAULT_GLASS, 1);
   });
 

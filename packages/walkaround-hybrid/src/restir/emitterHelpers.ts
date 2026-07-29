@@ -182,7 +182,10 @@ export function collectRectAreaEmitterTrisFromCore(scene: Scene): ExtraEmitterTr
       const segmentAngle = TAU / DISC_AREA_TRIANGLE_COUNT;
       const areaPreservingRadius = e.radius * Math.sqrt(segmentAngle / Math.sin(segmentAngle));
       const triArea = Math.PI * e.radius * e.radius / DISC_AREA_TRIANGLE_COUNT;
-      const N: [number, number, number] = [-n[0], -n[1], -n[2]];
+      // The core disc normal is the one-sided emitting-face normal. Keep that
+      // orientation in EmitterTri: every ReSTIR/DDGI/RC consumer accepts the
+      // front face with dot(e.normal, directionFromLight) > 0.
+      const N: [number, number, number] = [n[0], n[1], n[2]];
       const Le = emitterLe(e.color, e.intensity);
 
       for (let i = 0; i < DISC_AREA_TRIANGLE_COUNT; i += 1) {
@@ -190,8 +193,9 @@ export function collectRectAreaEmitterTrisFromCore(scene: Scene): ExtraEmitterTr
         const next = discPoint(e.position, tangent, bitangent, areaPreservingRadius, (i + 1) * segmentAngle);
         out.push({
           vA: [e.position[0], e.position[1], e.position[2]],
-          vB: next,
-          vC: curr,
+          // Preserve winding agreement with the authored +normal.
+          vB: curr,
+          vC: next,
           normal: N,
           area: triArea,
           Le,
@@ -213,8 +217,9 @@ export function collectRectAreaEmitterTrisFromCore(scene: Scene): ExtraEmitterTr
     const zLenSq = zx * zx + zy * zy + zz * zz;
     if (zLenSq < 1e-12) continue;
     const zLen = Math.sqrt(zLenSq);
-    // Face normal = -normalize(X × Y) = -normalize(uAxis × vAxis).
-    const N: [number, number, number] = [-zx / zLen, -zy / zLen, -zz / zLen];
+    // The core rect contract defines uAxis × vAxis as the one-sided
+    // emitting-face normal. The triangle winding below has that orientation.
+    const N: [number, number, number] = [zx / zLen, zy / zLen, zz / zLen];
 
     // Four world corners = position ± uAxis ± vAxis.
     const ll: [number, number, number] = [p[0] - u[0] - v[0], p[1] - u[1] - v[1], p[2] - u[2] - v[2]];

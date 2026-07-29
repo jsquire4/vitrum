@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest';
 import type { Engine } from '@vitrum/core';
 import { BACKEND_PROMISE_LEDGER } from '@vitrum/core';
 import { HybridEngine } from '../src/HybridEngine.js';
-import { WALKAROUND_NEURAL_DENOISER_SHAPE_REQUIREMENT } from '../src/neural/shapeContract.js';
 
 function makeMockDevice(): GPUDevice {
   return {
@@ -52,10 +51,6 @@ describe('walkaround-hybrid promise ledger compliance', () => {
     expect(sorted(caps.supportedAnalyticShapes)).toEqual(sorted(expected.supportedAnalyticShapes));
     expect(caps.supportDetails).toEqual({
       ...expected.supportDetails,
-      denoiserSpatialShapeRequirements: {
-        ...expected.supportDetails.denoiserSpatialShapeRequirements,
-        neural: WALKAROUND_NEURAL_DENOISER_SHAPE_REQUIREMENT,
-      },
       denoisers: {
         ...expected.supportDetails.denoisers,
         neural: 'unsupported',

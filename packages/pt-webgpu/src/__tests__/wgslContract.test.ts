@@ -26,25 +26,11 @@ import { activeLayerWeightRgbOracle } from './spectralScalarOracle.js';
 describe('pt-webgpu WGSL byte-identity (Theme-C dedup pin)', () => {
   it('composed full-tier trace string matches the golden SHA256', () => {
     const digest = createHash('sha256').update(PT_WEBGPU_TRACE_WGSL).digest('hex');
-    // Updated for Phase I.1: the trace kernel now composes MNEE_NEWTON_WGSL +
-    // MNEE_CHAIN_WGSL + MNEE_CONNECTION_WGSL and the real point-light REFLECTION +
-    // REFRACTION + GLASS-SLAB (2-vertex chain) caustics (caustic.wgsl.ts:
-    // pointLightReflectionCaustic / pointLightRefractionCaustic / pointLightGlassSlabCaustic).
-    // The reflection caustic is GPU-validated against the analytic mirror-image
-    // reference (wsl-gpu mnee-reflection-caustic-ab.ts); the refraction caustic
-    // ("water surface") against a deterministic forward-traced grid reference
-    // (wsl-gpu mnee-refraction-caustic-ab.ts — ratio 0.986, slope 0.984); the
-    // glass-slab chain caustic against a deterministic forward-traced SLAB grid
-    // (offline focusing derivation ratio/slope 1.000 in
-    // mnee-glass-slab-focusing-derivation.ts, then GPU-A/B'd in
-    // mnee-glass-slab-caustic-ab.ts — ratio 0.996, slope 0.990 on lavapipe). The
-    // refraction caustic gained a single-interface GUARD (causticSegmentCrossesTransmissive):
-    // it skips when the light→v leg crosses a transmissive facet, since that path is
-    // really a chain the slab kernel owns — without it the refraction + slab kernels
-    // double-counted (slab A/B ratio 2.17 → 0.996). The composed string also passes a
-    // naga compile gate (wsl-gpu mnee-slab-wgsl-compile.ts) — the byte-identity goldens
-    // alone do NOT catch a symbol-scope regression. Recompute (sha256 of
-    // PT_WEBGPU_TRACE_WGSL) on any intentional WGSL change and update both here.
+    // The full-tier trace composes only the coupled, bounded 1–8 vertex MNEE
+    // solver used by boundedManifoldCaustic. mneeBoundedChain.test.ts separately
+    // pins every shipped full-tier composer against reintroducing the superseded
+    // one-vertex and fixed two-vertex solvers. Recompute this digest on any
+    // intentional WGSL change; the byte golden alone does not prove reachability.
     // Re-pinned 2026-06-06: FrameParams dropped the never-read heroStrategy slot
     // (replaced by _padAuto0) and bdptConnection.wgsl gained a firefly-guard
     // comment above BDPT_CONTRIBUTION_CLAMP. Both are render-neutral.
@@ -93,7 +79,7 @@ describe('pt-webgpu WGSL byte-identity (Theme-C dedup pin)', () => {
     // Jakob-Hanika spectral reflectance carried scalar-spectral at the hero λ;
     // emitters/env/lights spectralised via spectralEmissionAtHero; MATERIAL_VEC4_STRIDE
     // bumped 26→27 for the spectral-coeff vec4 #26), B9 (Kulla-Conty GGX multiscatter
-    // energy compensation in evaluateBrdf/Full + the sampled-spec boost), B10 (physical
+    // energy compensation in the finite full-BSDF evaluator), B10 (physical
     // refraction transmittance = baseColor, replacing mix(vec3(1),baseColor,0.15)).
     // spectralEnabled=false RGB path is byte-identical at RUNTIME (the WGSL string
     // changes via the always-present select()s, hence this re-pin); B9/B10 are
@@ -175,9 +161,9 @@ describe('pt-webgpu WGSL byte-identity (Theme-C dedup pin)', () => {
     // Re-pinned 2026-06-10: D9.3 — buildShadingTangentFrame extracted in material.wgsl.ts;
     // applyNormalMap + applyBumpMap now call the shared helper. Dead bitanW variable removed
     // from applyBumpMap. SEMANTICALLY EQUIVALENT; tangent frame math unchanged.
-    // Re-pinned 2026-06-10: D9.4 — mneeChainFdJacobian4x4 extracted in mneeNewton.wgsl.ts;
-    // mneeNewtonSolveChain2 + mneeChainPdfJacobianDet now call the shared helper.
-    // SEMANTICALLY EQUIVALENT; same FD columns, same block assembly.
+    // Re-pinned 2026-07-29: the zero-consumer one-vertex/fixed-two-vertex MNEE
+    // solvers and their harness-only Jacobians were removed. The live bounded
+    // O(N) block-Thomas solver and estimator are unchanged.
     // Re-pinned 2026-06-10: D9.10 — causticReceiverRejected + causticClampedPointCount
     // extracted in caustic.wgsl.ts; all three pointLight*Caustic functions use them.
     // SEMANTICALLY EQUIVALENT; same receiver gate + same light-count cap.
@@ -373,8 +359,12 @@ describe('pt-webgpu WGSL byte-identity (Theme-C dedup pin)', () => {
     // finite-BSDF caustic receivers carry etaTOverI exactly once.
     // C35 keeps its native s=n-1 strategy helper out of the BDPT-off module;
     // the default composition retains the exact legacy explicit-strategy mask.
-    expect(digest).toBe('bcc9c22adddddb4dd840c0141db51c6f6cf2b4a806f4eb5402e8549e4c4d0c8e');
-    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(582277);
+    // Re-pinned 2026-07-29: U11 removes every continuous-event proposal-local
+    // throughput/PDF calculation overwritten by the finite finalizer.
+    // The same final hygiene pass removes legacy MNEE solvers that were
+    // composed but unreachable from every full-tier entry point.
+    expect(digest).toBe('83c30898ae14f65773b25139456a2a2235203452e97bb18ec8e0313d7d4c1451');
+    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(557847);
   });
 });
 
@@ -413,19 +403,20 @@ describe('pt-webgpu WGSL material contract', () => {
     expect(PT_WEBGPU_TRACE_WGSL).toContain('anisoRotation,');
   });
 
-  it('samples clearcoat and sheen in the main eye-path with a matching sampled pdf', () => {
+  it('samples clearcoat and sheen with one centralized finite-event estimator', () => {
     expect(PT_WEBGPU_TRACE_WGSL).toContain('fn brdfDirectionalPdfFullSampled(');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('fn brdfExtensionLobeWeightSum(clearcoat: f32, sheen: f32) -> f32 {');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('let xiLobe = rand_f32(rng) * lobeWeightSum;');
     expect(PT_WEBGPU_TRACE_WGSL).toContain(
-      'result.throughputMul = opaqueInterface.reflectance * g1Wi2 *',
+      '(*result).throughputMul = finiteBsdf * cosine / marginalPdf;',
     );
     expect(PT_WEBGPU_TRACE_WGSL).toContain(
       'let bsCc = glossyReflectionSample(rng, wo, clearcoatNormal, ccTanT, ccTanB, clearcoatRoughness);',
     );
-    expect(PT_WEBGPU_TRACE_WGSL).toContain('let ccDensity = (clearcoatWeight / lobeWeightSum) * ccPdf;');
-    expect(PT_WEBGPU_TRACE_WGSL).toContain('let shDensity = (sheenWeight / lobeWeightSum) * shPdf;');
-    expect(PT_WEBGPU_TRACE_WGSL).toContain('let shBrdf = evalSheenLobe(sheen, sheenRoughness, sheenColor, normal, -incomingDir, result.sampledDir);');
+    expect(PT_WEBGPU_TRACE_WGSL).not.toContain('let ccDensity = (clearcoatWeight / lobeWeightSum) * ccPdf;');
+    expect(PT_WEBGPU_TRACE_WGSL).not.toContain('let shDensity = (sheenWeight / lobeWeightSum) * shPdf;');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('result.sampledLobe = BSDF_LOBE_CLEARCOAT;');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('result.sampledLobe = BSDF_LOBE_SHEEN;');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('let scatterPdfFwd = bs.sampledEventPdf;');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('swappedRev = bdptMarginalSurfacePdf(');
   });
@@ -506,9 +497,8 @@ describe('pt-webgpu WGSL material contract', () => {
     expect(branch).toContain('let lobeWeightSum = brdfExtensionLobeWeightSum(clearcoat, sheen);');
     expect(branch).toContain('let xiLobe = rand_f32(rng) * lobeWeightSum;');
     expect(branch).toContain('let xiBase = xiLobe;');
-    expect(branch).toContain(
-      'result.throughputMul = microfacetInterface.reflectance * g1Wi *',
-    );
+    expect(branch).not.toContain('microfacetInterface.reflectance * g1Wi *');
+    expect(branch).toContain('finalizeFiniteBounceSampleWithClearcoatNormal(');
     expect(branch).toContain(
       'baseColor * transmissionWeight *\n' +
         '            microfacetInterface.baseTransmittance *',
@@ -516,7 +506,8 @@ describe('pt-webgpu WGSL material contract', () => {
     expect(branch).toContain(
       'let bsCc = glossyReflectionSample(rng, wo, clearcoatNormal, ccTanT, ccTanB, clearcoatRoughness);',
     );
-    expect(branch).toContain('let shDensity = (sheenWeight / lobeWeightSum) * shPdf;');
+    expect(branch).not.toContain('let shDensity = (sheenWeight / lobeWeightSum) * shPdf;');
+    expect(branch).toContain('result.sampledLobe = BSDF_LOBE_SHEEN;');
   });
 
   it('uses extension-aware BRDF evaluation for SPPM receiver gathers', () => {
@@ -617,8 +608,12 @@ describe('pt-webgpu WGSL material contract', () => {
     expect(PT_WEBGPU_TRACE_WGSL).toContain(
       'let offsetNormal = select(-normal, normal, dot(normal, wi) > 0.0);',
     );
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('roughTransmissionProposalPdf <= 0.0');
+    expect(PT_WEBGPU_TRACE_WGSL).not.toContain(
+      'result.sampleAllowsAreaMis = roughTransmissionProposalPdf > 0.0;',
+    );
     expect(PT_WEBGPU_TRACE_WGSL).toContain(
-      'result.sampleAllowsAreaMis = result.sampledEventPdf > 0.0;',
+      '(*result).sampleAllowsAreaMis = true;',
     );
   });
 

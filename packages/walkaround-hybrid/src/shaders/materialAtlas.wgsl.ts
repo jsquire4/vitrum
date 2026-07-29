@@ -65,12 +65,6 @@ const MATERIAL_ATLAS_OFFSET_CONSTS = buildMaterialAtlasOffsetConstsWGSL({
  * bounded 32-layer walk. Exhausting the budget returns the next surface as a
  * conservative blocker instead of leaking through it.
  *
- * NOTE: `sceneTraversal.wgsl.ts`'s `traceSceneFirstHitAlphaMask` is NOT folded
- * in here — it uses a different predicate SIGNATURE
- * (`materialScalarAlphaDiscardedForTri(triIndex, mask, width)` reads the mask
- * internally) and a structurally different exhausted-check, so it is not
- * byte-identical to this walker; it is left in place with this note.
- *
  * References consumer bindings (`materialMask`, BVH storage) → raw-string
  * template interpolated into the consumer body, NOT a WgslModule (composeWgsl
  * ordering constraint).
@@ -1383,14 +1377,6 @@ ${makeTexturedFirstHitAlphaMaskWalkerWGSL(
   'traceSceneFirstHitAlphaMaskTexturedOpaqueOnly',
   'materialAlphaDiscardedForOpaquePass',
 )}
-
-fn materialShadowOccluderForHit(
-  hit: IntersectionResult,
-  materialWord: u32,
-  skipGlass: bool,
-) -> bool {
-  return materialShadowTransmittanceForHit(hit, materialWord, skipGlass) <= 0.0;
-}
 
 fn materialShadowTransmittanceForHit(
   hit: IntersectionResult,

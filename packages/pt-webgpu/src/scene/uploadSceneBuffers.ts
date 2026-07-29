@@ -246,7 +246,6 @@ interface PackedSceneData {
   readonly spotLightsData: Float32Array;
   readonly rectAreaLightsData: Float32Array;
   readonly meshAreaLightsData: Float32Array;
-  readonly meshAreaLightSourceFactorsData: Float32Array;
   readonly environmentTint: readonly [number, number, number];
   readonly environmentSunDirection: readonly [number, number, number];
   readonly environmentSunStrength: number;
@@ -316,7 +315,6 @@ export interface UploadedSceneBuffers extends PackedSceneData {
   readonly spotLightsBuffer: GPUBuffer;
   readonly rectAreaLightsBuffer: GPUBuffer;
   readonly meshAreaLightsBuffer: GPUBuffer;
-  readonly meshAreaLightSourceFactorsBuffer: GPUBuffer;
   readonly tlasNodesBuffer: GPUBuffer;
   readonly tlasInstanceIndicesBuffer: GPUBuffer;
   readonly tlasBlasRootsBuffer: GPUBuffer;
@@ -347,7 +345,7 @@ export interface UploadedSceneBuffers extends PackedSceneData {
   /** T1-6 — emissive rgba16float 2d-array view bound in group 3 (binding 17). */
   readonly materialEmissiveTextureView: GPUTextureView;
   /** Live GPU footprint of the scene resources, split so the debug surface can
-   *  honour `GpuMemoryBreakdown`'s invariants: `bufferBytes` (all 24 scene
+   *  honour `GpuMemoryBreakdown`'s invariants: `bufferBytes` (all 32 scene
    *  STORAGE buffers) + `textureBytesByFormat` (the two material arrays, keyed by
    *  their actual `GPUTextureFormat`). Read off the CURRENT handles (not a
    *  creation-time constant) so it stays correct after a realloc fast-path swaps
@@ -368,14 +366,6 @@ export type { PrimitiveTlasBinding };
  * `bufferField` — the corresponding GPUBuffer handle field on `UploadedSceneBuffers`.
  * `label`       — the label string passed to `createStorageBuffer` (and visible in GPU
  *                 debuggers as `vitrum.pt-webgpu.scene.<name>`).
- * `excludeFromMemorySum` — (optional) when `true` the buffer is NOT counted by
- *                 `gpuMemoryBytes`. This flag exists ONLY to preserve the exact
- *                 pre-registry-driven behavior: `meshAreaLightSourceFactorsBuffer`
- *                 was historically omitted from the `gpuMemoryBytes` buffer sum
- *                 (present in destroy + create, absent from the debug memory
- *                 estimate). The omission looks unintentional; it is kept here as
- *                 data (not silently changed) so the debug estimate is byte-stable.
- *
  * **T2-A single-source invariant** — `uploadPackedScene`'s create loop, the
  * `destroy` closure, and `gpuMemoryBytes` are ALL driven off this registry, so a
  * buffer added here appears in creation, teardown, and the memory estimate with
@@ -424,7 +414,6 @@ export const SCENE_BUFFER_REGISTRY = [
   { key: 'spotLightsData',        bufferField: 'spotLightsBuffer',        label: 'vitrum.pt-webgpu.scene.spotLights' },
   { key: 'rectAreaLightsData',    bufferField: 'rectAreaLightsBuffer',    label: 'vitrum.pt-webgpu.scene.rectAreaLights' },
   { key: 'meshAreaLightsData',    bufferField: 'meshAreaLightsBuffer',    label: 'vitrum.pt-webgpu.scene.meshAreaLights' },
-  { key: 'meshAreaLightSourceFactorsData', bufferField: 'meshAreaLightSourceFactorsBuffer', label: 'vitrum.pt-webgpu.scene.meshAreaLightSourceFactors', excludeFromMemorySum: true },
   // ── WS2 light tree ────────────────────────────────────────────────────────
   { key: 'lightTreeNodes', bufferField: 'lightTreeBuffer', label: 'vitrum.pt-webgpu.scene.lightTree' },
   // ── P2 per-vertex UVs/tangents/colors + material texture descriptors ─────
@@ -729,8 +718,8 @@ export function packFoldedMaterialEntry(
  *
  * morphTargets ARE handled by solveSkin (morph-blend is applied before LBS when
  * morphTargets + morphWeights are present). solveSkin handles position, normal,
- * tangent, and UV morph deltas; solved tangents/UVs are preserved for
- * tangent-space and texture-space material maps.
+ * tangent, UV, and color morph deltas; solved tangents/UVs/colors are
+ * preserved for material evaluation.
  *
  * Returns a new scene whose skinned-mesh primitives carry solved
  * positions/normals/tangents/uvs/uvSets so that packSceneFromCore uses the correct
@@ -755,6 +744,8 @@ export function applySolveSkinToScene(scene: Scene): Scene {
         ...(solved.uvs ? { uvs: solved.uvs } : {}),
         ...(solved.uv1 ? { uv1: solved.uv1 } : {}),
         ...(solved.uvSets ? { uvSets: solved.uvSets } : {}),
+        ...(solved.colors ? { colors: solved.colors } : {}),
+        ...(solved.colorSets ? { colorSets: solved.colorSets } : {}),
       };
     } catch (err) {
       throw new Error(
@@ -1454,7 +1445,6 @@ export function buildPackedScene(
     spotLightsData: emitArrays.spotLightsData,
     rectAreaLightsData: emitArrays.rectAreaLightsData,
     meshAreaLightsData: emitArrays.meshAreaLightsData,
-    meshAreaLightSourceFactorsData: emitArrays.meshAreaLightSourceFactorsData,
     environmentTint: environment.tint,
     environmentSunDirection: environment.sunDirection,
     environmentSunStrength: environment.sunStrength,
@@ -1958,13 +1948,11 @@ interface MutableSceneBuffers {
   spotLightsBuffer: GPUBuffer;
   rectAreaLightsBuffer: GPUBuffer;
   meshAreaLightsBuffer: GPUBuffer;
-  meshAreaLightSourceFactorsBuffer: GPUBuffer;
   directionalLightsData: Float32Array;
   pointLightsData: Float32Array;
   spotLightsData: Float32Array;
   rectAreaLightsData: Float32Array;
   meshAreaLightsData: Float32Array;
-  meshAreaLightSourceFactorsData: Float32Array;
 
   // ── Emitter counts (incremental emitter patches) ─────────────────────────
   directionalLightCount: number;
@@ -3089,13 +3077,10 @@ function uploadPackedSceneInner(
     // T2-A — sum the CURRENT GPUBuffer sizes via the same registry (realloc-swapped
     // handles included) + the two material texture arrays (GPUTexture has no
     // `.size`, so derive w·h·layers·4 at rgba8 = 4 B/texel, keyed by the actual
-    // format). Entries flagged `excludeFromMemorySum` are skipped to preserve the
-    // exact pre-registry behavior (meshAreaLightSourceFactors was historically not
-    // counted here). Keeps `debug.estimatedGpuMemoryBytes` byte-stable.
+    // format).
     gpuMemoryBytes: () => {
       let bufferBytes = 0;
       for (const entry of SCENE_BUFFER_REGISTRY) {
-        if ('excludeFromMemorySum' in entry && entry.excludeFromMemorySum) continue;
         bufferBytes += uploaded[entry.bufferField].size;
       }
       const textureBytesByFormat: Record<string, number> = {};

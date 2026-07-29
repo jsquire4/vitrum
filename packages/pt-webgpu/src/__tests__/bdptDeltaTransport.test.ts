@@ -56,12 +56,15 @@ function roughTransmissionAtNormalIncidence(
 }
 
 describe('BDPT sampled-event delta/transmission transport', () => {
-  it('exposes the exact sampled event density and delta state from the shared sampler', () => {
+  it('centralizes finite-event estimators while preserving exact delta-event state', () => {
     expect(PT_WEBGPU_PATH_TRACE_BSDF_WGSL).toContain('sampledEventPdf: f32,');
     expect(PT_WEBGPU_PATH_TRACE_BSDF_WGSL).toContain('sampledIsDelta: bool,');
     expect(PT_WEBGPU_PATH_TRACE_BSDF_WGSL).toContain('sampledLobe: u32,');
     expect(PT_WEBGPU_PATH_TRACE_BSDF_WGSL).toContain('sampledEtaTOverI: f32,');
     expect(PT_WEBGPU_PATH_TRACE_BSDF_WGSL).toContain(
+      '(*result).sampledEventPdf = marginalPdf;',
+    );
+    expect(PT_WEBGPU_PATH_TRACE_BSDF_WGSL).not.toContain(
       'result.sampledEventPdf = (reflectionProbability / lobeWeightSum) * bs.pdf;',
     );
     expect(PT_WEBGPU_PATH_TRACE_BSDF_WGSL).toContain(
@@ -71,11 +74,38 @@ describe('BDPT sampled-event delta/transmission transport', () => {
     expect(PT_WEBGPU_PATH_TRACE_BSDF_WGSL).toContain(
       'result.sampledLobe = BSDF_LOBE_DELTA_TRANSMISSION;',
     );
-    expect(PT_WEBGPU_PATH_TRACE_BSDF_WGSL).toContain(
+    expect(PT_WEBGPU_PATH_TRACE_BSDF_WGSL).not.toContain(
       'result.sampledEventPdf = (specProb / lobeWeightSum) * bs2.pdf;',
     );
-    expect(PT_WEBGPU_PATH_TRACE_BSDF_WGSL).toContain(
+    expect(PT_WEBGPU_PATH_TRACE_BSDF_WGSL).not.toContain(
       'result.sampledEventPdf = (diffProb / lobeWeightSum) * bs.pdf;',
+    );
+
+    const normalize = (source: string): string =>
+      source.replace(/\s+/g, ' ').trim();
+    const directPdfAssignments = [
+      ...PT_WEBGPU_PATH_TRACE_BSDF_WGSL.matchAll(
+        /result\.sampledEventPdf\s*=\s*([^;]+);/g,
+      ),
+    ].map((match) => normalize(match[1]!));
+    expect(directPdfAssignments).toEqual([
+      '0.0',
+      'reflectionProbability / lobeWeightSum',
+      'transmissionProbability / lobeWeightSum',
+    ]);
+
+    const directThroughputAssignments = [
+      ...PT_WEBGPU_PATH_TRACE_BSDF_WGSL.matchAll(
+        /result\.throughputMul\s*=\s*([^;]+);/g,
+      ),
+    ].map((match) => normalize(match[1]!));
+    expect(directThroughputAssignments).toHaveLength(3);
+    expect(directThroughputAssignments[0]).toBe('vec3f(0.0)');
+    expect(directThroughputAssignments[1]).toContain(
+      'microfacetInterface.reflectance',
+    );
+    expect(directThroughputAssignments[2]).toContain(
+      'microfacetInterface.baseTransmittance',
     );
   });
 
@@ -121,7 +151,9 @@ describe('BDPT sampled-event delta/transmission transport', () => {
       (1 - reflectance) * (1 - transmission),
       12,
     );
-    expect(PT_WEBGPU_PATH_TRACE_BSDF_WGSL).toContain('transmissionWeight * ft *');
+    expect(PT_WEBGPU_PATH_TRACE_BSDF_WGSL).toContain(
+      'let finiteBsdf = evaluateFiniteBsdfFullWithClearcoatNormal(',
+    );
     const enterRadianceEtaScale = (1 / etaTOverI) ** 2;
     const exitRadianceEtaScale = etaTOverI ** 2;
     expect(enterRadianceEtaScale * exitRadianceEtaScale).toBeCloseTo(1, 12);
@@ -163,7 +195,7 @@ describe('BDPT sampled-event delta/transmission transport', () => {
       'dot(normal, bs.wi) <= 1e-5 || bs.pdf <= 0.0',
     );
     expect(dielectricSampler).toContain(
-      'dot(normal, outDir) >= -1e-5 || result.sampledEventPdf <= 0.0',
+      'dot(normal, outDir) >= -1e-5 || roughTransmissionProposalPdf <= 0.0',
     );
     expect(dielectricSampler).toContain(
       'if (dot(refractedDir, refractedDir) <= 1e-12) {',

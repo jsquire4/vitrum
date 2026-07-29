@@ -31,6 +31,14 @@ export interface PrimitiveTlasBinding {
   readonly primitiveId: string;
   readonly primitiveKind: 'mesh' | 'instanced-mesh' | 'skinned-mesh';
   readonly blasRoot: number;
+  /**
+   * Raw primitive-instance indices admitted to the TLAS, in TLAS slot order.
+   *
+   * Singular transforms are deliberately omitted. Keeping their exact source
+   * indices (rather than only the resulting count) lets refit distinguish a
+   * stable skipped-singular set from a same-count membership swap.
+   */
+  readonly instanceSourceIndices: readonly number[];
   readonly instanceCount: number;
   readonly vertexStart: number;
   readonly vertexCount: number;
@@ -78,6 +86,7 @@ export interface ScenePackResult {
 }
 
 export interface TlasGpuSnapshot {
+  /** Refit input is read-only: successful partial refits return copied arrays. */
   readonly tlasNodes: Uint32Array;
   readonly tlasInstanceIndices: Uint32Array;
   readonly tlasBlasRoots: Uint32Array;
@@ -95,7 +104,7 @@ export type RefitTlasResult =
       readonly tlasInstanceLocalToWorld: Float32Array;
       /** Exact child-before-parent TLAS node records changed by a partial refit. */
       readonly dirtyTlasNodeIndices?: Uint32Array;
-      /** Original-input matrix slots changed by a partial refit. */
+      /** Returned matrix slots that differ from the partial-refit input. */
       readonly dirtyTlasTransformInstanceIndices?: Uint32Array;
       readonly warnings: readonly string[];
     }
@@ -434,6 +443,10 @@ interface ResolvedInstance {
   readonly nonInvertible: boolean;
 }
 
+interface IndexedResolvedInstance extends ResolvedInstance {
+  readonly sourceIndex: number;
+}
+
 /**
  * Resolve a single raw `transform` (Mat4 or undefined) into a
  * {@link PendingTlasInstance}: invert the local→world matrix, fall back to
@@ -468,20 +481,89 @@ function resolveOneTransform(
  * Resolve a primitive's instance transforms into {@link PendingTlasInstance}s
  * relative to a binding (invert each local→world, transform the local AABB into
  * world space, fall back to identity when non-invertible). Shared by all three
- * TLAS-instance collectors — they differ only in their instance-count policy and
+ * TLAS-instance collectors — they differ only in their membership policy and
  * whether they emit the non-invertible warning.
  */
 function resolveInstanceTransforms(
   binding: PrimitiveTlasBinding,
   primitive: Extract<ScenePrimitive, { kind: 'mesh' | 'skinned-mesh' | 'instanced-mesh' }>,
-): { readonly transformCount: number; readonly resolved: readonly ResolvedInstance[] } {
+): { readonly transformCount: number; readonly resolved: readonly IndexedResolvedInstance[] } {
   const transforms =
     primitive.kind === 'instanced-mesh' ? primitive.instances : [primitive.transform ?? undefined];
-  const resolved: ResolvedInstance[] = [];
-  for (const transform of transforms) {
-    resolved.push(resolveOneTransform(transform, binding.localAabbMin, binding.localAabbMax, binding.blasRoot));
+  const resolved: IndexedResolvedInstance[] = [];
+  for (let sourceIndex = 0; sourceIndex < transforms.length; sourceIndex += 1) {
+    resolved.push({
+      sourceIndex,
+      ...resolveOneTransform(
+        transforms[sourceIndex],
+        binding.localAabbMin,
+        binding.localAabbMax,
+        binding.blasRoot,
+      ),
+    });
   }
   return { transformCount: transforms.length, resolved };
+}
+
+interface ResolvedTlasMembership {
+  readonly instances: readonly PendingTlasInstance[];
+  readonly sourceIndices: readonly number[];
+}
+
+function collectResolvedTlasMembership(
+  resolved: readonly IndexedResolvedInstance[],
+): ResolvedTlasMembership {
+  const instances: PendingTlasInstance[] = [];
+  const sourceIndices: number[] = [];
+  for (const { instance, nonInvertible, sourceIndex } of resolved) {
+    if (nonInvertible) continue;
+    instances.push(instance);
+    sourceIndices.push(sourceIndex);
+  }
+  return { instances, sourceIndices };
+}
+
+function validateStoredTlasMembership(
+  binding: PrimitiveTlasBinding,
+): string | null {
+  // Widen at the runtime-validation boundary so malformed JS callers cannot
+  // smuggle non-numeric members through the TypeScript-only contract.
+  const sourceIndices: readonly unknown[] = binding.instanceSourceIndices;
+  if (!Array.isArray(sourceIndices)) {
+    return `primitive "${binding.primitiveId}" TLAS binding has no source-index membership`;
+  }
+  if (sourceIndices.length !== binding.instanceCount) {
+    return `primitive "${binding.primitiveId}" TLAS binding is inconsistent: ` +
+      `instanceCount=${binding.instanceCount}, sourceIndices=${sourceIndices.length}`;
+  }
+  let previous = -1;
+  for (const sourceIndex of sourceIndices) {
+    if (
+      typeof sourceIndex !== 'number' ||
+      !Number.isInteger(sourceIndex) ||
+      sourceIndex <= previous ||
+      sourceIndex < 0
+    ) {
+      return `primitive "${binding.primitiveId}" TLAS binding has invalid source-index membership`;
+    }
+    previous = sourceIndex;
+  }
+  return null;
+}
+
+function sameTlasMembership(
+  a: readonly number[],
+  b: readonly number[],
+): boolean {
+  return a.length === b.length && a.every((value, index) => value === b[index]);
+}
+
+function membershipChangedReason(
+  binding: PrimitiveTlasBinding,
+  currentSourceIndices: readonly number[],
+): string {
+  return `primitive "${binding.primitiveId}" TLAS membership changed from ` +
+    `[${binding.instanceSourceIndices.join(',')}] to [${currentSourceIndices.join(',')}]`;
 }
 
 function collectTlasInstancesFromBindings(
@@ -502,24 +584,21 @@ function collectTlasInstancesFromBindings(
       };
     }
     const { resolved } = resolveInstanceTransforms(binding, primitive);
-    // V2-3: mirror the initial-pack skip — non-invertible instances are NOT
-    // inserted (no identity-at-origin fallback), and the membership comparison
-    // uses the INSERTED count so it matches `binding.instanceCount` (which is now
-    // itself the inserted-instance count). A membership change (e.g. a formerly
-    // singular instance became invertible) rejects → caller falls back to a full
-    // repack.
-    const insertedInstances: PendingTlasInstance[] = [];
-    for (const { instance, nonInvertible } of resolved) {
-      if (nonInvertible) continue;
-      insertedInstances.push(instance);
+    const invalidStoredMembership = validateStoredTlasMembership(binding);
+    if (invalidStoredMembership != null) {
+      return { ok: false, reason: invalidStoredMembership };
     }
-    if (insertedInstances.length !== binding.instanceCount) {
+    // Mirror the initial-pack skip exactly. Count equality alone is insufficient:
+    // two different raw instance sets can contain the same number of invertible
+    // transforms and therefore address different TLAS slots.
+    const membership = collectResolvedTlasMembership(resolved);
+    if (!sameTlasMembership(membership.sourceIndices, binding.instanceSourceIndices)) {
       return {
         ok: false,
-        reason: `primitive "${binding.primitiveId}" instance count changed from ${binding.instanceCount} to ${insertedInstances.length}`,
+        reason: membershipChangedReason(binding, membership.sourceIndices),
       };
     }
-    for (const instance of insertedInstances) {
+    for (const instance of membership.instances) {
       instances.push(instance);
     }
   }
@@ -967,14 +1046,13 @@ export function packSceneFromCore(scene: Scene, opts: ScenePackOptions): ScenePa
         primitive.kind === 'instanced-mesh' ? primitive.instances : [primitive.transform ?? undefined];
       // Zero-instance case is handled above (before geometry concatenation); this
       // branch should never be reached with an empty transforms array now.
-      // `insertedInstanceCount` counts only the instances that actually land in
-      // the TLAS — non-invertible (singular) transforms are skipped, so the
-      // per-primitive `instanceCount` reflects TLAS MEMBERSHIP, not the raw
-      // transform count (V2-3: count-vs-membership reconcile).
-      let insertedInstanceCount = 0;
-      for (const transform of transforms) {
+      // Record the exact raw indices that land in the TLAS. Non-invertible
+      // transforms are skipped, and a count alone cannot distinguish stable
+      // membership from a same-count swap.
+      const instanceSourceIndices: number[] = [];
+      for (let sourceIndex = 0; sourceIndex < transforms.length; sourceIndex += 1) {
         const { instance, nonInvertible } = resolveOneTransform(
-          transform,
+          transforms[sourceIndex],
           localAabb.min,
           localAabb.max,
           nodeBase,
@@ -989,13 +1067,14 @@ export function packSceneFromCore(scene: Scene, opts: ScenePackOptions): ScenePa
           continue;
         }
         pendingTlasInstances.push(instance);
-        insertedInstanceCount += 1;
+        instanceSourceIndices.push(sourceIndex);
       }
       primitiveTlasBindings.push({
         primitiveId: primitive.id,
         primitiveKind: primitive.kind,
         blasRoot: nodeBase,
-        instanceCount: insertedInstanceCount,
+        instanceSourceIndices,
+        instanceCount: instanceSourceIndices.length,
         vertexStart: vertexBase,
         vertexCount,
         triStart: triBase,
@@ -1088,24 +1167,23 @@ export function refitTlasTransforms(
         reason: `refitTlasTransforms: primitive "${binding.primitiveId}" is not mesh-like.`,
       };
     }
-    const { transformCount, resolved } = resolveInstanceTransforms(binding, primitive);
-    if (transformCount !== binding.instanceCount) {
+    const { resolved } = resolveInstanceTransforms(binding, primitive);
+    const invalidStoredMembership = validateStoredTlasMembership(binding);
+    if (invalidStoredMembership != null) {
       return {
         ok: false,
-        reason: `refitTlasTransforms: primitive "${binding.primitiveId}" instance count changed ` +
-          `from ${binding.instanceCount} to ${transformCount}.`,
+        reason: `refitTlasTransforms: ${invalidStoredMembership}.`,
       };
     }
-    for (const { instance, nonInvertible } of resolved) {
-      if (nonInvertible) {
-        return {
-          ok: false,
-          reason:
-            `refitTlasTransforms: primitive "${primitive.id}" has a non-invertible ` +
-            `instance transform. Rebuild the pack so the singular instance can be skipped ` +
-            `instead of refit as identity-at-origin.`,
-        };
-      }
+    const membership = collectResolvedTlasMembership(resolved);
+    if (!sameTlasMembership(membership.sourceIndices, binding.instanceSourceIndices)) {
+      return {
+        ok: false,
+        reason: `refitTlasTransforms: ${membershipChangedReason(binding, membership.sourceIndices)}. ` +
+          `Rebuild the TLAS so its instance slots match the current primitive membership.`,
+      };
+    }
+    for (const instance of membership.instances) {
       refitAabbs.push({ min: instance.aabbMin, max: instance.aabbMax });
       pendingTlasInstances.push(instance);
     }
@@ -1162,33 +1240,43 @@ export function refitTlasTransforms(
             (_, index) => partialInstanceStart + index,
           )
         : dirtyTransforms;
-      const dirtyTlasNodeIndices = refitTlasInstances(
-        {
-          nodes: prevTlas.tlasNodes,
-          nodeCount: Math.floor(prevTlas.tlasNodes.length / BVH_NODE_FLOATS),
-          instanceIndices: prevTlas.tlasInstanceIndices,
-          blasRoots: prevTlas.tlasBlasRoots,
-          instanceTransforms: prevTlas.tlasInstanceWorldToLocal,
-        },
-        refitAabbs,
-        refitInstances,
+      // A TlasGpuSnapshot is also the caller's rollback baseline. The low-level
+      // refit kernel is deliberately in-place, so isolate it behind copies and
+      // publish the copies only after every scene/topology check above passes.
+      const refitNodes = new Uint32Array(prevTlas.tlasNodes);
+      const refitWorldToLocal = new Float32Array(
+        prevTlas.tlasInstanceWorldToLocal,
       );
+      const refitLocalToWorld = new Float32Array(previousLocalToWorld);
+      const dirtyTlasNodeIndices = refitInstances.length === 0
+        ? new Uint32Array(0)
+        : refitTlasInstances(
+            {
+              nodes: refitNodes,
+              nodeCount: Math.floor(refitNodes.length / BVH_NODE_FLOATS),
+              instanceIndices: prevTlas.tlasInstanceIndices,
+              blasRoots: prevTlas.tlasBlasRoots,
+              instanceTransforms: refitWorldToLocal,
+            },
+            refitAabbs,
+            refitInstances,
+          );
       for (const instance of dirtyTransforms) {
         const matrixOffset = instance * MAT4_STRIDE_F32;
         const pending = pendingTlasInstances[instance]!;
-        prevTlas.tlasInstanceWorldToLocal.set(
+        refitWorldToLocal.set(
           pending.worldToLocal,
           matrixOffset,
         );
-        previousLocalToWorld.set(pending.localToWorld, matrixOffset);
+        refitLocalToWorld.set(pending.localToWorld, matrixOffset);
       }
       return {
         ok: true,
-        tlasNodes: prevTlas.tlasNodes,
+        tlasNodes: refitNodes,
         tlasInstanceIndices: prevTlas.tlasInstanceIndices,
         tlasBlasRoots: prevTlas.tlasBlasRoots,
-        tlasInstanceWorldToLocal: prevTlas.tlasInstanceWorldToLocal,
-        tlasInstanceLocalToWorld: previousLocalToWorld,
+        tlasInstanceWorldToLocal: refitWorldToLocal,
+        tlasInstanceLocalToWorld: refitLocalToWorld,
         dirtyTlasNodeIndices,
         dirtyTlasTransformInstanceIndices: Uint32Array.from(dirtyTransforms),
         warnings,
@@ -1252,18 +1340,29 @@ export function computeWorldAabbForBindings(
   let any = false;
   for (const binding of bindings) {
     const primitive = byId.get(binding.primitiveId);
-    if (primitive == null || !isMeshLike(primitive)) continue;
-    const transforms =
-      primitive.kind === 'instanced-mesh' ? primitive.instances : [primitive.transform ?? IDENTITY_MAT4];
-    for (const transform of transforms) {
-      const l2w = asMat4(transform ?? IDENTITY_MAT4);
-      const world = transformAabb(binding.localAabbMin, binding.localAabbMax, l2w);
-      minX = Math.min(minX, world.min[0]);
-      minY = Math.min(minY, world.min[1]);
-      minZ = Math.min(minZ, world.min[2]);
-      maxX = Math.max(maxX, world.max[0]);
-      maxY = Math.max(maxY, world.max[1]);
-      maxZ = Math.max(maxZ, world.max[2]);
+    if (
+      primitive == null ||
+      !isMeshLike(primitive) ||
+      primitive.kind !== binding.primitiveKind
+    ) {
+      continue;
+    }
+    const { resolved } = resolveInstanceTransforms(binding, primitive);
+    if (validateStoredTlasMembership(binding) != null) continue;
+    const membership = collectResolvedTlasMembership(resolved);
+    // Bounds describe the currently published TLAS. If raw membership no
+    // longer matches the binding, fail closed for this primitive until its TLAS
+    // has been rebuilt instead of unioning a different set of instances.
+    if (!sameTlasMembership(membership.sourceIndices, binding.instanceSourceIndices)) {
+      continue;
+    }
+    for (const instance of membership.instances) {
+      minX = Math.min(minX, instance.aabbMin[0]);
+      minY = Math.min(minY, instance.aabbMin[1]);
+      minZ = Math.min(minZ, instance.aabbMin[2]);
+      maxX = Math.max(maxX, instance.aabbMax[0]);
+      maxY = Math.max(maxY, instance.aabbMax[1]);
+      maxZ = Math.max(maxZ, instance.aabbMax[2]);
       any = true;
     }
   }
@@ -1273,23 +1372,26 @@ export function computeWorldAabbForBindings(
 
 /**
  * Collect TLAS instances from the CURRENT scene, taking each primitive's live
- * instance list (whose length may differ from the binding's stored
- * `instanceCount`). Unlike {@link collectTlasInstancesFromBindings}, this does
- * NOT bail on an instance-count change — it is the basis for a TLAS-only rebuild
- * that reuses verbatim BLAS buffers when only the instance count changed. BLAS
- * geometry (positions/normals/indices/nodes) is shared across instances, so an
- * instance-count change leaves every BLAS byte identical; only the TLAS and the
- * per-primitive `instanceCount` move.
+ * instance list (whose exact invertible-source membership may differ from the
+ * binding). Unlike {@link collectTlasInstancesFromBindings}, this does not bail
+ * on a membership change: it is the basis for a TLAS-only rebuild that reuses
+ * verbatim BLAS buffers when raw instances are added, removed, or cross the
+ * singular/invertible boundary.
  */
 function collectLiveTlasInstancesFromBindings(
   scene: Scene,
   bindings: readonly PrimitiveTlasBinding[],
 ):
-  | { readonly ok: true; readonly instances: readonly PendingTlasInstance[]; readonly liveCounts: readonly number[]; readonly warnings: readonly string[] }
+  | {
+      readonly ok: true;
+      readonly instances: readonly PendingTlasInstance[];
+      readonly liveSourceIndices: readonly (readonly number[])[];
+      readonly warnings: readonly string[];
+    }
   | { readonly ok: false; readonly reason: string } {
   const primitiveById = mapPrimitivesById(scene);
   const instances: PendingTlasInstance[] = [];
-  const liveCounts: number[] = [];
+  const liveSourceIndices: number[][] = [];
   const warnings: string[] = [];
   for (const binding of bindings) {
     const primitive = primitiveById.get(binding.primitiveId);
@@ -1302,6 +1404,10 @@ function collectLiveTlasInstancesFromBindings(
         reason: `primitive "${binding.primitiveId}" kind mismatch or not mesh-like`,
       };
     }
+    const invalidStoredMembership = validateStoredTlasMembership(binding);
+    if (invalidStoredMembership != null) {
+      return { ok: false, reason: invalidStoredMembership };
+    }
     const { transformCount, resolved } = resolveInstanceTransforms(binding, primitive);
     if (transformCount === 0) {
       return {
@@ -1309,25 +1415,19 @@ function collectLiveTlasInstancesFromBindings(
         reason: `primitive "${binding.primitiveId}" has zero instances (TLAS-only rebuild needs at least one)`,
       };
     }
-    // V2-3: mirror the initial-pack skip behavior — a non-invertible (singular)
-    // instance is SKIPPED (not inserted at identity), and `liveCounts` counts
-    // only the instances that actually land in the TLAS so the count matches
-    // membership on both build paths.
-    let insertedCount = 0;
-    for (const { instance, nonInvertible } of resolved) {
+    const membership = collectResolvedTlasMembership(resolved);
+    for (const { nonInvertible } of resolved) {
       if (nonInvertible) {
         warnings.push(
           `Primitive "${binding.primitiveId}" has non-invertible instance transform; ` +
           `skipping this TLAS instance (geometry would be placed at the origin otherwise).`,
         );
-        continue;
       }
-      instances.push(instance);
-      insertedCount += 1;
     }
-    liveCounts.push(insertedCount);
+    instances.push(...membership.instances);
+    liveSourceIndices.push([...membership.sourceIndices]);
   }
-  return { ok: true, instances, liveCounts, warnings };
+  return { ok: true, instances, liveSourceIndices, warnings };
 }
 
 export type RebuildTlasReuseBlasResult =
@@ -1335,19 +1435,18 @@ export type RebuildTlasReuseBlasResult =
   | { readonly ok: false; readonly reason: string };
 
 /**
- * Rebuild ONLY the TLAS after an instanced-mesh's instance COUNT changed,
+ * Rebuild ONLY the TLAS after an instanced-mesh's exact TLAS membership changed,
  * reusing the previous pack's BLAS node/index/position/normal arrays VERBATIM
- * (no per-triangle `buildArrayBvh` SAH rebuild). This is the clean slice-1 win
- * for incremental instanced-mesh add/remove: shared BLAS geometry is byte-
- * identical across instances, so only the TLAS tree + per-primitive
- * `instanceCount` need to change.
+ * (no per-triangle `buildArrayBvh` SAH rebuild). Shared BLAS geometry is byte-
+ * identical across instances, so only the TLAS tree and the per-primitive
+ * membership metadata need to change.
  *
- * Rejects (returns `ok:false`) when the patch is NOT a pure instance-count
+ * Rejects (returns `ok:false`) when the patch is NOT a pure instance-membership
  * change — e.g. a primitive's vertex/tri/BVH-node geometry changed, a primitive
- * disappeared, or no instance count actually moved — so the caller can fall back
- * to a full {@link packSceneFromCore} rebuild. The caller is responsible for
- * having already verified that the changed primitive is an `instanced-mesh`
- * whose only mutated facet is `instances`.
+ * disappeared, or membership did not actually move — so the caller can fall
+ * back to a full {@link packSceneFromCore} rebuild. The caller is responsible
+ * for having already verified that the changed primitive is an
+ * `instanced-mesh` whose only mutated facet is `instances`.
  */
 export function rebuildTlasReuseBlas(
   scene: Scene,
@@ -1361,34 +1460,40 @@ export function rebuildTlasReuseBlas(
     return { ok: false, reason: collected.reason };
   }
 
-  // Verify the ONLY thing that changed is one-or-more instanced-mesh instance
-  // counts. If every live count equals its binding's stored count, there is no
-  // count change and the caller should have taken the transform-only refit path
-  // instead — reject so we don't silently shadow that path. (A non-instanced
-  // binding can never legitimately change count here; `liveCounts` for a mesh /
-  // skinned-mesh binding is always 1, matching its stored `instanceCount` of 1.)
-  let anyCountChanged = false;
+  // Verify that one-or-more exact source-index memberships changed. Comparing
+  // only counts misses swaps such as [0,2] → [1,2].
+  let anyMembershipChanged = false;
   for (let i = 0; i < prev.primitiveTlasBindings.length; i += 1) {
     const binding = prev.primitiveTlasBindings[i]!;
-    const liveCount = collected.liveCounts[i]!;
-    if (liveCount !== binding.instanceCount) {
+    const liveSourceIndices = collected.liveSourceIndices[i]!;
+    const membershipChanged = !sameTlasMembership(
+      liveSourceIndices,
+      binding.instanceSourceIndices,
+    );
+    if (membershipChanged) {
       if (binding.primitiveKind !== 'instanced-mesh') {
         return {
           ok: false,
-          reason: `primitive "${binding.primitiveId}" (${binding.primitiveKind}) changed instance count; only instanced-mesh count changes are TLAS-only`,
+          reason: `primitive "${binding.primitiveId}" (${binding.primitiveKind}) changed TLAS membership; only instanced-mesh membership changes are TLAS-only`,
         };
       }
-      anyCountChanged = true;
+      anyMembershipChanged = true;
     }
   }
-  if (!anyCountChanged) {
-    return { ok: false, reason: 'no instance count changed; use the transform-only refit path' };
+  if (!anyMembershipChanged) {
+    return { ok: false, reason: 'no TLAS membership changed; use the transform-only refit path' };
   }
 
   const tlasBuild = buildTlasFromInstances(collected.instances);
   const primitiveTlasBindings = prev.primitiveTlasBindings.map((binding, i) => {
-    const liveCount = collected.liveCounts[i]!;
-    return liveCount === binding.instanceCount ? binding : { ...binding, instanceCount: liveCount };
+    const instanceSourceIndices = collected.liveSourceIndices[i]!;
+    return sameTlasMembership(instanceSourceIndices, binding.instanceSourceIndices)
+      ? binding
+      : {
+          ...binding,
+          instanceSourceIndices,
+          instanceCount: instanceSourceIndices.length,
+        };
   });
 
   return {

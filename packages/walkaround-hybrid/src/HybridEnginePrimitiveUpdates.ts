@@ -69,6 +69,10 @@ import {
 } from './restir/bvhCore.js';
 import type { ReSTIRBvhMode, SceneBVHBuffers } from './restir/bvhCore.js';
 import { packMaterialTextureAtlas } from './bvh/materialTextureAtlasPack.js';
+import {
+  needsAuthoredMorphStreamRestore,
+  solvedSkinRenderPatch,
+} from './skin/solvedSkinPatch.js';
 
 /** Union world AABB from merged `bvhPositions` (RC bounds after transform refit). */
 function computeWorldAabbFromBvhPositions(
@@ -294,7 +298,8 @@ export const SKIN_POSE_PATCH_FIELDS = [
   'skinIndices', 'skinWeights', 'skinInfluencesPerVertex',
   'bones', 'boneInverses', 'bindMatrix', 'bindMatrixInverse',
   'morphTargets', 'morphTargetNormals', 'morphTargetTangents',
-  'morphTargetUvs', 'morphTargetUv1s', 'morphTargetUvSets', 'morphWeights',
+  'morphTargetUvs', 'morphTargetUv1s', 'morphTargetUvSets',
+  'morphTargetColors', 'morphTargetColorSets', 'morphWeights',
 ] as const;
 
 /** Authored rest streams on a skinned primitive. Public patches to any of
@@ -302,6 +307,7 @@ export const SKIN_POSE_PATCH_FIELDS = [
  * render scene/BVH is updated. */
 export const SKIN_REST_STREAM_PATCH_FIELDS = [
   'positions', 'normals', 'tangents', 'uvs', 'uv1', 'uvSets',
+  'colors', 'colorSets',
 ] as const;
 
 /** Snapshot the live TLAS GPU buffers as the `prev` input to `refitTlasTransforms`. */
@@ -315,6 +321,50 @@ function captureTlasSnapshot(tlas: NonNullable<SceneBVHBuffers['tlas']>): TlasGp
   };
 }
 
+type TlasRefitView = Uint32Array | Float32Array;
+
+function copyTlasView(view: TlasRefitView): ArrayBuffer {
+  const copy = new Uint8Array(view.byteLength);
+  copy.set(new Uint8Array(view.buffer, view.byteOffset, view.byteLength));
+  return copy.buffer;
+}
+
+function publishTlasRefitSlices(
+  target: ArrayBuffer,
+  source: TlasRefitView,
+  ranges: readonly BvhNodeByteRange[],
+): ReadonlyArray<{ readonly byteOffset: number; readonly data: ArrayBuffer }> {
+  if (target.byteLength !== source.byteLength) {
+    throw new RangeError(
+      '[walkaround-hybrid] partial TLAS refit changed a live buffer extent.',
+    );
+  }
+  for (const range of ranges) {
+    if (
+      range.byteOffset < 0 ||
+      range.byteLength < 0 ||
+      range.byteOffset + range.byteLength > target.byteLength
+    ) {
+      throw new RangeError(
+        '[walkaround-hybrid] partial TLAS refit produced an out-of-range slice.',
+      );
+    }
+  }
+  return ranges.map((range) => {
+    const data = new Uint8Array(range.byteLength);
+    data.set(new Uint8Array(
+      source.buffer,
+      source.byteOffset + range.byteOffset,
+      range.byteLength,
+    ));
+    new Uint8Array(target, range.byteOffset, range.byteLength).set(data);
+    return {
+      byteOffset: range.byteOffset,
+      data: data.buffer,
+    };
+  });
+}
+
 /** Write a successful TLAS-transform refit back into `bvh.tlas.*` and push the
  *  three refreshed buffers to the pipeline. Mutates `bvh.tlas` in place
  *  (matching the pre-extraction call sites). */
@@ -326,36 +376,46 @@ function applyTlasRefitResult(
   const dirtyNodes = refit.dirtyTlasNodeIndices;
   const dirtyTransforms = refit.dirtyTlasTransformInstanceIndices;
   if (dirtyNodes != null && dirtyTransforms != null) {
-    const nodes = coalesceFixedByteRanges(dirtyNodes, 32).map((range) => ({
-      byteOffset: range.byteOffset,
-      data: tlas.nodes.cpuData.slice(
-        range.byteOffset,
-        range.byteOffset + range.byteLength,
-      ),
-    }));
+    const nodeRanges = coalesceFixedByteRanges(dirtyNodes, 32);
     const matrixRanges = coalesceFixedByteRanges(dirtyTransforms, 64);
+    // Validate every extent before publishing the first byte so a malformed
+    // result cannot compromise the caller's undo baseline mid-apply.
+    if (
+      tlas.nodes.cpuData.byteLength !== refit.tlasNodes.byteLength ||
+      tlas.worldToLocal.cpuData.byteLength !==
+        refit.tlasInstanceWorldToLocal.byteLength ||
+      tlas.localToWorld.cpuData.byteLength !==
+        refit.tlasInstanceLocalToWorld.byteLength
+    ) {
+      throw new RangeError(
+        '[walkaround-hybrid] partial TLAS refit changed a live buffer extent.',
+      );
+    }
+    const nodes = publishTlasRefitSlices(
+      tlas.nodes.cpuData,
+      refit.tlasNodes,
+      nodeRanges,
+    );
+    const worldToLocal = publishTlasRefitSlices(
+      tlas.worldToLocal.cpuData,
+      refit.tlasInstanceWorldToLocal,
+      matrixRanges,
+    );
+    const localToWorld = publishTlasRefitSlices(
+      tlas.localToWorld.cpuData,
+      refit.tlasInstanceLocalToWorld,
+      matrixRanges,
+    );
     pipeline?.refreshTlasRefit({
       nodes,
-      worldToLocal: matrixRanges.map((range) => ({
-        byteOffset: range.byteOffset,
-        data: tlas.worldToLocal.cpuData.slice(
-          range.byteOffset,
-          range.byteOffset + range.byteLength,
-        ),
-      })),
-      localToWorld: matrixRanges.map((range) => ({
-        byteOffset: range.byteOffset,
-        data: tlas.localToWorld.cpuData.slice(
-          range.byteOffset,
-          range.byteOffset + range.byteLength,
-        ),
-      })),
+      worldToLocal,
+      localToWorld,
     });
     return;
   }
-  tlas.nodes.cpuData = refit.tlasNodes.buffer.slice(0) as ArrayBuffer;
-  tlas.worldToLocal.cpuData = refit.tlasInstanceWorldToLocal.buffer.slice(0) as ArrayBuffer;
-  tlas.localToWorld.cpuData = refit.tlasInstanceLocalToWorld.buffer.slice(0) as ArrayBuffer;
+  tlas.nodes.cpuData = copyTlasView(refit.tlasNodes);
+  tlas.worldToLocal.cpuData = copyTlasView(refit.tlasInstanceWorldToLocal);
+  tlas.localToWorld.cpuData = copyTlasView(refit.tlasInstanceLocalToWorld);
   pipeline?.refreshTlasRefit({
     nodes: [{ byteOffset: 0, data: tlas.nodes.cpuData }],
     worldToLocal: [{ byteOffset: 0, data: tlas.worldToLocal.cpuData }],
@@ -965,29 +1025,44 @@ export function skinnedPosePatch(
 
   const nextPrimitive = { ...current, ...patch } as SkinnedMeshPrimitive;
   const solved = solveSkin(nextPrimitive);
+  const rendered = findSkinnedPrimitive(ctx.renderScene, id);
+  const renderPatch = solvedSkinRenderPatch(
+    nextPrimitive,
+    solved,
+    needsAuthoredMorphStreamRestore(nextPrimitive, rendered),
+  );
   const resolvedPatch = {
     ...patch,
-    positions: solved.positions,
-    normals: solved.normals,
-    ...(solved.tangents ? { tangents: solved.tangents } : {}),
-    ...(solved.uvs ? { uvs: solved.uvs } : {}),
-    ...(solved.uv1 ? { uv1: solved.uv1 } : {}),
-    ...(solved.uvSets ? { uvSets: solved.uvSets } : {}),
+    ...renderPatch,
   } as Partial<ScenePrimitive>;
 
+  const patchRecord = patch as unknown as Record<string, unknown>;
+  const currentRecord = current as unknown as Record<string, unknown>;
+  // A defined topology value replaces a stream as before. An OWN undefined
+  // value is also structural when it removes a currently-authored optional
+  // stream (UV/color/tangent/index/etc.); treating that as omission would leave
+  // the preceding GPU attribute payload alive after the scene field is cleared.
   const hasStructuralPatch = TOPOLOGY_PATCH_FIELDS.some(
     (field) =>
       field !== 'normals' &&
-      (patch as unknown as Record<string, unknown>)[field] !== undefined,
+      (
+        patchRecord[field] !== undefined ||
+        (
+          Object.prototype.hasOwnProperty.call(patchRecord, field) &&
+          currentRecord[field] !== undefined
+        )
+      ),
   );
   if (
     patch.material !== undefined ||
     (patch as { transform?: unknown }).transform !== undefined ||
     hasStructuralPatch ||
-    solved.tangents != null ||
-    solved.uvs != null ||
-    solved.uv1 != null ||
-    solved.uvSets != null
+    renderPatch.tangents != null ||
+    renderPatch.uvs != null ||
+    renderPatch.uv1 != null ||
+    renderPatch.uvSets != null ||
+    renderPatch.colors != null ||
+    renderPatch.colorSets != null
   ) {
     const result = topologyRebuild(id, resolvedPatch, ctx);
     return {

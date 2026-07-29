@@ -250,6 +250,38 @@ describe('InferenceGraph — double-initialize leak guard', () => {
     graph.dispose();
   });
 
+  it('fails closed on an in-place tensor swap without re-uploading layer weights', async () => {
+    const spec = buildUNetSpec();
+    const weights = makeStubWeights(spec);
+    const { device, allBuffers } = makeStubDevice();
+    const graph = new InferenceGraph(spec);
+    await graph.initialize(device, weights, 8, 8);
+
+    const internals = graph as unknown as {
+      _tensors: Map<string, { buf: GPUBuffer; dims: { H: number; W: number; C: number }; label: string }>;
+    };
+    const previous = internals._tensors.get('enc_input')!;
+    internals._tensors.set('enc_input', {
+      ...previous,
+      // Deliberately retain the debug label: cache validity must use handle
+      // identity, not a label that many generations can share.
+      buf: externalBuffer(previous.buf.size, previous.buf.label),
+    });
+    const allocationCount = allBuffers.length;
+    const bytes = 8 * 8 * 3 * 4;
+
+    expect(() => graph.run(
+      externalBuffer(bytes, 'noisy'),
+      externalBuffer(bytes, 'albedo'),
+      externalBuffer(bytes, 'normals'),
+      externalBuffer(bytes, 'output'),
+      device.createCommandEncoder(),
+    )).toThrow(/tensor identity changed.*reinitialize the graph/);
+    expect(allBuffers).toHaveLength(allocationCount);
+
+    graph.dispose();
+  });
+
   it('consumes the device workgroup-axis limit and rejects overflow before allocation', async () => {
     const spec = buildUNetSpec();
     const weights = makeStubWeights(spec);

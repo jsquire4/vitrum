@@ -28,6 +28,10 @@
 
 import { describe, expect, it } from 'vitest';
 import { TONEMAP_MODE_INDEX, applyTonemap, linearToSrgb } from '@vitrum/shared-samplers';
+import {
+  buildPresentFragBody,
+  selectPresentSources,
+} from '../gl/PresentPass.js';
 
 // ── 1. GLSL tonemap_functions.glsl.js source assertions ───────────────────────
 
@@ -102,6 +106,45 @@ describe('tonemap_functions.glsl.js — GLSL source guards', () => {
     // exported string content). The guard ensures the GLSL source itself
     // includes the operator attribution comment.
     expect(src).toContain('vitrum tonemap operators');
+  });
+});
+
+describe('present output preserves accumulated background coverage', () => {
+  const tonemapGlsl = (TFMod as Record<string, unknown>)['tonemap_functions'] as string;
+  const presentSource = buildPresentFragBody(tonemapGlsl);
+
+  it('uses the live accumulator alpha in both sRGB and linear output branches', () => {
+    expect(presentSource).toContain('uniform sampler2D uAlphaTex;');
+    expect(presentSource).toContain(
+      'float coverageAlpha = texture(uAlphaTex, vUv).a;',
+    );
+    expect(presentSource).toContain(
+      'pc_fragColor = vec4(vt_linearToSrgb(tonemapped), coverageAlpha);',
+    );
+    expect(presentSource).toContain(
+      'pc_fragColor = vec4(tonemapped, coverageAlpha);',
+    );
+    expect(presentSource).not.toContain(
+      'pc_fragColor = vec4(vt_linearToSrgb(tonemapped), 1.0);',
+    );
+    expect(presentSource).not.toContain(
+      'pc_fragColor = vec4(tonemapped, 1.0);',
+    );
+  });
+
+  it('keeps coverage on the live accumulator when OIDN replaces only RGB', () => {
+    const accumulator = { label: 'linear-accumulator' } as unknown as WebGLTexture;
+    const oidnRgb = { label: 'oidn-rgb' } as unknown as WebGLTexture;
+
+    expect(selectPresentSources(null, oidnRgb)).toBeNull();
+    expect(selectPresentSources(accumulator, null)).toEqual({
+      radiance: accumulator,
+      coverage: accumulator,
+    });
+    expect(selectPresentSources(accumulator, oidnRgb)).toEqual({
+      radiance: oidnRgb,
+      coverage: accumulator,
+    });
   });
 });
 

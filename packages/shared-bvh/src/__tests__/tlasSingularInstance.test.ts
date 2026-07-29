@@ -1,7 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import type { Mat4, Scene } from '@vitrum/core';
 import { asMat4 } from '@vitrum/core';
-import { packSceneFromCore, rebuildTlasReuseBlas } from '../scenePack.js';
+import {
+  computeWorldAabbForBindings,
+  packSceneFromCore,
+  rebuildTlasReuseBlas,
+  refitTlasTransforms,
+  type ScenePackResult,
+  type TlasGpuSnapshot,
+} from '../scenePack.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // R5 / V2-3 characterization: the initial pack SKIPS non-invertible (singular)
@@ -17,12 +24,12 @@ function translate(x: number): Mat4 {
 }
 
 /** A zero-first-column matrix is singular (det=0) → invertMat4 returns null. */
-function singular(): Mat4 {
+function singular(x = 0): Mat4 {
   return asMat4(new Float32Array([
     0, 0, 0, 0,
     0, 1, 0, 0,
     0, 0, 1, 0,
-    0, 0, 0, 1,
+    x, 0, 0, 1,
   ]));
 }
 
@@ -34,6 +41,24 @@ function instancedMesh(id: string, instances: Mat4[]): Scene['primitives'][numbe
     normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
     material: { baseColor: [1, 1, 1], roughness: 0.5, metallic: 0 },
     instances,
+  };
+}
+
+function sceneWithInstances(instances: Mat4[]): Scene {
+  return {
+    primitives: [instancedMesh('inst', instances)],
+    emitters: [],
+    environment: { kind: 'none' },
+  };
+}
+
+function tlasSnapshot(pack: ScenePackResult): TlasGpuSnapshot {
+  return {
+    tlasNodes: pack.tlasNodes,
+    tlasInstanceIndices: pack.tlasInstanceIndices,
+    tlasBlasRoots: pack.tlasBlasRoots,
+    tlasInstanceWorldToLocal: pack.tlasInstanceWorldToLocal,
+    tlasInstanceLocalToWorld: pack.tlasInstanceLocalToWorld,
   };
 }
 
@@ -51,6 +76,21 @@ describe('rebuildTlasReuseBlas — singular-instance skip parity (R5 / V2-3)', (
     expect(packed.tlasBlasRoots.length).toBe(2);
     // instanceCount reflects actual TLAS membership, NOT the raw 3-transform count.
     expect(packed.primitiveTlasBindings[0]?.instanceCount).toBe(2);
+    expect(packed.primitiveTlasBindings[0]?.instanceSourceIndices).toEqual([0, 2]);
+  });
+
+  it('world bounds union only the exact instances admitted to the TLAS', () => {
+    const scene = sceneWithInstances([
+      translate(0),
+      singular(100),
+      translate(4),
+    ]);
+    const packed = packSceneFromCore(scene, { tlas: true, resolveMaterialId: () => 0 });
+
+    const bounds = computeWorldAabbForBindings(scene, packed.primitiveTlasBindings);
+    expect(bounds).not.toBeNull();
+    expect(bounds?.min[0]).toBe(0);
+    expect(bounds?.max[0]).toBe(5);
   });
 
   it('rebuild path MIRRORS the skip — a singular instance never appears at identity', () => {
@@ -117,10 +157,121 @@ describe('rebuildTlasReuseBlas — singular-instance skip parity (R5 / V2-3)', (
       emitters: [],
       environment: { kind: 'none' },
     };
-    // No membership change (still 2 real instances) → the count-change rebuild
-    // must reject (caller should take the transform-only refit path). This pins
-    // that `instanceCount` tracks TLAS membership, not raw transform count.
+    // The count remains 2, but raw membership changes from [0,2] to [0,1].
+    // A membership-aware TLAS rebuild must not mistake that for a stable refit.
     const rebuilt = rebuildTlasReuseBlas(next, packed);
-    expect(rebuilt.ok).toBe(false);
+    expect(rebuilt.ok).toBe(true);
+    if (!rebuilt.ok) return;
+    expect(rebuilt.pack.primitiveTlasBindings[0]?.instanceCount).toBe(2);
+    expect(rebuilt.pack.primitiveTlasBindings[0]?.instanceSourceIndices).toEqual([0, 1]);
+    expect(rebuilt.pack.bvhNodes).toBe(packed.bvhNodes);
+    expect(rebuilt.pack.positions).toBe(packed.positions);
+  });
+});
+
+describe('refitTlasTransforms — exact singular-instance membership', () => {
+  it('refits a stable skipped-singular set without inserting an identity fallback', () => {
+    const initial = sceneWithInstances([translate(0), singular(), translate(4)]);
+    const packed = packSceneFromCore(initial, { tlas: true, resolveMaterialId: () => 0 });
+    const baselineNodes = Array.from(packed.tlasNodes);
+    const baselineWorldToLocal = Array.from(packed.tlasInstanceWorldToLocal);
+
+    const next = sceneWithInstances([translate(1), singular(), translate(5)]);
+    const refit = refitTlasTransforms(
+      next,
+      packed.primitiveTlasBindings,
+      tlasSnapshot(packed),
+      { primitiveId: 'inst' },
+    );
+
+    expect(refit.ok).toBe(true);
+    if (!refit.ok) return;
+    expect(refit.tlasBlasRoots).toHaveLength(2);
+    expect([
+      refit.tlasInstanceLocalToWorld[12],
+      refit.tlasInstanceLocalToWorld[16 + 12],
+    ]).toEqual([1, 5]);
+    expect(Array.from(refit.dirtyTlasTransformInstanceIndices ?? [])).toEqual([0, 1]);
+    // Partial refit treats the supplied snapshot as a rollback baseline.
+    expect(Array.from(packed.tlasNodes)).toEqual(baselineNodes);
+    expect(Array.from(packed.tlasInstanceWorldToLocal)).toEqual(baselineWorldToLocal);
+  });
+
+  it('rejects singular-to-invertible membership growth', () => {
+    const next = sceneWithInstances([translate(0), translate(2), translate(4)]);
+    const packed = packSceneFromCore(
+      sceneWithInstances([translate(0), singular(), translate(4)]),
+      { tlas: true, resolveMaterialId: () => 0 },
+    );
+    const refit = refitTlasTransforms(
+      next,
+      packed.primitiveTlasBindings,
+      tlasSnapshot(packed),
+      { primitiveId: 'inst' },
+    );
+
+    expect(refit.ok).toBe(false);
+    if (refit.ok) return;
+    expect(refit.reason).toContain('membership changed from [0,2] to [0,1,2]');
+
+    const rebuilt = rebuildTlasReuseBlas(next, packed);
+    expect(rebuilt.ok).toBe(true);
+    if (!rebuilt.ok) return;
+    expect(rebuilt.pack.primitiveTlasBindings[0]?.instanceSourceIndices).toEqual([0, 1, 2]);
+    expect(rebuilt.pack.tlasBlasRoots).toHaveLength(3);
+    expect(rebuilt.pack.bvhNodes).toBe(packed.bvhNodes);
+  });
+
+  it('rejects invertible-to-singular membership shrinkage', () => {
+    const next = sceneWithInstances([translate(0), singular(), translate(4)]);
+    const packed = packSceneFromCore(
+      sceneWithInstances([translate(0), translate(2), translate(4)]),
+      { tlas: true, resolveMaterialId: () => 0 },
+    );
+    const refit = refitTlasTransforms(
+      next,
+      packed.primitiveTlasBindings,
+      tlasSnapshot(packed),
+      { primitiveId: 'inst' },
+    );
+
+    expect(refit.ok).toBe(false);
+    if (refit.ok) return;
+    expect(refit.reason).toContain('membership changed from [0,1,2] to [0,2]');
+
+    const rebuilt = rebuildTlasReuseBlas(next, packed);
+    expect(rebuilt.ok).toBe(true);
+    if (!rebuilt.ok) return;
+    expect(rebuilt.pack.primitiveTlasBindings[0]?.instanceSourceIndices).toEqual([0, 2]);
+    expect(rebuilt.pack.tlasBlasRoots).toHaveLength(2);
+    expect(rebuilt.pack.bvhNodes).toBe(packed.bvhNodes);
+  });
+
+  it('rejects a same-count membership swap, then rebuilds TLAS while reusing BLAS', () => {
+    const initial = sceneWithInstances([translate(0), singular(), translate(4)]);
+    const packed = packSceneFromCore(initial, { tlas: true, resolveMaterialId: () => 0 });
+    const next = sceneWithInstances([singular(), translate(2), translate(4)]);
+
+    const refit = refitTlasTransforms(
+      next,
+      packed.primitiveTlasBindings,
+      tlasSnapshot(packed),
+      { primitiveId: 'inst' },
+    );
+    expect(refit.ok).toBe(false);
+    if (refit.ok) return;
+    expect(refit.reason).toContain('membership changed from [0,2] to [1,2]');
+
+    const rebuilt = rebuildTlasReuseBlas(next, packed);
+    expect(rebuilt.ok).toBe(true);
+    if (!rebuilt.ok) return;
+    expect(rebuilt.pack.primitiveTlasBindings[0]?.instanceCount).toBe(2);
+    expect(rebuilt.pack.primitiveTlasBindings[0]?.instanceSourceIndices).toEqual([1, 2]);
+    expect(rebuilt.pack.bvhNodes).toBe(packed.bvhNodes);
+    expect(rebuilt.pack.positions).toBe(packed.positions);
+    expect([
+      rebuilt.pack.tlasInstanceLocalToWorld[12],
+      rebuilt.pack.tlasInstanceLocalToWorld[16 + 12],
+    ]).toEqual([2, 4]);
   });
 });

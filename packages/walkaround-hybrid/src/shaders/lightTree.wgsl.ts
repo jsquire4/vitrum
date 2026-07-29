@@ -7,7 +7,7 @@
  * orientation cone) and uploaded as a flat `array<f32>`
  * storage buffer at `@group(3) @binding(0)` — a RIS-ONLY bind group, separate
  * from the shared `scene` group, so the heavier shade pass (which already sits
- * at the `maxStorageBuffersPerShaderStage = 16` full-tier floor) is unaffected.
+ * at the guaranteed `maxStorageBuffersPerShaderStage = 8` floor) is unaffected.
  *
  * Traversal (mirrors `sampleLightTreeCPU` in shared-samplers/src/lightTree.ts
  * branch-for-branch): descend from the root, at each internal node choosing a
@@ -40,7 +40,7 @@ import type { WgslModule } from '../pipeline/wgslComposer.js';
 import { lightTreeWgsl } from '@vitrum/shared-samplers';
 
 // RIS-only @group(3) binding(0) (separate from the shared `scene` group at the
-// 16-storage-buffer full-tier floor). Body is the canonical traversal hoisted to
+// eight-storage-buffer full-tier floor). Body is the canonical traversal hoisted to
 // `@vitrum/shared-samplers/wgsl/lightTree.wgsl.ts` — single source of truth across
 // walkaround-hybrid + pt-webgpu (no per-package copies).
 export const LIGHT_TREE_WGSL = /* wgsl */ `// ============================================================

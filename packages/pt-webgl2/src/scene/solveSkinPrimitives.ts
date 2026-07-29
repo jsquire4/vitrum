@@ -1,5 +1,5 @@
 // solveSkinPrimitives.ts — pre-pass that replaces skinned-mesh rest-pose
-// positions/normals/tangents/uvs with CPU-solved posed geometry before scene ingestion.
+// positions/normals/tangents/UVs/colors with CPU-solved posed geometry before scene ingestion.
 //
 // WHY here, not in shared-bvh:
 //   `mergeWorldSpaceFromCore` reads `primitive.positions` and `primitive.normals`
@@ -65,7 +65,7 @@ export function solveSkinPrimitives(scene: Scene, warningOptions: SolveSkinPrimi
     }
 
     const solved = solveSkin(prim);
-    const { positions, normals, tangents, uvs, uv1 } = solved;
+    const { positions, normals, tangents, uvs, uv1, colors } = solved;
     const solvedUvSets = prim.uvSets == null && solved.uvSets == null
       ? undefined
       : (() => {
@@ -80,6 +80,19 @@ export function solveSkinPrimitives(scene: Scene, warningOptions: SolveSkinPrimi
           if (uv1 != null && next[1] != null) next[1] = uv1;
           return next;
         })();
+    const solvedColorSets = prim.colorSets == null && solved.colorSets == null
+      ? undefined
+      : (() => {
+          const next = prim.colorSets == null ? [] : cloneSparseArray(prim.colorSets);
+          if (solved.colorSets != null) {
+            for (const colorSet of sparseArrayOwnIndices(solved.colorSets)) {
+              const stream = solved.colorSets[colorSet];
+              if (stream != null) next[colorSet] = stream;
+            }
+          }
+          if (colors != null && next[0] != null) next[0] = colors;
+          return next;
+        })();
     anyResolved = true;
     // Return a new object that shares every field except solved geometry arrays.
     // Core solveSkin() now handles tangent morphing + skinning, so preserve its
@@ -92,6 +105,8 @@ export function solveSkinPrimitives(scene: Scene, warningOptions: SolveSkinPrimi
       ...(uvs != null ? { uvs } : {}),
       ...(uv1 != null ? { uv1 } : {}),
       ...(solvedUvSets != null ? { uvSets: solvedUvSets } : {}),
+      ...(colors != null ? { colors } : {}),
+      ...(solvedColorSets != null ? { colorSets: solvedColorSets } : {}),
     };
   });
 

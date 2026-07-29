@@ -61,7 +61,7 @@ export class TemporalAccumPass implements Pass {
       resourceCache?.textureView(frameState.writeAccum) ?? frameState.writeAccum.createView(),
     );
     const bg = cachedBindGroup(resourceCache, 'pass:temporal-accum', [
-      this._uboRef,
+      this._uboRef.buf,
       frameState.combinedDenoised,
       frameState.readAccum,
       frameState.writeAccum,

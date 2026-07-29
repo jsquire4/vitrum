@@ -880,6 +880,17 @@ const WALKAROUND_DENOISERS: DenoiserSupportMatrix = Object.freeze({
   neural: 'native',
 });
 
+const WALKAROUND_DENOISER_SPATIAL_SHAPE_REQUIREMENTS: NonNullable<
+  BackendSupportDetails['denoiserSpatialShapeRequirements']
+> = Object.freeze({
+  neural: Object.freeze({
+    minWidth: 1,
+    minHeight: 1,
+    widthMultiple: 1,
+    heightMultiple: 1,
+  }),
+});
+
 const PT_WEBGL2_DENOISERS: DenoiserSupportMatrix = Object.freeze({
   none: 'native',
   auto: 'native',
@@ -1073,6 +1084,8 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
       },
       shadows: WALKAROUND_SHADOWS,
       denoisers: WALKAROUND_DENOISERS,
+      denoiserSpatialShapeRequirements:
+        WALKAROUND_DENOISER_SPATIAL_SHAPE_REQUIREMENTS,
       motionVectors: {
         units: 'pixels',
         direction: 'previous-minus-current',

@@ -50,7 +50,9 @@
  *   offset 408: regirGridFloatOffset        (u32 = 4 bytes) — grid-region float offset in combined buffer
  *   offset 412: grisReuse               (u32 = 4 bytes) — reserved compatibility word; always 1
  *   offset 416: sunAngular.x                (f32 = 4 bytes) — direct sun cone radius in radians
- *   offset 420: sunAngular.yzw              (3×f32 = 12 bytes) — padding / future sun controls
+ *   offset 420: sunAngular.y                (u32 bits) — GRIS history epoch
+ *   offset 424: sunAngular.z                (f32) — generic refractive-caustic strategy
+ *   offset 428: sunAngular.w                (u32 bits) — bounded MNEE/SMS configuration
  * Total: 432 bytes (432 % 16 == 0).
  */
 

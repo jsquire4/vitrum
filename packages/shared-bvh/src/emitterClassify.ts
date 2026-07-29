@@ -727,7 +727,7 @@ export function applyBeerLambertColor(
  *
  * Core triangle-color resolver:
  *  - `isTransmissive` ⇔ `transmission > {@link MATERIAL_TRANSMISSIVE_COLOR_THRESHOLD}`
- *    (0.01).
+ *    (currently zero: any positive transmission is transmissive).
  *  - transmissive → the attenuation color ({@link applyBeerLambertColor}-tinted
  *    iff `applyBeer`).
  *  - otherwise → `baseColor`, falling back to {@link MATERIAL_DEFAULT_TRI_COLOR}.

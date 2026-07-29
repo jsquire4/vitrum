@@ -58,7 +58,7 @@ describe('production general BDPT estimator', () => {
     expect(source).toContain('BDPT_LV_DIRECTIONAL_EMITTER_MATID');
       expect(source).toContain('BDPT_LV_ENVIRONMENT_EMITTER_MATID');
       expect(source).toContain('vec4( tri.castShadowDisabled, 1.0, 0.0, 0.0 )');
-      expect(source).toContain('vec4( light.castShadowDisabled, 1.0, 0.0, 0.0 )');
+      expect(source).toContain('vec4( light.castShadowDisabled, 0.0, 0.0, 0.0 )');
   });
 
   it('extends real BSDF subpaths and patches predecessor reverse densities', () => {

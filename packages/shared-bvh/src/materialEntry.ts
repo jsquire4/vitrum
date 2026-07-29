@@ -133,7 +133,7 @@ export interface MaterialEntryInput {
   transmission?: number;
   /** Beer-Lambert tint color. Defaults to (1, 1, 1) (no tint). */
   attenuationColor?: readonly [number, number, number];
-  /** Beer-Lambert distance. Defaults to Infinity (re-packed as 1e9). */
+  /** Beer-Lambert distance. Defaults to IEEE-754 +Infinity. */
   attenuationDistance?: number;
   /** Surface thickness for Beer-Lambert. Defaults to 0. */
   thickness?: number;
@@ -168,7 +168,7 @@ export interface MaterialEntryInput {
  *
  * Any field absent on the spec is left `undefined`, so {@link packMaterials}
  * applies the library-canonical defaults (`roughness = 1.0`, `ior = 1.5`,
- * `attenuationDistance → 1e9`, etc.).
+ * `attenuationDistance → +Infinity`, etc.).
  *
  * **Deliberate non-policy:** this adapter does NOT apply RC's `thickness → 0.1`
  * floor (RC's per-tri Beer-Lambert needs a non-zero numerator; DDGI does not).
