@@ -80,6 +80,12 @@ describe('MNEE facet proposal closure', () => {
       ...DELTA_MATERIAL,
       transmission: 1e-12,
       metallic: 0.5,
+    })).toBe(false);
+    expect(materialMayProduceMneeDelta({
+      ...DELTA_MATERIAL,
+      transmission: 1e-12,
+      metallic: 0.5,
+      metallicMap: { handle: {} },
     })).toBe(true);
     expect(materialMayProduceMneeDelta({
       ...DELTA_MATERIAL,

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  PT_WEBGPU_BDPT_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
   PT_WEBGPU_CWBVH_CLOSEST_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
   PT_WEBGPU_CWBVH_CLOSEST_RESTIR_PT_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
   PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
@@ -42,6 +43,15 @@ describe('webgpuLimits', () => {
       PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
     );
     expect(PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE).toBe(32);
+  });
+
+  it('BDPT requests and composes its additional camera-splat buffer', () => {
+    expect(countDistinctStorageBufferBindings(composePtWebgpuTraceWgsl(true))).toBe(
+      PT_WEBGPU_BDPT_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
+    );
+    expect(PT_WEBGPU_BDPT_REQUIRED_STORAGE_BUFFERS_PER_STAGE).toBe(
+      PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE + 1,
+    );
   });
 
   it('CWBVH closest-hit opt-in has a separate storage-buffer floor', () => {
@@ -93,6 +103,34 @@ describe('webgpuLimits', () => {
       maxStorageBuffersPerShaderStage: PT_WEBGPU_RESTIR_PT_REUSE_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
       maxStorageTexturesPerShaderStage: PT_WEBGPU_FULL_REQUIRED_STORAGE_TEXTURES_PER_STAGE,
     });
+    expect(PT_WEBGPU_RESTIR_PT_REUSE_REQUIRED_STORAGE_BUFFERS_PER_STAGE).toBe(
+      PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE + 5,
+    );
+  });
+
+  it('ptWebgpuRequiredLimitsForAdapter composes BDPT with other opt-in floors', () => {
+    const adapter = {
+      limits: {
+        maxStorageBuffersPerShaderStage: 64,
+        maxStorageTexturesPerShaderStage: 8,
+      },
+    } as GPUAdapter;
+    expect(ptWebgpuRequiredLimitsForAdapter(adapter, { bdpt: true })).toEqual({
+      maxStorageBuffersPerShaderStage:
+        PT_WEBGPU_BDPT_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
+      maxStorageTexturesPerShaderStage:
+        PT_WEBGPU_FULL_REQUIRED_STORAGE_TEXTURES_PER_STAGE,
+    });
+    expect(ptWebgpuRequiredLimitsForAdapter(adapter, {
+      bdpt: true,
+      oneEdgeReconnectionReuse: true,
+      cwbvhClosest: true,
+    })).toEqual({
+      maxStorageBuffersPerShaderStage:
+        PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE + 1 + 5 + 5,
+      maxStorageTexturesPerShaderStage:
+        PT_WEBGPU_FULL_REQUIRED_STORAGE_TEXTURES_PER_STAGE,
+    });
   });
 
   it('ptWebgpuRequiredLimitsForAdapter requests the CWBVH closest-hit floor when opted in', () => {
@@ -110,6 +148,11 @@ describe('webgpuLimits', () => {
       maxStorageBuffersPerShaderStage: PT_WEBGPU_CWBVH_CLOSEST_RESTIR_PT_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
       maxStorageTexturesPerShaderStage: PT_WEBGPU_FULL_REQUIRED_STORAGE_TEXTURES_PER_STAGE,
     });
+    expect(
+      PT_WEBGPU_CWBVH_CLOSEST_RESTIR_PT_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
+    ).toBe(
+      PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE + 5 + 5,
+    );
   });
 
   it('ptWebgpuRequiredLimitsForAdapter falls back to lite when ReSTIR-PT reuse cannot fit', () => {

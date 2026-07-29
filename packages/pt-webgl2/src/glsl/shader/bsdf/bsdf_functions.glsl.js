@@ -14,7 +14,7 @@ export const bsdf_functions = /* glsl */`
 
 	// Sprint 7: TRANSLUCENT material flag bit for SSS single-scatter path.
 	// This is packed in MaterialsTexture sample 14 and unpacked into material.flags
-	// by material_struct.glsl.js::readMaterialInfo().
+	// by material_mapped_rich.glsl.ts::readMaterialInfo().
 	const uint TRANSLUCENT_BIT = 0x10u;  // bit 4
 
 	// RFE-03 / Sprint 14 — defined before bsdfEval since GLSL parses top-down and
@@ -78,6 +78,9 @@ export const bsdf_functions = /* glsl */`
 		float fv = schlickFresnel( wo.z, 0.0 );
 
 		float metalFactor = ( 1.0 - surf.metalness );
+		// Physical diffuse energy is reduced by transmission exactly here. The
+		// same factor in getLobeWeights is a sampling probability/PDF term, not
+		// another BRDF attenuation.
 		float transFactor = ( 1.0 - surf.transmission );
 		float rr = 0.5 + 2.0 * surf.roughness * fl * fl;
 		float retro = rr * ( fl + fv + fl * fv * ( rr - 1.0f ) );
@@ -284,9 +287,8 @@ export const bsdf_functions = /* glsl */`
 		vec3 f90Color = vec3( mix( surf.specularIntensity, 1.0, surf.metalness ) );
 		vec3 F = evaluateFresnel( dot( wo, wh ), eta, f0Color, f90Color );
 
-		// Skip iridescence Fresnel computation when lobeMask bit 4 is clear
-		// (iridescence == 0) or a future shader-internal lite policy opts out.
-		if ( ( surf.lobeMask & 16u ) != 0u && ! surf.liteMode ) {
+		// Skip iridescence Fresnel computation when lobeMask bit 4 is clear.
+		if ( ( surf.lobeMask & 16u ) != 0u ) {
 			vec3 iridescenceF = evalIridescence( 1.0, surf.iridescenceIor, dot( wi, wh ), surf.iridescenceThickness, f0Color );
 			F = mix( F, iridescenceF, surf.iridescence );
 		}
@@ -315,11 +317,8 @@ export const bsdf_functions = /* glsl */`
 		// lobe above drops the multi-bounce microfacet inter-reflections, so rough
 		// metals/speculars read dark; add the multiscatter lobe that restores them.
 		// Favg ≈ f0 + (1 − f0)/21 (Fdez-Agüera 2019 cosine-weighted average Fresnel).
-		// Skipped only when a future shader-internal lite policy opts out.
-		if ( ! surf.liteMode ) {
-			vec3 Favg = f0Color + ( vec3( 1.0 ) - f0Color ) * ( 1.0 / 21.0 );
-			color += ggxMultiscatter( roughness, abs( wo.z ), abs( wi.z ), Favg );
-		}
+		vec3 Favg = f0Color + ( vec3( 1.0 ) - f0Color ) * ( 1.0 / 21.0 );
+		color += ggxMultiscatter( roughness, abs( wo.z ), abs( wi.z ), Favg );
 
 		return ggxPdf / ( 4.0 * dot( wo, wh ) );
 
@@ -1020,7 +1019,7 @@ export const bsdf_functions = /* glsl */`
                                         f0Color,
                                         f90Color
                                 );
-                                if ( ( surf.lobeMask & 16u ) != 0u && ! surf.liteMode ) {
+                                if ( ( surf.lobeMask & 16u ) != 0u ) {
 
                                         vec3 iridescenceF = evalIridescence(
                                                 1.0,
@@ -1104,7 +1103,7 @@ export const bsdf_functions = /* glsl */`
 
                 vec3 clearcoatDelta = vec3( 0.0 );
                 float clearcoatF = 0.0;
-                if ( ( surf.lobeMask & 8u ) != 0u && ! surf.liteMode ) {
+                if ( ( surf.lobeMask & 8u ) != 0u ) {
 
                         clearcoatF = schlickFresnel( abs( clearcoatWo.z ), 0.04 );
                         if (
@@ -1136,7 +1135,7 @@ export const bsdf_functions = /* glsl */`
 
                 }
 
-                if ( ( surf.lobeMask & 4u ) != 0u && ! surf.liteMode ) {
+                if ( ( surf.lobeMask & 4u ) != 0u ) {
 
                         baseDelta *= mix(
                                 1.0,
@@ -1169,7 +1168,6 @@ export const bsdf_functions = /* glsl */`
 		if ( diffuseWeight > 0.0 && wi.z > 0.0 ) {
 
 			dpdf = diffuseEval( wo, wi, halfVector, surf, color );
-			color *= 1.0 - surf.transmission;
 
 		}
 
@@ -1198,14 +1196,13 @@ export const bsdf_functions = /* glsl */`
 
 		}
 
-		if ( ( surf.lobeMask & 4u ) != 0u && ! surf.liteMode ) {
+		if ( ( surf.lobeMask & 4u ) != 0u ) {
 			color *= mix( 1.0, sheenAlbedoScaling( wo, wi, surf ), surf.sheen );
 			color += sheenColor( wo, wi, halfVector, surf ) * surf.sheen;
 		}
 
                 if (
                         ( surf.lobeMask & 8u ) != 0u &&
-                        ! surf.liteMode &&
                         clearcoatWi.z >= 0.0 &&
                         clearcoatWeight > 0.0 &&
                         ! bsdfClearcoatLobeIsDelta( surf )
@@ -1216,7 +1213,6 @@ export const bsdf_functions = /* glsl */`
 
                 } else if (
                         ( surf.lobeMask & 8u ) != 0u &&
-                        ! surf.liteMode &&
                         clearcoatWi.z >= 0.0 &&
                         clearcoatWeight > 0.0
                 ) {

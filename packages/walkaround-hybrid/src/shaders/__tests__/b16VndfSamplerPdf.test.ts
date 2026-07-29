@@ -1,5 +1,5 @@
 /**
- * B16 (road-to-100) — GGX VNDF sampler/pdf floor+G1 unification.
+ * B16 (road-to-100) — GGX VNDF sampler/pdf bounded-lobe+G1 unification.
  *
  * CPU mirrors of the WGSL functions in ggxBrdf.wgsl.ts:
  *   - `ggxSampleVndf`          — samples wi ∝ D(h)·G1(wo)/|wo·h| (VNDF, Heitz 2018)
@@ -8,13 +8,13 @@
  *
  * Two test suites:
  *   1. STRUCTURAL — the WGSL exposes smithG1GGX, uses it in ggxVndfReflectionPdf
- *      (not geometrySchlickGGX), and uses the authored positive alpha exactly
+ *      (not geometrySchlickGGX), and uses the same bounded roughness exactly
  *      between ggxSampleVndf and ggxVndfReflectionPdf.
  *   2. SAMPLER/PDF IDENTITY TEST — for each sampled direction wi, the ratio
  *      D(h)·G1(v,h) / (4·NdotV) / pdf(wi) must equal 1 within float tolerance
  *      (since pdf IS defined as D·G1/(4·NdotV)). A sampler/pdf mismatch — e.g.
  *      if the pdf used a different alpha floor or a different G1 — would make
- *      this ratio deviate from 1 on average. Tested at rough ∈ {0.02, 0.05, 0.3}.
+ *      this ratio deviate from 1 on average. Tested at rough ∈ {0, 0.02, 0.05, 0.3}.
  *
  *      For rough=0.3 only, we additionally verify the hemisphere-integral
  *      identity E[1/p(wi)] ≈ 2π using N=100k samples (the lobe is broad enough
@@ -28,14 +28,21 @@ import { describe, it, expect } from 'vitest';
 import { GGX_BRDF_WGSL } from '../ggxBrdf.wgsl.js';
 
 const PI = Math.PI;
+const MIN_CONTINUOUS_GGX_ROUGHNESS = 0.01;
+
+function boundedContinuousGgxRoughness(rough: number): number {
+  return Math.max(MIN_CONTINUOUS_GGX_ROUGHNESS, Math.min(1, Math.max(0, rough)));
+}
 
 // ── CPU mirrors of the WGSL functions (must track ggxBrdf.wgsl.ts exactly) ──
 
 /** GGX NDF D(h, rough) — matches distributionGGX in WGSL. rough = perceptual roughness. */
 function distributionGGX(NdotH: number, rough: number): number {
-  const a = rough * rough;    // alpha
+  const boundedRoughness = boundedContinuousGgxRoughness(rough);
+  const a = boundedRoughness * boundedRoughness; // alpha
   const a2 = a * a;           // alpha^2
-  const d = NdotH * NdotH * (a2 - 1) + 1;
+  const nDotH2 = NdotH * NdotH;
+  const d = Math.max(0, 1 - nDotH2) + nDotH2 * a2;
   return a2 / (PI * d * d);
 }
 
@@ -47,16 +54,16 @@ function smithG1GGX(nv: number, a2: number): number {
 
 /** VNDF reflection pdf — mirrors ggxVndfReflectionPdf in WGSL (B16 version). */
 function ggxVndfReflectionPdf(n: Vec3, wo: Vec3, wi: Vec3, rough: number): number {
-  if (!(rough > 0)) return 0;
   const h = normalize(add(wo, wi));
   const NdotV = dot(n, wo);
   const NdotL = dot(n, wi);
   if (NdotV <= 0 || NdotL <= 0) return 0;
   const NdotH = dot(n, h);
   if (NdotH <= 0) return 0;
-  const alpha = rough * rough;
+  const boundedRoughness = boundedContinuousGgxRoughness(rough);
+  const alpha = boundedRoughness * boundedRoughness;
   const alpha2 = alpha * alpha;
-  const D = distributionGGX(NdotH, rough);
+  const D = distributionGGX(NdotH, boundedRoughness);
   const g1 = smithG1GGX(NdotV, alpha2);
   return (D * g1) / (4 * NdotV);
 }
@@ -102,11 +109,8 @@ function buildOnb(n: Vec3): [Vec3, Vec3] {
  * wo = outgoing dir toward camera, n = surface normal, sampleIdx → Halton.
  */
 function ggxSampleVndf(n: Vec3, wo: Vec3, rough: number, sampleIdx: number): Vec3 {
-  if (!(rough > 0)) {
-    const nDotWo = dot(n, wo);
-    return [2*nDotWo*n[0]-wo[0], 2*nDotWo*n[1]-wo[1], 2*nDotWo*n[2]-wo[2]];
-  }
-  const alpha = rough * rough;
+  const boundedRoughness = boundedContinuousGgxRoughness(rough);
+  const alpha = boundedRoughness * boundedRoughness;
   const [t, b] = buildOnb(n);
   const woT: Vec3 = [dot(wo, t), dot(wo, b), dot(wo, n)];
 
@@ -146,7 +150,7 @@ function ggxSampleVndf(n: Vec3, wo: Vec3, rough: number, sampleIdx: number): Vec
 
 // ── Structural tests ──────────────────────────────────────────────────────────
 
-describe('B16 — structural gates (exact authored alpha + G1 form)', () => {
+describe('B16 — structural gates (shared bounded alpha + G1 form)', () => {
   it('ggxBrdf exposes smithG1GGX', () => {
     expect(GGX_BRDF_WGSL).toContain('fn smithG1GGX(');
   });
@@ -160,24 +164,38 @@ describe('B16 — structural gates (exact authored alpha + G1 form)', () => {
     expect(pdfBody).not.toContain('geometrySchlickGGX(');
   });
 
-  it('ggxSampleVndf uses the authored positive roughness without a floor', () => {
+  it('ggxSampleVndf uses the shared bounded continuous roughness', () => {
     const sStart = GGX_BRDF_WGSL.indexOf('fn ggxSampleVndf(');
     expect(sStart).toBeGreaterThanOrEqual(0);
     const sEnd = GGX_BRDF_WGSL.indexOf('\nfn ', sStart + 1);
     const sBody = GGX_BRDF_WGSL.slice(sStart, sEnd < 0 ? undefined : sEnd);
-    expect(sBody).toContain('if (rough <= 0.0) { return reflect(-wo, n); }');
-    expect(sBody).toContain('let alpha = rough * rough;');
-    expect(sBody).not.toContain('max(rough * rough');
+    expect(sBody).toContain(
+      'let boundedRoughness = boundedContinuousGgxRoughness(rough);',
+    );
+    expect(sBody).toContain('let alpha = boundedRoughness * boundedRoughness;');
+    expect(sBody).not.toContain('return reflect(-wo, n)');
   });
 
-  it('ggxVndfReflectionPdf uses the same unfloored authored alpha', () => {
+  it('ggxVndfReflectionPdf uses the same bounded alpha', () => {
     const pStart = GGX_BRDF_WGSL.indexOf('fn ggxVndfReflectionPdf(');
     expect(pStart).toBeGreaterThanOrEqual(0);
     const pEnd = GGX_BRDF_WGSL.indexOf('\nfn ', pStart + 1);
     const pBody = GGX_BRDF_WGSL.slice(pStart, pEnd < 0 ? undefined : pEnd);
-    expect(pBody).toContain('if (rough <= 0.0) { return 0.0; }');
-    expect(pBody).toContain('let alpha = rough * rough;');
-    expect(pBody).not.toContain('max(rough * rough');
+    expect(pBody).toContain(
+      'let boundedRoughness = boundedContinuousGgxRoughness(rough);',
+    );
+    expect(pBody).toContain('let alpha = boundedRoughness * boundedRoughness;');
+    expect(pBody).not.toContain('if (rough <= 0.0)');
+  });
+
+  it('retains an explicit zero-roughness delta in dielectric transmission', () => {
+    const start = GGX_BRDF_WGSL.indexOf('fn ggxSampleDielectricTransmission(');
+    expect(start).toBeGreaterThanOrEqual(0);
+    const end = GGX_BRDF_WGSL.indexOf('\n// VNDF reflection PDF', start);
+    const body = GGX_BRDF_WGSL.slice(start, end < 0 ? undefined : end);
+    expect(body).toContain('if (rough <= 0.0) {');
+    expect(body).toContain('let wi = refract(-wo, n, eta);');
+    expect(body).toContain('out.pdf = 1.0;');
   });
 });
 
@@ -191,18 +209,18 @@ describe('B16 — structural gates (exact authored alpha + G1 form)', () => {
 //   (both sides use the same D and G1 — any mismatch in alpha floor or
 //   G1 formula makes this ratio deviate from 1 on sampled directions).
 //
-// Tested at rough ∈ {0.02, 0.05, 0.3} with N=1000 samples each.
+// Tested at rough ∈ {0, 0.02, 0.05, 0.3} with N=1000 samples each.
 // Mean and max ratio checked to within 1e-5 (pure floating-point identity).
 //
 // Additionally for rough=0.3 (broad lobe, low variance):
 //   E[1/pdf(wi)] ≈ 2π  (hemisphere solid-angle identity, N=50k, tol 3%).
 
-describe('B16 — sampler/pdf identity at rough ∈ {0.02, 0.05, 0.3}', () => {
+describe('B16 — sampler/pdf identity at rough ∈ {0, 0.02, 0.05, 0.3}', () => {
   const N_IDENTITY = 1_000;
   const n: Vec3   = [0, 0, 1];
   const wo: Vec3  = normalize([Math.sin(35 * PI / 180), 0, Math.cos(35 * PI / 180)]);
 
-  for (const rough of [0.02, 0.05, 0.3]) {
+  for (const rough of [0, 0.02, 0.05, 0.3]) {
     it(`rough=${rough}: D·G1/(4·NdotV) / pdf(wi) ≡ 1 for all sampled wi`, () => {
       let sumRatio = 0;
       let count = 0;
@@ -219,9 +237,10 @@ describe('B16 — sampler/pdf identity at rough ∈ {0.02, 0.05, 0.3}', () => {
         if (NdotH <= 0) continue;
 
         // Recompute D and G1 directly (same formulas as pdf, no intermediary).
-        const alpha = rough * rough;
+        const boundedRoughness = boundedContinuousGgxRoughness(rough);
+        const alpha = boundedRoughness * boundedRoughness;
         const alpha2 = alpha * alpha;
-        const D = distributionGGX(NdotH, rough);
+        const D = distributionGGX(NdotH, boundedRoughness);
         const g1 = smithG1GGX(NdotV, alpha2);
         const numerator = (D * g1) / (4 * NdotV);
 

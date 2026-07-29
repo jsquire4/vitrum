@@ -65,10 +65,6 @@ Their exact bytes and research/production classification are pinned by
 `npm run learned-systems-proof-check`.
 See `tools/neural-denoiser-training/README.md` for training and export guidance.
 
-**Smoke-test path (no trained weights):** `buildRandomWeightsForSpec(spec, seed)`
-synthesises deterministic He-init random weights. The pipeline runs end-to-end
-but the denoised output will NOT be visually clean — wiring verification only.
-
 ## Host Contract
 
 The package root accepts `@vitrum/core` scene data and a raw `GPUDevice` / canvas
@@ -79,6 +75,12 @@ paths run on raw WebGPU resources; `walkaround-hybrid` has no direct
 Hosts should convert their scene graph to the `@vitrum/core` `Scene` contract before
 constructing `HybridEngine`. The Three.js adapter (`sceneFromThreeJS`) was removed with
 the THREE decouple (`e14000c`); host adapters belong outside this package.
+
+This realtime backend does not progressively accumulate toward an SPP target.
+Construction-time `maxSamplesPerPixel` and per-frame
+`FrameInput.quality.samplesTarget` are therefore rejected instead of being
+accepted as no-ops. `FrameInput.quality.bounces` remains the supported per-frame
+path-depth control.
 
 ## Architecture
 

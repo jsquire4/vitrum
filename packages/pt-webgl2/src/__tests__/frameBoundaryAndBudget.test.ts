@@ -166,6 +166,40 @@ describe('pt-webgl2 strict frame and size boundary', () => {
     engine.dispose();
   });
 
+  it('honors every frame viewport after an eager setSize call', async () => {
+    const engine = await createPTEngine_WebGL2({ device: createMockGl() });
+    engine.setScene(scene());
+
+    expect(engine.renderFrame(frame()).kind).toBe('rendered');
+    expect(await engine.captureFrame?.()).toMatchObject({ width: 64, height: 64 });
+
+    engine.setSize?.(48, 40);
+    expect(await engine.captureFrame?.()).toMatchObject({ width: 48, height: 40 });
+
+    const firstFrameResize = {
+      ...frame(),
+      viewport: { width: 32, height: 24, devicePixelRatio: 1 },
+      frameIndex: 1,
+    };
+    expect(engine.renderFrame(firstFrameResize)).toMatchObject({
+      kind: 'rendered',
+      samplesAccumulated: 1,
+    });
+    expect(await engine.captureFrame?.()).toMatchObject({ width: 32, height: 24 });
+
+    const secondFrameResize = {
+      ...firstFrameResize,
+      viewport: { width: 20, height: 12, devicePixelRatio: 1 },
+      frameIndex: 2,
+    };
+    expect(engine.renderFrame(secondFrameResize)).toMatchObject({
+      kind: 'rendered',
+      samplesAccumulated: 1,
+    });
+    expect(await engine.captureFrame?.()).toMatchObject({ width: 20, height: 12 });
+    engine.dispose();
+  });
+
   it('rejects malformed constructor payloads before any capability probe', async () => {
     await expect(createPTEngine_WebGL2(null as never)).rejects.toThrow(/options must be a non-array object/);
     await expect(createPTEngine_WebGL2([] as never)).rejects.toThrow(/options must be a non-array object/);

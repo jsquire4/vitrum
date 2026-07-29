@@ -62,6 +62,7 @@
 import {
   buildBDPTStrategyPDFs_full,
   bdptConnectionMIS_full,
+  maskBDPTExplicitConnectionStrategyPDFs,
 } from '@vitrum/shared-samplers';
 
 export type Vec3 = readonly [number, number, number];
@@ -261,6 +262,81 @@ export function assembleMergedConnectionPath(args: {
 }
 
 /**
+ * Assemble the merged path for the t=1 camera-splat strategy:
+ *
+ *   v[0]=L_0 … v[c]=L_c | camera
+ *
+ * Unlike an ordinary eye↔light connection, the camera endpoint is sampled
+ * directly from `L_c`; there is no eye-surface vertex. PBRT's two applicable
+ * connection-straddling reverse-density overrides are therefore:
+ *
+ * - `pdfRev(L_c)` = the perspective camera's directional importance density
+ *   toward `L_c` (`1 / (A cos³θ)` for the pinhole camera used by pt-webgpu);
+ * - `pdfRev(L_{c-1})` = the light connection vertex's swapped-direction
+ *   scattering density toward its predecessor.
+ *
+ * The selected strategy is `s=c+1=n-1`, i.e. t=1. At least one real light
+ * scattering vertex is required (`lightChain.length >= 2`); s=1,t=1 is not a
+ * valid BDPT connection strategy.
+ */
+export function assembleMergedCameraSplatPath(args: {
+  readonly lightChain: ReadonlyArray<LightStackVertex>;
+  readonly camera: { readonly position: Vec3; readonly normal: Vec3 };
+  readonly cameraDirectionalPdf: number;
+  readonly lightBrdfPdf: (wo: Vec3, wi: Vec3) => number;
+}): { vertices: MergedVertex[]; selectedS: number } {
+  const {
+    lightChain,
+    camera,
+    cameraDirectionalPdf,
+    lightBrdfPdf,
+  } = args;
+  if (lightChain.length < 2) {
+    throw new RangeError(
+      'assembleMergedCameraSplatPath requires an emitter plus at least one light scattering vertex',
+    );
+  }
+  if (!Number.isFinite(cameraDirectionalPdf) || cameraDirectionalPdf <= 0) {
+    throw new RangeError(
+      'assembleMergedCameraSplatPath.cameraDirectionalPdf must be finite and positive',
+    );
+  }
+
+  const c = lightChain.length - 1;
+  const Lc = lightChain[c]!;
+  const LcMinus = lightChain[c - 1]!;
+  const lcToCamera = normalize(sub(camera.position, Lc.position));
+  const lcToLcMinus = normalize(sub(LcMinus.position, Lc.position));
+  const reverseAtPredecessor = lightBrdfPdf(lcToCamera, lcToLcMinus);
+  if (!Number.isFinite(reverseAtPredecessor) || reverseAtPredecessor < 0) {
+    throw new RangeError(
+      'assembleMergedCameraSplatPath.lightBrdfPdf must return a finite non-negative density',
+    );
+  }
+
+  const vertices: MergedVertex[] = lightChain.map((light, index) => ({
+    position: light.position,
+    normal: light.normal,
+    pdfFwd: light.pdfFwd,
+    pdfRev:
+      index === c
+        ? cameraDirectionalPdf
+        : index === c - 1
+          ? reverseAtPredecessor
+          : light.pdfRev,
+    isSpecular: light.isSpecular,
+  }));
+  vertices.push({
+    position: camera.position,
+    normal: camera.normal,
+    pdfFwd: 1,
+    pdfRev: 1,
+    isSpecular: false,
+  });
+  return { vertices, selectedS: c + 1 };
+}
+
+/**
  * Enumerate all Veach §10.3 strategy path-pdfs for the merged path.
  * Delegates to `@vitrum/shared-samplers`'s `buildBDPTStrategyPDFs_full` —
  * re-exported under the historical local name so the oracle test continues to
@@ -294,5 +370,31 @@ export function bdptConnectionMisFull(args: {
 }): number {
   const { vertices, selectedS } = assembleMergedConnectionPath(args);
   const pdfs = buildStrategyPdfs(vertices, selectedS, args.pRef);
+  return powerHeuristicWeight(pdfs, selectedS, args.beta ?? 2);
+}
+
+/**
+ * Full Veach power-heuristic weight for the t=1 camera-splat strategy.
+ * `pRef` is arbitrary up to a common positive scale; the recurrence and power
+ * heuristic use only ratios.
+ */
+export function bdptCameraSplatMisFull(args: {
+  readonly lightChain: ReadonlyArray<LightStackVertex>;
+  readonly camera: { readonly position: Vec3; readonly normal: Vec3 };
+  readonly cameraDirectionalPdf: number;
+  readonly lightBrdfPdf: (wo: Vec3, wi: Vec3) => number;
+  readonly pRef: number;
+  readonly beta?: number;
+  readonly maxLightVertices?: number;
+  readonly maxEyeVertices?: number;
+}): number {
+  const { vertices, selectedS } = assembleMergedCameraSplatPath(args);
+  const pdfs = maskBDPTExplicitConnectionStrategyPDFs(
+    buildStrategyPdfs(vertices, selectedS, args.pRef),
+    {
+      maxLightVertices: args.maxLightVertices ?? 8,
+      maxEyeVertices: args.maxEyeVertices ?? 8,
+    },
+  );
   return powerHeuristicWeight(pdfs, selectedS, args.beta ?? 2);
 }

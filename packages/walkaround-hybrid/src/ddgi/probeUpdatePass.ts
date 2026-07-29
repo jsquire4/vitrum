@@ -157,6 +157,24 @@ export interface ProbeUpdatePassOptions {
   onWarning?: (warning: EngineWarning) => void;
 }
 
+export interface ProbeAtlasSnapshot {
+  readonly irrW: number;
+  readonly irrH: number;
+  readonly visW: number;
+  readonly visH: number;
+  readonly probeStateW: number;
+  readonly probeStateH: number;
+  readonly irrData: Uint16Array;
+  readonly visData: Uint16Array;
+  readonly probeStateData: Float32Array;
+}
+
+export interface ProbeAtlasImportTransaction {
+  commit(): void;
+  rollback(): void;
+  finalize(): void;
+}
+
 /** Transaction-safe snapshot of a full-blend invalidation generation. */
 export interface ProbeFullBlendState {
   readonly generation: number;
@@ -719,14 +737,6 @@ export class ProbeUpdatePass {
     return this._pendingFullBlendStrata.size > 0;
   }
 
-  setPendingFullBlend(value: boolean): void {
-    if (value) {
-      this.requestFullBlend(this._probeUpdateDivisor);
-    } else {
-      this._pendingFullBlendStrata.clear();
-    }
-  }
-
   get pendingFullBlendCount(): number {
     return this._pendingFullBlendStrata.size;
   }
@@ -1165,18 +1175,20 @@ export class ProbeUpdatePass {
     //      `coreMaterialToMaterialEntry`. This is the production material list
     //      path that mirrors the ReSTIR-DI emitter `46a0078` + standalone DDGI
     //      `15070cd` decouples.
-    //   2. core-first STANDALONE path — `SceneBvh.updateFromCore` filled
-    //      `legacyBuffers.coreMaterials` (no ReSTIR snapshot present).
+    //   2. core-first STANDALONE path — `SceneBvh.updateFromCore` fills
+    //      `materials` and the back-compat `coreMaterials` alias with one
+    //      canonical MaterialSpec array.
     //   3. ReSTIR snapshot structural-material path — `snap.materials`.
-    //   4. standalone SceneBvh structural-material path — `legacyBuffers.sourceMaterials`.
     const snapCoreMats = snap?.coreMaterials;
-    const legacyCoreMats = legacyBuffers?.materials ?? legacyBuffers?.coreMaterials;
+    const legacyCoreMats =
+      legacyBuffers?.materials ??
+      legacyBuffers?.coreMaterials;
     if (snapCoreMats != null && snapCoreMats.length > 0) {
       this._uploadCoreMaterials(device, snapCoreMats);
     } else if (legacyCoreMats != null && legacyCoreMats.length > 0) {
       this._uploadCoreMaterials(device, legacyCoreMats);
     } else {
-      const materials = snap?.materials ?? legacyBuffers?.sourceMaterials;
+      const materials = snap?.materials;
       this._uploadMaterials(device, [...(materials ?? [])] as PbrScalarSource[]);
     }
     this._uploadLights(device);
@@ -1216,6 +1228,7 @@ export class ProbeUpdatePass {
       gpu,
       activeProbes.length,
       irrReadTex,
+      visReadTex,
     );
     dispatchProbeClassifyRelocatePass(
       encoder,
@@ -1673,12 +1686,7 @@ export class ProbeUpdatePass {
    * Returns the raw rgba16float texels + atlas dims, or null if the atlases aren't
    * allocated yet. Async (mapAsync).
    */
-  async exportAtlasData(device: GPUDevice): Promise<{
-    irrW: number; irrH: number; visW: number; visH: number;
-    probeStateW: number; probeStateH: number;
-    irrData: Uint16Array; visData: Uint16Array;
-    probeStateData: Float32Array;
-  } | null> {
+  async exportAtlasData(device: GPUDevice): Promise<ProbeAtlasSnapshot | null> {
     const tex = this.getReadAtlasGPUTextures();
     const irrSlot = this._grid.irradianceReadTex;
     const visSlot = this._grid.visibilityReadTex;
@@ -1715,30 +1723,25 @@ export class ProbeUpdatePass {
    * snapshot's dims don't match the current grid (a different scene). The restored
    * state seeds the temporal blend, so subsequent frames continue from it.
    */
-  importAtlasData(
+  prepareAtlasImport(
     device: GPUDevice,
-    snap: {
-      irrW: number; irrH: number; visW: number; visH: number;
-      probeStateW: number; probeStateH: number;
-      irrData: Uint16Array; visData: Uint16Array;
-      probeStateData: Float32Array;
-    },
-  ): boolean {
+    snap: ProbeAtlasSnapshot,
+  ): ProbeAtlasImportTransaction | null {
     const tex = this.getReadAtlasGPUTextures();
     const irrSlot = this._grid.irradianceReadTex;
     const visSlot = this._grid.visibilityReadTex;
-    if (!tex || !irrSlot || !visSlot) return false;
+    if (!tex || !irrSlot || !visSlot) return null;
     if (irrSlot.width !== snap.irrW || irrSlot.height !== snap.irrH ||
         visSlot.width !== snap.visW || visSlot.height !== snap.visH ||
         this._grid.dims.x !== snap.probeStateW ||
         this._grid.dims.y * this._grid.dims.z !== snap.probeStateH) {
-      return false; // grid mismatch — cannot restore into a differently-sized atlas
+      return null; // grid mismatch — cannot restore into a differently-sized atlas
     }
     if (snap.irrData.length !== snap.irrW * snap.irrH * 4 ||
         snap.visData.length !== snap.visW * snap.visH * 4 ||
         snap.probeStateData.length !== snap.probeStateW * snap.probeStateH * 4 ||
         !isValidProbeStateData(snap.probeStateData, this._grid.worldSpacing)) {
-      return false;
+      return null;
     }
     const irradianceData = snap.irrData.slice();
     try {
@@ -1755,7 +1758,7 @@ export class ProbeUpdatePass {
         },
       );
     } catch {
-      return false;
+      return null;
     }
 
     const usage =
@@ -1787,11 +1790,12 @@ export class ProbeUpdatePass {
 
       this.#uploadRgba16f(device, irradiance, snap.irrW, snap.irrH, irradianceData);
       this.#uploadRgba16f(device, visibility, snap.visW, snap.visH, snap.visData);
-      this._atlasCache.replaceCachedAtlasCohort([
+      const transaction = this._atlasCache.prepareCachedAtlasCohort([
         { slot: irrSlot, texture: irradiance },
         { slot: visSlot, texture: visibility },
       ]);
       candidates.length = 0;
+      return transaction;
     } catch (error) {
       for (const candidate of new Set(candidates)) {
         if (
@@ -1802,6 +1806,18 @@ export class ProbeUpdatePass {
       }
       throw error;
     }
+  }
+
+  importAtlasData(device: GPUDevice, snap: ProbeAtlasSnapshot): boolean {
+    const transaction = this.prepareAtlasImport(device, snap);
+    if (transaction == null) return false;
+    try {
+      transaction.commit();
+    } catch (error) {
+      transaction.rollback();
+      throw error;
+    }
+    transaction.finalize();
     return true;
   }
 

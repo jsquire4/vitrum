@@ -232,6 +232,53 @@ describe('progressive facade contract', () => {
     expect(facade.state).toBe('disposed');
   });
 
+  it('exposes a live composite debug surface and reports both engines memory', () => {
+    const realtimePick = vi.fn(() => 'realtime-hit');
+    const convergedPick = vi.fn(() => 'converged-hit');
+    const realtime = {
+      ...stubEngine(capabilities({ debugSurface: true })),
+      debug: {
+        pickPrimitive: realtimePick,
+        estimatedGpuMemoryBytes: () => ({
+          total: 10,
+          byCategory: { realtime: 10 },
+          byTextureFormat: { rgba16float: 6 },
+          byBufferUsage: { storage: 4 },
+        }),
+      },
+      renderFrame: vi.fn(() => rendered(1)),
+    } as Engine;
+    const converged = {
+      ...stubEngine(capabilities({ debugSurface: true })),
+      debug: {
+        pickPrimitive: convergedPick,
+        estimatedGpuMemoryBytes: () => ({
+          total: 20,
+          byCategory: { converged: 20 },
+          byTextureFormat: { rgba16float: 8, rgba32float: 4 },
+          byBufferUsage: { storage: 12, uniform: 2 },
+        }),
+      },
+      renderFrame: vi.fn(() => rendered(1)),
+    } as Engine;
+    const facade = progressiveHandleAsEngine(handleFor(realtime, converged));
+
+    expect(facade.capabilities.debugSurface).toBe(true);
+    expect(facade.debug?.pickPrimitive?.(1, 2)).toBe('realtime-hit');
+    expect(facade.debug?.estimatedGpuMemoryBytes?.()).toEqual({
+      total: 30,
+      byCategory: { realtime: 10, converged: 20 },
+      byTextureFormat: { rgba16float: 14, rgba32float: 4 },
+      byBufferUsage: { storage: 16, uniform: 2 },
+    });
+
+    facade.renderFrame(input());
+    facade.renderFrame(input());
+    expect(facade.debug?.pickPrimitive?.(1, 2)).toBe('converged-hit');
+    expect(realtimePick).toHaveBeenCalledTimes(1);
+    expect(convergedPick).toHaveBeenCalledTimes(1);
+  });
+
   it('captures the displayed phase and validates resize before touching either backend', async () => {
     const realtimeCapture = vi.fn(async (): Promise<CapturedFrame> => ({
       width: 1, height: 1, rgba: new Float32Array(4), colorSpace: 'linear',

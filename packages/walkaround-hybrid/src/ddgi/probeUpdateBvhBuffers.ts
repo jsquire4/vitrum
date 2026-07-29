@@ -107,7 +107,15 @@ function rebuildProbeBvhBuffers(
   destroyBuffersBestEffort(previousSet, candidateSet);
 }
 
-/** C2 — TLAS transform refit: upload nodes + instance matrices only. */
+/**
+ * C2 — TLAS transform refit.
+ *
+ * Refresh the complete five-stream traversal cohort. Even a transform-only
+ * producer update fingerprints all five streams, and the TLAS builder is free
+ * to change its leaf permutation or BLAS-root table while refitting. Capacity
+ * growth is published only after one command buffer containing every upload is
+ * accepted; same-capacity streams retain their public GPUBuffer identities.
+ */
 export function refitProbeTlasBuffersInPlace(
   device: GPUDevice,
   g: ProbeUpdateBvhGpuBuffers,
@@ -115,6 +123,8 @@ export function refitProbeTlasBuffersInPlace(
 ): void {
   const entries = [
     ['tlasNodesBuf', tlas.nodes, BVH_NODE_PLACEHOLDER_BYTES],
+    ['tlasInstIdxBuf', tlas.instanceIndices, STORAGE_PLACEHOLDER_BYTES],
+    ['tlasBlasRootsBuf', tlas.blasRoots, STORAGE_PLACEHOLDER_BYTES],
     ['tlasW2lBuf', tlas.worldToLocal, STORAGE_PLACEHOLDER_BYTES],
     ['tlasL2wBuf', tlas.localToWorld, STORAGE_PLACEHOLDER_BYTES],
   ] as const satisfies readonly (readonly [ProbeBvhBufferKey, ProbeCpuBufferData, number])[];
@@ -172,8 +182,8 @@ export function refitProbeTlasBuffersInPlace(
       }
     }
 
-    // All three staging→destination copies enter the queue in one command
-    // buffer. Encoder/finish/submit failure cannot expose a mixed node/matrix
+    // All five staging→destination copies enter the queue in one command
+    // buffer. Encoder/finish/submit failure cannot expose a mixed TLAS
     // generation, and public replacement identities are published only after
     // the queue accepts that complete command buffer.
     const encoder = device.createCommandEncoder({ label: 'ddgi.tlas-refit.transaction' });
@@ -195,11 +205,19 @@ export function refitProbeTlasBuffersInPlace(
     throw error;
   }
 
+  const retiredDestinations = new Set<GPUBuffer>();
   for (const [key, replacement] of replacements) {
-    const previous = g[key];
+    retiredDestinations.add(g[key]);
     g[key] = replacement;
-    destroyBuffersBestEffort([previous], candidateSet);
   }
+  // Retire as one cohort so aliased prior fields are destroyed at most once.
+  // Preserve any prior buffer that another, non-replaced public field still
+  // references; a later replacement will retire it when its final alias leaves.
+  const publishedSet = new Set<GPUBuffer>(Object.values(g));
+  destroyBuffersBestEffort(
+    retiredDestinations,
+    new Set<GPUBuffer>([...candidateSet, ...publishedSet]),
+  );
 
   const stagingSet = new Set(staging.values());
   const retireStaging = (): void => destroyBuffersBestEffort(stagingSet, liveSet);
@@ -207,8 +225,11 @@ export function refitProbeTlasBuffersInPlace(
     try {
       void device.queue.onSubmittedWorkDone().then(retireStaging, retireStaging);
     } catch {
-      // The copy submission was already accepted. Keep staging alive rather
-      // than risking use-after-destroy if completion tracking itself is lost.
+      // Submission was already accepted. WebGPU defers the physical release of
+      // buffers referenced by queued work, so destroy is both safe here and
+      // necessary: a synchronous completion-tracker failure must not leak all
+      // five private staging buffers.
+      retireStaging();
     }
   } else {
     retireStaging();

@@ -69,7 +69,11 @@ export class SampleBudgetPass implements Pass {
     // zero-fills the trailing pad to match the prior [count, 0, 0, 0] write.
     const sampleCountBytes = new ArrayBuffer(SAMPLE_COUNT_UBO.sizeBytes);
     SAMPLE_COUNT_UBO.pack(new DataView(sampleCountBytes), 0, {
-      sampleCount: Math.max(ctx.frameIndex + 1, 1),
+      // This pass runs before the current frame's Welford update, so the
+      // freshest bound state contains exactly `frameIndex` prior samples.
+      // Using frameIndex+1 divided M2 by one too many observations and
+      // systematically understated the adaptive variance.
+      sampleCount: Math.max(ctx.frameIndex, 1),
     });
     device.queue.writeBuffer(this._sampleCountUboRef.buf!, 0, sampleCountBytes);
     // Select the freshest Welford variance side.  AtrousVarianceDenoiser

@@ -29,14 +29,15 @@
  * α = 0.1 (vs the main post-atrous accumulator's 0.01) gives ~10-frame
  * effective history at this stage; the main accumulator stacks another
  * ~100-frame history on top, for ~1000-frame effective convergence on
- * the static-camera steady state.  Camera-move resets are handled by the
- * main accumulator's existing motion-reset path — when α=1 there, this
- * pre-accumulator's history is naturally flushed via end-of-frame copy.
+ * the static-camera steady state. History is reprojected with the canonical
+ * previous-minus-current motion-vector convention. A dedicated reset entry
+ * point bypasses history on camera/scene/lighting reset frames.
  *
  * Bindings:
  *   @group(0) @binding(0) currentRaw  hdrIndirectTexture (sampled, full-res)
  *   @group(0) @binding(1) prevAccum   indirectAccum*PrevTexture (sampled)
- *   @group(0) @binding(2) outAccum    indirectAccum*Texture (storage write)
+ *   @group(0) @binding(2) motion      motionVectorTexture (sampled)
+ *   @group(0) @binding(3) outAccum    indirectAccum*Texture (storage write)
  */
 
 import type { WgslModule } from '../pipeline/wgslComposer.js';
@@ -45,7 +46,8 @@ export const INDIRECT_TEMPORAL_ACCUM_WGSL = /* wgsl */ `
 
 @group(0) @binding(0) var ita_currentRaw: texture_2d<f32>;
 @group(0) @binding(1) var ita_prevAccum:  texture_2d<f32>;
-@group(0) @binding(2) var ita_outAccum:   texture_storage_2d<rgba16float, write>;
+@group(0) @binding(2) var ita_motion:     texture_2d<f32>;
+@group(0) @binding(3) var ita_outAccum:   texture_storage_2d<rgba16float, write>;
 
 // Per-frame admit rate.  Lower = more history weight = smoother but slower
 // to converge after a real lighting change.  0.1 is a balance: 90 % history
@@ -63,8 +65,7 @@ const ITA_BBOX_EXPAND: f32 = 1.2;
 // neighbours, so the bound moves with the edge).
 const ITA_SPIKE_BOUND_MULT: f32 = 1.5;
 
-@compute @workgroup_size(16, 16, 1)
-fn indirectTemporalAccumMain(@builtin(global_invocation_id) gid: vec3u) {
+fn indirectTemporalAccumPixel(gid: vec3u, forceReset: bool) {
   let dims = textureDimensions(ita_outAccum);
   if (any(gid.xy >= dims)) { return; }
 
@@ -97,11 +98,50 @@ fn indirectTemporalAccumMain(@builtin(global_invocation_id) gid: vec3u) {
   let half   = (nmax - nmin) * 0.5 * ITA_BBOX_EXPAND;
   let lo = max(vec3f(0.0), centre - half);
   let hi = centre + half;
-  let prev = textureLoad(ita_prevAccum, gid.xy, 0).rgb;
+
+  // A reset frame must publish only current-frame data. This is a separate
+  // entry point rather than a CPU-cleared texture so scene/lighting mutation
+  // resets remain part of the same atomic frame submission.
+  if (forceReset) {
+    textureStore(ita_outAccum, gid.xy, vec4f(cur_capped, 1.0));
+    return;
+  }
+
+  // Canonical motion-vector convention is previous-current in framebuffer
+  // pixel units. Reproject history before applying the existing TCBB
+  // disocclusion clip; same-texel history would smear indirect GI under even
+  // sub-threshold camera motion.
+  let motionSample =
+    textureLoad(ita_motion, vec2i(i32(gid.x), i32(gid.y)), 0);
+  // Invalid reprojection (sky, non-finite clip, or absent producer) must not
+  // masquerade as a perfectly trusted zero-motion surface.
+  if (motionSample.a <= 0.5) {
+    textureStore(ita_outAccum, gid.xy, vec4f(cur_capped, 1.0));
+    return;
+  }
+  let mv = motionSample.rg;
+  let deltaPx = vec2i(round(mv));
+  let prevUnclamped = vec2i(i32(gid.x), i32(gid.y)) + deltaPx;
+  let prevXY = clamp(
+    prevUnclamped,
+    vec2i(0),
+    vec2i(i32(dims.x) - 1, i32(dims.y) - 1),
+  );
+  let prev = textureLoad(ita_prevAccum, prevXY, 0).rgb;
   let prev_clipped = clamp(prev, lo, hi);
 
   let result = mix(prev_clipped, cur_capped, ITA_ALPHA);
   textureStore(ita_outAccum, gid.xy, vec4f(result, 1.0));
+}
+
+@compute @workgroup_size(16, 16, 1)
+fn indirectTemporalAccumMain(@builtin(global_invocation_id) gid: vec3u) {
+  indirectTemporalAccumPixel(gid, false);
+}
+
+@compute @workgroup_size(16, 16, 1)
+fn indirectTemporalAccumResetMain(@builtin(global_invocation_id) gid: vec3u) {
+  indirectTemporalAccumPixel(gid, true);
 }
 `;
 

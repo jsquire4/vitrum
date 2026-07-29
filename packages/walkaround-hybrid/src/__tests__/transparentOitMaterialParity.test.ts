@@ -59,8 +59,9 @@ describe('transparent OIT estimator and ownership', () => {
     const sky = functionBody(TRANSPARENT_OIT_WGSL, 'oitLayerSkyRadiance');
     expect(sky).toContain('oitSamplingHashToF32(seed ^ 0x9e3779b9u)');
     expect(sky).toContain('let wi = oitCosineHemisphereDir(normal, xi);');
-    expect(sky).toContain('let pdf = dot(normal, wi) * INV_PI;');
-    expect(sky).toContain('oitLayerEnvSampleRadiance(payload, normal, wo, wi) / pdf');
+    expect(sky).toContain('let pdf = max(dot(normal, wi), 0.0) * INV_PI;');
+    expect(sky).toContain('oitBoundedCosineImportanceDivide(');
+    expect(sky).toContain('oitLayerEnvSampleRadiance(payload, normal, wo, wi),');
   });
 
   it('uses the configured DDGI/RC mixture for every layer and ULP ray offsets', () => {

@@ -2,7 +2,7 @@
 // lightsTexture, equirectHdrInfo, attributesTextureArray) and the GL consumer
 // (uploadSceneTextures builds the bundle; GlResources binds it to the program).
 
-import type { TextureAtlasLayerMap } from './texturesArray.js';
+import type { MaterialTextureAtlasLayerMaps } from './texturesArray.js';
 
 /** A square CPU texel grid ready for `gl.texImage2D` (dim×dim, RGBA-strided). */
 interface TexelGrid {
@@ -18,7 +18,7 @@ export interface LayeredTexelGrid {
   readonly layers: number;
 }
 
-/** Output of the materials packer (85px/material RGBA32F square; plan 03 §4). */
+/** Output of the materials packer (136px/material RGBA32F square). */
 export interface MaterialsTextureData extends TexelGrid {
   readonly kind: 'rgba32f';
   readonly materialCount: number;
@@ -50,7 +50,7 @@ export interface UploadedSceneTextures {
   readonly bvhPosition: WebGLTexture;
   readonly bvhIndex: WebGLTexture;
   readonly materialIndex: WebGLTexture;
-  // materials (sampler2D, 85px/material)
+  // materials (sampler2D, 136px/material)
   readonly materials: WebGLTexture;
   // vertex attributes (sampler2DArray: fixed 0=normal, 1=tangent, 2=uv0,
   // 3=color, 4=uv1; dense scene-local arbitrary UV layers begin at 5)
@@ -77,14 +77,18 @@ export interface UploadedSceneTextures {
   readonly envTotalSum: number;
   readonly envWidth: number;
   readonly envHeight: number;
-  // material texture atlas (optional)
+  // normalized material texture atlas (optional, RGBA8)
   readonly textures2DArray: WebGLTexture | null;
   readonly materialAtlasDim: number;
   readonly materialAtlasLayerCount: number;
   readonly materialAtlasLayerCapacity: number;
-  /** Role-aware TextureRef handle -> atlas layer map used to repack material scalar
-   *  slots without rebuilding the texture atlas. Null when no readable atlas exists. */
-  readonly materialLayerMap: TextureAtlasLayerMap | null;
+  // outgoing-radiance material texture atlas (optional, RGBA16F)
+  readonly materialHdrTextures2DArray: WebGLTexture | null;
+  readonly materialHdrAtlasDim: number;
+  readonly materialHdrAtlasLayerCount: number;
+  readonly materialHdrAtlasLayerCapacity: number;
+  /** Storage- and role-aware TextureRef handle -> atlas layer maps. */
+  readonly materialLayerMap: MaterialTextureAtlasLayerMaps;
   /** Material slots whose triangles use authored vertex colors; reused by the
    *  material-only mutation fast path so the vertex-color flag survives repacks. */
   readonly vertexColorMaterialIds: ReadonlySet<number>;

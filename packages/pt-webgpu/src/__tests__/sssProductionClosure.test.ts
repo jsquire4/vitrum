@@ -180,7 +180,7 @@ describe('SSS production closure — emitter ownership and packing', () => {
       1;
     const input = buildLightTreeInputForScene(scene, {
       packed,
-      envSummary: { hasHdri: true, sunStrength: 0, tint: [1, 1, 1] },
+      envSummary: { hasHdri: true, sunStrength: 0, lightTreePower: 1 },
     });
     expect(input.powers.length).toBe(expected);
     const order = [
@@ -241,7 +241,9 @@ describe('SSS production closure — boundaries, textures, and safety', () => {
       expect(source).toContain('hit.dist = hit.dist + alphaAdvance;');
     }
     expect(PT_WEBGPU_MEDIUM_NEE_WGSL).toContain('alphaTestPassThrough(');
-    expect(PT_WEBGPU_MEDIUM_NEE_WGSL).toContain('step < 16u');
+    expect(PT_WEBGPU_MEDIUM_NEE_WGSL).toContain(
+      'let surfaceHitLimit = sceneSurfaceHitLimit();',
+    );
   });
 
   it('samples thickness on every BDPT light-side material boundary', () => {
@@ -258,9 +260,10 @@ describe('SSS production closure — boundaries, textures, and safety', () => {
     expect(PT_WEBGPU_MEDIUM_NEE_WGSL).toContain(
       '!bdptMediumLayerMatchesBoundary(stack[depth - 1u], matId, boundary)',
     );
-    expect(PT_WEBGPU_MEDIUM_NEE_WGSL).toMatch(
-      /for \(var step = 0u; step < 16u;[\s\S]*?return result;\n}/,
+    expect(PT_WEBGPU_MEDIUM_NEE_WGSL).toContain(
+      'if (surfaceHitCount >= surfaceHitLimit) {',
     );
+    expect(PT_WEBGPU_MEDIUM_NEE_WGSL).not.toContain('step < 16u');
   });
 
   it('uses exact RGB-overrides-scalar scattering semantics', () => {

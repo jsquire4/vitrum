@@ -22,17 +22,23 @@ interface TeardownSpies {
   disposeRc: ReturnType<typeof vi.fn>;
   disposeSkinning: ReturnType<typeof vi.fn>;
   setState: ReturnType<typeof vi.fn>;
+  reportError: ReturnType<typeof vi.fn>;
+  rollbackBvh: ReturnType<typeof vi.fn>;
 }
 
 /** Build a full PipelineInitHost whose scene never becomes ready (so the
  *  coordinator stays in the readiness poll) plus teardown spies. */
-function makePollingHost(): { host: PipelineInitHost; spies: TeardownSpies } {
+function makePollingHost(
+  overrides: Partial<PipelineInitHost> = {},
+): { host: PipelineInitHost; spies: TeardownSpies } {
   const spies: TeardownSpies = {
     teardownPipeline: vi.fn(),
     disposeDdgi: vi.fn(),
     disposeRc: vi.fn(),
     disposeSkinning: vi.fn(),
     setState: vi.fn(),
+    reportError: vi.fn(),
+    rollbackBvh: vi.fn(),
   };
   const noop = () => {};
   const host = {
@@ -61,7 +67,6 @@ function makePollingHost(): { host: PipelineInitHost; spies: TeardownSpies } {
     gtaoMode: 'off' as const,
     diSpatialPasses: 1 as const,
     giSpatialPasses: 1 as const,
-    grisReuse: false,
     nrcEnabled: false,
     nrcConfig: DEFAULT_NRC_CONFIG,
     ppgEnabled: false,
@@ -75,9 +80,9 @@ function makePollingHost(): { host: PipelineInitHost; spies: TeardownSpies } {
     coreSceneSuppliesMeshes: () => false,
     publishBvh: noop,
     publishPipeline: noop,
-    rollbackBvh: noop,
+    rollbackBvh: spies.rollbackBvh,
     setState: spies.setState,
-    reportError: noop,
+    reportError: spies.reportError,
     reportWarning: noop,
     teardownPipeline: spies.teardownPipeline,
     disposeDdgi: spies.disposeDdgi,
@@ -86,6 +91,7 @@ function makePollingHost(): { host: PipelineInitHost; spies: TeardownSpies } {
     recordInitStart: noop,
     recordInitComplete: noop,
     currentBvhBuffers: null,
+    ...overrides,
   } satisfies PipelineInitHost;
   return { host, spies };
 }
@@ -121,5 +127,87 @@ describe('PipelineInitCoordinator — deferred teardown on dispose-races-poll', 
     expect(spies.setState).toHaveBeenCalledWith('disposed');
     // The chain has finished; it is no longer running.
     expect(coord.initRunning).toBe(false);
+  });
+
+  it('reports one typed fatal error at the readiness deadline and never enters BVH construction', async () => {
+    const { host, spies } = makePollingHost();
+    const coord = new PipelineInitCoordinator(host);
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    try {
+      coord.startInit();
+      await vi.advanceTimersByTimeAsync(5_050);
+
+      expect(spies.reportError).toHaveBeenCalledOnce();
+      expect(spies.reportError).toHaveBeenCalledWith({
+        kind: 'render',
+        message: expect.stringMatching(/scene readiness timed out after 5000 ms/i),
+        fatal: true,
+        raw: expect.any(Error),
+      });
+      expect(spies.setState.mock.calls.map(([state]) => state))
+        .toEqual(['initializing', 'error']);
+      expect(spies.rollbackBvh).not.toHaveBeenCalled();
+      expect(spies.teardownPipeline).not.toHaveBeenCalled();
+      expect(coord.initRunning).toBe(false);
+
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(spies.reportError).toHaveBeenCalledOnce();
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
+  it('accepts an explicitly empty scene immediately without a timeout error', async () => {
+    const emptyScene = {
+      primitives: [],
+      emitters: [],
+      environment: { kind: 'none' },
+    } as PipelineInitHost['lastScene'];
+    const { host, spies } = makePollingHost({
+      lastScene: emptyScene,
+      coreSceneSuppliesMeshes: () => false,
+    });
+    const coord = new PipelineInitCoordinator(host);
+
+    coord.startInit();
+    await Promise.resolve();
+
+    expect(spies.setState.mock.calls.map(([state]) => state))
+      .toEqual(['initializing', 'ready']);
+    expect(spies.rollbackBvh).toHaveBeenCalledOnce();
+    expect(spies.reportError).not.toHaveBeenCalled();
+    expect(coord.initRunning).toBe(false);
+  });
+
+  it('finalises teardown when the fatal-timeout subscriber disposes re-entrantly', async () => {
+    const reported = vi.fn();
+    const coordinatorRef: { current?: PipelineInitCoordinator } = {};
+    const { host, spies } = makePollingHost({
+      reportError: (error) => {
+        reported(error);
+        expect(coordinatorRef.current?.requestTeardown()).toBe(false);
+      },
+    });
+    const coord = new PipelineInitCoordinator(host);
+    coordinatorRef.current = coord;
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    try {
+      coord.startInit();
+      await vi.advanceTimersByTimeAsync(5_050);
+
+      expect(reported).toHaveBeenCalledOnce();
+      expect(spies.teardownPipeline).toHaveBeenCalledOnce();
+      expect(spies.disposeDdgi).toHaveBeenCalledOnce();
+      expect(spies.disposeRc).toHaveBeenCalledOnce();
+      expect(spies.disposeSkinning).toHaveBeenCalledOnce();
+      expect(spies.setState.mock.calls.map(([state]) => state))
+        .toEqual(['initializing', 'error', 'disposed']);
+      expect(coord.pendingTeardown).toBe(false);
+      expect(coord.initRunning).toBe(false);
+    } finally {
+      consoleError.mockRestore();
+    }
   });
 });

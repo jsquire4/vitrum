@@ -31,6 +31,7 @@ import {
 } from '../ddgiAtlasLayout.js';
 import { DDGI_PROBE_MAX_OFFSET_NORMALIZED } from '../probeState.js';
 import { DDGI_SH_WGSL } from './ddgiSH.wgsl.js';
+import { DDGI_SAMPLE_WGSL } from '../ddgiSampleWgsl.js';
 
 const WG_SIZE = 32;
 const RAYS_PER_THREAD = Math.ceil(RAYS_PER_PROBE / WG_SIZE);
@@ -126,6 +127,7 @@ ${MATERIAL_ENTRY_WGSL}
 ${BVH_INTERSECT_WGSL}
 ${TLAS_TRAVERSAL_WGSL}
 ${DDGI_SH_WGSL}
+${DDGI_SAMPLE_WGSL}
 
 const WG_SIZE: u32       = ${WG_SIZE}u;
 const RAYS_PER_PROBE: u32  = ${RAYS_PER_PROBE}u;
@@ -401,8 +403,30 @@ struct DdgiTraceParams {
 //               when hasEnv=0 so the bind group is always valid.
 @group(2) @binding(6) var                      ddgiEnvMap:   texture_2d<f32>;
 @group(2) @binding(7) var                      ddgiEnvSamp:  sampler;
+@group(2) @binding(8) var                      visibilityPrev: texture_2d<f32>;
 
 ${DDGI_MATERIAL_ATLAS_OFFSET_CONSTS}
+
+fn ddgiFeedbackAt(worldPos: vec3f, surfaceNormal: vec3f) -> vec3f {
+  return ddgiSample(
+    worldPos,
+    surfaceNormal,
+    irradiancePrev,
+    visibilityPrev,
+    irradianceSamp,
+    gridParams.origin.x,
+    gridParams.origin.y,
+    gridParams.origin.z,
+    gridParams.spacing,
+    gridParams.dims.x,
+    gridParams.dims.y,
+    gridParams.dims.z,
+    gridParams.irradianceAtlasW,
+    gridParams.irradianceAtlasH,
+    gridParams.visibilityAtlasW,
+    gridParams.visibilityAtlasH,
+  );
+}
 
 fn ddgiMaterialMetaCoord(texel: u32) -> vec2i {
   let dims = textureDimensions(ddgiMaterialMapMeta);
@@ -699,7 +723,13 @@ fn ddgiMaterialTangentFrameForHit(
     bitangent = bitangent * inverseSqrt(bLen2);
   }
 
-  return ddgiPreferAuthoredTangentFrameForHit(hit, frameNormal, tangent, bitangent);
+  // Authored glTF tangents describe TEXCOORD_0 only. Keep the derivative
+  // frame derived from the selected UV lane whenever a material map addresses
+  // TEXCOORD_1 or a higher auxiliary lane.
+  if (texCoord == 0u) {
+    return ddgiPreferAuthoredTangentFrameForHit(hit, frameNormal, tangent, bitangent);
+  }
+  return DdgiMaterialTangentFrame(tangent, bitangent);
 }
 
 fn ddgiSampleMaterialAtlasRawAtOffsetDelta(
@@ -810,18 +840,24 @@ fn ddgiApplyThicknessMapToBeerTint(hit: IntersectionResult, beerTint: vec3f) -> 
   return pow(max(beerTint, vec3f(0.0)), vec3f(thickness.x));
 }
 
-fn ddgiSampleSpecularControls(triIndex: u32, uv0: vec2f, uv1: vec2f) -> vec4f {
-  var color = vec3f(1.0);
+fn ddgiSampleSpecularMeta(triIndex: u32) -> vec4f {
+  var color = vec3f(0.04);
   var intensity = 1.0;
   if (ddgiMaterialMetaAvailable(triIndex, DDGI_MATERIAL_MAP_SPECULAR_TEXEL_OFFSET)) {
     let spec = ddgiMaterialMetaLoadOrZero(triIndex, DDGI_MATERIAL_MAP_SPECULAR_TEXEL_OFFSET);
-    color = clamp(spec.rgb, vec3f(0.0), vec3f(1.0));
+    color = max(spec.rgb, vec3f(0.0));
     intensity = clamp(spec.a, 0.0, 1.0);
   }
+  return vec4f(color, intensity);
+}
 
+fn ddgiSampleSpecularControls(triIndex: u32, uv0: vec2f, uv1: vec2f) -> vec4f {
+  let scalar = ddgiSampleSpecularMeta(triIndex);
+  var color = scalar.rgb;
+  var intensity = scalar.a;
   let colorMap = ddgiSampleMaterialAtlasRawAtOffset(triIndex, DDGI_MATERIAL_MAP_SPECULAR_COLOR_TEXEL_OFFSET, uv0, uv1);
   if (colorMap.x >= 0.0) {
-    color = clamp(color * colorMap.rgb, vec3f(0.0), vec3f(1.0));
+    color = max(color * colorMap.rgb, vec3f(0.0));
   }
   let intensityMap = ddgiSampleMaterialAtlasRawAtOffset(triIndex, DDGI_MATERIAL_MAP_SPECULAR_INTENSITY_TEXEL_OFFSET, uv0, uv1);
   if (intensityMap.x >= 0.0) {
@@ -1110,6 +1146,7 @@ fn ddgiSampleProbeHitMaterial(
   scalarRoughness: f32,
   scalarMetalness: f32,
   scalarTransmission: f32,
+  scalarIor: f32,
   scalarBeerTint: vec3f,
   frameNormal: vec3f,
   shadingNormal: vec3f,
@@ -1119,7 +1156,7 @@ fn ddgiSampleProbeHitMaterial(
   out.albedo = scalarBaseColor;
   out.roughness = scalarRoughness;
   out.metalness = scalarMetalness;
-  out.specular = vec4f(1.0);
+  out.specular = ddgiSampleSpecularMeta(hit.indices.w);
   out.clearcoat = vec2f(0.0);
   out.clearcoatNormal = shadingNormal;
   out.sheen = vec4f(0.0);
@@ -1130,7 +1167,8 @@ fn ddgiSampleProbeHitMaterial(
   out.volumeScattering = vec4f(0.0);
   out.transmission = scalarTransmission;
   out.beerTint = scalarBeerTint;
-  out.opticalIor = vec3f(1.5);
+  let transportIor = select(max(scalarIor, 1.0), 1e6, scalarIor == 0.0);
+  out.opticalIor = vec3f(transportIor);
   out.bulkThickness = materialOpticalThickness(hit.indices.w);
   out.clearcoatNormal = ddgiApplyClearcoatNormalMapForHit(hit, frameNormal, shadingNormal);
 
@@ -1140,7 +1178,7 @@ fn ddgiSampleProbeHitMaterial(
     out.roughness = ddgiFaceLayerRoughness(out.roughness, layerControls);
     out.layerTransmission = ddgiFaceLayerTransmission(layerControls);
     out.volumeScattering = ddgiSampleVolumeScatteringControls(hit.indices.w);
-    out.opticalIor = materialDispersionIorRgb(hit.indices.w, 1.5);
+    out.opticalIor = materialDispersionIorRgb(hit.indices.w, transportIor);
     out.beerTint = materialSpectralAttenuation(hit.indices.w, out.bulkThickness, out.beerTint);
     let film = materialThinFilmResponse(
       hit.indices.w,
@@ -1148,7 +1186,7 @@ fn ddgiSampleProbeHitMaterial(
       abs(dot(shadingNormal, safe_normalize(viewDirection))),
     );
     if (film.present != 0u) {
-      out.specular = vec4f(vec3f(1.0) + film.reflectance, 1.0);
+      out.specular = vec4f(film.reflectance, 1.0);
       out.iridescence = vec4f(0.0);
       out.layerTransmission = out.layerTransmission * film.transmittance;
     }
@@ -1198,26 +1236,27 @@ fn ddgiSampleProbeHitMaterial(
     out.bulkThickness,
     ddgiApplyThicknessMapToBeerTint(hit, scalarBeerTint),
   );
-  out.opticalIor = materialDispersionIorRgb(hit.indices.w, 1.5);
+  out.opticalIor = materialDispersionIorRgb(hit.indices.w, transportIor);
   let film = materialThinFilmResponse(
     hit.indices.w,
     hit.side >= 0.0,
     abs(dot(shadingNormal, safe_normalize(viewDirection))),
   );
   if (film.present != 0u) {
-    out.specular = vec4f(vec3f(1.0) + film.reflectance, 1.0);
+    out.specular = vec4f(film.reflectance, 1.0);
     out.iridescence = vec4f(0.0);
     out.layerTransmission = out.layerTransmission * film.transmittance;
   }
   return out;
 }
 
+fn ddgiProbeDielectricF0(mat: DdgiProbeHitMaterial) -> vec3f {
+  return max(mat.specular.rgb, vec3f(0.0)) *
+    clamp(mat.specular.a, 0.0, 1.0);
+}
+
 fn ddgiProbeMaterialF0(mat: DdgiProbeHitMaterial) -> vec3f {
-  let dielectricF0 = select(
-    vec3f(0.04) * clamp(mat.specular.rgb, vec3f(0.0), vec3f(1.0)) * clamp(mat.specular.a, 0.0, 1.0),
-    clamp(mat.specular.rgb - vec3f(1.0), vec3f(0.0), vec3f(1.0)),
-    all(mat.specular.rgb >= vec3f(1.0)),
-  );
+  let dielectricF0 = ddgiProbeDielectricF0(mat);
   return mix(dielectricF0, mat.albedo, clamp(mat.metalness, 0.0, 1.0));
 }
 
@@ -1244,9 +1283,12 @@ fn ddgiProbeSpecularTint(mat: DdgiProbeHitMaterial, vDotH: f32) -> vec3f {
 
 fn ddgiProbeBaseSpecularWeight(mat: DdgiProbeHitMaterial) -> f32 {
   let roughFade = max(0.0, 1.0 - mat.roughness * mat.roughness);
-  let metallic = clamp(mat.metalness, 0.0, 1.0) * roughFade;
-  let dielectric = max(mat.specular.r, max(mat.specular.g, mat.specular.b)) *
-    mat.specular.a * 0.04 * (1.0 - clamp(mat.metalness, 0.0, 1.0)) * roughFade;
+  let metalness = clamp(mat.metalness, 0.0, 1.0);
+  let metallic = metalness * roughFade;
+  // Consume the explicit absolute dielectric F0 for lobe weighting.
+  let dielectricF0 = ddgiProbeDielectricF0(mat);
+  let dielectric = max(dielectricF0.r, max(dielectricF0.g, dielectricF0.b)) *
+    (1.0 - metalness) * roughFade;
   let anisotropy = clamp(mat.anisotropy.x, 0.0, 1.0) * max(metallic, dielectric);
   let iridescence = clamp(mat.iridescence.x, 0.0, 1.0) * roughFade;
   return clamp(max(max(metallic, dielectric), max(anisotropy, iridescence)), 0.0, 1.0);
@@ -2276,7 +2318,7 @@ fn probeUpdateRays(
         let probeNormal = ddgiApplyBumpMapForHit(hit, normalMapped);
         let probeMat = ddgiSampleProbeHitMaterial(
           hit, mat.baseColor, mat.roughness, mat.metalness, mat.transmission,
-          mat.attenuationColor, smoothNormal, probeNormal, -dir,
+          mat.ior, mat.attenuationColor, smoothNormal, probeNormal, -dir,
         );
 
         // Direct lighting: analytic sun/fixture lights.
@@ -2292,45 +2334,11 @@ fn probeUpdateRays(
         );
         let direct = direct_analytic + direct_emitter;
 
-        // Previous-frame indirect feedback: sample the irradiance atlas at the
-        // hit position so each frame folds in one more diffuse bounce; the
-        // temporal EMA then converges to the multi-bounce equilibrium.
-        //
-        // Clamp the cell index to [0, dims-1]. The old guard
-        //     'baseProbeIdx3 + 1 < dims' returned indirect=0 for EVERY hit on
-        //     enclosing geometry (room walls/floor sit on or just past the grid
-        //     boundary), which disabled wall->wall->receiver multi-bounce
-        //     entirely: the field was effectively SINGLE-bounce and the floor
-        //     (lit almost only by wall bounce) came out ~0.58x of reference.
-        //     The receiver ddgiSample already clamps to its available probes;
-        //     this makes the producer feedback consistent with it. After the
-        //     clamp the index is always valid, so the guard is gone.
-        //
-        // The current L2-SH atlas stores cosine-convolved irradiance
-        // coefficients, so ddgiSampleSHProbe returns E directly. The historical
-        // octahedral atlas stored a cosine-weighted mean E/PI and required a PI
-        // reconstruction here; carrying that factor into the SH representation
-        // would over-brighten every feedback bounce.
-        let gridPos  = (hitWorldPos - gridParams.origin) / gridParams.spacing;
-        let baseProbeIdx3 = clamp(vec3i(floor(gridPos)), vec3i(0), vec3i(gridParams.dims) - vec3i(1));
-        let pi = u32(baseProbeIdx3.x) + u32(baseProbeIdx3.y) * gridParams.dims.x +
-                 u32(baseProbeIdx3.z) * gridParams.dims.x * gridParams.dims.y;
-        // L2 SH irradiance eval at the bounce normal (seam-free; replaces the
-        // octahedral lookup + *PI). irradiancePrev holds the 9 cosine-convolved
-        // SH coeffs per probe in the first 3x3 interior texels, so the eval
-        // returns irradiance E directly.
-        let shStride = ${IRR_STRIDE}u;
-        let fpx = pi % gridParams.dims.x;
-        let ftmp = pi / gridParams.dims.x;
-        let fpy = ftmp % gridParams.dims.y;
-        let fpz = ftmp / gridParams.dims.y;
-        let fix = fpx * shStride + 1u;
-        let fiy = (fpy + fpz * gridParams.dims.y) * shStride + 1u;
-        let indirect = ddgiSampleSHProbe(
-          irradiancePrev, irradianceSamp,
-          gridParams.irradianceAtlasW, gridParams.irradianceAtlasH,
-          fix, fiy, probeNormal,
-        );
+        // Previous-frame feedback uses the same relocated, active-probe-aware
+        // 8-probe trilinear + Chebyshev visibility sampler as receivers. A
+        // nearest-probe SH read leaked across walls and made producer/consumer
+        // visibility disagree.
+        let indirect = ddgiFeedbackAt(hitWorldPos, probeNormal);
 
         // Outgoing radiance from the BOUNCE surface toward the probe.
         //
@@ -2432,17 +2440,9 @@ fn probeUpdateRays(
           // outgoing specular direction, which is also the direction we use to
           // query the SH atlas for the radiance arriving from that hemisphere.
           let reflDir = safe_normalize(dir - 2.0 * dot(dir, probeNormal) * probeNormal);
-          let specularIrr = ddgiSampleSHProbe(
-            irradiancePrev, irradianceSamp,
-            gridParams.irradianceAtlasW, gridParams.irradianceAtlasH,
-            fix, fiy, reflDir,
-          );
+          let specularIrr = ddgiFeedbackAt(hitWorldPos, reflDir);
           let clearcoatReflDir = safe_normalize(dir - 2.0 * dot(dir, probeMat.clearcoatNormal) * probeMat.clearcoatNormal);
-          let clearcoatIrr = ddgiSampleSHProbe(
-            irradiancePrev, irradianceSamp,
-            gridParams.irradianceAtlasW, gridParams.irradianceAtlasH,
-            fix, fiy, clearcoatReflDir,
-          );
+          let clearcoatIrr = ddgiFeedbackAt(hitWorldPos, clearcoatReflDir);
           let f0Tint = ddgiProbeSpecularTint(probeMat, max(0.0, dot(-dir, probeNormal)));
           let baseSpecularLo = f0Tint * (specularIrr * (1.0 / PI));
           let clearcoatLo = vec3f(0.04) * (clearcoatIrr * (1.0 / PI));

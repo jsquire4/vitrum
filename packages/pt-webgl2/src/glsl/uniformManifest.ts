@@ -20,9 +20,8 @@ import type { FrameUniforms } from '../gl/glResources.js';
 //      _HandledSeparately reason (see _HANDLED_SEPARATELY_KEYS).
 //
 // Gated uniforms (physicalCamera under #if FEATURE_DOF; BDPT uniforms under
-// #if FEATURE_BDPT; backgroundMap etc. under #if FEATURE_BACKGROUND_MAP) are
-// inlined verbatim in buildUniformDecls() because the #if block structure
-// cannot be expressed as a flat manifest row.
+// #if FEATURE_BDPT) are inlined verbatim in buildUniformDecls() because the
+// #if block structure cannot be expressed as a flat manifest row.
 //
 // 'samplerOrStruct' covers sampler2D / usampler2D / sampler2DArray / struct
 // uniforms (LightsInfo, EquirectHdrInfo, BVH) that are bound via GlProgram
@@ -69,8 +68,6 @@ export const UNIFORM_MANIFEST = [
   // ── background ───────────────────────────────────────────────────────────
   { glslName: 'backgroundBlur',        glslType: 'float',            frameKey: 'backgroundBlur' },
   { glslName: 'backgroundAlpha',       glslType: 'float',            frameKey: 'backgroundAlpha' },
-  // backgroundMap / backgroundRotation / backgroundIntensity are gated under
-  // #if FEATURE_BACKGROUND_MAP — inlined in buildUniformDecls(), not manifest rows.
   // ── camera ────────────────────────────────────────────────────────────────
   { glslName: 'cameraWorldMatrix',     glslType: 'mat4',             frameKey: 'cameraWorldMatrix' },
   { glslName: 'invProjectionMatrix',   glslType: 'mat4',             frameKey: 'invProjectionMatrix' },
@@ -153,9 +150,9 @@ const _exhaustive: _ExhaustivenessCheck = true;
  * D10.3: Generate the GLSL uniform declarations block from UNIFORM_MANIFEST plus the
  * fixed gated sections. Returns a string byte-identical to UNIFORM_DECLS.
  *
- * The manifest covers the simple (ungated) uniforms; the gated sections
- * (#if FEATURE_BACKGROUND_MAP, #if FEATURE_DOF) are inlined verbatim since
- * their preprocessor structure cannot be expressed as flat manifest rows.
+ * The manifest covers the simple (ungated) uniforms; the FEATURE_DOF section
+ * is inlined verbatim because its preprocessor structure cannot be expressed
+ * as flat manifest rows.
  */
 export function buildUniformDecls(): string {
   return UNIFORM_DECLS;
@@ -187,13 +184,6 @@ const UNIFORM_DECLS = /* glsl */ `
 					// background
 					uniform float backgroundBlur;
 					uniform float backgroundAlpha;
-					#if FEATURE_BACKGROUND_MAP
-
-					uniform sampler2D backgroundMap;
-					uniform mat4 backgroundRotation;
-					uniform float backgroundIntensity;
-
-					#endif
 
 					// camera
 					uniform mat4 cameraWorldMatrix;
@@ -207,9 +197,10 @@ const UNIFORM_DECLS = /* glsl */ `
 					// geometry
 					uniform sampler2DArray attributesArray;
 					uniform usampler2D materialIndexAttribute;
-					uniform sampler2D materials;
-					uniform sampler2DArray textures;
-					uniform BVH bvh;
+						uniform sampler2D materials;
+						uniform sampler2DArray textures;
+						uniform sampler2DArray materialRadianceTextures;
+						uniform BVH bvh;
 
 					// path tracer
 					uniform int bounces;

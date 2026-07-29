@@ -80,8 +80,10 @@ describe('ReSTIR-DI material parity', () => {
     expect(RESTIR_PHAT_WGSL).toContain('if (surf.isGlass)');
     expect(RESTIR_PHAT_WGSL).toContain('brdf = evalGGXSpecularOnlyWithSpecularClearcoatSheenWithAnisotropyFrame(');
     expect(RESTIR_PHAT_WGSL).toContain('brdf = surf.layerTransmission * brdf;');
-    expect(RESTIR_PHAT_WGSL).toContain('return applyHomogeneousVolumeSingleScatter(');
-    expect(RESTIR_PHAT_WGSL).toContain('brdf, surf.albedo, surf.volumeScattering, surf.bulkThickness, surf.normal, surf.wo,');
+    expect(RESTIR_PHAT_WGSL).toContain('return applyHomogeneousVolumeSingleScatterDirectional(');
+    expect(RESTIR_PHAT_WGSL).toContain(
+      'brdf, surf.albedo, surf.volumeScattering, surf.bulkThickness,\n    surf.normal, surf.wo, wi,',
+    );
     expect(RESTIR_PHAT_WGSL).toContain('surf.specular.rgb,');
     expect(RESTIR_PHAT_WGSL).toContain('surf.anisotropyTangent,');
     expect(RESTIR_PHAT_WGSL).toContain('surf.anisotropyBitangent,');

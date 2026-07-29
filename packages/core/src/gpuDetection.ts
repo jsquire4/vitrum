@@ -2,8 +2,7 @@
  * gpuDetection — runtime GPU probe + detection for the hybrid stage.
  * Owns `probeWebGPU()` (the Tier-2 adapter probe, including the retry
  * loop for Chromium builds that defer `adapter.info` population) and
- * `detectGpu()` (the memoized `__WG__`-publishing wrapper consumed by
- * `probeUpdatePass` and the e2e chroma spec gate).
+ * `detectGpu()` (the memoized public wrapper).
  *
  * Pure classifier helpers (`WgpuAdapterKind`, `classifyAdapter`,
  * `isSwiftShaderAdapter`) live in `wgpuSupport.ts` so this file stays
@@ -178,44 +177,21 @@ export async function probeWebGPU(): Promise<WgpuProbeResult> {
 }
 
 /**
- * GpuDetection — the canonical `__WG__` shape consumed by every walkaround
- * engine (DDGI / RC / ReSTIR / hybrid) and the e2e chroma spec gate.
- *
- * RC's gl-factory writer publishes `adapterVendor` / `adapterArchitecture`
- * + an optional `adapter: { name }` summary; the other engines publish via
- * `detectGpu()` below. `adapterVendor` / `adapterArchitecture` remain
- * optional because some gates only need `isWebGPU` / `adapterKind`.
+ * Public, side-effect-free summary returned by {@link detectGpu}.
  */
 export interface GpuDetection {
   /** True if `navigator.gpu` is exposed AND an adapter was successfully obtained. */
-  isWebGPU: boolean;
+  readonly isWebGPU: boolean;
   /**
    * Classified adapter kind from the probe (or `'unknown'` when WebGPU is
    * unavailable). Use `adapterKind !== 'swiftshader'` to gate mounting a
    * hardware-required path.
    */
-  adapterKind: WgpuAdapterKind;
+  readonly adapterKind: WgpuAdapterKind;
   /** GPUAdapterInfo.vendor (lowercased) — '' if unavailable. */
-  adapterVendor?: string;
+  readonly adapterVendor?: string;
   /** GPUAdapterInfo.architecture (lowercased) — '' if unavailable. */
-  adapterArchitecture?: string;
-  /** Friendly summary used by RC's gl-factory writer for diagnostic logs. */
-  adapter?: { name: string };
-}
-
-/** Options for {@link detectGpu}. */
-export interface DetectGpuOptions {
-  /**
-   * When true (default), assigns `window.__WG__` on first successful probe.
-   * Set false in workers or tests that must not touch `window`.
-   */
-  readonly publishToWindow?: boolean;
-}
-
-declare global {
-  interface Window {
-    __WG__?: GpuDetection;
-  }
+  readonly adapterArchitecture?: string;
 }
 
 let cached: Promise<GpuDetection> | null = null;
@@ -225,9 +201,7 @@ let cached: Promise<GpuDetection> | null = null;
  *
  * The memo is otherwise permanent for the page lifetime, which is wrong after a
  * device-lost / eGPU unplug / driver reset, and makes per-test isolation
- * impossible. Does NOT clear an already-published `window.__WG__` (consumers may
- * hold the old snapshot); the next successful probe overwrites it when
- * `publishToWindow` is enabled.
+ * impossible.
  */
 export function resetGpuDetectionCache(): void {
   cached = null;
@@ -236,36 +210,25 @@ export function resetGpuDetectionCache(): void {
 /**
  * Detect whether the runtime is on a real hardware GPU. Memoized — safe
  * to call from multiple call sites; only one adapter is actually requested.
- * By default the first call also assigns `window.__WG__` (see
- * {@link DetectGpuOptions.publishToWindow}). Options apply only to the FIRST
- * invocation — later calls return the memo regardless of their options. After a
- * GPU topology change (device-lost, eGPU unplug) call
+ * The probe is side-effect-free: callers receive the immutable detection
+ * summary directly rather than communicating through a global window slot.
+ * After a GPU topology change (device-lost, eGPU unplug) call
  * {@link resetGpuDetectionCache} to force a re-probe.
  */
-export function detectGpu(options?: DetectGpuOptions): Promise<GpuDetection> {
+export function detectGpu(): Promise<GpuDetection> {
   if (cached) return cached;
-  const publishToWindow = options?.publishToWindow !== false;
   cached = (async () => {
     const probe = await probeWebGPU();
     const adapterKind: WgpuAdapterKind = probe.supported && probe.adapterKind != null
       ? probe.adapterKind
       : 'unknown';
-    const result: GpuDetection = {
+    const result: GpuDetection = Object.freeze({
       isWebGPU: probe.supported,
       adapterKind,
       adapterVendor: (probe.vendor ?? '').toLowerCase(),
       adapterArchitecture: (probe.architecture ?? '').toLowerCase(),
-    };
-    if (publishToWindow) {
-      publish(result);
-    }
+    });
     return result;
   })();
   return cached;
-}
-
-function publish(result: GpuDetection): void {
-  if (typeof window !== 'undefined') {
-    window.__WG__ = result;
-  }
 }

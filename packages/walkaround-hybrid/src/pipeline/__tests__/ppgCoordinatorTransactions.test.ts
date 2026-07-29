@@ -23,6 +23,13 @@ type Internals = {
   _sceneAABB: typeof BOUNDS;
   _sTree: STree | null;
   _frameResourcesGeneration: number;
+  _trainingDispatchesSinceRefine: number;
+  _trainingReadbackFailures: number;
+  _lastTrainingReadbackErrorMessage: string | null;
+  _fluxReadbackInFlight: boolean;
+  _trainingEpochState: 'collecting' | 'readback' | 'retry-pending' | 'failed' | 'disposed';
+  _fluxReadbackBuffer: GPUBuffer | null;
+  _cellCountReadbackBuffer: GPUBuffer | null;
   _mergeFluxAndRefine(
     rawFlux: Float32Array,
     cellCounts: Uint32Array,
@@ -33,13 +40,17 @@ type Internals = {
 };
 
 type TrackedBuffer = GPUBuffer & {
+  bytes: Uint8Array;
+  label?: string;
   destroy: ReturnType<typeof vi.fn>;
   getMappedRange?: ReturnType<typeof vi.fn>;
   unmap?: ReturnType<typeof vi.fn>;
 };
 
-function destination(size: number): GPUBuffer {
-  return { size, destroy: vi.fn() } as unknown as GPUBuffer;
+function destination(size: number, fill = 0x5a): TrackedBuffer {
+  const bytes = new Uint8Array(size);
+  bytes.fill(fill);
+  return { size, bytes, destroy: vi.fn() } as unknown as TrackedBuffer;
 }
 
 function frameResources(): FrameResources {
@@ -128,10 +139,14 @@ function deferred(): {
 function uploadDevice(options: {
   failAllocationAt?: number;
   failCopyAt?: number;
+  failCreateEncoder?: boolean;
+  failClearAt?: number;
   failFinish?: boolean;
   failSubmit?: boolean;
   failWorkDoneSync?: boolean;
   failWriteAt?: number;
+  aliasAllocationAt?: number;
+  aliasBuffer?: GPUBuffer;
   submittedWork?: Promise<void>;
   onSubmit?: () => void;
 } = {}) {
@@ -140,14 +155,34 @@ function uploadDevice(options: {
   const clears: unknown[][] = [];
   let allocations = 0;
   let copyCalls = 0;
+  let clearCalls = 0;
   let writeCalls = 0;
   const encoder = {
     copyBufferToBuffer: vi.fn((...args: unknown[]) => {
       copyCalls++;
       if (copyCalls === options.failCopyAt) throw new Error('injected copy failure');
       copies.push(args);
+      const source = args[0] as TrackedBuffer;
+      const sourceOffset = Number(args[1]);
+      const target = args[2] as TrackedBuffer;
+      const targetOffset = Number(args[3]);
+      const byteLength = Number(args[4]);
+      target.bytes.set(
+        source.bytes.subarray(sourceOffset, sourceOffset + byteLength),
+        targetOffset,
+      );
     }),
-    clearBuffer: vi.fn((...args: unknown[]) => { clears.push(args); }),
+    clearBuffer: vi.fn((...args: unknown[]) => {
+      clearCalls++;
+      if (clearCalls === options.failClearAt) {
+        throw new Error('injected clear failure');
+      }
+      clears.push(args);
+      const target = args[0] as TrackedBuffer;
+      const offset = Number(args[1] ?? 0);
+      const byteLength = Number(args[2] ?? target.size - offset);
+      target.bytes.fill(0, offset, offset + byteLength);
+    }),
     finish: vi.fn(() => {
       if (options.failFinish) throw new Error('injected finish failure');
       return {} as GPUCommandBuffer;
@@ -164,11 +199,25 @@ function uploadDevice(options: {
       }
       return options.submittedWork ?? Promise.resolve();
     }),
-    writeBuffer: vi.fn(() => {
+    writeBuffer: vi.fn((
+      target: TrackedBuffer,
+      targetOffset: number,
+      data: ArrayBuffer | ArrayBufferView,
+      dataOffset = 0,
+      byteLength?: number,
+    ) => {
       writeCalls++;
       if (writeCalls === options.failWriteAt) {
         throw new Error('injected write failure');
       }
+      const view = ArrayBuffer.isView(data)
+        ? new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
+        : new Uint8Array(data);
+      const length = byteLength ?? view.byteLength - dataOffset;
+      target.bytes.set(
+        view.subarray(dataOffset, dataOffset + length),
+        targetOffset,
+      );
     }),
   };
   const device = {
@@ -177,9 +226,19 @@ function uploadDevice(options: {
       if (allocations === options.failAllocationAt) {
         throw new Error('injected allocation failure');
       }
+      if (
+        allocations === options.aliasAllocationAt &&
+        options.aliasBuffer !== undefined
+      ) {
+        const alias = options.aliasBuffer as TrackedBuffer;
+        staging.push(alias);
+        return alias;
+      }
       const mapped = new ArrayBuffer(Number(descriptor.size));
       const buffer = {
+        label: descriptor.label,
         size: Number(descriptor.size),
+        bytes: new Uint8Array(mapped),
         getMappedRange: vi.fn(() => mapped),
         unmap: vi.fn(),
         destroy: vi.fn(),
@@ -187,7 +246,12 @@ function uploadDevice(options: {
       staging.push(buffer);
       return buffer;
     }),
-    createCommandEncoder: vi.fn(() => encoder),
+    createCommandEncoder: vi.fn(() => {
+      if (options.failCreateEncoder) {
+        throw new Error('injected encoder allocation failure');
+      }
+      return encoder;
+    }),
     queue,
   } as unknown as GPUDevice;
   return { device, staging, copies, clears, encoder, queue };
@@ -196,6 +260,30 @@ function uploadDevice(options: {
 async function flushMicrotasks(): Promise<void> {
   await Promise.resolve();
   await Promise.resolve();
+}
+
+type AllocatedPPG = Extract<
+  FrameResources['ppg'],
+  { queryArenaBuf: GPUBuffer }
+>;
+
+function ppgBuffers(ppg: AllocatedPPG): TrackedBuffer[] {
+  return [
+    ppg.queryArenaBuf,
+    ppg.fluxAtomicsBuf,
+    ppg.cellSampleCountsBuf,
+    ppg.updateUboBuffer,
+  ] as TrackedBuffer[];
+}
+
+function captureBytes(ppg: AllocatedPPG): Uint8Array[] {
+  return ppgBuffers(ppg).map((buffer) => buffer.bytes.slice());
+}
+
+function expectBytes(ppg: AllocatedPPG, expected: readonly Uint8Array[]): void {
+  ppgBuffers(ppg).forEach((buffer, index) => {
+    expect(buffer.bytes).toEqual(expected[index]);
+  });
 }
 
 describe('PPG snapshot import transaction', () => {
@@ -273,65 +361,183 @@ describe('PPG snapshot import transaction', () => {
     expect(warnings.at(-1)?.code).toBe('walkaround-hybrid.ppg-import-malformed-snapshot');
   });
 
+  it('probes compatibility without allocating, warning, or mutating state', () => {
+    const warnings: EngineWarning[] = [];
+    const gpu = uploadDevice();
+    const made = coordinator(gpu.device, warnings);
+    const resources = frameResources();
+    const live = resources.ppg as AllocatedPPG;
+    const before = captureBytes(live);
+    const malformed = snapshot();
+    malformed.dTreeBuf[4] = Number.NaN;
+
+    expect(made.value.canImportSTree(snapshot(), resources)).toBe(true);
+    expect(made.value.canImportSTree(malformed, resources)).toBe(false);
+    expect(made.state._sTree).toBe(made.oldTree);
+    expect(made.state._frameResourcesGeneration).toBe(7);
+    expect(resources.ppg).toBe(live);
+    expectBytes(live, before);
+    expect(gpu.device.createBuffer).not.toHaveBeenCalled();
+    expect(gpu.queue.submit).not.toHaveBeenCalled();
+    expect(warnings).toEqual([]);
+  });
+
+  it('prepares an isolated cohort, then restores exact live CPU/GPU identity on rollback', () => {
+    const gpu = uploadDevice();
+    const made = coordinator(gpu.device);
+    const resources = frameResources();
+    const live = resources.ppg as AllocatedPPG;
+    const before = captureBytes(live);
+    const fluxReadback = destination(16, 0x31);
+    const countReadback = destination(16, 0x32);
+    made.state._trainingDispatchesSinceRefine = 11;
+    made.state._trainingReadbackFailures = 2;
+    made.state._lastTrainingReadbackErrorMessage = 'old error';
+    made.state._fluxReadbackInFlight = true;
+    made.state._trainingEpochState = 'retry-pending';
+    made.state._fluxReadbackBuffer = fluxReadback;
+    made.state._cellCountReadbackBuffer = countReadback;
+
+    const transaction = made.value.prepareSTreeImport(snapshot(), resources);
+    expect(transaction).not.toBeNull();
+    expect(gpu.queue.submit).toHaveBeenCalledOnce();
+    expect(gpu.clears).toHaveLength(2);
+    expect(resources.ppg).toBe(live);
+    expect(made.state._sTree).toBe(made.oldTree);
+    expect(made.state._frameResourcesGeneration).toBe(7);
+    expectBytes(live, before);
+    expect(gpu.staging).toHaveLength(4);
+    expect(gpu.staging[1]?.bytes.every((byte) => byte === 0)).toBe(true);
+    expect(gpu.staging[2]?.bytes.every((byte) => byte === 0)).toBe(true);
+
+    transaction!.commit();
+    expect(resources.ppg).not.toBe(live);
+    expect(made.state._sTree?.dTrees[0]?.totalFlux).toBe(9);
+    expect(made.state._frameResourcesGeneration).toBe(8);
+    expect(made.state._trainingDispatchesSinceRefine).toBe(0);
+    expect(made.state._trainingReadbackFailures).toBe(0);
+    expect(made.state._lastTrainingReadbackErrorMessage).toBeNull();
+    expect(made.state._fluxReadbackInFlight).toBe(false);
+    expect(made.state._trainingEpochState).toBe('collecting');
+    for (const buffer of ppgBuffers(live)) {
+      expect(buffer.destroy).not.toHaveBeenCalled();
+    }
+    expect(fluxReadback.destroy).not.toHaveBeenCalled();
+    expect(countReadback.destroy).not.toHaveBeenCalled();
+
+    transaction!.rollback();
+    expect(resources.ppg).toBe(live);
+    expect(made.state._sTree).toBe(made.oldTree);
+    expect(made.state._frameResourcesGeneration).toBe(7);
+    expect(made.state._trainingDispatchesSinceRefine).toBe(11);
+    expect(made.state._trainingReadbackFailures).toBe(2);
+    expect(made.state._lastTrainingReadbackErrorMessage).toBe('old error');
+    expect(made.state._fluxReadbackInFlight).toBe(true);
+    expect(made.state._trainingEpochState).toBe('retry-pending');
+    expectBytes(live, before);
+    for (const buffer of gpu.staging) {
+      expect(buffer.destroy).toHaveBeenCalledOnce();
+    }
+    for (const buffer of ppgBuffers(live)) {
+      expect(buffer.destroy).not.toHaveBeenCalled();
+    }
+    expect(fluxReadback.destroy).not.toHaveBeenCalled();
+    expect(countReadback.destroy).not.toHaveBeenCalled();
+  });
+
+  it('finalize retires only the old cohort/readbacks and keeps the cold replacement live', () => {
+    const gpu = uploadDevice();
+    const made = coordinator(gpu.device);
+    const resources = frameResources();
+    const live = resources.ppg as AllocatedPPG;
+    const fluxReadback = destination(16);
+    const countReadback = destination(16);
+    made.state._fluxReadbackBuffer = fluxReadback;
+    made.state._cellCountReadbackBuffer = countReadback;
+    const transaction = made.value.prepareSTreeImport(snapshot(), resources)!;
+
+    transaction.commit();
+    const replacement = resources.ppg as AllocatedPPG;
+    transaction.finalize();
+
+    expect(resources.ppg).toBe(replacement);
+    expect(made.state._sTree?.dTrees[0]?.totalFlux).toBe(9);
+    expect(made.state._trainingEpochState).toBe('collecting');
+    expect(
+      (replacement.fluxAtomicsBuf as TrackedBuffer).bytes.every(
+        (byte) => byte === 0,
+      ),
+    ).toBe(true);
+    expect(
+      (replacement.cellSampleCountsBuf as TrackedBuffer).bytes.every(
+        (byte) => byte === 0,
+      ),
+    ).toBe(true);
+    for (const buffer of ppgBuffers(live)) {
+      expect(buffer.destroy).toHaveBeenCalledOnce();
+    }
+    for (const buffer of ppgBuffers(replacement)) {
+      expect(buffer.destroy).not.toHaveBeenCalled();
+    }
+    expect(fluxReadback.destroy).toHaveBeenCalledOnce();
+    expect(countReadback.destroy).toHaveBeenCalledOnce();
+  });
+
   it.each([
-    ['allocation', { failAllocationAt: 2 }],
-    ['encode', { failCopyAt: 2 }],
+    ['allocation-1', { failAllocationAt: 1 }],
+    ['allocation-2', { failAllocationAt: 2 }],
+    ['allocation-3', { failAllocationAt: 3 }],
+    ['allocation-4', { failAllocationAt: 4 }],
+    ['tree-write-1', { failWriteAt: 1 }],
+    ['tree-write-2', { failWriteAt: 2 }],
+    ['tree-write-3', { failWriteAt: 3 }],
+    ['header-write', { failWriteAt: 4 }],
+    ['ubo-write', { failWriteAt: 5 }],
+    ['encoder', { failCreateEncoder: true }],
+    ['clear-1', { failClearAt: 1 }],
+    ['clear-2', { failClearAt: 2 }],
     ['finish', { failFinish: true }],
     ['submit', { failSubmit: true }],
-  ] as const)('retains both guides and destroys each staging buffer once on %s failure', (_label, options) => {
+  ] as const)('keeps live handles, bytes, and CPU state exact on %s failure', (_label, options) => {
     const warnings: EngineWarning[] = [];
     const gpu = uploadDevice(options);
-    const { value, state, oldTree } = coordinator(gpu.device, warnings);
+    const made = coordinator(gpu.device, warnings);
+    const resources = frameResources();
+    const live = resources.ppg as AllocatedPPG;
+    const before = captureBytes(live);
 
-    expect(value.importSTree(snapshot(), frameResources())).toBe(false);
-    expect(state._sTree).toBe(oldTree);
-    expect(state._frameResourcesGeneration).toBe(7);
-    for (const buffer of gpu.staging) expect(buffer.destroy).toHaveBeenCalledOnce();
-    expect(warnings.at(-1)?.code).toBe('walkaround-hybrid.ppg-import-upload-failed');
+    expect(made.value.importSTree(snapshot(), resources)).toBe(false);
+    expect(resources.ppg).toBe(live);
+    expect(made.state._sTree).toBe(made.oldTree);
+    expect(made.state._frameResourcesGeneration).toBe(7);
+    expectBytes(live, before);
+    for (const buffer of gpu.staging) {
+      expect(buffer.destroy).toHaveBeenCalledOnce();
+    }
+    for (const buffer of ppgBuffers(live)) {
+      expect(buffer.destroy).not.toHaveBeenCalled();
+    }
+    expect(warnings.at(-1)?.code).toBe(
+      'walkaround-hybrid.ppg-import-upload-failed',
+    );
   });
 
-  it('submits one complete replacement before publishing CPU state and releases staging after completion', async () => {
-    const completion = deferred();
-    const observed: { state?: Internals; oldTree?: STree } = {};
+  it('rejects a candidate/live alias without touching or destroying the live buffer', () => {
+    const resources = frameResources();
+    const live = resources.ppg as AllocatedPPG;
+    const before = captureBytes(live);
     const gpu = uploadDevice({
-      submittedWork: completion.promise,
-      onSubmit: () => {
-        expect(observed.state?._sTree).toBe(observed.oldTree);
-        expect(observed.state?._frameResourcesGeneration).toBe(7);
-      },
+      aliasAllocationAt: 1,
+      aliasBuffer: live.queryArenaBuf,
     });
     const made = coordinator(gpu.device);
-    const state = made.state;
-    const oldTree = made.oldTree;
-    observed.state = state;
-    observed.oldTree = oldTree;
 
-    expect(made.value.importSTree(snapshot(), frameResources())).toBe(true);
-    expect(gpu.queue.submit).toHaveBeenCalledOnce();
-    expect(gpu.copies).toHaveLength(4);
-    // The arena header/epoch is the final copy, after all three payload ranges.
-    expect(gpu.copies[3]?.[3]).toBe(0);
-    expect(gpu.clears).toHaveLength(2);
-    expect(state._sTree).not.toBe(oldTree);
-    expect(state._sTree?.dTrees[0]?.totalFlux).toBe(9);
-    expect(state._frameResourcesGeneration).toBe(8);
-    for (const buffer of gpu.staging) expect(buffer.destroy).not.toHaveBeenCalled();
-
-    completion.resolve();
-    await flushMicrotasks();
-    for (const buffer of gpu.staging) expect(buffer.destroy).toHaveBeenCalledOnce();
-  });
-
-  it('keeps a published import successful and releases staging when completion tracking throws', () => {
-    const gpu = uploadDevice({ failWorkDoneSync: true });
-    const { value, state, oldTree } = coordinator(gpu.device);
-
-    expect(value.importSTree(snapshot(), frameResources())).toBe(true);
-    expect(gpu.queue.submit).toHaveBeenCalledOnce();
-    expect(state._sTree).not.toBe(oldTree);
-    expect(state._sTree?.dTrees[0]?.totalFlux).toBe(9);
-    expect(state._frameResourcesGeneration).toBe(8);
-    for (const buffer of gpu.staging) {
+    expect(made.value.importSTree(snapshot(), resources)).toBe(false);
+    expect(resources.ppg).toBe(live);
+    expect(made.state._sTree).toBe(made.oldTree);
+    expectBytes(live, before);
+    expect(live.queryArenaBuf.destroy).not.toHaveBeenCalled();
+    for (const buffer of gpu.staging.slice(1)) {
       expect(buffer.destroy).toHaveBeenCalledOnce();
     }
   });

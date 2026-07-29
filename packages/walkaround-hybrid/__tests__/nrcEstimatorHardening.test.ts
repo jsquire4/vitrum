@@ -17,7 +17,9 @@ describe('NRC and guided-RIS estimator hardening', () => {
       defaultCosStart,
       RIS_GI_WGSL.indexOf('let bounceRay', defaultCosStart),
     );
-    expect(defaultCosReject).toContain('r.M = r.M + 1u;');
+    expect(defaultCosReject).toContain(
+      'recordInvalidReservoirGICandidate(&r, GI_SAMPLE_SURFACE, currentGrisEpoch);',
+    );
     expect(RIS_GI_WGSL).toContain('!reservoirGiFinite(pHat) || !(pHat > 0.0)');
     expect(RIS_GI_WGSL).toContain('if (!reservoirGiFinite(pSrc) || !(pSrc > 0.0))');
     expect(RIS_GI_WGSL).toContain('!reservoirGiFinite(w) || !(w > 0.0)');
@@ -31,7 +33,9 @@ describe('NRC and guided-RIS estimator hardening', () => {
       RIS_GI_NRC_BODY.indexOf(nrcCosGuard),
       RIS_GI_NRC_BODY.indexOf('// WS1 — offset the bounce-ray origin'),
     );
-    expect(cosineReject).toContain('r.M = r.M + 1u;');
+    expect(cosineReject).toContain(
+      'recordInvalidReservoirGICandidate(&r, GI_SAMPLE_SURFACE, currentGrisEpoch);',
+    );
     expect(RIS_GI_NRC_BODY).toContain('let invalidPHat = !nrcFinite(pHat) || !(pHat > 0.0)');
     expect(RIS_GI_NRC_BODY).toContain('if (!nrcFinite(pSrc) || !(pSrc > 0.0))');
     expect(RIS_GI_NRC_BODY).toContain('!nrcFinite(w) || !(w > 0.0)');

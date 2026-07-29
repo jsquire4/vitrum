@@ -15,7 +15,6 @@ import { CONV2D_WGSL } from './wgsl/conv2d.wgsl.js';
 import { TRANSPOSED_CONV2D_WGSL } from './wgsl/transposedConv2d.wgsl.js';
 import { RELU_WGSL } from './wgsl/relu.wgsl.js';
 import { SKIP_CONNECTION_WGSL } from './wgsl/skipConnection.wgsl.js';
-import { BILINEAR_UPSAMPLE_WGSL } from './wgsl/bilinearUpsample.wgsl.js';
 import { buildInputPackerWgsl, INPUT_PACKER_ENTRY } from './inputPacker.js';
 import { buildOutputCropWgsl, OUTPUT_CROP_ENTRY } from './outputCrop.js';
 import { preprocessingContractForCheckpoint } from './preprocessing.js';
@@ -56,17 +55,11 @@ export interface LayerGPUState {
 
 // ── WGSL entry points per layer kind ─────────────────────────────────────────
 
-// NOTE — bilinearUpsample is a fully-plumbed EXTENSION POINT (Task 4.5 D2). No
-// canonical UNetSpec currently emits a bilinearUpsample layer (the decoder uses
-// transposedConv2d), but the kind is wired end-to-end (entry point, WGSL source,
-// dim solver, dispatch layout) so an alternative decoder upsampler can be slotted
-// in by emitting the layer in a custom spec. Do NOT delete it as "dead".
 const WGSL_ENTRY: Record<LayerKind, string> = {
   conv2d:          'conv2dMain',
   transposedConv2d:'transposedConv2dMain',
   relu:            'reluMain',
   skipAdd:         'skipConnectionMain',
-  bilinearUpsample:'bilinearUpsampleMain',  // extension point — see note above
   inputPack:       '',  // handled CPU-side by packing pass
 };
 
@@ -75,7 +68,6 @@ const WGSL_SOURCE: Partial<Record<LayerKind, string>> = {
   transposedConv2d:TRANSPOSED_CONV2D_WGSL,
   relu:            RELU_WGSL,
   skipAdd:         SKIP_CONNECTION_WGSL,
-  bilinearUpsample:BILINEAR_UPSAMPLE_WGSL,  // extension point — see note above
 };
 
 // Largest layer uniform is TConv2DParams: 10 fields, padded to 48 bytes.

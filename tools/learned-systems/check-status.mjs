@@ -698,25 +698,31 @@ function expectSemanticThrow(label, callback, pattern) {
 /**
  * Execute the canonical option parser rather than pinning test names or stale
  * source substrings. This makes the learned-systems checker prove the public
- * migration semantics it reports: grisReuse is canonical, restirPtReuse is
- * only a compatible alias, conflicting aliases fail, and PPG cannot falsely
- * claim guidance while the GRIS producer bypasses it.
+ * compatibility semantics it reports: generalized reuse is the sole live
+ * layout, omission or either legacy `true` spelling keeps that layout, either
+ * legacy `false` spelling fails closed, and PPG composes with generalized
+ * reuse rather than selecting a competing layout.
  */
 function assertLearnedRuntimeSemantics() {
   const defaults = parseHybridEngineOptions(learnedConfigOptions());
-  if (defaults.grisReuse !== 0 || defaults.nrcEnabled !== 0 || defaults.ppgEnabled !== 0) {
-    fail("learned-system defaults must leave GRIS, NRC, and PPG disabled");
+  if ("grisReuse" in defaults) {
+    fail("generalized reuse must not expose a retired runtime config gate");
+  }
+  if (defaults.nrcEnabled !== 0 || defaults.ppgEnabled !== 0) {
+    fail("learned-system defaults must leave NRC and PPG disabled");
   }
   const canonical = parseHybridEngineOptions(
     learnedConfigOptions({ grisReuse: true }),
   );
-  if (canonical.grisReuse !== 1) fail("grisReuse:true must enable the GRIS config bit");
+  if ("grisReuse" in canonical) {
+    fail("grisReuse:true must preserve the sole generalized-reuse layout");
+  }
 
   const alias = parseHybridEngineOptions(
     learnedConfigOptions({ restirPtReuse: true }),
   );
-  if (alias.grisReuse !== 1) {
-    fail("deprecated restirPtReuse:true must map to the canonical GRIS config bit");
+  if ("grisReuse" in alias) {
+    fail("deprecated restirPtReuse:true must preserve the sole generalized-reuse layout");
   }
   const nrc = parseHybridEngineOptions(
     learnedConfigOptions({ nrcEnabled: true }),
@@ -724,19 +730,25 @@ function assertLearnedRuntimeSemantics() {
   if (nrc.nrcEnabled !== 1) fail("nrcEnabled:true must enable the NRC config bit");
 
   expectSemanticThrow(
-    "conflicting GRIS migration aliases",
+    "retired compact reuse through grisReuse",
     () => parseHybridEngineOptions(
-      learnedConfigOptions({ grisReuse: true, restirPtReuse: false }),
+      learnedConfigOptions({ grisReuse: false }),
     ),
-    /grisReuse and deprecated restirPtReuse disagree/,
+    /retired compact ReSTIR-GI reuse path/,
   );
   expectSemanticThrow(
-    "PPG plus GRIS",
+    "retired compact reuse through restirPtReuse",
     () => parseHybridEngineOptions(
-      learnedConfigOptions({ ppgEnabled: true, grisReuse: true }),
+      learnedConfigOptions({ restirPtReuse: false }),
     ),
-    /ppgEnabled and grisReuse cannot be enabled together/,
+    /retired compact ReSTIR-GI reuse path/,
   );
+  const composed = parseHybridEngineOptions(
+    learnedConfigOptions({ ppgEnabled: true, grisReuse: true }),
+  );
+  if (composed.ppgEnabled !== 1 || "grisReuse" in composed) {
+    fail("PPG must compose with the sole generalized-reuse layout");
+  }
 }
 
 async function assertRuntimeTruthfulnessGuards() {

@@ -1,11 +1,10 @@
-// T1-2 — cross-backend emitter canonicalizer parity.
+// Cross-backend emitter packing parity.
 //
 // Both path-tracing backends pack `scene.emitters` into their own byte layouts
 // (`@vitrum/pt-webgl2` `packLightsTexture` — a flat 6-texel RGBA32F grid;
 // `@vitrum/pt-webgpu` `packEmitterArrays` — per-kind storage streams). The byte
 // layouts differ and stay per-backend. This test pins that the two agree on the
-// backend-neutral SEMANTIC interpretation of a fixture scene captured by the
-// shared `emitterToCanonical` normalizer (`@vitrum/shared-bvh`):
+// core contract's semantic interpretation of a fixture scene:
 //   - analytic light count,
 //   - per-light power (luminance·intensity·area),
 //   - spot cone cosines (outer from `angle`, inner from `angle·(1−penumbra)`).
@@ -16,15 +15,20 @@
 
 import { describe, expect, it } from 'vitest';
 import type { Scene, SceneEmitter } from '@vitrum/core';
-import {
-  emitterToCanonical,
-  canonicalizeEmitter,
-  type CanonicalEmitter,
-} from '@vitrum/shared-bvh';
 // Deep source imports — the packers are internal to each backend (not on the
-// public entry). The `file:` workspace symlink resolves these to source.
-import { packLightsTexture, LIGHT_PIXELS } from '@vitrum/pt-webgl2/src/scene/lightsTexture.js';
-import { packEmitterArrays } from '@vitrum/pt-webgpu/src/scene/emitterPacking.js';
+// public entry). Relative imports keep this explicitly monorepo-test-only.
+import { packLightsTexture, LIGHT_PIXELS } from '../../../pt-webgl2/src/scene/lightsTexture.js';
+import { packEmitterArrays } from '../../../pt-webgpu/src/scene/emitterPacking.js';
+
+const REC709 = (rgb: readonly [number, number, number]): number =>
+  0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2];
+
+function emittedPower(
+  emitter: Pick<SceneEmitter, 'color' | 'intensity'>,
+  area: number,
+): number {
+  return REC709(emitter.color) * emitter.intensity * area;
+}
 
 function fixtureEmitters(): SceneEmitter[] {
   return [
@@ -83,13 +87,13 @@ function fixtureScene(emitters: SceneEmitter[]): Scene {
   } as unknown as Scene;
 }
 
-describe('T1-2 emitter canonicalizer cross-backend parity', () => {
+describe('cross-backend emitter packing parity', () => {
   const emitters = fixtureEmitters();
   const scene = fixtureScene(emitters);
-  // Analytic canonical set (no mesh-area — this fixture has none, so both
-  // include flags produce the same set here).
-  const canonical = emitterToCanonical(scene, false);
-  const spotCanon = canonical.find((c) => c.kind === 'spot')!;
+  const expectedAnalyticCount = emitters.filter((emitter) => emitter.kind !== 'mesh-area').length;
+  const spot = emitters.find(
+    (emitter): emitter is Extract<SceneEmitter, { kind: 'spot' }> => emitter.kind === 'spot',
+  )!;
 
   it('agrees on analytic light count between both backends', () => {
     const webgl2 = packLightsTexture(emitters);
@@ -99,8 +103,8 @@ describe('T1-2 emitter canonicalizer cross-backend parity', () => {
       webgpu.pointLightCount +
       webgpu.spotLightCount +
       webgpu.rectAreaLightCount; // disc packed into the rect stream
-    expect(webgl2.lightCount).toBe(canonical.length);
-    expect(webgpuAnalyticCount).toBe(canonical.length);
+    expect(webgl2.lightCount).toBe(expectedAnalyticCount);
+    expect(webgpuAnalyticCount).toBe(expectedAnalyticCount);
   });
 
   it('agrees on the spot cone cosines (outer + inner) across both backends', () => {
@@ -115,12 +119,14 @@ describe('T1-2 emitter canonicalizer cross-backend parity', () => {
     const webgpu = packEmitterArrays(scene);
     const webgpuCosOuter = webgpu.spotLightsData[1 * 4 + 3]!;
     const webgpuCosInner = webgpu.spotLightsData[2 * 4 + 3]!;
+    const expectedCosOuter = Math.cos(spot.angle);
+    const expectedCosInner = Math.cos(spot.angle * (1 - (spot.penumbra ?? 0)));
 
     // Packed streams are Float32Array — compare at f32 precision (~6 digits).
-    expect(webgl2CoseOuter).toBeCloseTo(spotCanon.cone!.cosOuter, 6);
-    expect(webgpuCosOuter).toBeCloseTo(spotCanon.cone!.cosOuter, 6);
-    expect(webgl2CosInner).toBeCloseTo(spotCanon.cone!.cosInner, 6);
-    expect(webgpuCosInner).toBeCloseTo(spotCanon.cone!.cosInner, 6);
+    expect(webgl2CoseOuter).toBeCloseTo(expectedCosOuter, 6);
+    expect(webgpuCosOuter).toBeCloseTo(expectedCosOuter, 6);
+    expect(webgl2CosInner).toBeCloseTo(expectedCosInner, 6);
+    expect(webgpuCosInner).toBeCloseTo(expectedCosInner, 6);
   });
 
   it('pins the core spot emitter as a delta-position source in both backend packers', () => {
@@ -128,7 +134,7 @@ describe('T1-2 emitter canonicalizer cross-backend parity', () => {
     const spotIndex = emitters.findIndex((e) => e.kind === 'spot');
     const base = spotIndex * LIGHT_PIXELS * 4;
 
-    expect(spotCanon.area).toBe(0);
+    expect('radius' in spot).toBe(false);
     expect(webgl2.data[base + 3 * 4 + 3]).toBe(0); // s3.a: source area
     expect(webgl2.data[base + 4 * 4 + 0]).toBe(0); // s4.r: legacy radius lane
 
@@ -148,25 +154,44 @@ describe('T1-2 emitter canonicalizer cross-backend parity', () => {
     const rectPower = webgl2.data[rectIdx * LIGHT_PIXELS * 4 + 2 * 4 + 3]!;
     const discPower = webgl2.data[discIdx * LIGHT_PIXELS * 4 + 2 * 4 + 3]!;
 
-    const rectCanon = canonical.find((c) => c.kind === 'rect-area')!;
-    const discCanon = canonical.find((c) => c.kind === 'disc-area')!;
-    // Canonical rect power = luminance(radiance)·|u×v|. pt-webgl2 s2.a for rect
-    // = luminance(color)·intensity·(width·height) = same value since
-    // radiance = color·intensity and |u×v| = width·height for axis-aligned u,v.
-    expect(rectPower).toBeCloseTo(rectCanon.power, 6);
-    // Canonical disc power = luminance(radiance)·π·r². pt-webgl2 s2.a for disc
-    // = luminance(color)·intensity·(2r)²·(π/4) = luminance(radiance)·π·r².
-    expect(discPower).toBeCloseTo(discCanon.power, 6);
+    const rect = emitters.find(
+      (emitter): emitter is Extract<SceneEmitter, { kind: 'rect-area' }> =>
+        emitter.kind === 'rect-area',
+    )!;
+    const disc = emitters.find(
+      (emitter): emitter is Extract<SceneEmitter, { kind: 'disc-area' }> =>
+        emitter.kind === 'disc-area',
+    )!;
+    const rectArea = Math.hypot(
+      rect.uAxis[1] * rect.vAxis[2] - rect.uAxis[2] * rect.vAxis[1],
+      rect.uAxis[2] * rect.vAxis[0] - rect.uAxis[0] * rect.vAxis[2],
+      rect.uAxis[0] * rect.vAxis[1] - rect.uAxis[1] * rect.vAxis[0],
+    );
+    expect(rectPower).toBeCloseTo(emittedPower(rect, rectArea), 6);
+    expect(discPower).toBeCloseTo(emittedPower(disc, Math.PI * disc.radius * disc.radius), 6);
   });
 
   it('resolves the directional toward-light vector identically in both backends', () => {
     // pt-webgpu directional vec4[0].xyz = -dir/|dir| (toward the light).
     const webgpu = packEmitterArrays(scene);
-    const dirCanon = canonical.find((c) => c.kind === 'directional')!;
+    const directional = emitters.find(
+      (emitter): emitter is Extract<SceneEmitter, { kind: 'directional' }> =>
+        emitter.kind === 'directional',
+    )!;
+    const directionLength = Math.hypot(...directional.direction);
     // Packed stream is Float32Array — compare at f32 precision (~6 digits).
-    expect(webgpu.directionalLightsData[0]).toBeCloseTo(dirCanon.towardLight![0], 6);
-    expect(webgpu.directionalLightsData[1]).toBeCloseTo(dirCanon.towardLight![1], 6);
-    expect(webgpu.directionalLightsData[2]).toBeCloseTo(dirCanon.towardLight![2], 6);
+    expect(webgpu.directionalLightsData[0]).toBeCloseTo(
+      -directional.direction[0] / directionLength,
+      6,
+    );
+    expect(webgpu.directionalLightsData[1]).toBeCloseTo(
+      -directional.direction[1] / directionLength,
+      6,
+    );
+    expect(webgpu.directionalLightsData[2]).toBeCloseTo(
+      -directional.direction[2] / directionLength,
+      6,
+    );
   });
 
   it('resolves SHADOW-01 castShadow:false identically', () => {
@@ -178,8 +203,7 @@ describe('T1-2 emitter canonicalizer cross-backend parity', () => {
       position: [0, 0, 0],
       castShadow: false,
     };
-    const c = canonicalizeEmitter(shadowed, false) as CanonicalEmitter;
-    expect(c.shadowDisabled).toBe(true);
+    expect(shadowed.castShadow).toBe(false);
     // pt-webgpu point vec4[2].z carries castShadowDisabled.
     const webgpu = packEmitterArrays(fixtureScene([shadowed]));
     expect(webgpu.pointLightsData[2 * 4 + 2]).toBe(1);
@@ -197,9 +221,13 @@ describe('T1-2 emitter canonicalizer cross-backend parity', () => {
     // pt-webgl2 filters mesh-area out of the analytic light list.
     const webgl2 = packLightsTexture(withMesh);
     expect(webgl2.lightCount).toBe(emitters.length);
-    // The shared canonicalizer mirrors that exclusion by default (includeMeshArea=false)
-    // and can opt in (includeMeshArea=true) to match pt-webgpu's explicit mesh-area stream.
-    expect(emitterToCanonical(fixtureScene(withMesh), false)).toHaveLength(emitters.length);
-    expect(emitterToCanonical(fixtureScene(withMesh), true)).toHaveLength(emitters.length + 1);
+    const webgpu = packEmitterArrays(fixtureScene(withMesh));
+    const webgpuAnalyticCount =
+      webgpu.directionalLightCount +
+      webgpu.pointLightCount +
+      webgpu.spotLightCount +
+      webgpu.rectAreaLightCount;
+    expect(webgpuAnalyticCount).toBe(emitters.length);
+    expect(webgpu.meshAreaLightCount).toBe(0);
   });
 });

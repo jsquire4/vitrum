@@ -7,7 +7,7 @@
  */
 export const PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL = /* wgsl */ `
 fn bdptHasEnvironmentEndpoint() -> bool {
-  return hasEnvironmentMap() || params.environmentSun.w > 0.0;
+  return hasEnvironmentMap();
 }
 
 fn bdptEmitterCount() -> u32 {
@@ -148,7 +148,7 @@ struct BdptSampledMaterial {
   anisotropy: f32,
   anisotropyRotation: f32,
   clearcoatNormal: vec3f,
-  thinFilmEnabled: bool,
+  thinFilm: ThinFilmInterface,
 }
 
 fn bdptSampleMaterialAtPayload(matId: u32, payload: vec4f, shadingNormal: vec3f, woTowardPrev: vec3f, heroLambda: f32) -> BdptSampledMaterial {
@@ -185,7 +185,12 @@ fn bdptSampleMaterialAtPayload(matId: u32, payload: vec4f, shadingNormal: vec3f,
     if (iridescenceThickness <= 0.0) { out.iridescence = 0.0; }
   }
   out.iridescenceIor = mat.iridescenceIor;
-  out.specularColor = clamp(mat.specularColor * sampleSpecularColorTexture(matId, triIndex, baryVW, instanceIndex), vec3f(0.0), vec3f(1.0));
+  out.specularColor = max(
+    mat.specularColor * sampleSpecularColorTexture(
+      matId, triIndex, baryVW, instanceIndex,
+    ),
+    vec3f(0.0),
+  );
   out.specularIntensity = clamp(mat.specularIntensity * sampleSpecularIntensityTexture(matId, triIndex, baryVW, instanceIndex), 0.0, 1.0);
   if (params.spectralEnabled != 0u) {
     out.sheenColor = vec3f(spectralRgbFactorAtHero(out.sheenColor, heroLambda));
@@ -196,7 +201,18 @@ fn bdptSampleMaterialAtPayload(matId: u32, payload: vec4f, shadingNormal: vec3f,
     matId, triIndex, baryVW, shadingNormal, instanceIndex,
   );
   out.clearcoatNormal = applyClearcoatNormalMap(matId, triIndex, baryVW, shadingNormal, instanceIndex);
-  out.thinFilmEnabled = mat.thinFilmEnabled;
+  out.thinFilm = ThinFilmInterface(
+    mat.thinFilmEnabled,
+    matId,
+    mat.thinFilmLayerCountU,
+    mat.thinFilmIncidentIor,
+    out.ior,
+    mat.thinFilmAngleDependent,
+    isFrontFace,
+    params.spectralEnabled != 0u,
+    heroLambda,
+    out.transmission,
+  );
   let layerTx = clamp(select(mat.backLayerTx, mat.frontLayerTx, isFrontFace), vec3f(0.0), vec3f(1.0));
   let layerRoughness = select(mat.backLayerRoughness, mat.frontLayerRoughness, isFrontFace);
   if (layerRoughness >= 0.0) {
@@ -502,12 +518,11 @@ fn bdptWriteBounce0(col: i32, rng: ptr<function, PtRngState>) {
       var emitPos: vec3f;
       var areaS: f32;
       if (isDiscS) {
-        let rrad = length(ru);
         let disc = concentricDiscSample(
           vec2f(xi1s * 2.0 - 1.0, xi2s * 2.0 - 1.0),
         );
         emitPos = rpos + ru * disc.x + rv * disc.y;
-        areaS = PI * rrad * rrad;
+        areaS = PI * length(cross(ru, rv));
       } else {
         emitPos = rpos + ru * (xi1s * 2.0 - 1.0) + rv * (xi2s * 2.0 - 1.0);
         areaS = 4.0 * length(cross(ru, rv));
@@ -578,21 +593,10 @@ fn bdptWriteBounce0(col: i32, rng: ptr<function, PtRngState>) {
     cur = cur + 1u;
   }
   if (bdptHasEnvironmentEndpoint() && cur == flat) {
-    var towardSource = vec3f(0.0, 1.0, 0.0);
-    var radiance = vec3f(0.0);
-    var directionPdf = 0.0;
-    if (hasEnvironmentMap()) {
-      let environment = sampleEnvironmentImportance(rng);
-      towardSource = environment.wi;
-      radiance = environment.value;
-      directionPdf = environment.pdf;
-    } else {
-      towardSource = uniformSphere(
-        vec2f(rand_f32(rng), rand_f32(rng)),
-      );
-      radiance = sampleSky(towardSource);
-      directionPdf = 0.25 * INV_PI;
-    }
+    let environment = sampleEnvironmentImportance(rng);
+    let towardSource = environment.wi;
+    let radiance = environment.value;
+    let directionPdf = environment.pdf;
     if (!(directionPdf > 0.0) || any(radiance < vec3f(0.0))) {
       bdptWriteInvalid(col);
       return;
@@ -739,6 +743,7 @@ fn bdptBuildInvocationLightSubpath(pixel: vec2u) {
       let f0BasePrev = materialSpecularF0(
         prevMat.baseColor,
         prevMat.metallic,
+        prevEtaTOverI,
         prevMat.specularColor,
         prevMat.specularIntensity,
       );
@@ -763,13 +768,7 @@ fn bdptBuildInvocationLightSubpath(pixel: vec2u) {
         continue;
       }
       let prevGeometricNormal = select(-prevNormal, prevNormal, prevIsFrontFace);
-      let prevThinFilm = ThinFilmInterface(
-        prevDecodedMat.thinFilmEnabled, u32(prevMatId),
-        prevDecodedMat.thinFilmLayerCountU, prevDecodedMat.thinFilmIncidentIor,
-        prevMat.ior, prevDecodedMat.thinFilmAngleDependent, prevIsFrontFace,
-        params.spectralEnabled != 0u, bdptInvocationHeroLambdaNm,
-        prevMat.transmission,
-      );
+      let prevThinFilm = prevMat.thinFilm;
       let bsPrev = sampleNextBounceDirectionWithClearcoatNormal(
         &rng,
         -woAtPrev,
@@ -783,7 +782,9 @@ fn bdptBuildInvocationLightSubpath(pixel: vec2u) {
         prevMat.transmission,
         prevEtaTOverI,
         true,
-        fresnelSchlick(cosOPrev, f0Prev),
+        materialSpecularFresnelSchlick(
+          cosOPrev, f0Prev, prevMat.metallic, prevMat.specularIntensity,
+        ),
         prevMat.iridescence,
         prevMat.iridescenceIor,
         prevMat.iridescenceThicknessMin,
@@ -873,6 +874,7 @@ fn bdptBuildInvocationLightSubpath(pixel: vec2u) {
           prevMatForRev.iridescenceThicknessMax,
           prevMatForRev.specularColor, prevMatForRev.specularIntensity,
           prevMatForRev.anisotropy, prevMatForRev.anisotropyRotation,
+          prevMatForRev.thinFilm,
         );
       }
       let reverseEdgeDensity = max(v2prev.w, 0.0);
@@ -897,14 +899,27 @@ fn bdptBuildInvocationLightSubpath(pixel: vec2u) {
     let alphaTraceOrigin = ray.origin;
     var alphaAdvance = 0.0;
     var hit = traceClosest(ray, 1e-4, 1e30);
-    for (var alphaSkip = 0u; alphaSkip < 8u; alphaSkip = alphaSkip + 1u) {
-      if (!hit.didHit || !alphaTestPassThrough(
+    let alphaSurfaceHitLimit = sceneSurfaceHitLimit();
+    var alphaSurfaceHitCount = 0u;
+    var alphaTraversalValid = true;
+    loop {
+      if (!hit.didHit) { break; }
+      if (alphaSurfaceHitCount >= alphaSurfaceHitLimit) {
+        alphaTraversalValid = false;
+        break;
+      }
+      alphaSurfaceHitCount = alphaSurfaceHitCount + 1u;
+      if (!alphaTestPassThrough(
         hitMaterialId(hit), hit.triIndex, hit.baryVW, hit.instanceIndex, &rng,
       )) { break; }
       let alphaStep = hit.dist + 1e-4;
       alphaAdvance = alphaAdvance + alphaStep;
       ray.origin = ray.origin + ray.direction * alphaStep;
       hit = traceClosest(ray, 1e-4, 1e30);
+    }
+    if (!alphaTraversalValid) {
+      bdptWriteInvalid(col);
+      continue;
     }
     ray.origin = alphaTraceOrigin;
     if (hit.didHit) { hit.dist = hit.dist + alphaAdvance; }

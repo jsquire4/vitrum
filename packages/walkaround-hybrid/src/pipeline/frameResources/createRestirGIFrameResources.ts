@@ -1,29 +1,22 @@
 /**
  * ReSTIR GI reservoir GPU buffers (W4a — resourceManager split).
+ *
+ * All three buffers use the sole live 28-u32 generalized-reuse ABI. The
+ * producer writes the appended metadata and the canonical temporal/spatial
+ * passes consume it; compact 20-u32 data is snapshot-migration-only.
  */
 
 import type { RestirGIFrameResources } from '../resourceManager.js';
-import { reservoirGiStrideBytesForGrisReuse } from '../../gi/giLayout.js';
-
-export interface RestirGIFrameResourceOptions {
-  /**
-	 * GRIS DDGI-proxy reconnection-shift reuse widens each half-res reservoir
-	 * from the base 20-u32 Sprint-16/17 layout to the 30-u32 ReservoirPT layout.
-	 * The appended cache fields are read by the GRIS reuse variants; the default
-	 * path stays compact because those variants are not compiled.
-	 */
-  readonly grisReuse?: boolean;
-}
+import { RESERVOIR_GI_STRIDE_BYTES } from '../../gi/giLayout.js';
 
 export function createRestirGIFrameResources(
   device: GPUDevice,
   width: number,
   height: number,
-  options?: RestirGIFrameResourceOptions,
 ): RestirGIFrameResources {
   const halfW = Math.max(1, Math.floor(width / 2));
   const halfH = Math.max(1, Math.floor(height / 2));
-  const reservoirGiSize = halfW * halfH * reservoirGiStrideBytesForGrisReuse(options?.grisReuse === true);
+  const reservoirGiSize = halfW * halfH * RESERVOIR_GI_STRIDE_BYTES;
   const size = Math.max(256, reservoirGiSize);
   const usage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST;
 

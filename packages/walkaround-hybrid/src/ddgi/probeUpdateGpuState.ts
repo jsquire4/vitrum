@@ -18,7 +18,8 @@ import type { ProbeUpdateBvhGpuBuffers } from './probeUpdateBvhBuffers.js';
  * the drift-bug class this file documented.
  *
  * Slots (id → keyed on):
- *  - `raysG0`       BVH buffers (11 entries) — keyed on `bvhBuf` (all 11 rebuild atomically).
+ *  - `raysG0`       BVH buffers (11 entries) — keyed on all eleven identities;
+ *                     a TLAS capacity-growing refit can replace only a subset.
  *  - `raysG1`       materials/lights/emitters/atlas/tangent/color — keyed on all seven identities.
  *  - `raysG2`       per-frame — keyed on irrReadTex + rayResultsBuf +
  *                     activeProbesBuf + envMapView + envSamplerForProbe.

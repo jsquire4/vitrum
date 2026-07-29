@@ -40,7 +40,7 @@ fn sampleCanonicalDirectLight(
 }
 
 fn hasDistantDirectEnvironment() -> bool {
-  return hasEnvironmentMap() || params.environmentSun.w > 0.0;
+  return hasEnvironmentMap();
 }
 
 fn distantDirectEmitterCount() -> u32 {
@@ -55,15 +55,10 @@ fn distantDirectEmitterGlobalIndex(localIndex: u32) -> u32 {
 }
 
 fn distantDirectEnvironmentPower() -> f32 {
-  if (hasEnvironmentMap()) {
-    let dims = environmentDimensions();
-    let count = dims.x * dims.y;
-    if (count > 0u && arrayLength(&environmentMapCdf) >= count + 1u) {
-      return max(environmentMapCdf[count], 0.0);
-    }
-  }
-  if (params.environmentSun.w > 0.0) {
-    return params.environmentSun.w * (4.0 * PI);
+  let dims = environmentDimensions();
+  let count = dims.x * dims.y;
+  if (count > 0u && arrayLength(&environmentMapCdf) >= count + 1u) {
+    return max(environmentMapCdf[count], 0.0);
   }
   return 0.0;
 }
@@ -203,8 +198,10 @@ fn traceMediumVisibility(
   var depth = sourceDepth;
   var rayOrigin = origin;
   var travelled = 0.0;
+  let surfaceHitLimit = sceneSurfaceHitLimit();
+  var surfaceHitCount = 0u;
 
-  for (var step = 0u; step < 16u; step = step + 1u) {
+  loop {
     let remaining = max(maxDistance - travelled, 0.0);
     if (remaining <= 1e-5) {
       result.visible = true;
@@ -225,6 +222,13 @@ fn traceMediumVisibility(
       result.visible = true;
       return result;
     }
+    // Observe the final miss after exactly surfaceHitLimit pass-through
+    // surfaces. A further hit is impossible under the published scene support,
+    // so fail closed instead of silently accepting an unbounded/corrupt walk.
+    if (surfaceHitCount >= surfaceHitLimit) {
+      return result;
+    }
+    surfaceHitCount = surfaceHitCount + 1u;
 
     let matId = hitMaterialId(hit);
     if (alphaTestPassThrough(
@@ -400,7 +404,7 @@ fn sampleMediumEmitter(
       if (disc) {
         let uv = concentricDiscSample(xi * 2.0 - vec2f(1.0));
         lightPosition = center + uAxis * uv.x + vAxis * uv.y;
-        area = PI * dot(uAxis, uAxis);
+        area = PI * length(cross(uAxis, vAxis));
       } else {
         lightPosition =
           center + uAxis * (xi.x * 2.0 - 1.0) +
@@ -465,15 +469,6 @@ fn sampleMediumEmitter(
     if (env.pdf > 0.0) {
       return MediumEmitterSample(
         env.wi, env.value, INFINITY, env.pdf, false, false, true,
-      );
-    }
-    if (params.environmentSun.w > 0.0) {
-      let wi = uniformSphere(
-        vec2f(rand_f32(rng), rand_f32(rng)),
-      );
-      return MediumEmitterSample(
-        wi, sampleEnvironmentColor(wi), INFINITY,
-        0.25 * INV_PI, false, false, true,
       );
     }
     return invalidMediumEmitterSample();

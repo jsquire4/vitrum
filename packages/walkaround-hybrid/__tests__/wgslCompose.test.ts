@@ -43,7 +43,6 @@ import {
   SAMPLE_BUDGET_MODULE,
   SHADE_MODULE,
   SPATIAL_GI_MODULE,
-  SPATIAL_GI_GRIS_MODULE,
   SPATIAL_MODULE,
   SVGF_7X7_SPATIAL_FALLBACK_MODULE,
   SVGF_REAL_ATROUS_MODULE,
@@ -51,7 +50,6 @@ import {
   SVGF_VARIANCE_FROM_MOMENTS_MODULE,
   TEMPORAL_ACCUM_MODULE,
   TEMPORAL_GI_MODULE,
-  TEMPORAL_GI_GRIS_MODULE,
   TEMPORAL_MODULE,
   WELFORD_TEMPORAL_MODULE,
   WGSL_MODULES,
@@ -68,7 +66,6 @@ import { MATERIAL_DECODE_WGSL } from '../src/shaders/materialDecode.wgsl.js';
 import { MATERIAL_ATLAS_WGSL } from '../src/shaders/materialAtlas.wgsl.js';
 import { EMITTER_LE_AT_XI_WGSL } from '../src/shaders/emitterLeAtXi.wgsl.js';
 import { CAMERA_RAYS_WGSL } from '../src/shaders/cameraRays.wgsl.js';
-import { JACOBIAN_SHIFT_WGSL } from '../src/shaders/jacobianShift.wgsl.js';
 import { GRIS_REUSE_WGSL } from '../src/shaders/grisReuse.wgsl.js';
 import { WELFORD_TAIL_WGSL } from '../src/shaders/welfordTail.wgsl.js';
 import { MOTION_VECTORS_WGSL } from '../src/shaders/motionVectors.wgsl.js';
@@ -97,11 +94,15 @@ import { REFRACTIVE_CAUSTICS_WGSL } from '../src/shaders/refractiveCaustics.wgsl
 import { MANIFOLD_SMS_SOLVER_WGSL } from '../src/shaders/manifoldSmsSolver.wgsl.js';
 import { MANIFOLD_CAUSTICS_WGSL } from '../src/shaders/manifoldCaustics.wgsl.js';
 import { SPATIAL_WGSL } from '../src/shaders/spatial.wgsl.js';
-import { SPATIAL_GI_WGSL, SPATIAL_GI_GRIS_WGSL } from '../src/shaders/spatialGi.wgsl.js';
+import {
+  SPATIAL_GI_WGSL,
+} from '../src/shaders/spatialGi.wgsl.js';
 import { SPATIAL_GI_COMMON_WGSL } from '../src/shaders/spatialGiCommon.wgsl.js';
 import { SURFACE_TEXTURES_WGSL } from '../src/shaders/surfaceTextures.wgsl.js';
 import { TEMPORAL_WGSL } from '../src/shaders/temporal.wgsl.js';
-import { TEMPORAL_GI_WGSL, TEMPORAL_GI_GRIS_WGSL } from '../src/shaders/temporalGi.wgsl.js';
+import {
+  TEMPORAL_GI_WGSL,
+} from '../src/shaders/temporalGi.wgsl.js';
 import { WELFORD_TEMPORAL_WGSL } from '../src/shaders/welfordTemporal.wgsl.js';
 import { DDGI_SAMPLE_WGSL, DDGI_GRID_UBO_WGSL } from '../src/ddgi/ddgiSampleWgsl.js';
 import { PPG_TREE_LAYOUT_WGSL } from '../src/ppg/ppgTreeLayout.wgsl.js';
@@ -355,80 +356,31 @@ describe('composeWgsl — bit-identical to pre-R6 concat patterns', () => {
     );
   });
 
-  // ── GI reuse passes: the DEFAULT (grisReuse OFF) module is the verbatim
-  // Sprint-17 pass — no sceneTraversal/grisReuse, NO @group(1). The GRIS (ON)
-  // variant is a SEPARATE compile-root composed only when the host opts in.
-  // This split is the f8df9a4 black-frame fix: an opt-in feature must not change
-  // the default pipeline structure. (The structural-no-group(1) assertion lives
-  // in giStructuralGate.test.ts.) ──
-  it('temporalGi OFF (default, narrowed): walkaroundUbo + sceneTraversal + reservoirGi + sharedPrimitives + jacobianShift + cameraRays + TEMPORAL_GI', () => {
+  // ── GI reuse passes: generalized transformed-density reuse is the sole
+  // live compile root. ──
+  it('temporalGi canonical root has the complete generalized-reuse dependency closure', () => {
     expect(composeWgsl(TEMPORAL_GI_MODULE, WGSL_MODULES)).toBe(
       WALKAROUND_UBO_WGSL +
       SCENE_TRAVERSAL_WGSL +
       RESERVOIR_GI_WGSL +
       SHARED_PRIMITIVES_WGSL +
-      JACOBIAN_SHIFT_WGSL +
       CAMERA_RAYS_WGSL +
       MATERIAL_DECODE_WGSL +
       MATERIAL_ATLAS_WGSL +
-      RESTIR_CAST_PRIMARY_WGSL +
+      SURFACE_TEXTURES_WGSL +
+      ENVIRONMENT_SAMPLE_WGSL +
       GGX_BRDF_WGSL +
       RESTIR_GI_MATERIAL_WGSL +
+      GRIS_REUSE_WGSL +
+      RESTIR_CAST_PRIMARY_WGSL +
       TEMPORAL_GI_WGSL,
     );
   });
 
-  it('temporalGi ON (GRIS): complete diffuse-proxy reuse dependency closure', () => {
-    // The GRIS body uses the full inverse-J matrix instead of jacobianShift.
-    // Its alpha-aware visibility and environment paths pull surfaceTextures and
-    // environmentSample into the dependency closure before grisReuse itself.
-    expect(composeWgsl(TEMPORAL_GI_GRIS_MODULE, WGSL_MODULES)).toBe(
-      WALKAROUND_UBO_WGSL +
-      SCENE_TRAVERSAL_WGSL +
-      RESERVOIR_GI_WGSL +
-      SHARED_PRIMITIVES_WGSL +
-      CAMERA_RAYS_WGSL +
-      MATERIAL_DECODE_WGSL +
-      MATERIAL_ATLAS_WGSL +
-      SURFACE_TEXTURES_WGSL +
-      ENVIRONMENT_SAMPLE_WGSL +
-      GRIS_REUSE_WGSL +
-      RESTIR_CAST_PRIMARY_WGSL +
-      GGX_BRDF_WGSL +
-      RESTIR_GI_MATERIAL_WGSL +
-      TEMPORAL_GI_GRIS_WGSL,
-    );
-  });
-
-  it('spatialGi OFF (default, narrowed): walkaroundUbo + spatialGiCommon + reservoirGi + sharedPrimitives + jacobianShift + SPATIAL_GI', () => {
-    // Task3 — K_SPATIAL_GI / M_CLAMP_SPATIAL / sampleDiscPx hoisted into the
-    // `spatialGiCommon` module (registered dep) so both OFF and GRIS ON roots
-    // share a single declaration. `spatialGiCommon` has requires:[] so it
-    // lands immediately after walkaroundUbo (the first declared dep).
+  it('spatialGi canonical root has the complete generalized-reuse dependency closure', () => {
     expect(composeWgsl(SPATIAL_GI_MODULE, WGSL_MODULES)).toBe(
       WALKAROUND_UBO_WGSL +
       SPATIAL_GI_COMMON_WGSL +
-      RESERVOIR_GI_WGSL +
-      SHARED_PRIMITIVES_WGSL +
-      JACOBIAN_SHIFT_WGSL +
-      CAMERA_RAYS_WGSL +
-      SCENE_TRAVERSAL_WGSL +
-      MATERIAL_DECODE_WGSL +
-      MATERIAL_ATLAS_WGSL +
-      RESTIR_CAST_PRIMARY_WGSL +
-      GGX_BRDF_WGSL +
-      RESTIR_GI_MATERIAL_WGSL +
-      SPATIAL_GI_WGSL,
-    );
-  });
-
-  it('spatialGi ON (GRIS): complete diffuse-proxy reuse dependency closure', () => {
-    // grisReuse evaluates alpha-aware visibility and environment radiance, so
-    // surfaceTextures and environmentSample are real transitive dependencies.
-    // The post-order DFS emits their material dependencies before grisReuse.
-    expect(composeWgsl(SPATIAL_GI_GRIS_MODULE, WGSL_MODULES)).toBe(
-      WALKAROUND_UBO_WGSL +
-      SPATIAL_GI_COMMON_WGSL +
       SCENE_TRAVERSAL_WGSL +
       RESERVOIR_GI_WGSL +
       SHARED_PRIMITIVES_WGSL +
@@ -436,12 +388,12 @@ describe('composeWgsl — bit-identical to pre-R6 concat patterns', () => {
       MATERIAL_ATLAS_WGSL +
       SURFACE_TEXTURES_WGSL +
       ENVIRONMENT_SAMPLE_WGSL +
+      GGX_BRDF_WGSL +
+      RESTIR_GI_MATERIAL_WGSL +
       GRIS_REUSE_WGSL +
       CAMERA_RAYS_WGSL +
       RESTIR_CAST_PRIMARY_WGSL +
-      GGX_BRDF_WGSL +
-      RESTIR_GI_MATERIAL_WGSL +
-      SPATIAL_GI_GRIS_WGSL,
+      SPATIAL_GI_WGSL,
     );
   });
 
@@ -462,6 +414,18 @@ describe('composeWgsl — bit-identical to pre-R6 concat patterns', () => {
   it('indirectTemporalAccum: standalone (no prepend)', () => {
     expect(composeWgsl(INDIRECT_TEMPORAL_ACCUM_MODULE, WGSL_MODULES)).toBe(
       INDIRECT_TEMPORAL_ACCUM_WGSL,
+    );
+    expect(INDIRECT_TEMPORAL_ACCUM_WGSL).toContain(
+      '@group(0) @binding(2) var ita_motion:',
+    );
+    expect(INDIRECT_TEMPORAL_ACCUM_WGSL).toContain(
+      'let prevUnclamped = vec2i(i32(gid.x), i32(gid.y)) + deltaPx;',
+    );
+    expect(INDIRECT_TEMPORAL_ACCUM_WGSL).toContain(
+      'fn indirectTemporalAccumResetMain',
+    );
+    expect(INDIRECT_TEMPORAL_ACCUM_WGSL).toMatch(
+      /if \(forceReset\) \{\s*textureStore\(ita_outAccum, gid\.xy, vec4f\(cur_capped, 1\.0\)\);/,
     );
   });
 
@@ -537,13 +501,13 @@ describe('composeWgsl — bit-identical to pre-R6 concat patterns', () => {
 // ──────────────────────────────────────────────────────────────────────────
 describe('T9-stepC — static cross-module identifier resolution', () => {
   // The symbol universe = module-scope declarations across every library
-  // module a pass may include (common's 11 focused modules + the non-common
+  // module a pass may include (common's focused modules + the non-common
   // helpers). A reference to any of these names can ONLY be satisfied by
   // including the declaring module, so this is the set we resolve against.
   const LIBRARY_MODULE_NAMES = [
     'walkaroundUbo', 'sceneTraversal', 'reservoirDi', 'reservoirGi',
     'sharedPrimitives', 'ggxBrdf', 'materialDecode', 'emitterSampling',
-    'jacobianShift', 'cameraRays', 'welfordTail',
+    'grisReuse', 'cameraRays', 'welfordTail',
     'luminance', 'octahedralCore',
     'surfaceTextures', 'ddgiSample', 'sampleCascadeC0', 'stainedGlassShade',
     'restirPHat', 'restirCastPrimary', 'lightTree',
@@ -562,9 +526,6 @@ describe('T9-stepC — static cross-module identifier resolution', () => {
   const ROOT_PASSES = [
     'ris', 'temporal', 'spatial', 'shade',
     'risGi', 'temporalGi', 'spatialGi',
-    // GRIS (grisReuse ON) compile-roots — composed only when the host opts
-    // in, but the ident-resolution gate must still cover their closures.
-    'temporalGiGris', 'spatialGiGris',
     'welfordTemporal', 'motionVectors',
     'sampleBudget', 'resolve', 'gtao', 'gtaoUpsample',
     'indirectCombine', 'indirectTemporalAccum', 'atrous',
@@ -603,29 +564,14 @@ describe('T9-stepC — static cross-module identifier resolution', () => {
         'evalGGX', 'sampleEmitterPoint', 'loadReservoirDI_rw',
         'jacobianReconnectionShift', 'WelfordVariance',
       ],
-      // spatialGi (OFF, default): now casts the primary receiver and evaluates
-      // receiver-lobe GI p-hat, so BRDF/camera traversal are expected. It still
-      // carries no emitters and no GRIS branch.
+      // Canonical spatial GI carries generalized reuse but no emitters.
       spatialGi: [
-        'sampleEmitterPoint', 'grisDomainToCanonicalJacobian', 'grisProxyTargetAt',
+        'sampleEmitterPoint', 'WelfordVariance',
       ],
-      // spatialGiGris (ON): adds sceneTraversal (reconnection-visibility ray),
-      // primary receiver recast, receiver-lobe BRDF target and grisReuse, but
-      // still no emitter sampling and DROPS the legacy jacobianReconnectionShift.
-      spatialGiGris: [
-        'sampleEmitterPoint', 'jacobianReconnectionShift',
-      ],
-      // temporalGi (OFF, default): reprojects and recasts receiver material, but
-      // no emitters and NO GRIS. The default closure must NOT pull grisReuse.
+      // Canonical temporal GI carries generalized reuse but no emitters or
+      // denoiser variance helpers.
       temporalGi: [
         'sampleEmitterPoint', 'WelfordVariance',
-        'grisDomainToCanonicalJacobian', 'grisProxyTargetAt',
-      ],
-      // temporalGiGris (ON): adds grisReuse + receiver material recast, drops
-      // the legacy jacobianReconnectionShift.
-      temporalGiGris: [
-        'sampleEmitterPoint', 'WelfordVariance',
-        'jacobianReconnectionShift',
       ],
       // risGi: casts primary + DDGI + receiver-lobe GI material target, but no
       // emitter sampling / welford / legacy jacobian.
@@ -647,34 +593,28 @@ describe('T9-stepC — static cross-module identifier resolution', () => {
 // ──────────────────────────────────────────────────────────────────────────
 // 4b. Theme-C temporalGiCommon dedup — byte-identity pin.
 //
-// Task 2.2 Item 5 hoisted the geometric-rejection consts + projectToPrevHalfPx
-// (shared verbatim between the OFF and GRIS temporal-GI bodies) into the
-// `temporalGiCommon` fragment, and DELETED the dead `worldFromHalfPx_temporal`
-// helper (defined in both copies, called by neither — the pass reprojects via
-// rCur.xv). The composed strings must therefore be byte-identical EXCEPT for the
-// absence of that one dead function. These pins enforce exactly that.
+// Task 2.2 Item 5 hoisted the geometric-rejection consts +
+// projectToPrevHalfPx into the `temporalGiCommon` fragment, and deleted the
+// dead `worldFromHalfPx_temporal` helper. These pins keep the canonical body
+// and composed root free of the retired helper.
 // ──────────────────────────────────────────────────────────────────────────
-describe('Theme-C — temporalGiCommon dedup (byte-identity minus the deleted dead fn)', () => {
+describe('Theme-C — temporalGiCommon canonical helper set', () => {
   // The dead helper that Item 5 deleted (one of two sanctioned deletions). It
   // must be absent from BOTH temporal-GI bodies and from their composed roots.
   const deadFnSig = 'fn worldFromHalfPx_temporal';
 
-  it('the dead worldFromHalfPx_temporal helper is gone from both temporal-GI bodies', () => {
+  it('the dead worldFromHalfPx_temporal helper is gone from the temporal-GI body', () => {
     expect(TEMPORAL_GI_WGSL).not.toContain(deadFnSig);
-    expect(TEMPORAL_GI_GRIS_WGSL).not.toContain(deadFnSig);
   });
 
-  it('the shared helpers (consts + projectToPrevHalfPx) appear exactly once per body', () => {
-    for (const body of [TEMPORAL_GI_WGSL, TEMPORAL_GI_GRIS_WGSL]) {
-      expect(body.split('const DEPTH_REL_TOL: f32 = 0.1;').length - 1).toBe(1);
-      expect(body.split('const NORMAL_DOT_MIN: f32 = 0.906;').length - 1).toBe(1);
-      expect(body.split('fn projectToPrevHalfPx(').length - 1).toBe(1);
-    }
+  it('the shared helpers (consts + projectToPrevHalfPx) appear exactly once', () => {
+    expect(TEMPORAL_GI_WGSL.split('const DEPTH_REL_TOL: f32 = 0.1;').length - 1).toBe(1);
+    expect(TEMPORAL_GI_WGSL.split('const NORMAL_DOT_MIN: f32 = 0.906;').length - 1).toBe(1);
+    expect(TEMPORAL_GI_WGSL.split('fn projectToPrevHalfPx(').length - 1).toBe(1);
   });
 
-  it('both temporal-GI compose-roots are free of the dead fn (composer adds nothing that resurrects it)', () => {
+  it('the temporal-GI compose root is free of the dead fn', () => {
     expect(composeWgsl(TEMPORAL_GI_MODULE, WGSL_MODULES)).not.toContain(deadFnSig);
-    expect(composeWgsl(TEMPORAL_GI_GRIS_MODULE, WGSL_MODULES)).not.toContain(deadFnSig);
   });
 });
 

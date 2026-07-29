@@ -29,7 +29,16 @@ import {
   type SpectralCurveSampleOptions,
 } from '@vitrum/shared-samplers';
 import type { MaterialsTextureData } from './sceneTextures.js';
-import type { TextureAtlasLayerMap, TextureSampleColorSpace } from './texturesArray.js';
+import type {
+  MaterialTextureAtlasLayerMaps,
+  TextureAtlasLayerMap,
+  TextureAtlasStorageClass,
+  TextureSampleColorSpace,
+} from './texturesArray.js';
+import {
+  textureColorSpaceForMapKey,
+  textureStorageClassForMapKey,
+} from './texturesArray.js';
 
 import {
   MATERIAL_MAP_FIELD_ORDER,
@@ -202,15 +211,32 @@ const MIP_FILTER_INDEX: Readonly<Record<TextureMipFilterMode, number>> = {
  * Square sizing: `dim = ceil(sqrt(materials.length * MATERIAL_PIXELS))`.
  */
 /** Resolve a TextureRef → its atlas layer index (-1 = none / unmapped). */
-type TextureLayerLookup = Map<unknown, number> | TextureAtlasLayerMap;
+type TextureLayerLookup =
+  | Map<unknown, number>
+  | TextureAtlasLayerMap
+  | MaterialTextureAtlasLayerMaps;
+
+function atlasMapFor(
+  layerOf: TextureLayerLookup | undefined,
+  storageClass: TextureAtlasStorageClass,
+): TextureAtlasLayerMap | undefined {
+  if (layerOf == null || typeof (layerOf as Map<unknown, number>).get === 'function') {
+    return undefined;
+  }
+  if ('ldr' in layerOf && 'hdr' in layerOf) {
+    return layerOf[storageClass] ?? undefined;
+  }
+  return layerOf as TextureAtlasLayerMap;
+}
 
 function layerMapFor(
   layerOf: TextureLayerLookup | undefined,
+  storageClass: TextureAtlasStorageClass,
   colorSpace: TextureSampleColorSpace,
 ): ReadonlyMap<unknown, number> | undefined {
   if (layerOf == null) return undefined;
   if (typeof (layerOf as Map<unknown, number>).get === 'function') return layerOf as Map<unknown, number>;
-  return (layerOf as TextureAtlasLayerMap)[colorSpace];
+  return atlasMapFor(layerOf, storageClass)?.[colorSpace];
 }
 
 type TextureRefLike = { handle?: unknown; texCoord?: number };
@@ -238,10 +264,11 @@ export function assertThinFilmLayerLimit(
 function mapLayer(
   ref: TextureRefLike | undefined,
   layerOf: TextureLayerLookup | undefined,
+  storageClass: TextureAtlasStorageClass,
   colorSpace: TextureSampleColorSpace,
 ): number {
   if (ref?.handle == null || layerOf == null) return -1;
-  return layerMapFor(layerOf, colorSpace)?.get(ref.handle) ?? -1;
+  return layerMapFor(layerOf, storageClass, colorSpace)?.get(ref.handle) ?? -1;
 }
 
 function defaultUvAttributeLayer(texCoord: number): number {
@@ -308,21 +335,30 @@ function writeSamplerPolicy(
     mipFilter?: TextureMipFilterMode;
   } | undefined,
   layerOf: TextureLayerLookup | undefined,
+  storageClass: TextureAtlasStorageClass,
+  colorSpace: TextureSampleColorSpace,
 ): void {
-  const dimensions = ref?.handle == null || layerOf == null || typeof (layerOf as Map<unknown, number>).get === 'function'
-    ? undefined
-    : (layerOf as TextureAtlasLayerMap).dimensions?.get(ref.handle);
-  const width = dimensions?.[0] ?? 0;
-  const height = dimensions?.[1] ?? 0;
+  const atlasMap = atlasMapFor(layerOf, storageClass);
+  const placement =
+    ref?.handle == null ? undefined : atlasMap?.placements?.[colorSpace].get(ref.handle);
+  const dimensions =
+    ref?.handle == null ? undefined : atlasMap?.dimensions?.get(ref.handle);
+  const width = placement?.width ?? dimensions?.[0] ?? 0;
+  const height = placement?.height ?? dimensions?.[1] ?? 0;
+  const offsetX = placement?.x ?? 0;
+  const offsetY = placement?.y ?? 0;
   // Pack the native source extent into the high integer bits while retaining
-  // wrap mode modulo four. A zero extent is the low-level helper's legacy
-  // common-size mode; production atlas builds always supply exact dimensions.
+  // wrap mode modulo four. The other two lanes likewise retain mip/filter
+  // policy modulo four while carrying the source-rectangle offset. A zero
+  // extent is the low-level helper's legacy common-size mode; production atlas
+  // builds always supply exact placement metadata.
   data[offset] = WRAP_MODE_INDEX[ref?.wrapS ?? 'repeat'] + width * 4;
   data[offset + 1] = WRAP_MODE_INDEX[ref?.wrapT ?? 'repeat'] + height * 4;
-  data[offset + 2] = MIP_FILTER_INDEX[ref?.mipFilter ?? 'none'];
+  data[offset + 2] = MIP_FILTER_INDEX[ref?.mipFilter ?? 'none'] + offsetX * 4;
   data[offset + 3] =
     FILTER_MODE_INDEX[ref?.magFilter ?? 'nearest'] +
-    FILTER_MODE_INDEX[ref?.minFilter ?? 'nearest'] * 2;
+    FILTER_MODE_INDEX[ref?.minFilter ?? 'nearest'] * 2 +
+    offsetY * 4;
 }
 
 // ── D10.8: per-section packer helpers ────────────────────────────────────
@@ -359,42 +395,41 @@ interface LayerIds {
 
 /**
  * D10.8: Map table driving `packLayerIds`. Each entry declares the `LayerIds`
- * key, the `MaterialSpec` texture-ref accessor, its sample color space, and the
- * warning `field` label. One row per resolved layer id — iterated once so the
- * per-map arguments (color space, field name) live in data, not 23 positional
- * call sites. `field` doubles as the atlas-warning label the fork's GLSL expects.
+ * key, the `MaterialSpec` texture-ref accessor, and its sample color space.
+ * One row per resolved layer id keeps those per-map arguments in data rather
+ * than 23 positional call sites.
  */
 interface LayerIdMapEntry {
   readonly key: keyof LayerIds;
   readonly ref: (m: MaterialSpec) => TextureRefLike | undefined;
   readonly colorSpace: TextureSampleColorSpace;
-  readonly field: string;
+  readonly storageClass: TextureAtlasStorageClass;
 }
 
 const LAYER_ID_MAP: readonly LayerIdMapEntry[] = [
-  { key: 'baseColor', ref: (m) => m.baseColorMap, colorSpace: 'srgb', field: 'baseColorMap' },
-  { key: 'metal', ref: (m) => m.metallicMap, colorSpace: 'linear', field: 'metallicMap' },
-  { key: 'rough', ref: (m) => m.roughnessMap, colorSpace: 'linear', field: 'roughnessMap' },
-  { key: 'transmission', ref: (m) => m.transmissionMap, colorSpace: 'linear', field: 'transmissionMap' },
-  { key: 'emissive', ref: (m) => m.emissiveMap, colorSpace: 'srgb', field: 'emissiveMap' },
-  { key: 'normal', ref: (m) => m.normalMap, colorSpace: 'linear', field: 'normalMap' },
-  { key: 'alpha', ref: (m) => m.alphaMap, colorSpace: 'linear', field: 'alphaMap' },
-  { key: 'clearcoat', ref: (m) => m.clearcoatMap, colorSpace: 'linear', field: 'clearcoatMap' },
-  { key: 'clearcoatRoughness', ref: (m) => m.clearcoatRoughnessMap, colorSpace: 'linear', field: 'clearcoatRoughnessMap' },
-  { key: 'clearcoatNormal', ref: (m) => m.clearcoatNormalMap, colorSpace: 'linear', field: 'clearcoatNormalMap' },
-  { key: 'sheenColor', ref: (m) => m.sheenColorMap, colorSpace: 'srgb', field: 'sheenColorMap' },
-  { key: 'sheenRoughness', ref: (m) => m.sheenRoughnessMap, colorSpace: 'linear', field: 'sheenRoughnessMap' },
-  { key: 'iridescence', ref: (m) => m.iridescenceMap, colorSpace: 'linear', field: 'iridescenceMap' },
-  { key: 'iridescenceThickness', ref: (m) => m.iridescenceThicknessMap, colorSpace: 'linear', field: 'iridescenceThicknessMap' },
-  { key: 'specularColor', ref: (m) => m.specularColorMap, colorSpace: 'srgb', field: 'specularColorMap' },
-  { key: 'specularIntensity', ref: (m) => m.specularIntensityMap, colorSpace: 'linear', field: 'specularIntensityMap' },
-  { key: 'ao', ref: (m) => m.aoMap, colorSpace: 'linear', field: 'aoMap' },
-  { key: 'lightMap', ref: (m) => m.lightMap, colorSpace: 'linear', field: 'lightMap' },
-  { key: 'bump', ref: (m) => m.bumpMap, colorSpace: 'linear', field: 'bumpMap' },
-  { key: 'anisotropy', ref: (m) => m.anisotropyMap, colorSpace: 'linear', field: 'anisotropyMap' },
-  { key: 'thickness', ref: (m) => m.thicknessMap, colorSpace: 'linear', field: 'thicknessMap' },
-  { key: 'frontLayerNormal', ref: (m) => m.frontLayer?.normalMap, colorSpace: 'linear', field: 'frontLayer.normalMap' },
-  { key: 'backLayerNormal', ref: (m) => m.backLayer?.normalMap, colorSpace: 'linear', field: 'backLayer.normalMap' },
+  { key: 'baseColor', ref: (m) => m.baseColorMap, colorSpace: 'srgb', storageClass: 'ldr' },
+  { key: 'metal', ref: (m) => m.metallicMap, colorSpace: 'linear', storageClass: 'ldr' },
+  { key: 'rough', ref: (m) => m.roughnessMap, colorSpace: 'linear', storageClass: 'ldr' },
+  { key: 'transmission', ref: (m) => m.transmissionMap, colorSpace: 'linear', storageClass: 'ldr' },
+  { key: 'emissive', ref: (m) => m.emissiveMap, colorSpace: 'srgb', storageClass: 'hdr' },
+  { key: 'normal', ref: (m) => m.normalMap, colorSpace: 'linear', storageClass: 'ldr' },
+  { key: 'alpha', ref: (m) => m.alphaMap, colorSpace: 'linear', storageClass: 'ldr' },
+  { key: 'clearcoat', ref: (m) => m.clearcoatMap, colorSpace: 'linear', storageClass: 'ldr' },
+  { key: 'clearcoatRoughness', ref: (m) => m.clearcoatRoughnessMap, colorSpace: 'linear', storageClass: 'ldr' },
+  { key: 'clearcoatNormal', ref: (m) => m.clearcoatNormalMap, colorSpace: 'linear', storageClass: 'ldr' },
+  { key: 'sheenColor', ref: (m) => m.sheenColorMap, colorSpace: 'srgb', storageClass: 'ldr' },
+  { key: 'sheenRoughness', ref: (m) => m.sheenRoughnessMap, colorSpace: 'linear', storageClass: 'ldr' },
+  { key: 'iridescence', ref: (m) => m.iridescenceMap, colorSpace: 'linear', storageClass: 'ldr' },
+  { key: 'iridescenceThickness', ref: (m) => m.iridescenceThicknessMap, colorSpace: 'linear', storageClass: 'ldr' },
+  { key: 'specularColor', ref: (m) => m.specularColorMap, colorSpace: 'srgb', storageClass: 'ldr' },
+  { key: 'specularIntensity', ref: (m) => m.specularIntensityMap, colorSpace: 'linear', storageClass: 'ldr' },
+  { key: 'ao', ref: (m) => m.aoMap, colorSpace: 'linear', storageClass: 'ldr' },
+  { key: 'lightMap', ref: (m) => m.lightMap, colorSpace: 'linear', storageClass: 'hdr' },
+  { key: 'bump', ref: (m) => m.bumpMap, colorSpace: 'linear', storageClass: 'ldr' },
+  { key: 'anisotropy', ref: (m) => m.anisotropyMap, colorSpace: 'linear', storageClass: 'ldr' },
+  { key: 'thickness', ref: (m) => m.thicknessMap, colorSpace: 'linear', storageClass: 'ldr' },
+  { key: 'frontLayerNormal', ref: (m) => m.frontLayer?.normalMap, colorSpace: 'linear', storageClass: 'ldr' },
+  { key: 'backLayerNormal', ref: (m) => m.backLayer?.normalMap, colorSpace: 'linear', storageClass: 'ldr' },
 ];
 
 /** D10.8: Resolve all atlas layer ids for a material in one pass (avoids re-calling mapLayer). */
@@ -407,6 +442,7 @@ function packLayerIds(
     ids[entry.key] = mapLayer(
       entry.ref(m),
       layerOf,
+      entry.storageClass,
       entry.colorSpace,
     );
   }
@@ -693,7 +729,7 @@ function packTextureTransforms(
   // texture (others stay zero / unread → identity). The fork's
   // `writeTextureMatrixToArray` is the analogue.
   // Transform-slot order matches the GLSL `readTextureTransform` calls in
-  // material_struct.glsl.js (firstTextureTransformIdx + 2k): map(0), metalness(2),
+  // material_mapped_rich.glsl.ts (firstTextureTransformIdx + 2k): map(0), metalness(2),
   // roughness(4), transmission(6), emissive(8), normal(10), clearcoat(12),
   // clearcoatNormal(14), clearcoatRoughness(16), sheenColor(18), sheenRoughness(20),
   // iridescence(22), iridescenceThickness(24), specularColor(26), specularIntensity(28).
@@ -719,7 +755,7 @@ function packTextureTransforms(
   if (ids.thickness >= 0) writeTransform(data, base, MATERIAL_THICKNESS_TRANSFORM_TEXEL, m.thicknessMap);
 
   // D3 — texels 85/86: ao/light/bump map ids + scalars + envMapIntensity
-  // (mirrors readMaterialInfo s20/s21 in material_struct.glsl.js).
+  // (mirrors readMaterialInfo s20/s21 in material_mapped_rich.glsl.ts).
   // texel 86.a: retained UV1 compatibility mirror. Shaders use the arbitrary
   // layer-selector table below; this lane remains stable for record consumers.
   // instead of uv0 (ATTR_UV). Bit assignments are single-sourced in materialStride.js.
@@ -764,6 +800,8 @@ function packTextureTransforms(
         mipFilter?: TextureMipFilterMode;
       } | undefined,
       layerOf,
+      textureStorageClassForMapKey(field),
+      textureColorSpaceForMapKey(field),
     );
   }
 
@@ -782,9 +820,9 @@ function packTextureTransforms(
     writeTransform(data, base, MATERIAL_LAYER_NORMAL_TEXEL_OFFSET + 3, m.backLayer?.normalMap);
   }
   const frontLayerSampler = base + (MATERIAL_LAYER_NORMAL_TEXEL_OFFSET + 5) * 4;
-  writeSamplerPolicy(data, frontLayerSampler, m.frontLayer?.normalMap, layerOf);
+  writeSamplerPolicy(data, frontLayerSampler, m.frontLayer?.normalMap, layerOf, 'ldr', 'linear');
   const backLayerSampler = base + (MATERIAL_LAYER_NORMAL_TEXEL_OFFSET + 6) * 4;
-  writeSamplerPolicy(data, backLayerSampler, m.backLayer?.normalMap, layerOf);
+  writeSamplerPolicy(data, backLayerSampler, m.backLayer?.normalMap, layerOf, 'ldr', 'linear');
   const layerUv = base + (MATERIAL_LAYER_NORMAL_TEXEL_OFFSET + 7) * 4;
   data[layerUv] = resolveUvAttributeLayer(m.frontLayer?.normalMap, options);
   data[layerUv + 1] = resolveUvAttributeLayer(m.backLayer?.normalMap, options);

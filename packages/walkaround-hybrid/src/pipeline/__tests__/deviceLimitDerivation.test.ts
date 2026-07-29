@@ -173,7 +173,6 @@ describe('walkaround explicit pipeline device-limit derivation', () => {
     const { peaks, maxBindingsPerBindGroup, pipelines } = await derive({
       ppgEnabled: true,
       regirEnabled: true,
-      grisReuse: true,
     });
     expect(peaks).toEqual({
       storageBuffers: 8,
@@ -204,7 +203,6 @@ describe('walkaround explicit pipeline device-limit derivation', () => {
       nrcConfig: NRC_CONFIG,
       ppgEnabled: true,
       regirEnabled: true,
-      grisReuse: true,
     });
     expect(peaks.storageBuffers).toBe(8);
     expect(peaks.bindGroups).toBe(4);

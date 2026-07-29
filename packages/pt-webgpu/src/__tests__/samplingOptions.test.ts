@@ -174,8 +174,14 @@ describe('pt-webgpu sampling options', () => {
       );
       digest.update(String.fromCharCode(0));
     }
+    // A5 threads the active RNG into visibility helpers so stochastic alpha
+    // blends remain unbiased for shadow and reconnection rays.
+    // C65 expands the shared Joe-Kuo direction table to 512 dimensions; the
+    // C28-C40/KHR pass also changes the composed production call graph.
+    // C35 composes its native t=1 strategy helper only for BDPT-on modules, so
+    // Sobol's default and composite-off assignment surface stays legacy-exact.
     expect(digest.digest('hex')).toBe(
-      '78ce08571eefb70ee694e9ad1a8a40c147f4625beba0e76ed91e40ec184ca981',
+      'c4b85312699479411fc39c253b3c5e26247dc6f7018418c5989c4f9b7ec2d8d1',
     );
   });
   it('builds full and lite path-trace modules from the selected Sobol RNG', () => {
@@ -205,7 +211,7 @@ describe('pt-webgpu sampling options', () => {
       default: 'pcg',
       modes: { pcg: 'native', sobol: 'native' },
       sobol: {
-        lowDiscrepancyDimensions: 4,
+        lowDiscrepancyDimensions: 512,
         continuation: 'independent-pcg',
         sampleBlockSize: 65536,
         frameIndexPeriod: 4294967296,
@@ -231,7 +237,11 @@ describe('pt-webgpu sampling options', () => {
       ['full pixel y', 'pixelY: u32,'],
       ['frame-block key', 'sequenceKey: u32,'],
       ['independent overflow state', 'fallbackState: u32,'],
-      ['Sobol prefix length', 'const PT_SOBOL_DIMENSION_COUNT = 4u;'],
+      ['shared direction domain', 'const SOBOL_DIRECTION_DIMENSION_COUNT = 512u;'],
+      [
+        'Sobol prefix length',
+        'const PT_SOBOL_DIMENSION_COUNT = SOBOL_DIRECTION_DIMENSION_COUNT;',
+      ],
       ['sample extraction', 'let sampleIndex = frameKey & 0x0000ffffu;'],
       ['block extraction', 'let sequenceKey = frameKey >> 16u;'],
       ['full x retained', 'state.pixelX = px;'],
@@ -253,6 +263,7 @@ describe('pt-webgpu sampling options', () => {
     expect(PT_WEBGPU_SOBOL_RNG_WGSL).not.toContain('let dim = (*state) & 0xffu;');
     expect(PT_WEBGPU_SOBOL_RNG_WGSL).not.toContain('(dim + 1u) & 0xffu');
     expect(PT_WEBGPU_SOBOL_RNG_WGSL).not.toContain('dim % 256u');
+    expect(PT_WEBGPU_SOBOL_RNG_WGSL).not.toContain('fn rand3(');
 
     const composedSobol = composePtWebgpuTraceWgsl(false, { sampling: 'sobol' });
     expectOrderedNeedles(composedSobol, [
@@ -267,8 +278,9 @@ describe('pt-webgpu sampling options', () => {
 
     const parityState = initOwenScrambledSobolStream(9, 10, sobolFrameKey(123, 0));
     parityState.dimension = SOBOL_DIMENSION_COUNT - 2;
-    expect(Array.from({ length: 5 }, () => nextOwenScrambledSobolU32(parityState))).toEqual([
-      0xb524e900, 0x23e98800, 0xb625c789, 0xe10c246d, 0x25744040,
+    expect(Array.from({ length: 7 }, () => nextOwenScrambledSobolU32(parityState))).toEqual([
+      0x08785900, 0xe8b6ec00, 0x9d8c7ac8, 0xed2474d0,
+      0xb1a14c1e, 0x96716f84, 0x74ede162,
     ]);
     const lowDiscrepancyDimensions = Array.from(
       { length: SOBOL_DIMENSION_COUNT },
@@ -291,7 +303,7 @@ describe('pt-webgpu sampling options', () => {
       ],
       [
         'alpha visibility uses same stream',
-        'alphaTestPassThrough(hitMaterialId(hit), hit.triIndex, hit.baryVW, hit.instanceIndex, &rng)',
+        'hitMaterialId(hit), hit.triIndex, hit.baryVW, hit.instanceIndex, &rng,',
       ],
       [
         'canonical light selection consumes the next dimension block',
@@ -388,7 +400,7 @@ describe('pt-webgpu sampling options', () => {
       ['producer calls source-lobe sampler', 'let wiRecon = rptSampleSourceReconnectionDirection('],
       [
         'reservoir update tie-breaker uses stream',
-        '&r, xs, ns, Lo, heroLambda, pdfSrc, wCandidate, &rng,',
+        '&r, xs, ns, Lo, heroLambda, pdfSrc, logCandidateWeight, &rng,',
       ],
     ]);
     expect(RESTIR_PT_PRODUCER_WGSL).toContain(
@@ -405,12 +417,15 @@ describe('pt-webgpu sampling options', () => {
     );
   });
 
-  it('crosses the Sobol prefix on the maximum-bounce alpha and high-depth light-tree path', () => {
+  it('keeps the maximum-bounce alpha and high-depth light-tree path in the Sobol prefix', () => {
     expect(PT_WEBGPU_PATH_TRACE_KERNEL_WGSL).toContain(
       'let bounceLimit = max(1u, min(params.maxBounces, 8u));',
     );
     expect(PT_WEBGPU_PATH_TRACE_KERNEL_WGSL).toContain(
-      'for (var aSkip = 0u; aSkip < 8u; aSkip = aSkip + 1u)',
+      'let alphaSurfaceHitLimit = sceneSurfaceHitLimit();',
+    );
+    expect(PT_WEBGPU_PATH_TRACE_KERNEL_WGSL).toContain(
+      'if (alphaSurfaceHitCount >= alphaSurfaceHitLimit) {',
     );
     expect(LIGHT_TREE_TRAVERSAL_WGSL).toContain(
       'for (var guard: u32 = 0u; guard < nodeCount + 1u; guard = guard + 1u)',
@@ -422,18 +437,17 @@ describe('pt-webgpu sampling options', () => {
     const highDepthTreeNodes = 513;
     const highDepthTreeDraws = (highDepthTreeNodes - 1) / 2;
     const auditedDrawBudget = cameraAndSpectralDraws + maximumBounceAlphaDraws + highDepthTreeDraws;
-    expect(auditedDrawBudget).toBeGreaterThan(SOBOL_DIMENSION_COUNT);
+    expect(auditedDrawBudget).toBeLessThanOrEqual(SOBOL_DIMENSION_COUNT);
 
     const stream = initOwenScrambledSobolStream(9, 10, sobolFrameKey(123, 0));
+    const fallbackBeforeDraws = stream.fallbackState;
     const draws = Array.from({ length: auditedDrawBudget }, () =>
       nextOwenScrambledSobolU32(stream),
     );
-    expect(draws.slice(SOBOL_DIMENSION_COUNT - 2, SOBOL_DIMENSION_COUNT + 3)).toEqual([
-      0xb524e900, 0x23e98800, 0xb625c789, 0xe10c246d, 0x25744040,
+    expect(draws.slice(-4)).toEqual([
+      0xc4b83500, 0x41b58100, 0xf4567900, 0x0904d300,
     ]);
     expect(stream.dimension).toBe(auditedDrawBudget);
-    expect(new Set(draws.slice(SOBOL_DIMENSION_COUNT)).size).toBe(
-      draws.length - SOBOL_DIMENSION_COUNT,
-    );
+    expect(stream.fallbackState).toBe(fallbackBeforeDraws);
   });
 });

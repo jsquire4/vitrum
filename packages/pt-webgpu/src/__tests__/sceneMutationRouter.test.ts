@@ -207,33 +207,22 @@ describe('SceneMutationRouter — routing contract (pt-webgpu Task 4.3)', () => 
     expect(() => router.updatePrimitive('a', {
       material: {
         ...previous!.primitives[0]!.material,
+        thinFilmStack: {
+          layers: [{ ior: 1.4, thicknessNm: -1 }],
+        },
+      },
+    })).toThrow(/thinFilmStack\.layers\[0\]\.thicknessNm must be > 0/);
+    expect(state.scene).toBe(previous);
+    expect(calls.setScene).not.toHaveBeenCalled();
+    expect(calls.reset).not.toHaveBeenCalled();
+
+    // A coherent stack overrides the RGB-only iridescence model and now
+    // participates in the authored rough/metallic finite BSDF instead of
+    // requiring a smooth, fully transmissive special case.
+    expect(() => router.updatePrimitive('a', {
+      material: {
+        ...previous!.primitives[0]!.material,
         iridescence: 1,
-        thinFilmStack: {
-          layers: [{ ior: 1.4, thicknessNm: 320 }],
-        },
-      },
-    })).toThrow(/RGB-integrated/);
-    expect(state.scene).toBe(previous);
-    expect(calls.setScene).not.toHaveBeenCalled();
-    expect(calls.reset).not.toHaveBeenCalled();
-    expect(() => router.updatePrimitive('a', {
-      material: {
-        ...previous!.primitives[0]!.material,
-        thinFilmStack: {
-          layers: [{ ior: 1.4, thicknessNm: 320 }],
-        },
-      },
-    })).toThrow(/thin-film scene validation/);
-    expect(state.scene).toBe(previous);
-    expect(calls.setScene).not.toHaveBeenCalled();
-    expect(calls.reset).not.toHaveBeenCalled();
-    expect(() => router.updatePrimitive('a', {
-      material: {
-        ...previous!.primitives[0]!.material,
-        roughness: 0,
-        metallic: 0,
-        transmission: 1,
-        ior: 1.52,
         thinFilmStack: {
           layers: [{ ior: 1.4, thicknessNm: 320 }],
           angleDependent: true,
@@ -242,7 +231,9 @@ describe('SceneMutationRouter — routing contract (pt-webgpu Task 4.3)', () => 
     })).not.toThrow();
     expect(calls.setScene).toHaveBeenCalledTimes(1);
     const [accepted] = calls.setScene.mock.calls[0]!;
-    expect(accepted.primitives[0]!.material.iridescence ?? 0).toBe(0);
+    expect(accepted.primitives[0]!.material.iridescence).toBe(1);
+    expect(accepted.primitives[0]!.material.roughness).toBe(0.3);
+    expect(accepted.primitives[0]!.material.metallic).toBe(0.1);
     expect(accepted.primitives[0]!.material.thinFilmStack?.layers).toHaveLength(1);
     expect(calls.reset).not.toHaveBeenCalled();
 

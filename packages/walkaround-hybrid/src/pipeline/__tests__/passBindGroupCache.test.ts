@@ -169,8 +169,14 @@ describe('pass bind-group cache', () => {
     pass.dispatch(ctx);
 
     expect(buildSampleBudgetBindGroup).toHaveBeenCalledTimes(1);
-    expect((ctx as { device: { queue: { writeBuffer: ReturnType<typeof vi.fn> } } }).device.queue.writeBuffer)
-      .toHaveBeenCalledTimes(4);
+    const writeBuffer =
+      (ctx as { device: { queue: { writeBuffer: ReturnType<typeof vi.fn> } } })
+        .device.queue.writeBuffer;
+    expect(writeBuffer).toHaveBeenCalledTimes(4);
+    const sampleCountBytes = writeBuffer.mock.calls[1]?.[2] as ArrayBuffer;
+    // SampleBudget runs before this frame's Welford update, so frameIndex=3
+    // means the bound state contains three prior observations, not four.
+    expect(new DataView(sampleCountBytes).getUint32(0, true)).toBe(3);
   });
 
   it('keeps temporal alpha UBO writes while reusing the accum bind group', () => {
@@ -204,6 +210,30 @@ describe('pass bind-group cache', () => {
     pass.dispatch(ctx);
 
     expect(buildIndirectTemporalAccumBindGroup).toHaveBeenCalledTimes(2);
+  });
+
+  it('uses motion reprojection normally and the history-bypass pipeline on reset frames', () => {
+    const normalPipeline = { label: 'indirect-normal' } as unknown as GPUComputePipeline;
+    const resetPipeline = { label: 'indirect-reset' } as unknown as GPUComputePipeline;
+    const { ctx, pass: computePass, common } = baseCtx({ frameIndex: 0 });
+    const pass = new IndirectTemporalAccumPass(
+      normalPipeline,
+      { value: 0 },
+      resetPipeline,
+    );
+
+    pass.dispatch(ctx);
+
+    expect(computePass.setPipeline).toHaveBeenCalledWith(resetPipeline);
+    expect(buildIndirectTemporalAccumBindGroup).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+      expect.objectContaining({ label: 'motion-view' }),
+      expect.anything(),
+    );
+    expect(common.motionVectorTexture.createView).toHaveBeenCalledTimes(1);
   });
 
   it('publishes the transparent composition texture and reuses its bind group', () => {

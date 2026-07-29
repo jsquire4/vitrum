@@ -29,6 +29,141 @@ import {
 export const BASE_COLOR_MAP_META_TEX_WIDTH = 4096;
 export const MATERIAL_UV_AFFINE_LANE_BUDGET = 14;
 export const MATERIAL_MAP_META_TEXELS_PER_TRI = 157;
+const MATERIAL_TEXTURE_ATLAS_CPU_ALLOCATION_BUDGET_BYTES = 256 * 1024 * 1024;
+const MATERIAL_TEXTURE_ATLAS_CPU_AGGREGATE_BUDGET_BYTES = 512 * 1024 * 1024;
+const FLOAT32_BYTES = Float32Array.BYTES_PER_ELEMENT;
+const MAX_SAFE_INTEGER_BIGINT = BigInt(Number.MAX_SAFE_INTEGER);
+const MATERIAL_TEXTURE_ATLAS_CPU_ALLOCATION_BUDGET_BIGINT =
+  BigInt(MATERIAL_TEXTURE_ATLAS_CPU_ALLOCATION_BUDGET_BYTES);
+const MATERIAL_TEXTURE_ATLAS_CPU_AGGREGATE_BUDGET_BIGINT =
+  BigInt(MATERIAL_TEXTURE_ATLAS_CPU_AGGREGATE_BUDGET_BYTES);
+
+interface MaterialAtlasCpuBudget {
+  usedBytes: bigint;
+}
+
+interface MaterialAtlasProjection {
+  dim: number;
+  layers: number;
+  elementCount: number;
+  reservedBytes: bigint;
+}
+
+function checkedAllocationProduct(
+  label: string,
+  factors: readonly (number | bigint)[],
+): bigint {
+  let product = 1n;
+  for (const factor of factors) {
+    if (
+      (typeof factor === 'number' &&
+        (!Number.isSafeInteger(factor) || factor < 0)) ||
+      (typeof factor === 'bigint' && factor < 0n)
+    ) {
+      throw new RangeError(
+        `packMaterialTextureAtlas: ${label} dimensions must be non-negative safe integers.`,
+      );
+    }
+    product *= typeof factor === 'bigint' ? factor : BigInt(factor);
+  }
+  return product;
+}
+
+/**
+ * Reserve one Float32Array before constructing it. BigInt multiplication keeps
+ * adversarial dimensions exact; the aggregate cap reflects simultaneous CPU
+ * staging retained while the atlas and metadata are assembled.
+ */
+function reserveFloat32Allocation(
+  budget: MaterialAtlasCpuBudget,
+  label: string,
+  factors: readonly (number | bigint)[],
+): number {
+  const elementCount = checkedAllocationProduct(label, factors);
+  const byteCount = elementCount * BigInt(FLOAT32_BYTES);
+  if (byteCount > MAX_SAFE_INTEGER_BIGINT) {
+    throw new RangeError(
+      `packMaterialTextureAtlas: ${label} byte length exceeds the safe integer range.`,
+    );
+  }
+  if (byteCount > MATERIAL_TEXTURE_ATLAS_CPU_ALLOCATION_BUDGET_BIGINT) {
+    throw new RangeError(
+      `packMaterialTextureAtlas: ${label} requires ${byteCount.toString()} CPU bytes, ` +
+      `above the ${MATERIAL_TEXTURE_ATLAS_CPU_ALLOCATION_BUDGET_BYTES}-byte ` +
+      'per-allocation staging budget.',
+    );
+  }
+  const aggregateBytes = budget.usedBytes + byteCount;
+  if (aggregateBytes > MATERIAL_TEXTURE_ATLAS_CPU_AGGREGATE_BUDGET_BIGINT) {
+    throw new RangeError(
+      `packMaterialTextureAtlas: ${label} requires ${byteCount.toString()} CPU bytes ` +
+      `(aggregate ${aggregateBytes.toString()}), above the ` +
+      `${MATERIAL_TEXTURE_ATLAS_CPU_AGGREGATE_BUDGET_BYTES}-byte aggregate ` +
+      'staging budget.',
+    );
+  }
+  budget.usedBytes = aggregateBytes;
+  return Number(elementCount);
+}
+
+function updateAtlasProjection(
+  budget: MaterialAtlasCpuBudget,
+  projection: MaterialAtlasProjection,
+  width: number,
+  height: number,
+  layerCount: number,
+): void {
+  assertPositiveAtlasDimension(width, 'atlas layer width');
+  assertPositiveAtlasDimension(height, 'atlas layer height');
+  assertPositiveAtlasDimension(layerCount, 'atlas layer count');
+  const dim = Math.max(projection.dim, width, height);
+  const layers = Math.max(projection.layers, layerCount);
+  const elementCount = checkedAllocationProduct(
+    'material texture atlas',
+    [dim, dim, 4, layers],
+  );
+  const byteCount = elementCount * BigInt(FLOAT32_BYTES);
+  if (byteCount > MAX_SAFE_INTEGER_BIGINT) {
+    throw new RangeError(
+      'packMaterialTextureAtlas: material texture atlas byte length exceeds ' +
+      'the safe integer range.',
+    );
+  }
+  if (byteCount > MATERIAL_TEXTURE_ATLAS_CPU_ALLOCATION_BUDGET_BIGINT) {
+    throw new RangeError(
+      `packMaterialTextureAtlas: material texture atlas requires ` +
+      `${byteCount.toString()} CPU bytes, above the ` +
+      `${MATERIAL_TEXTURE_ATLAS_CPU_ALLOCATION_BUDGET_BYTES}-byte ` +
+      'per-allocation staging budget.',
+    );
+  }
+  const aggregateBytes =
+    budget.usedBytes - projection.reservedBytes + byteCount;
+  if (aggregateBytes > MATERIAL_TEXTURE_ATLAS_CPU_AGGREGATE_BUDGET_BIGINT) {
+    throw new RangeError(
+      `packMaterialTextureAtlas: material texture atlas requires ` +
+      `${byteCount.toString()} CPU bytes (aggregate ` +
+      `${aggregateBytes.toString()}), above the ` +
+      `${MATERIAL_TEXTURE_ATLAS_CPU_AGGREGATE_BUDGET_BYTES}-byte aggregate ` +
+      'staging budget.',
+    );
+  }
+  budget.usedBytes = aggregateBytes;
+  projection.dim = dim;
+  projection.layers = layers;
+  projection.elementCount = Number(elementCount);
+  projection.reservedBytes = byteCount;
+}
+
+function assertPositiveAtlasDimension(value: number, label: string): void {
+  if (!Number.isSafeInteger(value) || value < 1) {
+    throw new RangeError(
+      `packMaterialTextureAtlas: ${label} must be a positive safe integer; ` +
+      `received ${String(value)}.`,
+    );
+  }
+}
+
 export const MATERIAL_MAP_META_TEXEL_OFFSETS = {
   BASE_COLOR: 0,
   ROUGHNESS: 2,
@@ -242,7 +377,11 @@ interface AtlasLayerRecord {
   readonly height: number;
   readonly source:
     | { readonly kind: 'cpu'; readonly pixels: RawPixels }
-    | { readonly kind: 'gpu'; readonly descriptor: WalkaroundWebGpuTextureSource };
+    | {
+        readonly kind: 'gpu';
+        readonly descriptor: WalkaroundWebGpuTextureSource;
+        readonly cpuMirror?: RawPixels;
+      };
 }
 
 interface OrderedAtlasLayer {
@@ -370,7 +509,12 @@ function sourceMetaFields(source: TextureRefSourceMetadata | undefined): {
   };
 }
 
-function readHandlePixels(handle: unknown): ReadHandlePixelsResult | null {
+function readHandlePixels(
+  handle: unknown,
+  budget: MaterialAtlasCpuBudget,
+  label: string,
+  beforeDecode?: (width: number, height: number) => void,
+): ReadHandlePixelsResult | null {
   const h = handle as {
     width?: number;
     height?: number;
@@ -385,7 +529,22 @@ function readHandlePixels(handle: unknown): ReadHandlePixelsResult | null {
   const src = h.data ?? h.image?.data;
   const width = Number(h.width ?? h.image?.width ?? 0);
   const height = Number(h.height ?? h.image?.height ?? 0);
-  if (src == null || typeof src.length !== 'number' || width <= 0 || height <= 0) return null;
+  if (src == null || typeof src.length !== 'number') return null;
+  assertPositiveAtlasDimension(width, `${label}.width`);
+  assertPositiveAtlasDimension(height, `${label}.height`);
+  if (!Number.isSafeInteger(src.length) || src.length < 0) {
+    throw new RangeError(
+      `packMaterialTextureAtlas: ${label}.data.length must be a non-negative ` +
+      `safe integer; received ${String(src.length)}.`,
+    );
+  }
+  beforeDecode?.(width, height);
+  const outputElementCount = reserveFloat32Allocation(
+    budget,
+    `${label} RGBA decode`,
+    [width, height, 4],
+  );
+  const pixelCount = outputElementCount / 4;
 
   const hint: TextureHandleHint | undefined = h.__vitrum_hint__ ?? (
     (h.channels != null || h.dataType != null || h.colorSpace != null)
@@ -398,7 +557,7 @@ function readHandlePixels(handle: unknown): ReadHandlePixelsResult | null {
       : undefined
   );
 
-  const heuristicStride = Math.max(1, Math.round(src.length / (width * height)));
+  const heuristicStride = Math.max(1, Math.round(src.length / pixelCount));
   const stride = hint?.channels ?? heuristicStride;
   const ambiguousStride = hint == null && stride !== 1 && stride !== 4
     ? { pixelStride: stride, valueCount: src.length, width, height }
@@ -419,8 +578,8 @@ function readHandlePixels(handle: unknown): ReadHandlePixelsResult | null {
       intMax > 0 ? v / intMax : v
   );
 
-  const out = new Float32Array(width * height * 4);
-  for (let p = 0; p < width * height; p += 1) {
+  const out = new Float32Array(outputElementCount);
+  for (let p = 0; p < pixelCount; p += 1) {
     const s = p * stride;
     out[p * 4] = dec(Number(src[s] ?? 0));
     out[p * 4 + 1] = dec(Number(src[s + (stride > 1 ? 1 : 0)] ?? 0));
@@ -547,6 +706,15 @@ function nonNegativeVec3Component(
   return Number.isFinite(value) ? Math.max(0, value ?? fallback) : fallback;
 }
 
+function dielectricF0FromIor(ior: number | undefined): number {
+  // KHR_materials_ior defaults to 1.5. The core contract also preserves the
+  // finite IOR=0 endpoint; ((0 - 1) / (0 + 1))² is unit reflectance.
+  const resolvedIor = Number.isFinite(ior) ? Math.max(0, ior ?? 1.5) : 1.5;
+  const denominator = resolvedIor + 1;
+  const ratio = denominator > 1e-8 ? (resolvedIor - 1) / denominator : 1;
+  return Math.min(1, Math.max(0, ratio * ratio));
+}
+
 function clampedColorComponent(
   color: readonly [number, number, number] | undefined,
   index: 0 | 1 | 2,
@@ -562,6 +730,45 @@ export function packMaterialTextureAtlas(
   triCount: number,
   triangleUvs?: MaterialTriangleUvData,
 ): MaterialTextureAtlasPayload {
+  if (!Number.isSafeInteger(triCount) || triCount < 0) {
+    throw new RangeError(
+      'packMaterialTextureAtlas: triCount must be a non-negative safe integer; ' +
+      `received ${String(triCount)}.`,
+    );
+  }
+  const allocationBudget: MaterialAtlasCpuBudget = { usedBytes: 0n };
+  const rawMetaTexels = checkedAllocationProduct(
+    'material metadata texels',
+    [triCount, MATERIAL_MAP_META_TEXELS_PER_TRI],
+  );
+  const metaTexelsBig = rawMetaTexels > 0n ? rawMetaTexels : 1n;
+  const baseColorMetaWidthBig =
+    metaTexelsBig < BigInt(BASE_COLOR_MAP_META_TEX_WIDTH)
+      ? metaTexelsBig
+      : BigInt(BASE_COLOR_MAP_META_TEX_WIDTH);
+  const baseColorMetaHeightBig =
+    (metaTexelsBig + baseColorMetaWidthBig - 1n) / baseColorMetaWidthBig;
+  const baseColorMetaElementCount = reserveFloat32Allocation(
+    allocationBudget,
+    'material metadata atlas',
+    [baseColorMetaWidthBig, baseColorMetaHeightBig, 4n],
+  );
+  const baseColorMetaWidth = Number(baseColorMetaWidthBig);
+  const baseColorMetaHeight = Number(baseColorMetaHeightBig);
+  const opticalMetaElementCount = MATERIAL_OPTICAL_META_TEXELS * 4;
+  reserveFloat32Allocation(
+    allocationBudget,
+    'material optical metadata',
+    [BigInt(materials.length) + 1n, opticalMetaElementCount],
+  );
+  const atlasProjection: MaterialAtlasProjection = {
+    dim: 1,
+    layers: 1,
+    elementCount: 0,
+    reservedBytes: 0n,
+  };
+  updateAtlasProjection(allocationBudget, atlasProjection, 1, 1, 1);
+
   const readable = new Map<unknown, Partial<Record<AtlasColorSpace, AtlasLayerRecord>>>();
   const ordered: OrderedAtlasLayer[] = [];
   const diagnostics: MaterialTextureAtlasDiagnostic[] = [];
@@ -650,13 +857,46 @@ export function packMaterialTextureAtlas(
           `${source?.path !== undefined ? ` at ${source.path}` : ''}.`,
         );
       }
+      assertPositiveAtlasDimension(
+        ref.handle.width,
+        `material ${materialIndex} ${field} GPU source width`,
+      );
+      assertPositiveAtlasDimension(
+        ref.handle.height,
+        `material ${materialIndex} ${field} GPU source height`,
+      );
+      updateAtlasProjection(
+        allocationBudget,
+        atlasProjection,
+        ref.handle.width,
+        ref.handle.height,
+        ordered.length + 1,
+      );
+      let cpuMirror: RawPixels | undefined;
+      if (ref.handle.cpuMirror != null) {
+        cpuMirror = readHandlePixels(
+          ref.handle.cpuMirror,
+          allocationBudget,
+          `GPU source layer ${ordered.length} CPU mirror`,
+        )?.pixels;
+        if (cpuMirror == null) {
+          throw new TypeError(
+            `packMaterialTextureAtlas: GPU source layer ${ordered.length} has ` +
+            'an invalid CPU mirror.',
+          );
+        }
+      }
       pushInvalidTransformDiagnostic();
       const layer = ordered.length;
       const record: AtlasLayerRecord = {
         layer,
         width: ref.handle.width,
         height: ref.handle.height,
-        source: { kind: 'gpu', descriptor: ref.handle },
+        source: {
+          kind: 'gpu',
+          descriptor: ref.handle,
+          ...(cpuMirror != null ? { cpuMirror } : {}),
+        },
       };
       ordered.push({
         handle: ref.handle,
@@ -683,7 +923,18 @@ export function packMaterialTextureAtlas(
       );
     }
 
-    const read = readHandlePixels(ref.handle);
+    const read = readHandlePixels(
+      ref.handle,
+      allocationBudget,
+      `material ${materialIndex} ${field}`,
+      (width, height) => updateAtlasProjection(
+        allocationBudget,
+        atlasProjection,
+        width,
+        height,
+        ordered.length + 1,
+      ),
+    );
     if (read == null) {
       const source = textureRefSourceMetadata(ref);
       diagnostics.push({
@@ -783,13 +1034,23 @@ export function packMaterialTextureAtlas(
     );
   }
 
-  const atlasDim = Math.max(
-    1,
-    ...ordered.map((entry) => Math.max(entry.record.width, entry.record.height)),
-  );
+  let atlasDim = 1;
+  for (const entry of ordered) {
+    assertPositiveAtlasDimension(entry.record.width, 'atlas layer width');
+    assertPositiveAtlasDimension(entry.record.height, 'atlas layer height');
+    atlasDim = Math.max(atlasDim, entry.record.width, entry.record.height);
+  }
   const atlasLayerCount = Math.max(1, ordered.length);
+  if (
+    atlasDim !== atlasProjection.dim ||
+    atlasLayerCount !== atlasProjection.layers
+  ) {
+    throw new Error(
+      'packMaterialTextureAtlas: internal atlas allocation projection drifted.',
+    );
+  }
   const atlasMipLevelCount = Math.floor(Math.log2(atlasDim)) + 1;
-  const atlasData = new Float32Array(atlasDim * atlasDim * 4 * atlasLayerCount);
+  const atlasData = new Float32Array(atlasProjection.elementCount);
   const gpuSourceLayers: MaterialTextureAtlasGpuSourceLayer[] = [];
   if (ordered.length === 0) {
     atlasData.set([1, 1, 1, 1]);
@@ -806,13 +1067,8 @@ export function packMaterialTextureAtlas(
             !source.format.endsWith('-srgb')
           ),
         });
-        if (source.cpuMirror != null) {
-          const mirror = readHandlePixels(source.cpuMirror)?.pixels;
-          if (mirror == null) {
-            throw new TypeError(
-              `packMaterialTextureAtlas: GPU source layer ${layer} has an invalid CPU mirror.`,
-            );
-          }
+        if (entry.record.source.cpuMirror != null) {
+          const mirror = entry.record.source.cpuMirror;
           blitAtlasLayer(
             mirror,
             atlasDim,
@@ -834,12 +1090,9 @@ export function packMaterialTextureAtlas(
     });
   }
 
-  const metaTexels = Math.max(1, triCount * MATERIAL_MAP_META_TEXELS_PER_TRI);
-  const baseColorMetaWidth = Math.min(BASE_COLOR_MAP_META_TEX_WIDTH, metaTexels);
-  const baseColorMetaHeight = Math.ceil(metaTexels / baseColorMetaWidth);
-  const baseColorMetaData = new Float32Array(baseColorMetaWidth * baseColorMetaHeight * 4);
+  const baseColorMetaData = new Float32Array(baseColorMetaElementCount);
   const opticalMetaByMaterial = materials.map((material) => packMaterialOpticalMeta(material));
-  const emptyOpticalMeta = new Float32Array(MATERIAL_OPTICAL_META_TEXELS * 4);
+  const emptyOpticalMeta = new Float32Array(opticalMetaElementCount);
 
   const writeMapMeta = (
     mat: MaterialSpec | undefined,
@@ -921,9 +1174,15 @@ export function packMaterialTextureAtlas(
 
   const writeSpecularMeta = (mat: MaterialSpec | undefined, texel: number): void => {
     const b = texel * 4;
-    baseColorMetaData[b] = clampedColorComponent(mat?.specularColor, 0);
-    baseColorMetaData[b + 1] = clampedColorComponent(mat?.specularColor, 1);
-    baseColorMetaData[b + 2] = clampedColorComponent(mat?.specularColor, 2);
+    const dielectricF0 = dielectricF0FromIor(mat?.ior);
+    // Store absolute dielectric F0. Nonnegative KHR specularColor factors are
+    // intentionally unbounded, so authored values above one remain observable.
+    baseColorMetaData[b] =
+      dielectricF0 * nonNegativeVec3Component(mat?.specularColor, 0, 1);
+    baseColorMetaData[b + 1] =
+      dielectricF0 * nonNegativeVec3Component(mat?.specularColor, 1, 1);
+    baseColorMetaData[b + 2] =
+      dielectricF0 * nonNegativeVec3Component(mat?.specularColor, 2, 1);
     baseColorMetaData[b + 3] = clampedUnit(mat?.specularIntensity, 1);
   };
 

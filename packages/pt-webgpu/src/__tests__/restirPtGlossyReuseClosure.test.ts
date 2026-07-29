@@ -243,36 +243,82 @@ describe('ReSTIR-PT glossy reuse closure — change of variables and reservoir a
     }
   });
 
-  it('normalizes generalized-balance weights for arbitrary domain counts', () => {
+  it('normalizes Jacobian-corrected generalized-balance weights in one common measure', () => {
     const random = makeLcg(0x5eed1234);
     for (let domainCount = 2; domainCount <= 8; domainCount += 1) {
       const counts = Array.from(
         { length: domainCount },
         () => 1 + Math.floor(random() * 32),
       );
-      const targets = Array.from(
+      const nativeTargets = Array.from(
         { length: domainCount },
-        () => Array.from({ length: domainCount }, () => 0.01 + random() * 8),
+        () => 0.01 + random() * 8,
       );
-      for (let sample = 0; sample < domainCount; sample += 1) {
-        const denominator = counts.reduce(
-          (sum, count, domain) => sum + count * targets[domain]![sample]!,
+      // J_i maps domain i into the canonical receiver.  The target-measure
+      // proxy density is pHat_i / J_i.
+      const domainToCanonicalJacobians = Array.from(
+        { length: domainCount },
+        () => 0.05 + random() * 7,
+      );
+      const commonMeasureMasses = counts.map(
+        (count, domain) =>
+          count * nativeTargets[domain]! / domainToCanonicalJacobians[domain]!,
+      );
+      const commonDenominator = commonMeasureMasses.reduce(
+        (sum, mass) => sum + mass,
+        0,
+      );
+
+      // This is the shader's candidate-native form.  J_i/J_j converts
+      // technique j's proxy density into candidate i's native measure.
+      const weights = counts.map((count, candidate) => {
+        const candidateJacobian = domainToCanonicalJacobians[candidate]!;
+        const nativeDenominator = counts.reduce(
+          (sum, otherCount, domain) =>
+            sum
+            + otherCount
+              * nativeTargets[domain]!
+              * candidateJacobian
+              / domainToCanonicalJacobians[domain]!,
           0,
         );
-        const weights = counts.map(
-          (count, domain) => count * targets[domain]![sample]! / denominator,
+        const nativeNumerator = count * nativeTargets[candidate]!;
+        expect(nativeNumerator / nativeDenominator).toBeCloseTo(
+          commonMeasureMasses[candidate]! / commonDenominator,
+          13,
         );
-        expect(weights.reduce((sum, weight) => sum + weight, 0)).toBeCloseTo(1, 14);
-      }
+        return nativeNumerator / nativeDenominator;
+      });
+      expect(weights.reduce((sum, weight) => sum + weight, 0)).toBeCloseTo(1, 13);
     }
 
-    const temporalCounts = [3, 11];
-    const temporalTargets = [0.7, 4.3];
-    const denominator = temporalCounts[0]! * temporalTargets[0]!
-      + temporalCounts[1]! * temporalTargets[1]!;
-    const currentWeight = temporalCounts[0]! * temporalTargets[0]! / denominator;
-    const previousWeight = temporalCounts[1]! * temporalTargets[1]! / denominator;
+    // Two-domain hand case: previous→current J=4, so current→previous J=1/4.
+    const currentMass = 3 * 0.7;
+    const previousMass = 11 * 4.3;
+    const previousToCurrent = 4;
+    const currentToPrevious = 1 / previousToCurrent;
+    const currentWeight = currentMass
+      / (currentMass + previousMass * currentToPrevious);
+    const previousWeight = previousMass
+      / (currentMass * previousToCurrent + previousMass);
     expect(currentWeight + previousWeight).toBeCloseTo(1, 14);
+    expect(currentWeight).toBeCloseTo(
+      currentMass / (currentMass + previousMass / previousToCurrent),
+      14,
+    );
+    // The untransformed heuristic also normalizes, but is not the generalized
+    // balance heuristic's Jacobian-corrected density and gives a different mass.
+    expect(currentWeight).not.toBeCloseTo(
+      currentMass / (currentMass + previousMass),
+      6,
+    );
+
+    expect(RESERVOIR_PT_HERO_WGSL).toContain(
+      'fn rptLogWeightedShiftedTarget(',
+    );
+    expect(RESERVOIR_PT_HERO_WGSL).toContain(
+      'logWeightedTarget + log(sourceToTargetJacobian)',
+    );
   });
 });
 
@@ -446,16 +492,22 @@ describe('ReSTIR-PT glossy reuse closure — validation, exclusion, and fallback
   it('re-evaluates cross-material spatial targets and validates both reuse edges', () => {
     expect(RESTIR_PT_SPATIAL_WGSL).not.toContain('rQ.materialIdV != rCenter.materialIdV');
     expect(RESTIR_PT_SPATIAL_WGSL).toContain(
-      'rCenter, rQ.heroLambdaV, woCenter, rQ.xs, rQ.Lo,',
+      'rCenter, qR[i].heroLambdaV, woCenter, qR[i].xs, qR[i].Lo,',
     );
     expect(RESTIR_PT_SPATIAL_WGSL).toContain(
-      'rQ, rQ.heroLambdaV, woQ, rQ.xs, rQ.Lo,',
+      'qR[i], qR[i].heroLambdaV, qWo[i], qR[i].xs, qR[i].Lo,',
     );
     expect(RESTIR_PT_SPATIAL_WGSL).toContain(
-      'rptSpatialReconVisible(rCenter.xv, rCenter.nv, rQ.xs)',
+      'rCenter.xv, rCenter.nv, qR[i].xs, &rng,',
+    );
+    expect(RESTIR_PT_SPATIAL_WGSL).toContain(
+      'qR[j].xv, qR[j].nv, qR[i].xs, &rng,',
     );
     expect(RESTIR_PT_TEMPORAL_WGSL).toContain(
-      'rptReconnectionVisible(rCur.xv, rCur.nv, rPrev.xs)',
+      'rptReconnectionVisible(rCur.xv, rCur.nv, rPrev.xs, &rng)',
+    );
+    expect(RESTIR_PT_TEMPORAL_WGSL).toContain(
+      'rptReconnectionVisible(rPrev.xv, rPrev.nv, rCur.xs, &rng)',
     );
   });
 
@@ -497,7 +549,7 @@ describe('ReSTIR-PT glossy reuse closure — validation, exclusion, and fallback
       expect(production).not.toContain(obsolete);
     }
     expect(RESTIR_PT_PARAMS_FIELDS.map((field) => field.name)).toEqual([
-      'width', 'height', 'mClamp', '_padA', 'wCap', '_padB', '_padC', '_padD',
+      'width', 'height', 'mClamp', '_padA',
     ]);
     expect(RESERVOIR_PT_HERO_WGSL).toContain('const RESERVOIR_PT_HERO_STRIDE: u32 = 16u;');
   });

@@ -160,9 +160,6 @@ function goldenDims(spec: UNetSpec, W: number, H: number): Map<string, Dims> {
       case 'skipAdd':
         outC = inDims!.C;
         break;
-      case 'bilinearUpsample':
-        outH = outH * 2; outW = outW * 2;
-        break;
     }
     dims.set(layer.output, { H: outH, W: outW, C: outC });
   }
@@ -173,7 +170,6 @@ function goldenDispatch(kind: LayerSpec['kind'], d: Dims): [number, number, numb
   switch (kind) {
     case 'conv2d':
     case 'transposedConv2d':
-    case 'bilinearUpsample':
       return [Math.ceil(d.H / 8), Math.ceil(d.W / 8), d.C];
     case 'relu':
     case 'skipAdd':
@@ -208,12 +204,6 @@ function goldenUniformBytes(layer: LayerSpec, dimsMap: Map<string, Dims>, H: num
       const count = (inDims?.H ?? H) * (inDims?.W ?? W) * (inDims?.C ?? layer.params.inC);
       u32[0] = count;
       u32[1] = Math.ceil(count / 256);
-      break;
-    }
-    case 'bilinearUpsample': {
-      u32[0] = inDims?.H ?? H;
-      u32[1] = inDims?.W ?? W;
-      u32[2] = inDims?.C ?? layer.params.inC;
       break;
     }
     default:
@@ -273,7 +263,7 @@ describe('InferenceGraph — dims-once + decomposition behavior-identity (Task 4
     golden.push({ label: 'neural-inputPack', gx: Math.ceil((H * W) / 256), gy: 1, gz: 1 });
     for (const layer of spec.layers) {
       if (layer.kind === 'inputPack') continue;
-      if (!('conv2d transposedConv2d relu skipAdd bilinearUpsample'.includes(layer.kind))) continue;
+      if (!('conv2d transposedConv2d relu skipAdd'.includes(layer.kind))) continue;
       const od = dimsMap.get(layer.output);
       if (!od) continue;
       const [gx, gy, gz] = goldenDispatch(layer.kind, od);
@@ -305,7 +295,7 @@ describe('InferenceGraph — dims-once + decomposition behavior-identity (Task 4
     const expected: { bufLabel: string; bytes: number[] }[] = [];
     for (const layer of spec.layers) {
       if (layer.kind === 'inputPack') continue;
-      if (!('conv2d transposedConv2d relu skipAdd bilinearUpsample'.includes(layer.kind))) continue;
+      if (!('conv2d transposedConv2d relu skipAdd'.includes(layer.kind))) continue;
       expected.push({
         bufLabel: `neural-uniform-${layer.name}`,
         bytes: goldenUniformBytes(layer, dimsMap, H, W),

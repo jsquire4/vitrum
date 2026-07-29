@@ -6,9 +6,6 @@ export interface SceneTraceFeatures {
   readonly scalarRichMaterials: boolean;
   readonly mappedPbrMaterials: boolean;
   readonly mappedRichMaterials: boolean;
-  readonly analyticLights: boolean;
-  readonly meshLights: boolean;
-  readonly environmentLight: boolean;
   /** Scene contains the single supported participating-medium boundary. */
   readonly fog: boolean;
 }
@@ -20,6 +17,7 @@ const BASIC_MATERIAL_KEYS = new Set<keyof MaterialSpec>([
   'emissive',
   'emissiveIntensity',
   'shadingModel',
+  'doubleSided',
 ]);
 
 const SCALAR_RICH_MATERIAL_KEYS = new Set<keyof MaterialSpec>([
@@ -331,9 +329,6 @@ export function deriveSceneTraceFeatures(scene: Scene | null): SceneTraceFeature
       scalarRichMaterials: false,
       mappedPbrMaterials: false,
       mappedRichMaterials: true,
-      analyticLights: true,
-      meshLights: true,
-      environmentLight: true,
       fog: false,
     };
   }
@@ -356,9 +351,6 @@ export function deriveSceneTraceFeatures(scene: Scene | null): SceneTraceFeature
       !scalarRichMaterials &&
       !mappedPbrMaterials &&
       scene.primitives.every((primitive) => materialUsesMappedRichWebGl2Shader(primitive.material)),
-    analyticLights: scene.emitters.some((emitter) => emitter.kind !== 'mesh-area'),
-    meshLights: scene.emitters.some((emitter) => emitter.kind === 'mesh-area'),
-    environmentLight: scene.environment.kind !== 'none',
     fog: scene.primitives.some((primitive) => isParticipatingMedium(primitive.material)),
   };
 }

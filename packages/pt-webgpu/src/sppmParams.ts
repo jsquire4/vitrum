@@ -119,6 +119,35 @@ export interface SppmSceneBounds {
   readonly center: readonly [number, number, number];
 }
 
+/**
+ * Convert the canonical packed-scene bounding sphere into SPPM launch/gather
+ * parameters. `sceneRadius` is the root AABB half-diagonal, so the equivalent
+ * full diagonal used by {@link sppmInitialRadius} is `2 * sceneRadius`.
+ *
+ * This is the mutation-safe path: TLAS refits update `sceneCenter` and
+ * `sceneRadius` even though the retained BLAS vertex buffer remains local and
+ * byte-identical.
+ */
+export function sppmSceneBoundsFromCenterRadius(
+  sceneCenter: readonly [number, number, number],
+  sceneRadius: number,
+): SppmSceneBounds | null {
+  if (
+    sceneCenter.length !== 3 ||
+    !sceneCenter.every(Number.isFinite) ||
+    !Number.isFinite(sceneRadius) ||
+    sceneRadius < 0
+  ) {
+    return null;
+  }
+  const extent = Math.max(sceneRadius, 1e-3);
+  return {
+    initialRadius: Math.max((sceneRadius * 2) / 100, 1e-3),
+    extent,
+    center: [sceneCenter[0], sceneCenter[1], sceneCenter[2]],
+  };
+}
+
 /** Compute the AABB-derived launch disk and gather scale from packed xyz/w vertices. */
 export function sppmSceneBoundsFromPackedPositions(
   positions: ArrayLike<number>,

@@ -31,7 +31,8 @@
  *
  * Bind group 0:
  *   binding 0 — PresentParams (uniform)
- *   binding 1 — accumTex      (texture_2d<f32>, rgba16float — the running mean)
+ *   binding 1 — accumTex      (unfilterable-float texture_2d<f32>; rgba16float
+ *                               running mean or rgba32float OIDN result)
  *   binding 2 — presentTex    (texture_storage_2d<rgba16float, write> — output)
  */
 

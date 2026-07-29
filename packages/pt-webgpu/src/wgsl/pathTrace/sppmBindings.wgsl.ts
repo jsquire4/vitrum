@@ -262,6 +262,8 @@ fn sppmUpdateProgressiveKind(
   baseColor  : vec3f,
   roughness  : f32,
   metallic   : f32,
+  transmission : f32,
+  etaTOverI : f32,
   clearcoat  : f32,
   clearcoatRoughness : f32,
   sheen      : f32,
@@ -275,6 +277,7 @@ fn sppmUpdateProgressiveKind(
   specularIntensity : f32,
   anisotropy : f32,
   anisotropyRotation : f32,
+  thinFilm : ThinFilmInterface,
   throughput : vec3f,
   heroLambda : f32,
   heroPdf : f32,
@@ -353,13 +356,13 @@ fn sppmUpdateProgressiveKind(
             if (gatherKind == SPPM_PHOTON_KIND_SURFACE) {
               let nDotL = max(dot(normal, -ph.incidentDir), 0.0);
               if (nDotL > 0.0) {
-              let brdf = evaluateBrdfFullWithClearcoatNormal(
-                baseColor, roughness, metallic,
+              let brdf = evaluateFiniteBsdfFullWithClearcoatNormal(
+                baseColor, roughness, metallic, transmission, etaTOverI,
                 normal, clearcoatNormal, wo, -ph.incidentDir,
                 clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
                 iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
                 specularColor, specularIntensity,
-                anisotropy, anisotropyRotation,
+                anisotropy, anisotropyRotation, thinFilm, true,
               );
               // Accumulate BRDF-weighted photon flux (no π r² denominator here —
               // it is applied once in the final estimate, not per-photon, which
@@ -484,6 +487,8 @@ fn sppmUpdateSurfaceProgressive(
   baseColor  : vec3f,
   roughness  : f32,
   metallic   : f32,
+  transmission : f32,
+  etaTOverI : f32,
   clearcoat  : f32,
   clearcoatRoughness : f32,
   sheen      : f32,
@@ -497,6 +502,7 @@ fn sppmUpdateSurfaceProgressive(
   specularIntensity : f32,
   anisotropy : f32,
   anisotropyRotation : f32,
+  thinFilm : ThinFilmInterface,
   throughput : vec3f,
   heroLambda : f32,
   heroPdf : f32,
@@ -504,11 +510,12 @@ fn sppmUpdateSurfaceProgressive(
 ) {
   sppmUpdateProgressiveKind(
     pixelIndex, pos, normal, clearcoatNormal, wo,
-    baseColor, roughness, metallic,
+    baseColor, roughness, metallic, transmission, etaTOverI,
     clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
     iridescence, iridescenceIor,
     iridescenceThicknessMin, iridescenceThicknessMax,
     specularColor, specularIntensity, anisotropy, anisotropyRotation,
+    thinFilm,
     throughput, heroLambda, heroPdf, absorbedFluxInvPdf,
     SPPM_PHOTON_KIND_SURFACE, 0u,
   );
@@ -526,10 +533,11 @@ fn sppmUpdateVolumeProgressive(
 ) {
   sppmUpdateProgressiveKind(
     pixelIndex, pos, vec3f(0.0), vec3f(0.0), wo,
-    vec3f(0.0), 0.0, 0.0,
+    vec3f(0.0), 0.0, 0.0, 0.0, 1.0,
     0.0, 0.0, 0.0, 0.0, vec3f(0.0),
     0.0, 1.0, 0.0, 0.0,
     vec3f(1.0), 1.0, 0.0, 0.0,
+    bsdfNoThinFilm(),
     throughput, heroLambda, heroPdf, absorbedFluxInvPdf,
     SPPM_PHOTON_KIND_VOLUME, mediumMatId,
   );
@@ -705,7 +713,7 @@ fn sppmEmitPhotons(@builtin(global_invocation_id) gid: vec3u) {
       availableLightCount = availableLightCount + 1u;
     }
   }
-  if (hasEnvironmentMap() || params.environmentSun.w > 0.0) {
+  if (hasEnvironmentMap()) {
     availableLightCount = availableLightCount + 1u;
   }
   if (availableLightCount == 0u) { return; }
@@ -820,7 +828,8 @@ fn sppmEmitPhotons(@builtin(global_invocation_id) gid: vec3u) {
   }
 
   // Rect/disc area lights.  Same 4-vec4 record and area conventions as NEE:
-  // rshape.w ~= 0 => rect area 4*|u x v|; rshape.w ~= 1 => disc area PI*r^2.
+  // rshape.w ~= 0 => rect area 4*|u x v|;
+  // rshape.w ~= 1 => disc area PI*|u x v|.
   for (var rectIdx = 0u; rectIdx < params.rectAreaLightCount; rectIdx = rectIdx + 1u) {
     if (!sppmRectAreaCastsShadow(rectIdx)) { continue; }
     if (current == pick) {
@@ -842,7 +851,7 @@ fn sppmEmitPhotons(@builtin(global_invocation_id) gid: vec3u) {
         if (isDisc) {
           let disc = sppmConcentricDiscSample(vec2f(xi1 * 2.0 - 1.0, xi2 * 2.0 - 1.0));
           emitPos = rpos + ru * disc.x + rv * disc.y;
-          area = PI * dot(ru, ru);
+          area = PI * normalLen;
         } else {
           emitPos = rpos + ru * (xi1 * 2.0 - 1.0) + rv * (xi2 * 2.0 - 1.0);
           area = 4.0 * length(cross(ru, rv));
@@ -898,7 +907,7 @@ fn sppmEmitPhotons(@builtin(global_invocation_id) gid: vec3u) {
 
   // Environment source.  Direction/PDF comes from the same helpers as full-tier
   // NEE; photons are launched from a scene-covering disk perpendicular to wi.
-  if ((hasEnvironmentMap() || params.environmentSun.w > 0.0) && current == pick) {
+  if (hasEnvironmentMap() && current == pick) {
     var envDir = vec3f(0.0, 1.0, 0.0);
     var envColor = vec3f(0.0);
     var envPdf = 0.0;
@@ -953,14 +962,28 @@ fn sppmEmitPhotons(@builtin(global_invocation_id) gid: vec3u) {
     let alphaTraceOrigin = ray.origin;
     var alphaAdvance = 0.0;
     var hit = traceClosest(ray, 1e-4, INFINITY);
-    for (var aSkip = 0u; aSkip < 8u; aSkip = aSkip + 1u) {
-      if (!hit.didHit || !alphaTestPassThrough(hitMaterialId(hit), hit.triIndex, hit.baryVW, hit.instanceIndex, &rng)) { break; }
+    let alphaSurfaceHitLimit = sceneSurfaceHitLimit();
+    var alphaSurfaceHitCount = 0u;
+    var alphaTraversalValid = true;
+    loop {
+      if (!hit.didHit) { break; }
+      // Observe the final miss after exactly alphaSurfaceHitLimit pass-through
+      // surfaces; any further hit is outside the published scene support.
+      if (alphaSurfaceHitCount >= alphaSurfaceHitLimit) {
+        alphaTraversalValid = false;
+        break;
+      }
+      alphaSurfaceHitCount = alphaSurfaceHitCount + 1u;
+      if (!alphaTestPassThrough(
+        hitMaterialId(hit), hit.triIndex, hit.baryVW, hit.instanceIndex, &rng,
+      )) { break; }
       let alphaStep = hit.dist + 1e-4;
       alphaAdvance = alphaAdvance + alphaStep;
       ray.origin = ray.origin + ray.direction * alphaStep;
       hit = traceClosest(ray, 1e-4, INFINITY);
     }
     ray.origin = alphaTraceOrigin;
+    if (!alphaTraversalValid) { break; }
     if (hit.didHit) { hit.dist = hit.dist + alphaAdvance; }
     if (!hit.didHit) { break; }
     // Point/spot range and decay are properties of the source edge. Photon
@@ -1122,7 +1145,12 @@ fn sppmEmitPhotons(@builtin(global_invocation_id) gid: vec3u) {
       mat.iridescenceThicknessMax = iridescenceThickness;
       if (iridescenceThickness <= 0.0) { mat.iridescence = 0.0; }
     }
-    mat.specularColor = clamp(mat.specularColor * sampleSpecularColorTexture(matId, hit.triIndex, hit.baryVW, hit.instanceIndex), vec3f(0.0), vec3f(1.0));
+    mat.specularColor = max(
+      mat.specularColor * sampleSpecularColorTexture(
+        matId, hit.triIndex, hit.baryVW, hit.instanceIndex,
+      ),
+      vec3f(0.0),
+    );
     mat.specularIntensity = clamp(mat.specularIntensity * sampleSpecularIntensityTexture(matId, hit.triIndex, hit.baryVW, hit.instanceIndex), 0.0, 1.0);
     var materialIor = mat.ior;
     if (params.spectralEnabled != 0u) {
@@ -1198,7 +1226,10 @@ fn sppmEmitPhotons(@builtin(global_invocation_id) gid: vec3u) {
     let etaTOverI = transmittedIor / max(incidentIor, 1e-4);
     let wo = -ray.direction;
     let cosThetaO = max(dot(normal, wo), 0.0);
-    let f0Base = materialSpecularF0(baseColor, metallic, mat.specularColor, mat.specularIntensity);
+    let f0Base = materialSpecularF0(
+      baseColor, metallic, etaTOverI,
+      mat.specularColor, mat.specularIntensity,
+    );
     let f0 = iridescenceModifiedF0(
       f0Base, mat.iridescence, mat.iridescenceIor,
       mat.iridescenceThicknessMin, mat.iridescenceThicknessMax, cosThetaO,
@@ -1213,7 +1244,9 @@ fn sppmEmitPhotons(@builtin(global_invocation_id) gid: vec3u) {
     let bs = sampleNextBounceDirectionWithClearcoatNormal(
       &rng, ray.direction, hp, hit.normal, normal, clearcoatNormal,
       baseColor, roughness, metallic, transmission, etaTOverI, true,
-      fresnelSchlick(cosThetaO, f0),
+      materialSpecularFresnelSchlick(
+        cosThetaO, f0, metallic, mat.specularIntensity,
+      ),
       mat.iridescence, mat.iridescenceIor,
       mat.iridescenceThicknessMin, mat.iridescenceThicknessMax,
       mat.specularColor, mat.specularIntensity,

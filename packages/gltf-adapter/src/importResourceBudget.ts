@@ -406,7 +406,7 @@ export class ImportResourceLedger {
     this.encodedTotalLastResourceKey = resourceKey;
   }
 
-  chargeDecodedTexturePixels(pixelCount: number, path: string): void {
+  ensureDecodedTexturePixels(pixelCount: number, path: string): void {
     nonNegativeSafeInteger(pixelCount, `${path} decoded pixel count`);
     if (
       this.limits.maxDecodedTexturePixels !== 0 &&
@@ -435,6 +435,15 @@ export class ImportResourceLedger {
         path,
       });
     }
+  }
+
+  chargeDecodedTexturePixels(pixelCount: number, path: string): void {
+    this.ensureDecodedTexturePixels(pixelCount, path);
+    const next = checkedTotal(
+      this.decodedTexturePixelTotal,
+      pixelCount,
+      `${path} total decoded texture pixels`,
+    );
     this.decodedTexturePixelTotal = next;
     this.decodedTextureLastPath = path;
     if (pixelCount > this.largestDecodedTexturePixelCharge) {

@@ -208,8 +208,6 @@ describe('B4 mesh-area NEE/forward MIS consistency', () => {
     expect(out.totalEmissivePower).toBeGreaterThan(0);
     expect(out.data![4]).toBeCloseTo(6, 6);
     expect(out.data![5]).toBeCloseTo(0, 6);
-    expect(out.warnings).toEqual([]);
-
     const distSq = 7.5;
     const cosLight = 0.42;
     const firstTriArea = out.data![15]!;

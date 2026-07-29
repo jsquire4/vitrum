@@ -213,6 +213,7 @@ function makeFrameDeps(opts: {
     setSunIntensityMultiplier: () => undefined,
     setSkyParams: () => undefined,
     setGlassMixScale: () => undefined,
+    setIndirectFeedback: () => undefined,
     getReadAtlasGPUTextures: () => null,
     // Live BVH propagation (THREE-decouple): propagateBvhToGiSubsystems syncs the
     // shared scene-BVH buffers into DDGI each frame when syncDdgi + bvhBuffers.
@@ -235,13 +236,13 @@ function makeFrameDeps(opts: {
       primaryLightIntensity: 1,
       skyTint: [1, 1, 1],
       skyIrradiance: 1,
+      ddgiLights: [],
     },
     filter: {
       indirectFireflyClamp: [1, 1, 1],
       atrousDirectSigmas: [128, 5, 0.05],
       atrousIndirectSigmas: [32, 20, 0.5],
       stainedGlassFlags: 0,
-      grisReuse: 0,
       nrcEnabled: 0,
     },
     telemetry: {
@@ -268,6 +269,7 @@ function makeFrameDeps(opts: {
       ddgiOn: true,
       isLayerEnabled: () => true,
       device: makeStubDevice(),
+      maxBounces: 4,
       tunables: { glassMixScale: 1, triIntersectEpsilon: 1e-5 } as unknown as HybridEngineFrameDeps['flags']['tunables'],
       rcWeight: 0,
     },

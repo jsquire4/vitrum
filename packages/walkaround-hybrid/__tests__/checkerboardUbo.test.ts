@@ -187,7 +187,7 @@ describe('shade + resolve consume the SAME parity source', () => {
     expect(SPATIAL_WGSL).toContain('(gid.y + ubo.frameParity) & 1u');
     expect(SPATIAL_WGSL).toContain('gid.x * 2u + startCol');
     // OFF default keeps pix == gid.xy ⇒ full-res dispatch, bit-identity.
-    expect(SPATIAL_WGSL).toContain('var pix = gid.xy;');
+    expect(SPATIAL_WGSL).toContain('return gid.xy;');
   });
 
   it('ris.wgsl decodes the compacted dispatch with the SAME parity decode as shade/spatial', () => {

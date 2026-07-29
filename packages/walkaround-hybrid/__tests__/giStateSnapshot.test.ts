@@ -12,6 +12,10 @@ import {
 import { serialiseSTree } from '../src/ppg/serialise.js';
 import { buildSTree, splitOverflowLeaves } from '../src/ppg/sTree.js';
 import { dTreeAccumulateFlux } from '../src/ppg/dTree.js';
+import {
+  GI_STATE_COMPATIBILITY_SCHEMA,
+  GI_STATE_COMPATIBILITY_WORDS,
+} from '../src/giStateCompatibility.js';
 
 function makeSnapshot(): GIStateSnapshot {
   // Canonical atlas geometry for dims 3×4×5: irradiance stride 5,
@@ -26,6 +30,8 @@ function makeSnapshot(): GIStateSnapshot {
   for (let i = 0; i < probeStateData.length; i++) {
     probeStateData[i] = i % 4 === 3 ? Number(i % 8 === 3) : (i - 17) * 0.001;
   }
+  const compatibility = new Uint32Array(GI_STATE_COMPATIBILITY_WORDS);
+  compatibility[0] = GI_STATE_COMPATIBILITY_SCHEMA;
   return {
     dims: { x: 3, y: 4, z: 5 },
     origin: [-1.5, 2.25, -3.75],
@@ -33,11 +39,14 @@ function makeSnapshot(): GIStateSnapshot {
     irrW, irrH, visW, visH,
     irrData, visData,
     probeStateW, probeStateH, probeStateData,
+    compatibility,
   };
 }
 
-const RESTIR_GI_GRIS_STRIDE = 28; // GRIS DDGI-proxy reservoir stride (u32 per reservoir pixel)
-const RESTIR_GI_COMPACT_STRIDE = 20; // default Sprint-16/17 reservoir stride
+const RESTIR_GI_GRIS_STRIDE = 28; // sole live generalized reservoir stride
+const RESTIR_GI_COMPACT_STRIDE = 20; // legacy snapshot-only Sprint-16/17 stride
+const COMPAT_EXTENSION_BYTES =
+  32 + GI_STATE_COMPATIBILITY_WORDS * Uint32Array.BYTES_PER_ELEMENT;
 const RESTIR_BASE_FLOAT_LANES = [
   0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 18,
 ] as const;
@@ -63,7 +72,7 @@ function makeRestirSection(strideU32 = RESTIR_GI_GRIS_STRIDE): RestirGISnapshot 
         for (const lane of [20, 21, 22, 23, 26]) {
           f[base + lane] = (salt + record + lane) * 0.0001;
         }
-        a[base + 24] = record >>> 0;
+        a[base + 24] = 1; // reconnectable generalized sample
         a[base + 25] = record & 1;
         a[base + 27] = (salt + record) >>> 0;
       }
@@ -74,6 +83,42 @@ function makeRestirSection(strideU32 = RESTIR_GI_GRIS_STRIDE): RestirGISnapshot 
     halfW, halfH, strideU32,
     current: mk(1), previous: mk(2), spatial: mk(3),
   };
+}
+
+/** Build a historical v6 container without asking the v7 serializer to emit it. */
+function makeLegacyCompactV6Buffer(
+  snapshot: GIStateSnapshot,
+  restirGI: RestirGISnapshot,
+): ArrayBuffer {
+  const current = serializeGIState(snapshot);
+  const base = current.slice(0, current.byteLength - COMPAT_EXTENSION_BYTES);
+  const restirBytes =
+    20 +
+    restirGI.current.byteLength +
+    restirGI.previous.byteLength +
+    restirGI.spatial.byteLength;
+  const buffer = new ArrayBuffer(base.byteLength + restirBytes);
+  new Uint8Array(buffer, 0, base.byteLength).set(new Uint8Array(base));
+  const view = new DataView(buffer);
+  view.setUint32(4, 6, true);
+  view.setUint32(52, (view.getUint32(52, true) & 0x7) | 1, true);
+  let offset = base.byteLength;
+  view.setUint32(offset, restirGI.halfW, true); offset += 4;
+  view.setUint32(offset, restirGI.halfH, true); offset += 4;
+  view.setUint32(offset, restirGI.strideU32, true); offset += 4;
+  view.setUint32(offset, restirGI.current.length, true); offset += 4;
+  view.setUint32(offset, 0, true); offset += 4;
+  for (const data of [
+    restirGI.current,
+    restirGI.previous,
+    restirGI.spatial,
+  ]) {
+    new Uint8Array(buffer, offset, data.byteLength).set(
+      new Uint8Array(data.buffer, data.byteOffset, data.byteLength),
+    );
+    offset += data.byteLength;
+  }
+  return buffer;
 }
 
 /** Hand-build a v1 octahedral-irradiance buffer to assert the v3 SH break rejects it. */
@@ -129,7 +174,8 @@ describe('GI state snapshot serialization', () => {
       64 +
       s.irrData.byteLength +
       s.visData.byteLength +
-      s.probeStateData.byteLength,
+      s.probeStateData.byteLength +
+      COMPAT_EXTENSION_BYTES,
     );
   });
 
@@ -141,7 +187,12 @@ describe('GI state snapshot serialization', () => {
   it('rejects a truncated buffer (dims declare more than is present)', () => {
     const s = makeSnapshot();
     const full = serializeGIState(s);
-    const truncated = full.slice(0, full.byteLength - 16);
+    const basePayloadEnd =
+      64 +
+      s.irrData.byteLength +
+      s.visData.byteLength +
+      s.probeStateData.byteLength;
+    const truncated = full.slice(0, basePayloadEnd - 16);
     expect(() => deserializeGIState(truncated)).toThrow(/too small/);
   });
 
@@ -183,16 +234,22 @@ describe('GI state snapshot serialization', () => {
     expect(Array.from(r.spatial)).toEqual(Array.from(s.restirGI.spatial));
   });
 
-  it('round-trips the compact default ReSTIR-GI reservoir stride losslessly', () => {
-    const s = { ...makeSnapshot(), restirGI: makeRestirSection(RESTIR_GI_COMPACT_STRIDE) };
-    const back = deserializeGIState(serializeGIState(s));
+  it('decodes a legacy v6 compact ReSTIR-GI section for cold migration', () => {
+    const snapshot = makeSnapshot();
+    const restirGI = makeRestirSection(RESTIR_GI_COMPACT_STRIDE);
+    expect(() =>
+      serializeGIState({ ...snapshot, restirGI }),
+    ).toThrow(/cannot publish retired 20-u32/);
+    const back = deserializeGIState(
+      makeLegacyCompactV6Buffer(snapshot, restirGI),
+    );
     expect(back.restirGI).toBeDefined();
     const r = back.restirGI!;
     expect(r.strideU32).toBe(RESTIR_GI_COMPACT_STRIDE);
-    expect(r.current.length).toBe(s.restirGI.halfW * s.restirGI.halfH * RESTIR_GI_COMPACT_STRIDE);
-    expect(Array.from(r.current)).toEqual(Array.from(s.restirGI.current));
-    expect(Array.from(r.previous)).toEqual(Array.from(s.restirGI.previous));
-    expect(Array.from(r.spatial)).toEqual(Array.from(s.restirGI.spatial));
+    expect(r.current.length).toBe(restirGI.halfW * restirGI.halfH * RESTIR_GI_COMPACT_STRIDE);
+    expect(Array.from(r.current)).toEqual(Array.from(restirGI.current));
+    expect(Array.from(r.previous)).toEqual(Array.from(restirGI.previous));
+    expect(Array.from(r.spatial)).toEqual(Array.from(restirGI.spatial));
   });
 
   it('sizes the buffer for header + atlases + reservoir sub-block when reservoirs are present', () => {
@@ -202,7 +259,8 @@ describe('GI state snapshot serialization', () => {
     const reservoirBytes = 20 /* sub-header */ + r.current.byteLength + r.previous.byteLength + r.spatial.byteLength;
     expect(buf.byteLength).toBe(
       64 + s.irrData.byteLength + s.visData.byteLength
-        + s.probeStateData.byteLength + reservoirBytes,
+        + s.probeStateData.byteLength + reservoirBytes
+        + COMPAT_EXTENSION_BYTES,
     );
   });
 
@@ -210,7 +268,11 @@ describe('GI state snapshot serialization', () => {
     const s = makeSnapshot(); // no restirGI
     const buf = serializeGIState(s);
     expect(buf.byteLength).toBe(
-      64 + s.irrData.byteLength + s.visData.byteLength + s.probeStateData.byteLength,
+      64 +
+        s.irrData.byteLength +
+        s.visData.byteLength +
+        s.probeStateData.byteLength +
+        COMPAT_EXTENSION_BYTES,
     );
     expect(deserializeGIState(buf).restirGI).toBeUndefined();
   });
@@ -275,7 +337,9 @@ describe('GI state snapshot serialization', () => {
 
     const trailing = new Uint8Array(valid.byteLength + 4);
     trailing.set(new Uint8Array(valid));
-    expect(() => deserializeGIState(trailing.buffer)).toThrow(/trailing snapshot bytes/);
+    expect(() => deserializeGIState(trailing.buffer)).toThrow(
+      /trailing snapshot bytes|extension header/,
+    );
   });
 
   it.each([0x7c00, 0xfc00, 0x7e00])(
@@ -364,7 +428,7 @@ describe('GI state snapshot serialization', () => {
           spatial: new Uint32Array(5 * 7 * 30),
         },
       }),
-    ).toThrow(/compact or GRIS reservoir ABI/);
+    ).toThrow(/recognized reservoir ABI/);
   });
 
   it.each(
@@ -407,7 +471,7 @@ describe('GI state snapshot serialization', () => {
     ]) {
       data[15] = 0xffff_ffff;
       data[19] = 0xffff_ffff;
-      data[24] = 0xffff_ffff;
+      data[24] = 2;
       data[25] = 1;
       data[27] = 0xffff_ffff;
     }
@@ -426,7 +490,7 @@ describe('GI state snapshot serialization', () => {
     const restirGI: RestirGISnapshot = {
       halfW: 1,
       halfH: 1,
-      strideU32: RESTIR_GI_COMPACT_STRIDE,
+      strideU32: RESTIR_GI_GRIS_STRIDE,
       current: makeFloorBuffer(),
       previous: makeFloorBuffer(),
       spatial: makeFloorBuffer(),
@@ -595,7 +659,8 @@ describe('GI state snapshot v5 PPG section', () => {
     const ppgBytes = 48 /* PPG_SUBHEADER_BYTES */ + ppg.sTreeBuf.byteLength + ppg.dTreeBuf.byteLength + ppg.dTreeOffsets.byteLength;
     expect(buf.byteLength).toBe(
       64 + s.irrData.byteLength + s.visData.byteLength
-        + s.probeStateData.byteLength + reservoirBytes + ppgBytes,
+        + s.probeStateData.byteLength + reservoirBytes + ppgBytes
+        + COMPAT_EXTENSION_BYTES,
     );
   });
 
@@ -613,9 +678,19 @@ describe('GI state snapshot v5 PPG section', () => {
     const current = new Uint8Array(serializeGIState(s));
     const atlasEnd = 64 + s.irrData.byteLength + s.visData.byteLength;
     const probeStateEnd = atlasEnd + s.probeStateData.byteLength;
-    const v4 = new Uint8Array(current.byteLength - s.probeStateData.byteLength);
+    const v4 = new Uint8Array(
+      current.byteLength -
+        s.probeStateData.byteLength -
+        COMPAT_EXTENSION_BYTES,
+    );
     v4.set(current.subarray(0, atlasEnd));
-    v4.set(current.subarray(probeStateEnd), atlasEnd);
+    v4.set(
+      current.subarray(
+        probeStateEnd,
+        current.byteLength - COMPAT_EXTENSION_BYTES,
+      ),
+      atlasEnd,
+    );
     const header = new DataView(v4.buffer);
     header.setUint32(4, 4, true);
     header.setUint32(52, 0x2, true); // v4 PPG only; explicit DDGI state is v6.
@@ -630,7 +705,15 @@ describe('GI state snapshot v5 PPG section', () => {
     const s = { ...makeSnapshot(), ppg };
     const full = serializeGIState(s);
     // Drop enough bytes to truncate the dTreeOffsets blob.
-    const truncated = full.slice(0, full.byteLength - ppg.dTreeOffsets.byteLength);
+    const truncated = full.slice(
+      0,
+      full.byteLength -
+        COMPAT_EXTENSION_BYTES -
+        ppg.dTreeOffsets.byteLength,
+    );
+    const header = new DataView(truncated);
+    header.setUint32(4, 7, true);
+    header.setUint32(52, header.getUint32(52, true) & 0x7, true);
     expect(() => deserializeGIState(truncated)).toThrow(/PPG tree data/);
   });
 

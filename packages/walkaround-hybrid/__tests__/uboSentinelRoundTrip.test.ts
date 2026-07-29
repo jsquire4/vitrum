@@ -246,7 +246,7 @@ function buildSentinelInputs(): {
   const survivorsPerCell = s();
   // regirGridFloatOffset: u32 → u32[102]
   const gridFloatOffset = s();
-  // grisReuse: u32 → u32[103]
+  // grisReuse compatibility word: u32 → u32[103], always 1
   const grisReuse = s();
   // sunAngular.x: f32 → f32[104]
   const sunAngularRadius = s();
@@ -393,7 +393,7 @@ function buildSentinelInputs(): {
     'regirCandidatesPerCell@400': candidatesPerCell,
     'regirSurvivorsPerCell@404': survivorsPerCell,
     'regirGridFloatOffset@408': gridFloatOffset,
-    'grisReuse@412':        grisReuse,
+    'grisReuse@412':        1,
     'sunAngular.x@416':         sunAngularRadius,
   };
 
@@ -630,8 +630,9 @@ describe('packWalkaroundUBO — sentinel round-trip (packer index ↔ WGSL offse
     expect(ru(404)).toBe(survivorsPerCell);
     // regirGridFloatOffset (u32): offset 408
     expect(ru(408)).toBe(gridFloatOffset);
-    // grisReuse (u32): offset 412
-    expect(ru(412)).toBe(grisReuse);
+    // grisReuse compatibility word (u32): offset 412, always enabled.
+    expect(ru(412)).toBe(1);
+    expect(ru(412)).not.toBe(grisReuse);
   });
 
   it('ppg ON populates ppgEnabled=1 and ppgMixAlpha at offsets 348/352', () => {

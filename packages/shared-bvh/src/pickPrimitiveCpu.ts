@@ -16,7 +16,13 @@
  * Mat4s follow the `@vitrum/core` three.js column-major convention:
  * element (row, col) = m[col*4 + row].
  */
-import type { Mat4, Scene, ScenePrimitive, Vec3 } from '@vitrum/core';
+import {
+  solveSkin,
+  type Mat4,
+  type Scene,
+  type ScenePrimitive,
+  type Vec3,
+} from '@vitrum/core';
 import {
   invertMat4,
   mat4Mul,
@@ -182,8 +188,15 @@ function analyticBoundingSphere(shape: string, params: Float32Array, transform: 
 function intersectPrimitive(prim: ScenePrimitive, ray: Ray): number | null {
   switch (prim.kind) {
     case 'mesh':
-    case 'skinned-mesh': // rest-pose positions; deformation ignored (approximate, debug-only)
       return intersectTriangleSoup(prim.positions, prim.indices, prim.transform, ray);
+    case 'skinned-mesh': {
+      // Debug picking must follow the geometry currently visible on screen.
+      // `positions` is the rest-pose stream; the current bone matrices and
+      // morph weights live on the primitive and are resolved by the canonical
+      // core solver into the same mesh-local space before `transform`.
+      const posed = solveSkin(prim);
+      return intersectTriangleSoup(posed.positions, prim.indices, prim.transform, ray);
+    }
     case 'instanced-mesh': {
       let best: number | null = null;
       for (const inst of prim.instances) {

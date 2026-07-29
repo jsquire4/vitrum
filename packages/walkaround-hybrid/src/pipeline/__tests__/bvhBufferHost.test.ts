@@ -14,11 +14,6 @@ vi.mock('../resourceManager.js', () => ({
     usage,
     destroy: vi.fn(),
   })),
-  createDummyStorageBuffer: vi.fn(() => ({
-    size: 16,
-    usage: 0x80,
-    destroy: vi.fn(),
-  })),
 }));
 
 // WS1 — beer is a texture now; mock its host helper so the test stays
@@ -98,7 +93,6 @@ vi.mock('../environmentTexture.js', () => ({
 
 import { BvhBufferHost } from '../BvhBufferHost.js';
 import {
-  createDummyStorageBuffer,
   uploadBuffer,
   uploadBufferPadded,
 } from '../resourceManager.js';
@@ -165,7 +159,6 @@ type FaultableMock = {
 const replacementAllocators: readonly FaultableMock[] = [
   uploadBuffer,
   uploadBufferPadded,
-  createDummyStorageBuffer,
   uploadBeerTexture,
   uploadEmissiveTexture,
   uploadMaterialTextureAtlas,

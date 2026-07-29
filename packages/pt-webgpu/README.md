@@ -93,7 +93,7 @@ When the device cannot satisfy the full layout, the factory automatically select
 
 | Tier | Limits | Features |
 |------|--------|----------|
-| **full** | ≥34 storage buffers/stage, ≥5 storage textures/stage | TLAS, analytics, HDRI, all emitter arrays, material texture arrays/descriptors, motion vectors, variance moments, caustics (4 bind groups) |
+| **full** | ≥32 storage buffers/stage, ≥5 storage textures/stage; opt-ins add BDPT +1, one-edge reuse +4, CWBVH +5 | TLAS, analytics, HDRI, all emitter arrays, material texture arrays/descriptors, motion vectors, variance moments, caustics (4 bind groups) |
 | **lite** | ≥8 buffers, ≥4 textures | Merged-mesh BVH, directional + procedural sky, core G-buffer aux |
 
 Host device acquisition should use `ptWebgpuRequiredLimitsForAdapter(adapter)` (not the
@@ -118,7 +118,18 @@ Mechanical parity for the native WebGL2 path tracer is **implemented** for:
 
 **Denoisers on pt-webgpu:** `'none'`, `'auto'`, `'oidn-final'`. `auto` resolves to host OIDN when `oidn: { modelUrl }` exists, otherwise no-denoise with a structured warning. Any other explicit mode (incl. `'svgf-real'`) fails construction instead of silently selecting another estimator — SVGF is a real-time 1-spp filter, the wrong regime for a converged tracer.
 
-**BDPT (WG-7):** `bdpt: true` with `bdptOptions.maxLightBounces` 1–8 (default 2); a GPU `bdptExtendLightSubpath` compute pass fills the light subpath into a storage buffer, consumed by `evaluateBdptConnection` in the full-tier kernel. CPU oracles pin finite-area endpoint radiometry, medium sentinels, one-bounce diffuse light tracing, light-vertex BSDF connection, estimator ownership, and the full MIS recurrence.
+**BDPT (WG-7):** `bdpt: true` with `bdptOptions.maxLightBounces` 1–8
+(default 2) builds one invocation-private light subpath per camera invocation.
+The full-tier kernel evaluates bounded eye↔light connections and the native
+`s=n-1,t=1` light-subpath-to-camera strategy. Arbitrary-pixel t=1 contributions
+use a per-frame atomic RGB splat buffer and a second resolve entry point; the
+ordinary eye sample is staged into the same buffer so accumulation and variance
+see one complete base+splat sample per pixel. Both sides of the MIS partition
+use the same perspective-camera `Pdf_We = 1/(A cos³θ)`. CPU oracles pin camera
+projection/importance algebra, finite-area endpoint radiometry, medium
+sentinels, diffuse and glossy light tracing, bounded strategy ownership, and
+the full Veach recurrence. Enabling BDPT raises the full-tier storage-buffer
+floor from 32 to 33.
 
 Visual sign-off uses `npm run benchmark:gap-closure` on a WebGPU-capable host (`plan/archive/WG-signoff-2026-05-26-archived-2026-05-28.md`).
 

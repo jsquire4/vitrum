@@ -445,8 +445,8 @@ function isPreImportBlockingCompatibilityIssue<
   TFactoryOptions extends object,
 >(
   issue: GltfCompatibilityIssue,
-  preflight: GltfAssetCompatibilityPreflight,
-  options: LoadGltfForEngineOptions<TEngine, TFactoryOptions>,
+  _preflight: GltfAssetCompatibilityPreflight,
+  _options: LoadGltfForEngineOptions<TEngine, TFactoryOptions>,
 ): boolean {
   if (
     issue.category === 'animation' &&
@@ -455,15 +455,7 @@ function isPreImportBlockingCompatibilityIssue<
   ) {
     return true;
   }
-  return issue.category === 'extension' &&
-    issue.support === 'requires-hook' &&
-    isTextureSourceExtensionIssue(issue.name) &&
-    preflight.featureReport.extensions.required.includes(issue.name) &&
-    !(options.textureSourceExtensions ?? []).some((ext) => ext === issue.name);
-}
-
-function isTextureSourceExtensionIssue(name: string): boolean {
-  return name === 'KHR_texture_basisu' || name === 'EXT_texture_webp' || name === 'MSFT_texture_dds';
+  return false;
 }
 
 function formatBackendProfile(backend: BackendId, profileId: GltfBackendProfileId): string {
@@ -494,9 +486,9 @@ const UNSUPPORTED_IMPORT_DIAGNOSTICS: ReadonlySet<GltfImportDiagnosticCode> = ne
   'animation-target-node-not-found',
   'invalid-animation-output-count',
   'dropped-animation',
-  'ignored-vertex-color-set',
   'ignored-morph-target-texcoord',
   'unsupported-punctual-light-type',
+  'unsupported-image-based-light',
 ]);
 
 const DEGRADED_IMPORT_DIAGNOSTICS: ReadonlySet<GltfImportDiagnosticCode> = new Set([
@@ -518,11 +510,11 @@ const DEGRADED_IMPORT_DIAGNOSTICS: ReadonlySet<GltfImportDiagnosticCode> = new S
   'material-not-found',
   'material-variant-not-found',
   'material-variant-material-missing',
-  'ignored-material-texcoord',
   'ignored-morph-target-attribute',
   'invalid-morph-target-delta-length',
   'morph-weight-count-mismatch',
   'missing-punctual-light',
+  'undeclared-punctual-light-extension',
   'unknown-animation-interpolation',
   'image-not-found',
   'image-buffer-view-not-found',
@@ -744,9 +736,6 @@ function isSatisfiedCompatibilityIssue<
     if (issue.name === 'EXT_meshopt_compression' || issue.name === 'KHR_meshopt_compression') {
       return typeof options.meshoptDecode === 'function' ||
         options.compressionDecoderPolicy !== 'host-only';
-    }
-    if (issue.name === 'KHR_texture_basisu' || issue.name === 'EXT_texture_webp' || issue.name === 'MSFT_texture_dds') {
-      return (options.textureSourceExtensions ?? []).includes(issue.name) && typeof options.decodeImage === 'function';
     }
     return false;
   }

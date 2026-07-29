@@ -36,8 +36,12 @@ export class ShadePass extends SharedBindGroupPass {
 
   override dispatch(ctx: PassDispatchContext): void {
     if (!ctx.checkerboardOn) {
-      // OFF path — full-res dispatch, byte-identical to before.
-      super.dispatch(ctx);
+      dispatchSharedBindGroupPass(ctx, this._pipeline, {
+        label: 'shade',
+        useHybridLayers: this.useHybridLayers,
+        useShadeHybridLayers: this.useShadeHybridLayers,
+        frameBindGroupOverride: ctx.diTerminalFrameBindGroup,
+      });
       return;
     }
     // Checkerboard ON — compact the X dispatch to the active-parity columns.
@@ -50,6 +54,7 @@ export class ShadePass extends SharedBindGroupPass {
       label: 'shade',
       useHybridLayers: this.useHybridLayers,
       useShadeHybridLayers: this.useShadeHybridLayers,
+      frameBindGroupOverride: ctx.diTerminalFrameBindGroup,
       dispatchOverride: { x: ctx.checkerboardWgX, y: ctx.checkerboardWgY },
     });
   }

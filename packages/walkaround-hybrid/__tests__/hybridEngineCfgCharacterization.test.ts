@@ -69,12 +69,13 @@ function richOpts(overrides: Partial<HybridEngineOptions> = {}): HybridEngineOpt
     atrousDirectSigmas: [100, 6, 0.06],
     atrousIndirectSigmas: [30, 18, 0.4],
     grisReuse: true,
-    nrcEnabled: false,
+    nrcEnabled: true,
     nrcWarmupSteps: 3,
     gtaoMode: 'quarter',
     diSpatialPasses: 2,
     giSpatialPasses: 1,
     ddgiUpdateDivisor: 3,
+    ppgEnabled: true,
     ppgDispatchInterval: 5,
     ppgMaxSpatialCells: 2048,
     ppgMaxDTreeNodesPerCell: 97,
@@ -144,8 +145,7 @@ describe('HybridEngine._initStaticConfig — migrated config values unchanged', 
     expect(cfg['gtaoMode']).toBe(golden.gtaoMode);
     expect(cfg['diSpatialPasses']).toBe(golden.diSpatialPasses);
     expect(cfg['giSpatialPasses']).toBe(golden.giSpatialPasses);
-    // grisReuse / nrcEnabled forwarded as booleans (=== 1).
-    expect(cfg['grisReuse']).toBe(golden.grisReuse === 1);
+    expect('grisReuse' in cfg).toBe(false);
     expect(cfg['nrcEnabled']).toBe(golden.nrcEnabled === 1);
     expect(cfg['nrcConfig']).toEqual(golden.nrcConfig);
     // Runtime-mutable: intentionally excluded from the static snapshot so
@@ -175,7 +175,8 @@ describe('HybridEngine._denoiserFilterDeps — tuple cluster unchanged', () => {
     expect(deps['atrousDirectSigmas']).toEqual(golden.atrousDirectSigmas);
     expect(deps['atrousIndirectSigmas']).toEqual(golden.atrousIndirectSigmas);
     expect(deps['stainedGlassFlags']).toBe(golden.stainedGlassFlags);
-    expect(deps['grisReuse']).toBe(golden.grisReuse);
+    // Generalized reuse is the sole pipeline; no per-frame selector survives.
+    expect('grisReuse' in deps).toBe(false);
     expect(deps['nrcEnabled']).toBe(golden.nrcEnabled);
   });
 });
@@ -207,7 +208,7 @@ describe('HybridEngine._buildFrameDeps — per-frame config values unchanged', (
     expect(filter['atrousDirectSigmas']).toEqual(golden.atrousDirectSigmas);
     expect(filter['atrousIndirectSigmas']).toEqual(golden.atrousIndirectSigmas);
     expect(filter['stainedGlassFlags']).toBe(golden.stainedGlassFlags);
-    expect(filter['grisReuse']).toBe(golden.grisReuse);
+    expect('grisReuse' in filter).toBe(false);
     expect(filter['nrcEnabled']).toBe(golden.nrcEnabled);
   });
 
@@ -262,7 +263,7 @@ describe('HybridEngine._cfg — default options identity', () => {
     expect(cfg['denoiser']).toBe('atrous-variance');
     expect(cfg['maxBounces']).toBe(4);
     expect(cfg['indirectFireflyClamp']).toEqual([1.0, 1.0, 1.0]);
-    expect(cfg['grisReuse']).toBe(0);
+    expect('grisReuse' in cfg).toBe(false);
     expect(cfg['nrcEnabled']).toBe(0);
     expect(cfg['tunables']).toEqual(golden.tunables);
   });

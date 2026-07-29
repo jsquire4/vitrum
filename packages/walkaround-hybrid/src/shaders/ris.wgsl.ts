@@ -210,6 +210,12 @@ fn risMain(@builtin(global_invocation_id) gid: vec3u) {
   surf.bulkThickness = payload.bulkThickness;
   surf.envMapIntensity = envMapIntensity;
   surf.depth  = hit.dist;
+  surf.triangleId = hit.indices.w;
+  surf.instanceId = select(0u, hit.instanceIndex, ubo.bvhMode == 1u);
+  surf.materialKey =
+    hit.matColorPacked ^
+    (materialWord * 0x9e3779b9u) ^
+    (hit.indices.w * 0x85ebca6bu);
 
   var r = emptyReservoirDI();
   // Support-aware sample counts for mixed-measure reservoirs. Area emitters

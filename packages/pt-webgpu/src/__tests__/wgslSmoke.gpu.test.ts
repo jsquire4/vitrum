@@ -18,6 +18,9 @@ import {
 } from '../wgsl/pathTraceBruteforce.wgsl.js';
 import { PT_WEBGPU_TRACE_LITE_WGSL } from '../wgsl/pathTraceBruteforceLite.wgsl.js';
 import {
+  PT_WEBGPU_ADJOINT_PASS_WGSL,
+} from '../wgsl/pathTrace/adjointPass.wgsl.js';
+import {
   PT_WEBGPU_LITE_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
   PT_WEBGPU_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
 } from '../webgpuLimits.js';
@@ -185,5 +188,40 @@ describe('PT_WEBGPU_TRACE_WGSL GPU smoke', () => {
       );
     }
     expect(errors.length).toBe(0);
+  });
+
+  it('emissive adjoint WGSL parses and creates a real compute pipeline', async () => {
+    const module = device!.createShaderModule({
+      label: 'pt-webgpu-smoke-adjoint-emissive',
+      code: PT_WEBGPU_ADJOINT_PASS_WGSL,
+    });
+    const info = await module.getCompilationInfo();
+    const errors = info.messages.filter((message) => message.type === 'error');
+    if (errors.length > 0) {
+      throw new Error(
+        `emissive adjoint WGSL compile error(s):\n${errors
+          .map((error) => `  line ${error.lineNum}: ${error.message}`)
+          .join('\n')}`,
+      );
+    }
+    expect(errors).toEqual([]);
+
+    const requiredStorageBuffers = 7;
+    if (
+      adapter!.limits.maxStorageBuffersPerShaderStage >=
+      requiredStorageBuffers
+    ) {
+      await device!.createComputePipelineAsync({
+        label: 'pt-webgpu-smoke-pipeline-adjoint-emissive',
+        layout: 'auto',
+        compute: { module, entryPoint: 'main' },
+      });
+    } else {
+      await expect(device!.createComputePipelineAsync({
+        label: 'pt-webgpu-smoke-pipeline-adjoint-emissive',
+        layout: 'auto',
+        compute: { module, entryPoint: 'main' },
+      })).rejects.toThrow(/storage buffers .* exceeds the maximum/i);
+    }
   });
 });

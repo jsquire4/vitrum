@@ -35,8 +35,9 @@ import {
 } from '@vitrum/walkaround-hybrid';
 import {
   ptWebgpuRequiredLimitsForAdapter,
+  PT_WEBGPU_BDPT_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
   PT_WEBGPU_CWBVH_CLOSEST_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
-  PT_WEBGPU_CWBVH_CLOSEST_RESTIR_PT_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
+  PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
   PT_WEBGPU_FULL_REQUIRED_STORAGE_TEXTURES_PER_STAGE,
   PT_WEBGPU_LITE_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
   PT_WEBGPU_LITE_REQUIRED_STORAGE_TEXTURES_PER_STAGE,
@@ -99,15 +100,24 @@ export interface NegotiateWebGPUDeviceOptions {
   readonly label?: string;
 
   /**
-   * For `target: 'pt-webgpu'` or `'progressive'` — include the ReSTIR-PT reuse
+   * For `target: 'pt-webgpu'` or `'progressive'` — include one-edge reconnection
    * reservoir buffers in the device-limit union (raises the
    * `maxStorageBuffersPerShaderStage` floor to the ReSTIR-PT reuse tier).
-   * Matches the `restirPtReuse` option on {@link CreateProgressiveEngineOptions}
+   * Matches the converged engine's `oneEdgeReconnectionReuse` option
    * so a host can build the device with `negotiateWebGPUDevice` and then pass
    * it to `createProgressiveEngine` with the same flag without a limit
    * mismatch. Ignored for all other targets.
    */
+  readonly oneEdgeReconnectionReuse?: boolean;
+  /** @deprecated Compatibility alias for oneEdgeReconnectionReuse. */
   readonly restirPtReuse?: boolean;
+
+  /**
+   * For `target: 'pt-webgpu'` or `'progressive'` — include the converged
+   * renderer's native BDPT t=1 atomic camera-splat buffer in the device floor.
+   * Must match the converged engine's `bdpt:true` option.
+   */
+  readonly bdpt?: boolean;
 
   /**
    * For `target: 'pt-webgpu'` or `'progressive'` — include the opt-in CWBVH
@@ -238,15 +248,26 @@ function resolveRequiredLimits(
         );
       }
 
-      const restirPtReuse = options.restirPtReuse === true;
+      const restirPtReuse =
+        (options.oneEdgeReconnectionReuse ?? options.restirPtReuse) === true;
       const cwbvhClosest = options.cwbvhClosest === true;
-      const optionalBufferFloor = cwbvhClosest
-        ? (restirPtReuse
-            ? PT_WEBGPU_CWBVH_CLOSEST_RESTIR_PT_REQUIRED_STORAGE_BUFFERS_PER_STAGE
-            : PT_WEBGPU_CWBVH_CLOSEST_REQUIRED_STORAGE_BUFFERS_PER_STAGE)
-        : (restirPtReuse
-            ? PT_WEBGPU_RESTIR_PT_REUSE_REQUIRED_STORAGE_BUFFERS_PER_STAGE
-            : undefined);
+      const bdpt = options.bdpt === true;
+      const reconnectionStorageBindings =
+        PT_WEBGPU_RESTIR_PT_REUSE_REQUIRED_STORAGE_BUFFERS_PER_STAGE -
+        PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE;
+      const cwbvhStorageBindings =
+        PT_WEBGPU_CWBVH_CLOSEST_REQUIRED_STORAGE_BUFFERS_PER_STAGE -
+        PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE;
+      const bdptStorageBindings =
+        PT_WEBGPU_BDPT_REQUIRED_STORAGE_BUFFERS_PER_STAGE -
+        PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE;
+      const optionalBufferFloor =
+        bdpt || restirPtReuse || cwbvhClosest
+          ? PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE +
+            (bdpt ? bdptStorageBindings : 0) +
+            (restirPtReuse ? reconnectionStorageBindings : 0) +
+            (cwbvhClosest ? cwbvhStorageBindings : 0)
+          : undefined;
       if (
         optionalBufferFloor != null &&
         (maxBuffers < optionalBufferFloor ||
@@ -254,6 +275,8 @@ function resolveRequiredLimits(
       ) {
         throw new Error(
           'negotiateWebGPUDevice: target "pt-webgpu" cannot enable the requested ' +
+            `${bdpt ? 'BDPT camera splats' : ''}` +
+            `${bdpt && (cwbvhClosest || restirPtReuse) ? ' + ' : ''}` +
             `${cwbvhClosest ? 'CWBVH closest-hit' : ''}` +
             `${cwbvhClosest && restirPtReuse ? ' + ' : ''}` +
             `${restirPtReuse ? 'ReSTIR-PT reuse' : ''} layout. ` +
@@ -263,7 +286,11 @@ function resolveRequiredLimits(
         );
       }
 
-      const required = ptWebgpuRequiredLimitsForAdapter(adapter, { restirPtReuse, cwbvhClosest });
+      const required = ptWebgpuRequiredLimitsForAdapter(adapter, {
+        bdpt,
+        restirPtReuse,
+        cwbvhClosest,
+      });
       return assertRequiredLimits(adapter, required, 'target "pt-webgpu"');
     }
 
@@ -295,12 +322,15 @@ function resolveRequiredLimits(
       // Forward restirPtReuse so a host negotiating a progressive device for
       // ReSTIR-PT reuse gets the higher buffer floor (matching the
       // createProgressiveEngine limit-union preflight).
-      const restirPtReuse = options.restirPtReuse === true;
+      const restirPtReuse =
+        (options.oneEdgeReconnectionReuse ?? options.restirPtReuse) === true;
       const cwbvhClosest = options.cwbvhClosest === true;
+      const bdpt = options.bdpt === true;
       const nrcEnabled = options.nrcEnabled === true;
       const unionOptions = {
         restirPtReuse,
         cwbvhClosest,
+        bdpt,
         nrcEnabled,
         ...(options.nrcConfig !== undefined ? { nrcConfig: options.nrcConfig } : {}),
       };

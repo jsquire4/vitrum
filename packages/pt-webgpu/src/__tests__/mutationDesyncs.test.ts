@@ -113,19 +113,25 @@ describe('canFastPathMaterialPatch — Item 2a: TextureRef fields route to setSc
         material: {
           displacementScale: 0.2,
           displacementBias: -0.1,
+          displacementSubdivisions: 3,
         },
       } as never),
     ).toEqual({
       textureFields: [],
       descriptorScalarFields: [],
       layerDescriptorFields: [],
-      geometryFields: ['displacementBias', 'displacementScale'],
+      geometryFields: [
+        'displacementBias',
+        'displacementScale',
+        'displacementSubdivisions',
+      ],
     });
     expect(
       canFastPathMaterialPatch({
         material: {
           displacementScale: 0.2,
           displacementBias: -0.1,
+          displacementSubdivisions: 3,
         },
       } as never),
     ).toBe(false);
@@ -178,6 +184,48 @@ describe('canFastPathGeometryPatch — sparse semantic sets', () => {
     expect(canFastPathGeometryPatch(primitive, { uvSets })).toBe(true);
     uvSets[ordinaryPropertyIndex] = new Float32Array(4);
     expect(canFastPathGeometryPatch(primitive, { uvSets })).toBe(false);
+  });
+
+  it('classifies legacy and scalable vertex-color mutations as geometry patches', () => {
+    const colors = new Float32Array(9);
+    const selectedColors = new Float32Array(12);
+    const colorSets: Array<Float32Array | undefined> = [];
+    colorSets[0] = colors;
+    colorSets[2] = selectedColors;
+    const primitive: Scene['primitives'][number] = {
+      kind: 'mesh',
+      id: 'colored-patch',
+      positions: new Float32Array(9),
+      normals: new Float32Array(9),
+      colors,
+      colorSets,
+      vertexColorSet: 2,
+      material: { baseColor: [1, 1, 1], roughness: 0.5, metallic: 0 },
+    };
+
+    expect(canFastPathGeometryPatch(
+      primitive,
+      { colors: new Float32Array(12) },
+    )).toBe(true);
+    expect(canFastPathGeometryPatch(
+      primitive,
+      { colorSets },
+    )).toBe(true);
+    expect(canFastPathGeometryPatch(
+      primitive,
+      { vertexColorSet: 0 },
+    )).toBe(true);
+
+    expect(canFastPathGeometryPatch(
+      primitive,
+      { colors: new Float32Array(8) },
+    )).toBe(false);
+    const invalidColorSets: Array<Float32Array | undefined> = [];
+    invalidColorSets[3] = new Float32Array(10);
+    expect(canFastPathGeometryPatch(
+      primitive,
+      { colorSets: invalidColorSets },
+    )).toBe(false);
   });
 });
 
@@ -714,11 +762,23 @@ describe('SceneMutationRouter — Phase 5C mutation observability', () => {
           intensity: 1,
         },
       ],
-      environment: { kind: 'none' },
+      environment: {
+        kind: 'hdri',
+        hdri: {
+          width: 2,
+          height: 1,
+          data: new Float32Array([
+            1, 0.5, 0.25,
+            0.25, 0.5, 1,
+          ]),
+        },
+        intensity: 0.75,
+      },
     };
-    const { host, writeBuffer, copyBufferToBuffer, sceneBuffers } =
+    const { host, sceneRef, writeBuffer, copyBufferToBuffer, sceneBuffers } =
       makeHostWithEmissiveScene(scene);
     const router = new SceneMutationRouter(host);
+    const retainedEnvironmentPower = sceneBuffers.environmentLightTreePower;
     writeBuffer.mockClear();
     const copiesBefore = copyBufferToBuffer.mock.calls.length;
 
@@ -738,6 +798,13 @@ describe('SceneMutationRouter — Phase 5C mutation observability', () => {
       expect(Number(size) % 4).toBe(0);
     }
     expect(sceneBuffers.pointLightCount).toBe(1);
+    const freshPacked = buildPackedScene(sceneRef.current, {});
+    expect(sceneBuffers.environmentLightTreePower).toBe(
+      retainedEnvironmentPower,
+    );
+    expect(Array.from(sceneBuffers.lightTreeNodes)).toEqual(
+      Array.from(freshPacked.lightTreeNodes),
+    );
     expect(host.setSceneState).toHaveBeenCalledTimes(1);
     expect(host.setScene).not.toHaveBeenCalled();
     expect(host.reset).toHaveBeenCalledTimes(1);
@@ -762,16 +829,34 @@ describe('SceneMutationRouter — Phase 5C mutation observability', () => {
           material: { baseColor: [0.5, 0.5, 0.5], roughness: 0.5, metallic: 0 },
         },
       ],
-      emitters: [],
+      emitters: [
+        {
+          kind: 'point',
+          id: 'lamp',
+          position: [0, 2, 0],
+          color: [1, 0.9, 0.7],
+          intensity: 2,
+        },
+      ],
       environment: { kind: 'hdri', hdri: hdri(1), intensity: 1, rotationY: 0 },
     };
     const { host, writeBuffer, copyBufferToBuffer, sceneBuffers } =
       makeHostWithEmissiveScene(scene);
     const router = new SceneMutationRouter(host);
+    const nextEnvironment: Scene['environment'] = {
+      kind: 'hdri',
+      hdri: hdri(2),
+      intensity: 0.4,
+      rotationY: 0.25,
+    };
+    const expectedPacked = buildPackedScene(
+      { ...scene, environment: nextEnvironment },
+      {},
+    );
     writeBuffer.mockClear();
     const copiesBefore = copyBufferToBuffer.mock.calls.length;
 
-    router.updateEnvironment({ kind: 'hdri', hdri: hdri(2), intensity: 0.4, rotationY: 0.25 });
+    router.updateEnvironment(nextEnvironment);
 
     expect(writeBuffer.mock.calls).toHaveLength(1);
     const staging = writeBuffer.mock.calls[0]?.[0] as StubGpuBuffer;
@@ -790,8 +875,14 @@ describe('SceneMutationRouter — Phase 5C mutation observability', () => {
       expect(Number(size) % 4).toBe(0);
     }
     expect(sceneBuffers.hasEnvironmentMap).toBe(true);
-    expect(sceneBuffers.environmentHdriIntensity).toBe(0.4);
+    expect(sceneBuffers.environmentHdriIntensity).toBe(Math.fround(0.4));
     expect(sceneBuffers.environmentHdriRotationY).toBe(0.25);
+    expect(sceneBuffers.environmentLightTreePower).toBe(
+      expectedPacked.environmentLightTreePower,
+    );
+    expect(Array.from(sceneBuffers.lightTreeNodes)).toEqual(
+      Array.from(expectedPacked.lightTreeNodes),
+    );
     expect(host.setSceneState).toHaveBeenCalledTimes(1);
     expect(host.setScene).not.toHaveBeenCalled();
     expect(host.reset).toHaveBeenCalledTimes(1);

@@ -13,7 +13,7 @@ import { WEBGL2_MAX_PATH_STEPS } from '../limits.js';
 /**
  * The inlined main() render loop (PhysicalPathTracingMaterial.js:443-1099). The fork keeps
  * the whole orchestration loop inline in the material (no `RENDER.main` chunk), so it is
- * transcribed verbatim here. All FEATURE_ and DEBUG_MODE gates resolve from the preamble
+ * transcribed verbatim here. All FEATURE_ gates resolve from the preamble
  * defines at compile time.
  *
  * D10.4 (2026-06-11): split into named section constants assembled in order.
@@ -297,6 +297,13 @@ const RENDER_MAIN_GBUFFER = /* glsl */ `
 
                                                         }
 
+                                                        // Surface reconstruction uses a zero-based accepted-bounce
+                                                        // depth. Alpha/fog pass-through rewinds i below, so the first
+                                                        // camera-visible surface remains depth 0 even after skipped
+                                                        // intersections. state.depth deliberately remains the
+                                                        // one-based traversal counter used by RR/debug telemetry.
+                                                        int surfacePathDepth = i;
+
                                                         sobolBounceIndex ++;
 
                                                         state.depth ++;
@@ -532,7 +539,7 @@ const RENDER_MAIN_BDPT_EYE = /* glsl */ `
 
 								surfaceStatus = getSurfaceRecord(
 									materialIndex, surfaceHit, attributesArray,
-									state.accumulatedRoughness, int( state.depth ), state.wavelength,
+									state.accumulatedRoughness, surfacePathDepth, state.wavelength,
 									surf
 								);
 
@@ -692,9 +699,7 @@ const RENDER_MAIN_SURFACE_BDPT_EYE = /* glsl */ `
 								neeCandidate2 = vec4( 0.0 );
 								neeCandidate3 = vec4( 0.0 );
 
-								#if RANDOM_TYPE != 2
 								uvec4 neeSavedWhiteNoiseSeed = WHITE_NOISE_SEED;
-								#endif
 								uint neeSavedSobolBounceIndex = sobolBounceIndex;
 
                                                                         DirectLightSample neeLightSample = sampleDirectLight(
@@ -704,9 +709,7 @@ const RENDER_MAIN_SURFACE_BDPT_EYE = /* glsl */ `
                                                                         surf, state, geometricHitPoint, neeLightSample
                                                                 );
 
-								#if RANDOM_TYPE != 2
 								WHITE_NOISE_SEED = neeSavedWhiteNoiseSeed;
-								#endif
                                                                 sobolBounceIndex = neeSavedSobolBounceIndex;
 
                                                                 float neeCrossFamilyMisWeight = 1.0;
@@ -747,7 +750,9 @@ const RENDER_MAIN_SURFACE_BDPT_EYE = /* glsl */ `
 									uint neeFlags = 1u;
 									if ( surf.volumeParticle ) neeFlags |= 2u;
 									if ( neeLightSample.delta > 0.5 ) neeFlags |= 4u;
-									neeFlags |= ( min( state.depth, 127u ) << 3u );
+									neeFlags |= (
+										min( uint( surfacePathDepth ), 127u ) << 3u
+									);
 
                                                                         neeCandidate0 = vec4( ray.origin, state.accumulatedRoughness );
                                                                         neeCandidate1 = vec4( ray.direction, state.wavelength );
@@ -1050,19 +1055,6 @@ const RENDER_MAIN_SCATTER = /* glsl */ `
 // ── Section 9: post-loop alpha + debug + G-buffer write ──────────────────
 const RENDER_MAIN_POST_LOOP = /* glsl */ `
 						pc_fragColor.a *= opacity;
-
-						#if DEBUG_MODE == 1
-
-						// output the number of rays checked in the path and number of
-						// transmissive rays encountered.
-						pc_fragColor.rgb = vec3(
-							float( state.depth ),
-							transmissiveBounces - state.transmissiveTraversals,
-							0.0
-						);
-						pc_fragColor.a = 1.0;
-
-						#endif
 
 						#if NEE_CANDIDATE_PASS
 

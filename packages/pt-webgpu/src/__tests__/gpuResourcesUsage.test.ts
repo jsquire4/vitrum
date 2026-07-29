@@ -29,6 +29,59 @@ describe('GpuResources texture usage', () => {
     expect((usageByLabel.get('vitrum.pt-webgpu.albedo')! & copySrc) !== 0).toBe(true);
   });
 
+  it('allocates, clears, reuses, and disposes the BDPT camera-splat buffer', () => {
+    installGpuConstStubs();
+    const bufferDescs: GPUBufferDescriptor[] = [];
+    const buffers = new Map<string, {
+      readonly label: string;
+      readonly destroy: ReturnType<typeof vi.fn>;
+    }>();
+    const encoder = {
+      clearBuffer: vi.fn(),
+      finish: vi.fn(() => ({})),
+    };
+    const device = {
+      createBuffer: vi.fn((desc: GPUBufferDescriptor) => {
+        bufferDescs.push(desc);
+        const buffer = {
+          label: String(desc.label),
+          destroy: vi.fn(),
+        };
+        buffers.set(buffer.label, buffer);
+        return buffer;
+      }),
+      createTexture: vi.fn(() => ({
+        createView: vi.fn(() => ({})),
+        destroy: vi.fn(),
+      })),
+      createCommandEncoder: vi.fn(() => encoder),
+      queue: { submit: vi.fn() },
+    } as unknown as GPUDevice;
+
+    const gpu = new GpuResources(device, 'full', true);
+    expect(gpu.ensureAccumResources(4, 3)).toBe(true);
+    const descriptor = bufferDescs.find(
+      (desc) => desc.label === 'vitrum.pt-webgpu.bdpt.cameraSplats.buffer',
+    );
+    expect(descriptor).toMatchObject({
+      size: 4 * 3 * 16,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
+    expect(encoder.clearBuffer).toHaveBeenCalledWith(
+      gpu.bdptCameraSplatBuffer,
+    );
+
+    const allocated = gpu.bdptCameraSplatBuffer;
+    expect(gpu.ensureAccumResources(4, 3)).toBe(false);
+    expect(gpu.bdptCameraSplatBuffer).toBe(allocated);
+
+    gpu.dispose();
+    expect(
+      buffers.get('vitrum.pt-webgpu.bdpt.cameraSplats.buffer')?.destroy,
+    ).toHaveBeenCalledOnce();
+    expect(gpu.bdptCameraSplatBuffer).toBeNull();
+  });
+
   it('preserves a usable SPPM per-pixel stats buffer when a larger request exceeds device limits', () => {
     const { device, buffers } = createSizeValidatingGpuDeviceStub({ maxBufferSize: 1024 });
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});

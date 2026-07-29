@@ -448,36 +448,6 @@ export class BvhBufferHost {
     previous?.texture.destroy();
   }
 
-  /** Stage an analytic-light texture replacement for an engine transaction. */
-  prepareAnalyticLights(
-    device: GPUDevice,
-    scene: Scene,
-  ): PreparedSceneMutation {
-    const packed = packAnalyticPointSpotEmitters(scene);
-    const candidate = uploadAnalyticLightsTexture(device, packed.data, packed.count);
-    const previous = this._analyticLightsTexture;
-    let committed = false;
-    let closed = false;
-    return {
-      commit: () => {
-        if (closed || committed) return;
-        this._analyticLightsTexture = candidate;
-        committed = true;
-      },
-      rollback: () => {
-        if (closed) return;
-        if (committed) this._analyticLightsTexture = previous;
-        candidate.texture.destroy();
-        closed = true;
-      },
-      finalize: () => {
-        if (closed) return;
-        if (committed) previous?.texture.destroy();
-        else candidate.texture.destroy();
-        closed = true;
-      },
-    };
-  }
   /**
    * Stage every pipeline-owned resource affected by an emitter mutation:
    * emitter triangles/CDF/light tree, camera-visible emissive radiance, and the
@@ -673,7 +643,7 @@ export class BvhBufferHost {
 
     // Single-layer texture memory sections — all share the
     // {width, height, depthOrArrayLayers: 1, format} shape; the descriptor
-    // table keeps this list drift-free with dispose/refreshBvhFullRebuild.
+    // table keeps this list drift-free with dispose/transactional replacement.
     const addTex = (
       name: string,
       tex: { width: number; height: number } | null,
@@ -755,7 +725,7 @@ export class BvhBufferHost {
     candidate._regirGridBytes = this._regirGridBytes;
     candidate._sceneStorageArenaPayload = this._sceneStorageArenaPayload;
     try {
-      candidate._refreshBvhFullRebuildUnsafe(device, bvhBuffers);
+      candidate._uploadGeometryReplacementUnsafe(device, bvhBuffers);
       candidate._updateEmittersUnsafe(device, bvhBuffers);
     } catch (error) {
       candidate.dispose();
@@ -776,7 +746,7 @@ export class BvhBufferHost {
     candidate._regirGridBytes = this._regirGridBytes;
     candidate._sceneStorageArenaPayload = this._sceneStorageArenaPayload;
     try {
-      candidate._refreshBvhFullRebuildUnsafe(device, bvhBuffers);
+      candidate._uploadGeometryReplacementUnsafe(device, bvhBuffers);
       candidate._updateEmittersUnsafe(device, bvhBuffers);
     } catch (error) {
       candidate.dispose();
@@ -1196,19 +1166,6 @@ export class BvhBufferHost {
     }
   }
 
-  refreshBvhEmissiveLe(
-    device: GPUDevice,
-    emissiveFull: { data: ArrayBuffer; triCount: number },
-  ): void {
-    if (!this.initialized) return;
-    refreshEmissiveTexture(
-      device,
-      this._bvhEmissiveTexture!,
-      new Float32Array(emissiveFull.data),
-      emissiveFull.triCount,
-    );
-  }
-
   refreshMaterialTextureAtlas(
     device: GPUDevice,
     materialTextureAtlas: MaterialTextureAtlasPayload,
@@ -1221,27 +1178,7 @@ export class BvhBufferHost {
     previous?.baseColorMetaTexture.destroy();
   }
 
-  refreshBvhFullRebuild(
-    device: GPUDevice,
-    bvhBuffers: Pick<
-      SceneBVHBuffers,
-      'bvhNodes' | 'bvhIndex' | 'bvhBeerColors' | 'bvhEmissiveLe' | 'materialTextureAtlas' | 'bvhRoughMetal' | 'bvhNormals' | 'bvhTangents' | 'bvhColors' | 'bvhPositions' | 'bvhMode' | 'tlas'
-    >,
-  ): void {
-    if (!this.initialized) return;
-    const candidate = new BvhBufferHost();
-    candidate._sceneStorageArenaPayload = this._sceneStorageArenaPayload;
-    try {
-      candidate._refreshBvhFullRebuildUnsafe(device, bvhBuffers);
-    } catch (error) {
-      candidate.dispose();
-      throw error;
-    }
-    this._swapGeometryResources(candidate, true, device);
-    candidate.dispose();
-  }
-
-  private _refreshBvhFullRebuildUnsafe(
+  private _uploadGeometryReplacementUnsafe(
     device: GPUDevice,
     bvhBuffers: Pick<
       SceneBVHBuffers,

@@ -47,11 +47,9 @@ import {
   SAMPLE_BUDGET_MODULE,
   SHADE_MODULE,
   SPATIAL_GI_MODULE,
-  SPATIAL_GI_GRIS_MODULE,
   SPATIAL_MODULE,
   TEMPORAL_ACCUM_MODULE,
   TEMPORAL_GI_MODULE,
-  TEMPORAL_GI_GRIS_MODULE,
   TEMPORAL_MODULE,
   TRANSPARENT_OIT_MODULE,
   WGSL_MODULES,
@@ -84,7 +82,7 @@ import {
 } from './bindGroupLayouts.js';
 import { buildRisGiNrcModule, type RisGiNrcConfig } from '../shaders/risGiNrc.wgsl.js';
 import { buildReservoirGiModule } from '../shaders/reservoirGi.wgsl.js';
-import { reservoirGiStrideU32ForGrisReuse } from '../gi/giLayout.js';
+import { RESERVOIR_GI_STRIDE_U32 } from '../gi/giLayout.js';
 import {
   buildPpgUpdateWgsl,
   PPG_DEFAULT_MAX_DTREE_NODES_PER_CELL,
@@ -105,6 +103,8 @@ interface CompiledPipelines {
   ppgUpdatePipeline?: GPUComputePipeline;
   temporalPipeline: GPUComputePipeline;
   spatialPipeline: GPUComputePipeline;
+  /** ReSTIR-DI spatial round two, specialized with an independent RNG salt. */
+  spatialPipelineRoundTwo: GPUComputePipeline;
   shadePipeline: GPUComputePipeline;
   motionVectorsPipeline: GPUComputePipeline;
   /** Shared à-trous pipeline — used by the legacy `AtrousDenoiser` AND by
@@ -135,9 +135,49 @@ interface CompiledPipelines {
   transparentOitPipeline: GPUComputePipeline;
   /** Sprint 18 follow-up — pre-atrous temporal accumulator on indirect. */
   indirectTemporalAccumPipeline: GPUComputePipeline;
+  /** Reset variant: same bindings, but publishes current indirect only. */
+  indirectTemporalAccumResetPipeline: GPUComputePipeline;
   /** ReGIR grid-build kernel (Boksansky 2021). Opt-in via `opts.regirEnabled`;
    *  undefined when ReGIR is off (RIS then uses the light-tree path). */
   regirBuildPipeline?: GPUComputePipeline;
+}
+
+/**
+ * Compile the format-specialized composite pipeline synchronously.
+ *
+ * WebGPU render-pipeline color targets bake their format, while the host may
+ * legally replace its canvas configuration between frames. The main compiler
+ * uses its async counterpart at initialization; this helper is the bounded
+ * per-format rebuild path used at the render-frame boundary.
+ */
+export function createCompositePipeline(
+  device: GPUDevice,
+  bglCache: BGLCache,
+  swapChainFormat: GPUTextureFormat,
+): GPURenderPipeline {
+  const modules = new Map(WGSL_MODULES);
+  const vertexModule = device.createShaderModule({
+    label: 'comp-vert',
+    code: composeWgsl(COMPOSITE_VERT_MODULE, modules),
+  });
+  const fragmentModule = device.createShaderModule({
+    label: 'comp-frag',
+    code: composeWgsl(COMPOSITE_FRAG_MODULE, modules),
+  });
+  const layout = device.createPipelineLayout({
+    bindGroupLayouts: [getCompositeBindGroupLayout(device, bglCache)],
+  });
+  return device.createRenderPipeline({
+    label: 'composite',
+    layout,
+    vertex: { module: vertexModule, entryPoint: 'vertMain' },
+    fragment: {
+      module: fragmentModule,
+      entryPoint: 'fragMain',
+      targets: [{ format: swapChainFormat }],
+    },
+    primitive: { topology: 'triangle-list' },
+  });
 }
 
 export async function compilePipelines(
@@ -149,14 +189,14 @@ export async function compilePipelines(
     onWarning?: (warning: EngineWarning) => void;
     ppgEnabled?: boolean;
     regirEnabled?: boolean;
-    grisReuse?: boolean;
     /** NRC (Müller et al. 2021) — COMPILE-TIME structural gate. When set, the
      *  gi-ris pipeline is built with a 5th `@group(4)` NRC bind group + the
      *  inline-MLP-forward shader variant; when absent (default) gi-ris is the
      *  verbatim 4-group DDGI-estimate pass. MUST be a compile-time decision —
-     *  a runtime UBO flag that bound an extra group on the default path is the
-     *  GRIS-class regression (f8df9a4). The value carries the encoding/MLP
-     *  config the WGSL sizes are baked from (must match the host NrcSubsystem). */
+     *  a runtime UBO flag that bound an extra group on the NRC-off path caused
+     *  the prior structural-layout regression (f8df9a4). The value carries the
+     *  encoding/MLP config the WGSL sizes are baked from (must match the host
+     *  NrcSubsystem). */
     nrcConfig?: RisGiNrcConfig;
     /**
      * H29 — per-cell dTree node cap baked into the PPG flux buffer
@@ -168,24 +208,16 @@ export async function compilePipelines(
     ppgMaxDTreeNodesPerCell?: number;
   },
 ): Promise<CompiledPipelines> {
-  // GRIS DDGI-proxy reconnection-shift reuse is opt-in via the host flag
-  // `HybridEngineOptions.grisReuse`. The gate is COMPILE-TIME (the flag is
-  // fixed at engine creation) because turning it on STRUCTURALLY changes the GI
-  // spatial + temporal shader bodies and reservoir cache stride. Both default
-  // and GRIS variants now use the same two-group layout: group(1) is the shared
-  // scene/material group needed for receiver-lobe p-hat recasts, while the GRIS
-  // variant also traces reconnection visibility through it. See
-  // spatialGi.wgsl.ts / temporalGi.wgsl.ts headers.
-  const grisOn = opts?.grisReuse === true;
-  const reservoirGiStrideU32 = reservoirGiStrideU32ForGrisReuse(grisOn);
+  // Generalized reconnection-shift reuse is the sole structural GI path.
+  const reservoirGiStrideU32 = RESERVOIR_GI_STRIDE_U32;
   const wgslModules = new Map(WGSL_MODULES);
-  wgslModules.set('reservoirGi', buildReservoirGiModule({ grisCache: grisOn }));
-  // NRC (Müller et al. 2021) — COMPILE-TIME structural gate, same discipline as
-  // GRIS above. When ON the gi-ris pass gains a `@group(4)` NRC group + the
+  wgslModules.set('reservoirGi', buildReservoirGiModule());
+  // NRC (Müller et al. 2021) — COMPILE-TIME structural gate. When ON the gi-ris
+  // pass gains a `@group(4)` NRC group + the
   // inline-MLP-forward variant; when OFF (default) gi-ris is the verbatim
-  // 4-group DDGI-estimate pass. Binding a 5th group on the default path would
-  // alter the default pipeline structure (the GRIS-class regression), so the
-  // structure is gated at compile time, not by a runtime UBO flag.
+  // 4-group DDGI-estimate pass. Binding a 5th group on the NRC-off path would
+  // alter that pipeline structure, so the structure is gated at compile time,
+  // not by a runtime UBO flag.
   const nrcOn = opts?.nrcConfig !== undefined;
   // Compile all shader modules. The include-graph (composeWgsl + WGSL_MODULES)
   // resolves each module's dependency closure exactly once — no hand-rolled
@@ -287,11 +319,11 @@ export async function compilePipelines(
   });
   // Sprint 17 + rich-material receiver target — GI temporal + spatial passes.
   // group(0) is their dedicated reservoir-buffer + uniform group. group(1) is
-  // always the shared scene BVH/TLAS/material-atlas group: the default path
-  // recasts receiver material payloads for the GI p-hat, and the GRIS path also
-  // uses it for reconnection visibility. Storage-buffer budget: group(0)
-  // carries 2 reservoir storage buffers, group(1) carries the scene storage
-  // buffers, staying under the full-tier floor.
+  // always the shared scene BVH/TLAS/material-atlas group: the canonical
+  // generalized-reuse path recasts receiver material payloads for the GI p-hat
+  // and uses the same group for reconnection visibility. Storage-buffer budget:
+  // group(0) carries 2 reservoir storage buffers, group(1) carries the scene
+  // storage buffers, staying under the full-tier floor.
   const temporalGiLayout = device.createPipelineLayout({
     bindGroupLayouts: [
       getTemporalGiBindGroupLayout(device, bglCache),
@@ -347,10 +379,12 @@ export async function compilePipelines(
     readonly module: GPUShaderModule;
     readonly layout: GPUPipelineLayout;
     readonly entryPoint: string;
+    readonly constants?: Record<string, number>;
   }> = [
     { key: 'risPipeline',                  module: risSM,                layout: risLayout,                  entryPoint: 'risMain'                  },
     { key: 'temporalPipeline',             module: temporalSM,           layout: computeLayout,              entryPoint: 'temporalMain'             },
-    { key: 'spatialPipeline',              module: spatialSM,            layout: computeLayout,              entryPoint: 'spatialMain'              },
+    { key: 'spatialPipeline',              module: spatialSM,            layout: computeLayout,              entryPoint: 'spatialMain', constants: { SPATIAL_ROUND_INDEX: 0 } },
+    { key: 'spatialPipelineRoundTwo',      module: spatialSM,            layout: computeLayout,              entryPoint: 'spatialMain', constants: { SPATIAL_ROUND_INDEX: 1 } },
     { key: 'shadePipeline',                module: shadeSM,              layout: shadeLayout,                entryPoint: 'shadeMain'                },
     { key: 'motionVectorsPipeline',        module: motionVectorsSM,      layout: motionVectorsLayout,        entryPoint: 'motionVectorsMain'        },
     { key: 'atrousPipeline',               module: atrousSM,             layout: atrousLayout,               entryPoint: 'atrousMain'               },
@@ -362,17 +396,22 @@ export async function compilePipelines(
     { key: 'indirectCombinePipeline',      module: indirectCombineSM,    layout: indirectCombineLayout,      entryPoint: 'indirectCombineMain'      },
     { key: 'transparentOitPipeline',       module: transparentOitSM,     layout: transparentOitLayout,       entryPoint: 'transparentOitMain'       },
     { key: 'indirectTemporalAccumPipeline',module: indirectTemporalAccumSM, layout: indirectTemporalAccumLayout, entryPoint: 'indirectTemporalAccumMain' },
+    { key: 'indirectTemporalAccumResetPipeline', module: indirectTemporalAccumSM, layout: indirectTemporalAccumLayout, entryPoint: 'indirectTemporalAccumResetMain' },
     { key: 'accumPipeline',                module: accumSM,              layout: accumLayout,                entryPoint: 'temporalAccumMain'        },
   ] as const;
 
   // Compile all always-on compute pipelines in parallel via the spec table.
   const pipelineDraft: Partial<CompiledPipelines> = {};
   await Promise.all(
-    PIPELINE_SPECS.map(async ({ key, module, layout, entryPoint }) => {
+    PIPELINE_SPECS.map(async ({ key, module, layout, entryPoint, constants }) => {
       pipelineDraft[key] = await device.createComputePipelineAsync({
         label: key.replace(/Pipeline$/, ''),
         layout,
-        compute: { module, entryPoint },
+        compute: {
+          module,
+          entryPoint,
+          ...(constants !== undefined ? { constants } : {}),
+        },
       });
     }),
   );
@@ -406,17 +445,15 @@ export async function compilePipelines(
     compute: { module: risGiSM, entryPoint: 'risGiMain' },
   });
 
-  // Sprint 17 — GI temporal + spatial reuse pipelines. Compose the GRIS variant
-  // (adds the reconnection-shift branch) only when grisReuse is ON; otherwise
-  // compose the standard reuse pass. Both variants bind group(1) for
-  // receiver-material p-hat recasts, so the layout is shared.
+  // GI temporal + spatial reuse always compile the generalized
+  // reconnection-shift estimator. Both bind group(1) for material/visibility.
   const temporalGiSM = device.createShaderModule({
     label: 'temporalGi',
-    code: composeWgsl(grisOn ? TEMPORAL_GI_GRIS_MODULE : TEMPORAL_GI_MODULE, wgslModules),
+    code: composeWgsl(TEMPORAL_GI_MODULE, wgslModules),
   });
   const spatialGiSM = device.createShaderModule({
     label: 'spatialGi',
-    code: composeWgsl(grisOn ? SPATIAL_GI_GRIS_MODULE : SPATIAL_GI_MODULE, wgslModules),
+    code: composeWgsl(SPATIAL_GI_MODULE, wgslModules),
   });
   [pipelineDraft['temporalGiPipeline'], pipelineDraft['spatialGiPipeline']] = await Promise.all([
     device.createComputePipelineAsync({

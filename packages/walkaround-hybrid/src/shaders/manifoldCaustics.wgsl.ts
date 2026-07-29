@@ -882,11 +882,22 @@ fn lo_manifold_caustic(
   gid: vec2u,
   receiver: vec3f,
   normal: vec3f,
+  clearcoatNormal: vec3f,
+  wo: vec3f,
   albedo: vec3f,
+  rough: f32,
+  metal: f32,
+  specular: vec4f,
+  anisotropy: vec2f,
+  anisotropyTangent: vec3f,
+  anisotropyBitangent: vec3f,
+  iridescence: vec4f,
+  clearcoat: vec2f,
+  sheen: vec4f,
+  sheenRoughness: f32,
   isGlass: bool,
-  isMetal: bool,
 ) -> vec3f {
-  if (isGlass || isMetal || sceneMneeFacetDomainCount() == 0u) { return vec3f(0.0); }
+  if (isGlass || sceneMneeFacetDomainCount() == 0u) { return vec3f(0.0); }
   let pixelIndex = gid.y * ubo.screenSize.x + gid.x;
   var rng = pcgInit(gid.x, gid.y, ubo.frameSeed ^ 0x4d4e4545u);
   let endpoint = smsSampleEndpoint(&rng, receiver);
@@ -971,14 +982,24 @@ fn lo_manifold_caustic(
     let multiplicity = smsBoundedMultiplicityEstimate(
       geometry, built.media, endpoint, receiver, solved, pixelIndex, channel,
     );
-    // Point/directional focusing maps receiver area to source solid angle or
-    // source-perpendicular area and therefore already contains receiver
-    // foreshortening. Area focusing maps emitter area to receiver solid angle,
-    // so only that family still needs the receiver cosine from BSDF measure.
-    let receiverMeasure = select(
-      1.0, receiverCosine, endpoint.family == SMS_SOURCE_AREA,
+    // The canonical layered receiver evaluation includes N·L. Point and
+    // directional focusing determinants already contain receiver
+    // foreshortening, so remove that one cosine for those endpoint families;
+    // area focusing still needs the complete BRDF·cos response.
+    let receiverBrdfCosine =
+      evalGGXWithSpecularClearcoatSheenWithAnisotropyFrame(
+        albedo, rough, metal, specular.rgb, specular.a,
+        anisotropy.x, anisotropy.y, iridescence,
+        clearcoat.x, clearcoat.y, sheen.a, sheenRoughness, sheen.rgb,
+        anisotropyTangent, anisotropyBitangent,
+        normal, clearcoatNormal, wo, wi,
+      );
+    let receiverResponse = receiverBrdfCosine * select(
+      1.0 / max(receiverCosine, 1e-6),
+      1.0,
+      endpoint.family == SMS_SOURCE_AREA,
     );
-    let contribution = smsChannel(albedo, channel) * INV_PI * receiverMeasure *
+    let contribution = smsChannel(receiverResponse, channel) *
       light * path.factor * chainVisibility * focusing * multiplicity.weight /
       proposalDensity;
     if (!(contribution > 0.0) || !(contribution < INFINITY)) { continue; }

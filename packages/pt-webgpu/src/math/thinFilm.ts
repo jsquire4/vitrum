@@ -68,6 +68,40 @@ export interface ThinFilmRgbOracle {
   readonly absorptionEnergy: number;
 }
 
+export type ThinFilmNumericFailureReason =
+  | 'non-finite-response'
+  | 'non-passive-response';
+
+/**
+ * Structured production/preflight failure from the coherent TMM solver.
+ *
+ * RGB LUT construction runs before GPU publication, so callers can distinguish
+ * an unsupported numerical stack from an ordinary scene/schema error and keep
+ * the previous scene live. The old fallback silently converted either failure
+ * into a perfect mirror, materially changing the authored transport.
+ */
+export class ThinFilmNumericError extends Error {
+  readonly code = 'PT_WEBGPU_THIN_FILM_NUMERIC_FAILURE' as const;
+
+  constructor(
+    readonly reason: ThinFilmNumericFailureReason,
+    readonly input: ThinFilmStackOracleInput,
+    readonly response: {
+      readonly reflectance: number;
+      readonly transmittance: number;
+    },
+  ) {
+    super(
+      'pt-webgpu thin-film TMM numeric failure ' +
+      `(${reason}; wavelength=${String(input.wavelengthNm)}nm, ` +
+      `cosTheta=${String(input.cosTheta)}, ` +
+      `reflectance=${String(response.reflectance)}, ` +
+      `transmittance=${String(response.transmittance)})`,
+    );
+    this.name = 'ThinFilmNumericError';
+  }
+}
+
 function physicalCosine(n: Complex, transverse: number): Complex {
   const ratio = div([transverse, 0], n);
   let cosine = sqrtComplex(sub([1, 0], mul(ratio, ratio)));
@@ -121,11 +155,25 @@ export function thinFilmRtAtWavelength(input: ThinFilmStackOracleInput): ThinFil
   const [rp, tp] = polarized(input, true);
   let reflectance = Math.max(0, 0.5 * (rs + rp));
   let transmittance = Math.max(0, 0.5 * (ts + tp));
-  if (!Number.isFinite(reflectance) || !Number.isFinite(transmittance)) {
-    return { reflectance: 1, transmittance: 0, absorption: 0 };
+  if (
+    !Number.isFinite(reflectance) ||
+    !Number.isFinite(transmittance) ||
+    !Number.isFinite(reflectance + transmittance)
+  ) {
+    throw new ThinFilmNumericError(
+      'non-finite-response',
+      input,
+      { reflectance, transmittance },
+    );
   }
   const sum = reflectance + transmittance;
-  if (sum > 1 + 1e-8) return { reflectance: 1, transmittance: 0, absorption: 0 };
+  if (sum > 1 + 1e-8) {
+    throw new ThinFilmNumericError(
+      'non-passive-response',
+      input,
+      { reflectance, transmittance },
+    );
+  }
   if (sum > 1) {
     reflectance /= sum;
     transmittance /= sum;

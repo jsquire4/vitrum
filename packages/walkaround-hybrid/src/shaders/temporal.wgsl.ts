@@ -1,15 +1,10 @@
 /**
- * Temporal reuse compute pass.
+ * ReSTIR-DI temporal reuse.
  *
- * Projects current pixel through previous MVP to find the previous-frame
- * reservoir, then combines via GRIS with M-clamp = 20.
- *
- * Primary-ray-cast mode: no G-buffer rasterization.  We re-cast the
- * primary ray here to get the world-space hit `pos` and `normal`, then
- * reproject `pos` through the previous-frame view+projection matrix to find
- * the previous pixel.  This replaces the placeholder motion-vector texture
- * (which returned a constant offset, making temporal look-up land in the
- * wrong screen quadrant for ~all pixels).
+ * The previous pixel is found by reprojection, then recast against the current
+ * scene BVH using the previous camera. Reuse is allowed only when that recast
+ * identifies the same visible surface. Accepted current/previous reservoirs are
+ * combined with generalized Talbot MIS over their represented attempts.
  */
 
 import type { WgslModule } from '../pipeline/wgslComposer.js';
@@ -17,9 +12,6 @@ import { reservoirDiAccessorsWgsl } from './reservoirDi.wgsl.js';
 
 export const TEMPORAL_WGSL = /* wgsl */ `
 
-// Group 0: only the slots temporal actually reads / writes. The shared
-// FrameBindGroup layout carries 10 entries for shade; WGSL allows the
-// shader to declare a subset (W5-I1 cleanup 2026-05-18).
 @group(0) @binding(5) var<storage, read_write> currentReservoir:  array<u32>;
 @group(0) @binding(6) var<storage, read>       previousReservoir: array<u32>;
 
@@ -29,32 +21,60 @@ ${reservoirDiAccessorsWgsl({
   storeReadWriteBinding: 'currentReservoir',
 })}
 
-// bvh_index is array<vec4u>: .xyz=vertex indices, .w=packed RGBA8 material color+transmission
-
-// WalkaroundUBO struct defined in COMMON_WGSL.
 @group(2) @binding(0) var<uniform> ubo: WalkaroundUBO;
 
-// RESERVOIR_DI_STRIDE / loadReservoirDI_{rw,ro} / storeReservoirDI_rw live in COMMON_WGSL.
-// M_CLAMP is read from the UBO (ubo.temporalMClampDI).
-
-// PrimarySurface struct defined in COMMON_WGSL.
-// W2-C9 — primary-surface cast moved to restirCastPrimary.wgsl
-// (canonical castPrimary(px, dims, camPos, invVP)).
-
-// Reproject a world-space position through the previous-frame view-projection
-// matrix. Returns the previous pixel as ivec2 or -1 outside the frustum.
 fn reprojectToPrev(world: vec3f, dims: vec2u) -> vec2i {
   let clip = ubo.prevViewProjMatrix * vec4f(world, 1.0);
   if (clip.w <= 0.0) { return vec2i(-1, -1); }
   let ndc = clip.xyz / clip.w;
-  if (ndc.x < -1.0 || ndc.x > 1.0 || ndc.y < -1.0 || ndc.y > 1.0) { return vec2i(-1, -1); }
+  if (
+    ndc.x < -1.0 || ndc.x > 1.0 ||
+    ndc.y < -1.0 || ndc.y > 1.0 ||
+    ndc.z < -1.0 || ndc.z > 1.0
+  ) {
+    return vec2i(-1, -1);
+  }
   let uv = vec2f(ndc.x * 0.5 + 0.5, 1.0 - (ndc.y * 0.5 + 0.5));
-  let px = vec2i(i32(uv.x * f32(dims.x)), i32(uv.y * f32(dims.y)));
-  return px;
+  return vec2i(i32(uv.x * f32(dims.x)), i32(uv.y * f32(dims.y)));
 }
 
-// W2-C7 — p̂ moved to restirPHat.wgsl
-// (canonical restir_di_compute_phat_xi(lid, xi, surf)).
+// Reprojection alone is not a disocclusion test. Recast the historical pixel
+// against the CURRENT BVH and require exact primitive/material identity plus
+// conservative geometric agreement with the current visible point. This
+// rejects camera disocclusion and fails safe for changed geometry.
+fn temporalSurfaceCorresponds(
+  currentSurface: PrimarySurface,
+  previousSurfaceNow: PrimarySurface,
+  previousRay: Ray,
+) -> bool {
+  if (!previousSurfaceNow.hit) { return false; }
+  if (
+    previousSurfaceNow.instanceId != currentSurface.instanceId ||
+    previousSurfaceNow.triangleId != currentSurface.triangleId ||
+    previousSurfaceNow.materialKey != currentSurface.materialKey
+  ) {
+    return false;
+  }
+
+  let expectedPreviousDepth = length(currentSurface.pos - previousRay.origin);
+  let depthDifference = abs(previousSurfaceNow.depth - expectedPreviousDepth);
+  let worldDifference = length(previousSurfaceNow.pos - currentSurface.pos);
+  let depthTolerance = max(
+    ubo.spatialDepthTolFloor * 4.0,
+    expectedPreviousDepth * 0.02,
+  );
+  let worldTolerance = max(
+    ubo.spatialDepthTolFloor * 8.0,
+    expectedPreviousDepth * 0.02,
+  );
+  return
+    reservoirDiFinite(expectedPreviousDepth) &&
+    reservoirDiFinite(depthDifference) &&
+    reservoirDiFinite(worldDifference) &&
+    depthDifference <= depthTolerance &&
+    worldDifference <= worldTolerance &&
+    dot(previousSurfaceNow.normal, currentSurface.normal) >= 0.9;
+}
 
 @compute @workgroup_size(8, 8, 1)
 fn temporalMain(@builtin(global_invocation_id) gid: vec3u) {
@@ -62,82 +82,186 @@ fn temporalMain(@builtin(global_invocation_id) gid: vec3u) {
   if (any(gid.xy >= dims)) { return; }
 
   let pixelIdx = gid.y * dims.x + gid.x;
-  var rng = pcgInit(gid.x ^ 12345u, gid.y ^ 67890u, ubo.frameSeed ^ 0xABCDu);
-
-  var cur = loadReservoirDI_rw(pixelIdx);
-
-  // Re-cast current pixel's primary ray to get the actual surface.
-  let vp    = ubo.projMatrix * ubo.viewMatrix;
+  var current = loadReservoirDI_rw(pixelIdx);
+  let vp = ubo.projMatrix * ubo.viewMatrix;
   let invVP = invertMat4_common(vp);
-  let curSurf = castPrimary(gid.xy, dims, ubo.cameraPos, invVP);
-  if (!curSurf.hit) {
-    // Sky pixel — nothing to project; pass-through.
-    storeReservoirDI_rw(pixelIdx, cur);
+  let currentSurface = castPrimary(gid.xy, dims, ubo.cameraPos, invVP);
+  if (!currentSurface.hit) {
+    storeReservoirDI_rw(pixelIdx, current);
     return;
   }
 
-  // Reproject this surface's world position through the previous-frame view
-  // matrix to find the matching previous-frame pixel.  Replaces the pre-fix
-  // placeholder motion-vector lookup, which read a constant (0.5, 0.5) and
-  // sent prevPx far off-screen for ~half of the frame.
-  let prevPx = reprojectToPrev(curSurf.pos, dims);
-  if (any(prevPx < vec2i(0)) || any(prevPx >= vec2i(dims))) {
-    storeReservoirDI_rw(pixelIdx, cur);
+  let previousPixel = reprojectToPrev(currentSurface.pos, dims);
+  if (any(previousPixel < vec2i(0)) || any(previousPixel >= vec2i(dims))) {
+    storeReservoirDI_rw(pixelIdx, current);
     return;
   }
 
-  let prevIdx = u32(prevPx.y) * dims.x + u32(prevPx.x);
-  var prev = loadReservoirDI_ro(prevIdx);
-
-  // Note: there is no explicit disocclusion gate here.  The implicit gate is
-  // the p̂ re-evaluation below — if the previous reservoir's lightId is
-  // occluded or back-facing at the current surface, p̂≈0 and the sample
-  // contributes ~nothing (w_prev → 0).
-
-  // M-clamp previous reservoir — UBO-driven for scene-independence. Scale the
-  // generalized w_sum and both support counts together so W remains invariant.
-  scaleReservoirDIToM(&prev, ubo.temporalMClampDI);
-
-  // Evaluate p̂ at CURRENT pixel for the previous reservoir's chosen light.
-  // Wave 4: pass prev.xi so the ENV_SAMPLE_SENTINEL branch can recover the
-  // stored HDRI direction (restir_di_compute_phat_xi handles both emitter and
-  // env-sentinel lids — emitter path ignores xi, env path decodes xi → dir).
-  var w_prev = 0.0;
-  if (prev.M > 0u && prev.W > 0.0) {
-    let pHatPrevAtCur = restir_di_compute_phat_xi(prev.lightId, prev.xi, curSurf);
-    w_prev = pHatPrevAtCur * prev.W * f32(prev.M);
+  let previousIndex = u32(previousPixel.y) * dims.x + u32(previousPixel.x);
+  var previous = loadReservoirDI_ro(previousIndex);
+  if (previous.M == 0u) {
+    storeReservoirDI_rw(pixelIdx, current);
+    return;
   }
 
-  // Combine reservoirs.
-  var combined = cur;
-  combined.areaM = cur.areaM + prev.areaM;
-  combined.envM = cur.envM + prev.envM;
-  combined.M = combined.areaM + combined.envM;
-  combined.w_sum += w_prev;
-  if (rand_f32(&rng) * combined.w_sum < w_prev && w_prev > 0.0) {
-    combined.lightId = prev.lightId;
-    // 2026-05-18 sweep finding #3 — carry the chosen sample's xi forward
-    // so a downstream visibility test (this frame's spatial pass + shade)
-    // reconstructs the same point on the light, not the centroid.
-    combined.xi      = prev.xi;
+  let previousInvVP = invertMat4_common(ubo.prevViewProjMatrix);
+  let previousRay = generatePrimaryRayFromInvVP_common(
+    u32(previousPixel.x),
+    u32(previousPixel.y),
+    dims.x,
+    dims.y,
+    previousInvVP,
+  );
+  let previousSurfaceNow = castPrimaryFromInvVP(
+    vec2u(previousPixel),
+    dims,
+    previousInvVP,
+  );
+  if (!temporalSurfaceCorresponds(currentSurface, previousSurfaceNow, previousRay)) {
+    storeReservoirDI_rw(pixelIdx, current);
+    return;
   }
 
-  // Recompute W. Wave 4: pass combined.xi for the env-sentinel path.
-  combined.W = 0.0;
-  if (combined.M > 0u && combined.w_sum > 0.0) {
-    let pHatZ = restir_di_compute_phat_xi(combined.lightId, combined.xi, curSurf);
-    combined.W = select(0.0, combined.w_sum / (f32(combined.M) * pHatZ), pHatZ > 0.0);
+  scaleReservoirDIToM(&previous, ubo.temporalMClampDI);
+
+  // Full two-technique generalized Talbot matrix. For candidate y_i, every
+  // domain evaluates pHat_j(y_i); M_j pHat_j(y_i) forms the denominator.
+  let currentSupport =
+    reservoirDiSupportForLight(current, current.lightId);
+  var currentAtCurrent = 0.0;
+  var currentAtPrevious = 0.0;
+  if (currentSupport > 0u && current.W > 0.0) {
+    currentAtCurrent = restir_di_compute_phat_xi(
+      current.lightId,
+      current.xi,
+      currentSurface,
+    );
+    currentAtPrevious = restir_di_compute_phat_xi(
+      current.lightId,
+      current.xi,
+      previousSurfaceNow,
+    );
   }
+
+  let previousSupport =
+    reservoirDiSupportForLight(previous, previous.lightId);
+  var previousAtCurrent = 0.0;
+  var previousAtPrevious = 0.0;
+  if (previousSupport > 0u && previous.W > 0.0) {
+    previousAtCurrent = restir_di_compute_phat_xi(
+      previous.lightId,
+      previous.xi,
+      currentSurface,
+    );
+    previousAtPrevious = restir_di_compute_phat_xi(
+      previous.lightId,
+      previous.xi,
+      previousSurfaceNow,
+    );
+  }
+
+  let currentSourceLogDensity = reservoirDiLogWeightedDensity(
+    currentSupport,
+    currentAtCurrent,
+  );
+  let currentPreviousLogDensity = reservoirDiLogWeightedDensity(
+    reservoirDiSupportForLight(previous, current.lightId),
+    currentAtPrevious,
+  );
+  let currentMaxLogDensity = max(
+    currentSourceLogDensity,
+    currentPreviousLogDensity,
+  );
+  let currentScaledDenominator =
+    reservoirDiScaledDensityFromLog(
+      currentSourceLogDensity,
+      currentMaxLogDensity,
+    ) +
+    reservoirDiScaledDensityFromLog(
+      currentPreviousLogDensity,
+      currentMaxLogDensity,
+    );
+
+  let previousCurrentLogDensity = reservoirDiLogWeightedDensity(
+    reservoirDiSupportForLight(current, previous.lightId),
+    previousAtCurrent,
+  );
+  let previousSourceLogDensity = reservoirDiLogWeightedDensity(
+    previousSupport,
+    previousAtPrevious,
+  );
+  let previousMaxLogDensity = max(
+    previousCurrentLogDensity,
+    previousSourceLogDensity,
+  );
+  let previousScaledDenominator =
+    reservoirDiScaledDensityFromLog(
+      previousCurrentLogDensity,
+      previousMaxLogDensity,
+    ) +
+    reservoirDiScaledDensityFromLog(
+      previousSourceLogDensity,
+      previousMaxLogDensity,
+    );
+  let currentLogWeight = reservoirDiGeneralizedReuseLogWeight(
+    currentSourceLogDensity,
+    currentMaxLogDensity,
+    currentScaledDenominator,
+    currentAtCurrent,
+    current.W,
+  );
+  let previousLogWeight = reservoirDiGeneralizedReuseLogWeight(
+    previousSourceLogDensity,
+    previousMaxLogDensity,
+    previousScaledDenominator,
+    previousAtCurrent,
+    previous.W,
+  );
+  let maxCandidateLogWeight = max(currentLogWeight, previousLogWeight);
+
+  var rng = pcgInit(gid.x ^ 12345u, gid.y ^ 67890u, ubo.frameSeed ^ 0xABCDu);
+  var combined = emptyReservoirDI();
+  updateReservoirDI(
+    &combined,
+    current.lightId,
+    current.xi,
+    reservoirDiScaledDensityFromLog(
+      currentLogWeight,
+      maxCandidateLogWeight,
+    ),
+    &rng,
+  );
+  updateReservoirDI(
+    &combined,
+    previous.lightId,
+    previous.xi,
+    reservoirDiScaledDensityFromLog(
+      previousLogWeight,
+      maxCandidateLogWeight,
+    ),
+    &rng,
+  );
+  combined.areaM = reservoirDiSaturatingAddU32(current.areaM, previous.areaM);
+  combined.envM = reservoirDiSaturatingAddU32(current.envM, previous.envM);
+  combined.M = reservoirDiSaturatingAddU32(current.M, previous.M);
+  var selectedCanonicalDensity = 0.0;
+  if (combined.w_sum > 0.0) {
+    selectedCanonicalDensity = restir_di_compute_phat_xi(
+      combined.lightId,
+      combined.xi,
+      currentSurface,
+    );
+  }
+  finaliseReservoirDIFromGeneralizedReuse(
+    &combined,
+    maxCandidateLogWeight,
+    selectedCanonicalDensity,
+  );
 
   storeReservoirDI_rw(pixelIdx, combined);
 }
 `;
 
-/** W1-R6 — declarative include-graph entry.
- *  W2-C7+C9: depends on the canonical ReSTIR p̂ and primary-cast helpers
- *  (both of which transitively require `common`). The composer dedupes
- *  `common` so the emitted order is `common, restirPHat, restirCastPrimary,
- *  temporal`. */
 export const TEMPORAL_MODULE: WgslModule = {
   name: 'temporal',
   source: TEMPORAL_WGSL,

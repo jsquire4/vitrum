@@ -22,7 +22,7 @@
 - `pt-webgl2` — native WebGL2 converged PT (release-candidate track)
 - `pt-webgpu` — WebGPU-native converged PT peer: spectral, BDPT, SSS random walk, MNEE manifold caustics, light-tree NEE, ReSTIR-PT (off-default), path-replay adjoint
 - `walkaround-rc` — Radiance Cascades subsystem (cascade pyramid + dispatch + receiver)
-- `shared-bvh`, `shared-samplers`, `shared-denoisers`, `scene-lighting`, `stained-glass-extensions`, `dev` (debug overlays)
+- `shared-bvh`, `shared-samplers`, `shared-denoisers`, `stained-glass-extensions`, `dev` (debug overlays)
 
 ## Where things stand (2026-07-24)
 

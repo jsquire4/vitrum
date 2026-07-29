@@ -111,18 +111,6 @@ describe('PPG compiler/runtime gates', () => {
     )).toBe(true);
     const source = stub.shaderSources.get('ppg-update') ?? '';
     expect(source).toMatch(/MAX_DTREE_NODES_PER_CELL\s*:\s*u32\s*=\s*128u/);
-    expect(source).toMatch(/RESERVOIR_GI_STRIDE_LOCAL\s*:\s*u32\s*=\s*20u/);
-  });
-
-  it('threads the GRIS reservoir stride into the PPG update shader when DDGI-proxy GRIS reuse is enabled', async () => {
-    const stub = makeCompileStub();
-
-    await compilePipelines(stub.device, {}, 'bgra8unorm', {
-      ppgEnabled: true,
-      grisReuse: true,
-    });
-
-    const source = stub.shaderSources.get('ppg-update') ?? '';
     expect(source).toMatch(/RESERVOIR_GI_STRIDE_LOCAL\s*:\s*u32\s*=\s*28u/);
   });
 

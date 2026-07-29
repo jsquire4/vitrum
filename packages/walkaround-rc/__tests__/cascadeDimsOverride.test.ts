@@ -1,13 +1,12 @@
 /**
  * B3b (2026-05-19) — Cornell-tuned `CASCADE_DIMS` is no longer the only
  * shape the RC dispatcher can drive. `RCDispatcher` accepts a per-instance
- * `cascadeDims` constructor argument; `allocateCascades` accepts the same
- * via parameter. Hosts on non-Cornell aspect ratios / scene scales
- * override via `HybridEngineOptions.cascadeDims`.
+ * `cascadeDims` constructor argument. Hosts on non-Cornell aspect ratios /
+ * scene scales override via `HybridEngineOptions.cascadeDims`.
  *
  * These tests pin:
  *   1. `CASCADE_DIMS` still exists as the Cornell default on the raw root.
- *   2. package-root `allocateCascades(bounds)` matches `allocateCascades(bounds, CASCADE_DIMS)`.
+ *   2. The test-only CPU layout oracle matches the production default dims.
  *   3. A custom dims array drives differently-sized cascade buffers.
  *   4. `RCDispatcher` constructor accepts the override.
  */
@@ -17,10 +16,10 @@ import {
   CASCADE_DIMS,
   CASCADE_COUNT,
   RCDispatcher,
-  allocateCascades,
   validateCascadeDims,
   type CascadeDim,
 } from '../src/index.js';
+import { allocateCascades } from './support/cascadeBuffers.js';
 
 const TINY_BOUNDS = {
   min: [0, 0, 0] as const,

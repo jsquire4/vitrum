@@ -99,10 +99,9 @@ import { RESTIR_PT_SHIFT_WGSL } from './restirPtShift.wgsl.js';
  * the megakernel and MUST NOT grow a ReSTIR-PT field for this increment (a
  * parallel agent owns that file). So the reuse passes declare their OWN small
  * uniform — `RestirPtParams` — in the ReSTIR-PT bind group (@group(4)). It
- * carries the optional, intentionally biased GRIS W-cap and the temporal
- * M-clamp (`restirGiMClamp` analogue). The professional default writes f32-max,
- * making ordinary finite weights effectively unclamped while still saturating
- * an overflowed +Inf quotient to a finite value.
+ * carries the temporal M-clamp (`restirGiMClamp` analogue). Contribution
+ * weights are represented in log space by the reservoir itself; there is no
+ * host-authored clamp and therefore no biased robustness mode.
  *
  * @group(4) layout (the ReSTIR-PT-specific resources, separate from the
  * inherited @group(0..3) the shared modules own):
@@ -120,10 +119,6 @@ struct RestirPtParams {
   height:   u32,   // full-res height  run without re-reading FrameParams dims)
   mClamp:   u32,   // temporal M-clamp (GI restirGiMClamp analogue)
   _padA:    u32,
-  wCap:     f32,   // explicit biased W-cap, or f32-max for professional default
-  _padB:    f32,
-  _padC:    f32,
-  _padD:    f32,
 };
 `;
 
@@ -134,21 +129,17 @@ struct RestirPtParams {
  * declarations above.  The host packer (`GpuResources.writeReservoirParams`)
  * writes these slots in this order; this descriptor lets a test assert:
  *   (a) the WGSL struct fields parse out in this order, and
- *   (b) the total byte size equals RESTIR_PT_PARAMS_BYTES (= 32).
+ *   (b) the total byte size equals RESTIR_PT_PARAMS_BYTES (= 16).
  */
 export const RESTIR_PT_PARAMS_FIELDS = [
   { name: 'width',  byteOffset:  0, type: 'u32' },
   { name: 'height', byteOffset:  4, type: 'u32' },
   { name: 'mClamp', byteOffset:  8, type: 'u32' },
   { name: '_padA', byteOffset: 12, type: 'u32' },
-  { name: 'wCap',   byteOffset: 16, type: 'f32' },
-  { name: '_padB',  byteOffset: 20, type: 'f32' },
-  { name: '_padC',  byteOffset: 24, type: 'f32' },
-  { name: '_padD',  byteOffset: 28, type: 'f32' },
 ] as const;
 
-/** Byte size of the RestirPtParams UBO (8 × 4-byte fields). */
-export const RESTIR_PT_PARAMS_BYTES = 32;
+/** Byte size of the RestirPtParams UBO (4 × 4-byte fields). */
+export const RESTIR_PT_PARAMS_BYTES = 16;
 
 export const RESERVOIR_PT_HERO_WGSL = /* wgsl */ `// ============================================================
 // ReSTIR-PT / GRIS hero reservoir.
@@ -164,9 +155,9 @@ struct ReservoirPTHero {
   xv:      vec3f,   // visible vertex (primary hit / path prefix)
   _pad0:   f32,
   nv:      vec3f,   // shading normal at xv
-  W:       f32,     // RIS unbiased contribution weight (UCW)
+  logW:    f32,     // log RIS unbiased contribution weight (UCW)
   xs:      vec3f,   // reconnection vertex (held fixed by shift)
-  w_sum:   f32,     // running RIS weight sum
+  logWeightSum: f32,// log running RIS weight sum
   ns:      vec3f,   // shading normal at xs
   M:       u32,     // confidence (candidate count; stored exactly through 4095)
   Lo:      vec3f,   // outgoing radiance LEAVING xs toward xv
@@ -177,6 +168,8 @@ struct ReservoirPTHero {
   instanceIndexV:    u32,   // TLAS instance or 0xffffffff sentinel
   roughnessV:        f32,
   metalV:            f32,
+  transmissionV:     f32,
+  iorV:              f32,
   // Wavelength belonging to the SELECTED reconnection sample.  It is part of
   // z, not a permanent property of the visible domain: temporal/spatial reuse
   // must carry it when a neighbour wins and re-evaluate the target domain's
@@ -206,8 +199,8 @@ struct ReservoirPTHero {
 };
 
 // Compact storage layout (64 bytes = 16 × u32):
-//   [0..2] xv.xyz                  [3] W
-//   [4..6] xs.xyz                  [7] w_sum
+//   [0..2] xv.xyz                  [3] logW
+//   [4..6] xs.xyz                  [7] logWeightSum
 //   [8]    oct16(nv)               [9] oct16(ns)
 //   [10..11] shared-exponent 12-bit RGB Lo + 15-bit lambda + face + M[11:8]
 //   [12]   oct16(woV)              [13] instanceIndexV
@@ -218,18 +211,27 @@ struct ReservoirPTHero {
 // is 20 and confidence above 4095 is numerically counterproductive.
 const RESERVOIR_PT_HERO_STRIDE: u32 = 16u;
 const RPT_MAX_STORED_M: u32 = 4095u;
+const RPT_MAX_FINITE_F32: f32 = 3.402823466e38;
+const RPT_LOG_ZERO: f32 = -3.402823466e38;
+const RPT_LOG_NUMERIC_FAILURE: f32 = 3.402823466e38;
+const RPT_LOG_MAX_FINITE_F32: f32 = 88.7228390521;
 
 fn emptyReservoirPTHero() -> ReservoirPTHero {
   var r: ReservoirPTHero;
   r.xv = vec3f(0.0); r.nv = vec3f(0,1,0);
   r.xs = vec3f(0.0); r.ns = vec3f(0,1,0);
-  r.Lo = vec3f(0.0); r.W = 0.0; r.w_sum = 0.0; r.M = 0u;
+  r.Lo = vec3f(0.0);
+  r.logW = RPT_LOG_ZERO;
+  r.logWeightSum = RPT_LOG_ZERO;
+  r.M = 0u;
   r.pdfSrc = 0.0; r._pad0 = 0.0;
   r.woV = vec3f(0.0, 0.0, 1.0);
   r.materialIdV = 0xffffffffu;
   r.instanceIndexV = INVALID_TLAS_INSTANCE_INDEX;
   r.roughnessV = 0.0;
   r.metalV = 0.0;
+  r.transmissionV = 0.0;
+  r.iorV = 1.5;
   r.heroLambdaV = 550.0;
   r.isFrontFaceV = true;
   r.albV = vec3f(0.0);
@@ -345,10 +347,10 @@ fn rptVisibleMaterialAtSurface(
     if (thickness <= 0.0) { out.iridescence = 0.0; }
   }
   out.iridescenceIor = mat.iridescenceIor;
-  out.specularColor = clamp(
+  out.specularColor = max(
     mat.specularColor
       * sampleSpecularColorTexture(matId, triIndex, baryVW, instanceIndex),
-    vec3f(0.0), vec3f(1.0),
+    vec3f(0.0),
   );
   out.specularIntensity = clamp(
     mat.specularIntensity
@@ -608,6 +610,8 @@ fn rptHydrateVisibleDomain(r: ptr<function, ReservoirPTHero>) {
   (*r).albV = vm.baseColor;
   (*r).roughnessV = vm.roughness;
   (*r).metalV = vm.metallic;
+  (*r).transmissionV = vm.transmission;
+  (*r).iorV = vm.ior;
   (*r).clearcoatV = vm.clearcoat;
   (*r).clearcoatRoughnessV = vm.clearcoatRoughness;
   (*r).sheenV = vm.sheen;
@@ -632,13 +636,13 @@ fn loadReservoirPTHero_ro(buf: ptr<storage, array<u32>, read>, pixelIdx: u32) ->
     bitcast<f32>(buf[b + 1u]),
     bitcast<f32>(buf[b + 2u]),
   );
-  r.W = bitcast<f32>(buf[b + 3u]);
+  r.logW = bitcast<f32>(buf[b + 3u]);
   r.xs = vec3f(
     bitcast<f32>(buf[b + 4u]),
     bitcast<f32>(buf[b + 5u]),
     bitcast<f32>(buf[b + 6u]),
   );
-  r.w_sum = bitcast<f32>(buf[b + 7u]);
+  r.logWeightSum = bitcast<f32>(buf[b + 7u]);
   r.nv = rptUnpackOct16(buf[b + 8u]);
   r.ns = rptUnpackOct16(buf[b + 9u]);
   let decodedLo = rptUnpackLoMeta(buf[b + 10u], buf[b + 11u]);
@@ -671,13 +675,13 @@ fn loadReservoirPTHero_rw(buf: ptr<storage, array<u32>, read_write>, pixelIdx: u
     bitcast<f32>(buf[b + 1u]),
     bitcast<f32>(buf[b + 2u]),
   );
-  r.W = bitcast<f32>(buf[b + 3u]);
+  r.logW = bitcast<f32>(buf[b + 3u]);
   r.xs = vec3f(
     bitcast<f32>(buf[b + 4u]),
     bitcast<f32>(buf[b + 5u]),
     bitcast<f32>(buf[b + 6u]),
   );
-  r.w_sum = bitcast<f32>(buf[b + 7u]);
+  r.logWeightSum = bitcast<f32>(buf[b + 7u]);
   r.nv = rptUnpackOct16(buf[b + 8u]);
   r.ns = rptUnpackOct16(buf[b + 9u]);
   let decodedLo = rptUnpackLoMeta(buf[b + 10u], buf[b + 11u]);
@@ -709,11 +713,11 @@ fn storeReservoirPTHero_rw(buf: ptr<storage, array<u32>, read_write>, pixelIdx: 
   buf[b + 0u] = bitcast<u32>(r.xv.x);
   buf[b + 1u] = bitcast<u32>(r.xv.y);
   buf[b + 2u] = bitcast<u32>(r.xv.z);
-  buf[b + 3u] = bitcast<u32>(r.W);
+  buf[b + 3u] = bitcast<u32>(r.logW);
   buf[b + 4u] = bitcast<u32>(r.xs.x);
   buf[b + 5u] = bitcast<u32>(r.xs.y);
   buf[b + 6u] = bitcast<u32>(r.xs.z);
-  buf[b + 7u] = bitcast<u32>(r.w_sum);
+  buf[b + 7u] = bitcast<u32>(r.logWeightSum);
   buf[b + 8u] = rptPackOct16(r.nv);
   buf[b + 9u] = rptPackOct16(r.ns);
   buf[b + 10u] = loMeta.x;
@@ -730,14 +734,39 @@ fn storeReservoirPTHero_rw(buf: ptr<storage, array<u32>, read_write>, pixelIdx: 
 // pdfSrc alongside the chosen sample as proposal metadata for later shifted
 // reuse. Resolve consumes the finalized GRIS W and never divides by pdfSrc.
 // \`rand_f32\` is forward-referenced (composed earlier from PCG_WGSL).
-const RPT_MAX_FINITE_F32: f32 = 3.402823466e38;
-
 fn rptFiniteScalar(value: f32) -> bool {
   return value == value && abs(value) <= RPT_MAX_FINITE_F32;
 }
 
 fn rptFinitePositive(value: f32) -> bool {
   return value > 0.0 && rptFiniteScalar(value);
+}
+
+fn rptLogPositive(value: f32) -> f32 {
+  if (!rptFinitePositive(value)) { return RPT_LOG_ZERO; }
+  return log(value);
+}
+
+fn rptLogAddExp(a: f32, b: f32) -> f32 {
+  if (a == RPT_LOG_ZERO) { return b; }
+  if (b == RPT_LOG_ZERO) { return a; }
+  if (!rptFiniteScalar(a) || !rptFiniteScalar(b)) {
+    return RPT_LOG_NUMERIC_FAILURE;
+  }
+  let hi = max(a, b);
+  let lo = min(a, b);
+  let result = hi + log(1.0 + exp(lo - hi));
+  return select(RPT_LOG_NUMERIC_FAILURE, result, rptFiniteScalar(result));
+}
+
+fn rptReservoirHasNumericFailure(r: ReservoirPTHero) -> bool {
+  return r.M == 0u && r.logW == RPT_LOG_NUMERIC_FAILURE;
+}
+
+fn rptMarkReservoirNumericFailure(r: ptr<function, ReservoirPTHero>) {
+  (*r).M = 0u;
+  (*r).logW = RPT_LOG_NUMERIC_FAILURE;
+  (*r).logWeightSum = RPT_LOG_NUMERIC_FAILURE;
 }
 
 fn rptFiniteVec3(value: vec3f) -> bool {
@@ -751,17 +780,17 @@ fn rptSaturatingAddU32(a: u32, b: u32) -> u32 {
   return aStored + min(b, RPT_MAX_STORED_M - aStored);
 }
 
-fn updateReservoirPT(
+fn updateReservoirPTLog(
   r: ptr<function, ReservoirPTHero>,
   xs: vec3f, ns: vec3f, Lo: vec3f, heroLambda: f32, pdfSrc: f32,
-  w: f32,
+  logWeight: f32,
   rng: ptr<function, PtRngState>,
 ) -> bool {
-  // Reject malformed/overflowed candidates before they affect either M or the
-  // streaming selection. In the ordinary finite domain this branch is inert;
-  // outside representable f32 arithmetic an empty candidate is safer than
-  // publishing NaN/Inf into temporal history and the beauty accumulator.
-  if (!rptFinitePositive(w)
+  // A finite log weight represents every positive f32-domain weight without
+  // ever materializing a potentially overflowing product or quotient.
+  if (!rptFiniteScalar(logWeight)
+   || logWeight == RPT_LOG_ZERO
+   || logWeight == RPT_LOG_NUMERIC_FAILURE
    || !rptFinitePositive(pdfSrc)
    || !rptFiniteVec3(xs)
    || !rptFiniteVec3(ns)
@@ -775,17 +804,23 @@ fn updateReservoirPT(
   // Recover a corrupted aggregate without discarding the current visible-domain
   // payload. The accepted candidate below necessarily replaces the stale sample
   // because its fresh sum equals its own positive weight.
-  if ((*r).M == 0u || !rptFinitePositive((*r).w_sum)) {
+  if ((*r).M == 0u || !rptFiniteScalar((*r).logWeightSum)
+   || (*r).logWeightSum == RPT_LOG_NUMERIC_FAILURE) {
     (*r).M = 0u;
-    (*r).w_sum = 0.0;
-    (*r).W = 0.0;
+    (*r).logWeightSum = RPT_LOG_ZERO;
+    (*r).logW = RPT_LOG_ZERO;
   }
   if ((*r).M >= RPT_MAX_STORED_M) { return false; }
-  let nextWeightSum = (*r).w_sum + w;
-  if (!rptFinitePositive(nextWeightSum)) { return false; }
+  let nextLogWeightSum = rptLogAddExp((*r).logWeightSum, logWeight);
+  if (!rptFiniteScalar(nextLogWeightSum)
+   || nextLogWeightSum == RPT_LOG_NUMERIC_FAILURE) {
+    rptMarkReservoirNumericFailure(r);
+    return false;
+  }
   (*r).M = (*r).M + 1u;
-  (*r).w_sum = nextWeightSum;
-  if (rand_f32(rng) * (*r).w_sum < w) {
+  (*r).logWeightSum = nextLogWeightSum;
+  let selectionProbability = exp(logWeight - nextLogWeightSum);
+  if (rand_f32(rng) < selectionProbability) {
     (*r).xs = xs;
     (*r).ns = ns;
     // Canonicalize before target/finalize evaluation. W is therefore computed
@@ -812,6 +847,8 @@ fn copyReservoirPTVisibleDomain(dst: ptr<function, ReservoirPTHero>, src: Reserv
   (*dst).albV = src.albV;
   (*dst).roughnessV = src.roughnessV;
   (*dst).metalV = src.metalV;
+  (*dst).transmissionV = src.transmissionV;
+  (*dst).iorV = src.iorV;
   (*dst).heroLambdaV = src.heroLambdaV;
   (*dst).isFrontFaceV = src.isFrontFaceV;
   (*dst).clearcoatV = src.clearcoatV;
@@ -828,6 +865,27 @@ fn copyReservoirPTVisibleDomain(dst: ptr<function, ReservoirPTHero>, src: Reserv
   (*dst).specularColorV = src.specularColorV;
   (*dst).specularIntensityV = src.specularIntensityV;
   (*dst).clearcoatNormalV = src.clearcoatNormalV;
+}
+
+// Reconstruct the coherent interface from compact visible-domain identity.
+// Layer records live in the material table and therefore need not consume
+// reservoir storage; ior/transmission are rehydrated at the selected hero
+// wavelength alongside the other function-space BSDF parameters.
+fn rptThinFilmForDomain(r: ReservoirPTHero) -> ThinFilmInterface {
+  if (r.materialIdV == 0xffffffffu) { return bsdfNoThinFilm(); }
+  let mat = decodeMaterial(r.materialIdV);
+  return ThinFilmInterface(
+    mat.thinFilmEnabled,
+    r.materialIdV,
+    mat.thinFilmLayerCountU,
+    mat.thinFilmIncidentIor,
+    r.iorV,
+    mat.thinFilmAngleDependent,
+    r.isFrontFaceV,
+    params.spectralEnabled != 0u,
+    r.heroLambdaV,
+    r.transmissionV,
+  );
 }
 
 // The hero target function p̂ in the domain whose visible vertex is xv:
@@ -863,6 +921,7 @@ fn restirPtTargetAt(
   specularIntensityV: f32,
   anisotropyV: f32,
   anisotropyRotationV: f32,
+  thinFilmV: ThinFilmInterface,
   xs: vec3f,
   Lo: vec3f,
 ) -> f32 {
@@ -881,7 +940,7 @@ fn restirPtTargetAt(
     clearcoatV, clearcoatRoughnessV, sheenV, sheenRoughnessV, sheenColorV,
     iridescenceV, iridescenceIorV, iridescenceThicknessMinV, iridescenceThicknessMaxV,
     specularColorV, specularIntensityV,
-    anisotropyV, anisotropyRotationV,
+    anisotropyV, anisotropyRotationV, thinFilmV,
   );
   let targetValue = luminance(f * cosTheta * Lo);
   if (!rptFinitePositive(targetValue)) { return 0.0; }
@@ -889,13 +948,14 @@ fn restirPtTargetAt(
 }
 
 fn restirPtTargetForDomain(r: ReservoirPTHero, wo: vec3f, xs: vec3f, Lo: vec3f) -> f32 {
+  let thinFilm = rptThinFilmForDomain(r);
   return restirPtTargetAt(
     r.xv, r.nv, wo, r.albV, r.roughnessV, r.metalV,
     r.clearcoatNormalV,
     r.clearcoatV, r.clearcoatRoughnessV, r.sheenV, r.sheenRoughnessV, r.sheenColorV,
     r.iridescenceV, r.iridescenceIorV, r.iridescenceThicknessMinV, r.iridescenceThicknessMaxV,
     r.specularColorV, r.specularIntensityV,
-    r.anisotropyV, r.anisotropyRotationV,
+    r.anisotropyV, r.anisotropyRotationV, thinFilm,
     xs, Lo,
   );
 }
@@ -937,40 +997,71 @@ fn restirPtReconnectionJacobianForPair(
   );
 }
 
-// ── GRIS pairwise MIS (Lin 2022 §"pairwise MIS") — mirrors walkaround-hybrid's
-// grisPairwiseDenomNeighbor / grisPairwiseDenomCanonical EXACTLY. The streaming
-// temporal reuse folds the canonical (current) + the reprojected (previous)
-// sample with the two-domain generalized balance heuristic. The shift Jacobian
-// re-weights the RESAMPLING weight (multiplied in by the caller), NOT the target
-// ratio — the target p̂ is evaluated in each term's NATIVE domain (commensurable
-// densities). Returns the denominators; the caller forms m = numer/denom.
-fn restirPtPairwiseDenomNeighbor(
+fn rptLogWeightedTarget(candidateCount: f32, targetValue: f32) -> f32 {
+  if (!rptFinitePositive(candidateCount) || !rptFinitePositive(targetValue)) {
+    return RPT_LOG_ZERO;
+  }
+  return log(candidateCount) + log(targetValue);
+}
+
+// Express one target-domain proxy density in the SOURCE sample's measure.
+// For T_source→target this is c_target·p̂_target(T(x))·|∂T/∂x|.  These
+// Jacobian-corrected terms are commensurable and therefore may share a
+// generalized-balance denominator.  Omitting J compares densities in distinct
+// path-space measures and breaks the required partition of unity.
+fn rptLogWeightedShiftedTarget(
+  candidateCount: f32,
+  targetValue: f32,
+  sourceToTargetJacobian: f32,
+) -> f32 {
+  let logWeightedTarget = rptLogWeightedTarget(candidateCount, targetValue);
+  if (logWeightedTarget == RPT_LOG_ZERO
+   || !rptFinitePositive(sourceToTargetJacobian)) {
+    return RPT_LOG_ZERO;
+  }
+  let result = logWeightedTarget + log(sourceToTargetJacobian);
+  return select(RPT_LOG_NUMERIC_FAILURE, result, rptFiniteScalar(result));
+}
+
+// ── Two-domain generalized-balance denominators (Lin 2022, Eq. 11). ──
+// Each denominator is written in its candidate's native measure.  The native
+// term has identity J; the cross-domain term carries the candidate→other-domain
+// determinant.  The caller forms log(m_i) = log(native mass) - log(denom).
+fn restirPtPairwiseLogDenomNeighbor(
   cR: f32, pHatR_atQsample: f32,
+  qToRJacobian: f32,
   cQ: f32, pHatQ_native: f32,
 ) -> f32 {
-  return cR * pHatR_atQsample + cQ * pHatQ_native;
+  return rptLogAddExp(
+    rptLogWeightedShiftedTarget(cR, pHatR_atQsample, qToRJacobian),
+    rptLogWeightedTarget(cQ, pHatQ_native),
+  );
 }
 
-fn restirPtPairwiseDenomCanonical(
+fn restirPtPairwiseLogDenomCanonical(
   cR: f32, pHatR_native: f32,
   cQ: f32, pHatQ_atRsample: f32,
+  rToQJacobian: f32,
 ) -> f32 {
-  return cR * pHatR_native + cQ * pHatQ_atRsample;
+  return rptLogAddExp(
+    rptLogWeightedTarget(cR, pHatR_native),
+    rptLogWeightedShiftedTarget(cQ, pHatQ_atRsample, rToQJacobian),
+  );
 }
 
-// Finalise W for a GRIS hero reservoir (temporal reuse ON). GRIS folds each
+// Finalise log(W) for a GRIS hero reservoir. GRIS folds each
 // sample with a pairwise-MIS weight m_i where Σ m_i = 1, so the M-count does NOT
 // normalise the sum — dividing by M again would under-energise the estimate.
-//   W = w_sum / p̂(chosen sample)    — Lin 2022 §generalized RIS, NO /M.
+//   log W = log(weight_sum) - log(p̂(chosen sample))
+//                                      — Lin 2022 §generalized RIS, NO /M.
 // Mirrors walkaround-hybrid finaliseGIReservoirWGris EXACTLY (the GRIS form),
-// with the hero target p̂ via restirPtTargetAt. A finite host-authored wCap is an
-// explicitly biased robustness mode. The professional default supplies f32-max:
-// no ordinary finite weight is clipped, while an overflowed +Inf quotient still
-// saturates to a finite representable value.
-fn finaliseReservoirPTWGris(r: ptr<function, ReservoirPTHero>, wCap: f32) {
-  (*r).W = 0.0;
-  if ((*r).M == 0u || !rptFinitePositive((*r).w_sum)
-   || !rptFinitePositive(wCap)) {
+// with the hero target p̂ via restirPtTargetAt. Keeping the normalization in
+// log space avoids both overflow and any biased contribution clamp.
+fn finaliseReservoirPTWGris(r: ptr<function, ReservoirPTHero>) {
+  (*r).logW = RPT_LOG_ZERO;
+  if ((*r).M == 0u || !rptFiniteScalar((*r).logWeightSum)
+   || (*r).logWeightSum == RPT_LOG_ZERO
+   || (*r).logWeightSum == RPT_LOG_NUMERIC_FAILURE) {
     (*r).M = 0u;
     return;
   }
@@ -979,17 +1070,12 @@ fn finaliseReservoirPTWGris(r: ptr<function, ReservoirPTHero>, wCap: f32) {
     (*r).M = 0u;
     return;
   }
-  let W_raw = (*r).w_sum / pHatF;
-  // A positive finite quotient is unchanged unless the host explicitly opted
-  // into a lower cap. +Inf from a representable-positive division saturates to
-  // the finite cap; NaN/negative results fail closed to an empty reservoir.
-  if (W_raw > 0.0) {
-    (*r).W = min(W_raw, min(wCap, RPT_MAX_FINITE_F32));
+  let logW = (*r).logWeightSum - log(pHatF);
+  if (!rptFiniteScalar(logW)) {
+    rptMarkReservoirNumericFailure(r);
+    return;
   }
-  if (!rptFinitePositive((*r).W)) {
-    (*r).W = 0.0;
-    (*r).M = 0u;
-  }
+  (*r).logW = logW;
 }
 
 // The implemented ReSTIR-PT contract has exactly one reconnection edge. Reject
@@ -1000,10 +1086,12 @@ fn refreshReconnectionStatePT(r: ptr<function, ReservoirPTHero>) {
   let toRecon = (*r).xs - (*r).xv;
   let dRecon = length(toRecon);
   if (!rptFinitePositive(dRecon) || dRecon <= 1e-6
-   || (*r).M == 0u || !rptFinitePositive((*r).W)) {
+   || (*r).M == 0u || !rptFiniteScalar((*r).logW)
+   || (*r).logW == RPT_LOG_ZERO
+   || (*r).logW == RPT_LOG_NUMERIC_FAILURE) {
     (*r).M = 0u;
-    (*r).W = 0.0;
-    (*r).w_sum = 0.0;
+    (*r).logW = RPT_LOG_ZERO;
+    (*r).logWeightSum = RPT_LOG_ZERO;
   }
 }
 `;

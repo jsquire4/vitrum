@@ -17,10 +17,14 @@
  *    in `bvhPositions` when using merged BVH, reset the accumulator, and
  *    invalidate DDGI probes because cached irradiance is anchored to the old
  *    object placement.
- *  - structural topology fields present (`uvs` / `tangents` / `indices` /
- *    `instances` / `params` / `shape` / `fallbackMesh` / `kind`) → call
+ *  - packed structural topology fields present (`uvs` / `tangents` /
+ *    vertex-color streams or selection / `indices` / `castShadow`) → call
  *    {@link topologyRebuild}: re-run `buildReSTIRSceneBVH`, destroy +
  *    re-upload the four BVH GPU buffers, reset the accumulator.
+ *  - wholesale primitive fields (`instances` / `params` / `shape` /
+ *    `fallbackMesh`) are intercepted by `HybridEngine.updatePrimitive` and
+ *    routed through `setScene`; changed `id` / `kind` discriminants are
+ *    rejected canonically, while equal values are neutral.
  *  - `patch.positions` present, with optional same-count `normals` → call
  *    {@link positionsRefit}: update packed vertex data, refit bounds, and
  *    upload normals when provided.
@@ -28,7 +32,7 @@
  *    {@link skinnedPosePatch}: solve the pose, then reuse the positions/normals
  *    refit path when only geometry moved, or the topology rebuild path when
  *    morph-animated tangents/UVs need attribute-texture refresh, while preserving
- *    the pose fields in scene state.
+ *    authored rest/pose fields in scene state.
  *  - material-only patches → {@link materialPatch}: re-pack bvhIndex,
  *    bvhBeerColors/material textures, and partial GPU upload (no setScene).
  *
@@ -61,7 +65,6 @@ import { applyPrimitivePatchToScene } from './scenePatch.js';
 import {
   buildReSTIRSceneBVHForCoreScene,
   rebuildReSTIRSceneBVHPrimitiveCore,
-  disposeSceneBVH,
   rebuildEmitterBuffersFromCoreScene,
 } from './restir/bvhCore.js';
 import type { ReSTIRBvhMode, SceneBVHBuffers } from './restir/bvhCore.js';
@@ -104,7 +107,6 @@ import {
   packBVHRoughMetalFromCore,
 } from './restir/packingHelpers.js';
 import {
-  assertNoUnsupportedMaterialProfiles,
   collectUnconsumedMaterialFieldsForMaterial,
   type UnconsumedMaterialPrimitiveFields,
 } from './restir/consumedMaterialFields.js';
@@ -275,8 +277,9 @@ function transformPoint(
  * in both files reference the same list.
  */
 export const TOPOLOGY_PATCH_FIELDS = [
-  'normals', 'uvs', 'uv1', 'uvSets', 'tangents', 'indices',
-  'instances', 'params', 'shape', 'fallbackMesh', 'kind',
+  'normals', 'uvs', 'uv1', 'uvSets', 'tangents',
+  'colors', 'colorSets', 'vertexColorSet', 'indices',
+  'instances', 'params', 'shape', 'fallbackMesh', 'castShadow',
 ] as const;
 
 /** Topology fields that require wholesale scene replacement rather than a
@@ -284,11 +287,21 @@ export const TOPOLOGY_PATCH_FIELDS = [
  *  intercepts these and routes them through `setScene` (instead of
  *  `topologyRebuild` throwing). */
 export const TOPOLOGY_PATCH_WHOLESALE_FIELDS = [
-  'instances', 'params', 'shape', 'fallbackMesh', 'kind',
+  'instances', 'params', 'shape', 'fallbackMesh',
 ] as const;
 
 export const SKIN_POSE_PATCH_FIELDS = [
-  'bones', 'boneInverses', 'morphWeights',
+  'skinIndices', 'skinWeights', 'skinInfluencesPerVertex',
+  'bones', 'boneInverses', 'bindMatrix', 'bindMatrixInverse',
+  'morphTargets', 'morphTargetNormals', 'morphTargetTangents',
+  'morphTargetUvs', 'morphTargetUv1s', 'morphTargetUvSets', 'morphWeights',
+] as const;
+
+/** Authored rest streams on a skinned primitive. Public patches to any of
+ * these fields must be solved against the primitive's current pose before the
+ * render scene/BVH is updated. */
+export const SKIN_REST_STREAM_PATCH_FIELDS = [
+  'positions', 'normals', 'tangents', 'uvs', 'uv1', 'uvSets',
 ] as const;
 
 /** Snapshot the live TLAS GPU buffers as the `prev` input to `refitTlasTransforms`. */
@@ -927,14 +940,15 @@ function findSkinnedPrimitive(scene: Scene, id: string): SkinnedMeshPrimitive | 
 }
 
 /**
- * Skinned-pose mutation path for host patches that update only skeleton state
- * (`bones`, `boneInverses`) or morph weights.
+ * Skinned-pose mutation path for host patches that update skeleton state,
+ * skinning inputs, bind matrices, or morph-target definitions/weights.
  *
  * The renderer buffers still need deformed positions/normals, so this resolves
  * the next skinned pose through the canonical CPU solver and then delegates to
- * the existing geometry refit path. The committed scene keeps the submitted pose
- * fields alongside the solved geometry so subsequent pose patches start from the
- * latest skeleton state instead of turning into an unrecognised no-op.
+ * the existing geometry refit path. The authored scene keeps submitted rest/pose
+ * fields, while the separate render scene carries the solved geometry. Mixed
+ * transform+pose patches rebuild conservatively so the solved vertices and the
+ * BVH transform snapshot are published atomically.
  */
 export function skinnedPosePatch(
   id: string,
@@ -944,7 +958,7 @@ export function skinnedPosePatch(
   const current = findSkinnedPrimitive(ctx.lastScene, id);
   if (current == null) {
     throw new Error(
-      `HybridEngine.updatePrimitive("${id}"): bones/boneInverses/morphWeights patches ` +
+      `HybridEngine.updatePrimitive("${id}"): skin/morph patches ` +
       `require a skinned-mesh primitive.`,
     );
   }
@@ -961,8 +975,15 @@ export function skinnedPosePatch(
     ...(solved.uvSets ? { uvSets: solved.uvSets } : {}),
   } as Partial<ScenePrimitive>;
 
+  const hasStructuralPatch = TOPOLOGY_PATCH_FIELDS.some(
+    (field) =>
+      field !== 'normals' &&
+      (patch as unknown as Record<string, unknown>)[field] !== undefined,
+  );
   if (
     patch.material !== undefined ||
+    (patch as { transform?: unknown }).transform !== undefined ||
+    hasStructuralPatch ||
     solved.tangents != null ||
     solved.uvs != null ||
     solved.uv1 != null ||
@@ -971,8 +992,9 @@ export function skinnedPosePatch(
     const result = topologyRebuild(id, resolvedPatch, ctx);
     return {
       ...result,
-      // positions/normals in SkinnedMeshPrimitive are authored rest-pose
-      // data. Only pose fields are published to the host-owned scene.
+      // SkinnedMeshPrimitive geometry fields are authored rest-pose data.
+      // Publish the submitted authored patch to the host scene; solved streams
+      // remain private to the render scene.
       updatedScene: applyPrimitivePatchToScene(ctx.lastScene, id, patch),
       updatedRenderScene: applyPrimitivePatchToScene(
         ctx.renderScene,
@@ -1204,6 +1226,17 @@ export function positionsRefit(
 
   const newLocalPositions = (patch as { positions?: ArrayLike<number> }).positions;
   if (newLocalPositions == null) {
+    return topologyRebuild(id, patch, ctx);
+  }
+
+  // A merged BVH flattens every instance into a separate same-id vertex range.
+  // The single-range refit below cannot update all of them; rebuild so one
+  // shared authored geometry patch is expanded through every instance matrix.
+  if (
+    bvh.bvhMode === 'merged' &&
+    ctx.renderScene.primitives.find((primitive) => String(primitive.id) === id)
+      ?.kind === 'instanced-mesh'
+  ) {
     return topologyRebuild(id, patch, ctx);
   }
 
@@ -1588,10 +1621,11 @@ export function topologyRebuild(
 ): PrimitiveUpdateResult {
   // For now we support the most common topology patches:
   //   - transform (16-element Mat4)
-  //   - positions, normals, uvs, uv1, uvSets, tangents, indices (typed arrays from
-  //     core/src/scene.ts MeshPrimitive)
-  // Other fields (`instances`, `params`, `shape`, `fallbackMesh`,
-  // `kind`) require a wholesale primitive replacement. `HybridEngine.
+  //   - positions, normals, uvs, uv1, uvSets, tangents, colors, colorSets,
+  //     vertexColorSet, indices (typed arrays / semantic selectors from
+  //     core/src/scene/primitives.ts MeshPrimitive)
+  // Other fields (`instances`, `params`, `shape`, `fallbackMesh`) require a
+  // wholesale primitive replacement. `HybridEngine.
   // updatePrimitive` intercepts these and routes them through setScene
   // BEFORE reaching here, so the throw below is now a defensive backstop
   // for any direct caller — not the host-facing path.
@@ -1603,12 +1637,16 @@ export function topologyRebuild(
     uv1?: ArrayLike<number>;
     uvSets?: ReadonlyArray<ArrayLike<number> | undefined>;
     tangents?: ArrayLike<number>;
+    colors?: ArrayLike<number>;
+    colorSets?: ReadonlyArray<ArrayLike<number> | undefined>;
+    vertexColorSet?: number | null;
     indices?: ArrayLike<number>;
     instances?: unknown;
     params?: unknown;
     shape?: unknown;
     fallbackMesh?: unknown;
     kind?: unknown;
+    id?: unknown;
   };
   for (const f of TOPOLOGY_PATCH_WHOLESALE_FIELDS) {
     if (p[f] !== undefined) {
@@ -1659,13 +1697,7 @@ export function topologyRebuild(
     newBuffers = buildReSTIRSceneBVHForCoreScene(updatedRenderScene, bvhOpts);
   }
   // Publish the complete GPU replacement only after every allocation succeeds.
-  try {
-    ctx.pipeline?.replaceBvhAndEmitters(newBuffers);
-  } catch (error) {
-    disposeSceneBVH(newBuffers);
-    throw error;
-  }
-  if (!ctx.deferSubsystemSideEffects && oldBuffers) disposeSceneBVH(oldBuffers);
+  ctx.pipeline?.replaceBvhAndEmitters(newBuffers);
 
 
 
@@ -1979,11 +2011,6 @@ export function materialPatch(
     prevMaterial != null
       ? mergeMaterialPatch(prevMaterial, materialPatchValue)
       : materialPatchValue;
-  assertNoUnsupportedMaterialProfiles([{
-    id,
-    kind: prevPrim?.kind ?? 'mesh',
-    material: nextMaterial as unknown as Record<string, unknown>,
-  }], 'updatePrimitive');
   const unconsumedMaterialFields = collectUnconsumedMaterialFieldsForMaterial(
     nextMaterial as unknown as Record<string, unknown>,
   );

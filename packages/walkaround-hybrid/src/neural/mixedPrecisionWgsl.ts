@@ -70,19 +70,5 @@ export function neuralLayerWgslForStorage(
       );
       result = replaceRequired(result, '\n  );\n}', '\n  ));\n}');
       return result;
-    case 'bilinearUpsample':
-      result = replaceRequired(result, 'inputBuf  : array<f32>', 'inputBuf  : array<f16>');
-      result = replaceRequired(result, 'outputBuf : array<f32>', 'outputBuf : array<f16>');
-      result = replaceRequired(
-        result,
-        'return neuralSanitizeSigned(inputBuf[clampedY * params.inputW * params.channels + clampedX * params.channels + ch]);',
-        'return neuralSanitizeSigned(f32(inputBuf[clampedY * params.inputW * params.channels + clampedX * params.channels + ch]));',
-      );
-      result = replaceRequired(
-        result,
-        'outputBuf[outIdx] = neuralSanitizeSigned(val);',
-        'outputBuf[outIdx] = f16(neuralSanitizeSigned(val));',
-      );
-      return result;
   }
 }

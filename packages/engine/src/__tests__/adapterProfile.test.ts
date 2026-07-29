@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   HYBRID_WEBGPU_REQUIRED_LIMITS,
   HYBRID_LITE_LIMITS,
@@ -35,6 +35,10 @@ const FULL_BUF = HYBRID_WEBGPU_REQUIRED_LIMITS['maxStorageBuffersPerShaderStage'
 const FULL_TEX = HYBRID_WEBGPU_REQUIRED_LIMITS['maxStorageTexturesPerShaderStage']!;
 const LITE_BUF = HYBRID_LITE_LIMITS['maxStorageBuffersPerShaderStage']!;
 const LITE_TEX = HYBRID_LITE_LIMITS['maxStorageTexturesPerShaderStage']!;
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 describe('probeAdapterProfile — verdict logic (no GPU)', () => {
   it('16/8 hardware is full hybrid and pt-webgpu lite', async () => {
@@ -102,15 +106,15 @@ describe('probeAdapterProfile — verdict logic (no GPU)', () => {
     expect(p.adapterKind).toBe('swiftshader');
   });
 
-  it('below pt-webgpu lite floor → ptWebgpuTier none, hero falls to pt-webgl2', async () => {
+  it('below pt-webgpu lite floor fails closed when the realm has no WebGL2 surface', async () => {
     const belowBuf = PT_WEBGPU_LITE_REQUIRED_STORAGE_BUFFERS_PER_STAGE - 1;
     const belowTex = PT_WEBGPU_LITE_REQUIRED_STORAGE_TEXTURES_PER_STAGE - 1;
     const p = await probeAdapterProfile(fakeAdapter(belowBuf, belowTex));
     expect(p.ptWebgpuTier).toBe('none');
     // No GPUAdapter info ⇒ unknown adapter kind, not software.
     expect(p.isSoftwareAdapter).toBe(false);
-    // hasWebGL2 defaults true in the headless test env ⇒ pt-webgl2 fallback.
-    expect(p.recommendedHeroBackend).toBe('pt-webgl2');
+    expect(p.hasWebGL2).toBe(false);
+    expect(p.recommendedHeroBackend).toBe('none');
   });
 
   it('no navigator.gpu (no source, no WebGPU env) → hasWebGPU false', async () => {
@@ -119,7 +123,27 @@ describe('probeAdapterProfile — verdict logic (no GPU)', () => {
     const p = await probeAdapterProfile();
     expect(p.hasWebGPU).toBe(false);
     expect(p.recommendedRealtimeTier).toBe('unavailable');
-    expect(p.recommendedHeroBackend).toBe('pt-webgl2'); // headless WebGL2 default
+    expect(p.hasWebGL2).toBe(false);
+    expect(p.recommendedHeroBackend).toBe('none');
+  });
+
+  it('probes worker WebGL2 through OffscreenCanvas instead of assuming support', async () => {
+    vi.stubGlobal('document', undefined);
+    vi.stubGlobal('OffscreenCanvas', class {
+      constructor(_width: number, _height: number) {}
+      getContext(kind: string): object | null {
+        return kind === 'webgl2' ? {} : null;
+      }
+    });
+
+    const p = await probeAdapterProfile(fakeAdapter(
+      PT_WEBGPU_LITE_REQUIRED_STORAGE_BUFFERS_PER_STAGE - 1,
+      PT_WEBGPU_LITE_REQUIRED_STORAGE_TEXTURES_PER_STAGE - 1,
+    ));
+
+    expect(p.ptWebgpuTier).toBe('none');
+    expect(p.hasWebGL2).toBe(true);
+    expect(p.recommendedHeroBackend).toBe('pt-webgl2');
   });
 });
 

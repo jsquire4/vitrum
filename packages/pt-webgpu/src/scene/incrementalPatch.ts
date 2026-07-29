@@ -115,6 +115,7 @@ const MATERIAL_TEXTURE_DESCRIPTOR_SCALAR_FIELDS: ReadonlySet<string> = new Set([
 const GEOMETRY_MATERIAL_FIELDS: ReadonlySet<string> = new Set([
   'displacementScale',
   'displacementBias',
+  'displacementSubdivisions',
 ]);
 
 export interface MaterialPatchRepackFields {
@@ -206,10 +207,11 @@ export function canFastPathMaterialPatch(
 }
 
 /**
- * Geometry (positions/normals/tangents) patch eligible for in-place BLAS refit:
- * only same-count vertex attributes touched, and the primitive is a
- * (skinned-)mesh. Tangents ride the existing `rebuildPrimitiveBlas` splice path
- * so skinned/morphed tangent-space shading can update without a full setScene.
+ * Geometry/vertex-attribute patch eligible for in-place BLAS refit: only
+ * same-count vertex attributes (including the selected COLOR_n lane) are
+ * touched, and the primitive is a (skinned-)mesh. Every accepted field rides
+ * the existing `rebuildPrimitiveBlas` splice path, which republishes the
+ * canonical selected-color stream together with positions/normals/UVs.
  */
 export function canFastPathGeometryPatch(
   primitive: ScenePrimitive,
@@ -225,7 +227,10 @@ export function canFastPathGeometryPatch(
     k === 'tangents' ||
     k === 'uvs' ||
     k === 'uv1' ||
-    k === 'uvSets'
+    k === 'uvSets' ||
+    k === 'colors' ||
+    k === 'colorSets' ||
+    k === 'vertexColorSet'
   )) {
     return false;
   }
@@ -235,7 +240,10 @@ export function canFastPathGeometryPatch(
     !('tangents' in patch) &&
     !('uvs' in patch) &&
     !('uv1' in patch) &&
-    !('uvSets' in patch)
+    !('uvSets' in patch) &&
+    !('colors' in patch) &&
+    !('colorSets' in patch) &&
+    !('vertexColorSet' in patch)
   ) {
     return false;
   }
@@ -283,6 +291,22 @@ export function canFastPathGeometryPatch(
     for (const texCoord of sparseArrayOwnIndices(patch.uvSets)) {
       const stream = patch.uvSets[texCoord];
       if (stream != null && stream.length !== expectedLength) return false;
+    }
+  }
+  const vertexCount = Math.floor(primitive.positions.length / 3);
+  const isValidColorLength = (length: number): boolean =>
+    length === vertexCount * 3 || length === vertexCount * 4;
+  if (
+    'colors' in patch &&
+    patch.colors != null &&
+    !isValidColorLength(patch.colors.length)
+  ) {
+    return false;
+  }
+  if ('colorSets' in patch && patch.colorSets != null) {
+    for (const colorSet of sparseArrayOwnIndices(patch.colorSets)) {
+      const stream = patch.colorSets[colorSet];
+      if (stream != null && !isValidColorLength(stream.length)) return false;
     }
   }
   return true;

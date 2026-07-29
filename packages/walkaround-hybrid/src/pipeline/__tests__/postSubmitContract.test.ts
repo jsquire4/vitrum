@@ -34,10 +34,13 @@ function makeHarness(options: {
     unmap: vi.fn(),
   };
   pipeline._tsState = {
+    querySet: null,
     resolveBuffer: {},
     readbackA: readback,
     readbackB: readback,
     readbackInFlight: null,
+    readbackGeneration: 0,
+    disposed: false,
     periodNs: 1,
     lastGpuTimings: { previous: 1 },
     lastGpuTimingsFrame: 7,

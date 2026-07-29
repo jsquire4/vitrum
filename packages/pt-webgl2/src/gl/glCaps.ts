@@ -8,20 +8,15 @@
 // semantics, then the separately resolved NEE term is added to radiance before
 // one running-mean update. WebGL2 fixed-function blending cannot express that
 // per-attachment ownership, so EXT_float_blend is neither requested nor probed.
-// The MAX_* limits feed sampler-unit / MRT / data-texture sizing decisions in
-// GlResources + the scene packers.
+// The retained MAX_* limits feed MRT and data-texture sizing decisions in
+// GlResources. Other resource-specific limits are queried where they are
+// consumed so this object cannot imply unused enforcement.
 
 export interface GlCaps {
-  /** EXT_color_buffer_float present — RGBA32F targets are color-renderable. */
-  readonly floatColorRenderable: boolean;
   /** gl.MAX_DRAW_BUFFERS — MRT attachment budget (need ≥3 for gNormalDepth/gAlbedo). */
   readonly maxDrawBuffers: number;
-  /** gl.MAX_TEXTURE_IMAGE_UNITS — sampler-unit budget for GlProgram link-time assignment. */
-  readonly maxTexUnits: number;
   /** gl.MAX_TEXTURE_SIZE — square data-texture dimension ceiling. */
   readonly maxTexSize: number;
-  /** gl.MAX_ARRAY_TEXTURE_LAYERS — layer-count ceiling for sampler2DArray textures. */
-  readonly maxArrayLayers: number;
 }
 
 /**
@@ -30,11 +25,12 @@ export interface GlCaps {
  * so we call it once here (the activation persists for the context lifetime).
  */
 export function probeGlCaps(gl: WebGL2RenderingContext): GlCaps {
+  // Activates float color attachments for the context. Individual framebuffer
+  // creation checks completeness, so retaining an unconsumed boolean here would
+  // duplicate no usable decision.
+  gl.getExtension('EXT_color_buffer_float');
   return {
-    floatColorRenderable: gl.getExtension('EXT_color_buffer_float') != null,
     maxDrawBuffers: gl.getParameter(gl.MAX_DRAW_BUFFERS) as number,
-    maxTexUnits: gl.getParameter(gl.MAX_TEXTURE_IMAGE_UNITS) as number,
     maxTexSize: gl.getParameter(gl.MAX_TEXTURE_SIZE) as number,
-    maxArrayLayers: gl.getParameter(gl.MAX_ARRAY_TEXTURE_LAYERS) as number,
   };
 }

@@ -1,32 +1,10 @@
 /**
- * Spatial reuse compute pass.
+ * ReSTIR-DI spatial reuse.
  *
- * Combines 5 spatially-neighboring reservoirs via Poisson-disk offsets (30px radius).
- * Reads from currentReservoir, writes to spatialReservoir.
- * Two separable passes are run by the orchestrator (using the same shader twice).
- *
- * Primary-ray-cast mode: no G-buffer rasterization.  We re-cast primary
- * rays here for the center pixel + each neighbor so the target function p̂ is
- * evaluated at the CORRECT surface, not at the world origin.
- *
- * Checkerboard sparse-spatial (host opt-in; default OFF). The spatial reuse is
- * the pipeline's dominant cost — each thread does castPrimary(center) + 5×
- * castPrimary(neighbor) = 6 BVH traversals, ×2 separable passes ≈ 42% of the
- * walkaround frame (profiled, dzn RTX-4090). When checkerboardOn == 1u the host
- * COMPACTS this dispatch to ~half the threads — `ceil(ceil(W/2)/8) × ceil(H/8)`
- * workgroups — so the 6 BVH re-casts run for ONE pixel per active-parity slot
- * instead of every pixel. The decode maps the compacted global_invocation_id
- * back into the true full-res active-parity pixel
- *   px = gid.x*2 + ((gid.y + frameParity) & 1u),  py = gid.y
- * — EXACTLY the (px+py)&1u == frameParity set ShadePass (which uses the SAME
- * frameParity/checkerboardOn) shades this frame. So shade reads the
- * spatialReservoir slots spatial just refined; the complementary gap-parity
- * reservoir slots are NOT consumed this frame (shade is compacted to the same
- * active-parity set) and get refreshed next frame when the parity flips. The
- * few odd-width overshoot threads (px >= W) are caught by the existing bounds
- * guard. When the host gates checkerboardOn off (default, OR a fast-motion
- * frame — see WalkaroundGPUPipeline motion fallback) the dispatch is full-res
- * `wgX/wgY` and pix == gid.xy, byte-identical to the pre-checkerboard kernel.
+ * Each round gathers the center and up to five geometrically compatible
+ * neighbors. Their chosen samples are combined with generalized Talbot MIS,
+ * evaluating every candidate under every gathered surface domain. The host
+ * swaps bindings 5 and 7 for round two, making the rounds a real ping-pong.
  */
 
 import type { WgslModule } from '../pipeline/wgslComposer.js';
@@ -34,164 +12,239 @@ import { reservoirDiAccessorsWgsl } from './reservoirDi.wgsl.js';
 
 export const SPATIAL_WGSL = /* wgsl */ `
 
-// Group 0: only the slots spatial actually reads / writes. The shared
-// FrameBindGroup layout carries 10 entries for shade; WGSL allows the
-// shader to declare a subset (W5-I1 cleanup 2026-05-18).
-@group(0) @binding(5) var<storage, read_write> currentReservoir:  array<u32>;
-@group(0) @binding(7) var<storage, read_write> spatialReservoir:  array<u32>;
+@group(0) @binding(5) var<storage, read_write> currentReservoir: array<u32>;
+@group(0) @binding(7) var<storage, read_write> spatialReservoir: array<u32>;
 
 ${reservoirDiAccessorsWgsl({
   loadReadWriteBinding: 'currentReservoir',
   storeReadWriteBinding: 'spatialReservoir',
 })}
 
-// bvh_index is array<vec4u>: .xyz=vertex indices, .w=packed RGBA8 material color+transmission
-
-// WalkaroundUBO struct defined in COMMON_WGSL.
 @group(2) @binding(0) var<uniform> ubo: WalkaroundUBO;
 
-// RESERVOIR_DI_STRIDE / loadReservoirDI_rw / storeReservoirDI_rw live in COMMON_WGSL.
-// NEIGHBORS = 5 (restored — was briefly 3 for perf). The spatial-2
-// pass was also restored alongside.
-const NEIGHBORS = 5u;
-// RADIUS is now read from ubo.spatialReuseRadiusPx (derived from
-// HybridEngineOptions.spatialReuseRadiusFraction × screenHeight).
-const M_SCALE = 4u;
+const NEIGHBORS: u32 = 5u;
+const REUSE_TECHNIQUES: u32 = NEIGHBORS + 1u;
+const M_SCALE: u32 = 4u;
 
-// PrimarySurface struct defined in COMMON_WGSL.
-// W2-C9 — primary-surface cast moved to restirCastPrimary.wgsl
-// (canonical castPrimary(px, dims, camPos, invVP)).
-// W2-C7 — p̂ moved to restirPHat.wgsl
-// (canonical restir_di_compute_phat_xi(lid, xi, surf)).
+// Pipeline-specialized so otherwise-identical rounds cannot reuse the same
+// neighbor rotation or WRS random stream.
+override SPATIAL_ROUND_INDEX: u32 = 0u;
 
-// Poisson disk offsets (normalized, scale by RADIUS in the shader).
 fn poissonDisk(i: u32, rotation: f32) -> vec2f {
-  var offsets: array<vec2f, 8> = array<vec2f, 8>(
-    vec2f( 0.0,      1.0     ),
-    vec2f( 0.866,    0.5     ),
-    vec2f( 0.866,   -0.5     ),
-    vec2f( 0.0,     -1.0     ),
-    vec2f(-0.866,   -0.5     ),
-    vec2f(-0.866,    0.5     ),
-    vec2f( 0.354,    0.354   ),
-    vec2f(-0.354,   -0.354   ),
+  var offsets = array<vec2f, 8>(
+    vec2f( 0.0,    1.0),
+    vec2f( 0.866,  0.5),
+    vec2f( 0.866, -0.5),
+    vec2f( 0.0,   -1.0),
+    vec2f(-0.866, -0.5),
+    vec2f(-0.866,  0.5),
+    vec2f( 0.354,  0.354),
+    vec2f(-0.354, -0.354),
   );
-  let o = offsets[i % 8u];
-  let s = sin(rotation);
-  let c = cos(rotation);
-  return vec2f(o.x * c - o.y * s, o.x * s + o.y * c);
+  let offset = offsets[i % 8u];
+  let sine = sin(rotation);
+  let cosine = cos(rotation);
+  return vec2f(
+    offset.x * cosine - offset.y * sine,
+    offset.x * sine + offset.y * cosine,
+  );
+}
+
+fn spatialPixelFromInvocation(gid: vec3u) -> vec2u {
+  if (ubo.checkerboardOn == 1u) {
+    let startColumn = (gid.y + ubo.frameParity) & 1u;
+    return vec2u(gid.x * 2u + startColumn, gid.y);
+  }
+  return gid.xy;
 }
 
 @compute @workgroup_size(8, 8, 1)
 fn spatialMain(@builtin(global_invocation_id) gid: vec3u) {
   let dims = ubo.screenSize;
+  let pixel = spatialPixelFromInvocation(gid);
+  if (any(pixel >= dims)) { return; }
 
-  // Checkerboard sparse-spatial (opt-in; OFF by default). When checkerboardOn
-  // == 1u the host COMPACTS the dispatch to ~half the threads (one per
-  // active-parity pixel), so gid indexes the active-parity pixel set rather than
-  // the full-res grid. Decode it back to the true pixel:
-  //   px = gid.x*2 + ((gid.y + frameParity) & 1u),  py = gid.y
-  // This lands EXACTLY on the (px+py)&1u == frameParity set ShadePass shades
-  // this frame (it reads the SAME frameParity/checkerboardOn from the UBO), so
-  // shade consumes the spatialReservoir slots refined here; the gap-parity slots
-  // are not read this frame and refresh next frame when the parity flips. The
-  // compacted X grid (ceil(W/2) columns) can overshoot the row's last active
-  // pixel on odd widths; that lands at px >= W and is caught by the bounds
-  // guard. When OFF, pix == gid.xy and the dispatch is full-res ⇒ bit-identical
-  // with the pre-checkerboard kernel.
-  var pix = gid.xy;
-  if (ubo.checkerboardOn == 1u) {
-    let startCol = (gid.y + ubo.frameParity) & 1u;
-    pix = vec2u(gid.x * 2u + startCol, gid.y);
-  }
-  if (any(pix >= dims)) { return; }
+  let pixelIndex = pixel.y * dims.x + pixel.x;
+  var centerReservoir = loadReservoirDI_rw(pixelIndex);
+  scaleReservoirDIToM(&centerReservoir, M_SCALE);
 
-  let pixelIdx = pix.y * dims.x + pix.x;
-  var rng = pcgInit(pix.x ^ 54321u, pix.y ^ 98765u, ubo.frameSeed ^ 0xCAFEu);
-
-  var r = loadReservoirDI_rw(pixelIdx);
-
-  // M-scale down before spatial.
-  scaleReservoirDIToM(&r, M_SCALE);
-  var areaSupportM = r.areaM;
-  var envSupportM = r.envM;
-
-  // Re-cast the center pixel's primary ray to get the actual surface — needed
-  // both for the similarity gate (we compare against neighbor surfaces, not
-  // against placeholder textures) and for evaluating p̂ at the right pos/normal.
-  let vp    = ubo.projMatrix * ubo.viewMatrix;
+  let vp = ubo.projMatrix * ubo.viewMatrix;
   let invVP = invertMat4_common(vp);
-  let center = castPrimary(pix, dims, ubo.cameraPos, invVP);
-  if (!center.hit) {
-    // Sky pixel — no reservoir to combine; pass current through unchanged.
-    storeReservoirDI_rw(pixelIdx, r);
+  let centerSurface = castPrimary(pixel, dims, ubo.cameraPos, invVP);
+  if (!centerSurface.hit) {
+    storeReservoirDI_rw(pixelIndex, centerReservoir);
     return;
   }
 
-  let rotation = rand_f32(&rng) * 6.2831;
+  var reservoirs: array<ReservoirDI, 6>;
+  var surfaces: array<PrimarySurface, 6>;
+  reservoirs[0u] = centerReservoir;
+  surfaces[0u] = centerSurface;
+  var techniqueCount = 1u;
 
-  for (var i = 0u; i < NEIGHBORS; i++) {
-    let offset = poissonDisk(i, rotation);
-    let nbrPx  = vec2i(pix) + vec2i(vec2f(offset.x * ubo.spatialReuseRadiusPx, offset.y * ubo.spatialReuseRadiusPx));
-    if (any(nbrPx < vec2i(0)) || any(nbrPx >= vec2i(dims))) { continue; }
-    let nbrIdx = u32(nbrPx.y) * dims.x + u32(nbrPx.x);
+  let roundSalt = SPATIAL_ROUND_INDEX * 0x9e3779b9u;
+  var rng = pcgInit(
+    pixel.x ^ 54321u ^ roundSalt,
+    pixel.y ^ 98765u ^ (roundSalt >> 1u),
+    ubo.frameSeed ^ 0xCAFEu ^ (roundSalt * 0x85ebca6bu),
+  );
+  let rotation =
+    rand_f32(&rng) * 6.28318530718 +
+    f32(SPATIAL_ROUND_INDEX) * 2.39996322973;
 
-    // Geometric similarity gate computed from BVH-cast primary surfaces.
-    let nbr_surf = castPrimary(vec2u(nbrPx), dims, ubo.cameraPos, invVP);
-    if (!nbr_surf.hit) { continue; }
-    let depthDiff = abs(center.depth - nbr_surf.depth);
-    // Relative 10% depth tolerance, with an absolute floor from the UBO.
-    // spatialDepthTolFloor is derived from scene scale in uboUpdater.ts;
-    // default ~0.001 preserves near-zero tolerance for Cornell-scale scenes.
-    let depthTol  = max(ubo.spatialDepthTolFloor, 0.10 * center.depth);
-    let normalDot = dot(center.normal, nbr_surf.normal);
-    if (depthDiff > depthTol || normalDot < 0.9) { continue; }
-
-    var nbr = loadReservoirDI_rw(nbrIdx);
-    let nbrTargetM = select(0u, max(1u, nbr.M / M_SCALE), nbr.M > 0u);
-    scaleReservoirDIToM(&nbr, nbrTargetM);
-    let nbrM = nbr.M;
-    areaSupportM = areaSupportM + nbr.areaM;
-    envSupportM = envSupportM + nbr.envM;
-
-    // Re-evaluate p̂ at the CENTER surface for the neighbor's chosen light.
-    // Wave 4: pass nbr.xi for the ENV_SAMPLE_SENTINEL path.
-    var w = 0.0;
-    if (nbrM > 0u && nbr.W > 0.0) {
-      let pHatNbrAtCenter = restir_di_compute_phat_xi(nbr.lightId, nbr.xi, center);
-      w = pHatNbrAtCenter * nbr.W * f32(nbrM);
+  for (var neighborIndex = 0u; neighborIndex < NEIGHBORS; neighborIndex++) {
+    let offset = poissonDisk(neighborIndex, rotation);
+    let neighborPixel = vec2i(pixel) + vec2i(
+      vec2f(
+        offset.x * ubo.spatialReuseRadiusPx,
+        offset.y * ubo.spatialReuseRadiusPx,
+      ),
+    );
+    if (any(neighborPixel < vec2i(0)) || any(neighborPixel >= vec2i(dims))) {
+      continue;
     }
 
-    r.w_sum += w;
-    if (rand_f32(&rng) * r.w_sum < w && w > 0.0) {
-      r.lightId = nbr.lightId;
-      // 2026-05-18 sweep finding #3 — carry the neighbor's sample-xi
-      // forward so the next visibility test reconstructs the same point
-      // on the light, not the centroid.
-      r.xi      = nbr.xi;
+    let neighborSurface = castPrimary(
+      vec2u(neighborPixel),
+      dims,
+      ubo.cameraPos,
+      invVP,
+    );
+    if (!neighborSurface.hit) { continue; }
+    let depthDifference = abs(centerSurface.depth - neighborSurface.depth);
+    let depthTolerance = max(
+      ubo.spatialDepthTolFloor,
+      0.10 * centerSurface.depth,
+    );
+    if (
+      depthDifference > depthTolerance ||
+      dot(centerSurface.normal, neighborSurface.normal) < 0.9
+    ) {
+      continue;
     }
+
+    let neighborPixelIndex =
+      u32(neighborPixel.y) * dims.x + u32(neighborPixel.x);
+    var neighborReservoir = loadReservoirDI_rw(neighborPixelIndex);
+    let targetM = select(
+      0u,
+      max(1u, neighborReservoir.M / M_SCALE),
+      neighborReservoir.M > 0u,
+    );
+    scaleReservoirDIToM(&neighborReservoir, targetM);
+    reservoirs[techniqueCount] = neighborReservoir;
+    surfaces[techniqueCount] = neighborSurface;
+    techniqueCount++;
   }
 
-  // Recompute W.
-  // Wave 4: use xi-aware pHat so ENV_SAMPLE_SENTINEL reservoirs get correct W.
-  r.areaM = areaSupportM;
-  r.envM = envSupportM;
-  r.M = areaSupportM + envSupportM;
-  r.W = 0.0;
-  if (r.M > 0u && r.w_sum > 0.0) {
-    let pHatZ = restir_di_compute_phat_xi(r.lightId, r.xi, center);
-    r.W = select(0.0, r.w_sum / (f32(r.M) * pHatZ), pHatZ > 0.0);
+  var output = emptyReservoirDI();
+  var areaSupport = 0u;
+  var environmentSupport = 0u;
+  var representedAttempts = 0u;
+  var candidateLogWeights: array<f32, 6>;
+  var maxCandidateLogWeight = RESERVOIR_DI_INVALID_LOG_DENSITY;
+
+  for (var sourceIndex = 0u; sourceIndex < techniqueCount; sourceIndex++) {
+    let source = reservoirs[sourceIndex];
+    candidateLogWeights[sourceIndex] = RESERVOIR_DI_INVALID_LOG_DENSITY;
+    areaSupport = reservoirDiSaturatingAddU32(areaSupport, source.areaM);
+    environmentSupport =
+      reservoirDiSaturatingAddU32(environmentSupport, source.envM);
+    representedAttempts =
+      reservoirDiSaturatingAddU32(representedAttempts, source.M);
+
+    let sourceSupport =
+      reservoirDiSupportForLight(source, source.lightId);
+    if (sourceSupport == 0u || !(source.W > 0.0)) { continue; }
+
+    let sourceDensity = restir_di_compute_phat_xi(
+      source.lightId,
+      source.xi,
+      surfaces[sourceIndex],
+    );
+    var techniqueLogDensities: array<f32, 6>;
+    var maxLogDensity = RESERVOIR_DI_INVALID_LOG_DENSITY;
+    for (var domainIndex = 0u; domainIndex < techniqueCount; domainIndex++) {
+      let domainSupport = reservoirDiSupportForLight(
+        reservoirs[domainIndex],
+        source.lightId,
+      );
+      var domainDensity = 0.0;
+      if (domainSupport > 0u) {
+        domainDensity = restir_di_compute_phat_xi(
+          source.lightId,
+          source.xi,
+          surfaces[domainIndex],
+        );
+      }
+      let logDensity = reservoirDiLogWeightedDensity(
+        domainSupport,
+        domainDensity,
+      );
+      techniqueLogDensities[domainIndex] = logDensity;
+      maxLogDensity = max(maxLogDensity, logDensity);
+    }
+    var scaledTechniqueDenominator = 0.0;
+    for (var domainIndex = 0u; domainIndex < techniqueCount; domainIndex++) {
+      scaledTechniqueDenominator += reservoirDiScaledDensityFromLog(
+        techniqueLogDensities[domainIndex],
+        maxLogDensity,
+      );
+    }
+    let canonicalDensity = restir_di_compute_phat_xi(
+      source.lightId,
+      source.xi,
+      centerSurface,
+    );
+    let candidateLogWeight = reservoirDiGeneralizedReuseLogWeight(
+      reservoirDiLogWeightedDensity(sourceSupport, sourceDensity),
+      maxLogDensity,
+      scaledTechniqueDenominator,
+      canonicalDensity,
+      source.W,
+    );
+    candidateLogWeights[sourceIndex] = candidateLogWeight;
+    maxCandidateLogWeight = max(
+      maxCandidateLogWeight,
+      candidateLogWeight,
+    );
   }
 
-  storeReservoirDI_rw(pixelIdx, r);
+  for (var sourceIndex = 0u; sourceIndex < techniqueCount; sourceIndex++) {
+    let source = reservoirs[sourceIndex];
+    let candidateWeight = reservoirDiScaledDensityFromLog(
+      candidateLogWeights[sourceIndex],
+      maxCandidateLogWeight,
+    );
+    updateReservoirDI(
+      &output,
+      source.lightId,
+      source.xi,
+      candidateWeight,
+      &rng,
+    );
+  }
+
+  output.areaM = areaSupport;
+  output.envM = environmentSupport;
+  output.M = representedAttempts;
+  var selectedCanonicalDensity = 0.0;
+  if (output.w_sum > 0.0) {
+    selectedCanonicalDensity = restir_di_compute_phat_xi(
+      output.lightId,
+      output.xi,
+      centerSurface,
+    );
+  }
+  finaliseReservoirDIFromGeneralizedReuse(
+    &output,
+    maxCandidateLogWeight,
+    selectedCanonicalDensity,
+  );
+  storeReservoirDI_rw(pixelIndex, output);
 }
 `;
 
-/** W1-R6 — declarative include-graph entry.
- *  W2-C7+C9: depends on the canonical ReSTIR p̂ and primary-cast helpers
- *  (both of which transitively require `common`). The composer dedupes
- *  `common` so the emitted order is `common, restirPHat, restirCastPrimary,
- *  spatial`. */
 export const SPATIAL_MODULE: WgslModule = {
   name: 'spatial',
   source: SPATIAL_WGSL,

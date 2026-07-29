@@ -26,6 +26,7 @@ import { nrcEncodeBackwardWgsl } from './wgsl/nrcEncodeBackward.wgsl.js';
 import { ADAM_WGSL } from './fusedMlpTrainer.js';
 import { packAdamUbo } from './adamUbo.js';
 import { NRC_DIAGNOSTIC_BYTES } from './nrcDiagnostics.js';
+import type { NrcHashGridStateSnapshot } from './nrcStateSnapshot.js';
 
 /** Sizing + external buffers the table trainer needs. */
 export interface HashGridTableTrainerConfig {
@@ -65,6 +66,43 @@ export interface HashGridTableTrainTransaction {
   commitCpu(): void;
   rollback(): void;
   finalizeSuccess(): void;
+}
+
+export interface HashGridStateBuffers {
+  readonly tables: GPUBuffer;
+  readonly firstMoment: GPUBuffer;
+  readonly secondMoment: GPUBuffer;
+  readonly tableScalars: number;
+  readonly adamT: number;
+}
+
+export interface HashGridStateImportTransaction {
+  readonly candidateTableBuffer: GPUBuffer;
+  commitCpu(): void;
+  rollback(): void;
+  finalizeSuccess(): void;
+}
+
+function assertHashGridStateArray(
+  value: unknown,
+  expectedLength: number,
+  label: string,
+  nonNegative = false,
+): asserts value is Float32Array {
+  if (!(value instanceof Float32Array) || value.length !== expectedLength) {
+    throw new RangeError(
+      `NRC hash-grid ${label} must be a ${expectedLength}-element Float32Array.`,
+    );
+  }
+  for (let index = 0; index < value.length; index++) {
+    const scalar = value[index]!;
+    if (!Number.isFinite(scalar) || (nonNegative && scalar < 0)) {
+      throw new RangeError(
+        `NRC hash-grid ${label}[${index}] must be finite` +
+        `${nonNegative ? ' and non-negative' : ''}.`,
+      );
+    }
+  }
 }
 
 export class HashGridTableTrainer {
@@ -339,6 +377,139 @@ export class HashGridTableTrainer {
     encoder.clearBuffer(this._mTables);
     encoder.clearBuffer(this._vTables);
     this._device.queue.submit([encoder.finish()]);
+  }
+
+  /** Live f32 optimizer buffers used by the engine-level coherent readback. */
+  stateBuffers(): HashGridStateBuffers {
+    if (this.#disposed) {
+      throw new Error('HashGridTableTrainer.stateBuffers() called after dispose()');
+    }
+    return {
+      tables: this._ext.tablesBuf,
+      firstMoment: this._mTables,
+      secondMoment: this._vTables,
+      tableScalars: this._cfg.tableScalars,
+      adamT: this._tableAdamT,
+    };
+  }
+
+  /** Record a complete hash-grid optimizer generation into the isolated spare set. */
+  prepareStateRestore(
+    encoder: GPUCommandEncoder,
+    state: NrcHashGridStateSnapshot,
+  ): HashGridStateImportTransaction {
+    if (this.#disposed) {
+      throw new Error('HashGridTableTrainer.prepareStateRestore() called after dispose()');
+    }
+    if (this._inFlightCandidate) {
+      throw new Error(
+        'Cannot restore NRC hash-grid state while a training candidate is in flight.',
+      );
+    }
+    assertHashGridStateArray(state.tables, this._cfg.tableScalars, 'tables');
+    assertHashGridStateArray(
+      state.firstMoment,
+      this._cfg.tableScalars,
+      'firstMoment',
+    );
+    assertHashGridStateArray(
+      state.secondMoment,
+      this._cfg.tableScalars,
+      'secondMoment',
+      true,
+    );
+    if (!Number.isSafeInteger(state.adamT) || state.adamT < 0 || state.adamT > 0xffff_ffff) {
+      throw new RangeError('NRC hash-grid adamT must be an unsigned 32-bit integer.');
+    }
+
+    const old = this._liveTrainableSet();
+    const candidate = this._spareTrainableSet ?? this._allocateTrainableCandidate();
+    this._spareTrainableSet = undefined;
+    this._inFlightCandidate = candidate;
+    const uploads: GPUBuffer[] = [];
+    const stage = (data: Float32Array): GPUBuffer => {
+      const buffer = this._device.createBuffer({
+        label: 'nrc-hash-grid-state-import-staging',
+        size: Math.max(4, (data.byteLength + 3) & ~3),
+        usage: GPUBufferUsage.COPY_SRC,
+        mappedAtCreation: true,
+      });
+      uploads.push(buffer);
+      new Uint8Array(buffer.getMappedRange()).set(
+        new Uint8Array(data.buffer, data.byteOffset, data.byteLength),
+      );
+      buffer.unmap();
+      return buffer;
+    };
+    try {
+      const tables = stage(state.tables);
+      const firstMoment = stage(state.firstMoment);
+      const secondMoment = stage(state.secondMoment);
+      encoder.copyBufferToBuffer(
+        tables, 0, candidate.tables, 0, state.tables.byteLength,
+      );
+      encoder.copyBufferToBuffer(
+        firstMoment, 0, candidate.m, 0, state.firstMoment.byteLength,
+      );
+      encoder.copyBufferToBuffer(
+        secondMoment, 0, candidate.v, 0, state.secondMoment.byteLength,
+      );
+    } catch (error) {
+      for (const upload of uploads) {
+        try { upload.destroy(); } catch { /* continue candidate cleanup */ }
+      }
+      this._spareTrainableSet = candidate;
+      this._inFlightCandidate = undefined;
+      throw error;
+    }
+
+    const oldAdamT = this._tableAdamT;
+    let committed = false;
+    let closed = false;
+    const destroyUploads = (): void => {
+      for (const upload of uploads) {
+        try { upload.destroy(); } catch { /* continue staging retirement */ }
+      }
+    };
+    return {
+      candidateTableBuffer: candidate.tables,
+      commitCpu: () => {
+        if (closed || committed) return;
+        this._ext = { ...this._ext, tablesBuf: candidate.tables };
+        this._mTables = candidate.m;
+        this._vTables = candidate.v;
+        this._tableAdamT = state.adamT;
+        this._inFlightCandidate = undefined;
+        committed = true;
+      },
+      rollback: () => {
+        if (closed) return;
+        if (committed) {
+          this._ext = { ...this._ext, tablesBuf: old.tables };
+          this._mTables = old.m;
+          this._vTables = old.v;
+          this._tableAdamT = oldAdamT;
+        }
+        this._spareTrainableSet = candidate;
+        if (this._inFlightCandidate === candidate) this._inFlightCandidate = undefined;
+        closed = true;
+        destroyUploads();
+      },
+      finalizeSuccess: () => {
+        if (closed) return;
+        if (!committed) {
+          throw new Error('Cannot finalize an unpublished NRC hash-grid restore.');
+        }
+        this._spareTrainableSet = old;
+        closed = true;
+        const retire = (): void => destroyUploads();
+        try {
+          void this._device.queue.onSubmittedWorkDone().then(retire, retire);
+        } catch {
+          retire();
+        }
+      },
+    };
   }
 
   /** Encode into isolated candidate table/moments; publication is explicit. */

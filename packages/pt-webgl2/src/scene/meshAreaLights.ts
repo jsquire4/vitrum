@@ -11,8 +11,11 @@
 //   triangle, plus each ordinary mesh whose material has nonzero emissive energy,
 //   becomes one or more triangle lights the integrator can sample directly. CPU-
 //   readable nearest/no-mip emissive maps are partitioned exactly at texel-cell
-//   boundaries, so UV-varying emission is never collapsed to an approximate
-//   source-triangle radiance. To keep the result unbiased we MIS-combine the two strategies —
+//   boundaries. Their decoded texels are rounded through the same RGBA16F
+//   level-0 storage as forward hits, and emissive scalar operands/products follow
+//   the shader's RGBA32F arithmetic order. UV-varying emission is therefore never
+//   collapsed to an approximate or differently-rounded source-triangle radiance.
+//   To keep the result unbiased we MIS-combine the two strategies —
 //   the forward emissive hit
 //   (BSDF sampling) and the NEE triangle sample — with the balance/power heuristic.
 //
@@ -50,11 +53,12 @@ import {
   forEachEmissiveMapTexelSubTriangle,
   isTextureRefCpuReadable,
   materialSpecEmissiveLe,
-  materialSpecScalarEmissiveLe,
+  type EmissiveMapTexelRadianceResolver,
   type BarycentricWeights,
   type WorldSpaceMergeResult,
 } from '@vitrum/shared-bvh';
 import { luminance, vecCross as cross, vecLength as length } from '@vitrum/shared-samplers';
+import { quantizeFiniteFloat16 } from './halfFloat.js';
 import { buildUvAttributeLayout } from './uvAttributeLayout.js';
 
 /** Triangle-light type id — must match the GLSL `#define TRI_AREA_LIGHT_TYPE`. */
@@ -72,7 +76,6 @@ export interface MeshAreaLightsData {
   readonly totalEmissiveArea: number;
   /** Σ luminance(radiance)·area — energy-weighted selection mass for mesh NEE. */
   readonly totalEmissivePower: number;
-  readonly warnings: readonly string[];
 }
 
 function v3(p: Float32Array, vi: number, stride: number): Vec3 {
@@ -106,6 +109,104 @@ function sub(a: Vec3, b: Vec3): Vec3 {
 function luminanceRgb(rgb: Vec3): number {
   return luminance(rgb[0], rgb[1], rgb[2]);
 }
+
+function materialF32Operand(value: number, context: string): number {
+  if (!Number.isFinite(value)) {
+    throw new RangeError(`${context} must be finite for material RGBA32F storage.`);
+  }
+  const stored = Math.fround(value);
+  if (!Number.isFinite(stored)) {
+    throw new RangeError(`${context} overflows material RGBA32F storage.`);
+  }
+  if (value > 0 && stored === 0) {
+    throw new RangeError(`${context} underflows material RGBA32F storage.`);
+  }
+  return stored;
+}
+
+function multiplyForwardF32(a: number, b: number, context: string): number {
+  const exact = a * b;
+  const stored = Math.fround(exact);
+  if (!Number.isFinite(exact) || !Number.isFinite(stored)) {
+    throw new RangeError(`${context} overflows forward f32 emissive arithmetic.`);
+  }
+  if (exact !== 0 && stored === 0) {
+    throw new RangeError(`${context} underflows forward f32 emissive arithmetic.`);
+  }
+  return stored;
+}
+
+/**
+ * Mirror `packMaterialsTexture` + GLSL exactly: operands first enter separate
+ * RGBA32F slots, then `emissiveIntensity * emissive.rgb` is evaluated in f32.
+ */
+function storedMaterialEmissiveScalar(
+  emissive: readonly [number, number, number] | undefined,
+  emissiveIntensity: number | undefined,
+  context: string,
+): Vec3 | null {
+  if (emissive == null) return null;
+  const authoredIntensity = emissiveIntensity ?? 1;
+  if (!Number.isFinite(authoredIntensity)) {
+    throw new RangeError(`${context} emissiveIntensity must be finite.`);
+  }
+  if (authoredIntensity < 0) {
+    throw new RangeError(`${context} emissiveIntensity must be non-negative.`);
+  }
+  if (authoredIntensity === 0) return null;
+  const intensity = materialF32Operand(
+    authoredIntensity,
+    `${context} emissiveIntensity`,
+  );
+  const out: [number, number, number] = [0, 0, 0];
+  for (let channel = 0; channel < 3; channel += 1) {
+    const authoredComponent = emissive[channel]!;
+    if (authoredComponent < 0) {
+      throw new RangeError(`${context} emissive[${channel}] must be non-negative.`);
+    }
+    const component = materialF32Operand(
+      authoredComponent,
+      `${context} emissive[${channel}]`,
+    );
+    out[channel] = multiplyForwardF32(
+      intensity,
+      component,
+      `${context} emissive scalar[${channel}]`,
+    );
+  }
+  return out[0] > 0 || out[1] > 0 || out[2] > 0 ? out : null;
+}
+
+const resolveWebGl2MappedEmitterRadiance: EmissiveMapTexelRadianceResolver = (
+  material,
+  decodedLinearRgb,
+  texelX,
+  texelY,
+) => {
+  const scalar = storedMaterialEmissiveScalar(
+    material.emissive,
+    material.emissiveIntensity,
+    'mapped emitter material',
+  );
+  if (scalar == null) return null;
+  return [0, 1, 2].map((channel) => {
+    if (decodedLinearRgb[channel]! < 0) {
+      throw new RangeError(
+        `emissiveMap texel (${texelX}, ${texelY}) channel ${channel} ` +
+          'must be non-negative outgoing radiance.',
+      );
+    }
+    const mapValue = quantizeFiniteFloat16(
+      decodedLinearRgb[channel]!,
+      `emissiveMap texel (${texelX}, ${texelY}) channel ${channel}`,
+    );
+    return multiplyForwardF32(
+      scalar[channel]!,
+      mapValue,
+      `mapped emitter radiance[${channel}]`,
+    );
+  }) as [number, number, number];
+};
 
 function assertRadianceSurvivesF32(rgb: readonly [number, number, number], context: string): void {
   for (let channel = 0; channel < 3; channel += 1) {
@@ -142,7 +243,11 @@ function emissiveRadianceForMaterial(
   material: MaterialSpec,
   primitiveId: string,
 ): Vec3 {
-  const scalar = materialSpecScalarEmissiveLe(material);
+  const scalar = storedMaterialEmissiveScalar(
+    material.emissive,
+    material.emissiveIntensity,
+    `implicit emitter primitive ${primitiveId}`,
+  );
   if (scalar == null) return [0, 0, 0];
   assertEmissiveMapCpuReadable(material, primitiveId);
   // Mapped radiance is evaluated per exact texel partition below. This scalar
@@ -156,12 +261,12 @@ export function assertSceneEmissiveMapsCpuReadable(scene: Scene): void {
   for (const emitter of scene.emitters) {
     if (emitter.kind !== 'mesh-area') continue;
     explicitMeshIds.add(String(emitter.meshId));
-    const radiance: Vec3 = [
-      emitter.color[0] * emitter.intensity,
-      emitter.color[1] * emitter.intensity,
-      emitter.color[2] * emitter.intensity,
-    ];
-    if (!(luminanceRgb(radiance) > 0)) continue;
+    const radiance = storedMaterialEmissiveScalar(
+      emitter.color,
+      emitter.intensity,
+      `mesh-area emitter ${String(emitter.id)}`,
+    );
+    if (radiance == null || !(luminanceRgb(radiance) > 0)) continue;
     const primitive = scene.primitives.find((p) => String(p.id) === String(emitter.meshId));
     if (primitive != null && isMeshLikePrimitive(primitive)) {
       assertEmissiveMapCpuReadable(primitive.material, String(primitive.id));
@@ -169,7 +274,13 @@ export function assertSceneEmissiveMapsCpuReadable(scene: Scene): void {
   }
   for (const primitive of scene.primitives) {
     if (!isMeshLikePrimitive(primitive) || explicitMeshIds.has(String(primitive.id))) continue;
-    if (materialSpecScalarEmissiveLe(primitive.material) != null) {
+    if (
+      storedMaterialEmissiveScalar(
+        primitive.material.emissive,
+        primitive.material.emissiveIntensity,
+        `implicit emitter primitive ${String(primitive.id)}`,
+      ) != null
+    ) {
       assertEmissiveMapCpuReadable(primitive.material, String(primitive.id));
     }
   }
@@ -191,14 +302,24 @@ function collectMeshAreaSources(
     if (e.kind !== 'mesh-area') continue;
     const primitive = scene.primitives.find((p) => String(p.id) === String(e.meshId));
     const material = primitive != null && isMeshLikePrimitive(primitive) ? primitive.material : undefined;
-    const radiance: Vec3 = [e.color[0] * e.intensity, e.color[1] * e.intensity, e.color[2] * e.intensity];
-    if (!(luminanceRgb(radiance) > 0)) continue;
+    const radiance = storedMaterialEmissiveScalar(
+      e.color,
+      e.intensity,
+      `mesh-area emitter ${String(e.id)}`,
+    );
+    if (radiance == null || !(luminanceRgb(radiance) > 0)) continue;
     assertRadianceSurvivesF32(radiance, `mesh-area emitter ${String(e.id)}`);
     emitterByMesh.set(e.meshId, {
       radiance,
       castShadowDisabled: e.castShadow === false ? 1 : 0,
       ...(material?.emissiveMap != null
-        ? { implicitMaterial: { ...material, emissive: radiance, emissiveIntensity: 1 } }
+        ? {
+            implicitMaterial: {
+              ...material,
+              emissive: e.color,
+              emissiveIntensity: e.intensity,
+            },
+          }
         : {}),
     });
   }
@@ -222,15 +343,26 @@ function collectMeshAreaSources(
 export function hasMeshAreaLightForPrimitive(scene: Scene, primitiveId: string): boolean {
   for (const e of scene.emitters) {
     if (e.kind === 'mesh-area' && String(e.meshId) === primitiveId) {
-      return luminanceRgb([
-        e.color[0] * e.intensity,
-        e.color[1] * e.intensity,
-        e.color[2] * e.intensity,
-      ]) > 0;
+      return (
+        storedMaterialEmissiveScalar(
+          e.color,
+          e.intensity,
+          `mesh-area emitter ${String(e.id)}`,
+        ) != null
+      );
     }
   }
   const primitive = scene.primitives.find((p) => String(p.id) === primitiveId);
   if (primitive == null || !isMeshLikePrimitive(primitive)) return false;
+  if (
+    storedMaterialEmissiveScalar(
+      primitive.material.emissive,
+      primitive.material.emissiveIntensity,
+      `implicit emitter primitive ${primitiveId}`,
+    ) == null
+  ) {
+    return false;
+  }
   assertEmissiveMapCpuReadable(primitive.material, primitiveId);
   return materialSpecEmissiveLe(primitive.material) != null;
 }
@@ -247,10 +379,9 @@ export function packMeshAreaLights(
   merged: WorldSpaceMergeResult,
   mergedUvByTexCoord?: ReadonlyMap<number, Float32Array>,
 ): MeshAreaLightsData {
-  const warnings: string[] = [];
   const emitterByMesh = collectMeshAreaSources(scene);
   if (emitterByMesh.size === 0) {
-    return { data: null, dim: 1, triLightCount: 0, totalEmissiveArea: 0, totalEmissivePower: 0, warnings };
+    return { data: null, dim: 1, triLightCount: 0, totalEmissiveArea: 0, totalEmissivePower: 0 };
   }
 
   const stride = merged.positionStrideFloats;
@@ -348,6 +479,9 @@ export function packMeshAreaLights(
                 texelRadiance,
               );
             },
+            4096,
+            undefined,
+            resolveWebGl2MappedEmitterRadiance,
           );
       if (exactTexelHandled) continue;
       throw new TypeError(
@@ -359,7 +493,7 @@ export function packMeshAreaLights(
   }
 
   if (tris.length === 0) {
-    return { data: null, dim: 1, triLightCount: 0, totalEmissiveArea: 0, totalEmissivePower: 0, warnings };
+    return { data: null, dim: 1, triLightCount: 0, totalEmissiveArea: 0, totalEmissivePower: 0 };
   }
 
   const pixelCount = tris.length * TRI_LIGHT_PIXELS;
@@ -394,5 +528,5 @@ export function packMeshAreaLights(
     data[base + 21] = castShadowDisabled;
   }
 
-  return { data, dim, triLightCount: tris.length, totalEmissiveArea, totalEmissivePower, warnings };
+  return { data, dim, triLightCount: tris.length, totalEmissiveArea, totalEmissivePower };
 }

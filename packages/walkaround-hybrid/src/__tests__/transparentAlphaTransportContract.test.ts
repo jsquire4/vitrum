@@ -8,6 +8,7 @@ import { MATERIAL_ATLAS_WGSL } from '../shaders/materialAtlas.wgsl.js';
 import { NRC_INDEPENDENT_SUFFIX_WGSL } from '../shaders/nrcIndependentSuffix.wgsl.js';
 import { SHADE_WGSL } from '../shaders/shade.wgsl.js';
 import { SHADING_TERMS_WGSL } from '../shaders/shadingTerms.wgsl.js';
+import { SURFACE_TEXTURES_WGSL } from '../shaders/surfaceTextures.wgsl.js';
 import { TRANSPARENT_OIT_WGSL } from '../shaders/transparentOit.wgsl.js';
 import { RESTIR_GI_MATERIAL_WGSL } from '../shaders/restirGiMaterial.wgsl.js';
 import { makeProbeUpdateRaysWGSL } from '../ddgi/wgsl/probeUpdateRays.wgsl.js';
@@ -59,6 +60,30 @@ describe('transparent alpha transport contract', () => {
     expect(SHADING_TERMS_WGSL).toContain('var sunShadowT = vec3f(1.0);');
     expect(SHADING_TERMS_WGSL).toContain('shadowColorCorrection');
     expect(SHADING_TERMS_WGSL).not.toContain('sunShadowT = traceSceneAlphaTransmittanceTextured(');
+  });
+
+  it('preserves explicit transmission ownership in the overflow fallback', () => {
+    const ownershipWalker = SURFACE_TEXTURES_WGSL.slice(
+      SURFACE_TEXTURES_WGSL.indexOf(
+        'fn traceSceneAlphaTintTransmittanceTexturedWithOwnership(',
+      ),
+      SURFACE_TEXTURES_WGSL.indexOf(
+        'fn traceSceneAlphaTintTransmittanceTextured(',
+      ),
+    );
+    expect(ownershipWalker).toContain(
+      'materialShadowTransmittanceForHit(\n' +
+      '      hit,\n' +
+      '      word,\n' +
+      '      !blockMaterialTransmission,',
+    );
+    expect(ownershipWalker).toContain(
+      'max(0.0, tMax - traveled), triEps,\n' +
+      '    !blockMaterialTransmission,',
+    );
+    expect(ownershipWalker).not.toContain(
+      'max(0.0, tMax - traveled), triEps, true,',
+    );
   });
 
   it('orders and composites camera blend layers exactly once without a fixed tail cutoff', () => {

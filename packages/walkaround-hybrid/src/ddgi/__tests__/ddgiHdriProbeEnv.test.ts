@@ -241,11 +241,12 @@ describe('Wave 4 — WGSL structural assertions for HDRI probe-ray miss path', (
 describe('Wave 4 — dispatchProbeUpdateRaysPass DDGI resource bindings', () => {
   it('bg1 carries vertex colors and bg2 binds the consumed environment sampler', () => {
     const bindGroupEntryLists: unknown[][] = [];
+    const createBindGroup = vi.fn((desc: { entries: unknown[] }) => {
+      bindGroupEntryLists.push(desc.entries);
+      return {};
+    });
     const mockDevice = {
-      createBindGroup: vi.fn((desc: { entries: unknown[] }) => {
-        bindGroupEntryLists.push(desc.entries);
-        return {};
-      }),
+      createBindGroup,
       createBuffer: vi.fn(() => ({ size: 16 })),
     } as unknown as GPUDevice;
 
@@ -312,7 +313,21 @@ describe('Wave 4 — dispatchProbeUpdateRaysPass DDGI resource bindings', () => 
       })),
     } as unknown as GPUCommandEncoder;
 
-    dispatchProbeUpdateRaysPass(encoder, gpu, 1, mockTex);
+    dispatchProbeUpdateRaysPass(encoder, gpu, 1, mockTex, mockTex);
+
+    expect(gpu.bgCache?.get('raysG0')?.keys).toEqual([
+      gpu.bvhBuf,
+      gpu.posBuf,
+      gpu.idxBuf,
+      gpu.normBuf,
+      gpu.matIdBuf,
+      gpu.tlasNodesBuf,
+      gpu.tlasInstIdxBuf,
+      gpu.tlasBlasRootsBuf,
+      gpu.tlasW2lBuf,
+      gpu.tlasL2wBuf,
+      gpu.traceParamsBuf,
+    ]);
 
     const bg1Entries = bindGroupEntryLists[1] as Array<{ binding: number; resource: unknown }>;
     expect(bg1Entries).toBeDefined();
@@ -322,16 +337,43 @@ describe('Wave 4 — dispatchProbeUpdateRaysPass DDGI resource bindings', () => 
     // bg2 is the 3rd createBindGroup call (index 2).
     const bg2Entries = bindGroupEntryLists[2] as Array<{ binding: number }>;
     expect(bg2Entries).toBeDefined();
-    expect(bg2Entries.length).toBe(8);
+    expect(bg2Entries.length).toBe(9);
 
     const bindings = bg2Entries.map((e) => e.binding).sort((a, b) => a - b);
-    expect(bindings).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
+    expect(bindings).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8]);
 
     const replacementSampler = {} as GPUSampler;
     gpu.envSamplerForProbe = replacementSampler;
-    dispatchProbeUpdateRaysPass(encoder, gpu, 1, mockTex);
+    dispatchProbeUpdateRaysPass(encoder, gpu, 1, mockTex, mockTex);
     const rebuiltBg2 = bindGroupEntryLists[3] as Array<{ binding: number; resource: unknown }>;
     expect(rebuiltBg2.find((entry) => entry.binding === 7)?.resource).toBe(replacementSampler);
+
+    const g0BufferFields = [
+      'bvhBuf',
+      'posBuf',
+      'idxBuf',
+      'normBuf',
+      'matIdBuf',
+      'tlasNodesBuf',
+      'tlasInstIdxBuf',
+      'tlasBlasRootsBuf',
+      'tlasW2lBuf',
+      'tlasL2wBuf',
+      'traceParamsBuf',
+    ] as const;
+    for (const [binding, field] of g0BufferFields.entries()) {
+      const replacement = { size: 32 } as unknown as GPUBuffer;
+      gpu[field] = replacement;
+      const createCount = createBindGroup.mock.calls.length;
+      dispatchProbeUpdateRaysPass(encoder, gpu, 1, mockTex, mockTex);
+      expect(createBindGroup).toHaveBeenCalledTimes(createCount + 1);
+      const rebuiltG0 = bindGroupEntryLists.at(-1) as Array<{
+        binding: number;
+        resource: { buffer: GPUBuffer };
+      }>;
+      expect(rebuiltG0.find((entry) => entry.binding === binding)?.resource.buffer)
+        .toBe(replacement);
+    }
   });
 });
 

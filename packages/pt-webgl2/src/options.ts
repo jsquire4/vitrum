@@ -30,17 +30,17 @@ export interface PTEngineWebGL2Options extends EngineOptions {
    * Default: 512 MiB. Requests above the budget throw before GL allocation.
    */
   readonly maxRenderTargetBytes?: number;
-  /** Force a tier; otherwise auto-selected from WebGL2 caps (see traceTier.ts). */
+  /** Select the output profile; default `full`. `lite` omits albedo/normal MRTs. */
   readonly traceTier?: WebGl2TraceTier;
   /** Spectral hero-wavelength rendering (S3). Default false. */
   readonly spectral?: boolean;
   /** Bidirectional path tracing (S3). Default false. */
   readonly bdpt?: boolean;
   /**
-   * Primary path-sampling sequence. Default `'pcg'` preserves the historical random
-   * stream. `'sobol'` compiles RANDOM_TYPE=1 and uploads a real 256x256 RGBA32F
-   * Sobol direction texture; stratified sampling remains intentionally unsupported.
-   */
+    * Primary path-sampling sequence. Default `'pcg'` preserves the historical random
+    * stream. `'sobol'` composes the dedicated Sobol sampler and uploads a real
+    * 256x256 RGBA32F direction texture.
+    */
   readonly sampling?: 'pcg' | 'sobol';
   /** BDPT tuning — requires `bdpt:true` or `causticStrategy:'bdpt'`. */
   readonly bdptOptions?: {

@@ -19,6 +19,7 @@ import {
   createHostSunWarningState,
   mergeDDGILightsDedupSun,
 } from '../src/HybridEngineLifecycle.js';
+import { buildDdgiLightingMutationInputs } from '../src/HybridEngineDdgiSync.js';
 import { coreEmittersToDDGILights } from '../src/coreEmittersToDDGILights.js';
 import type { DDGILight } from '../src/ddgi/types.js';
 import type { Scene, DirectionalEmitter } from '@vitrum/core';
@@ -129,5 +130,29 @@ describe('mergeDDGILightsDedupSun', () => {
     const suns = merged.filter((l) => l.kind === 'sun');
     expect(suns).toHaveLength(1);
     expect(suns[0]!.id).toBe('scene-sun');
+  });
+
+  it('preserves authored scene sun directions unless the host explicitly overrides them', () => {
+    const scene = sceneOf(SCENE_DIRECTIONAL);
+    const base = {
+      ctorLights: [],
+      hostSunWarningState: createHostSunWarningState(),
+      primaryLightIntensity: 2,
+    };
+
+    const authored = buildDdgiLightingMutationInputs(base, scene);
+    expect(authored.lights[0]?.direction?.x).toBeCloseTo(-0.6);
+    expect(authored.lights[0]?.direction?.y).toBeCloseTo(-0.8);
+    expect(authored.lights[0]?.direction?.z).toBeCloseTo(-0);
+
+    const overridden = buildDdgiLightingMutationInputs(
+      { ...base, primaryLightDir: [1, 0, 0] },
+      scene,
+    );
+    expect(overridden.lights[0]?.direction).toEqual({
+      x: -1,
+      y: -0,
+      z: -0,
+    });
   });
 });

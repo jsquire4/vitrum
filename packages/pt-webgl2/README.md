@@ -24,10 +24,16 @@ The extension `EXT_color_buffer_float` (RGBA32F render targets) is **required**;
 
 | Tier | Condition | Difference |
 |------|-----------|------------|
-| `full` | MAX_DRAW_BUFFERS≥3, MAX_TEXTURE_IMAGE_UNITS≥12, MAX_TEXTURE_SIZE≥8192 | Auxiliary G-buffer (normal/depth, albedo at MRT attachments 1–2) enabled |
-| `lite` | Any limit below full-tier threshold | G-buffer outputs disabled (`normalDepth`, `albedo` are `null` on `FrameRendered`). The path-tracing kernel — all bounces, full BSDF, spectral, textures, all emitter types — runs **unchanged**. |
+| `full` | Default after mandatory WebGL2 kernel limits pass | Auxiliary G-buffer (normal/depth, albedo at MRT attachments 1–2) enabled |
+| `lite` | Explicit `traceTier:'lite'` lower-memory profile | G-buffer outputs disabled (`normalDepth`, `albedo` are `null` on `FrameRendered`). The path-tracing kernel — all bounces, full BSDF, spectral, textures, all emitter types — runs **unchanged**. |
 
 Force a tier with `traceTier: 'full' | 'lite'` in options.
+Both tiers require four draw buffers and four color attachments for the
+four-attachment NEE candidate handoff, plus 15 fragment texture units for the
+maximum selectable shader graph (WebGL2's required minimum is 16).
+Material/BVH texture dimensions are validated against the live context when
+each scene resource is allocated; `MAX_TEXTURE_SIZE` does not silently change
+the output tier.
 
 ## Capabilities summary
 

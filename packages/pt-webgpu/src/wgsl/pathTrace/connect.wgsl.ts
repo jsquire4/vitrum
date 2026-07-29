@@ -6,8 +6,7 @@ import { PT_WEBGPU_PATH_TRACE_CONNECT_CORE_WGSL } from './connectCore.wgsl.js';
  * BSDF→light MIS contributions.
  *
  * Bundled here:
- *  - Procedural sky + HDRI bookkeeping:
- *      - `sampleSky` — legacy analytic sky helper retained in the shared core
+ *  - CPU-baked procedural sky + HDRI bookkeeping:
  *      - `hasEnvironmentMap`, `environmentDimensions` — UBO/binding guards
  *      - `sampleEnvironmentColor` — equirect lookup with black no-env fallback
  *      - `environmentPdf` — equirect importance PDF
@@ -57,9 +56,6 @@ struct EnvironmentLookup {
 
 fn environmentLookup(dir: vec3f) -> EnvironmentLookup {
   if (!hasEnvironmentMap()) {
-    if (params.environmentSun.w > 0.0) {
-      return EnvironmentLookup(sampleSky(dir), 0.25 * INV_PI);
-    }
     return EnvironmentLookup(vec3f(0.0), 0.0);
   }
   let dims = environmentDimensions();
@@ -231,7 +227,7 @@ fn sampleMeshAreaLightRadiance(
   let wrapMode = materialTexDescriptors[descriptorBase + 13u].zw;
   let uvFitScale = materialTexDescriptors[descriptorBase + 7u].zw;
   let sourceBaseSize = materialTextureSourceBaseSize(
-    vec2u(textureDimensions(materialTexturesEmissive, 0)), uvFitScale,
+    vec2u(textureDimensions(materialTexturesEmissive, i32(0))), uvFitScale,
   );
   let sourceMipCount = f32(materialTextureSourceMipCount(sourceBaseSize));
   let texDim = vec2f(sourceBaseSize);
@@ -271,7 +267,7 @@ fn sampleMeshAreaLightRadiance(
 // Intersect the BSDF sample ray against rect/disc area light index li.
 // Reads the shape discriminator from emission.w: ≈ 0 → rect, ≈ 1 → analytic disc.
 // Rect:  uCoord/vCoord ∈ [-1,1] box test; area = 4·|u×v|.
-// Disc:  uCoord² + vCoord² ≤ 1 circle test; area = π·|u|² (|u| = radius).
+// Disc:  uCoord² + vCoord² ≤ 1 circle test; area = π·|u×v|.
 // Ref: Veach, E. PhD thesis, Stanford 1997, Ch. 9 -- power-heuristic MIS;
 //      sum-MIS over all lights is unbiased (D9 decision).
 // Native analytic disc emitters replace the 32-triangle fan, 2026-06-10 —
@@ -300,8 +296,13 @@ fn intersectRectAreaLightRay(li: u32, rayOrigin: vec3f, rayDir: vec3f, distOut: 
   let uLen2 = dot(uAxis, uAxis);
   let vLen2 = dot(vAxis, vAxis);
   if (uLen2 <= 0.0 || vLen2 <= 0.0) { return false; }
-  let uCoord = dot(rel, uAxis) / uLen2;
-  let vCoord = dot(rel, vAxis) / vLen2;
+  // Solve the full 2×2 Gram system. Independent projection is only correct
+  // for orthogonal axes and misclassifies sheared affine discs/rectangles.
+  let uv = dot(uAxis, vAxis);
+  let relU = dot(rel, uAxis);
+  let relV = dot(rel, vAxis);
+  let uCoord = (relU * vLen2 - relV * uv) / axisCrossLen2;
+  let vCoord = (relV * uLen2 - relU * uv) / axisCrossLen2;
   // Containment test: disc uses circle (u²+v²≤1), rect uses square (|u|,|v|≤1).
   let inside = select(
     abs(uCoord) <= 1.0 && abs(vCoord) <= 1.0,
@@ -315,10 +316,11 @@ fn intersectRectAreaLightRay(li: u32, rayOrigin: vec3f, rayDir: vec3f, distOut: 
   if (cosLight <= 0.0) {
     return false;
   }
-  // Area formula: disc → π·r² (r = |uAxis|); rect → 4·|u×v|.
+  // Area formula: the unit-disc parameterisation has Jacobian |u×v|;
+  // disc → π·|u×v|, rect → 4·|u×v|.
   let area = select(
     4.0 * sqrt(axisCrossLen2),
-    PI * uLen2,
+    PI * sqrt(axisCrossLen2),
     isDisc,
   );
   if (area <= 0.0) { return false; }
@@ -377,9 +379,11 @@ fn bsdfAreaLightConnectionContribution(
   specularIntensity: f32,
   anisotropy: f32,
   anisotropyRotation: f32,
+  thinFilm: ThinFilmInterface,
   throughputAtVertex: vec3f,
   heroLambda: f32,
   includeMeshAreaLights: bool,
+  rng: ptr<function, PtRngState>,
 ) -> vec3f {
   let nDotL = abs(dot(normal, wi));
   if (nDotL <= 0.0) {
@@ -391,7 +395,7 @@ fn bsdfAreaLightConnectionContribution(
     clearcoat, clearcoatRoughness, sheen, sheenRoughness,
     iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
     specularColor, specularIntensity,
-    anisotropy, anisotropyRotation,
+    anisotropy, anisotropyRotation, thinFilm,
   );
   if (bsdfPdf <= 0.0) {
     return vec3f(0.0);
@@ -419,7 +423,7 @@ fn bsdfAreaLightConnectionContribution(
       // flag; skip the visibility test for that light (matches the NEE half so
       // both MIS strategies see the same lighting).
       let rectShadowDisabled = rectAreaLights[li * 4u].w > 0.5;
-      if ((rectShadowDisabled || !traceAny(shadowRay, 1e-4, max(rectDist - 2e-3, 1e-3))) && rectDist < bestDist) {
+      if ((rectShadowDisabled || !traceAny(shadowRay, 1e-4, max(rectDist - 2e-3, 1e-3), rng)) && rectDist < bestDist) {
         bestDist = rectDist;
         bestLightPdf = rectPdf;
         bestEmission = rectAreaLights[li * 4u + 3u].rgb;
@@ -435,7 +439,7 @@ fn bsdfAreaLightConnectionContribution(
         // SHADOW-01 — row 3.w carries castShadowDisabled (NEE parity).
         let meshBase = meshAreaLightBase(mi);
         let meshShadowDisabled = meshAreaLights[meshBase + 3u].w > 0.5;
-        if ((meshShadowDisabled || !traceAny(shadowRay, 1e-4, max(meshDist - 2e-3, 1e-3))) && meshDist < bestDist) {
+        if ((meshShadowDisabled || !traceAny(shadowRay, 1e-4, max(meshDist - 2e-3, 1e-3), rng)) && meshDist < bestDist) {
           bestDist = meshDist;
           bestLightPdf = meshPdf;
           let lightPoint = offsetOrigin + wi * meshDist;
@@ -459,7 +463,7 @@ fn bsdfAreaLightConnectionContribution(
     clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
     iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
     specularColor, specularIntensity,
-    anisotropy, anisotropyRotation, false,
+    anisotropy, anisotropyRotation, thinFilm, false,
   );
   let misWeight = powerHeuristic(bsdfPdf, bestLightPdf);
   return throughputAtVertex * brdf * nDotL * emitOut * misWeight / bsdfPdf;
@@ -489,10 +493,12 @@ fn bsdfEnvironmentConnectionContribution(
   specularIntensity: f32,
   anisotropy: f32,
   anisotropyRotation: f32,
+  thinFilm: ThinFilmInterface,
   throughputAtVertex: vec3f,
   heroLambda: f32,
   matId: u32,
   misWeightOverride: f32,
+  rng: ptr<function, PtRngState>,
 ) -> vec3f {
   let nDotL = abs(dot(normal, wi));
   if (nDotL <= 0.0) { return vec3f(0.0); }
@@ -502,12 +508,12 @@ fn bsdfEnvironmentConnectionContribution(
     clearcoat, clearcoatRoughness, sheen, sheenRoughness,
     iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
     specularColor, specularIntensity,
-    anisotropy, anisotropyRotation,
+    anisotropy, anisotropyRotation, thinFilm,
   );
   if (bsdfPdf <= 0.0) { return vec3f(0.0); }
   let offsetNormal = select(-normal, normal, dot(normal, wi) > 0.0);
   let shadowRay = Ray(hitPos + offsetNormal * 1e-3, wi);
-  if (traceAny(shadowRay, 1e-4, INFINITY)) { return vec3f(0.0); }
+  if (traceAny(shadowRay, 1e-4, INFINITY, rng)) { return vec3f(0.0); }
   let env = environmentLookup(wi);
   let envLightPdf = environmentNeeProposalPdf(wi, normal);
   let ordinaryMisWeight = powerHeuristic(bsdfPdf, envLightPdf);
@@ -520,7 +526,7 @@ fn bsdfEnvironmentConnectionContribution(
     clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
     iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
     specularColor, specularIntensity,
-    anisotropy, anisotropyRotation, false,
+    anisotropy, anisotropyRotation, thinFilm, false,
   );
   // A3 — spectralize the env connection at the hero λ in spectral mode, matching the
   // NEE miss-shader path (kernel.wgsl.ts §431) and the NEE env branch (§724).

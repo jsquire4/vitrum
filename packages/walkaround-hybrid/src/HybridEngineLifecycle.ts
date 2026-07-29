@@ -44,7 +44,7 @@
  */
 
 import { WalkaroundGPUPipeline } from './pipeline/WalkaroundGPUPipeline.js';
-import { buildReSTIRSceneBVHForCoreScene, disposeSceneBVH } from './restir/bvhCore.js';
+import { buildReSTIRSceneBVHForCoreScene } from './restir/bvhCore.js';
 import type { ReSTIRBvhMode, SceneBVHBuffers } from './restir/bvhCore.js';
 import { InferenceGraph } from './neural/InferenceGraph.js';
 import type { ModelWeights } from './neural/weights.js';
@@ -85,6 +85,11 @@ export interface PipelineInitHost {
    * converted to generated MeshPrimitive fallbacks. May be null pre-bootstrap. */
   readonly lastScene: Scene | null;
   readonly primaryLightDir: readonly [number, number, number];
+  /** Explicit host override for scene directional suns. Undefined preserves
+   *  every authored emitter direction. */
+  readonly primaryLightDirOverride?:
+    | readonly [number, number, number]
+    | undefined;
   readonly primaryLightIntensity: number;
   /** Optional override from `extensions['walkaround-hybrid'].bvhMode`. */
   readonly restirBvhModeOverride: ReSTIRBvhMode | undefined;
@@ -109,18 +114,12 @@ export interface PipelineInitHost {
   readonly diSpatialPasses: 1 | 2;
   /** ReSTIR-GI spatial-reuse ping-pong pass count (1 or 2). */
   readonly giSpatialPasses: 1 | 2;
-  /** GRIS DDGI-proxy reconnection-shift reuse (Lin et al. 2022) opt-in.
-   *  COMPILE-TIME structural gate threaded into `pipeline.initialize`: when
-   *  true the GI spatial + temporal pipelines are built with the two-group
-   *  (scene-BVH) layout + GRIS shader; when false (default) they are the
-   *  verbatim Sprint-17 single-group pipeline. */
-  readonly grisReuse: boolean;
   /** NRC (Müller et al. 2021) live cache opt-in (full-tier only). COMPILE-TIME
    *  structural gate threaded into `pipeline.initialize`: when true the gi-ris
    *  pipeline is built with the 5th `@group(4)` NRC group + the inline-MLP
    *  shader variant; when false (default) it is the verbatim 4-group DDGI pass.
-   *  Same compile-time discipline as `grisReuse` (a runtime flag binding an
-   *  extra group on the default path is the GRIS-class regression). */
+   *  This remains a real compile-time choice because NRC adds a fifth bind
+   *  group; unlike the retired GRIS selector, both NRC variants are live. */
   readonly nrcEnabled: boolean;
   /** Fully resolved NRC shader/trainer/allocation contract. */
   readonly nrcConfig: NrcConfig;
@@ -220,7 +219,6 @@ export type HybridInitStaticConfig = Pick<
   | 'gtaoMode'
   | 'diSpatialPasses'
   | 'giSpatialPasses'
-  | 'grisReuse'
   | 'nrcEnabled'
   | 'nrcConfig'
   | 'ppgEnabled'
@@ -342,6 +340,9 @@ export class PipelineInitCoordinator {
   private _finaliseDeferredTeardownIfPending(mySeq: number): boolean {
     if (!(this._pendingTeardown && mySeq === this._initSeq)) return false;
     const host = this.host;
+    // Consume the request before invoking teardown callbacks so re-entrant
+    // cleanup paths cannot finalize the same generation twice.
+    this._pendingTeardown = false;
     if (host.debug) {
       console.log('[hybrid:debug] finalising deferred teardown', { seq: mySeq });
     }
@@ -365,11 +366,15 @@ export class PipelineInitCoordinator {
     // without turning a zero-mesh scene into a delayed init error.
     const pollStart = Date.now();
     let pollIters = 0;
+    let sceneReady = false;
+    let emptySceneReady = false;
     while (!this._disposed && mySeq === this._initSeq) {
-      const elapsed = Date.now() - pollStart;
-      if (elapsed >= 5_000) break;
-      if (host.lastScene != null && !host.coreSceneSuppliesMeshes()) break;
-      if (host.isSceneReadyForBvh()) break;
+      emptySceneReady =
+        host.lastScene != null && !host.coreSceneSuppliesMeshes();
+      if (emptySceneReady) break;
+      sceneReady = host.isSceneReadyForBvh();
+      if (sceneReady) break;
+      if (Date.now() - pollStart >= 5_000) break;
       await new Promise<void>((r) => setTimeout(r, 50));
       pollIters++;
     }
@@ -389,6 +394,25 @@ export class PipelineInitCoordinator {
       this._finaliseDeferredTeardownIfPending(mySeq);
       // Clear _initRunning if we're still latest; otherwise leave it
       // alone for the racer.
+      if (mySeq === this._initSeq) this._initRunning = false;
+      return;
+    }
+
+    if (!sceneReady && !emptySceneReady) {
+      const readinessError = new Error(
+        '[HybridEngine] scene readiness timed out after 5000 ms; no concrete ' +
+          'ready Scene with mesh primitives was available for BVH construction.',
+      );
+      reportFatalInitError(host, readinessError);
+      console.error(
+        '[HybridEngine] init failed — scene readiness timed out before BVH construction.',
+        readinessError,
+      );
+      // reportError is intentionally synchronous. A host subscriber may call
+      // engine.dispose() from that callback, which defers teardown because this
+      // init chain is still marked running. Finalize that request before this
+      // early-return path leaves the phase-machine's main try/finally.
+      this._finaliseDeferredTeardownIfPending(mySeq);
       if (mySeq === this._initSeq) this._initRunning = false;
       return;
     }
@@ -413,6 +437,7 @@ export class PipelineInitCoordinator {
     let pipeline: WalkaroundGPUPipeline | null = null;
     let bvhPublished: SceneBVHBuffers | null = null;
     let pipelineMs = 0;
+    let initSucceeded = false;
 
     try {
       // ── Phase: buildBvh ──────────────────────────────────────────────
@@ -504,10 +529,6 @@ export class PipelineInitCoordinator {
           gtaoMode: host.gtaoMode,
           diSpatialPasses: host.diSpatialPasses,
           giSpatialPasses: host.giSpatialPasses,
-          // GRIS DDGI-proxy reconnection-shift reuse — COMPILE-TIME structural
-          // gate (selects the GI pipeline layout + shader variant). Default
-          // OFF = the verbatim Sprint-17 GI pipeline (known-good default).
-          grisReuse: host.grisReuse,
           // NRC (Müller et al. 2021) — COMPILE-TIME structural gate (selects the
           // gi-ris pipeline layout: 4-group DDGI default vs 5-group inline-MLP
           // variant). Default OFF = the verbatim DDGI-estimate gi-ris pass.
@@ -581,8 +602,8 @@ export class PipelineInitCoordinator {
         // Also tear down the BVH we already published if it's still
         // ours; otherwise the newer chain has replaced it.
         if (host.currentBvhBuffers === bvhPublished) {
-          disposeSceneBVH(bvhPublished);
           host.rollbackBvh();
+          bvhPublished = null;
         }
         // pipeline disposed by the finally block.
         return;
@@ -610,7 +631,9 @@ export class PipelineInitCoordinator {
           pipeline,
           ctorLights: host.ctorLights,
           primaryLightIntensity: host.primaryLightIntensity,
-          primaryLightDir: host.primaryLightDir,
+          ...(host.primaryLightDirOverride != null
+            ? { primaryLightDir: host.primaryLightDirOverride }
+            : {}),
           hostSunWarningState: host.hostSunWarningState,
           onWarning: (warning) => host.reportWarning(warning),
           setLightsConditional: true,
@@ -627,6 +650,7 @@ export class PipelineInitCoordinator {
       host.publishPipeline(pipeline);
       pipeline = null; // ownership transferred to engine
       host.setState('ready');
+      initSucceeded = true;
 
       if (host.debug) {
         const totalMs = performance.now() - initStart;
@@ -634,15 +658,7 @@ export class PipelineInitCoordinator {
       }
     } catch (err) {
       if (!this._disposed) {
-        host.setState('error');
-        host.reportError({
-          kind: 'render',
-          message:
-            '[HybridEngine] async pipeline init failed; engine state set to error. ' +
-            errorMessage(err),
-          fatal: true,
-          raw: err,
-        });
+        reportFatalInitError(host, err);
       }
       console.error(
         '[HybridEngine] init failed — engine state set to error. Call dispose() and recreate the engine to retry.',
@@ -657,8 +673,17 @@ export class PipelineInitCoordinator {
       if (pipeline) {
         try { pipeline.dispose(); } catch { /* best-effort cleanup of losing init branch — ignore */ }
       }
+      if (
+        !initSucceeded &&
+        bvhPublished != null &&
+        host.currentBvhBuffers === bvhPublished
+      ) {
+        host.rollbackBvh();
+        bvhPublished = null;
+      }
       if (bvh) {
-        try { disposeSceneBVH(bvh); } catch { /* best-effort cleanup of losing init branch — ignore */ }
+        const wasPublished = host.currentBvhBuffers === bvh;
+        if (wasPublished) host.rollbackBvh();
       }
       // If requestTeardown() raced and left _pendingTeardown set,
       // finalise the teardown now. The newest writer (us, if we
@@ -681,6 +706,19 @@ export class PipelineInitCoordinator {
 function errorMessage(err: unknown): string {
   if (err instanceof Error) return err.message;
   return String(err);
+}
+
+function reportFatalInitError(host: PipelineInitHost, raw: unknown): void {
+  const error: EngineError = {
+    kind: 'render',
+    message:
+      '[HybridEngine] async pipeline init failed; engine state set to error. ' +
+      errorMessage(raw),
+    fatal: true,
+    raw,
+  };
+  host.setState('error');
+  host.reportError(error);
 }
 
 /**

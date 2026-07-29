@@ -77,6 +77,8 @@ export const get_surface_record_function = /* glsl */`
 		#define MAP_TRANSFORM(offset) readMaterialMapTransform( materials, materialIndex, offset )
 		#define MAP_POLICY(offset) readMaterialMapPolicy( materials, materialIndex, offset )
 		#define MAP_SAMPLE(layer,transformOffset,policyOffset,uvCoord) sampleMappedMaterialTexture( materials, textures, materialIndex, layer, transformOffset, policyOffset, uvCoord )
+		#define MAP_SRGB_SAMPLE(layer,transformOffset,policyOffset,uvCoord) sampleMappedSrgbMaterialTexture( materials, textures, materialIndex, layer, transformOffset, policyOffset, uvCoord )
+		#define MAP_RADIANCE_SAMPLE(layer,transformOffset,policyOffset,uvCoord) sampleMappedMaterialTexture( materials, materialRadianceTextures, materialIndex, layer, transformOffset, policyOffset, uvCoord )
 
 		// Optional material LOD by depth. When pathDepth > materialLodDepth, skip
 		// texture fetches and use flat material constants. materialLodDepth == 0
@@ -88,7 +90,7 @@ export const get_surface_record_function = /* glsl */`
 		vec3 albedoModulation = vec3( 1.0 );
 		if ( useTextures && material.map != - 1 ) {
 
-			vec4 baseColorSample = MAP_SAMPLE(
+			vec4 baseColorSample = MAP_SRGB_SAMPLE(
 				material.map, ${MATERIAL_TRANSFORM_TEXEL.baseColorMap}u,
 				${MATERIAL_WRAP_TEXEL_OFFSET + 0}u, MAP_UV( 0u )
 			);
@@ -188,7 +190,7 @@ export const get_surface_record_function = /* glsl */`
 		vec3 emission = material.emissiveIntensity * material.emissive;
 		if ( useTextures && material.emissiveMap != - 1 ) {
 
-			emission *= MAP_SAMPLE(
+			emission *= MAP_RADIANCE_SAMPLE(
 				material.emissiveMap, ${MATERIAL_TRANSFORM_TEXEL.emissiveMap}u,
 				${MATERIAL_WRAP_TEXEL_OFFSET + 4}u, MAP_UV( 4u )
 			).xyz;
@@ -202,7 +204,7 @@ export const get_surface_record_function = /* glsl */`
 		if ( useTextures && material.lightMap != - 1 && pathDepth == 0 ) {
 
 			emission += material.lightMapIntensity *
-				MAP_SAMPLE(
+				MAP_RADIANCE_SAMPLE(
 					material.lightMap, ${MATERIAL_LIGHTMAP_TRANSFORM_TEXEL}u,
 					${MATERIAL_WRAP_TEXEL_OFFSET + 17}u, MAP_UV( 17u )
 				).rgb;
@@ -403,7 +405,7 @@ export const get_surface_record_function = /* glsl */`
 		vec3 sheenColor = material.sheenColor;
 		if ( useTextures && material.sheenColorMap != - 1 ) {
 
-			sheenColor *= MAP_SAMPLE(
+			sheenColor *= MAP_SRGB_SAMPLE(
 				material.sheenColorMap, ${MATERIAL_TRANSFORM_TEXEL.sheenColorMap}u,
 				${MATERIAL_WRAP_TEXEL_OFFSET + 10}u, MAP_UV( 10u )
 			).rgb;
@@ -450,7 +452,7 @@ export const get_surface_record_function = /* glsl */`
 		vec3 specularColor = material.specularColor;
 		if ( useTextures && material.specularColorMap != - 1 ) {
 
-			specularColor *= MAP_SAMPLE(
+			specularColor *= MAP_SRGB_SAMPLE(
 				material.specularColorMap, ${MATERIAL_TRANSFORM_TEXEL.specularColorMap}u,
 				${MATERIAL_WRAP_TEXEL_OFFSET + 14}u, MAP_UV( 14u )
 			).rgb;
@@ -601,13 +603,9 @@ export const get_surface_record_function = /* glsl */`
     if ( surf.iridescence > 0.0 )   surf.lobeMask |= 16u;
     if ( surf.transmission > 0.0 )  surf.lobeMask |= 32u;
 
-		// Full-fidelity BSDF at every depth. The old indirect-bounce lite path
-		// skipped sheen/clearcoat/iridescence and multiscatter GGX after bounce 1;
-		// keep the field for shader-internal policy experiments, but do not silently
-		// drop authored glTF lobes on secondary transport.
-		surf.liteMode = false;
-
 		#undef MAP_SAMPLE
+		#undef MAP_SRGB_SAMPLE
+		#undef MAP_RADIANCE_SAMPLE
 		#undef MAP_POLICY
 		#undef MAP_TRANSFORM
 		#undef MAP_UV

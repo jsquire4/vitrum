@@ -35,11 +35,11 @@ function decodeRoughMetal(packed: number): { rough: number; metal: number } {
   return { rough, metal };
 }
 
-/** Mirror of the WGSL `decodeIor` (materialDecode.wgsl) — bits[15:8],
- *  decode: 1.0 + (byte / 255) * 2.0. */
+/** Mirror of WGSL transport decode. Byte 0 is the infinite-IOR endpoint. */
 function decodeIor(packed: number): number {
   const byte = (packed >>> 8) & 0xff;
-  return 1.0 + (byte / 255) * 2.0;
+  if (byte === 0) return 1e6;
+  return 1.0 + ((byte - 1) / 254) * 2.0;
 }
 
 /** Mirror of WGSL `decodeAoMapIntensity` — bits[7:3], /31. */
@@ -73,8 +73,8 @@ describe('packBVHRoughMetal — bit layout + decode round-trip', () => {
     const { rough, metal } = decodeRoughMetal(buf[0]!);
     expect(rough).toBeCloseTo(0.2, 2);
     expect(metal).toBeCloseTo(1.0, 2);
-    // low 16 bits reserved (zero).
-    expect(buf[0]! & 0xffff).toBe(0);
+    // Low byte remains the independent material-flags lane.
+    expect(buf[0]! & 0xff).toBe(0);
   });
 
   it('DIFFUSE-DEFAULT INVARIANT: unspecified roughness → 0.85, metal → 0', () => {
@@ -189,9 +189,14 @@ describe('packBVHRoughMetalFromCore — parity with the structural packer', () =
 // ── B1-ior-per-tri (2026-06-10) ─────────────────────────────────────────────
 
 describe('quantizeIor / dequantizeIor — round-trip', () => {
-  it('IOR 1.0 (air) encodes to byte 0, decodes exactly to 1.0', () => {
-    expect(quantizeIor(IOR_RANGE_MIN)).toBe(0);
-    expect(dequantizeIor(0)).toBeCloseTo(1.0, 6);
+  it('reserves byte 0 for IOR=0 infinite-IOR mode', () => {
+    expect(quantizeIor(0)).toBe(0);
+    expect(dequantizeIor(0)).toBe(0);
+  });
+
+  it('IOR 1.0 (air) encodes to byte 1 and decodes exactly', () => {
+    expect(quantizeIor(IOR_RANGE_MIN)).toBe(1);
+    expect(dequantizeIor(1)).toBeCloseTo(1.0, 6);
   });
 
   it('IOR 3.0 (range max) encodes to byte 255, decodes exactly to 3.0', () => {
@@ -201,7 +206,7 @@ describe('quantizeIor / dequantizeIor — round-trip', () => {
 
   it('IOR 1.5 (crown glass) round-trips to within 0.01', () => {
     const byte = quantizeIor(1.5);
-    expect(byte).toBe(64);  // round((0.5/2)*255) = round(63.75) = 64
+    expect(byte).toBe(65);
     expect(dequantizeIor(byte)).toBeCloseTo(1.5, 1);
     expect(Math.abs(dequantizeIor(byte) - 1.5)).toBeLessThan(0.01);
   });
@@ -216,9 +221,9 @@ describe('quantizeIor / dequantizeIor — round-trip', () => {
     expect(Math.abs(dequantizeIor(byte) - 2.42)).toBeLessThan(0.01);
   });
 
-  it('quantization step is approximately 0.0078 (= 2/255)', () => {
-    const step = (IOR_RANGE_MAX - IOR_RANGE_MIN) / 255;
-    expect(step).toBeCloseTo(0.00784, 4);
+  it('finite quantization step is approximately 0.00787 (= 2/254)', () => {
+    const step = (IOR_RANGE_MAX - IOR_RANGE_MIN) / 254;
+    expect(step).toBeCloseTo(0.00787, 4);
   });
 });
 
@@ -244,6 +249,13 @@ describe('B1-ior-per-tri — IOR lane in packBVHRoughMetal (structural packer)',
     expect(decodeIor(buf[0]!)).toBeCloseTo(IOR_RANGE_MIN, 4);
   });
 
+  it('preserves IOR=0 as the infinite-IOR transport sentinel', () => {
+    const mats: PbrMaterialLike[] = [{ transmission: 1.0, ior: 0 }];
+    const buf = packBVHRoughMetal(new Uint32Array([0]), mats, 1);
+    expect((buf[0]! >>> 8) & 0xff).toBe(0);
+    expect(decodeIor(buf[0]!)).toBe(1e6);
+  });
+
   it('rough+metal+IOR bits are co-packed without interfering', () => {
     // Set all three to non-trivial values.
     const mats: PbrMaterialLike[] = [{ roughness: 0.5, metalness: 0.5, ior: 2.0, transmission: 1.0 }];
@@ -265,13 +277,12 @@ describe('B1-ior-per-tri — IOR lane in packBVHRoughMetal (structural packer)',
 
   it('default-IOR-1.5 glass scene is byte-identical to the previous fixed IOR_GLASS=1.5', () => {
     // The prior B1 packer had no IOR lane (bits[15:8]=0). The new packer packs
-    // IOR_DEFAULT_GLASS=1.5 → byte 64, which changes bits[15:8] from 0 to
-    // (64 << 8) = 0x4000. This test confirms the new byte for documentation.
+    // IOR_DEFAULT_GLASS=1.5 → byte 65 in the finite [1,255] domain.
     // Callers that depended on bits[15:8]=0 for default glass should update.
     const mats: PbrMaterialLike[] = [{ transmission: 1.0 }];  // IOR defaults to 1.5
     const buf = packBVHRoughMetal(new Uint32Array([0]), mats, 1);
     const iorByte = (buf[0]! >>> 8) & 0xff;
-    expect(iorByte).toBe(64);  // (1.5-1)/2*255 = 63.75 → rounds to 64
+    expect(iorByte).toBe(65);
   });
 });
 

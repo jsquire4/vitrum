@@ -13,8 +13,13 @@ import {
   buildUniformDecls,
   UNIFORM_MANIFEST,
 } from './composeTraceGlsl.js';
-import { DEFAULT_TRACE_FEATURES, featureDefines } from '../featureTypes.js';
+import {
+  DEFAULT_TRACE_FEATURES,
+  featureDefines,
+  type TraceFeatures,
+} from '../featureTypes.js';
 import { NEE_RESOLVE_MAIN } from './neeResolveMain.glsl.js';
+import * as RandSobol from './shader/rand/sobol.glsl.js';
 
 describe('composeTraceGlsl', () => {
   const src = composeTraceGlsl(DEFAULT_TRACE_FEATURES);
@@ -66,18 +71,14 @@ describe('composeTraceGlsl', () => {
     );
   });
 
-  it('validates the host ceiling while retaining the runtime loop guard', () => {
-    const sixteenStepFeatures = { ...DEFAULT_TRACE_FEATURES, pathStepLimit: 16 };
-    const specializedTrace = composeTraceGlsl(sixteenStepFeatures);
-    const specializedCandidate = composeNeeCandidateGlsl(sixteenStepFeatures);
+  it('specializes the static marker to the host-validated runtime loop guard', () => {
+    const specializedTrace = composeTraceGlsl(DEFAULT_TRACE_FEATURES);
+    const specializedCandidate = composeNeeCandidateGlsl(DEFAULT_TRACE_FEATURES);
     for (const specialized of [specializedTrace, specializedCandidate]) {
       expect(specialized).toContain('pathStep < bounces * 2;');
       expect(specialized).not.toContain('pathStep < 64;');
       expect(specialized).toContain('if ( i >= bounces ) {');
     }
-    expect(() => composeTraceGlsl({ ...DEFAULT_TRACE_FEATURES, pathStepLimit: 1 })).toThrow(
-      /pathStepLimit must be a safe integer in \[2, 64\]/,
-    );
   });
 
   it('emits the compact opaque base-PBR program graph without optional material chunks', () => {
@@ -85,9 +86,6 @@ describe('composeTraceGlsl', () => {
       ...DEFAULT_TRACE_FEATURES,
       basicMaterials: true,
       mappedRichMaterials: false,
-      analyticLights: true,
-      meshLights: false,
-      environmentLight: true,
     };
     const basicTrace = composeTraceGlsl(basicFeatures);
     const basicCandidate = composeNeeCandidateGlsl(basicFeatures);
@@ -222,6 +220,31 @@ describe('composeTraceGlsl', () => {
     ).toThrow(/exactly one material compiler tier is required \(got 0\)/);
   });
 
+  it('decodes LDR color texels before manual filtering and routes radiance maps to RGBA16F', () => {
+    const rich = composeTraceGlsl(DEFAULT_TRACE_FEATURES);
+    const mappedPbr = composeTraceGlsl({
+      ...DEFAULT_TRACE_FEATURES,
+      mappedPbrMaterials: true,
+      mappedRichMaterials: false,
+    });
+
+    for (const source of [rich, mappedPbr]) {
+      expect(source).toContain('uniform sampler2DArray materialRadianceTextures;');
+      expect(source).toContain('vec4 decodeMaterialTextureTexel(');
+      expect(source).toContain('vec4 c00 = decodeMaterialTextureTexel(');
+      expect(source).toContain('value.a );');
+    }
+    expect(rich).toContain('vec4 baseColorSample = MAP_SRGB_SAMPLE(');
+    expect(rich).toContain('emission *= MAP_RADIANCE_SAMPLE(');
+    expect(rich).toContain('materialRadianceTextures, materialIndex');
+    expect(mappedPbr).toContain(
+      'textures, uvPrime.xy, material.map, material.mapWrap, true',
+    );
+    expect(mappedPbr).toContain(
+      'materialRadianceTextures, uvPrime.xy,',
+    );
+  });
+
   it('lazily fetches every mapped-rich transform and sampler policy from its exact slot', () => {
     const mappedTrace = composeTraceGlsl(DEFAULT_TRACE_FEATURES);
     const compactMappedTrace = mappedTrace.replace(/\s+/g, ' ');
@@ -321,6 +344,25 @@ describe('composeTraceGlsl', () => {
     expect(src).toContain('pc_fragColor.a *= opacity;');
   });
 
+  it('composes only the live texture-backed Sobol sampler', () => {
+    const sobolFeatures = { ...DEFAULT_TRACE_FEATURES, randomType: 1 as const };
+    const sobolSources = [
+      composeTraceGlsl(sobolFeatures),
+      composeNeeCandidateGlsl(sobolFeatures),
+      composeNeeResolveGlsl(sobolFeatures),
+    ];
+
+    expect(RandSobol).not.toHaveProperty('sobol_point_generation');
+    for (const sobolSource of sobolSources) {
+      expect(sobolSource).toContain('uniform sampler2D sobolTexture;');
+      expect(sobolSource).toContain('vec4 sobolGetTexturePoint( uint index )');
+      expect(sobolSource).toContain('float sobol( int effect )');
+      expect(sobolSource).not.toContain('SOBOL_DIRECTIONS_');
+      expect(sobolSource).not.toContain('getMaskedSobol(');
+      expect(sobolSource).not.toContain('generateSobolPoint(');
+    }
+  });
+
   it('inlines the <common> shim symbols the kernels reference', () => {
     // The shim must precede every kernel that uses these (it is emitted right after the
     // precision lines, before any kernel chunk). Existence is asserted here; ordering is
@@ -377,7 +419,9 @@ describe('composeTraceGlsl', () => {
     expect(src).toContain('vec3 spectralReflectanceCoeffs;');
     expect(src).toContain('bool hasSpectralReflectance;');
     expect(src).toContain('evalSpectrum( material.spectralReflectanceCoeffs, heroWavelength )');
-    expect(src).toContain('state.accumulatedRoughness, int( state.depth ), state.wavelength');
+    expect(src).toContain(
+      'state.accumulatedRoughness, surfacePathDepth, state.wavelength',
+    );
   });
 
   it('has no scene-global reflectance or unreachable flat-shading lane in any material tier', () => {
@@ -474,9 +518,28 @@ describe('composeTraceGlsl', () => {
     expect(src).toContain('gbufAlbedo = surf.rgbColor;');
   });
 
-  it('keeps optional BSDF lobes active after the first bounce', () => {
-    expect(src).toContain('surf.liteMode = false;');
-    expect(src).not.toContain('surf.liteMode = ( pathDepth > 1 )');
+  it('keeps optional BSDF lobes active at every bounce', () => {
+    expect(src).not.toContain('liteMode');
+  });
+
+  it('omits unreachable fork-only compiler branches', () => {
+    for (const token of [
+      'FEATURE_BACKGROUND_MAP',
+      'FEATURE_STAINED_GLASS_SHADOW_NORMAL_PERTURBATION',
+      'DEBUG_MODE',
+      'RANDOM_TYPE',
+      'stratifiedTexture',
+      'stratifiedOffsetTexture',
+      'activeShadowNormalUvLayer',
+    ]) {
+      expect(src).not.toContain(token);
+    }
+    expect(() =>
+      composeTraceGlsl({
+        ...DEFAULT_TRACE_FEATURES,
+        randomType: 2,
+      } as unknown as TraceFeatures),
+    ).toThrow(/unsupported random type 2/);
   });
 
   it('orders the uniform declarations before main() reads them', () => {
@@ -511,6 +574,8 @@ describe('composeTraceGlsl', () => {
     expect(connectionDef).toBeGreaterThanOrEqual(0);
     expect(connectionDef).toBeLessThan(main);
     expect(subpathDef).toBeLessThan(main);
+    expect(bdptSrc).not.toContain('bdptOctEncodeDirection');
+    expect(bdptSrc).not.toContain('bdptOctDecodeDirection');
     expect(bdptSrc).toContain('bool bdptVisibilityAttenuation(');
     expect(bdptSrc).toContain('out vec3 attenColor');
     expect(bdptSrc).toContain('attenColor = vec3( 1.0 );');
@@ -860,7 +925,7 @@ describe('composeTraceGlsl', () => {
   // D10.4: RENDER_MAIN_SECTIONS length pin (prevents silent render-main drift).
   it('D10.4: RENDER_MAIN_SECTIONS join length pin', () => {
     const assembled = RENDER_MAIN_SECTIONS.join('');
-    expect(assembled).toHaveLength(60287);
+    expect(assembled).toHaveLength(60572);
     // All sections must be non-empty and together contain the key anchor points.
     expect(RENDER_MAIN_SECTIONS).toHaveLength(6);
     expect(assembled).toContain('void main() {');
@@ -893,9 +958,11 @@ describe('buildUniformDecls', () => {
     expect(decls).toContain('uniform float backgroundAlpha;');
     expect(decls).toContain('uniform LightsInfo lights;');
     expect(decls).toContain('uniform BVH bvh;');
-    // Gated sections must be present (they control conditional declarations)
-    expect(decls).toContain('#if FEATURE_BACKGROUND_MAP');
+    // The host-controllable DOF section remains compile-gated.
     expect(decls).toContain('#if FEATURE_DOF');
+    expect(decls).not.toContain('backgroundMap');
+    expect(decls).not.toContain('backgroundRotation');
+    expect(decls).not.toContain('backgroundIntensity');
     // Globals section
     expect(decls).toContain('mat3 envRotation3x3;');
     expect(decls).toContain('float lightsDenom;');

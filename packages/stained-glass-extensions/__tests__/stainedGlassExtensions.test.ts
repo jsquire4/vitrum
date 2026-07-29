@@ -1,11 +1,10 @@
 /**
  * Unit coverage for @vitrum/stained-glass-extensions.
  *
- * Two of the three modules are pure ID/key registries (wire-level enums) whose
- * VALUES are themselves the contract — drift means silent GPU corruption, so
- * the tests pin every entry exactly. The third, `packCameUBO`, is a std140 UBO
- * wire-packer: it gets an exact byte-layout pin (byteLength + per-offset value +
- * padding), since a layout drift the consuming shader can't see is silent
+ * The root package is the renderer-consumed surface-texture wire contract.
+ * The host-only `packCameUBO` ABI lives at the explicit `host-came-ubo`
+ * subpath and gets an exact byte-layout pin (byteLength + per-offset value +
+ * padding), since a layout drift the host shader cannot see is silent
  * corruption.
  *
  * Authoritative came layout (from cameUniformUploader.ts):
@@ -19,10 +18,18 @@
  */
 import { describe, expect, it, vi } from 'vitest';
 import {
+  isSurfaceTextureId,
   SURFACE_TEXTURE_ID,
-  packCameUBO,
+  validateSurfaceTextureId,
 } from '../src/index.js';
-import type { CameNode, CameSegment } from '../src/index.js';
+import * as rendererContract from '../src/index.js';
+import {
+  packCameUBO,
+} from '@vitrum/stained-glass-extensions/host-came-ubo';
+import type {
+  CameNode,
+  CameSegment,
+} from '@vitrum/stained-glass-extensions/host-came-ubo';
 
 const SEGMENT_FLOATS = 16;
 const NODE_FLOATS = 4;
@@ -50,6 +57,21 @@ describe('SURFACE_TEXTURE_ID — wire-level texture enum', () => {
 
   it('starts at 0 (smooth is the default/zero glass surface)', () => {
     expect(SURFACE_TEXTURE_ID.smooth).toBe(0);
+  });
+
+  it('recognizes every canonical id and rejects non-canonical values', () => {
+    for (const id of Object.values(SURFACE_TEXTURE_ID)) {
+      expect(isSurfaceTextureId(id)).toBe(true);
+      expect(validateSurfaceTextureId(id)).toBe(id);
+    }
+    for (const invalid of [-1, 8, 15, 1.5, NaN, Infinity, '1', null, true]) {
+      expect(isSurfaceTextureId(invalid)).toBe(false);
+      expect(() => validateSurfaceTextureId(invalid)).toThrow(/surfaceTextureId/);
+    }
+  });
+
+  it('does not expose the host-only came ABI from the renderer contract root', () => {
+    expect(rendererContract).not.toHaveProperty('packCameUBO');
   });
 });
 

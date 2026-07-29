@@ -9,9 +9,14 @@
 import {
   BACKEND_PROMISE_LEDGER,
   type BackendId,
+  type BackendSupportDetails,
   type BackendSupportMode,
-  type MaterialSpec,
 } from '@vitrum/core';
+import {
+  PT_WEBGPU_FULL_SUPPORT_MANIFEST,
+  PT_WEBGPU_LITE_EXTRA_UNSUPPORTED_MATERIAL_FIELDS,
+  PT_WEBGPU_LITE_SUPPORT_MANIFEST,
+} from '@vitrum/pt-webgpu/support-profile';
 import { TEXTURE_SOURCE_EXTENSIONS } from './assetInventory.js';
 import {
   animationMalformedChannelMessage,
@@ -47,54 +52,15 @@ export const VERTEX_COLOR_SUPPORT: Readonly<Record<GltfBackendProfileId, Backend
  *  full-tier group-3 material texture bindings, so every entry here must be a
  *  valid `keyof MaterialSpec` AND must be one that the FULL pt-webgpu profile does
  *  NOT mark unsupported (the lite tier is what restricts them). See the pin. */
-export const PT_WEBGPU_LITE_UNSUPPORTED_MATERIAL_FIELDS = [
-  // Lite composes no full-tier group-3 material texture bindings; every
-  // texture-backed MaterialSpec field is therefore unsupported on that profile.
-  'baseColorMap',
-  'normalMap',
-  'normalScale',
-  'roughnessMap',
-  'metallicMap',
-  'transmissionMap',
-  'emissiveMap',
-  'alphaMap',
-  'aoMap',
-  'aoMapIntensity',
-  'clearcoatMap',
-  'clearcoatRoughnessMap',
-  'clearcoatNormalMap',
-  'clearcoatNormalScale',
-  'sheenColorMap',
-  'sheenRoughnessMap',
-  'iridescenceMap',
-  'iridescenceThicknessMap',
-  'anisotropyMap',
-  'specularColorMap',
-  'specularIntensityMap',
-  'bumpMap',
-  'bumpScale',
-  'lightMap',
-  'lightMapIntensity',
-  // Lite also omits the full-tier alpha-test and per-material env/aniso paths.
-  'alphaMode',
-  'alphaCutoff',
-  'opacity',
-  'envMapIntensity',
-  'anisotropy',
-  'anisotropyRotation',
-] as const satisfies readonly (keyof MaterialSpec)[];
+export const PT_WEBGPU_LITE_UNSUPPORTED_MATERIAL_FIELDS =
+  PT_WEBGPU_LITE_EXTRA_UNSUPPORTED_MATERIAL_FIELDS;
 
 interface GltfBackendProfile {
   readonly id: GltfBackendProfileId;
   readonly backend: BackendId;
   readonly traceTier?: GltfBackendTraceTier;
-  readonly materialOverrides?: Readonly<Partial<Record<keyof MaterialSpec, BackendSupportMode>>>;
+  readonly supportDetails?: BackendSupportDetails;
 }
-
-const PT_WEBGPU_LITE_MATERIAL_OVERRIDES: Readonly<Partial<Record<keyof MaterialSpec, BackendSupportMode>>> =
-  Object.freeze(Object.fromEntries(
-    PT_WEBGPU_LITE_UNSUPPORTED_MATERIAL_FIELDS.map((field) => [field, 'unsupported' as const]),
-  ));
 
 const BACKEND_PROFILES: Readonly<Record<GltfBackendProfileId, GltfBackendProfile>> = Object.freeze({
   'pt-webgl2': Object.freeze({ id: 'pt-webgl2', backend: 'pt-webgl2' }),
@@ -102,12 +68,13 @@ const BACKEND_PROFILES: Readonly<Record<GltfBackendProfileId, GltfBackendProfile
     id: 'pt-webgpu',
     backend: 'pt-webgpu',
     traceTier: 'full',
+    supportDetails: PT_WEBGPU_FULL_SUPPORT_MANIFEST,
   }),
   'pt-webgpu-lite': Object.freeze({
     id: 'pt-webgpu-lite',
     backend: 'pt-webgpu',
     traceTier: 'lite',
-    materialOverrides: PT_WEBGPU_LITE_MATERIAL_OVERRIDES,
+    supportDetails: PT_WEBGPU_LITE_SUPPORT_MANIFEST,
   }),
   'walkaround-hybrid': Object.freeze({
     id: 'walkaround-hybrid',
@@ -131,7 +98,6 @@ function requiresHookIssuePath(report: GltfFeatureReport, ext: string): string {
     )
     : undefined;
   if (textureSourcePath !== undefined) return textureSourcePath;
-  if (report.extensions.required.includes(ext) || !TEXTURE_SOURCE_EXTENSIONS.has(ext)) return fallback;
   return fallback;
 }
 
@@ -146,7 +112,7 @@ interface CompatibilityEmitContext {
   readonly report: GltfFeatureReport;
   readonly profile: GltfBackendProfile;
   readonly backend: BackendId;
-  readonly ledger: (typeof BACKEND_PROMISE_LEDGER)[BackendId];
+  readonly supportDetails: BackendSupportDetails;
   readonly issues: GltfCompatibilityIssue[];
   readonly counts: { unsupported: number; approximate: number; native: number; requiresHook: number };
   readonly addIssue: (issue: GltfCompatibilityIssue) => void;
@@ -184,11 +150,11 @@ function emitExtensionIssues(ctx: CompatibilityEmitContext): void {
 }
 
 function emitPrimitiveIssues(ctx: CompatibilityEmitContext): void {
-  const { report, profile, ledger, addIssue, counts } = ctx;
+  const { report, profile, supportDetails, addIssue, counts } = ctx;
   const { backend } = profile;
   const profileId = profile.id;
   for (const kind of report.primitives.expectedPrimitiveKinds) {
-    const support = ledger.supportDetails.primitives[kind] ?? 'unknown';
+    const support = supportDetails.primitives[kind] ?? 'unknown';
     if (support !== 'native') {
       addIssue({
         category: 'primitive',
@@ -403,7 +369,7 @@ function emitAnimationIssues(ctx: CompatibilityEmitContext): void {
 }
 
 function emitMaterialIssues(ctx: CompatibilityEmitContext): void {
-  const { report, profile, ledger, addIssue, counts } = ctx;
+  const { report, profile, supportDetails, addIssue, counts } = ctx;
   if (report.materials.specularGlossinessMaterialCount > 0) {
     addIssue({
       category: 'material',
@@ -432,6 +398,31 @@ function emitMaterialIssues(ctx: CompatibilityEmitContext): void {
     });
   }
 
+  for (const materialProfile of report.materials.materialProfiles ?? []) {
+    const support =
+      supportDetails.materialProfiles?.[materialProfile];
+    // The profile map is intentionally partial. An omitted row makes no
+    // conditional promise and therefore does not invent a compatibility issue.
+    if (support == null) continue;
+    if (support === 'native') {
+      counts.native += 1;
+    } else {
+      addIssue({
+        category: 'material',
+        name: `profile:${materialProfile}`,
+        support,
+        path: firstSourcePath(
+          report.materials.issuePaths,
+          `profile:${materialProfile}`,
+          'materials',
+        ),
+        message:
+          `Backend profile ${profile.id} reports conditional material profile ` +
+          `"${materialProfile}" as ${support}.`,
+      });
+    }
+  }
+
   for (const uvSet of report.materials.uvSets) {
     if (uvSet <= 1) continue;
     if (!report.materials.unrepresentableUvSets.includes(uvSet)) continue;
@@ -448,7 +439,7 @@ function emitMaterialIssues(ctx: CompatibilityEmitContext): void {
 
   for (const samplerPolicy of report.materials.samplerPolicies) {
     const field = samplerPolicy.materialField;
-    const fieldSupport = profile.materialOverrides?.[field] ?? ledger.supportDetails.materials[field] ?? 'unknown';
+    const fieldSupport = supportDetails.materials[field] ?? 'unknown';
     if (fieldSupport === 'unsupported') continue;
     const samplerSupport = samplerPolicySupport(profile.id, samplerPolicy);
     if (samplerSupport !== 'native') {
@@ -467,7 +458,7 @@ function emitMaterialIssues(ctx: CompatibilityEmitContext): void {
 
   for (const malformedSampler of report.materials.malformedSamplerPolicies) {
     const field = malformedSampler.materialField;
-    const fieldSupport = profile.materialOverrides?.[field] ?? ledger.supportDetails.materials[field] ?? 'unknown';
+    const fieldSupport = supportDetails.materials[field] ?? 'unknown';
     if (fieldSupport === 'unsupported') continue;
     addIssue({
       category: 'material',
@@ -480,7 +471,7 @@ function emitMaterialIssues(ctx: CompatibilityEmitContext): void {
 
   for (const textureIssue of report.materials.textureReferenceIssues) {
     const field = textureIssue.materialField;
-    const fieldSupport = profile.materialOverrides?.[field] ?? ledger.supportDetails.materials[field] ?? 'unknown';
+    const fieldSupport = supportDetails.materials[field] ?? 'unknown';
     if (fieldSupport === 'unsupported') continue;
     addIssue({
       category: 'material',
@@ -514,7 +505,7 @@ function emitMaterialIssues(ctx: CompatibilityEmitContext): void {
   }
 
   if (report.materials.textureFields.includes('emissiveMap')) {
-    const support = profile.materialOverrides?.emissiveMap ?? ledger.supportDetails.materials.emissiveMap ?? 'unknown';
+    const support = supportDetails.materials.emissiveMap ?? 'unknown';
     if (support === 'native' || support === 'approximate') {
       addIssue({
         category: 'material',
@@ -532,7 +523,7 @@ function emitMaterialIssues(ctx: CompatibilityEmitContext): void {
   }
 
   for (const field of report.materials.materialFields) {
-    const support = profile.materialOverrides?.[field] ?? ledger.supportDetails.materials[field] ?? 'unknown';
+    const support = supportDetails.materials[field] ?? 'unknown';
     if (support === 'native') {
       counts.native += 1;
     } else {
@@ -553,7 +544,8 @@ export function evaluateGltfBackendProfileCompatibility(
 ): GltfBackendCompatibility {
   const profile = BACKEND_PROFILES[profileId];
   const { backend } = profile;
-  const ledger = BACKEND_PROMISE_LEDGER[backend];
+  const supportDetails =
+    profile.supportDetails ?? BACKEND_PROMISE_LEDGER[backend].supportDetails;
   const issues: GltfCompatibilityIssue[] = [];
   const counts = { unsupported: 0, approximate: 0, native: 0, requiresHook: 0 };
 
@@ -569,7 +561,15 @@ export function evaluateGltfBackendProfileCompatibility(
     }
   };
 
-  const ctx: CompatibilityEmitContext = { report, profile, backend, ledger, issues, counts, addIssue };
+  const ctx: CompatibilityEmitContext = {
+    report,
+    profile,
+    backend,
+    supportDetails,
+    issues,
+    counts,
+    addIssue,
+  };
 
   emitExtensionIssues(ctx);
   emitPrimitiveIssues(ctx);

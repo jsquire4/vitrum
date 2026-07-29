@@ -217,11 +217,15 @@ describe('createEngine backend construction safety', () => {
     ptFactory.mockResolvedValue(makeEngine());
 
     await constructPathTracerWebGPU(
-      makeOptions({ restirPtReuse: true }, 'pt-webgpu'),
+      makeOptions({ oneEdgeReconnectionReuse: true }, 'pt-webgpu'),
       scene,
     );
 
-    expect(ptRequiredLimits).toHaveBeenCalledWith(adapter, { restirPtReuse: true });
+    expect(ptRequiredLimits).toHaveBeenCalledWith(adapter, {
+      bdpt: false,
+      oneEdgeReconnectionReuse: true,
+      cwbvhClosest: false,
+    });
   });
 
   it.each(['pt-webgpu', 'pt-webgpu-lite'] as const)(
@@ -464,6 +468,43 @@ describe('createEngine backend construction safety', () => {
     warnSpy.mockRestore();
   });
 
+  it('warns when prefer:realtime resolves directly to the converged WebGL2 backend', async () => {
+    Object.defineProperty(globalThis, 'navigator', {
+      value: {},
+      configurable: true,
+    });
+    const gl = { createFramebuffer: vi.fn() } as unknown as WebGL2RenderingContext;
+    const canvas = {
+      width: 64,
+      height: 64,
+      getContext: vi.fn((kind: string) => kind === 'webgl2' ? gl : null),
+    } as unknown as HTMLCanvasElement;
+    webglFactory.mockResolvedValue(makeEngine());
+    const warnings: EngineWarning[] = [];
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const result = await createEngine({
+      canvas,
+      scene,
+      prefer: 'realtime',
+      onWarning: (warning) => warnings.push(warning),
+    });
+
+    expect(result.backendId).toBe('pt-webgl2');
+    expect(hybridFactory).not.toHaveBeenCalled();
+    expect(warnings).toContainEqual(expect.objectContaining({
+      code: 'createEngine.realtime-unavailable-fallback',
+      phase: 'fallback',
+      details: expect.objectContaining({
+        preferredBackend: 'walkaround-hybrid',
+        resolvedBackend: 'pt-webgl2',
+        reason: 'webgpu-unavailable',
+      }),
+    }));
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    warnSpy.mockRestore();
+  });
+
   it('rejects ambiguous advanced options before GPU detection', async () => {
     const requestAdapter = vi.fn();
     Object.defineProperty(globalThis, 'navigator', {
@@ -683,14 +724,18 @@ describe('H31 fix — backend-scoped advanced resolution', () => {
         ...makeOptions(),
         advancedByBackend: {
           'walkaround-hybrid': { qualityTier: 'medium' },
-          'pt-webgpu': { restirPtReuse: true },
+          'pt-webgpu': { oneEdgeReconnectionReuse: true },
         },
       },
       scene,
     );
 
-    expect(ptRequiredLimits).toHaveBeenCalledWith(adapter, { restirPtReuse: true });
-    expect(ptFactory.mock.calls[0]?.[0]?.restirPtReuse).toBe(true);
+    expect(ptRequiredLimits).toHaveBeenCalledWith(adapter, {
+      bdpt: false,
+      oneEdgeReconnectionReuse: true,
+      cwbvhClosest: false,
+    });
+    expect(ptFactory.mock.calls[0]?.[0]?.oneEdgeReconnectionReuse).toBe(true);
     Object.defineProperty(globalThis, 'navigator', { value: ORIG_NAVIGATOR, configurable: true });
   });
 });

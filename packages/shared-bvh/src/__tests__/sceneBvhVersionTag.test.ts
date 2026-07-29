@@ -145,6 +145,29 @@ describe('H34-h: SceneBvh sceneVersionTag fast path', () => {
     expect(bvh.buffers).toBe(first);
   });
 
+  it('same tag skips the merge after an empty-scene publication', () => {
+    const bvh = new SceneBvh();
+    const empty: Scene = {
+      primitives: [],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+    bvh.updateFromCore(empty, { sceneVersionTag: 'empty-v1' });
+    expect(bvh.buffers).toBeNull();
+
+    const poisonedScene = {
+      get primitives(): never {
+        throw new Error('same-tag empty scene must not be traversed again');
+      },
+      emitters: [],
+      environment: { kind: 'none' },
+    } as unknown as Scene;
+    expect(() => {
+      bvh.updateFromCore(poisonedScene, { sceneVersionTag: 'empty-v1' });
+    }).not.toThrow();
+    expect(bvh.buffers).toBeNull();
+  });
+
   it('no tag → fingerprint fallback, identical scene skipped', () => {
     const bvh = new SceneBvh();
     const scene = minimalScene();

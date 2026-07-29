@@ -24,6 +24,11 @@ import {
   sobolTextureComponentBits,
   sobolTexturePoint,
 } from '../sobol.js';
+import {
+  SOBOL_DIRECTION_BITS,
+  SOBOL_DIRECTION_DIMENSION_COUNT,
+  SOBOL_DIRECTION_NUMBERS_WGSL,
+} from '../sobolDirectionNumbers.js';
 
 const INV_24 = 1 / 16_777_216;
 
@@ -90,9 +95,22 @@ describe('Sobol texture table', () => {
     expect(sobolBlueNoiseRotationBits(63, 9)).toBe(0xe40131);
   });
 
+  it('keeps rank zero as a zero rotation without aliasing full pixel streams', () => {
+    const frameKey = sobolFrameKey(0x12345678, 99);
+    const pixelA = initOwenScrambledSobolStream(0, 0, frameKey);
+    const pixelB = initOwenScrambledSobolStream(8, 0, frameKey);
+    expect(pixelA.rotationTile).toBe(0);
+    expect(pixelB.rotationTile).toBe(0);
+    expect(sobolBlueNoiseRotationBits(0, 323)).toBe(0);
+    expect(Array.from({ length: 16 }, () => nextOwenScrambledSobolU32(pixelA)))
+      .not.toEqual(Array.from({ length: 16 }, () => nextOwenScrambledSobolU32(pixelB)));
+  });
+
   it('pins the pt-webgpu CPU oracle and full non-aliasing stream state', () => {
     expect(sobolTextureComponentBits(7, 0)).toBe(0x00000007);
-    expect(sobolTextureComponentBits(7, 5)).toBe(0x00000004);
+    expect(sobolTextureComponentBits(7, 5)).toBe(0x00000007);
+    expect(sobolTextureComponentBits(7, 255)).toBe(0x00000006);
+    expect(sobolTextureComponentBits(7, 511)).toBe(0x00000006);
     expect(owenScrambledSobolU32(0, 0)).toBe(0xa66de000);
     expect(owenScrambledSobolU32(0, 1)).toBe(0x1fc82700);
     expect(owenScrambledSobolU32(1, 0)).toBe(0x5336f000);
@@ -109,22 +127,28 @@ describe('Sobol texture table', () => {
       pixelY: 10,
       sequenceKey: 49164,
       rotationTile: 17,
-      fallbackState: 1317513256,
+      fallbackState: 3105986336,
     });
     expect(Array.from({ length: 8 }, () => nextOwenScrambledSobolU32(stream))).toEqual([
       0x8aeca400,
       0x419e9400,
       0xb524e900,
       0x23e98800,
-      0xb625c789,
-      0xe10c246d,
-      0x25744040,
-      0x6a48ec00,
+      0x7759a400,
+      0xe7614000,
+      0xf4738a00,
+      0xb225f000,
     ]);
   });
 
   it('keeps dimensions decorrelated and rejects dimensions outside the Sobol prefix', () => {
-    expect(sobolTextureComponentBits(7, 0)).toBe(sobolTextureComponentBits(7, 4));
+    expect(SOBOL_DIMENSION_COUNT).toBe(512);
+    expect(SOBOL_DIMENSION_COUNT).toBe(SOBOL_DIRECTION_DIMENSION_COUNT);
+    expect(SOBOL_DIRECTION_BITS).toBe(16);
+    expect(SOBOL_DIRECTION_NUMBERS_WGSL).toContain(
+      'const SOBOL_DIRECTION_NUMBERS_PACKED = array<u32, 4096>',
+    );
+    expect(sobolTextureComponentBits(7, 0)).not.toBe(sobolTextureComponentBits(7, 4));
     expect(owenScrambledSobolU32(12345, 0)).not.toBe(owenScrambledSobolU32(12345, 3));
     const prefix = Array.from(
       { length: SOBOL_DIMENSION_COUNT },
@@ -134,6 +158,7 @@ describe('Sobol texture table', () => {
     expect(() => owenScrambledSobolU32(0, -1)).toThrow(RangeError);
     expect(() => owenScrambledSobolU32(0, 1.5)).toThrow(RangeError);
     expect(() => owenScrambledSobolU32(0, SOBOL_DIMENSION_COUNT)).toThrow(RangeError);
+    expect(() => sobolTextureComponentBits(0, SOBOL_DIMENSION_COUNT)).toThrow(RangeError);
   });
 
   it('maps all 2^32 frame indices to unique block and sample identities', () => {
@@ -183,7 +208,7 @@ describe('Sobol texture table', () => {
   });
 
   it('has no repeated values within the complete 65,536-sample Sobol block', () => {
-    for (const dimension of [0, 1, 2, 3]) {
+    for (const dimension of [0, 1, 2, 3, 255, 511]) {
       const values = new Set<number>();
       for (let sample = 0; sample < SOBOL_SAMPLE_BLOCK_SIZE; sample += 1) {
         values.add(owenScrambledSobolU32(sample, dimension, 17, 0x12345678));
@@ -218,18 +243,28 @@ describe('Sobol texture table', () => {
     }
   });
 
-  it('pins Sobol dimensions 2-3 and independent PCG continuation 4-6', () => {
+  it('covers the audited renderer budget and pins the deterministic continuation', () => {
     const key = sobolFrameKey(123, 0);
+    const rendererBudget = initOwenScrambledSobolStream(9, 10, key);
+    const fallbackBeforeBudget = rendererBudget.fallbackState;
+    for (let draw = 0; draw < 324; draw += 1) {
+      nextOwenScrambledSobolU32(rendererBudget);
+    }
+    expect(rendererBudget.dimension).toBe(324);
+    expect(rendererBudget.fallbackState).toBe(fallbackBeforeBudget);
+
     const stream = initOwenScrambledSobolStream(9, 10, key);
     stream.dimension = SOBOL_DIMENSION_COUNT - 2;
-    expect(Array.from({ length: 5 }, () => nextOwenScrambledSobolU32(stream))).toEqual([
-      0xb524e900,
-      0x23e98800,
-      0xb625c789,
-      0xe10c246d,
-      0x25744040,
+    expect(Array.from({ length: 7 }, () => nextOwenScrambledSobolU32(stream))).toEqual([
+      0x08785900,
+      0xe8b6ec00,
+      0x9d8c7ac8,
+      0xed2474d0,
+      0xb1a14c1e,
+      0x96716f84,
+      0x74ede162,
     ]);
-    expect(stream.dimension).toBe(SOBOL_DIMENSION_COUNT + 3);
+    expect(stream.dimension).toBe(SOBOL_DIMENSION_COUNT + 5);
 
     const continuationA = initOwenScrambledSobolStream(9, 10, key);
     const continuationB = initOwenScrambledSobolStream(9, 10, key);

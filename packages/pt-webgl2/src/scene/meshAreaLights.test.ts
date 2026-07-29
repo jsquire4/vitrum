@@ -7,6 +7,11 @@ import {
   TRI_AREA_LIGHT_TYPE,
   TRI_LIGHT_PIXELS,
 } from './meshAreaLights.js';
+import {
+  FLOAT16_HALF_MIN_SUBNORMAL,
+  float16BitsToFloat32,
+} from './halfFloat.js';
+import { packTextureAtlas } from './texturesArray.js';
 
 // B4 — mesh-area triangle-light packer. Pure-CPU: builds a fake merged geometry
 // stream + scene and checks triangle extraction, area, radiance, and the layout.
@@ -61,6 +66,12 @@ function material(overrides: Partial<MaterialSpec>): MaterialSpec {
 
 function luminance(rgb: readonly [number, number, number]): number {
   return 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2];
+}
+
+function srgbToLinearForTest(value: number): number {
+  return value <= 0.04045
+    ? value / 12.92
+    : ((value + 0.055) / 1.055) ** 2.4;
 }
 
 function panelPrimitive(mat: MaterialSpec, castShadow = true): MeshPrimitive {
@@ -225,7 +236,188 @@ describe('packMeshAreaLights (B4)', () => {
     expect(out.data![4]).toBeCloseTo(6, 6);
     expect(out.data![5]).toBeCloseTo(0, 6);
     expect(out.data![6]).toBeCloseTo(0, 6);
-    expect(out.warnings).toEqual([]);
+  });
+
+  it('uses the exact level-0 RGBA16F texel for byte-128 forward-hit and NEE radiance', () => {
+    const handle = {
+      width: 1,
+      height: 1,
+      data: new Uint8Array([128, 128, 128, 255]),
+      __vitrum_hint__: { channels: 4, dataType: 'uint8' } as const,
+    };
+    const mappedMaterial = material({
+      emissive: [1, 1, 1],
+      emissiveIntensity: 1,
+      emissiveMap: { handle },
+    });
+    const atlas = packTextureAtlas(
+      [mappedMaterial],
+      { storageClass: 'hdr' },
+    )!;
+    const forwardLevel0Texel = float16BitsToFloat32(atlas.data[0]!);
+    const out = packMeshAreaLights(
+      sceneWithPrimitive(panelPrimitive(mappedMaterial)),
+      fakeMerged(),
+    );
+
+    expect(forwardLevel0Texel).not.toBe(srgbToLinearForTest(128 / 255));
+    expect(out.data![4]).toBe(forwardLevel0Texel);
+    expect(out.data![5]).toBe(forwardLevel0Texel);
+    expect(out.data![6]).toBe(forwardLevel0Texel);
+  });
+
+  it('matches explicit mesh-area forward f32 operand order for tiny emissive × huge intensity', () => {
+    const handle = {
+      width: 1,
+      height: 1,
+      data: new Uint8Array([128, 0, 0, 255]),
+      __vitrum_hint__: { channels: 4, dataType: 'uint8' } as const,
+    };
+    const tinyEmissive = 2 ** -149;
+    const hugeIntensity = 2 ** 120;
+    const primitive = panelPrimitive(material({ emissiveMap: { handle } }));
+    const mappedMaterial = material({
+      emissive: [tinyEmissive, 0, 0],
+      emissiveIntensity: hugeIntensity,
+      emissiveMap: { handle },
+    });
+    const atlas = packTextureAtlas(
+      [mappedMaterial],
+      { storageClass: 'hdr' },
+    )!;
+    const mapTexel = float16BitsToFloat32(atlas.data[0]!);
+    const expectedScalar = Math.fround(
+      Math.fround(hugeIntensity) * Math.fround(tinyEmissive),
+    );
+    const expectedRadiance = Math.fround(expectedScalar * mapTexel);
+    const out = packMeshAreaLights(
+      sceneWithPrimitive(primitive, [{
+        kind: 'mesh-area',
+        id: 'mapped-explicit-f32',
+        meshId: 'panel',
+        color: [tinyEmissive, 0, 0],
+        intensity: hugeIntensity,
+      }]),
+      fakeMerged(),
+    );
+
+    expect(expectedRadiance).toBeGreaterThan(0);
+    expect(out.data![4]).toBe(expectedRadiance);
+    expect(out.data![5]).toBe(0);
+    expect(out.data![6]).toBe(0);
+  });
+
+  it('fails both mapped forward-atlas and NEE paths when a level-0 texel underflows f16', () => {
+    const handle = {
+      width: 1,
+      height: 1,
+      data: new Float32Array([FLOAT16_HALF_MIN_SUBNORMAL, 0, 0, 1]),
+      __vitrum_hint__: {
+        channels: 4,
+        dataType: 'float32',
+        colorSpace: 'linear',
+      } as const,
+    };
+    const mappedMaterial = material({
+      emissive: [1, 1, 1],
+      emissiveMap: { handle },
+    });
+
+    expect(() =>
+      packTextureAtlas(
+        [mappedMaterial],
+        { storageClass: 'hdr' },
+      ),
+    ).toThrow(/underflows to \+0 in RGBA16F storage/);
+    expect(() =>
+      packMeshAreaLights(
+        sceneWithPrimitive(panelPrimitive(mappedMaterial)),
+        fakeMerged(),
+      ),
+    ).toThrow(/underflows to \+0 in RGBA16F storage/);
+  });
+
+  it('fails both mapped forward-atlas and NEE paths on negative outgoing radiance', () => {
+    const handle = {
+      width: 1,
+      height: 1,
+      data: new Float32Array([-(2 ** -24), 1, 1, 1]),
+      __vitrum_hint__: {
+        channels: 4,
+        dataType: 'float32',
+        colorSpace: 'linear',
+      } as const,
+    };
+    const mappedMaterial = material({
+      emissive: [1, 1, 1],
+      emissiveMap: { handle },
+    });
+
+    expect(() =>
+      packTextureAtlas(
+        [mappedMaterial],
+        { storageClass: 'hdr' },
+      ),
+    ).toThrow(/outgoing-radiance RGB value .* must be non-negative/);
+    expect(() =>
+      packMeshAreaLights(
+        sceneWithPrimitive(panelPrimitive(mappedMaterial)),
+        fakeMerged(),
+      ),
+    ).toThrow(/must be non-negative outgoing radiance/);
+  });
+
+  it.each([
+    [
+      'implicit emissive component underflow despite a compensating intensity',
+      sceneWithPrimitive(panelPrimitive(material({
+        emissive: [2 ** -150, 0, 0],
+        emissiveIntensity: 2 ** 100,
+      }))),
+      /emissive\[0\] underflows material RGBA32F storage/,
+    ],
+    [
+      'implicit emissive component overflow',
+      sceneWithPrimitive(panelPrimitive(material({
+        emissive: [3.5e38, 0, 0],
+        emissiveIntensity: 1,
+      }))),
+      /emissive\[0\] overflows material RGBA32F storage/,
+    ],
+    [
+      'implicit emissive intensity underflow',
+      sceneWithPrimitive(panelPrimitive(material({
+        emissive: [2 ** 100, 0, 0],
+        emissiveIntensity: 2 ** -150,
+      }))),
+      /emissiveIntensity underflows material RGBA32F storage/,
+    ],
+    [
+      'implicit emissive intensity overflow',
+      sceneWithPrimitive(panelPrimitive(material({
+        emissive: [1, 0, 0],
+        emissiveIntensity: 3.5e38,
+      }))),
+      /emissiveIntensity overflows material RGBA32F storage/,
+    ],
+  ])('fails closed on %s', (_label, scene, message) => {
+    expect(() => packMeshAreaLights(scene, fakeMerged())).toThrow(message);
+  });
+
+  it('applies the same material-slot underflow guard to explicit mesh-area folding', () => {
+    const scene = sceneWithPrimitive(
+      panelPrimitive(material({})),
+      [{
+        kind: 'mesh-area',
+        id: 'explicit-underflow',
+        meshId: 'panel',
+        color: [2 ** -150, 0, 0],
+        intensity: 2 ** 100,
+      }],
+    );
+    expect(() => packMeshAreaLights(scene, fakeMerged())).toThrow(
+      /mesh-area emitter explicit-underflow emissive\[0\] underflows material RGBA32F storage/,
+    );
   });
 
   it('clips CPU-readable emissiveMap UV footprints to exact texel cells', () => {
@@ -311,7 +503,6 @@ describe('packMeshAreaLights (B4)', () => {
     expect(out.data![4]).toBeCloseTo(0, 6);
     expect(out.data![5]).toBeCloseTo(2, 6);
     expect(out.data![6]).toBeCloseTo(0, 6);
-    expect(out.warnings).toEqual([]);
   });
 
   it('samples implicit emissive maps from an arbitrary sparse texCoord stream', () => {
@@ -347,7 +538,6 @@ describe('packMeshAreaLights (B4)', () => {
     expect(out.data![4]).toBeCloseTo(0, 6);
     expect(out.data![5]).toBeCloseTo(2, 6);
     expect(out.data![6]).toBeCloseTo(0, 6);
-    expect(out.warnings).toEqual([]);
   });
 
   it('suppresses implicit mesh-light synthesis when a readable emissiveMap is black', () => {

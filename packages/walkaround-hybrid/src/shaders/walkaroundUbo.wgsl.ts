@@ -183,13 +183,10 @@ struct WalkaroundUBO {
   regirCandidatesPerCell:     u32,     //  offset 400 — M: WRS candidates per sub-reservoir
   regirSurvivorsPerCell:      u32,     //  offset 404 — K: survivors stored per cell
   regirGridFloatOffset:       u32,     //  offset 408 — float offset of the grid region in the combined buffer
-  // GRIS DDGI-proxy reconnection-shift reuse gate (Lin et al. 2022). Was
-  // _regirPad. 0 ⇒ the GI spatial/temporal reuse runs the legacy clamped-
-  // Jacobian path bit-for-bit; 1 ⇒ the reuse applies the bounded GRIS DDGI-proxy
-  // reconnection shift + reconnection visibility + bounded all-technique transformed-density
-  // balance MIS (grisReuse.wgsl). Host opt-in via HybridEngineOptions
-  // .grisReuse — the same OFF-is-bit-identical pattern as RC/PPG/ReGIR.
-  grisReuse:              u32,     //  offset 412 — GRIS reuse gate (was _regirPad)
+  // Reserved compatibility word for the retired GRIS toggle. Generalized
+  // reconnection-shift reuse is the sole live GI path and the host always
+  // writes one. The field remains solely to preserve all following offsets.
+  grisReuse:              u32,     //  offset 412 — deprecated mirror, always 1
   sunAngular:                 vec4f,   //  offset 416 — x = direct sun cone radius in radians; y bits = GRIS history epoch; z = generic refractive-caustic gate; w reserved
 };
 

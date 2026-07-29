@@ -39,6 +39,10 @@ function clamp3(a: Vec3, lo = 0, hi = 1): Vec3 {
   return [clamp(a[0], lo, hi), clamp(a[1], lo, hi), clamp(a[2], lo, hi)];
 }
 
+function nonNegative3(a: Vec3): Vec3 {
+  return [Math.max(a[0], 0), Math.max(a[1], 0), Math.max(a[2], 0)];
+}
+
 function mix3(a: Vec3, b: Vec3, t: number): Vec3 {
   return [
     a[0] * (1 - t) + b[0] * t,
@@ -146,8 +150,8 @@ function sampleBdptPayloadMaterialOracle(
   const iridescenceThickness = mat.iridescenceThicknessTex >= 0
     ? mat.iridescenceThicknessMin +
       (mat.iridescenceThicknessMax - mat.iridescenceThicknessMin) * mat.iridescenceThicknessTex
-    : mat.iridescenceThicknessMin;
-  const specularColor = clamp3(mul3(mat.specularColor, mat.specularColorTex));
+    : mat.iridescenceThicknessMax;
+  const specularColor = nonNegative3(mul3(mat.specularColor, mat.specularColorTex));
   const specularIntensity = clamp(mat.specularIntensity * mat.specularIntensityTex, 0, 1);
   const layerTx = clamp3(opts.isFrontFace ? mat.frontLayerTx : mat.backLayerTx);
   const layerRoughness = opts.isFrontFace ? mat.frontLayerRoughness : mat.backLayerRoughness;
@@ -270,7 +274,10 @@ describe('A9 — glossy/specular BDPT light subpath', () => {
       'let lightEmitterCastShadowDisabled = lightVtxIdx == 0 && lvMatId < 0.0 && lv4.x > 0.5;',
     );
     expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain(
-      'if (!lightEmitterCastShadowDisabled && traceAny(shadowRay, 1e-4, max(dist - 2e-3, 1e-3))) {',
+      'if (!lightEmitterCastShadowDisabled && traceAny(',
+    );
+    expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain(
+      'shadowRay, 1e-4, max(dist - 2e-3, 1e-3), rng,',
     );
   });
 
@@ -338,7 +345,10 @@ describe('A9 — glossy/specular BDPT light subpath', () => {
     expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('prevNormal,');
     expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('prevMat.clearcoatNormal,');
     expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain(
-      'out.specularColor = clamp(mat.specularColor * sampleSpecularColorTexture(matId, triIndex, baryVW, instanceIndex), vec3f(0.0), vec3f(1.0));',
+      'out.specularColor = max(',
+    );
+    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain(
+      'mat.specularColor * sampleSpecularColorTexture(',
     );
     expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain(
       'nsFront = applyNormalMap(matIdx, hit.triIndex, hit.baryVW, nsFront, hit.instanceIndex, isFrontFaceHit);',

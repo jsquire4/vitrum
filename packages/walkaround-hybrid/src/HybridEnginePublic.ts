@@ -51,7 +51,16 @@ export interface HybridEngine extends Engine, HybridEngineGISurface {
   disableFrameBudget(): void;
   readonly frameBudgetEnabled: boolean;
   tickFrameBudget(measuredMs: number): FrameBudgetDecision | null;
+  /** Update PPG training cadence; requires construction with `ppgEnabled: true`. */
   setPpgDispatchInterval(interval: number): void;
+  /**
+   * Retry a sealed PPG training epoch after bounded GPU-readback retries enter
+   * the durable failed state.
+   *
+   * Returns `false` when PPG is disabled, no failed epoch is awaiting recovery,
+   * the pipeline has not been published yet, or the engine was disposed.
+   */
+  requestPpgTrainingRecovery(): boolean;
 
   updatePrimitive(id: string, patch: Partial<ScenePrimitive>): void;
   updateEmitter(id: string, patch: Partial<SceneEmitter>): void;

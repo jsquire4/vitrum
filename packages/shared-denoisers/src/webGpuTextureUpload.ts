@@ -147,6 +147,36 @@ export function uploadRgbAsRgba32f(
   });
 }
 
+/**
+ * Tight world/view-space normals in the signed [-1, 1] domain → rgba32float
+ * texture using the denoiser kernels' affine packed-normal convention.
+ *
+ * Shader consumers decode with `packed * 2 - 1`; uploading the signed values
+ * directly would therefore decode a normal twice and can make dot products
+ * exceed one before a high-exponent normal edge stop.
+ */
+export function uploadUnitNormalsAsRgba32f(
+  device: GPUDevice,
+  texture: GPUTexture,
+  normals: Float32Array,
+  width: number,
+  height: number,
+): void {
+  uploadTexture2D(device, texture, width, height, RGBA32F_BPP, Float32Array, 4, (buf, rowStride) => {
+    for (let y = 0; y < height; y += 1) {
+      const row = y * rowStride;
+      for (let x = 0; x < width; x += 1) {
+        const si = (y * width + x) * 3;
+        const o = row + x * 4;
+        buf[o] = (normals[si] ?? 0) * 0.5 + 0.5;
+        buf[o + 1] = (normals[si + 1] ?? 0) * 0.5 + 0.5;
+        buf[o + 2] = (normals[si + 2] ?? 1) * 0.5 + 0.5;
+        buf[o + 3] = 0;
+      }
+    }
+  });
+}
+
 /** Linear depth → rgba32float texel `.r` (matches SVGF gbufferDepth sampling). */
 export function uploadLinearDepthAsRgba32f(
   device: GPUDevice,

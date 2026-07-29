@@ -81,7 +81,6 @@ export {
 
 // Neural-denoiser host wiring surface (kept public for example hosts).
 export {
-  buildRandomWeightsForSpec,
   assessNeuralCheckpointProductionReadiness,
   isNeuralCheckpointF16Compatible,
   isNeuralCheckpointProductionReady,

@@ -1,9 +1,12 @@
 /**
  * Pack analytic H-channel came geometry into std140-aligned UBO arrays.
  *
+ * Exported only from `@vitrum/stained-glass-extensions/host-came-ubo`.
  * This is a complete host-owned ABI: `packCameUBO` produces the packed arrays
  * and the host uploads them to its shader UBO. Vitrum render backends do not
- * implicitly consume or mutate this host-specific binding.
+ * implicitly consume or mutate this host-specific binding. It is intentionally
+ * distinct from core's per-primitive `h-channel-came` analytic-shape contract,
+ * which has no segment/node UBO binding.
  */
 
 export interface CameSegment {

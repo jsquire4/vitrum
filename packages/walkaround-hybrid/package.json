@@ -43,10 +43,10 @@
     "@vitrum/shared-bvh": "file:../shared-bvh",
     "@vitrum/shared-samplers": "file:../shared-samplers",
     "@vitrum/shared-denoisers": "file:../shared-denoisers",
+    "@vitrum/stained-glass-extensions": "file:../stained-glass-extensions",
     "@vitrum/walkaround-rc": "file:../walkaround-rc"
   },
   "devDependencies": {
-    "@vitrum/stained-glass-extensions": "file:../stained-glass-extensions",
     "@vitest/browser": "^1.6.1",
     "playwright": "^1.59.1",
     "typescript": "^5.5.0",

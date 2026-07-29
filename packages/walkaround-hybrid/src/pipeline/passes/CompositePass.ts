@@ -29,7 +29,7 @@ export class CompositePass implements Pass {
   readonly dependencies: readonly string[] = ['resolve'];
   readonly passLabels: readonly PassLabel[] = ['composite'];
 
-  private readonly _pipeline: GPURenderPipeline;
+  private _pipeline: GPURenderPipeline;
   private readonly _uboRef: UboRef;
 
   constructor(pipeline: GPURenderPipeline, uboRef: UboRef) {
@@ -41,6 +41,12 @@ export class CompositePass implements Pass {
    *  the compiled composite render pipeline without holding its own copy. */
   get pipeline(): GPURenderPipeline {
     return this._pipeline;
+  }
+
+  /** Swap the format-specialized render pipeline transactionally after the
+   *  host changes `FrameInput.swapChainFormat`. */
+  setPipeline(pipeline: GPURenderPipeline): void {
+    this._pipeline = pipeline;
   }
 
   gates(): boolean {
@@ -70,7 +76,6 @@ export class CompositePass implements Pass {
     const bg = buildCompositeBindGroup(
       device, bglCache,
       finalTex.createView(),
-      resources.common.compositeSampler,
       uboBuffer,
     );
     const tsComp = renderTimestampWrites('composite');

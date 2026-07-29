@@ -2,8 +2,8 @@
  * restirPtSpatial.wgsl.ts — the ReSTIR-PT SPATIAL reuse pass (GRIS, Lin 2022).
  *
  * A SEPARATE `@compute` entry point (`restirPtSpatial`) — a DIRECT PORT of the
- * SHIPPING walkaround-hybrid `SPATIAL_GI_GRIS_WGSL`
- * (`@vitrum/walkaround-hybrid/src/shaders/spatialGi.wgsl.ts`, the GRIS variant),
+ * SHIPPING walkaround-hybrid `SPATIAL_GI_WGSL`
+ * (`@vitrum/walkaround-hybrid/src/shaders/spatialGi.wgsl.ts`),
  * generalized to pt-webgpu's full-res hero reservoir (arbitrary visible-vertex
  * material; the hero target uses the real visible-vertex BRDF, not the GI cosine
  * proxy). It runs AFTER the temporal pass and BEFORE resolve.
@@ -17,12 +17,14 @@
  *   3. Reconnection VISIBILITY ray (xv → q.xs through the scene) — required for
  *      unbiasedness; an occluded shifted edge maps to zero contribution.
  *   4. Pass-1 GATHER accepted neighbours into a fixed array (≤ K), then Pass-2
- *      FOLD each sample with its full-GBH weight
- *        m_i(z) = c_i·p̂_i(z) / Σ_j c_j·p̂_j(T_{·→j} z)
+ *      FOLD each sample with its full-GBH weight, expressed in candidate i's
+ *      native measure:
+ *        m_i(z) = c_i·p̂_i(z)
+ *               / Σ_j c_j·p̂_j(T_{i→j} z)·|∂T_{i→j}/∂z|
  *      where the per-domain target is restirPtTargetAt(xv_j, nv_j, wo_j, mat_j,
- *      z.xs, z.Lo) (the hero target re-rooted onto domain j's visible vertex).
- *   5. Finalise W = w_sum/p̂ (GRIS, NO /M — the m_i already sum to 1), then
- *      validate the selected reconnection edge.
+ *      z.xs, z.Lo), and undefined/occluded inverse mappings contribute zero.
+ *   5. Finalise log(W) = log(weight_sum)-log(p̂) (GRIS, NO /M), then validate
+ *      the selected reconnection edge.
  *
  * ════════════════════════════════════════════════════════════════════════════
  * THE LOAD-BEARING LESSON (mirrored from temporalGi/spatialGi GRIS)
@@ -68,13 +70,20 @@ fn rptSpatialDiscPx(rng: ptr<function, PtRngState>) -> vec2f {
 }
 
 // Reconnection-visibility for the shifted edge xv → xs (traceAny, group 0..2).
-fn rptSpatialReconVisible(xv: vec3f, nv: vec3f, xs: vec3f) -> bool {
+fn rptSpatialReconVisible(
+  xv: vec3f,
+  nv: vec3f,
+  xs: vec3f,
+  rng: ptr<function, PtRngState>,
+) -> bool {
   let toS = xs - xv;
   let dist = length(toS);
   if (dist < 1e-4) { return false; }
   let wi = toS / dist;
   let orig = xv + nv * RPT_SPATIAL_NORMAL_BIAS;
-  return !traceAny(Ray(orig, wi), 1e-4, max(dist - 2e-3, 1e-3));
+  return !traceAny(
+    Ray(orig, wi), 1e-4, max(dist - 2e-3, 1e-3), rng,
+  );
 }
 
 @compute @workgroup_size(8, 8, 1)
@@ -108,7 +117,7 @@ fn restirPtSpatial(@builtin(global_invocation_id) gid: vec3u) {
   var qR:      array<ReservoirPTHero, 5>;
   var qWo:     array<vec3f, 5>;
   var qC:      array<f32, 5>;
-  var qW:      array<f32, 5>;
+  var qLogW:   array<f32, 5>;
   var qJ:      array<f32, 5>;
 
   for (var i: u32 = 0u; i < K_RPT_SPATIAL; i = i + 1u) {
@@ -121,7 +130,10 @@ fn restirPtSpatial(@builtin(global_invocation_id) gid: vec3u) {
 
     let qIdx = u32(qy) * params.width + u32(qx);
     let rQ = loadReservoirPTHero_ro(&rpt_resSpatialIn, qIdx);
-    if (rQ.M == 0u || rQ.W <= 0.0) { continue; }
+    if (rQ.M == 0u
+     || !rptFiniteScalar(rQ.logW)
+     || rQ.logW == RPT_LOG_ZERO
+     || rQ.logW == RPT_LOG_NUMERIC_FAILURE) { continue; }
 
     // Geometric-consistency: normal alignment + coplanarity to centre pixel.
     if (dot(rCenter.nv, rQ.nv) < RPT_SPATIAL_NORMAL_DOT_MIN) { continue; }
@@ -129,51 +141,60 @@ fn restirPtSpatial(@builtin(global_invocation_id) gid: vec3u) {
     if (planeDist > RPT_SPATIAL_COPLANAR_TOL) { continue; }
 
     let woQ = rQ.woV;
-    // One-edge shift Jacobian |∂T/∂·| = half-G target/source. There is no
-    // replayed random prefix and source proposal density is already in W.
+    // Cache this source sample's one-edge q→canonical determinant.  Do not
+    // reject the whole technique when its selected sample is not shiftable:
+    // its represented attempts still belong in other candidates' MIS matrices.
     let J = restirPtReconnectionJacobianForPair(rQ, rCenter);
-    if (!rptFinitePositive(J)) { continue; }
-
-    // Non-degenerate shifted + native targets, else q contributes nothing.
-    let pHatQ_atR = restirPtTargetForDomainAtHero(
-      rCenter, rQ.heroLambdaV, woCenter, rQ.xs, rQ.Lo,
-    );
-    if (pHatQ_atR < 1e-9) { continue; }
-    let pHatQ_native = restirPtTargetForDomainAtHero(
-      rQ, rQ.heroLambdaV, woQ, rQ.xs, rQ.Lo,
-    );
-    if (pHatQ_native < 1e-9) { continue; }
-
-    // Reconnection VISIBILITY — required for unbiasedness.
-    if (!rptSpatialReconVisible(rCenter.xv, rCenter.nv, rQ.xs)) { continue; }
 
     let Mq = min(rQ.M, RPT_SPATIAL_M_CLAMP);
     qR[nQ] = rQ; qWo[nQ] = woQ;
-    qC[nQ] = f32(Mq); qW[nQ] = rQ.W; qJ[nQ] = J;
+    qC[nQ] = f32(Mq); qLogW[nQ] = rQ.logW; qJ[nQ] = J;
     nQ = nQ + 1u;
   }
 
   var rOut = emptyReservoirPTHero();
   copyReservoirPTVisibleDomain(&rOut, rCenter);
+  var representedM = rCenter.M;
+  for (var i: u32 = 0u; i < nQ; i = i + 1u) {
+    representedM = rptSaturatingAddU32(representedM, u32(qC[i]));
+  }
 
   // ── Pass-2 FOLD: canonical sample with its full-GBH weight ──
   if (rCenter.M > 0u && pHatCanonNative > 1e-9) {
-    var denomR = cR * pHatCanonNative; // canonical's own native term
+    var logDenomR = rptLogWeightedTarget(
+      cR, pHatCanonNative,
+    ); // canonical's own native term
     for (var j: u32 = 0u; j < nQ; j = j + 1u) {
-      denomR += qC[j] * restirPtTargetForDomainAtHero(
+      let pHatQ_atCanonicalSample = restirPtTargetForDomainAtHero(
         qR[j], rCenter.heroLambdaV, qWo[j], rCenter.xs, rCenter.Lo,
       );
+      let JCanonicalToQ = restirPtReconnectionJacobianForPair(
+        rCenter, qR[j],
+      );
+      let qCoversCanonical =
+           rptFinitePositive(JCanonicalToQ)
+        && pHatQ_atCanonicalSample >= 1e-9
+        && rptSpatialReconVisible(
+          qR[j].xv, qR[j].nv, rCenter.xs, &rng,
+        );
+      if (qCoversCanonical) {
+        logDenomR = rptLogAddExp(
+          logDenomR,
+          rptLogWeightedShiftedTarget(
+            qC[j], pHatQ_atCanonicalSample, JCanonicalToQ,
+          ),
+        );
+      }
     }
-    let m_canon = select(0.0, (cR * pHatCanonNative) / denomR, denomR > 1e-12);
+    let logMCanonical =
+      rptLogWeightedTarget(cR, pHatCanonNative) - logDenomR;
     // Canonical: no shift (already at this pixel; J = 1).
-    let w_canon = m_canon * pHatCanonNative * rCenter.W;
-    let oldM = rOut.M;
-    if (updateReservoirPT(
+    let logWeightCanonical =
+      logMCanonical + log(pHatCanonNative) + rCenter.logW;
+    let acceptedCanonical = updateReservoirPTLog(
       &rOut, rCenter.xs, rCenter.ns, rCenter.Lo, rCenter.heroLambdaV,
-      rCenter.pdfSrc, w_canon, &rng,
-    )) {
-      rOut.M = rptSaturatingAddU32(oldM, rCenter.M);
-    }
+      rCenter.pdfSrc, logWeightCanonical, &rng,
+    );
   }
 
   // ── Pass-2 FOLD: each neighbour's sample with its full-GBH weight ──
@@ -181,35 +202,71 @@ fn restirPtSpatial(@builtin(global_invocation_id) gid: vec3u) {
     let pHatQ_native = restirPtTargetForDomainAtHero(
       qR[i], qR[i].heroLambdaV, qWo[i], qR[i].xs, qR[i].Lo,
     );
-    // GBH denominator: canonical's target for z_q + every neighbour's target.
-    var denomQ = cR * restirPtTargetForDomainAtHero(
-      rCenter, qR[i].heroLambdaV, woCenter, qR[i].xs, qR[i].Lo,
-    );
-    for (var j: u32 = 0u; j < nQ; j = j + 1u) {
-      denomQ += qC[j] * restirPtTargetForDomainAtHero(
-        qR[j], qR[i].heroLambdaV, qWo[j], qR[i].xs, qR[i].Lo,
-      );
-    }
-    let m_q = select(0.0, (qC[i] * pHatQ_native) / denomQ, denomQ > 1e-12);
-    // p̂_r(T z_q): q's sample re-rooted onto the canonical visible vertex.
     let pHatQ_atR = restirPtTargetForDomainAtHero(
       rCenter, qR[i].heroLambdaV, woCenter, qR[i].xs, qR[i].Lo,
     );
-    let w_q = m_q * pHatQ_atR * qW[i] * qJ[i];
-    let oldM = rOut.M;
+    let qCandidateValid =
+         pHatQ_native >= 1e-9
+      && pHatQ_atR >= 1e-9
+      && rptFinitePositive(qJ[i])
+      && rptSpatialReconVisible(
+        rCenter.xv, rCenter.nv, qR[i].xs, &rng,
+      );
+    if (!qCandidateValid) { continue; }
+
+    // GBH denominator in candidate i's native measure.  Every cross-domain
+    // target carries |dT_i→j| and contributes only when that inverse mapping is
+    // non-degenerate and visible.
+    var logDenomQ = rptLogWeightedShiftedTarget(
+      cR, pHatQ_atR, qJ[i],
+    );
+    for (var j: u32 = 0u; j < nQ; j = j + 1u) {
+      if (j == i) {
+        logDenomQ = rptLogAddExp(
+          logDenomQ,
+          rptLogWeightedTarget(qC[i], pHatQ_native),
+        );
+        continue;
+      }
+      let pHatJ_atQSample = restirPtTargetForDomainAtHero(
+        qR[j], qR[i].heroLambdaV, qWo[j], qR[i].xs, qR[i].Lo,
+      );
+      let JQToJ = restirPtReconnectionJacobianForPair(qR[i], qR[j]);
+      let jCoversQSample =
+           rptFinitePositive(JQToJ)
+        && pHatJ_atQSample >= 1e-9
+        && rptSpatialReconVisible(
+          qR[j].xv, qR[j].nv, qR[i].xs, &rng,
+        );
+      if (jCoversQSample) {
+        logDenomQ = rptLogAddExp(
+          logDenomQ,
+          rptLogWeightedShiftedTarget(qC[j], pHatJ_atQSample, JQToJ),
+        );
+      }
+    }
+    let logMNeighbor =
+      rptLogWeightedTarget(qC[i], pHatQ_native) - logDenomQ;
+    let logWeightNeighbor =
+      logMNeighbor + log(pHatQ_atR) + qLogW[i] + log(qJ[i]);
     // Preserve the selected neighbour sample's source proposal metadata. The
     // reusable contribution weight is qR[i].W and is already folded into w_q;
     // pdfSrc is not a resolve denominator and must not be replaced by W.
-    if (updateReservoirPT(
+    let acceptedNeighbor = updateReservoirPTLog(
       &rOut, qR[i].xs, qR[i].ns, qR[i].Lo, qR[i].heroLambdaV,
-      qR[i].pdfSrc, w_q, &rng,
-    )) {
-      rOut.M = rptSaturatingAddU32(oldM, u32(qC[i]));
-    }
+      qR[i].pdfSrc, logWeightNeighbor, &rng,
+    );
   }
 
-  // GRIS finalise: W = w_sum / p̂ (the MIS weights already sum to 1 — no /M).
-  finaliseReservoirPTWGris(&rOut, rptParams.wCap);
+  // Represent every gathered source attempt, including techniques whose
+  // selected sample had zero shifted weight.  Delay assignment until all WRS
+  // candidates are folded so a saturated history cannot suppress selection.
+  if (rOut.M > 0u) {
+    rOut.M = representedM;
+  }
+
+  // GRIS finalise in log space (MIS weights already sum to 1 — no /M).
+  finaliseReservoirPTWGris(&rOut);
   refreshReconnectionStatePT(&rOut);
 
   storeReservoirPTHero_rw(&rpt_resSpatialOut, pixelIdx, rOut);

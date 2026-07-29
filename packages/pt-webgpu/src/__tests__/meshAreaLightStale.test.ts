@@ -64,6 +64,38 @@ function sceneWithoutEmitter(positions: Float32Array): Scene {
   };
 }
 
+function displacedEmitterScene(positions: Float32Array): Scene {
+  const scene = emitterScene(positions);
+  const primitive = scene.primitives[0]!;
+  if (primitive.kind !== 'mesh') throw new Error('test fixture');
+  return {
+    ...scene,
+    primitives: [{
+      ...primitive,
+      uvs: new Float32Array([0, 0, 1, 0, 0, 1]),
+      material: {
+        ...primitive.material,
+        displacementMap: {
+          handle: {
+            width: 2,
+            height: 2,
+            data: new Float32Array([0, 1, 1, 0]),
+            __vitrum_hint__: {
+              channels: 1,
+              dataType: 'float32',
+              colorSpace: 'linear',
+            },
+          },
+          wrapS: 'clamp-to-edge',
+          wrapT: 'clamp-to-edge',
+        },
+        displacementScale: 1,
+        displacementSubdivisions: 1,
+      },
+    }],
+  };
+}
+
 // ─── hasMeshAreaEmitterForPrimitive unit tests ────────────────────────────────
 
 describe('hasMeshAreaEmitterForPrimitive (H11 gate helper)', () => {
@@ -266,6 +298,31 @@ describe('SceneMutationRouter — H11 mesh-area emitter triangle staleness', () 
     expect(meshAreaLightsWriteCalls.length).toBeGreaterThan(0);
     const written = meshAreaLightsWriteCalls[meshAreaLightsWriteCalls.length - 1]!;
     expect(written[2]).toBeCloseTo(7, 4);
+  });
+
+  it('geometry mutation republishes the same microdisplaced emitter triangles as the rebuilt BVH', () => {
+    const scene = displacedEmitterScene(
+      new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+    );
+    const { host, sceneRef, meshAreaLightsWriteCalls } =
+      makeHostWithEmitterScene(scene);
+    const router = new SceneMutationRouter(host);
+    router.updatePrimitive('emitter-panel', {
+      positions: new Float32Array([
+        0, 0, 3,
+        1, 0, 3,
+        0, 1, 3,
+      ]),
+      normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+    });
+
+    const expected = buildPackedScene(sceneRef.current).meshAreaLightsData;
+    const written = meshAreaLightsWriteCalls.at(-1);
+    expect(written).toBeDefined();
+    expect(Array.from(written!)).toEqual(Array.from(expected));
+    expect(
+      expected.some((value, index) => index % 4 === 2 && value > 3),
+    ).toBe(true);
   });
 
   it('non-emitter-backed mesh position patch does NOT trigger emitter re-upload', () => {

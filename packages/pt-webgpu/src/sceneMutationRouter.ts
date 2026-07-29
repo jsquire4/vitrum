@@ -165,6 +165,19 @@ interface FastPathCommit {
   readonly changedEmissiveField?: boolean;
 }
 
+/** Whether a committed buffer patch can change the world-space scene bounds. */
+export function sceneGeometryStatsNeedRefresh(
+  bufferPatch: SceneBufferMutationPatch,
+  publishesGeoPack: boolean,
+): boolean {
+  return (
+    publishesGeoPack ||
+    bufferPatch.bvhNodes !== undefined ||
+    bufferPatch.tlasNodes !== undefined ||
+    bufferPatch.analyticLocalToWorld !== undefined
+  );
+}
+
 const MATERIAL_DESCRIPTOR_SCALAR_OFFSETS = [
   4,  // alphaMode
   5,  // alphaCutoff
@@ -249,11 +262,11 @@ interface DeferredWarning {
 function emitterAndLightTreeMutationPatch(
   scene: Scene,
   packed: PackedEmitterArrays,
-  envSummary?: EnvSummaryForTree,
+  envSummary: EnvSummaryForTree,
 ): SceneBufferMutationPatch {
   const tree = packLightTreeForScene(scene, {
     packed,
-    ...(envSummary != null ? { envSummary } : {}),
+    envSummary,
   });
   return {
     directionalLightsData: packed.directionalLightsData,
@@ -270,6 +283,16 @@ function emitterAndLightTreeMutationPatch(
     meshAreaLightCount: packed.meshAreaLightCount,
     lightTreeNodeCount: tree.lightTreeNodeCount,
     lightTreeEnabled: tree.lightTreeEnabled,
+  };
+}
+
+function environmentSummaryFromSceneBuffers(
+  sceneBuffers: UploadedSceneBuffers,
+): EnvSummaryForTree {
+  return {
+    hasHdri: sceneBuffers.hasEnvironmentMap,
+    sunStrength: sceneBuffers.environmentSunStrength,
+    lightTreePower: sceneBuffers.environmentLightTreePower,
   };
 }
 
@@ -356,7 +379,7 @@ export class SceneMutationRouter {
       host.setSceneState(nextScene);
       // Same-size mutations copy into existing handles and deliberately preserve
       // cached bind groups. Replacement mutations still require a rebuild.
-      if (nextGeoPack != null) {
+      if (sceneGeometryStatsNeedRefresh(bufferPatch, nextGeoPack != null)) {
         rollbackSceneGeometryStats = host.refreshSceneGeometryStats?.() ?? null;
       }
       if (bufferMutation.replacesBufferHandles) host.invalidateBindGroups();
@@ -512,6 +535,9 @@ export class SceneMutationRouter {
         'uvs' in patch ||
         'uv1' in patch ||
         'uvSets' in patch ||
+        'colors' in patch ||
+        'colorSets' in patch ||
+        'vertexColorSet' in patch ||
         'boneInverses' in patch ||
         'morphWeights' in patch ||
         'positions' in patch ||
@@ -939,7 +965,11 @@ export class SceneMutationRouter {
         const emitterPacked = packEmitterArrays(renderNextScene);
         Object.assign(
           combinedPatch,
-          emitterAndLightTreeMutationPatch(renderNextScene, emitterPacked),
+          emitterAndLightTreeMutationPatch(
+            renderNextScene,
+            emitterPacked,
+            environmentSummaryFromSceneBuffers(sceneBuffers),
+          ),
         );
         for (const warning of emitterPacked.warnings) {
           deferredWarnings.push({
@@ -1041,7 +1071,11 @@ export class SceneMutationRouter {
     }
 
     const packed = packEmitterArrays(nextScene);
-    const bufferPatch = emitterAndLightTreeMutationPatch(nextScene, packed);
+    const bufferPatch = emitterAndLightTreeMutationPatch(
+      nextScene,
+      packed,
+      environmentSummaryFromSceneBuffers(sceneBuffers),
+    );
 
     // Camera-visible mesh emitters fold their radiance into the backing
     // primitive's material slot. Include that slot in the same candidate swap
@@ -1115,7 +1149,7 @@ export class SceneMutationRouter {
     const envSummaryForTree: EnvSummaryForTree = {
       hasHdri: packed.hasHdri,
       sunStrength: packed.sunStrength,
-      tint: packed.tint,
+      lightTreePower: packed.lightTreePower,
     };
     const tree = packLightTreeForScene(nextScene, {
       envSummary: envSummaryForTree,
@@ -1127,6 +1161,7 @@ export class SceneMutationRouter {
       environmentTint: packed.tint,
       environmentSunDirection: packed.sunDirection,
       environmentSunStrength: packed.sunStrength,
+      environmentLightTreePower: packed.lightTreePower,
       environmentHdriIntensity: packed.hdriIntensity,
       environmentHdriRotationY: packed.hdriRotationY,
       environmentMapWidth: packed.hdriWidth,
@@ -1214,15 +1249,11 @@ export class SceneMutationRouter {
     const packedEmitters = packEmitterArrays(nextScene);
     const packedEnvironment = hasEnvironment ? environmentParams(nextScene) : null;
     const envSummary: EnvSummaryForTree = packedEnvironment == null
-      ? {
-          hasHdri: sceneBuffers.hasEnvironmentMap,
-          sunStrength: sceneBuffers.environmentSunStrength,
-          tint: sceneBuffers.environmentTint,
-        }
+      ? environmentSummaryFromSceneBuffers(sceneBuffers)
       : {
           hasHdri: packedEnvironment.hasHdri,
           sunStrength: packedEnvironment.sunStrength,
-          tint: packedEnvironment.tint,
+          lightTreePower: packedEnvironment.lightTreePower,
         };
     const bufferPatch = emitterAndLightTreeMutationPatch(
       nextScene,
@@ -1236,6 +1267,7 @@ export class SceneMutationRouter {
         environmentTint: packedEnvironment.tint,
         environmentSunDirection: packedEnvironment.sunDirection,
         environmentSunStrength: packedEnvironment.sunStrength,
+        environmentLightTreePower: packedEnvironment.lightTreePower,
         environmentHdriIntensity: packedEnvironment.hdriIntensity,
         environmentHdriRotationY: packedEnvironment.hdriRotationY,
         environmentMapWidth: packedEnvironment.hdriWidth,

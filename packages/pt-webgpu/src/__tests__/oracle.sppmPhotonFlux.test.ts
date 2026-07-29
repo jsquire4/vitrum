@@ -11,12 +11,8 @@
  * Per-source flux (transcribed below, file:line cited):
  *   point: rad·4π·invPdf/N                                   [L433-435]
  *   rect:  Le·area·π·invPdf/N                                [L500-501]
- *   env (no-HDRI procedural fallback): sky·diskArea·invPdf/(N·envPdf) [L567-568]
- *     with envDir ~ uniformSphere, envPdf = 1/(4π)
- *     (full-tier sampleEnvironmentImportance returns pdf=0 with no map,
- *      connect.wgsl.ts:105-107, so the L552-555 fallback path runs:
- *      uniformSphere + environmentLookup → sampleSky, pdf 1/(4π),
- *      connect.wgsl.ts:57-60).
+ *   env (constant one-texel map): L·diskArea·invPdf/(N·envPdf) [L567-568]
+ *     with the map's authored direction density envPdf = 1/(4π).
  *
  * ENERGY-CONSERVATION LAW (derived from first principles):
  * With uniform light pick p = 1/K and flux Φ_i = P_pick·K/N, the expected total
@@ -67,8 +63,7 @@ const pointRad: [V3, V3] = [
 // (area convention at sppmBindings.wgsl.ts:495).
 const rectLe: V3 = [3, 2, 1];
 const rectArea = 4 * (0.8 * 0.5);
-// Constant procedural sky (environmentSun.w > 0 ⇒ env counts as a source,
-// sppmBindings.wgsl.ts:385-387; no HDRI map).
+// Constant one-texel environment map with a uniform-sphere direction density.
 const skyL0: V3 = [0.3, 0.4, 0.5];
 const sceneExtent = 5; // sppmStats.sceneExtent
 const diskArea = PI * sceneExtent * sceneExtent; // L566
@@ -174,9 +169,8 @@ function emitTotalFlux(
       ];
       cls = 1;
     } else {
-      // Env [L543-571], procedural fallback: envDir ~ uniformSphere (2 rands),
-      // envColor = sampleSky(dir) = L0 (constant sky), envPdf = 1/(4π)
-      // (connect.wgsl.ts:57-60). Disk-position draws (2 rands) don't affect flux.
+      // Env [L543-571], constant one-texel map: envColor = L0 and the map
+      // carries envPdf = 1/(4π). Disk-position draws don't affect flux.
       rng();
       rng(); // uniformSphere [L553]
       rng();

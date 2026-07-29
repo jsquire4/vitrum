@@ -58,6 +58,13 @@ import {
   type NrcInferenceArenaLayout,
   type NrcRuntimeArenaLayout,
 } from './nrcArena.js';
+import {
+  assertNrcLearnedStateSnapshot,
+  nrcStateBoundsMatch,
+  nrcStateConfigMatches,
+  type NrcLearnedStateSnapshot,
+  type NrcStateConfig,
+} from './nrcStateSnapshot.js';
 
 /** Resolved NRC config (encoding + MLP + self-training cadence). The WGSL gi-ris
  *  NRC variant and the trainer net-spec are both derived from this so the query
@@ -230,6 +237,12 @@ export type NrcSubsystemLifecycleState =
   | 'ready'
   | 'disposed';
 
+export interface NrcLearnedStateImportTransaction {
+  commit(): void;
+  rollback(): void;
+  finalize(): void;
+}
+
 interface NrcReadbackTicket {
   readonly buffer: GPUBuffer;
   readonly generation: number;
@@ -304,6 +317,8 @@ export class NrcSubsystem implements PipelineSubsystem {
   private _runtimeEpoch = 0;
   private _recordByteSize = 0;
   private _readbackByteSize = 0;
+  private _sceneBoundsMin: [number, number, number] | undefined;
+  private _sceneBoundsMax: [number, number, number] | undefined;
 
   // ── Hash-grid TABLE training (the trainable encoding). ──
   // Encode-backward scatter → grad finalize → Adam over _tablesBuf with its own
@@ -595,6 +610,16 @@ export class NrcSubsystem implements PipelineSubsystem {
       this._recordStride = recordStride;
       this._recordByteSize = recordByteSize;
       this._readbackByteSize = readbackByteSize;
+      this._sceneBoundsMin = [
+        Math.fround(aabbMin[0]),
+        Math.fround(aabbMin[1]),
+        Math.fround(aabbMin[2]),
+      ];
+      this._sceneBoundsMax = [
+        Math.fround(aabbMax[0]),
+        Math.fround(aabbMax[1]),
+        Math.fround(aabbMax[2]),
+      ];
       this._trainedSteps = 0;
       this._readbackState = { kind: 'idle' };
       this._lifecycleState = 'ready';
@@ -717,6 +742,18 @@ export class NrcSubsystem implements PipelineSubsystem {
     const oldSpareInference = this._spareInferenceArena!;
     const oldInferenceEpoch = this._inferenceEpoch;
     const oldRuntimeEpoch = this._runtimeEpoch;
+    const oldSceneBoundsMin = this._sceneBoundsMin;
+    const oldSceneBoundsMax = this._sceneBoundsMax;
+    const nextSceneBoundsMin: [number, number, number] = [
+      Math.fround(aabbMin[0]),
+      Math.fround(aabbMin[1]),
+      Math.fround(aabbMin[2]),
+    ];
+    const nextSceneBoundsMax: [number, number, number] = [
+      Math.fround(aabbMax[0]),
+      Math.fround(aabbMax[1]),
+      Math.fround(aabbMax[2]),
+    ];
     let committed = false;
     const oldGpuDiagnostics = this._lastGpuDiagnostics.slice();
     let closed = false;
@@ -740,6 +777,8 @@ export class NrcSubsystem implements PipelineSubsystem {
         this._spareInferenceArena = oldActiveInference;
         this._inferenceEpoch = nextEpoch;
         this._runtimeEpoch = nextEpoch;
+        this._sceneBoundsMin = nextSceneBoundsMin;
+        this._sceneBoundsMax = nextSceneBoundsMax;
         this._lastGpuDiagnostics.fill(0);
         this._trainedSteps = 0;
         committed = true;
@@ -758,6 +797,8 @@ export class NrcSubsystem implements PipelineSubsystem {
               this._spareInferenceArena = oldSpareInference;
               this._inferenceEpoch = oldInferenceEpoch;
               this._runtimeEpoch = oldRuntimeEpoch;
+              this._sceneBoundsMin = oldSceneBoundsMin;
+              this._sceneBoundsMax = oldSceneBoundsMax;
               this._trainedSteps = oldTrainedSteps;
               this._lastGpuDiagnostics.set(oldGpuDiagnostics);
             },
@@ -805,6 +846,429 @@ export class NrcSubsystem implements PipelineSubsystem {
       );
     }
     mutation.finalize();
+  }
+
+  private _snapshotConfig(): NrcStateConfig {
+    return {
+      levels: this.cfg.levels,
+      featuresPerEntry: this.cfg.featuresPerEntry,
+      tableSize: this.cfg.tableSize,
+      nMin: this.cfg.nMin,
+      growth: this.cfg.growth,
+      oneBlobBins: this.cfg.oneBlobBins,
+      width: this.cfg.width,
+      hidden: this.cfg.hidden,
+      spreadC: this.cfg.spreadC,
+      recordCap: this.cfg.recordCap,
+      learningRate: this.cfg.learningRate,
+      tableLearningRate: this.cfg.tableLearningRate,
+      useF16: this.cfg.useF16,
+      tileB: this.cfg.tileB,
+      warmupSteps:
+        this.cfg.warmupSteps ?? DEFAULT_NRC_CONFIG.warmupSteps ?? 8,
+    };
+  }
+
+  /**
+   * Read back one coherent learned NRC generation. All trainable sources are
+   * copied by one command buffer, so the result cannot mix MLP/table Adam
+   * epochs. Frame scratch and diagnostics are intentionally not persistent.
+   */
+  async exportLearnedState(): Promise<NrcLearnedStateSnapshot | null> {
+    if (this._lifecycleState !== 'ready') return null;
+    const trainerState = this._trainer!.stateBuffers();
+    const tableState = this._tableTrainer!.stateBuffers();
+    const boundsMin = this._sceneBoundsMin;
+    const boundsMax = this._sceneBoundsMax;
+    if (!boundsMin || !boundsMax) {
+      throw new Error('NRC scene bounds are unavailable for learned-state export.');
+    }
+    const bytesPerScalar = Float32Array.BYTES_PER_ELEMENT;
+    let totalBytes = 0;
+    const reserve = (scalars: number, label: string): number => {
+      if (!Number.isSafeInteger(scalars) || scalars < 0) {
+        throw new RangeError(`${label} has an invalid scalar count.`);
+      }
+      const bytes = scalars * bytesPerScalar;
+      const offset = totalBytes;
+      totalBytes += bytes;
+      if (!Number.isSafeInteger(totalBytes)) {
+        throw new RangeError('NRC learned-state readback exceeds the safe-integer domain.');
+      }
+      return offset;
+    };
+    const offsets = {
+      weights: reserve(trainerState.weightScalars, 'NRC MLP weights'),
+      biases: reserve(trainerState.biasScalars, 'NRC MLP biases'),
+      firstMomentWeights: reserve(
+        trainerState.weightScalars,
+        'NRC MLP firstMomentWeights',
+      ),
+      secondMomentWeights: reserve(
+        trainerState.weightScalars,
+        'NRC MLP secondMomentWeights',
+      ),
+      firstMomentBiases: reserve(
+        trainerState.biasScalars,
+        'NRC MLP firstMomentBiases',
+      ),
+      secondMomentBiases: reserve(
+        trainerState.biasScalars,
+        'NRC MLP secondMomentBiases',
+      ),
+      tables: reserve(tableState.tableScalars, 'NRC hash-grid tables'),
+      tableFirstMoment: reserve(
+        tableState.tableScalars,
+        'NRC hash-grid firstMoment',
+      ),
+      tableSecondMoment: reserve(
+        tableState.tableScalars,
+        'NRC hash-grid secondMoment',
+      ),
+    };
+    const sources: ReadonlyArray<readonly [GPUBuffer, number, number]> = [
+      [trainerState.weights, offsets.weights, trainerState.weightScalars],
+      [trainerState.biases, offsets.biases, trainerState.biasScalars],
+      [
+        trainerState.firstMomentWeights,
+        offsets.firstMomentWeights,
+        trainerState.weightScalars,
+      ],
+      [
+        trainerState.secondMomentWeights,
+        offsets.secondMomentWeights,
+        trainerState.weightScalars,
+      ],
+      [
+        trainerState.firstMomentBiases,
+        offsets.firstMomentBiases,
+        trainerState.biasScalars,
+      ],
+      [
+        trainerState.secondMomentBiases,
+        offsets.secondMomentBiases,
+        trainerState.biasScalars,
+      ],
+      [tableState.tables, offsets.tables, tableState.tableScalars],
+      [
+        tableState.firstMoment,
+        offsets.tableFirstMoment,
+        tableState.tableScalars,
+      ],
+      [
+        tableState.secondMoment,
+        offsets.tableSecondMoment,
+        tableState.tableScalars,
+      ],
+    ];
+    for (const [source, , scalars] of sources) {
+      if (source.size < scalars * bytesPerScalar) {
+        throw new Error('An NRC optimizer buffer is smaller than its declared state.');
+      }
+    }
+    const staging = this._device.createBuffer({
+      label: 'nrc-learned-state-readback',
+      size: Math.max(4, totalBytes),
+      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+    });
+    let mapped = false;
+    try {
+      const encoder = this._device.createCommandEncoder({
+        label: 'nrc-learned-state-readback',
+      });
+      for (const [source, offset, scalars] of sources) {
+        encoder.copyBufferToBuffer(
+          source,
+          0,
+          staging,
+          offset,
+          scalars * bytesPerScalar,
+        );
+      }
+      this._device.queue.submit([encoder.finish()]);
+      await staging.mapAsync(GPUMapMode.READ, 0, totalBytes);
+      mapped = true;
+      const range = staging.getMappedRange(0, totalBytes);
+      const copy = (offset: number, scalars: number): Float32Array =>
+        new Float32Array(range, offset, scalars).slice();
+      const snapshot: NrcLearnedStateSnapshot = {
+        config: this._snapshotConfig(),
+        sceneBoundsMin: [...boundsMin],
+        sceneBoundsMax: [...boundsMax],
+        trainedSteps: this._trainedSteps,
+        mlp: {
+          weights: copy(offsets.weights, trainerState.weightScalars),
+          biases: copy(offsets.biases, trainerState.biasScalars),
+          firstMomentWeights: copy(
+            offsets.firstMomentWeights,
+            trainerState.weightScalars,
+          ),
+          secondMomentWeights: copy(
+            offsets.secondMomentWeights,
+            trainerState.weightScalars,
+          ),
+          firstMomentBiases: copy(
+            offsets.firstMomentBiases,
+            trainerState.biasScalars,
+          ),
+          secondMomentBiases: copy(
+            offsets.secondMomentBiases,
+            trainerState.biasScalars,
+          ),
+          adamT: trainerState.adamT,
+        },
+        hashGrid: {
+          tables: copy(offsets.tables, tableState.tableScalars),
+          firstMoment: copy(offsets.tableFirstMoment, tableState.tableScalars),
+          secondMoment: copy(offsets.tableSecondMoment, tableState.tableScalars),
+          adamT: tableState.adamT,
+        },
+      };
+      assertNrcLearnedStateSnapshot(snapshot);
+      return snapshot;
+    } finally {
+      if (mapped || staging.mapState === 'mapped') {
+        try { staging.unmap(); } catch { /* preserve export outcome */ }
+      }
+      try { staging.destroy(); } catch { /* preserve export outcome */ }
+    }
+  }
+
+  canImportLearnedState(snapshot: unknown): snapshot is NrcLearnedStateSnapshot {
+    if (
+      this._lifecycleState !== 'ready' ||
+      !this._sceneBoundsMin ||
+      !this._sceneBoundsMax
+    ) {
+      return false;
+    }
+    try {
+      assertNrcLearnedStateSnapshot(snapshot);
+    } catch {
+      return false;
+    }
+    return (
+      nrcStateConfigMatches(snapshot.config, this._snapshotConfig()) &&
+      nrcStateBoundsMatch(snapshot, this._sceneBoundsMin, this._sceneBoundsMax)
+    );
+  }
+
+  /**
+   * Prepare a complete candidate learned-state generation. No live handle or
+   * CPU convergence counter changes until commit, and no encoded GPU mutation
+   * executes until the caller submits the shared command encoder.
+   */
+  prepareLearnedStateImport(
+    encoder: GPUCommandEncoder,
+    snapshot: NrcLearnedStateSnapshot,
+  ): NrcLearnedStateImportTransaction | null {
+    if (!this.canImportLearnedState(snapshot)) return null;
+    const trainer = this._trainer!;
+    const tableTrainer = this._tableTrainer!;
+    let mlpTransaction:
+      | ReturnType<FusedMlpTrainer['prepareStateRestore']>
+      | null = null;
+    let tableTransaction:
+      | ReturnType<HashGridTableTrainer['prepareStateRestore']>
+      | null = null;
+    const staging: GPUBuffer[] = [];
+    const stage = (data: ArrayBufferView): GPUBuffer => {
+      const buffer = this._device.createBuffer({
+        label: 'nrc-learned-state-import-staging',
+        size: Math.max(4, (data.byteLength + 3) & ~3),
+        usage: GPUBufferUsage.COPY_SRC,
+        mappedAtCreation: true,
+      });
+      staging.push(buffer);
+      new Uint8Array(buffer.getMappedRange()).set(
+        new Uint8Array(data.buffer, data.byteOffset, data.byteLength),
+      );
+      buffer.unmap();
+      return buffer;
+    };
+    const oldActiveInference = this._activeInferenceArena!;
+    const oldSpareInference = this._spareInferenceArena!;
+    const inferenceCandidate = oldSpareInference;
+    const inferenceLayout = this._inferenceLayout!;
+    const runtimeLayout = this._runtimeLayout!;
+    const nextEpoch = nextNrcArenaEpoch(
+      Math.max(this._inferenceEpoch, this._runtimeEpoch),
+    );
+    const nextGeneration = (this._generation + 1) >>> 0;
+    try {
+      mlpTransaction = trainer.prepareStateRestore(encoder, snapshot.mlp);
+      tableTransaction = tableTrainer.prepareStateRestore(
+        encoder,
+        snapshot.hashGrid,
+      );
+      const weightsBytes = snapshot.mlp.weights.byteLength;
+      const biasesBytes = snapshot.mlp.biases.byteLength;
+      const tablesBytes = snapshot.hashGrid.tables.byteLength;
+      const levelsBytes = this.cfg.levels * 16;
+      encoder.copyBufferToBuffer(
+        mlpTransaction.candidateWeightBuffer,
+        0,
+        inferenceCandidate,
+        inferenceLayout.weightsByteOffset,
+        weightsBytes,
+      );
+      encoder.copyBufferToBuffer(
+        mlpTransaction.candidateBiasBuffer,
+        0,
+        inferenceCandidate,
+        inferenceLayout.biasesByteOffset,
+        biasesBytes,
+      );
+      encoder.copyBufferToBuffer(
+        tableTransaction.candidateTableBuffer,
+        0,
+        inferenceCandidate,
+        inferenceLayout.tablesByteOffset,
+        tablesBytes,
+      );
+      encoder.copyBufferToBuffer(
+        this._levelsBuf!,
+        0,
+        inferenceCandidate,
+        inferenceLayout.levelsByteOffset,
+        levelsBytes,
+      );
+      const inferenceHeader = buildNrcInferenceArenaHeader(
+        inferenceLayout,
+        { weightsBytes, biasesBytes, tablesBytes, levelsBytes },
+        nextEpoch,
+        nextGeneration,
+      );
+      const runtimeHeader = buildNrcRuntimeArenaHeader(
+        runtimeLayout,
+        nextEpoch,
+        nextGeneration,
+        this.cfg.recordCap,
+        this._recordStride,
+      );
+      const gate = new Uint32Array([
+        snapshot.trainedSteps >>> 0,
+        (this.cfg.warmupSteps ?? DEFAULT_NRC_CONFIG.warmupSteps ?? 8) >>> 0,
+      ]);
+      const inferenceHeaderSource = stage(inferenceHeader);
+      const runtimeHeaderSource = stage(runtimeHeader);
+      const gateSource = stage(gate);
+      encoder.copyBufferToBuffer(
+        inferenceHeaderSource,
+        0,
+        inferenceCandidate,
+        0,
+        inferenceHeader.byteLength,
+      );
+      encoder.copyBufferToBuffer(
+        runtimeHeaderSource,
+        0,
+        this._runtimeArena!,
+        runtimeLayout.headerByteOffset,
+        runtimeHeader.byteLength,
+      );
+      encoder.copyBufferToBuffer(gateSource, 0, this._cfgUbo!, 40, gate.byteLength);
+      encoder.clearBuffer(
+        this._runtimeArena!,
+        runtimeLayout.recordsByteOffset,
+        runtimeLayout.recordsBytes,
+      );
+      encoder.clearBuffer(
+        this._runtimeArena!,
+        runtimeLayout.diagnosticsByteOffset,
+        runtimeLayout.diagnosticsBytes,
+      );
+      encoder.clearBuffer(
+        this._runtimeArena!,
+        runtimeLayout.claimsByteOffset,
+        runtimeLayout.claimsBytes,
+      );
+    } catch (error) {
+      try { tableTransaction?.rollback(); } catch { /* continue rollback */ }
+      try { mlpTransaction?.rollback(); } catch { /* continue rollback */ }
+      for (const buffer of staging) {
+        try { buffer.destroy(); } catch { /* continue rollback */ }
+      }
+      throw error;
+    }
+
+    const oldTables = this._tablesBuf!;
+    const oldGeneration = this._generation;
+    const oldInferenceEpoch = this._inferenceEpoch;
+    const oldRuntimeEpoch = this._runtimeEpoch;
+    const oldTrainedSteps = this._trainedSteps;
+    const oldDiagnostics = this._lastGpuDiagnostics.slice();
+    let committed = false;
+    let closed = false;
+    const destroyStaging = (): void => {
+      for (const buffer of staging) {
+        try { buffer.destroy(); } catch { /* continue retirement */ }
+      }
+    };
+    return {
+      commit: () => {
+        if (closed || committed) return;
+        mlpTransaction.commitCpu();
+        tableTransaction.commitCpu();
+        this._tablesBuf = tableTransaction.candidateTableBuffer;
+        this._activeInferenceArena = oldSpareInference;
+        this._spareInferenceArena = oldActiveInference;
+        this._generation = nextGeneration;
+        this._inferenceEpoch = nextEpoch;
+        this._runtimeEpoch = nextEpoch;
+        this._trainedSteps = snapshot.trainedSteps;
+        this._lastGpuDiagnostics.fill(0);
+        committed = true;
+      },
+      rollback: () => {
+        if (closed) return;
+        try { tableTransaction.rollback(); } finally {
+          mlpTransaction.rollback();
+        }
+        if (committed) {
+          this._tablesBuf = oldTables;
+          this._activeInferenceArena = oldActiveInference;
+          this._spareInferenceArena = oldSpareInference;
+          this._generation = oldGeneration;
+          this._inferenceEpoch = oldInferenceEpoch;
+          this._runtimeEpoch = oldRuntimeEpoch;
+          this._trainedSteps = oldTrainedSteps;
+          this._lastGpuDiagnostics.set(oldDiagnostics);
+        }
+        closed = true;
+        destroyStaging();
+      },
+      finalize: () => {
+        if (closed) return;
+        mlpTransaction.finalizeSuccess();
+        tableTransaction.finalizeSuccess();
+        closed = true;
+        const retire = (): void => destroyStaging();
+        try {
+          void this._device.queue.onSubmittedWorkDone().then(retire, retire);
+        } catch {
+          retire();
+        }
+      },
+    };
+  }
+
+  importLearnedState(snapshot: NrcLearnedStateSnapshot): boolean {
+    if (!this.canImportLearnedState(snapshot)) return false;
+    const encoder = this._device.createCommandEncoder({
+      label: 'nrc-learned-state-import',
+    });
+    const transaction = this.prepareLearnedStateImport(encoder, snapshot);
+    if (!transaction) return false;
+    try {
+      transaction.commit();
+      this._device.queue.submit([encoder.finish()]);
+    } catch (error) {
+      transaction.rollback();
+      throw error;
+    }
+    transaction.finalize();
+    return true;
   }
 
   /** Resources appended to the NRC-specific hybrid-layers group at bindings 7..9. */
@@ -1180,5 +1644,7 @@ export class NrcSubsystem implements PipelineSubsystem {
     this._recordStride = 0;
     this._recordByteSize = 0;
     this._readbackByteSize = 0;
+    this._sceneBoundsMin = undefined;
+    this._sceneBoundsMax = undefined;
   }
 }

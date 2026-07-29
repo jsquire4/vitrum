@@ -34,11 +34,13 @@ describe('validateHybridEngineAdvancedOptions', () => {
       indirectFireflyClamp: [1, 2, 3],
       atrousDirectSigmas: [128, 5, 0.05],
       atrousIndirectSigmas: [32, 20, 0.5],
+      ppgEnabled: true,
       ppgDispatchInterval: 2,
       regir: { enabled: true, cellsPerAxis: 8, candidatesPerCell: 16, survivorsPerCell: 4 },
       rcEnabled: true,
       rcTransmittedInterfaceBudget: 6,
       rcWeight: 0.5,
+      nrcEnabled: true,
       nrcConfig: {
         levels: 4,
         featuresPerEntry: 2,

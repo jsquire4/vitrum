@@ -269,47 +269,6 @@ fn mneePdfJacobianDet(v: vec3f, recv: vec3f, dadL: vec3f, dbdL: vec3f, tu: vec3f
   return determinant;
 }
 
-// Same area-light connection-PDF factor, but for an arbitrary finite-emitter
-// differential basis. lightU/lightV are the world-space emitter tangent axes for
-// local coordinates (s,t), so dA = |lightU×lightV| ds dt. The IFT rows dadL/dbdL
-// are derivatives w.r.t. world-space light motion; chain them through lightU/V,
-// project the resulting vertex motion to receiver solid angle, then normalize by
-// the emitter area scale. This is what production rect/disc/mesh MNEE needs:
-// unlike the historical mneePdfJacobianDet x/y harness helper, it does not assume
-// the area light lives in the world XY plane.
-fn mneePdfJacobianDetAxes(
-  v: vec3f,
-  recv: vec3f,
-  dadL: vec3f,
-  dbdL: vec3f,
-  tu: vec3f,
-  tv: vec3f,
-  lightU: vec3f,
-  lightV: vec3f,
-) -> f32 {
-  let solverScales = mneeLocalScales3(v, recv, v);
-  if (!mneeScalesRepresentable(solverScales)) { return 0.0; }
-  let areaScale = length(cross(lightU, lightV));
-  if (!(areaScale > bitcast<f32>(0x00800000u)) ||
-      !(areaScale < INFINITY)) { return 0.0; }
-  let da_ds = dot(dadL, lightU);
-  let db_ds = dot(dbdL, lightU);
-  let da_dt = dot(dadL, lightV);
-  let db_dt = dot(dbdL, lightV);
-  let dv_ds = tu * da_ds + tv * db_ds;
-  let dv_dt = tu * da_dt + tv * db_dt;
-  let d = v - recv;
-  let dist = length(d);
-  if (dist <= mneeLengthFloorFromScales(solverScales)) {
-    return 0.0;
-  }
-  let w = d / dist;
-  let dw_ds = (dv_ds - w * dot(w, dv_ds)) / dist;
-  let dw_dt = (dv_dt - w * dot(w, dv_dt)) / dist;
-  let determinant = length(cross(dw_ds, dw_dt)) / areaScale;
-  if (!(determinant >= 0.0) || !(determinant < INFINITY)) { return 0.0; }
-  return determinant;
-}
 `;
 
 /** Newton iterations for the 2-vertex chain solve (coupled 4-DOF → more than the

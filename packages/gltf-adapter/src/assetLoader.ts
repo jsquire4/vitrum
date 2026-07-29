@@ -15,7 +15,12 @@ import {
   type GltfToSceneResult,
 } from './gltfToScene.js';
 import { decodeGltfUtf8, parseGlb } from './glbParser.js';
-import type { DecodeImageFn, GltfImageBytes, RawImageHandle } from './textures.js';
+import {
+  effectiveGltfTextureSourceExtensions,
+  type DecodeImageFn,
+  type GltfImageBytes,
+  type RawImageHandle,
+} from './textures.js';
 import {
   analyzeGltfAsset,
   rankGltfBackends,
@@ -105,9 +110,34 @@ export interface GltfAssetCacheKey {
   readonly kind: GltfAssetResourceKind;
 }
 
+/**
+ * Complete reusable fetch result. Image content type is part of the cache
+ * identity because it participates in decoder selection when a glTF image has
+ * neither an authored mimeType nor an identifying URI suffix.
+ */
+export interface GltfAssetCacheEntry {
+  readonly data: ArrayBuffer;
+  readonly mimeType?: string;
+}
+
 export interface GltfAssetCache {
+  /**
+   * Legacy byte-only cache hooks. These remain source-compatible, but cannot
+   * preserve an HTTP Content-Type for an extensionless image. On a legacy hit,
+   * image MIME falls back to the authored glTF mimeType or URI suffix exactly
+   * as it did before metadata-aware caching.
+   */
   get(key: GltfAssetCacheKey): ArrayBuffer | undefined | Promise<ArrayBuffer | undefined>;
   set(key: GltfAssetCacheKey, data: ArrayBuffer): void | Promise<void>;
+  /**
+   * Optional metadata-aware hooks. Implement both methods to preserve decoder
+   * selection exactly across cold and warm loads. When both are present the
+   * loader uses them instead of the legacy byte-only hooks.
+   */
+  getEntry?(
+    key: GltfAssetCacheKey,
+  ): GltfAssetCacheEntry | undefined | Promise<GltfAssetCacheEntry | undefined>;
+  setEntry?(key: GltfAssetCacheKey, entry: GltfAssetCacheEntry): void | Promise<void>;
 }
 
 export interface LoadGltfAssetOptions extends GltfToSceneOptions {
@@ -235,10 +265,12 @@ async function loadGltfAssetWithResourceContext(
 
   const backendPolicy = options.backendPolicy ?? 'fidelity';
   const sceneIndex = options.sceneIndex ?? parsed.gltf.scene ?? 0;
+  const textureSourceExtensions =
+    effectiveGltfTextureSourceExtensions(options.textureSourceExtensions);
   const sceneReachability = collectGltfSceneReachability(
     parsed.gltf,
     sceneIndex,
-    options.textureSourceExtensions ?? [],
+    textureSourceExtensions,
   );
 
   await resolveExternalBuffers(
@@ -258,7 +290,7 @@ async function loadGltfAssetWithResourceContext(
   );
 
   const featureReport = analyzeGltfAsset(parsed.gltf, {
-    ...(options.textureSourceExtensions ? { textureSourceExtensions: options.textureSourceExtensions } : {}),
+    textureSourceExtensions,
     sceneIndex,
   });
   const staticBackendCompatibility = rankGltfBackends(featureReport, backendPolicy);
@@ -279,7 +311,7 @@ async function loadGltfAssetWithResourceContext(
     ...(options.compressionDecoderPolicy !== undefined
       ? { compressionDecoderPolicy: options.compressionDecoderPolicy }
       : {}),
-    ...(options.textureSourceExtensions ? { textureSourceExtensions: options.textureSourceExtensions } : {}),
+    textureSourceExtensions,
     ...(options.materialVariant !== undefined ? { materialVariant: options.materialVariant } : {}),
     ...(options.pointLineFallbackRadius !== undefined ? { pointLineFallbackRadius: options.pointLineFallbackRadius } : {}),
   };
@@ -294,6 +326,22 @@ async function loadGltfAssetWithResourceContext(
   const scene = canBakeLiteVertexColors
     ? bakePtWebgpuLiteCompatibleVertexColors(sceneResult.scene)
     : sceneResult.scene;
+  const nodeVisibilityScene = sceneResult.nodeVisibilityPrimitives === undefined
+    ? undefined
+    : {
+        ...sceneResult.scene,
+        primitives: sceneResult.nodeVisibilityPrimitives,
+        emitters: sceneResult.nodeVisibilityEmitters ?? sceneResult.scene.emitters,
+      };
+  const bakedNodeVisibilityScene = nodeVisibilityScene === undefined
+    ? undefined
+    : canBakeLiteVertexColors
+      ? bakePtWebgpuLiteCompatibleVertexColors(nodeVisibilityScene)
+      : nodeVisibilityScene;
+  // Compatibility must cover the retained visibility inventory, not merely
+  // the currently visible subset. A controller may restore any of these
+  // primitives after backend selection without re-running the planner.
+  const compatibilityScene = bakedNodeVisibilityScene ?? scene;
   const convertedMaterials = sceneResult.convertedMaterials;
   const sceneWithMaterialTable = convertedMaterials === undefined
     ? scene
@@ -306,7 +354,7 @@ async function loadGltfAssetWithResourceContext(
   const backendCompatibility = rerankBackendCompatibility(
     reconcileBackendCompatibilityAfterSceneImport(
       staticBackendCompatibility,
-      scene,
+      compatibilityScene,
       textureDecodeReport,
       canBakeLiteVertexColors,
     ),
@@ -316,6 +364,9 @@ async function loadGltfAssetWithResourceContext(
   return {
     ...sceneResult,
     scene,
+    ...(bakedNodeVisibilityScene !== undefined
+      ? { nodeVisibilityPrimitives: bakedNodeVisibilityScene.primitives }
+      : {}),
     ...(convertedMaterials !== undefined ? { convertedMaterials } : {}),
     gltf: parsed.gltf,
     sceneIndex,
@@ -844,6 +895,7 @@ async function resolveExternalImages(
         gltfImageResourceKey(index),
         resourceContext,
         sourcePath,
+        image.mimeType,
       );
       out.set(index, {
         bytes: fetched.bytes,
@@ -861,6 +913,7 @@ async function fetchImageBytes(
   resourceKey: string,
   resourceContext: GltfImportResourceContext,
   sourcePath: string,
+  authoredMimeType?: string,
 ): Promise<{ readonly bytes: Uint8Array; readonly mimeType?: string }> {
   const fetched = await acquireResourceBytes(
     url,
@@ -869,6 +922,7 @@ async function fetchImageBytes(
     resourceKey,
     resourceContext,
     sourcePath,
+    authoredMimeType,
   );
   const bytes = new Uint8Array(fetched.data);
   const mimeType = fetched.mimeType;
@@ -918,13 +972,41 @@ async function acquireResourceBytes(
   resourceKey: string,
   resourceContext: GltfImportResourceContext,
   sourcePath: string,
+  authoredImageMimeType?: string,
 ): Promise<AcquiredResourceBytes> {
   return resourceContext.limiter.run(async () => {
     const cacheKey = { url, kind } satisfies GltfAssetCacheKey;
-    const cached = await options.cache?.get(cacheKey);
-    if (cached !== undefined) {
-      chargeArrayBuffer(resourceContext, resourceKey, cached, sourcePath);
-      return { data: cached };
+    const cache = options.cache;
+    const metadataAwareCache =
+      typeof cache?.getEntry === 'function' &&
+      typeof cache.setEntry === 'function'
+        ? cache as GltfAssetCache & Required<Pick<GltfAssetCache, 'getEntry' | 'setEntry'>>
+        : undefined;
+    if (metadataAwareCache !== undefined) {
+      const cachedEntry = await metadataAwareCache.getEntry(cacheKey);
+      if (cachedEntry !== undefined) {
+        const entry = normalizeAssetCacheEntry(cachedEntry, sourcePath);
+        chargeArrayBuffer(resourceContext, resourceKey, entry.data, sourcePath);
+        return entry;
+      }
+    } else {
+      const cachedData = await cache?.get(cacheKey);
+      if (cachedData !== undefined) {
+        chargeArrayBuffer(resourceContext, resourceKey, cachedData, sourcePath);
+        if (kind !== 'image') return { data: cachedData };
+
+        // A byte-only cache has no response Content-Type. Recover the MIME
+        // deterministically from the authored glTF declaration, a supported
+        // container signature, or the URL suffix. If none is available, bypass
+        // this ambiguous image hit and fetch again: reusing the bytes with the
+        // old image/png fallback could select a different decoder than the cold
+        // request.
+        const cachedMimeType =
+          authoredImageMimeType ?? inferCachedImageMimeType(cachedData, url);
+        if (cachedMimeType !== undefined) {
+          return { data: cachedData, mimeType: cachedMimeType };
+        }
+      }
     }
 
     const response = await fetchResource(url, options, kind, sourcePath);
@@ -937,9 +1019,52 @@ async function acquireResourceBytes(
       resourceContext,
     );
     const mimeType = safeResponseHeader(response, 'content-type');
-    await options.cache?.set(cacheKey, data);
-    return mimeType === undefined ? { data } : { data, mimeType };
+    const entry = mimeType === undefined ? { data } : { data, mimeType };
+    if (metadataAwareCache !== undefined) {
+      await metadataAwareCache.setEntry(cacheKey, entry);
+    } else {
+      await cache?.set(cacheKey, data);
+    }
+    return entry;
   });
+}
+
+function normalizeAssetCacheEntry(
+  value: unknown,
+  sourcePath: string,
+): GltfAssetCacheEntry {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    throw new TypeError(
+      `[vitrum/gltf-adapter] Cache entry for ${sourcePath} must be an object with an ArrayBuffer data field.`,
+    );
+  }
+  let data: unknown;
+  let mimeType: unknown;
+  try {
+    const candidate = value as {
+      readonly data?: unknown;
+      readonly mimeType?: unknown;
+    };
+    data = candidate.data;
+    mimeType = candidate.mimeType;
+  } catch {
+    throw new TypeError(
+      `[vitrum/gltf-adapter] Cache entry for ${sourcePath} could not be inspected.`,
+    );
+  }
+  if (gltfArrayBufferByteLength(data) === undefined) {
+    throw new TypeError(
+      `[vitrum/gltf-adapter] Cache entry for ${sourcePath}.data must be a non-shared ArrayBuffer.`,
+    );
+  }
+  if (mimeType !== undefined && typeof mimeType !== 'string') {
+    throw new TypeError(
+      `[vitrum/gltf-adapter] Cache entry for ${sourcePath}.mimeType must be a string when supplied.`,
+    );
+  }
+  return mimeType === undefined
+    ? { data: data as ArrayBuffer }
+    : { data: data as ArrayBuffer, mimeType };
 }
 
 async function readBoundedResponseBody(
@@ -1586,10 +1711,83 @@ function uint8ToArrayBuffer(bytes: Uint8Array): ArrayBuffer {
 }
 
 function inferMimeType(uri: string): string {
-  const lower = uri.toLowerCase().split('?')[0] ?? uri.toLowerCase();
+  return inferMimeTypeFromUri(uri) ?? 'image/png';
+}
+
+function inferMimeTypeFromUri(uri: string): string | undefined {
+  const lower = uri.toLowerCase().split(/[?#]/u)[0] ?? uri.toLowerCase();
+  if (lower.endsWith('.png')) return 'image/png';
   if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) return 'image/jpeg';
   if (lower.endsWith('.webp')) return 'image/webp';
   if (lower.endsWith('.ktx2')) return 'image/ktx2';
   if (lower.endsWith('.dds')) return 'image/vnd-ms.dds';
-  return 'image/png';
+  return undefined;
+}
+
+function inferCachedImageMimeType(
+  data: ArrayBuffer,
+  uri: string,
+): string | undefined {
+  const bytes = new Uint8Array(data);
+  if (
+    bytes.length >= 8 &&
+    bytes[0] === 0x89 &&
+    bytes[1] === 0x50 &&
+    bytes[2] === 0x4e &&
+    bytes[3] === 0x47 &&
+    bytes[4] === 0x0d &&
+    bytes[5] === 0x0a &&
+    bytes[6] === 0x1a &&
+    bytes[7] === 0x0a
+  ) {
+    return 'image/png';
+  }
+  if (
+    bytes.length >= 3 &&
+    bytes[0] === 0xff &&
+    bytes[1] === 0xd8 &&
+    bytes[2] === 0xff
+  ) {
+    return 'image/jpeg';
+  }
+  if (
+    bytes.length >= 12 &&
+    bytes[0] === 0x52 &&
+    bytes[1] === 0x49 &&
+    bytes[2] === 0x46 &&
+    bytes[3] === 0x46 &&
+    bytes[8] === 0x57 &&
+    bytes[9] === 0x45 &&
+    bytes[10] === 0x42 &&
+    bytes[11] === 0x50
+  ) {
+    return 'image/webp';
+  }
+  if (
+    bytes.length >= 12 &&
+    bytes[0] === 0xab &&
+    bytes[1] === 0x4b &&
+    bytes[2] === 0x54 &&
+    bytes[3] === 0x58 &&
+    bytes[4] === 0x20 &&
+    bytes[5] === 0x32 &&
+    bytes[6] === 0x30 &&
+    bytes[7] === 0xbb &&
+    bytes[8] === 0x0d &&
+    bytes[9] === 0x0a &&
+    bytes[10] === 0x1a &&
+    bytes[11] === 0x0a
+  ) {
+    return 'image/ktx2';
+  }
+  if (
+    bytes.length >= 4 &&
+    bytes[0] === 0x44 &&
+    bytes[1] === 0x44 &&
+    bytes[2] === 0x53 &&
+    bytes[3] === 0x20
+  ) {
+    return 'image/vnd-ms.dds';
+  }
+  return inferMimeTypeFromUri(uri);
 }

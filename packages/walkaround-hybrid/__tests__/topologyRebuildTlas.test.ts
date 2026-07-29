@@ -38,7 +38,6 @@ describe('topologyRebuild TLAS (C2)', () => {
       markInstancesDirty: vi.fn(),
     };
     const pipeline = {
-      refreshBvhFullRebuild: vi.fn(),
       replaceBvhAndEmitters: vi.fn(),
       updateEmitters: vi.fn(),
       requestAccumReset: vi.fn(),
@@ -71,7 +70,7 @@ describe('topologyRebuild TLAS (C2)', () => {
   it('keeps the prior CPU BVH renderable when GPU replacement fails', () => {
     const scene = twoBoxScene();
     const buffers = buildReSTIRSceneBVHForCoreScene(scene, { bvhMode: 'tlas' });
-    const previousDispose = vi.spyOn(buffers.mergedGeometry, 'dispose');
+    const previousBounds = buffers.mergedGeometry.boundingBox;
     const pipeline = {
       replaceBvhAndEmitters: vi.fn(() => {
         throw new Error('gpu replacement failed');
@@ -100,8 +99,12 @@ describe('topologyRebuild TLAS (C2)', () => {
 
     expect(() => topologyRebuild('box-a', { indices: flipped }, ctx))
       .toThrow('gpu replacement failed');
-    expect(ctx.bvhBuffers).toBe(buffers);
-    expect(previousDispose).not.toHaveBeenCalled();
+    const restoredBuffers = ctx.bvhBuffers;
+    expect(restoredBuffers).toBe(buffers);
+    if (restoredBuffers == null) {
+      throw new Error('expected the previous BVH generation to be restored');
+    }
+    expect(restoredBuffers.mergedGeometry.boundingBox).toBe(previousBounds);
     expect(pipeline.requestAccumReset).not.toHaveBeenCalled();
     expect(ddgi.invalidateProbeCache).not.toHaveBeenCalled();
   });

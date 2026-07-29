@@ -1,11 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import { BACKEND_PROMISE_LEDGER } from '@vitrum/core';
+import { BDPT_EXPLICIT_STRATEGY_MASK_WGSL } from '@vitrum/shared-samplers';
 
-import { PT_WEBGPU_BDPT_CONNECTION_WGSL } from '../wgsl/bdpt/bdptConnection.wgsl.js';
+import {
+  PT_WEBGPU_BDPT_CONNECTION_WGSL,
+  composePtWebgpuBdptConnectionWgsl,
+} from '../wgsl/bdpt/bdptConnection.wgsl.js';
 import { PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL } from '../wgsl/bdpt/bdptLightSubpath.wgsl.js';
 import { PT_WEBGPU_PATH_TRACE_KERNEL_WGSL } from '../wgsl/pathTrace/kernel.wgsl.js';
 
 const DELTA = 1;
+const nativeCameraSplatConnection =
+  composePtWebgpuBdptConnectionWgsl(true);
 
 function bdptAcceptsSppmConnection(lightKinds: readonly number[], c: number): boolean {
   for (let j = 1; j < c; j += 1) {
@@ -33,7 +39,7 @@ describe('BDPT global estimator ownership', () => {
       maxLightVertices: 8,
       maxEyeVertices: 8,
       pureEyeStrategy: 'partitioned-eye-estimator',
-      cameraSplatStrategy: 'unsupported',
+      cameraSplatStrategy: 'native',
       misDenominator: 'sampled-strategies-only',
     });
   });
@@ -93,7 +99,7 @@ describe('BDPT global estimator ownership', () => {
 
   it('samples the primary eye vertex and emitter endpoint as explicit strategies', () => {
     expect(PT_WEBGPU_PATH_TRACE_KERNEL_WGSL).toContain(
-      'if (bdptOwnsFiniteLightFamily && !thinFilm.enabled &&',
+      'if (bdptOwnsFiniteLightFamily &&',
     );
     expect(PT_WEBGPU_PATH_TRACE_KERNEL_WGSL).toContain(
       'for (var lvi = 0u; lvi < maxLv; lvi++) {',
@@ -107,7 +113,9 @@ describe('BDPT global estimator ownership', () => {
   });
 
   it('assigns SPPM and bounded all-delta MNEE prefixes to one owner', () => {
-    expect(PT_WEBGPU_PATH_TRACE_KERNEL_WGSL).toContain('caustic == 1u && mneeReceiverEligible');
+    expect(PT_WEBGPU_PATH_TRACE_KERNEL_WGSL).toContain(
+      'caustic == 1u && mneeReceiverEligible',
+    );
     expect(PT_WEBGPU_PATH_TRACE_KERNEL_WGSL).toContain('let sppmActive = caustic == 2u;');
     expect(PT_WEBGPU_PATH_TRACE_KERNEL_WGSL).not.toContain(
       'if (!bdptOwnsFiniteLightFamily && caustic == 1u) {',
@@ -169,14 +177,14 @@ describe('BDPT global estimator ownership', () => {
     expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain(
       'fn bdptInfiniteRootLaunchPdf(directionPdf: f32) -> f32',
     );
-    expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain(
-      "var validExplicitStrategy = k >= 1u && k <= n - 2u;",
+    expect(nativeCameraSplatConnection).toContain(
+      BDPT_EXPLICIT_STRATEGY_MASK_WGSL.trim(),
     );
-    expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain(
-      'lightVertices <= maxLightVertices) &&',
+    expect(nativeCameraSplatConnection).toContain(
+      'var validExplicitStrategy = bdptExplicitConnectionStrategyIsValid(',
     );
-    expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain(
-      'eyeVertices <= maxEyeVertices;',
+    expect(nativeCameraSplatConnection).toContain(
+      'validExplicitStrategy = n > 0u && n - 1u <= maxEyeVertices;',
     );
   });
 

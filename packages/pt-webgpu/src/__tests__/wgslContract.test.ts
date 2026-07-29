@@ -67,9 +67,9 @@ describe('pt-webgpu WGSL byte-identity (Theme-C dedup pin)', () => {
     // (environmentHdriIntensity, f32 slot 31, replaces _padAuto0); H14-B adds spot
     // loop to restirPtProducer; H51-D bumps point stride 8→12 + spot stride 12→16
     // (penumbra+distance+decay). RENDER-CHANGING on HDRI + spot/point scenes; A/B required.
-    // Re-pinned 2026-06-09: H52 — clearcoat (additive GGX F0=0.04), sheen (Charlie
+    // Re-pinned 2026-06-09: H52 — clearcoat (outer GGX F0=0.04), sheen (Charlie
     // NDF + Neubelt-Pettineo visibility), and iridescence (Belcour & Barla 2017
-    // thin-film Fresnel F0 modification) lobes added to the WebGPU BRDF.
+    // thin-film Fresnel F0 modification) layers added to the WebGPU BRDF.
     // MATERIAL_VEC4_STRIDE bumped 23→26. Zero-default invariant: all lobes
     // short-circuit when their scalar is 0 → pre-H52 scenes are numerically identical.
     // RENDER-CHANGING on clearcoat/sheen/iridescence materials.
@@ -163,8 +163,8 @@ describe('pt-webgpu WGSL byte-identity (Theme-C dedup pin)', () => {
     // other strategies.
     // Re-pinned 2026-06-10: native analytic disc emitters — disc-area records now
     // packed into the rect stream with shape tag 1.0 (concentric-disc map sampling,
-    // pdf = 1/(π·r²)); connect.wgsl.ts intersectRectAreaLightRay reads the tag and
-    // uses circle containment + π·|u|² area for the MIS pdf; kernel.wgsl.ts,
+    // pdf = 1/(π·|u×v|)); connect.wgsl.ts intersectRectAreaLightRay reads the tag and
+    // uses circle containment + π·|u×v| area for the MIS pdf; kernel.wgsl.ts,
     // restirPtProducer.wgsl.ts, kernelLite.wgsl.ts, and bdptLightSubpath.wgsl.ts
     // all updated. The 32-triangle fan path is deleted. RENDER-CHANGING for
     // disc-lit scenes, A/B in R9-B.
@@ -219,9 +219,9 @@ describe('pt-webgpu WGSL byte-identity (Theme-C dedup pin)', () => {
     // materials remain behaviorally unchanged.
     // Re-pinned 2026-06-12: normalScale is now consumed by applyNormalMap,
     // scaling tangent-space xy before reconstructing the perturbed normal.
-    // Re-pinned 2026-06-12: environment:'none' no longer falls through to the
-    // analytic sampleSky gradient. Missing/invalid env maps now return black
-    // radiance + zero env pdf; procedural-sky stays lit via the CPU-baked HDRI.
+    // Re-pinned 2026-06-12: environment:'none' no longer falls through to an
+    // analytic sky gradient. Missing/invalid env maps return black radiance +
+    // zero env pdf; procedural skies use their CPU-baked HDRI exclusively.
     // Re-pinned 2026-06-12: standalone alphaMap is now sampled as LINEAR
     // coverage data and multiplies baseColor alpha + opacity in alphaMode paths.
     // Re-pinned 2026-06-12: transmissionMap is now sampled as LINEAR scalar
@@ -269,8 +269,8 @@ describe('pt-webgpu WGSL byte-identity (Theme-C dedup pin)', () => {
     // insertion hash grid while retaining the per-pixel shrunk physical disk.
     // Re-pinned 2026-06-16: SPPM over-capacity cells now use bounded reservoir
     // replacement plus totalInserted/storedCount density compensation.
-    // Re-pinned 2026-06-16: finite rect/disc/mesh-area reflection MNEE now uses
-    // mneePdfJacobianDetAxes and MIS against the receiver BSDF PDF.
+    // Re-pinned 2026-06-16: finite rect/disc/mesh-area reflection MNEE uses the
+    // bounded-chain area determinant and exact estimator ownership.
     // Re-pinned 2026-06-17: BDPT secondary connections skip the emitter endpoint
     // already covered by per-bounce NEE, avoiding direct-light double-counting.
     // Re-pinned 2026-06-17: bump maps finite-difference in raw UV space by the
@@ -334,9 +334,7 @@ describe('pt-webgpu WGSL byte-identity (Theme-C dedup pin)', () => {
     // mirrored TLAS/CWBVH parity), BDPT/SPPM interior-delta ownership, and
     // wavelength-carrying spectral ReSTIR reuse are intentional render changes.
     // Re-pinned 2026-07-23: finite-light, environment, SPPM, and MNEE receiver
-    // evaluation now uses the authored clearcoat-normal frame. Exact thin-film
-    // transport is owned only by the discrete TMM path and is excluded from
-    // finite connection/reuse families that cannot represent its delta events.
+    // evaluation now uses the authored clearcoat-normal frame.
     // Re-pinned 2026-07-24: exact-zero delta classification, stable HG sampling,
     // unbiased SPPM record accumulation, and sampled thin-film transmission are
     // now shared consistently by the full, BDPT, SPPM, and adjoint compositions.
@@ -352,8 +350,31 @@ describe('pt-webgpu WGSL byte-identity (Theme-C dedup pin)', () => {
     // path, and bounded MNEE uses the production caustic-event implementation.
     // Re-pinned 2026-07-27: medium NEE visibility now traverses nested null
     // boundaries while rejecting opaque or non-null dielectric blockers.
-    expect(digest).toBe('8ded043e1a57bad92f75d02685f2497aab669c795b1873d19cd81de2eabdfb9e');
-    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(567703);
+    // Re-pinned 2026-07-28: coherent stacks replace the authored bare Fresnel
+    // inside finite rough/material BSDFs and all connection estimators;
+    // clearcoat/sheen now attenuate the layers below them.
+    // Re-pinned 2026-07-28: straight-ray medium/BDPT alpha traversal uses
+    // scene-derived support, and invalid coherent-TMM samples absorb rather
+    // than silently becoming perfect mirrors.
+    // Re-pinned 2026-07-28: sampled-array mip operands are signed at the WGSL
+    // builtin boundary, affine disc emitters use π·|u×v| area throughout, and
+    // BSDF connections solve the full Gram system for sheared light axes.
+    // Re-pinned 2026-07-28: removed four uncalled legacy BSDF wrappers; the
+    // clearcoat-normal-aware layered entry points are the sole production path.
+    // Re-pinned 2026-07-28: corrupt thin-film descriptor/LUT ranges absorb
+    // instead of turning into a bright perfect-mirror fallback, and the main
+    // camera walk uses the scene-derived alpha traversal bound.
+    // Re-pinned 2026-07-28: A1 keeps opaque roughness-zero GGX finite and A5
+    // makes every shadow traversal honor alpha masks/blends.
+    // Re-pinned 2026-07-28: C28-C40 remediation removes unreachable analytic
+    // sky/dead helpers, makes caustic receivers transmission-aware, and applies
+    // KHR specular/IOR semantics including the IOR-zero transport surrogate.
+    // C65 expands the shared Joe-Kuo Sobol table to 512 dimensions; both
+    // finite-BSDF caustic receivers carry etaTOverI exactly once.
+    // C35 keeps its native s=n-1 strategy helper out of the BDPT-off module;
+    // the default composition retains the exact legacy explicit-strategy mask.
+    expect(digest).toBe('bcc9c22adddddb4dd840c0141db51c6f6cf2b4a806f4eb5402e8549e4c4d0c8e');
+    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(582277);
   });
 });
 
@@ -386,7 +407,7 @@ describe('pt-webgpu WGSL material contract', () => {
     expect(PT_WEBGPU_TRACE_WGSL).toContain('fn bsdfAreaLightConnectionContribution(');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('clearcoat: f32,');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('let bsdfPdf = brdfDirectionalPdfFullSampledWithClearcoatNormal(');
-    expect(PT_WEBGPU_TRACE_WGSL).toContain('let brdf = evaluateBrdfFullWithClearcoatNormal(');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('let brdf = evaluateFiniteBsdfFullWithClearcoatNormal(');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('mat.clearcoatRoughness,');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('clearcoatNormal,');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('anisoRotation,');
@@ -396,7 +417,9 @@ describe('pt-webgpu WGSL material contract', () => {
     expect(PT_WEBGPU_TRACE_WGSL).toContain('fn brdfDirectionalPdfFullSampled(');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('fn brdfExtensionLobeWeightSum(clearcoat: f32, sheen: f32) -> f32 {');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('let xiLobe = rand_f32(rng) * lobeWeightSum;');
-    expect(PT_WEBGPU_TRACE_WGSL).toContain('result.throughputMul = fresnel * g1Wi2 * msBoost * lobeWeightSum / max(specProb, 1e-4);');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain(
+      'result.throughputMul = opaqueInterface.reflectance * g1Wi2 *',
+    );
     expect(PT_WEBGPU_TRACE_WGSL).toContain(
       'let bsCc = glossyReflectionSample(rng, wo, clearcoatNormal, ccTanT, ccTanB, clearcoatRoughness);',
     );
@@ -408,23 +431,37 @@ describe('pt-webgpu WGSL material contract', () => {
   });
 
   it('uses iridescence-modified F0 for sampled Fresnel and the full sampled PDF', () => {
+    const fullF0Start = PT_WEBGPU_TRACE_WGSL.indexOf(
+      'let f0Base = materialSpecularF0(\n' +
+      '      baseColor, metallic, surfaceEtaTOverI,',
+    );
     const fullKernelFresnel = PT_WEBGPU_TRACE_WGSL.slice(
-      PT_WEBGPU_TRACE_WGSL.indexOf('let f0Base = materialSpecularF0(baseColor, metallic, mat.specularColor, mat.specularIntensity);'),
-      PT_WEBGPU_TRACE_WGSL.indexOf('let fresnel = fresnelSchlick(cosThetaO, f0);') + 80,
+      fullF0Start,
+      PT_WEBGPU_TRACE_WGSL.indexOf(
+        'let fresnel = materialSpecularFresnelSchlick(',
+        fullF0Start,
+      ) + 160,
     );
     expect(fullKernelFresnel).toContain('let f0 = iridescenceModifiedF0(');
     expect(fullKernelFresnel).toContain('mat.iridescenceThicknessMax,');
 
+    const liteF0Start = PT_WEBGPU_TRACE_LITE_WGSL.indexOf(
+      'let f0Base = materialSpecularF0(\n' +
+      '      baseColor, metallic, surfaceEtaTOverI,',
+    );
     const liteKernelFresnel = PT_WEBGPU_TRACE_LITE_WGSL.slice(
-      PT_WEBGPU_TRACE_LITE_WGSL.indexOf('let f0Base = materialSpecularF0(baseColor, metallic, mat.specularColor, mat.specularIntensity);'),
-      PT_WEBGPU_TRACE_LITE_WGSL.indexOf('let fresnel = fresnelSchlick(cosThetaO, f0);') + 80,
+      liteF0Start,
+      PT_WEBGPU_TRACE_LITE_WGSL.indexOf(
+        'let fresnel = materialSpecularFresnelSchlick(',
+        liteF0Start,
+      ) + 160,
     );
     expect(liteKernelFresnel).toContain('let f0 = iridescenceModifiedF0(');
     expect(liteKernelFresnel).toContain('mat.iridescenceThicknessMax,');
 
     const pdfHelper = PT_WEBGPU_TRACE_WGSL.slice(
       PT_WEBGPU_TRACE_WGSL.indexOf('fn brdfDirectionalPdfWithIridescence('),
-      PT_WEBGPU_TRACE_WGSL.indexOf('fn brdfDirectionalPdf(', PT_WEBGPU_TRACE_WGSL.indexOf('fn brdfDirectionalPdfWithIridescence(')),
+      PT_WEBGPU_TRACE_WGSL.indexOf('fn buildOnb(', PT_WEBGPU_TRACE_WGSL.indexOf('fn brdfDirectionalPdfWithIridescence(')),
     );
     expect(pdfHelper).toContain('iridescenceThicknessMax: f32,');
     expect(pdfHelper).toContain('let lobeWeights = brdfFiniteBaseLobeWeights(');
@@ -432,10 +469,28 @@ describe('pt-webgpu WGSL material contract', () => {
 
     const fullPdf = PT_WEBGPU_TRACE_WGSL.slice(
       PT_WEBGPU_TRACE_WGSL.indexOf('fn brdfDirectionalPdfFullWithClearcoatNormal('),
-      PT_WEBGPU_TRACE_WGSL.indexOf('fn brdfDirectionalPdfFull(', PT_WEBGPU_TRACE_WGSL.indexOf('fn brdfDirectionalPdfFullWithClearcoatNormal(')),
+      PT_WEBGPU_TRACE_WGSL.indexOf('fn brdfExtensionLobeWeightSum(', PT_WEBGPU_TRACE_WGSL.indexOf('fn brdfDirectionalPdfFullWithClearcoatNormal(')),
     );
     expect(fullPdf).toContain('basePdf = brdfDirectionalPdfWithIridescence(');
     expect(fullPdf).toContain('iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,');
+  });
+
+  it('exports only the layered BSDF entry points that production estimators call', () => {
+    for (const deadWrapper of [
+      'fn evaluateBrdf(',
+      'fn evaluateBrdfFull(',
+      'fn brdfDirectionalPdf(',
+      'fn brdfDirectionalPdfFull(',
+    ]) {
+      expect(PT_WEBGPU_TRACE_WGSL).not.toContain(deadWrapper);
+      expect(PT_WEBGPU_TRACE_LITE_WGSL).not.toContain(deadWrapper);
+    }
+    expect(PT_WEBGPU_TRACE_WGSL).toContain(
+      'fn evaluateFiniteBsdfFullWithClearcoatNormal(',
+    );
+    expect(PT_WEBGPU_TRACE_WGSL).toContain(
+      'fn brdfDirectionalPdfFullSampledWithClearcoatNormal(',
+    );
   });
 
   it('keeps transmissive dielectric source sampling aligned with the full sampled pdf', () => {
@@ -451,9 +506,12 @@ describe('pt-webgpu WGSL material contract', () => {
     expect(branch).toContain('let lobeWeightSum = brdfExtensionLobeWeightSum(clearcoat, sheen);');
     expect(branch).toContain('let xiLobe = rand_f32(rng) * lobeWeightSum;');
     expect(branch).toContain('let xiBase = xiLobe;');
-    expect(branch).toContain('result.throughputMul = microfacetF * g1Wi * msBoost * lobeWeightSum / max(reflectionProbability, 1e-10);');
     expect(branch).toContain(
-      'baseColor * transmissionWeight * (vec3f(1.0) - microfacetF) *',
+      'result.throughputMul = microfacetInterface.reflectance * g1Wi *',
+    );
+    expect(branch).toContain(
+      'baseColor * transmissionWeight *\n' +
+        '            microfacetInterface.baseTransmittance *',
     );
     expect(branch).toContain(
       'let bsCc = glossyReflectionSample(rng, wo, clearcoatNormal, ccTanT, ccTanB, clearcoatRoughness);',
@@ -465,7 +523,7 @@ describe('pt-webgpu WGSL material contract', () => {
     expect(PT_WEBGPU_TRACE_WGSL).toContain('fn sppmUpdateSurfaceProgressive(');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('fn sppmCurrentProgressiveEstimate(');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('clearcoatRoughness : f32,');
-    expect(PT_WEBGPU_TRACE_WGSL).toContain('let brdf = evaluateBrdfFullWithClearcoatNormal(');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('let brdf = evaluateFiniteBsdfFullWithClearcoatNormal(');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('photonMapUpdateProgressive(');
   });
 
@@ -473,7 +531,7 @@ describe('pt-webgpu WGSL material contract', () => {
     expect(PT_WEBGPU_TRACE_WGSL).toContain('fn manifoldNeeContribution(');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('fn boundedManifoldCaustic(');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('let emitter = mneeSampleEmitter(rng);');
-    expect(PT_WEBGPU_TRACE_WGSL).toContain('let fr = evaluateBrdfFullWithClearcoatNormal(');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('let fr = evaluateFiniteBsdfFullWithClearcoatNormal(');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('let brdfPdf = brdfDirectionalPdfFullSampledWithClearcoatNormal(');
   });
 
@@ -579,8 +637,15 @@ describe('pt-webgpu WGSL material contract', () => {
     // A3: the added quantity is `emitContribution` (= emissive in RGB mode,
     // spectralEmissionAtHero(emissive,λ) in spectral mode) — still a single gated
     // add, still double-count-free.
-    const emissiveAdds = (PT_WEBGPU_TRACE_WGSL.match(/radiance = radiance \+ throughput \* emitContribution;/g) ?? []).length;
+    const emissiveAdds = (
+      PT_WEBGPU_TRACE_WGSL.match(
+        /radiance = radiance \+ throughput \* emitContribution \* clearcoatEmissionAttenuation;/g,
+      ) ?? []
+    ).length;
     expect(emissiveAdds).toBe(1);
+    expect(PT_WEBGPU_TRACE_WGSL).toContain(
+      '1.0 - clearcoatLayerWeight(mat.clearcoat, clearcoatNormal, -ray.direction)',
+    );
     // The select that produces emitContribution falls back to the RGB emissive
     // when spectral mode is off (the byte-identical-RGB guarantee).
     expect(PT_WEBGPU_TRACE_WGSL).toContain(
@@ -610,24 +675,37 @@ describe('pt-webgpu WGSL material contract', () => {
     // Caches the strategy code in `caustic` and branches on the local, so
     // the manifold/photon dispatch sites read a single causticMode() call.
     expect(PT_WEBGPU_TRACE_WGSL).toContain('let caustic = causticMode();');
-    expect(PT_WEBGPU_TRACE_WGSL).toContain('caustic == 1u && mneeReceiverEligible');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain(
+      'caustic == 1u && mneeReceiverEligible',
+    );
     expect(PT_WEBGPU_TRACE_WGSL).toContain('else if (sppmActive)');
   });
 
-  it('keeps exact thin-film transport out of incompatible finite connection families', () => {
+  it('threads finite coherent thin film through every connection family', () => {
     expect(PT_WEBGPU_TRACE_WGSL).toContain(
-      'if (directFamilyCount > 0u && !sppmOwnsCurrentDirect && !thinFilm.enabled)',
+      'if (directFamilyCount > 0u && !sppmOwnsCurrentDirect)',
+    );
+    expect(PT_WEBGPU_TRACE_WGSL).not.toContain(
+      '!sppmOwnsCurrentDirect && !thinFilm.enabled',
+    );
+    expect(PT_WEBGPU_TRACE_WGSL).not.toContain(
+      'bdptOwnsFiniteLightFamily && !thinFilm.enabled',
+    );
+    expect(PT_WEBGPU_TRACE_WGSL).not.toContain(
+      'let sppmReceiverEligible = !thinFilm.enabled',
+    );
+    expect(RESTIR_PT_PRODUCER_WGSL).not.toContain(
+      'vMat.isUnlit || vMat.thinFilmEnabled',
+    );
+    expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).not.toContain(
+      'if (lvMat.thinFilmEnabled) {',
     );
     expect(PT_WEBGPU_TRACE_WGSL).toContain(
-      'if (bdptOwnsFiniteLightFamily && !thinFilm.enabled &&',
+      'anisoStrength, anisoRotation, thinFilm, false);',
     );
-    expect(PT_WEBGPU_TRACE_WGSL).toContain(
-      'let sppmReceiverEligible = !thinFilm.enabled &&',
+    expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain(
+      'lvMat.anisotropy, lvMat.anisotropyRotation, lvMat.thinFilm, true,',
     );
-    expect(RESTIR_PT_PRODUCER_WGSL).toContain(
-      'if (vMat.isUnlit || vMat.thinFilmEnabled ||',
-    );
-    expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain('if (lvMat.thinFilmEnabled) {');
   });
 
   it('declares INV_2PI alongside INV_PI for HDRI equirect sampling', () => {
@@ -639,7 +717,8 @@ describe('pt-webgpu WGSL material contract', () => {
 
   it('treats absent full-tier environments as black, not procedural sky', () => {
     expect(PT_WEBGPU_TRACE_WGSL).toContain('return EnvironmentLookup(vec3f(0.0), 0.0);');
-    expect(PT_WEBGPU_TRACE_WGSL).not.toContain('return EnvironmentLookup(sampleSky(dir), 1.0 / (4.0 * PI));');
+    expect(PT_WEBGPU_TRACE_WGSL).not.toContain('sampleSky');
+    expect(PT_WEBGPU_TRACE_WGSL).not.toContain('environmentSun.w');
   });
 
   it('FrameParams uses the exact generated 384-byte host/GPU payload', () => {
@@ -707,14 +786,11 @@ describe('pt-webgpu WGSL material contract', () => {
     expect(PT_WEBGPU_TRACE_WGSL).toContain('@group(2) @binding(4) var<storage, read> tlasInstanceLocalToWorld');
 
     const here = dirname(fileURLToPath(import.meta.url));
-    const limitsSource = readFileSync(resolve(here, '../webgpuLimits.ts'), 'utf8');
     const indexSource = readFileSync(resolve(here, '../index.ts'), 'utf8');
     // Group-2 bind-group construction was extracted into the GpuResources
     // sub-struct (T14-followup); the per-frame dispatch (`setBindGroup(2, …)`)
     // stays in index.ts. Both halves of the host↔WGSL lockstep are asserted.
     const gpuResourcesSource = readFileSync(resolve(here, '../gpuResources.ts'), 'utf8');
-    // Updated to 11 for N-directional expansion: directionalLights buffer added at group(1) binding(10).
-    expect(limitsSource).toMatch(/PT_WEBGPU_FULL_MAX_STORAGE_BUFFERS_PER_GROUP\s*=\s*11/);
     expect(indexSource).toContain('selectPtWebgpuTraceTier');
     expect(gpuResourcesSource).toContain('pathTrace.bindgroup2.full');
     expect(gpuResourcesSource).toContain('{ binding: 0, resource: { buffer: sb.tlasNodesBuffer } }');

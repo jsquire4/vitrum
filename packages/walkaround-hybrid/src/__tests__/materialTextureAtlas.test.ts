@@ -29,6 +29,73 @@ function parseMaterialAtlasU32Constants(wgsl: string): Map<string, number> {
 }
 
 describe('walkaround materialTextureAtlas', () => {
+  it('rejects adversarial metadata dimensions before traversing material data', () => {
+    const materialRead = vi.fn();
+    const material = {
+      baseColor: [1, 1, 1],
+      roughness: 1,
+      metallic: 0,
+      get baseColorMap() {
+        materialRead();
+        return undefined;
+      },
+    } as unknown as MaterialSpec;
+
+    expect(() => packMaterialTextureAtlas(
+      [material],
+      new Uint32Array(0),
+      Number.MAX_SAFE_INTEGER,
+    )).toThrow(/material metadata atlas byte length exceeds the safe integer range/);
+    expect(materialRead).not.toHaveBeenCalled();
+  });
+
+  it('preflights a 4096² decode plus its final atlas before either Float32Array allocation', () => {
+    const pixelRead = vi.fn();
+    const float32Allocation = vi.fn();
+    const data = {
+      length: 4,
+      get 0() {
+        pixelRead();
+        return 255;
+      },
+    };
+    const material: MaterialSpec = {
+      baseColor: [1, 1, 1],
+      roughness: 1,
+      metallic: 0,
+      baseColorMap: {
+        handle: {
+          width: 4096,
+          height: 4096,
+          data,
+          __vitrum_hint__: { channels: 4, dataType: 'uint8' },
+        },
+      },
+    };
+    const triMaterialIds = new Uint32Array([0]);
+    const NativeFloat32Array = globalThis.Float32Array;
+    const TrackedFloat32Array = new Proxy(NativeFloat32Array, {
+      construct(target, args, newTarget) {
+        float32Allocation(args[0]);
+        return Reflect.construct(target, args, newTarget);
+      },
+    });
+    vi.stubGlobal('Float32Array', TrackedFloat32Array);
+    try {
+      expect(() => packMaterialTextureAtlas(
+        [material],
+        triMaterialIds,
+        1,
+      )).toThrow(
+        /baseColorMap RGBA decode requires 268435456 CPU bytes .*above the .*aggregate staging budget/,
+      );
+      expect(float32Allocation).not.toHaveBeenCalled();
+      expect(pixelRead).not.toHaveBeenCalled();
+    } finally {
+      vi.stubGlobal('Float32Array', NativeFloat32Array);
+    }
+  });
+
   it('decodes readable baseColorMap handles into a linear atlas layer', () => {
     const handle = {
       width: 1,
@@ -809,10 +876,27 @@ describe('walkaround materialTextureAtlas', () => {
     const atlas = packMaterialTextureAtlas([material], new Uint32Array([0]), 1);
 
     // specular metadata lives at texel 21 (vec4 lanes 84..87).
-    expect(atlas.baseColorMetaData[84]).toBeCloseTo(0.25, 5);
-    expect(atlas.baseColorMetaData[85]).toBeCloseTo(0.5, 5);
-    expect(atlas.baseColorMetaData[86]).toBeCloseTo(0.75, 5);
+    expect(atlas.baseColorMetaData[84]).toBeCloseTo(0.04 * 0.25, 5);
+    expect(atlas.baseColorMetaData[85]).toBeCloseTo(0.04 * 0.5, 5);
+    expect(atlas.baseColorMetaData[86]).toBeCloseTo(0.04 * 0.75, 5);
     expect(atlas.baseColorMetaData[87]).toBeCloseTo(0.4, 5);
+  });
+
+  it('packs IOR=0 F0 before preserving unbounded nonnegative specularColor', () => {
+    const atlas = packMaterialTextureAtlas([{
+      baseColor: [1, 1, 1],
+      roughness: 1,
+      metallic: 0,
+      ior: 0,
+      specularColor: [2.5, 0.5, 0],
+      specularIntensity: 0.25,
+    }], new Uint32Array([0]), 1);
+
+    // IOR=0 has base F0=1. Strength remains in alpha and is applied in WGSL
+    // after the base F0 clamp; RGB factors above one remain intact.
+    expect(Array.from(atlas.baseColorMetaData.slice(84, 88))).toEqual([
+      2.5, 0.5, 0, 0.25,
+    ]);
   });
 
   it('packs specular texture maps into atlas metadata with the expected color spaces', () => {
@@ -1260,7 +1344,7 @@ describe('walkaround materialTextureAtlas', () => {
     expect(MATERIAL_ATLAS_WGSL).toContain('fn materialAlphaCoverageForHit(');
     expect(MATERIAL_ATLAS_WGSL).toContain('fn traceSceneFirstHitAlphaMaskTextured(');
     expect(MATERIAL_ATLAS_WGSL).toContain('traceSceneFirstHitAlphaMaskTexturedOpaqueOnly(');
-    expect(MATERIAL_ATLAS_WGSL).toContain('fn traceSceneAnyAlphaMaskTextured(');
+    expect(MATERIAL_ATLAS_WGSL).not.toContain('fn traceSceneAnyAlphaMaskTextured(');
     expect(MATERIAL_ATLAS_WGSL).toContain('fn materialShadowOccluderForHit(');
     expect(MATERIAL_ATLAS_WGSL).toContain('fn materialShadowTransmittanceForHit(');
     expect(MATERIAL_ATLAS_WGSL).toContain('fn traceSceneAlphaTransmittanceTextured(');

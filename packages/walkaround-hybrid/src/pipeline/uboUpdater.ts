@@ -48,7 +48,7 @@
  *   offset 400: regirCandidatesPerCell      (u32 = 4 bytes) — M per sub-reservoir
  *   offset 404: regirSurvivorsPerCell       (u32 = 4 bytes) — K survivors per cell
  *   offset 408: regirGridFloatOffset        (u32 = 4 bytes) — grid-region float offset in combined buffer
- *   offset 412: grisReuse               (u32 = 4 bytes) — GRIS reconnection-shift reuse gate (was _regirPad)
+ *   offset 412: grisReuse               (u32 = 4 bytes) — reserved compatibility word; always 1
  *   offset 416: sunAngular.x                (f32 = 4 bytes) — direct sun cone radius in radians
  *   offset 420: sunAngular.yzw              (3×f32 = 12 bytes) — padding / future sun controls
  * Total: 432 bytes (432 % 16 == 0).
@@ -272,12 +272,11 @@ export function packWalkaroundUBO(
   u32[100] = r.candidatesPerCell >>> 0; // offset 400 — regirCandidatesPerCell (M)
   u32[101] = r.survivorsPerCell >>> 0;  // offset 404 — regirSurvivorsPerCell (K)
   u32[102] = r.gridFloatOffset >>> 0;   // offset 408 — regirGridFloatOffset
-  // GRIS DDGI-proxy reconnection-shift reuse gate (offset 412 — the former
-  // _regirPad slot). 0 keeps the GI spatial/temporal reuse on the legacy
-  // clamped-Jacobian path bit-for-bit; 1 turns on the bounded GRIS DDGI-proxy shift +
-  // reconnection visibility + bounded all-technique density matrix. Absent ⇒ 0 (OFF), so callers and
-  // existing tests that never set it are byte-identical to before.
-  u32[103] = (inputs.restirGI.grisReuse ?? 0) >>> 0; // offset 412 — grisReuse
+  // Reserved ABI word for the retired GRIS structural toggle. Generalized
+  // reconnection reuse is the sole live path, so the mirror is always one.
+  // Keeping the word avoids shifting the epoch and caustic controls in the
+  // stable 432-byte UBO contract.
+  u32[103] = 1; // offset 412 — deprecated grisReuse mirror, always enabled
   const sunAngularRadius = inputs.lighting.sunAngularRadius;
   f32[104] = typeof sunAngularRadius === 'number' && Number.isFinite(sunAngularRadius)
     ? Math.max(0, sunAngularRadius)

@@ -451,28 +451,13 @@ describe('KHR extension texture sweep (GLTF-06)', () => {
     }
   });
 
-  it('loadGltfAsset textureDecodeReport follows enabled MSFT_texture_dds alternate source selection', async () => {
-    const { gltf, buffers, fallbackBytes, extensionBytes, extensionMimeType } =
+  it('loadGltfAsset auto-selects the built-in MSFT_texture_dds alternate source', async () => {
+    const { gltf, buffers, extensionBytes, extensionMimeType } =
       makeTextureSourceExtensionGltf('MSFT_texture_dds');
     gltf.extensionsUsed = ['MSFT_texture_dds'];
 
-    const fallback = await loadGltfAsset(gltf, {
-      buffers,
-      decodeImage: async (bytes, mimeType) => ({
-        kind: 'decoded-texture',
-        mimeType,
-        bytes: Array.from(bytes),
-      }),
-    });
-    const fallbackMaterial = (fallback.scene.primitives[0] as MeshPrimitive).material;
-    expect((fallbackMaterial.baseColorMap!.handle as { mimeType: string; bytes: number[] })).toMatchObject({
-      mimeType: 'image/png',
-      bytes: fallbackBytes,
-    });
-
     const alternate = await loadGltfAsset(gltf, {
       buffers,
-      textureSourceExtensions: ['MSFT_texture_dds'],
       decodeImage: async (bytes, mimeType) => ({
         kind: 'decoded-texture',
         mimeType,
@@ -506,10 +491,10 @@ describe('KHR extension texture sweep (GLTF-06)', () => {
     });
   });
 
-  it('rejects a texture that has only disabled source-extension images with a complete cause chain', async () => {
-    const { gltf, buffers } = makeTextureSourceExtensionGltf('MSFT_texture_dds');
+  it('rejects a texture that has only an opt-in source-extension image with a complete cause chain', async () => {
+    const { gltf, buffers } = makeTextureSourceExtensionGltf('EXT_texture_webp');
     delete gltf.textures![0]!.source;
-    gltf.extensionsUsed = ['MSFT_texture_dds'];
+    gltf.extensionsUsed = ['EXT_texture_webp'];
 
     await expect(gltfToScene(gltf, {
       buffers,
@@ -520,9 +505,9 @@ describe('KHR extension texture sweep (GLTF-06)', () => {
         expect.objectContaining({
           severity: 'warning',
           code: 'disabled-texture-source-extension',
-          path: 'textures[0].extensions.MSFT_texture_dds',
+          path: 'textures[0].extensions.EXT_texture_webp',
           textureIndex: 0,
-          textureSourceExtensions: ['MSFT_texture_dds'],
+          textureSourceExtensions: ['EXT_texture_webp'],
         }),
         expect.objectContaining({
           severity: 'error',

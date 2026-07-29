@@ -15,8 +15,8 @@
 //   map          width×height : the equirect radiance (RGB, .a unused here)
 //   totalSum     unnormalized luminance integral over all pixels
 //
-// NOTE: unlike the original fork TODO, the per-pixel importance weight includes
-// the equirectangular texel solid-angle term sin(theta). The GLSL decoder's
+// The per-pixel importance weight includes the equirectangular texel
+// solid-angle term sin(theta). The GLSL decoder's
 // returned PDF cancels that same factor back to a per-steradian density so the
 // sample CDF and MIS PDF stay measure-consistent.
 

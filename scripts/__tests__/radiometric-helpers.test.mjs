@@ -114,7 +114,10 @@ test('pt BDPT regression harness covers the complete bounded multi-vertex mode',
   assert.match(proofs, /bdptEstimatorOwnership\.test\.ts/);
   assert.match(proofs, /bdptDeltaTransport\.test\.ts/);
   assert.match(proofs, /BDPT_DEFAULT_LIGHT_BOUNCES = 2/);
-  assert.match(proofs, /BDPT_MAX_LIGHT_BOUNCES = 8/);
+  assert.match(
+    proofs,
+    /BDPT_MAX_LIGHT_BOUNCES =\\n {2}PT_WEBGPU_BDPT_SUPPORT\.maxLightVertices/,
+  );
 
   assert.match(checker, /function checkPtSourcePins/);
   assert.match(checker, /named test-source file \$\{path\} has no test declaration/);
@@ -123,7 +126,10 @@ test('pt BDPT regression harness covers the complete bounded multi-vertex mode',
   assert.doesNotMatch(checker, /checkBdptMultiVertexResearch/);
 
   assert.match(ptWebgpuValidation, /BDPT_DEFAULT_LIGHT_BOUNCES = 2/);
-  assert.match(ptWebgpuValidation, /BDPT_MAX_LIGHT_BOUNCES = 8/);
+  assert.match(
+    ptWebgpuValidation,
+    /BDPT_MAX_LIGHT_BOUNCES =\s+PT_WEBGPU_BDPT_SUPPORT\.maxLightVertices/,
+  );
   assert.doesNotMatch(ptWebgpuValidation, /promotionReady: false/);
   assert.doesNotMatch(ptWebgpuValidation, /research path/);
 

@@ -342,6 +342,8 @@ export function buildBDPTStrategyPDFs_full(
  *
  * `maxLightVertices` includes the sampled emitter endpoint. `maxEyeVertices`
  * counts scene-surface vertices on the eye subpath and excludes the camera.
+ * The `s=1` direct-light strategy samples its emitter independently and does
+ * not require a stored light-subpath vertex budget.
  */
 export interface BDPTExplicitConnectionLimits {
   readonly maxLightVertices: number;
@@ -354,17 +356,49 @@ function explicitConnectionStrategyIsValidUnchecked(
   maxLightVertices: number,
   maxEyeVertices: number,
 ): boolean {
-  // An explicit connection needs at least one light vertex (the emitter), one
-  // eye-surface vertex, and the camera endpoint. s=0 and s=n-1 are the pure
-  // camera/light techniques and are not sampled by the pt-webgpu connection
-  // kernel. The remaining counts must fit the actually allocated subpaths.
-  if (pathVertexCount < 3 || strategyS < 1 || strategyS > pathVertexCount - 2) {
+  // An explicit connection needs at least one light vertex and the camera
+  // endpoint. s=0 is the pure-eye technique and is owned separately.
+  // s=n-1 is the t=1 light-subpath-to-camera technique: it has no eye-surface
+  // vertices, but it is still an explicit strategy once the renderer provides
+  // a camera splat estimator. The remaining counts must fit the actually
+  // allocated subpaths.
+  if (pathVertexCount < 3 || strategyS < 1 || strategyS >= pathVertexCount) {
     return false;
   }
   const lightVertices = strategyS;
   const eyeVertices = pathVertexCount - strategyS - 1;
-  return lightVertices <= maxLightVertices && eyeVertices <= maxEyeVertices;
+  return (
+    (strategyS < 2 || lightVertices <= maxLightVertices) &&
+    eyeVertices <= maxEyeVertices
+  );
 }
+
+/**
+ * Binding-free WGSL form of {@link bdptExplicitConnectionStrategyIsValid}.
+ *
+ * The pt-webgpu denominator composes this declaration directly so the CPU
+ * oracle and production finite-root strategy family cannot evolve separately.
+ */
+export const BDPT_EXPLICIT_STRATEGY_MASK_WGSL = /* wgsl */ `
+fn bdptExplicitConnectionStrategyIsValid(
+  pathVertexCount: u32,
+  strategyS: u32,
+  maxLightVertices: u32,
+  maxEyeVertices: u32,
+) -> bool {
+  if (pathVertexCount < 3u) {
+    return false;
+  }
+  if (strategyS < 1u || strategyS >= pathVertexCount) {
+    return false;
+  }
+  let lightVertices = strategyS;
+  let eyeVertices = pathVertexCount - strategyS - 1u;
+  return
+    (strategyS < 2u || lightVertices <= maxLightVertices) &&
+    eyeVertices <= maxEyeVertices;
+}
+`;
 
 /** Return whether strategy `s` is sampled by the bounded explicit family. */
 export function bdptExplicitConnectionStrategyIsValid(
@@ -399,8 +433,9 @@ export function bdptExplicitConnectionStrategyIsValid(
 /**
  * Copy a full recurrence vector while zeroing techniques that the bounded
  * explicit-connection kernel did not sample. Applying this before the power
- * heuristic prevents unsampled s=0/t=1 or depth-truncated strategies from
- * diluting the weights of the techniques that were actually evaluated.
+ * heuristic prevents the separately-owned s=0 technique or depth-truncated
+ * strategies from diluting the weights of the techniques that were actually
+ * evaluated. The s=n-1/t=1 camera-splat strategy is part of this family.
  */
 export function maskBDPTExplicitConnectionStrategyPDFs(
   pdfsByStrategy: ReadonlyArray<number> | Float64Array,

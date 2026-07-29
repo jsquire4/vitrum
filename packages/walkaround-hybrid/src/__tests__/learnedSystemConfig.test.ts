@@ -307,6 +307,7 @@ describe('learned-system option parsing', () => {
 
   it('accepts agreeing NRC aliases and rejects silent alias overrides', () => {
     expect(parseHybridEngineOptions(baseOpts({
+      nrcEnabled: true,
       nrcConfig: {
         warmupSteps: 3,
         spreadC: 0.25,
@@ -322,14 +323,17 @@ describe('learned-system option parsing', () => {
     });
 
     expect(() => parseHybridEngineOptions(baseOpts({
+      nrcEnabled: true,
       nrcConfig: { warmupSteps: 4 },
       nrcWarmupSteps: 3,
     }))).toThrow(/nrcWarmupSteps.*disagrees with nrcConfig\.warmupSteps/);
     expect(() => parseHybridEngineOptions(baseOpts({
+      nrcEnabled: true,
       nrcConfig: { spreadC: 0.5 },
       nrcSpreadC: 0.25,
     }))).toThrow(/nrcSpreadC.*disagrees with nrcConfig\.spreadC/);
     expect(() => parseHybridEngineOptions(baseOpts({
+      nrcEnabled: true,
       nrcConfig: { maxNrcResidentBytes: 25_000_000 },
       nrcMaxResidentBytes: 24_000_000,
     }))).toThrow(/nrcMaxResidentBytes.*disagrees with nrcConfig\.maxNrcResidentBytes/);
@@ -359,11 +363,9 @@ describe('learned-system option parsing', () => {
     },
   );
 
-  it('rejects PPG and GRIS together because GRIS bypasses the guide proposal', () => {
-    expect(() => parseHybridEngineOptions(baseOpts({
-      ppgEnabled: true,
-      grisReuse: true,
-    }))).toThrow(/ppgEnabled and grisReuse cannot be enabled together/);
+  it('accepts PPG as a proposal composed with mandatory generalized reuse', () => {
+    const cfg = parseHybridEngineOptions(baseOpts({ ppgEnabled: true }));
+    expect(cfg.ppgEnabled).toBe(1);
   });
 
   it('accepts the canonical minimum neural internal shape', () => {

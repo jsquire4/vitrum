@@ -8,7 +8,9 @@
  *
  * References:
  *  - Cigolle et al. 2014, "A Survey of Efficient Representations for
- *    Independent Unit Vectors", JCGT Appendix A.2.
+ *    Independent Unit Vectors", JCGT Appendix A.2 — octahedral mapping.
+ *  - Van Oosterom & Strackee 1983, "The Solid Angle of a Plane Triangle",
+ *    IEEE Transactions on Biomedical Engineering 30(2), 125–126.
  *  - Veach 1997, Section 2.3, stratified Monte Carlo estimators.
  *
  * Include requirements: `octDecode` and `pcgHashToF32` must be defined by

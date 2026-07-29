@@ -78,9 +78,9 @@ interface PipelineFrameLighting {
   mneeMaxChainLength?: number;
   /** Bounded SMS recurrence trials used for inverse-basin correction. */
   mneeMultiplicityTrials?: number;
-  /** Diffuse-sky-dome RGB tint, derived from computeLightingState. Replaces
-   *  four formerly-hardcoded sky tints in WGSL. Consumed by sky-aperture
-   *  probe + second-bounce sky-miss paths. */
+  /** Diffuse-sky-dome RGB tint supplied by engine options or resolved from the
+   *  core Scene environment. Replaces four formerly-hardcoded sky tints in
+   *  WGSL. Consumed by sky-aperture probe + second-bounce sky-miss paths. */
   skyTint: [number, number, number];
   /** Sky-dome irradiance scalar paired with skyTint. ~0.5×sun at noon. */
   skyIrradiance: number;
@@ -123,7 +123,7 @@ interface PipelineFrameRestirDI {
   spatialDepthTolFloor: number;
 }
 
-/** ReSTIR-GI / GRIS tuning + reuse gate. */
+/** ReSTIR-GI tuning. */
 interface PipelineFrameRestirGI {
   /** 2026-05-18 sweep — ReSTIR-GI per-pixel unbiased weight cap (risGi,
    *  spatialGi). Cornell default 16.0. */
@@ -143,15 +143,6 @@ interface PipelineFrameRestirGI {
   /** 2026-05-18 sweep — ReSTIR-GI spatial-reuse tangent-plane distance
    *  tolerance (spatialGi). Cornell default 0.05 (5 cm world units). */
   restirGiSpatialCoplanarTol: number;
-  /** GRIS DDGI-proxy reconnection-shift reuse gate (UBO offset 412). `1` ⇒
-   *  the GI spatial + temporal reuse passes apply the bounded GRIS DDGI-proxy
-   *  reconnection shift, its change-of-variables Jacobian, a reconnection-
-   *  visibility ray, and the bounded all-technique transformed-density balance MIS (Lin et al.
-   *  2022). `0`/omitted ⇒ the reuse runs the legacy clamped-Jacobian path
-   *  BIT-FOR-BIT (the GRIS branch is gated behind `ubo.grisReuse == 1`).
-   *  Host opt-in via HybridEngineOptions.grisReuse — the same
-   *  OFF-is-bit-identical pattern as RC/PPG/ReGIR. */
-  grisReuse?: number;
 }
 
 /** GTAO + adaptive-sampling tuning knobs. */

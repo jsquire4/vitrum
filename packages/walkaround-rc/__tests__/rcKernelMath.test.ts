@@ -15,23 +15,16 @@
  * Mirrored pieces (all kept byte-faithful to the WGSL):
  *   - `octDecode` / `octEncode` (shared-samplers octahedralCore.wgsl.ts) — the
  *     `octDecode(rayUV*2-1)` per-ray direction generation in probeRayCastKernel.
- *   - `octCellSolidAngle` + `sphericalQuadAreaForMerge` (cascadeMerge.wgsl.ts) —
- *     the per-child solid-angle weight.
+ *   - `octCellSolidAngle` + `sphericalTriangleSolidAngle`
+ *     (octahedralSampling.wgsl.ts) — the per-child solid-angle weight.
  *   - `cascadeMergeCell` — the `merged = Σ child·Ω / Σ Ω` weighted average.
  *
  * References (each test cites the specific identity it uses):
  *   Cigolle et al. 2014, "A Survey of Efficient Representations for Independent
- *     Unit Vectors", JCGT §2 / §A.1 / §A.2 — octahedral map, fold convention,
- *     Jacobian / texel solid angle.
+ *     Unit Vectors", JCGT §2 / §A.1 / §A.2 — octahedral map and fold convention.
+ *   Van Oosterom & Strackee 1983, "The Solid Angle of a Plane Triangle" —
+ *     exact spherical-triangle solid angle.
  *   Sannikov 2023, §3 — cascade conservation law (the merge is a weighted average).
- *
- * NOTE (documented approximation, not a bug): the merge kernel's `octCellSolidAngle`
- * uses a single planar-quad approximation of the spherical cell area. Summed over an
- * N×N grid it UNDER-estimates 4π (−12.6% at N=4, shrinking with N). The merge formula
- * self-normalizes by Σ Ω, so this per-cell error cancels exactly in the weighted
- * average — see the convergence test below, which is the real 4π identity for this
- * helper. The high-accuracy (SUB=16) `computeOctahedralSolidAngles`, which DOES sum
- * to 4π within 1e-3, is exercised separately in `rcSolidAngles.test.ts`.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -89,7 +82,7 @@ function probeRayDir(
   return octDecode(uvU * 2.0 - 1.0, uvV * 2.0 - 1.0);
 }
 
-// ─── TS mirror: cascadeMerge octCellSolidAngle (cascadeMerge.wgsl.ts:48–67) ──
+// ─── TS mirror: octahedralSampling rcOctCellSolidAngle ───────────────────────
 function cross3(
   a: [number, number, number],
   b: [number, number, number],
@@ -100,39 +93,35 @@ function cross3(
     a[0] * b[1] - a[1] * b[0],
   ];
 }
-function len3(v: [number, number, number]): number {
-  return Math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
-}
-function sub3(
+function dot3(
   a: [number, number, number],
   b: [number, number, number],
-): [number, number, number] {
-  return [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
-}
-// WGSL sphericalQuadAreaForMerge (two-triangle planar-cross approximation).
-function sphericalQuadAreaForMerge(
-  p00: [number, number, number],
-  p10: [number, number, number],
-  p01: [number, number, number],
-  p11: [number, number, number],
 ): number {
-  const d1 = cross3(sub3(p10, p00), sub3(p01, p00));
-  const d2 = cross3(sub3(p10, p11), sub3(p01, p11));
-  return (len3(d1) + len3(d2)) * 0.5;
+  return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 }
-// WGSL octCellSolidAngle(cx, cy, N) — single-quad (4-corner) per-cell solid angle.
+// WGSL rcSphericalTriangleSolidAngle (Van Oosterom-Strackee exact formula).
+function sphericalTriangleSolidAngle(
+  a: [number, number, number],
+  b: [number, number, number],
+  c: [number, number, number],
+): number {
+  const numerator = Math.abs(dot3(a, cross3(b, c)));
+  const denominator = 1 + dot3(a, b) + dot3(b, c) + dot3(c, a);
+  return 2 * Math.atan2(numerator, denominator);
+}
+// WGSL rcOctCellSolidAngle(cx, cy, N) — two exact spherical triangles.
 function octCellSolidAngle(cx: number, cy: number, N: number): number {
   const cellWidth = 2.0 / N;
   const u0 = -1.0 + cx * cellWidth;
   const v0 = -1.0 + cy * cellWidth;
   const u1 = u0 + cellWidth;
   const v1 = v0 + cellWidth;
-  return sphericalQuadAreaForMerge(
-    octDecode(u0, v0),
-    octDecode(u1, v0),
-    octDecode(u0, v1),
-    octDecode(u1, v1),
-  );
+  const p00 = octDecode(u0, v0);
+  const p10 = octDecode(u1, v0);
+  const p01 = octDecode(u0, v1);
+  const p11 = octDecode(u1, v1);
+  return sphericalTriangleSolidAngle(p00, p10, p01)
+    + sphericalTriangleSolidAngle(p10, p11, p01);
 }
 
 // ─── TS mirror: cascadeMergeKernel weighted average (cascadeMerge.wgsl.ts:181–197) ─
@@ -472,51 +461,19 @@ describe('rcProbeIrradiance: A7 receiver estimator (sampleCascadeC0.wgsl.ts)', (
 // 4. octCellSolidAngle 4π identity (cascadeMerge.wgsl.ts)
 // ─────────────────────────────────────────────────────────────────────────────
 describe('cascadeMerge: octCellSolidAngle solid-angle identity (sphere = 4π)', () => {
-  // The merge kernel's `octCellSolidAngle` uses ONE planar quad per cell. Summed
-  // over an N×N grid it under-estimates 4π (−12.6% @N=4 … −0.25% @N=32) — a known
-  // approximation, NOT a bug, because the merge normalizes by Σ Ω so the bias
-  // cancels in the weighted average. We pin the magnitude of the gap so a future
-  // change to the helper is noticed, and below assert the TRUE 4π identity via
-  // refinement.
-  it.each([
-    [4, 0.13],
-    [8, 0.04],
-    [16, 0.011],
-    [32, 0.003],
-  ] as const)(
-    '1-quad octCellSolidAngle sum under-estimates 4π by the documented margin (N=%i, < %f rel)',
-    (N, maxRel) => {
+  // The power-of-two RC grids align their fold diagonals with the two-triangle
+  // tessellation. Exact spherical-triangle areas therefore tile the sphere.
+  it.each([4, 8, 16, 32] as const)(
+    'exact octCellSolidAngle sum equals 4π for N=%i',
+    (N) => {
       let s = 0;
       for (let cy = 0; cy < N; cy++) {
         for (let cx = 0; cx < N; cx++) s += octCellSolidAngle(cx, cy, N);
       }
-      const relErr = (FOUR_PI - s) / FOUR_PI; // positive ⇒ under-estimate
-      expect(relErr, `N=${N}: under-estimate ${(relErr * 100).toFixed(3)}%`).toBeGreaterThan(0);
-      expect(relErr, `N=${N}: under-estimate ${(relErr * 100).toFixed(3)}%`).toBeLessThan(maxRel);
+      const relErr = Math.abs(FOUR_PI - s) / FOUR_PI;
+      expect(relErr, `N=${N}: relative error ${(relErr * 100).toFixed(6)}%`).toBeLessThan(1e-12);
     },
   );
-
-  // Reference: as the SAME 1-quad helper is applied on an ever-finer UV grid, the
-  // planar-quad area → true spherical area, so the whole-sphere sum → 4π. This is
-  // the genuine closed-form identity (sphere solid angle = 4π). At M=256 the sum
-  // is within 0.005% of 4π — proving the helper is an unbiased estimator of the
-  // octahedral cell solid angle, just coarse at the grid sizes RC uses.
-  it('refined octCellSolidAngle sum converges to 4π (M=256 within 0.05%)', () => {
-    let prev = -Infinity;
-    let last = 0;
-    for (const M of [4, 8, 16, 32, 64, 128, 256]) {
-      let s = 0;
-      for (let cy = 0; cy < M; cy++) {
-        for (let cx = 0; cx < M; cx++) s += octCellSolidAngle(cx, cy, M);
-      }
-      // Monotone improvement toward 4π as the grid refines.
-      expect(s, `M=${M}: ${s} not > prev ${prev}`).toBeGreaterThan(prev);
-      expect(s, `M=${M}: ${s} overshoots 4π`).toBeLessThanOrEqual(FOUR_PI + 1e-6);
-      prev = s;
-      last = s;
-    }
-    expect(Math.abs(FOUR_PI - last) / FOUR_PI, `final rel err`).toBeLessThan(5e-4);
-  });
 
   // All per-cell solid angles must be strictly positive and bounded by 2π (no
   // single cell can exceed a hemisphere). Pure analytic bound, kernel-independent.

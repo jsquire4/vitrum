@@ -134,7 +134,6 @@ export class FrameCaptureHelper {
       device,
       bglCache,
       res.common.resolvedTexture.createView(),
-      res.common.compositeSampler,
       compositeUbo,
     );
 

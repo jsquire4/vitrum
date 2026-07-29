@@ -102,14 +102,13 @@ describe('deriveSceneTraceFeatures', () => {
       doubleSided: true,
     };
 
-    // The compact tier has no material-side lane, so authored double-sided
-    // behavior must promote to scalar-rich rather than being dropped.
-    expect(materialUsesBasicWebGl2Shader(material)).toBe(false);
+    // The compact tier reads the same packed side lane as every richer tier.
+    expect(materialUsesBasicWebGl2Shader(material)).toBe(true);
     expect(materialUsesScalarRichWebGl2Shader(material)).toBe(true);
     expect(() => validateWebGl2SceneMaterials(sceneWith(material))).not.toThrow();
     expect(deriveSceneTraceFeatures(sceneWith(material))).toMatchObject({
-      basicMaterials: false,
-      scalarRichMaterials: true,
+      basicMaterials: true,
+      scalarRichMaterials: false,
       mappedPbrMaterials: false,
       mappedRichMaterials: false,
     });
@@ -312,9 +311,6 @@ describe('deriveSceneTraceFeatures', () => {
       scalarRichMaterials: false,
       mappedPbrMaterials: false,
       mappedRichMaterials: false,
-      analyticLights: true,
-      meshLights: true,
-      environmentLight: true,
       fog: false,
     });
   });
@@ -325,9 +321,6 @@ describe('deriveSceneTraceFeatures', () => {
       scalarRichMaterials: false,
       mappedPbrMaterials: false,
       mappedRichMaterials: true,
-      analyticLights: true,
-      meshLights: true,
-      environmentLight: true,
       fog: false,
     });
   });

@@ -82,27 +82,6 @@ export interface BvhUpdateSink {
    * candidate allocation/upload fails. */
   replaceBvhAndEmitters(bvhBuffers: SceneBVHBuffers): void;
 
-  /**
-   * Full BVH-buffer reupload — allocate candidates, then replace the BVH GPU buffers
-   * from a freshly-built `SceneBVHBuffers`. Emitter buffers are NOT touched —
-   * call `updateEmitters` separately if the emitter list also changed.
-   */
-  refreshBvhFullRebuild(
-    bvhBuffers: Pick<
-      SceneBVHBuffers,
-      | 'bvhNodes'
-      | 'bvhIndex'
-      | 'bvhBeerColors'
-      | 'bvhEmissiveLe'
-      | 'materialTextureAtlas'
-      | 'bvhRoughMetal'
-      | 'bvhNormals'
-      | 'bvhPositions'
-      | 'bvhMode'
-      | 'tlas'
-    >,
-  ): void;
-
   /** Re-upload emitter GPU buffers after an emitter list change. */
   updateEmitters(
     bvhBuffers: Pick<

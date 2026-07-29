@@ -10,7 +10,6 @@
     "@vitrum/walkaround-hybrid":       "../../packages/walkaround-hybrid/src/index.ts",
     "@vitrum/walkaround-rc":           "../../packages/walkaround-rc/src/index.ts",
     "@vitrum/gltf-adapter":            "../../packages/gltf-adapter/src/index.ts",
-    "@vitrum/scene-lighting":          "../../packages/scene-lighting/src/index.ts",
     "@vitrum/stained-glass-extensions": "../../packages/stained-glass-extensions/src/index.ts",
     "@vitrum/engine":                  "../../packages/engine/src/index.ts"
   }

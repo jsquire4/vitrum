@@ -49,9 +49,8 @@ export const RESTIR_CAST_PRIMARY_WGSL = /* wgsl */ `
 //   See restirCastPrimary.wgsl.ts header for why shade and ris
 //   intentionally retain inline primary casts.
 // ============================================================
-fn castPrimary(px: vec2u, dims: vec2u, camPos: vec3f, invVP: mat4x4f) -> PrimarySurface {
+fn primarySurfaceFromRay(ray: Ray) -> PrimarySurface {
   var s: PrimarySurface;
-  let ray = generatePrimaryRay_common(px.x, px.y, dims.x, dims.y, camPos, invVP);
   let hit = traceSceneFirstHitAlphaMaskTexturedOpaqueOnly(
     ubo.bvhMode, ubo.tlasNodeCount,
 
@@ -105,7 +104,26 @@ fn castPrimary(px: vec2u, dims: vec2u, camPos: vec3f, invVP: mat4x4f) -> Primary
   s.bulkThickness = payload.bulkThickness;
   s.envMapIntensity = payload.envMapIntensity;
   s.depth  = hit.dist;
+  s.triangleId = hit.indices.w;
+  s.instanceId = select(0u, hit.instanceIndex, ubo.bvhMode == 1u);
+  s.materialKey =
+    hit.matColorPacked ^
+    (materialWord * 0x9e3779b9u) ^
+    (hit.indices.w * 0x85ebca6bu);
   return s;
+}
+
+fn castPrimary(px: vec2u, dims: vec2u, camPos: vec3f, invVP: mat4x4f) -> PrimarySurface {
+  let ray = generatePrimaryRay_common(px.x, px.y, dims.x, dims.y, camPos, invVP);
+  return primarySurfaceFromRay(ray);
+}
+
+// Re-cast a pixel from a historical camera represented only by its inverse VP.
+// The near-plane ray origin avoids inventing a previous camera position and
+// lets temporal reuse validate correspondence against the CURRENT BVH.
+fn castPrimaryFromInvVP(px: vec2u, dims: vec2u, invVP: mat4x4f) -> PrimarySurface {
+  let ray = generatePrimaryRayFromInvVP_common(px.x, px.y, dims.x, dims.y, invVP);
+  return primarySurfaceFromRay(ray);
 }
 `;
 

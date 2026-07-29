@@ -176,13 +176,8 @@ describe('MNEE half-vector Newton solve (real-MNEE core)', () => {
     expect(MNEE_PDF_HARNESS_WGSL).toContain('let det = mneePdfJacobianDet(r.vertex, c.recv, jac.dadL, jac.dbdL, tu, tv)');
   });
 
-  it('connection-PDF factor supports arbitrary finite-emitter tangent axes', () => {
-    expect(MNEE_NEWTON_WGSL).toContain('fn mneePdfJacobianDetAxes(');
-    expect(MNEE_NEWTON_WGSL).toContain('let da_ds = dot(dadL, lightU);');
-    expect(MNEE_NEWTON_WGSL).toContain('let db_dt = dot(dbdL, lightV);');
-    expect(MNEE_NEWTON_WGSL).toContain(
-      'let determinant = length(cross(dw_ds, dw_dt)) / areaScale;',
-    );
+  it('does not ship the uncalled finite-emitter-axis Jacobian variant', () => {
+    expect(MNEE_NEWTON_WGSL).not.toContain('fn mneePdfJacobianDetAxes(');
   });
 
   it('2-vertex chain solve (glass enter+exit) — block-tridiagonal Newton', () => {

@@ -1,56 +1,33 @@
 import type { MaterialSpec } from '@vitrum/core';
-import { BACKEND_PROMISE_LEDGER, MATERIAL_SPEC_FIELDS } from '@vitrum/core';
+import {
+  PT_WEBGPU_FULL_SUPPORT_MANIFEST,
+  PT_WEBGPU_LITE_SUPPORT_MANIFEST,
+} from './supportManifest.js';
 import type { PtWebgpuTraceTier } from './traceTier.js';
 
-// CAP-01 — the remaining material fields the full tier drops, derived from the
-// ledger's per-field support matrix so warning + capability rows can never drift.
-// `extensions` is the contract-sanctioned host-discretionary escape hatch
-// (no warning).
-export const UNSUPPORTED_MATERIAL_FIELDS: readonly (keyof MaterialSpec)[] = MATERIAL_SPEC_FIELDS.filter(
-  (field) =>
-    BACKEND_PROMISE_LEDGER['pt-webgpu'].supportDetails.materials[field] === 'unsupported' &&
-    field !== 'extensions',
+function materialFieldsWithMode(
+  materials: typeof PT_WEBGPU_FULL_SUPPORT_MANIFEST.materials,
+  mode: 'unsupported',
+): (keyof MaterialSpec)[] {
+  return (Object.keys(materials) as (keyof MaterialSpec)[])
+    .filter((field) => materials[field] === mode);
+}
+
+// `extensions` is the contract-sanctioned host-discretionary escape hatch and
+// is deliberately ignored without warning even though no shader consumes it.
+export const UNSUPPORTED_MATERIAL_FIELDS = Object.freeze(
+  materialFieldsWithMode(
+    PT_WEBGPU_FULL_SUPPORT_MANIFEST.materials,
+    'unsupported',
+  ).filter((field) => field !== 'extensions'),
 );
 
-export const PT_WEBGPU_LITE_EXTRA_UNSUPPORTED_MATERIAL_FIELDS = [
-  // The lite trace shader composes no full-tier group-3 material texture
-  // bindings. These fields are therefore unrendered on lite even when the full
-  // pt-webgpu tier supports them.
-  'baseColorMap',
-  'normalMap',
-  'normalScale',
-  'roughnessMap',
-  'metallicMap',
-  'transmissionMap',
-  'thicknessMap',
-  'emissiveMap',
-  'alphaMap',
-  'aoMap',
-  'aoMapIntensity',
-  'clearcoatMap',
-  'clearcoatRoughnessMap',
-  'clearcoatNormalMap',
-  'clearcoatNormalScale',
-  'sheenColorMap',
-  'sheenRoughnessMap',
-  'iridescenceMap',
-  'iridescenceThicknessMap',
-  'anisotropyMap',
-  'specularColorMap',
-  'specularIntensityMap',
-  'bumpMap',
-  'bumpScale',
-  'lightMap',
-  'lightMapIntensity',
-  // Lite also omits the full-tier alpha-test, per-material environment scale,
-  // and anisotropic-BSDF routes.
-  'alphaMode',
-  'alphaCutoff',
-  'opacity',
-  'envMapIntensity',
-  'anisotropy',
-  'anisotropyRotation',
-] as const satisfies readonly (keyof MaterialSpec)[];
+export const PT_WEBGPU_LITE_EXTRA_UNSUPPORTED_MATERIAL_FIELDS = Object.freeze(
+  (Object.keys(PT_WEBGPU_LITE_SUPPORT_MANIFEST.materials) as (keyof MaterialSpec)[])
+    .filter((field) =>
+      PT_WEBGPU_LITE_SUPPORT_MANIFEST.materials[field] === 'unsupported' &&
+      PT_WEBGPU_FULL_SUPPORT_MANIFEST.materials[field] !== 'unsupported'),
+);
 
 export const PT_WEBGPU_LITE_UNSUPPORTED_MATERIAL_FIELDS = Object.freeze([
   ...new Set([
@@ -59,18 +36,10 @@ export const PT_WEBGPU_LITE_UNSUPPORTED_MATERIAL_FIELDS = Object.freeze([
   ]),
 ]);
 
-export const PT_WEBGPU_LITE_MATERIALS = Object.freeze({
-  ...BACKEND_PROMISE_LEDGER['pt-webgpu'].supportDetails.materials,
-  ...Object.fromEntries(
-    PT_WEBGPU_LITE_EXTRA_UNSUPPORTED_MATERIAL_FIELDS.map((field) =>
-      [field, 'unsupported'],
-    ),
-  ),
-  // Lite still packs scalar layered-lobe controls inherited from the full tier,
-  // but it omits the group-3 texture bindings used by layer normal maps/scales.
-  frontLayer: 'approximate',
-  backLayer:  'approximate',
-});
+export const PT_WEBGPU_FULL_MATERIALS =
+  PT_WEBGPU_FULL_SUPPORT_MANIFEST.materials;
+export const PT_WEBGPU_LITE_MATERIALS =
+  PT_WEBGPU_LITE_SUPPORT_MANIFEST.materials;
 
 export function collectUnsupportedLayerNormalFields(
   fields: Set<string>,

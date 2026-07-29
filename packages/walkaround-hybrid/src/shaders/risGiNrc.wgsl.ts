@@ -229,23 +229,7 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
     scalarMatColor.rgb,
     sampleTransmissionMapForHit(hit, scalarMatColor.a),
   );
-  let receiverMaterialWordCoord = vec2u(
-    hit.indices.w % BVH_MATERIAL_TEX_WIDTH,
-    hit.indices.w / BVH_MATERIAL_TEX_WIDTH,
-  );
-  let receiverMaterialWord = textureLoad(bvh_material, vec2i(receiverMaterialWordCoord), 0).r;
-  let receiverPayload = sampleRestirDIMaterialPayloadForHit(
-    hit,
-    smoothNormal,
-    normal,
-    scalarMatColor.rgb,
-    receiverMaterialWord,
-    -primaryRay.direction,
-  );
-  let receiverClearcoatNormal = receiverPayload.clearcoatNormal;
-  let receiverWo = -primaryRay.direction;
   let isGlass = materialHasTransmission(matColor.a);
-  let grisOn = ubo.grisReuse == 1u;
   let currentGrisEpoch = bitcast<u32>(ubo.sunAngular.y);
 
 ${RIS_GI_GLASS_TRANSPORT_PREFIX_WGSL}
@@ -255,16 +239,34 @@ ${RIS_GI_GLASS_RESERVOIR_LOOP_WGSL}
 ${RIS_GI_GLASS_VISIBILITY_TAIL_WGSL}
   }
 
+  let receiverMaterialCoord = vec2u(
+    hit.indices.w % BVH_MATERIAL_TEX_WIDTH,
+    hit.indices.w / BVH_MATERIAL_TEX_WIDTH,
+  );
+  let receiverMaterialWord = textureLoad(
+    bvh_material,
+    vec2i(receiverMaterialCoord),
+    0,
+  ).r;
+  let receiverPayload = sampleRestirDIMaterialPayloadForHit(
+    hit,
+    smoothNormal,
+    normal,
+    matColor.rgb,
+    receiverMaterialWord,
+    safe_normalize(-primaryRay.direction),
+  );
+
   var r: ReservoirGI = emptyReservoirGI();
   r.xv = pos;
   r.nv = normal;
-  if (grisOn) { r.historyEpoch = currentGrisEpoch; }
+  r.historyEpoch = currentGrisEpoch;
 
   let tier_raw = textureLoad(gi_tier, vec2i(fullPx), 0).r;
   let tier = clamp(tier_raw, 1u, 4u);
   let M_GI = M_GI_BASE * tier / 2u;
 
-  let ppgGuidedOn = (ubo.ppgEnabled == 1u) && !grisOn;
+  let ppgGuidedOn = ubo.ppgEnabled == 1u;
   let alpha = select(0.0, ubo.ppgMixAlpha, ppgGuidedOn);
 
   // ── NRC: primary-vertex footprint a0 (Müller §5). The primary edge is
@@ -343,11 +345,7 @@ ${RIS_GI_GLASS_VISIBILITY_TAIL_WGSL}
     }
     let cosTheta = max(0.0, dot(normal, wi));
     if (!nrcFinite(cosTheta) || !(cosTheta > 0.0)) {
-      if (grisOn) {
-        recordInvalidReservoirGICandidate(&r, GI_SAMPLE_SURFACE, currentGrisEpoch);
-      } else {
-        r.M = r.M + 1u;
-      }
+      recordInvalidReservoirGICandidate(&r, GI_SAMPLE_SURFACE, currentGrisEpoch);
       continue;
     }
 
@@ -385,9 +383,8 @@ ${RIS_GI_GLASS_VISIBILITY_TAIL_WGSL}
         wi,
         xsMaterialWord,
       );
-      let ddgiProxyLo = restir_gi_surface_source_for_hit(bounceHit, xsPayload.albedo)
-        + irrAtXs * xsPayload.albedo * INV_PI;
-      let ddgiLo = select(xsPayload.Lo, ddgiProxyLo, grisOn);
+      let ddgiProxyLo = xsPayload.Lo;
+      let ddgiLo = ddgiProxyLo;
       let xsTransmission = sampleTransmissionMapForHit(
         bounceHit,
         decodeMaterialColor(bounceHit.matColorPacked).a,
@@ -419,11 +416,7 @@ ${RIS_GI_GLASS_VISIBILITY_TAIL_WGSL}
       }
       if (!nrcFinite(pSrcBounce) || !(pSrcBounce > 0.0)) {
         nrcRecordInvalidPdf();
-        if (grisOn) {
-          recordInvalidReservoirGICandidate(&r, GI_SAMPLE_SURFACE, currentGrisEpoch);
-        } else {
-          r.M = r.M + 1u;
-        }
+        recordInvalidReservoirGICandidate(&r, GI_SAMPLE_SURFACE, currentGrisEpoch);
         continue;
       }
       let aX = nrcAccumulateSpread(&runningSum, bounceHit.dist, pSrcBounce, cosArrive);
@@ -440,7 +433,7 @@ ${RIS_GI_GLASS_VISIBILITY_TAIL_WGSL}
         Lo = select(
           ddgiLo,
           nrcQueryRadiance(xs, ns, -wi, xsRough, xsAlbedo),
-          nrcCanSubstitute && !grisOn,
+          nrcCanSubstitute,
         );
         // Save the first qualifying candidate's input and its pre-cache suffix
         // target together. Reservoir selection below does not alter this pair.
@@ -479,129 +472,68 @@ ${RIS_GI_GLASS_VISIBILITY_TAIL_WGSL}
 
     var candidateVisibility: f32 = 1.0;
     var pHat: f32;
-    if (grisOn) {
-      var tMax = 1e20;
-      if (sampleKind == GI_SAMPLE_SURFACE) {
-        tMax = max(0.0, length(xs - pos) - 2e-3);
-      }
-      let shadowTint = traceSceneAlphaTintTransmittanceTextured(
-        ubo.bvhMode, ubo.tlasNodeCount,
-
-        pos + geoNormal * NORMAL_BIAS_GI, wi, tMax, ubo.triIntersectEpsilon,
-        bvh_material, BVH_MATERIAL_TEX_WIDTH, bvh_beer,
-      );
-      candidateVisibility = clamp(luminance(shadowTint), 0.0, 1.0);
-      pHat = luminance(Lo) * cosTheta * INV_PI * candidateVisibility;
-    } else {
-      pHat = restir_gi_receiver_phat_from_payload(
-        pos,
-        normal,
-        receiverClearcoatNormal,
-        receiverWo,
-        receiverPayload,
-        xs,
-        Lo,
-      );
+    var tMax = 1e20;
+    if (sampleKind == GI_SAMPLE_SURFACE) {
+      tMax = max(0.0, length(xs - pos) - 2e-3);
     }
-      let invalidPHat = !nrcFinite(pHat) || !(pHat > 0.0) || !nrcFinite(candidateVisibility) || !(candidateVisibility > 0.0);
-      if (invalidPHat) { nrcRecordInvalidPdf(); }
-      if (invalidPHat) {
-        if (grisOn) {
-          recordInvalidReservoirGICandidate(&r, sampleKind, currentGrisEpoch);
-        } else {
-          r.M = r.M + 1u;
-        }
-        continue;
-      }
+    let shadowTint = traceSceneAlphaTintTransmittanceTextured(
+      ubo.bvhMode, ubo.tlasNodeCount,
 
-      var pSrc: f32;
-      if (alpha > 0.0) {
-        let pCos = cosTheta * INV_PI;
-        let pGuide = ppgEvalPdf(pos, wi);
-        pSrc = alpha * pGuide + (1.0 - alpha) * pCos;
-      } else {
-        pSrc = cosTheta * INV_PI;
-      }
-      if (!nrcFinite(pSrc) || !(pSrc > 0.0)) {
-        nrcRecordInvalidPdf();
-        if (grisOn) {
-          recordInvalidReservoirGICandidate(&r, sampleKind, currentGrisEpoch);
-        } else {
-          r.M = r.M + 1u;
-        }
-        continue;
-      }
-      let w = pHat / pSrc;
-      if (!nrcFinite(w) || !(w > 0.0) || !nrcFinite(r.w_sum) || r.w_sum < 0.0 || w > 3.402823466e38 - r.w_sum) {
-        nrcRecordInvalidPdf();
-        if (grisOn) {
-          recordInvalidReservoirGICandidate(&r, sampleKind, currentGrisEpoch);
-        } else {
-          r.M = r.M + 1u;
-        }
-        continue;
-      }
-    if (grisOn) {
-      updateReservoirGIWithMetadata(
-        &r, xs, ns, Lo, sampleKind, wi,
-        pHat, candidateVisibility, currentGrisEpoch, w, &rng,
-      );
-    } else {
-      updateReservoirGI(&r, xs, ns, Lo, w, &rng);
+      pos + geoNormal * NORMAL_BIAS_GI, wi, tMax, ubo.triIntersectEpsilon,
+      bvh_material, BVH_MATERIAL_TEX_WIDTH, bvh_beer,
+    );
+    candidateVisibility = clamp(luminance(shadowTint), 0.0, 1.0);
+    pHat = restir_gi_receiver_phat_from_payload(
+      pos,
+      normal,
+      receiverPayload.clearcoatNormal,
+      safe_normalize(-primaryRay.direction),
+      receiverPayload,
+      xs,
+      Lo,
+    ) * candidateVisibility;
+    let invalidPHat = !nrcFinite(pHat) || !(pHat > 0.0)
+      || !nrcFinite(candidateVisibility) || !(candidateVisibility > 0.0);
+    if (invalidPHat) {
+      nrcRecordInvalidPdf();
+      recordInvalidReservoirGICandidate(&r, sampleKind, currentGrisEpoch);
+      continue;
     }
+
+    var pSrc: f32;
+    if (alpha > 0.0) {
+      let pCos = cosTheta * INV_PI;
+      let pGuide = ppgEvalPdf(pos, wi);
+      pSrc = alpha * pGuide + (1.0 - alpha) * pCos;
+    } else {
+      pSrc = cosTheta * INV_PI;
+    }
+    if (!nrcFinite(pSrc) || !(pSrc > 0.0)) {
+      nrcRecordInvalidPdf();
+      recordInvalidReservoirGICandidate(&r, sampleKind, currentGrisEpoch);
+      continue;
+    }
+    let w = pHat / pSrc;
+    if (!nrcFinite(w) || !(w > 0.0)
+     || !nrcFinite(r.w_sum) || r.w_sum < 0.0
+     || w > 3.402823466e38 - r.w_sum) {
+      nrcRecordInvalidPdf();
+      recordInvalidReservoirGICandidate(&r, sampleKind, currentGrisEpoch);
+      continue;
+    }
+    updateReservoirGIWithMetadata(
+      &r, xs, ns, Lo, sampleKind, wi,
+      pHat, candidateVisibility, currentGrisEpoch, w, &rng,
+    );
   }
 
-    if (grisOn) {
-      if (nrcFinite(r.nativePHat) && r.nativePHat > 0.0 && nrcFinite(r.w_sum) && r.w_sum >= 0.0) {
-        finaliseGIReservoirWFromPHat(&r, ubo.restirGiWCap, false, r.nativePHat);
-      } else {
-        nrcRecordInvalidPdf();
-        r.W = 0.0;
-        r.w_sum = 0.0;
-      }
-    }
-
-  if (!grisOn) {
-    if (r.M > 0u && r.w_sum > 0.0) {
-      let toS = r.xs - r.xv;
-      let distS = length(toS);
-      if (distS > 1e-4) {
-        let wiZ = toS / distS;
-        let shadowOrig = r.xv + r.nv * NORMAL_BIAS_GI;
-        let shadowTint = traceSceneAlphaTintTransmittanceTextured(
-          ubo.bvhMode, ubo.tlasNodeCount,
-
-          shadowOrig, wiZ, distS - 2e-3, ubo.triIntersectEpsilon,
-          bvh_material, BVH_MATERIAL_TEX_WIDTH, bvh_beer,
-        );
-        let shadowT = clamp(luminance(shadowTint), 0.0, 1.0);
-        if (!nrcFinite(shadowT) || !(shadowT > 0.0)) {
-          r.w_sum = 0.0;
-          r.W = 0.0;
-        } else {
-          let pHatZ = restir_gi_receiver_phat_from_payload(
-            pos,
-            normal,
-            receiverClearcoatNormal,
-            receiverWo,
-            receiverPayload,
-            r.xs,
-            r.Lo,
-          );
-          if (!nrcFinite(pHatZ) || !(pHatZ > 0.0)) {
-            nrcRecordInvalidPdf();
-            r.W = 0.0;
-            r.w_sum = 0.0;
-          } else {
-            r.w_sum = r.w_sum * shadowT;
-            finaliseGIReservoirWFromPHat(&r, ubo.restirGiWCap, false, pHatZ);
-          }
-        }
-      } else {
-        r.W = 0.0;
-        r.w_sum = 0.0;
-      }
-    }
+  if (nrcFinite(r.nativePHat) && r.nativePHat > 0.0
+   && nrcFinite(r.w_sum) && r.w_sum >= 0.0) {
+    finaliseGIReservoirWFromPHat(&r, ubo.restirGiWCap, r.nativePHat);
+  } else {
+    nrcRecordInvalidPdf();
+    r.W = 0.0;
+    r.w_sum = 0.0;
   }
 
   // Write one matched input/teacher record if any candidate crossed the spread
@@ -618,8 +550,7 @@ ${RIS_GI_GLASS_VISIBILITY_TAIL_WGSL}
     );
   }
 
-  // GRIS Phase-0 reconnection-shift cache (Lin et al. 2022 §5) — written, read
-  // by no pass in Phase 0.  Shared with risGi.wgsl via refreshGrisMetadata.
+  // Generalized-reuse metadata (Lin et al. 2022 §5), shared with risGi.wgsl.
   refreshGrisMetadata(&r);
 
   storeReservoirGI_rw(pixelIdxGi, r);
@@ -628,7 +559,7 @@ ${RIS_GI_GLASS_VISIBILITY_TAIL_WGSL}
 
 /**
  * Build the NRC gi-ris module for a given encoding/MLP config. The source is:
- *   nrcEncodeHelpers (hash + one-blob + normalise)
+ *   nrcEncodeHelpers (hash + normalise)
  *   + nrcHashGridForward (NrcLevelDesc + trilinear forward)
  *   + nrcSpreadTermination (segment-spread + accumulate + predicate)
  *   + nrcQuery (@group(4) bindings + one-blob/oct/assemble/MLP-forward/record)
@@ -641,9 +572,9 @@ ${RIS_GI_GLASS_VISIBILITY_TAIL_WGSL}
  * Composed ONLY when nrcEnabled is compile-time true — see compilePipelines.
  */
 export function buildRisGiNrcModule(cfg: RisGiNrcConfig): WgslModule {
-  // nrcEncodeHelpers provides nrcSpatialHash3D / nrcNormalizeToAabb /
-  // nrcOneBlobScalar (value/function-space args only — WGSL-portable). The
-  // hash-grid trilinear forward is INLINED inside nrcQueryWgsl (it reads the
+  // nrcEncodeHelpers provides nrcSpatialHash3D / nrcNormalizeToAabb. The
+  // one-blob and hash-grid trilinear forward are implemented inside
+  // nrcQueryWgsl (the latter reads the
   // storage `nrcTables` directly; a helper taking a storage pointer is
   // WGSL-illegal without unrestricted_pointer_parameters). So we do NOT include
   // a storage-buffer helper here.

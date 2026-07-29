@@ -53,8 +53,7 @@ export const ENGINE_DENOISER_MODES = Object.freeze([
  */
 export const ENGINE_FEATURE_IDS = Object.freeze([
   'pt-webgpu-bdpt',
-  'pt-webgpu-restir-pt-reuse',
-  'pt-webgpu-restir-pt-biased-weight-clamp',
+  'pt-webgpu-one-edge-gris-reconnection',
   'pt-webgpu-sobol-sampling',
   'pt-webgpu-cwbvh-closest-traversal',
   'pt-webgpu-photon-map-sppm',
@@ -248,6 +247,28 @@ export interface BackendSupportDetails {
   readonly denoiserSpatialShapeRequirements?: Readonly<
     Partial<Record<EngineDenoiserMode, DenoiserSpatialShapeRequirement>>
   >;
+  /**
+   * Exact convention and dynamic-geometry boundary for
+   * `FrameOutput.motionVectors`. Omitted when a backend does not expose the
+   * auxiliary motion field.
+   */
+  readonly motionVectors?: {
+    readonly units: 'pixels';
+    /** The vector stored at the current pixel before any consumer-side sign. */
+    readonly direction:
+      | 'previous-minus-current'
+      | 'current-minus-previous';
+    /** Which motion source is encoded by the producer. */
+    readonly geometry: 'camera-only' | 'camera-and-object';
+    /**
+     * Correctness policy when geometry, transforms, or skinning change.
+     * `reset-history` means temporal estimators discard their prior generation
+     * instead of pretending camera-only motion describes object motion.
+     */
+    readonly sceneMutationPolicy:
+      | 'reset-history'
+      | 'motion-compensated';
+  };
   readonly mutations: BackendMutationSupportDetails;
   /** Sampling-sequence support and, when applicable, Sobol overflow semantics. */
   readonly samplingSequences?: SamplingSequenceSupportDetails;
@@ -260,8 +281,9 @@ export interface BackendSupportDetails {
   /** D1 (2026-07-20) — maximum number of `MaterialSpec.thinFilmStack.layers`
    *  this backend can represent exactly. Scenes above this capacity are rejected
    *  before upload; the backend never truncates the authored coherent stack.
-   *  Additive/optional: a backend that does not declare it makes no thin-film-
-   *  capacity promise (walkaround omits it — `thinFilmStack` is `unsupported`).
+   *  Additive/optional: a backend that does not declare it makes no exact
+   *  coherent-layer capacity promise. Walkaround supports `thinFilmStack`
+   *  approximately, but does not expose an exact stack-layer capacity.
    *  pt-webgpu = 8 (WGSL loop stride); pt-webgl2 = 35 (GLSL stride). The value
    *  MUST stay in lockstep with each backend's packer constant — pinned by each
    *  backend's `thinFilmLayerLimit.test.ts` drift-guard. */

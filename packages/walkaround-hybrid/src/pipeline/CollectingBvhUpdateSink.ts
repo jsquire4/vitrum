@@ -118,10 +118,6 @@ export class CollectingBvhUpdateSink implements BvhUpdateSink {
     this._replacement = bvhBuffers;
   }
 
-  refreshBvhFullRebuild(bvhBuffers: SceneBVHBuffers): void {
-    this._replacement = bvhBuffers;
-  }
-
   updateEmitters(
     bvhBuffers: Pick<
       SceneBVHBuffers,

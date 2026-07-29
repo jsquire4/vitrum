@@ -50,7 +50,7 @@ export interface BackendMethodPromises {
   /**
    * Whether the backend implements `Engine.getRestirPtResultBuffer()` —
    * the ReSTIR-PT resolve-pass output buffer accessor. pt-webgpu only (and only
-   * when `pt-webgpu-restir-pt-reuse` is active); other backends omit it.
+   * when `pt-webgpu-one-edge-gris-reconnection` is active); other backends omit it.
    */
   readonly getRestirPtResultBuffer: boolean;
   /**
@@ -316,6 +316,51 @@ export const MATERIAL_SPEC_FIELDS = [
   // Backend escape hatch
   'extensions',
 ] as const satisfies readonly (keyof MaterialSpec)[];
+
+/**
+ * Material fields unavailable in the shipping `pt-webgpu` lite trace profile
+ * in addition to fields the full profile already rejects.
+ *
+ * This is executable contract data rather than adapter documentation: the
+ * pt-webgpu scene gate and the glTF compatibility evaluator both consume this
+ * exact frozen tuple. Keeping the profile restriction beside the exhaustive
+ * MaterialSpec key list prevents either consumer from independently retyping
+ * (and drifting from) the renderer's accepted domain.
+ */
+export const PT_WEBGPU_LITE_EXTRA_UNSUPPORTED_MATERIAL_FIELDS = Object.freeze([
+  'baseColorMap',
+  'normalMap',
+  'normalScale',
+  'roughnessMap',
+  'metallicMap',
+  'transmissionMap',
+  'thicknessMap',
+  'emissiveMap',
+  'alphaMap',
+  'aoMap',
+  'aoMapIntensity',
+  'clearcoatMap',
+  'clearcoatRoughnessMap',
+  'clearcoatNormalMap',
+  'clearcoatNormalScale',
+  'sheenColorMap',
+  'sheenRoughnessMap',
+  'iridescenceMap',
+  'iridescenceThicknessMap',
+  'anisotropyMap',
+  'specularColorMap',
+  'specularIntensityMap',
+  'bumpMap',
+  'bumpScale',
+  'lightMap',
+  'lightMapIntensity',
+  'alphaMode',
+  'alphaCutoff',
+  'opacity',
+  'envMapIntensity',
+  'anisotropy',
+  'anisotropyRotation',
+] as const satisfies readonly (keyof MaterialSpec)[]);
 
 // Compile-time exhaustiveness (reverse direction): a `MaterialSpec` key MISSING
 // from MATERIAL_SPEC_FIELDS makes this type non-never → TS2344 below.
@@ -767,7 +812,7 @@ type ShadowSupportMatrix = Readonly<
 /** walkaround-hybrid — primitive castShadow is honored by DI shadow predicates,
  *  ReSTIR-GI reservoir visibility, DDGI probe direct-light visibility, RC probe
  *  direct-light visibility, and GRIS reconnection visibility. The main pipeline
- *  uses traceSceneAnyAlphaMaskTextured for atlas-backed direct/ReSTIR/GI
+ *  uses traceSceneAlphaTintTransmittanceTextured for atlas-backed direct/ReSTIR/GI
  *  shadow visibility; DDGI/RC read shared MaterialEntry flag bit 1 through
  *  predicate-backed shared-BVH traversal.
  *  Emitter castShadow is honored across direct analytic/area NEE,
@@ -795,9 +840,9 @@ const PT_WEBGL2_SHADOWS: ShadowSupportMatrix = Object.freeze({
 /** pt-webgpu — primitive castShadow is enforced in `traceMeshBvh`'s any-hit
  *  (occlusion) mode, which underlies EVERY traceAny call site on both tiers
  *  (NEE shadow rays, BSDF-MIS connections, ReSTIR-PT reconnection visibility,
- *  MNEE/caustic legs) → 'native'. Note: contract-level `AnalyticPrimitive` has
- *  no castShadow field, so analytic shapes always occlude. Emitter castShadow
- *  is honored by the default kernel/kernelLite NEE loops + the connect.wgsl
+ *  MNEE/caustic legs) → 'native'. `AnalyticPrimitive.castShadow` is a
+ *  first-class validated field and the analytic intersection path honors it.
+ *  Emitter castShadow is honored by the default kernel/kernelLite NEE loops + the connect.wgsl
  *  BSDF-MIS area-light connections for all 6 emitter kinds. Lite-tier
  *  directional NEE decodes the signed `cameraPos.w` mirror for the first
  *  directional flag. ReSTIR-PT suffix direct lighting also consumes the packed
@@ -1028,6 +1073,12 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
       },
       shadows: WALKAROUND_SHADOWS,
       denoisers: WALKAROUND_DENOISERS,
+      motionVectors: {
+        units: 'pixels',
+        direction: 'previous-minus-current',
+        geometry: 'camera-only',
+        sceneMutationPolicy: 'reset-history',
+      },
       causticStrategies: {
         'refractive-trace': {
           mode: 'approximate',
@@ -1262,6 +1313,12 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
       materials: PT_WEBGPU_MATERIALS,
       shadows: PT_WEBGPU_SHADOWS,
       denoisers: PT_WEBGPU_DENOISERS,
+      motionVectors: {
+        units: 'pixels',
+        direction: 'current-minus-previous',
+        geometry: 'camera-only',
+        sceneMutationPolicy: 'reset-history',
+      },
       mutations: PT_WEBGPU_MUTATIONS,
       causticStrategies: {
         'manifold-nee': {
@@ -1306,14 +1363,14 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
         maxLightVertices: 8,
         maxEyeVertices: 8,
         pureEyeStrategy: 'partitioned-eye-estimator',
-        cameraSplatStrategy: 'unsupported',
+        cameraSplatStrategy: 'native',
         misDenominator: 'sampled-strategies-only',
       },
       samplingSequences: {
         default: 'pcg',
         modes: { pcg: 'native', sobol: 'native' },
         sobol: {
-          lowDiscrepancyDimensions: 4,
+          lowDiscrepancyDimensions: 512,
           continuation: 'independent-pcg',
           sampleBlockSize: 65536,
           frameIndexPeriod: 4294967296,
@@ -1338,7 +1395,7 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
       // parameter values instead of silently changing the selected method.
       createInverseSession: true,
       // getRestirPtResultBuffer is gated on active feature
-      // 'pt-webgpu-restir-pt-reuse'. The method IS wired on the engine class (returns
+      // 'pt-webgpu-one-edge-gris-reconnection'. The method IS wired on the engine class (returns
       // null when the feature is off); the ledger records it as implemented
       // because the method EXISTS on every pt-webgpu instance, not just those
       // with ReSTIR-PT enabled.

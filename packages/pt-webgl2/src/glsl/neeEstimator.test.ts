@@ -230,22 +230,20 @@ describe('separate NEE estimator', () => {
     expect(BLEND_FRAG).not.toContain('color2.a =');
   });
 
-  it('does not add ordinary NEE lighting after a debug program replaces radiance', () => {
-    const debugGuard = glResourcesSource.indexOf('if (this.#debugMode === 0) {');
+  it('always resolves ordinary NEE before the running-mean composite', () => {
     const candidateDraw = glResourcesSource.indexOf(
       'const candidateProgram = this.#neeCandidateProgram;',
-      debugGuard,
     );
     const resolveDraw = glResourcesSource.indexOf(
       'const resolveProgram = this.#neeResolveProgram;',
       candidateDraw,
     );
     const composite = glResourcesSource.indexOf('this.#compositeBlendStep(', resolveDraw);
-    expect(debugGuard).toBeGreaterThanOrEqual(0);
-    expect(candidateDraw).toBeGreaterThan(debugGuard);
+    expect(glResourcesSource).not.toContain('#debugMode');
+    expect(candidateDraw).toBeGreaterThanOrEqual(0);
     expect(resolveDraw).toBeGreaterThan(candidateDraw);
     expect(composite).toBeGreaterThan(resolveDraw);
-    expect(glResourcesSource.slice(debugGuard, composite)).toContain(
+    expect(glResourcesSource.slice(candidateDraw, composite)).toContain(
       'gl.blendFunc(gl.ONE, gl.ONE);',
     );
     expect(glResourcesSource).toContain(

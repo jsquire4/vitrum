@@ -351,27 +351,30 @@ export const RIS_GI_GLASS_TRANSPORT_PREFIX_WGSL = /* wgsl */ `  const GLASS_WALK
 export const RIS_GI_GLASS_RESERVOIR_LOOP_WGSL = /* wgsl */ `    var rGlass: ReservoirGI = emptyReservoirGI();
     rGlass.xv = walkHitPos;
     rGlass.nv = walkHitNormal;
-    if (grisOn) { rGlass.historyEpoch = currentGrisEpoch; }
-    let walkMaterialWordCoord = vec2u(
+    rGlass.historyEpoch = currentGrisEpoch;
+
+    let walkReceiverCoord = vec2u(
       walkHit.indices.w % BVH_MATERIAL_TEX_WIDTH,
       walkHit.indices.w / BVH_MATERIAL_TEX_WIDTH,
     );
-    let walkMaterialWord = textureLoad(bvh_material, vec2i(walkMaterialWordCoord), 0).r;
-    let walkPayload = sampleRestirDIMaterialPayloadForHit(
+    let walkReceiverWord = textureLoad(
+      bvh_material,
+      vec2i(walkReceiverCoord),
+      0,
+    ).r;
+    let walkReceiverPayload = sampleRestirDIMaterialPayloadForHit(
       walkHit,
       walkSmoothNormal,
       walkHitNormal,
       decodeMaterialColor(walkHit.matColorPacked).rgb,
-      walkMaterialWord,
-      -refractDir,
+      walkReceiverWord,
+      safe_normalize(-refractDir),
     );
-    let walkClearcoatNormal = walkPayload.clearcoatNormal;
-    let walkWo = -refractDir;
 
     let tier_raw_g = textureLoad(gi_tier, vec2i(fullPx), 0).r;
     let tier_g = clamp(tier_raw_g, 1u, 4u);
     let M_GI_g = M_GI_BASE * tier_g / 2u;
-    let ppgGuidedOn_g = (ubo.ppgEnabled == 1u) && !grisOn;
+    let ppgGuidedOn_g = ubo.ppgEnabled == 1u;
     let alpha_g = select(0.0, ubo.ppgMixAlpha, ppgGuidedOn_g);
 
     for (var i: u32 = 0u; i < M_GI_g; i = i + 1u) {
@@ -388,11 +391,7 @@ export const RIS_GI_GLASS_RESERVOIR_LOOP_WGSL = /* wgsl */ `    var rGlass: Rese
       }
       let cosTheta = max(0.0, dot(walkHitNormal, wi));
       if (cosTheta <= 0.0) {
-        if (grisOn) {
-          recordInvalidReservoirGICandidate(&rGlass, GI_SAMPLE_SURFACE, currentGrisEpoch);
-        } else {
-          rGlass.M = rGlass.M + 1u;
-        }
+        recordInvalidReservoirGICandidate(&rGlass, GI_SAMPLE_SURFACE, currentGrisEpoch);
         continue;
       }
 
@@ -429,12 +428,7 @@ export const RIS_GI_GLASS_RESERVOIR_LOOP_WGSL = /* wgsl */ `    var rGlass: Rese
           wi,
           xsMaterialWord_g,
         );
-        if (grisOn) {
-          Lo_g = restir_gi_surface_source_for_hit(bounceHit, xsPayload_g.albedo)
-            + irrAtXs * xsPayload_g.albedo * INV_PI;
-        } else {
-          Lo_g = xsPayload_g.Lo;
-        }
+        Lo_g = xsPayload_g.Lo;
       } else {
         xs_g = walkHitPos + wi * RECONNECT_MAX_DIST;
         ns_g = -wi;
@@ -449,38 +443,30 @@ export const RIS_GI_GLASS_RESERVOIR_LOOP_WGSL = /* wgsl */ `    var rGlass: Rese
 
       var candidateVisibility_g: f32 = 1.0;
       var pHat_g: f32;
-      if (grisOn) {
-        var tMax_g = 1e20;
-        if (sampleKind_g == GI_SAMPLE_SURFACE) {
-          tMax_g = max(0.0, length(xs_g - walkHitPos) - 2e-3);
-        }
-        let shadowTintCandidate_g = traceSceneAlphaTintTransmittanceTextured(
-          ubo.bvhMode, ubo.tlasNodeCount,
-
-          walkHitPos + walkHit.normal * NORMAL_BIAS_GI,
-          wi, tMax_g, ubo.triIntersectEpsilon,
-          bvh_material, BVH_MATERIAL_TEX_WIDTH, bvh_beer,
-        );
-        candidateVisibility_g = clamp(luminance(shadowTintCandidate_g), 0.0, 1.0);
-        pHat_g = luminance(Lo_g) * cosTheta * INV_PI * candidateVisibility_g;
-      } else {
-        pHat_g = restir_gi_receiver_phat_from_payload(
-          walkHitPos,
-          walkHitNormal,
-          walkClearcoatNormal,
-          walkWo,
-          walkPayload,
-          xs_g,
-          Lo_g,
-        );
+      var tMax_g = 1e20;
+      if (sampleKind_g == GI_SAMPLE_SURFACE) {
+        tMax_g = max(0.0, length(xs_g - walkHitPos) - 2e-3);
       }
+      let shadowTintCandidate_g = traceSceneAlphaTintTransmittanceTextured(
+        ubo.bvhMode, ubo.tlasNodeCount,
+
+        walkHitPos + walkHit.normal * NORMAL_BIAS_GI,
+        wi, tMax_g, ubo.triIntersectEpsilon,
+        bvh_material, BVH_MATERIAL_TEX_WIDTH, bvh_beer,
+      );
+      candidateVisibility_g = clamp(luminance(shadowTintCandidate_g), 0.0, 1.0);
+      pHat_g = restir_gi_receiver_phat_from_payload(
+        walkHitPos,
+        walkHitNormal,
+        walkReceiverPayload.clearcoatNormal,
+        safe_normalize(-refractDir),
+        walkReceiverPayload,
+        xs_g,
+        Lo_g,
+      ) * candidateVisibility_g;
       if (!reservoirGiFinite(pHat_g) || !(pHat_g > 0.0)
        || !reservoirGiFinite(candidateVisibility_g) || candidateVisibility_g <= 0.0) {
-        if (grisOn) {
-          recordInvalidReservoirGICandidate(&rGlass, sampleKind_g, currentGrisEpoch);
-        } else {
-          rGlass.M = rGlass.M + 1u;
-        }
+        recordInvalidReservoirGICandidate(&rGlass, sampleKind_g, currentGrisEpoch);
         continue;
       }
       let pCos_g = cosTheta * INV_PI;
@@ -493,25 +479,17 @@ export const RIS_GI_GLASS_RESERVOIR_LOOP_WGSL = /* wgsl */ `    var rGlass: Rese
         if (pCos_g > 0.0) { w_g = pHat_g / pCos_g; }
       }
       if (!reservoirGiFinite(w_g) || !(w_g > 0.0)) {
-        if (grisOn) {
-          recordInvalidReservoirGICandidate(&rGlass, sampleKind_g, currentGrisEpoch);
-        } else {
-          rGlass.M = rGlass.M + 1u;
-        }
+        recordInvalidReservoirGICandidate(&rGlass, sampleKind_g, currentGrisEpoch);
         continue;
       }
-      if (grisOn) {
-        updateReservoirGIWithMetadata(
-          &rGlass,
-          xs_g, ns_g, Lo_g,
-          sampleKind_g, wi,
-          pHat_g, candidateVisibility_g, currentGrisEpoch,
-          w_g,
-          &rng,
-        );
-      } else {
-        updateReservoirGI(&rGlass, xs_g, ns_g, Lo_g, w_g, &rng);
-      }
+      updateReservoirGIWithMetadata(
+        &rGlass,
+        xs_g, ns_g, Lo_g,
+        sampleKind_g, wi,
+        pHat_g, candidateVisibility_g, currentGrisEpoch,
+        w_g,
+        &rng,
+      );
     }`;
 
 /**
@@ -520,58 +498,29 @@ export const RIS_GI_GLASS_RESERVOIR_LOOP_WGSL = /* wgsl */ `    var rGlass: Rese
  * newline; the call site controls the surrounding whitespace.
  */
 export const RIS_GI_GLASS_VISIBILITY_TAIL_WGSL = /* wgsl */ `    if (rGlass.M > 0u && rGlass.w_sum > 0.0) {
-      if (grisOn) {
-        if (
-          rGlass.historyEpoch != currentGrisEpoch ||
-          rGlass.sampleVisibility <= 0.0 ||
-          !(rGlass.nativePHat > 0.0)
-        ) {
-          rGlass.w_sum = 0.0;
-          rGlass.W = 0.0;
-        } else {
-          finaliseGIReservoirWFromPHat(
-            &rGlass,
-            ubo.restirGiWCap,
-            false,
-            rGlass.nativePHat,
-          );
-        }
+      if (
+        rGlass.historyEpoch != currentGrisEpoch ||
+        rGlass.sampleVisibility <= 0.0 ||
+        !(rGlass.nativePHat > 0.0)
+      ) {
+        rGlass.w_sum = 0.0;
+        rGlass.W = 0.0;
       } else {
-        let toS_g = rGlass.xs - rGlass.xv;
-        let distS_g = length(toS_g);
-        if (distS_g > 1e-4) {
-          let wiZ_g = toS_g / distS_g;
-          let shadowOrig_g = rGlass.xv + rGlass.nv * NORMAL_BIAS_GI;
-          let shadowTint_g = traceSceneAlphaTintTransmittanceTextured(
-            ubo.bvhMode, ubo.tlasNodeCount,
-
-            shadowOrig_g, wiZ_g, distS_g - 2e-3, ubo.triIntersectEpsilon,
-            bvh_material, BVH_MATERIAL_TEX_WIDTH, bvh_beer,
-          );
-          let shadowT_g = clamp(luminance(shadowTint_g), 0.0, 1.0);
-          if (shadowT_g <= 0.0) {
-            rGlass.w_sum = 0.0;
-            rGlass.W = 0.0;
-          } else {
-            let pHatZ_g = restir_gi_receiver_phat_from_payload(
-              rGlass.xv,
-              rGlass.nv,
-              walkClearcoatNormal,
-              walkWo,
-              walkPayload,
-              rGlass.xs,
-              rGlass.Lo,
-            );
-            rGlass.w_sum = rGlass.w_sum * shadowT_g;
-            finaliseGIReservoirWFromPHat(&rGlass, ubo.restirGiWCap, false, pHatZ_g);
-          }
-        } else {
-          rGlass.W = 0.0;
-          rGlass.w_sum = 0.0;
-        }
+        finaliseGIReservoirWFromPHat(
+          &rGlass,
+          ubo.restirGiWCap,
+          rGlass.nativePHat,
+        );
       }
     }
 
     refreshGrisMetadata(&rGlass);
+    // Lo contains camera-side Fresnel/Beer throughput from a bounded
+    // dielectric prefix that is not represented in the reservoir. Keep the
+    // sample for this pixel's transmitted-GI shading, but mark it as having no
+    // valid temporal/spatial inverse shift.
+    if (rGlass.prefixVertexCount == GI_PREFIX_RECONNECTABLE) {
+      rGlass.prefixVertexCount = GI_PREFIX_CAMERA_TRANSMISSION;
+    }
     storeReservoirGI_rw(pixelIdxGi, rGlass);
     return;`;

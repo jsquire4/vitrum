@@ -38,6 +38,7 @@ export interface CascadeDim {
   readonly intervalFar: number;
 }
 
+/** Number of levels in the exported default pyramid; always derived from its layout. */
 export const CASCADE_COUNT = CASCADE_DIMS.length;
 
 const UINT32_MAX = 0xffff_ffff;
@@ -45,12 +46,6 @@ const MAX_CASCADE_RAYS_FOR_VEC4_INDEXING = Math.floor(UINT32_MAX / 4);
 
 function isArrayValue(value: unknown): boolean {
   return Array.isArray(value);
-}
-
-/** Plain AABB ({min,max} in world space), used instead of `THREE.Box3`. */
-export interface CascadeAABB {
-  readonly min: readonly [number, number, number];
-  readonly max: readonly [number, number, number];
 }
 
 function assertPositiveInteger(value: unknown, path: string): asserts value is number {

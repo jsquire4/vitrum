@@ -38,7 +38,6 @@ type OverlayId =
   | 'materialInspector';
 
 const DIAGNOSTIC_OVERLAYS = new Set<OverlayId>([
-  'ddgiAtlas',
   'giSignalSplit',
 ]);
 

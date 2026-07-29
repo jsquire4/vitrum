@@ -5,7 +5,7 @@
  * the hit surface (since we're using primary-ray-cast mode instead of a G-buffer),
  * traces one indirect bounce (ReSTIR GI), and writes HDR color to hdrColorOut.
  *
- * This is the primary-ray-cast fallback mode.
+ * This is the canonical primary-ray-cast mode.
  *
  * W4-A5 — `shadeMain` is split into one helper per lighting term:
  *   lo_emit, lo_direct, lo_refractive_caustic, lo_sg_aperture, lo_indirect.
@@ -114,8 +114,8 @@ ${reservoirGiAccessorsWgsl({ loadReadWriteBinding: 'reservoirGiCurrent' })}
 // so the pipeline layout matches risGi.wgsl (which is the real consumer of
 // the atlas at the reconnection vertex — Sprint 16 replaced shade's direct
 // atlas read with reservoir consumption). Shade does not reference these
-// bindings; they are declared only to keep the layout valid for layout
-// compatibility checks and to leave the door open for future fallback paths.
+// bindings; they are declared only to preserve the shared group-3 layout used
+// by the GI passes.
 //
 // D5.1+D5.2: DDGIGridUBO struct and @group(3) @binding(3) are now provided by
 // the shared ddgiGridUbo module (declared canonical in ddgiSampleWgsl.ts).
@@ -352,7 +352,13 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
   // The bounded generic refractive estimator is controlled by the explicit
   // construction-time strategy gate. The stained-glass aperture remains a
   // separate flag-gated presentation term.
-  let Lo_refractiveCaustic = lo_refractive_caustic(pix, pos, normal, albedo, isGlass, isMetal);
+  let Lo_refractiveCaustic = lo_refractive_caustic(
+    pix, pos, normal, clearcoatNormal, wo,
+    albedo, rough, metal, specular, anisotropy,
+    anisotropyFrame.tangent, anisotropyFrame.bitangent,
+    iridescence, clearcoat, sheen, sheenRoughness,
+    isGlass, isMetal,
+  );
   let Lo_skyAperture = lo_sg_aperture(pos, normal, albedo, isGlass, isMetal);
   let Lo_indirect   = lo_indirect(pix, dims, pos, normal, isGlass, isMetal);
   // B1 tail (2026-06-10) — glass refracted GI: consumption of the post-glass

@@ -4,6 +4,7 @@ import {
   NRC_WEBGPU_REQUIRED_LIMITS,
 } from '@vitrum/walkaround-hybrid';
 import {
+  PT_WEBGPU_BDPT_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
   PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
   PT_WEBGPU_CWBVH_CLOSEST_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
   PT_WEBGPU_CWBVH_CLOSEST_RESTIR_PT_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
@@ -58,6 +59,22 @@ describe('computeProgressiveLimitUnion', () => {
     expect(computeProgressiveLimitUnion({ cwbvhClosest: true })[
       'maxStorageBuffersPerShaderStage'
     ]).toBe(PT_WEBGPU_CWBVH_CLOSEST_REQUIRED_STORAGE_BUFFERS_PER_STAGE);
+  });
+
+  it('raises the shared-device floor for native BDPT camera splats', () => {
+    expect(computeProgressiveLimitUnion({ bdpt: true })[
+      'maxStorageBuffersPerShaderStage'
+    ]).toBe(PT_WEBGPU_BDPT_REQUIRED_STORAGE_BUFFERS_PER_STAGE);
+  });
+
+  it('adds the BDPT camera-splat buffer to other optional layouts', () => {
+    expect(computeProgressiveLimitUnion({
+      bdpt: true,
+      cwbvhClosest: true,
+      oneEdgeReconnectionReuse: true,
+    })['maxStorageBuffersPerShaderStage']).toBe(
+      PT_WEBGPU_CWBVH_CLOSEST_RESTIR_PT_REQUIRED_STORAGE_BUFFERS_PER_STAGE + 1,
+    );
   });
 
   it('uses the combined CWBVH + ReSTIR-PT floor when both optional layouts are enabled', () => {

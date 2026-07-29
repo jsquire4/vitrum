@@ -1,5 +1,6 @@
 import type { GltfJson, GltfPrimitive } from './gltfTypes.js';
 import {
+  effectiveGltfTextureSourceExtensions,
   GLTF_TEXTURE_SOURCE_EXTENSIONS,
   type GltfTextureSourceExtension,
 } from './textures.js';
@@ -130,7 +131,9 @@ export function collectGltfSceneReachability(
     }
   }
 
-  const enabledTextureSourceExtensions = new Set(textureSourceExtensions);
+  const enabledTextureSourceExtensions = new Set(
+    effectiveGltfTextureSourceExtensions(textureSourceExtensions),
+  );
   for (const textureIndex of textureIndices) {
     const imageIndex = selectedTextureImageIndex(
       gltf,

@@ -109,6 +109,15 @@ function resolvedDenoiser(engine: HybridEngine): string {
   return (engine as unknown as { _cfg: { denoiser: string } })._cfg.denoiser;
 }
 
+const ALWAYS_ON_GRIS_FEATURE = 'walkaround-hybrid-gris-ddgi-proxy-reuse';
+
+function expectedActiveFeatures(...features: Array<string | undefined>): Set<string> {
+  return new Set([
+    ALWAYS_ON_GRIS_FEATURE,
+    ...features.filter((feature): feature is string => feature !== undefined),
+  ]);
+}
+
 function meshPrimitive(id: string): ScenePrimitive {
   return {
     kind: 'mesh',
@@ -259,8 +268,24 @@ describe('walkaround-hybrid capability/partition reconciliation', () => {
   it('reports only the resolved default denoiser when opt-in features are disabled', () => {
     const engine = new HybridEngine(makeOpts());
     try {
-      expect(engine.capabilities.activeFeatures).toEqual(new Set(['walkaround-hybrid-denoiser-atrous-variance']));
+      expect(engine.capabilities.activeFeatures).toEqual(
+        expectedActiveFeatures('walkaround-hybrid-denoiser-atrous-variance'),
+      );
       expect([...(engine.capabilities.activeFeatures ?? [])]).not.toContain('svgf-real-conservative-objid');
+    } finally {
+      engine.dispose();
+    }
+  });
+
+  it('reports camera-only pixel motion with mandatory history reset for scene mutations', () => {
+    const engine = new HybridEngine(makeOpts());
+    try {
+      expect(engine.capabilities.supportDetails?.motionVectors).toEqual({
+        units: 'pixels',
+        direction: 'previous-minus-current',
+        geometry: 'camera-only',
+        sceneMutationPolicy: 'reset-history',
+      });
     } finally {
       engine.dispose();
     }
@@ -273,10 +298,10 @@ describe('walkaround-hybrid capability/partition reconciliation', () => {
     });
     try {
       expect(engine.capabilities.causticStrategy).toBe('refractive-trace');
-      expect(engine.capabilities.activeFeatures).toEqual(new Set([
+      expect(engine.capabilities.activeFeatures).toEqual(expectedActiveFeatures(
         'walkaround-hybrid-refractive-trace-caustics',
         'walkaround-hybrid-denoiser-atrous-variance',
-      ]));
+      ));
       expect(engine.capabilities.causticStrategy).not.toBe('manifold-nee');
       expect(engine.capabilities.supportDetails?.causticStrategies?.['refractive-trace']).toEqual({
         mode: 'approximate',
@@ -326,9 +351,7 @@ describe('walkaround-hybrid capability/partition reconciliation', () => {
         : {}),
     });
     try {
-      expect(engine.capabilities.activeFeatures).toEqual(
-        new Set(feature === undefined ? [] : [feature]),
-      );
+      expect(engine.capabilities.activeFeatures).toEqual(expectedActiveFeatures(feature));
       expect([...(engine.capabilities.activeFeatures ?? [])]).not.toContain(
         'svgf-real-conservative-objid',
       );
@@ -346,7 +369,9 @@ describe('walkaround-hybrid capability/partition reconciliation', () => {
       onWarning: (warning) => warnings.push(warning),
     });
     try {
-      expect(engine.capabilities.activeFeatures).toEqual(new Set(['walkaround-hybrid-denoiser-atrous-variance']));
+      expect(engine.capabilities.activeFeatures).toEqual(
+        expectedActiveFeatures('walkaround-hybrid-denoiser-atrous-variance'),
+      );
       expect(resolvedDenoiser(engine)).toBe('atrous-variance');
       expect(engine.capabilities.supportDetails?.denoisers.neural).toBe('unsupported');
       expect(warnings).toEqual([
@@ -379,7 +404,9 @@ describe('walkaround-hybrid capability/partition reconciliation', () => {
       onWarning: (warning) => warnings.push(warning),
     });
     try {
-      expect(engine.capabilities.activeFeatures).toEqual(new Set(['walkaround-hybrid-denoiser-neural']));
+      expect(engine.capabilities.activeFeatures).toEqual(
+        expectedActiveFeatures('walkaround-hybrid-denoiser-neural'),
+      );
       expect(resolvedDenoiser(engine)).toBe('neural');
       expect(engine.capabilities.supportDetails?.denoisers.neural).toBe('native');
       expect(warnings).toEqual(expect.arrayContaining([
@@ -420,7 +447,9 @@ describe('walkaround-hybrid capability/partition reconciliation', () => {
       onWarning: (warning) => warnings.push(warning),
     });
     try {
-      expect(engine.capabilities.activeFeatures).toEqual(new Set(['walkaround-hybrid-denoiser-atrous-variance']));
+      expect(engine.capabilities.activeFeatures).toEqual(
+        expectedActiveFeatures('walkaround-hybrid-denoiser-atrous-variance'),
+      );
       expect(resolvedDenoiser(engine)).toBe('atrous-variance');
       expect(engine.capabilities.supportDetails?.denoisers.neural).toBe('unsupported');
       expect(warnings).toEqual([
@@ -451,7 +480,9 @@ describe('walkaround-hybrid capability/partition reconciliation', () => {
       onWarning: (warning) => warnings.push(warning),
     });
     try {
-      expect(engine.capabilities.activeFeatures).toEqual(new Set(['walkaround-hybrid-denoiser-atrous-variance']));
+      expect(engine.capabilities.activeFeatures).toEqual(
+        expectedActiveFeatures('walkaround-hybrid-denoiser-atrous-variance'),
+      );
       expect(resolvedDenoiser(engine)).toBe('atrous-variance');
       expect(warnings).toEqual([
         expect.objectContaining({
@@ -476,7 +507,6 @@ describe('walkaround-hybrid capability/partition reconciliation', () => {
       rcEnabled: true,
       gpuSkinning: true,
       regir: { enabled: true },
-      grisReuse: false,
       ppgEnabled: true,
       nrcEnabled: true,
       denoiser: 'neural',
@@ -484,14 +514,14 @@ describe('walkaround-hybrid capability/partition reconciliation', () => {
       onWarning: (warning) => warnings.push(warning),
     });
     try {
-      expect(engine.capabilities.activeFeatures).toEqual(new Set([
+      expect(engine.capabilities.activeFeatures).toEqual(expectedActiveFeatures(
         'walkaround-hybrid-ppg-guided-gi',
         'walkaround-hybrid-nrc',
         'walkaround-hybrid-radiance-cascades',
         'walkaround-hybrid-regir',
         'walkaround-hybrid-gpu-skinning',
         'walkaround-hybrid-denoiser-neural',
-      ]));
+      ));
       expect(warnings).toEqual(expect.arrayContaining([
         expect.objectContaining({
           code: 'walkaround-hybrid.nrc-biased-estimator-enabled',

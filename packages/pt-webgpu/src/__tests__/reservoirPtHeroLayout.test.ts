@@ -144,10 +144,10 @@ describe('ReSTIR-PT compact hero reservoir ABI', () => {
     }
   });
 
-  it('keeps the reuse unit tunables in its 32-byte UBO', () => {
+  it('keeps the reuse unit tunables in its 16-byte UBO', () => {
     expect(RESTIR_PT_PARAMS_WGSL).toContain('struct RestirPtParams {');
     expect(RESTIR_PT_PARAMS_WGSL).toContain('mClamp:   u32,');
-    expect(RESTIR_PT_PARAMS_WGSL).toContain('wCap:     f32,');
+    expect(RESTIR_PT_PARAMS_WGSL).not.toContain('wCap');
   });
 });
 
@@ -236,8 +236,8 @@ describe('ReSTIR-PT empty reservoir', () => {
 
   it('initializes all persisted identity and metadata sentinels', () => {
     for (const token of [
-      'r.W = 0.0;',
-      'r.w_sum = 0.0;',
+      'r.logW = RPT_LOG_ZERO;',
+      'r.logWeightSum = RPT_LOG_ZERO;',
       'r.M = 0u;',
       'r.pdfSrc = 0.0;',
       'r.heroLambdaV = 550.0;',
@@ -254,7 +254,7 @@ describe('ReSTIR-PT empty reservoir', () => {
     const refresh = fnBody(RESERVOIR_PT_HERO_WGSL, 'refreshReconnectionStatePT');
     expect(refresh).toContain('!rptFinitePositive(dRecon) || dRecon <= 1e-6');
     expect(refresh).toContain('(*r).M = 0u;');
-    expect(refresh).toContain('(*r).W = 0.0;');
-    expect(refresh).toContain('(*r).w_sum = 0.0;');
+    expect(refresh).toContain('(*r).logW = RPT_LOG_ZERO;');
+    expect(refresh).toContain('(*r).logWeightSum = RPT_LOG_ZERO;');
   });
 });

@@ -53,6 +53,12 @@ interface EnvironmentParams {
   readonly sunDirection: readonly [number, number, number];
   readonly sunStrength: number;
   /**
+   * Solid-angle-integrated environment luminance used as the light-tree leaf
+   * power. HDRI intensity is folded in exactly once; procedural-sky intensity
+   * is already baked into its map and integral.
+   */
+  readonly lightTreePower: number;
+  /**
    * H14-E: HDRI radiance intensity multiplier, separate from `sunStrength`.
    * `scene.environment.intensity ?? 1` when a valid HDRI is present; 0 otherwise.
    * Uploaded to `params.environmentHdriIntensity` so the equirect lookup is NOT
@@ -171,14 +177,56 @@ function strictHdriRawPayload(handle: unknown): HdriRawPayload {
   return { width, height, data, channels };
 }
 
-function finiteNonNegative(value: number | undefined, fallback: number, label: string): number {
+function finiteNonNegativeF32(
+  value: number | undefined,
+  fallback: number,
+  label: string,
+): number {
   const resolved = value ?? fallback;
   if (!Number.isFinite(resolved) || resolved < 0) {
     throw new RangeError(
       `[vitrum/pt-webgpu] ${label} must be finite and non-negative; received ${String(resolved)}.`,
     );
   }
-  return resolved;
+  const packed = Math.fround(resolved);
+  if (!Number.isFinite(packed) || (resolved > 0 && packed === 0)) {
+    throw new RangeError(
+      `[vitrum/pt-webgpu] ${label} must remain finite and positive after Float32 packing ` +
+        `when non-zero; received ${String(resolved)}.`,
+    );
+  }
+  return packed === 0 ? 0 : packed;
+}
+
+/** Smallest positive IEEE-754 binary32 value. A positive environment power
+ * below this would pack to zero and make a nonblack selectable leaf
+ * unreachable; black/zero-intensity environments remain exactly zero. */
+const MIN_POSITIVE_F32 = 2 ** -149;
+
+function environmentLightTreePower(
+  luminanceIntegral: number,
+  intensity: number,
+): number {
+  if (
+    !Number.isFinite(luminanceIntegral) ||
+    luminanceIntegral < 0 ||
+    !Number.isFinite(intensity) ||
+    intensity < 0
+  ) {
+    throw new RangeError(
+      '[vitrum/pt-webgpu] environment light-tree luminance integral and intensity ' +
+        'must be finite and non-negative.',
+    );
+  }
+  const power = luminanceIntegral * intensity;
+  const packedPower = Math.fround(power);
+  if (!Number.isFinite(power) || !Number.isFinite(packedPower)) {
+    throw new RangeError(
+      '[vitrum/pt-webgpu] environment light-tree power exceeds Float32 range.',
+    );
+  }
+  if (luminanceIntegral === 0 || intensity === 0) return 0;
+  return packedPower === 0 ? MIN_POSITIVE_F32 : packedPower;
 }
 
 /** Empty / no-environment slot — neutral tint, no HDRI sampling.
@@ -189,6 +237,7 @@ function emptyEnvironmentParams(): EnvironmentParams {
     tint: [1, 1, 1],
     sunDirection: [0, 1, 0],
     sunStrength: 0,
+    lightTreePower: 0,
     hdriIntensity: 0,
     hdriRotationY: 0,
     hdriWidth: 0,
@@ -231,24 +280,24 @@ function buildProceduralSkyEnvironmentParams(
     len < 1e-8 ? [0, 1, 0] : [(rawD[0] ?? 0) / len, (rawD[1] ?? 0) / len, (rawD[2] ?? 0) / len];
   const intensity = env.intensity ?? 1;
 
-  const { texels, cdf, width, height } = bakePreethamSkyEquirect({
-    sunDirection: sunDir,
-    turbidity: env.turbidity ?? 2,
-    rayleigh: env.rayleigh ?? 1,
-    mieCoefficient: env.mieCoefficient ?? 0.005,
-    mieDirectionalG: env.mieDirectionalG ?? 0.8,
-    intensity,
-  });
+  const { texels, cdf, width, height, luminanceIntegral } =
+    bakePreethamSkyEquirect({
+      sunDirection: sunDir,
+      turbidity: env.turbidity ?? 2,
+      rayleigh: env.rayleigh ?? 1,
+      mieCoefficient: env.mieCoefficient ?? 0.005,
+      mieDirectionalG: env.mieDirectionalG ?? 0.8,
+      intensity,
+    });
 
   return {
     // Tint is white: the radiance is already baked into the equirect texels.
     tint: [1, 1, 1],
-    // sunDirection / sunStrength: the procedural-sky sun gate (environmentSun.w)
-    // is NOT needed here because we route through the HDRI path (hasHdri=true).
-    // Set sunStrength=0 so the sky NEE branch doesn't double-fire alongside the
-    // HDRI CDF sampling (the baked map includes the sun disk in the CDF).
+    // The legacy sun lane remains zero: the procedural sky, including its sun
+    // disk, is represented entirely by this baked HDRI and its sampling CDF.
     sunDirection: sunDir,
     sunStrength: 0,
+    lightTreePower: environmentLightTreePower(luminanceIntegral, 1),
     // H14-E: hdriIntensity is always 1 here — intensity was already folded into
     // the baked radiance values by bakePreethamSkyEquirect.  Multiplying again would
     // double-apply it.  The HDRI gate (hasHdri=true) picks this up correctly.
@@ -272,7 +321,11 @@ export function environmentParams(scene: Scene): EnvironmentParams {
     return buildProceduralSkyEnvironmentParams(scene.environment);
   }
   const raw = strictHdriRawPayload(scene.environment.hdri);
-  const hdriIntensity = finiteNonNegative(
+  // Use the exact scalar the shader receives for both radiance evaluation and
+  // light-tree power. A JS-finite value can overflow to +inf (or underflow to
+  // zero) when written to the f32 frame-parameter lane, which would otherwise
+  // make the tree proxy disagree with the rendered environment.
+  const hdriIntensity = finiteNonNegativeF32(
     scene.environment.intensity, 1, 'HDRI intensity',
   );
   const hdriRotationY = scene.environment.rotationY ?? 0;
@@ -316,6 +369,7 @@ export function environmentParams(scene: Scene): EnvironmentParams {
     const cdf = new Float32Array(pixelCount + 1);
     const weights = new Float64Array(pixelCount);
     let totalWeight = 0;
+    let scaledTotalWeight = 0;
     for (let i = 0; i < pixelCount; i += 1) {
       const r = Number(data[i * 4]);
       const g = Number(data[i * 4 + 1]);
@@ -337,14 +391,47 @@ export function environmentParams(scene: Scene): EnvironmentParams {
       texels[i * 4 + 2] = b;
       const y = (i / width) | 0;
       const theta = ((y + 0.5) / height) * Math.PI;
-      const weight = Math.max(0, luminance(r, g, b) * Math.sin(theta));
+      const sinTheta = Math.sin(theta);
+      const weight = Math.max(0, luminance(r, g, b) * sinTheta);
       if (!Number.isFinite(weight) || !Number.isFinite(totalWeight + weight)) {
         throw new RangeError('[vitrum/pt-webgpu] HDRI importance integral overflowed.');
       }
+      const scaledR = Math.fround(r * hdriIntensity);
+      const scaledG = Math.fround(g * hdriIntensity);
+      const scaledB = Math.fround(b * hdriIntensity);
+      if (
+        !Number.isFinite(scaledR) ||
+        !Number.isFinite(scaledG) ||
+        !Number.isFinite(scaledB)
+      ) {
+        throw new RangeError(
+          `[vitrum/pt-webgpu] HDRI texel ${i} multiplied by its intensity ` +
+            'must remain finite in Float32.',
+        );
+      }
+      const scaledWeight = Math.max(
+        0,
+        luminance(scaledR, scaledG, scaledB) * sinTheta,
+      );
+      if (
+        !Number.isFinite(scaledWeight) ||
+        !Number.isFinite(scaledTotalWeight + scaledWeight)
+      ) {
+        throw new RangeError(
+          '[vitrum/pt-webgpu] intensity-scaled HDRI luminance integral overflowed.',
+        );
+      }
       weights[i] = weight;
       totalWeight += weight;
+      scaledTotalWeight += scaledWeight;
     }
-    if (totalWeight > 1e-12) {
+    if (totalWeight > 0) {
+      if (hdriIntensity > 0 && scaledTotalWeight === 0) {
+        throw new RangeError(
+          '[vitrum/pt-webgpu] positive HDRI radiance multiplied by its positive ' +
+            'intensity underflows entirely to zero in Float32.',
+        );
+      }
       const dOmegaBase = ((2 * Math.PI) / width) * (Math.PI / height);
       let cumulative = 0;
       for (let i = 0; i < pixelCount; i += 1) {
@@ -361,10 +448,13 @@ export function environmentParams(scene: Scene): EnvironmentParams {
       return {
         tint: [1, 1, 1],
         sunDirection: [0, 1, 0],
-        // H14-E: sunStrength drives the procedural-sky sun gate (environmentSun.w).
-        // For a pure-HDRI scene, set sun.w to 0 so the sky NEE branch doesn't fire.
-        // The HDRI radiance uses its own hdriIntensity lane (→ params.environmentHdriIntensity).
+        // The legacy sun lane remains zero. HDRI radiance uses the map plus its
+        // own hdriIntensity lane (→ params.environmentHdriIntensity).
         sunStrength: 0,
+        lightTreePower: environmentLightTreePower(
+          scaledTotalWeight * dOmegaBase,
+          1,
+        ),
         hdriIntensity,
         hdriRotationY,
         hdriWidth: width,
@@ -375,13 +465,14 @@ export function environmentParams(scene: Scene): EnvironmentParams {
         warnings,
       };
     }
-    // All pixels are black (totalWeight ≤ 1e-12) — the HDRI data was valid but
-    // has zero luminance. Report accurately rather than misattributing this to
-    // missing pixel data.
+    // All pixels are exactly black. Positive Float32 radiance, however dim,
+    // remains a valid sampleable distribution and must not be discarded by an
+    // arbitrary epsilon gate.
     return {
       tint: [1, 1, 1],
       sunDirection: [0, 1, 0],
       sunStrength: 0,
+      lightTreePower: 0,
       hdriIntensity: 0,
       hdriRotationY: 0,
       hdriWidth: 0,

@@ -45,6 +45,24 @@ function frame(): FrameInput {
 }
 
 describe('PTEngineWebGL2 auxiliary MRT semantics', () => {
+  it('keeps forced lite as a real lower-memory output profile', async () => {
+    const engine = await createPTEngine_WebGL2({
+      device: createMockGl(),
+      traceTier: 'lite',
+    });
+    engine.setScene(scene());
+
+    const output = engine.renderFrame(frame());
+    expect(output.kind).toBe('rendered');
+    if (output.kind !== 'rendered') return;
+    expect(output.normalDepth).toBeUndefined();
+    expect(output.albedo).toBeUndefined();
+    // The coarse core flag remains false on both tiers because it promises
+    // variance and motion vectors in addition to these OIDN-style inputs.
+    expect(engine.capabilities.supportsAuxBuffers).toBe(false);
+    engine.dispose();
+  });
+
   it('overwrites last-sample auxiliaries and shader-accumulates radiance portably', async () => {
     // createMockGl exposes EXT_float_blend but no OES_draw_buffers_indexed
     // methods. This pins correctness on core WebGL2 without indexed blend state.

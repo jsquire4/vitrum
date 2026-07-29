@@ -35,6 +35,7 @@
  */
 
 import {
+  getPrimitiveActiveColorSet,
   getPrimitiveUvSet,
   validateScene,
   type Mat4,
@@ -263,7 +264,7 @@ export const DEFAULT_MERGE_FILTER = (primitive: ScenePrimitive): boolean =>
   isMeshLike(primitive);
 
 function constantVertexRgbMultiplier(primitive: MeshLikePrimitive): readonly [number, number, number] | null {
-  const colors = primitive.colors;
+  const colors = getPrimitiveActiveColorSet(primitive);
   if (colors == null || colors.length === 0) return null;
   const vertexCount = Math.floor(primitive.positions.length / 3);
   const stride = colors.length >= vertexCount * 4

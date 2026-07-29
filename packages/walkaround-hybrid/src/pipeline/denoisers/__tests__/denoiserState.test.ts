@@ -209,12 +209,12 @@ describe('Denoiser.state', () => {
     const createTexture = vi.fn();
     const denoiser = new NeuralDenoiser({ inferenceGraph: fakeGraph() });
     const seam = denoiser as unknown as {
-      _allocTensorBuffers(device: GPUDevice, width: number, height: number): void;
+      _createTensorBuffers(device: GPUDevice, width: number, height: number): void;
       _tensorBuffers: unknown;
     };
 
     try {
-      expect(() => seam._allocTensorBuffers(
+      expect(() => seam._createTensorBuffers(
         { createBuffer, createTexture } as unknown as GPUDevice,
         8,
         8,

@@ -18,7 +18,8 @@
  *   u32[6]     rightChildOrTriOffset
  *              - interior node: RELATIVE offset to right child node
  *                (rightChildIndex − thisNodeIndex). Left child is always
- *                nodeIndex + 1. Invariant: 1 ≤ offset < totalNodes.
+ *                nodeIndex + 1. Invariant: 2 ≤ offset and
+ *                nodeIndex + offset < totalNodes.
  *              - leaf node:     absolute triangle offset into the
  *                reorderedIndices array (first triangle of the leaf).
  *   u32[7]     splitAxisOrTriCount
@@ -37,6 +38,7 @@
  */
 
 import { BINARY_BVH_MAX_BUILD_DEPTH } from './strides.js';
+import { validateBvhEncoding } from './validateBvhEncoding.js';
 
 const LEAFNODE_FLAG = 0xffff0000;
 
@@ -405,8 +407,10 @@ export function buildArrayBvh(
     );
   }
   if (triCount === 0) {
+    const bvhNodes = createEmptyBvhNode();
+    validateBvhEncoding(bvhNodes, 1, { triangleCount: 0 });
     return {
-      bvhNodes: createEmptyBvhNode(),
+      bvhNodes,
       reorderedIndices: indices,
       reorderedTriMaterialIds: triMaterialIds,
       reorderedToSourceTriangle: new Uint32Array(0),
@@ -740,8 +744,15 @@ export function buildArrayBvh(
     dv.setUint32(off + 28, node.splitAxisOrTriCount >>> 0, true);
   }
 
+  const bvhNodes = new Float32Array(nodeBuffer);
+  // Publication gate: the complete structural/depth proof runs in production,
+  // not only behind the legacy NODE_ENV diagnostic above.
+  validateBvhEncoding(bvhNodes, nodes.length, {
+    triangleCount: orderedTriangles.length,
+  });
+
   return {
-    bvhNodes: new Float32Array(nodeBuffer),
+    bvhNodes,
     reorderedIndices,
     reorderedTriMaterialIds,
     reorderedToSourceTriangle,

@@ -262,9 +262,7 @@ describe('createOffscreenPresenter (R2 / V1-1)', () => {
   it('configures the context, builds one pipeline, and encodes a single fullscreen-triangle pass on present', () => {
     const { device, passEncoder, commandEncoder } = makeDevice();
     const ctx = makeContext();
-    const canvas = {} as HTMLCanvasElement;
-
-    const presenter = createOffscreenPresenter({ device, canvas, context: ctx });
+    const presenter = createOffscreenPresenter({ device, context: ctx });
     expect(ctx.configure).toHaveBeenCalledTimes(1);
     expect(device.createRenderPipeline).toHaveBeenCalledTimes(1);
     expect(device.createSampler).toHaveBeenCalledTimes(1);

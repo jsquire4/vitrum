@@ -33,6 +33,12 @@ export const ATTENUATE_HIT_BASIC_GLSL = /* glsl */ `
         );
         continue;
       }
+      if ( material.side != 0.0 && surfaceHit.side == material.side ) {
+        ray.origin = stepRayOrigin(
+          ray.origin, ray.direction, - surfaceHit.faceNormal, surfaceHit.dist
+        );
+        continue;
+      }
       result = true;
       break;
     }

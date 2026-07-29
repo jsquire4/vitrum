@@ -196,14 +196,13 @@ describe('HybridEngine frame-input boundary and viewport transaction', () => {
   it.each([
     ['null quality', null],
     ['array quality', []],
-    ['NaN samplesTarget', { samplesTarget: Number.NaN }],
-    ['fractional samplesTarget', { samplesTarget: 1.5 }],
     ['infinite bounces', { bounces: Number.POSITIVE_INFINITY }],
     ['fractional bounces', { bounces: 2.5 }],
     ['NaN resolutionFactor', { resolutionFactor: Number.NaN }],
     ['negative exposure', { exposure: -1 }],
     ['NaN exposure', { exposure: Number.NaN }],
     ['NaN filteredGlossyFactor', { filteredGlossyFactor: Number.NaN }],
+    ['nonzero filteredGlossyFactor', { filteredGlossyFactor: 0.5 }],
     ['unknown tonemap', { tonemap: 'bad' }],
     ['unknown color space', { outputColorSpace: 'bad' }],
   ])('rejects invalid quality payload: %s', (_label, quality) => {
@@ -217,17 +216,54 @@ describe('HybridEngine frame-input boundary and viewport transaction', () => {
     expect((engine as unknown as Record<string, unknown>)._errorFrameCount).toBe(7);
   });
 
-  it('accepts finite integer/out-of-range quality dials for backend clamping', () => {
+  it.each([
+    ['non-finite values first', Number.NaN, /quality\.samplesTarget must be finite/],
+    ['fractional values first', 1.5, /quality\.samplesTarget must be an integer/],
+    [
+      'otherwise-valid integers as unsupported no-ops',
+      8,
+      /quality\.samplesTarget is unsupported.*does not accumulate.*no-op/i,
+    ],
+  ])('rejects samplesTarget, validating %s', (_label, samplesTarget, expected) => {
+    const resize = vi.fn();
+    const { engine, reset } = makeEngine(resize);
+    const input = {
+      ...frame(16, 16),
+      quality: { samplesTarget },
+    } satisfies FrameInput;
+
+    expect(() => engine.renderFrame(input)).toThrow(expected);
+    expect(resize).not.toHaveBeenCalled();
+    expect(reset).not.toHaveBeenCalled();
+    expect((engine as unknown as Record<string, unknown>)._errorFrameCount).toBe(7);
+  });
+
+  it('validates other quality fields before rejecting a valid samplesTarget', () => {
     const resize = vi.fn();
     const { engine, reset } = makeEngine(resize);
     const input = {
       ...frame(16, 16),
       quality: {
-        samplesTarget: -100,
+        samplesTarget: 8,
+        exposure: Number.NaN,
+      },
+    } satisfies FrameInput;
+
+    expect(() => engine.renderFrame(input)).toThrow(/quality\.exposure must be finite/);
+    expect(resize).not.toHaveBeenCalled();
+    expect(reset).not.toHaveBeenCalled();
+  });
+
+  it('accepts implemented finite/out-of-range quality dials for backend clamping', () => {
+    const resize = vi.fn();
+    const { engine, reset } = makeEngine(resize);
+    const input = {
+      ...frame(16, 16),
+      quality: {
         bounces: 100_000,
         resolutionFactor: -5,
         exposure: 100,
-        filteredGlossyFactor: 100,
+        filteredGlossyFactor: 0,
       },
     } satisfies FrameInput;
 

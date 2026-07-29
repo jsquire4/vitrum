@@ -11,7 +11,7 @@
 // Per-test strategy:
 //   (a) PACKER test — pack a MaterialSpec with that map + a layerOf assignment; assert the
 //       EXACT texel/float offset carries the layer id. Offsets are READ from
-//       materialsTexture.ts (the packer) and cross-verified against material_struct.glsl.js
+//       materialsTexture.ts (the packer) and cross-verified against material_mapped_rich.glsl.ts
 //       (the GLSL decoder) — we assert the decoder's documented read site, not what the
 //       packer currently emits blind.
 //   (b) DECODER structural test — the composed GLSL contains the sampling site for that
@@ -371,9 +371,6 @@ describe('pt-webgl2 texCoord — scalable UV-layer selection', () => {
     );
     expect(compactSurface).toContain(
       'activeNormalUvLayer = int( round( material.frontLayerNormalTexCoord ) );',
-    );
-    expect(compactAttenuation).toContain(
-      'bvh.position, attributesArray, activeShadowNormalUvLayer, surfaceHit.faceIndices.xyz, faceN, tangentSample',
     );
   });
 

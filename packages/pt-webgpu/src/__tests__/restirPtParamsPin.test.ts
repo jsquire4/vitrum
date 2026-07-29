@@ -3,15 +3,15 @@
  *
  * Structural pin for the `RestirPtParams` WGSL struct ↔ host packer layout.
  *
- * The `GpuResources.writeReservoirParams` host packer writes an 8-field × 4-byte
- * UBO (32 bytes total).  The WGSL struct `RestirPtParams` in
+ * The `GpuResources.writeReservoirParams` host packer writes a 4-field × 4-byte
+ * UBO (16 bytes total). The WGSL struct `RestirPtParams` in
  * `reservoirPtHero.wgsl.ts` must mirror that layout exactly or GPU reads
  * will silently fetch the wrong values.
  *
  * This test asserts:
  *   (a) The WGSL struct fields parse out in the order declared in
  *       RESTIR_PT_PARAMS_FIELDS.
- *   (b) The total byte size encoded in RESTIR_PT_PARAMS_BYTES equals 32.
+ *   (b) The total byte size encoded in RESTIR_PT_PARAMS_BYTES equals 16.
  *   (c) The WGSL struct has exactly as many fields as RESTIR_PT_PARAMS_FIELDS.
  *   (d) Each field's name and type in RESTIR_PT_PARAMS_FIELDS matches the WGSL.
  */
@@ -54,8 +54,8 @@ function parseWgslStructFields(wgsl: string, structName: string): ParsedField[] 
 describe('RestirPtParams WGSL struct ↔ host packer pin (I4.4)', () => {
   const wgslFields = parseWgslStructFields(RESTIR_PT_PARAMS_WGSL, 'RestirPtParams');
 
-  it('RESTIR_PT_PARAMS_BYTES is 32 (8 × 4-byte fields)', () => {
-    expect(RESTIR_PT_PARAMS_BYTES).toBe(32);
+  it('RESTIR_PT_PARAMS_BYTES is 16 (4 × 4-byte fields)', () => {
+    expect(RESTIR_PT_PARAMS_BYTES).toBe(16);
   });
 
   it('WGSL struct has exactly the same number of fields as RESTIR_PT_PARAMS_FIELDS', () => {
@@ -78,7 +78,7 @@ describe('RestirPtParams WGSL struct ↔ host packer pin (I4.4)', () => {
 
   it('RESTIR_PT_PARAMS_FIELDS byte offsets are contiguous 4-byte steps', () => {
     // All fields are scalar (u32 or f32 = 4 bytes), so offsets must be
-    // 0, 4, 8, 12, 16, 20, 24, 28 — no gaps.
+    // 0, 4, 8, 12 — no gaps.
     for (let i = 0; i < RESTIR_PT_PARAMS_FIELDS.length; i++) {
       expect(RESTIR_PT_PARAMS_FIELDS[i]!.byteOffset).toBe(i * 4);
     }

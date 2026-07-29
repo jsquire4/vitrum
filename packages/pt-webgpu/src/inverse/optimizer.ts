@@ -7,9 +7,8 @@
  * with pt-webgl2. This module re-exports those symbols and adapts the two whose
  * signatures carry a per-backend detail (`paramLength`'s backend attribution),
  * so the rest of pt-webgpu's inverse code imports from here
- * unchanged. pt-webgpu supplies ONLY its gradient source (the path-replay
- * analytic adjoint); that FD-vs-adjoint split is documented and stays
- * per-backend.
+ * unchanged. pt-webgpu supplies the backend hooks for explicit frozen-seed
+ * finite differences and, separately, its certified emissive-only adjoint.
  *
  * Ref: Kingma & Ba, "Adam: A Method for Stochastic Optimization," ICLR 2015.
  */

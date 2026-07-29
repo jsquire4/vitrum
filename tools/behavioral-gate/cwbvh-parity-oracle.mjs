@@ -408,11 +408,14 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     root,
     false,
   );
-  let anyNoSkip = cwbvhIntersectAnyFromRoot(
-    ray.origin,
-    ray.direction,
-    tMax,
+  // Visibility uses the same range-bounded closest-hit traversal as renderer
+  // sidedness/alpha loops. Keeping one walker prevents layout guards and stack
+  // behavior from drifting between closest-hit and any-hit implementations.
+  let anyNoSkip = cwbvhIntersectFirstHitRangeFromRoot(
+    ray,
     1.0e-5,
+    1.0e-5,
+    tMax,
     CWBVH_GATE_NODE_COUNT,
     root,
     false,
@@ -425,11 +428,11 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     root,
     true,
   );
-  let anySkip = cwbvhIntersectAnyFromRoot(
-    ray.origin,
-    ray.direction,
-    tMax,
+  let anySkip = cwbvhIntersectFirstHitRangeFromRoot(
+    ray,
     1.0e-5,
+    1.0e-5,
+    tMax,
     CWBVH_GATE_NODE_COUNT,
     root,
     true,
@@ -986,82 +989,12 @@ fn gateTlasClosest(origin: vec3f, direction: vec3f, tMin: f32, tMax: f32) -> Gat
 }
 `;
 
-const TLAS_GATE_ANY_WGSL = /* wgsl */ `
-fn gateTlasAny(origin: vec3f, direction: vec3f, tMin: f32, tMax: f32) -> CwbvhAnyHitResult {
-  if (GATE_TLAS_NODE_COUNT == 0u || arrayLength(&gateTlasNodes) < GATE_TLAS_NODE_COUNT) {
-    return cwbvhAnyHitResult(CWBVH_STATUS_INVALID_LAYOUT, false);
-  }
-  var stack: array<u32, 64>;
-  var stackPtr = 1u;
-  stack[0] = 0u;
-  while (stackPtr > 0u) {
-    stackPtr = stackPtr - 1u;
-    let nodeIndex = stack[stackPtr];
-    if (nodeIndex >= GATE_TLAS_NODE_COUNT) {
-      return cwbvhAnyHitResult(CWBVH_STATUS_INVALID_LAYOUT, false);
-    }
-    let node = gateTlasNodes[nodeIndex];
-    let bmin = vec3f(node.boundsMin[0], node.boundsMin[1], node.boundsMin[2]);
-    let bmax = vec3f(node.boundsMax[0], node.boundsMax[1], node.boundsMax[2]);
-    if (!cwbvhBoundsAreValid(bmin, bmax)) {
-      return cwbvhAnyHitResult(CWBVH_STATUS_INVALID_LAYOUT, false);
-    }
-    if (!gateAabb(origin, direction, bmin, bmax, tMin, tMax)) { continue; }
-    if ((node.splitOrCount & GATE_LEAF_FLAG) == GATE_LEAF_FLAG) {
-      let count = node.splitOrCount & 0xffffu;
-      if (count == 0u || node.rightChildOrOffset > arrayLength(&gateInstanceIndices) || count > arrayLength(&gateInstanceIndices) - node.rightChildOrOffset) {
-        return cwbvhAnyHitResult(CWBVH_STATUS_INVALID_LAYOUT, false);
-      }
-      for (var i = 0u; i < count; i = i + 1u) {
-        let instanceIndex = gateInstanceIndices[node.rightChildOrOffset + i];
-        let matrixBase = instanceIndex * 4u;
-        if (matrixBase + 3u >= arrayLength(&gateWorldToLocal) || !gateRootPairValid(instanceIndex)) {
-          return cwbvhAnyHitResult(CWBVH_STATUS_INVALID_LAYOUT, false);
-        }
-        let w0 = gateWorldToLocal[matrixBase];
-        let w1 = gateWorldToLocal[matrixBase + 1u];
-        let w2 = gateWorldToLocal[matrixBase + 2u];
-        let w3 = gateWorldToLocal[matrixBase + 3u];
-        var localRay: CwbvhRay;
-        localRay.origin = gateTransformPoint(w0, w1, w2, w3, origin);
-        localRay.direction = gateTransformDirection(w0, w1, w2, direction);
-        let localStart = gateTransformPoint(w0, w1, w2, w3, origin + direction * tMin);
-        let localEnd = gateTransformPoint(w0, w1, w2, w3, origin + direction * tMax);
-        let localTMin = max(dot(localStart - localRay.origin, localRay.direction), 0.0);
-        let localTMax = max(dot(localEnd - localRay.origin, localRay.direction), localTMin);
-        let localAny = cwbvhIntersectAnyFromRoot(
-          localRay.origin + localRay.direction * localTMin,
-          localRay.direction, max(localTMax - localTMin, 0.0), 1e-5,
-          GATE_CWBVH_NODE_COUNT, gateRootPairs[instanceIndex].z, false,
-        );
-        if (localAny.status != CWBVH_STATUS_COMPLETE || localAny.didHit) { return localAny; }
-      }
-    } else {
-      let left = nodeIndex + 1u;
-      let right = nodeIndex + node.rightChildOrOffset;
-      if (node.rightChildOrOffset <= 1u || left >= GATE_TLAS_NODE_COUNT || right >= GATE_TLAS_NODE_COUNT) {
-        return cwbvhAnyHitResult(CWBVH_STATUS_INVALID_LAYOUT, false);
-      }
-      if (stackPtr + 2u > GATE_TLAS_STACK_DEPTH) {
-        return cwbvhAnyHitResult(CWBVH_STATUS_STACK_OVERFLOW, false);
-      }
-      stack[stackPtr] = right; stackPtr = stackPtr + 1u;
-      stack[stackPtr] = left; stackPtr = stackPtr + 1u;
-    }
-  }
-  return cwbvhAnyHitResult(CWBVH_STATUS_COMPLETE, false);
-}
-`;
-
 const TLAS_GATE_MAIN_WGSL = /* wgsl */ `
 @compute @workgroup_size(64)
 fn main(@builtin(global_invocation_id) gid: vec3u) {
   if (gid.x >= GATE_RAY_COUNT) { return; }
   let packed = gateRays[gid.x];
   let closest = gateTlasClosest(
-    packed.originAndTMax.xyz, packed.direction.xyz, 1e-5, packed.originAndTMax.w,
-  );
-  let any = gateTlasAny(
     packed.originAndTMax.xyz, packed.direction.xyz, 1e-5, packed.originAndTMax.w,
   );
   gateOutput[gid.x * 3u] = vec4u(
@@ -1077,9 +1010,9 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     select(0u, 1u, closest.frontFace),
   );
   gateOutput[gid.x * 3u + 2u] = vec4u(
-    any.status * 2u + select(0u, 1u, any.didHit),
+    closest.status * 2u + select(0u, 1u, closest.didHit),
     closest.status,
-    any.status,
+    closest.status,
     0xc0b7a11eu,
   );
 }
@@ -1093,7 +1026,6 @@ const GATE_CWBVH_NODE_COUNT: u32 = ${cwbvhNodeCount}u;
 const GATE_TLAS_NODE_COUNT: u32 = ${tlasNodeCount}u;
 ${TLAS_GATE_DECLARATIONS_WGSL}
 ${TLAS_GATE_CLOSEST_WGSL}
-${TLAS_GATE_ANY_WGSL}
 ${TLAS_GATE_MAIN_WGSL}
   `;
 }

@@ -267,6 +267,7 @@ describe('mergeWorldSpaceFromCore material slots', () => {
     const bvh = new SceneBvh();
     bvh.updateFromCore(sceneWithMixedCastShadow());
     expect(bvh.buffers?.materials.length).toBe(2);
+    expect(bvh.buffers?.coreMaterials).toBe(bvh.buffers?.materials);
     expect(Array.from(bvh.buffers?.triMaterialId ?? [])).toEqual([0, 1]);
     expect((bvh.buffers?.materials[0] as MaterialSpec & { castShadow?: boolean }).castShadow).toBe(true);
     expect((bvh.buffers?.materials[1] as MaterialSpec & { castShadow?: boolean }).castShadow).toBe(false);

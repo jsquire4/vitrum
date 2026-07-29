@@ -107,7 +107,7 @@ describe('pt-webgpu strict construction options', () => {
     }, /requires causticStrategy="manifold-nee"/],
     ['restirPtReuseOptions', {
       restirPtReuseOptions: { mClamp: 8 },
-    }, /requires restirPtReuse:true/],
+    }, /requires oneEdgeReconnectionReuse:true/],
     ['oidn', {
       denoiser: 'none',
       oidn: { modelUrl: '/model.onnx' },

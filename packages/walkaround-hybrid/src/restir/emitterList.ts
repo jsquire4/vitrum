@@ -29,13 +29,6 @@ import {
   materialSpecScalarEmissiveLe,
 } from '@vitrum/shared-bvh';
 
-interface Vector3Like {
-  readonly x: number;
-  readonly y: number;
-  readonly z: number;
-}
-
-
 /**
  * EmitterTri struct layout (80 bytes, 16-byte aligned, 20 f32 per entry):
  *   0..15  : vertexA.xyz + sourceTriIndex (-1 for non-BVH/placeholder emitters)
@@ -53,8 +46,6 @@ const EMITTER_FLOATS = EMITTER_TRI_STRIDE_BYTES / 4;
 
 
 interface EmitterListOptions {
-  primaryLightDir?: Vector3Like;
-  primaryLightIntensity?: number;
   /**
    * Additional emitter triangles from non-mesh sources (e.g. THREE.RectAreaLight
    * or other scene-graph lights that do not appear in the BVH). These are
@@ -88,16 +79,12 @@ interface EmitterListOptions {
   packSourceTriIndex?: boolean;
   /**
    * Optional mapper from the emitter-list triangle index to the active render
-   * buffers' triangle index. Returning a negative/non-finite value keeps that
-   * emitter on constant packed radiance.
+   * buffers' triangle index. `-1`, a non-integer/non-finite value, or a value
+   * that cannot round-trip through the packed f32 lane keeps a scalar emitter
+   * on constant packed radiance. A mapped emitter rejects such a value because
+   * evaluating its authored map requires an exact source triangle.
    */
   sourceTriIndexForTriangle?: (triIdx: number) => number;
-  /** Merged UV0 stream, stride-2 and aligned with `positions`. */
-  uvs?: Float32Array;
-  /** Optional merged UV1 stream, stride-2 and aligned with `positions`. */
-  uv1s?: Float32Array;
-  /** Arbitrary merged UV streams keyed by authored TextureRef.texCoord. */
-  uvSets?: ReadonlyMap<number, Float32Array>;
 }
 
 /**
@@ -186,23 +173,29 @@ export function buildEmitterListFromCore(
   /** Light-tree build inputs aligned 1:1 with the emitter list. */
   treeInput: EmitterTreeInput;
 } {
-  const ld = options.primaryLightDir;
-  const lightDir = ld != null ? { x: ld.x, y: ld.y, z: ld.z } : { x: 0, y: 1, z: 0 };
-  const primaryIntensity = options.primaryLightIntensity ?? 3.0;
   return buildEmitterListCore(
     indices,
     positions,
     normals,
-    (t, normal) => {
+    (t) => {
       const mat = materials[triMatIdMap[t]!];
       if (!mat) return null;
-      const classified = classifyTriangleEmitterCore(mat, normal, lightDir, primaryIntensity);
+      const classified = classifyTriangleEmitterCore(mat);
       const castShadowDisabled = (mat as MaterialSpec & { readonly castShadow?: boolean }).castShadow === false;
       if (classified == null) return null;
       const scalarLe = scalarMaterialEmissiveLe(mat);
       if (scalarLe == null) return { ...classified, castShadowDisabled };
       const sourceTriIndex = options.sourceTriIndexForTriangle?.(t) ?? t;
+      const sourceTriIndexIsPackable =
+        Number.isSafeInteger(sourceTriIndex) &&
+        sourceTriIndex !== -1 &&
+        Math.fround(sourceTriIndex) === sourceTriIndex;
       if (mat.emissiveMap != null) {
+        if (!sourceTriIndexIsPackable) {
+          throw new RangeError(
+            `Mapped emitter triangle ${t} requires an exact f32-packable source triangle index.`,
+          );
+        }
         // Mapped emitters use a bounded-memory uniform-area conditional
         // proposal over the parent triangle. The candidate shader evaluates
         // the exact atlas texel (including authored transform, wrap, filter,
@@ -215,24 +208,20 @@ export function buildEmitterListFromCore(
           castShadowDisabled,
           color: scalarLe,
           selectionColor: classified.color,
-          sourceTriIndex: Math.trunc(sourceTriIndex),
+          sourceTriIndex,
         };
       }
       if (options.packSourceTriIndex !== true) {
         return { ...classified, castShadowDisabled };
       }
-      if (
-        !Number.isFinite(sourceTriIndex) ||
-        (sourceTriIndex < 0 && Math.trunc(sourceTriIndex) !== sourceTriIndex) ||
-        sourceTriIndex === -1
-      ) {
-        return classified;
+      if (!sourceTriIndexIsPackable) {
+        return { ...classified, castShadowDisabled, color: scalarLe };
       }
       return {
         ...classified,
         castShadowDisabled,
         color: scalarLe,
-        sourceTriIndex: Math.trunc(sourceTriIndex),
+        sourceTriIndex,
       };
     },
     options,

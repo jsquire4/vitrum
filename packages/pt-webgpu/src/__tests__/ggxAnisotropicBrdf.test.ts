@@ -253,7 +253,8 @@ function smoothstep(edge0: number, edge1: number, x: number): number {
 
 function anisotropicMultiscatterScale(anisotropy: number, roughnessForScale: number): number {
   const anisoReduction = smoothstep(0, 0.35, Math.min(1, Math.max(0, anisotropy)));
-  return (1 - 0.4 * anisoReduction) * smoothstep(0.35, 0.9, roughnessForScale);
+  const anisotropicScale = 0.6 * smoothstep(0.35, 0.9, roughnessForScale);
+  return 1 + (anisotropicScale - 1) * anisoReduction;
 }
 
 function furnaceMeanWithProjectedMultiscatter(
@@ -374,6 +375,13 @@ describe('Item 7 — Anisotropic GGX sampler/PDF self-consistency', () => {
 
 describe('Item 7 — Anisotropic GGX white-furnace energy conservation', () => {
   const nDotV = 0.7;
+
+  it('keeps isotropic multiscatter at full strength continuously at anisotropy zero', () => {
+    for (const roughness of [0, 0.2, 0.5, 1]) {
+      expect(anisotropicMultiscatterScale(0, roughness)).toBe(1);
+      expect(anisotropicMultiscatterScale(1e-8, roughness)).toBeCloseTo(1, 12);
+    }
+  });
 
   it('furnace mean is in [0.5, 1.0] at anisotropy=0.5 across roughness', () => {
     for (const roughness of [0.2, 0.5, 0.8]) {

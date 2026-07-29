@@ -127,10 +127,11 @@ describe('MNEE authored-interface parity', () => {
       PT_WEBGPU_PATH_TRACE_CAUSTIC_WGSL.indexOf('fn mneeEmitterRadiance('),
     );
     expect(reflection).toContain('optics.coverage *');
-    expect(reflection).toContain('materialDielectricFresnel(');
+    expect(reflection).toContain('materialDielectricLayeredInterface(');
+    expect(reflection).toContain(').reflectance');
     expect(transmission).toContain('optics.coverage * optics.baseColor');
-    expect(transmission).toContain('materialDielectricFresnel(');
-    expect(transmission).toContain('(vec3f(1.0) - fresnel)');
+    expect(transmission).toContain('materialDielectricLayeredInterface(');
+    expect(transmission).toContain('interfaceResponse.baseTransmittance');
     expect(reflection).not.toContain('vec3f(frDielectric(');
     expect(transmission).not.toContain('1.0 - frDielectric(');
   });

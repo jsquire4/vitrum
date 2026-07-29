@@ -96,7 +96,10 @@ export interface BmfrWebGPUOptions {
   readonly validityW?: Float32Array;
   /** World-space normals (packed 0..1 XYZ), length W*H*3. Defaults to +Z. */
   readonly gbufferNormalsRgb?: Float32Array;
-  /** Previous-frame reconstruction (RGB, length W*H*3) for temporal blend. */
+  /**
+   * Previous-frame reconstruction (remodulated RGB, length W*H*3) for temporal
+   * blend. This is the same radiance domain returned by `runBmfrWebGPU`.
+   */
   readonly historyRgb?: Float32Array;
   /** Per-pixel diffuse albedo (RGB, length W*H*3); enables demodulation. */
   readonly albedoRgb?: Float32Array;
@@ -249,9 +252,24 @@ export async function runBmfrWebGPU(opts: BmfrWebGPUOptions): Promise<Float32Arr
     // as the sky/miss sentinel.
     uploadWorldPosAsRgba32f(device, worldPosTex, opts, w, h);
 
-    // History (only sampled when hasHistory; zero-fill otherwise so the
-    // texture is initialised — the kernel skips the read unless hasHistory).
-    uploadRgbAsRgba16f(device, historyTex, opts.historyRgb ?? new Float32Array(px * 3), w, h);
+    // History must enter the resolve kernel in the same domain as the current
+    // fit. `historyRgb` is a prior public result and is therefore remodulated
+    // radiance, while `rgbForFit` is c/ρ when albedo is supplied. Demodulate
+    // history with the current surface albedo before the EMA; the result is
+    // remodulated exactly once after readback below.
+    const historyForTemporal =
+      opts.historyRgb != null && opts.albedoRgb != null
+        ? demodulateAlbedo(opts.historyRgb, opts.albedoRgb, px)
+        : opts.historyRgb;
+    // Only sampled when hasHistory; zero-fill otherwise so the texture is
+    // initialised — the kernel skips the read unless hasHistory.
+    uploadRgbAsRgba16f(
+      device,
+      historyTex,
+      historyForTemporal ?? new Float32Array(px * 3),
+      w,
+      h,
+    );
 
     // UBO.
     const uboScratch = new ArrayBuffer(BMFR_UNIFORMS_SIZE_BYTES);

@@ -8,7 +8,6 @@
  */
 import { describe, expect, it } from 'vitest';
 import { PT_WEBGPU_PATH_TRACE_KERNEL_CORE_WGSL } from '../wgsl/pathTrace/kernelCore.wgsl.js';
-import { PT_WEBGPU_ADJOINT_PASS_WGSL } from '../wgsl/pathTrace/adjointPass.wgsl.js';
 
 type Vec2 = readonly [number, number];
 
@@ -99,11 +98,10 @@ describe('concentricDiscSample — independent Shirley-Chiu oracle', () => {
     expect(sumR2 / count).toBeCloseTo(0.5, 3);
   });
 
-  it('keeps production and adjoint WGSL on the sign-preserving Shirley-Chiu form', () => {
+  it('keeps production WGSL on the sign-preserving Shirley-Chiu form', () => {
     const production = extractFunctionBody(PT_WEBGPU_PATH_TRACE_KERNEL_CORE_WGSL, 'concentricDiscSample');
-    const adjoint = extractFunctionBody(PT_WEBGPU_ADJOINT_PASS_WGSL, 'adjointConcentricDiscSample');
 
-    for (const body of [production, adjoint]) {
+    for (const body of [production]) {
       expect(body).toContain('if (a == 0.0 && b == 0.0)');
       expect(body).toContain('(b / a)');
       expect(body).toContain('(a / b)');

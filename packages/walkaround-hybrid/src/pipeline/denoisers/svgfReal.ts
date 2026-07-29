@@ -23,7 +23,6 @@
 
 import {
   ATROUS_VARIANCE_ATROUS_UNIFORMS_SIZE_BYTES,
-  ATROUS_VARIANCE_DEFAULT_ATROUS_UNIFORMS,
   packAtrousVarianceAtrousUniforms,
   packSVGFReprojUniforms,
   SVGF_REAL_DEFAULT_ATROUS_ITERATIONS,
@@ -297,6 +296,7 @@ export class SVGFRealDenoiser implements Denoiser {
       computeDesc,
       resourceCache,
       isMoving,
+      atrousDirectSigmas,
     } = ctx;
     const common = resources.common;
     const svgf = resources.svgf;
@@ -429,7 +429,12 @@ export class SVGFRealDenoiser implements Denoiser {
       // keep their own constants while avoiding per-frame GPUBuffer churn.
       bindGroupFor: (iter, inputView, outputView, inputTex, outputTex) => {
         packAtrousVarianceAtrousUniforms(
-          { iteration: iter, ...ATROUS_VARIANCE_DEFAULT_ATROUS_UNIFORMS },
+          {
+            iteration: iter,
+            sigmaNormal: atrousDirectSigmas[0],
+            sigmaDepth: atrousDirectSigmas[1],
+            sigmaColor: atrousDirectSigmas[2],
+          },
           atrousUboBytes,
           0,
         );

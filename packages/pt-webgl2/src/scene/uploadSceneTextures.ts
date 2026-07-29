@@ -5,7 +5,8 @@
 //   1. partitionSceneBySupport(scene, caps)        → supported subset + warnings
 //   2. mergeWorldSpaceFromCore(supported, …)       → merged world-space tri stream + BVH
 //   3. packBvhTextureData + uploadBvhTextures       → the 4 BVH data textures + materialIndex
-//   4. packMaterialsTexture(merged.materials)       → 85px/material RGBA32F sampler2D
+//   4. packMaterialTextureAtlases(…)                → RGBA8 + RGBA16F sampler2DArray pair
+//      packMaterialsTexture(merged.materials)       → 136px/material RGBA32F sampler2D
 //   5. packLightsTexture(scene.emitters)            → 6px/light RGBA32F sampler2D
 //   6. buildEquirectInfo(scene.environment)         → equirect map + marginal/conditional CDFs
 //   7. packAttributesArray(merged)                  → 5-layer RGBA32F sampler2DArray
@@ -18,7 +19,11 @@
 // contracts (`MaterialsTextureData` / `LightsTextureData` / `EnvTextureData`).
 
 import type { EngineCapabilities, EngineWarning, Scene, ScenePrimitive } from '@vitrum/core';
-import { analyticPrimitiveToMesh, partitionSceneBySupport } from '@vitrum/core';
+import {
+  analyticPrimitiveToMesh,
+  getPrimitiveActiveColorSet,
+  partitionSceneBySupport,
+} from '@vitrum/core';
 import {
   mergeWorldSpaceFromCore,
   refitBvhBounds,
@@ -30,7 +35,11 @@ import { retireIndependently } from '../gl/resourceRetirement.js';
 import { foldMeshAreaEmittersIntoMaterials } from './foldEmissiveEmitters.js';
 import { packAttributesArray } from './attributesTextureArray.js';
 import { packMaterialsTexture } from './materialsTexture.js';
-import { packTextureAtlas, textureAtlasLayerCapacity, uploadTextureAtlas } from './texturesArray.js';
+import {
+  materialTextureAtlasLayerCapacities,
+  packMaterialTextureAtlases,
+  uploadTextureAtlas,
+} from './texturesArray.js';
 import { packLightsTexture } from './lightsTexture.js';
 import { assertSceneEmissiveMapsCpuReadable, packMeshAreaLights } from './meshAreaLights.js';
 import { buildEquirectInfo } from './equirectHdrInfo.js';
@@ -230,7 +239,7 @@ export function buildSceneGeometryTextureData(
     merged: geometry.merged,
     vertexColorMaterialIds,
     uvLayerByTexCoord: geometry.uvLayout.layerByTexCoord,
-    warnings: [...geometry.merged.warnings, ...meshLightsData.warnings],
+    warnings: geometry.merged.warnings,
     structuredWarnings,
   };
 }
@@ -336,7 +345,7 @@ export function buildRefitSceneGeometryTextures(
     merged: refitMerged,
     vertexColorMaterialIds,
     uvLayerByTexCoord: geometry.uvLayout.layerByTexCoord,
-    warnings: [...geometry.merged.warnings, ...meshLightsData.warnings],
+    warnings: geometry.merged.warnings,
     structuredWarnings,
   };
 }
@@ -388,13 +397,19 @@ export function buildSceneTextures(
   // (4a) material-map atlas — gather every readable map texture into a sampler2DArray
   //      and a handle→layer map (null when the scene has no usable textures).
   const maxAtlasLayers = gl.getParameter(gl.MAX_ARRAY_TEXTURE_LAYERS) as number;
-  const atlas = packTextureAtlas(merged.materials, {
+  const materialAtlases = packMaterialTextureAtlases(merged.materials, {
     ...warningOptions,
     maxArrayTextureLayers: maxAtlasLayers,
   });
-  const materialAtlasLayerCapacity = atlas != null
-    ? textureAtlasLayerCapacity(atlas.layerCount, maxAtlasLayers)
-    : 0;
+  const atlas = materialAtlases.ldr;
+  const hdrAtlas = materialAtlases.hdr;
+  const atlasCapacities = materialTextureAtlasLayerCapacities(
+    atlas,
+    hdrAtlas,
+    maxAtlasLayers,
+  );
+  const materialAtlasLayerCapacity = atlasCapacities.ldr;
+  const materialHdrAtlasLayerCapacity = atlasCapacities.hdr;
 
   // (4b) materials — the merged result already dedups the scene's unique
   //      MaterialSpecs in first-seen order (triMaterialId indexes into it), so it
@@ -402,7 +417,11 @@ export function buildSceneTextures(
   //      atlas maps turn each material's `<map>` ref into the GLSL's layer index
   //      without confusing sRGB color maps and linear data maps sharing a handle.
   const vertexColorMaterialIds = collectVertexColorMaterialIds(skinnedScene, merged);
-  const materialsData = packMaterialsTexture(merged.materials, atlas?.layerOfByColorSpace, {
+  const materialLayerMap = {
+    ldr: atlas?.layerOfByColorSpace ?? null,
+    hdr: hdrAtlas?.layerOfByColorSpace ?? null,
+  };
+  const materialsData = packMaterialsTexture(merged.materials, materialLayerMap, {
     vertexColorMaterialIds,
     uvLayerByTexCoord: geometry.uvLayout.layerByTexCoord,
     ...warningOptions,
@@ -441,6 +460,9 @@ export function buildSceneTextures(
   try {
   const textures2DArray = atlas != null
     ? own(uploadTextureAtlas(gl, atlas, { layerCapacity: materialAtlasLayerCapacity }))
+    : null;
+  const materialHdrTextures2DArray = hdrAtlas != null
+    ? own(uploadTextureAtlas(gl, hdrAtlas, { layerCapacity: materialHdrAtlasLayerCapacity }))
     : null;
   const materials = own(uploadRgba32f(gl, materialsData.data, materialsData.dim, 'scene materials'));
   const lights = own(uploadRgba32f(gl, lightsData.data, lightsData.dim, 'scene lights'));
@@ -484,7 +506,11 @@ export function buildSceneTextures(
     materialAtlasDim: atlas?.dim ?? 0,
     materialAtlasLayerCount: atlas?.layerCount ?? 0,
     materialAtlasLayerCapacity,
-    materialLayerMap: atlas?.layerOfByColorSpace ?? null,
+    materialHdrTextures2DArray,
+    materialHdrAtlasDim: hdrAtlas?.dim ?? 0,
+    materialHdrAtlasLayerCount: hdrAtlas?.layerCount ?? 0,
+    materialHdrAtlasLayerCapacity,
+    materialLayerMap,
     vertexColorMaterialIds,
     uvLayerByTexCoord: geometry.uvLayout.layerByTexCoord,
     attributeLayerCount: attrData.layers,
@@ -503,6 +529,7 @@ export function buildSceneTextures(
           envMarginal,
           envConditional,
           textures2DArray,
+          materialHdrTextures2DArray,
         ].filter((texture): texture is WebGLTexture => texture != null)
           .map((texture) => () => gl.deleteTexture(texture)),
       ], 'pt-webgl2: one or more scene textures failed to retire');
@@ -512,7 +539,7 @@ export function buildSceneTextures(
   return {
     textures,
     merged,
-    warnings: [...warnings, ...merged.warnings, ...meshLightsData.warnings],
+    warnings: [...warnings, ...merged.warnings],
     structuredWarnings,
     supported,
   };
@@ -646,7 +673,10 @@ function mergeColorsFromCore(
   totalVertexCount: number,
 ): Float32Array | undefined {
   const meshLike = scene.primitives.filter(isMeshLikePrimitive);
-  if (!meshLike.some((p) => p.colors != null && p.colors.length > 0)) return undefined;
+  if (!meshLike.some((p) => {
+    const colors = getPrimitiveActiveColorSet(p);
+    return colors != null && colors.length > 0;
+  })) return undefined;
 
   const out = new Float32Array(totalVertexCount * 4);
   for (let i = 0; i < totalVertexCount; i += 1) {
@@ -665,7 +695,7 @@ function mergeColorsFromCore(
     if (prim == null) continue;
     const localVertexCount = Math.floor(prim.positions.length / 3);
     if (localVertexCount < 1) continue;
-    const src = prim.colors;
+    const src = getPrimitiveActiveColorSet(prim);
     const colorStride = src == null || src.length === 0
       ? 4
       : Math.max(3, Math.min(4, Math.floor(src.length / Math.max(1, localVertexCount))));
@@ -698,7 +728,8 @@ export function collectVertexColorMaterialIds(
   for (const range of merged.meshVertexRanges) {
     const prim = primitiveById.get(String(range.sourcePrimitiveId ?? range.name));
     if (prim == null) continue;
-    const hasColors = prim.colors != null && prim.colors.length > 0;
+    const colors = getPrimitiveActiveColorSet(prim);
+    const hasColors = colors != null && colors.length > 0;
     if (!hasColors) continue;
     for (let t = range.triStart; t < range.triStart + range.triCount; t += 1) {
       const materialId = merged.mergedTriMaterialId[t];

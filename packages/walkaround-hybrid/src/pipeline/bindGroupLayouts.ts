@@ -10,7 +10,7 @@
  *   ubo     — 256-byte WalkaroundUBO uniform
  *   atrous  — denoiser I/O textures + per-pass UBO
  *   accum   — temporal accumulator I/O textures + AccumUBO
- *   composite — final blit (fragment stage, unfilterable-float + sampler)
+ *   composite — final blit (fragment stage, unfilterable-float texture)
  *   hybridLayers — DDGI atlas textures + grid uniform (shade pass slot 3)
  *
  * T9-stepB: the *uniform* families (frame/scene/ubo/gtao/gtaoUpsample/

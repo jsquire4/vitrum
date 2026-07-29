@@ -88,22 +88,6 @@ fn envRadiance(dir: vec3f) -> vec3f {
   return texel.rgb * max(envParams.intensity, 0.0);
 }
 
-// Solid-angle pdf for a WORLD direction (the .a lane of the texel). Used for MIS
-// bookkeeping when the env is added as a DI candidate. 0 when no map.
-fn envDirectionalPdf(dir: vec3f) -> f32 {
-  if (!envHasMap()) { return 0.0; }
-  let w = i32(envParams.width);
-  let h = i32(envParams.height);
-  let lookupDir = envRotateYNeg(safe_normalize(dir), envParams.rotationY);
-  let phi = atan2(lookupDir.z, lookupDir.x);
-  let theta = acos(clamp(lookupDir.y, -1.0, 1.0));
-  let u = fract(phi * INV_PI * 0.5 + 0.5);
-  let v = clamp(theta * INV_PI, 0.0, 0.999999);
-  let x = clamp(i32(floor(u * f32(w))), 0, w - 1);
-  let y = clamp(i32(floor(v * f32(h))), 0, h - 1);
-  return max(textureLoad(env_map, vec2i(x, y), 0).w, 0.0);
-}
-
 // Importance-sample the environment via the PBRT 2D distribution (marginal row
 // then conditional column). Two RNG draws. Returns pdf=0 when no map. The
 // sampled direction is in WORLD space (rotateYPos applied).

@@ -18,7 +18,6 @@ import { describe, expect, it, vi } from 'vitest';
 import type { Scene } from '@vitrum/core';
 import { asMat4 } from '@vitrum/core';
 import { createPTEngine_WebGPU } from '../index.js';
-import { PT_WEBGPU_RESTIR_PT_EFFECTIVELY_UNCLAMPED_W } from '../ptWebgpuValidation.js';
 import {
   PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
   PT_WEBGPU_RESTIR_PT_REUSE_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
@@ -41,7 +40,12 @@ interface Recorder {
   pipelineEntryPoints: string[];
   bufferLabels: string[];
   bindGroupLabels: string[];
+  bindGroupBufferEntries: Array<{
+    label: string;
+    entries: Array<{ binding: number; bufferLabel: string | null }>;
+  }>;
   computePassLabels: string[];
+  clearBufferLabels: string[];
   bufferWrites: Array<{ label: string; bytes: Uint8Array }>;
 }
 
@@ -58,7 +62,9 @@ function makeFullTierDevice(rec: Recorder): GPUDevice {
       rec.computePassLabels.push(desc?.label ?? '');
       return pass;
     }),
-    clearBuffer: vi.fn(),
+    clearBuffer: vi.fn((buffer?: { label?: string }) => {
+      rec.clearBufferLabels.push(buffer?.label ?? '');
+    }),
     copyBufferToBuffer: vi.fn(),
     finish: vi.fn(() => ({})),
   };
@@ -91,8 +97,24 @@ function makeFullTierDevice(rec: Recorder): GPUDevice {
       rec.pipelineEntryPoints.push(desc?.compute?.entryPoint ?? '');
       return { getBindGroupLayout: vi.fn(() => ({})) };
     }),
-    createBindGroup: vi.fn((desc?: { label?: string }) => {
+    createBindGroup: vi.fn((desc?: {
+      label?: string;
+      entries?: Array<{
+        binding: number;
+        resource: { buffer?: { label?: string } } | object;
+      }>;
+    }) => {
       rec.bindGroupLabels.push(desc?.label ?? '');
+      rec.bindGroupBufferEntries.push({
+        label: desc?.label ?? '',
+        entries: (desc?.entries ?? []).map((entry) => ({
+          binding: entry.binding,
+          bufferLabel:
+            'buffer' in entry.resource
+              ? entry.resource.buffer?.label ?? null
+              : null,
+        })),
+      });
       return {};
     }),
     createCommandEncoder: vi.fn(() => encoder),
@@ -109,7 +131,9 @@ function emptyRecorder(): Recorder {
     pipelineEntryPoints: [],
     bufferLabels: [],
     bindGroupLabels: [],
+    bindGroupBufferEntries: [],
     computePassLabels: [],
+    clearBufferLabels: [],
     bufferWrites: [],
   };
 }
@@ -192,7 +216,7 @@ describe('ReSTIR-PT reuse wiring — OFF by default (byte-identity)', () => {
     expect(rec.shaderCodes.some((c) => c.includes('rpt_result_in'))).toBe(false);
     // No reservoir / reuse buffers were created.
     expect(rec.bufferLabels.some((l) => l.includes('restirPt'))).toBe(false);
-    expect(engine.capabilities.activeFeatures?.has('pt-webgpu-restir-pt-reuse')).toBe(false);
+    expect(engine.capabilities.activeFeatures?.has('pt-webgpu-one-edge-gris-reconnection')).toBe(false);
     engine.dispose();
   });
 
@@ -213,7 +237,7 @@ describe('ReSTIR-PT reuse wiring — ON (full tier)', () => {
     const rec = emptyRecorder();
     const engine = await createPTEngine_WebGPU({
       device: makeFullTierDevice(rec),
-      restirPtReuse: true,
+      oneEdgeReconnectionReuse: true,
     });
     engine.setScene(makeScene());
     engine.renderFrame(frameInput(16));
@@ -243,8 +267,30 @@ describe('ReSTIR-PT reuse wiring — ON (full tier)', () => {
         `vitrum.pt-webgpu.restirPt.bindgroup0.${pass}`,
       );
     }
+    // WebGPU usage validation covers every explicit-layout entry in a dispatch,
+    // including shader-unused slots. The read-only history slot must therefore
+    // never alias any read_write reuse slot in the same bind group.
+    const base = RPT_GROUP0_BINDING_BASE;
+    for (const pass of ['producer', 'temporal', 'spatial', 'resolve']) {
+      const group = rec.bindGroupBufferEntries.find(
+        (candidate) =>
+          candidate.label ===
+          `vitrum.pt-webgpu.restirPt.bindgroup0.${pass}`,
+      );
+      expect(group, `${pass} reuse bind group`).toBeDefined();
+      const labelAt = (binding: number): string | null | undefined =>
+        group!.entries.find((entry) => entry.binding === binding)?.bufferLabel;
+      const readOnlyLabel = labelAt(base + 2);
+      expect(readOnlyLabel).toBeTruthy();
+      for (const readWriteBinding of [base, base + 1, base + 3, base + 5]) {
+        expect(
+          labelAt(readWriteBinding),
+          `${pass} b${readWriteBinding} must not alias read-only b${base + 2}`,
+        ).not.toBe(readOnlyLabel);
+      }
+    }
     // Runtime selection is reported through the typed active feature set.
-    expect(engine.capabilities.activeFeatures?.has('pt-webgpu-restir-pt-reuse')).toBe(true);
+    expect(engine.capabilities.activeFeatures?.has('pt-webgpu-one-edge-gris-reconnection')).toBe(true);
 
     // The debug result buffer is exposed.
     const buf = (engine as unknown as { getRestirPtResultBuffer(): unknown }).getRestirPtResultBuffer();
@@ -269,7 +315,90 @@ describe('ReSTIR-PT reuse wiring — ON (full tier)', () => {
     engine.dispose();
   });
 
-  it('ON: omitted tuning uses the unbiased effectively-unclamped weight default', async () => {
+  it('keeps restirPtReuse as an exact compatibility alias', async () => {
+    const rec = emptyRecorder();
+    const engine = await createPTEngine_WebGPU({
+      device: makeFullTierDevice(rec),
+      restirPtReuse: true,
+    });
+    expect(engine.capabilities.activeFeatures?.has(
+      'pt-webgpu-one-edge-gris-reconnection',
+    )).toBe(true);
+    engine.dispose();
+  });
+
+  it('rejects transmissive scenes before scene or reuse-resource publication', async () => {
+    const rec = emptyRecorder();
+    const engine = await createPTEngine_WebGPU({
+      device: makeFullTierDevice(rec),
+      oneEdgeReconnectionReuse: true,
+    });
+    const scene = makeScene();
+    const transmissive: Scene = {
+      ...scene,
+      primitives: scene.primitives.map((primitive) => ({
+        ...primitive,
+        material: {
+          ...primitive.material,
+          transmission: 0.75,
+        },
+      })),
+    };
+    const buffersBefore = rec.bufferLabels.length;
+    expect(() => engine.setScene(transmissive)).toThrow(
+      /finite opaque one-edge reconnection only/,
+    );
+    expect(rec.bufferLabels).toHaveLength(buffersBefore);
+    expect(rec.pipelineEntryPoints).not.toContain('restirPtProduce');
+    engine.dispose();
+  });
+
+  it('rejects a transmissive material mutation before publication', async () => {
+    const rec = emptyRecorder();
+    const engine = await createPTEngine_WebGPU({
+      device: makeFullTierDevice(rec),
+      oneEdgeReconnectionReuse: true,
+    });
+    engine.setScene(makeScene());
+    engine.renderFrame(frameInput(16));
+    const clearsBefore = rec.clearBufferLabels.length;
+    expect(() => engine.updatePrimitive!('mesh-a', {
+      material: {
+        baseColor: [0.8, 0.2, 0.1],
+        roughness: 0.3,
+        metallic: 0.1,
+        transmission: 1,
+      },
+    })).toThrow(/finite opaque one-edge reconnection only/);
+    expect(rec.clearBufferLabels).toHaveLength(clearsBefore);
+    expect(engine.getScene!()?.primitives[0]?.material.transmission ?? 0).toBe(0);
+    engine.dispose();
+  });
+
+  it('reset and resize clear or replace both temporal reservoirs', async () => {
+    const rec = emptyRecorder();
+    const engine = await createPTEngine_WebGPU({
+      device: makeFullTierDevice(rec),
+      oneEdgeReconnectionReuse: true,
+    });
+    engine.setScene(makeScene());
+    engine.renderFrame(frameInput(16));
+    rec.clearBufferLabels.length = 0;
+    engine.reset();
+    expect(rec.clearBufferLabels).toContain('vitrum.pt-webgpu.restirPt.reservoir.cur');
+    expect(rec.clearBufferLabels).toContain('vitrum.pt-webgpu.restirPt.reservoir.prev');
+
+    const curAllocationsBefore = rec.bufferLabels.filter(
+      (label) => label === 'vitrum.pt-webgpu.restirPt.reservoir.cur',
+    ).length;
+    engine.renderFrame(frameInput(8));
+    expect(rec.bufferLabels.filter(
+      (label) => label === 'vitrum.pt-webgpu.restirPt.reservoir.cur',
+    )).toHaveLength(curAllocationsBefore + 1);
+    engine.dispose();
+  });
+
+  it('ON: params contain only dimensions and the temporal confidence clamp', async () => {
     const rec = emptyRecorder();
     const engine = await createPTEngine_WebGPU({
       device: makeFullTierDevice(rec),
@@ -279,13 +408,11 @@ describe('ReSTIR-PT reuse wiring — ON (full tier)', () => {
     engine.renderFrame(frameInput(16));
 
     const u = new Uint32Array(latestRestirPtParamsWrite(rec));
-    const f = new Float32Array(u.buffer);
     expect(u[0]).toBe(16);
     expect(u[1]).toBe(16);
     expect(u[2]).toBe(20);
     expect(u[3]).toBe(0); // reserved padding; no maturity-mode switch
-    expect(f[4]).toBe(Math.fround(PT_WEBGPU_RESTIR_PT_EFFECTIVELY_UNCLAMPED_W));
-    expect(engine.capabilities.activeFeatures?.has('pt-webgpu-restir-pt-biased-weight-clamp')).toBe(false);
+    expect(u).toHaveLength(4);
 
     engine.dispose();
   });
@@ -296,13 +423,6 @@ describe('ReSTIR-PT reuse wiring — ON (full tier)', () => {
     ['mClamp', 0],
     ['mClamp', 1.5],
     ['mClamp', 4096],
-    ['wCap', NaN],
-    ['wCap', Infinity],
-    ['wCap', 0],
-    ['wCap', -1],
-    ['wCap', Number.MIN_VALUE],
-    ['wCap', 1e-50],
-    ['wCap', Number.MAX_VALUE],
   ] as const)('ON: rejects invalid explicit ReSTIR-PT %s=%s', async (key, value) => {
     await expect(createPTEngine_WebGPU({
       device: makeFullTierDevice(emptyRecorder()),
@@ -319,39 +439,19 @@ describe('ReSTIR-PT reuse wiring — ON (full tier)', () => {
     })).rejects.toThrow('restirPtReuseOptions contains unknown key(s): mClmap');
   });
 
-  it('rejects non-empty ReSTIR-PT tuning when reuse is disabled', async () => {
+  it('rejects non-empty legacy tuning when reuse is disabled', async () => {
     await expect(createPTEngine_WebGPU({
       device: makeFullTierDevice(emptyRecorder()),
       restirPtReuseOptions: { mClamp: 20 },
-    })).rejects.toThrow('non-empty restirPtReuseOptions requires restirPtReuse:true');
+    })).rejects.toThrow('non-empty restirPtReuseOptions requires oneEdgeReconnectionReuse:true');
   });
 
-  it('ON: reports an explicit finite W clamp as a biased active feature', async () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const engine = await createPTEngine_WebGPU({
+  it('rejects the removed biased wCap option as an unknown key', async () => {
+    await expect(createPTEngine_WebGPU({
       device: makeFullTierDevice(emptyRecorder()),
       restirPtReuse: true,
-      restirPtReuseOptions: { wCap: 10 },
-    });
-
-    expect(engine.capabilities.activeFeatures?.has('pt-webgpu-restir-pt-biased-weight-clamp')).toBe(true);
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining('biased GRIS contribution-weight clamp'));
-    engine.dispose();
-    warn.mockRestore();
-  });
-
-  it('ON: explicit f32-max is the professional default, not a biased clamp', async () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const engine = await createPTEngine_WebGPU({
-      device: makeFullTierDevice(emptyRecorder()),
-      restirPtReuse: true,
-      restirPtReuseOptions: { wCap: PT_WEBGPU_RESTIR_PT_EFFECTIVELY_UNCLAMPED_W },
-    });
-
-    expect(engine.capabilities.activeFeatures?.has('pt-webgpu-restir-pt-biased-weight-clamp')).toBe(false);
-    expect(warn).not.toHaveBeenCalledWith(expect.stringContaining('biased GRIS contribution-weight clamp'));
-    engine.dispose();
-    warn.mockRestore();
+      restirPtReuseOptions: { wCap: 10 } as never,
+    })).rejects.toThrow('restirPtReuseOptions contains unknown key(s): wCap');
   });
 
   it('ON: finite glossy reflection is part of the stable path', async () => {
@@ -425,7 +525,7 @@ describe('ReSTIR-PT reuse wiring — ON (full tier)', () => {
       device: makeFullTierDevice(rec),
       traceTier: 'lite',
       restirPtReuse: true,
-    })).rejects.toThrow(/restirPtReuse requires traceTier "full"/);
+    })).rejects.toThrow(/oneEdgeReconnectionReuse requires traceTier "full"/);
   });
 
   it('ON: full-tier request throws if the device was not acquired with the reuse buffer floor', async () => {
@@ -445,7 +545,7 @@ describe('ReSTIR-PT reuse wiring — ON (full tier)', () => {
       restirPtReuse: true,
     })).rejects.toThrow(
       new RegExp(
-        `restirPtReuse requires maxStorageBuffersPerShaderStage >= ${PT_WEBGPU_RESTIR_PT_REUSE_REQUIRED_STORAGE_BUFFERS_PER_STAGE}`,
+        `oneEdgeReconnectionReuse requires maxStorageBuffersPerShaderStage >= ${PT_WEBGPU_RESTIR_PT_REUSE_REQUIRED_STORAGE_BUFFERS_PER_STAGE}`,
       ),
     );
   });

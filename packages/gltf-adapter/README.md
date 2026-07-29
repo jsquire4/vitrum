@@ -193,7 +193,7 @@ asset's feature report.
 | EXT/KHR_meshopt_compression                                                                                  | Supported by the lazy built-in meshoptimizer decoder at bufferView level, so geometry, animation and image consumers all see decompressed data. `opts.meshoptDecode` overrides it                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | EXT_mesh_gpu_instancing                                                                                      | Supported for mesh nodes → core `InstancedMeshPrimitive` with `nodeWorld * instanceTRS` baked into each instance matrix. Required use is accepted. `GltfSceneController` patches `instances[]` when the instanced node or an ancestor animates. Malformed accessors warn and import the base mesh once. Skinned/morphed instancing is supported as a renderable `fallback-generated-mesh` route: the importer expands it to one `SkinnedMeshPrimitive` per authored instance, preserves instance-local controller bindings, `reject-unsupported` accepts it, and `reject-degraded` rejects it as a non-native approximation. Native instanced skinning remains a future performance/core-contract feature.                                                                                                                                                                                                                                                                                                    |
 | Morph targets (POSITION + NORMAL + TANGENT + TEXCOORD_N, sparse OK)                                         | Supported → scalable core morph streams plus compatibility aliases for UV sets 0 and 1. The shared solver blends every represented UV-set delta into posed texture coordinates and applies tangent deltas when rest tangents exist. A `TEXCOORD_N` delta without a matching base stream rejects. Optional `COLOR_N` and application-specific morph deltas are valid glTF data that the current core morph contract cannot represent; they are preserved at the base-attribute level, diagnosed with exact source paths, and omitted from morph evaluation. Unknown non-application morph semantics reject.                                                                                                                                                                                                                                                                                                           |
-| Skins / JOINTS_0 (u8 + u16) / WEIGHTS_0                                                                      | Supported when a mesh node binds `skin` and the primitive provides both `JOINTS_0` and `WEIGHTS_0` → `SkinnedMeshPrimitive` at rest pose (incl. `bindMatrix`/`bindMatrixInverse`). Joint/weight attributes without a bound node skin, or incomplete joint/weight pairs, are structured unsupported compatibility issues and best-effort import falls back to a static mesh with diagnostics.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| Skins / JOINTS_0 (u8 + u16) / WEIGHTS_0                                                                      | Supported when a mesh node binds `skin` and the primitive provides both `JOINTS_0` and `WEIGHTS_0` → `SkinnedMeshPrimitive` at rest pose. Joint worlds are converted to mesh-local bone matrices, so the primitive transform applies once and no redundant `bindMatrix`/`bindMatrixInverse` is emitted. Joint/weight attributes without a bound node skin, or incomplete joint/weight pairs, are structured unsupported compatibility issues and best-effort import falls back to a static mesh with diagnostics.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | Animations (LINEAR / STEP / CUBICSPLINE; T/R/S/weights channels)                                             | Supported → `result.animations` as core `AnimationClip[]` (see Animations below). Geometry imports at rest pose; the host drives playback                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | Cameras                                                                                                      | Projection metadata is validated against glTF 2.0 and returned on `result.cameras`; it is not injected into the core Scene camera contract, so a structured `ignored-camera` compatibility diagnostic remains                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 
@@ -429,6 +429,29 @@ retain ownership itself (for example by returning a non-closable wrapper) or
 provide idempotent/reference-counted `close()` semantics. Identity sharing within
 one import is deduplicated automatically.
 
+### Compressed textures
+
+`KHR_texture_basisu` KTX2 images and the portable 2D subset of
+`MSFT_texture_dds` decode without host setup in
+`decodeSceneTextures()` / `loadGltfAndDecodeTextures()`. The KTX2 path accepts
+spec-valid ETC1S and UASTC material images and transcodes their base level to
+RGBA8. The DDS path accepts BC1–BC5 and masked 8/16/24/32-bit UNORM layouts;
+unsupported array, cube, volume, signed, HDR, BC6H, and BC7 payloads fail
+explicitly. For BC5 normal-map fields, the decoder reconstructs the positive
+tangent-space Z channel; non-normal BC5 consumers retain the generic RG,
+zero-blue representation.
+
+The package-owned `src/assets/basis_capi_transcoder.wasm` is emitted through a
+static module-relative URL, so the same pinned bytes load through browser
+`fetch` and Node file I/O. It comes from
+`@h00w/basis-universal-transcoder` 2.1.0 (MIT; source commit
+[`11820b9`](https://github.com/hwei/Basis-Universal-Transcoder-Project/tree/11820b9f94b8b5abd6b1418aeb1ab189f2901b95))
+and embeds the Basis Universal transcoder (Binomial LLC, Apache-2.0). Its
+SHA-256 is
+`b407e8e2c510b5154e3fa9de286a94334c46069ebc8dfc3a3e9119a7a8dc5bf7`.
+The package MIT license, upstream Apache-2.0 license, and upstream NOTICE are
+retained beside the WASM.
+
 ### sRGB vs linear
 
 The default TextureRef bridge passes bytes/opaque handles as-is. **The backend is responsible for colorspace-correct upload:**
@@ -444,8 +467,8 @@ color management or canvas implementation differences from changing decoded
 pixels. Browser WebP uses the platform image/canvas path while Node WebP uses
 `webp-wasm`; a host that requires byte-identical WebP output across hosts
 supplies one shared `decodePixels` implementation, which always takes
-precedence. Workers without canvas readback, compressed texture sources, and
-custom formats likewise use `decodePixels`.
+precedence. Workers without canvas readback and custom or unsupported image
+formats likewise use `decodePixels`.
 
 The built-in PNG/JPEG and Node WebP paths preflight encoded dimensions against
 the exact pixel policy before decoder import or output allocation. The JPEG wrapper

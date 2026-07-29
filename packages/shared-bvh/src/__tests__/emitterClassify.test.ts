@@ -3,7 +3,6 @@ import type { MaterialSpec } from '@vitrum/core';
 import {
   classifyTriangleEmitterCore,
   emissiveMapTriangleSubdivisionLevel,
-  estimateMaterialSpecEmissiveLeOverTriangle,
   forEachBarycentricSubTriangle,
   forEachEmissiveMapTexelSubTriangle,
   materialSpecEmissiveLe,
@@ -152,30 +151,6 @@ describe('materialSpecEmissiveLe', () => {
     expect(le).toEqual([0, 2, 0]);
   });
 
-  it('estimates triangle emissive power from UV-local map samples instead of full-texture average', () => {
-    const handle = {
-      width: 2,
-      height: 1,
-      data: new Float32Array([
-        1, 0, 0, 1,
-        0, 1, 0, 1,
-      ]),
-      __vitrum_hint__: { channels: 4, dataType: 'float32', colorSpace: 'linear' },
-    };
-
-    const le = estimateMaterialSpecEmissiveLeOverTriangle(
-      material({
-        emissive: [4, 4, 4],
-        emissiveMap: { handle },
-      }),
-      [0.75, 0],
-      [0.75, 0],
-      [0.75, 0],
-    );
-
-    expect(le).toEqual([0, 4, 0]);
-  });
-
   it('chooses a bounded subdivision level for CPU-readable emissive maps', () => {
     expect(emissiveMapTriangleSubdivisionLevel(material({ emissive: [1, 1, 1] }))).toBe(1);
     expect(emissiveMapTriangleSubdivisionLevel(material({
@@ -279,6 +254,50 @@ describe('materialSpecEmissiveLe', () => {
     expect(patches.some((p) => p.radiance[0] === 0 && p.radiance[1] === 2)).toBe(true);
   });
 
+  it('lets a backend inject exact decoded-texel storage and arithmetic', () => {
+    const handle = {
+      width: 1,
+      height: 1,
+      data: new Float32Array([0.25, 0.5, 1, 1]),
+      __vitrum_hint__: {
+        channels: 4,
+        dataType: 'float32',
+        colorSpace: 'linear',
+      } as const,
+    };
+    let decoded: readonly [number, number, number] | undefined;
+    let visited: readonly [number, number, number] | undefined;
+    const mappedMaterial = material({
+      emissive: [2, 2, 2],
+      emissiveMap: { handle },
+    });
+
+    const handled = forEachEmissiveMapTexelSubTriangle(
+      mappedMaterial,
+      [0, 0],
+      [1, 0],
+      [0, 1],
+      undefined,
+      undefined,
+      undefined,
+      (_a, _b, _c, radiance) => {
+        visited = radiance;
+      },
+      4096,
+      undefined,
+      (resolvedMaterial, texelRgb, texelX, texelY) => {
+        expect(resolvedMaterial).toBe(mappedMaterial);
+        expect([texelX, texelY]).toEqual([0, 0]);
+        decoded = texelRgb;
+        return [texelRgb[0] + 1, texelRgb[1] + 2, texelRgb[2] + 3];
+      },
+    );
+
+    expect(handled).toBe(true);
+    expect(decoded).toEqual([0.25, 0.5, 1]);
+    expect(visited).toEqual([1.25, 2.5, 4]);
+  });
+
   it('does not split unsupported-UV emissive maps into exact texel sub-triangles', () => {
     const handle = {
       width: 2,
@@ -316,9 +335,6 @@ describe('classifyTriangleEmitterCore', () => {
   it('classifies emissive core materials without an explicit intensity', () => {
     const emitter = classifyTriangleEmitterCore(
       material({ emissive: [0.25, 0.5, 1] }),
-      { x: 0, y: 0, z: 1 },
-      { x: 0, y: 0, z: -1 },
-      10,
     );
 
     expect(emitter).toEqual({

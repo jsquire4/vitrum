@@ -46,6 +46,7 @@ import {
   uploadLinearDepthAsRgba32f,
   uploadRgbAsRgba16f,
   uploadRgbAsRgba32f,
+  uploadUnitNormalsAsRgba32f,
   readRgba16fToRgb,
 } from './webGpuTextureUpload.js';
 
@@ -108,6 +109,15 @@ export function assertAtrousVarianceWebGPUBufferShapes(opts: AtrousVarianceWebGP
   check('rgb', opts.rgb, px * 3);
   if (opts.gbufferNormalsRgb != null) {
     check('gbufferNormalsRgb', opts.gbufferNormalsRgb, px * 3);
+    for (let index = 0; index < opts.gbufferNormalsRgb.length; index += 1) {
+      const component = opts.gbufferNormalsRgb[index]!;
+      if (component < -1 || component > 1) {
+        throw new RangeError(
+          `${label}: gbufferNormalsRgb[${index}] must be in signed normal range [-1, 1] ` +
+          `(got ${String(component)})`,
+        );
+      }
+    }
   }
   if (opts.linearDepth != null) {
     check('linearDepth', opts.linearDepth, px);
@@ -136,6 +146,15 @@ export function assertAtrousVarianceWebGPUBufferShapes(opts: AtrousVarianceWebGP
   const fallback = opts.syntheticGbufferFallback;
   if (fallback?.normalRgb != null) {
     assertFiniteFloatSlice(label, 'syntheticGbufferFallback.normalRgb', fallback.normalRgb, 3);
+    for (let index = 0; index < fallback.normalRgb.length; index += 1) {
+      const component = fallback.normalRgb[index]!;
+      if (component < -1 || component > 1) {
+        throw new RangeError(
+          `${label}: syntheticGbufferFallback.normalRgb[${index}] must be in signed ` +
+          `normal range [-1, 1] (got ${String(component)})`,
+        );
+      }
+    }
   }
   if (fallback?.linearDepth != null) {
     assertFiniteNumber(label, 'syntheticGbufferFallback.linearDepth', fallback.linearDepth);
@@ -319,12 +338,12 @@ export async function runAtrousVarianceWebGPU(
 
     uploadRgbAsRgba32f(device, inputColor, opts.rgb, w, h);
     if (opts.gbufferNormalsRgb != null) {
-      uploadRgbAsRgba32f(device, gbufferNormal, opts.gbufferNormalsRgb, w, h);
+      uploadUnitNormalsAsRgba32f(device, gbufferNormal, opts.gbufferNormalsRgb, w, h);
     } else {
       fillRgba32fTexture(device, gbufferNormal, w, h, [
-        synNormal[0],
-        synNormal[1],
-        synNormal[2],
+        synNormal[0] * 0.5 + 0.5,
+        synNormal[1] * 0.5 + 0.5,
+        synNormal[2] * 0.5 + 0.5,
         0,
       ]);
     }

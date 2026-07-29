@@ -45,10 +45,9 @@
  * ENERGY-CONSISTENCY RISKS the producer guards (and the ones it does NOT)
  * ════════════════════════════════════════════════════════════════════════════
  * GUARDED:
- *   • TRANSMISSIVE or singular/delta visible vertex → EMPTY reservoir (M = 0).
- *     The stable shift is finite same-side reflection. Opaque glossy dielectric,
- *     metallic, clearcoat, and sheen mixtures remain reusable; transmission
- *     awaits an opposite-hemisphere shift and measure conversion.
+ *   • Singular/delta visible vertex → EMPTY reservoir (M = 0). Engine scene
+ *     admission rejects transmissive materials before this shader can run: this
+ *     production strategy is the finite, opaque, one-edge reconnection domain.
  *   • PRIMARY MISS / degenerate reconnection edge (xv≈xs, cos≤0) → EMPTY.
  *   • p_src ≤ 0 (the sampled direction has zero forward density) → EMPTY.
  *   • RECONNECTION-RAY ESCAPE (the bounce ray leaves the scene) → NOT empty: a FAR
@@ -86,10 +85,9 @@ export const RESTIR_PT_PRODUCER_WGSL = /* wgsl */ `
 @group(4) @binding(0) var<storage, read_write> rpt_reservoirOut: array<u32>;
 @group(4) @binding(4) var<uniform> rptParams: RestirPtParams;
 
-// Stable scope: finite same-side reflection only. Transmission is deliberately
-// excluded until its opposite-hemisphere shift and measure conversion are wired.
-// The second predicate is the production BSDF's canonical finite-event classifier;
-// opaque diffuse, glossy, metallic, clearcoat, and sheen mixtures all pass.
+// Production scope: finite opaque reflection only. Scene admission rejects the
+// complete transmissive material domain; this shader-level check is a defensive
+// guard against stale/corrupt packed material data.
 fn rptIsReusableVisibleVertex(
   roughness: f32, metallic: f32, transmission: f32, clearcoat: f32, sheen: f32,
 ) -> bool {
@@ -155,6 +153,7 @@ struct RptSuffixMaterial {
   specularIntensity: f32,
   anisotropy: f32,
   anisotropyRotation: f32,
+  thinFilm: ThinFilmInterface,
   envMapIntensity: f32,
   isUnlit: bool,
 }
@@ -166,21 +165,21 @@ fn rptTraceClosestAfterAlpha(rayIn: Ray, rng: ptr<function, PtRngState>) -> RptA
   var ray = rayIn;
   var hit = traceClosest(ray, 1e-4, INFINITY);
   var valid = true;
-  // Permit at most eight alpha pass-throughs, then INSPECT the next hit.  A
-  // ninth pass-through means this bounded trace did not find the segment's real
-  // endpoint; it is invalid rather than an opaque hit at the truncation layer.
-  for (var aSkip = 0u; aSkip < 9u; aSkip = aSkip + 1u) {
+  let surfaceHitLimit = sceneSurfaceHitLimit();
+  var surfaceHitCount = 0u;
+  loop {
     if (!hit.didHit) {
       break;
     }
+    if (surfaceHitCount >= surfaceHitLimit) {
+      valid = false;
+      break;
+    }
+    surfaceHitCount = surfaceHitCount + 1u;
     let passesThrough = alphaTestPassThrough(
       hitMaterialId(hit), hit.triIndex, hit.baryVW, hit.instanceIndex, rng,
     );
     if (!passesThrough) { break; }
-    if (aSkip == 8u) {
-      valid = false;
-      break;
-    }
     ray.origin = ray.origin + ray.direction * (hit.dist + 1e-4);
     hit = traceClosest(ray, 1e-4, INFINITY);
   }
@@ -200,9 +199,10 @@ fn rptInvalidSuffixEstimate() -> RptSuffixEstimate {
 
 // Full-tier suffix material decode for the reconnection vertex and its onward
 // hits. This mirrors the main shade prologue's hit-local material stack: maps,
-// normal/bump perturbation, layer tint, thin-film reflect tint, spectral albedo,
-// and KHR_materials_specular. The visible-vertex source-lobe sampler/PDF lives
-// below in rptSampleSourceReconnectionDirection / rptSourceDirectionalPdfFull.
+// normal/bump perturbation, layer tint, coherent thin-film interface, spectral
+// albedo, and KHR_materials_specular. The visible-vertex source-lobe sampler/PDF
+// lives below in rptSampleSourceReconnectionDirection /
+// rptSourceDirectionalPdfFull.
 fn rptSuffixMaterialAtHit(hit: SceneHit, incomingDir: vec3f, wo: vec3f, heroLambda: f32) -> RptSuffixMaterial {
   let matId = hitMaterialId(hit);
   let mat = decodeMaterial(matId);
@@ -219,6 +219,18 @@ fn rptSuffixMaterialAtHit(hit: SceneHit, incomingDir: vec3f, wo: vec3f, heroLamb
   if (params.spectralEnabled != 0u && mat.dispersionAbbe >= 1.0) {
     out.ior = cauchyIorAtLambda(heroLambda, mat.ior, mat.dispersionAbbe);
   }
+  out.thinFilm = ThinFilmInterface(
+    mat.thinFilmEnabled,
+    matId,
+    mat.thinFilmLayerCountU,
+    mat.thinFilmIncidentIor,
+    out.ior,
+    mat.thinFilmAngleDependent,
+    isFrontFace,
+    params.spectralEnabled != 0u,
+    heroLambda,
+    out.transmission,
+  );
   out.normal = select(-hit.normal, hit.normal, isFrontFace);
   out.normal = applyNormalMap(matId, hit.triIndex, hit.baryVW, out.normal, hit.instanceIndex, isFrontFace);
   out.normal = applyBumpMap(matId, hit.triIndex, hit.baryVW, out.normal, hit.instanceIndex);
@@ -240,7 +252,12 @@ fn rptSuffixMaterialAtHit(hit: SceneHit, incomingDir: vec3f, wo: vec3f, heroLamb
     if (iridescenceThickness <= 0.0) { out.iridescence = 0.0; }
   }
   out.iridescenceIor = mat.iridescenceIor;
-  out.specularColor = clamp(mat.specularColor * sampleSpecularColorTexture(matId, hit.triIndex, hit.baryVW, hit.instanceIndex), vec3f(0.0), vec3f(1.0));
+  out.specularColor = max(
+    mat.specularColor * sampleSpecularColorTexture(
+      matId, hit.triIndex, hit.baryVW, hit.instanceIndex,
+    ),
+    vec3f(0.0),
+  );
   out.specularIntensity = clamp(mat.specularIntensity * sampleSpecularIntensityTexture(matId, hit.triIndex, hit.baryVW, hit.instanceIndex), 0.0, 1.0);
   if (params.spectralEnabled != 0u) {
     out.sheenColor = vec3f(spectralRgbFactorAtHero(out.sheenColor, heroLambda));
@@ -325,6 +342,7 @@ fn rptDirectAtVertex(
   specularIntensity: f32,
   anisotropy: f32,
   anisotropyRotation: f32,
+  thinFilm: ThinFilmInterface,
   suffixThroughput: vec3f,
   heroLambda: f32,
   envMapIntensity: f32,
@@ -346,13 +364,13 @@ fn rptDirectAtVertex(
       let nDotL = max(0.0, dot(normal, lightDir));
       if (nDotL > 0.0) {
         let shadowRay = Ray(pos + normal * 1e-3, lightDir);
-        if (dirShadowDisabled || !traceAny(shadowRay, 1e-4, INFINITY)) {
+        if (dirShadowDisabled || !traceAny(shadowRay, 1e-4, INFINITY, rng)) {
           let brdf = evaluateFiniteSameSideBrdfFullWithClearcoatNormal(
             baseColor, roughness, metallic, transmission, normal, clearcoatNormal, wo, lightDir,
             clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
             iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
             specularColor, specularIntensity,
-            anisotropy, anisotropyRotation,
+            anisotropy, anisotropyRotation, thinFilm,
           );
           let dIrrOut = select(dIrrMean.rgb, spectralEmissionAtHero(dIrrMean.rgb, heroLambda), params.spectralEnabled != 0u);
           contrib = contrib + suffixThroughput * brdf * nDotL * dIrrOut;
@@ -379,12 +397,11 @@ fn rptDirectAtVertex(
     var lpos: vec3f;
     var area: f32;
     if (isDiscR) {
-      let rrad = length(ru);
       let disc = concentricDiscSample(
         vec2f(xi1r * 2.0 - 1.0, xi2r * 2.0 - 1.0),
       );
       lpos = rpos + ru * disc.x + rv * disc.y;
-      area = PI * rrad * rrad;
+      area = PI * length(cross(ru, rv));
     } else {
       lpos = rpos + ru * (xi1r * 2.0 - 1.0) + rv * (xi2r * 2.0 - 1.0);
       area = 4.0 * length(cross(ru, rv));
@@ -401,13 +418,13 @@ fn rptDirectAtVertex(
       if (cosLight > 0.0) {
         let lightPdf = dist2 / (cosLight * area);
         let shadowRay = Ray(pos + normal * 1e-3, wi);
-        if (rectShadowDisabled || !traceAny(shadowRay, 1e-4, max(dist - 2e-3, 1e-3))) {
+        if (rectShadowDisabled || !traceAny(shadowRay, 1e-4, max(dist - 2e-3, 1e-3), rng)) {
           let brdf = evaluateFiniteSameSideBrdfFullWithClearcoatNormal(
             baseColor, roughness, metallic, transmission, normal, clearcoatNormal, wo, wi,
             clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
             iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
             specularColor, specularIntensity,
-            anisotropy, anisotropyRotation,
+            anisotropy, anisotropyRotation, thinFilm,
           );
           let rrOut = select(rr, spectralEmissionAtHero(rr, heroLambda), params.spectralEnabled != 0u);
           contrib = contrib + suffixThroughput * brdf * nDotL * rrOut / lightPdf;
@@ -433,14 +450,14 @@ fn rptDirectAtVertex(
     let nDotL = max(0.0, dot(normal, wi));
     if (nDotL > 0.0) {
       let shadowRay = Ray(pos + normal * 1e-3, wi);
-      if (ptShadowDisabled || !traceAny(shadowRay, 1e-4, max(dist - 2e-3, 1e-3))) {
+      if (ptShadowDisabled || !traceAny(shadowRay, 1e-4, max(dist - 2e-3, 1e-3), rng)) {
         let attenuation = pointSpotDistanceAttenuation(dist, ptMaxDist, ptDecay);
         let brdf = evaluateFiniteSameSideBrdfFullWithClearcoatNormal(
           baseColor, roughness, metallic, transmission, normal, clearcoatNormal, wo, wi,
           clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
           iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
           specularColor, specularIntensity,
-          anisotropy, anisotropyRotation,
+          anisotropy, anisotropyRotation, thinFilm,
         );
         let radOut = select(rad, spectralEmissionAtHero(rad, heroLambda), params.spectralEnabled != 0u);
         contrib = contrib + suffixThroughput * brdf * nDotL * radOut * attenuation;
@@ -472,7 +489,7 @@ fn rptDirectAtVertex(
       let nDotL = max(0.0, dot(normal, wi));
       if (nDotL > 0.0) {
         let shadowRay = Ray(pos + normal * 1e-3, wi);
-        if (spShadowDisabled || !traceAny(shadowRay, 1e-4, max(dist - 2e-3, 1e-3))) {
+        if (spShadowDisabled || !traceAny(shadowRay, 1e-4, max(dist - 2e-3, 1e-3), rng)) {
           let softness = smoothstep(cosOuter, max(cosInner, cosOuter + 1e-6), coneCos);
           let attenuation = pointSpotDistanceAttenuation(dist, spMaxDist, spDecay);
           let brdf = evaluateFiniteSameSideBrdfFullWithClearcoatNormal(
@@ -480,7 +497,7 @@ fn rptDirectAtVertex(
             clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
             iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
             specularColor, specularIntensity,
-            anisotropy, anisotropyRotation,
+            anisotropy, anisotropyRotation, thinFilm,
           );
           let sradOut = select(srad, spectralEmissionAtHero(srad, heroLambda), params.spectralEnabled != 0u);
           contrib = contrib + suffixThroughput * brdf * nDotL * softness * sradOut * attenuation;
@@ -519,13 +536,13 @@ fn rptDirectAtVertex(
       if (cosLight > 0.0) {
         let lightPdf = dist2 / (cosLight * area);
         let shadowRay = Ray(pos + normal * 1e-3, wi);
-        if (meshAreaLights[mb + 3u].w > 0.5 || !traceAny(shadowRay, 1e-4, max(dist - 2e-3, 1e-3))) {
+        if (meshAreaLights[mb + 3u].w > 0.5 || !traceAny(shadowRay, 1e-4, max(dist - 2e-3, 1e-3), rng)) {
           let brdf = evaluateFiniteSameSideBrdfFullWithClearcoatNormal(
             baseColor, roughness, metallic, transmission, normal, clearcoatNormal, wo, wi,
             clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
             iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
             specularColor, specularIntensity,
-            anisotropy, anisotropyRotation,
+            anisotropy, anisotropyRotation, thinFilm,
           );
           let mrOut = select(mr, spectralEmissionAtHero(mr, heroLambda), params.spectralEnabled != 0u);
           contrib = contrib + suffixThroughput * brdf * nDotL * mrOut / lightPdf;
@@ -534,7 +551,7 @@ fn rptDirectAtVertex(
     }
   }
   // Environment (importance-sampled if a map is present), MIS vs the BRDF pdf.
-  if (hasEnvironmentMap() || params.environmentSun.w > 0.0) {
+  if (hasEnvironmentMap()) {
     var envDir = vec3f(0.0, 1.0, 0.0);
     var envColor = vec3f(0.0);
     var envPdf = 0.0;
@@ -552,13 +569,13 @@ fn rptDirectAtVertex(
     let nDotL = max(dot(normal, envDir), 0.0);
     if (nDotL > 1e-6) {
       let shadowRay = Ray(pos + normal * 1e-3, envDir);
-      if (!traceAny(shadowRay, 1e-4, INFINITY)) {
+      if (!traceAny(shadowRay, 1e-4, INFINITY, rng)) {
         let brdf = evaluateFiniteSameSideBrdfFullWithClearcoatNormal(
           baseColor, roughness, metallic, transmission, normal, clearcoatNormal, wo, envDir,
           clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
           iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
           specularColor, specularIntensity,
-          anisotropy, anisotropyRotation,
+          anisotropy, anisotropyRotation, thinFilm,
         );
         // The suffix continuation below is sampled from a cosine hemisphere,
         // not the full authored BSDF mixture. MIS must compare the environment
@@ -637,7 +654,7 @@ fn rptComputeLoAtReconnection(
       sm.clearcoat, sm.clearcoatRoughness, sm.sheen, sm.sheenRoughness, sm.sheenColor,
       sm.iridescence, sm.iridescenceIor, sm.iridescenceThicknessMin, sm.iridescenceThicknessMax,
       sm.specularColor, sm.specularIntensity,
-      sm.anisotropy, sm.anisotropyRotation,
+      sm.anisotropy, sm.anisotropyRotation, sm.thinFilm,
       suffixThroughput,
       heroLambda,
       sm.envMapIntensity,
@@ -670,7 +687,7 @@ fn rptComputeLoAtReconnection(
       sm.clearcoat, sm.clearcoatRoughness, sm.sheen, sm.sheenRoughness, sm.sheenColor,
       sm.iridescence, sm.iridescenceIor, sm.iridescenceThicknessMin, sm.iridescenceThicknessMax,
       sm.specularColor, sm.specularIntensity,
-      sm.anisotropy, sm.anisotropyRotation,
+      sm.anisotropy, sm.anisotropyRotation, sm.thinFilm,
     );
     suffixThroughput = suffixThroughput * fOnward * nDotNext / max(cosSample.pdf, 1e-8);
     prevAllowsAreaMis = true; // diffuse onward bounce: next emission handled by NEE/MIS.
@@ -776,13 +793,14 @@ fn rptSourceDirectionalPdfFull(
   specularIntensity: f32,
   anisotropy: f32,
   anisotropyRotation: f32,
+  thinFilm: ThinFilmInterface,
 ) -> f32 {
   return brdfDirectionalPdfFullSampledWithClearcoatNormal(
     baseColor, roughness, metallic, transmission, ior, normal, clearcoatNormal, wo, wi,
     clearcoat, clearcoatRoughness, sheen, sheenRoughness,
     iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
     specularColor, specularIntensity,
-    anisotropy, anisotropyRotation,
+    anisotropy, anisotropyRotation, thinFilm,
   );
 }
 
@@ -841,7 +859,12 @@ fn restirPtProduce(@builtin(global_invocation_id) gid: vec3u) {
     if (iridescenceThicknessV <= 0.0) { iridescenceV = 0.0; }
   }
   let iridescenceIorV = vMat.iridescenceIor;
-  var specularColorV = clamp(vMat.specularColor * sampleSpecularColorTexture(vMatId, vHit.triIndex, vHit.baryVW, vHit.instanceIndex), vec3f(0.0), vec3f(1.0));
+  var specularColorV = max(
+    vMat.specularColor * sampleSpecularColorTexture(
+      vMatId, vHit.triIndex, vHit.baryVW, vHit.instanceIndex,
+    ),
+    vec3f(0.0),
+  );
   var specularIntensityV = clamp(vMat.specularIntensity * sampleSpecularIntensityTexture(vMatId, vHit.triIndex, vHit.baryVW, vHit.instanceIndex), 0.0, 1.0);
   if (params.spectralEnabled != 0u) {
     sheenColorV = vec3f(spectralRgbFactorAtHero(sheenColorV, heroLambda));
@@ -853,6 +876,18 @@ fn restirPtProduce(@builtin(global_invocation_id) gid: vec3u) {
   if (params.spectralEnabled != 0u && vMat.dispersionAbbe >= 1.0) {
     iorV = cauchyIorAtLambda(heroLambda, vMat.ior, vMat.dispersionAbbe);
   }
+  let thinFilmV = ThinFilmInterface(
+    vMat.thinFilmEnabled,
+    vMatId,
+    vMat.thinFilmLayerCountU,
+    vMat.thinFilmIncidentIor,
+    iorV,
+    vMat.thinFilmAngleDependent,
+    vIsFront,
+    params.spectralEnabled != 0u,
+    heroLambda,
+    transmissionV,
+  );
   let layerTxV = clamp(select(vMat.backLayerTx, vMat.frontLayerTx, vIsFront), vec3f(0.0), vec3f(1.0));
   let layerRoughnessV = select(vMat.backLayerRoughness, vMat.frontLayerRoughness, vIsFront);
   if (layerRoughnessV >= 0.0) {
@@ -875,10 +910,10 @@ fn restirPtProduce(@builtin(global_invocation_id) gid: vec3u) {
     baseColorV = vec3f(reflScalarV);
   }
 
-  // Unlit, transmissive, or singular/delta visible vertex → empty. A TMM
-  // thin-film stack is an exact discrete R/T/A interface in the megakernel;
-  // it cannot be represented by this finite-direction reconnection reservoir.
-  if (vMat.isUnlit || vMat.thinFilmEnabled ||
+  // Unlit, transmissive, or singular/delta visible vertex -> empty. Coherent
+  // thin film is a finite rough-interface Fresnel replacement and remains in
+  // the reusable domain.
+  if (vMat.isUnlit ||
       !rptIsReusableVisibleVertex(roughnessV, metallicV, transmissionV, clearcoatV, sheenV)) {
     storeReservoirPTHero_rw(&rpt_reservoirOut, pixelIdx, emptyReservoirPTHero());
     return;
@@ -899,8 +934,15 @@ fn restirPtProduce(@builtin(global_invocation_id) gid: vec3u) {
     tanB = rotatedB;
   }
   let cosO = max(dot(nv, woV), 0.0);
-  let f0BaseV = materialSpecularF0(baseColorV, metallicV, specularColorV, specularIntensityV);
-  let f0V = iridescenceModifiedF0(
+  let etaTOverIV = select(
+    1.0 / max(iorV, 1e-8),
+    max(iorV, 1e-8),
+    vIsFront,
+  );
+  let f0BaseV = materialSpecularF0(
+    baseColorV, metallicV, etaTOverIV, specularColorV, specularIntensityV,
+  );
+  let iridescentF0V = iridescenceModifiedF0(
     f0BaseV,
     iridescenceV,
     iridescenceIorV,
@@ -908,7 +950,13 @@ fn restirPtProduce(@builtin(global_invocation_id) gid: vec3u) {
     iridescenceThicknessMaxV,
     cosO,
   );
-  let fresV = fresnelSchlick(cosO, f0V);
+  let f0V = select(iridescentF0V, f0BaseV, thinFilmV.enabled);
+  let fresV = bsdfLayeredInterfaceResponse(
+    materialSpecularFresnelSchlick(
+      cosO, f0V, metallicV, specularIntensityV,
+    ),
+    thinFilmV, cosO,
+  ).reflectance;
   // Sample from the normalized source-lobe mixture used by pdfSrc below:
   //   p_src = (p_base + clearcoat*p_clearcoat + sheen*p_sheen) /
   //           (1 + clearcoat + sheen)
@@ -951,7 +999,7 @@ fn restirPtProduce(@builtin(global_invocation_id) gid: vec3u) {
     clearcoatV, clearcoatRoughnessV, sheenV, sheenRoughnessV,
     iridescenceV, iridescenceIorV, iridescenceThicknessMinV, iridescenceThicknessMaxV,
     specularColorV, specularIntensityV,
-    anisotropyV, anisotropyRotationV,
+    anisotropyV, anisotropyRotationV, thinFilmV,
   );
   if (!rptFinitePositive(pdfSrc) || pdfSrc <= 1e-8) {
     storeReservoirPTHero_rw(&rpt_reservoirOut, pixelIdx, emptyReservoirPTHero());
@@ -982,10 +1030,9 @@ fn restirPtProduce(@builtin(global_invocation_id) gid: vec3u) {
     let reconDirToXv = safe_normalize(xv - xs); // wo at xs (Lo is measured here)
     let sReservoirMat = rptSuffixMaterialAtHit(sHit, reconRay.direction, reconDirToXv, heroLambda);
     ns = sReservoirMat.normal;
-    // Suffix bounce budget: bounded short walk (the reconnection-vertex tail). Kept
-    // modest; the wiring step can align it with the megakernel bounce budget for
-    // A/B parity. maxBounces is the host's path budget; the suffix is at most that.
-    let suffixBounces = max(1u, min(params.maxBounces, 4u));
+    // The suffix owns the same authored path-depth budget as the ordinary
+    // megakernel; silently truncating it to four bounces changes the estimator.
+    let suffixBounces = max(1u, params.maxBounces);
     let suffixEstimate = rptComputeLoAtReconnection(
       &rng, xs, sHit, reconRay.direction, reconDirToXv, heroLambda, suffixBounces,
     );
@@ -1008,6 +1055,8 @@ fn restirPtProduce(@builtin(global_invocation_id) gid: vec3u) {
   r.surfaceParamV = rptVisibleSurfaceParam(vHit, xv);
   r.clearcoatNormalV = clearcoatNormalV;
   r.albV = baseColorV; r.roughnessV = roughnessV; r.metalV = metallicV;
+  r.transmissionV = transmissionV;
+  r.iorV = iorV;
   r.clearcoatV = clearcoatV;
   r.clearcoatRoughnessV = clearcoatRoughnessV;
   r.sheenV = sheenV;
@@ -1031,15 +1080,17 @@ fn restirPtProduce(@builtin(global_invocation_id) gid: vec3u) {
   // one-candidate cancellation whenever shared-exponent quantization changes Lo.
   Lo = rptCanonicalizeStoredLo(Lo);
   let pHat = restirPtTargetForDomainAtHero(r, heroLambda, woV, xs, Lo);
-  let wCandidate = select(0.0, pHat / pdfSrc, pdfSrc > 1e-8);
-  if (!updateReservoirPT(
-    &r, xs, ns, Lo, heroLambda, pdfSrc, wCandidate, &rng,
+  let logCandidateWeight = log(pHat) - log(pdfSrc);
+  if (!updateReservoirPTLog(
+    &r, xs, ns, Lo, heroLambda, pdfSrc, logCandidateWeight, &rng,
   )) {
-    storeReservoirPTHero_rw(&rpt_reservoirOut, pixelIdx, emptyReservoirPTHero());
+    // A marked numeric failure remains observable to resolve (.a = -1), while
+    // an ordinary unsupported/zero-measure candidate remains an empty sample.
+    storeReservoirPTHero_rw(&rpt_reservoirOut, pixelIdx, r);
     return;
   }
-  // GRIS finalize: W = w_sum / p̂ (NO /M — the temporal pass folds with MIS).
-  finaliseReservoirPTWGris(&r, rptParams.wCap);
+  // GRIS finalize in log space (NO /M — the temporal pass folds with MIS).
+  finaliseReservoirPTWGris(&r);
   // Validate the selected one-edge reconnection path xv → xs.
   refreshReconnectionStatePT(&r);
 

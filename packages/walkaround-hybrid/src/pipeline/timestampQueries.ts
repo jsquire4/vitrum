@@ -18,7 +18,7 @@
  *       atrous-variance-atrous-0..2, indirect-temporal-accum,
  *       atrous-indirect-0..3, indirect-combine, ddgi-border-irr,
  *       ddgi-border-vis, transparent-oit, temporalAccum, resolve, composite
- *       (MAX_PASS_COUNT = 36 is the svgf-real+PPG+ReGIR worst case)
+ *       (MAX_PASS_COUNT = 37 is the svgf-real+variance+PPG+ReGIR worst case)
  *
  * Sprint 9 adaptive-sampling wire-in adds `sample-budget` (prepended) and
  * `resolve` (inserted between temporalAccum and composite). Both passes
@@ -106,7 +106,7 @@ export type PassLabel =
  * allocation survives every runtime layout. Verify against `buildPassLayout`
  * if you add a pass.
  */
-export const MAX_PASS_COUNT = 36;
+export const MAX_PASS_COUNT = 37;
 
 interface PassLayoutOptions {
   /** T2.H2: 'neural' falls through to 'atrous-variance' pass layout (InferenceGraph is
@@ -200,6 +200,9 @@ export interface TimestampState {
   readbackA: GPUBuffer | null;
   readbackB: GPUBuffer | null;
   readbackInFlight: 'A' | 'B' | null;
+  /** Invalidates late mapAsync continuations after disposal/reinitialization. */
+  readbackGeneration: number;
+  disposed: boolean;
   periodNs: number;
   lastGpuTimings: Record<string, number>;
   lastGpuTimingsFrame: number;
@@ -212,6 +215,8 @@ export function makeTimestampState(): TimestampState {
     readbackA: null,
     readbackB: null,
     readbackInFlight: null,
+    readbackGeneration: 0,
+    disposed: false,
     periodNs: 1.0,
     lastGpuTimings: {},
     lastGpuTimingsFrame: -1,
@@ -225,30 +230,67 @@ export function makeTimestampState(): TimestampState {
 export function initTimestampQueries(
   device: GPUDevice,
   state: TimestampState,
+  environment: { readonly DEV?: boolean } | undefined =
+    (import.meta as unknown as { env?: { readonly DEV?: boolean } }).env,
 ): void {
-  // DEV guard: Vite injects `import.meta.env.DEV`; in non-Vite toolchains
-  // the property is absent and we default to enabling queries (safe — the
-  // feature-gate below only activates on adapters that expose timestamp-query).
-  // The double unknown cast avoids TS2352 since ImportMeta has no index sig.
-  const meta = import.meta as unknown as { env?: { DEV?: boolean } };
-  const isDev = meta.env?.['DEV'] ?? true;
-  if (!isDev) return;
+  // Timestamp readback is diagnostic overhead. Only an explicit Vite-style
+  // DEV=true opts in; non-Vite hosts (where import.meta.env is absent) stay off.
+  const isDev = environment?.DEV === true;
+  if (!isDev) {
+    disposeTimestampState(state);
+    return;
+  }
 
   if (device.features.has('timestamp-query')) {
     const N = MAX_PASS_COUNT;
-    state.querySet = device.createQuerySet({ type: 'timestamp', count: N * 2 });
-    state.resolveBuffer = device.createBuffer({
-      size: N * 2 * 8,
-      usage: GPUBufferUsage.QUERY_RESOLVE | GPUBufferUsage.COPY_SRC,
-    });
-    state.readbackA = device.createBuffer({
-      size: N * 2 * 8,
-      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
-    });
-    state.readbackB = device.createBuffer({
-      size: N * 2 * 8,
-      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
-    });
+    let querySet: GPUQuerySet | null = null;
+    let resolveBuffer: GPUBuffer | null = null;
+    let readbackA: GPUBuffer | null = null;
+    let readbackB: GPUBuffer | null = null;
+    try {
+      querySet = device.createQuerySet({ type: 'timestamp', count: N * 2 });
+      resolveBuffer = device.createBuffer({
+        size: N * 2 * 8,
+        usage: GPUBufferUsage.QUERY_RESOLVE | GPUBufferUsage.COPY_SRC,
+      });
+      readbackA = device.createBuffer({
+        size: N * 2 * 8,
+        usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+      });
+      readbackB = device.createBuffer({
+        size: N * 2 * 8,
+        usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+      });
+    } catch (error) {
+      destroyTimestampResources(querySet, resolveBuffer, readbackA, readbackB);
+      throw error;
+    }
+
+    // Allocation is transactional: publish the complete generation, then
+    // retire any prior one. This also makes an explicit reinitialize safe.
+    const priorQuerySet = state.querySet;
+    const priorResolve = state.resolveBuffer;
+    const priorA = state.readbackA;
+    const priorB = state.readbackB;
+    state.querySet = querySet;
+    state.resolveBuffer = resolveBuffer;
+    state.readbackA = readbackA;
+    state.readbackB = readbackB;
+    state.readbackInFlight = null;
+    state.readbackGeneration++;
+    state.disposed = false;
+    destroyTimestampResources(
+      priorQuerySet,
+      priorResolve,
+      priorA,
+      priorB,
+      new Set<GPUQuerySet | GPUBuffer>([
+        querySet,
+        resolveBuffer,
+        readbackA,
+        readbackB,
+      ]),
+    );
     // WebGPU exposes timestampPeriod via adapter info (ns per tick).
     // Some browsers normalize to 1ns by spec.
     const adapterInfo = (device as unknown as { adapterInfo?: { timestampPeriod?: number } }).adapterInfo;
@@ -256,6 +298,9 @@ export function initTimestampQueries(
     console.log('[hybrid:debug] timestamp queries enabled',
       { maxPasses: N, periodNs: state.periodNs });
   } else {
+    // A reinitialize onto an adapter without the feature must disable and
+    // retire a prior generation, not leave stale query state active.
+    disposeTimestampState(state);
     console.log('[hybrid:debug] timestamp queries unavailable on this adapter; falling back to JS-submit timing only');
   }
 }
@@ -272,11 +317,13 @@ export function kickTimestampReadback(
   frameCount: number,
   labels: readonly PassLabel[],
 ): void {
+  if (state.disposed) return;
   if (!state.resolveBuffer || !state.readbackA || !state.readbackB) return;
   if (state.readbackInFlight) return; // prior readback still pending
 
   const target = frameCount % 2 === 0 ? state.readbackA : state.readbackB;
   const slot: 'A' | 'B' = frameCount % 2 === 0 ? 'A' : 'B';
+  const generation = ++state.readbackGeneration;
   state.readbackInFlight = slot;
   const periodNs = state.periodNs;
   const N = labels.length;
@@ -285,10 +332,13 @@ export function kickTimestampReadback(
   try {
     mapping = target.mapAsync(GPUMapMode.READ);
   } catch (error) {
-    state.readbackInFlight = null;
+    if (state.readbackGeneration === generation) {
+      state.readbackInFlight = null;
+    }
     throw error;
   }
   mapping.then(() => {
+    if (state.disposed || state.readbackGeneration !== generation) return;
     try {
       const range = target.getMappedRange();
       const view = new BigInt64Array(range.slice(0));
@@ -300,10 +350,14 @@ export function kickTimestampReadback(
     } catch {
       // ignore — buffer was likely unmapped during a dispose race
     } finally {
-      state.readbackInFlight = null;
+      if (state.readbackGeneration === generation) {
+        state.readbackInFlight = null;
+      }
     }
   }).catch(() => {
-    state.readbackInFlight = null;
+    if (state.readbackGeneration === generation) {
+      state.readbackInFlight = null;
+    }
   });
 }
 
@@ -389,14 +443,22 @@ export async function readTimestampsOnce(
     size,
     usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
   });
-  const encoder = device.createCommandEncoder({ label: 'timestamp-readback-debug' });
-  encoder.resolveQuerySet(state.querySet, 0, layout.slotCount * 2, state.resolveBuffer, 0);
-  encoder.copyBufferToBuffer(state.resolveBuffer, 0, readback, 0, size);
-  device.queue.submit([encoder.finish()]);
-  await readback.mapAsync(GPUMapMode.READ);
-  const view = new BigInt64Array(readback.getMappedRange().slice(0));
-  readback.unmap();
-  readback.destroy();
+  let mapped = false;
+  let view: BigInt64Array;
+  try {
+    const encoder = device.createCommandEncoder({ label: 'timestamp-readback-debug' });
+    encoder.resolveQuerySet(state.querySet, 0, layout.slotCount * 2, state.resolveBuffer, 0);
+    encoder.copyBufferToBuffer(state.resolveBuffer, 0, readback, 0, size);
+    device.queue.submit([encoder.finish()]);
+    await readback.mapAsync(GPUMapMode.READ);
+    mapped = true;
+    view = new BigInt64Array(readback.getMappedRange().slice(0));
+  } finally {
+    if (mapped) {
+      try { readback.unmap(); } catch { /* preserve the readback outcome */ }
+    }
+    try { readback.destroy(); } catch { /* preserve the readback outcome */ }
+  }
 
   const rawBigints: string[] = [];
   const { perPass, total } = decodeTimestampSlots(
@@ -407,13 +469,38 @@ export async function readTimestampsOnce(
 }
 
 /**
- * Destroy all timestamp query GPU resources. Skips mapped buffers
- * (mapped buffers can't be destroy()'d; the GC reclaims them when
- * their mapped range goes out of scope).
+ * Destroy all timestamp query GPU resources. GPUBuffer.destroy() is valid for
+ * mapped / mapping-pending buffers and causes pending mapAsync work to reject;
+ * kickTimestampReadback always owns that rejection, so disposal cannot leak an
+ * in-flight readback or produce an unhandled rejection.
  */
 export function disposeTimestampState(state: TimestampState): void {
-  state.querySet?.destroy();
-  state.resolveBuffer?.destroy();
-  if (state.readbackInFlight !== 'A') state.readbackA?.destroy();
-  if (state.readbackInFlight !== 'B') state.readbackB?.destroy();
+  if (state.disposed) return;
+  state.disposed = true;
+  state.readbackGeneration++;
+  state.readbackInFlight = null;
+  const querySet = state.querySet;
+  const resolveBuffer = state.resolveBuffer;
+  const readbackA = state.readbackA;
+  const readbackB = state.readbackB;
+  state.querySet = null;
+  state.resolveBuffer = null;
+  state.readbackA = null;
+  state.readbackB = null;
+  destroyTimestampResources(querySet, resolveBuffer, readbackA, readbackB);
+}
+
+function destroyTimestampResources(
+  querySet: GPUQuerySet | null,
+  resolveBuffer: GPUBuffer | null,
+  readbackA: GPUBuffer | null,
+  readbackB: GPUBuffer | null,
+  preserved: ReadonlySet<GPUQuerySet | GPUBuffer> = new Set(),
+): void {
+  const destroyed = new Set<GPUQuerySet | GPUBuffer>(preserved);
+  for (const resource of [querySet, resolveBuffer, readbackA, readbackB]) {
+    if (resource == null || destroyed.has(resource)) continue;
+    destroyed.add(resource);
+    try { resource.destroy(); } catch { /* best-effort teardown continues */ }
+  }
 }

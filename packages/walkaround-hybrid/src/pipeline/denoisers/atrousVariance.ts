@@ -22,7 +22,6 @@
 import {
   ATROUS_VARIANCE_ATROUS_UNIFORMS_SIZE_BYTES,
   ATROUS_VARIANCE_DEFAULT_ATROUS_ITERATIONS,
-  ATROUS_VARIANCE_DEFAULT_ATROUS_UNIFORMS,
   ATROUS_VARIANCE_VARIANCE_UNIFORMS_SIZE_BYTES,
   packAtrousVarianceAtrousUniforms,
   packAtrousVarianceVarianceUniforms,
@@ -56,6 +55,18 @@ import { publishFrameState } from '../FramePublication.js';
 import { shouldResetDenoiserHistory } from './historyReset.js';
 
 const ATROUS_VARIANCE_ATROUS_UBO_BINDING_STRIDE_BYTES = 256;
+
+function destroyBuffersBestEffort(
+  buffers: Iterable<GPUBuffer>,
+  preserved: ReadonlySet<GPUBuffer> = new Set(),
+): void {
+  const destroyed = new Set<GPUBuffer>(preserved);
+  for (const buffer of buffers) {
+    if (destroyed.has(buffer)) continue;
+    destroyed.add(buffer);
+    try { buffer.destroy(); } catch { /* preserve lifecycle outcome */ }
+  }
+}
 
 /**
  * Welford BG builder — pre-W1-R3 lived in `bindGroupBuilders.ts`. The
@@ -120,6 +131,8 @@ export class AtrousVarianceDenoiser implements Denoiser {
   private readonly _welfordUboRef: UboRef = { buf: undefined };
   private readonly _varianceUboRef: UboRef = { buf: undefined };
   private readonly _atrousUboRef: UboRef = { buf: undefined };
+  /** Invalidates stale async initialize generations and dispose races. */
+  private _initializeGeneration = 0;
 
   /** Ping-pong index for the Welford variance buffer (0 = read main, write aux). */
   private _welfordPing = 0;
@@ -148,6 +161,7 @@ export class AtrousVarianceDenoiser implements Denoiser {
 
   async initialize(ctx: DenoiserInitContext): Promise<void> {
     const { device } = ctx;
+    const generation = ++this._initializeGeneration;
 
     // ── Compile shader modules ────────────────────────────────────────────
     // The include-graph handles the self-contained-vs-common-dependent split
@@ -174,39 +188,84 @@ export class AtrousVarianceDenoiser implements Denoiser {
     }
 
     // ── Compile pipelines ─────────────────────────────────────────────────
-    this._welfordPipeline = await device.createComputePipelineAsync({
+    const welfordPipeline = await device.createComputePipelineAsync({
       label: 'welford-temporal',
       layout: 'auto',
       compute: { module: welfordSM, entryPoint: 'welfordTemporalMain' },
     });
-    this._variancePipeline = await device.createComputePipelineAsync({
+    const variancePipeline = await device.createComputePipelineAsync({
       label: 'atrous-variance-variance',
       layout: 'auto',
       compute: { module: atrousVarianceSM, entryPoint: 'svgfVarianceMain' },
     });
-    this._atrousPipeline = await device.createComputePipelineAsync({
+    const atrousPipeline = await device.createComputePipelineAsync({
       label: 'atrous-variance-atrous',
       layout: 'auto',
       compute: { module: atrousVarianceSM, entryPoint: 'svgfAtrousMain' },
     });
+    if (generation !== this._initializeGeneration) return;
 
     // ── Eager UBO allocation ──────────────────────────────────────────────
     // Each UBO is small (≤32B); allocating up-front avoids first-frame
-    // branching in dispatch.
+    // branching in dispatch. Allocate a private candidate cohort first:
+    // reinitialize failures leave the prior published generation usable.
     const U = GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST;
-    this._welfordUboRef.buf = device.createBuffer({
-      label: 'welford-ubo', size: 16, usage: U,
-    });
-    this._varianceUboRef.buf = device.createBuffer({
-      label: 'atrous-variance-variance-ubo',
-      size: ATROUS_VARIANCE_VARIANCE_UNIFORMS_SIZE_BYTES,
-      usage: U,
-    });
-    this._atrousUboRef.buf = device.createBuffer({
-      label: 'atrous-variance-atrous-ubo',
-      size: ATROUS_VARIANCE_DEFAULT_ATROUS_ITERATIONS * ATROUS_VARIANCE_ATROUS_UBO_BINDING_STRIDE_BYTES,
-      usage: U,
-    });
+    const previous = new Set<GPUBuffer>(
+      [
+        this._welfordUboRef.buf,
+        this._varianceUboRef.buf,
+        this._atrousUboRef.buf,
+      ].filter((buffer): buffer is GPUBuffer => buffer !== undefined),
+    );
+    const candidates = new Set<GPUBuffer>();
+    const allocate = (descriptor: GPUBufferDescriptor): GPUBuffer => {
+      const candidate = device.createBuffer(descriptor);
+      if (previous.has(candidate) || candidates.has(candidate)) {
+        throw new Error(
+          `AtrousVarianceDenoiser UBO candidate "${descriptor.label ?? 'unlabelled'}" ` +
+            'aliases a live resource.',
+        );
+      }
+      candidates.add(candidate);
+      return candidate;
+    };
+
+    let welfordUbo: GPUBuffer;
+    let varianceUbo: GPUBuffer;
+    let atrousUbo: GPUBuffer;
+    try {
+      welfordUbo = allocate({
+        label: 'welford-ubo', size: 16, usage: U,
+      });
+      varianceUbo = allocate({
+        label: 'atrous-variance-variance-ubo',
+        size: ATROUS_VARIANCE_VARIANCE_UNIFORMS_SIZE_BYTES,
+        usage: U,
+      });
+      atrousUbo = allocate({
+        label: 'atrous-variance-atrous-ubo',
+        size:
+          ATROUS_VARIANCE_DEFAULT_ATROUS_ITERATIONS *
+          ATROUS_VARIANCE_ATROUS_UBO_BINDING_STRIDE_BYTES,
+        usage: U,
+      });
+    } catch (error) {
+      destroyBuffersBestEffort(candidates, previous);
+      throw error;
+    }
+
+    if (generation !== this._initializeGeneration) {
+      destroyBuffersBestEffort(candidates, previous);
+      return;
+    }
+
+    this._welfordPipeline = welfordPipeline;
+    this._variancePipeline = variancePipeline;
+    this._atrousPipeline = atrousPipeline;
+    this._welfordUboRef.buf = welfordUbo;
+    this._varianceUboRef.buf = varianceUbo;
+    this._atrousUboRef.buf = atrousUbo;
+    destroyBuffersBestEffort(previous, candidates);
   }
 
   state(): DenoiserState {
@@ -223,6 +282,7 @@ export class AtrousVarianceDenoiser implements Denoiser {
       wgX16,
       wgY16,
       frameIndex,
+      atrousDirectSigmas,
       computeDesc,
       resourceCache,
     } = ctx;
@@ -322,7 +382,12 @@ export class AtrousVarianceDenoiser implements Denoiser {
       bindGroupFor: (iter, inputView, outputView, inputTex, outputTex) => {
         const atrousUboByteOffset = iter * ATROUS_VARIANCE_ATROUS_UBO_BINDING_STRIDE_BYTES;
         packAtrousVarianceAtrousUniforms(
-          { iteration: iter, ...ATROUS_VARIANCE_DEFAULT_ATROUS_UNIFORMS },
+          {
+            iteration: iter,
+            sigmaNormal: atrousDirectSigmas[0],
+            sigmaDepth: atrousDirectSigmas[1],
+            sigmaColor: atrousDirectSigmas[2],
+          },
           atrousUboBytes,
           0,
         );
@@ -365,9 +430,14 @@ export class AtrousVarianceDenoiser implements Denoiser {
   }
 
   dispose(): void {
-    this._welfordUboRef.buf?.destroy();
-    this._varianceUboRef.buf?.destroy();
-    this._atrousUboRef.buf?.destroy();
+    this._initializeGeneration++;
+    destroyBuffersBestEffort(
+      [
+        this._welfordUboRef.buf,
+        this._varianceUboRef.buf,
+        this._atrousUboRef.buf,
+      ].filter((buffer): buffer is GPUBuffer => buffer !== undefined),
+    );
     this._welfordUboRef.buf = undefined;
     this._varianceUboRef.buf = undefined;
     this._atrousUboRef.buf = undefined;

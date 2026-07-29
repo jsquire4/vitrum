@@ -53,11 +53,11 @@
  *
  *   Functions declared by required modules (common, surfaceTextures,
  *   ddgiGridUbo, sampleCascadeC0, stainedGlassShade, environmentSample):
- *     traceSceneAny, traceSceneAnyAlphaMaskTextured (SHADOW-01 / ALPHA-03),
+ *     traceSceneAny, traceSceneAlphaTintTransmittanceTextured (SHADOW-01 / ALPHA-03),
  *     traceSceneAlphaTintTransmittanceTextured,
  *     traceSceneFirstHit, loadReservoirDI_rw,
  *     loadReservoirGI_rw, sampleEmitterPoint, emitterGeometry,
- *     evalGGX, evalGGXSpecularOnly, decodeSurfaceTextureId,
+ *     rich-material GGX evaluators, decodeSurfaceTextureId,
  *     surfaceTextureMod, decodeMaterialColor, decodeIsMetal,
  *     decodeRoughMetal, decodeIor, envHasMap, envDirFromXi, envRadiance,
  *     sampleCascadeC0, safe_normalize, rand_f32, pcgInit,
@@ -69,9 +69,8 @@
  * ── D5.8b history ────────────────────────────────────────────────────────────
  * Originally the lo_* block lived inline in SHADE_WGSL and carried a D5.8b
  * deferral comment explaining why a WgslModule extraction was blocked. The
- * temporalGiCommon raw-string pattern (used by temporalGiCommon.wgsl.ts to
- * share helpers between TEMPORAL_GI_WGSL and TEMPORAL_GI_GRIS_WGSL) was the
- * proven resolution: export the text verbatim here and interpolate it with
+ * temporalGiCommon raw-string pattern was the proven resolution: export the
+ * text verbatim here and interpolate it with
  * `${SHADING_TERMS_WGSL}` at the same position in SHADE_WGSL's template
  * literal. Resolved 2026-06-11; byte-identical to the original composed
  * shader string.
@@ -604,13 +603,12 @@ fn lo_sunNEE(
 // with bilinear weights at half-res fractional coord (gid*0.5) eliminates
 // the quad grid.
 fn giReservoirVisibility(g: ReservoirGI) -> f32 {
-  if (ubo.grisReuse != 1u) { return 1.0; }
   if (g.historyEpoch != bitcast<u32>(ubo.sunAngular.y)) { return 0.0; }
   return clamp(g.sampleVisibility, 0.0, 1.0);
 }
 
 fn giReservoirDirectionVector(g: ReservoirGI, receiverPosition: vec3f) -> vec3f {
-  if (ubo.grisReuse == 1u && g.sampleKind == GI_SAMPLE_ENVIRONMENT) {
+  if (g.sampleKind == GI_SAMPLE_ENVIRONMENT) {
     return g.wi_recon;
   }
   return g.xs - receiverPosition;
@@ -640,6 +638,7 @@ ${giBilinearCornerSelectWgsl()}
     let giIdx = hy * halfDims.x + hx;
     let g = loadReservoirGI_rw(giIdx);
     if (g.W <= 0.0 || g.M == 0u) { continue; }
+    if (g.prefixVertexCount != GI_PREFIX_RECONNECTABLE) { continue; }
     let grisVisibility = giReservoirVisibility(g);
     if (grisVisibility <= 0.0) { continue; }
     let toS = giReservoirDirectionVector(g, pos);
@@ -750,6 +749,7 @@ ${giBilinearCornerSelectWgsl()}
     let giIdx = hy * halfDims.x + hx;
     let g = loadReservoirGI_rw(giIdx);
     if (g.W <= 0.0 || g.M == 0u) { continue; }
+    if (g.prefixVertexCount != GI_PREFIX_CAMERA_TRANSMISSION) { continue; }
 
     // Direction from the post-glass diffuse receiver vertex xv toward the stored
     // reconnect sample xs. The receiver's Lambertian albedo was folded into g.Lo
@@ -836,13 +836,14 @@ fn lo_indirectSpecular(
   let giIdx = hy * halfDims.x + hx;
   let g = loadReservoirGI_rw(giIdx);
   if (g.W <= 0.0 || g.M == 0u) { return vec3f(0.0); }
+  if (g.prefixVertexCount != GI_PREFIX_RECONNECTABLE) { return vec3f(0.0); }
   let grisVisibility = giReservoirVisibility(g);
   if (grisVisibility <= 0.0) { return vec3f(0.0); }
   let toS = giReservoirDirectionVector(g, pos);
   let distS = length(toS);
   if (distS <= 1e-4) { return vec3f(0.0); }
   let wi = toS / distS;
-  // evalGGXSpecularOnly already includes the NdotL cosine + conductor F0.
+  // The specular-only evaluator already includes the NdotL cosine + conductor F0.
   let specBrdf = evalGGXSpecularOnlyWithSpecularClearcoatSheenWithAnisotropyFrame(albedo, rough, metal, specular.rgb, specular.a, anisotropy.x, anisotropy.y, iridescence, clearcoat.x, clearcoat.y, sheen.a, sheenRoughness, sheen.rgb, anisotropyTangent, anisotropyBitangent, normal, clearcoatNormal, wo, wi);
   return g.Lo * specBrdf * g.W * grisVisibility;
 }`;

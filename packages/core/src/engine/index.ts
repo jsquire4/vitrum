@@ -31,6 +31,7 @@ import type { FrameStats, ProgressStats, EngineError, EngineWarning } from './te
 
 export * from './state.js';
 export * from './capabilities.js';
+export * from './supportManifest.js';
 export * from './debug.js';
 export * from './telemetry.js';
 export * from './factory.js';
@@ -462,10 +463,10 @@ export interface Engine {
   // ── Backend-specific result buffers ──────────────────────────────────────
 
   /**
-   * H14-C — Returns the ReSTIR-PT resolve-pass output buffer (the
+   * Returns pt-webgpu's opaque one-edge GRIS resolve-pass output buffer (the
    * per-pixel reconnection-indirect estimate, one vec4f / px = 16 B). Present
-   * ONLY when the backend was constructed with `restirPtReuse: true` (gated on
-   * active feature `'pt-webgpu-restir-pt-reuse'`) AND the reuse passes
+   * ONLY when the backend was constructed with one-edge reconnection reuse
+   * (gated on active feature `'pt-webgpu-one-edge-gris-reconnection'`) AND the passes
    * have been dispatched at least once (the buffer may be null before the first
    * successful frame). The returned value is backend-opaque (`unknown`) so hosts
    * must narrow it before use (e.g. cast to `GPUBuffer` when the backend is
@@ -474,7 +475,7 @@ export interface Engine {
    * This result buffer is a SEPARATE debug output from the beauty image: the
    * reuse path is validated in isolation before it composites into the beauty
    * buffer (road-to-100 A1). Hosts MUST typeof-check before calling; backends
-   * that do not implement ReSTIR-PT reuse omit this method entirely.
+   * that do not implement the reconnection strategy omit this method entirely.
    */
   getRestirPtResultBuffer?(): unknown;
 }

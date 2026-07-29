@@ -1,6 +1,6 @@
 /**
- * CPU mirror of GPU `bdptEmitterCount` / `bdptEmitterPower` / `bdptPickEmitterFlat`
- * for test oracles and `fillBdptLightPathCpu`.
+ * CPU mirror of GPU `bdptEmitterCount` / `bdptPickEmitterFlat` and bounce-0
+ * endpoint sampling for test oracles and `fillBdptLightPathCpu`.
  */
 
 import { luminance as luminance709 } from '@vitrum/shared-samplers';
@@ -11,7 +11,6 @@ import {
   meshTriangleArea,
   rectQuadArea,
   walkPositionalEmitters,
-  type PositionalEmitter,
 } from './flatEmitterWalk.js';
 
 const PI = Math.PI;
@@ -24,10 +23,9 @@ function bdptLightLuminance(rgb: readonly [number, number, number]): number {
 
 /** @internal Test-oracle CPU mirror of the GPU emitter-pick math; not public API. */
 function bdptHasEnvironmentEmitter(sb: UploadedSceneBuffers): boolean {
-  if (sb.hasEnvironmentMap && sb.environmentMapWidth > 0 && sb.environmentMapHeight > 0) {
-    return true;
-  }
-  return sb.environmentSunStrength > 0;
+  return sb.hasEnvironmentMap &&
+    sb.environmentMapWidth > 0 &&
+    sb.environmentMapHeight > 0;
 }
 
 /** @internal Test-oracle CPU mirror of the GPU emitter-pick math; not public API. */
@@ -37,9 +35,6 @@ function bdptEnvironmentPower(sb: UploadedSceneBuffers): number {
     if (sb.environmentMapCdf.length >= count + 1) {
       return Math.max(sb.environmentMapCdf[count]!, 0);
     }
-  }
-  if (sb.environmentSunStrength > 0) {
-    return sb.environmentSunStrength * (4 * PI);
   }
   return 0;
 }
@@ -138,52 +133,6 @@ export function bdptEmitterCount(sb: UploadedSceneBuffers): number {
   return sb.directionalLightCount + sb.pointLightCount + sb.spotLightCount +
     sb.rectAreaLightCount + sb.meshAreaLightCount +
     (bdptHasEnvironmentEmitter(sb) ? 1 : 0);
-}
-
-/** Per-emitter luminous power for one positional light (matches the GPU term). */
-function positionalEmitterPower(e: PositionalEmitter): number {
-  switch (e.kind) {
-    case 'point':
-      return (4 * PI) * bdptLightLuminance(e.radiance);
-    case 'spot': {
-      const solidAngle = exactPositiveEmitterMeasure(
-        2 * PI * (1 - 0.5 * (e.cosOuter + e.cosInner)),
-        'BDPT spot-emitter solid angle',
-      );
-      return solidAngle * bdptLightLuminance(e.radiance);
-    }
-    case 'rect': {
-      const isDisc = Math.abs(e.shapeTag - 1) < 0.5;
-      const area = exactPositiveEmitterMeasure(
-        isDisc ? discArea(e.uAxis) : rectQuadArea(e.uAxis, e.vAxis),
-        `BDPT ${isDisc ? 'disc' : 'rect'} emitter area`,
-      );
-      return PI * area * bdptLightLuminance(e.radiance);
-    }
-    case 'mesh': {
-      const area = exactPositiveEmitterMeasure(
-        meshTriangleArea(e.triA, e.triB, e.triC),
-        'BDPT mesh emitter area',
-      );
-      return PI * area * bdptLightLuminance(e.radiance);
-    }
-  }
-}
-
-export function bdptEmitterPower(sb: UploadedSceneBuffers, flatIdx: number): number {
-  if (flatIdx < 0 || flatIdx >= bdptEmitterCount(sb)) return 0;
-  if (flatIdx < sb.directionalLightCount) {
-    return distantDirectEmitterPower(sb, flatIdx);
-  }
-  let cur = sb.directionalLightCount;
-  for (const emitter of walkPositionalEmitters(sb)) {
-    if (cur === flatIdx) return positionalEmitterPower(emitter);
-    cur += 1;
-  }
-  if (cur === flatIdx && bdptHasEnvironmentEmitter(sb)) {
-    return distantDirectEmitterPower(sb, sb.directionalLightCount);
-  }
-  return 0;
 }
 
 /** Sampled-mode direct-light PMF. BDPT root selection is deliberately uniform. */
@@ -429,24 +378,14 @@ export function sampleBdptBounce0Cpu(
           let emitPos: [number, number, number];
           let area: number;
           if (isDisc) {
-            const a = u0 * 2 - 1;
-            const bb = u1 * 2 - 1;
-            let cr: number;
-            let cphi: number;
-            if (Math.abs(a) >= Math.abs(bb)) {
-              cr = a;
-              cphi = (PI / 4) * (bb / Math.max(Math.abs(a), 1e-9));
-            } else {
-              cr = bb;
-              cphi = PI / 2 - (PI / 4) * (a / Math.max(Math.abs(bb), 1e-9));
-            }
+            const [discX, discY] = concentricDisc(u0, u1);
             emitPos = [
-              e.position[0] + ru[0] * (cr * Math.cos(cphi)) + rv[0] * (cr * Math.sin(cphi)),
-              e.position[1] + ru[1] * (cr * Math.cos(cphi)) + rv[1] * (cr * Math.sin(cphi)),
-              e.position[2] + ru[2] * (cr * Math.cos(cphi)) + rv[2] * (cr * Math.sin(cphi)),
+              e.position[0] + ru[0] * discX + rv[0] * discY,
+              e.position[1] + ru[1] * discX + rv[1] * discY,
+              e.position[2] + ru[2] * discX + rv[2] * discY,
             ];
             area = exactPositiveEmitterMeasure(
-              discArea(ru), 'BDPT sampled disc emitter area',
+              discArea(ru, rv), 'BDPT sampled disc emitter area',
             );
           } else {
             const u = u0 * 2 - 1;
@@ -500,50 +439,37 @@ export function sampleBdptBounce0Cpu(
     cur += 1;
   }
   if (bdptHasEnvironmentEmitter(sb) && cur === globalFlat) {
-    let towardSource: [number, number, number];
-    let radiance: [number, number, number];
-    let directionPdf: number;
     const count = sb.environmentMapWidth * sb.environmentMapHeight;
-    if (sb.hasEnvironmentMap && count > 0 && sb.environmentMapCdf.length >= count + 1) {
-      const xi = clamp01(u0);
-      let lo = 0;
-      let hi = count;
-      while (lo + 1 < hi) {
-        const mid = (lo + hi) >>> 1;
-        if ((sb.environmentMapCdf[mid] ?? 0) <= xi) lo = mid;
-        else hi = mid;
-      }
-      const idx = Math.min(lo, count - 1);
-      const x = idx % sb.environmentMapWidth;
-      const y = Math.floor(idx / sb.environmentMapWidth);
-      const phi = ((x + 0.5) / sb.environmentMapWidth - 0.5) * 2 * PI;
-      const theta = ((y + 0.5) / sb.environmentMapHeight) * PI;
-      const sinTheta = Math.sin(theta);
-      towardSource = normalize3([
-        Math.cos(phi) * sinTheta,
-        Math.cos(theta),
-        Math.sin(phi) * sinTheta,
-      ]);
-      const texel = idx * 4;
-      const intensity = sb.environmentHdriIntensity ?? 1;
-      radiance = [
-        (sb.environmentMapTexels[texel] ?? 0) * intensity,
-        (sb.environmentMapTexels[texel + 1] ?? 0) * intensity,
-        (sb.environmentMapTexels[texel + 2] ?? 0) * intensity,
-      ];
-      directionPdf = sb.environmentMapTexels[texel + 3] ?? 0;
-    } else {
-      const z = 1 - 2 * clamp01(u0);
-      const phi = 2 * PI * clamp01(u1);
-      const radial = Math.sqrt(Math.max(0, 1 - z * z));
-      towardSource = [radial * Math.cos(phi), z, radial * Math.sin(phi)];
-      radiance = [
-        sb.environmentTint[0] * sb.environmentSunStrength,
-        sb.environmentTint[1] * sb.environmentSunStrength,
-        sb.environmentTint[2] * sb.environmentSunStrength,
-      ];
-      directionPdf = 1 / (4 * PI);
+    if (count <= 0 || sb.environmentMapCdf.length < count + 1) {
+      return null;
     }
+    const xi = clamp01(u0);
+    let lo = 0;
+    let hi = count;
+    while (lo + 1 < hi) {
+      const mid = (lo + hi) >>> 1;
+      if ((sb.environmentMapCdf[mid] ?? 0) <= xi) lo = mid;
+      else hi = mid;
+    }
+    const idx = Math.min(lo, count - 1);
+    const x = idx % sb.environmentMapWidth;
+    const y = Math.floor(idx / sb.environmentMapWidth);
+    const phi = ((x + 0.5) / sb.environmentMapWidth - 0.5) * 2 * PI;
+    const theta = ((y + 0.5) / sb.environmentMapHeight) * PI;
+    const sinTheta = Math.sin(theta);
+    const towardSource = normalize3([
+      Math.cos(phi) * sinTheta,
+      Math.cos(theta),
+      Math.sin(phi) * sinTheta,
+    ]);
+    const texel = idx * 4;
+    const intensity = sb.environmentHdriIntensity ?? 1;
+    const radiance: [number, number, number] = [
+      (sb.environmentMapTexels[texel] ?? 0) * intensity,
+      (sb.environmentMapTexels[texel + 1] ?? 0) * intensity,
+      (sb.environmentMapTexels[texel + 2] ?? 0) * intensity,
+    ];
+    const directionPdf = sb.environmentMapTexels[texel + 3] ?? 0;
     if (!(directionPdf > 0) || !Number.isFinite(directionPdf)) return null;
     const launch = sampleInfiniteDisk(sb, towardSource, 1 - u0, u1);
     const pdfJoint = discretePdf * launch.positionPdf;

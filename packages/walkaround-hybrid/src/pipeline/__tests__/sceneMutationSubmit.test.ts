@@ -47,6 +47,7 @@ describe('WalkaroundGPUPipeline scene-mutation submit boundary', () => {
     } as unknown as GPUDevice;
     const bvhMutation = participant();
     const regirMutation = participant();
+    const ppgMutation = participant();
     const bvhHost = { prepareMutation: vi.fn(() => bvhMutation) };
     const regir = { prepareForSceneBvh: vi.fn(() => regirMutation) };
     const originalShadow = new Uint8Array(64);
@@ -58,7 +59,10 @@ describe('WalkaroundGPUPipeline scene-mutation submit boundary', () => {
       _bvhHost: bvhHost,
       _regir: regir,
       _nrc: null,
-      _ppg: {},
+      _ppg: { prepareResetForSceneBvh: vi.fn(() => ppgMutation) },
+      _res: {},
+      _width: 8,
+      _height: 8,
       _learningBvhPositionsCpuData: originalShadow.buffer.slice(0),
       _accumFrameIndex: 9,
     });
@@ -136,7 +140,7 @@ describe('WalkaroundGPUPipeline scene-mutation submit boundary', () => {
       _learningBvhPositionsCpuData: new ArrayBuffer(0),
       _accumFrameIndex: 0,
       _grisHistoryEpoch: 0,
-      _grisHistoryClearPending: false,
+      _temporalHistoryClearPending: false,
     });
     const prepared = pipeline.prepareSceneMutation(
       {
@@ -195,7 +199,7 @@ describe('WalkaroundGPUPipeline scene-mutation submit boundary', () => {
       _learningBvhPositionsCpuData: new ArrayBuffer(0),
       _accumFrameIndex: 0,
       _grisHistoryEpoch: 0,
-      _grisHistoryClearPending: false,
+      _temporalHistoryClearPending: false,
     });
     const prepared = pipeline.prepareSceneMutation(
       {

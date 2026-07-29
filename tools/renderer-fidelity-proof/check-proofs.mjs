@@ -156,6 +156,11 @@ const SOURCE_PROOFS = [
       'bdptOwnsFiniteLightFamily',
       'directFamilyCount',
       'evaluateBdptConnection(',
+      'fn bdptResolveCameraSplats(',
+      'var frameEstimatorHash =',
+      'let rptMixtureSelected =',
+      'let advancedEstimatorSelected =',
+      'advancedPeerEnabled && !rptMixtureSelected',
     ],
   },
   {
@@ -193,6 +198,37 @@ const SOURCE_PROOFS = [
       'samples the primary eye vertex and emitter endpoint as explicit strategies',
       'bdptOwnsFiniteLightFamily',
       'PT_WEBGPU_BDPT_CONNECTION_WGSL',
+    ],
+  },
+  {
+    label: 'pt-webgpu native BDPT camera-splat implementation',
+    path: 'packages/pt-webgpu/src/wgsl/bdpt/bdptCameraSplat.wgsl.ts',
+    needles: [
+      'export const PT_WEBGPU_BDPT_CAMERA_SPLAT_WGSL',
+      'atomicCompareExchangeWeak(',
+      'fn bdptLoadCameraRgb(',
+      'fn bdptAccumulateCameraSplatStrategies(',
+    ],
+  },
+  {
+    label: 'pt-webgpu native BDPT camera-splat executable oracle',
+    path: 'packages/pt-webgpu/src/__tests__/bdptCameraSplatWiring.test.ts',
+    needles: [
+      'keeps the BDPT-off shader/resource surface unchanged',
+      'composes the atomic t=1 strategy and resolver only for bdpt:true',
+      'allocates, binds, clears, dispatches, and disposes the camera-splat cohort',
+      'admits s=n-1 in the canonical CPU+WGSL bounded-strategy mask',
+      'reports the now-executable native camera-splat strategy',
+    ],
+  },
+  {
+    label: 'pt-webgpu frame-global advanced-estimator composition oracle',
+    path: 'packages/pt-webgpu/src/__tests__/advancedEstimatorComposition.test.ts',
+    needles: [
+      'uses one backend-independent frame coin and keeps producer drops out of BDPT',
+      'selectionBlock).not.toContain(\'gid.\')',
+      'selectedAtArbitrarySplatTarget',
+      'camera splats merely because this target pixel had no RPT contribution',
     ],
   },
   {

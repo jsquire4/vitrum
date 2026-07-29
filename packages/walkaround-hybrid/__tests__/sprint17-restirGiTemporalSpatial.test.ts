@@ -46,8 +46,11 @@ describe('Sprint 17 — temporal-GI WGSL', () => {
     expect(TEMPORAL_GI_WGSL).toContain('NORMAL_DOT_MIN');
   });
 
-  it('applies reconnection-shift Jacobian for prev sample', () => {
-    expect(TEMPORAL_GI_WGSL).toContain('jacobianReconnectionShift');
+  it('evaluates both native receiver techniques in the canonical transformed domain', () => {
+    expect(TEMPORAL_GI_WGSL).toContain('grisDomainToCanonicalJacobian');
+    expect(TEMPORAL_GI_WGSL).toContain('grisLogWeightedTransformedDensity');
+    expect(TEMPORAL_GI_WGSL).toContain('var techniqueLogMass: array<f32, 2>');
+    expect(TEMPORAL_GI_WGSL).not.toContain('jacobianReconnectionShift');
   });
 });
 
@@ -80,14 +83,20 @@ describe('Sprint 17 — spatial-GI WGSL', () => {
     expect(SPATIAL_GI_WGSL).toContain('M_CLAMP_SPATIAL');
   });
 
-  it('applies geometric-consistency reject + Jacobian shift (normal-alignment + coplanarity bounds migrated to UBO in the 2026-05-18 sweep)', () => {
+  it('applies geometric-consistency rejection and complete transformed-density evaluation', () => {
     expect(SPATIAL_GI_WGSL).toContain('ubo.restirGiSpatialNormalDotMin');
     expect(SPATIAL_GI_WGSL).toContain('ubo.restirGiSpatialCoplanarTol');
-    expect(SPATIAL_GI_WGSL).toContain('jacobianReconnectionShift');
+    expect(SPATIAL_GI_WGSL).toContain('grisDomainToCanonicalJacobian');
+    expect(SPATIAL_GI_WGSL).toContain('grisLogWeightedTransformedDensity');
+    expect(SPATIAL_GI_WGSL).toContain('var techniqueLogMass: array<f32, 6>');
+    expect(SPATIAL_GI_WGSL).not.toContain('jacobianReconnectionShift');
   });
 
-  it('uses w_q = p̂(z_q) · W_q · M_q · J (standard RIS combine)', () => {
-    expect(SPATIAL_GI_WGSL).toMatch(/let w_q\s*=\s*pHatZ\s*\*\s*rQ\.W\s*\*\s*f32\(Mq\)\s*\*\s*J/);
+  it('uses Eq. 7 attempt mass only in m_i and applies each source UCW once', () => {
+    expect(SPATIAL_GI_WGSL).toContain('grisLogWeightedTransformedDensity(');
+    expect(SPATIAL_GI_WGSL).toContain('grisLogCanonicalResamplingWeight(');
+    expect(SPATIAL_GI_WGSL).toContain('candidate.W,');
+    expect(SPATIAL_GI_WGSL).not.toMatch(/candidate\.W\s*\*\s*f32\(domainM\[i\]\)/);
   });
 });
 

@@ -237,8 +237,7 @@ describe('backend promise ledger', () => {
     expect(new Set(ENGINE_FEATURE_IDS).size).toBe(ENGINE_FEATURE_IDS.length);
     expect(ENGINE_FEATURE_IDS).toEqual([
       'pt-webgpu-bdpt',
-      'pt-webgpu-restir-pt-reuse',
-      'pt-webgpu-restir-pt-biased-weight-clamp',
+      'pt-webgpu-one-edge-gris-reconnection',
       'pt-webgpu-sobol-sampling',
       'pt-webgpu-cwbvh-closest-traversal',
       'pt-webgpu-photon-map-sppm',

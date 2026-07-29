@@ -1,16 +1,16 @@
 /**
  * Octahedral solid-angle weight tests — Item 22 (RC normalization).
  *
- * Verifies that `computeOctahedralSolidAngles` returns physically correct
- * per-bin solid-angle weights for the N×N octahedral direction grid used by
- * the Radiance Cascades receiver irradiance integral.
+ * Verifies that the independent high-resolution CPU oracle returns physically
+ * correct per-bin solid-angle weights for an N×N octahedral direction grid.
+ * Production RC does not import this helper.
  *
- * Reference: Cigolle et al. 2014, "A Survey of Efficient Representations for
- * Independent Unit Vectors", JCGT §2 / Appendix A.2.
+ * Cigolle et al. 2014 supplies the octahedral mapping, not this numerical
+ * integration method.
  */
 
 import { describe, it, expect } from 'vitest';
-import { computeOctahedralSolidAngles } from '../src/octahedralSolidAngles.js';
+import { computeOctahedralSolidAngles } from './support/octahedralSolidAngles.js';
 
 const TWO_PI = 2 * Math.PI;
 const FOUR_PI = 4 * Math.PI;

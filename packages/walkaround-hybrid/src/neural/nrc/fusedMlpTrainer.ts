@@ -23,6 +23,7 @@ import {
 } from "./wgsl/fusedMlp.wgsl.js";
 import { packAdamUbo } from "./adamUbo.js";
 import { NRC_DIAGNOSTIC_BYTES, NRC_DIAGNOSTIC_CONSTANTS_WGSL } from './nrcDiagnostics.js';
+import type { NrcMlpStateSnapshot } from './nrcStateSnapshot.js';
 
 // Adam optimizer kernel (same math as the spike; operates on the finalized f32
 // grad buffers). Kept inline so the module is self-contained.
@@ -113,6 +114,26 @@ interface MlpTrainableSet {
 }
 
 export interface FusedMlpTrainTransaction {
+  readonly candidateWeightBuffer: GPUBuffer;
+  readonly candidateBiasBuffer: GPUBuffer;
+  commitCpu(): void;
+  rollback(): void;
+  finalizeSuccess(): void;
+}
+
+export interface FusedMlpStateBuffers {
+  readonly weights: GPUBuffer;
+  readonly biases: GPUBuffer;
+  readonly firstMomentWeights: GPUBuffer;
+  readonly secondMomentWeights: GPUBuffer;
+  readonly firstMomentBiases: GPUBuffer;
+  readonly secondMomentBiases: GPUBuffer;
+  readonly weightScalars: number;
+  readonly biasScalars: number;
+  readonly adamT: number;
+}
+
+export interface FusedMlpStateImportTransaction {
   readonly candidateWeightBuffer: GPUBuffer;
   readonly candidateBiasBuffer: GPUBuffer;
   commitCpu(): void;
@@ -231,6 +252,44 @@ function f32ToF16Bits(src: Float32Array): Uint16Array {
     out[k] = sign | (exp16 << 10) | mant16;
   }
   return out;
+}
+
+function assertMlpStateArray(
+  value: unknown,
+  expectedLength: number,
+  label: string,
+  nonNegative = false,
+): asserts value is Float32Array {
+  if (!(value instanceof Float32Array) || value.length !== expectedLength) {
+    throw new RangeError(
+      `NRC MLP ${label} must be a ${expectedLength}-element Float32Array.`,
+    );
+  }
+  for (let index = 0; index < value.length; index++) {
+    const scalar = value[index]!;
+    if (!Number.isFinite(scalar) || (nonNegative && scalar < 0)) {
+      throw new RangeError(
+        `NRC MLP ${label}[${index}] must be finite` +
+        `${nonNegative ? ' and non-negative' : ''}.`,
+      );
+    }
+  }
+}
+
+function assertMlpAdamT(value: number): void {
+  if (!Number.isSafeInteger(value) || value < 0 || value > 0xffff_ffff) {
+    throw new RangeError('NRC MLP adamT must be an unsigned 32-bit integer.');
+  }
+}
+
+function assertF16Representable(value: Float32Array, label: string): void {
+  for (let index = 0; index < value.length; index++) {
+    if (Math.abs(value[index]!) > 65504) {
+      throw new RangeError(
+        `NRC MLP ${label}[${index}] is outside the finite binary16 range.`,
+      );
+    }
+  }
 }
 
 export class FusedMlpTrainer {
@@ -762,6 +821,187 @@ export class FusedMlpTrainer {
     this.wMaster = w.slice();
     this.bMaster = b.slice();
     this.pushWeightsToGpu();
+  }
+
+  /** Live f32 optimizer buffers used by the engine-level coherent readback. */
+  stateBuffers(): FusedMlpStateBuffers {
+    this.#assertUsable('stateBuffers');
+    return {
+      weights: this.wMasterGpu!,
+      biases: this.bMasterGpu!,
+      firstMomentWeights: this.mW!,
+      secondMomentWeights: this.vW!,
+      firstMomentBiases: this.mB!,
+      secondMomentBiases: this.vB!,
+      weightScalars: this.plan.totalW,
+      biasScalars: this.plan.totalB,
+      adamT: this.adamT,
+    };
+  }
+
+  /**
+   * Record a complete optimizer generation into the isolated spare set.
+   * Publication is pointer/CPU-state only; callers may therefore compose this
+   * transaction with DDGI, DI/GI, PPG, and NRC inference publication before
+   * submitting one command buffer.
+   */
+  prepareStateRestore(
+    encoder: GPUCommandEncoder,
+    state: NrcMlpStateSnapshot,
+  ): FusedMlpStateImportTransaction {
+    this.#assertUsable('prepareStateRestore');
+    if (this._inFlightCandidate) {
+      throw new Error('Cannot restore NRC MLP state while a training candidate is in flight.');
+    }
+    assertMlpStateArray(state.weights, this.plan.totalW, 'weights');
+    assertMlpStateArray(state.biases, this.plan.totalB, 'biases');
+    assertMlpStateArray(
+      state.firstMomentWeights,
+      this.plan.totalW,
+      'firstMomentWeights',
+    );
+    assertMlpStateArray(
+      state.secondMomentWeights,
+      this.plan.totalW,
+      'secondMomentWeights',
+      true,
+    );
+    assertMlpStateArray(
+      state.firstMomentBiases,
+      this.plan.totalB,
+      'firstMomentBiases',
+    );
+    assertMlpStateArray(
+      state.secondMomentBiases,
+      this.plan.totalB,
+      'secondMomentBiases',
+      true,
+    );
+    assertMlpAdamT(state.adamT);
+    if (this.cfg.useF16) {
+      assertF16Representable(state.weights, 'weights');
+      assertF16Representable(state.biases, 'biases');
+    }
+
+    const old = this._liveTrainableSet();
+    const candidate = this._spareTrainableSet ?? this._allocateTrainableCandidate();
+    this._spareTrainableSet = undefined;
+    this._inFlightCandidate = candidate;
+    const uploads: GPUBuffer[] = [];
+    const stage = (data: ArrayBufferView): GPUBuffer => {
+      const buffer = this.device.createBuffer({
+        label: 'nrc-mlp-state-import-staging',
+        size: Math.max(4, (data.byteLength + 3) & ~3),
+        usage: GPUBufferUsage.COPY_SRC,
+        mappedAtCreation: true,
+      });
+      uploads.push(buffer);
+      new Uint8Array(buffer.getMappedRange()).set(
+        new Uint8Array(data.buffer, data.byteOffset, data.byteLength),
+      );
+      buffer.unmap();
+      return buffer;
+    };
+    try {
+      const weights = stage(state.weights);
+      const biases = stage(state.biases);
+      const firstMomentWeights = stage(state.firstMomentWeights);
+      const secondMomentWeights = stage(state.secondMomentWeights);
+      const firstMomentBiases = stage(state.firstMomentBiases);
+      const secondMomentBiases = stage(state.secondMomentBiases);
+      const forwardWeightsData = this.cfg.useF16
+        ? padEvenU16(f32ToF16Bits(state.weights))
+        : state.weights;
+      const forwardBiasesData = this.cfg.useF16
+        ? padEvenU16(f32ToF16Bits(state.biases))
+        : state.biases;
+      const forwardWeights = stage(forwardWeightsData);
+      const forwardBiases = stage(forwardBiasesData);
+      encoder.copyBufferToBuffer(
+        weights, 0, candidate.wMasterGpu, 0, state.weights.byteLength,
+      );
+      encoder.copyBufferToBuffer(
+        biases, 0, candidate.bMasterGpu, 0, state.biases.byteLength,
+      );
+      encoder.copyBufferToBuffer(
+        firstMomentWeights, 0, candidate.mW, 0,
+        state.firstMomentWeights.byteLength,
+      );
+      encoder.copyBufferToBuffer(
+        secondMomentWeights, 0, candidate.vW, 0,
+        state.secondMomentWeights.byteLength,
+      );
+      encoder.copyBufferToBuffer(
+        firstMomentBiases, 0, candidate.mB, 0,
+        state.firstMomentBiases.byteLength,
+      );
+      encoder.copyBufferToBuffer(
+        secondMomentBiases, 0, candidate.vB, 0,
+        state.secondMomentBiases.byteLength,
+      );
+      encoder.copyBufferToBuffer(
+        forwardWeights, 0, candidate.weights, 0, forwardWeightsData.byteLength,
+      );
+      encoder.copyBufferToBuffer(
+        forwardBiases, 0, candidate.biases, 0, forwardBiasesData.byteLength,
+      );
+    } catch (error) {
+      for (const upload of uploads) {
+        try { upload.destroy(); } catch { /* continue candidate cleanup */ }
+      }
+      this._spareTrainableSet = candidate;
+      this._inFlightCandidate = undefined;
+      throw error;
+    }
+
+    const oldW = this.wMaster;
+    const oldB = this.bMaster;
+    const oldAdamT = this.adamT;
+    let committed = false;
+    let closed = false;
+    const destroyUploads = (): void => {
+      for (const upload of uploads) {
+        try { upload.destroy(); } catch { /* continue staging retirement */ }
+      }
+    };
+    return {
+      candidateWeightBuffer: candidate.wMasterGpu,
+      candidateBiasBuffer: candidate.bMasterGpu,
+      commitCpu: () => {
+        if (closed || committed) return;
+        this._publishTrainableSet(candidate);
+        this.wMaster = state.weights.slice();
+        this.bMaster = state.biases.slice();
+        this.adamT = state.adamT;
+        this._inFlightCandidate = undefined;
+        committed = true;
+      },
+      rollback: () => {
+        if (closed) return;
+        if (committed) {
+          this._publishTrainableSet(old);
+          this.wMaster = oldW;
+          this.bMaster = oldB;
+          this.adamT = oldAdamT;
+        }
+        this._spareTrainableSet = candidate;
+        if (this._inFlightCandidate === candidate) this._inFlightCandidate = undefined;
+        closed = true;
+        destroyUploads();
+      },
+      finalizeSuccess: () => {
+        if (closed) return;
+        if (!committed) throw new Error('Cannot finalize an unpublished NRC MLP restore.');
+        this._spareTrainableSet = old;
+        closed = true;
+        const retire = (): void => destroyUploads();
+        try {
+          void this.device.queue.onSubmittedWorkDone().then(retire, retire);
+        } catch {
+          retire();
+        }
+      },
+    };
   }
 
   private pushWeightsToGpu() {

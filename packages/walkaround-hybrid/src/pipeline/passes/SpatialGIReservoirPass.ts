@@ -20,11 +20,9 @@
  * `gi-spatial-2` is kept for BOTH counts so the `shade` dependency + `id` stay
  * stable; a 1-pass config emits only `['gi-spatial-2']`.
  *
- * GRIS gate (`grisEnabled`) remains compile-time for the GRIS math branch, but
- * both shader variants now bind the shared scene/material group at `@group(1)`.
- * The default branch needs it to recast receiver material payloads for rich
- * ReSTIR-GI receiver-lobe p-hat; the GRIS branch also traces reconnection
- * visibility through the same group.
+ * The canonical generalized-reuse shader binds the shared scene/material group
+ * at `@group(1)` to recast receiver material payloads and trace reconnection
+ * visibility.
  *
  * R2 — `buildPassLayout` MUST be built with the same `giSpatialPasses` so the
  * timestamp slot layout matches the labels emitted here.
@@ -49,7 +47,7 @@ export class SpatialGIReservoirPass implements Pass {
   private readonly _pipeline: GPUComputePipeline;
   private readonly _passCount: 1 | 2;
 
-  constructor(pipeline: GPUComputePipeline, passCount: 1 | 2 = 2, _grisEnabled = false) {
+  constructor(pipeline: GPUComputePipeline, passCount: 1 | 2 = 2) {
     this._pipeline = pipeline;
     this._passCount = passCount;
     this.passLabels = giSpatialPassLabels(passCount);

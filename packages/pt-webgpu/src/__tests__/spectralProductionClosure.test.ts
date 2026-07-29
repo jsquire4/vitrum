@@ -72,7 +72,7 @@ describe('pt-webgpu spectral production closure', () => {
     }
   });
 
-  it('rejects RGB-integrated iridescence but accepts wavelength-resolved TMM', () => {
+  it('rejects standalone RGB iridescence but accepts wavelength-resolved TMM overrides', () => {
     expect(() => assertSpectralSceneSupported(sceneWithMaterial({
       iridescence: 1,
       iridescenceIor: 1.3,
@@ -92,7 +92,7 @@ describe('pt-webgpu spectral production closure', () => {
       thinFilmStack: {
         layers: [{ ior: 1.4, thicknessNm: 320 }],
       },
-    }))).toThrow(/RGB-integrated/);
+    }))).not.toThrow();
 
     const repackStart = ENGINE_SOURCE.indexOf('  #repackScene(');
     const repackEnd = ENGINE_SOURCE.indexOf('  #syncLiteTextures(', repackStart);
@@ -192,7 +192,7 @@ describe('pt-webgpu spectral production closure', () => {
       '&rGris, rPrev.xs, rPrev.ns, rPrev.Lo, rPrev.heroLambdaV,',
     );
     expect(RESTIR_PT_SPATIAL_WGSL).toContain(
-      'rCenter, rQ.heroLambdaV, woCenter, rQ.xs, rQ.Lo,',
+      'rCenter, qR[i].heroLambdaV, woCenter, qR[i].xs, qR[i].Lo,',
     );
     expect(RESTIR_PT_SPATIAL_WGSL).toContain(
       '&rOut, qR[i].xs, qR[i].ns, qR[i].Lo, qR[i].heroLambdaV,',

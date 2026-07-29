@@ -22,6 +22,7 @@ import {
   type HashGridConfig, type HashGridLevel, type NrcEncodingConfig,
 } from '../nrcEncoding.ts';
 import { nrcEncodeHelpersWgsl } from '../wgsl/nrcEncoding.wgsl.ts';
+import { nrcQueryWgsl } from '../wgsl/nrcQuery.wgsl.ts';
 
 // ── build a small but representative multiresolution hash grid ──
 function makeGrid(seed = 1): HashGridConfig {
@@ -215,10 +216,19 @@ describe('NRC full input assembly', () => {
 });
 
 describe('NRC WGSL codegen — shape pins (line-for-line oracle equivalence)', () => {
-  it('one-blob helper L1-normalises (matches the oracle normalisation)', () => {
-    const helpers = nrcEncodeHelpersWgsl();
-    expect(helpers).toContain('exp(-0.5 * d * d)');
-    expect(helpers).toContain('/ sum'); // L1 normalisation
+  it('the live query one-blob implementation L1-normalises like the oracle', () => {
+    const query = nrcQueryWgsl({
+      levels: 4,
+      featuresPerEntry: 2,
+      oneBlobBins: 8,
+      width: 32,
+      outWidth: 3,
+      hidden: 2,
+    });
+    expect(query).toContain('fn nrcOneBlob(');
+    expect(query).toContain('exp(-0.5 * d * d)');
+    expect(query).toContain('/ sum'); // L1 normalisation
+    expect(query).not.toContain('nrcOneBlobScalar');
   });
 
   // The undispatchable ptr-arg WGSL oracle `nrcHashGridBackwardWgsl` was DELETED

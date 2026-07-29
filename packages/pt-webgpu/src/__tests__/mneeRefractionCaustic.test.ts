@@ -19,7 +19,8 @@ describe('unified MNEE refraction closure', () => {
 
   it('keeps spectral dispersion, coherent films, and every Jacobian domain', () => {
     expect(code).toContain('ior = cauchyIorAtLambda(heroLambda, mat.ior, mat.dispersionAbbe);');
-    expect(code).toContain('thinFilmTransportRt(film, microfacetCos).transmittance');
+    expect(code).toContain('materialDielectricLayeredInterface(');
+    expect(code).toContain('interfaceResponse.baseTransmittance');
     expect(code).toContain('mneeBoundedChainAreaPdfDet(');
     expect(code).toContain('mneeBoundedChainDirectionalFocusingDet(');
     expect(code).toContain('mneeBoundedChainFocusingDet(');

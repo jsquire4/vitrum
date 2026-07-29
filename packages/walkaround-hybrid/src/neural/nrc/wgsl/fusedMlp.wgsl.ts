@@ -62,6 +62,68 @@ export interface FusedMlpWgslOptions {
   TILE_B: number;
 }
 
+/** Müller et al. 2021, Eq. 5: prediction-luminance-normalized relative L2.
+ * The denominator is a stop-gradient term and therefore scales the output
+ * residual without contributing its own derivative. The released tiny-cuda-nn
+ * `RelativeL2Luminance` kernel uses these RGB weights and epsilon. */
+export const NRC_RELATIVE_L2_EPSILON = 1e-2;
+export const NRC_RELATIVE_L2_LUMINANCE = [0.299, 0.587, 0.114] as const;
+export const NRC_RELATIVE_L2_MAX_LUMINANCE = 1e19;
+/** Keeps the backward resident tile representable in both the f16 and f32 paths. */
+export const NRC_RELATIVE_L2_MAX_DELTA = 65504;
+
+export function nrcRelativeL2Luminance(
+  prediction: readonly [number, number, number],
+): number {
+  if (!prediction.every(Number.isFinite)) return Number.NaN;
+  const scale = Math.max(
+    Math.abs(prediction[0]),
+    Math.abs(prediction[1]),
+    Math.abs(prediction[2]),
+  );
+  if (scale === 0) return 0;
+  const normalized =
+    NRC_RELATIVE_L2_LUMINANCE[0] * (prediction[0] / scale) +
+    NRC_RELATIVE_L2_LUMINANCE[1] * (prediction[1] / scale) +
+    NRC_RELATIVE_L2_LUMINANCE[2] * (prediction[2] / scale);
+  return Math.max(-1, Math.min(1, normalized)) * scale;
+}
+
+/** CPU oracle for the exact output-delta initialization emitted below. Invalid
+ * network values are dropped; finite overflow is saturated before the resident
+ * f16-compatible delta tile, matching the production shader. */
+export function nrcRelativeL2OutputGradient(
+  prediction: readonly [number, number, number],
+  target: readonly [number, number, number],
+  numSamples: number,
+): [number, number, number] {
+  if (
+    !Number.isSafeInteger(numSamples) ||
+    numSamples <= 0 ||
+    !prediction.every(Number.isFinite) ||
+    !target.every(Number.isFinite)
+  ) {
+    return [0, 0, 0];
+  }
+  const luminance = nrcRelativeL2Luminance(prediction);
+  if (!Number.isFinite(luminance)) return [0, 0, 0];
+  const boundedLuminance = Math.min(
+    Math.abs(luminance),
+    NRC_RELATIVE_L2_MAX_LUMINANCE,
+  );
+  const denominator =
+    boundedLuminance * boundedLuminance + NRC_RELATIVE_L2_EPSILON;
+  const inverseNormalization = 2 / numSamples / 3 / denominator;
+  return prediction.map((value, channel) => {
+    const raw = (value - target[channel]!) * inverseNormalization;
+    if (Number.isNaN(raw)) return 0;
+    return Math.max(
+      -NRC_RELATIVE_L2_MAX_DELTA,
+      Math.min(NRC_RELATIVE_L2_MAX_DELTA, raw),
+    );
+  }) as [number, number, number];
+}
+
 /** Exact workgroup-memory footprint of either fused kernel.
  *
  * Both forward and backward declare two `TILE_B * W` workgroup arrays and no
@@ -299,6 +361,11 @@ fn ${functionName}(index: u32, value: f32) {
 
 // this the hash tables stay frozen at random init and only the MLP learns.
 export function fusedBackwardWgsl(o: FusedMlpWgslOptions): string {
+  if (o.OUT_W !== 3) {
+    throw new RangeError(
+      `NRC relative-L2 luminance training requires RGB OUT_W=3; got ${o.OUT_W}`,
+    );
+  }
   const d = fusedMlpDerived(o);
   const { SC, enableF16 } = d;
   const { W, TILE_B } = o;
@@ -335,6 +402,73 @@ fn nrcTrainFinite(value: f32) -> bool { return value == value && abs(value) <= 3
 ${safeFixedAtomicAddWgsl('nrcAddGradWeight', 'gradWfx')}
 ${safeFixedAtomicAddWgsl('nrcAddGradBias', 'gradBfx')}
 ${safeFixedAtomicAddWgsl('nrcAddGradInput', 'gradInputFx')}
+// Müller et al. 2021 Eq. 5 / tiny-cuda-nn RelativeL2Luminance:
+//   (prediction - target)^2 / (sg(luminance(prediction))^2 + 0.01)
+// averaged over the B×RGB scalar outputs. The direct implementation below
+// makes the denominator a stop-gradient by construction.
+const NRC_RELATIVE_L2_EPSILON : f32 = ${NRC_RELATIVE_L2_EPSILON};
+const NRC_RELATIVE_L2_MAX_LUMINANCE : f32 = ${NRC_RELATIVE_L2_MAX_LUMINANCE};
+const NRC_RELATIVE_L2_MAX_DELTA : f32 = ${NRC_RELATIVE_L2_MAX_DELTA}.0;
+
+fn nrcRelativeL2Luminance(prediction: vec3<f32>) -> f32 {
+  // Scaling before the dot product prevents finite HDR channels from
+  // overflowing the luminance sum while retaining cancellation.
+  let scale = max(max(abs(prediction.x), abs(prediction.y)), abs(prediction.z));
+  if (!(scale > 0.0)) { return 0.0; }
+  let normalized = prediction / scale;
+  return clamp(
+    dot(normalized, vec3<f32>(${NRC_RELATIVE_L2_LUMINANCE.join(', ')})),
+    -1.0,
+    1.0
+  ) * scale;
+}
+
+fn nrcRelativeL2Delta(
+  prediction: vec3<f32>,
+  target: f32,
+  channel: u32,
+  numSamples: u32
+) -> f32 {
+  if (
+    numSamples == 0u ||
+    !nrcTrainFinite(prediction.x) ||
+    !nrcTrainFinite(prediction.y) ||
+    !nrcTrainFinite(prediction.z) ||
+    !nrcTrainFinite(target)
+  ) {
+    atomicAdd(&nrcDiagnostics[NRC_DIAG_NONFINITE], 1u);
+    return 0.0;
+  }
+  let luminance = nrcRelativeL2Luminance(prediction);
+  if (!nrcTrainFinite(luminance)) {
+    atomicAdd(&nrcDiagnostics[NRC_DIAG_NONFINITE], 1u);
+    return 0.0;
+  }
+  let boundedLuminance = min(abs(luminance), NRC_RELATIVE_L2_MAX_LUMINANCE);
+  let denominator =
+    boundedLuminance * boundedLuminance + NRC_RELATIVE_L2_EPSILON;
+  let inverseNormalization =
+    2.0 / f32(numSamples) / f32(OUT_W) / denominator;
+  let difference = prediction[channel] - target;
+  if (!nrcTrainFinite(difference)) {
+    atomicAdd(&nrcDiagnostics[NRC_DIAG_NONFINITE], 1u);
+    return 0.0;
+  }
+  let raw = difference * inverseNormalization;
+  if (raw != raw) {
+    atomicAdd(&nrcDiagnostics[NRC_DIAG_NONFINITE], 1u);
+    return 0.0;
+  }
+  if (!nrcTrainFinite(raw)) {
+    atomicAdd(&nrcDiagnostics[NRC_DIAG_SATURATED], 1u);
+    return select(-NRC_RELATIVE_L2_MAX_DELTA, NRC_RELATIVE_L2_MAX_DELTA, difference > 0.0);
+  }
+  let bounded = clamp(raw, -NRC_RELATIVE_L2_MAX_DELTA, NRC_RELATIVE_L2_MAX_DELTA);
+  if (bounded != raw) {
+    atomicAdd(&nrcDiagnostics[NRC_DIAG_SATURATED], 1u);
+  }
+  return bounded;
+}
 fn wOff(l : u32) -> u32 { return p.lay[l].x; }
 fn bOff(l : u32) -> u32 { return p.lay[l].y; }
 fn layInW(l : u32) -> u32 { return p.lay[l].z; }
@@ -354,14 +488,21 @@ fn fusedBackward(@builtin(workgroup_id) wg : vec3<u32>,
   let sampleBase = tile * TILE_B;
 
   // ── output delta into deltaA (node-layer NODE-1, width OUT_W) ──
-  // delta_out[s,o] = (pred - tgt) / numSamples   (MSE grad, linear out)
+  // Relative-L2 luminance gradient, linear output. Its prediction-luminance
+  // denominator is intentionally detached (stop-gradient).
   if (col < OUT_W) {
     for (var s : u32 = 0u; s < TILE_B; s = s + 1u) {
       let S = sampleBase + s;
       if (S < p.numSamples) {
-        let pred = f32(actsGlob[saveOff(S, NODE - 1u, col)]);
+        let prediction = vec3<f32>(
+          f32(actsGlob[saveOff(S, NODE - 1u, 0u)]),
+          f32(actsGlob[saveOff(S, NODE - 1u, 1u)]),
+          f32(actsGlob[saveOff(S, NODE - 1u, 2u)])
+        );
         let tgt  = targets[S * OUT_W + col];
-        deltaA[s * W + col] = ${SC}((pred - tgt) / f32(p.numSamples));
+        deltaA[s * W + col] = ${SC}(
+          nrcRelativeL2Delta(prediction, tgt, col, p.numSamples)
+        );
       } else {
         deltaA[s * W + col] = ${SC}(0);
       }

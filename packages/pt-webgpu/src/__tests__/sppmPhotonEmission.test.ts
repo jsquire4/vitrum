@@ -155,8 +155,9 @@ describe('SPPM photon emission source normalization (PTWG-03)', () => {
     expect(SPPM_PHOTON_PASS_WGSL).toContain('if (sppmRectAreaCastsShadow(rectIdx))');
     expect(SPPM_PHOTON_PASS_WGSL).toContain('if (sppmMeshAreaCastsShadow(meshIdx))');
     expect(SPPM_PHOTON_PASS_WGSL).toContain(
-      'if (hasEnvironmentMap() || params.environmentSun.w > 0.0) {',
+      'if (hasEnvironmentMap()) {',
     );
+    expect(SPPM_PHOTON_PASS_WGSL).not.toContain('params.environmentSun.w');
     expect(SPPM_PHOTON_PASS_WGSL).toContain('availableLightCount = availableLightCount + 1u;');
   });
 
@@ -170,7 +171,7 @@ describe('SPPM photon emission source normalization (PTWG-03)', () => {
     expect(SPPM_PHOTON_PASS_WGSL).toContain(
       'sppmConcentricDiscSample(vec2f(xi1 * 2.0 - 1.0, xi2 * 2.0 - 1.0))',
     );
-    expect(SPPM_PHOTON_PASS_WGSL).toContain('area = PI * dot(ru, ru);');
+    expect(SPPM_PHOTON_PASS_WGSL).toContain('area = PI * normalLen;');
     expect(SPPM_PHOTON_PASS_WGSL).toContain('area = 4.0 * length(cross(ru, rv));');
     expect(SPPM_PHOTON_PASS_WGSL).toContain('if (area > 0.0)');
     expect(SPPM_PHOTON_PASS_WGSL).toContain(
@@ -387,7 +388,7 @@ describe('SPPM source-measure and launch-volume oracles', () => {
       'lightCount, distantDirectEmitterCount(), bdptOwnsFiniteLightFamily,',
     );
     expect(PT_WEBGPU_PATH_TRACE_KERNEL_WGSL).toContain(
-      'if (directFamilyCount > 0u && !sppmOwnsCurrentDirect && !thinFilm.enabled)',
+      'if (directFamilyCount > 0u && !sppmOwnsCurrentDirect)',
     );
     expect(PT_WEBGPU_PATH_TRACE_KERNEL_WGSL).toContain(
       'if (!prevSampleAllowsAreaMis && !sppmOwnsCurrentEmission)',
@@ -402,7 +403,8 @@ describe('SPPM per-pixel progressive stats update site (PTWG-04)', () => {
   it('guards photonMapUpdateProgressive so one pixel mutates stats once per frame', () => {
     expect(PT_WEBGPU_PATH_TRACE_KERNEL_WGSL).toContain('var sppmGatherUpdated = false;');
     expect(PT_WEBGPU_PATH_TRACE_KERNEL_WGSL).toContain(
-      'let sppmReceiverEligible = !thinFilm.enabled &&',
+      'let sppmReceiverEligible =\n' +
+        '        (1.0 - metallic) * (1.0 - transmission) > 0.0;',
     );
     expect(PT_WEBGPU_PATH_TRACE_KERNEL_WGSL).toContain(
       'if (!sppmGatherUpdated && sppmReceiverEligible)',

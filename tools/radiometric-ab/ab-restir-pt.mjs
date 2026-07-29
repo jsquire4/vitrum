@@ -5,7 +5,8 @@
  *
  * A/B #3: ReSTIR-PT reuse on vs off — bias check + variance reduction
  *
- * ReSTIR-PT (restirPtReuse:true) composites the reconnection-indirect
+ * One-edge GRIS reconnection (`oneEdgeReconnectionReuse:true`) composites the
+ * reconnection-indirect
  * estimate into the beauty accumulator via the COMPOSITE megakernel path
  * (A1, kernel.wgsl.ts:308-312).  The estimator split is E0-direct-only in
  * the megakernel + rpt_result indirect from the resolve pass.  If the split
@@ -17,12 +18,10 @@
  *       and a paired independent-seed 95% confidence interval must fit wholly
  *       inside that equivalence margin.
  *   (b) Variance: 8×8-frame runs estimate per-pixel variance in an
- *       indirect-lit ROI.  ReSTIR-PT should not INCREASE variance beyond 2×.
- *   (c) Clamp diagnosis: the professional default is effectively unclamped;
- *       finite caps 10 and 100 are measured as explicitly biased controls, and
- *       the resolved-reservoir readback reports the weight mass they would cut.
+ *       indirect-lit ROI. Reconnection reuse should not INCREASE variance
+ *       beyond 2×.
  *
- * Device requirement: restirPtReuse=true requires full-tier limits
+ * Device requirement: oneEdgeReconnectionReuse=true requires full-tier limits
  * (maxStorageBuffersPerShaderStage ≥ 28).  The gate acquires these limits.
  * On lavapipe, the full-tier flag is auto-set by acquirePtDevice(true).
  *
@@ -58,7 +57,6 @@ const FULL_TIER = { traceTier: "full", requireFullTier: true, requireRadiometric
 const EQUIVALENCE_MARGIN = 0.10;
 const VARIANCE_RATIO_MAX = 2.0;
 const PAIRED_T_CRITICAL_95_DF7 = 2.364624251;
-const PROFESSIONAL_DEFAULT_W_CAP = Math.fround(3.4028234663852886e38);
 
 function arithmeticMean(values) {
   return values.reduce((sum, value) => sum + value, 0) / values.length;
@@ -92,8 +90,8 @@ console.log("");
 const MEAN_FRAMES = 60;
 console.log(`Part 1: Mean luminance comparison (${MEAN_FRAMES} frames each)...`);
 
-console.log("  Rendering BASE (restirPtReuse:false, default path)...");
-const baseResult = await renderScene({ ...FULL_TIER, restirPtReuse: false }, scene, MEAN_FRAMES);
+console.log("  Rendering BASE (oneEdgeReconnectionReuse:false, default path)...");
+const baseResult = await renderScene({ ...FULL_TIER, oneEdgeReconnectionReuse: false }, scene, MEAN_FRAMES);
 const deviceIdentity = baseResult.deviceIdentity;
 const baseGlobalLum = meanLuminanceROI(baseResult.rgba, W, 0, 0, W-1, H-1);
 const baseROILum    = meanLuminanceROI(baseResult.rgba, W, ROI.x0, ROI.y0, ROI.x1, ROI.y1);
@@ -101,10 +99,10 @@ baseResult.engine.dispose();
 baseResult.device.destroy();
 console.log(`  BASE: global lum = ${baseGlobalLum.toFixed(5)}, ROI lum = ${baseROILum.toFixed(5)}`);
 
-console.log("  Rendering RPT (restirPtReuse:true, composite path)...");
+console.log("  Rendering RPT (oneEdgeReconnectionReuse:true, composite path)...");
 const rptResult = await renderScene({
   ...FULL_TIER,
-  restirPtReuse: true,
+  oneEdgeReconnectionReuse: true,
   captureRestirPtReservoirStats: true,
 }, scene, MEAN_FRAMES);
 const rptGlobalLum = meanLuminanceROI(rptResult.rgba, W, 0, 0, W-1, H-1);
@@ -130,50 +128,19 @@ console.log(`  Resolved W > 10: ${reservoirWeightStats.aboveDiagnosticClampCount
 console.log(`  Weight mass removed by W=10 clamp: ${(reservoirWeightStats.clippedWeightMassFraction * 100).toFixed(2)}%`);
 console.log("");
 
-// Same-seed finite-clamp controls. These are deliberately biased opt-in modes,
-// not promotion arms. They make the old default's estimator damage executable:
-// cap=10 must lose actual resolved weight mass and move the mean farther from
-// the baseline than the effectively-unclamped professional default.
-const clampControls = [];
-for (const cap of [10, 100]) {
-  console.log(`  Rendering biased clamp control (wCap:${cap})...`);
-  const control = await renderScene({
-    ...FULL_TIER,
-    restirPtReuse: true,
-    restirPtReuseOptions: { wCap: cap },
-  }, scene, MEAN_FRAMES);
-  const controlGlobalLum = meanLuminanceROI(control.rgba, W, 0, 0, W-1, H-1);
-  const controlROILum = meanLuminanceROI(control.rgba, W, ROI.x0, ROI.y0, ROI.x1, ROI.y1);
-  assertSameDeviceIdentity(deviceIdentity, control.deviceIdentity, `wCap=${cap} control`);
-  control.engine.dispose();
-  control.device.destroy();
-  clampControls.push({
-    wCap: cap,
-    effectivePackedWCap: Math.fround(cap),
-    promotionEligible: false,
-    estimatorMode: "intentionally-biased-finite-weight-clamp",
-    globalLum: controlGlobalLum,
-    roiLum: controlROILum,
-    globalRelErr: relativeError(controlGlobalLum, baseGlobalLum),
-    roiRelErr: relativeError(controlROILum, baseROILum),
-  });
-  console.log(`    global=${controlGlobalLum.toFixed(5)}, relErr=${(clampControls.at(-1).globalRelErr * 100).toFixed(2)}%`);
-}
-console.log("");
-
 // ── Part 2: Variance estimate (8 runs × 8 frames) ───────────────────────────
 const VAR_RUNS   = 8;
 const VAR_FRAMES = 8;
 console.log(`Part 2: Variance estimate (${VAR_RUNS} runs × ${VAR_FRAMES} frames)...`);
 
 console.log("  Rendering BASE variance runs...");
-const baseRuns = await renderMultipleRuns({ ...FULL_TIER, restirPtReuse: false }, scene, VAR_FRAMES, VAR_RUNS);
+const baseRuns = await renderMultipleRuns({ ...FULL_TIER, oneEdgeReconnectionReuse: false }, scene, VAR_FRAMES, VAR_RUNS);
 assertSameDeviceIdentity(deviceIdentity, baseRuns.deviceIdentity, "BASE variance arm");
 const baseVar  = varianceROI(baseRuns, W, ROI.x0, ROI.y0, ROI.x1, ROI.y1);
 console.log(`  BASE variance (ROI): ${baseVar.toFixed(6)}`);
 
 console.log("  Rendering RPT variance runs...");
-const rptRuns = await renderMultipleRuns({ ...FULL_TIER, restirPtReuse: true }, scene, VAR_FRAMES, VAR_RUNS);
+const rptRuns = await renderMultipleRuns({ ...FULL_TIER, oneEdgeReconnectionReuse: true }, scene, VAR_FRAMES, VAR_RUNS);
 assertSameDeviceIdentity(deviceIdentity, rptRuns.deviceIdentity, "RPT variance arm");
 const rptVar  = varianceROI(rptRuns, W, ROI.x0, ROI.y0, ROI.x1, ROI.y1);
 console.log(`  RPT variance (ROI): ${rptVar.toFixed(6)}`);
@@ -281,11 +248,10 @@ const results = {
     varianceRuns: VAR_RUNS,
     varianceFramesPerRun: VAR_FRAMES,
     arms: {
-      base: { restirPtReuse: false },
+      base: { oneEdgeReconnectionReuse: false },
       candidate: {
-        restirPtReuse: true,
+        oneEdgeReconnectionReuse: true,
         effectiveMClamp: 20,
-        effectivePackedWCap: PROFESSIONAL_DEFAULT_W_CAP,
       },
     },
     seeds: ptRadiometricSeedManifest(MEAN_FRAMES, VAR_RUNS, VAR_FRAMES),
@@ -296,9 +262,8 @@ const results = {
   globalRelErr,
   roiRelErr,
   varRatio,
-  defaultWeightMode: "effectively-unclamped-f32-max",
+  weightMode: "shared-max-log-with-f32-output-storage",
   reservoirWeightStats,
-  clampControls,
   pairedSeedAnalysis: {
     confidenceLevel: 0.95,
     tCritical: PAIRED_T_CRITICAL_95_DF7,

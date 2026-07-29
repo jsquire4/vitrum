@@ -18,7 +18,7 @@
  *   binding 1: lowerCascade  — read_write — array<vec4f>
  *   binding 2: m_arr         — read-only  — array<MergeUniforms>
  *
- * See `src/rc/TSL_TO_RAW_MAPPING.md` for the full mapping rationale.
+ * See `../TSL_TO_RAW_MAPPING.md` for the full mapping rationale.
  */
 
 import { OCTAHEDRAL_CORE_WGSL } from '@vitrum/shared-samplers';
@@ -137,9 +137,12 @@ fn cascadeMergeKernel(@builtin(global_invocation_id) globalId: vec3u) {
   // For true Sannikov 2D/3D dimensions this simplifies to the original ÷4
   // since all four children are adjacent cells of equal solid angle.
   //
-  // References:
-  //   Sannikov 2023, §3 — cascade conservation law (violated by current dims).
-  //   Cigolle et al. 2014, JCGT §A.2 — octahedral solid-angle per texel.
+  // Provenance:
+  //   Sannikov 2023 motivates cascade merging. The solid-angle-weighted
+  //   adaptation for Vitrum's noncanonical dimensions is implemented here.
+  //   Cigolle et al. 2014, JCGT Appendix A.2 supplies the octahedral mapping;
+  //   Van Oosterom & Strackee 1983 supplies the spherical-triangle solid-angle
+  //   formula composed by RC_OCTAHEDRAL_SOLID_ANGLE_WGSL.
   var merged     = vec3f(0.0);
   var omegaTotal = 0.0;
   for (var ci = 0u; ci < 4u; ci = ci + 1u) {

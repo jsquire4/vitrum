@@ -282,7 +282,9 @@ fn svgfAtrousMain(@builtin(global_invocation_id) gid: vec3u) {
       let wc = exp(-dLum * dLum / colorDenom);
 
       // ── Normal edge stop ────────────────────────────────────────────────
-      let dn = max(0.0, dot(nCenter, nP));
+      // Clamp both ends: finite-but-imperfect normal inputs and f32 roundoff
+      // must never turn the high-exponent edge stop into pow(x>1, 128).
+      let dn = clamp(dot(nCenter, nP), 0.0, 1.0);
       let wn = pow(dn, sigN);
 
       // ── Depth edge stop ─────────────────────────────────────────────────

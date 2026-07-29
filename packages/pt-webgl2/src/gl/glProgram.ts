@@ -4,10 +4,9 @@
 // Verified fork behaviours reproduced here:
 //  1. Uniform-as-property aliasing (MaterialBase.js:20-38) → explicit setFloat/setVec*/…
 //     + a cached name→WebGLUniformLocation map (lazy `#loc`).
-//  2. needsUpdate → 'recompilation' event (MaterialBase.js:5-14, 43-69) → `setDefine`
-//     is CHANGE-GATED: a real change marks `#dirty`, and the relink happens on the NEXT
-//     `use()`. An unchanged setDefine is a no-op (NEVER relink per-frame — a recompile
-//     resets the accumulator, per PhysicalPathTracingMaterial.js:43-44).
+//  2. Defines are construction-time immutable. Feature changes build a staged
+//     replacement program graph in GlResources rather than mutating a linked program
+//     in place (which would reset the accumulator).
 //  3. GLSL3 is implicit in THREE (auto from `precision highp isampler2D` + `layout(location=N) out`).
 //     We have no ShaderMaterial, so the preamble emits `#version 300 es` ourselves, and the
 //     FRAGMENT additionally gets the precision qualifiers + `layout(location = 0) out vec4
@@ -151,20 +150,6 @@ export class GlProgram {
   }
 
   /**
-   * Change-gated `#define` set (MaterialBase.js:43-69). Returns true on an ACTUAL change,
-   * marking the program dirty so the next `use()` relinks. Returns false (no-op) when the
-   * value is unchanged — this is what prevents per-frame recompiles (which reset the accumulator).
-   */
-  setDefine(name: string, value: number): boolean {
-    if (this.#defines.get(name) === value) return false;
-    this.#defines.set(name, value);
-    this.#discardPendingLink();
-    this.#linkFailure = null;
-    this.#dirty = true;
-    return true;
-  }
-
-  /**
    * Start or poll compilation/linking without blocking on LINK_STATUS when
    * KHR_parallel_shader_compile is available. Returns false while the driver is
    * still compiling and throws on a compile/link error or deadline expiry.
@@ -214,11 +199,6 @@ export class GlProgram {
     if (l != null) this.#gl.uniform3f(l, x, y, z);
   }
 
-  setVec4(name: string, x: number, y: number, z: number, w: number): void {
-    const l = this.#loc(name);
-    if (l != null) this.#gl.uniform4f(l, x, y, z, w);
-  }
-
   /** Upload a column-major mat4 (THREE/GL convention — `transpose` is always false). */
   setMat4(name: string, m: Float32Array | readonly number[]): void {
     const l = this.#loc(name);
@@ -248,16 +228,6 @@ export class GlProgram {
     gl.bindTexture(target, tex);
     const l = this.#loc(name);
     if (l != null) gl.uniform1i(l, unit);
-  }
-
-  /** The texture unit assigned to a sampler at link (null if absent) — for UBO/MRT wiring. */
-  samplerUnit(name: string): number | null {
-    return this.#samplerUnit.get(name) ?? null;
-  }
-
-  /** The linked GLProgram handle (null until first `use()`/relink) — for UBO block binding. */
-  get program(): WebGLProgram | null {
-    return this.#program;
   }
 
   dispose(): void {

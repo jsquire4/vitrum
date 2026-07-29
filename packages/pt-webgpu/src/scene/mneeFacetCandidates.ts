@@ -17,7 +17,7 @@ export function materialMayProduceMneeDelta(material: MaterialSpec): boolean {
   const mayTransmit =
     (material.transmission ?? 0) > 0 ||
     material.transmissionMap != null;
-  const mayBeNonMetal = material.metallic < 1 || material.metallicMap != null;
+  const mayBeDielectric = material.metallic === 0 || material.metallicMap != null;
   const faceMayBeSmooth =
     (material.frontLayer?.roughness != null &&
       material.frontLayer.roughness <= ROUGH_DIELECTRIC_SMOOTH_THRESHOLD) ||
@@ -28,7 +28,7 @@ export function materialMayProduceMneeDelta(material: MaterialSpec): boolean {
     material.roughnessMap != null ||
     faceMayBeSmooth;
 
-  return mayTransmit && mayBeNonMetal && mayBeSmooth;
+  return mayTransmit && mayBeDielectric && mayBeSmooth;
 }
 
 /**

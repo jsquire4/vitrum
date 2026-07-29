@@ -2,13 +2,10 @@ import {
   analyticPrimitiveToMesh,
   asMat4,
   partitionSceneBySupport,
-  type AnalyticShape,
   type EngineWarning,
   type MaterialSpec,
   type Scene,
-  type SceneEmitter,
   type ScenePrimitive,
-  type SupportSets,
 } from '@vitrum/core';
 import {
   BVH_NODE_FLOATS,
@@ -62,6 +59,14 @@ import {
   type PackedEmitterArrays,
 } from './emitterPacking.js';
 import { assertLiteSceneSupported } from './liteSceneWarnings.js';
+import {
+  PT_WEBGPU_FULL_SUPPORT,
+  ptWebgpuSupportManifest,
+  ptWebgpuSupportSets,
+} from '../supportManifest.js';
+import {
+  collectUnsupportedMaterialFieldsForTraceTier,
+} from '../supportDetails.js';
 
 const ANALYTIC_MATERIAL_TEXTURE_FIELDS = [
   'baseColorMap',
@@ -245,9 +250,13 @@ interface PackedSceneData {
   readonly environmentTint: readonly [number, number, number];
   readonly environmentSunDirection: readonly [number, number, number];
   readonly environmentSunStrength: number;
+  /** CPU-only power proxy retained so emitter-only mutations rebuild the light
+   * tree from the same environment integral without rebaking the map. */
+  readonly environmentLightTreePower: number;
   /**
-   * H14-E: HDRI radiance intensity multiplier — separate from `environmentSunStrength`
-   * (which drives the procedural-sky sun gate, `environmentSun.w`).
+   * H14-E: map-backed environment-radiance intensity multiplier. The legacy
+   * `environmentSunStrength` field is retained for stable packed-scene state,
+   * but shader environment evaluation no longer consumes it.
    * Value = `scene.environment.intensity ?? 1` when a valid HDRI is present; 0 otherwise.
    * Uploaded to `params.environmentHdriIntensity` so the equirect lookup is NOT gated
    * by the procedural-sky sun-strength lane.
@@ -601,37 +610,12 @@ function analyticShapeId(shape: string): number {
   return idx > 0 ? idx : 0;
 }
 
-/** The capability sets `buildPackedScene` partitions a scene against. These are
- *  the single source of truth for what pt-webgpu ingests — `index.ts` derives
- *  the engine's advertised `EngineCapabilities.supported*Kinds` from the same
- *  values, so the declared sets and the ingestion behavior can no longer drift.
- *
- *  Slot 0 of `PT_WEBGPU_ANALYTIC_SHAPES` is the "unknown" sentinel; the real
- *  supported shapes start at index 1. */
-export const PT_WEBGPU_SUPPORT: Required<SupportSets> = {
-  supportedPrimitiveKinds: new Set<ScenePrimitive['kind']>([
-    'mesh',
-    'instanced-mesh',
-    'analytic',
-    'skinned-mesh',
-  ]),
-  supportedEmitterKinds: new Set<SceneEmitter['kind']>([
-    'directional',
-    'point',
-    'spot',
-    'rect-area',
-    'disc-area',
-    'mesh-area',
-  ]),
-  supportedAnalyticShapes: new Set<AnalyticShape>(
-    PT_WEBGPU_ANALYTIC_SHAPES.slice(1) as readonly AnalyticShape[],
-  ),
-  supportedEnvironmentKinds: new Set<Scene['environment']['kind']>([
-    'none',
-    'hdri',
-    'procedural-sky',
-  ]),
-};
+/**
+ * Backward-compatible name for the full-tier support sets. The sets are
+ * derived from the exhaustive backend-local manifest; this file no longer
+ * owns a parallel kind list.
+ */
+export const PT_WEBGPU_SUPPORT = PT_WEBGPU_FULL_SUPPORT;
 
 function isMeshLikePrimitive(
   primitive: ScenePrimitive,
@@ -752,7 +736,7 @@ export function packFoldedMaterialEntry(
  * positions/normals/tangents/uvs/uvSets so that packSceneFromCore uses the correct
  * deformed geometry, tangent frame, and texture coordinates.
  */
-function applySolveSkinToScene(scene: Scene): Scene {
+export function applySolveSkinToScene(scene: Scene): Scene {
   let anyChanged = false;
   const nextPrimitives = scene.primitives.map((p) => {
     if (p.kind !== 'skinned-mesh') return p;
@@ -1106,21 +1090,72 @@ function buildPackedCwbvhSceneData(pack: Pick<
   };
 }
 
+function assertKnownManifestDiscriminators(
+  scene: Scene,
+  manifest: ReturnType<typeof ptWebgpuSupportManifest>,
+): void {
+  for (const primitive of scene.primitives) {
+    if (
+      primitive.kind === 'analytic' &&
+      !Object.prototype.hasOwnProperty.call(
+        manifest.analyticShapes,
+        primitive.shape,
+      )
+    ) {
+      throw new TypeError(
+        `@vitrum/pt-webgpu: scene contains unsupported content: ` +
+        `Scene primitive "${primitive.id}" has unknown analytic shape ` +
+        `"${String(primitive.shape)}".`,
+      );
+    }
+  }
+}
+
+function assertManifestMaterialDomain(
+  scene: Scene,
+  traceTier: 'full' | 'lite',
+): void {
+  const violations: string[] = [];
+  for (const primitive of scene.primitives) {
+    const fields = collectUnsupportedMaterialFieldsForTraceTier(
+      primitive.material,
+      traceTier,
+    );
+    if (fields.length > 0) {
+      violations.push(`"${primitive.id}" [${fields.join(', ')}]`);
+    }
+  }
+  if (violations.length > 0) {
+    throw new TypeError(
+      `@vitrum/pt-webgpu: scene contains unsupported content for the ` +
+      `${traceTier} tier: material fields ${violations.join('; ')}.`,
+    );
+  }
+}
+
 export function buildPackedScene(
   inputScene: Scene,
   options: BuildPackedSceneOptions = {},
 ): PackedSceneData {
+  const geometryMode = options.geometryMode ?? 'tlas';
+  const traceTier = geometryMode === 'merged' ? 'lite' : 'full';
+  const supportManifest = ptWebgpuSupportManifest(traceTier);
+  const supportSets = ptWebgpuSupportSets(traceTier);
+  // Preserve the detailed lite-domain diagnostic for known unsupported
+  // geometry/emitter families before generic partitioning.
+  if (traceTier === 'lite') assertLiteSceneSupported(inputScene);
+  assertKnownManifestDiscriminators(inputScene, supportManifest);
+  assertManifestMaterialDomain(inputScene, traceTier);
   // Capability preflight. Partitioning is used only to identify unsupported
   // content; silently packing the supported subset would change the scene.
-  const { supported: filteredScene, warnings } = partitionSceneBySupport(inputScene, PT_WEBGPU_SUPPORT);
+  const { supported: filteredScene, warnings } =
+    partitionSceneBySupport(inputScene, supportSets);
   if (warnings.length > 0) {
     throw new TypeError(
       `@vitrum/pt-webgpu: scene contains unsupported content: ${warnings.join(' | ')}`,
     );
   }
   const textureSafeScene = applyAnalyticTextureFallbacks(filteredScene, warnings);
-  const geometryMode = options.geometryMode ?? 'tlas';
-  if (geometryMode === 'merged') assertLiteSceneSupported(textureSafeScene);
   assertThinFilmLayerCapacity(textureSafeScene);
   // Item 1 — apply CPU LBS to skinned-mesh primitives so packSceneFromCore uses
   // solved (deformed) positions instead of rest-pose. morphTargets are also
@@ -1222,7 +1257,7 @@ export function buildPackedScene(
           positions: merged.positions,
           normals: merged.normals,
           uvs: packMergedUvs(scene, merged),
-          tangents: new Float32Array(merged.positions.length),
+          tangents: merged.tangents,
           colors: merged.colors,
           indices: padTriangleIndicesToVec4(merged.indices),
           triMaterialIds: merged.triMaterialId,
@@ -1351,7 +1386,7 @@ export function buildPackedScene(
   const envSummaryForTree: EnvSummaryForTree = {
     hasHdri: environment.hasHdri,
     sunStrength: environment.sunStrength,
-    tint: environment.tint,
+    lightTreePower: environment.lightTreePower,
   };
   const lightTreeInput = buildLightTreeInputForScene(scene, {
     packed: emitArrays,
@@ -1423,6 +1458,7 @@ export function buildPackedScene(
     environmentTint: environment.tint,
     environmentSunDirection: environment.sunDirection,
     environmentSunStrength: environment.sunStrength,
+    environmentLightTreePower: environment.lightTreePower,
     environmentHdriIntensity: environment.hdriIntensity,
     environmentHdriRotationY: environment.hdriRotationY,
     environmentMapWidth: environment.hdriWidth,
@@ -1941,6 +1977,7 @@ interface MutableSceneBuffers {
   environmentTint: readonly [number, number, number];
   environmentSunDirection: readonly [number, number, number];
   environmentSunStrength: number;
+  environmentLightTreePower: number;
   environmentHdriIntensity: number;
   environmentHdriRotationY: number;
   environmentMapWidth: number;
@@ -2761,6 +2798,7 @@ export function applyEnvironmentMutation(
     readonly environmentTint: readonly [number, number, number];
     readonly environmentSunDirection: readonly [number, number, number];
     readonly environmentSunStrength: number;
+    readonly environmentLightTreePower: number;
     readonly environmentHdriIntensity: number;
     readonly environmentHdriRotationY: number;
     readonly environmentMapWidth: number;
@@ -2772,6 +2810,7 @@ export function applyEnvironmentMutation(
   mutable.environmentTint = next.environmentTint;
   mutable.environmentSunDirection = next.environmentSunDirection;
   mutable.environmentSunStrength = next.environmentSunStrength;
+  mutable.environmentLightTreePower = next.environmentLightTreePower;
   mutable.environmentHdriIntensity = next.environmentHdriIntensity;
   mutable.environmentHdriRotationY = next.environmentHdriRotationY;
   mutable.environmentMapWidth = next.environmentMapWidth;

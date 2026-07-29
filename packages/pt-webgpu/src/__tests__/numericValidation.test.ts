@@ -63,8 +63,21 @@ describe('pt-webgpu strict per-frame numeric validation', () => {
   it('accepts valid quality dials and values above the engine caps for documented upper clamping', () => {
     expect(() => validatePtWebgpuFrameInput({
       ...frameInput(),
-      quality: { samplesTarget: 100_000, bounces: 99, resolutionFactor: 0.5, exposure: 0 },
+      quality: {
+        samplesTarget: 100_000,
+        bounces: 99,
+        resolutionFactor: 0.5,
+        exposure: 0,
+        filteredGlossyFactor: 0,
+      },
     })).not.toThrow();
+  });
+
+  it('rejects nonzero filteredGlossyFactor instead of silently ignoring it', () => {
+    expect(() => validatePtWebgpuFrameInput({
+      ...frameInput(),
+      quality: { filteredGlossyFactor: 0.5 },
+    })).toThrow(/filteredGlossyFactor is unsupported by pt-webgpu/);
   });
 
   it('accepts an omitted legacy camera position and rejects disagreement', () => {

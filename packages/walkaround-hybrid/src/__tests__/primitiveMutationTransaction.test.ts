@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   asMat4,
+  type InstancedMeshPrimitive,
   type MeshPrimitive,
   type Scene,
   type ScenePrimitive,
@@ -61,6 +62,20 @@ function skin(
     boneInverses: new Float32Array(IDENTITY),
     material: { baseColor: [0.5, 0.5, 0.5], roughness: 0.5, metallic: 0 },
     ...(options.transform ? { transform: asMat4(options.transform) } : {}),
+  };
+}
+
+function instancedMesh(id: string): InstancedMeshPrimitive {
+  return {
+    kind: 'instanced-mesh',
+    id,
+    positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+    normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+    instances: [
+      asMat4(translation(10)),
+      asMat4(translation(20)),
+    ],
+    material: { baseColor: [0.5, 0.5, 0.5], roughness: 0.5, metallic: 0 },
   };
 }
 
@@ -406,6 +421,52 @@ describe('primitive mutation journal and collector', () => {
 });
 
 describe('skinned render-state ownership', () => {
+  it.each(['merged', 'tlas'] as const)(
+    'publishes transform+bone pose atomically in %s BVH mode',
+    (bvhMode) => {
+      const authored = skin('skin');
+      const restPositions = new Float32Array(authored.positions);
+      const scene = sceneOf(authored);
+      const collector = new CollectingBvhUpdateSink();
+      const ctx: PrimitiveUpdateContext = {
+        ...context(scene, scene, collector, bvhMode),
+        restirBvhModeOverride: bvhMode,
+      };
+      const result = skinnedPosePatch('skin', {
+        bones: translation(2),
+        transform: asMat4(translation(5)),
+      }, ctx);
+      const authoredAfter = result.updatedScene.primitives[0] as SkinnedMeshPrimitive;
+      const renderedAfter = result.updatedRenderScene!.primitives[0] as SkinnedMeshPrimitive;
+      const range = result.bvhBuffers.meshVertexRanges.find(
+        (candidate) => candidate.name === 'skin',
+      )!;
+      const packedPositions = new Float32Array(result.bvhBuffers.bvhPositions.cpuData);
+
+      expect([...authoredAfter.positions]).toEqual([...restPositions]);
+      expect(authoredAfter.bones[12]).toBeCloseTo(2, 6);
+      expect(authoredAfter.transform?.[12]).toBeCloseTo(5, 6);
+      expect([...renderedAfter.positions]).toEqual([2, 0, 0, 3, 0, 0, 2, 1, 0]);
+      expect(renderedAfter.transform?.[12]).toBeCloseTo(5, 6);
+      expect(range.matrixWorldAtBuild[12]).toBeCloseTo(5, 6);
+
+      if (bvhMode === 'merged') {
+        expect(packedPositions[range.vertexStart * 4]).toBeCloseTo(7, 6);
+      } else {
+        const binding = result.bvhBuffers.primitiveTlasBindings.find(
+          (candidate) => candidate.primitiveId === 'skin',
+        )!;
+        expect(packedPositions[binding.vertexStart * 4]).toBeCloseTo(2, 6);
+        expect(new Float32Array(result.bvhBuffers.tlas!.localToWorld.cpuData)[12])
+          .toBeCloseTo(5, 6);
+        expect(
+          packedPositions[binding.vertexStart * 4]! +
+            new Float32Array(result.bvhBuffers.tlas!.localToWorld.cpuData)[12]!,
+        ).toBeCloseTo(7, 6);
+      }
+    },
+  );
+
   it('solves two non-identity frames from immutable authored rest arrays', () => {
     const authored = skin('skin');
     const originalPositions = new Float32Array(authored.positions);
@@ -483,6 +544,33 @@ describe('skinned render-state ownership', () => {
 
     expect([...actual]).toEqual([...new Uint8Array(expected.buffer)]);
     expect(collector.snapshot().normals).toBeUndefined();
+  });
+});
+
+describe('merged instanced geometry mutations', () => {
+  it('rebuilds every flattened instance range for one shared positions patch', () => {
+    const primitive = instancedMesh('instances');
+    const scene = sceneOf(primitive);
+    const collector = new CollectingBvhUpdateSink();
+    const ctx: PrimitiveUpdateContext = {
+      ...context(scene, scene, collector, 'merged'),
+      restirBvhModeOverride: 'merged',
+    };
+    const moved = new Float32Array([2, 0, 0, 3, 0, 0, 2, 1, 0]);
+
+    const result = positionsRefit('instances', { positions: moved }, ctx);
+    const ranges = result.bvhBuffers.meshVertexRanges.filter(
+      (candidate) => candidate.name === 'instances',
+    );
+    const packed = new Float32Array(result.bvhBuffers.bvhPositions.cpuData);
+
+    expect(result.bvhBuffers.bvhMode).toBe('merged');
+    expect(ranges).toHaveLength(2);
+    expect(ranges.map((range) => packed[range.vertexStart * 4])).toEqual([12, 22]);
+    expect(
+      (result.updatedScene.primitives[0] as InstancedMeshPrimitive).positions,
+    ).toEqual(moved);
+    expect(collector.snapshot().replacement).not.toBeNull();
   });
 });
 

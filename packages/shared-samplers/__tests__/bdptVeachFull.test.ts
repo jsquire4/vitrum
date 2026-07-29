@@ -27,8 +27,9 @@ import {
   bdptConnectionMIS_full,
   bdptExplicitConnectionStrategyIsValid,
   maskBDPTExplicitConnectionStrategyPDFs,
-} from '../src/bdptMIS.js';
-import type { BDPTFullVertex } from '../src/bdptMIS.js';
+  BDPT_EXPLICIT_STRATEGY_MASK_WGSL,
+  type BDPTFullVertex,
+} from '../src/index.js';
 
 // ── Helper factories ──────────────────────────────────────────────────────────
 
@@ -526,6 +527,21 @@ describe('T6 — camera/light endpoint corner cases', () => {
 });
 
 describe('bounded explicit-connection strategy family', () => {
+  it('exports one CPU/WGSL finite-strategy contract from the package root', () => {
+    expect(BDPT_EXPLICIT_STRATEGY_MASK_WGSL).toContain(
+      'fn bdptExplicitConnectionStrategyIsValid(',
+    );
+    expect(BDPT_EXPLICIT_STRATEGY_MASK_WGSL).toContain(
+      '(strategyS < 2u || lightVertices <= maxLightVertices) &&',
+    );
+
+    // s=1 is direct lighting and does not consume a stored light-subpath
+    // vertex. Higher-s strategies still obey the stored-light budget.
+    const directOnly = { maxLightVertices: 0, maxEyeVertices: 4 } as const;
+    expect(bdptExplicitConnectionStrategyIsValid(6, 1, directOnly)).toBe(true);
+    expect(bdptExplicitConnectionStrategyIsValid(6, 2, directOnly)).toBe(false);
+  });
+
   it('excludes pure-eye, pure-light, and unavailable-depth strategies', () => {
     const limits = { maxLightVertices: 3, maxEyeVertices: 3 } as const;
     // n=6: s=2 has 2 light + 3 eye vertices; s=3 has 3 light + 2 eye.

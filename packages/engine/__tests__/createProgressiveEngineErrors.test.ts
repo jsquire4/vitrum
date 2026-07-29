@@ -128,6 +128,85 @@ function installSuccessfulSubEngines(): void {
 }
 
 describe('createProgressiveEngine error callbacks', () => {
+  it('reports an unreported converged post-device rejection once after transactional cleanup', async () => {
+    const device = installWebGpu();
+    const realtime = makeEngine({ supportsProgressiveSeedSource: true });
+    const failure = new Error('converged build failed');
+    constructorMocks.constructWalkaround.mockResolvedValue(realtime);
+    constructorMocks.constructPathTracerWebGPU.mockRejectedValue(failure);
+    const onError = vi.fn();
+
+    await expect(createProgressiveEngine({
+      canvas: makeCanvas(),
+      scene: SCENE,
+      onError,
+    })).rejects.toBe(failure);
+
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(onError).toHaveBeenCalledWith(failure, {
+      phase: 'create:pt-webgpu',
+      backend: 'pt-webgpu',
+      recoverable: false,
+    });
+    expect(realtime.dispose).toHaveBeenCalledTimes(1);
+    expect(device.destroy).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not double-report a raw error already forwarded by a sub-build', async () => {
+    const device = installWebGpu();
+    const failure = new Error('raw sub-build failure');
+    const event: CreateEngineErrorEvent = {
+      phase: 'create:walkaround-hybrid',
+      backend: 'walkaround-hybrid',
+      recoverable: false,
+    };
+    constructorMocks.constructWalkaround.mockImplementation(
+      async (opts: CreateEngineOptions) => {
+        opts.onError?.(failure, event);
+        throw failure;
+      },
+    );
+    const onError = vi.fn();
+
+    await expect(createProgressiveEngine({
+      canvas: makeCanvas(),
+      scene: SCENE,
+      onError,
+    })).rejects.toBe(failure);
+
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(onError).toHaveBeenCalledWith(failure, event);
+    expect(device.destroy).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not double-report a wrapper whose cause a sub-build already forwarded', async () => {
+    const device = installWebGpu();
+    const cause = new Error('canvas configure cause');
+    const failure = new Error('walkaround unavailable', { cause });
+    const event: CreateEngineErrorEvent = {
+      phase: 'canvas-configure',
+      backend: 'walkaround-hybrid',
+      recoverable: false,
+    };
+    constructorMocks.constructWalkaround.mockImplementation(
+      async (opts: CreateEngineOptions) => {
+        opts.onError?.(cause, event);
+        throw failure;
+      },
+    );
+    const onError = vi.fn();
+
+    await expect(createProgressiveEngine({
+      canvas: makeCanvas(),
+      scene: SCENE,
+      onError,
+    })).rejects.toBe(failure);
+
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(onError).toHaveBeenCalledWith(cause, event);
+    expect(device.destroy).toHaveBeenCalledTimes(1);
+  });
+
   it('forwards sub-engine construction error events without dropping phase/backend metadata', async () => {
     installWebGpu();
     const reported = new Error('sub-build');

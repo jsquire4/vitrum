@@ -1,8 +1,9 @@
 /**
  * hgPhase.ts — Henyey-Greenstein phase function.
  *
- * Used by the Sprint 7 volume scattering path AND single-scatter SSS
- * (opalescent, glueChip, ringMottled glass types).
+ * Public CPU reference implementation and test/oracle surface. Runtime shader
+ * integrations own their language-native kernels; for example pt-webgl2's
+ * `sampleHG_glsl` explicitly mirrors `sampleHG`.
  *
  * The HG phase function describes the angular distribution of scattered light
  * in a participating medium:

@@ -198,10 +198,16 @@ describe('ReSTIR-DI attempted-candidate accounting', () => {
     expect(spatial).toMatchObject({ M: 198, areaM: 195, envM: 3 });
     expect(spatial.W).toBeCloseTo(5 / 3, 12);
 
-    expect(TEMPORAL_WGSL).toContain('combined.areaM = cur.areaM + prev.areaM;');
-    expect(TEMPORAL_WGSL).toContain('combined.M = combined.areaM + combined.envM;');
-    expect(SPATIAL_WGSL).toContain('areaSupportM = areaSupportM + nbr.areaM;');
-    expect(SPATIAL_WGSL).toContain('r.M = areaSupportM + envSupportM;');
+    expect(TEMPORAL_WGSL).toContain(
+      'combined.areaM = reservoirDiSaturatingAddU32(current.areaM, previous.areaM);',
+    );
+    expect(TEMPORAL_WGSL).toContain(
+      'combined.M = reservoirDiSaturatingAddU32(current.M, previous.M);',
+    );
+    expect(SPATIAL_WGSL).toContain(
+      'areaSupport = reservoirDiSaturatingAddU32(areaSupport, source.areaM);',
+    );
+    expect(SPATIAL_WGSL).toContain('output.M = representedAttempts;');
   });
 
   it('keeps reused estimates invariant as whole-frame null probability changes', () => {

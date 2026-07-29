@@ -101,7 +101,3 @@ export const PPG_MIS_ALPHA = 0.5;
  * `__tests__/ppgSpatialSplitAndRunaway.test.ts`.
  */
 export const PPG_FLUX_DECAY = 0.5;
-
-export {
-  RESERVOIR_GI_GRIS_STRIDE_U32 as RESERVOIR_GI_STRIDE,
-} from '../gi/giLayout.js';

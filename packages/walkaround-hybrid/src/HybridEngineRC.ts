@@ -29,7 +29,7 @@
  * Plan: `plan/w8-rc-mis-composition.md` (Phase 2 section).
  */
 
-import type { EngineWarning, MaterialSpec, Scene } from '@vitrum/core';
+import type { EngineWarning, Scene } from '@vitrum/core';
 import {
   RCDispatcher,
   CASCADE_DIMS,
@@ -268,6 +268,7 @@ export class RCSubsystem implements PipelineSubsystem {
   private readonly _device: GPUDevice;
   private readonly _cascadeDims: readonly CascadeDim[];
   private readonly _onWarning: ((warning: EngineWarning) => void) | null;
+  private readonly _warningKeys = new Set<string>();
   private readonly _transmittedInterfaceBudget: number;
   private _dispatcher: RCDispatcher | null = null;
   private _bvhBuffers: RCBVHBuffers | null = null;
@@ -330,6 +331,16 @@ export class RCSubsystem implements PipelineSubsystem {
     this._onWarning = diagnostics.onWarning ?? null;
     this._transmittedInterfaceBudget = diagnostics.transmittedInterfaceBudget
       ?? RC_DEFAULT_TRANSMITTED_INTERFACE_BUDGET;
+  }
+
+  private _warnOnce(key: string, warning: EngineWarning): void {
+    if (this._warningKeys.has(key)) return;
+    this._warningKeys.add(key);
+    try {
+      this._onWarning?.(warning);
+    } catch {
+      // Diagnostic callbacks never interrupt rendering or resource cleanup.
+    }
   }
 
   buildRCInputs(rcWeight: number): { cascade0Buffer: GPUBuffer; paramsBytes: ArrayBuffer } | null {
@@ -405,15 +416,6 @@ export class RCSubsystem implements PipelineSubsystem {
         }
       },
     };
-  }
-
-  refreshMaterialsFromCore(materials: readonly MaterialSpec[]): void {
-    const bvh = this._bvhBuffers;
-    if (bvh == null || materials.length === 0) return;
-    const matFloats = packCascadeMaterialsFromCore([...materials]);
-    const next = this._uploadTypedArray(matFloats, 'rc-bvh-materials-refresh');
-    this._bvhBuffers = { ...bvh, materialsBuf: next };
-    bvh.materialsBuf.destroy();
   }
 
   /**
@@ -1047,6 +1049,23 @@ export class RCSubsystem implements PipelineSubsystem {
     }
     if (!this._dispatcher || !this._bvhBuffers || !this._cascadeBufs ||
         !this._probeOriginWorld || !this._roomSize) {
+      this._warnOnce('dispatch-unavailable', {
+        code: 'walkaround-hybrid.rc-dispatch-unavailable',
+        backend: 'walkaround-hybrid',
+        phase: 'renderFrame',
+        method: 'RCSubsystem.dispatchFrame',
+        message:
+          '[RCSubsystem] RC frame dispatch was skipped because its scene, ' +
+          'cascade, or dispatcher state has not been published.',
+        details: {
+          dispatcherReady: this._dispatcher != null,
+          bvhReady: this._bvhBuffers != null,
+          cascadesReady: this._cascadeBufs != null,
+          boundsReady:
+            this._probeOriginWorld != null && this._roomSize != null,
+          fallback: 'skip-rc-frame',
+        },
+      });
       return;
     }
     const sharedGeometry = inputs.sceneGeometryBindings ?? this._sharedGeometryBindings;
@@ -1161,6 +1180,35 @@ export class RCSubsystem implements PipelineSubsystem {
 
   getCascadeC0Buffer(): GPUBuffer | null {
     return this._cascadeBufs?.[0] ?? null;
+  }
+
+  /** Flatten RC-owned persistent GPU buffers for the engine memory budget.
+   * Borrowed main-pipeline geometry is absent from `_bvhBuffers` after arena
+   * adoption and therefore is not double-counted. */
+  gpuMemorySection(): Readonly<Record<string, GPUBuffer>> {
+    const section: Record<string, GPUBuffer> = {};
+    const seen = new Set<GPUBuffer>();
+    const add = (label: string, value: unknown): void => {
+      if (
+        value == null ||
+        typeof value !== 'object' ||
+        typeof (value as GPUBuffer).size !== 'number' ||
+        typeof (value as GPUBuffer).usage !== 'number' ||
+        seen.has(value as GPUBuffer)
+      ) {
+        return;
+      }
+      seen.add(value as GPUBuffer);
+      section[label] = value as GPUBuffer;
+    };
+    for (const [label, buffer] of Object.entries(this._bvhBuffers ?? {})) {
+      add(label, buffer);
+    }
+    for (let index = 0; index < (this._cascadeBufs?.length ?? 0); index++) {
+      add(`cascade${index}`, this._cascadeBufs?.[index]);
+    }
+    add('lights', this._lightsGpuBuf);
+    return section;
   }
 
   getCascadeC0Dims(): { probes: readonly [number, number, number]; rays: number } | null {

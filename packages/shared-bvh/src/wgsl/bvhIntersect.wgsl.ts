@@ -27,12 +27,6 @@
  *   - `bvhIntersectAny(origin, dir, tMax,
  *     triEps, skipGlass: bool) -> bool` — shadow-ray any-hit traversal
  *     with caller-chosen glass-skip behaviour.
- *   - `bvhIntersectFirstHitV3(bvh_index, bvh_position, bvh, ray, triEps) ->
- *     IntersectionResult` — same algorithm but for `array<vec3u>` /
- *     `array<vec3f>` storage (DDGI / RC's pre-canonical three-mesh-bvh
- *     upstream form). DDGI and RC keep their existing host-side packers
- *     (12-byte stride per element) and bind the canonical V3 entry point.
- *
  * Storage forms:
  *   - vec4u / vec4f variant (ReSTIR):
  *       bvh_index    is `array<vec4u>`: .xyz = vertex indices,
@@ -41,10 +35,6 @@
  *                                            zero (DDGI/RC zero-fill).
  *       bvh_position is `array<vec4f>`: .xyz = world-space position,
  *                                       .w = 16:16 unorm UV (ReSTIR), or zero.
- *   - vec3u / vec3f variant (DDGI / RC):
- *       bvh_index    is `array<vec3u>`: three vertex indices (no .w payload).
- *       bvh_position is `array<vec3f>`: world-space position (no .w payload).
- *
  *   `bvh` is `array<BVHNode>` in both cases — 32-byte flat layout
  *   (boundsMin 3×f32, boundsMax 3×f32, rightChildOrTriOffset u32,
  *   splitAxisOrTriCount u32) matching three-mesh-bvh's `BYTES_PER_NODE`.
@@ -520,81 +510,6 @@ fn bvhIntersectAnyAtRoot(
     }
   }
   return false;
-}
-
-// Compatibility entry point for legacy callers that only consume xyz lanes.
-// It uses the same value-return loaders as the canonical vec4 traversal, so it
-// remains portable and does not impose a second storage-buffer type on modules.
-fn bvhIntersectFirstHitV3(
-  ray: Ray,
-  triEps: f32,
-) -> IntersectionResult {
-  var best: IntersectionResult;
-  best.didHit = false;
-  best.dist   = BVH_INTERSECT_INFINITY;
-  best.matColorPacked = 0u;
-  best.uv     = vec2f(0.0);
-
-  var stack: array<u32, ${BVH_INTERSECT_STACK_DEPTH}>;
-  var pointer: i32 = 0;
-  stack[0] = 0u;
-
-  let invDir = safeInvDir(ray.direction);
-
-  loop {
-    if (pointer < 0 || pointer >= i32(BVH_INTERSECT_STACK_DEPTH)) { break; }
-    let currNodeIdx = stack[pointer];
-    let node        = bvhLoadNode(currNodeIdx);
-    pointer = pointer - 1;
-
-    let bmin = vec3f(node.boundsMin[0], node.boundsMin[1], node.boundsMin[2]);
-    let bmax = vec3f(node.boundsMax[0], node.boundsMax[1], node.boundsMax[2]);
-    let t0 = (bmin - ray.origin) * invDir;
-    let t1 = (bmax - ray.origin) * invDir;
-    let tNear = max(max(min(t0.x, t1.x), min(t0.y, t1.y)), min(t0.z, t1.z));
-    let tFar  = min(min(max(t0.x, t1.x), max(t0.y, t1.y)), max(t0.z, t1.z));
-    if (tNear > tFar || tFar < 0.0 || tNear > best.dist) { continue; }
-
-    let splitOrCount = node.splitAxisOrTriCount;
-    let isLeaf = (splitOrCount & 0xFFFF0000u) == BVH_LEAFNODE_FLAG;
-
-    if (isLeaf) {
-      let triCount  = splitOrCount & 0x0000FFFFu;
-      let triOffset = node.rightChildOrTriOffset;
-      for (var i = 0u; i < triCount; i = i + 1u) {
-        let triIdx = triOffset + i;
-        let idx = bvhLoadIndex(triIdx).xyz;
-        let a = bvhLoadPosition(idx.x).xyz;
-        let b = bvhLoadPosition(idx.y).xyz;
-        let c = bvhLoadPosition(idx.z).xyz;
-        let tri = intersectTriangle(
-          ray.origin, ray.direction,
-          a, b, c,
-          triEps,
-        );
-        if (tri.didHit && tri.dist < best.dist) {
-          best = tri;
-          best.indices = vec4u(idx, triIdx);
-        }
-      }
-    } else {
-      let leftIdx   = currNodeIdx + 1u;
-      let rightIdx  = currNodeIdx + node.rightChildOrTriOffset;
-      let axis      = splitOrCount & 0x3u;
-      let leftToRight = ray.direction[axis] >= 0.0;
-      let nearChild = select(rightIdx, leftIdx, leftToRight);
-      let farChild  = select(leftIdx, rightIdx, leftToRight);
-      if (pointer + 2 >= i32(BVH_INTERSECT_STACK_DEPTH)) {
-        return best;
-      }
-      pointer = pointer + 1;
-      stack[pointer] = farChild;
-      pointer = pointer + 1;
-      stack[pointer] = nearChild;
-    }
-  }
-
-  return best;
 }
 
 `;

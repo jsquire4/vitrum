@@ -9,13 +9,11 @@ import {
   roughDielectricTransmissionPdf,
   sampleRoughDielectric,
 } from '../math/roughDielectric.js';
-import { PT_WEBGPU_ADJOINT_PASS_WGSL } from '../wgsl/pathTrace/adjointPass.wgsl.js';
 import { PT_WEBGPU_PATH_TRACE_BSDF_WGSL } from '../wgsl/pathTrace/bsdf.wgsl.js';
 import { PT_WEBGPU_PATH_TRACE_CONNECT_WGSL } from '../wgsl/pathTrace/connect.wgsl.js';
 import { PT_WEBGPU_PATH_TRACE_CONNECT_LITE_WGSL } from '../wgsl/pathTrace/connectLite.wgsl.js';
 import { PT_WEBGPU_PATH_TRACE_KERNEL_LITE_WGSL } from '../wgsl/pathTrace/kernelLite.wgsl.js';
 import { PT_WEBGPU_PATH_TRACE_MATERIAL_FUNCS_WGSL } from '../wgsl/pathTrace/material.wgsl.js';
-import { PT_WEBGPU_PATH_TRACE_ADJOINT_WGSL } from '../wgsl/pathTrace/pathTraceAdjoint.wgsl.js';
 import { RESTIR_PT_PRODUCER_WGSL } from '../wgsl/pathTrace/restirPtProducer.wgsl.js';
 
 describe('positive authored feature semantics', () => {
@@ -83,11 +81,7 @@ describe('positive authored feature semantics', () => {
       8,
     );
 
-    for (const source of [
-      PT_WEBGPU_PATH_TRACE_BSDF_WGSL,
-      PT_WEBGPU_PATH_TRACE_ADJOINT_WGSL,
-      PT_WEBGPU_ADJOINT_PASS_WGSL,
-    ]) {
+    for (const source of [PT_WEBGPU_PATH_TRACE_BSDF_WGSL]) {
       expect(source).toContain('max(roughness * roughness, 0.001)');
     }
     expect(PT_WEBGPU_PATH_TRACE_MATERIAL_FUNCS_WGSL).toContain(
@@ -99,11 +93,7 @@ describe('positive authored feature semantics', () => {
   });
 
   it('does not erase tiny clearcoat, sheen, iridescence, or anisotropy weights', () => {
-    for (const source of [
-      PT_WEBGPU_PATH_TRACE_BSDF_WGSL,
-      PT_WEBGPU_PATH_TRACE_ADJOINT_WGSL,
-      PT_WEBGPU_ADJOINT_PASS_WGSL,
-    ]) {
+    for (const source of [PT_WEBGPU_PATH_TRACE_BSDF_WGSL]) {
       expect(source).not.toMatch(/(?:clearcoat|sheen|iridescence) < 1e-/);
       expect(source).not.toMatch(/if \(anisotropy (?:>|<=) 1e-/);
     }
@@ -131,15 +121,15 @@ describe('positive authored feature semantics', () => {
     );
   });
 
-  it('does not erase a tiny positive authored procedural-sky strength', () => {
+  it('routes procedural skies through their baked environment map only', () => {
     for (const source of [
       PT_WEBGPU_PATH_TRACE_CONNECT_WGSL,
       PT_WEBGPU_PATH_TRACE_CONNECT_LITE_WGSL,
       PT_WEBGPU_PATH_TRACE_KERNEL_LITE_WGSL,
       RESTIR_PT_PRODUCER_WGSL,
     ]) {
-      expect(source).not.toContain('environmentSun.w > 1e-6');
-      expect(source).toContain('environmentSun.w > 0.0');
+      expect(source).not.toContain('environmentSun.w');
+      expect(source).not.toContain('sampleSky');
     }
   });
 

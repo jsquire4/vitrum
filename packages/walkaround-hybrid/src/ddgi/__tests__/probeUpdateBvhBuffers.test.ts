@@ -43,6 +43,103 @@ function trackedCohort(size = 256): {
   return { gpu, records };
 }
 
+interface MemoryBuffer {
+  readonly gpu: GPUBuffer;
+  readonly bytes: Uint8Array;
+  readonly destroy: ReturnType<typeof vi.fn>;
+}
+
+function memoryBuffer(size = 256): MemoryBuffer {
+  const bytes = new Uint8Array(size);
+  const destroy = vi.fn();
+  return {
+    gpu: { size, destroy } as unknown as GPUBuffer,
+    bytes,
+    destroy,
+  };
+}
+
+function memoryRefitHarness(size = 256): {
+  readonly device: GPUDevice;
+  readonly gpu: ProbeUpdateBvhGpuBuffers;
+  readonly records: Readonly<Record<(typeof bvhKeys)[number], MemoryBuffer>>;
+  readonly recordFor: (buffer: GPUBuffer) => MemoryBuffer;
+} {
+  const byGpu = new Map<GPUBuffer, MemoryBuffer>();
+  const records = {} as Record<(typeof bvhKeys)[number], MemoryBuffer>;
+  const gpu = {} as ProbeUpdateBvhGpuBuffers;
+  for (const key of bvhKeys) {
+    const record = memoryBuffer(size);
+    records[key] = record;
+    gpu[key] = record.gpu;
+    byGpu.set(record.gpu, record);
+  }
+  const pendingCopies: Array<{
+    source: GPUBuffer;
+    sourceOffset: number;
+    destination: GPUBuffer;
+    destinationOffset: number;
+    byteLength: number;
+  }> = [];
+  const device = {
+    createBuffer: vi.fn((descriptor: GPUBufferDescriptor) => {
+      const record = memoryBuffer(descriptor.size);
+      byGpu.set(record.gpu, record);
+      return record.gpu;
+    }),
+    queue: {
+      writeBuffer: vi.fn((
+        destination: GPUBuffer,
+        destinationOffset: number,
+        source: ArrayBuffer,
+        sourceOffset = 0,
+        byteLength = source.byteLength - sourceOffset,
+      ) => {
+        byGpu.get(destination)!.bytes.set(
+          new Uint8Array(source, sourceOffset, byteLength),
+          destinationOffset,
+        );
+      }),
+      submit: vi.fn(() => {
+        for (const copy of pendingCopies) {
+          byGpu.get(copy.destination)!.bytes.set(
+            byGpu.get(copy.source)!.bytes.subarray(
+              copy.sourceOffset,
+              copy.sourceOffset + copy.byteLength,
+            ),
+            copy.destinationOffset,
+          );
+        }
+      }),
+      onSubmittedWorkDone: vi.fn(() => Promise.resolve()),
+    },
+    createCommandEncoder: vi.fn(() => ({
+      copyBufferToBuffer: vi.fn((
+        source: GPUBuffer,
+        sourceOffset: number,
+        destination: GPUBuffer,
+        destinationOffset: number,
+        byteLength: number,
+      ) => {
+        pendingCopies.push({
+          source,
+          sourceOffset,
+          destination,
+          destinationOffset,
+          byteLength,
+        });
+      }),
+      finish: vi.fn(() => ({} as GPUCommandBuffer)),
+    })),
+  } as unknown as GPUDevice;
+  return {
+    device,
+    gpu,
+    records,
+    recordFor: (buffer) => byGpu.get(buffer)!,
+  };
+}
+
 function restirSnapshot(): never {
   return {
     bvhNodes: new ArrayBuffer(32),
@@ -60,6 +157,7 @@ function failureDevice(options: {
   encoder?: boolean;
   finish?: boolean;
   submit?: boolean;
+  completion?: boolean;
 } = {}): {
   readonly device: GPUDevice;
   readonly created: TrackedBuffer[];
@@ -94,7 +192,13 @@ function failureDevice(options: {
           throw new Error('injected submit');
         }
       }),
-      onSubmittedWorkDone: vi.fn(() => Promise.resolve()),
+      onSubmittedWorkDone: vi.fn(() => {
+        if (failureAvailable && options.completion) {
+          failureAvailable = false;
+          throw new Error('injected completion tracker');
+        }
+        return Promise.resolve();
+      }),
     },
     createCommandEncoder: vi.fn(() => {
       if (failureAvailable && options.encoder) {
@@ -302,16 +406,107 @@ describe('probeUpdateBvhBuffers', () => {
     for (const record of prior.records) expect(record.destroy).toHaveBeenCalledTimes(1);
   });
 
-  it('preflights TLAS refit capacity and atomically replaces all three growth buffers', () => {
+  it('keeps identities stable and refreshes all five TLAS streams in place', async () => {
+    const harness = memoryRefitHarness();
+    const previous = {
+      nodes: harness.gpu.tlasNodesBuf,
+      instanceIndices: harness.gpu.tlasInstIdxBuf,
+      blasRoots: harness.gpu.tlasBlasRootsBuf,
+      w2l: harness.gpu.tlasW2lBuf,
+      l2w: harness.gpu.tlasL2wBuf,
+    };
+    const payloads = {
+      nodes: Uint8Array.from([1, 2, 3, 4]).buffer,
+      instanceIndices: Uint8Array.from([5, 6, 7, 8]).buffer,
+      blasRoots: Uint8Array.from([9, 10, 11, 12]).buffer,
+      worldToLocal: Uint8Array.from([13, 14, 15, 16]).buffer,
+      localToWorld: Uint8Array.from([17, 18, 19, 20]).buffer,
+    };
+
+    refitProbeTlasBuffersInPlace(
+      harness.device,
+      harness.gpu,
+      payloads,
+    );
+
+    expect(harness.gpu.tlasNodesBuf).toBe(previous.nodes);
+    expect(harness.gpu.tlasInstIdxBuf).toBe(previous.instanceIndices);
+    expect(harness.gpu.tlasBlasRootsBuf).toBe(previous.blasRoots);
+    expect(harness.gpu.tlasW2lBuf).toBe(previous.w2l);
+    expect(harness.gpu.tlasL2wBuf).toBe(previous.l2w);
+    expect(Array.from(harness.records.tlasNodesBuf.bytes.subarray(0, 4)))
+      .toEqual([1, 2, 3, 4]);
+    expect(Array.from(harness.records.tlasInstIdxBuf.bytes.subarray(0, 4)))
+      .toEqual([5, 6, 7, 8]);
+    expect(Array.from(harness.records.tlasBlasRootsBuf.bytes.subarray(0, 4)))
+      .toEqual([9, 10, 11, 12]);
+    expect(Array.from(harness.records.tlasW2lBuf.bytes.subarray(0, 4)))
+      .toEqual([13, 14, 15, 16]);
+    expect(Array.from(harness.records.tlasL2wBuf.bytes.subarray(0, 4)))
+      .toEqual([17, 18, 19, 20]);
+    await vi.waitFor(() => {
+      expect(harness.device.createBuffer).toHaveBeenCalledTimes(5);
+    });
+  });
+
+  it('publishes capacity-growing replacements containing all five TLAS streams', () => {
+    const harness = memoryRefitHarness(2);
+    const previous = {
+      nodes: harness.gpu.tlasNodesBuf,
+      instanceIndices: harness.gpu.tlasInstIdxBuf,
+      blasRoots: harness.gpu.tlasBlasRootsBuf,
+      w2l: harness.gpu.tlasW2lBuf,
+      l2w: harness.gpu.tlasL2wBuf,
+    };
+    const payloads = {
+      nodes: Uint8Array.from([31, 32, 33, 34]).buffer,
+      instanceIndices: Uint8Array.from([35, 36, 37, 38]).buffer,
+      blasRoots: Uint8Array.from([39, 40, 41, 42]).buffer,
+      worldToLocal: Uint8Array.from([43, 44, 45, 46]).buffer,
+      localToWorld: Uint8Array.from([47, 48, 49, 50]).buffer,
+    };
+
+    refitProbeTlasBuffersInPlace(harness.device, harness.gpu, payloads);
+
+    expect(harness.gpu.tlasNodesBuf).not.toBe(previous.nodes);
+    expect(harness.gpu.tlasInstIdxBuf).not.toBe(previous.instanceIndices);
+    expect(harness.gpu.tlasBlasRootsBuf).not.toBe(previous.blasRoots);
+    expect(harness.gpu.tlasW2lBuf).not.toBe(previous.w2l);
+    expect(harness.gpu.tlasL2wBuf).not.toBe(previous.l2w);
+    expect(Array.from(
+      harness.recordFor(harness.gpu.tlasNodesBuf).bytes.subarray(0, 4),
+    )).toEqual([31, 32, 33, 34]);
+    expect(Array.from(
+      harness.recordFor(harness.gpu.tlasInstIdxBuf).bytes.subarray(0, 4),
+    )).toEqual([35, 36, 37, 38]);
+    expect(Array.from(
+      harness.recordFor(harness.gpu.tlasBlasRootsBuf).bytes.subarray(0, 4),
+    )).toEqual([39, 40, 41, 42]);
+    expect(Array.from(
+      harness.recordFor(harness.gpu.tlasW2lBuf).bytes.subarray(0, 4),
+    )).toEqual([43, 44, 45, 46]);
+    expect(Array.from(
+      harness.recordFor(harness.gpu.tlasL2wBuf).bytes.subarray(0, 4),
+    )).toEqual([47, 48, 49, 50]);
+    for (const buffer of Object.values(previous)) {
+      expect(harness.recordFor(buffer).destroy).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it('preflights TLAS refit capacity and atomically replaces all five growth buffers', () => {
     const prior = trackedCohort(16);
     const previous = {
       nodes: prior.gpu.tlasNodesBuf,
+      instanceIndices: prior.gpu.tlasInstIdxBuf,
+      blasRoots: prior.gpu.tlasBlasRootsBuf,
       w2l: prior.gpu.tlasW2lBuf,
       l2w: prior.gpu.tlasL2wBuf,
     };
     const stub = failureDevice({ createAt: 2 });
     const tlas = {
       nodes: new ArrayBuffer(64),
+      instanceIndices: new ArrayBuffer(32),
+      blasRoots: new ArrayBuffer(32),
       worldToLocal: new ArrayBuffer(128),
       localToWorld: new ArrayBuffer(128),
     } as never;
@@ -319,12 +514,16 @@ describe('probeUpdateBvhBuffers', () => {
     expect(() => refitProbeTlasBuffersInPlace(stub.device, prior.gpu, tlas))
       .toThrow('injected create 2');
     expect(prior.gpu.tlasNodesBuf).toBe(previous.nodes);
+    expect(prior.gpu.tlasInstIdxBuf).toBe(previous.instanceIndices);
+    expect(prior.gpu.tlasBlasRootsBuf).toBe(previous.blasRoots);
     expect(prior.gpu.tlasW2lBuf).toBe(previous.w2l);
     expect(prior.gpu.tlasL2wBuf).toBe(previous.l2w);
     expect(stub.created[0]!.destroy).toHaveBeenCalledTimes(1);
 
     refitProbeTlasBuffersInPlace(stub.device, prior.gpu, tlas);
     expect(prior.gpu.tlasNodesBuf).not.toBe(previous.nodes);
+    expect(prior.gpu.tlasInstIdxBuf).not.toBe(previous.instanceIndices);
+    expect(prior.gpu.tlasBlasRootsBuf).not.toBe(previous.blasRoots);
     expect(prior.gpu.tlasW2lBuf).not.toBe(previous.w2l);
     expect(prior.gpu.tlasL2wBuf).not.toBe(previous.l2w);
   });
@@ -341,12 +540,16 @@ describe('probeUpdateBvhBuffers', () => {
       const prior = trackedCohort(256);
       const previous = {
         nodes: prior.gpu.tlasNodesBuf,
+        instanceIndices: prior.gpu.tlasInstIdxBuf,
+        blasRoots: prior.gpu.tlasBlasRootsBuf,
         w2l: prior.gpu.tlasW2lBuf,
         l2w: prior.gpu.tlasL2wBuf,
       };
       const stub = failureDevice(options);
       const tlas = {
         nodes: new ArrayBuffer(64),
+        instanceIndices: new ArrayBuffer(32),
+        blasRoots: new ArrayBuffer(32),
         worldToLocal: new ArrayBuffer(128),
         localToWorld: new ArrayBuffer(128),
       } as never;
@@ -354,6 +557,8 @@ describe('probeUpdateBvhBuffers', () => {
       expect(() => refitProbeTlasBuffersInPlace(stub.device, prior.gpu, tlas))
         .toThrow(message);
       expect(prior.gpu.tlasNodesBuf).toBe(previous.nodes);
+      expect(prior.gpu.tlasInstIdxBuf).toBe(previous.instanceIndices);
+      expect(prior.gpu.tlasBlasRootsBuf).toBe(previous.blasRoots);
       expect(prior.gpu.tlasW2lBuf).toBe(previous.w2l);
       expect(prior.gpu.tlasL2wBuf).toBe(previous.l2w);
       for (const record of prior.records) expect(record.destroy).not.toHaveBeenCalled();
@@ -368,9 +573,64 @@ describe('probeUpdateBvhBuffers', () => {
       });
 
       expect(prior.gpu.tlasNodesBuf).toBe(previous.nodes);
+      expect(prior.gpu.tlasInstIdxBuf).toBe(previous.instanceIndices);
+      expect(prior.gpu.tlasBlasRootsBuf).toBe(previous.blasRoots);
       expect(prior.gpu.tlasW2lBuf).toBe(previous.w2l);
       expect(prior.gpu.tlasL2wBuf).toBe(previous.l2w);
-      expect(stub.created.slice(createdBeforeRetry)).toHaveLength(3);
+      expect(stub.created.slice(createdBeforeRetry)).toHaveLength(5);
     },
   );
+
+  it('retires all staging after accepted submit when completion tracking throws synchronously', () => {
+    const prior = trackedCohort(256);
+    const previous = bvhKeys.map((key) => prior.gpu[key]);
+    const stub = failureDevice({ completion: true });
+    const tlas = {
+      nodes: new ArrayBuffer(64),
+      instanceIndices: new ArrayBuffer(32),
+      blasRoots: new ArrayBuffer(32),
+      worldToLocal: new ArrayBuffer(128),
+      localToWorld: new ArrayBuffer(128),
+    } as never;
+
+    expect(() => refitProbeTlasBuffersInPlace(stub.device, prior.gpu, tlas))
+      .not.toThrow();
+    expect(bvhKeys.map((key) => prior.gpu[key])).toEqual(previous);
+    expect(stub.created).toHaveLength(5);
+    for (const record of stub.created) {
+      expect(record.destroy).toHaveBeenCalledOnce();
+    }
+    for (const record of prior.records) {
+      expect(record.destroy).not.toHaveBeenCalled();
+    }
+  });
+
+  it('retires an aliased prior TLAS destination at most once', () => {
+    const prior = trackedCohort(16);
+    const shared = trackedBuffer(16);
+    prior.gpu.tlasNodesBuf = shared.gpu;
+    prior.gpu.tlasInstIdxBuf = shared.gpu;
+    prior.gpu.tlasBlasRootsBuf = shared.gpu;
+    prior.gpu.tlasW2lBuf = shared.gpu;
+    prior.gpu.tlasL2wBuf = shared.gpu;
+    const stub = failureDevice();
+    const tlas = {
+      nodes: new ArrayBuffer(64),
+      instanceIndices: new ArrayBuffer(32),
+      blasRoots: new ArrayBuffer(32),
+      worldToLocal: new ArrayBuffer(128),
+      localToWorld: new ArrayBuffer(128),
+    } as never;
+
+    refitProbeTlasBuffersInPlace(stub.device, prior.gpu, tlas);
+
+    expect(shared.destroy).toHaveBeenCalledOnce();
+    expect(new Set([
+      prior.gpu.tlasNodesBuf,
+      prior.gpu.tlasInstIdxBuf,
+      prior.gpu.tlasBlasRootsBuf,
+      prior.gpu.tlasW2lBuf,
+      prior.gpu.tlasL2wBuf,
+    ])).toHaveLength(5);
+  });
 });

@@ -110,7 +110,9 @@ fn resolveKernel(@builtin(global_invocation_id) globalId: vec3<u32>) {
     // TEMPORAL term: reproject the previous frame's radiance through the motion
     // vector (sharp when reprojection is valid). Motion-vector convention:
     // mv = previous-current framebuffer-pixel delta (y-down).
-    let mv     = textureLoad(t_motion_vectors, vec2<i32>(i32(px), i32(py)), 0).rg;
+    let motionSample =
+      textureLoad(t_motion_vectors, vec2<i32>(i32(px), i32(py)), 0);
+    let mv = motionSample.rg;
     let deltaPx = vec2i(round(mv));
     let prevXY = clampCoord(vec2<i32>(i32(px), i32(py)) + deltaPx, W, H);
     let temporal = textureLoad(t_prev_radiance, prevXY, 0);
@@ -151,7 +153,10 @@ fn resolveKernel(@builtin(global_invocation_id) globalId: vec3<u32>) {
       1.0,
       max(max(abs(temporalClipped.r), abs(temporalClipped.g)), abs(temporalClipped.b)),
     );
-    let historyAccepted = temporalFinite && maxHistoryDelta <= 0.25 * historyScale;
+    let historyAccepted =
+      motionSample.a > 0.5 &&
+      temporalFinite &&
+      maxHistoryDelta <= 0.25 * historyScale;
 
     // BLEND by motion magnitude only after the color-box validity test. Full
     // spatial by ~4px; a disoccluded outlier gets zero temporal weight even at

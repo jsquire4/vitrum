@@ -2,10 +2,12 @@
  * BSDF module — BRDF evaluation, directional PDF, diffuse / glossy samplers,
  * and the layered single-bounce direction sampler (`sampleNextBounceDirection`).
  *
- * Bundled here:
- *  - `evaluateBrdf` — Cook-Torrance unified diffuse + specular BRDF eval
- *  - `brdfDirectionalPdf` — three-lobe MIS-aware directional PDF (VNDF
- *    reflection PDF aligned with `glossyReflectionSample`)
+ * Production entry points bundled here:
+ *  - `evaluateBrdfFullWithClearcoatNormal` and
+ *    `evaluateFiniteBsdfFullWithClearcoatNormal` — layered finite-BSDF
+ *    evaluation, including distinct base and clearcoat normals
+ *  - `brdfDirectionalPdfFullSampledWithClearcoatNormal` — MIS-aware marginal
+ *    directional PDF aligned with the layered samplers
  *  - `buildOnb` — orthonormal basis around a surface normal
  *  - `cosineHemisphereSample` — Lambertian diffuse sampler returning BsdfSample
  *  - `sampleGgxVndfTangent` — Heitz 2018 VNDF Algorithm 1
@@ -163,7 +165,9 @@ fn evalIridescence(
 }
 
 // Mix the base specular F0 with the iridescent Fresnel based on the iridescence
-// factor.  thicknessNm is sampled linearly between min and max using viewDotN.
+// factor. KHR_materials_iridescence defines an absent thickness texture as an
+// implicit sample of 1, so the authored maximum is used here. Texture-backed
+// paths collapse min/max to the sampled thickness before reaching this helper.
 // Returns a modified F0 that the caller substitutes into fresnelSchlick.
 // Ref: glTF KHR_materials_iridescence §3.
 fn iridescenceModifiedF0(
@@ -177,34 +181,49 @@ fn iridescenceModifiedF0(
   if (iridescence <= 0.0) {
     return baseF0; // zero-default: numerically identical to pre-H52 path.
   }
-  let thicknessNm = mix(thicknessMin, thicknessMax, clamp(cosTheta, 0.0, 1.0));
+  let thicknessNm = max(thicknessMax, 0.0);
   let iridF = evalIridescence(1.0, iridescenceIor, cosTheta, thicknessNm, baseF0);
   return mix(baseF0, iridF, iridescence);
 }
 
-// SPEC-01 — KHR_materials_specular dielectric F0 composition.
-// specularColor/specularIntensity scale the dielectric 4% baseline; metallic
-// surfaces still use baseColor as F0. Defaults ([1,1,1], 1) reproduce the old path.
+// KHR_materials_ior + KHR_materials_specular dielectric F0 composition.
+// Khronos requires clamping IOR-derived F0 × specularColor BEFORE applying
+// specularIntensity. This order is observable for color factors above one.
 fn materialSpecularF0(
   baseColor: vec3f,
   metallic: f32,
+  etaTOverI: f32,
   specularColor: vec3f,
   specularIntensity: f32,
 ) -> vec3f {
-  let dielectricF0 = clamp(
-    vec3f(0.04) * clamp(specularColor, vec3f(0.0), vec3f(1.0)) * clamp(specularIntensity, 0.0, 1.0),
-    vec3f(0.0),
+  let eta = max(abs(etaTOverI), 1e-8);
+  let ratio = (eta - 1.0) / (eta + 1.0);
+  let iorF0 = ratio * ratio;
+  let coloredDielectricF0 = min(
+    vec3f(iorF0) * max(specularColor, vec3f(0.0)),
     vec3f(1.0),
   );
-  return mix(dielectricF0, baseColor, metallic);
+  let dielectricF0 =
+    coloredDielectricF0 * clamp(specularIntensity, 0.0, 1.0);
+  return mix(dielectricF0, baseColor, clamp(metallic, 0.0, 1.0));
 }
 
-// Rough dielectric transport uses exact IOR Fresnel for the no-extension
-// baseline, while KHR_materials_specular and KHR_materials_iridescence author
-// the dielectric's coloured F0. Apply those authored controls as a ratio to the
-// legacy 4%-F0 Schlick curve so the default values preserve frDielectric
-// bit-for-bit for every IOR, including non-1.5 interfaces. The same function is
-// consumed by finite evaluation, directional PDFs, and source sampling.
+fn materialSpecularFresnelSchlick(
+  cosTheta: f32,
+  f0: vec3f,
+  metallic: f32,
+  specularIntensity: f32,
+) -> vec3f {
+  let dielectricF90 = vec3f(clamp(specularIntensity, 0.0, 1.0));
+  let f90 = mix(dielectricF90, vec3f(1.0), clamp(metallic, 0.0, 1.0));
+  let x = clamp(1.0 - cosTheta, 0.0, 1.0);
+  let x2 = x * x;
+  return f0 + (f90 - f0) * x2 * x2 * x;
+}
+
+// The same Khronos F0/F90 construction is consumed by finite evaluation,
+// directional PDFs, and source sampling. Exact Fresnel remains the TIR oracle:
+// material controls cannot create transmission when Snell's law forbids it.
 fn materialDielectricFresnel(
   cosTheta: f32,
   etaTOverI: f32,
@@ -215,39 +234,180 @@ fn materialDielectricFresnel(
   specularColor: vec3f,
   specularIntensity: f32,
 ) -> vec3f {
-  let exactF = frDielectric(abs(cosTheta), max(etaTOverI, 1e-4));
+  let interfaceEta = max(abs(etaTOverI), 1e-8);
+  let cosI = clamp(abs(cosTheta), 0.0, 1.0);
+  let sinI2 = max(0.0, 1.0 - cosI * cosI);
   // Total internal reflection is achromatic unit reflectance; material F0
   // controls cannot turn a physically unavailable transmission event back on.
-  if (exactF >= 1.0) { return vec3f(1.0); }
+  if (interfaceEta < 1.0 && sinI2 >= interfaceEta * interfaceEta) {
+    return vec3f(1.0);
+  }
 
   let authoredF0 = iridescenceModifiedF0(
     materialSpecularF0(
-      vec3f(1.0), 0.0, specularColor, specularIntensity,
+      vec3f(1.0), 0.0, etaTOverI, specularColor, specularIntensity,
     ),
     iridescence, iridescenceIor,
     iridescenceThicknessMin, iridescenceThicknessMax, abs(cosTheta),
   );
-  let baselineSchlick = fresnelSchlick(abs(cosTheta), vec3f(0.04));
-  let authoredSchlick = fresnelSchlick(abs(cosTheta), authoredF0);
-  return clamp(
-    vec3f(exactF) * authoredSchlick / max(baselineSchlick, vec3f(1e-6)),
-    vec3f(0.0),
-    vec3f(1.0),
+  return materialSpecularFresnelSchlick(
+    abs(cosTheta), authoredF0, 0.0, specularIntensity,
   );
 }
 
-// ── Clearcoat (additive GGX specular at fixed IOR 1.5) ────────────────────────
+// A coherent stack replaces (rather than adds to) the authored bare interface
+// inside the rough microfacet lobe. TMM already includes the final
+// incident-medium -> Material.ior substrate boundary, so adding its R to the
+// authored Fresnel would count that boundary twice.
+//
+// Material metallic/baseColor/KHR-specular controls still define the authored
+// bare-interface reflectance. We preserve them with a coated-vs-bare odds
+// replacement:
+//
+//   odds_coated = odds_authored * (R_stack/T_stack) / (R_bare/T_bare)
+//
+// and allocate the TMM surviving energy R_stack+T_stack by those odds. This has
+// three important invariants:
+//   1. authored == physical bare Fresnel -> exactly the TMM R/T;
+//   2. a zero-layer TMM stack -> exactly authored F and 1-F;
+//   3. R_out + T_out == R_stack + T_stack <= 1, preserving film absorption.
+//
+// This is the bounded "spectral modulation ratio" construction used when an
+// artistic base Fresnel must coexist with a physical coating transfer function;
+// it does not invent a second optical interface.
+struct BsdfLayeredInterfaceResponse {
+  reflectance: vec3f,
+  baseTransmittance: vec3f,
+}
+
+fn bsdfLayeredInterfaceResponse(
+  baseFresnel: vec3f,
+  thinFilm: ThinFilmInterface,
+  microfacetCos: f32,
+) -> BsdfLayeredInterfaceResponse {
+  var response: BsdfLayeredInterfaceResponse;
+  let baseF = clamp(baseFresnel, vec3f(0.0), vec3f(1.0));
+  let baseT = vec3f(1.0) - baseF;
+  response.reflectance = baseF;
+  response.baseTransmittance = baseT;
+  if (!thinFilm.enabled) { return response; }
+
+  // KHR transmission is a substrate branch selection, not an optical property
+  // of the coherent stack. Evaluate raw stack R/T here and apply the authored
+  // transmission scalar later, alongside the ordinary diffuse/transmission
+  // partition. This also avoids double-applying transmissionMap.
+  var opticalFilm = thinFilm;
+  opticalFilm.transmissionScale = 1.0;
+  let filmRt = thinFilmTransportRt(
+    opticalFilm, clamp(abs(microfacetCos), 0.0, 1.0),
+  );
+  let etaIncident = select(
+    thinFilm.substrateIor, thinFilm.incidentIor, thinFilm.frontFace,
+  );
+  let etaTransmitted = select(
+    thinFilm.incidentIor, thinFilm.substrateIor, thinFilm.frontFace,
+  );
+  let interfaceCos = select(
+    1.0, clamp(abs(microfacetCos), 0.0, 1.0), thinFilm.angleDependent,
+  );
+  let bareR = frDielectric(
+    interfaceCos,
+    max(etaTransmitted / max(etaIncident, 1e-4), 1e-4),
+  );
+  let bareT = 1.0 - bareR;
+  let reflectedWeight =
+    baseF * filmRt.reflectance / max(bareR, 1e-6);
+  let transmittedWeight =
+    baseT * filmRt.transmittance / max(bareT, 1e-6);
+  let weightSum = reflectedWeight + transmittedWeight;
+  var reflectedFraction = clamp(
+    select(
+      baseF,
+      reflectedWeight / max(weightSum, vec3f(1e-20)),
+      weightSum > vec3f(1e-20),
+    ),
+    vec3f(0.0),
+    vec3f(1.0),
+  );
+  // Exact one-sided events (notably reverse-incidence TIR) must not turn into
+  // 0/0 odds when an artistic authored channel is exactly zero or one.
+  reflectedFraction = select(
+    reflectedFraction,
+    vec3f(1.0),
+    (filmRt.transmittance <= vec3f(1e-20)) &
+      (filmRt.reflectance > vec3f(1e-20)),
+  );
+  reflectedFraction = select(
+    reflectedFraction,
+    vec3f(0.0),
+    (filmRt.reflectance <= vec3f(1e-20)) &
+      (filmRt.transmittance > vec3f(1e-20)),
+  );
+  let survivingEnergy = clamp(
+    filmRt.reflectance + filmRt.transmittance,
+    vec3f(0.0),
+    vec3f(1.0),
+  );
+  response.reflectance = survivingEnergy * reflectedFraction;
+  response.baseTransmittance =
+    survivingEnergy * (vec3f(1.0) - reflectedFraction);
+  return response;
+}
+
+fn materialDielectricLayeredInterface(
+  cosTheta: f32,
+  etaTOverI: f32,
+  iridescence: f32,
+  iridescenceIor: f32,
+  iridescenceThicknessMin: f32,
+  iridescenceThicknessMax: f32,
+  specularColor: vec3f,
+  specularIntensity: f32,
+  thinFilm: ThinFilmInterface,
+) -> BsdfLayeredInterfaceResponse {
+  // ThinFilmStack overrides KHR_materials_iridescence by core contract.
+  let activeIridescence = select(iridescence, 0.0, thinFilm.enabled);
+  let baseF = materialDielectricFresnel(
+    cosTheta, etaTOverI,
+    activeIridescence, iridescenceIor,
+    iridescenceThicknessMin, iridescenceThicknessMax,
+    specularColor, specularIntensity,
+  );
+  return bsdfLayeredInterfaceResponse(baseF, thinFilm, cosTheta);
+}
+
+fn bsdfNoThinFilm() -> ThinFilmInterface {
+  return ThinFilmInterface(
+    false, 0u, 0u, 1.0, 1.5, false, true, false, 550.0, 1.0,
+  );
+}
+
+// ── Clearcoat (outer GGX layer at fixed IOR 1.5) ─────────────────────────────
 // Ref: glTF KHR_materials_clearcoat (Spec rev 3.0) §3.
 //      Burley, "Physically-Based Shading at Disney," SIGGRAPH 2012 §5.4.
-// The clearcoat lobe is an additive GGX specular layer at a fixed IOR of 1.5
-// (F0 = 0.04), independent of the base metallic/roughness lobe.
+// The clearcoat lobe is an outer GGX specular layer at a fixed IOR of 1.5
+// (F0 = 0.04). Its directional Fresnel attenuates the base-plus-sheen response
+// before the coat reflection is added.
 // The caller supplies the ALREADY COMPUTED clearcoat roughness (= clearcoatRoughness²
 // evaluated with the shared finite-alpha numerical floor used by base GGX); the
 // clearcoat scalar weights the result.
-// The lobe uses the same Cook-Torrance estimator as evaluateBrdf's specular branch.
+// The lobe uses the same Cook-Torrance estimator as the base specular branch.
 // evalClearcoatLobe returns the BRDF kernel (WITHOUT nDotL) so it can be
-// summed with evaluateBrdf and the caller multiplies by nDotL once, matching
+// summed with the lower layers and the caller multiplies by nDotL once, matching
 // the convention used throughout the kernel's NEE paths.
+fn clearcoatLayerWeight(
+  clearcoat: f32,
+  clearcoatNormal: vec3f,
+  wo: vec3f,
+) -> f32 {
+  // KHR_materials_clearcoat evaluates the fixed-IOR coat Fresnel at the
+  // view/clearcoat-normal angle. This weight is shared by the coat reflection
+  // and attenuation of every lower layer.
+  let vDotN = clamp(abs(dot(clearcoatNormal, wo)), 0.0, 1.0);
+  let fcc = fresnelSchlick(vDotN, vec3f(0.04)).x;
+  return clamp(clearcoat, 0.0, 1.0) * fcc;
+}
+
 fn evalClearcoatLobe(
   clearcoat: f32,
   clearcoatRoughness: f32,
@@ -261,19 +421,32 @@ fn evalClearcoatLobe(
   if (nDotL <= 1e-5 || nDotV <= 1e-5) { return vec3f(0.0); }
   let h = safe_normalize(wi + wo);
   let nDotH = max(dot(normal, h), 0.0);
-  let vDotH = max(dot(wo, h), 0.0);
-  // Fixed IOR 1.5 → F0 = ((1.5-1)/(1.5+1))² = 0.04.
-  let f0cc = vec3f(0.04);
-  let f = fresnelSchlick(vDotH, f0cc);
+  // Fixed IOR 1.5 → F0 = ((1.5-1)/(1.5+1))² = 0.04. The ratified glTF
+  // layering model evaluates that Fresnel at abs(V·Nc), not V·H.
+  let layerWeight = clearcoatLayerWeight(clearcoat, normal, wo);
   let alpha = max(clearcoatRoughness * clearcoatRoughness, ${PT_WEBGPU_MICROFACET_ALPHA_FLOOR});
   let d = ggxD(nDotH, alpha);
   let g = smithG1(nDotV, clearcoatRoughness) * smithG1(nDotL, clearcoatRoughness);
   // BRDF kernel (no nDotL) — caller multiplies by nDotL together with the base lobe.
-  let spec = (d * g) * f / max(4.0 * nDotV * nDotL, 1e-6);
-  return clearcoat * spec;
+  let spec = (d * g) / max(4.0 * nDotV * nDotL, 1e-6);
+  return vec3f(layerWeight * spec);
 }
 
-// Clearcoat PDF contribution for brdfDirectionalPdf.
+// KHR_materials_clearcoat layering:
+//   f_layered = f_below * (1 - clearcoat * Fcc) + f_clearcoat.
+// Use the same view/clearcoat-normal Fresnel as evalClearcoatLobe so the
+// attenuation and reflected coat cannot disagree directionally.
+fn clearcoatBaseAttenuation(
+  clearcoat: f32,
+  clearcoatNormal: vec3f,
+  wo: vec3f,
+  _wi: vec3f,
+) -> f32 {
+  if (clearcoat <= 0.0) { return 1.0; }
+  return clamp(1.0 - clearcoatLayerWeight(clearcoat, clearcoatNormal, wo), 0.0, 1.0);
+}
+
+// Clearcoat PDF contribution for the layered directional PDF.
 // Weighted by clearcoat scalar; the base lobe PDF is extended by this term.
 // Returns 0 when clearcoat == 0 (zero-default: identical to pre-H52 PDF).
 fn clearcoatPdf(clearcoat: f32, clearcoatRoughness: f32, normal: vec3f, wo: vec3f, wi: vec3f) -> f32 {
@@ -310,7 +483,8 @@ fn sheenVisibility(nDotL: f32, nDotV: f32) -> f32 {
 }
 
 // evalSheenLobe returns the BRDF kernel (WITHOUT nDotL) matching the convention
-// of evaluateBrdf (caller multiplies by nDotL once for the full NEE contribution).
+// of the layered evaluator (caller multiplies by nDotL once for the full NEE
+// contribution).
 fn evalSheenLobe(
   sheen: f32,
   sheenRoughness: f32,
@@ -330,6 +504,43 @@ fn evalSheenLobe(
   let vis = sheenVisibility(nDotL, nDotV);
   // BRDF kernel (no nDotL) — caller multiplies by nDotL together with the base lobe.
   return sheen * sheenColor * d * vis;
+}
+
+// Estevez & Kulla 2017, section 5: directional-albedo compensation for a
+// sheen layer. The fitted directional albedo bounds the energy removed from
+// the base by the brighter of the incoming/outgoing directions.
+fn sheenDirectionalAlbedo(cosThetaRaw: f32, alpha: f32) -> f32 {
+  let cosTheta = clamp(cosThetaRaw, 0.0, 1.0);
+  let c = 1.0 - cosTheta;
+  let c3 = c * c * c;
+  return 0.65584461 * c3 +
+    1.0 / (4.16526551 + exp(-7.97291361 * sqrt(alpha) + 6.33516894));
+}
+
+fn sheenBaseAttenuation(
+  sheen: f32,
+  sheenRoughness: f32,
+  sheenColor: vec3f,
+  normal: vec3f,
+  wo: vec3f,
+  wi: vec3f,
+) -> f32 {
+  if (sheen <= 0.0) { return 1.0; }
+  // Sheen is an outer layer over the complete base material. Use magnitudes
+  // so the same bounded directional-albedo loss applies to a base event that
+  // crosses the interface; the sheen reflection lobe itself remains same-side.
+  let nDotL = clamp(abs(dot(normal, wi)), 0.0, 1.0);
+  let nDotV = clamp(abs(dot(normal, wo)), 0.0, 1.0);
+  let alpha = max(sheenRoughness, 0.07);
+  let alpha2 = alpha * alpha;
+  let maxSheenColor = max(max(sheenColor.r, sheenColor.g), sheenColor.b);
+  let eWo = sheenDirectionalAlbedo(nDotV, alpha2);
+  let eWi = sheenDirectionalAlbedo(nDotL, alpha2);
+  let fullSheenScale = min(
+    1.0 - maxSheenColor * eWo,
+    1.0 - maxSheenColor * eWi,
+  );
+  return clamp(mix(1.0, fullSheenScale, clamp(sheen, 0.0, 1.0)), 0.0, 1.0);
 }
 
 fn charlieSheenPdf(
@@ -480,7 +691,7 @@ fn glossyReflectionSampleAnisotropic(
 // Returns the anisotropic Cook-Torrance specular BRDF kernel D·G·F/(4·NdotV·NdotL).
 // Requires the pre-rotated tangent frame (t, b) aligned to the anisotropy direction.
 fn evalBrdfSpecAnisotropic(
-  f0: vec3f,
+  fresnel: vec3f,
   roughness: f32,
   anisotropy: f32,
   normal: vec3f,
@@ -493,8 +704,6 @@ fn evalBrdfSpecAnisotropic(
   let nDotL = max(dot(normal, wi), 0.0);
   if (nDotL <= 1e-5 || nDotV <= 1e-5) { return vec3f(0.0); }
   let h = safe_normalize(wo + wi);
-  let vDotH = max(dot(wo, h), 1e-6);
-  let f = fresnelSchlick(vDotH, f0);
   let alpha = max(roughness * roughness, ${PT_WEBGPU_MICROFACET_ALPHA_FLOOR});
   let aspect = sqrt(max(1.0 - 0.9 * anisotropy, 1e-4));
   let ax = max(alpha / aspect, 1e-4);
@@ -510,7 +719,7 @@ fn evalBrdfSpecAnisotropic(
   let wiN = max(dot(wi, normal), 1e-6);
   let d = ggxDAnis(hT, hB, hN, ax, ay);
   let g = smithG1Anis(woT, woB, woN, ax, ay) * smithG1Anis(wiT, wiB, wiN, ax, ay);
-  return (d * g) * f / max(4.0 * nDotV * nDotL, 1e-6);
+  return (d * g) * fresnel / max(4.0 * nDotV * nDotL, 1e-6);
 }
 
 // Anisotropic VNDF reflection PDF (for brdfDirectionalPdf).
@@ -580,17 +789,20 @@ fn anisotropicMultiscatterScale(anisotropy: f32, roughnessForScale: f32) -> f32 
   // empirical correction mainly belongs to rough lobes where single scatter loses
   // obvious energy.
   let anisoReduction = smoothstep(0.0, 0.35, clamp(anisotropy, 0.0, 1.0));
-  return mix(1.0, 0.6, anisoReduction) * smoothstep(0.35, 0.9, roughnessForScale);
+  let anisotropicScale = 0.6 * smoothstep(0.35, 0.9, roughnessForScale);
+  return mix(1.0, anisotropicScale, anisoReduction);
 }
 
 // ── H52 extended BRDF evaluation (base + clearcoat + sheen + iridescence) ─────
-// evaluateBrdfFull: adds the three Disney extension lobes to the base Cook-Torrance
-// BRDF.  Returns the BRDF kernel (WITHOUT nDotL); callers multiply by nDotL once.
-// When all extension scalars are 0 the result is identical to evaluateBrdf.
+// Adds the three Disney extension lobes to the base Cook-Torrance BRDF. Returns
+// the BRDF kernel (WITHOUT nDotL); callers multiply by nDotL once. When all
+// extension scalars are 0 the result is the base Cook-Torrance response.
 //
 // iridescence modifies the base specular F0 BEFORE the Cook-Torrance evaluation
 // (it is NOT an additive lobe — it replaces the F0 that governs diffuse/specular
-// partition and the specular highlight colour).  Clearcoat and sheen ARE additive.
+// partition and the specular highlight colour). Clearcoat and sheen are ordered
+// outer layers: each attenuates the complete response below it before its own
+// same-side reflection lobe is added.
 //
 // Refs: glTF KHR_materials_clearcoat, KHR_materials_sheen, KHR_materials_iridescence;
 //       Belcour & Barla 2017 (iridescence); Estevez & Kulla 2017 (sheen).
@@ -615,6 +827,7 @@ fn evaluateBrdfFullWithClearcoatNormal(
   specularIntensity: f32,
   anisotropy: f32,
   anisotropyRotation: f32,
+  thinFilm: ThinFilmInterface,
 ) -> vec3f {
   let nDotL = max(dot(normal, wi), 0.0);
   let nDotV = max(dot(normal, wo), 0.0);
@@ -624,14 +837,24 @@ fn evaluateBrdfFullWithClearcoatNormal(
   let vDotH = max(dot(wo, h), 0.0);
 
   // Iridescence-modified F0 (modifies diffuse/specular partition + specular colour).
-  let f0base = materialSpecularF0(baseColor, metallic, specularColor, specularIntensity);
-  let f0 = iridescenceModifiedF0(
+  let f0base = materialSpecularF0(
+    baseColor, metallic, thinFilm.substrateIor,
+    specularColor, specularIntensity,
+  );
+  let iridescentF0 = iridescenceModifiedF0(
     f0base, iridescence, iridescenceIor,
     iridescenceThicknessMin, iridescenceThicknessMax, vDotH,
   );
-
-  let f = fresnelSchlick(vDotH, f0);
-  let kd = (vec3f(1.0) - f) * (1.0 - metallic);
+  // ThinFilmStack overrides the single-layer iridescence model.
+  let f0 = select(iridescentF0, f0base, thinFilm.enabled);
+  let interfaceResponse = bsdfLayeredInterfaceResponse(
+    materialSpecularFresnelSchlick(
+      vDotH, f0, metallic, specularIntensity,
+    ),
+    thinFilm, vDotH,
+  );
+  let f = interfaceResponse.reflectance;
+  let kd = interfaceResponse.baseTransmittance * (1.0 - metallic);
   let diff = kd * baseColor * INV_PI;
 
   // Item 7 — anisotropic GGX specular lobe.
@@ -648,13 +871,13 @@ fn evaluateBrdfFullWithClearcoatNormal(
     let s = sin(anisotropyRotation);
     let anisoT = c * tanT + s * tanB;
     let anisoB = -s * tanT + c * tanB;
-    spec = evalBrdfSpecAnisotropic(f0, roughness, anisotropy, normal, anisoT, anisoB, wo, wi);
+    spec = evalBrdfSpecAnisotropic(f, roughness, anisotropy, normal, anisoT, anisoB, wo, wi);
     // B9 — anisotropy-aware Kulla-Conty approximation. The E LUT is still the
     // isotropic GGX table, but view/light lookups use projected roughness along
     // the authored anisotropy axes instead of ignoring the lobe stretch.
     let roughnessAvg = anisotropicAverageRoughness(roughness, anisotropy);
     ms = anisotropicMultiscatterScale(anisotropy, roughnessAvg) * ggxMultiscatterLobeRoughness(
-      f0,
+      bsdfLayeredInterfaceResponse(f0, thinFilm, nDotV).reflectance,
       anisotropicProjectedRoughness(wo, anisoT, anisoB, roughness, anisotropy),
       anisotropicProjectedRoughness(wi, anisoT, anisoB, roughness, anisotropy),
       roughnessAvg,
@@ -667,44 +890,26 @@ fn evaluateBrdfFullWithClearcoatNormal(
     let g = smithG1(nDotV, roughness) * smithG1(nDotL, roughness);
     spec = (d * g) * f / max(4.0 * nDotV * nDotL, 1e-6);
     // B9 — Kulla-Conty multiscatter energy compensation.
-    ms = ggxMultiscatterLobe(f0, roughness, nDotV, nDotL);
+    ms = ggxMultiscatterLobe(
+      bsdfLayeredInterfaceResponse(f0, thinFilm, nDotV).reflectance,
+      roughness, nDotV, nDotL,
+    );
   }
   let base = diff + spec + ms;
 
-  // Additive extension lobes (each returns BRDF kernel, no nDotL factor).
+  // Layered extension lobes (each returns a BRDF kernel, no nDotL factor).
+  // Sheen sits over the base; the outer clearcoat attenuates everything below.
   let cc = evalClearcoatLobe(clearcoat, clearcoatRoughness, clearcoatNormal, wo, wi);
   let sh = evalSheenLobe(sheen, sheenRoughness, sheenColor, normal, wo, wi);
-  return base + cc + sh;
+  let sheenAttenuation = sheenBaseAttenuation(
+    sheen, sheenRoughness, sheenColor, normal, wo, wi,
+  );
+  let clearcoatAttenuation = clearcoatBaseAttenuation(
+    clearcoat, clearcoatNormal, wo, wi,
+  );
+  return (base * sheenAttenuation + sh) * clearcoatAttenuation + cc;
 }
 
-fn evaluateBrdfFull(
-  baseColor: vec3f,
-  roughness: f32,
-  metallic: f32,
-  normal: vec3f,
-  wo: vec3f,
-  wi: vec3f,
-  clearcoat: f32,
-  clearcoatRoughness: f32,
-  sheen: f32,
-  sheenRoughness: f32,
-  sheenColor: vec3f,
-  iridescence: f32,
-  iridescenceIor: f32,
-  iridescenceThicknessMin: f32,
-  iridescenceThicknessMax: f32,
-  specularColor: vec3f,
-  specularIntensity: f32,
-  anisotropy: f32,
-  anisotropyRotation: f32,
-) -> vec3f {
-  return evaluateBrdfFullWithClearcoatNormal(
-    baseColor, roughness, metallic, normal, normal, wo, wi,
-    clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
-    iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
-    specularColor, specularIntensity, anisotropy, anisotropyRotation,
-  );
-}
 fn evaluateFiniteSameSideBrdfFullWithClearcoatNormal(
   baseColor: vec3f, roughness: f32, metallic: f32, transmission: f32,
   normal: vec3f, clearcoatNormal: vec3f, wo: vec3f, wi: vec3f,
@@ -714,6 +919,7 @@ fn evaluateFiniteSameSideBrdfFullWithClearcoatNormal(
   iridescenceThicknessMin: f32, iridescenceThicknessMax: f32,
   specularColor: vec3f, specularIntensity: f32,
   anisotropy: f32, anisotropyRotation: f32,
+  thinFilm: ThinFilmInterface,
 ) -> vec3f {
   let finiteBaseColor = select(
     baseColor,
@@ -724,7 +930,7 @@ fn evaluateFiniteSameSideBrdfFullWithClearcoatNormal(
     finiteBaseColor, roughness, metallic, normal, clearcoatNormal, wo, wi,
     clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
     iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
-    specularColor, specularIntensity, anisotropy, anisotropyRotation,
+    specularColor, specularIntensity, anisotropy, anisotropyRotation, thinFilm,
   );
 }
 fn evaluateFiniteBsdfFullWithClearcoatNormal(
@@ -737,6 +943,7 @@ fn evaluateFiniteBsdfFullWithClearcoatNormal(
   iridescenceThicknessMin: f32, iridescenceThicknessMax: f32,
   specularColor: vec3f, specularIntensity: f32,
   anisotropy: f32, anisotropyRotation: f32,
+  thinFilm: ThinFilmInterface,
   transportModeImportance: bool,
 ) -> vec3f {
   if (
@@ -752,28 +959,38 @@ fn evaluateFiniteBsdfFullWithClearcoatNormal(
       anisotropy, anisotropyRotation, transportModeImportance,
       iridescence, iridescenceIor,
       iridescenceThicknessMin, iridescenceThicknessMax,
-      specularColor, specularIntensity,
+      specularColor, specularIntensity, thinFilm,
     );
-    return baseColor * clamp(transmission, 0.0, 1.0) * ft;
+    let sheenAttenuation = sheenBaseAttenuation(
+      sheen, sheenRoughness, sheenColor, normal, wo, wi,
+    );
+    let clearcoatAttenuation = clearcoatBaseAttenuation(
+      clearcoat, clearcoatNormal, wo, wi,
+    );
+    // Cross-side transport sees only the transmitted base response. The outer
+    // layer losses still apply, but their reflection lobes cannot contribute on
+    // the opposite side of the interface.
+    return baseColor * clamp(transmission, 0.0, 1.0) * ft *
+      sheenAttenuation * clearcoatAttenuation;
   }
   if (transmission > 0.0 && metallic == 0.0) {
     let cosO = dot(normal, wo);
     let cosI = dot(normal, wi);
     if (cosO <= 1e-5 || cosI <= 1e-5) { return vec3f(0.0); }
-    let macroF = materialDielectricFresnel(
+    let macroInterface = materialDielectricLayeredInterface(
       abs(cosO), etaTOverI,
       iridescence, iridescenceIor,
       iridescenceThicknessMin, iridescenceThicknessMax,
-      specularColor, specularIntensity,
+      specularColor, specularIntensity, thinFilm,
     );
-    let diffuse = baseColor * (vec3f(1.0) - macroF) *
+    let diffuse = baseColor * macroInterface.baseTransmittance *
       (1.0 - clamp(transmission, 0.0, 1.0)) * INV_PI;
     let specular = evaluateRoughDielectricReflection(
       roughness, etaTOverI, normal, wo, wi,
       anisotropy, anisotropyRotation,
       iridescence, iridescenceIor,
       iridescenceThicknessMin, iridescenceThicknessMax,
-      specularColor, specularIntensity,
+      specularColor, specularIntensity, thinFilm,
     );
     let cc = evalClearcoatLobe(
       clearcoat, clearcoatRoughness, clearcoatNormal, wo, wi,
@@ -781,7 +998,14 @@ fn evaluateFiniteBsdfFullWithClearcoatNormal(
     let sh = evalSheenLobe(
       sheen, sheenRoughness, sheenColor, normal, wo, wi,
     );
-    return diffuse + specular + cc + sh;
+    let sheenAttenuation = sheenBaseAttenuation(
+      sheen, sheenRoughness, sheenColor, normal, wo, wi,
+    );
+    let clearcoatAttenuation = clearcoatBaseAttenuation(
+      clearcoat, clearcoatNormal, wo, wi,
+    );
+    return ((diffuse + specular) * sheenAttenuation + sh) *
+      clearcoatAttenuation + cc;
   }
   return evaluateFiniteSameSideBrdfFullWithClearcoatNormal(
     baseColor, roughness, metallic, transmission,
@@ -791,7 +1015,7 @@ fn evaluateFiniteBsdfFullWithClearcoatNormal(
     iridescence, iridescenceIor,
     iridescenceThicknessMin, iridescenceThicknessMax,
     specularColor, specularIntensity,
-    anisotropy, anisotropyRotation,
+    anisotropy, anisotropyRotation, thinFilm,
   );
 }
 
@@ -809,17 +1033,21 @@ fn bsdfDielectricFiniteEventProbabilities(
   iridescenceThicknessMax: f32,
   specularColor: vec3f,
   specularIntensity: f32,
+  thinFilm: ThinFilmInterface,
 ) -> vec3f {
   let t = clamp(transmission, 0.0, 1.0);
   let oriented = bsdfOrientDielectricInterface(normal, wo, etaTOverI);
-  let macroF = materialDielectricFresnel(
+  let macroInterface = materialDielectricLayeredInterface(
     abs(dot(oriented.normal, wo)), oriented.etaTOverI,
     iridescence, iridescenceIor,
     iridescenceThicknessMin, iridescenceThicknessMax,
-    specularColor, specularIntensity,
+    specularColor, specularIntensity, thinFilm,
   );
-  let macroFProbability = clamp(luminance(macroF), 0.0, 1.0);
-  let diffuseProbability = (1.0 - macroFProbability) * (1.0 - t);
+  let diffuseProbability = clamp(
+    luminance(macroInterface.baseTransmittance) * (1.0 - t),
+    0.0,
+    1.0,
+  );
   let dielectricProbability = max(1.0 - diffuseProbability, 0.0);
   var wm: vec3f;
   if (dot(normal, wo) * dot(normal, wi) > 0.0) {
@@ -830,20 +1058,23 @@ fn bsdfDielectricFiniteEventProbabilities(
       normal, wo, wi, etaTOverI,
     );
   }
-  let microfacetF = materialDielectricFresnel(
+  let microfacetInterface = materialDielectricLayeredInterface(
     abs(dot(wo, wm)), oriented.etaTOverI,
     iridescence, iridescenceIor,
     iridescenceThicknessMin, iridescenceThicknessMax,
-    specularColor, specularIntensity,
+    specularColor, specularIntensity, thinFilm,
   );
-  let microfacetFProbability = clamp(luminance(microfacetF), 0.0, 1.0);
+  let microfacetFProbability =
+    clamp(luminance(microfacetInterface.reflectance), 0.0, 1.0);
+  let microfacetTProbability =
+    clamp(luminance(microfacetInterface.baseTransmittance), 0.0, 1.0);
   let dielectricNorm = max(
-    microfacetFProbability + t * (1.0 - microfacetFProbability), 1e-8,
+    microfacetFProbability + t * microfacetTProbability, 1e-8,
   );
   return vec3f(
     dielectricProbability * microfacetFProbability / dielectricNorm,
     diffuseProbability,
-    dielectricProbability * t * (1.0 - microfacetFProbability) / dielectricNorm,
+    dielectricProbability * t * microfacetTProbability / dielectricNorm,
   );
 }
 
@@ -853,32 +1084,140 @@ fn brdfFiniteBaseLobeWeights(
   nDotV: f32, specularColor: vec3f, specularIntensity: f32,
   iridescence: f32, iridescenceIor: f32,
   iridescenceThicknessMin: f32, iridescenceThicknessMax: f32,
+  thinFilm: ThinFilmInterface,
 ) -> vec2f {
   if (transmission > 0.0 && metallic == 0.0) {
-    let fresnelProbability = clamp(luminance(materialDielectricFresnel(
+    let interfaceResponse = materialDielectricLayeredInterface(
       abs(nDotV), max(etaTOverI, 1e-4),
       iridescence, iridescenceIor,
       iridescenceThicknessMin, iridescenceThicknessMax,
-      specularColor, specularIntensity,
-    )), 0.0, 1.0);
+      specularColor, specularIntensity, thinFilm,
+    );
+    let fresnelProbability =
+      clamp(luminance(interfaceResponse.reflectance), 0.0, 1.0);
     let diffuseProbability =
-      (1.0 - fresnelProbability) * (1.0 - clamp(transmission, 0.0, 1.0));
+      clamp(luminance(interfaceResponse.baseTransmittance), 0.0, 1.0) *
+      (1.0 - clamp(transmission, 0.0, 1.0));
     return vec2f(fresnelProbability, diffuseProbability);
   }
-  let f0Base = materialSpecularF0(baseColor, metallic, specularColor, specularIntensity);
-  let f0 = iridescenceModifiedF0(
+  let f0Base = materialSpecularF0(
+    baseColor, metallic, etaTOverI, specularColor, specularIntensity,
+  );
+  let iridescentF0 = iridescenceModifiedF0(
     f0Base, iridescence, iridescenceIor,
     iridescenceThicknessMin, iridescenceThicknessMax, nDotV,
   );
-  let fresnel = fresnelSchlick(nDotV, f0);
+  let f0 = select(iridescentF0, f0Base, thinFilm.enabled);
+  let fresnel = bsdfLayeredInterfaceResponse(
+    materialSpecularFresnelSchlick(
+      nDotV, f0, metallic, specularIntensity,
+    ),
+    thinFilm, nDotV,
+  ).reflectance;
   let specProbability =
     clamp(mix(0.04, 0.96, max(luminance(fresnel), metallic)), 0.04, 0.96);
   return vec2f(specProbability, 1.0 - specProbability);
 }
-// brdfDirectionalPdfFull: the pdf for the full lobe mixture used in MIS.
-// The base pdf comes from brdfDirectionalPdf; the clearcoat and sheen terms add
-// their (weighted) pdfs. The sheen PDF mirrors the Charlie half-vector sampler.
-// When all extension scalars are 0 the result is identical to brdfDirectionalPdf.
+
+fn brdfDirectionalPdfThinFilm(
+  baseColor: vec3f,
+  roughness: f32,
+  metallic: f32,
+  transmission: f32,
+  etaTOverI: f32,
+  normal: vec3f,
+  clearcoatNormal: vec3f,
+  wo: vec3f,
+  wi: vec3f,
+  clearcoat: f32,
+  clearcoatRoughness: f32,
+  sheen: f32,
+  sheenRoughness: f32,
+  iridescence: f32,
+  iridescenceIor: f32,
+  iridescenceThicknessMin: f32,
+  iridescenceThicknessMax: f32,
+  specularColor: vec3f,
+  specularIntensity: f32,
+  anisotropy: f32,
+  anisotropyRotation: f32,
+  thinFilm: ThinFilmInterface,
+) -> f32 {
+  let wiDotN = dot(normal, wi);
+  let woDotN = dot(normal, wo);
+  let nDotV = max(woDotN, 0.0);
+  if (nDotV <= 1e-5) { return 0.0; }
+  let lobeWeights = brdfFiniteBaseLobeWeights(
+    baseColor, metallic, transmission, etaTOverI,
+    nDotV, specularColor, specularIntensity,
+    iridescence, iridescenceIor,
+    iridescenceThicknessMin, iridescenceThicknessMax, thinFilm,
+  );
+  var specWeight = lobeWeights.x;
+  var diffWeight = lobeWeights.y;
+  if (transmission > 0.0 && metallic == 0.0) {
+    let eventProbabilities = bsdfDielectricFiniteEventProbabilities(
+      roughness, transmission, etaTOverI, normal, wo, wi,
+      iridescence, iridescenceIor,
+      iridescenceThicknessMin, iridescenceThicknessMax,
+      specularColor, specularIntensity, thinFilm,
+    );
+    specWeight = eventProbabilities.x;
+    diffWeight = eventProbabilities.y;
+  }
+  let sameHemisphere = wiDotN * woDotN > 0.0;
+  if (!sameHemisphere) {
+    if (transmission <= 0.0 || metallic != 0.0) { return 0.0; }
+    let eventProbabilities = bsdfDielectricFiniteEventProbabilities(
+      roughness, transmission, etaTOverI, normal, wo, wi,
+      iridescence, iridescenceIor,
+      iridescenceThicknessMin, iridescenceThicknessMax,
+      specularColor, specularIntensity, thinFilm,
+    );
+    return eventProbabilities.z * bsdfRoughTransmissionPdf(
+      roughness, etaTOverI, normal, wo, wi,
+      anisotropy, anisotropyRotation,
+    );
+  }
+  let nDotL = max(wiDotN, 0.0);
+  if (nDotL <= 1e-5) { return 0.0; }
+  var pdfSpec: f32;
+  if (anisotropy > 0.0) {
+    var tanT: vec3f;
+    var tanB: vec3f;
+    buildOnb(normal, &tanT, &tanB);
+    let c = cos(anisotropyRotation);
+    let s = sin(anisotropyRotation);
+    let anisoT = c * tanT + s * tanB;
+    let anisoB = -s * tanT + c * tanB;
+    pdfSpec = brdfAnisotropicSpecPdf(
+      roughness, anisotropy, normal, anisoT, anisoB, wo, wi,
+    );
+  } else {
+    let h = safe_normalize(wo + wi);
+    let nDotH = max(dot(normal, h), 0.0);
+    let alpha = max(
+      roughness * roughness, ${PT_WEBGPU_MICROFACET_ALPHA_FLOOR},
+    );
+    pdfSpec = ggxD(nDotH, alpha) * smithG1(nDotV, roughness) /
+      max(4.0 * nDotV, 1e-6);
+  }
+  pdfSpec = select(
+    pdfSpec,
+    0.0,
+    bsdfBaseReflectionIsDelta(roughness, metallic, transmission),
+  );
+  let basePdf = diffWeight * nDotL * INV_PI + specWeight * pdfSpec;
+  return basePdf +
+    clearcoat * clearcoatPdf(
+      clearcoat, clearcoatRoughness, clearcoatNormal, wo, wi,
+    ) +
+    sheen * charlieSheenPdf(sheen, sheenRoughness, normal, wo, wi);
+}
+// PDF for the full lobe mixture used in MIS. The clearcoat and sheen terms add
+// their weighted PDFs to the base mixture. The sheen PDF mirrors the Charlie
+// half-vector sampler. With all extension scalars at zero, this reduces to the
+// base diffuse/specular/transmission mixture.
 fn brdfDirectionalPdfFullWithClearcoatNormal(
   baseColor: vec3f,
   roughness: f32,
@@ -901,12 +1240,24 @@ fn brdfDirectionalPdfFullWithClearcoatNormal(
   specularIntensity: f32,
   anisotropy: f32,
   anisotropyRotation: f32,
+  thinFilm: ThinFilmInterface,
 ) -> f32 {
+  if (thinFilm.enabled) {
+    return brdfDirectionalPdfThinFilm(
+      baseColor, roughness, metallic, transmission, etaTOverI,
+      normal, clearcoatNormal, wo, wi,
+      clearcoat, clearcoatRoughness, sheen, sheenRoughness,
+      iridescence, iridescenceIor,
+      iridescenceThicknessMin, iridescenceThicknessMax,
+      specularColor, specularIntensity,
+      anisotropy, anisotropyRotation, thinFilm,
+    );
+  }
   // Item 7 — when anisotropic, replace the isotropic specular PDF with the
   // anisotropic VNDF PDF. The diffuse/trans lobe probabilities stay identical.
   var basePdf: f32;
   if (anisotropy > 0.0) {
-    // Compute lobe probabilities (same as brdfDirectionalPdf).
+    // Compute the base lobe probabilities shared with the sampling path.
     let wiDotN = dot(normal, wi);
     let woDotN = dot(normal, wo);
     let nDotV = max(woDotN, 0.0);
@@ -915,7 +1266,7 @@ fn brdfDirectionalPdfFullWithClearcoatNormal(
       baseColor, metallic, transmission, etaTOverI,
       nDotV, specularColor, specularIntensity,
       iridescence, iridescenceIor,
-      iridescenceThicknessMin, iridescenceThicknessMax,
+      iridescenceThicknessMin, iridescenceThicknessMax, thinFilm,
     );
     var specWeight = lobeWeights.x;
     var diffWeight = lobeWeights.y;
@@ -924,7 +1275,7 @@ fn brdfDirectionalPdfFullWithClearcoatNormal(
         roughness, transmission, etaTOverI, normal, wo, wi,
         iridescence, iridescenceIor,
         iridescenceThicknessMin, iridescenceThicknessMax,
-        specularColor, specularIntensity,
+        specularColor, specularIntensity, thinFilm,
       );
       specWeight = eventProbabilities.x;
       diffWeight = eventProbabilities.y;
@@ -936,7 +1287,7 @@ fn brdfDirectionalPdfFullWithClearcoatNormal(
         roughness, transmission, etaTOverI, normal, wo, wi,
         iridescence, iridescenceIor,
         iridescenceThicknessMin, iridescenceThicknessMax,
-        specularColor, specularIntensity,
+        specularColor, specularIntensity, thinFilm,
       );
       return eventProbabilities.z * bsdfRoughTransmissionPdf(
         roughness, etaTOverI, normal, wo, wi,
@@ -953,7 +1304,13 @@ fn brdfDirectionalPdfFullWithClearcoatNormal(
     let s = sin(anisotropyRotation);
     let anisoT = c * tanT + s * tanB;
     let anisoB = -s * tanT + c * tanB;
-    let pdfSpec = brdfAnisotropicSpecPdf(roughness, anisotropy, normal, anisoT, anisoB, wo, wi);
+    let pdfSpec = select(
+      brdfAnisotropicSpecPdf(
+        roughness, anisotropy, normal, anisoT, anisoB, wo, wi,
+      ),
+      0.0,
+      bsdfBaseReflectionIsDelta(roughness, metallic, transmission),
+    );
     let pdfDiff = nDotL * INV_PI;
     basePdf = diffWeight * pdfDiff + specWeight * pdfSpec;
   } else {
@@ -972,36 +1329,6 @@ fn brdfDirectionalPdfFullWithClearcoatNormal(
   // Total pdf: sum of all lobe pdfs.
   let total = basePdf + ccPdf + sheenPdf;
   return total;
-}
-
-fn brdfDirectionalPdfFull(
-  baseColor: vec3f,
-  roughness: f32,
-  metallic: f32,
-  transmission: f32,
-  etaTOverI: f32,
-  normal: vec3f,
-  wo: vec3f,
-  wi: vec3f,
-  clearcoat: f32,
-  clearcoatRoughness: f32,
-  sheen: f32,
-  sheenRoughness: f32,
-  iridescence: f32,
-  iridescenceIor: f32,
-  iridescenceThicknessMin: f32,
-  iridescenceThicknessMax: f32,
-  specularColor: vec3f,
-  specularIntensity: f32,
-  anisotropy: f32,
-  anisotropyRotation: f32,
-) -> f32 {
-  return brdfDirectionalPdfFullWithClearcoatNormal(
-    baseColor, roughness, metallic, transmission, etaTOverI, normal, normal, wo, wi,
-    clearcoat, clearcoatRoughness, sheen, sheenRoughness,
-    iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
-    specularColor, specularIntensity, anisotropy, anisotropyRotation,
-  );
 }
 
 fn brdfExtensionLobeWeightSum(clearcoat: f32, sheen: f32) -> f32 {
@@ -1030,13 +1357,14 @@ fn brdfDirectionalPdfFullSampledWithClearcoatNormal(
   specularIntensity: f32,
   anisotropy: f32,
   anisotropyRotation: f32,
+  thinFilm: ThinFilmInterface,
 ) -> f32 {
   return brdfDirectionalPdfFullWithClearcoatNormal(
     baseColor, roughness, metallic, transmission, etaTOverI, normal, clearcoatNormal, wo, wi,
     clearcoat, clearcoatRoughness, sheen, sheenRoughness,
     iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
     specularColor, specularIntensity,
-    anisotropy, anisotropyRotation,
+    anisotropy, anisotropyRotation, thinFilm,
   ) / brdfExtensionLobeWeightSum(clearcoat, sheen);
 }
 
@@ -1061,44 +1389,14 @@ fn brdfDirectionalPdfFullSampled(
   specularIntensity: f32,
   anisotropy: f32,
   anisotropyRotation: f32,
+  thinFilm: ThinFilmInterface,
 ) -> f32 {
   return brdfDirectionalPdfFullSampledWithClearcoatNormal(
     baseColor, roughness, metallic, transmission, etaTOverI, normal, normal, wo, wi,
     clearcoat, clearcoatRoughness, sheen, sheenRoughness,
     iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
-    specularColor, specularIntensity, anisotropy, anisotropyRotation,
+    specularColor, specularIntensity, anisotropy, anisotropyRotation, thinFilm,
   );
-}
-
-fn evaluateBrdf(
-  baseColor: vec3f,
-  roughness: f32,
-  metallic: f32,
-  normal: vec3f,
-  wo: vec3f,
-  wi: vec3f,
-  specularColor: vec3f,
-  specularIntensity: f32,
-) -> vec3f {
-  let nDotL = max(dot(normal, wi), 0.0);
-  let nDotV = max(dot(normal, wo), 0.0);
-  if (nDotL <= 1e-5 || nDotV <= 1e-5) {
-    return vec3f(0.0);
-  }
-  let h = safe_normalize(wi + wo);
-  let nDotH = max(dot(normal, h), 0.0);
-  let vDotH = max(dot(wo, h), 0.0);
-  let f0 = materialSpecularF0(baseColor, metallic, specularColor, specularIntensity);
-  let f = fresnelSchlick(vDotH, f0);
-  let alpha = max(roughness * roughness, ${PT_WEBGPU_MICROFACET_ALPHA_FLOOR});
-  let d = ggxD(nDotH, alpha);
-  let g = smithG1(nDotV, roughness) * smithG1(nDotL, roughness);
-  let spec = (d * g) * f / max(4.0 * nDotV * nDotL, 1e-6);
-  let kd = (vec3f(1.0) - f) * (1.0 - metallic);
-  let diff = kd * baseColor * INV_PI;
-  // B9 — Kulla-Conty multiscatter energy compensation (see evaluateBrdfFull).
-  let ms = ggxMultiscatterLobe(f0, roughness, nDotV, nDotL);
-  return diff + spec + ms;
 }
 
 fn brdfDirectionalPdfWithIridescence(
@@ -1129,7 +1427,7 @@ fn brdfDirectionalPdfWithIridescence(
     baseColor, metallic, transmission, etaTOverI,
     nDotV, specularColor, specularIntensity,
     iridescence, iridescenceIor,
-    iridescenceThicknessMin, iridescenceThicknessMax,
+    iridescenceThicknessMin, iridescenceThicknessMax, bsdfNoThinFilm(),
   );
   var specWeight = lobeWeights.x;
   var diffWeight = lobeWeights.y;
@@ -1138,7 +1436,7 @@ fn brdfDirectionalPdfWithIridescence(
       roughness, transmission, etaTOverI, normal, wo, wi,
       iridescence, iridescenceIor,
       iridescenceThicknessMin, iridescenceThicknessMax,
-      specularColor, specularIntensity,
+      specularColor, specularIntensity, bsdfNoThinFilm(),
     );
     specWeight = eventProbabilities.x;
     diffWeight = eventProbabilities.y;
@@ -1150,7 +1448,7 @@ fn brdfDirectionalPdfWithIridescence(
       roughness, transmission, etaTOverI, normal, wo, wi,
       iridescence, iridescenceIor,
       iridescenceThicknessMin, iridescenceThicknessMax,
-      specularColor, specularIntensity,
+      specularColor, specularIntensity, bsdfNoThinFilm(),
     );
     return eventProbabilities.z * bsdfRoughTransmissionPdf(
       roughness, etaTOverI, normal, wo, wi, 0.0, 0.0,
@@ -1170,28 +1468,13 @@ fn brdfDirectionalPdfWithIridescence(
   // Earlier revisions used the NDF half-vector PDF (d · N·h / (4 · wo·h));
   // that distribution and the VNDF sampler disagree, biasing MIS weights.
   let g1Wo = smithG1(nDotV, roughness);
-  let pdfSpec = select((d * g1Wo) / max(4.0 * nDotV, 1e-6), 0.0, bsdfDielectricIsSmooth(roughness));
+  let pdfSpec = select(
+    (d * g1Wo) / max(4.0 * nDotV, 1e-6),
+    0.0,
+    bsdfBaseReflectionIsDelta(roughness, metallic, transmission),
+  );
   let pdfDiff = nDotL * INV_PI;
   return diffWeight * pdfDiff + specWeight * pdfSpec;
-}
-
-fn brdfDirectionalPdf(
-  baseColor: vec3f,
-  roughness: f32,
-  metallic: f32,
-  transmission: f32,
-  etaTOverI: f32,
-  normal: vec3f,
-  wo: vec3f,
-  wi: vec3f,
-  specularColor: vec3f,
-  specularIntensity: f32,
-) -> f32 {
-  return brdfDirectionalPdfWithIridescence(
-    baseColor, roughness, metallic, transmission, etaTOverI, normal, wo, wi,
-    specularColor, specularIntensity,
-    0.0, 1.3, 0.0, 0.0,
-  );
 }
 
 fn buildOnb(n: vec3f, t: ptr<function, vec3f>, b: ptr<function, vec3f>) {
@@ -1305,7 +1588,7 @@ fn sampleGgxVndfTangent(wo: vec3f, alpha: f32, rng: ptr<function, PtRngState>) -
  * Returns a BsdfSample where:
  *   wi    — world-space reflection direction
  *   pdf   — VNDF reflection PDF D(h) * G1(wo) / (4 * NdotV), matching
- *           brdfDirectionalPdf's specular branch for MIS consistency
+ *           the layered directional PDF's specular branch for MIS consistency
  *   value — unitless microfacet specular kernel D * G / (4 * nDotV * nDotL);
  *           Fresnel and albedo are integrated by callers at the throughput
  *           level (matches sampleNextBounceDirection's existing pattern).
@@ -1357,6 +1640,20 @@ const BSDF_LOBE_DELTA_REFLECTION: u32 = 7u;
 fn bsdfDielectricIsSmooth(roughness: f32) -> bool {
   return roughness <= ${ROUGH_DIELECTRIC_SMOOTH_THRESHOLD};
 }
+
+// The base-reflection sampler is Dirac only in the transmissive dielectric
+// branch. Opaque and metallic materials remain finite GGX at the shared
+// numerical alpha floor, including when their authored roughness is exactly 0.
+fn bsdfBaseReflectionIsDelta(
+  roughness: f32,
+  metallic: f32,
+  transmission: f32,
+) -> bool {
+  return metallic == 0.0 &&
+    transmission > 0.0 &&
+    bsdfDielectricIsSmooth(roughness);
+}
+
 fn bsdfHasFiniteConnectionSupport(
   roughness: f32,
   metallic: f32,
@@ -1427,6 +1724,7 @@ fn finalizeFiniteBounceSampleWithClearcoatNormal(
   specularIntensity: f32,
   anisotropy: f32,
   anisotropyRotation: f32,
+  thinFilm: ThinFilmInterface,
 ) {
   if (
     (*result).sampledIsDelta ||
@@ -1441,7 +1739,7 @@ fn finalizeFiniteBounceSampleWithClearcoatNormal(
     clearcoat, clearcoatRoughness, sheen, sheenRoughness,
     iridescence, iridescenceIor,
     iridescenceThicknessMin, iridescenceThicknessMax,
-    specularColor, specularIntensity, anisotropy, anisotropyRotation,
+    specularColor, specularIntensity, anisotropy, anisotropyRotation, thinFilm,
   );
   let finiteBsdf = evaluateFiniteBsdfFullWithClearcoatNormal(
     baseColor, roughness, metallic, transmission, etaTOverI,
@@ -1451,7 +1749,7 @@ fn finalizeFiniteBounceSampleWithClearcoatNormal(
     iridescence, iridescenceIor,
     iridescenceThicknessMin, iridescenceThicknessMax,
     specularColor, specularIntensity,
-    anisotropy, anisotropyRotation, transportModeImportance,
+    anisotropy, anisotropyRotation, thinFilm, transportModeImportance,
   );
   let cosine = abs(dot(normal, wi));
   if (marginalPdf <= 0.0 || cosine <= 1e-8) {
@@ -1588,6 +1886,7 @@ fn evaluateRoughDielectricTransmission(
   iridescenceThicknessMax: f32,
   specularColor: vec3f,
   specularIntensity: f32,
+  thinFilm: ThinFilmInterface,
 ) -> vec3f {
   if (bsdfDielectricIsSmooth(roughness)) { return vec3f(0.0); }
   let oriented = bsdfOrientDielectricInterface(normal, wo, etaTOverI);
@@ -1623,14 +1922,14 @@ fn evaluateRoughDielectricTransmission(
     d = ggxD(max(dot(oriented.normal, wm), 0.0), max(roughness * roughness, ${PT_WEBGPU_MICROFACET_ALPHA_FLOOR}));
     g = smithG1(cosO, roughness) * smithG1(abs(cosI), roughness);
   }
-  let F = materialDielectricFresnel(
+  let interfaceResponse = materialDielectricLayeredInterface(
     abs(dot(wo, wm)), eta,
     iridescence, iridescenceIor,
     iridescenceThicknessMin, iridescenceThicknessMax,
-    specularColor, specularIntensity,
+    specularColor, specularIntensity, thinFilm,
   );
   let denomTerm = dot(wi, wm) + dot(wo, wm) / eta;
-  var ft = d * (vec3f(1.0) - F) * g *
+  var ft = d * interfaceResponse.baseTransmittance * g *
     abs(dot(wi, wm) * dot(wo, wm) /
       max(abs(denomTerm * denomTerm * cosI * cosO), 1e-10));
   if (!transportModeImportance) { ft /= eta * eta; }
@@ -1650,6 +1949,7 @@ fn evaluateRoughDielectricReflection(
   iridescenceThicknessMax: f32,
   specularColor: vec3f,
   specularIntensity: f32,
+  thinFilm: ThinFilmInterface,
 ) -> vec3f {
   if (bsdfDielectricIsSmooth(roughness)) { return vec3f(0.0); }
   let cosO = dot(normal, wo);
@@ -1679,13 +1979,14 @@ fn evaluateRoughDielectricReflection(
     d = ggxD(max(dot(normal, wm), 0.0), max(roughness * roughness, ${PT_WEBGPU_MICROFACET_ALPHA_FLOOR}));
     g = smithG1(cosO, roughness) * smithG1(cosI, roughness);
   }
-  let F = materialDielectricFresnel(
+  let interfaceResponse = materialDielectricLayeredInterface(
     abs(dot(wo, wm)), etaTOverI,
     iridescence, iridescenceIor,
     iridescenceThicknessMin, iridescenceThicknessMax,
-    specularColor, specularIntensity,
+    specularColor, specularIntensity, thinFilm,
   );
-  return d * g * F / max(4.0 * cosO * cosI, 1e-10);
+  return d * g * interfaceResponse.reflectance /
+    max(4.0 * cosO * cosI, 1e-10);
 }
 
 
@@ -1780,52 +2081,6 @@ fn sampleNextBounceDirectionWithClearcoatNormal(
   result.enteredMedium = false;
   result.exitedMedium = false;
 
-  // Coherent R/T/A owns the smooth-interface event distribution.
-  if (thinFilm.enabled) {
-    let wo = -incomingDir;
-    let rt = thinFilmTransportRt(thinFilm, abs(dot(wo, normal)));
-    let pReflect = clamp(rt.reflectanceEnergy, 0.0, 1.0);
-    let pTransmit = clamp(
-      rt.transmittanceEnergy, 0.0, max(0.0, 1.0 - pReflect),
-    );
-    let xiFilm = rand_f32(rng);
-    let frontFace = dot(incomingDir, hitNormal) < 0.0;
-    if (xiFilm < pReflect && pReflect > 1e-8) {
-      let outDir = safe_normalize(reflect(incomingDir, normal));
-      result.newRayOrigin = hitPos + normal * 1e-3;
-      result.newRayDir = outDir;
-      result.sampledDir = outDir;
-      result.throughputMul = rt.reflectance / pReflect;
-      result.sampledEventPdf = pReflect;
-      result.sampledIsDelta = true;
-      result.sampledLobe = BSDF_LOBE_DELTA_REFLECTION;
-      return result;
-    }
-    if (xiFilm < pReflect + pTransmit && pTransmit > 1e-8) {
-      let etaIOverT = 1.0 / max(etaTOverI, 1e-4);
-      let refracted = refract(incomingDir, normal, etaIOverT);
-      if (dot(refracted, refracted) <= 1e-12) { return result; }
-      let outDir = safe_normalize(refracted);
-      let offsetN = select(-normal, normal, dot(outDir, normal) > 0.0);
-      let etaScale = select(
-        etaIOverT * etaIOverT, 1.0, transportModeImportance,
-      );
-      result.newRayOrigin = hitPos + offsetN * 1e-3;
-      result.newRayDir = outDir;
-      result.sampledDir = outDir;
-      result.throughputMul =
-        baseColor * rt.transmittance * etaScale / pTransmit;
-      result.sampledEventPdf = pTransmit;
-      result.sampledIsDelta = true;
-      result.sampledLobe = BSDF_LOBE_DELTA_TRANSMISSION;
-      result.enteredMedium = isTranslucent && frontFace;
-      result.exitedMedium = isTranslucent && !frontFace;
-      return result;
-    }
-    // The remainder is physical absorption; zero throughput terminates.
-    return result;
-  }
-
   // -----------------------------------------------------------------------
   // Transmissive (dielectric) surface: Fresnel-weighted reflect/refract
   // partition per PBR4e §9.3 FrDielectric.
@@ -1839,7 +2094,8 @@ fn sampleNextBounceDirectionWithClearcoatNormal(
     let sheenWeight = max(sheen, 0.0);
     // Transmissive dielectrics use the same normalized source-lobe mixture as
     // opaque materials: the base lobe is the Fresnel reflect/refract partition,
-    // while clearcoat and sheen remain additive same-side reflection lobes.
+    // while clearcoat and sheen provide same-side proposals. The shared finite
+    // evaluator applies their ordered lower-layer attenuation after sampling.
     let xiLobe = rand_f32(rng) * lobeWeightSum;
     if (xiLobe < 1.0) {
       let wo = -incomingDir;
@@ -1871,38 +2127,44 @@ fn sampleNextBounceDirectionWithClearcoatNormal(
         }
       }
       let refractedDir = refract(incomingDir, wm, etaIOverT);
-      var microfacetF = materialDielectricFresnel(
+      var microfacetInterface = materialDielectricLayeredInterface(
         abs(dot(wo, wm)), etaTOverI,
         iridescence, iridescenceIor,
         iridescenceThicknessMin, iridescenceThicknessMax,
-        specularColor, specularIntensity,
+        specularColor, specularIntensity, thinFilm,
       );
       if (dot(refractedDir, refractedDir) <= 1e-12) {
-        microfacetF = vec3f(1.0);
+        microfacetInterface.reflectance = vec3f(1.0);
+        microfacetInterface.baseTransmittance = vec3f(0.0);
       }
       let transmissionWeight = clamp(transmission, 0.0, 1.0);
-      let macroF = materialDielectricFresnel(
+      let macroInterface = materialDielectricLayeredInterface(
         abs(dot(wo, normal)), etaTOverI,
         iridescence, iridescenceIor,
         iridescenceThicknessMin, iridescenceThicknessMax,
-        specularColor, specularIntensity,
+        specularColor, specularIntensity, thinFilm,
       );
-      let macroFProbability = clamp(luminance(macroF), 0.0, 1.0);
-      let diffuseProbability =
-        (1.0 - macroFProbability) * (1.0 - transmissionWeight);
+      let diffuseProbability = clamp(
+        luminance(macroInterface.baseTransmittance) *
+          (1.0 - transmissionWeight),
+        0.0,
+        1.0,
+      );
       let dielectricProbability = max(1.0 - diffuseProbability, 0.0);
       let microfacetFProbability =
-        clamp(luminance(microfacetF), 0.0, 1.0);
+        clamp(luminance(microfacetInterface.reflectance), 0.0, 1.0);
+      let microfacetTProbability =
+        clamp(luminance(microfacetInterface.baseTransmittance), 0.0, 1.0);
       let dielectricNorm = max(
         microfacetFProbability +
-          transmissionWeight * (1.0 - microfacetFProbability),
+          transmissionWeight * microfacetTProbability,
         1e-8,
       );
       let reflectionProbability =
         dielectricProbability * microfacetFProbability / dielectricNorm;
       let transmissionProbability =
         dielectricProbability * transmissionWeight *
-        (1.0 - microfacetFProbability) / dielectricNorm;
+        microfacetTProbability / dielectricNorm;
       let xiBase = xiLobe;
       let frontFace = dot(incomingDir, hitNormal) < 0.0;
       if (xiBase < reflectionProbability) {
@@ -1928,8 +2190,16 @@ fn sampleNextBounceDirectionWithClearcoatNormal(
           result.sampledIsDelta = true;
           result.sampleAllowsAreaMis = false;
           result.sampledLobe = BSDF_LOBE_DELTA_REFLECTION;
+          let sheenAttenuation = sheenBaseAttenuation(
+            sheen, sheenRoughness, sheenColor, normal, wo, wiDelta,
+          );
+          let clearcoatAttenuation = clearcoatBaseAttenuation(
+            clearcoat, clearcoatNormal, wo, wiDelta,
+          );
           result.throughputMul =
-            microfacetF * lobeWeightSum / max(reflectionProbability, 1e-10);
+            microfacetInterface.reflectance * sheenAttenuation *
+            clearcoatAttenuation * lobeWeightSum /
+            max(reflectionProbability, 1e-10);
         } else {
         result.sampledDir = bs.wi;
         result.newRayDir = bs.wi;
@@ -1959,9 +2229,11 @@ fn sampleNextBounceDirectionWithClearcoatNormal(
         let nDotVcc = max(dot(normal, wo), 0.0);
         let projectedRoughnessV = anisotropicProjectedRoughness(wo, tanT, tanB, roughness, anisotropy);
         let msBoostRaw = select(
-          ggxMultiscatterBoost(microfacetF, roughness, nDotVcc),
+          ggxMultiscatterBoost(
+            microfacetInterface.reflectance, roughness, nDotVcc,
+          ),
           ggxMultiscatterBoostRoughness(
-            microfacetF,
+            microfacetInterface.reflectance,
             projectedRoughnessV,
             nDotVcc,
           ),
@@ -1972,7 +2244,8 @@ fn sampleNextBounceDirectionWithClearcoatNormal(
           vec3f(1.0) + (msBoostRaw - vec3f(1.0)) * anisotropicMultiscatterScale(anisotropy, projectedRoughnessV),
           anisotropy > 0.0,
         );
-        result.throughputMul = microfacetF * g1Wi * msBoost * lobeWeightSum / max(reflectionProbability, 1e-10);
+        result.throughputMul = microfacetInterface.reflectance * g1Wi *
+          msBoost * lobeWeightSum / max(reflectionProbability, 1e-10);
         }
       } else if (xiBase < reflectionProbability + transmissionProbability) {
         // Fresnel-weighted refraction branch — the only branch that crosses the
@@ -2027,8 +2300,16 @@ fn sampleNextBounceDirectionWithClearcoatNormal(
           let etaScale = select(
             etaIOverT * etaIOverT, 1.0, transportModeImportance,
           );
+          let sheenAttenuation = sheenBaseAttenuation(
+            sheen, sheenRoughness, sheenColor, normal, wo, outDir,
+          );
+          let clearcoatAttenuation = clearcoatBaseAttenuation(
+            clearcoat, clearcoatNormal, wo, outDir,
+          );
           result.throughputMul =
-            baseColor * transmissionWeight * (vec3f(1.0) - microfacetF) *
+            baseColor * transmissionWeight *
+            microfacetInterface.baseTransmittance *
+            sheenAttenuation * clearcoatAttenuation *
             lobeWeightSum * etaScale / max(transmissionProbability, 1e-10);
         } else {
           let ft = evaluateRoughDielectricTransmission(
@@ -2036,7 +2317,7 @@ fn sampleNextBounceDirectionWithClearcoatNormal(
             anisotropy, anisotropyRotation, transportModeImportance,
             iridescence, iridescenceIor,
             iridescenceThicknessMin, iridescenceThicknessMax,
-            specularColor, specularIntensity,
+            specularColor, specularIntensity, thinFilm,
           );
           result.throughputMul =
             baseColor * transmissionWeight * ft *
@@ -2054,7 +2335,8 @@ fn sampleNextBounceDirectionWithClearcoatNormal(
           (diffuseProbability / lobeWeightSum) * bsDiffuse.pdf;
         result.sampledLobe = BSDF_LOBE_DIFFUSE_REFLECTION;
         result.sampleAllowsAreaMis = true;
-        let kd = (vec3f(1.0) - macroF) * (1.0 - transmissionWeight);
+        let kd = macroInterface.baseTransmittance *
+          (1.0 - transmissionWeight);
         result.throughputMul =
           kd * baseColor * lobeWeightSum / max(diffuseProbability, 1e-10);
       }
@@ -2097,6 +2379,7 @@ fn sampleNextBounceDirectionWithClearcoatNormal(
       iridescence, iridescenceIor,
       iridescenceThicknessMin, iridescenceThicknessMax,
       specularColor, specularIntensity, anisotropy, anisotropyRotation,
+      thinFilm,
     );
     return result;
   }
@@ -2104,7 +2387,25 @@ fn sampleNextBounceDirectionWithClearcoatNormal(
   // -----------------------------------------------------------------------
   // Non-transmissive surface: heuristic specular / diffuse partition.
   // -----------------------------------------------------------------------
-  let baseSpecProb = clamp(mix(0.04, 0.96, max(luminance(fresnel), metallic)), 0.04, 0.96);
+  let woOpaque = -incomingDir;
+  let nDotVOpaque = max(dot(normal, woOpaque), 0.0);
+  let opaqueBaseF0 = materialSpecularF0(
+    baseColor, metallic, etaTOverI, specularColor, specularIntensity,
+  );
+  let opaqueBaseFresnel = select(
+    fresnel,
+    materialSpecularFresnelSchlick(
+      nDotVOpaque, opaqueBaseF0, metallic, specularIntensity,
+    ),
+    thinFilm.enabled,
+  );
+  let opaqueInterface = bsdfLayeredInterfaceResponse(
+    opaqueBaseFresnel, thinFilm, nDotVOpaque,
+  );
+  let baseSpecProb = clamp(mix(
+    0.04, 0.96,
+    max(luminance(opaqueInterface.reflectance), metallic),
+  ), 0.04, 0.96);
   let baseDiffProb = max(0.0, 1.0 - baseSpecProb);
   let sumProb = max(baseSpecProb + baseDiffProb, 1e-4);
   let specProb = baseSpecProb / sumProb;
@@ -2148,9 +2449,11 @@ fn sampleNextBounceDirectionWithClearcoatNormal(
     let nDotVcc = max(dot(normal, wo), 0.0);
     let projectedRoughnessV = anisotropicProjectedRoughness(wo, tanT, tanB, roughness, anisotropy);
     let msBoostRaw = select(
-      ggxMultiscatterBoost(fresnel, roughness, nDotVcc),
+      ggxMultiscatterBoost(
+        opaqueInterface.reflectance, roughness, nDotVcc,
+      ),
       ggxMultiscatterBoostRoughness(
-        fresnel,
+        opaqueInterface.reflectance,
         projectedRoughnessV,
         nDotVcc,
       ),
@@ -2161,7 +2464,8 @@ fn sampleNextBounceDirectionWithClearcoatNormal(
       vec3f(1.0) + (msBoostRaw - vec3f(1.0)) * anisotropicMultiscatterScale(anisotropy, projectedRoughnessV),
       anisotropy > 0.0,
     );
-    result.throughputMul = fresnel * g1Wi2 * msBoost * lobeWeightSum / max(specProb, 1e-4);
+    result.throughputMul = opaqueInterface.reflectance * g1Wi2 *
+      msBoost * lobeWeightSum / max(specProb, 1e-4);
     } else {
       result.newRayOrigin = hitPos + normal * 1e-3;
       let bs = cosineHemisphereSample(rng, normal);
@@ -2170,7 +2474,7 @@ fn sampleNextBounceDirectionWithClearcoatNormal(
       result.sampledEventPdf = (diffProb / lobeWeightSum) * bs.pdf;
       result.sampledLobe = BSDF_LOBE_DIFFUSE_REFLECTION;
       result.sampleAllowsAreaMis = true;
-      let kd = (vec3f(1.0) - fresnel) * (1.0 - metallic);
+      let kd = opaqueInterface.baseTransmittance * (1.0 - metallic);
       result.throughputMul = (kd * baseColor) * lobeWeightSum / max(diffProb, 1e-4);
     }
   } else if (xiLobe < 1.0 + clearcoatWeight) {
@@ -2212,6 +2516,7 @@ fn sampleNextBounceDirectionWithClearcoatNormal(
     iridescence, iridescenceIor,
     iridescenceThicknessMin, iridescenceThicknessMax,
     specularColor, specularIntensity, anisotropy, anisotropyRotation,
+    thinFilm,
   );
   return result;
 }

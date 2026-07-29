@@ -241,7 +241,7 @@ export function toProductionEmissiveRadiance(m: MaterialSpec): MaterialSpec {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Core emitter / Beer-Lambert / surface-texture classification
+// Core emitter / Beer-Lambert classification
 //
 // Extracted to emitterClassify.ts (D11.5). Re-exported here for back-compat
 // so all existing `from '@vitrum/shared-bvh'` or `from './materialEntry.js'`
@@ -251,7 +251,6 @@ export {
   materialSpecEmissiveLe,
   applyBeerLambertColor,
   materialSpecTriColor,
-  materialSpecSurfaceTextureId,
   materialSpecSkipEmitter,
   classifyTriangleEmitterCore,
 } from './emitterClassify.js';

@@ -112,6 +112,14 @@ export interface PrimitiveUvStreams {
 export interface PrimitiveColorStreams {
   readonly colors?: Float32Array;
   readonly colorSets?: PrimitiveColorSets;
+  /**
+   * COLOR_n lane multiplied into the material base color. Defaults to 0;
+   * `null` explicitly disables vertex-color multiplication while retaining
+   * authored lanes for a later mutation.
+   * Backends consume the selected lane through the canonical `colors` packing
+   * stream; unselected lanes remain available for a later primitive mutation.
+   */
+  readonly vertexColorSet?: number | null;
 }
 
 /** Resolve a material texCoord index through the scalable and legacy lanes. */
@@ -134,6 +142,15 @@ export function getPrimitiveColorSet(
     (colorSet === 0 ? primitive.colors : undefined);
 }
 
+/** Resolve the primitive's selected vertex-color lane (COLOR_0 by default). */
+export function getPrimitiveActiveColorSet(
+  primitive: object,
+): Float32Array | undefined {
+  const streams = primitive as PrimitiveColorStreams;
+  if (streams.vertexColorSet === null) return undefined;
+  return getPrimitiveColorSet(streams, streams.vertexColorSet ?? 0);
+}
+
 /** Triangle mesh. Position/normal/uv arrays follow three.js convention:
  *  flat Float32Arrays where consecutive triples (or pairs for uv) describe
  *  one vertex. `indices` is optional; without it, vertices are interpreted
@@ -152,6 +169,7 @@ export interface MeshPrimitive {
   readonly tangents?: Float32Array;
   readonly colors?: Float32Array;         // vertex colors; RGB(A) (components = length / vertexCount)
   readonly colorSets?: PrimitiveColorSets; // arbitrary COLOR_n streams; colors aliases set 0
+  readonly vertexColorSet?: number | null; // selected COLOR_n lane; default 0; null disables
   readonly indices?: Uint32Array | Uint16Array;
   readonly material: MaterialSpec;
   readonly transform?: Mat4;              // identity if absent
@@ -185,6 +203,7 @@ export interface InstancedMeshPrimitive {
   readonly tangents?: Float32Array;
   readonly colors?: Float32Array;         // vertex colors; RGB(A) per vertex
   readonly colorSets?: PrimitiveColorSets; // arbitrary COLOR_n streams; colors aliases set 0
+  readonly vertexColorSet?: number | null; // selected COLOR_n lane; default 0; null disables
   readonly indices?: Uint32Array | Uint16Array;
   readonly material: MaterialSpec;
   readonly instances: ReadonlyArray<Mat4>;
@@ -256,9 +275,10 @@ export type AnalyticShape =
  * that expose world-space bone chains, by supplying `bindMatrix` /
  * `bindMatrixInverse` such that the solver's final output is mesh-local.
  *
- * The CPU-side solver (`solveSkin`) lives in `@vitrum/core`; the engine ingests
- * the deformed positions through the existing `HybridEngine.updatePrimitive`
- * positions-refit fast path (A3).
+ * The CPU-side solver (`solveSkin`) lives in `@vitrum/core`. Native engine
+ * mutation APIs accept authored rest/pose fields and solve once into private
+ * render geometry; direct solved arrays remain useful for previews and
+ * instanced-mesh deformation fallbacks that cannot retain skeleton state.
  *
  * Backends that don't implement skinning should report this in
  * `EngineCapabilities` and either skip the primitive (with a warning)
@@ -278,6 +298,7 @@ export interface SkinnedMeshPrimitive {
   readonly tangents?: Float32Array;
   readonly colors?: Float32Array;      // vertex colors; RGB(A) per vertex
   readonly colorSets?: PrimitiveColorSets; // arbitrary COLOR_n streams; colors aliases set 0
+  readonly vertexColorSet?: number | null; // selected COLOR_n lane; default 0; null disables
   readonly indices?: Uint32Array | Uint16Array;
   /** Bone indices, length `vertexCount * skinInfluencesPerVertex`. */
   readonly skinIndices: Uint32Array;

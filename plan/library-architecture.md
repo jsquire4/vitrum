@@ -79,12 +79,6 @@
 
 **Depends on** (see `packages/walkaround-rc/package.json`): `@vitrum/shared-bvh`, `@vitrum/shared-samplers`.
 
-### `@vitrum/scene-lighting`
-
-**Owns**: host-side lighting-state primitives — time-of-day sky params, sun geometry, intensity tables, and `computeLightingState`. (Emitter packing lives in `pt-webgpu`; light-tree CDF construction lives in `@vitrum/shared-samplers` — not here.)
-
-**Depends on**: nothing (pure TypeScript, THREE-free). No `@vitrum/*` deps, no `three` runtime dep — the package.json has no `dependencies` block.
-
 ## How a host application consumes vitrum
 
 After extraction, a host app's rendering layer looks like:

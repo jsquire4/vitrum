@@ -4,8 +4,8 @@
  * CPU mirror of the WGSL `ggxMultiscatter` / `ggxDirectionalAlbedo` /
  * `ggxAverageAlbedo` fit in ggxBrdf.wgsl.ts. Two gates:
  *   1. STRUCTURAL — the WGSL exposes the multiscatter helper and folds it into
- *      evalGGXSpecularOnly (the gated glossy/metal GI lobe) but NOT into evalGGX
- *      (the direct-light lobe) — diffuse-default byte-identity invariant.
+ *      the gated glossy/metal GI lobe but NOT into the direct-light evaluator —
+ *      diffuse-default byte-identity invariant.
  *   2. WHITE-FURNACE — for a perfect conductor (F0 = 1) the directional albedo
  *      E(μ) PLUS the cosine-integrated multiscatter lobe recovers ≈ all incident
  *      energy at every roughness. Without compensation a rough conductor reads
@@ -54,11 +54,9 @@ describe('B9 — Kulla-Conty multiscatter (structural)', () => {
     expect(body).toContain('(specular + ms) * NdotL');
   });
 
-  it('multiscatter is NOT folded into the direct-light evalGGX (byte-identity)', () => {
-    // Slice the evalGGX body only (up to the next top-level `fn ` decl), so the
-    // helper functions declared between evalGGX and evalGGXSpecularOnly do not
-    // leak into the negative match.
-    const start = GGX_BRDF_WGSL.indexOf('fn evalGGX(');
+  it('multiscatter is NOT folded into the direct-light evaluator (byte-identity)', () => {
+    // Slice the base direct evaluator only (up to the next top-level function).
+    const start = GGX_BRDF_WGSL.indexOf('fn evalGGXWithSpecular(');
     const next = GGX_BRDF_WGSL.indexOf('\nfn ', start + 1);
     const body = GGX_BRDF_WGSL.slice(start, next);
     expect(body).not.toContain('ggxMultiscatter');

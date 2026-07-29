@@ -7,7 +7,11 @@
 // per-vertex-color path). Behaviour is byte-identical to the former inline fns;
 // only the home changed.
 
-import type { Scene, ScenePrimitive } from '@vitrum/core';
+import {
+  getPrimitiveActiveColorSet,
+  type Scene,
+  type ScenePrimitive,
+} from '@vitrum/core';
 
 /**
  * True when `primitive`'s vertex colors are uniform enough for the lite tier to
@@ -16,7 +20,7 @@ import type { Scene, ScenePrimitive } from '@vitrum/core';
  * represented faithfully on lite.
  */
 export function liteCanBakeVertexColors(primitive: ScenePrimitive): boolean {
-  const colors = (primitive as { readonly colors?: Float32Array }).colors;
+  const colors = getPrimitiveActiveColorSet(primitive);
   const positions = (primitive as { readonly positions?: Float32Array }).positions;
   if (colors == null || colors.length === 0) return true;
   if (positions == null || positions.length === 0) return false;
@@ -54,7 +58,7 @@ export function liteCanBakeVertexColors(primitive: ScenePrimitive): boolean {
 export function collectLiteUnsupportedVertexColorPrimitiveIds(scene: Scene): string[] {
   const ids: string[] = [];
   for (const primitive of scene.primitives) {
-    const colors = (primitive as { readonly colors?: Float32Array }).colors;
+    const colors = getPrimitiveActiveColorSet(primitive);
     if (colors != null && colors.length > 0 && !liteCanBakeVertexColors(primitive)) ids.push(primitive.id);
   }
   return ids.sort();

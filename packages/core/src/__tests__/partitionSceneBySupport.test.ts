@@ -81,7 +81,7 @@ describe('partitionSceneBySupport', () => {
     expect(supported.environment).toBe(scene.environment);
   });
 
-  it('drops an unsupported primitive KIND with a warning', () => {
+  it('converts unsupported analytic primitive kinds to canonical meshes with warnings', () => {
     const scene = makeScene();
     const { supported, warnings } = partitionSceneBySupport(scene, {
       ...ALL_SUPPORTED,
@@ -93,15 +93,15 @@ describe('partitionSceneBySupport', () => {
       ]),
     });
 
-    expect(supported.primitives.map((p) => p.id)).toEqual(['mesh-a']);
-    // Both analytic primitives are dropped by the kind filter (one warning each).
+    expect(supported.primitives.map((p) => p.id)).toEqual(['mesh-a', 'sphere-a', 'capsule-a']);
+    expect(supported.primitives.every((p) => p.kind === 'mesh')).toBe(true);
     expect(warnings).toHaveLength(2);
     expect(warnings[0]).toMatch(/sphere-a/);
     expect(warnings[0]).toMatch(/analytic/);
     expect(warnings[0]).toMatch(/not supported/);
   });
 
-  it('drops an analytic primitive whose SHAPE is unsupported with a warning', () => {
+  it('converts an unsupported analytic shape to its canonical mesh with a warning', () => {
     const scene = makeScene();
     const { supported, warnings } = partitionSceneBySupport(scene, {
       ...ALL_SUPPORTED,
@@ -109,7 +109,8 @@ describe('partitionSceneBySupport', () => {
       supportedAnalyticShapes: new Set<AnalyticShape>(['sphere', 'box']),
     });
 
-    expect(supported.primitives.map((p) => p.id)).toEqual(['mesh-a', 'sphere-a']);
+    expect(supported.primitives.map((p) => p.id)).toEqual(['mesh-a', 'sphere-a', 'capsule-a']);
+    expect(supported.primitives[2]!.kind).toBe('mesh');
     expect(warnings).toHaveLength(1);
     expect(warnings[0]).toMatch(/capsule-a/);
     expect(warnings[0]).toMatch(/capsule/);
@@ -237,8 +238,7 @@ describe('partitionSceneBySupport', () => {
     expect(warnings[0]).toMatch(/fallbackMesh/);
   });
 
-  it('fallbackMesh absent: unsupported analytic is still dropped', () => {
-    // Analytic shape 'capsule' is unsupported, and there is NO fallbackMesh.
+  it('fallbackMesh absent: unsupported analytic uses the canonical shape tessellator', () => {
     const scene: Scene = {
       primitives: [
         {
@@ -259,11 +259,15 @@ describe('partitionSceneBySupport', () => {
       supportedAnalyticShapes: new Set<AnalyticShape>(['sphere', 'box']),
     });
 
-    // No fallbackMesh → dropped as before.
-    expect(supported.primitives).toHaveLength(0);
+    expect(supported.primitives).toHaveLength(1);
+    expect(supported.primitives[0]!.kind).toBe('mesh');
+    expect(supported.primitives[0]!.id).toBe('capsule-no-fallback');
+    if (supported.primitives[0]!.kind !== 'mesh') throw new Error('expected generated mesh');
+    expect(supported.primitives[0]!.positions.length).toBeGreaterThan(0);
+    expect(supported.primitives[0]!.indices?.length).toBeGreaterThan(0);
     expect(warnings).toHaveLength(1);
     expect(warnings[0]).toMatch(/capsule-no-fallback/);
-    expect(warnings[0]).toMatch(/not supported/);
+    expect(warnings[0]).toMatch(/canonical generated mesh/);
   });
 
   it('does not mutate the input scene (pure helper)', () => {

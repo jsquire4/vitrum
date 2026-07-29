@@ -36,10 +36,8 @@ const FIELD_MIGRATION_TABLE = [
   ['denoisedPongTexture',            'common'],
   ['accumTextureA',                  'common'],
   ['accumTextureB',                  'common'],
-  ['placeholderTexture',             'common'],
   ['uboBuffer',                      'common'],
   ['nearestSampler',                 'common'],
-  ['compositeSampler',               'common'],
   ['motionVectorTexture',            'common'],
   ['tierTexture',                    'common'],
   ['resolvedTexture',                'common'],
@@ -123,12 +121,10 @@ describe('FrameResources shape — W1-R2 per-algorithm sub-structs', () => {
   });
 
   it('migration table is exhaustive — covers every legacy FrameResources sibling field', () => {
-    // The legacy interface had 46 sibling fields (the "41-field god-struct"
-    // shorthand in the W1-R2 brief is approximate — actual count when
-    // enumerated: common 26 + restirDI 3 + restirGI 3 + ddgi 3 + gtao 3 +
-    // svgf 11 + the dedicated DDGI receiver sampler = 50). Every entry must
-    // appear exactly once.
-    expect(FIELD_MIGRATION_TABLE.length).toBe(50);
+    // The live interface has 48 sibling fields after removing the unused
+    // common.placeholderTexture allocation. Every retained entry must appear
+    // exactly once.
+    expect(FIELD_MIGRATION_TABLE.length).toBe(48);
     const seen = new Set<string>();
     for (const [field] of FIELD_MIGRATION_TABLE) {
       expect(seen.has(field), `legacy field '${field}' listed twice`).toBe(false);

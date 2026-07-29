@@ -3,7 +3,8 @@
  *
  * Reads a SkinnedMeshPrimitive (rest pose + current bones / boneInverses)
  * and produces deformed `positions` + `normals` (+ optional `tangents`)
- * Float32Arrays that hosts push through `engine.updatePrimitive(...)`.
+ * Float32Arrays for previews and internal render/instancing paths. Native
+ * engine hosts patch authored rest/pose fields; each backend solves once.
  *
  * Algorithm: linear blend skinning (LBS) per glTF 2.0 / three.js convention,
  * preceded by morph-target blending when the primitive carries blend shapes,

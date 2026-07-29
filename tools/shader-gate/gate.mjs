@@ -14,6 +14,20 @@
  *   deno run --unstable-webgpu --sloppy-imports --allow-read --allow-env \
  *     tools/shader-gate/gate.mjs
  *
+ * Backend-only mode (keeps pt-webgpu independently gateable during unrelated
+ * package work):
+ *   ... gate.mjs --pt-webgpu-only
+ *
+ * A substring can focus the expensive native pipeline-creation half while the
+ * module-compile half still covers the full selected inventory:
+ *   ... gate.mjs --pt-webgpu-only --pipeline-filter=restirpt-producer
+ *
+ * CPU/WGSL Sobol parity can be executed independently of unrelated shaders:
+ *   ... gate.mjs --sobol-parity-only
+ *
+ * The shared finite-root BDPT strategy mask has the same independent gate:
+ *   ... gate.mjs --bdpt-mask-parity-only
+ *
  * Self-test mode (proves detection works):
  *   ... gate.mjs --self-test
  *
@@ -29,6 +43,12 @@
 // ── Parse flags ──────────────────────────────────────────────────────────────
 const selfTest = Deno.args.includes("--self-test");
 const noPipelineGate = Deno.args.includes("--no-pipeline-gate");
+const ptWebgpuOnly = Deno.args.includes("--pt-webgpu-only");
+const sobolParityOnly = Deno.args.includes("--sobol-parity-only");
+const bdptMaskParityOnly = Deno.args.includes("--bdpt-mask-parity-only");
+const pipelineFilter = Deno.args
+  .find((arg) => arg.startsWith("--pipeline-filter="))
+  ?.slice("--pipeline-filter=".length);
 
 // ── Acquire the WebGPU device ─────────────────────────────────────────────────
 const adapter = await navigator.gpu.requestAdapter();
@@ -45,11 +65,29 @@ if (!adapter) {
 const adapterMaxBG = (adapter.limits && adapter.limits.maxBindGroups != null)
   ? adapter.limits.maxBindGroups
   : 4;
-const device = await adapter.requestDevice(
-  adapterMaxBG > 4
-    ? { requiredLimits: { maxBindGroups: adapterMaxBG } }
-    : {},
-);
+const requiredLimits = {};
+if (adapterMaxBG > 4) {
+  requiredLimits.maxBindGroups = adapterMaxBG;
+}
+for (const limitName of [
+  "maxStorageBuffersPerShaderStage",
+  "maxStorageTexturesPerShaderStage",
+]) {
+  const value = adapter.limits?.[limitName];
+  if (typeof value === "number") {
+    requiredLimits[limitName] = value;
+  }
+}
+const device = await adapter.requestDevice({ requiredLimits });
+
+if (sobolParityOnly) {
+  await runSobolParityGate();
+  Deno.exit(0);
+}
+if (bdptMaskParityOnly) {
+  await runBdptStrategyMaskParityGate();
+  Deno.exit(0);
+}
 
 // ── Shader inventory ──────────────────────────────────────────────────────────
 // Each entry: { name, wgsl, entryPoint?, entryPoints? }
@@ -65,6 +103,27 @@ const shaders = [];
 // ReSTIR-PT per-pass composers: composeRestirPt{Producer,Temporal,Spatial,Resolve}Wgsl.
 // ─────────────────────────────────────────────────────────────────────────────
 {
+  // Regression kernel for Naga's GLSL robustness lowering around a dynamically
+  // selected mip in a sampled 2D-array texture. Keeping the mip signed at the
+  // builtin boundary must produce GLSL's textureSize(..., int) overload.
+  shaders.push({
+    name: "pt-webgpu/material-array-signed-mip",
+    wgsl: `
+@group(0) @binding(0) var mipTexture: texture_2d_array<f32>;
+@group(0) @binding(1) var<storage, read_write> mipResult: array<vec4f>;
+
+@compute @workgroup_size(1)
+fn materialArraySignedMipMain(@builtin(global_invocation_id) gid: vec3u) {
+  let mip = gid.x & 1u;
+  let dimensions = textureDimensions(mipTexture, i32(mip));
+  mipResult[0] =
+    textureLoad(mipTexture, vec2i(0), 0, i32(mip)) +
+    vec4f(vec2f(dimensions), 0.0, 0.0);
+}
+`,
+    entryPoint: "materialArraySignedMipMain",
+  });
+
   const {
     composePtWebgpuTraceWgsl,
     composePtWebgpuCompositeTraceWgsl,
@@ -127,8 +186,9 @@ const shaders = [];
     entryPoint: "main",
   });
 
-  // Opt-in CWBVH closest/any-hit traversal variant. The any-hit wrapper keeps
-  // castShadow predicate parity with the binary BVH shadow path.
+  // Opt-in CWBVH closest-hit traversal variant. Visibility reuses successive
+  // closest candidates so sidedness, castShadow, and alpha semantics stay on
+  // one canonical walker.
   shaders.push({
     name: "pt-webgpu/trace-full-cwbvh-closest",
     wgsl: composePtWebgpuTraceWgsl(false, { cwbvhClosest: true }),
@@ -269,6 +329,7 @@ const shaders = [];
 //   - buildRisGiNrcModule(cfg)                  — NRC variant of GI-RIS
 //     (this is a WgslModule; compose with composeWgsl to get the string)
 // ─────────────────────────────────────────────────────────────────────────────
+if (!ptWebgpuOnly) {
 {
   const { composeWgsl } = await import(
     "../../packages/walkaround-hybrid/src/pipeline/wgslComposer.ts"
@@ -284,9 +345,7 @@ const shaders = [];
     MOTION_VECTORS_MODULE,
     RIS_GI_MODULE,
     TEMPORAL_GI_MODULE,
-    TEMPORAL_GI_GRIS_MODULE,
     SPATIAL_GI_MODULE,
-    SPATIAL_GI_GRIS_MODULE,
     WELFORD_TEMPORAL_MODULE,
     SAMPLE_BUDGET_MODULE,
     RESOLVE_MODULE,
@@ -360,12 +419,10 @@ const shaders = [];
   addWh("gtao", GTAO_MODULE);
   addWh("gtaoUpsample", GTAO_UPSAMPLE_MODULE);
 
-  // ReSTIR-GI passes (default + GRIS variants)
+  // ReSTIR-GI passes (sole live generalized-reuse roots)
   addWh("risGi", RIS_GI_MODULE);
   addWh("temporalGi", TEMPORAL_GI_MODULE);
-  addWh("temporalGiGris", TEMPORAL_GI_GRIS_MODULE);
   addWh("spatialGi", SPATIAL_GI_MODULE);
-  addWh("spatialGiGris", SPATIAL_GI_GRIS_MODULE);
 
   // Indirect channel
   addWh("indirectCombine", INDIRECT_COMBINE_MODULE);
@@ -590,6 +647,7 @@ const shaders = [];
     entryPoint: "probeUpdateBorderVisibility",
   });
 }
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Self-test mode: append an intentionally broken shader to the list and assert
@@ -652,7 +710,9 @@ for (const entry of shaders) {
 }
 
 const portableTotal = portablePassed + portableFailed;
-const expectedPortableTotal = 31;
+// 29 sole live walkaround/RC roots. The retired temporalGiGris and
+// spatialGiGris aliases are intentionally not double-counted as pipelines.
+const expectedPortableTotal = ptWebgpuOnly ? 0 : 29;
 if (portableTotal !== expectedPortableTotal) {
   failed++;
   const message =
@@ -693,6 +753,7 @@ if (!selfTest && failed > 0) {
 if (!noPipelineGate) {
   await runPipelineCreationGates();
   await runSobolParityGate();
+  await runBdptStrategyMaskParityGate();
 }
 
 if (selfTest) {
@@ -704,6 +765,16 @@ async function runSobolParityGate() {
   const { PT_WEBGPU_SOBOL_RNG_WGSL, SOBOL_FRAME_KEY_WGSL } = await import(
     "../../packages/pt-webgpu/src/wgsl/common.wgsl.ts"
   );
+  const {
+    SOBOL_DIMENSION_COUNT,
+    initOwenScrambledSobolStream,
+    nextOwenScrambledSobolU32,
+    sobolFrameKey,
+    sobolHashCombine,
+  } = await import("../../packages/shared-samplers/src/sobol.ts");
+  const auditedDrawBudget = 324;
+  const boundaryStart = SOBOL_DIMENSION_COUNT - 2;
+  const boundaryValueCount = 7;
   const code = `${PT_WEBGPU_SOBOL_RNG_WGSL}
 ${SOBOL_FRAME_KEY_WGSL}
 @group(0) @binding(0) var<storage, read_write> parityOut: array<u32>;
@@ -725,31 +796,69 @@ fn sobolParityMain() {
   parityOut[10] = state.sequenceKey;
   parityOut[11] = state.rotationTile;
   parityOut[12] = state.fallbackState;
-  state.dimension = 2u;
-  for (var i = 0u; i < 5u; i = i + 1u) {
+  state.dimension = ${boundaryStart}u;
+  for (var i = 0u; i < ${boundaryValueCount}u; i = i + 1u) {
     parityOut[13u + i] = pcgNext(&state);
   }
 
   var highState = pcgInit(9u, 10u, ptRngFrameKey(123u, 0u));
   var digest = 0u;
-  for (var draw = 0u; draw < 324u; draw = draw + 1u) {
+  for (var draw = 0u; draw < ${auditedDrawBudget}u; draw = draw + 1u) {
     let value = pcgNext(&highState);
-    if (draw >= 2u && draw <= 6u) {
-      parityOut[20u + draw - 2u] = value;
-    }
     digest = ptSobolHashCombine(digest, value);
   }
-  parityOut[18] = highState.dimension;
-  parityOut[19] = digest;
+  parityOut[20] = highState.dimension;
+  parityOut[21] = digest;
+  parityOut[22] = highState.fallbackState;
+
+  // Both pixels select rank zero from the repeated 8x8 rotation tile. Their
+  // full pixel identity must still produce distinct, CPU-identical streams.
+  var rankZeroA = pcgInit(0u, 0u, ptRngFrameKey(0x12345678u, 99u));
+  var rankZeroB = pcgInit(8u, 0u, ptRngFrameKey(0x12345678u, 99u));
+  for (var i = 0u; i < 4u; i = i + 1u) {
+    parityOut[23u + i] = pcgNext(&rankZeroA);
+    parityOut[27u + i] = pcgNext(&rankZeroB);
+  }
 }
 `;
-  const expected = [
-    0xd1bc0000, 0xd1bcffff, 0x6ff30000, 0x6ff30001, 0x3385fffe, 0x3385ffff,
-    0, 0, 9, 10, 49164, 17, 1317513256,
-    0xb524e900, 0x23e98800, 0xb625c789, 0xe10c246d, 0x25744040,
-    324, 0xa481f52c,
-    0xb524e900, 0x23e98800, 0xb625c789, 0xe10c246d, 0x25744040,
-  ];
+  const frameIndices = [0, 0xffff, 0x10000, 0x10001, 0xfffffffe, 0xffffffff];
+  const expected = frameIndices.map((frameIndex) =>
+    sobolFrameKey(0x12345678, frameIndex)
+  );
+  const initialState = initOwenScrambledSobolStream(9, 10, sobolFrameKey(123, 0));
+  expected.push(
+    initialState.sampleIndex,
+    initialState.dimension,
+    initialState.pixelX,
+    initialState.pixelY,
+    initialState.sequenceKey,
+    initialState.rotationTile,
+    initialState.fallbackState,
+  );
+
+  const boundaryState = initOwenScrambledSobolStream(9, 10, sobolFrameKey(123, 0));
+  boundaryState.dimension = boundaryStart;
+  for (let i = 0; i < boundaryValueCount; i++) {
+    expected.push(nextOwenScrambledSobolU32(boundaryState));
+  }
+
+  const highState = initOwenScrambledSobolStream(9, 10, sobolFrameKey(123, 0));
+  let digest = 0;
+  for (let draw = 0; draw < auditedDrawBudget; draw++) {
+    digest = sobolHashCombine(digest, nextOwenScrambledSobolU32(highState));
+  }
+  expected.push(highState.dimension, digest, highState.fallbackState);
+
+  for (const pixelX of [0, 8]) {
+    const rankZeroState = initOwenScrambledSobolStream(
+      pixelX,
+      0,
+      sobolFrameKey(0x12345678, 99),
+    );
+    for (let i = 0; i < 4; i++) {
+      expected.push(nextOwenScrambledSobolU32(rankZeroState));
+    }
+  }
   const byteLength = expected.length * Uint32Array.BYTES_PER_ELEMENT;
   const output = device.createBuffer({
     label: "pt-webgpu/sobol-parity-output",
@@ -795,7 +904,128 @@ fn sobolParityMain() {
     if (mismatch >= 0 || actual.length !== expected.length) {
       throw new Error(`index ${mismatch}: expected ${expected[mismatch]}, received ${actual[mismatch]}`);
     }
-    console.log("[shader-gate] EXEC  pt-webgpu/sobol-parity (25 u32 values)");
+    console.log(
+      `[shader-gate] EXEC  pt-webgpu/sobol-parity ` +
+      `(${expected.length} u32 values, ${SOBOL_DIMENSION_COUNT} dimensions)`,
+    );
+  } finally {
+    output.destroy();
+    readback.destroy();
+  }
+}
+
+async function runBdptStrategyMaskParityGate() {
+  const {
+    BDPT_EXPLICIT_STRATEGY_MASK_WGSL,
+    bdptExplicitConnectionStrategyIsValid,
+  } = await import("../../packages/shared-samplers/src/bdptMIS.ts");
+  const pathVertexCountDomain = 20;
+  const strategyDomain = 20;
+  const lightLimitDomain = 9;
+  const eyeLimitDomain = 9;
+  const caseCount =
+    pathVertexCountDomain * strategyDomain * lightLimitDomain * eyeLimitDomain;
+  const code = `${BDPT_EXPLICIT_STRATEGY_MASK_WGSL}
+@group(0) @binding(0) var<storage, read_write> parityOut: array<u32>;
+
+@compute @workgroup_size(64)
+fn bdptMaskParityMain(@builtin(global_invocation_id) gid: vec3u) {
+  if (gid.x >= ${caseCount}u) {
+    return;
+  }
+  var code = gid.x;
+  let maxEyeVertices = code % ${eyeLimitDomain}u;
+  code = code / ${eyeLimitDomain}u;
+  let maxLightVertices = code % ${lightLimitDomain}u;
+  code = code / ${lightLimitDomain}u;
+  let strategyS = code % ${strategyDomain}u;
+  let pathVertexCount = code / ${strategyDomain}u;
+  parityOut[gid.x] = select(
+    0u,
+    1u,
+    bdptExplicitConnectionStrategyIsValid(
+      pathVertexCount,
+      strategyS,
+      maxLightVertices,
+      maxEyeVertices,
+    ),
+  );
+}
+`;
+  const expected = new Uint32Array(caseCount);
+  let index = 0;
+  for (let pathVertexCount = 0;
+       pathVertexCount < pathVertexCountDomain;
+       pathVertexCount++) {
+    for (let strategyS = 0; strategyS < strategyDomain; strategyS++) {
+      for (let maxLightVertices = 0;
+           maxLightVertices < lightLimitDomain;
+           maxLightVertices++) {
+        for (let maxEyeVertices = 0;
+             maxEyeVertices < eyeLimitDomain;
+             maxEyeVertices++) {
+          expected[index++] = bdptExplicitConnectionStrategyIsValid(
+            pathVertexCount,
+            strategyS,
+            { maxLightVertices, maxEyeVertices },
+          ) ? 1 : 0;
+        }
+      }
+    }
+  }
+
+  const byteLength = expected.byteLength;
+  const output = device.createBuffer({
+    label: "pt-webgpu/bdpt-mask-parity-output",
+    size: byteLength,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC,
+  });
+  const readback = device.createBuffer({
+    label: "pt-webgpu/bdpt-mask-parity-readback",
+    size: byteLength,
+    usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+  });
+  try {
+    const module = device.createShaderModule({
+      label: "pt-webgpu/bdpt-mask-parity",
+      code,
+    });
+    const info = await module.getCompilationInfo();
+    const compileErrors = info.messages.filter((message) => message.type === "error");
+    if (compileErrors.length > 0) {
+      throw new Error(compileErrors.map((message) => message.message).join(" | "));
+    }
+    const pipeline = await device.createComputePipelineAsync({
+      label: "pt-webgpu/bdpt-mask-parity",
+      layout: "auto",
+      compute: { module, entryPoint: "bdptMaskParityMain" },
+    });
+    const bindGroup = device.createBindGroup({
+      layout: pipeline.getBindGroupLayout(0),
+      entries: [{ binding: 0, resource: { buffer: output } }],
+    });
+    const encoder = device.createCommandEncoder();
+    const pass = encoder.beginComputePass();
+    pass.setPipeline(pipeline);
+    pass.setBindGroup(0, bindGroup);
+    pass.dispatchWorkgroups(Math.ceil(caseCount / 64));
+    pass.end();
+    encoder.copyBufferToBuffer(output, 0, readback, 0, byteLength);
+    device.queue.submit([encoder.finish()]);
+    await readback.mapAsync(GPUMapMode.READ);
+    const actual = Array.from(new Uint32Array(readback.getMappedRange()));
+    const mismatch = actual.findIndex((value, caseIndex) =>
+      value !== expected[caseIndex]
+    );
+    readback.unmap();
+    if (mismatch >= 0 || actual.length !== expected.length) {
+      throw new Error(
+        `case ${mismatch}: expected ${expected[mismatch]}, received ${actual[mismatch]}`,
+      );
+    }
+    console.log(
+      `[shader-gate] EXEC  pt-webgpu/bdpt-mask-parity (${caseCount} cases)`,
+    );
   } finally {
     output.destroy();
     readback.destroy();
@@ -813,17 +1043,44 @@ async function runPipelineCreationGates() {
   let pipelineFailed = 0;
   const pipelineErrors = [];
 
-  for (const entry of pipelineEntries) {
+  const selectedPipelineEntries = pipelineFilter
+    ? pipelineEntries.filter((entry) => entry.name.includes(pipelineFilter))
+    : pipelineEntries;
+  if (pipelineFilter && selectedPipelineEntries.length === 0) {
+    throw new Error(`--pipeline-filter=${pipelineFilter} matched no compute pipelines`);
+  }
+
+  for (const entry of selectedPipelineEntries) {
     try {
       const module = device.createShaderModule({
         label: `${entry.name}/${entry.entryPoint}/pipeline`,
         code: entry.wgsl,
       });
-      await device.createComputePipelineAsync({
-        label: `${entry.name}/${entry.entryPoint}`,
-        layout: "auto",
-        compute: { module, entryPoint: entry.entryPoint },
-      });
+      device.pushErrorScope("validation");
+      device.pushErrorScope("internal");
+      let internalError;
+      let validationError;
+      try {
+        await device.createComputePipelineAsync({
+          label: `${entry.name}/${entry.entryPoint}`,
+          layout: "auto",
+          compute: { module, entryPoint: entry.entryPoint },
+        });
+      } finally {
+        internalError = await device.popErrorScope();
+        validationError = await device.popErrorScope();
+      }
+      if (internalError || validationError) {
+        const scopedErrors = [internalError, validationError]
+          .filter(Boolean)
+          .map((error) => {
+            const kind = error.constructor?.name ?? "GPUError";
+            const message = error.message?.trim();
+            return `${kind}: ${message || "<driver returned no diagnostic>"}`;
+          })
+          .join(" | ");
+        throw new Error(scopedErrors);
+      }
       pipelinePassed++;
       console.log(`[shader-gate] PIPE  ${entry.name}::${entry.entryPoint}`);
     } catch (err) {
@@ -834,7 +1091,9 @@ async function runPipelineCreationGates() {
     }
   }
 
-  const productionVariants = await runWalkaroundProductionPipelineGate();
+  const productionVariants = ptWebgpuOnly
+    ? { passed: 0, failed: 0, errors: [] }
+    : await runWalkaroundProductionPipelineGate();
   pipelinePassed += productionVariants.passed;
   pipelineFailed += productionVariants.failed;
   pipelineErrors.push(...productionVariants.errors);
@@ -865,8 +1124,7 @@ async function runWalkaroundProductionPipelineGate() {
     hidden: 5,
   };
   const variants = [
-    { name: "walkaround-hybrid/production-default", opts: {} },
-    { name: "walkaround-hybrid/production-gris", opts: { restirPtReuse: true } },
+    { name: "walkaround-hybrid/production-canonical", opts: {} },
     { name: "walkaround-hybrid/production-ppg", opts: { ppgEnabled: true } },
     { name: "walkaround-hybrid/production-regir", opts: { regirEnabled: true } },
   ];

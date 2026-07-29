@@ -337,7 +337,7 @@ describe('OIDN shared session leases', () => {
 });
 
 describe('OIDN model input negotiation', () => {
-  it('omits optional auxiliary feeds that a color-only model does not declare', async () => {
+  it('rejects supplied auxiliary guidance that a color-only model cannot consume', async () => {
     vi.resetModules();
     const run = vi.fn(async (_feeds: Record<string, unknown>) => ({
       output: {
@@ -368,10 +368,8 @@ describe('OIDN model input negotiation', () => {
         height: 1,
       },
       { modelUrl: '/color-only.onnx', executionProviders: ['wasm'] },
-    )).resolves.toEqual(new Float32Array([0.25, 0.5, 0.75]));
-
-    const feeds = run.mock.calls[0]?.[0] as Record<string, unknown>;
-    expect(Object.keys(feeds)).toEqual(['color']);
+    )).rejects.toThrow(/normal guidance was supplied.*not declared/i);
+    expect(run).not.toHaveBeenCalled();
   });
 
   it('rejects an explicitly configured auxiliary name absent from the model', async () => {
@@ -403,7 +401,36 @@ describe('OIDN model input negotiation', () => {
         executionProviders: ['wasm'],
         tensorNames: { normal: 'surface_normal' },
       },
-    )).rejects.toThrow(/configured normal input 'surface_normal'.*not declared/i);
+    )).rejects.toThrow(/normal guidance was supplied.*'surface_normal'.*not declared/i);
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it('rejects supplied albedo guidance when the default input is absent', async () => {
+    vi.resetModules();
+    const run = vi.fn();
+    vi.doMock('onnxruntime-web', () => ({
+      Tensor: class {
+        constructor(..._args: unknown[]) {}
+      },
+      InferenceSession: {
+        create: vi.fn(async () => ({
+          inputNames: ['color'],
+          run,
+          release: vi.fn(),
+        })),
+      },
+    }));
+
+    const bridge = await import('../src/oidnBridge.js');
+    await expect(bridge.denoiseFinal(
+      {
+        color: new Float32Array([1, 2, 3]),
+        albedo: new Float32Array([0.5, 0.5, 0.5]),
+        width: 1,
+        height: 1,
+      },
+      { modelUrl: '/color-only-albedo.onnx', executionProviders: ['wasm'] },
+    )).rejects.toThrow(/albedo guidance was supplied.*not declared/i);
     expect(run).not.toHaveBeenCalled();
   });
 });

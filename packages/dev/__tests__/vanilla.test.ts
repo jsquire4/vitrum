@@ -220,6 +220,7 @@ describe('attachDebugOverlays', () => {
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => { /* suppress */ });
 
       const engine = makeEngine();
+      const originalRenderFrame = engine.renderFrame;
       const handle = attachDebugOverlays(engine, container, {
         overlays: ['ddgiAtlas'],
       });
@@ -228,6 +229,8 @@ describe('attachDebugOverlays', () => {
       expect(container.textContent).toContain('DDGI / capabilities');
       expect(container.textContent).toContain('debugSurface');
       expect(container.textContent).toContain('texture api unavailable');
+      expect(container.querySelectorAll('canvas')).toHaveLength(2);
+      expect(engine.renderFrame).toBe(originalRenderFrame);
 
       handle.dispose();
       warnSpy.mockRestore();
@@ -305,6 +308,7 @@ describe('attachDebugOverlays', () => {
       expect(container.textContent).toContain('normalDepth');
       expect(container.textContent).toContain('motion');
       expect(container.textContent).toContain('missing');
+      expect(container.querySelectorAll('canvas')).toHaveLength(4);
 
       handle.dispose();
       expect(engine.renderFrame).toBe(originalRenderFrame);

@@ -20,7 +20,6 @@ interface RestirBoundsLike {
 export interface RestirMergedGeometryLike {
   boundingBox: RestirBoundsLike | null;
   computeBoundingBox(): void;
-  dispose(): void;
 }
 
 export interface SceneBVHBuffers {

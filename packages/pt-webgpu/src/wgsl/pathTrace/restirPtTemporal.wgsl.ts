@@ -2,9 +2,9 @@
  * restirPtTemporal.wgsl.ts — the ReSTIR-PT TEMPORAL reuse pass (GRIS, Lin 2022).
  *
  * A SEPARATE `@compute` entry point (`restirPtTemporal`) — a DIRECT PORT of the
- * SHIPPING walkaround-hybrid `TEMPORAL_GI_GRIS_WGSL`
- * (`@vitrum/walkaround-hybrid/src/shaders/temporalGi.wgsl.ts`, the ON / opt-in
- * GRIS variant), generalized to pt-webgpu's full-res hero reservoir.
+ * SHIPPING walkaround-hybrid `TEMPORAL_GI_WGSL`
+ * (`@vitrum/walkaround-hybrid/src/shaders/temporalGi.wgsl.ts`), generalized to
+ * pt-webgpu's full-res hero reservoir.
  *
  * Per full-res pixel it:
  *   1. reprojects the current visible vertex xv through the PREVIOUS-frame camera
@@ -17,8 +17,8 @@
  *   5. shifts the previous reservoir's reconnection sample onto THIS pixel's
  *      visible vertex via the reconnection shift + its Jacobian, gated by a
  *      reconnection-visibility ray (traceAny along xv → xs),
- *   6. folds both samples into a fresh GRIS reservoir and finalises W = w_sum/p̂
- *      (NO /M — the MIS weights already sum to 1).
+ *   6. folds both samples into a fresh log-domain GRIS reservoir and finalises
+ *      log(W) = log(weight_sum)-log(p̂) (NO /M).
  *
  * ════════════════════════════════════════════════════════════════════════════
  * THE LOAD-BEARING LESSON (mirrored from temporalGi.wgsl.ts:358-367)
@@ -31,8 +31,8 @@
  * re-weights by m·p̂·W·J only — the Jacobian alone carries the reconnection-edge
  * measure conversion. This is the temporal FEEDBACK loop (this pass's output
  * becomes next frame's rPrev). An extra /p_src would multiply the carried weight
- * by ≈π…∞ every frame, driving the recursion gain above 1 → W pins at wCap and
- * the GI mean climbs without bound (the V19 grison-divergence). REPLICATED HERE
+ * by ≈π…∞ every frame, driving the recursion gain above 1 and making the GI
+ * mean climb without bound (the V19 grison-divergence). REPLICATED HERE
  * EXACTLY — see the w_prev line; there is NO /p_src.
  *
  * For prefix length 1 the source/target pre-reconnection vertices ARE the visible
@@ -114,13 +114,20 @@ fn rptProjectToPrevPx(worldPos: vec3f) -> vec2i {
 
 // GRIS reconnection visibility — clear edge xv → xs through the scene BVH/TLAS
 // (traceAny over the inherited @group(0..2)). Mirrors GI tgiReconnectionVisible.
-fn rptReconnectionVisible(xv: vec3f, nv: vec3f, xs: vec3f) -> bool {
+fn rptReconnectionVisible(
+  xv: vec3f,
+  nv: vec3f,
+  xs: vec3f,
+  rng: ptr<function, PtRngState>,
+) -> bool {
   let toS = xs - xv;
   let dist = length(toS);
   if (dist < 1e-4) { return false; }
   let wi = toS / dist;
   let orig = xv + nv * RPT_RECON_NORMAL_BIAS;
-  return !traceAny(Ray(orig, wi), 1e-4, max(dist - 2e-3, 1e-3));
+  return !traceAny(
+    Ray(orig, wi), 1e-4, max(dist - 2e-3, 1e-3), rng,
+  );
 }
 
 @compute @workgroup_size(8, 8, 1)
@@ -155,7 +162,9 @@ fn restirPtTemporal(@builtin(global_invocation_id) gid: vec3u) {
   let prevIdx = u32(prevPx.y) * params.width + u32(prevPx.x);
   var rPrev = loadReservoirPTHero_ro(&rpt_resPrev, prevIdx);
   var prevFound = rPrev.M > 0u
-               && rPrev.W > 0.0
+               && rptFiniteScalar(rPrev.logW)
+               && rPrev.logW != RPT_LOG_ZERO
+               && rPrev.logW != RPT_LOG_NUMERIC_FAILURE
                && rptTemporalNormalIsValid(rPrev.nv)
                && rptTemporalSurfaceIdentityMatches(rCur, rPrev);
   var prevAmbiguous = false;
@@ -176,7 +185,10 @@ fn restirPtTemporal(@builtin(global_invocation_id) gid: vec3u) {
         }
         let candidateIdx = u32(candidatePx.y) * params.width + u32(candidatePx.x);
         let candidate = loadReservoirPTHero_ro(&rpt_resPrev, candidateIdx);
-        if (candidate.M == 0u || candidate.W <= 0.0
+        if (candidate.M == 0u
+         || !rptFiniteScalar(candidate.logW)
+         || candidate.logW == RPT_LOG_ZERO
+         || candidate.logW == RPT_LOG_NUMERIC_FAILURE
          || !rptTemporalNormalIsValid(candidate.nv)
          || !rptTemporalSurfaceIdentityMatches(rCur, candidate)) {
           continue;
@@ -238,57 +250,79 @@ fn restirPtTemporal(@builtin(global_invocation_id) gid: vec3u) {
   );
   let prevValid = rptFinitePositive(J)
                && (pHatPrev_atCur >= 1e-9) && (pHatPrev_native >= 1e-9)
-               && rptReconnectionVisible(rCur.xv, rCur.nv, rPrev.xs);
+               && rptReconnectionVisible(rCur.xv, rCur.nv, rPrev.xs, &rng);
+
+  // The canonical sample has a separate inverse-support question: could the
+  // previous technique have produced this current sample?  Evaluate that
+  // current→previous map independently.  Its determinant converts the previous
+  // target into the current sample's native measure for generalized-balance MIS.
+  let JCurrentToPrevious = restirPtReconnectionJacobianForPair(rCur, rPrev);
+  let pHatPrev_atCurSample = restirPtTargetForDomainAtHero(
+    rPrev, rCur.heroLambdaV, woPrev, rCur.xs, rCur.Lo,
+  );
+  let previousCoversCurrent =
+       rptFinitePositive(JCurrentToPrevious)
+    && pHatPrev_atCurSample >= 1e-9
+    && rptReconnectionVisible(rPrev.xv, rPrev.nv, rCur.xs, &rng);
 
   var rGris = emptyReservoirPTHero();
   copyReservoirPTVisibleDomain(&rGris, rCur);
+  let representedM = rptSaturatingAddU32(rCur.M, prevM);
 
   // Canonical (current) sample, MIS-weighted against the prev pair.
   if (rCur.M > 0u && pHatCur_native > 1e-9) {
-    var m_cur: f32 = 1.0;
-    if (prevValid) {
-      // prev's sample re-rooted onto the CURRENT domain is p̂_cur(T z_prev); the
-      // canonical's own sample re-rooted onto prev is p̂_prev(T⁻¹ z_cur).
-      let pHatPrev_atCurSample = restirPtTargetForDomainAtHero(
-        rPrev, rCur.heroLambdaV, woPrev, rCur.xs, rCur.Lo,
+    var logMCurrent: f32 = 0.0;
+    if (previousCoversCurrent) {
+      // The previous proxy is evaluated at the inverse-shifted current sample.
+      // J_current→previous converts it into the current sample's measure.
+      let logDenomCur = restirPtPairwiseLogDenomCanonical(
+        cCur, pHatCur_native,
+        cPrev, pHatPrev_atCurSample, JCurrentToPrevious,
       );
-      let denomCur = restirPtPairwiseDenomCanonical(cCur, pHatCur_native, cPrev, pHatPrev_atCurSample);
-      m_cur = select(1.0, (cCur * pHatCur_native) / denomCur, denomCur > 1e-12);
+      logMCurrent =
+        rptLogWeightedTarget(cCur, pHatCur_native) - logDenomCur;
     }
     // Canonical: no shift (J = 1), already at this pixel (no visibility re-test).
-    let w_cur = m_cur * pHatCur_native * rCur.W;
-    let oldM = rGris.M;
-    if (updateReservoirPT(
+    let logWeightCurrent =
+      logMCurrent + log(pHatCur_native) + rCur.logW;
+    let acceptedCurrent = updateReservoirPTLog(
       &rGris, rCur.xs, rCur.ns, rCur.Lo, rCur.heroLambdaV,
-      rCur.pdfSrc, w_cur, &rng,
-    )) {
-      rGris.M = rptSaturatingAddU32(oldM, rCur.M);
-    }
+      rCur.pdfSrc, logWeightCurrent, &rng,
+    );
   }
 
   // Previous (reprojected) sample, reconnection-shifted + MIS-weighted.
   if (prevValid) {
-    let denomPrev = restirPtPairwiseDenomNeighbor(cCur, pHatPrev_atCur, cPrev, pHatPrev_native);
-    let m_prev = select(0.0, (cPrev * pHatPrev_native) / denomPrev, denomPrev > 1e-12);
+    let logDenomPrev = restirPtPairwiseLogDenomNeighbor(
+      cCur, pHatPrev_atCur, J,
+      cPrev, pHatPrev_native,
+    );
+    let logMPrevious =
+      rptLogWeightedTarget(cPrev, pHatPrev_native) - logDenomPrev;
     // GRIS resampling weight for a REUSED reservoir sample (Lin 2022, Alg. 3 /
     // Eq. 9):  w_prev = m_prev · p̂_cur(T z_prev) · W_prev · |∂T/∂·|.
     // NO /p_src — rPrev is a reservoir; W_prev already bakes its source pdf in.
     // (See the load-bearing lesson in the file header; an extra /p_src diverges
     // the temporal feedback loop — V19 grison.)
-    let w_prev = m_prev * pHatPrev_atCur * rPrev.W * J;
-    let oldM = rGris.M;
+    let logWeightPrevious =
+      logMPrevious + log(pHatPrev_atCur) + rPrev.logW + log(J);
     // Carry the selected producer density as sample metadata. The reuse weight
     // does not divide by it again because rPrev.W already contains 1 / p_src.
-    if (updateReservoirPT(
+    let acceptedPrevious = updateReservoirPTLog(
       &rGris, rPrev.xs, rPrev.ns, rPrev.Lo, rPrev.heroLambdaV,
-      rPrev.pdfSrc, w_prev, &rng,
-    )) {
-      rGris.M = rptSaturatingAddU32(oldM, prevM);
-    }
+      rPrev.pdfSrc, logWeightPrevious, &rng,
+    );
   }
 
-  // GRIS finalise: W = w_sum / p̂ (the MIS weights already sum to 1 — no /M).
-  finaliseReservoirPTWGris(&rGris, rptParams.wCap);
+  // M is confidence/represented-attempt metadata, not the number of positive
+  // WRS candidates.  Include zero-weight techniques and assign it only after
+  // reservoir selection so a saturated history cannot suppress later folds.
+  if (rGris.M > 0u) {
+    rGris.M = representedM;
+  }
+
+  // GRIS finalise in log space (MIS weights already sum to 1 — no /M).
+  finaliseReservoirPTWGris(&rGris);
   // Validate the selected reconnection edge before downstream spatial reuse and
   // next frame's temporal step.
   refreshReconnectionStatePT(&rGris);

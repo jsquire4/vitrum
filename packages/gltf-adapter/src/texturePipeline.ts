@@ -18,10 +18,14 @@ import {
 } from './textures.js';
 import {
   PlatformTextureDecodeError,
+  canDecodeRawBasisKtx2Pixels,
+  canDecodeRawDdsPixels,
   canDecodeRawImagePixelsWithPlatform,
   canDecodeRawJpegPixelsDeterministically,
   canDecodeRawPngPixelsDeterministically,
   canDecodeRawWebpPixelsWithNode,
+  decodeRawBasisKtx2Pixels,
+  decodeRawDdsPixels,
   decodeRawImagePixelsWithPlatform,
   decodeRawJpegPixelsDeterministically,
   decodeRawPngPixelsDeterministically,
@@ -336,7 +340,15 @@ type DecodedTextureCacheOutcome =
 
 type DecodedTexturePromiseCache = Map<
   unknown,
-  Map<GltfTextureColorSpace, Promise<DecodedTextureCacheOutcome>>
+  Map<DecodedTextureCacheKey, Promise<DecodedTextureCacheOutcome>>
+>;
+
+type DecodedTextureCacheKey =
+  `${GltfTextureColorSpace}:${GltfMaterialTextureField}`;
+
+type NpotResizePromiseCache = Map<
+  GltfCpuTextureHandle,
+  Map<string, Promise<GltfCpuTextureHandle>>
 >;
 
 type RawImageSnapshotOutcome =
@@ -360,6 +372,9 @@ export interface DecodeSceneTexturesContext {
   readonly encodedResourceLedger: ImportResourceLedger;
   readonly imageDecodeLimiter: AsyncResourceLimiter;
   readonly decoded: DecodedTexturePromiseCache;
+  /** Adapter-owned POT derivations, keyed by normalized source identity and
+   * the complete resize configuration that affects output pixels. */
+  readonly npotResizes: NpotResizePromiseCache;
   readonly specGlossBakes: SpecGlossRoughnessBakeCache;
   readonly rawImageSnapshots: Map<unknown, Promise<RawImageSnapshotOutcome>>;
   readonly rawImageResourceKeys: Map<unknown, string>;
@@ -445,6 +460,7 @@ export function createDecodeSceneTexturesContext(
     encodedResourceLedger: resourceLedger,
     imageDecodeLimiter,
     decoded: new Map(),
+    npotResizes: new Map(),
     specGlossBakes: new Map(),
     rawImageSnapshots: new Map(),
     rawImageResourceKeys: new Map(),
@@ -706,13 +722,6 @@ function rawImageDecoderMissingMessage(context: {
   readonly source?: GltfTextureRefSource;
   readonly options: DecodeSceneTexturesOptions;
 }): string {
-  const extension = context.source?.textureSourceExtension;
-  if (extension === 'KHR_texture_basisu' || extension === 'MSFT_texture_dds') {
-    return `[vitrum/gltf-adapter] ${context.path} selects ${extension}` +
-      `${context.source?.imageMimeType ? ` (${context.source.imageMimeType})` : ''}, ` +
-      'but this compressed texture-source extension has no built-in pixel decoder. Supply decodePixels ' +
-      `for decodeSceneTextures(target:"${context.options.target}") or choose an asset fallback. Texture left unchanged.`;
-  }
   return `[vitrum/gltf-adapter] ${context.path} is a raw-image texture but no decodePixels hook was supplied ` +
     `and this host has no browser image/canvas readback path for decodeSceneTextures(target:"${context.options.target}"). ` +
     'Texture left unchanged.';
@@ -812,7 +821,8 @@ async function decodeTextureRef(
     perSpace = new Map();
     context.decodeContext.decoded.set(ref.handle, perSpace);
   }
-  let pending = perSpace.get(colorSpace);
+  const cacheKey = decodedTextureCacheKey(colorSpace, context.field);
+  let pending = perSpace.get(cacheKey);
   if (pending === undefined) {
     // Install the promise before awaiting it. Both raw and CPU-readable handles
     // therefore deduplicate concurrent references, including failures.
@@ -821,13 +831,13 @@ async function decodeTextureRef(
       causeMessage: safeErrorMessage(err),
     }));
     pending = created;
-    perSpace.set(colorSpace, created);
+    perSpace.set(cacheKey, created);
     void created.then((settled) => {
       if (
         settled.kind !== 'decoded' &&
-        perSpace?.get(colorSpace) === created
+        perSpace?.get(cacheKey) === created
       ) {
-        perSpace.delete(colorSpace);
+        perSpace.delete(cacheKey);
         if (perSpace.size === 0) {
           context.decodeContext.decoded.delete(ref.handle);
         }
@@ -842,7 +852,7 @@ async function decodeTextureRef(
 
   emitDecodedTextureDiagnostics(outcome.entry, ref, context);
   try {
-    return applyNpotRepeatWrapPolicy(ref, outcome.entry, context);
+    return await applyNpotRepeatWrapPolicy(ref, outcome.entry, context);
   } catch (err) {
     emitDerivedTextureFailure(err, context);
     return attachGltfTextureRefSource(
@@ -852,9 +862,26 @@ async function decodeTextureRef(
   }
 }
 
+function decodedTextureCacheKey(
+  colorSpace: GltfTextureColorSpace,
+  field: GltfMaterialTextureField,
+): DecodedTextureCacheKey {
+  // A host decode hook receives the material field and may legally produce
+  // field-specific pixels even when two consumers share one raw handle and
+  // color space. Keep that semantic input in the cache key; this also
+  // preserves BC5 normal-vector reconstruction.
+  return `${colorSpace}:${field}`;
+}
+
 function builtInRawImageDecoder(
   handle: RawImageHandle,
 ): DecodeGltfTexturePixelsFn | undefined {
+  if (canDecodeRawBasisKtx2Pixels(handle)) {
+    return decodeRawBasisKtx2Pixels;
+  }
+  if (canDecodeRawDdsPixels(handle)) {
+    return decodeRawDdsPixels;
+  }
   // PNG and JPEG are intentionally routed through the same pure-JS decoder
   // in browser and Node. Browser image/canvas decoding remains a fallback for
   // WebP and other platform-supported formats; hosts that require exact
@@ -1667,11 +1694,11 @@ function effectiveNpotRepeatWrapPolicy(
   return options.warnOnNpotRepeatWrap === true ? 'warn' : 'none';
 }
 
-function applyNpotRepeatWrapPolicy(
+async function applyNpotRepeatWrapPolicy(
   ref: TextureRef,
   entry: DecodedTextureCacheEntry,
   context: TextureRefDecodeContext,
-): TextureRef {
+): Promise<TextureRef> {
   const policy = effectiveNpotRepeatWrapPolicy(context.options);
   const handle = entry.handle;
   if (policy === 'none' || policy === 'warn' || isPowerOfTwo(handle.width, handle.height) || !usesRepeatWrap(ref)) {
@@ -1706,7 +1733,7 @@ function applyNpotRepeatWrapPolicy(
     }, context.source);
   }
 
-  const resized = resizeDecodedTextureToPowerOfTwo(
+  const resized = await cachedPowerOfTwoResize(
     handle,
     context.options.maxTextureSize,
     context.decodeContext,
@@ -1732,6 +1759,48 @@ function applyNpotRepeatWrapPolicy(
       `by npotRepeatWrapPolicy:"${policy}" for deterministic repeat-wrap sampling.`,
   });
   return attachGltfTextureRefSource({ ...ref, handle: resized }, context.source);
+}
+
+function cachedPowerOfTwoResize(
+  handle: GltfCpuTextureHandle,
+  maxTextureSize: number | undefined,
+  decodeContext: DecodeSceneTexturesContext,
+  path: string,
+): Promise<GltfCpuTextureHandle> {
+  let perSource = decodeContext.npotResizes.get(handle);
+  if (perSource === undefined) {
+    perSource = new Map();
+    decodeContext.npotResizes.set(handle, perSource);
+  }
+  // maxTextureSize is the only decode option that changes this derivation's
+  // dimensions. Source identity already captures target color space and any
+  // preceding max-size normalization.
+  const configurationKey =
+    `resize-to-pot:maxTextureSize=${maxTextureSize === undefined ? 'none' : maxTextureSize}`;
+  const cached = perSource.get(configurationKey);
+  if (cached !== undefined) return cached;
+
+  const created = Promise.resolve().then(() =>
+    resizeDecodedTextureToPowerOfTwo(
+      handle,
+      maxTextureSize,
+      decodeContext,
+      path,
+    )
+  );
+  perSource.set(configurationKey, created);
+  void created.catch(() => {
+    // A rejected derivation owns no reusable output. Evict transactionally so
+    // a later call can retry after a host raises/reconfigures its resource
+    // budget instead of replaying a stale failure.
+    if (perSource?.get(configurationKey) === created) {
+      perSource.delete(configurationKey);
+      if (perSource.size === 0) {
+        decodeContext.npotResizes.delete(handle);
+      }
+    }
+  });
+  return created;
 }
 
 function normalizeDecodedPixels(
@@ -1863,12 +1932,20 @@ function resizeDecodedTextureToPowerOfTwo(
     decodeContext,
     path,
   );
-  return withDecodedTextureMetadata(
+  const output = withDecodedTextureMetadata(
     resized,
     textureDecodeHint(handle)?.originalWidth ?? handle.width,
     textureDecodeHint(handle)?.originalHeight ?? handle.height,
     maxTextureSize,
   );
+  // The resize allocation is provisional until every derivation step
+  // succeeds. Commit its ledger charge only after metadata publication is
+  // ready, so a thrown resample/allocation/metadata step leaves no stale cost.
+  decodeContext.resourceLedger.chargeDecodedTexturePixels(
+    checkedPixelCount(width, height, path),
+    path,
+  );
+  return output;
 }
 
 function powerOfTwoTarget(value: number, maxTextureSize: number | undefined): number {
@@ -1889,7 +1966,7 @@ function resizeDecodedTextureFiltered(
 ): GltfCpuTextureHandle {
   if (width === handle.width && height === handle.height) return handle;
   const pixelCount = checkedPixelCount(width, height, path);
-  const data = allocateFloat32Rgba(pixelCount, decodeContext, path);
+  const data = allocateFloat32Rgba(pixelCount, decodeContext, path, false);
   resampleDecodedTexture(
     handle.data,
     4,
@@ -2167,6 +2244,7 @@ function allocateFloat32Rgba(
   pixelCount: number,
   context: DecodeSceneTexturesContext,
   path: string,
+  commitLedgerCharge = true,
 ): Float32Array {
   const componentCount = checkedSafeProduct(
     [pixelCount, 4],
@@ -2177,7 +2255,11 @@ function allocateFloat32Rgba(
       `[vitrum/gltf-adapter] ${path} Float32 RGBA component count exceeds the safe integer range.`,
     );
   }
-  context.resourceLedger.chargeDecodedTexturePixels(pixelCount, path);
+  if (commitLedgerCharge) {
+    context.resourceLedger.chargeDecodedTexturePixels(pixelCount, path);
+  } else {
+    context.resourceLedger.ensureDecodedTexturePixels(pixelCount, path);
+  }
   return new Float32Array(componentCount);
 }
 

@@ -24,10 +24,11 @@
  *     `['svgf-real', 'bmfr', 'neural', 'oidn-final']`.
  *
  * Dependencies:
- *   - `gtao-upsample` — matches the former sole dependency of
- *     `denoiser-adapter`.  This pass runs in the topological slot immediately
- *     before the denoiser-adapter:
- *       … → gtao-upsample → cb-prefill → denoiser-adapter → …
+ *   - `gtao-upsample` and `motion-vectors` — this pass samples the freshly
+ *     written motion-vector texture and runs in the topological slot
+ *     immediately before the denoiser-adapter:
+ *       … → {gtao-upsample, motion-vectors} → cb-prefill
+ *         → denoiser-adapter → …
  *
  * Bind group (`cb-prefill` BGL, 5 bindings):
  *   0  CbPrefillUniforms UBO  (16 bytes: screenW/H, frameParity, _pad)
@@ -65,8 +66,11 @@ const REAL_DENOISER_IDS: ReadonlySet<string> = new Set([
 
 export class CheckerboardPrefillPass implements Pass {
   readonly id = 'cb-prefill' as const;
-  /** Dependency chain: gtao-upsample → cb-prefill → (denoiser-adapter). */
-  readonly dependencies: readonly string[] = ['gtao-upsample'];
+  /** Both sampled inputs must be produced before the prefill dispatch. */
+  readonly dependencies: readonly string[] = [
+    'gtao-upsample',
+    'motion-vectors',
+  ];
   readonly passLabels: readonly PassLabel[] = ['cb-prefill'];
 
   private readonly _pipeline: GPUComputePipeline;

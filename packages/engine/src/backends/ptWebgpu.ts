@@ -44,7 +44,6 @@ export async function constructPathTracerWebGPU(
   const advancedWebGPU = stripOwnershipCriticalKeys(
     advancedWebGPURaw,
     'pt-webgpu',
-    opts.onWarning,
   ) as Partial<PTEngineWebGPUOptions>;
   validatePtWebgpuAdvancedOptions(advancedWebGPU);
 
@@ -68,7 +67,12 @@ export async function constructPathTracerWebGPU(
   try {
     device = shared?.device ?? await adapter.requestDevice({
       requiredLimits: ptWebgpuRequiredLimitsForAdapter(adapter, {
-        restirPtReuse: advancedWebGPURaw?.restirPtReuse === true,
+        bdpt: advancedWebGPURaw?.bdpt === true,
+        oneEdgeReconnectionReuse:
+          (advancedWebGPURaw?.oneEdgeReconnectionReuse ??
+            advancedWebGPURaw?.restirPtReuse) === true,
+        cwbvhClosest:
+          advancedWebGPURaw?.bvhTraversal === 'cwbvh-closest',
       }),
     });
   } catch (cause) {

@@ -86,10 +86,11 @@ describe('pt-webgpu CWBVH traversal wiring', () => {
     expect(wgsl).toContain('let hit = traceClosestRaw(ray, cursor, tMax);');
     expect(wgsl).toContain('materialAcceptsSidedHit(matId, hit.frontFace) &&');
     expect(wgsl).toContain('!materialShadowCastDisabled(matId)');
-    expect(wgsl).not.toContain('if (traceTlasAnyCwbvh(ray, tMin, tMax))');
+    expect(wgsl).not.toContain('fn traceTlasAnyCwbvh(');
+    expect(wgsl).not.toContain('fn traceMeshCwbvhAny(');
   });
 
-  it('validates paired roots before use and restarts canonical traversal with original bounds', () => {
+  it('validates paired roots before closest-hit use and restarts canonical traversal with original bounds', () => {
     const wgsl = composePtWebgpuTraceWgsl(false, { cwbvhClosest: true });
     expect(wgsl).toContain('cwbvhTlasBlasRoots: array<vec4u>');
     expect(wgsl).toContain('rootPair.x != CWBVH_ROOT_PAIR_MAGIC');
@@ -102,13 +103,10 @@ describe('pt-webgpu CWBVH traversal wiring', () => {
     expect(wgsl).toContain(
       'return traceMeshBvh(ray, tMin, tMaxBound, true, hit, binaryRootNode, captureShadingDetails);',
     );
-    expect(wgsl).toContain(
-      'return traceMeshBinaryAny(ray, tMin, tMaxBound, binaryRootNode);',
-    );
     expect(wgsl).toContain('let fallbackHit = traceTlasClosest(ray, tMin, tMax, hit);');
-    expect(wgsl).toContain('let fallbackHit = traceTlasAny(ray, tMin, tMax);');
     expect(wgsl).toContain('tlasTraversalStatusCode = TLAS_TRAVERSAL_STATUS_FALLBACK;');
     expect(wgsl).not.toContain('prefer occlusion over a light leak');
+    expect(wgsl.match(/let rootPair = cwbvhTlasBlasRoots\[instIdx\];/g)).toHaveLength(1);
 
     const closestPairLoad = wgsl.indexOf('let rootPair = cwbvhTlasBlasRoots[instIdx];');
     const closestPairCheck = wgsl.indexOf('rootPair.x != CWBVH_ROOT_PAIR_MAGIC', closestPairLoad);
@@ -116,15 +114,9 @@ describe('pt-webgpu CWBVH traversal wiring', () => {
     expect(closestPairLoad).toBeGreaterThan(-1);
     expect(closestPairCheck).toBeGreaterThan(closestPairLoad);
     expect(closestWideUse).toBeGreaterThan(closestPairCheck);
-
-    const anyPairLoad = wgsl.indexOf('let rootPair = cwbvhTlasBlasRoots[instIdx];', closestPairLoad + 1);
-    const anyPairCheck = wgsl.indexOf('rootPair.x != CWBVH_ROOT_PAIR_MAGIC', anyPairLoad);
-    const anyWideUse = wgsl.indexOf('let blasRoot = rootPair.z;', anyPairLoad);
-    expect(anyPairCheck).toBeGreaterThan(anyPairLoad);
-    expect(anyWideUse).toBeGreaterThan(anyPairCheck);
   });
 
-  it('initializes every binary traversal output and falls back exactly once on CWBVH stack overflow', () => {
+  it('initializes every binary traversal output before an early return', () => {
     const wgsl = composePtWebgpuTraceWgsl(false, { cwbvhClosest: true });
     const meshStart = wgsl.indexOf('fn traceMeshBvh(');
     const meshEnd = wgsl.indexOf('\nfn traceAnalyticShapes(', meshStart);
@@ -141,58 +133,24 @@ describe('pt-webgpu CWBVH traversal wiring', () => {
     expect(meshBody).toContain('var stack: array<u32, 60>;');
     expect(meshBody).toContain('if (stackPtr + 2u <= 60u)');
     expect(meshBody).toContain('return select(true, (*hit).didHit, closest);');
-
-    const anyStart = wgsl.indexOf('fn traceMeshCwbvhAny(');
-    const anyEnd = wgsl.indexOf('\nfn traceTlasClosestCwbvh(', anyStart);
-    const anyBody = wgsl.slice(anyStart, anyEnd);
-    const overflowStart = anyBody.indexOf('if (stackPtr >= CWBVH_INTERSECT_STACK_DEPTH)');
-    const overflowEnd = anyBody.indexOf('stack[stackPtr] = childInfo.indexOrOffset;', overflowStart);
-    const overflowBranch = anyBody.slice(overflowStart, overflowEnd);
-    expect(overflowStart).toBeGreaterThan(-1);
-    expect(overflowEnd).toBeGreaterThan(overflowStart);
-    expect(overflowBranch.match(/return traceMeshBinaryAny\(/g)).toHaveLength(1);
-    expect(overflowBranch).not.toContain('return false');
   });
 
-  it('restarts binary any-hit for every corrupt live-child shape', () => {
+  it('does not compose a second CWBVH any-hit walker', () => {
     const wgsl = composePtWebgpuTraceWgsl(false, { cwbvhClosest: true });
-    const anyStart = wgsl.indexOf('fn traceMeshCwbvhAny(');
-    const anyEnd = wgsl.indexOf('\nfn traceTlasClosestCwbvh(', anyStart);
-    const anyBody = wgsl.slice(anyStart, anyEnd);
-    expect(anyBody).toContain('if (!cwbvhBoundsAreValid(parentMin, parentMax))');
-    expect(anyBody).toContain('if (!cwbvhBoundsAreValid(bounds.boundsMin, bounds.boundsMax))');
-    expect(anyBody).toContain('childInfo.triCount == 0u ||');
-    expect(anyBody).not.toMatch(
-      /if \(childInfo\.kind == CWBVH_CHILD_EMPTY\) \{\s*continue;/,
-    );
-    for (const marker of [
-      'if (!cwbvhBoundsAreValid(parentMin, parentMax))',
-      'if (childInfo.kind == CWBVH_CHILD_EMPTY)',
-      'if (!cwbvhBoundsAreValid(bounds.boundsMin, bounds.boundsMax))',
-      'childInfo.triCount == 0u ||',
-    ]) {
-      const start = anyBody.indexOf(marker);
-      expect(start).toBeGreaterThan(-1);
-      expect(anyBody.slice(start, start + 420)).toContain(
-        'return traceMeshBinaryAny(ray, tMin, tMaxBound, binaryRootNode);',
-      );
-    }
-  });
+    expect(wgsl).not.toContain('fn cwbvhIntersectAny(');
+    expect(wgsl).not.toContain('fn traceMeshBinaryAny(');
+    expect(wgsl).not.toContain('fn traceMeshCwbvhAny(');
+    expect(wgsl).not.toContain('fn traceTlasAnyCwbvh(');
 
-  it('uses overflow-safe CWBVH capacity and leaf-range guards before any-hit loads', () => {
-    const wgsl = composePtWebgpuTraceWgsl(false, { cwbvhClosest: true });
-    const anyStart = wgsl.indexOf('fn traceMeshCwbvhAny(');
-    const anyEnd = wgsl.indexOf('\nfn traceTlasClosestCwbvh(', anyStart);
+    const anyStart = wgsl.indexOf('fn traceAny(');
+    const anyEnd = wgsl.indexOf('\nfn hitMaterialId(', anyStart);
     const anyBody = wgsl.slice(anyStart, anyEnd);
-    expect(anyBody).toContain(
-      'nodeCount > arrayLength(&cwbvhChildBoundsPacked) / (CWBVH_CHILDREN * CWBVH_CHILD_BOUNDS_PACKED_U32)',
-    );
-    expect(anyBody).toContain(
-      'nodeCount > arrayLength(&cwbvhChildMeta) / CWBVH_CHILDREN',
-    );
-    expect(anyBody).not.toContain('arrayLength(&cwbvhChildBoundsPacked) < nodeCount *');
-    expect(anyBody).toContain('childInfo.indexOrOffset > triangleCount');
-    expect(anyBody).toContain('childInfo.triCount > triangleCount - childInfo.indexOrOffset');
+    expect(anyStart).toBeGreaterThan(-1);
+    expect(anyEnd).toBeGreaterThan(anyStart);
+    expect(anyBody).toContain('let hit = traceClosestRaw(ray, cursor, tMax);');
+    expect(anyBody).toContain('materialAcceptsSidedHit(matId, hit.frontFace)');
+    expect(anyBody).toContain('!materialShadowCastDisabled(matId)');
+    expect(anyBody).toContain('!alphaTestPassThrough(');
   });
 
   it('binds uploaded CWBVH buffers into the opt-in full-tier renderer group 3', () => {

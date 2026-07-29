@@ -56,11 +56,12 @@ export interface PartitionedScene {
  *  - A primitive is kept when its `kind` is in `supportedPrimitiveKinds`
  *    (or the set is omitted) AND, for `analytic` primitives, its `shape` is in
  *    `supportedAnalyticShapes` (or that set is omitted).
- *  - When an `analytic` primitive is unsupported (kind or shape) AND it carries
- *    a `fallbackMesh`, the primitive is converted to a `MeshPrimitive` via
+ *  - When an `analytic` primitive is unsupported (kind or shape) and `mesh` is
+ *    accepted, the primitive is converted to a `MeshPrimitive` via
  *    `analyticPrimitiveToMesh` and placed in the supported partition instead of
- *    being dropped (provided `mesh` is itself supported or no kind restriction
- *    is declared). A warning is still emitted documenting the conversion.
+ *    being dropped. An authored `fallbackMesh` is preferred; otherwise the
+ *    canonical shape tessellator generates the mesh. A warning still documents
+ *    the conversion.
  *  - An emitter is kept when its `kind` is in `supportedEmitterKinds` (or the
  *    set is omitted).
  *  - The environment is always carried through; an unsupported `kind` only
@@ -79,11 +80,16 @@ export function partitionSceneBySupport(scene: Scene, caps: SupportSets): Partit
       caps.supportedPrimitiveKinds != null &&
       !caps.supportedPrimitiveKinds.has(primitive.kind)
     ) {
-      // Analytic with fallbackMesh: convert to mesh if mesh is accepted.
-      if (primitive.kind === 'analytic' && primitive.fallbackMesh != null && meshKindAccepted) {
+      // Every public analytic shape has a canonical mesh conversion. Prefer an
+      // authored fallbackMesh when present, but never discard representable
+      // geometry merely because the host omitted one.
+      if (primitive.kind === 'analytic' && meshKindAccepted) {
+        const conversion = primitive.fallbackMesh != null
+          ? 'converting via fallbackMesh'
+          : 'converting via canonical generated mesh';
         warnings.push(
           `Scene primitive "${primitive.id}" (analytic kind) is not supported by this backend; ` +
-          `converting via fallbackMesh to a MeshPrimitive.`,
+          `${conversion} to a MeshPrimitive.`,
         );
         return [analyticPrimitiveToMesh(primitive)];
       }
@@ -98,11 +104,13 @@ export function partitionSceneBySupport(scene: Scene, caps: SupportSets): Partit
       caps.supportedAnalyticShapes != null &&
       !caps.supportedAnalyticShapes.has(primitive.shape)
     ) {
-      // Shape unsupported but fallbackMesh present and mesh kind accepted.
-      if (primitive.fallbackMesh != null && meshKindAccepted) {
+      if (meshKindAccepted) {
+        const conversion = primitive.fallbackMesh != null
+          ? 'converting via fallbackMesh'
+          : 'converting via canonical generated mesh';
         warnings.push(
           `Scene primitive "${primitive.id}" (analytic shape "${primitive.shape}") is not supported by this backend; ` +
-          `converting via fallbackMesh to a MeshPrimitive.`,
+          `${conversion} to a MeshPrimitive.`,
         );
         return [analyticPrimitiveToMesh(primitive)];
       }

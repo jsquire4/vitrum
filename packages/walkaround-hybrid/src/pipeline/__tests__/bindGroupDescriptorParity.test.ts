@@ -131,7 +131,7 @@ const BUILDER_DRIVERS: Record<BindGroupTableId, (d: GPUDevice, c: BGLCache) => G
     envSampler: sampler, envParamsBuffer: buf,
   }),
   ubo: (d, c) => buildUboBindGroup(d, c, buf, view, view),
-  composite: (d, c) => buildCompositeBindGroup(d, c, view, sampler, buf),
+  composite: (d, c) => buildCompositeBindGroup(d, c, view, buf),
   sampleBudget: (d, c) => buildSampleBudgetBindGroup(d, c, view, view, buf, buf),
   resolve: (d, c) => buildResolveBindGroup(d, c, buf, view, view, view, view),
   cbPrefill: (d, c) => buildCbPrefillBindGroup(d, c, buf, view, view, view, view),
@@ -140,7 +140,9 @@ const BUILDER_DRIVERS: Record<BindGroupTableId, (d: GPUDevice, c: BGLCache) => G
   gtaoUpsample: (d, c) => buildGTAOUpsampleBindGroup(d, c, view, view, view, buf),
   temporalGi: (d, c) => buildTemporalGiBindGroup(d, c, buf, buf, buf),
   spatialGi: (d, c) => buildSpatialGiBindGroup(d, c, buf, buf, buf, 'spatial-gi-bg-1'),
-  indirectTemporalAccum: (d, c) => buildIndirectTemporalAccumBindGroup(d, c, view, view, view),
+  indirectTemporalAccum: (d, c) => buildIndirectTemporalAccumBindGroup(
+    d, c, view, view, view, view,
+  ),
   indirectCombine: (d, c) => buildIndirectCombineBindGroup(d, c, view, view, view, view),
   transparentOit: (d, c) => buildTransparentOitBindGroup(
     d, c, view, view, sampler, buf, buf, buf, view, view,

@@ -63,14 +63,17 @@ describe('B2 — WGSL structural pins: specular complement', () => {
     const src = wgsl();
     expect(src).toContain('fn ddgiProbeBaseSpecularWeight(mat: DdgiProbeHitMaterial) -> f32');
     expect(src).toContain('let roughFade = max(0.0, 1.0 - mat.roughness * mat.roughness);');
-    expect(src).toContain('let metallic = clamp(mat.metalness, 0.0, 1.0) * roughFade;');
+    expect(src).toContain('let metalness = clamp(mat.metalness, 0.0, 1.0);');
+    expect(src).toContain('let metallic = metalness * roughFade;');
+    expect(src).toContain('let dielectricF0 = ddgiProbeDielectricF0(mat);');
     expect(src).toContain('fn ddgiProbeExtensionSpecularWeight(mat: DdgiProbeHitMaterial) -> f32');
   });
 
-  it('1c. specular branch calls ddgiSampleSHProbe at the reflected direction', () => {
+  it('1c. specular branch uses canonical relocated visibility-aware DDGI feedback', () => {
     const src = wgsl();
-    // The reflected lookup variable is named specularIrr.
-    expect(src).toContain('let specularIrr = ddgiSampleSHProbe(');
+    expect(src).toContain(
+      'let specularIrr = ddgiFeedbackAt(hitWorldPos, reflDir);',
+    );
   });
 
   it('1d. mix blend from Lambertian to specular is present', () => {
@@ -96,7 +99,7 @@ describe('B2 — WGSL structural pins: specular complement', () => {
   it('1g. mat.roughness and mat.metalness are accessed in the shader', () => {
     const src = wgsl();
     expect(src).toContain('hit, mat.baseColor, mat.roughness, mat.metalness, mat.transmission,');
-    expect(src).toContain('mat.attenuationColor, smoothNormal, probeNormal, -dir,');
+    expect(src).toContain('mat.ior, mat.attenuationColor, smoothNormal, probeNormal, -dir,');
     expect(src).toContain('mat.roughness');
     expect(src).toContain('mat.metalness');
   });
@@ -157,7 +160,7 @@ describe('B2 — WGSL structural pins: specular complement', () => {
     expect(src).toContain('let probeNormal = ddgiApplyBumpMapForHit(hit, normalMapped);');
     expect(src).toContain('let direct_analytic = evalDirectLighting(');
     expect(src).toContain('hitWorldPos, probeNormal, directSeed ^ 0xa511e9b3u,');
-    expect(src).toContain('fix, fiy, probeNormal,');
+    expect(src).toContain('let indirect = ddgiFeedbackAt(hitWorldPos, probeNormal);');
     expect(src).not.toContain('out.hitNormal');
   });
 

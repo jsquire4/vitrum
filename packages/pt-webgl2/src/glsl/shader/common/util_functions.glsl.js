@@ -155,10 +155,6 @@ export const util_functions = /* glsl */`
 		return max( dot( rgb, vec3( tR, tG, tB ) ), 0.0 );
 	}
 
-	float heroWeightFromRgb( vec3 rgb, float heroWavelength ) {
-		return heroScalarFromRgb( rgb, heroWavelength );
-	}
-
 	// Packed spectral μ(λ) grid: MaterialsTexture.js texels 20..27 (32 floats),
 	// uniform wavelength samples 380..780 nm (matches SPECTRAL_GRID_* in JS).
 	float readSpectralAttenuationMu( sampler2D materialsTex, uint materialIndex, uint spectralIdx ) {

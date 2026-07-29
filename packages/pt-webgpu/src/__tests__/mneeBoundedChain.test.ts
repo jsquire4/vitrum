@@ -138,7 +138,7 @@ describe('bounded 3–8 vertex MNEE chain', () => {
       start,
     );
     const unified = PT_WEBGPU_PATH_TRACE_CAUSTIC_WGSL.slice(start, end);
-    expect(unified).toContain('let fr = evaluateBrdfFullWithClearcoatNormal(');
+    expect(unified).toContain('let fr = evaluateFiniteBsdfFullWithClearcoatNormal(');
     expect(unified).not.toContain('causticReceiverRejected');
     expect(PT_WEBGPU_PATH_TRACE_CAUSTIC_WGSL).not.toContain(
       'fn causticReceiverRejected(',

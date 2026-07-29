@@ -25,6 +25,7 @@
 import { describe, expect, it } from 'vitest';
 import { BACKEND_PROMISE_LEDGER, MATERIAL_SPEC_FIELDS } from '../engine/promiseLedger.js';
 import { buildCapabilities as buildPtWebgl2Capabilities, PT_WEBGL2_SUPPORT } from '@vitrum/pt-webgl2/src/capabilities.js';
+import { PT_WEBGL2_SUPPORT_MANIFEST } from '@vitrum/pt-webgl2/src/supportManifest.js';
 
 function sorted(values: Iterable<string>): string[] {
   return Array.from(values).sort();
@@ -100,6 +101,28 @@ describe('BACKEND_PROMISE_LEDGER incremental patch semantics', () => {
     expect(webgpu.incrementalPatchSupport.material).toBe(true);
     expect(webgpu.supportDetails.mutations.material).toBe('fallback-rebuild');
   });
+
+  it('declares the exact auxiliary motion-vector convention and dynamic-scene boundary', () => {
+    expect(
+      BACKEND_PROMISE_LEDGER['walkaround-hybrid'].supportDetails.motionVectors,
+    ).toEqual({
+      units: 'pixels',
+      direction: 'previous-minus-current',
+      geometry: 'camera-only',
+      sceneMutationPolicy: 'reset-history',
+    });
+    expect(
+      BACKEND_PROMISE_LEDGER['pt-webgpu'].supportDetails.motionVectors,
+    ).toEqual({
+      units: 'pixels',
+      direction: 'current-minus-previous',
+      geometry: 'camera-only',
+      sceneMutationPolicy: 'reset-history',
+    });
+    expect(
+      BACKEND_PROMISE_LEDGER['pt-webgl2'].supportDetails.motionVectors,
+    ).toBeUndefined();
+  });
 });
 
 // ── Road-to-100 future-contract boundaries ───────────────────────────────────
@@ -138,6 +161,10 @@ describe('BACKEND_PROMISE_LEDGER Road-to-100 future-contract boundaries', () => 
 
 describe('BACKEND_PROMISE_LEDGER["pt-webgl2"] vs PT_WEBGL2_SUPPORT', () => {
   const ledger = BACKEND_PROMISE_LEDGER['pt-webgl2'];
+
+  it('keeps the static reference row equal to the executable backend manifest', () => {
+    expect(ledger.supportDetails).toEqual(PT_WEBGL2_SUPPORT_MANIFEST);
+  });
 
   it('supportedPrimitiveKinds matches ledger', () => {
     expect(sorted(PT_WEBGL2_SUPPORT.supportedPrimitiveKinds)).toEqual(
@@ -183,14 +210,14 @@ describe('BACKEND_PROMISE_LEDGER["pt-webgl2"] vs PT_WEBGL2_SUPPORT', () => {
   });
 
   it('debugSurface matches the method promise row', () => {
-    const caps = buildPtWebgl2Capabilities('none', 8, Infinity, false);
+    const caps = buildPtWebgl2Capabilities('none', 8, Infinity, { bdpt: false });
     expect(caps.debugSurface).toBe(true);
     expect(ledger.methodPromises.debug).toBe(caps.debugSurface);
   });
 
   it('supportsAuxBuffers stays false because WebGL2 lacks variance and motion-vector outputs', () => {
-    const fullCaps = buildPtWebgl2Capabilities('none', 8, Infinity, true);
-    const liteCaps = buildPtWebgl2Capabilities('none', 8, Infinity, false);
+    const fullCaps = buildPtWebgl2Capabilities('none', 8, Infinity, { bdpt: true });
+    const liteCaps = buildPtWebgl2Capabilities('none', 8, Infinity, { bdpt: false });
     expect(fullCaps.supportsAuxBuffers).toBe(false);
     expect(ledger.supportsAuxBuffers).toBe(fullCaps.supportsAuxBuffers);
     expect(liteCaps.supportsAuxBuffers).toBe(false);

@@ -13,9 +13,9 @@
  * section as an equal-area fan, so the stride walk still mirrors the GPU kernel
  * without a dedicated disc storage layout.
  *
- * That walk was open-coded FOUR times — `bdptEmitterPower`, `sampleBdptBounce0Cpu`
- * (both in `./bdptEmitterPickCpu.ts`) and `buildLightTreeInputForScene`
- * (`../scene/emitterPacking.ts`). The per-emitter-kind stride/offset arithmetic
+ * That walk was historically open-coded across the bounce-0 CPU sampler and
+ * `buildLightTreeInputForScene` (`../scene/emitterPacking.ts`). The
+ * per-emitter-kind stride/offset arithmetic
  * MUST be byte-identical across all consumers because the flat emitter index feeds
  * the RNG-correlated power-weighted pick — any reorder or value drift would
  * silently de-correlate the CPU oracle from the GPU kernel.
@@ -23,7 +23,7 @@
  * This module owns the POSITIONAL middle of the walk (point → spot → rect → mesh)
  * as a single generator yielding one record per packed light, in exact walk order.
  * The non-positional directional/env ENDS stay with each consumer because their
- * per-consumer semantics differ (power term vs. sampled vertex vs. light-tree leaf
+ * per-consumer semantics differ (sampled vertex vs. light-tree leaf
  * with a union-AABB), but they bracket the SAME positional sequence this generator
  * produces, so the flat index alignment is single-sourced here.
  *
@@ -169,12 +169,18 @@ export function rectQuadArea(uAxis: Vec3, vAxis: Vec3): number {
 }
 
 /**
- * Disc area = π·|uAxis|² (matches the WGSL disc NEE term).
- * uAxis carries tangent × radius so |uAxis| = radius.
+ * Area of the affine image of the unit disc: π·|uAxis×vAxis|.
+ *
+ * This reduces to πr² for an orthogonal equal-radius frame and remains exact
+ * after non-uniform scale or shear.
  */
-export function discArea(uAxis: Vec3): number {
-  const r = Math.hypot(uAxis[0], uAxis[1], uAxis[2]);
-  return Math.PI * r * r;
+export function discArea(uAxis: Vec3, vAxis: Vec3): number {
+  const cross: Vec3 = [
+    uAxis[1] * vAxis[2] - uAxis[2] * vAxis[1],
+    uAxis[2] * vAxis[0] - uAxis[0] * vAxis[2],
+    uAxis[0] * vAxis[1] - uAxis[1] * vAxis[0],
+  ];
+  return Math.PI * Math.hypot(cross[0], cross[1], cross[2]);
 }
 
 /** Triangle area = 0.5·|(B−A)×(C−A)| (matches the WGSL mesh-area NEE term). */

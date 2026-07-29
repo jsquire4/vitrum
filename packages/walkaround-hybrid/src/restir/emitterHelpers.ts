@@ -6,7 +6,7 @@
  * the DDGI probe-NEE kernel and the ReSTIR shade pass.
  */
 
-import type { EngineWarning, Mat4, Scene, Vec3 } from '@vitrum/core';
+import type { EngineWarning, Scene, Vec3 } from '@vitrum/core';
 import {
   type PrimitiveTlasBinding,
 } from '@vitrum/shared-bvh';
@@ -283,7 +283,7 @@ export function collectMeshAreaEmitterTrisFromCore(
   for (const p of scene.primitives) {
     primById.set(String(p.id), p);
   }
-  const sourceTriIndexFor = buildMeshAreaTlasSourceTriResolver(scene, options.tlasPrimitiveBindings);
+  const sourceTriIndexFor = buildMeshAreaTlasSourceTriResolver(options.tlasPrimitiveBindings);
 
   const out: ExtraEmitterTri[] = [];
   for (const e of meshAreaEmitters) {
@@ -308,64 +308,89 @@ export function collectMeshAreaEmitterTrisFromCore(
       });
       continue;
     }
-    if (prim.kind !== 'mesh' && prim.kind !== 'skinned-mesh') continue;
+    if (
+      prim.kind !== 'mesh' &&
+      prim.kind !== 'skinned-mesh' &&
+      prim.kind !== 'instanced-mesh'
+    ) {
+      warnCollectMeshAreaEmitter(options, {
+        code: 'walkaround-hybrid.mesh-area-emitter-unsupported-primitive',
+        backend: 'walkaround-hybrid',
+        phase: options.warningPhase ?? 'lifecycle',
+        method: options.warningMethod ?? 'syncDdgiFromCoreScene',
+        message:
+          `[vitrum/walkaround-hybrid] mesh-area emitter "${String(e.id)}" ` +
+          `references primitive "${String(e.meshId)}" of kind "${prim.kind}", ` +
+          `which has no triangle surface; the emitter is skipped for DDGI probe lighting.`,
+        details: {
+          emitterId: String(e.id),
+          meshId: String(e.meshId),
+          primitiveKind: prim.kind,
+          source: 'ddgi-probe-emitter-tris',
+          fallback: 'emitter skipped',
+        },
+      });
+      continue;
+    }
 
     const positions = prim.positions;
     const indices = prim.indices;
-    const transform: Mat4 | undefined = (prim as { transform?: Mat4 }).transform;
     const Le = emitterLe(e.color, e.intensity);
-    const m: ArrayLike<number> = transform != null ? (transform) : IDENTITY_MAT4;
+    const transforms: readonly ArrayLike<number>[] =
+      prim.kind === 'instanced-mesh'
+        ? prim.instances
+        : [prim.transform ?? IDENTITY_MAT4];
 
     const triCount = indices != null
       ? Math.floor(indices.length / 3)
       : Math.floor(positions.length / 9);
 
-    for (let ti = 0; ti < triCount; ti++) {
-      const i0 = indices != null ? (indices[ti * 3]!)     : (ti * 3);
-      const i1 = indices != null ? (indices[ti * 3 + 1]!) : (ti * 3 + 1);
-      const i2 = indices != null ? (indices[ti * 3 + 2]!) : (ti * 3 + 2);
+    for (const m of transforms) {
+      for (let ti = 0; ti < triCount; ti++) {
+        const i0 = indices != null ? (indices[ti * 3]!)     : (ti * 3);
+        const i1 = indices != null ? (indices[ti * 3 + 1]!) : (ti * 3 + 1);
+        const i2 = indices != null ? (indices[ti * 3 + 2]!) : (ti * 3 + 2);
 
-      const vA = transformPoint(m, positions[i0 * 3]!, positions[i0 * 3 + 1]!, positions[i0 * 3 + 2]!);
-      const vB = transformPoint(m, positions[i1 * 3]!, positions[i1 * 3 + 1]!, positions[i1 * 3 + 2]!);
-      const vC = transformPoint(m, positions[i2 * 3]!, positions[i2 * 3 + 1]!, positions[i2 * 3 + 2]!);
-      const abx = vB[0] - vA[0], aby = vB[1] - vA[1], abz = vB[2] - vA[2];
-      const acx = vC[0] - vA[0], acy = vC[1] - vA[1], acz = vC[2] - vA[2];
-      const nx = aby * acz - abz * acy;
-      const ny = abz * acx - abx * acz;
-      const nz = abx * acy - aby * acx;
-      const crossLen = Math.sqrt(nx * nx + ny * ny + nz * nz);
-      if (crossLen < 1e-8) continue;
-      const invLen = 1 / crossLen;
-      const normal: [number, number, number] = [nx * invLen, ny * invLen, nz * invLen];
-      const sourceTriIndex = sourceTriIndexFor?.(String(prim.id), ti);
-      // A world-space sub-triangle: 3 positions + its two UV sets, plus optional
-      // provenance/override metadata. Replaces the former 13-positional-arg
-      // pushTri closure (D6-6).
-      const pushTri = (sub: SubTriangle): void => {
-        const [triA, triB, triC] = sub.pos;
-        const sx = triB[0] - triA[0], sy = triB[1] - triA[1], sz = triB[2] - triA[2];
-        const tx = triC[0] - triA[0], ty = triC[1] - triA[1], tz = triC[2] - triA[2];
-        const triArea = 0.5 * Math.sqrt(
-          (sy * tz - sz * ty) ** 2 +
-          (sz * tx - sx * tz) ** 2 +
-          (sx * ty - sy * tx) ** 2,
-        );
-        if (triArea < 1e-12) return;
-        out.push({
-          vA: triA,
-          vB: triB,
-          vC: triC,
-          normal,
-          area: triArea,
-          Le: [Le[0], Le[1], Le[2]],
-          ...(e.castShadow !== undefined ? { castShadow: e.castShadow } : {}),
-          ...(sourceTriIndex != null ? { sourceTriIndex } : {}),
-        });
-      };
-      // Keep one bounded-memory parent-triangle proposal. DDGI and RC recover
-      // the source barycentrics from this provenance and evaluate the same
-      // material-atlas emissive sample as ReSTIR at candidate time.
-      pushTri({ pos: [vA, vB, vC] });
+        const vA = transformPoint(m, positions[i0 * 3]!, positions[i0 * 3 + 1]!, positions[i0 * 3 + 2]!);
+        const vB = transformPoint(m, positions[i1 * 3]!, positions[i1 * 3 + 1]!, positions[i1 * 3 + 2]!);
+        const vC = transformPoint(m, positions[i2 * 3]!, positions[i2 * 3 + 1]!, positions[i2 * 3 + 2]!);
+        const abx = vB[0] - vA[0], aby = vB[1] - vA[1], abz = vB[2] - vA[2];
+        const acx = vC[0] - vA[0], acy = vC[1] - vA[1], acz = vC[2] - vA[2];
+        const nx = aby * acz - abz * acy;
+        const ny = abz * acx - abx * acz;
+        const nz = abx * acy - aby * acx;
+        const crossLen = Math.sqrt(nx * nx + ny * ny + nz * nz);
+        if (crossLen < 1e-8) continue;
+        const invLen = 1 / crossLen;
+        const normal: [number, number, number] = [nx * invLen, ny * invLen, nz * invLen];
+        const sourceTriIndex = sourceTriIndexFor?.(String(prim.id), ti, m);
+        // A world-space sub-triangle plus optional provenance/override metadata.
+        const pushTri = (sub: SubTriangle): void => {
+          const [triA, triB, triC] = sub.pos;
+          const sx = triB[0] - triA[0], sy = triB[1] - triA[1], sz = triB[2] - triA[2];
+          const tx = triC[0] - triA[0], ty = triC[1] - triA[1], tz = triC[2] - triA[2];
+          const triArea = 0.5 * Math.sqrt(
+            (sy * tz - sz * ty) ** 2 +
+            (sz * tx - sx * tz) ** 2 +
+            (sx * ty - sy * tx) ** 2,
+          );
+          if (triArea < 1e-12) return;
+          out.push({
+            vA: triA,
+            vB: triB,
+            vC: triC,
+            normal,
+            area: triArea,
+            Le: [Le[0], Le[1], Le[2]],
+            ...(e.castShadow !== undefined ? { castShadow: e.castShadow } : {}),
+            ...(sourceTriIndex != null ? { sourceTriIndex } : {}),
+          });
+        };
+        // Keep one bounded-memory parent-triangle proposal. DDGI and RC recover
+        // the source barycentrics from this provenance and evaluate the same
+        // material-atlas emissive sample as ReSTIR at candidate time.
+        pushTri({ pos: [vA, vB, vC] });
+      }
     }
   }
   return out;
@@ -386,9 +411,12 @@ function determinantSignOfLinear(m: ArrayLike<number> | undefined): number {
 }
 
 function buildMeshAreaTlasSourceTriResolver(
-  scene: Scene,
   bindings: readonly PrimitiveTlasBinding[] | undefined,
-): ((primitiveId: string, localTri: number) => number) | null {
+): ((
+  primitiveId: string,
+  localTri: number,
+  worldTransform: ArrayLike<number>,
+) => number) | null {
   if (bindings == null || bindings.length === 0) return null;
   const bindingByPrimitiveId = new Map<string, PrimitiveTlasBinding>();
   for (const binding of bindings) {
@@ -397,17 +425,15 @@ function buildMeshAreaTlasSourceTriResolver(
     }
   }
 
-  const windingSignByPrimitiveId = new Map<string, number>();
-  for (const p of scene.primitives) {
-    if (p.kind !== 'mesh' && p.kind !== 'skinned-mesh') continue;
-    windingSignByPrimitiveId.set(String(p.id), determinantSignOfLinear(p.transform));
-  }
-
-  return (primitiveId: string, localTri: number): number => {
+  return (
+    primitiveId: string,
+    localTri: number,
+    worldTransform: ArrayLike<number>,
+  ): number => {
     const binding = bindingByPrimitiveId.get(primitiveId);
     if (binding == null || localTri < 0 || localTri >= binding.triCount) return -1;
     const sourceTri = binding.triStart + localTri;
-    return (windingSignByPrimitiveId.get(primitiveId) ?? 1) < 0
+    return determinantSignOfLinear(worldTransform) < 0
       ? -(sourceTri + 2)
       : sourceTri;
   };

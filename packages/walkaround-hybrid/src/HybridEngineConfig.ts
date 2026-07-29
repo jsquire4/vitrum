@@ -558,7 +558,13 @@ function validateHybridOptionValueDomains(opts: HybridEngineOptions): void {
   assertSafeInteger(opts.ddgiUpdateDivisor, 'options.ddgiUpdateDivisor', 1);
   assertSafeInteger(opts.ppgDispatchInterval, 'options.ppgDispatchInterval', 1);
   assertSafeInteger(opts.nrcWarmupSteps, 'options.nrcWarmupSteps', 0);
-  assertSafeInteger(opts.maxSamplesPerPixel, 'options.maxSamplesPerPixel', 1);
+  if (opts.maxSamplesPerPixel !== undefined) {
+    throw new TypeError(
+      '[HybridEngine] maxSamplesPerPixel is unsupported by walkaround-hybrid: ' +
+      'this realtime backend does not accumulate samples (capabilities.accumulates=false). ' +
+      'Use per-frame quality controls or a path-tracing backend for SPP caps.',
+    );
+  }
   if (opts.targetFrameIntervalMs !== null) {
     assertFiniteNumber(opts.targetFrameIntervalMs, 'options.targetFrameIntervalMs', { min: 0 });
   }
@@ -743,11 +749,6 @@ export interface ParsedHybridEngineConfig {
   readonly atrousDirectSigmas: readonly [number, number, number];
   readonly atrousIndirectSigmas: readonly [number, number, number];
   readonly stainedGlassFlags: number;
-  /** GRIS DDGI-proxy reconnection-shift reuse gate (0 = off / legacy reuse,
-   *  1 = bounded GRIS DDGI-proxy shift + visibility + all-technique transformed-density MIS). The STRUCTURE is
-   *  COMPILE-TIME (the boolean selects the GI pipeline layout + shader variant
-   *  at init); this number is also threaded into the per-frame UBO. */
-  readonly grisReuse: number;
   /** Maximum transmitted dielectric interfaces per RC probe ray. */
   readonly rcTransmittedInterfaceBudget: number;
   /** NRC (Müller et al. 2021) cache flag mirrored into the per-frame UBO
@@ -1026,30 +1027,49 @@ function resolveHybridDenoiser(
  *   5. supplied full-tier neuralWeights must match the canonical U-Net spec.
  */
 
-function resolveGrisReuseOption(opts: HybridEngineOptions): boolean {
-  if (
-    opts.grisReuse !== undefined &&
-    opts.restirPtReuse !== undefined &&
-    opts.grisReuse !== opts.restirPtReuse
-  ) {
+function validateGrisReuseOptions(opts: HybridEngineOptions): void {
+  if (opts.grisReuse === false || opts.restirPtReuse === false) {
     throw new TypeError(
-      '[HybridEngine] grisReuse and deprecated restirPtReuse disagree; ' +
-      'supply only grisReuse.',
+      '[HybridEngine] grisReuse=false/restirPtReuse=false requests the retired ' +
+      'compact ReSTIR-GI reuse path. Generalized reconnection-shift reuse is ' +
+      'always enabled; remove the option.',
     );
   }
-  return opts.grisReuse ?? opts.restirPtReuse ?? false;
 }
 
-function warnDeprecatedRestirPtReuse(opts: HybridEngineOptions): void {
-  if (opts.restirPtReuse === undefined) return;
+function warnDeprecatedGrisReuseOptions(opts: HybridEngineOptions): void {
+  if (opts.grisReuse === undefined && opts.restirPtReuse === undefined) return;
   emitConfigWarning(opts, {
-    code: 'walkaround-hybrid.restir-pt-reuse-deprecated',
+    code: 'walkaround-hybrid.gi-reuse-option-deprecated',
     backend: 'walkaround-hybrid',
     phase: 'construction',
     method: 'createWalkaroundEngine_Hybrid',
-    message: '[HybridEngine] restirPtReuse is deprecated; use grisReuse. The mode is a diffuse/geometric one-bounce DDGI proxy, not ReSTIR PT.',
-    details: { replacement: 'grisReuse', effectiveValue: resolveGrisReuseOption(opts) },
+    message:
+      '[HybridEngine] grisReuse/restirPtReuse is deprecated because generalized ' +
+      'reconnection-shift GI reuse is always enabled. Remove the option; this ' +
+      'is a diffuse/geometric one-bounce proxy, not ReSTIR PT.',
+    details: {
+      replacement: 'omit-option',
+      suppliedGrisReuse: opts.grisReuse,
+      suppliedRestirPtReuse: opts.restirPtReuse,
+      effectiveValue: true,
+    },
   });
+}
+
+function rejectDisabledSubsystemOptions(
+  opts: HybridEngineOptions,
+  enabled: boolean,
+  gate: 'ppgEnabled' | 'nrcEnabled' | 'rcEnabled',
+  fields: readonly (keyof HybridEngineOptions)[],
+): void {
+  if (enabled) return;
+  const supplied = fields.filter((field) => opts[field] !== undefined);
+  if (supplied.length === 0) return;
+  throw new TypeError(
+    `[HybridEngine] ${supplied.join(', ')} require ${gate}:true; ` +
+    `the subsystem is construction-time immutable, so these options would otherwise have no effect.`,
+  );
 }
 
 /**
@@ -1203,14 +1223,7 @@ export function validateHybridEngineOptions(opts: HybridEngineOptions): void {
   }
 
 
-  const grisReuse = resolveGrisReuseOption(opts);
-  if (opts.ppgEnabled === true && grisReuse) {
-    throw new TypeError(
-      '[HybridEngine] ppgEnabled and grisReuse cannot be enabled together: ' +
-      'the GRIS producer deliberately bypasses the PPG proposal, so claiming ' +
-      'guided sampling would be false.',
-    );
-  }
+  validateGrisReuseOptions(opts);
   if (
     opts.ppgMixAlpha !== undefined &&
     (!Number.isFinite(opts.ppgMixAlpha) || opts.ppgMixAlpha <= 0 || opts.ppgMixAlpha >= 1)
@@ -1302,6 +1315,29 @@ export function validateHybridEngineOptions(opts: HybridEngineOptions): void {
       );
     }
   }
+  rejectDisabledSubsystemOptions(
+    opts,
+    opts.ppgEnabled === true,
+    'ppgEnabled',
+    [
+      'ppgMaxSpatialCells',
+      'ppgMaxDTreeNodesPerCell',
+      'ppgMixAlpha',
+      'ppgDispatchInterval',
+    ],
+  );
+  rejectDisabledSubsystemOptions(
+    opts,
+    opts.nrcEnabled === true,
+    'nrcEnabled',
+    ['nrcConfig', 'nrcWarmupSteps', 'nrcSpreadC', 'nrcMaxResidentBytes'],
+  );
+  rejectDisabledSubsystemOptions(
+    opts,
+    opts.rcEnabled === true,
+    'rcEnabled',
+    ['rcTransmittedInterfaceBudget', 'rcWeight', 'cascadeDims'],
+  );
 }
 
 /**
@@ -1321,9 +1357,9 @@ export function deriveHybridEngineConfig(
   preset: ReturnType<typeof resolveQualityPreset>,
 ): ParsedHybridEngineConfig {
   const isLite = opts.tier === 'lite';
-  const grisReuse = resolveGrisReuseOption(opts);
+  validateGrisReuseOptions(opts);
   const nrcConfig = resolveHybridNrcConfig(opts);
-  warnDeprecatedRestirPtReuse(opts);
+  warnDeprecatedGrisReuseOptions(opts);
   // Effective options overlay: the preset supplies fallbacks for the knobs it
   // governs, so the existing table-driven `readTunables` / denoiser /
   // targetFrameInterval logic picks them up unchanged. Explicit opts win.
@@ -1394,10 +1430,6 @@ export function deriveHybridEngineConfig(
       sunCaustic: opts.stainedGlass?.sunCaustic,
       skyAperture: opts.stainedGlass?.skyAperture,
     }),
-    // GRIS DDGI-proxy reconnection-shift reuse gate. Default 0 (OFF) so the
-    // GI spatial/temporal reuse is bit-identical to the legacy clamped-Jacobian
-    // path unless a host opts in via opts.grisReuse.
-    grisReuse: grisReuse ? 1 : 0,
     rcTransmittedInterfaceBudget: opts.rcTransmittedInterfaceBudget
       ?? RC_DEFAULT_TRANSMITTED_INTERFACE_BUDGET,
     // NRC cache flag. Default 0 (OFF) so the gi-ris suffix is bit-identical to

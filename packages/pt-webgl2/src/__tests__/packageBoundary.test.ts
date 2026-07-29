@@ -28,4 +28,19 @@ describe('@vitrum/pt-webgl2 package boundary', () => {
     });
     expect(offenders).toEqual([]);
   });
+
+  it('declares every directly imported Vitrum package as a runtime dependency', () => {
+    const pkg = JSON.parse(
+      readFileSync(fileURLToPath(new URL('../../package.json', import.meta.url)), 'utf8'),
+    ) as {
+      dependencies?: Readonly<Record<string, string>>;
+    };
+
+    expect(pkg.dependencies).toMatchObject({
+      '@vitrum/core': expect.any(String),
+      '@vitrum/shared-bvh': expect.any(String),
+      '@vitrum/shared-denoisers': expect.any(String),
+      '@vitrum/shared-samplers': expect.any(String),
+    });
+  });
 });

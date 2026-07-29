@@ -122,6 +122,68 @@ function textureSourceGltf(extension: GltfTextureSourceExtension): {
 }
 
 describe('glTF common extension policy', () => {
+  it('classifies every unimplemented optional extension, including vendor prefixes', () => {
+    const { gltf } = minimalMaterialGltf({
+      extensions: {
+        ADOBE_materials_clearcoat_tint: { tintFactor: [1, 0.5, 0.25] },
+      },
+    });
+    gltf.extensionsUsed = ['ADOBE_materials_clearcoat_tint', 'CESIUM_primitive_outline'];
+
+    const report = analyzeGltfAsset(gltf);
+
+    expect(report.extensions.unsupportedOptional).toEqual([
+      'ADOBE_materials_clearcoat_tint',
+      'CESIUM_primitive_outline',
+    ]);
+    expect(report.materials.unsupportedKnownExtensions).toContain(
+      'ADOBE_materials_clearcoat_tint',
+    );
+    expect(evaluateGltfBackendCompatibility(report, 'pt-webgpu').issues).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          category: 'extension',
+          name: 'ADOBE_materials_clearcoat_tint',
+          support: 'unsupported',
+        }),
+        expect.objectContaining({
+          category: 'extension',
+          name: 'CESIUM_primitive_outline',
+          support: 'unsupported',
+        }),
+      ]),
+    );
+  });
+
+  it('reports a selected EXT_lights_image_based environment instead of silently dropping it', async () => {
+    const { gltf, buffers } = minimalMaterialGltf({});
+    gltf.extensionsUsed = ['EXT_lights_image_based'];
+    gltf.extensions = {
+      EXT_lights_image_based: {
+        lights: [{
+          intensity: 2,
+          irradianceCoefficients: Array.from({ length: 9 }, () => [0, 0, 0]),
+          specularImageSize: 16,
+          specularImages: [[0, 1, 2, 3, 4, 5]],
+        }],
+      },
+    };
+    gltf.scenes![0]!.extensions = {
+      EXT_lights_image_based: { light: 0 },
+    };
+
+    const report = analyzeGltfAsset(gltf);
+    expect(report.extensions.unsupportedOptional).toContain('EXT_lights_image_based');
+
+    const result = await gltfToScene(gltf, { buffers });
+    expect(result.scene.environment).toEqual({ kind: 'none' });
+    expect(result.diagnostics).toContainEqual(expect.objectContaining({
+      severity: 'warning',
+      code: 'unsupported-image-based-light',
+      path: 'scenes[0].extensions.EXT_lights_image_based',
+    }));
+  });
+
   it('accepts required KHR_mesh_quantization when normalized accessors unpack to scene floats', async () => {
     const positions = i16Buffer([
       -32767, -32767, 0,
@@ -500,7 +562,7 @@ describe('glTF common extension policy', () => {
     ]));
   });
 
-  it('requires opt-in before a required texture-source extension can override texture.source', async () => {
+  it('selects required KHR_texture_basisu through the built-in codec path', async () => {
     const { gltf, buffers, extensionBytes } = textureSourceGltf('KHR_texture_basisu');
     gltf.extensionsRequired = ['KHR_texture_basisu'];
     const report = analyzeGltfAsset(gltf);
@@ -510,24 +572,30 @@ describe('glTF common extension policy', () => {
         textureIndex: 0,
         sourceImageIndex: 1,
         path: 'textures[0].extensions.KHR_texture_basisu',
-        selected: false,
+        selected: true,
         required: true,
         hasBaseSource: true,
-        requiresHook: true,
+        requiresHook: false,
         mimeType: 'image/ktx2',
       },
     ]);
-    expect(evaluateGltfBackendCompatibility(report, 'pt-webgl2').issues).toEqual(
+    expect(evaluateGltfBackendCompatibility(report, 'pt-webgl2').issues).not.toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           category: 'extension',
           name: 'KHR_texture_basisu',
           support: 'requires-hook',
-          path: 'textures[0].extensions.KHR_texture_basisu',
         }),
       ]),
     );
-    await expect(gltfToScene(gltf, { buffers })).rejects.toThrow('KHR_texture_basisu');
+    const builtinScene = await gltfToScene(gltf, { buffers });
+    const builtinHandle = (
+      builtinScene.scene.primitives[0] as MeshPrimitive
+    ).material.baseColorMap as TextureRef;
+    expect(builtinHandle.handle).toMatchObject({
+      kind: 'raw-image',
+      mimeType: 'image/ktx2',
+    });
 
     const decodeImage = vi.fn(async (bytes: Uint8Array, mimeType: string) => {
       expect(Array.from(bytes)).toEqual(extensionBytes);
@@ -537,7 +605,6 @@ describe('glTF common extension policy', () => {
     const { scene } = await gltfToScene(gltf, {
       buffers,
       decodeImage,
-      textureSourceExtensions: ['KHR_texture_basisu'],
     });
 
     expect(decodeImage).toHaveBeenCalledTimes(1);

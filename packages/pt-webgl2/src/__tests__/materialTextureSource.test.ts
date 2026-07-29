@@ -38,9 +38,9 @@ describe('pt-webgl2 immutable material texture sources', () => {
     const atlas = packTextureAtlas([material]);
     expect(atlas).not.toBeNull();
     expect(atlas?.sourceDimensions).toEqual([[2, 1]]);
-    expect(Array.from(atlas?.data ?? [])).toEqual(Array.from(new Float32Array([
-      1, 0, 0, 1,
-      0, 1, 0, 1,
+    expect(Array.from(atlas?.data ?? [])).toEqual(Array.from(new Uint8Array([
+      255, 0, 0, 255,
+      0, 255, 0, 255,
       0, 0, 0, 0,
       0, 0, 0, 0,
     ])));

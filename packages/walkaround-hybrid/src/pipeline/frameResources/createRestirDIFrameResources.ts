@@ -22,11 +22,11 @@ export function createRestirDIFrameResources(
   });
   const reservoirPreviousBuffer = device.createBuffer({
     size: totalReservoirBytes,
-    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    usage,
   });
   const reservoirSpatialBuffer = device.createBuffer({
     size: totalReservoirBytes,
-    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    usage,
   });
 
   return {

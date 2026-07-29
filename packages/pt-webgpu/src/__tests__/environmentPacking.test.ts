@@ -7,15 +7,24 @@
  */
 import { describe, expect, it } from 'vitest';
 import { environmentParams } from '../scene/environmentPacking.js';
+import { buildLightTreeInputForScene } from '../scene/emitterPacking.js';
+import { buildPackedScene } from '../scene/uploadSceneBuffers.js';
+import { LIGHT_TREE_FLOATS_PER_NODE } from '@vitrum/shared-samplers';
 import type { Scene } from '@vitrum/core';
 
-function makeHdriScene(data: ArrayLike<number>, width: number, height: number): Scene {
+function makeHdriScene(
+  data: ArrayLike<number>,
+  width: number,
+  height: number,
+  intensity?: number,
+): Scene {
   return {
     primitives: [],
     emitters: [],
     environment: {
       kind: 'hdri',
       hdri: { width, height, data } as unknown as Scene['environment'] & object,
+      ...(intensity !== undefined ? { intensity } : {}),
     },
   };
 }
@@ -151,6 +160,121 @@ describe('environmentPacking — all-black HDRI message', () => {
   });
 });
 
+describe('environmentPacking — light-tree environment power', () => {
+  const uniformHdri = (radiance: number): Float32Array =>
+    new Float32Array([
+      radiance, radiance, radiance,
+      radiance, radiance, radiance,
+      radiance, radiance, radiance,
+      radiance, radiance, radiance,
+    ]);
+
+  it('scales linearly with both HDRI content and the independent intensity', () => {
+    const unit = environmentParams(makeHdriScene(uniformHdri(1), 2, 2, 1));
+    const brighterMap = environmentParams(
+      makeHdriScene(uniformHdri(3), 2, 2, 1),
+    );
+    const brighterIntensity = environmentParams(
+      makeHdriScene(uniformHdri(1), 2, 2, 4),
+    );
+
+    expect(unit.lightTreePower).toBeGreaterThan(0);
+    expect(brighterMap.lightTreePower / unit.lightTreePower).toBeCloseTo(3, 6);
+    expect(
+      brighterIntensity.lightTreePower / unit.lightTreePower,
+    ).toBeCloseTo(4, 6);
+  });
+
+  it('retains a dim but positive Float32 HDRI as a sampleable environment', () => {
+    const params = environmentParams(
+      makeHdriScene(uniformHdri(1e-20), 2, 2, 1),
+    );
+
+    expect(params.hasHdri).toBe(true);
+    expect(params.hdriCdf[0]).toBe(0);
+    expect(params.hdriCdf[params.hdriCdf.length - 1]).toBe(1);
+    expect(params.lightTreePower).toBeGreaterThan(0);
+  });
+
+  it('uses the effective Float32 intensity for both shading and tree power', () => {
+    const authoredIntensity = 1 + 2 ** -25;
+    const effectiveIntensity = Math.fround(authoredIntensity);
+    const authored = environmentParams(
+      makeHdriScene(uniformHdri(1), 2, 2, authoredIntensity),
+    );
+    const effective = environmentParams(
+      makeHdriScene(uniformHdri(1), 2, 2, effectiveIntensity),
+    );
+
+    expect(authored.hdriIntensity).toBe(effectiveIntensity);
+    expect(authored.lightTreePower).toBe(effective.lightTreePower);
+  });
+
+  it('keeps black and zero-intensity environments at exactly zero power', () => {
+    const blackScene = makeHdriScene(
+      new Float32Array(2 * 2 * 3),
+      2,
+      2,
+      5,
+    );
+    const zeroIntensityScene = makeHdriScene(uniformHdri(1), 2, 2, 0);
+    const black = environmentParams(blackScene);
+    const zeroIntensity = environmentParams(zeroIntensityScene);
+
+    expect(black.hasHdri).toBe(false);
+    expect(black.lightTreePower).toBe(0);
+    expect(zeroIntensity.hasHdri).toBe(true);
+    expect(zeroIntensity.lightTreePower).toBe(0);
+
+    expect(buildLightTreeInputForScene(blackScene).powers).toEqual([]);
+    const zeroInput = buildLightTreeInputForScene(zeroIntensityScene);
+    expect(zeroInput.powers).toEqual([0]);
+  });
+
+  it('rejects when positive map radiance and intensity multiply entirely to zero in f32', () => {
+    const smallestPositiveF32 = 2 ** -149;
+    expect(() =>
+      environmentParams(
+        makeHdriScene(uniformHdri(0.01), 2, 2, smallestPositiveF32),
+      ),
+    ).toThrow(/underflows entirely to zero in Float32/);
+  });
+
+  it('packs the environment leaf from the same retained power used by initial scene packing', () => {
+    const scene: Scene = {
+      ...makeHdriScene(uniformHdri(2), 2, 2, 0.75),
+      emitters: [
+        {
+          kind: 'point',
+          id: 'lamp',
+          position: [0, 2, 0],
+          color: [1, 1, 1],
+          intensity: 3,
+        },
+      ],
+    };
+    const params = environmentParams(scene);
+    const input = buildLightTreeInputForScene(scene);
+    const packed = buildPackedScene(scene, {});
+    const environmentEmitterIndex = input.powers.length - 1;
+    let packedLeafPower: number | undefined;
+    for (
+      let base = 0;
+      base < packed.lightTreeNodes.length;
+      base += LIGHT_TREE_FLOATS_PER_NODE
+    ) {
+      if (packed.lightTreeNodes[base] === environmentEmitterIndex) {
+        packedLeafPower = packed.lightTreeNodes[base + 1];
+        break;
+      }
+    }
+
+    expect(input.powers[environmentEmitterIndex]).toBe(params.lightTreePower);
+    expect(packed.environmentLightTreePower).toBe(params.lightTreePower);
+    expect(packedLeafPower).toBe(Math.fround(params.lightTreePower));
+  });
+});
+
 describe('environmentPacking — strict malformed-input rejection', () => {
   it('rejects non-exact channel layouts', () => {
     expect(() => environmentParams(makeHdriScene(new Float32Array(5), 1, 1))).toThrow(
@@ -184,6 +308,27 @@ describe('environmentPacking — strict malformed-input rejection', () => {
     expect(() => environmentParams(scene)).toThrow(/HDRI intensity must be finite and non-negative/);
   });
 
+  it.each([
+    ['underflows to zero', 2 ** -150],
+    ['overflows to infinity', 1e39],
+  ])('rejects a positive HDRI intensity that %s in Float32', (_label, intensity) => {
+    const dimButPositiveMap = new Float32Array(2 * 2 * 3).fill(1e-11);
+    expect(() =>
+      environmentParams(makeHdriScene(dimButPositiveMap, 2, 2, intensity)),
+    ).toThrow(/HDRI intensity must remain finite and positive after Float32 packing/);
+  });
+
+  it('rejects per-texel f32 overflow even when the solid-angle integral fits', () => {
+    const width = 1_000;
+    const data = new Float32Array(width * 3);
+    data[0] = 1e38;
+    data[1] = 1e38;
+    data[2] = 1e38;
+    expect(() =>
+      environmentParams(makeHdriScene(data, width, 1, 10)),
+    ).toThrow(/texel 0 multiplied by its intensity must remain finite in Float32/);
+  });
+
   it.each([NaN, Infinity, -Infinity])('rejects invalid HDRI rotation %s even for an all-black map', (rotationY) => {
     const scene = makeHdriScene(new Float32Array(3), 1, 1);
     const env = scene.environment;
@@ -215,6 +360,7 @@ describe('environmentPacking — no environment', () => {
     expect(p.hdriHeight).toBe(0);
     expect(p.hdriIntensity).toBe(0);
     expect(p.sunStrength).toBe(0);
+    expect(p.lightTreePower).toBe(0);
     expect(p.hdriTexels.length).toBe(0);
     expect(p.hdriCdf.length).toBe(0);
     expect(p.warnings).toEqual([]);
@@ -381,6 +527,16 @@ describe('environmentPacking — Preetham procedural sky bake', () => {
   it('sunStrength is 0 so the procedural-sky NEE gate does not double-fire', () => {
     const p = environmentParams(makeProceduralSkyScene({ intensity: 3 }));
     expect(p.sunStrength).toBe(0);
+  });
+
+  it('carries the baked sky integral and scales it exactly once with intensity', () => {
+    const unit = environmentParams(makeProceduralSkyScene({ intensity: 1 }));
+    const scaled = environmentParams(makeProceduralSkyScene({ intensity: 2.5 }));
+    const black = environmentParams(makeProceduralSkyScene({ intensity: 0 }));
+
+    expect(unit.lightTreePower).toBeGreaterThan(0);
+    expect(scaled.lightTreePower / unit.lightTreePower).toBeCloseTo(2.5, 5);
+    expect(black.lightTreePower).toBe(0);
   });
 
   // ----- 8. Horizon–zenith ratio: zenith should be brighter than horizon (clear sky) -----

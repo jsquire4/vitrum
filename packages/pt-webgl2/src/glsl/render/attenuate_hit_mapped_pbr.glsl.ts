@@ -41,7 +41,7 @@ bool attenuateHit( RenderState state, Ray ray, float rayDist, out vec3 color ) {
       vec3 uvPrime =
         material.mapTransform * vec3( MAPPED_SHADOW_UV( 0u ), 1.0 );
       albedo *= sampleMaterialTexture(
-        textures, uvPrime.xy, material.map, material.mapWrap
+        textures, uvPrime.xy, material.map, material.mapWrap, true
       );
     }
     if ( material.vertexColors ) {

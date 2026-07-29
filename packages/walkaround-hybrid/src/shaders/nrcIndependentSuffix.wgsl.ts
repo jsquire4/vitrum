@@ -100,13 +100,14 @@ fn nrcTeacherMaterialResponse(
     wo,
     wi,
   ) * payload.layerTransmission;
-  return applyHomogeneousVolumeSingleScatter(
+  return applyHomogeneousVolumeSingleScatterDirectional(
     fCos,
     payload.albedo,
     payload.volumeScattering,
     payload.bulkThickness,
     normal,
     wo,
+    wi,
   );
 }
 

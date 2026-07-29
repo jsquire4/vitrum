@@ -76,6 +76,12 @@ export type GltfCamera = GltfPerspectiveCamera | GltfOrthographicCamera | GltfUn
 export interface GltfScene {
   name?: string;
   nodes?: number[];
+  extensions?: {
+    EXT_lights_image_based?: {
+      light?: number;
+    };
+    [key: string]: unknown;
+  };
 }
 
 export interface GltfNode {

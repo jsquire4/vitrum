@@ -26,6 +26,11 @@ import {
   packRoughMetalIorBytes,
 } from '../../packingHelpers.js';
 import { quantizePackedMaterialTransmission } from '@vitrum/shared-bvh';
+import {
+  SURFACE_TEXTURE_ID,
+  validateSurfaceTextureId,
+  type SurfaceTextureId,
+} from '@vitrum/stained-glass-extensions';
 
 interface ColorLike {
   readonly r: number;
@@ -111,7 +116,7 @@ function packBVHIndexWTri(
   const mat = materials[matId];
   let r = WARM_GRAY_DEFAULT_R, g = WARM_GRAY_DEFAULT_G, b = WARM_GRAY_DEFAULT_B;
   let transmission = 0;
-  let texTypeId = 0;
+  let texTypeId: SurfaceTextureId = SURFACE_TEXTURE_ID.smooth;
   let isMetal = 0;
   if (mat) {
     transmission = (mat.transmission ?? 0);
@@ -120,12 +125,17 @@ function packBVHIndexWTri(
     g = Math.round(color.g * 255) & 0xFF;
     b = Math.round(color.b * 255) & 0xFF;
     const surfTex = mat.userData?.surfaceTextureId;
-    texTypeId = (typeof surfTex === 'number' ? surfTex : 0) & 0x7;
+    texTypeId = surfTex === undefined
+      ? SURFACE_TEXTURE_ID.smooth
+      : validateSurfaceTextureId(
+        surfTex,
+        `materials[${matId}].userData.surfaceTextureId`,
+      );
     const metalness = (mat.metalness ?? 0);
     isMetal = metalness > 1e-4 ? 1 : 0;
   }
   const trans4 = quantizePackedMaterialTransmission(transmission);
-  const lowByte = ((trans4 << 4) | (isMetal << 3) | (texTypeId & 0x7)) & 0xFF;
+  const lowByte = (trans4 << 4) | (isMetal << 3) | texTypeId;
   indexBuf[base4 + 3] = (r << 24) | (g << 16) | (b << 8) | lowByte;
 }
 

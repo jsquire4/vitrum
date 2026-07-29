@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
 import { PT_WEBGPU_PATH_TRACE_KERNEL_WGSL } from '../wgsl/pathTrace/kernel.wgsl.js';
-import { PT_WEBGPU_ADJOINT_PASS_WGSL } from '../wgsl/pathTrace/adjointPass.wgsl.js';
 import { RESTIR_PT_PRODUCER_WGSL } from '../wgsl/pathTrace/restirPtProducer.wgsl.js';
 
 type V3 = readonly [number, number, number];
@@ -86,15 +85,14 @@ describe('pt-webgpu directional soft-sun cone sampler — independent oracle', (
     expect(lowerHalf).toBe(n / 2);
   });
 
-  it('forward full-tier, adjoint replay, and ReSTIR-PT suffix shaders are linked to the same solid-angle cone mapping', () => {
-    for (const wgsl of [PT_WEBGPU_PATH_TRACE_KERNEL_WGSL, PT_WEBGPU_ADJOINT_PASS_WGSL, RESTIR_PT_PRODUCER_WGSL]) {
+  it('forward full-tier and ReSTIR-PT suffix shaders are linked to the same solid-angle cone mapping', () => {
+    for (const wgsl of [PT_WEBGPU_PATH_TRACE_KERNEL_WGSL, RESTIR_PT_PRODUCER_WGSL]) {
       expect(wgsl).toContain('let cosHalfAngle = cos(');
       expect(wgsl).toContain('let cosTheta = mix(cosHalfAngle, 1.0, xi1);');
       expect(wgsl).toContain('let sinTheta = sqrt(max(0.0, 1.0 - cosTheta * cosTheta));');
       expect(wgsl).toContain('let tangentX = select(vec3f(1.0, 0.0, 0.0), vec3f(0.0, 1.0, 0.0), abs(');
     }
     expect(PT_WEBGPU_PATH_TRACE_KERNEL_WGSL).toContain('let angDiam = select(angDiamRaw, -1.0 - angDiamRaw, dirShadowDisabled);');
-    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let angularDiameter = select(angularDiameterRaw, -1.0 - angularDiameterRaw, directionalShadowDisabled);');
     expect(RESTIR_PT_PRODUCER_WGSL).toContain('let angDiam = select(angDiamRaw, -1.0 - angDiamRaw, dirShadowDisabled);');
   });
 });

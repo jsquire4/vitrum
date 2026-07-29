@@ -30,7 +30,11 @@ import { SceneBvh } from '@vitrum/shared-bvh';
 import type { EngineError, EngineWarning, Scene } from '@vitrum/core';
 import { ProbeGrid } from './probeGrid.js';
 import type { ProbeGridParams } from './probeGrid.js';
-import { ProbeUpdatePass } from './probeUpdatePass.js';
+import {
+  ProbeUpdatePass,
+  type ProbeAtlasImportTransaction,
+  type ProbeAtlasSnapshot,
+} from './probeUpdatePass.js';
 import { snapshotDdgiLights, type DDGILight } from './types.js';
 import {
   isRestirTlasOnlyRefit,
@@ -527,12 +531,7 @@ export class DDGI {
    * Callers (e.g. `HybridEngineGIState.exportGIStateImpl`) use this instead of
    * reaching through `DDGI.pass.exportAtlasData`.
    */
-  async exportAtlasData(device: GPUDevice): Promise<{
-    irrW: number; irrH: number; visW: number; visH: number;
-    probeStateW: number; probeStateH: number;
-    irrData: Uint16Array; visData: Uint16Array;
-    probeStateData: Float32Array;
-  } | null> {
+  async exportAtlasData(device: GPUDevice): Promise<ProbeAtlasSnapshot | null> {
     return this._pass.exportAtlasData(device);
   }
 
@@ -546,14 +545,16 @@ export class DDGI {
    */
   importAtlasData(
     device: GPUDevice,
-    snap: {
-      irrW: number; irrH: number; visW: number; visH: number;
-      probeStateW: number; probeStateH: number;
-      irrData: Uint16Array; visData: Uint16Array;
-      probeStateData: Float32Array;
-    },
+    snap: ProbeAtlasSnapshot,
   ): boolean {
     return this._pass.importAtlasData(device, snap);
+  }
+
+  prepareAtlasImport(
+    device: GPUDevice,
+    snap: ProbeAtlasSnapshot,
+  ): ProbeAtlasImportTransaction | null {
+    return this._pass.prepareAtlasImport(device, snap);
   }
 
   /**

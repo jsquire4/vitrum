@@ -115,8 +115,9 @@ describe('COMPOSITE_FRAG_WGSL — shader source guards', () => {
     expect(COMPOSITE_FRAG_WGSL).toContain('outputColorSpace');
   });
 
-  it('binds CompositeUniforms at group(0) binding(2) as a uniform', () => {
-    expect(COMPOSITE_FRAG_WGSL).toMatch(/@group\(0\)\s+@binding\(2\)\s+var<uniform>\s+compositeParams/);
+  it('binds CompositeUniforms at group(0) binding(1) without an unused sampler', () => {
+    expect(COMPOSITE_FRAG_WGSL).toMatch(/@group\(0\)\s+@binding\(1\)\s+var<uniform>\s+compositeParams/);
+    expect(COMPOSITE_FRAG_WGSL).not.toMatch(/var\s+\w*compositeSampler\s*:\s*sampler/);
   });
 
   it('calls vitrumTonemap with compositeParams.tonemapMode and compositeParams.exposure', () => {

@@ -221,13 +221,24 @@ export class ProbeGrid {
     // A point/fully-degenerate AABB still needs a finite grid. One scene unit is
     // the least-surprising fallback when no positive extent exists to derive it.
     const autoSpacing = maxExtent > 0 ? maxExtent / 12 : 1;
-    const PROBE_SPACING = spacingInches ?? autoSpacing;
+    const requestedSpacing = spacingInches ?? autoSpacing;
+    const cap = Math.max(3, maxProbesPerAxis);
+    // A dimension cap must coarsen the physical lattice as well as truncate
+    // its integer dimensions. Keeping the requested spacing while clipping
+    // `dims` leaves the far side of a large scene outside the probe volume.
+    // Use one isotropic spacing so the capped lattice still encloses every
+    // axis: origin + (dims - 1) * spacing >= bounds.max.
+    const PROBE_SPACING = Math.max(
+      requestedSpacing,
+      size.x / (cap - 1),
+      size.y / (cap - 1),
+      size.z / (cap - 1),
+    );
 
     const nx = Math.max(3, Math.ceil(size.x / PROBE_SPACING) + 1);
     const ny = Math.max(3, Math.ceil(size.y / PROBE_SPACING) + 1);
     const nz = Math.max(3, Math.ceil(size.z / PROBE_SPACING) + 1);
 
-    const cap = Math.max(3, maxProbesPerAxis);
     const cx = Math.min(nx, cap);
     const cy = Math.min(ny, cap);
     const cz = Math.min(nz, cap);

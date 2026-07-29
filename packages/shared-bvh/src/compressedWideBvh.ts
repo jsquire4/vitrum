@@ -724,81 +724,8 @@ export function intersectCompressedWideBvhAnyHit(
   ray: CwbvhRay,
   opts: CwbvhTraverseOptions = {},
 ): boolean {
-  const positionStride = opts.positionStride ?? 4;
-  const indexStride = opts.indexStride ?? 4;
-  const triEps = opts.triEps ?? 1e-5;
-  // Reconciled with intersectCompressedWideBvhFirstHit: same default tMin
-  // (triEps) and the same strict open-interval `>` acceptance below. anyHit must not
-  // report a *miss* where firstHit reports a *hit* at the same epsilon boundary,
-  // or shadow/occlusion rays would under-occlude relative to the closest-hit
-  // geometry.
-  const tMin = opts.tMin ?? triEps;
-  const tMax = opts.tMax ?? Number.POSITIVE_INFINITY;
-  const skipGlass = opts.skipGlass ?? false;
-
-  const maxStackDepth = opts.maxStackDepth ?? Number.POSITIVE_INFINITY;
-  validateCwbvhTraversalInputs(cwbvh, positions, ray, positionStride, indexStride, triEps, tMin, tMax);
-  if (!Number.isInteger(maxStackDepth) && maxStackDepth !== Number.POSITIVE_INFINITY || maxStackDepth < 1) {
-    throw new RangeError('CWBVH maxStackDepth must be a positive integer or Infinity');
-  }
-  if (cwbvh.cwbvhNodeCount === 0) return false;
-
-  const root = resolveCwbvhRoot(cwbvh, opts.root);
-  validatedCwbvhChildCount(cwbvh, root);
-  const rootBounds = cwbvhNodeBounds(cwbvh, root);
-  validateCwbvhBounds(rootBounds, `CWBVH node ${root}`);
-  if (intersectAabb(ray, rootBounds.min, rootBounds.max, tMin, tMax) == null) return false;
-
-  const stack: number[] = [root];
-  while (stack.length > 0) {
-    const nodeIndex = stack.pop()!;
-    const count = validatedCwbvhChildCount(cwbvh, nodeIndex);
-    for (let slot = 0; slot < count; slot += 1) {
-      const mb = nodeIndex * CWBVH_CHILDREN * CWBVH_CHILD_META_WORDS + slot * CWBVH_CHILD_META_WORDS;
-      const kind = cwbvh.cwbvhChildMeta[mb] ?? CWBVH_CHILD_EMPTY;
-      if (kind === CWBVH_CHILD_EMPTY) {
-        throw new Error(`CWBVH node ${nodeIndex} has an empty live child at slot ${slot}`);
-      }
-      const bounds = cwbvhChildBounds(cwbvh, nodeIndex, slot);
-      validateCwbvhBounds(bounds, `CWBVH node ${nodeIndex} child ${slot}`);
-      if (intersectAabb(ray, bounds.min, bounds.max, tMin, tMax) == null) continue;
-
-      if (kind === CWBVH_CHILD_NODE) {
-        const childNode = cwbvh.cwbvhChildMeta[mb + 1]!;
-        if (childNode >= cwbvh.cwbvhNodeCount) {
-          throw new Error(`CWBVH child node reference ${childNode} is out of range`);
-        }
-        if (stack.length >= maxStackDepth) {
-          throw new Error(`CWBVH traversal stack overflow at capacity ${maxStackDepth}`);
-        }
-        stack.push(childNode);
-        continue;
-      }
-      if (kind === CWBVH_CHILD_LEAF) {
-        const triOffset = cwbvh.cwbvhChildMeta[mb + 1] ?? 0;
-        const triCount = cwbvh.cwbvhChildMeta[mb + 2] ?? 0;
-        const triangleCount = cwbvh.reorderedIndices.length / indexStride;
-        if (triCount === 0 || triOffset > triangleCount || triCount > triangleCount - triOffset) {
-          throw new Error(`CWBVH leaf range ${triOffset}+${triCount} is out of range`);
-        }
-        for (let i = 0; i < triCount; i += 1) {
-          const tri = triOffset + i;
-          if (shouldSkipGlassTriangle(cwbvh.reorderedIndices, tri, indexStride, skipGlass)) continue;
-          const ib = tri * indexStride;
-          const i0 = cwbvh.reorderedIndices[ib] ?? 0;
-          const i1 = cwbvh.reorderedIndices[ib + 1] ?? 0;
-          const i2 = cwbvh.reorderedIndices[ib + 2] ?? 0;
-          const a = positionAt(positions, i0, positionStride);
-          const b = positionAt(positions, i1, positionStride);
-          const c = positionAt(positions, i2, positionStride);
-          const hit = intersectTriangle(ray, a, b, c, triEps);
-          if (hit != null && hit.t > tMin && hit.t < tMax) return true;
-        }
-      } else {
-        throw new Error(`CWBVH child kind ${kind} is invalid`);
-      }
-    }
-  }
-
-  return false;
+  // One canonical walker owns bounds, layout, stack, interval, and glass-skip
+  // semantics. The CPU any-hit helper is an oracle/convenience API, so an
+  // early-exit duplicate is not worth the correctness-drift surface.
+  return intersectCompressedWideBvhFirstHit(cwbvh, positions, ray, opts).didHit;
 }

@@ -515,6 +515,104 @@ describe('decode context governance', () => {
     }));
   });
 
+  it('reuses one POT derivation for shared source identity and charges it once', async () => {
+    const handle = {
+      width: 3,
+      height: 1,
+      data: new Uint8Array(12).fill(255),
+      channels: 4 as const,
+      dataType: 'uint8' as const,
+      colorSpace: 'srgb' as const,
+    };
+    const context = createDecodeSceneTexturesContext({
+      target: 'cpu-linear',
+      npotRepeatWrapPolicy: 'resize-to-pot',
+      maxTotalDecodedTexturePixels: 7,
+    });
+    const result = await decodeSceneTexturesWithContext(
+      sceneForMaterials([
+        materialWith('baseColorMap', handle),
+        materialWith('baseColorMap', handle),
+      ]),
+      context,
+    );
+    const first = (result.scene.primitives[0] as MeshPrimitive).material
+      .baseColorMap as TextureRef;
+    const second = (result.scene.primitives[1] as MeshPrimitive).material
+      .baseColorMap as TextureRef;
+
+    expect(first.handle).toBe(second.handle);
+    expect(first.handle).toMatchObject({ width: 4, height: 1 });
+    // 3 source-normalization pixels + one shared 4-pixel POT derivation.
+    expect(context.resourceLedger.totalDecodedTexturePixels).toBe(7);
+  });
+
+  it('evicts a failed POT derivation so a raised import budget can retry it', async () => {
+    const handle = {
+      width: 3,
+      height: 1,
+      data: new Uint8Array(12).fill(255),
+      channels: 4 as const,
+      dataType: 'uint8' as const,
+      colorSpace: 'srgb' as const,
+    };
+    const scene = sceneForMaterials([materialWith('baseColorMap', handle)]);
+    const context = createDecodeSceneTexturesContext({
+      target: 'cpu-linear',
+      npotRepeatWrapPolicy: 'resize-to-pot',
+      maxTotalDecodedTexturePixels: 6,
+    });
+
+    const failed = await decodeSceneTexturesWithContext(scene, context);
+    const failedRef = (failed.scene.primitives[0] as MeshPrimitive).material
+      .baseColorMap as TextureRef;
+    expect(failedRef.handle).toMatchObject({ width: 3, height: 1 });
+    expect(failed.diagnostics).toContainEqual(expect.objectContaining({
+      code: 'decoded-texture-exceeds-total-pixel-budget',
+    }));
+    expect(context.resourceLedger.totalDecodedTexturePixels).toBe(3);
+
+    context.resourceLedger.reconfigureLimits({
+      ...context.resourceLedger.limits,
+      maxTotalDecodedTexturePixels: 7,
+    });
+    const retried = await decodeSceneTexturesWithContext(scene, context);
+    const retriedRef = (retried.scene.primitives[0] as MeshPrimitive).material
+      .baseColorMap as TextureRef;
+    expect(retriedRef.handle).toMatchObject({ width: 4, height: 1 });
+    expect(context.resourceLedger.totalDecodedTexturePixels).toBe(7);
+  });
+
+  it('keeps distinct source color configurations in distinct POT derivations', async () => {
+    const handle = {
+      width: 3,
+      height: 1,
+      data: new Uint8Array(12).fill(128),
+      channels: 4 as const,
+      dataType: 'uint8' as const,
+    };
+    const material: MaterialSpec = {
+      ...materialWith('baseColorMap', handle),
+      normalMap: { handle, texCoord: 0 },
+    };
+    const result = await decodeSceneTextures(
+      sceneForMaterials([material]),
+      {
+        target: 'cpu-linear',
+        npotRepeatWrapPolicy: 'resize-to-pot',
+        maxTotalDecodedTexturePixels: 14,
+      },
+    );
+    const decodedMaterial = (result.scene.primitives[0] as MeshPrimitive).material;
+    const color = decodedMaterial.baseColorMap as TextureRef;
+    const normal = decodedMaterial.normalMap as TextureRef;
+    const colorData = (color.handle as { data: Float32Array }).data;
+    const normalData = (normal.handle as { data: Float32Array }).data;
+
+    expect(color.handle).not.toBe(normal.handle);
+    expect(colorData[0]).not.toBeCloseTo(normalData[0]!, 4);
+  });
+
   it('does not bake a malformed short CPU-linear spec-gloss payload', async () => {
     const malformed = {
       width: 2,

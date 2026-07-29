@@ -9,6 +9,7 @@ vitrum builds on decades of foundational work in physically-based rendering, rea
 - **three-mesh-bvh** — MIT — Garrett Johnson — `https://github.com/gkjohnson/three-mesh-bvh`
 - **Google Draco 1.5.7** — Apache-2.0 — Google — <https://github.com/google/draco>. `@vitrum/gltf-adapter` ships the matching decoder WASM and a mechanically browser-cleaned ESM wrapper derived from `draco_decoder_nodejs.js`; the transformation removes Node `fs`/`path` branches, replaces the UMD footer, and preserves the upstream function-scoped browser loader declarations required by strict ESM without changing decoder logic. Vendored paths: `packages/gltf-adapter/src/assets/draco_decoder.wasm` (SHA-256 `2516a4e43526d71787bf2f678f951329f7f858f8f15f42d4bc9e370b31a0da3a`) and `packages/gltf-adapter/src/vendor/draco_decoder_browser.js` (SHA-256 `7ec0115432825e898de8796e696b2b6a424405307295b4ab4eae14ade8b2d375`). The full license is retained at `packages/gltf-adapter/src/assets/LICENSE.draco.txt`.
 - **meshoptimizer 1.1.1** — MIT — Arseny Kapoulkine — <https://github.com/zeux/meshoptimizer>. Its lazy JavaScript/WASM decoder implements the built-in `EXT/KHR_meshopt_compression` path in `@vitrum/gltf-adapter`.
+- **Basis Universal transcoder** — Apache-2.0 — Binomial LLC — <https://github.com/BinomialLLC/basis_universal>. `@vitrum/gltf-adapter` vendors the C-ABI WASM distributed by `@h00w/basis-universal-transcoder` 2.1.0 (MIT, source commit [`11820b9`](https://github.com/hwei/Basis-Universal-Transcoder-Project/tree/11820b9f94b8b5abd6b1418aeb1ab189f2901b95)) for its built-in KTX2/UASTC and ETC1S path. Vendored path: `packages/gltf-adapter/src/assets/basis_capi_transcoder.wasm` (SHA-256 `b407e8e2c510b5154e3fa9de286a94334c46069ebc8dfc3a3e9119a7a8dc5bf7`). The package MIT license, upstream Apache-2.0 license, and upstream NOTICE are retained beside the WASM.
 
 ## Ecosystem / prior art (not direct dependencies)
 
@@ -36,7 +37,7 @@ Each technique is cited at its implementation site in the source code. This list
 - **GGX visible normal distribution function (VNDF) sampling** — Eric Heitz, "Sampling the GGX Distribution of Visible Normals," JCGT 7(4):1–13, 2018. <https://jcgt.org/published/0007/04/01/paper.pdf>
 - **Multiple importance sampling (MIS) — power heuristic** — Eric Veach, "Robust Monte Carlo Methods for Light Transport Simulation," PhD thesis, Stanford 1997
 - **RIS (Resampled Importance Sampling) estimator** — Justin Talbot, David Cline, Parris Egbert, "Importance Resampling for Global Illumination," EGSR 2005
-- **Sobol low-discrepancy sequence** — Ilya Sobol (1967), as adapted in the three-gpu-pathtracer library
+- **Sobol low-discrepancy sequence** — Ilya Sobol (1967); Stephen Joe, Frances Y. Kuo, "Constructing Sobol Sequences with Better Two-Dimensional Projections," SIAM J. Sci. Comput. 30(5), 2008. `@vitrum/shared-samplers` embeds the recommended Joe–Kuo D(6) direction-number prefix under its upstream BSD-style licence and single-sources the production CPU/WGSL tables.
 
 ### Geometry & acceleration
 
@@ -48,10 +49,12 @@ Each technique is cited at its implementation site in the source code. This list
 
 - **DDGI (Dynamic Diffuse Global Illumination)** — Zander Majercik, Jean-Philippe Guertin, Derek Nowrouzezahrai, Morgan McGuire, "Dynamic Diffuse Global Illumination with Ray-Traced Irradiance Fields," JCGT 2019
 - **Radiance Cascades** — Alexander Sannikov, "Radiance Cascades: A Novel Approach to Calculating Global Illumination," 2023
+- **Octahedral unit-vector mapping** — Zina H. Cigolle, Sam Donow, Daniel Evangelakos, Michael Mara, Morgan McGuire, Quirin Meyer, "A Survey of Efficient Representations for Independent Unit Vectors," JCGT 3(2), 2014. The mapping underlies the Radiance Cascades direction grid; it is not the provenance of Vitrum's CPU integration oracle.
+- **Spherical-triangle solid angle** — A. Van Oosterom, J. Strackee, "The Solid Angle of a Plane Triangle," IEEE Transactions on Biomedical Engineering 30(2):125–126, 1983. The exact formula weights octahedral cells in the Radiance Cascades merge shader.
 - **ReSTIR DI (Reservoir-based Spatiotemporal Importance Resampling)** — Benedikt Bitterli, Chris Wyman, Matt Pharr, Peter Shirley, Aaron Lefohn, Wojciech Jarosz, "Spatiotemporal reservoir resampling for real-time ray tracing with dynamic direct lighting," SIGGRAPH 2020
 - **ReSTIR GI (diffuse-indirect resampling)** — Zander Majercik, Adam Marrs, Josef Spjut, Morgan McGuire, "Dynamic Diffuse Global Illumination Resampling," SIGGRAPH 2021 (§4.2 initial-sample RIS, §4.5 temporal/spatial reuse)
 - **Many-light importance sampling (power-weighted light tree)** — Alejandro Conty Estévez, Christopher Kulla, "Importance Sampling of Many Lights with Adaptive Tree Splitting," Proc. ACM Comput. Graph. Interact. Tech. 2018 (power × spatial-proximity tree descent), with the median-split / power-as-cost partition of Peter Shirley, Changyaw Wang, Kurt Zimmerman, "Monte Carlo Techniques for Direct Lighting Calculations," ACM TOG 1996. Drives walkaround-hybrid ReSTIR-DI candidate selection AND pt-webgpu's NEE light pick (WS2): the CPU builder/traversal `@vitrum/shared-samplers/lightTree.ts`, the canonical WGSL `@vitrum/shared-samplers/wgsl/lightTree.wgsl.ts`, consumed by `pt-webgpu` (group(3) light-tree NEE) and `walkaround-hybrid/shaders/lightTree.wgsl.ts`.
-- **GRIS / ReSTIR-PT (reconnection-shift reuse)** — Daqi Lin, Markus Kettunen, Benedikt Bitterli, Jacopo Pantaleoni, Wenzel Jakob, Derek Nowrouzezahrai, "Generalized Resampled Importance Sampling: Foundations of ReSTIR," ACM TOG 41(4) (SIGGRAPH 2022) — §5 (reconnection shift), Eq. 12 (shift Jacobian as the destination-cosine half-G ratio), §pairwise MIS (generalized balance heuristic). Drives the opt-in unbiased ReSTIR-GI spatial + temporal reuse (`HybridEngineOptions.restirPtReuse`): the CPU oracle `@vitrum/shared-samplers/reconnectionShift.ts`, the WGSL `walkaround-hybrid/shaders/grisReuse.wgsl.ts`, and its TS mirror `walkaround-hybrid/pipeline/grisReuseMis.ts`.
+- **GRIS / ReSTIR-PT (reconnection-shift reuse)** — Daqi Lin, Markus Kettunen, Benedikt Bitterli, Jacopo Pantaleoni, Wenzel Jakob, Derek Nowrouzezahrai, "Generalized Resampled Importance Sampling: Foundations of ReSTIR," ACM TOG 41(4) (SIGGRAPH 2022) — §5 (reconnection shift), Eq. 12 (shift Jacobian as the destination-cosine half-G ratio), §pairwise MIS (generalized balance heuristic). Drives the opt-in unbiased ReSTIR-GI spatial + temporal reuse (`HybridEngineOptions.restirPtReuse`): the CPU oracle `@vitrum/shared-samplers/reconnectionShift.ts`, the WGSL `walkaround-hybrid/shaders/grisReuse.wgsl.ts`, and its test-only TS mirror `walkaround-hybrid/__tests__/oracles/grisReuseMis.ts`.
 
 ### Ambient occlusion
 
@@ -61,7 +64,6 @@ Each technique is cited at its implementation site in the source code. This list
 
 - **Henyey-Greenstein phase function** — Louis Henyey, Jesse Greenstein, "Diffuse radiation in the Galaxy," Astrophysical Journal 1941. Consumed by the `@vitrum/pt-webgpu` homogeneous participating-media random walk (WS4): `wgsl/pathTrace/bsdf.wgsl.ts` (`hgPhase` / `sampleHenyeyGreenstein`) + `wgsl/pathTrace/kernel.wgsl.ts` (free-flight distance sampling, single-scatter albedo σ_s/σ_t, in-medium NEE with phase↔light MIS).
 - **Homogeneous volume transport** — Pharr, Jakob, Humphreys, PBR 4th ed. §11 "Volume Scattering" (free-flight transmittance CDF inversion `t = -ln(1-ξ)/σ_t`, single-scattering albedo). Implemented in `@vitrum/pt-webgpu` `wgsl/pathTrace/kernel.wgsl.ts` + `caustic.wgsl.ts` (specular-chain extinction); σ_a derived from `attenuationColor`/`attenuationDistance` in `scene/materialPacking.ts`.
-- **Equi-angular volume scatter PDF** — Christopher Kulla, Marcos Fajardo, "Importance Sampling Techniques for Path Tracing in Participating Media," Eurographics 2012
 
 ### Spectral rendering
 
@@ -105,7 +107,7 @@ Each technique is cited at its implementation site in the source code. This list
 
 Foundational textbooks cited from JSDoc comments across the codebase:
 
-- **PBR4e** — Matt Pharr, Wenzel Jakob, Greg Humphreys, "Physically Based Rendering: From Theory to Implementation," 4th edition, MIT Press, 2023. Cited from `shared-samplers/src/{bdptMIS,equiAngular,hgPhase}.ts`, `shared-samplers/__tests__/pdfNormalization.test.ts`, `pt-webgpu/src/wgsl/pathTrace/*.wgsl.ts`. Referenced for: HG phase normalisation (§11.4), equi-angular volume PDF (§14.1.2), BDPT MIS recursive ratio (§16.3.5 Eq. 16.16), hero-wavelength MIS reconstruction (§4.6.2), barycentric reconstruction (§6.8).
+- **PBR4e** — Matt Pharr, Wenzel Jakob, Greg Humphreys, "Physically Based Rendering: From Theory to Implementation," 4th edition, MIT Press, 2023. Cited from `shared-samplers/src/{bdptMIS,hgPhase}.ts`, `shared-samplers/__tests__/pdfNormalization.test.ts`, `pt-webgpu/src/wgsl/pathTrace/*.wgsl.ts`. Referenced for: HG phase normalisation (§11.4), BDPT MIS recursive ratio (§16.3.5 Eq. 16.16), hero-wavelength MIS reconstruction (§4.6.2), barycentric reconstruction (§6.8).
 - **Veach 1997** — Eric Veach, "Robust Monte Carlo Methods for Light Transport Simulation," PhD thesis, Stanford University. Cited from `shared-samplers/src/bdptMIS.ts` (§10.3 BDPT MIS connection formulae). The canonical reference for multiple-importance-sampling theory.
 
 ## Candidate techniques (not yet implemented)

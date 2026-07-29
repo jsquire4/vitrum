@@ -61,7 +61,6 @@ export async function constructWalkaround(
   const advancedHybrid = stripOwnershipCriticalKeys(
     advancedHybridRaw,
     'walkaround-hybrid',
-    opts.onWarning,
   ) as Partial<HybridEngineOptions>;
   validateHybridEngineAdvancedOptions(advancedHybrid);
 

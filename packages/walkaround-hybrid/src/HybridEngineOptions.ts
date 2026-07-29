@@ -42,7 +42,8 @@ import type { NrcConfig } from './neural/nrc/nrcSubsystem.js';
  * parameter unchanged.
  */
 export interface LightingOptions {
-  /** Primary directional light direction (world-space, normalised). */
+  /** Explicit primary-direction override (world-space, normalised). Once set,
+   *  it supersedes authored scene directional vectors for this engine. */
   primaryLightDir?: [number, number, number];
   /** Primary directional light intensity (linear, unitless). */
   primaryLightIntensity?: number;
@@ -190,10 +191,11 @@ export interface HybridEngineOptions extends EngineOptions {
   readonly getPipelineRebuildKey?: () => string | number | null | undefined;
 
   /**
-   * Primary directional light direction (world-space, normalised).
-   * Used for both BVH-build-time emitter list construction AND per-frame
-   * sun-shadow casting. The two MUST match exactly for self-emission Le
-   * to reproduce correctly.
+   * Legacy primary directional fallback (world-space, normalised) used when
+   * the scene has no authored directional emitter. Scene directions are the
+   * default source of truth; calling
+   * `updateLighting({ primaryLightDir })` establishes an explicit persistent
+   * host override for BVH, DDGI, RC, and per-frame sun shading together.
    */
   readonly primaryLightDir: [number, number, number];
 
@@ -604,19 +606,19 @@ export interface HybridEngineOptions extends EngineOptions {
    */
   readonly atrousIndirectSigmas?: readonly [number, number, number];
 
-  // ── GRIS reuse for the one-bounce DDGI proxy (Lin et al. 2022) ────────────
+  // ── Generalized reuse compatibility options ───────────────────────────────
 
   /**
-   * Enable GRIS spatiotemporal reuse for walkaround's one-bounce DDGI
-   * irradiance proxy.
+   * @deprecated Generalized reconnection-shift reuse is now the sole
+   * production ReSTIR-GI path and is always enabled. Omit this option.
    *
-   * This is deliberately narrower than ReSTIR PT: the reused sample is one
+   * The estimator is deliberately narrower than ReSTIR PT: the reused sample is one
    * cosine-sampled direction whose suffix radiance comes from DDGI (or the
    * environment), and the receiver target is geometric diffuse
    * `luminance(Lo) * cos(theta) / PI`. Receiver material response is applied
-   * later by shading and is not part of the reused target. When this mode is
-   * active, PPG and NRC proposal/suffix substitutions are bypassed so they
-   * cannot silently change the declared target or proposal.
+   * later by shading and is not part of the reused target. PPG proposals and
+   * NRC suffix substitution compose with this target using their exact source
+   * mixture PDF and the same generalized reuse matrix.
    *
    * The enabled path uses a reconnection shift for surface samples, an
    * identity-direction shift for environment samples, exact shift Jacobians,
@@ -627,17 +629,18 @@ export interface HybridEngineOptions extends EngineOptions {
    * This option does not promise an unbiased path-tracing estimator. DDGI is a
    * cached irradiance approximation and the default finite
    * `restirGiIrrClamp` / `restirGiWCap` controls intentionally bound outliers.
-   * The option is fixed at engine creation because it changes the reservoir
-   * layout and GI shader variants.
+   * `true` is accepted only for source compatibility and emits a deprecation
+   * warning. `false` is rejected because it would request the retired biased
+   * compact reuse implementation.
    *
-   * @default false
+   * @default true
    */
   readonly grisReuse?: boolean;
 
   /**
-   * @deprecated Use {@link grisReuse}. This migration alias has identical
-   * semantics and will be removed in the next major version. Supplying both
-   * names with different values is rejected.
+   * @deprecated Historical alias for {@link grisReuse}. Generalized reuse is
+   * always enabled; omit both names. `true` is accepted with a warning and
+   * `false` is rejected.
    */
   readonly restirPtReuse?: boolean;
 
@@ -667,7 +670,7 @@ export interface HybridEngineOptions extends EngineOptions {
    * Default: `false` — OFF shades/refines EVERY pixel and the resolve pass passes
    * through, so the render is BIT-IDENTICAL to the pre-checkerboard pipeline
    * (the OFF-is-bit-identical opt-in pattern shared by `rcEnabled` /
-   * `ppgEnabled` / `grisReuse` / `nrcEnabled` / `regir`). The flag flips
+   * `ppgEnabled` / `nrcEnabled` / `regir`). The flag flips
    * a few already-present UBO fields + the dispatch compaction + the ResolvePass
    * gate — it adds no bind groups, so it is NOT a compile-time structural decision.
    * The bare engine default (no quality preset ⇒ `ultra`) leaves this OFF; the
@@ -753,6 +756,8 @@ export interface HybridEngineOptions extends EngineOptions {
    * buffers always stay in lockstep. Raising this value allocates larger GPU
    * buffers; lowering it suppresses splits earlier, saving VRAM at the cost of
    * coarser spatial guidance.
+   *
+   * Requires `ppgEnabled: true`; construction rejects it otherwise.
    */
   readonly ppgMaxSpatialCells?: number;
 
@@ -769,7 +774,7 @@ export interface HybridEngineOptions extends EngineOptions {
    * directional refinement; raising it only helps once the CPU dTree max depth
    * is raised too.
    *
-   * Only meaningful when `ppgEnabled: true`.
+   * Requires `ppgEnabled: true`; construction rejects it otherwise.
    */
   readonly ppgMaxDTreeNodesPerCell?: number;
 
@@ -783,7 +788,7 @@ export interface HybridEngineOptions extends EngineOptions {
    *
    * Default: 0.5 (Muller 2017 section 3.4).
    *
-   * Only meaningful when `ppgEnabled: true`.
+   * Requires `ppgEnabled: true`; construction rejects it otherwise.
    */
   readonly ppgMixAlpha?: number;
 
@@ -795,8 +800,8 @@ export interface HybridEngineOptions extends EngineOptions {
    * them EVERY frame, so a higher interval is a pure training-cost lever — it
    * never changes whether guided sampling is active, only how often the tree
    * is retrained. `1` trains every frame (no behaviour change); `N > 1` trains
-   * every Nth frame. Clamped to ≥ 1 internally. Only meaningful when
-   * `ppgEnabled: true`.
+   * every Nth frame. Values must be positive safe integers. Requires
+   * `ppgEnabled: true`; construction rejects it otherwise.
    *
    * Default: resolved from `qualityTier` (`resolveQualityPreset`) —
    * ultra/high = 1, medium = 2, low = 4. An explicit value here OVERRIDES the
@@ -877,7 +882,7 @@ export interface HybridEngineOptions extends EngineOptions {
    *
    * Must be an integer in [1, 8]. The default of 8 matches the shader's
    * statically bounded medium stack and preserves the standalone RC default.
-   * Only meaningful when {@link rcEnabled} is `true`.
+   * Requires {@link rcEnabled} to be `true`; construction rejects it otherwise.
    *
    * @default 8
    */
@@ -898,7 +903,9 @@ export interface HybridEngineOptions extends EngineOptions {
    *   - 0.5 — equal-weight mix. Should look like ReSTIR-GI's diffuse
    *     gain damped by half + half of RC's smoother spatial signal.
    *
-   * @default 0.5 (effective only when rcEnabled === true)
+   * Requires `rcEnabled: true`; construction rejects it otherwise.
+   *
+   * @default 0.5 (when rcEnabled === true)
    */
   readonly rcWeight?: number;
 
@@ -914,6 +921,8 @@ export interface HybridEngineOptions extends EngineOptions {
    * aspect ratio (`probes` along the dominant axis); hosts on different
    * scene scales should pass proportional `intervalNear`/`intervalFar`
    * world-unit bounds.
+   *
+   * Requires `rcEnabled: true`; construction rejects it otherwise.
    *
    * @default CASCADE_DIMS from @vitrum/walkaround-rc
    */
@@ -980,6 +989,8 @@ export interface HybridEngineOptions extends EngineOptions {
    * `nrcMaxResidentBytes` aliases remain accepted. Supplying an alias together
    * with the corresponding `nrcConfig` field is allowed only when the values
    * agree exactly; disagreement throws synchronously.
+   *
+   * Requires `nrcEnabled: true`; construction rejects it otherwise.
    */
   readonly nrcConfig?: Partial<NrcConfig>;
 
@@ -990,11 +1001,12 @@ export interface HybridEngineOptions extends EngineOptions {
    * NRC gathers training records immediately, but the GI shader keeps using the
    * DDGI suffix until `trainedSteps >= nrcWarmupSteps`. Lower values promote the
    * biased cache earlier; higher values keep the explicit DDGI suffix longer
-   * while the cache settles. Values are clamped to integer `>= 0`.
+   * while the cache settles. Values must be safe integers `>= 0`; invalid
+   * values are rejected.
    *
    * Default: 8.
    *
-   * Only meaningful when `nrcEnabled: true`.
+   * Requires `nrcEnabled: true`; construction rejects it otherwise.
    *
    * @deprecated Use `nrcConfig: { warmupSteps }`.
    */
@@ -1005,11 +1017,11 @@ export interface HybridEngineOptions extends EngineOptions {
    *
    * Smaller values let the biased cache replace the DDGI suffix earlier along a
    * path; larger values keep more of the explicit DDGI suffix before querying the
-   * cache. Values are clamped to finite `>= 0`.
+   * cache. Values must be finite and `>= 0`; invalid values are rejected.
    *
    * Default: 0.01.
    *
-   * Only meaningful when `nrcEnabled: true`.
+   * Requires `nrcEnabled: true`; construction rejects it otherwise.
    *
    * @deprecated Use `nrcConfig: { spreadC }`.
    */
@@ -1021,7 +1033,8 @@ export interface HybridEngineOptions extends EngineOptions {
    * residency uncapped because WebGPU reports no adapter-wide VRAM budget; all
    * real per-buffer and binding limits remain enforced independently.
    *
-   * Only meaningful when `nrcEnabled: true`. Must be a positive safe integer.
+   * Requires `nrcEnabled: true`; construction rejects it otherwise. Must be a
+   * positive safe integer.
    *
    * @deprecated Use `nrcConfig: { maxNrcResidentBytes }`.
    */

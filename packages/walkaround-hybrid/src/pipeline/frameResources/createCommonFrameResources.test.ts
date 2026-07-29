@@ -138,4 +138,16 @@ describe('createCommonFrameResources Welford allocation policy', () => {
     expect(Object.keys(resources.common)).toContain('varianceBufferAux');
     expect(Object.keys(resources.common)).toContain('atrousVarianceEstimateTexture');
   });
+
+  it('keeps shared Welford history full-size without allocating an unused à-trous estimate', () => {
+    const resources = createFrameResources(makeFakeDevice(), 64, 32, {
+      svgfEnabled: false,
+      welfordPingPong: true,
+      atrousVarianceEstimate: false,
+    });
+
+    expect(textureSize(resources.common.varianceBuffer)).toEqual([64, 32]);
+    expect(textureSize(resources.common.varianceBufferAux)).toEqual([64, 32]);
+    expect(textureSize(resources.common.atrousVarianceEstimateTexture)).toEqual([1, 1]);
+  });
 });

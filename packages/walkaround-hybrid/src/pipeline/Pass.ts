@@ -139,6 +139,15 @@ export interface PassDispatchContext {
   readonly inputs: PipelineFrameInputs;
   /** Pre-built frame/scene/ubo bind groups — shared by RIS/temporal/spatial/shade. */
   readonly frameBindGroup: GPUBindGroup;
+  /** DI round-two ping-pong view (binding 5=spatial, binding 7=current). */
+  readonly diSpatialReverseFrameBindGroup: GPUBindGroup;
+  /**
+   * Explicit slot-0 identity of the last configured DI spatial round. Shade
+   * must bind this group instead of assuming a particular physical buffer.
+   */
+  readonly diTerminalFrameBindGroup: GPUBindGroup;
+  /** Physical terminal DI reservoir copied into previous-frame history. */
+  readonly diTerminalReservoirBuffer: GPUBuffer;
   readonly risGiFrameBindGroup: GPUBindGroup;
   readonly sceneBindGroup: GPUBindGroup;
   readonly uboBindGroup: GPUBindGroup;
@@ -170,12 +179,12 @@ export interface PassDispatchContext {
   readonly checkerboardWgY: number;
   /**
    * Welford variance ping-pong index at the START of this frame, before the
-   * atrousVariance denoiser's dispatch() has run. The SampleBudgetPass reads
-   * this to select the freshest variance side:
+   * the active variance producer has run. The SampleBudgetPass reads this to
+   * select the freshest variance side:
    *   welfordPing === 0 → freshest data is in `resources.common.varianceBuffer`
    *   welfordPing === 1 → freshest data is in `resources.common.varianceBufferAux`
-   * For non-atrous-variance denoisers (where varianceBufferAux may not be
-   * written), always 0 (read `varianceBuffer`).
+   * `atrous-variance` owns this producer inside its denoiser; every other mode
+   * uses the pipeline-wide VarianceTrackerPass.
    */
   readonly welfordPing: number;
   /** Checkerboard half-res shading state (host opt-in; default OFF). When ON

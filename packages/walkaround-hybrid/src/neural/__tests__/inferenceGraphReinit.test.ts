@@ -20,12 +20,12 @@ installWebGPUPolyfills();
 import { InferenceGraph } from '../InferenceGraph.js';
 import { buildUNetSpec } from '../unetArchitecture.js';
 import {
-  buildRandomWeightsForSpec,
   NEURAL_ARCHITECTURE_ID,
   NEURAL_F16_METRIC_DOMAIN,
   NEURAL_F16_QUANTIZATION,
   type ModelWeights,
 } from '../weights.js';
+import { buildRandomWeightsForSpec } from '../../../__tests__/helpers/neuralWeights.js';
 import { neuralCheckpointPayloadSha256 } from '../checkpointDigest.js';
 import { NEURAL_PREPROCESSING_CONTRACT } from '../preprocessing.js';
 

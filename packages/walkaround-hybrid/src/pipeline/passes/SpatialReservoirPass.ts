@@ -42,30 +42,58 @@ export class SpatialReservoirPass extends SharedBindGroupPass {
   readonly id = 'spatial-2' as const; // last dispatch id — shade depends on this.
   readonly dependencies: readonly string[] = ['temporal'];
   readonly passLabels: readonly PassLabel[];
+  private readonly _roundTwoPipeline: GPUComputePipeline;
+  private readonly _passCount: 1 | 2;
 
-  constructor(pipeline: GPUComputePipeline, passCount: 1 | 2 = 2) {
-    super(pipeline);
-    this.passLabels = diSpatialPassLabels(passCount);
+  constructor(
+    roundOnePipeline: GPUComputePipeline,
+    roundTwoPipelineOrPassCount: GPUComputePipeline | 1 | 2 = roundOnePipeline,
+    passCount: 1 | 2 = 2,
+  ) {
+    super(roundOnePipeline);
+    if (typeof roundTwoPipelineOrPassCount === 'number') {
+      // Compatibility for pass-level harnesses using the historical
+      // `(pipeline, passCount)` constructor. Production always supplies the
+      // independently-specialized round-two pipeline.
+      this._roundTwoPipeline = roundOnePipeline;
+      this._passCount = roundTwoPipelineOrPassCount;
+    } else {
+      this._roundTwoPipeline = roundTwoPipelineOrPassCount;
+      this._passCount = passCount;
+    }
+    this.passLabels = diSpatialPassLabels(this._passCount);
   }
 
   override dispatch(ctx: PassDispatchContext): void {
-    if (!ctx.checkerboardOn) {
-      // OFF path — full-res dispatch per label, byte-identical to before.
-      super.dispatch(ctx);
-      return;
+    if (ctx.checkerboardOn) {
+      // The compact dispatch overwrites only active-parity destinations.
+      // Seed the whole round-one destination from temporal/current first so
+      // gap pixels remain valid inputs to round two and valid terminal history
+      // for a one-round configuration.
+      const { reservoirCurrentBuffer, reservoirSpatialBuffer } =
+        ctx.resources.restirDI;
+      ctx.encoder.copyBufferToBuffer(
+        reservoirCurrentBuffer,
+        0,
+        reservoirSpatialBuffer,
+        0,
+        reservoirCurrentBuffer.size,
+      );
     }
-    // Checkerboard ON — compact the X dispatch of EVERY spatial dispatch to the
-    // active-parity columns. Each row has at most ceil(W/2) active-parity
-    // pixels; the shader decodes compacted gid.x -> px = gid.x*2 +
-    // ((gid.y + frameParity)&1) and guards the few overshoot threads (px >= W)
-    // with the existing bounds check. Y stays full-res (one compacted thread per
-    // row). Workgroup size is 8×8 (matches spatial.wgsl @workgroup_size(8,8,1)),
-    // identical to the ShadePass compaction.
-    for (const label of this.passLabels) {
-      dispatchSharedBindGroupPass(ctx, this._pipeline, {
-        label,
-        dispatchOverride: { x: ctx.checkerboardWgX, y: ctx.checkerboardWgY },
-      });
-    }
+    const dispatchOverride = ctx.checkerboardOn
+      ? { x: ctx.checkerboardWgX, y: ctx.checkerboardWgY }
+      : undefined;
+    const firstLabel = this.passLabels[0]!;
+    dispatchSharedBindGroupPass(ctx, this._pipeline, {
+      label: firstLabel,
+      ...(dispatchOverride !== undefined ? { dispatchOverride } : {}),
+    });
+    if (this._passCount === 1) return;
+
+    dispatchSharedBindGroupPass(ctx, this._roundTwoPipeline, {
+      label: this.passLabels[1]!,
+      frameBindGroupOverride: ctx.diSpatialReverseFrameBindGroup,
+      ...(dispatchOverride !== undefined ? { dispatchOverride } : {}),
+    });
   }
 }

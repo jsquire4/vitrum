@@ -11,7 +11,7 @@ import {
   type UNetSpec,
 } from '../unetArchitecture.js';
 import { NEURAL_F16_TENSOR_STORAGE } from '../tensorPrecision.js';
-import { buildRandomWeightsForSpec } from '../weights.js';
+import { buildRandomWeightsForSpec } from '../../../__tests__/helpers/neuralWeights.js';
 
 function inclusiveLifetimeSpec(): UNetSpec {
   const layers = [

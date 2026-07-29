@@ -1,8 +1,12 @@
 # Road to 100 — code completion
 
-**Source audit date:** 2026-07-27
+**Source audit date:** 2026-07-28
 
-**Audit freeze:** base HEAD `5556fb834648b108d3ab7ec272a60ea1871ff352`; SHA-256 `bb5546613f725857804a0e94c2c3bbd54df61a4623ef0595debe4ba4adb2c3bc` for the sorted `packages/*/src` path-and-content manifest (repository-relative POSIX path, NUL, raw content, NUL; 1,204 files)
+**Audit freeze:** base HEAD `a666411be90f432caa8ef5f0a8d1e3a40f16b3a1`
+plus the current uncommitted remediation working tree; SHA-256
+`55a0faed72130bdf54b59745700db31a2b0275547677fa98287d09005bd2c0e3`
+for the bytewise path-sorted `packages/*/src` path-and-content manifest
+(repository-relative POSIX path, NUL, raw content, NUL; 1,247 files)
 
 **Authority:** current production source under `packages/*/src`
 
@@ -15,12 +19,13 @@ ideas are not implementation authority.
 ## Bottom line
 
 At the current production source, every executable semantic defect found by the
-2026-07-27 deep audit and its independent post-fix sweeps has a landed
-implementation and focused regression. No additional production code is
-presently known to be required for the declared profiles. The same-tree
-convergence run and source-manifest refresh are complete. A future failing gate
-reopens this plan only when it exposes a current production-code defect under
-the rule below.
+2026-07-27 deep audit, the 2026-07-28 external completeness audit, and their
+independent post-fix sweeps has an implementation and focused regression in the
+current working tree. No additional production code is presently known to be
+required for the declared profiles. The same-tree convergence run and
+source-manifest refresh are complete. This freeze describes uncommitted working
+tree bytes, not a landed commit. A future failing gate reopens this plan only
+when it exposes a current production-code defect under the rule below.
 
 Production code has no provisional feature-maturity channel. Optional algorithms
 use stable typed options and capability fields. A mode is implemented under its
@@ -63,6 +68,82 @@ queue.
 
 ## Closed implementation programs
 
+### 2026-07-28 external completeness-audit remediation
+
+- Walkaround material transport now uses a disjoint physical F0 encoding,
+  retains authored zero roughness through the shared finite-alpha numerical
+  floor, preserves zero-default clearcoat/sheen semantics, and applies ordered
+  sheen and clearcoat attenuation in both direct and indirect evaluators.
+  GTAO projects the normal in the correct slice plane, and environment
+  replacement is part of transactional scene publication.
+- Native WebGL2 keeps light maps receiver-local and applies transmissive
+  attenuation once per represented boundary. Material maps retain native
+  source rectangles in split sRGB-aware RGBA8 parameter/color and linear
+  RGBA16F radiance atlases; their complete CPU mip chains and spare-capacity
+  GPU storage share one exact 512 MiB preflight before allocation or
+  transactional publication. Compiler flags, shader chunks, and material
+  structs that cannot affect a composed permutation are removed.
+- WebGPU clearcoat/sheen sample, evaluation, PDF, BDPT, SPPM, MNEE, and ReSTIR
+  paths share one layered response. Thin-film TMM reflection, transmission, and
+  absorption participate in the same finite microfacet families; malformed
+  certified data fails dark. Presentation uses an explicit unfilterable-float
+  layout and re-presents retained converged/paused output after presentation
+  controls change.
+- WebGPU BDPT includes the native `s=n-1,t=1` light-subpath-to-camera strategy
+  with matched perspective-camera densities, arbitrary-pixel atomic
+  accumulation, and one complete per-frame variance sample. Its bounded
+  CPU/WGSL strategy mask agrees over the executable domain:
+  `npm run shader-gate -- --bdpt-mask-parity-only` passes all 32,400 cases.
+  The BDPT-off shader and resource surface remain byte-identical.
+- Every WebGPU alpha walker is bounded by scene surface support rather than a
+  fixed layer count and fails closed on impossible extra traversal. Production
+  path replay is the exact one-bounce opaque-triangle unlit-emissive domain;
+  paused frame inputs update the bounce regime before inverse preflight.
+- Generalized reconnection-shift reuse is the sole live walkaround GI ABI.
+  DI/GI use represented attempt counts, log-domain weights, distinct
+  ping-pong generations, exact temporal correspondence, and scene-mutation
+  history invalidation. Persisted DDGI, DI, GI, PPG, and NRC state publishes as
+  one reversible cohort; imported GI adopts its nonzero history epoch and runs
+  one full-rate initialization frame without erasing restored reservoirs.
+- DDGI refit/cache invalidation, finite-difference boundary probes, NRC
+  relative-L2 training loss, and BMFR demodulated-history clamping now agree
+  with their live estimator domains. Checkerboard execution waits for its
+  history producers, and progressive/lifecycle errors preserve the previous
+  usable generation or fail before publication.
+- glTF import now preserves decoder MIME identity across cold, metadata-aware,
+  legacy, authored-MIME, and offline cache paths; validates reachable lights,
+  animation degradation, analytic UVs, atlas budgets, and derived resources;
+  and accepts tiny but Float32-invertible skinned transforms while rejecting
+  singular or numerically non-reciprocal matrices.
+- Built-in DDS/DX10 and KTX2/Basis texture decoding now validates complete
+  headers, layouts, mip payloads, transfer/alpha metadata, resource ceilings,
+  and the pinned transcoder ABI before allocation or publication. DDS coverage
+  includes pitched rows, block formats, BC5 normal reconstruction, and strict
+  single-image policy; KTX2 coverage includes ETC1S, UASTC, BasisLZ SGD, DFD,
+  mip ordering, overlap/padding rejection, and an authoritative Khronos ETC1S
+  fixture with its complete decoded RGBA output.
+- Runtime animation updates now solve native skin/morph state once per shared
+  deformation, preserve instance transforms, reset to bind state correctly,
+  and route mixed transform-plus-pose or merged-instanced geometry changes
+  through coherent rebuilds. CPU picking solves the same skinned geometry as
+  rendering, and public skinned rest-stream mutation routes through the
+  canonical solver.
+- Public GPU detection snapshots are frozen and the dead window-global
+  detection channel is removed. The public à-trous variance layout matches its
+  four live bindings, while Deno and TypeScript share explicit owned-buffer and
+  pipeline-constant types at the PPG compiler boundary.
+- The sole generalized-reuse GI ABI no longer exposes a retired runtime config
+  bit through the learned-systems proof surface: omission and legacy `true`
+  spellings preserve the fixed layout, legacy `false` spellings fail closed,
+  and PPG composes with the canonical reuse path. WebGPU BDPT camera splats use
+  storage-array word indices for their bounded CAS loop, compiling portably
+  across every shipped BDPT module variant.
+- The audit's inert functions, aliases, compatibility branches, stale shader
+  chunks, unused resource fields, and contradictory source headers were
+  removed or reconciled. Road/source and renderer-fidelity guards enforce that
+  production source, active plans, and package READMEs have no separate
+  provisional maturity channel.
+
 ### 2026-07-27 renderer-integrity and persisted-state closure
 
 - WebGL2 finite-area/environment direct lighting now preserves delta ownership
@@ -103,8 +184,8 @@ queue.
   boundaries.
 - Every reachable pt-webgl2 material/fog tier composes its required helpers; the
   GLSL gate covers 30 combinations. Its BDPT NEE candidate receives scene bounds,
-  while pt-webgpu discloses the exact bounded explicit-connection strategy set it
-  allocates.
+  while pt-webgpu executes and discloses its exact bounded explicit-connection
+  strategy set, including native light-subpath camera splats.
 - DDGI mesh-area radiometry applies the receiver BRDF once, spot lights retain
   cone semantics, and glass face-layer selection uses the hit triangle.
   Walkaround glass includes reflection and GRIS-reused transmission, and applies
@@ -234,7 +315,8 @@ queue.
   caustics, layered/volume transport, and adjoint replay have explicit ownership,
   capability, and rejection rules.
 - BDPT uses one bounded multi-vertex strategy family with delta handling, medium
-  transport, and independent density/ownership checks.
+  transport, native WebGPU light-subpath camera splats, and independent
+  density/ownership checks.
 - Exact-positive activation is consistent for medium density, transmission,
   environment/sun selection, directional/ReSTIR gates, and light-tree ownership.
 - Inverse sessions report the selected analytic or finite-difference method
@@ -287,12 +369,12 @@ implementation rows.
 | --- | --- |
 | `npm run proof-check` | PASS — source/Road, radiometric, ReSTIR-PT specialty, and renderer-fidelity proofs |
 | `npm run typecheck` | PASS — all configured workspaces |
-| `npm run build` | PASS — all configured workspace builds |
-| `npm test` | PASS — 84/84 root script tests and 7,865/7,865 workspace tests across 652 files (7,949 total; 2,902 walkaround-hybrid) |
+| `npm run build` | PASS — all seven configured example production builds |
+| `npm test` | PASS — 84/84 root script tests and 8,103/8,103 workspace tests across 693 files (8,187 tests across 704 files combined; 3,057 walkaround-hybrid) |
 | `npm run lint` | PASS — 0 errors and 0 warnings |
-| `npm run shader-gate` | PASS — 79/79 WGSL modules, 31/31 portable shipped shaders, 51/51 native pipelines, and 25-value Sobol parity |
-| `npm run shader-gate:glsl` | PASS — 30/30 shader combinations |
-| `npm run gltf-compression-browser-proof` | PASS — built-in Draco and meshopt in Chromium with host hooks absent |
+| WGSL compile gate (`--no-pipeline-gate`) | PASS — 78/78 modules and 29/29 portable shipped walkaround/RC roots; no native pipeline-graph claim |
+| `npm run shader-gate -- --bdpt-mask-parity-only` | PASS — 32,400/32,400 bounded CPU/WGSL strategy-mask cases agree |
+| GLSL compile gate | PASS — 30/30 shader combinations; injected-error self-test detected the broken control |
 | `git diff --check` | PASS |
 
 `npm run proof-check` remains source/code-derived: Road/source markers,

@@ -21,10 +21,6 @@ import { BACKEND_PROMISE_LEDGER, MATERIAL_SPEC_FIELDS } from '@vitrum/core';
 import {
   categorizeUnconsumedMaterialFields,
   CONSUMED_MATERIAL_FIELDS,
-  collectUnsupportedVolumeLayerPrimitiveFields,
-  assertNoRcDirectSunTransmissionProfiles,
-  assertNoUnsupportedLayeredTransmissionProfiles,
-  assertNoUnsupportedRoughTransmissionProfiles,
   collectUnconsumedMaterialFields,
   collectUnconsumedMaterialFieldsForMaterial,
   collectUnconsumedMaterialPrimitiveFields,
@@ -269,74 +265,7 @@ describe('collectUnconsumedMaterialFields', () => {
       },
     ];
 
-    expect(collectUnsupportedVolumeLayerPrimitiveFields(prims)).toEqual([]);
-  });
-
-  it('accepts rough, mapped, and anisotropic transmissive profiles', () => {
-    const primitive = (material: Record<string, unknown>): PrimLike[] => [{
-      id: 'conditional-glass',
-      kind: 'mesh',
-      material: { baseColor: [1, 1, 1], metallic: 0, transmission: 1, ...material },
-    }];
-
-    expect(() => assertNoUnsupportedRoughTransmissionProfiles(
-      primitive({ roughness: 0.001 }), 'setScene',
-    )).not.toThrow();
-    expect(() => assertNoUnsupportedRoughTransmissionProfiles(
-      primitive({ roughness: 0, roughnessMap: { handle: 'roughness' } }), 'setScene',
-    )).not.toThrow();
-    expect(() => assertNoUnsupportedRoughTransmissionProfiles(
-      primitive({ roughness: 0, anisotropy: 0.25 }), 'updatePrimitive',
-    )).not.toThrow();
-    expect(() => assertNoUnsupportedRoughTransmissionProfiles(
-      primitive({ roughness: 0, anisotropyMap: { handle: 'anisotropy' } }), 'setScene',
-    )).not.toThrow();
-    expect(() => assertNoUnsupportedRoughTransmissionProfiles(
-      primitive({
-        roughness: 0,
-        normalMap: { handle: 'normal' },
-        normalScale: 0.8,
-        bumpMap: { handle: 'bump' },
-        bumpScale: 0.2,
-      }),
-      'setScene',
-    )).not.toThrow();
-  });
-
-  it('accepts layered opaque lobes combined with transmission', () => {
-    const primitive = (material: Record<string, unknown>): PrimLike[] => [{
-      id: 'layered-glass',
-      kind: 'mesh',
-      material: {
-        baseColor: [1, 1, 1], roughness: 0, metallic: 0, transmission: 1,
-        ...material,
-      },
-    }];
-    for (const material of [
-      { metallic: 0.2 },
-      { clearcoat: 0.5 },
-      { sheenColorMap: { handle: 'sheen' } },
-      { specularIntensity: 0.5 },
-      { iridescenceMap: { handle: 'film' } },
-    ]) {
-      expect(() => assertNoUnsupportedLayeredTransmissionProfiles(
-        primitive(material), 'setScene',
-      )).not.toThrow();
-    }
-    expect(() => assertNoUnsupportedLayeredTransmissionProfiles(
-      primitive({ normalMap: { handle: 'normal' } }), 'setScene',
-    )).not.toThrow();
-  });
-
-  it('accepts RC plus authored transmission through the dielectric transport path', () => {
-    expect(() => assertNoRcDirectSunTransmissionProfiles([{
-      id: 'rc-glass', kind: 'mesh',
-      material: { baseColor: [1, 1, 1], roughness: 0, metallic: 0, transmission: 1 },
-    }], 'setScene')).not.toThrow();
-    expect(() => assertNoRcDirectSunTransmissionProfiles([{
-      id: 'opaque', kind: 'mesh',
-      material: { baseColor: [1, 1, 1], roughness: 0.5, metallic: 0 },
-    }], 'setScene')).not.toThrow();
+    expect(collectUnconsumedMaterialFields(prims)).toEqual([]);
   });
 
   it('categorizes unconsumed fields for structured warning consumers', () => {

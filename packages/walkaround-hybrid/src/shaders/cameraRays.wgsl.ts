@@ -63,6 +63,27 @@ fn generatePrimaryRay_common(
   return ray;
 }
 
+// Reconstruct a camera ray using only an inverse view-projection matrix. This
+// is used for temporal surface correspondence, where the UBO intentionally
+// stores the previous VP but not a fabricated previous object-motion field.
+// Starting at the unprojected near-plane point is intersection-equivalent to
+// the perspective camera origin and is also correct for orthographic cameras.
+fn generatePrimaryRayFromInvVP_common(
+  px: u32, py: u32, w: u32, h: u32,
+  invVP: mat4x4f,
+) -> Ray {
+  let uv  = (vec2f(f32(px), f32(py)) + 0.5) / vec2f(f32(w), f32(h));
+  let ndc = vec2f(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
+  let far4  = invVP * vec4f(ndc,  1.0, 1.0);
+  let near4 = invVP * vec4f(ndc, -1.0, 1.0);
+  let farW  = far4.xyz  / select(1.0, far4.w,  abs(far4.w)  > 1e-30);
+  let nearW = near4.xyz / select(1.0, near4.w, abs(near4.w) > 1e-30);
+  var ray: Ray;
+  ray.origin = nearW;
+  ray.direction = safe_normalize(farW - nearW);
+  return ray;
+}
+
 `;
 
 /** T9-stepA — focused WGSL_MODULES entry split out of `common`. */

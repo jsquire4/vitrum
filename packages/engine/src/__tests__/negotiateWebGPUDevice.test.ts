@@ -5,6 +5,7 @@ import {
   NRC_WEBGPU_REQUIRED_LIMITS,
 } from '@vitrum/walkaround-hybrid';
 import {
+  PT_WEBGPU_BDPT_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
   PT_WEBGPU_CWBVH_CLOSEST_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
   PT_WEBGPU_CWBVH_CLOSEST_RESTIR_PT_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
   PT_WEBGPU_RESTIR_PT_REUSE_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
@@ -382,6 +383,42 @@ describe('negotiateWebGPUDevice — host-owned device negotiation', () => {
     });
     expect(fa.lastDescriptor()?.requiredLimits?.maxStorageBuffersPerShaderStage).toBe(
       PT_WEBGPU_RESTIR_PT_REUSE_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
+    );
+  });
+
+  it("target 'pt-webgpu' includes the native BDPT camera-splat buffer floor", async () => {
+    const fa = fakeAdapter(
+      PT_WEBGPU_BDPT_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
+      PT_WEBGPU_FULL_REQUIRED_STORAGE_TEXTURES_PER_STAGE,
+    );
+    restore = installNavigatorGpu();
+    await negotiateWebGPUDevice({
+      adapter: fa.adapter,
+      target: 'pt-webgpu',
+      bdpt: true,
+    });
+    expect(fa.lastDescriptor()?.requiredLimits?.maxStorageBuffersPerShaderStage).toBe(
+      PT_WEBGPU_BDPT_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
+    );
+  });
+
+  it("target 'progressive' composes BDPT with CWBVH and one-edge reuse", async () => {
+    const required =
+      PT_WEBGPU_CWBVH_CLOSEST_RESTIR_PT_REQUIRED_STORAGE_BUFFERS_PER_STAGE + 1;
+    const fa = fakeAdapter(
+      required,
+      HYBRID_WEBGPU_REQUIRED_LIMITS['maxStorageTexturesPerShaderStage']!,
+    );
+    restore = installNavigatorGpu();
+    await negotiateWebGPUDevice({
+      adapter: fa.adapter,
+      target: 'progressive',
+      bdpt: true,
+      cwbvhClosest: true,
+      oneEdgeReconnectionReuse: true,
+    });
+    expect(fa.lastDescriptor()?.requiredLimits?.maxStorageBuffersPerShaderStage).toBe(
+      required,
     );
   });
 

@@ -8,8 +8,8 @@
  * motionVectorsOut and
  * consumed by the SVGF reprojection pass for temporal history accumulation.
  *
- * Sky pixels (depth <= 1e-6) write (0,0) — SVGF discards them via the
- * velocity-magnitude gate rather than trying to reproject an infinite-depth hit.
+ * `.a` is an explicit reprojection-validity bit. Sky/invalid-clip pixels write
+ * alpha 0; a stationary but valid surface writes motion (0,0) with alpha 1.
  */
 import type { WgslModule } from '../pipeline/wgslComposer.js';
 
@@ -60,7 +60,7 @@ fn motionVectorsMain(@builtin(global_invocation_id) gid: vec3u) {
     ndcDelta.x * f32(dims.x) * 0.5,
     -ndcDelta.y * f32(dims.y) * 0.5,
   );
-  textureStore(motionVectorsOut, gid.xy, vec4f(motion, 0.0, 0.0));
+  textureStore(motionVectorsOut, gid.xy, vec4f(motion, 0.0, 1.0));
 }
 `;
 

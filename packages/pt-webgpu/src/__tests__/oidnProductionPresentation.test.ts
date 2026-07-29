@@ -14,6 +14,7 @@ interface StubTexture {
 
 interface GpuRecorder {
   readonly textures: StubTexture[];
+  readonly bindGroupLayouts: GPUBindGroupLayoutDescriptor[];
   readonly bindGroups: Array<{
     readonly label: string;
     readonly entries: readonly GPUBindGroupEntry[];
@@ -23,6 +24,10 @@ interface GpuRecorder {
     readonly rgba: Float32Array;
   }>;
   readonly createTexture: Mock<[GPUTextureDescriptor], StubTexture>;
+  readonly createComputePipeline: Mock<
+    [GPUComputePipelineDescriptor],
+    GPUComputePipeline
+  >;
   readonly writeTexture: Mock<
     [GPUImageCopyTexture, GPUAllowSharedBufferSource],
     void
@@ -36,6 +41,7 @@ function makeProductionDevice(): {
 } {
   installGpuConstStubs();
   const textures: StubTexture[] = [];
+  const bindGroupLayouts: GPUBindGroupLayoutDescriptor[] = [];
   const bindGroups: GpuRecorder['bindGroups'] = [];
   const oidnUploads: GpuRecorder['oidnUploads'] = [];
   const createTexture = vi.fn((descriptor: GPUTextureDescriptor) => {
@@ -77,7 +83,10 @@ function makeProductionDevice(): {
     createShaderModule: vi.fn(() => ({
       getCompilationInfo: vi.fn(async () => ({ messages: [] })),
     })),
-    createBindGroupLayout: vi.fn(() => ({})),
+    createBindGroupLayout: vi.fn((descriptor: GPUBindGroupLayoutDescriptor) => {
+      bindGroupLayouts.push(descriptor);
+      return {};
+    }),
     createPipelineLayout: vi.fn(() => ({})),
     createComputePipeline: vi.fn(() => ({
       getBindGroupLayout: vi.fn(() => ({})),
@@ -107,9 +116,11 @@ function makeProductionDevice(): {
     device,
     record: {
       textures,
+      bindGroupLayouts,
       bindGroups,
       oidnUploads,
       createTexture,
+      createComputePipeline: device.createComputePipeline as unknown as GpuRecorder['createComputePipeline'],
       writeTexture,
       submit,
     },
@@ -169,6 +180,91 @@ async function flushAsyncWork(): Promise<void> {
 }
 
 describe('pt-webgpu OIDN production presentation', () => {
+  it('uses an explicit unfilterable-float source layout for rgba16f and rgba32f presentation', async () => {
+    const { device, record } = makeProductionDevice();
+    const engine = await createPTEngine_WebGPU({
+      device,
+      traceTier: 'full',
+      denoiser: 'none',
+    });
+    engine.setScene(scene());
+    engine.renderFrame(frame(1));
+
+    const layout = record.bindGroupLayouts.find(
+      (descriptor) =>
+        descriptor.label === 'vitrum.pt-webgpu.present.bindGroupLayout',
+    );
+    expect(layout).toBeDefined();
+    expect(Array.from(layout!.entries)).toEqual([
+      expect.objectContaining({
+        binding: 0,
+        buffer: { type: 'uniform' },
+      }),
+      expect.objectContaining({
+        binding: 1,
+        texture: {
+          sampleType: 'unfilterable-float',
+          viewDimension: '2d',
+        },
+      }),
+      expect.objectContaining({
+        binding: 2,
+        storageTexture: {
+          access: 'write-only',
+          format: 'rgba16float',
+          viewDimension: '2d',
+        },
+      }),
+    ]);
+    const presentPipeline = record.createComputePipeline.mock.calls
+      .map(([descriptor]) => descriptor)
+      .find((descriptor) =>
+        descriptor.label === 'vitrum.pt-webgpu.present.pipeline',
+      );
+    expect(presentPipeline?.layout).not.toBe('auto');
+    engine.dispose();
+  });
+
+  it('re-presents changed dials from the accumulator on converged and paused frames', async () => {
+    const { device, record } = makeProductionDevice();
+    const engine = await createPTEngine_WebGPU({
+      device,
+      traceTier: 'full',
+      denoiser: 'none',
+    });
+    engine.setScene(scene());
+    const first = engine.renderFrame(frame(1, 1));
+    expect(first.kind).toBe('rendered');
+    const accumulator = record.textures.find(
+      (texture) => texture.label === 'vitrum.pt-webgpu.accum',
+    );
+    expect(accumulator).toBeDefined();
+    const sourceForLastPresent = () => record.bindGroups
+      .filter((group) => group.label === 'vitrum.pt-webgpu.present.bindgroup')
+      .at(-1)?.entries.find((entry) => entry.binding === 1)
+      ?.resource as { readonly texture?: StubTexture } | undefined;
+
+    const submitsAfterFirst = record.submit.mock.calls.length;
+    const converged = engine.renderFrame(frame(1, 2));
+    expect(converged.kind).toBe('rendered');
+    expect(converged.samplesAccumulated).toBe(1);
+    expect(record.submit.mock.calls.length).toBe(submitsAfterFirst + 1);
+    expect(sourceForLastPresent()?.texture).toBe(accumulator);
+
+    engine.pause();
+    const submitsBeforePausedChange = record.submit.mock.calls.length;
+    const paused = engine.renderFrame(frame(1, 3));
+    expect(paused.kind).toBe('rendered');
+    expect(paused.samplesAccumulated).toBe(1);
+    expect(record.submit.mock.calls.length).toBe(submitsBeforePausedChange + 1);
+    expect(sourceForLastPresent()?.texture).toBe(accumulator);
+
+    const submitsBeforeUnchangedPause = record.submit.mock.calls.length;
+    engine.renderFrame(frame(1, 3));
+    expect(record.submit.mock.calls.length).toBe(submitsBeforeUnchangedPause);
+    engine.dispose();
+  });
+
   it('queues CPU output, then uploads and presents it only on render cadence', async () => {
     const { device, record } = makeProductionDevice();
     let resolveFirst!: (rgb: Float32Array) => void;
@@ -269,6 +365,28 @@ describe('pt-webgpu OIDN production presentation', () => {
     )).toThrow(/aliased a live GPU texture/);
     expect(record.writeTexture.mock.calls.length).toBe(writesBefore);
     expect(liveNormal.destroy).not.toHaveBeenCalled();
+    expect(gpu.hasDenoisedResult()).toBe(false);
+    gpu.dispose();
+  });
+
+  it('destroys a fresh OIDN candidate when upload fails before publication', () => {
+    const { device, record } = makeProductionDevice();
+    const gpu = new GpuResources(device, 'full', false);
+    gpu.ensureAccumResources(2, 2);
+    const texturesBefore = record.textures.length;
+    record.writeTexture.mockImplementationOnce(() => {
+      throw new Error('synthetic OIDN upload failure');
+    });
+
+    expect(() => gpu.presentDenoisedResult(
+      { rgb: new Float32Array(12), width: 2, height: 2 },
+      0,
+      1,
+      0,
+    )).toThrow(/synthetic OIDN upload failure/);
+    const candidate = record.textures[texturesBefore]!;
+    expect(candidate.label).toBe('vitrum.pt-webgpu.oidn.linear');
+    expect(candidate.destroy).toHaveBeenCalledTimes(1);
     expect(gpu.hasDenoisedResult()).toBe(false);
     gpu.dispose();
   });

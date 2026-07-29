@@ -1,8 +1,8 @@
 /**
- * Regression coverage for the explicit WebGPU pipeline layout. BDPT now builds
- * its light and eye subpaths inside each `main` invocation, so there is one
- * compute pipeline and no cross-pipeline storage-buffer handoff. These tests pin
- * that single pipeline and the exact layouts declared by the composed WGSL.
+ * Regression coverage for the explicit WebGPU pipeline layout. BDPT builds its
+ * light and eye subpaths inside each `main` invocation, then its cross-pixel
+ * t=1 splats are committed by a second entry point over the same explicit
+ * layout. These tests pin both entry points and the exact composed layouts.
  */
 import { describe, expect, it, vi } from 'vitest';
 import { GpuResources } from '../gpuResources.js';
@@ -86,7 +86,7 @@ function makeStubDevice() {
 describe('pt-webgpu explicit pipeline layout', () => {
   installWebGpuConstStubs();
 
-  it('full+bdpt: builds one main pipeline with one explicit GPUPipelineLayout', () => {
+  it('full+bdpt: builds main + camera-splat resolve over one explicit GPUPipelineLayout', () => {
     const stub = makeStubDevice();
     const gpu = new GpuResources(stub.device, 'full', true);
     gpu.ensurePipeline();
@@ -97,7 +97,7 @@ describe('pt-webgpu explicit pipeline layout', () => {
     expect(stub.createdPipelineLayouts[0]!.bindGroupLayouts).toHaveLength(4);
 
     const entryPoints = stub.createdPipelines.map((p) => p.entryPoint).sort();
-    expect(entryPoints).toEqual(['main']);
+    expect(entryPoints).toEqual(['bdptResolveCameraSplats', 'main']);
 
     const sharedLayout = stub.createdPipelineLayouts[0]!.token;
     for (const p of stub.createdPipelines) {
@@ -106,7 +106,7 @@ describe('pt-webgpu explicit pipeline layout', () => {
     }
   });
 
-  it('full: bindGroupLayout/1/2/3 are the explicit layouts the shared pipeline layout uses', () => {
+  it('full+bdpt: bindGroupLayout/1/2/3 are the explicit layouts both pipelines use', () => {
     const stub = makeStubDevice();
     const gpu = new GpuResources(stub.device, 'full', true);
     gpu.ensurePipeline();
@@ -123,7 +123,7 @@ describe('pt-webgpu explicit pipeline layout', () => {
     expect(pl[3]).toBe(gpu.bindGroupLayout3);
   });
 
-  it('full: explicit group layouts match the WGSL binding indices/types the auto layout produced', () => {
+  it('full+bdpt: explicit group layouts match the WGSL binding indices/types', () => {
     const stub = makeStubDevice();
     const gpu = new GpuResources(stub.device, 'full', true);
     gpu.ensurePipeline();
@@ -132,8 +132,10 @@ describe('pt-webgpu explicit pipeline layout', () => {
     const [g0, g1, g2, g3] = stub.createdLayouts;
     const COMPUTE = (globalThis as unknown as { GPUShaderStage: { COMPUTE: number } }).GPUShaderStage.COMPUTE;
 
-    // Group 0 — bindings 0..13 (full). Types must match material.wgsl.ts.
-    expect(g0!.entries.map((e) => e.binding)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]);
+    // Group 0 — full bindings 0..13 plus BDPT camera-splat storage at 14.
+    expect(g0!.entries.map((e) => e.binding)).toEqual([
+      0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14,
+    ]);
     const byBinding = (entries: GPUBindGroupLayoutEntry[]) =>
       new Map(entries.map((e) => [e.binding, e]));
     const g0m = byBinding(g0!.entries);
@@ -145,6 +147,7 @@ describe('pt-webgpu explicit pipeline layout', () => {
     expect(g0m.get(9)!.storageTexture?.format).toBe('rgba16float'); // normalDepth
     expect(g0m.get(12)!.storageTexture).toBeDefined(); // motionVectors
     expect(g0m.get(13)!.buffer?.type).toBe('storage'); // varianceMoments (read_write)
+    expect(g0m.get(14)!.buffer?.type).toBe('storage'); // BDPT atomic RGB splats
     for (const e of g0!.entries) expect(e.visibility).toBe(COMPUTE);
 
     // Group 1 — 11 read-only storage buffers (binding 10 = directionalLights, N-directional expansion).

@@ -101,8 +101,8 @@ export class NeuralDenoiser implements Denoiser {
   private _unpackParamsBuf: GPUBuffer | null = null;
 
   /** The four GPU tensor buffers + output texture, grouped so they are
-   *  allocated, checked, and destroyed together.  Null until the first
-   *  `_allocTensorBuffers` call (i.e. until `initialize` or `dispatch`). */
+   *  allocated, checked, and destroyed together. Null until a successful
+   *  initialization generation is published. */
   private _tensorBuffers: NeuralTensorBuffers | null = null;
 
   private _lastFallbackReason: string | null = null;
@@ -664,26 +664,6 @@ export class NeuralDenoiser implements Denoiser {
   private _destroyTensorBuffers(): void {
     destroyTensorBuffers(this._tensorBuffers);
     this._tensorBuffers = null;
-  }
-
-  /**
-   * Allocate (or reallocate) the four tensor GPU buffers + output texture
-   * for dimensions `(w, h)`. No-ops when the current record already matches.
-   * Mirrors `bmfr.ts _allocHistory` in shape.
-   */
-  private _allocTensorBuffers(device: GPUDevice, w: number, h: number): void {
-    assertWalkaroundNeuralDenoiserShape(w, h);
-    if (
-      this._tensorBuffers != null &&
-      this._tensorBuffers.width === w &&
-      this._tensorBuffers.height === h
-    ) {
-      return;
-    }
-    const next = this._createTensorBuffers(device, w, h);
-    const previous = this._tensorBuffers;
-    this._tensorBuffers = next;
-    destroyTensorBuffers(previous);
   }
 
   private _setUnsupportedShapeFailure(

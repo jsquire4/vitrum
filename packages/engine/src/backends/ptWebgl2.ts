@@ -60,7 +60,6 @@ export async function constructPathTracer(
   const advancedWebGL2 = stripOwnershipCriticalKeys(
     advancedWebGL2Raw as Record<string, unknown> | undefined,
     'pt-webgl2',
-    opts.onWarning,
   ) as WebGL2PathTracerAdvancedOptions;
   const module: PtWebgl2Module = await import('@vitrum/pt-webgl2');
   module.validateWebgl2AdvancedOptions(advancedWebGL2);

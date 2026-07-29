@@ -7,6 +7,8 @@ import {
   tryFastPathGeometryMutation,
   tryFastPathMaterialMutation,
 } from './mutateSceneTextures.js';
+import { ATTR_LAYER_COLOR } from './attributesTextureArray.js';
+import { MATERIAL_PIXELS } from './materialsTexture.js';
 import { buildSceneGeometryTextureData } from './uploadSceneTextures.js';
 
 function fakeGl(): WebGL2RenderingContext {
@@ -110,7 +112,11 @@ function fakeCurrent(overrides: Partial<UploadedSceneTextures> = {}): UploadedSc
     materialAtlasDim: 0,
     materialAtlasLayerCount: 0,
     materialAtlasLayerCapacity: 0,
-    materialLayerMap: null,
+    materialHdrTextures2DArray: null,
+    materialHdrAtlasDim: 0,
+    materialHdrAtlasLayerCount: 0,
+    materialHdrAtlasLayerCapacity: 0,
+    materialLayerMap: { ldr: null, hdr: null },
     vertexColorMaterialIds: new Set(),
     triangleCount: 2,
     destroy: vi.fn(),
@@ -199,7 +205,7 @@ describe('tryFastPathMaterialMutation', () => {
     expect(meshLightData[6]).toBeCloseTo(0, 6);
   });
 
-  it('drops a resident atlas when a layered normal-map patch removes the last texture', () => {
+  it('defers an atlas-changing patch to the staged full-scene transaction', () => {
     const gl = fakeGl();
     const oldAtlas = { id: 'old-atlas' } as unknown as WebGLTexture;
     const oldNormalHandle = { width: 1, height: 1, data: new Float32Array([0.5, 0.5, 1, 1]) };
@@ -226,7 +232,10 @@ describe('tryFastPathMaterialMutation', () => {
         materialAtlasDim: 1,
         materialAtlasLayerCount: 1,
         materialAtlasLayerCapacity: 1,
-        materialLayerMap: { srgb: new Map(), linear: new Map([[oldNormalHandle, 0]]) },
+        materialLayerMap: {
+          ldr: { srgb: new Map(), linear: new Map([[oldNormalHandle, 0]]) },
+          hdr: null,
+        },
         meshLights: null,
         meshLightCount: 0,
         totalEmissiveArea: 0,
@@ -238,13 +247,12 @@ describe('tryFastPathMaterialMutation', () => {
       { material: { frontLayer: { normalMap: undefined } } } as never,
     );
 
-    expect(swap).not.toBeNull();
-    expect(swap?.textures.textures2DArray).toBeNull();
-    expect(swap?.textures.materialLayerMap).toBeNull();
-    expect(swap?.textures.materialAtlasLayerCount).toBe(0);
-    expect(swap?.deleteOldTextures).toContain(oldAtlas);
+    expect(swap).toBeNull();
+    expect(gl.texSubImage2D).not.toHaveBeenCalled();
+    expect(gl.texSubImage3D).not.toHaveBeenCalled();
     expect((gl.texImage3D as unknown as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(0);
   });
+
 });
 
 describe('tryFastPathGeometryMutation — arbitrary UV sets', () => {
@@ -308,5 +316,76 @@ describe('tryFastPathGeometryMutation — arbitrary UV sets', () => {
         uvSets: [undefined, undefined, uv2, uv3],
       }),
     ).toBeNull();
+  });
+});
+
+describe('tryFastPathGeometryMutation — vertex color selection', () => {
+  it('refreshes the selected color stream and material vertex-color flag together', () => {
+    const disabled = {
+      ...panelPrimitive(material({})),
+      colorSets: [
+        new Float32Array([
+          1, 0, 0, 1,
+          1, 0, 0, 1,
+          1, 0, 0, 1,
+          1, 0, 0, 1,
+        ]),
+        new Float32Array([
+          0, 1, 0, 1,
+          0, 1, 0, 1,
+          0, 1, 0, 1,
+          0, 1, 0, 1,
+        ]),
+      ],
+      vertexColorSet: null,
+    } satisfies MeshPrimitive;
+    const enabled = { ...disabled, vertexColorSet: 1 } satisfies MeshPrimitive;
+    const currentBuild = buildSceneGeometryTextureData(sceneWithPrimitive(disabled));
+    expect(currentBuild.vertexColorMaterialIds.size).toBe(0);
+
+    const gl = fakeGl();
+    const current = fakeCurrent({
+      meshLights: null,
+      meshLightCount: 0,
+      totalEmissiveArea: 0,
+      totalEmissivePower: 0,
+      vertexColorMaterialIds: currentBuild.vertexColorMaterialIds,
+      uvLayerByTexCoord: currentBuild.uvLayerByTexCoord,
+      attributeLayerCount: currentBuild.attrData.layers,
+    });
+    const swap = tryFastPathGeometryMutation(
+      gl,
+      current,
+      currentBuild.merged,
+      sceneWithPrimitive(enabled),
+      { vertexColorSet: 1 },
+    );
+
+    expect(swap).not.toBeNull();
+    expect(swap?.textures.vertexColorMaterialIds).toEqual(new Set([0]));
+
+    const attributeCall = (
+      gl.texSubImage3D as unknown as ReturnType<typeof vi.fn>
+    ).mock.calls.find((call) => call[7] === currentBuild.attrData.layers);
+    expect(attributeCall).toBeDefined();
+    const attributes = attributeCall?.[10] as Float32Array;
+    const floatsPerLayer = currentBuild.attrData.dim * currentBuild.attrData.dim * 4;
+    const colorBase = ATTR_LAYER_COLOR * floatsPerLayer;
+    expect(Array.from(attributes.slice(colorBase, colorBase + 16))).toEqual([
+      0, 1, 0, 1,
+      0, 1, 0, 1,
+      0, 1, 0, 1,
+      0, 1, 0, 1,
+    ]);
+
+    const materialCall = (
+      gl.texSubImage2D as unknown as ReturnType<typeof vi.fn>
+    ).mock.calls.find((call) => {
+      const payload = call[8];
+      return payload instanceof Float32Array && payload.length >= MATERIAL_PIXELS * 4;
+    });
+    expect(materialCall).toBeDefined();
+    const materialPayload = materialCall?.[8] as Float32Array;
+    expect(materialPayload[14 * 4 + 2]).toBe(1);
   });
 });

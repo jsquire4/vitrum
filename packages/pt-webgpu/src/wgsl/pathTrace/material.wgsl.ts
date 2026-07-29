@@ -21,6 +21,7 @@ import {
   MATERIAL_TEX_VEC4_STRIDE,
 } from '../../scene/materialTextures.js';
 import { roughDielectricSmithG1Wgsl } from '../../math/roughDielectric.js';
+import { KHR_MATERIALS_IOR_INFINITY_APPROX } from '../../scene/materialPacking.js';
 
 /**
  * Material module — `FrameParams` UBO + group(0) bindings + material payload
@@ -90,9 +91,9 @@ struct FrameParams {
   lightTreeNodeCount: u32,
   // Only the camera position's xyz components are part of the contract.
   cameraPos: vec3f,
-  // H14-E: HDRI radiance intensity multiplier — separate from environmentSun.w
-  // (which drives the procedural-sky sun-strength gate). This scalar occupies
-  // cameraPos's aligned fourth lane, keeping its established slot 31.
+  // H14-E: map-backed environment-radiance intensity. This scalar occupies
+  // cameraPos's aligned fourth lane, keeping its established slot 31. The
+  // following environmentSun lane is retained solely for layout compatibility.
   environmentHdriIntensity: f32,
   environmentTint: vec4f,
   environmentSun: vec4f,
@@ -220,6 +221,58 @@ const PT_WEBGPU_PATH_TRACE_MATERIAL_FULL_BINDINGS_GROUP2_WGSL = /* wgsl */ `
 @group(2) @binding(3) var<storage, read> tlasInstanceWorldToLocal: array<vec4f>;
 @group(2) @binding(4) var<storage, read> tlasInstanceLocalToWorld: array<vec4f>;
 
+fn sceneTraversalSaturatingAdd(a: u32, b: u32) -> u32 {
+  if (b > 0xffffffffu - a) { return 0xffffffffu; }
+  return a + b;
+}
+
+fn sceneTraversalSaturatingMul(a: u32, b: u32) -> u32 {
+  if (a == 0u || b == 0u) { return 0u; }
+  if (a > 0xffffffffu / b) { return 0xffffffffu; }
+  return a * b;
+}
+
+// Proven upper bound on distinct surface hits along one forward-only straight
+// ray. Each world-space triangle plane can be crossed once per TLAS instance.
+// The four convex analytic families are closed solids and contribute at most
+// entry+exit; the closed H-channel is the union of three boxes and therefore
+// contributes at most six. A tangent double root cannot exceed those counts
+// (and the forward origin step normally collapses it to one reported hit).
+// Unknown analytic discriminants are not intersected by traceAnalyticShapes.
+fn sceneSurfaceHitLimit() -> u32 {
+  let triangleSupport = min(params.triangleCount, arrayLength(&indices));
+  // The direct single-BLAS path can expose each packed triangle once. TLAS
+  // traversal expands that support by the validated instance membership.
+  var meshSupport = triangleSupport;
+  if (params.tlasNodeCount > 0u) {
+    let instanceSupport = min(
+      arrayLength(&tlasInstanceIndices),
+      arrayLength(&tlasBlasRoots),
+    );
+    meshSupport = sceneTraversalSaturatingMul(
+      triangleSupport,
+      instanceSupport,
+    );
+  }
+
+  var analyticSupport = 0u;
+  let analyticTotal = min(params.analyticCount, arrayLength(&analyticHeaders));
+  for (var ai = 0u; ai < analyticTotal; ai = ai + 1u) {
+    let shapeId = u32(max(analyticHeaders[ai].x, 0.0));
+    var multiplicity = 0u;
+    if (shapeId >= 1u && shapeId <= 4u) {
+      multiplicity = 2u;
+    } else if (shapeId == 5u) {
+      multiplicity = 6u;
+    }
+    analyticSupport = sceneTraversalSaturatingAdd(
+      analyticSupport,
+      multiplicity,
+    );
+  }
+  return sceneTraversalSaturatingAdd(meshSupport, analyticSupport);
+}
+
 // Light-path flat index: 7 vec4f rows per light-vertex column. Row 3 carries
 // the reached vertex's matId + wo-toward-prev so the §10.3 connection can evaluate
 // the REAL light-vertex BSDF for a glossy/metallic light-path vertex; row 4 carries
@@ -310,7 +363,7 @@ function materialLayerSamplerWgsl(
     -sy * s * rawUv.x + sy * c * rawUv.y + xform.y,
   );
   let sourceBaseSize = materialTextureSourceBaseSize(
-    vec2u(textureDimensions(${texArray}, 0)), uvFitScale,
+    vec2u(textureDimensions(${texArray}, i32(0))), uvFitScale,
   );
   let sourceMipCount = f32(materialTextureSourceMipCount(sourceBaseSize));
   let texDim = vec2f(sourceBaseSize);
@@ -352,7 +405,10 @@ fn materialTextureBilinearAxis(baseCoord: i32, size: u32, wrapMode: f32) -> vec2
 function materialSourceRectSamplerWgsl(name: string, texArray: string): string {
   return /* wgsl */ `
 fn ${name}Fetch(layerIdx: i32, coord: vec2i, mip: u32) -> vec4f {
-  return textureLoad(${texArray}, coord, layerIdx, mip);
+  // Keep the mip operand signed at the texture builtin boundary. WGSL accepts
+  // an i32 mip level, and Naga's GLSL robustness lowering then emits the GLSL
+  // textureSize(sampler2DArray, int) overload instead of an invalid uint call.
+  return textureLoad(${texArray}, coord, layerIdx, i32(mip));
 }
 
 fn ${name}Bilinear(
@@ -812,7 +868,7 @@ fn sampleMaterialLayerLinearRawUvPolicy(layerIdx: i32, base: u32, triIndex: u32,
     -sy * s * rawUv.x + sy * c * rawUv.y + xform.y,
   );
   let sourceBaseSize = materialTextureSourceBaseSize(
-    vec2u(textureDimensions(materialTexturesLinear, 0)), uvFitScale,
+    vec2u(textureDimensions(materialTexturesLinear, i32(0))), uvFitScale,
   );
   let sourceMipCount = f32(materialTextureSourceMipCount(sourceBaseSize));
   let texDim = vec2f(sourceBaseSize);
@@ -1178,7 +1234,7 @@ fn applyBumpMap(matId: u32, triIndex: u32, baryVW: vec2f, shadingNormal: vec3f, 
     materialUvForVertex(tri.x, bumpGpuUvSlot) * u +
     materialUvForVertex(tri.y, bumpGpuUvSlot) * v +
     materialUvForVertex(tri.z, bumpGpuUvSlot) * w;
-  let linearDims = vec2f(textureDimensions(materialTexturesLinear, 0));
+  let linearDims = vec2f(textureDimensions(materialTexturesLinear, i32(0)));
   let sourceDims = max(linearDims * bumpUvFitScale, vec2f(1.0));
   let texelStep = vec2f(1.0 / sourceDims.x, 1.0 / sourceDims.y);
   let hC = sampleMaterialLayerLinearRawUvPolicy(bumpIdx, base, triIndex, baryVW, instanceIndex, rawUv, MATERIAL_TEX_UV_BUMP, bumpUvFitScale, bumpWrapMode, MATERIAL_TEX_MIP_BUMP).r;
@@ -1637,7 +1693,10 @@ fn thinFilmTmmRt(
   var r = max(0.0, 0.5 * (rtS.x + rtP.x));
   var t = max(0.0, 0.5 * (rtS.y + rtP.y));
   if (!tfFinite(r) || !tfFinite(t) || r + t > 1.0001) {
-    return vec3f(1.0, 0.0, 0.0);
+    // A shader invocation cannot raise the CPU's ThinFilmNumericError. Lose
+    // the invalid sample as absorption instead of silently synthesizing a
+    // perfect mirror that was never authored.
+    return vec3f(0.0, 0.0, 1.0);
   }
   if (r + t > 1.0) {
     let invSum = 1.0 / (r + t);
@@ -1685,6 +1744,19 @@ fn thinFilmApplyTransmissionScale(
   return out;
 }
 
+// Structural corruption must fail dark. CPU scene publication validates every
+// descriptor/LUT range before upload, but a stale or externally corrupted GPU
+// buffer must not turn into an unbounded bright perfect-mirror contribution.
+fn thinFilmAbsorbedTransportRt() -> ThinFilmTransportRt {
+  var out: ThinFilmTransportRt;
+  out.reflectance = vec3f(0.0);
+  out.transmittance = vec3f(0.0);
+  out.reflectanceEnergy = 0.0;
+  out.transmittanceEnergy = 0.0;
+  out.absorptionEnergy = 1.0;
+  return out;
+}
+
 fn thinFilmTransportRt(
   film: ThinFilmInterface,
   microfacetCos: f32,
@@ -1729,12 +1801,7 @@ fn thinFilmTransportRt(
   let directionOffset = select(8u, 0u, film.frontFace);
   let descriptorIndex = film.matId * MATERIAL_VEC4_STRIDE + 28u;
   if (descriptorIndex >= arrayLength(&materials)) {
-    out.reflectance = vec3f(1.0);
-    out.transmittance = vec3f(0.0);
-    out.reflectanceEnergy = 1.0;
-    out.transmittanceEnergy = 0.0;
-    out.absorptionEnergy = 0.0;
-    return out;
+    return thinFilmAbsorbedTransportRt();
   }
   // The CPU validates this numeric f32 as an exact non-negative integer below
   // 2^24 before upload; conversion back to u32 is therefore bit-exact.
@@ -1742,12 +1809,7 @@ fn thinFilmTransportRt(
   let lutEndScalar = lutBaseVec4 * 4u +
     THIN_FILM_RGB_LUT_BINS * THIN_FILM_RGB_LUT_SCALARS_PER_BIN;
   if (lutBaseVec4 == 0u || lutEndScalar > arrayLength(&materials) * 4u) {
-    out.reflectance = vec3f(1.0);
-    out.transmittance = vec3f(0.0);
-    out.reflectanceEnergy = 1.0;
-    out.transmittanceEnergy = 0.0;
-    out.absorptionEnergy = 0.0;
-    return out;
+    return thinFilmAbsorbedTransportRt();
   }
   let base0 = lutBaseVec4 * 4u +
     bin0 * THIN_FILM_RGB_LUT_SCALARS_PER_BIN + directionOffset;
@@ -2029,8 +2091,8 @@ struct DecodedMaterial {
   hasSpectralReflectance: bool,
   isUnlit: bool,
   doubleSided: bool,
-  // SPEC-01 — KHR_materials_specular scalar factors. Defaults are
-  // specularColor=[1,1,1], specularIntensity=1 so legacy dielectric F0 stays 0.04.
+  // SPEC-01 — KHR_materials_specular scalar factors. specularColor is
+  // non-negative and intentionally unbounded until IOR-derived F0 composition.
   specularColor: vec3f,
   specularIntensity: f32,
   volumeThickness: f32,
@@ -2166,7 +2228,13 @@ fn decodeMaterial(matId: u32) -> DecodedMaterial {
   mat.emissive = m1.rgb;
   mat.metallic = clamp(m1.w, 0.0, 1.0);
   mat.transmission = clamp(m2.x, 0.0, 1.0);
-  mat.ior = clamp(m2.y, 1.0, 2.5);
+  // KHR_materials_ior defines authored zero as effective positive infinity.
+  // Keep the transport finite while preserving an exact f32 Fresnel limit of 1.
+  mat.ior = select(
+    max(m2.y, 1.0),
+    ${KHR_MATERIALS_IOR_INFINITY_APPROX},
+    m2.y == 0.0,
+  );
   mat.scatteringCoeff = max(m2.z, 0.0);
   mat.scatteringAnisotropy = clamp(m2.w, -0.999999, 0.999999);
   mat.scatteringRgb = vec3f(max(m3.x, 0.0), max(m3.y, 0.0), max(m3.z, 0.0));
@@ -2199,7 +2267,7 @@ fn decodeMaterial(matId: u32) -> DecodedMaterial {
   mat.hasSpectralReflectance = (u32(max(m26.w, 0.0)) & 1u) != 0u;
   mat.isUnlit = (u32(max(m26.w, 0.0)) & 2u) != 0u;
   mat.doubleSided = (u32(max(m26.w, 0.0)) & 4u) != 0u;
-	  mat.specularColor = clamp(m27.rgb, vec3f(0.0), vec3f(1.0));
+	  mat.specularColor = max(m27.rgb, vec3f(0.0));
 	  mat.specularIntensity = clamp(m27.w, 0.0, 1.0);
 	  mat.volumeThickness = max(m28.x, 0.0);
 	  mat.hasVolumeThickness = m28.y > 0.5;

@@ -223,7 +223,7 @@ const PT_WEBGL2_UNLIT = evidence(
   [
     'packages/pt-webgl2/src/scene/materialsTexture.ts',
     'packages/pt-webgl2/src/glsl/composeTraceGlsl.ts',
-    'packages/pt-webgl2/src/glsl/shader/structs/material_struct.glsl.js',
+    'packages/pt-webgl2/src/glsl/shader/structs/material_mapped_rich.glsl.ts',
   ],
   [
     {
@@ -268,7 +268,7 @@ const PT_WEBGL2_SCATTER_RGB = evidence(
   ],
   [
     'packages/pt-webgl2/src/scene/materialsTexture.ts',
-    'packages/pt-webgl2/src/glsl/shader/structs/material_struct.glsl.js',
+    'packages/pt-webgl2/src/glsl/shader/structs/material_mapped_rich.glsl.ts',
     'packages/pt-webgl2/src/glsl/shader/bsdf/bsdf_functions.glsl.js',
   ],
   [
@@ -345,7 +345,6 @@ const PT_WEBGPU_RICH_LOBES = evidence(
     'packages/pt-webgpu/src/__tests__/untestedMaterialMaps.test.ts',
     'packages/pt-webgpu/src/__tests__/extensionLobeReference.test.ts',
     'packages/pt-webgpu/src/__tests__/ggxAnisotropicBrdf.test.ts',
-    'packages/pt-webgpu/src/__tests__/adjointHarness.test.ts',
   ],
   [
     'packages/pt-webgpu/src/scene/materialPacking.ts',

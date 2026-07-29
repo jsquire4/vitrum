@@ -1,12 +1,24 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { MaterialSpec } from '@vitrum/core';
 import {
+  MATERIAL_TEXTURE_ATLAS_STORAGE_BUDGET_BYTES,
+  materialTextureAtlasLayerCapacities,
+  packMaterialTextureAtlases,
   packTextureAtlas,
   textureAtlasLayerCapacity,
+  textureAtlasLayerCapacityForStorage,
   textureAtlasMipElementCounts,
+  textureAtlasStorageByteLength,
   uploadTextureAtlas,
+  type TextureAtlas,
   type TextureHandleHint,
 } from './texturesArray.js';
+import {
+  FLOAT16_HALF_MIN_SUBNORMAL,
+  FLOAT16_MAX_FINITE,
+  FLOAT16_MIN_SUBNORMAL,
+  float16BitsToFloat32,
+} from './halfFloat.js';
 
 // packTextureAtlas gathers material-map handles into a sampler2DArray + a
 // handle→layer map. These pin the duck-typed pixel read (raw + DataTexture forms),
@@ -21,11 +33,38 @@ function matWithBaseColorMap(handle: unknown): MaterialSpec {
   return { baseColor: [1, 1, 1], roughness: 1, metallic: 0, baseColorMap: { handle } };
 }
 
+function matWithEmissiveMap(
+  handle: unknown,
+  sampler: Omit<NonNullable<MaterialSpec['emissiveMap']>, 'handle'> = {},
+): MaterialSpec {
+  return {
+    baseColor: [1, 1, 1],
+    roughness: 1,
+    metallic: 0,
+    emissive: [1, 1, 1],
+    emissiveMap: { handle, ...sampler },
+  };
+}
+
 function srgbToLinear(v: number): number {
   return v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
 }
 
-function makeTextureAtlasUploadGl(error = 0) {
+function ldrLinear(data: Uint8Array, index: number): number {
+  return (data[index] ?? 0) / 255;
+}
+
+function ldrSrgbLinear(data: Uint8Array, index: number): number {
+  return srgbToLinear(ldrLinear(data, index));
+}
+
+function makeTextureAtlasUploadGl(
+  error = 0,
+  limits: {
+    readonly maxTextureSize?: number;
+    readonly maxArrayTextureLayers?: number;
+  } = {},
+) {
   const texture = {} as WebGLTexture;
   const deleteTexture = vi.fn();
   const bindTexture = vi.fn();
@@ -34,9 +73,11 @@ function makeTextureAtlasUploadGl(error = 0) {
   const texImage3D = vi.fn();
   const gl = {
     TEXTURE_2D_ARRAY: 0x8c1a,
-    RGBA32F: 0x8814,
+    RGBA8: 0x8058,
+    RGBA16F: 0x881a,
     RGBA: 0x1908,
-    FLOAT: 0x1406,
+    UNSIGNED_BYTE: 0x1401,
+    HALF_FLOAT: 0x140b,
     TEXTURE_MIN_FILTER: 0x2801,
     TEXTURE_MAG_FILTER: 0x2800,
     TEXTURE_WRAP_S: 0x2802,
@@ -49,7 +90,11 @@ function makeTextureAtlasUploadGl(error = 0) {
     MAX_ARRAY_TEXTURE_LAYERS: 0x88ff,
     NO_ERROR: 0,
     isContextLost: vi.fn(() => false),
-    getParameter: vi.fn(() => 256),
+    getParameter: vi.fn((parameter: number) =>
+      parameter === 0x0d33
+        ? (limits.maxTextureSize ?? 256)
+        : (limits.maxArrayTextureLayers ?? 256),
+    ),
     getError: vi.fn(() => error),
     createTexture: vi.fn(() => texture),
     deleteTexture,
@@ -137,15 +182,15 @@ describe('packTextureAtlas', () => {
       dataTexHandle(new Float32Array([0, 1, 0, 1]), 1, 1),
       dataTexHandle(new Float32Array([0, 0, 1, 1]), 1, 1),
     ];
-    const NativeFloat32Array = globalThis.Float32Array;
+    const NativeUint8Array = globalThis.Uint8Array;
     const allocationLengths: number[] = [];
-    class CountingFloat32Array extends NativeFloat32Array {
+    class CountingUint8Array extends NativeUint8Array {
       constructor(length: number) {
         allocationLengths.push(length);
         super(length);
       }
     }
-    vi.stubGlobal('Float32Array', CountingFloat32Array);
+    vi.stubGlobal('Uint8Array', CountingUint8Array);
     try {
       const atlas = packTextureAtlas(handles.map(matWithBaseColorMap));
       expect(atlas?.layerCount).toBe(3);
@@ -166,7 +211,7 @@ describe('packTextureAtlas', () => {
 
     expect(uploadTextureAtlas(gl, atlas, { layerCapacity: 4 })).toBe(texture);
     expect(texStorage3D).toHaveBeenCalledOnce();
-    expect(texStorage3D).toHaveBeenCalledWith(gl.TEXTURE_2D_ARRAY, 2, gl.RGBA32F, 2, 2, 4);
+    expect(texStorage3D).toHaveBeenCalledWith(gl.TEXTURE_2D_ARRAY, 2, gl.RGBA8, 2, 2, 4);
     expect(texImage3D).not.toHaveBeenCalled();
     expect(texSubImage3D).toHaveBeenCalledTimes(2);
     atlas.mipLevels.forEach((level, lod) => {
@@ -181,10 +226,218 @@ describe('packTextureAtlas', () => {
         level.dim,
         3,
         gl.RGBA,
-        gl.FLOAT,
+        gl.UNSIGNED_BYTE,
       ]);
       expect(call?.[10]).toBe(level.data);
     });
+  });
+
+  it('uploads outgoing-radiance maps as RGBA16F/HALF_FLOAT', () => {
+    const handle = {
+      width: 1,
+      height: 1,
+      data: new Float32Array([8, 4, 2, 1]),
+      __vitrum_hint__: {
+        channels: 4,
+        dataType: 'float32',
+        colorSpace: 'linear',
+      } as const,
+    };
+    const material: MaterialSpec = {
+      baseColor: [1, 1, 1],
+      roughness: 1,
+      metallic: 0,
+      emissiveMap: { handle },
+    };
+    const atlas = packTextureAtlas([material], { storageClass: 'hdr' })!;
+    const { gl, texStorage3D, texSubImage3D } = makeTextureAtlasUploadGl();
+
+    uploadTextureAtlas(gl, atlas, { layerCapacity: 2 });
+
+    expect(texStorage3D).toHaveBeenCalledWith(
+      gl.TEXTURE_2D_ARRAY,
+      1,
+      gl.RGBA16F,
+      1,
+      1,
+      2,
+    );
+    expect(texSubImage3D.mock.calls[0]?.[9]).toBe(gl.HALF_FLOAT);
+    expect(float16BitsToFloat32(atlas.data[0]!)).toBe(8);
+  });
+
+  it.each([
+    ['maximum finite', FLOAT16_MAX_FINITE, 0x7bff],
+    ['minimum positive subnormal', FLOAT16_MIN_SUBNORMAL, 0x0001],
+  ])('stores the HDR %s boundary exactly', (_label, value, expectedBits) => {
+    const handle = {
+      width: 1,
+      height: 1,
+      data: new Float32Array([value]),
+      __vitrum_hint__: {
+        channels: 1,
+        dataType: 'float32',
+        colorSpace: 'linear',
+      } as const,
+    };
+    const atlas = packTextureAtlas(
+      [matWithEmissiveMap(handle)],
+      { storageClass: 'hdr' },
+    )!;
+    expect(atlas.data[0]).toBe(expectedBits);
+  });
+
+  it.each([
+    ['positive half-minimum tie', FLOAT16_HALF_MIN_SUBNORMAL, /\+0/],
+  ])('fails closed when an HDR level-0 %s encodes to signed zero', (
+    _label,
+    value,
+    zeroPattern,
+  ) => {
+    const handle = {
+      width: 1,
+      height: 1,
+      data: new Float32Array([value]),
+      __vitrum_hint__: {
+        channels: 1,
+        dataType: 'float32',
+        colorSpace: 'linear',
+      } as const,
+    };
+    expect(() =>
+      packTextureAtlas(
+        [matWithEmissiveMap(handle)],
+        { storageClass: 'hdr' },
+      ),
+    ).toThrow(zeroPattern);
+  });
+
+  it('rejects a reachable generated HDR mip that underflows at the half-minimum tie', () => {
+    const handle = {
+      width: 2,
+      height: 1,
+      data: new Float32Array([
+        FLOAT16_MIN_SUBNORMAL, 0, 0, 1,
+        0, 0, 0, 1,
+      ]),
+      __vitrum_hint__: {
+        channels: 4,
+        dataType: 'float32',
+        colorSpace: 'linear',
+      } as const,
+    };
+
+    // The generated half-minimum mip is inert when the authored sampler is
+    // level-0-only, but must fail closed as soon as that mip is reachable.
+    expect(packTextureAtlas(
+      [matWithEmissiveMap(handle)],
+      { storageClass: 'hdr' },
+    )).not.toBeNull();
+    expect(() =>
+      packTextureAtlas(
+        [matWithEmissiveMap(handle, { mipFilter: 'nearest' })],
+        { storageClass: 'hdr' },
+      ),
+    ).toThrow(/generated HDR mip 1 .* underflows to \+0/);
+  });
+
+  it.each([
+    ['NaN', Number.NaN, /decoded pixel data must be finite/],
+    ['positive infinity', Number.POSITIVE_INFINITY, /decoded pixel data must be finite/],
+    ['negative infinity', Number.NEGATIVE_INFINITY, /decoded pixel data must be finite/],
+    ['positive overflow', 65_520, /exceeds the finite RGBA16F range/],
+  ])('rejects HDR %s before materialization', (_label, value, message) => {
+    const handle = {
+      width: 1,
+      height: 1,
+      data: new Float32Array([value]),
+      __vitrum_hint__: {
+        channels: 1,
+        dataType: 'float32',
+        colorSpace: 'linear',
+      } as const,
+    };
+    expect(() =>
+      packTextureAtlas(
+        [matWithEmissiveMap(handle)],
+        { storageClass: 'hdr' },
+      ),
+    ).toThrow(message);
+  });
+
+  it('rejects negative linear RGB for both outgoing-radiance atlas roles', () => {
+    const handle = {
+      width: 1,
+      height: 1,
+      data: new Float32Array([-FLOAT16_MIN_SUBNORMAL, 0, 0, 1]),
+      __vitrum_hint__: {
+        channels: 4,
+        dataType: 'float32',
+        colorSpace: 'linear',
+      } as const,
+    };
+    const lightMapMaterial: MaterialSpec = {
+      baseColor: [1, 1, 1],
+      roughness: 1,
+      metallic: 0,
+      lightMap: { handle },
+    };
+
+    for (const material of [matWithEmissiveMap(handle), lightMapMaterial]) {
+      expect(() =>
+        packTextureAtlas(
+          [material],
+          { storageClass: 'hdr' },
+        ),
+      ).toThrow(/outgoing-radiance RGB value .* must be non-negative/);
+    }
+  });
+
+  it.each([
+    ['negative maximum finite', -FLOAT16_MAX_FINITE, 0xfbff],
+    ['minimum negative subnormal', -FLOAT16_MIN_SUBNORMAL, 0x8001],
+  ])('keeps the HDR alpha lane format-generic at the %s boundary', (
+    _label,
+    alpha,
+    expectedBits,
+  ) => {
+    const handle = {
+      width: 1,
+      height: 1,
+      data: new Float32Array([0, 0, 0, alpha]),
+      __vitrum_hint__: {
+        channels: 4,
+        dataType: 'float32',
+        colorSpace: 'linear',
+      } as const,
+    };
+    const atlas = packTextureAtlas(
+      [matWithEmissiveMap(handle)],
+      { storageClass: 'hdr' },
+    )!;
+    expect(atlas.data[3]).toBe(expectedBits);
+  });
+
+  it.each([
+    ['negative half-minimum tie', -FLOAT16_HALF_MIN_SUBNORMAL, /underflows to -0/],
+    ['negative overflow', -65_520, /exceeds the finite RGBA16F range/],
+  ])('checks the format-generic HDR alpha %s', (_label, alpha, message) => {
+    const handle = {
+      width: 1,
+      height: 1,
+      data: new Float32Array([0, 0, 0, alpha]),
+      __vitrum_hint__: {
+        channels: 4,
+        dataType: 'float32',
+        colorSpace: 'linear',
+      } as const,
+    };
+    expect(() =>
+      packTextureAtlas(
+        [matWithEmissiveMap(handle)],
+        { storageClass: 'hdr' },
+      ),
+    ).toThrow(message);
   });
 
   it('deletes and unbinds an atlas candidate when immutable upload reports a GL error', () => {
@@ -199,6 +452,31 @@ describe('packTextureAtlas', () => {
     expect(bindTexture).toHaveBeenLastCalledWith(gl.TEXTURE_2D_ARRAY, null);
   });
 
+  it('rejects over-budget immutable storage before creating a GL texture', () => {
+    const placeholder = new Uint8Array(4);
+    const atlas = {
+      data: placeholder,
+      storageClass: 'ldr',
+      format: 'rgba8unorm',
+      dim: 2_048,
+      mipLevels: [{ data: placeholder, dim: 2_048 }],
+      layerCount: 1,
+      layerOfByColorSpace: { srgb: new Map(), linear: new Map() },
+      sourceDimensions: [[1, 1]],
+      sourcePlacements: [{ layer: 0, x: 0, y: 0, width: 1, height: 1 }],
+    } satisfies TextureAtlas;
+    const { gl, texStorage3D } = makeTextureAtlasUploadGl(0, {
+      maxTextureSize: 2_048,
+      maxArrayTextureLayers: 256,
+    });
+
+    expect(() => uploadTextureAtlas(gl, atlas, { layerCapacity: 32 })).toThrow(
+      /allocation requests .* bytes .* exceeding the 536870912-byte storage budget/,
+    );
+    expect(gl.createTexture).not.toHaveBeenCalled();
+    expect(texStorage3D).not.toHaveBeenCalled();
+  });
+
   it('packs a DataTexture-shaped baseColorMap and assigns it layer 0', () => {
     // 1×1 red RGBA float
     const handle = dataTexHandle(new Float32Array([1, 0, 0, 1]), 1, 1);
@@ -208,15 +486,15 @@ describe('packTextureAtlas', () => {
     expect(atlas!.dim).toBe(1);
     expect(atlas!.mipLevels).toHaveLength(1);
     expect(atlas!.mipLevels[0]!.data).toBe(atlas!.data);
-    expect(atlas!.layerOf.get(handle)).toBe(0);
-    expect(Array.from(atlas!.data)).toEqual([1, 0, 0, 1]);
+    expect(atlas!.layerOfByColorSpace.srgb.get(handle)).toBe(0);
+    expect(Array.from(atlas!.data)).toEqual([255, 0, 0, 255]);
   });
 
   it('dedups a shared handle across materials to one layer', () => {
     const handle = dataTexHandle(new Float32Array([0.5, 0.5, 0.5, 1]), 1, 1);
     const atlas = packTextureAtlas([matWithBaseColorMap(handle), matWithBaseColorMap(handle)]);
     expect(atlas!.layerCount).toBe(1);
-    expect(atlas!.layerOf.get(handle)).toBe(0);
+    expect(atlas!.layerOfByColorSpace.srgb.get(handle)).toBe(0);
   });
 
   it('stores heterogeneous handles at native extent without resampling', () => {
@@ -225,12 +503,12 @@ describe('packTextureAtlas', () => {
     const atlas = packTextureAtlas([matWithBaseColorMap(h1), matWithBaseColorMap(h2)]);
     expect(atlas!.layerCount).toBe(2);
     expect(atlas!.dim).toBe(2); // max source dim
-    expect(atlas!.layerOf.get(h1)).toBe(0);
-    expect(atlas!.layerOf.get(h2)).toBe(1);
-    // Layer 0 retains its native 1×1 texel at the origin; padding stays zero
-    // and is never addressable because its native extent is packed per handle.
-    expect(Array.from(atlas!.data.slice(0, 16))).toEqual([
-      1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    expect(atlas!.layerOfByColorSpace.srgb.get(h2)).toBe(0);
+    expect(atlas!.layerOfByColorSpace.srgb.get(h1)).toBe(1);
+    // The largest source owns layer 0. The 1×1 source keeps its native texel in
+    // layer 1; padding is never addressable through its packed placement.
+    expect(Array.from(atlas!.data.slice(16, 32))).toEqual([
+      255, 255, 255, 255, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     ]);
     expect(atlas!.sourceDimensions[0]).toEqual([1, 1]);
     expect(atlas!.sourceDimensions[1]).toEqual([2, 2]);
@@ -238,11 +516,124 @@ describe('packTextureAtlas', () => {
     expect(atlas!.layerOfByColorSpace.dimensions?.get(h2)).toEqual([2, 2]);
     expect(atlas!.mipLevels).toHaveLength(2);
     expect(atlas!.mipLevels[1]!.dim).toBe(1);
-    expect(Array.from(atlas!.mipLevels[1]!.data.slice(0, 4))).toEqual([1, 1, 1, 1]);
-    expect(atlas!.mipLevels[1]!.data[4]).toBeCloseTo(srgbToLinear(0.5), 6);
-    expect(atlas!.mipLevels[1]!.data[5]).toBeCloseTo(srgbToLinear(0.5), 6);
-    expect(atlas!.mipLevels[1]!.data[6]).toBeCloseTo(srgbToLinear(0.5), 6);
-    expect(atlas!.mipLevels[1]!.data[7]).toBeCloseTo(0.5, 6);
+    expect(ldrSrgbLinear(atlas!.mipLevels[1]!.data as Uint8Array, 0))
+      .toBeCloseTo(srgbToLinear(0.5), 2);
+    expect(ldrSrgbLinear(atlas!.mipLevels[1]!.data as Uint8Array, 1))
+      .toBeCloseTo(srgbToLinear(0.5), 2);
+    expect(ldrSrgbLinear(atlas!.mipLevels[1]!.data as Uint8Array, 2))
+      .toBeCloseTo(srgbToLinear(0.5), 2);
+    expect(ldrLinear(atlas!.mipLevels[1]!.data as Uint8Array, 3)).toBeCloseTo(0.5, 2);
+    expect(Array.from(atlas!.mipLevels[1]!.data.slice(4, 8))).toEqual([0, 0, 0, 0]);
+  });
+
+  it('packs small sources together instead of charging each the largest source extent', () => {
+    const large = dataTexHandle(new Float32Array(8 * 8 * 4).fill(0.25), 8, 8);
+    const small = Array.from({ length: 16 }, (_, index) =>
+      dataTexHandle(
+        new Float32Array([
+          (index + 1) / 32,
+          (index + 2) / 32,
+          (index + 3) / 32,
+          1,
+        ]),
+        1,
+        1,
+      ),
+    );
+    const atlas = packTextureAtlas([
+      matWithBaseColorMap(large),
+      ...small.map(matWithBaseColorMap),
+    ])!;
+
+    expect(atlas.dim).toBe(8);
+    expect(atlas.layerCount).toBe(2);
+    expect(
+      new Set(small.map((handle) => atlas.layerOfByColorSpace.srgb.get(handle))),
+    ).toEqual(new Set([1]));
+    const placementKeys = new Set(
+      small.map((handle) => {
+        const placement = atlas.layerOfByColorSpace.placements?.srgb.get(handle);
+        return `${placement?.layer}:${placement?.x}:${placement?.y}`;
+      }),
+    );
+    expect(placementKeys.size).toBe(16);
+
+    const oneSourcePerLayerBytes = textureAtlasStorageByteLength(atlas.dim, 17);
+    const packedBytes = textureAtlasStorageByteLength(atlas.dim, atlas.layerCount);
+    expect(packedBytes * 8).toBeLessThan(oneSourcePerLayerBytes);
+  });
+
+  it('keeps HDR radiance above one and sRGB-coded LDR precision in separate mips', () => {
+    const extentAnchor = {
+      width: 8,
+      height: 8,
+      data: new Float32Array(8 * 8 * 4),
+      __vitrum_hint__: { channels: 4, dataType: 'float32', colorSpace: 'linear' } as const,
+    };
+    const hdr = {
+      width: 2,
+      height: 2,
+      data: new Float32Array([
+        4, 2, 1, 1,
+        8, 4, 2, 1,
+        12, 6, 3, 1,
+        16, 8, 4, 1,
+      ]),
+      __vitrum_hint__: { channels: 4, dataType: 'float32', colorSpace: 'linear' } as const,
+    };
+    const encoded = {
+      width: 2,
+      height: 2,
+      data: new Uint8Array([
+        128, 64, 32, 255,
+        128, 64, 32, 255,
+        128, 64, 32, 255,
+        128, 64, 32, 255,
+      ]),
+      __vitrum_hint__: { channels: 4, dataType: 'uint8' } as const,
+    };
+    const hdrAtlas = packTextureAtlas([
+      {
+        baseColor: [1, 1, 1],
+        roughness: 1,
+        metallic: 0,
+        lightMap: { handle: extentAnchor },
+      },
+      {
+        baseColor: [1, 1, 1],
+        roughness: 1,
+        metallic: 0,
+        emissiveMap: { handle: hdr },
+      },
+    ], { storageClass: 'hdr' })!;
+    const hdrPlacement = hdrAtlas.layerOfByColorSpace.placements?.srgb.get(hdr);
+
+    const readHdr = (
+      level: number,
+      placement: NonNullable<typeof hdrPlacement>,
+      channel: number,
+    ): number => {
+      const mip = hdrAtlas.mipLevels[level]!;
+      const x = Math.floor(placement.x / 2 ** level);
+      const y = Math.floor(placement.y / 2 ** level);
+      const bits =
+        mip.data[(placement.layer * mip.dim * mip.dim + y * mip.dim + x) * 4 + channel]!;
+      return float16BitsToFloat32(bits);
+    };
+    expect(readHdr(0, hdrPlacement!, 0)).toBe(4);
+    expect(readHdr(1, hdrPlacement!, 0)).toBe(10);
+
+    const ldrAtlas = packTextureAtlas([
+      matWithBaseColorMap(extentAnchor),
+      matWithBaseColorMap(encoded),
+    ])!;
+    const encodedPlacement = ldrAtlas.layerOfByColorSpace.placements?.srgb.get(encoded);
+    const encodedOffset =
+      ((encodedPlacement!.layer * ldrAtlas.dim + encodedPlacement!.y) * ldrAtlas.dim +
+        encodedPlacement!.x) * 4;
+    expect((ldrAtlas.data as Uint8Array)[encodedOffset]).toBe(128);
+    expect(ldrSrgbLinear(ldrAtlas.data as Uint8Array, encodedOffset))
+      .toBeCloseTo(srgbToLinear(128 / 255), 6);
   });
 
   it('builds each heterogeneous layer mip from only its native source rectangle', () => {
@@ -254,14 +645,21 @@ describe('packTextureAtlas', () => {
     ])!;
     expect(atlas.dim).toBe(2);
     expect(atlas.mipLevels[1]!.dim).toBe(1);
-    expect(Array.from(atlas.mipLevels[1]!.data.slice(0, 4))).toEqual([0.5, 0, 0.5, 1]);
-    expect(Array.from(atlas.mipLevels[1]!.data.slice(4, 8))).toEqual([0.5, 1, 0.5, 1]);
+    const mip = atlas.mipLevels[1]!.data as Uint8Array;
+    expect(ldrSrgbLinear(mip, 0)).toBeCloseTo(0.5, 2);
+    expect(ldrSrgbLinear(mip, 1)).toBeCloseTo(0, 2);
+    expect(ldrSrgbLinear(mip, 2)).toBeCloseTo(0.5, 2);
+    expect(ldrLinear(mip, 3)).toBe(1);
+    expect(ldrSrgbLinear(mip, 4)).toBeCloseTo(0.5, 2);
+    expect(ldrSrgbLinear(mip, 5)).toBeCloseTo(1, 2);
+    expect(ldrSrgbLinear(mip, 6)).toBeCloseTo(0.5, 2);
+    expect(ldrLinear(mip, 7)).toBe(1);
   });
 
   it('averages every source texel when generating odd-sized mip levels', () => {
     const data = new Float32Array(3 * 3 * 4);
     for (let i = 0; i < 9; i += 1) {
-      data[i * 4] = i;
+      data[i * 4] = i / 8;
       data[i * 4 + 3] = 1;
     }
     const handle = dataTexHandle(data, 3, 3);
@@ -277,8 +675,8 @@ describe('packTextureAtlas', () => {
     expect(atlas).not.toBeNull();
     expect(atlas!.mipLevels).toHaveLength(2);
     expect(atlas!.mipLevels[1]!.dim).toBe(1);
-    expect(atlas!.mipLevels[1]!.data[0]).toBeCloseTo(4, 6);
-    expect(atlas!.mipLevels[1]!.data[3]).toBeCloseTo(1, 6);
+    expect(ldrLinear(atlas!.mipLevels[1]!.data as Uint8Array, 0)).toBeCloseTo(0.5, 2);
+    expect(ldrLinear(atlas!.mipLevels[1]!.data as Uint8Array, 3)).toBeCloseTo(1, 6);
   });
 
   it('collects front/back layer normal maps as linear atlas layers', () => {
@@ -336,6 +734,71 @@ describe('textureAtlasLayerCapacity', () => {
     expect(textureAtlasLayerCapacity(3, 3)).toBe(3);
     expect(textureAtlasLayerCapacity(4, 6)).toBe(6);
   });
+
+  it('accounts for exact RGBA8/RGBA16F mip bytes at maximum ordinary extent', () => {
+    expect(textureAtlasStorageByteLength(4, 2, 'ldr')).toBe(168);
+    expect(textureAtlasStorageByteLength(4, 2, 'hdr')).toBe(336);
+    expect(textureAtlasLayerCapacityForStorage(8_192, 1, 256, 'ldr')).toBe(1);
+    expect(textureAtlasStorageByteLength(8_192, 1, 'ldr')).toBeLessThanOrEqual(
+      MATERIAL_TEXTURE_ATLAS_STORAGE_BUDGET_BYTES,
+    );
+    expect(textureAtlasStorageByteLength(8_192, 2, 'ldr')).toBeGreaterThan(
+      MATERIAL_TEXTURE_ATLAS_STORAGE_BUDGET_BYTES,
+    );
+    expect(textureAtlasStorageByteLength(4_096, 1, 'hdr')).toBeLessThanOrEqual(
+      MATERIAL_TEXTURE_ATLAS_STORAGE_BUDGET_BYTES,
+    );
+  });
+
+  it('rejects live format-native storage that exceeds the byte budget', () => {
+    expect(() => textureAtlasLayerCapacityForStorage(8_192, 2, 256, 'ldr')).toThrow(
+      /bytes, exceeding the 536870912-byte storage budget/,
+    );
+    expect(() => textureAtlasLayerCapacityForStorage(8_192, 1, 256, 'hdr')).toThrow(
+      /bytes, exceeding the 536870912-byte storage budget/,
+    );
+  });
+
+  it('keeps the pair under one 512 MiB ceiling while trimming only spare layers', () => {
+    const capacities = materialTextureAtlasLayerCapacities(
+      { dim: 8_192, layerCount: 1 },
+      { dim: 4_096, layerCount: 1 },
+      256,
+    );
+    expect(capacities).toEqual({
+      ldr: 1,
+      hdr: 1,
+      storageBytes: MATERIAL_TEXTURE_ATLAS_STORAGE_BUDGET_BYTES - 4,
+    });
+    expect(() =>
+      materialTextureAtlasLayerCapacities(
+        { dim: 8_192, layerCount: 1 },
+        { dim: 4_096, layerCount: 2 },
+        256,
+      ),
+    ).toThrow(/combined material texture atlases require .* exceeding the 536870912-byte storage budget/);
+  });
+
+  it('bulk-trims huge spare counts and rejects hostile layer limits without iteration blowups', () => {
+    expect(
+      materialTextureAtlasLayerCapacities(
+        { dim: 1, layerCount: 33_554_433 },
+        { dim: 1, layerCount: 33_554_433 },
+        134_217_728,
+      ),
+    ).toEqual({
+      ldr: 67_108_862,
+      hdr: 33_554_433,
+      storageBytes: MATERIAL_TEXTURE_ATLAS_STORAGE_BUDGET_BYTES,
+    });
+    expect(() =>
+      materialTextureAtlasLayerCapacities(
+        { dim: 1, layerCount: 1 },
+        null,
+        Number.POSITIVE_INFINITY,
+      ),
+    ).toThrow(/MAX_ARRAY_TEXTURE_LAYERS must be a positive safe integer/);
+  });
 });
 
 describe('textureAtlasMipElementCounts', () => {
@@ -345,7 +808,7 @@ describe('textureAtlasMipElementCounts', () => {
 
   it('rejects an aggregate mip chain that exceeds the CPU staging budget', () => {
     // Level zero is below the cap; mip one is what pushes the retained chain over it.
-    expect(() => textureAtlasMipElementCounts(5600, 1)).toThrow(
+    expect(() => textureAtlasMipElementCounts(11_000, 1, 'ldr')).toThrow(
       /512 MiB CPU staging budget at mip 1/,
     );
   });
@@ -355,6 +818,61 @@ describe('textureAtlasMipElementCounts', () => {
       /positive safe integers/,
     );
     expect(() => textureAtlasMipElementCounts(1, 0)).toThrow(/positive safe integers/);
+  });
+});
+
+describe('packMaterialTextureAtlases shared CPU preflight', () => {
+  it('rejects an over-budget pair before reading payload values or materializing either atlas', () => {
+    let pixelReads = 0;
+    const virtualFloat32Payload = (length: number): ArrayLike<number> =>
+      new Proxy(
+        {
+          length,
+          [Symbol.toStringTag]: 'Float32Array',
+        } as unknown as ArrayLike<number>,
+        {
+          get(target, property, receiver) {
+            if (typeof property === 'string' && /^\d+$/.test(property)) {
+              pixelReads += 1;
+              throw new Error('pixel payload was scanned before aggregate preflight');
+            }
+            return Reflect.get(target, property, receiver);
+          },
+        },
+      );
+    const ldrDim = 8_192;
+    const hdrDim = 4_097;
+    const ldrHandle = {
+      width: ldrDim,
+      height: ldrDim,
+      data: virtualFloat32Payload(ldrDim * ldrDim * 4),
+      __vitrum_hint__: { channels: 4, dataType: 'float32' } as const,
+    };
+    const hdrHandle = {
+      width: hdrDim,
+      height: hdrDim,
+      data: virtualFloat32Payload(hdrDim * hdrDim * 4),
+      __vitrum_hint__: {
+        channels: 4,
+        dataType: 'float32',
+        colorSpace: 'linear',
+      } as const,
+    };
+
+    expect(() =>
+      packMaterialTextureAtlases([
+        {
+          baseColor: [1, 1, 1],
+          roughness: 1,
+          metallic: 0,
+          baseColorMap: { handle: ldrHandle },
+          emissiveMap: { handle: hdrHandle },
+        },
+      ]),
+    ).toThrow(
+      /combined material texture atlas CPU mip chains require .* exceeding the shared 536870912-byte staging budget before allocation/,
+    );
+    expect(pixelReads).toBe(0);
   });
 });
 
@@ -374,7 +892,7 @@ describe('TextureHandleHint: readHandlePixels uses explicit hints', () => {
     return { baseColor: [1, 1, 1], roughness: 1, metallic: 0, baseColorMap: { handle } };
   }
 
-  it('explicit channels:4 on Uint8 data decodes baseColorMap sRGB into linear RGBA output', () => {
+  it('explicit channels:4 retains baseColorMap sRGB coding in RGBA8', () => {
     // 1×1 red pixel in Uint8 RGBA (255,0,0,255)
     const handle = hintedHandle(new Uint8Array([255, 0, 0, 255]), 1, 1, {
       channels: 4,
@@ -382,25 +900,21 @@ describe('TextureHandleHint: readHandlePixels uses explicit hints', () => {
     });
     const atlas = packTextureAtlas([mat(handle)]);
     expect(atlas).not.toBeNull();
-    // Should decode to linear [1,0,0,1] after /255 normalization + sRGB decode.
-    expect(atlas!.data[0]).toBeCloseTo(1, 5);
-    expect(atlas!.data[1]).toBeCloseTo(0, 5);
-    expect(atlas!.data[2]).toBeCloseTo(0, 5);
-    expect(atlas!.data[3]).toBeCloseTo(1, 5);
+    expect(Array.from(atlas!.data)).toEqual([255, 0, 0, 255]);
   });
 
-  it('explicit channels:1 expands a single-channel sRGB baseColorMap value to linear (R,R,R,1)', () => {
+  it('explicit channels:1 expands one sRGB code to (R,R,R,255)', () => {
     // 1×1 grayscale 128/255 ≈ 0.502
     const handle = hintedHandle(new Uint8Array([128]), 1, 1, { channels: 1 });
     const atlas = packTextureAtlas([mat(handle)]);
     expect(atlas).not.toBeNull();
     const r = atlas!.data[0]!;
-    expect(r).toBeCloseTo(srgbToLinear(128 / 255), 4);
+    expect(r).toBe(128);
     // Channels 1 and 2 mirror channel 0 (stride=1 path)
     expect(atlas!.data[1]!).toBe(r);
     expect(atlas!.data[2]!).toBe(r);
     // Alpha = 1 (default for stride < 4)
-    expect(atlas!.data[3]).toBe(1);
+    expect(atlas!.data[3]).toBe(255);
   });
 
   it('explicit colorSpace:linear keeps Float32 baseColorMap values already in linear light', () => {
@@ -412,10 +926,10 @@ describe('TextureHandleHint: readHandlePixels uses explicit hints', () => {
     });
     const atlas = packTextureAtlas([mat(handle)]);
     expect(atlas).not.toBeNull();
-    expect(atlas!.data[0]).toBeCloseTo(0.5, 5);
-    expect(atlas!.data[1]).toBeCloseTo(0.25, 5);
-    expect(atlas!.data[2]).toBeCloseTo(0.75, 5);
-    expect(atlas!.data[3]).toBeCloseTo(1.0, 5);
+    expect(ldrSrgbLinear(atlas!.data as Uint8Array, 0)).toBeCloseTo(0.5, 2);
+    expect(ldrSrgbLinear(atlas!.data as Uint8Array, 1)).toBeCloseTo(0.25, 2);
+    expect(ldrSrgbLinear(atlas!.data as Uint8Array, 2)).toBeCloseTo(0.75, 2);
+    expect(ldrLinear(atlas!.data as Uint8Array, 3)).toBeCloseTo(1.0, 5);
   });
 
   it('uploads an explicit cpuMirror for an otherwise opaque texture handle', () => {
@@ -432,8 +946,11 @@ describe('TextureHandleHint: readHandlePixels uses explicit hints', () => {
     };
     const atlas = packTextureAtlas([mat(handle)]);
     expect(atlas).not.toBeNull();
-    expect(atlas!.layerOf.get(handle)).toBe(0);
-    expect(Array.from(atlas!.data)).toEqual([0.5, 0.25, 0.75, 1]);
+    expect(atlas!.layerOfByColorSpace.srgb.get(handle)).toBe(0);
+    expect(ldrSrgbLinear(atlas!.data as Uint8Array, 0)).toBeCloseTo(0.5, 2);
+    expect(ldrSrgbLinear(atlas!.data as Uint8Array, 1)).toBeCloseTo(0.25, 2);
+    expect(ldrSrgbLinear(atlas!.data as Uint8Array, 2)).toBeCloseTo(0.75, 2);
+    expect(ldrLinear(atlas!.data as Uint8Array, 3)).toBe(1);
   });
 
   it('treats Uint16Array handles as normalized uint16 unless explicitly hinted as float16', () => {
@@ -444,10 +961,10 @@ describe('TextureHandleHint: readHandlePixels uses explicit hints', () => {
     });
     const atlas = packTextureAtlas([mat(normalized)]);
     expect(atlas).not.toBeNull();
-    expect(atlas!.data[0]).toBeCloseTo(32768 / 65535, 5);
-    expect(atlas!.data[1]).toBeCloseTo(1, 5);
-    expect(atlas!.data[2]).toBeCloseTo(0, 5);
-    expect(atlas!.data[3]).toBeCloseTo(1, 5);
+    expect(ldrSrgbLinear(atlas!.data as Uint8Array, 0)).toBeCloseTo(32768 / 65535, 2);
+    expect(ldrSrgbLinear(atlas!.data as Uint8Array, 1)).toBeCloseTo(1, 5);
+    expect(ldrSrgbLinear(atlas!.data as Uint8Array, 2)).toBeCloseTo(0, 5);
+    expect(ldrLinear(atlas!.data as Uint8Array, 3)).toBeCloseTo(1, 5);
 
     const halfFloat = hintedHandle(new Uint16Array([0x3800, 0x3c00, 0, 0x3c00]), 1, 1, {
       channels: 4,
@@ -456,10 +973,10 @@ describe('TextureHandleHint: readHandlePixels uses explicit hints', () => {
     });
     const halfAtlas = packTextureAtlas([mat(halfFloat)]);
     expect(halfAtlas).not.toBeNull();
-    expect(halfAtlas!.data[0]).toBeCloseTo(0.5, 5);
-    expect(halfAtlas!.data[1]).toBeCloseTo(1, 5);
-    expect(halfAtlas!.data[2]).toBeCloseTo(0, 5);
-    expect(halfAtlas!.data[3]).toBeCloseTo(1, 5);
+    expect(ldrSrgbLinear(halfAtlas!.data as Uint8Array, 0)).toBeCloseTo(0.5, 2);
+    expect(ldrSrgbLinear(halfAtlas!.data as Uint8Array, 1)).toBeCloseTo(1, 5);
+    expect(ldrSrgbLinear(halfAtlas!.data as Uint8Array, 2)).toBeCloseTo(0, 5);
+    expect(ldrLinear(halfAtlas!.data as Uint8Array, 3)).toBeCloseTo(1, 5);
   });
 
   it('rejects a dataType hint that does not match the typed-array backing', () => {
@@ -558,7 +1075,14 @@ describe('TextureHandleHint: readHandlePixels uses explicit hints', () => {
     expect(() => packTextureAtlas([mat(handle)])).toThrow(message);
   });
 
-  it('uses separate atlas layers when the same handle is sampled as sRGB and linear data', () => {
+  it('preserves the darkest authored sRGB code instead of quantizing linear light to zero', () => {
+    const handle = hintedHandle(new Uint8Array([1, 1, 1, 255]), 1, 1, { channels: 4 });
+    const atlas = packTextureAtlas([mat(handle)])!;
+    expect(Array.from(atlas.data)).toEqual([1, 1, 1, 255]);
+    expect(ldrSrgbLinear(atlas.data as Uint8Array, 0)).toBeCloseTo(1 / 255 / 12.92, 8);
+  });
+
+  it('uses independent role/storage placements when one handle feeds LDR color, LDR data, and HDR', () => {
     const handle = hintedHandle(new Uint8Array([128, 64, 32, 255]), 1, 1, { channels: 4 });
     const material: MaterialSpec = {
       baseColor: [1, 1, 1],
@@ -566,6 +1090,7 @@ describe('TextureHandleHint: readHandlePixels uses explicit hints', () => {
       metallic: 0,
       baseColorMap: { handle },
       roughnessMap: { handle },
+      emissiveMap: { handle },
     };
     const atlas = packTextureAtlas([material]);
     expect(atlas).not.toBeNull();
@@ -574,13 +1099,13 @@ describe('TextureHandleHint: readHandlePixels uses explicit hints', () => {
     expect(atlas!.layerOfByColorSpace.linear.get(handle)).toBe(1);
 
     const linearLayerBase = atlas!.dim * atlas!.dim * 4;
-    expect(atlas!.data[0]).toBeCloseTo(srgbToLinear(128 / 255), 4);
-    expect(atlas!.data[1]).toBeCloseTo(srgbToLinear(64 / 255), 4);
-    expect(atlas!.data[2]).toBeCloseTo(srgbToLinear(32 / 255), 4);
-    expect(atlas!.data[3]).toBe(1);
-    expect(atlas!.data[linearLayerBase]).toBeCloseTo(128 / 255, 4);
-    expect(atlas!.data[linearLayerBase + 1]).toBeCloseTo(64 / 255, 4);
-    expect(atlas!.data[linearLayerBase + 2]).toBeCloseTo(32 / 255, 4);
-    expect(atlas!.data[linearLayerBase + 3]).toBe(1);
+    expect(Array.from(atlas!.data.slice(0, 4))).toEqual([128, 64, 32, 255]);
+    expect(Array.from(atlas!.data.slice(linearLayerBase, linearLayerBase + 4)))
+      .toEqual([128, 64, 32, 255]);
+
+    const hdrAtlas = packTextureAtlas([material], { storageClass: 'hdr' })!;
+    expect(hdrAtlas.layerOfByColorSpace.srgb.get(handle)).toBe(0);
+    expect(float16BitsToFloat32(hdrAtlas.data[0]!))
+      .toBeCloseTo(srgbToLinear(128 / 255), 3);
   });
 });

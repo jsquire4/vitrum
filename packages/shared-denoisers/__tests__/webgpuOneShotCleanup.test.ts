@@ -20,6 +20,7 @@ const textureUploadMocks = vi.hoisted(() => {
     uploadRgbAsRgba16f: noop,
     uploadRgbAsRgba32f: noop,
     uploadRgbAsRgba32fPacked: noop,
+    uploadUnitNormalsAsRgba32f: noop,
   };
 });
 

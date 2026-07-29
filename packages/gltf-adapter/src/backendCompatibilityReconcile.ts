@@ -5,7 +5,11 @@
 // helpers the loaders call directly are exported. The texture issue-name predicates
 // are imported from the shared compatibilityIssuePredicates module (I4-2 / D15-8).
 
-import type { Scene, ScenePrimitive } from '@vitrum/core';
+import {
+  getPrimitiveActiveColorSet,
+  type Scene,
+  type ScenePrimitive,
+} from '@vitrum/core';
 import type { GltfJson } from './gltfTypes.js';
 import type {
   GltfBackendCompatibility,
@@ -34,11 +38,6 @@ import {
 const SPEC_GLOSS_ALPHA_ISSUE =
   'KHR_materials_pbrSpecularGlossiness.specularGlossinessTexture.glossinessAlpha';
 const EMISSIVE_MAP_TEXEL_PDF_ISSUE = 'emissiveMap.texelPdf';
-const TEXTURE_SOURCE_EXTENSION_HOOK_ISSUES = new Set([
-  'KHR_texture_basisu',
-  'EXT_texture_webp',
-  'MSFT_texture_dds',
-]);
 const DEGRADED_TEXTURE_DECODE_DIAGNOSTICS: ReadonlySet<DecodeSceneTextureDiagnostic['code']> = new Set([
   'decoded-texture-exceeds-max-size',
   'decoded-texture-npot-repeat-wrap',
@@ -68,7 +67,7 @@ export function reconcileBackendCompatibilityAfterSceneImport(
 
 function sceneHasOnlyPtWebgpuLiteBakeableVertexColors(scene: Scene): boolean {
   for (const primitive of scene.primitives) {
-    const colors = (primitive as { readonly colors?: Float32Array }).colors;
+    const colors = getPrimitiveActiveColorSet(primitive);
     if (colors != null && colors.length > 0 && !ptWebgpuLiteCanBakeVertexColors(primitive)) {
       return false;
     }
@@ -115,13 +114,15 @@ export function hasReachableMaterialPointerAnimationForColoredPrimitive(
 export function bakePtWebgpuLiteCompatibleVertexColors(scene: Scene): Scene {
   let changed = false;
   const primitives = scene.primitives.map((primitive): ScenePrimitive => {
+    if (primitive.kind === 'analytic') return primitive;
     const color = ptWebgpuLiteBakeableVertexColor(primitive);
     if (color == null) return primitive;
     changed = true;
-    const { colors: _colors, ...withoutColors } = primitive as ScenePrimitive & { readonly colors?: Float32Array };
+    const { colors: _legacyColor0, ...withoutLegacyColor0 } = primitive;
     const material = primitive.material;
     return {
-      ...withoutColors,
+      ...withoutLegacyColor0,
+      vertexColorSet: null,
       material: {
         ...material,
         baseColor: [
@@ -136,14 +137,14 @@ export function bakePtWebgpuLiteCompatibleVertexColors(scene: Scene): Scene {
 }
 
 function ptWebgpuLiteBakeableVertexColor(primitive: ScenePrimitive): readonly [number, number, number] | null {
-  const colors = (primitive as { readonly colors?: Float32Array }).colors;
+  const colors = getPrimitiveActiveColorSet(primitive);
   if (colors == null || colors.length === 0) return null;
   if (!ptWebgpuLiteCanBakeVertexColors(primitive)) return null;
   return [colors[0] ?? 1, colors[1] ?? 1, colors[2] ?? 1];
 }
 
 function ptWebgpuLiteCanBakeVertexColors(primitive: ScenePrimitive): boolean {
-  const colors = (primitive as { readonly colors?: Float32Array }).colors;
+  const colors = getPrimitiveActiveColorSet(primitive);
   const positions = (primitive as { readonly positions?: Float32Array }).positions;
   if (colors == null || colors.length === 0) return true;
   if (positions == null || positions.length === 0) return false;
@@ -187,7 +188,6 @@ export function reconcileBackendCompatibilityAfterTextureDecode(
       if (isTextureDecodeDiagnosticIssue(issue)) return false;
       if (specGlossAlphaIssueSatisfiedByDecode(issue, report, diagnostics, featureReport)) return false;
       if (emissiveTexelPdfIssueSatisfiedByDecode(issue, candidate, report)) return false;
-      if (textureSourceHookIssueSatisfiedByDecode(issue, report)) return false;
       return true;
     });
     const decodeDiagnosticIssues = textureDecodeDiagnosticIssuesForCandidate(
@@ -248,19 +248,6 @@ function emissiveTexelPdfIssueSatisfiedByDecode(
     (entry.handleKind === 'pixel-data' || entry.handleKind === 'data-texture') &&
     entry.handleColorSpace === 'linear' &&
     entry.backendReadiness[key] === 'ready'
-  );
-}
-
-function textureSourceHookIssueSatisfiedByDecode(
-  issue: GltfCompatibilityIssue,
-  report: GltfTextureDecodeReport,
-): boolean {
-  if (issue.support !== 'requires-hook' || !TEXTURE_SOURCE_EXTENSION_HOOK_ISSUES.has(issue.name)) {
-    return false;
-  }
-  const entries = report.entries.filter((entry) => entry.textureSourceExtension === issue.name);
-  return entries.length > 0 && entries.every((entry) =>
-    entry.handleKind === 'pixel-data' || entry.handleKind === 'data-texture'
   );
 }
 

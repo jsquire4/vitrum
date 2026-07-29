@@ -38,6 +38,13 @@
  *      snapshot (ppg section absent) imports cleanly with a cold-start PPG, not
  *      an error.
  *
+ *   4. (v8+) The full-resolution ReSTIR-DI reservoir cohort and, when enabled,
+ *      the complete NRC learned state (master weights/tables, both Adam moments,
+ *      and convergence counters). v8 also carries an exact live-input
+ *      compatibility key over scene geometry, materials, emitters, directional
+ *      environment, and scalar sky. Import rejects a mismatched key before any
+ *      live state is published.
+ *
  * `HybridEngine.exportGIState()` / `importGIState()` produce/consume the snapshot;
  * `serializeGIState` / `deserializeGIState` round-trip it through a single
  * transferable `ArrayBuffer` for storage.
@@ -51,9 +58,18 @@ import {
 import { IRR_STRIDE, VIS_STRIDE } from './ddgi/ddgiAtlasLayout.js';
 import { validateSerialisedSTree } from './ppg/validateSerialisedSTree.js';
 import {
-  RESERVOIR_GI_BASE_STRIDE_U32,
-  RESERVOIR_GI_GRIS_STRIDE_U32,
+  RESERVOIR_GI_LEGACY_STRIDE_U32,
+  RESERVOIR_GI_STRIDE_U32,
 } from './gi/giLayout.js';
+import type { RestirDISnapshot } from './restir/restirDiStateSnapshot.js';
+import type { NrcLearnedStateSnapshot } from './neural/nrc/nrcStateSnapshot.js';
+import {
+  assertGIStateExtendedSections,
+  deserializeGIStateExtendedSections,
+  giStateExtendedSectionsByteLength,
+  serializeGIStateExtendedSections,
+} from './giStateExtendedSections.js';
+import { isValidGIStateCompatibility } from './giStateCompatibility.js';
 
 /** Magic + version for the binary container (bump VERSION on any layout change). */
 const GI_SNAPSHOT_MAGIC = 0x47495353; // "GISS"
@@ -86,8 +102,14 @@ const GI_SNAPSHOT_MAGIC = 0x47495353; // "GISS"
  *      its width and height; SECTION_DDGI_PROBE_STATE gates the data block
  *      immediately after the visibility atlas. v3-v5 snapshots synthesize
  *      offset=0/active=1 state so their converged light fields remain importable.
+ * v7 — the 28-u32 generalized reconnection-shift ReSTIR-GI ABI is the sole
+ *      serializable live reservoir layout. v3-v6 compact 20-u32 sections remain
+ *      decodable for explicit cold-ReSTIR migration while retaining DDGI/PPG.
+ * v8 — appends a mandatory complete-state extension carrying an exact
+ *      scene/light/environment compatibility key plus optional ReSTIR-DI and
+ *      NRC learned-state sections for the active subsystems.
  */
-const GI_SNAPSHOT_VERSION = 6;
+const GI_SNAPSHOT_VERSION = 8;
 const HEADER_BYTES = 64; // fixed header, data blocks follow
 
 /** Header section-flags bitfield (header offset 52, u32). Bit 0 = ReSTIR-GI present. */
@@ -96,6 +118,8 @@ const SECTION_RESTIR_GI = 1 << 0;
 const SECTION_PPG = 1 << 1;
 /** Bit 2 = explicit Float32 DDGI relocation/classification state present (v6+). */
 const SECTION_DDGI_PROBE_STATE = 1 << 2;
+/** Bit 3 = v8 complete-state extension (compatibility + optional DI/NRC). */
+const SECTION_COMPLETE_STATE = 1 << 3;
 /** Sub-header preceding the three packed reservoir buffers when SECTION_RESTIR_GI is set. */
 const RESTIR_GI_SUBHEADER_BYTES = 20; // halfW(u32) halfH(u32) strideU32(u32) bufU32Len(u32) reserved(u32)
 /**
@@ -122,7 +146,8 @@ const MAX_U32 = 0xffff_ffff;
 const KNOWN_SECTION_FLAGS =
   SECTION_RESTIR_GI |
   SECTION_PPG |
-  SECTION_DDGI_PROBE_STATE;
+  SECTION_DDGI_PROBE_STATE |
+  SECTION_COMPLETE_STATE;
 
 /**
  * The ReSTIR-GI temporal reservoir state (Sprint 16/17). Persisting these lets a
@@ -239,6 +264,16 @@ export interface GIStateSnapshot {
    * coordinator builds a fresh single-cell sTree at boot and trains from scratch.
    */
   readonly ppg?: PpgSnapshot;
+  /**
+   * v8 live-input compatibility key. Required for snapshots emitted by the
+   * current serializer; absent only on decoded v3-v7 legacy containers, which
+   * the engine rejects as unverifiable rather than mixing unrelated state.
+   */
+  readonly compatibility?: Uint32Array;
+  /** Optional v8 full-resolution ReSTIR-DI temporal/spatial reservoir cohort. */
+  readonly restirDI?: RestirDISnapshot;
+  /** Optional v8 complete NRC learned state when NRC is enabled. */
+  readonly nrc?: NrcLearnedStateSnapshot;
 }
 
 /** True when every raw binary16 lane represents a finite value. */
@@ -436,13 +471,18 @@ function restirReservoirPayloadIsValid(
     for (const lane of RESTIR_GI_BASE_FLOAT_LANES) {
       if (!Number.isFinite(floats[base + lane])) return false;
     }
-    if (strideU32 === RESERVOIR_GI_GRIS_STRIDE_U32) {
+    if (strideU32 === RESERVOIR_GI_STRIDE_U32) {
       for (const lane of RESTIR_GI_GRIS_FLOAT_LANES) {
         if (!Number.isFinite(floats[base + lane])) return false;
       }
-      // sampleKind is the only enum-valued u32 lane. M, lightId,
-      // prefixVertexCount, and historyEpoch legitimately consume the full u32
-      // domain, so they are intentionally not range-restricted.
+      const prefixSupport = data[base + 24];
+      if (
+        prefixSupport !== 0 &&
+        prefixSupport !== 1 &&
+        prefixSupport !== 2
+      ) {
+        return false;
+      }
       const sampleKind = data[base + 25];
       if (sampleKind !== 0 && sampleKind !== 1) return false;
     }
@@ -456,6 +496,7 @@ function restirReservoirPayloadIsValid(
 
 function assertSerializableRestirSnapshot(
   value: unknown,
+  allowLegacyCompact = false,
 ): asserts value is RestirGISnapshot {
   if (value == null || typeof value !== 'object') {
     throw new TypeError('GI snapshot ReSTIR section must be an object.');
@@ -465,11 +506,19 @@ function assertSerializableRestirSnapshot(
   assertPositiveU32(snapshot.halfH, 'GI snapshot ReSTIR halfH');
   assertPositiveU32(snapshot.strideU32, 'GI snapshot ReSTIR strideU32');
   if (
-    snapshot.strideU32 !== RESERVOIR_GI_BASE_STRIDE_U32 &&
-    snapshot.strideU32 !== RESERVOIR_GI_GRIS_STRIDE_U32
+    snapshot.strideU32 !== RESERVOIR_GI_LEGACY_STRIDE_U32 &&
+    snapshot.strideU32 !== RESERVOIR_GI_STRIDE_U32
   ) {
     throw new RangeError(
-      'GI snapshot ReSTIR stride must match the compact or GRIS reservoir ABI.',
+      'GI snapshot ReSTIR stride is not a recognized reservoir ABI.',
+    );
+  }
+  if (
+    !allowLegacyCompact &&
+    snapshot.strideU32 === RESERVOIR_GI_LEGACY_STRIDE_U32
+  ) {
+    throw new RangeError(
+      'GI snapshot serialization cannot publish retired 20-u32 ReSTIR-GI history.',
     );
   }
   for (const [name, data] of [
@@ -529,7 +578,9 @@ export function isValidRestirGISnapshot(
   value: unknown,
 ): value is RestirGISnapshot {
   try {
-    assertSerializableRestirSnapshot(value);
+    // Import compatibility: old compact sections are validated fully, then
+    // migrated transactionally to an empty live generalized reservoir cohort.
+    assertSerializableRestirSnapshot(value, true);
     return true;
   } catch {
     return false;
@@ -590,6 +641,8 @@ function assertSerializablePpgSnapshot(snapshot: PpgSnapshot): void {
 function assertSerializableSnapshot(
   value: unknown,
   validatePpg = true,
+  allowLegacyCompact = false,
+  requireCompleteState = true,
 ): asserts value is GIStateSnapshot {
   if (value == null || typeof value !== 'object') {
     throw new TypeError('GI snapshot must be an object.');
@@ -648,10 +701,26 @@ function assertSerializableSnapshot(
     );
   }
   if (snapshot.restirGI != null) {
-    assertSerializableRestirSnapshot(snapshot.restirGI);
+    assertSerializableRestirSnapshot(snapshot.restirGI, allowLegacyCompact);
   }
   if (validatePpg && snapshot.ppg != null) {
     assertSerializablePpgSnapshot(snapshot.ppg);
+  }
+  if (requireCompleteState && !isValidGIStateCompatibility(snapshot.compatibility)) {
+    throw new RangeError(
+      'GI snapshot is missing its required live-input compatibility key.',
+    );
+  }
+  if (
+    snapshot.compatibility != null ||
+    snapshot.restirDI != null ||
+    snapshot.nrc != null
+  ) {
+    assertGIStateExtendedSections({
+      compatibility: snapshot.compatibility,
+      ...(snapshot.restirDI != null ? { restirDI: snapshot.restirDI } : {}),
+      ...(snapshot.nrc != null ? { nrc: snapshot.nrc } : {}),
+    });
   }
 
   const restirBytes = snapshot.restirGI == null
@@ -672,6 +741,13 @@ function assertSerializableSnapshot(
         snapshot.ppg.dTreeBuf.byteLength,
         snapshot.ppg.dTreeOffsets.byteLength,
       );
+  const extendedBytes = snapshot.compatibility == null
+    ? 0
+    : giStateExtendedSectionsByteLength({
+        compatibility: snapshot.compatibility,
+        ...(snapshot.restirDI != null ? { restirDI: snapshot.restirDI } : {}),
+        ...(snapshot.nrc != null ? { nrc: snapshot.nrc } : {}),
+      });
   checkedSum(
     'GI snapshot container size',
     HEADER_BYTES,
@@ -680,6 +756,7 @@ function assertSerializableSnapshot(
     snapshot.probeStateData.byteLength,
     restirBytes,
     ppgBytes,
+    extendedBytes,
   );
 }
 
@@ -692,7 +769,7 @@ export function isValidRequiredGIStateSnapshot(
   value: unknown,
 ): value is GIStateSnapshot {
   try {
-    assertSerializableSnapshot(value, false);
+    assertSerializableSnapshot(value, false, true, true);
     return true;
   } catch {
     return false;
@@ -723,9 +800,21 @@ export function serializeGIState(s: GIStateSnapshot): ArrayBuffer {
       + p.dTreeBuf.byteLength
       + p.dTreeOffsets.byteLength
     : 0;
+  const extension = serializeGIStateExtendedSections({
+    compatibility: s.compatibility!,
+    ...(s.restirDI != null ? { restirDI: s.restirDI } : {}),
+    ...(s.nrc != null ? { nrc: s.nrc } : {}),
+  });
+  const extendedBytes = extension.byteLength;
 
   const buf = new ArrayBuffer(
-    HEADER_BYTES + irrBytes + visBytes + probeStateBytes + restirBytes + ppgBytes,
+    HEADER_BYTES +
+      irrBytes +
+      visBytes +
+      probeStateBytes +
+      restirBytes +
+      ppgBytes +
+      extendedBytes,
   );
   const dv = new DataView(buf);
   let o = 0;
@@ -746,7 +835,8 @@ export function serializeGIState(s: GIStateSnapshot): ArrayBuffer {
   const sectionFlags =
     (hasRestir ? SECTION_RESTIR_GI : 0) |
     (hasPpg ? SECTION_PPG : 0) |
-    SECTION_DDGI_PROBE_STATE;
+    SECTION_DDGI_PROBE_STATE |
+    SECTION_COMPLETE_STATE;
   dv.setUint32(o, sectionFlags, true); o += 4;
   dv.setUint32(o, s.probeStateW, true); o += 4;
   dv.setUint32(o, s.probeStateH, true); o += 4;
@@ -812,6 +902,17 @@ export function serializeGIState(s: GIStateSnapshot): ArrayBuffer {
     );
   }
 
+  const extensionOffset =
+    HEADER_BYTES +
+    irrBytes +
+    visBytes +
+    probeStateBytes +
+    restirBytes +
+    ppgBytes;
+  new Uint8Array(buf, extensionOffset, extendedBytes).set(
+    new Uint8Array(extension),
+  );
+
   return buf;
 }
 
@@ -831,8 +932,10 @@ export function deserializeGIState(buf: ArrayBuffer): GIStateSnapshot {
   }
   const version = dv.getUint32(o, true); o += 4;
   // v3 (SH irradiance, no PPG), v4 (adds optional PPG), v5 (adds PPG
-  // maxDTreeNodesPerCell), and v6 (probe relocation/classification state) are
-  // accepted. Older SH snapshots synthesize zero-offset active probe state.
+  // maxDTreeNodesPerCell), v6 (probe relocation/classification state), v7
+  // (generalized-only live ReSTIR ABI), and v8 (complete-state extension) are
+  // accepted. Older SH snapshots
+  // synthesize zero-offset active probe state.
   // v3 readers see no PPG
   // section flag and return ppg:undefined (cold PPG start — not an error).
   // v4 PPG sections default the new dTree cap to 341. v1/v2 carried an OCTAHEDRAL irradiance
@@ -842,9 +945,11 @@ export function deserializeGIState(buf: ArrayBuffer): GIStateSnapshot {
     version !== 3 &&
     version !== 4 &&
     version !== 5 &&
+    version !== 6 &&
+    version !== 7 &&
     version !== GI_SNAPSHOT_VERSION
   ) {
-    throw new Error(`deserializeGIState: unsupported version ${version} (expected ${GI_SNAPSHOT_VERSION}, 5, 4, or 3; v1/v2 octahedral irradiance is incompatible with SH).`);
+    throw new Error(`deserializeGIState: unsupported version ${version} (expected ${GI_SNAPSHOT_VERSION}, 7, 6, 5, 4, or 3; v1/v2 octahedral irradiance is incompatible with SH).`);
   }
   const dx = dv.getUint32(o, true); o += 4;
   const dy = dv.getUint32(o, true); o += 4;
@@ -870,10 +975,19 @@ export function deserializeGIState(buf: ArrayBuffer): GIStateSnapshot {
       ? SECTION_RESTIR_GI
       : version === 4 || version === 5
         ? SECTION_RESTIR_GI | SECTION_PPG
-        : KNOWN_SECTION_FLAGS;
+        : version === 6 || version === 7
+          ? SECTION_RESTIR_GI | SECTION_PPG | SECTION_DDGI_PROBE_STATE
+          : KNOWN_SECTION_FLAGS;
   if ((sectionFlags & ~allowedSectionFlags) !== 0) {
     throw new Error(
       `deserializeGIState: section flags are incompatible with snapshot version ${version}.`,
+    );
+  }
+  const hasCompleteState =
+    (sectionFlags & SECTION_COMPLETE_STATE) !== 0;
+  if (version >= 8 && !hasCompleteState) {
+    throw new Error(
+      'deserializeGIState: v8 snapshot is missing its complete-state extension.',
     );
   }
   assertAtlasMetadata({ x: dx, y: dy, z: dz }, irrW, irrH, visW, visH);
@@ -1042,101 +1156,124 @@ export function deserializeGIState(buf: ArrayBuffer): GIStateSnapshot {
     cursor = ro;
   }
 
-  if ((sectionFlags & SECTION_PPG) === 0) {
-    if (cursor !== buf.byteLength) {
-      throw new Error('deserializeGIState: unexpected trailing snapshot bytes.');
+  // ── PPG sTree / dTree section (v4+) ────────────────────────────────────────
+  let ppg: PpgSnapshot | undefined;
+  if ((sectionFlags & SECTION_PPG) !== 0) {
+    let po = cursor;
+    if (buf.byteLength < po + PPG_SUBHEADER_BYTES) {
+      throw new Error('deserializeGIState: buffer too small for the PPG sub-header.');
     }
-    return restirGI != null ? { ...base, restirGI } : base;
+    const maxSpatialCells = dv.getUint32(po, true); po += 4;     // [0]
+    const sTreeBufF32Len  = dv.getUint32(po, true); po += 4;     // [1] / [3]
+    const dTreeCount      = dv.getUint32(po, true); po += 4;     // [2]
+    const ppgField3       = dv.getUint32(po, true); po += 4;     // [3] v5 maxDTreeNodesPerCell / v4 repeat of [1]
+    const maxDTreeNodesPerCell = version >= 5
+      ? ppgField3
+      : PPG_DEFAULT_MAX_DTREE_NODES_PER_CELL;
+    const dTreeBufF32Len      = dv.getUint32(po, true); po += 4; // [4]
+    const dTreeOffsetsByteLen = dv.getUint32(po, true); po += 4; // [5]
+    const sbMinX = dv.getFloat32(po, true); po += 4;              // [6]
+    const sbMinY = dv.getFloat32(po, true); po += 4;              // [7]
+    const sbMinZ = dv.getFloat32(po, true); po += 4;              // [8]
+    const sbMaxX = dv.getFloat32(po, true); po += 4;              // [9]
+    const sbMaxY = dv.getFloat32(po, true); po += 4;              // [10]
+    const sbMaxZ = dv.getFloat32(po, true); po += 4;              // [11]
+    assertPositiveU32(maxSpatialCells, 'GI snapshot PPG maxSpatialCells');
+    assertPositiveU32(
+      maxDTreeNodesPerCell,
+      'GI snapshot PPG maxDTreeNodesPerCell',
+    );
+    if (dTreeOffsetsByteLen % Uint32Array.BYTES_PER_ELEMENT !== 0) {
+      throw new Error(
+        'deserializeGIState: PPG dTreeOffsets byte length must be u32-aligned.',
+      );
+    }
+    if (
+      dTreeOffsetsByteLen !==
+      checkedProduct(
+        'GI snapshot PPG dTreeOffsets byte length',
+        dTreeCount,
+        Uint32Array.BYTES_PER_ELEMENT,
+      )
+    ) {
+      throw new Error(
+        'deserializeGIState: PPG dTreeOffsets byte length does not match dTreeCount.',
+      );
+    }
+    const sTreeByteLen = checkedProduct(
+      'GI snapshot PPG sTree byte length',
+      sTreeBufF32Len,
+      4,
+    );
+    const dTreeByteLen = checkedProduct(
+      'GI snapshot PPG dTree byte length',
+      dTreeBufF32Len,
+      4,
+    );
+    const ppgEnd = checkedSum(
+      'GI snapshot PPG payload end',
+      po,
+      sTreeByteLen,
+      dTreeByteLen,
+      dTreeOffsetsByteLen,
+    );
+    if (buf.byteLength < ppgEnd) {
+      throw new Error('deserializeGIState: buffer too small for the declared PPG tree data.');
+    }
+    const sTreeBuf = new Float32Array(buf.slice(po, po + sTreeByteLen));
+    po += sTreeByteLen;
+    const dTreeBuf = new Float32Array(buf.slice(po, po + dTreeByteLen));
+    po += dTreeByteLen;
+    const dTreeOffsets = new Uint32Array(
+      buf.slice(po, po + dTreeOffsetsByteLen),
+    );
+    po += dTreeOffsetsByteLen;
+    if (dTreeOffsets.length !== dTreeCount) {
+      throw new Error(
+        `deserializeGIState: PPG dTreeOffsets length ${dTreeOffsets.length} does not match ` +
+        `declared dTreeCount ${dTreeCount}.`,
+      );
+    }
+    ppg = {
+      maxSpatialCells,
+      maxDTreeNodesPerCell,
+      sTreeBuf,
+      dTreeBuf,
+      dTreeOffsets,
+      sceneBoundsMin: [sbMinX, sbMinY, sbMinZ],
+      sceneBoundsMax: [sbMaxX, sbMaxY, sbMaxZ],
+    };
+    assertSerializablePpgSnapshot(ppg);
+    cursor = po;
   }
 
-  // ── PPG sTree / dTree section (v4+) ────────────────────────────────────────
-  let po = cursor;
-  if (buf.byteLength < po + PPG_SUBHEADER_BYTES) {
-    throw new Error('deserializeGIState: buffer too small for the PPG sub-header.');
+  let complete:
+    | ReturnType<typeof deserializeGIStateExtendedSections>
+    | undefined;
+  if (hasCompleteState) {
+    if (cursor >= buf.byteLength) {
+      throw new Error(
+        'deserializeGIState: complete-state extension payload is missing.',
+      );
+    }
+    complete = deserializeGIStateExtendedSections(buf.slice(cursor));
+    cursor = buf.byteLength;
   }
-  const maxSpatialCells = dv.getUint32(po, true); po += 4;     // [0]
-  const sTreeBufF32Len  = dv.getUint32(po, true); po += 4;     // [1] / [3]
-  const dTreeCount      = dv.getUint32(po, true); po += 4;     // [2]
-  const ppgField3       = dv.getUint32(po, true); po += 4;     // [3] v5 maxDTreeNodesPerCell / v4 repeat of [1]
-  const maxDTreeNodesPerCell = version >= 5
-    ? ppgField3
-    : PPG_DEFAULT_MAX_DTREE_NODES_PER_CELL;
-  const dTreeBufF32Len      = dv.getUint32(po, true); po += 4; // [4]
-  const dTreeOffsetsByteLen = dv.getUint32(po, true); po += 4; // [5]
-  const sbMinX = dv.getFloat32(po, true); po += 4;              // [6]
-  const sbMinY = dv.getFloat32(po, true); po += 4;              // [7]
-  const sbMinZ = dv.getFloat32(po, true); po += 4;              // [8]
-  const sbMaxX = dv.getFloat32(po, true); po += 4;              // [9]
-  const sbMaxY = dv.getFloat32(po, true); po += 4;              // [10]
-  const sbMaxZ = dv.getFloat32(po, true); po += 4;              // [11]
-  assertPositiveU32(maxSpatialCells, 'GI snapshot PPG maxSpatialCells');
-  assertPositiveU32(
-    maxDTreeNodesPerCell,
-    'GI snapshot PPG maxDTreeNodesPerCell',
-  );
-  if (dTreeOffsetsByteLen % Uint32Array.BYTES_PER_ELEMENT !== 0) {
-    throw new Error(
-      'deserializeGIState: PPG dTreeOffsets byte length must be u32-aligned.',
-    );
-  }
-  if (
-    dTreeOffsetsByteLen !==
-    checkedProduct(
-      'GI snapshot PPG dTreeOffsets byte length',
-      dTreeCount,
-      Uint32Array.BYTES_PER_ELEMENT,
-    )
-  ) {
-    throw new Error(
-      'deserializeGIState: PPG dTreeOffsets byte length does not match dTreeCount.',
-    );
-  }
-  const sTreeByteLen = checkedProduct(
-    'GI snapshot PPG sTree byte length',
-    sTreeBufF32Len,
-    4,
-  );
-  const dTreeByteLen = checkedProduct(
-    'GI snapshot PPG dTree byte length',
-    dTreeBufF32Len,
-    4,
-  );
-  const ppgEnd = checkedSum(
-    'GI snapshot PPG payload end',
-    po,
-    sTreeByteLen,
-    dTreeByteLen,
-    dTreeOffsetsByteLen,
-  );
-  if (buf.byteLength < ppgEnd) {
-    throw new Error('deserializeGIState: buffer too small for the declared PPG tree data.');
-  }
-  const sTreeBuf    = new Float32Array(buf.slice(po, po + sTreeByteLen)); po += sTreeByteLen;
-  const dTreeBuf    = new Float32Array(buf.slice(po, po + dTreeByteLen)); po += dTreeByteLen;
-  const dTreeOffsets = new Uint32Array(buf.slice(po, po + dTreeOffsetsByteLen));
-  po += dTreeOffsetsByteLen;
-  // Validate dTreeOffsets length matches declared dTreeCount (guard against
-  // corrupted blobs that pass the size check above but carry wrong metadata).
-  if (dTreeOffsets.length !== dTreeCount) {
-    throw new Error(
-      `deserializeGIState: PPG dTreeOffsets length ${dTreeOffsets.length} does not match ` +
-      `declared dTreeCount ${dTreeCount}.`,
-    );
-  }
-  const ppg: PpgSnapshot = {
-    maxSpatialCells,
-    maxDTreeNodesPerCell,
-    sTreeBuf,
-    dTreeBuf,
-    dTreeOffsets,
-    sceneBoundsMin: [sbMinX, sbMinY, sbMinZ],
-    sceneBoundsMax: [sbMaxX, sbMaxY, sbMaxZ],
-  };
-  assertSerializablePpgSnapshot(ppg);
-  if (po !== buf.byteLength) {
+  if (cursor !== buf.byteLength) {
     throw new Error('deserializeGIState: unexpected trailing snapshot bytes.');
   }
-  return restirGI != null
-    ? { ...base, restirGI, ppg }
-    : { ...base, ppg };
+  return {
+    ...base,
+    ...(restirGI != null ? { restirGI } : {}),
+    ...(ppg != null ? { ppg } : {}),
+    ...(complete != null
+      ? {
+          compatibility: complete.compatibility,
+          ...(complete.restirDI != null
+            ? { restirDI: complete.restirDI }
+            : {}),
+          ...(complete.nrc != null ? { nrc: complete.nrc } : {}),
+        }
+      : {}),
+  };
 }

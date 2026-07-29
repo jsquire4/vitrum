@@ -18,6 +18,15 @@ export interface PreethamSkyBake {
   readonly width: number;
   readonly height: number;
   readonly sunDirection: readonly [number, number, number];
+  /**
+   * Solid-angle-weighted luminance integral of the baked RGB map:
+   * `Σ luminance(texel) · sin(theta) · Δtheta · Δphi`.
+   *
+   * Computed from the same Float32 radiance and weights used to build `cdf`,
+   * so downstream power estimators do not need to rescan or approximate the
+   * environment map.
+   */
+  readonly luminanceIntegral: number;
 }
 
 const DEFAULT_SKY_WIDTH = 256;
@@ -225,8 +234,15 @@ export function bakePreethamSkyEquirect(opts: PreethamSkyBakeOptions = {}): Pree
   }
 
   const cdf = new Float32Array(pixelCount + 1);
-  if (totalWeight > 1e-12) {
-    const dOmegaBase = ((2 * Math.PI) / width) * (Math.PI / height);
+  const dOmegaBase = ((2 * Math.PI) / width) * (Math.PI / height);
+  const luminanceIntegral = requireFinite(
+    totalWeight * dOmegaBase,
+    'bakePreethamSkyEquirect.luminanceIntegral',
+  );
+  // Any positive Float32 radiance defines a valid normalized distribution.
+  // An epsilon gate would leave a dim-but-nonblack baked sky with an all-zero
+  // CDF even though its RGB texels and luminance integral remain positive.
+  if (totalWeight > 0) {
     for (let i = 0; i < pixelCount; i += 1) {
       const cdfValue = (cumulativeWeights[i + 1] ?? 0) / totalWeight;
       cdf[i + 1] = requireF32(cdfValue, 'bakePreethamSkyEquirect.cdf');
@@ -246,5 +262,12 @@ export function bakePreethamSkyEquirect(opts: PreethamSkyBakeOptions = {}): Pree
     cdf[pixelCount] = 1;
   }
 
-  return { texels, cdf, width, height, sunDirection: sunDir };
+  return {
+    texels,
+    cdf,
+    width,
+    height,
+    sunDirection: sunDir,
+    luminanceIntegral,
+  };
 }

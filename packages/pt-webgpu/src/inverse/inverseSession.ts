@@ -1,44 +1,16 @@
 /**
- * inverseSession.ts — the pt-webgpu InverseSession implementation (WS5).
+ * pt-webgpu inverse-session implementation.
  *
- * Phase 0 (finite-difference) is fully wired here and backend-portable in shape:
- *   1. render N samples with a FROZEN frame seed/index,
- *   2. read the accum texture back to CPU (reuses `readOidnInputsFromTextures`),
- *   3. compute the image-space loss vs the target,
- *   4. estimate the gradient by +epsilon perturbing each parameter and re-rendering,
- *   5. Adam-step the tiny flat parameter vector,
- *   6. push the updated params into the scene via updatePrimitive/updateEmitter.
+ * `method:'finite-difference'` uses frozen-seed rerenders and a bound-aware
+ * one-sided probe for every parameter component. `method:'path-replay'` is a
+ * separate, deliberately narrow route: one-bounce RGB camera visibility and
+ * the analytic primary-hit material-emissive identity. Its complete scene,
+ * parameter, and render regime are validated before initial values are applied;
+ * unsupported requests throw rather than downgrade or mix estimators.
  *
- * Phase 1 (path-replay analytic adjoint) plugs into the SAME step skeleton via
- * the OPTIONAL `InverseEngineHooks.computeAdjointGradient`: instead of the
- * N-render FD probe loop, the per-pixel loss gradient `dLoss/dRendered` is handed
- * to the engine's adjoint pass, which re-traces the frozen-seed path + NEE and
- * feeds the analytic BSDF partials (`../wgsl/pathTrace/pathTraceAdjoint.wgsl.ts`,
- * oracle in `brdfAdjoint.ts`). The two adjoint stages are GPU-validated on
- * lavapipe (V24): the partials match the FD oracle to f32 precision, and the
- * chain rule + fixed-point accumulation match an on-device finite-difference.
- * The session requests 'path-replay' only when the engine provides the hook,
- * every parameter appears in its end-to-end GPU-fit proof manifest, and every target
- * material stays within the scoped direct-light domain this pass mirrors
- * (delta/soft directional, point, spot, stochastic area-measure rect/disc/mesh
- * area lights, and direct HDRI/procedural-sky environment NEE), or
- * is a baseColorMap / COLOR_0-aware `shadingModel:'unlit'` baseColor primary-hit fit.
- * The built-in release proof currently covers material emissive only. Other
- * implemented local partials are not part of the production path-replay
- * contract until their complete GPU inverse fit agrees with the reference
- * gradient gate. The production engine uses `failurePolicy:'error'`: preflight
- * rejects the whole path-replay request before scene mutation if any slot,
- * geometry, lighting regime, or required hook is outside that proof. There is
- * no mixed analytic/finite-difference production session. This unexported
- * implementation class also supports an explicit finite-difference fallback
- * policy solely for isolated kernel and diagnostic tests. The hook and proof
- * manifest together form the hardware-validation claim.
+ * The host owns cadence. Each `step()` performs one optimizer iteration.
  *
- * The host owns the cadence: each `step()` is one optimizer iteration. The
- * session never schedules itself.
- *
- * Ref: Vicini 2021 (Path Replay Backprop); Nimier-David 2020 (Radiative
- *      Backprop); Kingma & Ba 2015 (Adam).
+ * Ref: Vicini 2021 (Path Replay Backprop); Kingma & Ba 2015 (Adam).
  */
 
 import type {
@@ -79,22 +51,10 @@ import {
 } from './paramResolution.js';
 import {
   type InversePathReplayRenderContext,
-  type InversePathReplayGeometryCapabilities,
   collectPathReplayDiagnostics,
-  pathReplayRenderRegimeIssue,
-  diagnosePathReplaySlot,
-  isPathReplayZeroGradientSlot,
 } from './pathReplayDiagnostics.js';
 
-export type { InversePathReplayRenderContext, InversePathReplayGeometryCapabilities };
-
-/** End-to-end inverse-fit evidence exposed by an engine implementation.
- * Implementation-capable local derivatives are not enough: a field appears
- * here only after its GPU session fit converges against finite differences. */
-export interface InversePathReplayProofManifest {
-  readonly materialFields: readonly string[];
-  readonly emitterFields: readonly string[];
-}
+export type { InversePathReplayRenderContext };
 
 /** The engine hooks an InverseSession needs. The engine implements these with
  *  private access to its scene + GPU pipeline; the session stays decoupled from
@@ -116,23 +76,8 @@ export interface InverseEngineHooks {
   patchMaterial(primitiveId: string, patch: Partial<MaterialSpec>): void;
   /** Apply an emitter patch (mirrors Engine.updateEmitter). */
   patchEmitter(emitterId: string, patch: Partial<SceneEmitter>): void;
-  /**
-   * Optional render-regime facts for deciding whether the scoped path-replay
-   * adjoint matches the most recent forward baseline. When omitted, the session
-   * keeps legacy permissive behavior for non-engine fakes; the real pt-webgpu
-   * engine supplies this so multi-bounce/spectral baselines downgrade honestly.
-   */
+  /** Exact forward-regime facts required by fail-closed path-replay preflight. */
   getPathReplayRenderContext?(): InversePathReplayRenderContext;
-  /**
-   * Optional geometry facts for deciding whether the scoped path-replay adjoint
-   * can build an exact temporary triangle replay stream. Omitted means analytic
-   * primitives remain outside path replay. The production pt-webgpu engine
-   * intentionally reports no replayable analytic shapes: deterministic
-   * tessellation is an approximation and therefore cannot certify an exact
-   * path-replay gradient. Private implementation tests may supply capabilities
-   * for isolated diagnostic coverage.
-   */
-  getPathReplayGeometryCapabilities?(): InversePathReplayGeometryCapabilities;
   /**
    * Material support rows for the active pt-webgpu runtime profile. Full and
    * lite profiles consume different material subsets, so inverse must reject
@@ -147,35 +92,9 @@ export interface InverseEngineHooks {
    * the active profile reports as unsupported.
    */
   getEmitterSupportDetails?(): Readonly<Partial<Record<SceneEmitter['kind'], BackendSupportMode>>>;
-  /** Exact end-to-end proof manifest. The production engine supplies its
-   *  certified public domain explicitly; isolated implementation tests may
-   *  supply wider manifests to exercise private adjoint kernels. */
-  getPathReplayProofManifest?(): InversePathReplayProofManifest;
   /**
-   * Public-engine policy for an out-of-domain `method:'path-replay'` request.
-   * The production pt-webgpu engine sets `error`, matching its published
-   * capability contract. Omission preserves the finite-difference downgrade
-   * used by isolated implementation tests; this session class is not exported
-   * from the package public facade.
-   */
-  readonly pathReplayFailurePolicy?: 'error' | 'finite-difference';
-  /**
-   * OPTIONAL Phase-1 path-replay adjoint. When present, the engine dispatches a
-   * single-bounce adjoint compute pass over its scene buffers — re-tracing the
-   * frozen-seed primary path + NEE, evaluating the analytic BSDF partials
-   * (`pathTraceAdjoint.wgsl`, GPU-validated vs the FD oracle to f32 precision),
-   * and accumulating `∂loss/∂θ` (the chain rule GPU-validated vs on-device FD) —
-   * and returns the flat gradient. Replaces the N-render FD probe loop with one
-   * baseline render + one adjoint pass. The session only requests this when the
-   * hook exists, every parameter is in the engine's proof manifest, and every target material
-   * stays inside the adjoint-compatible direct-light domain (delta/soft
-   * directional, point, spot, stochastic area-measure rect/disc/mesh area
-   * lights, and direct HDRI/procedural-sky environment NEE). A field only
-   * graduates to public path replay once its end-to-end inverse fit converges
-   * and the engine includes it in `getPathReplayProofManifest`. The production
-   * engine uses an error policy, so an unsupported slot rejects the complete
-   * request before scene mutation. The optional fallback policy exists only for
-   * this unexported class's isolated implementation tests.
+   * Certified one-bounce emissive adjoint. It replaces finite-difference probes
+   * only after fail-closed preflight establishes the exact production domain.
    */
   computeAdjointGradient?(args: AdjointGradientRequest): Promise<Float32Array>;
 }
@@ -206,60 +125,143 @@ export interface AdjointGradientRequest {
   readonly gradientLength: number;
 }
 
-const DEFAULT_PATH_REPLAY_PROOF: InversePathReplayProofManifest = {
-  materialFields: ['emissive'],
-  // Emitter derivatives have implementation/oracle coverage, but no completed
-  // full-forward replay-vs-render proof. Keep them off the certified default.
-  emitterFields: [],
-};
+const F32_MIN_SUBNORMAL = 1.401298464324817e-45;
+const f32StepBuffer = new ArrayBuffer(4);
+const f32StepValue = new Float32Array(f32StepBuffer);
+const f32StepBits = new Uint32Array(f32StepBuffer);
 
-function hasPathReplayProof(
-  _scene: Scene,
-  slot: ParamSlot,
-  materialFields: ReadonlySet<string>,
-  emitterFields: ReadonlySet<string>,
-): boolean {
-  return slot.target.domain === 'materials'
-    ? materialFields.has(slot.target.field)
-    : emitterFields.has(slot.target.field);
+/** Adjacent representable f32 in `direction`. The optimized vector itself is
+ * Float32Array-backed, so a nominal epsilon can round back to the baseline for
+ * large values. Advancing one ULP prevents a response-changing parameter from
+ * silently receiving a zero-length probe. */
+function adjacentFloat32(value: number, direction: -1 | 1): number {
+  if (value === 0) return direction > 0 ? F32_MIN_SUBNORMAL : -F32_MIN_SUBNORMAL;
+  f32StepValue[0] = value;
+  const bits = f32StepBits[0]!;
+  f32StepBits[0] =
+    (value > 0) === (direction > 0)
+      ? (bits + 1) >>> 0
+      : (bits - 1) >>> 0;
+  return f32StepValue[0];
 }
 
-function pathReplayProofDiagnostic(
-  scene: Scene,
-  slot: ParamSlot,
-  materialFields: ReadonlySet<string>,
-  emitterFields: ReadonlySet<string>,
-  failurePolicy: 'error' | 'finite-difference',
-): InverseSessionDiagnostic | null {
-  if (hasPathReplayProof(scene, slot, materialFields, emitterFields)) return null;
-  const domainLabel = slot.target.domain === 'materials' ? 'material' : 'emitter';
-  return {
-    severity: 'info',
-    code: 'path-replay-unsupported-field',
-    path: slot.param.path,
-    message:
-      `[vitrum/pt-webgpu] InverseSession path "${slot.param.path}" targets ` +
-      `${domainLabel} field "${slot.target.field}", which has local adjoint coverage ` +
-      'but no registered end-to-end GPU inverse-fit proof; ' +
-      (failurePolicy === 'error'
-        ? 'the path-replay request will be rejected. Select finite-difference explicitly.'
-        : 'using finite-difference.'),
-    details: { field: slot.target.field, proof: 'missing-end-to-end-gpu-fit' },
-  };
+interface FiniteDifferenceProbe {
+  readonly value: number;
+  readonly delta: number;
 }
 
-function pathReplayDiagnosticForPolicy(
-  diagnostic: InverseSessionDiagnostic,
-  failurePolicy: 'error' | 'finite-difference',
-): InverseSessionDiagnostic {
-  if (failurePolicy === 'finite-difference') return diagnostic;
-  return {
-    ...diagnostic,
-    message: diagnostic.message.replace(
-      /using finite-difference\./g,
-      'the path-replay request will be rejected. Select finite-difference explicitly.',
-    ),
-  };
+function probeInDirection(
+  original: number,
+  epsilon: number,
+  direction: -1 | 1,
+  min: number,
+  max: number,
+  enforceBounds: boolean,
+): FiniteDifferenceProbe | null {
+  let desired = original + direction * epsilon;
+  if (enforceBounds) {
+    desired = Math.min(max, Math.max(min, desired));
+  }
+  let value = Math.fround(desired);
+
+  // A non-representable authored bound can round outside its own interval.
+  // Move one f32 inward before considering the opposite one-sided direction.
+  if (enforceBounds && value > max) value = adjacentFloat32(value, -1);
+  if (enforceBounds && value < min) value = adjacentFloat32(value, 1);
+  if (value === original) value = adjacentFloat32(original, direction);
+
+  const delta = value - original;
+  if (
+    !Number.isFinite(value) ||
+    !Number.isFinite(delta) ||
+    delta === 0 ||
+    Math.sign(delta) !== direction ||
+    (enforceBounds && (value < min || value > max))
+  ) {
+    return null;
+  }
+  return { value, delta };
+}
+
+function probeTowardInterval(
+  original: number,
+  epsilon: number,
+  min: number,
+  max: number,
+): FiniteDifferenceProbe | null {
+  const direction: -1 | 1 = original > max ? -1 : 1;
+  const nearestBound = direction < 0 ? max : min;
+  const distanceToInterval = Math.abs(original - nearestBound);
+  const desired = original + direction * Math.min(epsilon, distanceToInterval);
+  let value = Math.fround(desired);
+
+  // When the capped step lands on a non-representable bound, round one ULP
+  // inward rather than crossing the complete legal interval.
+  if (direction < 0 && desired <= max && value > max) {
+    value = adjacentFloat32(value, -1);
+  } else if (direction > 0 && desired >= min && value < min) {
+    value = adjacentFloat32(value, 1);
+  }
+  if (value === original) value = adjacentFloat32(original, direction);
+
+  const delta = value - original;
+  if (
+    !Number.isFinite(value) ||
+    !Number.isFinite(delta) ||
+    delta === 0 ||
+    Math.sign(delta) !== direction ||
+    // A capped probe may land at/just inside the nearest boundary, but must
+    // never traverse through the complete legal interval.
+    (direction < 0 && value < min) ||
+    (direction > 0 && value > max)
+  ) {
+    return null;
+  }
+  return { value, delta };
+}
+
+/** Resolve a legal finite-difference sample against the same effective bounds
+ * used by the post-Adam clamp. Legal boundary values use the inward one-sided
+ * derivative. Legacy initial values outside an explicit interval retain their
+ * documented first-step semantics and probe by epsilon toward that interval. */
+function finiteDifferenceProbe(
+  slot: ParamSlot,
+  original: number,
+  epsilon: number,
+): FiniteDifferenceProbe | null {
+  const [defaultMin, defaultMax] = defaultClampRange(slot.target.field);
+  const min = slot.param.min ?? defaultMin;
+  const max = slot.param.max ?? defaultMax;
+
+  // A zero-width interval is an explicitly fixed parameter.
+  if (min === max) return null;
+
+  // An authored decimal bound may round to the adjacent f32 when stored in the
+  // optimizer vector. Treat that exact stored representation as the boundary,
+  // not as a legacy out-of-range initial value with a one-ULP probe.
+  const atStoredMin = Number.isFinite(min) && original === Math.fround(min);
+  const atStoredMax = Number.isFinite(max) && original === Math.fround(max);
+  const inside = (original >= min && original <= max) || atStoredMin || atStoredMax;
+  if (!inside) {
+    return probeTowardInterval(original, epsilon, min, max);
+  }
+
+  let preferred: -1 | 1;
+  if (original >= max || atStoredMax) {
+    preferred = -1;
+  } else if (original <= min || atStoredMin) {
+    preferred = 1;
+  } else if (original + epsilon <= max) {
+    preferred = 1;
+  } else if (original - epsilon >= min) {
+    preferred = -1;
+  } else {
+    preferred = max - original >= original - min ? 1 : -1;
+  }
+  return (
+    probeInDirection(original, epsilon, preferred, min, max, true) ??
+    probeInDirection(original, epsilon, preferred === 1 ? -1 : 1, min, max, true)
+  );
 }
 
 export class PtWebgpuInverseSession implements InverseSession {
@@ -270,9 +272,6 @@ export class PtWebgpuInverseSession implements InverseSession {
   readonly #method: InverseGradientMethod;
   readonly #parameterMethods: readonly InverseGradientMethod[];
   readonly #diagnostics: readonly InverseSessionDiagnostic[];
-  readonly #pathReplaySlotEligible: readonly boolean[];
-  readonly #pathReplayShaderSlotEligible: readonly boolean[];
-  readonly #usesPartialPathReplay: boolean;
   readonly #samplesPerStep: number;
   readonly #fdEpsilon: number;
   readonly #slots: ParamSlot[];
@@ -332,91 +331,20 @@ export class PtWebgpuInverseSession implements InverseSession {
     }
     this.#flat = new Float32Array(offset);
 
-    // Resolve the EFFECTIVE gradient method from the request + backend capability
-    // (InverseSessionOptions.method contract). Public 'path-replay' requires the
-    // engine to provide the adjoint hook, every parameter to be in the
-    // adjoint-differentiable set, and every target material to stay in the
-    // compatible direct-light domain. The built-in proof manifest currently
-    // advertises only material emissive. Additional local adjoint partials
-    // remain finite-difference until the native GPU gate agrees with finite
-    // differences. The production engine's error policy rejects any shortfall
-    // before applying initial values, so its public facade never creates a
-    // downgraded or mixed session. This unexported class retains an opt-in
-    // finite-difference policy solely for isolated kernel/diagnostic tests. The
-    // two adjoint stages the hook relies on (partials;
-    // chain rule + accumulation) are GPU-validated on lavapipe (V24); the proof
-    // manifest controls which complete fits may consume that machinery. Public
-    // production hooks use `error`, so an uncertified slot cannot silently
-    // downgrade; this internal class's fallback mode is test-only.
-    const iridescenceOptimizedPrimitiveIds = new Set(
-      this.#slots
-        .filter(
-          (s) =>
-            s.target.domain === 'materials' &&
-            (
-              s.target.field === 'iridescence' ||
-              s.target.field === 'iridescenceIor' ||
-              s.target.field === 'iridescenceThicknessRange'
-            ),
-        )
-        .map((s) => s.target.id),
-    );
+    // Path replay is all-or-nothing. Its diagnostics run before reading or
+    // applying any parameter `initial` override.
     const pathReplayRenderContext = hooks.getPathReplayRenderContext == null
       ? {}
       : invokeInverseHook(
           'createInverseSession getPathReplayRenderContext',
           () => hooks.getPathReplayRenderContext!(),
         );
-    const pathReplayGeometryCapabilities =
-      hooks.getPathReplayGeometryCapabilities == null
-        ? {}
-        : invokeInverseHook(
-            'createInverseSession getPathReplayGeometryCapabilities',
-            () => hooks.getPathReplayGeometryCapabilities!(),
-          );
-    const proofManifest = hooks.getPathReplayProofManifest == null
-      ? DEFAULT_PATH_REPLAY_PROOF
-      : invokeInverseHook(
-          'createInverseSession getPathReplayProofManifest',
-          () => hooks.getPathReplayProofManifest!(),
-        );
-    const provenMaterialFields = new Set(proofManifest.materialFields);
-    const provenEmitterFields = new Set(proofManifest.emitterFields);
-    const pathReplayFailurePolicy = hooks.pathReplayFailurePolicy ?? 'finite-difference';
-    const implementationDiagnostics = requestedMethod === 'path-replay'
+    const pathReplayDiagnostics = requestedMethod === 'path-replay'
       ? collectPathReplayDiagnostics(scene, this.#slots, {
           hasHook: hooks.computeAdjointGradient != null,
-          iridescenceOptimizedPrimitiveIds,
           renderContext: pathReplayRenderContext,
-          geometryCapabilities: pathReplayGeometryCapabilities,
-          emitterSupportDetails,
-        }).map((diagnostic) =>
-          pathReplayDiagnosticForPolicy(diagnostic, pathReplayFailurePolicy),
-        )
+        })
       : [];
-    const pathsWithImplementationIssue = new Set(
-      implementationDiagnostics
-        .map((diagnostic) => diagnostic.path)
-        .filter((path): path is string => path != null),
-    );
-    const proofDiagnostics =
-      requestedMethod === 'path-replay' && hooks.computeAdjointGradient != null
-        ? this.#slots
-            .filter((slot) => !pathsWithImplementationIssue.has(slot.param.path))
-            .map((slot) =>
-              pathReplayProofDiagnostic(
-                scene,
-                slot,
-                provenMaterialFields,
-                provenEmitterFields,
-                pathReplayFailurePolicy,
-              ),
-            )
-            .filter((diagnostic): diagnostic is InverseSessionDiagnostic =>
-              diagnostic != null,
-            )
-        : [];
-    const pathReplayDiagnostics = [...implementationDiagnostics, ...proofDiagnostics];
     this.#diagnostics = pathReplayDiagnostics;
     for (const diagnostic of pathReplayDiagnostics) {
       try {
@@ -425,11 +353,7 @@ export class PtWebgpuInverseSession implements InverseSession {
         // Host diagnostic callbacks must not abort inverse-session creation.
       }
     }
-    if (
-      requestedMethod === 'path-replay' &&
-      pathReplayDiagnostics.length > 0 &&
-      hooks.pathReplayFailurePolicy === 'error'
-    ) {
+    if (requestedMethod === 'path-replay' && pathReplayDiagnostics.length > 0) {
       const failures = pathReplayDiagnostics.map((diagnostic) => new Error(
         `${diagnostic.code}${diagnostic.path == null ? '' : ` (${diagnostic.path})`}: ` +
           diagnostic.message,
@@ -442,46 +366,8 @@ export class PtWebgpuInverseSession implements InverseSession {
           'and render regime to match capabilities.inverseRendering.pathReplay.',
       );
     }
-    const allEligible = pathReplayDiagnostics.length === 0;
-    this.#method =
-      requestedMethod === 'path-replay' && hooks.computeAdjointGradient != null && allEligible
-        ? 'path-replay'
-        : 'finite-difference';
-    const canUseScopedAdjoint =
-      requestedMethod === 'path-replay' &&
-      hooks.computeAdjointGradient != null &&
-      pathReplayRenderRegimeIssue(pathReplayRenderContext) == null;
-    this.#pathReplaySlotEligible = canUseScopedAdjoint
-      ? this.#slots.map((slot) =>
-          hasPathReplayProof(
-            scene,
-            slot,
-            provenMaterialFields,
-            provenEmitterFields,
-          ) &&
-          diagnosePathReplaySlot(
-              scene,
-              slot,
-              iridescenceOptimizedPrimitiveIds,
-              pathReplayGeometryCapabilities,
-              pathReplayRenderContext,
-              emitterSupportDetails,
-            ).length === 0,
-        )
-      : this.#slots.map(() => false);
-    this.#pathReplayShaderSlotEligible = canUseScopedAdjoint
-      ? this.#slots.map((slot, index) =>
-          this.#pathReplaySlotEligible[index] === true &&
-          !isPathReplayZeroGradientSlot(scene, slot),
-        )
-      : this.#slots.map(() => false);
-    this.#usesPartialPathReplay =
-      this.#method === 'finite-difference' &&
-      canUseScopedAdjoint &&
-      this.#pathReplaySlotEligible.some((eligible) => eligible);
-    this.#parameterMethods = this.#pathReplaySlotEligible.map((eligible) =>
-      eligible ? 'path-replay' : 'finite-difference',
-    );
+    this.#method = requestedMethod;
+    this.#parameterMethods = this.#slots.map(() => requestedMethod);
 
     // Seed the flat vector from the parameter `initial` override or the current
     // scene value.
@@ -572,57 +458,36 @@ export class PtWebgpuInverseSession implements InverseSession {
         assertFiniteArray(dLoss_dRendered, 'InverseSession.step loss gradient');
 
         let grad: Float32Array;
-        if (this.#method === 'path-replay' || this.#usesPartialPathReplay) {
-          grad = new Float32Array(this.#flat.length);
-          const replaySlots = this.#slots.filter(
-            (_slot, index) => this.#pathReplayShaderSlotEligible[index] === true,
-          );
-          if (replaySlots.length > 0) {
-            const adjointGrad = await this.#hooks.computeAdjointGradient!({
-              dLoss_dRendered,
-              channels: base.channels,
-              width,
-              height,
-              samples: this.#samplesPerStep,
-              params: replaySlots.map((s) => ({
-                domain: s.target.domain,
-                id: s.target.id,
-                field: s.target.field,
-                offset: s.offset,
-                length: s.length,
-              })),
-              gradientLength: this.#flat.length,
-            });
-            this.#assertGeneration(generation);
-            if (!(adjointGrad instanceof Float32Array)) {
-              throw new Error(
-                'InverseSession.step: adjoint gradient must be a Float32Array.',
-              );
-            }
-            if (adjointGrad.length !== this.#flat.length) {
-              throw new Error(
-                `InverseSession.step: adjoint gradient length ${adjointGrad.length} ≠ ` +
-                  `parameter length ${this.#flat.length}.`,
-              );
-            }
-            assertFiniteArray(adjointGrad, 'InverseSession.step adjoint gradient');
-            for (const slot of replaySlots) {
-              grad.set(
-                adjointGrad.subarray(slot.offset, slot.offset + slot.length),
-                slot.offset,
-              );
-            }
-          }
-          if (this.#usesPartialPathReplay) {
-            await this.#fillFiniteDifferenceGradient(
-              grad,
-              loss,
-              width,
-              height,
-              generation,
-              (slotIndex) => this.#pathReplaySlotEligible[slotIndex] !== true,
+        if (this.#method === 'path-replay') {
+          const adjointGrad = await this.#hooks.computeAdjointGradient!({
+            dLoss_dRendered,
+            channels: base.channels,
+            width,
+            height,
+            samples: this.#samplesPerStep,
+            params: this.#slots.map((slot) => ({
+              domain: slot.target.domain,
+              id: slot.target.id,
+              field: slot.target.field,
+              offset: slot.offset,
+              length: slot.length,
+            })),
+            gradientLength: this.#flat.length,
+          });
+          this.#assertGeneration(generation);
+          if (!(adjointGrad instanceof Float32Array)) {
+            throw new Error(
+              'InverseSession.step: adjoint gradient must be a Float32Array.',
             );
           }
+          if (adjointGrad.length !== this.#flat.length) {
+            throw new Error(
+              `InverseSession.step: adjoint gradient length ${adjointGrad.length} ≠ ` +
+                `parameter length ${this.#flat.length}.`,
+            );
+          }
+          assertFiniteArray(adjointGrad, 'InverseSession.step adjoint gradient');
+          grad = adjointGrad;
         } else {
           grad = new Float32Array(this.#flat.length);
           await this.#fillFiniteDifferenceGradient(
@@ -679,7 +544,7 @@ export class PtWebgpuInverseSession implements InverseSession {
 
   // ── internals ──────────────────────────────────────────────────────────────
 
-  /** Fill selected gradient slots with forward finite differences. */
+  /** Fill selected gradient slots with bound-aware one-sided finite differences. */
   async #fillFiniteDifferenceGradient(
     grad: Float32Array,
     baselineLoss: number,
@@ -688,14 +553,18 @@ export class PtWebgpuInverseSession implements InverseSession {
     generation: number,
     shouldProbeSlot: (slotIndex: number) => boolean,
   ): Promise<void> {
-    const eps = this.#fdEpsilon;
     for (let slotIndex = 0; slotIndex < this.#slots.length; slotIndex++) {
       if (!shouldProbeSlot(slotIndex)) continue;
       const slot = this.#slots[slotIndex]!;
       for (let local = 0; local < slot.length; local++) {
         const flatIndex = slot.offset + local;
         const original = this.#flat[flatIndex]!;
-        this.#flat[flatIndex] = original + eps;
+        const probeSpec = finiteDifferenceProbe(slot, original, this.#fdEpsilon);
+        if (probeSpec == null) {
+          grad[flatIndex] = 0;
+          continue;
+        }
+        this.#flat[flatIndex] = probeSpec.value;
         let failed = false;
         let failure: unknown;
         let componentGradient = 0;
@@ -716,7 +585,7 @@ export class PtWebgpuInverseSession implements InverseSession {
             this.#lossKind,
           );
           assertFiniteNumber(probeLoss, 'probe loss');
-          componentGradient = (probeLoss - baselineLoss) / eps;
+          componentGradient = (probeLoss - baselineLoss) / probeSpec.delta;
           assertFiniteNumber(componentGradient, 'finite-difference gradient');
         } catch (error) {
           failed = true;

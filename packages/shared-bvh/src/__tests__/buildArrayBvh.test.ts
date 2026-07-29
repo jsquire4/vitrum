@@ -105,7 +105,7 @@ describe('buildArrayBvh', () => {
     const built = buildArrayBvh(positions, indices, triMaterialIds);
 
     const totalNodes = built.bvhNodes.length / 8;
-    // validateBvhEncoding (sibling export) enforces 1 ≤ offset < totalNodes.
+    // validateBvhEncoding enforces rightChild=node+offset in range and offset ≥ 2.
     expect(() => validateBvhEncoding(built.bvhNodes, totalNodes)).not.toThrow();
 
     const u32 = new Uint32Array(built.bvhNodes.buffer);

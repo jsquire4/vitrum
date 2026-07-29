@@ -116,6 +116,33 @@ function makeUploadHarness(failBeginComputePass = false) {
 }
 
 describe('walkaround explicit WebGPU material texture sources', () => {
+  it('preflights atlas layer bytes before allocating an over-budget GPU-source atlas', () => {
+    const device = {} as GPUDevice;
+    const makeSource = (colorSpace: 'srgb' | 'linear') => {
+      const { texture } = makeSourceTexture({ width: 4096, height: 4096 });
+      return createWalkaroundWebGpuTextureSource(device, texture, {
+        format: 'rgba8unorm',
+        colorSpace,
+      });
+    };
+    const material: MaterialSpec = {
+      baseColor: [1, 1, 1],
+      roughness: 0.5,
+      metallic: 0,
+      baseColorMap: { handle: makeSource('srgb') },
+      normalMap: { handle: makeSource('linear') },
+      roughnessMap: { handle: makeSource('linear') },
+    };
+
+    expect(() => packMaterialTextureAtlas(
+      [material],
+      new Uint32Array([0]),
+      1,
+    )).toThrow(
+      /material texture atlas requires 536870912 CPU bytes, above the .*per-allocation staging budget/,
+    );
+  });
+
   it('pins source format, transfer function, selected subresource, and identity', () => {
     const device = {} as GPUDevice;
     const { texture } = makeSourceTexture({

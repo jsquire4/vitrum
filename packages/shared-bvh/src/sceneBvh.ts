@@ -27,12 +27,6 @@ export interface SceneBvhBuffers {
    * {@link materials}; both fields point at the same core-native list.
    */
   coreMaterials?: readonly MaterialSpec[];
-  /**
-   * Optional source-native material handles for adapters that preserve the
-   * original host material objects. Root consumers should prefer
-   * {@link materials}; legacy subpaths may refine this neutral field.
-   */
-  sourceMaterials?: readonly unknown[];
   /** BVH bounding box (world space). */
   boundingBox: PlainAabb;
 }
@@ -100,8 +94,7 @@ export class SceneBvh {
     const { sceneVersionTag } = opts;
     if (
       sceneVersionTag !== undefined &&
-      sceneVersionTag === this._lastSceneVersionTag &&
-      this._buffers !== null
+      sceneVersionTag === this._lastSceneVersionTag
     ) {
       return;
     }

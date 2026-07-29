@@ -13,7 +13,6 @@ import {
   type MaterialSpec,
   type PrimitiveUvSets,
   type Scene,
-  type ScenePrimitive,
 } from '@vitrum/core';
 import {
   collapseIndicesToStride3,
@@ -81,14 +80,6 @@ function sceneHasCoreMeshes(scene: Scene): boolean {
     (p) => p.kind === 'mesh' || p.kind === 'skinned-mesh' || p.kind === 'instanced-mesh',
   );
 }
-
-/**
- * Compatibility preflight retained for callers. Mapped emitters now use a
- * bounded-memory parent-triangle proposal and evaluate the exact atlas sample
- * at candidate barycentrics, so texture dimensions, wrap modes, and filtering
- * never make scene publication fail.
- */
-export function assertExactEmissiveMapSamplingForCoreScene(_scene: Scene): void {}
 
 export function resolveReSTIRBvhMode(scene: Scene, override?: ReSTIRBvhMode): ReSTIRBvhMode {
   if (override != null) return override;
@@ -322,7 +313,6 @@ function makeMergedGeometry(
   return {
     boundingBox,
     computeBoundingBox() {},
-    dispose() {},
   };
 }
 
@@ -549,12 +539,6 @@ function coreEmitterBuffers(
     options.packSourceTriIndex === true && options.tlasPrimitiveBindings != null
       ? buildTlasEmitterSourceTriMapper(merged, options.tlasPrimitiveBindings)
       : undefined;
-  const mergedUv1 = options.packSourceTriIndex === true
-    ? mergeUv1FromCore(scene, merged.meshVertexRanges, merged.vertexCount)
-    : undefined;
-  const mergedHighUvSets = options.packSourceTriIndex === true
-    ? mergeHighUvSetsFromCore(scene, merged.meshVertexRanges, merged.vertexCount)
-    : undefined;
   const { emitterFloats, cdfArray, totalEmissivePower, treeInput } = buildEmitterListFromCore(
     merged.indices,
     merged.positions,
@@ -565,11 +549,6 @@ function coreEmitterBuffers(
       ...options,
       extraEmitters,
       ...(sourceTriIndexForTriangle != null ? { sourceTriIndexForTriangle } : {}),
-      ...(options.packSourceTriIndex === true ? { uvs: merged.uvs } : {}),
-      ...(mergedUv1 != null ? { uv1s: mergedUv1 } : {}),
-      ...(mergedHighUvSets != null && mergedHighUvSets.size > 0
-        ? { uvSets: mergedHighUvSets }
-        : {}),
     },
   );
   const emitterCount = cdfArray.length;
@@ -820,10 +799,10 @@ function buffersFromCoreScenePack(
     packSourceTriIndex: true,
     tlasPrimitiveBindings: geo.primitiveTlasBindings,
   });
-  const merged = mergeWorldSpaceFromCore(scene, {
-    positionStride: 4,
-    filter: (p: ScenePrimitive) => p.kind !== 'instanced-mesh',
-  });
+  // `mergedGeometry` is the CPU fallback AABB consumed by cascade/probe
+  // placement. It must enclose TLAS instances too; excluding instanced meshes
+  // silently clipped scenes whose only/farthest geometry lived in the TLAS.
+  const merged = mergeWorldSpaceFromCore(scene, { positionStride: 4 });
   warnScenePackWarnings(options, geo.warnings);
 
   return {
@@ -1013,8 +992,4 @@ export function rebuildEmitterBuffersFromCoreScene(
   } = {},
 ): RebuiltEmitterBuffers {
   return coreEmitterBuffers(scene, options);
-}
-
-export function disposeSceneBVH(buffers: SceneBVHBuffers): void {
-  buffers.mergedGeometry.dispose();
 }

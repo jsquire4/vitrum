@@ -1,8 +1,9 @@
 // Lite-tier strict scene validation.
 //
 // The lite shader omits analytic bindings, explicit mesh-area-light sampling,
-// and arbitrary COLOR_0. Rendering after dropping any of those inputs is a
-// lossy scene substitution, so ingestion fails before packing/allocation.
+// and arbitrary active COLOR_n streams. Rendering after dropping any of those
+// inputs is a lossy scene substitution, so ingestion fails before
+// packing/allocation.
 
 import type { Scene } from '@vitrum/core';
 import { collectLiteUnsupportedVertexColorPrimitiveIds } from './liteSceneAnalysis.js';
@@ -31,7 +32,7 @@ export function assertLiteSceneSupported(scene: Scene): void {
   }
   if (vertexColorPrimitiveIds.length > 0) {
     details.push(
-      `non-bakeable COLOR_0 primitives [${vertexColorPrimitiveIds.join(', ')}]`,
+      `non-bakeable active vertex-color primitives [${vertexColorPrimitiveIds.join(', ')}]`,
     );
   }
   throw new TypeError(

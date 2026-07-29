@@ -12,6 +12,7 @@ import { buildTlas, refitTlas, refitTlasInstances } from './tlas.js';
 import { invertMat4 as _invertMat4 } from './mathUtils.js';
 import { rebaseLeafTriOffset as _rebaseLeafTriOffset, copyVec4Strided as _copyVec4Strided, rebaseIndexWords as _rebaseIndexWords } from './splicePack.js';
 import { resolveDisplacedGeometry } from './vertexDisplacement.js';
+import { validateBvhEncoding } from './validateBvhEncoding.js';
 
 // ── Back-compat re-export from extracted module ───────────────────────────────
 // invertMat4 was previously defined in this file; now canonical in mathUtils.
@@ -558,6 +559,33 @@ interface SplicedPackBuffers {
 }
 
 /**
+ * Unconditional publication gate for the concatenated BLAS forest.
+ *
+ * Each primitive binding identifies one disjoint BLAS root. A TLAS-free
+ * single-primitive pack has no binding table, so root zero is the implicit
+ * standalone root. The validator proves every node is reachable exactly once,
+ * every leaf range tiles the triangle buffer, and the shader's fixed private
+ * stack is sufficient before any consumer can upload the pack.
+ */
+function validatePackedBlasForest(
+  pack: Pick<
+    ScenePackResult,
+    'bvhNodes' | 'triangleCount' | 'primitiveTlasBindings'
+  >,
+): void {
+  const nodeCount = pack.bvhNodes.length / BVH_NODE_FLOATS;
+  const roots = pack.primitiveTlasBindings.length > 0
+    ? pack.primitiveTlasBindings.map((binding) => binding.blasRoot)
+    : nodeCount > 0
+      ? [0]
+      : [];
+  validateBvhEncoding(pack.bvhNodes, nodeCount, {
+    roots,
+    triangleCount: pack.triangleCount,
+  });
+}
+
+/**
  * Rebuild the TLAS over `primitiveTlasBindings` and assemble the spliced pack
  * result (D12-4). Shared by the same-size and resize splice paths — both, after
  * mutating the BLAS buffers, collect TLAS instances (falling back to a full
@@ -578,28 +606,30 @@ function finalizeSplicedPack(
     return { ok: true, pack: packSceneFromCore(scene, opts), strategy: 'full' };
   }
   const tlasBuild = buildTlasFromInstances(collected.instances);
+  const pack: ScenePackResult = {
+    positions: buffers.positions,
+    normals: buffers.normals,
+    uvs: buffers.uvs,
+    tangents: buffers.tangents,
+    colors: buffers.colors,
+    indices: buffers.indices,
+    triMaterialIds: buffers.triMaterialIds,
+    bvhNodes: buffers.bvhNodes,
+    triangleCount: buffers.triangleCount,
+    tlasNodes: tlasBuild.tlasNodes,
+    tlasInstanceIndices: tlasBuild.tlasInstanceIndices,
+    tlasBlasRoots: tlasBuild.tlasBlasRoots,
+    tlasInstanceWorldToLocal: tlasBuild.tlasInstanceWorldToLocal,
+    tlasInstanceLocalToWorld: tlasBuild.tlasInstanceLocalToWorld,
+    tlasNodeCount: tlasBuild.tlasNodeCount,
+    primitiveTlasBindings,
+    warnings: [...prev.warnings, ...sliceWarnings],
+  };
+  validatePackedBlasForest(pack);
   return {
     ok: true,
     strategy: 'splice',
-    pack: {
-      positions: buffers.positions,
-      normals: buffers.normals,
-      uvs: buffers.uvs,
-      tangents: buffers.tangents,
-      colors: buffers.colors,
-      indices: buffers.indices,
-      triMaterialIds: buffers.triMaterialIds,
-      bvhNodes: buffers.bvhNodes,
-      triangleCount: buffers.triangleCount,
-      tlasNodes: tlasBuild.tlasNodes,
-      tlasInstanceIndices: tlasBuild.tlasInstanceIndices,
-      tlasBlasRoots: tlasBuild.tlasBlasRoots,
-      tlasInstanceWorldToLocal: tlasBuild.tlasInstanceWorldToLocal,
-      tlasInstanceLocalToWorld: tlasBuild.tlasInstanceLocalToWorld,
-      tlasNodeCount: tlasBuild.tlasNodeCount,
-      primitiveTlasBindings,
-      warnings: [...prev.warnings, ...sliceWarnings],
-    },
+    pack,
   };
 }
 
@@ -995,7 +1025,7 @@ export function packSceneFromCore(scene: Scene, opts: ScenePackOptions): ScenePa
         tlasNodeCount: 0,
       };
 
-  return {
+  const pack: ScenePackResult = {
     positions: packedPositions,
     normals: packedNormals,
     uvs: packedUvs,
@@ -1014,6 +1044,8 @@ export function packSceneFromCore(scene: Scene, opts: ScenePackOptions): ScenePa
     primitiveTlasBindings,
     warnings,
   };
+  validatePackedBlasForest(pack);
+  return pack;
 }
 
 /** Refit TLAS instance transforms / world AABBs without topology change. */

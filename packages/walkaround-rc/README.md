@@ -6,6 +6,12 @@ raw WGSL shader strings.
 Reference: Sannikov 2023, "Radiance Cascades: A Novel Approach to Calculating
 Global Illumination."
 
+The RC direction grid uses the octahedral mapping described by Cigolle et al.,
+"A Survey of Efficient Representations for Independent Unit Vectors" (JCGT
+2014). Cascade merge weights use the exact spherical-triangle solid-angle
+formula from Van Oosterom and Strackee, "The Solid Angle of a Plane Triangle"
+(IEEE Transactions on Biomedical Engineering 30(2), 1983).
+
 ## Status
 
 GPU-validated (2026-06-07). The cascade-zero light-model gaps (RC only sampled
@@ -25,16 +31,18 @@ arc for the emitter-NEE fix; two-scene RC acceptance gate
 
 - `RCDispatcher` — raw-WebGPU dispatch driver for the cascade compute passes.
 - `CASCADE_DIMS` / `CASCADE_COUNT` / `CascadeDim` — default cascade pyramid
-  sizes. Hosts can override per-engine via
+  sizes. `CASCADE_COUNT` is derived directly from `CASCADE_DIMS` for hosts that
+  inspect the default layout; it is not a second source of geometry truth.
+  Hosts can override per-engine via
   `HybridEngineOptions.cascadeDims: readonly CascadeDim[]`.
 - `validateCascadeDims` — runtime guard for custom cascade overrides (positive
   probe grids, square ray counts, 2x ray-grid steps, valid intervals).
-- `allocateCascades` / `disposeCascades` — optional CPU-only cascade storage
-  helpers for hosts and raw-kernel validation. They do not allocate GPU
-  resources and are not part of `RCDispatcher` lifecycle management.
 - `PROBE_RAY_CAST_WGSL` / `CASCADE_MERGE_WGSL` — raw WGSL strings for host
   inspection or headless WGSL-compile testing.
-- `computeOctahedralSolidAngles` — pure CPU helper used by cascade-merge math.
+
+CPU cascade allocation and high-resolution solid-angle integration live under
+`__tests__/support/`; they are validation oracles, not runtime package exports.
+The production merge kernel uses its own composed WGSL solid-angle function.
 
 There is no THREE bridge subpath. The package root is raw-runtime safe; it has
 no `three` or `three/webgpu` peer dependency. The old TSL receiver wrappers are
@@ -50,8 +58,8 @@ raw-WebGPU path.
 
 ## Testing
 
-- `__tests__/rcSolidAngles.test.ts` — CPU-only unit tests for the octahedral
-  solid-angle table.
+- `__tests__/rcSolidAngles.test.ts` — CPU-only checks for the independent
+  high-resolution octahedral solid-angle test oracle.
 - `__tests__/rcKernelMath.test.ts` — pure math invariants (cascade geometry,
   uniform packing).
 - `__tests__/rcLightEvalWgsl.test.ts` — direct-light WGSL contract for

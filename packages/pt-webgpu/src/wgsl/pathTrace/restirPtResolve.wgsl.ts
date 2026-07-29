@@ -11,7 +11,7 @@
  * ════════════════════════════════════════════════════════════════════════════
  * The reconstruction (and WHY it uses the FULL BRDF, not the proxy target)
  * ════════════════════════════════════════════════════════════════════════════
- * The reservoir's W was finalised as W = w_sum/p̂ where p̂ is the
+ * The reservoir's logW was finalised as log(weight_sum)-log(p̂) where p̂ is the
  * INTEGRAND-MATCHING target (restirPtTargetAt: luminance of the real unshadowed
  * reconnection contribution — evaluateBrdf·cos·Lo; B3). For an initial
  * one-candidate producer reservoir, w = p̂/p_src and this reduces to W=1/p_src.
@@ -19,7 +19,7 @@
  * contributions from multiple source reservoirs, so W is NOT generally the
  * reciprocal of the selected sample's rCur.pdfSrc. The GRIS contribution is:
  *
- *   L = f_bsdf(xv; wo → wi) · cos(nv, wi) · Lo · W
+ *   L = f_bsdf(xv; wo → wi) · cos(nv, wi) · Lo · exp(logW)
  *
  * with W carrying the complete resampling normalization. pdfSrc remains source
  * proposal metadata for the selected shifted sample; resolve must not divide by
@@ -48,9 +48,10 @@
  *   rpt_result : array<vec4f>, one vec4 per full-res pixel (row-major,
  *                index = y·width + x). .rgb = the reconnection indirect radiance
  *                (linear HDR); .a = 1.0 on a contributing pixel, 0.0 on an empty
- *                reservoir (so the compositor can distinguish "no reuse" from
- *                "reuse produced black"). The wiring step composites .rgb into the
- *                beauty buffer (add to the direct/emissive at xv).
+ *                reservoir, and -1.0 on an unrepresentable numeric result. Both
+ *                non-positive states make the compositor run the ordinary full
+ *                path; the negative marker remains observable through the debug
+ *                result buffer instead of masquerading as a black reuse sample.
  *
  * ── Bind groups ─────────────────────────────────────────────────────────────
  * Composes the SHARED pt-webgpu modules (for evaluateBrdf); the ReSTIR-PT
@@ -66,6 +67,40 @@ export const RESTIR_PT_RESOLVE_WGSL = /* wgsl */ `
 @group(4) @binding(3) var<storage, read_write> rpt_result:      array<vec4f>;
 @group(4) @binding(4) var<uniform>             rptParams:       RestirPtParams;
 
+struct RptLogScaledVec3 {
+  value: vec3f,
+  valid: bool,
+}
+
+fn rptScalePositiveVec3ByLog(value: vec3f, logScale: f32) -> RptLogScaledVec3 {
+  var out: RptLogScaledVec3;
+  out.value = vec3f(0.0);
+  out.valid = false;
+  if (!rptFiniteVec3(value) || any(value < vec3f(0.0))
+   || !rptFiniteScalar(logScale)
+   || logScale == RPT_LOG_ZERO
+   || logScale == RPT_LOG_NUMERIC_FAILURE) {
+    return out;
+  }
+  if (value.x > 0.0) {
+    let logX = log(value.x) + logScale;
+    if (!rptFiniteScalar(logX) || logX > RPT_LOG_MAX_FINITE_F32) { return out; }
+    out.value.x = exp(logX);
+  }
+  if (value.y > 0.0) {
+    let logY = log(value.y) + logScale;
+    if (!rptFiniteScalar(logY) || logY > RPT_LOG_MAX_FINITE_F32) { return out; }
+    out.value.y = exp(logY);
+  }
+  if (value.z > 0.0) {
+    let logZ = log(value.z) + logScale;
+    if (!rptFiniteScalar(logZ) || logZ > RPT_LOG_MAX_FINITE_F32) { return out; }
+    out.value.z = exp(logZ);
+  }
+  out.valid = rptFiniteVec3(out.value);
+  return out;
+}
+
 @compute @workgroup_size(8, 8, 1)
 fn restirPtResolve(@builtin(global_invocation_id) gid: vec3u) {
   if (gid.x >= params.width || gid.y >= params.height) {
@@ -74,9 +109,17 @@ fn restirPtResolve(@builtin(global_invocation_id) gid: vec3u) {
   let pixelIdx = gid.y * params.width + gid.x;
   let r = loadReservoirPTHero_ro(&rpt_resResolved, pixelIdx);
 
+  if (rptReservoirHasNumericFailure(r)) {
+    rpt_result[pixelIdx] = vec4f(0.0, 0.0, 0.0, -1.0);
+    return;
+  }
+
   // Empty reservoir → no reconnection indirect (alpha 0 so the compositor can
   // tell "no reuse" apart from "reuse is black").
-  if (r.M == 0u || !rptFinitePositive(r.W)
+  if (r.M == 0u
+   || !rptFiniteScalar(r.logW)
+   || r.logW == RPT_LOG_ZERO
+   || r.logW == RPT_LOG_NUMERIC_FAILURE
    || !rptFiniteVec3(r.xv) || !rptFiniteVec3(r.xs)
    || !rptFiniteVec3(r.nv) || !rptFiniteVec3(r.woV)
    || !rptFiniteVec3(r.Lo)) {
@@ -103,23 +146,25 @@ fn restirPtResolve(@builtin(global_invocation_id) gid: vec3u) {
 
   // FULL visible-vertex BRDF. Multiply the vector integrand by the finalized
   // scalar GRIS weight exactly once; reused reservoirs must not add /pdfSrc.
+  let thinFilm = rptThinFilmForDomain(r);
   let fBsdf = evaluateBrdfFullWithClearcoatNormal(
     r.albV, r.roughnessV, r.metalV, r.nv, r.clearcoatNormalV, wo, wiRecon,
     r.clearcoatV, r.clearcoatRoughnessV, r.sheenV, r.sheenRoughnessV, r.sheenColorV,
     r.iridescenceV, r.iridescenceIorV, r.iridescenceThicknessMinV, r.iridescenceThicknessMaxV,
     r.specularColorV, r.specularIntensityV,
-    r.anisotropyV, r.anisotropyRotationV,
+    r.anisotropyV, r.anisotropyRotationV, thinFilm,
   );
   let integrand = fBsdf * cosTheta * r.Lo;
   if (!rptFiniteVec3(fBsdf) || !rptFiniteVec3(integrand)) {
-    rpt_result[pixelIdx] = vec4f(0.0, 0.0, 0.0, 0.0);
+    rpt_result[pixelIdx] = vec4f(0.0, 0.0, 0.0, -1.0);
     return;
   }
-  let indirect = integrand * r.W;
-  if (!rptFiniteVec3(indirect)) {
-    rpt_result[pixelIdx] = vec4f(0.0, 0.0, 0.0, 0.0);
+  let scaled = rptScalePositiveVec3ByLog(integrand, r.logW);
+  if (!scaled.valid) {
+    rpt_result[pixelIdx] = vec4f(0.0, 0.0, 0.0, -1.0);
     return;
   }
+  let indirect = scaled.value;
 
   // Lo and the visible-domain BRDF are monochromatic replicated scalars in
   // spectral mode.  Reconstruct this reservoir with THE RESERVOIR'S wavelength
@@ -130,14 +175,14 @@ fn restirPtResolve(@builtin(global_invocation_id) gid: vec3u) {
   if (params.spectralEnabled != 0u) {
     let reservoirHeroPdf = heroMisMixturePdf(r.heroLambdaV);
     if (!rptFinitePositive(reservoirHeroPdf)) {
-      rpt_result[pixelIdx] = vec4f(0.0, 0.0, 0.0, 0.0);
+      rpt_result[pixelIdx] = vec4f(0.0, 0.0, 0.0, -1.0);
       return;
     }
     indirectOut = heroWavelengthToRgb(
       r.heroLambdaV, luminance(indirect), reservoirHeroPdf,
     );
     if (!rptFiniteVec3(indirectOut)) {
-      rpt_result[pixelIdx] = vec4f(0.0, 0.0, 0.0, 0.0);
+      rpt_result[pixelIdx] = vec4f(0.0, 0.0, 0.0, -1.0);
       return;
     }
   }

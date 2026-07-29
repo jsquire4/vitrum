@@ -1,5 +1,5 @@
 import type { MaterialSpec } from '@vitrum/core';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, expectTypeOf, it } from 'vitest';
 import { GltfComponentType, type GltfJson } from './gltfTypes.js';
 import {
   applyGltfMaterialAnimationPointerValue,
@@ -12,6 +12,7 @@ import {
   gltfNativeAnimationTargetIdentity,
   resolveGltfAnimationPointer,
   supportedGltfAnimationPointers,
+  type GltfAnimationPointerValueType,
 } from './animationPointer.js';
 import { buildTextureDecodeReport } from './textureDecodeReport.js';
 import { attachGltfTextureRefSource, gltfTextureRefSource } from './textures.js';
@@ -73,6 +74,21 @@ function target(pointer: string) {
 }
 
 describe('ratified KHR_animation_pointer object-model support', () => {
+  it('exposes only value domains implemented by a resolved pointer target', () => {
+    expectTypeOf<GltfAnimationPointerValueType>()
+      .toEqualTypeOf<'float' | 'boolean' | 'float-array'>();
+    for (const pointer of [
+      '/nodes/0/translation',
+      '/nodes/0/weights',
+      '/nodes/0/extensions/KHR_node_visibility/visible',
+      '/cameras/0/perspective/yfov',
+      '/extensions/KHR_lights_punctual/lights/0/intensity',
+      '/materials/0/pbrMetallicRoughness/baseColorFactor',
+    ]) {
+      expect(target(pointer).valueType, pointer).not.toBe('integer');
+    }
+  });
+
   it('resolves native-equivalent node channels, weight elements, cameras, lights, and visibility', () => {
     expect(target('/nodes/0/rotation')).toMatchObject({ kind: 'node', path: 'rotation', components: 4 });
     expect(target('/nodes/0/weights/1')).toMatchObject({ kind: 'node-weight', weightIndex: 1 });

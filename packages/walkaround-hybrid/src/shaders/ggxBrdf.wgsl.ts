@@ -2,27 +2,42 @@
  * GGX BRDF — simplified Lambertian diffuse + GGX specular.
  *
  * Split out of common.wgsl.ts (T9-stepA): `distributionGGX`,
- * `geometrySchlickGGX`, `geometrySmith`, and the `evalGGX` entry point used
- * by the ReSTIR p̂ helper and shade. Depends on `PI`/`INV_PI` (walkaroundUbo
+ * `geometrySmith` and the explicit rich-material evaluators used by the
+ * ReSTIR p̂ helper and shade. Depends on `PI`/`INV_PI` (walkaroundUbo
  * module), `safe_normalize`, and `fresnelSchlick` (shared primitives module);
  * `common` aggregates all three so the symbols are in scope.
  */
 
 import type { WgslModule } from '../pipeline/wgslComposer.js';
 
-// Walter et al. 2007 / Heitz 2014 GGX. The continuous lobe is deliberately zero
-// at perceptual roughness == 0; delta reflection/transmission is owned by the
-// explicit event samplers below rather than by broadening the distribution.
+// Walter et al. 2007 / Heitz 2014 GGX. Realtime direct-light evaluation cannot
+// represent a measure-zero mirror event, so reflection lobes use one shared,
+// bounded continuous roughness in evaluation, VNDF sampling, and PDF evaluation.
+// Dielectric transmission retains its explicit roughness-zero Snell event.
 export const GGX_BRDF_WGSL = /* wgsl */ `// ============================================================
 // GGX BRDF (simplified Lambertian + GGX specular)
 // ============================================================
 
+// The bounded realtime representation of an authored mirror. Keeping this in
+// one helper prevents eval/sample/pdf drift and preserves finite direct-light
+// energy for roughness == 0. Transmission handles its exact delta before using
+// this helper.
+const MIN_CONTINUOUS_GGX_ROUGHNESS: f32 = 0.01;
+
+fn boundedContinuousGgxRoughness(rough: f32) -> f32 {
+  return max(MIN_CONTINUOUS_GGX_ROUGHNESS, clamp(rough, 0.0, 1.0));
+}
+
 // GGX NDF
 fn distributionGGX(NdotH: f32, rough: f32) -> f32 {
-  if (NdotH <= 0.0 || rough <= 0.0) { return 0.0; }
-  let alpha = rough * rough;
+  if (NdotH <= 0.0) { return 0.0; }
+  let boundedRoughness = boundedContinuousGgxRoughness(rough);
+  let alpha = boundedRoughness * boundedRoughness;
   let alpha2 = alpha * alpha;
-  let d = NdotH * NdotH * (alpha2 - 1.0) + 1.0;
+  // Algebraically equivalent to NdotH²(alpha²-1)+1, but avoids cancelling
+  // alpha² to zero in f32 at NdotH == 1 for the narrow bounded lobe.
+  let nDotH2 = NdotH * NdotH;
+  let d = max(0.0, 1.0 - nDotH2) + nDotH2 * alpha2;
   return alpha2 / (PI * d * d);
 }
 
@@ -34,19 +49,18 @@ fn smithG1GGX(NdotV: f32, alpha2: f32) -> f32 {
 }
 
 fn geometrySmith(NdotV: f32, NdotL: f32, rough: f32) -> f32 {
-  if (rough <= 0.0) { return 0.0; }
-  let alpha = rough * rough;
+  let boundedRoughness = boundedContinuousGgxRoughness(rough);
+  let alpha = boundedRoughness * boundedRoughness;
   let alpha2 = alpha * alpha;
   return smithG1GGX(NdotV, alpha2) * smithG1GGX(NdotL, alpha2);
 }
 
 fn materialF0(albedo: vec3f, metal: f32, specularColor: vec3f, specularIntensity: f32) -> vec3f {
-  let absoluteThinFilmF0 = all(specularColor >= vec3f(1.0));
-  let dielectricF0 = select(
-    vec3f(0.04) * clamp(specularColor, vec3f(0.0), vec3f(1.0)) * clamp(specularIntensity, 0.0, 1.0),
-    clamp(specularColor - vec3f(1.0), vec3f(0.0), vec3f(1.0)),
-    absoluteThinFilmF0,
-  );
+  // specularColor is the atlas' explicit absolute dielectric F0
+  // representation (clamped IOR F0 × nonnegative KHR color factor). Apply the
+  // independent KHR strength only after the base IOR F0 has been clamped.
+  let dielectricF0 =
+    max(specularColor, vec3f(0.0)) * clamp(specularIntensity, 0.0, 1.0);
   return mix(dielectricF0, albedo, clamp(metal, 0.0, 1.0));
 }
 
@@ -157,7 +171,8 @@ fn iridescenceModifiedF0(baseF0: vec3f, iridescence: vec4f, cosTheta: f32) -> ve
 }
 
 fn anisotropyAxes(rough: f32, anisotropy: f32) -> vec2f {
-  let alpha = rough * rough;
+  let boundedRoughness = boundedContinuousGgxRoughness(rough);
+  let alpha = boundedRoughness * boundedRoughness;
   let aspect = sqrt(1.0 - 0.9 * clamp(anisotropy, 0.0, 1.0));
   return vec2f(alpha / aspect, alpha * aspect);
 }
@@ -243,44 +258,13 @@ fn evalGGXWithSpecular(
 
   let F0 = materialF0(albedo, metal, specularColor, specularIntensity);
   let F   = fresnelSchlick(VdotH, F0);
-  let continuousRoughness = clamp(rough, 0.0, 1.0);
+  let continuousRoughness = boundedContinuousGgxRoughness(rough);
   let D   = distributionGGX(NdotH, continuousRoughness);
   let G   = geometrySmith(NdotV, NdotL, continuousRoughness);
 
   let specular = (D * G * F) / (4.0 * NdotV * NdotL);
   let diffuse  = (1.0 - F) * (1.0 - metal) * albedo * INV_PI;
   return (diffuse + specular) * NdotL;
-}
-
-fn evalGGXWithSpecularAnisotropy(
-  albedo: vec3f,
-  rough: f32,
-  metal: f32,
-  specularColor: vec3f,
-  specularIntensity: f32,
-  anisotropy: f32,
-  anisotropyRotation: f32,
-  iridescence: vec4f,
-  n: vec3f,
-  wo: vec3f,
-  wi: vec3f,
-) -> vec3f {
-  let frame = anisotropyTangentFrame(n, 0.0);
-  return evalGGXWithSpecularAnisotropyFrame(
-    albedo,
-    rough,
-    metal,
-    specularColor,
-    specularIntensity,
-    anisotropy,
-    anisotropyRotation,
-    iridescence,
-    frame[0],
-    frame[1],
-    n,
-    wo,
-    wi,
-  );
 }
 
 fn evalGGXWithSpecularAnisotropyFrame(
@@ -309,7 +293,7 @@ fn evalGGXWithSpecularAnisotropyFrame(
   if (NdotL <= 0.0 || NdotV <= 0.0) { return vec3f(0.0); }
   let NdotH = max(0.0, dot(n, h));
   let VdotH = max(0.0, dot(wo, h));
-  let continuousRoughness = clamp(rough, 0.0, 1.0);
+  let continuousRoughness = boundedContinuousGgxRoughness(rough);
 
   let F0 = iridescenceModifiedF0(materialF0(albedo, metal, specularColor, specularIntensity), iridescence, VdotH);
   let F = fresnelSchlick(VdotH, F0);
@@ -330,31 +314,56 @@ fn evalGGXWithSpecularAnisotropyFrame(
   return (diffuse + specular) * NdotL;
 }
 
-fn evalGGX(albedo: vec3f, rough: f32, metal: f32, n: vec3f, wo: vec3f, wi: vec3f) -> vec3f {
-  return evalGGXWithSpecular(albedo, rough, metal, vec3f(1.0), 1.0, n, wo, wi);
+// KHR_materials_clearcoat is an outer fixed-IOR dielectric layer. The same
+// view/clearcoat-normal Fresnel weights both its reflected lobe and the
+// attenuation of every layer beneath it. Keeping that directional weight in
+// one helper prevents the coat reflection and lower-layer loss from drifting.
+fn clearcoatLayerWeight(
+  clearcoat: f32,
+  clearcoatNormal: vec3f,
+  wo: vec3f,
+) -> f32 {
+  let vDotN = clamp(abs(dot(clearcoatNormal, wo)), 0.0, 1.0);
+  let fcc = fresnelSchlick(vDotN, vec3f(0.04)).x;
+  return clamp(clearcoat, 0.0, 1.0) * fcc;
+}
+
+fn clearcoatBaseAttenuation(
+  clearcoat: f32,
+  clearcoatNormal: vec3f,
+  wo: vec3f,
+) -> f32 {
+  if (clearcoat <= 0.0) { return 1.0; }
+  return clamp(
+    1.0 - clearcoatLayerWeight(clearcoat, clearcoatNormal, wo),
+    0.0,
+    1.0,
+  );
 }
 
 fn evalClearcoatLobe(clearcoat: f32, clearcoatRoughness: f32, n: vec3f, wo: vec3f, wi: vec3f) -> vec3f {
   let cc = clamp(clearcoat, 0.0, 1.0);
-  let rough = clamp(clearcoatRoughness, 0.0, 1.0);
-  if (cc <= 0.0 || rough <= 0.0) { return vec3f(0.0); }
+  let rough = boundedContinuousGgxRoughness(clearcoatRoughness);
+  if (cc <= 0.0) { return vec3f(0.0); }
   let h = safe_normalize(wo + wi);
   let NdotL = dot(n, wi);
   let NdotV = dot(n, wo);
   if (NdotL <= 0.0 || NdotV <= 0.0) { return vec3f(0.0); }
   let NdotH = max(0.0, dot(n, h));
-  let VdotH = max(0.0, dot(wo, h));
 
-  // KHR_materials_clearcoat uses a dielectric top coat at IOR 1.5 (F0 ≈ 0.04).
-  let F = fresnelSchlick(VdotH, vec3f(0.04));
+  // KHR_materials_clearcoat uses a dielectric top coat at IOR 1.5
+  // (F0 ≈ 0.04). Its ratified directional layer weight is evaluated against
+  // the authored clearcoat normal and view direction.
+  let layerWeight = clearcoatLayerWeight(cc, n, wo);
   let D = distributionGGX(NdotH, rough);
   let G = geometrySmith(NdotV, NdotL, rough);
-  let specular = (D * G * F) / (4.0 * NdotV * NdotL);
-  return cc * specular * NdotL;
+  let specular = (D * G) / (4.0 * NdotV * NdotL);
+  return vec3f(layerWeight * specular * NdotL);
 }
 
 // KHR_materials_sheen: Charlie distribution plus Neubelt-Pettineo visibility.
-// This returns the full lobe contribution including NdotL, matching evalGGX().
+// This returns the full lobe contribution including NdotL, matching the
+// direct-light evaluators above.
 fn charlieD(nDotH: f32, alpha: f32) -> f32 {
   if (alpha <= 0.0) { return 0.0; }
   let invAlpha = 1.0 / alpha;
@@ -369,58 +378,59 @@ fn sheenVisibility(nDotL: f32, nDotV: f32) -> f32 {
 fn evalSheenLobe(sheen: f32, sheenRoughness: f32, sheenColor: vec3f, n: vec3f, wo: vec3f, wi: vec3f) -> vec3f {
   let sh = clamp(sheen, 0.0, 1.0);
   let sheenRough = clamp(sheenRoughness, 0.0, 1.0);
-  if (sh <= 0.0 || sheenRough <= 0.0) { return vec3f(0.0); }
+  if (sh <= 0.0) { return vec3f(0.0); }
   let NdotL = dot(n, wi);
   let NdotV = dot(n, wo);
   if (NdotL <= 0.0 || NdotV <= 0.0) { return vec3f(0.0); }
   let h = safe_normalize(wo + wi);
   let NdotH = max(0.0, dot(n, h));
-  let alpha = sheenRough * sheenRough;
+  // Charlie's exponent becomes singular at alpha == 0. Use its conventional
+  // bounded continuous representation, just as the GGX lobes do above.
+  let alpha = max(sheenRough * sheenRough, 1.0e-3);
   let D = charlieD(NdotH, alpha);
   let V = sheenVisibility(NdotL, NdotV);
   return sh * clamp(sheenColor, vec3f(0.0), vec3f(1.0)) * D * V * NdotL;
 }
 
-fn evalGGXWithSpecularClearcoatSheen(
-  albedo: vec3f,
-  rough: f32,
-  metal: f32,
-  specularColor: vec3f,
-  specularIntensity: f32,
-  anisotropy: f32,
-  anisotropyRotation: f32,
-  iridescence: vec4f,
-  clearcoat: f32,
-  clearcoatRoughness: f32,
+// Estevez & Kulla 2017 directional-albedo fit for the energy removed by a
+// sheen layer. The brighter of the incoming/outgoing losses bounds the base
+// attenuation, as required by KHR_materials_sheen's layered model.
+fn sheenDirectionalAlbedo(cosThetaRaw: f32, alpha: f32) -> f32 {
+  let cosTheta = clamp(cosThetaRaw, 0.0, 1.0);
+  let c = 1.0 - cosTheta;
+  let c3 = c * c * c;
+  return 0.65584461 * c3 +
+    1.0 / (4.16526551 + exp(-7.97291361 * sqrt(alpha) + 6.33516894));
+}
+
+fn sheenBaseAttenuation(
   sheen: f32,
   sheenRoughness: f32,
   sheenColor: vec3f,
   n: vec3f,
-  clearcoatNormal: vec3f,
   wo: vec3f,
   wi: vec3f,
-) -> vec3f {
-  let frame = anisotropyTangentFrame(n, 0.0);
-  return evalGGXWithSpecularClearcoatSheenWithAnisotropyFrame(
-    albedo,
-    rough,
-    metal,
-    specularColor,
-    specularIntensity,
-    anisotropy,
-    anisotropyRotation,
-    iridescence,
-    clearcoat,
-    clearcoatRoughness,
-    sheen,
-    sheenRoughness,
-    sheenColor,
-    frame[0],
-    frame[1],
-    n,
-    clearcoatNormal,
-    wo,
-    wi,
+) -> f32 {
+  if (sheen <= 0.0) { return 1.0; }
+  let nDotL = clamp(abs(dot(n, wi)), 0.0, 1.0);
+  let nDotV = clamp(abs(dot(n, wo)), 0.0, 1.0);
+  let rough = max(sheenRoughness, 0.07);
+  let alpha = rough * rough;
+  let boundedColor = clamp(sheenColor, vec3f(0.0), vec3f(1.0));
+  let maxSheenColor = max(
+    max(boundedColor.r, boundedColor.g),
+    boundedColor.b,
+  );
+  let eWo = sheenDirectionalAlbedo(nDotV, alpha);
+  let eWi = sheenDirectionalAlbedo(nDotL, alpha);
+  let fullSheenScale = min(
+    1.0 - maxSheenColor * eWo,
+    1.0 - maxSheenColor * eWi,
+  );
+  return clamp(
+    mix(1.0, fullSheenScale, clamp(sheen, 0.0, 1.0)),
+    0.0,
+    1.0,
   );
 }
 
@@ -445,9 +455,21 @@ fn evalGGXWithSpecularClearcoatSheenWithAnisotropyFrame(
   wo: vec3f,
   wi: vec3f,
 ) -> vec3f {
-  return evalGGXWithSpecularAnisotropyFrame(albedo, rough, metal, specularColor, specularIntensity, anisotropy, anisotropyRotation, iridescence, anisotropyTangent, anisotropyBitangent, n, wo, wi)
-       + evalClearcoatLobe(clearcoat, clearcoatRoughness, clearcoatNormal, wo, wi)
-       + evalSheenLobe(sheen, sheenRoughness, sheenColor, n, wo, wi);
+  let base = evalGGXWithSpecularAnisotropyFrame(albedo, rough, metal, specularColor, specularIntensity, anisotropy, anisotropyRotation, iridescence, anisotropyTangent, anisotropyBitangent, n, wo, wi);
+  let sheenLobe = evalSheenLobe(
+    sheen, sheenRoughness, sheenColor, n, wo, wi,
+  );
+  let sheenAttenuation = sheenBaseAttenuation(
+    sheen, sheenRoughness, sheenColor, n, wo, wi,
+  );
+  let clearcoatLobe = evalClearcoatLobe(
+    clearcoat, clearcoatRoughness, clearcoatNormal, wo, wi,
+  );
+  let clearcoatAttenuation = clearcoatBaseAttenuation(
+    clearcoat, clearcoatNormal, wo,
+  );
+  return (base * sheenAttenuation + sheenLobe) *
+    clearcoatAttenuation + clearcoatLobe;
 }
 
 // ── B9 (road-to-100) — Kulla-Conty multiple-scattering energy compensation ───
@@ -476,9 +498,10 @@ fn evalGGXWithSpecularClearcoatSheenWithAnisotropyFrame(
 // with Favg the hemispherical Fresnel average ≈ F0 + (1 − F0)/21 (Karis).
 //
 // At low roughness E→1 and Eavg→1, so f_ms → 0 — the compensation vanishes and the
-// lobe is the pure single-scatter form. This is APPLIED ONLY in evalGGXSpecularOnly
+// lobe is the pure single-scatter form. This is applied only in the
+// specular-only evaluators
 // (the glossy/metal GI path, already gated to non-default surfaces by shade's
-// SPEC_GI_ROUGH_MAX), so default-diffuse + direct-light evalGGX stay byte-identical.
+// SPEC_GI_ROUGH_MAX), so default-diffuse + direct-light evaluation stays byte-identical.
 
 // Analytic GGX-Smith directional albedo fit E(μ,α). Rational fit to the white-
 // furnace single-scatter integral; monotone, E(μ,0)=1, E→ small at μ→0 & α→1.
@@ -535,7 +558,7 @@ fn ggxMultiscatter(F0: vec3f, rough: f32, NdotV: f32, NdotL: f32) -> vec3f {
 // to the single-scatter lobe here so rough metals/glossy surfaces re-gain the
 // inter-facet energy the Smith G term drops. This is the glossy/metal GI path
 // only (shade gates it to non-default surfaces via SPEC_GI_ROUGH_MAX), so
-// default-diffuse + the direct-light evalGGX above remain byte-identical.
+// default-diffuse + the direct-light evaluator above remain byte-identical.
 fn evalGGXSpecularOnlyWithSpecular(
   albedo: vec3f,
   rough: f32,
@@ -552,7 +575,7 @@ fn evalGGXSpecularOnlyWithSpecular(
   if (NdotL <= 0.0 || NdotV <= 0.0) { return vec3f(0.0); }
   let NdotH = max(0.0, dot(n, h));
   let VdotH = max(0.0, dot(wo, h));
-  let continuousRoughness = clamp(rough, 0.0, 1.0);
+  let continuousRoughness = boundedContinuousGgxRoughness(rough);
   let F0 = materialF0(albedo, metal, specularColor, specularIntensity);
   let F  = fresnelSchlick(VdotH, F0);
   let D  = distributionGGX(NdotH, continuousRoughness);
@@ -560,37 +583,6 @@ fn evalGGXSpecularOnlyWithSpecular(
   let specular = (D * G * F) / (4.0 * NdotV * NdotL);
   let ms = ggxMultiscatter(F0, continuousRoughness, NdotV, NdotL);
   return (specular + ms) * NdotL;
-}
-
-fn evalGGXSpecularOnlyWithSpecularAnisotropy(
-  albedo: vec3f,
-  rough: f32,
-  metal: f32,
-  specularColor: vec3f,
-  specularIntensity: f32,
-  anisotropy: f32,
-  anisotropyRotation: f32,
-  iridescence: vec4f,
-  n: vec3f,
-  wo: vec3f,
-  wi: vec3f,
-) -> vec3f {
-  let frame = anisotropyTangentFrame(n, 0.0);
-  return evalGGXSpecularOnlyWithSpecularAnisotropyFrame(
-    albedo,
-    rough,
-    metal,
-    specularColor,
-    specularIntensity,
-    anisotropy,
-    anisotropyRotation,
-    iridescence,
-    frame[0],
-    frame[1],
-    n,
-    wo,
-    wi,
-  );
 }
 
 fn evalGGXSpecularOnlyWithSpecularAnisotropyFrame(
@@ -619,7 +611,7 @@ fn evalGGXSpecularOnlyWithSpecularAnisotropyFrame(
   if (NdotL <= 0.0 || NdotV <= 0.0) { return vec3f(0.0); }
   let NdotH = max(0.0, dot(n, h));
   let VdotH = max(0.0, dot(wo, h));
-  let continuousRoughness = clamp(rough, 0.0, 1.0);
+  let continuousRoughness = boundedContinuousGgxRoughness(rough);
 
   let F0 = iridescenceModifiedF0(materialF0(albedo, metal, specularColor, specularIntensity), iridescence, VdotH);
   let F = fresnelSchlick(VdotH, F0);
@@ -637,53 +629,6 @@ fn evalGGXSpecularOnlyWithSpecularAnisotropyFrame(
   let specular = (D * G * F) / (4.0 * NdotV * NdotL);
   let ms = ggxMultiscatter(F0, continuousRoughness, NdotV, NdotL);
   return (specular + ms) * NdotL;
-}
-
-fn evalGGXSpecularOnly(albedo: vec3f, rough: f32, metal: f32, n: vec3f, wo: vec3f, wi: vec3f) -> vec3f {
-  return evalGGXSpecularOnlyWithSpecular(albedo, rough, metal, vec3f(1.0), 1.0, n, wo, wi);
-}
-
-fn evalGGXSpecularOnlyWithSpecularClearcoatSheen(
-  albedo: vec3f,
-  rough: f32,
-  metal: f32,
-  specularColor: vec3f,
-  specularIntensity: f32,
-  anisotropy: f32,
-  anisotropyRotation: f32,
-  iridescence: vec4f,
-  clearcoat: f32,
-  clearcoatRoughness: f32,
-  sheen: f32,
-  sheenRoughness: f32,
-  sheenColor: vec3f,
-  n: vec3f,
-  clearcoatNormal: vec3f,
-  wo: vec3f,
-  wi: vec3f,
-) -> vec3f {
-  let frame = anisotropyTangentFrame(n, 0.0);
-  return evalGGXSpecularOnlyWithSpecularClearcoatSheenWithAnisotropyFrame(
-    albedo,
-    rough,
-    metal,
-    specularColor,
-    specularIntensity,
-    anisotropy,
-    anisotropyRotation,
-    iridescence,
-    clearcoat,
-    clearcoatRoughness,
-    sheen,
-    sheenRoughness,
-    sheenColor,
-    frame[0],
-    frame[1],
-    n,
-    clearcoatNormal,
-    wo,
-    wi,
-  );
 }
 
 fn evalGGXSpecularOnlyWithSpecularClearcoatSheenWithAnisotropyFrame(
@@ -707,9 +652,21 @@ fn evalGGXSpecularOnlyWithSpecularClearcoatSheenWithAnisotropyFrame(
   wo: vec3f,
   wi: vec3f,
 ) -> vec3f {
-  return evalGGXSpecularOnlyWithSpecularAnisotropyFrame(albedo, rough, metal, specularColor, specularIntensity, anisotropy, anisotropyRotation, iridescence, anisotropyTangent, anisotropyBitangent, n, wo, wi)
-       + evalClearcoatLobe(clearcoat, clearcoatRoughness, clearcoatNormal, wo, wi)
-       + evalSheenLobe(sheen, sheenRoughness, sheenColor, n, wo, wi);
+  let baseSpecular = evalGGXSpecularOnlyWithSpecularAnisotropyFrame(albedo, rough, metal, specularColor, specularIntensity, anisotropy, anisotropyRotation, iridescence, anisotropyTangent, anisotropyBitangent, n, wo, wi);
+  let sheenLobe = evalSheenLobe(
+    sheen, sheenRoughness, sheenColor, n, wo, wi,
+  );
+  let sheenAttenuation = sheenBaseAttenuation(
+    sheen, sheenRoughness, sheenColor, n, wo, wi,
+  );
+  let clearcoatLobe = evalClearcoatLobe(
+    clearcoat, clearcoatRoughness, clearcoatNormal, wo, wi,
+  );
+  let clearcoatAttenuation = clearcoatBaseAttenuation(
+    clearcoat, clearcoatNormal, wo,
+  );
+  return (baseSpecular * sheenAttenuation + sheenLobe) *
+    clearcoatAttenuation + clearcoatLobe;
 }
 
 // ── B16 (road-to-100) — GGX VNDF importance sampler (Heitz 2018) ─────────────
@@ -755,11 +712,12 @@ fn ggxSampleVndfTangent(wo: vec3f, alpha: f32, rng: ptr<function, u32>) -> vec3f
 // normal, wo = world view dir (toward camera). Returns wi (may point below the
 // surface — the caller checks dot(n,wi) > 0).
 //
-// roughness == 0 is the discrete mirror event. Positive roughness is sampled
-// without broadening so the VNDF and its PDF describe the authored lobe.
+// Reflection uses the same bounded continuous roughness as direct evaluation.
+// This is deliberately not a delta: realtime NEE needs a finite lobe, and the
+// matching PDF below must describe the exact distribution sampled here.
 fn ggxSampleVndf(n: vec3f, wo: vec3f, rough: f32, rng: ptr<function, u32>) -> vec3f {
-  if (rough <= 0.0) { return reflect(-wo, n); }
-  let alpha = rough * rough;
+  let boundedRoughness = boundedContinuousGgxRoughness(rough);
+  let alpha = boundedRoughness * boundedRoughness;
   var t: vec3f; var b: vec3f;
   ggxBuildOnb(n, &t, &b);
   // wo into tangent space (N = +Z).
@@ -872,18 +830,18 @@ fn ggxSampleDielectricTransmission(
 // Jacobian): p(wi) = D(h)·G1(wo,α²) / (4·NdotV). MUST match ggxSampleVndf so
 // the RIS source pdf is exact.
 //
-// Uses the same unfloored alpha and exact Smith G1 as ggxSampleVndf.
+// Uses the same bounded alpha and exact Smith G1 as ggxSampleVndf.
 fn ggxVndfReflectionPdf(n: vec3f, wo: vec3f, wi: vec3f, rough: f32) -> f32 {
-  if (rough <= 0.0) { return 0.0; }
   let NdotV = dot(n, wo);
   let NdotL = dot(n, wi);
   if (NdotV <= 0.0 || NdotL <= 0.0) { return 0.0; }
   let h = safe_normalize(wo + wi);
   let NdotH = dot(n, h);
   if (NdotH <= 0.0) { return 0.0; }
-  let alpha = rough * rough;
+  let boundedRoughness = boundedContinuousGgxRoughness(rough);
+  let alpha = boundedRoughness * boundedRoughness;
   let alpha2 = alpha * alpha;
-  let D  = distributionGGX(NdotH, rough);
+  let D  = distributionGGX(NdotH, boundedRoughness);
   let g1 = smithG1GGX(NdotV, alpha2);
   return (D * g1) / (4.0 * NdotV);
 }

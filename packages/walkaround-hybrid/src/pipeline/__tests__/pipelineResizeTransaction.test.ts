@@ -66,7 +66,6 @@ function makePipeline(
     _res: resources,
     _gtaoDownscale: 2,
     _denoiserMode: 'none',
-    _grisReuseStructural: false,
     _ppg: { onResize: vi.fn(onPpgResize) },
     _activeDenoiser: { resize: vi.fn(onDenoiserResize) },
     _frameCount: 7,
@@ -74,6 +73,7 @@ function makePipeline(
     _accumPingPongIndex: 1,
     _accumFrameIndex: 9,
     _indirectAccumPingPongRef: { value: 1 },
+    _varianceTrackerPingPongRef: { value: 1 },
     _lastCameraPos: [4, 5, 6],
   });
   return pipeline;

@@ -1,88 +1,332 @@
 /**
- * AdjointPass — WS5 Phase-1 path-replay adjoint compute pass.
+ * GPU implementation of the certified pt-webgpu path-replay domain.
  *
- * Extracted from PTEngineWebGPU.#computeAdjointGradient (D8.10). Owns:
- *   - Lazy pipeline compilation (PT_WEBGPU_ADJOINT_PASS_WGSL, layout:'auto').
- *   - Per-step transient buffer allocation + guaranteed destroy on success and
- *     on mapAsync rejection (H14-D leak-guard accounting with adjointCreated /
- *     adjointDestroyed counters — these counters may be consumed by telemetry
- *     and tests; the semantics are preserved verbatim).
- *   - UBO packing (invViewProj + cameraPos + direct-light counts + env map replay params).
- *   - Dispatch + copyBufferToBuffer readback.
- *
- * The engine holds one lazy instance (`#adjointPass`) and delegates the
- * `computeAdjointGradient` hook to it.  The pipeline is cached for the lifetime
- * of the AdjointPass instance (engine-owned; freed via dispose()).
+ * Only one-bounce, camera-visible `MaterialSpec.emissive` is accepted. This
+ * class validates that narrow descriptor domain before creating a shader module,
+ * pipeline, buffer, bind group, or command encoder.
  */
-
 import {
-  analyticPrimitiveToMesh,
   asMat4,
   resolveFrameCameraPosition,
   type FrameInput,
   type Scene,
   type ScenePrimitive,
 } from '@vitrum/core';
+import { MAX_INVERSE_SAMPLES_PER_STEP } from '@vitrum/core/inverse-scaffolding';
 import {
   expandIndicesToStride4,
-  mergeUv1FromCore,
   mergeWorldSpaceFromCore,
 } from '@vitrum/shared-bvh';
+import { resolveEmissiveIntensity } from '@vitrum/shared-samplers';
 import { invertMat4, multiplyMat4 } from './math/mat4.js';
 import {
+  ADJOINT_FIELD_EMISSIVE,
+  ADJOINT_PARAMS_UBO_BYTES,
   PT_WEBGPU_ADJOINT_PASS_WGSL,
   composePtWebgpuAdjointPassWgsl,
-  ADJOINT_PARAMS_UBO_BYTES,
-  ADJOINT_FIELD_BASECOLOR,
-  ADJOINT_FIELD_ROUGHNESS,
-  ADJOINT_FIELD_EMISSIVE,
-  ADJOINT_FIELD_SPECULAR_COLOR,
-  ADJOINT_FIELD_SPECULAR_INTENSITY,
-  ADJOINT_FIELD_METALLIC,
-  ADJOINT_FIELD_EMISSIVE_INTENSITY,
-  ADJOINT_FIELD_CLEARCOAT,
-  ADJOINT_FIELD_CLEARCOAT_ROUGHNESS,
-  ADJOINT_FIELD_SHEEN,
-  ADJOINT_FIELD_SHEEN_ROUGHNESS,
-  ADJOINT_FIELD_SHEEN_COLOR,
-  ADJOINT_FIELD_IRIDESCENCE,
-  ADJOINT_FIELD_IRIDESCENCE_IOR,
-  ADJOINT_FIELD_IRIDESCENCE_THICKNESS_RANGE,
-  ADJOINT_FIELD_ANISOTROPY,
-  ADJOINT_FIELD_ANISOTROPY_ROTATION,
-  ADJOINT_FIELD_AO_MAP_INTENSITY,
-  ADJOINT_FIELD_LIGHT_MAP_INTENSITY,
-  ADJOINT_FIELD_ENV_MAP_INTENSITY,
-  ADJOINT_FIELD_NORMAL_SCALE,
-  ADJOINT_FIELD_BUMP_SCALE,
-  ADJOINT_FIELD_CLEARCOAT_NORMAL_SCALE,
-  ADJOINT_FIELD_EMITTER_COLOR,
-  ADJOINT_FIELD_EMITTER_INTENSITY,
-  ADJOINT_EMITTER_TARGET_DIRECTIONAL,
-  ADJOINT_EMITTER_TARGET_POINT,
-  ADJOINT_EMITTER_TARGET_SPOT,
-  ADJOINT_EMITTER_TARGET_RECT,
-  ADJOINT_EMITTER_TARGET_MESH,
 } from './wgsl/pathTrace/adjointPass.wgsl.js';
 import type { PtWebgpuSamplingMode } from './wgsl/common.wgsl.js';
-import { ADJOINT_GRAD_FP } from './wgsl/pathTrace/pathTraceAdjoint.wgsl.js';
-import type { UploadedSceneBuffers } from './scene/uploadSceneBuffers.js';
-import type { AdjointGradientRequest } from './inverse/inverseSession.js';
-import { packGpuUvSets } from './scene/gpuUvPacking.js';
 import {
-  meshAreaEmitterAdjointRangeForScene,
-  packMeshAreaAdjointReplayArrays,
-} from './scene/emitterPacking.js';
+  applySolveSkinToScene,
+  type UploadedSceneBuffers,
+} from './scene/uploadSceneBuffers.js';
+import type { AdjointGradientRequest } from './inverse/inverseSession.js';
+import {
+  emissiveReplayPrimitiveIssue,
+  emissiveReplaySceneIssue,
+  emissiveReplayTargetIssue,
+} from './inverse/emissivePathReplayDomain.js';
+
+const NO_ANALYTIC_SHAPES: ReadonlySet<string> = new Set();
+const DEFAULT_GRADIENT_SCALE = 1048576;
+const I32_MAX = 2147483647;
+const FIXED_POINT_MARGIN = 4096;
+const U32_MAX = 0xffff_ffff;
+const F32_MAX = 3.4028234663852886e38;
 
 interface AdjointWorldSpaceGeometry {
   readonly positions: Float32Array;
-  readonly normals: Float32Array;
-  readonly uvs: Float32Array;
-  readonly tangents: Float32Array;
-  readonly colors: Float32Array;
   readonly indices: Uint32Array;
   readonly triMaterialIds: Uint32Array;
   readonly triangleCount: number;
+}
+
+type MaterialIndexForPrimitive = (
+  scene: Scene,
+  id: string,
+  shapes: ReadonlySet<string>,
+) => number | null;
+
+function assertPositiveU32(value: number, label: string): void {
+  if (!Number.isSafeInteger(value) || value < 1 || value > U32_MAX) {
+    throw new RangeError(
+      `computeAdjointGradient: ${label} must be a positive u32 integer.`,
+    );
+  }
+}
+
+function checkedProduct(label: string, ...factors: readonly number[]): number {
+  let product = 1;
+  for (const factor of factors) {
+    product *= factor;
+    if (!Number.isSafeInteger(product) || product > U32_MAX) {
+      throw new RangeError(
+        `computeAdjointGradient: ${label} exceeds the addressable u32 resource domain.`,
+      );
+    }
+  }
+  return product;
+}
+
+function validateDeviceResourceLimits(
+  device: GPUDevice,
+  req: AdjointGradientRequest,
+  geometryOverride: AdjointWorldSpaceGeometry | null,
+): void {
+  const limits = device.limits;
+  const maxBufferSize = Number(limits.maxBufferSize);
+  const maxStorageBindingSize = Number(limits.maxStorageBufferBindingSize);
+  const maxWorkgroups = Number(limits.maxComputeWorkgroupsPerDimension);
+  if (
+    !Number.isFinite(maxBufferSize) ||
+    maxBufferSize < 1 ||
+    !Number.isFinite(maxStorageBindingSize) ||
+    maxStorageBindingSize < 1 ||
+    !Number.isFinite(maxWorkgroups) ||
+    maxWorkgroups < 1
+  ) {
+    throw new RangeError(
+      'computeAdjointGradient: device did not report valid WebGPU resource limits.',
+    );
+  }
+  const storageSizes = [
+    req.dLoss_dRendered.byteLength,
+    req.gradientLength * 4,
+    req.params.length * 16,
+    ...(geometryOverride == null
+      ? []
+      : [
+          geometryOverride.positions.byteLength,
+          geometryOverride.indices.byteLength,
+          geometryOverride.triMaterialIds.byteLength,
+        ]),
+  ];
+  for (const size of storageSizes) {
+    if (size > maxBufferSize || size > maxStorageBindingSize) {
+      throw new RangeError(
+        `computeAdjointGradient: ${size}-byte storage resource exceeds this device's limits.`,
+      );
+    }
+  }
+
+  if (
+    Math.ceil(req.width / 8) > maxWorkgroups ||
+    Math.ceil(req.height / 8) > maxWorkgroups
+  ) {
+    throw new RangeError(
+      'computeAdjointGradient: dispatch dimensions exceed this device\'s compute-workgroup limit.',
+    );
+  }
+}
+
+/**
+ * Derive an exactly representable power-of-two fixed-point scale whose worst
+ * possible absolute atomic sum stays below i32. The bound includes all legal
+ * overlapping gradient offsets and a half-unit rounding allowance for every
+ * per-pixel atomic add. A two-sided arithmetic margin covers f32 multiply/add
+ * rounding in the shader. Requests with no safe positive f32 scale reject.
+ */
+export function computeAdjointGradientScale(
+  req: AdjointGradientRequest,
+  emissiveIntensities: readonly number[],
+): number {
+  if (emissiveIntensities.length !== req.params.length) {
+    throw new RangeError(
+      'computeAdjointGradient: emissive intensity count does not match parameters.',
+    );
+  }
+  const pixelCount = req.width * req.height;
+  if (!Number.isSafeInteger(pixelCount) || pixelCount < 1) {
+    throw new RangeError('computeAdjointGradient: pixel count is not a safe integer.');
+  }
+
+  const lossAbsSums: [number, number, number] = [0, 0, 0];
+  const lossAbsMaxima: [number, number, number] = [0, 0, 0];
+  for (let pixel = 0; pixel < pixelCount; pixel += 1) {
+    const base = pixel * req.channels;
+    for (let channel = 0; channel < 3; channel += 1) {
+      const value = req.dLoss_dRendered[base + channel]!;
+      if (!Number.isFinite(value)) {
+        throw new RangeError(
+          `computeAdjointGradient: dLoss_dRendered[${base + channel}] is not finite.`,
+        );
+      }
+      const absoluteValue = Math.abs(value);
+      lossAbsSums[channel] = lossAbsSums[channel]! + absoluteValue;
+      lossAbsMaxima[channel] = Math.max(
+        lossAbsMaxima[channel]!,
+        absoluteValue,
+      );
+      if (!Number.isFinite(lossAbsSums[channel])) {
+        throw new RangeError('computeAdjointGradient: loss magnitude bound overflowed.');
+      }
+    }
+  }
+
+  const absoluteBounds = new Float64Array(req.gradientLength);
+  const atomicAdds = new Float64Array(req.gradientLength);
+  for (let parameter = 0; parameter < req.params.length; parameter += 1) {
+    const param = req.params[parameter]!;
+    const intensity = Math.fround(emissiveIntensities[parameter]!);
+    if (!Number.isFinite(intensity)) {
+      throw new RangeError(
+        `computeAdjointGradient: emissive intensity for "${param.id}" is not finite.`,
+      );
+    }
+    for (let channel = 0; channel < 3; channel += 1) {
+      const gradientIndex = param.offset + channel;
+      if (lossAbsMaxima[channel]! * Math.abs(intensity) > F32_MAX) {
+        throw new RangeError(
+          `computeAdjointGradient: per-pixel emissive gradient for "${param.id}" ` +
+            `channel ${channel} exceeds finite f32 range before fixed-point scaling.`,
+        );
+      }
+      absoluteBounds[gradientIndex] =
+        absoluteBounds[gradientIndex]! +
+        lossAbsSums[channel]! * Math.abs(intensity);
+      if (
+        !Number.isFinite(absoluteBounds[gradientIndex]) ||
+        absoluteBounds[gradientIndex] > F32_MAX
+      ) {
+        throw new RangeError(
+          `computeAdjointGradient: aggregate emissive gradient at offset ` +
+            `${gradientIndex} exceeds finite f32 readback range.`,
+        );
+      }
+      atomicAdds[gradientIndex] = atomicAdds[gradientIndex]! + pixelCount;
+    }
+  }
+
+  let maximumScale = DEFAULT_GRADIENT_SCALE;
+  for (let index = 0; index < req.gradientLength; index += 1) {
+    const bound = absoluteBounds[index]!;
+    if (bound === 0) continue;
+    const roundingAllowance = Math.ceil(atomicAdds[index]! * 0.5);
+    const available = I32_MAX - FIXED_POINT_MARGIN - roundingAllowance;
+    if (available <= 0) {
+      throw new RangeError(
+        'computeAdjointGradient: no overflow-safe fixed-point accumulation range.',
+      );
+    }
+    // 2x is intentionally conservative for f32 product and local-sum rounding.
+    maximumScale = Math.min(maximumScale, available / (bound * 2));
+  }
+  if (!(maximumScale > 0) || !Number.isFinite(maximumScale)) {
+    throw new RangeError(
+      'computeAdjointGradient: no overflow-safe fixed-point accumulation scale.',
+    );
+  }
+
+  const scale = maximumScale >= DEFAULT_GRADIENT_SCALE
+    ? DEFAULT_GRADIENT_SCALE
+    : 2 ** Math.floor(Math.log2(maximumScale));
+  if (!(scale > 0) || !Number.isFinite(scale) || Math.fround(scale) !== scale) {
+    throw new RangeError(
+      'computeAdjointGradient: overflow-safe scale is not representable as f32.',
+    );
+  }
+  return scale;
+}
+
+/**
+ * Defense-in-depth validation at the dispatch boundary. InverseSession performs
+ * the public preflight earlier; this guard prevents private callers from
+ * compiling or dispatching a descriptor outside the certified domain.
+ */
+function validateAdjointRequest(
+  req: AdjointGradientRequest,
+  scene: Scene,
+  cameraVisibleEmitters: boolean,
+): void {
+  if (cameraVisibleEmitters !== true) {
+    throw new Error(
+      'computeAdjointGradient: cameraVisibleEmitters must be true for exact primary-emission replay.',
+    );
+  }
+  assertPositiveU32(req.width, 'width');
+  assertPositiveU32(req.height, 'height');
+  assertPositiveU32(req.samples, 'samples');
+  assertPositiveU32(req.gradientLength, 'gradientLength');
+  if (req.samples > MAX_INVERSE_SAMPLES_PER_STEP) {
+    throw new RangeError(
+      `computeAdjointGradient: samples exceeds the inverse-session limit ${MAX_INVERSE_SAMPLES_PER_STEP}.`,
+    );
+  }
+  if (req.channels !== 3 && req.channels !== 4) {
+    throw new RangeError('computeAdjointGradient: channels must be 3 or 4.');
+  }
+  const pixelCount = checkedProduct('pixel count', req.width, req.height);
+  const requiredLossLength = checkedProduct(
+    'loss element count',
+    pixelCount,
+    req.channels,
+  );
+  if (req.dLoss_dRendered.length !== requiredLossLength) {
+    throw new RangeError(
+      `computeAdjointGradient: dLoss_dRendered length ${req.dLoss_dRendered.length} ` +
+        `does not equal ${requiredLossLength}.`,
+    );
+  }
+  if (req.params.length < 1) {
+    throw new RangeError('computeAdjointGradient: at least one emissive parameter is required.');
+  }
+  if (req.params.length > U32_MAX) {
+    throw new RangeError(
+      'computeAdjointGradient: parameter count exceeds the addressable u32 domain.',
+    );
+  }
+  checkedProduct('loss buffer byte size', requiredLossLength, 4);
+  checkedProduct('gradient buffer byte size', req.gradientLength, 4);
+  checkedProduct('descriptor buffer byte size', req.params.length, 16);
+
+  const sceneIssue = emissiveReplaySceneIssue(scene);
+  if (sceneIssue != null) {
+    throw new Error(
+      `computeAdjointGradient: scene is outside exact emissive replay: ${sceneIssue.message}.`,
+    );
+  }
+
+  for (const param of req.params) {
+    if (
+      param.domain !== 'materials' ||
+      param.field !== 'emissive' ||
+      param.length !== 3
+    ) {
+      throw new Error(
+        'computeAdjointGradient: production path replay accepts only material emissive RGB.',
+      );
+    }
+    if (
+      !Number.isSafeInteger(param.offset) ||
+      param.offset < 0 ||
+      param.offset > U32_MAX - 2 ||
+      param.offset + 3 > req.gradientLength
+    ) {
+      throw new RangeError(
+        `computeAdjointGradient: invalid emissive gradient offset ${param.offset}.`,
+      );
+    }
+    const primitive = scene.primitives.find((candidate) => candidate.id === param.id);
+    if (primitive == null) {
+      throw new Error(`computeAdjointGradient: primitive "${param.id}" does not exist.`);
+    }
+    const targetIssue = emissiveReplayTargetIssue(scene, primitive);
+    if (targetIssue != null) {
+      throw new Error(
+        `computeAdjointGradient: target is outside exact emissive replay: ${targetIssue.message}.`,
+      );
+    }
+  }
 }
 
 export class AdjointPass {
@@ -95,41 +339,96 @@ export class AdjointPass {
     this.#sampling = sampling;
   }
 
-  /**
-   * WS5 Phase-1 path-replay adjoint pass.
-   *
-   * One dispatch of `PT_WEBGPU_ADJOINT_PASS_WGSL` over the live scene buffers:
-   * per pixel it re-traces the frozen-seed primary ray (brute-force closest-hit)
-   * and accumulates `∂loss/∂θ` for the optimized material params through the
-   * GPU-validated partials + fixed-point `adjointScatter`:
-   *  - baseColor / roughness / metallic / specular / clearcoat / sheen scalar controls —
-   *    single-bounce directional + point + spot + stochastic area-measure rect/disc/mesh-area
-   *    direct-light NEE (the BRDF partials in `pathTraceAdjoint.wgsl.ts`);
-   *  - emissive / emissiveIntensity / lightMapIntensity — the camera-DIRECT
-   *    emission at the primary hit (NOT a NEE term): `∂loss/∂emissive_c =
-   *    dLoss_dR_c · emissiveIntensity`, `∂loss/∂emissiveIntensity =
-   *    dot(dLoss_dR, emissive)`, and `∂loss/∂lightMapIntensity =
-   *    dot(dLoss_dR, lightMapRadiance)`, modulated by the hit-local readable
-   *    texture texels when authored.
-   *
-   * The pipeline is lazily compiled and cached on the first call.
-   * Transient buffers are allocated per step and destroyed in the finally block
-   * (H14-D leak-guard: adjointCreated / adjointDestroyed counters preserved).
-   */
   async computeGradient(
     req: AdjointGradientRequest,
-    sb: UploadedSceneBuffers,
-    last: FrameInput,
+    sceneBuffers: UploadedSceneBuffers,
+    lastFrame: FrameInput,
     scene: Scene,
-    supportedAnalyticShapes: ReadonlySet<string>,
-    materialIndexForPrimitive: (
-      scene: Scene,
-      id: string,
-      shapes: ReadonlySet<string>,
-    ) => number | null,
+    materialIndexForPrimitive: MaterialIndexForPrimitive,
+    cameraVisibleEmitters: boolean,
   ): Promise<Float32Array> {
-    const device = this.#device;
+    // Nothing observable on the GPU may happen before this check completes.
+    validateAdjointRequest(req, scene, cameraVisibleEmitters);
 
+    const viewProjection = multiplyMat4(lastFrame.projMatrix, lastFrame.viewMatrix);
+    const inverseViewProjection = invertMat4(asMat4(viewProjection));
+    if (inverseViewProjection == null) {
+      throw new Error('computeAdjointGradient: camera viewProj is not invertible.');
+    }
+
+    const descriptors = new Uint32Array(req.params.length * 4);
+    const descriptorFloats = new Float32Array(descriptors.buffer);
+    const emissiveIntensities: number[] = [];
+    for (let index = 0; index < req.params.length; index += 1) {
+      const param = req.params[index]!;
+      const materialId = materialIndexForPrimitive(scene, param.id, NO_ANALYTIC_SHAPES);
+      if (
+        materialId == null ||
+        !Number.isSafeInteger(materialId) ||
+        materialId < 0 ||
+        materialId > U32_MAX
+      ) {
+        throw new Error(`computeAdjointGradient: no material index for primitive "${param.id}".`);
+      }
+      const primitive = scene.primitives.find((candidate) => candidate.id === param.id)!;
+      const base = index * 4;
+      descriptors[base] = materialId >>> 0;
+      descriptors[base + 1] = ADJOINT_FIELD_EMISSIVE;
+      descriptors[base + 2] = param.offset >>> 0;
+      const emissiveIntensity = resolveEmissiveIntensity(
+        primitive.material.emissiveIntensity,
+      );
+      descriptorFloats[base + 3] = emissiveIntensity;
+      emissiveIntensities.push(emissiveIntensity);
+    }
+    const gradientScale = computeAdjointGradientScale(req, emissiveIntensities);
+
+    const geometryOverride = buildAdjointWorldSpaceGeometryOverride(
+      scene,
+      materialIndexForPrimitive,
+    );
+    const triangleCount = geometryOverride?.triangleCount ?? sceneBuffers.triangleCount;
+    assertPositiveU32(triangleCount, 'triangleCount');
+    if (geometryOverride != null) {
+      checkedProduct(
+        'world-space position buffer byte size',
+        geometryOverride.positions.length,
+        Float32Array.BYTES_PER_ELEMENT,
+      );
+      checkedProduct(
+        'world-space index buffer byte size',
+        geometryOverride.indices.length,
+        Uint32Array.BYTES_PER_ELEMENT,
+      );
+      checkedProduct(
+        'world-space material-id buffer byte size',
+        geometryOverride.triMaterialIds.length,
+        Uint32Array.BYTES_PER_ELEMENT,
+      );
+    }
+    validateDeviceResourceLimits(this.#device, req, geometryOverride);
+
+    const uniformData = new ArrayBuffer(ADJOINT_PARAMS_UBO_BYTES);
+    const uniformFloats = new Float32Array(uniformData);
+    const uniformU32 = new Uint32Array(uniformData);
+    uniformFloats.set(inverseViewProjection, 0);
+    const cameraPosition = resolveFrameCameraPosition(
+      lastFrame,
+      'PTEngineWebGPU.computeAdjointGradient',
+    );
+    uniformFloats[16] = cameraPosition[0];
+    uniformFloats[17] = cameraPosition[1];
+    uniformFloats[18] = cameraPosition[2];
+    uniformFloats[19] = 1;
+    uniformU32[20] = req.width >>> 0;
+    uniformU32[21] = req.height >>> 0;
+    uniformU32[22] = triangleCount >>> 0;
+    uniformU32[23] = req.params.length >>> 0;
+    uniformU32[24] = req.channels >>> 0;
+    uniformU32[25] = req.samples >>> 0;
+    uniformFloats[26] = gradientScale;
+
+    const device = this.#device;
     if (this.#pipeline == null) {
       const module = device.createShaderModule({
         code:
@@ -138,503 +437,232 @@ export class AdjointPass {
             : composePtWebgpuAdjointPassWgsl(this.#sampling),
       });
       this.#pipeline = device.createComputePipeline({
-        label: 'vitrum.pt-webgpu.adjointPass',
+        label: 'vitrum.pt-webgpu.adjointPass.emissive',
         layout: 'auto',
         compute: { module, entryPoint: 'main' },
       });
     }
     const pipeline = this.#pipeline;
 
-    const { width, height, channels, params, gradientLength, dLoss_dRendered } = req;
-    const sampleCount = Math.max(1, Math.floor(req.samples));
-
-    // AdjointParams UBO: invViewProj(mat4) + cameraPos(vec4) + 3×uvec4 of counts
-    // plus an env-map uvec4 and env scalar vec4.
-    const vp = multiplyMat4(last.projMatrix, last.viewMatrix);
-    const invVp = invertMat4(asMat4(vp));
-    if (invVp == null) {
-      throw new Error('computeAdjointGradient: camera viewProj is not invertible.');
-    }
-    const ubo = new ArrayBuffer(ADJOINT_PARAMS_UBO_BYTES);
-    const uboF = new Float32Array(ubo);
-    const uboU = new Uint32Array(ubo);
-    uboF.set(invVp, 0); // mat4x4f at byte 0 (16 floats)
-    const cameraPosition = resolveFrameCameraPosition(
-      last,
-      'PTEngineWebGPU.computeAdjointGradient',
-    );
-    uboF[16] = cameraPosition[0];
-    uboF[17] = cameraPosition[1];
-    uboF[18] = cameraPosition[2];
-    uboF[19] = 1;
-    uboU[20] = width >>> 0;
-    uboU[21] = height >>> 0;
-    uboU[22] = sb.triangleCount >>> 0;
-    uboU[23] = sb.pointLightCount >>> 0;
-    uboU[24] = params.length >>> 0;
-    uboU[25] = channels >>> 0;
-    uboU[26] = sb.rectAreaLightCount >>> 0;
-    uboU[27] = sampleCount >>> 0;
-    uboU[28] = sb.directionalLightCount >>> 0;
-    uboU[29] = sb.spotLightCount >>> 0;
-    uboU[32] = sb.environmentMapWidth >>> 0;
-    uboU[33] = sb.environmentMapHeight >>> 0;
-    uboU[34] = sb.hasEnvironmentMap ? 1 : 0;
-    uboF[36] = sb.environmentHdriIntensity;
-    uboF[37] = sb.environmentHdriRotationY;
-
-    // adjointParamDescs: two vec4u records per param:
-    //   material record 0: {matId, fieldCode, gradOffset, fieldPayloadBits}
-    //   emitter record 0: {kind-local light slot/range start, fieldCode, gradOffset, emitterTargetMeta}
-    //   record 1: {payloadXBits, payloadYBits, payloadZBits, payloadWBits}
-    // For an emissive param, record0.w carries the FIXED emissiveIntensity
-    // (bitcast f32). For an emissiveIntensity param, record1.xyz carries the
-    // UNFACTORED material emissive RGB so intensity=0 remains differentiable.
-    // Emitter color/intensity params use record1.xyz = unfactored color and
-    // record1.w = fixed intensity. Mapped mesh-area emitters recover their
-    // readable emissive-map multiplier from meshAreaLightSourceFactorsBuffer, so
-    // zero authored color channels remain differentiable. The same vec4 stores
-    // the explicit mesh-area owner slot in `.w`, so capped/power-sorted replay
-    // can scatter by owner instead of assuming a contiguous packed range.
-    // emitterTargetMeta packs kind in the low 8 bits and range count in the upper
-    // bits (1 for scalar light streams).
-    // Lit BRDF fields leave payloads 0.
-    // A Float32 view aliases the same buffer.
-    const needsMeshAreaAdjointReplay = params.some(
-      (p) =>
-        p.domain === 'emitters' &&
-        scene.emitters.some((e) => e.id === p.id && e.kind === 'mesh-area'),
-    );
-    const meshAreaAdjointReplay = needsMeshAreaAdjointReplay
-      ? packMeshAreaAdjointReplayArrays(scene)
-      : null;
-    uboU[30] = (meshAreaAdjointReplay?.meshAreaLightCount ?? sb.meshAreaLightCount) >>> 0;
-
-    const descs = new Uint32Array(Math.max(params.length, 1) * 8);
-    const descsF = new Float32Array(descs.buffer);
-    for (let i = 0; i < params.length; i++) {
-      const p = params[i]!;
-      if (p.domain === 'emitters') {
-        const target = adjointEmitterTargetForScene(scene, p.id);
-        if (target == null) {
-          throw new Error(
-            `computeAdjointGradient: emitter "${p.id}" is outside the scoped adjoint direct-light target domain.`,
-          );
-        }
-        let fieldCode: number;
-        switch (p.field) {
-          case 'intensity':
-            fieldCode = ADJOINT_FIELD_EMITTER_INTENSITY;
-            break;
-          case 'color':
-            fieldCode = ADJOINT_FIELD_EMITTER_COLOR;
-            break;
-          default:
-            throw new Error(
-              `computeAdjointGradient: unsupported emitter adjoint field "${String(p.field)}".`,
-            );
-        }
-        const descBase = i * 8;
-        descs[descBase + 0] = target.slot >>> 0;
-        descs[descBase + 1] = fieldCode;
-        descs[descBase + 2] = p.offset >>> 0;
-        descs[descBase + 3] = encodeAdjointEmitterTargetMeta(target.kind, target.count);
-        descsF[descBase + 4] = target.color[0];
-        descsF[descBase + 5] = target.color[1];
-        descsF[descBase + 6] = target.color[2];
-        descsF[descBase + 7] = target.intensity;
-        continue;
-      }
-      const matId = materialIndexForPrimitive(scene, p.id, supportedAnalyticShapes);
-      if (matId == null) {
-        throw new Error(`computeAdjointGradient: no material index for primitive "${p.id}".`);
-      }
-      let fieldCode: number;
-      switch (p.field) {
-        case 'baseColor':
-          fieldCode = ADJOINT_FIELD_BASECOLOR;
-          break;
-        case 'roughness':
-          fieldCode = ADJOINT_FIELD_ROUGHNESS;
-          break;
-        case 'metallic':
-          fieldCode = ADJOINT_FIELD_METALLIC;
-          break;
-        case 'aoMapIntensity':
-          fieldCode = ADJOINT_FIELD_AO_MAP_INTENSITY;
-          break;
-        case 'lightMapIntensity':
-          fieldCode = ADJOINT_FIELD_LIGHT_MAP_INTENSITY;
-          break;
-        case 'envMapIntensity':
-          fieldCode = ADJOINT_FIELD_ENV_MAP_INTENSITY;
-          break;
-        case 'normalScale':
-          fieldCode = ADJOINT_FIELD_NORMAL_SCALE;
-          break;
-        case 'bumpScale':
-          fieldCode = ADJOINT_FIELD_BUMP_SCALE;
-          break;
-        case 'clearcoatNormalScale':
-          fieldCode = ADJOINT_FIELD_CLEARCOAT_NORMAL_SCALE;
-          break;
-        case 'emissive':
-          fieldCode = ADJOINT_FIELD_EMISSIVE;
-          break;
-        case 'emissiveIntensity':
-          fieldCode = ADJOINT_FIELD_EMISSIVE_INTENSITY;
-          break;
-        case 'clearcoat':
-          fieldCode = ADJOINT_FIELD_CLEARCOAT;
-          break;
-        case 'clearcoatRoughness':
-          fieldCode = ADJOINT_FIELD_CLEARCOAT_ROUGHNESS;
-          break;
-        case 'sheen':
-          fieldCode = ADJOINT_FIELD_SHEEN;
-          break;
-        case 'sheenRoughness':
-          fieldCode = ADJOINT_FIELD_SHEEN_ROUGHNESS;
-          break;
-        case 'sheenColor':
-          fieldCode = ADJOINT_FIELD_SHEEN_COLOR;
-          break;
-        case 'iridescence':
-          fieldCode = ADJOINT_FIELD_IRIDESCENCE;
-          break;
-        case 'iridescenceIor':
-          fieldCode = ADJOINT_FIELD_IRIDESCENCE_IOR;
-          break;
-        case 'iridescenceThicknessRange':
-          fieldCode = ADJOINT_FIELD_IRIDESCENCE_THICKNESS_RANGE;
-          break;
-        case 'anisotropy':
-          fieldCode = ADJOINT_FIELD_ANISOTROPY;
-          break;
-        case 'anisotropyRotation':
-          fieldCode = ADJOINT_FIELD_ANISOTROPY_ROTATION;
-          break;
-        case 'specularColor':
-          fieldCode = ADJOINT_FIELD_SPECULAR_COLOR;
-          break;
-        case 'specularIntensity':
-          fieldCode = ADJOINT_FIELD_SPECULAR_INTENSITY;
-          break;
-        default:
-          throw new Error(
-            `computeAdjointGradient: unsupported material adjoint field "${String(p.field)}".`,
-          );
-      }
-      const descBase = i * 8;
-      descs[descBase + 0] = matId >>> 0;
-      descs[descBase + 1] = fieldCode;
-      descs[descBase + 2] = p.offset >>> 0;
-      const prim = scene.primitives.find((pr) => pr.id === p.id);
-      if (fieldCode === ADJOINT_FIELD_EMISSIVE) {
-        // Read the live emissiveIntensity (held fixed during the fit) for the fold.
-        descsF[descBase + 3] = prim?.material.emissiveIntensity ?? 1;
-      } else if (fieldCode === ADJOINT_FIELD_EMISSIVE_INTENSITY) {
-        const emissive = prim?.material.emissive ?? [0, 0, 0];
-        descsF[descBase + 4] = emissive[0];
-        descsF[descBase + 5] = emissive[1];
-        descsF[descBase + 6] = emissive[2];
-      }
-    }
-
-    const geometryOverride = buildAdjointWorldSpaceGeometryOverride(
-      scene,
-      supportedAnalyticShapes,
-      materialIndexForPrimitive,
-      sb.uvSetTexCoords,
-    );
-    if (geometryOverride != null) {
-      uboU[22] = geometryOverride.triangleCount >>> 0;
-    }
-
-    // H14-D: own every transient from its first successful allocation. Upload,
-    // bind/encode/submit, mapping, and decoding can all fail before readback.
-    const U = (globalThis as { GPUBufferUsage: typeof GPUBufferUsage }).GPUBufferUsage;
-    const adjointCreated: GPUBuffer[] = [];
-    const adjointDestroyed = new Set<GPUBuffer>();
+    const usage = (globalThis as { GPUBufferUsage: typeof GPUBufferUsage }).GPUBufferUsage;
+    const created: GPUBuffer[] = [];
     let stage: GPUBuffer | null = null;
     let stageMapped = false;
-    const cleanupAdjointBuffers = (): {
-      readonly failed: boolean;
-      readonly error?: unknown;
-    } => {
-      let failed = false;
-      let firstError: unknown;
-      const capture = (error: unknown) => {
-        if (!failed) {
-          failed = true;
-          firstError = error;
-        }
-      };
+    const createBuffer = (
+      size: number,
+      bufferUsage: number,
+      data?: ArrayBufferView,
+    ): GPUBuffer => {
+      const buffer = device.createBuffer({ size: Math.max(size, 16), usage: bufferUsage });
+      created.push(buffer);
+      if (data != null) {
+        device.queue.writeBuffer(
+          buffer,
+          0,
+          data.buffer,
+          data.byteOffset,
+          data.byteLength,
+        );
+      }
+      return buffer;
+    };
 
+    let result: Float32Array | null = null;
+    let operationError: unknown;
+    let cleanupError: unknown;
+    try {
+      const paramsBuffer = createBuffer(
+        ADJOINT_PARAMS_UBO_BYTES,
+        usage.UNIFORM | usage.COPY_DST,
+        uniformFloats,
+      );
+      const lossBuffer = createBuffer(
+        req.dLoss_dRendered.byteLength,
+        usage.STORAGE | usage.COPY_DST,
+        req.dLoss_dRendered,
+      );
+      const gradientBuffer = createBuffer(
+        req.gradientLength * 4,
+        usage.STORAGE | usage.COPY_SRC | usage.COPY_DST,
+        new Int32Array(req.gradientLength),
+      );
+      const descriptorBuffer = createBuffer(
+        descriptors.byteLength,
+        usage.STORAGE | usage.COPY_DST,
+        descriptors,
+      );
+      stage = createBuffer(req.gradientLength * 4, usage.MAP_READ | usage.COPY_DST);
+
+      const positionsBuffer = geometryOverride == null
+        ? sceneBuffers.positionsBuffer
+        : createBuffer(
+            geometryOverride.positions.byteLength,
+            usage.STORAGE | usage.COPY_DST,
+            geometryOverride.positions,
+          );
+      const indicesBuffer = geometryOverride == null
+        ? sceneBuffers.indicesBuffer
+        : createBuffer(
+            geometryOverride.indices.byteLength,
+            usage.STORAGE | usage.COPY_DST,
+            geometryOverride.indices,
+          );
+      const materialIdsBuffer = geometryOverride == null
+        ? sceneBuffers.triMaterialIdsBuffer
+        : createBuffer(
+            geometryOverride.triMaterialIds.byteLength,
+            usage.STORAGE | usage.COPY_DST,
+            geometryOverride.triMaterialIds,
+          );
+
+      const bindGroup = device.createBindGroup({
+        layout: pipeline.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: { buffer: paramsBuffer } },
+          { binding: 1, resource: { buffer: positionsBuffer } },
+          { binding: 2, resource: { buffer: indicesBuffer } },
+          { binding: 3, resource: { buffer: materialIdsBuffer } },
+          { binding: 4, resource: { buffer: sceneBuffers.materialsBuffer } },
+          { binding: 5, resource: { buffer: lossBuffer } },
+          { binding: 6, resource: { buffer: gradientBuffer } },
+          { binding: 7, resource: { buffer: descriptorBuffer } },
+        ],
+      });
+
+      const encoder = device.createCommandEncoder();
+      const pass = encoder.beginComputePass();
+      pass.setPipeline(pipeline);
+      pass.setBindGroup(0, bindGroup);
+      pass.dispatchWorkgroups(Math.ceil(req.width / 8), Math.ceil(req.height / 8));
+      pass.end();
+      encoder.copyBufferToBuffer(
+        gradientBuffer,
+        0,
+        stage,
+        0,
+        req.gradientLength * 4,
+      );
+      device.queue.submit([encoder.finish()]);
+
+      await stage.mapAsync(
+        (globalThis as { GPUMapMode: typeof GPUMapMode }).GPUMapMode.READ,
+      );
+      stageMapped = true;
+      const fixedPoint = new Int32Array(stage.getMappedRange().slice(0));
+      result = new Float32Array(req.gradientLength);
+      for (let index = 0; index < req.gradientLength; index += 1) {
+        result[index] = fixedPoint[index]! / gradientScale;
+      }
+    } catch (error) {
+      operationError = error;
+    } finally {
       if (stageMapped && stage != null) {
         try {
           stage.unmap();
         } catch (error) {
-          capture(error);
-        } finally {
-          stageMapped = false;
+          cleanupError ??= error;
         }
       }
-
-      for (const buffer of adjointCreated) {
-        if (adjointDestroyed.has(buffer)) continue;
+      for (const buffer of created) {
         try {
           buffer.destroy();
         } catch (error) {
-          capture(error);
-        } finally {
-          adjointDestroyed.add(buffer);
+          cleanupError ??= error;
         }
       }
-      return failed ? { failed, error: firstError } : { failed };
-    };
-    const mk = (size: number, usage: number, data?: ArrayBufferView): GPUBuffer => {
-      const b = device.createBuffer({ size: Math.max(size, 16), usage });
-      adjointCreated.push(b);
-      if (data) device.queue.writeBuffer(b, 0, data.buffer, data.byteOffset, data.byteLength);
-      return b;
-    };
-    let operationFailed = false;
-    let operationError: unknown;
-    let result: Float32Array | null = null;
-    let cleanup: ReturnType<typeof cleanupAdjointBuffers> = { failed: false };
-    try {
-      const paramsBuf = mk(ADJOINT_PARAMS_UBO_BYTES, U.UNIFORM | U.COPY_DST, uboF);
-      const dLossBuf = mk(dLoss_dRendered.byteLength, U.STORAGE | U.COPY_DST, dLoss_dRendered);
-      const gradBuf = mk(
-        gradientLength * 4,
-        U.STORAGE | U.COPY_SRC | U.COPY_DST,
-        new Int32Array(gradientLength),
-      );
-      const descBuf = mk(descs.byteLength, U.STORAGE | U.COPY_DST, descs);
-      stage = mk(gradientLength * 4, U.MAP_READ | U.COPY_DST);
-      const meshAreaLightsBuffer =
-        meshAreaAdjointReplay == null
-          ? sb.meshAreaLightsBuffer
-          : mk(
-              meshAreaAdjointReplay.meshAreaLightsData.byteLength,
-              U.STORAGE | U.COPY_DST,
-              meshAreaAdjointReplay.meshAreaLightsData,
-            );
-      const meshAreaLightSourceFactorsBuffer =
-        meshAreaAdjointReplay == null
-          ? sb.meshAreaLightSourceFactorsBuffer
-          : mk(
-              meshAreaAdjointReplay.meshAreaLightSourceFactorsData.byteLength,
-              U.STORAGE | U.COPY_DST,
-              meshAreaAdjointReplay.meshAreaLightSourceFactorsData,
-            );
-      const positionsBuffer =
-        geometryOverride == null
-          ? sb.positionsBuffer
-          : mk(
-              geometryOverride.positions.byteLength,
-              U.STORAGE | U.COPY_DST,
-              geometryOverride.positions,
-            );
-      const indicesBuffer =
-        geometryOverride == null
-          ? sb.indicesBuffer
-          : mk(
-              geometryOverride.indices.byteLength,
-              U.STORAGE | U.COPY_DST,
-              geometryOverride.indices,
-            );
-      const triMaterialIdsBuffer =
-        geometryOverride == null
-          ? sb.triMaterialIdsBuffer
-          : mk(
-              geometryOverride.triMaterialIds.byteLength,
-              U.STORAGE | U.COPY_DST,
-              geometryOverride.triMaterialIds,
-            );
-      const normalsBuffer =
-        geometryOverride == null
-          ? sb.normalsBuffer
-          : mk(
-              geometryOverride.normals.byteLength,
-              U.STORAGE | U.COPY_DST,
-              geometryOverride.normals,
-            );
-      const uvsBuffer =
-        geometryOverride == null
-          ? sb.uvsBuffer
-          : mk(geometryOverride.uvs.byteLength, U.STORAGE | U.COPY_DST, geometryOverride.uvs);
-      const colorsBuffer =
-        geometryOverride == null
-          ? sb.colorsBuffer
-          : mk(geometryOverride.colors.byteLength, U.STORAGE | U.COPY_DST, geometryOverride.colors);
-      const tangentsBuffer =
-        geometryOverride == null
-          ? sb.tangentsBuffer
-          : mk(
-              geometryOverride.tangents.byteLength,
-              U.STORAGE | U.COPY_DST,
-              geometryOverride.tangents,
-            );
-
-      const bind = device.createBindGroup({
-        layout: pipeline.getBindGroupLayout(0),
-        entries: [
-          { binding: 0, resource: { buffer: paramsBuf } },
-          { binding: 1, resource: { buffer: positionsBuffer } },
-          { binding: 2, resource: { buffer: indicesBuffer } },
-          { binding: 3, resource: { buffer: triMaterialIdsBuffer } },
-          { binding: 4, resource: { buffer: sb.materialsBuffer } },
-          { binding: 5, resource: { buffer: normalsBuffer } },
-          { binding: 6, resource: { buffer: sb.pointLightsBuffer } },
-          { binding: 7, resource: { buffer: dLossBuf } },
-          { binding: 8, resource: { buffer: gradBuf } },
-          { binding: 9, resource: { buffer: descBuf } },
-          { binding: 10, resource: { buffer: sb.rectAreaLightsBuffer } },
-          { binding: 11, resource: { buffer: sb.directionalLightsBuffer } },
-          { binding: 12, resource: { buffer: sb.spotLightsBuffer } },
-          { binding: 13, resource: { buffer: meshAreaLightsBuffer } },
-          { binding: 14, resource: { buffer: uvsBuffer } },
-          { binding: 15, resource: { buffer: sb.materialTexDescriptorsBuffer } },
-          { binding: 16, resource: sb.materialTextureView },
-          { binding: 17, resource: sb.materialTextureSampler },
-          { binding: 18, resource: { buffer: colorsBuffer } },
-          { binding: 19, resource: sb.materialLinearTextureView },
-          { binding: 20, resource: { buffer: sb.environmentMapTexelsBuffer } },
-          { binding: 21, resource: { buffer: sb.environmentMapCdfBuffer } },
-          { binding: 22, resource: { buffer: meshAreaLightSourceFactorsBuffer } },
-          { binding: 23, resource: { buffer: tangentsBuffer } },
-          // T1-6 — dedicated rgba16float emissive array (HDR emissive replay).
-          { binding: 24, resource: sb.materialEmissiveTextureView },
-        ],
-      });
-
-      const enc = device.createCommandEncoder();
-      const pass = enc.beginComputePass();
-      pass.setPipeline(pipeline);
-      pass.setBindGroup(0, bind);
-      pass.dispatchWorkgroups(Math.ceil(width / 8), Math.ceil(height / 8));
-      pass.end();
-      enc.copyBufferToBuffer(gradBuf, 0, stage, 0, gradientLength * 4);
-      device.queue.submit([enc.finish()]);
-      await stage.mapAsync((globalThis as { GPUMapMode: typeof GPUMapMode }).GPUMapMode.READ);
-      stageMapped = true;
-      const raw = new Int32Array(stage.getMappedRange().slice(0));
-
-      const grad = new Float32Array(gradientLength);
-      for (let i = 0; i < gradientLength; i++) grad[i] = raw[i]! / ADJOINT_GRAD_FP;
-
-      result = grad;
-    } catch (error) {
-      operationFailed = true;
-      operationError = error;
-    } finally {
-      // Preserve the operation error while still attempting every cleanup.
-      cleanup = cleanupAdjointBuffers();
     }
-    if (operationFailed) throw operationError;
-    if (cleanup.failed) throw cleanup.error;
+
+    if (operationError != null) {
+      throw operationError instanceof Error
+        ? operationError
+        : new Error('computeAdjointGradient: GPU operation rejected with a non-Error value.');
+    }
+    if (cleanupError != null) {
+      throw cleanupError instanceof Error
+        ? cleanupError
+        : new Error('computeAdjointGradient: cleanup rejected with a non-Error value.');
+    }
     if (result == null) {
       throw new Error('computeAdjointGradient: readback completed without a gradient result.');
     }
     return result;
   }
 
-  /** Drop the cached pipeline reference (GPUComputePipeline has no destroy()). */
+  /** GPUComputePipeline has no explicit destroy method. */
   dispose(): void {
     this.#pipeline = null;
   }
 }
 
+/**
+ * Flatten transforms and instances when the uploaded triangle buffer is not
+ * already world-space. Analytic primitives are rejected before this helper.
+ */
 export function buildAdjointWorldSpaceGeometryOverride(
   scene: Scene,
-  supportedAnalyticShapes: ReadonlySet<string>,
-  materialIndexForPrimitive: (
-    scene: Scene,
-    id: string,
-    shapes: ReadonlySet<string>,
-  ) => number | null,
-  uvSetTexCoords: readonly number[] = [0, 1],
+  materialIndexForPrimitive: MaterialIndexForPrimitive,
 ): AdjointWorldSpaceGeometry | null {
-  const replayPrimitives: ScenePrimitive[] = [];
-  let needsOverride = false;
-  for (const primitive of scene.primitives) {
-    const replayPrimitive = adjointReplayPrimitive(primitive, supportedAnalyticShapes);
-    if (replayPrimitive == null) return null;
-    replayPrimitives.push(replayPrimitive);
-    needsOverride ||=
-      primitive.kind === 'analytic' || needsAdjointWorldSpaceGeometryOverride(replayPrimitive);
+  const solvedScene = applySolveSkinToScene(scene);
+  const replayPrimitives =
+    solvedScene.primitives.filter(isTriangleBackedPrimitive);
+  if (replayPrimitives.length !== solvedScene.primitives.length) {
+    throw new Error('buildAdjointWorldSpaceGeometryOverride: non-triangle primitive.');
   }
-  if (!needsOverride) {
-    return null;
-  }
-
-  const replayScene: Scene = { ...scene, primitives: replayPrimitives };
-  const merged = mergeWorldSpaceFromCore(replayScene, {
-    positionStride: 4,
-    filter: isAdjointReplayMeshPrimitive,
-  });
-  if (merged.triangleCount === 0) return null;
-
-  const mergedTriMaterialIds = new Uint32Array(merged.triangleCount);
-  for (const range of merged.meshVertexRanges) {
-    const matId = materialIndexForPrimitive(scene, range.name, supportedAnalyticShapes);
-    if (matId == null) return null;
-    const triEnd = Math.min(mergedTriMaterialIds.length, range.triStart + range.triCount);
-    for (let tri = range.triStart; tri < triEnd; tri += 1) {
-      mergedTriMaterialIds[tri] = matId >>> 0;
+  for (const primitive of replayPrimitives) {
+    const issue = emissiveReplayPrimitiveIssue(primitive);
+    if (issue != null) {
+      throw new Error(
+        `buildAdjointWorldSpaceGeometryOverride: ${issue.message}.`,
+      );
     }
+  }
+  const needsOverride = replayPrimitives.some(needsWorldSpaceOverride);
+  if (!needsOverride) return null;
+
+  const merged = mergeWorldSpaceFromCore(solvedScene, {
+    positionStride: 4,
+    filter: isTriangleBackedPrimitive,
+  });
+  if (merged.triangleCount < 1) {
+    throw new Error('buildAdjointWorldSpaceGeometryOverride: replay geometry is empty.');
+  }
+
+  const mergedMaterialIds = new Uint32Array(merged.triangleCount);
+  for (const range of merged.meshVertexRanges) {
+    const materialId = materialIndexForPrimitive(
+      solvedScene,
+      range.name,
+      NO_ANALYTIC_SHAPES,
+    );
+    if (materialId == null) {
+      throw new Error(
+        `buildAdjointWorldSpaceGeometryOverride: no material for "${range.name}".`,
+      );
+    }
+    const end = Math.min(mergedMaterialIds.length, range.triStart + range.triCount);
+    mergedMaterialIds.fill(materialId >>> 0, range.triStart, end);
   }
 
   const triMaterialIds = new Uint32Array(merged.triangleCount);
-  for (let tri = 0; tri < merged.triangleCount; tri += 1) {
-    const mergedTri = merged.bvhTriToMergedTri[tri] ?? tri;
-    triMaterialIds[tri] = mergedTriMaterialIds[mergedTri] ?? 0;
+  for (let triangle = 0; triangle < merged.triangleCount; triangle += 1) {
+    const mergedTriangle = merged.bvhTriToMergedTri[triangle] ?? triangle;
+    triMaterialIds[triangle] = mergedMaterialIds[mergedTriangle] ?? 0;
   }
-
-  const uv1 = mergeUv1FromCore(replayScene, merged.meshVertexRanges, merged.vertexCount);
-  const primaryUvs = new Float32Array(merged.vertexCount * 4);
-  for (let vertex = 0; vertex < merged.vertexCount; vertex += 1) {
-    primaryUvs[vertex * 4] = merged.uvs[vertex * 2] ?? 0;
-    primaryUvs[vertex * 4 + 1] = merged.uvs[vertex * 2 + 1] ?? 0;
-    if (uv1 != null) {
-      primaryUvs[vertex * 4 + 2] = uv1[vertex * 2] ?? 0;
-      primaryUvs[vertex * 4 + 3] = uv1[vertex * 2 + 1] ?? 0;
-    }
-  }
-  const uvs = packGpuUvSets(replayScene, primaryUvs, merged.meshVertexRanges, uvSetTexCoords);
 
   return {
     positions: merged.positions,
-    normals: merged.normals,
-    uvs,
-    tangents: merged.tangents,
-    colors: merged.colors,
     indices: expandIndicesToStride4(merged.indices),
     triMaterialIds,
     triangleCount: merged.triangleCount,
   };
 }
 
-function adjointReplayPrimitive(
+function isTriangleBackedPrimitive(
   primitive: ScenePrimitive,
-  supportedAnalyticShapes: ReadonlySet<string>,
-): Extract<ScenePrimitive, { kind: 'mesh' | 'skinned-mesh' | 'instanced-mesh' }> | null {
-  if (isAdjointReplayMeshPrimitive(primitive)) return primitive;
-  if (primitive.kind === 'analytic') {
-    if (!supportedAnalyticShapes.has(primitive.shape)) return null;
-    // The forward full tier always intersects the authored analytic shape and
-    // never substitutes fallbackMesh. Replay must obey the same source of
-    // geometry even when a host supplied a deliberately coarse fallback.
-    return analyticPrimitiveToMesh(primitive, { preferFallbackMesh: false });
-  }
-  return null;
-}
-
-function isAdjointReplayMeshPrimitive(
-  primitive: ScenePrimitive,
-): primitive is Extract<ScenePrimitive, { kind: 'mesh' | 'skinned-mesh' | 'instanced-mesh' }> {
+): primitive is Extract<
+  ScenePrimitive,
+  { kind: 'mesh' | 'skinned-mesh' | 'instanced-mesh' }
+> {
   return (
     primitive.kind === 'mesh' ||
     primitive.kind === 'skinned-mesh' ||
@@ -642,115 +670,20 @@ function isAdjointReplayMeshPrimitive(
   );
 }
 
-function needsAdjointWorldSpaceGeometryOverride(
-  primitive: Extract<ScenePrimitive, { kind: 'mesh' | 'skinned-mesh' | 'instanced-mesh' }>,
+function needsWorldSpaceOverride(
+  primitive: Extract<
+    ScenePrimitive,
+    { kind: 'mesh' | 'skinned-mesh' | 'instanced-mesh' }
+  >,
 ): boolean {
   if (primitive.kind === 'instanced-mesh') return primitive.instances.length > 0;
   return primitive.transform != null && !isIdentityMat4(primitive.transform);
 }
 
 function isIdentityMat4(transform: Float32Array): boolean {
-  const expected = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
-  if (transform.length < 16) return false;
-  for (let i = 0; i < 16; i += 1) {
-    if (Math.abs((transform[i] ?? 0) - expected[i]!) > 1e-6) return false;
-  }
-  return true;
-}
-
-function adjointEmitterTargetForScene(
-  scene: Scene,
-  id: string,
-): {
-  readonly kind: number;
-  readonly slot: number;
-  readonly count: number;
-  readonly color: readonly [number, number, number];
-  readonly intensity: number;
-} | null {
-  let directionalSlot = 0;
-  let pointSlot = 0;
-  let spotSlot = 0;
-  let rectSlot = 0;
-  for (const emitter of scene.emitters) {
-    switch (emitter.kind) {
-      case 'directional': {
-        const slot = directionalSlot;
-        directionalSlot += 1;
-        if (emitter.id !== id) break;
-        return {
-          kind: ADJOINT_EMITTER_TARGET_DIRECTIONAL,
-          slot,
-          count: 1,
-          color: emitter.color,
-          intensity: emitter.intensity,
-        };
-      }
-      case 'point': {
-        const slot = pointSlot;
-        pointSlot += 1;
-        if (emitter.id !== id) break;
-        return {
-          kind: ADJOINT_EMITTER_TARGET_POINT,
-          slot,
-          count: 1,
-          color: emitter.color,
-          intensity: emitter.intensity,
-        };
-      }
-      case 'spot': {
-        const slot = spotSlot;
-        spotSlot += 1;
-        if (emitter.id !== id) break;
-        return {
-          kind: ADJOINT_EMITTER_TARGET_SPOT,
-          slot,
-          count: 1,
-          color: emitter.color,
-          intensity: emitter.intensity,
-        };
-      }
-      case 'rect-area':
-      case 'disc-area': {
-        const slot = rectSlot;
-        rectSlot += 1;
-        if (emitter.id !== id) break;
-        return {
-          kind: ADJOINT_EMITTER_TARGET_RECT,
-          slot,
-          count: 1,
-          color: emitter.color,
-          intensity: emitter.intensity,
-        };
-      }
-      case 'mesh-area': {
-        if (emitter.id !== id) break;
-        const range = meshAreaEmitterAdjointRangeForScene(scene, emitter.id);
-        if (range == null) return null;
-        return {
-          kind: ADJOINT_EMITTER_TARGET_MESH,
-          slot: range.adjointEmitterSlot,
-          count: 1,
-          color: emitter.color,
-          intensity: emitter.intensity,
-        };
-      }
-      default: {
-        const unknownEmitter = emitter as { readonly id?: string };
-        if (unknownEmitter.id === id) return null;
-        break;
-      }
-    }
-  }
-  return null;
-}
-
-function encodeAdjointEmitterTargetMeta(kind: number, count: number): number {
-  if (!Number.isInteger(count) || count < 1 || count > 0x00ffffff) {
-    throw new RangeError(
-      `computeAdjointGradient: emitter target count must be an integer in ` +
-        `[1, 16777215], received ${String(count)}.`,
-    );
-  }
-  return ((kind & 0xff) | (count << 8)) >>> 0;
+  const identity = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
+  if (transform.length < identity.length) return false;
+  return identity.every(
+    (expected, index) => Math.abs((transform[index] ?? 0) - expected) <= 1e-6,
+  );
 }

@@ -7,6 +7,7 @@ import {
 } from './index.js';
 import {
   asMat4,
+  solveSkin,
   type AnimationClip,
   type InstancedMeshPrimitive,
   type MaterialSpec,
@@ -664,6 +665,41 @@ function manualSkinnedInput(): {
   };
 }
 
+function manualInstancedSkinnedInput() {
+  const input = manualSkinnedInput();
+  const deformationSource = input.scene.primitives[0] as SkinnedMeshPrimitive;
+  const secondInstance = identityMat4();
+  secondInstance[12] = 10;
+  const instances = [
+    asMat4(identityMat4()),
+    asMat4(secondInstance),
+  ];
+  const primitive: InstancedMeshPrimitive = {
+    kind: 'instanced-mesh',
+    id: deformationSource.id,
+    positions: deformationSource.positions,
+    normals: deformationSource.normals,
+    ...(deformationSource.tangents != null
+      ? { tangents: deformationSource.tangents }
+      : {}),
+    instances,
+    material: deformationSource.material,
+  };
+  return {
+    ...input,
+    scene: {
+      ...input.scene,
+      primitives: [primitive],
+    },
+    instancingBindings: [{
+      primitiveId: String(primitive.id),
+      nodeIndex: 0,
+      localInstanceTransforms: instances,
+      deformationSource,
+    }],
+  };
+}
+
 describe('GltfSceneController', () => {
   it('recomputes child primitive world transforms when an ancestor node is animated', async () => {
     const { gltf, buffers } = animatedHierarchyGltf();
@@ -1073,6 +1109,7 @@ describe('GltfSceneController', () => {
     const patch = frame.primitivePatches[0]!.patch as {
       instances: ReadonlyArray<Float32Array>;
       positions: Float32Array;
+      normals: Float32Array;
       transform?: Float32Array;
     };
     expect(frame.primitivePatches[0]!.id).toBe('gltf-prim-0');
@@ -1082,6 +1119,12 @@ describe('GltfSceneController', () => {
     expect(patch.instances[0]![13]).toBeCloseTo(0);
     expect(patch.instances[1]![12]).toBeCloseTo(12);
     expect(patch.instances[1]![13]).toBeCloseTo(3);
+    // Unlike a true skinned primitive, an instanced target has nowhere to
+    // retain pose state. Its private deformation source must therefore stay
+    // resolved into the shared geometry patch.
+    expect(patch.positions).toBeInstanceOf(Float32Array);
+    expect(patch.normals).toBeInstanceOf(Float32Array);
+    expect(patch).not.toHaveProperty('morphWeights');
     expect(Array.from(patch.positions.slice(0, 2))).toEqual([0, 0]);
     expect(Array.from(patch.positions.slice(3, 5))).toEqual([1, 0]);
     expect(Array.from(patch.positions.slice(6, 8))).toEqual([0, 1]);
@@ -1334,6 +1377,49 @@ describe('GltfSceneController', () => {
     expect((controller.scene.primitives[0] as { transform: Float32Array }).transform[13]).toBeCloseTo(3);
   });
 
+  it('hemisphere-corrects and normalizes node-rotation pointer channels while blending', async () => {
+    const { gltf, buffers } = animatedHierarchyGltf();
+    const result = await gltfToScene(gltf, { buffers });
+    const halfSqrt = Math.SQRT1_2;
+    const pointer = '/nodes/0/rotation';
+    const pointerClip = (
+      name: string,
+      quaternion: readonly [number, number, number, number],
+    ): AnimationClip => ({
+      name,
+      duration: 1,
+      channels: [{
+        target: { node: `gltf-pointer:${pointer}`, path: 'pointer', pointer },
+        sampler: {
+          times: new Float32Array([0, 1]),
+          values: new Float32Array([...quaternion, ...quaternion]),
+          interpolation: 'LINEAR',
+        },
+      }],
+    });
+    const controller = createGltfSceneController({
+      gltf,
+      ...result,
+      animations: [
+        pointerClip('positive-hemisphere', [0, halfSqrt, 0, halfSqrt]),
+        pointerClip('negative-hemisphere', [0, -halfSqrt, 0, -halfSqrt]),
+      ],
+    });
+
+    const frame = controller.blend(
+      ['positive-hemisphere', 'negative-hemisphere'],
+      [0.5, 0.5],
+      1,
+    );
+
+    const transform = (frame.primitivePatches[0]!.patch as { transform: Float32Array }).transform;
+    expect(Array.from(transform).every(Number.isFinite)).toBe(true);
+    expect(transform[0]).toBeCloseTo(0, 5);
+    expect(Math.abs(transform[2]!)).toBeCloseTo(1, 5);
+    expect(Math.abs(transform[8]!)).toBeCloseTo(1, 5);
+    expect(transform[10]).toBeCloseTo(0, 5);
+  });
+
   it('owns a play/pause/resume clock so hosts can tick animations predictably', async () => {
     const { gltf, buffers } = animatedHierarchyGltf();
     const result = await gltfToScene(gltf, { buffers });
@@ -1372,71 +1458,260 @@ describe('GltfSceneController', () => {
     expect((controller.scene.primitives[0] as { transform: Float32Array }).transform[12]).toBeCloseTo(1.5);
   });
 
-  it('blends morph weights before skin solving', async () => {
+  it('publishes blended morph state without replacing skinned rest streams', async () => {
     const { gltf, buffers } = morphGltf();
     const result = await gltfToScene(gltf, { buffers });
     const controller = createGltfSceneController({ gltf, ...result });
+    const rest = result.scene.primitives[0] as SkinnedMeshPrimitive;
 
     const frame = controller.blend(['morph-on', 'morph-off'], [0.25, 0.75], 1);
 
     const patch = frame.primitivePatches[0]!.patch as {
       morphWeights: Float32Array;
-      positions: Float32Array;
-      tangents: Float32Array;
     };
     expect(patch.morphWeights[0]).toBeCloseTo(0.25);
-    expect(Array.from(patch.positions)).toEqual([0.25, 0, 0, 1.25, 0, 0, 0.25, 1, 0]);
-    expect(patch.tangents).toBeInstanceOf(Float32Array);
-    expect(patch.tangents[1]).toBeGreaterThan(0);
+    for (const field of ['positions', 'normals', 'tangents', 'uvs', 'uv1', 'uvSets']) {
+      expect(patch).not.toHaveProperty(field);
+    }
+    const solved = solveSkin({ ...rest, ...patch });
+    expect(Array.from(solved.positions)).toEqual([0.25, 0, 0, 1.25, 0, 0, 0.25, 1, 0]);
+    expect(solved.tangents).toBeInstanceOf(Float32Array);
+    expect(solved.tangents![1]).toBeGreaterThan(0);
+    expect((controller.scene.primitives[0] as SkinnedMeshPrimitive).positions)
+      .toBe(rest.positions);
   });
 
-  it('samples morph-weight channels, solves the promoted skinned primitive, and patches deformed geometry', async () => {
+  it('samples morph-weight channels while retaining the promoted primitive rest geometry', async () => {
     const { gltf, buffers } = morphGltf();
     const result = await gltfToScene(gltf, { buffers });
     const controller = createGltfSceneController({ gltf, ...result });
+    const rest = result.scene.primitives[0] as SkinnedMeshPrimitive;
 
     const frame = controller.applyAnimation('morph-on', 1);
 
     const patch = frame.primitivePatches[0]!.patch as {
       morphWeights: Float32Array;
-      positions: Float32Array;
-      tangents: Float32Array;
     };
     expect(patch.morphWeights[0]).toBeCloseTo(1);
-    expect(Array.from(patch.positions)).toEqual([1, 0, 0, 2, 0, 0, 1, 1, 0]);
-    expect(patch.tangents).toBeInstanceOf(Float32Array);
-    expect(patch.tangents[1]).toBeGreaterThan(0);
-    expect((controller.scene.primitives[0] as SkinnedMeshPrimitive).tangents![1]).toBeGreaterThan(0);
+    expect(patch).not.toHaveProperty('positions');
+    expect(patch).not.toHaveProperty('normals');
+    expect(patch).not.toHaveProperty('tangents');
+    const solved = solveSkin({ ...rest, ...patch });
+    expect(Array.from(solved.positions)).toEqual([1, 0, 0, 2, 0, 0, 1, 1, 0]);
+    expect(solved.tangents).toBeInstanceOf(Float32Array);
+    expect(solved.tangents![1]).toBeGreaterThan(0);
+    expect((controller.scene.primitives[0] as SkinnedMeshPrimitive).tangents)
+      .toBe(rest.tangents);
     expect((controller.scene.primitives[0] as SkinnedMeshPrimitive).morphWeights![0]).toBeCloseTo(1);
   });
 
-  it('rebuilds skinned bone matrices from animated joint nodes and patches solved vertices', () => {
+  it('diagnoses and truncates a runtime morph-weight stride mismatch', async () => {
+    const { gltf, buffers } = morphGltf();
+    const result = await gltfToScene(gltf, { buffers });
+    const sourceClip = result.animations.find((clip) => clip.name === 'morph-on')!;
+    const mismatchedClip: AnimationClip = {
+      ...sourceClip,
+      channels: sourceClip.channels.map((channel) => ({
+        ...channel,
+        sampler: {
+          ...channel.sampler,
+          // Two weights per keyframe target a primitive with one morph target.
+          values: new Float32Array([0, 0, 1, 0.5]),
+        },
+      })),
+    };
+    const controller = createGltfSceneController({
+      gltf,
+      ...result,
+      animations: [mismatchedClip],
+    });
+
+    const frame = controller.applyAnimation('morph-on', 1);
+    const patch = frame.primitivePatches[0]!.patch as {
+      morphWeights: Float32Array;
+    };
+
+    expect(frame.diagnostics).toEqual([
+      expect.objectContaining({
+        severity: 'warning',
+        caller: 'applyAnimation',
+        code: 'morph-weight-count-mismatch',
+        path: 'scene.primitives["gltf-prim-0"].morphWeights',
+        primitiveId: 'gltf-prim-0',
+      }),
+    ]);
+    expect(Array.from(patch.morphWeights)).toEqual([1]);
+    expect(patch).not.toHaveProperty('positions');
+    const solved = solveSkin({
+      ...(result.scene.primitives[0] as SkinnedMeshPrimitive),
+      ...patch,
+    });
+    expect(Array.from(solved.positions)).toEqual([1, 0, 0, 2, 0, 0, 1, 1, 0]);
+  });
+
+  it('diagnoses and zero-fills a short runtime morph-weight stride', async () => {
+    const { gltf, buffers } = morphGltf();
+    const primitive = gltf.meshes![0]!.primitives[0]!;
+    primitive.targets = [primitive.targets![0]!, { ...primitive.targets![0]! }];
+    gltf.meshes![0]!.weights = [0, 0];
+    const result = await gltfToScene(gltf, { buffers });
+    const controller = createGltfSceneController({ gltf, ...result });
+
+    const frame = controller.applyAnimation('morph-on', 1);
+    const patch = frame.primitivePatches[0]!.patch as {
+      morphWeights: Float32Array;
+    };
+
+    expect(frame.diagnostics).toEqual([
+      expect.objectContaining({
+        severity: 'warning',
+        code: 'morph-weight-count-mismatch',
+        primitiveId: 'gltf-prim-0',
+      }),
+    ]);
+    expect(Array.from(patch.morphWeights)).toEqual([1, 0]);
+    expect(patch).not.toHaveProperty('positions');
+    const solved = solveSkin({
+      ...(result.scene.primitives[0] as SkinnedMeshPrimitive),
+      ...patch,
+    });
+    expect(Array.from(solved.positions)).toEqual([1, 0, 0, 2, 0, 0, 1, 1, 0]);
+  });
+
+  it('publishes joint pose state and leaves backend skin solving single-pass', () => {
     const input = manualSkinnedInput();
     const controller = createGltfSceneController(input);
+    const rest = input.scene.primitives[0] as SkinnedMeshPrimitive;
 
     const frame = controller.applyAnimation('joint-slide', 1);
 
     const patch = frame.primitivePatches[0]!.patch as {
       bones: Float32Array;
-      positions: Float32Array;
-      tangents: Float32Array;
     };
     expect(patch.bones[12]).toBeCloseTo(1);
-    expect(Array.from(patch.positions)).toEqual([1, 0, 0, 2, 0, 0, 1, 1, 0]);
-    expect(Array.from(patch.tangents)).toEqual([
+    for (const field of ['positions', 'normals', 'tangents', 'uvs', 'uv1', 'uvSets']) {
+      expect(patch).not.toHaveProperty(field);
+    }
+    const solved = solveSkin({ ...rest, ...patch });
+    expect(Array.from(solved.positions)).toEqual([1, 0, 0, 2, 0, 0, 1, 1, 0]);
+    expect(Array.from(solved.tangents!)).toEqual([
       1, 0, 0, 1,
       1, 0, 0, 1,
       1, 0, 0, 1,
     ]);
+    expect((controller.scene.primitives[0] as SkinnedMeshPrimitive).positions)
+      .toBe(rest.positions);
     const world = transformPoint(
       (controller.scene.primitives[0] as SkinnedMeshPrimitive).transform,
-      patch.positions[0]!,
-      patch.positions[1]!,
-      patch.positions[2]!,
+      solved.positions[0]!,
+      solved.positions[1]!,
+      solved.positions[2]!,
     );
     expect(world[0]).toBeCloseTo(6);
     expect(world[1]).toBeCloseTo(0);
     expect(world[2]).toBeCloseTo(0);
+  });
+
+  it('publishes a return-to-bind joint pose instead of skipping against base bones', () => {
+    const input = manualSkinnedInput();
+    const controller = createGltfSceneController(input);
+
+    const forward = controller.applyAnimation('joint-slide', 1);
+    expect(
+      (forward.primitivePatches[0]!.patch as { bones: Float32Array }).bones[12],
+    ).toBeCloseTo(1);
+
+    const returned = controller.applyAnimation('joint-slide', 0);
+    expect(returned.primitivePatches).toHaveLength(1);
+    const patch = returned.primitivePatches[0]!.patch as { bones: Float32Array };
+    expect(patch.bones[12]).toBeCloseTo(0);
+    expect(patch).not.toHaveProperty('positions');
+    expect(
+      (controller.scene.primitives[0] as SkinnedMeshPrimitive).bones[12],
+    ).toBeCloseTo(0);
+  });
+
+  it('CPU-solves instanced joint deformation and publishes the return-to-bind geometry', () => {
+    const input = manualInstancedSkinnedInput();
+    const controller = createGltfSceneController(input);
+
+    const forward = controller.applyAnimation('joint-slide', 1);
+    const posedPatch = forward.primitivePatches[0]!.patch as {
+      positions: Float32Array;
+      normals: Float32Array;
+    };
+    expect(posedPatch.positions[0]).toBeCloseTo(1);
+    expect(posedPatch.normals).toBeInstanceOf(Float32Array);
+    expect(posedPatch).not.toHaveProperty('bones');
+
+    const returned = controller.applyAnimation('joint-slide', 0);
+    expect(returned.primitivePatches).toHaveLength(1);
+    const restPatch = returned.primitivePatches[0]!.patch as {
+      positions: Float32Array;
+    };
+    expect([...restPatch.positions]).toEqual([0, 0, 0, 1, 0, 0, 0, 1, 0]);
+    expect(restPatch).not.toHaveProperty('bones');
+    expect(
+      (controller.scene.primitives[0] as InstancedMeshPrimitive).positions,
+    ).toEqual(restPatch.positions);
+  });
+
+  it('publishes combined native joint+morph pose state atomically without geometry', () => {
+    const input = manualSkinnedInput();
+    const source = input.scene.primitives[0] as SkinnedMeshPrimitive;
+    const morphedSource: SkinnedMeshPrimitive = {
+      ...source,
+      morphTargets: [new Float32Array([
+        1, 0, 0,
+        1, 0, 0,
+        1, 0, 0,
+      ])],
+      morphWeights: new Float32Array([0]),
+    };
+    const jointClip = input.animations[0]!;
+    const controller = createGltfSceneController({
+      ...input,
+      gltf: {
+        ...input.gltf,
+        meshes: [{
+          weights: [0],
+          primitives: [{
+            ...input.gltf.meshes![0]!.primitives[0]!,
+            targets: [{ POSITION: 0 }],
+          }],
+        }],
+      },
+      scene: {
+        ...input.scene,
+        primitives: [morphedSource],
+      },
+      animations: [{
+        ...jointClip,
+        name: 'joint-and-morph',
+        channels: [
+          ...jointClip.channels,
+          {
+            target: { node: 'gltf-node-0', path: 'weights' as const },
+            sampler: {
+              times: new Float32Array([0, 1]),
+              values: new Float32Array([0, 1]),
+            },
+          },
+        ],
+      }],
+    });
+
+    const frame = controller.applyAnimation('joint-and-morph', 1);
+    const patch = frame.primitivePatches[0]!.patch as {
+      bones: Float32Array;
+      morphWeights: Float32Array;
+    };
+    expect(Object.keys(patch).sort()).toEqual(['bones', 'morphWeights']);
+    expect(patch.bones[12]).toBeCloseTo(1);
+    expect([...patch.morphWeights]).toEqual([1]);
+    expect([
+      ...solveSkin({ ...morphedSource, ...patch }).positions,
+    ]).toEqual([2, 0, 0, 3, 0, 0, 2, 1, 0]);
   });
 
   it('bounds retained diagnostic history without truncating per-operation results', async () => {

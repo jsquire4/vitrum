@@ -680,7 +680,7 @@ describe('validateScene', () => {
     }]))).toThrow(/inverse representable as float32/);
   });
 
-  it('requires every material texture texCoord on its primitive or fallback mesh', () => {
+  it('requires every material texture texCoord on its primitive or effective analytic mesh', () => {
     expect(() => validateScene(sceneWith([{
       ...triangle('missing-uv2'),
       material: {
@@ -735,6 +735,22 @@ describe('validateScene', () => {
       shape: 'sphere',
       params: new Float32Array([0, 0, 0, 1]),
       material: { ...MATERIAL, normalMap: { handle: {}, texCoord: 2 } },
+    }]))).toThrow(/normalMap\.texCoord.*generated analytic mesh.*does not provide/);
+
+    expect(() => validateScene(sceneWith([{
+      kind: 'analytic',
+      id: 'generated-uv0-analytic',
+      shape: 'sphere',
+      params: new Float32Array([0, 0, 0, 1]),
+      material: { ...MATERIAL, normalMap: { handle: {}, texCoord: 0 } },
+    }]))).not.toThrow();
+
+    expect(() => validateScene(sceneWith([{
+      kind: 'analytic',
+      id: 'generated-default-uv0-analytic',
+      shape: 'sphere',
+      params: new Float32Array([0, 0, 0, 1]),
+      material: { ...MATERIAL, baseColorMap: { handle: {} } },
     }]))).not.toThrow();
   });
 
@@ -763,6 +779,30 @@ describe('validateScene', () => {
       }],
     })).toThrow(/intensity.*underflow to zero as float32/);
     expect(() => validateMaterialSpec({ ...MATERIAL, attenuationDistance: Infinity })).not.toThrow();
+  });
+
+  it('enforces the Khronos IOR domain and unbounded non-negative specular color', () => {
+    for (const ior of [0, 1, 1.5, 2.5]) {
+      expect(() => validateMaterialSpec({ ...MATERIAL, ior })).not.toThrow();
+    }
+    expect(() => validateMaterialSpec({ ...MATERIAL, ior: 0.5 })).toThrow(
+      /ior.*must be 0 .* or >= 1/,
+    );
+    expect(() => validateMaterialSpec({ ...MATERIAL, ior: -1 })).toThrow(
+      /ior.*must be 0 .* or >= 1/,
+    );
+    expect(() => validateMaterialSpec({
+      ...MATERIAL,
+      specularColor: [1.25, 4, 0],
+    })).not.toThrow();
+    expect(() => validateMaterialSpec({
+      ...MATERIAL,
+      specularColor: [1, -0.01, 1],
+    })).toThrow(/specularColor\[1\].*>= 0/);
+    expect(() => validateMaterialSpec({
+      ...MATERIAL,
+      specularColor: [1, Number.POSITIVE_INFINITY, 1],
+    })).toThrow(/specularColor\[1\].*finite/);
   });
 
   it('reserves only non-enumerable symbols for metadata', () => {

@@ -6,7 +6,7 @@
 // method, so we pin the routing by asserting exactly which one fired:
 //   - transformRefit (TLAS)   → refreshTlasRefit
 //   - positionsRefit          → refreshBvhNormalsSlice
-//   - topologyRebuild         → refreshBvhFullRebuild
+//   - topologyRebuild         → transactional replacement
 //   - materialPatch           → refreshBvhMaterialSlice (+ optional atlas refresh)
 //   - wholesale topology field → intercepted to setScene (none of the refit/
 //     rebuild slice methods fire from _routePrimitiveUpdate)
@@ -19,8 +19,8 @@ import type { MockInstance } from 'vitest';
 import {
   asMat4,
   type EngineWarning,
+  type MeshPrimitive,
   type Scene,
-  type ScenePrimitive,
   type SkinnedMeshPrimitive,
 } from '@vitrum/core';
 import { HybridEngine, type HybridEngineOptions } from '../HybridEngine.js';
@@ -75,7 +75,7 @@ function identityMat4(): Float32Array {
   ]);
 }
 
-function mesh(id: string, x: number): ScenePrimitive {
+function mesh(id: string, x: number): MeshPrimitive {
   return {
     kind: 'mesh',
     id,
@@ -113,6 +113,29 @@ function baseScene(): Scene {
   };
 }
 
+function vertexColorScene(): Scene {
+  const lane0 = new Float32Array([
+    1, 0, 0,
+    1, 0, 0,
+    1, 0, 0,
+  ]);
+  const lane1 = new Float32Array([
+    0, 1, 0,
+    0, 0.5, 0,
+    0, 0.25, 0,
+  ]);
+  return {
+    primitives: [{
+      ...mesh('mesh-a', 0),
+      colors: lane0,
+      colorSets: [lane0, lane1],
+      vertexColorSet: 0,
+    }],
+    emitters: [],
+    environment: { kind: 'none' },
+  };
+}
+
 function skinnedScene(): Scene {
   return {
     primitives: [skinnedMesh('skin-a', 0)],
@@ -128,10 +151,8 @@ function makePipeline() {
   return {
     dispose: vi.fn(),
     refreshBvhMaterialSlice: vi.fn(),
-    refreshBvhEmissiveLe: vi.fn(),
     refreshBvhNormalsSlice: vi.fn(),
     refreshBvhRefit: vi.fn(),
-    refreshBvhFullRebuild: vi.fn(),
     replaceBvhAndEmitters: vi.fn(),
     refreshMaterialTextureAtlas: vi.fn(),
     refreshTlasRefit: vi.fn(),
@@ -271,6 +292,82 @@ describe('HybridEngine _routePrimitiveUpdate (patch shape → routed path) matri
     }
   });
 
+  it('primitive castShadow mutation → topologyRebuild/repack', () => {
+    const { engine, pipeline } = seedEngine(baseScene());
+    try {
+      engine.updatePrimitive('mesh-a', { castShadow: false });
+      expect(routeMarkers(pipeline)).toEqual({
+        transformRefit: 0, positionsRefit: 0, topologyRebuild: 1, materialPatch: 0,
+      });
+    } finally {
+      engine.dispose();
+    }
+  });
+
+  it.each([
+    [
+      'colors',
+      baseScene,
+      {
+        colors: new Float32Array([
+          0.8, 0.2, 0.1,
+          0.7, 0.3, 0.2,
+          0.6, 0.4, 0.3,
+        ]),
+      },
+    ],
+    [
+      'colorSets',
+      baseScene,
+      {
+        colorSets: [new Float32Array([
+          0.8, 0.2, 0.1,
+          0.7, 0.3, 0.2,
+          0.6, 0.4, 0.3,
+        ])],
+      },
+    ],
+    ['vertexColorSet', vertexColorScene, { vertexColorSet: 1 }],
+  ] satisfies ReadonlyArray<
+    readonly [string, () => Scene, Partial<MeshPrimitive>]
+  >)(
+    'vertex-color field (%s) → topologyRebuild/repack',
+    (_field, makeScene, patch) => {
+      const { engine, pipeline } = seedEngine(makeScene());
+      try {
+        engine.updatePrimitive('mesh-a', patch);
+        expect(routeMarkers(pipeline)).toEqual({
+          transformRefit: 0,
+          positionsRefit: 0,
+          topologyRebuild: 1,
+          materialPatch: 0,
+        });
+      } finally {
+        engine.dispose();
+      }
+    },
+  );
+
+  it('vertexColorSet mutation republishes the newly selected COLOR_n lane', () => {
+    const { engine, pipeline } = seedEngine(vertexColorScene());
+    try {
+      engine.updatePrimitive('mesh-a', { vertexColorSet: 1 });
+      const mutation = pipeline.prepareSceneMutation.mock.calls[0]?.[0];
+      if (mutation?.replacement == null) {
+        throw new Error('vertexColorSet mutation did not publish a BVH replacement');
+      }
+      expect([
+        ...new Float32Array(mutation.replacement.bvhColors.cpuData),
+      ]).toEqual([
+        0, 1, 0, 1,
+        0, 0.5, 0, 1,
+        0, 0.25, 0, 1,
+      ]);
+    } finally {
+      engine.dispose();
+    }
+  });
+
   it('material only → materialPatch (slice re-pack), NOT rebuild', () => {
     const { engine, pipeline } = seedEngine(baseScene());
     try {
@@ -352,22 +449,17 @@ describe('HybridEngine _routePrimitiveUpdate (patch shape → routed path) matri
     }
   });
 
-  it('wholesale topology field (kind) → intercepted to setScene, not the refit/rebuild slice methods', () => {
+  it('equal kind discriminant is neutral, not a wholesale rebuild', () => {
     const { engine, pipeline } = seedEngine(baseScene());
+    const setScene = vi.spyOn(engine, 'setScene');
     try {
-      // `kind` is a wholesale-replacement field: updatePrimitive intercepts it
-      // and routes through setScene BEFORE _routePrimitiveUpdate, so none of the
-      // in-place slice methods fire. (setScene itself would fail on the stubbed
-      // pipeline; we only assert the routing decision, so guard the throw.)
-      try {
-        engine.updatePrimitive('mesh-a', { kind: 'mesh' });
-      } catch {
-        /* setScene needs a real device; the routing decision already happened */
-      }
+      engine.updatePrimitive('mesh-a', { kind: 'mesh' });
+      expect(setScene).not.toHaveBeenCalled();
       expect(routeMarkers(pipeline)).toEqual({
         transformRefit: 0, positionsRefit: 0, topologyRebuild: 0, materialPatch: 0,
       });
     } finally {
+      setScene.mockRestore();
       engine.dispose();
     }
   });

@@ -92,7 +92,7 @@ describe('Wave 4 — env DI NEE candidate call sites', () => {
     expect(src).toContain('r.areaM = mAreaSupport;');
     expect(src).toContain('r.envM = mEnvSupport;');
     expect(src).toContain('r.M = mAreaSupport + mEnvSupport;');
-    expect(countOccurrences(src, 'restir_di_compute_phat_from_surface(')).toBe(1);
+    expect(src).not.toContain('restir_di_compute_phat_from_surface(');
   });
 
   it('shade lo_direct handles ENV_SAMPLE_SENTINEL via envDirFromXi + envRadiance', () => {

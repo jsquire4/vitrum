@@ -25,17 +25,14 @@ export { pickPrimitiveCpu, type PickCamera } from './pickPrimitiveCpu.js';
 export { refitBvhBounds } from './refitBvhBounds.js';
 export * from './buildArrayBvh.js';
 export * from './compressedWideBvh.js';
-export { validateBvhEncoding } from './validateBvhEncoding.js';
+export {
+  validateBvhEncoding,
+  type BvhEncodingProof,
+  type BvhEncodingValidationOptions,
+} from './validateBvhEncoding.js';
 export * from './sceneBvh.js';
 export * from './materialEntry.js';
 export * from './emitterClassify.js';
-export {
-  emitterToCanonical,
-  canonicalizeEmitter,
-  canonicalMeshAreaIncluded,
-  type CanonicalEmitter,
-  type CanonicalEmitterKind,
-} from './emitterCanonical.js';
 export {
   mergeWorldSpaceFromCore,
   mergeUvSetFromCore,

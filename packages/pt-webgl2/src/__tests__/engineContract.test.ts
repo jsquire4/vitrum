@@ -215,7 +215,7 @@ function opts(): PTEngineWebGL2Options {
   return { device: createMockGl() };
 }
 
-function frame(spp: number): FrameInput {
+function frame(spp: number, width = 64, height = 64): FrameInput {
   // an identity-ish view + a finite invertible projection (packFrameParams inverts both)
   const view = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, -5, 1]);
   const proj = new Float32Array([1.5, 0, 0, 0, 0, 1.5, 0, 0, 0, 0, -1.002, -1, 0, 0, -0.2, 0]);
@@ -223,7 +223,7 @@ function frame(spp: number): FrameInput {
     viewMatrix: view as never,
     projMatrix: proj as never,
     cameraPosition: [0, 0, 5] as never,
-    viewport: { width: 64, height: 64, devicePixelRatio: 1 },
+    viewport: { width, height, devicePixelRatio: 1 },
     frameIndex: 0,
     frameSeed: 0,
     quality: { samplesTarget: spp },
@@ -866,26 +866,26 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
     e.setScene(triScene());
 
     e.setSize!(32, 48);
-    const first = e.renderFrame(frame(16));
+    const first = e.renderFrame(frame(16, 32, 48));
     expect(first.kind).toBe('rendered');
     expect(first.samplesAccumulated).toBe(1);
     let captured = await e.captureFrame!();
     expect(captured?.width).toBe(32);
     expect(captured?.height).toBe(48);
 
-    expect(e.renderFrame(frame(16)).samplesAccumulated).toBe(2);
+    expect(e.renderFrame(frame(16, 32, 48)).samplesAccumulated).toBe(2);
     e.setSize!(32, 48);
-    expect(e.renderFrame(frame(16)).samplesAccumulated).toBe(3);
+    expect(e.renderFrame(frame(16, 32, 48)).samplesAccumulated).toBe(3);
 
     e.setSize!(16, 20);
-    const resized = e.renderFrame(frame(16));
+    const resized = e.renderFrame(frame(16, 16, 20));
     expect(resized.samplesAccumulated).toBe(1);
     captured = await e.captureFrame!();
     expect(captured?.width).toBe(16);
     expect(captured?.height).toBe(20);
 
     expect(() => e.setSize!(0, 20)).toThrow(/positive safe integer/);
-    expect(e.renderFrame(frame(16)).samplesAccumulated).toBe(2);
+    expect(e.renderFrame(frame(16, 16, 20)).samplesAccumulated).toBe(2);
   });
 
   it('converges at samplesTarget and stops advancing', async () => {
@@ -1254,7 +1254,7 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
     }
   });
 
-  it('extends a preallocated material atlas in place for same-dimension map insertions', async () => {
+  it('transactionally rebuilds both atlas classes for same-dimension map insertions', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const structured: EngineWarning[] = [];
     const gl = createMockGl();
@@ -1311,32 +1311,107 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
 
       expect(
         structured.filter((w) => w.code === 'pt-webgl2.primitive-mutation-fallback-rebuild'),
-      ).toHaveLength(0);
-      expect(createTexture.mock.calls.length - initialTextureUploads).toBe(0);
-      expect(texImage3D.mock.calls.length - initialImage3D).toBe(0);
-      expect(texStorage3D.mock.calls.length - initialStorage3D).toBe(0);
-      expect(texSubImage3D.mock.calls.length - initialSubImage3D).toBe(1);
-      expect(texSubImage3D.mock.calls.at(-1)?.[7]).toBe(2);
-      expect(texSubImage2D.mock.calls.length - initialSubImage2D).toBe(1);
+      ).toHaveLength(1);
+      expect(createTexture.mock.calls.length - initialTextureUploads).toBeGreaterThan(0);
+      expect(texImage3D.mock.calls.length - initialImage3D).toBeGreaterThan(0);
+      expect(texStorage3D.mock.calls.length - initialStorage3D).toBeGreaterThan(0);
+      expect(texSubImage3D.mock.calls.length - initialSubImage3D).toBeGreaterThan(0);
+      expect(texSubImage2D.mock.calls.length - initialSubImage2D).toBe(0);
       expect(e._debugGeoPack?.materials[0]?.baseColorMap?.handle).toBe(baseMap);
       expect(e._debugGeoPack?.materials[0]?.roughnessMap?.handle).toBe(roughnessMap);
       expect(e._debugGeoPack?.materials[0]?.roughness).toBe(0.4);
       expect(
         structured.filter((w) => w.code === 'pt-webgl2.material-atlas-texture-refresh'),
       ).toHaveLength(0);
-      expect(
-        warn.mock.calls
-          .flat()
-          .map(String)
-          .filter(
-            (m) =>
-              m.includes('primitive-mutation-fallback-rebuild') ||
-              m.includes('texture-map-material-patch'),
-          ),
-      ).toHaveLength(0);
     } finally {
       warn.mockRestore();
     }
+  });
+
+  it('uploads linear HDR emissive maps through the dedicated RGBA16F atlas', async () => {
+    const gl = createMockGl();
+    const texStorage3D = vi.fn();
+    const texSubImage3D = vi.fn();
+    (gl as unknown as { texStorage3D: typeof texStorage3D }).texStorage3D = texStorage3D;
+    (gl as unknown as { texSubImage3D: typeof texSubImage3D }).texSubImage3D = texSubImage3D;
+    const baseScene = triScene();
+    const primitive = baseScene.primitives[0];
+    if (primitive?.kind !== 'mesh') throw new Error('expected mesh fixture');
+    const hdrHandle = {
+      width: 1,
+      height: 1,
+      data: new Float32Array([8, 4, 2, 1]),
+      __vitrum_hint__: {
+        channels: 4,
+        dataType: 'float32',
+        colorSpace: 'linear',
+      } as const,
+    };
+    const scene: Scene = {
+      ...baseScene,
+      primitives: [{
+        ...primitive,
+        material: {
+          ...primitive.material,
+          emissive: [1, 1, 1],
+          emissiveIntensity: 1,
+          emissiveMap: { handle: hdrHandle },
+        },
+      }],
+    };
+    const engine = await createPTEngine_WebGL2({ device: gl });
+
+    engine.setScene(scene);
+
+    expect(texStorage3D.mock.calls.some((call) => call[2] === gl.RGBA16F)).toBe(true);
+    const hdrUpload = texSubImage3D.mock.calls.find((call) => call[9] === gl.HALF_FLOAT);
+    expect(hdrUpload?.[10]).toBeInstanceOf(Uint16Array);
+    expect((hdrUpload?.[10] as Uint16Array | undefined)?.[0]).toBe(0x4800);
+  });
+
+  it('keeps the previous scene published when a staged HDR-atlas upload fails', async () => {
+    const gl = createMockGl();
+    let nextTextureId = 0;
+    let rejectHdrStorage = false;
+    const createTexture = vi.fn(() => ({ id: nextTextureId++ }));
+    const deleteTexture = vi.fn();
+    const texStorage3D = vi.fn((...args: unknown[]) => {
+      if (rejectHdrStorage && args[2] === gl.RGBA16F) {
+        throw new Error('synthetic RGBA16F allocation failure');
+      }
+    });
+    (gl as unknown as { createTexture: typeof createTexture }).createTexture = createTexture;
+    (gl as unknown as { deleteTexture: typeof deleteTexture }).deleteTexture = deleteTexture;
+    (gl as unknown as { texStorage3D: typeof texStorage3D }).texStorage3D = texStorage3D;
+    const engine = await createPTEngine_WebGL2({ device: gl, onWarning: () => {} });
+    engine.setScene(triScene());
+    const retainedScene = engine.getScene?.();
+    const firstCandidateTextureId = nextTextureId;
+    rejectHdrStorage = true;
+    const hdrHandle = {
+      width: 1,
+      height: 1,
+      data: new Float32Array([8, 4, 2, 1]),
+      __vitrum_hint__: {
+        channels: 4,
+        dataType: 'float32',
+        colorSpace: 'linear',
+      } as const,
+    };
+
+    expect(() => engine.updatePrimitive?.('tri', {
+      material: {
+        emissive: [1, 1, 1],
+        emissiveMap: { handle: hdrHandle },
+      },
+    } as never)).toThrow(/synthetic RGBA16F allocation failure/);
+
+    expect(engine.getScene?.()).toBe(retainedScene);
+    expect(engine._debugGeoPack?.materials[0]?.emissiveMap).toBeUndefined();
+    expect(deleteTexture).toHaveBeenCalled();
+    expect(deleteTexture.mock.calls.every(
+      ([texture]) => (texture as { id: number }).id >= firstCandidateTextureId,
+    )).toBe(true);
   });
 
   it('transactionally rebuilds when a material atlas changes dimensions', async () => {
@@ -1967,7 +2042,7 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
     }
   });
 
-  it('keeps atlas-backed dimension-stable primitive list mutations resident', async () => {
+  it('transactionally rebuilds atlas-backed primitive-list mutations', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const structured: EngineWarning[] = [];
     const gl = createMockGl();
@@ -2000,13 +2075,13 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
       ]);
       expect(
         structured.filter((w) => w.code === 'pt-webgl2.primitive-list-fallback-rebuild'),
-      ).toHaveLength(0);
+      ).toHaveLength(1);
       expect(
         structured.filter((w) => w.code === 'pt-webgl2.material-atlas-texture-refresh'),
       ).toHaveLength(0);
-      expect(createTexture.mock.calls.length - initialTextureUploads).toBe(0);
-      expect(texSubImage2D.mock.calls.length - initialSubImage2D).toBe(6);
-      expect(texSubImage3D.mock.calls.length - initialSubImage3D).toBe(2);
+      expect(createTexture.mock.calls.length - initialTextureUploads).toBeGreaterThan(0);
+      expect(texSubImage2D.mock.calls.length - initialSubImage2D).toBe(0);
+      expect(texSubImage3D.mock.calls.length - initialSubImage3D).toBeGreaterThan(0);
       expect(
         warn.mock.calls
           .flat()

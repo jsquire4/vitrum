@@ -1,16 +1,18 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
-  MAX_OCTAHEDRAL_SOLID_ANGLE_GRID_SIZE,
   RC_DEFAULT_TRANSMITTED_INTERFACE_BUDGET,
   RC_MAX_TRANSMITTED_INTERFACE_BUDGET,
   RC_MIN_TRANSMITTED_INTERFACE_BUDGET,
   RCDispatcher,
-  allocateCascades,
-  computeOctahedralSolidAngles,
   validateCascadeDims,
   type CascadeDim,
   type RCDispatchOptsRaw,
 } from '../src/index.js';
+import { allocateCascades } from './support/cascadeBuffers.js';
+import {
+  computeOctahedralSolidAngles,
+  MAX_OCTAHEDRAL_SOLID_ANGLE_GRID_SIZE,
+} from './support/octahedralSolidAngles.js';
 import {
   buildCascadeUniformDataInto,
   type CascadeUniformInputs,

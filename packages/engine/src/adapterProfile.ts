@@ -143,9 +143,8 @@ export async function probeAdapterProfile(
   const facts = await resolveFacts(source);
 
   // WebGL2 fallback presence — drives the hero-backend recommendation when
-  // WebGPU is absent. A synchronous canvas probe (no async adapter request);
-  // returns true in headless/no-DOM environments so a missing `document` does
-  // not falsely downgrade the recommendation to 'none'.
+  // WebGPU is absent. The synchronous DOM/OffscreenCanvas probe fails closed
+  // when the current realm cannot actually create either surface.
   const hasWebGL2 = detectWebGL2Sync();
 
   if (!facts.hasWebGPU) {
@@ -226,22 +225,23 @@ function recommendHeroBackend(
   return 'none';
 }
 
-/** Synchronous WebGL2 presence check (no async adapter request). Returns true
- *  in non-DOM environments (headless tests) so a missing `document` does not
- *  falsely report 'none' — the realtime/hero recommendation already gates on
- *  the WebGPU verdicts.
+/** Synchronous WebGL2 presence check (no async adapter request).
  *
  *  H31-e — the catch branch used to return `true`, which caused a false-positive
  *  `recommendedHeroBackend` on any exception thrown by `getContext('webgl2')` (e.g.
- *  a CSP violation or a WebGL-disabled worker). Return `false` on exception so the
- *  WebGL2 recommendation is conservative on real failures. The `document` undefined
- *  guard stays `true` — headless test environments without a DOM are intentionally
- *  assumed to support WebGL2 (test stubs handle that). */
+ *  a CSP violation or a WebGL-disabled worker). A missing DOM is not positive
+ *  evidence either: workers are probed through OffscreenCanvas when available,
+ *  while SSR/headless realms fail closed instead of recommending a backend whose
+ *  constructor cannot acquire a context. */
 function detectWebGL2Sync(): boolean {
-  if (typeof document === 'undefined') return true;
   try {
-    const canvas = document.createElement('canvas');
-    return canvas.getContext('webgl2') != null;
+    if (typeof document !== 'undefined') {
+      return document.createElement('canvas').getContext('webgl2') != null;
+    }
+    if (typeof OffscreenCanvas !== 'undefined') {
+      return new OffscreenCanvas(1, 1).getContext('webgl2') != null;
+    }
+    return false;
   } catch {
     return false;
   }

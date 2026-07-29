@@ -8,8 +8,8 @@ import { SHADING_TERMS_WGSL } from '../shadingTerms.wgsl.js';
 import { NRC_INDEPENDENT_SUFFIX_WGSL } from '../nrcIndependentSuffix.wgsl.js';
 import { RESERVOIR_DI_WGSL } from '../reservoirDi.wgsl.js';
 import { SAMPLE_CASCADE_C0_WGSL } from '../sampleCascadeC0.wgsl.js';
-import { TEMPORAL_GI_WGSL, TEMPORAL_GI_GRIS_WGSL } from '../temporalGi.wgsl.js';
-import { SPATIAL_GI_WGSL, SPATIAL_GI_GRIS_WGSL } from '../spatialGi.wgsl.js';
+import { TEMPORAL_GI_WGSL } from '../temporalGi.wgsl.js';
+import { SPATIAL_GI_WGSL } from '../spatialGi.wgsl.js';
 
 describe('exact represented radiometric support', () => {
   it('retains tiny positive DI source PDFs and rejects only non-finite weights', () => {
@@ -34,7 +34,7 @@ describe('exact represented radiometric support', () => {
     expect(glass).not.toMatch(/pHat_g\s*[<=>]+\s*1e-/);
     expect(glass).not.toMatch(/candidateVisibility_g\s*[<=>]+\s*0\.001/);
 
-    for (const src of [TEMPORAL_GI_WGSL, TEMPORAL_GI_GRIS_WGSL, SPATIAL_GI_WGSL, SPATIAL_GI_GRIS_WGSL]) {
+    for (const src of [TEMPORAL_GI_WGSL, SPATIAL_GI_WGSL]) {
       expect(src).not.toMatch(/pHat[^\n]*1e-9/);
       expect(src).not.toMatch(/denominator[^\n]*1e-12/);
     }

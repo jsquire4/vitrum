@@ -10,6 +10,7 @@ Sampling utilities for path tracers and walkaround engines: QMC sequences, light
 - `defineUbo` — declarative WGSL UBO codegen helper (W2-C13). Pack + unpack + WGSL struct generation from a single field-type table.
 - `CIE_X_TABLE`, `CIE_Y_TABLE`, `CIE_Z_TABLE`, `X_CMF_INTEGRAL`, `Y_CMF_INTEGRAL`, `Z_CMF_INTEGRAL`, `X_CMF_CDF`, `Y_CMF_CDF`, `Z_CMF_CDF`, `sampleHeroWavelengthMIS` — spectral sampling consumed by pt-webgl2 (`glResources.ts`, `composeTraceGlsl.ts`) and pt-webgpu (`kernel.wgsl.ts`, `kernelLite.wgsl.ts`).
 - `haltonSO3AxisAngleFromFrameIndex` — deterministic Halton-Shoemake SO(3) axis-angle sampler used by walkaround DDGI probe rotation.
+- `SOBOL_DIRECTION_NUMBERS_WGSL` / `SOBOL_DIRECTION_DIMENSION_COUNT` — the binding-free 512-dimension Joe–Kuo D(6) prefix shared byte-for-byte by the CPU oracle and pt-webgpu; dimensions beyond the prefix use a deterministic independent-PCG continuation.
 
 **Hoisted WGSL primitives (also exported from package index):**
 - `PCG_WGSL`, `PCG_HASH_TO_F32_WGSL`, `BSDF_PRIMITIVES_WGSL`, `LUMINANCE_WGSL` — canonical declarations; consumers should import via `wgslModules.ts` `requires` rather than inlining duplicates.
@@ -20,12 +21,11 @@ Sampling utilities for path tracers and walkaround engines: QMC sequences, light
 **Standalone CPU/host utilities (zero backend imports are intentional):**
 - `mixturePdf` — general N-strategy mixture-PDF evaluator for host algorithms
   and numerical oracles.
-- `sampleEquiAngular` — homogeneous-volume distance sampler for host algorithms
-  and CPU reference implementations.
 
 **Also exported from the package index:**
 `buildLightTree`, `evaluateHG`, BDPT MIS helpers (`bdptConnectionMIS_full`,
-`BDPTFullVertex`; `_partial` variants deleted), Jakob–Hanika spectral upsampling
+`bdptExplicitConnectionStrategyIsValid`, `maskBDPTExplicitConnectionStrategyPDFs`,
+`BDPT_EXPLICIT_STRATEGY_MASK_WGSL`, `BDPTFullVertex`; `_partial` variants deleted), Jakob–Hanika spectral upsampling
 (`rgbToSpectralCoefficients`), and the Cauchy IOR formula (`cauchyIOR`) are
 available to consumers. Unit tests pin their numerical contracts. BDPT vertex
 storage is deliberately backend-owned: the WebGL2 and WebGPU renderers retain

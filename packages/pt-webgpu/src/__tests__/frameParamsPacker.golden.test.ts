@@ -88,7 +88,7 @@ function reconstructExpected(
   f[FrameParamsSlot.sceneRadius] = Math.max(1e-3, sb.sceneRadius);
   u[FrameParamsSlot.directLightingMode] =
     config.directLightingMode === 'summed-expectation' ? 1 : 0;
-  // H14-E: HDRI intensity in its own slot (slot 31), separate from environmentSun.w.
+  // H14-E: map-backed environment intensity occupies its own stable slot 31.
   f[FrameParamsSlot.environmentHdriIntensity] = sb.environmentHdriIntensity;
   const cameraPosition = resolveFrameCameraPosition(input);
   f[FrameParamsSlot.cameraPos] = cameraPosition[0];

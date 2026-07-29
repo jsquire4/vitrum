@@ -541,13 +541,11 @@ export function buildCompositeBindGroup(
   device: GPUDevice,
   cache: BGLCache,
   texView: GPUTextureView,
-  compositeSampler: GPUSampler,
   compositeUbo: GPUBuffer,
 ): GPUBindGroup {
   return buildBindGroupFromTable(device, 'composite', getCompositeBindGroupLayout(device, cache), [
     texView,                      // 0 — denoised HDR source
-    compositeSampler,             // 1 — (nearest, unfilterable-float)
-    { buffer: compositeUbo },     // 2 — CompositeUniforms (tonemap/exposure/colorspace)
+    { buffer: compositeUbo },     // 1 — CompositeUniforms (tonemap/exposure/colorspace)
   ]);
 }
 
@@ -700,12 +698,14 @@ export function buildIndirectTemporalAccumBindGroup(
   cache: BGLCache,
   currentRawView: GPUTextureView,
   prevAccumView: GPUTextureView,
+  motionVectorView: GPUTextureView,
   outAccumView: GPUTextureView,
 ): GPUBindGroup {
   return buildBindGroupFromTable(device, 'indirectTemporalAccum', getIndirectTemporalAccumBindGroupLayout(device, cache), [
     currentRawView,   // 0
     prevAccumView,    // 1
-    outAccumView,     // 2
+    motionVectorView, // 2
+    outAccumView,     // 3
   ]);
 }
 

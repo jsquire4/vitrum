@@ -177,7 +177,36 @@ export const PT_LOCAL_ACCEPTANCE_PROOFS = {
       "packages/pt-webgpu/src/__tests__/bdptDeltaTransport.test.ts",
     ],
     sourcePath: "packages/pt-webgpu/src/ptWebgpuValidation.ts",
-    needles: ["BDPT_DEFAULT_LIGHT_BOUNCES = 2", "BDPT_MAX_LIGHT_BOUNCES = 8"],
+    needles: [
+      "BDPT_DEFAULT_LIGHT_BOUNCES = 2",
+      "BDPT_MAX_LIGHT_BOUNCES =\n  PT_WEBGPU_BDPT_SUPPORT.maxLightVertices",
+    ],
+  },
+  bdptCameraSplat: {
+    paths: [
+      "packages/pt-webgpu/src/__tests__/bdptCameraSplatCpu.test.ts",
+      "packages/pt-webgpu/src/__tests__/bdptCameraSplatWiring.test.ts",
+    ],
+    sourcePath: "packages/pt-webgpu/src/wgsl/bdpt/bdptCameraSplat.wgsl.ts",
+    needles: [
+      "export const PT_WEBGPU_BDPT_CAMERA_SPLAT_WGSL",
+      "atomicCompareExchangeWeak(",
+      "fn bdptLoadCameraRgb(",
+      "fn bdptAccumulateCameraSplatStrategies(",
+    ],
+  },
+  advancedFrameGlobalComposition: {
+    paths: [
+      "packages/pt-webgpu/src/__tests__/advancedEstimatorComposition.test.ts",
+    ],
+    sourcePath: "packages/pt-webgpu/src/wgsl/pathTrace/kernel.wgsl.ts",
+    needles: [
+      "var frameEstimatorHash =",
+      "params.frameSeed ^ (params.frameIndex * 0x9e3779b9u);",
+      "let rptMixtureSelected =",
+      "let advancedEstimatorSelected =",
+      "advancedPeerEnabled && !rptMixtureSelected",
+    ],
   },
   restirPtGlossy: {
     paths: [
@@ -186,9 +215,9 @@ export const PT_LOCAL_ACCEPTANCE_PROOFS = {
     ],
     sourcePath: "packages/pt-webgpu/src/index.ts",
     needles: [
+      "readonly oneEdgeReconnectionReuse?: boolean",
       "readonly restirPtReuse?: boolean",
       "readonly mClamp?: number",
-      "readonly wCap?: number",
     ],
   },
   sobol: {
@@ -196,7 +225,7 @@ export const PT_LOCAL_ACCEPTANCE_PROOFS = {
     sourcePath: "packages/core/src/engine/promiseLedger.ts",
     needles: [
       "default: 'pcg'",
-      "lowDiscrepancyDimensions: 4",
+      "lowDiscrepancyDimensions: 512",
       "continuation: 'independent-pcg'",
     ],
   },

@@ -118,6 +118,9 @@ function makeRenderAndReadbackDevice(rec: Recorder): GPUDevice {
     createBindGroup: vi.fn(() => ({})),
     createCommandEncoder: vi.fn(() => encoder),
     limits: {
+      maxBufferSize: 0xffff_ffff,
+      maxStorageBufferBindingSize: 0xffff_ffff,
+      maxComputeWorkgroupsPerDimension: 0xffff_ffff,
       maxStorageBuffersPerShaderStage: 64,
       maxStorageTexturesPerShaderStage: 8,
       maxTextureDimension2D: 8192,
@@ -207,7 +210,10 @@ describe('pt-webgpu inverse render while host-paused', () => {
       const expected = expect.objectContaining({
         code: 'path-replay-unsupported-field',
         path: `materials.panel.${field}`,
-        details: expect.objectContaining({ proof: 'missing-end-to-end-gpu-fit' }),
+        details: expect.objectContaining({
+          field,
+          expectedField: 'emissive',
+        }),
       });
       expect(reported).toContainEqual(expected);
       expect(engine.getScene!()).toBe(retainedScene);
@@ -215,6 +221,18 @@ describe('pt-webgpu inverse render while host-paused', () => {
       expect(retainedMaterial.roughness).toBe(0.5);
     }
 
+    engine.setScene({
+      ...scene,
+      primitives: scene.primitives.map((primitive) => ({
+        ...primitive,
+        material: {
+          ...primitive.material,
+          shadingModel: 'unlit',
+          emissive: [0.2, 0.2, 0.2],
+        },
+      })),
+    });
+    engine.renderFrame(frameInput());
     const emissive = engine.createInverseSession!({
       ...common,
       parameters: [{ path: 'materials.panel.emissive', kind: 'rgb' }],
@@ -224,6 +242,60 @@ describe('pt-webgpu inverse render while host-paused', () => {
     expect(warnings).toEqual([]);
 
     emissive.dispose();
+    engine.dispose();
+  });
+
+  it('preflights replay against the latest paused-frame bounce regime', async () => {
+    const rec: Recorder = { computePassLabels: [], directLightingModes: [], bufferCopies: 0 };
+    const engine = await createPTEngine_WebGPU({
+      device: makeRenderAndReadbackDevice(rec),
+      cameraVisibleEmitters: true,
+    });
+    const scene = makeScene();
+    engine.setScene({
+      ...scene,
+      primitives: scene.primitives.map((primitive) => ({
+        ...primitive,
+        material: {
+          ...primitive.material,
+          shadingModel: 'unlit',
+          emissive: [0.2, 0.2, 0.2],
+        },
+      })),
+    });
+    engine.renderFrame(frameInput());
+    engine.pause();
+    engine.renderFrame({
+      ...frameInput(),
+      quality: {
+        ...frameInput().quality,
+        bounces: 2,
+      },
+    });
+
+    const diagnostics: unknown[] = [];
+    expect(() => engine.createInverseSession!({
+      target: {
+        data: new Float32Array([0.4, 0.4, 0.4]),
+        width: 1,
+        height: 1,
+        channels: 3,
+      },
+      method: 'path-replay',
+      parameters: [{ path: 'materials.panel.emissive', kind: 'rgb' }],
+      samplesPerStep: 1,
+      optimizer: { learningRate: 0.01, fdEpsilon: 1e-3 },
+      onDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
+    })).toThrow(/requested path-replay is outside the certified pt-webgpu domain/);
+    expect(diagnostics).toContainEqual(expect.objectContaining({
+      code: 'path-replay-unsupported-render-regime',
+      message: expect.stringMatching(/forward baseline used 2 bounces/),
+      details: expect.objectContaining({
+        bounces: 2,
+        supportedBounces: 1,
+      }),
+    }));
+
     engine.dispose();
   });
 });

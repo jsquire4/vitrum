@@ -13,7 +13,6 @@ type PipelineMutationHarness = {
     refreshBvhRefit: ReturnType<typeof vi.fn>;
     refreshBvhNodesOnly: ReturnType<typeof vi.fn>;
     refreshTlasRefit: ReturnType<typeof vi.fn>;
-    refreshBvhFullRebuild: ReturnType<typeof vi.fn>;
     replaceBvhAndEmitters: ReturnType<typeof vi.fn>;
   };
   _ppg: {
@@ -36,7 +35,6 @@ function makePipelineHarness(initialPositions: Float32Array): PipelineMutationHa
     refreshBvhRefit: vi.fn(),
     refreshBvhNodesOnly: vi.fn(),
     refreshTlasRefit: vi.fn(),
-    refreshBvhFullRebuild: vi.fn(),
     replaceBvhAndEmitters: vi.fn(),
   };
   pipeline._ppg = {

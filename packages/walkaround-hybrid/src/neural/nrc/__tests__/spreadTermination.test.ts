@@ -339,7 +339,8 @@ describe('NRC warm-up gate — cold cache predictions do not replace DDGI', () =
       '&& nrcInferenceArenaValid() && nrcRuntimeArenaValid();',
     );
     expect(RIS_GI_NRC_BODY).toContain('Lo = select(');
-    expect(RIS_GI_NRC_BODY).toContain('nrcCanSubstitute && !grisOn,');
+    expect(RIS_GI_NRC_BODY).toContain('nrcCanSubstitute,');
+    expect(RIS_GI_NRC_BODY).not.toContain('grisOn');
     expect(RIS_GI_NRC_BODY).toContain('if (nrcFired) {');
     expect(RIS_GI_NRC_BODY).toContain('nrcWriteRecord(');
   });

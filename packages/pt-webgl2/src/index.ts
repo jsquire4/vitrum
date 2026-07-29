@@ -23,7 +23,6 @@ import type {
 } from '@vitrum/core';
 import {
   asBackendTexture,
-  BACKEND_PROMISE_LEDGER,
   MATERIAL_SPEC_FIELDS,
   deriveCameraPositionFromViewMatrix,
   patchEmitterInScene,
@@ -33,6 +32,7 @@ import {
 import type { WorldSpaceMergeResult } from '@vitrum/shared-bvh';
 import { pickPrimitiveCpu, type PickCamera } from '@vitrum/shared-bvh';
 import { buildCapabilities } from './capabilities.js';
+import { PT_WEBGL2_MATERIAL_SUPPORT } from './supportManifest.js';
 import { makeStateSlot, type StateSlot } from './state.js';
 import type { PTEngineWebGL2Options } from './options.js';
 import { resolveWebGl2TraceTier, type WebGl2TraceTier } from './traceTier.js';
@@ -101,13 +101,12 @@ function assertNoUnsupportedMaterialFields(scene: Scene, method: string): void {
   );
 }
 
-// CAP-01 — the remaining material fields this backend silently drops, derived
-// from the ledger's per-field support matrix so warning + capability rows can
-// never drift. `extensions` is the contract-sanctioned host-discretionary escape
-// hatch (no warning).
+// The renderer's rejection gate and live capability record consume the same
+// backend-local executable material manifest. `extensions` is the
+// contract-sanctioned host-discretionary escape hatch (no warning).
 const UNSUPPORTED_MATERIAL_FIELDS: readonly (keyof MaterialSpec)[] = MATERIAL_SPEC_FIELDS.filter(
   (field) =>
-    BACKEND_PROMISE_LEDGER['pt-webgl2'].supportDetails.materials[field] === 'unsupported' &&
+    PT_WEBGL2_MATERIAL_SUPPORT[field] === 'unsupported' &&
     field !== 'extensions',
 );
 
@@ -270,7 +269,6 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
   #sceneTextures: UploadedSceneTextures | null = null;
   #bdptSceneBounds: BdptSceneBounds = { center: [0, 0, 0], radius: 1 };
   #samplesAccumulated = 0;
-  #requestedSize: { width: number; height: number } | null = null;
   #resolutionFactor = 1;
   #accumulationSignature: AccumulationSignature | null = null;
   #presentationSignature: PresentationSignature | null = null;
@@ -402,7 +400,6 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
       this.#postDenoiser == null ? 'none' : 'oidn-final',
       this.#maxBouncesLimit,
       this.#maxSamplesLimit,
-      this.#supportsAuxBuffers,
       {
         bdpt: this.#bdpt,
         spectral: this.#spectralEnabled,
@@ -777,16 +774,15 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
   setSize(width: number, height: number): void {
     this.#guardLive('setSize');
     validateWebGl2PixelSize('setSize', width, height);
-    const next = { width, height };
-    if (this.#requestedSize?.width === next.width && this.#requestedSize.height === next.height)
-      return;
+    const targetWidth = Math.max(1, Math.floor(width * this.#resolutionFactor));
+    const targetHeight = Math.max(1, Math.floor(height * this.#resolutionFactor));
+    if (
+      this.#gpu.accumDims.width === targetWidth &&
+      this.#gpu.accumDims.height === targetHeight
+    ) return;
     if (this.#gpu.accumDims.width > 0 && this.#gpu.accumDims.height > 0) {
-      this.#gpu.ensureAccumResources(
-        Math.max(1, Math.floor(next.width * this.#resolutionFactor)),
-        Math.max(1, Math.floor(next.height * this.#resolutionFactor)),
-      );
+      this.#gpu.ensureAccumResources(targetWidth, targetHeight);
     }
-    this.#requestedSize = next;
     this.reset();
   }
 
@@ -816,8 +812,8 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
     const targetSpp = quality.samplesTarget;
     const res = quality.resolutionFactor;
     this.#resolutionFactor = res;
-    const requestedBaseWidth = this.#requestedSize?.width ?? input.viewport.width;
-    const requestedBaseHeight = this.#requestedSize?.height ?? input.viewport.height;
+    const requestedBaseWidth = input.viewport.width;
+    const requestedBaseHeight = input.viewport.height;
     const baseWidth =
       Number.isFinite(requestedBaseWidth) && requestedBaseWidth > 0 ? requestedBaseWidth : 1;
     const baseHeight =
@@ -957,7 +953,7 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
    * DELIBERATELY RGBA32F (not RGBA8): the present texture is also the public
    * `primaryRadiance`, which hosts and the GPU validation harnesses read with
    * FLOAT readPixels — a UNORM8 target makes that read fail silently
-   * (all-zeros). See createPresentTexture.
+   * (all-zeros). The presentation target therefore remains RGBA32F.
    *
    * Returns `null` before the first frame (FBO not yet allocated).
    * Synchronous (WebGL readPixels is always synchronous — no async stall). Wraps
@@ -982,10 +978,8 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
   ): Promise<{ rgba: Float32Array; channels: 4 }> {
     const last = this.#lastFrameInput!;
     const frozenSeedBase = 0x5eed5eed;
-    const previousRequestedSize = this.#requestedSize;
     const previousResolutionFactor = this.#resolutionFactor;
     this.#inInverseRender = true;
-    this.#requestedSize = { width, height };
     this.#resolutionFactor = 1;
     try {
       this.reset();
@@ -1009,7 +1003,6 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
       };
     } finally {
       this.#inInverseRender = false;
-      this.#requestedSize = previousRequestedSize;
       this.#resolutionFactor = previousResolutionFactor;
       this.reset();
     }
@@ -1203,7 +1196,6 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
       cameraType: this.#cameraType,
       dof: this.#dof != null,
       randomType: this.#randomType,
-      pathStepLimit: this.#maxBouncesLimit * 2,
       ...sceneFeatures,
     };
   }

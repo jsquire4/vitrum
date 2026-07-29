@@ -8,7 +8,7 @@ import {
 } from './materialPointerAnimation.js';
 import { attachGltfTextureRefSource, gltfTextureRefSource } from './textures.js';
 
-export type GltfAnimationPointerValueType = 'float' | 'integer' | 'boolean' | 'float-array';
+export type GltfAnimationPointerValueType = 'float' | 'boolean' | 'float-array';
 export type GltfAnimationPointerComponents = 1 | 2 | 3 | 4 | 'dynamic';
 
 interface GltfAnimationPointerTargetBase {
@@ -441,17 +441,6 @@ export function gltfAnimationPointerOutputAccessorError(
     if (accessor.componentType !== GltfComponentType.UNSIGNED_BYTE || accessor.normalized === true) {
       return 'boolean targets require a non-normalized UNSIGNED_BYTE SCALAR accessor';
     }
-  } else if (target.valueType === 'integer') {
-    const integerTypes = new Set<number>([
-      GltfComponentType.BYTE,
-      GltfComponentType.UNSIGNED_BYTE,
-      GltfComponentType.SHORT,
-      GltfComponentType.UNSIGNED_SHORT,
-      GltfComponentType.UNSIGNED_INT,
-    ]);
-    if (!integerTypes.has(accessor.componentType) || accessor.normalized === true) {
-      return 'integer targets require a non-normalized integer SCALAR accessor';
-    }
   } else {
     // KHR_animation_pointer float* values may come from FLOAT, normalized
     // byte/short integers, or non-normalized integers. UNSIGNED_INT and FLOAT
@@ -604,7 +593,7 @@ export function gltfAnimationPointerInterpolationError(
   target: GltfAnimationPointerTarget,
   interpolation: 'LINEAR' | 'STEP' | 'CUBICSPLINE',
 ): string | undefined {
-  if ((target.valueType === 'integer' || target.valueType === 'boolean') && interpolation !== 'STEP') {
+  if (target.valueType === 'boolean' && interpolation !== 'STEP') {
     return `${target.valueType} properties require STEP interpolation`;
   }
   if (interpolation === 'CUBICSPLINE' && pointerHasBoundedDomain(target)) {

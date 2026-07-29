@@ -34,10 +34,7 @@ import {
   classifyBufferUsage,
   estimateFrameResourcesMemory,
 } from '../src/pipeline/gpuMemoryEstimate.js';
-import {
-  RESERVOIR_GI_BASE_STRIDE_BYTES,
-  RESERVOIR_GI_GRIS_STRIDE_BYTES,
-} from '../src/restir/reservoirGiLayout.js';
+import { RESERVOIR_GI_STRIDE_BYTES } from '../src/gi/giLayout.js';
 
 // ─── Stub GPU device that records every texture / buffer allocation ─────────
 
@@ -205,36 +202,22 @@ describe('external GPU resource sections', () => {
 });
 
 describe('H24 ReSTIR-GI reservoir allocation', () => {
-  it('uses compact 20-u32 reservoirs by default and widens only for GRIS DDGI-proxy reuse', () => {
+  it('uses the sole live 28-u32 generalized-reuse layout', () => {
     const device = makeStubDevice();
     const W = 128;
     const H = 64;
     const halfPixels = Math.floor(W / 2) * Math.floor(H / 2);
 
-    const compact = createFrameResources(device, W, H);
-    const gris = createFrameResources(device, W, H, { grisReuse: true });
-
-    expect(compact.restirGI.reservoirGiCurrentBuffer.size).toBe(halfPixels * RESERVOIR_GI_BASE_STRIDE_BYTES);
-    expect(compact.restirGI.reservoirGiPreviousBuffer.size).toBe(halfPixels * RESERVOIR_GI_BASE_STRIDE_BYTES);
-    expect(compact.restirGI.reservoirGiSpatialBuffer.size).toBe(halfPixels * RESERVOIR_GI_BASE_STRIDE_BYTES);
-
-    expect(gris.restirGI.reservoirGiCurrentBuffer.size).toBe(halfPixels * RESERVOIR_GI_GRIS_STRIDE_BYTES);
-    expect(gris.restirGI.reservoirGiPreviousBuffer.size).toBe(halfPixels * RESERVOIR_GI_GRIS_STRIDE_BYTES);
-    expect(gris.restirGI.reservoirGiSpatialBuffer.size).toBe(halfPixels * RESERVOIR_GI_GRIS_STRIDE_BYTES);
-  });
-
-  it('reports the exact GRIS memory delta in the restirGI category', () => {
-    const device = makeStubDevice();
-    const W = 128;
-    const H = 64;
-    const halfPixels = Math.floor(W / 2) * Math.floor(H / 2);
-    const expectedDelta = 3 * halfPixels * (RESERVOIR_GI_GRIS_STRIDE_BYTES - RESERVOIR_GI_BASE_STRIDE_BYTES);
-
-    const compact = estimateFrameResourcesMemory(createFrameResources(device, W, H));
-    const gris = estimateFrameResourcesMemory(createFrameResources(device, W, H, { grisReuse: true }));
-
-    expect(gris.byCategory.restirGI! - compact.byCategory.restirGI!).toBe(expectedDelta);
-    expect(gris.total - compact.total).toBe(expectedDelta);
+    const resources = createFrameResources(device, W, H);
+    expect(resources.restirGI.reservoirGiCurrentBuffer.size).toBe(
+      halfPixels * RESERVOIR_GI_STRIDE_BYTES,
+    );
+    expect(resources.restirGI.reservoirGiPreviousBuffer.size).toBe(
+      halfPixels * RESERVOIR_GI_STRIDE_BYTES,
+    );
+    expect(resources.restirGI.reservoirGiSpatialBuffer.size).toBe(
+      halfPixels * RESERVOIR_GI_STRIDE_BYTES,
+    );
   });
 });
 

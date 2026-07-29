@@ -60,20 +60,22 @@ function mixedScene(): UploadedSceneBuffers {
     rectAreaLightsData: rect,
     meshAreaLightCount: 1,
     meshAreaLightsData: mesh,
-    environmentSunStrength: 2,
+    hasEnvironmentMap: true,
+    environmentMapWidth: 1,
+    environmentMapHeight: 1,
+    environmentMapCdf: new Float32Array([0, 1]),
+    environmentMapTexels: new Float32Array([2, 2, 2, 1 / (4 * Math.PI)]),
     sceneRadius: 5,
   });
 }
 
 describe('invocation-local BDPT source selection', () => {
-  it('keeps a tiny positive procedural sky in CPU/GPU emitter classification', () => {
+  it('ignores the legacy procedural-sun lane without a baked environment map', () => {
     const scene = stubScene({ environmentSunStrength: 1e-12, sceneRadius: 2 });
-    expect(bdptEmitterCount(scene)).toBe(1);
-    expect(distantDirectEmitterCount(scene)).toBe(1);
-    expect(distantDirectEmitterPower(scene, 0)).toBeGreaterThan(0);
-    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain(
-      'params.environmentSun.w > 0.0',
-    );
+    expect(bdptEmitterCount(scene)).toBe(0);
+    expect(distantDirectEmitterCount(scene)).toBe(0);
+    expect(distantDirectEmitterPower(scene, 0)).toBe(0);
+    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).not.toContain('environmentSun.w');
   });
 
   it('enumerates every finite and infinite source exactly once', () => {
@@ -156,6 +158,23 @@ describe('invocation-local BDPT source selection', () => {
     const rectSample = sampleBdptBounce0Cpu(rect, 0, 0.3, 0.7)!;
     expect(rectSample.positionPdf).toBeCloseTo(1 / 24, 14);
     expect(rectSample.pdfJoint).toBeCloseTo(1 / 24, 14);
+  });
+
+  it('preserves the signed concentric-disc quadrant for negative wedge coordinates', () => {
+    const discData = new Float32Array(16);
+    discData.set([
+      0, 0, 0, 0,
+      1, 0, 0, 0,
+      0, 1, 0, 0,
+      1, 1, 1, 1,
+    ]);
+    const disc = stubScene({
+      rectAreaLightCount: 1,
+      rectAreaLightsData: discData,
+    });
+    const sample = sampleBdptBounce0Cpu(disc, 0, 0, 0.625)!;
+    expect(sample.emitPos[0]).toBeLessThan(0);
+    expect(sample.emitPos[1]).toBeGreaterThan(0);
   });
 
   it('pins full-family uniform roots and power-weighted distant direct selection', () => {

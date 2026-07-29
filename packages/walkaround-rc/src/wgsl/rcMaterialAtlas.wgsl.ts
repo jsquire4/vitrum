@@ -297,18 +297,24 @@ fn rcSampleMaterialScalarMap(
   return clamp(fallback * rcMaterialMapChannel(texel, channel), 0.0, 1.0);
 }
 
-fn rcSampleSpecularControls(triIndex: u32, uv0: vec2f, uv1: vec2f) -> vec4f {
-  var color = vec3f(1.0);
+fn rcSampleSpecularMeta(triIndex: u32) -> vec4f {
+  var color = vec3f(0.04);
   var intensity = 1.0;
   if (rcMaterialMetaAvailable(triIndex, RC_MATERIAL_MAP_SPECULAR_TEXEL_OFFSET)) {
     let spec = rcMaterialMetaLoadOrZero(triIndex, RC_MATERIAL_MAP_SPECULAR_TEXEL_OFFSET);
-    color = clamp(spec.rgb, vec3f(0.0), vec3f(1.0));
+    color = max(spec.rgb, vec3f(0.0));
     intensity = clamp(spec.a, 0.0, 1.0);
   }
+  return vec4f(color, intensity);
+}
 
+fn rcSampleSpecularControls(triIndex: u32, uv0: vec2f, uv1: vec2f) -> vec4f {
+  let scalar = rcSampleSpecularMeta(triIndex);
+  var color = scalar.rgb;
+  var intensity = scalar.a;
   let colorMap = rcSampleMaterialAtlasRawAtOffset(triIndex, RC_MATERIAL_MAP_SPECULAR_COLOR_TEXEL_OFFSET, uv0, uv1);
   if (colorMap.x >= 0.0) {
-    color = clamp(color * colorMap.rgb, vec3f(0.0), vec3f(1.0));
+    color = max(color * colorMap.rgb, vec3f(0.0));
   }
   let intensityMap = rcSampleMaterialAtlasRawAtOffset(triIndex, RC_MATERIAL_MAP_SPECULAR_INTENSITY_TEXEL_OFFSET, uv0, uv1);
   if (intensityMap.x >= 0.0) {
@@ -889,7 +895,7 @@ fn rcSampleProbeHitMaterial(
   out.albedo = scalarBaseColor;
   out.roughness = scalarRoughness;
   out.metalness = scalarMetalness;
-  out.specular = vec4f(1.0);
+  out.specular = rcSampleSpecularMeta(hit.indices.w);
   out.clearcoat = vec2f(0.0);
   out.clearcoatNormal = shadingNormal;
   out.sheen = vec4f(0.0);
@@ -902,7 +908,8 @@ fn rcSampleProbeHitMaterial(
   out.layerTransmission = vec3f(1.0);
   out.volumeScattering = vec4f(0.0);
   out.transmission = scalarTransmission;
-  out.opticalIor = materialDispersionIorRgb(hit.indices.w, scalarIor);
+  let transportIor = select(max(scalarIor, 1.0), 1e6, scalarIor == 0.0);
+  out.opticalIor = materialDispersionIorRgb(hit.indices.w, transportIor);
   out.bulkThickness = materialOpticalThickness(hit.indices.w);
   out.clearcoatNormal = rcApplyClearcoatNormalMapForHit(hit, frameNormal, shadingNormal);
 
@@ -916,7 +923,7 @@ fn rcSampleProbeHitMaterial(
     abs(dot(shadingNormal, rcSafeNormalizeOr(viewDirection, shadingNormal))),
   );
   if (film.present != 0u) {
-    out.specular = vec4f(vec3f(1.0) + film.reflectance, 1.0);
+    out.specular = vec4f(film.reflectance, 1.0);
     out.iridescence = vec4f(0.0);
     out.layerTransmission = out.layerTransmission * film.transmittance;
   }
@@ -986,7 +993,7 @@ fn rcSampleProbeHitMaterial(
     abs(dot(shadingNormal, rcSafeNormalizeOr(viewDirection, shadingNormal))),
   );
   if (mappedFilm.present != 0u) {
-    out.specular = vec4f(vec3f(1.0) + mappedFilm.reflectance, 1.0);
+    out.specular = vec4f(mappedFilm.reflectance, 1.0);
     out.iridescence = vec4f(0.0);
   }
   return out;

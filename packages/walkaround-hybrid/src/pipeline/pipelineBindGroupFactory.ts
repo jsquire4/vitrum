@@ -21,6 +21,11 @@ import { cachedBindGroup, type PipelineResourceCache } from './PipelineResourceC
 
 export interface PerFrameBindGroups {
   readonly frame: GPUBindGroup;
+  /**
+   * DI spatial round-two view: binding 5 reads round one's spatial output and
+   * binding 7 writes back to current. All other bindings are unchanged.
+   */
+  readonly diSpatialReverse: GPUBindGroup;
   readonly risGiFrame: GPUBindGroup;
   readonly scene: GPUBindGroup;
   readonly ubo: GPUBindGroup;
@@ -34,15 +39,17 @@ export function buildPerFrameBindGroups(
   resources: FrameResources,
   scene: SceneBindGroupResources,
   ddgi: OptionalSubsystemBindingState,
-  placeholderView: GPUTextureView,
   resourceCache?: PipelineResourceCache,
   nrcBindings?: NrcHybridLayerBindings,
 ): PerFrameBindGroups {
   const { common, restirDI, restirGI, gtao, svgf } = resources;
-  const buildFrame = (): GPUBindGroup => buildFrameBindGroup(device, cache, {
-    reservoirCurrentBuffer: restirDI.reservoirCurrentBuffer,
+  const buildFrame = (
+    currentReservoirBuffer: GPUBuffer,
+    spatialReservoirBuffer: GPUBuffer,
+  ): GPUBindGroup => buildFrameBindGroup(device, cache, {
+    reservoirCurrentBuffer: currentReservoirBuffer,
     reservoirPreviousBuffer: restirDI.reservoirPreviousBuffer,
-    reservoirSpatialBuffer: restirDI.reservoirSpatialBuffer,
+    reservoirSpatialBuffer: spatialReservoirBuffer,
     hdrColorTexture: common.hdrColorTexture,
     nearestSampler: common.nearestSampler,
     gNormalDepthTexture: common.gNormalDepthTexture,
@@ -108,7 +115,26 @@ export function buildPerFrameBindGroups(
       common.hdrTotalTexture,
       common.albedoTexture,
       svgf.svgfCurrentObjectIdTexture,
-    ], buildFrame),
+    ], () => buildFrame(
+      restirDI.reservoirCurrentBuffer,
+      restirDI.reservoirSpatialBuffer,
+    )),
+    diSpatialReverse: cachedBindGroup(resourceCache, 'per-frame:di-spatial-reverse', [
+      restirDI.reservoirSpatialBuffer,
+      restirDI.reservoirPreviousBuffer,
+      restirDI.reservoirCurrentBuffer,
+      common.hdrColorTexture,
+      common.nearestSampler,
+      common.gNormalDepthTexture,
+      restirGI.reservoirGiCurrentBuffer,
+      common.hdrIndirectTexture,
+      common.hdrTotalTexture,
+      common.albedoTexture,
+      svgf.svgfCurrentObjectIdTexture,
+    ], () => buildFrame(
+      restirDI.reservoirSpatialBuffer,
+      restirDI.reservoirCurrentBuffer,
+    )),
     risGiFrame: cachedBindGroup(resourceCache, 'per-frame:ris-gi-frame', [
       restirGI.reservoirGiCurrentBuffer,
     ], buildRisGiFrame),
@@ -127,7 +153,6 @@ export function buildCompositePresentBindGroup(
   device: GPUDevice,
   cache: BGLCache,
   resolvedTexture: GPUTexture,
-  compositeSampler: GPUSampler,
   compositeUbo: GPUBuffer,
   resourceCache?: PipelineResourceCache,
 ): GPUBindGroup {
@@ -135,13 +160,12 @@ export function buildCompositePresentBindGroup(
     device,
     cache,
     resourceCache?.textureView(resolvedTexture) ?? resolvedTexture.createView(),
-    compositeSampler,
     compositeUbo,
   );
   return cachedBindGroup(
     resourceCache,
     'present:composite',
-    [resolvedTexture, compositeSampler, compositeUbo],
+    [resolvedTexture, compositeUbo],
     build,
   );
 }

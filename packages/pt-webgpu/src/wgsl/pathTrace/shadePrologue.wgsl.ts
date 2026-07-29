@@ -73,6 +73,11 @@ export function composeShadePrologueWgsl(
     let spectralSampleCount = mat.spectralSampleCount;
     let isTranslucent = mat.isTranslucent;
 
+    let hitPos = ray.origin + ray.direction * hit.dist;
+    let isFrontFace = hit.frontFace;
+    var normal = select(-hit.normal, hit.normal, isFrontFace);${normalMapApply}${bumpMapApply}
+    var clearcoatNormal = normal;${clearcoatNormalMapApply}
+
 ${emissiveComment}
     if (!prevSampleAllowsAreaMis && !sppmOwnsCurrentEmission${emissiveOwnershipGuard}) {
       // A3 — emitters in spectral mode: upsample the RGB emission to a spectrum
@@ -85,15 +90,17 @@ ${emissiveComment}
       // reconstruct its hero-λ SPD via the same upsampling used for reflectance;
       // for a neutral (white) emitter this reduces to the luminance scale, the
       // documented flat-spectrum approximation. RGB mode: emissive unchanged.
+      //
+      // Emission is authored on the material below the clearcoat layer. Apply
+      // the same ratified KHR_materials_clearcoat view-normal attenuation used
+      // by the lower BSDF lobes after the clearcoat normal has been resolved.
       let emitSpectral = spectralEmissionAtHero(emissive, heroLambda);
       let emitContribution = select(emissive, emitSpectral, params.spectralEnabled != 0u);
-      radiance = radiance + throughput * emitContribution;
+      let clearcoatEmissionAttenuation =
+        1.0 - clearcoatLayerWeight(mat.clearcoat, clearcoatNormal, -ray.direction);
+      radiance = radiance + throughput * emitContribution * clearcoatEmissionAttenuation;
     }
 
-    let hitPos = ray.origin + ray.direction * hit.dist;
-    let isFrontFace = hit.frontFace;
-    var normal = select(-hit.normal, hit.normal, isFrontFace);${normalMapApply}${bumpMapApply}
-    var clearcoatNormal = normal;${clearcoatNormalMapApply}
     if (mat.isUnlit) {
       if (!firstHitValid) {
         firstHitValid = true;
@@ -261,5 +268,5 @@ export const SHADE_PROLOGUE_EXTENSION_LOBE_TEX_APPLY_FULL =
   `\n      mat.iridescenceThicknessMax = iridescenceThickness;` +
   `\n      if (iridescenceThickness <= 0.0) { mat.iridescence = 0.0; }` +
   `\n    }` +
-  `\n    mat.specularColor = clamp(mat.specularColor * sampleSpecularColorTexture(matId, hit.triIndex, hit.baryVW, hit.instanceIndex), vec3f(0.0), vec3f(1.0));` +
+  `\n    mat.specularColor = max(mat.specularColor * sampleSpecularColorTexture(matId, hit.triIndex, hit.baryVW, hit.instanceIndex), vec3f(0.0));` +
   `\n    mat.specularIntensity = clamp(mat.specularIntensity * sampleSpecularIntensityTexture(matId, hit.triIndex, hit.baryVW, hit.instanceIndex), 0.0, 1.0);`;

@@ -64,7 +64,7 @@ export function createGtaoFrameResources(
 
   const gtaoUboBuffer = device.createBuffer({
     label: 'gtao-ubo',
-    size: 32,
+    size: 96,
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
 

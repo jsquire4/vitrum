@@ -68,17 +68,14 @@ fn decodeRoughMetal(packed: u32) -> vec2f {
   return vec2f(rough, metal);
 }
 
-// B1-ior-per-tri (2026-06-10) — decode per-triangle IOR from bits[15:8] of the
-// packed bvh_material u32. The quantization maps [1.0, 3.0] → [0, 255]:
-//   encode: byte = round(clamp((ior − 1) / 2 * 255, 0, 255))
-//   decode: ior  = 1.0 + (byte / 255.0) * 2.0
-// Covers water (1.33), glass (1.5→1.502), diamond (2.42), TiO₂ (≈2.9).
-// Quantization step ≈ 0.0078 (sub-dispersion-spread for all common glasses).
-// Default glass IOR = 1.5 encodes to byte 64, decodes to 1.502 (error < 0.003).
-// Opaque surfaces pack 0 (IOR = 1.0); consumers gate on isGlass before calling.
+// Decode per-triangle IOR from bits[15:8]. Byte 0 preserves KHR's IOR=0
+// infinite-IOR compatibility mode; finite [1,3] values use bytes [1,255].
+// Transport maps the infinite endpoint to a large finite value so Snell and
+// Fresnel remain numerically defined while transmission tends to zero.
 fn decodeIor(packed: u32) -> f32 {
   let byte = (packed >> 8u) & 0xFFu;
-  return 1.0 + f32(byte) / 255.0 * 2.0;
+  if (byte == 0u) { return 1e6; }
+  return 1.0 + f32(byte - 1u) / 254.0 * 2.0;
 }
 
 // SHADOW-01 (2026-06-11) — bvh_material bits[7:0] (formerly reserved): bit 0 =

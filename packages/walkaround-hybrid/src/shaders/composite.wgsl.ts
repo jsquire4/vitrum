@@ -67,7 +67,6 @@ function buildCompositFragWgsl(): string {
 ${COMPOSITE_VARYINGS_WGSL}
 
 @group(0) @binding(0) var denoisedTex: texture_2d<f32>;
-@group(0) @binding(1) var _compositeSampler: sampler;
 
 // CompositeUniforms — per-frame tonemap/exposure/outputColorSpace dials.
 // tonemapMode: 0=aces(default) 1=agx 2=reinhard 3=linear(clamped) 4=none.
@@ -78,7 +77,7 @@ struct CompositeUniforms {
   outputColorSpace: u32,
   _pad:             u32,
 }
-@group(0) @binding(2) var<uniform> compositeParams: CompositeUniforms;
+@group(0) @binding(1) var<uniform> compositeParams: CompositeUniforms;
 
 ${tonemapWgsl()}
 

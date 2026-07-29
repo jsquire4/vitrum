@@ -55,6 +55,14 @@ fn traceRefractiveCausticPath(
     );
     if (!hit.didHit) {
       out.direction = ray.direction;
+      // A scene-global refractive-caustic gate means most receiver probes can
+      // miss every glass primitive. That path belongs to lo_sunNEE's baseline,
+      // not to the refractive residual: mark it ineligible so the caller adds
+      // the matching baseline sample instead of treating the miss as a zero
+      // estimate and subtracting unobstructed direct sun.
+      if (out.sawGlass == 0u) {
+        out.eligible = 0u;
+      }
       out.escaped = select(0u, 1u, mediumDepth == 0u && out.sawGlass != 0u);
       return out;
     }
@@ -280,12 +288,30 @@ fn lo_refractive_caustic(
   gid: vec2u,
   pos: vec3f,
   normal: vec3f,
+  clearcoatNormal: vec3f,
+  wo: vec3f,
   albedo: vec3f,
+  rough: f32,
+  metal: f32,
+  specular: vec4f,
+  anisotropy: vec2f,
+  anisotropyTangent: vec3f,
+  anisotropyBitangent: vec3f,
+  iridescence: vec4f,
+  clearcoat: vec2f,
+  sheen: vec4f,
+  sheenRoughness: f32,
   isGlass: bool,
   isMetal: bool,
 ) -> vec3f {
   if (ubo.sunAngular.z >= 1.5) {
-    return lo_manifold_caustic(gid, pos, normal, albedo, isGlass, isMetal);
+    return lo_manifold_caustic(
+      gid, pos, normal, clearcoatNormal, wo,
+      albedo, rough, metal, specular, anisotropy,
+      anisotropyTangent, anisotropyBitangent,
+      iridescence, clearcoat, sheen, sheenRoughness,
+      isGlass,
+    );
   }
   if (ubo.sunAngular.z < 0.5 || !(ubo.sunIntensity > 0.0) || isGlass || isMetal) {
     return vec3f(0.0);

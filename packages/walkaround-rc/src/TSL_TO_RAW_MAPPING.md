@@ -53,27 +53,30 @@ const layoutEntry: GPUBindGroupLayoutEntry = {
 uses explicit indices. The convention adopted here (matching parameter order in the
 `wgslFn` kernel signature):
 
-**Cast pass bindings** (one bind group per cascade) — current as of 2026-06-07:
-| binding | name                    | access         | WGSL type                             |
-|---------|-------------------------|----------------|---------------------------------------|
-| 0       | bvh                     | read-only      | `array<BVHNode>`                      |
-| 1       | geom_index              | read-only      | `array<vec3u>`                        |
-| 2       | geom_position           | read-only      | `array<vec3f>`                        |
-| 3       | materials               | read-only      | `array<MaterialEntry>`                |
-| 4       | triMatId                | read-only      | `array<u32>`                          |
-| 5       | cascadeOut              | read_write     | `array<vec4f>`                        |
-| 6       | envMap                  | texture        | `texture_2d<f32>`                     |
-| 7       | envSampler              | sampler        | `sampler`                             |
-| 8       | u_arr (CascadeUniforms) | read-only      | `array<CascadeUniforms>`              |
-| 9       | tlasNodes               | read-only      | `array<BVHNode>` (TLAS; dummy if merged) |
-| 10      | tlasInstanceIndices     | read-only      | `array<u32>` (TLAS instance indices)  |
-| 11      | tlasBlasRoots           | read-only      | `array<u32>` (TLAS BLAS root offsets) |
-| 12      | tlasWorldToLocal        | read-only      | `array<vec4f>` (TLAS instance xforms) |
-| 13      | tlasLocalToWorld        | read-only      | `array<vec4f>` (TLAS instance xforms) |
-| 14      | rc_emitters             | read-only      | `array<EmitterTri>` (rect-area NEE)   |
+**Cast pass bindings** (one bind group per cascade) — current production ABI:
+| binding | name                       | access     | WGSL type                                  |
+|---------|----------------------------|------------|--------------------------------------------|
+| 0       | `rc_bvh`                   | read-only  | `array<BVHNode>`                           |
+| 1       | `rc_geom_index`            | read-only  | `array<vec4u>`                             |
+| 2       | `rc_geom_position`         | read-only  | `array<vec4f>`                             |
+| 3       | `rc_scene_arena`           | read-only  | `array<u32>`                               |
+| 5       | `rc_cascadeOut`            | read_write | `array<vec4f>`                             |
+| 6       | `rc_envMap`                | texture    | `texture_2d<f32>`                          |
+| 7       | `rc_envSampler`            | sampler    | `sampler`                                  |
+| 8       | `rc_u`                     | uniform    | `CascadeUniforms`                          |
+| 14      | `rc_emitters`              | read-only  | packed emitter words (`array<u32>`)        |
+| 15      | `rc_lights`                | read-only  | packed light/alias words (`array<u32>`)    |
+| 16      | `rc_materialTextureAtlas`  | texture    | `texture_2d_array<f32>`                    |
+| 17      | `rc_materialMapMeta`       | texture    | `texture_2d<f32>`                          |
+| 18      | `rc_geom_normal`           | read-only  | `array<vec4f>`                             |
+| 19      | `rc_geom_tangent`          | texture    | `texture_2d<f32>`                          |
+| 20      | `rc_geom_vertex_color`     | texture    | `texture_2d<f32>`                          |
 
-Bindings 9-13 (TLAS) are always present but hold 32-byte dummy buffers in merged-BVH
-mode (`bvhMode=0`). Binding 14 holds an 80-byte zero placeholder when `emitterCount=0`.
+The scene arena at binding 3 packs materials, triangle-material IDs, and all
+five TLAS streams behind a 16-word offset/count header. This keeps the cast
+shader at WebGPU's guaranteed eight-storage-buffer floor. Missing environment,
+material-map, tangent, vertex-color, emitter, and light inputs bind explicit
+well-typed placeholders; scalar/count uniforms select the authored fallback.
 
 **Merge pass bindings** (one bind group per merge step):
 | binding | name         | access         | WGSL type              |
@@ -103,14 +106,17 @@ with all its dependencies into a single WGSL string:
 
 ```typescript
 const code = `
-  ${BVH_CONSTANTS_WGSL}        // from three-mesh-bvh common_functions
-  ${BVH_STRUCTS_WGSL}          // Ray, BVHNode, BVHBoundingBox, IntersectionResult
-  ${BVH_INTERSECT_FUNCTIONS}   // intersectsTriangle, intersectTriangles, intersectsBounds, bvhIntersectFirstHit
-  ${CASCADE_STRUCTS_WGSL}      // CascadeUniforms, MaterialEntry
-  ${OCTAHEDRAL_BODY_WGSL}      // octEncode, octDecode (body only, stripped of file header)
-  ${PROBE_RAY_HELPERS_WGSL}    // pcgHash, dirToEquirectUV
-  ${SUN_VISIBILITY_WGSL}       // traceSunVisibility
-  ${PROBE_RAY_CAST_ENTRY}      // @compute @workgroup_size(64) fn probeRayCastKernel(...)
+  ${MATERIAL_ENTRY_WGSL}
+  ${BVH_INTERSECT_CORE_WGSL}
+  ${TLAS_TRAVERSAL_CORE_WGSL}
+  // RC scene-arena loaders and binding declarations
+  ${OCTAHEDRAL_CORE_WGSL}
+  ${PCG_HASH_TO_F32_WGSL}
+  ${RC_MATERIAL_ATLAS_WGSL}
+  ${RC_BRDF_WGSL}
+  ${RC_SUN_VISIBILITY_WGSL}
+  ${RC_NEE_POINTSPOT_WGSL}
+  ${PROBE_RAY_CAST_ENTRY}
 `;
 device.createShaderModule({ code });
 ```

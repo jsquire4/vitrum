@@ -42,6 +42,8 @@ import {
 import { localUint8ArrayView } from './intrinsicTypedArrays.js';
 import { readEncodedImageDimensions } from './rawImageDimensions.js';
 import { validateDeclaredBufferRange } from './bufferRangeValidation.js';
+import { isBasisKtx2Bytes } from './basisKtx2Codec.js';
+import { isDdsBytes } from './ddsCodec.js';
 
 export type GltfTextureSourceExtension =
   | 'KHR_texture_basisu'
@@ -53,6 +55,30 @@ export const GLTF_TEXTURE_SOURCE_EXTENSIONS: readonly GltfTextureSourceExtension
   'EXT_texture_webp',
   'MSFT_texture_dds',
 ];
+
+/**
+ * Alternate image sources the adapter can consume without a host codec hook.
+ * KHR_texture_basisu is normalized to RGBA8 by the built-in WASM transcoder.
+ * MSFT_texture_dds is normalized by the built-in BC1-BC5/masked-pixel decoder.
+ * WebP remains opt-in as a source preference because its browser and Node
+ * decoders are platform-specific.
+ */
+export const BUILTIN_GLTF_TEXTURE_SOURCE_EXTENSIONS =
+  Object.freeze([
+    'KHR_texture_basisu',
+    'MSFT_texture_dds',
+  ] as const satisfies readonly GltfTextureSourceExtension[]);
+
+export function effectiveGltfTextureSourceExtensions(
+  requested: readonly GltfTextureSourceExtension[] | undefined,
+): readonly GltfTextureSourceExtension[] {
+  return Object.freeze([
+    ...new Set<GltfTextureSourceExtension>([
+      ...BUILTIN_GLTF_TEXTURE_SOURCE_EXTENSIONS,
+      ...(requested ?? []),
+    ]),
+  ]);
+}
 
 /**
  * Decode one glTF image into a texture handle.
@@ -537,6 +563,27 @@ async function decodeImage(
   let handle: unknown;
   if (decodeFn) {
     handle = await decodeFn(bytes, mimeType);
+  } else if (
+    mimeType.trim().toLowerCase() === 'image/ktx2' ||
+    isBasisKtx2Bytes(bytes)
+  ) {
+    // createImageBitmap does not portably decode KTX2. Preserve the encoded
+    // bytes so decodeSceneTextures can run the built-in Basis transcoder in
+    // both browser and Node.
+    handle = {
+      kind: 'raw-image',
+      mimeType: 'image/ktx2',
+      data: bytes,
+    } satisfies RawImageHandle;
+  } else if (
+    mimeType.trim().toLowerCase() === 'image/vnd-ms.dds' ||
+    isDdsBytes(bytes)
+  ) {
+    handle = {
+      kind: 'raw-image',
+      mimeType: 'image/vnd-ms.dds',
+      data: bytes,
+    } satisfies RawImageHandle;
   } else if (typeof createImageBitmap !== 'undefined') {
     // Browser path: createImageBitmap
     const ownedBytes = Reflect.apply(UINT8_ARRAY_SLICE, bytes, []) as Uint8Array;
@@ -698,7 +745,9 @@ export async function buildTextureHandleMap(
   }>();
   const textureImageSources = new Map<number, SelectedTextureImageSource>();
   const externalImageMap = normalizeImageBytesMap(externalImages);
-  const sourceExtensions = new Set(textureSourceExtensions);
+  const sourceExtensions = new Set(
+    effectiveGltfTextureSourceExtensions(textureSourceExtensions),
+  );
   let reservedDecodedPixels = 0;
 
   // Resolve and preflight every unique image before starting any decoder work.

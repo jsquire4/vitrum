@@ -7,20 +7,16 @@
  *
  * Tests:
  *  1. HG phase PDF normalizes: MC integral over unit sphere ≈ 1.0 (N=50k)
- *  2. equiAngular PDF matches sample return: closed-form recompute ≈ returned pdf;
- *     trapezoidal integral over [0, tMax] ≈ 1.0
- *  3. mixturePdf weighted sum: evaluates to exact analytic result (tolerance 1e-6)
- *  4. Uniform-sphere PDF normalizes: MC integral of 1/(4π) over sphere ≈ 1.0
+ *  2. mixturePdf weighted sum: evaluates to exact analytic result (tolerance 1e-6)
+ *  3. Uniform-sphere PDF normalizes: MC integral of 1/(4π) over sphere ≈ 1.0
  *
  * References:
  *   PBR4e §11.4 Eq. 11.4  — HG phase function normalization
- *   Kulla & Fajardo 2012 §3  — equi-angular PDF formula
  *   Veach & Guibas 1995    — mixture PDF (balance / power heuristic)
  */
 
 import { describe, it, expect } from 'vitest';
 import { evaluateHG } from '../src/hgPhase.js';
-import { sampleEquiAngular } from '../src/equiAngular.js';
 import { mixturePdf } from '../src/mixturePdf.js';
 
 // ── Deterministic LCG RNG (seed-controlled) ───────────────────────────────────
@@ -97,75 +93,7 @@ describe('HG phase PDF normalizes (∫ p dω ≈ 1)', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Test 2: equiAngular PDF matches sample return
-// ─────────────────────────────────────────────────────────────────────────────
-//
-// For each sample (t, pdf) drawn from sampleEquiAngular(u, ...):
-//   Recompute closed-form PDF from Kulla-Fajardo §3:
-//     p(t) = D / (thetaRange × (D² + (t - tClosest)²))
-//   which simplifies from 1 / (D · thetaRange · (1 + ((t-tClosest)/D)²))
-//   by multiplying num+denom by D².
-//
-// Also verify that ∫₀^tMax p(t) dt ≈ 1 via trapezoidal rule on a fine grid.
-//
-// Reference: Kulla & Fajardo 2012 §3; Pharr et al. PBR4e §14.1.2.
-
-describe('equiAngular PDF matches sample return', () => {
-  type Vec3 = readonly [number, number, number];
-
-  const ORIGIN: Vec3 = [0, 0, 0];
-  const DIR_Z: Vec3  = [0, 0, 1];
-
-  // Fixed light setup for a non-degenerate scenario
-  // Light at [0, 2, 10]: tClosest = 10, D = 2
-  const LIGHT: Vec3    = [0, 2, 10];
-  const T_CLOSEST      = 10;
-  const D              = 2;
-  const SCENE_T_MAX    = 100;
-
-  // Closed-form PDF: p(t) = D / (thetaRange × (D² + (t - tClosest)²))
-  function analyticalPdf(t: number): number {
-    const thetaMin   = Math.atan2(-T_CLOSEST, D);
-    const thetaMax   = Math.atan2(SCENE_T_MAX - T_CLOSEST, D);
-    const thetaRange = thetaMax - thetaMin;
-    const dt         = t - T_CLOSEST;
-    return D / (thetaRange * (D * D + dt * dt));
-  }
-
-  it('returned pdf matches closed-form formula within 1% (N=10k samples)', () => {
-    const N   = 10_000;
-    const rng = makeLcg(0xc0ffee42);
-    const TOL = 0.01; // 1 %
-
-    for (let i = 0; i < N; i++) {
-      const u             = rng();
-      const { t, pdf }    = sampleEquiAngular(u, ORIGIN, DIR_Z, LIGHT, { sceneTMax: SCENE_T_MAX });
-      const expected      = analyticalPdf(t);
-      const relErr        = Math.abs(pdf - expected) / Math.max(expected, 1e-12);
-      expect(relErr).toBeLessThan(TOL);
-    }
-  });
-
-  it('∫₀^tMax p(t) dt ≈ 1 via trapezoidal rule (N=1000 grid points)', () => {
-    // Integrate analyticalPdf over [0, SCENE_T_MAX] using the trapezoidal rule.
-    // A correct normalized PDF should integrate to 1.
-    const N   = 1_000;
-    const h   = SCENE_T_MAX / N;
-    let   sum = 0;
-    for (let i = 0; i <= N; i++) {
-      const t = i * h;
-      const w = i === 0 || i === N ? 0.5 : 1.0; // trapezoidal weights
-      sum += w * analyticalPdf(t);
-    }
-    const integral = sum * h;
-    const TOL = 0.01; // 1 %
-    expect(integral).toBeGreaterThan(1 - TOL);
-    expect(integral).toBeLessThan(1 + TOL);
-  });
-});
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Test 3: mixturePdf weighted sum matches analytic formula exactly
+// Test 2: mixturePdf weighted sum matches analytic formula exactly
 // ─────────────────────────────────────────────────────────────────────────────
 //
 // mixturePdf(probs, pdfs) = Σᵢ probs[i] × pdfs[i]
@@ -224,7 +152,7 @@ describe('mixturePdf weighted sum matches analytic formula', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Test 4: Uniform-sphere PDF normalizes
+// Test 3: Uniform-sphere PDF normalizes
 // ─────────────────────────────────────────────────────────────────────────────
 //
 // uniformSphere samples directions uniformly on S² with pdf = 1/(4π) sr⁻¹.

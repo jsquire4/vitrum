@@ -75,29 +75,22 @@ describe('GRIS Phase-0 — ReservoirPT stride widened to 28 u32 / 112 bytes', ()
   });
 });
 
-describe('H24 — default reservoir layout stays compact unless GRIS is structurally enabled', () => {
-  const compact = buildReservoirGiWgsl({ grisCache: false });
-  const full = buildReservoirGiWgsl({ grisCache: true });
+describe('H24 — the sole live reservoir layout carries generalized-reuse metadata', () => {
+  const canonical = buildReservoirGiWgsl();
 
-  it('compact default declares the 20-u32 Sprint-16/17 stride', () => {
-    expect(compact).toContain('const RESERVOIR_GI_STRIDE: u32 = 20u;');
-    expect(full).toContain('const RESERVOIR_GI_STRIDE: u32 = 28u;');
+  it('construction produces the canonical 28-u32 ABI', () => {
+    expect(canonical).toContain('const RESERVOIR_GI_STRIDE: u32 = 28u;');
   });
 
-  it('compact pack helper writes only the shared [0..19] prefix', () => {
-    const store = fnBody(compact, 'packReservoirGI');
+  it('pack and unpack helpers cover the complete [0..27] live layout', () => {
+    const store = fnBody(canonical, 'packReservoirGI');
+    const load = fnBody(canonical, 'unpackReservoirGI');
     const writes = [...store.matchAll(/words\[(\d+)u\]/g)].map((m) => Number(m[1]));
-    expect(writes.length).toBeGreaterThan(0);
-    expect(Math.max(...writes)).toBe(19);
-    expect(store).toContain('Compact default layout: no appended GRIS cache stores.');
-  });
-
-  it('compact unpack helper zeroes appended GRIS fields instead of reading beyond index 19', () => {
-    const body = fnBody(compact, 'unpackReservoirGI');
-    const reads = [...body.matchAll(/words\[(\d+)u\]/g)].map((m) => Number(m[1]));
-    expect(Math.max(...reads)).toBe(19);
-    expect(body).toContain('r.wi_recon = vec3f(0.0);');
-    expect(body).toContain('r.prefixVertexCount = 0u;');
+    const reads = [...load.matchAll(/words\[(\d+)u\]/g)].map((m) => Number(m[1]));
+    expect(Math.max(...writes)).toBe(27);
+    expect(Math.max(...reads)).toBe(27);
+    expect(store).toContain('r.prefixVertexCount');
+    expect(load).toContain('r.nativePHat');
   });
 
   it('pass-local accessors copy exact bindings through the canonical pack/unpack helpers', () => {

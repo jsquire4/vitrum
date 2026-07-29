@@ -101,13 +101,19 @@ describe('rough-transmission material BSDF coherence', () => {
       'fn materialDielectricFresnel(',
     );
     expect(PT_WEBGPU_PATH_TRACE_BSDF_WGSL).toContain(
-      'let F = materialDielectricFresnel(',
+      'fn materialDielectricLayeredInterface(',
     );
     expect(PT_WEBGPU_PATH_TRACE_BSDF_WGSL).toContain(
-      'let microfacetF = materialDielectricFresnel(',
+      'let interfaceResponse = materialDielectricLayeredInterface(',
     );
     expect(PT_WEBGPU_PATH_TRACE_BSDF_WGSL).toContain(
-      'let microfacetFProbability = clamp(luminance(microfacetF), 0.0, 1.0);',
+      'let microfacetInterface = materialDielectricLayeredInterface(',
+    );
+    expect(PT_WEBGPU_PATH_TRACE_BSDF_WGSL).toContain(
+      'clamp(luminance(microfacetInterface.reflectance), 0.0, 1.0);',
+    );
+    expect(PT_WEBGPU_PATH_TRACE_BSDF_WGSL).toContain(
+      'clamp(luminance(microfacetInterface.baseTransmittance), 0.0, 1.0);',
     );
     expect(PT_WEBGPU_PATH_TRACE_BSDF_WGSL).not.toContain(
       'let microfacetF = frDielectric(abs(dot(wo, wm)), etaTOverI);',

@@ -12,24 +12,6 @@ function createColorTexture(gl: WebGL2RenderingContext, w: number, h: number): W
   return createTexture(gl, w, h, gl.RGBA32F, gl.RGBA, gl.FLOAT);
 }
 
-/**
- * Allocate the present (tonemapped) target — DELIBERATELY RGBA32F, not RGBA8.
- *
- * The present texture is what `resultTexture()` returns and therefore what the
- * public `FrameRendered.primaryRadiance` hands to hosts. Hosts (and the
- * wsl-gpu GPU validation harnesses) read it with `readPixels(RGBA, FLOAT)`;
- * a UNORM8 attachment makes that read an INVALID_OPERATION that fails
- * SILENTLY (buffer stays zeroed, framebuffer still "complete") — an all-black
- * readback with no error. Display-referred data does not *need* float
- * precision, but the float READBACK CONTRACT does. Sweep note (2026-06-11):
- * D10.11 briefly switched this to RGBA8 and broke every external float
- * readback of primaryRadiance; reverted. Do not change this format without
- * migrating every primaryRadiance consumer to UNSIGNED_BYTE reads.
- */
-export function createPresentTexture(gl: WebGL2RenderingContext, w: number, h: number): WebGLTexture {
-  return createTexture(gl, w, h, gl.RGBA32F, gl.RGBA, gl.FLOAT);
-}
-
 /** Internal helper: allocate a 2D texture with the given internalFormat/format/type. */
 function createTexture(
   gl: WebGL2RenderingContext, w: number, h: number,

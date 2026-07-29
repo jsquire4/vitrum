@@ -14,43 +14,6 @@ export const BDPT_INFINITE_MIS_GLSL = /* glsl */ `
 
         #define BDPT_MAX_INFINITE_STRATEGIES 10
 
-        vec2 bdptOctEncodeDirection( vec3 direction ) {
-
-                vec3 n = normalize( direction );
-                n /= abs( n.x ) + abs( n.y ) + abs( n.z );
-                vec2 encoded = n.xy;
-                if ( n.z < 0.0 ) {
-
-                        vec2 signNotZero = vec2(
-                                encoded.x >= 0.0 ? 1.0 : -1.0,
-                                encoded.y >= 0.0 ? 1.0 : -1.0
-                        );
-                        encoded = ( 1.0 - abs( encoded.yx ) ) * signNotZero;
-
-                }
-                return encoded;
-
-        }
-
-        vec3 bdptOctDecodeDirection( vec2 encoded ) {
-
-                vec3 n = vec3(
-                        encoded,
-                        1.0 - abs( encoded.x ) - abs( encoded.y )
-                );
-                if ( n.z < 0.0 ) {
-
-                        vec2 signNotZero = vec2(
-                                n.x >= 0.0 ? 1.0 : -1.0,
-                                n.y >= 0.0 ? 1.0 : -1.0
-                        );
-                        n.xy = ( 1.0 - abs( n.yx ) ) * signNotZero;
-
-                }
-                return normalize( n );
-
-        }
-
         float bdptInfiniteDensityToArea(
                 float pdf,
                 vec3 fromPosition,

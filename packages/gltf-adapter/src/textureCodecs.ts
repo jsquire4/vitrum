@@ -21,6 +21,14 @@ import {
   isIntrinsicArrayBuffer,
   localUint8ArrayView,
 } from './intrinsicTypedArrays.js';
+export {
+  canDecodeRawBasisKtx2Pixels,
+  decodeRawBasisKtx2Pixels,
+} from './basisKtx2Codec.js';
+export {
+  canDecodeRawDdsPixels,
+  decodeRawDdsPixels,
+} from './ddsCodec.js';
 
 const arrayBufferSlice: unknown = Reflect.get(ArrayBuffer.prototype, 'slice');
 

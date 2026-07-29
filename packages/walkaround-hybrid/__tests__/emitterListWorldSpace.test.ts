@@ -13,10 +13,11 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import type { Scene } from '@vitrum/core';
+import type { MaterialSpec, Scene } from '@vitrum/core';
 import { asMat4 } from '@vitrum/core';
 import { packSceneFromCore } from '@vitrum/shared-bvh';
 import { buildReSTIRSceneBVHForCoreScene } from '../src/restir/bvhCore.js';
+import { buildEmitterListFromCore } from '../src/restir/emitterList.js';
 
 const EMITTER_FLOATS = 20; // 80-byte EmitterTri stride / 4
 
@@ -105,6 +106,42 @@ describe('emitter list is built in world space (driven by core transform)', () =
     expect(ax).toBeCloseTo(0, 5);
     expect(ay).toBeCloseTo(0, 5);
     expect(az).toBeCloseTo(0, 5);
+  });
+});
+
+describe('emitter source-index fallback', () => {
+  it('retains castShadow:false when an invalid scalar source index falls back to packed radiance', () => {
+    const material = {
+      baseColor: [1, 1, 1],
+      roughness: 0.5,
+      metallic: 0,
+      emissive: [1, 1, 1],
+      emissiveIntensity: 5,
+      castShadow: false,
+    } as unknown as MaterialSpec;
+    const result = buildEmitterListFromCore(
+      new Uint32Array([0, 1, 2]),
+      new Float32Array([
+        0, 0, 0, 0,
+        1, 0, 0, 0,
+        0, 1, 0, 0,
+      ]),
+      new Float32Array([
+        0, 0, 1, 0,
+        0, 0, 1, 0,
+        0, 0, 1, 0,
+      ]),
+      new Uint32Array([0]),
+      [material],
+      {
+        packSourceTriIndex: true,
+        sourceTriIndexForTriangle: () => 1.5,
+      },
+    );
+
+    expect(result.emitterFloats[3]).toBe(-1);
+    expect(result.emitterFloats[19]).toBe(1);
+    expect(Array.from(result.emitterFloats.slice(16, 19))).toEqual([5, 5, 5]);
   });
 });
 

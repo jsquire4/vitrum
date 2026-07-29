@@ -15,6 +15,7 @@
 
 import { FusedMlpTrainer, heInit, type FusedNetSpec } from "./fusedMlpTrainer.ts";
 import { FusedMlpTrainerProbe } from "./fusedMlpTrainerProbe.ts";
+import { nrcRelativeL2OutputGradient } from "./wgsl/fusedMlp.wgsl.ts";
 
 declare const Deno: { args: string[]; exit: (c?: number) => never };
 
@@ -49,8 +50,9 @@ function makeBatch(B: number, inW: number, seed: { s: number }, outW: number) {
 // dL/dX upstream signal the NRC hash-grid encode-backward scatters; the input
 // layer is LINEAR so dX[S,i] = Σ_o W[0][o,i]·δ₁[S,o] with NO relu' factor —
 // Müller 2022 Instant-NGP §4). `cpuGrads` / `cpuInputGrads` below are thin
-// wrappers; the per-cell float-op sequence is identical to the previous two
-// standalone copies, so all FD pins are unchanged.
+// wrappers. The output-layer derivative follows NRC's prediction-luminance-
+// relative L2 objective; lower-layer propagation and parameter accumulation
+// retain the same operation ordering.
 function cpuForwardBackward(
   w: Float32Array, b: Float32Array, x: Float32Array, y: Float32Array,
   spec: FusedNetSpec, plan: { wOff: number[]; bOff: number[]; inW: number[]; outW: number[]; wlayers: number; totalW: number; totalB: number },
@@ -83,7 +85,13 @@ function cpuForwardBackward(
     const delta: number[][] = [];
     for (let nl = 0; nl < node; nl++) delta.push(new Array<number>(W).fill(0));
     const outA = a[node - 1]!, outDelta = delta[node - 1]!;
-    for (let o = 0; o < outW; o++) outDelta[o] = (outA[o]! - y[S * outW + o]!) / B;
+    if (outW !== 3) throw new Error(`NRC relative-L2 luminance requires RGB outW=3; got ${outW}`);
+    const outputGradient = nrcRelativeL2OutputGradient(
+      [outA[0]!, outA[1]!, outA[2]!],
+      [y[S * outW + 0]!, y[S * outW + 1]!, y[S * outW + 2]!],
+      B,
+    );
+    for (let o = 0; o < outW; o++) outDelta[o] = outputGradient[o]!;
     for (let l = wl - 1; l >= 0; l--) {
       const iN = plan.inW[l]!, oN = plan.outW[l]!;
       const wOff = plan.wOff[l]!, bOff = plan.bOff[l]!;
@@ -183,6 +191,7 @@ export async function checkGradients(device: GPUDevice, useF16: boolean): Promis
   const { gw, gb } = await tinyProbe.readGrads();
 
   const plan = tiny.layerPlan;
+  const fdNormalization = await tinyProbe.captureLossNormalization();
 
   // PRIMARY oracle: CPU exact analytic grads for the SAME net. GPU must match.
   const cpu = cpuGrads(init.w, init.b, batch.x, batch.y, tinySpec, plan, B_fd);
@@ -215,20 +224,20 @@ export async function checkGradients(device: GPUDevice, useF16: boolean): Promis
   for (let k = 0; k < plan.totalW; k++) {
     const wp = init.w.slice(); wp[k] = wp[k]! + h; tiny.setWeights(wp, init.b);
     tiny.setBatch(batch.x, batch.y);
-    const lp = await tinyProbe.computeLoss();
+    const lp = await tinyProbe.computeLoss(fdNormalization);
     const wm = init.w.slice(); wm[k] = wm[k]! - h; tiny.setWeights(wm, init.b);
     tiny.setBatch(batch.x, batch.y);
-    const lm = await tinyProbe.computeLoss();
+    const lm = await tinyProbe.computeLoss(fdNormalization);
     fdGW[k] = (lp - lm) / (2 * h);
   }
   const fdGB = new Float32Array(plan.totalB);
   for (let k = 0; k < plan.totalB; k++) {
     const bp = init.b.slice(); bp[k] = bp[k]! + h; tiny.setWeights(init.w, bp);
     tiny.setBatch(batch.x, batch.y);
-    const lp = await tinyProbe.computeLoss();
+    const lp = await tinyProbe.computeLoss(fdNormalization);
     const bm = init.b.slice(); bm[k] = bm[k]! - h; tiny.setWeights(init.w, bm);
     tiny.setBatch(batch.x, batch.y);
-    const lm = await tinyProbe.computeLoss();
+    const lm = await tinyProbe.computeLoss(fdNormalization);
     fdGB[k] = (lp - lm) / (2 * h);
   }
   tiny.setWeights(init.w, init.b);
@@ -290,7 +299,7 @@ export async function checkLearning(device: GPUDevice, useF16: boolean): Promise
   }
   await device.queue.onSubmittedWorkDone?.();
   const t1 = performance.now();
-  console.log("loss trajectory (MSE):");
+  console.log("loss trajectory (relative L2 luminance):");
   for (const k of Object.keys(lossesAt).map(Number).sort((a, b) => a - b)) {
     console.log(`  step ${k.toString().padStart(4)}: ${lossesAt[k]!.toExponential(4)}`);
   }

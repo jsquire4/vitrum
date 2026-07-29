@@ -11,11 +11,15 @@ export function createCommonFrameResources(
   width: number,
   height: number,
   options?: {
-    /** Full-res Welford ping-pong + estimate textures are only needed by
-     *  `atrous-variance`. Other denoisers keep legal 1x1 placeholders because
-     *  SampleBudgetPass reads only `varianceBuffer` when no denoiser exposes a
-     *  Welford ping index. Defaults to true for legacy direct callers. */
+    /** Allocate the second full-res Welford side.
+     *  Production pipelines keep this true for every denoiser so the shared
+     *  variance tracker can drive adaptive sampling and FrameOutput. Direct
+     *  resource-harness callers may still request a 1x1 placeholder. */
     readonly welfordPingPong?: boolean;
+    /** Allocate the à-trous-only scalar variance estimate at full resolution.
+     *  Other denoisers consume the shared Welford state directly and retain a
+     *  1x1 placeholder for this otherwise-unused texture. */
+    readonly atrousVarianceEstimate?: boolean;
     /** Allocate the checkerboard prefill's current-radiance snapshot at full resolution. */
     readonly checkerboardSnapshot?: boolean;
   },
@@ -105,14 +109,6 @@ export function createCommonFrameResources(
     usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC,
   });
 
-  const placeholderTexture = device.createTexture({
-    size: [1, 1],
-    format: 'rgba32float',
-    usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
-  });
-  const placeholderData = new Float32Array([0.5, 0.5, 1.0, 0.0]);
-  device.queue.writeTexture({ texture: placeholderTexture }, placeholderData, { bytesPerRow: 16 }, [1, 1]);
-
   const uboBuffer = device.createBuffer({
     size: WALKAROUND_UBO_SIZE_BYTES,
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
@@ -122,21 +118,20 @@ export function createCommonFrameResources(
     magFilter: 'nearest',
     minFilter: 'nearest',
   });
-  const compositeSampler = device.createSampler({
-    magFilter: 'nearest',
-    minFilter: 'nearest',
-    addressModeU: 'clamp-to-edge',
-    addressModeV: 'clamp-to-edge',
-  });
 
   const varianceBuffer = createVarianceBuffer(device, width, height);
   const fullWelfordPingPong = options?.welfordPingPong !== false;
   const varianceAuxW = fullWelfordPingPong ? width : 1;
   const varianceAuxH = fullWelfordPingPong ? height : 1;
   const varianceBufferAux = createVarianceBuffer(device, varianceAuxW, varianceAuxH);
+  const fullAtrousVarianceEstimate =
+    options?.atrousVarianceEstimate ?? fullWelfordPingPong;
   const atrousVarianceEstimateTexture = device.createTexture({
     label: 'atrous-variance-estimate',
-    size: [varianceAuxW, varianceAuxH],
+    size: [
+      fullAtrousVarianceEstimate ? width : 1,
+      fullAtrousVarianceEstimate ? height : 1,
+    ],
     format: 'rgba32float',
     usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
   });
@@ -200,10 +195,8 @@ export function createCommonFrameResources(
     denoisedPongTexture,
     accumTextureA,
     accumTextureB,
-    placeholderTexture,
     uboBuffer,
     nearestSampler,
-    compositeSampler,
     motionVectorTexture,
     checkerboardRadianceSnapshotTexture,
     tierTexture,

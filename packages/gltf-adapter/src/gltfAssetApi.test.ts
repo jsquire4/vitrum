@@ -24,7 +24,12 @@ import {
   loadGltfAsset,
   rankGltfBackends,
 } from './index.js';
-import type { DecodeGltfTexturePixelsFn, GltfAssetFetchResponse, GltfJson } from './index.js';
+import type {
+  DecodeGltfTexturePixelsFn,
+  GltfAssetCacheEntry,
+  GltfAssetFetchResponse,
+  GltfJson,
+} from './index.js';
 import type { InstancedMeshPrimitive, MeshPrimitive, Scene, TextureRef } from '@vitrum/core';
 
 async function expectGltfImportFailure(
@@ -68,6 +73,15 @@ function concatArrayBuffers(chunks: readonly ArrayBuffer[]): ArrayBuffer {
 
 function bytes(values: number[]): ArrayBuffer {
   return new Uint8Array(values).buffer;
+}
+
+function base64Bytes(value: string): ArrayBuffer {
+  const decoded = atob(value);
+  const out = new Uint8Array(decoded.length);
+  for (let i = 0; i < decoded.length; i += 1) {
+    out[i] = decoded.charCodeAt(i);
+  }
+  return out.buffer;
 }
 
 function textBuffer(text: string): ArrayBuffer {
@@ -1379,6 +1393,169 @@ describe('loadGltfAsset', () => {
     )).toHaveLength(2);
   });
 
+  it('preserves fetched image MIME metadata so cold and warm cache loads select the same decoder', async () => {
+    const gltf = makeExternalTexturedGltf();
+    gltf.images = [{ uri: 'textures/content-addressed-image' }];
+    const positions = f32Buffer([0, 0, 0, 1, 0, 0, 0, 1, 0]);
+    const uvs = f32Buffer([0, 0, 1, 0, 0, 1]);
+    const meshBytes = concatArrayBuffers([positions, uvs]);
+    // Keep the payload opaque so this test exercises MIME-driven decoder
+    // selection without coupling itself to the encoded-dimension preflight.
+    const imageBytes = bytes([1, 2, 3, 4]);
+    const cacheStore = new Map<string, GltfAssetCacheEntry>();
+    const cache = {
+      get: vi.fn(async (_key: { readonly url: string; readonly kind: string }) =>
+        undefined as ArrayBuffer | undefined),
+      set: vi.fn(async (
+        _key: { readonly url: string; readonly kind: string },
+        _data: ArrayBuffer,
+      ) => undefined),
+      getEntry: vi.fn(async (key: { readonly url: string; readonly kind: string }) =>
+        cacheStore.get(`${key.kind}:${key.url}`)),
+      setEntry: vi.fn(async (
+        key: { readonly url: string; readonly kind: string },
+        entry: GltfAssetCacheEntry,
+      ) => {
+        cacheStore.set(`${key.kind}:${key.url}`, entry);
+      }),
+    };
+    const fetch = vi.fn(async (url: string) => {
+      if (url.endsWith('/model.gltf')) {
+        return response(textBuffer(JSON.stringify(gltf)), 'model/gltf+json');
+      }
+      if (url.endsWith('/mesh.bin')) return response(meshBytes);
+      if (url.endsWith('/textures/content-addressed-image')) {
+        return response(imageBytes, 'image/jpeg');
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+    const decodedMimeTypes: string[] = [];
+    const decodeImage = vi.fn(async (_bytes: Uint8Array, mimeType: string) => {
+      decodedMimeTypes.push(mimeType);
+      return { kind: `decoded-${mimeType}` };
+    });
+
+    await loadGltfAsset('model.gltf', {
+      baseUri: 'https://cdn.test/a/',
+      fetch,
+      cache,
+      decodeImage,
+    });
+    await loadGltfAsset('model.gltf', {
+      baseUri: 'https://cdn.test/a/',
+      fetch,
+      cache,
+      decodeImage,
+    });
+
+    expect(fetch).toHaveBeenCalledTimes(3);
+    expect(decodedMimeTypes).toEqual(['image/jpeg', 'image/jpeg']);
+    expect(cache.get).not.toHaveBeenCalled();
+    expect(cache.set).not.toHaveBeenCalled();
+    expect(cacheStore.get(
+      'image:https://cdn.test/a/textures/content-addressed-image',
+    )).toMatchObject({ mimeType: 'image/jpeg' });
+  });
+
+  it('refetches an ambiguous extensionless image from a legacy byte-only cache instead of changing decoders', async () => {
+    const gltf = makeExternalTexturedGltf();
+    gltf.images = [{ uri: 'textures/content-addressed-image' }];
+    const positions = f32Buffer([0, 0, 0, 1, 0, 0, 0, 1, 0]);
+    const uvs = f32Buffer([0, 0, 1, 0, 0, 1]);
+    const meshBytes = concatArrayBuffers([positions, uvs]);
+    const imageBytes = bytes([1, 2, 3, 4]);
+    const cacheStore = new Map<string, ArrayBuffer>();
+    const cache = {
+      get: vi.fn(async (key: { readonly url: string; readonly kind: string }) =>
+        cacheStore.get(`${key.kind}:${key.url}`)),
+      set: vi.fn(async (
+        key: { readonly url: string; readonly kind: string },
+        data: ArrayBuffer,
+      ) => {
+        cacheStore.set(`${key.kind}:${key.url}`, data);
+      }),
+    };
+    const fetch = vi.fn(async (url: string) => {
+      if (url.endsWith('/model.gltf')) {
+        return response(textBuffer(JSON.stringify(gltf)), 'model/gltf+json');
+      }
+      if (url.endsWith('/mesh.bin')) return response(meshBytes);
+      if (url.endsWith('/textures/content-addressed-image')) {
+        return response(imageBytes, 'image/jpeg');
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+    const decodedMimeTypes: string[] = [];
+    const decodeImage = vi.fn(async (_bytes: Uint8Array, mimeType: string) => {
+      decodedMimeTypes.push(mimeType);
+      return { kind: `decoded-${mimeType}` };
+    });
+
+    await loadGltfAsset('model.gltf', {
+      baseUri: 'https://cdn.test/a/',
+      fetch,
+      cache,
+      decodeImage,
+    });
+    await loadGltfAsset('model.gltf', {
+      baseUri: 'https://cdn.test/a/',
+      fetch,
+      cache,
+      decodeImage,
+    });
+
+    // Asset and mesh bytes are reused. The ambiguous image is fetched again
+    // solely to recover its response MIME rather than being mislabeled PNG.
+    expect(fetch).toHaveBeenCalledTimes(4);
+    expect(decodedMimeTypes).toEqual(['image/jpeg', 'image/jpeg']);
+  });
+
+  it('uses an authored image MIME to consume an extensionless legacy cache hit offline', async () => {
+    const gltf = makeExternalTexturedGltf();
+    gltf.images = [{
+      uri: 'textures/content-addressed-image',
+      mimeType: 'image/jpeg',
+    }];
+    const positions = f32Buffer([0, 0, 0, 1, 0, 0, 0, 1, 0]);
+    const uvs = f32Buffer([0, 0, 1, 0, 0, 1]);
+    const meshBytes = concatArrayBuffers([positions, uvs]);
+    const imageBytes = bytes([1, 2, 3, 4]);
+    const imageUrl =
+      'https://cdn.test/a/textures/content-addressed-image';
+    const cache = {
+      get: vi.fn(async (key: { readonly url: string; readonly kind: string }) =>
+        key.kind === 'image' && key.url === imageUrl
+          ? imageBytes
+          : undefined),
+      set: vi.fn(async (
+        _key: { readonly url: string; readonly kind: string },
+        _data: ArrayBuffer,
+      ) => undefined),
+    };
+    const fetch = vi.fn(async (url: string) => {
+      throw new Error(`offline fetch must not run: ${url}`);
+    });
+    const decodeImage = vi.fn(async (
+      _bytes: Uint8Array,
+      mimeType: string,
+    ) => {
+      expect(mimeType).toBe('image/jpeg');
+      return { kind: 'decoded-jpeg' };
+    });
+
+    await expect(loadGltfAsset(gltf, {
+      baseUri: 'https://cdn.test/a/',
+      buffers: new Map([[0, meshBytes]]),
+      fetch,
+      cache,
+      decodeImage,
+    })).resolves.toMatchObject({
+      scene: { primitives: expect.any(Array) },
+    });
+    expect(fetch).not.toHaveBeenCalled();
+    expect(decodeImage).toHaveBeenCalledTimes(1);
+  });
+
   it('returns a textureDecodeReport for raw image fallback handles', async () => {
     const { gltf, buffers } = makeInlineUnsupportedTexturedGltf();
     const result = await loadGltfAndDecodeTextures(gltf, { buffers });
@@ -2457,9 +2634,11 @@ describe('decodeSceneTextures', () => {
     ]);
   });
 
-  it('reports selected compressed texture-source provenance when no pixel decoder is supplied', async () => {
+  it('decodes selected KHR_texture_basisu sources without a host pixel decoder', async () => {
     const { gltf, buffers } = makeInlineTexturedGltf();
-    const ktx = bytes([0xab, 0x4b, 0x54, 0x58, 0x20]);
+    const ktx = base64Bytes(
+      'q0tUWCAyMLsNChoKAAAAAAEAAAAEAAAABAAAAAAAAAAAAAAAAQAAAAEAAAAAAAAAaAAAACwAAACUAAAALAAAAAAAAAAAAAAAAAAAAAAAAADAAAAAAAAAABAAAAAAAAAAEAAAAAAAAAAsAAAAAAAAAAIAKACmAQIAAwMAABAAAAAAAAAAAAB/AwAAAAAAAAAA/////x8AAABLVFh3cml0ZXIAQmFzaXMgVW5pdmVyc2FsIDIuNTAAAAQAAAB/fwAAz/6x7h7gAR7h4f8J/H5+fg==',
+    );
     const bufferIndex = gltf.buffers!.length;
     const bufferViewIndex = gltf.bufferViews!.length;
     const imageIndex = gltf.images!.length;
@@ -2475,26 +2654,30 @@ describe('decodeSceneTextures', () => {
 
     const asset = await loadGltfAsset(gltf, {
       buffers,
-      textureSourceExtensions: ['KHR_texture_basisu'],
     });
     const result = await decodeSceneTextures(asset.scene, { target: 'cpu-linear' });
 
-    expect(result.decodedCount).toBe(0);
-    expect(result.unchangedCount).toBe(1);
-    expect(result.diagnostics).toEqual([
+    expect(result.decodedCount).toBe(1);
+    expect(result.unchangedCount).toBe(0);
+    expect(result.diagnostics).toEqual([]);
+    const map = (
+      result.scene.primitives[0] as MeshPrimitive
+    ).material.baseColorMap as TextureRef;
+    const handle = map.handle as {
+      readonly width: number;
+      readonly height: number;
+      readonly data: Float32Array;
+    };
+    expect(handle.width).toBe(4);
+    expect(handle.height).toBe(4);
+    expect(Array.from(handle.data.slice(0, 4))).toEqual([1, 0, 0, 1]);
+    expect(result.report.entries).toEqual([
       expect.objectContaining({
-        severity: 'warning',
-        code: 'raw-image-decoder-missing',
-        path: 'materials[0].pbrMetallicRoughness.baseColorTexture',
-        materialField: 'baseColorMap',
-        primitiveId: 'gltf-prim-0',
-        primitiveIndex: 0,
-        handleKind: 'raw-image',
         textureIndex: 0,
         imageIndex,
         imageMimeType: 'image/ktx2',
         textureSourceExtension: 'KHR_texture_basisu',
-        message: expect.stringContaining('KHR_texture_basisu'),
+        handleKind: 'pixel-data',
       }),
     ]);
   });
@@ -4809,6 +4992,38 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
     ]));
   });
 
+  it('validates the count domain of a single EXT_mesh_gpu_instancing attribute', () => {
+    const { gltf } = makeInlineTriangleGltf();
+    gltf.nodes![0] = {
+      ...gltf.nodes![0]!,
+      extensions: {
+        EXT_mesh_gpu_instancing: {
+          attributes: { TRANSLATION: 1 },
+        },
+      },
+    };
+    gltf.extensionsUsed = ['EXT_mesh_gpu_instancing'];
+    gltf.accessors![1] = {
+      ...gltf.accessors![1]!,
+      count: 0,
+      type: 'VEC3',
+      componentType: 5126,
+    };
+
+    const report = analyzeGltfAsset(gltf);
+
+    expect(report.primitives.accessorImportIssues).toContainEqual(expect.objectContaining({
+      kind: 'invalid-accessor-count',
+      support: 'unsupported',
+      semantic: 'instancing.TRANSLATION',
+      accessorIndex: 1,
+      path: 'accessors[1].count',
+      expectedCount: 1,
+      actualCount: 0,
+      nodeIndex: 0,
+    }));
+  });
+
   it('reports malformed sparse animation storage before backend selection', () => {
     const { gltf } = makeInlineTriangleGltf();
     const inputAccessor = gltf.accessors!.length;
@@ -5953,6 +6168,55 @@ describe('loadGltfForEngine', () => {
     const primitive = scene.primitives[0] as MeshPrimitive;
     expect(primitive.colors).toBeUndefined();
     expect(primitive.material.baseColor).toEqual([0.5, 0.25, 1]);
+  });
+
+  it('retains the same lite vertex-color bake in the node-visibility restore inventory', async () => {
+    const { gltf, buffers } = makeInlineVertexColorGltf([
+      0.5, 0.25, 1,
+      0.5, 0.25, 1,
+      0.5, 0.25, 1,
+    ]);
+    gltf.extensionsUsed = ['KHR_node_visibility'];
+    gltf.nodes![0] = {
+      ...gltf.nodes![0]!,
+      extensions: { KHR_node_visibility: { visible: false } },
+    };
+
+    const asset = await loadGltfAsset(gltf, { buffers });
+
+    expect(asset.scene.primitives).toHaveLength(0);
+    expect(asset.nodeVisibilityPrimitives).toHaveLength(1);
+    const retained = asset.nodeVisibilityPrimitives![0] as MeshPrimitive;
+    expect(retained.colors).toBeUndefined();
+    expect(retained.material.baseColor).toEqual([0.5, 0.25, 1]);
+    const liteCompatibility = asset.backendCompatibility.find(
+      (entry) => entry.profileId === 'pt-webgpu-lite',
+    );
+    expect(liteCompatibility?.issues.some((issue) => issue.name === 'vertexColors')).toBe(false);
+  });
+
+  it('keeps hidden nonconstant vertex colors in lite compatibility decisions', async () => {
+    const { gltf, buffers } = makeInlineVertexColorGltf();
+    gltf.extensionsUsed = ['KHR_node_visibility'];
+    gltf.nodes![0] = {
+      ...gltf.nodes![0]!,
+      extensions: { KHR_node_visibility: { visible: false } },
+    };
+
+    const asset = await loadGltfAsset(gltf, { buffers });
+
+    expect(asset.scene.primitives).toHaveLength(0);
+    expect(asset.nodeVisibilityPrimitives).toHaveLength(1);
+    const liteCompatibility = asset.backendCompatibility.find(
+      (entry) => entry.profileId === 'pt-webgpu-lite',
+    );
+    expect(liteCompatibility?.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        category: 'primitive',
+        name: 'vertexColors',
+        support: 'unsupported',
+      }),
+    ]));
   });
 
   it('rejects direct pt-webgpu-lite strict loads when material pointer animation can undo constant COLOR_0 bake', async () => {
@@ -7666,7 +7930,7 @@ describe('loadGltfForEngine', () => {
   });
 
   it.each(['reject-unsupported', 'reject-degraded'] as const)(
-    'rejects unselected required texture-source extensions with a canonical compatibility error under %s',
+    'accepts required KHR_texture_basisu through the built-in source/decoder path under %s',
     async (compatibilityMode) => {
       const { gltf, buffers } = makeInlineTexturedGltf();
       gltf.extensionsUsed = ['KHR_texture_basisu'];
@@ -7677,30 +7941,19 @@ describe('loadGltfForEngine', () => {
       };
       const createEngine = vi.fn(async () => ({ setScene: vi.fn() }));
 
-      let error: unknown;
-      try {
-        await loadGltfForEngine(gltf, {
+      await expect(
+        loadGltfForEngine(gltf, {
           buffers,
           backend: 'pt-webgl2',
           compatibilityMode,
+          opaqueTextureHandlesReady: ['pt-webgl2'],
           createEngine,
-        });
-      } catch (caught) {
-        error = caught;
-      }
-
-      expect(error).toBeInstanceOf(GltfCompatibilityError);
-      expect(error).not.toBeInstanceOf(GltfImportError);
-      expect(error).toMatchObject({
-        code: 'GLTF_COMPATIBILITY_REJECTED',
+        }),
+      ).resolves.toMatchObject({
         backend: 'pt-webgl2',
-        profileId: 'pt-webgl2',
-        compatibilityMode,
-        failures: [
-          'extension:KHR_texture_basisu=requires-hook at textures[0].extensions.KHR_texture_basisu',
-        ],
+        attached: true,
       });
-      expect(createEngine).not.toHaveBeenCalled();
+      expect(createEngine).toHaveBeenCalledOnce();
     },
   );
 

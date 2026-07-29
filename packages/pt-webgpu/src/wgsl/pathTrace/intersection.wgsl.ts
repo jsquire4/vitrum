@@ -197,7 +197,12 @@ fn traceClosest(ray: Ray, tMin: f32, tMax: f32) -> SceneHit {
   return hit;
 }
 
-fn traceAny(ray: Ray, tMin: f32, tMax: f32) -> bool {
+fn traceAny(
+  ray: Ray,
+  tMin: f32,
+  tMax: f32,
+  rng: ptr<function, PtRngState>,
+) -> bool {
   var cursor = tMin;
   loop {
     let hit = traceClosestRaw(ray, cursor, tMax);
@@ -205,7 +210,10 @@ fn traceAny(ray: Ray, tMin: f32, tMax: f32) -> bool {
     let matId = hitMaterialId(hit);
     if (
       materialAcceptsSidedHit(matId, hit.frontFace) &&
-      !materialShadowCastDisabled(matId)
+      !materialShadowCastDisabled(matId) &&
+      !alphaTestPassThrough(
+        matId, hit.triIndex, hit.baryVW, hit.instanceIndex, rng,
+      )
     ) {
       return true;
     }
@@ -386,112 +394,6 @@ fn traceMeshCwbvhClosest(
   return true;
 }
 
-fn traceMeshBinaryAny(ray: Ray, tMin: f32, tMaxBound: f32, binaryRootNode: u32) -> bool {
-  var fallbackHit: SceneHit;
-  return traceMeshBvh(
-    ray, tMin, tMaxBound, false, &fallbackHit, binaryRootNode, false,
-  );
-}
-
-fn traceMeshCwbvhAny(
-  ray: Ray,
-  tMin: f32,
-  tMaxBound: f32,
-  rootNode: u32,
-  binaryRootNode: u32,
-) -> bool {
-  let nodeCount = arrayLength(&cwbvhChildCount);
-  if (nodeCount == 0u || rootNode >= nodeCount) {
-    return traceMeshBinaryAny(ray, tMin, tMaxBound, binaryRootNode);
-  }
-  if (
-    nodeCount > arrayLength(&cwbvhNodeBounds) ||
-    nodeCount > arrayLength(&cwbvhChildBoundsPacked) / (CWBVH_CHILDREN * CWBVH_CHILD_BOUNDS_PACKED_U32) ||
-    nodeCount > arrayLength(&cwbvhChildMeta) / CWBVH_CHILDREN
-  ) {
-    return traceMeshBinaryAny(ray, tMin, tMaxBound, binaryRootNode);
-  }
-
-  var stack: array<u32, CWBVH_INTERSECT_STACK_DEPTH>;
-  var stackPtr = 0u;
-  stack[stackPtr] = rootNode;
-  stackPtr = stackPtr + 1u;
-  let invDir = safeInvDir(ray.direction);
-
-  while (stackPtr > 0u) {
-    stackPtr = stackPtr - 1u;
-    let nodeIndex = stack[stackPtr];
-    if (nodeIndex >= nodeCount) {
-      return traceMeshBinaryAny(ray, tMin, tMaxBound, binaryRootNode);
-    }
-    let rawCount = cwbvhChildCount[nodeIndex];
-    if (rawCount > CWBVH_CHILDREN) {
-      return traceMeshBinaryAny(ray, tMin, tMaxBound, binaryRootNode);
-    }
-    let parent = cwbvhNodeBounds[nodeIndex];
-    let parentMin = vec3f(parent.boundsMin[0], parent.boundsMin[1], parent.boundsMin[2]);
-    let parentMax = vec3f(parent.boundsMax[0], parent.boundsMax[1], parent.boundsMax[2]);
-    if (!cwbvhBoundsAreValid(parentMin, parentMax)) {
-      return traceMeshBinaryAny(ray, tMin, tMaxBound, binaryRootNode);
-    }
-    let count = rawCount;
-    for (var slot = 0u; slot < count; slot = slot + 1u) {
-      let childIndex = nodeIndex * CWBVH_CHILDREN + slot;
-      let childInfo = cwbvhChildMeta[childIndex];
-      if (childInfo.kind == CWBVH_CHILD_EMPTY) {
-        return traceMeshBinaryAny(ray, tMin, tMaxBound, binaryRootNode);
-      }
-      let bounds = cwbvhLoadChildBounds(nodeIndex, slot);
-      if (!cwbvhBoundsAreValid(bounds.boundsMin, bounds.boundsMax)) {
-        return traceMeshBinaryAny(ray, tMin, tMaxBound, binaryRootNode);
-      }
-      let childT = cwbvhAabbEntry(ray.origin, invDir, bounds.boundsMin, bounds.boundsMax, tMaxBound);
-      if (childT == CWBVH_INTERSECT_INFINITY) {
-        continue;
-      }
-      if (childInfo.kind == CWBVH_CHILD_NODE) {
-        if (childInfo.indexOrOffset >= nodeCount) {
-          return traceMeshBinaryAny(ray, tMin, tMaxBound, binaryRootNode);
-        }
-        if (stackPtr >= CWBVH_INTERSECT_STACK_DEPTH) {
-          return traceMeshBinaryAny(ray, tMin, tMaxBound, binaryRootNode);
-        }
-        stack[stackPtr] = childInfo.indexOrOffset;
-        stackPtr = stackPtr + 1u;
-      } else if (childInfo.kind == CWBVH_CHILD_LEAF) {
-        let triangleCount = min(params.triangleCount, arrayLength(&indices));
-        if (
-          childInfo.triCount == 0u ||
-          childInfo.indexOrOffset > triangleCount ||
-          childInfo.triCount > triangleCount - childInfo.indexOrOffset
-        ) {
-          return traceMeshBinaryAny(ray, tMin, tMaxBound, binaryRootNode);
-        }
-        for (var i = 0u; i < childInfo.triCount; i = i + 1u) {
-          let triIdx = childInfo.indexOrOffset + i;
-          if (triShadowCastDisabled(triIdx)) {
-            continue;
-          }
-          let tri = indices[triIdx];
-          if (tri.x >= arrayLength(&positions) || tri.y >= arrayLength(&positions) || tri.z >= arrayLength(&positions)) {
-            return traceMeshBinaryAny(ray, tMin, tMaxBound, binaryRootNode);
-          }
-          let a = positions[tri.x].xyz;
-          let b = positions[tri.y].xyz;
-          let c = positions[tri.z].xyz;
-          let hitT = intersectTriangle(ray.origin, ray.direction, a, b, c);
-          if (hitT > tMin && hitT < tMaxBound) {
-            return true;
-          }
-        }
-      } else {
-        return traceMeshBinaryAny(ray, tMin, tMaxBound, binaryRootNode);
-      }
-    }
-  }
-  return false;
-}
-
 fn traceTlasClosestCwbvhFallback(
   ray: Ray,
   tMin: f32,
@@ -499,12 +401,6 @@ fn traceTlasClosestCwbvhFallback(
   hit: ptr<function, SceneHit>,
 ) -> bool {
   let fallbackHit = traceTlasClosest(ray, tMin, tMax, hit);
-  tlasTraversalStatusCode = TLAS_TRAVERSAL_STATUS_FALLBACK;
-  return fallbackHit;
-}
-
-fn traceTlasAnyCwbvhFallback(ray: Ray, tMin: f32, tMax: f32) -> bool {
-  let fallbackHit = traceTlasAny(ray, tMin, tMax);
   tlasTraversalStatusCode = TLAS_TRAVERSAL_STATUS_FALLBACK;
   return fallbackHit;
 }
@@ -612,82 +508,6 @@ fn traceTlasClosestCwbvh(ray: Ray, tMin: f32, tMax: f32, hit: ptr<function, Scen
   return (*hit).didHit;
 }
 
-fn traceTlasAnyCwbvh(ray: Ray, tMin: f32, tMax: f32) -> bool {
-  tlasTraversalStatusCode = TLAS_TRAVERSAL_STATUS_COMPLETE;
-  if (params.tlasNodeCount == 0u || arrayLength(&tlasNodes) == 0u || arrayLength(&tlasInstanceIndices) == 0u) {
-    return traceTlasAny(ray, tMin, tMax);
-  }
-  var stack: array<u32, 64>;
-  var stackPtr = 0u;
-  stack[stackPtr] = 0u;
-  stackPtr = stackPtr + 1u;
-  while (stackPtr > 0u) {
-    stackPtr = stackPtr - 1u;
-    let nodeIdx = stack[stackPtr];
-    if (nodeIdx >= min(params.tlasNodeCount, arrayLength(&tlasNodes))) { continue; }
-    let node = tlasNodes[nodeIdx];
-    let bmin = vec3f(node.boundsMin[0], node.boundsMin[1], node.boundsMin[2]);
-    let bmax = vec3f(node.boundsMax[0], node.boundsMax[1], node.boundsMax[2]);
-    if (!intersectAabb(ray, bmin, bmax, tMin, tMax)) { continue; }
-    let splitOrCount = node.splitAxisOrTriCount;
-    if ((splitOrCount & LEAFNODE_FLAG) == LEAFNODE_FLAG) {
-      let count = splitOrCount & 0x0000ffffu;
-      let start = node.rightChildOrTriOffset;
-      for (var i = 0u; i < count; i = i + 1u) {
-        let permIdx = start + i;
-        if (permIdx >= arrayLength(&tlasInstanceIndices)) { continue; }
-        let instIdx = tlasInstanceIndices[permIdx];
-        let m = instIdx * 4u;
-        if (m + 3u >= arrayLength(&tlasInstanceWorldToLocal)) { continue; }
-        let w2l0 = tlasInstanceWorldToLocal[m];
-        let w2l1 = tlasInstanceWorldToLocal[m + 1u];
-        let w2l2 = tlasInstanceWorldToLocal[m + 2u];
-        let w2l3 = tlasInstanceWorldToLocal[m + 3u];
-        var localRay: Ray;
-        localRay.origin = transformPointCols(w2l0, w2l1, w2l2, w2l3, ray.origin);
-        localRay.direction = transformDirectionCols(w2l0, w2l1, w2l2, ray.direction);
-        let localStart = transformPointCols(
-          w2l0, w2l1, w2l2, w2l3, ray.origin + ray.direction * tMin,
-        );
-        let localTMin = max(dot(localStart - localRay.origin, localRay.direction), 0.0);
-        var localTMax = tMax;
-        if (tMax < INFINITY * 0.5) {
-          let localEnd = transformPointCols(w2l0, w2l1, w2l2, w2l3, ray.origin + ray.direction * tMax);
-          localTMax = max(dot(localEnd - localRay.origin, localRay.direction), localTMin);
-        }
-        if (instIdx >= arrayLength(&cwbvhTlasBlasRoots) || instIdx >= arrayLength(&tlasBlasRoots)) {
-          return traceTlasAnyCwbvhFallback(ray, tMin, tMax);
-        }
-        let rootPair = cwbvhTlasBlasRoots[instIdx];
-        if (
-          rootPair.x != CWBVH_ROOT_PAIR_MAGIC ||
-          rootPair.y == 0xffffffffu || rootPair.z == 0xffffffffu ||
-          rootPair.y != tlasBlasRoots[instIdx] ||
-          rootPair.y >= min(params.bvhNodeCount, arrayLength(&bvhNodes)) ||
-          rootPair.z >= arrayLength(&cwbvhChildCount) ||
-          rootPair.w != (rootPair.x ^ rootPair.y * CWBVH_BINARY_ROOT_FACTOR ^ rootPair.z * CWBVH_WIDE_ROOT_FACTOR)
-        ) {
-          return traceTlasAnyCwbvhFallback(ray, tMin, tMax);
-        }
-        let binaryBlasRoot = rootPair.y;
-        let blasRoot = rootPair.z;
-        if (traceMeshCwbvhAny(localRay, localTMin, localTMax, blasRoot, binaryBlasRoot)) {
-          return true;
-        }
-      }
-    } else {
-      let leftChild = nodeIdx + 1u;
-      let rightChild = nodeIdx + node.rightChildOrTriOffset;
-      if (stackPtr + 2u <= 64u) {
-        stack[stackPtr] = rightChild; stackPtr = stackPtr + 1u;
-        stack[stackPtr] = leftChild; stackPtr = stackPtr + 1u;
-      } else {
-        return traceTlasAnyCwbvhFallback(ray, tMin, tMax);
-      }
-    }
-  }
-  return false;
-}
 `;
 
 const PT_WEBGPU_TRACE_CLOSEST_CWBVH_WGSL = /* wgsl */ `fn traceClosestRaw(ray: Ray, tMin: f32, tMax: f32) -> SceneHit {

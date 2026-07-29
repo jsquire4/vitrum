@@ -1,18 +1,24 @@
-import { describe, expect, it } from 'vitest';
-import { asMat4, type FrameInput, type Scene } from '@vitrum/core';
-import { AdjointPass, buildAdjointWorldSpaceGeometryOverride } from '../adjointPass.js';
-import type { UploadedSceneBuffers } from '../scene/uploadSceneBuffers.js';
-import type { AdjointGradientRequest } from '../inverse/inverseSession.js';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
-  ADJOINT_EMITTER_TARGET_MESH,
-  ADJOINT_FIELD_EMITTER_INTENSITY,
+  asMat4,
+  type FrameInput,
+  type Scene,
+  type SkinnedMeshPrimitive,
+} from '@vitrum/core';
+import {
+  AdjointPass,
+  buildAdjointWorldSpaceGeometryOverride,
+} from '../adjointPass.js';
+import type { AdjointGradientRequest } from '../inverse/inverseSession.js';
+import type { UploadedSceneBuffers } from '../scene/uploadSceneBuffers.js';
+import {
+  ADJOINT_FIELD_EMISSIVE,
   ADJOINT_PARAMS_UBO_BYTES,
 } from '../wgsl/pathTrace/adjointPass.wgsl.js';
 
 interface FakeBuffer {
-  readonly id: number;
   readonly size: number;
-  readonly usage: number;
+  readonly bytes: ArrayBuffer;
   destroyed: boolean;
   destroy(): void;
   mapAsync(): Promise<void>;
@@ -22,183 +28,116 @@ interface FakeBuffer {
 
 interface BufferWrite {
   readonly buffer: FakeBuffer;
-  readonly byteLength: number;
-  readonly data: ArrayBuffer;
-}
-
-interface FakeBindGroup {
-  readonly entries: readonly {
-    readonly binding: number;
-    readonly resource: unknown;
-  }[];
+  readonly bytes: Uint8Array;
 }
 
 function installWebGpuConstants(): () => void {
-  const g = globalThis as unknown as {
+  const global = globalThis as unknown as {
     GPUBufferUsage?: Record<string, number>;
     GPUMapMode?: Record<string, number>;
   };
-  const prevUsage = g.GPUBufferUsage;
-  const prevMapMode = g.GPUMapMode;
-  g.GPUBufferUsage = {
-    UNIFORM: 1 << 0,
-    COPY_DST: 1 << 1,
-    STORAGE: 1 << 2,
-    COPY_SRC: 1 << 3,
-    MAP_READ: 1 << 4,
+  const previousUsage = global.GPUBufferUsage;
+  const previousMapMode = global.GPUMapMode;
+  global.GPUBufferUsage = {
+    UNIFORM: 1,
+    COPY_DST: 2,
+    STORAGE: 4,
+    COPY_SRC: 8,
+    MAP_READ: 16,
   };
-  g.GPUMapMode = { READ: 1 };
+  global.GPUMapMode = { READ: 1 };
   return () => {
-    if (prevUsage === undefined) {
-      delete g.GPUBufferUsage;
-    } else {
-      g.GPUBufferUsage = prevUsage;
-    }
-    if (prevMapMode === undefined) {
-      delete g.GPUMapMode;
-    } else {
-      g.GPUMapMode = prevMapMode;
-    }
+    if (previousUsage == null) delete global.GPUBufferUsage;
+    else global.GPUBufferUsage = previousUsage;
+    if (previousMapMode == null) delete global.GPUMapMode;
+    else global.GPUMapMode = previousMapMode;
   };
 }
 
-function makeFakeDevice(): {
+function fakeGpu(): {
   readonly device: GPUDevice;
   readonly writes: BufferWrite[];
-  readonly bindGroups: FakeBindGroup[];
-  makeExternalBuffer(size?: number): FakeBuffer;
+  readonly bindEntries: number[][];
+  readonly calls: { shaderModules: number; buffers: number };
+  externalBuffer(): GPUBuffer;
 } {
-  let nextId = 1;
   const writes: BufferWrite[] = [];
-  const bindGroups: FakeBindGroup[] = [];
-
-  const makeBuffer = (size = 16, usage = 0): FakeBuffer => ({
-    id: nextId++,
+  const bindEntries: number[][] = [];
+  const calls = { shaderModules: 0, buffers: 0 };
+  const makeBuffer = (size = 16): FakeBuffer => ({
     size,
-    usage,
+    bytes: new ArrayBuffer(size),
     destroyed: false,
     destroy() {
       this.destroyed = true;
     },
-    async mapAsync() {
-      return undefined;
-    },
+    async mapAsync() {},
     getMappedRange() {
-      return new ArrayBuffer(size);
+      return this.bytes;
     },
-    unmap() {
-      // no-op
-    },
+    unmap() {},
   });
-
   const device = {
+    limits: {
+      maxBufferSize: 0xffff_ffff,
+      maxStorageBufferBindingSize: 0xffff_ffff,
+      maxComputeWorkgroupsPerDimension: 0xffff_ffff,
+    },
     queue: {
       writeBuffer(
         buffer: FakeBuffer,
-        _bufferOffset: number,
+        offset: number,
         source: ArrayBuffer,
         sourceOffset = 0,
         size?: number,
       ) {
         const byteLength = size ?? source.byteLength - sourceOffset;
-        const bytes = new Uint8Array(source, sourceOffset, byteLength);
-        writes.push({
-          buffer,
-          byteLength,
-          data: bytes.slice().buffer,
-        });
+        const bytes = new Uint8Array(source, sourceOffset, byteLength).slice();
+        new Uint8Array(buffer.bytes, offset, byteLength).set(bytes);
+        writes.push({ buffer, bytes });
       },
-      submit() {
-        // no-op
-      },
+      submit() {},
     },
     createShaderModule() {
+      calls.shaderModules += 1;
       return {};
     },
     createComputePipeline() {
-      return {
-        getBindGroupLayout() {
-          return {};
-        },
-      };
+      return { getBindGroupLayout: () => ({}) };
     },
-    createBuffer(desc: { size: number; usage: number }) {
-      return makeBuffer(desc.size, desc.usage);
+    createBuffer({ size }: GPUBufferDescriptor) {
+      calls.buffers += 1;
+      return makeBuffer(Number(size));
     },
-    createBindGroup(desc: FakeBindGroup) {
-      bindGroups.push(desc);
-      return desc;
+    createBindGroup({ entries }: GPUBindGroupDescriptor) {
+      bindEntries.push(Array.from(entries, (entry) => entry.binding));
+      return {};
     },
     createCommandEncoder() {
       return {
         beginComputePass() {
           return {
-            setPipeline() {
-              // no-op
-            },
-            setBindGroup() {
-              // no-op
-            },
-            dispatchWorkgroups() {
-              // no-op
-            },
-            end() {
-              // no-op
-            },
+            setPipeline() {},
+            setBindGroup() {},
+            dispatchWorkgroups() {},
+            end() {},
           };
         },
-        copyBufferToBuffer() {
-          // no-op
-        },
-        finish() {
-          return {};
-        },
+        copyBufferToBuffer() {},
+        finish: () => ({}),
       };
     },
   } as unknown as GPUDevice;
-
   return {
     device,
     writes,
-    bindGroups,
-    makeExternalBuffer: (size = 16) => makeBuffer(size, 0),
+    bindEntries,
+    calls,
+    externalBuffer: () => makeBuffer() as unknown as GPUBuffer,
   };
 }
 
-function makeScene(): Scene {
-  return {
-    primitives: [
-      {
-        kind: 'mesh',
-        id: 'panel',
-        positions: new Float32Array([
-          0, 0, 0,
-          1, 0, 0,
-          0, 1, 0,
-        ]),
-        normals: new Float32Array([
-          0, 0, 1,
-          0, 0, 1,
-          0, 0, 1,
-        ]),
-        indices: new Uint32Array([0, 1, 2]),
-        material: { baseColor: [1, 1, 1], roughness: 0.4, metallic: 0 },
-      },
-    ],
-    emitters: [
-      {
-        kind: 'mesh-area',
-        id: 'panel-light',
-        meshId: 'panel',
-        color: [0.25, 0.5, 1],
-        intensity: 3,
-      },
-    ],
-    environment: { kind: 'none' },
-  };
-}
-
-function makeFrame(): FrameInput {
+function frame(): FrameInput {
   const identity = asMat4(new Float32Array([
     1, 0, 0, 0,
     0, 1, 0, 0,
@@ -215,288 +154,402 @@ function makeFrame(): FrameInput {
   };
 }
 
-function makeUploadedSceneBuffers(makeBuffer: (size?: number) => FakeBuffer): UploadedSceneBuffers {
-  const b = (size = 16) => makeBuffer(size) as unknown as GPUBuffer;
+function unlitScene(material: Record<string, unknown> = {}): Scene {
+  return {
+    primitives: [{
+      kind: 'mesh',
+      id: 'emitter',
+      positions: new Float32Array([
+        -1, -1, -1,
+        1, -1, -1,
+        0, 1, -1,
+      ]),
+      normals: new Float32Array([
+        0, 0, 1,
+        0, 0, 1,
+        0, 0, 1,
+      ]),
+      indices: new Uint32Array([0, 1, 2]),
+      material: {
+        baseColor: [0, 0, 0],
+        roughness: 1,
+        metallic: 0,
+        shadingModel: 'unlit',
+        emissive: [0.25, 0.5, 1],
+        emissiveIntensity: 4,
+        ...material,
+      },
+    }],
+    emitters: [],
+    environment: { kind: 'none' },
+  } as unknown as Scene;
+}
+
+function request(): AdjointGradientRequest {
+  return {
+    width: 1,
+    height: 1,
+    channels: 3,
+    samples: 2,
+    dLoss_dRendered: new Float32Array([1, -2, 3]),
+    params: [{
+      domain: 'materials',
+      id: 'emitter',
+      field: 'emissive',
+      offset: 0,
+      length: 3,
+    }],
+    gradientLength: 3,
+  };
+}
+
+function uploaded(externalBuffer: () => GPUBuffer): UploadedSceneBuffers {
   return {
     triangleCount: 1,
-    pointLightCount: 0,
-    rectAreaLightCount: 0,
-    directionalLightCount: 0,
-    spotLightCount: 0,
-    meshAreaLightCount: 99,
-    environmentMapWidth: 0,
-    environmentMapHeight: 0,
-    hasEnvironmentMap: false,
-    environmentHdriIntensity: 0,
-    environmentHdriRotationY: 0,
-    positionsBuffer: b(),
-    indicesBuffer: b(),
-    triMaterialIdsBuffer: b(),
-    materialsBuffer: b(),
-    normalsBuffer: b(),
-    pointLightsBuffer: b(),
-    rectAreaLightsBuffer: b(),
-    directionalLightsBuffer: b(),
-    spotLightsBuffer: b(),
-    meshAreaLightsBuffer: b(),
-    uvsBuffer: b(),
-    materialTexDescriptorsBuffer: b(),
-    materialTextureView: {},
-    materialTextureSampler: {},
-    materialLinearTextureView: {},
-    colorsBuffer: b(),
-    environmentMapTexelsBuffer: b(),
-    environmentMapCdfBuffer: b(),
-    meshAreaLightSourceFactorsBuffer: b(),
-    tangentsBuffer: b(),
+    positionsBuffer: externalBuffer(),
+    indicesBuffer: externalBuffer(),
+    triMaterialIdsBuffer: externalBuffer(),
+    materialsBuffer: externalBuffer(),
   } as unknown as UploadedSceneBuffers;
 }
 
-describe('AdjointPass host packing', () => {
-  it('builds a world-space replay override for transformed mesh geometry without remapping material slots', () => {
-    const translated = asMat4(new Float32Array([
-      1, 0, 0, 0,
-      0, 1, 0, 0,
-      0, 0, 1, 0,
-      2, 0, 0, 1,
-    ]));
-    const scene = makeScene();
-    const base = scene.primitives[0]!;
-    if (base.kind !== 'mesh') throw new Error('test fixture expected a mesh');
-    const transformedScene: Scene = {
-      ...scene,
-      primitives: [{
-        ...base,
-        transform: translated,
-        uvs: new Float32Array([0, 0, 1, 0, 0, 1]),
-        uv1: new Float32Array([0.25, 0.25, 0.75, 0.25, 0.25, 0.75]),
-        tangents: new Float32Array([1, 0, 0, 1, 1, 0, 0, 1, 1, 0, 0, 1]),
-        colors: new Float32Array([1, 0, 0, 1, 0, 1, 0, 0.5, 0, 0, 1, 1]),
-      }],
-    };
+describe('AdjointPass emissive-only packing and preflight', () => {
+  let restoreConstants: () => void;
 
-    const override = buildAdjointWorldSpaceGeometryOverride(
-      transformedScene,
-      new Set(),
-      (_scene, id) => (id === 'panel' ? 7 : null),
+  beforeAll(() => {
+    restoreConstants = installWebGpuConstants();
+  });
+
+  afterAll(() => {
+    restoreConstants();
+  });
+
+  it('packs only the eight certified bindings and one emissive descriptor', async () => {
+    const gpu = fakeGpu();
+    await new AdjointPass(gpu.device).computeGradient(
+      request(),
+      uploaded(gpu.externalBuffer),
+      frame(),
+      unlitScene(),
+      () => 0,
+      true,
     );
 
-    expect(override).not.toBeNull();
-    expect(override!.triangleCount).toBe(1);
-    expect(Array.from(override!.positions)).toEqual([
-      2, 0, 0, 0,
-      3, 0, 0, 0,
-      2, 1, 0, 0,
+    expect(gpu.bindEntries).toEqual([[0, 1, 2, 3, 4, 5, 6, 7]]);
+    expect(gpu.writes[0]?.bytes.byteLength).toBe(ADJOINT_PARAMS_UBO_BYTES);
+    const uniformF32 = new Float32Array(gpu.writes[0]!.bytes.buffer);
+    expect(uniformF32[26]).toBeGreaterThan(0);
+    const descriptor = new Uint32Array(gpu.writes[3]!.bytes.buffer);
+    expect(Array.from(descriptor.slice(0, 3))).toEqual([
+      0,
+      ADJOINT_FIELD_EMISSIVE,
+      0,
     ]);
-    expect(Array.from(override!.normals)).toEqual([
-      0, 0, 1, 0,
-      0, 0, 1, 0,
-      0, 0, 1, 0,
-    ]);
+    expect(new Float32Array(descriptor.buffer)[3]).toBe(4);
+  });
+
+  it('rejects camera-hidden primitive emission before GPU creation', async () => {
+    const gpu = fakeGpu();
+    await expect(new AdjointPass(gpu.device).computeGradient(
+      request(),
+      uploaded(gpu.externalBuffer),
+      frame(),
+      unlitScene(),
+      () => 0,
+      false,
+    )).rejects.toThrow(/cameraVisibleEmitters must be true/);
+    expect(gpu.calls).toEqual({ shaderModules: 0, buffers: 0 });
+  });
+
+  it('flattens transformed triangle geometry and preserves material ids', () => {
+    const scene = unlitScene();
+    const primitive = scene.primitives[0]!;
+    if (primitive.kind !== 'mesh') throw new Error('fixture');
+    const transformed: Scene = {
+      ...scene,
+      primitives: [{
+        ...primitive,
+        transform: asMat4(new Float32Array([
+          1, 0, 0, 0,
+          0, 1, 0, 0,
+          0, 0, 1, 0,
+          2, 3, 4, 1,
+        ])),
+      }],
+    };
+    const override = buildAdjointWorldSpaceGeometryOverride(
+      transformed,
+      () => 7,
+    );
+    expect(override?.triangleCount).toBe(1);
+    expect(Array.from(override!.positions.slice(0, 4))).toEqual([1, 2, 3, 0]);
     expect(Array.from(override!.indices)).toEqual([0, 1, 2, 0]);
     expect(Array.from(override!.triMaterialIds)).toEqual([7]);
-    expect(Array.from(override!.uvs)).toEqual([
-      0, 0, 0.25, 0.25,
-      1, 0, 0.75, 0.25,
-      0, 1, 0.25, 0.75,
-    ]);
-    expect(Array.from(override!.colors)).toEqual([
-      1, 0, 0, 1,
-      0, 1, 0, 0.5,
-      0, 0, 1, 1,
-    ]);
-    expect(Array.from(override!.tangents)).toEqual([
-      1, 0, 0, 1,
-      1, 0, 0, 1,
-      1, 0, 0, 1,
-    ]);
   });
 
-  it('builds a world-space replay override for instanced mesh geometry', () => {
-    const instanceA = asMat4(new Float32Array([
+  it('solves skinning and morph targets before applying the primitive transform', () => {
+    const identity = new Float32Array([
       1, 0, 0, 0,
       0, 1, 0, 0,
       0, 0, 1, 0,
-      2, 0, 0, 1,
-    ]));
-    const instanceB = asMat4(new Float32Array([
-      1, 0, 0, 0,
-      0, 1, 0, 0,
-      0, 0, 1, 0,
-      0, 3, 0, 1,
-    ]));
-    const scene = makeScene();
-    const base = scene.primitives[0]!;
-    if (base.kind !== 'mesh') throw new Error('test fixture expected a mesh');
-    const instancedScene: Scene = {
-      ...scene,
-      primitives: [{
-        kind: 'instanced-mesh',
-        id: base.id,
-        positions: base.positions,
-        normals: base.normals,
-        indices: base.indices ?? new Uint32Array([0, 1, 2]),
-        material: base.material,
-        uvs: new Float32Array([0, 0, 1, 0, 0, 1]),
-        uv1: new Float32Array([0.25, 0.25, 0.75, 0.25, 0.25, 0.75]),
-        instances: [instanceA, instanceB],
-      }],
-    };
-
-    const override = buildAdjointWorldSpaceGeometryOverride(
-      instancedScene,
-      new Set(),
-      (_scene, id) => (id === 'panel' ? 7 : null),
-    );
-
-    expect(override).not.toBeNull();
-    expect(override!.triangleCount).toBe(2);
-    expect(Array.from(override!.positions)).toEqual([
-      2, 0, 0, 0,
-      3, 0, 0, 0,
-      2, 1, 0, 0,
-      0, 3, 0, 0,
-      1, 3, 0, 0,
-      0, 4, 0, 0,
+      0, 0, 0, 1,
     ]);
-    expect(Array.from(override!.uvs)).toEqual([
-      0, 0, 0.25, 0.25,
-      1, 0, 0.75, 0.25,
-      0, 1, 0.25, 0.75,
-      0, 0, 0.25, 0.25,
-      1, 0, 0.75, 0.25,
-      0, 1, 0.25, 0.75,
-    ]);
-    expect(Array.from(override!.triMaterialIds)).toEqual([7, 7]);
-    const triangles: string[] = [];
-    for (let tri = 0; tri < override!.triangleCount; tri += 1) {
-      triangles.push(Array.from(override!.indices.slice(tri * 4, tri * 4 + 3)).join(','));
-    }
-    expect(triangles.sort()).toEqual(['0,1,2', '3,4,5']);
-  });
-
-  it('builds a tessellated replay override for supported analytic geometry', () => {
-    const scene = makeScene();
-    const base = scene.primitives[0]!;
-    if (base.kind !== 'mesh') throw new Error('test fixture expected a mesh');
-    const analyticScene: Scene = {
-      ...scene,
-      primitives: [{
-        kind: 'analytic',
-        id: base.id,
-        shape: 'box',
-        params: new Float32Array([0, 0, 0, 1, 1, 1]),
-        material: base.material,
-        fallbackMesh: {
-          positions: new Float32Array([99, 0, 0, 100, 0, 0, 99, 1, 0]),
-          normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
-          indices: new Uint32Array([0, 1, 2]),
-        },
-      }],
+    const boneTranslation = new Float32Array(identity);
+    boneTranslation[12] = 5;
+    const primitiveTransform = asMat4(new Float32Array(identity));
+    primitiveTransform[12] = 2;
+    const skinWeights = new Float32Array(12);
+    skinWeights[0] = 1;
+    skinWeights[4] = 1;
+    skinWeights[8] = 1;
+    const skinned: SkinnedMeshPrimitive = {
+      kind: 'skinned-mesh',
+      id: 'emitter',
+      positions: new Float32Array([
+        0, 0, 0,
+        1, 0, 0,
+        0, 1, 0,
+      ]),
+      normals: new Float32Array([
+        0, 0, 1,
+        0, 0, 1,
+        0, 0, 1,
+      ]),
+      indices: new Uint32Array([0, 1, 2]),
+      skinIndices: new Uint32Array(12),
+      skinWeights,
+      bones: boneTranslation,
+      boneInverses: identity,
+      morphTargets: [new Float32Array([
+        1, 0, 0,
+        0, 0, 0,
+        0, 0, 0,
+      ])],
+      morphWeights: new Float32Array([1]),
+      material: unlitScene().primitives[0]!.material,
+      transform: primitiveTransform,
     };
+    const override = buildAdjointWorldSpaceGeometryOverride({
+      primitives: [skinned],
+      emitters: [],
+      environment: { kind: 'none' },
+    }, () => 0);
 
-    const override = buildAdjointWorldSpaceGeometryOverride(
-      analyticScene,
-      new Set(['box']),
-      (_scene, id) => (id === 'panel' ? 9 : null),
-    );
-
-    expect(override).not.toBeNull();
-    expect(override!.triangleCount).toBe(12);
-    expect(override!.positions.length).toBeGreaterThan(0);
-    expect(Math.max(...override!.positions)).toBeLessThanOrEqual(1);
-    expect(Array.from(override!.triMaterialIds)).toEqual(new Array(12).fill(9));
+    // rest x=0 + morph x=1 + bone x=5 + primitive transform x=2
+    expect(override?.positions[0]).toBeCloseTo(8, 6);
+    expect(override?.positions[1]).toBeCloseTo(0, 6);
+    expect(override?.positions[2]).toBeCloseTo(0, 6);
   });
 
-  it('does not build an analytic replay override for unsupported analytic shapes', () => {
-    const scene = makeScene();
-    const base = scene.primitives[0]!;
-    if (base.kind !== 'mesh') throw new Error('test fixture expected a mesh');
-    const analyticScene: Scene = {
-      ...scene,
-      primitives: [{
-        kind: 'analytic',
-        id: base.id,
-        shape: 'sphere',
-        params: new Float32Array([0, 0, 0, 1]),
-        material: base.material,
-      }],
-    };
-
-    expect(buildAdjointWorldSpaceGeometryOverride(
-      analyticScene,
-      new Set(['box']),
-      (_scene, id) => (id === 'panel' ? 9 : null),
-    )).toBeNull();
-  });
-
-  it('packs replay sample count and swaps mesh-area emitter adjoint replay buffers into bindings', async () => {
-    const restoreWebGpuConstants = installWebGpuConstants();
-    try {
-      const fake = makeFakeDevice();
-      const scene = makeScene();
-      const sb = makeUploadedSceneBuffers(fake.makeExternalBuffer);
-      const req: AdjointGradientRequest = {
-        width: 1,
-        height: 1,
-        channels: 3,
-        samples: 4,
-        dLoss_dRendered: new Float32Array([0, 0, 0]),
-        params: [
-          {
-            domain: 'emitters',
-            id: 'panel-light',
-            field: 'intensity',
-            offset: 2,
-            length: 1,
+  it.each([
+    {
+      name: 'lit implicit-emitter receiver',
+      scene: () => unlitScene({ shadingModel: 'standard' }),
+      message: /implicit emissive-mesh NEE/,
+    },
+    {
+      name: 'transmission',
+      scene: () => unlitScene({ transmission: 0.5 }),
+      message: /transmission changes camera transport/,
+    },
+    {
+      name: 'emissive map',
+      scene: () => unlitScene({ emissiveMap: {} }),
+      message: /emissive map/,
+    },
+    {
+      name: 'clearcoat attenuation',
+      scene: () => unlitScene({ clearcoat: 0.5 }),
+      message: /clearcoat emission attenuation/,
+    },
+    {
+      name: 'cross-primitive equal-distance tie',
+      scene: () => {
+        const base = unlitScene();
+        return {
+          ...base,
+          primitives: [
+            base.primitives[0]!,
+            {
+              ...base.primitives[0]!,
+              id: 'overlapping-occluder',
+            },
+          ],
+        };
+      },
+      message: /equal-distance material tie/,
+    },
+    {
+      name: 'mesh-area emitter folding',
+      scene: (): Scene => ({
+        ...unlitScene(),
+        emitters: [{
+          kind: 'mesh-area',
+          id: 'fold',
+          meshId: 'emitter',
+          color: [1, 1, 1],
+          intensity: 1,
+        }],
+        }),
+      message: /folds .* emission/,
+    },
+    {
+      name: 'analytic primitive',
+      scene: () => ({
+        primitives: [{
+          kind: 'analytic',
+          id: 'emitter',
+          shape: 'sphere',
+          params: { center: [0, 0, -1], radius: 1 },
+          material: {
+            baseColor: [0, 0, 0],
+            roughness: 1,
+            metallic: 0,
+            shadingModel: 'unlit',
+            emissive: [1, 1, 1],
           },
-        ],
-        gradientLength: 4,
-      };
+        }],
+        emitters: [],
+        environment: { kind: 'none' },
+      } as unknown as Scene),
+      message: /analytic primitive/,
+    },
+    {
+      name: 'singular primitive transform',
+      scene: (): Scene => {
+        const scene = unlitScene();
+        const primitive = scene.primitives[0]!;
+        if (primitive.kind !== 'mesh') throw new Error('fixture');
+        return {
+          ...scene,
+          primitives: [{
+            ...primitive,
+            transform: asMat4(new Float32Array([
+              0, 0, 0, 0,
+              0, 1, 0, 0,
+              0, 0, 1, 0,
+              0, 0, 0, 1,
+            ])),
+          }],
+          };
+      },
+      message: /non-invertible replay transform/,
+    },
+    {
+      name: 'singular instance transform',
+      scene: (): Scene => {
+        const scene = unlitScene();
+        const primitive = scene.primitives[0]!;
+        if (primitive.kind !== 'mesh') throw new Error('fixture');
+        const {
+          transform: _transform,
+          ...mesh
+        } = primitive;
+        return {
+          ...scene,
+          primitives: [{
+            ...mesh,
+            kind: 'instanced-mesh',
+            instances: [asMat4(new Float32Array([
+              1, 0, 0, 0,
+              0, 0, 0, 0,
+              0, 0, 1, 0,
+              0, 0, 0, 1,
+            ]))],
+          }],
+          };
+      },
+      message: /non-invertible replay transform/,
+    },
+  ])('rejects $name before any GPU creation', async ({ scene, message }) => {
+    const gpu = fakeGpu();
+    await expect(new AdjointPass(gpu.device).computeGradient(
+      request(),
+      uploaded(gpu.externalBuffer),
+      frame(),
+      scene(),
+      () => 0,
+      true,
+    )).rejects.toThrow(message);
+    expect(gpu.calls).toEqual({ shaderModules: 0, buffers: 0 });
+  });
 
-      const grad = await new AdjointPass(fake.device).computeGradient(
-        req,
-        sb,
-        makeFrame(),
-        scene,
-        new Set(),
-        () => null,
-      );
+  it.each([
+    {
+      name: 'width outside u32',
+      req: () => ({ ...request(), width: 0x1_0000_0000 }),
+      message: /width must be a positive u32/,
+    },
+    {
+      name: 'sample count outside u32',
+      req: () => ({ ...request(), samples: 0x1_0000_0000 }),
+      message: /samples must be a positive u32/,
+    },
+    {
+      name: 'sample count above the session limit',
+      req: () => ({ ...request(), samples: 4097 }),
+      message: /samples exceeds the inverse-session limit 4096/,
+    },
+    {
+      name: 'gradient length outside u32',
+      req: () => ({ ...request(), gradientLength: 0x1_0000_0000 }),
+      message: /gradientLength must be a positive u32/,
+    },
+    {
+      name: 'pixel product outside u32',
+      req: () => ({ ...request(), width: 65536, height: 65536 }),
+      message: /pixel count exceeds the addressable u32 resource domain/,
+    },
+  ])('rejects $name before any GPU creation', async ({ req, message }) => {
+    const gpu = fakeGpu();
+    await expect(new AdjointPass(gpu.device).computeGradient(
+      req(),
+      uploaded(gpu.externalBuffer),
+      frame(),
+      unlitScene(),
+      () => 0,
+      true,
+    )).rejects.toThrow(message);
+    expect(gpu.calls).toEqual({ shaderModules: 0, buffers: 0 });
+  });
 
-      expect(Array.from(grad)).toEqual([0, 0, 0, 0]);
-
-      const paramsWrite = fake.writes.find((write) => write.byteLength === ADJOINT_PARAMS_UBO_BYTES);
-      expect(paramsWrite).toBeDefined();
-      const paramsU32 = new Uint32Array(paramsWrite!.data);
-      expect(paramsU32[27]).toBe(4);
-      expect(paramsU32[30]).toBe(1);
-
-      const descWrite = fake.writes.find((write) => write.byteLength === 8 * Uint32Array.BYTES_PER_ELEMENT);
-      expect(descWrite).toBeDefined();
-      const descU32 = new Uint32Array(descWrite!.data);
-      const descF32 = new Float32Array(descWrite!.data);
-      expect(descU32[0]).toBe(0);
-      expect(descU32[1]).toBe(ADJOINT_FIELD_EMITTER_INTENSITY);
-      expect(descU32[2]).toBe(2);
-      expect(descU32[3]! & 0xff).toBe(ADJOINT_EMITTER_TARGET_MESH);
-      expect(descU32[3]! >>> 8).toBe(1);
-      expect(descF32[4]).toBeCloseTo(0.25, 6);
-      expect(descF32[5]).toBeCloseTo(0.5, 6);
-      expect(descF32[6]).toBeCloseTo(1, 6);
-      expect(descF32[7]).toBeCloseTo(3, 6);
-
-      const bindGroup = fake.bindGroups.at(-1);
-      expect(bindGroup).toBeDefined();
-      const meshAreaLightsEntry = bindGroup!.entries.find((entry) => entry.binding === 13);
-      const sourceFactorsEntry = bindGroup!.entries.find((entry) => entry.binding === 22);
-      const meshAreaLightsBuffer = (meshAreaLightsEntry!.resource as { buffer: FakeBuffer }).buffer;
-      const sourceFactorsBuffer = (sourceFactorsEntry!.resource as { buffer: FakeBuffer }).buffer;
-      expect(meshAreaLightsBuffer).not.toBe(sb.meshAreaLightsBuffer);
-      expect(sourceFactorsBuffer).not.toBe(sb.meshAreaLightSourceFactorsBuffer);
-      expect(meshAreaLightsBuffer.size).toBe(28 * Float32Array.BYTES_PER_ELEMENT);
-      expect(sourceFactorsBuffer.size).toBe(4 * Float32Array.BYTES_PER_ELEMENT);
-    } finally {
-      restoreWebGpuConstants();
-    }
+  it.each([
+    {
+      name: 'storage binding limit',
+      limit: 'maxStorageBufferBindingSize',
+      value: 8,
+      message: /storage resource exceeds this device's limits/,
+      req: () => request(),
+    },
+    {
+      name: 'dispatch workgroup limit',
+      limit: 'maxComputeWorkgroupsPerDimension',
+      value: 1,
+      message: /compute-workgroup limit/,
+      req: () => ({
+        ...request(),
+        width: 9,
+        dLoss_dRendered: new Float32Array(9 * 3),
+      }),
+    },
+  ] as const)('rejects the device $name before GPU creation', async ({
+    limit,
+    value,
+    message,
+    req,
+  }) => {
+    const gpu = fakeGpu();
+    (
+      gpu.device.limits as unknown as Record<string, number>
+    )[limit] = value;
+    await expect(new AdjointPass(gpu.device).computeGradient(
+      req(),
+      uploaded(gpu.externalBuffer),
+      frame(),
+      unlitScene(),
+      () => 0,
+      true,
+    )).rejects.toThrow(message);
+    expect(gpu.calls).toEqual({ shaderModules: 0, buffers: 0 });
   });
 });

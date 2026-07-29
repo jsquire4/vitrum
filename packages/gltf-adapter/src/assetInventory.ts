@@ -26,6 +26,7 @@ import {
   gltfPrimitiveKey,
   type GltfSceneReachability,
 } from './sceneScope.js';
+import { effectiveGltfTextureSourceExtensions } from './textures.js';
 import {
   gltfAnimationPointerInterpolationError,
   gltfAnimationPointerOutputAccessorError,
@@ -94,11 +95,6 @@ const REQUIRED_EXTENSION_SUPPORT = new Set([
   'EXT_mesh_gpu_instancing',
 ]);
 
-const EXTENSIONS_REQUIRING_HOST_HOOK = new Set([
-  'KHR_texture_basisu',
-  'MSFT_texture_dds',
-]);
-
 export const TEXTURE_SOURCE_EXTENSION_NAMES = [
   'KHR_texture_basisu',
   'EXT_texture_webp',
@@ -107,8 +103,6 @@ export const TEXTURE_SOURCE_EXTENSION_NAMES = [
 
 export const TEXTURE_SOURCE_EXTENSIONS = new Set<string>(TEXTURE_SOURCE_EXTENSION_NAMES);
 const MESHOPT_COMPRESSION_EXTENSIONS = new Set(['EXT_meshopt_compression', 'KHR_meshopt_compression']);
-
-const COMMON_UNSUPPORTED_EXTENSIONS = new Set<string>();
 
 const FALLBACK_GENERATED_PRIMITIVE_MODES = new Set([0, 1, 2, 3]);
 const SUPPORTED_GLTF_PRIMITIVE_MODES = new Set([0, 1, 2, 3, 4, 5, 6]);
@@ -149,7 +143,9 @@ export function analyzeGltfAsset(
   gltf: GltfJson,
   options: AnalyzeGltfAssetOptions = {},
 ): GltfFeatureReport {
-  const selectedTextureSourceExtensions = new Set<string>(options.textureSourceExtensions ?? []);
+  const selectedTextureSourceExtensions = new Set<string>(
+    effectiveGltfTextureSourceExtensions(options.textureSourceExtensions),
+  );
   const sceneScope = options.sceneIndex === undefined
     ? undefined
     : collectGltfSceneReachability(gltf, options.sceneIndex);
@@ -215,13 +211,12 @@ function analyzeExtensions(
   const unsupportedRequired: string[] = [];
 
   for (const ext of sorted(all)) {
-    if (extensionRequiresHostHook(gltf, ext, required, selectedTextureSourceExtensions, sceneScope)) requiresHook.push(ext);
     if (REQUIRED_EXTENSION_SUPPORT.has(ext)) {
       supported.push(ext);
       continue;
     }
     if (required.includes(ext)) unsupportedRequired.push(ext);
-    else if (COMMON_UNSUPPORTED_EXTENSIONS.has(ext) || ext.startsWith('KHR_') || ext.startsWith('EXT_') || ext.startsWith('MSFT_')) {
+    else {
       unsupportedOptional.push(ext);
     }
   }
@@ -236,32 +231,6 @@ function analyzeExtensions(
     textureSourceUses: collectTextureSourceExtensionUses(gltf, required, selectedTextureSourceExtensions, sceneScope),
     sourcePaths: sourcePathRecord(sourcePaths),
   };
-}
-
-function extensionRequiresHostHook(
-  gltf: GltfJson,
-  ext: string,
-  required: readonly string[],
-  selectedTextureSourceExtensions: ReadonlySet<string>,
-  sceneScope: GltfSceneReachability | undefined,
-): boolean {
-  if (!EXTENSIONS_REQUIRING_HOST_HOOK.has(ext)) return false;
-  if (!TEXTURE_SOURCE_EXTENSIONS.has(ext)) return true;
-
-  // Required texture-source extensions cannot be safely ignored. Optional
-  // texture-source extensions only need a host hook when they are the sole
-  // available image source for at least one texture; otherwise the loader uses
-  // the base `texture.source` fallback until the host opts into the extension.
-  if (required.includes(ext)) return true;
-  if (selectedTextureSourceExtensions.has(ext)) {
-    return textureEntriesForScope(gltf, sceneScope).some(([, texture]) =>
-      textureSourceExtensionHasImageSource(texture.extensions?.[ext]),
-    );
-  }
-  return textureEntriesForScope(gltf, sceneScope).some(([, texture]) =>
-    texture.source === undefined &&
-    textureSourceExtensionHasImageSource(texture.extensions?.[ext]),
-  );
 }
 
 function requiredExtensionAppliesToScope(
@@ -282,11 +251,6 @@ function hasMeshoptCompressionExtension(extensions: Record<string, unknown> | un
   return [...MESHOPT_COMPRESSION_EXTENSIONS].some((name) => extensions[name] !== undefined);
 }
 
-function textureSourceExtensionHasImageSource(value: unknown): boolean {
-  if (value == null || typeof value !== 'object' || Array.isArray(value)) return false;
-  return typeof (value as { readonly source?: unknown }).source === 'number';
-}
-
 function collectTextureSourceExtensionUses(
   gltf: GltfJson,
   required: readonly string[],
@@ -301,7 +265,6 @@ function collectTextureSourceExtensionUses(
       const requiredUse = required.includes(extension);
       const selectedUse = selectedTextureSourceExtensions.has(extension);
       const hasBaseSource = texture.source !== undefined;
-      const codecRequiresHostHook = EXTENSIONS_REQUIRING_HOST_HOOK.has(extension);
       uses.push({
         extension,
         textureIndex,
@@ -310,7 +273,7 @@ function collectTextureSourceExtensionUses(
         selected: selectedUse,
         required: requiredUse,
         hasBaseSource,
-        requiresHook: codecRequiresHostHook && (requiredUse || selectedUse || !hasBaseSource),
+        requiresHook: false,
         ...(gltf.images?.[source]?.mimeType !== undefined ? { mimeType: gltf.images[source].mimeType } : {}),
       });
     }
@@ -692,14 +655,23 @@ function analyzePrimitives(
         accessorIndex,
         nodeIndex,
       });
+      const accessor = gltf.accessors?.[accessorIndex];
+      const expectedTypes = instancingAccessorTypes(attr);
+      const accessorCanDefineInstanceCount =
+        accessor !== undefined &&
+        expectedTypes?.includes(accessor.type) === true &&
+        FLOAT_ACCESSOR_COMPONENT_TYPES.includes(accessor.componentType) &&
+        Number.isSafeInteger(accessor.count) &&
+        accessor.count > 0;
+      if (instancingCount === undefined && accessorCanDefineInstanceCount) {
+        instancingCount = accessor.count;
+      }
       addPrimitiveAccessorImportIssueForInstancing(gltf, accessorImportIssues, {
         semantic: attr,
         accessorIndex,
         expectedCount: instancingCount,
         nodeIndex,
       });
-      const accessor = gltf.accessors?.[accessorIndex];
-      if (accessor !== undefined && instancingCount === undefined) instancingCount = accessor.count;
     }
     if (!hasTransformAttribute) {
       instancingIssues.push({
@@ -1336,6 +1308,16 @@ function addPrimitiveAccessorImportIssue(
     });
     return;
   }
+  if (!Number.isSafeInteger(accessor.count) || accessor.count < 1) {
+    issues.push({
+      ...base,
+      kind: 'invalid-accessor-count',
+      path: `accessors[${input.accessorIndex}].count`,
+      expectedCount: input.expectedCount ?? 1,
+      actualCount: accessor.count,
+    });
+    return;
+  }
   if (input.expectedCount !== undefined && accessor.count !== input.expectedCount) {
     issues.push({
       ...base,
@@ -1476,6 +1458,8 @@ function analyzeMaterials(
     sceneScope === undefined || sceneScope.materialIndices.has(materialIndex)
   );
   const fields = new Set<keyof MaterialSpec>();
+  const materialProfiles =
+    new Set<NonNullable<GltfMaterialFeatureReport['materialProfiles']>[number]>();
   const textureFields = new Set<keyof MaterialSpec>();
   const samplerPolicies: GltfTextureSamplerPolicyUse[] = [];
   const malformedSamplerPolicies: GltfMalformedTextureSamplerPolicyUse[] = [];
@@ -1568,7 +1552,7 @@ function analyzeMaterials(
     for (const key of Object.keys(ext)) {
       extensions.add(key);
       addSourcePath(issuePaths, `extension:${key}`, `${matPath}.extensions.${key}`);
-      if (COMMON_UNSUPPORTED_EXTENSIONS.has(key)) unsupportedKnownExtensions.add(key);
+      if (!REQUIRED_EXTENSION_SUPPORT.has(key)) unsupportedKnownExtensions.add(key);
     }
     if (ext.KHR_materials_unlit) addField('shadingModel', `${matPath}.extensions.KHR_materials_unlit`);
     const transmission = ext.KHR_materials_transmission;
@@ -1577,6 +1561,24 @@ function analyzeMaterials(
         addField('transmission', `${matPath}.extensions.KHR_materials_transmission.transmissionFactor`);
       }
       addTexture('transmissionMap', transmission.transmissionTexture, `${matPath}.extensions.KHR_materials_transmission.transmissionTexture`);
+      const transmissionFactor = transmission.transmissionFactor ?? 0;
+      const specGloss = ext.KHR_materials_pbrSpecularGlossiness;
+      const glossinessFactor = specGloss?.glossinessFactor ?? 1;
+      const roughnessFactor = specGloss == null
+        ? (pbr?.roughnessFactor ?? 1)
+        : 1 - (
+          Number.isFinite(glossinessFactor)
+            ? Math.min(1, Math.max(0, glossinessFactor))
+            : 1
+        );
+      if (transmissionFactor > 0 && roughnessFactor > 0) {
+        materialProfiles.add('roughTransmission');
+        addSourcePath(
+          issuePaths,
+          'profile:roughTransmission',
+          `${matPath}.extensions.KHR_materials_transmission`,
+        );
+      }
     }
     const ior = ext.KHR_materials_ior;
     if (ior?.ior !== undefined) addField('ior', `${matPath}.extensions.KHR_materials_ior.ior`);
@@ -1668,6 +1670,7 @@ function analyzeMaterials(
   return {
     count: materialEntries.length,
     materialFields: sorted(fields),
+    materialProfiles: sorted(materialProfiles),
     textureFields: sorted(textureFields),
     samplerPolicies: samplerPolicies.sort((a, b) =>
       a.path.localeCompare(b.path) || String(a.materialField).localeCompare(String(b.materialField)),

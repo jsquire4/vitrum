@@ -34,7 +34,6 @@ import { CONV2D_WGSL } from '../src/neural/wgsl/conv2d.wgsl.js';
 import { TRANSPOSED_CONV2D_WGSL } from '../src/neural/wgsl/transposedConv2d.wgsl.js';
 import { RELU_WGSL } from '../src/neural/wgsl/relu.wgsl.js';
 import { SKIP_CONNECTION_WGSL } from '../src/neural/wgsl/skipConnection.wgsl.js';
-import { BILINEAR_UPSAMPLE_WGSL } from '../src/neural/wgsl/bilinearUpsample.wgsl.js';
 
 // ─── Deterministic LCG (Park-Miller, no Math.random()) ───────────────────────
 
@@ -92,10 +91,6 @@ function computeGraphDims(
         break;
       case 'skipAdd':
         outC = inDims!.C;
-        break;
-      case 'bilinearUpsample':
-        outH = outH * 2;
-        outW = outW * 2;
         break;
     }
     dims.set(layer.output, { H: outH, W: outW, C: outC });
@@ -299,12 +294,6 @@ describe('Test 2 — WGSL binding declarations match host dispatch order (Bug 3 
     expect(bindings.has(2)).toBe(false);
   });
 
-  it('bilinearUpsample.wgsl uses binding 0 for input, 3 for output', () => {
-    const bindings = parseBindings(BILINEAR_UPSAMPLE_WGSL);
-    expect(bindings.has(0)).toBe(true);   // inputBuf
-    expect(bindings.has(3)).toBe(true);   // outputBuf
-    expect(bindings.has(4)).toBe(true);   // params
-  });
 });
 
 // ─── Test 3: Uniform buffer write check (Bug 4 fix) ───────────────────────────

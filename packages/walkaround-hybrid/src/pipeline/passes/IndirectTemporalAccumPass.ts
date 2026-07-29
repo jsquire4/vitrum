@@ -43,14 +43,18 @@ export class IndirectTemporalAccumPass implements Pass {
   readonly passLabels: readonly PassLabel[] = ['indirect-temporal-accum'];
 
   private readonly _pipeline: GPUComputePipeline;
+  /** Same layout/module, reset entry point that bypasses all prior history. */
+  private readonly _resetPipeline: GPUComputePipeline;
   /** Orchestrator-owned ping-pong index (0 = ping out / pong prev). */
   private readonly _pingPongRef: PingPongRef;
 
   constructor(
     pipeline: GPUComputePipeline,
     pingPongRef: PingPongRef,
+    resetPipeline: GPUComputePipeline = pipeline,
   ) {
     this._pipeline = pipeline;
+    this._resetPipeline = resetPipeline;
     this._pingPongRef = pingPongRef;
   }
 
@@ -74,14 +78,23 @@ export class IndirectTemporalAccumPass implements Pass {
       device, bglCache,
       resourceCache?.textureView(common.hdrIndirectTexture) ?? common.hdrIndirectTexture.createView(),
       resourceCache?.textureView(indirectAccumPrev) ?? indirectAccumPrev.createView(),
+      resourceCache?.textureView(common.motionVectorTexture) ?? common.motionVectorTexture.createView(),
       resourceCache?.textureView(indirectAccumOut) ?? indirectAccumOut.createView(),
     );
     const bg = cachedBindGroup(resourceCache, 'pass:indirect-temporal-accum', [
       common.hdrIndirectTexture,
       indirectAccumPrev,
+      common.motionVectorTexture,
       indirectAccumOut,
     ], buildBg);
-    dispatchSingleBindGroup(ctx, this._pipeline, bg, 'indirect-temporal-accum', { wg16: true });
+    const resetHistory = ctx.frameIndex === 0 || frameState.isMoving;
+    dispatchSingleBindGroup(
+      ctx,
+      resetHistory ? this._resetPipeline : this._pipeline,
+      bg,
+      'indirect-temporal-accum',
+      { wg16: true },
+    );
 
     // Publish the output handle for the downstream atrous chain.
     frameState.indirectAccumOut = indirectAccumOut;

@@ -77,6 +77,7 @@ import type {
 import { GltfComponentType } from './gltfTypes.js';
 import {
   buildTextureHandleMap,
+  effectiveGltfTextureSourceExtensions,
   GLTF_TEXTURE_SOURCE_EXTENSIONS,
   gltfTextureRefSource,
   type DecodeImageFn,
@@ -227,6 +228,7 @@ const SUPPORTED_REQUIRED_EXTENSIONS = new Set([
   // float32, which is the representation contract KHR_mesh_quantization needs.
   'KHR_mesh_quantization',
   'KHR_texture_transform',
+  'KHR_texture_basisu',
   'EXT_mesh_gpu_instancing',
 ]);
 
@@ -381,12 +383,15 @@ export interface GltfToSceneResult {
    *     `GltfSceneController`, which retains the glTF hierarchy and recomputes
    *     world transforms.
    *   - `weights` channels: write the sampled vector into the skinned
-   *     primitive's `morphWeights`, re-run `solveSkin` (@vitrum/core), and
-   *     push the deformed `positions`/`normals` through `updatePrimitive`.
+   *     primitive's `morphWeights`. Native skinned targets publish that authored
+   *     pose state for the backend to solve once; instanced deformation
+   *     fallbacks CPU-solve their shared geometry because instances cannot carry
+   *     skeleton state.
    *   - Joint-node channels (skeletal animation): the channel id names the
    *     joint's glTF node; after sampling the skeleton pose, hosts rebuild
-   *     `SkinnedMeshPrimitive.bones` (joint world matrices) and re-run
-   *     `solveSkin`. The adapter does not retarget skeletal clips.
+   *     `SkinnedMeshPrimitive.bones` (joint world matrices). Native skinned
+   *     targets publish those matrices; instanced fallbacks CPU-solve their
+   *     shared geometry. The adapter does not retarget skeletal clips.
    *
    * Evaluate clips with `sampleAnimationClip(clip, time)` from `@vitrum/core`.
    */
@@ -460,7 +465,6 @@ export interface GltfMaterialBinding {
 export interface GltfMaterialVariantPrimitivePatch {
   readonly materialIndex?: number;
   readonly materialRouting?: MaterialSpec;
-  readonly droppedTextureFields?: readonly MaterialTextureRefField[];
   readonly uvs?: Float32Array | undefined;
   readonly uv1?: Float32Array | undefined;
   readonly uvSets?: ReadonlyArray<Float32Array | undefined> | undefined;
@@ -525,7 +529,6 @@ export type GltfImportDiagnosticCode =
   | 'unreadable-position'
   | 'unreadable-indices'
   | 'invalid-primitive-attribute'
-  | 'ignored-vertex-color-set'
   | 'ignored-primitive-attribute'
   | 'empty-triangulated-primitive'
   | 'material-variant-not-found'
@@ -533,13 +536,15 @@ export type GltfImportDiagnosticCode =
   | 'material-not-found'
   | 'material-variant-material-missing'
   | 'material-variant-mapping-malformed'
-  | 'ignored-material-texcoord'
   | 'ignored-morph-target-texcoord'
   | 'ignored-morph-target-attribute'
   | 'invalid-morph-target-delta-length'
   | 'morph-weight-count-mismatch'
+  | 'non-invertible-node-transform'
+  | 'undeclared-punctual-light-extension'
   | 'missing-punctual-light'
-  | 'unsupported-punctual-light-type';
+  | 'unsupported-punctual-light-type'
+  | 'unsupported-image-based-light';
 
 export interface GltfImportDiagnostic {
   readonly severity: 'warning' | 'error';
@@ -673,6 +678,173 @@ function validateMorphTargetAttributeSemantic(semantic: string, path: string): v
     path,
     `[vitrum/gltf-adapter] Unknown morph-target attribute "${semantic}" cannot be represented exactly.`,
   );
+}
+
+function validateInvertibleAffineFloat32Matrix(
+  matrix: Float32Array,
+  path: string,
+  label: string,
+): void {
+  if (
+    matrix.length !== 16 ||
+    !matrix.every(Number.isFinite) ||
+    matrix[3] !== 0 ||
+    matrix[7] !== 0 ||
+    matrix[11] !== 0 ||
+    matrix[15] !== 1
+  ) {
+    throwImportBoundaryError(
+      'non-invertible-node-transform',
+      path,
+      `[vitrum/gltf-adapter] ${label} must be a finite affine Float32 matrix ` +
+        'with bottom row [0, 0, 0, 1].',
+    );
+  }
+
+  const m00 = matrix[0]!, m01 = matrix[4]!, m02 = matrix[8]!;
+  const m10 = matrix[1]!, m11 = matrix[5]!, m12 = matrix[9]!;
+  const m20 = matrix[2]!, m21 = matrix[6]!, m22 = matrix[10]!;
+  const determinant =
+    m00 * (m11 * m22 - m12 * m21) -
+    m01 * (m10 * m22 - m12 * m20) +
+    m02 * (m10 * m21 - m11 * m20);
+  if (!Number.isFinite(determinant) || determinant === 0) {
+    throwImportBoundaryError(
+      'non-invertible-node-transform',
+      path,
+      `[vitrum/gltf-adapter] ${label} has a non-invertible linear transform.`,
+    );
+  }
+
+  const inverseDeterminant = 1 / determinant;
+  const inverseLinear = [
+    (m11 * m22 - m12 * m21) * inverseDeterminant,
+    (m02 * m21 - m01 * m22) * inverseDeterminant,
+    (m01 * m12 - m02 * m11) * inverseDeterminant,
+    (m12 * m20 - m10 * m22) * inverseDeterminant,
+    (m00 * m22 - m02 * m20) * inverseDeterminant,
+    (m02 * m10 - m00 * m12) * inverseDeterminant,
+    (m10 * m21 - m11 * m20) * inverseDeterminant,
+    (m01 * m20 - m00 * m21) * inverseDeterminant,
+    (m00 * m11 - m01 * m10) * inverseDeterminant,
+  ];
+  const tx = matrix[12]!, ty = matrix[13]!, tz = matrix[14]!;
+  const inverseTranslation = [
+    -(inverseLinear[0]! * tx + inverseLinear[1]! * ty + inverseLinear[2]! * tz),
+    -(inverseLinear[3]! * tx + inverseLinear[4]! * ty + inverseLinear[5]! * tz),
+    -(inverseLinear[6]! * tx + inverseLinear[7]! * ty + inverseLinear[8]! * tz),
+  ];
+  const inverseComponents = [...inverseLinear, ...inverseTranslation];
+  if (
+    inverseComponents.some((component) =>
+      !Number.isFinite(component) || !Number.isFinite(Math.fround(component))
+    )
+  ) {
+    throwImportBoundaryError(
+      'non-invertible-node-transform',
+      path,
+      `[vitrum/gltf-adapter] ${label} does not have a Float32-representable inverse.`,
+    );
+  }
+
+  const inverse = new Float32Array([
+    inverseLinear[0]!, inverseLinear[3]!, inverseLinear[6]!, 0,
+    inverseLinear[1]!, inverseLinear[4]!, inverseLinear[7]!, 0,
+    inverseLinear[2]!, inverseLinear[5]!, inverseLinear[8]!, 0,
+    inverseTranslation[0]!, inverseTranslation[1]!, inverseTranslation[2]!, 1,
+  ]);
+  for (const [left, right] of [[matrix, inverse], [inverse, matrix]] as const) {
+    for (let column = 0; column < 4; column += 1) {
+      for (let row = 0; row < 4; row += 1) {
+        let product = 0;
+        let absoluteTermSum = 0;
+        for (let inner = 0; inner < 4; inner += 1) {
+          const term = left[inner * 4 + row]! * right[column * 4 + inner]!;
+          product += term;
+          absoluteTermSum += Math.abs(term);
+        }
+        const expected = row === column ? 1 : 0;
+        const tolerance = 1e-5 * Math.max(1, absoluteTermSum);
+        if (!Number.isFinite(product) || Math.abs(product - expected) > tolerance) {
+          throwImportBoundaryError(
+            'non-invertible-node-transform',
+            path,
+            `[vitrum/gltf-adapter] ${label} is not numerically reciprocal in Float32.`,
+          );
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Validate authored local transforms before they are flattened into primitive
+ * world matrices. This keeps local failures anchored to the exact glTF field.
+ */
+function validateReachableNodeTransforms(
+  gltf: GltfJson,
+  reachableNodeIndices: ReadonlySet<number>,
+): void {
+  const nodes = gltf.nodes ?? [];
+  for (const nodeIndex of [...reachableNodeIndices].sort((a, b) => a - b)) {
+    const node = nodes[nodeIndex];
+    if (node === undefined) continue;
+
+    if (node.scale !== undefined) {
+      const scale = node.scale as unknown;
+      const validScale =
+        Array.isArray(scale) &&
+        scale.length === 3 &&
+        scale.every((component) =>
+          typeof component === 'number' &&
+          Number.isFinite(component) &&
+          Math.fround(component) !== 0
+        );
+      if (!validScale) {
+        throwImportBoundaryError(
+          'non-invertible-node-transform',
+          `nodes[${nodeIndex}].scale`,
+          `[vitrum/gltf-adapter] Node ${nodeIndex} scale must contain three finite, ` +
+            'non-zero values whose Float32 representation remains non-zero.',
+        );
+      }
+    }
+
+    if (node.matrix !== undefined) {
+      const matrix = node.matrix as unknown;
+      if (
+        !Array.isArray(matrix) ||
+        matrix.length !== 16 ||
+        !matrix.every((component) =>
+          typeof component === 'number' &&
+          Number.isFinite(component) &&
+          Number.isFinite(Math.fround(component))
+        )
+      ) {
+        throwImportBoundaryError(
+          'non-invertible-node-transform',
+          `nodes[${nodeIndex}].matrix`,
+          `[vitrum/gltf-adapter] Node ${nodeIndex} matrix must be a finite ` +
+            '16-component Float32-representable affine transform.',
+        );
+      }
+      validateInvertibleAffineFloat32Matrix(
+        new Float32Array(matrix),
+        `nodes[${nodeIndex}].matrix`,
+        `Node ${nodeIndex} matrix`,
+      );
+    }
+  }
+}
+
+function validateComposedWorldTransforms(worldTransforms: ReadonlyMap<number, Mat4>): void {
+  for (const [nodeIndex, worldTransform] of worldTransforms) {
+    validateInvertibleAffineFloat32Matrix(
+      worldTransform,
+      `nodes[${nodeIndex}]`,
+      `Node ${nodeIndex} composed world transform`,
+    );
+  }
 }
 
 function validateReachablePrimitiveSemantics(
@@ -2121,6 +2293,8 @@ export async function gltfToSceneWithResourceContext(
 
   assertSupportedGltfVersion(gltf);
   const sceneIndex = resolveValidatedSceneIndex(gltf, opts.sceneIndex);
+  const textureSourceExtensions =
+    effectiveGltfTextureSourceExtensions(opts.textureSourceExtensions);
 
   const diagnostics: GltfImportDiagnostic[] = [];
   const onAccessorDiagnostic = (diagnostic: GltfAccessorDiagnostic): void => {
@@ -2135,8 +2309,13 @@ export async function gltfToSceneWithResourceContext(
   const sceneReachability = collectGltfSceneReachability(
     gltf,
     sceneIndex,
-    opts.textureSourceExtensions ?? [],
+    textureSourceExtensions,
   );
+  validateReachableNodeTransforms(gltf, sceneReachability.nodeIndices);
+  const gltfScene = gltf.scenes?.[sceneIndex];
+  const rootNodes = gltfScene?.nodes ?? [];
+  const preflightWorldTransforms = buildWorldTransforms(gltf, rootNodes);
+  validateComposedWorldTransforms(preflightWorldTransforms);
   validateReachablePrimitiveSemantics(gltf, sceneReachability);
   const cameraMetadataIssues = validateGltfCameraMetadata(
     gltf,
@@ -2154,16 +2333,14 @@ export async function gltfToSceneWithResourceContext(
     );
   }
   const scopedFeatureReport = analyzeGltfAsset(gltf, {
-    ...(opts.textureSourceExtensions
-      ? { textureSourceExtensions: opts.textureSourceExtensions }
-      : {}),
+    textureSourceExtensions,
     sceneIndex,
   });
 
   const requiredExtensions = scopedFeatureReport.extensions.required;
   for (let i = 0; i < requiredExtensions.length; i += 1) {
     const ext = requiredExtensions[i]!;
-    if (!isRequiredExtensionSupported(ext, opts.textureSourceExtensions)) {
+    if (!isRequiredExtensionSupported(ext, textureSourceExtensions)) {
       const message =
         `[vitrum/gltf-adapter] extensionsRequired includes unsupported extension "${ext}". ` +
         'Required glTF extensions cannot be safely ignored.';
@@ -2211,8 +2388,6 @@ export async function gltfToSceneWithResourceContext(
     });
   }
 
-  const extUsed = gltf.extensionsUsed ?? [];
-
   // ── 3.5. Resolve compressed geometry (GLTF-02) ─────────────────────────────
   // KHR_draco_mesh_compression + EXT_meshopt_compression via host overrides or
   // the adapter's lazy built-in decoders. Runs BEFORE texture/accessor
@@ -2257,7 +2432,7 @@ export async function gltfToSceneWithResourceContext(
     opts.decodeImage,
     warnings,
     opts.imageBytes,
-    opts.textureSourceExtensions,
+    textureSourceExtensions,
     (diagnostic) => {
       diagnostics.push(diagnostic);
     },
@@ -2275,7 +2450,7 @@ export async function gltfToSceneWithResourceContext(
         warnings,
         gltf,
         materialIndex,
-        opts.textureSourceExtensions,
+        textureSourceExtensions,
         onMaterialDiagnostic,
       );
     } catch (error) {
@@ -2298,18 +2473,13 @@ export async function gltfToSceneWithResourceContext(
     diagnostics,
   );
 
-  // ── 6. Pick the target scene ───────────────────────────────────────────────
-  const gltfScene = gltf.scenes?.[sceneIndex];
-  const rootNodes = gltfScene?.nodes ?? [];
-
-  // ── 7. Build world transforms for all nodes ────────────────────────────────
+  // ── 6–7. Build the already-preflighted transforms under the import ledger ─
   const worldTransforms = buildWorldTransforms(
     gltf,
     rootNodes,
     resourceLedger,
     'scene node transforms',
   );
-
   const cameras = collectSceneCameras(gltf, worldTransforms, resourceLedger, 'scene cameras');
 
   // ── 8. Flatten node → mesh → primitives ───────────────────────────────────
@@ -2414,62 +2584,86 @@ export async function gltfToSceneWithResourceContext(
   const punctualEmitterBindings: GltfPunctualEmitterBinding[] = [];
   let emitterIdCounter = 0;
 
-  if (extUsed.includes('KHR_lights_punctual')) {
-    const rawRootExt = gltf.extensions?.['KHR_lights_punctual'];
-    if (rawRootExt !== undefined && (!isObject(rawRootExt) || !Array.isArray(rawRootExt.lights))) {
+  // A reachable node payload is authoritative even when a producer forgot to
+  // list the extension in extensionsUsed. Silently dropping that light would
+  // make the imported scene depend on redundant declaration metadata.
+  const reachablePunctualNodeIndices = [...worldTransforms.keys()].filter((nodeIndex) =>
+    gltfNodes[nodeIndex]?.extensions?.['KHR_lights_punctual'] !== undefined
+  );
+  if (
+    reachablePunctualNodeIndices.length > 0 &&
+    gltf.extensionsUsed?.includes('KHR_lights_punctual') !== true
+  ) {
+    emitImportDiagnostic(warnings, diagnostics, {
+      severity: 'warning',
+      code: 'undeclared-punctual-light-extension',
+      path: 'extensionsUsed',
+      message:
+        '[vitrum/gltf-adapter] Reachable nodes use KHR_lights_punctual, but ' +
+        'extensionsUsed does not declare it. The payload was imported.',
+    });
+  }
+  const rawRootExt = gltf.extensions?.['KHR_lights_punctual'];
+  if (
+    reachablePunctualNodeIndices.length > 0 &&
+    rawRootExt !== undefined &&
+    (!isObject(rawRootExt) || !Array.isArray(rawRootExt.lights))
+  ) {
+    throwImportBoundaryError(
+      'missing-punctual-light',
+      'extensions.KHR_lights_punctual',
+      '[vitrum/gltf-adapter] KHR_lights_punctual root extension must contain a lights array.',
+    );
+  }
+  const rootExt = rawRootExt as KhrLightsPunctualRoot | undefined;
+  const lights = rootExt?.lights ?? [];
+
+  for (const [nodeIdx, worldMat] of worldTransforms) {
+    const node = gltfNodes[nodeIdx];
+    if (!node?.extensions) continue;
+
+    const rawNodeLightRef = node.extensions['KHR_lights_punctual'];
+    if (rawNodeLightRef === undefined) continue;
+    if (
+      !isObject(rawNodeLightRef) ||
+      !Number.isSafeInteger(rawNodeLightRef.light) ||
+      (rawNodeLightRef.light as number) < 0
+    ) {
       throwImportBoundaryError(
         'missing-punctual-light',
-        'extensions.KHR_lights_punctual',
-        '[vitrum/gltf-adapter] KHR_lights_punctual root extension must contain a lights array.',
+        `nodes[${nodeIdx}].extensions.KHR_lights_punctual.light`,
+        `[vitrum/gltf-adapter] Node ${nodeIdx} KHR_lights_punctual light must be a non-negative safe integer.`,
       );
     }
-    const rootExt = rawRootExt as KhrLightsPunctualRoot | undefined;
-    const lights = rootExt?.lights ?? [];
+    const nodeLightRef = rawNodeLightRef as { light: number };
 
-    for (const [nodeIdx, worldMat] of worldTransforms) {
-      const node = gltfNodes[nodeIdx];
-      if (!node?.extensions) continue;
-
-      const rawNodeLightRef = node.extensions['KHR_lights_punctual'];
-      if (rawNodeLightRef === undefined) continue;
-      if (
-        !isObject(rawNodeLightRef) ||
-        !Number.isSafeInteger(rawNodeLightRef.light) ||
-        (rawNodeLightRef.light as number) < 0
-      ) {
-        throwImportBoundaryError(
-          'missing-punctual-light',
-          `nodes[${nodeIdx}].extensions.KHR_lights_punctual.light`,
-          `[vitrum/gltf-adapter] Node ${nodeIdx} KHR_lights_punctual light must be a non-negative safe integer.`,
-        );
-      }
-      const nodeLightRef = rawNodeLightRef as { light: number };
-
-      const light = lights[nodeLightRef.light];
-      if (!light) {
-        throwImportBoundaryError(
-          'missing-punctual-light',
-          `nodes[${nodeIdx}].extensions.KHR_lights_punctual.light`,
-          `[vitrum/gltf-adapter] Node ${nodeIdx} references missing KHR_lights_punctual light ${nodeLightRef.light}.`,
-        );
-      }
-
-      const id = `gltf-light-${emitterIdCounter++}`;
-      const emitter = _convertPunctualLight(
-        light,
-        worldMat,
-        id,
-        warnings,
-        diagnostics,
-        `extensions.KHR_lights_punctual.lights[${nodeLightRef.light}]`,
+    const light = lights[nodeLightRef.light];
+    if (!light) {
+      throwImportBoundaryError(
+        'missing-punctual-light',
+        `nodes[${nodeIdx}].extensions.KHR_lights_punctual.light`,
+        `[vitrum/gltf-adapter] Node ${nodeIdx} references missing ` +
+          `KHR_lights_punctual light ${nodeLightRef.light}.`,
       );
-      emitters.push(emitter);
-      punctualEmitterBindings.push({
-        emitterId: id,
-        nodeIndex: nodeIdx,
-        lightIndex: nodeLightRef.light,
-      });
     }
+
+    const id = `gltf-light-${emitterIdCounter}`;
+    const emitter = _convertPunctualLight(
+      light,
+      worldMat,
+      id,
+      warnings,
+      diagnostics,
+      `extensions.KHR_lights_punctual.lights[${nodeLightRef.light}]`,
+    );
+    if (emitter === undefined) continue;
+    emitterIdCounter += 1;
+    emitters.push(emitter);
+    punctualEmitterBindings.push({
+      emitterId: id,
+      nodeIndex: nodeIdx,
+      lightIndex: nodeLightRef.light,
+    });
   }
 
   // ── 10. Convert animations (GLTF-03) ───────────────────────────────────────
@@ -2522,6 +2716,21 @@ export async function gltfToSceneWithResourceContext(
     visiblePrimitiveIds.has(String(primitive.id)),
   );
   const visibleEmitters = emitters.filter((emitter) => visibleEmitterIds.has(String(emitter.id)));
+
+  const selectedImageBasedLight =
+    gltfScene?.extensions?.EXT_lights_image_based;
+  if (selectedImageBasedLight !== undefined) {
+    emitImportDiagnostic(warnings, diagnostics, {
+      severity: 'warning',
+      code: 'unsupported-image-based-light',
+      path: `scenes[${sceneIndex}].extensions.EXT_lights_image_based`,
+      message:
+        '[vitrum/gltf-adapter] The selected scene references EXT_lights_image_based, ' +
+        'which cannot be represented by the current equirectangular SceneEnvironment ' +
+        'contract without discarding its prefiltered cubemap or irradiance coefficients. ' +
+        'The environment was left unlit instead of silently claiming extension support.',
+    });
+  }
 
   const scene: Scene = {
     primitives: visiblePrimitives,
@@ -2718,9 +2927,6 @@ function _buildPrimitiveMaterialVariantPatch(
     ...(materialIndex !== undefined ? { materialIndex } : {}),
     materialRouting: uvResolved.material,
     uvs: uvResolved.uvs,
-    ...(uvResolved.droppedTextureFields != null && uvResolved.droppedTextureFields.length > 0
-      ? { droppedTextureFields: uvResolved.droppedTextureFields }
-      : {}),
     uv1: uvResolved.uv1,
     uvSets: uvResolved.uvSets,
     tangents: finalTangents,
@@ -3371,13 +3577,8 @@ function _extractSkinData(
 
 interface PrimitiveUvMaterialResolution {
   readonly material: MaterialSpec;
-  readonly droppedTextureFields?: readonly MaterialTextureRefField[];
   readonly uvs?: Float32Array;
-  /** glTF TEXCOORD_0 compatibility alias carried by core `uvs`. */
-  readonly uvSourceTexCoord?: number;
   readonly uv1?: Float32Array;
-  /** glTF TEXCOORD_1 compatibility alias carried by core `uv1`. */
-  readonly uv1SourceTexCoord?: number;
   /** Sparse, index-preserving glTF TEXCOORD_N streams. */
   readonly uvSets?: ReadonlyArray<Float32Array | undefined>;
 }
@@ -3386,21 +3587,11 @@ function _isTextureRef(value: unknown): value is TextureRef {
   return value !== null && typeof value === 'object' && 'handle' in value;
 }
 
-function _cloneMaterialWithoutTextureRefs(
-  material: MaterialSpec,
-  fields: readonly MaterialTextureRefField[],
-): MaterialSpec {
-  const next: Record<string, unknown> = { ...material };
-  for (const field of fields) delete next[field];
-  return next as unknown as MaterialSpec;
-}
-
 function uvLaneResult(
   material: MaterialSpec,
   uvs: Float32Array | undefined,
   uv1: Float32Array | undefined,
   uvSets: ReadonlyArray<Float32Array | undefined>,
-  droppedTextureFields?: readonly MaterialTextureRefField[],
 ): PrimitiveUvMaterialResolution {
   const normalizedUvSets = cloneSparseArray(uvSets);
   const uv0 = uvs ?? normalizedUvSets[0];
@@ -3409,11 +3600,8 @@ function uvLaneResult(
   if (uvOne != null) normalizedUvSets[1] = uvOne;
   return {
     material,
-    ...(droppedTextureFields != null && droppedTextureFields.length > 0
-      ? { droppedTextureFields }
-      : {}),
-    ...(uv0 != null ? { uvs: uv0, uvSourceTexCoord: 0 } : {}),
-    ...(uvOne != null ? { uv1: uvOne, uv1SourceTexCoord: 1 } : {}),
+    ...(uv0 != null ? { uvs: uv0 } : {}),
+    ...(uvOne != null ? { uv1: uvOne } : {}),
     ...(sparseArrayHasDefinedEntry(normalizedUvSets) ? { uvSets: normalizedUvSets } : {}),
   };
 }
@@ -3815,8 +4003,6 @@ function _buildPrimitive(
     skinInfluencesPerVertex?: number;
     bones: Float32Array;
     boneInverses: Float32Array;
-    bindMatrix?: Float32Array;
-    bindMatrixInverse?: Float32Array;
   },
   morph?: MorphData,
   instances?: readonly Mat4[],
@@ -3846,8 +4032,6 @@ function _buildPrimitive(
         : {}),
       bones: skin.bones,
       boneInverses: skin.boneInverses,
-      ...(skin.bindMatrix ? { bindMatrix: skin.bindMatrix } : {}),
-      ...(skin.bindMatrixInverse ? { bindMatrixInverse: skin.bindMatrixInverse } : {}),
       ...(morph
         ? {
             morphTargets: morph.morphTargets,
@@ -4220,7 +4404,9 @@ function _extractMorphTargets(
 
 /**
  * Convert one KHR_lights_punctual light (with its node world transform) to a
- * core SceneEmitter. Invalid or unsupported payloads fail at the import boundary.
+ * core SceneEmitter. Malformed supported payloads fail at the import boundary;
+ * unsupported light types are optional degradation and are skipped with a
+ * structured diagnostic.
  */
 function _convertPunctualLight(
   light: NonNullable<KhrLightsPunctualRoot['lights']>[number],
@@ -4229,13 +4415,25 @@ function _convertPunctualLight(
   warnings: string[],
   diagnostics: GltfImportDiagnostic[],
   lightPath: string,
-): SceneEmitter {
+): SceneEmitter | undefined {
   if (!isObject(light)) {
     throwImportBoundaryError(
       'missing-punctual-light',
       lightPath,
       '[vitrum/gltf-adapter] KHR_lights_punctual light must be an object.',
     );
+  }
+  const lightType = (light as { readonly type?: unknown }).type;
+  if (lightType !== 'point' && lightType !== 'spot' && lightType !== 'directional') {
+    emitImportDiagnostic(warnings, diagnostics, {
+      severity: 'warning',
+      code: 'unsupported-punctual-light-type',
+      path: `${lightPath}.type`,
+      message:
+        `[vitrum/gltf-adapter] KHR_lights_punctual light "${light.name ?? id}" ` +
+        `has unsupported type "${String(lightType)}". The emitter was skipped.`,
+    });
+    return undefined;
   }
   if (
     light.color !== undefined &&
@@ -4296,7 +4494,7 @@ function _convertPunctualLight(
   const dirY = lzy / lzLen;
   const dirZ = lzz / lzLen;
 
-  switch (light.type) {
+  switch (lightType) {
     case 'point':
       return {
         kind: 'point',
@@ -4350,14 +4548,6 @@ function _convertPunctualLight(
         direction: [-dirX, -dirY, -dirZ],
       };
 
-    default:
-      void warnings;
-      void diagnostics;
-      throwImportBoundaryError(
-        'unsupported-punctual-light-type',
-        `${lightPath}.type`,
-        `[vitrum/gltf-adapter] KHR_lights_punctual light "${light.name ?? id}" has unsupported type "${String((light as { type?: unknown }).type)}".`,
-      );
   }
 }
 

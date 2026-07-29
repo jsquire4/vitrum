@@ -129,7 +129,7 @@ export const OPTIONAL_METHOD_PROXIES: readonly OptionalMethodProxy[] = [
     throwMessage: 'createInverseSession: engine is disposed',
   },
   // H61 — debug accessor for the ReSTIR-PT reuse output buffer
-  // (pt-webgpu, gated by active feature 'pt-webgpu-restir-pt-reuse').
+  // (pt-webgpu, gated by active feature 'pt-webgpu-one-edge-gris-reconnection').
   // Added to the Engine contract in H14-C; without this row the createEngine
   // facade silently hid it. After dispose the buffer is destroyed → null
   // (the contract type is `unknown | null`, so null is the correct sentinel,

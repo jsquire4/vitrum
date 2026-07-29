@@ -37,10 +37,10 @@ import {
 import {
   loadWeightsFromArrayBuffer,
   serializeWeightsToArrayBuffer,
-  buildRandomWeightsForSpec,
   validateWeightsForSpec,
 } from '../src/neural/weights.js';
 import type { ModelWeights } from '../src/neural/weights.js';
+import { buildRandomWeightsForSpec } from './helpers/neuralWeights.js';
 
 // The 14 weight-bearing layers train.py exports, in order. Must match
 // CANONICAL_LAYERS in tools/neural-denoiser-training/train.py and the

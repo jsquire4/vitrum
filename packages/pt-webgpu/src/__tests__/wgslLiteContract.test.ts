@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { PT_WEBGPU_TRACE_LITE_WGSL } from '../wgsl/pathTraceBruteforceLite.wgsl.js';
 import { activeLayerWeightRgbOracle } from './spectralScalarOracle.js';
 
@@ -93,9 +94,9 @@ describe('pt-webgpu lite WGSL byte-identity (Theme-C dedup pin)', () => {
     // shader-gate caught a stale stub/caller mismatch. Caustic lite still returns
     // zero by design; environment reconnection now receives the same scalar
     // extension fields it already evaluates.
-    // Re-pinned 2026-06-12: environment:'none' no longer falls through to the
-    // analytic sampleSky gradient. Missing/invalid env maps now return black
-    // radiance + zero env pdf; procedural-sky stays lit via the CPU-baked HDRI.
+    // Re-pinned 2026-06-12: environment:'none' no longer falls through to an
+    // analytic sky gradient. Missing/invalid env maps return black radiance +
+    // zero env pdf; procedural skies use their CPU-baked HDRI exclusively.
     // Re-pinned 2026-06-12: shared prologue changed `transmission` from let to
     // var so the full tier can modulate it by transmissionMap; lite still has
     // no material texture bindings and remains scalar-only.
@@ -138,8 +139,21 @@ describe('pt-webgpu lite WGSL byte-identity (Theme-C dedup pin)', () => {
     // made cameraPos a semantic vec3f beside the live HDRI-intensity scalar.
     // Re-pinned 2026-07-27: finite-BSDF sampling now shares one finalization
     // path instead of retaining obsolete per-caller normalization helpers.
-    expect(digest).toBe('a64a28a322ecfa192f0b1b5a536fe57102fcf4436c6cdc1fedb38b22216de1db');
-    expect(PT_WEBGPU_TRACE_LITE_WGSL.length).toBe(207789);
+    // Re-pinned 2026-07-28: the shared BSDF now layers coherent stacks into
+    // finite rough/material lobes and applies clearcoat/sheen attenuation.
+    // Re-pinned 2026-07-28: invalid coherent-TMM samples are absorbed instead
+    // of silently being replaced by a perfect mirror.
+    // Re-pinned 2026-07-28: affine disc emitters use π·|u×v| for both NEE and
+    // BSDF-connection area conversion, and BSDF connections solve the full
+    // Gram system for sheared light axes.
+    // Re-pinned 2026-07-28: removed four uncalled legacy BSDF wrappers.
+    // Re-pinned 2026-07-28: corrupt thin-film descriptor/LUT ranges fail dark.
+    // Re-pinned 2026-07-28: A1 keeps opaque roughness-zero GGX finite. A5 is
+    // full-only because the lite contract rejects alpha materials before upload.
+    // Re-pinned 2026-07-28: shared KHR specular/IOR semantics, map-only
+    // environments, unavailable lite variance, and the 512-D Sobol table.
+    expect(digest).toBe('32c552f1075014ae10cfae2a1e2b7036f54a54a046665c2b0caf71c1d732c6f0');
+    expect(PT_WEBGPU_TRACE_LITE_WGSL.length).toBe(219950);
   });
 });
 
@@ -152,6 +166,19 @@ describe('pt-webgpu lite WGSL contract', () => {
     expect(PT_WEBGPU_TRACE_LITE_WGSL).not.toContain('pointLights');
     expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('mat.isUnlit');
     expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('specularIntensity: f32,');
+  });
+
+  it('does not expose raw sample luminance as a variance auxiliary', () => {
+    expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain(
+      'textureStore(varianceTexture, vec2i(gid.xy), vec4f(0.0));',
+    );
+    expect(PT_WEBGPU_TRACE_LITE_WGSL).not.toContain(
+      'vec4f(sampleLum, sampleLum, sampleLum, 1.0)',
+    );
+    const engineSource = readFileSync(new URL('../index.ts', import.meta.url), 'utf8');
+    expect(engineSource).toContain(
+      "this.#traceTier === 'full' && this.#gpu.varianceTexture != null",
+    );
   });
 
   it('routes lite scalar extension lobes through transmission-aware full BRDF helpers with zero anisotropy', () => {
@@ -208,7 +235,7 @@ describe('pt-webgpu lite WGSL contract', () => {
     expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('let dirShadowDisabled = angDiamRaw < 0.0;');
     expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('if (dirShadowDisabled || !traceAny(shadowRay, 1e-4, INFINITY))');
     expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('directLi = directLi + throughput * brdf * nDotL * dirIrrOut;');
-    expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('fn sampleSky');
+    expect(PT_WEBGPU_TRACE_LITE_WGSL).not.toContain('fn sampleSky');
   });
 
   it('treats absent lite-tier environments as black, not procedural sky', () => {
@@ -217,6 +244,7 @@ describe('pt-webgpu lite WGSL contract', () => {
     expect(PT_WEBGPU_TRACE_LITE_WGSL).not.toContain('return vec4f(sampleSky(dir), 0.0);');
     expect(PT_WEBGPU_TRACE_LITE_WGSL).not.toContain('if (lk.a <= 0.0) { return sampleSky(dir); }');
     expect(PT_WEBGPU_TRACE_LITE_WGSL).not.toContain('Procedural-sky fallback: uniform-sphere sample + sky eval.');
+    expect(PT_WEBGPU_TRACE_LITE_WGSL).not.toContain('environmentSun.w');
   });
 
   it('gates emissive-on-hit to paths without an MIS-accountable prior event', () => {

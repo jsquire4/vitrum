@@ -20,11 +20,6 @@ export const ALLOWED_MARKERS = Object.freeze([
     reason: "Adapter profile helper accepts minimal limit objects for tests/hosts.",
   },
   {
-    path: "packages/engine/src/adapterProfile.ts",
-    line: "*  assumed to support WebGL2 (test stubs handle that). */",
-    reason: "Capability-probe documentation for test doubles.",
-  },
-  {
     path: "packages/walkaround-hybrid/src/neural/nrc/nrcQueryHarness.ts",
     line: "// Stub the spread-termination + reservoir symbols the query module does NOT",
     reason: "Standalone NRC validation harness isolates nrcQuery forward math from unrelated GI spread/reservoir code.",
@@ -43,16 +38,6 @@ export const ALLOWED_MARKERS = Object.freeze([
     path: "packages/walkaround-hybrid/src/pipeline/BvhUpdateSink.ts",
     line: "* can be tested with a lightweight stub instead of a real GPU pipeline.",
     reason: "Dependency-injection testability comment.",
-  },
-  {
-    path: "packages/walkaround-hybrid/src/environment/equirectDirectional.ts",
-    line: "* NOTE vs that port: we include the sinθ solid-angle term (the fork carries a TODO",
-    reason: "Comment notes this implementation fixed the inherited TODO by including solid angle.",
-  },
-  {
-    path: "packages/pt-webgl2/src/scene/equirectHdrInfo.ts",
-    line: "// NOTE: unlike the original fork TODO, the per-pixel importance weight includes",
-    reason: "Comment notes this implementation fixed the inherited TODO by including solid angle.",
   },
 ]);
 

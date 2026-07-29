@@ -153,7 +153,7 @@ const PT_WEBGL2_SCALARS = evidence('packer+shader', [
   'packages/pt-webgl2/src/scene/materialStrideParity.test.ts',
 ], [
   'packages/pt-webgl2/src/scene/materialsTexture.ts',
-  'packages/pt-webgl2/src/glsl/shader/structs/material_struct.glsl.js',
+  'packages/pt-webgl2/src/glsl/shader/structs/material_mapped_rich.glsl.ts',
   'packages/pt-webgl2/src/glsl/render/get_surface_record_function.glsl.js',
   'packages/pt-webgl2/src/glsl/shader/bsdf/bsdf_functions.glsl.js',
 ]);
@@ -165,23 +165,43 @@ const PT_WEBGL2_TEXTURES = evidence('packer+shader', [
 ], [
   'packages/pt-webgl2/src/scene/texturesArray.ts',
   'packages/pt-webgl2/src/scene/materialsTexture.ts',
-  'packages/pt-webgl2/src/glsl/shader/structs/material_struct.glsl.js',
+  'packages/pt-webgl2/src/glsl/shader/structs/material_mapped_rich.glsl.ts',
   'packages/pt-webgl2/src/glsl/render/get_surface_record_function.glsl.js',
   'packages/pt-webgl2/src/glsl/render/attenuate_hit_function.glsl.js',
 ]);
 
 const PT_WEBGL2_DOUBLE_SIDED = evidence('packer+shader', [
   'packages/pt-webgl2/src/scene/materialsTexture.test.ts',
-  'packages/pt-webgl2/src/glsl/composeTraceGlsl.test.ts',
+  'packages/pt-webgl2/src/glsl/doubleSidedTierEvidence.test.ts',
 ], [
   'packages/pt-webgl2/src/scene/materialsTexture.ts',
-  'packages/pt-webgl2/src/glsl/shader/structs/material_struct.glsl.js',
+  'packages/pt-webgl2/src/glsl/shader/structs/material_basic.glsl.ts',
+  'packages/pt-webgl2/src/glsl/render/get_surface_record_basic.glsl.ts',
+  'packages/pt-webgl2/src/glsl/render/attenuate_hit_basic.glsl.ts',
+  'packages/pt-webgl2/src/glsl/shader/structs/material_scalar_rich.glsl.ts',
+  'packages/pt-webgl2/src/glsl/render/get_surface_record_scalar_rich.glsl.ts',
+  'packages/pt-webgl2/src/glsl/render/attenuate_hit_scalar_rich.glsl.ts',
+  'packages/pt-webgl2/src/glsl/shader/structs/material_mapped_pbr.glsl.ts',
+  'packages/pt-webgl2/src/glsl/render/get_surface_record_mapped_pbr.glsl.ts',
+  'packages/pt-webgl2/src/glsl/render/attenuate_hit_mapped_pbr.glsl.ts',
+  'packages/pt-webgl2/src/glsl/shader/structs/material_mapped_rich.glsl.ts',
   'packages/pt-webgl2/src/glsl/render/get_surface_record_function.glsl.js',
+  'packages/pt-webgl2/src/glsl/render/attenuate_hit_function.glsl.js',
 ], [
   {
     path: 'packages/pt-webgl2/src/scene/materialsTexture.test.ts',
     includes: [
       'packs authored double-sided opaque surfaces while preserving closed-volume exit traversal',
+    ],
+  },
+  {
+    path: 'packages/pt-webgl2/src/glsl/doubleSidedTierEvidence.test.ts',
+    includes: [
+      'consumes the packed side lane for radiance and visibility',
+      "'basic'",
+      "'scalar-rich'",
+      "'mapped-pbr'",
+      "'mapped-rich'",
     ],
   },
   {

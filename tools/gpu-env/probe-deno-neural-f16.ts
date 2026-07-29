@@ -8,7 +8,6 @@ import {
   type NeuralTensorPrecision,
   type NeuralTensorStorageContract,
 } from '../../packages/walkaround-hybrid/src/neural/tensorPrecision.ts';
-import { BILINEAR_UPSAMPLE_WGSL } from '../../packages/walkaround-hybrid/src/neural/wgsl/bilinearUpsample.wgsl.ts';
 import { CONV2D_WGSL } from '../../packages/walkaround-hybrid/src/neural/wgsl/conv2d.wgsl.ts';
 import { RELU_WGSL } from '../../packages/walkaround-hybrid/src/neural/wgsl/relu.wgsl.ts';
 import { SKIP_CONNECTION_WGSL } from '../../packages/walkaround-hybrid/src/neural/wgsl/skipConnection.wgsl.ts';
@@ -227,42 +226,6 @@ function maxAbsoluteError(actual: Float32Array, expected: Float32Array): number 
   return max;
 }
 
-async function runBilinearMicrocase(
-  device: GPUDevice,
-  precision: NeuralTensorPrecision,
-): Promise<Record<string, unknown>> {
-  const storage = precision === 'f16'
-    ? NEURAL_F16_TENSOR_STORAGE
-    : NEURAL_F32_TENSOR_STORAGE;
-  const expected = Float32Array.from([
-    // Independent analytic half-pixel oracle: signed taps are individually
-    // clamped to a 2x2 source at every border.
-    1, 1.25, 1.75, 2,
-    1.5, 1.75, 2.25, 2.5,
-    2.5, 2.75, 3.25, 3.5,
-    3, 3.25, 3.75, 4,
-  ]);
-  const actual = await runStorageKernel(
-    device,
-    `deno-bilinear-${precision}`,
-    neuralLayerWgslForStorage('bilinearUpsample', BILINEAR_UPSAMPLE_WGSL, storage),
-    'bilinearUpsampleMain',
-    storage,
-    [{ binding: 0, values: Float32Array.from([1, 2, 3, 4]), representation: 'tensor' }],
-    Uint32Array.from([2, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
-    16,
-    [1, 1, 1],
-  );
-  const error = maxAbsoluteError(actual, expected);
-  return {
-    label: 'bilinear-border',
-    precision,
-    ok: error === 0,
-    maxAbsError: error,
-    stats: signalStats(actual),
-  };
-}
-
 const MICRO_TCONV_WEIGHTS = Float32Array.from([
   1, 2, 3, 4,
   0.5, 1, 1.5, 2,
@@ -402,9 +365,6 @@ const sources = [
   ['skip-add', neuralLayerWgslForStorage(
     'skipAdd', SKIP_CONNECTION_WGSL, NEURAL_F16_TENSOR_STORAGE,
   ), 'skipConnectionMain'],
-  ['bilinear-upsample', neuralLayerWgslForStorage(
-    'bilinearUpsample', BILINEAR_UPSAMPLE_WGSL, NEURAL_F16_TENSOR_STORAGE,
-  ), 'bilinearUpsampleMain'],
 ] as const;
 
 let compiled = 0;
@@ -440,16 +400,14 @@ for (const [label, code, entryPoint] of sources) {
 const microResults: Array<Record<string, unknown>> = [];
 let microError: string | null = null;
 try {
-  microResults.push(await runBilinearMicrocase(device, 'f32'));
   microResults.push(await runTransposedConvMicrocase(device, 'f32'));
   if (supportsShaderF16 && compiled === sources.length) {
-    microResults.push(await runBilinearMicrocase(device, 'f16'));
     microResults.push(await runTransposedConvMicrocase(device, 'f16'));
   }
 } catch (error) {
   microError = error instanceof Error ? error.message : String(error);
 }
-const expectedMicroCount = supportsShaderF16 ? 4 : 2;
+const expectedMicroCount = supportsShaderF16 ? 2 : 1;
 const microOk = microError == null &&
   microResults.length === expectedMicroCount &&
   microResults.every(result => result.ok === true);

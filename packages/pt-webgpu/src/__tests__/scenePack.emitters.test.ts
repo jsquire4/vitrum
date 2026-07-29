@@ -362,6 +362,102 @@ describe('buildPackedScene emitter + environment packing', () => {
     expect(buildLightTreeInputForScene(scene).powers[0]).toBeGreaterThan(0);
   });
 
+  it('packs mesh emitters from the exact microdisplaced geometry consumed by the BVH', () => {
+    const scene: Scene = {
+      primitives: [{
+        kind: 'mesh',
+        id: 'displaced-emitter',
+        positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+        normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+        uvs: new Float32Array([0, 0, 1, 0, 0, 1]),
+        material: {
+          baseColor: [1, 1, 1],
+          roughness: 0.4,
+          metallic: 0,
+          displacementMap: {
+            handle: {
+              width: 2,
+              height: 2,
+              data: new Float32Array([0, 1, 1, 0]),
+              __vitrum_hint__: {
+                channels: 1,
+                dataType: 'float32',
+                colorSpace: 'linear',
+              },
+            },
+            wrapS: 'clamp-to-edge',
+            wrapT: 'clamp-to-edge',
+          },
+          displacementScale: 1,
+          displacementBias: 0,
+          displacementSubdivisions: 1,
+        },
+      }],
+      emitters: [{
+        kind: 'mesh-area',
+        id: 'displaced-light',
+        meshId: 'displaced-emitter',
+        color: [1, 1, 1],
+        intensity: 2,
+      }],
+      environment: { kind: 'none' },
+    };
+    const packed = buildPackedScene(scene);
+    expect(packed.triangleCount).toBe(4);
+    expect(packed.meshAreaLightCount).toBe(packed.triangleCount);
+
+    const geometryTriangles: string[] = [];
+    for (let tri = 0; tri < packed.triangleCount; tri += 1) {
+      const vertices: number[] = [];
+      for (let corner = 0; corner < 3; corner += 1) {
+        const vertex = packed.indices[tri * 4 + corner]!;
+        vertices.push(
+          packed.positions[vertex * 4]!,
+          packed.positions[vertex * 4 + 1]!,
+          packed.positions[vertex * 4 + 2]!,
+        );
+      }
+      geometryTriangles.push(JSON.stringify(vertices));
+    }
+    const emitterTriangles: string[] = [];
+    for (let tri = 0; tri < packed.meshAreaLightCount; tri += 1) {
+      const record = triAt(packed.meshAreaLightsData, tri);
+      emitterTriangles.push(JSON.stringify([
+        ...record.a,
+        ...record.b,
+        ...record.c,
+      ]));
+    }
+    expect(emitterTriangles.sort()).toEqual(geometryTriangles.sort());
+    expect(emitterTriangles.some((triangle) => (
+      (JSON.parse(triangle) as number[]).some(
+        (value, index) => index % 3 === 2 && value > 0,
+      )
+    ))).toBe(true);
+  });
+
+  it('omits singular mesh-emitter instances exactly as TLAS publication does', () => {
+    const scene = quadScene('instanced-mesh');
+    const primitive = scene.primitives[0]!;
+    if (primitive.kind !== 'instanced-mesh') throw new Error('test fixture');
+    const singular = asMat4([
+      1, 0, 0, 0,
+      0, 1, 0, 0,
+      0, 0, 0, 0,
+      5, 0, 0, 1,
+    ]);
+    const candidate: Scene = {
+      ...scene,
+      primitives: [{ ...primitive, instances: [primitive.instances[0]!, singular] }],
+    };
+    const packed = buildPackedScene(candidate);
+    expect(packed.tlasInstanceIndices.length).toBe(1);
+    expect(packed.meshAreaLightCount).toBe(2);
+    expect(packed.warnings).toEqual(expect.arrayContaining([
+      expect.stringMatching(/skipped a non-invertible instance transform/),
+    ]));
+  });
+
   it('rejects low-level unsupported scene content instead of packing a filtered subset', () => {
     const scene = {
       primitives: [{

@@ -243,6 +243,30 @@ describe('buildPackedScene core packing', () => {
     ]);
   });
 
+  it('preserves authored tangents and handedness in lite merged geometry', () => {
+    const scene = makeScene();
+    const mesh = scene.primitives[0]!;
+    if (mesh.kind !== 'mesh') throw new Error('expected mesh');
+    const withTangents: Scene = {
+      ...scene,
+      primitives: [{
+        ...mesh,
+        tangents: new Float32Array([
+          1, 0, 0, -1,
+          1, 0, 0, -1,
+          1, 0, 0, -1,
+        ]),
+      }],
+    };
+
+    const packed = buildPackedScene(withTangents, { geometryMode: 'merged' });
+    expect(Array.from(packed.tangents.slice(0, 12))).toEqual([
+      1, 0, 0, -1,
+      1, 0, 0, -1,
+      1, 0, 0, -1,
+    ]);
+  });
+
   it('bakes primitive-constant COLOR_0 RGB into lite merged material baseColor', () => {
     const scene: Scene = {
       primitives: [

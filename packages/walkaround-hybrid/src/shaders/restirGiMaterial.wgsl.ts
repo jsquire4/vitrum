@@ -90,13 +90,14 @@ fn restir_gi_receiver_contribution_from_payload(
     );
     contribution = contribution + Lo * specBrdf;
   }
-  return applyHomogeneousVolumeSingleScatter(
+  return applyHomogeneousVolumeSingleScatterDirectional(
     contribution * payload.layerTransmission,
     payload.albedo,
     payload.volumeScattering,
     payload.bulkThickness,
     receiverNormal,
     receiverWo,
+    wi,
   );
 }
 
@@ -159,7 +160,6 @@ fn restir_gi_receiver_phat_from_surface(
   payload.sheenRoughness = surf.sheenRoughness;
   payload.layerTransmission = surf.layerTransmission;
   payload.volumeScattering = surf.volumeScattering;
-  payload.opticalIor = vec3f(1.5);
   payload.bulkThickness = surf.bulkThickness;
   return restir_gi_receiver_phat_from_payload(
     surf.pos,

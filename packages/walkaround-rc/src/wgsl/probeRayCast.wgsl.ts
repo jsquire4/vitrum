@@ -8,27 +8,21 @@
  * `device.createShaderModule({ code: PROBE_RAY_CAST_WGSL })`.
  *
  * Composition order:
- *   1. three-mesh-bvh constants (BVH_STACK_DEPTH, INFINITY, TRI_INTERSECT_EPSILON)
- *   2. three-mesh-bvh structs (Ray, BVHBoundingBox, BVHNode, IntersectionResult)
- *   3. three-mesh-bvh functions (intersectsBounds, intersectsTriangle, intersectTriangles,
- *      bvhIntersectFirstHit)
- *   4. CascadeUniforms struct (160-byte WGSL layout in a 160-byte host allocation;
- *      must match cascadeDispatch.ts layout)
- *   5. MaterialEntry struct (16 f32 fields = 64 bytes; must match @vitrum/shared-bvh layout)
- *   6. Octahedral helpers (octEncode, octDecode) — body stripped of file header
- *   7. PCG hash utilities (pcgHashToF32 from @vitrum/shared-samplers PCG_HASH_TO_F32_WGSL)
- *   8. Probe-ray helpers (dirToEquirectUV)
- *   9. Sun visibility helper (traceSunVisibility)
- *  10. Entry-point function with @compute @workgroup_size(64)
+ *   1. Canonical shared material, binary-BVH, and TLAS traversal modules.
+ *   2. RC binding-loader seams, including the packed material/TLAS scene arena.
+ *   3. Canonical octahedral and PCG sampling helpers.
+ *   4. RC material-atlas, BRDF, and analytic-light evaluation modules.
+ *   5. Cascade uniforms, binding declarations, and the workgroup-64 entry point.
  *
  * The original TSL `instanceIndex` built-in (global thread index) becomes
  * `@builtin(global_invocation_id) globalId: vec3u` with `let index = globalId.x;`.
  *
- * Source-of-truth: the WGSL function bodies below are taken VERBATIM from the
- * `wgslFn()` source strings in `probeRayCast.wgsl.ts` (and from three-mesh-bvh's
- * own `.wgsl.js` files).  No semantic changes.
+ * The first extraction preserved the TSL function bodies. The production
+ * module now composes canonical Vitrum traversal/material/light kernels; the
+ * live WGSL and cascadeDispatch binding layout are the executable source of
+ * truth.
  *
- * See `src/rc/TSL_TO_RAW_MAPPING.md` for the full mapping rationale.
+ * See `../TSL_TO_RAW_MAPPING.md` for the conversion rationale and current ABI.
  */
 
 import {
@@ -779,7 +773,14 @@ fn rcShadeOpaqueTransmissionReceiver(
   let emissive = rcSampleSurfaceEmissiveMap(hit, mat.emissive);
   let bakedOutgoing = probeMat.albedo * RC_INV_PI *
     rcSampleLightMapIrradiance(hit);
-  return directSun + emitterNEE + pointSpotLights + emissive + bakedOutgoing;
+  var radiance = (
+    directSun + emitterNEE + pointSpotLights + emissive + bakedOutgoing
+  ) * probeMat.layerTransmission;
+  radiance = rcApplyHomogeneousVolumeSingleScatter(
+    radiance, probeMat.albedo, probeMat.volumeScattering,
+    probeMat.bulkThickness, n, wo,
+  );
+  return radiance;
 }
 
 // Trace one spectral channel through a runtime-selected 1..8 dielectric

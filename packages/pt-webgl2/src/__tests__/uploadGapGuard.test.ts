@@ -75,14 +75,14 @@ function sceneWithMeshAreaLight(): Scene {
     environment: { kind: 'none' },
   };
 }
-function frame(spp: number): FrameInput {
+function frame(spp: number, width = 32, height = 32): FrameInput {
   const view = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, -5, 1]);
   const proj = new Float32Array([1.5, 0, 0, 0, 0, 1.5, 0, 0, 0, 0, -1.002, -1, 0, 0, -0.2, 0]);
   return {
     viewMatrix: view as never,
     projMatrix: proj as never,
     cameraPosition: [0, 0, 5] as never,
-    viewport: { width: 32, height: 32, devicePixelRatio: 1 },
+    viewport: { width, height, devicePixelRatio: 1 },
     frameIndex: 0,
     frameSeed: 0,
     quality: { samplesTarget: spp },
@@ -112,15 +112,11 @@ const EXPLICITLY_NON_UPLOADED_UNIFORMS = new Map<string, string>([
   ['materialIndexAttribute', 'sampler uniform; bound via SCENE_TEXTURE_BINDINGS'],
   ['materials', 'sampler uniform; bound via SCENE_TEXTURE_BINDINGS'],
   ['textures', 'sampler uniform; bound via SCENE_TEXTURE_BINDINGS'],
-  ['backgroundMap', 'FEATURE_BACKGROUND_MAP compile-gated and pinned false'],
+  ['materialRadianceTextures', 'sampler uniform; bound via SCENE_TEXTURE_BINDINGS'],
   ['sobolTexture', 'sampler uniform; bound to a real Sobol table when sampling=sobol'],
-  ['stratifiedTexture', 'RANDOM_TYPE stratified branch remains unexposed and dummy-bound'],
-  ['stratifiedOffsetTexture', 'RANDOM_TYPE stratified branch remains unexposed and dummy-bound'],
   ['uBdptLightPathTex', 'sampler uniform; BDPT path binds it when FEATURE_BDPT is active'],
   // Compile-gated non-default feature uniforms; focused tests below cover accepted
   // host-controllable variants where applicable.
-  ['backgroundRotation', 'FEATURE_BACKGROUND_MAP compile-gated and pinned false'],
-  ['backgroundIntensity', 'FEATURE_BACKGROUND_MAP compile-gated and pinned false'],
   ['physicalCamera', 'FEATURE_DOF struct root; physicalCamera.* members are uploaded'],
 ]);
 
@@ -186,8 +182,8 @@ describe('pt-webgl2 upload-gap guard — load-bearing uniforms ARE uploaded', ()
       device: createMockGl(record),
       spectral: true,
     });
-    const assertSpectralFrame = () => {
-      const output = engine.renderFrame(frame(4));
+    const assertSpectralFrame = (width = 32, height = 32) => {
+      const output = engine.renderFrame(frame(4, width, height));
       expect(output.kind).toBe('rendered');
       expect(record.get('uSpectralRendering')).toBe(1);
       expect(record.has('uCmfX')).toBe(true);
@@ -203,7 +199,7 @@ describe('pt-webgl2 upload-gap guard — load-bearing uniforms ARE uploaded', ()
     record.clear();
     expect(engine.setSize).toBeTypeOf('function');
     engine.setSize!(16, 12);
-    assertSpectralFrame();
+    assertSpectralFrame(16, 12);
     expect(record.get('resolution')).toEqual([16, 12]);
     record.clear();
     engine.setScene(sceneWithPointLight());
@@ -276,9 +272,6 @@ describe('pt-webgl2 upload-gap guard — load-bearing uniforms ARE uploaded', ()
       ...declaredUniformNames(composeTraceGlsl(DEFAULT_TRACE_FEATURES)),
       ...declaredUniformNames(
         composeTraceGlsl({ ...DEFAULT_TRACE_FEATURES, randomType: 1 }),
-      ),
-      ...declaredUniformNames(
-        composeTraceGlsl({ ...DEFAULT_TRACE_FEATURES, randomType: 2 }),
       ),
     ]);
     for (const [name, reason] of EXPLICITLY_NON_UPLOADED_UNIFORMS) {

@@ -56,7 +56,7 @@ fn fsMain(in: VsOut) -> @location(0) vec4f {
 `;
 
 /** A device-scoped presenter that blits an offscreen source texture to a canvas.
- *  Construct once per (device, canvas, context) and call `present(source)` each
+ *  Construct once per (device, context) and call `present(source)` each
  *  frame. Idempotent `dispose()`. */
 export interface OffscreenPresenter {
   /** Blit `source` to the current canvas texture in a single render pass. */
@@ -69,8 +69,6 @@ export interface CreateOffscreenPresenterArgs {
   /** The GPUDevice that owns the source textures (the backend's device). The
    *  presenter allocates against it but does NOT own its lifecycle. */
   readonly device: GPUDevice;
-  /** The host canvas (or OffscreenCanvas) the source is presented onto. */
-  readonly canvas: HTMLCanvasElement | OffscreenCanvas;
   /** The canvas's WebGPU context. The presenter configures it (format = the
    *  preferred canvas format unless `format` is given). */
   readonly context: GPUCanvasContext;

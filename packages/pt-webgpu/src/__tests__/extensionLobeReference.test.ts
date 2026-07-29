@@ -75,13 +75,13 @@ function evalClearcoatLobe(
   if (nDotL <= 1e-5 || nDotV <= 1e-5) return [0, 0, 0];
   const h = normalize(add(wi, wo));
   const nDotH = Math.max(dot(normal, h), 0);
-  const vDotH = Math.max(dot(wo, h), 0);
-  const f = fresnelSchlick(vDotH, [0.04, 0.04, 0.04]);
+  const layerWeight = clearcoat *
+    fresnelSchlick(Math.abs(dot(normal, wo)), [0.04, 0.04, 0.04])[0];
   const alpha = Math.max(clearcoatRoughness * clearcoatRoughness, 1e-3);
   const d = ggxD(nDotH, alpha);
   const g = smithG1(nDotV, clearcoatRoughness) * smithG1(nDotL, clearcoatRoughness);
   const denom = Math.max(4 * nDotV * nDotL, 1e-6);
-  return scale(f, clearcoat * d * g / denom);
+  return [layerWeight * d * g / denom, layerWeight * d * g / denom, layerWeight * d * g / denom];
 }
 
 function clearcoatPdf(

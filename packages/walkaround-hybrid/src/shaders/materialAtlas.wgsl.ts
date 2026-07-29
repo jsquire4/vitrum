@@ -618,7 +618,13 @@ fn applyHomogeneousVolumeSingleScatter(
   if (all(sigmaS <= vec3f(0.0)) || pathLength <= 0.0) { return radiance; }
   let n = safe_normalize(normal);
   let v = safe_normalize(wo);
-  let phase = henyeyGreensteinPhase(dot(n, v), scatter.a);
+  // This overload is for directionally aggregated lighting (DDGI irradiance,
+  // accumulated direct/indirect buffers, and OIT's multi-source resolve).
+  // Once incident directions have been integrated there is no scattering
+  // angle left to evaluate.  Use the isotropic average instead of inventing
+  // one from the surface normal; anisotropic HG is evaluated only by the
+  // directional overload below.
+  let phase = henyeyGreensteinPhase(0.0, 0.0);
   let source = dot(max(radiance, vec3f(0.0)), vec3f(0.2126, 0.7152, 0.0722)) *
     max(albedo, vec3f(0.0)) * phase;
   let projectedCosine = abs(dot(n, v));
@@ -630,6 +636,35 @@ fn applyHomogeneousVolumeSingleScatter(
   return radiance * transmittance + source * (vec3f(1.0) - transmittance);
 }
 
+fn applyHomogeneousVolumeSingleScatterDirectional(
+  radiance: vec3f,
+  albedo: vec3f,
+  scatter: vec4f,
+  pathLength: f32,
+  normal: vec3f,
+  wo: vec3f,
+  wi: vec3f,
+) -> vec3f {
+  let sigmaS = max(scatter.rgb, vec3f(0.0));
+  if (all(sigmaS <= vec3f(0.0)) || pathLength <= 0.0) { return radiance; }
+  let n = safe_normalize(normal);
+  let v = safe_normalize(wo);
+  // wi points from the receiver toward the source, so the incident
+  // propagation direction is -wi. HG depends on that propagation/outgoing
+  // angle, not on the surface normal.
+  let phase = henyeyGreensteinPhase(
+    dot(safe_normalize(-wi), v),
+    scatter.a,
+  );
+  let source = dot(max(radiance, vec3f(0.0)), vec3f(0.2126, 0.7152, 0.0722)) *
+    max(albedo, vec3f(0.0)) * phase;
+  let projectedCosine = abs(dot(n, v));
+  if (projectedCosine <= 0.0) { return source; }
+  let distance = pathLength / projectedCosine;
+  let transmittance = homogeneousBeerTransmittanceRgb(sigmaS, distance);
+  return radiance * transmittance + source * (vec3f(1.0) - transmittance);
+}
+
 fn sampleSpecularControls(hit: IntersectionResult) -> vec4f {
   let triIndex = hit.indices.w;
   let spec = textureLoad(
@@ -637,12 +672,14 @@ fn sampleSpecularControls(hit: IntersectionResult) -> vec4f {
     baseColorMapMetaCoord(triIndex * MATERIAL_MAP_META_TEXELS_PER_TRI + MATERIAL_MAP_SPECULAR_TEXEL_OFFSET),
     0,
   );
-  var color = clamp(spec.rgb, vec3f(0.0), vec3f(1.0));
+  // RGB is absolute dielectric F0 packed from material IOR and the
+  // nonnegative KHR specularColor factor. Values above one remain observable.
+  var color = max(spec.rgb, vec3f(0.0));
   var intensity = clamp(spec.a, 0.0, 1.0);
 
   let colorMap = sampleMaterialAtlasRawAtOffsetForHit(hit, MATERIAL_MAP_SPECULAR_COLOR_TEXEL_OFFSET);
   if (colorMap.x >= 0.0) {
-    color = clamp(color * colorMap.rgb, vec3f(0.0), vec3f(1.0));
+    color = max(color * colorMap.rgb, vec3f(0.0));
   }
 
   let intensityMap = sampleMaterialAtlasRawAtOffsetForHit(hit, MATERIAL_MAP_SPECULAR_INTENSITY_TEXEL_OFFSET);
@@ -967,7 +1004,14 @@ fn materialTangentFrameForHit(
     bitangent = bitangent * inverseSqrt(bLen2);
   }
 
-  return preferAuthoredTangentFrameForHit(hit, frameNormal, tangent, bitangent);
+  // glTF's authored TANGENT attribute is defined for TEXCOORD_0. A texture
+  // selecting another UV lane needs the derivative frame derived above from
+  // that exact lane; replacing it with the UV0 tangent would orient the map
+  // against the wrong parameterization.
+  if (texCoord == 0u) {
+    return preferAuthoredTangentFrameForHit(hit, frameNormal, tangent, bitangent);
+  }
+  return MaterialTangentFrame(tangent, bitangent);
 }
 
 fn applyNormalMapAtOffsetForHit(
@@ -1116,7 +1160,6 @@ struct RestirDIMaterialPayload {
   sheenRoughness: f32,
   layerTransmission: vec3f,
   volumeScattering: vec4f,
-  opticalIor: vec3f,
   bulkThickness: f32,
 };
 
@@ -1150,7 +1193,6 @@ fn sampleRestirDIMaterialPayloadForHit(
   payload.sheenRoughness = sampleSheenRoughness(hit);
   payload.layerTransmission = faceLayerTransmission(layerControls);
   payload.volumeScattering = sampleVolumeScatteringControls(hit.indices.w);
-  payload.opticalIor = materialDispersionIorRgb(hit.indices.w, decodeIor(materialWord));
   payload.bulkThickness = materialOpticalThickness(hit.indices.w);
   let film = materialThinFilmResponse(
     hit.indices.w,
@@ -1158,9 +1200,9 @@ fn sampleRestirDIMaterialPayloadForHit(
     abs(dot(shadingNormal, safe_normalize(viewDirection))),
   );
   if (film.present != 0u) {
-    // Values above one are an internal absolute-F0 marker consumed by
-    // materialF0; authored KHR specularColor is always clamped to [0,1].
-    payload.specular = vec4f(vec3f(1.0) + film.reflectance, 1.0);
+    // RGB always represents absolute dielectric F0, so thin-film reflectance
+    // has an explicit representation and needs no value-range sentinel.
+    payload.specular = vec4f(film.reflectance, 1.0);
     payload.iridescence = vec4f(0.0);
     payload.layerTransmission = payload.layerTransmission * film.transmittance;
   }
@@ -1432,24 +1474,6 @@ fn traceSceneAlphaTransmittanceTextured(
     return 0.0;
   }
   return clamp(tau, 0.0, 1.0);
-}
-
-fn traceSceneAnyAlphaMaskTextured(
-  bvhMode: u32,
-  tlasNodeCount: u32,
-  origin: vec3f,
-  dir: vec3f,
-  tMax: f32,
-  triEps: f32,
-  skipGlass: bool,
-  materialMask: texture_2d<u32>,
-  materialMaskWidth: u32,
-) -> bool {
-  return traceSceneAlphaTransmittanceTextured(
-    bvhMode, tlasNodeCount,
-    origin, dir, tMax, triEps, skipGlass,
-    materialMask, materialMaskWidth,
-  ) <= 0.0;
 }
 
 `;

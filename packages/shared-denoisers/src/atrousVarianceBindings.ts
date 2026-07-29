@@ -202,34 +202,23 @@ export function packAtrousVarianceAtrousUniforms(
  *
  * All texture formats are the render pipeline's conventions:
  *   - Color / radiance textures: rgba16float
- *   - Normal G-buffer: rgba16float (.xyz = world normal, .w unused)
- *   - Depth G-buffer: rgba16float (.r = linear depth) or r32float
- *   - Motion vectors: rg32float (.xy = previous-minus-current pixel delta)
  *   - Welford variance buffer: rg32float (.r = mean, .g = M2)
  *   - Output variance map: rgba32float (.r = estimated variance, .g = frameCount)
  */
 export interface AtrousVarianceVarianceBindGroupLayout {
   /** binding 0 — noisy current-frame color.  Format: rgba16float. */
   inputColor: 'texture_2d<f32>';
-  /** binding 1 — reprojected previous-frame radiance.  Format: rgba16float. */
-  prevRadiance: 'texture_2d<f32>';
-  /** binding 2 — G-buffer world-space normal.  Format: rgba16float, .xyz channel. */
-  gbufferNormal: 'texture_2d<f32>';
-  /** binding 3 — G-buffer linear depth.  Format: rgba16float (.r) or r32float. */
-  gbufferDepth: 'texture_2d<f32>';
-  /** binding 4 — screen-space motion vectors.  Format: rg32float. */
-  motionVectors: 'texture_2d<f32>';
   /**
-   * binding 5 — Welford variance buffer from Sprint 9 accumulator.
+   * binding 1 — Welford variance buffer from the path accumulator.
    * Format: rg32float (.r = mean luminance, .g = M2 running sum).
    * @see walkaround-hybrid/src/shaders/common.wgsl.ts — WelfordVariance @version 1
    *
    * WebGPU uploads from CPU: `runAtrousVarianceWebGPU({ welfordMeanM2 })` expects interleaved RG floats per pixel.
    */
   varianceIn: 'texture_2d<f32>';
-  /** binding 6 — estimated variance output.  Format: rgba32float (storage write). */
+  /** binding 2 — estimated variance output.  Format: rgba32float (storage write). */
   varianceOut: 'texture_storage_2d<rgba32float, write>';
-  /** binding 7 — AtrousVarianceVarianceUBO (frameCount + padding). */
+  /** binding 3 — AtrousVarianceVarianceUBO (frameCount + padding). */
   ubo: 'uniform AtrousVarianceVarianceUBO';
 }
 

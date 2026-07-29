@@ -44,7 +44,7 @@ int getSurfaceRecord(
   if ( useTextures && material.map != -1 ) {
     vec3 uvPrime = material.mapTransform * vec3( MAPPED_PBR_UV( 0u ), 1.0 );
     vec4 sampleValue = sampleMaterialTexture(
-      textures, uvPrime.xy, material.map, material.mapWrap
+      textures, uvPrime.xy, material.map, material.mapWrap, true
     );
     albedo *= sampleValue;
     albedoModulation *= sampleValue.rgb;
@@ -102,14 +102,16 @@ int getSurfaceRecord(
     vec3 uvPrime =
       material.emissiveMapTransform * vec3( MAPPED_PBR_UV( 4u ), 1.0 );
     emission *= sampleMaterialTexture(
-      textures, uvPrime.xy, material.emissiveMap, material.emissiveMapWrap
+      materialRadianceTextures, uvPrime.xy,
+      material.emissiveMap, material.emissiveMapWrap
     ).rgb;
   }
   if ( useTextures && material.lightMap != -1 && pathDepth == 0 ) {
     vec3 uvPrime =
       material.lightMapTransform * vec3( MAPPED_PBR_UV( 17u ), 1.0 );
     emission += material.lightMapIntensity * sampleMaterialTexture(
-      textures, uvPrime.xy, material.lightMap, material.lightMapWrap
+      materialRadianceTextures, uvPrime.xy,
+      material.lightMap, material.lightMapWrap
     ).rgb;
   }
 
@@ -249,7 +251,6 @@ int getSurfaceRecord(
   surf.envMapIntensity = max( material.envMapIntensity, 0.0 );
   surf.lobeMask = 2u;
   if ( surf.roughness > 0.0 || surf.metalness < 1.0 ) surf.lobeMask |= 1u;
-  surf.liteMode = false;
   #undef MAPPED_PBR_UV
   return HIT_SURFACE;
 }

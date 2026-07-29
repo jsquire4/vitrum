@@ -409,17 +409,17 @@ describe('buildPassLayout — DDGI border fill slots', () => {
     expect(layout.slotCount).toBeLessThanOrEqual(MAX_PASS_COUNT);
   });
 
-  it('atrous layout reports 31 slots (30 + trailing opt-in regir-build)', () => {
+  it('atrous layout reports 32 slots (31 + trailing opt-in regir-build)', () => {
     // 2026-06-10: cb-prefill inserted before denoiser-adapter (+1 slot).
     // 2026-06-16: transparent-oit inserted before temporalAccum (+1 slot).
     const layout = buildPassLayout({ denoiserMode: 'atrous' });
-    expect(layout.slotCount).toBe(31);
+    expect(layout.slotCount).toBe(32);
   });
 
-  it('MAX_PASS_COUNT is 36 (includes transparent-oit + the trailing opt-in regir-build slot)', () => {
+  it('MAX_PASS_COUNT is 37 (includes all-mode variance + the trailing opt-in regir-build slot)', () => {
     // 2026-06-10: cb-prefill added (+1).
     // 2026-06-16: transparent-oit added (+1).
-    expect(MAX_PASS_COUNT).toBe(36);
+    expect(MAX_PASS_COUNT).toBe(37);
   });
 });
 

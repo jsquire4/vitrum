@@ -6,7 +6,7 @@
 //
 // Returns ONLY the fragment BODY: no `#version 300 es`, no precision/`pc_fragColor`
 // preamble, no `#define` block — those are emitted by the GlProgram preamble (WS2). The
-// `#define` flags this body branches on (RANDOM_TYPE, FEATURE_*, CAMERA_TYPE, DEBUG_MODE,
+// `#define` flags this body branches on (FEATURE_*, CAMERA_TYPE,
 // ATTR_*) come from featureDefines() in the GlProgram preamble, so the GLSL `#if`s below
 // resolve at compile time exactly as in the fork.
 //
@@ -15,7 +15,7 @@
 //      indexed by their original `export const` names (byte-identical to the fork).
 //   2. The three-mesh-bvh BVH port (src/glsl/bvh) — re-exported as BVH_* uppercase names.
 //   3. Hand-authored glue: the THREE_COMMON_SHIM (the `<common>` subset), the inlined
-//      uniform declarations, the RANDOM_TYPE branch, the two inline helper functions
+//      uniform declarations, RNG selection, the two inline helper functions
 //      (applyFilteredGlossy/sampleBackground), and the main() render loop — all of which
 //      lived inline in the fork material (not in a `.glsl.js` chunk), transcribed here.
 
@@ -65,7 +65,6 @@ import * as CommonShapeIsect from './shader/common/shape_intersection_functions.
 
 import * as RandPcg from './shader/rand/pcg.glsl.js';
 import * as RandSobol from './shader/rand/sobol.glsl.js';
-import * as RandStratified from './shader/rand/stratified.glsl.js';
 
 import * as PtbvhFog from './shader/bvh/inside_fog_volume_function.glsl.js';
 
@@ -129,7 +128,6 @@ const RANDOM = {
   pcg_functions: pick(RandPcg, 'pcg_functions'),
   sobol_common: pick(RandSobol, 'sobol_common'),
   sobol_functions: pick(RandSobol, 'sobol_functions'),
-  stratified_functions: pick(RandStratified, 'stratified_functions'),
 } as const;
 
 const PTBVH = {
@@ -157,10 +155,9 @@ const RENDER = {
   bdpt_connection: pick(RenderBdptConnection, 'bdpt_connection'),
 } as const;
 
-/** Emit exactly one RNG implementation. Sending all three implementations to
+/** Emit exactly one RNG implementation. Sending every implementation to
  * ANGLE behind preprocessor branches materially increases first-link work. */
 function randBlock(randomType: TraceFeatures['randomType']): string {
-  if (randomType === 2) return RANDOM.stratified_functions;
   if (randomType === 1) {
     return /* glsl */ `
 					${RANDOM.pcg_functions}
@@ -171,6 +168,9 @@ function randBlock(randomType: TraceFeatures['randomType']): string {
 					#define rand3(v) sobol3(v)
 					#define rand4(v) sobol4(v)
 `;
+  }
+  if (randomType !== 0) {
+    throw new RangeError(`pt-webgl2 compose: unsupported random type ${String(randomType)}`);
   }
   return /* glsl */ `
 					${RANDOM.pcg_functions}
@@ -206,17 +206,8 @@ const INLINE_HELPERS = /* glsl */ `
 
 						vec3 sampleDir = sampleHemisphere( direction, uv ) * 0.5 * backgroundBlur;
 
-						#if FEATURE_BACKGROUND_MAP
-
-						sampleDir = normalize( mat3( backgroundRotation ) * direction + sampleDir );
-						return backgroundIntensity * sampleEquirectColor( backgroundMap, sampleDir );
-
-						#else
-
 						sampleDir = normalize( envRotation3x3 * direction + sampleDir );
 						return environmentIntensity * sampleEquirectColor( envMapInfo.map, sampleDir );
-
-						#endif
 
 					}
 `;
@@ -289,25 +280,15 @@ function specializeNeeCandidatePass(source: string, candidatePass: boolean): str
   return processRange(0, lines.length).join('\n');
 }
 
-function specializePathStepLimit(source: string, pathStepLimit: number): string {
-  if (
-    !Number.isSafeInteger(pathStepLimit) ||
-    pathStepLimit < 2 ||
-    pathStepLimit > WEBGL2_MAX_PATH_STEPS
-  ) {
-    throw new RangeError(
-      `pt-webgl2 compose: pathStepLimit must be a safe integer in ` +
-        `[2, ${WEBGL2_MAX_PATH_STEPS}] (got ${String(pathStepLimit)})`,
-    );
-  }
+function specializeRuntimeBounceLoop(source: string): string {
   const original = `pathStep < ${WEBGL2_MAX_PATH_STEPS};`;
   if (!source.includes(original)) {
     throw new Error('pt-webgl2 compose: static path-step loop marker is missing');
   }
   // WebGL2 permits uniform-bounded loops. Keeping a literal 16/64 ceiling made
   // ANGLE unroll and optimize the entire path body once per possible step; the
-  // host already validates `bounces <= pathStepLimit / 2`, so the uniform bound
-  // is both exact and substantially cheaper to link.
+  // host validates `bounces <= WEBGL2_MAX_BOUNCES`, so the uniform bound is both
+  // exact and substantially cheaper to link.
   return source.replace(original, 'pathStep < bounces * 2;');
 }
 
@@ -381,11 +362,10 @@ function compactFeatureTierGlsl(source: string): string {
  * reproduces PhysicalPathTracingMaterial.js:227-441 + the inlined main() loop exactly;
  * struct-before-use is load-bearing.
  *
- * @param features compile-flag set; `features.bdpt` gates the bdpt render chunks (the
- *   FEATURE_* `#if`s themselves resolve from the GlProgram preamble defines, so the only
- *   feature this composer branches on at JS-compose time is `bdpt` — to keep the bdpt
- *   render chunks out of the program text entirely when off, matching the fork's
- *   `#if FEATURE_BDPT`-wrapped chunk injection at lines 436-441).
+ * @param features compiler dimensions. Material tier and RNG choose their exact
+ *   source modules; `features.bdpt` keeps the BDPT render chunks out of the
+ *   program text entirely when off. Remaining FEATURE_* gates resolve from the
+ *   GlProgram preamble.
  */
 function composePathGlsl(features: TraceFeatures, candidatePass: boolean): string {
   assertExactlyOneMaterialTier(features);
@@ -469,9 +449,8 @@ function composePathGlsl(features: TraceFeatures, candidatePass: boolean): strin
                                         ${features.bdpt ? BDPT_INFINITE_MIS_GLSL : ''}
                                         ${features.bdpt && !candidatePass ? RENDER.bdpt_light_subpath + '\n' + RENDER.bdpt_connection : ''}
 
-					${specializePathStepLimit(
+					${specializeRuntimeBounceLoop(
 						specializeNeeCandidatePass(RENDER_MAIN, candidatePass),
-						features.pathStepLimit,
 					)}
 `;
   return compactFeatureTierGlsl(source);

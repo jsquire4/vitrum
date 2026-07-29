@@ -1,9 +1,11 @@
 import {
+  getPrimitiveActiveColorSet,
   getPrimitiveUvSet,
   sparseArrayHasDefinedEntry,
   sparseArrayOwnIndices,
   type MaterialSpec,
   type PrimitiveUvSets,
+  type PrimitiveColorSets,
   type TextureRef,
   type TextureWrapMode,
   type UvTransform,
@@ -1104,6 +1106,8 @@ export interface DisplaceablePrimitive {
   readonly uvSets?: PrimitiveUvSets;
   readonly tangents?: Float32Array;
   readonly colors?: Float32Array;
+  readonly colorSets?: PrimitiveColorSets;
+  readonly vertexColorSet?: number | null;
 }
 
 /** Resolved base attributes after (optional) microdisplacement + vertex displacement. */
@@ -1140,6 +1144,7 @@ export function resolveDisplacedGeometry(
   primitive: DisplaceablePrimitive,
   warn: DisplacementWarningSink,
 ): ResolvedDisplacedGeometry {
+  const selectedColors = getPrimitiveActiveColorSet(primitive);
   const microdisplaced = maybeMicrodisplaceMeshGeometry({
     primitiveId: primitive.id,
     material: primitive.material,
@@ -1150,13 +1155,13 @@ export function resolveDisplacedGeometry(
     ...(primitive.uv1 != null ? { uv1: primitive.uv1 } : {}),
     ...(primitive.uvSets != null ? { uvSets: primitive.uvSets } : {}),
     ...(primitive.tangents != null ? { tangents: primitive.tangents } : {}),
-    ...(primitive.colors != null ? { colors: primitive.colors } : {}),
+    ...(selectedColors != null ? { colors: selectedColors } : {}),
     onWarning: warn,
   });
   const basePositions = microdisplaced?.positions ?? primitive.positions;
   const baseNormals = microdisplaced?.normals ?? primitive.normals;
   const baseTangents = microdisplaced?.tangents ?? primitive.tangents;
-  const baseColors = microdisplaced?.colors ?? primitive.colors;
+  const baseColors = microdisplaced?.colors ?? selectedColors;
   const resolvedUvStreams = microdisplaced ?? primitive;
   const resolvedUvSets: Array<Float32Array | undefined> = [];
   if (resolvedUvStreams.uvSets != null) {

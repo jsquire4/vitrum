@@ -22,8 +22,10 @@ import type {
   BackendSupportDetails,
   BackendSupportMode,
   EngineCapabilities,
+  EngineDebugSurface,
   EngineState,
   EngineWarning,
+  GpuMemoryBreakdown,
   Scene,
   Engine,
   FrameInput,
@@ -40,6 +42,7 @@ import {
   type HybridEngineOptions,
 } from '@vitrum/walkaround-hybrid';
 import {
+  PT_WEBGPU_BDPT_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
   PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
   PT_WEBGPU_CWBVH_CLOSEST_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
   PT_WEBGPU_CWBVH_CLOSEST_RESTIR_PT_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
@@ -545,8 +548,103 @@ export function composeProgressiveCapabilities(
     causticStrategy: first.causticStrategy === second.causticStrategy
       ? first.causticStrategy
       : 'none',
-    debugSurface: false,
+    debugSurface: realtime.debug != null || converged.debug != null,
   };
+}
+
+function addBreakdownMaps(
+  first: Readonly<Record<string, number>>,
+  second: Readonly<Record<string, number>>,
+): Readonly<Record<string, number>> {
+  const result: Record<string, number> = { ...first };
+  for (const [key, value] of Object.entries(second)) {
+    result[key] = (result[key] ?? 0) + value;
+  }
+  return Object.freeze(result);
+}
+
+function sumGpuMemoryBreakdowns(
+  first: GpuMemoryBreakdown | null,
+  second: GpuMemoryBreakdown | null,
+): GpuMemoryBreakdown | null {
+  if (first == null) return second;
+  if (second == null) return first;
+  return Object.freeze({
+    total: first.total + second.total,
+    byCategory: addBreakdownMaps(first.byCategory, second.byCategory),
+    byTextureFormat: addBreakdownMaps(first.byTextureFormat, second.byTextureFormat),
+    byBufferUsage: addBreakdownMaps(first.byBufferUsage, second.byBufferUsage),
+  });
+}
+
+function composeProgressiveDebugSurface(
+  realtime: Engine,
+  converged: Engine,
+  displayedEngine: () => Engine,
+): EngineDebugSurface | undefined {
+  const realtimeDebug = realtime.debug;
+  const convergedDebug = converged.debug;
+  if (realtimeDebug == null && convergedDebug == null) return undefined;
+
+  const displayedDebug = (): EngineDebugSurface | undefined => displayedEngine().debug;
+  const alternateDebug = (): EngineDebugSurface | undefined =>
+    displayedEngine() === realtime ? convergedDebug : realtimeDebug;
+  const firstValue = <T>(
+    read: (surface: EngineDebugSurface) => T | null | undefined,
+  ): T | null => {
+    const primary = displayedDebug();
+    const primaryValue = primary == null ? null : read(primary);
+    if (primaryValue != null) return primaryValue;
+    const alternate = alternateDebug();
+    return alternate == null ? null : (read(alternate) ?? null);
+  };
+
+  return Object.freeze({
+    ...(realtimeDebug?.device != null || convergedDebug?.device != null
+      ? { device: () => firstValue((surface) => surface.device?.()) }
+      : {}),
+    ...(realtimeDebug?.atlasTexture != null || convergedDebug?.atlasTexture != null
+      ? { atlasTexture: () => firstValue((surface) => surface.atlasTexture?.()) }
+      : {}),
+    ...(realtimeDebug?.visibilityAtlasTexture != null || convergedDebug?.visibilityAtlasTexture != null
+      ? { visibilityAtlasTexture: () => firstValue((surface) => surface.visibilityAtlasTexture?.()) }
+      : {}),
+    ...(realtimeDebug?.bvhNodes != null || convergedDebug?.bvhNodes != null
+      ? { bvhNodes: () => firstValue((surface) => surface.bvhNodes?.()) }
+      : {}),
+    ...(realtimeDebug?.pickPrimitive != null || convergedDebug?.pickPrimitive != null
+      ? {
+          pickPrimitive: (x: number, y: number) =>
+            firstValue((surface) => surface.pickPrimitive?.(x, y)),
+        }
+      : {}),
+    ...(realtimeDebug?.isDenoiserEnabled != null || convergedDebug?.isDenoiserEnabled != null
+      ? {
+          isDenoiserEnabled: () =>
+            firstValue((surface) => surface.isDenoiserEnabled?.()) ?? false,
+        }
+      : {}),
+    ...(realtimeDebug?.setDenoiserEnabled != null || convergedDebug?.setDenoiserEnabled != null
+      ? {
+          setDenoiserEnabled: (enabled: boolean) => {
+            realtimeDebug?.setDenoiserEnabled?.(enabled);
+            convergedDebug?.setDenoiserEnabled?.(enabled);
+          },
+        }
+      : {}),
+    ...(realtimeDebug?.giSignalTextures != null || convergedDebug?.giSignalTextures != null
+      ? { giSignalTextures: () => firstValue((surface) => surface.giSignalTextures?.()) }
+      : {}),
+    ...(realtimeDebug?.estimatedGpuMemoryBytes != null ||
+    convergedDebug?.estimatedGpuMemoryBytes != null
+      ? {
+          estimatedGpuMemoryBytes: () => sumGpuMemoryBreakdowns(
+            realtimeDebug?.estimatedGpuMemoryBytes?.() ?? null,
+            convergedDebug?.estimatedGpuMemoryBytes?.() ?? null,
+          ),
+        }
+      : {}),
+  });
 }
 
 function progressiveState(realtime: EngineState, converged: EngineState): EngineState {
@@ -605,10 +703,16 @@ export function progressiveHandleAsEngine(handle: ProgressiveEngineHandle): Engi
   const profileId = handle.profileId ?? convergedProfile.profileId;
   const exportGIState = handle.realtime.exportGIState?.bind(handle.realtime);
   const importGIState = handle.realtime.importGIState?.bind(handle.realtime);
+  const debug = composeProgressiveDebugSurface(
+    handle.realtime,
+    handle.converged,
+    () => coordinator.phase === 'converging' ? handle.converged : handle.realtime,
+  );
   const engine = {
     backendId: 'progressive' as const,
     ...(backendProfileId != null ? { backendProfileId } : {}),
     ...(profileId != null ? { profileId } : {}),
+    ...(debug != null ? { debug } : {}),
     get state() { return progressiveState(handle.realtime.state, handle.converged.state); },
     get capabilities() { return capabilities; },
     setScene: (scene: Scene) => coordinator.setScene(scene),
@@ -690,7 +794,11 @@ export function progressiveHandleAsEngine(handle: ProgressiveEngineHandle): Engi
  * the buffer floor, while walkaround-hybrid dominates the texture floor.
  */
 export interface ProgressiveLimitUnionOptions {
-  /** Include converged-engine ReSTIR-PT reuse reservoirs in the shared-device floor. */
+  /** Include converged-engine BDPT's native t=1 atomic camera-splat buffer. */
+  readonly bdpt?: boolean;
+  /** Include converged-engine one-edge reconnection reservoirs in the shared-device floor. */
+  readonly oneEdgeReconnectionReuse?: boolean;
+  /** @deprecated Compatibility alias for oneEdgeReconnectionReuse. */
   readonly restirPtReuse?: boolean;
   /** Include the realtime engine's opt-in NRC bind-group/buffer/workgroup floor. */
   readonly nrcEnabled?: boolean;
@@ -707,13 +815,23 @@ export function computeProgressiveLimitUnion(
   const hybridFull = options.nrcEnabled === true
     ? nrcWebGpuRequiredLimitsForConfig(options.nrcConfig ?? {})
     : HYBRID_WEBGPU_REQUIRED_LIMITS;
-  const ptBufferFloor = options.restirPtReuse === true
+  const reconnectionReuse =
+    (options.oneEdgeReconnectionReuse ?? options.restirPtReuse) === true;
+  const ptBaseBufferFloor = reconnectionReuse
     ? (options.cwbvhClosest === true
         ? PT_WEBGPU_CWBVH_CLOSEST_RESTIR_PT_REQUIRED_STORAGE_BUFFERS_PER_STAGE
         : PT_WEBGPU_RESTIR_PT_REUSE_REQUIRED_STORAGE_BUFFERS_PER_STAGE)
     : (options.cwbvhClosest === true
         ? PT_WEBGPU_CWBVH_CLOSEST_REQUIRED_STORAGE_BUFFERS_PER_STAGE
         : PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE);
+  const ptBufferFloor =
+    ptBaseBufferFloor +
+    (
+      options.bdpt === true
+        ? PT_WEBGPU_BDPT_REQUIRED_STORAGE_BUFFERS_PER_STAGE -
+          PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE
+        : 0
+    );
   const ptWebgpuFull: Record<string, number> = {
     maxStorageBuffersPerShaderStage: ptBufferFloor,
     maxStorageTexturesPerShaderStage: PT_WEBGPU_FULL_REQUIRED_STORAGE_TEXTURES_PER_STAGE,
@@ -771,8 +889,46 @@ export async function createProgressiveEngine(
   const aabb = computeSceneAABB(vitrumScene);
   const needsTlas = auditSceneNeedsTlas(vitrumScene).needsTlas;
 
+  // Construction callbacks can be reached from both this facade and a
+  // sub-build (notably walkaround's required canvas configuration). Record the
+  // exact reported error before invoking host code, then recognize it through a
+  // later wrapper's `cause` chain so the terminal catch cannot double-report it.
+  const reportedConstructionErrors = new Set<unknown>();
+  const errorOrCauseWasReported = (error: unknown): boolean => {
+    const visited = new Set<unknown>();
+    let current = error;
+    while (!visited.has(current)) {
+      if (reportedConstructionErrors.has(current)) return true;
+      visited.add(current);
+      if (
+        current == null ||
+        (typeof current !== 'object' && typeof current !== 'function')
+      ) {
+        return false;
+      }
+      try {
+        const cause = (current as { readonly cause?: unknown }).cause;
+        if (cause === undefined) return false;
+        current = cause;
+      } catch {
+        // A hostile thrown proxy must not prevent the original failure from
+        // being surfaced or cleaned up.
+        return false;
+      }
+    }
+    return false;
+  };
+  const reportConstructionErrorOnce = (
+    error: unknown,
+    event: CreateEngineErrorEvent,
+  ): void => {
+    if (errorOrCauseWasReported(error)) return;
+    reportedConstructionErrors.add(error);
+    reportProgressiveEngineError(opts, error, event);
+  };
+
   const failConstruction = (error: unknown): never => {
-    reportProgressiveEngineError(opts, error, {
+    reportConstructionErrorOnce(error, {
       phase: 'create:progressive',
       backend: 'progressive',
       recoverable: false,
@@ -805,11 +961,20 @@ export async function createProgressiveEngine(
   // The shared device must satisfy BOTH backends' FULL floors. Compute the union
   // and check the adapter BEFORE requesting the device, so we can throw a clear,
   // gap-naming error instead of letting requestDevice reject opaquely.
-  const restirPtReuse = opts.convergedOptions?.restirPtReuse === true;
+  const restirPtReuse =
+    (opts.convergedOptions?.oneEdgeReconnectionReuse ??
+      opts.convergedOptions?.restirPtReuse) === true;
   const cwbvhClosest = opts.convergedOptions?.bvhTraversal === 'cwbvh-closest';
+  const bdpt = opts.convergedOptions?.bdpt === true;
   const nrcEnabled = opts.realtimeOptions?.nrcEnabled === true;
   const nrcConfig = resolveHybridNrcConfig(opts.realtimeOptions ?? {});
-  const unionOptions = { restirPtReuse, cwbvhClosest, nrcEnabled, nrcConfig };
+  const unionOptions = {
+    oneEdgeReconnectionReuse: restirPtReuse,
+    cwbvhClosest,
+    bdpt,
+    nrcEnabled,
+    nrcConfig,
+  };
   const union = computeProgressiveLimitUnion(unionOptions);
   const unmet = checkProgressiveLimitUnion(adapter, unionOptions);
   if (unmet.length > 0) {
@@ -841,6 +1006,11 @@ export async function createProgressiveEngine(
   // reason.
   let realtime: (Engine & { dispose(): void }) | null = null;
   let converged: (Engine & { dispose(): void }) | null = null;
+  let postDeviceFailureEvent: CreateEngineErrorEvent = {
+    phase: 'create:progressive',
+    backend: 'progressive',
+    recoverable: false,
+  };
   try {
     // Surface the shared device's profile for HUD / CI (probed from the device, so
     // its reported limits reflect the union we requested). This is the SINGLE
@@ -869,7 +1039,8 @@ export async function createProgressiveEngine(
     // host's single callback with the same phase/backend/recoverability event
     // shape as createEngine().
     const subBuildOnError = opts.onError != null
-      ? (err: unknown, ev: CreateEngineErrorEvent): void => reportProgressiveEngineError(opts, err, ev)
+      ? (err: unknown, ev: CreateEngineErrorEvent): void =>
+          reportConstructionErrorOnce(err, ev)
       : undefined;
 
     // The two sub-builds reuse createEngine's OWN scene-handling / options-merging
@@ -893,6 +1064,11 @@ export async function createProgressiveEngine(
       ...(subBuildOnError != null ? { onError: subBuildOnError } : {}),
       ...(opts.onWarning != null ? { onWarning: opts.onWarning } : {}),
     };
+    postDeviceFailureEvent = {
+      phase: 'create:walkaround-hybrid',
+      backend: 'walkaround-hybrid',
+      recoverable: false,
+    };
     realtime = await constructWalkaround(
       realtimeBuildOpts,
       vitrumScene,
@@ -914,11 +1090,21 @@ export async function createProgressiveEngine(
       ...(subBuildOnError != null ? { onError: subBuildOnError } : {}),
       ...(opts.onWarning != null ? { onWarning: opts.onWarning } : {}),
     };
+    postDeviceFailureEvent = {
+      phase: 'create:pt-webgpu',
+      backend: 'pt-webgpu',
+      recoverable: false,
+    };
     converged = await constructPathTracerWebGPU(
       convergedBuildOpts,
       vitrumScene,
       shared,
     );
+    postDeviceFailureEvent = {
+      phase: 'create:progressive',
+      backend: 'progressive',
+      recoverable: false,
+    };
 
     // ── Capability preflight ────────────────────────────────────────────────
     // The seed handoff requires the realtime engine to expose a seed SOURCE and
@@ -955,7 +1141,7 @@ export async function createProgressiveEngine(
     // H31-b — thread the host onError callback so canvas-configure failures are
     // surfaced with the same structured event shape as createEngine().
     configureWebGpuCanvas(opts.canvas, device, (err) => {
-      reportProgressiveEngineError(opts, err, {
+      reportConstructionErrorOnce(err, {
         phase: 'canvas-configure',
         backend: 'walkaround-hybrid',
         recoverable: true,
@@ -1019,6 +1205,7 @@ export async function createProgressiveEngine(
     try { realtime?.dispose(); } catch { /* best-effort cleanup — ignore */ }
     try { converged?.dispose(); } catch { /* best-effort cleanup — ignore */ }
     try { device.destroy(); } catch { /* best-effort device destroy — ignore */ }
+    reportConstructionErrorOnce(err, postDeviceFailureEvent);
     throw err;
   }
 }

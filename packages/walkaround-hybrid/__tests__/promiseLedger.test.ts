@@ -59,6 +59,7 @@ describe('walkaround-hybrid promise ledger compliance', () => {
       denoisers: {
         ...expected.supportDetails.denoisers,
         neural: 'unsupported',
+        'oidn-final': 'unsupported',
       },
     });
 

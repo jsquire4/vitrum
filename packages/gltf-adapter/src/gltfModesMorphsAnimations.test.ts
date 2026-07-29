@@ -784,7 +784,7 @@ describe('animations (GLTF-03)', () => {
     expect(animationTargets[animationNodeId(0)]).toEqual(['gltf-prim-0']);
   });
 
-  it('rejects unknown animation interpolation atomically', async () => {
+  it('degrades unknown animation interpolation to LINEAR with a structured warning', async () => {
     const { gltf, buffers } = makeAnimGltf([{
       path: 'translation',
       times: [0, 1],
@@ -792,17 +792,117 @@ describe('animations (GLTF-03)', () => {
       outType: 'VEC3',
       interpolation: 'BEZIER', // not a glTF interpolation
     }]);
-    await expect(gltfToScene(gltf, { buffers })).rejects.toMatchObject({
-      name: 'GltfImportError',
-      diagnostics: expect.arrayContaining([expect.objectContaining({
-        severity: 'error',
+    const result = await gltfToScene(gltf, { buffers });
+    expect(result.animations[0]!.channels[0]!.sampler.interpolation).toBe('LINEAR');
+    expect(result.diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        severity: 'warning',
         code: 'unknown-animation-interpolation',
         path: 'animations[0].samplers[0].interpolation',
         animationIndex: 0,
         samplerIndex: 0,
+      }),
+    ]));
+    expect(result.warnings).toContainEqual(expect.stringContaining('Falling back to LINEAR'));
+  });
+
+  it('keeps valid channels while skipping optional unsupported and duplicate channels', async () => {
+    const { gltf, buffers } = makeAnimGltf([
+      {
+        path: 'translation',
+        times: [0, 1],
+        values: [0,0,0, 1,0,0],
+        outType: 'VEC3',
+      },
+      {
+        path: 'scale',
+        times: [0, 1],
+        values: [1,1,1, 2,2,2],
+        outType: 'VEC3',
+      },
+      {
+        path: 'translation',
+        times: [0, 1],
+        values: [0,0,0, 5,0,0],
+        outType: 'VEC3',
+      },
+    ]);
+    gltf.animations![0]!.channels![1]!.target.path = 'VENDOR_optional';
+
+    const result = await gltfToScene(gltf, { buffers });
+
+    expect(result.animations).toHaveLength(1);
+    expect(result.animations[0]!.channels).toHaveLength(1);
+    expect(result.animations[0]!.channels[0]!.target.path).toBe('translation');
+    expect(result.diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        severity: 'warning',
+        code: 'unsupported-animation-target-path',
+        path: 'animations[0].channels[1].target.path',
+      }),
+      expect.objectContaining({
+        severity: 'warning',
+        code: 'duplicate-animation-target',
+        path: 'animations[0].channels[2].target',
+      }),
+    ]));
+  });
+
+  it('still rejects malformed required sampler data in a mixed animation', async () => {
+    const { gltf, buffers } = makeAnimGltf([
+      {
+        path: 'translation',
+        times: [0, 1],
+        values: [0,0,0, 1,0,0],
+        outType: 'VEC3',
+      },
+      {
+        path: 'scale',
+        times: [0, 1],
+        values: [1,1,1, 2,2,2],
+        outType: 'VEC3',
+      },
+    ]);
+    gltf.animations![0]!.channels![1]!.sampler = 99;
+
+    await expect(gltfToScene(gltf, { buffers })).rejects.toMatchObject({
+      name: 'GltfImportError',
+      diagnostics: expect.arrayContaining([expect.objectContaining({
+        severity: 'error',
+        code: 'missing-animation-sampler',
+        path: 'animations[0].samplers[99]',
       })]),
     });
   });
+
+  it.each([
+    ['missing', undefined, 'missing-animation-target-node'],
+    ['nonexistent', 99, 'animation-target-node-not-found'],
+  ] as const)(
+    'rejects a %s native target node even with selected-scene reachability enabled',
+    async (_label, nodeIndex, code) => {
+      const { gltf, buffers } = makeAnimGltf([{
+        path: 'translation',
+        times: [0, 1],
+        values: [0,0,0, 1,0,0],
+        outType: 'VEC3',
+      }]);
+      if (nodeIndex === undefined) {
+        delete gltf.animations![0]!.channels![0]!.target.node;
+      } else {
+        gltf.animations![0]!.channels![0]!.target.node = nodeIndex;
+      }
+
+      await expect(gltfToScene(gltf, { buffers })).rejects.toMatchObject({
+        name: 'GltfImportError',
+        diagnostics: expect.arrayContaining([expect.objectContaining({
+          severity: 'error',
+          code,
+          path: 'animations[0].channels[0].target.node',
+        })]),
+      });
+    },
+  );
 
   it('rejects invalid animation output counts atomically', async () => {
     const { gltf, buffers } = makeAnimGltf([{

@@ -188,7 +188,11 @@ export interface MaterialSpec {
 
   // ── Transmission / refraction ───────────────────────────────────────────
   readonly transmission?: number;        // 0 = opaque, 1 = fully transparent
-  readonly ior?: number;                  // index of refraction
+  /**
+   * Index of refraction. Must be either 0 (the KHR_materials_ior
+   * infinite-IOR compatibility mode) or >= 1. Default 1.5.
+   */
+  readonly ior?: number;
   readonly attenuationColor?: Vec3;       // Beer-Lambert: color the medium absorbs to
   readonly attenuationDistance?: number;  // Beer-Lambert: depth at which attenuationColor reached
   readonly thickness?: number;            // Beer-Lambert: actual slab thickness
@@ -275,15 +279,17 @@ export interface MaterialSpec {
   // ── Dielectric specular (glTF KHR_materials_specular) ───────────────────
   /**
    * Dielectric specular reflection strength factor ∈ [0, 1]
-   * (KHR_materials_specular `specularFactor`). Scales the base 0.04 dielectric
-   * F0 reflectance; has no effect on the metallic lobe. Default 1.
+   * (KHR_materials_specular `specularFactor`). Scales the IOR-derived
+   * dielectric F0 reflectance; has no effect on the metallic lobe. Default 1.
    *
    * Reference: glTF KHR_materials_specular.
    */
   readonly specularIntensity?: number;
   /**
    * Dielectric specular color tint (KHR_materials_specular
-   * `specularColorFactor`) applied to the dielectric F0. Default [1, 1, 1].
+   * `specularColorFactor`) applied to the dielectric F0. Components are finite
+   * and non-negative, but intentionally have no upper bound: the Khronos
+   * extension permits factors greater than 1. Default [1, 1, 1].
    *
    * Reference: glTF KHR_materials_specular.
    */

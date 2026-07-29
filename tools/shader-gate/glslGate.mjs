@@ -84,104 +84,61 @@ import { FULLSCREEN_VERT } from "../../packages/pt-webgl2/src/gl/fullscreenQuad.
 // From featureTypes.ts and index.ts:
 //   - bdpt: driven by opts.bdpt (true/false). At compose time, bdpt=true adds the
 //     bdpt_light_subpath + bdpt_connection chunks; bdpt=false omits them entirely.
-//     Both are production-reachable. All other features are either always-on (mis,
-//     russianRoulette), scene-driven (fog), pinned-off (backgroundMap, stratified randomType=2,
-//     debugMode), or only affect #define values (not the composed chunk set).
+//     Both are production-reachable. MIS and Russian roulette are fixed production
+//     invariants rather than cache-key dimensions.
 //   - dof: driven by opts.dof (truthy/null). FEATURE_DOF resolves in #if blocks.
 //   - cameraType: driven by opts.cameraType (0=perspective, 1=ortho, 2=equirect).
 //     CAMERA_TYPE resolves in #if blocks inside getCameraRay().
-//   - stainedGlassPerturbation: driven by opts.stainedGlassPerturbation. Affects one
-//     GLSL block. Compile-time meaningful; include one variant.
 //   - randomType: driven by opts.sampling for production PCG(0) and Sobol(1).
-//     Stratified(2) remains unexposed because its textures are still dummy-bound.
 //   - material tier + fog: derived from the installed Scene. Every one of the four
 //     tiers is production-reachable, and texture-free participating media select
 //     scalarRichMaterials + fog.
 //
-// Compose-time branching is ONLY on `bdpt` (composeTraceGlsl() branches on it to
-// include/exclude the BDPT render chunks). All other flags only affect #define
-// values fed to buildFragmentSource. So the minimal matrix that exercises all
-// production-reachable GLSL paths is:
+// Composition branches on BDPT, RNG source, and material tier. The generated
+// preamble also gates DOF, camera, and fog paths. The matrix below exercises every
+// production-reachable dimension plus the heaviest BDPT+Sobol interaction:
 //
-//   Combo              bdpt  dof   cameraType  stainedGlass  notes
-//   ─────────────────────────────────────────────────────────────────────
-//   baseline            F    F       0           F           default production path
-//   bdpt-on             T    F       0           F           BDPT chunks included
-//   dof-on              F    T       0           F           FEATURE_DOF=1 #if paths
-//   cameraType-ortho    F    F       1           F           CAMERA_TYPE=1 #if paths
-//   cameraType-equirect F    F       2           F           CAMERA_TYPE=2 #if paths
-//   stained-glass       F    F       0           T           perturbation #if path
-//   sobol-on            F    F       0           F           RANDOM_TYPE=1 Sobol RNG path
-//   material-basic      F    F       0           F           basic material compiler tier
-//   scalar-rich-fog     F    F       0           F           texture-free medium compiler tier
-//   material-mapped-pbr F    F       0           F           mapped base-PBR compiler tier
-//
-// (bdpt+dof+cameraType combinations not listed are not novel — no additional GLSL
-//  path branches open; all other define combos follow from the drivers above.)
+//   Combo              bdpt  dof   cameraType  RNG    notes
+//   ─────────────────────────────────────────────────────────────────
+//   baseline            F    F       0         PCG    default production path
+//   bdpt-on             T    F       0         PCG    BDPT chunks + fog path
+//   dof-on              F    T       0         PCG    FEATURE_DOF=1 paths
+//   cameraType-ortho    F    F       1         PCG    CAMERA_TYPE=1 paths
+//   cameraType-equirect F    F       2         PCG    CAMERA_TYPE=2 paths
+//   bdpt-sobol          T    F       0         Sobol  heaviest live interaction
+//   sobol-on            F    F       0         Sobol  Sobol RNG composition
+//   material-basic      F    F       0         PCG    basic material tier
+//   scalar-rich-fog     F    F       0         PCG    scalar-rich + medium tier
+//   material-mapped-pbr F    F       0         PCG    mapped base-PBR tier
 
 const COMBOS = [
   {
     name: "baseline",
-    features: {
-      ...DEFAULT_TRACE_FEATURES,
-      mis: true, russianRoulette: true, bdpt: false, dof: false,
-      cameraType: 0, stainedGlassPerturbation: false,
-      fog: false, backgroundMap: false, randomType: 0, debugMode: 0,
-    },
+    features: { ...DEFAULT_TRACE_FEATURES },
   },
   {
     name: "bdpt-on",
-    features: {
-      ...DEFAULT_TRACE_FEATURES,
-      mis: true, russianRoulette: true, bdpt: true, dof: false,
-      cameraType: 0, stainedGlassPerturbation: false,
-      fog: true, backgroundMap: false, randomType: 0, debugMode: 0,
-    },
+    features: { ...DEFAULT_TRACE_FEATURES, bdpt: true, fog: true },
   },
   {
     name: "dof-on",
-    features: {
-      ...DEFAULT_TRACE_FEATURES,
-      mis: true, russianRoulette: true, bdpt: false, dof: true,
-      cameraType: 0, stainedGlassPerturbation: false,
-      fog: false, backgroundMap: false, randomType: 0, debugMode: 0,
-    },
+    features: { ...DEFAULT_TRACE_FEATURES, dof: true },
   },
   {
     name: "cameraType-ortho",
-    features: {
-      ...DEFAULT_TRACE_FEATURES,
-      mis: true, russianRoulette: true, bdpt: false, dof: false,
-      cameraType: 1, stainedGlassPerturbation: false,
-      fog: false, backgroundMap: false, randomType: 0, debugMode: 0,
-    },
+    features: { ...DEFAULT_TRACE_FEATURES, cameraType: 1 },
   },
   {
     name: "cameraType-equirect",
-    features: {
-      ...DEFAULT_TRACE_FEATURES,
-      mis: true, russianRoulette: true, bdpt: false, dof: false,
-      cameraType: 2, stainedGlassPerturbation: false,
-      fog: false, backgroundMap: false, randomType: 0, debugMode: 0,
-    },
+    features: { ...DEFAULT_TRACE_FEATURES, cameraType: 2 },
   },
   {
-    name: "stained-glass",
-    features: {
-      ...DEFAULT_TRACE_FEATURES,
-      mis: true, russianRoulette: true, bdpt: false, dof: false,
-      cameraType: 0, stainedGlassPerturbation: true,
-      fog: false, backgroundMap: false, randomType: 0, debugMode: 0,
-    },
+    name: "bdpt-sobol",
+    features: { ...DEFAULT_TRACE_FEATURES, bdpt: true, randomType: 1 },
   },
   {
     name: "sobol-on",
-    features: {
-      ...DEFAULT_TRACE_FEATURES,
-      mis: true, russianRoulette: true, bdpt: false, dof: false,
-      cameraType: 0, stainedGlassPerturbation: false,
-      fog: false, backgroundMap: false, randomType: 1, debugMode: 0,
-    },
+    features: { ...DEFAULT_TRACE_FEATURES, randomType: 1 },
   },
   {
     name: "material-basic",

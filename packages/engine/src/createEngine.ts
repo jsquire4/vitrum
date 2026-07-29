@@ -135,7 +135,7 @@ export async function createEngine(opts: CreateEngineOptions): Promise<EngineWit
 
   const aabb = computeSceneAABB(vitrumScene);
   const tlasAudit = auditSceneNeedsTlas(vitrumScene);
-  const gpu = await detectGpu({ publishToWindow: false });
+  const gpu = await detectGpu();
   const gltfRecommendedBackend = opts.gltfAsset?.recommendedBackend?.backend;
   const materialRecommendation = gltfRecommendedBackend == null
     ? recommendBackendForSceneMaterials(vitrumScene, gpu.isWebGPU)
@@ -173,6 +173,27 @@ export async function createEngine(opts: CreateEngineOptions): Promise<EngineWit
         resolvedBackend: backend,
       },
     });
+  }
+  if ((opts.prefer ?? 'auto') === 'realtime' && !gpu.isWebGPU && backend === 'pt-webgl2') {
+    emitCreateEngineWarning(
+      opts.onWarning,
+      {
+        code: 'createEngine.realtime-unavailable-fallback',
+        backend: 'createEngine',
+        phase: 'fallback',
+        method: 'createEngine',
+        message:
+          '[vitrum/createEngine] prefer:\'realtime\' requires WebGPU; ' +
+          'this host has no WebGPU adapter, so the engine is using the converged pt-webgl2 backend.',
+        details: {
+          preferredBackend: 'walkaround-hybrid',
+          resolvedBackend: 'pt-webgl2',
+          reason: 'webgpu-unavailable',
+        },
+      },
+      '[vitrum/createEngine] prefer:\'realtime\' requires WebGPU; ' +
+        'falling back to the converged pt-webgl2 backend.',
+    );
   }
   // When the audit recommends a TLAS-capable backend but we resolved to pt-webgl2
   // (the only merged-BVH backend), surface the recommendation + detail so the host

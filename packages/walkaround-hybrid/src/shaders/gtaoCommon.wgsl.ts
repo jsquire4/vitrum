@@ -36,6 +36,10 @@ struct GTAOUniforms {
   // Pad to 32 bytes (8-element struct) for WebGPU 16-byte UBO alignment.
   _pad1: f32,
   _pad2: f32,
+  // World-to-view transform. gNormalDepth stores world-space normals while
+  // GTAO constructs its horizon slices in view space; keeping both operands in
+  // one space is required for camera rotations to leave AO invariant.
+  viewMatrix: mat4x4f,
 };
 `;
 

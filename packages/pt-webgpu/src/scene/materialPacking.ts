@@ -13,6 +13,19 @@ import { thinFilmRgb } from '../math/thinFilm.js';
  *  `wgsl/pathTrace/material.wgsl.ts` MUST stay in lockstep with this value. */
 export const THIN_FILM_LAYER_LIMIT = 8;
 /**
+ * Finite transport surrogate for KHR_materials_ior's authored value 0.
+ * In f32, ±1 around this value round away, so the normal-incidence Fresnel
+ * ratio evaluates to exactly one while refraction arithmetic stays finite.
+ */
+export const KHR_MATERIALS_IOR_INFINITY_APPROX = 100_000_000;
+
+export function effectiveMaterialIor(ior: number | undefined): number {
+  const finiteIor = typeof ior === 'number' && Number.isFinite(ior) ? ior : 1.5;
+  return finiteIor === 0
+    ? KHR_MATERIALS_IOR_INFINITY_APPROX
+    : Math.max(finiteIor, 1);
+}
+/**
  * Matches WGSL `MATERIAL_VEC4_STRIDE`. MUST stay in lockstep with the constant
  * in `wgsl/pathTrace/material.wgsl.ts` and the `matId * MATERIAL_VEC4_STRIDE`
  * indexing in `caustic.wgsl.ts`; changing it here without the WGSL constant
@@ -58,8 +71,9 @@ export const THIN_FILM_LAYER_LIMIT = 8;
  * not depend on the (optional) spectral-attenuation curve.
  *
  * H52: vec4s #23–#25 (`MATERIAL_VEC4_STRIDE` bumped 23 → 26) carry the three
- * Disney extension lobes — clearcoat (additive GGX at F0=0.04), sheen (Charlie
- * retro-reflective), and iridescence (thin-film Fresnel modification of F0).
+ * Disney extension layers — clearcoat (outer GGX at F0=0.04 with base
+ * attenuation), sheen (Charlie retro-reflective with directional-albedo
+ * compensation), and iridescence (thin-film Fresnel modification of F0).
  * All three scalars default to 0, so zero-default scenes are NUMERICALLY
  * IDENTICAL to the pre-H52 path (the lobes multiply by their scalar and are
  * skipped when it is 0).
@@ -95,6 +109,8 @@ export function materialToPackedVec4s(
 ): number[] {
   const finite = (v: number, fallback = 0): number => (Number.isFinite(v) ? v : fallback);
   const clamp01 = (v: number): number => Math.min(1, Math.max(0, finite(v)));
+  const nonNegative = (v: number, fallback = 0): number =>
+    Math.max(0, finite(v, fallback));
   const base = material.baseColor;
   const emissive = material.emissive ?? [0, 0, 0];
   const emissiveIntensity = resolveEmissiveIntensity(material.emissiveIntensity);
@@ -104,7 +120,11 @@ export function materialToPackedVec4s(
   const hasVolumeThickness =
     material.thickness != null || material.thicknessMap != null;
   const volumeThickness = Math.max(finite(material.thickness ?? 0), 0);
-  const ior = material.ior ?? 1.5;
+  // Preserve authored zero in the fixed material slot so decodeMaterial can
+  // select the finite infinite-IOR transport surrogate. Other valid values are
+  // already >= 1 by the canonical core validation contract.
+  const authoredIor = finite(material.ior ?? 1.5, 1.5);
+  const ior = authoredIor === 0 ? 0 : Math.max(authoredIor, 1);
   const scatteringCoeff = material.scatteringCoefficient ?? 0;
   const scatteringAnisotropy = material.scatteringAnisotropy ?? 0;
   const scatteringRgb = material.scatteringCoefficientRGB ?? [
@@ -279,15 +299,15 @@ export function materialToPackedVec4s(
     (material.doubleSided === true ? 4 : 0);
   packed.push(finite(specC0), finite(specC1), finite(specC2), materialFlags);
 
-  // SPEC-01 — KHR_materials_specular scalar factors for dielectric F0. Defaults
-  // are specularColor=[1,1,1], specularIntensity=1 so old scenes keep the same
-  // 4% dielectric F0. Metallic F0 remains baseColor-driven in WGSL.
+  // SPEC-01 — KHR_materials_specular scalar factors for dielectric F0. Khronos
+  // permits specularColor factors above one; the IOR-derived F0 is clamped only
+  // after factor × texture multiplication in WGSL.
   const specularColor = material.specularColor ?? [1, 1, 1];
   const specularIntensity = clamp01(material.specularIntensity ?? 1);
   packed.push(
-    clamp01(specularColor[0] ?? 1),
-    clamp01(specularColor[1] ?? 1),
-    clamp01(specularColor[2] ?? 1),
+    nonNegative(specularColor[0] ?? 1, 1),
+    nonNegative(specularColor[1] ?? 1, 1),
+    nonNegative(specularColor[2] ?? 1, 1),
     specularIntensity,
   );
 
@@ -369,7 +389,7 @@ export function thinFilmRgbLutForMaterial(material: MaterialSpec): number[] {
   const incidentIor = Math.max(
     finite(material.thinFilmStack?.incidentIor ?? 1, 1), 1,
   );
-  const substrateIor = Math.max(finite(material.ior ?? 1.5, 1.5), 1);
+  const substrateIor = effectiveMaterialIor(material.ior);
   const rgbInput = {
     layers,
     incidentIor,

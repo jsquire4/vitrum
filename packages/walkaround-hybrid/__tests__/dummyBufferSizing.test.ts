@@ -18,8 +18,6 @@
  * What each test guarantees:
  *   - The sizingGpuDevice helper correctly rejects 16-byte buffers when the
  *     declared min is 32 (regression guard for the guard itself).
- *   - `createDummyStorageBuffer` (the production helper) allocates ≥32 bytes,
- *     which satisfies the `array<BVHNode>` minimum.
  *   - A deliberately-16-byte placeholder FAILS the binding size check —
  *     confirming the guard catches the historical bug.
  *   - The probe-update TLAS dummy path in `rebuildProbeBvhFromScene` allocates
@@ -30,7 +28,6 @@
 import { describe, it, expect } from 'vitest';
 import { installWebGPUPolyfills } from './helpers/webgpuPolyfills.js';
 import { createSizingGpuDevice } from './helpers/sizingGpuDevice.js';
-import { createDummyStorageBuffer } from '../src/pipeline/resourceManager.js';
 import { rebuildProbeBvhFromScene } from '../src/ddgi/probeUpdateBvhBuffers.js';
 
 installWebGPUPolyfills();
@@ -115,38 +112,10 @@ describe('sizingGpuDevice — meta-checks', () => {
 });
 
 // ────────────────────────────────────────────────────────────────────────────
-// H53b-A: createDummyStorageBuffer (ReSTIR scene BGL placeholder) — CURRENT
+// H53b-A: bind-group layout and resource-range validation
 // ────────────────────────────────────────────────────────────────────────────
 
-describe('createDummyStorageBuffer — ReSTIR scene BGL', () => {
-  it('allocates exactly 32 bytes (≥ BVHNode min-binding-size)', () => {
-    const device = createSizingGpuDevice();
-    const buf = createDummyStorageBuffer(device as unknown as GPUDevice, 'test-dummy');
-    // Check via the recorded allocations (the stub records every createBuffer call,
-    // and createDummyStorageBuffer delegates to uploadBuffer which calls createBuffer).
-    const last = device.allocations.at(-1);
-    expect(last).toBeDefined();
-    expect(last!.size).toBeGreaterThanOrEqual(BVHNODE_MIN_BINDING_BYTES);
-    void buf; // consume the return value
-  });
-
-  it('the current 32-byte dummy passes the scene-BGL binding size check', () => {
-    // Verify that the production dummy satisfies the same min-binding-size rule
-    // that a real WebGPU driver enforces.  This is the guard that would have
-    // caught the PR-3 / 0bedd92 regression before it shipped.
-    const minSizes = { [SCENE_TLAS_NODES_BINDING]: BVHNODE_MIN_BINDING_BYTES };
-    const device = createSizingGpuDevice(minSizes);
-    const buf = createDummyStorageBuffer(device as unknown as GPUDevice, 'scene-tlas-dummy');
-
-    const layout = device.createBindGroupLayout({ entries: [] });
-    expect(() =>
-      device.createBindGroup({
-        layout,
-        entries: [{ binding: SCENE_TLAS_NODES_BINDING, resource: { buffer: buf } }],
-      }),
-    ).not.toThrow();
-  });
-
+describe('sizingGpuDevice — bind-group validation', () => {
   it('a historical 16-byte placeholder WOULD have failed the scene-BGL check (regression oracle)', () => {
     // This test immortalises the exact failure mode of the 0bedd92 bug:
     // a 16-byte placeholder for tlasNodes binding causes the bind group to be

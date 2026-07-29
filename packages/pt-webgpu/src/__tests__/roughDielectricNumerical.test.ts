@@ -22,10 +22,8 @@ import {
   type RoughDielectricConfig,
   type RoughDielectricVec3,
 } from '../math/roughDielectric.js';
-import { PT_WEBGPU_ADJOINT_PASS_WGSL } from '../wgsl/pathTrace/adjointPass.wgsl.js';
 import { PT_WEBGPU_PATH_TRACE_BSDF_WGSL } from '../wgsl/pathTrace/bsdf.wgsl.js';
 import { PT_WEBGPU_PATH_TRACE_MATERIAL_FUNCS_WGSL } from '../wgsl/pathTrace/material.wgsl.js';
-import { RESTIR_PT_HYBRID_SHIFT_WGSL } from '../wgsl/pathTrace/restirPtHybridShift.wgsl.js';
 
 const N: RoughDielectricVec3 = [0, 0, 1];
 const TWO_PI = 2 * Math.PI;
@@ -350,22 +348,14 @@ describe('rough dielectric numerical production oracle', () => {
 
   it('keeps the exact Smith implementation shared by every production consumer', () => {
     const forwardSmith = roughDielectricSmithG1Wgsl('smithG1');
-    const replaySmith = roughDielectricSmithG1Wgsl('rptHybrid_smithG1');
     expect(PT_WEBGPU_PATH_TRACE_MATERIAL_FUNCS_WGSL).toContain(forwardSmith);
-    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain(forwardSmith);
-    expect(RESTIR_PT_HYBRID_SHIFT_WGSL).toContain(replaySmith);
     expect(PT_WEBGPU_PATH_TRACE_BSDF_WGSL).toContain('smithG1(nDotO, roughness)');
     expect(PT_WEBGPU_PATH_TRACE_BSDF_WGSL).toContain('let oDotM = dot(wo, wm);');
     expect(PT_WEBGPU_PATH_TRACE_BSDF_WGSL).toContain('oDotM <= 1e-6');
     expect(PT_WEBGPU_PATH_TRACE_BSDF_WGSL).not.toContain('let oDotM = abs(dot(wo, wm));');
 
-    for (const source of [
-      PT_WEBGPU_PATH_TRACE_MATERIAL_FUNCS_WGSL,
-      PT_WEBGPU_ADJOINT_PASS_WGSL,
-      RESTIR_PT_HYBRID_SHIFT_WGSL,
-    ]) {
-      expect(source).not.toContain('(roughness + 1.0) * (roughness + 1.0) * 0.125');
-    }
+    expect(PT_WEBGPU_PATH_TRACE_MATERIAL_FUNCS_WGSL)
+      .not.toContain('(roughness + 1.0) * (roughness + 1.0) * 0.125');
   });
 
   it('stays finite at normal, grazing, TIR, and the delta boundary', () => {

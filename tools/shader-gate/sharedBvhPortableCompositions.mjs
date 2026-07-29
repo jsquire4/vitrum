@@ -78,9 +78,10 @@ fn cwbvhGateMain() {
   var ray: CwbvhRay;
   ray.origin = vec3f(0.0, 0.0, 1.0);
   ray.direction = vec3f(0.0, 0.0, -1.0);
-  let anyHit = cwbvhIntersectAny(ray.origin, ray.direction, 1e20, 1e-5, 0u, false);
-  let closest = cwbvhIntersectFirstHit(ray, 1e-5, 0u, false);
-  cwbvhGateOut[0] = anyHit.status * 2u + select(0u, 1u, anyHit.didHit || closest.didHit);
+  let closest = cwbvhIntersectFirstHitRangeFromRoot(
+    ray, 1e-5, 1e-5, 1e20, 0u, 0u, false,
+  );
+  cwbvhGateOut[0] = closest.status * 2u + select(0u, 1u, closest.didHit);
 }
 `;
 

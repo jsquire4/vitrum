@@ -7,8 +7,8 @@ import { RIS_WGSL } from '../ris.wgsl.js';
 import { RIS_GI_WGSL } from '../risGi.wgsl.js';
 import { RIS_GI_NRC_BODY } from '../risGiNrc.wgsl.js';
 import { SHADING_TERMS_WGSL } from '../shadingTerms.wgsl.js';
-import { TEMPORAL_GI_GRIS_MODULE } from '../temporalGi.wgsl.js';
-import { SPATIAL_GI_GRIS_MODULE } from '../spatialGi.wgsl.js';
+import { TEMPORAL_GI_MODULE } from '../temporalGi.wgsl.js';
+import { SPATIAL_GI_MODULE } from '../spatialGi.wgsl.js';
 import { composeWgsl } from '../../pipeline/wgslComposer.js';
 import { WGSL_MODULES } from '../../pipeline/wgslModules.js';
 
@@ -87,10 +87,11 @@ describe('emitter castShadow:false shader gates', () => {
     }
 
     for (const src of [
-      composeWgsl(TEMPORAL_GI_GRIS_MODULE, WGSL_MODULES),
-      composeWgsl(SPATIAL_GI_GRIS_MODULE, WGSL_MODULES),
+      composeWgsl(TEMPORAL_GI_MODULE, WGSL_MODULES),
+      composeWgsl(SPATIAL_GI_MODULE, WGSL_MODULES),
     ]) {
-      expect(src).toContain('traceSceneAnyAlphaMaskTextured(');
+      expect(src).toContain('traceSceneAlphaTintTransmittanceTextured(');
+      expect(src).not.toContain('traceSceneAnyAlphaMaskTextured(');
       expect(src).toContain('BVH_MATERIAL_TEX_WIDTH');
     }
   });

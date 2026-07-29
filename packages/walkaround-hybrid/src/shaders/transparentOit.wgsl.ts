@@ -213,6 +213,33 @@ fn oitLayerEnvSampleRadiance(
   return envRadiance(wi) * max(payload.envMapIntensity, 0.0) * brdf;
 }
 
+fn oitFiniteVec3(value: vec3f) -> bool {
+  return all(value == value) &&
+    all(abs(value) <= vec3f(3.402823466e38));
+}
+
+// The 24-bit hash maps xi.x to [0, 1 - 2^-24], so cosine sampling has
+// cos(theta) >= 2^-12 and pdf >= INV_PI/4096. Keep that proven lower bound
+// despite basis-roundoff, reject non-finite inputs, and cap to the largest
+// finite rgba16float value before the storage write. Clamping the numerator
+// before division prevents the division itself from overflowing.
+fn oitBoundedCosineImportanceDivide(numerator: vec3f, pdf: f32) -> vec3f {
+  if (
+    !oitFiniteVec3(numerator) ||
+    !(pdf > 0.0) ||
+    !(pdf <= 3.402823466e38)
+  ) {
+    return vec3f(0.0);
+  }
+  let safePdf = max(pdf, INV_PI / 4096.0);
+  let maxOutput = 65504.0;
+  let boundedNumerator = min(
+    max(numerator, vec3f(0.0)),
+    vec3f(maxOutput * safePdf),
+  );
+  return boundedNumerator / safePdf;
+}
+
 fn oitLayerSkyRadiance(
   payload: RestirDIMaterialPayload,
   normal: vec3f,
@@ -227,8 +254,11 @@ fn oitLayerSkyRadiance(
     oitSamplingHashToF32(seed ^ 0x85ebca6bu),
   );
   let wi = oitCosineHemisphereDir(normal, xi);
-  let pdf = dot(normal, wi) * INV_PI;
-  return oitLayerEnvSampleRadiance(payload, normal, wo, wi) / pdf;
+  let pdf = max(dot(normal, wi), 0.0) * INV_PI;
+  return oitBoundedCosineImportanceDivide(
+    oitLayerEnvSampleRadiance(payload, normal, wo, wi),
+    pdf,
+  );
 }
 
 fn oitLayerAnalyticNEE(

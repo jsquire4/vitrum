@@ -8,7 +8,6 @@ function flags(traceTier: 'full' | 'lite'): PtWebgpuCapabilitiesFlags {
     maxBouncesLimit: 8,
     bdpt: false,
     restirPtReuse: false,
-    restirPtBiasedWeightClamp: false,
     sampling: 'pcg',
     bvhTraversal: 'binary',
     causticStrategy: 'none',

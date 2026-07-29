@@ -14,8 +14,8 @@ import type {
 import { asBackendTexture, resolveFrameCameraPosition } from '@vitrum/core';
 import { TONEMAP_MODE_INDEX } from '@vitrum/shared-samplers';
 import type { DDGI } from './ddgi/DDGI.js';
+import type { DDGILight } from './ddgi/types.js';
 import { packDDGIGridParams } from './ddgi/ddgiGridUbo.js';
-import { coreEmittersToDDGILights, orientDdgiSunLights } from './coreEmittersToDDGILights.js';
 import { propagateBvhToGiSubsystems } from './HybridEngineGiPropagation.js';
 import type { RCSubsystem } from './HybridEngineRC.js';
 import type { Tunables } from './HybridEngineTuning.js';
@@ -153,7 +153,13 @@ interface HybridEngineFrameDiag {
  *  `_lightingSnapshot()` rather than one per dependency builder. */
 export interface HybridLightingDeps {
   primaryLightDir: [number, number, number];
+  /** Present only after an explicit host updateLighting(primaryLightDir).
+   *  Undefined means scene directional emitters retain authored directions. */
+  primaryLightDirOverride?: readonly [number, number, number];
   primaryLightIntensity: number;
+  /** Canonical ctor+scene DDGI light merge, including host fixtures and the
+   *  scene-wins sun de-duplication policy. RC consumes this exact list. */
+  ddgiLights: readonly DDGILight[];
   skyTint: [number, number, number];
   skyIrradiance: number;
 }
@@ -172,17 +178,9 @@ export interface HybridDenoiserFilterDeps {
    *  {@link Tunables} table) because it is a derived bitfield, not a
    *  host-overridable scalar tunable. */
   stainedGlassFlags: number;
-  /** GRIS DDGI-proxy reconnection-shift reuse gate (0 = legacy reuse, 1 =
-   *  bounded GRIS DDGI-proxy shift + visibility + all-technique transformed-density MIS). Splatted into
-   *  pipeline.renderFrame as `grisReuse` for the UBO. NOTE: the GI pipeline
-   *  STRUCTURE (the @group(1) scene group + GRIS shader) is gated at COMPILE
-   *  time in `pipeline.initialize` — this per-frame number only drives the UBO
-   *  field (telemetry/consistency). Lives in this cluster for the same
-   *  derived-gate (not scalar tunable) reason as `stainedGlassFlags`. */
-  grisReuse: number;
   /** NRC (Müller et al. 2021) cache flag (0 = off / verbatim DDGI suffix, 1 =
    *  on). Splatted into pipeline.renderFrame as `nrcEnabled`. Same derived-gate
-   *  cluster rationale as `grisReuse`. The load-bearing gate is compile-time
+   *  cluster rationale as `stainedGlassFlags`. The load-bearing gate is compile-time
    *  (the risGiNrc variant); when ON the suffix cache-query + training are live. */
   nrcEnabled: number;
 }
@@ -252,6 +250,10 @@ interface HybridEngineFrameFlags {
   state: EngineState;
   debug: boolean;
   ddgiOn: boolean;
+  /** Construction-time structural cap for the per-frame quality.bounces
+   *  override. Walkaround maps the resolved value onto DDGI's only meaningful
+   *  bounce regimes: 1 = direct-only probes, >=2 = indirect feedback. */
+  maxBounces: number;
   isLayerEnabled: (layer: HybridRenderLayer) => boolean;
   device: GPUDevice;
   tunables: Tunables;
@@ -276,7 +278,7 @@ export interface HybridEngineFrameDeps {
   subsystems: HybridEngineFrameSubsystems;
   /** Runtime-mutable lighting cluster (mutated by `updateLighting()`). */
   lighting: HybridLightingDeps;
-  /** Denoiser filter parameters and stained-glass/NRC/GRIS gates. */
+  /** Denoiser filter parameters and stained-glass/NRC gates. */
   filter: HybridDenoiserFilterDeps;
   /** Telemetry subscribers, debug timings, and debug surface. */
   telemetry: HybridEngineFrameTelemetry;
@@ -458,13 +460,7 @@ function dispatchRcAndSetInputs(
     // array changes). Forward the same DDGILight list that DDGI uses so RC and
     // DDGI always agree on the fixture set. Null scene → empty list.
     const scene = deps.subsystems.lastScene;
-    const ddgiLights = scene == null
-      ? []
-      : orientDdgiSunLights(
-          coreEmittersToDDGILights(scene),
-          deps.lighting.primaryLightDir,
-        );
-    deps.subsystems.rc.updateLights(ddgiLights);
+    deps.subsystems.rc.updateLights(deps.lighting.ddgiLights);
 
     // A7/H24: chromatic sun from the scene directional emitter. Scene
     // directional emitters are the physical source of truth for GI suns (same
@@ -559,6 +555,12 @@ function runDdgiAndRc(deps: HybridEngineFrameDeps, input: FrameInput): void {
   });
 
   if (ddgiLayerOn) {
+    const requestedBounces = input.quality?.bounces ?? deps.flags.maxBounces;
+    const activeBounces = Math.min(
+      deps.flags.maxBounces,
+      Math.max(1, requestedBounces),
+    );
+    deps.subsystems.ddgi.setIndirectFeedback(activeBounces >= 2);
     deps.subsystems.ddgi.setSkyParams?.(deps.lighting.skyTint, deps.lighting.skyIrradiance);
     void deps.subsystems.ddgi.updateFrame({
       ...(coreScene != null ? { coreScene } : {}),
@@ -877,7 +879,6 @@ export function runHybridEngineFrame(
       restirGiSpatialRadiusPx:   deps.flags.tunables.restirGiSpatialRadiusPx,
       restirGiSpatialNormalDotMin: deps.flags.tunables.restirGiSpatialNormalDotMin,
       restirGiSpatialCoplanarTol: deps.flags.tunables.restirGiSpatialCoplanarTol,
-      grisReuse:             deps.filter.grisReuse,
     },
     gtao: {
       gtaoRadiusPx:                deps.flags.tunables.gtaoRadiusPx,

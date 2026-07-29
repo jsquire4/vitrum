@@ -85,6 +85,11 @@ class FailureDevice {
     this.destroyFailureIndex = config.destroyFailureIndex ?? null;
 
     this.device = {
+      limits: {
+        maxBufferSize: 0xffff_ffff,
+        maxStorageBufferBindingSize: 0xffff_ffff,
+        maxComputeWorkgroupsPerDimension: 0xffff_ffff,
+      },
       queue: {
         writeBuffer: () => {
           this.hit('writeBuffer');
@@ -194,7 +199,28 @@ function frame(): FrameInput {
 
 function scene(): Scene {
   return {
-    primitives: [],
+    primitives: [{
+      kind: 'mesh',
+      id: 'emitter',
+      positions: new Float32Array([
+        -1, -1, -1,
+        1, -1, -1,
+        0, 1, -1,
+      ]),
+      normals: new Float32Array([
+        0, 0, 1,
+        0, 0, 1,
+        0, 0, 1,
+      ]),
+      indices: new Uint32Array([0, 1, 2]),
+      material: {
+        baseColor: [0, 0, 0],
+        roughness: 1,
+        metallic: 0,
+        shadingModel: 'unlit',
+        emissive: [1, 1, 1],
+      },
+    }],
     emitters: [],
     environment: { kind: 'none' },
   };
@@ -207,15 +233,21 @@ function request(): AdjointGradientRequest {
     channels: 3,
     samples: 1,
     dLoss_dRendered: new Float32Array([0, 0, 0]),
-    params: [],
-    gradientLength: 1,
+    params: [{
+      domain: 'materials',
+      id: 'emitter',
+      field: 'emissive',
+      offset: 0,
+      length: 3,
+    }],
+    gradientLength: 3,
   };
 }
 
 function uploaded(stub: FailureDevice): UploadedSceneBuffers {
   const buffer = () => stub.makeBorrowedBuffer();
   return {
-    triangleCount: 0,
+    triangleCount: 1,
     pointLightCount: 0,
     rectAreaLightCount: 0,
     directionalLightCount: 0,
@@ -256,8 +288,8 @@ async function invoke(stub: FailureDevice): Promise<Float32Array> {
     uploaded(stub),
     frame(),
     scene(),
-    new Set(),
-    () => null,
+    () => 0,
+    true,
   );
 }
 
@@ -316,7 +348,7 @@ describe('AdjointPass transient lifetime', () => {
 
   it('unmaps readback and destroys every owned buffer after successful decoding', async () => {
     const stub = new FailureDevice();
-    await expect(invoke(stub)).resolves.toEqual(new Float32Array([0]));
+    await expect(invoke(stub)).resolves.toEqual(new Float32Array([0, 0, 0]));
     expectOwnedBuffersDestroyed(stub);
     expect(stub.ownedBuffers.at(-1)?.unmapCalls).toBe(1);
   });

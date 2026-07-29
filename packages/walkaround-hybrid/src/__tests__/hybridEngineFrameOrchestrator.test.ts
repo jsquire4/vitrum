@@ -2,6 +2,10 @@ import { describe, expect, it } from 'vitest';
 import type { FrameInput, Scene } from '@vitrum/core';
 import type { DDGILight } from '../ddgi/types.js';
 import {
+  coreEmittersToDDGILights,
+  orientDdgiSunLights,
+} from '../coreEmittersToDDGILights.js';
+import {
   fingerprintHybridPipelineRebuildKey,
   HYBRID_FRAME_SKIP_OUTPUT,
   RESOLUTION_FACTOR_DEBOUNCE_MS,
@@ -195,6 +199,7 @@ function makeRcFrameDeps(args: {
   scene: Scene | null;
   primaryLightIntensity: number;
   primaryLightDir?: readonly [number, number, number];
+  primaryLightDirOverride?: readonly [number, number, number];
   capture: {
     sunColor: readonly [number, number, number] | null;
     sunCastShadowDisabled?: boolean | null;
@@ -310,16 +315,26 @@ function makeRcFrameDeps(args: {
     },
     lighting: {
       primaryLightDir: [...(args.primaryLightDir ?? [0, -1, 0])] as [number, number, number],
+      ...(args.primaryLightDirOverride != null
+        ? { primaryLightDirOverride: args.primaryLightDirOverride }
+        : {}),
       primaryLightIntensity: args.primaryLightIntensity,
       skyTint: args.skyTint ?? [1, 1, 1],
       skyIrradiance: args.skyIrradiance ?? 1,
+      ddgiLights: args.scene == null
+        ? []
+        : args.primaryLightDirOverride == null
+          ? coreEmittersToDDGILights(args.scene)
+          : orientDdgiSunLights(
+              coreEmittersToDDGILights(args.scene),
+              args.primaryLightDirOverride,
+            ),
     },
     filter: {
       indirectFireflyClamp: [1, 1, 1],
       atrousDirectSigmas: [128, 5, 0.05],
       atrousIndirectSigmas: [32, 20, 0.5],
       stainedGlassFlags: 0,
-      grisReuse: 0,
       nrcEnabled: 0,
     },
     telemetry: {
@@ -346,6 +361,7 @@ function makeRcFrameDeps(args: {
       ddgiOn: false,
       isLayerEnabled: () => false,
       device: {} as GPUDevice,
+      maxBounces: 4,
       tunables: {
         emitterDist2Floor: 0.01,
         directFireflyClamp: 4,
@@ -375,7 +391,7 @@ function makeRcFrameDeps(args: {
 }
 
 describe('HybridEngineFrameOrchestrator — RC sun input', () => {
-  it('orients every RC sun to the runtime primary direction and clears stale lights', () => {
+  it('preserves scene RC sun directions until a runtime host override is active', () => {
     const capture = {
       sunColor: null as readonly [number, number, number] | null,
       lights: undefined as readonly DDGILight[] | undefined,
@@ -393,6 +409,21 @@ describe('HybridEngineFrameOrchestrator — RC sun input', () => {
       FRAME_INPUT,
     );
     expect(capture.lights).toHaveLength(2);
+    expect(capture.lights?.map((light) => light.direction)).toEqual([
+      { x: -0, y: -1, z: -0 },
+      { x: -0, y: -0, z: -1 },
+    ]);
+
+    runHybridEngineFrame(
+      makeRcFrameDeps({
+        scene,
+        primaryLightDir: [1, 0, 0],
+        primaryLightDirOverride: [1, 0, 0],
+        primaryLightIntensity: 1,
+        capture,
+      }),
+      FRAME_INPUT,
+    );
     expect(capture.lights?.map((light) => light.direction)).toEqual([
       { x: -1, y: -0, z: -0 },
       { x: -1, y: -0, z: -0 },

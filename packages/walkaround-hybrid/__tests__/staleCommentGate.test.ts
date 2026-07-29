@@ -10,14 +10,16 @@ function readWorkspace(relative: string): string {
 }
 
 describe('Road D5 stale-comment gates', () => {
-  it('documents GRIS reservoir cache fields as live reuse inputs', () => {
+  it('documents generalized reservoir metadata as live reuse inputs', () => {
     const frameResources = readSource('pipeline/frameResources/createRestirGIFrameResources.ts');
     const resourceManager = readSource('pipeline/resourceManager.ts');
 
     expect(frameResources).not.toContain('written-but-unread');
     expect(frameResources).not.toContain('will read');
-    expect(frameResources).toContain('read by the GRIS reuse');
-    expect(resourceManager).toContain('READ by the GRIS reuse variants');
+    expect(frameResources).toContain('sole live 28-u32 generalized-reuse ABI');
+    expect(frameResources).toContain('canonical temporal/spatial');
+    expect(resourceManager).toContain('generalized reconnection-shift metadata');
+    expect(resourceManager).toContain('read by temporal/spatial passes and shade');
   });
 
   it('keeps RC cascade dispatch verification status current', () => {
@@ -51,5 +53,19 @@ describe('Road D5 stale-comment gates', () => {
     expect(nrcSubsystem).not.toContain('checking whether the first');
     expect(nrcSubsystem).toContain('const unpacked = unpackRecords(');
     expect(nrcSubsystem).toContain('if (unpacked.filled === 0) return;');
+  });
+
+  it('does not retain the retired GRIS selector or draft G-buffer bindings', () => {
+    const pipeline = readSource('pipeline/WalkaroundGPUPipeline.ts');
+    const temporalPass = readSource('pipeline/passes/TemporalGIReservoirPass.ts');
+    const spatialPass = readSource('pipeline/passes/SpatialGIReservoirPass.ts');
+    const bindingTable = readSource('pipeline/bindGroupDescriptors.ts');
+
+    expect(pipeline).not.toContain('_grisReuseStructural');
+    expect(temporalPass).not.toContain('_grisEnabled');
+    expect(spatialPass).not.toContain('_grisEnabled');
+    expect(spatialPass).not.toContain('GRIS gate');
+    expect(bindingTable).not.toContain('gDepth/gNormal/gAlbedo/gRough/motionVec');
+    expect(bindingTable).toContain('frame layout intentionally begins at binding 5');
   });
 });

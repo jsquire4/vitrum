@@ -5,8 +5,9 @@ import { createPTEngine_WebGL2 } from '../index.js';
 import { buildSceneTextures } from '../scene/uploadSceneTextures.js';
 import { createMockGl } from '../__tests__/mockGl.js';
 import { createNeeCandidateTarget, createRenderTarget } from './framebuffer.js';
-import { GlResources } from './glResources.js';
-import { DEFAULT_TRACE_FEATURES } from '../featureTypes.js';
+import { GlResources, programGraphKey } from './glResources.js';
+import { DEFAULT_TRACE_FEATURES, featureDefines } from '../featureTypes.js';
+import { FLOAT16_HALF_MIN_SUBNORMAL } from '../scene/halfFloat.js';
 
 function triangleScene(id = 'triangle'): Scene {
   return {
@@ -37,6 +38,39 @@ function triangleScene(id = 'triangle'): Scene {
 }
 
 describe('pt-webgl2 transactional framebuffer allocation', () => {
+  it('retains compiler-visible shader dimensions in the relink key', () => {
+    const key = programGraphKey(DEFAULT_TRACE_FEATURES);
+    for (const changed of [
+      { bdpt: true },
+      { dof: true },
+      { fog: true },
+      { randomType: 1 as const },
+      { basicMaterials: true, mappedRichMaterials: false },
+    ]) {
+      expect(programGraphKey({ ...DEFAULT_TRACE_FEATURES, ...changed })).not.toBe(key);
+    }
+  });
+
+  it('does not retain fixed or unreachable fork flags as relink dimensions', () => {
+    for (const field of [
+      'mis',
+      'russianRoulette',
+      'backgroundMap',
+      'debugMode',
+      'stainedGlassPerturbation',
+      'pathStepLimit',
+    ]) {
+      expect(DEFAULT_TRACE_FEATURES).not.toHaveProperty(field);
+    }
+    const defines = featureDefines(DEFAULT_TRACE_FEATURES);
+    expect(defines.FEATURE_MIS).toBe(1);
+    expect(defines.FEATURE_RUSSIAN_ROULETTE).toBe(1);
+    expect(defines).not.toHaveProperty('FEATURE_BACKGROUND_MAP');
+    expect(defines).not.toHaveProperty('FEATURE_STAINED_GLASS_SHADOW_NORMAL_PERTURBATION');
+    expect(defines).not.toHaveProperty('DEBUG_MODE');
+    expect(defines).not.toHaveProperty('RANDOM_TYPE');
+  });
+
   it('keeps a parallel-compiling pass graph private until every program is ready', () => {
     const gl = createMockGl();
     const completionStatus = 0x91b1;
@@ -57,7 +91,7 @@ describe('pt-webgl2 transactional framebuffer allocation', () => {
 
     complete = true;
     expect(resources.ensureProgram(DEFAULT_TRACE_FEATURES)).toBe(true);
-    expect(resources.ptProgram?.program).not.toBeNull();
+    expect(resources.ptProgram).not.toBeNull();
     resources.dispose();
   });
 
@@ -216,6 +250,97 @@ describe('pt-webgl2 transactional scene texture upload', () => {
     expect(() => buildSceneTextures(gl, rejected, capabilities)).toThrow(
       /emissiveMap without complete CPU-readable texels/,
     );
+    expect(createTexture).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [
+      'a mapped level-0 value that underflows RGBA16F',
+      {
+        emissive: [1, 1, 1],
+        emissiveIntensity: 1,
+        emissiveMap: {
+          handle: {
+            width: 1,
+            height: 1,
+            data: new Float32Array([FLOAT16_HALF_MIN_SUBNORMAL, 0, 0, 1]),
+            __vitrum_hint__: {
+              channels: 4,
+              dataType: 'float32',
+              colorSpace: 'linear',
+            },
+          },
+        },
+      },
+      /underflows to \+0 in RGBA16F storage/,
+    ],
+    [
+      'a positive emissive operand that underflows its RGBA32F material slot',
+      {
+        emissive: [2 ** -150, 0, 0],
+        emissiveIntensity: 2 ** 100,
+        emissiveMap: {
+          handle: {
+            width: 1,
+            height: 1,
+            data: new Uint8Array([128, 0, 0, 255]),
+            __vitrum_hint__: {
+              channels: 4,
+              dataType: 'uint8',
+            },
+          },
+        },
+      },
+      /emissive\[0\] underflows material RGBA32F storage/,
+    ],
+    [
+      'negative mapped outgoing radiance',
+      {
+        emissive: [1, 1, 1],
+        emissiveIntensity: 1,
+        emissiveMap: {
+          handle: {
+            width: 1,
+            height: 1,
+            data: new Float32Array([-(2 ** -24), 1, 1, 1]),
+            __vitrum_hint__: {
+              channels: 4,
+              dataType: 'float32',
+              colorSpace: 'linear',
+            },
+          },
+        },
+      },
+      /outgoing-radiance RGB value .* must be non-negative/,
+    ],
+  ])('rejects %s before allocating any GL texture', (_label, materialPatch, message) => {
+    const gl = createMockGl();
+    const originalCreateTexture = gl.createTexture.bind(gl);
+    const createTexture = vi.fn(() => originalCreateTexture());
+    (gl as unknown as { createTexture: typeof createTexture }).createTexture = createTexture;
+    const scene = triangleScene('precision-reject');
+    const primitive = scene.primitives[0];
+    if (primitive?.kind !== 'mesh') throw new Error('test fixture must be a mesh');
+    const rejected: Scene = {
+      ...scene,
+      primitives: [{
+        ...primitive,
+        material: {
+          ...primitive.material,
+          ...materialPatch,
+        } as never,
+      }],
+    };
+    const capabilities = {
+      backend: 'pt-webgl2',
+      sceneSupport: {
+        primitiveKinds: ['mesh'],
+        emitterKinds: [],
+        environmentKinds: ['none'],
+      },
+    } as never;
+
+    expect(() => buildSceneTextures(gl, rejected, capabilities)).toThrow(message);
     expect(createTexture).not.toHaveBeenCalled();
   });
 

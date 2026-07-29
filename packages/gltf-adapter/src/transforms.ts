@@ -79,7 +79,7 @@ export function mat4Invert(
 
   const det =
     b00 * b11 - b01 * b10 + b02 * b09 + b03 * b08 - b04 * b07 + b05 * b06;
-  if (!Number.isFinite(det) || Math.abs(det) < 1e-12) return null;
+  if (!Number.isFinite(det) || det === 0) return null;
   const invDet = 1.0 / det;
 
   chargeMatrixAllocation(resourceLedger, allocationPath);
@@ -100,6 +100,35 @@ export function mat4Invert(
   out[13] = (a00 * b09 - a01 * b07 + a02 * b06) * invDet;
   out[14] = (a31 * b01 - a30 * b03 - a32 * b00) * invDet;
   out[15] = (a20 * b03 - a21 * b01 + a22 * b00) * invDet;
+
+  // A fixed absolute determinant threshold is not scale invariant: a valid
+  // uniform scale(1e-5) has determinant 1e-15 but a perfectly representable
+  // Float32 reciprocal. Validate the reciprocal we will actually publish
+  // instead. The relative term-sum tolerance matches the import preflight's
+  // Float32 reciprocity proof and still rejects ill-conditioned/non-finite
+  // inverses.
+  for (const component of out) {
+    if (!Number.isFinite(component)) return null;
+  }
+  for (const [left, right] of [[m, out], [out, m]] as const) {
+    for (let column = 0; column < 4; column += 1) {
+      for (let row = 0; row < 4; row += 1) {
+        let product = 0;
+        let absoluteTermSum = 0;
+        for (let inner = 0; inner < 4; inner += 1) {
+          const term = (left[inner * 4 + row] ?? 0) *
+            (right[column * 4 + inner] ?? 0);
+          product += term;
+          absoluteTermSum += Math.abs(term);
+        }
+        const expected = row === column ? 1 : 0;
+        const tolerance = 1e-5 * Math.max(1, absoluteTermSum);
+        if (!Number.isFinite(product) || Math.abs(product - expected) > tolerance) {
+          return null;
+        }
+      }
+    }
+  }
   return out;
 }
 

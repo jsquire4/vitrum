@@ -109,16 +109,14 @@ describe('MNEE estimator implementation pins', () => {
     );
   });
 
-  it('uses the joint emitter-selection and conditional-area density exactly once', () => {
+  it('uses the joint emitter-selection and conditional-area density without a dead duplicate', () => {
     expect(PT_WEBGPU_PATH_TRACE_CAUSTIC_WGSL).toContain(
       'let endpointPdf = (1.0 / emitter.area) / areaDet;',
     );
     expect(PT_WEBGPU_PATH_TRACE_CAUSTIC_WGSL).toContain(
       'if (!(endpointPdf > 0.0) || !(endpointPdf < INFINITY))',
     );
-    expect(PT_WEBGPU_PATH_TRACE_CAUSTIC_WGSL).toContain(
-      'log(lengthSelectionPdf) + log(emitter.selectionPdf)',
-    );
+    expect(PT_WEBGPU_PATH_TRACE_CAUSTIC_WGSL).not.toContain('let logMneePdf =');
     expect(PT_WEBGPU_PATH_TRACE_CAUSTIC_WGSL).toContain(
       'pathMeasure = nDotL * emitter.area * areaDet;',
     );

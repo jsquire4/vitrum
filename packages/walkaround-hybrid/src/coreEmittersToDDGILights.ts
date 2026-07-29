@@ -107,6 +107,32 @@ export function orientDdgiSunLights(
   ));
 }
 
+/**
+ * Resolve the first authored scene directional into the normalized
+ * toward-light vector consumed by shade/RC/BVH primary-light paths.
+ *
+ * DDGI keeps every scene sun's individual direction; this helper is only for
+ * consumers whose realtime contract has one primary directional slot.
+ */
+export function scenePrimaryLightDirection(
+  scene: Scene | null,
+): [number, number, number] | null {
+  const emitter = scene?.emitters.find((candidate) => candidate.kind === 'directional');
+  if (emitter == null) return null;
+  const len = Math.hypot(
+    emitter.direction[0],
+    emitter.direction[1],
+    emitter.direction[2],
+  );
+  if (len < 1e-12) return null;
+  const inv = 1 / len;
+  return [
+    emitter.direction[0] * inv,
+    emitter.direction[1] * inv,
+    emitter.direction[2] * inv,
+  ];
+}
+
 /** Project a single core emitter onto a DDGILight, or null if the emitter
  *  kind is not represented as an analytic DDGI light (rect-area, disc-area,
  *  mesh-area) or is degenerate. A `directional` emitter maps to a `sun`

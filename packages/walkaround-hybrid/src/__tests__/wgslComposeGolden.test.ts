@@ -14,10 +14,9 @@
  * These goldens are captured against the PRE-refactor composed output (sha256 +
  * length) and MUST stay green through the refactor.
  *
- * Registry construction mirrors `pipelineCompiler.compilePipelines`: the
- * `reservoirGi` module is overridden per-grisOn (grisCache true/false), and the
- * GI passes are composed with the matching reservoirGi flavour. The NRC gi-ris
- * module is built from a representative config.
+ * Registry construction mirrors `pipelineCompiler.compilePipelines`: the sole
+ * live generalized-reuse reservoir and GI pass roots are composed directly.
+ * The NRC gi-ris module is built from a representative config.
  */
 
 import { createHash } from 'node:crypto';
@@ -25,11 +24,10 @@ import { describe, expect, it } from 'vitest';
 
 import { composeWgsl } from '../pipeline/wgslComposer.js';
 import { WGSL_MODULES } from '../pipeline/wgslModules.js';
-import { buildReservoirGiModule } from '../shaders/reservoirGi.wgsl.js';
 import { RIS_GI_MODULE } from '../shaders/risGi.wgsl.js';
 import { buildRisGiNrcModule, type RisGiNrcConfig } from '../shaders/risGiNrc.wgsl.js';
-import { TEMPORAL_GI_MODULE, TEMPORAL_GI_GRIS_MODULE } from '../shaders/temporalGi.wgsl.js';
-import { SPATIAL_GI_MODULE, SPATIAL_GI_GRIS_MODULE } from '../shaders/spatialGi.wgsl.js';
+import { TEMPORAL_GI_MODULE } from '../shaders/temporalGi.wgsl.js';
+import { SPATIAL_GI_MODULE } from '../shaders/spatialGi.wgsl.js';
 import { SHADE_MODULE } from '../shaders/shade.wgsl.js';
 import { TRANSPARENT_OIT_MODULE } from '../shaders/transparentOit.wgsl.js';
 import { REGIR_MODULE, REGIR_BUILD_MODULE } from '../shaders/regir.wgsl.js';
@@ -46,10 +44,8 @@ const NRC_CFG: RisGiNrcConfig = {
   hidden: 2,
 };
 
-function registryFor(grisOn: boolean): ReadonlyMap<string, WgslModule> {
-  const m = new Map(WGSL_MODULES);
-  m.set('reservoirGi', buildReservoirGiModule({ grisCache: grisOn }));
-  return m;
+function canonicalRegistry(): ReadonlyMap<string, WgslModule> {
+  return new Map(WGSL_MODULES);
 }
 
 function digest(code: string): { sha256: string; length: number } {
@@ -98,40 +94,80 @@ function digest(code: string): { sha256: string; length: number } {
 // created 51/51 pipelines before these intentional bytes were re-pinned.
 // Whitespace hygiene removed 10 nonsemantic trailing-space bytes from the
 // shared NRC suffix after that gate; only the two NRC compositions changed.
+// Default-material energy refresh (2026-07-28): the thin-film F0 marker now
+// occupies disjoint [2,3], reflection eval/sample/pdf share a bounded
+// continuous roughness, and default clearcoat/sheen lobes remain active at
+// authored roughness zero. The shipped walkaround/RC shader gate compiled all
+// 31 compositions before this intentional semantic repin.
+// ReSTIR-DI temporal/spatial closure (2026-07-28): PrimarySurface gained
+// stable correspondence keys, DI reuse gained finite generalized-Talbot
+// helpers with area/environment support accounting, and the temporal/spatial
+// kernels now perform recast rejection and real ping-pong reuse. The shipped
+// walkaround/RC shader gate compiled all 31 compositions before this repin.
+// Extreme-density hardening evaluates the generalized-Talbot denominator with
+// max-normalized log2 terms, preserving ratios when finite M*pHat products
+// exceed f32. The same 31/31 shipped compositions passed the shader gate.
+// Transparent visibility overflow now preserves explicit-transmission
+// ownership, and transparent OIT bounds its cosine-importance division before
+// rgba16float storage. The affected compositions were re-pinned after focused
+// shader and numerical-oracle gates.
+// Generalized-reuse closure (2026-07-28): the compact execution ABI and
+// duplicate OFF/GRIS shader roots were retired, the canonical producer/reuse
+// path now uses complete log-domain transformed-density MIS, and the orphaned
+// scalar-Jacobian module was removed. These goldens pin the sole live roots.
+// ReSTIR-DI overflow-ratio closure (2026-07-28): temporal/spatial reuse now
+// shares a maximum log weight across candidates before weighted-reservoir
+// sampling, preserving relative probability when multiple finite pHat*W
+// products exceed f32. The production shader gate passed before this repin.
+// Primary-visibility source reconciliation then removed shade's stale
+// fallback/G-buffer prose; executable WGSL is unchanged by that comment-only
+// repin.
+// Layered-extension energy closure (2026-07-28): KHR clearcoat now attenuates
+// every lower layer with its authored-normal Fresnel weight, and KHR sheen
+// attenuates the base with the Estevez-Kulla directional-albedo fit before the
+// clearcoat layer is applied. The shader gate compiled 78/78 modules, including
+// all 29 shipped walkaround/RC compositions, before this intentional repin.
+// Tier-1 semantic closure (2026-07-28): GI producer/reuse targets now retain
+// rich receiver lobes, material-atlas F0 obeys KHR_specular's absolute domain,
+// IOR=0 keeps its infinite-IOR meaning, DDGI feedback uses the canonical
+// relocated/visibility-aware sampler, and checkerboard history requires a
+// valid motion payload. The shipped walkaround/RC gate compiled 29/29 roots
+// before this intentional repin.
+// Multi-UV tangent-frame closure (2026-07-28): authored glTF tangents now
+// override the derivative frame only for TEXCOORD_0; maps selecting UV1+
+// retain the frame derived from their exact authored lane. The production
+// shader gate compiled 78/78 modules (29/29 shipped walkaround/RC roots)
+// before this intentional semantic repin.
+// Executable-surface cleanup (2026-07-28): removed unreferenced compatibility
+// GGX evaluators, environment/GRIS/material-atlas wrappers, the duplicated NRC
+// one-blob helper, and the retired compact GI finaliser path. The canonical GI
+// producer/reuse roots and every live rich-material evaluator remain composed.
+// Canonical-GI prose reconciliation (2026-07-28): reservoirGi's obsolete
+// "compact vs GRIS" finalisation comment was updated to describe the sole live
+// generalized-reuse path. This adds exactly 43 comment bytes to every root
+// below; executable WGSL is unchanged.
 const GOLDENS: Record<string, { sha256: string; length: number }> = {
-  'risGi.off': { sha256: '5c5a2dcbf55f1558678eeece027290c089bf7481a08086ef88afb7eb4454a6f5', length: 267228 },
-  'risGi.gris': { sha256: 'a11f917c7ef94b44443ffa767269dc4febbe9a4fc2decaf2e453c40d42b2d295', length: 267701 },
-  'risGiNrc.off': { sha256: '27700174c1499469a6795618c565696b729b162632661c96f8e562ca4e2f3824', length: 315824 },
-  'risGiNrc.gris': { sha256: '0a7f288d4cd9201da88f4651ab2da83cd82b1061f390605018be462c41800d8d', length: 316297 },
-  'temporalGi.off': { sha256: '0ee86f6ea4f1bc504c0dc6bb238c7307a3f1d437c5d0a659374482ed775608c5', length: 191226 },
-  'temporalGi.gris': { sha256: '7f122efca4b7f7a868875c0cf9a51f190570a063d5bd65cf95d5cdb58334daee', length: 226876 },
-  'spatialGi.off': { sha256: '210af3c6fcca83805e12c193a146bd68e8a0115a04842ac0b473b77dcb78826a', length: 189881 },
-  'spatialGi.gris': { sha256: 'f0e30abc585591e3a638b548bc53c23bb96d6613f551b1999b4a0c8916351482', length: 226619 },
-  'shade.off': { sha256: '9e14afbdd4c78531256ca1b53009e6eb2ba5c0aa355c6404399b18d69c0f3d8a', length: 380946 },
-  'shade.gris': { sha256: '797a7adb8c7fe888f7658e473eb068706358b0b0161da37cb56b55478d62fca7', length: 381419 },
-  'transparentOit.off': { sha256: '8e62b4de402234b88469cb3d47b31b315d312feb42b03d2d352edd28486b4ad6', length: 253768 },
-  'regir': { sha256: '8f17da4b79e10934995c7e9ee37212c4b1560c0469bb57b76ae39cf0e951c3c2', length: 135978 },
-  'regirBuild': { sha256: '613d6758efb7f5617f78b4bbc7ed5a1978d5b1e6cef7c3f5972b470a468b9953', length: 135175 },
+  risGi: { sha256: 'cbc0a9dadd9349d8d068da25c34e9100a47a26641a2708e0fec7d97c0ea45b83', length: 263466 },
+  risGiNrc: { sha256: 'c53a5fbabb952589439f3ef33d7794514518720ade055e0691c66f31904177ac', length: 314792 },
+  temporalGi: { sha256: '16beaf9ce227871a395e85e3a4a85c9d0900b4e7f1ae0ec1cfae73890137a4b2', length: 230458 },
+  spatialGi: { sha256: '6c3342acdaed4c8be4d4fe73a6e06c218773b0823427ba383bc869385f172b59', length: 230965 },
+  shade: { sha256: 'f4743596b9f834497be54e250dc7f7eca5f95fbea5a047222b2fecfc7cae4581', length: 386203 },
+  transparentOit: { sha256: '9726b22caf92fcef182128075e9c9a24e11959dfa34464648789e0284c6063b3', length: 258233 },
+  regir: { sha256: '2208cc7a3509a8e705c8013fbf4c7024bf63f9d04760e8915774b50cbce9fe83', length: 138788 },
+  regirBuild: { sha256: '1d56e95eba15a878f92ff0936a67402e0c2002f9654c5bd4f2c5d60e82cdca58', length: 137985 },
 };
 
 interface Case { name: string; code: () => string; }
 
 const CASES: Case[] = [
-  // GI passes are grisOn-sensitive via the reservoirGi override. Both flavours
-  // are composed the way pipelineCompiler emits them.
-  { name: 'risGi.off', code: () => composeWgsl(RIS_GI_MODULE, registryFor(false)) },
-  { name: 'risGi.gris', code: () => composeWgsl(RIS_GI_MODULE, registryFor(true)) },
-  { name: 'risGiNrc.off', code: () => composeWgsl(buildRisGiNrcModule(NRC_CFG), registryFor(false)) },
-  { name: 'risGiNrc.gris', code: () => composeWgsl(buildRisGiNrcModule(NRC_CFG), registryFor(true)) },
-  { name: 'temporalGi.off', code: () => composeWgsl(TEMPORAL_GI_MODULE, registryFor(false)) },
-  { name: 'temporalGi.gris', code: () => composeWgsl(TEMPORAL_GI_GRIS_MODULE, registryFor(true)) },
-  { name: 'spatialGi.off', code: () => composeWgsl(SPATIAL_GI_MODULE, registryFor(false)) },
-  { name: 'spatialGi.gris', code: () => composeWgsl(SPATIAL_GI_GRIS_MODULE, registryFor(true)) },
-  { name: 'shade.off', code: () => composeWgsl(SHADE_MODULE, registryFor(false)) },
-  { name: 'shade.gris', code: () => composeWgsl(SHADE_MODULE, registryFor(true)) },
-  { name: 'transparentOit.off', code: () => composeWgsl(TRANSPARENT_OIT_MODULE, registryFor(false)) },
-  { name: 'regir', code: () => composeWgsl(REGIR_MODULE, registryFor(false)) },
-  { name: 'regirBuild', code: () => composeWgsl(REGIR_BUILD_MODULE, registryFor(false)) },
+  { name: 'risGi', code: () => composeWgsl(RIS_GI_MODULE, canonicalRegistry()) },
+  { name: 'risGiNrc', code: () => composeWgsl(buildRisGiNrcModule(NRC_CFG), canonicalRegistry()) },
+  { name: 'temporalGi', code: () => composeWgsl(TEMPORAL_GI_MODULE, canonicalRegistry()) },
+  { name: 'spatialGi', code: () => composeWgsl(SPATIAL_GI_MODULE, canonicalRegistry()) },
+  { name: 'shade', code: () => composeWgsl(SHADE_MODULE, canonicalRegistry()) },
+  { name: 'transparentOit', code: () => composeWgsl(TRANSPARENT_OIT_MODULE, canonicalRegistry()) },
+  { name: 'regir', code: () => composeWgsl(REGIR_MODULE, canonicalRegistry()) },
+  { name: 'regirBuild', code: () => composeWgsl(REGIR_BUILD_MODULE, canonicalRegistry()) },
 ];
 
 describe('T4 group-A composed-WGSL byte-identity goldens', () => {

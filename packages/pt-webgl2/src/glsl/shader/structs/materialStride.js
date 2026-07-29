@@ -30,7 +30,7 @@ export const MATERIAL_WRAP_TEXEL_OFFSET = 100;
 // these as bare literals (55, 57, …, 98) — the exact stride-drift surface this
 // module exists to eliminate. Each texture-transform occupies 2 texels (mat3
 // rows). Ordering matches the GLSL `readTextureTransform` calls in
-// material_struct.glsl.js (firstTextureTransformIdx + 2k).
+// material_mapped_rich.glsl.ts (firstTextureTransformIdx + 2k).
 
 /** First texture-transform texel — the fork's `firstTextureTransformIdx`. */
 export const MATERIAL_FIRST_TRANSFORM_TEXEL = 55;
@@ -112,7 +112,7 @@ export const MATERIAL_PIXELS = MATERIAL_UV_SELECTOR_TEXEL_OFFSET + MATERIAL_UV_S
 // this bitmask remains stable for older material-record diagnostics/consumers.
 // Bit k set = the k-th map was authored with texCoord 1.
 // Map→bit assignments (must match the packer in materialsTexture.ts AND the
-// GLSL decoder in material_struct.glsl.js — single source here):
+// GLSL decoder in material_mapped_rich.glsl.ts — single source here):
 //   bit 0  = baseColorMap          bit 10 = sheenColorMap
 //   bit 1  = metallicMap           bit 11 = sheenRoughnessMap
 //   bit 2  = roughnessMap          bit 12 = iridescenceMap

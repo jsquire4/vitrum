@@ -5,9 +5,8 @@
  * source pdf) and `ppgPdf.wgsl.ts` (the dTree pdf-eval that the gi-ris loop
  * evaluates for the chosen direction). They pin:
  *
- *   (a) ppg-OFF (α = 0) → diffuse-default receivers reduce algebraically to the
- *       pre-PPG cosine shortcut `luminance(Lo)`. Rich receivers keep the full
- *       receiver-lobe target divided by the cosine source pdf.
+ *   (a) ppg-OFF (α = 0) → the declared diffuse/geometric proxy reduces
+ *       algebraically to the pre-PPG cosine shortcut `luminance(Lo)`.
  *   (b) ppg-ON (α > 0) → the WEIGHT uses the mixture
  *       p_src = α·p_guide + (1−α)·p_cos (not just sampling).
  *   (c) The GPU-port p_guide (sTree descent → dTree flux-proportional pdf)
@@ -415,10 +414,13 @@ describe('W9 gi-ris — WGSL structure pins', () => {
     expect(RIS_GI_WGSL).toContain('let w = pHat / pSrc;');
   });
 
-  it('risGi keeps the receiver-lobe target on the α==0 path', () => {
+  it('risGi keeps the generalized proxy target on the α==0 path', () => {
     expect(RIS_GI_WGSL).toMatch(/} else {\s*\n\s*pSrc = cosTheta \* INV_PI;/);
     expect(RIS_GI_WGSL).toContain('let w = pHat / pSrc;');
-    expect(RIS_GI_WGSL).toContain('restir_gi_receiver_phat_from_payload(');
+    expect(RIS_GI_WGSL).toContain(
+      'pHat = restir_gi_receiver_phat_from_payload(',
+    );
+    expect(RIS_GI_WGSL).toContain(') * candidateVisibility;');
   });
 
   it('risGi requires the ppgPdf module', () => {

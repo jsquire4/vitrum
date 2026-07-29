@@ -1,39 +1,61 @@
 # @vitrum/stained-glass-extensions
 
-Stained-glass-specific contracts and host-app helpers extracted from generic
-vitrum packages.
+Stained-glass-specific renderer contracts and opt-in host-app helpers extracted
+from generic vitrum packages.
 
-This package is a **host-app utility**, not a render backend. It does not
-produce GPU commands. It owns the wire-level contracts and CPU-side packers
-that host applications use when building stained-glass scenes on top of
-`@vitrum/core`.
+This package is not a render backend and does not produce GPU commands. Its
+root export owns the wire-level surface-texture contract consumed by
+`@vitrum/walkaround-hybrid`. The unrelated host-only came UBO ABI is isolated
+behind an explicit subpath so it cannot be mistaken for a vitrum renderer
+binding.
 
 ## Exports
 
 ### `SURFACE_TEXTURE_ID`
 
-Wire-level integer enum for the stained-glass surface texture type stamped
-on scene primitives. Values are GPU-packed into BVH index words and consumed
-by WGSL surface-texture switch statements in `@vitrum/walkaround-hybrid`.
+Wire-level integer enum for the stained-glass surface texture type stored in
+`MaterialSpec.extensions.surfaceTextureId`. Values are GPU-packed into BVH
+index words and consumed by WGSL surface-texture switch statements in
+`@vitrum/walkaround-hybrid`.
 
 **Do not renumber entries** — renumbering silently corrupts rendering. Add new
-entries at the next unused integer.
+entries at the next unused integer. The walkaround ingestion path calls
+`validateSurfaceTextureId`; a defined non-integer or an id outside `0..7`
+throws instead of being silently wrapped through a low-bit mask. An absent
+extension retains the wire default, `smooth`.
 
 ```ts
-import { SURFACE_TEXTURE_ID } from '@vitrum/stained-glass-extensions';
-prim.userData.surfaceTextureId = SURFACE_TEXTURE_ID.waterglass; // → 5
+import {
+  SURFACE_TEXTURE_ID,
+  validateSurfaceTextureId,
+} from '@vitrum/stained-glass-extensions';
+
+material.extensions = {
+  ...material.extensions,
+  surfaceTextureId: validateSurfaceTextureId(SURFACE_TEXTURE_ID.waterglass),
+};
 ```
 
-### `packCameUBO` / `CameSegment` / `CameNode`
+### Host-only subpath: `host-came-ubo`
+
+`packCameUBO`, `CameSegment`, and `CameNode` are available only from
+`@vitrum/stained-glass-extensions/host-came-ubo`.
 
 Packs H-channel came geometry (segments + nodes) into std140-aligned
 `Float32Array` buffers ready for host upload to a shader UBO.
 
 This is a complete host-owned ABI. No vitrum backend implicitly consumes these
-arrays; the host application uploads them to its own shader binding.
+arrays; the host application uploads them to its own shader binding. In
+particular, the live core `h-channel-came` analytic-shape contract is not this
+ABI: it carries one primitive transform plus
+`[length, railWidth, blockHeight, webThickness]`, and has no segment/node UBO
+binding. Converting between a segment graph and analytic primitives is host
+scene-authoring policy, so this package does not invent that conversion.
 
 ```ts
-import { packCameUBO } from '@vitrum/stained-glass-extensions';
+import {
+  packCameUBO,
+} from '@vitrum/stained-glass-extensions/host-came-ubo';
 const { segments, nodes, segmentCount, nodeCount } = packCameUBO(segs, nodes);
 // → upload segments / nodes to your own UBO binding
 ```

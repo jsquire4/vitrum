@@ -265,11 +265,11 @@ fn mneeFacetOpticsAt(
     iridescenceThicknessMax = iridescenceThickness;
     if (iridescenceThickness <= 0.0) { iridescence = 0.0; }
   }
-  var specularColor = clamp(
+  var specularColor = max(
     mat.specularColor * sampleSpecularColorTexture(
       matId, facet.triIndex, baryVW, facet.instanceIndex,
     ),
-    vec3f(0.0), vec3f(1.0),
+    vec3f(0.0),
   );
   let specularIntensity = clamp(
     mat.specularIntensity * sampleSpecularIntensityTexture(
@@ -345,22 +345,20 @@ fn mneeFacetOpticsAt(
   return out;
 }
 
-// Match the production sampler's genuine Dirac reflection domains. Coherent
-// films own a delta R/T/A event distribution. Without a film, only the reflection
-// branch of a smooth transmissive dielectric is delta. Opaque metallic GGX — even
-// at any positive roughness — remains finite measure and is not eligible here.
+// Match the production sampler's genuine Dirac domains. Thin film changes the
+// interface Fresnel but not its measure: only the reflection/refraction branches
+// of a smooth transmissive dielectric are delta. Opaque metallic GGX remains
+// finite measure, including at the shared alpha floor.
 fn mneeFacetHasDeltaReflection(optics: MneeFacetOptics) -> bool {
   if (optics.isUnlit || optics.coverage <= 0.0) { return false; }
-  if (optics.thinFilmEnabled) { return true; }
-  return optics.metallic < 1.0 &&
+  return optics.metallic == 0.0 &&
     optics.transmission > 0.0 &&
     bsdfDielectricIsSmooth(optics.roughness);
 }
 
 fn mneeFacetHasDeltaTransmission(optics: MneeFacetOptics) -> bool {
   if (optics.isUnlit || optics.coverage <= 0.0) { return false; }
-  if (optics.thinFilmEnabled) { return optics.transmission > 0.0; }
-  return optics.metallic < 1.0 &&
+  return optics.metallic == 0.0 &&
     optics.transmission > 0.0 &&
     bsdfDielectricIsSmooth(optics.roughness);
 }
@@ -512,22 +510,18 @@ fn mneeFacetReflectionFactorWithEta(
   heroLambda: f32,
   etaTOverI: f32,
 ) -> vec3f {
-  if (optics.thinFilmEnabled) {
-    let film = ThinFilmInterface(
-      true, optics.matId, optics.thinFilmLayerCount,
-      optics.thinFilmIncidentIor, optics.ior,
-      optics.thinFilmAngleDependent, optics.frontFace,
-      params.spectralEnabled != 0u, heroLambda, optics.transmission,
-    );
-    return optics.coverage *
-      thinFilmTransportRt(film, microfacetCos).reflectance;
-  }
-  return optics.coverage * materialDielectricFresnel(
+  let film = ThinFilmInterface(
+    optics.thinFilmEnabled, optics.matId, optics.thinFilmLayerCount,
+    optics.thinFilmIncidentIor, optics.ior,
+    optics.thinFilmAngleDependent, optics.frontFace,
+    params.spectralEnabled != 0u, heroLambda, optics.transmission,
+  );
+  return optics.coverage * materialDielectricLayeredInterface(
     microfacetCos, etaTOverI,
     optics.iridescence, optics.iridescenceIor,
     optics.iridescenceThicknessMin, optics.iridescenceThicknessMax,
-    optics.specularColor, optics.specularIntensity,
-  );
+    optics.specularColor, optics.specularIntensity, film,
+  ).reflectance;
 }
 
 
@@ -537,24 +531,20 @@ fn mneeFacetTransmissionFactorWithEta(
   heroLambda: f32,
   etaTOverI: f32,
 ) -> vec3f {
-  if (optics.thinFilmEnabled) {
-    let film = ThinFilmInterface(
-      true, optics.matId, optics.thinFilmLayerCount,
-      optics.thinFilmIncidentIor, optics.ior,
-      optics.thinFilmAngleDependent, optics.frontFace,
-      params.spectralEnabled != 0u, heroLambda, optics.transmission,
-    );
-    return optics.coverage * optics.baseColor *
-      thinFilmTransportRt(film, microfacetCos).transmittance;
-  }
-  let fresnel = materialDielectricFresnel(
+  let film = ThinFilmInterface(
+    optics.thinFilmEnabled, optics.matId, optics.thinFilmLayerCount,
+    optics.thinFilmIncidentIor, optics.ior,
+    optics.thinFilmAngleDependent, optics.frontFace,
+    params.spectralEnabled != 0u, heroLambda, optics.transmission,
+  );
+  let interfaceResponse = materialDielectricLayeredInterface(
     microfacetCos, etaTOverI,
     optics.iridescence, optics.iridescenceIor,
     optics.iridescenceThicknessMin, optics.iridescenceThicknessMax,
-    optics.specularColor, optics.specularIntensity,
+    optics.specularColor, optics.specularIntensity, film,
   );
   return optics.coverage * optics.baseColor * optics.transmission *
-    (vec3f(1.0) - fresnel);
+    interfaceResponse.baseTransmittance;
 }
 
 
@@ -941,7 +931,7 @@ fn mneeSampleEmitter(
     if (isDisc) {
       let disc = concentricDiscSample(xi * 2.0 - vec2f(1.0));
       out.position = centerAndShadow.xyz + u * disc.x + v * disc.y;
-      out.area = PI * length(u) * length(v);
+      out.area = PI * length(cross(u, v));
     } else {
       out.position = centerAndShadow.xyz +
         u * (xi.x * 2.0 - 1.0) + v * (xi.y * 2.0 - 1.0);
@@ -1042,6 +1032,7 @@ fn boundedManifoldCaustic(
   specularIntensity: f32,
   anisotropy: f32,
   anisotropyRotation: f32,
+  thinFilm: ThinFilmInterface,
   throughput: vec3f,
   heroLambda: f32,
 ) -> vec3f {
@@ -1287,12 +1278,13 @@ fn boundedManifoldCaustic(
     let wi = safe_normalize(solved.vertices[chainLength - 1u] - hitPos);
     let nDotL = max(dot(normal, wi), 0.0);
     if (nDotL <= 1e-5) { continue; }
-    let fr = evaluateBrdfFullWithClearcoatNormal(
-      baseColor, roughness, metallic, normal, clearcoatNormal, wo, wi,
+    let fr = evaluateFiniteBsdfFullWithClearcoatNormal(
+      baseColor, roughness, metallic, transmission, etaTOverI,
+      normal, clearcoatNormal, wo, wi,
       clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
       iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
       specularColor, specularIntensity,
-      anisotropy, anisotropyRotation,
+      anisotropy, anisotropyRotation, thinFilm, true,
     );
     let emitterFactor = mneeEmitterScalarFactor(
       emitter, solved.vertices[0], pathDistance,
@@ -1310,9 +1302,6 @@ fn boundedManifoldCaustic(
       if (!(emitter.area > 0.0) || !(emitter.area < INFINITY)) { continue; }
       let endpointPdf = (1.0 / emitter.area) / areaDet;
       if (!(endpointPdf > 0.0) || !(endpointPdf < INFINITY)) { continue; }
-      let logMneePdf =
-        log(lengthSelectionPdf) + log(emitter.selectionPdf) +
-        log(max(endpointPdf, bitcast<f32>(0x00800000u))) + logFacetEventPdf;
       // Exact ownership replaces the old one-sided MIS weight: the eye kernel
       // suppresses mesh-emitter hits reached through 1..configuredMax delta
       // events, and BDPT rejects the same bounded all-delta finite-source
@@ -1381,6 +1370,7 @@ fn manifoldNeeContribution(
   specularIntensity: f32,
   anisotropy: f32,
   anisotropyRotation: f32,
+  thinFilm: ThinFilmInterface,
   heroLambda: f32,
   throughput: vec3f,
 ) -> vec3f {
@@ -1393,7 +1383,7 @@ fn manifoldNeeContribution(
     clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
     iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
     specularColor, specularIntensity,
-    anisotropy, anisotropyRotation,
+    anisotropy, anisotropyRotation, thinFilm,
     throughput, heroLambda,
   );
 }
@@ -1430,6 +1420,7 @@ fn photonMapUpdateProgressive(
   roughness: f32,
   metallic: f32,
   transmission: f32,
+  etaTOverI: f32,
   clearcoat: f32,
   clearcoatRoughness: f32,
   sheen: f32,
@@ -1443,6 +1434,7 @@ fn photonMapUpdateProgressive(
   specularIntensity: f32,
   anisotropy: f32,
   anisotropyRotation: f32,
+  thinFilm: ThinFilmInterface,
   throughput: vec3f,
   heroLambda: f32,
   heroPdf: f32,
@@ -1450,11 +1442,11 @@ fn photonMapUpdateProgressive(
 ) {
   sppmUpdateSurfaceProgressive(
     pixelIndex, hitPos, normal, clearcoatNormal, wo,
-    baseColor, roughness, metallic,
+    baseColor, roughness, metallic, transmission, etaTOverI,
     clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
     iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
     specularColor, specularIntensity,
-    anisotropy, anisotropyRotation,
+    anisotropy, anisotropyRotation, thinFilm,
     throughput,
     heroLambda, heroPdf, absorbedFluxInvPdf,
   );

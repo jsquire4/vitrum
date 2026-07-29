@@ -3,7 +3,12 @@
 // These are pure type declarations (no runtime code); featureReport.ts re-exports
 // them so all existing `./featureReport.js` imports keep working.
 
-import type { BackendId, BackendSupportMode, MaterialSpec } from '@vitrum/core';
+import type {
+  BackendId,
+  BackendSupportDetails,
+  BackendSupportMode,
+  MaterialSpec,
+} from '@vitrum/core';
 
 export type GltfResourceKind = 'embedded' | 'bufferView' | 'data-uri' | 'external-uri' | 'missing';
 
@@ -178,6 +183,14 @@ export interface GltfPrimitiveInstancingIssue {
 export interface GltfMaterialFeatureReport {
   readonly count: number;
   readonly materialFields: readonly (keyof MaterialSpec)[];
+  /**
+   * Conditional material combinations present in the selected asset scope.
+   * These names index `BackendSupportDetails.materialProfiles` during backend
+   * compatibility evaluation.
+   */
+  readonly materialProfiles?: readonly (
+    keyof NonNullable<BackendSupportDetails['materialProfiles']>
+  )[];
   readonly textureFields: readonly (keyof MaterialSpec)[];
   readonly samplerPolicies: readonly GltfTextureSamplerPolicyUse[];
   readonly malformedSamplerPolicies: readonly GltfMalformedTextureSamplerPolicyUse[];
@@ -400,7 +413,7 @@ export interface GltfBackendCompatibility {
 
 export type GltfBackendProfileId = BackendId | 'pt-webgpu-lite';
 export type GltfBackendTraceTier = 'full' | 'lite';
-export type GltfBackendPolicy = 'fidelity' | 'realtime' | 'strict' | 'best-effort';
+export type GltfBackendPolicy = 'fidelity' | 'realtime' | 'strict';
 
 export interface AnalyzeGltfAssetOptions {
   readonly textureSourceExtensions?: readonly GltfTextureSourceExtensionName[];

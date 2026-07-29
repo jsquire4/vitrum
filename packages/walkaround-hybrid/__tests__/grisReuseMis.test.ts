@@ -12,14 +12,19 @@ import {
   canonicalResamplingWeight,
   domainToCanonicalJacobian,
   evaluateTechniqueMatrix,
+  finaliseLogScaledReservoirWeight,
   foldAttemptCount,
+  foldClampedAttemptCount,
+  logCanonicalResamplingWeight,
+  logWeightedTransformedDensity,
+  normaliseCanonicalResamplingWeights,
   proxyPHatAt,
   reconnectionGeometryTerm,
   transformedDensity,
   type GrisDomain,
   type GrisSample,
   type Vec3,
-} from '../src/pipeline/grisReuseMis.js';
+} from './oracles/grisReuseMis.js';
 
 function unit(v: Vec3): Vec3 {
   const length = Math.hypot(v[0], v[1], v[2]);
@@ -270,6 +275,21 @@ describe('GRIS transformed technique densities', () => {
     expect(Number.isFinite(matrix.denominator)).toBe(true);
     expect(matrix.weights).toEqual([1]);
   });
+
+  it('preserves unequal extreme technique masses instead of independently capping them', () => {
+    const high = logWeightedTransformedDensity(
+      0xffff_ffff,
+      3.402823466e38,
+      1e-30,
+    );
+    const low = logWeightedTransformedDensity(1, 3.402823466e38, 1e30);
+    const commonScale = Math.max(high, low);
+    const scaled = [2 ** (high - commonScale), 2 ** (low - commonScale)];
+    expect(scaled[0]).toBe(1);
+    expect(scaled[1]).toBeGreaterThanOrEqual(0);
+    expect(scaled[1]).toBeLessThan(1e-50);
+    expect(scaled[0]).not.toBe(scaled[1]);
+  });
 });
 
 describe('GRIS reservoir accounting', () => {
@@ -287,10 +307,93 @@ describe('GRIS reservoir accounting', () => {
     }
   });
 
+  it('folds per-source-clamped confidence without adding or re-clamping the batch', () => {
+    expect(foldClampedAttemptCount([4, 100, 9], 50)).toBe(63);
+    expect(foldClampedAttemptCount([500, 500, 500], 500)).toBe(1500);
+    expect(foldClampedAttemptCount([0xffff_ffff, 0xffff_ffff], 0xffff_ffff))
+      .toBe(0xffff_ffff);
+    expect(() => foldClampedAttemptCount([1], 0)).toThrow(/positive u32/);
+  });
+
   it('applies the source-to-canonical Jacobian exactly once to resampling weight', () => {
     // Hand arithmetic: m * pHatCanonical * Wsource * J = .25*2*3*4 = 6.
     expect(canonicalResamplingWeight(0.25, 2, 3, 4)).toBe(6);
     expect(canonicalResamplingWeight(0.25, 0, 3, 4)).toBe(0);
+  });
+
+  it('places unequal source confidence only in generalized m_i, not again beside the UCW', () => {
+    // Identical environment targets/Jacobians make the generalized balance
+    // masses exactly proportional to represented attempts: m=[1/10, 9/10].
+    const domains: GrisDomain[] = [
+      { xv: [0, 0, 0], nv: [0, 1, 0], attempts: 1 },
+      { xv: [4, 0, -3], nv: [0, 1, 0], attempts: 9 },
+    ];
+    const samples: GrisSample[] = [0, 1].map((nativeDomainIndex) => ({
+      kind: 'environment',
+      direction: [0, 1, 0],
+      Lo: [1, 1, 1],
+      nativeDomainIndex,
+      nativePHat: 1 / Math.PI,
+    }));
+    const sourceUcw = [7, 2] as const;
+    const logWeights = samples.map((sample, index) => {
+      const matrix = evaluateTechniqueMatrix(domains, sample, 0);
+      return logCanonicalResamplingWeight(
+        matrix.weights[index]!,
+        1 / Math.PI,
+        sourceUcw[index]!,
+        1,
+      );
+    });
+    const normalized = normaliseCanonicalResamplingWeights(logWeights).weights;
+
+    // Eq. 7 + UCW: (m1*W1)/(m0*W0) = (0.9*2)/(0.1*7) = 18/7.
+    expect(normalized[1]! / normalized[0]!).toBeCloseTo(18 / 7, 12);
+    // Multiplying source M again would produce an M² ratio of 162/7.
+    expect(normalized[1]! / normalized[0]!).not.toBeCloseTo(162 / 7, 6);
+  });
+
+  it('normalizes WRS with a common scale and caps only the final estimator weight', () => {
+    const logWeights = [
+      logCanonicalResamplingWeight(0.75, 4, 1e30, 2),
+      logCanonicalResamplingWeight(0.25, 4, 1e-20, 2),
+    ];
+    const normalized = normaliseCanonicalResamplingWeights(logWeights);
+    expect(normalized.weights[0]).toBe(1);
+    expect(normalized.weights[1]).toBeGreaterThan(0);
+    expect(normalized.weights[1]).toBeLessThan(1e-45);
+
+    expect(finaliseLogScaledReservoirWeight(
+      normalized.logScale,
+      sum(normalized.weights),
+      4,
+      16,
+    )).toBe(16);
+    expect(finaliseLogScaledReservoirWeight(Math.log2(6), 1.5, 3, 16))
+      .toBeCloseTo(3, 12);
+  });
+
+  it('selects common-scaled candidates with the expected Monte Carlo frequencies', () => {
+    const desired = [1, 0.2, 0.05] as const;
+    const total = sum(desired);
+    const counts = [0, 0, 0];
+    let state = 0x12345678;
+    const draws = 100_000;
+    for (let draw = 0; draw < draws; draw += 1) {
+      state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+      const target = (state / 0x1_0000_0000) * total;
+      let cumulative = 0;
+      for (let index = 0; index < desired.length; index += 1) {
+        cumulative += desired[index]!;
+        if (target < cumulative) {
+          counts[index]! += 1;
+          break;
+        }
+      }
+    }
+    for (let index = 0; index < desired.length; index += 1) {
+      expect(counts[index]! / draws).toBeCloseTo(desired[index]! / total, 2);
+    }
   });
 
   it('does not resurrect an invisible sample through a stored native pHat', () => {

@@ -14,6 +14,7 @@ export type {
   GltfInstancingBinding,
   GltfMaterialBinding,
   GltfMaterialVariantBinding,
+  GltfPunctualEmitterBinding,
   GltfSceneCamera,
   GltfToSceneOptions,
   GltfToSceneResult,
@@ -33,6 +34,7 @@ export type {
 export { loadGltfAndDecodeTextures, loadGltfAsset } from './assetLoader.js';
 export type {
   GltfAssetCache,
+  GltfAssetCacheEntry,
   GltfAssetCacheKey,
   GltfAssetCompatibilityPreflight,
   GltfAssetFetch,

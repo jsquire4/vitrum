@@ -13,6 +13,8 @@ describe('bakePreethamSkyEquirect', () => {
     expect(bake.cdf[0]).toBe(0);
     expect(bake.cdf[bake.cdf.length - 1]).toBe(1);
     expect(Array.from(bake.texels).every(Number.isFinite)).toBe(true);
+    expect(Number.isFinite(bake.luminanceIntegral)).toBe(true);
+    expect(bake.luminanceIntegral).toBeGreaterThan(0);
   });
 
   it('honors zero intensity instead of falling back to the default sky strength', () => {
@@ -24,6 +26,40 @@ describe('bakePreethamSkyEquirect', () => {
 
     expect(total).toBe(0);
     expect(bake.cdf[bake.cdf.length - 1]).toBe(0);
+    expect(bake.luminanceIntegral).toBe(0);
+  });
+
+  it('carries the baked radiance scale into its luminance integral exactly once', () => {
+    const unit = bakePreethamSkyEquirect({
+      width: 32,
+      height: 16,
+      intensity: 1,
+    });
+    const scaled = bakePreethamSkyEquirect({
+      width: 32,
+      height: 16,
+      intensity: 3.5,
+    });
+
+    expect(scaled.luminanceIntegral / unit.luminanceIntegral).toBeCloseTo(
+      3.5,
+      5,
+    );
+  });
+
+  it('builds a normalized CDF for a dim but positive baked sky', () => {
+    const bake = bakePreethamSkyEquirect({
+      width: 32,
+      height: 16,
+      intensity: 1e-20,
+    });
+
+    expect(bake.luminanceIntegral).toBeGreaterThan(0);
+    expect(Array.from(bake.texels).some((value, index) =>
+      index % 4 !== 3 && value > 0
+    )).toBe(true);
+    expect(bake.cdf[0]).toBe(0);
+    expect(bake.cdf[bake.cdf.length - 1]).toBe(1);
   });
 
   it('places the brightest texel near a low-angle sun direction', () => {

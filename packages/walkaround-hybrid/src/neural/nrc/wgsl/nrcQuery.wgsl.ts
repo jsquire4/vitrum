@@ -24,11 +24,10 @@
 // This module + its @group(4) bindings are composed into gi-ris ONLY when the
 // host opts into `nrcEnabled` (a compile-time engine-creation flag). When OFF
 // (the default), the gi-ris pipeline is byte-for-byte the pre-NRC pass — NO
-// @group(4), NO NRC symbols, NO layout delta. This mirrors the GRIS
-// (`grisReuse`) compile-time gate; a runtime-only UBO flag that bound an
-// extra group on the default path is exactly what regressed the default
-// walkaround render to a black frame (f8df9a4). The structure is gated at
-// compile time so the default pipeline is provably untouched.
+// @group(4), NO NRC symbols, NO layout delta. A runtime-only UBO flag that
+// bound an extra group on the default path is exactly what regressed an
+// earlier walkaround render to a black frame (f8df9a4). The structure is
+// gated at compile time so the default pipeline is provably untouched.
 //
 // LAYER PLAN (must match FusedMlpTrainer.planLayers): the raw encoded input is
 // padded to W for the first GEMM, then HIDDEN W→W ReLU layers, then a W→OUT_W
@@ -135,8 +134,6 @@ const NRC_LEVELS    : u32 = ${L}u;
 const NRC_FEAT      : u32 = ${F}u;   // features per hash-grid entry
 const NRC_BLOB_BINS : u32 = ${K}u;
 const NRC_IN_W      : u32 = ${inWidth}u; // raw encoded input width
-const NRC_MAX_LF    : u32 = ${L * F}u;
-const NRC_MAX_BLOB  : u32 = ${K}u;
 const NRC_W         : u32 = ${W}u;       // MLP hidden width (padded input width)
 const NRC_OUT_W     : u32 = ${o.outWidth}u;
 const NRC_WLAYERS   : u32 = ${plan.wlayers}u;

@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import type { MaterialSpec, Scene, ThinFilmLayer } from '@vitrum/core';
 import {
+  ThinFilmNumericError,
   thinFilmRgb,
   thinFilmRtAtWavelength,
 } from '../math/thinFilm.js';
@@ -14,10 +15,21 @@ import {
   MATERIAL_VEC4_STRIDE,
 } from '../scene/materialPacking.js';
 import { assertThinFilmSceneSupported } from '../spectralSceneValidation.js';
-import { PT_WEBGPU_TRACE_WGSL } from '../wgsl/pathTraceBruteforce.wgsl.js';
+import {
+  composeSppmPhotonPassWgsl,
+  PT_WEBGPU_TRACE_WGSL,
+} from '../wgsl/pathTraceBruteforce.wgsl.js';
+import { PT_WEBGPU_TRACE_LITE_WGSL } from '../wgsl/pathTraceBruteforceLite.wgsl.js';
 import { buildPackedScene } from '../scene/uploadSceneBuffers.js';
+import { PT_WEBGPU_BDPT_CONNECTION_WGSL } from '../wgsl/bdpt/bdptConnection.wgsl.js';
 import { PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL } from '../wgsl/bdpt/bdptLightSubpath.wgsl.js';
+import { PT_WEBGPU_PATH_TRACE_BSDF_WGSL } from '../wgsl/pathTrace/bsdf.wgsl.js';
+import {
+  composeRestirPtProducerWgsl,
+  composeRestirPtResolveWgsl,
+} from '../wgsl/pathTrace/restirPtCompose.wgsl.js';
 import { SPPM_PHOTON_PASS_WGSL } from '../wgsl/pathTrace/sppmBindings.wgsl.js';
+import { PT_WEBGPU_PATH_TRACE_MATERIAL_WGSL } from '../wgsl/pathTrace/material.wgsl.js';
 
 const ENGINE_SOURCE = readFileSync(new URL('../index.ts', import.meta.url), 'utf8');
 const MUTATION_ROUTER_SOURCE = readFileSync(
@@ -35,6 +47,37 @@ const dielectricMaterial = (
   ior: 1.52,
   thinFilmStack: { layers },
   ...extra,
+});
+
+describe('thin-film numerical failure contract', () => {
+  it('raises a structured CPU error and absorbs an invalid shader sample', () => {
+    let failure: unknown;
+    try {
+      thinFilmRtAtWavelength({
+        layers: [{ ior: 1.5, thicknessNm: 100 }],
+        incidentIor: 1,
+        substrateIor: 1.5,
+        wavelengthNm: 0,
+        cosTheta: 0.5,
+        angleDependent: true,
+      });
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toBeInstanceOf(ThinFilmNumericError);
+    expect(failure).toMatchObject({
+      name: 'ThinFilmNumericError',
+      code: 'PT_WEBGPU_THIN_FILM_NUMERIC_FAILURE',
+      reason: 'non-finite-response',
+    });
+    expect(PT_WEBGPU_PATH_TRACE_MATERIAL_WGSL).toContain(
+      'return vec3f(0.0, 0.0, 1.0);',
+    );
+    expect(PT_WEBGPU_PATH_TRACE_MATERIAL_WGSL).not.toContain(
+      'if (!tfFinite(r) || !tfFinite(t) || r + t > 1.0001) {\n' +
+      '    return vec3f(1.0, 0.0, 0.0);',
+    );
+  });
 });
 
 function scene(material: MaterialSpec): Scene {
@@ -58,6 +101,32 @@ function bareFresnel(cosI: number, etaI: number, etaT: number): number {
   const rs = (etaI * cosI - etaT * cosT) / (etaI * cosI + etaT * cosT);
   const rp = (etaT * cosI - etaI * cosT) / (etaT * cosI + etaI * cosT);
   return 0.5 * (rs * rs + rp * rp);
+}
+
+function coatedInterfaceChannel(
+  authoredF: number,
+  stackR: number,
+  stackT: number,
+  bareR: number,
+): { reflectance: number; transmittance: number; absorption: number } {
+  const baseF = Math.max(0, Math.min(1, authoredF));
+  const survivingEnergy = Math.max(0, Math.min(1, stackR + stackT));
+  const reflectedWeight = baseF * stackR / Math.max(bareR, 1e-6);
+  const transmittedWeight =
+    (1 - baseF) * stackT / Math.max(1 - bareR, 1e-6);
+  const weightSum = reflectedWeight + transmittedWeight;
+  let reflectedFraction =
+    weightSum > 1e-20 ? reflectedWeight / weightSum : baseF;
+  if (stackT <= 1e-20 && stackR > 1e-20) reflectedFraction = 1;
+  if (stackR <= 1e-20 && stackT > 1e-20) reflectedFraction = 0;
+  const reflectance = survivingEnergy *
+    Math.max(0, Math.min(1, reflectedFraction));
+  const transmittance = survivingEnergy - reflectance;
+  return {
+    reflectance,
+    transmittance,
+    absorption: 1 - survivingEnergy,
+  };
 }
 
 describe('pt-webgpu coherent thin-film production closure', () => {
@@ -139,6 +208,154 @@ describe('pt-webgpu coherent thin-film production closure', () => {
     expect(reverse.reflectance).toBeCloseTo(forward.reflectance, 9);
   });
 
+  it('replaces the bare interface without double counting and preserves all limiting identities', () => {
+    const common = {
+      layers: [
+        { ior: 1.31, thicknessNm: 90 },
+        { ior: 2.05, extinctionCoefficient: 0.07, thicknessNm: 145 },
+      ],
+      incidentIor: 1,
+      substrateIor: 1.52,
+      wavelengthNm: 610,
+      cosTheta: 0.47,
+      angleDependent: true,
+    } as const;
+    const stack = thinFilmRtAtWavelength(common);
+    const bareR = bareFresnel(common.cosTheta, 1, 1.52);
+
+    // Authored Fresnel equal to the physical bare interface must replace that
+    // interface with the complete TMM stack exactly, not add a second boundary.
+    const physical = coatedInterfaceChannel(
+      bareR, stack.reflectance, stack.transmittance, bareR,
+    );
+    expect(physical.reflectance).toBeCloseTo(stack.reflectance, 12);
+    expect(physical.transmittance).toBeCloseTo(stack.transmittance, 12);
+    expect(physical.absorption).toBeCloseTo(stack.absorption, 12);
+
+    // Conversely, a zero-layer stack is just the bare boundary and must leave
+    // arbitrary authored metallic/specular reflectance untouched.
+    const bareStack = thinFilmRtAtWavelength({ ...common, layers: [] });
+    for (const authoredF of [0, 0.02, 0.37, 0.91, 1]) {
+      const uncoated = coatedInterfaceChannel(
+        authoredF,
+        bareStack.reflectance,
+        bareStack.transmittance,
+        bareR,
+      );
+      expect(uncoated.reflectance).toBeCloseTo(authoredF, 12);
+      expect(uncoated.transmittance).toBeCloseTo(1 - authoredF, 12);
+      expect(uncoated.absorption).toBeCloseTo(0, 12);
+    }
+  });
+
+  it('keeps lossy colored lanes bounded and finite through TIR and near-zero bare odds', () => {
+    const rgb = thinFilmRgb({
+      layers: [
+        { ior: 1.28, thicknessNm: 105 },
+        { ior: 2.35, extinctionCoefficient: 0.22, thicknessNm: 260 },
+      ],
+      incidentIor: 1,
+      substrateIor: 1.52,
+      cosTheta: 0.31,
+      angleDependent: true,
+    });
+    const bareR = bareFresnel(0.31, 1, 1.52);
+    for (let lane = 0; lane < 3; lane += 1) {
+      const adjusted = coatedInterfaceChannel(
+        [0.015, 0.44, 0.93][lane]!,
+        rgb.reflectance[lane]!,
+        rgb.transmittance[lane]!,
+        bareR,
+      );
+      expect(Number.isFinite(adjusted.reflectance)).toBe(true);
+      expect(Number.isFinite(adjusted.transmittance)).toBe(true);
+      expect(Number.isFinite(adjusted.absorption)).toBe(true);
+      expect(adjusted.reflectance).toBeGreaterThanOrEqual(0);
+      expect(adjusted.transmittance).toBeGreaterThanOrEqual(0);
+      expect(adjusted.absorption).toBeGreaterThanOrEqual(0);
+      expect(
+        adjusted.reflectance + adjusted.transmittance + adjusted.absorption,
+      ).toBeCloseTo(1, 12);
+    }
+
+    const tir = thinFilmRtAtWavelength({
+      layers: [{ ior: 1.2, thicknessNm: 0 }],
+      incidentIor: 1,
+      substrateIor: 1.52,
+      wavelengthNm: 550,
+      cosTheta: 0.5,
+      angleDependent: true,
+      reverse: true,
+    });
+    for (const authoredF of [0, 1e-12, 0.5, 1]) {
+      const adjusted = coatedInterfaceChannel(
+        authoredF, tir.reflectance, tir.transmittance, 1,
+      );
+      expect(adjusted).toEqual({
+        reflectance: 1,
+        transmittance: 0,
+        absorption: 0,
+      });
+    }
+
+    // Equal endpoint IOR gives bareR=0. A real coating may still reflect; the
+    // denominator floor must keep the authored-odds replacement finite.
+    const equalIorStack = thinFilmRtAtWavelength({
+      layers: [{ ior: 1.8, thicknessNm: 170 }],
+      incidentIor: 1,
+      substrateIor: 1,
+      wavelengthNm: 500,
+      cosTheta: 0.62,
+      angleDependent: true,
+    });
+    const nearZero = coatedInterfaceChannel(
+      0.04,
+      equalIorStack.reflectance,
+      equalIorStack.transmittance,
+      0,
+    );
+    expect(Object.values(nearZero).every(Number.isFinite)).toBe(true);
+    expect(
+      nearZero.reflectance + nearZero.transmittance + nearZero.absorption,
+    ).toBeCloseTo(1, 12);
+  });
+
+  it('preserves the complete TMM response under forward and reverse incidence', () => {
+    const layers = [
+      { ior: 1.31, thicknessNm: 90 },
+      { ior: 2.05, extinctionCoefficient: 0.04, thicknessNm: 145 },
+    ];
+    const cosForward = 0.47;
+    const sinForward = Math.sqrt(1 - cosForward * cosForward);
+    const cosReverse = Math.sqrt(1 - (sinForward / 1.52) ** 2);
+    for (const sample of [
+      {
+        rt: thinFilmRtAtWavelength({
+          layers, incidentIor: 1, substrateIor: 1.52, wavelengthNm: 610,
+          cosTheta: cosForward, angleDependent: true,
+        }),
+        bareR: bareFresnel(cosForward, 1, 1.52),
+      },
+      {
+        rt: thinFilmRtAtWavelength({
+          layers, incidentIor: 1, substrateIor: 1.52, wavelengthNm: 610,
+          cosTheta: cosReverse, angleDependent: true, reverse: true,
+        }),
+        bareR: bareFresnel(cosReverse, 1.52, 1),
+      },
+    ]) {
+      const adjusted = coatedInterfaceChannel(
+        sample.bareR,
+        sample.rt.reflectance,
+        sample.rt.transmittance,
+        sample.bareR,
+      );
+      expect(adjusted.reflectance).toBeCloseTo(sample.rt.reflectance, 11);
+      expect(adjusted.transmittance).toBeCloseTo(sample.rt.transmittance, 11);
+      expect(adjusted.absorption).toBeCloseTo(sample.rt.absorption, 11);
+    }
+  });
+
   it('handles total internal reflection and angleDependent=false', () => {
     const tir = thinFilmRtAtWavelength({
       layers: [{ ior: 1.2, thicknessNm: 0 }],
@@ -193,7 +410,7 @@ describe('pt-webgpu coherent thin-film production closure', () => {
     expect(maxError).toBeLessThan(0.02);
   });
 
-  it('defaults angle dependence on and validates the narrow interface domain', () => {
+  it('defaults angle dependence on and admits every implemented layered-BSDF combination', () => {
     const packed = materialToPackedVec4s(dielectricMaterial([
       { ior: 1.4, thicknessNm: 120 },
     ]));
@@ -227,40 +444,102 @@ describe('pt-webgpu coherent thin-film production closure', () => {
         frontLayer: { transmission: [0.9, 0.8, 0.7] },
       }),
     ]) {
-      expect(() => assertThinFilmSceneSupported(scene(material))).toThrow(
-        /thin-film scene validation/,
-      );
+      expect(() => assertThinFilmSceneSupported(scene(material))).not.toThrow();
     }
   });
 
-  it('routes R/T/A through the central sampler on eye, lite, SPPM and BDPT paths', () => {
+  it('routes the adjusted interface through evaluation, sampling, PDFs, and every composed estimator', () => {
+    const interfaceResponse = PT_WEBGPU_PATH_TRACE_BSDF_WGSL.slice(
+      PT_WEBGPU_PATH_TRACE_BSDF_WGSL.indexOf(
+        'fn bsdfLayeredInterfaceResponse(',
+      ),
+      PT_WEBGPU_PATH_TRACE_BSDF_WGSL.indexOf(
+        'fn materialDielectricLayeredInterface(',
+      ),
+    );
     for (const token of [
-      'let rt = thinFilmTransportRt(thinFilm, abs(dot(wo, normal)));',
-      'result.throughputMul = rt.reflectance / pReflect;',
-      'baseColor * rt.transmittance * etaScale / pTransmit;',
-      'The remainder is physical absorption',
-      'const MATERIAL_VEC4_STRIDE = 29u;',
+      'let filmRt = thinFilmTransportRt(',
+      'let reflectedWeight =',
+      'baseF * filmRt.reflectance / max(bareR, 1e-6);',
+      'baseT * filmRt.transmittance / max(bareT, 1e-6);',
+      'response.reflectance = survivingEnergy * reflectedFraction;',
+      'response.baseTransmittance =',
     ]) {
-      expect(PT_WEBGPU_TRACE_WGSL).toContain(token);
+      expect(interfaceResponse).toContain(token);
     }
+
+    const evaluator = PT_WEBGPU_PATH_TRACE_BSDF_WGSL.slice(
+      PT_WEBGPU_PATH_TRACE_BSDF_WGSL.indexOf(
+        'fn evaluateBrdfFullWithClearcoatNormal(',
+      ),
+      PT_WEBGPU_PATH_TRACE_BSDF_WGSL.indexOf(
+        'fn evaluateFiniteSameSideBrdfFullWithClearcoatNormal(',
+      ),
+    );
+    const eventPdf = PT_WEBGPU_PATH_TRACE_BSDF_WGSL.slice(
+      PT_WEBGPU_PATH_TRACE_BSDF_WGSL.indexOf(
+        'fn bsdfDielectricFiniteEventProbabilities(',
+      ),
+      PT_WEBGPU_PATH_TRACE_BSDF_WGSL.indexOf(
+        'fn brdfFiniteBaseLobeWeights(',
+      ),
+    );
+    const sampler = PT_WEBGPU_PATH_TRACE_BSDF_WGSL.slice(
+      PT_WEBGPU_PATH_TRACE_BSDF_WGSL.indexOf(
+        'fn sampleNextBounceDirectionWithClearcoatNormal(',
+      ),
+      PT_WEBGPU_PATH_TRACE_BSDF_WGSL.indexOf(
+        'fn sampleNextBounceDirection(',
+      ),
+    );
+    expect(evaluator).toContain('bsdfLayeredInterfaceResponse(');
+    expect(eventPdf).toContain('materialDielectricLayeredInterface(');
+    expect(eventPdf).toContain('microfacetInterface.reflectance');
+    expect(eventPdf).toContain('microfacetInterface.baseTransmittance');
+    expect(sampler).toContain('materialDielectricLayeredInterface(');
+    expect(sampler).toContain('microfacetInterface.reflectance');
+    expect(sampler).toContain('microfacetInterface.baseTransmittance');
+
+    const composedShaders = [
+      PT_WEBGPU_TRACE_WGSL,
+      PT_WEBGPU_TRACE_LITE_WGSL,
+      composeSppmPhotonPassWgsl(),
+      composeRestirPtProducerWgsl(),
+      composeRestirPtResolveWgsl(),
+    ];
+    for (const shader of composedShaders) {
+      expect(shader).toContain('fn bsdfLayeredInterfaceResponse(');
+      expect(shader).toContain('fn materialDielectricLayeredInterface(');
+    }
+    expect(PT_WEBGPU_TRACE_WGSL).toContain(
+      'anisoStrength, anisoRotation, thinFilm, false);',
+    );
+    expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain(
+      '0.0, 0.0, thinFilm, false);',
+    );
+    expect(composeSppmPhotonPassWgsl()).toContain(
+      'sampleNextBounceDirectionWithClearcoatNormal(',
+    );
+    expect(composeRestirPtProducerWgsl()).toContain(
+      'rptSourceDirectionalPdfFull(',
+    );
+    expect(composeRestirPtResolveWgsl()).toContain(
+      'let thinFilm = rptThinFilmForDomain(r);',
+    );
     expect(PT_WEBGPU_TRACE_WGSL).not.toContain('thinFilmReflectTint');
     expect(PT_WEBGPU_TRACE_WGSL).not.toContain('layerStrength = clamp(0.12');
     expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain(
-      'let prevThinFilm = ThinFilmInterface(',
+      'let prevThinFilm = prevMat.thinFilm;',
     );
-    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain(
-      'fresnelSchlick(cosOPrev, f0Prev),\n' +
-      '        prevMat.iridescence,\n' +
-      '        prevMat.iridescenceIor,\n' +
-      '        prevMat.iridescenceThicknessMin,\n' +
-      '        prevMat.iridescenceThicknessMax,\n' +
-      '        prevMat.specularColor,\n' +
-      '        prevMat.specularIntensity,\n' +
-      '        prevThinFilm,',
+    expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain(
+      'evalThinFilm.frontFace = !evalThinFilm.frontFace;',
+    );
+    expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain(
+      'specularColor, specularIntensity, evalThinFilm,',
     );
   });
 
-  it('samples RGB R/T/A at scalar energy while preserving colored R/p and T/p expectations', () => {
+  it('samples adjusted RGB R/T at scalar energy while preserving colored expectations and film loss', () => {
     const rt = thinFilmRgb({
       layers: [
         { ior: 1.32, thicknessNm: 95 },
@@ -271,45 +550,67 @@ describe('pt-webgpu coherent thin-film production closure', () => {
       angleDependent: true,
       cosTheta: 0.43,
     });
-    const pReflect = rt.reflectanceEnergy;
-    const pTransmit = rt.transmittanceEnergy;
-    const pAbsorb = 1 - pReflect - pTransmit;
-    expect(Math.max(...rt.reflectance) - Math.min(...rt.reflectance)).toBeGreaterThan(0.01);
-    expect(Math.max(...rt.transmittance) - Math.min(...rt.transmittance)).toBeGreaterThan(0.01);
-    expect(pAbsorb).toBeGreaterThan(0.01);
+    const bareR = bareFresnel(0.43, 1, 1.52);
+    const authored = [0.025, 0.32, 0.78];
+    const adjusted = authored.map((baseF, lane) => coatedInterfaceChannel(
+      baseF,
+      rt.reflectance[lane]!,
+      rt.transmittance[lane]!,
+      bareR,
+    ));
+    const luminance = (values: readonly number[]) =>
+      values[0]! * 0.2126 + values[1]! * 0.7152 + values[2]! * 0.0722;
+    const reflected = adjusted.map((lane) => lane.reflectance);
+    const transmitted = adjusted.map((lane) => lane.transmittance);
+    const reflectedEnergy = luminance(reflected);
+    const transmittedEnergy = luminance(transmitted);
+    const proposalNorm = reflectedEnergy + transmittedEnergy;
+    const pReflect = reflectedEnergy / proposalNorm;
+    const pTransmit = transmittedEnergy / proposalNorm;
+    expect(Math.max(...reflected) - Math.min(...reflected)).toBeGreaterThan(0.01);
+    expect(Math.max(...transmitted) - Math.min(...transmitted)).toBeGreaterThan(0.01);
+    expect(adjusted.some((lane) => lane.absorption > 0.01)).toBe(true);
 
     const sampleCount = 100_000;
-    let reflected = 0;
-    let transmitted = 0;
-    let absorbed = 0;
+    let reflectedCount = 0;
+    let transmittedCount = 0;
     const reflectedMean = [0, 0, 0];
     const transmittedMean = [0, 0, 0];
     for (let sample = 0; sample < sampleCount; sample += 1) {
       const xi = (sample + 0.5) / sampleCount;
       if (xi < pReflect) {
-        reflected += 1;
+        reflectedCount += 1;
         for (let lane = 0; lane < 3; lane += 1) {
-          reflectedMean[lane] = reflectedMean[lane]! + rt.reflectance[lane]! / pReflect;
-        }
-      } else if (xi < pReflect + pTransmit) {
-        transmitted += 1;
-        for (let lane = 0; lane < 3; lane += 1) {
-          transmittedMean[lane] = transmittedMean[lane]! + rt.transmittance[lane]! / pTransmit;
+          reflectedMean[lane] =
+            reflectedMean[lane]! + reflected[lane]! / pReflect;
         }
       } else {
-        absorbed += 1;
+        transmittedCount += 1;
+        for (let lane = 0; lane < 3; lane += 1) {
+          transmittedMean[lane] =
+            transmittedMean[lane]! + transmitted[lane]! / pTransmit;
+        }
       }
     }
-    expect(reflected / sampleCount).toBeCloseTo(pReflect, 4);
-    expect(transmitted / sampleCount).toBeCloseTo(pTransmit, 4);
-    expect(absorbed / sampleCount).toBeCloseTo(pAbsorb, 4);
+    expect(reflectedCount / sampleCount).toBeCloseTo(pReflect, 4);
+    expect(transmittedCount / sampleCount).toBeCloseTo(pTransmit, 4);
     for (let lane = 0; lane < 3; lane += 1) {
-      expect(reflectedMean[lane]! / sampleCount).toBeCloseTo(rt.reflectance[lane]!, 4);
-      expect(transmittedMean[lane]! / sampleCount).toBeCloseTo(rt.transmittance[lane]!, 4);
+      expect(reflectedMean[lane]! / sampleCount).toBeCloseTo(
+        reflected[lane]!,
+        4,
+      );
+      expect(transmittedMean[lane]! / sampleCount).toBeCloseTo(
+        transmitted[lane]!,
+        4,
+      );
+      expect(
+        reflectedMean[lane]! / sampleCount +
+          transmittedMean[lane]! / sampleCount,
+      ).toBeCloseTo(1 - adjusted[lane]!.absorption, 4);
     }
   });
 
-  it('gates coherent transmission without changing reflection or T-over-p throughput', () => {
+  it('applies KHR transmission after the optical stack without excluding finite estimators', () => {
     const raw = {
       reflectance: [0.08, 0.12, 0.2] as const,
       transmittance: [0.71, 0.63, 0.49] as const,
@@ -350,12 +651,24 @@ describe('pt-webgpu coherent thin-film production closure', () => {
     expect(SPPM_PHOTON_PASS_WGSL).toContain(
       'frontFace, params.spectralEnabled != 0u, photonHeroLambda, transmission,',
     );
+    expect(PT_WEBGPU_PATH_TRACE_BSDF_WGSL).toContain(
+      'opticalFilm.transmissionScale = 1.0;',
+    );
+    expect(PT_WEBGPU_PATH_TRACE_BSDF_WGSL).toContain(
+      'baseColor * clamp(transmission, 0.0, 1.0) * ft *',
+    );
+    expect(PT_WEBGPU_PATH_TRACE_BSDF_WGSL).toContain(
+      'sheenAttenuation * clearcoatAttenuation;',
+    );
+    expect(PT_WEBGPU_TRACE_WGSL).not.toContain(
+      'if (optics.thinFilmEnabled)',
+    );
     expect(PT_WEBGPU_TRACE_WGSL).toContain(
-      'if (optics.thinFilmEnabled) { return optics.transmission > 0.0; }',
+      'let mneeDeltaEvent = bs.sampledIsDelta && bs.sampledEventPdf > 0.0;',
     );
   });
 
-  it('samples hero-wavelength R/T/A at the exact scalar proposal', () => {
+  it('samples adjusted hero R/T at the exact scalar proposal and retains absorption as lost weight', () => {
     const rt = thinFilmRtAtWavelength({
       layers: [{ ior: 1.8, extinctionCoefficient: 0.11, thicknessNm: 310 }],
       incidentIor: 1,
@@ -364,28 +677,42 @@ describe('pt-webgpu coherent thin-film production closure', () => {
       cosTheta: 0.37,
       angleDependent: true,
     });
+    const adjusted = coatedInterfaceChannel(
+      0.36,
+      rt.reflectance,
+      rt.transmittance,
+      bareFresnel(0.37, 1, 1.52),
+    );
+    const proposalNorm = adjusted.reflectance + adjusted.transmittance;
+    const pReflect = adjusted.reflectance / proposalNorm;
     const sampleCount = 100_000;
-    const boundaries = [rt.reflectance, rt.reflectance + rt.transmittance];
-    const counts = [0, 0, 0];
+    const counts = [0, 0];
     let reflectedEstimator = 0;
     let transmittedEstimator = 0;
     for (let sample = 0; sample < sampleCount; sample += 1) {
       const xi = (sample + 0.5) / sampleCount;
-      if (xi < boundaries[0]!) {
+      if (xi < pReflect) {
         counts[0]! += 1;
-        reflectedEstimator += rt.reflectance / rt.reflectance;
-      } else if (xi < boundaries[1]!) {
-        counts[1]! += 1;
-        transmittedEstimator += rt.transmittance / rt.transmittance;
+        reflectedEstimator += adjusted.reflectance / pReflect;
       } else {
-        counts[2]! += 1;
+        counts[1]! += 1;
+        transmittedEstimator +=
+          adjusted.transmittance / (1 - pReflect);
       }
     }
-    expect(counts[0]! / sampleCount).toBeCloseTo(rt.reflectance, 4);
-    expect(counts[1]! / sampleCount).toBeCloseTo(rt.transmittance, 4);
-    expect(counts[2]! / sampleCount).toBeCloseTo(rt.absorption, 4);
-    expect(reflectedEstimator / sampleCount).toBeCloseTo(rt.reflectance, 4);
-    expect(transmittedEstimator / sampleCount).toBeCloseTo(rt.transmittance, 4);
+    expect(counts[0]! / sampleCount).toBeCloseTo(pReflect, 4);
+    expect(counts[1]! / sampleCount).toBeCloseTo(1 - pReflect, 4);
+    expect(reflectedEstimator / sampleCount).toBeCloseTo(
+      adjusted.reflectance,
+      4,
+    );
+    expect(transmittedEstimator / sampleCount).toBeCloseTo(
+      adjusted.transmittance,
+      4,
+    );
+    expect(
+      (reflectedEstimator + transmittedEstimator) / sampleCount,
+    ).toBeCloseTo(1 - adjusted.absorption, 4);
   });
 
   it('pins eta-mode reciprocity, BDPT reverse delta density, SPPM parity, and deterministic TIR', () => {
@@ -492,6 +819,38 @@ describe('pt-webgpu coherent thin-film production closure', () => {
       'fn materialStorageScalar(scalarIndex: u32) -> f32 {',
     ]) {
       expect(PT_WEBGPU_TRACE_WGSL).toContain(token);
+    }
+  });
+
+  it('fails dark when a published thin-film descriptor or LUT range is corrupt', () => {
+    const material = PT_WEBGPU_PATH_TRACE_MATERIAL_WGSL;
+    const helperStart = material.indexOf('fn thinFilmAbsorbedTransportRt(');
+    const transportStart = material.indexOf('fn thinFilmTransportRt(');
+    expect(helperStart).toBeGreaterThanOrEqual(0);
+    expect(transportStart).toBeGreaterThan(helperStart);
+
+    const helper = material.slice(helperStart, transportStart);
+    expect(helper).toContain('out.reflectance = vec3f(0.0);');
+    expect(helper).toContain('out.transmittance = vec3f(0.0);');
+    expect(helper).toContain('out.reflectanceEnergy = 0.0;');
+    expect(helper).toContain('out.transmittanceEnergy = 0.0;');
+    expect(helper).toContain('out.absorptionEnergy = 1.0;');
+
+    const transport = material.slice(transportStart);
+    const descriptorGuard = transport.slice(
+      transport.indexOf('if (descriptorIndex >= arrayLength(&materials)) {'),
+      transport.indexOf('// The CPU validates this numeric f32'),
+    );
+    const lutGuard = transport.slice(
+      transport.indexOf(
+        'if (lutBaseVec4 == 0u || lutEndScalar > arrayLength(&materials) * 4u) {',
+      ),
+      transport.indexOf('let base0 = lutBaseVec4 * 4u +'),
+    );
+    for (const guard of [descriptorGuard, lutGuard]) {
+      expect(guard).toContain('return thinFilmAbsorbedTransportRt();');
+      expect(guard).not.toContain('vec3f(1.0)');
+      expect(guard).not.toContain('reflectanceEnergy = 1.0');
     }
   });
 });

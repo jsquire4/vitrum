@@ -47,6 +47,7 @@ import { SpatialReservoirPass } from '../src/pipeline/passes/SpatialReservoirPas
 import { ShadePass } from '../src/pipeline/passes/ShadePass.js';
 import { GTAOPass } from '../src/pipeline/passes/GTAOPass.js';
 import { DenoiserAdapterPass } from '../src/pipeline/passes/DenoiserAdapterPass.js';
+import { VarianceTrackerPass } from '../src/pipeline/passes/VarianceTrackerPass.js';
 import { CompositePass } from '../src/pipeline/passes/CompositePass.js';
 import {
   DENOISER_PASS_LABELS,
@@ -233,6 +234,11 @@ function makeCtx(encoder: GPUCommandEncoder): PassDispatchContext {
   };
   const resources = {
     common,
+    restirDI: {
+      reservoirCurrentBuffer: buf('diCurrent', 512),
+      reservoirSpatialBuffer: buf('diSpatial', 512),
+      reservoirPreviousBuffer: buf('diPrevious', 512),
+    },
     gtao: {
       aoHalfTexture: tex('aoHalf'),
       aoFullTexture: tex('aoFull'),
@@ -266,9 +272,14 @@ function makeCtx(encoder: GPUCommandEncoder): PassDispatchContext {
       filter: { atrousIndirectSigmas: [32, 20, 0.5] },
     } as never,
     frameBindGroup: { __tag: 'frameBG' } as unknown as GPUBindGroup,
+    diSpatialReverseFrameBindGroup: { __tag: 'diSpatialReverseBG' } as unknown as GPUBindGroup,
+    diTerminalFrameBindGroup: { __tag: 'diTerminalBG' } as unknown as GPUBindGroup,
+    diTerminalReservoirBuffer: buf('diTerminal'),
+    risGiFrameBindGroup: { __tag: 'risGiFrameBG' } as unknown as GPUBindGroup,
     sceneBindGroup: { __tag: 'sceneBG' } as unknown as GPUBindGroup,
     uboBindGroup: { __tag: 'uboBG' } as unknown as GPUBindGroup,
     hybridLayersBindGroup: { __tag: 'hybridBG' } as unknown as GPUBindGroup,
+    shadeHybridLayersBindGroup: { __tag: 'shadeHybridBG' } as unknown as GPUBindGroup,
     lightTreeBindGroup: { __tag: 'lightTreeBG' } as unknown as GPUBindGroup,
     wgX: 8, wgY: 8,
     wgX16: 4, wgY16: 4,
@@ -339,10 +350,10 @@ describe('Theme-E dispatch equivalence — single-bind-group passes', () => {
 });
 
 describe('Theme-E dispatch equivalence — GI scene-bind routing (#3)', () => {
-  it('TemporalGIReservoirPass: default = slot-0 + receiver-material scene@slot-1, half-res 2x2', () => {
+  it('TemporalGIReservoirPass: slot-0 + receiver-material scene@slot-1, half-res 2x2', () => {
     const { encoder, records } = makeRecordingEncoder();
     const ctx = makeCtx(encoder);
-    new TemporalGIReservoirPass(stubPipeline('giT'), /* grisEnabled */ false).dispatch(ctx);
+    new TemporalGIReservoirPass(stubPipeline('giT')).dispatch(ctx);
     expect(records).toHaveLength(1);
     expect(records[0]!.label).toBe('gi-temporal');
     expect(records[0]!.binds.map((b) => b.slot)).toEqual([0, 1]);
@@ -350,19 +361,10 @@ describe('Theme-E dispatch equivalence — GI scene-bind routing (#3)', () => {
     expect(records[0]!.dims).toEqual([2, 2, 1]);
   });
 
-  it('TemporalGIReservoirPass: GRIS ON = slot-0 + scene@slot-1', () => {
-    const { encoder, records } = makeRecordingEncoder();
-    const ctx = makeCtx(encoder);
-    new TemporalGIReservoirPass(stubPipeline('giT'), /* grisEnabled */ true).dispatch(ctx);
-    expect(records[0]!.binds.map((b) => b.slot)).toEqual([0, 1]);
-    // slot-1 must be the shared scene group.
-    expect((records[0]!.binds[1]!.group as { __tag: string }).__tag).toBe('sceneBG');
-  });
-
   it('SpatialGIReservoirPass (2-pass): two half-res dispatches with scene@slot-1, terminal label gi-spatial-2', () => {
     const { encoder, records } = makeRecordingEncoder();
     const ctx = makeCtx(encoder);
-    new SpatialGIReservoirPass(stubPipeline('giS'), 2, false).dispatch(ctx);
+    new SpatialGIReservoirPass(stubPipeline('giS'), 2).dispatch(ctx);
     expect(records.map((r) => r.label)).toEqual(['gi-spatial-1', 'gi-spatial-2']);
     expect(records.every((r) => r.binds.map((b) => b.slot).join() === '0,1')).toBe(true);
     expect(records.every((r) => (r.binds[1]!.group as { __tag: string }).__tag === 'sceneBG')).toBe(true);
@@ -372,7 +374,7 @@ describe('Theme-E dispatch equivalence — GI scene-bind routing (#3)', () => {
   it('SpatialGIReservoirPass (1-pass): one dispatch labelled gi-spatial-2 + a buffer copy', () => {
     const { encoder, records, copies } = makeRecordingEncoder();
     const ctx = makeCtx(encoder);
-    new SpatialGIReservoirPass(stubPipeline('giS'), 1, false).dispatch(ctx);
+    new SpatialGIReservoirPass(stubPipeline('giS'), 1).dispatch(ctx);
     expect(records).toHaveLength(1);
     expect(records[0]!.label).toBe('gi-spatial-2');
     expect(records[0]!.binds.map((b) => b.slot)).toEqual([0, 1]);
@@ -382,15 +384,6 @@ describe('Theme-E dispatch equivalence — GI scene-bind routing (#3)', () => {
     expect(copies).toEqual([{ kind: 'buffer', size: 512 }]);
   });
 
-  it('SpatialGIReservoirPass (2-pass, GRIS ON): scene group at slot-1 on BOTH dispatches', () => {
-    const { encoder, records } = makeRecordingEncoder();
-    const ctx = makeCtx(encoder);
-    new SpatialGIReservoirPass(stubPipeline('giS'), 2, true).dispatch(ctx);
-    for (const r of records) {
-      expect(r.binds.map((b) => b.slot)).toEqual([0, 1]);
-      expect((r.binds[1]!.group as { __tag: string }).__tag).toBe('sceneBG');
-    }
-  });
 });
 
 describe('Theme-E dispatch equivalence — RISGIPass NRC slot-4 (#3)', () => {
@@ -511,6 +504,8 @@ describe('Theme-E dispatch equivalence — runAtrousChain (#2)', () => {
       resources: ctx.resources,
       gNormalDepthView: ctx.gNormalDepthView,
       isMoving: false,
+      atrousDirectSigmas: [128, 5, 0.05],
+      atrousIndirectSigmas: [32, 20, 0.5],
       wgX16: 4,
       wgY16: 4,
       frameIndex: 3,
@@ -595,6 +590,7 @@ describe('Theme-E ordering safety — composePassLabels == dispatch order (#7)',
     // cb-prefill must be registered so denoiser-adapter's dependency resolves;
     // with denoiserMode='atrous-variance' the pass gates false and is never dispatched.
     reg.register(new CheckerboardPrefillPass(stubPipeline, stubUbo, /* checkerboard */ false));
+    reg.register(new VarianceTrackerPass({ value: 0 }, () => false));
     reg.register(new DenoiserAdapterPass(() => denoiser, () => stubPipeline));
     reg.register(new IndirectTemporalAccumPass(stubPipeline, { value: 0 }));
     reg.register(new AtrousIndirectPass(stubPipeline, stubUbo));
@@ -712,8 +708,10 @@ describe('CheckerboardPrefillPass — pass-order assertion for checkerboard+real
     const labels = composePassLabels(svgfLabels as PassLabel[]);
     const cbIdx = labels.indexOf('cb-prefill');
     expect(cbIdx).toBeGreaterThanOrEqual(0);
-    // The very next label after cb-prefill must be the first svgf-real label.
-    expect(labels[cbIdx + 1]).toBe(svgfLabels[0]);
+    // Every non-atrous-variance mode first updates the shared Welford state,
+    // then dispatches the selected denoiser.
+    expect(labels[cbIdx + 1]).toBe('welford-temporal');
+    expect(labels[cbIdx + 2]).toBe(svgfLabels[0]);
   });
 });
 
@@ -728,6 +726,7 @@ describe('ShadePass + SpatialReservoirPass — checkerboard compacted dispatch',
     expect(records).toHaveLength(1);
     expect(records[0]!.label).toBe('shade');
     expect(records[0]!.binds.map((b) => b.slot)).toEqual([0, 1, 2, 3]);
+    expect(records[0]!.binds[0]!.group).toMatchObject({ __tag: 'diTerminalBG' });
     expect(records[0]!.dims).toEqual([8, 8, 1]);
   });
 
@@ -744,6 +743,7 @@ describe('ShadePass + SpatialReservoirPass — checkerboard compacted dispatch',
     expect(records).toHaveLength(1);
     expect(records[0]!.label).toBe('shade');
     expect(records[0]!.binds.map((b) => b.slot)).toEqual([0, 1, 2, 3]);
+    expect(records[0]!.binds[0]!.group).toMatchObject({ __tag: 'diTerminalBG' });
     expect(records[0]!.dims).toEqual([4, 8, 1]);
     // The compacted X count is strictly less than the OFF full-res X count.
     expect(records[0]!.dims[0]).toBeLessThan(ctx.wgX);
@@ -757,8 +757,13 @@ describe('ShadePass + SpatialReservoirPass — checkerboard compacted dispatch',
   it('SpatialReservoirPass checkerboard OFF: full-res [8,8,1] per label (spatial-1, spatial-2)', () => {
     const { encoder, records } = makeRecordingEncoder();
     const ctx = { ...makeCtx(encoder), checkerboardOn: false, frameParity: 0 } as PassDispatchContext;
-    new SpatialReservoirPass(stubPipeline('spatial'), 2).dispatch(ctx);
+    const roundOne = stubPipeline('spatial-round-one');
+    const roundTwo = stubPipeline('spatial-round-two');
+    new SpatialReservoirPass(roundOne, roundTwo, 2).dispatch(ctx);
     expect(records.map((r) => r.label)).toEqual(['spatial-1', 'spatial-2']);
+    expect(records.map((r) => r.pipeline)).toEqual([roundOne, roundTwo]);
+    expect(records[0]!.binds[0]!.group).toMatchObject({ __tag: 'frameBG' });
+    expect(records[1]!.binds[0]!.group).toMatchObject({ __tag: 'diSpatialReverseBG' });
     for (const r of records) {
       expect(r.binds.map((b) => b.slot)).toEqual([0, 1, 2]);
       expect(r.dims).toEqual([8, 8, 1]);
@@ -766,10 +771,16 @@ describe('ShadePass + SpatialReservoirPass — checkerboard compacted dispatch',
   });
 
   it('SpatialReservoirPass checkerboard ON: compacted [4,8,1] per label (half the X workgroups)', () => {
-    const { encoder, records } = makeRecordingEncoder();
+    const { encoder, records, copies } = makeRecordingEncoder();
     const ctx = { ...makeCtx(encoder), checkerboardOn: true, frameParity: 1 } as PassDispatchContext;
-    new SpatialReservoirPass(stubPipeline('spatial'), 2).dispatch(ctx);
+    const roundOne = stubPipeline('spatial-round-one');
+    const roundTwo = stubPipeline('spatial-round-two');
+    new SpatialReservoirPass(roundOne, roundTwo, 2).dispatch(ctx);
     expect(records.map((r) => r.label)).toEqual(['spatial-1', 'spatial-2']);
+    expect(records.map((r) => r.pipeline)).toEqual([roundOne, roundTwo]);
+    expect(copies).toEqual([{ kind: 'buffer', size: 512 }]);
+    expect(records[0]!.binds[0]!.group).toMatchObject({ __tag: 'frameBG' });
+    expect(records[1]!.binds[0]!.group).toMatchObject({ __tag: 'diSpatialReverseBG' });
     for (const r of records) {
       expect(r.binds.map((b) => b.slot)).toEqual([0, 1, 2]);
       // 64×64 ⇒ ceil(64/2)=32 cols ⇒ ceil(32/8)=4 X workgroups, ceil(64/8)=8 Y.
@@ -780,10 +791,15 @@ describe('ShadePass + SpatialReservoirPass — checkerboard compacted dispatch',
   });
 
   it('SpatialReservoirPass checkerboard ON (1-pass): single compacted spatial-2 dispatch', () => {
-    const { encoder, records } = makeRecordingEncoder();
+    const { encoder, records, copies } = makeRecordingEncoder();
     const ctx = { ...makeCtx(encoder), checkerboardOn: true, frameParity: 0 } as PassDispatchContext;
-    new SpatialReservoirPass(stubPipeline('spatial'), 1).dispatch(ctx);
+    const roundOne = stubPipeline('spatial-round-one');
+    const unusedRoundTwo = stubPipeline('spatial-round-two');
+    new SpatialReservoirPass(roundOne, unusedRoundTwo, 1).dispatch(ctx);
     expect(records.map((r) => r.label)).toEqual(['spatial-2']);
+    expect(records[0]!.pipeline).toBe(roundOne);
+    expect(records[0]!.binds[0]!.group).toMatchObject({ __tag: 'frameBG' });
+    expect(copies).toEqual([{ kind: 'buffer', size: 512 }]);
     expect(records[0]!.dims).toEqual([4, 8, 1]);
   });
 

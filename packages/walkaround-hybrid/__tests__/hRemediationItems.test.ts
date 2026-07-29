@@ -437,22 +437,11 @@ describe('H46 — HybridEngine construction warnings', () => {
     expect(causticWarns).toHaveLength(0);
   });
 
-  it('warns when maxSamplesPerPixel is supplied (walkaround does not accumulate SPP)', async () => {
+  it('rejects maxSamplesPerPixel because walkaround does not accumulate SPP', async () => {
     const { HybridEngine } = await import('../src/HybridEngine.js');
-    const structured: import('@vitrum/core').EngineWarning[] = [];
-    new HybridEngine(makeStubOpts({
+    expect(() => new HybridEngine(makeStubOpts({
       maxSamplesPerPixel: 64,
-      onWarning: (w: import('@vitrum/core').EngineWarning) => structured.push(w),
-    }) as never);
-    const sampleWarns = warnSpy.mock.calls.filter(
-      (c) => String(c[0]).includes('maxSamplesPerPixel'),
-    );
-    expect(sampleWarns.length).toBeGreaterThan(0);
-    expect(String(sampleWarns[0]![0])).toContain('64');
-    expect(structured.some((w) =>
-      w.code === 'walkaround-hybrid.max-samples-per-pixel-ignored' &&
-      w.details?.requested === 64,
-    )).toBe(true);
+    }) as never)).toThrow(/maxSamplesPerPixel.*unsupported.*does not accumulate/i);
   });
 
   it('rejects unsupported causticOptions even if causticStrategy is none', async () => {
@@ -510,6 +499,7 @@ describe('H47/H29 — PPG cap threading', () => {
       skyTint: [0.4, 0.6, 1.0],
       skyIrradiance: 2.0,
       denoiser: 'atrous-variance',
+      ppgEnabled: true,
       ppgMaxSpatialCells: 2048,
     } as never);
 
@@ -548,6 +538,7 @@ describe('H47/H29 — PPG cap threading', () => {
       skyTint: [0.4, 0.6, 1.0],
       skyIrradiance: 2.0,
       denoiser: 'atrous-variance',
+      ppgEnabled: true,
       ppgMaxDTreeNodesPerCell: 97,
     } as never);
 
@@ -585,6 +576,7 @@ describe('H47/H29 — PPG cap threading', () => {
       skyTint: [0.4, 0.6, 1.0],
       skyIrradiance: 2.0,
       denoiser: 'atrous-variance',
+      ppgEnabled: true,
       ppgMixAlpha: 0.35,
     } as never);
 

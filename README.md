@@ -135,7 +135,6 @@ context loss, device-limit errors, NaN pixels) see
 @vitrum/shared-bvh         Software BVH compute (CPU + GPU)
 @vitrum/shared-samplers    Hammersley, light tree, hero-wavelength MIS, spectral helpers
 @vitrum/shared-denoisers   À-trous, SVGF, BMFR, OIDN bridge
-@vitrum/scene-lighting     Host-side lighting state (time-of-day, sun, sky)
 @vitrum/stained-glass-extensions  Stained-glass host contract extensions
 @vitrum/dev                Debug overlays (devDep)
 ```

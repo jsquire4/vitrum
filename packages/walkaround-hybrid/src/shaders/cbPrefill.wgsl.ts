@@ -84,7 +84,8 @@ fn cbPrefillKernel(@builtin(global_invocation_id) globalId: vec3<u32>) {
   // Temporal reprojection: reproject the previous-frame accumulated radiance
   // through the motion vector to fill the gap pixel.
   // Convention: mv is already previous-current in framebuffer pixel units.
-  let mv    = textureLoad(t_motion_vec, vec2<i32>(i32(px), i32(py)), 0).rg;
+  let motionSample = textureLoad(t_motion_vec, vec2<i32>(i32(px), i32(py)), 0);
+  let mv = motionSample.rg;
   let deltaPx = vec2i(round(mv));
   let prevXY = clampCoord(vec2<i32>(i32(px), i32(py)) + deltaPx, W, H);
   let temporal = textureLoad(t_prev_radiance, prevXY, 0);
@@ -116,7 +117,10 @@ fn cbPrefillKernel(@builtin(global_invocation_id) globalId: vec3<u32>) {
     1.0,
     max(max(abs(temporalClipped.r), abs(temporalClipped.g)), abs(temporalClipped.b)),
   );
-  let historyAccepted = temporalFinite && maxHistoryDelta <= 0.25 * historyScale;
+  let historyAccepted =
+    motionSample.a > 0.5 &&
+    temporalFinite &&
+    maxHistoryDelta <= 0.25 * historyScale;
   let motionTrust = clamp(1.0 - length(mv) * 0.25, 0.0, 1.0);
   let temporalWeight = select(0.0, motionTrust, historyAccepted);
   let filled = mix(spatial, temporalClipped, temporalWeight);

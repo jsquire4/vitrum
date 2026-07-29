@@ -9,7 +9,6 @@ import type {
 import { asMat4 } from '@vitrum/core';
 import { LIGHT_TREE_FLOATS_PER_NODE } from '@vitrum/shared-samplers';
 import {
-  assertExactEmissiveMapSamplingForCoreScene,
   buildReSTIRSceneBVHForCoreScene,
 } from '../bvhCore.js';
 import {
@@ -389,14 +388,12 @@ describe('core ReSTIR direct-light emitter fidelity', () => {
     };
 
     const unreadableScene: Scene = { primitives: [unreadable], emitters: [], environment: { kind: 'none' } };
-    expect(() => assertExactEmissiveMapSamplingForCoreScene(unreadableScene)).not.toThrow();
     const buffers = buildReSTIRSceneBVHForCoreScene(unreadableScene, { bvhMode: 'merged' });
     const emitters = stripPlaceholder(decodeEmitters(buffers.emitters.cpuData));
     expect(emitters).toHaveLength(1);
     expect(emitters[0]!.sourceTriIndex).toBe(0);
 
     const missingUvScene: Scene = { primitives: [missingUv1], emitters: [], environment: { kind: 'none' } };
-    expect(() => assertExactEmissiveMapSamplingForCoreScene(missingUvScene)).not.toThrow();
     expect(() => buildReSTIRSceneBVHForCoreScene(missingUvScene, { bvhMode: 'merged' }))
       .toThrow(/does not provide that UV stream/);
   });

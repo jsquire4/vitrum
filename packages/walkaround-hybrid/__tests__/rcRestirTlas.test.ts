@@ -13,7 +13,6 @@ function boundsGeometry(): RestirMergedGeometryLike {
       max: { x: 1, y: 1, z: 1 },
     },
     computeBoundingBox: () => undefined,
-    dispose: () => undefined,
   };
 }
 

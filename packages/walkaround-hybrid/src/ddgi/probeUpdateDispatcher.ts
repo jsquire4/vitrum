@@ -92,14 +92,27 @@ export function dispatchProbeUpdateRaysPass(
   gpu: ProbeUpdateGpuState,
   activeCount: number,
   irrReadTex: GPUTexture,
+  visReadTex: GPUTexture,
 ): void {
   if (!gpu.bgCache) gpu.bgCache = makeBgCache();
   const c = gpu.bgCache;
 
-  // Group 0: BVH geometry buffers (11 entries). Invalidated when BVH is rebuilt
-  // (bvhBuf reference changes). All 11 buffers are rebuilt atomically, so keying
-  // on bvhBuf alone is sufficient.
-  const raysG0 = getOrCreateBindGroup(c, 'raysG0', [gpu.bvhBuf], () => gpu.device.createBindGroup({
+  // Group 0: BVH geometry buffers (11 entries). Key every bound identity:
+  // transform-only TLAS refits preserve the BLAS buffers and may replace only
+  // the TLAS streams whose capacities grew.
+  const raysG0 = getOrCreateBindGroup(c, 'raysG0', [
+    gpu.bvhBuf,
+    gpu.posBuf,
+    gpu.idxBuf,
+    gpu.normBuf,
+    gpu.matIdBuf,
+    gpu.tlasNodesBuf,
+    gpu.tlasInstIdxBuf,
+    gpu.tlasBlasRootsBuf,
+    gpu.tlasW2lBuf,
+    gpu.tlasL2wBuf,
+    gpu.traceParamsBuf,
+  ], () => gpu.device.createBindGroup({
     layout: gpu.raysPipeline.getBindGroupLayout(0),
     entries: [
       { binding: 0, resource: { buffer: gpu.bvhBuf } },
@@ -146,6 +159,7 @@ export function dispatchProbeUpdateRaysPass(
   // practice, but the cache must not rely on that coupling.
   const raysG2 = getOrCreateBindGroup(c, 'raysG2', [
     irrReadTex,
+    visReadTex,
     gpu.rayResultsBuf,
     gpu.activeProbesBuf,
     gpu.envMapView,
@@ -165,6 +179,7 @@ export function dispatchProbeUpdateRaysPass(
       // before sampling, so the placeholder is never actually read.
       { binding: 6, resource: gpu.envMapView },
       { binding: 7, resource: gpu.envSamplerForProbe },
+      { binding: 8, resource: visReadTex.createView() },
     ],
   }));
 

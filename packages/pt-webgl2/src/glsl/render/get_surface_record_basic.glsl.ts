@@ -12,6 +12,9 @@ export const GET_SURFACE_RECORD_BASIC_GLSL = /* glsl */ `
   ) {
     Material material;
     readMaterialInfo( materials, materialIndex, material );
+    if ( material.side != 0.0 && surfaceHit.side != material.side ) {
+      return SKIP_SURFACE;
+    }
     vec3 normal = normalize( textureSampleBarycoord(
       attributesArray, ATTR_NORMAL, surfaceHit.barycoord, surfaceHit.faceIndices.xyz
     ).xyz );
@@ -82,7 +85,6 @@ export const GET_SURFACE_RECORD_BASIC_GLSL = /* glsl */ `
     surf.envMapIntensity = 1.0;
     surf.lobeMask = 2u;
     if ( surf.roughness > 0.0 || surf.metalness < 1.0 ) surf.lobeMask |= 1u;
-    surf.liteMode = false;
     return HIT_SURFACE;
   }
 

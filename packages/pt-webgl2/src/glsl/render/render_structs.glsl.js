@@ -121,7 +121,6 @@ export const render_structs = /* glsl */`
 		// Medium scattering is not a material-local IBL override.
 		fogSurface.envMapIntensity = 1.0;
 		fogSurface.lobeMask = 1u;
-		fogSurface.liteMode = false;
 		surf = fogSurface;
 
 	}

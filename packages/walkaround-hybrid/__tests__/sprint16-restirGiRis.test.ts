@@ -4,9 +4,7 @@
  * Verifies the RIS_GI_WGSL string contains the expected entry point, bindings,
  * candidate count, and reservoir helpers; the pass layout places `gi-ris`
  * between `spatial-2` and `shade`; and the static/common ReservoirGI export
- * still carries the widened 28-u32 GRIS layout. Runtime compilation selects the
- * compact 20-u32 default via `compilePipelines`; that gate is covered by
- * `giStructuralGate.test.ts`.
+ * carries the sole live 28-u32 generalized-reuse layout.
  */
 
 import { describe, expect, it } from 'vitest';
@@ -57,7 +55,7 @@ describe('Sprint 16 — RIS_GI WGSL', () => {
     expect(RIS_GI_WGSL).toMatch(/let M_GI\s*=\s*M_GI_BASE\s*\*\s*tier/);
   });
 
-  it('writes an empty reservoir on primary-ray miss, glass, or metal', () => {
+  it('writes an empty reservoir on a primary-ray miss', () => {
     expect(RIS_GI_WGSL).toContain('emptyReservoirGI()');
     // No-hit early-out should call store with empty reservoir.
     expect(RIS_GI_WGSL).toMatch(/storeReservoirGI_rw\([^)]*emptyReservoirGI\(\)/);
@@ -71,22 +69,22 @@ describe('Sprint 16 — RIS_GI WGSL', () => {
   it('uses DDGI-atlas reconnection-vertex radiance estimation through the material payload helper', () => {
     expect(RIS_GI_WGSL).toContain('sampleDDGIAtPoint');
     expect(RIS_GI_WGSL).toContain('let xsPayload = sampleRestirGIHitMaterialForHit(');
-    expect(RIS_GI_WGSL).toContain('Lo = xsPayload.Lo');
+    expect(RIS_GI_WGSL).toContain('Lo = xsPayload.Lo;');
   });
 
-  it('runs the final visibility test on the chosen sample and attenuates W by tinted alpha transmittance', () => {
+  it('evaluates tinted alpha visibility for every candidate before reservoir selection', () => {
     expect(RIS_GI_WGSL).toContain('@group(1) @binding(5) var bvh_beer: texture_2d<u32>;');
     expect(RIS_GI_WGSL).toContain('traceSceneAlphaTintTransmittanceTextured(');
-    expect(RIS_GI_WGSL).toContain('let shadowT = clamp(luminance(shadowTint), 0.0, 1.0);');
+    expect(RIS_GI_WGSL).toContain('candidateVisibility = clamp(luminance(shadowTint), 0.0, 1.0);');
+    expect(RIS_GI_WGSL).toContain('pHat = restir_gi_receiver_phat_from_payload(');
+    expect(RIS_GI_WGSL).toContain(') * candidateVisibility;');
     expect(RIS_GI_WGSL).not.toContain('traceSceneAlphaTransmittanceTextured(');
-    expect(RIS_GI_WGSL).toContain('if (!reservoirGiFinite(shadowT) || !(shadowT > 0.0))');
-    expect(RIS_GI_WGSL).toContain('r.w_sum = r.w_sum * shadowT;');
-    expect(RIS_GI_WGSL).toMatch(/r\.W\s*=\s*0\.0/);
+    expect(RIS_GI_WGSL).not.toContain('r.w_sum = r.w_sum * shadowT;');
   });
 
   it('computes W = w_sum / (M · p̂(z)) per the RIS estimator', () => {
-    expect(RIS_GI_WGSL).toContain('finaliseGIReservoirWFromPHat(&r, ubo.restirGiWCap, false, pHatZ);');
-    expect(COMMON_WGSL).toContain('let denominator = normaliser * pHatF;');
+    expect(RIS_GI_WGSL).toContain('finaliseGIReservoirWFromPHat(&r, ubo.restirGiWCap, r.nativePHat);');
+    expect(COMMON_WGSL).toContain('let denominator = f32((*r).M) * pHatF;');
     expect(COMMON_WGSL).toContain('let W_raw = (*r).w_sum / denominator;');
   });
 
@@ -97,7 +95,7 @@ describe('Sprint 16 — RIS_GI WGSL', () => {
 });
 
 describe('Sprint 16 — ReservoirGI canonical byte pack and pass-local accessors', () => {
-  it('declares the 30 × u32 stride constant on the static GRIS-compatible export', () => {
+  it('declares the 28-u32 stride constant on the canonical export', () => {
     // GRIS Phase-0 appended the reconnection-shift cache at indices [20..27],
     // widening the per-pixel reservoir from 20 u32 (80 bytes) to 28 u32
     // (112 bytes). The [0..19] prefix stays byte-identical — see

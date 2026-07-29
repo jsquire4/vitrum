@@ -2,8 +2,8 @@
 // load-bearing artifact. The composeTraceGlsl split (renderMain.glsl.ts +
 // uniformManifest.ts extraction) MUST NOT perturb a single byte of the composed
 // string for any representative feature set. This test snapshots the sha256 +
-// length of the composed GLSL for the three feature sets the composer branches on
-// (bdpt on/off is the only JS-compose-time branch). Captured on the pre-refactor
+// length of the composed GLSL for representative feature sets the composer branches on.
+// Captured on the pre-refactor
 // code; if any assembly-order or whitespace drift occurs, these hashes fail.
 
 import { createHash } from 'node:crypto';
@@ -33,31 +33,42 @@ const FEATURE_SETS: Record<string, TraceFeatures> = {
 // medium SurfaceRecord initialization, and finite-light NEE measure ownership.
 // The 2026-07-27 closure removes unreachable global-medium Jakob and flat-
 // shading fork lanes, and pins the corrected punctual-spot back-axis convention.
+// The 2026-07-28 closure makes camera-surface depth zero-based for light maps
+// and removes a duplicate diffuse-transmission attenuation. It also removes
+// the permanently-false internal liteMode lane so every compiled BSDF has one
+// full-fidelity behavior rather than an unreachable experimental branch, and
+// drops two zero-consumer BDPT octahedral-direction helpers.
+// The compiler-surface closure also deletes unexposed background/debug/stained-
+// glass/stratified branches, fixed-only cache-key dimensions, and the orphaned
+// heroWeightFromRgb alias.
+// C41 adds source-rectangle offsets to mapped-material atlas sampling so small
+// maps can share split RGBA8 LDR and RGBA16F radiance-atlas layers without
+// changing authored filter/wrap behavior.
 // length + sha256(utf8) of composeTraceGlsl(features) for each set.
 const GOLDENS: Record<string, { length: number; sha256: string }> = {
   default: {
-    length: 136186,
-    sha256: '2deb00681816ad03a64ace84bb3d5a6c42acb215e4b5f2da1be1401f10eb0705',
+    length: 137825,
+    sha256: '9791ebe2d25de6ffa7801783b9db29d46f1ee44acaf1d707789f77ef01e838f6',
   },
   bdptOn: {
-    length: 183951,
-    sha256: '355a29e0574346bdd36d8c2b2942f1deb15d88ae6511ffd50f66bbbdbc00a356',
+    length: 182643,
+    sha256: 'c856be1fc08ff1baf1d3ab75a8245e90a2dff28213feffd75ce82b8379bd56dc',
   },
   bdptOff: {
-    length: 136186,
-    sha256: '2deb00681816ad03a64ace84bb3d5a6c42acb215e4b5f2da1be1401f10eb0705',
+    length: 137825,
+    sha256: '9791ebe2d25de6ffa7801783b9db29d46f1ee44acaf1d707789f77ef01e838f6',
   },
   sobol: {
-    length: 142058,
-    sha256: '44fae3ecf84e56a56d7e69df1d8640c7b4e32554876d76f8ce697ff7ff8ebbe5',
+    length: 143697,
+    sha256: '7ac6b4378ee4a6e2653f4c4e42d38a3285c136e17493ef2cfb9effbadd0cc634',
   },
   orthographic: {
-    length: 136186,
-    sha256: '2deb00681816ad03a64ace84bb3d5a6c42acb215e4b5f2da1be1401f10eb0705',
+    length: 137825,
+    sha256: '9791ebe2d25de6ffa7801783b9db29d46f1ee44acaf1d707789f77ef01e838f6',
   },
   dof: {
-    length: 136186,
-    sha256: '2deb00681816ad03a64ace84bb3d5a6c42acb215e4b5f2da1be1401f10eb0705',
+    length: 137825,
+    sha256: '9791ebe2d25de6ffa7801783b9db29d46f1ee44acaf1d707789f77ef01e838f6',
   },
 };
 
@@ -79,7 +90,7 @@ describe('composeTraceGlsl byte-identity golden (T3-D)', () => {
     });
   }
 
-  it('bdptOn differs from bdptOff (the only compose-time branch is real)', () => {
+  it('bdptOn differs from bdptOff (the compose-time branch is real)', () => {
     expect(composeTraceGlsl(FEATURE_SETS.bdptOn!)).not.toBe(
       composeTraceGlsl(FEATURE_SETS.bdptOff!),
     );

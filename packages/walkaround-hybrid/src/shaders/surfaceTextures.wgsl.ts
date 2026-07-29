@@ -356,7 +356,8 @@ fn traceSceneAlphaTintTransmittanceTexturedWithOwnership(
 
   if (traceSceneAnyCastMask(
     bvhMode, tlasNodeCount,
-    walkRay.origin, dir, max(0.0, tMax - traveled), triEps, true,
+    walkRay.origin, dir, max(0.0, tMax - traveled), triEps,
+    !blockMaterialTransmission,
     materialMask, materialMaskWidth,
   )) {
     return vec3f(0.0);

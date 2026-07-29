@@ -1,5 +1,4 @@
 import {
-  getPrimitiveUvSet,
   type DiscAreaEmitter,
   type Mat4,
   type MaterialSpec,
@@ -7,9 +6,11 @@ import {
   type Scene,
 } from '@vitrum/core';
 import {
+  invertMat4,
   isTextureRefCpuReadable,
   materialSpecEmissiveLe,
   materialSpecScalarEmissiveLe,
+  resolveDisplacedGeometry,
 } from '@vitrum/shared-bvh';
 import { luminance, type LightTreeBuildInput } from '@vitrum/shared-samplers';
 import { transformPoint } from '../math/mat4.js';
@@ -77,8 +78,8 @@ export const MESH_AREA_LIGHT_FLOAT_STRIDE = 28;
  *
  * Rect sampling: uniform in [-1,1]² → p = center + uAxis*u + vAxis*v; area = 4·|u×v|
  * Disc sampling: concentric-map (xi₁,xi₂)→(r,φ) → p = center + uAxis*(r·cos φ) + vAxis*(r·sin φ)
- *   area = π·|uAxis|² (= π·r² when |uAxis|=|vAxis|=radius; enforced by packDiscAsRect).
- *   pdf = dist² / (cosLight · π·r²)  — identical solid-angle formula as rect but with disc area.
+ *   area = π·|uAxis×vAxis| (= π·r² for the canonical orthogonal radius frame).
+ *   pdf = dist² / (cosLight · area) — the same solid-angle conversion as a rect.
  * Forward-hit MIS (connect.wgsl): ray-plane + |rel_u|²+|rel_v|²≤1 circle test for disc;
  *   uCoord/vCoord ∈ [-1,1] box test for rect.  |shape.w - 1.0| < 0.5 discriminates disc.
  */
@@ -314,7 +315,7 @@ function assertUniqueMeshAreaEmitterOwnership(scene: Scene): void {
  *
  * The WGSL side reads shape = rectAreaLights[rb+3].w and branches:
  *   shape ≈ 0 → rect sampling (uniform [-1,1]², area = 4|u×v|)
- *   shape ≈ 1 → disc sampling (concentric-map, area = π|u|²)
+ *   shape ≈ 1 → disc sampling (concentric-map, area = π|u×v|)
  *
  * Native analytic disc emitters replace the 32-triangle fan, 2026-06-10 —
  * RENDER-CHANGING for disc-lit scenes, A/B in R9-B.
@@ -401,9 +402,21 @@ function packMeshAreaTriangles(
     warnings.push(`Mesh-area emitter "${emitter.id}" references missing or non-mesh primitive "${emitter.meshId}".`);
     return [];
   }
-  const positions = primitive.positions;
+  // Resolve through the exact canonical geometry preamble used by both
+  // packSceneFromCore (TLAS tier) and mergeWorldSpaceFromCore (lite tier).
+  // Sampling authored vertices while the BVH intersects displaced/diced
+  // vertices gives NEE and forward hits disjoint geometric support.
+  const resolved = resolveDisplacedGeometry(
+    primitive,
+    (warning) => warnings.push(warning),
+  );
+  const positions = resolved.sourcePositions;
+  const indices = resolved.baseIndicesSource;
+  const uv0 = resolved.baseUvs;
+  const uv1 = resolved.baseUv1;
+  const uvSets = resolved.baseUvSets;
   const vertexCount = Math.floor(positions.length / 3);
-  const triangleIndexCount = primitive.indices?.length ?? vertexCount;
+  const triangleIndexCount = indices?.length ?? vertexCount;
   const triangleCount = Math.floor(triangleIndexCount / 3);
   if (triangleCount < 1 || vertexCount < 3 || positions.length < 9) {
     warnings.push(`Mesh-area emitter "${emitter.id}" references primitive "${emitter.meshId}" with no triangles.`);
@@ -414,7 +427,7 @@ function packMeshAreaTriangles(
     positions[idx * 3 + 1] ?? 0,
     positions[idx * 3 + 2] ?? 0,
   ];
-  const indexAt = (offset: number): number => primitive.indices?.[offset] ?? offset;
+  const indexAt = (offset: number): number => indices?.[offset] ?? offset;
   const transforms: readonly (Mat4 | undefined)[] = primitive.kind === 'instanced-mesh'
     ? primitive.instances
     : [primitive.transform];
@@ -472,6 +485,16 @@ function packMeshAreaTriangles(
   let invalidTriangleCount = 0;
   let degenerateTriangleCount = 0;
   for (const transform of transforms) {
+    // packSceneFromCore deliberately omits singular TLAS instances. Matching
+    // that publication rule here prevents NEE from sampling emitter geometry
+    // that no renderer hit can ever reach.
+    if (transform != null && invertMat4(transform) == null) {
+      warnings.push(
+        `Mesh-area emitter "${emitter.id}" skipped a non-invertible instance ` +
+          `transform for primitive "${emitter.meshId}".`,
+      );
+      continue;
+    }
     for (let tri = 0; tri < triangleCount; tri += 1) {
       const base = tri * 3;
       const i0 = indexAt(base);
@@ -504,15 +527,15 @@ function packMeshAreaTriangles(
         degenerateTriangleCount += 1;
         continue;
       }
-      const uv0A = uvAt(primitive.uvs, i0);
-      const uv0B = uvAt(primitive.uvs, i1);
-      const uv0C = uvAt(primitive.uvs, i2);
-      const uv1A = uvAt(primitive.uv1, i0);
-      const uv1B = uvAt(primitive.uv1, i1);
-      const uv1C = uvAt(primitive.uv1, i2);
+      const uv0A = uvAt(uv0, i0);
+      const uv0B = uvAt(uv0, i1);
+      const uv0C = uvAt(uv0, i2);
+      const uv1A = uvAt(uv1, i0);
+      const uv1B = uvAt(uv1, i1);
+      const uv1C = uvAt(uv1, i2);
       const mappedTexCoord = mappedSourceFactorMaterial?.emissiveMap?.texCoord ?? 0;
       const highUvStream = mappedTexCoord > 1
-        ? getPrimitiveUvSet(primitive, mappedTexCoord)
+        ? uvSets?.[mappedTexCoord]
         : undefined;
       const selectedHighUv = highUvStream == null
         ? undefined
@@ -521,7 +544,6 @@ function packMeshAreaTriangles(
             uvAt(highUvStream, i1),
             uvAt(highUvStream, i2),
           ] as const;
-      const sourceWorldArea = sourceArea;
       const selectedRawUvs = mappedTexCoord === 0
         ? [uv0A, uv0B, uv0C] as const
         : mappedTexCoord === 1
@@ -572,7 +594,7 @@ function packMeshAreaTriangles(
             [rawEmissiveUvC[0], rawEmissiveUvC[1]],
           ],
           mappedMaterialId,
-          sourceWorldArea,
+          sourceWorldArea: area,
           sourceFactor,
           adjointEmitterSlot: options.adjointEmitterSlot ?? -1,
           power: emittedLuminance * area,
@@ -1114,8 +1136,12 @@ export interface EnvSummaryForTree {
   readonly hasHdri: boolean;
   /** Procedural-sky / HDRI sun-strength scalar (drives the env NEE gate). */
   readonly sunStrength: number;
-  /** Environment tint used as the env-leaf radiance proxy in the power estimate. */
-  readonly tint: readonly [number, number, number];
+  /**
+   * Solid-angle-integrated environment luminance, with map intensity applied
+   * exactly once. Derived by `environmentParams`; zero means the selectable
+   * environment is radiometrically black.
+   */
+  readonly lightTreePower: number;
 }
 
 /**
@@ -1206,7 +1232,11 @@ export function buildLightTreeInputForScene(
   // call for the same scene), use it directly to avoid re-running the HDRI/sky bake.
   const envSummary: EnvSummaryForTree = precomputed?.envSummary ?? (() => {
     const p = environmentParams(scene);
-    return { hasHdri: p.hasHdri, sunStrength: p.sunStrength, tint: p.tint };
+    return {
+      hasHdri: p.hasHdri,
+      sunStrength: p.sunStrength,
+      lightTreePower: p.lightTreePower,
+    };
   })();
   const hasEnv = envSummary.hasHdri || envSummary.sunStrength > 0;
 
@@ -1277,14 +1307,14 @@ export function buildLightTreeInputForScene(
       case 'rect': {
         // rect-area / disc-area records (both packed in the rect stream).
         // Disc records carry shape tag = 1.0 in shapeTag; rect records = 0.0.
-        // Area formula: disc → π·|u|² (= π·r²); rect → 4·|u×v|.
+        // Area formula: disc → π·|u×v|; rect → 4·|u×v|.
         // AABB: disc → sphere-bounding-box with radius = |u| (conservative);
         //        rect → four corners p ± u ± v.
         const p = e.position;
         const u = e.uAxis;
         const v = e.vAxis;
         const isDisc = Math.abs((e.shapeTag ?? 0) - 1.0) < 0.5;
-        const area = isDisc ? discArea(u) : rectQuadArea(u, v);
+        const area = isDisc ? discArea(u, v) : rectQuadArea(u, v);
         let min: Vec3;
         let max: Vec3;
         if (isDisc) {
@@ -1358,15 +1388,23 @@ export function buildLightTreeInputForScene(
     }
   }
   if (hasEnv) {
-    // Env radiance proxy: the dome tint scaled by the dome brightness (sun
-    // strength), no per-pixel HDRI integral on the CPU. The luminance of that
-    // proxy gives a stable RELATIVE weight against the local lights. A floor of
-    // 1 on the strength keeps the env slot selectable (its leaf pdf must be > 0)
-    // even for a faint sky.
-    const strength = Math.max(envSummary.sunStrength, 1);
-    const t = envSummary.tint;
-    const envRad: Vec3 = [t[0] * strength, t[1] * strength, t[2] * strength];
-    powers.push(emitterPower(envRad, { kind: 'delta' }));
+    // environmentParams integrates the actual map luminance over solid angle
+    // and applies HDRI intensity exactly once. Nonblack underflow is clamped
+    // there only to the smallest positive f32; black / zero-intensity maps stay
+    // exactly zero rather than receiving an artificial unit floor.
+    if (
+      !Number.isFinite(envSummary.lightTreePower) ||
+      envSummary.lightTreePower < 0 ||
+      !Number.isFinite(Math.fround(envSummary.lightTreePower)) ||
+      (envSummary.lightTreePower > 0 &&
+        Math.fround(envSummary.lightTreePower) === 0)
+    ) {
+      throw new RangeError(
+        'buildLightTreeInputForScene: envSummary.lightTreePower must be a ' +
+          'finite, non-negative, Float32-representable value derived from environmentParams.',
+      );
+    }
+    powers.push(envSummary.lightTreePower);
     centroids.push(unionCentroid);
     aabbs.push({ min: unionMin, max: unionMax });
     cones.push(undefined); // env dome — full sphere

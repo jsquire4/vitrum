@@ -4,69 +4,7 @@ import { executeNeuralInferenceCpu } from '../cpuInference.js';
 import { packLayerUniform, preflightTensorDims } from '../tensorDimSolver.js';
 import { deriveParamCount, type UNetSpec } from '../unetArchitecture.js';
 import type { ModelWeights } from '../weights.js';
-import { BILINEAR_UPSAMPLE_WGSL } from '../wgsl/bilinearUpsample.wgsl.js';
 import { TRANSPOSED_CONV2D_WGSL } from '../wgsl/transposedConv2d.wgsl.js';
-
-function bilinearSpec(): UNetSpec {
-  const layers = [
-    {
-      name: 'pack',
-      kind: 'inputPack',
-      inputs: ['noisyColor', 'albedo', 'normals'],
-      output: 'enc_input',
-      params: { inC: 9, outC: 9 },
-      weightLayout: 'none',
-    },
-    {
-      name: 'down',
-      kind: 'conv2d',
-      inputs: ['enc_input'],
-      output: 'downsampled',
-      params: { inC: 9, outC: 9, kH: 1, kW: 1, stride: 2, padding: 0 },
-      weightLayout: 'OIKW',
-    },
-    {
-      name: 'upsample',
-      kind: 'bilinearUpsample',
-      inputs: ['downsampled'],
-      output: 'upsampled',
-      params: { inC: 9, outC: 9 },
-      weightLayout: 'none',
-    },
-    {
-      name: 'proj',
-      kind: 'conv2d',
-      inputs: ['upsampled'],
-      output: 'denoised',
-      params: { inC: 9, outC: 3, kH: 1, kW: 1, stride: 1, padding: 0 },
-      weightLayout: 'OIKW',
-    },
-  ] as const;
-  return {
-    name: 'bilinear-edge-oracle',
-    inputChannels: 9,
-    outputChannels: 3,
-    layers,
-    paramCount: deriveParamCount(layers),
-  };
-}
-
-function bilinearWeights(): ModelWeights {
-  const down = new Float32Array(9 * 9);
-  for (let channel = 0; channel < 9; channel++) {
-    down[channel * 9 + channel] = 1;
-  }
-  const projection = new Float32Array(3 * 9);
-  projection[0] = 1;
-  projection[10] = 1;
-  projection[20] = 1;
-  return {
-    layers: [
-      { name: 'down', weights: down, biases: new Float32Array(9) },
-      { name: 'proj', weights: projection, biases: new Float32Array(3) },
-    ],
-  };
-}
 
 function transposedConvSpec(
   outputPadding = 1,
@@ -177,51 +115,7 @@ function scatterTransposedConvReference(input: readonly number[]): Float32Array 
   return output;
 }
 
-describe('neural extension kernels', () => {
-  it.each(['f32', 'f16'] as const)(
-    'uses align_corners=false edge replication in the %s CPU oracle',
-    precision => {
-      const width = 4;
-      const height = 4;
-      const noisy = new Float32Array(width * height * 3);
-      const setPixel = (x: number, y: number, value: number): void => {
-        const base = (y * width + x) * 3;
-        noisy[base] = value;
-        noisy[base + 1] = value;
-        noisy[base + 2] = value;
-      };
-      setPixel(0, 0, 1);
-      setPixel(2, 0, 2);
-      setPixel(0, 2, 3);
-      setPixel(2, 2, 4);
-
-      const result = executeNeuralInferenceCpu(
-        bilinearSpec(),
-        bilinearWeights(),
-        width,
-        height,
-        {
-          noisyColor: noisy,
-          albedo: new Float32Array(noisy.length),
-          normals: new Float32Array(noisy.length),
-        },
-        precision,
-      );
-      const expectedPixels = [
-        // Analytic half-pixel coordinates with each of the four signed taps
-        // independently edge-clamped. These constants are not produced by the
-        // production CPU sampler.
-        1, 1.25, 1.75, 2,
-        1.5, 1.75, 2.25, 2.5,
-        2.5, 2.75, 3.25, 3.5,
-        3, 3.25, 3.75, 4,
-      ];
-      expect(Array.from(result.modelOutput)).toEqual(
-        expectedPixels.flatMap(value => [value, value, value]),
-      );
-    },
-  );
-
+describe('neural transposed-convolution kernel', () => {
   it.each(['f32', 'f16'] as const)(
     'matches an independent scatter oracle for custom transposed-conv shape parameters in %s',
     precision => {
@@ -267,7 +161,7 @@ describe('neural extension kernels', () => {
   it('rejects invalid or misplaced transposed-convolution shape parameters', () => {
     expect(() => preflightTensorDims(transposedConvSpec(2), 4, 4))
       .toThrow(/outputPadding < stride/);
-    const invalidConv = bilinearSpec();
+    const invalidConv = transposedConvSpec();
     const layers = invalidConv.layers.map(layer => layer.name === 'down'
       ? { ...layer, params: { ...layer.params, dilation: 2 } }
       : layer);
@@ -285,11 +179,5 @@ describe('neural extension kernels', () => {
     expect(TRANSPOSED_CONV2D_WGSL).toContain('let khOffset = kh * params.dilation;');
     expect(TRANSPOSED_CONV2D_WGSL).toContain('let oxPadded = ox + params.padding;');
     expect(TRANSPOSED_CONV2D_WGSL).toContain('if (ix_r % params.stride != 0u)');
-  });
-
-  it('keeps the bilinear WGSL footprint signed until per-sample edge clamping', () => {
-    expect(BILINEAR_UPSAMPLE_WGSL).toContain('fn sampleInput(iy: i32, ix: i32');
-    expect(BILINEAR_UPSAMPLE_WGSL).toContain('let iy0 = i32(floor(fy));');
-    expect(BILINEAR_UPSAMPLE_WGSL).toContain('let ix0 = i32(floor(fx));');
   });
 });

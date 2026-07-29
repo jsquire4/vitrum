@@ -4,8 +4,7 @@
 // throw/warn validation). Behaviour is byte-identical: the factory now calls
 // `validatePtWebgpuOptions(opts)` which performs the same ordered sequence of
 // structural throws + structured `onWarning` emissions and returns the resolved
-// `{ traceTier, effectiveOpts, resolvedBdptMaxLightBounces }` the factory then
-// hands to the engine constructor.
+// `{ traceTier, effectiveOpts }` the factory then hands to the engine constructor.
 //
 // Shared numeric caps and the small pure resolvers (`emitPteWarning`,
 // `resolveBdptMaxLightBounces`, etc.) also live here now — the engine class in
@@ -19,6 +18,14 @@ import {
 import type { PTEngineWebGPUOptions } from './index.js';
 import { resolvePtWebgpuTraceTier, type PtWebgpuTraceTier } from './traceTier.js';
 import {
+  PT_WEBGPU_BDPT_SUPPORT,
+  PT_WEBGPU_DENOISER_VALUES as PT_WEBGPU_MANIFEST_DENOISER_VALUES,
+  PT_WEBGPU_IMPLEMENTED_DENOISER_VALUES as PT_WEBGPU_MANIFEST_IMPLEMENTED_DENOISER_VALUES,
+  PT_WEBGPU_SAMPLING_VALUES as PT_WEBGPU_MANIFEST_SAMPLING_VALUES,
+  ptWebgpuSupportManifest,
+} from './supportManifest.js';
+import {
+  PT_WEBGPU_BDPT_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
   PT_WEBGPU_CWBVH_CLOSEST_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
   PT_WEBGPU_CWBVH_CLOSEST_RESTIR_PT_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
   PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
@@ -37,6 +44,8 @@ const PT_WEBGPU_OPTION_KEY_RECORD = {
   traceTier: true,
   spectral: true,
   bdpt: true,
+  oneEdgeReconnectionReuse: true,
+  oneEdgeReconnectionReuseOptions: true,
   restirPtReuse: true,
   restirPtReuseOptions: true,
   bvhTraversal: true,
@@ -50,24 +59,14 @@ const PT_WEBGPU_OPTION_KEY_RECORD = {
 } as const satisfies Readonly<Record<keyof PTEngineWebGPUOptions, true>>;
 const PT_WEBGPU_OPTION_KEYS = new Set(Object.keys(PT_WEBGPU_OPTION_KEY_RECORD));
 
-const PT_WEBGPU_DENOISER_VALUES = new Set([
-  'none',
-  'auto',
-  'atrous',
-  'atrous-variance',
-  'svgf-real',
-  'bmfr',
-  'oidn-final',
-  'neural',
-]);
-const PT_WEBGPU_IMPLEMENTED_DENOISER_VALUES = new Set([
-  'none',
-  'auto',
-  'oidn-final',
-]);
+const PT_WEBGPU_DENOISER_VALUES =
+  new Set<string>(PT_WEBGPU_MANIFEST_DENOISER_VALUES);
+const PT_WEBGPU_IMPLEMENTED_DENOISER_VALUES =
+  new Set<string>(PT_WEBGPU_MANIFEST_IMPLEMENTED_DENOISER_VALUES);
 const PT_WEBGPU_TRACE_TIER_VALUES = new Set(['full', 'lite']);
 const PT_WEBGPU_CAUSTIC_STRATEGY_VALUES = new Set(['none', 'manifold-nee', 'photon-map']);
-const PT_WEBGPU_SAMPLING_VALUES = new Set(['pcg', 'sobol']);
+const PT_WEBGPU_SAMPLING_VALUES =
+  new Set<string>(PT_WEBGPU_MANIFEST_SAMPLING_VALUES);
 const PT_WEBGPU_BVH_TRAVERSAL_VALUES = new Set(['binary', 'cwbvh-closest']);
 const PT_WEBGPU_OIDN_EXECUTION_PROVIDER_VALUES = new Set(['webnn', 'webgpu', 'wasm']);
 
@@ -175,9 +174,8 @@ function assertPtWebgpuExtensions(value: unknown): void {
 }
 
 export const PT_WEBGPU_MAX_BOUNCES = 8;
-export const BDPT_MAX_LIGHT_BOUNCES = 8;
-/** Largest finite f32. Used as an effectively-unclamped GRIS weight ceiling. */
-export const PT_WEBGPU_RESTIR_PT_EFFECTIVELY_UNCLAMPED_W = 3.4028234663852886e38;
+export const BDPT_MAX_LIGHT_BOUNCES =
+  PT_WEBGPU_BDPT_SUPPORT.maxLightVertices;
 // D2 (2026-07-20): raised 1 → 2 unconditionally. With maxLv=2 the kernel
 // connection loop `for lvi=1u; lvi<maxLv` executes lvi=1, so BDPT does real
 // light-path connections out of the box instead of being silently inert at the
@@ -333,10 +331,10 @@ export function validatePtWebgpuFrameInput(input: FrameInput): void {
   }
   if (quality.filteredGlossyFactor !== undefined) {
     assertFiniteNumber(quality.filteredGlossyFactor, 'quality.filteredGlossyFactor');
-    if (quality.filteredGlossyFactor < 0 || quality.filteredGlossyFactor > 1) {
+    if (quality.filteredGlossyFactor !== 0) {
       throw new RangeError(
-        `renderFrame: quality.filteredGlossyFactor must be in [0, 1] ` +
-          `(got ${quality.filteredGlossyFactor})`,
+        'renderFrame: quality.filteredGlossyFactor is unsupported by pt-webgpu; ' +
+          'use 0 or omit it.',
       );
     }
   }
@@ -355,15 +353,15 @@ export function validatePtWebgpuFrameInput(input: FrameInput): void {
 function assertRestirPtReuseSupported(device: GPUDevice, traceTier: PtWebgpuTraceTier): void {
   if (traceTier !== 'full') {
     throw new Error(
-      'createPTEngine_WebGPU: restirPtReuse requires traceTier "full"; the selected lite tier cannot bind the ReSTIR-PT reuse reservoirs.',
+      'createPTEngine_WebGPU: oneEdgeReconnectionReuse requires traceTier "full"; the selected lite tier cannot bind the reconnection reservoirs.',
     );
   }
   const maxBuffers = device.limits.maxStorageBuffersPerShaderStage;
   if (maxBuffers < PT_WEBGPU_RESTIR_PT_REUSE_REQUIRED_STORAGE_BUFFERS_PER_STAGE) {
     throw new Error(
-      `createPTEngine_WebGPU: restirPtReuse requires maxStorageBuffersPerShaderStage >= ` +
+      `createPTEngine_WebGPU: oneEdgeReconnectionReuse requires maxStorageBuffersPerShaderStage >= ` +
         `${PT_WEBGPU_RESTIR_PT_REUSE_REQUIRED_STORAGE_BUFFERS_PER_STAGE}; device exposes ${maxBuffers}. ` +
-        'Request the ReSTIR-PT reuse limit floor when acquiring the GPUDevice.',
+        'Request the one-edge reconnection limit floor when acquiring the GPUDevice.',
     );
   }
 }
@@ -391,17 +389,54 @@ function assertCwbvhClosestSupported(
   }
 }
 
+function assertBdptCameraSplatSupported(
+  device: GPUDevice,
+  traceTier: PtWebgpuTraceTier,
+  restirPtReuse: boolean,
+  cwbvhClosest: boolean,
+): void {
+  const support =
+    ptWebgpuSupportManifest(traceTier).bidirectionalPathTracing;
+  if (support == null) {
+    throw new Error(
+      'createPTEngine_WebGPU: bdpt:true is unavailable in the selected support profile.',
+    );
+  }
+  if (support.cameraSplatStrategy !== 'native') {
+    throw new Error(
+      'createPTEngine_WebGPU: bdpt:true requires a native t=1 camera-splat strategy.',
+    );
+  }
+  const reconnectionStorageBindings =
+    PT_WEBGPU_RESTIR_PT_REUSE_REQUIRED_STORAGE_BUFFERS_PER_STAGE -
+    PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE;
+  const cwbvhStorageBindings =
+    PT_WEBGPU_CWBVH_CLOSEST_REQUIRED_STORAGE_BUFFERS_PER_STAGE -
+    PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE;
+  const required =
+    PT_WEBGPU_BDPT_REQUIRED_STORAGE_BUFFERS_PER_STAGE +
+    (restirPtReuse ? reconnectionStorageBindings : 0) +
+    (cwbvhClosest ? cwbvhStorageBindings : 0);
+  const maxBuffers = device.limits.maxStorageBuffersPerShaderStage;
+  if (maxBuffers < required) {
+    throw new Error(
+      'createPTEngine_WebGPU: bdpt:true requires the native t=1 camera-splat ' +
+        `layout with maxStorageBuffersPerShaderStage >= ${required}; device exposes ${maxBuffers}. ` +
+        'Request the BDPT limit floor when acquiring the GPUDevice.',
+    );
+  }
+}
+
 /** The resolved values `createPTEngine_WebGPU` needs after validation. */
 export interface ValidatedPtWebgpuOptions {
   readonly traceTier: PtWebgpuTraceTier;
   readonly effectiveOpts: PTEngineWebGPUOptions;
-  readonly resolvedBdptMaxLightBounces: number;
 }
 
 /**
  * Validate + normalize `createPTEngine_WebGPU` options: perform every structural
  * throw and emit every construction-time `onWarning`, then return the resolved
- * trace tier, denoiser-resolved effective options, and BDPT light-bounce count.
+ * trace tier and denoiser-resolved effective options.
  * Byte-identical to the former inline factory body (T3-B extraction).
  */
 export function validatePtWebgpuOptions(
@@ -430,11 +465,22 @@ export function validatePtWebgpuOptions(
   for (const key of [
     'spectral',
     'bdpt',
+    'oneEdgeReconnectionReuse',
     'restirPtReuse',
     'lightTreeImportanceSampling',
     'cameraVisibleEmitters',
   ] as const) {
     assertOptionalBoolean(rawOpts[key], key);
+  }
+  if (
+    rawOpts.oneEdgeReconnectionReuse !== undefined &&
+    rawOpts.restirPtReuse !== undefined &&
+    rawOpts.oneEdgeReconnectionReuse !== rawOpts.restirPtReuse
+  ) {
+    throw new TypeError(
+      'createPTEngine_WebGPU: oneEdgeReconnectionReuse and deprecated ' +
+      'restirPtReuse disagree; supply one value.',
+    );
   }
   if (rawOpts.onWarning !== undefined && typeof rawOpts.onWarning !== 'function') {
     throw new TypeError('createPTEngine_WebGPU: onWarning must be a function when supplied');
@@ -505,7 +551,6 @@ export function validatePtWebgpuOptions(
         'the tuning object is not silently ignored when BDPT is disabled.',
     );
   }
-  const resolvedBdptMaxLightBounces = resolveBdptMaxLightBounces(bdptMaxLightBounces);
   const causticOptions = opts.causticOptions;
   if (causticOptions !== undefined && (causticOptions === null || typeof causticOptions !== 'object' || Array.isArray(causticOptions))) {
     throw new TypeError('createPTEngine_WebGPU: causticOptions must be an object when supplied');
@@ -542,26 +587,48 @@ export function validatePtWebgpuOptions(
         'causticStrategy="manifold-nee"; MNEE tuning is not silently ignored.',
     );
   }
-  const restirPtOptions = opts.restirPtReuseOptions;
-  if (restirPtOptions !== undefined && (restirPtOptions === null || typeof restirPtOptions !== 'object' || Array.isArray(restirPtOptions))) {
-    throw new TypeError('createPTEngine_WebGPU: restirPtReuseOptions must be an object when supplied');
+  if (
+    opts.oneEdgeReconnectionReuseOptions !== undefined &&
+    opts.restirPtReuseOptions !== undefined
+  ) {
+    throw new TypeError(
+      'createPTEngine_WebGPU: supply oneEdgeReconnectionReuseOptions or the ' +
+      'deprecated restirPtReuseOptions alias, not both.',
+    );
+  }
+  const restirPtOptions =
+    opts.oneEdgeReconnectionReuseOptions ?? opts.restirPtReuseOptions;
+  const restirPtOptionsLabel =
+    opts.oneEdgeReconnectionReuseOptions !== undefined
+      ? 'oneEdgeReconnectionReuseOptions'
+      : 'restirPtReuseOptions';
+  if (
+    restirPtOptions !== undefined &&
+    (restirPtOptions === null || typeof restirPtOptions !== 'object' ||
+      Array.isArray(restirPtOptions))
+  ) {
+    throw new TypeError(
+      `createPTEngine_WebGPU: ${restirPtOptionsLabel} must be an object when supplied`,
+    );
   }
   if (restirPtOptions !== undefined) {
-    assertOptionsObject(restirPtOptions, 'restirPtReuseOptions');
+    assertOptionsObject(restirPtOptions, restirPtOptionsLabel);
   }
   const restirPtOptionKeys = restirPtOptions == null ? [] : Object.keys(restirPtOptions);
   const unknownRestirPtOptionKeys = restirPtOptionKeys.filter(
-    (key) => key !== 'mClamp' && key !== 'wCap',
+    (key) => key !== 'mClamp',
   );
   if (unknownRestirPtOptionKeys.length > 0) {
     throw new TypeError(
-      'createPTEngine_WebGPU: restirPtReuseOptions contains unknown key(s): ' +
+      `createPTEngine_WebGPU: ${restirPtOptionsLabel} contains unknown key(s): ` +
         unknownRestirPtOptionKeys.join(', '),
     );
   }
   const restirPtMClamp = restirPtOptions?.mClamp;
   if (restirPtMClamp !== undefined && typeof restirPtMClamp !== 'number') {
-    throw new TypeError('createPTEngine_WebGPU: restirPtReuseOptions.mClamp must be a number when supplied');
+    throw new TypeError(
+      `createPTEngine_WebGPU: ${restirPtOptionsLabel}.mClamp must be a number when supplied`,
+    );
   }
   if (
     restirPtMClamp !== undefined &&
@@ -569,28 +636,16 @@ export function validatePtWebgpuOptions(
       restirPtMClamp < 1 || restirPtMClamp > 4095)
   ) {
     throw new RangeError(
-      'createPTEngine_WebGPU: restirPtReuseOptions.mClamp must be an integer in 1..4095 ' +
+      `createPTEngine_WebGPU: ${restirPtOptionsLabel}.mClamp must be an integer in 1..4095 ` +
         `(got ${restirPtMClamp})`,
     );
   }
-  const restirPtWCap = restirPtOptions?.wCap;
-  if (restirPtWCap !== undefined && typeof restirPtWCap !== 'number') {
-    throw new TypeError('createPTEngine_WebGPU: restirPtReuseOptions.wCap must be a number when supplied');
-  }
-  if (
-    restirPtWCap !== undefined &&
-    (!Number.isFinite(restirPtWCap) || restirPtWCap <= 0 ||
-      restirPtWCap > PT_WEBGPU_RESTIR_PT_EFFECTIVELY_UNCLAMPED_W ||
-      !Number.isFinite(Math.fround(restirPtWCap)) || Math.fround(restirPtWCap) <= 0)
-  ) {
-    throw new RangeError(
-      'createPTEngine_WebGPU: restirPtReuseOptions.wCap must remain finite and positive when packed to f32, and be in ' +
-      `(0, ${PT_WEBGPU_RESTIR_PT_EFFECTIVELY_UNCLAMPED_W}] (got ${restirPtWCap})`,
-    );
-  }
-  if (opts.restirPtReuse !== true && restirPtOptionKeys.length > 0) {
+  const oneEdgeReconnectionRequested =
+    (opts.oneEdgeReconnectionReuse ?? opts.restirPtReuse) === true;
+  if (!oneEdgeReconnectionRequested && restirPtOptionKeys.length > 0) {
     throw new Error(
-      'createPTEngine_WebGPU: non-empty restirPtReuseOptions requires restirPtReuse:true; ' +
+      `createPTEngine_WebGPU: non-empty ${restirPtOptionsLabel} requires ` +
+        'oneEdgeReconnectionReuse:true (or deprecated restirPtReuse:true); ' +
         'the tuning object is not silently ignored when reuse is disabled.',
     );
   }
@@ -651,7 +706,6 @@ export function validatePtWebgpuOptions(
     return {
       traceTier: 'full',
       effectiveOpts: opts,
-      resolvedBdptMaxLightBounces,
     };
   }
   const traceTier = resolvePtWebgpuTraceTier(opts.device, opts.traceTier);
@@ -674,40 +728,35 @@ export function validatePtWebgpuOptions(
         'lite does not ingest explicit mesh-area emitters.',
     );
   }
-  if (opts.bdpt === true && traceTier !== 'full') {
+  if (
+    opts.bdpt === true &&
+    ptWebgpuSupportManifest(traceTier).bidirectionalPathTracing == null
+  ) {
     throw new Error(
-      'createPTEngine_WebGPU: bdpt:true requires traceTier "full"; the lite kernel does not compose the BDPT connection or invocation-private path state.',
+      'createPTEngine_WebGPU: bdpt:true requires a support profile with ' +
+        'bidirectionalPathTracing; the selected lite profile does not compose ' +
+        'the BDPT connection or invocation-private path state.',
     );
   }
   const cwbvhClosestRequested = opts.bvhTraversal === 'cwbvh-closest';
 
-  if (opts.restirPtReuse === true) {
+  if (oneEdgeReconnectionRequested) {
     assertRestirPtReuseSupported(opts.device, traceTier);
-    const effectiveRestirPtWCap = restirPtWCap === undefined
-      ? undefined
-      : Math.fround(restirPtWCap);
-    if (
-      effectiveRestirPtWCap !== undefined &&
-      effectiveRestirPtWCap < Math.fround(PT_WEBGPU_RESTIR_PT_EFFECTIVELY_UNCLAMPED_W)
-    ) {
-      emitPteWarning(opts, {
-        code: 'pt-webgpu.restir-pt-biased-weight-clamp',
-        backend: 'pt-webgpu',
-        phase: 'construction',
-        method: 'createPTEngine_WebGPU',
-        message:
-          '[vitrum/pt-webgpu] restirPtReuseOptions.wCap explicitly enables a biased ' +
-          'GRIS contribution-weight clamp. Omit wCap for the effectively-unclamped professional estimator.',
-        details: {
-          authoredWCap: restirPtWCap,
-          effectivePackedWCap: effectiveRestirPtWCap,
-          biased: true,
-        },
-      });
-    }
   }
   if (cwbvhClosestRequested) {
-    assertCwbvhClosestSupported(opts.device, traceTier, opts.restirPtReuse === true);
+    assertCwbvhClosestSupported(
+      opts.device,
+      traceTier,
+      oneEdgeReconnectionRequested,
+    );
+  }
+  if (opts.bdpt === true) {
+    assertBdptCameraSplatSupported(
+      opts.device,
+      traceTier,
+      oneEdgeReconnectionRequested,
+      cwbvhClosestRequested,
+    );
   }
   if (traceTier === 'full') {
     console.info(
@@ -726,7 +775,7 @@ export function validatePtWebgpuOptions(
       details: { traceTier },
     });
   }
-  return { traceTier, effectiveOpts, resolvedBdptMaxLightBounces };
+  return { traceTier, effectiveOpts };
 }
 
 /**

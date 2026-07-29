@@ -1063,9 +1063,10 @@ export class GltfSceneController {
       }
     }
 
-    // Morph-only meshes use a synthesized identity skin and therefore have no
-    // glTF skin binding. Solve their shared stream here. True skinned meshes
-    // are solved below so joint pose and morph weights publish atomically.
+    // Morph-only primitives have no glTF skin binding. True skinned primitives
+    // publish only morph weights so engines solve once from their retained rest
+    // streams. Native instanced primitives cannot carry skin state, so their
+    // deformation source is still solved here into one shared geometry stream.
     for (const id of this.#allPrimitiveIds) {
       if (this.#skinBindingsByPrimitiveId.has(id)) continue;
       const source = this.#deformationSource(id);
@@ -1202,8 +1203,11 @@ export class GltfSceneController {
   ): Partial<ScenePrimitive> | undefined {
     const source = this.#deformationSource(primitiveId);
     if (!source?.morphTargets || source.morphTargets.length === 0) return undefined;
+    if (isSkinnedMesh(this.#basePrimitiveById.get(primitiveId))) {
+      return { morphWeights };
+    }
     const solved = solveSkin({ ...source, morphWeights });
-    const patch: Record<string, unknown> = {
+    return {
       positions: solved.positions,
       normals: solved.normals,
       ...(solved.tangents ? { tangents: solved.tangents } : {}),
@@ -1211,10 +1215,6 @@ export class GltfSceneController {
       ...(solved.uv1 ? { uv1: solved.uv1 } : {}),
       ...(solved.uvSets ? { uvSets: solved.uvSets } : {}),
     };
-    if (isSkinnedMesh(this.#basePrimitiveById.get(primitiveId))) {
-      patch.morphWeights = morphWeights;
-    }
-    return patch;
   }
 
   #buildSkinPatch(
@@ -1267,15 +1267,30 @@ export class GltfSceneController {
         ?? source.morphWeights
         ?? new Float32Array(source.morphTargets.length)
       : undefined;
-    if (matArrayAlmostEqual(source.bones, bones) && morphWeights === undefined) {
-      return undefined;
+    const basePrimitive = this.#basePrimitiveById.get(primitiveId);
+    if (isSkinnedMesh(basePrimitive)) {
+      const currentPrimitive = findPrimitive(this.#scene, primitiveId);
+      if (
+        currentPrimitive?.kind === 'skinned-mesh' &&
+        matArrayAlmostEqual(currentPrimitive.bones, bones) &&
+        morphWeights === undefined
+      ) {
+        return undefined;
+      }
+      return {
+        bones,
+        ...(morphWeights ? { morphWeights } : {}),
+      };
     }
+
+    // Instanced primitives cannot retain bones/morph weights. Resolve their
+    // private deformation source once and patch the shared render attributes.
     const solved = solveSkin({
       ...source,
       bones,
       ...(morphWeights ? { morphWeights } : {}),
     });
-    const patch: Record<string, unknown> = {
+    return {
       positions: solved.positions,
       normals: solved.normals,
       ...(solved.tangents ? { tangents: solved.tangents } : {}),
@@ -1283,11 +1298,6 @@ export class GltfSceneController {
       ...(solved.uv1 ? { uv1: solved.uv1 } : {}),
       ...(solved.uvSets ? { uvSets: solved.uvSets } : {}),
     };
-    if (isSkinnedMesh(this.#basePrimitiveById.get(primitiveId))) {
-      patch.bones = bones;
-      if (morphWeights) patch.morphWeights = morphWeights;
-    }
-    return patch;
   }
 
   #applyMaterialPointerSamples(
@@ -1730,8 +1740,6 @@ const MATERIAL_TEXTURE_REF_FIELDS = [
   'lightMap',
 ] as const satisfies readonly (keyof MaterialSpec)[];
 
-type MaterialTextureRefField = typeof MATERIAL_TEXTURE_REF_FIELDS[number];
-
 function materialReplacementPatch(material: MaterialSpec): MaterialSpec {
   const patch: Record<string, unknown> = {};
   for (const field of MATERIAL_REPLACEMENT_CLEAR_FIELDS) patch[field] = undefined;
@@ -1755,9 +1763,6 @@ function materialForVariantPatch(
 ): MaterialSpec {
   if (patch.materialRouting === undefined) return material;
   const routed: Record<string, unknown> = { ...material };
-  const droppedFields = new Set<MaterialTextureRefField>(
-    patch.droppedTextureFields,
-  );
   for (const field of MATERIAL_TEXTURE_REF_FIELDS) {
     const routedRef = patch.materialRouting[field];
     const liveRef = material[field];
@@ -1765,8 +1770,6 @@ function materialForVariantPatch(
       routed[field] = isTextureRef(liveRef)
         ? textureRefWithRouting(liveRef, routedRef)
         : routedRef;
-    } else if (droppedFields.has(field)) {
-      delete routed[field];
     }
   }
   return routed as unknown as MaterialSpec;
@@ -1815,6 +1818,7 @@ function blendSampledChannels(
     pointer?: string;
     value: Float32Array;
     weightSum: number;
+    quaternion: boolean;
     referenceQuat?: Float32Array;
   }>();
 
@@ -1823,6 +1827,7 @@ function blendSampledChannels(
     if (weight <= 0) continue;
     for (const sample of perClipSamples[clipIndex] ?? []) {
       const key = `${sample.node}\u0000${sample.path}\u0000${sample.pointer ?? ''}`;
+      const quaternion = sampledChannelIsNodeRotation(sample);
       let acc = accumulators.get(key);
       if (!acc) {
         acc = {
@@ -1831,7 +1836,8 @@ function blendSampledChannels(
           ...(sample.pointer !== undefined ? { pointer: sample.pointer } : {}),
           value: new Float32Array(sample.value.length),
           weightSum: 0,
-          ...(sample.path === 'rotation' ? { referenceQuat: new Float32Array(sample.value) } : {}),
+          quaternion,
+          ...(quaternion ? { referenceQuat: new Float32Array(sample.value) } : {}),
         };
         accumulators.set(key, acc);
       }
@@ -1841,7 +1847,7 @@ function blendSampledChannels(
         acc.value = grown;
       }
 
-      const sign = sample.path === 'rotation' && acc.referenceQuat && quatDot(acc.referenceQuat, sample.value) < 0
+      const sign = acc.quaternion && acc.referenceQuat && quatDot(acc.referenceQuat, sample.value) < 0
         ? -1
         : 1;
       for (let i = 0; i < sample.value.length; i += 1) {
@@ -1855,7 +1861,7 @@ function blendSampledChannels(
   for (const acc of accumulators.values()) {
     if (acc.weightSum <= 0) continue;
     const value = new Float32Array(acc.value.length);
-    if (acc.path === 'rotation') {
+    if (acc.quaternion) {
       value.set(acc.value);
       normalizeQuatInPlace(value);
     } else {
@@ -1871,6 +1877,13 @@ function blendSampledChannels(
     });
   }
   return out;
+}
+
+function sampledChannelIsNodeRotation(sample: SampledChannel): boolean {
+  if (sample.path === 'rotation') return true;
+  if (sample.path !== 'pointer') return false;
+  const target = resolveGltfAnimationPointer(sample.pointer);
+  return target?.kind === 'node' && target.path === 'rotation';
 }
 
 function quatDot(a: ArrayLike<number>, b: ArrayLike<number>): number {
@@ -2156,8 +2169,19 @@ function fitMorphWeights(
   frame: GltfSceneControllerDiagnosticFrame,
 ): Float32Array {
   if (weights.length === targetCount) return new Float32Array(weights);
-  void frame;
-  throw new Error(
-    `[vitrum/gltf-adapter] Animation weights for primitive "${primitiveId}" have length ${weights.length}; expected exactly ${targetCount}.`,
-  );
+  const retainedCount = Math.min(weights.length, targetCount);
+  const fitted = new Float32Array(targetCount);
+  fitted.set(weights.subarray(0, retainedCount));
+  emitControllerDiagnostic(frame, {
+    code: 'morph-weight-count-mismatch',
+    path: `scene.primitives["${primitiveId}"].morphWeights`,
+    primitiveId,
+    message:
+      `[vitrum/gltf-adapter] Animation weights for primitive "${primitiveId}" have ` +
+      `length ${weights.length}; expected ${targetCount}. ` +
+      (weights.length > targetCount
+        ? `The first ${targetCount} weight(s) were retained and the remainder were discarded.`
+        : `The ${weights.length} supplied weight(s) were retained and the remainder were zero-filled.`),
+  });
+  return fitted;
 }

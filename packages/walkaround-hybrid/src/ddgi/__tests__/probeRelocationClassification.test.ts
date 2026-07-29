@@ -303,7 +303,9 @@ describe('DDGI packed probe-state shader contract', () => {
 
   it('loads bounded packed relocation from the irradiance atlas without suppressing inactive recovery rays', () => {
     const wgsl = makeProbeUpdateRaysWGSL(8);
-    expect(wgsl).not.toContain('@group(2) @binding(8)');
+    expect(wgsl).toContain('@group(2) @binding(8)');
+    expect(wgsl).toContain('visibilityPrev,');
+    expect(wgsl).toContain('fn ddgiFeedbackAt(');
     expect(wgsl).toContain('textureLoad(irradiancePrev');
     expect(wgsl).toContain('normalizedOffset * gridParams.spacing');
     expect(wgsl).toContain('out._pad0 = 0.0');

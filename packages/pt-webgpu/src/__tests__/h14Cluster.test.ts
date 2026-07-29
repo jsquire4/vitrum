@@ -75,7 +75,7 @@ describe('H14-C: getRestirPtResultBuffer on the Engine contract', () => {
     // restirPtReuse requires full tier; the buffer is null until a frame runs.
     const engine = await createPTEngine_WebGPU({ device: fullDevice, restirPtReuse: true });
     expect(PT_WEBGPU_RESTIR_PT_REUSE_REQUIRED_STORAGE_BUFFERS_PER_STAGE).toBe(
-      PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE + 4,
+      PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE + 5,
     );
     expect(engine.getRestirPtResultBuffer!()).toBeNull();
     engine.dispose();

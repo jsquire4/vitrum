@@ -83,6 +83,54 @@ afterEach(() => {
 });
 
 describe('BMFR overlap fit + resolve', () => {
+  it('blends remodulated history with the current fit in one albedo-demodulated domain', async () => {
+    const device = createStubDevice();
+    const rho = 0.5;
+    const temporalAlpha = 0.2;
+
+    // Identity-reconstruction oracle for one pixel: reproduce the resolve
+    // kernel's mix(history, current, alpha) from the actual uploaded arrays.
+    uploadMocks.readRgba16fToRgb.mockImplementationOnce(async () => {
+      const uploads = uploadMocks.uploadRgbAsRgba16f.mock.calls as unknown as Array<
+        [GPUDevice, GPUTexture, Float32Array, number, number]
+      >;
+      const currentLighting = uploads[0]?.[2];
+      const historyLighting = uploads[2]?.[2];
+      if (currentLighting == null || historyLighting == null) {
+        throw new Error('expected BMFR current and history uploads');
+      }
+      return new Float32Array([
+        historyLighting[0]! * (1 - temporalAlpha) + currentLighting[0]! * temporalAlpha,
+        historyLighting[1]! * (1 - temporalAlpha) + currentLighting[1]! * temporalAlpha,
+        historyLighting[2]! * (1 - temporalAlpha) + currentLighting[2]! * temporalAlpha,
+      ]);
+    });
+
+    const result = await runBmfrWebGPU({
+      device: device as unknown as GPUDevice,
+      rgb: new Float32Array([1, 1, 1]),
+      historyRgb: new Float32Array([0.5, 0.5, 0.5]),
+      albedoRgb: new Float32Array([rho, rho, rho]),
+      worldPosRgb: new Float32Array([0, 0, 1]),
+      width: 1,
+      height: 1,
+      temporalAlpha,
+    });
+
+    const uploads = uploadMocks.uploadRgbAsRgba16f.mock.calls as unknown as Array<
+      [GPUDevice, GPUTexture, Float32Array, number, number]
+    >;
+    expect(Array.from(uploads[0]![2])).toEqual([2, 2, 2]);
+    expect(Array.from(uploads[2]![2])).toEqual([1, 1, 1]);
+    // Correct remodulated-domain EMA:
+    // (1 - 0.2) * 0.5 history + 0.2 * 1.0 current = 0.6.
+    expect(Array.from(result)).toEqual([
+      expect.closeTo(0.6, 6),
+      expect.closeTo(0.6, 6),
+      expect.closeTo(0.6, 6),
+    ]);
+  });
+
   it('uses the half-block overlap default and a full pixel resolve grid', async () => {
     const device = createStubDevice();
     const width = 64;

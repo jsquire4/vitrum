@@ -74,15 +74,15 @@ const SCENE_KEYS = exhaustiveKnownKeys<Scene>()([
 
 const MESH_KEYS = exhaustiveKnownKeys<MeshPrimitive>()([
   'kind', 'id', 'positions', 'normals', 'uvs', 'uv1', 'uvSets', 'tangents',
-  'colors', 'colorSets', 'indices', 'material', 'transform', 'castShadow',
+  'colors', 'colorSets', 'vertexColorSet', 'indices', 'material', 'transform', 'castShadow',
 ]);
 const INSTANCED_MESH_KEYS = exhaustiveKnownKeys<InstancedMeshPrimitive>()([
   'kind', 'id', 'positions', 'normals', 'uvs', 'uv1', 'uvSets', 'tangents',
-  'colors', 'colorSets', 'indices', 'material', 'instances', 'castShadow',
+  'colors', 'colorSets', 'vertexColorSet', 'indices', 'material', 'instances', 'castShadow',
 ]);
 const SKINNED_MESH_KEYS = exhaustiveKnownKeys<SkinnedMeshPrimitive>()([
   'kind', 'id', 'positions', 'normals', 'uvs', 'uv1', 'uvSets', 'tangents',
-  'colors', 'colorSets', 'indices', 'skinIndices', 'skinWeights',
+  'colors', 'colorSets', 'vertexColorSet', 'indices', 'skinIndices', 'skinWeights',
   'skinInfluencesPerVertex', 'bones', 'boneInverses', 'bindMatrix',
   'bindMatrixInverse', 'morphTargets', 'morphTargetNormals',
   'morphTargetTangents', 'morphTargetUvs', 'morphTargetUv1s',
@@ -94,7 +94,7 @@ const ANALYTIC_KEYS = exhaustiveKnownKeys<AnalyticPrimitive>()([
 ]);
 const ANALYTIC_FALLBACK_MESH_KEYS = exhaustiveKnownKeys<AnalyticFallbackMesh>()([
   'positions', 'normals', 'uvs', 'uv1', 'uvSets', 'tangents', 'colors',
-  'colorSets', 'indices', 'castShadow',
+  'colorSets', 'vertexColorSet', 'indices', 'castShadow',
 ]);
 
 const DIRECTIONAL_EMITTER_KEYS = exhaustiveKnownKeys<DirectionalEmitter>()([
@@ -609,7 +609,15 @@ export function validateMaterialSpec(material: MaterialSpec, path = 'material'):
   if (material.opacity !== undefined) assertRange(material.opacity, `${path}.opacity`, 0, 1);
   if (material.doubleSided !== undefined) assertBoolean(material.doubleSided, `${path}.doubleSided`);
   if (material.transmission !== undefined) assertRange(material.transmission, `${path}.transmission`, 0, 1);
-  if (material.ior !== undefined) assertPositive(material.ior, `${path}.ior`);
+  if (material.ior !== undefined) {
+    assertFinite(material.ior, `${path}.ior`);
+    if (material.ior !== 0 && material.ior < 1) {
+      failRange(
+        `${path}.ior`,
+        `must be 0 (KHR_materials_ior infinite-IOR mode) or >= 1 (got ${material.ior})`,
+      );
+    }
+  }
   if (material.attenuationColor !== undefined) {
     assertVecInRange(material.attenuationColor, 3, `${path}.attenuationColor`, 0, 1);
   }
@@ -667,7 +675,7 @@ export function validateMaterialSpec(material: MaterialSpec, path = 'material'):
     }
   }
   if (material.specularColor !== undefined) {
-    assertVecInRange(material.specularColor, 3, `${path}.specularColor`, 0, 1);
+    assertVecNonNegative(material.specularColor, 3, `${path}.specularColor`);
   }
   if (material.spectralAttenuation !== undefined) {
     const curve = material.spectralAttenuation;
@@ -710,8 +718,12 @@ export function validateMaterialSpec(material: MaterialSpec, path = 'material'):
 
 type MeshStreams = Pick<
   MeshPrimitive,
-  'positions' | 'normals' | 'uvs' | 'uv1' | 'uvSets' | 'tangents' | 'colors' | 'colorSets' | 'indices' | 'castShadow'
+  'positions' | 'normals' | 'uvs' | 'uv1' | 'uvSets' | 'tangents' | 'colors' | 'colorSets' | 'vertexColorSet' | 'indices' | 'castShadow'
 >;
+
+// Every generated analytic mesh carries the geometry builder's UV0 stream.
+// Higher channels exist only when an authored fallbackMesh supplies them.
+const GENERATED_ANALYTIC_TEXCOORDS: ReadonlySet<number> = new Set([0]);
 
 function materialTextureEntries(
   material: MaterialSpec,
@@ -736,6 +748,7 @@ function validateMaterialTexCoords(
   streams: MeshStreams | undefined,
   materialPath: string,
   streamsPath: string,
+  generatedTexCoords?: ReadonlySet<number>,
 ): void {
   for (const [texture, texturePath] of materialTextureEntries(material, materialPath)) {
     const texCoord = texture.texCoord ?? 0;
@@ -744,7 +757,10 @@ function validateMaterialTexCoords(
       : ownArrayElement(streams.uvSets, texCoord);
     const resolvedStream = stream ??
       (texCoord === 0 ? streams?.uvs : texCoord === 1 ? streams?.uv1 : undefined);
-    if (resolvedStream === undefined) {
+    if (
+      resolvedStream === undefined &&
+      generatedTexCoords?.has(texCoord) !== true
+    ) {
       failRange(
         `${texturePath}.texCoord`,
         `references TEXCOORD_${texCoord}, but ${streamsPath} does not provide that UV stream`,
@@ -866,6 +882,28 @@ function validateMeshStreams(streams: MeshStreams, path: string): number {
           'must match the legacy colors alias when both are present',
         );
       }
+    }
+  }
+  if (streams.vertexColorSet !== undefined && streams.vertexColorSet !== null) {
+    if (
+      !Number.isSafeInteger(streams.vertexColorSet) ||
+      streams.vertexColorSet < 0
+    ) {
+      failRange(
+        `${path}.vertexColorSet`,
+        `must be a non-negative safe integer (got ${streams.vertexColorSet})`,
+      );
+    }
+    const selected = streams.colorSets === undefined
+      ? undefined
+      : ownArrayElement(streams.colorSets, streams.vertexColorSet);
+    const resolved = selected ??
+      (streams.vertexColorSet === 0 ? streams.colors : undefined);
+    if (resolved === undefined) {
+      failRange(
+        `${path}.vertexColorSet`,
+        `selects COLOR_${streams.vertexColorSet}, but that stream is not present`,
+      );
     }
   }
 
@@ -1154,17 +1192,22 @@ function validateAnalyticPrimitive(primitive: AnalyticPrimitive, path: string): 
       ANALYTIC_FALLBACK_MESH_KEYS,
     );
     validateMeshStreams(primitive.fallbackMesh, `${path}.fallbackMesh`);
-    // A native analytic has shape-local parameterisation in the backend and
-    // therefore does not need mesh UV streams merely because its material
-    // references a texture. When a generated fallback is supplied, however,
-    // every referenced texCoord must be representable by that fallback.
-    validateMaterialTexCoords(
-      primitive.material,
-      primitive.fallbackMesh,
-      `${path}.material`,
-      `${path}.fallbackMesh`,
-    );
   }
+  // Backends either consume a native analytic under their narrower texture
+  // contract or tessellate it through analyticPrimitiveToMesh(). The generated
+  // path always provides UV0, while an authored fallbackMesh is the effective
+  // source of every UV channel when present.
+  validateMaterialTexCoords(
+    primitive.material,
+    primitive.fallbackMesh,
+    `${path}.material`,
+    primitive.fallbackMesh !== undefined
+      ? `${path}.fallbackMesh`
+      : `${path}'s generated analytic mesh`,
+    primitive.fallbackMesh === undefined
+      ? GENERATED_ANALYTIC_TEXCOORDS
+      : undefined,
+  );
 }
 
 function validatePrimitive(primitive: ScenePrimitive, path: string): void {

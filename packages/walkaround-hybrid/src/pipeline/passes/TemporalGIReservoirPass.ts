@@ -4,10 +4,9 @@
  * Half-resolution (W/2 × H/2) dispatch. group(0) is the dedicated GI reservoir
  * group (current GI reservoir, previous GI reservoir, ubo).
  *
- * group(1) is the shared scene BVH/TLAS/material-atlas group. Both default and
- * GRIS variants bind it now: default temporal reuse recasts the current receiver
- * material to evaluate the same rich receiver-lobe p-hat the RIS producer uses,
- * while GRIS additionally uses the group for reconnection visibility.
+ * group(1) is the shared scene BVH/TLAS/material-atlas group. The canonical
+ * generalized-reuse pass binds it for reconnection visibility and mapped
+ * environment/alpha support evaluation.
  */
 
 import { buildTemporalGiBindGroup } from '../bindGroupBuilders.js';
@@ -29,7 +28,6 @@ export class TemporalGIReservoirPass implements Pass {
 
   constructor(
     pipeline: GPUComputePipeline,
-    _grisEnabled = false,
     ppgTrainingBeforeReuse = false,
   ) {
     this.dependencies = ppgTrainingBeforeReuse ? ['ppg-update'] : ['gi-ris'];

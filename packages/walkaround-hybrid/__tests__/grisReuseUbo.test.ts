@@ -1,24 +1,23 @@
-/** Contract pins for opt-in diffuse DDGI-proxy GRIS reuse. */
+/** Contract pins for mandatory generalized DDGI-proxy reuse. */
 
 import { describe, expect, it } from 'vitest';
 import { WALKAROUND_UBO_SIZE_BYTES } from '../src/pipeline/constants.js';
 import { packWalkaroundUBO, updateUBO } from '../src/pipeline/uboUpdater.js';
 import { WALKAROUND_UBO_WGSL } from '../src/shaders/walkaroundUbo.wgsl.js';
-import { SPATIAL_GI_WGSL, SPATIAL_GI_GRIS_WGSL } from '../src/shaders/spatialGi.wgsl.js';
-import { TEMPORAL_GI_WGSL, TEMPORAL_GI_GRIS_WGSL } from '../src/shaders/temporalGi.wgsl.js';
+import { SPATIAL_GI_WGSL } from '../src/shaders/spatialGi.wgsl.js';
+import { TEMPORAL_GI_WGSL } from '../src/shaders/temporalGi.wgsl.js';
 import { GRIS_REUSE_WGSL } from '../src/shaders/grisReuse.wgsl.js';
 import { RIS_GI_WGSL } from '../src/shaders/risGi.wgsl.js';
 import { RIS_GI_NRC_BODY } from '../src/shaders/risGiNrc.wgsl.js';
 import { SHADING_TERMS_WGSL } from '../src/shaders/shadingTerms.wgsl.js';
 import { buildReservoirGiWgsl, RESERVOIR_GI_WGSL } from '../src/shaders/reservoirGi.wgsl.js';
 import {
-  RESERVOIR_GI_BASE_STRIDE_U32,
-  RESERVOIR_GI_GRIS_STRIDE_U32,
-  reservoirGiStrideU32ForGrisReuse,
+  RESERVOIR_GI_LEGACY_STRIDE_U32,
+  RESERVOIR_GI_STRIDE_U32,
 } from '../src/gi/giLayout.js';
 import type { PipelineFrameInputs } from '../src/pipeline/WalkaroundGPUPipeline.js';
 
-function fakeInputs(grisReuseOverride?: number): PipelineFrameInputs {
+function fakeInputs(): PipelineFrameInputs {
   const matrix = new Float32Array(16);
   return {
     camera: {
@@ -60,7 +59,6 @@ function fakeInputs(grisReuseOverride?: number): PipelineFrameInputs {
       restirGiSpatialRadiusPx: 12,
       restirGiSpatialNormalDotMin: 0.9,
       restirGiSpatialCoplanarTol: 0.05,
-      ...(grisReuseOverride === undefined ? {} : { grisReuse: grisReuseOverride }),
     },
     gtao: {
       gtaoRadiusPx: 32,
@@ -94,38 +92,30 @@ function capturingDevice(backing: Uint8Array): GPUDevice {
   } as unknown as GPUDevice;
 }
 
-describe('WalkaroundUBO GRIS fields', () => {
-  it('keeps the gate at u32[103] and epoch bits at u32[105]', () => {
+describe('WalkaroundUBO generalized-reuse compatibility fields', () => {
+  it('keeps the reserved always-on mirror at u32[103] and epoch bits at u32[105]', () => {
     expect(WALKAROUND_UBO_SIZE_BYTES).toBe(432);
     expect(WALKAROUND_UBO_WGSL).toContain('grisReuse:              u32,');
-    expect(WALKAROUND_UBO_WGSL).toContain('offset 412 — GRIS reuse gate');
+    expect(WALKAROUND_UBO_WGSL).toContain('offset 412 — deprecated mirror, always 1');
     expect(WALKAROUND_UBO_WGSL).toContain('y bits = GRIS history epoch');
 
     const bytes = new Uint8Array(WALKAROUND_UBO_SIZE_BYTES);
-    updateUBO(capturingDevice(bytes), {} as GPUBuffer, fakeInputs(1), undefined, undefined, undefined, 0x89abcdef);
+    updateUBO(capturingDevice(bytes), {} as GPUBuffer, fakeInputs(), undefined, undefined, undefined, 0x89abcdef);
     const words = new Uint32Array(bytes.buffer);
     expect(words[103]).toBe(1);
     expect(words[105]).toBe(0x89abcdef);
   });
 
-  it('defaults the opt-in gate and epoch to zero', () => {
+  it('defaults the compatibility mirror to one and the epoch to zero', () => {
     const words = new Uint32Array(packWalkaroundUBO(fakeInputs()));
-    expect(words[103]).toBe(0);
+    expect(words[103]).toBe(1);
     expect(words[105]).toBe(0);
   });
 
-  it('flipping the gate changes only u32[103]', () => {
-    const off = new Uint32Array(packWalkaroundUBO(fakeInputs(0)));
-    const on = new Uint32Array(packWalkaroundUBO(fakeInputs(1)));
-    for (let index = 0; index < off.length; index += 1) {
-      expect(on[index]).toBe(index === 103 ? 1 : off[index]);
-    }
-  });
-
   it('advancing history changes only u32[105]', () => {
-    const epoch0 = new Uint32Array(packWalkaroundUBO(fakeInputs(1)));
+    const epoch0 = new Uint32Array(packWalkaroundUBO(fakeInputs()));
     const epoch9 = new Uint32Array(packWalkaroundUBO(
-      fakeInputs(1),
+      fakeInputs(),
       undefined,
       undefined,
       undefined,
@@ -137,44 +127,44 @@ describe('WalkaroundUBO GRIS fields', () => {
   });
 });
 
-describe('GRIS shader variants', () => {
-  it('keeps default spatial and temporal reuse free of GRIS machinery', () => {
+describe('canonical generalized-reuse shaders', () => {
+  it('keeps generalized reuse unconditional in both reuse passes', () => {
     for (const source of [SPATIAL_GI_WGSL, TEMPORAL_GI_WGSL]) {
-      expect(source).toContain('jacobianReconnectionShift(');
-      expect(source).not.toContain('grisDomainToCanonicalJacobian(');
-      expect(source).not.toContain('grisTransformedDensity(');
+      expect(source).toContain('grisDomainToCanonicalJacobian(');
+      expect(source).toContain('grisLogWeightedTransformedDensity(');
       expect(source).not.toContain('ubo.grisReuse == 1u');
+      expect(source).not.toContain('jacobianReconnectionShift(');
     }
   });
 
-  it('spatial reuse evaluates the bounded all-candidate/all-technique matrix', () => {
-    expect(SPATIAL_GI_GRIS_WGSL).toContain('var domains: array<ReservoirPT, 6>;');
-    expect(SPATIAL_GI_GRIS_WGSL).toContain('j < domainCount');
-    expect(SPATIAL_GI_GRIS_WGSL).toContain('grisDomainToCanonicalJacobian(');
-    expect(SPATIAL_GI_GRIS_WGSL).toContain('grisTransformedDensity(');
-    expect(SPATIAL_GI_GRIS_WGSL).toContain(
-      'grisWeightedDensity(domainM[j], transformed)',
-    );
-    expect(SPATIAL_GI_GRIS_WGSL).toContain('candidate.W * sourceJ');
-    expect(SPATIAL_GI_GRIS_WGSL).toContain('foldInvalidReservoirGICandidates(');
-    expect(SPATIAL_GI_GRIS_WGSL).toContain('candidate.sampleVisibility > 0.0');
+  it('spatial reuse evaluates a log-scaled all-candidate/all-technique matrix', () => {
+    expect(SPATIAL_GI_WGSL).toContain('var domains: array<ReservoirPT, 6>;');
+    expect(SPATIAL_GI_WGSL).toContain('j < domainCount');
+    expect(SPATIAL_GI_WGSL).toContain('grisDomainToCanonicalJacobian(');
+    expect(SPATIAL_GI_WGSL).toContain('grisLogWeightedTransformedDensity(');
+    expect(SPATIAL_GI_WGSL).toContain('grisLogCanonicalResamplingWeight(');
+    expect(SPATIAL_GI_WGSL).toContain('candidate.W,');
+    expect(SPATIAL_GI_WGSL).not.toContain('candidate.W * f32(domainM[i])');
+    expect(SPATIAL_GI_WGSL).toContain('totalAttempts = reservoirGiSaturatingAddU32(');
+    expect(SPATIAL_GI_WGSL).toContain('candidateVisibility[i]');
   });
 
   it('temporal reuse evaluates both current and native previous receivers', () => {
-    expect(TEMPORAL_GI_GRIS_WGSL).toContain('var domains: array<ReservoirPT, 2>;');
-    expect(TEMPORAL_GI_GRIS_WGSL).toContain('domains[0] = current;');
-    expect(TEMPORAL_GI_GRIS_WGSL).toContain('domains[1] = previous;');
-    expect(TEMPORAL_GI_GRIS_WGSL).toContain('j < 2u');
-    expect(TEMPORAL_GI_GRIS_WGSL).toContain('grisTransformedDensity(');
-    expect(TEMPORAL_GI_GRIS_WGSL).toContain(
-      'grisWeightedDensity(domainM[j], transformed)',
+    expect(TEMPORAL_GI_WGSL).toContain('var domains: array<ReservoirPT, 2>;');
+    expect(TEMPORAL_GI_WGSL).toContain('domains[0] = current;');
+    expect(TEMPORAL_GI_WGSL).toContain('domains[1] = previous;');
+    expect(TEMPORAL_GI_WGSL).toContain('j < 2u');
+    expect(TEMPORAL_GI_WGSL).toContain('grisLogWeightedTransformedDensity(');
+    expect(TEMPORAL_GI_WGSL).toContain('grisLogCanonicalResamplingWeight(');
+    expect(TEMPORAL_GI_WGSL).toContain('candidate.W,');
+    expect(TEMPORAL_GI_WGSL).not.toContain('candidate.W * f32(domainM[i])');
+    expect(TEMPORAL_GI_WGSL).toContain(
+      'totalAttempts = reservoirGiSaturatingAddU32(totalAttempts, domainM[i]);',
     );
-    expect(TEMPORAL_GI_GRIS_WGSL).toContain('candidate.W * sourceJ');
-    expect(TEMPORAL_GI_GRIS_WGSL).toContain('foldInvalidReservoirGICandidates(');
   });
 
   it('rejects stale or invisible reservoir metadata in both reuse passes', () => {
-    for (const source of [SPATIAL_GI_GRIS_WGSL, TEMPORAL_GI_GRIS_WGSL]) {
+    for (const source of [SPATIAL_GI_WGSL, TEMPORAL_GI_WGSL]) {
       expect(source).toContain('historyEpoch != epoch');
       expect(source).toContain('!reservoirGiFinite(');
       expect(source).toContain('nativePHat > 0.0');
@@ -188,26 +178,22 @@ describe('GRIS shader variants', () => {
   it('pins inverse-J densities and the environment identity map', () => {
     expect(GRIS_REUSE_WGSL).toContain('fn grisDomainToCanonicalJacobian(');
     expect(GRIS_REUSE_WGSL).toContain('if (sampleKind == GI_SAMPLE_ENVIRONMENT) { return 1.0; }');
-    expect(GRIS_REUSE_WGSL).toContain('fn grisTransformedDensity(');
+    expect(GRIS_REUSE_WGSL).toContain('fn grisLogWeightedTransformedDensity(');
     expect(GRIS_REUSE_WGSL).toContain(
-      'let result = pHatDomain / domainToCanonicalJacobian;',
+      '+ log2(pHatDomain)',
     );
     expect(GRIS_REUSE_WGSL).toContain(
-      'reservoirGiFinite(result) && result > 0.0',
+      '- log2(domainToCanonicalJacobian)',
     );
-    expect(GRIS_REUSE_WGSL).toContain('Invalid inverse mappings and occluded techniques contribute exactly zero.');
+    expect(GRIS_REUSE_WGSL).not.toContain('fn grisTransformedDensity(');
   });
 });
 
 describe('GRIS reservoir physical layout', () => {
-  it('pins the compact and widened stride authority', () => {
-    expect(RESERVOIR_GI_BASE_STRIDE_U32).toBe(20);
-    expect(RESERVOIR_GI_GRIS_STRIDE_U32).toBe(28);
-    expect(reservoirGiStrideU32ForGrisReuse(false)).toBe(20);
-    expect(reservoirGiStrideU32ForGrisReuse(true)).toBe(28);
-    expect(buildReservoirGiWgsl({ grisCache: false })).toContain(
-      'const RESERVOIR_GI_STRIDE: u32 = 20u;',
-    );
+  it('keeps 20-u32 snapshot migration separate from the sole live 28-u32 ABI', () => {
+    expect(RESERVOIR_GI_LEGACY_STRIDE_U32).toBe(20);
+    expect(RESERVOIR_GI_STRIDE_U32).toBe(28);
+    expect(buildReservoirGiWgsl()).toContain('const RESERVOIR_GI_STRIDE: u32 = 28u;');
     expect(RESERVOIR_GI_WGSL).toContain('const RESERVOIR_GI_STRIDE: u32 = 28u;');
   });
 
@@ -244,32 +230,35 @@ describe('GRIS reservoir physical layout', () => {
 
   it('guards every GRIS density/weight boundary and saturates represented M', () => {
     expect(GRIS_REUSE_WGSL).toContain('fn grisSafeDirection(value: vec3f)');
-    expect(GRIS_REUSE_WGSL).toContain('fn grisWeightedDensity(attempts: u32, density: f32)');
+    expect(GRIS_REUSE_WGSL).toContain('fn grisLogWeightedTransformedDensity(');
+    expect(GRIS_REUSE_WGSL).toContain('fn grisScaledMass(');
+    expect(GRIS_REUSE_WGSL).toContain('fn grisFinaliseLogScaledReservoir(');
     expect(GRIS_REUSE_WGSL).toContain('!reservoirGiFinite(pHatDomain)');
     expect(RESERVOIR_GI_WGSL).toContain('fn reservoirGiSaturatingAddU32');
-    for (const source of [TEMPORAL_GI_GRIS_WGSL, SPATIAL_GI_GRIS_WGSL]) {
-      expect(source).toContain(
-        'denominator = denominator + grisWeightedDensity(domainM[j], transformed);',
-      );
-      expect(source).toContain('if (!reservoirGiFinite(weight) || !(weight > 0.0))');
-      expect(source).toContain('out.M = reservoirGiSaturatingAddU32(oldM, attempts);');
+    for (const source of [TEMPORAL_GI_WGSL, SPATIAL_GI_WGSL]) {
+      expect(source).toContain('grisScaledMass(techniqueLogMass[j], maxTechniqueLogMass)');
+      expect(source).toContain('out.M = totalAttempts;');
+      expect(source).toContain('grisFinaliseLogScaledReservoir(');
       expect(source).toContain('!grisSampleKindValid(');
     }
   });
 });
 
 describe('GRIS target/proposal boundary', () => {
-  it('forces cosine proposal sampling even when PPG resources are compiled', () => {
+  it('composes PPG mixture proposals with generalized reuse', () => {
     for (const source of [RIS_GI_WGSL, RIS_GI_NRC_BODY]) {
-      expect(source).toContain('let ppgGuidedOn = (ubo.ppgEnabled == 1u) && !grisOn;');
+      expect(source).toContain('let ppgGuidedOn = ubo.ppgEnabled == 1u;');
       expect(source).toContain('let alpha = select(0.0, ubo.ppgMixAlpha, ppgGuidedOn);');
+      expect(source).not.toContain('grisOn');
     }
   });
 
-  it('prevents NRC prediction substitution from changing the proxy suffix', () => {
-    expect(RIS_GI_NRC_BODY).toContain('nrcCanSubstitute && !grisOn,');
-    expect(RIS_GI_NRC_BODY).toContain('if (grisOn) {');
-    expect(RIS_GI_NRC_BODY).toContain('pHat = luminance(Lo) * cosTheta * INV_PI * candidateVisibility;');
+  it('composes warm NRC substitution with the same proxy suffix target', () => {
+    expect(RIS_GI_NRC_BODY).toContain('nrcCanSubstitute,');
+    expect(RIS_GI_NRC_BODY).not.toContain('nrcCanSubstitute && !grisOn');
+    expect(RIS_GI_NRC_BODY).not.toContain('grisOn');
+    expect(RIS_GI_NRC_BODY).toContain('pHat = restir_gi_receiver_phat_from_payload(');
+    expect(RIS_GI_NRC_BODY).toContain(') * candidateVisibility;');
   });
 
   it('reweights GRIS samples for glossy/metal while reserving glass for transmitted GI', () => {
@@ -284,11 +273,13 @@ describe('GRIS target/proposal boundary', () => {
     expect(SHADING_TERMS_WGSL).toContain('g.historyEpoch != bitcast<u32>(ubo.sunAngular.y)');
     expect(SHADING_TERMS_WGSL).toContain('return clamp(g.sampleVisibility, 0.0, 1.0);');
     expect(specular).toContain('if (isGlass) { return vec3f(0.0); }');
+    expect(specular).toContain('g.prefixVertexCount != GI_PREFIX_RECONNECTABLE');
     expect(specular).toContain('let grisVisibility = giReservoirVisibility(g);');
     expect(specular).toContain('if (grisVisibility <= 0.0) { return vec3f(0.0); }');
     expect(specular).toContain('let toS = giReservoirDirectionVector(g, pos);');
     expect(specular).toContain('return g.Lo * specBrdf * g.W * grisVisibility;');
     expect(specular).not.toContain('if (ubo.grisReuse == 1u) { return vec3f(0.0); }');
     expect(transmitted).toContain('if (!isGlass) { return vec3f(0.0); }');
+    expect(transmitted).toContain('g.prefixVertexCount != GI_PREFIX_CAMERA_TRANSMISSION');
   });
 });

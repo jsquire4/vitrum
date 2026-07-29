@@ -10,8 +10,8 @@ const GPU_RESOURCES_SOURCE = readFileSync(
   'utf8',
 );
 
-describe('BDPT has no frame-global advance or shared-storage seam', () => {
-  it('removes the public override hook and group-2 rebuild path', () => {
+describe('BDPT path state has no frame-global advance or shared path-storage seam', () => {
+  it('removes the public override hook and group-2 path-buffer rebuild', () => {
     expect(ENGINE_SOURCE).not.toContain('bdptAdvanceFrame');
     expect(ENGINE_SOURCE).not.toContain('BdptLightPathBufferWebGPU');
     expect(GPU_RESOURCES_SOURCE).not.toContain('rebuildGroup2Only');

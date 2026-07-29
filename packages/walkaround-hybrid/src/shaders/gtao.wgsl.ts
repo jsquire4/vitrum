@@ -114,8 +114,13 @@ fn gtaoMain(@builtin(global_invocation_id) gid: vec3u) {
     return;
   }
 
-  // Decode world-space surface normal from G-buffer (stored as n*0.5+0.5).
-  let surfNormal = normalize(center.xyz * 2.0 - 1.0);
+  // Decode the world-space G-buffer normal and rotate it into view space. The
+  // horizon slice directions below are view-space XY vectors; mixing them with
+  // a world-space normal makes AO change when only the camera rotates.
+  let surfNormalWorld = normalize(center.xyz * 2.0 - 1.0);
+  let surfNormal = normalize(
+    (gtao_ubo.viewMatrix * vec4f(surfNormalWorld, 0.0)).xyz,
+  );
 
   // ── B6 — per-pixel view axis from the inverse perspective projection ──────
   //
@@ -126,24 +131,25 @@ fn gtaoMain(@builtin(global_invocation_id) gid: vec3u) {
   // That mis-tilt skews the projected-normal angle γ (n) and therefore the
   // hemisphere the slice integral covers, biasing edge/wide-FOV AO.
   //
-  // Reconstruct the camera→pixel ray analytically (no matrix needed — a
+  // Reconstruct the surface→camera direction analytically (no inverse
+  // projection needed — a
   // standard perspective frustum is fully determined by tan(fov_y/2) and the
   // aspect ratio, which we derive from the G-buffer dimensions):
   //   uv     = (fullPx + 0.5) / fullDims                 (pixel centre, [0,1])
   //   ndc    = uv*2 - 1                                   ([-1,1], y flipped:
   //            screen-y points down, view-y up)
-  //   viewDir = normalize(ndc.x·tanFovHalf·aspect,
-  //                       -ndc.y·tanFovHalf, -1)         (camera → pixel)
-  // At the screen centre ndc≈0 ⇒ viewDir = (0,0,-1), so the centre-pixel result
-  // is BYTE-IDENTICAL to the old constant. Off-axis pixels now integrate the
+  //   viewVec = normalize(-ndc.x·tanFovHalf·aspect,
+  //                        ndc.y·tanFovHalf, 1)          (surface → camera)
+  // At the screen centre ndc≈0 ⇒ viewVec = (0,0,1). Off-axis pixels now
+  // integrate the
   // correct tilted hemisphere; the improvement grows with FOV and eccentricity.
   let aspect = f32(fullDims.x) / max(f32(fullDims.y), 1.0);
   let uv = (vec2f(fullPx) + vec2f(0.5)) / vec2f(fullDims);
   let ndc = uv * 2.0 - vec2f(1.0);
   let pixViewAxis = normalize(vec3f(
-    ndc.x * gtao_ubo.tanFovHalf * aspect,
-    -ndc.y * gtao_ubo.tanFovHalf,
-    -1.0,
+    -ndc.x * gtao_ubo.tanFovHalf * aspect,
+    ndc.y * gtao_ubo.tanFovHalf,
+    1.0,
   ));
 
   let jitter = hashPx(gid.xy);
@@ -157,34 +163,31 @@ fn gtaoMain(@builtin(global_invocation_id) gid: vec3u) {
 
     // ── Projected-normal angle γ (n) for this slice ──────────────────────
     //
-    // The slice plane is defined by two axes:
-    //   axisVec  = vec3(dir.x, dir.y, 0.0) — the 2D slice direction lifted
-    //              into 3D; this is the "in-plane perpendicular" (XeGTAO's
-    //              axisVec). We treat screen X/Y as lateral and depth as −Z.
-    //   viewAxis = pixViewAxis — the PER-PIXEL camera→pixel ray (B6). Was the
-    //              constant (0,0,-1) central-pixel approximation; reconstructed
-    //              above from tan(fov/2) + aspect so off-axis/wide-FOV pixels
-    //              integrate the correct tilted hemisphere. Centre pixel ⇒
-    //              (0,0,-1) ⇒ byte-identical to the old constant.
+    // The slice plane contains the per-pixel surface→camera vector and the
+    // screen-space sampling direction after removing its view-vector component.
+    // Its normal is XeGTAO's axisVec:
+    //   orthoDirection = directionVec - viewAxis*dot(directionVec, viewAxis)
+    //   axisVec = normalize(cross(orthoDirection, viewAxis))
     //
-    // Project the surface normal onto the slice plane (perpendicular to axisVec)
+    // Project the surface normal onto that plane (perpendicular to axisVec)
     // and compute the signed angle between that projection and viewAxis.
     //   projNormal = surfNormal − axisVec · dot(surfNormal, axisVec)
     //   n = signNorm · acos(clamp(dot(projNormal, viewAxis) / |projNormal|))
     //
     // Matches XeGTAO.hlsli lines ~640–660.
-    let axisVec = vec3f(dir.x, dir.y, 0.0);
+    let directionVec = vec3f(dir.x, dir.y, 0.0);
     let viewAxis = pixViewAxis;
+    let orthoDirection =
+      directionVec - viewAxis * dot(directionVec, viewAxis);
+    let axisVec = normalize(cross(orthoDirection, viewAxis));
 
     let projNormal = surfNormal - axisVec * dot(surfNormal, axisVec);
     let projNormalLen = max(length(projNormal), 1e-6);
 
-    // orthoDir = component of dir perpendicular to viewAxis in the slice plane
-    // (XeGTAO's orthoDirectionVec). Used only to determine the sign of n.
-    // In our coord system, orthoDir = vec3(dir.x, dir.y, 0) - it is axisVec
-    // itself here because axisVec lies in the XY plane (depth = 0).
-    let signNorm = sign(dot(axisVec, projNormal));
-    let cosN = clamp(dot(projNormal, viewAxis) / projNormalLen, -1.0, 1.0);
+    // The sign comes from the IN-PLANE direction, not axisVec (which is
+    // perpendicular to projNormal by construction).
+    let signNorm = sign(dot(orthoDirection, projNormal));
+    let cosN = clamp(dot(projNormal, viewAxis) / projNormalLen, 0.0, 1.0);
     // n = γ: signed angle of projected normal from view axis in slice plane.
     let n = signNorm * acos(cosN);
 

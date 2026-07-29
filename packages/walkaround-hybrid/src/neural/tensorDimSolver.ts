@@ -88,10 +88,6 @@ function computeTensorDimsUnchecked(spec: UNetSpec, W: number, H: number): Map<s
         outC = inDims!.C;
         break;
 
-      case 'bilinearUpsample':
-        outH = outH * 2;
-        outW = outW * 2;
-        break;
     }
 
     dims.set(layer.output, { H: outH, W: outW, C: outC });
@@ -400,13 +396,6 @@ export function packLayerUniform(
       break;
     }
 
-    case 'bilinearUpsample': {
-      u32[0] = inDims?.H ?? H;
-      u32[1] = inDims?.W ?? W;
-      u32[2] = inDims?.C ?? layer.params.inC;
-      break;
-    }
-
     default:
       break;
   }
@@ -427,7 +416,6 @@ export function dispatchWorkgroupsFor(
   switch (kind) {
     case 'conv2d':
     case 'transposedConv2d':
-    case 'bilinearUpsample':
       return [
         Math.ceil(dims.H / 8),
         Math.ceil(dims.W / 8),

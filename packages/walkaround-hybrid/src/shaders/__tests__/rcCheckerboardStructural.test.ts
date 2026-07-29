@@ -43,7 +43,10 @@ describe('checkerboard sparse-shading resolve path', () => {
       'radiance = mix(spatial, temporalClipped, wTemporal);',
     );
     expect(RESOLVE_WGSL).toContain(
-      'let historyAccepted = temporalFinite && maxHistoryDelta <= 0.25 * historyScale;',
+      'motionSample.a > 0.5 &&',
+    );
+    expect(RESOLVE_WGSL).toContain(
+      'maxHistoryDelta <= 0.25 * historyScale;',
     );
   });
 
@@ -55,7 +58,10 @@ describe('checkerboard sparse-shading resolve path', () => {
     expect(src).toContain('let temporal = textureLoad(t_prev_radiance, prevXY, 0);');
     expect(src).toContain('let filled = mix(spatial, temporalClipped, temporalWeight);');
     expect(src).toContain(
-      'let historyAccepted = temporalFinite && maxHistoryDelta <= 0.25 * historyScale;',
+      'motionSample.a > 0.5 &&',
+    );
+    expect(src).toContain(
+      'maxHistoryDelta <= 0.25 * historyScale;',
     );
     expect(src).toContain('textureStore(t_hdr_out, vec2<u32>(px, py), filled);');
     expect(src).not.toContain('t_hdr_in');

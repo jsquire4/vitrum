@@ -1023,15 +1023,15 @@ describe('material-texture host↔WGSL contract (P2 lockstep)', () => {
     expect(wgsl).toContain('let filterPolicy = materialTextureFilterPolicy(base, mipPolicySlot);');
     expect(wgsl).toContain('fn sampleMaterialSrgbSourceRect(');
     expect(wgsl).toContain('fn sampleMaterialLinearSourceRect(');
-    expect(wgsl).toContain('return textureLoad(materialTextures, coord, layerIdx, mip);');
-    expect(wgsl).toContain('return textureLoad(materialTexturesLinear, coord, layerIdx, mip);');
+    expect(wgsl).toContain('return textureLoad(materialTextures, coord, layerIdx, i32(mip));');
+    expect(wgsl).toContain('return textureLoad(materialTexturesLinear, coord, layerIdx, i32(mip));');
     expect(wgsl).toContain('return sampleMaterialSrgbSourceRect(');
     expect(wgsl).toContain('return sampleMaterialLinearSourceRect(');
     expect(wgsl).toContain('sampleMaterialLayer(i32(materialTexDescriptors[base].x), base, triIndex, baryVW, instanceIndex, MATERIAL_TEX_UV_BASE_COLOR');
     // T1-6 — emissive samples the dedicated rgba16float emissive array.
     expect(wgsl).toContain('sampleMaterialLayerEmissive(i32(materialTexDescriptors[base].w), base, triIndex, baryVW, instanceIndex, MATERIAL_TEX_UV_EMISSIVE');
     expect(wgsl).toContain('fn sampleMaterialEmissiveSourceRect(');
-    expect(wgsl).toContain('return textureLoad(materialTexturesEmissive, coord, layerIdx, mip);');
+    expect(wgsl).toContain('return textureLoad(materialTexturesEmissive, coord, layerIdx, i32(mip));');
     expect(wgsl).toContain('return sampleMaterialEmissiveSourceRect(');
     expect(wgsl).toContain('@group(3) @binding(17) var materialTexturesEmissive: texture_2d_array<f32>;');
     expect(wgsl).toContain('sampleMaterialLayerLinear(normalIdx, base, triIndex, baryVW, instanceIndex, normalUvMetaOffset, normalUvFitScale, normalWrapMode');
@@ -1062,7 +1062,7 @@ describe('material-texture host↔WGSL contract (P2 lockstep)', () => {
     expect(wgsl).toContain('MATERIAL_TEX_MIP_BUMP');
     expect(wgsl).toContain('fn materialUvForVertex(vertexIndex: u32, gpuUvSlot: u32) -> vec2f');
     expect(wgsl).toContain('materialUvForVertex(tri.x, bumpGpuUvSlot) * u');
-    expect(wgsl).toContain('let linearDims = vec2f(textureDimensions(materialTexturesLinear, 0));');
+    expect(wgsl).toContain('let linearDims = vec2f(textureDimensions(materialTexturesLinear, i32(0)));');
     expect(wgsl).toContain('let sourceDims = max(linearDims * bumpUvFitScale, vec2f(1.0));');
     expect(wgsl).toContain('let texelStep = vec2f(1.0 / sourceDims.x, 1.0 / sourceDims.y);');
     expect(wgsl).toContain('rawUv + vec2f(texelStep.x, 0.0)');

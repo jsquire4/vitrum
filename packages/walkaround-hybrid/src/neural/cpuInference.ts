@@ -158,12 +158,6 @@ function executeLayer(
       }
       return output;
     }
-    case 'bilinearUpsample':
-      return bilinearUpsample(
-        requireTensor(tensors, layer.inputs[0]!),
-        requireDims(allDims, layer.inputs[0]!),
-        outputDims,
-      );
   }
 }
 
@@ -268,40 +262,6 @@ function transposedConv2d(
         }
         output[(oy * outputDims.W + ox) * outputDims.C + oc] =
           sanitizeNeuralSigned(acc);
-      }
-    }
-  }
-  return output;
-}
-
-function bilinearUpsample(
-  input: Float32Array,
-  inputDims: TensorDims,
-  outputDims: TensorDims,
-): Float32Array {
-  const output = new Float32Array(outputDims.H * outputDims.W * outputDims.C);
-  const sample = (y: number, x: number, channel: number): number => {
-    const cy = Math.max(0, Math.min(y, inputDims.H - 1));
-    const cx = Math.max(0, Math.min(x, inputDims.W - 1));
-    return sanitizeNeuralSigned(input[(cy * inputDims.W + cx) * inputDims.C + channel]!);
-  };
-
-  for (let oy = 0; oy < outputDims.H; oy++) {
-    for (let ox = 0; ox < outputDims.W; ox++) {
-      const fy = (oy + 0.5) / 2 - 0.5;
-      const fx = (ox + 0.5) / 2 - 0.5;
-      const y0 = Math.floor(fy);
-      const x0 = Math.floor(fx);
-      const ty = fy - y0;
-      const tx = fx - x0;
-      for (let channel = 0; channel < outputDims.C; channel++) {
-        const value =
-          sample(y0, x0, channel) * (1 - ty) * (1 - tx) +
-          sample(y0, x0 + 1, channel) * (1 - ty) * tx +
-          sample(y0 + 1, x0, channel) * ty * (1 - tx) +
-          sample(y0 + 1, x0 + 1, channel) * ty * tx;
-        output[(oy * outputDims.W + ox) * outputDims.C + channel] =
-          sanitizeNeuralSigned(value);
       }
     }
   }

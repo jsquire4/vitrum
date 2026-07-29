@@ -150,7 +150,7 @@ function baseScene(emitters: readonly SceneEmitter[] = []): Scene {
 
 function makePipeline() {
   const refreshBvhMaterialSlice = vi.fn();
-  const refreshBvhEmissiveLe = vi.fn();
+  const cameraVisibleEmissiveUpload = vi.fn();
   const refreshBvhNormalsSlice = vi.fn();
   const refreshBvhRefit = vi.fn();
   const replaceBvhAndEmitters = vi.fn();
@@ -214,7 +214,7 @@ function makePipeline() {
   ) => ({
     commit: vi.fn(() => {
       updateEmitters(bvh);
-      refreshBvhEmissiveLe({
+      cameraVisibleEmissiveUpload({
         data: bvh.bvhEmissiveLe.cpuData,
         triCount: bvh.bvhEmissiveLe.count,
       });
@@ -227,10 +227,9 @@ function makePipeline() {
   return {
     dispose: vi.fn(),
     refreshBvhMaterialSlice,
-    refreshBvhEmissiveLe,
+    cameraVisibleEmissiveUpload,
     refreshBvhNormalsSlice,
     refreshBvhRefit,
-    refreshBvhFullRebuild: vi.fn(),
     replaceBvhAndEmitters,
     refreshMaterialTextureAtlas,
     refreshTlasRefit,
@@ -505,7 +504,6 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
       expect(pipeline.refreshBvhRefit).toHaveBeenCalledTimes(1);
       expect(pipeline.refreshBvhNormalsSlice).toHaveBeenCalledTimes(1);
       expect(pipeline.refreshTlasRefit).toHaveBeenCalledTimes(1);
-      expect(pipeline.refreshBvhFullRebuild).not.toHaveBeenCalled();
 
       const [normalsSlice] = pipeline.refreshBvhNormalsSlice.mock.calls[0] as [
         { byteOffset: number; data: ArrayBuffer },
@@ -536,7 +534,6 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
       expect(pipeline.refreshBvhRefit).toHaveBeenCalledTimes(1);
       expect(pipeline.refreshBvhNormalsSlice).toHaveBeenCalledTimes(1);
       expect(pipeline.refreshTlasRefit).toHaveBeenCalledTimes(1);
-      expect(pipeline.refreshBvhFullRebuild).not.toHaveBeenCalled();
       expect(pipeline.requestAccumReset).toHaveBeenCalledTimes(1);
       expect(ddgi.invalidateProbeCache).toHaveBeenCalledTimes(1);
       expect(ddgi.syncRestirBvhBuffers).toHaveBeenCalledTimes(1);
@@ -558,6 +555,56 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
       engine.dispose();
     }
   });
+
+  it.each<ReSTIRBvhMode>(['merged', 'tlas'])(
+    'updatePrimitive(rest positions) solves the current nonidentity pose once in %s mode',
+    (bvhMode) => {
+      const scene: Scene = {
+        primitives: [skinnedMesh('skin-rest', 5, [0.8, 0.2, 0.2])],
+        emitters: [],
+        environment: { kind: 'none' },
+      };
+      const { engine } = seedEngine(scene, { bvhMode });
+      try {
+        engine.updatePrimitive('skin-rest', {
+          bones: new Float32Array(mat4Translate(2, 0, 0)),
+        });
+        const nextRest = new Float32Array([
+          10, 0, 0,
+          11, 0, 0,
+          10, 1, 0,
+        ]);
+
+        engine.updatePrimitive('skin-rest', { positions: nextRest });
+
+        const authored = storedScene(engine).primitives[0] as SkinnedMeshPrimitive;
+        const rendered = storedRenderScene(engine).primitives[0] as SkinnedMeshPrimitive;
+        expect(authored.positions).toEqual(nextRest);
+        expect(authored.bones[12]).toBeCloseTo(2, 6);
+        expect([...rendered.positions]).toEqual([
+          12, 0, 0,
+          13, 0, 0,
+          12, 1, 0,
+        ]);
+
+        const bvh = storedBvh(engine);
+        const packed = new Float32Array(bvh.bvhPositions.cpuData);
+        if (bvhMode === 'tlas') {
+          const binding = bvh.primitiveTlasBindings.find(
+            (candidate) => candidate.primitiveId === 'skin-rest',
+          )!;
+          expect(packed[binding.vertexStart * 4]).toBeCloseTo(12, 6);
+        } else {
+          const range = bvh.meshVertexRanges.find(
+            (candidate) => candidate.name === 'skin-rest',
+          )!;
+          expect(packed[range.vertexStart * 4]).toBeCloseTo(17, 6);
+        }
+      } finally {
+        engine.dispose();
+      }
+    },
+  );
 
   it('updatePrimitive(morphWeights) with morph UV deltas refreshes topology attributes', () => {
     const prim: SkinnedMeshPrimitive = {
@@ -660,7 +707,6 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
       });
 
       expect(pipeline.refreshBvhMaterialSlice).toHaveBeenCalledTimes(1);
-      expect(pipeline.refreshBvhFullRebuild).not.toHaveBeenCalled();
       expect(ddgi.invalidateProbeCache).toHaveBeenCalledTimes(1);
       expect(ddgi.syncRestirBvhBuffers).toHaveBeenCalledTimes(1);
       expect(pipeline.updateEmitters).toHaveBeenCalledTimes(1);
@@ -684,7 +730,6 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
       });
 
       expect(pipeline.refreshBvhMaterialSlice).toHaveBeenCalledTimes(1);
-      expect(pipeline.refreshBvhFullRebuild).not.toHaveBeenCalled();
       expect(pipeline.requestAccumReset).toHaveBeenCalledTimes(1);
       expect(ddgi.invalidateProbeCache).toHaveBeenCalledTimes(1);
       expect(ddgi.syncRestirBvhBuffers).toHaveBeenCalledTimes(1);
@@ -728,7 +773,6 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
       } as unknown as Partial<ScenePrimitive>);
 
       expect(pipeline.refreshBvhMaterialSlice).toHaveBeenCalledTimes(1);
-      expect(pipeline.refreshBvhFullRebuild).not.toHaveBeenCalled();
       const gpuMaterial = storedBvh(engine).coreMaterials[0];
       expect(gpuMaterial?.baseColor).toEqual([0.8, 0.2, 0.2]);
       expect(gpuMaterial?.metallic).toBe(0);
@@ -762,7 +806,6 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
       } as unknown as Partial<ScenePrimitive>);
 
       expect(pipeline.refreshBvhMaterialSlice).toHaveBeenCalledTimes(1);
-      expect(pipeline.refreshBvhFullRebuild).not.toHaveBeenCalled();
       const updatedBvh = storedBvh(engine);
       expect(updatedBvh.coreMaterials).toHaveLength(2);
       expect(updatedBvh.coreMaterials[0]?.roughness).toBe(0.5);
@@ -789,7 +832,6 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
       expect(warnings).toHaveLength(0);
       expect(pipeline.resize).not.toHaveBeenCalled();
       expect(pipeline.refreshBvhMaterialSlice).not.toHaveBeenCalled();
-      expect(pipeline.refreshBvhFullRebuild).not.toHaveBeenCalled();
       expect(pipeline.refreshTlasRefit).not.toHaveBeenCalled();
     } finally {
       engine.dispose();
@@ -1298,7 +1340,6 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
         },
       });
 
-      expect(pipeline.refreshBvhFullRebuild).not.toHaveBeenCalled();
       expect(pipeline.refreshBvhMaterialSlice).toHaveBeenCalledTimes(1);
       expect(pipeline.refreshMaterialTextureAtlas).toHaveBeenCalledTimes(1);
       expect(pipeline.requestAccumReset).toHaveBeenCalledTimes(1);
@@ -1447,7 +1488,6 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
         },
       });
 
-      expect(pipeline.refreshBvhFullRebuild).not.toHaveBeenCalled();
       expect(pipeline.refreshBvhMaterialSlice).toHaveBeenCalledTimes(1);
       expect(pipeline.refreshMaterialTextureAtlas).toHaveBeenCalledTimes(1);
       const [atlas] = pipeline.refreshMaterialTextureAtlas.mock.calls[0] as [SceneBVHBuffers['materialTextureAtlas']];
@@ -1492,7 +1532,6 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
         },
       });
 
-      expect(pipeline.refreshBvhFullRebuild).not.toHaveBeenCalled();
       expect(pipeline.refreshBvhMaterialSlice).toHaveBeenCalledTimes(1);
       expect(pipeline.refreshMaterialTextureAtlas).toHaveBeenCalledTimes(1);
       const [atlas] = pipeline.refreshMaterialTextureAtlas.mock.calls[0] as [SceneBVHBuffers['materialTextureAtlas']];
@@ -1535,7 +1574,6 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
         },
       });
 
-      expect(pipeline.refreshBvhFullRebuild).not.toHaveBeenCalled();
       expect(pipeline.refreshBvhMaterialSlice).toHaveBeenCalledTimes(1);
       expect(pipeline.refreshMaterialTextureAtlas).toHaveBeenCalledTimes(1);
       const [atlas] = pipeline.refreshMaterialTextureAtlas.mock.calls[0] as [SceneBVHBuffers['materialTextureAtlas']];
@@ -1629,7 +1667,7 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
       engine.updateEmitter('lamp', { intensity: 4, position: [2, 3, 4] });
 
       expect(pipeline.updateEmitters).toHaveBeenCalledTimes(1);
-      expect(pipeline.refreshBvhEmissiveLe).toHaveBeenCalledTimes(1);
+      expect(pipeline.cameraVisibleEmissiveUpload).toHaveBeenCalledTimes(1);
       expect(rc?.invalidateBindings).toHaveBeenCalledTimes(1);
       expect(ddgi.setSunIntensityMultiplier).toHaveBeenCalledTimes(1);
       expect(ddgi.setLights).toHaveBeenCalledTimes(1);
@@ -1660,8 +1698,8 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
       });
 
       expect(pipeline.updateEmitters).toHaveBeenCalledTimes(1);
-      expect(pipeline.refreshBvhEmissiveLe).toHaveBeenCalledTimes(1);
-      const [payload] = pipeline.refreshBvhEmissiveLe.mock.calls[0] as [{
+      expect(pipeline.cameraVisibleEmissiveUpload).toHaveBeenCalledTimes(1);
+      const [payload] = pipeline.cameraVisibleEmissiveUpload.mock.calls[0] as [{
         data: ArrayBuffer;
         triCount: number;
       }];

@@ -57,8 +57,9 @@ import type { MaterialSpec } from '@vitrum/core';
  *                           Beer-Lambert tint by thicknessTexture.g.
  *  ior                    shared-bvh coreMaterialToMaterialEntry →
  *                           ddgi/probeUpdateMaterials.ts (DDGI material upload)
- *  extensions             materialSpecSurfaceTextureId (extensions.surfaceTextureId
- *                           → texType3 lane in bvhIndex.w) +
+ *  extensions             stained-glass validateSurfaceTextureId
+ *                           (extensions.surfaceTextureId → texType3 lane in
+ *                           bvhIndex.w) +
  *                           materialSpecSkipEmitter (extensions.skipEmitter)
  *  baseColorMap           pipeline/materialTextureAtlas.ts packs CPU pixel or
  *                           nominal GPU TextureRefs into a full-mip RGBA32F array;
@@ -227,7 +228,7 @@ export const CONSUMED_MATERIAL_FIELD_DOCS = {
   frontLayer: 'front-face RGB transmission, roughness, and layer-local normal map transport',
   backLayer: 'back-face RGB transmission, roughness, and layer-local normal map transport',
   ior: 'shared-bvh coreMaterialToMaterialEntry → DDGI material upload',
-  extensions: 'surfaceTextureId → texType3 lane; skipEmitter',
+  extensions: 'stained-glass-validated surfaceTextureId → texType3 lane; skipEmitter',
   baseColorMap: 'mipmapped RGBA32F atlas with CPU/GPU sources and compact arbitrary-texCoord affine charts',
   normalMap: 'material atlas path; shade.wgsl per-triangle TBN perturbation',
   normalScale: 'normal-map atlas metadata applied to tangent-space xy',
@@ -246,8 +247,7 @@ export const CONSUMED_MATERIAL_FIELD_DOCS = {
 
 /**
  * Compile-time-complete disposition of the canonical MaterialSpec contract.
- * Every field is either represented by the renderer's ingestion/transport
- * path above or is rejected by assertNoUnsupportedVolumeLayerProfiles.
+ * Every field is represented by the renderer's ingestion/transport path above.
  * Adding a core material field therefore breaks this package's typecheck until
  * the backend deliberately consumes or rejects it.
  */
@@ -260,11 +260,6 @@ export const MATERIAL_FIELD_DISPOSITIONS = {
  *  the doc index cannot drift (D6-5). */
 export const CONSUMED_MATERIAL_FIELDS: ReadonlySet<string> =
   new Set<string>(Object.keys(CONSUMED_MATERIAL_FIELD_DOCS));
-
-export interface UnsupportedVolumeLayerPrimitiveFields {
-  readonly primitiveId: string;
-  readonly fields: readonly string[];
-}
 
 /** Numerical zero used by the delta-interface transport paths. Roughness is
  * packed to u8 on GPU, so every positive representable shader value is above
@@ -413,105 +408,4 @@ export function assertNoUnconsumedMaterialFields(
     `[vitrum/walkaround-hybrid] ${method}: material fields are not represented ` +
     `by this backend and cannot be ignored. Unsupported primitive fields: ${details}.`,
   );
-}
-
-export function collectUnsupportedVolumeLayerPrimitiveFields(
-  _primitives: ReadonlyArray<{
-    readonly id?: string;
-    readonly kind: string;
-    readonly material?: Record<string, unknown>;
-  }>,
-): UnsupportedVolumeLayerPrimitiveFields[] {
-  return [];
-}
-
-export function collectUnsupportedVolumeLayerFieldsForMaterial(
-  _material: Record<string, unknown> | undefined,
-): string[] {
-  return [];
-}
-
-/**
- * Reject material profiles whose public contract requires participating-media
- * or layered-BSDF transport that this realtime backend does not implement.
- * The old compact tint/softening path was not delta tracking and the one-pass
- * face multiplier did not satisfy the two-sided layer contract, so accepting
- * these fields would silently substitute a different model.
- */
-export function assertNoUnsupportedVolumeLayerProfiles(
-  _primitives: ReadonlyArray<{
-    readonly id?: string;
-    readonly kind: string;
-    readonly material?: Record<string, unknown>;
-  }>,
-  _method: 'setScene' | 'updatePrimitive',
-): void {
-  // Compatibility no-op: every formerly rejected field has a live transport
-  // implementation. Keep the exported guard so existing hosts need not branch.
-}
-
-/**
- * The bounded GI/RC/caustic dielectric continuations are delta-interface
- * estimators. Applying their Snell path to a rough transmissive BSDF would omit
- * the rough proposal PDF and BSDF weight, so that profile is rejected at the
- * synchronous scene boundary instead of being silently rendered as smooth.
- */
-export function assertNoUnsupportedRoughTransmissionProfiles(
-  _primitives: ReadonlyArray<{
-    readonly id?: string;
-    readonly kind: string;
-    readonly material?: Record<string, unknown>;
-  }>,
-  _method: 'setScene' | 'updatePrimitive',
-): void {
-  // Compatibility no-op: exact VNDF rough-BTDF sampling is implemented.
-}
-
-/**
- * The bounded dielectric continuation owns one smooth interface lobe.  The
- * opaque BRDF path supports coat/sheen/specular/iridescence, but composing
- * those lobes with transmission requires a joint event sampler and PDFs at the
- * boundary. Reject that conditional profile instead of dropping the lobes.
- */
-export function assertNoUnsupportedLayeredTransmissionProfiles(
-  _primitives: ReadonlyArray<{
-    readonly id?: string;
-    readonly kind: string;
-    readonly material?: Record<string, unknown>;
-  }>,
-  _method: 'setScene' | 'updatePrimitive',
-): void {
-  // Compatibility no-op: layered event weights are represented at interfaces.
-}
-
-export function assertNoUnsupportedMaterialProfiles(
-  primitives: ReadonlyArray<{
-    readonly id?: string;
-    readonly kind: string;
-    readonly material?: Record<string, unknown>;
-  }>,
-  method: 'setScene' | 'updatePrimitive',
-): void {
-  assertNoUnsupportedVolumeLayerProfiles(primitives, method);
-  assertNoUnsupportedRoughTransmissionProfiles(primitives, method);
-  assertNoUnsupportedLayeredTransmissionProfiles(primitives, method);
-}
-
-/**
- * Radiance Cascades' direct-sun cache path currently casts a straight
- * directional visibility ray. A delta dielectric can bend that path, and a
- * correct connection to a delta directional emitter requires solving the
- * refractive boundary connection (not merely applying Beer tint along the
- * unrefracted ray). Until RC owns that solver, reject this feature combination
- * synchronously instead of publishing a physically false cache.
- */
-export function assertNoRcDirectSunTransmissionProfiles(
-  _primitives: ReadonlyArray<{
-    readonly id?: string;
-    readonly kind: string;
-    readonly material?: Record<string, unknown>;
-  }>,
-  _method: 'setScene' | 'updatePrimitive',
-): void {
-  // Compatibility no-op retained for hosts compiled against the older guard.
 }

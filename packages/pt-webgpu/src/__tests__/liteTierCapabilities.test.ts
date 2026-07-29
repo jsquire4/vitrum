@@ -15,7 +15,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import { asMat4, type EngineWarning, type Scene } from '@vitrum/core';
 import { createPTEngine_WebGPU } from '../index.js';
-import { PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE } from '../webgpuLimits.js';
+import {
+  PT_WEBGPU_BDPT_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
+  PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
+} from '../webgpuLimits.js';
 import { installGpuConstStubs, textureStubMethods } from './gpuStub.js';
 
 function makeLiteDevice(): GPUDevice {
@@ -35,7 +38,10 @@ function makeLiteDevice(): GPUDevice {
 function makeFullDevice(): GPUDevice {
   return {
     limits: {
-      maxStorageBuffersPerShaderStage: PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
+      maxStorageBuffersPerShaderStage: Math.max(
+        PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
+        PT_WEBGPU_BDPT_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
+      ),
       maxStorageTexturesPerShaderStage: 8,
     },
     createCommandEncoder: vi.fn(),
@@ -122,11 +128,11 @@ describe('H12: lite-tier capabilities truth', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const engine = await createPTEngine_WebGPU({ device: makeLiteDevice() });
     expect(engine.capabilities.incrementalPatchSupport).toEqual({
-      transform: false,
-      positions: false,
+      transform: true,
+      positions: true,
       material: true,
       emitter: true,
-      topology: false,
+      topology: true,
     });
     expect(engine.capabilities.supportsAuxBuffers).toBe(false);
     const primitiveKinds = engine.capabilities.supportedPrimitiveKinds!;
@@ -137,7 +143,7 @@ describe('H12: lite-tier capabilities truth', () => {
     expect(sd.primitives['instanced-mesh']).toBe('native');
     expect(sd.mutations.transform).toBe('fallback-rebuild');
     expect(sd.mutations.positions).toBe('fallback-rebuild');
-    expect(sd.mutations.material).toBe('native');
+    expect(sd.mutations.material).toBe('fallback-rebuild');
     expect(sd.mutations.topology).toBe('fallback-rebuild');
     expect(sd.materials.baseColor).toBe('native');
     expect(sd.materials.clearcoat).toBe('native');
@@ -168,7 +174,7 @@ describe('H12: lite-tier capabilities truth', () => {
         bdpt: true,
         bdptOptions: { maxLightBounces: 2 },
       })).rejects.toThrow(
-        /bdpt:true requires traceTier .*full.*lite kernel does not compose the BDPT connection or invocation-private path state/,
+        /bdpt:true requires a support profile with bidirectionalPathTracing.*selected lite profile does not compose the BDPT connection or invocation-private path state/,
       );
     } finally {
       warn.mockRestore();
@@ -665,7 +671,50 @@ describe('H12: lite-tier capabilities truth', () => {
       environment: { kind: 'none' },
     };
     const buffersBefore = vi.mocked(device.createBuffer).mock.calls.length;
-    expect(() => engine.setScene(scene)).toThrow(/non-bakeable COLOR_0 primitives \[colored\]/);
+    expect(() => engine.setScene(scene)).toThrow(
+      /non-bakeable active vertex-color primitives \[colored\]/,
+    );
+    expect(vi.mocked(device.createBuffer).mock.calls.length).toBe(buffersBefore);
+    expect(structured).toEqual([]);
+    engine.dispose();
+    warn.mockRestore();
+  });
+
+  it('lite tier: setScene rejects a non-constant selected COLOR_n before allocation', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const structured: EngineWarning[] = [];
+    const device = makeLiteDeviceForSetScene();
+    const engine = await createPTEngine_WebGPU({
+      device,
+      onWarning: (w) => structured.push(w),
+    });
+    warn.mockClear();
+    structured.length = 0;
+    const colorSets: Array<Float32Array | undefined> = [];
+    colorSets[2] = new Float32Array([
+      1, 0, 0,
+      0, 1, 0,
+      0, 0, 1,
+    ]);
+    const scene: Scene = {
+      primitives: [
+        {
+          kind: 'mesh',
+          id: 'selected-colored',
+          positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+          normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+          colorSets,
+          vertexColorSet: 2,
+          material: { baseColor: [0.8, 0.2, 0.1], roughness: 0.3, metallic: 0 },
+        },
+      ],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+    const buffersBefore = vi.mocked(device.createBuffer).mock.calls.length;
+    expect(() => engine.setScene(scene)).toThrow(
+      /non-bakeable active vertex-color primitives \[selected-colored\]/,
+    );
     expect(vi.mocked(device.createBuffer).mock.calls.length).toBe(buffersBefore);
     expect(structured).toEqual([]);
     engine.dispose();

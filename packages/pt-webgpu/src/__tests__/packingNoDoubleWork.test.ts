@@ -128,7 +128,7 @@ describe('packingNoDoubleWork — byte-identical with/without precomputed args',
     const envSummary: EnvSummaryForTree = {
       hasHdri: env.hasHdri,
       sunStrength: env.sunStrength,
-      tint: env.tint,
+      lightTreePower: env.lightTreePower,
     };
     const withPrecomputed = buildLightTreeInputForScene(scene, { packed, envSummary });
 
@@ -158,7 +158,7 @@ describe('packingNoDoubleWork — byte-identical with/without precomputed args',
     const envSummary: EnvSummaryForTree = {
       hasHdri: env.hasHdri,
       sunStrength: env.sunStrength,
-      tint: env.tint,
+      lightTreePower: env.lightTreePower,
     };
     const withPrecomputed = buildLightTreeInputForScene(scene, { packed, envSummary });
 
@@ -175,7 +175,7 @@ describe('packingNoDoubleWork — byte-identical with/without precomputed args',
     const envSummary: EnvSummaryForTree = {
       hasHdri: env.hasHdri,
       sunStrength: env.sunStrength,
-      tint: env.tint,
+      lightTreePower: env.lightTreePower,
     };
     const onlyPacked = buildLightTreeInputForScene(scene, { packed });
     const bothPrecomputed = buildLightTreeInputForScene(scene, { packed, envSummary });
@@ -202,12 +202,12 @@ describe('packingNoDoubleWork — environmentParams call count', () => {
     const packed = packEmitterArrays(scene);
     const realEnv = environmentParams(scene);
 
-    // Probe: supply a zeroed-out tint and sunStrength=0 + hasHdri=false as the
+    // Probe: supply zero power and sunStrength=0 + hasHdri=false as the
     // envSummary. This should suppress the env leaf entirely.
     const suppressedEnvSummary: EnvSummaryForTree = {
       hasHdri: false,
       sunStrength: 0,
-      tint: [0, 0, 0],
+      lightTreePower: 0,
     };
     const withSuppressed = buildLightTreeInputForScene(scene, { packed, envSummary: suppressedEnvSummary });
 
@@ -215,7 +215,7 @@ describe('packingNoDoubleWork — environmentParams call count', () => {
     const withRealEnv = buildLightTreeInputForScene(scene, { packed, envSummary: {
       hasHdri: realEnv.hasHdri,
       sunStrength: realEnv.sunStrength,
-      tint: realEnv.tint,
+      lightTreePower: realEnv.lightTreePower,
     }});
 
     // If environmentParams were re-called internally, withSuppressed would have the
@@ -233,7 +233,7 @@ describe('packingNoDoubleWork — environmentParams call count', () => {
     const envSummary: EnvSummaryForTree = {
       hasHdri: env.hasHdri,
       sunStrength: env.sunStrength,
-      tint: env.tint,
+      lightTreePower: env.lightTreePower,
     };
 
     // Probe: empty packed (no lights at all).

@@ -20,7 +20,7 @@ the nave over a simulated day — before a single piece of glass is cut.
 Restorers mock replacement panels against photographed originals.
 
 **Leans on:** spectral PT, thin-film TMM, MNEE, attenuation/Beer-Lambert,
-Preetham sky + scene-lighting sun position, stained-glass-extensions,
+core procedural-sky environment, stained-glass-extensions,
 progressive walkaround→PT handoff.
 
 ## 2. Material capture from a photograph

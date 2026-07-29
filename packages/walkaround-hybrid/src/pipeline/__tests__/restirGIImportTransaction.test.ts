@@ -3,12 +3,13 @@ import { installWebGPUPolyfills } from '../../../__tests__/helpers/webgpuPolyfil
 import type { RestirGISnapshot } from '../../giStateSnapshot.js';
 import type { FrameResources } from '../resourceManager.js';
 import { WalkaroundGPUPipeline } from '../WalkaroundGPUPipeline.js';
+import { RESERVOIR_GI_STRIDE_U32 } from '../../gi/giLayout.js';
 
 installWebGPUPolyfills();
 
 const WIDTH = 4;
 const HEIGHT = 4;
-const STRIDE_U32 = 20;
+const STRIDE_U32 = RESERVOIR_GI_STRIDE_U32;
 const RESERVOIR_U32 = 2 * 2 * STRIDE_U32;
 const RESERVOIR_BYTES = RESERVOIR_U32 * Uint32Array.BYTES_PER_ELEMENT;
 
@@ -21,9 +22,12 @@ type TrackedBuffer = GPUBuffer & {
 
 type PipelineInternals = {
   _initialized: boolean;
-  _grisReuseStructural: boolean;
   _res: FrameResources;
   _resourceCache: { clear(): void };
+  _accumFrameIndex: number;
+  _grisHistoryEpoch: number;
+  _temporalHistoryClearPending: boolean;
+  _temporalHistoryFullRatePending: boolean;
 };
 
 type TrackedCohort = {
@@ -49,6 +53,7 @@ function snapshot(overrides: Partial<RestirGISnapshot> = {}): RestirGISnapshot {
     const floats = new Float32Array(values.buffer);
     const floatLanes = [
       0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 18,
+      20, 21, 22, 23, 26,
     ];
     for (let record = 0; record < 4; record += 1) {
       const base = record * STRIDE_U32;
@@ -57,6 +62,9 @@ function snapshot(overrides: Partial<RestirGISnapshot> = {}): RestirGISnapshot {
       }
       values[base + 15] = (seed + record) >>> 0;
       values[base + 19] = (seed * 17 + record) >>> 0;
+      values[base + 24] = 1;
+      values[base + 25] = record & 1;
+      values[base + 27] = 37;
     }
     return values;
   };
@@ -125,7 +133,6 @@ function makePipeline(
   const pipeline = new WalkaroundGPUPipeline(device, WIDTH, HEIGHT);
   const state = pipeline as unknown as PipelineInternals;
   state._initialized = true;
-  state._grisReuseStructural = false;
   state._res = { restirGI: live } as unknown as FrameResources;
   const clear = vi.spyOn(state._resourceCache, 'clear');
   return { pipeline, state, live, clear };
@@ -164,7 +171,7 @@ describe('ReSTIR-GI reservoir import transaction', () => {
 
   it.each([
     ['wrong grid', { halfW: 3 }],
-    ['wrong stride', { strideU32: 30 }],
+    ['retired compact stride', { strideU32: 20 }],
     ['short current', { current: new Uint32Array(RESERVOIR_U32 - 1) }],
     ['long previous', { previous: new Uint32Array(RESERVOIR_U32 + 1) }],
     ['short spatial', { spatial: new Uint32Array(RESERVOIR_U32 - 1) }],
@@ -199,6 +206,20 @@ describe('ReSTIR-GI reservoir import transaction', () => {
       expectLiveUnchanged(made.state, made.live);
     },
   );
+
+  it('rejects a mixed live history epoch before candidate allocation', () => {
+    const gpu = makeDevice();
+    const made = makePipeline(gpu.device);
+    const value = snapshot();
+    value.previous[27] = 38;
+
+    expect(
+      made.pipeline.prepareRestirGIReservoirImport(gpu.device, value),
+    ).toBeNull();
+    expect(gpu.device.createBuffer).not.toHaveBeenCalled();
+    expect(made.clear).not.toHaveBeenCalled();
+    expectLiveUnchanged(made.state, made.live);
+  });
 
   it('rejects a different GPUDevice without allocating on either device', () => {
     const owner = makeDevice();
@@ -275,23 +296,28 @@ describe('ReSTIR-GI reservoir import transaction', () => {
     expectLiveUnchanged(made.state, made.live);
   });
 
-  it('retires candidates and retains live identities if cache invalidation throws during prepare', () => {
+  it('prepares without invalidating live bind groups and rolls back publication if commit invalidation fails', () => {
     const gpu = makeDevice();
     const made = makePipeline(gpu.device);
     made.clear.mockImplementationOnce(() => {
       throw new Error('injected cache clear failure');
     });
 
-    expect(() =>
-      made.pipeline.prepareRestirGIReservoirImport(gpu.device, snapshot()),
-    ).toThrow('injected cache clear failure');
+    const transaction = made.pipeline.prepareRestirGIReservoirImport(
+      gpu.device,
+      snapshot(),
+    );
+    expect(transaction).not.toBeNull();
+    expect(made.clear).not.toHaveBeenCalled();
+    expect(() => transaction!.commit()).toThrow('injected cache clear failure');
     expectLiveUnchanged(made.state, made.live);
+    expect(made.clear).toHaveBeenCalledTimes(2);
     for (const candidate of gpu.candidates) {
       expect(candidate.destroy).toHaveBeenCalledOnce();
     }
   });
 
-  it('aborts a fully populated candidate cohort without changing live identities', () => {
+  it('rolls back a prepared candidate cohort without changing live identities', () => {
     const gpu = makeDevice();
     const made = makePipeline(gpu.device);
     const transaction = made.pipeline.prepareRestirGIReservoirImport(
@@ -301,20 +327,25 @@ describe('ReSTIR-GI reservoir import transaction', () => {
 
     expect(transaction).not.toBeNull();
     expectLiveUnchanged(made.state, made.live);
-    expect(made.clear).toHaveBeenCalledOnce();
-    transaction!.abort();
-    transaction!.abort();
+    expect(made.clear).not.toHaveBeenCalled();
+    transaction!.rollback();
+    transaction!.rollback();
     transaction!.commit();
 
     expectLiveUnchanged(made.state, made.live);
+    expect(made.clear).not.toHaveBeenCalled();
     for (const candidate of gpu.candidates) {
       expect(candidate.destroy).toHaveBeenCalledOnce();
     }
   });
 
-  it('publishes all three populated buffers as one cohort and retires the old generation', () => {
+  it('publishes all three buffers, supports rollback, and retires old buffers only at finalize', () => {
     const gpu = makeDevice();
     const made = makePipeline(gpu.device);
+    made.state._accumFrameIndex = 19;
+    made.state._grisHistoryEpoch = 11;
+    made.state._temporalHistoryClearPending = true;
+    made.state._temporalHistoryFullRatePending = false;
     const state = snapshot();
     const transaction = made.pipeline.prepareRestirGIReservoirImport(
       gpu.device,
@@ -325,13 +356,16 @@ describe('ReSTIR-GI reservoir import transaction', () => {
     expectLiveUnchanged(made.state, made.live);
     transaction!.commit();
     transaction!.commit();
-    transaction!.abort();
 
     const published = made.state._res.restirGI;
     expect(published).not.toBe(made.live);
     expect(published.reservoirGiCurrentBuffer).toBe(gpu.candidates[0]);
     expect(published.reservoirGiPreviousBuffer).toBe(gpu.candidates[1]);
     expect(published.reservoirGiSpatialBuffer).toBe(gpu.candidates[2]);
+    expect(made.state._accumFrameIndex).toBe(0);
+    expect(made.state._grisHistoryEpoch).toBe(37);
+    expect(made.state._temporalHistoryClearPending).toBe(false);
+    expect(made.state._temporalHistoryFullRatePending).toBe(true);
     expect(Array.from(new Uint32Array(gpu.candidates[0]!.backing))).toEqual(
       Array.from(state.current),
     );
@@ -341,6 +375,40 @@ describe('ReSTIR-GI reservoir import transaction', () => {
     expect(Array.from(new Uint32Array(gpu.candidates[2]!.backing))).toEqual(
       Array.from(state.spatial),
     );
+    expect(made.live.reservoirGiCurrentBuffer.destroy).not.toHaveBeenCalled();
+    expect(made.live.reservoirGiPreviousBuffer.destroy).not.toHaveBeenCalled();
+    expect(made.live.reservoirGiSpatialBuffer.destroy).not.toHaveBeenCalled();
+    for (const candidate of gpu.candidates) {
+      expect(candidate.destroy).not.toHaveBeenCalled();
+    }
+
+    transaction!.rollback();
+    expectLiveUnchanged(made.state, made.live);
+    expect(made.state._accumFrameIndex).toBe(19);
+    expect(made.state._grisHistoryEpoch).toBe(11);
+    expect(made.state._temporalHistoryClearPending).toBe(true);
+    expect(made.state._temporalHistoryFullRatePending).toBe(false);
+    expect(made.clear).toHaveBeenCalledTimes(2);
+    for (const candidate of gpu.candidates) {
+      expect(candidate.destroy).toHaveBeenCalledOnce();
+    }
+  });
+
+  it('finalize retires the old generation only after publication is irreversible', () => {
+    const gpu = makeDevice();
+    const made = makePipeline(gpu.device);
+    const transaction = made.pipeline.prepareRestirGIReservoirImport(
+      gpu.device,
+      snapshot(),
+    )!;
+
+    transaction.commit();
+    expect(made.clear).toHaveBeenCalledOnce();
+    expect(made.live.reservoirGiCurrentBuffer.destroy).not.toHaveBeenCalled();
+    transaction.finalize();
+    transaction.finalize();
+    transaction.rollback();
+
     expect(made.live.reservoirGiCurrentBuffer.destroy).toHaveBeenCalledOnce();
     expect(made.live.reservoirGiPreviousBuffer.destroy).toHaveBeenCalledOnce();
     expect(made.live.reservoirGiSpatialBuffer.destroy).toHaveBeenCalledOnce();

@@ -1,3 +1,8 @@
+import {
+  SOBOL_DIRECTION_DIMENSION_COUNT,
+  maskedSobolDirectionComponent,
+} from './sobolDirectionNumbers.js';
+
 export const SOBOL_TEXTURE_SIZE = 256;
 export const SOBOL_TEXTURE_POINTS = SOBOL_TEXTURE_SIZE * SOBOL_TEXTURE_SIZE;
 export const SOBOL_TEXTURE_CHANNELS = 4;
@@ -6,10 +11,10 @@ export const SOBOL_BLUE_NOISE_TILE_SIZE = 8;
 const SOBOL_FACTOR = 1 / 16_777_216; // 2^-24, matching the GLSL Sobol texture path.
 
 export const SOBOL_SAMPLE_BLOCK_SIZE = 65_536;
-// Four independent direction-number tables are embedded by both the CPU and
-// WGSL implementations. Higher dimensions use the explicit PCG continuation;
-// cycling those four tables with a different scramble is not a 256-D Sobol net.
-export const SOBOL_DIMENSION_COUNT = 4;
+// The shared Joe-Kuo D(6) prefix covers the renderer's audited 324-draw
+// worst-case path budget with headroom. The explicit PCG continuation remains
+// deterministic for callers that exhaust the complete low-discrepancy domain.
+export const SOBOL_DIMENSION_COUNT = SOBOL_DIRECTION_DIMENSION_COUNT;
 export const SOBOL_DIMENSION_EXHAUSTION = 0xffff_ffff;
 
 export interface OwenScrambledSobolStreamState {
@@ -31,50 +36,6 @@ export const SOBOL_BLUE_NOISE_RANK_8X8 = [
   58, 30, 49, 16, 59, 20, 43, 18,
   11, 56,  6, 34,  9, 39,  4, 50,
   52, 31, 33, 27, 42, 26, 61, 21,
-] as const;
-
-const DIRECTIONS_1 = [
-  0x80000000, 0xc0000000, 0xa0000000, 0xf0000000,
-  0x88000000, 0xcc000000, 0xaa000000, 0xff000000,
-  0x80800000, 0xc0c00000, 0xa0a00000, 0xf0f00000,
-  0x88880000, 0xcccc0000, 0xaaaa0000, 0xffff0000,
-  0x80008000, 0xc000c000, 0xa000a000, 0xf000f000,
-  0x88008800, 0xcc00cc00, 0xaa00aa00, 0xff00ff00,
-  0x80808080, 0xc0c0c0c0, 0xa0a0a0a0, 0xf0f0f0f0,
-  0x88888888, 0xcccccccc, 0xaaaaaaaa, 0xffffffff,
-] as const;
-
-const DIRECTIONS_2 = [
-  0x80000000, 0xc0000000, 0x60000000, 0x90000000,
-  0xe8000000, 0x5c000000, 0x8e000000, 0xc5000000,
-  0x68800000, 0x9cc00000, 0xee600000, 0x55900000,
-  0x80680000, 0xc09c0000, 0x60ee0000, 0x90550000,
-  0xe8808000, 0x5cc0c000, 0x8e606000, 0xc5909000,
-  0x6868e800, 0x9c9c5c00, 0xeeee8e00, 0x5555c500,
-  0x8000e880, 0xc0005cc0, 0x60008e60, 0x9000c590,
-  0xe8006868, 0x5c009c9c, 0x8e00eeee, 0xc5005555,
-] as const;
-
-const DIRECTIONS_3 = [
-  0x80000000, 0xc0000000, 0x20000000, 0x50000000,
-  0xf8000000, 0x74000000, 0xa2000000, 0x93000000,
-  0xd8800000, 0x25400000, 0x59e00000, 0xe6d00000,
-  0x78080000, 0xb40c0000, 0x82020000, 0xc3050000,
-  0x208f8000, 0x51474000, 0xfbea2000, 0x75d93000,
-  0xa0858800, 0x914e5400, 0xdbe79e00, 0x25db6d00,
-  0x58800080, 0xe54000c0, 0x79e00020, 0xb6d00050,
-  0x800800f8, 0xc00c0074, 0x200200a2, 0x50050093,
-] as const;
-
-const DIRECTIONS_4 = [
-  0x80000000, 0x40000000, 0x20000000, 0xb0000000,
-  0xf8000000, 0xdc000000, 0x7a000000, 0x9d000000,
-  0x5a800000, 0x2fc00000, 0xa1600000, 0xf0b00000,
-  0xda880000, 0x6fc40000, 0x81620000, 0x40bb0000,
-  0x22878000, 0xb3c9c000, 0xfb65a000, 0xddb2d000,
-  0x78022800, 0x9c0b3c00, 0x5a0fb600, 0x2d0ddb00,
-  0xa2878080, 0xf3c9c040, 0xdb65a020, 0x6db2d0b0,
-  0x800228f8, 0x400b3cdc, 0x200fb67a, 0xb00ddb9d,
 ] as const;
 
 function toU32(value: number): number {
@@ -141,28 +102,18 @@ export function nestedUniformScrambleBase2(value: number, seed: number): number 
   return reverseBits32(laineKarrasPermutation(value, seed));
 }
 
-function directionsForDimension(dimension: number): readonly number[] {
-  switch ((finiteIntegerOrZero(dimension) >>> 0) & 3) {
-    case 0:
-      return DIRECTIONS_1;
-    case 1:
-      return DIRECTIONS_2;
-    case 2:
-      return DIRECTIONS_3;
-    default:
-      return DIRECTIONS_4;
-  }
-}
-
 export function sobolTextureComponentBits(index: number, dimension: number): number {
   const i = (finiteIntegerOrZero(index) >>> 0) % SOBOL_TEXTURE_POINTS;
-  return reverseBits32(maskedSobol(i, directionsForDimension(dimension))) & 0x00ffffff;
+  return maskedSobolDirectionComponent(i, dimension) & 0x00ffffff;
 }
 
 export function sobolBlueNoiseRotationBits(tileIndex: number, dimension: number): number {
   const tile = finiteIntegerOrZero(tileIndex) & 63;
   const dim = finiteIntegerOrZero(dimension) >>> 0;
   const rank = SOBOL_BLUE_NOISE_RANK_8X8[tile] ?? 0;
+  // Rank zero is the canonical zero-offset member of the ranked additive tile.
+  // It is not an unscrambled stream: full pixel identity still drives both Owen
+  // seeds, so pixels sharing this tile member do not alias or form a stripe.
   if (rank === 0) return 0;
   return sobolHash(sobolHashCombine(rank, dim)) & 0x00ffffff;
 }
@@ -218,18 +169,14 @@ export function initOwenScrambledSobolState(
   return toU32((state.sampleIndex << 16) | (state.rotationTile << 8));
 }
 
-function sobolComponent(index: number, directions: readonly number[]): number {
-  return (reverseBits32(maskedSobol(index, directions)) & 0x00ffffff) * SOBOL_FACTOR;
-}
-
 export function sobolTexturePoint(index: number): readonly [number, number, number, number] {
   const i = Math.floor(index);
   if (!Number.isFinite(i) || i < 0 || i >= SOBOL_TEXTURE_POINTS) return [0, 0, 0, 0];
   return [
-    sobolComponent(i, DIRECTIONS_1),
-    sobolComponent(i, DIRECTIONS_2),
-    sobolComponent(i, DIRECTIONS_3),
-    sobolComponent(i, DIRECTIONS_4),
+    sobolTextureComponentBits(i, 0) * SOBOL_FACTOR,
+    sobolTextureComponentBits(i, 1) * SOBOL_FACTOR,
+    sobolTextureComponentBits(i, 2) * SOBOL_FACTOR,
+    sobolTextureComponentBits(i, 3) * SOBOL_FACTOR,
   ];
 }
 
@@ -237,8 +184,8 @@ export function sobolTexturePoint(index: number): readonly [number, number, numb
  * CPU oracle for pt-webgpu's binding-free Sobol dimensions.
  *
  * The Owen seed is fixed for a full pixel/path stream and dimension; it never
- * depends on the sample index. Dimensions outside the four-table contract are
- * rejected here and are handled by nextOwenScrambledSobolU32's PCG fallback.
+ * depends on the sample index. Dimensions outside the shared Joe-Kuo prefix
+ * are rejected here and handled by nextOwenScrambledSobolU32's PCG fallback.
  */
 export function owenScrambledSobolU32(
   pathIndex: number,

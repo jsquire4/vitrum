@@ -16,11 +16,8 @@
  */
 
 export const RC_BRDF_WGSL = /* wgsl */ `fn rcBaseMaterialF0(mat: RCProbeHitMaterial) -> vec3f {
-  let dielectricF0 = select(
-    vec3f(0.04) * clamp(mat.specular.rgb, vec3f(0.0), vec3f(1.0)) * clamp(mat.specular.a, 0.0, 1.0),
-    clamp(mat.specular.rgb - vec3f(1.0), vec3f(0.0), vec3f(1.0)),
-    all(mat.specular.rgb >= vec3f(1.0)),
-  );
+  let dielectricF0 = max(mat.specular.rgb, vec3f(0.0)) *
+    clamp(mat.specular.a, 0.0, 1.0);
   return mix(dielectricF0, mat.albedo, clamp(mat.metalness, 0.0, 1.0));
 }
 

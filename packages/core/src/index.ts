@@ -8,7 +8,7 @@ export * from './frame.js';
 export * from './inverse.js';
 export * from './engine/index.js';
 export { solveSkin, combineSkinMatrices, mat3InverseTranspose } from './skinSolver.js';
-export type { GpuDetection, DetectGpuOptions } from './gpuDetection.js';
+export type { GpuDetection } from './gpuDetection.js';
 export type { WgpuAdapterKind, WgpuProbeResult } from './wgpuSupport.js';
 export type {
   AdapterProfile,

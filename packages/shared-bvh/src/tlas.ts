@@ -699,6 +699,21 @@ export function validateTlasBuild(
     visitedNodes[nodeIndex] = 1;
     visitedNodeCount += 1;
     maxObservedDepth = Math.max(maxObservedDepth, depth);
+    // Child visit order is ray-dependent. The order-independent worst case is
+    // the deepest root-to-node path plus one pending sibling per ancestor.
+    // Measuring this validator's fixed left-first stack would underestimate a
+    // deep-right/shallow-left tree even though a live ray may choose the
+    // opposite order.
+    maxTraversalStackEntries = Math.max(
+      maxTraversalStackEntries,
+      depth + 1,
+    );
+    if (maxTraversalStackEntries > TLAS_TRAVERSAL_STACK_DEPTH) {
+      throw new Error(
+        `validateTlasBuild: traversal requires ${maxTraversalStackEntries} stack entries, ` +
+        `exceeding the live WGSL capacity ${TLAS_TRAVERSAL_STACK_DEPTH}.`,
+      );
+    }
 
     const base = nodeIndex * TLAS_NODE_STRIDE_U32;
     const minX = nodeFloats[base]!;
@@ -813,13 +828,6 @@ export function validateTlasBuild(
     }
     stack.push({ nodeIndex: rightChild, depth: depth + 1 });
     stack.push({ nodeIndex: leftChild, depth: depth + 1 });
-    maxTraversalStackEntries = Math.max(maxTraversalStackEntries, stack.length);
-    if (maxTraversalStackEntries > TLAS_TRAVERSAL_STACK_DEPTH) {
-      throw new Error(
-        `validateTlasBuild: traversal requires ${maxTraversalStackEntries} stack entries, ` +
-        `exceeding the live WGSL capacity ${TLAS_TRAVERSAL_STACK_DEPTH}.`,
-      );
-    }
   }
 
   if (visitedNodeCount !== data.nodeCount) {

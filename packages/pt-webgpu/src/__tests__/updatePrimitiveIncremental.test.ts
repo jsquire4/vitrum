@@ -660,7 +660,7 @@ describe('pt-webgpu incremental primitive updates', () => {
         traceTier: 'lite',
         onWarning: (w) => structured.push(w),
       });
-      expect(engine.capabilities.incrementalPatchSupport?.positions).toBe(false);
+      expect(engine.capabilities.incrementalPatchSupport?.positions).toBe(true);
       expect(engine.capabilities.supportDetails?.mutations.positions).toBe('fallback-rebuild');
       engine.setScene(makeScene());
       const buffersBefore = createBuffer.mock.calls.length;

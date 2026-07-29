@@ -327,6 +327,17 @@ describe('SPEC-01 specular scalar packing', () => {
     expect(packed[SPECULAR_OFFSET + 3]).toBeCloseTo(0.35);
   });
 
+  it('preserves KHR specularColor factors above one', () => {
+    const packed = materialToPackedVec4s({
+      baseColor: [0.8, 0.7, 0.6],
+      roughness: 0.5,
+      metallic: 0,
+      specularColor: [1.25, 4, 0],
+    });
+    expect(packed.slice(SPECULAR_OFFSET, SPECULAR_OFFSET + 3))
+      .toEqual([1.25, 4, 0]);
+  });
+
   it('defaults to the KHR_materials_specular no-op values', () => {
     const packed = materialToPackedVec4s({
       baseColor: [0.8, 0.7, 0.6],
@@ -345,7 +356,8 @@ describe('SPEC-01 specular scalar packing', () => {
 //   1. TypeScript: materialPacking.ts (MATERIAL_VEC4_STRIDE = 29, exported as
 //      MATERIAL_FLOAT_STRIDE = 116)
 //   2. WGSL: material.wgsl.ts (const MATERIAL_VEC4_STRIDE = 29u;)
-//   3. WGSL: adjointPass.wgsl.ts (checked by adjointHarness.test.ts)
+//   3. WGSL: emissive-only adjointPass.wgsl.ts (checked by
+//      emissivePathReplayOracle.test.ts)
 // If they diverge, every material read in the GPU kernel/replay is silently misaligned.
 // This test checks both sources agree, and that the TS float-stride is exactly
 // 4× the WGSL vec4-stride.

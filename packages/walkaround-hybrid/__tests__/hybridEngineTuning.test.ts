@@ -248,12 +248,11 @@ describe('deriveHybridEngineConfig — defaulting record (parse split)', () => {
     expect(cfg.tunables.emitterDist2Floor).toBe(0.01);
   });
 
-  it('default config (ultra) keeps the pre-Phase-0 baseline knobs', () => {
+  it('default config (ultra) enables the canonical generalized-reuse path', () => {
     const cfg = derive(baseOpts());
     expect(cfg.denoiser).toBe('atrous-variance');
     expect(cfg.maxBounces).toBe(4);
     expect(cfg.indirectFireflyClamp).toEqual([1.0, 1.0, 1.0]);
-    expect(cfg.grisReuse).toBe(0);
     expect(cfg.nrcEnabled).toBe(0);
     // Resolved tunables all at default.
     for (const def of TUNABLE_DEFINITIONS) {

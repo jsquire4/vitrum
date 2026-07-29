@@ -4,6 +4,12 @@
 import type { AtlasTextureSlot } from './probeGrid.js';
 import type { ProbeUpdateGpuState } from './probeUpdateGpuState.js';
 
+export interface AtlasCohortReplacementTransaction {
+  commit(): void;
+  rollback(): void;
+  finalize(): void;
+}
+
 export class ProbeUpdateAtlasTextureCache {
   private _textureCache = new WeakMap<AtlasTextureSlot, GPUTexture>();
   private _trackedCacheTextures = new Set<GPUTexture>();
@@ -93,42 +99,102 @@ export class ProbeUpdateAtlasTextureCache {
       readonly texture: GPUTexture;
     }[],
   ): void {
+    const transaction = this.prepareCachedAtlasCohort(replacements);
+    try {
+      transaction.commit();
+    } catch (error) {
+      transaction.rollback();
+      throw error;
+    }
+    transaction.finalize();
+  }
+
+  /**
+   * Stage a reversible atlas-cache publication. Candidate textures become
+   * cache-owned immediately; rollback/finalize retire the losing generation.
+   */
+  prepareCachedAtlasCohort(
+    replacements: readonly {
+      readonly slot: AtlasTextureSlot;
+      readonly texture: GPUTexture;
+    }[],
+  ): AtlasCohortReplacementTransaction {
     const previous = replacements.map(({ slot }) => this._textureCache.get(slot));
     const live = new Set(previous.filter((texture): texture is GPUTexture => texture != null));
     const candidates = new Set<GPUTexture>();
-    for (const { texture } of replacements) {
-      if (live.has(texture) || candidates.has(texture)) {
-        throw new Error('DDGI atlas replacement aliases a live or sibling texture.');
+    const slots = new Set<AtlasTextureSlot>();
+    for (const { slot, texture } of replacements) {
+      if (
+        slots.has(slot) ||
+        live.has(texture) ||
+        candidates.has(texture)
+      ) {
+        throw new Error(
+          'DDGI atlas replacement duplicates a slot or aliases a live/sibling texture.',
+        );
       }
+      slots.add(slot);
       candidates.add(texture);
     }
+    for (const candidate of candidates) {
+      this._trackedCacheTextures.add(candidate);
+    }
 
-    let published = 0;
-    try {
+    let state: 'prepared' | 'committed' | 'closed' = 'prepared';
+    const restorePrevious = (): void => {
       for (let index = 0; index < replacements.length; index += 1) {
-        const replacement = replacements[index]!;
-        this._textureCache.set(replacement.slot, replacement.texture);
-        published += 1;
-        this._trackedCacheTextures.add(replacement.texture);
-      }
-    } catch (error) {
-      for (let index = 0; index < published; index += 1) {
         const replacement = replacements[index]!;
         const prior = previous[index];
         if (prior != null) this._textureCache.set(replacement.slot, prior);
         else this._textureCache.delete(replacement.slot);
-        this._trackedCacheTextures.delete(replacement.texture);
       }
-      throw error;
-    }
-
-    const retired = new Set<GPUTexture>();
-    for (const prior of previous) {
-      if (prior == null || retired.has(prior)) continue;
-      retired.add(prior);
-      this._trackedCacheTextures.delete(prior);
-      try { prior.destroy(); } catch { /* replacement is already published */ }
-    }
+    };
+    const retire = (textures: Iterable<GPUTexture>): void => {
+      for (const texture of new Set(textures)) {
+        this._trackedCacheTextures.delete(texture);
+        try { texture.destroy(); } catch { /* continue cohort retirement */ }
+      }
+    };
+    return {
+      commit: () => {
+        if (state !== 'prepared') return;
+        let published = 0;
+        try {
+          for (let index = 0; index < replacements.length; index += 1) {
+            const replacement = replacements[index]!;
+            this._textureCache.set(replacement.slot, replacement.texture);
+            published += 1;
+          }
+          state = 'committed';
+        } catch (error) {
+          for (let index = 0; index < published; index += 1) {
+            const replacement = replacements[index]!;
+            const prior = previous[index];
+            if (prior != null) this._textureCache.set(replacement.slot, prior);
+            else this._textureCache.delete(replacement.slot);
+          }
+          retire(candidates);
+          state = 'closed';
+          throw error;
+        }
+      },
+      rollback: () => {
+        if (state === 'closed') return;
+        if (state === 'committed') restorePrevious();
+        retire(candidates);
+        state = 'closed';
+      },
+      finalize: () => {
+        if (state === 'closed') return;
+        if (state !== 'committed') {
+          retire(candidates);
+          state = 'closed';
+          return;
+        }
+        retire(live);
+        state = 'closed';
+      },
+    };
   }
 
   dispose(): void {

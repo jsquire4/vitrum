@@ -4,24 +4,6 @@
  * `HYBRID_WEBGPU_REQUIRED_LIMITS` from `@vitrum/walkaround-hybrid`.
  */
 /**
- * Full tier uses 4 bind groups (WS2 added group 3); peak storage buffers in any
- * one group is 11 (group 1: analytics + env + area lights + directionalLights).
- * N-directional expansion (2026-06-10) added binding 10 = directionalLights to
- * group 1, raising the per-group peak from 10 to 11. Group 2 carries 7
- * storage buffers (the 5 TLAS buffers). BDPT path state is invocation-private,
- * so it does not add persistent group-2 scratch bindings. Group 3 carries four
- * read-only storage buffers (the WS2
- * many-light importance-sampling tree, mesh UVs, material texture descriptors,
- * and mesh tangents) + three read_write storage buffers (A4 SPPM:
- * sppmPhotonCells at binding 6, sppmCellCounters at binding 7, sppmPixelStats at
- * binding 9) + one uniform (sppmStats at binding 8, does NOT count against the
- * storage-buffer limit). The WebGPU device-request contract is per-STAGE, so the
- * exported full-tier request uses the aggregate storage-buffer count below; this
- * per-group peak remains useful for layout audits.
- */
-export const PT_WEBGPU_FULL_MAX_STORAGE_BUFFERS_PER_GROUP = 11;
-
-/**
  * Full-tier storage-buffer bindings visible to the compute stage.
  * N-directional (2026-06-10): +1 for group-1 directionalLights (binding 10).
  * D10/H53 (2026-06-14): group 3 is 8, not 5: lightTree, meshUvs,
@@ -31,9 +13,20 @@ export const PT_WEBGPU_FULL_MAX_STORAGE_BUFFERS_PER_GROUP = 11;
  */
 export const PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE = 32;
 
-/** Full tier plus the opt-in ReSTIR-PT reuse pre-pass group-0 reservoirs. */
+/** Full tier plus the BDPT t=1 atomic RGB camera-splat buffer. */
+export const PT_WEBGPU_BDPT_REQUIRED_STORAGE_BUFFERS_PER_STAGE =
+  PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE + 1;
+
+/**
+ * Full tier plus the opt-in ReSTIR-PT reuse group-0 storage bindings.
+ *
+ * The extended layout declares five compute-visible storage entries:
+ * reservoirOut, current, history, result, and spatial output. Some entries
+ * alias the same three physical storage buffers in individual bind groups, but
+ * WebGPU's per-stage limit counts layout bindings rather than unique resources.
+ */
 export const PT_WEBGPU_RESTIR_PT_REUSE_REQUIRED_STORAGE_BUFFERS_PER_STAGE =
-  PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE + 4;
+  PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE + 5;
 
 /** Full tier plus the opt-in CWBVH closest-hit traversal buffers in group 3. */
 export const PT_WEBGPU_CWBVH_CLOSEST_REQUIRED_STORAGE_BUFFERS_PER_STAGE =
@@ -41,7 +34,11 @@ export const PT_WEBGPU_CWBVH_CLOSEST_REQUIRED_STORAGE_BUFFERS_PER_STAGE =
 
 /** Full tier plus both opt-in CWBVH closest-hit and ReSTIR-PT reuse buffers. */
 export const PT_WEBGPU_CWBVH_CLOSEST_RESTIR_PT_REQUIRED_STORAGE_BUFFERS_PER_STAGE =
-  PT_WEBGPU_CWBVH_CLOSEST_REQUIRED_STORAGE_BUFFERS_PER_STAGE + 4;
+  PT_WEBGPU_CWBVH_CLOSEST_REQUIRED_STORAGE_BUFFERS_PER_STAGE +
+  (
+    PT_WEBGPU_RESTIR_PT_REUSE_REQUIRED_STORAGE_BUFFERS_PER_STAGE -
+    PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE
+  );
 
 /** @public — back-compat alias for PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE; test consumers reference this name. */
 export const PT_WEBGPU_REQUIRED_STORAGE_BUFFERS_PER_STAGE =
@@ -88,8 +85,9 @@ export const PT_WEBGPU_SAMPLED_TEXTURES_BASELINE = 16;
 
 /**
  * Full tier uses 5 storage textures per stage, all in group 0 (output +
- * G-buffer aux). BDPT path state is invocation-private, so the per-stage
- * storage-texture total is exactly group 0's 5.
+ * G-buffer aux). BDPT's cross-pixel camera splats use one additional storage
+ * buffer, not a storage texture, so the per-stage storage-texture total stays
+ * exactly group 0's 5.
  */
 export const PT_WEBGPU_FULL_REQUIRED_STORAGE_TEXTURES_PER_STAGE = 5;
 
@@ -102,7 +100,11 @@ export const PT_WEBGPU_REQUIRED_LIMITS: Record<string, number> = {
 };
 
 export interface PtWebgpuRequiredLimitOptions {
-  /** Include the opt-in ReSTIR-PT reuse reservoir/result storage buffers. */
+  /** Include the BDPT t=1 atomic camera-splat buffer. */
+  readonly bdpt?: boolean;
+  /** Include the opt-in opaque one-edge reconnection storage buffers. */
+  readonly oneEdgeReconnectionReuse?: boolean;
+  /** @deprecated Compatibility alias for oneEdgeReconnectionReuse. */
   readonly restirPtReuse?: boolean;
   /** Include the opt-in CWBVH closest-hit traversal storage buffers. */
   readonly cwbvhClosest?: boolean;
@@ -115,13 +117,22 @@ export function ptWebgpuRequiredLimitsForAdapter(
 ): Record<string, number> {
   const maxBuffers = adapter.limits.maxStorageBuffersPerShaderStage;
   const maxTextures = adapter.limits.maxStorageTexturesPerShaderStage;
-  const fullBufferFloor = options.restirPtReuse === true
-    ? (options.cwbvhClosest === true
-        ? PT_WEBGPU_CWBVH_CLOSEST_RESTIR_PT_REQUIRED_STORAGE_BUFFERS_PER_STAGE
-        : PT_WEBGPU_RESTIR_PT_REUSE_REQUIRED_STORAGE_BUFFERS_PER_STAGE)
-    : (options.cwbvhClosest === true
-        ? PT_WEBGPU_CWBVH_CLOSEST_REQUIRED_STORAGE_BUFFERS_PER_STAGE
-        : PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE);
+  const reconnectionReuse =
+    (options.oneEdgeReconnectionReuse ?? options.restirPtReuse) === true;
+  const reconnectionStorageBindings =
+    PT_WEBGPU_RESTIR_PT_REUSE_REQUIRED_STORAGE_BUFFERS_PER_STAGE -
+    PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE;
+  const cwbvhStorageBindings =
+    PT_WEBGPU_CWBVH_CLOSEST_REQUIRED_STORAGE_BUFFERS_PER_STAGE -
+    PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE;
+  const bdptStorageBindings =
+    PT_WEBGPU_BDPT_REQUIRED_STORAGE_BUFFERS_PER_STAGE -
+    PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE;
+  const fullBufferFloor =
+    PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE +
+    (options.bdpt === true ? bdptStorageBindings : 0) +
+    (reconnectionReuse ? reconnectionStorageBindings : 0) +
+    (options.cwbvhClosest === true ? cwbvhStorageBindings : 0);
   if (
     maxBuffers >= fullBufferFloor &&
     maxTextures >= PT_WEBGPU_FULL_REQUIRED_STORAGE_TEXTURES_PER_STAGE

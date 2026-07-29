@@ -20,8 +20,8 @@
  * Provenance: PBRT (Pharr/Jakob/Humphreys) §12.6 InfiniteAreaLight; the marginal/
  * conditional layout follows gkjohnson/three-gpu-pathtracer EquirectHdrInfoUniform
  * (MIT, see CREDITS.md) as ported THREE-free in pt-webgl2's equirectHdrInfo.ts.
- * NOTE vs that port: we include the sinθ solid-angle term (the fork carries a TODO
- * to add it but does not) so the per-texel pdf is a true directional pdf, matching
+ * This implementation includes the sinθ solid-angle term omitted by the
+ * provenance fork, so the per-texel pdf is a true directional pdf matching
  * pt-webgpu and enabling correct env-importance MIS bookkeeping.
  */
 

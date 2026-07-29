@@ -2,7 +2,7 @@
 //
 // Phase 1 deliverable: Hammersley QMC sequence + sphere sampling WGSL fragment.
 // Sprint 3 (Phase 6): light tree CDF (CPU-side build + GPU pack), mixture PDF / MIS heuristics.
-// Sprint 7 (Phase 6): HG phase function + equi-angular volume distance sampling.
+// Sprint 7 (Phase 6): HG phase function.
 // Sprint 8b (Phase 6): Jakob+Hanika spectral upsampling.
 // Sprint 10c (Phase 6): connection-PMF MIS weights.
 // Sprint 12 (Phase 6): CIE CMF tables, hero-wavelength sampling, Cauchy IOR.
@@ -23,6 +23,11 @@ export {
 } from './tonemap.js';
 export { tonemapWgsl } from './wgsl/tonemap.wgsl.js';
 export { PCG_WGSL, PCG_MODULE_NAME, PCG_HASH_TO_F32_WGSL } from './wgsl/pcg.wgsl.js';
+export {
+  SOBOL_DIRECTION_BITS,
+  SOBOL_DIRECTION_DIMENSION_COUNT,
+  SOBOL_DIRECTION_NUMBERS_WGSL,
+} from './sobolDirectionNumbers.js';
 export {
   SOBOL_TEXTURE_SIZE,
   SOBOL_TEXTURE_POINTS,
@@ -109,8 +114,6 @@ export {
 export type { ReGIRSurvivor } from './regir.js';
 export { balanceHeuristic, powerHeuristic, mixturePdf } from './mixturePdf.js';
 export { evaluateHG, sampleHG, pdfHG } from './hgPhase.js';
-export { sampleEquiAngular } from './equiAngular.js';
-export type { EquiAngularSample, EquiAngularOptions } from './equiAngular.js';
 export {
   // `rgbToSpectralCoefficients` is the stable public alias; the underlying
   // `rgbToJakobHanikaCoefficients` runs the genuine Jakob & Hanika 2019
@@ -126,8 +129,18 @@ export {
 // Full Veach §10.3 BDPT MIS strategy enumeration. Vertex-storage ABIs are
 // backend-owned: WebGL2 and WebGPU carry different transport state and layouts.
 // Sprint-10c `_partial` variants removed 2026-05-18 (no production consumers).
-export { geometricTermG, buildBDPTStrategyPDFs_full, bdptConnectionMIS_full } from './bdptMIS.js';
-export type { BDPTFullVertex } from './bdptMIS.js';
+export {
+  geometricTermG,
+  buildBDPTStrategyPDFs_full,
+  bdptConnectionMIS_full,
+  bdptExplicitConnectionStrategyIsValid,
+  maskBDPTExplicitConnectionStrategyPDFs,
+  BDPT_EXPLICIT_STRATEGY_MASK_WGSL,
+} from './bdptMIS.js';
+export type {
+  BDPTFullVertex,
+  BDPTExplicitConnectionLimits,
+} from './bdptMIS.js';
 
 // GRIS / ReSTIR-PT reconnection-shift CPU oracle (Lin et al. 2022).
 // Phase-0 foundation for evolving ReSTIR-GI toward path reuse: the reconnection

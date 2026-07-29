@@ -311,11 +311,10 @@ describe('WalkaroundGPUPipeline.captureOutputFrame — mock-device harness', () 
     pipeline['_compositePass'] = {
       pipeline: {},
     };
-    // Provide mock frame resources (resolvedTexture + compositeSampler)
+    // Provide mock frame resources (resolvedTexture)
     pipeline['_res'] = {
       common: {
         resolvedTexture: { createView: vi.fn(() => ({})) },
-        compositeSampler: {},
       },
     };
     // Provide a minimal _bglCache
@@ -371,7 +370,6 @@ describe('WalkaroundGPUPipeline.captureOutputFrame — mock-device harness', () 
     pipeline['_res'] = {
       common: {
         resolvedTexture: { createView: vi.fn(() => ({})) },
-        compositeSampler: {},
       },
     };
     pipeline['_bglCache'] = {};

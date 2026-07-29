@@ -66,10 +66,143 @@ struct ReservoirDI {
 };
 
 const RESERVOIR_DI_MAX_FINITE_F32: f32 = 3.402823466e38;
+const RESERVOIR_DI_INVALID_LOG_DENSITY: f32 = -3.402823466e38;
+// DI reuse keeps the exact sampled point xi on the same finite emitter.
+// Both source and destination therefore use emitter-area measure and the shift
+// Jacobian is exactly one (unlike a receiver-reconnection path-space shift).
+const RESERVOIR_DI_EMITTER_AREA_SHIFT_JACOBIAN: f32 = 1.0;
 
 fn reservoirDiFinite(value: f32) -> bool {
   return value >= -RESERVOIR_DI_MAX_FINITE_F32
       && value <= RESERVOIR_DI_MAX_FINITE_F32;
+}
+
+fn reservoirDiSaturatingAddU32(a: u32, b: u32) -> u32 {
+  if (b > 0xffffffffu - a) { return 0xffffffffu; }
+  return a + b;
+}
+
+// Stratified RIS schedules finite-emitter and environment candidates on
+// disjoint measures. Generalized reuse must balance a selected candidate only
+// against attempts that had support on that candidate's measure.
+fn reservoirDiSupportForLight(r: ReservoirDI, lightId: u32) -> u32 {
+  return select(r.areaM, r.envM, lightId == ENV_SAMPLE_SENTINEL);
+}
+
+// Compute log2(M_i * pHat_i(y)) without ever forming the potentially
+// overflowing product. Talbot denominators are accumulated after subtracting
+// their largest log term (log-sum-exp), preserving ratios across the full
+// finite f32 density and u32 support range.
+fn reservoirDiLogWeightedDensity(attempts: u32, density: f32) -> f32 {
+  if (attempts == 0u || !reservoirDiFinite(density) || !(density > 0.0)) {
+    return RESERVOIR_DI_INVALID_LOG_DENSITY;
+  }
+  return log2(f32(attempts)) + log2(density);
+}
+
+fn reservoirDiScaledDensityFromLog(
+  logDensity: f32,
+  maxLogDensity: f32,
+) -> f32 {
+  if (
+    logDensity == RESERVOIR_DI_INVALID_LOG_DENSITY ||
+    maxLogDensity == RESERVOIR_DI_INVALID_LOG_DENSITY ||
+    !reservoirDiFinite(logDensity) ||
+    !reservoirDiFinite(maxLogDensity)
+  ) {
+    return 0.0;
+  }
+  return exp2(min(0.0, logDensity - maxLogDensity));
+}
+
+// Generalized Talbot MIS (Lin et al. 2022, Eq. 36 / supplemental Eq. S.7)
+// after grouping the M_i represented attempts of each input reservoir:
+//
+//   m_i(y) = M_i pHat_i(y) / sum_j M_j pHat_j(y).
+//
+// The returned log-weight is Eq. 19 with the identity DI shift:
+//
+//   w_i = m_i(y_i) pHat_0(y_i) W_i |J_i|,  |J_i| = 1.
+//
+// Callers collect every candidate log-weight first, subtract their shared
+// maximum, and only then run WRS. This preserves candidate ratios across the
+// complete finite f32 input range; independently capping each pHat_0 * W_i
+// would collapse unequal overflowing products to the same value.
+fn reservoirDiGeneralizedReuseLogWeight(
+  sourceLogDensity: f32,
+  maxLogDensity: f32,
+  scaledTechniqueDenominator: f32,
+  canonicalDensity: f32,
+  sourceReservoirW: f32,
+) -> f32 {
+  let sourceNumerator = reservoirDiScaledDensityFromLog(
+    sourceLogDensity,
+    maxLogDensity,
+  );
+  if (
+    !(sourceNumerator > 0.0) ||
+    !reservoirDiFinite(scaledTechniqueDenominator) ||
+    !(scaledTechniqueDenominator > 0.0) ||
+    !reservoirDiFinite(canonicalDensity) ||
+    !(canonicalDensity > 0.0) ||
+    !reservoirDiFinite(sourceReservoirW) ||
+    !(sourceReservoirW > 0.0)
+  ) {
+    return RESERVOIR_DI_INVALID_LOG_DENSITY;
+  }
+  let misWeight = sourceNumerator / scaledTechniqueDenominator;
+  if (!reservoirDiFinite(misWeight) || !(misWeight > 0.0)) {
+    return RESERVOIR_DI_INVALID_LOG_DENSITY;
+  }
+  let logWeight =
+    log2(misWeight) +
+    log2(canonicalDensity) +
+    log2(sourceReservoirW) +
+    log2(RESERVOIR_DI_EMITTER_AREA_SHIFT_JACOBIAN);
+  return select(
+    RESERVOIR_DI_INVALID_LOG_DENSITY,
+    logWeight,
+    reservoirDiFinite(logWeight),
+  );
+}
+
+// Generalized reuse already includes represented attempt multiplicity in the
+// all-technique MIS denominator, so it must not divide by M again. The stored
+// WRS sum is max-log-scaled; recover the unscaled UCW directly in log space:
+// W = 2^maxLogWeight * scaledWeightSum / pHat_0(z). M/areaM/envM remain
+// confidence/support counts.
+fn finaliseReservoirDIFromGeneralizedReuse(
+  r: ptr<function, ReservoirDI>,
+  maxLogWeight: f32,
+  selectedCanonicalDensity: f32,
+) {
+  (*r).W = 0.0;
+  if (
+    (*r).M == 0u ||
+    maxLogWeight == RESERVOIR_DI_INVALID_LOG_DENSITY ||
+    !reservoirDiFinite(maxLogWeight) ||
+    !reservoirDiFinite((*r).w_sum) ||
+    !((*r).w_sum > 0.0) ||
+    !reservoirDiFinite(selectedCanonicalDensity) ||
+    !(selectedCanonicalDensity > 0.0)
+  ) {
+    return;
+  }
+  let logW =
+    maxLogWeight +
+    log2((*r).w_sum) -
+    log2(selectedCanonicalDensity);
+  if (!reservoirDiFinite(logW)) {
+    return;
+  }
+  if (logW >= log2(RESERVOIR_DI_MAX_FINITE_F32)) {
+    (*r).W = RESERVOIR_DI_MAX_FINITE_F32;
+    return;
+  }
+  let rawW = exp2(logW);
+  if (reservoirDiFinite(rawW) && rawW > 0.0) {
+    (*r).W = rawW;
+  }
 }
 
 fn emptyReservoirDI() -> ReservoirDI {

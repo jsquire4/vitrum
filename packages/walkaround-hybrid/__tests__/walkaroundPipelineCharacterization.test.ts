@@ -43,6 +43,7 @@ import {
   TemporalGIReservoirPass,
   TemporalReservoirPass,
   TransparentOitPass,
+  VarianceTrackerPass,
 } from '../src/pipeline/passes/index.js';
 import { PassRegistry } from '../src/pipeline/PassRegistry.js';
 import {
@@ -69,7 +70,7 @@ const makeStubDenoiser = (id: string, labels: readonly string[]): Denoiser =>
 /**
  * Reproduce the registration sequence of `WalkaroundGPUPipeline.initialize()`
  * (default options: PPG compiled+on, ReGIR compiled+on, both spatial counts 2,
- * NRC off, grisReuse off) so the golden captures the full pass set the
+ * NRC off) so the golden captures the full pass set the
  * orchestrator wires. The ReGIRBuildPass getter is a no-op closure here.
  */
 function buildPipelineRegistry(): PassRegistry {
@@ -79,13 +80,14 @@ function buildPipelineRegistry(): PassRegistry {
   reg.register(new TemporalReservoirPass(stubPipeline));
   reg.register(new SpatialReservoirPass(stubPipeline, 2));
   reg.register(new RISGIPass(stubPipeline, undefined));
-  reg.register(new TemporalGIReservoirPass(stubPipeline, false, true));
-  reg.register(new SpatialGIReservoirPass(stubPipeline, 2, false));
+  reg.register(new TemporalGIReservoirPass(stubPipeline, true));
+  reg.register(new SpatialGIReservoirPass(stubPipeline, 2));
   reg.register(new ShadePass(stubPipeline));
   reg.register(new MotionVectorsPass(stubPipeline));
   reg.register(new GTAOPass(stubPipeline));
   reg.register(new GTAOUpsamplePass(stubPipeline));
   reg.register(new CheckerboardPrefillPass(stubPipeline, stubUboRef, /* checkerboard */ false));
+  reg.register(new VarianceTrackerPass({ value: 0 }, () => false));
   reg.register(new DenoiserAdapterPass(
     () => makeStubDenoiser('atrous-variance', ['welford-temporal', 'atrous-variance-variance']),
     () => stubPipeline,
@@ -124,6 +126,7 @@ const GOLDEN_REGISTERED_IDS = [
   'gtao',
   'gtao-upsample',
   'cb-prefill',
+  'variance-tracker',
   'denoiser-adapter',
   'indirect-temporal-accum',
   'atrous-indirect-3',
@@ -172,12 +175,13 @@ describe('WalkaroundGPUPipeline — pass-registration characterization', () => {
       'shade',
       'gtao',
       'gtao-upsample',
+      'motion-vectors',
       'cb-prefill',
+      'variance-tracker',
       'denoiser-adapter',
       'indirect-temporal-accum',
       'atrous-indirect-3',
       'indirect-combine',
-      'motion-vectors',
       'transparent-oit',
       'temporalAccum',
       'resolve',
@@ -210,6 +214,7 @@ describe('WalkaroundGPUPipeline — pass-registration characterization', () => {
       'shade',
       'gtao',
       'gtao-upsample',
+      'motion-vectors',
       'cb-prefill',
       'welford-temporal',
       'atrous-variance-variance',
@@ -219,7 +224,6 @@ describe('WalkaroundGPUPipeline — pass-registration characterization', () => {
       'atrous-indirect-2',
       'atrous-indirect-3',
       'indirect-combine',
-      'motion-vectors',
       'transparent-oit',
       'temporalAccum',
       'resolve',

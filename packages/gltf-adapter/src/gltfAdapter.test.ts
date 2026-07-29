@@ -446,7 +446,7 @@ describe('minimal triangle', () => {
     );
     fixture.gltf.meshes![0]!.primitives[0]!.attributes.TEXCOORD_2 = uv2;
 
-    const { scene, diagnostics, warnings } = await gltfToScene(fixture.gltf, { buffers: fixture.buffers });
+    const { scene, warnings } = await gltfToScene(fixture.gltf, { buffers: fixture.buffers });
 
     const prim = scene.primitives[0] as MeshPrimitive;
     expect((prim.material.normalMap)?.texCoord).toBe(2);
@@ -462,7 +462,6 @@ describe('minimal triangle', () => {
     ]);
     expect(prim.tangents).toBeInstanceOf(Float32Array);
     expect(warnings.some((w) => w.includes('sampled with the wrong UV channel'))).toBe(false);
-    expect(diagnostics.some((d) => d.code === 'ignored-material-texcoord')).toBe(false);
   });
 
   it('rejects a high-UV material map when the accessor is not VEC2', async () => {
@@ -517,7 +516,7 @@ describe('minimal triangle', () => {
       normalTexture: { index: 0, texCoord: 2 },
     };
 
-    const { scene, diagnostics, warnings } = await gltfToScene(fixture.gltf, { buffers: fixture.buffers });
+    const { scene, warnings } = await gltfToScene(fixture.gltf, { buffers: fixture.buffers });
 
     const prim = scene.primitives[0] as MeshPrimitive;
     expect((prim.material.baseColorMap)?.texCoord).toBe(1);
@@ -531,7 +530,6 @@ describe('minimal triangle', () => {
     expect(Array.from(prim.uvSets?.[2] ?? [])).toEqual(Array.from(new Float32Array(uv2Values)));
     expect(prim.tangents).toBeInstanceOf(Float32Array);
     expect(warnings.some((w) => w.includes('sampled with the wrong UV channel'))).toBe(false);
-    expect(diagnostics.some((d) => d.code === 'ignored-material-texcoord')).toBe(false);
   });
 
   it('preserves two high material-visible UV sets in distinct indexed lanes', async () => {
@@ -560,7 +558,7 @@ describe('minimal triangle', () => {
       normalTexture: { index: 0, texCoord: 3 },
     };
 
-    const { scene, diagnostics, warnings } = await gltfToScene(fixture.gltf, { buffers: fixture.buffers });
+    const { scene, warnings } = await gltfToScene(fixture.gltf, { buffers: fixture.buffers });
 
     const prim = scene.primitives[0] as MeshPrimitive;
     expect((prim.material.baseColorMap)?.texCoord).toBe(2);
@@ -571,7 +569,6 @@ describe('minimal triangle', () => {
     expect(Array.from(prim.uvSets?.[3] ?? [])).toEqual(Array.from(new Float32Array(uv3Values)));
     expect(prim.tangents).toBeInstanceOf(Float32Array);
     expect(warnings.some((w) => w.includes('sampled with the wrong UV channel'))).toBe(false);
-    expect(diagnostics.some((d) => d.code === 'ignored-material-texcoord')).toBe(false);
   });
 
   it('preserves sparse UV/color/morph lanes through fallback remap above the JS array-index ceiling', async () => {
@@ -839,7 +836,7 @@ describe('minimal triangle', () => {
       buffers: [{ byteLength: packed.byteLength }],
     };
 
-    const { diagnostics, scene, warnings } = await gltfToScene(gltf, { buffers: new Map([[0, packed]]) });
+    const { scene, warnings } = await gltfToScene(gltf, { buffers: new Map([[0, packed]]) });
 
     const prim = scene.primitives[0] as MeshPrimitive;
     expect(Array.from(prim.colors ?? [])).toEqual([
@@ -852,7 +849,6 @@ describe('minimal triangle', () => {
       0.50, 0.50, 0.50,
       0.75, 0.75, 0.75,
     ]);
-    expect(diagnostics.some((entry) => entry.code === 'ignored-vertex-color-set')).toBe(false);
     expect(warnings.some(w => w.includes('COLOR_1') && w.includes('ignored'))).toBe(false);
   });
 
@@ -1890,6 +1886,57 @@ describe('node hierarchy with nested TRS', () => {
     expect(prim.transform![13]).toBeCloseTo(2, 5);  // Y
     expect(prim.transform![14]).toBeCloseTo(3, 5);  // Z
   });
+
+  it('rejects a reachable zero-scale transform at its exact glTF source path', async () => {
+    const { gltf, buffers } = makeMinimalTriangleGltf();
+    gltf.nodes![0]!.scale = [1, 0, 1];
+
+    await expect(gltfToScene(gltf, { buffers })).rejects.toMatchObject({
+      name: 'GltfImportError',
+      diagnostics: [{
+        severity: 'error',
+        code: 'non-invertible-node-transform',
+        path: 'nodes[0].scale',
+      }],
+    });
+  });
+
+  it('rejects a reachable singular matrix at its exact glTF source path', async () => {
+    const { gltf, buffers } = makeMinimalTriangleGltf();
+    gltf.nodes![0]!.matrix = [
+      1, 0, 0, 0,
+      0, 1, 0, 0,
+      0, 0, 0, 0,
+      0, 0, 0, 1,
+    ];
+
+    await expect(gltfToScene(gltf, { buffers })).rejects.toMatchObject({
+      name: 'GltfImportError',
+      diagnostics: [{
+        severity: 'error',
+        code: 'non-invertible-node-transform',
+        path: 'nodes[0].matrix',
+      }],
+    });
+  });
+
+  it('rejects a Float32-noninvertible composed world transform before conversion', async () => {
+    const { gltf, buffers } = makeMinimalTriangleGltf();
+    gltf.scenes![0]!.nodes = [0];
+    gltf.nodes = [
+      { scale: [1e-20, 1, 1], children: [1] },
+      { mesh: 0, scale: [1e-20, 1, 1] },
+    ];
+
+    await expect(gltfToScene(gltf, { buffers })).rejects.toMatchObject({
+      name: 'GltfImportError',
+      diagnostics: [{
+        severity: 'error',
+        code: 'non-invertible-node-transform',
+        path: 'nodes[1]',
+      }],
+    });
+  });
 });
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -2647,6 +2694,21 @@ describe('skin → SkinnedMeshPrimitive', () => {
     expect(prim.kind).toBe('skinned-mesh');
   });
 
+  it('imports a Float32-invertible tiny-scale skinned mesh transform', async () => {
+    const { gltf, buffers } = makeSkinnedGltf(5121);
+    gltf.nodes![0] = {
+      ...gltf.nodes![0]!,
+      scale: [1e-5, 1e-5, 1e-5],
+    };
+
+    const { scene } = await gltfToScene(gltf, { buffers });
+    const prim = scene.primitives[0] as SkinnedMeshPrimitive;
+
+    expect(prim.kind).toBe('skinned-mesh');
+    expect(prim.transform?.[0]).toBeCloseTo(1e-5, 10);
+    expect(Array.from(prim.bones).every(Number.isFinite)).toBe(true);
+  });
+
   it('skinIndices decoded correctly from UNSIGNED_BYTE JOINTS_0', async () => {
     const { gltf, buffers } = makeSkinnedGltf(5121);
     const { scene } = await gltfToScene(gltf, { buffers });
@@ -2955,6 +3017,39 @@ describe('KHR_lights_punctual → SceneEmitter[]', () => {
     expect(scene.emitters).toHaveLength(3);
   });
 
+  it('imports reachable node light payloads when extensionsUsed omits the redundant token', async () => {
+    const { gltf, buffers } = makeLightsGltf();
+    delete gltf.extensionsUsed;
+
+    const { scene, diagnostics } = await gltfToScene(gltf, { buffers });
+
+    expect(scene.emitters).toHaveLength(3);
+    expect(diagnostics).toContainEqual(expect.objectContaining({
+      severity: 'warning',
+      code: 'undeclared-punctual-light-extension',
+      path: 'extensionsUsed',
+    }));
+  });
+
+  it('validates malformed root light payloads only when a selected-scene node references them', async () => {
+    const { gltf, buffers } = makeLightsGltf();
+    gltf.extensions = { KHR_lights_punctual: {} };
+    gltf.scenes = [{ nodes: [0] }, { nodes: [1] }];
+
+    const selectedResult = await gltfToScene(gltf, { buffers });
+    expect(selectedResult.scene.emitters).toEqual([]);
+
+    gltf.scene = 1;
+    await expect(gltfToScene(gltf, { buffers })).rejects.toMatchObject({
+      name: 'GltfImportError',
+      diagnostics: [expect.objectContaining({
+        severity: 'error',
+        code: 'missing-punctual-light',
+        path: 'extensions.KHR_lights_punctual',
+      })],
+    });
+  });
+
   it('point emitter: kind, position, color, intensity, distance, decay', async () => {
     const { gltf, buffers } = makeLightsGltf();
     const { scene } = await gltfToScene(gltf, { buffers });
@@ -3022,7 +3117,7 @@ describe('KHR_lights_punctual → SceneEmitter[]', () => {
     expect(unsupportedWarn).toBeUndefined();
   });
 
-  it('rejects unsupported punctual light types with a structured diagnostic', async () => {
+  it('skips unsupported punctual light types with a structured warning', async () => {
     const { gltf, buffers } = makeLightsGltf();
     const punctual = gltf.extensions!.KHR_lights_punctual as { lights: Array<{ type: string; name?: string }> };
     punctual.lights[2] = {
@@ -3030,19 +3125,25 @@ describe('KHR_lights_punctual → SceneEmitter[]', () => {
       name: 'bad tube',
     };
 
-    await expect(gltfToScene(gltf, { buffers })).rejects.toMatchObject({
-      name: 'GltfImportError',
-      diagnostics: [expect.objectContaining({
-        severity: 'error',
+    const result = await gltfToScene(gltf, { buffers });
+
+    expect(result.scene.emitters).toHaveLength(2);
+    expect(result.diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        severity: 'warning',
         code: 'unsupported-punctual-light-type',
         path: 'extensions.KHR_lights_punctual.lights[2].type',
-      })],
-    });
+      }),
+    ]));
   });
 
-  it('rejects missing punctual light references with a structured diagnostic', async () => {
+  it.each([
+    ['missing light field', {}],
+    ['non-integer light field', { light: 1.5 }],
+    ['out-of-range light field', { light: 99 }],
+  ])('rejects a malformed punctual light reference: %s', async (_label, payload) => {
     const { gltf, buffers } = makeLightsGltf();
-    gltf.nodes![1]!.extensions = { KHR_lights_punctual: { light: 99 } };
+    gltf.nodes![1]!.extensions = { KHR_lights_punctual: payload };
 
     await expect(gltfToScene(gltf, { buffers })).rejects.toMatchObject({
       name: 'GltfImportError',

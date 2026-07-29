@@ -53,15 +53,15 @@ describe('ReSTIR-PT producer stored-Lo target domain', () => {
       canonicalize,
     );
     const weight = RESTIR_PT_PRODUCER_WGSL.indexOf(
-      'let wCandidate = select(0.0, pHat / pdfSrc, pdfSrc > 1e-8);',
+      'let logCandidateWeight = log(pHat) - log(pdfSrc);',
       target,
     );
     const update = RESTIR_PT_PRODUCER_WGSL.indexOf(
-      '&r, xs, ns, Lo, heroLambda, pdfSrc, wCandidate, &rng,',
+      '&r, xs, ns, Lo, heroLambda, pdfSrc, logCandidateWeight, &rng,',
       weight,
     );
     const finalise = RESTIR_PT_PRODUCER_WGSL.indexOf(
-      'finaliseReservoirPTWGris(&r, rptParams.wCap);',
+      'finaliseReservoirPTWGris(&r);',
       update,
     );
 

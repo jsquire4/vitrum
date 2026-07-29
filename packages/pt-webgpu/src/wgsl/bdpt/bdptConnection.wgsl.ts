@@ -1,3 +1,5 @@
+import { BDPT_EXPLICIT_STRATEGY_MASK_WGSL } from '@vitrum/shared-samplers';
+
 /**
  * BDPT eye↔light connection — full Veach §10.3 multi-strategy MIS (WebGPU).
  *
@@ -33,7 +35,7 @@
  *   Pharr et al. 2023, PBR 4e §16.3.5 Eq. 16.16; integrators.cpp MISWeight.
  *   @vitrum/shared-samplers: bdptConnectionMIS_full, buildBDPTStrategyPDFs_full.
  */
-export const PT_WEBGPU_BDPT_CONNECTION_WGSL = /* wgsl */ `
+const PT_WEBGPU_BDPT_CONNECTION_NATIVE_CAMERA_SPLAT_WGSL = /* wgsl */ `
 const BDPT_KIND_INVALID: f32 = 3.0;
 const BDPT_KIND_DELTA: f32 = 1.0;
 const BDPT_MAX_MERGED: u32 = 19u; // c(<=7) + e(<=7) + 3, with headroom
@@ -44,6 +46,9 @@ const BDPT_LV_MEDIUM_MATID: f32 = -7.0;
 const BDPT_NO_MEDIUM: u32 = 0xffffffffu;
 
 const BDPT_UNBOUNDED_MEDIUM_DISTANCE: f32 = 3.402823e38;
+
+${BDPT_EXPLICIT_STRATEGY_MASK_WGSL}
+
 struct BdptMediumLayer {
   matId: u32,
   boundaryKind: u32,
@@ -565,14 +570,23 @@ fn bdptTransmissiveConnectionPdf(
   specularIntensity: f32,
   anisotropy: f32,
   anisotropyRotation: f32,
+  thinFilm: ThinFilmInterface,
 ) -> f32 {
   var evalNormal = normal;
   var evalClearcoatNormal = clearcoatNormal;
   var evalEta = max(etaTOverI, 1e-4);
+  var evalThinFilm = thinFilm;
   if (dot(evalNormal, wo) < 0.0) {
     evalNormal = -evalNormal;
     evalClearcoatNormal = -evalClearcoatNormal;
     evalEta = 1.0 / evalEta;
+    // thinFilm.frontFace records the side used by the sampled forward
+    // subpath. A BDPT reverse-density query whose outgoing direction lies on
+    // the other side
+    // must reverse the coherent stack as well as the shading normal and eta.
+    // Otherwise the stored forward LUT half is incorrectly reused for the
+    // reverse strategy on asymmetric/lossy stacks.
+    evalThinFilm.frontFace = !evalThinFilm.frontFace;
   }
   let nDotV = dot(evalNormal, wo);
   let nDotL = dot(evalNormal, wi);
@@ -581,7 +595,7 @@ fn bdptTransmissiveConnectionPdf(
     roughness, transmission, evalEta, evalNormal, wo, wi,
     iridescence, iridescenceIor,
     iridescenceThicknessMin, iridescenceThicknessMax,
-    specularColor, specularIntensity,
+    specularColor, specularIntensity, evalThinFilm,
   );
   let lobeWeightSum = brdfExtensionLobeWeightSum(clearcoat, sheen);
   if (nDotL < -1e-5) {
@@ -639,6 +653,7 @@ fn bdptMarginalSurfacePdf(
   specularIntensity: f32,
   anisotropy: f32,
   anisotropyRotation: f32,
+  thinFilm: ThinFilmInterface,
 ) -> f32 {
   if (transmission > 0.0 && metallic == 0.0) {
     return bdptTransmissiveConnectionPdf(
@@ -647,7 +662,7 @@ fn bdptMarginalSurfacePdf(
       iridescence, iridescenceIor,
       iridescenceThicknessMin, iridescenceThicknessMax,
       specularColor, specularIntensity,
-      anisotropy, anisotropyRotation,
+      anisotropy, anisotropyRotation, thinFilm,
     );
   }
   return brdfDirectionalPdfFullSampledWithClearcoatNormal(
@@ -656,7 +671,7 @@ fn bdptMarginalSurfacePdf(
     clearcoat, clearcoatRoughness, sheen, sheenRoughness,
     iridescence, iridescenceIor,
     iridescenceThicknessMin, iridescenceThicknessMax,
-    specularColor, specularIntensity, anisotropy, anisotropyRotation,
+    specularColor, specularIntensity, anisotropy, anisotropyRotation, thinFilm,
   );
 }
 
@@ -845,7 +860,7 @@ fn bdptMISWeightFull(
     validPdfs[0u] = false;
     validPdfs[1u] = false;
     if (
-      n > 3u && validPdfs[2u] &&
+      n >= 3u && validPdfs[2u] &&
       bdptFinitePositive(infiniteNeePdf) &&
       bdptFinitePositive(infiniteLaunchPdf)
     ) {
@@ -886,22 +901,19 @@ fn bdptMISWeightFull(
 
   // Keep only the explicit strategies that this bounded kernel actually samples.
   // Infinite roots additionally admit p0 eye escape and p1 distant NEE; finite
-  // roots retain only explicit p1..p(n-2) connection strategies.
+  // roots retain explicit p1..p(n-2) eye↔light connections plus the native
+  // p(n-1) / t=1 light-subpath-to-camera splat strategy.
   let maxLightVertices = min(params.bdptMaxLightBounces, 8u);
   let maxEyeVertices = min(params.bdptMaxEyeDepth, 8u);
   for (var k = 0u; k < n; k = k + 1u) {
-    var validExplicitStrategy = k >= 1u && k <= n - 2u;
-    if (infiniteRoot) {
-      validExplicitStrategy =
-        (k == 0u && infiniteEnvironmentRoot) ||
-        k == 1u || (k >= 2u && k <= n - 2u);
-    }
-    if (validExplicitStrategy) {
-      let lightVertices = k;
-      let eyeVertices = n - k - 1u;
-      validExplicitStrategy =
-        (k < 2u || lightVertices <= maxLightVertices) &&
-        eyeVertices <= maxEyeVertices;
+    var validExplicitStrategy = bdptExplicitConnectionStrategyIsValid(
+      n, k, maxLightVertices, maxEyeVertices,
+    );
+    if (infiniteRoot && k == 0u && infiniteEnvironmentRoot) {
+      // The shared finite family excludes pure-eye s=0. Environment roots add
+      // that separately when an eye-escape estimator exists and fits the same
+      // bounded eye-subpath allocation.
+      validExplicitStrategy = n > 0u && n - 1u <= maxEyeVertices;
     }
     if (!validExplicitStrategy) { validPdfs[k] = false; }
   }
@@ -956,11 +968,13 @@ fn evaluateBdptConnection(
   specularIntensity: f32,
   anisotropy: f32,
   anisotropyRotation: f32,
+  eyeThinFilm: ThinFilmInterface,
   eyeDepth: u32,
   eyeIsMedium: bool,
   eyeMediumG: f32,
   eyeMediumMatId: u32,
   lightVtxIdx: i32,
+  rng: ptr<function, PtRngState>,
 ) -> vec3f {
   let lv0 = bdptLightPath[bdptLightPathIndex(lightVtxIdx, 0u)];
   let lv1 = bdptLightPath[bdptLightPathIndex(lightVtxIdx, 1u)];
@@ -1076,7 +1090,9 @@ fn evaluateBdptConnection(
   }
   let lightEmitterCastShadowDisabled = lightVtxIdx == 0 && lvMatId < 0.0 && lv4.x > 0.5;
   let shadowRay = Ray(eyePos + connDir * 1e-3, connDir);
-  if (!lightEmitterCastShadowDisabled && traceAny(shadowRay, 1e-4, max(dist - 2e-3, 1e-3))) {
+  if (!lightEmitterCastShadowDisabled && traceAny(
+    shadowRay, 1e-4, max(dist - 2e-3, 1e-3), rng,
+  )) {
     return vec3f(0.0);
   }
   var eyeBrdf = vec3f(
@@ -1089,7 +1105,7 @@ fn evaluateBdptConnection(
       clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
       iridescence, iridescenceIor, iridescenceThicknessMin,
       iridescenceThicknessMax, specularColor, specularIntensity,
-      anisotropy, anisotropyRotation, false,
+      anisotropy, anisotropyRotation, eyeThinFilm, false,
     );
   }
   // bdptGeometricTerm already contributes the receiver cosine for this edge.
@@ -1120,11 +1136,6 @@ fn evaluateBdptConnection(
   }
   if (lvMatId >= 0.0) {
     let lvMat = bdptSampleMaterialAtPayload(u32(lvMatId), lv4, lightNormal, lvWoPrev, bdptInvocationHeroLambdaNm);
-    // The TMM stack is sampled as a discrete R/T/A event by the light random
-    // walk. It has no finite connection density at this vertex.
-    if (lvMat.thinFilmEnabled) {
-      return vec3f(0.0);
-    }
     if (!bsdfHasFiniteConnectionSupport(
       lvMat.roughness, lvMat.metallic, lvMat.transmission,
       lvMat.clearcoat, lvMat.sheen,
@@ -1138,7 +1149,7 @@ fn evaluateBdptConnection(
       lvMat.clearcoat, lvMat.clearcoatRoughness, lvMat.sheen, lvMat.sheenRoughness, lvMat.sheenColor,
       lvMat.iridescence, lvMat.iridescenceIor, lvMat.iridescenceThicknessMin, lvMat.iridescenceThicknessMax,
       lvMat.specularColor, lvMat.specularIntensity,
-      lvMat.anisotropy, lvMat.anisotropyRotation, true,
+      lvMat.anisotropy, lvMat.anisotropyRotation, lvMat.thinFilm, true,
     );
     // bdptGeometricTerm already contributes the light-vertex cosine.
     lightBsdfCosTheta = lvBrdf;
@@ -1191,6 +1202,7 @@ fn evaluateBdptConnection(
         lvMatF.specularIntensity,
         lvMatF.anisotropy,
         lvMatF.anisotropyRotation,
+        lvMatF.thinFilm,
       );
     } else {
       fwdEe = brdfDirectionalPdfFullSampledWithClearcoatNormal(
@@ -1199,7 +1211,7 @@ fn evaluateBdptConnection(
         lvMatF.clearcoat, lvMatF.clearcoatRoughness, lvMatF.sheen, lvMatF.sheenRoughness,
         lvMatF.iridescence, lvMatF.iridescenceIor, lvMatF.iridescenceThicknessMin, lvMatF.iridescenceThicknessMax,
         lvMatF.specularColor, lvMatF.specularIntensity,
-        lvMatF.anisotropy, lvMatF.anisotropyRotation,
+        lvMatF.anisotropy, lvMatF.anisotropyRotation, lvMatF.thinFilm,
       );
     }
   }
@@ -1242,6 +1254,7 @@ fn evaluateBdptConnection(
       specularIntensity,
       anisotropy,
       anisotropyRotation,
+      eyeThinFilm,
     );
   } else {
     revLc = brdfDirectionalPdfFullSampledWithClearcoatNormal(
@@ -1249,7 +1262,7 @@ fn evaluateBdptConnection(
       clearcoat, clearcoatRoughness, sheen, sheenRoughness,
       iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
       specularColor, specularIntensity,
-      anisotropy, anisotropyRotation,
+      anisotropy, anisotropyRotation, eyeThinFilm,
     );
   }
   revLc = revLc * bdptSegmentDistanceDensity(
@@ -1284,6 +1297,7 @@ fn evaluateBdptConnection(
         specularIntensity,
         anisotropy,
         anisotropyRotation,
+        eyeThinFilm,
       );
     } else {
       fwdEeMinus = brdfDirectionalPdfFullSampledWithClearcoatNormal(
@@ -1291,7 +1305,7 @@ fn evaluateBdptConnection(
         clearcoat, clearcoatRoughness, sheen, sheenRoughness,
         iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
         specularColor, specularIntensity,
-        anisotropy, anisotropyRotation,
+        anisotropy, anisotropyRotation, eyeThinFilm,
       );
     }
     let prevEyeForDensity = bdptEyeStackLoad(e - 1u);
@@ -1350,6 +1364,7 @@ fn evaluateBdptConnection(
           lvMatR.specularIntensity,
           lvMatR.anisotropy,
           lvMatR.anisotropyRotation,
+          lvMatR.thinFilm,
         );
       } else {
         revLcMinus = brdfDirectionalPdfFullSampledWithClearcoatNormal(
@@ -1358,7 +1373,7 @@ fn evaluateBdptConnection(
           lvMatR.clearcoat, lvMatR.clearcoatRoughness, lvMatR.sheen, lvMatR.sheenRoughness,
           lvMatR.iridescence, lvMatR.iridescenceIor, lvMatR.iridescenceThicknessMin, lvMatR.iridescenceThicknessMax,
           lvMatR.specularColor, lvMatR.specularIntensity,
-          lvMatR.anisotropy, lvMatR.anisotropyRotation,
+          lvMatR.anisotropy, lvMatR.anisotropyRotation, lvMatR.thinFilm,
         );
       }
     } else {
@@ -1428,7 +1443,7 @@ fn evaluateBdptConnection(
         u32(first3.w), first4, first1.xyz, firstCamerawardDirection,
         bdptInvocationHeroLambdaNm,
       );
-      if (!firstMaterial.thinFilmEnabled && bsdfHasFiniteConnectionSupport(
+      if (bsdfHasFiniteConnectionSupport(
         firstMaterial.roughness,
         firstMaterial.metallic,
         firstMaterial.transmission,
@@ -1459,6 +1474,7 @@ fn evaluateBdptConnection(
             firstMaterial.specularIntensity,
             firstMaterial.anisotropy,
             firstMaterial.anisotropyRotation,
+            firstMaterial.thinFilm,
           );
         } else {
           infiniteEyeEscapePdf =
@@ -1484,6 +1500,7 @@ fn evaluateBdptConnection(
               firstMaterial.specularIntensity,
               firstMaterial.anisotropy,
               firstMaterial.anisotropyRotation,
+              firstMaterial.thinFilm,
             );
         }
       }
@@ -1522,3 +1539,85 @@ fn evaluateBdptConnection(
   return contribution;
 }
 `;
+
+const PT_WEBGPU_BDPT_LEGACY_STRATEGY_MASK_WGSL = /* wgsl */ `  // Keep only the explicit strategies that this bounded kernel actually samples.
+  // Infinite roots additionally admit p0 eye escape and p1 distant NEE; finite
+  // roots retain only explicit p1..p(n-2) connection strategies.
+  let maxLightVertices = min(params.bdptMaxLightBounces, 8u);
+  let maxEyeVertices = min(params.bdptMaxEyeDepth, 8u);
+  for (var k = 0u; k < n; k = k + 1u) {
+    var validExplicitStrategy = k >= 1u && k <= n - 2u;
+    if (infiniteRoot) {
+      validExplicitStrategy =
+        (k == 0u && infiniteEnvironmentRoot) ||
+        k == 1u || (k >= 2u && k <= n - 2u);
+    }
+    if (validExplicitStrategy) {
+      let lightVertices = k;
+      let eyeVertices = n - k - 1u;
+      validExplicitStrategy =
+        (k < 2u || lightVertices <= maxLightVertices) &&
+        eyeVertices <= maxEyeVertices;
+    }
+    if (!validExplicitStrategy) { validPdfs[k] = false; }
+  }`;
+
+/**
+ * Recover the exact pre-camera-splat connection module for the BDPT-off
+ * composition. The native helper changes both declarations and mask semantics,
+ * even though the runtime BDPT flag is false, so keeping it out of the off
+ * module is required for the byte-identity contract.
+ */
+function buildLegacyBdptConnectionWgsl(nativeSource: string): string {
+  const helperStart = nativeSource.indexOf(
+    'fn bdptExplicitConnectionStrategyIsValid(',
+  );
+  const mediumStructStart = nativeSource.indexOf(
+    'struct BdptMediumLayer',
+    helperStart,
+  );
+  if (helperStart < 0 || mediumStructStart < 0) {
+    throw new Error(
+      'pt-webgpu: BDPT connection helper boundaries drifted while composing the legacy module',
+    );
+  }
+  const withoutNativeHelper =
+    nativeSource.slice(0, helperStart).replace(/\n+$/u, '\n\n') +
+    nativeSource.slice(mediumStructStart);
+
+  const maskStart = withoutNativeHelper.indexOf(
+    '  // Keep only the explicit strategies that this bounded kernel actually samples.',
+  );
+  const maskEnd = withoutNativeHelper.indexOf(
+    '\n\n  if (!validPdfs[selectedS])',
+    maskStart,
+  );
+  if (maskStart < 0 || maskEnd < 0) {
+    throw new Error(
+      'pt-webgpu: BDPT strategy-mask boundaries drifted while composing the legacy module',
+    );
+  }
+  return (
+    withoutNativeHelper.slice(0, maskStart) +
+    PT_WEBGPU_BDPT_LEGACY_STRATEGY_MASK_WGSL +
+    withoutNativeHelper.slice(maskEnd)
+  );
+}
+
+/**
+ * Pre-C35 connection source retained for BDPT-off compositions and internal
+ * source-stability tests.
+ */
+export const PT_WEBGPU_BDPT_CONNECTION_WGSL =
+  buildLegacyBdptConnectionWgsl(
+    PT_WEBGPU_BDPT_CONNECTION_NATIVE_CAMERA_SPLAT_WGSL,
+  );
+
+/** Compose the connection module for the selected camera-splat strategy set. */
+export function composePtWebgpuBdptConnectionWgsl(
+  nativeCameraSplat: boolean,
+): string {
+  return nativeCameraSplat
+    ? PT_WEBGPU_BDPT_CONNECTION_NATIVE_CAMERA_SPLAT_WGSL
+    : PT_WEBGPU_BDPT_CONNECTION_WGSL;
+}

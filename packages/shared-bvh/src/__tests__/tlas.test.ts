@@ -67,6 +67,49 @@ function makeCombTlas(interiorDepth: number): TlasBufferView {
   };
 }
 
+/** Deep-right comb: the validator's fixed left-first walk retains almost no
+ * siblings, while a ray that visits right first retains one at every level. */
+function makeRightCombTlas(interiorDepth: number): TlasBufferView {
+  const nodeCount = interiorDepth * 2 + 1;
+  const instanceCount = interiorDepth + 1;
+  const nodes = new Uint32Array(nodeCount * 8);
+  const bounds = new Float32Array(nodes.buffer);
+  for (let nodeIndex = 0; nodeIndex < nodeCount; nodeIndex += 1) {
+    const base = nodeIndex * 8;
+    bounds[base] = 0;
+    bounds[base + 1] = 0;
+    bounds[base + 2] = 0;
+    bounds[base + 3] = 1;
+    bounds[base + 4] = 1;
+    bounds[base + 5] = 1;
+  }
+  for (let depth = 0; depth < interiorDepth; depth += 1) {
+    const interior = depth * 2;
+    nodes[interior * 8 + 6] = 2;
+    nodes[interior * 8 + 7] = 0;
+    const leftLeaf = interior + 1;
+    nodes[leftLeaf * 8 + 6] = depth;
+    nodes[leftLeaf * 8 + 7] = 0xffff0001;
+  }
+  const finalLeaf = interiorDepth * 2;
+  nodes[finalLeaf * 8 + 6] = interiorDepth;
+  nodes[finalLeaf * 8 + 7] = 0xffff0001;
+  const instanceTransforms = new Float32Array(instanceCount * 16);
+  for (let i = 0; i < instanceCount; i += 1) {
+    instanceTransforms.set(IDENT16(), i * 16);
+  }
+  return {
+    nodes,
+    nodeCount,
+    instanceIndices: Uint32Array.from(
+      { length: instanceCount },
+      (_, index) => index,
+    ),
+    blasRoots: new Uint32Array(instanceCount),
+    instanceTransforms,
+  };
+}
+
 function copyIntoNodeSubview(data: TlasBufferView): {
   readonly view: TlasBufferView;
   readonly backing: Uint32Array;
@@ -246,16 +289,21 @@ describe('buildTlas', () => {
 });
 
 describe('validateTlasBuild', () => {
-  it('reports the exact DFS stack occupancy at the canonical depth cap', () => {
-    const report = validateTlasBuild(makeCombTlas(TLAS_MAX_BUILD_DEPTH), {
-      maxDepth: TLAS_MAX_BUILD_DEPTH,
-      maxLeafInstances: 1,
-    });
-    expect(report.maxDepth).toBe(TLAS_MAX_BUILD_DEPTH);
-    expect(report.maxTraversalStackEntries).toBe(TLAS_MAX_BUILD_DEPTH + 1);
-    expect(report.maxTraversalStackEntries).toBeLessThanOrEqual(
-      TLAS_TRAVERSAL_STACK_DEPTH,
-    );
+  it('reports order-independent stack occupancy for both comb orientations', () => {
+    for (const data of [
+      makeCombTlas(TLAS_MAX_BUILD_DEPTH),
+      makeRightCombTlas(TLAS_MAX_BUILD_DEPTH),
+    ]) {
+      const report = validateTlasBuild(data, {
+        maxDepth: TLAS_MAX_BUILD_DEPTH,
+        maxLeafInstances: 1,
+      });
+      expect(report.maxDepth).toBe(TLAS_MAX_BUILD_DEPTH);
+      expect(report.maxTraversalStackEntries).toBe(TLAS_MAX_BUILD_DEPTH + 1);
+      expect(report.maxTraversalStackEntries).toBeLessThanOrEqual(
+        TLAS_TRAVERSAL_STACK_DEPTH,
+      );
+    }
   });
 
   it('rejects a comb deeper than the canonical accepted build depth', () => {

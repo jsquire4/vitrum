@@ -8,16 +8,16 @@ import {
 } from '../index.js';
 
 describe('CWBVH_INTERSECT_WGSL', () => {
-  it('exports closest-hit and any-hit traversal entry points', () => {
+  it('exports only the canonical closest-hit traversal entry points', () => {
     expect(CWBVH_INTERSECT_CORE_WGSL).toContain('fn cwbvhIntersectFirstHitRangeFromRoot(');
     expect(CWBVH_INTERSECT_CORE_WGSL).toContain('fn cwbvhIntersectFirstHitFromRoot(');
     expect(CWBVH_INTERSECT_WGSL).toContain('fn cwbvhIntersectFirstHitRangeFromRoot(');
     expect(CWBVH_INTERSECT_WGSL).toContain('fn cwbvhIntersectFirstHitFromRoot(');
     expect(CWBVH_INTERSECT_WGSL).toContain('fn cwbvhIntersectFirstHit(');
-    expect(CWBVH_INTERSECT_WGSL).toContain('fn cwbvhIntersectAnyFromRoot(');
-    expect(CWBVH_INTERSECT_WGSL).toContain('fn cwbvhIntersectAny(');
+    expect(CWBVH_INTERSECT_WGSL).not.toContain('fn cwbvhIntersectAnyFromRoot(');
+    expect(CWBVH_INTERSECT_WGSL).not.toContain('fn cwbvhIntersectAny(');
     expect(CWBVH_INTERSECT_WGSL).toContain('struct CwbvhIntersectionResult');
-    expect(CWBVH_INTERSECT_WGSL).toContain('struct CwbvhAnyHitResult');
+    expect(CWBVH_INTERSECT_WGSL).not.toContain('struct CwbvhAnyHitResult');
     expect(CWBVH_INTERSECT_WGSL).toContain('struct CwbvhChildMeta');
   });
 
@@ -39,22 +39,16 @@ describe('CWBVH_INTERSECT_WGSL', () => {
     expect(CWBVH_INTERSECT_WGSL).toContain('if (rootNode >= nodeCount)');
     expect(CWBVH_INTERSECT_WGSL).toContain('stack[stackPtr] = rootNode;');
     expect(CWBVH_INTERSECT_WGSL).toContain('return cwbvhIntersectFirstHitFromRoot(');
-    expect(CWBVH_INTERSECT_WGSL).toContain('return cwbvhIntersectAnyFromRoot(');
     expect(CWBVH_INTERSECT_WGSL).toMatch(/nodeCount,\s+0u,\s+skipGlass,/);
   });
 
-  it('keeps COMPLETE, STACK_OVERFLOW, and INVALID_LAYOUT distinct for any-hit callers', () => {
+  it('keeps COMPLETE, STACK_OVERFLOW, and INVALID_LAYOUT distinct for closest-hit callers', () => {
     expect(CWBVH_INTERSECT_WGSL).toContain('const CWBVH_STATUS_COMPLETE: u32 = 0u;');
     expect(CWBVH_INTERSECT_WGSL).toContain('const CWBVH_STATUS_STACK_OVERFLOW: u32 = 1u;');
     expect(CWBVH_INTERSECT_WGSL).toContain('const CWBVH_STATUS_INVALID_LAYOUT: u32 = 2u;');
-    expect(CWBVH_INTERSECT_WGSL).toContain(') -> CwbvhAnyHitResult');
-    expect(CWBVH_INTERSECT_WGSL).toContain(
-      'return cwbvhAnyHitResult(CWBVH_STATUS_STACK_OVERFLOW, false);',
-    );
-    expect(CWBVH_INTERSECT_WGSL).toContain(
-      'return cwbvhAnyHitResult(CWBVH_STATUS_INVALID_LAYOUT, false);',
-    );
-    expect(CWBVH_INTERSECT_WGSL).toContain('if (tri.hit && tri.t > triEps && tri.t < tMax)');
+    expect(CWBVH_INTERSECT_WGSL).toContain('best.status = CWBVH_STATUS_STACK_OVERFLOW;');
+    expect(CWBVH_INTERSECT_WGSL).toContain('best.status = CWBVH_STATUS_INVALID_LAYOUT;');
+    expect(CWBVH_INTERSECT_WGSL).toContain('if (tri.hit && tri.t > tMin && tri.t < best.dist)');
   });
 
   it('rejects corrupt live children while leaving zeroed padding outside childCount unread', () => {
@@ -64,17 +58,17 @@ describe('CWBVH_INTERSECT_WGSL', () => {
     expect(CWBVH_INTERSECT_WGSL).not.toMatch(
       /if \(childInfo\.kind == CWBVH_CHILD_EMPTY\) \{\s*continue;/,
     );
-    expect(CWBVH_INTERSECT_WGSL.match(/childInfo\.triCount == 0u/g)).toHaveLength(2);
-    expect(CWBVH_INTERSECT_WGSL.match(/CWBVH_STATUS_INVALID_LAYOUT/g)?.length ?? 0).toBeGreaterThan(10);
+    expect(CWBVH_INTERSECT_WGSL.match(/childInfo\.triCount == 0u/g)).toHaveLength(1);
+    expect(CWBVH_INTERSECT_WGSL.match(/CWBVH_STATUS_INVALID_LAYOUT/g)?.length ?? 0).toBeGreaterThan(5);
   });
 
   it('validates storage capacities without overflow-prone node-count products', () => {
     expect(CWBVH_INTERSECT_CORE_WGSL.match(
       /nodeCount > cwbvhChildBoundsWordCount\(\) \/ \(CWBVH_CHILDREN \* CWBVH_CHILD_BOUNDS_PACKED_U32\)/g,
-    )).toHaveLength(2);
+    )).toHaveLength(1);
     expect(CWBVH_INTERSECT_CORE_WGSL.match(
       /nodeCount > cwbvhChildMetaCount\(\) \/ CWBVH_CHILDREN/g,
-    )).toHaveLength(2);
+    )).toHaveLength(1);
     expect(CWBVH_INTERSECT_CORE_WGSL).not.toContain(
       'cwbvhChildBoundsWordCount() < nodeCount *',
     );

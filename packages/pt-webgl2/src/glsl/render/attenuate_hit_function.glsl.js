@@ -1,6 +1,5 @@
 import {
 	MATERIAL_ALPHA_TRANSFORM_TEXEL,
-	MATERIAL_LAYER_NORMAL_TEXEL_OFFSET,
 	MATERIAL_THICKNESS_TRANSFORM_TEXEL,
 	MATERIAL_TRANSFORM_TEXEL,
 	MATERIAL_WRAP_TEXEL_OFFSET,
@@ -132,12 +131,13 @@ export const attenuate_hit_function = /* glsl */`
 
 				#define ATTENUATE_MAP_UV(mapIndex) textureSampleBarycoord( attributesArray, readMaterialMapUvLayer( materials, materialIndex, mapIndex ), surfaceHit.barycoord, surfaceHit.faceIndices.xyz ).xy
 				#define ATTENUATE_MAP_SAMPLE(layer,transformOffset,policyOffset,uvCoord) sampleMappedMaterialTexture( materials, textures, materialIndex, layer, transformOffset, policyOffset, uvCoord )
+				#define ATTENUATE_SRGB_MAP_SAMPLE(layer,transformOffset,policyOffset,uvCoord) sampleMappedSrgbMaterialTexture( materials, textures, materialIndex, layer, transformOffset, policyOffset, uvCoord )
 
 				// albedo
 				vec4 albedo = vec4( material.color, material.opacity );
 				if ( material.map != - 1 ) {
 
-					albedo *= ATTENUATE_MAP_SAMPLE(
+					albedo *= ATTENUATE_SRGB_MAP_SAMPLE(
 						material.map, ${MATERIAL_TRANSFORM_TEXEL.baseColorMap}u,
 						${MATERIAL_WRAP_TEXEL_OFFSET + 0}u, ATTENUATE_MAP_UV( 0u )
 					);
@@ -242,71 +242,8 @@ export const attenuate_hit_function = /* glsl */`
 
 				}
 
-				// stainedglass fork — opt-in caustic-texture patch.
-				// Default conservative: FEATURE_STAINED_GLASS_SHADOW_NORMAL_PERTURBATION
-				// is intentionally undefined/false unless a host compiles this fork
-				// path in. When enabled for shadow rays, the material normalMap
-				// applies a small perturbation to the ray direction so NEE caustic
-				// projections can pick up per-pixel surface relief.
-				#if FEATURE_STAINED_GLASS_SHADOW_NORMAL_PERTURBATION
-
-				bool frontFaceHitForNormal = surfaceHit.side == 1.0 || transmission == 0.0;
-				bool hasFaceLayerForNormal = frontFaceHitForNormal ? material.hasFrontLayer : material.hasBackLayer;
-				int activeShadowNormalMap = material.normalMap;
-				uint activeShadowNormalMapTransformOffset = ${MATERIAL_TRANSFORM_TEXEL.normalMap}u;
-				vec2 activeShadowNormalScale = material.normalScale;
-				uint activeShadowNormalMapPolicyOffset = ${MATERIAL_WRAP_TEXEL_OFFSET + 5}u;
-				int activeShadowNormalUvLayer = readMaterialMapUvLayer( materials, materialIndex, 5u );
-				vec2 activeShadowNormalUv = textureSampleBarycoord( attributesArray, activeShadowNormalUvLayer, surfaceHit.barycoord, surfaceHit.faceIndices.xyz ).xy;
-				if ( hasFaceLayerForNormal && frontFaceHitForNormal && material.frontLayerNormalMap != - 1 ) {
-					activeShadowNormalMap = material.frontLayerNormalMap;
-					activeShadowNormalMapTransformOffset = ${MATERIAL_LAYER_NORMAL_TEXEL_OFFSET + 1}u;
-					activeShadowNormalScale = material.frontLayerNormalScale;
-					activeShadowNormalMapPolicyOffset = ${MATERIAL_LAYER_NORMAL_TEXEL_OFFSET + 5}u;
-					activeShadowNormalUvLayer = int( round( material.frontLayerNormalTexCoord ) );
-					activeShadowNormalUv = textureSampleBarycoord( attributesArray, activeShadowNormalUvLayer, surfaceHit.barycoord, surfaceHit.faceIndices.xyz ).xy;
-				} else if ( hasFaceLayerForNormal && ! frontFaceHitForNormal && material.backLayerNormalMap != - 1 ) {
-					activeShadowNormalMap = material.backLayerNormalMap;
-					activeShadowNormalMapTransformOffset = ${MATERIAL_LAYER_NORMAL_TEXEL_OFFSET + 3}u;
-					activeShadowNormalScale = material.backLayerNormalScale;
-					activeShadowNormalMapPolicyOffset = ${MATERIAL_LAYER_NORMAL_TEXEL_OFFSET + 6}u;
-					activeShadowNormalUvLayer = int( round( material.backLayerNormalTexCoord ) );
-					activeShadowNormalUv = textureSampleBarycoord( attributesArray, activeShadowNormalUvLayer, surfaceHit.barycoord, surfaceHit.faceIndices.xyz ).xy;
-				}
-
-				if ( isShadowRay && activeShadowNormalMap != - 1 ) {
-
-					vec4 tangentSample = textureSampleBarycoord(
-						attributesArray,
-						ATTR_TANGENT,
-						surfaceHit.barycoord,
-						surfaceHit.faceIndices.xyz
-					);
-
-					vec3 faceN = surfaceHit.faceNormal * surfaceHit.side;
-					mat3 shadowBasis = getBasisFromSelectedUv(
-						bvh.position, attributesArray, activeShadowNormalUvLayer,
-						surfaceHit.faceIndices.xyz, faceN, tangentSample
-					);
-					vec3 tangent = shadowBasis[ 0 ];
-					vec3 bitangent = shadowBasis[ 1 ];
-						vec3 texNormal = ATTENUATE_MAP_SAMPLE(
-							activeShadowNormalMap,
-							activeShadowNormalMapTransformOffset,
-							activeShadowNormalMapPolicyOffset,
-							activeShadowNormalUv
-						).xyz * 2.0 - 1.0;
-						texNormal.xy *= activeShadowNormalScale;
-						// World-space perturbation vector in the tangent plane.
-						vec3 dN = tangent * texNormal.x + bitangent * texNormal.y;
-						float perturbStrength = ( material.ior - 1.0 ) * 0.1;
-						ray.direction = normalize( ray.direction + dN * perturbStrength );
-
-				}
-
-				#endif
-
 				#undef ATTENUATE_MAP_SAMPLE
+				#undef ATTENUATE_SRGB_MAP_SAMPLE
 				#undef ATTENUATE_MAP_UV
 
 				bool isTransmissiveRay = dot( ray.direction, surfaceHit.faceNormal * surfaceHit.side ) < 0.0;

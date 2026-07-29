@@ -20,6 +20,10 @@ import {
 import {
   fusedForwardWgsl, fusedBackwardWgsl, gradFinalizeWgsl, downcastF16Wgsl,
   fusedMlpWorkgroupStorageBytes,
+  nrcRelativeL2OutputGradient,
+  NRC_RELATIVE_L2_EPSILON,
+  NRC_RELATIVE_L2_LUMINANCE,
+  NRC_RELATIVE_L2_MAX_DELTA,
   type FusedMlpWgslOptions,
 } from '../wgsl/fusedMlp.wgsl.ts';
 
@@ -149,9 +153,60 @@ describe('fused NRC MLP — WGSL codegen', () => {
     expect(src).toContain('GRAD_FP');
   });
 
+  it('uses the cited stop-gradient relative-L2 luminance objective', () => {
+    const src = fusedBackwardWgsl(MULLER);
+    expect(src).toContain(`const NRC_RELATIVE_L2_EPSILON : f32 = ${NRC_RELATIVE_L2_EPSILON}`);
+    expect(src).toContain(`vec3<f32>(${NRC_RELATIVE_L2_LUMINANCE.join(', ')})`);
+    expect(src).toContain('boundedLuminance * boundedLuminance + NRC_RELATIVE_L2_EPSILON');
+    expect(src).toContain('2.0 / f32(numSamples) / f32(OUT_W) / denominator');
+    expect(src).toContain('nrcRelativeL2Delta(prediction, tgt, col, p.numSamples)');
+    expect(src).not.toContain('(pred - tgt) / f32(p.numSamples)');
+  });
+
+  it('rejects a non-RGB backward objective instead of indexing a partial luminance vector', () => {
+    expect(() => fusedBackwardWgsl({ ...MULLER, OUT_W: 2 })).toThrow(/requires RGB OUT_W=3/);
+  });
+
   it('grad finalize clears the fixed-point buffer (atomicExchange to 0)', () => {
     expect(gradFinalizeWgsl()).toContain('atomicExchange');
     expect(downcastF16Wgsl()).toContain('f16(src[idx])');
+  });
+});
+
+describe('fused NRC MLP — relative-L2 luminance CPU oracle', () => {
+  it('keeps dark-prediction gradients finite through the 0.01 denominator floor', () => {
+    const gradient = nrcRelativeL2OutputGradient([0, 0, 0], [1, 2, 3], 1);
+    expect(gradient[0]).toBeCloseTo(-2 / 3 / NRC_RELATIVE_L2_EPSILON, 8);
+    expect(gradient[1]).toBeCloseTo(-4 / 3 / NRC_RELATIVE_L2_EPSILON, 8);
+    expect(gradient[2]).toBeCloseTo(-6 / 3 / NRC_RELATIVE_L2_EPSILON, 8);
+    expect(gradient.every(Number.isFinite)).toBe(true);
+  });
+
+  it('normalizes every RGB residual by one detached prediction luminance', () => {
+    const prediction: [number, number, number] = [4, 2, 1];
+    const target: [number, number, number] = [1, 1, 1];
+    const gradient = nrcRelativeL2OutputGradient(prediction, target, 2);
+    const luminance =
+      NRC_RELATIVE_L2_LUMINANCE[0] * prediction[0] +
+      NRC_RELATIVE_L2_LUMINANCE[1] * prediction[1] +
+      NRC_RELATIVE_L2_LUMINANCE[2] * prediction[2];
+    const scale = 2 / 2 / 3 / (luminance * luminance + NRC_RELATIVE_L2_EPSILON);
+    expect(gradient).toEqual([
+      expect.closeTo((prediction[0] - target[0]) * scale, 10),
+      expect.closeTo((prediction[1] - target[1]) * scale, 10),
+      0,
+    ]);
+  });
+
+  it('bounds extreme finite residuals before the f16-compatible delta tile', () => {
+    const gradient = nrcRelativeL2OutputGradient(
+      [Number.MAX_VALUE, -Number.MAX_VALUE, Number.MAX_VALUE],
+      [0, 0, 0],
+      1,
+    );
+    expect(gradient.every(Number.isFinite)).toBe(true);
+    expect(gradient.every((value) => Math.abs(value) <= NRC_RELATIVE_L2_MAX_DELTA)).toBe(true);
+    expect(nrcRelativeL2OutputGradient([Number.NaN, 0, 0], [0, 0, 0], 1)).toEqual([0, 0, 0]);
   });
 });
 

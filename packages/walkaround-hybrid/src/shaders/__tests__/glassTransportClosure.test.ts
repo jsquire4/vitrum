@@ -133,6 +133,18 @@ describe('bounded hybrid dielectric transport closure', () => {
     expect(REFRACTIVE_CAUSTICS_WGSL).not.toContain('materialRm.x > 0.0001');
   });
 
+  it('routes no-glass escapes through the direct-sun baseline residual', () => {
+    expect(REFRACTIVE_CAUSTICS_WGSL).toMatch(
+      /if \(out\.sawGlass == 0u\) \{\s*out\.eligible = 0u;/,
+    );
+    expect(REFRACTIVE_CAUSTICS_WGSL).toContain(
+      'if (path.eligible == 0u)',
+    );
+    expect(REFRACTIVE_CAUSTICS_WGSL).toContain(
+      'let fallback = refractiveCausticChannel(baseline, channel) * 0.5;',
+    );
+  });
+
   it('reserves a terminal query after exactly four dielectric interfaces', () => {
     expect(RIS_GI_GLASS_TRANSPORT_PREFIX_WGSL).toContain(
       'gi <= GLASS_WALK_MAX_INTERFACES',

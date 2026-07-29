@@ -18,10 +18,10 @@ import { defineUbo } from '@vitrum/shared-samplers';
 
 /**
  * `GTAOUniforms` (mirrors `src/shaders/gtao.wgsl.ts` +
- * `src/shaders/gtaoUpsample.wgsl.ts`): 6 active f32 + 2 explicit f32 pad =
- * 32 bytes. `gtaoDownscale` (2 = half-res, 4 = quarter-res) was the former
+ * `src/shaders/gtaoUpsample.wgsl.ts`): 6 active f32 + 2 explicit f32 pad +
+ * one mat4x4f = 96 bytes. `gtaoDownscale` (2 = half-res, 4 = quarter-res) was the former
  * inert `_pad0`; both gtao + gtaoUpsample read it to map between the AO grid
- * and full-res coords. The 32-byte size is what `resourceManager` allocates
+ * and full-res coords. The 96-byte size is what `resourceManager` allocates
  * and both shaders re-bind.
  */
 export const GTAO_UBO = defineUbo([
@@ -33,6 +33,7 @@ export const GTAO_UBO = defineUbo([
   { name: 'gtaoDownscale',       type: 'f32' },
   { name: '_pad1',               type: 'f32' },
   { name: '_pad2',               type: 'f32' },
+  { name: 'viewMatrix',          type: 'mat4x4f' },
 ] as const);
 
 /**

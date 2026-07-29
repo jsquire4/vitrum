@@ -1,15 +1,14 @@
 // nrcEncoding.wgsl.ts — WGSL forward of the NRC input encoding.
 //
-// GPU mirror of the CPU oracle `../nrcEncoding.ts`. Emits the multiresolution
-// hash-grid positional encode (Müller et al. 2022 Instant-NGP §3), the one-blob
-// direction encode (Müller et al. 2019 §4.3), and the raw-feature concat — the
-// exact arithmetic the host-side oracle computes, so the two are pinned to ~1e-6
-// (f32) by `__tests__/nrcEncoding.test.ts`.
+// GPU mirror of the CPU oracle `../nrcEncoding.ts`. This module emits the
+// multiresolution hash and AABB-normalisation helpers shared by the live query
+// and training kernels. The live query module owns its direction one-blob and
+// raw-feature assembly so those operations have one executable implementation.
 //
 // This file emits the FORWARD encode (cache query + the forward half of
 // training). STATUS (verified 2026-05-29):
-//   • FORWARD — WIRED. `nrcEncodeHelpersWgsl` is composed into the dispatched
-//     gi-ris NRC variant (`buildRisGiNrcModule`); the query runs + gathers
+//   • FORWARD — WIRED. `nrcEncodeHelpersWgsl` supplies shared hash/normalisation
+//     helpers to the dispatched gi-ris NRC variant (`buildRisGiNrcModule`); the query runs + gathers
 //     self-training records, and `NrcSubsystem.trainFromRecords` runs one MLP
 //     `trainStep` per frame (host-owns-cadence) when `nrcEnabled`.
 //   • hash-grid BACKWARD — WIRED. The DISPATCHED scatter is the standalone
@@ -29,14 +28,8 @@
 //   * trilinear: 8 corners, weight = ∏ axis(frac | 1-frac), Σ weights = 1.
 //   * one-blob: k Gaussian bins centred at (i+0.5)/k, L1-normalised.
 //
-// COMPOSITION NOTE: the helper signatures take `array<f32, NRC_MAX_LF>`
-// / `array<f32, NRC_MAX_BLOB>` scratch by pointer. The pass composing these
-// modules emits the matching `const NRC_MAX_LF : u32 = <L·F>;` and
-// `const NRC_MAX_BLOB : u32 = <k>;` (and `let F : u32` from the config) ahead of
-// the helpers — these emitters are deliberately config-agnostic on those sizes
-// so the pass picks them from the live encoding config. The FORWARD helpers are
-// composed into the dispatched gi-ris NRC variant today; the hash-grid BACKWARD
-// scatter lives in the standalone dispatchable `nrcEncodeBackward.wgsl.ts`.
+// The hash-grid BACKWARD scatter lives in the standalone dispatchable
+// `nrcEncodeBackward.wgsl.ts`.
 
 export interface NrcEncodeWgslOptions {
   /** Hash-grid resolution levels L. */
@@ -72,34 +65,11 @@ fn nrcNormalizeToAabb(pos: vec3f, aabbMin: vec3f, aabbMax: vec3f) -> vec3f {
 `;
 }
 
-// Shared hash + trilinear + one-blob helpers. Kept as a separate emitter so the
-// forward and backward modules both include them without duplication. The
-// concatenation below is byte-identical to the pre-split single template
-// (pinned by nrcEncoding.test.ts + the shader-gate's composed risGiNrc compile).
-// NOTE: nrcOneBlobScalar references the module-scope const NRC_MAX_BLOB, which
-// the COMPOSING pass must emit — that is why the encode-backward kernel composes
-// only nrcEncodeHashHelpersWgsl().
+// Forward-facing alias retained for the query/harness composition sites. It
+// intentionally emits only the shared helpers above; direction one-blob
+// encoding is implemented and called in nrcQuery.wgsl.ts.
 export function nrcEncodeHelpersWgsl(): string {
-  return nrcEncodeHashHelpersWgsl() + /* wgsl */`
-// One-blob encode one scalar u∈[0,1] into k Gaussian bins, L1-normalised
-// (Müller 2019 §4.3). Writes to out[base + 0 .. base + k-1].
-fn nrcOneBlobScalar(out: ptr<function, array<f32, NRC_MAX_BLOB>>, base: u32, u: f32, k: u32, sigma: f32) {
-  let uc = clamp(u, 0.0, 1.0);
-  var sum: f32 = 0.0;
-  for (var i: u32 = 0u; i < k; i = i + 1u) {
-    let center = (f32(i) + 0.5) / f32(k);
-    let d = (uc - center) / sigma;
-    let a = exp(-0.5 * d * d);
-    (*out)[i] = a;
-    sum = sum + a;
-  }
-  if (sum > 1e-20) {
-    for (var i: u32 = 0u; i < k; i = i + 1u) {
-      (*out)[i] = (*out)[i] / sum;
-    }
-  }
-}
-`;
+  return nrcEncodeHashHelpersWgsl();
 }
 
 // (Task 4.5 #5) The ptr-arg `nrcHashGridBackwardWgsl` emitter was DELETED here.

@@ -1,6 +1,6 @@
 /**
- * emitterClassify.ts — emitter-classification + Beer-Lambert + surface-texture
- * helpers extracted from materialEntry.ts (D11.5).
+ * emitterClassify.ts — emitter-classification + Beer-Lambert helpers extracted
+ * from materialEntry.ts (D11.5).
  *
  * These are the `MaterialSpec` field readers used by the ReSTIR/DDGI/RC emitter
  * list and per-triangle color/glow packing
@@ -8,9 +8,8 @@
  * they read lives on core `MaterialSpec`, with optional backend escape hatches
  * carried through `material.extensions`.
  *
- * `extensions['surfaceTextureId']` and `extensions['skipEmitter']` are explicit
- * core-scene contract lanes. A host feeding a core `Scene` must set those values
- * directly to exercise the surface-texture and emitter-suppression paths.
+ * `extensions['skipEmitter']` is an explicit core-scene contract lane. A host
+ * feeding a core `Scene` must set it directly to exercise emitter suppression.
  */
 
 import type { MaterialSpec, TextureRef } from '@vitrum/core';
@@ -50,6 +49,21 @@ type MutableTextureHandleHint = {
 };
 
 export type BarycentricWeights = readonly [number, number, number];
+
+/**
+ * Backend-owned exact-storage/arithmetic boundary for mapped emitters.
+ *
+ * Shared BVH code supplies the decoded linear texel and remains unaware of GPU
+ * texture/material formats. A backend whose forward shader stores or evaluates
+ * those operands at narrower precision can inject the exact radiance resolver
+ * used by its NEE/MIS distribution builder.
+ */
+export type EmissiveMapTexelRadianceResolver = (
+  material: MaterialSpec,
+  decodedLinearRgb: readonly [number, number, number],
+  texelX: number,
+  texelY: number,
+) => readonly [number, number, number] | null;
 
 interface TexelClipVertex {
   readonly weights: BarycentricWeights;
@@ -324,16 +338,6 @@ export function materialSpecEmissiveLeAtUv(
   return (out[0] <= 0 && out[1] <= 0 && out[2] <= 0) ? null : out;
 }
 
-const TRIANGLE_EMISSIVE_QUADRATURE: readonly [number, number, number][] = [
-  [1 / 3, 1 / 3, 1 / 3],
-  [0.6, 0.2, 0.2],
-  [0.2, 0.6, 0.2],
-  [0.2, 0.2, 0.6],
-  [0.5, 0.5, 0],
-  [0.5, 0, 0.5],
-  [0, 0.5, 0.5],
-];
-
 /**
  * Conservative subdivision level for CPU-readable emissive-map triangle lights.
  * A value of `1` means no split. Higher values split one source triangle into
@@ -504,6 +508,10 @@ function texUvArea2(
  * (unreadable map, missing selected UV set, non-constant degenerate UVs, or too
  * many covered cells). Production importance samplers must reject that
  * emitter rather than substitute scalar-average selection weights.
+ * `resolveTexelRadiance` is an optional backend boundary: it receives the
+ * decoded linear texel before scalar multiplication and can reproduce the
+ * backend's exact storage precision and arithmetic without teaching shared-bvh
+ * about a concrete GPU format.
  * Returns `true` when the texture was handled, even if all covered texels were
  * black and no sub-triangles were emitted.
  */
@@ -530,12 +538,35 @@ export function forEachEmissiveMapTexelSubTriangle(
     readonly [number, number],
     readonly [number, number],
   ],
+  resolveTexelRadiance?: EmissiveMapTexelRadianceResolver,
 ): boolean {
   const scalar = materialSpecScalarEmissiveLe(material);
   const ref = material.emissiveMap;
   if (scalar == null || ref == null) return false;
   const dims = readableTextureDimensions(ref);
   if (dims == null) return false;
+  const resolveRadiance = (
+    texelRgb: readonly [number, number, number],
+    texelX: number,
+    texelY: number,
+  ): [number, number, number] | null => {
+    const resolved = resolveTexelRadiance == null
+      ? [
+          scalar[0] * texelRgb[0],
+          scalar[1] * texelRgb[1],
+          scalar[2] * texelRgb[2],
+        ] as const
+      : resolveTexelRadiance(material, texelRgb, texelX, texelY);
+    if (resolved == null) return null;
+    if (
+      !Number.isFinite(resolved[0]) ||
+      !Number.isFinite(resolved[1]) ||
+      !Number.isFinite(resolved[2])
+    ) {
+      return null;
+    }
+    return [resolved[0], resolved[1], resolved[2]];
+  };
 
   const texCoord = ref.texCoord ?? 0;
   if (!Number.isSafeInteger(texCoord) || texCoord < 0) return false;
@@ -546,11 +577,8 @@ export function forEachEmissiveMapTexelSubTriangle(
   if (dims.width === 1 && dims.height === 1) {
     const texelRgb = readTextureRgbAtTexel(ref, 0, 0, 'srgb');
     if (texelRgb == null) return false;
-    const radiance: [number, number, number] = [
-      scalar[0] * texelRgb[0],
-      scalar[1] * texelRgb[1],
-      scalar[2] * texelRgb[2],
-    ];
+    const radiance = resolveRadiance(texelRgb, 0, 0);
+    if (radiance == null) return false;
     if (radiance[0] > 0 || radiance[1] > 0 || radiance[2] > 0) {
       visit([1, 0, 0], [0, 1, 0], [0, 0, 1], radiance, 0, 0, 0);
     }
@@ -582,11 +610,8 @@ export function forEachEmissiveMapTexelSubTriangle(
     const texelY = Math.min(dims.height - 1, Math.max(0, Math.floor(wrapped[1] * dims.height)));
     const texelRgb = readTextureRgbAtTexel(ref, texelX, texelY, 'srgb');
     if (texelRgb == null) return false;
-    const radiance: [number, number, number] = [
-      scalar[0] * texelRgb[0],
-      scalar[1] * texelRgb[1],
-      scalar[2] * texelRgb[2],
-    ];
+    const radiance = resolveRadiance(texelRgb, texelX, texelY);
+    if (radiance == null) return false;
     if (radiance[0] > 0 || radiance[1] > 0 || radiance[2] > 0) {
       visit([1, 0, 0], [0, 1, 0], [0, 0, 1], radiance, texelX, texelY, 0);
     }
@@ -616,11 +641,8 @@ export function forEachEmissiveMapTexelSubTriangle(
       if (clipped.length < 3) continue;
       const texelRgb = readTextureRgbAtTexel(ref, xi.texel, yi.texel, 'srgb');
       if (texelRgb == null) return false;
-      const radiance: [number, number, number] = [
-        scalar[0] * texelRgb[0],
-        scalar[1] * texelRgb[1],
-        scalar[2] * texelRgb[2],
-      ];
+      const radiance = resolveRadiance(texelRgb, xi.texel, yi.texel);
+      if (radiance == null) return false;
       if (radiance[0] <= 0 && radiance[1] <= 0 && radiance[2] <= 0) continue;
       const anchor = clipped[0]!;
       for (let i = 1; i + 1 < clipped.length; i += 1) {
@@ -633,62 +655,6 @@ export function forEachEmissiveMapTexelSubTriangle(
     }
   }
   return true;
-}
-
-function baryUv(
-  a: readonly [number, number],
-  b: readonly [number, number],
-  c: readonly [number, number],
-  w: readonly [number, number, number],
-): [number, number] {
-  return [
-    a[0] * w[0] + b[0] * w[1] + c[0] * w[2],
-    a[1] * w[0] + b[1] * w[1] + c[1] * w[2],
-  ];
-}
-
-/**
- * Deterministic UV-local emissive estimate for one triangle. This is not a full
- * texel alias table, but it prevents large UV-varying emissive maps from being
- * selected solely by a whole-material average when building CPU emitter CDFs.
- */
-export function estimateMaterialSpecEmissiveLeOverTriangle(
-  material: MaterialSpec,
-  uv0A: readonly [number, number],
-  uv0B: readonly [number, number],
-  uv0C: readonly [number, number],
-  uv1A?: readonly [number, number],
-  uv1B?: readonly [number, number],
-  uv1C?: readonly [number, number],
-  selectedHighUv?: readonly [
-    readonly [number, number],
-    readonly [number, number],
-    readonly [number, number],
-  ],
-): [number, number, number] | null {
-  const scalar = materialSpecScalarEmissiveLe(material);
-  if (scalar == null) return null;
-  if (material.emissiveMap == null) return scalar;
-
-  let r = 0;
-  let g = 0;
-  let b = 0;
-  for (const weights of TRIANGLE_EMISSIVE_QUADRATURE) {
-    const uv0 = baryUv(uv0A, uv0B, uv0C, weights);
-    const uv1 = uv1A != null && uv1B != null && uv1C != null
-      ? baryUv(uv1A, uv1B, uv1C, weights)
-      : undefined;
-    const highUv = selectedHighUv == null
-      ? undefined
-      : baryUv(selectedHighUv[0], selectedHighUv[1], selectedHighUv[2], weights);
-    const le = materialSpecEmissiveLeAtUv(material, uv0, uv1, highUv);
-    r += le?.[0] ?? 0;
-    g += le?.[1] ?? 0;
-    b += le?.[2] ?? 0;
-  }
-  const inv = 1 / TRIANGLE_EMISSIVE_QUADRATURE.length;
-  const out: [number, number, number] = [r * inv, g * inv, b * inv];
-  return (out[0] <= 0 && out[1] <= 0 && out[2] <= 0) ? null : out;
 }
 
 /**
@@ -810,17 +776,6 @@ export function materialSpecTriColor(
 }
 
 /**
- * Read the surface-texture id (the `bvhIndex.w` low-byte `texType` lane, 3 bits)
- * from a core `MaterialSpec`'s `extensions['surfaceTextureId']`.
- *
- * Returns `0` when absent / non-numeric.
- */
-export function materialSpecSurfaceTextureId(material: MaterialSpec): number {
-  const raw = material.extensions?.['surfaceTextureId'];
-  return (typeof raw === 'number' ? raw : 0) & 0x7;
-}
-
-/**
  * Read the `skipEmitter` override from a core `MaterialSpec`'s
  * `extensions['skipEmitter']`. Strict `=== true` (any other value, including
  * absent, means "do not skip").
@@ -840,21 +795,16 @@ export function materialSpecSkipEmitter(material: MaterialSpec): boolean {
  *  2. Otherwise → `null`. Transmission is transport, never emission; inventing
  *     a sun-shaped source at glass boundaries double-counts radiance.
  *
- * `lightDir` is the configured primary-light direction; `primaryIntensity` is
- * its irradiance — both passed as plain numbers/tuples. The caller computes
- * power (`luminance(color) · area`) without an arbitrary dim-emitter cutoff.
+ * The caller computes power (`luminance(color) · area`) without an arbitrary
+ * dim-emitter cutoff. Geometry and primary-light inputs are intentionally not
+ * part of this source-term classifier: transmission redirects incident
+ * radiance but never creates an emitter.
  *
- * @param material         a core `MaterialSpec`.
- * @param normal           the face normal (world-space, unit length).
- * @param lightDir         the primary-light direction (world-space, unit length).
- * @param primaryIntensity the primary-light irradiance.
+ * @param material a core `MaterialSpec`.
  * @returns `{ color, intensity }` for a selected emitter, else `null`.
  */
 export function classifyTriangleEmitterCore(
   material: MaterialSpec,
-  _normal: { x: number; y: number; z: number },
-  _lightDir: { x: number; y: number; z: number },
-  _primaryIntensity: number,
 ): { color: [number, number, number]; intensity: number } | null {
   // 1. Emissive surface → direct emitter (shares the camera-glow Le source).
   const emissiveLe = materialSpecEmissiveLe(material);

@@ -21,7 +21,6 @@ import {
 } from '../weights.js';
 import { neuralCheckpointPayloadSha256 } from '../checkpointDigest.js';
 import { decodeNeuralTensor, encodeNeuralTensor } from '../float16.js';
-import { BILINEAR_UPSAMPLE_WGSL } from '../wgsl/bilinearUpsample.wgsl.js';
 import { CONV2D_WGSL } from '../wgsl/conv2d.wgsl.js';
 import { RELU_WGSL } from '../wgsl/relu.wgsl.js';
 import { SKIP_CONNECTION_WGSL } from '../wgsl/skipConnection.wgsl.js';
@@ -520,7 +519,6 @@ describe.skipIf(!GPU_PARITY_ENABLED)('neural CPU/WebGPU parity', () => {
       ['transposed-conv2d', TRANSPOSED_CONV2D_WGSL, 'transposedConv2dMain'],
       ['relu', RELU_WGSL, 'reluMain'],
       ['skip-connection', SKIP_CONNECTION_WGSL, 'skipConnectionMain'],
-      ['bilinear-upsample', BILINEAR_UPSAMPLE_WGSL, 'bilinearUpsampleMain'],
     ] as const;
 
     try {

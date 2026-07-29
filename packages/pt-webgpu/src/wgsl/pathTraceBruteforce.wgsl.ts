@@ -30,8 +30,12 @@ import {
   PT_WEBGPU_PATH_TRACE_KERNEL_WGSL,
   composePathTraceKernelWgsl,
 } from './pathTrace/kernel.wgsl.js';
-import { PT_WEBGPU_BDPT_CONNECTION_WGSL } from './bdpt/bdptConnection.wgsl.js';
+import {
+  PT_WEBGPU_BDPT_CONNECTION_WGSL,
+  composePtWebgpuBdptConnectionWgsl,
+} from './bdpt/bdptConnection.wgsl.js';
 import { PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL } from './bdpt/bdptLightSubpath.wgsl.js';
+import { PT_WEBGPU_BDPT_CAMERA_SPLAT_WGSL } from './bdpt/bdptCameraSplat.wgsl.js';
 import { PT_WEBGPU_MEDIUM_NEE_WGSL } from './pathTrace/mediumNee.wgsl.js';
 
 /**
@@ -95,10 +99,17 @@ export interface PtWebgpuTraceComposeOptions {
 }
 
 export function composePtWebgpuTraceWgsl(
-  _bdptEnabled: boolean,
+  bdptEnabled: boolean,
   opts: PtWebgpuTraceComposeOptions = {},
 ): string {
-  const kernel = composePathTraceKernelWgsl({ volumetricSss: true });
+  const kernel = composePathTraceKernelWgsl({
+    volumetricSss: true,
+    bdptCameraSplat: bdptEnabled,
+  });
+  const cameraSplat = bdptEnabled
+    ? PT_WEBGPU_BDPT_CAMERA_SPLAT_WGSL
+    : '';
+  const bdptConnection = composePtWebgpuBdptConnectionWgsl(bdptEnabled);
   const common = composePtWebgpuCommonWgsl(opts.sampling ?? 'pcg');
   const intersection = composePtWebgpuPathTraceIntersectionWgsl({
     cwbvhClosest: opts.cwbvhClosest === true,
@@ -118,9 +129,9 @@ ${MNEE_CHAIN_WGSL}
 ${MNEE_CONNECTION_WGSL}
 ${SPPM_GROUP3_BINDINGS_WGSL}
 ${PT_WEBGPU_PATH_TRACE_CAUSTIC_WGSL}
-${PT_WEBGPU_BDPT_CONNECTION_WGSL}
+${bdptConnection}
 ${PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL}
-${PT_WEBGPU_MEDIUM_NEE_WGSL}
+${cameraSplat}${PT_WEBGPU_MEDIUM_NEE_WGSL}
 ${kernel}
 `;
 }
@@ -142,13 +153,18 @@ ${kernel}
  * are in group(3) (bindings 6/7/8) and are not relocated by this transform.
  */
 export function composePtWebgpuCompositeTraceWgsl(
-  _bdptEnabled: boolean,
+  bdptEnabled: boolean,
   opts: PtWebgpuTraceComposeOptions = {},
 ): string {
   const kernel = composePathTraceKernelWgsl({
     volumetricSss: true,
     restirPtComposite: true,
+    bdptCameraSplat: bdptEnabled,
   });
+  const cameraSplat = bdptEnabled
+    ? PT_WEBGPU_BDPT_CAMERA_SPLAT_WGSL
+    : '';
+  const bdptConnection = composePtWebgpuBdptConnectionWgsl(bdptEnabled);
   const common = composePtWebgpuCommonWgsl(opts.sampling ?? 'pcg');
   const intersection = composePtWebgpuPathTraceIntersectionWgsl({
     cwbvhClosest: opts.cwbvhClosest === true,
@@ -168,9 +184,9 @@ ${MNEE_CHAIN_WGSL}
 ${MNEE_CONNECTION_WGSL}
 ${SPPM_GROUP3_BINDINGS_WGSL}
 ${PT_WEBGPU_PATH_TRACE_CAUSTIC_WGSL}
-${PT_WEBGPU_BDPT_CONNECTION_WGSL}
+${bdptConnection}
 ${PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL}
-${PT_WEBGPU_MEDIUM_NEE_WGSL}
+${cameraSplat}${PT_WEBGPU_MEDIUM_NEE_WGSL}
 ${kernel}
 `;
   // Relocate @group(4)@binding(N) → @group(0)@binding(20+N).

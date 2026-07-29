@@ -3,7 +3,7 @@
 // Proves the honest OFF-bit-identity acceptance criterion at the UBO-byte level:
 // when nrcEnabled is 0/absent, EVERY byte of the WalkaroundUBO is unchanged from
 // the pre-NRC layout, and ONLY u32[91] (offset 364, the former _ppgPad2 slot)
-// flips to 1 when nrcEnabled is on. Same discipline as the V19 GRIS gate proof.
+// flips to 1 when nrcEnabled is on, pinning the live compile-time NRC choice.
 //
 // The NRC gate lands in the previously-zero `_ppgPad2` pad slot, so an OFF gate
 // is byte-for-byte identical to a build with no NRC field at all — the default
@@ -51,7 +51,6 @@ function baseInputs(): PipelineFrameInputs {
       restirGiWCap: 16, restirGiIrrClamp: 5, restirGiMClamp: 50,
       restirGiSpatialRadiusPx: 12, restirGiSpatialNormalDotMin: 0.906,
       restirGiSpatialCoplanarTol: 0.05,
-      grisReuse: 0,
     },
     gtao: { gtaoRadiusPx: 32, gtaoIntensity: 2, gtaoDepthThreshold: 2, gtaoBilateralDepthSigma: 0.25, adaptiveSamplingThresholdLow: 0.01, adaptiveSamplingThresholdHigh: 0.1 },
     filter: {
@@ -110,8 +109,9 @@ describe('NRC gate — OFF bit-identity (the honest acceptance criterion)', () =
     expect(bytes.length).toBe(WALKAROUND_UBO_SIZE_BYTES);
     const u32 = new Uint32Array(bytes.buffer.slice(0));
     const f32 = new Float32Array(bytes.buffer.slice(0));
-    // grisReuse (offset 412 / u32[103]) and the later sun-angular tail are unaffected.
-    expect(u32[103]).toBe(0);
+    // The generalized-reuse compatibility word (offset 412 / u32[103])
+    // remains always-on; the later sun-angular tail is unaffected.
+    expect(u32[103]).toBe(1);
     expect(f32[104]).toBeCloseTo(WALKAROUND_DEFAULT_SUN_ANGULAR_RADIUS);
     expect(u32[NRC_GATE_U32_INDEX]).toBe(1);
   });

@@ -2,7 +2,7 @@
 // `materialPackingCoreEquivalence` style: pack a known `@vitrum/core` MaterialSpec
 // and assert the EXACT texel values at the load-bearing offsets the fork's GLSL
 // `material_struct` decoder reads (verified against `MaterialsTexture.js` +
-// `material_struct.glsl.js`). Any divergence here is a real render bug.
+// `material_mapped_rich.glsl.ts`). Any divergence here is a real render bug.
 
 import { describe, it, expect } from 'vitest';
 import type { MaterialSpec } from '@vitrum/core';
@@ -670,7 +670,7 @@ describe('packMaterialsTexture — RGBA32F byte layout', () => {
   // The packer writes ao/lightMap/bumpMap id + scalars at texels 85/86, and their
   // UV-transform mat3s at texels 87 (aoMapTransform), 89 (lightMapTransform), 91
   // (bumpMapTransform), 2 texels per mat3 (see writeTransform + readTextureTransform
-  // in material_struct.glsl.js). The GLSL decoder reads:
+  // in material_mapped_rich.glsl.ts). The GLSL decoder reads:
   //   m.aoMapTransform   = readTextureTransform(tex, i + 87u)
   //   m.lightMapTransform = readTextureTransform(tex, i + 89u)
   //   m.bumpMapTransform  = readTextureTransform(tex, i + 91u)
@@ -681,7 +681,7 @@ describe('packMaterialsTexture — RGBA32F byte layout', () => {
   // layers and non-identity UvTransforms, then assert the exact float values that
   // readTextureTransform will read on the GPU.
   //
-  // writeTransform encoding (verified against material_struct.glsl.js):
+  // writeTransform encoding (verified against material_mapped_rich.glsl.ts):
   //   texel k   row1: (sx·cos, sx·sin, offsetX, 0)
   //   texel k+1 row2: (−sy·sin, sy·cos, offsetY, 0)
   // readTextureTransform unpacks:
@@ -811,6 +811,34 @@ describe('packMaterialsTexture — RGBA32F byte layout', () => {
     expect(d[texel(0, 89, 0)]).toBe(0); // lightMapTransform row1.r
     expect(d[texel(0, 91, 0)]).toBe(0); // bumpMapTransform row1.r
     expect(d[texel(0, 93, 0)]).toBe(0); // alphaMapTransform row1.r
+  });
+
+  it('resolves layer ids from the statically selected LDR or radiance atlas', () => {
+    const handle = {};
+    const material: MaterialSpec = {
+      baseColor: [1, 1, 1],
+      roughness: 1,
+      metallic: 0,
+      baseColorMap: { handle },
+      roughnessMap: { handle },
+      emissiveMap: { handle },
+      lightMap: { handle },
+    };
+    const d = packMaterialsTexture([material], {
+      ldr: {
+        srgb: new Map([[handle, 7]]),
+        linear: new Map([[handle, 9]]),
+      },
+      hdr: {
+        srgb: new Map([[handle, 3]]),
+        linear: new Map([[handle, 5]]),
+      },
+    }).data;
+
+    expect(d[texel(0, 0, 3)]).toBe(7); // baseColorMap: LDR sRGB
+    expect(d[texel(0, 1, 3)]).toBe(9); // roughnessMap: LDR linear
+    expect(d[texel(0, 3, 3)]).toBe(3); // emissiveMap: HDR sRGB source role
+    expect(d[texel(0, 85, 1)]).toBe(5); // lightMap: HDR linear
   });
 
   it('multiple materials are packed at their MATERIAL_PIXELS-strided offsets', () => {

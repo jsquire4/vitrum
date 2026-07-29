@@ -64,7 +64,6 @@ describe('package root import boundaries', () => {
   it('keeps SceneBvh root buffer fields host-neutral', () => {
     const source = readSource('../sceneBvh.ts');
 
-    expect(source).toContain('sourceMaterials?: readonly unknown[]');
     expect(source).not.toContain('legacyThreeMaterials');
   });
 

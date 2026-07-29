@@ -37,9 +37,6 @@ fn environmentDimensions() -> vec2u {
 // absent (hasEnvironmentMap()=false).
 fn liteEnvLookup(dir: vec3f) -> vec4f {
   if (!hasEnvironmentMap()) {
-    if (params.environmentSun.w > 0.0) {
-      return vec4f(sampleSky(dir), 0.25 * INV_PI);
-    }
     return vec4f(0.0);
   }
   let dims = environmentDimensions();
@@ -162,8 +159,13 @@ fn intersectLiteRectAreaLightRay(li: u32, rayOrigin: vec3f, rayDir: vec3f, distO
   let uLen2 = dot(uAxis, uAxis);
   let vLen2 = dot(vAxis, vAxis);
   if (uLen2 <= 0.0 || vLen2 <= 0.0) { return false; }
-  let uCoord = dot(rel, uAxis) / uLen2;
-  let vCoord = dot(rel, vAxis) / vLen2;
+  // Solve the full 2×2 Gram system. Independent projection is only correct
+  // for orthogonal axes and misclassifies sheared affine discs/rectangles.
+  let uv = dot(uAxis, vAxis);
+  let relU = dot(rel, uAxis);
+  let relV = dot(rel, vAxis);
+  let uCoord = (relU * vLen2 - relV * uv) / axisCrossLen2;
+  let vCoord = (relV * uLen2 - relU * uv) / axisCrossLen2;
   let inside = select(
     abs(uCoord) <= 1.0 && abs(vCoord) <= 1.0,
     uCoord * uCoord + vCoord * vCoord <= 1.0,
@@ -178,7 +180,7 @@ fn intersectLiteRectAreaLightRay(li: u32, rayOrigin: vec3f, rayDir: vec3f, distO
   }
   let area = select(
     4.0 * sqrt(axisCrossLen2),
-    PI * uLen2,
+    PI * sqrt(axisCrossLen2),
     isDisc,
   );
   if (area <= 0.0) { return false; }
@@ -208,6 +210,7 @@ fn bsdfAreaLightConnectionContribution(
   iridescenceThicknessMax: f32,
   specularColor: vec3f,
   specularIntensity: f32,
+  thinFilm: ThinFilmInterface,
   throughputAtVertex: vec3f,
   heroLambda: f32,
 ) -> vec3f {
@@ -220,7 +223,7 @@ fn bsdfAreaLightConnectionContribution(
     clearcoat, clearcoatRoughness, sheen, sheenRoughness,
     iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
     specularColor, specularIntensity,
-    0.0, 0.0,
+    0.0, 0.0, thinFilm,
   );
   if (bsdfPdf <= 0.0) {
     return vec3f(0.0);
@@ -255,7 +258,7 @@ fn bsdfAreaLightConnectionContribution(
     clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
     iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
     specularColor, specularIntensity,
-    0.0, 0.0, false,
+    0.0, 0.0, thinFilm, false,
   );
   let emitOut = select(bestEmission, spectralEmissionAtHero(bestEmission, heroLambda), params.spectralEnabled != 0u);
   let misWeight = powerHeuristic(bsdfPdf, bestLightPdf);
@@ -283,6 +286,7 @@ fn bsdfEnvironmentConnectionContribution(
   iridescenceThicknessMax: f32,
   specularColor: vec3f,
   specularIntensity: f32,
+  thinFilm: ThinFilmInterface,
   throughputAtVertex: vec3f,
   heroLambda: f32,
 ) -> vec3f {
@@ -293,7 +297,7 @@ fn bsdfEnvironmentConnectionContribution(
     clearcoat, clearcoatRoughness, sheen, sheenRoughness,
     iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
     specularColor, specularIntensity,
-    0.0, 0.0,
+    0.0, 0.0, thinFilm,
   );
   if (bsdfPdf <= 0.0) { return vec3f(0.0); }
   let offsetNormal = select(-normal, normal, dot(normal, wi) > 0.0);
@@ -309,7 +313,7 @@ fn bsdfEnvironmentConnectionContribution(
     clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
     iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
     specularColor, specularIntensity,
-    0.0, 0.0, false,
+    0.0, 0.0, thinFilm, false,
   );
   return throughputAtVertex * brdf * nDotL * envColor * misWeight / bsdfPdf;
 }

@@ -40,20 +40,51 @@ describe('A1 — ReSTIR-PT spatial pass (GRIS full GBH)', () => {
     expect(RESTIR_PT_SPATIAL_WGSL).not.toContain('restirPtVisibleReplayPdfForDomain');
     // GRIS finalize (the m_i already sum to 1 — no /M).
     expect(RESTIR_PT_SPATIAL_WGSL).toContain(
-      'finaliseReservoirPTWGris(&rOut, rptParams.wCap);',
+      'finaliseReservoirPTWGris(&rOut);',
     );
   });
 
   it('the reused-sample weight is m·p̂·W·J with NO /p_src (the V19 grison guard)', () => {
     // w_q = m_q · p̂_r(T z_q) · W_q · J  — the reservoir W already bakes the source
     // pdf; an extra /p_src would diverge the feedback loop. Pin the exact form.
-    expect(RESTIR_PT_SPATIAL_WGSL).toContain('let w_q = m_q * pHatQ_atR * qW[i] * qJ[i];');
+    expect(RESTIR_PT_SPATIAL_WGSL).toContain(
+      'logMNeighbor + log(pHatQ_atR) + qLogW[i] + log(qJ[i])',
+    );
     // And it must NOT divide any reused weight by a source pdf.
-    expect(RESTIR_PT_SPATIAL_WGSL).not.toMatch(/w_q\s*=\s*[^;]*\/\s*\w*[pP]dfSrc/);
+    expect(RESTIR_PT_SPATIAL_WGSL).not.toMatch(
+      /logWeightNeighbor\s*=\s*[^;]*\/\s*\w*[pP]dfSrc/,
+    );
   });
 
   it('gates each neighbour on reconnection VISIBILITY (unbiasedness)', () => {
-    expect(RESTIR_PT_SPATIAL_WGSL).toContain('rptSpatialReconVisible(rCenter.xv, rCenter.nv, rQ.xs)');
+    expect(RESTIR_PT_SPATIAL_WGSL).toContain(
+      'rCenter.xv, rCenter.nv, qR[i].xs, &rng,',
+    );
+    expect(RESTIR_PT_SPATIAL_WGSL).toContain(
+      'qR[j].xv, qR[j].nv, qR[i].xs, &rng,',
+    );
+  });
+
+  it('puts every technique in the candidate measure with its shift Jacobian', () => {
+    expect(RESTIR_PT_SPATIAL_WGSL).toMatch(
+      /rptLogWeightedShiftedTarget\(\s*qC\[j\], pHatQ_atCanonicalSample, JCanonicalToQ,/,
+    );
+    expect(RESTIR_PT_SPATIAL_WGSL).toMatch(
+      /rptLogWeightedShiftedTarget\(qC\[j\], pHatJ_atQSample, JQToJ\)/,
+    );
+    expect(RESTIR_PT_SPATIAL_WGSL).toMatch(
+      /rptLogWeightedShiftedTarget\(\s*cR, pHatQ_atR, qJ\[i\],/,
+    );
+  });
+
+  it('folds represented attempts after WRS, including zero-weight techniques', () => {
+    expect(RESTIR_PT_SPATIAL_WGSL).toContain(
+      'representedM = rptSaturatingAddU32(representedM, u32(qC[i]));',
+    );
+    expect(RESTIR_PT_SPATIAL_WGSL).toContain(
+      'if (rOut.M > 0u) {\n    rOut.M = representedM;',
+    );
+    expect(RESTIR_PT_SPATIAL_WGSL).not.toContain('let oldM = rOut.M;');
   });
 
   it('reads the temporal output (b21) + writes the spatial output (b25) — hazard-free neighbour reads', () => {
@@ -107,8 +138,10 @@ describe('A1 — ReSTIR-PT composite megakernel (estimator split)', () => {
     expect(composite).toContain('radiance = radiance + bsdfAreaLightConnectionContribution(');
     // But only the mesh-area branch is disabled for contributed ReSTIR pixels,
     // because the resolve Lo already carries xs-on-emissive-mesh radiance.
-    expect(dflt).toMatch(/heroLambda,\s*true,\s*\);/);
-    expect(composite).toMatch(/heroLambda,\s*!rptCompositeContributed,\s*\);/);
+    expect(dflt).toMatch(/heroLambda,\s*true,\s*&rng,\s*\);/);
+    expect(composite).toMatch(
+      /heroLambda,\s*!rptCompositeContributed,\s*&rng,\s*\);/,
+    );
   });
 
   it('the DEFAULT (non-composite) megakernel is unchanged — no rpt_result_in, full path', () => {

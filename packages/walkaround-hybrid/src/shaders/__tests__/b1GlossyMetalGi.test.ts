@@ -116,21 +116,22 @@ describe('B1 — glossy/metal GI reservoir (no empty-reservoir punt for metal)',
       expect(src).not.toContain('if (grisOn && isGlass)');
       expect(src).toContain('const GLASS_WALK_MAX_INTERFACES: u32 = 4u;');
       expect(src).toContain('var rGlass: ReservoirGI = emptyReservoirGI();');
-      expect(src).toContain('if (grisOn) { rGlass.historyEpoch = currentGrisEpoch; }');
+      expect(src).toContain('rGlass.historyEpoch = currentGrisEpoch;');
       expect(src).toContain('updateReservoirGIWithMetadata(');
       expect(src).toContain('rGlass.xv = walkHitPos;');
       expect(src).toContain('storeReservoirGI_rw(pixelIdxGi, rGlass);');
     }
   });
 
-  it('the GI producer targets the receiver lobe over material-shaded Lo', () => {
-    // p̂ is formed from reservoir Lo and the visible receiver material. Diffuse
-    // defaults still reduce to the old Lo*cos/pi target, but glossy/metal/clearcoat
-    // receivers now guide reservoir selection with their consuming lobe.
+  it('the GI producer targets the declared one-bounce DDGI proxy', () => {
+    // The live generalized-reuse domain is receiver-independent: source
+    // emission and one-bounce DDGI material response are stored at xs, while
+    // the canonical target re-evaluates the visible receiver's authored lobes.
     expect(RIS_GI_WGSL).toContain('let xsPayload = sampleRestirGIHitMaterialForHit(');
     expect(RIS_GI_WGSL).toContain('Lo = xsPayload.Lo;');
+    expect(RIS_GI_WGSL).toContain('pHat = restir_gi_receiver_phat_from_payload(');
+    expect(RIS_GI_WGSL).toContain(') * candidateVisibility;');
     expect(RIS_GI_WGSL).toContain('let receiverPayload = sampleRestirDIMaterialPayloadForHit(');
-    expect(RIS_GI_WGSL).toContain('restir_gi_receiver_phat_from_payload(');
     expect(RIS_GI_WGSL).toContain('pSrc = alpha * pGuide + (1.0 - alpha) * pCos;');
     expect(RIS_GI_WGSL).toContain('pSrc = cosTheta * INV_PI;');
     expect(RIS_GI_WGSL).toContain('let w = pHat / pSrc;');
@@ -138,14 +139,15 @@ describe('B1 — glossy/metal GI reservoir (no empty-reservoir punt for metal)',
 });
 
 describe('B1 — glossy/metal specular indirect term', () => {
-  it('ggxBrdf exposes evalGGXSpecularOnly (specular lobe, conductor F0)', () => {
-    expect(GGX_BRDF_WGSL).toContain('fn evalGGXSpecularOnly(');
+  it('ggxBrdf exposes only the rich evaluators consumed by production passes', () => {
     expect(GGX_BRDF_WGSL).toContain('fn evalGGXSpecularOnlyWithSpecular(');
-    expect(GGX_BRDF_WGSL).toContain('fn evalGGXSpecularOnlyWithSpecularClearcoatSheen(');
     expect(GGX_BRDF_WGSL).toContain('fn evalGGXSpecularOnlyWithSpecularClearcoatSheenWithAnisotropyFrame(');
     expect(GGX_BRDF_WGSL).toContain('fn evalGGXWithSpecular(');
-    expect(GGX_BRDF_WGSL).toContain('fn evalGGXWithSpecularClearcoatSheen(');
     expect(GGX_BRDF_WGSL).toContain('fn evalGGXWithSpecularClearcoatSheenWithAnisotropyFrame(');
+    expect(GGX_BRDF_WGSL).not.toContain('fn evalGGX(');
+    expect(GGX_BRDF_WGSL).not.toContain('fn evalGGXSpecularOnly(');
+    expect(GGX_BRDF_WGSL).not.toContain('fn evalGGXWithSpecularAnisotropy(');
+    expect(GGX_BRDF_WGSL).not.toContain('fn evalGGXSpecularOnlyWithSpecularAnisotropy(');
     expect(GGX_BRDF_WGSL).toContain('fn evalClearcoatLobe(');
     expect(GGX_BRDF_WGSL).toContain('fn evalSheenLobe(');
     expect(GGX_BRDF_WGSL).toContain('fn charlieD(');
@@ -189,10 +191,11 @@ describe('B1 — glossy/metal specular indirect term', () => {
 });
 
 describe('B1-ior-per-tri — per-triangle IOR lane structural pins', () => {
-  it('materialDecode provides decodeIor (bits[15:8] decode: 1.0 + byte/255*2.0)', () => {
+  it('materialDecode preserves IOR=0 and decodes finite bytes over [1,3]', () => {
     expect(MATERIAL_DECODE_WGSL).toContain('fn decodeIor(packed: u32) -> f32');
     expect(MATERIAL_DECODE_WGSL).toContain('(packed >> 8u) & 0xFFu');
-    expect(MATERIAL_DECODE_WGSL).toContain('1.0 + f32(byte) / 255.0 * 2.0');
+    expect(MATERIAL_DECODE_WGSL).toContain('if (byte == 0u) { return 1e6; }');
+    expect(MATERIAL_DECODE_WGSL).toContain('1.0 + f32(byte - 1u) / 254.0 * 2.0');
   });
 
   it('risGi / risGiNrc glass walks no longer use a hardcoded IOR_GLASS=1.5 constant', () => {

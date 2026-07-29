@@ -143,7 +143,6 @@ int getSurfaceRecord(
   if ( surf.clearcoat > 0.0 ) surf.lobeMask |= 8u;
   if ( surf.iridescence > 0.0 ) surf.lobeMask |= 16u;
   if ( surf.transmission > 0.0 ) surf.lobeMask |= 32u;
-  surf.liteMode = false;
   return HIT_SURFACE;
 }
 

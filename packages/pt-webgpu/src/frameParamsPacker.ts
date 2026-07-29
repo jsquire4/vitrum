@@ -54,9 +54,9 @@ export interface FrameParamsSceneInputs {
   readonly environmentTint: readonly [number, number, number];
   readonly environmentSunDirection: readonly [number, number, number];
   readonly environmentSunStrength: number;
-  /** H14-E: HDRI-only intensity lane — separate from environmentSunStrength.
-   *  Written to params.environmentHdriIntensity so the equirect lookup is not
-   *  gated by the procedural-sky sun-strength lane. */
+  /** H14-E: map-backed environment-radiance intensity lane. The legacy
+   *  environmentSunStrength field remains in the stable layout but is not a
+   *  shader environment-radiance gate. */
   readonly environmentHdriIntensity: number;
   /**
    * H6: HDRI dome CCW Y-rotation in radians (default 0).
@@ -175,9 +175,9 @@ export function packFrameParams(
   paramsF32[FrameParamsSlot.sceneRadius] = Math.max(1e-3, sb.sceneRadius);
   paramsU32[FrameParamsSlot.directLightingMode] =
     config.directLightingMode === 'summed-expectation' ? 1 : 0;
-  // H14-E: HDRI intensity lives in its own f32 slot (slot 31 = environmentHdriIntensity),
-  // separate from environmentSun.w (procedural sky sun strength). This ensures the HDRI
-  // equirect lookup is NOT silently zeroed when sun.w == 0 (e.g. night-only scenes).
+  // H14-E: HDRI intensity lives in its own f32 slot (slot 31 =
+  // environmentHdriIntensity). The legacy environmentSun lane remains in the
+  // stable frame layout, but all environment radiance is map-backed.
   paramsF32[FrameParamsSlot.environmentHdriIntensity] = sb.environmentHdriIntensity;
   paramsF32[FrameParamsSlot.cameraPos] = cameraPosition[0];
   paramsF32[FrameParamsSlot.cameraPos + 1] = cameraPosition[1];

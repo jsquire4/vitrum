@@ -5,8 +5,8 @@ import { composeWgsl } from '../pipeline/wgslComposer.js';
 import { RIS_GI_MODULE, RIS_GI_WGSL } from '../shaders/risGi.wgsl.js';
 import { buildRisGiNrcModule } from '../shaders/risGiNrc.wgsl.js';
 import { RESTIR_GI_MATERIAL_WGSL } from '../shaders/restirGiMaterial.wgsl.js';
-import { TEMPORAL_GI_GRIS_MODULE, TEMPORAL_GI_MODULE, TEMPORAL_GI_WGSL } from '../shaders/temporalGi.wgsl.js';
-import { SPATIAL_GI_GRIS_MODULE, SPATIAL_GI_MODULE, SPATIAL_GI_WGSL } from '../shaders/spatialGi.wgsl.js';
+import { TEMPORAL_GI_MODULE, TEMPORAL_GI_WGSL } from '../shaders/temporalGi.wgsl.js';
+import { SPATIAL_GI_MODULE, SPATIAL_GI_WGSL } from '../shaders/spatialGi.wgsl.js';
 
 const nrcModule = buildRisGiNrcModule({
   levels: 1,
@@ -57,7 +57,9 @@ describe('ReSTIR-GI material parity', () => {
     expect(RESTIR_GI_MATERIAL_WGSL).toContain('evalGGXSpecularOnlyWithSpecularClearcoatSheenWithAnisotropyFrame(');
     expect(RESTIR_GI_MATERIAL_WGSL).toContain('contribution = contribution + Lo * specBrdf;');
     expect(RESTIR_GI_MATERIAL_WGSL).toContain('payload.volumeScattering = surf.volumeScattering;');
-    expect(RESTIR_GI_MATERIAL_WGSL).toContain('return applyHomogeneousVolumeSingleScatter(');
+    expect(RESTIR_GI_MATERIAL_WGSL).toContain(
+      'return applyHomogeneousVolumeSingleScatterDirectional(',
+    );
     expect(RESTIR_GI_MATERIAL_WGSL).toContain('payload.bulkThickness,');
     expect(RESTIR_GI_MATERIAL_WGSL).toContain('contribution * payload.layerTransmission');
   });
@@ -72,9 +74,9 @@ describe('ReSTIR-GI material parity', () => {
     expect(RIS_GI_WGSL).toContain('let xsPayload = sampleRestirGIHitMaterialForHit(');
     expect(RIS_GI_WGSL).toContain('Lo = xsPayload.Lo;');
     expect(RIS_GI_WGSL).toContain('let receiverPayload = sampleRestirDIMaterialPayloadForHit(');
-    expect(RIS_GI_WGSL).toContain('restir_gi_receiver_phat_from_payload(');
+    expect(RIS_GI_WGSL).toContain('pHat = restir_gi_receiver_phat_from_payload(');
     expect(RIS_GI_WGSL).toContain('let shadowTint = traceSceneAlphaTintTransmittanceTextured(');
-    expect(RIS_GI_WGSL).toContain('let shadowT = clamp(luminance(shadowTint), 0.0, 1.0);');
+    expect(RIS_GI_WGSL).toContain('candidateVisibility = clamp(luminance(shadowTint), 0.0, 1.0);');
     expect(RIS_GI_WGSL).not.toContain('traceSceneAlphaTransmittanceTextured(');
     expect(RIS_GI_WGSL).not.toContain('Lo = irrAtXs * xsMat.rgb * INV_PI;');
   });
@@ -87,22 +89,22 @@ describe('ReSTIR-GI material parity', () => {
     expect(body).toContain('let normalMapped = applyNormalMapForHit(hit, smoothNormal);');
     expect(body).toContain('let normal = applyBumpMapForHit(hit, normalMapped);');
     expect(body).toContain('let xsPayload = sampleRestirGIHitMaterialForHit(');
-    // Default NRC uses the full extension-aware suffix; GRIS deliberately uses
-    // the diffuse proxy required by its reconnection-shift density model.
-    expect(body).toContain('let ddgiLo = select(xsPayload.Lo, ddgiProxyLo, grisOn);');
+    // The canonical producer always uses the receiver-independent proxy; NRC
+    // may substitute its learned independent suffix after that baseline.
+    expect(body).toContain('let ddgiLo = ddgiProxyLo;');
     expect(body).toContain('let xsAlbedo = xsPayload.albedo;');
     expect(body).toContain('let xsRough = xsPayload.rough;');
     expect(body).toContain('let receiverPayload = sampleRestirDIMaterialPayloadForHit(');
-    expect(body).toContain('restir_gi_receiver_phat_from_payload(');
+    expect(body).toContain('pHat = restir_gi_receiver_phat_from_payload(');
     expect(body).toContain('let shadowTint = traceSceneAlphaTintTransmittanceTextured(');
-    expect(body).toContain('let shadowT = clamp(luminance(shadowTint), 0.0, 1.0);');
+    expect(body).toContain('candidateVisibility = clamp(luminance(shadowTint), 0.0, 1.0);');
     expect(body).not.toContain('traceSceneAlphaTransmittanceTextured(');
     expect(body).not.toContain('let ddgiLo = irrAtXs * xsMat.rgb * INV_PI;');
   });
 
   it('keeps primary-glass GI branches on the same PPG defensive mixture as opaque GI', () => {
     for (const body of [RIS_GI_WGSL, nrcModule.source]) {
-      expect(body).toContain('let ppgGuidedOn_g = (ubo.ppgEnabled == 1u) && !grisOn;');
+      expect(body).toContain('let ppgGuidedOn_g = ubo.ppgEnabled == 1u;');
       expect(body).toContain('let alpha_g = select(0.0, ubo.ppgMixAlpha, ppgGuidedOn_g);');
       expect(body).toContain('wi = ppgSampleGuidedDir(walkHitPos, &rng);');
       expect(body).toContain('let pGuide_g = ppgEvalPdf(walkHitPos, wi);');
@@ -111,8 +113,8 @@ describe('ReSTIR-GI material parity', () => {
     }
   });
 
-  it('wires GI temporal/spatial reuse through receiver-material p-hat', () => {
-    for (const module of [TEMPORAL_GI_MODULE, TEMPORAL_GI_GRIS_MODULE, SPATIAL_GI_MODULE, SPATIAL_GI_GRIS_MODULE]) {
+  it('wires GI temporal/spatial reuse through canonical material targets', () => {
+    for (const module of [TEMPORAL_GI_MODULE, SPATIAL_GI_MODULE]) {
       expect(module.requires).toContain('restirCastPrimary');
       expect(module.requires).toContain('restirGiMaterial');
     }
@@ -123,12 +125,10 @@ describe('ReSTIR-GI material parity', () => {
       const composed = composeWgsl(module, WGSL_MODULES);
       expect(composed).toContain('@group(1) @binding(0) var<storage, read> sceneGeometryArena');
       expect(composed).toContain('fn bvhLoadNode(');
-      expect(
-        shader.includes('let centerSurf = castPrimary(') ||
-        shader.includes('let curSurf = castPrimary('),
-      ).toBe(true);
-      expect(shader).toContain('restir_gi_receiver_phat_from_surface_or_geometry(');
-      expect(shader).toContain('finaliseGIReservoirWFromPHat(');
+      expect(shader).toContain('grisMaterialPHatAt(');
+      expect(shader).toContain('grisMaterialTargetAt(');
+      expect(shader).toContain('grisFinaliseLogScaledReservoir(');
+      expect(composed).toContain('restir_gi_receiver_phat_from_surface_or_geometry(');
     }
   });
 
@@ -138,7 +138,6 @@ describe('ReSTIR-GI material parity', () => {
 
     for (const shader of [defaultGi, nrcGi]) {
       expect(shader).toContain('fn sampleRestirGIHitMaterialForHit(');
-      expect(shader).toContain('fn evalGGXWithSpecularClearcoatSheen(');
       expect(shader).toContain('fn evalGGXWithSpecularClearcoatSheenWithAnisotropyFrame(');
       expect(shader).toContain('struct RestirDIMaterialPayload');
       expect(shader).toContain('fn applyNormalMapForHit(');

@@ -462,11 +462,12 @@ type OwnershipCriticalKey = (typeof OWNERSHIP_CRITICAL_KEYS)[number];
 /**
  * Strip ownership-critical keys (`device`, `canvas`, `context`) from an
  * `advanced` option bag before spreading it over createEngine's own
- * factory-derived values.  If `advanced` supplied any of these keys they
+ * factory-derived values. If `advanced` supplied any of these keys they
  * would silently override the device that createEngine minted and owns — the
  * dispose path would destroy a device the HOST owns (or a completely alien
- * object), so the engine-minted one would leak.  We strip and warn so the
- * bug surfaces at construction instead of at GC/teardown time.
+ * object), so the engine-minted one would leak. The function rejects the
+ * entire option bag before construction; it never publishes a silently
+ * stripped configuration.
  *
  * @internal — used by the two device-owning constructors (walkaround-hybrid +
  * pt-webgpu).  The WebGL2 path already uses `Omit<…, 'device'>` in its type
@@ -475,7 +476,6 @@ type OwnershipCriticalKey = (typeof OWNERSHIP_CRITICAL_KEYS)[number];
 export function stripOwnershipCriticalKeys<T extends Record<string, unknown>>(
   advanced: T | undefined,
   backend: CreateEngineBackendId,
-  _onWarning?: (warning: EngineWarning) => void,
 ): Omit<T, OwnershipCriticalKey> {
   if (advanced == null) return {} as Omit<T, OwnershipCriticalKey>;
   const overridden: string[] = [];

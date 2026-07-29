@@ -14,10 +14,14 @@
 import type { MaterialSpec } from '@vitrum/core';
 import {
   materialSpecTriColor,
-  materialSpecSurfaceTextureId,
   quantizePackedMaterialTransmission,
   toProductionEmissiveRadiance,
 } from '@vitrum/shared-bvh';
+import {
+  SURFACE_TEXTURE_ID,
+  validateSurfaceTextureId,
+  type SurfaceTextureId,
+} from '@vitrum/stained-glass-extensions';
 
 // Generic vertex-stream UV packing (packUVIntoVec4W / packUVIntoPositionW /
 // BufferAttributeLike) moved to `../bvh/bvhPacking.ts` (I3-1: restir/ was a
@@ -92,20 +96,37 @@ export const ROUGH_DEFAULT = 0.85;
 const ROUGH_GLASS = 0.05;
 /** Default IOR for glass (crown glass). Packs to byte 64, decodes to 1.502. */
 export const IOR_DEFAULT_GLASS = 1.5;
-/** IOR range minimum (air/vacuum). Byte 0. */
+/** Finite IOR range minimum (air/vacuum). Byte 1; byte 0 is the IOR=0 sentinel. */
 export const IOR_RANGE_MIN = 1.0;
 /** IOR range maximum (slightly above diamond 2.42, up to TiO₂ ≈ 2.9). */
 export const IOR_RANGE_MAX = 3.0;
 
-/** Quantize an IOR value to a u8 byte using the [IOR_RANGE_MIN, IOR_RANGE_MAX] linear mapping.
- *  Maps ior → clamp((ior − 1) / 2 * 255, 0, 255). */
+/** Quantize an IOR value to a u8 byte. Byte 0 preserves KHR's IOR=0
+ *  infinite-IOR mode; finite [1,3] values use the remaining [1,255] codes. */
 export function quantizeIor(ior: number): number {
-  return Math.min(255, Math.max(0, Math.round((ior - IOR_RANGE_MIN) / (IOR_RANGE_MAX - IOR_RANGE_MIN) * 255))) & 0xFF;
+  if (ior === 0) return 0;
+  return (
+    1 +
+    Math.min(
+      254,
+      Math.max(
+        0,
+        Math.round(
+          (ior - IOR_RANGE_MIN) /
+          (IOR_RANGE_MAX - IOR_RANGE_MIN) *
+          254,
+        ),
+      ),
+    )
+  ) & 0xFF;
 }
 
 /** Dequantize a u8 IOR byte back to a float. Inverse of {@link quantizeIor}. */
 export function dequantizeIor(byte: number): number {
-  return IOR_RANGE_MIN + (byte / 255) * (IOR_RANGE_MAX - IOR_RANGE_MIN);
+  if ((byte & 0xFF) === 0) return 0;
+  return IOR_RANGE_MIN +
+    (((byte & 0xFF) - 1) / 254) *
+    (IOR_RANGE_MAX - IOR_RANGE_MIN);
 }
 
 const BVH_MATERIAL_CAST_SHADOW_DISABLED_BIT = 1 << 0;
@@ -159,9 +180,11 @@ export function resolveRoughMetal(
   }
   const metal = Math.min(1, Math.max(0, metalness ?? 0));
   // IOR: glass defaults to 1.5, opaque defaults to 1.0 (irrelevant — not consumed).
-  const resolvedIor = (ior !== undefined && Number.isFinite(ior) && ior > 0)
-    ? Math.min(IOR_RANGE_MAX, Math.max(IOR_RANGE_MIN, ior))
-    : (isGlass ? IOR_DEFAULT_GLASS : IOR_RANGE_MIN);
+  const resolvedIor = ior === 0
+    ? 0
+    : (ior !== undefined && Number.isFinite(ior) && ior > 0)
+      ? Math.min(IOR_RANGE_MAX, Math.max(IOR_RANGE_MIN, ior))
+      : (isGlass ? IOR_DEFAULT_GLASS : IOR_RANGE_MIN);
   return { rough, metal, ior: resolvedIor };
 }
 
@@ -181,14 +204,25 @@ export function resolveRoughMetal(
 // These are the core-`MaterialSpec` counterparts to the three `*Tri` packers
 // above. They delegate the per-material RGB resolution to the canonical
 // `materialEntry.ts` mirrors in `@vitrum/shared-bvh`
-// (`materialSpecTriColor` / scalar emissive Le /
-// `materialSpecSurfaceTextureId`) — the same functions the DDGI/emitter
-// decouples already use — and reproduce the EXACT RGBA8 / trans4 / isMetal
-// bit-packing + warm-gray missing-material default of the structural PBR packers
-// byte-for-byte. The caller drives them with a parallel `coreMaterials[]` built
-// in material-slot order, so output is per-triangle stable with the production
-// packers, not merely set-equivalent.
+// (`materialSpecTriColor` / scalar emissive Le) and the canonical stained-glass
+// surface-texture validator. They reproduce the EXACT RGBA8 / trans4 / isMetal
+// bit-packing + warm-gray missing-material default of the structural PBR
+// packers byte-for-byte for valid inputs. The caller drives them with a parallel
+// `coreMaterials[]` built in material-slot order, so output is per-triangle
+// stable with the production packers, not merely set-equivalent.
 // ──────────────────────────────────────────────────────────────────────────
+
+function materialSurfaceTextureId(
+  material: MaterialSpec,
+  materialIndex: number,
+): SurfaceTextureId {
+  const raw = material.extensions?.['surfaceTextureId'];
+  if (raw === undefined) return SURFACE_TEXTURE_ID.smooth;
+  return validateSurfaceTextureId(
+    raw,
+    `materials[${materialIndex}].extensions.surfaceTextureId`,
+  );
+}
 
 /**
  * Scalar production Le for the camera-visible emissive buffer.
@@ -227,8 +261,9 @@ function scalarProductionEmissiveLe(m: MaterialSpec): [number, number, number] |
  *    (the RAW attenuation color for a transmissive surface, else baseColor).
  *  - trans4 ← canonical nonzero-preserving 4-bit transmission quantization.
  *  - isMetal ← `metallic > 0 ? 1 : 0`.
- *  - texType ← `materialSpecSurfaceTextureId(mat) & 0x7`.
- *  - low byte ← `((trans4 << 4) | (isMetal << 3) | (texType & 0x7)) & 0xFF`.
+ *  - texType ← the canonical validated `extensions.surfaceTextureId`.
+ *  - low byte ← `(trans4 << 4) | (isMetal << 3) | texType`.
+ * Defined invalid ids throw instead of aliasing through a low-three-bit mask.
  * A missing material slot falls back to the warm-gray default + zero
  * transmission/texType/metal.
  */
@@ -248,7 +283,7 @@ export function packBVHIndexWFromCore(
     const mat = materials[triMaterialId[t]!];
     let r = WARM_GRAY_DEFAULT_R, g = WARM_GRAY_DEFAULT_G, b = WARM_GRAY_DEFAULT_B;
     let transmission = 0;
-    let texTypeId = 0;
+    let texTypeId: SurfaceTextureId = SURFACE_TEXTURE_ID.smooth;
     let isMetal = 0;
     if (mat) {
       transmission = mat.transmission ?? 0;
@@ -256,12 +291,12 @@ export function packBVHIndexWFromCore(
       r = Math.round(color[0] * 255) & 0xFF;
       g = Math.round(color[1] * 255) & 0xFF;
       b = Math.round(color[2] * 255) & 0xFF;
-      texTypeId = materialSpecSurfaceTextureId(mat) & 0x7;
+      texTypeId = materialSurfaceTextureId(mat, triMaterialId[t]!);
       const metalness = mat.metallic ?? 0;
       isMetal = metalness > 0 ? 1 : 0;
     }
     const trans4 = quantizePackedMaterialTransmission(transmission);
-    const lowByte = ((trans4 << 4) | (isMetal << 3) | (texTypeId & 0x7)) & 0xFF;
+    const lowByte = (trans4 << 4) | (isMetal << 3) | texTypeId;
     indexBuf[base4 + 3] = (r << 24) | (g << 16) | (b << 8) | lowByte;
   }
   return indexBuf;

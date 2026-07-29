@@ -13,6 +13,7 @@ export const MATERIAL_BASIC_GLSL = /* glsl */ `
     bool matte;
     bool castShadow;
     bool vertexColors;
+    float side;
     bool fogVolume;
     bool unlit;
     bool meshEmitterCastShadowDisabled;
@@ -25,6 +26,7 @@ export const MATERIAL_BASIC_GLSL = /* glsl */ `
     vec4 s1 = texelFetch1D( tex, i + 1u );
     vec4 s2 = texelFetch1D( tex, i + 2u );
     vec4 s3 = texelFetch1D( tex, i + 3u );
+    vec4 s13 = texelFetch1D( tex, i + 13u );
     vec4 s14 = texelFetch1D( tex, i + 14u );
     uint packedFlags = uint( round( s14.a ) );
 
@@ -38,6 +40,7 @@ export const MATERIAL_BASIC_GLSL = /* glsl */ `
     material.matte = bool( s14.r );
     material.castShadow = bool( s14.g );
     material.vertexColors = bool( int( s14.b ) & 1 );
+    material.side = s13.a;
     material.fogVolume = false;
     material.unlit = bool( packedFlags & 0x20u );
     material.meshEmitterCastShadowDisabled = bool( packedFlags & 0x40u );

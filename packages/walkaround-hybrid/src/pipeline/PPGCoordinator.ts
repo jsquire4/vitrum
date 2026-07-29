@@ -19,7 +19,12 @@ import { deriveSceneAABBFromBvhPositions } from '@vitrum/shared-bvh';
 import type { SceneBVHBuffers } from '../restir/bvhTypes.js';
 import { buildSTree, splitOverflowLeaves } from '../ppg/sTree.js';
 import { recomputeDTreeInteriorFlux, refineDTree } from '../ppg/dTree.js';
-import { serialiseSTree, deserialiseSTree, type SerialisedSTree } from '../ppg/serialise.js';
+import {
+  serialiseSTree,
+  deserialiseSTree,
+  type OwnedSerialisedSTree,
+  type SerialisedSTree,
+} from '../ppg/serialise.js';
 import { validateSerialisedSTree } from '../ppg/validateSerialisedSTree.js';
 import {
   PPG_DEFAULT_MAX_DTREE_NODES_PER_CELL,
@@ -65,6 +70,15 @@ interface SceneBvhPositionData {
   };
 }
 
+export interface PPGSTreeSnapshot extends SerialisedSTree {
+  readonly maxSpatialCells: number;
+  readonly maxDTreeNodesPerCell?: number;
+  readonly sceneBoundsMin: readonly [number, number, number];
+  readonly sceneBoundsMax: readonly [number, number, number];
+}
+
+export type PreparedSTreeImport = PreparedSceneMutation;
+
 /**
  * Type guard — returns `true` when `ppg` is a fully-allocated
  * `PPGFrameResources` (i.e. `allocatePPGResources` was called). Distinguishes
@@ -75,14 +89,68 @@ function isPPGAllocated(ppg: FrameResources['ppg']): ppg is PPGFrameResources {
 }
 
 function destroyPPGResources(ppg: PPGFrameResources): void {
-  for (const buffer of [
+  for (const buffer of new Set(ppgResourceBuffers(ppg))) {
+    try { buffer.destroy(); } catch { /* release every independently-owned buffer */ }
+  }
+}
+
+function ppgResourceBuffers(ppg: PPGFrameResources): readonly GPUBuffer[] {
+  return [
     ppg.queryArenaBuf,
     ppg.fluxAtomicsBuf,
     ppg.cellSampleCountsBuf,
     ppg.updateUboBuffer,
-  ]) {
-    try { buffer.destroy(); } catch { /* release every independently-owned buffer */ }
+  ];
+}
+
+function assertCandidatePPGResources(
+  candidate: PPGFrameResources,
+  live: PPGFrameResources,
+): void {
+  const candidateBuffers = ppgResourceBuffers(candidate);
+  const liveBuffers = new Set(ppgResourceBuffers(live));
+  if (
+    new Set(candidateBuffers).size !== candidateBuffers.length ||
+    candidateBuffers.some((buffer) => liveBuffers.has(buffer))
+  ) {
+    throw new Error(
+      'PPG import candidate aliases a live or sibling resource buffer.',
+    );
   }
+}
+
+function destroyCandidatePPGResources(
+  candidate: PPGFrameResources,
+  live: PPGFrameResources,
+): void {
+  const liveBuffers = new Set(ppgResourceBuffers(live));
+  for (const buffer of new Set(ppgResourceBuffers(candidate))) {
+    if (liveBuffers.has(buffer)) continue;
+    try { buffer.destroy(); } catch { /* release every isolated candidate buffer */ }
+  }
+}
+
+function isPPGSTreeSnapshot(value: unknown): value is PPGSTreeSnapshot {
+  if (value == null || typeof value !== 'object') return false;
+  const candidate = value as Partial<PPGSTreeSnapshot>;
+  const boundsAreTriples = (
+    bounds: unknown,
+  ): bounds is readonly [number, number, number] =>
+    Array.isArray(bounds) &&
+    bounds.length === 3 &&
+    bounds.every((entry) => typeof entry === 'number');
+  return (
+    typeof candidate.maxSpatialCells === 'number' &&
+    (
+      candidate.maxDTreeNodesPerCell === undefined ||
+      typeof candidate.maxDTreeNodesPerCell === 'number'
+    ) &&
+    candidate.sTreeBuf instanceof Float32Array &&
+    candidate.dTreeBuf instanceof Float32Array &&
+    candidate.dTreeOffsets instanceof Uint32Array &&
+    boundsAreTriples(candidate.sceneBoundsMin) &&
+    boundsAreTriples(candidate.sceneBoundsMax)
+  );
 }
 
 function cloneSTreeForRefine(source: STree): STree {
@@ -151,6 +219,9 @@ export class PPGCoordinator implements PipelineSubsystem {
   /** Retained from initialize() so onResize(), export, and import enforce the
    *  same per-cell dTree stride as the compiled update shader. */
   private _maxDTreeNodesPerCell: number | undefined = undefined;
+  /** Last successfully published render dimensions, used to size import candidates. */
+  private _width = 1;
+  private _height = 1;
   private _mixAlpha = PPG_MIS_ALPHA;
   /** CPU-side PPG model (sTree + per-cell dTrees). Allocated at
    *  initialize() when ppgEnabled is true; refined from GPU training epochs
@@ -290,6 +361,8 @@ export class PPGCoordinator implements PipelineSubsystem {
     this._mixAlpha = resolvedMixAlpha;
     this._sceneAABB = nextSceneAABB;
     this._sTree = nextSTree;
+    this._width = width;
+    this._height = height;
     if (isPPGAllocated(previous)) destroyPPGResources(previous);
   }
 
@@ -336,6 +409,8 @@ export class PPGCoordinator implements PipelineSubsystem {
     this._trainingEpochState = 'collecting';
     this._trainingReadbackFailures = 0;
     this._trainingDispatchesSinceRefine = 0;
+    this._width = width;
+    this._height = height;
     if (isPPGAllocated(previous)) destroyPPGResources(previous);
   }
 
@@ -456,6 +531,8 @@ export class PPGCoordinator implements PipelineSubsystem {
     const oldReadbackError = this._lastTrainingReadbackErrorMessage;
     const oldGeneration = this._frameResourcesGeneration;
     const oldArenaEpoch = ppg.queryArenaEpoch;
+    const oldWidth = this._width;
+    const oldHeight = this._height;
     let committed = false;
     let closed = false;
     const releaseStaging = (): void => {
@@ -476,6 +553,8 @@ export class PPGCoordinator implements PipelineSubsystem {
         this._trainingReadbackFailures = 0;
         this._fluxReadbackInFlight = false;
         this._frameResourcesGeneration = nextCoordinatorGeneration(oldGeneration);
+        this._width = width;
+        this._height = height;
         committed = true;
       },
       rollback: () => {
@@ -494,6 +573,8 @@ export class PPGCoordinator implements PipelineSubsystem {
               this._fluxReadbackInFlight = oldReadbackInFlight;
               this._lastTrainingReadbackErrorMessage = oldReadbackError;
               this._frameResourcesGeneration = oldGeneration;
+              this._width = oldWidth;
+              this._height = oldHeight;
             },
             releaseStaging,
           ],
@@ -695,7 +776,7 @@ export class PPGCoordinator implements PipelineSubsystem {
         if (this._trainingReadbackFailures >= PPGCoordinator._MAX_READBACK_FAILURES) {
           this._trainingEpochState = 'failed';
           this._reportTrainingReadbackFailure(new Error(
-            `PPG training entered a durable failed state after ${this._trainingReadbackFailures} readback attempts; call requestTrainingRecovery() to retry the sealed epoch. Last failure: ${String(readbackFailure)}`,
+            `PPG training entered a durable failed state after ${this._trainingReadbackFailures} readback attempts; call HybridEngine.requestPpgTrainingRecovery() to retry the sealed epoch. Last failure: ${String(readbackFailure)}`,
           ));
         } else {
           this._trainingEpochState = 'retry-pending';
@@ -738,140 +819,283 @@ export class PPGCoordinator implements PipelineSubsystem {
   }
 
   /**
-   * Restore a PPG snapshot into the live coordinator, replacing the current
-   * sTree with the deserialised snapshot tree and immediately re-uploading it
-   * to the GPU buffers so guided sampling picks up the restored distribution
-   * on the very next frame.
-   *
-   * Compatibility checks:
-   *   1. `maxSpatialCells` and `maxDTreeNodesPerCell` must match the live
-   *      coordinator caps (defaults 1 024 / 341 when unset). A mismatch means
-   *      the sTree indices or dTree stride may be out-of-bounds for the live GPU
-   *      buffer allocation — reject loudly.
-   *   2. `sceneBoundsMin/Max` must have the same float32 representation as
-   *      `_sceneAABB`, matching the snapshot wire precision, so a
-   *      snapshot trained on a different scene's geometry is rejected before
-   *      its guiding distribution poisons the live training.
-   *
-   * Returns `false` and emits a structured warning for any mismatch, `true` on success.
-   *
-   * No-op (returns false) when PPG is disabled or not yet initialised —
-   * the importGIState caller treats false as "PPG restore skipped" and
-   * continues with the atlas-only success.
+   * Non-mutating compatibility probe used by the outer GI restore transaction.
+   * It deliberately emits no diagnostics: the caller can inspect several
+   * optional snapshot sections before choosing which transaction to prepare.
    */
-  importSTree(
-    snapshot: {
-      maxSpatialCells: number;
-      maxDTreeNodesPerCell?: number;
-      sTreeBuf: Float32Array;
-      dTreeBuf: Float32Array;
-      dTreeOffsets: Uint32Array;
-      sceneBoundsMin: readonly [number, number, number];
-      sceneBoundsMax: readonly [number, number, number];
-    },
+  canImportSTree(
+    snapshot: unknown,
     frameResources: FrameResources,
-  ): boolean {
-    if (!this._enabled) return false;
-
-    // ── Compatibility: maxSpatialCells ───────────────────────────────────────
-    const liveCap = this._maxSpatialCells ?? PPG_DEFAULT_SPATIAL_CELLS;
-    if (snapshot.maxSpatialCells !== liveCap) {
-      this._warn({
-        code: 'walkaround-hybrid.ppg-import-max-spatial-cells-mismatch',
-        backend: 'walkaround-hybrid',
-        phase: 'lifecycle',
-        method: 'importGIState',
-        message:
-          `[PPGCoordinator] importSTree: maxSpatialCells mismatch — ` +
-          `snapshot=${snapshot.maxSpatialCells}, live=${liveCap}. ` +
-          `PPG restore rejected; the current guide is retained.`,
-        details: {
-          snapshotMaxSpatialCells: snapshot.maxSpatialCells,
-          liveMaxSpatialCells: liveCap,
-          fallback: 'retain current PPG guide',
-        },
-      });
-      return false;
-    }
-
-    // ── Compatibility: maxDTreeNodesPerCell ─────────────────────────────────
-    const liveDTreeCap = this._maxDTreeNodesPerCell ?? PPG_DEFAULT_MAX_DTREE_NODES_PER_CELL;
-    const snapshotDTreeCap = snapshot.maxDTreeNodesPerCell ?? PPG_DEFAULT_MAX_DTREE_NODES_PER_CELL;
-    if (snapshotDTreeCap !== liveDTreeCap) {
-      this._warn({
-        code: 'walkaround-hybrid.ppg-import-max-dtree-nodes-mismatch',
-        backend: 'walkaround-hybrid',
-        phase: 'lifecycle',
-        method: 'importGIState',
-        message:
-          `[PPGCoordinator] importSTree: maxDTreeNodesPerCell mismatch — ` +
-          `snapshot=${snapshotDTreeCap}, live=${liveDTreeCap}. ` +
-          `PPG restore rejected; the current guide is retained.`,
-        details: {
-          snapshotMaxDTreeNodesPerCell: snapshotDTreeCap,
-          liveMaxDTreeNodesPerCell: liveDTreeCap,
-          fallback: 'retain current PPG guide',
-        },
-      });
-      return false;
-    }
-
-    // ── Compatibility: scene bounds ──────────────────────────────────────────
-    const validationEpsilon = 1e-5;
-    const sb = this._sceneAABB;
-    const boundsOk =
-      f32SnapshotMetadataMatches(snapshot.sceneBoundsMin[0], sb.min[0]) &&
-      f32SnapshotMetadataMatches(snapshot.sceneBoundsMin[1], sb.min[1]) &&
-      f32SnapshotMetadataMatches(snapshot.sceneBoundsMin[2], sb.min[2]) &&
-      f32SnapshotMetadataMatches(snapshot.sceneBoundsMax[0], sb.max[0]) &&
-      f32SnapshotMetadataMatches(snapshot.sceneBoundsMax[1], sb.max[1]) &&
-      f32SnapshotMetadataMatches(snapshot.sceneBoundsMax[2], sb.max[2]);
-    if (!boundsOk) {
-      this._warn({
-        code: 'walkaround-hybrid.ppg-import-scene-bounds-mismatch',
-        backend: 'walkaround-hybrid',
-        phase: 'lifecycle',
-        method: 'importGIState',
-        message:
-          `[PPGCoordinator] importSTree: scene-bounds mismatch — snapshot covers a different ` +
-          `scene geometry. PPG restore rejected; the current guide is retained.`,
-        details: {
-          snapshotSceneBounds: {
-            min: snapshot.sceneBoundsMin,
-            max: snapshot.sceneBoundsMax,
-          },
-          liveSceneBounds: {
-            min: sb.min,
-            max: sb.max,
-          },
-          tolerance: 'same-f32-representation',
-          fallback: 'retain current PPG guide',
-        },
-      });
-      return false;
-    }
-
-    return this._importValidatedSTree(
-      snapshot,
-      frameResources,
-      liveCap,
-      liveDTreeCap,
-      validationEpsilon,
-    );
+  ): snapshot is PPGSTreeSnapshot {
+    return this._validateSTreeImport(snapshot, frameResources, false) !== null;
   }
 
-  private _importValidatedSTree(
-    snapshot: SerialisedSTree & {
-      sceneBoundsMin: readonly [number, number, number];
-      sceneBoundsMax: readonly [number, number, number];
-    },
+  /**
+   * Allocate and populate a complete replacement PPG generation without
+   * touching the live guide. The returned transaction publishes handles and
+   * CPU state only in commit, can restore them in rollback, and retires the old
+   * GPU/readback generation only in finalize.
+   *
+   * The restored directional distribution starts a deliberately cold training
+   * epoch: snapshot persistence covers the guide, not volatile per-frame flux
+   * atomics, sample counters, readback attempts, or an in-flight readback.
+   */
+  prepareSTreeImport(
+    snapshot: PPGSTreeSnapshot,
     frameResources: FrameResources,
-    maxSpatialCells: number,
-    maxDTreeNodesPerCell: number,
-    epsilon: number,
+  ): PreparedSTreeImport | null {
+    const validated = this._validateSTreeImport(
+      snapshot,
+      frameResources,
+      true,
+    );
+    if (validated === null) return null;
+
+    const { restored, packed, liveResources } = validated;
+    let candidate: PPGFrameResources | null = null;
+    try {
+      candidate = allocatePPGResources(
+        this._device,
+        this._width,
+        this._height,
+        this._allocationOptions(),
+      );
+      assertCandidatePPGResources(candidate, liveResources);
+      this._uploadSerialisedTreeModel(candidate, packed);
+      this._writeUpdateUBOForResources(candidate, this._width, this._height);
+
+      // These accumulators are intentionally not part of the persisted guide.
+      // Clear the isolated candidate cohort before it can become live.
+      const encoder = this._device.createCommandEncoder({
+        label: 'ppg-snapshot-import-candidate-clear',
+      });
+      encoder.clearBuffer(candidate.fluxAtomicsBuf);
+      encoder.clearBuffer(candidate.cellSampleCountsBuf);
+      this._device.queue.submit([encoder.finish()]);
+    } catch (error) {
+      if (candidate !== null) {
+        destroyCandidatePPGResources(candidate, liveResources);
+      }
+      throw error;
+    }
+
+    const replacement = candidate;
+    const oldTree = this._sTree;
+    const oldGeneration = this._frameResourcesGeneration;
+    const oldDispatches = this._trainingDispatchesSinceRefine;
+    const oldReadbackFailures = this._trainingReadbackFailures;
+    const oldReadbackError = this._lastTrainingReadbackErrorMessage;
+    const oldReadbackInFlight = this._fluxReadbackInFlight;
+    const oldEpochState = this._trainingEpochState;
+    let state: 'prepared' | 'committed' | 'closed' = 'prepared';
+
+    return {
+      commit: () => {
+        if (state !== 'prepared') return;
+        if (
+          frameResources.ppg !== liveResources ||
+          this._sTree !== oldTree ||
+          this._frameResourcesGeneration !== oldGeneration
+        ) {
+          throw new Error(
+            'PPG import commit rejected because the live generation changed after preparation.',
+          );
+        }
+        frameResources.ppg = replacement;
+        this._sTree = restored;
+        this._frameResourcesGeneration =
+          nextCoordinatorGeneration(oldGeneration);
+        this._trainingDispatchesSinceRefine = 0;
+        this._trainingReadbackFailures = 0;
+        this._lastTrainingReadbackErrorMessage = null;
+        this._fluxReadbackInFlight = false;
+        this._trainingEpochState = 'collecting';
+        state = 'committed';
+      },
+      rollback: () => {
+        if (state === 'closed') return;
+        if (state === 'committed') {
+          frameResources.ppg = liveResources;
+          this._sTree = oldTree;
+          this._frameResourcesGeneration = oldGeneration;
+          this._trainingDispatchesSinceRefine = oldDispatches;
+          this._trainingReadbackFailures = oldReadbackFailures;
+          this._lastTrainingReadbackErrorMessage = oldReadbackError;
+          this._fluxReadbackInFlight = oldReadbackInFlight;
+          this._trainingEpochState = oldEpochState;
+        }
+        state = 'closed';
+        destroyPPGResources(replacement);
+      },
+      finalize: () => {
+        if (state === 'closed') return;
+        if (state === 'prepared') {
+          state = 'closed';
+          destroyPPGResources(replacement);
+          return;
+        }
+        state = 'closed';
+        this._discardReadbackBuffers();
+        destroyPPGResources(liveResources);
+      },
+    };
+  }
+
+  /** Prepare, publish, and retire a snapshot as one convenience operation. */
+  importSTree(
+    snapshot: PPGSTreeSnapshot,
+    frameResources: FrameResources,
   ): boolean {
+    let transaction: PreparedSTreeImport | null = null;
+    try {
+      transaction = this.prepareSTreeImport(snapshot, frameResources);
+      if (transaction === null) return false;
+      transaction.commit();
+      transaction.finalize();
+      return true;
+    } catch (raw) {
+      try { transaction?.rollback(); } catch { /* preserve the primary failure */ }
+      this._warn({
+        code: 'walkaround-hybrid.ppg-import-upload-failed',
+        backend: 'walkaround-hybrid',
+        phase: 'lifecycle',
+        method: 'importGIState',
+        message: `[PPGCoordinator] importSTree: candidate GPU preparation failed; current guide retained. ${raw instanceof Error ? raw.message : String(raw)}`,
+        details: { fallback: 'retain current PPG guide' },
+      });
+      return false;
+    }
+  }
+
+  private _validateSTreeImport(
+    rawSnapshot: unknown,
+    frameResources: FrameResources,
+    emitWarning: boolean,
+  ): {
+    restored: STree;
+    packed: OwnedSerialisedSTree;
+    liveResources: PPGFrameResources;
+  } | null {
+    if (!this._enabled) return null;
+    if (!isPPGSTreeSnapshot(rawSnapshot)) {
+      if (emitWarning) {
+        this._warn({
+          code: 'walkaround-hybrid.ppg-import-malformed-snapshot',
+          backend: 'walkaround-hybrid',
+          phase: 'lifecycle',
+          method: 'importGIState',
+          message: '[PPGCoordinator] importSTree: malformed PPG snapshot rejected before live state mutation.',
+          details: { fallback: 'retain current PPG guide' },
+        });
+      }
+      return null;
+    }
+    const snapshot = rawSnapshot;
+    const maxSpatialCells =
+      this._maxSpatialCells ?? PPG_DEFAULT_SPATIAL_CELLS;
+    if (snapshot.maxSpatialCells !== maxSpatialCells) {
+      if (emitWarning) {
+        this._warn({
+          code: 'walkaround-hybrid.ppg-import-max-spatial-cells-mismatch',
+          backend: 'walkaround-hybrid',
+          phase: 'lifecycle',
+          method: 'importGIState',
+          message:
+            `[PPGCoordinator] importSTree: maxSpatialCells mismatch — ` +
+            `snapshot=${snapshot.maxSpatialCells}, live=${maxSpatialCells}. ` +
+            `PPG restore rejected; the current guide is retained.`,
+          details: {
+            snapshotMaxSpatialCells: snapshot.maxSpatialCells,
+            liveMaxSpatialCells: maxSpatialCells,
+            fallback: 'retain current PPG guide',
+          },
+        });
+      }
+      return null;
+    }
+
+    const maxDTreeNodesPerCell =
+      this._maxDTreeNodesPerCell ??
+      PPG_DEFAULT_MAX_DTREE_NODES_PER_CELL;
+    const snapshotDTreeCap =
+      snapshot.maxDTreeNodesPerCell ??
+      PPG_DEFAULT_MAX_DTREE_NODES_PER_CELL;
+    if (snapshotDTreeCap !== maxDTreeNodesPerCell) {
+      if (emitWarning) {
+        this._warn({
+          code: 'walkaround-hybrid.ppg-import-max-dtree-nodes-mismatch',
+          backend: 'walkaround-hybrid',
+          phase: 'lifecycle',
+          method: 'importGIState',
+          message:
+            `[PPGCoordinator] importSTree: maxDTreeNodesPerCell mismatch — ` +
+            `snapshot=${snapshotDTreeCap}, live=${maxDTreeNodesPerCell}. ` +
+            `PPG restore rejected; the current guide is retained.`,
+          details: {
+            snapshotMaxDTreeNodesPerCell: snapshotDTreeCap,
+            liveMaxDTreeNodesPerCell: maxDTreeNodesPerCell,
+            fallback: 'retain current PPG guide',
+          },
+        });
+      }
+      return null;
+    }
+
+    const sceneBounds = this._sceneAABB;
+    const boundsMatch =
+      f32SnapshotMetadataMatches(
+        snapshot.sceneBoundsMin[0],
+        sceneBounds.min[0],
+      ) &&
+      f32SnapshotMetadataMatches(
+        snapshot.sceneBoundsMin[1],
+        sceneBounds.min[1],
+      ) &&
+      f32SnapshotMetadataMatches(
+        snapshot.sceneBoundsMin[2],
+        sceneBounds.min[2],
+      ) &&
+      f32SnapshotMetadataMatches(
+        snapshot.sceneBoundsMax[0],
+        sceneBounds.max[0],
+      ) &&
+      f32SnapshotMetadataMatches(
+        snapshot.sceneBoundsMax[1],
+        sceneBounds.max[1],
+      ) &&
+      f32SnapshotMetadataMatches(
+        snapshot.sceneBoundsMax[2],
+        sceneBounds.max[2],
+      );
+    if (!boundsMatch) {
+      if (emitWarning) {
+        this._warn({
+          code: 'walkaround-hybrid.ppg-import-scene-bounds-mismatch',
+          backend: 'walkaround-hybrid',
+          phase: 'lifecycle',
+          method: 'importGIState',
+          message:
+            '[PPGCoordinator] importSTree: scene-bounds mismatch — snapshot covers a different ' +
+            'scene geometry. PPG restore rejected; the current guide is retained.',
+          details: {
+            snapshotSceneBounds: {
+              min: snapshot.sceneBoundsMin,
+              max: snapshot.sceneBoundsMax,
+            },
+            liveSceneBounds: {
+              min: sceneBounds.min,
+              max: sceneBounds.max,
+            },
+            tolerance: 'same-f32-representation',
+            fallback: 'retain current PPG guide',
+          },
+        });
+      }
+      return null;
+    }
+
     let restored: STree;
-    let packed: SerialisedSTree;
+    let packed: OwnedSerialisedSTree;
     try {
       validateSerialisedSTree(snapshot, {
         maxSpatialCells,
@@ -880,7 +1104,7 @@ export class PPGCoordinator implements PipelineSubsystem {
           min: snapshot.sceneBoundsMin,
           max: snapshot.sceneBoundsMax,
         },
-        epsilon,
+        epsilon: 1e-5,
       });
       restored = deserialiseSTree(snapshot, {
         min: snapshot.sceneBoundsMin,
@@ -888,110 +1112,37 @@ export class PPGCoordinator implements PipelineSubsystem {
       });
       packed = serialiseSTree(restored, maxDTreeNodesPerCell);
     } catch (raw) {
-      this._warn({
-        code: 'walkaround-hybrid.ppg-import-malformed-snapshot',
-        backend: 'walkaround-hybrid',
-        phase: 'lifecycle',
-        method: 'importGIState',
-        message: `[PPGCoordinator] importSTree: malformed PPG snapshot rejected before live state mutation. ${raw instanceof Error ? raw.message : String(raw)}`,
-        details: { fallback: 'retain current PPG guide' },
-      });
-      return false;
+      if (emitWarning) {
+        this._warn({
+          code: 'walkaround-hybrid.ppg-import-malformed-snapshot',
+          backend: 'walkaround-hybrid',
+          phase: 'lifecycle',
+          method: 'importGIState',
+          message: `[PPGCoordinator] importSTree: malformed PPG snapshot rejected before live state mutation. ${raw instanceof Error ? raw.message : String(raw)}`,
+          details: { fallback: 'retain current PPG guide' },
+        });
+      }
+      return null;
     }
 
     if (!isPPGAllocated(frameResources.ppg)) {
-      this._warn({
-        code: 'walkaround-hybrid.ppg-import-resources-unavailable',
-        backend: 'walkaround-hybrid',
-        phase: 'lifecycle',
-        method: 'importGIState',
-        message: '[PPGCoordinator] importSTree: live PPG resources are unavailable; current guide retained.',
-        details: { fallback: 'retain current PPG guide' },
-      });
-      return false;
-    }
-
-    const ppg = frameResources.ppg;
-    const staging: GPUBuffer[] = [];
-    let stagingReleased = false;
-    const releaseStaging = (): void => {
-      if (stagingReleased) return;
-      stagingReleased = true;
-      for (const buffer of staging) {
-        try { buffer.destroy(); } catch { /* release every staging buffer */ }
-      }
-    };
-    try {
-      assertPpgQueryArenaPayloadFits(ppg.queryArenaLayout, packed);
-      const nextArenaEpoch = nextPpgQueryArenaEpoch(ppg.queryArenaEpoch);
-      const arenaHeader = buildPpgQueryArenaHeader(
-        ppg.queryArenaLayout,
-        packed,
-        nextArenaEpoch,
-      );
-      const encoder = this._device.createCommandEncoder({ label: 'ppg-snapshot-import' });
-      const stage = (
-        destination: GPUBuffer,
-        destinationOffset: number,
-        data: ArrayBufferView,
-        label: string,
-      ): void => {
-        const upload = this._device.createBuffer({
-          label,
-          size: Math.max(4, data.byteLength),
-          usage: 0x4,
-          mappedAtCreation: true,
+      if (emitWarning) {
+        this._warn({
+          code: 'walkaround-hybrid.ppg-import-resources-unavailable',
+          backend: 'walkaround-hybrid',
+          phase: 'lifecycle',
+          method: 'importGIState',
+          message: '[PPGCoordinator] importSTree: live PPG resources are unavailable; current guide retained.',
+          details: { fallback: 'retain current PPG guide' },
         });
-        staging.push(upload);
-        new Uint8Array(upload.getMappedRange()).set(
-          new Uint8Array(data.buffer, data.byteOffset, data.byteLength),
-        );
-        upload.unmap();
-        encoder.copyBufferToBuffer(upload, 0, destination, destinationOffset, data.byteLength);
-      };
-      stage(ppg.queryArenaBuf, ppg.queryArenaLayout.sTreeByteOffset, packed.sTreeBuf, 'ppg-import-stree');
-      stage(ppg.queryArenaBuf, ppg.queryArenaLayout.dTreeByteOffset, packed.dTreeBuf, 'ppg-import-dtree');
-      stage(ppg.queryArenaBuf, ppg.queryArenaLayout.dTreeOffsetsByteOffset, packed.dTreeOffsets, 'ppg-import-offsets');
-      stage(ppg.queryArenaBuf, 0, arenaHeader, 'ppg-import-header');
-      encoder.clearBuffer(ppg.fluxAtomicsBuf);
-      encoder.clearBuffer(ppg.cellSampleCountsBuf);
-      this._device.queue.submit([encoder.finish()]);
-      ppg.queryArenaEpoch = nextArenaEpoch;
-    } catch (raw) {
-      releaseStaging();
-      this._warn({
-        code: 'walkaround-hybrid.ppg-import-upload-failed',
-        backend: 'walkaround-hybrid',
-        phase: 'lifecycle',
-        method: 'importGIState',
-        message: `[PPGCoordinator] importSTree: staged GPU upload failed; current guide retained. ${raw instanceof Error ? raw.message : String(raw)}`,
-        details: { fallback: 'retain current PPG guide' },
-      });
-      return false;
+      }
+      return null;
     }
-
-    // All GPU replacements and volatile-buffer clears share one ordered command
-    // buffer. Install CPU state only after command creation and submit succeed.
-    this._sTree = restored;
-    this._frameResourcesGeneration = nextCoordinatorGeneration(
-      this._frameResourcesGeneration,
-    );
-    this._trainingDispatchesSinceRefine = 0;
-    this._trainingReadbackFailures = 0;
-    this._lastTrainingReadbackErrorMessage = null;
-    this._fluxReadbackInFlight = false;
-    this._trainingEpochState = 'collecting';
-    this._discardReadbackBuffers();
-    try {
-      void this._device.queue
-        .onSubmittedWorkDone()
-        .then(releaseStaging, releaseStaging);
-    } catch {
-      // Submission and CPU publication already succeeded. Buffer destruction
-      // after submit is legal and cannot retroactively make the import fail.
-      releaseStaging();
-    }
-    return true;
+    return {
+      restored,
+      packed,
+      liveResources: frameResources.ppg,
+    };
   }
 
   dispose(): void {
@@ -1068,10 +1219,21 @@ export class PPGCoordinator implements PipelineSubsystem {
     // it keeps the upload valid instead of crashing.
     const cap = this._deriveMaxDTreeNodesPerCellFromResources(ppg);
     const serialised = serialiseSTree(tree, cap);
+    this._uploadSerialisedTreeModel(ppg, serialised);
+  }
+
+  /** Upload a previously validated canonical tree into one isolated cohort. */
+  private _uploadSerialisedTreeModel(
+    ppg: PPGFrameResources,
+    serialised: OwnedSerialisedSTree,
+  ): void {
     assertPpgQueryArenaPayloadFits(ppg.queryArenaLayout, serialised);
     const nextEpoch = nextPpgQueryArenaEpoch(ppg.queryArenaEpoch);
     const header = buildPpgQueryArenaHeader(ppg.queryArenaLayout, serialised, nextEpoch);
-    const write = (offset: number, data: ArrayBufferView<ArrayBuffer>): void => {
+    const write = (
+      offset: number,
+      data: ArrayBufferView<ArrayBuffer>,
+    ): void => {
       this._device.queue.writeBuffer(
         ppg.queryArenaBuf,
         offset,

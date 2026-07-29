@@ -164,23 +164,7 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
     scalarMatColor.rgb,
     sampleTransmissionMapForHit(hit, scalarMatColor.a),
   );
-  let receiverMaterialWordCoord = vec2u(
-    hit.indices.w % BVH_MATERIAL_TEX_WIDTH,
-    hit.indices.w / BVH_MATERIAL_TEX_WIDTH,
-  );
-  let receiverMaterialWord = textureLoad(bvh_material, vec2i(receiverMaterialWordCoord), 0).r;
-  let receiverPayload = sampleRestirDIMaterialPayloadForHit(
-    hit,
-    smoothNormal,
-    normal,
-    scalarMatColor.rgb,
-    receiverMaterialWord,
-    -primaryRay.direction,
-  );
-  let receiverClearcoatNormal = receiverPayload.clearcoatNormal;
-  let receiverWo = -primaryRay.direction;
   let isGlass = materialHasTransmission(matColor.a);
-  let grisOn = ubo.grisReuse == 1u;
   let currentGrisEpoch = bitcast<u32>(ubo.sunAngular.y);
 
 ${RIS_GI_GLASS_TRANSPORT_PREFIX_WGSL}
@@ -196,10 +180,28 @@ ${RIS_GI_GLASS_RESERVOIR_LOOP_WGSL}
 ${RIS_GI_GLASS_VISIBILITY_TAIL_WGSL}
   }
 
+  let receiverMaterialCoord = vec2u(
+    hit.indices.w % BVH_MATERIAL_TEX_WIDTH,
+    hit.indices.w / BVH_MATERIAL_TEX_WIDTH,
+  );
+  let receiverMaterialWord = textureLoad(
+    bvh_material,
+    vec2i(receiverMaterialCoord),
+    0,
+  ).r;
+  let receiverPayload = sampleRestirDIMaterialPayloadForHit(
+    hit,
+    smoothNormal,
+    normal,
+    matColor.rgb,
+    receiverMaterialWord,
+    safe_normalize(-primaryRay.direction),
+  );
+
   var r: ReservoirGI = emptyReservoirGI();
   r.xv = pos;
   r.nv = normal;
-  if (grisOn) { r.historyEpoch = currentGrisEpoch; }
+  r.historyEpoch = currentGrisEpoch;
 
   // Adaptive-sampling tier read at the full-res quad centre. Clamped to
   // [1,4] in case the sample-budget pass emits a bad/uninitialised value
@@ -219,7 +221,7 @@ ${RIS_GI_GLASS_VISIBILITY_TAIL_WGSL}
   //     receiver-lobe target divided by the cosine source pdf. For default
   //     diffuse receivers this algebraically reduces to luminance(Lo); rich
   //     material receivers now guide the reservoir by their actual lobes.
-  let ppgGuidedOn = (ubo.ppgEnabled == 1u) && !grisOn;
+  let ppgGuidedOn = ubo.ppgEnabled == 1u;
   let alpha = select(0.0, ubo.ppgMixAlpha, ppgGuidedOn);
 
   for (var i: u32 = 0u; i < M_GI; i = i + 1u) {
@@ -242,11 +244,7 @@ ${RIS_GI_GLASS_VISIBILITY_TAIL_WGSL}
     }
     let cosTheta = max(0.0, dot(normal, wi));
     if (!reservoirGiFinite(cosTheta) || !(cosTheta > 0.0)) {
-      if (grisOn) {
-        recordInvalidReservoirGICandidate(&r, GI_SAMPLE_SURFACE, currentGrisEpoch);
-      } else {
-        r.M = r.M + 1u;
-      }
+      recordInvalidReservoirGICandidate(&r, GI_SAMPLE_SURFACE, currentGrisEpoch);
       continue;
     }
 
@@ -301,12 +299,7 @@ ${RIS_GI_GLASS_VISIBILITY_TAIL_WGSL}
         wi,
         xsMaterialWord,
       );
-      if (grisOn) {
-        Lo = restir_gi_surface_source_for_hit(bounceHit, xsPayload.albedo)
-          + irrAtXs * xsPayload.albedo * INV_PI;
-      } else {
-        Lo = xsPayload.Lo;
-      }
+      Lo = xsPayload.Lo;
     } else {
       // Sky miss — the GI ray escaped the scene. B3: sample the directional IBL
       // map along wi (rotationY-aware) as the reconnection radiance; envRadiance
@@ -317,42 +310,33 @@ ${RIS_GI_GLASS_VISIBILITY_TAIL_WGSL}
       Lo = envRadiance(wi);
     }
 
-    // The opt-in GRIS mode has one declared target: diffuse/geometric
-    // one-bounce DDGI proxy radiance, including visibility in every candidate.
-    // The default path keeps the richer receiver-lobe target and its historical
-    // selected-sample-only visibility test below.
+    // Evaluate the same mapped receiver lobes that shade will consume. The
+    // diffuse-default path still reduces to luminance(Lo) * cos(theta) / pi,
+    // while glossy/metal/clearcoat/sheen receivers retain their actual target.
     var candidateVisibility: f32 = 1.0;
     var pHat: f32;
-    if (grisOn) {
-      var tMax = 1e20;
-      if (sampleKind == GI_SAMPLE_SURFACE) {
-        tMax = max(0.0, length(xs - pos) - 2e-3);
-      }
-      let shadowTint = traceSceneAlphaTintTransmittanceTextured(
-        ubo.bvhMode, ubo.tlasNodeCount,
-
-        pos + geoNormal * NORMAL_BIAS_GI, wi, tMax, ubo.triIntersectEpsilon,
-        bvh_material, BVH_MATERIAL_TEX_WIDTH, bvh_beer,
-      );
-      candidateVisibility = clamp(luminance(shadowTint), 0.0, 1.0);
-      pHat = luminance(Lo) * cosTheta * INV_PI * candidateVisibility;
-    } else {
-      pHat = restir_gi_receiver_phat_from_payload(
-        pos,
-        normal,
-        receiverClearcoatNormal,
-        receiverWo,
-        receiverPayload,
-        xs,
-        Lo,
-      );
+    var tMax = 1e20;
+    if (sampleKind == GI_SAMPLE_SURFACE) {
+      tMax = max(0.0, length(xs - pos) - 2e-3);
     }
+    let shadowTint = traceSceneAlphaTintTransmittanceTextured(
+      ubo.bvhMode, ubo.tlasNodeCount,
+
+      pos + geoNormal * NORMAL_BIAS_GI, wi, tMax, ubo.triIntersectEpsilon,
+      bvh_material, BVH_MATERIAL_TEX_WIDTH, bvh_beer,
+    );
+    candidateVisibility = clamp(luminance(shadowTint), 0.0, 1.0);
+    pHat = restir_gi_receiver_phat_from_payload(
+      pos,
+      normal,
+      receiverPayload.clearcoatNormal,
+      safe_normalize(-primaryRay.direction),
+      receiverPayload,
+      xs,
+      Lo,
+    ) * candidateVisibility;
     if (!reservoirGiFinite(pHat) || !(pHat > 0.0) || !reservoirGiFinite(candidateVisibility) || !(candidateVisibility > 0.0)) {
-      if (grisOn) {
-        recordInvalidReservoirGICandidate(&r, sampleKind, currentGrisEpoch);
-      } else {
-        r.M = r.M + 1u;
-      }
+      recordInvalidReservoirGICandidate(&r, sampleKind, currentGrisEpoch);
       continue;
     }
 
@@ -380,11 +364,7 @@ ${RIS_GI_GLASS_VISIBILITY_TAIL_WGSL}
       pSrc = cosTheta * INV_PI;
     }
     if (!reservoirGiFinite(pSrc) || !(pSrc > 0.0)) {
-      if (grisOn) {
-        recordInvalidReservoirGICandidate(&r, sampleKind, currentGrisEpoch);
-      } else {
-        r.M = r.M + 1u;
-      }
+      recordInvalidReservoirGICandidate(&r, sampleKind, currentGrisEpoch);
       continue;
     }
     let w = pHat / pSrc;
@@ -393,69 +373,19 @@ ${RIS_GI_GLASS_VISIBILITY_TAIL_WGSL}
       !reservoirGiFinite(r.w_sum) || r.w_sum < 0.0 ||
       w > 3.402823466e38 - r.w_sum
     ) {
-      if (grisOn) {
-        recordInvalidReservoirGICandidate(&r, sampleKind, currentGrisEpoch);
-      } else {
-        r.M = r.M + 1u;
-      }
+      recordInvalidReservoirGICandidate(&r, sampleKind, currentGrisEpoch);
       continue;
     }
-    if (grisOn) {
-      updateReservoirGIWithMetadata(
-        &r, xs, ns, Lo, sampleKind, wi,
-        pHat, candidateVisibility, currentGrisEpoch, w, &rng,
-      );
-    } else {
-      updateReservoirGI(&r, xs, ns, Lo, w, &rng);
-    }
+    updateReservoirGIWithMetadata(
+      &r, xs, ns, Lo, sampleKind, wi,
+      pHat, candidateVisibility, currentGrisEpoch, w, &rng,
+    );
   }
 
-  if (grisOn) {
-    finaliseGIReservoirWFromPHat(&r, ubo.restirGiWCap, false, r.nativePHat);
-  }
+  finaliseGIReservoirWFromPHat(&r, ubo.restirGiWCap, r.nativePHat);
 
-  // Default mode retains its selected-sample visibility evaluation.
-  if (!grisOn) {
-  if (r.M > 0u && r.w_sum > 0.0) {
-    let toS = r.xs - r.xv;
-    let distS = length(toS);
-    if (distS > 1e-4) {
-      let wiZ = toS / distS;
-      let shadowOrig = r.xv + r.nv * NORMAL_BIAS_GI;
-      // skipGlass=true: matches pre-canonical ReSTIR shadow-ray glass filter
-      // (light passes through glass; per-channel tinted-visibility handles tint).
-      let shadowTint = traceSceneAlphaTintTransmittanceTextured(
-        ubo.bvhMode, ubo.tlasNodeCount,
-
-        shadowOrig, wiZ, distS - 2e-3, ubo.triIntersectEpsilon,
-        bvh_material, BVH_MATERIAL_TEX_WIDTH, bvh_beer,
-      );
-      let shadowT = clamp(luminance(shadowTint), 0.0, 1.0);
-      if (!reservoirGiFinite(shadowT) || !(shadowT > 0.0)) {
-        r.w_sum = 0.0;
-        r.W = 0.0;
-      } else {
-        let pHatZ = restir_gi_receiver_phat_from_payload(
-          pos,
-          normal,
-          receiverClearcoatNormal,
-          receiverWo,
-          receiverPayload,
-          r.xs,
-          r.Lo,
-        );
-        r.w_sum = r.w_sum * shadowT;
-        finaliseGIReservoirWFromPHat(&r, ubo.restirGiWCap, false, pHatZ);
-      }
-    } else {
-      r.W = 0.0;
-      r.w_sum = 0.0;
-    }
-  }
-  }
-
-  // ── GRIS producer metadata (Lin et al. 2022, §5) ─────────────────────────
-  // The widened fields are consumed by the GRIS temporal/spatial variants and
+  // ── Generalized-reuse producer metadata (Lin et al. 2022, §5) ────────────
+  // The metadata is consumed by the canonical temporal/spatial passes and
   // by the final shading visibility gate. refreshGrisMetadata derives the
   // reconnection direction, distance, outgoing cosine, and prefix count from
   // the selected edge; the winning candidate's sample kind, native target,
@@ -478,7 +408,7 @@ ${RIS_GI_GLASS_VISIBILITY_TAIL_WGSL}
  *      / `BVH_MATERIAL_TEX_WIDTH`              → materialDecode
  *    - `invertMat4_common` / `generatePrimaryRay_common` → cameraRays
  *    - `ddgiSample`                          → ddgiSample
- *  Drops emitterSampling / jacobianShift / welfordTail (unused).
+ *  Drops emitterSampling / welfordTail (unused).
  *  ReSTIR-GI material parity adds `restirGiMaterial` (normal/bump maps, mapped
  *  base color, rough/metal, and extension-aware suffix radiance).
  *  W9 guided sampling — adds `ppgPdf` (declares the group(3) PPG tree buffers

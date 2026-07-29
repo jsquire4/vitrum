@@ -55,7 +55,7 @@ import {
   PPG_DEFAULT_MAX_DTREE_NODES_PER_CELL,
   PPG_DEFAULT_SPATIAL_CELLS,
 } from './ppgConstants.js';
-import { RESERVOIR_GI_GRIS_STRIDE_U32 } from '../gi/giLayout.js';
+import { RESERVOIR_GI_STRIDE_U32 } from '../gi/giLayout.js';
 import type { WgslModule } from '../wgslTypes.js';
 import {
   PPG_QUERY_ARENA_MAGIC,
@@ -95,8 +95,13 @@ export { PPG_DEFAULT_MAX_DTREE_NODES_PER_CELL, PPG_DEFAULT_SPATIAL_CELLS };
  */
 export function buildPpgUpdateWgsl(
   maxDTreeNodesPerCell: number = PPG_DEFAULT_MAX_DTREE_NODES_PER_CELL,
-  reservoirGiStrideU32: number = RESERVOIR_GI_GRIS_STRIDE_U32,
+  reservoirGiStrideU32: number = RESERVOIR_GI_STRIDE_U32,
 ): string {
+  if (reservoirGiStrideU32 !== RESERVOIR_GI_STRIDE_U32) {
+    throw new TypeError(
+      'buildPpgUpdateWgsl: PPG training requires the live 28-u32 generalized GI ABI.',
+    );
+  }
   return /* wgsl */`
 // ── PPG update kernel ─────────────────────────────────────────────────────────
 // Muller et al. 2017 section 3.3 - training from accepted GI reservoir samples.
@@ -143,8 +148,8 @@ fn ppgArenaLoadDTreeOffsetUpdate(word: u32) -> u32 {
 // STREE_HEADER_F32, STREE_NODE_STRIDE). ppgUpdate-specific constant below.
   // H29: MAX_DTREE_NODES_PER_CELL is now single-sourced — pipelineCompiler.ts
   // passes the live allocatePPGResources value to buildPpgUpdateWgsl().
-  // H24: RESERVOIR_GI_STRIDE_LOCAL is also single-sourced from the live
-  // grisReuse structural gate (20u default, 28u for GRIS DDGI-proxy).
+  // H24: RESERVOIR_GI_STRIDE_LOCAL is single-sourced from the sole live
+  // generalized-reuse ABI.
   const MAX_DTREE_NODES_PER_CELL : u32 = ${maxDTreeNodesPerCell}u;
   const RESERVOIR_GI_STRIDE_LOCAL : u32 = ${reservoirGiStrideU32}u;
 
@@ -251,6 +256,10 @@ fn ppgUpdateMain(@builtin(global_invocation_id) gid: vec3<u32>) {
   let b = idx * RESERVOIR_GI_STRIDE_LOCAL;
   let reservoirM = ppgReservoirGiCurrent[b + 15u];
   if (reservoirM == 0u) { return; }
+  // Camera-prefix glass samples carry receiver-specific throughput and are
+  // deliberately non-shiftable. Training the shared world-space guide from
+  // that view-specific target would contaminate other receivers.
+  if (ppgReservoirGiCurrent[b + 24u] != 1u) { return; }
 
   let pos = vec3f(
     bitcast<f32>(ppgReservoirGiCurrent[b + 0u]),

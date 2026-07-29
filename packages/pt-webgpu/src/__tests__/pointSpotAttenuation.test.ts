@@ -3,7 +3,6 @@ import { PT_WEBGPU_PATH_TRACE_MATERIAL_FUNCS_WGSL } from '../wgsl/pathTrace/mate
 import { PT_WEBGPU_PATH_TRACE_KERNEL_WGSL } from '../wgsl/pathTrace/kernel.wgsl.js';
 import { PT_WEBGPU_PATH_TRACE_KERNEL_LITE_WGSL } from '../wgsl/pathTrace/kernelLite.wgsl.js';
 import { RESTIR_PT_PRODUCER_WGSL } from '../wgsl/pathTrace/restirPtProducer.wgsl.js';
-import { PT_WEBGPU_ADJOINT_PASS_WGSL } from '../wgsl/pathTrace/adjointPass.wgsl.js';
 import { PT_WEBGPU_PATH_TRACE_CAUSTIC_WGSL } from '../wgsl/pathTrace/caustic.wgsl.js';
 import { SPPM_PHOTON_PASS_WGSL } from '../wgsl/pathTrace/sppmBindings.wgsl.js';
 
@@ -78,12 +77,11 @@ describe('point and spot distance attenuation', () => {
     );
   });
 
-  it('routes full, lite, ReSTIR-PT, and adjoint point/spot lighting through the helper', () => {
+  it('routes full, lite, and ReSTIR-PT point/spot lighting through the helper', () => {
     const modules: ReadonlyArray<readonly [string, number]> = [
       [PT_WEBGPU_PATH_TRACE_KERNEL_WGSL, 2],
       [PT_WEBGPU_PATH_TRACE_KERNEL_LITE_WGSL, 2],
       [RESTIR_PT_PRODUCER_WGSL, 2],
-      [PT_WEBGPU_ADJOINT_PASS_WGSL, 4],
     ];
     for (const [module, expectedOccurrences] of modules) {
       expect(

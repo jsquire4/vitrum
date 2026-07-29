@@ -58,7 +58,9 @@ function texImageUploads(record: Map<string, unknown>): readonly unknown[][] {
 describe('pt-webgl2 sampling options', () => {
   it('keeps PCG as the default random sequence', async () => {
     const { record } = await renderWithRecord();
-    expect(shaderSources(record)).toContain('#define RANDOM_TYPE 0');
+    const sources = shaderSources(record);
+    expect(sources).toContain('#define rand(v) pcgRand()');
+    expect(sources).not.toContain('uniform sampler2D stratifiedTexture;');
     const sobolUpload = texImageUploads(record).find((args) =>
       args[3] === SOBOL_TEXTURE_SIZE &&
       args[4] === SOBOL_TEXTURE_SIZE &&
@@ -71,7 +73,8 @@ describe('pt-webgl2 sampling options', () => {
   it('uploads a real RGBA32F Sobol table when sampling=sobol', async () => {
     const { gl, record } = await renderWithRecord({ sampling: 'sobol' });
     const sources = shaderSources(record);
-    expect(sources).toContain('#define RANDOM_TYPE 1');
+    expect(sources).toContain('#define rand(v) sobol(v)');
+    expect(sources).not.toContain('uniform sampler2D stratifiedTexture;');
     expect(sources).toContain('( vec2( x, y ) + 0.5 ) / vec2( dim )');
     const sobolUpload = texImageUploads(record).find((args) =>
       args[2] === gl.RGBA32F &&

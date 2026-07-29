@@ -880,7 +880,7 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
         const ctx = presenterContext ?? (opts.canvas.getContext('webgpu')) ?? undefined;
         if (ctx == null) return;
         presenterContext = ctx;
-        presenter = createOffscreenPresenter({ device, canvas: opts.canvas, context: ctx });
+        presenter = createOffscreenPresenter({ device, context: ctx });
         presenterDevice = device;
       }
       presenter.present(texture);

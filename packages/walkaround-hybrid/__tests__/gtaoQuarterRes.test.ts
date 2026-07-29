@@ -266,7 +266,7 @@ function makeDispatchCtx(
   const resources = {
     gtao: {
       aoHalfTexture: { createView: view },
-      gtaoUboBuffer: { size: 32, usage: 0 },
+      gtaoUboBuffer: { size: 96, usage: 0 },
     },
     common: {
       gNormalDepthTexture: { createView: view },
@@ -278,6 +278,7 @@ function makeDispatchCtx(
   const inputs = {
     camera: {
       projMatrix: [0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+      viewMatrix: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
     },
     gtao: {
       gtaoRadiusPx: 32,
@@ -292,6 +293,9 @@ function makeDispatchCtx(
     frameIndex: 0, frameCount: 0,
     bglCache, resources, inputs,
     frameBindGroup: {} as unknown as GPUBindGroup,
+    diSpatialReverseFrameBindGroup: {} as unknown as GPUBindGroup,
+    diTerminalFrameBindGroup: {} as unknown as GPUBindGroup,
+    diTerminalReservoirBuffer: { size: 256 } as unknown as GPUBuffer,
     risGiFrameBindGroup: {} as unknown as GPUBindGroup,
     sceneBindGroup: {} as unknown as GPUBindGroup,
     uboBindGroup: {} as unknown as GPUBindGroup,
@@ -353,9 +357,14 @@ describe('GTAOPass.dispatch — resolution + UBO downscale', () => {
     expect(ubo.bytes).toBeDefined();
     const dv = new DataView(ubo.bytes!);
     // [0]=tanFovHalf [4]=radiusPx [8]=intensity [12]=depthThresh
-    // [16]=bilateralDepthSigma [20]=gtaoDownscale [24]=_pad1 [28]=_pad2
+    // [16]=bilateralDepthSigma [20]=gtaoDownscale [24]=_pad1 [28]=_pad2,
+    // followed by the 64-byte world-to-view matrix.
     expect(dv.getFloat32(20, true)).toBe(4);
-    expect(dv.byteLength).toBe(32);
+    expect(dv.byteLength).toBe(96);
+    expect(dv.getFloat32(32, true)).toBe(1);
+    expect(dv.getFloat32(52, true)).toBe(1);
+    expect(dv.getFloat32(72, true)).toBe(1);
+    expect(dv.getFloat32(92, true)).toBe(1);
   });
 
   it('"on" packs gtaoDownscale = 2 (UBO field is load-bearing in both modes)', () => {

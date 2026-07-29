@@ -82,7 +82,7 @@ export type GltfAnimationImportDiagnosticCode =
   | 'dropped-animation';
 
 export interface GltfAnimationImportDiagnostic {
-  readonly severity: 'error'  ;
+  readonly severity: 'warning' | 'error';
   readonly code: GltfAnimationImportDiagnosticCode;
   readonly path: string;
   readonly message: string;
@@ -157,13 +157,20 @@ export function convertAnimations(
     const claimedTargets: GltfAnimationTargetIdentity[] = [];
 
     // Decode each referenced sampler once (multiple channels may share one).
-    const decoded = new Map<number, { times: Float32Array; values: Float32Array; interpolation: AnimationInterpolation } | null>();
-    const decodeSampler = (samplerIdx: number): { times: Float32Array; values: Float32Array; interpolation: AnimationInterpolation } | null => {
+    const decoded = new Map<number, {
+      times: Float32Array;
+      values: Float32Array;
+      interpolation: AnimationInterpolation;
+    }>();
+    const decodeSampler = (samplerIdx: number): {
+      times: Float32Array;
+      values: Float32Array;
+      interpolation: AnimationInterpolation;
+    } => {
       if (decoded.has(samplerIdx)) return decoded.get(samplerIdx)!;
-      let result: { times: Float32Array; values: Float32Array; interpolation: AnimationInterpolation } | null = null;
       const sampler = samplers[samplerIdx];
       if (!sampler) {
-        emitAnimationDiagnostic(warnings, onDiagnostic, {
+        throwAnimationImportError(warnings, onDiagnostic, {
           severity: 'error',
           code: 'missing-animation-sampler',
           path: `animations[${animIdx}].samplers[${samplerIdx}]`,
@@ -173,70 +180,74 @@ export function convertAnimations(
             `[vitrum/gltf-adapter] Animation "${label}" references sampler ${samplerIdx} which does ` +
             'not exist. Import rejected.',
         });
-      } else {
-        let interpolation: AnimationInterpolation = 'LINEAR';
-        if (sampler.interpolation !== undefined) {
-          if (VALID_INTERPOLATIONS.has(sampler.interpolation)) {
-            interpolation = sampler.interpolation as AnimationInterpolation;
-          } else {
-            emitAnimationDiagnostic(warnings, onDiagnostic, {
-              severity: 'error',
-              code: 'unknown-animation-interpolation',
-              path: `animations[${animIdx}].samplers[${samplerIdx}].interpolation`,
-              animationIndex: animIdx,
-              samplerIndex: samplerIdx,
-              message:
-                `[vitrum/gltf-adapter] Animation "${label}" sampler ${samplerIdx} has unknown ` +
-                `interpolation "${sampler.interpolation}". Import rejected.`,
-            });
-          }
-        }
-        try {
-          const times = unpackAccessorFloat(
-            gltf,
-            buffers,
-            sampler.input,
-            warnings,
-            onAccessorDiagnostic,
-            options.resourceLedger,
-          );
-          const values = unpackAccessorFloat(
-            gltf,
-            buffers,
-            sampler.output,
-            warnings,
-            onAccessorDiagnostic,
-            options.resourceLedger,
-          );
-          const inputAccessor = gltf.accessors?.[sampler.input];
-          if (
-            !inputAccessor || inputAccessor.type !== 'SCALAR' ||
-            inputAccessor.componentType !== GltfComponentType.FLOAT ||
-            inputAccessor.normalized === true || times.length === 0 || !times.every(Number.isFinite) ||
-            !values.every(Number.isFinite)
-          ) {
-            throw new Error('animation input must be a non-empty, finite, non-normalized FLOAT SCALAR accessor and output values must be finite');
-          }
-          for (let keyframe = 0; keyframe < times.length; keyframe++) {
-            const time = times[keyframe]!;
-            if (time < 0 || (keyframe > 0 && time <= times[keyframe - 1]!)) {
-              throw new Error('animation input times must be non-negative and strictly increasing');
-            }
-          }
-          result = { times, values, interpolation };
-        } catch (e) {
-          if (e instanceof GltfResourceLimitError) throw e;
-          emitAnimationDiagnostic(warnings, onDiagnostic, {
-            severity: 'error',
-            code: 'unreadable-animation-sampler',
-            path: `animations[${animIdx}].samplers[${samplerIdx}]`,
+      }
+      let interpolation: AnimationInterpolation = 'LINEAR';
+      if (sampler.interpolation !== undefined) {
+        if (VALID_INTERPOLATIONS.has(sampler.interpolation)) {
+          interpolation = sampler.interpolation as AnimationInterpolation;
+        } else {
+          emitAnimationWarning(warnings, onDiagnostic, {
+            severity: 'warning',
+            code: 'unknown-animation-interpolation',
+            path: `animations[${animIdx}].samplers[${samplerIdx}].interpolation`,
             animationIndex: animIdx,
             samplerIndex: samplerIdx,
             message:
-              `[vitrum/gltf-adapter] Failed to read animation "${label}" sampler ${samplerIdx}: ` +
-              `${String(e)} Import rejected.`,
+              `[vitrum/gltf-adapter] Animation "${label}" sampler ${samplerIdx} has unknown ` +
+              `interpolation "${sampler.interpolation}". Falling back to LINEAR.`,
           });
         }
+      }
+      let result: {
+        times: Float32Array;
+        values: Float32Array;
+        interpolation: AnimationInterpolation;
+      };
+      try {
+        const times = unpackAccessorFloat(
+          gltf,
+          buffers,
+          sampler.input,
+          warnings,
+          onAccessorDiagnostic,
+          options.resourceLedger,
+        );
+        const values = unpackAccessorFloat(
+          gltf,
+          buffers,
+          sampler.output,
+          warnings,
+          onAccessorDiagnostic,
+          options.resourceLedger,
+        );
+        const inputAccessor = gltf.accessors?.[sampler.input];
+        if (
+          !inputAccessor || inputAccessor.type !== 'SCALAR' ||
+          inputAccessor.componentType !== GltfComponentType.FLOAT ||
+          inputAccessor.normalized === true || times.length === 0 || !times.every(Number.isFinite) ||
+          !values.every(Number.isFinite)
+        ) {
+          throw new Error('animation input must be a non-empty, finite, non-normalized FLOAT SCALAR accessor and output values must be finite');
+        }
+        for (let keyframe = 0; keyframe < times.length; keyframe++) {
+          const time = times[keyframe]!;
+          if (time < 0 || (keyframe > 0 && time <= times[keyframe - 1]!)) {
+            throw new Error('animation input times must be non-negative and strictly increasing');
+          }
+        }
+        result = { times, values, interpolation };
+      } catch (e) {
+        if (e instanceof GltfResourceLimitError) throw e;
+        throwAnimationImportError(warnings, onDiagnostic, {
+          severity: 'error',
+          code: 'unreadable-animation-sampler',
+          path: `animations[${animIdx}].samplers[${samplerIdx}]`,
+          animationIndex: animIdx,
+          samplerIndex: samplerIdx,
+          message:
+            `[vitrum/gltf-adapter] Failed to read animation "${label}" sampler ${samplerIdx}: ` +
+            `${String(e)} Import rejected.`,
+        });
       }
       decoded.set(samplerIdx, result);
       return result;
@@ -248,14 +259,17 @@ export function convertAnimations(
         ch.target?.path !== 'pointer' &&
         reachableNodeIndices !== undefined &&
         targetNodeIndex !== undefined &&
+        Number.isSafeInteger(targetNodeIndex) &&
+        targetNodeIndex >= 0 &&
+        gltf.nodes?.[targetNodeIndex] !== undefined &&
         !reachableNodeIndices.has(targetNodeIndex)
       ) {
         continue;
       }
       const path = ch.target?.path;
       if (path === undefined || !VALID_PATHS.has(path)) {
-        emitAnimationDiagnostic(warnings, onDiagnostic, {
-          severity: 'error',
+        emitAnimationWarning(warnings, onDiagnostic, {
+          severity: 'warning',
           code: 'unsupported-animation-target-path',
           path: `animations[${animIdx}].channels[${chIdx}].target.path`,
           animationIndex: animIdx,
@@ -263,7 +277,7 @@ export function convertAnimations(
           targetPath: path,
           message:
             `[vitrum/gltf-adapter] Animation "${label}" channel ${chIdx} targets unsupported ` +
-            `path "${String(path)}" (supported: translation, rotation, scale, weights, pointer). Import rejected.`,
+            `path "${String(path)}" (supported: translation, rotation, scale, weights, pointer). Channel skipped.`,
         });
         continue;
       }
@@ -275,8 +289,8 @@ export function convertAnimations(
         }
         hasReachableChannel = true;
         if (pointerTarget === undefined) {
-          emitAnimationDiagnostic(warnings, onDiagnostic, {
-            severity: 'error',
+          emitAnimationWarning(warnings, onDiagnostic, {
+            severity: 'warning',
             code: 'unsupported-animation-target-path',
             path: `animations[${animIdx}].channels[${chIdx}].target.extensions.KHR_animation_pointer.pointer`,
             animationIndex: animIdx,
@@ -285,13 +299,13 @@ export function convertAnimations(
             message:
               `[vitrum/gltf-adapter] Animation "${label}" channel ${chIdx} targets unsupported ` +
               `KHR_animation_pointer JSON pointer "${String(pointer)}". Supported pointers: ` +
-              `${supportedGltfAnimationPointers().join(', ')}. Import rejected.`,
+              `${supportedGltfAnimationPointers().join(', ')}. Channel skipped.`,
           });
           continue;
         }
         const definitionError = gltfAnimationPointerTargetDefinitionError(gltf, pointerTarget);
         if (definitionError !== undefined) {
-          emitAnimationDiagnostic(warnings, onDiagnostic, {
+          throwAnimationImportError(warnings, onDiagnostic, {
             severity: 'error',
             code: 'animation-pointer-target-undefined',
             path: `animations[${animIdx}].channels[${chIdx}].target.extensions.KHR_animation_pointer.pointer`,
@@ -302,10 +316,8 @@ export function convertAnimations(
               `[vitrum/gltf-adapter] Animation "${label}" channel ${chIdx} pointer "${pointer}" ` +
               `does not resolve to a property defined by this asset: ${definitionError}. Import rejected.`,
           });
-          continue;
         }
         const samplerData = decodeSampler(ch.sampler);
-        if (!samplerData) continue;
         const { times, values, interpolation } = samplerData;
         const outputAccessorError = gltfAnimationPointerOutputAccessorError(
           gltf,
@@ -313,7 +325,7 @@ export function convertAnimations(
           gltf.accessors?.[anim.samplers?.[ch.sampler]?.output ?? -1],
         );
         if (outputAccessorError !== undefined) {
-          emitAnimationDiagnostic(warnings, onDiagnostic, {
+          throwAnimationImportError(warnings, onDiagnostic, {
             severity: 'error',
             code: 'invalid-animation-pointer-output-accessor',
             path: `animations[${animIdx}].samplers[${ch.sampler}].output`,
@@ -325,11 +337,10 @@ export function convertAnimations(
               `[vitrum/gltf-adapter] Animation "${label}" channel ${chIdx} (${pointer}) has an ` +
               `incompatible output accessor: ${outputAccessorError}. Import rejected.`,
           });
-          continue;
         }
         const interpolationError = gltfAnimationPointerInterpolationError(pointerTarget, interpolation);
         if (interpolationError !== undefined) {
-          emitAnimationDiagnostic(warnings, onDiagnostic, {
+          throwAnimationImportError(warnings, onDiagnostic, {
             severity: 'error',
             code: 'invalid-animation-pointer-interpolation',
             path: `animations[${animIdx}].samplers[${ch.sampler}].interpolation`,
@@ -341,16 +352,27 @@ export function convertAnimations(
               `[vitrum/gltf-adapter] Animation "${label}" channel ${chIdx} (${pointer}) targets a ` +
               `property with incompatible interpolation: ${interpolationError}. Import rejected.`,
           });
-          continue;
         }
         const cubicFactor = interpolation === 'CUBICSPLINE' ? 3 : 1;
         const componentCount = gltfAnimationPointerTargetComponentCount(gltf, pointerTarget);
-        if (componentCount === undefined) continue;
+        if (componentCount === undefined) {
+          throwAnimationImportError(warnings, onDiagnostic, {
+            severity: 'error',
+            code: 'animation-pointer-target-undefined',
+            path: `animations[${animIdx}].channels[${chIdx}].target.extensions.KHR_animation_pointer.pointer`,
+            animationIndex: animIdx,
+            channelIndex: chIdx,
+            targetPath: 'pointer',
+            message:
+              `[vitrum/gltf-adapter] Animation "${label}" channel ${chIdx} pointer "${pointer}" ` +
+              'has no defined component count. Import rejected.',
+          });
+        }
         const pointerStride = times.length * cubicFactor;
         const expected = pointerStride * componentCount;
         const validOutputCount = values.length === expected;
         if (!validOutputCount) {
-          emitAnimationDiagnostic(warnings, onDiagnostic, {
+          throwAnimationImportError(warnings, onDiagnostic, {
             severity: 'error',
             code: 'invalid-animation-output-count',
             path: `animations[${animIdx}].channels[${chIdx}].sampler`,
@@ -363,7 +385,6 @@ export function convertAnimations(
               `${values.length} output floats but ${times.length} keyframes expect ` +
               `${expected}. Import rejected.`,
           });
-          continue;
         }
         const valuesError = gltfAnimationPointerValuesError(
           gltf,
@@ -373,7 +394,7 @@ export function convertAnimations(
           interpolation,
         );
         if (valuesError !== undefined) {
-          emitAnimationDiagnostic(warnings, onDiagnostic, {
+          throwAnimationImportError(warnings, onDiagnostic, {
             severity: 'error',
             code: 'invalid-animation-pointer-value',
             path: `animations[${animIdx}].samplers[${ch.sampler}].output`,
@@ -385,11 +406,10 @@ export function convertAnimations(
               `[vitrum/gltf-adapter] Animation "${label}" channel ${chIdx} (${pointer}) has an invalid ` +
               `animated value: ${valuesError}. Import rejected.`,
           });
-          continue;
         }
         const identity = gltfAnimationPointerTargetIdentity(pointerTarget);
         if (!claimAnimationTarget(claimedTargets, identity)) {
-          emitAnimationDiagnostic(warnings, onDiagnostic, duplicateTargetDiagnostic(
+          emitAnimationWarning(warnings, onDiagnostic, duplicateTargetDiagnostic(
             label, animIdx, chIdx, 'pointer', pointerTarget.pointer,
           ));
           continue;
@@ -410,12 +430,8 @@ export function convertAnimations(
       }
 
       const nodeIdx = targetNodeIndex;
-      if (reachableNodeIndices !== undefined) {
-        if (nodeIdx === undefined || !reachableNodeIndices.has(nodeIdx)) continue;
-        hasReachableChannel = true;
-      }
       if (nodeIdx === undefined) {
-        emitAnimationDiagnostic(warnings, onDiagnostic, {
+        throwAnimationImportError(warnings, onDiagnostic, {
           severity: 'error',
           code: 'missing-animation-target-node',
           path: `animations[${animIdx}].channels[${chIdx}].target.node`,
@@ -426,10 +442,9 @@ export function convertAnimations(
             `[vitrum/gltf-adapter] Animation "${label}" channel ${chIdx} has no target node ` +
             '(extension-targeted channels are not supported). Import rejected.',
         });
-        continue;
       }
-      if (!gltf.nodes?.[nodeIdx]) {
-        emitAnimationDiagnostic(warnings, onDiagnostic, {
+      if (!Number.isSafeInteger(nodeIdx) || nodeIdx < 0 || !gltf.nodes?.[nodeIdx]) {
+        throwAnimationImportError(warnings, onDiagnostic, {
           severity: 'error',
           code: 'animation-target-node-not-found',
           path: `animations[${animIdx}].channels[${chIdx}].target.node`,
@@ -441,10 +456,12 @@ export function convertAnimations(
             `[vitrum/gltf-adapter] Animation "${label}" channel ${chIdx} targets node ${nodeIdx} ` +
             'which does not exist. Import rejected.',
         });
-        continue;
+      }
+      if (reachableNodeIndices !== undefined) {
+        if (!reachableNodeIndices.has(nodeIdx)) continue;
+        hasReachableChannel = true;
       }
       const samplerData = decodeSampler(ch.sampler);
-      if (!samplerData) continue;
       const { times, values, interpolation } = samplerData;
       const typedPath = path as AnimationTargetPath;
 
@@ -454,7 +471,7 @@ export function convertAnimations(
       const comps = trsComponents(typedPath);
       if (comps !== undefined) {
         if (values.length !== times.length * comps * cubicFactor) {
-          emitAnimationDiagnostic(warnings, onDiagnostic, {
+          throwAnimationImportError(warnings, onDiagnostic, {
             severity: 'error',
             code: 'invalid-animation-output-count',
             path: `animations[${animIdx}].channels[${chIdx}].sampler`,
@@ -468,10 +485,9 @@ export function convertAnimations(
               `${values.length} output floats but ${times.length} keyframes expect ` +
               `${times.length * comps * cubicFactor}. Import rejected.`,
           });
-          continue;
         }
       } else if (times.length > 0 && values.length % (times.length * cubicFactor) !== 0) {
-        emitAnimationDiagnostic(warnings, onDiagnostic, {
+        throwAnimationImportError(warnings, onDiagnostic, {
           severity: 'error',
           code: 'invalid-animation-output-count',
           path: `animations[${animIdx}].channels[${chIdx}].sampler`,
@@ -485,11 +501,10 @@ export function convertAnimations(
             `${values.length} is not a multiple of keyframe count ${times.length}` +
             `${cubicFactor === 3 ? ' × 3 (CUBICSPLINE)' : ''}. Import rejected.`,
         });
-        continue;
       }
 
       if (!claimAnimationTarget(claimedTargets, gltfNativeAnimationTargetIdentity(nodeIdx, path))) {
-        emitAnimationDiagnostic(warnings, onDiagnostic, duplicateTargetDiagnostic(
+        emitAnimationWarning(warnings, onDiagnostic, duplicateTargetDiagnostic(
           label, animIdx, chIdx, path, `nodes[${nodeIdx}].${path}`,
         ));
         continue;
@@ -506,12 +521,12 @@ export function convertAnimations(
 
     if (channels.length === 0) {
       if (!hasReachableChannel) continue;
-      emitAnimationDiagnostic(warnings, onDiagnostic, {
-        severity: 'error',
+      emitAnimationWarning(warnings, onDiagnostic, {
+        severity: 'warning',
         code: 'dropped-animation',
         path: `animations[${animIdx}]`,
         animationIndex: animIdx,
-        message: `[vitrum/gltf-adapter] Animation "${label}" has no importable channels. Import rejected.`,
+        message: `[vitrum/gltf-adapter] Animation "${label}" has no importable channels and was skipped.`,
       });
       continue;
     }
@@ -543,7 +558,7 @@ function duplicateTargetDiagnostic(
   targetLabel: string,
 ): GltfAnimationImportDiagnostic {
   return {
-    severity: 'error',
+    severity: 'warning',
     code: 'duplicate-animation-target',
     path: `animations[${animationIndex}].channels[${channelIndex}].target`,
     animationIndex,
@@ -551,7 +566,8 @@ function duplicateTargetDiagnostic(
     targetPath,
     message:
       `[vitrum/gltf-adapter] Animation "${label}" channel ${channelIndex} targets ` +
-      `"${targetLabel}", which conflicts with an earlier channel target. Import rejected.`,
+      `"${targetLabel}", which conflicts with an earlier channel target. ` +
+      'The first channel was kept and this duplicate was skipped.',
   };
 }
 
@@ -574,7 +590,24 @@ function pointerTargetIsReachable(
   }
 }
 
-function emitAnimationDiagnostic(
+function emitAnimationWarning(
+  warnings: string[],
+  onDiagnostic: GltfAnimationImportDiagnosticSink | undefined,
+  diagnostic: GltfAnimationImportDiagnostic,
+): void {
+  const warningDiagnostic: GltfAnimationImportDiagnostic = {
+    ...diagnostic,
+    severity: 'warning',
+  };
+  warnings.push(warningDiagnostic.message);
+  try {
+    onDiagnostic?.(warningDiagnostic);
+  } catch {
+    // A diagnostic observer cannot abort a recoverable animation degradation.
+  }
+}
+
+function throwAnimationImportError(
   warnings: string[],
   onDiagnostic: GltfAnimationImportDiagnosticSink | undefined,
   diagnostic: GltfAnimationImportDiagnostic,

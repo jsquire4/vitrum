@@ -3,10 +3,8 @@
  *
  * Verifies two properties of the cascade merge:
  *
- *   1. TS mirror of `octCellSolidAngle` returns values in the same ballpark
- *      as `computeOctahedralSolidAngles(N)`. (The WGSL uses a 1-quad
- *      approximation; the TS uses SUB=16 sub-cells. They should agree within
- *      5% for most cells, and the sums over all N² bins should agree within 1%.)
+ *   1. TS mirror of `rcOctCellSolidAngle` agrees with an independent SUB=16
+ *      numerical oracle.
  *
  *   2. Uniform-radiance merge: when every child has radiance vec3(1,1,1),
  *      the weighted-average merge also returns vec3(1,1,1) within 1e-6.
@@ -14,16 +12,17 @@
  *      weighted sum without normalization.)
  *
  * References:
- *   Cigolle et al. 2014, JCGT §A.2 — octahedral Jacobian / texel area.
- *   Sannikov 2023, §3 — cascade conservation law.
+ *   Cigolle et al. 2014, JCGT §A.2 — octahedral mapping.
+ *   Van Oosterom & Strackee 1983 — solid angle of a plane triangle.
+ *   Sannikov 2023 — Radiance Cascades merge context; Vitrum's weighting is
+ *   an adaptation for its noncanonical cascade dimensions.
  */
 
 import { describe, it, expect } from 'vitest';
-import { computeOctahedralSolidAngles } from '@vitrum/walkaround-rc';
+import { computeOctahedralSolidAngles } from '../../walkaround-rc/__tests__/support/octahedralSolidAngles.js';
 
-// ─── TS mirror of WGSL `octCellSolidAngle(cx, cy, N)` ───────────────────────
-// Mirrors the WGSL function in cascadeMerge.wgsl.ts:65–76 exactly:
-//   - one quad (4 corner directions), no sub-division.
+// ─── TS mirror of WGSL `rcOctCellSolidAngle(cx, cy, N)` ──────────────────────
+// Mirrors the live WGSL function: two exact spherical-triangle solid angles.
 // cx = column index (u-axis), cy = row index (v-axis).
 
 function octDecodeForMerge(u: number, v: number): [number, number, number] {
@@ -50,32 +49,27 @@ function cross3(
   ];
 }
 
-function len3(v: [number, number, number]): number {
-  return Math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
-}
-
-function sub3(
+function dot3(
   a: [number, number, number],
   b: [number, number, number],
-): [number, number, number] {
-  return [a[0]-b[0], a[1]-b[1], a[2]-b[2]];
+): number {
+  return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 }
 
-function sphericalQuadAreaForMerge(
-  p00: [number, number, number],
-  p10: [number, number, number],
-  p01: [number, number, number],
-  p11: [number, number, number],
+function sphericalTriangleSolidAngle(
+  a: [number, number, number],
+  b: [number, number, number],
+  c: [number, number, number],
 ): number {
-  const d1 = cross3(sub3(p10, p00), sub3(p01, p00));
-  const d2 = cross3(sub3(p10, p11), sub3(p01, p11));
-  return (len3(d1) + len3(d2)) * 0.5;
+  const numerator = Math.abs(dot3(a, cross3(b, c)));
+  const denominator = 1 + dot3(a, b) + dot3(b, c) + dot3(c, a);
+  return 2 * Math.atan2(numerator, denominator);
 }
 
 /**
  * TS mirror of WGSL `octCellSolidAngle(cx, cy, N)`.
  * cx = column (u-axis), cy = row (v-axis).
- * Uses the same single-quad (4-corner) approximation as the WGSL.
+ * Uses the same two exact spherical-triangle evaluations as the WGSL.
  */
 function octCellSolidAngle(cx: number, cy: number, N: number): number {
   const cellWidth = 2.0 / N;
@@ -87,7 +81,8 @@ function octCellSolidAngle(cx: number, cy: number, N: number): number {
   const p10 = octDecodeForMerge(u1, v0);
   const p01 = octDecodeForMerge(u0, v1);
   const p11 = octDecodeForMerge(u1, v1);
-  return sphericalQuadAreaForMerge(p00, p10, p01, p11);
+  return sphericalTriangleSolidAngle(p00, p10, p01)
+    + sphericalTriangleSolidAngle(p10, p11, p01);
 }
 
 /**
@@ -123,9 +118,9 @@ function cascadeMergeCell(
 
 describe('cascadeMerge solid-angle weighting — F4 re-verification', () => {
 
-  // ── 1. WGSL mirror vs TS `computeOctahedralSolidAngles` ─────────────────────
+  // ── 1. WGSL mirror vs independent numerical oracle ──────────────────────────
   it.each([4, 8, 16] as const)(
-    'octCellSolidAngle (1-quad) vs computeOctahedralSolidAngles (SUB=16) agree to within 5%% for N=%i',
+    'rcOctCellSolidAngle agrees with the SUB=16 numerical oracle for N=%i',
     (N: 4 | 8 | 16) => {
       const tsWeights = computeOctahedralSolidAngles(N);
 
@@ -148,18 +143,13 @@ describe('cascadeMerge solid-angle weighting — F4 re-verification', () => {
         }
       }
 
-      // Sums over all N² bins should agree within 15% — the 1-quad WGSL approximation
-      // underestimates total solid angle (especially for small N) because the planar
-      // quad area underestimates the true spherical area. For N=4 the 1-quad error
-      // reaches ~13%; it shrinks as N grows (N=8: ~4%, N=16: ~2%).
-      // This test documents the known approximation gap, not a bug.
+      // The production formula is exact for the two-triangle cell
+      // tessellation; the independent oracle converges toward it by subdividing
+      // each cell into planar quads.
       const sumRelErr = Math.abs(wgslSum - tsSum) / tsSum;
-      expect(sumRelErr, `N=${N}: sum relative error ${(sumRelErr*100).toFixed(2)}% (ts=${tsSum.toFixed(4)}, wgsl=${wgslSum.toFixed(4)})`).toBeLessThan(0.15);
+      expect(sumRelErr, `N=${N}: sum relative error ${(sumRelErr*100).toFixed(2)}% (ts=${tsSum.toFixed(4)}, wgsl=${wgslSum.toFixed(4)})`).toBeLessThan(0.005);
 
-      // Per-cell relative error: allow up to 25% (WGSL uses 1 quad vs TS's SUB=16).
-      // Edge/corner cells near the octahedral fold have the highest local error
-      // due to the coarser 1-quad approximation. N=4 worst cell reaches ~19%.
-      expect(maxRelError, `N=${N}: max per-cell relative error ${(maxRelError*100).toFixed(2)}%`).toBeLessThan(0.25);
+      expect(maxRelError, `N=${N}: max per-cell relative error ${(maxRelError*100).toFixed(2)}%`).toBeLessThan(0.01);
     },
   );
 

@@ -119,7 +119,7 @@ describe('ReSTIR-PT specialty-lobe CPU/static reference', () => {
       'var clearcoatV = clamp(vMat.clearcoat * sampleClearcoatTexture',
       'var sheenV = vMat.sheen;',
       'var iridescenceV = clamp(vMat.iridescence * sampleIridescenceTexture',
-      'var specularColorV = clamp(vMat.specularColor * sampleSpecularColorTexture',
+      'var specularColorV = max(',
       'var specularIntensityV = clamp(vMat.specularIntensity * sampleSpecularIntensityTexture',
       'let anisotropyV = materialAnisotropy(vMatId, vHit.triIndex, vHit.baryVW, vHit.instanceIndex);',
       'let wiRecon = rptSampleSourceReconnectionDirection(',
@@ -152,7 +152,7 @@ describe('ReSTIR-PT specialty-lobe CPU/static reference', () => {
       'r.iridescenceV, r.iridescenceIorV, r.iridescenceThicknessMinV, r.iridescenceThicknessMaxV,',
       'r.anisotropyV, r.anisotropyRotationV,',
       'let integrand = fBsdf * cosTheta * r.Lo;',
-      'let indirect = integrand * r.W;',
+      'let scaled = rptScalePositiveVec3ByLog(integrand, r.logW);',
     ]) {
       expect(RESTIR_PT_RESOLVE_WGSL).toContain(line);
     }

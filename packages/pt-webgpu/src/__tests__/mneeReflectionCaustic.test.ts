@@ -21,7 +21,7 @@ describe('unified MNEE reflection closure', () => {
     expect(code).toContain('hit.instanceIndex == facet.instanceIndex &&');
     expect(code).toContain('fn mneeSegmentBlockedExceptFacet(');
     const unified = code.slice(code.indexOf('fn boundedManifoldCaustic('), code.indexOf('fn manifoldNeeContribution('));
-    expect(unified).toContain('let fr = evaluateBrdfFullWithClearcoatNormal(');
+    expect(unified).toContain('let fr = evaluateFiniteBsdfFullWithClearcoatNormal(');
     expect(unified).not.toContain('causticReceiverRejected');
   });
 

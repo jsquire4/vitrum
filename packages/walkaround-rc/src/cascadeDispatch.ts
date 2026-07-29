@@ -52,7 +52,6 @@ interface MergePassHandles {
   pipeline:  GPUComputePipeline;
   /** Uniform buffer for MergeUniforms. */
   cascadeParamsBuf: GPUBuffer;
-  mergeRaw:   Float32Array;
   /** Workgroup dispatch count = ceil(totalLower / 64). */
   dispatchX:  number;
 }
@@ -208,7 +207,7 @@ export interface RCDispatchOptsRaw {
    *  reads/writes parents (merge). */
   cascadeBufs:        readonly GPUBuffer[];
 
-  /** Cascade geometry — plain tuples matching `CascadeBuffers.probeOriginWorld`/`roomSize`. */
+  /** Cascade geometry — plain world-space origin and room-size tuples. */
   probeOriginWorld:   readonly [number, number, number];
   roomSize:           readonly [number, number, number];
 
@@ -1893,7 +1892,7 @@ export class RCDispatcher {
         ],
       });
 
-      mergePasses.push({ pipeline, cascadeParamsBuf, mergeRaw, dispatchX: Math.ceil(totalLower / 64) });
+      mergePasses.push({ pipeline, cascadeParamsBuf, dispatchX: Math.ceil(totalLower / 64) });
       mergeBindGroups.push(bindGroup);
     }
 

@@ -92,6 +92,7 @@ function meshFromFallback(primitive: AnalyticPrimitive): MeshPrimitive {
     ...(fallback.tangents != null ? { tangents: new Float32Array(fallback.tangents) } : {}),
     ...(fallback.colors != null ? { colors: new Float32Array(fallback.colors) } : {}),
     ...(fallback.colorSets != null ? { colorSets: cloneSparseStreams(fallback.colorSets) } : {}),
+    ...(fallback.vertexColorSet !== undefined ? { vertexColorSet: fallback.vertexColorSet } : {}),
     ...(fallback.indices != null ? { indices: cloneIndices(fallback.indices) } : {}),
     material: primitive.material,
     ...(primitive.transform != null ? { transform: primitive.transform } : {}),

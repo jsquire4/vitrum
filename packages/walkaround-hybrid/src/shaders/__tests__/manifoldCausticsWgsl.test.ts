@@ -150,7 +150,10 @@ describe('walkaround bounded manifold caustics WGSL', () => {
       ') * distanceSquaredToSource;',
     );
     expect(MANIFOLD_CAUSTICS_WGSL).toContain(
-      '1.0, receiverCosine, endpoint.family == SMS_SOURCE_AREA',
+      '1.0 / max(receiverCosine, 1e-6),',
+    );
+    expect(MANIFOLD_CAUSTICS_WGSL).toContain(
+      'endpoint.family == SMS_SOURCE_AREA,',
     );
   });
 

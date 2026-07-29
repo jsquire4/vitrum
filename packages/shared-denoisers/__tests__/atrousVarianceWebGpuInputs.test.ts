@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { assertAtrousVarianceWebGPUBufferShapes } from '../src/atrousVarianceWebGPU.js';
+import { ATROUS_VARIANCE_WGSL } from '../src/wgsl/atrousVariance.wgsl.js';
 
 // ── CPU-mirror of the albedo demodulate/remodulate helpers ────────────────────
 // These are plain-JS mirrors of the private helpers in atrousVarianceWebGPU.ts.
@@ -75,16 +76,31 @@ describe('assertAtrousVarianceWebGPUBufferShapes', () => {
 
   it('accepts fully populated slices', () => {
     const px = 4;
+    const normals = new Float32Array(px * 3);
+    for (let pixel = 0; pixel < px; pixel += 1) {
+      normals[pixel * 3 + 1] = 1;
+    }
     expect(() =>
       assertAtrousVarianceWebGPUBufferShapes({
         rgb: new Float32Array(px * 3),
         width: 2,
         height: 2,
-        gbufferNormalsRgb: new Float32Array(px * 3),
+        gbufferNormalsRgb: normals,
         linearDepth: new Float32Array(px),
         welfordMeanM2: new Float32Array(px * 2),
       }),
     ).not.toThrow();
+  });
+
+  it('rejects signed normal components outside the shader encoding domain', () => {
+    const normals = new Float32Array(12);
+    normals[5] = 1.01;
+    expect(() =>
+      assertAtrousVarianceWebGPUBufferShapes({
+        ...minimal,
+        gbufferNormalsRgb: normals,
+      }),
+    ).toThrow(/gbufferNormalsRgb\[5\].*\[-1, 1\]/);
   });
 
   it('throws when albedoRgb is undersized', () => {
@@ -106,6 +122,17 @@ describe('assertAtrousVarianceWebGPUBufferShapes', () => {
         albedoRgb: new Float32Array(px * 3),
       }),
     ).not.toThrow();
+  });
+});
+
+describe('standalone atrous normal edge-stop safety', () => {
+  it('bounds the high-exponent dot-product base to the physical cosine domain', () => {
+    expect(ATROUS_VARIANCE_WGSL).toContain(
+      'let dn = clamp(dot(nCenter, nP), 0.0, 1.0);',
+    );
+    expect(ATROUS_VARIANCE_WGSL).not.toContain(
+      'let dn = max(0.0, dot(nCenter, nP));',
+    );
   });
 });
 

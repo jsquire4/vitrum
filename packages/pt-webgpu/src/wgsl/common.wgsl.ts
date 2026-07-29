@@ -1,4 +1,7 @@
-import { PCG_WGSL } from '@vitrum/shared-samplers';
+import {
+  PCG_WGSL,
+  SOBOL_DIRECTION_NUMBERS_WGSL,
+} from '@vitrum/shared-samplers';
 import { SAFE_INV_DIR_WGSL, MOLLER_TRUMBORE_WGSL } from '@vitrum/shared-bvh';
 
 export type PtWebgpuSamplingMode = 'pcg' | 'sobol';
@@ -7,17 +10,17 @@ export type PtWebgpuSamplingMode = 'pcg' | 'sobol';
  * pt-webgpu low-discrepancy RNG module.
  *
  * It intentionally preserves the existing pt-webgpu RNG symbol surface
- * (`pcgInit`, `pcgNext`, `rand_f32`, `rand2`, `rand3`) so the path-trace,
+ * (`pcgInit`, `pcgNext`, `rand_f32`, `rand2`) so the path-trace,
  * ReSTIR-PT, SPPM, BDPT, and adjoint call sites can switch as a composed
- * whole. This mirrors the pt-webgl2 Sobol texture path's first-four direction
- * set plus JCGT/Laine-Karras hash-based Owen scrambling, but keeps it
- * binding-free for WebGPU.
+ * whole. It combines the shared Joe-Kuo D(6) direction-number prefix with
+ * JCGT/Laine-Karras hash-based Owen scrambling while remaining binding-free.
  *
- * Dimensions 0 through 3 use fixed-stream Owen scrambles over the first-four
- * direction-table basis. Dimension 4 and later use an independent PCG
- * continuation seeded from the full pixel/frame/path identity and the crossing
- * dimension. The 32-bit counter never wraps back into the Sobol prefix, and every
- * 65,536-sample block receives a distinct fixed scramble key.
+ * Dimensions 0 through 511 use fixed-stream Owen scrambles over one
+ * CPU/WGSL-canonical table, covering the audited 324-draw path budget with
+ * headroom. Dimension 512 and later use an independent PCG continuation seeded
+ * from the full pixel/frame/path identity and the crossing dimension. The
+ * 32-bit counter never wraps into the Sobol prefix, and every 65,536-sample
+ * block receives a distinct fixed scramble key.
  */
 export const PT_WEBGPU_SOBOL_RNG_WGSL = /* wgsl */ `
 struct PtRngState {
@@ -30,9 +33,11 @@ struct PtRngState {
   fallbackState: u32,
 };
 
+${SOBOL_DIRECTION_NUMBERS_WGSL}
+
 const PT_SOBOL_FACTOR = 0.000000059604644775390625; // 1 / 2^24
 const PT_SOBOL_MAX_POINTS = 65536u;
-const PT_SOBOL_DIMENSION_COUNT = 4u;
+const PT_SOBOL_DIMENSION_COUNT = SOBOL_DIRECTION_DIMENSION_COUNT;
 
 const PT_SOBOL_BLUE_NOISE_RANK_8X8 = array<u32, 64>(
   0u, 63u, 12u, 60u, 3u, 55u, 15u, 62u,
@@ -43,50 +48,6 @@ const PT_SOBOL_BLUE_NOISE_RANK_8X8 = array<u32, 64>(
   58u, 30u, 49u, 16u, 59u, 20u, 43u, 18u,
   11u, 56u, 6u, 34u, 9u, 39u, 4u, 50u,
   52u, 31u, 33u, 27u, 42u, 26u, 61u, 21u
-);
-
-const PT_SOBOL_DIRECTIONS_1 = array<u32, 32>(
-  0x80000000u, 0xc0000000u, 0xa0000000u, 0xf0000000u,
-  0x88000000u, 0xcc000000u, 0xaa000000u, 0xff000000u,
-  0x80800000u, 0xc0c00000u, 0xa0a00000u, 0xf0f00000u,
-  0x88880000u, 0xcccc0000u, 0xaaaa0000u, 0xffff0000u,
-  0x80008000u, 0xc000c000u, 0xa000a000u, 0xf000f000u,
-  0x88008800u, 0xcc00cc00u, 0xaa00aa00u, 0xff00ff00u,
-  0x80808080u, 0xc0c0c0c0u, 0xa0a0a0a0u, 0xf0f0f0f0u,
-  0x88888888u, 0xccccccccu, 0xaaaaaaaau, 0xffffffffu
-);
-
-const PT_SOBOL_DIRECTIONS_2 = array<u32, 32>(
-  0x80000000u, 0xc0000000u, 0x60000000u, 0x90000000u,
-  0xe8000000u, 0x5c000000u, 0x8e000000u, 0xc5000000u,
-  0x68800000u, 0x9cc00000u, 0xee600000u, 0x55900000u,
-  0x80680000u, 0xc09c0000u, 0x60ee0000u, 0x90550000u,
-  0xe8808000u, 0x5cc0c000u, 0x8e606000u, 0xc5909000u,
-  0x6868e800u, 0x9c9c5c00u, 0xeeee8e00u, 0x5555c500u,
-  0x8000e880u, 0xc0005cc0u, 0x60008e60u, 0x9000c590u,
-  0xe8006868u, 0x5c009c9cu, 0x8e00eeeeu, 0xc5005555u
-);
-
-const PT_SOBOL_DIRECTIONS_3 = array<u32, 32>(
-  0x80000000u, 0xc0000000u, 0x20000000u, 0x50000000u,
-  0xf8000000u, 0x74000000u, 0xa2000000u, 0x93000000u,
-  0xd8800000u, 0x25400000u, 0x59e00000u, 0xe6d00000u,
-  0x78080000u, 0xb40c0000u, 0x82020000u, 0xc3050000u,
-  0x208f8000u, 0x51474000u, 0xfbea2000u, 0x75d93000u,
-  0xa0858800u, 0x914e5400u, 0xdbe79e00u, 0x25db6d00u,
-  0x58800080u, 0xe54000c0u, 0x79e00020u, 0xb6d00050u,
-  0x800800f8u, 0xc00c0074u, 0x200200a2u, 0x50050093u
-);
-
-const PT_SOBOL_DIRECTIONS_4 = array<u32, 32>(
-  0x80000000u, 0x40000000u, 0x20000000u, 0xb0000000u,
-  0xf8000000u, 0xdc000000u, 0x7a000000u, 0x9d000000u,
-  0x5a800000u, 0x2fc00000u, 0xa1600000u, 0xf0b00000u,
-  0xda880000u, 0x6fc40000u, 0x81620000u, 0x40bb0000u,
-  0x22878000u, 0xb3c9c000u, 0xfb65a000u, 0xddb2d000u,
-  0x78022800u, 0x9c0b3c00u, 0x5a0fb600u, 0x2d0ddb00u,
-  0xa2878080u, 0xf3c9c040u, 0xdb65a020u, 0x6db2d0b0u,
-  0x800228f8u, 0x400b3cdcu, 0x200fb67au, 0xb00ddb9du
 );
 
 fn ptSobolReverseBits32(xIn: u32) -> u32 {
@@ -125,36 +86,24 @@ fn ptSobolNestedUniformScrambleBase2(x: u32, seed: u32) -> u32 {
   return ptSobolReverseBits32(ptSobolLaineKarrasPermutation(x, seed));
 }
 
-fn ptSobolDirection(dim: u32, bit: u32) -> u32 {
-  let d = dim & 3u;
-  if (d == 0u) {
-    return PT_SOBOL_DIRECTIONS_1[bit];
-  }
-  if (d == 1u) {
-    return PT_SOBOL_DIRECTIONS_2[bit];
-  }
-  if (d == 2u) {
-    return PT_SOBOL_DIRECTIONS_3[bit];
-  }
-  return PT_SOBOL_DIRECTIONS_4[bit];
-}
-
-fn ptSobolMasked(index: u32, dim: u32) -> u32 {
+fn ptSobolMaskedComponent(index: u32, dim: u32) -> u32 {
   var out = 0u;
-  for (var bit = 0u; bit < 32u; bit = bit + 1u) {
+  for (var bit = 0u; bit < SOBOL_DIRECTION_BITS; bit = bit + 1u) {
     if (((index >> bit) & 1u) != 0u) {
-      out ^= ptSobolDirection(dim, bit);
+      out ^= sobolDirectionComponent(dim, bit);
     }
   }
   return out;
 }
 
 fn ptSobolTextureComponent(index: u32, dim: u32) -> u32 {
-  return ptSobolReverseBits32(ptSobolMasked(index % PT_SOBOL_MAX_POINTS, dim)) & 0x00ffffffu;
+  return ptSobolMaskedComponent(index % PT_SOBOL_MAX_POINTS, dim) & 0x00ffffffu;
 }
 
 fn ptSobolBlueNoiseRotation(tile: u32, dim: u32) -> u32 {
   let rank = PT_SOBOL_BLUE_NOISE_RANK_8X8[tile & 63u];
+  // Rank zero is the zero-offset stratum, not an unscrambled pixel: the full
+  // pixel identity still feeds both fixed-stream Owen seeds in ptSobolNextU32.
   if (rank == 0u) {
     return 0u;
   }
@@ -227,10 +176,6 @@ fn rand_f32(state: ptr<function, PtRngState>) -> f32 {
 
 fn rand2(state: ptr<function, PtRngState>) -> vec2f {
   return vec2f(rand_f32(state), rand_f32(state));
-}
-
-fn rand3(state: ptr<function, PtRngState>) -> vec3f {
-  return vec3f(rand_f32(state), rand_f32(state), rand_f32(state));
 }
 `;
 

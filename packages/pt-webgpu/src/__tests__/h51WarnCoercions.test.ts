@@ -10,13 +10,19 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createPTEngine_WebGPU } from '../index.js';
 import { collectMaterialTextures } from '../scene/materialTextures.js';
-import { PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE } from '../webgpuLimits.js';
+import {
+  PT_WEBGPU_BDPT_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
+  PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
+} from '../webgpuLimits.js';
 import type { MaterialSpec } from '@vitrum/core';
 
-function makeStubDevice(): GPUDevice {
+function makeStubDevice(
+  maxStorageBuffersPerShaderStage =
+    PT_WEBGPU_BDPT_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
+): GPUDevice {
   return {
     limits: {
-      maxStorageBuffersPerShaderStage: PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
+      maxStorageBuffersPerShaderStage,
       maxStorageTexturesPerShaderStage: 8,
     },
     createCommandEncoder: vi.fn(),
@@ -72,6 +78,17 @@ describe("H51-A: maxBounces validation", () => {
 
 // ── H51-D ──────────────────────────────────────────────────────────────────────
 describe("H51-D: bdptOptions.maxLightBounces validation", () => {
+  it('rejects a full-tier device that omitted the camera-splat buffer floor', async () => {
+    await expect(createPTEngine_WebGPU({
+      device: makeStubDevice(
+        PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
+      ),
+      bdpt: true,
+    })).rejects.toThrow(
+      `maxStorageBuffersPerShaderStage >= ${PT_WEBGPU_BDPT_REQUIRED_STORAGE_BUFFERS_PER_STAGE}`,
+    );
+  });
+
   it.each([0, 2.75, 9, Number.NaN, Number.POSITIVE_INFINITY])(
     "rejects an unsupported value (%s)",
     async (maxLightBounces) => {

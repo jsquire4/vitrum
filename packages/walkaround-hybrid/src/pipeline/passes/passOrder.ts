@@ -75,6 +75,10 @@ const NON_DENOISER_PASS_ORDER: readonly NonDenoiserPassEntry[] = Object.freeze([
   { id: 'cb-prefill', labels: ['cb-prefill'] },
   // Virtual denoiser-adapter slot — labels come from the active Denoiser
   // and are spliced here by `composePassLabels`.
+  // The pipeline-wide variance tracker owns this timestamp slot for every
+  // non-atrous-variance mode. In atrous-variance mode the tracker gates off
+  // and the denoiser's identical Welford dispatch uses the same slot.
+  { id: 'variance-tracker', labels: ['welford-temporal'] },
   { id: 'denoiser-adapter', labels: [] },
   { id: 'indirect-temporal-accum', labels: ['indirect-temporal-accum'] },
   {
@@ -184,6 +188,12 @@ export function composePassLabels(
       result.push(...giSpatialPassLabels(giPasses));
     } else if (entry.id === 'gtao' || entry.id === 'gtao-upsample') {
       if (gtaoOn) result.push(...entry.labels);
+    } else if (
+      entry.id === 'variance-tracker' &&
+      denoiserLabels.includes('welford-temporal')
+    ) {
+      // atrous-variance owns the identical Welford dispatch inside its
+      // denoiser; every other mode receives this pipeline-wide slot.
     } else {
       result.push(...entry.labels);
     }

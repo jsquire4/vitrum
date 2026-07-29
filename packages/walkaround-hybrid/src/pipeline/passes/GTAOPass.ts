@@ -2,7 +2,7 @@
  * GTAOPass — Sprint 15 low-resolution GTAO compute pass.
  *
  * Packs the GTAOUniforms struct (tanFovHalf, radiusPx, intensity, depthThresh,
- * bilateralDepthSigma, gtaoDownscale, _pad...) per frame from
+ * bilateralDepthSigma, gtaoDownscale, padding, viewMatrix) per frame from
  * PipelineFrameInputs, then dispatches at W/ds × H/ds with 8×8 workgroups,
  * where ds = `ctx.gtaoDownscale` (2 for `gtaoMode:'on'` half-res, 4 for
  * `gtaoMode:'quarter'` quarter-res). Reads gNormalDepthTexture (written by
@@ -52,7 +52,9 @@ export class GTAOPass implements Pass {
     // depthThresh/bilateralDepthSigma are host-configurable via
     // HybridEngineOptions.gtao (audit M1 + B3); gtaoDownscale (2/4) is the
     // half/quarter-res selector. The 2 trailing explicit pad fields keep the
-    // buffer at 32 B to match what gtaoUpsample reads.
+    // first block at 32 B; the trailing view matrix rotates the world-space
+    // G-buffer normal into the view-space horizon frame. gtaoUpsample shares
+    // this UBO but does not read the matrix.
     const camY = inputs.camera.projMatrix[5] ?? 1.0; // (1/tan(fov/2)) at the y-FOV
     const tanFovHalf = camY > 1e-6 ? 1.0 / camY : 0.5;
     const gtaoUboBytes = new ArrayBuffer(GTAO_UBO.sizeBytes);
@@ -64,6 +66,12 @@ export class GTAOPass implements Pass {
       bilateralDepthSigma: inputs.gtao.gtaoBilateralDepthSigma,
       gtaoDownscale:       ds,
       _pad1: 0, _pad2: 0,
+      viewMatrix: inputs.camera.viewMatrix as unknown as readonly [
+        number, number, number, number,
+        number, number, number, number,
+        number, number, number, number,
+        number, number, number, number,
+      ],
     });
     device.queue.writeBuffer(resources.gtao.gtaoUboBuffer, 0, gtaoUboBytes);
 

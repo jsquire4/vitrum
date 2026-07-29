@@ -10,13 +10,18 @@
 // production class lean and makes the "this is debug instrumentation" boundary
 // explicit.
 //
-// BEHAVIOR-IDENTICAL: this is a pure code move. The probe wraps a trainer
-// instance and issues the EXACT same GPU command sequence the methods issued
-// when they lived on the trainer — same encoders, same dispatch counts, same
-// readback discipline. Pinned by `__tests__/fusedMlpTrainerProbe.test.ts`.
+// The probe wraps a trainer instance and issues the same GPU command sequence
+// as the production trainer — same encoders, dispatch counts, and readback
+// discipline. Its loss readback evaluates NRC's prediction-luminance-relative
+// L2 objective and is pinned by `__tests__/fusedMlpTrainerProbe.test.ts`.
 
 import { f16BitsToF32 } from "./fusedMlpTrainer.js";
 import type { FusedMlpTrainer } from "./fusedMlpTrainer.js";
+import {
+  NRC_RELATIVE_L2_EPSILON,
+  NRC_RELATIVE_L2_MAX_LUMINANCE,
+  nrcRelativeL2Luminance,
+} from "./wgsl/fusedMlp.wgsl.js";
 
 export class FusedMlpTrainerProbe {
   constructor(private readonly t: FusedMlpTrainer) {}
@@ -57,8 +62,10 @@ export class FusedMlpTrainerProbe {
     return this.readF32(t.gradInputF!, t.numSamples * t.spec.inW);
   }
 
-  /** Forward-only + CPU MSE from prediction readback (for FD loss probe). */
-  async computeLoss(): Promise<number> {
+  /** Capture the per-sample prediction luminance used as the detached
+   * relative-L2 normalizer. Holding this baseline across +/- parameter probes
+   * makes finite differences match the production stop-gradient objective. */
+  async captureLossNormalization(): Promise<Float32Array> {
     const t = this.t;
     const d = t.device;
     const enc = d.createCommandEncoder();
@@ -66,16 +73,61 @@ export class FusedMlpTrainerProbe {
     d.queue.submit([enc.finish()]);
     const W = t.spec.W, node = t.node, outW = t.spec.outW;
     const acts = await this.readScalar(t.actsGlob!, t.numSamples * node * W);
+    if (outW !== 3) throw new Error(`NRC relative-L2 luminance requires RGB outW=3; got ${outW}`);
+    const luminance = new Float32Array(t.numSamples);
+    for (let S = 0; S < t.numSamples; S++) {
+      const outputBase = S * node * W + (node - 1) * W;
+      luminance[S] = nrcRelativeL2Luminance([
+        acts[outputBase + 0]!,
+        acts[outputBase + 1]!,
+        acts[outputBase + 2]!,
+      ]);
+    }
+    return luminance;
+  }
+
+  /** Forward-only + CPU relative-L2 luminance loss from prediction readback.
+   * `normalizationLuminance` is optional for ordinary monitoring; the FD harness
+   * supplies a captured baseline so the denominator remains stop-gradient. */
+  async computeLoss(normalizationLuminance?: Float32Array): Promise<number> {
+    const t = this.t;
+    const d = t.device;
+    const enc = d.createCommandEncoder();
+    t.recordForward(enc);
+    d.queue.submit([enc.finish()]);
+    const W = t.spec.W, node = t.node, outW = t.spec.outW;
+    if (outW !== 3) throw new Error(`NRC relative-L2 luminance requires RGB outW=3; got ${outW}`);
+    if (
+      normalizationLuminance != null &&
+      normalizationLuminance.length !== t.numSamples
+    ) {
+      throw new RangeError(
+        `NRC loss normalization has ${normalizationLuminance.length} samples; expected ${t.numSamples}`,
+      );
+    }
+    const acts = await this.readScalar(t.actsGlob!, t.numSamples * node * W);
     const tgt = await this.readF32(t.targets!, t.numSamples * outW);
     let loss = 0;
     for (let S = 0; S < t.numSamples; S++) {
+      const outputBase = S * node * W + (node - 1) * W;
+      const luminance = normalizationLuminance?.[S] ?? nrcRelativeL2Luminance([
+        acts[outputBase + 0]!,
+        acts[outputBase + 1]!,
+        acts[outputBase + 2]!,
+      ]);
+      const boundedLuminance = Math.min(
+        Math.abs(luminance),
+        NRC_RELATIVE_L2_MAX_LUMINANCE,
+      );
+      const denominator =
+        boundedLuminance * boundedLuminance + NRC_RELATIVE_L2_EPSILON;
       for (let o = 0; o < outW; o++) {
-        const pred = acts[S * node * W + (node - 1) * W + o]!;
+        const pred = acts[outputBase + o]!;
         const tv = tgt[S * outW + o]!;
-        loss += 0.5 * (pred - tv) * (pred - tv);
+        loss += (pred - tv) * (pred - tv) / denominator;
       }
     }
-    return loss / t.numSamples;
+    return loss / (t.numSamples * outW);
   }
 
   private async readF32(buf: GPUBuffer, count: number): Promise<Float32Array> {

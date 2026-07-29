@@ -89,15 +89,16 @@ fn restir_di_eval_surface_brdf(surf: PrimarySurface, wi: vec3f) -> vec3f {
     );
   }
   brdf = surf.layerTransmission * brdf;
-  return applyHomogeneousVolumeSingleScatter(
-    brdf, surf.albedo, surf.volumeScattering, surf.bulkThickness, surf.normal, surf.wo,
+  return applyHomogeneousVolumeSingleScatterDirectional(
+    brdf, surf.albedo, surf.volumeScattering, surf.bulkThickness,
+    surf.normal, surf.wo, wi,
   );
 }
 
 // ENV branch: p̂ = luminance(envRadiance(dir) * full material BRDF(... dir)) — no geometry
 // term (the IBL is at infinity: no cosθ_light, no 1/dist² falloff). This is the
-// solid-angle measure p̂ consistent with the SA-measure source pdf the env
-// candidate used (envDirectionalPdf).
+// solid-angle measure p̂ consistent with the source pdf stored by the sampled
+// environment candidate.
 fn restir_di_compute_phat_xi(lid: u32, xi: vec2f, surf: PrimarySurface) -> f32 {
   if (!surf.hit) { return 0.0; }
   // Wave 4 — ENV_SAMPLE_SENTINEL: decode xi → world direction, evaluate env p̂.
@@ -128,12 +129,6 @@ fn restir_di_compute_phat_xi(lid: u32, xi: vec2f, surf: PrimarySurface) -> f32 {
   return luminance(Le * brdf * G);
 }
 
-// Thin wrapper: legacy callers that don't have xi handy. Emitter callers should
-// prefer restir_di_compute_phat_xi so the p̂ used by finalization/reuse stays
-// identical to the sampled candidate stored in the reservoir.
-fn restir_di_compute_phat_from_surface(lid: u32, surf: PrimarySurface) -> f32 {
-  return restir_di_compute_phat_xi(lid, vec2f(0.0), surf);
-}
 `;
 
 /** W2-C7 — declarative include-graph entry for the canonical p̂.

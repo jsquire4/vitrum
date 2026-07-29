@@ -62,7 +62,7 @@ describe('createPTEngine_WebGPU', () => {
     });
     expect(sppmComposite.capabilities.activeFeatures?.has('pt-webgpu-spectral')).toBe(true);
     expect(sppmComposite.capabilities.activeFeatures?.has('pt-webgpu-bdpt')).toBe(true);
-    expect(sppmComposite.capabilities.activeFeatures?.has('pt-webgpu-restir-pt-reuse')).toBe(true);
+    expect(sppmComposite.capabilities.activeFeatures?.has('pt-webgpu-one-edge-gris-reconnection')).toBe(true);
     expect(sppmComposite.capabilities.activeFeatures?.has('pt-webgpu-photon-map-sppm')).toBe(true);
     sppmComposite.dispose();
 
@@ -132,7 +132,7 @@ describe('createPTEngine_WebGPU', () => {
       restirPtReuse: true,
     });
     expect(restir.capabilities.activeFeatures?.has('pt-webgpu-spectral')).toBe(true);
-    expect(restir.capabilities.activeFeatures?.has('pt-webgpu-restir-pt-reuse')).toBe(true);
+    expect(restir.capabilities.activeFeatures?.has('pt-webgpu-one-edge-gris-reconnection')).toBe(true);
     restir.dispose();
   });
 

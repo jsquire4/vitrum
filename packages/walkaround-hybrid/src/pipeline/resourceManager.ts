@@ -52,8 +52,7 @@ import {
  * Cross-cutting GPU resources shared by every pass — primary HDR targets,
  * temporal accumulator ping-pong, UBO, samplers, motion vectors, the
  * sample-tier + resolved-radiance textures used by sample-budget /
- * resolve, Sprint-18 indirect + albedo + variance scaffolding, and the
- * 1×1 placeholder used by the G-buffer bind group slots.
+ * resolve, and Sprint-18 indirect + albedo + variance scaffolding.
  *
  * Anything that belongs to a single algorithm (DDGI atlas placeholders,
  * GTAO half-/full-res output, SVGF history textures, ReSTIR reservoir
@@ -66,10 +65,8 @@ export interface CommonFrameResources {
   denoisedPongTexture: GPUTexture;
   accumTextureA: GPUTexture;
   accumTextureB: GPUTexture;
-  placeholderTexture: GPUTexture;
   uboBuffer: GPUBuffer;
   nearestSampler: GPUSampler;
-  compositeSampler: GPUSampler;
   /** Screen-space motion (RG32F), written each frame by MotionVectorsPass. */
   motionVectorTexture: GPUTexture;
   /**
@@ -159,7 +156,7 @@ export interface CommonFrameResources {
    * `welfordTemporalMain` each frame.
    */
   varianceBuffer: GPUTexture;
-  /** Second Welford ping-pong half (atrous-variance path only). */
+  /** Second Welford ping-pong half (all production denoiser modes). */
   varianceBufferAux: GPUTexture;
   /** Atrous-variance estimation output (.r = scalar variance, .g = frame tag). */
   atrousVarianceEstimateTexture: GPUTexture;
@@ -175,14 +172,11 @@ export interface RestirDIFrameResources {
 /** ReSTIR global-illumination reservoir buffers (current / previous / spatial). */
 export interface RestirGIFrameResources {
   /**
-   * Sprint 16 — half-res ReSTIR-GI reservoir buffer.
-   * Layout: 20 u32 (80 bytes) per pixel by default; 28 u32 (112 bytes) when
-   * `grisReuse` enables the GRIS DDGI-proxy reconnection-shift cache.
-   *   [0..19] = Sprint-16/17 reconnection sample (byte-identical to the
-   *             original 80-byte layout); [20..27] = GRIS reconnection-shift
-   *             metadata (Lin 2022) — READ by the GRIS reuse variants of the
-   *             temporal/spatial GI passes; active when built with grisReuse
-   *             (off by default). See shaders/reservoirGi.wgsl.ts.
+   * Half-res ReSTIR-GI reservoir buffer. The sole live layout is 28 u32
+   * (112 bytes) per pixel: the original sample prefix at [0..19], followed by
+   * generalized reconnection-shift metadata at [20..27]. The historical
+   * 20-u32 layout is accepted only by snapshot migration code and is never
+   * allocated for execution. See shaders/reservoirGi.wgsl.ts.
    * Size: (W/2) × (H/2) × stride bytes.
    * Written by `risGiMain`; read by temporal/spatial passes and shade.
    */
@@ -442,23 +436,6 @@ export function uploadBufferPadded(
   }
 }
 
-/** Zeroed storage buffer for unused scene-BGL slots (merged BVH mode).
- *
- *  32 bytes, NOT 16: scene binding 6 is `tlasNodes: array<BVHNode>` whose
- *  struct stride is 32 → WebGPU's minimum binding size for that slot is 32.
- *  A 16-byte placeholder is REJECTED at bind-group creation ("Binding size 16
- *  … less than minimum 32" on lavapipe AND dzn), invalidating the WHOLE scene
- *  bind group in merged mode — every ReSTIR pass then no-ops and the render
- *  is black. This is the exact bug class already fixed for DDGI (ea88803)
- *  and RC (`RCDispatcher._dummyStorageBuffer`); the ReSTIR scene BGL kept the
- *  16-byte placeholder from PR-3 (29942f9) because the TLAS auto-rule
- *  (>1 mesh → tlas) hid the merged path from every multi-mesh test scene.
- *  Single-mesh scenes (auto → merged) and tier:'lite' (forces merged)
- *  rendered black GI from 2026-05-26 until this fix. */
-export function createDummyStorageBuffer(device: GPUDevice, _label: string): GPUBuffer {
-  return uploadBuffer(device, new ArrayBuffer(32), GPUBufferUsage.STORAGE);
-}
-
 /**
  * Create a per-pixel Welford variance buffer (RG32Float storage texture).
  *
@@ -504,13 +481,14 @@ export interface FrameResourceOptions {
    *  because shade writes it through the shared frame bind group. Defaults to
    *  `true` so callers that omit it keep the legacy full-allocation behavior. */
   readonly svgfEnabled?: boolean;
-  /** Allocate the widened 30-u32 GRIS DDGI-proxy GI reservoir layout. */
-  readonly grisReuse?: boolean;
-  /** Allocate full-res Welford ping-pong/variance-estimate textures. This is
-   *  needed only by the `atrous-variance` denoiser; other modes keep 1x1
-   *  placeholders while preserving the FrameResources shape. Defaults to true
-   *  so direct callers keep the legacy allocation policy. */
+  /** Allocate full-res Welford ping-pong textures.
+   *  Production uses this for every denoiser: `atrous-variance` writes it
+   *  itself and the shared variance tracker covers all other modes. Defaults
+   *  to true; direct resource harnesses may opt into 1x1 placeholders. */
   readonly welfordPingPong?: boolean;
+  /** Allocate the à-trous-only full-resolution scalar variance estimate.
+   *  Defaults to true for direct callers preserving the legacy allocation. */
+  readonly atrousVarianceEstimate?: boolean;
   /** Allocate the full-resolution checkerboard reconstruction snapshot. */
   readonly checkerboard?: boolean;
 }
@@ -558,12 +536,12 @@ export function createFrameResources(
   try {
     const common = createCommonFrameResources(trackedDevice, W, H, {
       welfordPingPong: options?.welfordPingPong ?? true,
+      atrousVarianceEstimate:
+        options?.atrousVarianceEstimate ?? options?.welfordPingPong ?? true,
       checkerboardSnapshot: options?.checkerboard === true,
     });
     const restirDI = createRestirDIFrameResources(trackedDevice, W, H);
-    const restirGI = createRestirGIFrameResources(trackedDevice, W, H, {
-      grisReuse: options?.grisReuse === true,
-    });
+    const restirGI = createRestirGIFrameResources(trackedDevice, W, H);
     const gtao = createGtaoFrameResources(trackedDevice, W, H, options?.gtaoDownscale ?? 2);
     const ddgi = createDdgiFrameResources(trackedDevice);
     const svgf = createSvgfFrameResources(trackedDevice, W, H, options?.svgfEnabled ?? true);
@@ -609,7 +587,6 @@ function buildDestroyQueue(r: FrameResources): DestroyableResource[] {
     r.common.denoisedPongTexture,
     r.common.accumTextureA,
     r.common.accumTextureB,
-    r.common.placeholderTexture,
     r.common.uboBuffer,
     // ddgi
     r.ddgi.ddgiPlaceholderRgba16f,

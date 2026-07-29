@@ -28,7 +28,6 @@ import { RESTIR_PT_SPATIAL_WGSL } from '../wgsl/pathTrace/restirPtSpatial.wgsl.j
 import { RESTIR_PT_PRODUCER_WGSL } from '../wgsl/pathTrace/restirPtProducer.wgsl.js';
 import { RESTIR_PT_RESOLVE_WGSL } from '../wgsl/pathTrace/restirPtResolve.wgsl.js';
 import { RESERVOIR_PT_HERO_WGSL } from '../wgsl/pathTrace/reservoirPtHero.wgsl.js';
-import { PT_WEBGPU_RESTIR_PT_EFFECTIVELY_UNCLAMPED_W } from '../ptWebgpuValidation.js';
 
 const composed = composePtWebgpuReuseWgsl();
 const compositeKernel = composePathTraceKernelWgsl({
@@ -65,6 +64,9 @@ interface TemporalReuseWeightsInput {
   readonly pHatPrevNative: number;
   readonly rCurW: number;
   readonly rPrevW: number;
+  /** |dT_current→previous| for the current sample. */
+  readonly currentToPreviousJacobian: number;
+  /** |dT_previous→current| for the previous sample. */
   readonly shiftJacobian: number;
 }
 
@@ -74,9 +76,15 @@ function restirPtTemporalWeightsReference(input: TemporalReuseWeightsInput): {
   readonly wCur: number;
   readonly wPrev: number;
 } {
-  const denomCur = input.cCur * input.pHatCurNative + input.cPrev * input.pHatPrevAtCurSample;
+  const denomCur = input.cCur * input.pHatCurNative
+    + input.cPrev
+      * input.pHatPrevAtCurSample
+      * input.currentToPreviousJacobian;
   const mCur = denomCur > 1e-12 ? (input.cCur * input.pHatCurNative) / denomCur : 1;
-  const denomPrev = input.cCur * input.pHatPrevAtCur + input.cPrev * input.pHatPrevNative;
+  const denomPrev = input.cCur
+      * input.pHatPrevAtCur
+      * input.shiftJacobian
+    + input.cPrev * input.pHatPrevNative;
   const mPrev = denomPrev > 1e-12 ? (input.cPrev * input.pHatPrevNative) / denomPrev : 0;
   return {
     mCur,
@@ -90,14 +98,10 @@ function finaliseReservoirPTWGrisReference(opts: {
   readonly M: number;
   readonly wSum: number;
   readonly pHat: number;
-  readonly wCap: number;
 }): number {
   if (opts.M <= 0 || !Number.isFinite(opts.wSum) || opts.wSum <= 0 ||
-      !Number.isFinite(opts.pHat) || opts.pHat <= 1e-9 ||
-      !Number.isFinite(opts.wCap) || opts.wCap <= 0) return 0;
-  const raw = opts.wSum / opts.pHat;
-  if (Number.isNaN(raw) || raw <= 0) return 0;
-  return Math.min(raw, opts.wCap);
+      !Number.isFinite(opts.pHat) || opts.pHat <= 1e-9) return Number.NEGATIVE_INFINITY;
+  return Math.log(opts.wSum) - Math.log(opts.pHat);
 }
 
 describe('ReSTIR-PT reuse — composes as a single WGSL unit', () => {
@@ -127,10 +131,9 @@ describe('ReSTIR-PT reuse — composes as a single WGSL unit', () => {
     for (const def of [
       'fn traceClosest(',
       'fn traceAny(',
-      'fn evaluateBrdf(',
-      'fn evaluateBrdfFull(',
-      'fn brdfDirectionalPdf(',
-      'fn brdfDirectionalPdfFull(',
+      'fn evaluateBrdfFullWithClearcoatNormal(',
+      'fn evaluateFiniteBsdfFullWithClearcoatNormal(',
+      'fn brdfDirectionalPdfFullWithClearcoatNormal(',
       'fn brdfDirectionalPdfFullSampled(',
       'fn brdfDirectionalPdfFullSampledWithClearcoatNormal(',
       'fn cosineHemisphereSample(',
@@ -169,13 +172,14 @@ describe('ReSTIR-PT temporal — calls the reconnection shift + the GRIS finaliz
     );
   });
 
-  it('finalises with the GRIS form finaliseReservoirPTWGris (W = w_sum/p̂, NO /M)', () => {
-    expect(RESTIR_PT_TEMPORAL_WGSL).toContain('finaliseReservoirPTWGris(&rGris, rptParams.wCap);');
+  it('finalises with the unbiased log-domain GRIS form (NO /M and no clamp)', () => {
+    expect(RESTIR_PT_TEMPORAL_WGSL).toContain('finaliseReservoirPTWGris(&rGris);');
     // The GRIS finalize must NOT divide by M (the MIS weights already sum to 1).
     const finalizeBody = RESERVOIR_PT_HERO_WGSL.slice(
       RESERVOIR_PT_HERO_WGSL.indexOf('fn finaliseReservoirPTWGris('),
     ).split('\n').slice(0, 30).join('\n');
-    expect(finalizeBody).toContain('(*r).w_sum / pHatF');
+    expect(finalizeBody).toContain('(*r).logWeightSum - log(pHatF)');
+    expect(finalizeBody).not.toContain('wCap');
     expect(finalizeBody).not.toMatch(/f32\(\(\*r\)\.M\)/); // no ·M normalisation
   });
 
@@ -201,9 +205,14 @@ describe('ReSTIR-PT temporal — calls the reconnection shift + the GRIS finaliz
     // temporal MIS weights glossy candidates correctly. Unbiased by construction
     // (W = w_sum/p̂ cancels p̂ — see the producer 1-sample note), variance-reducing
     // for a glossy visible vertex whose BRDF the old cosine proxy mis-weighted.
-    const targetBody = RESERVOIR_PT_HERO_WGSL.slice(
-      RESERVOIR_PT_HERO_WGSL.indexOf('fn restirPtTargetAt('),
-    ).split('\n').slice(0, 42).join('\n');
+    const targetStart = RESERVOIR_PT_HERO_WGSL.indexOf(
+      'fn restirPtTargetAt(',
+    );
+    const targetEnd = RESERVOIR_PT_HERO_WGSL.indexOf(
+      'fn restirPtTargetForDomain(',
+      targetStart,
+    );
+    const targetBody = RESERVOIR_PT_HERO_WGSL.slice(targetStart, targetEnd);
     expect(targetBody).toContain('evaluateBrdfFullWithClearcoatNormal(');
     expect(targetBody).toContain('clearcoatNormalV, wo, wi,');
     expect(targetBody).toContain('clearcoatV, clearcoatRoughnessV, sheenV, sheenRoughnessV, sheenColorV,');
@@ -222,7 +231,9 @@ describe('ReSTIR-PT temporal — calls the reconnection shift + the GRIS finaliz
 
   it('gates reuse on a reconnection-visibility ray (traceAny along xv → xs)', () => {
     expect(RESTIR_PT_TEMPORAL_WGSL).toContain('fn rptReconnectionVisible(');
-    expect(RESTIR_PT_TEMPORAL_WGSL).toContain('rptReconnectionVisible(rCur.xv, rCur.nv, rPrev.xs)');
+    expect(RESTIR_PT_TEMPORAL_WGSL).toContain(
+      'rptReconnectionVisible(rCur.xv, rCur.nv, rPrev.xs, &rng)',
+    );
   });
 
   it('M-clamps the previous history before contributing', () => {
@@ -230,26 +241,23 @@ describe('ReSTIR-PT temporal — calls the reconnection shift + the GRIS finaliz
   });
 });
 
-describe('ReSTIR-PT temporal — the w_prev weight is m·p̂·W·J with NO /p_src (V19 lesson)', () => {
+describe('ReSTIR-PT temporal — log weight is log(m·p̂·W·J) with NO /p_src', () => {
   // THE load-bearing invariant. temporalGi.wgsl.ts:358-367: a reused RESERVOIR's
   // weight is m_prev·p̂_cur(T z_prev)·W_prev·J — NO division by a source pdf (the
   // reservoir's W already bakes its source pdf in). An extra /p_src multiplies the
   // carried weight by ≈π…∞ each frame and diverges the temporal feedback loop.
-  it('the w_prev expression multiplies by the Jacobian J', () => {
-    // Locate the w_prev assignment and assert it ends in `* J`.
-    const m = RESTIR_PT_TEMPORAL_WGSL.match(/let w_prev = ([^;]+);/);
-    expect(m, 'w_prev assignment present').not.toBeNull();
+  it('the previous expression includes the Jacobian exactly once', () => {
+    const m = RESTIR_PT_TEMPORAL_WGSL.match(/let logWeightPrevious =\s*([^;]+);/);
+    expect(m, 'logWeightPrevious assignment present').not.toBeNull();
     const rhs = (m![1] ?? '').trim();
-    // Must include the Jacobian factor.
-    expect(/\*\s*J\b/.test(rhs), `w_prev RHS multiplies by J: "${rhs}"`).toBe(true);
-    // Must be the canonical m·p̂·W·J shape.
-    expect(rhs).toContain('m_prev');
-    expect(rhs).toContain('pHatPrev_atCur');
-    expect(rhs).toContain('rPrev.W');
+    expect(rhs).toContain('logMPrevious');
+    expect(rhs).toContain('log(pHatPrev_atCur)');
+    expect(rhs).toContain('rPrev.logW');
+    expect(rhs).toContain('log(J)');
   });
 
   it('the w_prev expression does NOT divide by any source pdf', () => {
-    const m = RESTIR_PT_TEMPORAL_WGSL.match(/let w_prev = ([^;]+);/);
+    const m = RESTIR_PT_TEMPORAL_WGSL.match(/let logWeightPrevious =\s*([^;]+);/);
     const rhs = (m![1] ?? '').trim();
     // No division at all in the canonical reuse weight, and specifically no
     // /pdfSrc / /p_src / /pHat-source.
@@ -258,11 +266,11 @@ describe('ReSTIR-PT temporal — the w_prev weight is m·p̂·W·J with NO /p_sr
     expect(rhs.toLowerCase().includes('p_src')).toBe(false);
   });
 
-  it('the canonical (current) sample weight is also division-free (m·p̂·W)', () => {
-    const m = RESTIR_PT_TEMPORAL_WGSL.match(/let w_cur = ([^;]+);/);
-    expect(m, 'w_cur assignment present').not.toBeNull();
+  it('the canonical sample uses the same log-product representation', () => {
+    const m = RESTIR_PT_TEMPORAL_WGSL.match(/let logWeightCurrent =\s*([^;]+);/);
+    expect(m, 'logWeightCurrent assignment present').not.toBeNull();
     const rhs = (m![1] ?? '').trim();
-    expect(rhs).toBe('m_cur * pHatCur_native * rCur.W');
+    expect(rhs).toBe('logMCurrent + log(pHatCur_native) + rCur.logW');
     expect(rhs.includes('/')).toBe(false);
   });
 
@@ -276,12 +284,19 @@ describe('ReSTIR-PT temporal — the w_prev weight is m·p̂·W·J with NO /p_sr
       pHatPrevNative: 3.5,
       rCurW: 0.75,
       rPrevW: 0.4,
+      currentToPreviousJacobian: 1 / 0.6,
       shiftJacobian: 0.6,
     };
     const weights = restirPtTemporalWeightsReference(input);
 
-    expect(weights.mCur).toBeCloseTo((3 * 2.0) / (3 * 2.0 + 5 * 4.0), 12);
-    expect(weights.mPrev).toBeCloseTo((5 * 3.5) / (3 * 1.5 + 5 * 3.5), 12);
+    expect(weights.mCur).toBeCloseTo(
+      (3 * 2.0) / (3 * 2.0 + 5 * 4.0 * input.currentToPreviousJacobian),
+      12,
+    );
+    expect(weights.mPrev).toBeCloseTo(
+      (5 * 3.5) / (3 * 1.5 * input.shiftJacobian + 5 * 3.5),
+      12,
+    );
     expect(weights.wCur).toBeCloseTo(weights.mCur * input.pHatCurNative * input.rCurW, 12);
     expect(weights.wPrev).toBeCloseTo(
       weights.mPrev * input.pHatPrevAtCur * input.rPrevW * input.shiftJacobian,
@@ -292,52 +307,50 @@ describe('ReSTIR-PT temporal — the w_prev weight is m·p̂·W·J with NO /p_sr
       expect(weights.wPrev / pdfSrc).not.toBeCloseTo(weights.wPrev, 6);
       expect(restirPtTemporalWeightsReference({ ...input }).wPrev).toBeCloseTo(weights.wPrev, 12);
     }
+
+    expect(RESTIR_PT_TEMPORAL_WGSL).toContain(
+      'cCur, pHatPrev_atCur, J,',
+    );
+    expect(RESTIR_PT_TEMPORAL_WGSL).toContain(
+      'cPrev, pHatPrev_atCurSample, JCurrentToPrevious,',
+    );
   });
 
-  it('CPU oracle: GRIS final W is w_sum / pHat, capped, with no M normalization', () => {
-    expect(finaliseReservoirPTWGrisReference({ M: 1, wSum: 12, pHat: 3, wCap: 100 })).toBe(4);
-    expect(finaliseReservoirPTWGrisReference({ M: 128, wSum: 12, pHat: 3, wCap: 100 })).toBe(4);
-    expect(finaliseReservoirPTWGrisReference({ M: 128, wSum: 12, pHat: 3, wCap: 2.5 })).toBe(2.5);
-    expect(finaliseReservoirPTWGrisReference({ M: 128, wSum: 12, pHat: 0, wCap: 100 })).toBe(0);
-    expect(finaliseReservoirPTWGrisReference({ M: 0, wSum: 12, pHat: 3, wCap: 100 })).toBe(0);
+  it('CPU oracle: log GRIS finalization is independent of M and unclamped', () => {
+    const expected = Math.log(4);
+    expect(finaliseReservoirPTWGrisReference({ M: 1, wSum: 12, pHat: 3 })).toBeCloseTo(expected, 14);
+    expect(finaliseReservoirPTWGrisReference({ M: 128, wSum: 12, pHat: 3 })).toBeCloseTo(expected, 14);
+    expect(finaliseReservoirPTWGrisReference({ M: 128, wSum: 12, pHat: 0 })).toBe(Number.NEGATIVE_INFINITY);
+    expect(finaliseReservoirPTWGrisReference({ M: 0, wSum: 12, pHat: 3 })).toBe(Number.NEGATIVE_INFINITY);
   });
 
-  it('professional f32-max ceiling keeps adversarial positive GRIS weights finite without ordinary clipping', () => {
-    const cap = Math.fround(PT_WEBGPU_RESTIR_PT_EFFECTIVELY_UNCLAMPED_W);
-    const finalizeF32 = (wSum: number, pHat: number): number => {
-      const raw = pHat > 1e-9 ? Math.fround(Math.fround(wSum) / Math.fround(pHat)) : 0;
-      return Math.min(raw, cap);
-    };
+  it('max-log arithmetic preserves adversarial ratios without a biased ceiling', () => {
+    const finalizeLog = (wSum: number, pHat: number): number =>
+      Math.log(wSum) - Math.log(pHat);
     for (const [wSum, pHat] of [
       [1, 1],
       [1e20, 1e-8],
-      [cap, 1e-8],
-      [cap, 1],
       [Number.MAX_VALUE, 1e-8],
+      [Number.MAX_VALUE, Number.MIN_VALUE],
     ] as const) {
-      const weight = finalizeF32(wSum, pHat);
-      expect(Number.isFinite(weight)).toBe(true);
-      expect(Number.isNaN(weight)).toBe(false);
-      expect(weight).toBeGreaterThanOrEqual(0);
-      expect(weight).toBeLessThanOrEqual(cap);
+      expect(Number.isFinite(finalizeLog(wSum, pHat))).toBe(true);
     }
-    expect(finalizeF32(12, 3)).toBe(4);
-    expect(finalizeF32(cap, 1e-8)).toBe(cap);
-    expect(RESERVOIR_PT_HERO_WGSL).toContain('let W_raw = (*r).w_sum / pHatF;');
-    expect(RESERVOIR_PT_HERO_WGSL).toContain('(*r).W = min(W_raw, min(wCap, RPT_MAX_FINITE_F32));');
-    expect(RESERVOIR_PT_HERO_WGSL).toContain('if (!rptFinitePositive((*r).W))');
+    expect(Math.exp(finalizeLog(12, 3))).toBeCloseTo(4, 14);
+    expect(RESERVOIR_PT_HERO_WGSL).toContain('fn rptLogAddExp(');
+    expect(RESERVOIR_PT_HERO_WGSL).toContain('let logW = (*r).logWeightSum - log(pHatF);');
+    expect(RESERVOIR_PT_HERO_WGSL).not.toContain('wCap');
   });
 
   it('production reservoir code rejects NaN/Inf before candidate count or history publication', () => {
     const updateBody = RESERVOIR_PT_HERO_WGSL.slice(
-      RESERVOIR_PT_HERO_WGSL.indexOf('fn updateReservoirPT('),
+      RESERVOIR_PT_HERO_WGSL.indexOf('fn updateReservoirPTLog('),
       RESERVOIR_PT_HERO_WGSL.indexOf('fn copyReservoirPTVisibleDomain('),
     );
     expect(updateBody).toContain(') -> bool {');
-    expect(updateBody).toContain('if (!rptFinitePositive(w)');
+    expect(updateBody).toContain('if (!rptFiniteScalar(logWeight)');
     expect(updateBody).toContain('|| !rptFinitePositive(pdfSrc)');
-    expect(updateBody).toContain('let nextWeightSum = (*r).w_sum + w;');
-    expect(updateBody).toContain('if (!rptFinitePositive(nextWeightSum)) { return false; }');
+    expect(updateBody).toContain('let nextLogWeightSum = rptLogAddExp(');
+    expect(updateBody).toContain('rptMarkReservoirNumericFailure(r);');
     expect(updateBody.indexOf('if (!rptFinitePositive(w)')).toBeLessThan(
       updateBody.indexOf('(*r).M = (*r).M + 1u;'),
     );
@@ -417,13 +430,13 @@ describe('ReSTIR-PT producer — unbiased candidate weight + specular gate', () 
 
   it('honors packed emitter castShadow flags in suffix direct lighting where those lanes are available', () => {
     expect(RESTIR_PT_PRODUCER_WGSL).toContain('let dirShadowDisabled = angDiamRaw < 0.0;');
-    expect(RESTIR_PT_PRODUCER_WGSL).toContain('if (dirShadowDisabled || !traceAny(shadowRay, 1e-4, INFINITY)) {');
+    expect(RESTIR_PT_PRODUCER_WGSL).toContain('if (dirShadowDisabled || !traceAny(shadowRay, 1e-4, INFINITY, rng)) {');
     expect(RESTIR_PT_PRODUCER_WGSL).toContain('let rectShadowDisabled = rectAreaLights[rb].w > 0.5;');
-    expect(RESTIR_PT_PRODUCER_WGSL).toContain('if (rectShadowDisabled || !traceAny(shadowRay, 1e-4, max(dist - 2e-3, 1e-3))) {');
+    expect(RESTIR_PT_PRODUCER_WGSL).toContain('if (rectShadowDisabled || !traceAny(shadowRay, 1e-4, max(dist - 2e-3, 1e-3), rng)) {');
     expect(RESTIR_PT_PRODUCER_WGSL).toContain('let ptShadowDisabled = ptExtra.z > 0.5;');
-    expect(RESTIR_PT_PRODUCER_WGSL).toContain('if (ptShadowDisabled || !traceAny(shadowRay, 1e-4, max(dist - 2e-3, 1e-3))) {');
+    expect(RESTIR_PT_PRODUCER_WGSL).toContain('if (ptShadowDisabled || !traceAny(shadowRay, 1e-4, max(dist - 2e-3, 1e-3), rng)) {');
     expect(RESTIR_PT_PRODUCER_WGSL).toContain('let spShadowDisabled = spExtra.z > 0.5;');
-    expect(RESTIR_PT_PRODUCER_WGSL).toContain('if (spShadowDisabled || !traceAny(shadowRay, 1e-4, max(dist - 2e-3, 1e-3))) {');
+    expect(RESTIR_PT_PRODUCER_WGSL).toContain('if (spShadowDisabled || !traceAny(shadowRay, 1e-4, max(dist - 2e-3, 1e-3), rng)) {');
     expect(RESTIR_PT_PRODUCER_WGSL).toContain('meshAreaLights[mb + 3u].w > 0.5 || !traceAny');
   });
 
@@ -434,8 +447,8 @@ describe('ReSTIR-PT producer — unbiased candidate weight + specular gate', () 
   });
 
   it('the candidate weight is p̂ / p_src (RIS), and finalises with the GRIS W', () => {
-    expect(RESTIR_PT_PRODUCER_WGSL).toContain('let wCandidate = select(0.0, pHat / pdfSrc, pdfSrc > 1e-8);');
-    expect(RESTIR_PT_PRODUCER_WGSL).toContain('finaliseReservoirPTWGris(&r, rptParams.wCap);');
+    expect(RESTIR_PT_PRODUCER_WGSL).toContain('let logCandidateWeight = log(pHat) - log(pdfSrc);');
+    expect(RESTIR_PT_PRODUCER_WGSL).toContain('finaliseReservoirPTWGris(&r);');
   });
 
   it('stores the visible-vertex extension payload and uses anisotropic producer sampling', () => {
@@ -479,7 +492,7 @@ describe('ReSTIR-PT producer — unbiased candidate weight + specular gate', () 
       'var sheenRoughnessV = clamp(vMat.sheenRoughness * sampleSheenRoughnessTexture(vMatId, vHit.triIndex, vHit.baryVW, vHit.instanceIndex), 0.0, 1.0);',
       'var iridescenceV = clamp(vMat.iridescence * sampleIridescenceTexture(vMatId, vHit.triIndex, vHit.baryVW, vHit.instanceIndex), 0.0, 1.0);',
       'let iridescenceThicknessSampleV = sampleIridescenceThicknessTexture(vMatId, vHit.triIndex, vHit.baryVW, vHit.instanceIndex);',
-      'var specularColorV = clamp(vMat.specularColor * sampleSpecularColorTexture(vMatId, vHit.triIndex, vHit.baryVW, vHit.instanceIndex), vec3f(0.0), vec3f(1.0));',
+      'var specularColorV = max(',
       'var specularIntensityV = clamp(vMat.specularIntensity * sampleSpecularIntensityTexture(vMatId, vHit.triIndex, vHit.baryVW, vHit.instanceIndex), 0.0, 1.0);',
     ]) {
       expect(RESTIR_PT_PRODUCER_WGSL).toContain(line);
@@ -509,7 +522,9 @@ describe('ReSTIR-PT producer — unbiased candidate weight + specular gate', () 
       expect(RESTIR_PT_PRODUCER_WGSL).toContain(line);
     }
     const prologueIdx = RESTIR_PT_PRODUCER_WGSL.indexOf('baseColorV = vec3f(reflScalarV);');
-    const f0Idx = RESTIR_PT_PRODUCER_WGSL.indexOf('let f0BaseV = materialSpecularF0(baseColorV, metallicV, specularColorV, specularIntensityV);');
+    const f0Idx = RESTIR_PT_PRODUCER_WGSL.indexOf(
+      'let f0BaseV = materialSpecularF0(',
+    );
     expect(f0Idx).toBeGreaterThan(prologueIdx);
   });
 
@@ -528,7 +543,8 @@ describe('ReSTIR-PT producer — unbiased candidate weight + specular gate', () 
       'out.clearcoat = clamp(mat.clearcoat * sampleClearcoatTexture(matId, hit.triIndex, hit.baryVW, hit.instanceIndex), 0.0, 1.0);',
       'out.sheenColor = clamp(mat.sheenColor * sampleSheenColorTexture(matId, hit.triIndex, hit.baryVW, hit.instanceIndex), vec3f(0.0), vec3f(1.0));',
       'out.iridescence = clamp(mat.iridescence * sampleIridescenceTexture(matId, hit.triIndex, hit.baryVW, hit.instanceIndex), 0.0, 1.0);',
-      'out.specularColor = clamp(mat.specularColor * sampleSpecularColorTexture(matId, hit.triIndex, hit.baryVW, hit.instanceIndex), vec3f(0.0), vec3f(1.0));',
+      'out.specularColor = max(',
+      'mat.specularColor * sampleSpecularColorTexture(',
       'out.specularIntensity = clamp(mat.specularIntensity * sampleSpecularIntensityTexture(matId, hit.triIndex, hit.baryVW, hit.instanceIndex), 0.0, 1.0);',
       'out.anisotropy = materialAnisotropy(matId, hit.triIndex, hit.baryVW, hit.instanceIndex);',
       'out.anisotropyRotation = materialAnisotropyRotation(matId, hit.triIndex, hit.baryVW, out.normal, hit.instanceIndex);',
@@ -538,21 +554,37 @@ describe('ReSTIR-PT producer — unbiased candidate weight + specular gate', () 
     }
   });
 
-  it('uses iridescence-modified F0 for visible-vertex source sampling', () => {
+  it('uses the layered iridescence/coherent-stack response for visible-vertex source sampling', () => {
     const f0BaseIdx = RESTIR_PT_PRODUCER_WGSL.indexOf(
-      'let f0BaseV = materialSpecularF0(baseColorV, metallicV, specularColorV, specularIntensityV);',
+      'let f0BaseV = materialSpecularF0(',
     );
-    const f0Idx = RESTIR_PT_PRODUCER_WGSL.indexOf('let f0V = iridescenceModifiedF0(', f0BaseIdx);
-    const fresnelIdx = RESTIR_PT_PRODUCER_WGSL.indexOf('let fresV = fresnelSchlick(cosO, f0V);', f0Idx);
+    const iridescentF0Idx = RESTIR_PT_PRODUCER_WGSL.indexOf(
+      'let iridescentF0V = iridescenceModifiedF0(',
+      f0BaseIdx,
+    );
+    const f0Idx = RESTIR_PT_PRODUCER_WGSL.indexOf(
+      'let f0V = select(iridescentF0V, f0BaseV, thinFilmV.enabled);',
+      iridescentF0Idx,
+    );
+    const fresnelIdx = RESTIR_PT_PRODUCER_WGSL.indexOf(
+      'let fresV = bsdfLayeredInterfaceResponse(',
+      f0Idx,
+    );
     const sampleIdx = RESTIR_PT_PRODUCER_WGSL.indexOf('let wiRecon = rptSampleSourceReconnectionDirection(', fresnelIdx);
     const pdfIdx = RESTIR_PT_PRODUCER_WGSL.indexOf('let pdfSrc = rptSourceDirectionalPdfFull(', sampleIdx);
 
     expect(f0BaseIdx).toBeGreaterThanOrEqual(0);
-    expect(f0Idx).toBeGreaterThan(f0BaseIdx);
+    expect(iridescentF0Idx).toBeGreaterThan(f0BaseIdx);
+    expect(f0Idx).toBeGreaterThan(iridescentF0Idx);
     expect(fresnelIdx).toBeGreaterThan(f0Idx);
     expect(sampleIdx).toBeGreaterThan(fresnelIdx);
     expect(pdfIdx).toBeGreaterThan(sampleIdx);
-    expect(RESTIR_PT_PRODUCER_WGSL.slice(f0Idx, fresnelIdx)).toContain('iridescenceThicknessMaxV,');
+    expect(
+      RESTIR_PT_PRODUCER_WGSL.slice(iridescentF0Idx, f0Idx),
+    ).toContain('iridescenceThicknessMaxV,');
+    expect(RESTIR_PT_PRODUCER_WGSL.slice(fresnelIdx, sampleIdx)).toContain(
+      'materialSpecularFresnelSchlick(',
+    );
   });
 
   it('applies layer, spectral albedo, and spectral emission in suffix Lo', () => {
@@ -617,8 +649,8 @@ describe('ReSTIR-PT producer — unbiased candidate weight + specular gate', () 
     expect(RESTIR_PT_PRODUCER_WGSL).toContain(
       'hitMaterialId(hit), hit.triIndex, hit.baryVW, hit.instanceIndex, rng,',
     );
-    expect(RESTIR_PT_PRODUCER_WGSL).toContain('for (var aSkip = 0u; aSkip < 9u; aSkip = aSkip + 1u) {');
-    expect(RESTIR_PT_PRODUCER_WGSL).toContain('if (aSkip == 8u) {');
+    expect(RESTIR_PT_PRODUCER_WGSL).toContain('let surfaceHitLimit = sceneSurfaceHitLimit();');
+    expect(RESTIR_PT_PRODUCER_WGSL).toContain('if (surfaceHitCount >= surfaceHitLimit) {');
     expect(RESTIR_PT_PRODUCER_WGSL).toContain('valid = false;');
     expect(RESTIR_PT_PRODUCER_WGSL).toContain('let sTrace = rptTraceClosestAfterAlpha(reconRay, &rng);');
     expect(RESTIR_PT_PRODUCER_WGSL).toContain('let nextTrace = rptTraceClosestAfterAlpha(Ray(pos + normal * 1e-3, nextDir), rng);');
@@ -633,19 +665,27 @@ describe('ReSTIR-PT producer — unbiased candidate weight + specular gate', () 
     const matIdx = RESTIR_PT_PRODUCER_WGSL.indexOf('let sReservoirMat = rptSuffixMaterialAtHit(sHit, reconRay.direction, reconDirToXv, heroLambda);');
     const normalIdx = RESTIR_PT_PRODUCER_WGSL.indexOf('ns = sReservoirMat.normal;');
     const updateIdx = RESTIR_PT_PRODUCER_WGSL.indexOf(
-      '&r, xs, ns, Lo, heroLambda, pdfSrc, wCandidate, &rng,',
+      '&r, xs, ns, Lo, heroLambda, pdfSrc, logCandidateWeight, &rng,',
     );
     expect(matIdx).toBeGreaterThanOrEqual(0);
     expect(normalIdx).toBeGreaterThan(matIdx);
     expect(updateIdx).toBeGreaterThan(normalIdx);
   });
 
-  it('gates singular, transmissive, or exact thin-film visible vertices to an EMPTY reservoir (no reuse)', () => {
+  it('gates singular or transmissive vertices while retaining finite thin-film reuse', () => {
     expect(RESTIR_PT_PRODUCER_WGSL).toContain('fn rptIsReusableVisibleVertex(');
     expect(RESTIR_PT_PRODUCER_WGSL).toContain('if (transmission > 0.0) { return false; }');
-    expect(RESTIR_PT_PRODUCER_WGSL).toContain('if (vMat.isUnlit || vMat.thinFilmEnabled ||');
+    expect(RESTIR_PT_PRODUCER_WGSL).not.toContain(
+      'vMat.isUnlit || vMat.thinFilmEnabled ||',
+    );
+    expect(RESTIR_PT_PRODUCER_WGSL).toContain(
+      '// thin film is a finite rough-interface Fresnel replacement and remains in',
+    );
     expect(RESTIR_PT_PRODUCER_WGSL).toContain(
       '!rptIsReusableVisibleVertex(roughnessV, metallicV, transmissionV, clearcoatV, sheenV)) {',
+    );
+    expect(RESTIR_PT_PRODUCER_WGSL).toContain(
+      'anisotropyV, anisotropyRotationV, thinFilmV,',
     );
   });
   it('rejects a transmissive or alpha-exhausted suffix instead of publishing partial Lo', () => {
@@ -665,15 +705,16 @@ describe('ReSTIR-PT producer — unbiased candidate weight + specular gate', () 
 });
 
 describe('ReSTIR-PT resolve — reconstructs with the FULL BRDF (not the proxy target)', () => {
-  it('evaluates the full visible-vertex BRDF and forms f·cos·Lo·W', () => {
+  it('evaluates the full visible-vertex BRDF and applies logW without overflow', () => {
     expect(RESTIR_PT_RESOLVE_WGSL).toContain('let fBsdf = evaluateBrdfFullWithClearcoatNormal(');
     expect(RESTIR_PT_RESOLVE_WGSL).toContain('r.nv, r.clearcoatNormalV, wo, wiRecon,');
     expect(RESTIR_PT_RESOLVE_WGSL).toContain('r.clearcoatV, r.clearcoatRoughnessV, r.sheenV, r.sheenRoughnessV, r.sheenColorV,');
     expect(RESTIR_PT_RESOLVE_WGSL).toContain('r.specularColorV, r.specularIntensityV,');
     expect(RESTIR_PT_RESOLVE_WGSL).toContain('r.anisotropyV, r.anisotropyRotationV,');
     expect(RESTIR_PT_RESOLVE_WGSL).toContain('let integrand = fBsdf * cosTheta * r.Lo;');
-    expect(RESTIR_PT_RESOLVE_WGSL).toContain('let indirect = integrand * r.W;');
-    expect(RESTIR_PT_RESOLVE_WGSL).toContain('if (!rptFiniteVec3(indirect))');
+    expect(RESTIR_PT_RESOLVE_WGSL).toContain('let scaled = rptScalePositiveVec3ByLog(integrand, r.logW);');
+    expect(RESTIR_PT_RESOLVE_WGSL).toContain('if (!scaled.valid)');
+    expect(RESTIR_PT_RESOLVE_WGSL).toContain('vec4f(0.0, 0.0, 0.0, -1.0)');
   });
 
   it('does NOT use the diffuse-cosine proxy (restirPtTargetAt) in reconstruction', () => {

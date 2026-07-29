@@ -75,13 +75,13 @@ function makeFrameDeps(capture: { inputs: PipelineFrameInputs | null }): HybridE
       primaryLightIntensity: 1,
       skyTint: [1, 1, 1],
       skyIrradiance: 1,
+      ddgiLights: [],
     },
     filter: {
       indirectFireflyClamp: [1, 1, 1],
       atrousDirectSigmas: [128, 5, 0.05],
       atrousIndirectSigmas: [32, 20, 0.5],
       stainedGlassFlags: 0,
-      grisReuse: 0,
       nrcEnabled: 0,
     },
     telemetry: {
@@ -108,6 +108,7 @@ function makeFrameDeps(capture: { inputs: PipelineFrameInputs | null }): HybridE
       ddgiOn: false,
       isLayerEnabled: () => false,
       device: {} as GPUDevice,
+      maxBounces: 4,
       tunables: {
         emitterDist2Floor: 0.01,
         directFireflyClamp: 4,

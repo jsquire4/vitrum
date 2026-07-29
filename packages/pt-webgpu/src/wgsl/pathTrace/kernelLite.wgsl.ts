@@ -49,7 +49,6 @@ fn accumulateFrame(
   accum = accum + vec4f(sampleColor, 1.0);
   accumBuffer[pixelIndex] = accum;
   let display = accum.xyz / max(accum.w, 1.0);
-  let sampleLum = luminance(sampleColor);
   textureStore(outputTexture, vec2i(gid.xy), vec4f(display, 1.0));
   if (firstHitValid) {
     textureStore(normalDepthTexture, vec2i(gid.xy), vec4f(firstHitNormal * 0.5 + vec3f(0.5), firstHitDepth));
@@ -58,7 +57,10 @@ fn accumulateFrame(
     textureStore(normalDepthTexture, vec2i(gid.xy), vec4f(0.5, 1.0, 0.5, 0.0));
     textureStore(albedoTexture, vec2i(gid.xy), vec4f(0.0, 0.0, 0.0, 0.0));
   }
-  textureStore(varianceTexture, vec2i(gid.xy), vec4f(sampleLum, sampleLum, sampleLum, 1.0));
+  // The lite tier has no moment history and does not advertise variance.
+  // Keep the layout-compatible storage target deterministic without exposing a
+  // raw luminance image under the canonical variance semantic.
+  textureStore(varianceTexture, vec2i(gid.xy), vec4f(0.0));
 }
 
 @compute @workgroup_size(8, 8, 1)
@@ -145,7 +147,12 @@ ${composeShadePrologueWgsl(SHADE_PROLOGUE_EMISSIVE_COMMENT_LITE)}
       }
     }
     let cosThetaO = max(0.0, dot(normal, wo));
-    let f0Base = materialSpecularF0(baseColor, metallic, mat.specularColor, mat.specularIntensity);
+    let surfaceEtaTOverI =
+      select(1.0 / max(ior, 1e-8), max(ior, 1e-8), isFrontFace);
+    let f0Base = materialSpecularF0(
+      baseColor, metallic, surfaceEtaTOverI,
+      mat.specularColor, mat.specularIntensity,
+    );
     let f0 = iridescenceModifiedF0(
       f0Base,
       mat.iridescence,
@@ -154,9 +161,9 @@ ${composeShadePrologueWgsl(SHADE_PROLOGUE_EMISSIVE_COMMENT_LITE)}
       mat.iridescenceThicknessMax,
       cosThetaO,
     );
-    let fresnel = fresnelSchlick(cosThetaO, f0);
-    let surfaceEtaTOverI =
-      select(1.0 / max(ior, 1e-4), max(ior, 1e-4), isFrontFace);
+    let fresnel = materialSpecularFresnelSchlick(
+      cosThetaO, f0, metallic, mat.specularIntensity,
+    );
 
     // B12 — lite-tier NEE: directional + env/sky + point + spot + rect-area.
     // Directional/point/spot/rect data is loaded from liteLightTex (binding 14) via textureLoad.
@@ -177,7 +184,7 @@ ${composeShadePrologueWgsl(SHADE_PROLOGUE_EMISSIVE_COMMENT_LITE)}
     lightCount = lightCount + params.pointLightCount;
     lightCount = lightCount + params.spotLightCount;
     lightCount = lightCount + params.rectAreaLightCount;
-    if (hasEnvironmentMap() || params.environmentSun.w > 0.0) {
+    if (hasEnvironmentMap()) {
       lightCount = lightCount + 1u;
     }
     if (lightCount > 0u) {
@@ -218,7 +225,7 @@ ${composeShadePrologueWgsl(SHADE_PROLOGUE_EMISSIVE_COMMENT_LITE)}
                 mat.clearcoat, mat.clearcoatRoughness, mat.sheen, mat.sheenRoughness, mat.sheenColor,
                 mat.iridescence, mat.iridescenceIor, mat.iridescenceThicknessMin, mat.iridescenceThicknessMax,
                 mat.specularColor, mat.specularIntensity,
-                0.0, 0.0, false);
+                0.0, 0.0, thinFilm, false);
               let dirIrrOut = select(dIrrMean.rgb, spectralEmissionAtHero(dIrrMean.rgb, heroLambda), params.spectralEnabled != 0u);
               directLi = directLi + throughput * brdf * nDotL * dirIrrOut;
             }
@@ -252,7 +259,7 @@ ${composeShadePrologueWgsl(SHADE_PROLOGUE_EMISSIVE_COMMENT_LITE)}
               mat.clearcoat, mat.clearcoatRoughness, mat.sheen, mat.sheenRoughness, mat.sheenColor,
               mat.iridescence, mat.iridescenceIor, mat.iridescenceThicknessMin, mat.iridescenceThicknessMax,
               mat.specularColor, mat.specularIntensity,
-              0.0, 0.0, false);
+              0.0, 0.0, thinFilm, false);
             let attenuation = pointSpotDistanceAttenuation(dist, ptMaxDist, ptDecay);
             let radOut = select(rad, spectralEmissionAtHero(rad, heroLambda), params.spectralEnabled != 0u);
             directLi = directLi + throughput * brdf * nDotL * radOut * attenuation;
@@ -295,7 +302,7 @@ ${composeShadePrologueWgsl(SHADE_PROLOGUE_EMISSIVE_COMMENT_LITE)}
                 mat.clearcoat, mat.clearcoatRoughness, mat.sheen, mat.sheenRoughness, mat.sheenColor,
                 mat.iridescence, mat.iridescenceIor, mat.iridescenceThicknessMin, mat.iridescenceThicknessMax,
                 mat.specularColor, mat.specularIntensity,
-                0.0, 0.0, false);
+                0.0, 0.0, thinFilm, false);
               let sradOut = select(srad, spectralEmissionAtHero(srad, heroLambda), params.spectralEnabled != 0u);
               directLi = directLi + throughput * brdf * nDotL * softness * sradOut * attenuation;
             }
@@ -305,7 +312,8 @@ ${composeShadePrologueWgsl(SHADE_PROLOGUE_EMISSIVE_COMMENT_LITE)}
       }
       // B12 — rect/disc-area lights (area; stride 4 texels: rpos, ru, rv, rshape).
       // Shape discriminator in rshape.w: ≈ 0 → rect, ≈ 1 → analytic disc.
-      // Disc sampling uses the concentric-disc map (Shirley & Chiu 1997); area = π·|u|².
+      // Disc sampling uses the concentric-disc map (Shirley & Chiu 1997);
+      // area = π·|u×v|.
       // Lite rect/disc lights are analytic records, not scene geometry. The
       // paired BSDF->area-light half lives in connectLite and intersects the
       // same liteLightTex records, so this NEE half applies the matching MIS
@@ -327,10 +335,9 @@ ${composeShadePrologueWgsl(SHADE_PROLOGUE_EMISSIVE_COMMENT_LITE)}
           var area: f32;
           if (isDiscL) {
             // D9.11 — Shirley & Chiu 1997 concentric-disc map via shared kernelCore helper.
-            let rradL = length(ru);
             let discL = concentricDiscSample(vec2f(xi1l * 2.0 - 1.0, xi2l * 2.0 - 1.0));
             lpos = rpos + ru * discL.x + rv * discL.y;
-            area = PI * rradL * rradL;
+            area = PI * length(cross(ru, rv));
           } else {
             lpos = rpos + ru * (xi1l * 2.0 - 1.0) + rv * (xi2l * 2.0 - 1.0);
             area = 4.0 * length(cross(ru, rv));
@@ -345,7 +352,7 @@ ${composeShadePrologueWgsl(SHADE_PROLOGUE_EMISSIVE_COMMENT_LITE)}
               mat.clearcoat, mat.clearcoatRoughness, mat.sheen, mat.sheenRoughness, mat.sheenColor,
               mat.iridescence, mat.iridescenceIor, mat.iridescenceThicknessMin, mat.iridescenceThicknessMax,
               mat.specularColor, mat.specularIntensity,
-              0.0, 0.0, false);
+              0.0, 0.0, thinFilm, false);
             let lightNormal = safe_normalize(cross(ru, rv));
             let cosLight = max(dot(lightNormal, -wi), 0.0);
             if (cosLight > 0.0) {
@@ -354,7 +361,7 @@ ${composeShadePrologueWgsl(SHADE_PROLOGUE_EMISSIVE_COMMENT_LITE)}
                 mat.clearcoat, mat.clearcoatRoughness, mat.sheen, mat.sheenRoughness,
                 mat.iridescence, mat.iridescenceIor, mat.iridescenceThicknessMin, mat.iridescenceThicknessMax,
                 mat.specularColor, mat.specularIntensity,
-                0.0, 0.0);
+                0.0, 0.0, thinFilm);
               let misWeight = powerHeuristic(lightPdf, brdfPdf);
               let rectOffsetNormal = select(-normal, normal, dot(normal, wi) > 0.0);
               let shadowRay = Ray(hitPos + rectOffsetNormal * 1e-3, wi);
@@ -369,7 +376,7 @@ ${composeShadePrologueWgsl(SHADE_PROLOGUE_EMISSIVE_COMMENT_LITE)}
         }
         current = current + 1u;
       }
-      if ((hasEnvironmentMap() || params.environmentSun.w > 0.0) && (sumDirectLighting || current == picked)) {
+      if (hasEnvironmentMap() && (sumDirectLighting || current == picked)) {
         var envDir = vec3f(0.0, 1.0, 0.0);
         var envColor = vec3f(0.0);
         var envPdf = 0.0;
@@ -392,12 +399,12 @@ ${composeShadePrologueWgsl(SHADE_PROLOGUE_EMISSIVE_COMMENT_LITE)}
               mat.clearcoat, mat.clearcoatRoughness, mat.sheen, mat.sheenRoughness, mat.sheenColor,
               mat.iridescence, mat.iridescenceIor, mat.iridescenceThicknessMin, mat.iridescenceThicknessMax,
               mat.specularColor, mat.specularIntensity,
-              0.0, 0.0, false);
+              0.0, 0.0, thinFilm, false);
             let brdfPdf = brdfDirectionalPdfFullSampled(baseColor, roughness, metallic, transmission, surfaceEtaTOverI, normal, wo, envDir,
               mat.clearcoat, mat.clearcoatRoughness, mat.sheen, mat.sheenRoughness,
               mat.iridescence, mat.iridescenceIor, mat.iridescenceThicknessMin, mat.iridescenceThicknessMax,
               mat.specularColor, mat.specularIntensity,
-              0.0, 0.0);
+              0.0, 0.0, thinFilm);
             // A3 — spectralise the env radiance at the hero λ (RGB unchanged).
             let envColorOut = select(envColor, spectralEmissionAtHero(envColor, heroLambda), params.spectralEnabled != 0u);
             let misWeight = powerHeuristic(envPdf, brdfPdf);
@@ -506,6 +513,7 @@ ${composeShadePrologueWgsl(SHADE_PROLOGUE_EMISSIVE_COMMENT_LITE)}
         mat.iridescenceThicknessMax,
         mat.specularColor,
         mat.specularIntensity,
+        thinFilm,
         throughputAtVertex,
         heroLambda,
       );
@@ -530,6 +538,7 @@ ${composeShadePrologueWgsl(SHADE_PROLOGUE_EMISSIVE_COMMENT_LITE)}
         mat.iridescenceThicknessMax,
         mat.specularColor,
         mat.specularIntensity,
+        thinFilm,
         throughputAtVertex,
         heroLambda,
       );
